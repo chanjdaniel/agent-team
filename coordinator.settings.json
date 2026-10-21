@@ -1,0 +1,7 @@
+{
+  "enabledPlugins": {
+    "discord@claude-plugins-official": true,
+    "mongodb-atlas@claude-plugins-official": false
+  },
+  "crossSessionInbound": "accept"
+}

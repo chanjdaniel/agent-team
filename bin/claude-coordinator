@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Start the one session that owns Discord: the team's coordinator.
+#
+# The Discord plugin logs in to Discord from every session that loads it, so it is off in user
+# settings and on here alone, through this session's own --settings. Bypass mode, by Daniel's
+# choice; workers run in auto mode, and crossSessionInbound: accept (user settings) keeps their
+# messages to this session from being held. With the safety classifier off here, deny rules and
+# GitHub rulesets are what block force-push, reset --hard and merging unapproved PRs.
+#
+# Usage: claude-coordinator [working-directory]   (default: ~/agent-team)
+set -euo pipefail
+cd "${1:-$HOME/agent-team}"
+exec claude --bg --name coordinator \
+  --channels plugin:discord@claude-plugins-official \
+  --dangerously-skip-permissions \
+  --settings "$HOME/agent-team/coordinator.settings.json" \
+  "You are the coordinator. Daniel talks to you on Discord. Wait for their messages."
