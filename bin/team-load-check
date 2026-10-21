@@ -56,7 +56,7 @@ cp "$inventory" "$home/tasks/T0/inventory${expected:+-$(IFS=-; echo "${expected[
 
 fail=0
 tools=$(sed '/^---$/q' "$inventory" | grep '^mcp__' || true)
-skills=$(sed '1,/^---$/d' "$inventory")
+skills=$(sed '0,/^---$/d' "$inventory")
 allowed='^$'
 for kit in "${expected[@]}"; do
   allowed+="|^mcp__plugin_${kit}_"

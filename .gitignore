@@ -3,3 +3,4 @@ tasks/*/settings.*.json
 tasks/*/mcp.*.json
 .claude/worktrees/
 .claude/load-check/
+tasks/T0/

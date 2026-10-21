@@ -68,13 +68,16 @@ else
 fi
 
 name=$task-$role
-out=$(cd "$worktree" && claude --bg --name "$name" \
-  --permission-mode auto \
-  --settings "$settings" \
-  --append-system-prompt-file "$home/roles/$role.md" \
+# --mcp-config takes several values, so it must not come right before the prompt.
+out=$(cd "$worktree" && claude --bg \
   --strict-mcp-config --mcp-config "$mcp" \
   "${plugin_args[@]}" \
+  --settings "$settings" \
+  --append-system-prompt-file "$home/roles/$role.md" \
+  --permission-mode auto \
+  --name "$name" \
   "$prompt")
+[[ $out != *"send a prompt to start"* ]] || die "the session started without its prompt: $out"
 id=$(grep -oE '\b[0-9a-f]{8}\b' <<<"$out" | head -n 1) || die "could not read the session id from: $out"
 
 jq -cn --arg task "$task" --arg role "$role" --arg session "$id" --arg worktree "$worktree" \
