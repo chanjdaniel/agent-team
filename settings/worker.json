@@ -24,5 +24,8 @@
       "Bash(*mongodb+srv://*)",
       "Bash(*migrate_user_emails*)"
     ]
+  },
+  "attribution": {
+    "commit": ""
   }
 }
