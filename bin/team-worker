@@ -7,7 +7,7 @@
 #   role      planner | builder | reviewer
 #   worktree  a linked git worktree of the task's repo (never a primary checkout)
 #
-# Prints the background session id and logs the launch to ledger.jsonl.
+# Prints the background session id and logs the launch to ledger.jsonl (except T0, the load check).
 # The merged settings and MCP config are generated into tasks/<task>/ (gitignored).
 set -euo pipefail
 
@@ -80,7 +80,8 @@ out=$(cd "$worktree" && claude --bg \
 [[ $out != *"send a prompt to start"* ]] || die "the session started without its prompt: $out"
 id=$(grep -oE '\b[0-9a-f]{8}\b' <<<"$out" | head -n 1) || die "could not read the session id from: $out"
 
-jq -cn --arg task "$task" --arg role "$role" --arg session "$id" --arg worktree "$worktree" \
+# T0 is the load check, not a task, so it stays out of the ledger.
+[[ $task == T0 ]] || jq -cn --arg task "$task" --arg role "$role" --arg session "$id" --arg worktree "$worktree" \
   --args '{ts: (now | todate), task: $task, event: "launch", role: $role, session: $session,
     worktree: $worktree, toolkits: $ARGS.positional}' "${toolkits[@]}" >>"$home/ledger.jsonl"
 
