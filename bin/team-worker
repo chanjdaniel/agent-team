@@ -33,6 +33,11 @@ shift
 prompt="$*"
 [[ -n $prompt ]] || die "missing first prompt"
 
+# Every task has its Discord thread before any worker starts (bin/team-thread).
+if [[ $task != T0 ]] && ! jq -e --arg t "$task" 'select(.task == $t and .event == "thread")' "$home/ledger.jsonl" >/dev/null 2>&1; then
+  die "$task has no Discord thread; open one first with bin/team-thread"
+fi
+
 # A worker runs only in a linked worktree, so it can never edit a primary checkout.
 worktree=$(realpath -- "$worktree")
 git_dir=$(git -C "$worktree" rev-parse --absolute-git-dir 2>/dev/null) || die "$worktree is not a git checkout"

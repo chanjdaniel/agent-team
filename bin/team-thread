@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Open a task's Discord thread under #coordinator and record it in the ledger.
+# Every task has one; bin/team-worker refuses to launch a worker for a task without it.
+#
+# Usage: team-thread <task> <project> <title>
+# Prints the thread id. Needs the bot token in ~/.claude/channels/discord/.env.
+set -euo pipefail
+
+home=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+channel=${TEAM_COORDINATOR_CHANNEL:-1562486564871995482}
+
+die() { echo "team-thread: $*" >&2; exit 1; }
+[[ $# -eq 3 ]] || die "usage: team-thread <task> <project> <title>"
+task=$1 project=$2 title=$3
+[[ $task =~ ^T[1-9][0-9]*$ ]] || die "task must look like T<n>, got '$task'"
+
+if existing=$(jq -re --arg t "$task" 'select(.task == $t and .event == "thread") | .discord_thread' "$home/ledger.jsonl" 2>/dev/null | tail -n 1); then
+  echo "$existing"
+  exit 0
+fi
+
+token=$(sed -n 's/^DISCORD_BOT_TOKEN=//p' "$HOME/.claude/channels/discord/.env")
+[[ -n $token ]] || die "no DISCORD_BOT_TOKEN in ~/.claude/channels/discord/.env"
+
+body=$(jq -cn --arg name "$task · $project · $title" '{name: $name[0:100], type: 11, auto_archive_duration: 10080}')
+id=$(curl -fsS -X POST -H "Authorization: Bot $token" -H "Content-Type: application/json" \
+  "https://discord.com/api/v10/channels/$channel/threads" -d "$body" | jq -r .id)
+[[ $id =~ ^[0-9]+$ ]] || die "Discord did not return a thread id"
+
+jq -cn --arg task "$task" --arg thread "$id" \
+  '{ts: (now | todate), task: $task, event: "thread", discord_thread: $thread}' >>"$home/ledger.jsonl"
+echo "$id"
