@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# Start one agent-team worker as its own background session, in auto mode, with its role's
+# settings and nothing else: no user-level MCP servers, no plugin MCP, no claude.ai connectors.
+#
+# Usage: team-worker <task> <role> <worktree> [--toolkit <name>]... -- <first prompt>
+#   task      T<n>, e.g. T1
+#   role      planner | builder | reviewer
+#   worktree  a linked git worktree of the task's repo (never a primary checkout)
+#
+# Prints the background session id and logs the launch to ledger.jsonl.
+# The merged settings and MCP config are generated into tasks/<task>/ (gitignored).
+set -euo pipefail
+
+home=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+
+die() { echo "team-worker: $*" >&2; exit 1; }
+
+[[ $# -ge 3 ]] || die "usage: team-worker <task> <role> <worktree> [--toolkit <name>]... -- <first prompt>"
+task=$1 role=$2 worktree=$3
+shift 3
+[[ $task =~ ^T[0-9]+$ ]] || die "task must look like T<n>, got '$task'"
+[[ -f $home/roles/$role.md && -f $home/settings/$role.json ]] || die "unknown role '$role'"
+
+toolkits=()
+while [[ $# -gt 0 && $1 != -- ]]; do
+  case $1 in
+    --toolkit) [[ $# -ge 2 ]] || die "--toolkit needs a name"; toolkits+=("$2"); shift 2 ;;
+    *) die "unexpected argument '$1'" ;;
+  esac
+done
+[[ ${1:-} == -- ]] || die "missing '--' before the first prompt"
+shift
+prompt="$*"
+[[ -n $prompt ]] || die "missing first prompt"
+
+# A worker runs only in a linked worktree, so it can never edit a primary checkout.
+worktree=$(realpath -- "$worktree")
+git_dir=$(git -C "$worktree" rev-parse --absolute-git-dir 2>/dev/null) || die "$worktree is not a git checkout"
+common_dir=$(realpath -- "$(git -C "$worktree" rev-parse --git-common-dir)")
+[[ $git_dir != "$common_dir" ]] || die "$worktree is a primary checkout, not a linked worktree"
+
+taskdir=$home/tasks/$task
+mkdir -p "$taskdir"
+
+# Role settings layered on the shared worker settings; permission lists are concatenated.
+settings=$taskdir/settings.$role.json
+jq -s '.[0] as $base | .[1] as $role
+  | ($base * $role)
+  | .permissions.deny = (($base.permissions.deny // []) + ($role.permissions.deny // []))
+  | .permissions.allow = (($base.permissions.allow // []) + ($role.permissions.allow // []))' \
+  "$home/settings/worker.json" "$home/settings/$role.json" |
+  sed "s#@TEAM_HOME@#$home#g" >"$settings"
+
+# MCP servers come only from the chosen toolkits.
+mcp=$taskdir/mcp.$role.json
+plugin_args=()
+mcp_files=()
+for kit in "${toolkits[@]}"; do
+  dir=$home/toolkits/$kit
+  [[ -d $dir ]] || die "unknown toolkit '$kit'"
+  plugin_args+=(--plugin-dir "$dir")
+  if [[ -f $dir/.mcp.json ]]; then mcp_files+=("$dir/.mcp.json"); fi
+done
+if [[ ${#mcp_files[@]} -gt 0 ]]; then
+  jq -s '{mcpServers: (map(.mcpServers // {}) | add)}' "${mcp_files[@]}" >"$mcp"
+else
+  echo '{"mcpServers": {}}' >"$mcp"
+fi
+
+name=$task-$role
+out=$(cd "$worktree" && claude --bg --name "$name" \
+  --permission-mode auto \
+  --settings "$settings" \
+  --append-system-prompt-file "$home/roles/$role.md" \
+  --strict-mcp-config --mcp-config "$mcp" \
+  "${plugin_args[@]}" \
+  "$prompt")
+id=$(grep -oE '\b[0-9a-f]{8}\b' <<<"$out" | head -n 1) || die "could not read the session id from: $out"
+
+jq -cn --arg task "$task" --arg role "$role" --arg session "$id" --arg worktree "$worktree" \
+  --args '{ts: (now | todate), task: $task, event: "launch", role: $role, session: $session,
+    worktree: $worktree, toolkits: $ARGS.positional}' "${toolkits[@]}" >>"$home/ledger.jsonl"
+
+echo "$id"

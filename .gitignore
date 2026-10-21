@@ -1,3 +1,5 @@
 # Generated per launch by bin/team-worker
 tasks/*/settings.*.json
 tasks/*/mcp.*.json
+.claude/worktrees/
+.claude/load-check/
