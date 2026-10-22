@@ -1,0 +1,2 @@
+# shellcheck reads this from any script under the repo: follow sourced files from the script's own directory.
+source-path=SCRIPTDIR

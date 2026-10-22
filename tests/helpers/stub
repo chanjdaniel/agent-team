@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Fake external command for tests: copied onto PATH as claude, gh and curl.
+# Logs its argv as one JSON array per call to $STUB_CALLS/<name>.log, then answers from the
+# test's fixture in $STUB_FIXTURES: <name>.sh is sourced with the call's arguments when present,
+# otherwise <name>.out is printed and <name>.status is the exit code (default 0).
+# A call with no fixture at all fails, so a test never passes on an unplanned call.
+set -euo pipefail
+name=${0##*/}
+# --arg takes each value literally, even one that looks like an option.
+for arg in "$@"; do jq -cn --arg a "$arg" '$a'; done | jq -cs . >>"$STUB_CALLS/$name.log"
+fixture=$STUB_FIXTURES/$name
+if [[ -f $fixture.sh ]]; then
+  # shellcheck disable=SC1090 # the per-test fixture
+  source "$fixture.sh"
+  exit 0
+fi
+if [[ ! -f $fixture.out && ! -f $fixture.status ]]; then
+  echo "stub $name: no fixture for this call: $*" >&2
+  exit 127
+fi
+if [[ -f $fixture.out ]]; then cat "$fixture.out"; fi
+exit "$(cat "$fixture.status" 2>/dev/null || echo 0)"

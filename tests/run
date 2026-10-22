@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Run the team home's checks: shellcheck on every shell script in bin/ and tests/ (not the
+# vendored bats), then the whole bats suite on the vendored bats-core.
+#
+# Usage: tests/run [shellcheck|bats]   (default: both)
+# Exit 0 when every check passes; CI runs each half as its own job.
+set -euo pipefail
+
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# shellcheck source=bin/lib/team.sh
+source "$root/bin/lib/team.sh" "$@"
+
+what=${1:-all}
+[[ $# -le 1 && $what =~ ^(all|shellcheck|bats)$ ]] || usage_error "usage: tests/run [shellcheck|bats]"
+
+# Every file under bin/ and tests/ that is a shell script by its shebang or extension.
+shell_scripts() {
+  local file
+  while IFS= read -r file; do
+    if [[ $file == *.sh || $file == *.bash || $file == *.bats ]] ||
+      head -n 1 "$file" | grep -Eq '^#!.*\b(ba)?sh\b'; then
+      echo "$file"
+    fi
+  done < <(cd "$root" && find bin tests -path tests/vendor -prune -o -type f -print | sort)
+}
+
+fail=0
+if [[ $what != bats ]]; then
+  mapfile -t scripts < <(shell_scripts)
+  echo "shellcheck $(shellcheck --version | sed -n 's/^version: //p'): ${#scripts[@]} scripts"
+  (cd "$root" && shellcheck -x "${scripts[@]}") || fail=1
+fi
+if [[ $what != shellcheck ]]; then
+  "$root/tests/vendor/bats-core/bin/bats" "$root/tests" || fail=1
+fi
+exit $fail
