@@ -103,6 +103,17 @@ assert_not_launched() {
   assert_equal "$(find "${settings%/*}" -name '*.json.*')" ""
 }
 
+@test "its settings deny sudo, and leave it free to start Claude sessions" {
+  run_bin -0 claude-coordinator
+  local settings=$HOME/.local/state/agent-team/coordinator.settings.json command
+  for command in "sudo" "sudo -n true" "sudo pacman -S jq"; do
+    denied_in "$settings" "$command" || { echo "allows: $command" >&2; return 1; }
+  done
+  for command in "claude --bg --name x go" "claude -p hi" "claude agents" "grep -rn sudo tests"; do
+    if denied_in "$settings" "$command"; then echo "denies: $command" >&2; return 1; fi
+  done
+}
+
 @test "it launches from the working directory it is given" {
   mkdir -p "$BATS_TEST_TMPDIR/elsewhere"
   run_bin -0 claude-coordinator "$BATS_TEST_TMPDIR/elsewhere"

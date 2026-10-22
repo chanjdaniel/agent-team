@@ -150,6 +150,17 @@ on_machine() {
   HOME=$root/home TEAM_HOME=$root/team "${@:2}"
 }
 
+# Whether one of the settings file <file>'s Bash deny rules matches <command>, each * in a rule
+# matching anything: denied_in <file> <command>
+denied_in() {
+  local pattern
+  while IFS= read -r pattern; do
+    # shellcheck disable=SC2053 # the rule is a glob
+    [[ $2 == $pattern ]] && return 0
+  done < <(jq -r '.permissions.deny[] | select(startswith("Bash(")) | .[5:-1]' "$1")
+  return 1
+}
+
 assert_equal() {
   if [[ $1 != "$2" ]]; then
     printf 'expected: %s\nactual:   %s\n' "$2" "$1" >&2

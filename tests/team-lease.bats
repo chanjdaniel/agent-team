@@ -311,17 +311,6 @@ checkout_state() {
   assert_equal "$(git -C "$TEAM_HOME" rev-parse origin/lease)" "$(git -C "$origin" rev-parse lease)"
 }
 
-# Whether one of the settings file <file>'s Bash deny rules matches <command>, each * in a rule
-# matching anything: denied_in <file> <command>
-denied_in() {
-  local pattern
-  while IFS= read -r pattern; do
-    # shellcheck disable=SC2053 # the rule is a glob
-    [[ $2 == $pattern ]] && return 0
-  done < <(jq -r '.permissions.deny[] | select(startswith("Bash(")) | .[5:-1]' "$1")
-  return 1
-}
-
 @test "lease commands on one machine wait for each other's lock" {
   local state=$HOME/.local/state/agent-team start
   mkdir -p "$state"

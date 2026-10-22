@@ -10,6 +10,8 @@
       "Bash(gh pr merge*)",
       "Bash(gh-axi pr merge*)",
       "Bash(gh api*pulls/*/merge*)",
+      "Bash(sudo)",
+      "Bash(sudo *)",
       "Bash(*team-lease*--steal*)",
       "Bash(git push * lease)",
       "Bash(git push * lease *)",

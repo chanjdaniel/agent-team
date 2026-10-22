@@ -305,6 +305,29 @@ run_fake() {
   done
 }
 
+@test "every role's generated settings deny sudo and starting a Claude session of its own" {
+  thread T7
+  local role settings command
+  for role in planner builder reviewer; do
+    run_bin -0 team-worker T7 "$role" "$wt1" -- go
+    settings=$TEAM_HOME/tasks/T7/settings.$role.json
+    # shellcheck disable=SC2088 # ~ is part of the command as an agent types it
+    for command in "sudo" "sudo -n true" "sudo pacman -S jq" "claude --bg --name x go" \
+      "claude --background go" "claude -p hi" "claude --print hi" "claude --model opus -p hi" \
+      "claude --settings s.json --bg go" "claude --model opus --print hi" "claude agents" \
+      "claude agents --json" "claude respawn --all" "$HOME/.local/bin/claude -p hi" \
+      "~/.local/bin/claude --bg go" "/usr/bin/claude --model opus --print hi" \
+      "$HOME/.local/bin/claude agents"; do
+      denied_in "$settings" "$command" || { echo "$role allows: $command" >&2; return 1; }
+    done
+    for command in "claude --version" "claude auth status --json" "claude mcp list" \
+      "grep -n 'claude --bg' bin/team-worker" "grep -rn sudo tests" "git commit -m 'deny sudo'" \
+      "ls ~/.claude/projects" "pseudo-tool -p"; do
+      if denied_in "$settings" "$command"; then echo "$role denies: $command" >&2; return 1; fi
+    done
+  done
+}
+
 @test "a closed task is refused, opened or legacy" {
   thread T7
   opened T7 proj feat/T7-one "$wt1"

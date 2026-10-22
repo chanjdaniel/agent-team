@@ -132,9 +132,14 @@ Task directory: `.scratch/task/` in the worktree (excluded from git), for your s
 
 ## Deliver through no-mistakes
 
-1. Run `/no-mistakes` with this intent: "T12: rate-limit the applicant sign-in endpoints (per address and per IP, Mongo TTL counters, 429 with Retry-After), so Conventioner cannot be used to flood addresses with sign-in codes or to guess codes."
-2. The PR must target `dev`; if the gate opens it against another branch, retarget it to `dev` and close any duplicate.
-3. When the gate returns checks-passed, send `T12 PR <full url>` to `coordinator`.
+1. Bring the branch up to date with the base: `git fetch origin`; if `git merge-base --is-ancestor origin/dev HEAD` fails, merge `origin/dev` with a merge commit (`git merge origin/dev`, never a rebase), resolve any conflict and re-run what the conflicts touched.
+   A conflict whose resolution is a judgment call on behaviour goes to `coordinator` as `T12 QUESTION <the conflict> | options: ...`.
+2. Run `/no-mistakes` with this intent: "T12: rate-limit the applicant sign-in endpoints (per address and per IP, Mongo TTL counters, 429 with Retry-After), so Conventioner cannot be used to flood addresses with sign-in codes or to guess codes."
+3. The PR must target `dev`; if the gate opens it against another branch, retarget it to `dev` and close any duplicate.
+4. When the gate returns checks-passed, repeat step 1; if it merged anything, go back to step 2, so every required check passes on the new head.
+5. Then send `T12 PR <full url>` to `coordinator`.
+
+Never run a command that needs `sudo`; send `T12 BLOCKED <the command> needs sudo` to `coordinator` instead.
 
 ## Rules
 
@@ -177,6 +182,24 @@ EOF
     'gh pr create --repo chanjdaniel/agent-team --base main --head feat/T14-team-tooling'
   refute_grep no-mistakes "$TEAM_HOME/tasks/T14/brief-builder-fix.md"
   refute_grep 'gh pr create' "$TEAM_HOME/tasks/T12/brief-builder-deliver.md"
+}
+
+@test "each delivery brings the branch up to date with the base before reporting, and never uses sudo" {
+  open_t12
+  open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
+  local task base brief
+  for task in T12:dev T14:main; do
+    base=${task#*:} task=${task%:*}
+    run_bin -0 team-brief "$task" builder-deliver --set "goal=the goal"
+    brief=$(<"$output")
+    assert_contains "$brief" "if \`git merge-base --is-ancestor origin/$base HEAD\` fails, merge \`origin/$base\` with a merge commit (\`git merge origin/$base\`, never a rebase)"
+    assert_contains "$brief" "goes to \`coordinator\` as \`$task QUESTION <the conflict> | options: ...\`"
+    assert_contains "$brief" "step 1; if it merged anything, go back to step"
+    assert_contains "$brief" "so every required check passes on the new head."
+    assert_contains "$brief" "Never run a command that needs \`sudo\`; send \`$task BLOCKED <the command> needs sudo\` to \`coordinator\` instead."
+    # The up-to-date check replaced the old refusal when the base moved.
+    [[ $brief != *"merge-tree"* && $brief != *"moved:"* ]]
+  done
 }
 
 @test "no template repeats a rule from roles/" {
