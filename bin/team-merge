@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+# Merge a task's PR on Daniel's recorded word, only with every required check green on its head.
+#
+# Usage: team-merge T<n> [--pr <url>]
+# The PR is the task's latest pr event, or --pr, which must be one of the task's pr events; its
+# repo must be a project in projects.toml. Checks first, changing nothing, each failure a reason:
+#   a merge-approved event for the PR exists (the latest counts), and its discord_message is a
+#   message in the task's thread or in #coordinator, read with the bot token through the Discord
+#   API, whose author is in allowFrom of ~/.claude/channels/discord/access.json;
+#   the PR is open, not a draft, does not conflict, and targets the project's base;
+#   every required check (the base branch's protection, gh pr checks --required and the
+#   project's required_checks) is present on the head and passed (a skipped one passes);
+#   no check on the head is failing or pending; agent-review is success on the head;
+#   no commit of the PR carries an agent attribution line, and the list read ends at the head.
+# Any failure is exit 1 with every reason, and gh pr merge is never called.
+# Then: gh pr merge <number> --repo <repo> --<merge_method> --match-head-commit <head>, never
+# --auto or --admin; the PR is read again and must be merged (if gh left it open with auto-merge
+# on, auto-merge is turned off and it is exit 1); then merged is appended with pr, merge, head,
+# by (naming the Discord message and its author), project, branch, discord_message and
+# discord_channel. Prints {task, pr, merge, head, by}.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+usage="usage: team-merge T<n> [--pr <url>]"
+
+task='' url=''
+while (($#)); do
+  case $1 in
+    --pr)
+      [[ $# -ge 2 && -n $2 ]] || usage_error "$usage"
+      url=${2%/}
+      shift
+      ;;
+    -*) usage_error "$usage" ;;
+    *)
+      [[ -z $task ]] || usage_error "$usage"
+      task=$1
+      ;;
+  esac
+  shift
+done
+[[ -n $task ]] || usage_error "$usage"
+[[ $task =~ ^T[1-9][0-9]*$ ]] || usage_error "task must look like T<n>, got '$task'"
+
+events=$(task_events "$task" | jq -cs .)
+[[ $events != '[]' ]] || die "unknown task $task: the ledger has no events for it"
+jq -e 'any(.[]; .event == "pr")' <<<"$events" >/dev/null || die "$task has no pr event, so there is no PR to merge"
+if [[ -z $url ]]; then
+  pr=$(jq -c 'map(select(.event == "pr")) | last' <<<"$events")
+else
+  pr=$(jq -c --arg url "$url" 'map(select(.event == "pr" and (.url | rtrimstr("/")) == $url)) | last' <<<"$events")
+  [[ $pr != null ]] ||
+    die "$url is not one of $task's pr events:"$'\n'"$(jq -r '.[] | select(.event == "pr") | "  \(.url)"' <<<"$events")"
+fi
+
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+
+# The PR as team-state sees it: the repo, the project, the head and the checks by bucket.
+facts=$(pr_part "$events" "$pr" "$scratch") || exit 1
+url=$(jq -r .url <<<"$facts")
+[[ $(jq -r '.number // empty' <<<"$facts") ]] || die "$(jq -r .error <<<"$facts")"
+number=$(jq -r .number <<<"$facts") repo=$(jq -r .repo <<<"$facts") project=$(jq -r '.project // empty' <<<"$facts")
+[[ -n $project ]] || die "PR #$number is in $repo, which is not a project in projects.toml, so it has no base or merge method"
+base=$(team_project "$project" base)
+method=$(team_project "$project" merge_method)
+
+problems=()
+
+# Daniel's word: the latest merge-approved for this PR, its message read back from Discord.
+by='' channel=''
+approval=$(jq -c --argjson n "$number" 'map(select(.event == "merge-approved" and (.pr | tostring) == ($n | tostring))) | last' <<<"$events")
+access=$HOME/.claude/channels/discord/access.json
+if [[ $approval == null ]]; then
+  problems+=("no merge-approved event for PR #$number: Daniel's word is not recorded")
+else
+  message=$(jq -r '.discord_message | tostring' <<<"$approval")
+  thread=$(jq -r 'map(select(.event == "thread")) | last | .discord_thread // empty' <<<"$events")
+  if [[ ! $message =~ ^[0-9]+$ ]]; then
+    problems+=("merge-approved names discord_message '$message', which is not a Discord message id")
+  elif ! allow=$(jq -ce '.allowFrom | select(type == "array") | map(tostring)' "$access" 2>/dev/null); then
+    problems+=("cannot read allowFrom from ~/.claude/channels/discord/access.json, so the approval cannot be checked")
+  elif ! discord_token >/dev/null; then
+    problems+=("no DISCORD_BOT_TOKEN in ~/.claude/channels/discord/.env, so the approval cannot be checked")
+  else
+    found='' where=() errors=()
+    if [[ -n $thread ]]; then where+=("$thread"); fi
+    where+=("$COORDINATOR_CHANNEL")
+    for candidate in "${where[@]}"; do
+      if discord_api "channels/$candidate/messages/$message" >"$scratch/message" 2>"$scratch/discord-error" &&
+        jq -e --arg m "$message" 'type == "object" and .id == $m and (.author.id | type) == "string"' "$scratch/message" >/dev/null 2>&1; then
+        found=$candidate
+        break
+      fi
+      errors+=("$(grep -m1 . "$scratch/discord-error" || echo "not that message")")
+    done
+    if [[ $thread == "$found" && -n $thread ]]; then
+      place="the task's thread $thread"
+    else
+      place="#coordinator $COORDINATOR_CHANNEL"
+    fi
+    if [[ -z $found ]]; then
+      if [[ -n $thread ]]; then
+        tried="the task's thread $thread or #coordinator $COORDINATOR_CHANNEL"
+      else
+        tried="#coordinator $COORDINATOR_CHANNEL (the task has no thread)"
+      fi
+      problems+=("Discord message $message cannot be fetched from $tried: $(printf '%s\n' "${errors[@]}" | sort -u | paste -sd ';' | sed 's/;/; /g')")
+    else
+      author=$(jq -r '.author.id' "$scratch/message")
+      who="$(jq -r '.author.username // "unknown"' "$scratch/message") ($author)"
+      if jq -e --arg a "$author" 'index($a) | not' <<<"$allow" >/dev/null; then
+        problems+=("Discord message $message is by $who, who is not in allowFrom of ~/.claude/channels/discord/access.json")
+      else
+        by="Discord message $message in $place, from $who" channel=$found
+      fi
+    fi
+  fi
+fi
+
+# GitHub's facts: the checks from pr_part, the rest from one more view, the base branch's
+# protection and the commit list.
+head='' branch=''
+if jq -e 'has("error")' <<<"$facts" >/dev/null; then
+  problems+=("GitHub cannot be read: $(jq -r .error <<<"$facts")")
+elif ! github "$scratch" pr pr view "$number" --repo "$repo" --json isDraft,mergeable,headRefName,headRefOid ||
+  ! github "$scratch" branch api "repos/$repo/branches/$base" ||
+  ! github "$scratch" commits api "repos/$repo/pulls/$number/commits" --paginate; then
+  problems+=("GitHub cannot be read: $(<"$scratch/error")")
+else
+  head=$(jq -r .head <<<"$facts") branch=$(jq -r .headRefName "$scratch/pr")
+  state=$(jq -r .state <<<"$facts")
+  [[ $state == open ]] || problems+=("PR #$number is $state, not open")
+  [[ $(jq -r .isDraft "$scratch/pr") != true ]] || problems+=("PR #$number is a draft")
+  case $(jq -r .mergeable "$scratch/pr") in
+    MERGEABLE) ;;
+    CONFLICTING) problems+=("PR #$number conflicts with its base") ;;
+    *) problems+=("GitHub has not worked out yet whether PR #$number conflicts with its base; try again in a minute") ;;
+  esac
+  [[ $(jq -r .base <<<"$facts") == "$base" ]] || problems+=("PR #$number targets $(jq -r .base <<<"$facts"), not $project's base $base")
+  [[ $(jq -r .headRefOid "$scratch/pr") == "$head" ]] || problems+=("the head moved while it was read (${head:0:7}, then $(jq -r '.headRefOid[:7]' "$scratch/pr")); run team-merge again")
+  while IFS= read -r line; do problems+=("$line"); done < <(jq -r --slurpfile branch "$scratch/branch" '
+    ((.required + ($branch[0].protection.required_status_checks.contexts // [])) | unique) as $required
+    | (.checks.passed + .checks.failing + .checks.pending) as $present
+    | ($required[] | select(IN($present[]) | not) | "required check \(.) is missing on the head"),
+      ([$required[] | select(IN($present[]))] - .checks.passed | .[] | "required check \(.) has not passed on the head"),
+      (.checks.failing | select(length > 0) | "checks failing on the head: \(join(", "))"),
+      (.checks.pending | select(length > 0) | "checks pending on the head: \(join(", "))"),
+      (.agent_review | select(. != "success") | "agent-review is \(.) on the head, not success")' <<<"$facts")
+  commits=$(jq -cs 'add // []' "$scratch/commits")
+  last=$(jq -r 'last.sha // ""' <<<"$commits")
+  [[ $last == "$head" ]] || problems+=("the PR's commit list ends at ${last:0:7}, not at the head ${head:0:7}, so not every commit could be checked")
+  attributed=''
+  while IFS= read -r sha; do
+    msg=$(jq -r --arg s "$sha" '.[] | select(.sha == $s) | .commit.message' <<<"$commits")
+    while IFS= read -r line; do
+      problems+=("commit ${sha:0:7} ($(head -n 1 <<<"$msg")) carries an attribution line: $line")
+      attributed=1
+    done < <(attribution_lines <<<"$msg")
+  done < <(jq -r '.[].sha' <<<"$commits")
+fi
+
+if ((${#problems[@]})); then
+  {
+    echo "team-merge: $task cannot merge PR #$number, so nothing changed:"
+    printf '  %s\n' "${problems[@]}"
+    if [[ -n ${attributed:-} ]]; then echo "  (team-clean-messages <worktree> strips them; push its rewrite and wait for the checks again)"; fi
+  } >&2
+  exit 1
+fi
+
+gh pr merge "$number" --repo "$repo" "--$method" --match-head-commit "$head" >&2 ||
+  die "gh pr merge did not merge PR #$number (exit $?); nothing was logged"
+
+github "$scratch" after pr view "$number" --repo "$repo" --json state,mergeCommit,headRefOid,autoMergeRequest ||
+  die "PR #$number's state cannot be read after gh pr merge ($(<"$scratch/error")); check it on GitHub before logging anything"
+if [[ $(jq -r .state "$scratch/after") != MERGED ]]; then
+  if [[ $(jq -r .autoMergeRequest "$scratch/after") != null ]]; then
+    gh pr merge "$number" --repo "$repo" --disable-auto >&2 ||
+      die "PR #$number is still open after gh pr merge, with auto-merge on, and turning it off failed: turn it off on GitHub"
+    die "PR #$number is still open after gh pr merge, with auto-merge on; turned auto-merge off, so nothing merges unseen"
+  fi
+  die "PR #$number is $(jq -r '.state | ascii_downcase' "$scratch/after") after gh pr merge, not merged; nothing was logged"
+fi
+merge=$(jq -r '.mergeCommit.oid // empty' "$scratch/after")
+[[ -n $merge ]] || die "PR #$number is merged but GitHub names no merge commit; log it by hand with what GitHub shows"
+[[ $(jq -r .headRefOid "$scratch/after") == "$head" ]] ||
+  die "PR #$number was merged at $(jq -r '.headRefOid[:7]' "$scratch/after"), not at the checked head ${head:0:7}; check it on GitHub"
+
+trap 'status=$?; rm -rf "$scratch"; ((status == 0)) || echo "team-merge: PR #$number is merged (merge $merge), but its merged event was not logged" >&2' EXIT
+ledger_append "$(jq -cn --arg task "$task" --argjson pr "$number" --arg merge "$merge" --arg head "$head" \
+  --arg by "$by" --arg project "$project" --arg branch "$branch" --arg message "$message" --arg channel "$channel" \
+  '{ts: (now | todate), task: $task, event: "merged", pr: $pr, merge: $merge, head: $head, by: $by,
+    project: $project, branch: $branch, discord_message: $message, discord_channel: $channel}')"
+jq -n --arg task "$task" --arg url "$url" --arg merge "$merge" --arg head "$head" --arg by "$by" \
+  '{task: $task, pr: $url, merge: $merge, head: $head, by: $by}'

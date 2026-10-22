@@ -7,8 +7,6 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
-channel=${TEAM_COORDINATOR_CHANNEL:-1562486564871995482}
-
 [[ $# -eq 3 ]] || usage_error "usage: team-thread <task> <project> <title>"
 task=$1 project=$2 title=$3
 [[ $task =~ ^T[1-9][0-9]*$ ]] || die "task must look like T<n>, got '$task'"
@@ -18,12 +16,11 @@ if existing=$(jq -re --arg t "$task" 'select(.task == $t and .event == "thread")
   exit 0
 fi
 
-token=$(sed -n 's/^DISCORD_BOT_TOKEN=//p' "$HOME/.claude/channels/discord/.env" 2>/dev/null || true)
-[[ -n $token ]] || die "no DISCORD_BOT_TOKEN in ~/.claude/channels/discord/.env"
+discord_token >/dev/null || die "no DISCORD_BOT_TOKEN in ~/.claude/channels/discord/.env"
 
 body=$(jq -cn --arg name "$task · $project · $title" '{name: $name[0:100], type: 11, auto_archive_duration: 10080}')
-id=$(curl -fsS -X POST -H "Authorization: Bot $token" -H "Content-Type: application/json" \
-  "https://discord.com/api/v10/channels/$channel/threads" -d "$body" | jq -r .id 2>/dev/null || true)
+id=$(discord_api "channels/$COORDINATOR_CHANNEL/threads" -X POST -H "Content-Type: application/json" \
+  -d "$body" | jq -r .id 2>/dev/null || true)
 [[ $id =~ ^[0-9]+$ ]] || die "Discord did not return a thread id"
 
 ledger_append "$(jq -cn --arg task "$task" --arg thread "$id" \

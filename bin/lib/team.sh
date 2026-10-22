@@ -6,7 +6,8 @@
 # --help with the calling script's header (then runs the script's help_more, if it defined one
 # before sourcing), and provides die, usage_error, team_project, ledger_jq, ledger_append,
 # task_events, task_worktrees, worktree_changes, attribution_lines, strip_attribution,
-# live_sessions, github, pr_part and task_state_json.
+# live_sessions, discord_token, discord_api, github, pr_part and task_state_json, and sets
+# COORDINATOR_CHANNEL.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
 # shellcheck shell=bash
 
@@ -103,6 +104,31 @@ attribution_lines() {
 strip_attribution() {
   { LC_ALL=C grep -aEiv -- "$ATTRIBUTION_RE" || (($? == 1)); } |
     LC_ALL=C awk '{ line[NR] = $0 } END { n = NR; while (n > 0 && line[n] ~ /^[[:space:]]*$/) n--; for (i = 1; i <= n; i++) print line[i] }'
+}
+
+# The Discord channel #coordinator, under which every task's thread is opened.
+# shellcheck disable=SC2034 # read by the scripts that source this library
+COORDINATOR_CHANNEL=${TEAM_COORDINATOR_CHANNEL:-1562486564871995482}
+
+# Print the Discord bot token from ~/.claude/channels/discord/.env, or fail with nothing printed.
+# Callers keep it in a variable or test for it (discord_token >/dev/null); never print it.
+discord_token() {
+  local token
+  token=$(sed -n 's/^DISCORD_BOT_TOKEN=//p' "$HOME/.claude/channels/discord/.env" 2>/dev/null || true)
+  [[ -n $token ]] || return 1
+  printf '%s\n' "$token"
+}
+
+# Call the Discord API with the bot token: discord_api <path under /api/v10/> [curl options...]
+# The token reaches curl on stdin (-H @-), so it never shows in a process list. Prints the
+# response; fails with curl's reason on stderr, or with "no DISCORD_BOT_TOKEN ..." without one.
+discord_api() {
+  local token
+  token=$(discord_token) || {
+    echo "no DISCORD_BOT_TOKEN in ~/.claude/channels/discord/.env" >&2
+    return 1
+  }
+  curl -fsS -H @- "${@:2}" "https://discord.com/api/v10/$1" <<<"Authorization: Bot $token"
 }
 
 # The project registry, through this checkout's team-project: team_project [<arguments>...]

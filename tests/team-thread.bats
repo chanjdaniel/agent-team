@@ -60,10 +60,16 @@ LEDGER
   assert_equal "$name" "T7 · conventioner · $(printf '%080d' 0)"
 }
 
-@test "the token never reaches the output" {
-  stub_reply curl '{"id":"42"}'
+@test "the token reaches curl on stdin, never its command line or the output" {
+  stub_script curl <<'EOF'
+cat >"$STUB_CALLS/curl.stdin"
+echo '{"id":"42"}'
+EOF
   run_bin -0 team-thread T7 conventioner "Sign-in limits"
   [[ $output != *"$FAKE_DISCORD_TOKEN"* ]]
+  [[ $(stub_calls curl) != *"$FAKE_DISCORD_TOKEN"* ]]
+  assert_equal "$(stub_calls curl | jq -r '.[1:3] | join(" ")')" "-H @-"
+  assert_equal "$(cat "$STUB_CALLS/curl.stdin")" "Authorization: Bot $FAKE_DISCORD_TOKEN"
 }
 
 @test "a missing token is refused with nothing appended" {
