@@ -11,7 +11,9 @@
 # Any failure is exit 1 with every reason. --keep-worktree keeps unlanded worktrees instead of
 # refusing, and --stop-busy stops busy sessions instead of refusing.
 # Then, in order: claude stop <id> for each live session of the task's launch events (by id,
-# never another task's); the stack teardown (empty until T9's team-stack); each worktree's task
+# never another task's), then, when any was stopped, the landed check again for each worktree to
+# return (one that no longer has landed is kept with --keep-worktree, else exit 1 with the task
+# half closed); the stack teardown (empty until T9's team-stack); each worktree's task
 # directory mirrored to tasks/T<n>/scratch/ (the opened project) or tasks/T<n>/scratch-<project>/
 # (an added one), a missing or empty one reported on stderr; claude rm <id> for each of the
 # task's sessions; each landed worktree returned through its pool (git: git worktree remove,
@@ -50,9 +52,8 @@ done
 [[ -n $task ]] || usage_error "$usage"
 [[ $task =~ ^T[1-9][0-9]*$ ]] || usage_error "task must look like T<n>, got '$task'"
 
-events=$(task_events "$task" | jq -cs .)
-[[ $events != '[]' ]] || die "unknown task $task: the ledger has no events for it"
-! jq -e 'any(.[]; .event == "closed")' <<<"$events" >/dev/null || die "$task is already closed"
+events=$(known_task_events "$task")
+[[ $(task_status "$events") != closed ]] || die "$task is already closed"
 opened_project=$(jq -r 'map(select(.event == "opened")) | first | .project // empty' <<<"$events")
 if [[ -n $opened_project && ${#named[@]} -gt 0 ]]; then
   usage_error "--worktree is for a legacy task (one with no opened event); $task's worktrees are in the ledger"
@@ -69,18 +70,13 @@ if [[ -n $opened_project ]]; then
 else
   # A legacy task names its slots: never inferred, since slots were shared and reused.
   mapfile -t launched < <(jq -r '.[] | select(.event == "launch") | .worktree // empty' <<<"$events")
-  mapfile -t projects < <(team_project --list)
   for path in "${named[@]}"; do
-    real=$(realpath -m -- "$path") slot='' project=''
-    for name in "${projects[@]}"; do
-      while IFS= read -r candidate; do
-        if [[ $(realpath -m -- "$candidate") == "$real" ]]; then slot=$candidate project=$name; fi
-      done < <(team_project "$name" pool.slots | jq -r '.[]')
-    done
-    [[ -n $slot ]] || die "$path is not a trusted slot of any project in projects.toml"
+    slot=$(realpath -m -- "$path")
+    project=$(team_project --find pool.slots "$slot")
+    [[ -n $project ]] || die "$path is not a trusted slot of any project in projects.toml"
     found=''
     for wt in "${launched[@]}"; do
-      if [[ $(realpath -m -- "$wt") == "$real" ]]; then found=1; fi
+      if [[ $(realpath -m -- "$wt") == "$slot" ]]; then found=1; fi
     done
     [[ -n $found ]] || die "$path appears in none of $task's launch events"
     branch=$(git -C "$slot" symbolic-ref -q --short HEAD 2>/dev/null) ||
@@ -135,20 +131,29 @@ unlanded() {
   if ((${#found[@]})); then printf '%s; ' "${found[@]}" | sed 's/; $//'; fi
 }
 
+# Sort the worktrees given into returning (landed) and kept (not landed, with --keep-worktree);
+# each other one adds why it has not landed <since> to problems: sort_landed <since> <wt>...
+sort_landed() {
+  local since=$1 wt project branch path reason
+  shift
+  returning=()
+  for wt in "$@"; do
+    project=$(field project "$wt") branch=$(field branch "$wt") path=$(field worktree "$wt")
+    reason=$(unlanded "$path" "$project" "$branch")
+    if [[ -z $reason ]]; then
+      returning+=("$wt")
+    elif [[ -n $keep ]]; then
+      kept+=("$wt")
+    else
+      problems+=("$path ($project, ${branch:-detached HEAD}) has not landed$since: $reason")
+      unlanded_count=$((unlanded_count + 1))
+    fi
+  done
+}
+
 # The read-only checks: every reason the task cannot close, collected before anything changes.
 problems=() returning=() kept=() unlanded_count=0 busy_count=0
-for wt in "${worktrees[@]}"; do
-  project=$(field project "$wt") branch=$(field branch "$wt") path=$(field worktree "$wt")
-  reason=$(unlanded "$path" "$project" "$branch")
-  if [[ -z $reason ]]; then
-    returning+=("$wt")
-  elif [[ -n $keep ]]; then
-    kept+=("$wt")
-  else
-    problems+=("$path ($project, ${branch:-detached HEAD}) has not landed: $reason")
-    unlanded_count=$((unlanded_count + 1))
-  fi
-done
+sort_landed "" "${worktrees[@]}"
 
 live_sessions
 sessions=$(ledger_jq 'reduce (.[] | select(.event == "launch") | .session | select(type == "string" and . != "")) as $s
@@ -181,6 +186,16 @@ while IFS= read -r id; do
   claude stop "$id" >&2 || die "cannot stop session $id"
   stopped+=("$id")
 done < <(jq -r '.[] | select(.live) | .session' <<<"$sessions")
+
+# A worker may have committed between the checks and its stop: what is to be returned must still
+# have landed.
+if ((${#stopped[@]})); then
+  sort_landed " since its sessions were stopped" "${returning[@]}"
+  if ((${#problems[@]})); then
+    printf 'team-close: %s\n' "${problems[@]}" >&2
+    exit 1
+  fi
+fi
 
 # The stack teardown goes here, before the archive, so that the stack's logs land in the
 # worktree's .scratch/ and are archived with it: T9's ticket 08 (tasks/T9/tickets/08-rules-and-

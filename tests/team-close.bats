@@ -361,6 +361,45 @@ SH
   [[ -d ${home_slots[1]} ]]
 }
 
+@test "a commit made while sessions were stopped is caught by a second landed check" {
+  open_home_task
+  work_and_push "$wt" feature.txt
+  sessions "$(session 4f2a9c1e T1-builder busy)"
+  remember_before
+  # The worker commits as it is stopped.
+  export LATE_IN=$wt
+  stub_script claude <<'SH'
+case $1 in
+  agents) cat "$BATS_TEST_TMPDIR/sessions.json" ;;
+  stop)
+    echo late >"$LATE_IN/late.txt"
+    git -C "$LATE_IN" add late.txt
+    git -C "$LATE_IN" commit -q -m "feat: late"
+    ;;
+  rm) ;;
+  *) exit 64 ;;
+esac
+SH
+  stub_reply gh '[]'
+
+  run_bin -1 --separate-stderr team-close T1 --stop-busy
+  assert_contains "$stderr" "team-close: $wt (home, feat/T1-work) has not landed since its sessions were stopped: head"
+  assert_contains "$stderr" "(1 commit not pushed)"
+  assert_contains "$stderr" "team-close: T1 is half closed"
+  assert_equal "$(claude_actions)" '["stop","4f2a9c1e"]'
+  [[ ! -e $TEAM_HOME/tasks/T1/scratch ]]
+  cmp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/ledger.before"
+  assert_equal "$(home_worktrees)" "$(cat "$BATS_TEST_TMPDIR/worktrees.before")"
+
+  # With --keep-worktree, the worktree that stopped landing is kept instead.
+  git -C "$wt" reset -q --hard HEAD~1
+  : >"$STUB_CALLS/claude.log"
+  run_bin -0 --separate-stderr team-close T1 --stop-busy --keep-worktree
+  assert_equal "$(jq -c '[.stopped, .returned, .kept]' <<<"$output")" "$(jq -cn --arg wt "$wt" '[["4f2a9c1e"], [], [$wt]]')"
+  [[ -f $wt/late.txt ]]
+  assert_equal "$(events worktree-returned)" ""
+}
+
 @test "a two-project task archives both task directories and returns both slots through their pools" {
   run_bin -0 team-open home feature feat work "Do the work"
   run_bin -0 team-open --task T1 --add conv feat move
