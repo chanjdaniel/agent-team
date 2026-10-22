@@ -43,7 +43,7 @@ waiting team-log on reason
 resumed team-log
 pr team-log url head
 review team-log verdict head
-merge-approved team-log pr discord_message
+merge-approved team-log url discord_message
 failed team-log reason
 TABLE
   )
@@ -68,7 +68,8 @@ TABLE
   done
   grep -Eq '^  opened +team-open +project, path, type, title, branch, base, base_sha, worktree$' <<<"$output"
   grep -Eq '^  review +team-log +verdict \(pass\|findings\), head; optional agent_review$' <<<"$output"
-  grep -Eq '^  closed +team-close +archive \(list\), returned \(list\), kept \(list\)$' <<<"$output"
+  grep -Eq '^  closed +team-close +archive \(list\), returned \(list\), kept \(list\)  \(.*legacy.*\)$' <<<"$output"
+  grep -Eq '^  merge-approved +team-log +url, discord_message  \(.*\)$' <<<"$output"
   grep -Eq '^  launch +team-worker +role, session, worktree, toolkits \(list\); optional project, branch$' <<<"$output"
   grep -Eq '^  resumed +team-log +- +\(clears held, blocked, paused and waiting\)$' <<<"$output"
   assert_equal "$(stub_calls curl)$(stub_calls gh)" ""
@@ -103,12 +104,12 @@ TABLE
 @test "a field the contract types as a string stays a string even when it looks like JSON" {
   run_bin -0 team-log T14 ticket-done ticket=12 'commits=["1234567"]'
   run_bin -0 team-log T14 pr url=https://github.com/chanjdaniel/agent-team/pull/5 head=1234567 note=true
-  run_bin -0 team-log T14 merge-approved pr=5 discord_message=1563000000000000123456789
+  run_bin -0 team-log T14 merge-approved url=https://github.com/chanjdaniel/agent-team/pull/5 discord_message=1563000000000000123456789
   assert_equal "$(ledger_without_ts)" "$(
     cat <<'LINES'
 {"task":"T14","event":"ticket-done","ticket":"12","commits":["1234567"]}
 {"task":"T14","event":"pr","url":"https://github.com/chanjdaniel/agent-team/pull/5","head":"1234567","note":"true"}
-{"task":"T14","event":"merge-approved","pr":5,"discord_message":"1563000000000000123456789"}
+{"task":"T14","event":"merge-approved","url":"https://github.com/chanjdaniel/agent-team/pull/5","discord_message":"1563000000000000123456789"}
 LINES
   )"
 }
@@ -126,10 +127,10 @@ LINES
   run_bin -0 team-log --check
 }
 
-@test "a malformed task id is refused with nothing appended" {
+@test "a malformed task id is a usage error with nothing appended" {
   local task
   for task in 14 T0 t14 T14a T-1 ''; do
-    run_bin -1 team-log "$task" resumed
+    run_bin -2 team-log "$task" resumed
     assert_contains "$output" "task must look like T<n>, got '$task'"
   done
   assert_ledger_empty
@@ -156,25 +157,45 @@ LINES
   assert_contains "$output" "commits must be a list, got a string"
   run_bin -1 team-log T14 review verdict=ok head=a1b2c3d
   assert_contains "$output" "verdict must be one of pass, findings"
-  run_bin -1 team-log T14 merge-approved pr=five discord_message=1563
-  assert_contains "$output" "pr must be a number, got a string"
+  run_bin -1 team-log T14 ticket-done ticket=03 'commits={"a":1}'
+  assert_contains "$output" "commits must be a list, got an object"
   assert_ledger_empty
 }
 
-@test "a malformed key=value is refused with nothing appended" {
+@test "a malformed key=value is a usage error with nothing appended" {
   local pair
   for pair in reason '=x' 'Reason=x' 'two words=x' 'reason=' '1st=x'; do
-    run_bin -1 team-log T14 blocked "$pair"
+    run_bin -2 team-log T14 blocked "$pair"
     assert_contains "$output" "not a key=value: '$pair'"
   done
-  run_bin -1 team-log T14 blocked reason=a reason=b
+  run_bin -2 team-log T14 blocked reason=a reason=b
   assert_contains "$output" "reason is given twice"
   local key
   for key in ts task event; do
-    run_bin -1 team-log T14 blocked reason=a "$key=x"
+    run_bin -2 team-log T14 blocked reason=a "$key=x"
     assert_contains "$output" "$key is set by team-log"
   done
   assert_ledger_empty
+}
+
+@test "merge-approved names a PR of the task's pr events, by its URL" {
+  local five=https://github.com/owner/proj/pull/5 seven=https://github.com/other/repo/pull/7
+  run_bin -1 team-log T14 merge-approved url=$five discord_message=1563
+  assert_contains "$output" "$five is not a PR of T14's pr events; it has none"
+  assert_ledger_empty
+  run_bin -0 team-log T14 pr url=$five/ head=a1b2c3d
+  run_bin -0 team-log T14 pr url=$seven head=e4f5a6b
+  run_bin -0 team-log T13 pr url=https://github.com/owner/proj/pull/9 head=0a1b2c3
+  run_bin -1 team-log T14 merge-approved url=https://github.com/owner/proj/pull/9 discord_message=1563
+  assert_contains "$output" "https://github.com/owner/proj/pull/9 is not a PR of T14's pr events:"
+  assert_contains "$output" "  $five/"
+  assert_contains "$output" "  $seven"
+  run_bin -1 team-log T14 merge-approved pr=5 discord_message=1563
+  assert_contains "$output" "merge-approved needs url"
+  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "3"
+  run_bin -0 team-log T14 merge-approved url=$five discord_message=1563
+  run_bin -0 team-log T14 merge-approved url=$seven/ discord_message=1564
+  assert_equal "$(tail -n 2 "$TEAM_HOME/ledger.jsonl" | jq -r .url)" "$five"$'\n'"$seven/"
 }
 
 @test "a kind another script writes is refused with nothing appended" {
@@ -205,12 +226,14 @@ LINES
 {"ts":"2026-10-01T00:00:00Z","task":"T1","event":"closed"}
 {"ts":"2026-10-01T00:00:01Z","task":"T5","event":"ticket-partial","ticket":"09"}
 {"ts":"2026-10-01T00:00:02Z","task":"T4","event":"review","verdict":"pass","agent_review":"success","head":"e1e8cdb6"}
+{"ts":"2026-10-01T00:00:03Z","task":"T7","event":"closed","note":"a legacy close by hand: no lists"}
+{"ts":"2026-10-01T00:00:04Z","task":"T16","event":"plan-ready","note":"a kind that is not in the contract"}
 {"ts":"$STRICT_FROM","task":"T14","event":"closed","archive":["tasks/T14/scratch"],"returned":[],"kept":[]}
 {"ts":"$STRICT_FROM","task":"T14","event":"launch","role":"builder","session":"c79f0205","worktree":"/w","toolkits":[]}
 {"ts":"$STRICT_FROM","task":"T14","event":"resumed","note":"anything extra is allowed","by":"coordinator"}
 LEDGER
   run_bin -0 team-log --check
-  assert_equal "$output" "$TEAM_HOME/ledger.jsonl: 6 lines meet the ledger contract"
+  assert_equal "$output" "$TEAM_HOME/ledger.jsonl: 8 lines meet the ledger contract"
 }
 
 @test "--check lists every bad line by number and exits 1" {

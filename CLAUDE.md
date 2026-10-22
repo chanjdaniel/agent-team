@@ -29,7 +29,7 @@ The team's own work on it goes through a task and a PR to `dev`, like any projec
 - Tests run the real scripts in a sandbox (`load helpers/common`, then `sandbox` in `setup`): `TEAM_HOME` and `HOME` are temporary, `claude`, `gh` and `curl` are stubs, and git is real.
   `tests/helpers/common.bash` documents the helpers.
 - CI's runner has jq 1.7.1, so keep to jq 1.7 features.
-- Repo invariants are tests too: every executable in `bin/` answers `--help` with its header, every `bin/team-*` script is named in `roles/coordinator.md`, which stays at most 120 lines, and no tracked Markdown outside `tasks/` has an em dash.
+- Repo invariants are tests too: every executable in `bin/` answers `--help` with its header, every `bin/team-*` script is named in `roles/coordinator.md`, which stays at most 120 lines, and no tracked Markdown outside `tasks/` and `projects/` (history, kept as written) has an em dash.
 
 ## Script conventions
 

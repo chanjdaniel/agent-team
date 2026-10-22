@@ -6,7 +6,8 @@
 # Appends {ts (now, UTC), task, event, key: value...}. A value is stored as JSON when it parses
 # as JSON (a list, a number, true) and as a string otherwise; a field the contract types as a
 # string is always a string. note is allowed on every kind. Kinds written by another script
-# (opened, launch, merged, closed...) are refused.
+# (opened, launch, merged, closed...) are refused, and so is a merge-approved whose url is not
+# one of the task's pr events (a trailing slash aside).
 # --check checks a ledger (default: the team home's): every line is JSON with ts, task and
 # event, and lines from strict_from on meet their kind's fields; exit 1 lists each bad line.
 set -euo pipefail
@@ -39,7 +40,7 @@ fi
 [[ $# -ge 2 ]] || usage_error "$usage"
 task=$1 event=$2
 shift 2
-[[ $task =~ ^T[1-9][0-9]*$ ]] || die "task must look like T<n>, got '$task'"
+[[ $task =~ ^T[1-9][0-9]*$ ]] || usage_error "task must look like T<n>, got '$task'"
 ledger_jq '$contract.kinds | has($event)' -ne --arg event "$event" >/dev/null ||
   die "unknown event kind '$event'; team-log --help lists the kinds"
 
@@ -47,12 +48,22 @@ declare -A seen=()
 pairs=()
 for pair in "$@"; do
   key=${pair%%=*}
-  [[ $pair == *=?* && $key =~ ^[a-z][a-z0-9_]*$ ]] || die "not a key=value: '$pair'"
-  [[ $key != ts && $key != task && $key != event ]] || die "$key is set by team-log"
-  [[ -z ${seen[$key]:-} ]] || die "$key is given twice"
-  seen[$key]=1
+  [[ $pair == *=?* && $key =~ ^[a-z][a-z0-9_]*$ ]] || usage_error "not a key=value: '$pair'"
+  [[ $key != ts && $key != task && $key != event ]] || usage_error "$key is set by team-log"
+  [[ -z ${seen[$key]:-} ]] || usage_error "$key is given twice"
+  seen[$key]=${pair#*=}
   pairs+=("$key" "${pair#*=}")
 done
+
+# Daniel's word is on one PR: the approval names it as one of the task's pr events does.
+if [[ $event == merge-approved && -n ${seen[url]:-} ]]; then
+  problem=$(task_events "$task" | jq -nr --arg url "${seen[url]}" --arg events "$task's pr events" '
+    [inputs | select(.event == "pr") | .url | strings] as $prs
+    | if any($prs[]; rtrimstr("/") == ($url | rtrimstr("/"))) then empty
+      elif $prs == [] then "\($url) is not a PR of \($events); it has none"
+      else "\($url) is not a PR of \($events):" + ($prs | map("\n  " + .) | add) end')
+  [[ -z $problem ]] || die "$problem"
+fi
 
 # Each value is typed by the contract when it names the field, and by whether it parses as JSON
 # otherwise; ledger_append then checks the event against the contract.

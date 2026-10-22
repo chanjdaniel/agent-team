@@ -7,9 +7,10 @@ setup() {
   sandbox
 }
 
-@test "no em dash in tracked Markdown or templates outside tasks/" {
+# tasks/ and projects/ hold history imported as written, so they keep their own text.
+@test "no em dash in tracked Markdown or templates outside tasks/ and projects/" {
   local files hits
-  files=$(git -C "$REPO_ROOT" ls-files -- '*.md' 'templates/**' ':!:tasks/**')
+  files=$(git -C "$REPO_ROOT" ls-files -- '*.md' 'templates/**' ':!:tasks/**' ':!:projects/**')
   [[ -n $files ]]
   hits=$(cd "$REPO_ROOT" && xargs -d '\n' grep -n $'—' -- <<<"$files" || true)
   assert_equal "$hits" ""

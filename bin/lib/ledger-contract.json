@@ -4,9 +4,10 @@
     "Each field's type is string, number or array (a list), or a list of the strings it may be.",
     "Every line has ts (UTC, like 2026-10-22T01:00:00Z), task (T<n>) and event; note (a string) is allowed on every kind, and other fields are allowed.",
     "Lines from strict_from on must meet their kind's fields; earlier lines are legacy and only need ts, task and event.",
+    "Legacy lines keep shapes no kind has now: closes by hand with no lists, and plan-ready, which is not a kind, since a planner's report is done and a plan put to Daniel is asked.",
     "Read by ledger_append in bin/lib/team.sh (through bin/lib/ledger.jq) and printed by team-log --help."
   ],
-  "strict_from": "2026-10-22T01:15:00Z",
+  "strict_from": "2026-10-23T00:00:00Z",
   "kinds": {
     "opened": {
       "writer": "team-open",
@@ -33,6 +34,7 @@
     },
     "closed": {
       "writer": "team-close",
+      "about": "a legacy task's lists are empty; the hand-written legacy closes before strict_from have none",
       "required": {"archive": "array", "returned": "array", "kept": "array"}
     },
     "merged": {
@@ -106,7 +108,8 @@
     },
     "merge-approved": {
       "writer": "team-log",
-      "required": {"pr": "number", "discord_message": "string"}
+      "about": "Daniel's word on the PR at url, one of the task's pr events; legacy lines name only the number",
+      "required": {"url": "string", "discord_message": "string"}
     },
     "failed": {
       "writer": "team-log",
