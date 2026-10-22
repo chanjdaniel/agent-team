@@ -27,3 +27,88 @@ setup() {
   done < <(cd "$REPO_ROOT/bin" && find . -type f -perm -u+x -printf '%P\n' | sort)
   ((found >= 5))
 }
+
+# The settings every session starts with: the coordinator's and the workers' shared ones.
+SETTINGS=(coordinator.settings.json settings/worker.json)
+
+# Whether one of the Bash deny rules in <settings file> matches <command>, a rule's * matching any
+# text as Claude Code's does: denied <settings file> <command>
+denied() {
+  local rule
+  while IFS= read -r rule; do
+    rule_matches "$rule" "$2" && return 0
+  done < <(jq -r '.permissions.deny[] | select(startswith("Bash("))' "$REPO_ROOT/$1")
+  return 1
+}
+
+# Whether the Bash rule <rule> matches <command>: rule_matches <rule> <command>
+rule_matches() {
+  local glob=${1#Bash(}
+  glob=${glob%)}
+  # shellcheck disable=SC2053 # the rule is a glob
+  [[ $2 == $glob ]]
+}
+
+# Every session's settings deny <rule>, and it matches each <command>: assert_denies <rule> <command>...
+assert_denies() {
+  local file command
+  for file in "${SETTINGS[@]}"; do
+    jq -e --arg rule "$1" '.permissions.deny | index($rule)' "$REPO_ROOT/$file" >/dev/null ||
+      { echo "$file lacks the deny rule $1" >&2; return 1; }
+  done
+  for command in "${@:2}"; do
+    rule_matches "$1" "$command" || { echo "$1 does not match: $command" >&2; return 1; }
+  done
+}
+
+@test "the git hooks' deny rule: --no-verify, on any git command" {
+  assert_denies 'Bash(git *--no-verify*)' 'git commit --no-verify -m "x"' \
+    'git commit -a -m "x" --no-verify' 'git push --no-verify origin feat/T1-x' \
+    'git push -u origin feat/T1-x --no-verify' 'git -C /home/me/agent-team commit --no-verify'
+}
+
+@test "the git hooks' deny rule: git commit -n first" {
+  assert_denies 'Bash(git commit -n*)' 'git commit -n -m "x"' 'git commit -nm "x"'
+}
+
+@test "the git hooks' deny rule: git commit -n last" {
+  assert_denies 'Bash(git commit * -n)' 'git commit -m "x" -n'
+}
+
+@test "the git hooks' deny rule: git commit -n between options" {
+  assert_denies 'Bash(git commit * -n *)' 'git commit -a -n -m "x"'
+}
+
+@test "the git hooks' deny rule: core.hooksPath, set, unset or overridden" {
+  assert_denies 'Bash(git *core.hooksPath*)' 'git -c core.hooksPath=/dev/null commit -m "x"' \
+    'git -C /home/me/agent-team -c core.hooksPath= commit -m "x"' \
+    'git config core.hooksPath /dev/null' 'git config --unset core.hooksPath' \
+    'git -C /home/me/agent-team config core.hooksPath x'
+}
+
+@test "the git hooks' deny rule: core.hookspath, the same key in git's lower case" {
+  assert_denies 'Bash(git *core.hookspath*)' 'git config core.hookspath x' 'git -c core.hookspath= commit'
+}
+
+@test "plain commits, pushes and config stay allowed for every session" {
+  local file command
+  for file in "${SETTINGS[@]}"; do
+    while IFS= read -r command; do
+      if denied "$file" "$command"; then echo "$file denies: $command" >&2; return 1; fi
+    done <<'COMMANDS'
+git commit -m "fix: x"
+git commit -am "x"
+git commit --no-edit
+git push -u origin feat/T1-x
+git config user.name "x"
+COMMANDS
+  done
+}
+
+@test "the dev-records workflow's paths-ignore lists exactly bin/lib/records' globs" {
+  local ignored records
+  ignored=$(sed -n '/^    paths-ignore:/,/^[^ ]/s/^      - //p' "$REPO_ROOT/.github/workflows/dev-records.yml")
+  records=$(grep -v -e '^#' -e '^$' "$REPO_ROOT/bin/lib/records")
+  [[ -n $records ]]
+  assert_equal "$ignored" "$records"
+}

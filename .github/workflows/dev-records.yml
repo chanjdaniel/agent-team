@@ -1,0 +1,32 @@
+# dev takes direct commits of records only: every commit a push adds to dev must touch records only
+# or be a pull request's merge (bin/team-records-check). paths-ignore skips a push that changes
+# records only, the coordinator's many a day; it lists bin/lib/records' globs (tests/repo.bats).
+name: Dev records
+
+on:
+  push:
+    branches: [dev]
+    paths-ignore:
+      - ledger.jsonl
+      - manual-steps.md
+      - tasks/**
+      - projects/**
+      - memory/**
+      - machine/**
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  records-only:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - run: bin/team-records-check --repo "$GITHUB_REPOSITORY" "$BEFORE" "$AFTER"
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+          GH_TOKEN: ${{ github.token }}

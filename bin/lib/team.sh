@@ -6,9 +6,9 @@
 # --help with the calling script's header (then runs the script's help_more, if it defined one
 # before sourcing), and provides die, usage_error, team_project, ledger_jq, ledger_append,
 # task_events, known_task_events, open_task_events, task_status, task_worktrees,
-# worktree_changes, render_template, attribution_lines, strip_attribution, live_sessions,
-# discord_token, discord_api, github, pr_part and task_state_json, and sets
-# COORDINATOR_CHANNEL.
+# worktree_changes, non_records, records_list, render_template, attribution_lines,
+# strip_attribution, live_sessions, discord_token, discord_api, github, pr_part and
+# task_state_json, and sets COORDINATOR_CHANNEL.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
 # shellcheck shell=bash
 
@@ -113,6 +113,28 @@ worktree_changes() {
   [[ -z $list ]] || echo "changes to tracked files: $list"
   list=$(git -C "$1" ls-files --others --exclude-standard | paste -sd ' ')
   [[ -z $list ]] || echo "untracked files: $list"
+}
+
+# The records as a reader's list: "ledger.jsonl, manual-steps.md, tasks/, ...".
+records_list() {
+  local globs
+  globs=$(grep -v -e '^#' -e '^$' "$TEAM_LIB/records" | sed 's/\*\*$//' | paste -sd ,)
+  printf '%s\n' "${globs//,/, }"
+}
+
+# The paths of the NUL-separated list on stdin that are not records (bin/lib/records), one per
+# line, in order: non_records
+non_records() {
+  local path record
+  local -a records
+  mapfile -t records < <(grep -v -e '^#' -e '^$' "$TEAM_LIB/records")
+  while IFS= read -r -d '' path; do
+    for record in "${records[@]}"; do
+      # shellcheck disable=SC2053 # the record is a glob
+      [[ $path != $record ]] || continue 2
+    done
+    printf '%s\n' "$path"
+  done
 }
 
 # The agent attribution lines no commit message may carry, one case-insensitive ERE over whole

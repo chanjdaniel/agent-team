@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Check a push to dev, as CI does on every one: each commit the push added along the first parent
+# must touch records only (bin/lib/records) against its first parent, or be a pull request's merge
+# into dev. Run in the clone, with the pushed commits fetched.
+#
+# Usage: team-records-check --repo <owner/name> <before> <after>
+#   <before>, <after>   the push's old and new tips; a <before> of all zeros (a new branch)
+#                       checks <after> alone, and one the clone lacks (a force-push) fails.
+# A merge commit that brings in more than records passes only when GitHub names it as the merge
+# commit of a merged pull request into dev whose head is its second parent
+# (gh api repos/<owner/name>/commits/<sha>/pulls); the pull request's own commits are not walked.
+# Prints each refused commit with its paths that are not records, or one line counting the
+# commits that passed. Exit 0 every commit passed, 1 one was refused or GitHub failed.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+usage="usage: team-records-check --repo <owner/name> <before> <after>"
+[[ $# -eq 4 && $1 == --repo && -n $2 ]] || usage_error "$usage"
+repo=$2 before=$3 after=$4
+
+if [[ $before =~ ^0+$ ]]; then
+  range=(-1 "$after")
+elif git cat-file -e "$before^{commit}" 2>/dev/null; then
+  range=("$before..$after")
+else
+  die "the push's old tip $before is not in this clone: dev was force-pushed or the clone is shallow; check the push by hand"
+fi
+mapfile -t commits < <(git rev-list --first-parent "${range[@]}")
+
+# Whether GitHub names <merge> as a merged pull request's merge into dev with head <head>:
+# pull_request_merge <merge> <head>
+pull_request_merge() {
+  local pulls
+  pulls=$(gh api "repos/$repo/commits/$1/pulls" 2>&1) ||
+    die "cannot ask GitHub about merge $1: gh api: $(grep -m1 . <<<"$pulls")"
+  jq -e --arg merge "$1" --arg head "$2" 'any(.[]; .merge_commit_sha == $merge and
+    .head.sha == $head and .base.ref == "dev" and .merged_at != null)' <<<"$pulls" >/dev/null
+}
+
+refused=0
+for commit in "${commits[@]}"; do
+  read -r -a parents <<<"$(git rev-list --parents -n 1 "$commit" | cut -d' ' -f2-)"
+  if ((${#parents[@]})); then
+    others=$(git diff --name-only --no-renames -z "${parents[0]}" "$commit" | non_records)
+  else
+    others=$(git diff-tree -r --root --no-commit-id --name-only --no-renames -z "$commit" | non_records)
+  fi
+  [[ -n $others ]] || continue
+  note=''
+  if ((${#parents[@]} > 1)); then
+    if pull_request_merge "$commit" "${parents[1]}"; then continue; fi
+    note=" (a merge, not a pull request's into dev)"
+  fi
+  refused=$((refused + 1))
+  printf 'refused %s %s%s\n  %s\n' "$(git rev-parse --short "$commit")" \
+    "$(git log -1 --format=%s "$commit")" "$note" "${others//$'\n'/$'\n'  }"
+done
+
+checked=${#commits[@]}
+noun=commits
+((checked != 1)) || noun=commit
+if ((refused)); then
+  die "$refused of $checked $noun on dev refused: a direct commit on dev may touch records only \
+($(records_list)), and anything else reaches dev through a pull request"
+fi
+echo "$checked $noun on dev checked: each touches records only or is a pull request's merge into dev"
