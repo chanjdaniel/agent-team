@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Install the pinned MCP servers the toolkits run, exactly as servers/package-lock.json pins them.
+#
+# Usage: servers/install [--force]
+# Runs npm ci --ignore-scripts into servers/node_modules (gitignored), staging the install beside
+# it and swapping it in only once npm ci succeeds, so a failed run leaves the last install alone.
+# Does nothing when the install already matches package.json and the lock; --force reinstalls.
+# Safe to re-run, and two runs at once take turns.
+set -euo pipefail
+# shellcheck source=bin/lib/team.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../bin/lib/team.sh" "$@"
+
+force=0
+case $# in
+  0) ;;
+  1) [[ $1 == --force ]] || usage_error "usage: servers/install [--force]"; force=1 ;;
+  *) usage_error "usage: servers/install [--force]" ;;
+esac
+
+dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+command -v npm >/dev/null || die "npm is not on PATH"
+
+exec 9>"$dir/.install.lock"
+flock -x 9
+
+# The install records the package.json and lock it came from; a match means nothing to do.
+want=$(cat "$dir/package.json" "$dir/package-lock.json" | sha256sum | cut -d' ' -f1)
+stamp=$dir/node_modules/.installed-from
+if [[ $force == 0 && -f $stamp && $(cat "$stamp") == "$want" ]]; then
+  echo "servers: up to date"
+  exit 0
+fi
+
+staging=$(mktemp -d "$dir/.staging.XXXXXX")
+old=$dir/.old.$$
+trap 'rm -rf "$staging" "$old"' EXIT
+cp "$dir/package.json" "$dir/package-lock.json" "$staging/"
+(cd "$staging" && npm ci --ignore-scripts --no-audit --no-fund --loglevel=error) ||
+  die "npm ci failed; the previous install, if any, is unchanged"
+echo "$want" >"$staging/node_modules/.installed-from"
+
+# Running servers keep the files they opened, so swapping under them is safe.
+if [[ -d $dir/node_modules ]]; then mv "$dir/node_modules" "$old"; fi
+mv "$staging/node_modules" "$dir/node_modules"
+echo "servers: installed from package-lock.json"

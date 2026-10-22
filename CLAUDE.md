@@ -8,11 +8,13 @@ The team's own work on it goes through a task and a PR to `dev`, like any projec
 | Path | What it holds |
 | - | - |
 | `bin/` | The team's commands, `team-*` and `claude-coordinator`; `bin/lib/` is the shared library, the ledger contract and its jq; `bin/hooks/` the sessions' hooks |
-| `tests/` | The bats suite, one `.bats` file per script plus `task-life.bats`, a whole task's life across them, with `tests/helpers/` and bats-core vendored in `tests/vendor/` |
+| `tests/` | The bats suite, one `.bats` file per script plus `task-life.bats`, a whole task's life across them, with `tests/helpers/` and bats-core vendored in `tests/vendor/`; `tests/toolkits/` the toolkits' Node tests |
 | `roles/` | The role prompts each session's system prompt is appended with, one per role, the coordinator's included |
 | `settings/` | Worker settings: `worker.json` shared, one file per role layered on it |
 | `coordinator.settings.json` | The coordinator's own settings: Discord, its hooks and its denials |
 | `plugins/coordinator-skills/` | Skills loaded only into the coordinator by `bin/claude-coordinator` |
+| `toolkits/` | Plugin directories a worker loads with `team-worker --toolkit <name>`: MCP config (`.mcp.json`), skills, docs, scripts |
+| `servers/` | The MCP servers the toolkits run, pinned by `package-lock.json`; `servers/install` puts them in the gitignored `servers/node_modules/` |
 | `templates/` | The task plan and the worker briefs `team-open` and `team-brief` render |
 | `projects.toml` | The project registry, read only through `bin/team-project` |
 | `ledger.jsonl` | The append-only record of every task's events |
@@ -24,8 +26,11 @@ The team's own work on it goes through a task and a PR to `dev`, like any projec
 
 ## Tests and shellcheck
 
-- `tests/run` runs shellcheck (0.11.0) on every shell script in `bin/` and `tests/`, then the whole bats suite; `tests/run shellcheck` and `tests/run bats` run one half each, as the CI jobs do.
+- `tests/run` runs shellcheck (0.11.0) on every shell script in `bin/`, `tests/`, `servers/` and `toolkits/`, then the whole bats suite, then the toolkit tests; `tests/run shellcheck`, `tests/run bats` and `tests/run toolkits` run one part each; CI runs the shellcheck and bats parts as its two jobs.
+- The toolkit tests are `node --test` files in `tests/toolkits/`, run after `servers/install`: each starts a toolkit's server exactly as its `.mcp.json` declares, with `op` stubbed and a throwaway MongoDB in Docker, and speaks MCP to it over stdio (`tests/toolkits/helpers/` documents the helpers).
+  No test reaches 1Password or production: the test `PATH` refuses to start if a real `op` is on it.
 - One file: `tests/vendor/bats-core/bin/bats tests/<name>.bats`; one test: add `-f '<part of its name>'`.
+  A toolkit test file: `node --test tests/toolkits/<name>.test.mjs`; one test: add `--test-name-pattern '<part of its name>'`.
 - Tests run the real scripts in a sandbox (`load helpers/common`, then `sandbox` in `setup`): `TEAM_HOME` and `HOME` are temporary, `claude`, `gh` and `curl` are stubs, and git is real.
   `tests/helpers/common.bash` documents the helpers.
 - CI's runner has jq 1.7.1, so keep to jq 1.7 features.

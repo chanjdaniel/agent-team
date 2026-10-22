@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# A stand-in for the 1Password CLI in the toolkit tests: `op read --no-newline <ref>` and
+# `op signout`, driven by files in $OP_STUB_DIR, never by variables (a variable would put the
+# value in the launcher's starting environment, which is what the tests look for):
+#   value    what `op read` prints, with no newline
+#   mode     ok (the default), fail (op read fails like a declined prompt), signout-fail
+#   calls    appended: one line per call, its arguments and where its stdin points
+# It runs no command from PATH but readlink, so the tests' spies on cat, head and hostname see
+# only what the server itself runs.
+set -euo pipefail
+
+dir=${OP_STUB_DIR:?OP_STUB_DIR is not set}
+mode=ok
+if [[ -f $dir/mode ]]; then mode=$(<"$dir/mode"); fi
+echo "$* stdin=$(readlink /proc/self/fd/0 || echo none)" >>"$dir/calls"
+
+case $1 in
+  read)
+    [[ $# == 3 && $2 == --no-newline ]] || { echo "[ERROR] op stub: unexpected arguments: $*" >&2; exit 2; }
+    if [[ $mode == fail ]]; then
+      echo "[ERROR] 2026/10/22 12:00:00 could not read secret '$3': error initializing client: authorization prompt dismissed, please try again" >&2
+      exit 1
+    fi
+    IFS= read -r -d '' value <"$dir/value" || true
+    printf '%s' "$value"
+    ;;
+  signout)
+    if [[ $mode == signout-fail ]]; then
+      echo "[ERROR] 2026/10/22 12:00:00 signout: connection reset" >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "[ERROR] op stub: unknown command $1" >&2
+    exit 2
+    ;;
+esac

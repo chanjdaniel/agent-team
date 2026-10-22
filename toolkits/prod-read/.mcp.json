@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "prod-read": {
+      "command": "node",
+      "args": ["@TEAM_HOME@/toolkits/prod-read/scripts/start-server.mjs"]
+    }
+  }
+}
