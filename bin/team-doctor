@@ -22,6 +22,8 @@
 #   heartbeat     `team-timers status`: passes enabled on the lease holder, or disabled on any
 #                 other machine; fails the other way round, with the command that puts it right;
 #                 warns while the lease line cannot say whether this machine holds it.
+#   offline       Warns while the heartbeat holds the team for an outage ("offline since <time>
+#                 (<n> minutes)"): it resumes on its own once GitHub answers.
 # Logins are asked of claude and gh themselves: no credential file, ~/.claude.json or
 # ~/.claude/channels/ is read, and no line carries a secret. Read-only.
 # TEAM_OS_RELEASE names the os-release file to read instead of /etc/os-release (the tests' seam).
@@ -254,6 +256,16 @@ else
     disabled-yes) report heartbeat FAIL "disabled, but this machine holds the lease" "team-timers enable" ;;
     *) report heartbeat WARN "$enabled, but whether it should be waits on the lease line" "the lease line's fix, then run team-doctor again" ;;
   esac
+fi
+
+# offline: the heartbeat's flag, written when a probe of GitHub failed twice.
+offline=$HOME/.local/state/agent-team/offline
+if [[ -e $offline ]]; then
+  since=$(jq -er '.since | strings' "$offline" 2>/dev/null) || since=$(date -u -r "$offline" +%FT%TZ)
+  report offline WARN "offline since $since ($((($(date +%s) - $(date -d "$since" +%s)) / 60)) minutes)" \
+    "check this machine's network; the heartbeat resumes the team when GitHub answers"
+else
+  report offline PASS "the team is not holding for an outage"
 fi
 
 if ((json)); then printf '%s\n' "${results[@]}" | jq -s .; fi

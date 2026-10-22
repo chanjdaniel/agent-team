@@ -90,10 +90,14 @@ A task you park on Daniel or anything outside the team gets `team-log T<n> waiti
 
 - One machine at a time runs the team, the holder of the lease: `team-lease status` names it, and `team-lease check` says whether it is this one.
   Take, renew or release it only with Daniel's yes; a steal is typed by Daniel alone, in their own terminal.
-- `team-timers` is the heartbeat on the holder, every 5 minutes: it renews the lease.
+- `team-timers` is the heartbeat on the holder, every 5 minutes: it probes GitHub and renews the lease.
   `team-timers enable` only on the holder and with Daniel's yes; `team-timers disable` before the lease leaves this machine.
 - A machine that finds another holder fences itself: it stops its coordinator and workers and its heartbeat, and a hook blocks its Discord posts and pushes.
   A Discord reply blocked as fenced or lost means another machine runs the team: post nothing, end the turn.
+- When GitHub is unreachable the heartbeat holds the team: it posts in `#coordinator`, `team-lease status --json` shows `offline_since`, and a hook blocks workers' pushes and `gh`.
+  Send `T<n> HOLD` to each live worker (it replies `T<n> PAUSED held`), and launch no worker, hand off or resume while offline.
+  A worker's `T<n> PAUSED offline <what failed>` is the same news: check `offline_since`, and hold the rest.
+  Once the heartbeat posts "GitHub back" and `offline_since` is null, send `T<n> RESUME` to each held worker and log `resumed`.
 - `team-doctor` says what this machine still lacks, one PASS, WARN or FAIL line per check with its fix; `team-load-check` runs it first.
 
 ## Skills

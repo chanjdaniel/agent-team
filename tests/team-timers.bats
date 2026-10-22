@@ -291,14 +291,225 @@ EOF
   assert_equal "$(lease_tip)" "$tip"
 }
 
-@test "run with GitHub unreachable logs it, exits 75 and changes nothing" {
+# Origin unreachable for the team home: a closed local port.
+cut_origin() {
+  git -C "${1:-$TEAM_HOME}" remote set-url origin https://127.0.0.1:9/agent-team.git
+}
+
+# Make the 60-second wait before the probe's second try return at once, running <script> (read
+# from stdin, may be empty) in its place: the uname stub keeps the sandbox's stubs ahead of
+# Homebrew's GNU sleep on macOS too.
+stub_sleep() {
+  cp "$REPO_ROOT/tests/helpers/stub" "$BATS_TEST_TMPDIR/stubs/sleep"
+  stub_script sleep
+}
+
+# Discord answers each post (curl) with a message id, or with <status> and an error when given.
+discord_answers() {
+  if [[ -z ${1:-} ]]; then
+    stub_reply curl '{"id":"1563000000000000001"}'
+  else
+    stub_script curl <<EOF
+echo "curl: (22) The requested URL returned error: $1" >&2
+exit 22
+EOF
+  fi
+}
+
+# The content of each post to #coordinator, one JSON string per line.
+posts() {
+  stub_calls curl | jq -c 'select(.[-1] == "https://discord.com/api/v10/channels/1562486564871995482/messages")
+    | .[index("-d") + 1] | fromjson | .content'
+}
+
+# A UTC time as the heartbeat writes it in a post: this machine's local hours and minutes.
+clock() {
+  date -d "$1" +%H:%M
+}
+
+# Serve HTTP <status> to every request on a free local port, standing in for GitHub; prints the
+# URL of a repository there. teardown stops it.
+http_origin() {
+  local port=$BATS_TEST_TMPDIR/http.port
+  rm -f "$port"
+  python3 -I "$REPO_ROOT/tests/helpers/http-status.py" "$1" "$port" </dev/null >/dev/null 2>&1 3>&- &
+  echo $! >>"$BATS_TEST_TMPDIR/http.pids"
+  for _ in $(seq 1 100); do
+    [[ ! -s $port ]] || break
+    sleep 0.05
+  done
+  echo "http://127.0.0.1:$(cat "$port")/agent-team.git"
+}
+
+teardown() {
+  [[ ! -f $BATS_TEST_TMPDIR/http.pids ]] || xargs kill <"$BATS_TEST_TMPDIR/http.pids" 2>/dev/null || true
+}
+
+@test "a probe that fails once and then answers sets no flag, posts nothing and goes on to the lease" {
   age_lease 20
+  stub_sleep <<EOF
+git -C "$TEAM_HOME" remote set-url origin "$origin"
+EOF
+  cut_origin
+  run_bin -0 team-timers run
+  assert_equal "$(stub_calls sleep)" '["60"]'
+  assert_equal "$(sed -n 1p <<<"$output" | cut -d' ' -f2-)" "probe: GitHub unreachable (unable to access 'https://127.0.0.1:9/agent-team.git/': Failed to connect to 127.0.0.1:9 after 0 ms: Could not connect to server); trying again in 60s"
+  assert_contains "$(sed -n 2p <<<"$output")" " probe: GitHub answered the second try"
+  assert_contains "$(sed -n 3p <<<"$output")" " lease: home-pc renewed the lease, epoch 1"
+  [[ ! -e $HOME/.local/state/agent-team/offline ]]
+  assert_equal "$(stub_calls curl)" ""
+}
+
+@test "two failures hold the team from the first failure's time and post once; later runs post nothing more; the lease is untouched" {
+  local tip before
+  age_lease 20
+  tip=$(lease_tip)
+  stub_sleep </dev/null
+  discord_answers
+  cut_origin
+  before=$(date -u +%s)
+  run_bin -75 team-timers run
+  local flag=$HOME/.local/state/agent-team/offline since
+  since=$(jq -r .since "$flag")
+  (($(date -d "$since" +%s) >= before && $(date -d "$since" +%s) <= $(date -u +%s)))
+  jq -e '.posted == true' "$flag"
+  assert_contains "$(sed -n 2p <<<"$output")" " probe: GitHub unreachable since $since (unable to access 'https://127.0.0.1:9/agent-team.git/': Failed to connect"
+  assert_contains "$(sed -n 2p <<<"$output")" "); the team is holding; #coordinator is told"
+  assert_equal "$(posts)" "$(jq -n --arg t "GitHub unreachable since $(clock "$since") on home-pc; holding the team" '$t')"
+  assert_equal "$(lease_tip)" "$tip"
+  run -75 --separate-stderr "$REPO_ROOT/bin/team-lease" status --json
+  assert_equal "$(jq -r .offline_since <<<"$output")" "$since"
+
+  # Still offline: no second try (the team already holds), no post, the same since.
+  : >"$STUB_CALLS/sleep.log"
+  run_bin -75 team-timers run
+  assert_equal "$(cut -d' ' -f2- <<<"$output")" "probe: GitHub unreachable since $since (unable to access 'https://127.0.0.1:9/agent-team.git/': Failed to connect to 127.0.0.1:9 after 0 ms: Could not connect to server); the team is still holding"
+  assert_equal "$(stub_calls sleep)" ""
+  assert_equal "$(posts | wc -l)" 1
+  assert_equal "$(jq -r .since "$flag")" "$since"
+  assert_equal "$(lease_tip)" "$tip"
+}
+
+@test "the first probe that answers renews at once, clears the flag and posts the window and the tasks with a live worker" {
+  stub_sleep </dev/null
+  discord_answers
+  stub_reply claude '[{"id": "3169fcbd", "name": "coordinator"}, {"id": "81f08540", "name": "T8-reviewer"},
+    {"id": "a3586a81", "name": "T5-builder"}, {"id": "1baf2408", "name": "T5-planner"}, {"id": "22222222", "name": "my-T9-builder"}]'
+  cut_origin
+  run_bin -75 team-timers run
+  local since tip
+  since=$(jq -r .since "$HOME/.local/state/agent-team/offline")
+
+  # Renewed 5 minutes ago, so no renewal would be due but for the outage.
+  age_lease 5
+  tip=$(lease_tip)
+  git -C "$TEAM_HOME" remote set-url origin "$origin"
+  run_bin -0 team-timers run
+  [[ $(lease_tip) != "$tip" ]]
+  lease_json | jq -e '.holder == "home-pc" and .epoch == 1 and (.renewed_at | fromdateiso8601) > now - 120'
+  [[ ! -e $HOME/.local/state/agent-team/offline ]]
+  local back
+  back=$(sed -nE 's/.* GitHub back at ([^ ]+) .*/\1/p' <<<"$output")
+  assert_equal "$(cut -d' ' -f2- <<<"$output")" "back: home-pc renewed the lease, epoch 1; GitHub back at $back (unreachable from $since); #coordinator is told"
+  assert_equal "$(posts | sed -n 2p)" "$(jq -n --arg t "GitHub back at $(clock "$back") (unreachable from $(clock "$since")); resuming T5, T8" '$t')"
+
+  # The next run is an ordinary one.
+  run_bin -0 team-timers run
+  assert_contains "$output" "lease: home-pc holds the lease, epoch 1, renewed 0 minutes ago; no renewal due"
+  assert_equal "$(posts | wc -l)" 2
+}
+
+@test "an outage post that failed goes out with the back message" {
+  stub_sleep </dev/null
+  discord_answers 503
+  stub_reply claude '[]'
+  cut_origin
+  run_bin -75 team-timers run
+  assert_contains "$output" "the team is holding; the post to #coordinator failed (curl: (22) The requested URL returned error: 503); it goes with the back message"
+  jq -e '.posted == false' "$HOME/.local/state/agent-team/offline"
+  local since
+  since=$(jq -r .since "$HOME/.local/state/agent-team/offline")
+
+  discord_answers
+  git -C "$TEAM_HOME" remote set-url origin "$origin"
+  run_bin -0 team-timers run
+  local back
+  back=$(sed -nE 's/.* GitHub back at ([^ ]+) .*/\1/p' <<<"$output")
+  assert_equal "$(posts | sed -n 2p)" "$(jq -n --arg t "GitHub unreachable since $(clock "$since") on home-pc; holding the team
+GitHub back at $(clock "$back") (unreachable from $(clock "$since")); no worker was live, so none was held" '$t')"
+}
+
+@test "GitHub refusing the login (HTTP 403 or 401) is not offline: logged each run, posted once, no second try" {
   local tip
   tip=$(lease_tip)
-  git -C "$TEAM_HOME" remote set-url origin https://127.0.0.1:9/agent-team.git
+  git -C "$TEAM_HOME" remote set-url origin "$(http_origin 403)"
+  stub_sleep </dev/null
+  discord_answers
+  run_bin -1 team-timers run
+  [[ $output =~ ^[0-9T:Z-]+" probe: GitHub refuses home-pc's login (unable to access 'http://127.0.0.1:"[0-9]+"/agent-team.git/': The requested URL returned error: 403); not offline; #coordinator is told"$ ]]
+  [[ ! -e $HOME/.local/state/agent-team/offline ]]
+  assert_equal "$(stub_calls sleep)" ""
+  local pattern="^GitHub refuses home-pc's login \\(unable to access 'http://127.0.0.1:[0-9]+/agent-team.git/': The requested URL returned error: 403\\); the heartbeat cannot renew the lease until it is fixed there \\(team-doctor\\)$"
+  [[ $(posts | jq -r .) =~ $pattern ]]
+
+  # A credential git cannot ask for (HTTP 401) is the same refusal, and is not posted again.
+  git -C "$TEAM_HOME" remote set-url origin "$(http_origin 401)"
+  run_bin -1 team-timers run
+  [[ $output =~ ^[0-9T:Z-]+" probe: GitHub refuses home-pc's login (could not read Username for 'http://127.0.0.1:"[0-9]+"': terminal prompts disabled); not offline"$ ]]
+  assert_equal "$(posts | wc -l)" 1
+
+  # Answering again clears it, so a later refusal is posted again.
+  git -C "$TEAM_HOME" remote set-url origin "$origin"
+  run_bin -0 team-timers run
+  assert_contains "$(sed -n 1p <<<"$output")" " probe: GitHub accepts home-pc's login again"
+  [[ ! -e $HOME/.local/state/agent-team/login-refused ]]
+  assert_equal "$(lease_tip)" "$tip"
+}
+
+@test "GitHub answering 5xx is a network failure, tried again and then offline" {
+  git -C "$TEAM_HOME" remote set-url origin "$(http_origin 503)"
+  stub_sleep </dev/null
+  discord_answers
   run_bin -75 team-timers run
-  [[ $output =~ ^[0-9T:Z-]+" lease: not checked: GitHub is unreachable ("[^\)]+"); showing the last known lease, unconfirmed"$ ]]
-  assert_equal "$(tail -n 1 "$log")" "$output"
+  assert_equal "$(stub_calls sleep)" '["60"]'
+  assert_contains "$output" "The requested URL returned error: 503); the team is holding; #coordinator is told"
+  [[ -e $HOME/.local/state/agent-team/offline ]]
+}
+
+@test "a machine that does not hold the lease logs an outage and holds nothing" {
+  make_machine laptop
+  stub_sleep </dev/null
+  cut_origin "$BATS_TEST_TMPDIR/machines/laptop/team"
+  on_machine laptop run_bin -75 team-timers run
+  assert_contains "$output" "; laptop does not hold the lease, so there is no team to hold"
+  [[ ! -e $BATS_TEST_TMPDIR/machines/laptop/home/.local/state/agent-team/offline ]]
+  assert_equal "$(stub_calls curl)" ""
+}
+
+@test "A holds through an outage while B steals: A's first answering probe fences A instead of resuming, and posts nothing more" {
+  stub_sleep </dev/null
+  discord_answers
+  stub_script claude <<'EOF'
+case $1 in
+  agents) echo '[{"id": "3169fcbd", "name": "coordinator"}, {"id": "81f08540", "name": "T5-builder"}]' ;;
+  stop) echo "Stopped $2" ;;
+  *) exit 127 ;;
+esac
+EOF
+  run_bin -0 team-timers enable
+  cut_origin
+  run_bin -75 team-timers run
+  assert_equal "$(posts | wc -l)" 1
+
+  make_machine laptop
+  steal_lease laptop home-pc
+  local tip
+  tip=$(lease_tip)
+  git -C "$TEAM_HOME" remote set-url origin "$origin"
+  run_bin -0 team-timers run
+  [[ $output =~ ^[0-9T:Z-]+" back: home-pc no longer holds the lease: laptop holds it (epoch 2); fenced home-pc: stopped coordinator (3169fcbd), T5-builder (81f08540); the heartbeat is disabled: agent-team-heartbeat.timer stopped and removed; team-lease take clears the fence"$ ]]
+  [[ -e $HOME/.local/state/agent-team/fenced && ! -e $HOME/.local/state/agent-team/offline ]]
+  assert_equal "$(posts | wc -l)" 1
   assert_equal "$(lease_tip)" "$tip"
 }
 

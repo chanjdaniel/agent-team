@@ -6,9 +6,12 @@
 #     holder or a higher epoch, so an old coordinator never answers in the channel the new one
 #     owns, even before its heartbeat fences it. Origin is asked at most once a minute (git
 #     ls-remote, cached in probe.json); unreachable passes, since the heartbeat owns offline.
-#   Bash (workers): a command that runs git push is blocked while this machine is fenced.
-# Reads, in ~/.local/state/agent-team/: fenced and lease.json (team-lease's), and probe.json, the
-# last probe of origin's lease branch: {"checked_at": "<UTC time>", "reachable": true, "tip": "<commit>"}.
+#   Bash (workers): a command that runs git push is blocked while this machine is fenced; while
+#     the team holds offline, one that runs git push, gh or gh-axi is blocked with the hold
+#     ("GitHub is unreachable (since 13:05); the team is holding: ..."), so no worker retries.
+# Reads, in ~/.local/state/agent-team/: fenced and lease.json (team-lease's), offline (team-timers
+# run's: {"since": "<UTC time>", ...}), and probe.json, the last probe of origin's lease branch:
+# {"checked_at": "<UTC time>", "reachable": true, "tip": "<commit>"}.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/team.sh" "$@"
 
@@ -81,11 +84,20 @@ case $tool in
     why=$(lost_lease) && block "$why: a machine that lost the lease posts nothing to Discord; the coordinator on the holder answers there."
     ;;
   Bash)
-    why=$(fence_reason) || exit 0
     command=$(jq -r '.tool_input.command // empty' <<<"$input")
     push='(^|[^[:alnum:]_.-])git([[:space:]]+(-[Cc][[:space:]]+[^[:space:]]+|-[^[:space:]]+))*[[:space:]]+push([[:space:]]|$)'
-    [[ ! $command =~ $push ]] ||
-      block "$machine is $why: a fenced machine pushes nothing; commit locally and stop."
+    # gh or gh-axi where a command starts: at the start, after a separator or a line break, past
+    # any variable assignments and a directory.
+    gh=$'(^|[;&|(`\n])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|]*/)?gh(-axi)?([[:space:]]|$)'
+    if why=$(fence_reason); then
+      [[ ! $command =~ $push ]] ||
+        block "$machine is $why: a fenced machine pushes nothing; commit locally and stop."
+    elif [[ -e $state/offline ]]; then
+      if [[ $command =~ $push || $command =~ $gh ]]; then
+        since=$(jq -er '.since | strings' "$state/offline" 2>/dev/null) || since=$(date -u -r "$state/offline" +%FT%TZ)
+        block "GitHub is unreachable (since $(date -d "$since" +%H:%M)); the team is holding: commit locally, write handoff.md, send T<n> PAUSED offline, and wait."
+      fi
+    fi
     ;;
 esac
 exit 0

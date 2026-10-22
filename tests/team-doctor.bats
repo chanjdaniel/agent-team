@@ -196,7 +196,7 @@ every_tool_fails() {
   assert_equal "$(grep -cv '^PASS ' <<<"$output")" 0
   local expected
   expected=$(printf '%s\n' os; lock_tools arch | cut -f1 | sed 's/^/tool /'
-    printf '%s\n' machine 'claude login' 'github login' clock lease heartbeat)
+    printf '%s\n' machine 'claude login' 'github login' clock lease heartbeat offline)
   assert_equal "$(checks)" "$expected"
   assert_equal "$(line_of os)" "PASS os: Arch Linux"
   assert_equal "$(line_of 'tool claude')" "PASS tool claude: 2.1.308"
@@ -214,7 +214,7 @@ every_tool_fails() {
   assert_equal "$(grep -cv '^PASS ' <<<"$output")" 0
   local expected
   expected=$(printf '%s\n' os homebrew; lock_tools macos | cut -f1 | sed 's/^/tool /'
-    printf '%s\n' machine 'claude login' 'github login' clock lease heartbeat)
+    printf '%s\n' machine 'claude login' 'github login' clock lease heartbeat offline)
   assert_equal "$(checks)" "$expected"
   assert_equal "$(line_of os)" "PASS os: macOS"
 }
@@ -384,6 +384,15 @@ EOF
   git -C "$TEAM_HOME" remote set-url origin https://127.0.0.1:9/agent-team.git
   run_bin -1 team-doctor
   assert_equal "$(line_of lease)" "FAIL lease: fenced since 2026-10-22T14:00:00Z (holder seen laptop, epoch 2); fix: hand off on the machine that holds the lease, then team-resume here (its take clears the fence)"
+}
+
+@test "the offline line warns with the outage's start and age while the heartbeat holds the team" {
+  tools_at arch
+  run_bin -0 team-doctor
+  assert_equal "$(line_of offline)" "PASS offline: the team is not holding for an outage"
+  jq -n '{since: (now - 35 * 60 | floor | todate), posted: true}' >"$HOME/.local/state/agent-team/offline"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of offline)" "WARN offline: offline since $(jq -r .since "$HOME/.local/state/agent-team/offline") (35 minutes); fix: check this machine's network; the heartbeat resumes the team when GitHub answers"
 }
 
 @test "the heartbeat line: PASS enabled on the holder or disabled elsewhere, FAIL otherwise with the command" {

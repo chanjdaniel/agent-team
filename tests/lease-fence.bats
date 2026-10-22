@@ -1,8 +1,8 @@
 #!/usr/bin/env bats
 # hooks/lease-fence: the PreToolUse hook that keeps a machine that lost the lease quiet. It blocks
 # the coordinator's Discord posts when this machine is fenced or the lease on origin names another
-# holder, and a worker's git push when fenced. home-pc holds the lease on a bare origin; laptop is
-# the other machine.
+# holder, a worker's git push when fenced, and a worker's git push and gh while the team holds
+# offline. home-pc holds the lease on a bare origin; laptop is the other machine.
 
 load helpers/common
 
@@ -151,6 +151,27 @@ age_probe() {
     bash_call -0 "$command"
   done
   assert_equal "$(probes)" 0
+}
+
+@test "while the team holds offline, a worker's git push, gh and gh-axi are blocked with the hold; other commands pass" {
+  mkdir -p "$state"
+  echo '{"since": "2026-10-22T13:05:00Z", "posted": true}' >"$state/offline"
+  local command hold
+  hold="Blocked: GitHub is unreachable (since $(date -d 2026-10-22T13:05:00Z +%H:%M)); the team is holding: commit locally, write handoff.md, send T<n> PAUSED offline, and wait."
+  for command in "git push" "git -C /home/x/wt push origin HEAD" "cd wt && git push" "gh pr create --fill" \
+    "gh-axi pr view 6" "cd wt && gh pr checks 6 --watch" "GH_REPO=a/b gh issue list" "/usr/bin/gh api user" \
+    $'git commit -m wip\ngh pr view' "echo x | gh pr comment 6 -F -" "(gh pr view)" '$(gh api user)'; do
+    bash_call -2 "$command"
+    assert_equal "$stderr" "$hold"
+  done
+  for command in "git status" "git commit -m 'gh pr later'" "grep -rn 'gh pr' bin" "ls ~/.config/gh" \
+    "cat high.txt" "git log --grep gh" "ghost run" "echo gh-axi"; do
+    bash_call -0 "$command"
+  done
+  # The hold is read from the flag alone: origin is never asked.
+  assert_equal "$(probes)" 0
+  rm "$state/offline"
+  bash_call -0 "gh pr view 6"
 }
 
 @test "every other tool passes at once, fenced or not, and never asks origin" {

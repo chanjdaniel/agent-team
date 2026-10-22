@@ -19,15 +19,34 @@
 #   status   installed, enabled (every job of this OS loaded and running) and the last run, the
 #            time of the heartbeat log's last line; --json prints them as one object.
 #   run      What the job runs, each step one line in the heartbeat log (and on stdout):
+#              fence  On a fenced machine, team-timers disable, and nothing else.
+#              probe  git ls-remote of origin's lease branch, at most 20 s. A network failure
+#                     (name resolution, connect, timeout, TLS, HTTP 5xx) is tried again once
+#                     after 60 s; a second one is offline. GitHub refusing the login (HTTP 401
+#                     or 403, a credential it cannot ask for, an ssh key it denies, a repository
+#                     it will not show) is not offline: it is logged, posted once to
+#                     #coordinator ("GitHub refuses home-pc's login ...") and the run exits 1.
+#                     Offline on the machine whose record says it holds the lease: the offline
+#                     flag is written with the first failure's time, and one post is tried
+#                     ("GitHub unreachable since 13:05 on home-pc; holding the team"); while the
+#                     flag stays, a run only logs, and the lease is not touched (exit 75).
+#              back   The first probe that answers while the flag exists: team-lease renew at
+#                     once; renewed, the flag goes and #coordinator is told "GitHub back at
+#                     13:40 (unreachable from 13:05); resuming T5, T8" (the tasks with a live
+#                     worker), after the outage post when that one failed; a machine another
+#                     took the lease from meanwhile is fenced by the renew instead, and posts
+#                     nothing.
 #              lease  team-lease status; on the holder, team-lease renew once the last renewal is
 #                     15 minutes old (less a minute for the timer's slack); on a machine that lost
 #                     the lease, team-lease renew at once, which fences it (stops its team
-#                     sessions and disables this heartbeat); on a fenced machine, team-timers
-#                     disable; otherwise nothing.
-#            A run that finds another still going skips.
+#                     sessions and disables this heartbeat); otherwise nothing.
+#            A run that finds another still going skips. Posts go through discord_api; times in
+#            them are this machine's local time.
 # In ~/.local/state/agent-team/: heartbeat.log ("<UTC time> <step>: <what happened>", kept to its
-# last 1000 lines once it passes 2000), heartbeat.lock (one run at a time), and on macOS
-# heartbeat.err, the job's stderr (systemd keeps it in the journal).
+# last 1000 lines once it passes 2000), heartbeat.lock (one run at a time), offline ({since,
+# posted}: GitHub unreachable since the UTC time, and whether #coordinator was told; read by
+# team-lease status, the fence hook and the doctor), login-refused ({since, reason}: the refusal
+# was posted), and on macOS heartbeat.err, the job's stderr (systemd keeps it in the journal).
 # Exit 0 done, 1 refused or a step failed, 2 usage error, 75 GitHub unreachable.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
@@ -37,6 +56,11 @@ INTERVAL=5
 RENEW_MINUTES=15
 # The timer may start a run up to a minute after its mark (systemd's AccuracySec).
 SLACK_SECONDS=60
+# Seconds: the most one probe of origin may take, the wait before trying a failed one again, and
+# the most one Discord post may take.
+PROBE_TIMEOUT=20
+RETRY_SECONDS=60
+POST_TIMEOUT=20
 LOG_KEEP=1000
 LOG_MAX=2000
 SERVICE=agent-team-heartbeat
@@ -56,6 +80,10 @@ bin=$(dirname "$TEAM_LIB")
 program=$bin/team-timers
 state=$HOME/.local/state/agent-team
 log=$state/heartbeat.log
+offline=$state/offline
+refused=$state/login-refused
+# Appended to every post while no in-session check wakes an idle coordinator (ticket 08's spike).
+RESUME_HINT=''
 units=$HOME/.config/systemd/user
 agents=$HOME/Library/LaunchAgents
 domain=gui/$(id -u)
@@ -303,10 +331,184 @@ team() {
   TEAM_HOME=$TEAM_HOME "$bin/$1" "${@:2}" {run_fd}>&-
 }
 
+# The fence step: a fenced machine turns its heartbeat off and does nothing else; fails when it
+# is not fenced.
+fence_step() {
+  local why rc=0 out
+  why=$(fence_reason) || return 1
+  out=$(team team-timers disable 2>"$err") || rc=$?
+  ((rc == 0)) || out="the heartbeat could not be disabled: $(first_error)"
+  log lease "$machine is $why; $out"
+  exit "$rc"
+}
+
+# Ask origin for its lease branch once: 0 it answered; 1 a network failure, 2 GitHub refused the
+# login, 3 anything else, each with the reason in PROBE_REASON (credentials in a URL cut out).
+probe_once() {
+  local rc=0
+  GIT_TERMINAL_PROMPT=0 timeout "$PROBE_TIMEOUT" git -C "$TEAM_HOME" ls-remote origin refs/heads/lease \
+    >/dev/null 2>"$err" </dev/null {run_fd}>&- || rc=$?
+  ((rc)) || return 0
+  PROBE_REASON=$(grep -v '^[[:space:]]*$' "$err" | tail -n 1 | sed -E 's/^(fatal|error|remote): //; s#//[^/@[:space:]]*@#//#g')
+  if ((rc == 124)); then
+    PROBE_REASON="no answer in ${PROBE_TIMEOUT}s"
+    return 1
+  fi
+  [[ -n $PROBE_REASON ]] || PROBE_REASON="git ls-remote exited $rc"
+  if grep -qiE 'authentication failed|could not read (username|password)|invalid username or password|permission denied \(publickey|returned error: 40[13]|repository not found|access denied|403 forbidden' "$err"; then
+    return 2
+  fi
+  if grep -qiE 'could not resolve|name resolution|name or service not known|failed to connect|connect(ion)? (refused|timed out)|connection (reset|closed)|timed out|network is unreachable|no route to host|ssl|tls|gnutls|certificate|handshake|returned error: 5[0-9][0-9]|kex_exchange_identification|hung up unexpectedly|early eof|rpc failed' "$err"; then
+    return 1
+  fi
+  return 3
+}
+
+# The probe step: whether GitHub answers, tried again once after RETRY_SECONDS on a network
+# failure unless the team already holds. Returns when it answers; exits 75 offline, 1 otherwise.
+probe_step() {
+  local first rc=0
+  first=$(date -u +%FT%TZ)
+  probe_once || rc=$?
+  if ((rc == 1)) && [[ ! -e $offline ]]; then
+    log probe "GitHub unreachable ($PROBE_REASON); trying again in ${RETRY_SECONDS}s"
+    sleep "$RETRY_SECONDS"
+    rc=0
+    probe_once || rc=$?
+    ((rc)) || log probe "GitHub answered the second try"
+  fi
+  case $rc in
+    0)
+      if [[ -e $refused ]]; then
+        rm -f "$refused"
+        log probe "GitHub accepts $machine's login again"
+      fi
+      ;;
+    1) go_offline "$first" ;;
+    2) login_refused ;;
+    *)
+      log probe "cannot ask GitHub: $PROBE_REASON"
+      exit 1
+      ;;
+  esac
+}
+
+# Hold the team from <since>: write the offline flag and tell #coordinator once, on the machine
+# whose record says it holds the lease. Exits 75.
+go_offline() {
+  local since post
+  if [[ -e $offline ]]; then
+    since=$(jq -r '.since // empty' "$offline" 2>/dev/null) || since=''
+    log probe "GitHub unreachable since ${since:-an unknown time} ($PROBE_REASON); the team is still holding"
+    exit 75
+  fi
+  if ! jq -e --arg machine "$machine" '.holder == $machine and .state == "held"' "$state/lease.json" >/dev/null 2>&1; then
+    log probe "GitHub unreachable ($PROBE_REASON); $machine does not hold the lease, so there is no team to hold"
+    exit 75
+  fi
+  jq -n --arg since "$1" '{since: $since, posted: false}' >"$offline.$$"
+  mv -f "$offline.$$" "$offline"
+  if post "$(outage_text "$1")"; then
+    jq -n --arg since "$1" '{since: $since, posted: true}' >"$offline.$$"
+    mv -f "$offline.$$" "$offline"
+    post=" #coordinator is told"
+  else
+    post=" the post to #coordinator failed ($POST_ERROR); it goes with the back message"
+  fi
+  log probe "GitHub unreachable since $1 ($PROBE_REASON); the team is holding;$post"
+  exit 75
+}
+
+# GitHub refuses this machine's login: logged each run, posted once until it answers again.
+# Exits 1.
+login_refused() {
+  local post=''
+  if [[ ! -e $refused ]]; then
+    jq -n --arg since "$(date -u +%FT%TZ)" --arg reason "$PROBE_REASON" '{since: $since, reason: $reason}' >"$refused"
+    if post "GitHub refuses $machine's login ($PROBE_REASON); the heartbeat cannot renew the lease until it is fixed there (team-doctor)$RESUME_HINT"; then
+      post="; #coordinator is told"
+    else
+      post="; the post to #coordinator failed ($POST_ERROR)"
+    fi
+  fi
+  log probe "GitHub refuses $machine's login ($PROBE_REASON); not offline$post"
+  exit 1
+}
+
+# The back step, on the first probe that answers while offline: renew at once; renewed, clear
+# the flag and tell #coordinator; a machine that lost the lease meanwhile is fenced by the renew.
+back_step() {
+  local since back rc=0 out text posted told
+  read -r since posted < <(jq -r '"\(.since // "") \(.posted // false)"' "$offline" 2>/dev/null) || since='' posted=false
+  out=$(team team-lease renew 2>"$err") || rc=$?
+  case $rc in
+    0) ;;
+    75)
+      log back "GitHub answers, but the renew did not: $(first_error); the team is still holding"
+      exit 75
+      ;;
+    *)
+      rm -f "$offline"
+      if [[ -e $state/fenced ]]; then
+        log back "$(first_error)"
+        return
+      fi
+      log back "GitHub answers; not renewed: $(first_error)"
+      exit 1
+      ;;
+  esac
+  rm -f "$offline"
+  back=$(date -u +%FT%TZ)
+  text="GitHub back at $(clock "$back") (unreachable from $(clock "$since")); $(held_tasks)"
+  [[ $posted == true ]] || text="$(outage_text "$since")"$'\n'"$text"
+  if post "$text$RESUME_HINT"; then
+    told="#coordinator is told"
+  else
+    told="the post to #coordinator failed ($POST_ERROR)"
+  fi
+  log back "$out; GitHub back at $back (unreachable from $since); $told"
+}
+
+# What the outage post says: outage_text <since>
+outage_text() {
+  printf 'GitHub unreachable since %s on %s; holding the team%s' "$(clock "$1")" "$machine" "$RESUME_HINT"
+}
+
+# A UTC time as this machine's local hours and minutes, or "an unknown time": clock <time>
+clock() {
+  date -d "$1" +%H:%M 2>/dev/null || echo "an unknown time"
+}
+
+# What the back post says of the tasks: those with a live worker (T<n>-<role>) resume.
+held_tasks() {
+  local tasks
+  if ! tasks=$(claude agents --json 2>/dev/null {run_fd}>&- | jq -r '
+      [.[] | .name // "" | capture("^T(?<n>[0-9]+)-[a-z][a-z0-9-]*$") | .n | tonumber] | unique
+      | map("T\(.)") | join(", ")' 2>/dev/null); then
+    echo "resuming the held tasks (the live session list could not be read)"
+  elif [[ -z $tasks ]]; then
+    echo "no worker was live, so none was held"
+  else
+    echo "resuming $tasks"
+  fi
+}
+
+# Post <text> to #coordinator; fails with the reason in POST_ERROR.
+post() {
+  local body
+  body=$(jq -cn --arg content "$1" '{content: $content}')
+  if discord_api "channels/$COORDINATOR_CHANNEL/messages" -X POST -H "Content-Type: application/json" \
+    --max-time "$POST_TIMEOUT" -d "$body" >/dev/null 2>"$err" {run_fd}>&-; then
+    return 0
+  fi
+  POST_ERROR=$(grep -m1 . "$err" || echo "no reason given")
+  return 1
+}
+
 # The lease step: renew on the holder once the last renewal is RENEW_MINUTES old, and at once on
-# a machine that lost the lease, which renew fences; a fenced machine turns its heartbeat off.
+# a machine that lost the lease, which renew fences.
 lease_step() {
-  local desc rc=0 holder epoch age out
+  local desc rc=0 holder epoch age
   desc=$(team team-lease status --json 2>"$err") || rc=$?
   case $rc in
     0) ;;
@@ -320,13 +522,7 @@ lease_step() {
       ;;
   esac
   read -r holder epoch < <(jq -r '"\(.holder // "-") \(.epoch)"' <<<"$desc")
-  if jq -e '.fenced != null' <<<"$desc" >/dev/null; then
-    rc=0
-    out=$(team team-timers disable 2>"$err") || rc=$?
-    ((rc == 0)) || out="the heartbeat could not be disabled: $(first_error)"
-    log lease "$machine is $(fence_reason); $out"
-    return "$rc"
-  elif jq -e '.lost' <<<"$desc" >/dev/null; then
+  if jq -e '.lost' <<<"$desc" >/dev/null; then
     renew
   elif jq -e '.state == "released"' <<<"$desc" >/dev/null; then
     log lease "the lease is released (epoch $epoch); nothing to do"
@@ -378,7 +574,9 @@ run_heartbeat() {
     log run "$(first_error)"
     exit 1
   fi
-  lease_step
+  fence_step || true
+  probe_step
+  if [[ -e $offline ]]; then back_step; else lease_step; fi
 }
 
 case $command in
