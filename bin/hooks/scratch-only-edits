@@ -2,6 +2,7 @@
 # PreToolUse hook for planners and reviewers: file edits are allowed only inside the
 # worktree's .scratch/ directory. Exit 2 blocks the tool call and shows stderr to the agent.
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/team.sh" "$@"
 input=$(cat)
 path=$(jq -r '.tool_input.file_path // .tool_input.notebook_path // empty' <<<"$input")
 cwd=$(jq -r '.cwd // empty' <<<"$input")

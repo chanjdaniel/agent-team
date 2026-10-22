@@ -5,3 +5,6 @@ tasks/*/mcp.*.json
 .claude/load-check/
 tasks/T0/
 .scratch/
+
+# The ledger's append lock (bin/lib/team.sh)
+ledger.jsonl.lock

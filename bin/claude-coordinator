@@ -9,6 +9,7 @@
 #
 # Usage: claude-coordinator [working-directory]   (default: ~/agent-team)
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 cd "${1:-$HOME/agent-team}"
 exec claude --bg --name coordinator \
   --channels plugin:discord@claude-plugins-official \

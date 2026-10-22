@@ -8,6 +8,7 @@
 # Usage: team-load-check [--toolkit <name>]...
 # Exit 0 when every check passes. The inventory is kept in tasks/T0/ for the toolkit's README.
 set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
 home=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 toolkit_args=() expected=()
