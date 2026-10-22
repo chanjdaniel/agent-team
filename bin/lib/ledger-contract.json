@@ -38,7 +38,7 @@
     "merged": {
       "writer": "team-merge",
       "required": {"pr": "number", "merge": "string", "head": "string", "by": "string"},
-      "optional": {"project": "string", "branch": "string", "discord_message": "string", "discord_channel": "string"}
+      "optional": {"project": "string", "branch": "string", "discord_message": "string", "discord_channel": "string", "url": "string"}
     },
     "history-rewritten": {
       "writer": "team-clean-messages",

@@ -111,8 +111,36 @@ def same_head($a; $b):
 
 # The following defs read a task's events, in ledger order, as an array.
 
-# The latest PR head the ledger knows: the head of the latest pr or history-rewritten event.
-def ledger_pr_head: map(select(.event == "pr" or .event == "history-rewritten") | .head) | last;
+# The task's PRs, one per repo, as {url, number, head}, in the order of their latest pr events. A
+# task has one branch per repo, so a later pr event in the same repo is that branch's new PR and
+# replaces the earlier one. A PR's head is its pr event's, moved by each later history-rewritten
+# whose old_head is that head; one whose old_head is no PR's head (fixes pushed with no pr event
+# since, or a legacy one with no old_head) moves every PR's head.
+def task_prs:
+  reduce .[] as $e ([];
+    if $e.event == "pr" then
+      (first($e.url | strings | capture("^https://github\\.com/(?<r>[^/]+/[^/]+)/") | .r | ascii_downcase) // $e.url) as $repo
+      | map(select(.repo != $repo))
+        + [{url: $e.url, repo: $repo, head: $e.head,
+            number: (first($e.url | strings | capture("/pull/(?<n>[0-9]+)/?$") | .n | tonumber) // null)}]
+    elif $e.event == "history-rewritten" then
+      any(.[]; same_head($e.old_head; .head)) as $named
+      | map(if ($named | not) or same_head($e.old_head; .head) then .head = $e.head else . end)
+    else . end)
+  | map(del(.repo));
+
+# The head the ledger knows for the PR at $url, from task_prs.
+def pr_head($url): task_prs | map(select(.url == $url)) | last | .head;
+
+# Whether a PR of task_prs (the input) has a merged event among $events: by its URL when the
+# event names one; a legacy event names only the number, and then, when another of the task's
+# PRs ($prs) has the same number in another repo, its head must be the PR's.
+def pr_merged($events; $prs):
+  . as $pr
+  | any($events[]; .event == "merged"
+      and if .url != null then .url == $pr.url
+        else $pr.number != null and (.pr | tostring) == ($pr.number | tostring)
+          and (([$prs[] | select(.number == $pr.number)] | length) == 1 or same_head(.head; $pr.head)) end);
 
 # Whether the latest event of $kind stands: none of the kinds $clears after it.
 def standing($kind; $clears):
@@ -132,15 +160,18 @@ def waiting:
     map(select(.event == "waiting")) | last | {on, reason, since: .ts}
   else null end;
 
-# The task's phase, first match wins. A review counts when it is the latest review of the
-# ledger's PR head and a pass.
+# The task's phase, first match wins. Merged needs every PR of task_prs merged; awaiting-merge
+# needs each PR not merged yet to have, as the latest review of its head, a pass.
 def phase:
-  ledger_pr_head as $head
+  . as $events
+  | task_prs as $prs
+  | [$prs[] | select(pr_merged($events; $prs) | not)] as $open
   | if any(.[]; .event == "closed") then "closed"
-    elif any(.[]; .event == "merged") then "merged"
+    elif any(.[]; .event == "merged") and $open == [] then "merged"
     elif standing("held") then "held"
     elif standing("blocked") then "blocked"
-    elif (map(select(.event == "review" and same_head(.head; $head))) | last | .verdict) == "pass" then "awaiting-merge"
+    elif $open != [] and all($open[]; . as $pr
+      | ($events | map(select(.event == "review" and same_head(.head; $pr.head))) | last | .verdict) == "pass") then "awaiting-merge"
     elif any(.[]; .event == "pr") then "in-review"
     elif any(.[]; .event == "plan-approved") then "building"
     else "planning" end;
@@ -215,6 +246,9 @@ def finding($task; $kind; $session; $name; $detail; $next):
 
 # The no-worker, waiting-input and silent findings of an open task that is not parked. A live
 # session is judged by its latest launch, and one waiting for input is not also called silent.
+# A live session is at work while it is busy, waiting for input, or idle with no ledger event
+# since its launch (silent); idle with an event since, it has handed the next step back to the
+# coordinator, so a task with no session at work is no-worker however many are live.
 def task_findings($sessions):
   .[0].task as $task
   | length as $count
@@ -222,20 +256,26 @@ def task_findings($sessions):
   | ([$launches | reverse | .[] | . + {live: live_session(.launch.session; $sessions)} | select(.live != null)
       | . + {short: (.live.id // .launch.session), name: (.live.name // "\($task)-\(.launch.role)")}]
      | unique_by(.short) | sort_by(.i)) as $live
+  | ($live | map(select(.live.state == "blocked" or .live.status != "idle" or .i == $count - 1))) as $at_work
   | ($launches | last) as $latest
-  | if $live == [] and any(.[]; .event == "opened" or .event == "launch") then
+  | if $at_work == [] and any(.[]; .event == "opened" or .event == "launch") then
       if $latest == null then
         finding($task; "no-worker"; null; null; "opened with no worker launched";
           "launch one with team-worker, or log what is known with team-log")
       else
         "\($task)-\($latest.launch.role)" as $name | $latest.launch.session as $session
+        | (if $live == [] then "with no live worker" else "with every live worker idle" end) as $how
         | if phase == "merged" then
             finding($task; "no-worker"; $session; $name;
-              "merged and not closed, with no live worker (latest \($name) \($session))"; "close it with team-close \($task)")
-          else
+              "merged and not closed, \($how) (latest \($name) \($session))"; "close it with team-close \($task)")
+          elif $live == [] then
             finding($task; "no-worker"; $session; $name;
               "no live session among its \($launches | length) launch\(if ($launches | length) == 1 then "" else "es" end) (latest \($name) \($session))";
               "read claude logs \($session) for how it ended, then launch the next worker with team-worker or log what is known with team-log")
+          else
+            finding($task; "no-worker"; $session; $name;
+              "every live worker is idle with a ledger event since its launch (latest \($name) \($session))";
+              "send it its next step or launch the next worker with team-worker, or log why the task waits with team-log")
           end
       end
     else empty end,

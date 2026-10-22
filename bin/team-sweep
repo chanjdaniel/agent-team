@@ -7,7 +7,9 @@
 # or awaiting-merge, when it has an ask with no answer, or when its latest paused or waiting has
 # no later resumed or launch. Findings, one line each with the task, the session and the next step:
 #   no-worker      an open task, not parked, with an opened or launch event and no live session
-#                  among its launches
+#                  among its launches at work: busy, waiting for input or silent (one idle with a
+#                  ledger event since its launch has handed the next step back); merged is told
+#                  to close
 #   waiting-input  a live session of an open task, not parked, whose state is blocked
 #   silent         a live, idle session of an open task, not parked, with no ledger event for the
 #                  task after that session's latest launch (one waiting for input is not also silent)

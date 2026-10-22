@@ -361,11 +361,11 @@ after"
   assert_equal "$(task_files)" ""
 }
 
-@test "an existing brief is kept unless --force" {
+@test "an existing brief is kept unless --force, and the refusal points at --name for another" {
   open_t12
   echo "hand-written" >"$TEAM_HOME/tasks/T12/brief-build.md"
   run_bin -1 team-brief T12 builder-ticket --set ticket=01 --name build
-  assert_equal "$output" "team-brief: $TEAM_HOME/tasks/T12/brief-build.md exists; pass --force to replace it"
+  assert_equal "$output" "team-brief: $TEAM_HOME/tasks/T12/brief-build.md exists; pass --force to replace it, or --name <suffix> to write another brief"
   assert_equal "$(<"$TEAM_HOME/tasks/T12/brief-build.md")" "hand-written"
   run_bin -0 team-brief T12 builder-ticket --force --set ticket=01 --name build
   assert_equal "$output" "$TEAM_HOME/tasks/T12/brief-build.md"

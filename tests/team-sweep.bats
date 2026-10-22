@@ -106,6 +106,33 @@ T5 no-worker: no live session among its 1 launch (latest T5-builder 33333333); n
   assert_equal "$output" "T7 no-worker: merged and not closed, with no live worker (latest T7-builder 22222222); next: close it with team-close T7"
 }
 
+@test "no-worker: every live worker idle since a report leaves the next step to the coordinator" {
+  opened T8
+  launch T8 planner 11111111
+  sessions "$(session 11111111 T8-planner idle working)"
+  event T8 "done" '{role: "planner", session: "11111111"}'
+  run_bin -1 --separate-stderr team-sweep
+  assert_equal "$output" "T8 no-worker: every live worker is idle with a ledger event since its launch (latest T8-planner 11111111); next: send it its next step or launch the next worker with team-worker, or log why the task waits with team-log"
+  # The next worker at work, busy or not yet reporting, is enough.
+  launch T8 builder 22222222
+  sessions "$(session 11111111 T8-planner idle working)" "$(session 22222222 T8-builder busy working)"
+  run_bin -0 team-sweep
+  event T8 ticket-done '{ticket: "01", commits: ["abc1234"]}'
+  run_bin -0 team-sweep
+  # Once it is idle after its report, the coordinator owes the next step again.
+  sessions "$(session 11111111 T8-planner idle working)" "$(session 22222222 T8-builder idle working)"
+  run_bin -1 team-sweep
+  assert_contains "$output" "T8 no-worker: every live worker is idle with a ledger event since its launch (latest T8-builder 22222222)"
+  # Merged with idle workers is told to close, as with none.
+  event T8 merged '{pr: 5, merge: "abcdef0", head: "1234567", by: "daniel"}'
+  run_bin -1 team-sweep
+  assert_equal "$output" "T8 no-worker: merged and not closed, with every live worker idle (latest T8-builder 22222222); next: close it with team-close T8"
+  # A parked task waits for what it is parked on instead.
+  event T8 waiting '{on: "Daniel", reason: "the walkthrough"}'
+  run_bin -0 team-sweep
+  no_github
+}
+
 @test "waiting-input: a live session of an open task that is blocked on input" {
   opened T12
   launch T12 builder 5fcd3daf
@@ -137,7 +164,9 @@ T5 no-worker: no live session among its 1 launch (latest T5-builder 33333333); n
   run_bin -1 team-sweep
   assert_contains "$output" "T8 silent"
   event T8 ticket-done '{ticket: "1", commits: ["abc1234"]}'
-  run_bin -0 team-sweep
+  run_bin -1 team-sweep
+  assert_equal "${#lines[@]}" 1
+  assert_contains "$output" "T8 no-worker: every live worker is idle with a ledger event since its launch"
 }
 
 @test "silent judges each live session by its own latest launch" {
@@ -279,14 +308,19 @@ T42 stray: T42-reviewer 88888888 is live but T42 is not in the ledger; next: rea
   assert_contains "$output" "T5 no-worker"
 }
 
-@test "T4's real history: held finds nothing, resumed with no live reviewer is no-worker, closed only strays" {
+@test "T4's real history: held finds nothing, resumed with no live reviewer is no-worker, merged is told to close, closed only strays" {
   fixture_ledger T4 57
   run_bin -0 team-sweep
   fixture_ledger T4 59
   run_bin -1 team-sweep
   assert_equal "$output" "T4 no-worker: no live session among its 30 launches (latest T4-reviewer 3c409a5e); next: read claude logs 3c409a5e for how it ended, then launch the next worker with team-worker or log what is known with team-log"
-  sessions "$(session 3c409a5e T4-reviewer idle)"
+  sessions "$(session 3c409a5e T4-reviewer busy working)"
   run_bin -0 team-sweep
+  # Merged with its reviewer idle, it is told to close.
+  sessions "$(session 3c409a5e T4-reviewer idle)"
+  fixture_ledger T4 60
+  run_bin -1 team-sweep
+  assert_equal "$output" "T4 no-worker: merged and not closed, with every live worker idle (latest T4-reviewer 3c409a5e); next: close it with team-close T4"
   # Closed with its reviewer still live, the reviewer is stray.
   fixture_ledger T4 61
   run_bin -1 team-sweep

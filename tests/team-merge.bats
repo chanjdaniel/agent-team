@@ -181,7 +181,8 @@ merged_events() {
   assert_equal "$(merged_events)" "$(jq -cn --arg m "$merge" --arg h "$head" '{task: "T14", event: "merged",
     pr: 5, merge: $m, head: $h,
     by: "Discord message 1570 in the task'"'"'s thread 1563, from daniel (757)",
-    project: "proj", branch: "feat/T14-tooling", discord_message: "1570", discord_channel: "1563"}')"
+    project: "proj", branch: "feat/T14-tooling", discord_message: "1570", discord_channel: "1563",
+    url: "https://github.com/owner/proj/pull/5"}')"
   assert_equal "$(jq -c . <<<"$output")" "$(jq -cn --arg m "$merge" --arg h "$head" '{task: "T14",
     pr: "https://github.com/owner/proj/pull/5", merge: $m, head: $h,
     by: "Discord message 1570 in the task'"'"'s thread 1563, from daniel (757)"}')"

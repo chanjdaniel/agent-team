@@ -155,7 +155,7 @@ brief=$(jq -nr --arg text "$text" --argjson values "$values_json" \
   '$text | gsub("\\{\\{(?<key>[a-z][a-z0-9_]*)\\}\\}"; $values[.key])')
 
 file=$TEAM_HOME/tasks/$task/brief${name:+-$name}.md
-[[ -n $force || ! -e $file ]] || die "$file exists; pass --force to replace it"
+[[ -n $force || ! -e $file ]] || die "$file exists; pass --force to replace it, or --name <suffix> to write another brief"
 mkdir -p "$TEAM_HOME/tasks/$task"
 tmp=$TEAM_HOME/tasks/$task/.${file##*/}.$$
 trap 'rm -f "$tmp"' EXIT

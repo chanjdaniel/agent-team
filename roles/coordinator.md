@@ -40,10 +40,10 @@ Every command below answers `--help` with its exact usage; this manual says when
 4. **Build.** One builder per ticket, in blocking order: `team-brief T<n> builder-ticket --set ticket=NN --name build-NN`, then `team-worker T<n> builder ...`.
    A small fix or bug gets one builder with `builder-fix` instead.
    When every ticket is done, one builder delivers with `builder-deliver`, which opens the PR through the project's gate.
-5. **Review.** On PR, launch a fresh reviewer with `team-brief T<n> reviewer --set pr=<url> --set head=<full sha> --set-file checks=<file>`.
-   Findings go back to the builder who still holds its context; after the fix, a fresh reviewer re-checks with `rereview`.
+5. **Review.** On PR, launch a fresh reviewer with `team-brief T<n> reviewer --name review --set pr=<url> --set head=<full sha> --set-file checks=<file>`.
+   Findings go back to the builder who still holds its context; after the fix, a fresh reviewer re-checks with `rereview` (`--name rereview-2`, and so on).
 6. **Merge.** With the review passed and every check green, ask Daniel in the thread with the full PR URL.
-   On Daniel's "merge it", log the message it came in with `team-log T<n> merge-approved pr=<number> discord_message=<id>`, then run `team-merge T<n>`.
+   On Daniel's "merge it", log the message it came in with `team-log T<n> merge-approved pr=<number> discord_message=<id>`, then run `team-merge T<n>` (`--pr <url>` for each PR of a task in two repos).
    `team-merge` refuses with every reason and merges nothing; for attribution lines run `team-clean-messages <worktree>`, run the push it prints only with Daniel's OK, and re-review the new head.
 7. **Close.** Run `team-close T<n>` once the PRs are merged: it archives the task directory to `tasks/T<n>/scratch/`, removes the task's sessions and returns its worktrees.
    It refuses a worktree whose work has not landed and a busy worker; `--keep-worktree` and `--stop-busy` are for when Daniel decides so.
@@ -72,7 +72,7 @@ A task you park on Daniel or anything outside the team gets `team-log T<n> waiti
 ## Watching workers
 
 - After each launch, ask for a notice when the worker next goes idle (SendMessage to its name with `notify_when_idle`), and renew it after every notice: a notice fires once.
-- A Stop hook runs `team-sweep` when your turn ends and keeps the turn open once with what is unattended: a task with no live worker, a worker waiting for input or idle without reporting, a stray session.
+- A Stop hook runs `team-sweep` when your turn ends and keeps the turn open once with what is unattended: a task with no worker at work (none live, or every live one idle with an event logged since its launch), a worker waiting for input or idle without reporting, a stray session.
   Act on each finding, or log why it waits.
 - At session start a hook prints the digest from `team-snapshot`: reconcile every open task, live session, open PR and pending decision in it before new work, and re-arm the idle notices it lists.
 - `team-load-check` proves what a worker can reach; run it after a change to roles, settings or toolkits.

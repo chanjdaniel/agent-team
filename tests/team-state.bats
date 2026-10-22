@@ -201,6 +201,73 @@ phase_of() {
   assert_equal "$(phase_of T14)" awaiting-merge
 }
 
+@test "with PRs in two repos, the task awaits merge once each is reviewed and is merged once each is" {
+  open_task
+  github_down
+  event T14 plan-approved '{by: "Daniel"}'
+  event T14 pr '{url: "https://github.com/owner/proj/pull/5", head: "1111111"}'
+  event T14 pr '{url: "https://github.com/owner/conv/pull/5", head: "2222222"}'
+  event T14 review '{verdict: "pass", head: "2222222"}'
+  assert_equal "$(phase_of T14)" in-review
+  event T14 review '{verdict: "pass", head: "1111111"}'
+  assert_equal "$(phase_of T14)" awaiting-merge
+  # Both PRs are #5, so the merged event's head says which one merged.
+  event T14 merged '{pr: 5, merge: "aaaaaaa", head: "1111111", by: "Daniel"}'
+  assert_equal "$(phase_of T14)" awaiting-merge
+  event T14 merged '{pr: 5, merge: "bbbbbbb", head: "2222222", by: "Daniel"}'
+  assert_equal "$(phase_of T14)" merged
+}
+
+@test "a merged event naming its PR's URL marks that PR merged, even at a head the ledger never saw" {
+  open_task
+  github_down
+  event T14 pr '{url: "https://github.com/owner/proj/pull/5", head: "1111111"}'
+  event T14 pr '{url: "https://github.com/owner/conv/pull/5", head: "2222222"}'
+  event T14 merged '{pr: 5, merge: "aaaaaaa", head: "9999999", by: "Daniel", url: "https://github.com/owner/conv/pull/5"}'
+  assert_equal "$(phase_of T14)" in-review
+  event T14 merged '{pr: 5, merge: "bbbbbbb", head: "8888888", by: "Daniel", url: "https://github.com/owner/proj/pull/5"}'
+  assert_equal "$(phase_of T14)" merged
+}
+
+@test "a rewrite from a head the ledger never saw moves the PR's head" {
+  open_task
+  github_down
+  event T14 pr '{url: "https://github.com/owner/proj/pull/5", head: "1111111"}'
+  event T14 review '{verdict: "findings", head: "1111111"}'
+  # The fix was pushed without a new pr event, then its messages were cleaned.
+  event T14 history-rewritten '{project: "proj", branch: "feat/T14-tooling", old_head: "5555555", head: "6666666"}'
+  event T14 review '{verdict: "pass", head: "6666666"}'
+  assert_equal "$(phase_of T14)" awaiting-merge
+}
+
+@test "a later PR in the same repo replaces the earlier one" {
+  open_task
+  github_down
+  event T14 pr '{url: "https://github.com/owner/proj/pull/5", head: "1111111"}'
+  event T14 pr '{url: "https://github.com/owner/proj/pull/6", head: "3333333"}'
+  event T14 review '{verdict: "pass", head: "3333333"}'
+  assert_equal "$(phase_of T14)" awaiting-merge
+  event T14 merged '{pr: 6, merge: "aaaaaaa", head: "3333333", by: "Daniel"}'
+  assert_equal "$(phase_of T14)" merged
+}
+
+@test "a rewrite moves only the head of the PR it started from" {
+  open_task
+  github_down
+  event T14 pr '{url: "https://github.com/owner/proj/pull/5", head: "1111111"}'
+  event T14 pr '{url: "https://github.com/owner/conv/pull/3", head: "2222222"}'
+  event T14 review '{verdict: "pass", head: "1111111"}'
+  event T14 review '{verdict: "pass", head: "2222222"}'
+  event T14 history-rewritten '{project: "proj", branch: "feat/T14-tooling", old_head: "1111111", head: "4444444"}'
+  assert_equal "$(phase_of T14)" in-review
+  event T14 review '{verdict: "pass", head: "4444444"}'
+  assert_equal "$(phase_of T14)" awaiting-merge
+  # The PR part is the latest PR's (conv's), whose head the rewrite of proj did not move.
+  stub_github '{"number": 3, "state": "OPEN", "baseRefName": "main", "headRefOid": "2222222"}' '[]' '[]'
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c '.pr | [.number, .ledger_head, .head_moved]' <<<"$output")" '[3,"2222222",false]'
+}
+
 @test "the PR part joins the ledger with the PR, its checks and the required ones on GitHub" {
   open_task
   event T14 pr '{url: "https://github.com/owner/proj/pull/5", head: "1111111"}'

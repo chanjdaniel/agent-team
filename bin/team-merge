@@ -16,8 +16,8 @@
 # Then: gh pr merge <number> --repo <repo> --<merge_method> --match-head-commit <head>, never
 # --auto or --admin; the PR is read again and must be merged (if gh left it open with auto-merge
 # on, auto-merge is turned off and it is exit 1); then merged is appended with pr, merge, head,
-# by (naming the Discord message and its author), project, branch, discord_message and
-# discord_channel. Prints {task, pr, merge, head, by}.
+# by (naming the Discord message and its author), project, branch, discord_message,
+# discord_channel and url (the PR's). Prints {task, pr, merge, head, by}.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
@@ -190,7 +190,7 @@ merge=$(jq -r '.mergeCommit.oid // empty' "$scratch/after")
 trap 'status=$?; rm -rf "$scratch"; ((status == 0)) || echo "team-merge: PR #$number is merged (merge $merge), but its merged event was not logged" >&2' EXIT
 ledger_append "$(jq -cn --arg task "$task" --argjson pr "$number" --arg merge "$merge" --arg head "$head" \
   --arg by "$by" --arg project "$project" --arg branch "$branch" --arg message "$message" --arg channel "$channel" \
-  '{ts: (now | todate), task: $task, event: "merged", pr: $pr, merge: $merge, head: $head, by: $by,
-    project: $project, branch: $branch, discord_message: $message, discord_channel: $channel}')"
+  --arg url "$url" '{ts: (now | todate), task: $task, event: "merged", pr: $pr, merge: $merge, head: $head, by: $by,
+    project: $project, branch: $branch, discord_message: $message, discord_channel: $channel, url: $url}')"
 jq -n --arg task "$task" --arg url "$url" --arg merge "$merge" --arg head "$head" --arg by "$by" \
   '{task: $task, pr: $url, merge: $merge, head: $head, by: $by}'

@@ -7,9 +7,11 @@
 # With --json, the versioned state (schema team-state/1): task, title, project, path, phase,
 # worktrees (returned or not), thread, workers (every launch, live when claude agents --json
 # lists its session, with that session's status and state), last_event, pending_asks, and pr.
-# Phase, first match wins: closed, merged, held or blocked (with no later resumed),
-# awaiting-merge (the latest review of the ledger's PR head is a pass; that head is the latest pr
-# or history-rewritten event's), in-review (a pr event), building (plan-approved), planning.
+# Phase, first match wins: closed, merged (every PR merged), held or blocked (with no later
+# resumed), awaiting-merge (every PR not merged has a pass as the latest review of its head),
+# in-review (a pr event), building (plan-approved), planning. A task's PRs are the latest pr event
+# in each repo; a PR's head is that event's, moved by each later history-rewritten from it (or from
+# a head no PR has); a PR is merged by a merged event naming its URL (legacy: its number).
 # Heads compare by the shorter one's prefix, at least 7 characters.
 # pr is null without a pr event; otherwise it joins the latest pr event with GitHub (gh pr view,
 # gh pr checks, gh pr checks --required): number, repo and project (from the event's project in
