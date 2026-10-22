@@ -1,0 +1,31 @@
+---
+name: stow
+description: Move every decision and lesson still held only in this conversation to its home on disk. Use before a compaction, a restart, or a handoff to another session or machine.
+---
+
+# Stow
+
+Your conversation is a cache that a compaction or a restart throws away.
+Stow is done when a fresh coordinator, reading only the disk, would take the same next step on every open task.
+
+## Walk the conversation since the last stow
+
+For each decision, answer, wait and lesson in it, write it to its one home:
+
+| What | Its home |
+| - | - |
+| A decision Daniel made on a task | The ledger: `team-log T<n> answered id=<ask id> answer=<text>`, or `plan-approved`, `merge-approved`, `held` as it fits |
+| A task parked on Daniel or anything outside the team | `team-log T<n> waiting on=<who> reason=<what>` |
+| A worker's progress, a plan change, a task's notes | `tasks/T<n>/`: the plan, the brief's "Progress so far", or a note file |
+| A step only Daniel can take | `manual-steps.md` |
+| A fact about a project | A ticket for that project's task, so it lands in its docs or knowledge graph through a PR |
+| A lesson about how the team works | A ticket in `tasks/` for a team-home task that changes the manual, a role, a template or a script |
+| Daniel's own preference | A one-line proposal to Daniel for `~/.claude/CLAUDE.md`, which only Daniel changes |
+
+Write notes that point at the source of truth (the ledger, a PR URL, a file), never temp paths, versions or ids that rot.
+
+## Before a restart or a handoff
+
+Run `team-snapshot` and check every open task in it reads as you know it; fix the ledger or `tasks/` where it does not.
+Write `tasks/handoff-<date>.md`: how to start the coordinator again, each task in flight with how to resume it, and what waits on Daniel.
+The next coordinator deletes it once everything in it is running again.

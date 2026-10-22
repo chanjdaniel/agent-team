@@ -7,6 +7,10 @@
 # messages to this session from being held. With the safety classifier off here, deny rules and
 # GitHub rulesets are what block force-push, reset --hard and merging unapproved PRs.
 #
+# The manual, roles/coordinator.md, is appended to the system prompt, and the coordinator's own
+# skills (recover-worker, stow, status-report) load from plugins/coordinator-skills; both come
+# from this script's checkout, and no worker loads either.
+#
 # Only one coordinator: it refuses (exit 1, naming the session id) while `claude agents --json`
 # lists a live session named coordinator, so the ledger keeps one writer and Discord one
 # listener. A non-blocking flock on ~/.local/state/agent-team/coordinator-launch.lock, held from
@@ -15,6 +19,8 @@
 # Usage: claude-coordinator [working-directory]   (default: ~/agent-team)
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+# The manual and the skills are code: they come from this checkout, beside bin/.
+code=$(dirname "$(dirname "$TEAM_LIB")")
 cd "${1:-$HOME/agent-team}"
 
 # The lock only serialises launches: `claude --bg` returns at once, so the session list, not
@@ -37,6 +43,8 @@ live=$(jq -r 'map(select(.name == "coordinator")) | first
 claude --bg --name coordinator \
   --channels plugin:discord@claude-plugins-official \
   --dangerously-skip-permissions \
+  --append-system-prompt-file "$code/roles/coordinator.md" \
+  --plugin-dir "$code/plugins/coordinator-skills" \
   --settings "$HOME/agent-team/coordinator.settings.json" \
   "You are the coordinator. Daniel talks to you on Discord. Wait for their messages." \
   {lock_fd}>&-

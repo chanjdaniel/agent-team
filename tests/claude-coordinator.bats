@@ -39,11 +39,14 @@ sessions() {
   printf '%s\n' "$@" | jq -s . >"$BATS_TEST_TMPDIR/sessions.json"
 }
 
-# The launch command line, as today, prompt included.
+# The launch command line: today's, plus this checkout's manual and the coordinator's skills.
 launch_argv() {
-  jq -cn --arg settings "$HOME/agent-team/coordinator.settings.json" '["--bg", "--name", "coordinator",
+  jq -cn --arg settings "$HOME/agent-team/coordinator.settings.json" --arg code "$REPO_ROOT" \
+    '["--bg", "--name", "coordinator",
     "--channels", "plugin:discord@claude-plugins-official",
     "--dangerously-skip-permissions",
+    "--append-system-prompt-file", "\($code)/roles/coordinator.md",
+    "--plugin-dir", "\($code)/plugins/coordinator-skills",
     "--settings", $settings,
     "You are the coordinator. Daniel talks to you on Discord. Wait for their messages."]'
 }
@@ -68,6 +71,17 @@ assert_not_launched() {
   assert_contains "$output" "Started background session 7c3e9a10"
   assert_equal "$(stub_calls claude)" "$(printf '%s\n%s' '["agents","--json"]' "$(launch_argv)")"
   assert_equal "$(cat "$STUB_CALLS/claude.cwd")" "$HOME/agent-team"
+}
+
+@test "the launch appends the manual and loads the skills plugin, both from its own checkout" {
+  run_bin -0 claude-coordinator
+  local argv manual plugin
+  argv=$(stub_calls claude | tail -n 1)
+  manual=$(jq -r 'index("--append-system-prompt-file") as $i | .[$i + 1]' <<<"$argv")
+  plugin=$(jq -r 'index("--plugin-dir") as $i | .[$i + 1]' <<<"$argv")
+  assert_equal "$manual" "$REPO_ROOT/roles/coordinator.md"
+  assert_equal "$plugin" "$REPO_ROOT/plugins/coordinator-skills"
+  [[ -f $manual && -f $plugin/.claude-plugin/plugin.json ]]
 }
 
 @test "it launches from the working directory it is given" {

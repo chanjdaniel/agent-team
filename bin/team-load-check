@@ -2,7 +2,8 @@
 # Prove what a worker can and cannot reach: launch a throwaway planner through bin/team-worker
 # in a scratch repo, have it list its MCP tools and skills, and check that
 #   - its only MCP tools are the given toolkits' (none when no toolkit is given);
-#   - no production or coordinator-only plugin (mongodb-atlas, discord) reaches it;
+#   - no production or coordinator-only plugin (mongodb-atlas, discord, coordinator-skills)
+#     reaches it;
 #   - the planner's edit hook blocks a write outside .scratch/.
 #
 # Usage: team-load-check [--toolkit <name>]...
@@ -71,7 +72,7 @@ if [[ -n $stray ]]; then
   while IFS= read -r tool; do echo "  $tool"; done <<<"$stray"
   fail=1
 fi
-if grep -Eiq 'atlas|mongodb-atlas|discord|vercel|resend|claude_ai' <<<"$tools$skills"; then
+if grep -Eiq 'atlas|mongodb-atlas|discord|coordinator-skills|vercel|resend|claude_ai' <<<"$tools$skills"; then
   echo "FAIL: a production or coordinator-only server or plugin reached the worker"; fail=1
 fi
 if [[ -e $scratch/wt/outside.txt ]]; then echo "FAIL: the planner wrote outside .scratch/"; fail=1; fi
