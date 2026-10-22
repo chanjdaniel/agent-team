@@ -81,11 +81,11 @@ Find out why and fix it, or check the tasks and workers by hand (team-state, cla
   local settings=$REPO_ROOT/coordinator.settings.json commands command
   commands=$(jq -r '[.hooks.Stop[].hooks[] | select(.type == "command") | .command] | .[]' "$settings")
   assert_equal "$(wc -l <<<"$commands")" 1
-  command=$commands
-  assert_contains "$command" "bin/hooks/stop-sweep"
-  # Run the command as Claude Code does, through a shell, with HOME's agent-team being this
-  # checkout: an active stop exits 0 at once, an inactive one sweeps the sandbox ledger.
-  ln -s "$REPO_ROOT" "$HOME/agent-team"
+  # claude-coordinator fills in @TEAM_HOME@ with its own checkout.
+  command=${commands//@TEAM_HOME@/$REPO_ROOT}
+  assert_equal "$command" "\"$REPO_ROOT/bin/hooks/stop-sweep\""
+  # Run the command as Claude Code does, through a shell: an active stop exits 0 at once, an
+  # inactive one sweeps the sandbox ledger.
   unattended_task
   guard_sandbox
   run -0 sh -c "$command" <<<'{"hook_event_name": "Stop", "stop_hook_active": true}'

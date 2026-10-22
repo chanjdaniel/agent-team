@@ -104,13 +104,12 @@ Reconcile by hand before taking new work (team-sweep, team-state T<n>, claude ag
   local settings=$REPO_ROOT/coordinator.settings.json commands command
   commands=$(jq -r '[.hooks.SessionStart[] | select(has("matcher") | not) | .hooks[] | select(.type == "command") | .command] | .[]' "$settings")
   assert_equal "$(wc -l <<<"$commands")" 1
-  command=$commands
-  assert_contains "$command" "bin/hooks/session-digest"
+  # claude-coordinator fills in @TEAM_HOME@ with its own checkout.
+  command=${commands//@TEAM_HOME@/$REPO_ROOT}
+  assert_equal "$command" "\"$REPO_ROOT/bin/hooks/session-digest\""
   # The Stop hook stays beside it.
   assert_contains "$(jq -r '.hooks.Stop[].hooks[].command' "$settings")" "bin/hooks/stop-sweep"
-  # Run the command as Claude Code does, through a shell, with HOME's agent-team being this
-  # checkout.
-  ln -s "$REPO_ROOT" "$HOME/agent-team"
+  # Run the command as Claude Code does, through a shell.
   team_at_work
   guard_sandbox
   run -0 sh -c "$command" <<<'{"hook_event_name": "SessionStart", "source": "startup"}'

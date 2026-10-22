@@ -41,7 +41,7 @@ sessions() {
 
 # The launch command line: today's, plus this checkout's manual and the coordinator's skills.
 launch_argv() {
-  jq -cn --arg settings "$HOME/agent-team/coordinator.settings.json" --arg code "$REPO_ROOT" \
+  jq -cn --arg settings "$HOME/.local/state/agent-team/coordinator.settings.json" --arg code "$REPO_ROOT" \
     '["--bg", "--name", "coordinator",
     "--channels", "plugin:discord@claude-plugins-official",
     "--dangerously-skip-permissions",
@@ -82,6 +82,19 @@ assert_not_launched() {
   assert_equal "$manual" "$REPO_ROOT/roles/coordinator.md"
   assert_equal "$plugin" "$REPO_ROOT/plugins/coordinator-skills"
   [[ -f $manual && -f $plugin/.claude-plugin/plugin.json ]]
+}
+
+@test "its settings are the checkout's, with the hooks of the same checkout" {
+  run_bin -0 claude-coordinator
+  local settings=$HOME/.local/state/agent-team/coordinator.settings.json
+  assert_equal "$(jq -c . "$settings")" \
+    "$(jq -c --arg code "$REPO_ROOT" 'walk(if type == "string" then gsub("@TEAM_HOME@"; $code) else . end)' \
+      "$REPO_ROOT/coordinator.settings.json")"
+  assert_equal "$(jq -r '[.hooks[][].hooks[].command] | .[]' "$settings")" \
+    "\"$REPO_ROOT/bin/hooks/session-digest\""$'\n'"\"$REPO_ROOT/bin/hooks/stop-sweep\""
+  [[ -x $REPO_ROOT/bin/hooks/session-digest && -x $REPO_ROOT/bin/hooks/stop-sweep ]]
+  [[ $(cat "$settings") != *"@TEAM_HOME@"* ]]
+  assert_equal "$(find "${settings%/*}" -name '*.json.*')" ""
 }
 
 @test "it launches from the working directory it is given" {
