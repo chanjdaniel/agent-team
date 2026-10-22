@@ -5,6 +5,11 @@
 #        team-project <name> <key>    one value; a dotted key such as pool.provider works;
 #                                     strings print bare, lists and tables as JSON
 #        team-project --list          the project names, one per line, in file order
+#        team-project --find <key> <value>
+#                                     the projects whose key (dotted, as above) is the value, or
+#                                     holds it when a list, one per line; repo compares in any
+#                                     case, and path, pool.slots, pool.lease and pool.return by
+#                                     real path; a key no project has is refused
 #        team-project --check         check the whole file and list every problem
 # Paths in the file are relative to $HOME, except pool.lease and pool.return (relative to the
 # primary checkout) and task_dir and docs (relative to a worktree, so they stay relative).
@@ -18,7 +23,7 @@ import sys
 import tomllib
 
 NAME = os.path.basename(sys.argv[0])
-USAGE = "usage: team-project <name> [<key>] | --list | --check"
+USAGE = "usage: team-project <name> [<key>] | --list | --find <key> <value> | --check"
 
 # The keys of a project and of its pool, in the order problems are reported.
 PROJECT_STRINGS = ("repo", "path", "base", "delivery", "merge_method", "task_dir")
@@ -32,6 +37,8 @@ ENUMS = {
     "provider": ("treehouse", "git"),
 }
 RELATIVE_PATHS = ("path", "task_dir", "lease", "return")
+# The keys --find compares by real path, once resolved.
+ABSOLUTE_PATHS = ("path", "pool.slots", "pool.lease", "pool.return")
 
 
 def fail(message, status=1):
@@ -182,11 +189,34 @@ def lookup(name, project, dotted):
     return value
 
 
+# The names of the projects whose dotted key is value, or holds it when a list.
+def find(registry, home, dotted, value):
+    if dotted == "repo":
+        same = lambda held: held.casefold() == value.casefold()
+    elif dotted in ABSOLUTE_PATHS:
+        same = lambda held: os.path.realpath(held) == os.path.realpath(value)
+    else:
+        same = lambda held: held == value
+    found, known = [], False
+    for name, project in registry.items():
+        held = resolve(project, home)
+        for part in dotted.split("."):
+            held = held.get(part) if isinstance(held, dict) else None
+        if held is None:
+            continue
+        known = True
+        if any(isinstance(item, str) and same(item) for item in (held if isinstance(held, list) else [held])):
+            found.append(name)
+    if not known:
+        fail(f"no project has a key '{dotted}'")
+    return found
+
+
 def main(args):
     if args[:1] in (["--help"], ["-h"]):
         print_help()
         return
-    if args in (["--list"], ["--check"]):
+    if args in (["--list"], ["--check"]) or (args[:1] == ["--find"] and len(args) == 3):
         pass
     elif not 1 <= len(args) <= 2 or args[0].startswith("-"):
         fail(USAGE, 2)
@@ -197,6 +227,9 @@ def main(args):
         print(f"{path}: {len(registry)} projects ok")
     elif args[0] == "--list":
         print("\n".join(registry))
+    elif args[0] == "--find":
+        for name in find(registry, home, args[1], args[2]):
+            print(name)
     elif args[0] not in registry:
         fail(f"unknown project '{args[0]}'; known: {', '.join(registry)}")
     else:

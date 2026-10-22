@@ -49,12 +49,8 @@ g() { git -C "$worktree" "$@"; }
 # The project: the registered one whose primary checkout this worktree belongs to.
 primary=$(dirname "$(g rev-parse --path-format=absolute --git-common-dir)")
 primary=$(realpath -m -- "$primary")
-names=$(team_project --list) || exit 1
-project=''
-while IFS= read -r name; do
-  path=$(team_project "$name" path) || exit 1
-  if [[ $(realpath -m -- "$path") == "$primary" ]]; then project=$name; fi
-done <<<"$names"
+project=$(team_project --find path "$primary") || exit 1
+project=${project%%$'\n'*}
 [[ -n $project ]] || die "$worktree is a worktree of $primary, which is no project's primary checkout in projects.toml"
 base=$(team_project "$project" base) || exit 1
 

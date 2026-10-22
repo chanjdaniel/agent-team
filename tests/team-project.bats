@@ -88,6 +88,39 @@ registry() {
   assert_contains "$stderr" "alpha has no key 'base.name'; base is not a table"
 }
 
+@test "--find names the projects whose key holds a value: repo in any case, paths by their real path" {
+  run_bin -0 team-project --find repo owner/beta
+  assert_equal "$output" beta
+  run_bin -0 team-project --find repo Owner/ALPHA
+  assert_equal "$output" alpha
+  run_bin -0 team-project --find repo owner/gamma
+  assert_equal "$output" ""
+  run_bin -0 team-project --find base dev
+  assert_equal "$output" beta
+  run_bin -0 team-project --find required_checks test
+  assert_equal "$output" beta
+  run_bin -0 team-project --find delivery merge
+  assert_equal "$output" ""
+
+  # Paths: the primary checkout, a slot, a lease command, through a symlink and a trailing slash.
+  mkdir -p "$HOME/projects/alpha" "$HOME/.treehouse/alpha/2/alpha"
+  ln -s "$HOME/.treehouse/alpha" "$HOME/th"
+  run_bin -0 team-project --find path "$HOME/projects/alpha/"
+  assert_equal "$output" alpha
+  run_bin -0 team-project --find pool.slots "$HOME/th/2/alpha"
+  assert_equal "$output" alpha
+  run_bin -0 team-project --find pool.slots "$HOME/beta/.claude/worktrees/1"
+  assert_equal "$output" beta
+  run_bin -0 team-project --find pool.lease "$HOME/projects/alpha/scripts/lease.sh"
+  assert_equal "$output" alpha
+  # A primary checkout is not a slot.
+  run_bin -0 team-project --find pool.slots "$HOME/projects/alpha"
+  assert_equal "$output" ""
+
+  run_bin -1 team-project --find pool.color red
+  assert_contains "$output" "no project has a key 'pool.color'"
+}
+
 @test "a malformed command line is a usage error" {
   run_bin -2 team-project
   assert_contains "$output" "usage: team-project"
@@ -97,6 +130,9 @@ registry() {
   assert_contains "$output" "usage: team-project"
   run_bin -2 team-project --list extra
   assert_contains "$output" "usage: team-project"
+  run_bin -2 team-project --find repo
+  assert_contains "$output" "usage: team-project"
+  run_bin -2 team-project --find repo a b
 }
 
 @test "--help prints the header" {

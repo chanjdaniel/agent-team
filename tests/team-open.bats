@@ -77,10 +77,16 @@ advance_origin() {
   local plan=$TEAM_HOME/tasks/T1/plan.md
   assert_equal "$(sed -n 1p "$plan")" "# T1: Rate-limit sign-in & codes"
   assert_equal "$(sed -n 3p "$plan")" "High-level plan, by the coordinator, $(date +%F)."
-  assert_equal "$(sed -n 4p "$plan")" 'Project: proj, base `main`, branch `fix/T1-sign-in-limit`. Path: bug.'
+  assert_equal "$(sed -n 4p "$plan")" 'Project: proj, base `main`, branch `fix/T1-sign-in-limit`.'
+  assert_equal "$(sed -n 5p "$plan")" 'Path: bug.'
   assert_equal "$(grep '^## ' "$plan")" "$(printf '%s\n' '## Goal' '## Why' '## Scope' '## Acceptance criteria' '## Not in scope')"
   run grep -c '{{' "$plan"
   assert_equal "$output" "0"
+}
+
+@test "the plan is filled in one pass, so a title is never read for placeholders itself" {
+  run_bin -0 team-open proj small chore q-and-a 'Q&A {{date}} and {{task}}'
+  assert_equal "$(sed -n 1p "$TEAM_HOME/tasks/T1/plan.md")" '# T1: Q&A {{date}} and {{task}}'
 }
 
 @test "two runs in a row take the next two numbers and the next two slots" {

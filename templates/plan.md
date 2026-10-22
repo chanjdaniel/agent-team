@@ -1,7 +1,8 @@
 # {{task}}: {{title}}
 
 High-level plan, by the coordinator, {{date}}.
-Project: {{project}}, base `{{base}}`, branch `{{branch}}`. Path: {{path}}.
+Project: {{project}}, base `{{base}}`, branch `{{branch}}`.
+Path: {{path}}.
 
 ## Goal
 

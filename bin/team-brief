@@ -76,10 +76,8 @@ for key in "${fact_keys[@]}"; do
 done
 
 # The task must be open, and the brief is for one of its open worktrees.
-events=$(task_events "$task" | jq -s .)
+events=$(open_task_events "$task")
 opened=$(jq -c 'map(select(.event == "opened")) | first' <<<"$events")
-[[ $opened != null ]] || die "$task is not open: the ledger has no opened event for it"
-! jq -e 'any(.[]; .event == "closed")' <<<"$events" >/dev/null || die "$task is closed"
 
 # A path under $HOME, as ~/...
 tilde() {
@@ -147,12 +145,9 @@ if ((${#unused[@]})); then
   die "no placeholder in $template uses: $(printf '%s\n' "${unused[@]}" | sort | paste -sd ',' | sed 's/,/, /g')"
 fi
 
-# One pass over the template, so a value is never read for placeholders itself.
 args=()
 for key in "${used[@]}"; do args+=(--arg "$key" "${values[$key]}"); done
-values_json=$(jq -n '$ARGS.named' "${args[@]}")
-brief=$(jq -nr --arg text "$text" --argjson values "$values_json" \
-  '$text | gsub("\\{\\{(?<key>[a-z][a-z0-9_]*)\\}\\}"; $values[.key])')
+brief=$(render_template "$text" "$(jq -n '$ARGS.named' "${args[@]}")")
 
 file=$TEAM_HOME/tasks/$task/brief${name:+-$name}.md
 [[ -n $force || ! -e $file ]] || die "$file exists; pass --force to replace it, or --name <suffix> to write another brief"

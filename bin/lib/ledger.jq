@@ -111,6 +111,14 @@ def same_head($a; $b):
 
 # The following defs read a task's events, in ledger order, as an array.
 
+# The task's status: open (opened by team-open, not closed), closed, legacy (from before
+# team-open: events but no opened, not closed) or unknown (no events).
+def task_status:
+  if length == 0 then "unknown"
+  elif any(.[]; .event == "closed") then "closed"
+  elif any(.[]; .event == "opened") then "open"
+  else "legacy" end;
+
 # The task's PRs, one per repo, as {url, number, head}, in the order of their latest pr events. A
 # task has one branch per repo, so a later pr event in the same repo is that branch's new PR and
 # replaces the earlier one. A PR's head is its pr event's, moved by each later history-rewritten
@@ -299,9 +307,9 @@ def ledger_events:
 # Ledger events as an object of each task's events, keyed by task id.
 def by_task: group_by(.task) | map({key: .[0].task, value: .}) | from_entries;
 
-# Whether a task's events (an array, or null for a task not in the ledger) are an open task's:
-# it has events and no closed.
-def is_open: . != null and all(.[]; .event != "closed");
+# Whether a task's events (an array, or null for a task not in the ledger) are an open task's,
+# opened by team-open or legacy: it has events and no closed.
+def is_open: . != null and (task_status | IN("open", "legacy"));
 
 # The live sessions named like team workers (T<n>-<role>), from the session list and every
 # task's events by id: {task, role, name, session (the short id), status, state, logged (a launch

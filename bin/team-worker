@@ -51,17 +51,16 @@ common_dir=$(realpath -- "$(git -C "$worktree" rev-parse --path-format=absolute 
 # T0 is the load check, not a task: it has no ledger entry and stays out of the ledger.
 worktree_event=
 if [[ $task != T0 ]]; then
-  ledger=$TEAM_HOME/ledger.jsonl
-  events=()
-  [[ ! -e $ledger ]] || mapfile -t events < <(jq -r --arg t "$task" 'select(.task == $t) | .event' "$ledger")
-  has() { [[ " ${events[*]} " == *" $1 "* ]]; }
-  ! has closed || die "$task is closed"
+  events=$(task_events "$task" | jq -cs .)
+  status=$(task_status "$events")
+  [[ $status != closed ]] || die "$task is closed"
   # Every task has its Discord thread before any worker starts (bin/team-thread).
-  has thread || die "$task has no Discord thread; open one first with bin/team-thread"
+  jq -e 'any(.[]; .event == "thread")' <<<"$events" >/dev/null ||
+    die "$task has no Discord thread; open one first with bin/team-thread"
 
   # A task opened by team-open launches only in one of its open worktrees; tasks from before
   # team-open (no opened event) launch in any linked worktree.
-  if has opened; then
+  if [[ $status == open ]]; then
     open=
     while IFS= read -r line; do
       wt=$(jq -r .worktree <<<"$line")

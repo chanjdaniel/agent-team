@@ -13,10 +13,10 @@ setup() {
   assert_equal "$(stub_calls curl)" ""
 }
 
-@test "a task id that is not T<n> is refused" {
-  run_bin -1 team-thread 7 conventioner "Sign-in limits"
+@test "a task id that is not T<n> is a usage error" {
+  run_bin -2 team-thread 7 conventioner "Sign-in limits"
   assert_contains "$output" "task must look like T<n>, got '7'"
-  run_bin -1 team-thread T0 conventioner "Sign-in limits"
+  run_bin -2 team-thread T0 conventioner "Sign-in limits"
   assert_equal "$(stub_calls curl)" ""
   assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" ""
 }

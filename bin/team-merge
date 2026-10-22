@@ -43,8 +43,7 @@ done
 [[ -n $task ]] || usage_error "$usage"
 [[ $task =~ ^T[1-9][0-9]*$ ]] || usage_error "task must look like T<n>, got '$task'"
 
-events=$(task_events "$task" | jq -cs .)
-[[ $events != '[]' ]] || die "unknown task $task: the ledger has no events for it"
+events=$(known_task_events "$task")
 jq -e 'any(.[]; .event == "pr")' <<<"$events" >/dev/null || die "$task has no pr event, so there is no PR to merge"
 if [[ -z $url ]]; then
   pr=$(jq -c 'map(select(.event == "pr")) | last' <<<"$events")

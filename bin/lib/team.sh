@@ -5,8 +5,9 @@
 # It sets TEAM_HOME (the directory above bin/, unless TEAM_HOME is already set), answers
 # --help with the calling script's header (then runs the script's help_more, if it defined one
 # before sourcing), and provides die, usage_error, team_project, ledger_jq, ledger_append,
-# task_events, task_worktrees, worktree_changes, attribution_lines, strip_attribution,
-# live_sessions, discord_token, discord_api, github, pr_part and task_state_json, and sets
+# task_events, known_task_events, open_task_events, task_status, task_worktrees,
+# worktree_changes, render_template, attribution_lines, strip_attribution, live_sessions,
+# discord_token, discord_api, github, pr_part and task_state_json, and sets
 # COORDINATOR_CHANNEL.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
 # shellcheck shell=bash
@@ -61,6 +62,33 @@ task_events() {
     jq -cR --arg task "$1" 'fromjson? | select(type == "object" and .task == $task)' "$TEAM_HOME/ledger.jsonl"
 }
 
+# A task's events as one JSON array in ledger order, refusing a task the ledger has no events for:
+# known_task_events T<n>
+known_task_events() {
+  local events
+  events=$(task_events "$1" | jq -cs .)
+  [[ $events != '[]' ]] || die "unknown task $1: the ledger has no events for it"
+  printf '%s\n' "$events"
+}
+
+# A task's events as one JSON array in ledger order, refusing a task that is not open: one with
+# no opened event, or a closed one: open_task_events T<n>
+open_task_events() {
+  local events
+  events=$(task_events "$1" | jq -cs .)
+  case $(task_status "$events") in
+    open) printf '%s\n' "$events" ;;
+    closed) die "$1 is closed" ;;
+    *) die "$1 is not open: the ledger has no opened event for it" ;;
+  esac
+}
+
+# A task's status from its events (one JSON array): open, closed, legacy or unknown, as
+# task_status in ledger.jq tells it: task_status '<events>'
+task_status() {
+  ledger_jq task_status -r <<<"$1"
+}
+
 # Read the live session list (claude agents --json, a JSON array) into LIVE_SESSIONS, once per
 # run: later calls keep the first read.
 LIVE_SESSIONS=''
@@ -104,6 +132,14 @@ attribution_lines() {
 strip_attribution() {
   { LC_ALL=C grep -aEiv -- "$ATTRIBUTION_RE" || (($? == 1)); } |
     LC_ALL=C awk '{ line[NR] = $0 } END { n = NR; while (n > 0 && line[n] ~ /^[[:space:]]*$/) n--; for (i = 1; i <= n; i++) print line[i] }'
+}
+
+# A template's text with each {{key}} filled from the JSON object <values>, in one pass, so a
+# value is never read for placeholders itself; a key with no value stays as it is:
+# render_template <text> '<values>'
+render_template() {
+  jq -nr --arg text "$1" --argjson values "$2" \
+    '$text | gsub("\\{\\{(?<key>[a-z][a-z0-9_]*)\\}\\}"; $values[.key] // "{{\(.key)}}")'
 }
 
 # The Discord channel #coordinator, under which every task's thread is opened.
@@ -161,7 +197,7 @@ github() {
 # The pr part of a task's state: its latest pr event joined with GitHub, using <dir> for gh's
 # answers: pr_part '<events>' '<pr event>' <dir>
 pr_part() {
-  local events=$1 pr=$2 dir=$3 url project repo='' number name names required_checks='[]' facts
+  local events=$1 pr=$2 dir=$3 url project repo='' number required_checks='[]' facts
   url=$(jq -r .url <<<"$pr") || return 1
   project=$(jq -r '.project // empty' <<<"$pr") || return 1
   if [[ $url =~ ^https://github\.com/([^/]+/[^/]+)/pull/([0-9]+)/?$ ]]; then
@@ -172,13 +208,8 @@ pr_part() {
   fi
   if [[ -z $project ]]; then
     # A legacy pr event names no project: the registered project whose repo is the URL's.
-    names=$(team_project --list) || return 1
-    while IFS= read -r name; do
-      if [[ $(team_project "$name" repo | tr '[:upper:]' '[:lower:]') == "$(tr '[:upper:]' '[:lower:]' <<<"$repo")" ]]; then
-        project=$name
-        break
-      fi
-    done <<<"$names"
+    project=$(team_project --find repo "$repo") || return 1
+    project=${project%%$'\n'*}
   fi
   if [[ -n $project ]]; then
     repo=$(team_project "$project" repo) || return 1

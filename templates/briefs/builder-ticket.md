@@ -1,10 +1,12 @@
 # {{task}} brief (builder): ticket {{ticket}} of {{title}}
 
-Path: {{path}}; you are a builder, on one ticket only. The plan and spec are approved.
+Path: {{path}}; you are a builder, on one ticket only.
+The plan and spec are approved.
 Project: {{project}} (`{{repo}}`), base `{{base}}`.
 Worktree: `{{worktree}}`, branch `{{branch}}`.
 Task directory: `{{task_dir}}/` in the worktree (excluded from git): `spec.md`, `tickets/`, `build-notes/`.
-Your ticket: number {{ticket}} in `{{task_dir}}/tickets/`. Its blockers are done on this branch.
+Your ticket: number {{ticket}} in `{{task_dir}}/tickets/`.
+Its blockers are done on this branch.
 
 ## Do
 
@@ -16,4 +18,5 @@ Your ticket: number {{ticket}} in `{{task_dir}}/tickets/`. Its blockers are done
 
 ## Rules
 
-Stay inside your ticket. Never the em dash; refer to Daniel with they/them.
+Stay inside your ticket.
+Never the em dash; refer to Daniel with they/them.

@@ -86,19 +86,16 @@ fi
 mkdir -p "$TEAM_HOME/tasks"
 claimed=
 if [[ -n $add ]]; then
-  state=$(jq -nr --arg t "$task" '[inputs | select(.task == $t) | .event]
-    | if any(.[]; . == "closed") then "closed" elif any(.[]; . == "opened") then "open" else "" end' "$ledger")
-  [[ $state != closed ]] || die "$task is closed"
-  [[ $state == open ]] || die "$task is not open: the ledger has no opened event for it"
+  open_task_events "$task" >/dev/null
   held=$(task_worktrees "$task" | jq -r --arg p "$project" 'select(.project == $p) | "\(.worktree) (\(.branch))"')
   [[ -z $held ]] || die "$task already has an open worktree in $project: $held"
 elif [[ -n $task ]]; then
-  opened=$(jq -n --arg t "$task" '[inputs | select(.task == $t and .event == "opened")] | length' "$ledger")
-  ((opened == 0)) || die "$task is already open: the ledger has its opened event"
+  ! task_events "$task" | jq -se 'any(.[]; .event == "opened")' >/dev/null ||
+    die "$task is already open: the ledger has its opened event"
   mkdir -p "$TEAM_HOME/tasks/$task"
 else
   n=$({
-    jq -r '.task // empty' "$ledger"
+    ledger_jq 'ledger_events[].task' -nRr "$ledger"
     find "$TEAM_HOME/tasks" -mindepth 1 -maxdepth 1 -name 'T*' -printf '%f\n'
   } | sed -nE 's/^T([1-9][0-9]*)$/\1/p' | sort -n | tail -n 1)
   n=$((${n:-0} + 1))
@@ -271,11 +268,9 @@ if [[ -n $add ]]; then
 else
   plan=$TEAM_HOME/tasks/$task/plan.md
   if [[ ! -e $plan ]]; then
-    declare -A fields=([task]=$task [title]=$title [project]=$project [path]=$path [base]=$base
-      [branch]=$branch [date]=$(date +%F))
-    text=$(<"$templates/plan.md")
-    for key in "${!fields[@]}"; do text=${text//"{{$key}}"/"${fields[$key]}"}; done
-    printf '%s\n' "$text" >"$plan"
+    render_template "$(<"$templates/plan.md")" "$(jq -n --arg task "$task" --arg title "$title" \
+      --arg project "$project" --arg path "$path" --arg base "$base" --arg branch "$branch" \
+      --arg date "$(date +%F)" '$ARGS.named')" >"$plan"
   fi
 
   thread=$(TEAM_HOME=$TEAM_HOME "$bin/team-thread" "$task" "$project" "$title")
@@ -293,13 +288,13 @@ else
 fi
 
 # Overlap between tasks is the coordinator's judgment: show the project's other open tasks.
-others=$(ledger_jq '[inputs] as $events
-  | ($events | map(select(.event == "closed") | .task)) as $closed
-  | ($events | map(select(.event == "opened") | {(.task): .title}) | add // {}) as $titles
-  | open_worktrees($events[])
-  | select(.project == $project and .task != $task and (.task | IN($closed[]) | not))
-  | "  \(.task) \(.branch) in \(.worktree)\(if $titles[.task] then ": \($titles[.task])" else "" end)"' \
-  -nr --arg project "$project" --arg task "$task" "$ledger")
+others=$(ledger_jq 'ledger_events as $events
+  | ($events | by_task | with_entries(select(.value | is_open))) as $open
+  | open_worktrees($events[] | select($open[.task]))
+  | select(.project == $project and .task != $task)
+  | ($open[.task] | map(select(.event == "opened")) | first | .title) as $title
+  | "  \(.task) \(.branch) in \(.worktree)\(if $title then ": \($title)" else "" end)"' \
+  -nRr --arg project "$project" --arg task "$task" "$ledger")
 if [[ -n $others ]]; then
   printf 'team-open: other open tasks in %s:\n%s\n' "$project" "$others" >&2
 fi

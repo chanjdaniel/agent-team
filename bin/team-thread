@@ -9,9 +9,10 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
 [[ $# -eq 3 ]] || usage_error "usage: team-thread <task> <project> <title>"
 task=$1 project=$2 title=$3
-[[ $task =~ ^T[1-9][0-9]*$ ]] || die "task must look like T<n>, got '$task'"
+[[ $task =~ ^T[1-9][0-9]*$ ]] || usage_error "task must look like T<n>, got '$task'"
 
-if existing=$(jq -re --arg t "$task" 'select(.task == $t and .event == "thread") | .discord_thread' "$TEAM_HOME/ledger.jsonl" 2>/dev/null | tail -n 1); then
+existing=$(task_events "$task" | jq -r 'select(.event == "thread") | .discord_thread | strings' | tail -n 1)
+if [[ -n $existing ]]; then
   echo "$existing"
   exit 0
 fi
