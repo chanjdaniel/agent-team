@@ -44,6 +44,7 @@ Every command below answers `--help` with its exact usage; this manual says when
    When every ticket is done, one builder delivers with `builder-deliver --set goal=<the plan's goal, one line>`, which opens the PR through the project's gate.
 5. **Review.** On PR, launch a fresh reviewer with `team-brief T<n> reviewer --name review --set pr=<url> --set head=<full sha> --set-file checks=<file>`.
    Findings go back to the builder who still holds its context; after the fix, a fresh reviewer re-checks with `rereview` (`--name rereview-2`, and so on).
+   A reviewer writes to GitHub only through `team-review-comment` and `team-review-status`, the one comment and the `agent-review` status its settings allow.
 6. **Merge.** With the review passed and every check green, ask Daniel in the thread with the full PR URL.
    On Daniel's "merge it", log the message it came in with `team-log T<n> merge-approved url=<PR url> discord_message=<id>`, then run `team-merge T<n>` (`--pr <url>` for each PR of a task in two repos).
    Only a message sent since the PR's `pr` event counts, so ask again after a new PR.

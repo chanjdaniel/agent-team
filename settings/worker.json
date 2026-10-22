@@ -29,6 +29,8 @@
       "Bash(git *-c core.hookspath*)",
       "Bash(gh pr merge*)",
       "Bash(gh-axi pr merge*)",
+      "Bash(gh api*pulls/*/merge*)",
+      "Bash(gh api*git/refs*)",
       "Bash(vercel*)",
       "Bash(*mongodb+srv://*)",
       "Bash(*migrate_user_emails*)"

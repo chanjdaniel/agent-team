@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Set the agent-review status on a pull request's head: the reviewer's only way to set a status.
+# The script builds the whole gh call itself, so the reviewer's allow rule for it lets nothing else
+# through, as no glob over a raw gh api command can.
+#
+# Usage: team-review-status <pr url> <success|failure> <description>
+#   pr url       https://github.com/<owner>/<name>/pull/<n>, in a registered project's repo
+#   description  one line of at most 140 characters, GitHub's limit
+# The status goes on the head GitHub reports for the PR now, with context agent-review.
+# Refused, exit 2 with nothing set: any other command line; exit 1: a repo no project has, a head
+# that is not a commit sha, and a status GitHub refuses.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+[[ $# -eq 3 ]] || usage_error "usage: team-review-status <pr url> <success|failure> <description>"
+url=$1 state=$2 description=$3
+[[ $state == success || $state == failure ]] || usage_error "the state is success or failure, got '$state'"
+[[ -n $description && ! $description =~ [[:cntrl:]] ]] ||
+  usage_error "the description is one non-empty line"
+((${#description} <= 140)) || usage_error "the description is at most 140 characters, got ${#description}"
+pr=$(registered_pr "$url")
+{ read -r _ && read -r repo && read -r number; } <<<"$pr"
+
+head=$(gh pr view "$number" --repo "$repo" --json headRefOid --jq .headRefOid) ||
+  die "gh cannot read the head of $url"
+[[ $head =~ ^[0-9a-f]{40}$ ]] || die "the head GitHub gave for $url is not a commit sha: $head"
+gh api --method POST "repos/$repo/statuses/$head" \
+  -f state="$state" -f context=agent-review -f description="$description" >/dev/null ||
+  die "GitHub refused the status on $repo@$head"
+echo "agent-review $state on $repo@$head"

@@ -6,7 +6,7 @@
 # --help with the calling script's header (then runs the script's help_more, if it defined one
 # before sourcing), and provides die, usage_error, team_project, ledger_jq, ledger_append,
 # task_events, known_task_events, open_task_events, task_status, task_worktrees,
-# worktree_changes, non_records, commit_non_records, records_list, render_template,
+# worktree_changes, non_records, commit_non_records, records_list, render_template, registered_pr,
 # attribution_lines, strip_attribution, live_sessions, discord_token, discord_api, github, pr_part
 # and task_state_json, and sets COORDINATOR_CHANNEL.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
@@ -203,6 +203,19 @@ discord_api() {
 # team-project refuses a broken registry itself, with every problem on stderr.
 team_project() {
   TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-project" "$@"
+}
+
+# The project, its repo as the registry spells it, and the number of a pull request URL, one
+# per line, refusing any URL but https://github.com/<owner>/<name>/pull/<n> in a registered
+# project's repo: registered_pr <url>
+registered_pr() {
+  local project
+  [[ $1 =~ ^https://github\.com/([A-Za-z0-9-]+/[A-Za-z0-9._-]+)/pull/([1-9][0-9]*)$ ]] ||
+    usage_error "not a GitHub pull request URL: $1"
+  project=$(team_project --find repo "${BASH_REMATCH[1]}") || exit 1
+  [[ -n $project ]] || die "${BASH_REMATCH[1]} is no registered project's repo"
+  project=${project%%$'\n'*}
+  printf '%s\n' "$project" "$(team_project "$project" repo)" "${BASH_REMATCH[2]}"
 }
 
 # Run gh, keeping its JSON in <dir>/<name>: github <dir> <name> <gh arguments...>

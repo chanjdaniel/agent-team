@@ -104,6 +104,24 @@ assert_denies() {
   assert_denies 'Bash(git *-c core.hookspath*)' 'git -c core.hookspath= commit'
 }
 
+@test "a PR merge through gh api is denied to every session" {
+  assert_denies 'Bash(gh api*pulls/*/merge*)' \
+    'gh api repos/me/shop/pulls/5/merge -X PUT' \
+    'gh api -X PUT repos/me/shop/pulls/5/merge' \
+    'gh api repos/me/shop/pulls/5/merge -X PUT -f a=repos/x/statuses/y -f state=success -f context=agent-review'
+}
+
+@test "a ref written through gh api, a branch delete included, is denied to every worker" {
+  local command
+  jq -e '.permissions.deny | index("Bash(gh api*git/refs*)")' "$REPO_ROOT/settings/worker.json" >/dev/null
+  for command in \
+    'gh api repos/me/shop/git/refs/heads/dev -X DELETE' \
+    'gh api -X PATCH repos/me/shop/git/refs/heads/dev -f sha=a1b2c3d -F force=true' \
+    'gh api repos/me/shop/git/refs -f ref=refs/heads/x -f sha=a1b2c3d'; do
+    denied settings/worker.json "$command" || { echo "not denied: $command" >&2; return 1; }
+  done
+}
+
 @test "plain commits, pushes, config and searches for the rules' words stay allowed for every session" {
   local file command
   for file in "${SETTINGS[@]}"; do
@@ -119,38 +137,57 @@ git push -u origin feat/T1-x
 git config user.name "x"
 git grep -n core.hooksPath
 git log -S core.hooksPath
+gh pr view https://github.com/me/shop/pull/5 --json headRefOid
+gh pr checks https://github.com/me/shop/pull/5 --watch
+gh api repos/me/shop/pulls/5/comments
 COMMANDS
   done
 }
 
-# Whether one of the Bash allow rules in settings/reviewer.json matches <command>:
-# reviewer_allows <command>
+# Whether one of the Bash allow rules in settings/reviewer.json, with @TEAM_HOME@ as team-worker
+# renders it (this checkout), matches <command>: reviewer_allows <command>
+# Claude Code checks each part of a compound command (;, &&, |) on its own, so a rule's * never
+# lets a second command ride along; this model checks one simple command.
 reviewer_allows() {
   local rule
   while IFS= read -r rule; do
-    rule_matches "$rule" "$1" && return 0
+    rule_matches "${rule//@TEAM_HOME@/$REPO_ROOT}" "$1" && return 0
   done < <(jq -r '.permissions.allow[]' "$REPO_ROOT/settings/reviewer.json")
   return 1
 }
 
-@test "the reviewer may set the agent-review status and post its comment, and no other gh write" {
+@test "the reviewer's allow rules are the agent-review status and the review comment scripts only" {
   assert_equal "$(jq -r '.permissions.allow[]' "$REPO_ROOT/settings/reviewer.json")" \
-    'Bash(gh api repos/*/statuses/* -f state=success -f context=agent-review -f description=*)
-Bash(gh api repos/*/statuses/* -f state=failure -f context=agent-review -f description=*)
-Bash(gh pr comment * --body-file *)'
-  # The commands as templates/briefs/reviewer.md and rereview.md render them.
+    'Bash(@TEAM_HOME@/bin/team-review-status *)
+Bash(@TEAM_HOME@/bin/team-review-comment *)'
+  # The commands as templates/briefs/reviewer.md and rereview.md give them, team_bin being
+  # this checkout's bin/ in full.
   local brief
   for brief in reviewer rereview; do
-    grep -qF 'gh api repos/{{repo}}/statuses/{{head}} -f state=<success|failure> -f context=agent-review -f description="<one line>"' \
+    grep -qF '`{{team_bin}}/team-review-status {{pr}} <success|failure> "<one line, at most 140 characters>"`' \
       "$REPO_ROOT/templates/briefs/$brief.md"
+    grep -qF '`{{team_bin}}/team-review-comment {{pr}} {{task_dir}}/' "$REPO_ROOT/templates/briefs/$brief.md"
   done
-  reviewer_allows 'gh api repos/me/shop/statuses/a1b2c3d -f state=success -f context=agent-review -f description="no blocking findings"'
-  reviewer_allows 'gh api repos/me/shop/statuses/a1b2c3d -f state=failure -f context=agent-review -f description="1 blocking"'
-  reviewer_allows 'gh pr comment https://github.com/me/shop/pull/5 --body-file /home/me/wt/.scratch/task/review.md'
-  run -1 reviewer_allows 'gh api repos/me/shop/statuses/a1b2c3d -f state=success -f context=ci -f description=x'
-  run -1 reviewer_allows 'gh api repos/me/shop/pulls/5/merge -X PUT'
-  run -1 reviewer_allows 'gh pr comment https://github.com/me/shop/pull/5 --body "x"'
-  run -1 reviewer_allows 'gh pr merge https://github.com/me/shop/pull/5'
+  reviewer_allows "$REPO_ROOT/bin/team-review-status https://github.com/me/shop/pull/5 success \"no blocking findings\""
+  reviewer_allows "$REPO_ROOT/bin/team-review-comment https://github.com/me/shop/pull/5 .scratch/task/review.md"
+}
+
+@test "the reviewer's allow rules let no raw gh write through, statuses in the command or not" {
+  local command
+  while IFS= read -r command; do
+    if reviewer_allows "$command"; then echo "the reviewer may run: $command" >&2; return 1; fi
+  done <<'COMMANDS'
+gh api repos/me/shop/pulls/5/merge -X PUT -f a=repos/x/statuses/y -f state=success -f context=agent-review -f description=x
+gh api repos/me/shop/git/refs/heads/dev -X DELETE -F x=repos/a/statuses/b -f state=success -f context=agent-review -f description=x
+gh api repos/me/shop/statuses/a1b2c3d -f state=success -f context=agent-review -f description=x
+gh api repos/me/shop/statuses/a1b2c3d -f state=success -f context=ci -f description=x
+gh api repos/me/shop/pulls/5/merge -X PUT
+gh pr comment https://github.com/me/shop/pull/5 --body-file review.md
+gh pr comment https://github.com/me/shop/pull/5 --repo someone/else --body-file review.md
+gh pr merge https://github.com/me/shop/pull/5
+team-review-status https://github.com/me/shop/pull/5 success x
+/elsewhere/bin/team-review-status https://github.com/me/shop/pull/5 success x
+COMMANDS
 }
 
 @test "the dev-records workflow's paths-ignore lists exactly bin/lib/records' globs" {
