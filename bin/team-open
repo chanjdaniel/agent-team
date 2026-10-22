@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+# Open a task: its number, plan, worktree from the project's pool, Discord thread and ledger entry.
+#
+# Usage: team-open [--task T<n>] <project> <path> <type> <slug> <title...>
+#   project  a project in projects.toml (team-project --list)
+#   path     feature | bug | small | research
+#   type     the branch prefix: feat | fix | docs | chore | build | ci | test | refactor | perf | research
+#   slug     lower-case kebab case, at most 40 characters; the branch is <type>/T<n>-<slug>
+# Without --task, claims the next task number by creating tasks/T<n>/. With --task, opens that
+# task, keeping an existing tasks/T<n>/plan.md, and refuses a task that already has an opened
+# event; after a failure, re-running with --task finishes the half-open task in the slot that
+# holds its branch.
+# Fetches the base in the primary checkout, adds the first free trusted slot as a worktree on the
+# branch from origin/<base> (no upstream), makes the task directory (refused, and the slot removed
+# again, unless git ignores it), writes tasks/T<n>/plan.md from templates/plan.md, opens the thread
+# (team-thread) and appends opened. Prints the task's facts as JSON; the project's other open
+# tasks go to stderr. Exit 75 when every slot is taken, listing the slots and who holds them.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+bin=$(dirname "$TEAM_LIB")
+templates=$(dirname "$bin")/templates
+ledger=$TEAM_HOME/ledger.jsonl
+usage="usage: team-open [--task T<n>] <project> <path> <type> <slug> <title...>"
+
+task=
+if [[ ${1:-} == --task ]]; then
+  [[ $# -ge 2 ]] || usage_error "$usage"
+  task=$2
+  shift 2
+  [[ $task =~ ^T[1-9][0-9]*$ ]] || usage_error "task must look like T<n>, got '$task'"
+fi
+[[ $# -ge 5 ]] || usage_error "$usage"
+project=$1 path=$2 type=$3 slug=$4
+shift 4
+title="$*"
+[[ $path =~ ^(feature|bug|small|research)$ ]] ||
+  usage_error "path must be feature, bug, small or research, got '$path'"
+[[ $type =~ ^(feat|fix|docs|chore|build|ci|test|refactor|perf|research)$ ]] ||
+  usage_error "type must be feat, fix, docs, chore, build, ci, test, refactor, perf or research, got '$type'"
+[[ $slug =~ ^[a-z0-9]+(-[a-z0-9]+)*$ && ${#slug} -le 40 ]] ||
+  usage_error "slug must be lower-case kebab case of at most 40 characters, got '$slug'"
+[[ $title =~ [^[:space:]] ]] || usage_error "$usage"
+
+team_project() {
+  TEAM_HOME=$TEAM_HOME "$bin/team-project" "$@"
+}
+
+# team-project refuses a broken registry itself, with every problem on stderr.
+projects=$(team_project --list)
+grep -qxF -- "$project" <<<"$projects" ||
+  usage_error "unknown project '$project'; known: $(jq -Rnr '[inputs] | join(", ")' <<<"$projects")"
+facts=$(team_project "$project")
+primary=$(jq -r .path <<<"$facts")
+base=$(jq -r .base <<<"$facts")
+task_dir=$(jq -r .task_dir <<<"$facts")
+provider=$(jq -r .pool.provider <<<"$facts")
+mapfile -t slots < <(jq -r '.pool.slots[]' <<<"$facts")
+[[ $provider == git ]] || die "team-open does not take worktrees from a $provider pool yet"
+git -C "$primary" rev-parse --git-dir >/dev/null 2>&1 || die "the primary checkout $primary is not a git checkout"
+
+# The task number. Creating tasks/T<n>/ is the claim, so two runs never take the same number.
+mkdir -p "$TEAM_HOME/tasks"
+claimed=
+if [[ -n $task ]]; then
+  opened=$(jq -n --arg t "$task" '[inputs | select(.task == $t and .event == "opened")] | length' "$ledger")
+  ((opened == 0)) || die "$task is already open: the ledger has its opened event"
+  mkdir -p "$TEAM_HOME/tasks/$task"
+else
+  n=$({
+    jq -r '.task // empty' "$ledger"
+    find "$TEAM_HOME/tasks" -mindepth 1 -maxdepth 1 -name 'T*' -printf '%f\n'
+  } | sed -nE 's/^T([1-9][0-9]*)$/\1/p' | sort -n | tail -n 1)
+  n=$((${n:-0} + 1))
+  while ! mkdir "$TEAM_HOME/tasks/T$n" 2>/dev/null; do
+    [[ -e $TEAM_HOME/tasks/T$n ]] || die "cannot create $TEAM_HOME/tasks/T$n"
+    n=$((n + 1))
+  done
+  task=T$n claimed=1
+fi
+branch=$type/$task-$slug
+
+# On failure, a number this run claimed is given back while nothing holds it yet; once a slot
+# holds the task's branch, the task is half open and re-running with --task finishes it.
+worktree=
+on_exit() {
+  local status=$?
+  ((status != 0)) || return 0
+  if [[ -z $worktree ]]; then
+    [[ -z $claimed ]] || rmdir "$TEAM_HOME/tasks/$task" 2>/dev/null || true
+    return 0
+  fi
+  echo "team-open: $task is half open in $worktree; finish it with:" \
+    "team-open --task $task $project $path $type $slug $(printf '%q' "$title")" >&2
+}
+trap on_exit EXIT
+
+git -C "$primary" fetch -q origin "$base" || die "cannot fetch $base from origin in $primary"
+
+# The primary checkout's registered worktrees: real path -> checked-out branch ("" when detached).
+declare -A holds=()
+while IFS=$'\t' read -r wt wt_branch; do
+  holds[$(realpath -m -- "$wt")]=$wt_branch
+done < <(git -C "$primary" worktree list --porcelain | awk '
+  /^worktree / { if (path != "") print path "\t" branch; path = substr($0, 10); branch = "" }
+  /^branch refs\/heads\// { branch = substr($0, 19) }
+  END { if (path != "") print path "\t" branch }')
+
+# The slot already holding the task's branch (the resume case), else the first free slot.
+added=
+for slot in "${slots[@]}"; do
+  if [[ ${holds[$(realpath -m -- "$slot")]-} == "$branch" ]]; then worktree=$slot; fi
+done
+if [[ -z $worktree ]]; then
+  for wt in "${!holds[@]}"; do
+    [[ ${holds[$wt]} != "$branch" ]] || die "$branch is checked out in $wt, which is not one of $project's slots"
+  done
+  ! git -C "$primary" show-ref -q --verify "refs/heads/$branch" ||
+    die "branch $branch already exists in $primary but no slot holds it"
+  free=
+  for slot in "${slots[@]}"; do
+    if [[ ! -v holds[$(realpath -m -- "$slot")] ]]; then free=$slot && break; fi
+  done
+  if [[ -z $free ]]; then
+    echo "team-open: every slot of $project is taken:" >&2
+    for slot in "${slots[@]}"; do
+      wt_branch=${holds[$(realpath -m -- "$slot")]}
+      holder=$(sed -nE 's#^[^/]+/(T[1-9][0-9]*)-.*#\1#p' <<<"$wt_branch")
+      echo "  $slot: ${holder:-no task} (${wt_branch:-detached HEAD})" >&2
+    done
+    exit 75
+  fi
+  git -C "$primary" worktree add -q --no-track -b "$branch" "$free" "origin/$base" ||
+    die "cannot add $free as a worktree of $primary"
+  worktree=$free added=1
+fi
+base_sha=$(git -C "$worktree" merge-base HEAD "origin/$base")
+
+# The task directory must never be committed: refuse a project whose git does not ignore it.
+mkdir -p "$worktree/$task_dir"
+if ! git -C "$worktree" check-ignore -q -- "$task_dir"; then
+  if [[ -n $added ]]; then
+    git -C "$primary" worktree remove --force "$worktree"
+    git -C "$primary" branch -q -D "$branch"
+    worktree=
+  fi
+  die "git does not ignore $task_dir in $project; add it to the project's .gitignore first"
+fi
+
+plan=$TEAM_HOME/tasks/$task/plan.md
+if [[ ! -e $plan ]]; then
+  declare -A fields=([task]=$task [title]=$title [project]=$project [path]=$path [base]=$base
+    [branch]=$branch [date]=$(date +%F))
+  text=$(<"$templates/plan.md")
+  for key in "${!fields[@]}"; do text=${text//"{{$key}}"/"${fields[$key]}"}; done
+  printf '%s\n' "$text" >"$plan"
+fi
+
+thread=$(TEAM_HOME=$TEAM_HOME "$bin/team-thread" "$task" "$project" "$title")
+
+ledger_append "$(jq -cn --arg task "$task" --arg project "$project" --arg path "$path" --arg type "$type" \
+  --arg title "$title" --arg branch "$branch" --arg base "$base" --arg base_sha "$base_sha" --arg worktree "$worktree" \
+  '{ts: (now | todate), task: $task, event: "opened", project: $project, path: $path, type: $type,
+    title: $title, branch: $branch, base: $base, base_sha: $base_sha, worktree: $worktree}')"
+
+jq -n --arg task "$task" --arg project "$project" --arg path "$path" --arg title "$title" --arg branch "$branch" \
+  --arg base "$base" --arg base_sha "$base_sha" --arg worktree "$worktree" --arg task_dir "$worktree/$task_dir" \
+  --arg thread "$thread" --arg plan "$plan" \
+  '{task: $task, project: $project, path: $path, title: $title, branch: $branch, base: $base,
+    base_sha: $base_sha, worktree: $worktree, task_dir: $task_dir, thread: $thread, plan: $plan}'
+
+# Overlap between tasks is the coordinator's judgment: show the project's other open tasks.
+others=$(jq -nr --arg project "$project" --arg task "$task" '
+  reduce (inputs | select(.task != $task)) as $e ({};
+    if ($e.event == "opened" or $e.event == "worktree-added") and $e.project == $project then
+      .[$e.task] //= "\($e.branch) in \($e.worktree)\(if $e.title then ": \($e.title)" else "" end)"
+    elif $e.event == "closed" then del(.[$e.task])
+    else . end)
+  | to_entries[] | "  \(.key) \(.value)"' "$ledger")
+if [[ -n $others ]]; then
+  printf 'team-open: other open tasks in %s:\n%s\n' "$project" "$others" >&2
+fi
