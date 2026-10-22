@@ -61,10 +61,17 @@ assert_denies() {
   done
 }
 
-@test "the git hooks' deny rule: --no-verify, on any git command" {
-  assert_denies 'Bash(git *--no-verify*)' 'git commit --no-verify -m "x"' \
-    'git commit -a -m "x" --no-verify' 'git push --no-verify origin feat/T1-x' \
-    'git push -u origin feat/T1-x --no-verify' 'git -C /home/me/agent-team commit --no-verify'
+# The deny rules are a speed bump, not the guard: git's hooks and the Dev records workflow are
+# (CLAUDE.md). Each rule matches the commands it is for; the commands below them stay allowed.
+
+@test "the git hooks' deny rule: --no-verify last, on any git command" {
+  assert_denies 'Bash(git * --no-verify)' 'git commit --no-verify' 'git commit -a -m "x" --no-verify' \
+    'git push -u origin feat/T1-x --no-verify'
+}
+
+@test "the git hooks' deny rule: --no-verify before more arguments, on any git command" {
+  assert_denies 'Bash(git * --no-verify *)' 'git commit --no-verify -m "x"' \
+    'git push --no-verify origin feat/T1-x' 'git -C /home/me/agent-team commit --no-verify -m "x"'
 }
 
 @test "the git hooks' deny rule: git commit -n first" {
@@ -75,22 +82,29 @@ assert_denies() {
   assert_denies 'Bash(git commit * -n)' 'git commit -m "x" -n'
 }
 
-@test "the git hooks' deny rule: git commit -n between options" {
-  assert_denies 'Bash(git commit * -n *)' 'git commit -a -n -m "x"'
+@test "the git hooks' deny rule: git commit -n before another option" {
+  assert_denies 'Bash(git commit * -n -*)' 'git commit -a -n -m "x"'
 }
 
-@test "the git hooks' deny rule: core.hooksPath, set, unset or overridden" {
-  assert_denies 'Bash(git *core.hooksPath*)' 'git -c core.hooksPath=/dev/null commit -m "x"' \
-    'git -C /home/me/agent-team -c core.hooksPath= commit -m "x"' \
-    'git config core.hooksPath /dev/null' 'git config --unset core.hooksPath' \
-    'git -C /home/me/agent-team config core.hooksPath x'
+@test "the git hooks' deny rule: git config of core.hooksPath, set or unset" {
+  assert_denies 'Bash(git *config*core.hooksPath*)' 'git config core.hooksPath /dev/null' \
+    'git config --unset core.hooksPath' 'git -C /home/me/agent-team config core.hooksPath x'
 }
 
-@test "the git hooks' deny rule: core.hookspath, the same key in git's lower case" {
-  assert_denies 'Bash(git *core.hookspath*)' 'git config core.hookspath x' 'git -c core.hookspath= commit'
+@test "the git hooks' deny rule: git config of core.hookspath, the same key in git's lower case" {
+  assert_denies 'Bash(git *config*core.hookspath*)' 'git config core.hookspath x'
 }
 
-@test "plain commits, pushes and config stay allowed for every session" {
+@test "the git hooks' deny rule: core.hooksPath overridden for one command" {
+  assert_denies 'Bash(git *-c core.hooksPath*)' 'git -c core.hooksPath=/dev/null commit -m "x"' \
+    'git -C /home/me/agent-team -c core.hooksPath= commit -m "x"'
+}
+
+@test "the git hooks' deny rule: core.hookspath overridden for one command, in git's lower case" {
+  assert_denies 'Bash(git *-c core.hookspath*)' 'git -c core.hookspath= commit'
+}
+
+@test "plain commits, pushes, config and searches for the rules' words stay allowed for every session" {
   local file command
   for file in "${SETTINGS[@]}"; do
     while IFS= read -r command; do
@@ -99,8 +113,12 @@ assert_denies() {
 git commit -m "fix: x"
 git commit -am "x"
 git commit --no-edit
+git commit -m "docs: deny --no-verify"
+git commit -m "fix: the -n flag"
 git push -u origin feat/T1-x
 git config user.name "x"
+git grep -n core.hooksPath
+git log -S core.hooksPath
 COMMANDS
   done
 }

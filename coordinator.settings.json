@@ -9,12 +9,15 @@
       "Bash(gh pr merge*)",
       "Bash(gh-axi pr merge*)",
       "Bash(gh api*pulls/*/merge*)",
-      "Bash(git *--no-verify*)",
+      "Bash(git * --no-verify)",
+      "Bash(git * --no-verify *)",
       "Bash(git commit -n*)",
       "Bash(git commit * -n)",
-      "Bash(git commit * -n *)",
-      "Bash(git *core.hooksPath*)",
-      "Bash(git *core.hookspath*)"
+      "Bash(git commit * -n -*)",
+      "Bash(git *config*core.hooksPath*)",
+      "Bash(git *config*core.hookspath*)",
+      "Bash(git *-c core.hooksPath*)",
+      "Bash(git *-c core.hookspath*)"
     ]
   },
   "hooks": {
