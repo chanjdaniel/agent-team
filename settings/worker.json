@@ -4,6 +4,7 @@
     "mongodb-atlas@claude-plugins-official": false
   },
   "disableClaudeAiConnectors": true,
+  "isolatePeerMachines": true,
   "permissions": {
     "deny": [
       "Bash(git push --force*)",

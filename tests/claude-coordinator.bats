@@ -1,9 +1,11 @@
 #!/usr/bin/env bats
-# bin/claude-coordinator: one coordinator at a time, launched as before.
+# bin/claude-coordinator: one coordinator at a time, only on the lease holder, launched as before.
 load helpers/common
 
 setup() {
   sandbox
+  # This machine, home-pc, holds the lease; make_machine laptop builds the other one.
+  hold_lease home-pc >/dev/null
   lock=$HOME/.local/state/agent-team/coordinator-launch.lock
   mkdir -p "$HOME/agent-team"
   # claude answers `agents` from $BATS_TEST_TMPDIR/sessions.json; a launch records its cwd and
@@ -97,6 +99,7 @@ assert_not_launched() {
     "\"$REPO_ROOT/bin/hooks/session-digest\""$'\n'"\"$REPO_ROOT/bin/hooks/stop-sweep\""
   [[ -x $REPO_ROOT/bin/hooks/session-digest && -x $REPO_ROOT/bin/hooks/stop-sweep ]]
   [[ $(cat "$settings") != *"@TEAM_HOME@"* ]]
+  assert_equal "$(jq .isolatePeerMachines "$settings")" true
   assert_equal "$(find "${settings%/*}" -name '*.json.*')" ""
 }
 
@@ -182,9 +185,67 @@ assert_not_launched() {
   run_bin -3 claude-coordinator
 }
 
-@test "the comment for T6's lease check comes before the launch" {
-  local comment launch
-  comment=$(grep -n "T6" "$REPO_ROOT/bin/claude-coordinator" | grep -i lease | tail -n 1 | cut -d: -f1)
-  launch=$(grep -n "claude --bg" "$REPO_ROOT/bin/claude-coordinator" | tail -n 1 | cut -d: -f1)
-  [[ -n $comment && -n $launch && $comment -lt $launch ]]
+@test "with the lease held by the other machine it refuses, naming the holder and the next step" {
+  make_machine laptop
+  run_bin -0 team-lease release
+  on_machine laptop run_bin -0 team-lease take
+  run_bin -1 --separate-stderr claude-coordinator
+  assert_equal "$output" ""
+  assert_contains "$stderr" "team-lease: home-pc no longer holds the lease: laptop holds it (epoch 2"
+  assert_contains "$stderr" "claude-coordinator: laptop holds the lease: hand off there, then team-resume here"
+  assert_not_launched
+  [[ ! -e $HOME/.local/state/agent-team/coordinator.settings.json ]]
+}
+
+@test "with GitHub unreachable it refuses: a coordinator never starts offline" {
+  git -C "$TEAM_HOME" remote set-url origin https://127.0.0.1:9/agent-team.git
+  run_bin -1 --separate-stderr claude-coordinator
+  assert_contains "$stderr" "team-lease: GitHub is unreachable"
+  assert_contains "$stderr" "claude-coordinator: GitHub unreachable; a coordinator never starts offline"
+  assert_not_launched
+}
+
+@test "with the lease released, or held at an epoch this machine has no record of, it refuses with the lease's reason" {
+  run_bin -0 team-lease release
+  run_bin -1 --separate-stderr claude-coordinator
+  assert_contains "$stderr" "team-lease: the lease is released (last held by home-pc, epoch 1); take it with team-lease take"
+  assert_contains "$stderr" "claude-coordinator: a coordinator starts only on the machine that holds the lease"
+  assert_not_launched
+
+  run_bin -0 team-lease take
+  rm "$HOME/.local/state/agent-team/lease.json"
+  run_bin -1 --separate-stderr claude-coordinator
+  assert_contains "$stderr" "but this machine has no record of taking it"
+  assert_contains "$stderr" "claude-coordinator: a coordinator starts only on the machine that holds the lease"
+  assert_not_launched
+}
+
+@test "without a team name for this machine it refuses" {
+  rm "$HOME/.config/agent-team/machine"
+  run_bin -1 --separate-stderr claude-coordinator
+  assert_contains "$stderr" "this machine has no team name"
+  assert_not_launched
+}
+
+@test "the lease is checked under the launch lock, and no git the check runs inherits the lock's file" {
+  local real_git
+  real_git=$(command -v git)
+  # git, first on PATH: records whether the launch lock is held and whether it has the lock's
+  # file open, then runs the real git.
+  {
+    echo '#!/usr/bin/env bash'
+    printf 'lock=%q calls=%q real=%q\n' "$lock" "$STUB_CALLS/git.lock" "$real_git"
+    cat <<'SH'
+for fd in /dev/fd/*; do
+  if [[ $(stat -L -c %d:%i "$fd" 2>/dev/null) == "$(stat -c %d:%i "$lock")" ]]; then
+    echo "git inherited the lock" >>"$calls"
+  fi
+done
+if flock -n "$lock" true; then echo "git: lock free" >>"$calls"; else echo "git: lock held" >>"$calls"; fi
+exec "$real" "$@"
+SH
+  } >"$BATS_TEST_TMPDIR/stubs/git"
+  chmod +x "$BATS_TEST_TMPDIR/stubs/git"
+  run_bin -0 claude-coordinator
+  assert_equal "$(sort -u "$STUB_CALLS/git.lock")" "git: lock held"
 }

@@ -7,9 +7,9 @@
 # --help with the calling script's header (then runs the script's help_more, if it defined one
 # before sourcing), and provides die, usage_error, team_project, ledger_jq, ledger_append,
 # task_events, known_task_events, open_task_events, task_status, task_worktrees, local_path,
-# machine_name, worktree_changes, render_template, attribution_lines, strip_attribution,
-# live_sessions, discord_token, discord_api, github, pr_part and task_state_json, and sets
-# COORDINATOR_CHANNEL.
+# machine_name, lease_gate, worktree_changes, render_template, attribution_lines,
+# strip_attribution, live_sessions, discord_token, discord_api, github, pr_part and
+# task_state_json, and sets COORDINATOR_CHANNEL.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
 # shellcheck shell=bash
 
@@ -131,6 +131,22 @@ machine_name() {
     return 1
   fi
   printf '%s\n' "$name"
+}
+
+# Refuse to start <what> ("a coordinator", "a worker") unless this machine holds the lease,
+# confirmed against origin by team-lease check, whose reason comes first on stderr: the team runs
+# on the lease holder alone, and never starts offline.
+lease_gate() {
+  local lease=$TEAM_LIB/../team-lease rc=0 holder
+  TEAM_HOME=$TEAM_HOME "$lease" check >/dev/null || rc=$?
+  case $rc in
+    0) return 0 ;;
+    75) die "GitHub unreachable; $1 never starts offline" ;;
+  esac
+  holder=$(TEAM_HOME=$TEAM_HOME "$lease" status --json 2>/dev/null |
+    jq -r 'select(.confirmed and .state == "held" and (.mine | not)) | .holder') || holder=''
+  [[ -z $holder ]] || die "$holder holds the lease: hand off there, then team-resume here"
+  die "$1 starts only on the machine that holds the lease"
 }
 
 # What is not committed in the worktree <wt>, one line per kind, nothing when it is clean (files

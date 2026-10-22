@@ -4,6 +4,7 @@
     "mongodb-atlas@claude-plugins-official": false
   },
   "crossSessionInbound": "accept",
+  "isolatePeerMachines": true,
   "permissions": {
     "deny": [
       "Bash(gh pr merge*)",

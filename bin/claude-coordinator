@@ -13,6 +13,10 @@
 # commands) naming this checkout, written to ~/.local/state/agent-team/coordinator.settings.json;
 # the manual, the skills, the settings and the hooks all come from this script's checkout.
 #
+# Only on the lease holder: it refuses (exit 1) unless `team-lease check` confirms against origin
+# that this machine holds the lease, naming the holder, or saying a coordinator never starts
+# offline when GitHub is unreachable.
+#
 # Only one coordinator: it refuses (exit 1, naming the session id) while `claude agents --json`
 # lists a live session named coordinator, so the ledger keeps one writer and Discord one
 # listener. A non-blocking flock on ~/.local/state/agent-team/coordinator-launch.lock, held from
@@ -39,7 +43,8 @@ live=$(jq -r 'map(select(.name == "coordinator")) | first
   | if . then .id // ((.sessionId // "")[:8]) else empty end' <<<"$LIVE_SESSIONS")
 [[ -z $live ]] || die "a coordinator is already live: session $live; stop it with claude stop $live first"
 
-# T6's lease check goes here, before the launch.
+# The lock's file is closed for team-lease, so no helper its git leaves running holds it.
+lease_gate "a coordinator" {lock_fd}>&-
 
 # The settings, with the hooks of this checkout; written whole, then moved into place.
 settings=$state/coordinator.settings.json

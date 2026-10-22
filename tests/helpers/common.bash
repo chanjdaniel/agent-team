@@ -111,6 +111,16 @@ make_team_home() {
   echo "$origin"
 }
 
+# Make the sandbox's team home a clone of a bare origin (make_team_home) and take the lease as
+# this machine, named <name> (default home-pc), so the team's sessions may launch here; prints
+# the origin's path.
+hold_lease() {
+  local origin
+  origin=$(make_team_home "${1:-home-pc}")
+  "$REPO_ROOT/bin/team-lease" take >/dev/null
+  echo "$origin"
+}
+
 # Build a second machine named <name> (make_team_home first): its own HOME, with this HOME's git
 # identity and Discord token and its own machine name, its own team home cloned from the team
 # home's origin, and a clone at <its HOME>/projects/<repo> of every other bare origin made so

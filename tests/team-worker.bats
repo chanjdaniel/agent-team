@@ -1,11 +1,13 @@
 #!/usr/bin/env bats
-# team-worker: starting a worker as a background session, only in one of its task's open
-# worktrees, with its role's settings, and logging the launch.
+# team-worker: starting a worker as a background session, only on the lease holder and in one of
+# its task's open worktrees, with its role's settings, and logging the launch.
 
 load helpers/common
 
 setup() {
   sandbox
+  # This machine, home-pc, holds the lease; make_machine laptop builds the other one.
+  hold_lease home-pc >/dev/null
   primary=$(make_repo proj)
   wt1=$HOME/slots/proj/1 wt2=$HOME/slots/proj/2
   git -C "$primary" worktree add -q -b feat/T7-one "$wt1"
@@ -170,7 +172,10 @@ run_fake() {
   assert_equal "$(launches)" ""
 }
 
-@test "T0, the load check, needs no thread and is not logged" {
+@test "T0, the load check, needs no thread and no lease, and is not logged" {
+  # No lease anywhere: no origin to read one from, and no team name to hold one under.
+  git -C "$TEAM_HOME" remote remove origin
+  rm "$HOME/.config/agent-team/machine"
   run_bin -0 team-worker T0 planner "$wt1" -- go
   assert_equal "$output" "4f2a9c1e"
   assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" ""
@@ -180,7 +185,7 @@ run_fake() {
   thread T7
   run_bin -0 team-worker T7 builder "$wt2" -- go
   assert_equal "$(launches)" \
-    "$(jq -cn --arg wt "$wt2" '{task: "T7", event: "launch", role: "builder", session: "4f2a9c1e", worktree: $wt, toolkits: []}')"
+    "$(jq -cn --arg wt "$wt2" '{task: "T7", event: "launch", role: "builder", session: "4f2a9c1e", worktree: $wt, toolkits: [], machine: "home-pc"}')"
   run_bin -0 team-log --check
 }
 
@@ -192,7 +197,7 @@ run_fake() {
   cd "$HOME"
   run_bin -0 team-worker T7 builder link/proj/1 -- go
   assert_equal "$(launches)" "$(jq -cn --arg wt "$wt1" '{task: "T7", event: "launch", role: "builder",
-    session: "4f2a9c1e", worktree: $wt, toolkits: [], project: "proj", branch: "feat/T7-one"}')"
+    session: "4f2a9c1e", worktree: $wt, toolkits: [], project: "proj", branch: "feat/T7-one", machine: "home-pc"}')"
   run_bin -0 team-log --check
 }
 
@@ -239,19 +244,65 @@ run_fake() {
   assert_equal "$(head -n 2 "$TEAM_HOME/ledger.jsonl")" "$(cat "$BATS_TEST_TMPDIR/before")"
 }
 
-@test "the launch names this machine when it has a team name" {
+@test "the launch names this machine" {
   thread T7
   opened T7 proj feat/T7-one "$wt1"
-  mkdir -p "$HOME/.config/agent-team"
-  echo laptop >"$HOME/.config/agent-team/machine"
   run_bin -0 team-worker T7 builder "$wt1" -- go
-  assert_equal "$(launches | jq -r .machine)" "laptop"
+  assert_equal "$(launches | jq -r .machine)" "home-pc"
   run_bin -0 team-log --check
+}
 
-  # A name that is not one is left out, and the launch goes ahead.
-  echo Laptop >"$HOME/.config/agent-team/machine"
-  run_bin -0 team-worker T7 builder "$wt1" -- go
-  assert_equal "$(launches | jq -c 'has("machine")')" "$(printf 'true\nfalse')"
+@test "with the lease held by the other machine it refuses, naming the holder: no session, no ledger line" {
+  thread T7
+  opened T7 proj feat/T7-one "$wt1"
+  cp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before"
+  make_machine laptop
+  run_bin -0 team-lease release
+  on_machine laptop run_bin -0 team-lease take
+  run_bin -1 --separate-stderr team-worker T7 builder "$wt1" -- go
+  assert_equal "$output" ""
+  assert_contains "$stderr" "team-lease: home-pc no longer holds the lease: laptop holds it (epoch 2"
+  assert_contains "$stderr" "team-worker: laptop holds the lease: hand off there, then team-resume here"
+  assert_equal "$(stub_calls claude)" ""
+  cmp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before"
+  [[ ! -e $TEAM_HOME/tasks/T7/settings.builder.json ]]
+}
+
+@test "with GitHub unreachable it refuses: a worker never starts offline" {
+  thread T7
+  cp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before"
+  git -C "$TEAM_HOME" remote set-url origin https://127.0.0.1:9/agent-team.git
+  run_bin -1 --separate-stderr team-worker T7 planner "$wt1" -- go
+  assert_equal "$output" ""
+  assert_contains "$stderr" "team-lease: GitHub is unreachable"
+  assert_contains "$stderr" "team-worker: GitHub unreachable; a worker never starts offline"
+  assert_equal "$(stub_calls claude)" ""
+  cmp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before"
+}
+
+@test "with the lease released, or no team name for this machine, it refuses" {
+  thread T7
+  run_bin -0 team-lease release
+  run_bin -1 --separate-stderr team-worker T7 builder "$wt1" -- go
+  assert_contains "$stderr" "team-lease: the lease is released (last held by home-pc, epoch 1)"
+  assert_contains "$stderr" "team-worker: a worker starts only on the machine that holds the lease"
+
+  run_bin -0 team-lease take
+  echo Home-PC >"$HOME/.config/agent-team/machine"
+  run_bin -1 --separate-stderr team-worker T7 builder "$wt1" -- go
+  assert_contains "$stderr" "not a lower-case kebab-case name like home-pc"
+  assert_contains "$stderr" "team-worker: a worker starts only on the machine that holds the lease"
+  assert_equal "$(stub_calls claude)" ""
+  assert_equal "$(launches)" ""
+}
+
+@test "every role's generated settings isolate peer machines" {
+  thread T7
+  local role
+  for role in planner builder reviewer; do
+    run_bin -0 team-worker T7 "$role" "$wt1" -- go
+    assert_equal "$(jq .isolatePeerMachines "$TEAM_HOME/tasks/T7/settings.$role.json")" true
+  done
 }
 
 @test "a closed task is refused, opened or legacy" {
