@@ -3,5 +3,12 @@
     "discord@claude-plugins-official": true,
     "mongodb-atlas@claude-plugins-official": false
   },
-  "crossSessionInbound": "accept"
+  "crossSessionInbound": "accept",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [{ "type": "command", "command": "\"$HOME/agent-team/bin/hooks/stop-sweep\"" }]
+      }
+    ]
+  }
 }

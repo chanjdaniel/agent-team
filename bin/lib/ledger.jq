@@ -140,13 +140,16 @@ def worktree_list:
     | $w | {project, branch, worktree}
       + {returned: any($events[$i + 1:][]; .event == "worktree-returned" and .project == $w.project and .worktree == $w.worktree)}];
 
-# Every launch of the task, live when the session list ($sessions, from claude agents --json)
-# has its session: by the short id, or by the start of the full session id.
+# A launch's session in the session list ($sessions, from claude agents --json), or null: by the
+# short id, or by the start of the full session id (interactive sessions have no short id).
+def live_session($session; $sessions):
+  if ($session | type) == "string" and $session != "" then
+    $sessions | map(select(.id == $session or ((.sessionId // "") | startswith($session)))) | first
+  else null end;
+
+# Every launch of the task, live when the session list has its session.
 def workers($sessions):
-  [.[] | select(.event == "launch") | .session as $session
-    | (if ($session | type) == "string" and $session != "" then
-        $sessions | map(select(.id == $session or ((.sessionId // "") | startswith($session)))) | first
-      else null end) as $live
+  [.[] | select(.event == "launch") | live_session(.session; $sessions) as $live
     | {role, session, launched: .ts, worktree, live: ($live != null), status: $live.status, state: $live.state}];
 
 # The asks put to Daniel with no answer yet.
@@ -184,3 +187,71 @@ def state_line:
            + " agent-review \(.agent_review)"
          end
      end);
+
+# Whether the latest paused stands: no resumed and no launch after it.
+def paused_standing:
+  ([to_entries[] | select(.value.event == "paused") | .key] | last) as $i
+  | $i != null and all(.[$i + 1:][]; .event != "resumed" and .event != "launch");
+
+# Whether a task is parked, waiting on something other than a worker: held, blocked or awaiting
+# merge, an ask with no answer, or a pause still standing.
+def parked:
+  IN(phase; "held", "blocked", "awaiting-merge") or pending_asks != [] or paused_standing;
+
+# One of team-sweep's findings: {task, kind, session, name, next, text}, text being its one line.
+def finding($task; $kind; $session; $name; $detail; $next):
+  {task: $task, kind: $kind, session: $session, name: $name, next: $next,
+   text: "\($task) \($kind): \($detail); next: \($next)"};
+
+# The no-worker, waiting-input and silent findings of an open task that is not parked. A live
+# session is judged by its latest launch, and one waiting for input is not also called silent.
+def task_findings($sessions):
+  .[0].task as $task
+  | length as $count
+  | [to_entries[] | select(.value.event == "launch") | {i: .key, launch: .value}] as $launches
+  | ([$launches | reverse | .[] | . + {live: live_session(.launch.session; $sessions)} | select(.live != null)
+      | . + {short: (.live.id // .launch.session), name: (.live.name // "\($task)-\(.launch.role)")}]
+     | unique_by(.short) | sort_by(.i)) as $live
+  | ($launches | last) as $latest
+  | if $live == [] and any(.[]; .event == "opened" or .event == "launch") then
+      if $latest == null then
+        finding($task; "no-worker"; null; null; "opened with no worker launched";
+          "launch one with team-worker, or log what is known with team-log")
+      else
+        "\($task)-\($latest.launch.role)" as $name | $latest.launch.session as $session
+        | if phase == "merged" then
+            finding($task; "no-worker"; $session; $name;
+              "merged and not closed, with no live worker (latest \($name) \($session))"; "close it with team-close \($task)")
+          else
+            finding($task; "no-worker"; $session; $name;
+              "no live session among its \($launches | length) launch\(if ($launches | length) == 1 then "" else "es" end) (latest \($name) \($session))";
+              "read claude logs \($session) for how it ended, then launch the next worker with team-worker or log what is known with team-log")
+          end
+      end
+    else empty end,
+    ($live[]
+      | if .live.state == "blocked" then
+          finding($task; "waiting-input"; .short; .name; "\(.name) \(.short) is waiting for input";
+            "read claude logs \(.short), then answer it in one line or put the question to Daniel with team-log \($task) asked")
+        elif .live.status == "idle" and .i == $count - 1 then
+          finding($task; "silent"; .short; .name;
+            "\(.name) \(.short) is idle with no ledger event since its launch at \(.launch.ts)";
+            "read claude logs \(.short), then send it one line or log what is known with team-log")
+        else empty end);
+
+# team-sweep's findings, over every ledger event as one array and the session list: each open
+# task's (open means it has events and no closed) unless it is parked, then the stray sessions
+# (named like a team worker, T<n>-<role>, whose task is closed or not in the ledger); in task
+# number order.
+def sweep($sessions):
+  (group_by(.task) | map({key: .[0].task, value: .}) | from_entries) as $tasks
+  | [($tasks[] | select(any(.[]; .event == "closed") | not) | select(parked | not) | task_findings($sessions)),
+     ($sessions[] | (.name // "") as $name
+       | ($name | capture("^(?<task>T(0|[1-9][0-9]*))-.").task) as $task
+       | ($tasks[$task] // null) as $events
+       | select($events == null or any($events[]; .event == "closed"))
+       | (.id // ((.sessionId // "")[:8])) as $short
+       | finding($task; "stray"; $short; $name;
+           "\($name) \($short) is live but \($task) is \(if $events == null then "not in the ledger" else "closed" end)";
+           "read claude logs \($short) for anything left to log, then stop it with claude stop \($short)"))]
+  | sort_by(.task[1:] | tonumber);

@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Stop hook for the coordinator: no turn ends while team-sweep has findings. It keeps the turn
+# open once, with the findings as the reason; when the sweep itself fails, it keeps the turn open
+# once with the error, so supervision is never silently off.
+# Reads the Stop event's JSON on stdin; with stop_hook_active true (the turn was already kept
+# open once) it exits 0 at once. Otherwise it prints {"decision": "block", "reason": ...} to
+# block, or nothing. Exit 0 either way. Wired only in coordinator.settings.json.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/team.sh" "$@"
+
+if jq -e '.stop_hook_active == true' >/dev/null 2>&1; then exit 0; fi
+
+errors=$(mktemp)
+trap 'rm -f "$errors"' EXIT
+
+block() {
+  jq -cn --arg reason "$1" '{decision: "block", reason: $reason}'
+  exit 0
+}
+
+status=0
+findings=$(TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-sweep" --json </dev/null 2>"$errors") || status=$?
+count=$(jq -er 'if type == "array" then length else error end' <<<"$findings" 2>/dev/null) || count=''
+
+if [[ $status -eq 0 && $count == 0 ]]; then
+  exit 0
+elif [[ $status -eq 1 && -n $count && $count -gt 0 ]]; then
+  block "team-sweep found $count thing$([[ $count -eq 1 ]] || echo s) to reconcile before this turn ends:
+$(jq -r '.[].text' <<<"$findings")
+Act on each, then end the turn."
+else
+  block "team-sweep failed (exit $status), so supervision is off until it works again:
+$(if [[ -s $errors ]]; then cat "$errors"; else echo "it printed no findings and no error"; fi)
+Find out why and fix it, or check the tasks and workers by hand (team-state, claude agents), then end the turn."
+fi
