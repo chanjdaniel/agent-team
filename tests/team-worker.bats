@@ -305,6 +305,9 @@ bg_calls() {
       { echo "missing deny rule $rule" >&2; return 1; }
   done
   assert_equal "$(jq -c .env "$s")" '{"MCP_TIMEOUT":"120000"}'
+  # --restricted ignores the user settings, and without this the coordinator's replies (the
+  # write protocol's answers) never reach the session (T16 ticket 04's live check).
+  assert_equal "$(jq -r .crossSessionInbound "$s")" accept
   assert_equal "$(jq -r '.hooks.PreToolUse[0] | "\(.matcher) \(.hooks[0].command)"' "$s")" \
     "Edit|Write|MultiEdit|NotebookEdit $REPO_ROOT/bin/hooks/scratch-only-edits"
 }
