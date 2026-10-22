@@ -371,6 +371,21 @@ EOF
   assert_equal "$(line_of lease)" "FAIL lease: the team home $TEAM_HOME has no git remote origin, where the lease lives; fix: fix what team-lease names, then run team-doctor again"
 }
 
+@test "the lease line fails on a fenced machine, naming the holder it saw, reachable or not" {
+  tools_at arch
+  make_machine laptop
+  steal_lease laptop home-pc
+  "$REPO_ROOT/bin/team-timers" disable >/dev/null
+  echo '{"since": "2026-10-22T14:00:00Z", "holder": "laptop", "epoch": 2}' >"$HOME/.local/state/agent-team/fenced"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of lease)" "FAIL lease: fenced since 2026-10-22T14:00:00Z (holder seen laptop, epoch 2); fix: hand off on the machine that holds the lease, then team-resume here (its take clears the fence)"
+  assert_equal "$(line_of heartbeat)" "PASS heartbeat: disabled, and this machine does not hold the lease"
+
+  git -C "$TEAM_HOME" remote set-url origin https://127.0.0.1:9/agent-team.git
+  run_bin -1 team-doctor
+  assert_equal "$(line_of lease)" "FAIL lease: fenced since 2026-10-22T14:00:00Z (holder seen laptop, epoch 2); fix: hand off on the machine that holds the lease, then team-resume here (its take clears the fence)"
+}
+
 @test "the heartbeat line: PASS enabled on the holder or disabled elsewhere, FAIL otherwise with the command" {
   tools_at arch
   make_machine laptop

@@ -20,7 +20,10 @@
 #            time of the heartbeat log's last line; --json prints them as one object.
 #   run      What the job runs, each step one line in the heartbeat log (and on stdout):
 #              lease  team-lease status; on the holder, team-lease renew once the last renewal is
-#                     15 minutes old (less a minute for the timer's slack); otherwise nothing.
+#                     15 minutes old (less a minute for the timer's slack); on a machine that lost
+#                     the lease, team-lease renew at once, which fences it (stops its team
+#                     sessions and disables this heartbeat); on a fenced machine, team-timers
+#                     disable; otherwise nothing.
 #            A run that finds another still going skips.
 # In ~/.local/state/agent-team/: heartbeat.log ("<UTC time> <step>: <what happened>", kept to its
 # last 1000 lines once it passes 2000), heartbeat.lock (one run at a time), and on macOS
@@ -300,7 +303,8 @@ team() {
   TEAM_HOME=$TEAM_HOME "$bin/$1" "${@:2}" {run_fd}>&-
 }
 
-# The lease step: renew on the holder once the last renewal is RENEW_MINUTES old.
+# The lease step: renew on the holder once the last renewal is RENEW_MINUTES old, and at once on
+# a machine that lost the lease, which renew fences; a fenced machine turns its heartbeat off.
 lease_step() {
   local desc rc=0 holder epoch age out
   desc=$(team team-lease status --json 2>"$err") || rc=$?
@@ -317,7 +321,13 @@ lease_step() {
   esac
   read -r holder epoch < <(jq -r '"\(.holder // "-") \(.epoch)"' <<<"$desc")
   if jq -e '.fenced != null' <<<"$desc" >/dev/null; then
-    log lease "$machine is fenced since $(jq -r .fenced <<<"$desc"); nothing to do"
+    rc=0
+    out=$(team team-timers disable 2>"$err") || rc=$?
+    ((rc == 0)) || out="the heartbeat could not be disabled: $(first_error)"
+    log lease "$machine is $(fence_reason); $out"
+    return "$rc"
+  elif jq -e '.lost' <<<"$desc" >/dev/null; then
+    renew
   elif jq -e '.state == "released"' <<<"$desc" >/dev/null; then
     log lease "the lease is released (epoch $epoch); nothing to do"
   elif jq -e '.mine | not' <<<"$desc" >/dev/null; then
@@ -328,20 +338,29 @@ lease_step() {
       log lease "$machine holds the lease, epoch $epoch, renewed $((age / 60)) minutes ago; no renewal due"
       return
     fi
-    rc=0
-    out=$(team team-lease renew 2>"$err") || rc=$?
-    case $rc in
-      0) log lease "$out" ;;
-      75)
-        log lease "not renewed: $(first_error)"
-        exit 75
-        ;;
-      *)
-        log lease "not renewed: $(first_error)"
-        exit 1
-        ;;
-    esac
+    renew
   fi
+}
+
+# team-lease renew, logged; a renew that fenced this machine did its job.
+renew() {
+  local rc=0 out
+  out=$(team team-lease renew 2>"$err") || rc=$?
+  case $rc in
+    0) log lease "$out" ;;
+    75)
+      log lease "not renewed: $(first_error)"
+      exit 75
+      ;;
+    *)
+      if [[ -e $state/fenced ]]; then
+        log lease "$(first_error)"
+        return
+      fi
+      log lease "not renewed: $(first_error)"
+      exit 1
+      ;;
+  esac
 }
 
 run_heartbeat() {

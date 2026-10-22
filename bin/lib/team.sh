@@ -7,7 +7,7 @@
 # --help with the calling script's header (then runs the script's help_more, if it defined one
 # before sourcing), and provides die, usage_error, team_project, ledger_jq, ledger_append,
 # task_events, known_task_events, open_task_events, task_status, task_worktrees, local_path,
-# machine_name, lease_gate, worktree_changes, render_template, attribution_lines,
+# machine_name, fence_reason, lease_gate, worktree_changes, render_template, attribution_lines,
 # strip_attribution, live_sessions, discord_token, discord_api, github, pr_part and
 # task_state_json, and sets COORDINATOR_CHANNEL.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
@@ -131,6 +131,18 @@ machine_name() {
     return 1
   fi
   printf '%s\n' "$name"
+}
+
+# Print why this machine is fenced, "fenced since <time> (holder seen <name>, epoch <n>)", from
+# ~/.local/state/agent-team/fenced, which team-lease writes when it finds the lease lost; fails
+# when this machine is not fenced. A fence file without a since dates from its modification time.
+fence_reason() {
+  local file=$HOME/.local/state/agent-team/fenced since
+  [[ -e $file ]] || return 1
+  since=$(jq -er '.since | strings' "$file" 2>/dev/null) || since=$(date -u -r "$file" +%FT%TZ)
+  jq -r --arg since "$since" '"fenced since \($since)"
+    + if (.holder | type) == "string" then " (holder seen \(.holder), epoch \(.epoch // "?"))" else "" end' \
+    "$file" 2>/dev/null || echo "fenced since $since"
 }
 
 # Refuse to start <what> ("a coordinator", "a worker") unless this machine holds the lease,

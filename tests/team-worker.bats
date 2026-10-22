@@ -48,7 +48,9 @@ fake_checkout() {
   echo "You plan." >"$code/roles/planner.md"
   cat >"$code/settings/worker.json" <<'JSON'
 {"disableClaudeAiConnectors": true, "env": {"A": "worker", "B": "worker"},
- "permissions": {"deny": ["Bash(git clean*)", "Bash(gh pr merge*)"], "allow": ["Read"]}}
+ "permissions": {"deny": ["Bash(git clean*)", "Bash(gh pr merge*)"], "allow": ["Read"]},
+ "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "@TEAM_HOME@/bin/hooks/w"}]}],
+   "Stop": [{"hooks": [{"type": "command", "command": "s"}]}]}}
 JSON
   cat >"$code/settings/planner.json" <<'JSON'
 {"env": {"B": "planner"}, "permissions": {"deny": ["Bash(git push*)"], "allow": ["Edit"]},
@@ -125,7 +127,7 @@ run_fake() {
   assert_equal "$(jq -c . "$t/mcp.builder.json")" '{"mcpServers":{}}'
 }
 
-@test "role settings are layered on the worker settings, permission lists concatenated" {
+@test "role settings are layered on the worker settings, permission and hook lists concatenated" {
   fake_checkout
   thread T7
   run_fake T7 planner "$wt1" -- go
@@ -133,19 +135,29 @@ run_fake() {
   assert_equal "$(jq -cS . "$TEAM_HOME/tasks/T7/settings.planner.json")" "$(jq -cnS --arg code "$code" '{
     disableClaudeAiConnectors: true, env: {A: "worker", B: "planner"},
     permissions: {deny: ["Bash(git clean*)", "Bash(gh pr merge*)", "Bash(git push*)"], allow: ["Read", "Edit"]},
-    hooks: {PreToolUse: [{hooks: [{type: "command", command: "\($code)/bin/hooks/x \($code)"}]}]}}')"
+    hooks: {PreToolUse: [{matcher: "Bash", hooks: [{type: "command", command: "\($code)/bin/hooks/w"}]},
+        {hooks: [{type: "command", command: "\($code)/bin/hooks/x \($code)"}]}],
+      Stop: [{hooks: [{type: "command", command: "s"}]}]}}')"
 }
 
-@test "the real planner and reviewer settings point the edit hook at this checkout" {
+@test "every role's settings run the fence hook on Bash; the planner's and reviewer's add the edit hook" {
   thread T7
-  local role
-  for role in planner reviewer; do
+  local role settings
+  for role in planner builder reviewer; do
     run_bin -0 team-worker T7 "$role" "$wt1" -- go
-    assert_equal "$(jq -r '.hooks.PreToolUse[0].hooks[0].command' "$TEAM_HOME/tasks/T7/settings.$role.json")" \
-      "$REPO_ROOT/bin/hooks/scratch-only-edits"
-    assert_equal "$(jq -r '.permissions.deny | index("Bash(gh pr merge*)") != null' "$TEAM_HOME/tasks/T7/settings.$role.json")" true
+    settings=$TEAM_HOME/tasks/T7/settings.$role.json
+    assert_equal "$(jq -r '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].command' "$settings")" \
+      "$REPO_ROOT/bin/hooks/lease-fence"
+    if [[ $role == builder ]]; then
+      assert_equal "$(jq '.hooks.PreToolUse | length' "$settings")" 1
+    else
+      assert_equal "$(jq -r '.hooks.PreToolUse[] | select(.matcher == "Edit|Write|MultiEdit|NotebookEdit") | .hooks[].command' "$settings")" \
+        "$REPO_ROOT/bin/hooks/scratch-only-edits"
+      assert_equal "$(jq '.hooks.PreToolUse | length' "$settings")" 2
+    fi
+    assert_equal "$(jq -r '.permissions.deny | index("Bash(gh pr merge*)") != null' "$settings")" true
   done
-  [[ -x $REPO_ROOT/bin/hooks/scratch-only-edits ]]
+  [[ -x $REPO_ROOT/bin/hooks/scratch-only-edits && -x $REPO_ROOT/bin/hooks/lease-fence ]]
 }
 
 @test "toolkits add their plugin directories and only their MCP servers" {

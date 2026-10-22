@@ -56,5 +56,13 @@
   },
   "attribution": {
     "commit": ""
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [{ "type": "command", "command": "@TEAM_HOME@/bin/hooks/lease-fence" }]
+      }
+    ]
   }
 }

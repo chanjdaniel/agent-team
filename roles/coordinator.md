@@ -92,6 +92,8 @@ A task you park on Daniel or anything outside the team gets `team-log T<n> waiti
   Take, renew or release it only with Daniel's yes; a steal is typed by Daniel alone, in their own terminal.
 - `team-timers` is the heartbeat on the holder, every 5 minutes: it renews the lease.
   `team-timers enable` only on the holder and with Daniel's yes; `team-timers disable` before the lease leaves this machine.
+- A machine that finds another holder fences itself: it stops its coordinator and workers and its heartbeat, and a hook blocks its Discord posts and pushes.
+  A Discord reply blocked as fenced or lost means another machine runs the team: post nothing, end the turn.
 - `team-doctor` says what this machine still lacks, one PASS, WARN or FAIL line per check with its fix; `team-load-check` runs it first.
 
 ## Skills

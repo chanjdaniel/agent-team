@@ -192,7 +192,7 @@ checkout_state() {
 @test "status --json carries every field, and check exits 0 held, 1 not held" {
   run_bin -0 team-lease status --json
   jq -e '. == {holder: null, epoch: 0, state: "released", taken_at: null, renewed_at: null,
-    ttl_minutes: 60, stolen_from: null, stale: false, age_minutes: null, mine: false,
+    ttl_minutes: 60, stolen_from: null, stale: false, age_minutes: null, mine: false, lost: false,
     fenced: null, offline_since: null, confirmed: true}' <<<"$output"
   run_bin -1 --separate-stderr team-lease check
   assert_contains "$stderr" "the lease is released"
@@ -203,9 +203,9 @@ checkout_state() {
   age_lease 61
   run_bin -0 team-lease status --json
   jq -e '(keys | sort) == (["holder", "epoch", "state", "taken_at", "renewed_at", "ttl_minutes",
-      "stolen_from", "stale", "age_minutes", "mine", "fenced", "offline_since", "confirmed"] | sort)
+      "stolen_from", "stale", "age_minutes", "mine", "lost", "fenced", "offline_since", "confirmed"] | sort)
     and .holder == "home-pc" and .epoch == 1 and .state == "held" and .stale == true
-    and .age_minutes == 61 and .mine == true and .fenced == null and .offline_since == null
+    and .age_minutes == 61 and .mine == true and .lost == false and .fenced == null and .offline_since == null
     and .confirmed == true' <<<"$output"
   on_machine laptop run_bin -0 team-lease status --json
   jq -e '.mine == false and .holder == "home-pc"' <<<"$output"
@@ -227,12 +227,61 @@ checkout_state() {
   run_bin -0 team-lease status --json
   jq -e '.fenced == "2026-10-22T14:00:00Z"' <<<"$output"
   run_bin -1 --separate-stderr team-lease check
-  assert_contains "$stderr" "home-pc is fenced since 2026-10-22T14:00:00Z"
+  assert_contains "$stderr" "home-pc is fenced since 2026-10-22T14:00:00Z (holder seen laptop, epoch 2); team-lease take clears it"
   run_bin -1 --separate-stderr team-lease renew
-  assert_contains "$stderr" "home-pc is fenced since 2026-10-22T14:00:00Z"
+  assert_contains "$stderr" "home-pc is fenced since 2026-10-22T14:00:00Z (holder seen laptop, epoch 2)"
   run_bin -0 team-lease take
   [[ ! -e $state/fenced ]]
   run_bin -0 team-lease check
+}
+
+@test "renew on a machine whose lease was stolen fences it, and only a take clears the fence" {
+  local state=$HOME/.local/state/agent-team
+  stub_script claude <<'EOF'
+case $1 in
+  agents) echo '[{"id": "3169fcbd", "name": "coordinator"}, {"id": "81f08540", "name": "T5-builder"}, {"id": "1baf2408", "name": "notes"}]' ;;
+  stop) [[ $2 != 81f08540 ]] || { echo "error: no such session" >&2; exit 1; } ;;
+esac
+EOF
+  run_bin -0 team-lease take
+  run_bin -0 team-lease status --json
+  jq -e '.lost == false' <<<"$output"
+  steal_lease laptop home-pc
+  run_bin -0 team-lease status --json
+  jq -e '.lost == true and .mine == false and .fenced == null' <<<"$output"
+  on_machine laptop run_bin -0 team-lease status --json
+  jq -e '.lost == false and .mine == true' <<<"$output"
+
+  run_bin -1 --separate-stderr team-lease renew
+  assert_equal "$stderr" "team-lease: home-pc no longer holds the lease: laptop holds it (epoch 2); fenced home-pc: stopped coordinator (3169fcbd); the heartbeat is not installed; nothing to disable; could not stop T5-builder (81f08540): error: no such session; team-lease take clears the fence"
+  jq -e '.holder == "laptop" and .epoch == 2' "$state/fenced"
+  assert_equal "$(stub_calls claude)" "$(printf '%s\n' '["agents","--json"]' '["stop","3169fcbd"]' '["stop","81f08540"]')"
+  lease_json | jq -e '.holder == "laptop"'
+  run_bin -1 --separate-stderr team-lease check
+  assert_contains "$stderr" "home-pc is fenced since"
+
+  # Taken again, once laptop releases it: the fence is gone.
+  on_machine laptop run -0 "$REPO_ROOT/bin/team-lease" release
+  run_bin -0 team-lease take
+  [[ ! -e $state/fenced ]]
+  run_bin -0 team-lease status --json
+  jq -e '.lost == false and .mine == true and .fenced == null and .epoch == 3' <<<"$output"
+}
+
+@test "a machine that released, or never held, the lease is not lost when another holds it" {
+  run_bin -0 team-lease take
+  run_bin -0 team-lease release
+  on_machine laptop run -0 "$REPO_ROOT/bin/team-lease" take
+  run_bin -0 team-lease status --json
+  jq -e '.lost == false and .mine == false' <<<"$output"
+  run_bin -1 --separate-stderr team-lease renew
+  assert_contains "$stderr" "home-pc no longer holds the lease: laptop holds it"
+  [[ ! -e $HOME/.local/state/agent-team/fenced ]]
+  assert_equal "$(stub_calls claude)" ""
+
+  make_machine desk
+  on_machine desk run_bin -0 team-lease status --json
+  jq -e '.lost == false' <<<"$output"
 }
 
 @test "a lease the record does not match is not this machine's to renew or check" {

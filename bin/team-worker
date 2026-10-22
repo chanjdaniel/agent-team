@@ -81,13 +81,18 @@ fi
 taskdir=$TEAM_HOME/tasks/$task
 mkdir -p "$taskdir"
 
-# Role settings layered on the shared worker settings; permission lists are concatenated.
+# Role settings layered on the shared worker settings; permission lists and each event's hook
+# list are concatenated, the shared ones first, so a role's hooks add to the shared hooks.
 # @TEAM_HOME@ in the settings names this checkout, where the hooks live.
 settings=$taskdir/settings.$role.json
 jq -s --arg code "$code" '.[0] as $base | .[1] as $role
   | ($base * $role)
   | .permissions.deny = (($base.permissions.deny // []) + ($role.permissions.deny // []))
   | .permissions.allow = (($base.permissions.allow // []) + ($role.permissions.allow // []))
+  | if $base.hooks or $role.hooks then
+      .hooks = reduce ((($base.hooks // {}) + ($role.hooks // {})) | keys[]) as $event ({};
+        .[$event] = (($base.hooks[$event] // []) + ($role.hooks[$event] // [])))
+    else . end
   | walk(if type == "string" then gsub("@TEAM_HOME@"; $code) else . end)' \
   "$code/settings/worker.json" "$code/settings/$role.json" >"$settings"
 

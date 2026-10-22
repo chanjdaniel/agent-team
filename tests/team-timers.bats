@@ -302,6 +302,60 @@ EOF
   assert_equal "$(lease_tip)" "$tip"
 }
 
+@test "A holds, B steals: A's next run fences A, stops only its team sessions, disables the heartbeat and posts nothing" {
+  run_bin -0 team-timers enable
+  stub_reply curl "curl must not be called" 99
+  stub_script claude <<'EOF'
+case $1 in
+  agents) cat <<'JSON' ;;
+[{"id": "3169fcbd", "sessionId": "3169fcbd-1111", "name": "coordinator", "status": "busy", "state": "working"},
+ {"id": "81f08540", "sessionId": "81f08540-1111", "name": "T5-builder", "status": "busy", "state": "working"},
+ {"id": "a3586a81", "sessionId": "a3586a81-1111", "name": "T12-reviewer", "status": "idle", "state": "done"},
+ {"id": "1baf2408", "sessionId": "1baf2408-1111", "name": "sudo-password-faillock", "status": "idle", "state": "done"},
+ {"id": "22222222", "sessionId": "22222222-1111", "name": "coordinator-notes", "status": "idle", "state": "done"},
+ {"id": "33333333", "sessionId": "33333333-1111", "name": "T5", "status": "idle", "state": "done"},
+ {"id": "44444444", "sessionId": "44444444-1111", "name": "my-T5-builder", "status": "idle", "state": "done"},
+ {"id": "55555555", "sessionId": "55555555-1111", "status": "idle", "state": "done"}]
+JSON
+  stop) echo "Stopped $2" ;;
+  *) exit 127 ;;
+esac
+EOF
+  make_machine laptop
+  steal_lease laptop home-pc
+  local tip
+  tip=$(lease_tip)
+
+  run_bin -0 team-timers run
+  [[ $output =~ ^[0-9T:Z-]+" lease: home-pc no longer holds the lease: laptop holds it (epoch 2); fenced home-pc: stopped coordinator (3169fcbd), T5-builder (81f08540), T12-reviewer (a3586a81); the heartbeat is disabled: agent-team-heartbeat.timer stopped and removed; team-lease take clears the fence"$ ]]
+  assert_equal "$output" "$(tail -n 1 "$log")"
+  jq -e '.holder == "laptop" and .epoch == 2 and ((.since | fromdateiso8601) > now - 120)' "$HOME/.local/state/agent-team/fenced"
+  assert_equal "$(stub_calls claude)" "$(printf '%s\n' '["agents","--json"]' '["stop","3169fcbd"]' '["stop","81f08540"]' '["stop","a3586a81"]')"
+  [[ ! -e $units/agent-team-heartbeat.timer && ! -e $HOME/.fake-systemd/agent-team-heartbeat.timer.enabled ]]
+  assert_equal "$(stub_calls curl)" ""
+  assert_equal "$(lease_tip)" "$tip"
+
+  # The next run, were the heartbeat still to fire, only makes sure it is off.
+  : >"$STUB_CALLS/claude.log"
+  run_bin -0 team-timers run
+  assert_contains "$output" "lease: home-pc is fenced since "
+  assert_contains "$output" " (holder seen laptop, epoch 2); the heartbeat is not installed; nothing to disable"
+  assert_equal "$(stub_calls claude)" ""
+  assert_equal "$(stub_calls curl)" ""
+  assert_equal "$(lease_tip)" "$tip"
+}
+
+@test "a machine that released the lease is not fenced when another takes it" {
+  run_bin -0 team-timers enable
+  make_machine laptop
+  run -0 "$REPO_ROOT/bin/team-lease" release
+  on_machine laptop run -0 "$REPO_ROOT/bin/team-lease" take
+  run_bin -0 team-timers run
+  assert_contains "$output" "lease: laptop holds the lease (epoch 2); nothing to do"
+  [[ ! -e $HOME/.local/state/agent-team/fenced ]]
+  assert_equal "$(stub_calls claude)" ""
+}
+
 @test "run without a machine name logs why and exits 1" {
   rm "$HOME/.config/agent-team/machine"
   run_bin -1 team-timers run

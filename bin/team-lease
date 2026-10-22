@@ -16,9 +16,11 @@
 # lease's history, one commit per change ("lease: home-pc renew, epoch 7").
 #
 # Usage: team-lease status [--json] | check | take [--steal] | renew | release
-#   status   The lease, one "field: value" line each, with stale, age_minutes, mine, fenced
-#            (null or since), offline_since (null or since) and confirmed; --json prints it as
-#            one object. With origin unreachable: the last lease read, marked unconfirmed, exit 75.
+#   status   The lease, one "field: value" line each, with stale, age_minutes, mine, lost,
+#            fenced (null or since), offline_since (null or since) and confirmed; --json prints
+#            it as one object. lost: this machine's record says it holds the lease, but the lease
+#            names another holder or a higher epoch. With origin unreachable: the last lease
+#            read, marked unconfirmed, exit 75.
 #   check    Whether this machine holds the lease right now, confirmed against origin: it is the
 #            holder, at the epoch it last wrote, the lease is held, and it is not fenced. Exit 1
 #            says why not, naming the holder.
@@ -28,13 +30,18 @@
 #            controlling terminal, reads the holder's name typed there, and takes the lease with
 #            epoch + 1 and stolen_from; no terminal, no steal. Only Daniel's own terminal
 #            steals: deny rules stop the team's sessions typing one. Clears this machine's fence.
-#   renew    The holder only: a new renewed_at.
+#   renew    The holder only: a new renewed_at. On a machine that lost the lease it fences
+#            this machine instead, and exits 1: writes fenced (since, the holder seen and its
+#            epoch), stops every live session named coordinator or T<n>-<role> (claude agents
+#            --json, then claude stop each; no other session), and runs team-timers disable.
+#            A fenced machine refuses check, renew and release, posts nothing to Discord and
+#            pushes nothing (bin/hooks/lease-fence), until a take clears the fence.
 #   release  The holder only: state released. A released lease is left as it is (exit 0).
 #
 # Needs this machine's team name (~/.config/agent-team/machine). In ~/.local/state/agent-team/:
 # lease.json is the lease this machine last wrote, with its commit; lease.lock serialises lease
-# commands on this machine; fenced and offline, JSON objects with a since (the heartbeat writes
-# them), are read by status, check and renew.
+# commands on this machine; fenced (renew writes it) and offline (the heartbeat's), JSON objects
+# with a since, are read by status, check and renew.
 # The steal's terminal is /dev/tty, or the file or device TEAM_LEASE_TTY names (the tests' seam):
 # the prompt is appended to it and the name is its first line.
 # Exit 0 done, 1 refused or not held, 2 usage error, 75 GitHub unreachable, the lease kept moving,
@@ -158,13 +165,17 @@ since() {
 
 # The lease with what this machine knows of it, as status prints it: describe <lease> <confirmed>
 describe() {
-  jq -c --arg machine "$machine" --argjson confirmed "$2" \
+  local written
+  written=$(jq -c 'select(type == "object")' "$record" 2>/dev/null) || written=null
+  jq -c --arg machine "$machine" --argjson confirmed "$2" --argjson written "${written:-null}" \
     --argjson fenced "$(since "$state/fenced")" --argjson offline "$(since "$state/offline")" '
     (if .renewed_at then now - (.renewed_at | fromdateiso8601) else null end) as $age
     | {holder, epoch, state, taken_at, renewed_at, ttl_minutes, stolen_from,
        stale: (.state == "held" and $age != null and $age > .ttl_minutes * 60),
        age_minutes: (if $age then $age / 60 | floor else null end),
        mine: (.state == "held" and .holder == $machine),
+       lost: ($written != null and $written.holder == $machine and $written.state == "held"
+         and (.holder != $machine or .epoch > $written.epoch)),
        fenced: $fenced, offline_since: $offline, confirmed: $confirmed}' <<<"$1"
 }
 
@@ -181,7 +192,7 @@ not_held() {
     written=$(jq -r --arg machine "$machine" 'select(.holder == $machine) | .epoch' "$record" 2>/dev/null) || written=''
   fi
   if [[ -n $fenced ]]; then
-    echo "$machine is fenced since $fenced; team-lease take clears it"
+    echo "$machine is $(fence_reason); team-lease take clears it"
   elif [[ $(field state) == released ]]; then
     echo "the lease is released (last held by ${holder:-nobody}, epoch $epoch); take it with team-lease take"
   elif [[ $holder != "$machine" ]]; then
@@ -282,8 +293,44 @@ decide_take() {
   DONE="$machine holds the lease, epoch $next"
 }
 
+# Fence this machine, which lost the lease DESC shows, and refuse: the fence file first, so the
+# fence hook blocks at once, then the team's sessions, then the heartbeat.
+fence() {
+  local holder epoch seen sessions id name stopped=() problems=() out outcome
+  holder=$(field holder) epoch=$(field epoch)
+  seen="$holder holds it (epoch $epoch)"
+  [[ $(field state) == held ]] || seen="$holder released it (epoch $epoch)"
+  jq -n --arg holder "$holder" --argjson epoch "$epoch" '{since: (now | floor | todate), holder: $holder, epoch: $epoch}' \
+    >"$state/fenced.$$" || exit 1
+  mv -f "$state/fenced.$$" "$state/fenced"
+  if sessions=$(claude agents --json 2>"$err" {lock_fd}>&- | jq -c 'select(type == "array")' 2>/dev/null) &&
+    [[ -n $sessions ]]; then
+    while read -r id name; do
+      if claude stop "$id" </dev/null >/dev/null 2>"$err" {lock_fd}>&-; then
+        stopped+=("$name ($id)")
+      else
+        problems+=("could not stop $name ($id): $(grep -m1 . "$err" || echo "claude stop failed")")
+      fi
+    done < <(jq -r '.[] | select(.name | strings | . == "coordinator" or test("^T[0-9]+-[a-z][a-z0-9-]*$"))
+      | "\(.id // ((.sessionId // "")[:8])) \(.name)"' <<<"$sessions")
+  else
+    problems+=("could not read the live session list (claude agents --json), so no session was stopped")
+  fi
+  outcome="no team session was live"
+  ((${#stopped[@]} == 0)) || outcome="stopped $(printf '%s, ' "${stopped[@]}")" outcome=${outcome%, }
+  if out=$(TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-timers" disable 2>"$err" </dev/null {lock_fd}>&-); then
+    outcome+="; $out"
+  else
+    problems+=("could not disable the heartbeat ($(grep -m1 . "$err" || echo "team-timers disable failed")); run team-timers disable")
+  fi
+  local why="$machine no longer holds the lease: $seen; fenced $machine: $outcome"
+  ((${#problems[@]} == 0)) || why+="; $(printf '%s; ' "${problems[@]}")" why=${why%; }
+  die "$why; team-lease take clears the fence"
+}
+
 decide_renew() {
   local why
+  [[ $(field lost) != true ]] || fence
   why=$(not_held)
   [[ -z $why ]] || die "$why"
   NEW=$(jq -c --arg now "$NOW" --argjson ttl "$TTL_MINUTES" '.renewed_at = $now | .ttl_minutes = $ttl' <<<"$LEASE")

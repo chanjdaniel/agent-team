@@ -243,6 +243,15 @@ on_machine() {
   HOME=$root/home TEAM_HOME=$root/team "${@:2}"
 }
 
+# Steal the lease on machine <name> (make_machine) from its holder <holder>, typing the holder's
+# name on the steal's terminal as Daniel would: steal_lease <name> <holder>
+steal_lease() {
+  local tty
+  tty=$(realpath "$BATS_TEST_TMPDIR")/steal-tty
+  echo "$2" >"$tty"
+  TEAM_LEASE_TTY=$tty on_machine "$1" "$REPO_ROOT/bin/team-lease" take --steal >/dev/null
+}
+
 # Whether one of the settings file <file>'s Bash deny rules matches <command>, each * in a rule
 # matching anything: denied_in <file> <command>
 denied_in() {

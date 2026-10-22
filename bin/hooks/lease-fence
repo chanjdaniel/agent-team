@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# PreToolUse hook that keeps a machine that lost the lease from acting: exit 2 blocks the tool
+# call and shows stderr to the agent; anything else passes at once.
+#   Discord (the coordinator's reply, react and edit_message): blocked while this machine is
+#     fenced, or when the lease on origin is not this machine's last write and names another
+#     holder or a higher epoch, so an old coordinator never answers in the channel the new one
+#     owns, even before its heartbeat fences it. Origin is asked at most once a minute (git
+#     ls-remote, cached in probe.json); unreachable passes, since the heartbeat owns offline.
+#   Bash (workers): a command that runs git push is blocked while this machine is fenced.
+# Reads, in ~/.local/state/agent-team/: fenced and lease.json (team-lease's), and probe.json, the
+# last probe of origin's lease branch: {"checked_at": "<UTC time>", "reachable": true, "tip": "<commit>"}.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/team.sh" "$@"
+
+# Seconds a probe is good for, and the most one may take.
+PROBE_MAX_AGE=60
+PROBE_TIMEOUT=20
+
+input=$(cat)
+tool=$(jq -r '.tool_name // empty' <<<"$input")
+state=$HOME/.local/state/agent-team
+named=1
+machine=$(machine_name 2>/dev/null) || machine="this machine" named=0
+
+# A git call that reaches origin: it never prompts and gives up after PROBE_TIMEOUT seconds.
+origin_git() {
+  GIT_TERMINAL_PROMPT=0 timeout "$PROBE_TIMEOUT" git -C "$TEAM_HOME" "$@" 2>/dev/null </dev/null
+}
+
+# Set TIP to the tip of origin's lease branch (empty when there is none), from a probe at most a
+# minute old, or a new one, and PROBED to 1 when this call asked origin; fails when origin was
+# unreachable.
+lease_tip() {
+  local probe=$state/probe.json out reachable=true
+  PROBED=0
+  if jq -e --argjson max "$PROBE_MAX_AGE" 'now - (.checked_at | fromdateiso8601) < $max' "$probe" >/dev/null 2>&1; then
+    TIP=$(jq -er 'select(.reachable == true) | .tip // ""' "$probe") || return 1
+    return 0
+  fi
+  PROBED=1
+  out=$(origin_git ls-remote origin refs/heads/lease) || reachable=false
+  TIP=${out%%[[:space:]]*}
+  mkdir -p "$state"
+  jq -n --argjson reachable "$reachable" --arg tip "$TIP" \
+    '{checked_at: (now | floor | todate), reachable: $reachable} + if $reachable then {tip: $tip} else {} end' \
+    >"$probe.$$"
+  mv -f "$probe.$$" "$probe"
+  [[ $reachable == true ]]
+}
+
+# Why a Discord post must not go out, or fail when it may: a machine with no name or no origin
+# cannot tell, and passes.
+lost_lease() {
+  local tip record lease
+  ((named)) || return 1
+  git -C "$TEAM_HOME" remote get-url origin >/dev/null 2>&1 || return 1
+  lease_tip || return 1
+  tip=$TIP
+  [[ -n $tip ]] || return 1
+  record=$(jq -c 'select(type == "object")' "$state/lease.json" 2>/dev/null) || record=''
+  [[ -n $record ]] || record='{}'
+  [[ $tip != "$(jq -r '.commit // empty' <<<"$record")" ]] || return 1
+  # Fetched without moving a ref (no FETCH_HEAD, no refmap), so team-lease's refs are never raced.
+  git -C "$TEAM_HOME" cat-file -e "$tip^{commit}" 2>/dev/null ||
+    { ((PROBED)) && origin_git fetch -q --no-tags --no-write-fetch-head --refmap= origin refs/heads/lease; } || return 1
+  lease=$(git -C "$TEAM_HOME" show "$tip:lease.json" 2>/dev/null) || return 1
+  jq -er --arg machine "$machine" --argjson record "$record" '
+    select(.holder != $machine or ($record.holder == $machine and .epoch > $record.epoch))
+    | "\($machine) no longer holds the lease: origin names \(.holder) (\(.state), epoch \(.epoch))"' \
+    <<<"$lease" 2>/dev/null
+}
+
+block() {
+  echo "Blocked: $1" >&2
+  exit 2
+}
+
+case $tool in
+  mcp__plugin_discord_discord__reply | mcp__plugin_discord_discord__react | mcp__plugin_discord_discord__edit_message)
+    why=$(fence_reason) && block "$machine is $why: a fenced machine posts nothing to Discord; the coordinator on the holder answers there."
+    why=$(lost_lease) && block "$why: a machine that lost the lease posts nothing to Discord; the coordinator on the holder answers there."
+    ;;
+  Bash)
+    why=$(fence_reason) || exit 0
+    command=$(jq -r '.tool_input.command // empty' <<<"$input")
+    push='(^|[^[:alnum:]_.-])git([[:space:]]+(-[Cc][[:space:]]+[^[:space:]]+|-[^[:space:]]+))*[[:space:]]+push([[:space:]]|$)'
+    [[ ! $command =~ $push ]] ||
+      block "$machine is $why: a fenced machine pushes nothing; commit locally and stop."
+    ;;
+esac
+exit 0
