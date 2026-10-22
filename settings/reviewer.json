@@ -14,9 +14,8 @@
   },
   "permissions": {
     "allow": [
-      "Bash(gh api repos/*/statuses/* -f state=success -f context=agent-review -f description=*)",
-      "Bash(gh api repos/*/statuses/* -f state=failure -f context=agent-review -f description=*)",
-      "Bash(gh pr comment * --body-file *)"
+      "Bash(@TEAM_HOME@/bin/team-review-status *)",
+      "Bash(@TEAM_HOME@/bin/team-review-comment *)"
     ]
   }
 }
