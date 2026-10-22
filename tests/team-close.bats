@@ -259,7 +259,6 @@ squash_merge() {
   git -C "$other" merge -q --squash "origin/$2" >/dev/null
   git -C "$other" commit -q -m "feat: the work (#7)"
   git -C "$other" push -q origin main ":$2"
-  git -C "$1" fetch -q --prune origin
 }
 
 @test "the landed check fetches origin first, so a head pushed from elsewhere counts" {
@@ -277,11 +276,23 @@ squash_merge() {
   assert_equal "$(stub_calls gh)" ""
 }
 
+@test "a branch deleted on origin without a merge has not landed, though this checkout still has its ref" {
+  open_home_task
+  work_and_push "$wt" feature.txt
+  git -C "$BATS_TEST_TMPDIR/origin/home.git" branch -q -D feat/T1-work
+  git -C "$wt" rev-parse -q --verify refs/remotes/origin/feat/T1-work
+  stub_reply gh '[]'
+
+  run_bin -1 team-close T1
+  assert_contains "$output" "is on no branch of origin (1 commit not pushed) and is not the head of a merged PR"
+  assert_unchanged
+}
+
 @test "a squash-merged head on no branch of origin has landed as a merged PR's head" {
   open_home_task
   work_and_push "$wt" feature.txt
   squash_merge "$wt" feat/T1-work
-  [[ -z $(git -C "$wt" branch -r --contains HEAD) ]]
+  [[ -z $(git -C "$BATS_TEST_TMPDIR/origin/home.git" branch --contains "$(git -C "$wt" rev-parse HEAD)") ]]
   stub_reply gh "$(jq -cn --arg head "$(git -C "$wt" rev-parse HEAD)" '[{number: 7, headRefOid: $head}]')"
 
   run_bin -0 team-close T1
@@ -449,6 +460,8 @@ team-close: ${conv_slots[0]}/.scratch/task is empty, so nothing was archived fro
   assert_equal "$(claude_actions | tail -n 1)" '["rm","954b98a2"]'
 }
 
+# Hand-written rather than fixtures/ledger-T5.jsonl: the slot a legacy close checks must be one of
+# the sandbox's, and the real launches name paths on Daniel's machine.
 # legacy_task <worktree> <branch>: T5 as the ledger had it, launched in <worktree> and in an
 # agent-team slot, with <worktree> (a home slot) on <branch>, pushed, its task directory holding a
 # handoff.

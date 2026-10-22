@@ -203,10 +203,7 @@ take_treehouse_slot() {
     die "the leased slot $trusted is not a git worktree"
   [[ $(realpath -m -- "$common") == "$(realpath -m -- "$(git -C "$primary" rev-parse --path-format=absolute --git-common-dir)")" ]] ||
     die "the leased slot $trusted is not a worktree of $primary"
-  list=$(git -C "$trusted" diff --name-only HEAD | paste -sd ' ')
-  [[ -z $list ]] || found+=("changes to tracked files: $list")
-  list=$(git -C "$trusted" ls-files --others --exclude-standard | paste -sd ' ')
-  [[ -z $list ]] || found+=("untracked files: $list")
+  mapfile -t found < <(worktree_changes "$trusted")
   if [[ -d $trusted/$task_dir ]]; then
     list=$(find "$trusted/$task_dir" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | paste -sd ' ')
     [[ -z $list ]] || found+=("a non-empty task directory $task_dir: $list")

@@ -5,7 +5,7 @@
 # It sets TEAM_HOME (the directory above bin/, unless TEAM_HOME is already set), answers
 # --help with the calling script's header (then runs the script's help_more, if it defined one
 # before sourcing), and provides die, usage_error, team_project, ledger_jq, ledger_append,
-# task_events, task_worktrees, live_sessions, github, pr_part and task_state_json.
+# task_events, task_worktrees, worktree_changes, live_sessions, github, pr_part and task_state_json.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
 # shellcheck shell=bash
 
@@ -73,6 +73,16 @@ live_sessions() {
 task_worktrees() {
   [[ ! -e $TEAM_HOME/ledger.jsonl ]] ||
     ledger_jq 'open_worktrees(inputs | select(.task == $task))' -nc --arg task "$1" "$TEAM_HOME/ledger.jsonl"
+}
+
+# What is not committed in the worktree <wt>, one line per kind, nothing when it is clean (files
+# git ignores are fine): "changes to tracked files: <files>", "untracked files: <files>".
+worktree_changes() {
+  local list
+  list=$(git -C "$1" diff --name-only HEAD | paste -sd ' ')
+  [[ -z $list ]] || echo "changes to tracked files: $list"
+  list=$(git -C "$1" ls-files --others --exclude-standard | paste -sd ' ')
+  [[ -z $list ]] || echo "untracked files: $list"
 }
 
 # The project registry, through this checkout's team-project: team_project [<arguments>...]

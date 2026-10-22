@@ -4,7 +4,7 @@
 #
 # Usage: team-close T<n> [--keep-worktree] [--stop-busy] [--worktree <path>]...
 # Checks first, changing nothing: the task has events and no closed; each of its open worktrees
-# (opened and added, minus returned) has landed after git fetch origin; no live session of its
+# (opened and added, minus returned) has landed after git fetch --prune origin; no live session of its
 # launch events is busy. Landed means no changes to tracked files and no untracked files (ignored
 # files are fine), and the head on a remote-tracking branch of origin or the head of a merged PR
 # of the branch in the project's repo (gh); a worktree with no commits of its own has landed.
@@ -104,20 +104,17 @@ trap 'rm -rf "$scratch"' EXIT
 
 # Why the worktree <wt> of <project> on <branch> has not landed, or nothing when it has.
 unlanded() {
-  local wt=$1 project=$2 branch=$3 status tracked untracked head ahead repo found=()
+  local wt=$1 project=$2 branch=$3 head ahead repo found=()
   git -C "$wt" rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
     echo "it is not a git worktree"
     return
   }
-  git -C "$wt" fetch -q origin 2>/dev/null || {
+  # --prune: a branch deleted on origin must not count through a stale remote-tracking ref.
+  git -C "$wt" fetch -q --prune origin 2>/dev/null || {
     echo "cannot fetch origin"
     return
   }
-  status=$(git -C "$wt" status --porcelain --untracked-files=all)
-  tracked=$(grep -v '^??' <<<"$status" | cut -c4- | paste -sd ' ' || true)
-  untracked=$(grep '^??' <<<"$status" | cut -c4- | paste -sd ' ' || true)
-  [[ -z $tracked ]] || found+=("changes to tracked files: $tracked")
-  [[ -z $untracked ]] || found+=("untracked files: $untracked")
+  mapfile -t found < <(worktree_changes "$wt")
   head=$(git -C "$wt" rev-parse HEAD)
   if [[ -z $(git -C "$wt" for-each-ref --contains "$head" --count=1 refs/remotes/origin) ]]; then
     # Not on origin: a squash or rebase merge leaves the head only as a merged PR's head.
@@ -243,17 +240,18 @@ for wt in "${returning[@]}"; do
   returned+=("$path")
 done
 
-list() { jq -cn '$ARGS.positional' --args "$@"; }
+# The arguments as a JSON list.
+json_list() { jq -cn '$ARGS.positional' --args "$@"; }
 kept_paths=()
 for wt in "${kept[@]}"; do kept_paths+=("$(jq -r .worktree <<<"$wt")"); done
 note=''
 [[ -n $opened_project ]] || note=legacy
-ledger_append "$(jq -cn --arg task "$task" --argjson archive "$(list "${archived[@]}")" \
-  --argjson returned "$(list "${returned[@]}")" --argjson kept "$(list "${kept_paths[@]}")" --arg note "$note" \
+ledger_append "$(jq -cn --arg task "$task" --argjson archive "$(json_list "${archived[@]}")" \
+  --argjson returned "$(json_list "${returned[@]}")" --argjson kept "$(json_list "${kept_paths[@]}")" --arg note "$note" \
   '{ts: (now | todate), task: $task, event: "closed", archive: $archive, returned: $returned, kept: $kept}
     + if $note == "" then {} else {note: $note} end')"
 
-jq -n --arg task "$task" --argjson stopped "$(list "${stopped[@]}")" --argjson removed "$(list "${removed[@]}")" \
-  --argjson archive "$(list "${archived[@]}")" --argjson returned "$(list "${returned[@]}")" \
-  --argjson kept "$(list "${kept_paths[@]}")" \
+jq -n --arg task "$task" --argjson stopped "$(json_list "${stopped[@]}")" --argjson removed "$(json_list "${removed[@]}")" \
+  --argjson archive "$(json_list "${archived[@]}")" --argjson returned "$(json_list "${returned[@]}")" \
+  --argjson kept "$(json_list "${kept_paths[@]}")" \
   '{task: $task, stopped: $stopped, removed: $removed, archive: $archive, returned: $returned, kept: $kept}'
