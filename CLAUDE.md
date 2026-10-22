@@ -7,7 +7,7 @@ The team's own work on it goes through a task and a PR to `dev`, like any projec
 
 | Path | What it holds |
 | - | - |
-| `bin/` | The team's commands, `team-*` and `claude-coordinator`; `bin/lib/` is the shared library, the ledger contract and its jq; `bin/hooks/` the sessions' hooks |
+| `bin/` | The team's commands, `team-*` and `claude-coordinator`; `bin/lib/` is the shared library, the ledger contract and its jq, and `records`, the paths a direct commit on `dev` may touch; `bin/hooks/` the sessions' hooks, and `bin/hooks/git/` git's |
 | `tests/` | The bats suite, one `.bats` file per script plus `task-life.bats`, a whole task's life across them, with `tests/helpers/` and bats-core vendored in `tests/vendor/` |
 | `roles/` | The role prompts each session's system prompt is appended with, one per role, the coordinator's included |
 | `settings/` | Worker settings: `worker.json` shared, one file per role layered on it |
@@ -21,6 +21,15 @@ The team's own work on it goes through a task and a PR to `dev`, like any projec
 | `sops/`, `projects/` | Standing procedures, and each project's planning (Conventioner's backlog) |
 
 `.scratch/task/` is a team-home task's own task directory, ignored by git.
+
+## Direct commits on dev
+
+- A commit straight to `dev` may touch records only, the paths `bin/lib/records` lists: `ledger.jsonl`, `tasks/`, `manual-steps.md`, `projects/`, `memory/` and `machine/`.
+  Everything else reaches `dev` through a PR, and nothing is committed on `main`, which a release fast-forwards from `dev`.
+- Git runs `bin/hooks/git/` as the team home's hooks once the primary checkout has `git -C ~/agent-team config core.hooksPath bin/hooks/git`, which every worktree shares, each running its own checkout's hooks.
+  Its `pre-commit` (and `pre-merge-commit`) refuses a commit on `dev` that touches anything else, naming each path, and every commit on `main`.
+- The `Dev records` workflow runs `bin/team-records-check` on every push to `dev` that changes more than records: a commit that is neither records only nor a PR's merge fails it.
+- Every session is denied skipping the hooks (`--no-verify`, `git commit -n`) and touching `core.hooksPath`, so the setup line above is Daniel's to run.
 
 ## Tests and shellcheck
 
