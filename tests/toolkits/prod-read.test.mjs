@@ -3,11 +3,12 @@
 // The test user may write, so every refusal here is the server's own, not the database's.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, readlinkSync } from "node:fs";
+import { readFileSync, readdirSync, readlinkSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, beforeEach, describe, test } from "node:test";
-import { opStub, repoRoot, startToolkitServer, tempDir, testPath } from "./helpers/mcp.mjs";
+import { opStub, repoRoot, startToolkitServer, tempDir } from "./helpers/mcp.mjs";
 import { startMongo } from "./helpers/mongo.mjs";
+import { assertNoLeak, children, launcherRefusalTests } from "./helpers/toolkit.mjs";
 
 const reference = "op://agent-team/conventioner-prod-read/uri";
 const readTools = [
@@ -56,15 +57,8 @@ async function withServer(body, { value = db.uri("ops-read", marker), env } = {}
     await body(server, op);
   } finally {
     await server.close();
-    assertNoLeak(server);
+    assertNoLeak(server, { marker, home });
   }
-}
-
-function assertNoLeak(server) {
-  assert.ok(!server.stdout.includes(marker), "the password marker is on stdout");
-  assert.ok(!server.stderr.includes(marker), "the password marker is on stderr");
-  assert.ok(!existsSync(join(home, ".mongodb")), "the server wrote under HOME/.mongodb/");
-  assert.deepEqual(server.spied(), [], "the server started a child process");
 }
 
 const names = (tools) => tools.map((tool) => tool.name).sort();
@@ -205,40 +199,8 @@ describe("the secret", () => {
 });
 
 describe("the launcher refuses before the server starts", () => {
-  // `calls`: the op commands the case runs; a value read is always signed out, even a bad one.
-  const cases = [
-    { what: "when op is not on PATH", path: () => testPath({ withOp: false }), calls: [], reason: /^prod-read: op is not on PATH$/ },
-    { what: "when op read fails", mode: "fail", calls: ["read"], reason: /^prod-read: op read failed: .*authorization prompt dismissed/ },
-    { what: "when op read returns nothing", value: "", calls: ["read", "signout"], reason: /^prod-read: op read returned an empty value$/ },
-    { what: "when the value is not a connection string", value: `${marker}\n`, calls: ["read", "signout"], reason: /is not a MongoDB connection string$/ },
-    { what: "when op signout fails", mode: "signout-fail", calls: ["read", "signout"], reason: /^prod-read: op signout failed: / },
-    { what: "when given an argument", args: ["--readOnly=false"], calls: [], reason: /^prod-read: takes no arguments$/ },
-  ];
-  for (const { what, path, mode, value, args, calls, reason } of cases) {
-    test(what, async () => {
-      const op = opStub({ value: value ?? db.uri("ops-read", marker), mode });
-      const server = startToolkitServer("prod-read", { home, opDir: op.dir, path: path?.(), args });
-      try {
-        await assert.rejects(server.initialize(), /server exited \(1\)/);
-      } finally {
-        await server.close();
-      }
-      assert.equal((await server.exited).code, 1);
-      assert.equal(server.stdout, "");
-      const lines = server.stderr.split("\n").filter(Boolean);
-      assert.equal(lines.length, 1, server.stderr);
-      assert.match(lines[0], reason);
-      assert.deepEqual(op.calls().map((call) => call.split(" ")[0]), calls);
-      assertNoLeak(server);
-    });
-  }
+  launcherRefusalTests("prod-read", () => ({ value: db.uri("ops-read", marker), home, marker }));
 });
-
-// The pids of a process's children, across all its threads.
-function children(pid) {
-  return readdirSync(`/proc/${pid}/task`).flatMap((task) =>
-    readFileSync(`/proc/${pid}/task/${task}/children`, "utf8").split(" ").filter(Boolean));
-}
 
 // The remote address of every TCP and UDP socket the process holds, as "host:port".
 function inetPeers(pid) {

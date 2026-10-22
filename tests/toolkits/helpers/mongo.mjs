@@ -4,6 +4,7 @@
 //   const db = await startMongo();           before()
 //   db.uri(user, password, options)          a connection string for a test user
 //   await db.createUser(user, password, roles)
+//   await db.connectAs(user, password)       a driver client as a test user; close it when done
 //   await db.seed(database, { collection: [documents] })   beforeEach(): drop, then insert
 //   db.client                                a driver client as root, for checking the data
 //   await db.stop();                         after()
@@ -43,6 +44,7 @@ export async function startMongo() {
       client,
       createUser: (user, password, roles) =>
         client.db("admin").command({ createUser: user, pwd: password, roles }),
+      connectAs: (user, password) => new MongoClient(uri(user, password)).connect(),
       async seed(database, collections) {
         await client.db(database).dropDatabase();
         for (const [collection, documents] of Object.entries(collections)) {

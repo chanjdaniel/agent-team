@@ -2,13 +2,17 @@
 // this checkout (what team-worker does), spoken to over stdio by a minimal MCP client.
 //
 //   const server = startToolkitServer("prod-read", { home, opDir, env, path });
-//   await server.initialize();
+//   await server.initialize();                         or initialize({ elicitation: true })
 //   const tools = await server.listTools();
 //   const result = await server.callTool("find", { database, collection, filter });
 //   await server.close();
 //   server.stdout, server.stderr   everything the server printed, for leak checks
 //   server.pid, server.exited      the server process, and a promise of { code, signal }
 //   server.spied()                 the spied commands the server ran (see spyDir)
+//   server.fromServer              requests and notifications the server sent; an elicitation
+//                                  request is answered with a decline, any other request refused
+//
+// startServer({ command, args, env }, options) starts any server entry the same way.
 import { spawn } from "node:child_process";
 import { accessSync, constants, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -78,8 +82,11 @@ function spyDir() {
 
 // Start the server with a small, explicit environment: HOME, PATH (the spies, then testPath()
 // unless `path` replaces it), OP_STUB_DIR, plus `env`.
-export function startToolkitServer(toolkit, { home, opDir, env = {}, path = testPath(), args = [] }) {
-  const { command, args: configArgs = [], env: configEnv = {} } = serverConfig(toolkit);
+export function startToolkitServer(toolkit, options) {
+  return startServer(serverConfig(toolkit), options);
+}
+
+export function startServer({ command, args: configArgs = [], env: configEnv = {} }, { home, opDir, env = {}, path = testPath(), args = [] }) {
   const spies = spyDir();
   const child = spawn(command, [...configArgs, ...args], {
     env: {
@@ -104,6 +111,7 @@ class McpConnection {
     this.stderr = "";
     this.nextId = 1;
     this.pending = new Map();
+    this.fromServer = [];
     let buffer = "";
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
@@ -133,11 +141,14 @@ class McpConnection {
   }
 
   receive(message) {
-    if (message.id === undefined || !this.pending.has(message.id)) {
-      // A request or notification from the server; elicitation would arrive here.
-      (this.fromServer ??= []).push(message);
+    if (message.method !== undefined) {
+      this.fromServer.push(message);
+      if (message.id === undefined) return;
+      if (message.method === "elicitation/create") this.send({ id: message.id, result: { action: "decline" } });
+      else this.send({ id: message.id, error: { code: -32601, message: `${message.method} is not supported` } });
       return;
     }
+    if (!this.pending.has(message.id)) return;
     const { resolve, reject } = this.pending.get(message.id);
     this.pending.delete(message.id);
     if (message.error) reject(Object.assign(new Error(message.error.message), { rpc: message.error }));
@@ -163,10 +174,12 @@ class McpConnection {
     });
   }
 
-  async initialize() {
+  // `elicitation`: declare the client capability Claude Code declares, so a server that wants to
+  // confirm a tool call asks.
+  async initialize({ elicitation = false } = {}) {
     const result = await this.request("initialize", {
       protocolVersion: "2025-06-18",
-      capabilities: {},
+      capabilities: elicitation ? { elicitation: {} } : {},
       clientInfo: { name: "toolkit-test", version: "1.0.0" },
     });
     this.send({ method: "notifications/initialized" });

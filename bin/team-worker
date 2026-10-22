@@ -15,10 +15,11 @@
 # The merged settings and MCP config are generated into tasks/<task>/ (gitignored); @TEAM_HOME@
 # in either names this checkout, @TASK@ the task, and @TASK_DIR@ the team home's tasks/<task>/.
 #
-# Production toolkits (prod-*) are for the ops role only, which needs prod-read and --request,
-# and is refused while any T<n>-ops session is listed by claude agents (one at a time; end it
-# with team-ops-end). An ops session runs with --restricted and only the built-in tools
-# Read, Glob, Grep, Edit, Write, ToolSearch, SendMessage and ListAgents: no shell, no web.
+# Production toolkits (prod-*) are for the ops role only, which needs prod-read (prod-write comes
+# only beside it) and --request, and is refused while any T<n>-ops session is listed by claude
+# agents (one at a time; end it with team-ops-end). An ops session runs with --restricted and only
+# the built-in tools Read, Glob, Grep, Edit, Write, ToolSearch, SendMessage and ListAgents: no
+# shell, no web.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
@@ -59,6 +60,9 @@ for kit in "${toolkits[@]}"; do
   [[ $kit != prod-* || $role == ops ]] || die "toolkit '$kit' is for the ops role only"
 done
 if [[ $role == ops ]]; then
+  # A write session reads through the read user, never the write user.
+  [[ " ${toolkits[*]} " != *" prod-write "* || " ${toolkits[*]} " == *" prod-read "* ]] ||
+    die "prod-write needs --toolkit prod-read beside it"
   [[ " ${toolkits[*]} " == *" prod-read "* ]] || die "the ops role needs --toolkit prod-read"
   [[ -n $request ]] || die "the ops role needs --request <the link to Daniel's Discord message>"
 fi

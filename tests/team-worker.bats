@@ -255,6 +255,34 @@ bg_calls() {
   stub_calls claude | jq -c 'select(.[0] == "--bg")'
 }
 
+# prod-write's tools in both naming forms: the --mcp-config form and the plugin form.
+PROD_WRITE_TOOLS=(insert-many update-many delete-many create-index drop-index)
+prod_write_names() {
+  local tool
+  for tool in "${PROD_WRITE_TOOLS[@]}"; do
+    echo "mcp__prod-write__$tool"
+    echo "mcp__plugin_prod-write_prod-write__$tool"
+  done
+}
+
+# assert_prod_write_gated <settings>: an ask rule names every prod-write tool in both forms, the
+# glob proven live (T16 ticket 02) covers them all, and no allow rule matches any of them, read
+# as a glob the way Claude Code reads a rule's *.
+assert_prod_write_gated() {
+  local name rule
+  while IFS= read -r name; do
+    jq -e --arg n "$name" '.permissions.ask | index($n) != null' "$1" >/dev/null ||
+      { echo "no ask rule names $name" >&2; return 1; }
+    # shellcheck disable=SC2053 # the rules are globs
+    [[ $name == mcp__*prod-write* ]] || { echo "the ask glob misses $name" >&2; return 1; }
+    while IFS= read -r rule; do
+      # shellcheck disable=SC2053
+      [[ $name != $rule ]] || { echo "allow rule $rule matches $name" >&2; return 1; }
+    done < <(jq -r '.permissions.allow[]?' "$1")
+  done < <(prod_write_names)
+  jq -e '.permissions.ask | index("mcp__*prod-write*") != null' "$1" >/dev/null
+}
+
 @test "an ops launch is restricted to the allowlisted tools and logs Daniel's request" {
   thread T7
   opened T7 proj feat/T7-one "$wt1"
@@ -291,13 +319,15 @@ bg_calls() {
     <(jq 'del(.permissions.deny)' "$TEAM_HOME/tasks/T7/settings.ops.json")
 }
 
-@test "the generated ops settings allow only prod-read and .scratch edits, and deny every outbound tool" {
+@test "the generated ops settings allow only prod-read and .scratch edits, ask for every prod-write tool, and deny every outbound tool" {
   thread T7
   ops_stub
   run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$request" -- go
   local s=$TEAM_HOME/tasks/T7/settings.ops.json rule
   assert_equal "$(jq -c .permissions.allow "$s")" '["mcp__prod-read__*","Edit(./.scratch/**)"]'
-  assert_equal "$(jq -c '.permissions | has("ask")' "$s")" false
+  # The write rules hold even in a read session, where prod-write is not loaded.
+  assert_prod_write_gated "$s"
+  assert_equal "$(jq '.permissions.ask | length' "$s")" 11
   for rule in Bash WebFetch WebSearch Agent NotebookEdit Artifact ArtifactComments ArtifactData SendUserFile \
     PushNotification SendFeedback DesignSync EnterWorktree CronCreate RemoteTrigger ScheduleWakeup \
     'Read(//proc/**)' 'Bash(op *)' 'Bash(gh pr merge*)'; do
@@ -318,6 +348,38 @@ bg_calls() {
   done
 }
 
+@test "a write launch adds prod-write's plugin and server beside prod-read's, every write tool behind an ask rule" {
+  thread T7
+  opened T7 proj feat/T7-one "$wt1"
+  ops_stub
+  run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --toolkit prod-write --request "$request" -- Make the change
+  local t=$TEAM_HOME/tasks/T7
+  assert_equal "$(bg_calls)" "$(jq -cn --arg t "$t" --arg code "$REPO_ROOT" '["--bg",
+    "--restricted", "--tools", "Read,Glob,Grep,Edit,Write,ToolSearch,SendMessage,ListAgents",
+    "--strict-mcp-config", "--mcp-config", "\($t)/mcp.ops.json",
+    "--plugin-dir", "\($code)/toolkits/prod-read", "--plugin-dir", "\($code)/toolkits/prod-write",
+    "--settings", "\($t)/settings.ops.json",
+    "--append-system-prompt-file", "\($code)/roles/ops.md",
+    "--permission-mode", "auto", "--name", "T7-ops", "Make the change"]')"
+
+  local mcp=$t/mcp.ops.json
+  assert_equal "$(jq -c . "$mcp")" "$(jq -cn --arg code "$REPO_ROOT" '{mcpServers: {
+    "prod-read": {command: "node", args: ["\($code)/toolkits/prod-read/scripts/start-server.mjs"]},
+    "prod-write": {command: "node", args: ["\($code)/toolkits/prod-write/scripts/start-server.mjs"]}}}')"
+  run -1 grep -Eq '@TEAM_HOME@|@TASK@|mongodb(\+srv)?://|MDB_MCP|op://|password' "$mcp"
+
+  local s=$t/settings.ops.json
+  assert_prod_write_gated "$s"
+  assert_equal "$(jq -c .permissions.allow "$s")" '["mcp__prod-read__*","Edit(./.scratch/**)"]'
+  # The ops log's hooks cover both toolkits' tools, and block a write whose line is lost.
+  assert_equal "$(jq -r '.hooks.PreToolUse[-1] | "\(.matcher) \(.hooks[0].onFailure)"' "$s")" \
+    '^mcp__.*prod-(read|write).*__ block'
+  run -1 grep -Eq 'mongodb(\+srv)?://|MDB_MCP_CONNECTION|op://|password' <(jq 'del(.permissions.deny)' "$s")
+
+  assert_equal "$(launches | jq -c '[.toolkits, .request]')" "$(jq -cn --arg r "$request" '[["prod-read", "prod-write"], $r]')"
+  run_bin -0 team-log --check
+}
+
 @test "only the ops role is restricted" {
   thread T7
   local role
@@ -335,6 +397,8 @@ bg_calls() {
   for role in planner builder reviewer; do
     run_bin -1 team-worker T7 "$role" "$wt1" --toolkit prod-read -- go
     assert_contains "$output" "toolkit 'prod-read' is for the ops role only"
+    run_bin -1 team-worker T7 "$role" "$wt1" --toolkit prod-write -- go
+    assert_contains "$output" "toolkit 'prod-write' is for the ops role only"
   done
   run_bin -2 team-worker T7 builder "$wt1" --request "$request" -- go
   assert_contains "$output" "--request is for the ops role only"
@@ -342,7 +406,7 @@ bg_calls() {
   assert_equal "$(launches)" ""
 }
 
-@test "an ops launch without prod-read or without Daniel's request is refused" {
+@test "an ops launch without prod-read, prod-write without prod-read, or a launch without Daniel's request is refused" {
   fake_checkout
   mkdir -p "$code/toolkits/prod-read" "$code/toolkits/prod-write"
   cp "$REPO_ROOT/roles/ops.md" "$code/roles/" && cp "$REPO_ROOT/settings/ops.json" "$code/settings/"
@@ -353,7 +417,7 @@ bg_calls() {
   assert_contains "$output" "the ops role needs --toolkit prod-read"
   run_fake T7 ops "$wt1" --toolkit prod-write --request "$request" -- go
   assert_equal "$status" 1
-  assert_contains "$output" "the ops role needs --toolkit prod-read"
+  assert_contains "$output" "prod-write needs --toolkit prod-read beside it"
   run_fake T7 ops "$wt1" --toolkit prod-read -- go
   assert_equal "$status" 1
   assert_contains "$output" "the ops role needs --request <the link to Daniel's Discord message>"

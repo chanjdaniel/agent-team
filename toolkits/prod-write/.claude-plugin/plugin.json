@@ -1,0 +1,5 @@
+{
+  "name": "prod-write",
+  "version": "0.1.0",
+  "description": "Document writes and index changes in Conventioner's production database through the pinned MongoDB MCP server, on a write user that cannot drop or rename collections, whose connection string comes from 1Password at server start. Loaded only into the ops role, beside prod-read, for a write request; every tool is behind an ask rule."
+}

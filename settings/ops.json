@@ -2,6 +2,19 @@
   "crossSessionInbound": "accept",
   "permissions": {
     "allow": ["mcp__prod-read__*", "Edit(./.scratch/**)"],
+    "ask": [
+      "mcp__*prod-write*",
+      "mcp__prod-write__insert-many",
+      "mcp__prod-write__update-many",
+      "mcp__prod-write__delete-many",
+      "mcp__prod-write__create-index",
+      "mcp__prod-write__drop-index",
+      "mcp__plugin_prod-write_prod-write__insert-many",
+      "mcp__plugin_prod-write_prod-write__update-many",
+      "mcp__plugin_prod-write_prod-write__delete-many",
+      "mcp__plugin_prod-write_prod-write__create-index",
+      "mcp__plugin_prod-write_prod-write__drop-index"
+    ],
     "deny": [
       "Bash",
       "WebFetch",
