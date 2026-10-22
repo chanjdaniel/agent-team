@@ -11,21 +11,6 @@ setup() {
   make_machine laptop
 }
 
-# lease_json [<git dir>]: the lease on origin's lease branch, or that of <git dir>'s branch.
-lease_json() {
-  git -C "${1:-$origin}" show lease:lease.json
-}
-
-# Rewrite origin's lease as if its holder last renewed <minutes> ago: a new commit on the branch.
-age_lease() {
-  local blob tree commit
-  blob=$(lease_json | jq -c --argjson m "$1" '.renewed_at = (now - $m * 60 | floor | todate)' |
-    git -C "$origin" hash-object -w --stdin)
-  tree=$(printf '100644 blob %s\tlease.json\n' "$blob" | git -C "$origin" mktree)
-  commit=$(git -C "$origin" commit-tree "$tree" -p lease -m "test: age the lease")
-  git -C "$origin" update-ref refs/heads/lease "$commit"
-}
-
 # What the team home <dir> shows a user: its branch, HEAD, raw index, staged and unstaged changes,
 # untracked files and the working tree's contents, read without refreshing the index.
 checkout_state() {

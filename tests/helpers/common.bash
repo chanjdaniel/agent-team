@@ -1,6 +1,7 @@
 # Shared setup for the team home's bats tests: load it with `load helpers/common` and call
 # `sandbox` from `setup`. Every test then runs real scripts from this checkout's bin/ against a
-# temporary team home and HOME, with claude, gh and curl replaced by logging stubs.
+# temporary team home and HOME, with claude, gh, curl, systemctl and launchctl replaced by
+# logging stubs, so no test reaches this machine's own service managers.
 # shellcheck shell=bash
 
 bats_require_minimum_version 1.5.0
@@ -24,7 +25,7 @@ sandbox() {
   echo "DISCORD_BOT_TOKEN=$FAKE_DISCORD_TOKEN" >"$HOME/.claude/channels/discord/.env"
 
   local cmd
-  for cmd in claude gh curl; do cp "$REPO_ROOT/tests/helpers/stub" "$root/stubs/$cmd"; done
+  for cmd in claude gh curl systemctl launchctl; do cp "$REPO_ROOT/tests/helpers/stub" "$root/stubs/$cmd"; done
   export PATH=$root/stubs:$PATH
 
   # git reads only the sandbox's config.
@@ -78,6 +79,80 @@ stub_calls() {
   cat "$STUB_CALLS/$1.log" 2>/dev/null || true
 }
 
+# Make the systemctl and launchctl stubs behave as the user's systemd and launchd would, each
+# machine's units kept under its own HOME: systemctl --user daemon-reload, enable, disable (with
+# --now), restart, is-enabled and is-active on unit files under ~/.config/systemd/user; launchctl
+# bootstrap gui/<uid> <plist>, bootout gui/<uid>/<label> and print gui/<uid>/<label>, refusing as
+# launchctl does a bootstrap of a loaded job or a bootout of one not loaded.
+fake_service_managers() {
+  stub_script systemctl <<'EOF'
+units=$HOME/.config/systemd/user state=$HOME/.fake-systemd
+mkdir -p "$state"
+[[ ${1:-} == --user ]] || { echo "systemctl stub: only --user calls are planned: $*" >&2; exit 1; }
+verb=${2:-} now=0 quiet=0 names=()
+for arg in "${@:3}"; do
+  case $arg in
+    --now) now=1 ;;
+    --quiet) quiet=1 ;;
+    *) names+=("$arg") ;;
+  esac
+done
+for name in "${names[@]}"; do
+  if [[ $verb != is-* && ! -f $units/$name ]]; then
+    echo "Failed to $verb unit: Unit file $name does not exist." >&2
+    exit 1
+  fi
+done
+case $verb in
+  daemon-reload) ;;
+  enable) for name in "${names[@]}"; do touch "$state/$name.enabled"; if ((now)); then touch "$state/$name.active"; fi; done ;;
+  disable) for name in "${names[@]}"; do rm -f "$state/$name.enabled"; if ((now)); then rm -f "$state/$name.active"; fi; done ;;
+  restart) for name in "${names[@]}"; do touch "$state/$name.active"; done ;;
+  is-enabled)
+    if [[ -e $state/${names[0]}.enabled ]]; then ((quiet)) || echo enabled; exit 0; fi
+    ((quiet)) || echo disabled
+    exit 1 ;;
+  is-active)
+    if [[ -e $state/${names[0]}.active ]]; then ((quiet)) || echo active; exit 0; fi
+    ((quiet)) || echo inactive
+    exit 3 ;;
+  *) echo "systemctl stub: unplanned call: $*" >&2; exit 127 ;;
+esac
+EOF
+  stub_script launchctl <<'EOF'
+state=$HOME/.fake-launchd domain=gui/$(id -u)
+mkdir -p "$state"
+case ${1:-} in
+  bootstrap)
+    [[ $2 == "$domain" && -f $3 ]] || { echo "Bootstrap failed: 5: Input/output error" >&2; exit 5; }
+    label=$(sed -n '/<key>Label<\/key>/{n;s/.*<string>\(.*\)<\/string>.*/\1/p;}' "$3")
+    [[ ! -e $state/$label ]] || { echo "Bootstrap failed: 5: Input/output error" >&2; exit 5; }
+    cp "$3" "$state/$label" ;;
+  bootout | print)
+    label=${2#"$domain"/}
+    if [[ $2 != "$domain/$label" || ! -e $state/$label ]]; then
+      echo "Could not find service \"$label\" in domain for user gui: $(id -u)" >&2
+      exit 113
+    fi
+    if [[ $1 == bootout ]]; then rm "$state/$label"; else echo "$domain/$label = {"; echo "	state = running"; echo "}"; fi ;;
+  *) echo "launchctl stub: unplanned call: $*" >&2; exit 127 ;;
+esac
+EOF
+}
+
+# Run the sandbox as macOS: uname stubbed to say Darwin, and a fake Homebrew (HOMEBREW_PREFIX)
+# with the directories of the GNU tools bin/lib/platform.sh puts first on PATH.
+as_macos() {
+  [[ -e $BATS_TEST_TMPDIR/stubs/uname ]] || cp "$REPO_ROOT/tests/helpers/stub" "$BATS_TEST_TMPDIR/stubs/uname"
+  stub_reply uname Darwin
+  export HOMEBREW_PREFIX=$BATS_TEST_TMPDIR/brew
+  local dir
+  for dir in coreutils/libexec/gnubin findutils/libexec/gnubin gnu-sed/libexec/gnubin \
+    grep/libexec/gnubin flock/bin; do
+    mkdir -p "$HOMEBREW_PREFIX/opt/$dir"
+  done
+}
+
 # Build a bare repo as origin and a primary clone at $HOME/projects/<name>, with one commit on
 # <branch> (default main) pushed; prints the clone's path.
 make_repo() {
@@ -119,6 +194,24 @@ hold_lease() {
   origin=$(make_team_home "${1:-home-pc}")
   "$REPO_ROOT/bin/team-lease" take >/dev/null
   echo "$origin"
+}
+
+# lease_json [<git dir>]: the lease on the lease branch of the team home's origin (make_team_home),
+# or of <git dir>.
+lease_json() {
+  git -C "${1:-$(realpath "$BATS_TEST_TMPDIR")/origin/agent-team.git}" show lease:lease.json
+}
+
+# Rewrite the lease on the team home's origin as if its holder last renewed <minutes> ago: a new
+# commit on the branch.
+age_lease() {
+  local origin blob tree commit
+  origin=$(realpath "$BATS_TEST_TMPDIR")/origin/agent-team.git
+  blob=$(lease_json | jq -c --argjson m "$1" '.renewed_at = (now - $m * 60 | floor | todate)' |
+    git -C "$origin" hash-object -w --stdin)
+  tree=$(printf '100644 blob %s\tlease.json\n' "$blob" | git -C "$origin" mktree)
+  commit=$(git -C "$origin" commit-tree "$tree" -p lease -m "test: age the lease")
+  git -C "$origin" update-ref refs/heads/lease "$commit"
 }
 
 # Build a second machine named <name> (make_team_home first): its own HOME, with this HOME's git

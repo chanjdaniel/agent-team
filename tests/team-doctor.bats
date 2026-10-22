@@ -42,6 +42,7 @@ declare -gA FORMAT=(
 setup() {
   sandbox
   hold_lease home-pc >/dev/null
+  fake_service_managers
 
   # The OS: Linux, from an Arch os-release file, until a test says Darwin.
   cp "$REPO_ROOT/tests/helpers/stub" "$BATS_TEST_TMPDIR/stubs/uname"
@@ -69,6 +70,8 @@ case $* in
 esac
 EOF
   clock_offset 0
+  # The heartbeat runs, as it should on the holder.
+  "$REPO_ROOT/bin/team-timers" enable >/dev/null
 }
 
 # GitHub's API answers HEAD with a Date header <seconds> away from this clock.
@@ -128,15 +131,10 @@ tools_at() {
   done < <(lock_tools "$os")
 }
 
-# The sandbox runs as macOS: a stubbed Darwin and a fake Homebrew with the GNU tools' directories.
+# The sandbox runs as macOS (as_macos), with the heartbeat's LaunchAgents enabled.
 on_macos() {
-  stub_reply uname Darwin
-  export HOMEBREW_PREFIX=$BATS_TEST_TMPDIR/brew
-  local dir
-  for dir in coreutils/libexec/gnubin findutils/libexec/gnubin gnu-sed/libexec/gnubin \
-    grep/libexec/gnubin flock/bin; do
-    mkdir -p "$HOMEBREW_PREFIX/opt/$dir"
-  done
+  as_macos
+  "$REPO_ROOT/bin/team-timers" enable >/dev/null
 }
 
 # The line of check <name> in the output.
@@ -198,7 +196,7 @@ every_tool_fails() {
   assert_equal "$(grep -cv '^PASS ' <<<"$output")" 0
   local expected
   expected=$(printf '%s\n' os; lock_tools arch | cut -f1 | sed 's/^/tool /'
-    printf '%s\n' machine 'claude login' 'github login' clock lease)
+    printf '%s\n' machine 'claude login' 'github login' clock lease heartbeat)
   assert_equal "$(checks)" "$expected"
   assert_equal "$(line_of os)" "PASS os: Arch Linux"
   assert_equal "$(line_of 'tool claude')" "PASS tool claude: 2.1.308"
@@ -206,6 +204,7 @@ every_tool_fails() {
   assert_equal "$(line_of machine)" "PASS machine: home-pc"
   assert_equal "$(line_of 'claude login')" "PASS claude login: signed in with a claude.ai account"
   assert_contains "$(line_of lease)" "PASS lease: held here, epoch 1"
+  assert_equal "$(line_of heartbeat)" "PASS heartbeat: enabled, and this machine holds the lease"
 }
 
 @test "on macOS with every tool at its version, every line passes, Homebrew's included" {
@@ -215,7 +214,7 @@ every_tool_fails() {
   assert_equal "$(grep -cv '^PASS ' <<<"$output")" 0
   local expected
   expected=$(printf '%s\n' os homebrew; lock_tools macos | cut -f1 | sed 's/^/tool /'
-    printf '%s\n' machine 'claude login' 'github login' clock lease)
+    printf '%s\n' machine 'claude login' 'github login' clock lease heartbeat)
   assert_equal "$(checks)" "$expected"
   assert_equal "$(line_of os)" "PASS os: macOS"
 }
@@ -353,6 +352,8 @@ EOF
 @test "the lease line: PASS held here, WARN held elsewhere or released, FAIL unreachable" {
   tools_at arch
   make_machine laptop
+  # Not holding, the heartbeat belongs off.
+  "$REPO_ROOT/bin/team-timers" disable >/dev/null
   run -0 "$REPO_ROOT/bin/team-lease" release
   run_bin -0 team-doctor
   assert_equal "$(line_of lease)" "WARN lease: released, epoch 1; fix: team-lease take, with Daniel's yes"
@@ -368,6 +369,33 @@ EOF
   git -C "$TEAM_HOME" remote remove origin
   run_bin -1 team-doctor
   assert_equal "$(line_of lease)" "FAIL lease: the team home $TEAM_HOME has no git remote origin, where the lease lives; fix: fix what team-lease names, then run team-doctor again"
+}
+
+@test "the heartbeat line: PASS enabled on the holder or disabled elsewhere, FAIL otherwise with the command" {
+  tools_at arch
+  make_machine laptop
+  "$REPO_ROOT/bin/team-timers" disable >/dev/null
+  run_bin -1 team-doctor
+  assert_equal "$(line_of heartbeat)" "FAIL heartbeat: disabled, but this machine holds the lease; fix: team-timers enable"
+
+  run -0 "$REPO_ROOT/bin/team-lease" release
+  run_bin -0 team-doctor
+  assert_equal "$(line_of heartbeat)" "PASS heartbeat: disabled, and this machine does not hold the lease"
+
+  on_machine laptop run -0 "$REPO_ROOT/bin/team-lease" take
+  "$REPO_ROOT/bin/team-timers" enable >/dev/null
+  run_bin -1 team-doctor
+  assert_equal "$(line_of heartbeat)" "FAIL heartbeat: enabled, but this machine does not hold the lease; fix: team-timers disable"
+
+  # With the lease unconfirmed, the doctor cannot say which it should be.
+  git -C "$TEAM_HOME" remote set-url origin https://127.0.0.1:9/agent-team.git
+  run_bin -1 team-doctor
+  assert_equal "$(line_of heartbeat)" "WARN heartbeat: enabled, but whether it should be waits on the lease line; fix: the lease line's fix, then run team-doctor again"
+
+  # A heartbeat team-timers cannot read fails with its reason.
+  stub_reply uname FreeBSD
+  run_bin -1 team-doctor
+  assert_equal "$(line_of heartbeat)" "FAIL heartbeat: FreeBSD has neither systemd nor launchd; the heartbeat runs on Linux or macOS; fix: fix what team-timers names, then run team-doctor again"
 }
 
 @test "--json prints one array of {check, verdict, reason, fix}, the same verdicts as the lines" {
