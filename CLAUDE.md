@@ -28,8 +28,10 @@ The team's own work on it goes through a task and a PR to `dev`, like any projec
   Everything else reaches `dev` through a PR, and nothing is committed on `main`, which a release fast-forwards from `dev`.
 - Git runs `bin/hooks/git/` as the team home's hooks once the primary checkout has `git -C ~/agent-team config core.hooksPath bin/hooks/git`, which every worktree shares, each running its own checkout's hooks.
   Its `pre-commit` (and `pre-merge-commit`) refuses a commit on `dev` that touches anything else, naming each path, and every commit on `main`.
+  Its `pre-push` catches what those never see (a cherry-pick, a revert, `git am`, a fast-forward merge): a push to `dev` may only fast-forward it with commits that touch records only, and a push to `main` may only fast-forward it to a commit already on `origin/dev`.
 - The `Dev records` workflow runs `bin/team-records-check` on every push to `dev` that changes more than records: a commit that is neither records only nor a PR's merge fails it.
 - Every session is denied skipping the hooks (`--no-verify`, `git commit -n`) and touching `core.hooksPath`, so the setup line above is Daniel's to run.
+  Those deny rules are a speed bump, never the guarantee: git accepts too many spellings for a deny list to cover, so the hooks and the `Dev records` workflow are what hold the rule.
 
 ## Tests and shellcheck
 
