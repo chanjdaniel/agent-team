@@ -40,11 +40,7 @@ pull_request_merge() {
 refused=0
 for commit in "${commits[@]}"; do
   read -r -a parents <<<"$(git rev-list --parents -n 1 "$commit" | cut -d' ' -f2-)"
-  if ((${#parents[@]})); then
-    others=$(git diff --name-only --no-renames -z "${parents[0]}" "$commit" | non_records)
-  else
-    others=$(git diff-tree -r --root --no-commit-id --name-only --no-renames -z "$commit" | non_records)
-  fi
+  others=$(commit_non_records "$commit")
   [[ -n $others ]] || continue
   note=''
   if ((${#parents[@]} > 1)); then

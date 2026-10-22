@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 # hooks/git/pre-commit and pre-merge-commit: with core.hooksPath set to bin/hooks/git, a commit on
 # dev may touch records only (bin/lib/records), a commit on main is refused, and any other branch
-# commits freely.
+# commits freely. tests/pre-push.bats covers the commits that skip these hooks.
 
 load helpers/common
 
@@ -90,12 +90,29 @@ by fast-forward from dev"
   git -C "$repo" checkout -q dev
   run -1 --separate-stderr git -C "$repo" merge -q --no-ff -m "Merge feat/T1-code" feat/T1-code
   assert_contains "$stderr" "pre-merge-commit: refused: a direct commit on dev may touch records only"
-  assert_contains "$stderr" $'\n  bin/team-open'
+  assert_contains "$stderr" "open a PR to dev, or, for a merge from origin/dev, rebase onto it \
+instead (git pull --rebase):"$'\n  bin/team-open'
   git -C "$repo" merge --abort
   run -0 git -C "$repo" merge -q --no-ff -m "Merge feat/T1-records" feat/T1-records
   git -C "$repo" checkout -q -b main feat/T1-code
   run -1 --separate-stderr git -C "$repo" merge -q --no-ff -m "Merge dev" dev
   assert_contains "$stderr" "pre-merge-commit: refused: nothing is committed on main"
+}
+
+@test "a conflicted merge on dev, committed through pre-commit, gets the merge's advice too" {
+  git -C "$repo" checkout -q -b feat/T1-code
+  stage bin/team-open tasks/plan.md
+  commit -0
+  git -C "$repo" checkout -q dev
+  stage tasks/plan.md
+  commit -0
+  run -1 git -C "$repo" merge -q feat/T1-code
+  echo merged >"$repo/tasks/plan.md"
+  git -C "$repo" add tasks/plan.md
+  run -1 --separate-stderr git -C "$repo" commit -q --no-edit
+  assert_contains "$stderr" "pre-commit: refused: a direct commit on dev may touch records only"
+  assert_contains "$stderr" "or, for a merge from origin/dev, rebase onto it instead (git pull \
+--rebase):"$'\n  bin/team-open'
 }
 
 @test "the documented setup, a relative hooks path, holds in every worktree with its own checkout's hooks" {

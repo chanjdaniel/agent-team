@@ -6,9 +6,9 @@
 # --help with the calling script's header (then runs the script's help_more, if it defined one
 # before sourcing), and provides die, usage_error, team_project, ledger_jq, ledger_append,
 # task_events, known_task_events, open_task_events, task_status, task_worktrees,
-# worktree_changes, non_records, records_list, render_template, attribution_lines,
-# strip_attribution, live_sessions, discord_token, discord_api, github, pr_part and
-# task_state_json, and sets COORDINATOR_CHANNEL.
+# worktree_changes, non_records, commit_non_records, records_list, render_template,
+# attribution_lines, strip_attribution, live_sessions, discord_token, discord_api, github, pr_part
+# and task_state_json, and sets COORDINATOR_CHANNEL.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
 # shellcheck shell=bash
 
@@ -135,6 +135,16 @@ non_records() {
     done
     printf '%s\n' "$path"
   done
+}
+
+# The paths <commit> touches against its first parent (a root commit: all its paths) that are not
+# records, one per line, in order: commit_non_records <commit>
+commit_non_records() {
+  if git rev-parse -q --verify "$1^1" >/dev/null; then
+    git diff --name-only --no-renames -z "$1^1" "$1" | non_records
+  else
+    git diff-tree -r --root --no-commit-id --name-only --no-renames -z "$1" | non_records
+  fi
 }
 
 # The agent attribution lines no commit message may carry, one case-insensitive ERE over whole

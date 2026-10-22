@@ -3,7 +3,8 @@
 # refuses a commit that touches anything but records (bin/lib/records), naming each such path; on
 # main it refuses every commit, since a release reaches main by fast-forward from dev. Any other
 # branch, and a detached HEAD (a rebase replaying commits), commits freely.
-# pre-merge-commit runs it for a merge commit, which is judged by what it brings in.
+# pre-merge-commit runs it for a merge commit, which is judged by what it brings in; a commit that
+# skips both (cherry-pick, revert, am, a fast-forward merge) meets pre-push instead.
 # Exit 0 the commit may go ahead, 1 refused with the reason on stderr.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../../lib/team.sh" "$@"
@@ -13,8 +14,11 @@ case $(git symbolic-ref --short -q HEAD || true) in
   dev)
     others=$(git diff --cached --name-only --no-renames -z | non_records)
     [[ -n $others ]] || exit 0
-    die "refused: a direct commit on dev may touch records only ($(records_list)); commit these on \
-a task branch and open a PR to dev:
+    advice="commit these on a task branch and open a PR to dev"
+    if [[ -n ${merging:-} ]] || git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+      advice+=", or, for a merge from origin/dev, rebase onto it instead (git pull --rebase)"
+    fi
+    die "refused: a direct commit on dev may touch records only ($(records_list)); $advice:
   ${others//$'\n'/$'\n'  }"
     ;;
 esac
