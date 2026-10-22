@@ -237,7 +237,7 @@ LEDGER
   run_bin -0 --separate-stderr team-open proj feature feat new "New"
   assert_equal "$(jq -r .task <<<"$output")" "T5"
   assert_equal "$stderr" "$(printf '%s\n' "team-open: other open tasks in proj:" \
-    "  T2 fix/T2-going in /w/2: Still going" "  T4 chore/T4-y in /w/5")"
+    "  T2 fix/T2-going in /w/2: Still going" "  T4 chore/T4-y in /w/5: Elsewhere")"
 }
 
 @test "the Discord token never reaches the output" {

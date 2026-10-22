@@ -4,7 +4,7 @@
 #
 # It sets TEAM_HOME (the directory above bin/, unless TEAM_HOME is already set), answers
 # --help with the calling script's header (then runs the script's help_more, if it defined one
-# before sourcing), and provides die, usage_error, ledger_jq and ledger_append.
+# before sourcing), and provides die, usage_error, ledger_jq, ledger_append and task_worktrees.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
 # shellcheck shell=bash
 
@@ -49,6 +49,13 @@ ledger_append() {
     flock -x 9
     printf '%s\n' "$line" >>"$TEAM_HOME/ledger.jsonl"
   } 9>>"$TEAM_HOME/ledger.jsonl.lock"
+}
+
+# A task's open worktrees (opened and added, minus returned), one compact
+# {task, project, branch, worktree} per line: task_worktrees T<n>
+task_worktrees() {
+  [[ ! -e $TEAM_HOME/ledger.jsonl ]] ||
+    ledger_jq 'open_worktrees(inputs | select(.task == $task))' -nc --arg task "$1" "$TEAM_HOME/ledger.jsonl"
 }
 
 if [[ ${1:-} == --help || ${1:-} == -h ]]; then

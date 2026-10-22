@@ -1,5 +1,6 @@
-# Checking ledger lines against the ledger contract (ledger-contract.json, passed as $contract).
-# Used through ledger_jq in team.sh. Each *_problems def yields one string per problem found.
+# Checking ledger lines against the ledger contract (ledger-contract.json, passed as $contract),
+# and reading state from them. Used through ledger_jq in team.sh. Each *_problems def yields one
+# string per problem found.
 
 # A jq type, or a field type of the contract, as a noun: "a list", "a number", "null".
 def noun:
@@ -87,3 +88,15 @@ def contract_table:
            + if $optional == [] then "" else "; optional \($optional | join(", "))" end) as $text
       | "  \(.key | pad($event_width))  \($kind.writer | pad($writer_width))  \($text)"
         + if $kind.about then "  (\($kind.about))" else "" end);
+
+# The open worktrees among a stream of ledger events: one {task, project, branch, worktree} per
+# opened or worktree-added event with no later worktree-returned of the same task, project and
+# worktree, in the order they were added.
+def open_worktrees(events):
+  reduce events as $e ([];
+    if $e.event == "opened" or $e.event == "worktree-added" then
+      . + [$e | {task, project, branch, worktree}]
+    elif $e.event == "worktree-returned" then
+      map(select([.task, .project, .worktree] != [$e.task, $e.project, $e.worktree]))
+    else . end)
+  | .[];
