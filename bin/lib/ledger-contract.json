@@ -41,7 +41,8 @@
     },
     "history-rewritten": {
       "writer": "team-clean-messages",
-      "required": {"branch": "string", "old_head": "string", "head": "string"}
+      "required": {"branch": "string", "old_head": "string", "head": "string"},
+      "optional": {"project": "string"}
     },
     "done": {
       "writer": "team-log",

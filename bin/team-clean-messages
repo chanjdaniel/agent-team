@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+# Strip agent attribution lines from the messages of a task branch's own commits, prove nothing
+# else changed, move the branch and print the push for the coordinator to run with Daniel's OK.
+#
+# Usage: team-clean-messages <worktree> [--check]
+# The range is origin/<base>..HEAD after git fetch origin <base>, the base being projects.toml's
+# for the project whose primary checkout the worktree belongs to (any other repo is refused).
+# Attribution lines are the library's (attribution_lines): a Co-Authored-By naming Claude,
+# Anthropic or an anthropic.com address (human co-authors stay), Claude-Session trailers and the
+# "Generated with Claude Code" line; the blank lines they leave at a message's end go too.
+# --check prints each offending commit (short sha and subject) with its lines, exit 1 if any,
+# and changes nothing.
+# Otherwise it refuses, changing nothing, on a detached HEAD, on the base branch or main, on a
+# branch naming no task (<type>/T<n>-...), with uncommitted changes or with a merge commit in the
+# range. From the first offender on, each commit is rebuilt with git commit-tree (never signed)
+# on its own tree and its new parent, with its author's and committer's names, emails and dates;
+# only the message changes. The branch moves, by a compare-and-swap ref update against the old
+# head, only when every rebuilt commit has its original's tree, author and committer, the commit
+# count matches and the old and new heads have an empty diff; otherwise exit 1 and nothing moves.
+# It never pushes: it prints git push --force-with-lease=<branch>:<old head> origin <branch> on
+# stdout and appends history-rewritten. With nothing to clean it says so and exits 0.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+usage="usage: team-clean-messages <worktree> [--check]"
+
+worktree='' check=''
+while (($#)); do
+  case $1 in
+    --check) check=1 ;;
+    -*) usage_error "$usage" ;;
+    *)
+      [[ -z $worktree ]] || usage_error "$usage"
+      worktree=$1
+      ;;
+  esac
+  shift
+done
+[[ -n $worktree ]] || usage_error "$usage"
+
+git -C "$worktree" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "$worktree is not a git worktree"
+worktree=$(git -C "$worktree" rev-parse --show-toplevel)
+g() { git -C "$worktree" "$@"; }
+
+# The project: the registered one whose primary checkout this worktree belongs to.
+primary=$(dirname "$(g rev-parse --path-format=absolute --git-common-dir)")
+primary=$(realpath -m -- "$primary")
+names=$(team_project --list) || exit 1
+project=''
+while IFS= read -r name; do
+  path=$(team_project "$name" path) || exit 1
+  if [[ $(realpath -m -- "$path") == "$primary" ]]; then project=$name; fi
+done <<<"$names"
+[[ -n $project ]] || die "$worktree is a worktree of $primary, which is no project's primary checkout in projects.toml"
+base=$(team_project "$project" base) || exit 1
+
+g fetch -q origin "$base" || die "cannot fetch $base from origin"
+g rev-parse -q --verify "refs/remotes/origin/$base^{commit}" >/dev/null || die "origin has no branch $base"
+branch=$(g symbolic-ref -q --short HEAD) || branch=''
+old_head=$(g rev-parse HEAD)
+range="origin/$base..${branch:-HEAD}"
+commits=$(g rev-list --reverse "origin/$base..$old_head") || die "cannot list $range"
+mapfile -t commits <<<"$commits"
+[[ -n ${commits[0]} ]] || commits=()
+
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+
+# Each commit's message, exactly as stored, in $scratch/<sha>, and its attribution lines in
+# $scratch/<sha>.lines; offenders lists the commits that have any.
+offenders=()
+for sha in "${commits[@]}"; do
+  g cat-file commit "$sha" | sed '1,/^$/d' >"$scratch/$sha"
+  attribution_lines <"$scratch/$sha" >"$scratch/$sha.lines"
+  [[ ! -s $scratch/$sha.lines ]] || offenders+=("$sha")
+done
+
+# One line for the commit <sha>: its short sha and subject.
+describe() { g log -1 --format='%h %s' "$1"; }
+
+if [[ -n $check ]]; then
+  for sha in "${offenders[@]}"; do
+    describe "$sha"
+    sed 's/^/  /' "$scratch/$sha.lines"
+  done
+  ((${#offenders[@]} == 0)) || exit 1
+fi
+
+if [[ -z $check ]]; then
+  [[ -n $branch ]] || die "$worktree is on a detached HEAD; check out the task's branch first"
+  [[ $branch != "$base" && $branch != main ]] || die "$branch is the base branch or main; only a task branch is cleaned"
+  [[ $branch =~ ^[^/]+/(T[1-9][0-9]*)- ]] || die "$branch names no task (<type>/T<n>-<slug>)"
+  task=${BASH_REMATCH[1]}
+  changes=$(worktree_changes "$worktree" | paste -sd ';' | sed 's/;/; /g')
+  [[ -z $changes ]] || die "$worktree has uncommitted changes: $changes"
+  merges=$(g rev-list --min-parents=2 --abbrev-commit "origin/$base..$old_head" | paste -sd ' ')
+  [[ -z $merges ]] || die "there is a merge commit in $range: $merges; it cannot be rebuilt message by message"
+fi
+
+if ((${#offenders[@]} == 0)); then
+  if ((${#commits[@]} == 1)); then count="the 1 commit of $range carries"; else count="the ${#commits[@]} commits of $range carry"; fi
+  echo "team-clean-messages: nothing to clean: $count no attribution lines" >&2
+  exit 0
+fi
+
+# The headers of the commit <sha> that a rebuild must keep: all but its parents and signature.
+kept_headers() {
+  g cat-file commit "$1" |
+    awk '/^$/ { exit } /^parent / { next } /^gpgsig(-sha256)? / { sig = 1; next } sig && /^ / { next } { sig = 0; print }'
+}
+
+# The name, email and raw date of the commit <sha>'s <author|committer>, one per line.
+person() {
+  g cat-file commit "$2" | sed -n "/^\$/q; s/^$1 \(.*\) <\(.*\)> \([0-9]* [-+][0-9]*\)\$/\1\n\2\n\3/p"
+}
+
+# Rebuild from the first offender on: until then, every commit stays as it is.
+parent=$(g rev-parse "${commits[0]}^")
+rebuilt=()
+for sha in "${commits[@]}"; do
+  msg=$scratch/$sha
+  if [[ -s $scratch/$sha.lines ]]; then
+    strip_attribution <"$scratch/$sha" >"$scratch/$sha.new"
+    grep -q '[^[:space:]]' "$scratch/$sha.new" || die "$(describe "$sha") would be left with an empty message; nothing moved"
+    msg=$scratch/$sha.new
+  elif [[ $(g rev-parse "$sha^") == "$parent" ]]; then
+    parent=$sha
+    rebuilt+=("$sha")
+    continue
+  fi
+  mapfile -t author < <(person author "$sha")
+  mapfile -t committer < <(person committer "$sha")
+  ((${#author[@]} == 3 && ${#committer[@]} == 3)) ||
+    die "cannot read the author and committer of $(describe "$sha"); nothing moved"
+  parent=$(GIT_AUTHOR_NAME=${author[0]} GIT_AUTHOR_EMAIL=${author[1]} GIT_AUTHOR_DATE=${author[2]} \
+    GIT_COMMITTER_NAME=${committer[0]} GIT_COMMITTER_EMAIL=${committer[1]} GIT_COMMITTER_DATE=${committer[2]} \
+    g commit-tree --no-gpg-sign "$(g rev-parse "$sha^{tree}")" -p "$parent" -F "$msg") ||
+    die "cannot rebuild $(describe "$sha"); nothing moved"
+  rebuilt+=("$parent")
+done
+new_head=$parent
+
+# The proof, before anything moves: same trees, people and dates, same count, no diff.
+for i in "${!commits[@]}"; do
+  sha=${commits[i]} new=${rebuilt[i]}
+  [[ $(g rev-parse "$sha^{tree}") == "$(g rev-parse "$new^{tree}")" ]] ||
+    die "the rebuilt $(describe "$sha") is wrong: its tree differs; nothing moved"
+  [[ $(kept_headers "$sha") == "$(kept_headers "$new")" ]] ||
+    die "the rebuilt $(describe "$sha") is wrong: its author, committer or headers differ; nothing moved"
+done
+[[ $(g rev-list --count "origin/$base..$new_head") == "${#commits[@]}" ]] ||
+  die "the rebuilt branch does not have ${#commits[@]} commits on origin/$base; nothing moved"
+g diff --quiet "$old_head" "$new_head" -- || die "the rebuilt branch's content differs from $branch's; nothing moved"
+
+g update-ref -m "team-clean-messages: strip attribution lines" "refs/heads/$branch" "$new_head" "$old_head" 2>"$scratch/update" ||
+  die "$branch moved while it was being cleaned, so it was left where it is: $(head -n 1 "$scratch/update")"
+
+push="git push --force-with-lease=$branch:$old_head origin $branch"
+trap 'status=$?; rm -rf "$scratch"; ((status == 0)) || echo "team-clean-messages: $branch moved to $new_head, but history-rewritten is not in the ledger; push it with: $push" >&2' EXIT
+ledger_append "$(jq -cn --arg task "$task" --arg project "$project" --arg branch "$branch" \
+  --arg old "$old_head" --arg new "$new_head" \
+  '{ts: (now | todate), task: $task, event: "history-rewritten", project: $project, branch: $branch,
+    old_head: $old, head: $new}')"
+
+{
+  echo "team-clean-messages: rewrote the messages of ${#offenders[@]} of ${#commits[@]} commits of $range:"
+  for sha in "${offenders[@]}"; do
+    echo "  $(describe "$sha") ($(wc -l <"$scratch/$sha.lines") lines removed)"
+  done
+  echo "team-clean-messages: $branch moved from ${old_head:0:7} to ${new_head:0:7}; nothing is pushed. With Daniel's OK, run:"
+} >&2
+echo "$push"

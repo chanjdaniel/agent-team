@@ -5,7 +5,8 @@
 # It sets TEAM_HOME (the directory above bin/, unless TEAM_HOME is already set), answers
 # --help with the calling script's header (then runs the script's help_more, if it defined one
 # before sourcing), and provides die, usage_error, team_project, ledger_jq, ledger_append,
-# task_events, task_worktrees, worktree_changes, live_sessions, github, pr_part and task_state_json.
+# task_events, task_worktrees, worktree_changes, attribution_lines, strip_attribution,
+# live_sessions, github, pr_part and task_state_json.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
 # shellcheck shell=bash
 
@@ -83,6 +84,23 @@ worktree_changes() {
   [[ -z $list ]] || echo "changes to tracked files: $list"
   list=$(git -C "$1" ls-files --others --exclude-standard | paste -sd ' ')
   [[ -z $list ]] || echo "untracked files: $list"
+}
+
+# The agent attribution lines no commit message may carry, one case-insensitive ERE over whole
+# lines: a Co-Authored-By naming Claude, Anthropic or an anthropic.com address (human co-authors
+# stay), a Claude-Session trailer, and the "Generated with Claude Code" line with or without its
+# emoji and link.
+ATTRIBUTION_RE='^[[:space:]]*(co-authored-by:(.*[^[:alnum:]])?(claude|anthropic)([^[:alnum:]].*)?|claude-session:.*|(🤖[[:space:]]*)?generated with (claude code|\[claude code\])([[:space:]]*\([^)]*\))?\.?)[[:space:]]*$'
+
+# The attribution lines of the message on stdin, nothing when it has none.
+attribution_lines() {
+  grep -Ei -- "$ATTRIBUTION_RE" || true
+}
+
+# The message on stdin without its attribution lines and the blank lines that leaves at its end.
+strip_attribution() {
+  { grep -Eiv -- "$ATTRIBUTION_RE" || true; } |
+    awk '{ line[NR] = $0 } END { n = NR; while (n > 0 && line[n] ~ /^[[:space:]]*$/) n--; for (i = 1; i <= n; i++) print line[i] }'
 }
 
 # The project registry, through this checkout's team-project: team_project [<arguments>...]
