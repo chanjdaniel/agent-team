@@ -6,6 +6,8 @@
 #     reaches it;
 #   - the planner's edit hook blocks a write outside .scratch/.
 #
+# It runs team-doctor first, and stops there, launching nothing, on any FAIL.
+#
 # Usage: team-load-check [--toolkit <name>]...
 # Exit 0 when every check passes. The inventory is kept in tasks/T0/ for the toolkit's README.
 set -euo pipefail
@@ -19,6 +21,11 @@ while [[ $# -gt 0 ]]; do
     *) echo "usage: team-load-check [--toolkit <name>]..." >&2; exit 2 ;;
   esac
 done
+
+TEAM_HOME=$TEAM_HOME "$home/bin/team-doctor" || {
+  echo "load check: team-doctor reports a FAIL above; fix it, then run the load check again" >&2
+  exit 1
+}
 
 # Background sessions start only in trusted directories, and trust is per path, so the check
 # always uses the same scratch repo; its worktree path is trusted once, at setup.

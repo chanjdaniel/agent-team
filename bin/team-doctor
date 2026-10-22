@@ -1,0 +1,230 @@
+#!/usr/bin/env bash
+# Say what this machine still lacks to run the team: one PASS, WARN or FAIL line per check, each
+# WARN and FAIL with its reason and its fix ("FAIL tool jq: 1.6, below the minimum 1.7.1; fix: ...").
+#
+# Usage: team-doctor [--json]
+#   --json   One array of {check, verdict, reason, fix} instead of the lines; fix is "" on a PASS.
+# The checks, in order:
+#   os            Arch Linux (ID or ID_LIKE arch in /etc/os-release) or macOS; on any other OS
+#                 it fails and no tool is checked.
+#   homebrew      macOS only: Homebrew's GNU tools first on PATH, as bin/lib/platform.sh puts them.
+#   tool <name>   Each tool machine/tools.lock lists for this OS, by its version_cmd: missing, a
+#                 version it cannot read, or below its min fails; a version off its pin fails, or
+#                 warns where the lock says pin_mismatch WARN (Claude Code, which updates itself).
+#                 The fix is the lock's source for this OS.
+#   machine       This machine's team name, ~/.config/agent-team/machine.
+#   claude login  `claude auth status`: signed in with a claude.ai account.
+#   github login  `gh auth status` for github.com.
+#   clock         Within 60 s of the Date header of https://api.github.com (curl -sI); warns.
+#   lease         `team-lease status`: passes held here, warns held elsewhere or released, fails
+#                 when GitHub is unreachable or team-lease refuses.
+# Logins are asked of claude and gh themselves: no credential file, ~/.claude.json or
+# ~/.claude/channels/ is read, and no line carries a secret. Read-only.
+# TEAM_OS_RELEASE names the os-release file to read instead of /etc/os-release (the tests' seam).
+# Exit 0 nothing failed, 1 a check failed, 2 usage error.
+set -euo pipefail
+# The doctor reports a missing Homebrew or GNU tool as its homebrew line instead of refusing.
+# shellcheck disable=SC2034 # read by bin/lib/platform.sh
+platform_report=1
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+[[ $# -eq 0 || ($# -eq 1 && $1 == --json) ]] || usage_error "usage: team-doctor [--json]"
+json=0
+[[ ${1:-} != --json ]] || json=1
+
+bin=$(dirname "$TEAM_LIB")
+lock=$(dirname "$bin")/machine/tools.lock
+err=$(mktemp)
+trap 'rm -f "$err"' EXIT
+results=() failed=0
+
+# Record one check: report <check> <verdict> <reason> [<fix>]; the line is printed at once.
+report() {
+  local line
+  results+=("$(jq -cn --arg check "$1" --arg verdict "$2" --arg reason "$3" --arg fix "${4:-}" \
+    '{check: $check, verdict: $verdict, reason: $reason, fix: $fix}')")
+  [[ $2 != FAIL ]] || failed=1
+  if ((json)); then return 0; fi
+  line="$2 $1: $3"
+  [[ -z ${4:-} ]] || line+="; fix: $4"
+  printf '%s\n' "$line"
+}
+
+# Run <command...> for at most <seconds>, or unbounded where there is no timeout (macOS
+# without coreutils): bounded <seconds> <command...>
+bounded() {
+  if command -v timeout >/dev/null; then timeout "$@"; else "${@:2}"; fi
+}
+
+# The first line a command wrote to stderr (in $err), without its "<script>: " prefix.
+first_error() {
+  local line
+  line=$(grep -m1 . "$err" || true)
+  printf '%s\n' "${line#team-*: }"
+}
+
+# Whether version <a> is below version <b>, number by number: version_below <a> <b>
+version_below() {
+  local -a a b
+  local i
+  IFS=. read -ra a <<<"$1"
+  IFS=. read -ra b <<<"$2"
+  for ((i = 0; i < ${#a[@]} || i < ${#b[@]}; i++)); do
+    if ((10#${a[i]:-0} < 10#${b[i]:-0})); then return 0; fi
+    if ((10#${a[i]:-0} > 10#${b[i]:-0})); then return 1; fi
+  done
+  return 1
+}
+
+# A value of the os-release file: os_release <key>
+os_release() {
+  sed -n "s/^$1=//p" "${TEAM_OS_RELEASE:-/etc/os-release}" 2>/dev/null | head -n1 |
+    sed -E "s/^\"(.*)\"\$/\\1/; s/^'(.*)'\$/\\1/"
+}
+
+# One tool of the lock: check_tool <name> <version_cmd> <pattern> <pin> <min> <pin_mismatch> <source>
+check_tool() {
+  local name=$1 cmd=$2 pattern=$3 pin=$4 min=$5 mismatch=$6 source=$7 words out rc=0 version
+  read -ra words <<<"$cmd"
+  out=$(bounded 30 "${words[@]}" 2>&1 </dev/null) || rc=$?
+  if ((rc == 127)); then
+    report "tool $name" FAIL "not installed" "$source"
+  elif ((rc == 124)); then
+    report "tool $name" FAIL "\`$cmd\` did not answer within 30 s" "$source"
+  elif [[ ! $out =~ $pattern ]]; then
+    report "tool $name" FAIL "\`$cmd\` printed no version" "$source"
+  else
+    version=${BASH_REMATCH[1]}
+    if [[ -n $pin && $version == "$pin" ]]; then
+      report "tool $name" PASS "$version"
+    elif [[ -n $pin ]]; then
+      report "tool $name" "$mismatch" "$version, not the pinned $pin" "$source"
+    elif version_below "$version" "$min"; then
+      report "tool $name" FAIL "$version, below the minimum $min" "$source"
+    else
+      report "tool $name" PASS "$version (minimum $min)"
+    fi
+  fi
+}
+
+# os
+os='' kernel=$(uname -s)
+case $kernel in
+  Darwin)
+    os=macos
+    report os PASS macOS
+    ;;
+  Linux)
+    name=$(os_release PRETTY_NAME)
+    name=${name:-$(os_release ID)}
+    name=${name:-Linux}
+    if [[ $(os_release ID) == arch ]]; then
+      os=arch
+      report os PASS "$name"
+    elif [[ " $(os_release ID_LIKE) " == *" arch "* ]]; then
+      os=arch
+      report os PASS "$name, an Arch Linux"
+    else
+      report os FAIL "$name is neither Arch Linux nor macOS, so no tool is checked" "run the team on Arch Linux or macOS"
+    fi
+    ;;
+  *) report os FAIL "$kernel is neither Arch Linux nor macOS, so no tool is checked" "run the team on Arch Linux or macOS" ;;
+esac
+
+# homebrew
+if [[ $os == macos ]]; then
+  if [[ -n $PLATFORM_PROBLEM ]]; then
+    report homebrew FAIL "$PLATFORM_PROBLEM" "$PLATFORM_FIX"
+  else
+    report homebrew PASS "Homebrew's GNU tools are first on PATH"
+  fi
+fi
+
+# tool <name>; fd 3, since a tool's version command may read stdin.
+if [[ -n $os ]]; then
+  while IFS= read -r -u 3 name && IFS= read -r -u 3 cmd && IFS= read -r -u 3 pattern &&
+    IFS= read -r -u 3 pin && IFS= read -r -u 3 min && IFS= read -r -u 3 mismatch &&
+    IFS= read -r -u 3 source; do
+    check_tool "$name" "$cmd" "$pattern" "$pin" "$min" "$mismatch" "$source"
+  done 3< <(jq -r --arg os "$os" '.tools[] | select(.source[$os])
+    | .name, .version_cmd, .version_pattern, .pin // "", .min // "", .pin_mismatch // "FAIL", .source[$os]' "$lock")
+fi
+
+# machine
+machine=''
+if machine=$(machine_name 2>"$err"); then
+  report machine PASS "$machine"
+else
+  reason=$(first_error)
+  report machine FAIL "${reason%%; write one with: *}" "echo <name> > ~/.config/agent-team/machine"
+fi
+
+# claude login: the answer is read for these two fields alone.
+login_fix="claude auth login --claudeai" rc=0
+auth=$(bounded 30 claude auth status --json 2>/dev/null </dev/null) || rc=$?
+auth=$(jq -r 'select(type == "object" and (.loggedIn | type) == "boolean")
+  | if .loggedIn then (.authMethod // "" | tostring) else "-" end' <<<"$auth" 2>/dev/null) || auth=''
+case $auth in
+  claude.ai) report "claude login" PASS "signed in with a claude.ai account" ;;
+  -) report "claude login" FAIL "not signed in" "$login_fix" ;;
+  '') report "claude login" FAIL "\`claude auth status\` did not answer (exit $rc)" "install Claude Code (see tool claude), then $login_fix" ;;
+  *) report "claude login" FAIL "signed in through $auth, not a claude.ai account" "claude auth logout, then $login_fix" ;;
+esac
+
+# github login
+if bounded 30 gh auth status --hostname github.com >/dev/null 2>&1 </dev/null; then
+  report "github login" PASS "gh is signed in to github.com"
+else
+  report "github login" FAIL "gh auth status finds no working login for github.com" \
+    "gh auth login --hostname github.com --git-protocol https --web"
+fi
+
+# clock
+github_date=$(bounded 30 curl -sSI --max-time 20 https://api.github.com 2>/dev/null </dev/null |
+  awk 'tolower($1) == "date:" { sub(/^[^:]*:[ \t]*/, ""); sub(/\r$/, ""); print; exit }') || github_date=''
+if [[ -n $github_date ]] && github_epoch=$(date -d "$github_date" +%s 2>/dev/null); then
+  skew=$((github_epoch - $(date +%s)))
+  if ((skew > 60)); then
+    direction=behind
+  elif ((skew < -60)); then
+    direction="ahead of" skew=$((-skew))
+  else
+    direction=''
+  fi
+  if [[ -z $direction ]]; then
+    report clock PASS "within 60 s of GitHub's"
+  else
+    clock_fix="sudo timedatectl set-ntp true"
+    [[ $os != macos ]] || clock_fix="sudo systemsetup -setusingnetworktime on"
+    report clock WARN "this clock is $skew s $direction GitHub's" "$clock_fix"
+  fi
+else
+  report clock WARN "cannot read the Date of https://api.github.com" "check the network, then run team-doctor again"
+fi
+
+# lease: team-lease needs the machine's name, whose own line says how to write it.
+rc=0
+if [[ -z $machine ]]; then
+  rc=no-name
+else
+  lease=$(TEAM_HOME=$TEAM_HOME "$bin/team-lease" status --json 2>"$err" </dev/null) || rc=$?
+fi
+case $rc in
+  no-name) report lease FAIL "this machine has no team name to read the lease with" "the machine line's fix, then run team-doctor again" ;;
+  0)
+    read -r state holder epoch age mine < <(jq -r '[.state, .holder // "-", .epoch, .age_minutes // "-", .mine]
+      | map(tostring) | join(" ")' <<<"$lease")
+    if [[ $state == held && $mine == true ]]; then
+      report lease PASS "held here, epoch $epoch"
+    elif [[ $state == held ]]; then
+      report lease WARN "held by $holder, epoch $epoch, renewed $age minutes ago" "hand off on $holder, then team-resume here"
+    else
+      report lease WARN "released, epoch $epoch" "team-lease take, with Daniel's yes"
+    fi
+    ;;
+  75) report lease FAIL "GitHub unreachable, so the lease is unconfirmed" "check the network, then run team-doctor again" ;;
+  *) report lease FAIL "$(first_error)" "fix what team-lease names, then run team-doctor again" ;;
+esac
+
+if ((json)); then printf '%s\n' "${results[@]}" | jq -s .; fi
+exit "$failed"

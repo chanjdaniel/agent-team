@@ -15,6 +15,7 @@ The team's own work on it goes through a task and a PR to `dev`, like any projec
 | `plugins/coordinator-skills/` | Skills loaded only into the coordinator by `bin/claude-coordinator` |
 | `templates/` | The task plan and the worker briefs `team-open` and `team-brief` render |
 | `projects.toml` | The project registry, read only through `bin/team-project` |
+| `machine/` | What a machine needs to run the team: `tools.lock`, the tools `team-doctor` checks, pinned or with a minimum, and their source per OS |
 | `ledger.jsonl` | The append-only record of every task's events |
 | `tasks/` | Each task's plan, briefs and archived scratch; history, kept as written |
 | `manual-steps.md` | The steps only Daniel can take |
