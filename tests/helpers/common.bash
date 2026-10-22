@@ -31,7 +31,7 @@ sandbox() {
   git config --global init.defaultBranch main
   git config --global advice.detachedHead false
 
-  unset TEAM_COORDINATOR_CHANNEL
+  unset TEAM_COORDINATOR_CHANNEL CLAUDE_PROJECT_DIR
   guard_sandbox
 }
 

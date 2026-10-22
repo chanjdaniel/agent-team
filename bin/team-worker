@@ -5,65 +5,92 @@
 # Usage: team-worker <task> <role> <worktree> [--toolkit <name>]... -- <first prompt>
 #   task      T<n>, e.g. T1
 #   role      planner | builder | reviewer
-#   worktree  a linked git worktree of the task's repo (never a primary checkout)
+#   worktree  a linked git worktree of the task's repo (never a primary checkout); for a task
+#             opened by team-open, one of its open worktrees (opened or added, not returned)
 #
-# Prints the background session id and logs the launch to ledger.jsonl (except T0, the load check).
+# Refuses a closed task and a task with no Discord thread. Prints the background session id and
+# logs the launch to ledger.jsonl, with the worktree's project and branch when the task was opened
+# by team-open (T0, the load check, needs no thread and is not logged).
 # The merged settings and MCP config are generated into tasks/<task>/ (gitignored).
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
-home=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# Roles, settings, toolkits and hooks are code: they come from this checkout, beside bin/.
+code=$(dirname "$(dirname "$TEAM_LIB")")
 
-die() { echo "team-worker: $*" >&2; exit 1; }
-
-[[ $# -ge 3 ]] || die "usage: team-worker <task> <role> <worktree> [--toolkit <name>]... -- <first prompt>"
+[[ $# -ge 3 ]] || usage_error "usage: team-worker <task> <role> <worktree> [--toolkit <name>]... -- <first prompt>"
 task=$1 role=$2 worktree=$3
 shift 3
-[[ $task =~ ^T[0-9]+$ ]] || die "task must look like T<n>, got '$task'"
-[[ -f $home/roles/$role.md && -f $home/settings/$role.json ]] || die "unknown role '$role'"
+[[ $task =~ ^T[0-9]+$ ]] || usage_error "task must look like T<n>, got '$task'"
+[[ -f $code/roles/$role.md && -f $code/settings/$role.json ]] || usage_error "unknown role '$role'"
 
 toolkits=()
 while [[ $# -gt 0 && $1 != -- ]]; do
   case $1 in
-    --toolkit) [[ $# -ge 2 ]] || die "--toolkit needs a name"; toolkits+=("$2"); shift 2 ;;
-    *) die "unexpected argument '$1'" ;;
+    --toolkit)
+      [[ $# -ge 2 ]] || usage_error "--toolkit needs a name"
+      [[ -d $code/toolkits/$2 ]] || usage_error "unknown toolkit '$2'"
+      toolkits+=("$2")
+      shift 2
+      ;;
+    *) usage_error "unexpected argument '$1'" ;;
   esac
 done
-[[ ${1:-} == -- ]] || die "missing '--' before the first prompt"
+[[ ${1:-} == -- ]] || usage_error "missing '--' before the first prompt"
 shift
 prompt="$*"
-[[ -n $prompt ]] || die "missing first prompt"
-
-# Every task has its Discord thread before any worker starts (bin/team-thread).
-if [[ $task != T0 ]] && ! jq -e --arg t "$task" 'select(.task == $t and .event == "thread")' "$home/ledger.jsonl" >/dev/null 2>&1; then
-  die "$task has no Discord thread; open one first with bin/team-thread"
-fi
+[[ -n $prompt ]] || usage_error "missing first prompt"
 
 # A worker runs only in a linked worktree, so it can never edit a primary checkout.
-worktree=$(realpath -- "$worktree")
+real=$(realpath -e -- "$worktree" 2>/dev/null) || die "$worktree does not exist"
+worktree=$real
 git_dir=$(git -C "$worktree" rev-parse --absolute-git-dir 2>/dev/null) || die "$worktree is not a git checkout"
-common_dir=$(realpath -- "$(git -C "$worktree" rev-parse --git-common-dir)")
+common_dir=$(realpath -- "$(git -C "$worktree" rev-parse --path-format=absolute --git-common-dir)")
 [[ $git_dir != "$common_dir" ]] || die "$worktree is a primary checkout, not a linked worktree"
 
-taskdir=$home/tasks/$task
+# T0 is the load check, not a task: it has no ledger entry and stays out of the ledger.
+worktree_event=
+if [[ $task != T0 ]]; then
+  ledger=$TEAM_HOME/ledger.jsonl
+  events=()
+  [[ ! -e $ledger ]] || mapfile -t events < <(jq -r --arg t "$task" 'select(.task == $t) | .event' "$ledger")
+  has() { [[ " ${events[*]} " == *" $1 "* ]]; }
+  ! has closed || die "$task is closed"
+  # Every task has its Discord thread before any worker starts (bin/team-thread).
+  has thread || die "$task has no Discord thread; open one first with bin/team-thread"
+
+  # A task opened by team-open launches only in one of its open worktrees; tasks from before
+  # team-open (no opened event) launch in any linked worktree.
+  if has opened; then
+    open=
+    while IFS= read -r line; do
+      wt=$(jq -r .worktree <<<"$line")
+      if [[ $(realpath -m -- "$wt") == "$worktree" ]]; then worktree_event=$line; fi
+      open+=$'\n'"  $(jq -r '"\(.worktree) (\(.project), \(.branch))"' <<<"$line")"
+    done < <(task_worktrees "$task")
+    [[ -n $worktree_event ]] || die "$worktree is not one of $task's open worktrees:${open:- it has none}"
+  fi
+fi
+
+taskdir=$TEAM_HOME/tasks/$task
 mkdir -p "$taskdir"
 
 # Role settings layered on the shared worker settings; permission lists are concatenated.
+# @TEAM_HOME@ in the settings names this checkout, where the hooks live.
 settings=$taskdir/settings.$role.json
-jq -s '.[0] as $base | .[1] as $role
+jq -s --arg code "$code" '.[0] as $base | .[1] as $role
   | ($base * $role)
   | .permissions.deny = (($base.permissions.deny // []) + ($role.permissions.deny // []))
-  | .permissions.allow = (($base.permissions.allow // []) + ($role.permissions.allow // []))' \
-  "$home/settings/worker.json" "$home/settings/$role.json" |
-  sed "s#@TEAM_HOME@#$home#g" >"$settings"
+  | .permissions.allow = (($base.permissions.allow // []) + ($role.permissions.allow // []))
+  | walk(if type == "string" then gsub("@TEAM_HOME@"; $code) else . end)' \
+  "$code/settings/worker.json" "$code/settings/$role.json" >"$settings"
 
 # MCP servers come only from the chosen toolkits.
 mcp=$taskdir/mcp.$role.json
 plugin_args=()
 mcp_files=()
 for kit in "${toolkits[@]}"; do
-  dir=$home/toolkits/$kit
-  [[ -d $dir ]] || die "unknown toolkit '$kit'"
+  dir=$code/toolkits/$kit
   plugin_args+=(--plugin-dir "$dir")
   if [[ -f $dir/.mcp.json ]]; then mcp_files+=("$dir/.mcp.json"); fi
 done
@@ -79,16 +106,18 @@ out=$(cd "$worktree" && claude --bg \
   --strict-mcp-config --mcp-config "$mcp" \
   "${plugin_args[@]}" \
   --settings "$settings" \
-  --append-system-prompt-file "$home/roles/$role.md" \
+  --append-system-prompt-file "$code/roles/$role.md" \
   --permission-mode auto \
   --name "$name" \
   "$prompt")
 [[ $out != *"send a prompt to start"* ]] || die "the session started without its prompt: $out"
 id=$(grep -oE '\b[0-9a-f]{8}\b' <<<"$out" | head -n 1) || die "could not read the session id from: $out"
 
-# T0 is the load check, not a task, so it stays out of the ledger.
-[[ $task == T0 ]] || jq -cn --arg task "$task" --arg role "$role" --arg session "$id" --arg worktree "$worktree" \
-  --args '{ts: (now | todate), task: $task, event: "launch", role: $role, session: $session,
-    worktree: $worktree, toolkits: $ARGS.positional}' "${toolkits[@]}" >>"$home/ledger.jsonl"
+if [[ $task != T0 ]]; then
+  ledger_append "$(jq -cn --arg task "$task" --arg role "$role" --arg session "$id" --arg worktree "$worktree" \
+    --argjson at "${worktree_event:-null}" --args '{ts: (now | todate), task: $task, event: "launch",
+      role: $role, session: $session, worktree: $worktree, toolkits: $ARGS.positional}
+      + ($at // {} | {project, branch} | with_entries(select(.value != null)))' "${toolkits[@]}")"
+fi
 
 echo "$id"
