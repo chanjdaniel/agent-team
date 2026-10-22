@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Post a review as a comment on a pull request: the reviewer's only way to comment.
+# The script builds the whole gh call itself and posts only a task directory's Markdown, so the
+# reviewer's allow rule for it posts no other file and on no other repo's PR.
+#
+# Usage: team-review-comment <pr url> <file>
+#   pr url  https://github.com/<owner>/<name>/pull/<n>, in a registered project's repo
+#   file    a non-empty .md file inside the task directory (the project's task_dir) of the git
+#           checkout that holds it, symlinks resolved first
+# Prints the comment's URL.
+# Refused, exit 2 with nothing posted: any other command line; exit 1: a repo no project has, any
+# other file, and a comment GitHub refuses.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+[[ $# -eq 2 ]] || usage_error "usage: team-review-comment <pr url> <file>"
+url=$1
+pr=$(registered_pr "$url")
+{ read -r project && read -r repo && read -r number; } <<<"$pr"
+
+file=$(realpath -e -- "$2" 2>/dev/null) || die "no such file: $2"
+[[ -f $file && -s $file && $file == *.md ]] || die "$2 is not a non-empty .md file"
+top=$(git -C "$(dirname "$file")" rev-parse --show-toplevel 2>/dev/null) || die "$2 is not in a git checkout"
+task_dir=$(realpath -m -- "$top/$(team_project "$project" task_dir)")
+[[ $file == "$task_dir"/* ]] || die "$2 is not inside the task directory $task_dir"
+
+gh pr comment "$number" --repo "$repo" --body-file "$file" || die "GitHub refused the comment on $url"

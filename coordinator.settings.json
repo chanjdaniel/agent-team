@@ -16,7 +16,16 @@
       "Bash(*op item*)",
       "Bash(*op document*)",
       "Bash(*/proc/*/environ*)",
-      "Read(//proc/**)"
+      "Read(//proc/**)",
+      "Bash(git * --no-verify)",
+      "Bash(git * --no-verify *)",
+      "Bash(git commit -n*)",
+      "Bash(git commit * -n)",
+      "Bash(git commit * -n -*)",
+      "Bash(git *config*core.hooksPath*)",
+      "Bash(git *config*core.hookspath*)",
+      "Bash(git *-c core.hooksPath*)",
+      "Bash(git *-c core.hookspath*)"
     ]
   },
   "hooks": {

@@ -1,0 +1,10 @@
+# The records: the only paths a direct commit on dev may touch, one glob per line, where a *
+# matches across directories. Read by bin/lib/team.sh's non_records, for the pre-commit hook and
+# team-records-check; .github/workflows/dev-records.yml's paths-ignore lists the same globs
+# (tests/repo.bats checks it).
+ledger.jsonl
+manual-steps.md
+tasks/**
+projects/**
+memory/**
+machine/**

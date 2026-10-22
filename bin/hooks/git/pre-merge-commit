@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Git's pre-merge-commit hook for the team home: pre-commit's check, for a merge commit git makes
+# without stopping (one that stops on a conflict is committed through pre-commit itself).
+set -euo pipefail
+# shellcheck disable=SC2034 # read by pre-commit
+merging=1
+# shellcheck source=bin/hooks/git/pre-commit
+source "$(dirname "${BASH_SOURCE[0]}")/pre-commit"
