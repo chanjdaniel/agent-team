@@ -10,11 +10,16 @@
 # task, keeping an existing tasks/T<n>/plan.md, and refuses a task that already has an opened
 # event; after a failure, re-running with --task finishes the half-open task in the slot that
 # holds its branch.
-# Fetches the base in the primary checkout, adds the first free trusted slot as a worktree on the
-# branch from origin/<base> (no upstream), makes the task directory (refused, and the slot removed
-# again, unless git ignores it), writes tasks/T<n>/plan.md from templates/plan.md, opens the thread
+# Fetches the base in the primary checkout and puts a trusted slot on the branch from origin/<base>
+# (no upstream). A git pool adds its first slot that is not yet a worktree. A treehouse pool runs
+# the project's lease command from the primary checkout with the task as the holder and takes the
+# path it prints; a path that is not a trusted slot, or a slot with changes to tracked files,
+# untracked files or a non-empty task directory, is handed back through the return command and
+# refused. Then makes the task directory (refused, and the slot removed or returned again, unless
+# git ignores it), writes tasks/T<n>/plan.md from templates/plan.md, opens the thread
 # (team-thread) and appends opened. Prints the task's facts as JSON; the project's other open
-# tasks go to stderr. Exit 75 when every slot is taken, listing the slots and who holds them.
+# tasks go to stderr. Exit 75 when every slot is taken (a git pool) or the lease command fails
+# (a treehouse pool), listing the slots and who holds them.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
@@ -56,8 +61,13 @@ base=$(jq -r .base <<<"$facts")
 task_dir=$(jq -r .task_dir <<<"$facts")
 provider=$(jq -r .pool.provider <<<"$facts")
 mapfile -t slots < <(jq -r '.pool.slots[]' <<<"$facts")
-[[ $provider == git ]] || die "team-open does not take worktrees from a $provider pool yet"
 git -C "$primary" rev-parse --git-dir >/dev/null 2>&1 || die "the primary checkout $primary is not a git checkout"
+if [[ $provider == treehouse ]]; then
+  lease=$(jq -r .pool.lease <<<"$facts")
+  return_cmd=$(jq -r .pool.return <<<"$facts")
+  [[ -x $lease ]] || die "the lease command $lease is not executable"
+  [[ -x $return_cmd ]] || die "the return command $return_cmd is not executable"
+fi
 
 # The task number. Creating tasks/T<n>/ is the claim, so two runs never take the same number.
 mkdir -p "$TEAM_HOME/tasks"
@@ -80,12 +90,21 @@ else
 fi
 branch=$type/$task-$slug
 
-# On failure, a number this run claimed is given back while nothing holds it yet; once a slot
-# holds the task's branch, the task is half open and re-running with --task finishes it.
-worktree=
+# On failure, a slot this run leased and has not yet put on the branch is returned, and a number
+# this run claimed is given back while nothing holds it yet; once a slot holds the task's branch,
+# the task is half open and re-running with --task finishes it.
+worktree='' leased='' lease_log=''
 on_exit() {
   local status=$?
+  [[ -z $lease_log ]] || rm -f "$lease_log"
   ((status != 0)) || return 0
+  if [[ -n $leased ]]; then
+    if (cd "$primary" && "$return_cmd" "$leased") </dev/null >&2; then
+      echo "team-open: handed $leased back to $return_cmd" >&2
+    else
+      echo "team-open: could not return $leased through $return_cmd; return it by hand" >&2
+    fi
+  fi
   if [[ -z $worktree ]]; then
     [[ -z $claimed ]] || rmdir "$TEAM_HOME/tasks/$task" 2>/dev/null || true
     return 0
@@ -106,7 +125,92 @@ done < <(git -C "$primary" worktree list --porcelain | awk '
   /^branch refs\/heads\// { branch = substr($0, 19) }
   END { if (path != "") print path "\t" branch }')
 
-# The slot already holding the task's branch (the resume case), else the first free slot.
+# Each slot, with the task holding it (from its branch's name) and its branch, on stderr.
+list_slots() {
+  local slot wt_branch holder
+  for slot in "${slots[@]}"; do
+    if [[ ! -v holds[$(realpath -m -- "$slot")] ]]; then
+      echo "  $slot: not a worktree" >&2
+      continue
+    fi
+    wt_branch=${holds[$(realpath -m -- "$slot")]}
+    holder=$(sed -nE 's#^[^/]+/(T[1-9][0-9]*)-.*#\1#p' <<<"$wt_branch")
+    echo "  $slot: ${holder:-no task} (${wt_branch:-detached HEAD})" >&2
+  done
+}
+
+# A git pool: add the first slot that is not a registered worktree, on the branch.
+take_git_slot() {
+  local slot free=
+  for slot in "${slots[@]}"; do
+    if [[ ! -v holds[$(realpath -m -- "$slot")] ]]; then free=$slot && break; fi
+  done
+  if [[ -z $free ]]; then
+    echo "team-open: every slot of $project is taken:" >&2
+    list_slots
+    exit 75
+  fi
+  git -C "$primary" worktree add -q --no-track -b "$branch" "$free" "origin/$base" ||
+    die "cannot add $free as a worktree of $primary"
+  worktree=$free added=1
+}
+
+# A treehouse pool: lease a slot for the task, check it is trusted and clean, then switch it to
+# the branch. The lease command's stderr (its pre-warm progress) is shown only when it fails.
+take_treehouse_slot() {
+  local slot trusted='' found=() list common
+  lease_log=$(mktemp)
+  if ! leased=$(cd "$primary" && "$lease" "$task" 2>"$lease_log"); then
+    leased=
+    echo "team-open: $project's lease command found no free slot:" >&2
+    cat "$lease_log" >&2
+    echo "team-open: $project's slots:" >&2
+    list_slots
+    exit 75
+  fi
+  [[ -n $leased ]] || die "the lease command $lease printed no path"
+  for slot in "${slots[@]}"; do
+    if [[ $(realpath -m -- "$slot") == "$(realpath -m -- "$leased")" ]]; then trusted=$slot; fi
+  done
+  [[ -n $trusted ]] || die "the lease command handed out $leased, which is not one of $project's slots"
+
+  common=$(git -C "$trusted" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) ||
+    die "the leased slot $trusted is not a git worktree"
+  [[ $(realpath -m -- "$common") == "$(realpath -m -- "$(git -C "$primary" rev-parse --path-format=absolute --git-common-dir)")" ]] ||
+    die "the leased slot $trusted is not a worktree of $primary"
+  list=$(git -C "$trusted" diff --name-only HEAD | paste -sd ' ')
+  [[ -z $list ]] || found+=("changes to tracked files: $list")
+  list=$(git -C "$trusted" ls-files --others --exclude-standard | paste -sd ' ')
+  [[ -z $list ]] || found+=("untracked files: $list")
+  if [[ -d $trusted/$task_dir ]]; then
+    list=$(find "$trusted/$task_dir" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | paste -sd ' ')
+    [[ -z $list ]] || found+=("a non-empty task directory $task_dir: $list")
+  fi
+  if ((${#found[@]})); then
+    list=$(printf '%s; ' "${found[@]}")
+    die "the leased slot $trusted is not clean: ${list%; }"
+  fi
+
+  git -C "$trusted" switch -q --no-track -c "$branch" "origin/$base" ||
+    die "cannot switch the leased slot $trusted to $branch"
+  worktree=$trusted added=1 leased=
+}
+
+# Undo take_*_slot for a slot this run took: remove or return it, and drop the branch.
+release_slot() {
+  case $provider in
+    git) git -C "$primary" worktree remove --force "$worktree" ;;
+    treehouse)
+      (cd "$worktree" && rmdir -p -- "$task_dir" 2>/dev/null) || true
+      git -C "$worktree" switch -q --detach
+      leased=$worktree
+      ;;
+  esac
+  git -C "$primary" branch -q -D "$branch"
+  worktree=
+}
+
+# The slot already holding the task's branch (the resume case), else a slot from the pool.
 added=
 for slot in "${slots[@]}"; do
   if [[ ${holds[$(realpath -m -- "$slot")]-} == "$branch" ]]; then worktree=$slot; fi
@@ -117,33 +221,18 @@ if [[ -z $worktree ]]; then
   done
   ! git -C "$primary" show-ref -q --verify "refs/heads/$branch" ||
     die "branch $branch already exists in $primary but no slot holds it"
-  free=
-  for slot in "${slots[@]}"; do
-    if [[ ! -v holds[$(realpath -m -- "$slot")] ]]; then free=$slot && break; fi
-  done
-  if [[ -z $free ]]; then
-    echo "team-open: every slot of $project is taken:" >&2
-    for slot in "${slots[@]}"; do
-      wt_branch=${holds[$(realpath -m -- "$slot")]}
-      holder=$(sed -nE 's#^[^/]+/(T[1-9][0-9]*)-.*#\1#p' <<<"$wt_branch")
-      echo "  $slot: ${holder:-no task} (${wt_branch:-detached HEAD})" >&2
-    done
-    exit 75
-  fi
-  git -C "$primary" worktree add -q --no-track -b "$branch" "$free" "origin/$base" ||
-    die "cannot add $free as a worktree of $primary"
-  worktree=$free added=1
+  case $provider in
+    git) take_git_slot ;;
+    treehouse) take_treehouse_slot ;;
+    *) die "team-open does not take worktrees from a $provider pool" ;;
+  esac
 fi
 base_sha=$(git -C "$worktree" merge-base HEAD "origin/$base")
 
 # The task directory must never be committed: refuse a project whose git does not ignore it.
 mkdir -p "$worktree/$task_dir"
 if ! git -C "$worktree" check-ignore -q -- "$task_dir"; then
-  if [[ -n $added ]]; then
-    git -C "$primary" worktree remove --force "$worktree"
-    git -C "$primary" branch -q -D "$branch"
-    worktree=
-  fi
+  [[ -z $added ]] || release_slot
   die "git does not ignore $task_dir in $project; add it to the project's .gitignore first"
 fi
 
