@@ -3,8 +3,20 @@
     "PreToolUse": [
       {
         "matcher": "Edit|Write|MultiEdit|NotebookEdit",
-        "hooks": [{ "type": "command", "command": "@TEAM_HOME@/bin/hooks/scratch-only-edits" }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@TEAM_HOME@/bin/hooks/scratch-only-edits"
+          }
+        ]
       }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(gh api repos/*/statuses/* -f state=success -f context=agent-review -f description=*)",
+      "Bash(gh api repos/*/statuses/* -f state=failure -f context=agent-review -f description=*)",
+      "Bash(gh pr comment * --body-file *)"
     ]
   }
 }
