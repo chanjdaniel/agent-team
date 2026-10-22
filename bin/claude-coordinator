@@ -7,12 +7,36 @@
 # messages to this session from being held. With the safety classifier off here, deny rules and
 # GitHub rulesets are what block force-push, reset --hard and merging unapproved PRs.
 #
+# Only one coordinator: it refuses (exit 1, naming the session id) while `claude agents --json`
+# lists a live session named coordinator, so the ledger keeps one writer and Discord one
+# listener. A non-blocking flock on ~/.local/state/agent-team/coordinator-launch.lock, held from
+# that check through the launch, makes a second launch at the same moment exit 1 at once.
+#
 # Usage: claude-coordinator [working-directory]   (default: ~/agent-team)
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 cd "${1:-$HOME/agent-team}"
-exec claude --bg --name coordinator \
+
+# The lock only serialises launches: `claude --bg` returns at once, so the session list, not
+# the lock, says whether a coordinator is alive.
+state=$HOME/.local/state/agent-team
+lock=$state/coordinator-launch.lock
+mkdir -p "$state"
+exec {lock_fd}>"$lock"
+flock -n "$lock_fd" || die "another claude-coordinator is launching right now (it holds $lock)"
+
+live_sessions
+live=$(jq -r 'map(select(.name == "coordinator")) | first
+  | if . then .id // ((.sessionId // "")[:8]) else empty end' <<<"$LIVE_SESSIONS")
+[[ -z $live ]] || die "a coordinator is already live: session $live; stop it with claude stop $live first"
+
+# T6's lease check goes here, before the launch.
+
+# Not exec: this shell keeps the lock until claude returns, and the session it starts does not
+# inherit the lock's file, so a running coordinator never holds the next launch's lock.
+claude --bg --name coordinator \
   --channels plugin:discord@claude-plugins-official \
   --dangerously-skip-permissions \
   --settings "$HOME/agent-team/coordinator.settings.json" \
-  "You are the coordinator. Daniel talks to you on Discord. Wait for their messages."
+  "You are the coordinator. Daniel talks to you on Discord. Wait for their messages." \
+  {lock_fd}>&-
