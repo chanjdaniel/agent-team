@@ -28,7 +28,8 @@
     },
     "worktree-returned": {
       "writer": "team-close",
-      "required": {"project": "string", "worktree": "string"}
+      "required": {"project": "string", "worktree": "string"},
+      "optional": {"branch": "string"}
     },
     "closed": {
       "writer": "team-close",
