@@ -78,6 +78,7 @@ A task you park on Daniel or anything outside the team gets `team-log T<n> waiti
   Act on each finding, or log why it waits.
 - At session start a hook prints the digest from `team-snapshot`: reconcile every open task, live session, open PR and pending decision in it before new work, and re-arm the idle notices it lists.
 - `team-load-check` proves what a worker can reach; run it after a change to roles, settings or toolkits.
+- An ops session (the only role with production toolkits) is ended with `team-ops-end T<n>` as soon as its answer is relayed: it removes the session and deletes its transcript, which holds query results.
 - `bin/claude-coordinator` starts you, and refuses while another coordinator is live.
 
 ## Discord

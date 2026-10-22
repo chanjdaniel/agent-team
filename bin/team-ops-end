@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# End a task's ops session: stop and remove the background session named <task>-ops, then delete
+# its transcript, which holds production query results that claude rm keeps:
+# ~/.claude/projects/<project slug>/<session uuid>.jsonl and the <session uuid>/ directory beside it.
+#
+# Usage: team-ops-end <task>
+#   task  T<n>, e.g. T5 (T0 for the load check)
+#
+# The transcript is found only by the session's full uuid, read from claude agents --json --all,
+# never by a pattern. Refuses, deleting nothing, when no <task>-ops session is listed, when one
+# has no full uuid, or when claude rm fails. Prints each path it deleted.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+[[ $# -eq 1 ]] || usage_error "usage: team-ops-end <task>"
+task=$1
+[[ $task =~ ^T[0-9]+$ ]] || usage_error "task must look like T<n>, got '$task'"
+name=$task-ops
+
+sessions=$(claude agents --json --all | jq -ce 'select(type == "array")' 2>/dev/null) ||
+  die "cannot read the session list (claude agents --json --all)"
+mapfile -t found < <(jq -r --arg name "$name" '.[] | select(.name == $name) | "\(.id) \(.sessionId // "")"' <<<"$sessions")
+[[ ${#found[@]} -gt 0 ]] || die "no session named $name is listed"
+
+# Every session must resolve to its full uuid before anything is stopped or deleted.
+uuid_re='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+for entry in "${found[@]}"; do
+  read -r id uuid <<<"$entry"
+  [[ $uuid =~ $uuid_re && $uuid == "$id"* ]] || die "cannot resolve the full session uuid of $name ($id); nothing deleted"
+done
+
+for entry in "${found[@]}"; do
+  read -r id uuid <<<"$entry"
+  # A session that already finished has nothing to stop.
+  claude stop "$id" >/dev/null 2>&1 || true
+  claude rm "$id" >/dev/null || die "claude rm $id failed; its transcript is kept"
+  while IFS= read -r -d '' path; do
+    rm -rf -- "$path"
+    echo "deleted $path"
+  done < <(find "$HOME/.claude/projects" -mindepth 2 -maxdepth 2 \( -name "$uuid.jsonl" -o -name "$uuid" \) -print0 2>/dev/null)
+  echo "ended $name ($id)"
+done

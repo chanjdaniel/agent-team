@@ -2,35 +2,47 @@
 # Start one agent-team worker as its own background session, in auto mode, with its role's
 # settings and nothing else: no user-level MCP servers, no plugin MCP, no claude.ai connectors.
 #
-# Usage: team-worker <task> <role> <worktree> [--toolkit <name>]... -- <first prompt>
-#   task      T<n>, e.g. T1
-#   role      planner | builder | reviewer
-#   worktree  a linked git worktree of the task's repo (never a primary checkout); for a task
-#             opened by team-open, one of its open worktrees (opened or added, not returned)
+# Usage: team-worker <task> <role> <worktree> [--toolkit <name>]... [--request <link>] -- <first prompt>
+#   task       T<n>, e.g. T1
+#   role       planner | builder | reviewer | ops
+#   worktree   a linked git worktree of the task's repo (never a primary checkout); for a task
+#              opened by team-open, one of its open worktrees (opened or added, not returned)
+#   --request  ops only, and required for it: the link to Daniel's Discord message asking
 #
 # Refuses a closed task and a task with no Discord thread. Prints the background session id and
 # logs the launch to ledger.jsonl, with the worktree's project and branch when the task was opened
-# by team-open (T0, the load check, needs no thread and is not logged).
-# The merged settings and MCP config are generated into tasks/<task>/ (gitignored).
+# by team-open, and the request for ops (T0, the load check, needs no thread and is not logged).
+# The merged settings and MCP config are generated into tasks/<task>/ (gitignored); @TEAM_HOME@
+# in either names this checkout, and @TASK@ the task.
+#
+# Production toolkits (prod-*) are for the ops role only, which needs prod-read and --request,
+# and is refused while any T<n>-ops session is listed by claude agents (one at a time; end it
+# with team-ops-end). An ops session runs with --restricted and only the built-in tools
+# Read, Glob, Grep, Edit, Write, ToolSearch, SendMessage and ListAgents: no shell, no web.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
 # Roles, settings, toolkits and hooks are code: they come from this checkout, beside bin/.
 code=$(dirname "$(dirname "$TEAM_LIB")")
 
-[[ $# -ge 3 ]] || usage_error "usage: team-worker <task> <role> <worktree> [--toolkit <name>]... -- <first prompt>"
+[[ $# -ge 3 ]] || usage_error "usage: team-worker <task> <role> <worktree> [--toolkit <name>]... [--request <link>] -- <first prompt>"
 task=$1 role=$2 worktree=$3
 shift 3
 [[ $task =~ ^T[0-9]+$ ]] || usage_error "task must look like T<n>, got '$task'"
 [[ -f $code/roles/$role.md && -f $code/settings/$role.json ]] || usage_error "unknown role '$role'"
 
-toolkits=()
+toolkits=() request=
 while [[ $# -gt 0 && $1 != -- ]]; do
   case $1 in
     --toolkit)
       [[ $# -ge 2 ]] || usage_error "--toolkit needs a name"
       [[ -d $code/toolkits/$2 ]] || usage_error "unknown toolkit '$2'"
       toolkits+=("$2")
+      shift 2
+      ;;
+    --request)
+      [[ $# -ge 2 && -n $2 ]] || usage_error "--request needs Daniel's Discord message link"
+      request=$2
       shift 2
       ;;
     *) usage_error "unexpected argument '$1'" ;;
@@ -40,6 +52,16 @@ done
 shift
 prompt="$*"
 [[ -n $prompt ]] || usage_error "missing first prompt"
+[[ -z $request || $role == ops ]] || usage_error "--request is for the ops role only"
+
+# Production reaches only the ops role, and only on Daniel's recorded request.
+for kit in "${toolkits[@]}"; do
+  [[ $kit != prod-* || $role == ops ]] || die "toolkit '$kit' is for the ops role only"
+done
+if [[ $role == ops ]]; then
+  [[ " ${toolkits[*]} " == *" prod-read "* ]] || die "the ops role needs --toolkit prod-read"
+  [[ -n $request ]] || die "the ops role needs --request <the link to Daniel's Discord message>"
+fi
 
 # A worker runs only in a linked worktree, so it can never edit a primary checkout.
 real=$(realpath -e -- "$worktree" 2>/dev/null) || die "$worktree does not exist"
@@ -74,14 +96,25 @@ fi
 taskdir=$TEAM_HOME/tasks/$task
 mkdir -p "$taskdir"
 
+# One ops session at a time, across every task.
+if [[ $role == ops ]]; then
+  live_sessions
+  busy=$(jq -r '[.[] | select((.name // "") | test("^T[0-9]+-ops$")) | "\(.name) (\(.id))"] | join(", ")' <<<"$LIVE_SESSIONS")
+  [[ -z $busy ]] || die "an ops session is already listed: $busy; end it with team-ops-end first"
+fi
+
+# @TEAM_HOME@ names this checkout, where the hooks and toolkits live; @TASK@ names the task.
+substitute='walk(if type == "string" then gsub("@TEAM_HOME@"; $code) | gsub("@TASK@"; $task) else . end)'
+
 # Role settings layered on the shared worker settings; permission lists are concatenated.
-# @TEAM_HOME@ in the settings names this checkout, where the hooks live.
 settings=$taskdir/settings.$role.json
-jq -s --arg code "$code" '.[0] as $base | .[1] as $role
+jq -s --arg code "$code" --arg task "$task" '.[0] as $base | .[1] as $role
   | ($base * $role)
   | .permissions.deny = (($base.permissions.deny // []) + ($role.permissions.deny // []))
   | .permissions.allow = (($base.permissions.allow // []) + ($role.permissions.allow // []))
-  | walk(if type == "string" then gsub("@TEAM_HOME@"; $code) else . end)' \
+  | .permissions.ask = (($base.permissions.ask // []) + ($role.permissions.ask // []))
+  | .permissions |= with_entries(select(.value != []))
+  | '"$substitute" \
   "$code/settings/worker.json" "$code/settings/$role.json" >"$settings"
 
 # MCP servers come only from the chosen toolkits.
@@ -94,14 +127,21 @@ for kit in "${toolkits[@]}"; do
   if [[ -f $dir/.mcp.json ]]; then mcp_files+=("$dir/.mcp.json"); fi
 done
 if [[ ${#mcp_files[@]} -gt 0 ]]; then
-  jq -s '{mcpServers: (map(.mcpServers // {}) | add)}' "${mcp_files[@]}" >"$mcp"
+  jq -s --arg code "$code" --arg task "$task" '{mcpServers: (map(.mcpServers // {}) | add)} | '"$substitute" \
+    "${mcp_files[@]}" >"$mcp"
 else
   echo '{"mcpServers": {}}' >"$mcp"
 fi
 
+# An ops session gets no shell, no web and no other outbound tool.
+restricted=()
+if [[ $role == ops ]]; then
+  restricted=(--restricted --tools "Read,Glob,Grep,Edit,Write,ToolSearch,SendMessage,ListAgents")
+fi
+
 name=$task-$role
-# --mcp-config takes several values, so it must not come right before the prompt.
-out=$(cd "$worktree" && claude --bg \
+# --mcp-config and --tools take several values, so neither may come right before the prompt.
+out=$(cd "$worktree" && claude --bg "${restricted[@]}" \
   --strict-mcp-config --mcp-config "$mcp" \
   "${plugin_args[@]}" \
   --settings "$settings" \
@@ -114,9 +154,10 @@ id=$(grep -oE '\b[0-9a-f]{8}\b' <<<"$out" | head -n 1) || die "could not read th
 
 if [[ $task != T0 ]]; then
   ledger_append "$(jq -cn --arg task "$task" --arg role "$role" --arg session "$id" --arg worktree "$worktree" \
-    --argjson at "${worktree_event:-null}" --args '{ts: (now | todate), task: $task, event: "launch",
-      role: $role, session: $session, worktree: $worktree, toolkits: $ARGS.positional}
-      + ($at // {} | {project, branch} | with_entries(select(.value != null)))' "${toolkits[@]}")"
+    --arg request "$request" --argjson at "${worktree_event:-null}" --args '{ts: (now | todate), task: $task,
+      event: "launch", role: $role, session: $session, worktree: $worktree, toolkits: $ARGS.positional}
+      + ($at // {} | {project, branch} | with_entries(select(.value != null)))
+      + (if $request == "" then {} else {request: $request} end)' "${toolkits[@]}")"
 fi
 
 echo "$id"

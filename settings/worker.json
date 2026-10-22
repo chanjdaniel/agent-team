@@ -22,7 +22,15 @@
       "Bash(gh-axi pr merge*)",
       "Bash(vercel*)",
       "Bash(*mongodb+srv://*)",
-      "Bash(*migrate_user_emails*)"
+      "Bash(*migrate_user_emails*)",
+      "Bash(op *)",
+      "Bash(* op *)",
+      "Bash(*op read*)",
+      "Bash(*op run*)",
+      "Bash(*op item*)",
+      "Bash(*op document*)",
+      "Bash(*/proc/*/environ*)",
+      "Read(//proc/**)"
     ]
   },
   "attribution": {

@@ -64,7 +64,7 @@ run_fake() {
 @test "a malformed command line is a usage error, with nothing started or logged" {
   thread T7
   run_bin -2 team-worker T7 builder
-  assert_contains "$output" "usage: team-worker <task> <role> <worktree> [--toolkit <name>]... -- <first prompt>"
+  assert_contains "$output" "usage: team-worker <task> <role> <worktree> [--toolkit <name>]... [--request <link>] -- <first prompt>"
   run_bin -2 team-worker 7 builder "$wt1" -- go
   assert_contains "$output" "task must look like T<n>, got '7'"
   run_bin -2 team-worker T7 builder "$wt1" go
@@ -235,4 +235,151 @@ run_fake() {
   assert_contains "$output" "T8 is closed"
   assert_equal "$(stub_calls claude)" ""
   assert_equal "$(launches)" ""
+}
+
+# The claude stub for an ops launch: claude agents --json lists $STUB_FIXTURES/agents.json (no
+# session by default), and claude --bg starts a session.
+ops_stub() {
+  echo "${1:-[]}" >"$STUB_FIXTURES/agents.json"
+  stub_script claude <<'SH'
+if [[ $1 == agents ]]; then cat "$STUB_FIXTURES/agents.json"; exit 0; fi
+printf '%s\n' "$PWD" >>"$STUB_CALLS/claude.cwd"
+echo "Started background session 5b3c0d2f (${*: -2:1}). Attach with: claude attach 5b3c0d2f"
+SH
+}
+
+request=https://discord.com/channels/1/2/3
+
+# The claude --bg calls made, without claude agents.
+bg_calls() {
+  stub_calls claude | jq -c 'select(.[0] == "--bg")'
+}
+
+@test "an ops launch is restricted to the allowlisted tools and logs Daniel's request" {
+  thread T7
+  opened T7 proj feat/T7-one "$wt1"
+  ops_stub
+  run_bin -0 --separate-stderr team-worker T7 ops "$wt1" --toolkit prod-read --request "$request" -- Answer the request
+  assert_equal "$output" "5b3c0d2f"
+  assert_equal "$(cat "$STUB_CALLS/claude.cwd")" "$wt1"
+
+  local t=$TEAM_HOME/tasks/T7
+  assert_equal "$(stub_calls claude | head -n 1)" '["agents","--json"]'
+  assert_equal "$(bg_calls)" "$(jq -cn --arg t "$t" --arg code "$REPO_ROOT" '["--bg",
+    "--restricted", "--tools", "Read,Glob,Grep,Edit,Write,ToolSearch,SendMessage,ListAgents",
+    "--strict-mcp-config", "--mcp-config", "\($t)/mcp.ops.json",
+    "--plugin-dir", "\($code)/toolkits/prod-read",
+    "--settings", "\($t)/settings.ops.json",
+    "--append-system-prompt-file", "\($code)/roles/ops.md",
+    "--permission-mode", "auto", "--name", "T7-ops", "Answer the request"]')"
+  assert_equal "$(launches)" "$(jq -cn --arg wt "$wt1" --arg r "$request" '{task: "T7", event: "launch",
+    role: "ops", session: "5b3c0d2f", worktree: $wt, toolkits: ["prod-read"], project: "proj",
+    branch: "feat/T7-one", request: $r}')"
+  run_bin -0 team-log --check
+}
+
+@test "the generated ops MCP config starts the real prod-read launcher and holds no secret" {
+  thread T7
+  ops_stub
+  run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$request" -- go
+  local mcp=$TEAM_HOME/tasks/T7/mcp.ops.json
+  assert_equal "$(jq -c . "$mcp")" "$(jq -cn --arg code "$REPO_ROOT" '{mcpServers: {"prod-read": {command: "node",
+    args: ["\($code)/toolkits/prod-read/scripts/start-server.mjs"]}}}')"
+  run -1 grep -Eq '@TEAM_HOME@|@TASK@|mongodb(\+srv)?://|MDB_MCP|op://|password' "$mcp"
+  # The worker settings' deny rules name mongodb+srv:// themselves.
+  run -1 grep -Eq 'mongodb(\+srv)?://|MDB_MCP_CONNECTION|op://|password' \
+    <(jq 'del(.permissions.deny)' "$TEAM_HOME/tasks/T7/settings.ops.json")
+}
+
+@test "the generated ops settings allow only prod-read and .scratch edits, and deny every outbound tool" {
+  thread T7
+  ops_stub
+  run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$request" -- go
+  local s=$TEAM_HOME/tasks/T7/settings.ops.json rule
+  assert_equal "$(jq -c .permissions.allow "$s")" '["mcp__prod-read__*","Edit(./.scratch/**)"]'
+  assert_equal "$(jq -c '.permissions | has("ask")' "$s")" false
+  for rule in Bash WebFetch WebSearch Agent NotebookEdit Artifact ArtifactComments ArtifactData SendUserFile \
+    PushNotification SendFeedback DesignSync EnterWorktree CronCreate RemoteTrigger ScheduleWakeup \
+    'Read(//proc/**)' 'Bash(op *)' 'Bash(gh pr merge*)'; do
+    jq -e --arg r "$rule" '.permissions.deny | index($r) != null' "$s" >/dev/null ||
+      { echo "missing deny rule $rule" >&2; return 1; }
+  done
+  assert_equal "$(jq -c .env "$s")" '{"MCP_TIMEOUT":"120000"}'
+  assert_equal "$(jq -r '.hooks.PreToolUse[0] | "\(.matcher) \(.hooks[0].command)"' "$s")" \
+    "Edit|Write|MultiEdit|NotebookEdit $REPO_ROOT/bin/hooks/scratch-only-edits"
+}
+
+@test "only the ops role is restricted" {
+  thread T7
+  local role
+  for role in planner builder reviewer; do
+    : >"$STUB_CALLS/claude.log"
+    run_bin -0 team-worker T7 "$role" "$wt1" -- go
+    assert_equal "$(stub_calls claude | jq -c 'map(select(. == "--restricted" or . == "--tools"))')" '[]'
+  done
+}
+
+@test "production toolkits are refused for every role but ops, with nothing started or logged" {
+  thread T7
+  ops_stub
+  local role
+  for role in planner builder reviewer; do
+    run_bin -1 team-worker T7 "$role" "$wt1" --toolkit prod-read -- go
+    assert_contains "$output" "toolkit 'prod-read' is for the ops role only"
+  done
+  run_bin -2 team-worker T7 builder "$wt1" --request "$request" -- go
+  assert_contains "$output" "--request is for the ops role only"
+  assert_equal "$(stub_calls claude)" ""
+  assert_equal "$(launches)" ""
+}
+
+@test "an ops launch without prod-read or without Daniel's request is refused" {
+  fake_checkout
+  mkdir -p "$code/toolkits/prod-read" "$code/toolkits/prod-write"
+  cp "$REPO_ROOT/roles/ops.md" "$code/roles/" && cp "$REPO_ROOT/settings/ops.json" "$code/settings/"
+  thread T7
+  ops_stub
+  run_fake T7 ops "$wt1" --request "$request" -- go
+  assert_equal "$status" 1
+  assert_contains "$output" "the ops role needs --toolkit prod-read"
+  run_fake T7 ops "$wt1" --toolkit prod-write --request "$request" -- go
+  assert_equal "$status" 1
+  assert_contains "$output" "the ops role needs --toolkit prod-read"
+  run_fake T7 ops "$wt1" --toolkit prod-read -- go
+  assert_equal "$status" 1
+  assert_contains "$output" "the ops role needs --request <the link to Daniel's Discord message>"
+  run_fake T7 ops "$wt1" --toolkit prod-read --request "" -- go
+  assert_equal "$status" 2
+  assert_contains "$output" "--request needs Daniel's Discord message link"
+  assert_equal "$(stub_calls claude)" ""
+  assert_equal "$(launches)" ""
+}
+
+@test "an ops launch is refused while any task's ops session is listed" {
+  thread T7
+  ops_stub '[{"id": "11111111", "name": "T7-builder"}, {"id": "22222222", "name": "T5-ops", "state": "done"}]'
+  run_bin -1 team-worker T7 ops "$wt1" --toolkit prod-read --request "$request" -- go
+  assert_contains "$output" "an ops session is already listed: T5-ops (22222222); end it with team-ops-end first"
+  assert_equal "$(bg_calls)" ""
+  assert_equal "$(launches)" ""
+
+  stub_reply claude "not json"
+  rm "$STUB_FIXTURES/claude.sh"
+  run_bin -1 team-worker T7 ops "$wt1" --toolkit prod-read --request "$request" -- go
+  assert_contains "$output" "cannot read the live session list"
+  assert_equal "$(bg_calls)" ""
+}
+
+@test "@TEAM_HOME@ and @TASK@ are substituted in the settings and the MCP config" {
+  fake_checkout
+  echo '{"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "@TEAM_HOME@/bin/hooks/x @TASK@"}]}]}}' \
+    >"$code/settings/planner.json"
+  echo '{"mcpServers": {"alpha": {"command": "@TEAM_HOME@/a", "args": ["--task", "@TASK@"]}}}' >"$code/toolkits/kit-a/.mcp.json"
+  thread T7
+  run_fake T7 planner "$wt1" --toolkit kit-a -- go
+  assert_equal "$status" 0
+  assert_equal "$(jq -r '.hooks.PreToolUse[0].hooks[0].command' "$TEAM_HOME/tasks/T7/settings.planner.json")" \
+    "$code/bin/hooks/x T7"
+  assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.planner.json")" \
+    "$(jq -cn --arg code "$code" '{mcpServers: {alpha: {command: "\($code)/a", args: ["--task", "T7"]}}}')"
 }

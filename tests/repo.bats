@@ -27,3 +27,16 @@ setup() {
   done < <(cd "$REPO_ROOT/bin" && find . -type f -perm -u+x -printf '%P\n' | sort)
   ((found >= 5))
 }
+
+# Only the ops role's production servers fetch a credential, through Daniel's 1Password prompt:
+# every other session is denied the 1Password CLI and other processes' environments.
+@test "the worker and coordinator settings deny the 1Password CLI and /proc environment reads" {
+  local file rule
+  for file in settings/worker.json coordinator.settings.json; do
+    for rule in 'Bash(op *)' 'Bash(* op *)' 'Bash(*op read*)' 'Bash(*op run*)' 'Bash(*op item*)' \
+      'Bash(*op document*)' 'Bash(*/proc/*/environ*)' 'Read(//proc/**)'; do
+      jq -e --arg r "$rule" '.permissions.deny | index($r) != null' "$REPO_ROOT/$file" >/dev/null ||
+        { echo "$file does not deny $rule" >&2; return 1; }
+    done
+  done
+}

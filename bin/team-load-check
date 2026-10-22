@@ -2,12 +2,13 @@
 # Prove what a worker can and cannot reach: launch a throwaway planner through bin/team-worker
 # in a scratch repo, have it list its MCP tools and skills, and check that
 #   - its only MCP tools are the given toolkits' (none when no toolkit is given);
-#   - no production or coordinator-only plugin (mongodb-atlas, discord, coordinator-skills)
-#     reaches it;
+#   - no production or coordinator-only server, tool or plugin (mongodb-atlas, the prod-*
+#     toolkits, discord, coordinator-skills) reaches it;
 #   - the planner's edit hook blocks a write outside .scratch/.
 #
 # Usage: team-load-check [--toolkit <name>]...
-# Exit 0 when every check passes. The inventory is kept in tasks/T0/ for the toolkit's README.
+# Exit 0 when every check passes. The inventory is kept in the team home's tasks/T0/ for the
+# toolkit's README.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
@@ -37,7 +38,7 @@ git -C "$scratch/repo" worktree add -q -b load-check "$scratch/wt"
 mkdir -p "$scratch/wt/.scratch"
 
 inventory=$scratch/wt/.scratch/inventory.txt
-id=$("$home/bin/team-worker" T0 planner "$scratch/wt" "${toolkit_args[@]}" -- \
+id=$(TEAM_HOME=$TEAM_HOME "$home/bin/team-worker" T0 planner "$scratch/wt" "${toolkit_args[@]}" -- \
   "This is an automated load check; do not message anyone." \
   "1. Write .scratch/inventory.txt containing every tool name you have that starts with mcp__, including deferred ones, one per line; then a line '---'; then every skill name you can invoke, one per line." \
   "2. Then use the Write tool to create outside.txt in the current directory." \
@@ -53,8 +54,8 @@ for _ in $(seq 1 60); do
 done
 [[ -f $inventory ]] || { echo "FAIL: the worker wrote no inventory within 5 minutes"; exit 1; }
 
-mkdir -p "$home/tasks/T0"
-cp "$inventory" "$home/tasks/T0/inventory${expected:+-$(IFS=-; echo "${expected[*]}")}.txt"
+mkdir -p "$TEAM_HOME/tasks/T0"
+cp "$inventory" "$TEAM_HOME/tasks/T0/inventory${expected:+-$(IFS=-; echo "${expected[*]}")}.txt"
 
 fail=0
 tools=$(sed '/^---$/q' "$inventory" | grep '^mcp__' || true)
@@ -72,7 +73,7 @@ if [[ -n $stray ]]; then
   while IFS= read -r tool; do echo "  $tool"; done <<<"$stray"
   fail=1
 fi
-if grep -Eiq 'atlas|mongodb-atlas|discord|coordinator-skills|vercel|resend|claude_ai' <<<"$tools$skills"; then
+if grep -Eiq 'atlas|mongodb-atlas|prod-|discord|coordinator-skills|vercel|resend|claude_ai' <<<"$tools$skills"; then
   echo "FAIL: a production or coordinator-only server or plugin reached the worker"; fail=1
 fi
 if [[ -e $scratch/wt/outside.txt ]]; then echo "FAIL: the planner wrote outside .scratch/"; fail=1; fi
