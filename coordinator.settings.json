@@ -5,7 +5,17 @@
   },
   "crossSessionInbound": "accept",
   "permissions": {
-    "deny": ["Bash(gh pr merge*)", "Bash(gh-axi pr merge*)", "Bash(gh api*pulls/*/merge*)"]
+    "deny": [
+      "Bash(gh pr merge*)",
+      "Bash(gh-axi pr merge*)",
+      "Bash(gh api*pulls/*/merge*)",
+      "Bash(*team-lease*--steal*)",
+      "Bash(git push * lease)",
+      "Bash(git push * lease *)",
+      "Bash(git push *:lease)",
+      "Bash(git push *:lease *)",
+      "Bash(git push *refs/heads/lease*)"
+    ]
   },
   "hooks": {
     "SessionStart": [

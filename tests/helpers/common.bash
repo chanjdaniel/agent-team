@@ -94,6 +94,52 @@ make_repo() {
   echo "$clone"
 }
 
+# Make the sandbox's team home a clone of a bare origin standing in for GitHub (at
+# $BATS_TEST_TMPDIR/origin/agent-team.git), with its files committed on dev and pushed, and name
+# this machine <name> (default home-pc); prints the origin's path.
+make_team_home() {
+  local origin
+  origin=$(realpath "$BATS_TEST_TMPDIR")/origin/agent-team.git
+  git init -q --bare -b dev "$origin"
+  git -C "$TEAM_HOME" init -q -b dev
+  git -C "$TEAM_HOME" remote add origin "$origin"
+  git -C "$TEAM_HOME" add -A
+  git -C "$TEAM_HOME" commit -q -m "chore: start the team home"
+  git -C "$TEAM_HOME" push -q -u origin dev
+  mkdir -p "$HOME/.config/agent-team"
+  echo "${1:-home-pc}" >"$HOME/.config/agent-team/machine"
+  echo "$origin"
+}
+
+# Build a second machine named <name> (make_team_home first): its own HOME, with this HOME's git
+# identity and Discord token and its own machine name, its own team home cloned from the team
+# home's origin, and a clone at <its HOME>/projects/<repo> of every other bare origin made so
+# far (make_repo). Run commands there with on_machine.
+make_machine() {
+  local name=$1 root origin repo
+  root=$(realpath "$BATS_TEST_TMPDIR")/machines/$name
+  mkdir -p "$root/home/.config/agent-team" "$root/home/.claude/channels/discord"
+  cp "$HOME/.gitconfig" "$root/home/.gitconfig"
+  cp "$HOME/.claude/channels/discord/.env" "$root/home/.claude/channels/discord/.env"
+  echo "$name" >"$root/home/.config/agent-team/machine"
+  git clone -q "$(realpath "$BATS_TEST_TMPDIR")/origin/agent-team.git" "$root/team"
+  for origin in "$(realpath "$BATS_TEST_TMPDIR")"/origin/*.git; do
+    repo=${origin##*/}
+    repo=${repo%.git}
+    [[ $repo != agent-team ]] || continue
+    git clone -q "$origin" "$root/home/projects/$repo" 2>/dev/null
+  done
+}
+
+# Run <command...> on the machine make_machine built: with its HOME and its team home, e.g.
+# `on_machine laptop run_bin -0 team-lease take`.
+on_machine() {
+  local root
+  root=$(realpath "$BATS_TEST_TMPDIR")/machines/$1
+  [[ -d $root ]] || { echo "on_machine: no machine $1 (make_machine $1 first)" >&2; return 1; }
+  HOME=$root/home TEAM_HOME=$root/team "${@:2}"
+}
+
 assert_equal() {
   if [[ $1 != "$2" ]]; then
     printf 'expected: %s\nactual:   %s\n' "$2" "$1" >&2

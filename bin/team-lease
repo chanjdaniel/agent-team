@@ -1,0 +1,352 @@
+#!/usr/bin/env bash
+# Hold the team on one machine at a time: the lease on the lease branch of the team home's origin.
+#
+# The lease is lease.json, alone on an orphan branch `lease` of the team home's origin (GitHub):
+#   {"holder": "home-pc", "epoch": 7, "state": "held", "taken_at": "2026-10-21T13:00:00Z",
+#    "renewed_at": "2026-10-21T14:45:00Z", "ttl_minutes": 60, "stolen_from": null}
+# state is held or released; epoch rises by one each time the holder changes, and is the fencing
+# token. A held lease not renewed for ttl_minutes is stale, which changes only what take says.
+# Before the first take there is no branch, and the lease reads as released at epoch 0.
+#
+# Every change is a commit built with git plumbing in the team home's repository, on the tip just
+# read from origin, pushed without force to refs/heads/lease. A push origin rejects means another
+# machine moved the lease first: the command reads it again and decides again. A network failure
+# is never read as a lost race. The team home's checked-out branch, index and working tree are
+# never touched; origin/lease follows every read and write, and `git log origin/lease` is the
+# lease's history, one commit per change ("lease: home-pc renew, epoch 7").
+#
+# Usage: team-lease status [--json] | check | take [--steal] | renew | release
+#   status   The lease, one "field: value" line each, with stale, age_minutes, mine, fenced
+#            (null or since), offline_since (null or since) and confirmed; --json prints it as
+#            one object. With origin unreachable: the last lease read, marked unconfirmed, exit 75.
+#   check    Whether this machine holds the lease right now, confirmed against origin: it is the
+#            holder, at the epoch it last wrote, the lease is held, and it is not fenced. Exit 1
+#            says why not, naming the holder.
+#   take     Takes a released lease (epoch + 1 when the holder changes), or takes again one this
+#            machine holds. A lease another machine holds is refused, saying stale or fresh and
+#            its age. With --steal it prints the holder, epoch and last renewal on the
+#            controlling terminal, reads the holder's name typed there, and takes the lease with
+#            epoch + 1 and stolen_from; no terminal, no steal. Only Daniel's own terminal
+#            steals: deny rules stop the team's sessions typing one. Clears this machine's fence.
+#   renew    The holder only: a new renewed_at.
+#   release  The holder only: state released. A released lease is left as it is (exit 0).
+#
+# Needs this machine's team name (~/.config/agent-team/machine). In ~/.local/state/agent-team/:
+# lease.json is the lease this machine last wrote, with its commit; lease.lock serialises lease
+# commands on this machine; fenced and offline, JSON objects with a since (the heartbeat writes
+# them), are read by status, check and renew.
+# The steal's terminal is /dev/tty, or the file or device TEAM_LEASE_TTY names (the tests' seam):
+# the prompt is appended to it and the name is its first line.
+# Exit 0 done, 1 refused or not held, 2 usage error, 75 GitHub unreachable, the lease kept moving,
+# or another lease command held the lock too long.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+TTL_MINUTES=60
+# Seconds: each git call that reaches origin, and the wait for this machine's lock.
+NET_TIMEOUT=60
+LOCK_WAIT=120
+# Writes tried before giving up on a lease other machines keep moving.
+ATTEMPTS=10
+
+usage="usage: team-lease status [--json] | check | take [--steal] | renew | release"
+command=${1:-} json=0 steal=0
+case $command in
+  status) [[ $# -eq 1 || ($# -eq 2 && $2 == --json) ]] || usage_error "$usage" ;;
+  take) [[ $# -eq 1 || ($# -eq 2 && $2 == --steal) ]] || usage_error "$usage" ;;
+  check | renew | release) [[ $# -eq 1 ]] || usage_error "$usage" ;;
+  *) usage_error "$usage" ;;
+esac
+[[ ${2:-} != --json ]] || json=1
+[[ ${2:-} != --steal ]] || steal=1
+
+machine=$(machine_name) || exit 1
+git -C "$TEAM_HOME" remote get-url origin >/dev/null 2>&1 ||
+  die "the team home $TEAM_HOME has no git remote origin, where the lease lives"
+state=$HOME/.local/state/agent-team
+record=$state/lease.json
+mkdir -p "$state"
+exec {lock_fd}>>"$state/lease.lock"
+if ! flock -w "$LOCK_WAIT" "$lock_fd"; then
+  echo "${0##*/}: another lease command has held $state/lease.lock for ${LOCK_WAIT}s; try again" >&2
+  exit 75
+fi
+err=$(mktemp)
+trap 'rm -f "$err"' EXIT
+
+home_git() {
+  git -C "$TEAM_HOME" "$@"
+}
+
+# A git call that reaches origin: it never prompts, gives up after NET_TIMEOUT seconds and keeps
+# its stderr in $err. The lock's file is closed for it, so a helper git leaves running (a
+# credential cache, an ssh master) never holds this machine's lock.
+net_git() {
+  GIT_TERMINAL_PROMPT=0 timeout "$NET_TIMEOUT" git -C "$TEAM_HOME" "$@" 2>"$err" {lock_fd}>&-
+}
+
+# What failed in the last net_git call: net_failure <what> <exit status>. Credentials in a URL
+# are cut out.
+net_failure() {
+  local why
+  why=$(sed -nE 's/^(fatal|error): //p' "$err" | head -n 1 | sed -E 's#//[^/@[:space:]]*@#//#g')
+  if [[ -z $why ]]; then
+    if (($2 == 124)); then why="no answer in ${NET_TIMEOUT}s"; else why="exit $2"; fi
+  fi
+  printf '%s: %s\n' "$1" "$why"
+}
+
+# Refuse with exit 75: unreachable <reason> <what that leaves>.
+unreachable() {
+  echo "${0##*/}: GitHub is unreachable ($1); $2" >&2
+  exit 75
+}
+
+# The lease at commit <tip> of the lease branch, compact; a released lease at epoch 0 when <tip>
+# is empty. A commit that holds no lease fails.
+lease_at() {
+  if [[ -z $1 ]]; then
+    jq -cn --argjson ttl "$TTL_MINUTES" \
+      '{holder: null, epoch: 0, state: "released", taken_at: null, renewed_at: null, ttl_minutes: $ttl, stolen_from: null}'
+    return
+  fi
+  home_git show "$1:lease.json" 2>/dev/null | jq -ce '
+      def date_or_null: . == null or (try (fromdateiso8601 | true) catch false);
+      select(type == "object" and (.holder | type) == "string" and (.epoch | type) == "number"
+        and (.state == "held" or .state == "released") and (.ttl_minutes | type) == "number"
+        and (.taken_at | date_or_null) and (.renewed_at | date_or_null)
+        and (.stolen_from == null or (.stolen_from | type) == "string"))' 2>/dev/null ||
+    die "origin's lease branch at ${1:0:12} holds no lease: lease.json is missing or malformed"
+}
+
+# Read the lease from origin: TIP is its commit (empty when the branch does not exist yet), LEASE
+# the lease, and origin/lease follows. Fails with the reason in REASON when origin cannot be
+# reached.
+read_remote() {
+  local out rc=0
+  out=$(net_git ls-remote origin refs/heads/lease) || rc=$?
+  if ((rc)); then
+    REASON=$(net_failure "git ls-remote" "$rc")
+    return 1
+  fi
+  TIP=${out%%[[:space:]]*}
+  if [[ -z $TIP ]]; then
+    home_git update-ref -d refs/remotes/origin/lease || exit 1
+  elif home_git cat-file -e "$TIP^{commit}" 2>/dev/null; then
+    home_git update-ref refs/remotes/origin/lease "$TIP" || exit 1
+  else
+    net_git fetch -q --no-tags --no-write-fetch-head origin +refs/heads/lease:refs/remotes/origin/lease || {
+      rc=$?
+      REASON=$(net_failure "git fetch" "$rc")
+      return 1
+    }
+    # What the fetch brought may be newer than what ls-remote saw: decide on the newest.
+    TIP=$(home_git rev-parse refs/remotes/origin/lease) || exit 1
+  fi
+  LEASE=$(lease_at "$TIP") || exit 1
+}
+
+# The since of the state file <file> as JSON: null when there is none, else its since, or its
+# modification time when it has no readable since.
+since() {
+  if [[ ! -e $1 ]]; then
+    echo null
+  else
+    jq -ce '.since | strings' "$1" 2>/dev/null || date -u -r "$1" +%FT%TZ | jq -R .
+  fi
+}
+
+# The lease with what this machine knows of it, as status prints it: describe <lease> <confirmed>
+describe() {
+  jq -c --arg machine "$machine" --argjson confirmed "$2" \
+    --argjson fenced "$(since "$state/fenced")" --argjson offline "$(since "$state/offline")" '
+    (if .renewed_at then now - (.renewed_at | fromdateiso8601) else null end) as $age
+    | {holder, epoch, state, taken_at, renewed_at, ttl_minutes, stolen_from,
+       stale: (.state == "held" and $age != null and $age > .ttl_minutes * 60),
+       age_minutes: (if $age then $age / 60 | floor else null end),
+       mine: (.state == "held" and .holder == $machine),
+       fenced: $fenced, offline_since: $offline, confirmed: $confirmed}' <<<"$1"
+}
+
+# One field of DESC as text, empty for null: field <name>
+field() {
+  jq -r --arg name "$1" '.[$name] | if . == null then "" else tostring end' <<<"$DESC"
+}
+
+# Why this machine does not hold the lease in DESC, one line; nothing when it does.
+not_held() {
+  local holder epoch fenced written=''
+  holder=$(field holder) epoch=$(field epoch) fenced=$(field fenced)
+  if [[ -f $record ]]; then
+    written=$(jq -r --arg machine "$machine" 'select(.holder == $machine) | .epoch' "$record" 2>/dev/null) || written=''
+  fi
+  if [[ -n $fenced ]]; then
+    echo "$machine is fenced since $fenced; team-lease take clears it"
+  elif [[ $(field state) == released ]]; then
+    echo "the lease is released (last held by ${holder:-nobody}, epoch $epoch); take it with team-lease take"
+  elif [[ $holder != "$machine" ]]; then
+    local verb="does not hold"
+    if [[ -f $record ]] && jq -e --arg machine "$machine" '.holder == $machine' "$record" >/dev/null 2>&1; then
+      verb="no longer holds"
+    fi
+    echo "$machine $verb the lease: $holder holds it (epoch $epoch, renewed $(field age_minutes) minutes ago)"
+  elif [[ -z $written ]]; then
+    echo "the lease names $machine at epoch $epoch, but this machine has no record of taking it; run team-lease take to take it again"
+  elif [[ $written != "$epoch" ]]; then
+    echo "the lease names $machine at epoch $epoch, but this machine last wrote epoch $written; run team-lease take to take it again"
+  fi
+}
+
+# Push <lease> to origin as a commit on TIP, its message <message>. 0: pushed, and TIP, origin/lease
+# and the record are the new commit; 1: origin took another write first (REJECTED says how);
+# exit 75 when origin cannot be reached.
+push_lease() {
+  local blob tree commit out rc=0 parent=()
+  [[ -z $TIP ]] || parent=(-p "$TIP")
+  blob=$(jq . <<<"$1" | home_git hash-object -w --stdin) || exit 1
+  tree=$(printf '100644 blob %s\tlease.json\n' "$blob" | home_git mktree) || exit 1
+  commit=$(home_git commit-tree "$tree" "${parent[@]}" -m "$2") || exit 1
+  out=$(net_git push --porcelain origin "$commit:refs/heads/lease") || rc=$?
+  if ((rc == 0)); then
+    home_git update-ref refs/remotes/origin/lease "$commit" || exit 1
+    jq -c --arg commit "$commit" '{commit: $commit, holder, epoch, state, written_at: (now | floor | todate)}' \
+      <<<"$1" >"$record.$$" || exit 1
+    mv -f "$record.$$" "$record"
+    TIP=$commit
+    return 0
+  fi
+  # Porcelain marks each ref origin refused with "!"; with none, the push never got an answer.
+  if grep -q '^!' <<<"$out"; then
+    REJECTED=$(grep -m1 '^!' <<<"$out" | cut -f3)
+    return 1
+  fi
+  unreachable "$(net_failure "git push" "$rc")" \
+    "the lease may or may not have changed; run team-lease status once GitHub answers"
+}
+
+# Ask on the controlling terminal for the holder's name, refusing unless it is typed exactly.
+confirm_steal() {
+  local tty=${TEAM_LEASE_TTY:-/dev/tty} tty_in typed='' holder
+  holder=$(field holder)
+  if ! { exec {tty_in}<"$tty"; } 2>/dev/null; then
+    die "no terminal to confirm the steal on ($tty); steal only from your own terminal"
+  fi
+  {
+    printf 'The lease: holder: %s, epoch %s, renewed %s (%s minutes ago, %s).\n' "$holder" "$(field epoch)" \
+      "$(field renewed_at)" "$(field age_minutes)" "$(freshness)"
+    printf "Type the holder's name to steal the lease: "
+  } >>"$tty"
+  IFS= read -r typed <&"$tty_in" || true
+  exec {tty_in}<&-
+  [[ $typed == "$holder" ]] || die "'$typed' is not the holder's name, $holder; nothing stolen"
+}
+
+freshness() {
+  if [[ $(field stale) == true ]]; then echo stale; else echo fresh; fi
+}
+
+# The lease as a take writes it: new_lease <epoch> <stolen from, or empty>
+new_lease() {
+  jq -cn --arg holder "$machine" --argjson epoch "$1" --arg now "$NOW" --argjson ttl "$TTL_MINUTES" \
+    --arg from "$2" '{holder: $holder, epoch: $epoch, state: "held", taken_at: $now, renewed_at: $now,
+      ttl_minutes: $ttl, stolen_from: (if $from == "" then null else $from end)}'
+}
+
+# Each decide_<command> sets NEW (the lease to write), MESSAGE (its commit's) and DONE (what to
+# print once it is written), or ends the command.
+stolen_confirmed=''
+decide_take() {
+  local holder epoch next
+  holder=$(field holder) epoch=$(field epoch)
+  if [[ $(field state) == held && $holder != "$machine" ]]; then
+    ((steal)) || die "the lease is held by $holder (epoch $epoch), $(freshness): renewed $(field age_minutes) minutes ago;" \
+      "release it there first (team-lease release, or a handoff), or steal it with team-lease take --steal in your own terminal"
+    # Asked once per holder: a re-read after a lost push asks again only if the holder changed.
+    [[ $stolen_confirmed == "$holder" ]] || confirm_steal
+    stolen_confirmed=$holder
+    next=$((epoch + 1))
+    NEW=$(new_lease "$next" "$holder")
+    MESSAGE="lease: $machine steal from $holder, epoch $next"
+    DONE="$machine holds the lease, epoch $next, stolen from $holder"
+    return
+  fi
+  if [[ $(field state) == held ]]; then
+    NEW=$(jq -c --arg now "$NOW" --argjson ttl "$TTL_MINUTES" '.renewed_at = $now | .ttl_minutes = $ttl' <<<"$LEASE")
+    next=$epoch
+  else
+    next=$epoch
+    [[ $holder == "$machine" ]] || next=$((epoch + 1))
+    NEW=$(new_lease "$next" '')
+  fi
+  MESSAGE="lease: $machine take, epoch $next"
+  DONE="$machine holds the lease, epoch $next"
+}
+
+decide_renew() {
+  local why
+  why=$(not_held)
+  [[ -z $why ]] || die "$why"
+  NEW=$(jq -c --arg now "$NOW" --argjson ttl "$TTL_MINUTES" '.renewed_at = $now | .ttl_minutes = $ttl' <<<"$LEASE")
+  MESSAGE="lease: $machine renew, epoch $(field epoch)"
+  DONE="$machine renewed the lease, epoch $(field epoch)"
+}
+
+decide_release() {
+  local why
+  if [[ $(field state) == released ]]; then
+    if [[ $(field epoch) == 0 ]]; then
+      echo "the lease is already released (never taken)"
+    else
+      echo "the lease is already released (last held by $(field holder), epoch $(field epoch))"
+    fi
+    exit 0
+  fi
+  why=$(not_held)
+  [[ -z $why ]] || die "$why"
+  NEW=$(jq -c '.state = "released"' <<<"$LEASE")
+  MESSAGE="lease: $machine release, epoch $(field epoch)"
+  DONE="$machine released the lease, epoch $(field epoch)"
+}
+
+case $command in
+  status)
+    confirmed=true
+    if ! read_remote; then
+      confirmed=false
+      echo "${0##*/}: GitHub is unreachable ($REASON); showing the last known lease, unconfirmed" >&2
+      TIP=$(home_git rev-parse -q --verify refs/remotes/origin/lease) || TIP=''
+      LEASE=$(lease_at "$TIP") || exit 1
+    fi
+    DESC=$(describe "$LEASE" "$confirmed")
+    if ((json)); then
+      jq . <<<"$DESC"
+    else
+      [[ $confirmed == true ]] || echo "UNCONFIRMED: GitHub is unreachable; this is the last known lease"
+      jq -r 'to_entries[] | "\(.key): \(if .value == null then "none" else .value end)"' <<<"$DESC"
+    fi
+    [[ $confirmed == true ]] || exit 75
+    ;;
+  check)
+    read_remote || unreachable "$REASON" "nothing changed"
+    DESC=$(describe "$LEASE" true)
+    why=$(not_held)
+    [[ -z $why ]] || die "$why"
+    echo "$machine holds the lease, epoch $(field epoch)"
+    ;;
+  take | renew | release)
+    for ((attempt = 1; attempt <= ATTEMPTS; attempt++)); do
+      read_remote || unreachable "$REASON" "nothing changed"
+      DESC=$(describe "$LEASE" true)
+      NOW=$(date -u +%FT%TZ)
+      "decide_$command"
+      if push_lease "$NEW" "$MESSAGE"; then
+        [[ $command != take ]] || rm -f "$state/fenced"
+        echo "$DONE"
+        exit 0
+      fi
+      sleep 0.2
+    done
+    echo "${0##*/}: the lease moved under each of $ATTEMPTS attempts (last: $REJECTED); nothing changed" >&2
+    exit 75
+    ;;
+esac

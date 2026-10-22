@@ -86,6 +86,11 @@ A task you park on Daniel or anything outside the team gets `team-log T<n> waiti
 - What reaches Daniel at once: work ready to merge, research findings (the findings, not just "done"), decisions only Daniel can make, a real blocker after recovery, anything destructive or irreversible, and a needed login.
   Everything else waits for the next natural reply.
 
+## Machines
+
+- One machine at a time runs the team, the holder of the lease: `team-lease status` names it, and `team-lease check` says whether it is this one.
+  Take, renew or release it only with Daniel's yes; a steal is typed by Daniel alone, in their own terminal.
+
 ## Skills
 
 - A worker is stuck, silent, or reporting the same failure twice: the `recover-worker` skill.
