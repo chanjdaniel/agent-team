@@ -123,6 +123,36 @@ COMMANDS
   done
 }
 
+# Whether one of the Bash allow rules in settings/reviewer.json matches <command>:
+# reviewer_allows <command>
+reviewer_allows() {
+  local rule
+  while IFS= read -r rule; do
+    rule_matches "$rule" "$1" && return 0
+  done < <(jq -r '.permissions.allow[]' "$REPO_ROOT/settings/reviewer.json")
+  return 1
+}
+
+@test "the reviewer may set the agent-review status and post its comment, and no other gh write" {
+  assert_equal "$(jq -r '.permissions.allow[]' "$REPO_ROOT/settings/reviewer.json")" \
+    'Bash(gh api repos/*/statuses/* -f state=success -f context=agent-review -f description=*)
+Bash(gh api repos/*/statuses/* -f state=failure -f context=agent-review -f description=*)
+Bash(gh pr comment * --body-file *)'
+  # The commands as templates/briefs/reviewer.md and rereview.md render them.
+  local brief
+  for brief in reviewer rereview; do
+    grep -qF 'gh api repos/{{repo}}/statuses/{{head}} -f state=<success|failure> -f context=agent-review -f description="<one line>"' \
+      "$REPO_ROOT/templates/briefs/$brief.md"
+  done
+  reviewer_allows 'gh api repos/me/shop/statuses/a1b2c3d -f state=success -f context=agent-review -f description="no blocking findings"'
+  reviewer_allows 'gh api repos/me/shop/statuses/a1b2c3d -f state=failure -f context=agent-review -f description="1 blocking"'
+  reviewer_allows 'gh pr comment https://github.com/me/shop/pull/5 --body-file /home/me/wt/.scratch/task/review.md'
+  run -1 reviewer_allows 'gh api repos/me/shop/statuses/a1b2c3d -f state=success -f context=ci -f description=x'
+  run -1 reviewer_allows 'gh api repos/me/shop/pulls/5/merge -X PUT'
+  run -1 reviewer_allows 'gh pr comment https://github.com/me/shop/pull/5 --body "x"'
+  run -1 reviewer_allows 'gh pr merge https://github.com/me/shop/pull/5'
+}
+
 @test "the dev-records workflow's paths-ignore lists exactly bin/lib/records' globs" {
   local ignored records
   ignored=$(sed -n '/^    paths-ignore:/,/^[^ ]/s/^      - //p' "$REPO_ROOT/.github/workflows/dev-records.yml")
