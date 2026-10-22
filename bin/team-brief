@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+# Write a worker's brief from a template, with the task's facts already filled in.
+#
+# Usage: team-brief T<n> <template> [--project <name>] [--set key=value]... [--set-file key=path]...
+#                   [--name <suffix>] [--force]
+#   template    one of templates/briefs/: planner-feature, planner-research, builder-ticket,
+#               builder-fix, builder-deliver, reviewer, rereview
+#   --project   the project whose worktree the brief is for; required when the task has open
+#               worktrees in two projects
+#   --set       fill the placeholder {{key}} with value; --set-file with the file's text, without
+#               its final newline. A value is literal and never empty.
+#   --name      write tasks/T<n>/brief-<suffix>.md (kebab case) instead of tasks/T<n>/brief.md
+#   --force     replace an existing brief
+# Placeholders are {{key}}. The task's facts fill task, title, path, project, repo, base, branch,
+# worktree, task_dir, plan, thread and team_home, from the ledger and projects.toml; paths under
+# $HOME are written ~/... In a template, {{> delivery}} stands for the delivery partial of the
+# project's delivery, templates/briefs/delivery/<delivery>.md.
+# Refused, exit 1 with nothing written: an unknown template, a task that is not open (no opened
+# event, or closed) or has no open worktree, a placeholder left unfilled (each named), a --set key
+# no placeholder uses, a --set of a task fact, and an existing brief without --force.
+# Prints the brief's path, ready for team-worker's first prompt.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+# Templates are code: they come from this checkout, beside bin/.
+briefs=$(dirname "$(dirname "$TEAM_LIB")")/templates/briefs
+usage="usage: team-brief T<n> <template> [--project <name>] [--set key=value]... [--set-file key=path]... [--name <suffix>] [--force]"
+fact_keys=(task title path project repo base branch worktree task_dir plan thread team_home)
+
+positionals=() project='' name='' force=''
+declare -A sets=()
+# set_value <key> <value> <how it was given>: one value per key, never empty.
+set_value() {
+  [[ ! -v sets[$1] ]] || usage_error "$1 is set twice"
+  [[ -n $2 ]] || usage_error "$3"
+  sets[$1]=$2
+}
+while (($#)); do
+  case $1 in
+    --project | --name | --set | --set-file)
+      [[ $# -ge 2 ]] || usage_error "$1 needs a value"
+      case $1 in
+        --project) project=$2 ;;
+        --name)
+          [[ $2 =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] || usage_error "--name must be lower-case kebab case, got '$2'"
+          name=$2
+          ;;
+        *)
+          [[ $2 =~ ^([a-z][a-z0-9_]*)=(.*)$ ]] || usage_error "$1 needs key=value, got '$2'"
+          key=${BASH_REMATCH[1]} value=${BASH_REMATCH[2]}
+          if [[ $1 == --set ]]; then
+            set_value "$key" "$value" "--set $key= has no value"
+          else
+            [[ -f $value && -r $value ]] || die "cannot read $value for $key"
+            set_value "$key" "$(<"$value")" "--set-file $key: $value is empty"
+          fi
+          ;;
+      esac
+      shift 2
+      ;;
+    --force) force=1 && shift ;;
+    -*) usage_error "unexpected argument '$1'" ;;
+    *) positionals+=("$1") && shift ;;
+  esac
+done
+[[ ${#positionals[@]} -eq 2 ]] || usage_error "$usage"
+task=${positionals[0]} template=${positionals[1]}
+[[ $task =~ ^T[1-9][0-9]*$ ]] || usage_error "task must look like T<n>, got '$task'"
+
+known=$(find "$briefs" -maxdepth 1 -name '*.md' -printf '%f\n' | sed 's/\.md$//' | sort)
+grep -qxF -- "$template" <<<"$known" ||
+  die "unknown template '$template'; known: $(paste -sd ',' <<<"$known" | sed 's/,/, /g')"
+for key in "${fact_keys[@]}"; do
+  [[ ! -v sets[$key] ]] ||
+    die "$key is one of the task's facts, filled from the ledger and the registry; it cannot be set"
+done
+
+# The task must be open, and the brief is for one of its open worktrees.
+events=$(task_events "$task" | jq -s .)
+opened=$(jq -c 'map(select(.event == "opened")) | first' <<<"$events")
+[[ $opened != null ]] || die "$task is not open: the ledger has no opened event for it"
+! jq -e 'any(.[]; .event == "closed")' <<<"$events" >/dev/null || die "$task is closed"
+
+# A path under $HOME, as ~/...
+tilde() {
+  # shellcheck disable=SC2088 # the literal ~ is the point: the brief is read, not run
+  if [[ $1 == "$HOME"/* ]]; then printf '~/%s\n' "${1#"$HOME"/}"; else printf '%s\n' "$1"; fi
+}
+worktrees=$(task_worktrees "$task" | jq -s .)
+[[ $worktrees != '[]' ]] || die "$task has no open worktree"
+if [[ -n $project ]]; then
+  chosen=$(jq -c --arg p "$project" 'map(select(.project == $p)) | first' <<<"$worktrees")
+  if [[ $chosen == null ]]; then
+    list=$(jq -r '.[] | "\(.project)\t\(.worktree)"' <<<"$worktrees" | while IFS=$'\t' read -r p wt; do
+      echo "$p ($(tilde "$wt"))"
+    done | paste -sd ',' | sed 's/,/, /g')
+    die "$task has no open worktree in $project; its open worktrees: $list"
+  fi
+else
+  projects=$(jq -r 'map(.project) | unique | .[]' <<<"$worktrees")
+  (($(wc -l <<<"$projects") == 1)) ||
+    usage_error "$task has open worktrees in $(sed -z 's/\n$//; s/\n/ and /g' <<<"$projects"); name one with --project"
+  chosen=$(jq -c 'first' <<<"$worktrees")
+  project=$(jq -r .project <<<"$chosen")
+fi
+facts=$(team_project "$project")
+
+declare -A values=(
+  [task]=$task
+  [title]=$(jq -r .title <<<"$opened")
+  [path]=$(jq -r .path <<<"$opened")
+  [project]=$project
+  [repo]=$(jq -r .repo <<<"$facts")
+  [base]=$(jq -r .base <<<"$facts")
+  [branch]=$(jq -r .branch <<<"$chosen")
+  [worktree]=$(tilde "$(jq -r .worktree <<<"$chosen")")
+  [task_dir]=$(jq -r .task_dir <<<"$facts")
+  [plan]=$(tilde "$TEAM_HOME/tasks/$task/plan.md")
+  [team_home]=$(tilde "$TEAM_HOME")
+)
+thread=$(jq -r 'map(select(.event == "thread")) | last | .discord_thread // empty' <<<"$events")
+[[ -z $thread ]] || values[thread]=$thread
+
+# The template, with the delivery partial in place of {{> delivery}}.
+text=$(<"$briefs/$template.md")
+if [[ $text == *"{{> delivery}}"* ]]; then
+  delivery=$(jq -r .delivery <<<"$facts")
+  [[ -f $briefs/delivery/$delivery.md ]] || die "no delivery partial for $project's delivery '$delivery'"
+  text=${text//"{{> delivery}}"/"$(<"$briefs/delivery/$delivery.md")"}
+fi
+
+# Every placeholder needs a value, and every --set value a placeholder.
+mapfile -t used < <(grep -oE '\{\{[a-z][a-z0-9_]*\}\}' <<<"$text" | sed 's/^{{//; s/}}$//' | sort -u)
+missing=() unused=()
+for key in "${used[@]}"; do
+  if [[ -v sets[$key] ]]; then
+    values[$key]=${sets[$key]}
+  elif [[ ! -v values[$key] ]]; then
+    missing+=("$key")
+  fi
+done
+for key in "${!sets[@]}"; do
+  printf '%s\n' "${used[@]}" | grep -qxF -- "$key" || unused+=("$key")
+done
+if ((${#missing[@]})); then die "unfilled placeholders: $(printf '%s\n' "${missing[@]}" | paste -sd ',' | sed 's/,/, /g')"; fi
+if ((${#unused[@]})); then
+  die "no placeholder in $template uses: $(printf '%s\n' "${unused[@]}" | sort | paste -sd ',' | sed 's/,/, /g')"
+fi
+
+# One pass over the template, so a value is never read for placeholders itself.
+args=()
+for key in "${used[@]}"; do args+=(--arg "$key" "${values[$key]}"); done
+values_json=$(jq -n '$ARGS.named' "${args[@]}")
+brief=$(jq -nr --arg text "$text" --argjson values "$values_json" \
+  '$text | gsub("\\{\\{(?<key>[a-z][a-z0-9_]*)\\}\\}"; $values[.key])')
+
+file=$TEAM_HOME/tasks/$task/brief${name:+-$name}.md
+[[ -n $force || ! -e $file ]] || die "$file exists; pass --force to replace it"
+mkdir -p "$TEAM_HOME/tasks/$task"
+tmp=$TEAM_HOME/tasks/$task/.${file##*/}.$$
+trap 'rm -f "$tmp"' EXIT
+printf '%s\n' "$brief" >"$tmp"
+mv -f "$tmp" "$file"
+echo "$file"
