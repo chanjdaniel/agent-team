@@ -310,6 +310,12 @@ bg_calls() {
   assert_equal "$(jq -r .crossSessionInbound "$s")" accept
   assert_equal "$(jq -r '.hooks.PreToolUse[0] | "\(.matcher) \(.hooks[0].command)"' "$s")" \
     "Edit|Write|MultiEdit|NotebookEdit $REPO_ROOT/bin/hooks/scratch-only-edits"
+  # The ops log goes to the team home's task directory, which is not this checkout's in a test.
+  local event
+  for event in PreToolUse PostToolUse PostToolUseFailure; do
+    assert_equal "$(jq -c --arg e "$event" '.hooks[$e][-1].hooks[0] | [.command, .args]' "$s")" \
+      "$(jq -cn --arg c "$REPO_ROOT/bin/hooks/ops-log" --arg t "$TEAM_HOME/tasks/T7" '[$c, [$t]]')"
+  done
 }
 
 @test "only the ops role is restricted" {
@@ -373,16 +379,16 @@ bg_calls() {
   assert_equal "$(bg_calls)" ""
 }
 
-@test "@TEAM_HOME@ and @TASK@ are substituted in the settings and the MCP config" {
+@test "@TEAM_HOME@, @TASK@ and @TASK_DIR@ are substituted in the settings and the MCP config" {
   fake_checkout
-  echo '{"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "@TEAM_HOME@/bin/hooks/x @TASK@"}]}]}}' \
+  echo '{"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "@TEAM_HOME@/bin/hooks/x @TASK@", "args": ["@TASK_DIR@"]}]}]}}' \
     >"$code/settings/planner.json"
-  echo '{"mcpServers": {"alpha": {"command": "@TEAM_HOME@/a", "args": ["--task", "@TASK@"]}}}' >"$code/toolkits/kit-a/.mcp.json"
+  echo '{"mcpServers": {"alpha": {"command": "@TEAM_HOME@/a", "args": ["--task", "@TASK@", "@TASK_DIR@"]}}}' >"$code/toolkits/kit-a/.mcp.json"
   thread T7
   run_fake T7 planner "$wt1" --toolkit kit-a -- go
   assert_equal "$status" 0
-  assert_equal "$(jq -r '.hooks.PreToolUse[0].hooks[0].command' "$TEAM_HOME/tasks/T7/settings.planner.json")" \
-    "$code/bin/hooks/x T7"
+  assert_equal "$(jq -c '.hooks.PreToolUse[0].hooks[0] | [.command, .args[0]]' "$TEAM_HOME/tasks/T7/settings.planner.json")" \
+    "$(jq -cn --arg code "$code" --arg t "$TEAM_HOME/tasks/T7" '["\($code)/bin/hooks/x T7", $t]')"
   assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.planner.json")" \
-    "$(jq -cn --arg code "$code" '{mcpServers: {alpha: {command: "\($code)/a", args: ["--task", "T7"]}}}')"
+    "$(jq -cn --arg code "$code" --arg t "$TEAM_HOME/tasks/T7" '{mcpServers: {alpha: {command: "\($code)/a", args: ["--task", "T7", $t]}}}')"
 }

@@ -13,7 +13,7 @@
 # logs the launch to ledger.jsonl, with the worktree's project and branch when the task was opened
 # by team-open, and the request for ops (T0, the load check, needs no thread and is not logged).
 # The merged settings and MCP config are generated into tasks/<task>/ (gitignored); @TEAM_HOME@
-# in either names this checkout, and @TASK@ the task.
+# in either names this checkout, @TASK@ the task, and @TASK_DIR@ the team home's tasks/<task>/.
 #
 # Production toolkits (prod-*) are for the ops role only, which needs prod-read and --request,
 # and is refused while any T<n>-ops session is listed by claude agents (one at a time; end it
@@ -103,12 +103,14 @@ if [[ $role == ops ]]; then
   [[ -z $busy ]] || die "an ops session is already listed: $busy; end it with team-ops-end first"
 fi
 
-# @TEAM_HOME@ names this checkout, where the hooks and toolkits live; @TASK@ names the task.
-substitute='walk(if type == "string" then gsub("@TEAM_HOME@"; $code) | gsub("@TASK@"; $task) else . end)'
+# @TEAM_HOME@ names this checkout, where the hooks and toolkits live; @TASK@ names the task, and
+# @TASK_DIR@ its directory in the team home, where its records live (the ops log).
+substitute='walk(if type == "string" then gsub("@TEAM_HOME@"; $code) | gsub("@TASK@"; $task)
+  | gsub("@TASK_DIR@"; $taskdir) else . end)'
 
 # Role settings layered on the shared worker settings; permission lists are concatenated.
 settings=$taskdir/settings.$role.json
-jq -s --arg code "$code" --arg task "$task" '.[0] as $base | .[1] as $role
+jq -s --arg code "$code" --arg task "$task" --arg taskdir "$taskdir" '.[0] as $base | .[1] as $role
   | ($base * $role)
   | .permissions.deny = (($base.permissions.deny // []) + ($role.permissions.deny // []))
   | .permissions.allow = (($base.permissions.allow // []) + ($role.permissions.allow // []))
@@ -127,7 +129,7 @@ for kit in "${toolkits[@]}"; do
   if [[ -f $dir/.mcp.json ]]; then mcp_files+=("$dir/.mcp.json"); fi
 done
 if [[ ${#mcp_files[@]} -gt 0 ]]; then
-  jq -s --arg code "$code" --arg task "$task" '{mcpServers: (map(.mcpServers // {}) | add)} | '"$substitute" \
+  jq -s --arg code "$code" --arg task "$task" --arg taskdir "$taskdir" '{mcpServers: (map(.mcpServers // {}) | add)} | '"$substitute" \
     "${mcp_files[@]}" >"$mcp"
 else
   echo '{"mcpServers": {}}' >"$mcp"

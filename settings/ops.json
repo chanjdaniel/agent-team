@@ -27,6 +27,22 @@
       {
         "matcher": "Edit|Write|MultiEdit|NotebookEdit",
         "hooks": [{ "type": "command", "command": "@TEAM_HOME@/bin/hooks/scratch-only-edits" }]
+      },
+      {
+        "matcher": "^mcp__.*prod-(read|write).*__",
+        "hooks": [{ "type": "command", "command": "@TEAM_HOME@/bin/hooks/ops-log", "args": ["@TASK_DIR@"], "onFailure": "block" }]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^mcp__.*prod-(read|write).*__",
+        "hooks": [{ "type": "command", "command": "@TEAM_HOME@/bin/hooks/ops-log", "args": ["@TASK_DIR@"] }]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "^mcp__.*prod-(read|write).*__",
+        "hooks": [{ "type": "command", "command": "@TEAM_HOME@/bin/hooks/ops-log", "args": ["@TASK_DIR@"] }]
       }
     ]
   },
