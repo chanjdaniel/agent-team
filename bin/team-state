@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+# Tell where a task stands, from its ledger events, the live session list and GitHub.
+#
+# Usage: team-state T<n> [--json]
+# Prints one line: the task, its project and path, its phase, its live workers and its PR, as
+#   T14 agent-team feature building | T14-builder idle | PR #5 a1b2c3d checks 2/2 agent-review missing
+# With --json, the versioned state (schema team-state/1): task, title, project, path, phase,
+# worktrees (returned or not), thread, workers (every launch, live when claude agents --json
+# lists its session, with that session's status and state), last_event, pending_asks, and pr.
+# Phase, first match wins: closed, merged, held or blocked (with no later resumed),
+# awaiting-merge (the latest review of the ledger's PR head is a pass; that head is the latest pr
+# or history-rewritten event's), in-review (a pr event), building (plan-approved), planning.
+# Heads compare by the shorter one's prefix, at least 7 characters.
+# pr is null without a pr event; otherwise it joins the latest pr event with GitHub (gh pr view,
+# gh pr checks, gh pr checks --required): number, repo and project (from the event's project in
+# projects.toml, else from the URL), state, base, the live head, the ledger head, head_moved,
+# checks passed, failing and pending by name (a skipped check counts as passed, a cancelled one
+# as failing), required (server-required plus the project's required_checks) and
+# required_missing, agent_review (the agent-review check's state on the head, or missing), and
+# merge_approved (a merge-approved event for this PR). When GitHub cannot be read, pr carries
+# error instead of GitHub's facts, the text says "GitHub unavailable", and the exit is still 0.
+# Exit 1 for a task with no events, or when the live session list cannot be read.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+bin=$(dirname "$TEAM_LIB")
+usage="usage: team-state T<n> [--json]"
+
+task='' json=''
+for arg in "$@"; do
+  case $arg in
+    --json) json=1 ;;
+    -*) usage_error "$usage" ;;
+    *)
+      [[ -z $task ]] || usage_error "$usage"
+      task=$arg
+      ;;
+  esac
+done
+[[ -n $task ]] || usage_error "$usage"
+[[ $task =~ ^T[1-9][0-9]*$ ]] || usage_error "task must look like T<n>, got '$task'"
+
+events=$(task_events "$task" | jq -cs .)
+[[ $events != '[]' ]] || die "unknown task $task: the ledger has no events for it"
+live_sessions
+state=$(ledger_jq 'task_state($sessions)' -c --argjson sessions "$LIVE_SESSIONS" <<<"$events")
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+registry() {
+  TEAM_HOME=$TEAM_HOME "$bin/team-project" "$@"
+}
+
+# github <file> <gh arguments...>: gh's JSON into $tmp/<file>. On failure, false with the reason
+# in $tmp/error. "No checks reported" is an empty list, and gh pr checks' exit 8 (checks pending)
+# is a success when it printed the list.
+github() {
+  local file=$1 status=0
+  shift
+  gh "$@" >"$tmp/$file" 2>"$tmp/stderr" || status=$?
+  if [[ $status -eq 8 && $1 == pr && $2 == checks ]] && jq -e 'type == "array"' "$tmp/$file" >/dev/null 2>&1; then
+    status=0
+  elif [[ $status -ne 0 && $1 == pr && $2 == checks ]] && grep -Eq '^no (required )?checks reported' "$tmp/stderr"; then
+    echo '[]' >"$tmp/$file"
+    status=0
+  fi
+  if [[ $status -eq 0 ]] && jq -e . "$tmp/$file" >/dev/null 2>&1; then return 0; fi
+  {
+    printf 'gh %s %s: ' "$1" "$2"
+    grep -m1 . "$tmp/stderr" || if [[ $status -eq 0 ]]; then echo "not JSON"; else echo "exit $status"; fi
+  } >"$tmp/error"
+  return 1
+}
+
+# The pr part: the task's latest pr event joined with GitHub.
+pr_part() {
+  local pr=$1 url project repo='' number name required_checks='[]' facts
+  url=$(jq -r .url <<<"$pr")
+  project=$(jq -r '.project // empty' <<<"$pr")
+  if [[ $url =~ ^https://github\.com/([^/]+/[^/]+)/pull/([0-9]+)/?$ ]]; then
+    repo=${BASH_REMATCH[1]} number=${BASH_REMATCH[2]}
+  else
+    jq -cn --arg url "$url" '{url: $url, error: "not a GitHub pull request URL: \($url)"}'
+    return
+  fi
+  if [[ -z $project ]]; then
+    # A legacy pr event names no project: the registered project whose repo is the URL's.
+    local names
+    names=$(registry --list) || exit 1
+    while IFS= read -r name; do
+      if [[ $(registry "$name" repo | tr '[:upper:]' '[:lower:]') == "$(tr '[:upper:]' '[:lower:]' <<<"$repo")" ]]; then
+        project=$name
+        break
+      fi
+    done <<<"$names"
+  fi
+  if [[ -n $project ]]; then
+    repo=$(registry "$project" repo) || exit 1
+    required_checks=$(registry "$project" required_checks) || exit 1
+  fi
+  facts=$(ledger_jq '{url: $url, number: $number, repo: $repo, project: $project,
+      ledger_head: ledger_pr_head,
+      merge_approved: any(.[]; .event == "merge-approved" and (.pr | tostring) == ($number | tostring))}' \
+    -c --arg url "$url" --argjson number "$number" --arg repo "$repo" \
+    --argjson project "$(jq -n --arg p "$project" 'if $p == "" then null else $p end')" <<<"$events")
+  if github view pr view "$number" --repo "$repo" --json number,state,baseRefName,headRefOid &&
+    github checks pr checks "$number" --repo "$repo" --json name,bucket,state &&
+    github required pr checks "$number" --repo "$repo" --required --json name,bucket,state; then
+    ledger_jq '
+      $view[0] as $view | $checks[0] as $checks
+      | ($checks | map(.name)) as $present
+      | (($required[0] | map(.name)) + $project_required | unique) as $required
+      | . + {state: ($view.state | ascii_downcase), base: $view.baseRefName, head: $view.headRefOid,
+          head_moved: (same_head($view.headRefOid; .ledger_head) | not),
+          checks: {
+            passed: [$checks[] | select(.bucket == "pass" or .bucket == "skipping") | .name] | unique,
+            failing: [$checks[] | select(.bucket == "fail" or .bucket == "cancel") | .name] | unique,
+            pending: [$checks[] | select(.bucket == "pending") | .name] | unique},
+          required: $required,
+          required_missing: [$required[] | select(IN($present[]) | not)],
+          agent_review: ([$checks[] | select(.name == "agent-review") | .state | ascii_downcase] | first // "missing")}
+      | {url, number, repo, project, state, base, head, ledger_head, head_moved, checks, required,
+         required_missing, agent_review, merge_approved}' \
+      -c --slurpfile view "$tmp/view" --slurpfile checks "$tmp/checks" \
+      --slurpfile required "$tmp/required" --argjson project_required "$required_checks" <<<"$facts"
+  else
+    jq -c --rawfile error "$tmp/error" '. + {error: ($error | rtrimstr("\n"))}' <<<"$facts"
+  fi
+}
+
+pr=$(jq -c 'map(select(.event == "pr")) | last' <<<"$events")
+if [[ $pr != null ]]; then
+  state=$(jq -c --argjson pr "$(pr_part "$pr")" '.pr = $pr' <<<"$state")
+fi
+
+if [[ -n $json ]]; then
+  jq . <<<"$state"
+else
+  ledger_jq 'state_line' -r <<<"$state"
+fi

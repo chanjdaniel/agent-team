@@ -100,3 +100,87 @@ def open_worktrees(events):
       map(select([.task, .project, .worktree] != [$e.task, $e.project, $e.worktree]))
     else . end)
   | .[];
+
+# Whether two heads name the same commit: compared by the shorter one's prefix, which must be at
+# least 7 characters, since the ledger holds both short and full SHAs.
+def same_head($a; $b):
+  if ($a | type) == "string" and ($b | type) == "string" then
+    ([($a | length), ($b | length)] | min) as $n
+    | $n >= 7 and ($a[:$n] | ascii_downcase) == ($b[:$n] | ascii_downcase)
+  else false end;
+
+# The following defs read a task's events, in ledger order, as an array.
+
+# The latest PR head the ledger knows: the head of the latest pr or history-rewritten event.
+def ledger_pr_head: map(select(.event == "pr" or .event == "history-rewritten") | .head) | last;
+
+# Whether the latest event of $kind stands: no resumed after it.
+def standing($kind):
+  ([to_entries[] | select(.value.event == $kind) | .key] | last) as $i
+  | $i != null and all(.[$i + 1:][]; .event != "resumed");
+
+# The task's phase, first match wins. A review counts when it is the latest review of the
+# ledger's PR head and a pass.
+def phase:
+  ledger_pr_head as $head
+  | if any(.[]; .event == "closed") then "closed"
+    elif any(.[]; .event == "merged") then "merged"
+    elif standing("held") then "held"
+    elif standing("blocked") then "blocked"
+    elif (map(select(.event == "review" and same_head(.head; $head))) | last | .verdict) == "pass" then "awaiting-merge"
+    elif any(.[]; .event == "pr") then "in-review"
+    elif any(.[]; .event == "plan-approved") then "building"
+    else "planning" end;
+
+# Every worktree the task was given (opened or added), and whether it was returned since.
+def worktree_list:
+  . as $events
+  | [to_entries[] | select(.value.event == "opened" or .value.event == "worktree-added")
+    | .key as $i | .value as $w
+    | $w | {project, branch, worktree}
+      + {returned: any($events[$i + 1:][]; .event == "worktree-returned" and .project == $w.project and .worktree == $w.worktree)}];
+
+# Every launch of the task, live when the session list ($sessions, from claude agents --json)
+# has its session: by the short id, or by the start of the full session id.
+def workers($sessions):
+  [.[] | select(.event == "launch") | .session as $session
+    | (if ($session | type) == "string" and $session != "" then
+        $sessions | map(select(.id == $session or ((.sessionId // "") | startswith($session)))) | first
+      else null end) as $live
+    | {role, session, launched: .ts, worktree, live: ($live != null), status: $live.status, state: $live.state}];
+
+# The asks put to Daniel with no answer yet.
+def pending_asks:
+  [.[] | select(.event == "answered") | .id] as $answered
+  | [.[] | select(.event == "asked" and (.id | IN($answered[]) | not)) | {id, text, ts}];
+
+# A task's state from its events and the session list; team-state adds the pr part.
+def task_state($sessions):
+  (map(select(.event == "opened")) | first) as $opened
+  | {schema: "team-state/1", task: .[0].task, title: $opened.title, project: $opened.project,
+     path: $opened.path, phase: phase, worktrees: worktree_list,
+     thread: (map(select(.event == "thread") | .discord_thread) | last),
+     workers: workers($sessions), last_event: last, pending_asks: pending_asks, pr: null};
+
+# A task's state (team-state's JSON) as one line of text:
+# T14 agent-team feature building | T14-builder idle | PR #5 a1b2c3d checks 2/2 agent-review missing
+def state_line:
+  .task as $task
+  | ([.task, .project, .path, .phase] | map(select(. != null)) | join(" "))
+  + " | "
+  + ([.workers[] | select(.live)
+      | "\($task)-\(.role) \(.status)" + if .state == null or .state == "working" then "" else " \(.state)" end]
+     | if . == [] then "no live worker" else join(", ") end)
+  + (if .pr == null then "" else
+     .pr | if .number == null then " | PR \(.url) unreadable"
+       else " | PR #\(.number)" end
+       + if .number == null then ""
+         elif .error then " GitHub unavailable"
+         else
+           (if .state == "open" then "" else " \(.state)" end)
+           + " \(.head[:7])"
+           + (if .head_moved then " (head moved)" else "" end)
+           + " checks \(.checks.passed | length)/\(.checks | map(length) | add)"
+           + " agent-review \(.agent_review)"
+         end
+     end);

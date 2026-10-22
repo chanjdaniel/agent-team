@@ -1,0 +1,61 @@
+{"ts":"2026-10-21T15:15:21Z","task":"T4","event":"launch","role":"planner","session":"40c16318","worktree":"/home/danielc/.treehouse/Conventioner-d4c77a/3/Conventioner","toolkits":[]}
+{"ts":"2026-10-21T15:33:07Z","task":"T4","event":"launch","role":"builder","session":"655ac6c4","worktree":"/home/danielc/.treehouse/Conventioner-d4c77a/3/Conventioner","toolkits":[]}
+{"ts":"2026-10-21T15:33:07Z","task":"T4","event":"plan-approved","by":"coordinator","note":"22 tickets implementing the T1 design Daniel approved"}
+{"ts":"2026-10-21T15:35:09Z","task":"T4","event":"thread","discord_thread":"1562489356034248818"}
+{"ts":"2026-10-21T15:41:02Z","task":"T4","event":"launch","role":"builder","session":"999a58e0","worktree":"/home/danielc/.treehouse/Conventioner-d4c77a/3/Conventioner","toolkits":[]}
+{"ts":"2026-10-21T15:41:02Z","task":"T4","event":"ticket-done","ticket":"01","commits":["4007d3d9","ac55ba05"]}
+{"ts":"2026-10-21T15:46:49Z","task":"T4","event":"launch","role":"builder","session":"928bfe2e","worktree":"/home/danielc/.treehouse/Conventioner-d4c77a/3/Conventioner","toolkits":[]}
+{"ts":"2026-10-21T15:46:49Z","task":"T4","event":"ticket-done","ticket":"02","commits":["e022ab23"]}
+{"ts":"2026-10-21T16:01:46Z","task":"T4","event":"launch","role":"builder","session":"599759dd","worktree":"/home/danielc/.treehouse/Conventioner-d4c77a/3/Conventioner","toolkits":[]}
+{"ts":"2026-10-21T16:01:46Z","task":"T4","event":"ticket-done","ticket":"03","commits":["86a11bb8"]}
+{"ts":"2026-10-21T16:15:35Z","task":"T4","event":"ticket-done","ticket":"04","commits":["664420ca"]}
+{"ts":"2026-10-21T16:15:38Z","task":"T4","event":"launch","role":"builder","session":"62330ad4","worktree":"/home/danielc/.treehouse/Conventioner-d4c77a/3/Conventioner","toolkits":[]}
+{"ts":"2026-10-21T16:24:05Z","task":"T4","event":"ticket-done","ticket":"05","commits":["aa220e3c"]}
+{"ts":"2026-10-21T16:24:06Z","task":"T4","event":"launch","role":"builder","session":"0745bfca","worktree":"/home/danielc/.treehouse/Conventioner-d4c77a/3/Conventioner","toolkits":[]}
+{"ts":"2026-10-21T16:28:51Z","task":"T4","event":"ticket-done","ticket":"06","commits":["79f67156"]}
+{"ts":"2026-10-21T16:28:52Z","task":"T4","event":"launch","role":"builder","session":"f4b39631","worktree":"/home/danielc/.treehouse/Conventioner-d4c77a/3/Conventioner","toolkits":[]}
+{"ts":"2026-10-21T16:40:49Z","task":"T4","event":"ticket-done","ticket":"07","commits":["0e5b5224"]}
+{"ts":"2026-10-21T16:40:49Z","task":"T4","event":"launch","role":"builder","session":"e747210c","worktree":"/home/danielc/.treehouse/Conventioner-d4c77a/3/Conventioner","toolkits":[]}
+{"ts":"2026-10-21T16:48:29Z","task":"T4","event":"ticket-done","ticket":"08","commits":["4f95bb4e"]}
+{"ts":"2026-10-21T16:48:30Z","task":"T4","event":"launch","role":"builder","session":"9f4a3952","worktree":"/home/danielc/.treehouse/Conventioner-d4c77a/3/Conventioner","toolkits":[]}
+{"ts":"2026-10-21T16:59:54Z","task":"T4","event":"ticket-done","ticket":"09","commits":["a6077129"]}
+{"ts":"2026-10-21T16:59:54Z","task":"T4","event":"launch","role":"builder","session":"38459eb4","worktree":"/home/danielc/.treehouse/Conventioner-d4c77a/3/Conventioner","toolkits":[]}
+{"ts":"2026-10-21T17:11:19Z","task":"T4","event":"ticket-done","ticket":"10","commits":["e077eb37"]}
+{"ts":"2026-10-21T17:11:20Z","task":"T4","event":"launch","role":"builder","session":"7f72ddf6","worktree":"/home/danielc/.treehouse/Conventioner-d4c77a/3/Conventioner","toolkits":[]}
+{"ts":"2026-10-21T17:19:14Z","task":"T4","event":"ticket-done","ticket":"11","commits":["122690f4"]}
+{"ts":"2026-10-21T17:19:15Z","task":"T4","event":"launch","role":"builder","session":"4676cc60","worktree":"/home/danielc/.treehouse/Conventioner-d4c77a/3/Conventioner","toolkits":[]}
+{"ts":"2026-10-21T17:36:03Z","task":"T4","event":"ticket-done","ticket":"12","commits":["752388ce"]}
+{"ts":"2026-10-21T17:36:03Z","task":"T4","event":"launch","role":"builder","session":"14820ae2","worktree":"/home/danielc/.treehouse/Conventioner-d4c77a/3/Conventioner","toolkits":[]}
+{"ts":"2026-10-21T17:51:12Z","task":"T4","event":"ticket-done","ticket":"13","commits":["8a23a885"]}
+{"ts":"2026-10-21T17:51:12Z","task":"T4","event":"launch","role":"builder","session":"53e9432b","worktree":"/home/danielc/.treehouse/Conventioner-d4c77a/3/Conventioner","toolkits":[]}
+{"ts":"2026-10-21T17:56:47Z","task":"T4","event":"ticket-done","ticket":"14","commits":["144c4774"]}
+{"ts":"2026-10-21T17:56:47Z","task":"T4","event":"launch","role":"builder","session":"0d65c133","worktree":"/home/danielc/.treehouse/Conventioner-d4c77a/3/Conventioner","toolkits":[]}
+{"ts":"2026-10-21T18:06:07Z","task":"T4","event":"ticket-done","ticket":"15","commits":["60b4ea0a"]}
+{"ts":"2026-10-21T18:06:11Z","task":"T4","event":"launch","role":"builder","session":"530402ad","worktree":"/home/danielc/.treehouse/Conventioner-d4c77a/3/Conventioner","toolkits":[]}
+{"ts":"2026-10-21T18:18:05Z","task":"T4","event":"ticket-done","ticket":"16","commits":["a4765509"]}
+{"ts":"2026-10-21T18:18:05Z","task":"T4","event":"launch","role":"builder","session":"012b6f9d","worktree":"/home/danielc/.treehouse/Conventioner-d4c77a/3/Conventioner","toolkits":[]}
+{"ts":"2026-10-21T18:29:38Z","task":"T4","event":"ticket-done","ticket":"17","commits":["e610caa8"]}
+{"ts":"2026-10-21T18:29:39Z","task":"T4","event":"launch","role":"builder","session":"dddfbdcf","worktree":"/home/danielc/.treehouse/Conventioner-d4c77a/3/Conventioner","toolkits":[]}
+{"ts":"2026-10-21T18:41:41Z","task":"T4","event":"ticket-done","ticket":"18","commits":["3a2ca744"]}
+{"ts":"2026-10-21T18:41:42Z","task":"T4","event":"launch","role":"builder","session":"6a359165","worktree":"/home/danielc/.treehouse/Conventioner-d4c77a/3/Conventioner","toolkits":[]}
+{"ts":"2026-10-21T18:52:45Z","task":"T4","event":"ticket-done","ticket":"19","commits":["e7c35e84"]}
+{"ts":"2026-10-21T18:52:46Z","task":"T4","event":"launch","role":"builder","session":"b4ffb40e","worktree":"/home/danielc/.treehouse/Conventioner-d4c77a/3/Conventioner","toolkits":[]}
+{"ts":"2026-10-21T19:05:56Z","task":"T4","event":"ticket-done","ticket":"20","commits":["e6087b0b"]}
+{"ts":"2026-10-21T19:05:57Z","task":"T4","event":"launch","role":"builder","session":"c95fc7a4","worktree":"/home/danielc/.treehouse/Conventioner-d4c77a/3/Conventioner","toolkits":[]}
+{"ts":"2026-10-21T19:12:30Z","task":"T4","event":"ticket-done","ticket":"21","commits":["7def2975"]}
+{"ts":"2026-10-21T19:12:31Z","task":"T4","event":"launch","role":"builder","session":"aade32e9","worktree":"/home/danielc/.treehouse/Conventioner-d4c77a/3/Conventioner","toolkits":[]}
+{"ts":"2026-10-21T19:33:00Z","task":"T4","event":"ticket-done","ticket":"22","commits":["49363278"]}
+{"ts":"2026-10-21T19:33:04Z","task":"T4","event":"launch","role":"builder","session":"715b55e8","worktree":"/home/danielc/.treehouse/Conventioner-d4c77a/3/Conventioner","toolkits":[]}
+{"ts":"2026-10-21T21:06:39Z","task":"T4","event":"launch","role":"reviewer","session":"36b64139","worktree":"/home/danielc/.treehouse/Conventioner-d4c77a/3/Conventioner","toolkits":[]}
+{"ts":"2026-10-21T21:06:39Z","task":"T4","event":"pr","url":"https://github.com/chanjdaniel/Conventioner/pull/118","head":"e1e8cdb6"}
+{"ts":"2026-10-21T21:12:50Z","task":"T4","event":"review","verdict":"pass","agent_review":"success","head":"e1e8cdb6"}
+{"ts":"2026-10-21T22:51:55Z","task":"T4","event":"launch","role":"builder","session":"17ac64f7","worktree":"/home/danielc/.treehouse/Conventioner-d4c77a/3/Conventioner","toolkits":[]}
+{"ts":"2026-10-21T22:56:15Z","task":"T4","event":"launch","role":"builder","session":"fe9bb869","worktree":"/home/danielc/.treehouse/Conventioner-d4c77a/3/Conventioner","toolkits":[]}
+{"ts":"2026-10-21T22:56:15Z","task":"T4","event":"history-rewritten","head":"9ce2bfd3","note":"messages only, diff empty; pushed with force-with-lease on Daniel OK"}
+{"ts":"2026-10-21T23:16:34Z","task":"T4","event":"launch","role":"builder","session":"64e939f1","worktree":"/home/danielc/.treehouse/Conventioner-d4c77a/3/Conventioner","toolkits":[]}
+{"ts":"2026-10-21T23:17:36Z","task":"T4","event":"launch","role":"reviewer","session":"3ed2d1f2","worktree":"/home/danielc/.treehouse/Conventioner-d4c77a/3/Conventioner","toolkits":[]}
+{"ts":"2026-10-21T23:25:56Z","task":"T4","event":"held","reason":"OS update","head":"c0b2254f"}
+{"ts":"2026-10-22T00:02:06Z","task":"T4","event":"launch","role":"reviewer","session":"3c409a5e","worktree":"/home/danielc/.treehouse/Conventioner-d4c77a/3/Conventioner","toolkits":[]}
+{"ts":"2026-10-22T00:02:07Z","task":"T4","event":"resumed"}
+{"ts":"2026-10-22T00:03:34Z","task":"T4","event":"merged","pr":118,"merge":"84b97f70","by":"coordinator on Daniel's word"}
+{"ts":"2026-10-22T00:03:34Z","task":"T4","event":"closed","note":"knowledge-graph now required on dev; drift job not required for 10 PRs"}

@@ -4,7 +4,8 @@
 #
 # It sets TEAM_HOME (the directory above bin/, unless TEAM_HOME is already set), answers
 # --help with the calling script's header (then runs the script's help_more, if it defined one
-# before sourcing), and provides die, usage_error, ledger_jq, ledger_append and task_worktrees.
+# before sourcing), and provides die, usage_error, ledger_jq, ledger_append, task_events,
+# task_worktrees and live_sessions.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
 # shellcheck shell=bash
 
@@ -49,6 +50,22 @@ ledger_append() {
     flock -x 9
     printf '%s\n' "$line" >>"$TEAM_HOME/ledger.jsonl"
   } 9>>"$TEAM_HOME/ledger.jsonl.lock"
+}
+
+# All of a task's events, in ledger order, one compact object per line (lines that are not JSON
+# objects are skipped): task_events T<n>
+task_events() {
+  [[ ! -e $TEAM_HOME/ledger.jsonl ]] ||
+    jq -cR --arg task "$1" 'fromjson? | select(type == "object" and .task == $task)' "$TEAM_HOME/ledger.jsonl"
+}
+
+# Read the live session list (claude agents --json, a JSON array) into LIVE_SESSIONS, once per
+# run: later calls keep the first read.
+LIVE_SESSIONS=''
+live_sessions() {
+  [[ -z ${LIVE_SESSIONS:-} ]] || return 0
+  LIVE_SESSIONS=$(claude agents --json | jq -ce 'select(type == "array")' 2>/dev/null) ||
+    die "cannot read the live session list (claude agents --json)"
 }
 
 # A task's open worktrees (opened and added, minus returned), one compact
