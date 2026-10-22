@@ -45,13 +45,14 @@ event() {
   ledger_line --arg t "$1" --arg e "$2" "{ts: \"2026-10-22T02:00:00Z\", task: \$t, event: \$e} + (${3:-{\}})"
 }
 
-# T14 of proj with its thread 1563, PR #5 at the head and Daniel's word in message 1570.
+# T14 of proj with its thread 1563, PR #5 at the head and Daniel's word in message 1562661774950400000,
+# sent at 03:00, an hour after the pr event.
 open_task() {
   event T14 opened '{project: "proj", path: "feature", type: "feat", title: "The tooling",
     branch: "feat/T14-tooling", base: "dev", base_sha: "0123456", worktree: "/w/1"}'
   event T14 thread '{discord_thread: "1563"}'
   event T14 pr '{url: "https://github.com/owner/proj/pull/5", head: "a1b2c3d4", project: "proj"}'
-  event T14 merge-approved '{pr: 5, discord_message: "1570"}'
+  event T14 merge-approved '{url: "https://github.com/owner/proj/pull/5", discord_message: "1562661774950400000"}'
 }
 
 # PR #5 as GitHub shows it: open, mergeable, on dev, every check green on the head, and two
@@ -122,11 +123,11 @@ fi
 EOF
 }
 
-# Message 1570 in the task's thread (or the channel given), written by the user id given.
+# Message 1562661774950400000 in the task's thread (or the channel given), written by the user id given.
 approved_by() {
-  rm -f "$discord"/*-1570.json
-  jq -n --arg author "$1" --arg channel "${2:-1563}" '{id: "1570", channel_id: $channel,
-    content: "merge it", author: {id: $author, username: "daniel"}}' >"$discord/${2:-1563}-1570.json"
+  rm -f "$discord"/*-1562661774950400000.json
+  jq -n --arg author "$1" --arg channel "${2:-1563}" '{id: "1562661774950400000", channel_id: $channel,
+    content: "merge it", author: {id: $author, username: "daniel"}}' >"$discord/${2:-1563}-1562661774950400000.json"
 }
 
 # Run team-merge expecting a refusal: exit 1, stderr naming every reason given, gh pr merge never
@@ -180,12 +181,12 @@ merged_events() {
     "[\"pr\",\"merge\",\"5\",\"--repo\",\"owner/proj\",\"--squash\",\"--match-head-commit\",\"$head\"]"
   assert_equal "$(merged_events)" "$(jq -cn --arg m "$merge" --arg h "$head" '{task: "T14", event: "merged",
     pr: 5, merge: $m, head: $h,
-    by: "Discord message 1570 in the task'"'"'s thread 1563, from daniel (757)",
-    project: "proj", branch: "feat/T14-tooling", discord_message: "1570", discord_channel: "1563",
+    by: "Discord message 1562661774950400000 in the task'"'"'s thread 1563, from daniel (757)",
+    project: "proj", branch: "feat/T14-tooling", discord_message: "1562661774950400000", discord_channel: "1563",
     url: "https://github.com/owner/proj/pull/5"}')"
   assert_equal "$(jq -c . <<<"$output")" "$(jq -cn --arg m "$merge" --arg h "$head" '{task: "T14",
     pr: "https://github.com/owner/proj/pull/5", merge: $m, head: $h,
-    by: "Discord message 1570 in the task'"'"'s thread 1563, from daniel (757)"}')"
+    by: "Discord message 1562661774950400000 in the task'"'"'s thread 1563, from daniel (757)"}')"
   # The merge is confirmed by reading the PR again after gh pr merge.
   assert_equal "$(stub_calls gh | jq -r 'select(.[0:2] == ["pr", "view"]) | .[0:2] | join(" ")' | wc -l)" 3
   assert_equal "$(stub_calls gh | jq -c 'select(.[0:2] == ["pr", "view"])' | tail -n 1 | jq -r '.[-1]')" \
@@ -197,7 +198,7 @@ merged_events() {
 @test "the message is read with the bot token on stdin, never on the command line or in the output" {
   run_bin -0 team-merge T14
   assert_equal "$(stub_calls curl | jq -c .)" \
-    '["-fsS","-H","@-","https://discord.com/api/v10/channels/1563/messages/1570"]'
+    '["-fsS","-H","@-","https://discord.com/api/v10/channels/1563/messages/1562661774950400000"]'
   assert_equal "$(cat "$discord/stdin")" "Authorization: Bot $FAKE_DISCORD_TOKEN"
   [[ $output != *"$FAKE_DISCORD_TOKEN"* ]]
   [[ $(cat "$STUB_CALLS"/*.log) != *"$FAKE_DISCORD_TOKEN"* ]]
@@ -207,16 +208,16 @@ merged_events() {
   approved_by 757 1562486564871995482
   run_bin -0 team-merge T14
   assert_equal "$(stub_calls curl | jq -r '.[-1]')" \
-    "https://discord.com/api/v10/channels/1563/messages/1570
-https://discord.com/api/v10/channels/1562486564871995482/messages/1570"
-  assert_equal "$(merged_events | jq -r .by)" "Discord message 1570 in #coordinator 1562486564871995482, from daniel (757)"
+    "https://discord.com/api/v10/channels/1563/messages/1562661774950400000
+https://discord.com/api/v10/channels/1562486564871995482/messages/1562661774950400000"
+  assert_equal "$(merged_events | jq -r .by)" "Discord message 1562661774950400000 in #coordinator 1562486564871995482, from daniel (757)"
 }
 
 @test "a task without a thread has its word looked up in #coordinator only" {
   jq -c 'select(.event != "thread")' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l" && mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
   approved_by 757 1562486564871995482
   run_bin -0 team-merge T14
-  assert_equal "$(stub_calls curl | jq -r '.[-1]')" "https://discord.com/api/v10/channels/1562486564871995482/messages/1570"
+  assert_equal "$(stub_calls curl | jq -r '.[-1]')" "https://discord.com/api/v10/channels/1562486564871995482/messages/1562661774950400000"
 }
 
 @test "the PR is the latest pr event, or --pr naming one of the task's pr events" {
@@ -236,32 +237,54 @@ https://discord.com/api/v10/channels/1562486564871995482/messages/1570"
 }
 
 @test "no merge-approved for the PR is refused without asking Discord" {
-  jq -c 'if .event == "merge-approved" then .pr = 6 else . end' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
+  jq -c 'if .event == "merge-approved" then .url = "https://github.com/owner/proj/pull/6" else . end' \
+    "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
   mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
-  refused "no merge-approved event for PR #5: Daniel's word is not recorded"
+  refused "no merge-approved event for https://github.com/owner/proj/pull/5: Daniel's word is not recorded"
+  assert_equal "$(stub_calls curl)" ""
+}
+
+@test "an approval of a PR with the same number in another repo, or naming only the number, does not count" {
+  jq -c 'select(.event != "merge-approved")' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
+  mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
+  event T14 pr '{url: "https://github.com/other/repo/pull/5", head: "b2c3d4e5"}'
+  event T14 merge-approved '{url: "https://github.com/other/repo/pull/5", discord_message: "1562661774950400000"}'
+  event T14 merge-approved '{pr: 5, discord_message: "1562661774950400000"}'
+  run_bin -1 --separate-stderr team-merge T14 --pr https://github.com/owner/proj/pull/5
+  assert_contains "$stderr" "  no merge-approved event for https://github.com/owner/proj/pull/5: Daniel's word is not recorded"
+  no_merge_call
+  assert_equal "$(stub_calls curl)" ""
+}
+
+@test "an approval sent before the PR's pr event is refused without asking Discord" {
+  # 1562631575961600000 is 01:00, an hour before the pr event at 02:00.
+  jq -c 'if .event == "merge-approved" then .discord_message = "1562631575961600000" else . end' \
+    "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
+  mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
+  refused "Discord message 1562631575961600000 was sent at 2026-10-22T01:00:00Z, before the pr event of https://github.com/owner/proj/pull/5 at 2026-10-22T02:00:00Z, so it is not Daniel's word on this PR"
   assert_equal "$(stub_calls curl)" ""
 }
 
 @test "an approval whose message cannot be fetched is refused" {
-  rm "$discord/1563-1570.json"
-  refused "Discord message 1570 cannot be fetched from the task's thread 1563 or #coordinator 1562486564871995482: curl: (22) The requested URL returned error: 404"
+  rm "$discord/1563-1562661774950400000.json"
+  refused "Discord message 1562661774950400000 cannot be fetched from the task's thread 1563 or #coordinator 1562486564871995482: curl: (22) The requested URL returned error: 404"
 }
 
 @test "an answer from Discord that is not the approval's message does not count" {
-  jq '.id = "1571"' "$discord/1563-1570.json" >"$discord/x" && mv "$discord/x" "$discord/1563-1570.json"
-  refused "Discord message 1570 cannot be fetched from the task's thread 1563 or #coordinator 1562486564871995482: curl: (22) The requested URL returned error: 404; not that message"
+  jq '.id = "1562661774950400001"' "$discord/1563-1562661774950400000.json" >"$discord/x" && mv "$discord/x" "$discord/1563-1562661774950400000.json"
+  refused "Discord message 1562661774950400000 cannot be fetched from the task's thread 1563 or #coordinator 1562486564871995482: curl: (22) The requested URL returned error: 404; not that message"
 }
 
 @test "an approval whose message is not a Discord message id is refused without asking Discord" {
-  jq -c 'if .event == "merge-approved" then .discord_message = "1570/../x" else . end' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
+  jq -c 'if .event == "merge-approved" then .discord_message = "1562661774950400000/../x" else . end' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
   mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
-  refused "merge-approved names discord_message '1570/../x', which is not a Discord message id"
+  refused "merge-approved names discord_message '1562661774950400000/../x', which is not a Discord message id"
   assert_equal "$(stub_calls curl)" ""
 }
 
 @test "an approval by an author not in the plugin's allowFrom list is refused" {
   approved_by 999
-  refused "Discord message 1570 is by daniel (999), who is not in allowFrom of ~/.claude/channels/discord/access.json"
+  refused "Discord message 1562661774950400000 is by daniel (999), who is not in allowFrom of ~/.claude/channels/discord/access.json"
 }
 
 @test "an approval that cannot be checked, with no token or no allowlist, is refused" {
@@ -374,7 +397,7 @@ EOF
   approved_by 999
   pr_field '.isDraft = true | .baseRefName = "main"'
   checks '[{"name": "test", "bucket": "pass", "state": "SUCCESS"}]'
-  refused "Discord message 1570 is by daniel (999)" "PR #5 is a draft" "PR #5 targets main" \
+  refused "Discord message 1562661774950400000 is by daniel (999)" "PR #5 is a draft" "PR #5 targets main" \
     "required check lint is missing" "required check agent-review is missing" \
     "agent-review is missing on the head, not success"
 }
@@ -412,8 +435,9 @@ EOF
   assert_equal "$(stub_calls gh | jq -c 'select(.[0:2] == ["pr", "merge"]) | map(select(. == "--auto" or . == "--admin"))')" "[]"
 }
 
-@test "coordinator.settings.json denies gh pr merge and gh-axi pr merge, and no settings file allows a merge" {
-  jq -e '.permissions.deny | index("Bash(gh pr merge*)") and index("Bash(gh-axi pr merge*)")' \
+@test "coordinator.settings.json denies gh pr merge, gh-axi pr merge and the API's merge, and no settings file allows a merge" {
+  jq -e '.permissions.deny | index("Bash(gh pr merge*)") and index("Bash(gh-axi pr merge*)")
+    and index("Bash(gh api*pulls/*/merge*)")' \
     "$REPO_ROOT/coordinator.settings.json"
   local file
   for file in "$REPO_ROOT/coordinator.settings.json" "$REPO_ROOT"/settings/*.json; do

@@ -4,8 +4,9 @@
 # Usage: team-merge T<n> [--pr <url>]
 # The PR is the task's latest pr event, or --pr, which must be one of the task's pr events; its
 # repo must be a project in projects.toml. Checks first, changing nothing, each failure a reason:
-#   a merge-approved event for the PR exists (the latest counts), and its discord_message is a
-#   message in the task's thread or in #coordinator, read with the bot token through the Discord
+#   a merge-approved event names the PR's url (the latest counts; a trailing slash aside), and
+#   its discord_message is a message sent no earlier than the PR's latest pr event (by the time in
+#   its id), in the task's thread or in #coordinator, read with the bot token through the Discord
 #   API, whose author is in allowFrom of ~/.claude/channels/discord/access.json;
 #   the PR is open, not a draft, does not conflict, and targets the project's base;
 #   every required check (the base branch's protection, gh pr checks --required and the
@@ -67,17 +68,26 @@ method=$(team_project "$project" merge_method)
 
 problems=()
 
-# Daniel's word: the latest merge-approved for this PR, its message read back from Discord.
+# Daniel's word: the latest merge-approved naming this PR's URL, its message sent since the PR's
+# pr event and read back from Discord. A number alone names a PR in any repo, so it never counts.
 by='' channel=''
-approval=$(jq -c --argjson n "$number" 'map(select(.event == "merge-approved" and (.pr | tostring) == ($n | tostring))) | last' <<<"$events")
+approval=$(jq -c --arg url "${url%/}" '
+  map(select(.event == "merge-approved" and (.url | strings | rtrimstr("/")) == $url)) | last' <<<"$events")
+pr_ts=$(jq -r --arg url "${url%/}" 'map(select(.event == "pr" and (.url | rtrimstr("/")) == $url)) | last | .ts' <<<"$events")
 access=$HOME/.claude/channels/discord/access.json
 if [[ $approval == null ]]; then
-  problems+=("no merge-approved event for PR #$number: Daniel's word is not recorded")
+  problems+=("no merge-approved event for $url: Daniel's word is not recorded")
 else
   message=$(jq -r '.discord_message | tostring' <<<"$approval")
   thread=$(jq -r 'map(select(.event == "thread")) | last | .discord_thread // empty' <<<"$events")
-  if [[ ! $message =~ ^[0-9]+$ ]]; then
+  # A Discord id holds the milliseconds since 2015-01-01 above its low 22 bits.
+  if [[ $message =~ ^[1-9][0-9]{0,18}$ ]]; then
+    sent=$(((10#$message >> 22) / 1000 + 1420070400))
+  fi
+  if [[ ! $message =~ ^[1-9][0-9]{0,18}$ ]]; then
     problems+=("merge-approved names discord_message '$message', which is not a Discord message id")
+  elif ((sent < $(date -ud "$pr_ts" +%s))); then
+    problems+=("Discord message $message was sent at $(date -ud "@$sent" +%FT%TZ), before the pr event of $url at $pr_ts, so it is not Daniel's word on this PR")
   elif ! allow=$(jq -ce '.allowFrom | select(type == "array") | map(tostring)' "$access" 2>/dev/null); then
     problems+=("cannot read allowFrom from ~/.claude/channels/discord/access.json, so the approval cannot be checked")
   elif ! discord_token >/dev/null; then

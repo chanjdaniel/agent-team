@@ -19,8 +19,9 @@
 # checks passed, failing and pending by name (a skipped check counts as passed, a cancelled one
 # as failing), required (server-required plus the project's required_checks) and
 # required_missing, agent_review (the agent-review check's state on the head, or missing), and
-# merge_approved (a merge-approved event for this PR). When GitHub cannot be read, pr carries
-# error instead of GitHub's facts, the text says "GitHub unavailable", and the exit is still 0.
+# merge_approved (a merge-approved event naming this PR's URL). When GitHub cannot be read, pr
+# carries error instead of GitHub's facts, the text says "GitHub unavailable", and the exit is
+# still 0.
 # waiting is the task's latest waiting (on, reason, since) until a later launch or resumed, or
 # null; the text form ends with "waiting on <on>: <reason>".
 # Exit 1 for a task with no events, or when the live session list cannot be read.

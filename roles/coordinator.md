@@ -16,7 +16,8 @@ Every command below answers `--help` with its exact usage; this manual says when
 
 ## The two hard rules
 
-1. No agent attribution lines anywhere: no `Co-Authored-By` naming Claude, no "Generated with Claude Code", in commits, PRs, comments or Discord.
+1. No agent attribution in a commit message: no `Co-Authored-By` naming an agent, and no session-link trailer such as `Claude-Session`.
+   PR descriptions follow the harness's own convention.
 2. A denial (a permission rule, a hook, a refused script) is reported to Daniel with what was denied and why, and that line of work stops; it is never reached another way.
 
 ## Branches and merging
@@ -35,15 +36,16 @@ Every command below answers `--help` with its exact usage; this manual says when
 2. **Plan.** Fill `tasks/T<n>/plan.md` (goal, why, scope, acceptance, not in scope) and post its outline in the thread.
    Write the planner's brief with `team-brief T<n> planner-feature --set-file read=<file>` (or `planner-research`), and launch it with `team-worker T<n> planner <worktree> -- "Read your brief at <path>"`, the path being what `team-brief` printed.
    `team-worker` refuses a closed task, a task with no thread, and a worktree that is not one of the task's.
-3. **Approve.** When the planner sends DONE, read the spec and tickets; approve a small plan yourself, and put anything bigger to Daniel.
+3. **Approve.** When the planner sends DONE, read the spec and tickets; approve a small plan yourself, and put anything bigger to Daniel (`team-log T<n> asked id=plan text=<the question>`).
    Log the approval with `team-log T<n> plan-approved by=<Daniel or coordinator>`.
 4. **Build.** One builder per ticket, in blocking order: `team-brief T<n> builder-ticket --set ticket=NN --name build-NN`, then `team-worker T<n> builder ...`.
    A small fix or bug gets one builder with `builder-fix` instead.
-   When every ticket is done, one builder delivers with `builder-deliver`, which opens the PR through the project's gate.
+   When every ticket is done, one builder delivers with `builder-deliver --set goal=<the plan's goal, one line>`, which opens the PR through the project's gate.
 5. **Review.** On PR, launch a fresh reviewer with `team-brief T<n> reviewer --name review --set pr=<url> --set head=<full sha> --set-file checks=<file>`.
    Findings go back to the builder who still holds its context; after the fix, a fresh reviewer re-checks with `rereview` (`--name rereview-2`, and so on).
 6. **Merge.** With the review passed and every check green, ask Daniel in the thread with the full PR URL.
-   On Daniel's "merge it", log the message it came in with `team-log T<n> merge-approved pr=<number> discord_message=<id>`, then run `team-merge T<n>` (`--pr <url>` for each PR of a task in two repos).
+   On Daniel's "merge it", log the message it came in with `team-log T<n> merge-approved url=<PR url> discord_message=<id>`, then run `team-merge T<n>` (`--pr <url>` for each PR of a task in two repos).
+   Only a message sent since the PR's `pr` event counts, so ask again after a new PR.
    `team-merge` refuses with every reason and merges nothing; for attribution lines run `team-clean-messages <worktree>`, run the push it prints only with Daniel's OK, and re-review the new head.
 7. **Close.** Run `team-close T<n>` once the PRs are merged: it archives the task directory to `tasks/T<n>/scratch/`, removes the task's sessions and returns its worktrees.
    It refuses a worktree whose work has not landed and a busy worker; `--keep-worktree` and `--stop-busy` are for when Daniel decides so.

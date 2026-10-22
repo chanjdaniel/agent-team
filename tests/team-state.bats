@@ -272,7 +272,7 @@ phase_of() {
   open_task
   event T14 pr '{url: "https://github.com/owner/proj/pull/5", head: "1111111"}'
   event T14 history-rewritten "{branch: \"feat/T14-tooling\", old_head: \"1111111\", head: \"${head:0:8}\"}"
-  event T14 merge-approved '{pr: 5, discord_message: "1564"}'
+  event T14 merge-approved '{url: "https://github.com/owner/proj/pull/5", discord_message: "1564"}'
   view='{"number": 5, "state": "OPEN", "baseRefName": "main", "headRefOid": "'"$head"'"}'
   checks='[
     {"name": "shellcheck", "bucket": "pass", "state": "SUCCESS"},
@@ -297,10 +297,14 @@ phase_of() {
     ["pr", "checks", "5", "--repo", "owner/proj", "--required", "--json", "name,bucket,state"]')"
 }
 
-@test "the head moved when GitHub's head is not the ledger's, and approval is per PR" {
+@test "the head moved when GitHub's head is not the ledger's, and approval is per PR, by its URL" {
   open_task
   event T14 pr '{url: "https://github.com/owner/proj/pull/5", head: "1111111"}'
-  event T14 merge-approved '{pr: 4, discord_message: "1564"}'
+  event T14 pr '{url: "https://github.com/other/repo/pull/5", head: "3333333"}'
+  event T14 pr '{url: "https://github.com/owner/proj/pull/5", head: "1111111"}'
+  event T14 merge-approved '{url: "https://github.com/owner/proj/pull/4", discord_message: "1564"}'
+  event T14 merge-approved '{url: "https://github.com/other/repo/pull/5", discord_message: "1565"}'
+  event T14 merge-approved '{pr: 5, discord_message: "1566"}'
   stub_github '{"number": 5, "state": "MERGED", "baseRefName": "main", "headRefOid": "'"$head"'"}' \
     '[{"name": "agent-review", "bucket": "fail", "state": "FAILURE"}]' '[]'
   run_bin -0 team-state T14 --json
@@ -369,7 +373,7 @@ EOF
   open_task
   event T14 plan-approved '{by: "Daniel"}'
   event T14 pr "{url: \"https://github.com/owner/proj/pull/5\", head: \"$head\"}"
-  event T14 merge-approved '{pr: 5, discord_message: "1564"}'
+  event T14 merge-approved '{url: "https://github.com/owner/proj/pull/5", discord_message: "1564"}'
   stub_reply claude '[{"id": "59709d99", "sessionId": "59709d99-7687", "name": "T14-builder", "status": "idle", "state": "working"}]'
   github_down
   run_bin -0 team-state T14 --json

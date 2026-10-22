@@ -186,7 +186,7 @@ pr_part() {
   fi
   facts=$(ledger_jq '{url: $url, number: $number, repo: $repo, project: $project,
       ledger_head: pr_head($url),
-      merge_approved: any(.[]; .event == "merge-approved" and (.pr | tostring) == ($number | tostring))}' \
+      merge_approved: any(.[]; .event == "merge-approved" and (.url | strings | rtrimstr("/")) == ($url | rtrimstr("/")))}' \
     -c --arg url "$url" --argjson number "$number" --arg repo "$repo" \
     --argjson project "$(jq -n --arg p "$project" 'if $p == "" then null else $p end')" <<<"$events") || return 1
   if github "$dir" view pr view "$number" --repo "$repo" --json number,state,baseRefName,headRefOid &&

@@ -154,18 +154,29 @@ esac
 SH
 }
 
-# curl: Discord opens thread 1563 under #coordinator and holds Daniel's (757) "merge it" as
-# messages 1570 and 1571 in it; anything else is a 404.
+# curl: Discord opens thread 1563 under #coordinator and holds the messages daniel_says posted
+# in it; anything else is a 404.
 fake_discord() {
+  export DISCORD_MESSAGES=$BATS_TEST_TMPDIR/messages
+  mkdir -p "$DISCORD_MESSAGES"
   stub_script curl <<'SH'
-case ${*: -1} in
+url=${*: -1}
+case $url in
   https://discord.com/api/v10/channels/*/threads) echo '{"id": "1563"}' ;;
-  https://discord.com/api/v10/channels/1563/messages/157[01])
-    jq -n --arg id "${*: -1}" '{id: ($id | sub(".*/"; "")), channel_id: "1563", content: "merge it",
-      author: {id: "757", username: "daniel"}}' ;;
+  https://discord.com/api/v10/channels/1563/messages/*)
+    if [[ -f $DISCORD_MESSAGES/${url##*/} ]]; then cat "$DISCORD_MESSAGES/${url##*/}"; else
+      echo "curl: (22) The requested URL returned error: 404" >&2; exit 22
+    fi ;;
   *) echo "curl: (22) The requested URL returned error: 404" >&2; exit 22 ;;
 esac
 SH
+}
+
+# Daniel (757) says <text> in the thread now; sets message to its id, which holds the time sent.
+daniel_says() {
+  message=$((($(date +%s%3N) - 1420070400000) << 22 | $(find "$DISCORD_MESSAGES" -type f | wc -l)))
+  jq -n --arg id "$message" --arg text "$1" '{id: $id, channel_id: "1563", content: $text,
+    author: {id: "757", username: "daniel"}}' >"$DISCORD_MESSAGES/$message"
 }
 
 # The worker's part: a commit of <file> in <worktree>, pushed to its branch on origin; prints the
@@ -305,13 +316,14 @@ assert_closed_and_clean() {
   step awaiting-merge
 
   # 6. Merge on Daniel's word in the thread.
-  ok team-log T1 merge-approved pr=7 discord_message=1570
+  daniel_says "merge it"
+  ok team-log T1 merge-approved url="$url" discord_message="$message"
   step awaiting-merge
   ok team-merge T1
   local merge
   merge=$(git --git-dir "$BATS_TEST_TMPDIR/origin/home.git" rev-parse dev)
   assert_equal "$(jq -c . <<<"$output")" "$(jq -cn --arg url "$url" --arg merge "$merge" --arg head "$head" \
-    '{task: "T1", pr: $url, merge: $merge, head: $head, by: "Discord message 1570 in the task'"'"'s thread 1563, from daniel (757)"}')"
+    '{task: "T1", pr: $url, merge: $merge, head: $head, by: "Discord message \($message) in the task'"'"'s thread 1563, from daniel (757)"}' --arg message "$message")"
   # Merged with its workers idle: the coordinator closes it.
   step merged no-worker:"$reviewer"
 
@@ -409,8 +421,10 @@ assert_closed_and_clean() {
   step awaiting-merge
 
   # 5. Daniel's word for each PR; each merges on its own.
-  ok team-log T1 merge-approved pr=7 discord_message=1570
-  ok team-log T1 merge-approved pr=3 discord_message=1571
+  daniel_says "merge home's"
+  ok team-log T1 merge-approved url="$home_url" discord_message="$message"
+  daniel_says "merge conv's"
+  ok team-log T1 merge-approved url="$conv_url" discord_message="$message"
   ok team-merge T1 --pr "$home_url"
   # conv's PR still waits for its merge.
   step awaiting-merge
