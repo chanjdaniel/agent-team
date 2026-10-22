@@ -92,15 +92,17 @@ worktree_changes() {
 # emoji and link.
 ATTRIBUTION_RE='^[[:space:]]*(co-authored-by:(.*[^[:alnum:]])?(claude|anthropic)([^[:alnum:]].*)?|claude-session:.*|(🤖[[:space:]]*)?generated with (claude code|\[claude code\])([[:space:]]*\([^)]*\))?\.?)[[:space:]]*$'
 
+# Messages are matched as bytes (LC_ALL=C), so one in another encoding is read whole, never as
+# binary; a grep that fails (exit 2) fails the caller.
 # The attribution lines of the message on stdin, nothing when it has none.
 attribution_lines() {
-  grep -Ei -- "$ATTRIBUTION_RE" || true
+  LC_ALL=C grep -aEi -- "$ATTRIBUTION_RE" || (($? == 1))
 }
 
 # The message on stdin without its attribution lines and the blank lines that leaves at its end.
 strip_attribution() {
-  { grep -Eiv -- "$ATTRIBUTION_RE" || true; } |
-    awk '{ line[NR] = $0 } END { n = NR; while (n > 0 && line[n] ~ /^[[:space:]]*$/) n--; for (i = 1; i <= n; i++) print line[i] }'
+  { LC_ALL=C grep -aEiv -- "$ATTRIBUTION_RE" || (($? == 1)); } |
+    LC_ALL=C awk '{ line[NR] = $0 } END { n = NR; while (n > 0 && line[n] ~ /^[[:space:]]*$/) n--; for (i = 1; i <= n; i++) print line[i] }'
 }
 
 # The project registry, through this checkout's team-project: team_project [<arguments>...]

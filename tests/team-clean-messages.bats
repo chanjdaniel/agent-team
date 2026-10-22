@@ -65,6 +65,8 @@ assert_unchanged() {
 
 attributed=$'feat: two\n\nBody line.\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nCo-authored-by: Grace Human <grace@example.invalid>\nClaude-Session: 0785a670\n\n\xf0\x9f\xa4\x96 Generated with [Claude Code](https://claude.com/claude-code)\n'
 
+# A co-author whose name is the word Claude is taken for the agent, as the spec says: a human
+# Claude loses the line.
 @test "the matcher finds the attribution lines case-insensitively and keeps human co-authors" {
   local text
   text=$(printf '%s\n' \
@@ -75,6 +77,7 @@ attributed=$'feat: two\n\nBody line.\n\nCo-Authored-By: Claude Opus 5.5 <noreply
     'Co-Authored-By: Anthropic Assistant <a@example.invalid>' \
     'Co-Authored-By: Grace Human <grace@example.invalid>' \
     'Co-Authored-By: Claudette Painter <claudette@example.invalid>' \
+    'Co-Authored-By: Claude Monet <monet@example.invalid>' \
     'claude-session: abc123' \
     'Generated with Claude Code' \
     '🤖 Generated with [Claude Code](https://claude.com/claude-code)' \
@@ -88,6 +91,7 @@ attributed=$'feat: two\n\nBody line.\n\nCo-Authored-By: Claude Opus 5.5 <noreply
     'co-authored-by: claude-code <x@example.invalid>' \
     'CO-AUTHORED-BY: Some Bot <bot@ANTHROPIC.COM>' \
     'Co-Authored-By: Anthropic Assistant <a@example.invalid>' \
+    'Co-Authored-By: Claude Monet <monet@example.invalid>' \
     'claude-session: abc123' \
     'Generated with Claude Code' \
     '🤖 Generated with [Claude Code](https://claude.com/claude-code)' \
@@ -376,4 +380,58 @@ sign_head() {
   assert_equal "$(git -C "$wt" rev-parse HEAD~1)" "$first"
   assert_equal "$(message HEAD)" 'feat: two'
   assert_equal "$(raw HEAD | grep -c '^gpgsig ')" 0
+}
+
+@test "--check lists the offenders on a detached HEAD too" {
+  commit $'feat: one\n\nClaude-Session: x' a
+  git -C "$wt" checkout -q --detach
+  run_bin -1 team-clean-messages "$wt" --check
+  assert_equal "$output" "$(git -C "$wt" rev-parse --short HEAD) feat: one
+  Claude-Session: x"
+}
+
+@test "a commit in another encoding keeps its encoding and its bytes" {
+  echo x >"$wt/a"
+  git -C "$wt" add a
+  git -C "$wt" -c i18n.commitEncoding=ISO-8859-1 commit -q --cleanup=verbatim -m $'feat: caf\xe9\n\nClaude-Session: x'
+  run_bin -0 team-clean-messages "$wt"
+  raw HEAD | grep -qx 'encoding ISO-8859-1'
+  assert_equal "$(message HEAD | od -An -tx1 | tr -d ' \n')" "$(printf 'feat: caf\xe9\n' | od -An -tx1 | tr -d ' \n')"
+}
+
+@test "refused, with nothing changed, when the range reaches a root commit" {
+  git -C "$wt" checkout -q --orphan feat/T7-orphan
+  commit $'feat: unrelated\n\nClaude-Session: x'
+  remember_before
+  run_bin -1 team-clean-messages "$wt"
+  assert_contains "$output" "is a root commit: feat/T7-orphan does not start from origin/dev"
+  assert_unchanged
+}
+
+@test "the push leases what origin has: no branch, or a head behind the old one" {
+  commit $'feat: one\n\nClaude-Session: x' a
+  run_bin -0 --separate-stderr team-clean-messages "$wt"
+  assert_equal "$output" "git push --force-with-lease=feat/T7-thing: origin feat/T7-thing"
+  run bash -c "cd '$wt' && $output"
+  assert_equal "$status" 0
+
+  local pushed
+  pushed=$(git -C "$wt" rev-parse HEAD)
+  commit $'feat: two\n\nClaude-Session: y' b
+  run_bin -0 --separate-stderr team-clean-messages "$wt"
+  assert_equal "$output" "git push --force-with-lease=feat/T7-thing:$pushed origin feat/T7-thing"
+}
+
+@test "refused, with nothing changed, when origin's branch has commits the worktree lacks" {
+  commit $'feat: one\n\nClaude-Session: x' a
+  git -C "$wt" push -q origin feat/T7-thing
+  git clone -q "$BATS_TEST_TMPDIR/origin/proj.git" "$BATS_TEST_TMPDIR/second" 2>/dev/null
+  git -C "$BATS_TEST_TMPDIR/second" checkout -q feat/T7-thing
+  git -C "$BATS_TEST_TMPDIR/second" commit -q --allow-empty -m "feat: from elsewhere"
+  git -C "$BATS_TEST_TMPDIR/second" push -q origin feat/T7-thing
+  remember_before
+  run_bin -1 team-clean-messages "$wt"
+  assert_contains "$output" "origin's feat/T7-thing is at"
+  assert_contains "$output" "which this branch does not contain"
+  assert_unchanged
 }
