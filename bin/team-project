@@ -1,0 +1,210 @@
+#!/usr/bin/env -S python3 -I
+# Read the project registry, projects.toml in the team home: the one way any script reads it.
+#
+# Usage: team-project <name>          the project as JSON, every path with a fixed root absolute
+#        team-project <name> <key>    one value; a dotted key such as pool.provider works;
+#                                     strings print bare, lists and tables as JSON
+#        team-project --list          the project names, one per line, in file order
+#        team-project --check         check the whole file and list every problem
+# Paths in the file are relative to $HOME, except pool.lease and pool.return (relative to the
+# primary checkout) and task_dir and docs (relative to a worktree, so they stay relative).
+# Every command refuses a registry that fails --check. Exit 0 done, 1 refused or a check
+# failed, 2 usage error. Python standard library only (tomllib, Python 3.11 or later).
+
+import json
+import os
+import re
+import sys
+import tomllib
+
+NAME = os.path.basename(sys.argv[0])
+USAGE = "usage: team-project <name> [<key>] | --list | --check"
+
+# The keys of a project and of its pool, in the order problems are reported.
+PROJECT_STRINGS = ("repo", "path", "base", "delivery", "merge_method", "task_dir")
+PROJECT_LISTS = ("required_checks", "docs", "toolkits")
+PROJECT_KEYS = PROJECT_STRINGS + PROJECT_LISTS + ("pool",)
+POOL_KEYS = ("provider", "lease", "return", "slots")
+TREEHOUSE_ONLY = ("lease", "return")
+ENUMS = {
+    "delivery": ("no-mistakes", "direct-pr"),
+    "merge_method": ("merge", "squash", "rebase"),
+    "provider": ("treehouse", "git"),
+}
+RELATIVE_PATHS = ("path", "task_dir", "lease", "return")
+
+
+def fail(message, status=1):
+    print(f"{NAME}: {message}", file=sys.stderr)
+    sys.exit(status)
+
+
+# Print this script's header: the comment block under its shebang, as bin/lib/team.sh does.
+def print_help():
+    with open(__file__, encoding="utf-8") as script:
+        next(script)
+        for line in script:
+            if not line.startswith("#"):
+                break
+            print(re.sub(r"^# ?", "", line), end="")
+
+
+# The team home: the directory above bin/, unless TEAM_HOME is set.
+def team_home():
+    home = os.environ.get("TEAM_HOME") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if not os.path.isdir(home):
+        fail(f"team home {home} is not a directory")
+    return home
+
+
+def is_relative_path(value):
+    return value != "" and not value.startswith(("/", "~")) and ".." not in value.split("/")
+
+
+def is_string_list(value):
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
+def check_string(where, key, value, problems):
+    if not isinstance(value, str):
+        problems.append(f"{where}.{key}: must be a string")
+    elif key in ENUMS and value not in ENUMS[key]:
+        problems.append(f"{where}.{key}: '{value}' is not one of {', '.join(ENUMS[key])}")
+    elif key in RELATIVE_PATHS and not is_relative_path(value):
+        problems.append(f"{where}.{key}: '{value}' must be a relative path")
+    elif key == "repo" and not re.fullmatch(r"[\w.-]+/[\w.-]+", value):
+        problems.append(f"{where}.{key}: '{value}' is not owner/name")
+
+
+def check_keys(where, table, known, required, problems):
+    problems.extend(f"{where}: missing required key '{key}'" for key in required if key not in table)
+    problems.extend(f"{where}: unknown key '{key}'" for key in table if key not in known)
+
+
+# Check one project's pool; slot_owners maps every slot seen so far to its project, so a slot
+# shared by two pools is caught too.
+def check_pool(name, pool, slot_owners, problems):
+    where = f"{name}.pool"
+    if not isinstance(pool, dict):
+        problems.append(f"{where}: must be a table")
+        return
+    check_keys(where, pool, POOL_KEYS, ("provider", "slots"), problems)
+    for key in ("provider",) + TREEHOUSE_ONLY:
+        if key in pool:
+            check_string(where, key, pool[key], problems)
+    for key in TREEHOUSE_ONLY:
+        if pool.get("provider") == "treehouse" and key not in pool:
+            problems.append(f"{where}: a treehouse pool needs '{key}'")
+        if pool.get("provider") == "git" and key in pool:
+            problems.append(f"{where}: '{key}' is for treehouse pools only")
+    slots = pool.get("slots", [])
+    if not is_string_list(slots):
+        problems.append(f"{where}.slots: must be a list of strings")
+        return
+    seen = set()
+    for slot in slots:
+        if not is_relative_path(slot):
+            problems.append(f"{where}.slots: '{slot}' must be a relative path")
+            continue
+        key = os.path.normpath(slot)
+        owner = slot_owners.setdefault(key, name)
+        if owner != name:
+            problems.append(f"{where}.slots: '{slot}' is already a slot of {owner}")
+        elif key in seen:
+            problems.append(f"{where}.slots: '{slot}' is listed twice")
+        seen.add(key)
+
+
+# Every problem with the registry, as one line each; none means it is valid.
+def check(registry):
+    problems = [] if registry else ["defines no projects"]
+    slot_owners = {}
+    for name, project in registry.items():
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name):
+            problems.append(f"{name}: a project name is lowercase letters, digits and dashes")
+        if not isinstance(project, dict):
+            problems.append(f"{name}: must be a table")
+            continue
+        check_keys(name, project, PROJECT_KEYS, PROJECT_KEYS, problems)
+        for key in PROJECT_STRINGS:
+            if key in project:
+                check_string(name, key, project[key], problems)
+        for key in PROJECT_LISTS:
+            if key in project and not is_string_list(project[key]):
+                problems.append(f"{name}.{key}: must be a list of strings")
+        if is_string_list(project.get("docs")):
+            problems.extend(
+                f"{name}.docs: '{doc}' must be a relative path"
+                for doc in project["docs"]
+                if not is_relative_path(doc)
+            )
+        if "pool" in project:
+            check_pool(name, project["pool"], slot_owners, problems)
+    return problems
+
+
+# The registry, parsed and checked; any problem refuses with every problem listed.
+def load(path):
+    try:
+        with open(path, "rb") as registry_file:
+            registry = tomllib.load(registry_file)
+    except FileNotFoundError:
+        fail(f"no registry at {path}")
+    except tomllib.TOMLDecodeError as error:
+        fail(f"{path}: not valid TOML: {error}")
+    problems = check(registry)
+    if problems:
+        print("\n".join(f"{NAME}: {path}: {problem}" for problem in problems), file=sys.stderr)
+        fail(f"{path}: {len(problems)} problem{'s' if len(problems) > 1 else ''}")
+    return registry
+
+
+# A checked project with every path that has a fixed root made absolute.
+def resolve(project, home):
+    resolved = dict(project, pool=dict(project["pool"]))
+    pool = resolved["pool"]
+    resolved["path"] = os.path.normpath(os.path.join(home, project["path"]))
+    pool["slots"] = [os.path.normpath(os.path.join(home, slot)) for slot in pool["slots"]]
+    for key in TREEHOUSE_ONLY:
+        if key in pool:
+            pool[key] = os.path.normpath(os.path.join(resolved["path"], pool[key]))
+    return resolved
+
+
+def lookup(name, project, dotted):
+    value, where = project, name
+    for part in dotted.split("."):
+        if not isinstance(value, dict):
+            fail(f"{name} has no key '{dotted}'; {where} is not a table")
+        if part not in value:
+            fail(f"{name} has no key '{dotted}'; {where} has: {', '.join(value)}")
+        value, where = value[part], part
+    return value
+
+
+def main(args):
+    if args[:1] in (["--help"], ["-h"]):
+        print_help()
+        return
+    if args in (["--list"], ["--check"]):
+        pass
+    elif not 1 <= len(args) <= 2 or args[0].startswith("-"):
+        fail(USAGE, 2)
+    home = os.environ.get("HOME") or fail("HOME is not set")
+    path = os.path.join(team_home(), "projects.toml")
+    registry = load(path)
+    if args[0] == "--check":
+        print(f"{path}: {len(registry)} projects ok")
+    elif args[0] == "--list":
+        print("\n".join(registry))
+    elif args[0] not in registry:
+        fail(f"unknown project '{args[0]}'; known: {', '.join(registry)}")
+    else:
+        value = resolve(registry[args[0]], home)
+        if len(args) == 2:
+            value = lookup(args[0], value, args[1])
+        print(value if isinstance(value, str) else json.dumps(value, indent=2))
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
