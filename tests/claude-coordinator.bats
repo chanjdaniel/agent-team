@@ -19,8 +19,11 @@ if [[ $1 == agents ]]; then
 fi
 echo "launch $held" >>"$STUB_CALLS/claude.lock"
 printf '%s\n' "$PWD" >>"$STUB_CALLS/claude.cwd"
-for fd in /proc/$$/fd/*; do
-  if [[ $(readlink "$fd") == "$lock" ]]; then echo "launch inherited the lock" >>"$STUB_CALLS/claude.lock"; fi
+# Each open file by device and inode, through /dev/fd as both Linux and macOS have it.
+for fd in /dev/fd/*; do
+  if [[ $(stat -L -c %d:%i "$fd" 2>/dev/null) == "$(stat -c %d:%i "$lock")" ]]; then
+    echo "launch inherited the lock" >>"$STUB_CALLS/claude.lock"
+  fi
 done
 echo "Started background session 7c3e9a10 (coordinator). Attach with: claude attach 7c3e9a10"
 exit "$(cat "$BATS_TEST_TMPDIR/launch.status" 2>/dev/null || echo 0)"
