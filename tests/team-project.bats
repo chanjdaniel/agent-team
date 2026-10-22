@@ -268,7 +268,7 @@ TOML
   assert_equal "$(jq -r '[.repo, .base, .delivery, .merge_method, .pool.provider] | join(" ")' <<<"$output")" \
     "chanjdaniel/agent-team dev direct-pr merge git"
   assert_equal "$(jq -c .pool.slots <<<"$output")" \
-    "[\"$HOME/agent-team/.claude/worktrees/1\",\"$HOME/agent-team/.claude/worktrees/2\"]"
+    "[\"$HOME/agent-team/.claude/worktrees/1\",\"$HOME/agent-team/.claude/worktrees/2\",\"$HOME/agent-team/.claude/worktrees/3\"]"
 }
 
 @test "the team home's required checks are the jobs of its CI workflow" {
