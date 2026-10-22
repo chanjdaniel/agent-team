@@ -5,6 +5,11 @@
   },
   "crossSessionInbound": "accept",
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [{ "type": "command", "command": "\"$HOME/agent-team/bin/hooks/session-digest\"", "timeout": 120 }]
+      }
+    ],
     "Stop": [
       {
         "hooks": [{ "type": "command", "command": "\"$HOME/agent-team/bin/hooks/stop-sweep\"" }]

@@ -4,8 +4,8 @@
 #
 # It sets TEAM_HOME (the directory above bin/, unless TEAM_HOME is already set), answers
 # --help with the calling script's header (then runs the script's help_more, if it defined one
-# before sourcing), and provides die, usage_error, ledger_jq, ledger_append, task_events,
-# task_worktrees and live_sessions.
+# before sourcing), and provides die, usage_error, team_project, ledger_jq, ledger_append,
+# task_events, task_worktrees, live_sessions, github, pr_part and task_state_json.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
 # shellcheck shell=bash
 
@@ -74,6 +74,107 @@ task_worktrees() {
   [[ ! -e $TEAM_HOME/ledger.jsonl ]] ||
     ledger_jq 'open_worktrees(inputs | select(.task == $task))' -nc --arg task "$1" "$TEAM_HOME/ledger.jsonl"
 }
+
+# The project registry, through this checkout's team-project: team_project [<arguments>...]
+# team-project refuses a broken registry itself, with every problem on stderr.
+team_project() {
+  TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-project" "$@"
+}
+
+# Run gh, keeping its JSON in <dir>/<name>: github <dir> <name> <gh arguments...>
+# On failure, false with the reason in <dir>/error. "No checks reported" is an empty list,
+# and gh pr checks' exit 8 (checks pending) is a success when it printed the list.
+github() {
+  local dir=$1 name=$2 status=0
+  shift 2
+  gh "$@" >"$dir/$name" 2>"$dir/$name.stderr" || status=$?
+  if [[ $status -eq 8 && $1 == pr && $2 == checks ]] && jq -e 'type == "array"' "$dir/$name" >/dev/null 2>&1; then
+    status=0
+  elif [[ $status -ne 0 && $1 == pr && $2 == checks ]] && grep -Eq '^no (required )?checks reported' "$dir/$name.stderr"; then
+    echo '[]' >"$dir/$name"
+    status=0
+  fi
+  if [[ $status -eq 0 ]] && jq -e . "$dir/$name" >/dev/null 2>&1; then return 0; fi
+  {
+    printf 'gh %s %s: ' "$1" "$2"
+    grep -m1 . "$dir/$name.stderr" || if [[ $status -eq 0 ]]; then echo "not JSON"; else echo "exit $status"; fi
+  } >"$dir/error"
+  return 1
+}
+
+# The pr part of a task's state: its latest pr event joined with GitHub, using <dir> for gh's
+# answers: pr_part '<events>' '<pr event>' <dir>
+pr_part() {
+  local events=$1 pr=$2 dir=$3 url project repo='' number name names required_checks='[]' facts
+  url=$(jq -r .url <<<"$pr") || return 1
+  project=$(jq -r '.project // empty' <<<"$pr") || return 1
+  if [[ $url =~ ^https://github\.com/([^/]+/[^/]+)/pull/([0-9]+)/?$ ]]; then
+    repo=${BASH_REMATCH[1]} number=${BASH_REMATCH[2]}
+  else
+    jq -cn --arg url "$url" '{url: $url, error: "not a GitHub pull request URL: \($url)"}'
+    return
+  fi
+  if [[ -z $project ]]; then
+    # A legacy pr event names no project: the registered project whose repo is the URL's.
+    names=$(team_project --list) || return 1
+    while IFS= read -r name; do
+      if [[ $(team_project "$name" repo | tr '[:upper:]' '[:lower:]') == "$(tr '[:upper:]' '[:lower:]' <<<"$repo")" ]]; then
+        project=$name
+        break
+      fi
+    done <<<"$names"
+  fi
+  if [[ -n $project ]]; then
+    repo=$(team_project "$project" repo) || return 1
+    required_checks=$(team_project "$project" required_checks) || return 1
+  fi
+  facts=$(ledger_jq '{url: $url, number: $number, repo: $repo, project: $project,
+      ledger_head: ledger_pr_head,
+      merge_approved: any(.[]; .event == "merge-approved" and (.pr | tostring) == ($number | tostring))}' \
+    -c --arg url "$url" --argjson number "$number" --arg repo "$repo" \
+    --argjson project "$(jq -n --arg p "$project" 'if $p == "" then null else $p end')" <<<"$events") || return 1
+  if github "$dir" view pr view "$number" --repo "$repo" --json number,state,baseRefName,headRefOid &&
+    github "$dir" checks pr checks "$number" --repo "$repo" --json name,bucket,state &&
+    github "$dir" required pr checks "$number" --repo "$repo" --required --json name,bucket,state; then
+    ledger_jq '
+      $view[0] as $view | $checks[0] as $checks
+      | ($checks | map(.name)) as $present
+      | (($required[0] | map(.name)) + $project_required | unique) as $required
+      | . + {state: ($view.state | ascii_downcase), base: $view.baseRefName, head: $view.headRefOid,
+          head_moved: (same_head($view.headRefOid; .ledger_head) | not),
+          checks: {
+            passed: [$checks[] | select(.bucket == "pass" or .bucket == "skipping") | .name] | unique,
+            failing: [$checks[] | select(.bucket == "fail" or .bucket == "cancel") | .name] | unique,
+            pending: [$checks[] | select(.bucket == "pending") | .name] | unique},
+          required: $required,
+          required_missing: [$required[] | select(IN($present[]) | not)],
+          agent_review: ([$checks[] | select(.name == "agent-review") | .state | ascii_downcase] | first // "missing")}
+      | {url, number, repo, project, state, base, head, ledger_head, head_moved, checks, required,
+         required_missing, agent_review, merge_approved}' \
+      -c --slurpfile view "$dir/view" --slurpfile checks "$dir/checks" \
+      --slurpfile required "$dir/required" --argjson project_required "$required_checks" <<<"$facts"
+  else
+    jq -c --rawfile error "$dir/error" '. + {error: ($error | rtrimstr("\n"))}' <<<"$facts"
+  fi
+}
+
+# A task's state, as team-state --json prints it but compact, from its events (one JSON array in
+# ledger order), the live session list and, when it has a pr event, GitHub. GitHub failures are
+# carried in the pr part; a broken registry or an unreadable session list fails with the reason
+# on stderr: task_state_json '<events>'
+task_state_json() (
+  local events=$1 state pr dir
+  live_sessions
+  state=$(ledger_jq 'task_state($sessions)' -c --argjson sessions "$LIVE_SESSIONS" <<<"$events") || exit 1
+  pr=$(jq -c 'map(select(.event == "pr")) | last' <<<"$events") || exit 1
+  if [[ $pr != null ]]; then
+    dir=$(mktemp -d) || exit 1
+    trap 'rm -rf "$dir"' EXIT
+    pr=$(pr_part "$events" "$pr" "$dir") || exit 1
+    state=$(jq -c --argjson pr "$pr" '.pr = $pr' <<<"$state") || exit 1
+  fi
+  printf '%s\n' "$state"
+)
 
 if [[ ${1:-} == --help || ${1:-} == -h ]]; then
   team_help

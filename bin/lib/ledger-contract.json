@@ -82,9 +82,14 @@
       "required": {"reason": "string"},
       "optional": {"head": "string"}
     },
+    "waiting": {
+      "writer": "team-log",
+      "about": "a task parked on Daniel or something outside the team; the next launch or resumed clears it",
+      "required": {"on": "string", "reason": "string"}
+    },
     "resumed": {
       "writer": "team-log",
-      "about": "clears held, blocked and paused",
+      "about": "clears held, blocked, paused and waiting",
       "required": {}
     },
     "pr": {

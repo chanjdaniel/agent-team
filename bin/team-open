@@ -63,10 +63,6 @@ fi
 [[ $slug =~ ^[a-z0-9]+(-[a-z0-9]+)*$ && ${#slug} -le 40 ]] ||
   usage_error "slug must be lower-case kebab case of at most 40 characters, got '$slug'"
 
-team_project() {
-  TEAM_HOME=$TEAM_HOME "$bin/team-project" "$@"
-}
-
 # team-project refuses a broken registry itself, with every problem on stderr.
 projects=$(team_project --list)
 grep -qxF -- "$project" <<<"$projects" ||

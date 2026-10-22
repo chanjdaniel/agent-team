@@ -261,6 +261,24 @@ T42 stray: T42-reviewer 88888888 is live but T42 is not in the ledger; next: rea
   run_bin -0 team-sweep
 }
 
+@test "waiting parks a task with no worker until the next launch or resumed" {
+  opened T5
+  launch T5 builder 11111111
+  run_bin -1 team-sweep
+  event T5 waiting '{on: "Daniel", reason: "restart the Docker daemons"}'
+  run_bin -0 team-sweep
+  event T5 "done" '{role: "builder", session: "11111111"}'
+  run_bin -0 team-sweep
+  launch T5 builder 22222222
+  run_bin -1 team-sweep
+  assert_contains "$output" "T5 no-worker"
+  event T5 waiting '{on: "Daniel", reason: "walkthrough"}'
+  run_bin -0 team-sweep
+  event T5 resumed
+  run_bin -1 team-sweep
+  assert_contains "$output" "T5 no-worker"
+}
+
 @test "T4's real history: held finds nothing, resumed with no live reviewer is no-worker, closed only strays" {
   fixture_ledger T4 57
   run_bin -0 team-sweep

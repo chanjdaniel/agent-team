@@ -104,7 +104,7 @@ phase_of() {
     thread: "1563",
     last_event: {ts: "2026-10-22T02:00:00Z", task: "T14", event: "answered", id: "q1", answer: "team-state"},
     pending_asks: [{id: "q2", text: "Ship it?", ts: "2026-10-22T02:00:00Z"}],
-    pr: null}')"
+    waiting: null, pr: null}')"
   assert_equal "$(stub_calls gh)" ""
 }
 
@@ -347,4 +347,22 @@ EOF
   fixture_ledger T4 3
   run_bin -0 team-state T4
   assert_equal "$output" "T4 building | no live worker"
+}
+
+@test "waiting stands until the next launch or resumed, and the text form says what it waits on" {
+  open_task
+  event T14 waiting '{on: "Daniel", reason: "restart the Docker daemons"}'
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .waiting <<<"$output")" \
+    '{"on":"Daniel","reason":"restart the Docker daemons","since":"2026-10-22T02:00:00Z"}'
+  assert_equal "$(jq -r .phase <<<"$output")" planning
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature planning | no live worker | waiting on Daniel: restart the Docker daemons"
+  event T14 launch '{role: "builder", session: "3ed2d1f2", worktree: "/w/1", toolkits: []}'
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .waiting <<<"$output")" null
+  event T14 waiting '{on: "a Docker daemon restart", reason: "containers fail"}'
+  event T14 resumed
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .waiting <<<"$output")" null
 }

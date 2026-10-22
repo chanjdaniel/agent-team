@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# Show everything open across the team: every open task's state, the live team sessions and
+# strays, the open PRs of every registered project, and the asks waiting on Daniel.
+#
+# Usage: team-snapshot [--json]
+# Open tasks are those with events and no closed, in task number order, each as its team-state
+# line. Live team sessions are the sessions claude agents --json lists named like a team worker
+# (T<n>-<role>) whose task is open, marked when no launch in the ledger names them; strays are
+# those whose task is closed or not in the ledger. Open PRs come from gh pr list for each project
+# in projects.toml (the first 100). Pending asks are the open tasks' asks with no answer, with
+# their text. Text lines are cut at 120 columns.
+# With --json, the versioned snapshot (schema team-snapshot/1): tasks (each team-state's JSON, or
+# {task, error} when its state could not be told, as for a PR naming an unregistered project),
+# sessions ({task, role, name, session, status, state, logged}), strays (the same with
+# task_state closed or unknown instead of logged), prs ({project, repo, prs: [{number, title,
+# url, branch, base, draft, task}]}, or {project, repo, error}), and pending_asks
+# ({task, id, text, ts}).
+# GitHub failures never fail it: the affected part carries an error and the text says "GitHub
+# unavailable". Exit 1 when the session list or the list of projects cannot be read.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+json=''
+for arg in "$@"; do
+  case $arg in
+    --json) json=1 ;;
+    *) usage_error "usage: team-snapshot [--json]" ;;
+  esac
+done
+
+ledger=$TEAM_HOME/ledger.jsonl
+[[ -e $ledger ]] || ledger=/dev/null
+live_sessions
+projects=$(team_project --list) || exit 1
+
+tmp=$(mktemp -d)
+# Stop the jobs below if this run is cut short, and keep every temp file of the run in $tmp.
+trap 'kill $(jobs -p) 2>/dev/null || true; rm -rf "$tmp"' EXIT
+export TMPDIR=$tmp
+
+# Every task's events by id, read once.
+ledger_jq 'ledger_events | by_task' -nRc "$ledger" >"$tmp/tasks"
+open=$(ledger_jq 'open_tasks[]' -r "$tmp/tasks")
+
+# One registered project's open PRs, or the error that stopped gh: project_prs <project>
+project_prs() {
+  local project=$1 repo dir
+  repo=$(team_project "$project" repo) || return 1
+  dir=$(mktemp -d) || return 1
+  if github "$dir" list pr list --repo "$repo" --state open --limit 100 \
+    --json number,title,url,headRefName,baseRefName,isDraft; then
+    jq -c --arg project "$project" --arg repo "$repo" '{project: $project, repo: $repo,
+      prs: [.[] | {number, title, url, branch: .headRefName, base: .baseRefName, draft: .isDraft,
+        task: ((.headRefName | capture("^[^/]+/(?<task>T[1-9][0-9]*)-").task) // null)}]}' "$dir/list"
+  else
+    jq -cn --arg project "$project" --arg repo "$repo" --rawfile error "$dir/error" \
+      '{project: $project, repo: $repo, error: ($error | rtrimstr("\n"))}'
+  fi
+}
+
+# Each open task's state and each project's PRs at once, since each may wait on GitHub. A task
+# whose state cannot be told is {task, error}, its reason being the job's first line on stderr.
+task_pids=() tasks=() project_pids=() prs=()
+while IFS= read -r task; do
+  [[ -n $task ]] || continue
+  task_state_json "$(jq -c --arg task "$task" '.[$task]' "$tmp/tasks")" >"$tmp/state-$task" 2>"$tmp/state-$task.error" &
+  task_pids+=("$!") tasks+=("$task")
+done <<<"$open"
+index=0
+while IFS= read -r project; do
+  [[ -n $project ]] || continue
+  index=$((index + 1))
+  project_prs "$project" >"$tmp/prs-$index" &
+  project_pids+=("$!") prs+=("$tmp/prs-$index")
+done <<<"$projects"
+states=()
+for index in "${!tasks[@]}"; do
+  task=${tasks[index]}
+  if ! wait "${task_pids[index]}"; then
+    jq -cn --arg task "$task" --rawfile error "$tmp/state-$task.error" \
+      '{task: $task, error: ($error | split("\n") | map(select(. != "")) | first // "it failed with no reason given")}' \
+      >"$tmp/state-$task"
+  fi
+  states+=("$tmp/state-$task")
+done
+for pid in "${project_pids[@]}"; do wait "$pid" || exit 1; done
+
+jq -cs . "${states[@]}" </dev/null >"$tmp/states"
+jq -cs . "${prs[@]}" </dev/null >"$tmp/prs"
+snapshot=$(ledger_jq 'snapshot($tasks[0]; $states[0]; $sessions; $prs[0])' -nc --slurpfile tasks "$tmp/tasks" \
+  --slurpfile states "$tmp/states" --argjson sessions "$LIVE_SESSIONS" --slurpfile prs "$tmp/prs")
+
+if [[ -n $json ]]; then
+  jq . <<<"$snapshot"
+else
+  ledger_jq 'snapshot_text' -r <<<"$snapshot"
+fi

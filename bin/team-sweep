@@ -4,8 +4,8 @@
 # Usage: team-sweep [--json]
 # Reads only ledger.jsonl and claude agents --json (never GitHub), so it runs in about a second.
 # A task is open when it has events and no closed; it is parked when its phase is held, blocked
-# or awaiting-merge, when it has an ask with no answer, or when its latest paused has no later
-# resumed or launch. Findings, one line each with the task, the session and the next step:
+# or awaiting-merge, when it has an ask with no answer, or when its latest paused or waiting has
+# no later resumed or launch. Findings, one line each with the task, the session and the next step:
 #   no-worker      an open task, not parked, with an opened or launch event and no live session
 #                  among its launches
 #   waiting-input  a live session of an open task, not parked, whose state is blocked
@@ -30,8 +30,7 @@ done
 ledger=$TEAM_HOME/ledger.jsonl
 [[ -e $ledger ]] || ledger=/dev/null
 live_sessions
-findings=$(ledger_jq '[inputs | fromjson? | select(type == "object" and (.task | type) == "string" and (.task | test("^T[1-9][0-9]*$")))]
-  | sweep($sessions)' -nRc --argjson sessions "$LIVE_SESSIONS" "$ledger")
+findings=$(ledger_jq 'ledger_events | sweep($sessions)' -nRc --argjson sessions "$LIVE_SESSIONS" "$ledger")
 
 if [[ -n $json ]]; then
   jq . <<<"$findings"

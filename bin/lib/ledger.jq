@@ -114,10 +114,23 @@ def same_head($a; $b):
 # The latest PR head the ledger knows: the head of the latest pr or history-rewritten event.
 def ledger_pr_head: map(select(.event == "pr" or .event == "history-rewritten") | .head) | last;
 
-# Whether the latest event of $kind stands: no resumed after it.
-def standing($kind):
+# Whether the latest event of $kind stands: none of the kinds $clears after it.
+def standing($kind; $clears):
   ([to_entries[] | select(.value.event == $kind) | .key] | last) as $i
-  | $i != null and all(.[$i + 1:][]; .event != "resumed");
+  | $i != null and all(.[$i + 1:][]; .event | IN($clears[]) | not);
+
+# Whether the latest event of $kind stands: no resumed after it.
+def standing($kind): standing($kind; ["resumed"]);
+
+# Whether the latest event of $kind stands until a worker is launched: no resumed and no launch
+# after it.
+def standing_until_launch($kind): standing($kind; ["resumed", "launch"]);
+
+# What the task is waiting on, from its latest waiting while it stands, or null.
+def waiting:
+  if standing_until_launch("waiting") then
+    map(select(.event == "waiting")) | last | {on, reason, since: .ts}
+  else null end;
 
 # The task's phase, first match wins. A review counts when it is the latest review of the
 # ledger's PR head and a pass.
@@ -163,7 +176,7 @@ def task_state($sessions):
   | {schema: "team-state/1", task: .[0].task, title: $opened.title, project: $opened.project,
      path: $opened.path, phase: phase, worktrees: worktree_list,
      thread: (map(select(.event == "thread") | .discord_thread) | last),
-     workers: workers($sessions), last_event: last, pending_asks: pending_asks, pr: null};
+     workers: workers($sessions), last_event: last, pending_asks: pending_asks, waiting: waiting, pr: null};
 
 # A task's state (team-state's JSON) as one line of text:
 # T14 agent-team feature building | T14-builder idle | PR #5 a1b2c3d checks 2/2 agent-review missing
@@ -186,17 +199,14 @@ def state_line:
            + " checks \(.checks.passed | length)/\(.checks | map(length) | add)"
            + " agent-review \(.agent_review)"
          end
-     end);
-
-# Whether the latest paused stands: no resumed and no launch after it.
-def paused_standing:
-  ([to_entries[] | select(.value.event == "paused") | .key] | last) as $i
-  | $i != null and all(.[$i + 1:][]; .event != "resumed" and .event != "launch");
+     end)
+  + (if .waiting == null then "" else " | waiting on \(.waiting.on): \(.waiting.reason)" end);
 
 # Whether a task is parked, waiting on something other than a worker: held, blocked or awaiting
-# merge, an ask with no answer, or a pause still standing.
+# merge, an ask with no answer, or a pause or a wait still standing.
 def parked:
-  IN(phase; "held", "blocked", "awaiting-merge") or pending_asks != [] or paused_standing;
+  IN(phase; "held", "blocked", "awaiting-merge") or pending_asks != [] or standing_until_launch("paused")
+  or waiting != null;
 
 # One of team-sweep's findings: {task, kind, session, name, next, text}, text being its one line.
 def finding($task; $kind; $session; $name; $detail; $next):
@@ -239,19 +249,88 @@ def task_findings($sessions):
             "read claude logs \(.short), then send it one line or log what is known with team-log")
         else empty end);
 
+# The following defs read the whole ledger.
+
+# Every ledger event of a task T<n>, read as raw lines (jq -nR), as one array in ledger order;
+# lines that are not JSON objects with such a task are skipped.
+def ledger_events:
+  [inputs | fromjson? | select(type == "object" and (.task | type) == "string" and (.task | test("^T[1-9][0-9]*$")))];
+
+# Ledger events as an object of each task's events, keyed by task id.
+def by_task: group_by(.task) | map({key: .[0].task, value: .}) | from_entries;
+
+# Whether a task's events (an array, or null for a task not in the ledger) are an open task's:
+# it has events and no closed.
+def is_open: . != null and all(.[]; .event != "closed");
+
+# The live sessions named like team workers (T<n>-<role>), from the session list and every
+# task's events by id: {task, role, name, session (the short id), status, state, logged (a launch
+# of the task names it), task_state (open, closed, or unknown when not in the ledger)}.
+def team_sessions($tasks; $sessions):
+  [$sessions[] | . as $session
+    | ((.name // "") | capture("^(?<task>T(0|[1-9][0-9]*))-(?<role>.+)$")) as $name
+    | ($tasks[$name.task] // null) as $events
+    | {task: $name.task, role: $name.role, name, session: (.id // ((.sessionId // "")[:8])), status, state,
+       logged: ($events != null and any($events[]; .event == "launch" and live_session(.session; [$session]) != null)),
+       task_state: (if $events == null then "unknown" elif $events | is_open then "open" else "closed" end)}];
+
+# Sort by task number.
+def by_task_number: sort_by(.task[1:] | tonumber);
+
+# Why a team session is a stray, from team_sessions: "T4 is closed", "T9 is not in the ledger".
+def stray_reason: "\(.task) is \(if .task_state == "unknown" then "not in the ledger" else "closed" end)";
+
 # team-sweep's findings, over every ledger event as one array and the session list: each open
-# task's (open means it has events and no closed) unless it is parked, then the stray sessions
-# (named like a team worker, T<n>-<role>, whose task is closed or not in the ledger); in task
-# number order.
+# task's unless it is parked, then the stray sessions (named like a team worker whose task is
+# closed or not in the ledger); in task number order.
 def sweep($sessions):
-  (group_by(.task) | map({key: .[0].task, value: .}) | from_entries) as $tasks
-  | [($tasks[] | select(any(.[]; .event == "closed") | not) | select(parked | not) | task_findings($sessions)),
-     ($sessions[] | (.name // "") as $name
-       | ($name | capture("^(?<task>T(0|[1-9][0-9]*))-.").task) as $task
-       | ($tasks[$task] // null) as $events
-       | select($events == null or any($events[]; .event == "closed"))
-       | (.id // ((.sessionId // "")[:8])) as $short
-       | finding($task; "stray"; $short; $name;
-           "\($name) \($short) is live but \($task) is \(if $events == null then "not in the ledger" else "closed" end)";
-           "read claude logs \($short) for anything left to log, then stop it with claude stop \($short)"))]
-  | sort_by(.task[1:] | tonumber);
+  by_task as $tasks
+  | [($tasks[] | select(is_open) | select(parked | not) | task_findings($sessions)),
+     (team_sessions($tasks; $sessions)[] | select(.task_state != "open")
+       | finding(.task; "stray"; .session; .name;
+           "\(.name) \(.session) is live but \(stray_reason)";
+           "read claude logs \(.session) for anything left to log, then stop it with claude stop \(.session)"))]
+  | by_task_number;
+
+# The ids of the open tasks among every task's events by id, in task number order.
+def open_tasks: [to_entries[] | select(.value | is_open) | .key] | sort_by(.[1:] | tonumber);
+
+# team-snapshot's JSON from every task's events by id ($tasks), the open tasks' team-state JSON
+# in task number order ($states; {task, error} for a task whose state could not be told), the
+# session list, and each registered project's open PRs ($prs).
+def snapshot($tasks; $states; $sessions; $prs):
+  team_sessions($tasks; $sessions) as $team
+  | {schema: "team-snapshot/1",
+     tasks: $states,
+     sessions: [$team[] | select(.task_state == "open") | del(.task_state)],
+     strays: [$team[] | select(.task_state != "open") | del(.logged)],
+     prs: $prs,
+     pending_asks: [$states[] | .task as $task | (.pending_asks // [])[] | {task: $task} + .]};
+
+# Cut a line to $n characters, showing the cut.
+def clip($n): if length > $n then .[:$n - 3] + "..." else . end;
+
+# A live session as text: its name, short id, status, and state unless working.
+def session_text:
+  "\(.name) \(.session) \(.status)" + if .state == null or .state == "working" then "" else " \(.state)" end;
+
+# team-snapshot's text form, one line per string, from its JSON. Lines are cut at 120 columns, so
+# ten open tasks fit one screen.
+def snapshot_text:
+  def section($title; $lines):
+    if $lines == [] then "\($title): none" else "\($title) (\($lines | length)):", ($lines[] | "  " + . | clip(120)) end;
+  section("Open tasks"; [.tasks[] | if .error then "\(.task) state unreadable: \(.error)" else state_line end]),
+  section("Live team sessions";
+    [.sessions[] | session_text + if .logged then "" else " (no launch of it in the ledger)" end]),
+  section("Stray sessions";
+    [.strays[] | session_text + ": \(stray_reason)"]),
+  (if .prs == [] then "Open PRs: no registered projects"
+   else "Open PRs:",
+     (.prs[] | "  \(.project) (\(.repo)):" as $heading
+       | if .error then "\($heading) GitHub unavailable (\(.error))" | clip(120)
+         elif .prs == [] then "\($heading) none"
+         else $heading,
+           (.prs[] | "    #\(.number) \(.branch)" + (if .draft then " (draft)" else "" end) + ": \(.title)" | clip(120))
+         end)
+   end),
+  section("Pending asks"; [.pending_asks[] | "\(.task) \(.id): \(.text)"]);

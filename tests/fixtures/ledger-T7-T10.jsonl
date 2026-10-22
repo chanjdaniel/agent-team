@@ -1,0 +1,11 @@
+{"ts":"2026-10-21T15:15:40Z","task":"T7","event":"launch","role":"planner","session":"418e77bd","worktree":"/home/danielc/agent-team/.claude/worktrees/1","toolkits":[]}
+{"ts":"2026-10-21T15:25:54Z","task":"T7","event":"done","role":"planner","session":"418e77bd","report":"tasks/T7/report.md"}
+{"ts":"2026-10-21T15:47:55Z","task":"T8","event":"launch","role":"planner","session":"77ddfee3","worktree":"/home/danielc/agent-team/.claude/worktrees/1","toolkits":[]}
+{"ts":"2026-10-21T15:50:59Z","task":"T9","event":"launch","role":"planner","session":"a3529935","worktree":"/home/danielc/agent-team/.claude/worktrees/2","toolkits":[]}
+{"ts":"2026-10-21T15:51:30Z","task":"T10","event":"launch","role":"planner","session":"954b98a2","worktree":"/home/danielc/.treehouse/Conventioner-d4c77a/4/Conventioner","toolkits":[]}
+{"ts":"2026-10-21T15:51:50Z","task":"T8","event":"thread","discord_thread":"1562493626490036344"}
+{"ts":"2026-10-21T15:51:51Z","task":"T9","event":"thread","discord_thread":"1562493629384368208"}
+{"ts":"2026-10-21T15:51:51Z","task":"T10","event":"thread","discord_thread":"1562493631334453309"}
+{"ts":"2026-10-21T15:54:40Z","task":"T8","event":"done","role":"planner","session":"77ddfee3","report":"tasks/T8/report.md"}
+{"ts":"2026-10-21T15:58:34Z","task":"T10","event":"done","role":"planner","session":"954b98a2","report":"tasks/T10/report.md"}
+{"ts":"2026-10-21T16:03:00Z","task":"T9","event":"done","role":"planner","session":"a3529935","report":"tasks/T9/report.md"}

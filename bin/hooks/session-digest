@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# SessionStart hook for the coordinator: on start, resume, clear or compaction, print the team
+# snapshot (team-snapshot's text form), then the instruction to reconcile it before taking new
+# work, then the live workers whose idle notices (SendMessage with notify_when_idle) to re-arm,
+# so a restarted coordinator rebuilds its picture before anything else. Claude Code adds what
+# it prints to the session's context.
+# When the snapshot fails it prints the error and what to do by hand instead. Exit 0 either way.
+# Wired only in coordinator.settings.json.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/team.sh" "$@"
+
+errors=$(mktemp)
+trap 'rm -f "$errors"' EXIT
+
+status=0
+snapshot=$(TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-snapshot" --json </dev/null 2>"$errors") ||
+  status=$?
+if [[ $status -ne 0 ]] || ! jq -e '.schema == "team-snapshot/1"' >/dev/null 2>&1 <<<"$snapshot"; then
+  echo "team-snapshot failed (exit $status), so there is no digest:"
+  if [[ -s $errors ]]; then cat "$errors"; else echo "it printed no snapshot and no error"; fi
+  echo "Reconcile by hand before taking new work (team-sweep, team-state T<n>, claude agents)," \
+    "and re-arm the idle notice (SendMessage with notify_when_idle) for each live worker."
+  exit 0
+fi
+
+ledger_jq 'snapshot_text,
+  "",
+  "Reconcile these before taking new work: log what the ledger is missing with team-log,"
+    + " act on what team-sweep finds (stray sessions, and tasks with no live worker that are not"
+    + " held, blocked, awaiting merge, asking, paused or waiting), and chase the pending asks.",
+  if .sessions == [] then "No live workers, so no idle notices to re-arm."
+  else "Re-arm the idle notice for each live worker (SendMessage to its name with notify_when_idle):",
+    (.sessions[] | "  \(.name) \(.session)")
+  end' -r <<<"$snapshot" ||
+  echo "The digest could not be printed; run team-snapshot by hand before taking new work."

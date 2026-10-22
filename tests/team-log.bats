@@ -39,6 +39,7 @@ plan-approved team-log by
 paused team-log reason
 blocked team-log reason
 held team-log reason
+waiting team-log on reason
 resumed team-log
 pr team-log url head
 review team-log verdict head
@@ -69,7 +70,7 @@ TABLE
   grep -Eq '^  review +team-log +verdict \(pass\|findings\), head; optional agent_review$' <<<"$output"
   grep -Eq '^  closed +team-close +archive \(list\), returned \(list\), kept \(list\)$' <<<"$output"
   grep -Eq '^  launch +team-worker +role, session, worktree, toolkits \(list\); optional project, branch$' <<<"$output"
-  grep -Eq '^  resumed +team-log +- +\(clears held, blocked and paused\)$' <<<"$output"
+  grep -Eq '^  resumed +team-log +- +\(clears held, blocked, paused and waiting\)$' <<<"$output"
   assert_equal "$(stub_calls curl)$(stub_calls gh)" ""
 }
 
@@ -121,7 +122,7 @@ LINES
     count=$((count + 1))
     assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r '.event + " " + .note')" "$kind why $kind"
   done < <(jq -r '.kinds | to_entries[] | select(.value.writer == "team-log") | .key' "$CONTRACT")
-  assert_equal "$count" "14"
+  assert_equal "$count" "15"
   run_bin -0 team-log --check
 }
 
