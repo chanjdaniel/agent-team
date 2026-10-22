@@ -89,11 +89,23 @@ def contract_table:
       | "  \(.key | pad($event_width))  \($kind.writer | pad($writer_width))  \($text)"
         + if $kind.about then "  (\($kind.about))" else "" end);
 
+# A recorded path as a path on this machine, whose home directory is $home: every machine keeps
+# the same layout under its home, so one under /home/<name> or /Users/<name> is the same path
+# under $home. Any other path, or a value that is not a string, is unchanged.
+def local_path($home):
+  if type == "string" then
+    (capture("^/(home|Users)/[^/]+(?<rest>/.*)?$") | ($home | rtrimstr("/")) + (.rest // "")) // .
+  else . end;
+
+# An event with its recorded worktree, when it has one, as a path on this machine (local_path).
+def local_worktree($home):
+  if type == "object" and has("worktree") then .worktree |= local_path($home) else . end;
+
 # The open worktrees among a stream of ledger events: one {task, project, branch, worktree} per
 # opened or worktree-added event with no later worktree-returned of the same task, project and
-# worktree, in the order they were added.
-def open_worktrees(events):
-  reduce events as $e ([];
+# worktree, in the order they were added. Worktrees are paths on this machine (local_worktree).
+def open_worktrees(events; $home):
+  reduce (events | local_worktree($home)) as $e ([];
     if $e.event == "opened" or $e.event == "worktree-added" then
       . + [$e | {task, project, branch, worktree}]
     elif $e.event == "worktree-returned" then
@@ -209,9 +221,11 @@ def pending_asks:
   [.[] | select(.event == "answered") | .id] as $answered
   | [.[] | select(.event == "asked" and (.id | IN($answered[]) | not)) | {id, text, ts}];
 
-# A task's state from its events and the session list; team-state adds the pr part.
-def task_state($sessions):
-  (map(select(.event == "opened")) | first) as $opened
+# A task's state from its events and the session list, its worktrees as paths on this machine,
+# whose home directory is $home (local_worktree); team-state adds the pr part.
+def task_state($sessions; $home):
+  map(local_worktree($home))
+  | (map(select(.event == "opened")) | first) as $opened
   | {schema: "team-state/1", task: .[0].task, title: $opened.title, project: $opened.project,
      path: $opened.path, phase: phase, worktrees: worktree_list,
      thread: (map(select(.event == "thread") | .discord_thread) | last),

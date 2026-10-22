@@ -7,6 +7,8 @@
 # With --json, the versioned state (schema team-state/1): task, title, project, path, phase,
 # worktrees (returned or not), thread, workers (every launch, live when claude agents --json
 # lists its session, with that session's status and state), last_event, pending_asks, and pr.
+# Recorded worktree paths under another machine's home (/home/<name>, /Users/<name>) show as the
+# same paths under this HOME.
 # Phase, first match wins: closed, merged (every PR merged), held or blocked (with no later
 # resumed), awaiting-merge (every PR not merged has a pass as the latest review of its head),
 # in-review (a pr event), building (plan-approved), planning. A task's PRs are the latest pr event

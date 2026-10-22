@@ -25,7 +25,7 @@
     "launch": {
       "writer": "team-worker",
       "required": {"role": "string", "session": "string", "worktree": "string", "toolkits": "array"},
-      "optional": {"project": "string", "branch": "string"}
+      "optional": {"project": "string", "branch": "string", "machine": "string"}
     },
     "worktree-returned": {
       "writer": "team-close",

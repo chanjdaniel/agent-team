@@ -10,7 +10,9 @@
 #
 # Refuses a closed task and a task with no Discord thread. Prints the background session id and
 # logs the launch to ledger.jsonl, with the worktree's project and branch when the task was opened
-# by team-open (T0, the load check, needs no thread and is not logged).
+# by team-open, and the machine's team name (~/.config/agent-team/machine) when it has one (T0,
+# the load check, needs no thread and is not logged). Recorded worktrees are compared as paths on
+# this machine: one recorded under another machine's home is the same path under this HOME.
 # The merged settings and MCP config are generated into tasks/<task>/ (gitignored).
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
@@ -113,10 +115,13 @@ out=$(cd "$worktree" && claude --bg \
 id=$(grep -oE '\b[0-9a-f]{8}\b' <<<"$out" | head -n 1) || die "could not read the session id from: $out"
 
 if [[ $task != T0 ]]; then
+  # The machine's team name when it has one: launches before machines had names carry none.
+  machine=$(machine_name 2>/dev/null) || machine=''
   ledger_append "$(jq -cn --arg task "$task" --arg role "$role" --arg session "$id" --arg worktree "$worktree" \
-    --argjson at "${worktree_event:-null}" --args '{ts: (now | todate), task: $task, event: "launch",
-      role: $role, session: $session, worktree: $worktree, toolkits: $ARGS.positional}
-      + ($at // {} | {project, branch} | with_entries(select(.value != null)))' "${toolkits[@]}")"
+    --arg machine "$machine" --argjson at "${worktree_event:-null}" --args '{ts: (now | todate), task: $task,
+      event: "launch", role: $role, session: $session, worktree: $worktree, toolkits: $ARGS.positional}
+      + ($at // {} | {project, branch} | with_entries(select(.value != null)))
+      + if $machine == "" then {} else {machine: $machine} end' "${toolkits[@]}")"
 fi
 
 echo "$id"

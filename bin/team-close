@@ -23,7 +23,8 @@
 # A legacy task (events but no opened) has no worktrees in the ledger: its sessions are stopped
 # and removed and closed carries the note legacy. --worktree names a slot it still holds; the
 # path must be a trusted slot of a project in projects.toml, appear in one of the task's launch
-# events and be on a branch naming the task, else exit 1. The first named slot archives to
+# events (a path recorded under another machine's home counting as the same path under this
+# HOME, as for every recorded worktree) and be on a branch naming the task, else exit 1. The first named slot archives to
 # scratch/, others to scratch-<project>/, one slot per project.
 # A failure after the checks leaves the task half closed: fix the cause and run team-close again.
 set -euo pipefail
@@ -69,7 +70,7 @@ if [[ -n $opened_project ]]; then
   done < <(task_worktrees "$task")
 else
   # A legacy task names its slots: never inferred, since slots were shared and reused.
-  mapfile -t launched < <(jq -r '.[] | select(.event == "launch") | .worktree // empty' <<<"$events")
+  mapfile -t launched < <(ledger_jq '.[] | select(.event == "launch") | local_worktree($home) | .worktree // empty' -r <<<"$events")
   for path in "${named[@]}"; do
     slot=$(realpath -m -- "$path")
     project=$(team_project --find pool.slots "$slot")

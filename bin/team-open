@@ -290,7 +290,7 @@ fi
 # Overlap between tasks is the coordinator's judgment: show the project's other open tasks.
 others=$(ledger_jq 'ledger_events as $events
   | ($events | by_task | with_entries(select(.value | is_open))) as $open
-  | open_worktrees($events[] | select($open[.task]))
+  | open_worktrees($events[] | select($open[.task]); $home)
   | select(.project == $project and .task != $task)
   | ($open[.task] | map(select(.event == "opened")) | first | .title) as $title
   | "  \(.task) \(.branch) in \(.worktree)\(if $title then ": \($title)" else "" end)"' \

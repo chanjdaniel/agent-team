@@ -223,6 +223,37 @@ run_fake() {
   assert_equal "$(launches)" ""
 }
 
+@test "a worktree recorded under another home launches as the same path under this HOME" {
+  thread T7
+  opened T7 proj feat/T7-one /home/someone/slots/proj/1
+  cp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before"
+  run_bin -0 team-worker T7 builder "$wt1" -- go
+  assert_equal "$(launches | jq -c '[.project, .branch, .worktree]')" \
+    "$(jq -cn --arg wt "$wt1" '["proj", "feat/T7-one", $wt]')"
+  # Returned on the other machine, under its own home: no longer open here either.
+  ledger_line '{ts: (now | todate), task: "T7", event: "worktree-returned", project: "proj",
+    worktree: "/Users/someone/slots/proj/1"}'
+  run_bin -1 team-worker T7 builder "$wt1" -- go
+  assert_contains "$output" "$wt1 is not one of T7's open worktrees: it has none"
+  # The recorded events stay as they were written.
+  assert_equal "$(head -n 2 "$TEAM_HOME/ledger.jsonl")" "$(cat "$BATS_TEST_TMPDIR/before")"
+}
+
+@test "the launch names this machine when it has a team name" {
+  thread T7
+  opened T7 proj feat/T7-one "$wt1"
+  mkdir -p "$HOME/.config/agent-team"
+  echo laptop >"$HOME/.config/agent-team/machine"
+  run_bin -0 team-worker T7 builder "$wt1" -- go
+  assert_equal "$(launches | jq -r .machine)" "laptop"
+  run_bin -0 team-log --check
+
+  # A name that is not one is left out, and the launch goes ahead.
+  echo Laptop >"$HOME/.config/agent-team/machine"
+  run_bin -0 team-worker T7 builder "$wt1" -- go
+  assert_equal "$(launches | jq -c 'has("machine")')" "$(printf 'true\nfalse')"
+}
+
 @test "a closed task is refused, opened or legacy" {
   thread T7
   opened T7 proj feat/T7-one "$wt1"

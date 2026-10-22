@@ -155,6 +155,35 @@ rm 4f2a9c1e archive:2 worktrees:2"
   assert_contains "$output" "closed"
 }
 
+# rehome_ledger <home>: the ledger as another machine with home <home> wrote it, its recorded
+# worktree paths under that home instead of this HOME.
+rehome_ledger() {
+  jq -c --arg home "$HOME" --arg other "$1" \
+    'if (.worktree // "" | startswith("\($home)/")) then .worktree |= $other + .[($home | length):] else . end' \
+    "$TEAM_HOME/ledger.jsonl" >"$BATS_TEST_TMPDIR/ledger"
+  cp "$BATS_TEST_TMPDIR/ledger" "$TEAM_HOME/ledger.jsonl"
+}
+
+@test "a task whose worktree was recorded under another home closes this machine's slot" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  local slot=${home_slots[0]}
+  # The task was opened on another machine, whose home is /home/someone.
+  rehome_ledger /home/someone
+  assert_equal "$(events opened | jq -r .worktree)" "/home/someone/slots/home/1"
+  launch T1 builder 4f2a9c1e /Users/someone/slots/home/1
+  sessions "$(session 4f2a9c1e T1-builder idle)"
+  echo "spec" >"$slot/.scratch/task/spec.md"
+  work_and_push "$slot" feature.txt
+
+  run_bin -0 --separate-stderr team-close T1
+  assert_equal "$(jq -c .returned <<<"$output")" "$(jq -cn --arg wt "$slot" '[$wt]')"
+  assert_equal "$(cat "$TEAM_HOME/tasks/T1/scratch/spec.md")" "spec"
+  [[ ! -e $slot ]]
+  assert_equal "$(events worktree-returned | jq -r .worktree)" "$slot"
+  assert_equal "$(events opened | jq -r .worktree)" "/home/someone/slots/home/1"
+  run_bin -0 team-log --check
+}
+
 # open_home_task: T1 open in the first home slot with a builder launched and live, its task
 # directory holding a spec; remembers the ledger so assert_unchanged can compare.
 open_home_task() {
@@ -527,6 +556,16 @@ legacy_task() {
     '{task: "T5", event: "closed", archive: ["tasks/T5/scratch"], returned: [$wt], kept: [], note: "legacy"}')"
   assert_equal "$(claude_actions)" '["rm","bcc8f165"]
 ["rm","99cb9d02"]'
+}
+
+@test "a legacy task's --worktree matches a launch recorded under another home" {
+  local slot=${home_slots[1]}
+  legacy_task "$slot" feat/T5-sign-in-limits
+  rehome_ledger /Users/someone
+
+  run_bin -0 team-close T5 --worktree "$slot"
+  [[ ! -e $slot ]]
+  assert_equal "$(events worktree-returned | jq -r .worktree)" "$slot"
 }
 
 @test "a legacy task's --worktree with an uncommitted change is refused like any other" {

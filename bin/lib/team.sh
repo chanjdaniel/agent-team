@@ -6,9 +6,9 @@
 # PATH). It sets TEAM_HOME (the directory above bin/, unless TEAM_HOME is already set), answers
 # --help with the calling script's header (then runs the script's help_more, if it defined one
 # before sourcing), and provides die, usage_error, team_project, ledger_jq, ledger_append,
-# task_events, known_task_events, open_task_events, task_status, task_worktrees,
-# worktree_changes, render_template, attribution_lines, strip_attribution, live_sessions,
-# discord_token, discord_api, github, pr_part and task_state_json, and sets
+# task_events, known_task_events, open_task_events, task_status, task_worktrees, local_path,
+# machine_name, worktree_changes, render_template, attribution_lines, strip_attribution,
+# live_sessions, discord_token, discord_api, github, pr_part and task_state_json, and sets
 # COORDINATOR_CHANNEL.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
 # shellcheck shell=bash
@@ -37,10 +37,10 @@ team_help() {
   sed -n '2,/^[^#]/{/^#/!q;s/^# \{0,1\}//;p}' "$0"
 }
 
-# Run jq with the ledger contract as $contract and the definitions of ledger.jq:
-# ledger_jq <filter> [jq options and files...]
+# Run jq with the ledger contract as $contract, this machine's home directory as $home, and the
+# definitions of ledger.jq: ledger_jq <filter> [jq options and files...]
 ledger_jq() {
-  jq -L "$TEAM_LIB" --slurpfile contract "$TEAM_LIB/ledger-contract.json" \
+  jq -L "$TEAM_LIB" --slurpfile contract "$TEAM_LIB/ledger-contract.json" --arg home "$HOME" \
     "include \"ledger\"; \$contract[0] as \$contract | $1" "${@:2}"
 }
 
@@ -103,10 +103,34 @@ live_sessions() {
 }
 
 # A task's open worktrees (opened and added, minus returned), one compact
-# {task, project, branch, worktree} per line: task_worktrees T<n>
+# {task, project, branch, worktree} per line, each worktree a path on this machine (local_path):
+# task_worktrees T<n>
 task_worktrees() {
   [[ ! -e $TEAM_HOME/ledger.jsonl ]] ||
-    ledger_jq 'open_worktrees(inputs | select(.task == $task))' -nc --arg task "$1" "$TEAM_HOME/ledger.jsonl"
+    ledger_jq 'open_worktrees(inputs | select(.task == $task); $home)' -nc --arg task "$1" "$TEAM_HOME/ledger.jsonl"
+}
+
+# A recorded path as the same path on this machine: one under /home/<name> or /Users/<name> is
+# re-rooted to this HOME, since every machine keeps the same layout under its home; any other
+# path is printed unchanged. Recorded paths stay as written; readers map them: local_path <path>
+local_path() {
+  ledger_jq '$path | local_path($home)' -nr --arg path "$1"
+}
+
+# Print this machine's team name, the first line of ~/.config/agent-team/machine (lower-case
+# kebab case, like home-pc or laptop), or fail saying how to write one.
+machine_name() {
+  local file=$HOME/.config/agent-team/machine name='' fix='write one with: echo <name> > ~/.config/agent-team/machine'
+  if [[ ! -f $file ]]; then
+    echo "${0##*/}: this machine has no team name; $fix" >&2
+    return 1
+  fi
+  IFS= read -r name <"$file" || true
+  if [[ ! $name =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
+    echo "${0##*/}: ~/.config/agent-team/machine names '$name', not a lower-case kebab-case name like home-pc; $fix" >&2
+    return 1
+  fi
+  printf '%s\n' "$name"
 }
 
 # What is not committed in the worktree <wt>, one line per kind, nothing when it is clean (files
@@ -256,7 +280,7 @@ pr_part() {
 task_state_json() (
   local events=$1 state pr dir
   live_sessions
-  state=$(ledger_jq 'task_state($sessions)' -c --argjson sessions "$LIVE_SESSIONS" <<<"$events") || exit 1
+  state=$(ledger_jq 'task_state($sessions; $home)' -c --argjson sessions "$LIVE_SESSIONS" <<<"$events") || exit 1
   pr=$(jq -c 'map(select(.event == "pr")) | last' <<<"$events") || exit 1
   if [[ $pr != null ]]; then
     dir=$(mktemp -d) || exit 1
