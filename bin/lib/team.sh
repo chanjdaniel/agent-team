@@ -2,7 +2,8 @@
 #
 #   source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 #
-# It sets TEAM_HOME (the directory above bin/, unless TEAM_HOME is already set), answers
+# It first applies bin/lib/platform.sh (Bash 5 or later; on macOS, Homebrew's GNU tools first on
+# PATH). It sets TEAM_HOME (the directory above bin/, unless TEAM_HOME is already set), answers
 # --help with the calling script's header (then runs the script's help_more, if it defined one
 # before sourcing), and provides die, usage_error, team_project, ledger_jq, ledger_append,
 # task_events, known_task_events, open_task_events, task_status, task_worktrees,
@@ -11,6 +12,9 @@
 # COORDINATOR_CHANNEL.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
 # shellcheck shell=bash
+
+# shellcheck source=bin/lib/platform.sh
+source "$(dirname "${BASH_SOURCE[0]}")/platform.sh"
 
 TEAM_HOME=${TEAM_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
 # This library's directory, which holds the ledger contract: code, never the team home's data.

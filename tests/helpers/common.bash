@@ -5,6 +5,10 @@
 
 bats_require_minimum_version 1.5.0
 
+# The scripts' platform rules apply to the tests too: on macOS, .bats files get the GNU tools.
+# shellcheck source=bin/lib/platform.sh
+source "$BATS_TEST_DIRNAME/../bin/lib/platform.sh"
+
 # The checkout under test, whichever worktree it is.
 REPO_ROOT=$(cd "$BATS_TEST_DIRNAME/.." && pwd)
 FAKE_DISCORD_TOKEN=fake-discord-token-for-tests

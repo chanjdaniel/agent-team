@@ -20,6 +20,17 @@ import json
 import os
 import re
 import sys
+
+# tomllib is Python 3.11's; macOS's own python3 is older. This file must parse on it to say so.
+if sys.version_info < (3, 11):
+    print(
+        f"{os.path.basename(sys.argv[0])}: needs Python 3.11 or later (tomllib), but runs under"
+        f" Python {sys.version.split()[0]} ({sys.executable}); on macOS run `brew install python`"
+        " and put Homebrew's bin first on PATH (eval \"$(brew shellenv)\")",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
 import tomllib
 
 NAME = os.path.basename(sys.argv[0])

@@ -29,11 +29,13 @@ The team's own work on it goes through a task and a PR to `dev`, like any projec
 - Tests run the real scripts in a sandbox (`load helpers/common`, then `sandbox` in `setup`): `TEAM_HOME` and `HOME` are temporary, `claude`, `gh` and `curl` are stubs, and git is real.
   `tests/helpers/common.bash` documents the helpers.
 - CI's runner has jq 1.7.1, so keep to jq 1.7 features.
+- Scripts and tests run on Linux and macOS: on macOS `bin/lib/platform.sh` (sourced by the library and the test helpers) puts Homebrew's GNU coreutils, findutils, sed, grep and `flock` first on `PATH`, so GNU forms are fine and BSD-only ones are not.
+  CI's `macos` job runs `tests/run bats` on a macOS runner on pull requests only; pushes to `dev` changing only `tasks/**`, `ledger.jsonl` or `memory/**` run no CI.
 - Repo invariants are tests too: every executable in `bin/` answers `--help` with its header, every `bin/team-*` script is named in `roles/coordinator.md`, which stays at most 120 lines, and no tracked Markdown outside `tasks/` and `projects/` (history, kept as written) has an em dash.
 
 ## Script conventions
 
-- Bash, `set -euo pipefail`, then the library: `source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"`; `bin/lib/team.sh`'s header lists what it provides.
+- Bash 5 (the library refuses older), `set -euo pipefail`, then the library: `source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"`; `bin/lib/team.sh`'s header lists what it provides.
 - The header (the comment block under the shebang) is the script's usage and its `--help`, which the library prints; exact commands live there and nowhere else.
 - `TEAM_HOME` (the ledger, `tasks/`, `projects.toml`) is the directory above `bin/` unless set, and is not exported: pass it to a sibling script explicitly.
   Code (roles, settings, templates, plugins, hooks) comes from the script's own checkout, beside `bin/`, never from `TEAM_HOME`.
