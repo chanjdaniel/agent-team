@@ -164,11 +164,11 @@ Bash(@TEAM_HOME@/bin/team-review-comment *)'
   # this checkout's bin/ in full.
   local brief
   for brief in reviewer rereview; do
-    grep -qF '`{{team_bin}}/team-review-status {{pr}} <success|failure> "<one line, at most 140 characters>"`' \
+    grep -qF '`{{team_bin}}/team-review-status {{pr}} {{head}} <success|failure> "<one line, at most 140 characters>"`' \
       "$REPO_ROOT/templates/briefs/$brief.md"
     grep -qF '`{{team_bin}}/team-review-comment {{pr}} {{task_dir}}/' "$REPO_ROOT/templates/briefs/$brief.md"
   done
-  reviewer_allows "$REPO_ROOT/bin/team-review-status https://github.com/me/shop/pull/5 success \"no blocking findings\""
+  reviewer_allows "$REPO_ROOT/bin/team-review-status https://github.com/me/shop/pull/5 a1b2c3d4e5f60718293a4b5c6d7e8f9012345678 success \"no blocking findings\""
   reviewer_allows "$REPO_ROOT/bin/team-review-comment https://github.com/me/shop/pull/5 .scratch/task/review.md"
 }
 
@@ -185,8 +185,8 @@ gh api repos/me/shop/pulls/5/merge -X PUT
 gh pr comment https://github.com/me/shop/pull/5 --body-file review.md
 gh pr comment https://github.com/me/shop/pull/5 --repo someone/else --body-file review.md
 gh pr merge https://github.com/me/shop/pull/5
-team-review-status https://github.com/me/shop/pull/5 success x
-/elsewhere/bin/team-review-status https://github.com/me/shop/pull/5 success x
+team-review-status https://github.com/me/shop/pull/5 a1b2c3d4e5f60718293a4b5c6d7e8f9012345678 success x
+/elsewhere/bin/team-review-status https://github.com/me/shop/pull/5 a1b2c3d4e5f60718293a4b5c6d7e8f9012345678 success x
 COMMANDS
 }
 
