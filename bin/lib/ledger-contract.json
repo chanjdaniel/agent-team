@@ -1,0 +1,108 @@
+{
+  "about": [
+    "The ledger contract: every event kind in ledger.jsonl, the one script that writes it, and its fields.",
+    "Each field's type is string, number or array (a list), or a list of the strings it may be.",
+    "Every line has ts (UTC, like 2026-10-22T01:00:00Z), task (T<n>) and event; note (a string) is allowed on every kind, and other fields are allowed.",
+    "Lines from strict_from on must meet their kind's fields; earlier lines are legacy and only need ts, task and event.",
+    "Read by ledger_append in bin/lib/team.sh (through bin/lib/ledger.jq) and printed by team-log --help."
+  ],
+  "strict_from": "2026-10-22T01:15:00Z",
+  "kinds": {
+    "opened": {
+      "writer": "team-open",
+      "required": {"project": "string", "path": "string", "type": "string", "title": "string", "branch": "string", "base": "string", "base_sha": "string", "worktree": "string"}
+    },
+    "worktree-added": {
+      "writer": "team-open",
+      "about": "team-open --add",
+      "required": {"project": "string", "branch": "string", "base": "string", "base_sha": "string", "worktree": "string"}
+    },
+    "thread": {
+      "writer": "team-thread",
+      "required": {"discord_thread": "string"}
+    },
+    "launch": {
+      "writer": "team-worker",
+      "required": {"role": "string", "session": "string", "worktree": "string", "toolkits": "array"},
+      "optional": {"project": "string", "branch": "string"}
+    },
+    "worktree-returned": {
+      "writer": "team-close",
+      "required": {"project": "string", "worktree": "string"}
+    },
+    "closed": {
+      "writer": "team-close",
+      "required": {"archive": "array", "returned": "array", "kept": "array"}
+    },
+    "merged": {
+      "writer": "team-merge",
+      "required": {"pr": "number", "merge": "string", "head": "string", "by": "string"}
+    },
+    "history-rewritten": {
+      "writer": "team-clean-messages",
+      "required": {"branch": "string", "old_head": "string", "head": "string"}
+    },
+    "done": {
+      "writer": "team-log",
+      "required": {"role": "string", "session": "string"},
+      "optional": {"report": "string"}
+    },
+    "ticket-done": {
+      "writer": "team-log",
+      "required": {"ticket": "string", "commits": "array"},
+      "optional": {"repo": "string"}
+    },
+    "question": {
+      "writer": "team-log",
+      "required": {"role": "string", "text": "string"}
+    },
+    "asked": {
+      "writer": "team-log",
+      "about": "a decision put to Daniel",
+      "required": {"id": "string", "text": "string"}
+    },
+    "answered": {
+      "writer": "team-log",
+      "required": {"id": "string", "answer": "string"}
+    },
+    "plan-approved": {
+      "writer": "team-log",
+      "required": {"by": "string"}
+    },
+    "paused": {
+      "writer": "team-log",
+      "required": {"reason": "string"}
+    },
+    "blocked": {
+      "writer": "team-log",
+      "required": {"reason": "string"}
+    },
+    "held": {
+      "writer": "team-log",
+      "required": {"reason": "string"},
+      "optional": {"head": "string"}
+    },
+    "resumed": {
+      "writer": "team-log",
+      "about": "clears held, blocked and paused",
+      "required": {}
+    },
+    "pr": {
+      "writer": "team-log",
+      "required": {"url": "string", "head": "string"}
+    },
+    "review": {
+      "writer": "team-log",
+      "required": {"verdict": ["pass", "findings"], "head": "string"},
+      "optional": {"agent_review": "string"}
+    },
+    "merge-approved": {
+      "writer": "team-log",
+      "required": {"pr": "number", "discord_message": "string"}
+    },
+    "failed": {
+      "writer": "team-log",
+      "required": {"reason": "string"}
+    }
+  }
+}

@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Record an event the coordinator writes by hand in the ledger, against the ledger contract.
+#
+# Usage: team-log T<n> <event> [key=value]...
+#        team-log --check [<file>]
+# Appends {ts (now, UTC), task, event, key: value...}. A value is stored as JSON when it parses
+# as JSON (a list, a number, true) and as a string otherwise; a field the contract types as a
+# string is always a string. note is allowed on every kind. Kinds written by another script
+# (opened, launch, merged, closed...) are refused.
+# --check checks a ledger (default: the team home's): every line is JSON with ts, task and
+# event, and lines from strict_from on meet their kind's fields; exit 1 lists each bad line.
+set -euo pipefail
+
+# Printed by --help after the header.
+help_more() {
+  echo
+  ledger_jq '"Ledger contract, strict from \($contract.strict_from) (bin/lib/ledger-contract.json):", ($contract | contract_table)' -nr
+}
+
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+usage="usage: team-log T<n> <event> [key=value]... | team-log --check [<file>]"
+
+if [[ ${1:-} == --check ]]; then
+  [[ $# -le 2 ]] || usage_error "$usage"
+  file=${2:-$TEAM_HOME/ledger.jsonl}
+  [[ -f $file ]] || die "no ledger at $file"
+  report=$(ledger_jq 'check_ledger($contract)' -nRc <"$file")
+  read -r total bad < <(jq -r '"\(.total) \(.bad | length)"' <<<"$report")
+  if ((bad > 0)); then
+    jq -r --arg file "$file" '.bad[] | "\($file):\(.line): \(.problems | join("; "))"' <<<"$report" >&2
+    echo "$file: $bad of $total lines break the ledger contract" >&2
+    exit 1
+  fi
+  if ((total == 1)); then echo "$file: 1 line meets the ledger contract"; else echo "$file: $total lines meet the ledger contract"; fi
+  exit 0
+fi
+
+[[ $# -ge 2 ]] || usage_error "$usage"
+task=$1 event=$2
+shift 2
+[[ $task =~ ^T[1-9][0-9]*$ ]] || die "task must look like T<n>, got '$task'"
+ledger_jq '$contract.kinds | has($event)' -ne --arg event "$event" >/dev/null ||
+  die "unknown event kind '$event'; team-log --help lists the kinds"
+
+declare -A seen=()
+pairs=()
+for pair in "$@"; do
+  key=${pair%%=*}
+  [[ $pair == *=?* && $key =~ ^[a-z][a-z0-9_]*$ ]] || die "not a key=value: '$pair'"
+  [[ $key != ts && $key != task && $key != event ]] || die "$key is set by team-log"
+  [[ -z ${seen[$key]:-} ]] || die "$key is given twice"
+  seen[$key]=1
+  pairs+=("$key" "${pair#*=}")
+done
+
+# Each value is typed by the contract when it names the field, and by whether it parses as JSON
+# otherwise; ledger_append then checks the event against the contract.
+ledger_append "$(ledger_jq '
+  field_types($contract.kinds[$event]) as $types
+  | $ARGS.positional as $pairs
+  | reduce range(0; $pairs | length; 2) as $i ({ts: (now | todate), task: $task, event: $event};
+      $pairs[$i] as $key | $pairs[$i + 1] as $raw
+      | .[$key] = if ($types[$key] | type) == "array" or $types[$key] == "string" then $raw
+        else ((try ($raw | fromjson) catch null) | if . == null or (type == "number" and isnan) then $raw else . end)
+        end)' -nc --arg task "$task" --arg event "$event" --args "${pairs[@]}")"

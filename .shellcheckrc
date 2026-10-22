@@ -1,2 +1,4 @@
 # shellcheck reads this from any script under the repo: follow sourced files from the script's own directory.
 source-path=SCRIPTDIR
+# ledger_jq (bin/lib/team.sh) takes a jq filter, whose $variables are jq's, in single quotes.
+disable=SC2016
