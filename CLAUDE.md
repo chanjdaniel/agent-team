@@ -20,7 +20,9 @@ The team's own work on it goes through a task and a PR to `dev`, like any projec
 | `tasks/` | Each task's plan, briefs and archived scratch; history, kept as written |
 | `memory/` | Each registered project's Claude Code auto memory, `memory/<project>/`, which every machine and worktree of it shares once `team-config apply` points the project at it |
 | `manual-steps.md` | The steps only Daniel can take |
-| `sops/`, `projects/` | Standing procedures, and each project's planning (Conventioner's backlog) |
+| `README.md`, `SETUP.md` | The sentence Daniel types on a new machine, and the agent's entry point for "set up as host" |
+| `sops/` | Standing procedures: `machine-setup.md` (a new machine, driven by `SETUP.md`), `portability.md` (moving the team between machines), `knowledge-graph.md` |
+| `projects/` | Each project's planning (Conventioner's backlog) |
 
 `.scratch/task/` is a team-home task's own task directory, ignored by git.
 

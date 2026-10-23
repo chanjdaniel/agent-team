@@ -16,6 +16,32 @@ setup() {
   assert_equal "$hits" ""
 }
 
+# The machine docs: Daniel's sentence, the setup entry point, the SOPs and Daniel's steps.
+MACHINE_DOCS=(README.md SETUP.md sops/machine-setup.md sops/portability.md manual-steps.md)
+
+@test "the machine docs name only commands in bin/, with options and subcommands their --help knows" {
+  local doc span cmd i found=0 missing=() words
+  for doc in "${MACHINE_DOCS[@]}"; do
+    # Each code span's team command and what follows it: `~/agent-team/bin/team-lease take --steal`.
+    while IFS= read -r span; do
+      found=$((found + 1))
+      read -ra words <<<"$span"
+      cmd=${words[0]}
+      [[ -x $REPO_ROOT/bin/$cmd ]] || { missing+=("$doc: $cmd is not in bin/"); continue; }
+      run_bin -0 "$cmd" --help </dev/null
+      # Every option, and a subcommand right after the command (`team-config diff --full`).
+      for i in "${!words[@]}"; do
+        ((i)) || continue
+        [[ ${words[i]} == --?* ]] || { ((i == 1)) && [[ ${words[i]} =~ ^[a-z]+$ ]]; } || continue
+        grep -qwF -- "${words[i]}" <<<"$output" || missing+=("$doc: $span (${words[i]})")
+      done
+    done < <(grep -oE '`[^`]*`' "$REPO_ROOT/$doc" | tr -d '`' |
+      grep -oE '(^|[ /])(team-[a-z]+(-[a-z]+)*|claude-coordinator)( [^ ]+)*' | sed -E 's#^[ /]##')
+  done
+  assert_equal "$(printf '%s\n' "${missing[@]}")" ""
+  ((found >= 20))
+}
+
 @test "every executable in bin/ answers --help with its header and exit 0" {
   local script found=0 header
   while IFS= read -r script; do
