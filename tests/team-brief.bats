@@ -152,7 +152,7 @@ EOF
 
 @test "every real template renders for each delivery with no placeholder left and no em dash" {
   assert_equal "$(templates | paste -sd ' ')" \
-    "builder-deliver builder-fix builder-ticket planner-feature planner-research rereview reviewer"
+    "builder-deliver builder-fix builder-ticket ops planner-feature planner-research rereview reviewer"
   open_t12
   open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
   local task template keys sets key brief
@@ -177,6 +177,42 @@ EOF
     'gh pr create --repo chanjdaniel/agent-team --base main --head feat/T14-team-tooling'
   refute_grep no-mistakes "$TEAM_HOME/tasks/T14/brief-builder-fix.md"
   refute_grep 'gh pr create' "$TEAM_HOME/tasks/T12/brief-builder-deliver.md"
+}
+
+@test "an ops brief quotes Daniel's request, links it, and says whether personal details were asked for" {
+  open_task T30 conv research research/T30-ops-market-phases .treehouse/Conventioner-d4c77a/3/Conventioner \
+    "markets per phase"
+  printf -- '- `docs/OBJECT_RELATIONSHIPS.md`\n- `docs/schema.d.ts`\n' >"$BATS_TEST_TMPDIR/docs.md"
+  run_bin -0 team-brief T30 ops --set request='how many markets are in each phase?' \
+    --set request_link=https://discord.com/channels/1/2/3 --set personal=no \
+    --set-file data_docs="$BATS_TEST_TMPDIR/docs.md"
+  assert_equal "$(<"$TEAM_HOME/tasks/T30/brief.md")" "$(
+    cat <<'EOF'
+# T30 brief (ops): markets per phase
+
+Path: research; you are the ops agent, on the one production request below.
+Project: conv (`chanjdaniel/Conventioner`).
+Worktree: `~/.treehouse/Conventioner-d4c77a/3/Conventioner`, branch `research/T30-ops-market-phases`.
+Task directory: `.scratch/task/` in the worktree (excluded from git), for an answer too long for one message.
+
+## The request
+
+Daniel asked, in https://discord.com/channels/1/2/3:
+
+> how many markets are in each phase?
+
+Personal details asked for: no.
+
+## Read first
+
+- `docs/OBJECT_RELATIONSHIPS.md`
+- `docs/schema.d.ts`
+
+## Report
+
+Send `T30 DONE <answer>` to `coordinator` when you have the answer.
+EOF
+  )"
 }
 
 @test "no template repeats a rule from roles/" {

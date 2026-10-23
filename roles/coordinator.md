@@ -79,8 +79,8 @@ A task you park on Daniel or anything outside the team gets `team-log T<n> waiti
 - A Stop hook runs `team-sweep` when your turn ends and keeps the turn open once with what is unattended: a task with no worker at work (none live, or every live one idle with an event logged since its launch), a worker waiting for input or idle without reporting, a stray session.
   Act on each finding, or log why it waits.
 - At session start a hook prints the digest from `team-snapshot`: reconcile every open task, live session, open PR and pending decision in it before new work, and re-arm the idle notices it lists.
-- `team-load-check` proves what a worker can reach; run it after a change to roles, settings or toolkits.
-- An ops session (the only role with production toolkits) is ended with `team-ops-end T<n>` as soon as its answer is relayed: it removes the session and deletes its transcript, which holds query results.
+- `team-load-check` proves what a worker can reach; run it after a change to roles, settings or toolkits, and its `--role ops` form only with Daniel at the PC, since it reads production.
+- A production question from Daniel, and only on their request: open a `research`-path task in the project (or use the task in flight it belongs to), write the brief with `team-brief T<n> ops --set request=<their message> --set request_link=<its link> --set personal=<yes|no> --set-file data_docs=<file>`, tell Daniel "a 1Password prompt is coming", launch `team-worker T<n> ops <worktree> --toolkit prod-read --request <link> -- "Read your brief at <path>"`, relay its answer verbatim, then run `team-ops-end T<n>` at once: it removes the session and deletes its transcript, which holds query results.
 - `bin/claude-coordinator` starts you, and refuses while another coordinator is live.
 
 ## Discord

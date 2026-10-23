@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# team-load-check: the planner it launches through team-worker reports its MCP tools and skills,
+# team-load-check, the planner form: the planner it launches through team-worker reports its MCP tools and skills,
 # and the check fails on anything production or coordinator-only. The session is a claude stub
 # that writes the inventory from $STUB_FIXTURES/inventory.txt.
 
@@ -46,4 +46,139 @@ inventory() {
   run_bin -1 team-load-check
   assert_contains "$output" "FAIL: a production or coordinator-only server or plugin reached the worker"
   assert_contains "$output" "load check FAILED"
+}
+
+# The ops form. The claude stub plays the ops session: claude --bg copies $STUB_FIXTURES/session/
+# into the worktree's .scratch/load-check-ops/, appends $STUB_FIXTURES/ops-log to T0's ops log as
+# the ops-log hook would, and writes the session's transcript; claude agents lists it until
+# claude rm. team-ops-end, run for real, deletes the transcript.
+
+ops_uuid=6f93fe38-4a6e-4b35-8f39-776a26bc624b
+prod_read_tools=(aggregate aggregate-db collection-indexes collection-schema collection-storage-size
+  count db-stats explain find list-collections list-databases)
+
+# ops_setup: a linked worktree, the stub, and a session that passes every check
+ops_setup() {
+  local clone
+  clone=$(make_repo proj)
+  wt=$HOME/wt/proj-1
+  git -C "$clone" worktree add -q -b load "$wt"
+  stub_script claude <<'SH'
+case $1 in
+  --bg)
+    touch "$STUB_FIXTURES/launched"
+    cp -R "$STUB_FIXTURES/session/." .scratch/load-check-ops/
+    cat "$STUB_FIXTURES/ops-log" >>"$TEAM_HOME/tasks/T0/ops-log.md"
+    mkdir -p "$HOME/.claude/projects/-wt"
+    echo '{}' >"$HOME/.claude/projects/-wt/6f93fe38-4a6e-4b35-8f39-776a26bc624b.jsonl"
+    echo "Started background session 6f93fe38 (${*: -2:1}). Attach with: claude attach 6f93fe38"
+    ;;
+  agents)
+    if [[ -f $STUB_FIXTURES/launched && ! -f $STUB_FIXTURES/removed ]]; then
+      echo '[{"id": "6f93fe38", "name": "T0-ops", "state": "done", "sessionId": "6f93fe38-4a6e-4b35-8f39-776a26bc624b"}]'
+    else
+      echo '[]'
+    fi
+    ;;
+  stop) ;;
+  rm) touch "$STUB_FIXTURES/removed" ;;
+  *) exit 64 ;;
+esac
+SH
+  local s=$STUB_FIXTURES/session
+  mkdir -p "$s"
+  printf '%s\n' 'prod-read: connected' 'notice: connected' >"$s/connect.txt"
+  {
+    echo "tools: Read, Glob, Grep, Edit, Write, ToolSearch, SendMessage, ListAgents, EndConversation, $(printf 'mcp__prod-read__%s, ' "${prod_read_tools[@]}" | sed 's/, $//')"
+    printf 'mcp__prod-read__%s\n' "${prod_read_tools[@]}"
+    printf '%s: absent\n' Bash WebFetch WebSearch Agent Artifact
+  } >"$s/tools.txt"
+  printf '%s\n' 'grep-environ: refused: Permission to read /proc/self/environ has been denied.' \
+    'read-status: refused: File is in a directory that is denied by your permission settings.' >"$s/probes.txt"
+  printf '%s\n' 'list-collections: ok' 'count: 2' 'names: markets, stalls' >"$s/query.txt"
+  echo 'done' >"$s/done.txt"
+  oplog_lines requested ran
+}
+
+# oplog_lines <kind>...: what the session's hook appends, one list-collections line per kind
+oplog_lines() {
+  local kind
+  for kind in "$@"; do
+    echo "- 2026-10-23T12:28:58Z $kind \`prod-read\` \`list-collections\` \`{\"connectionId\":\"preconfigured\",\"database\":\"conventioner\"}\`"
+  done >"$STUB_FIXTURES/ops-log"
+}
+
+@test "an ops session that can read only through prod-read passes, keeps its inventory and is ended with its transcript" {
+  ops_setup
+  mkdir -p "$TEAM_HOME/tasks/T0"
+  printf '%s\n' '# Ops log of T0' '' '- 2026-10-22T00:00:00Z requested `prod-read` `find` `{}`' >"$TEAM_HOME/tasks/T0/ops-log.md"
+  run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit prod-read
+  assert_contains "$output" "load check: Daniel, a 1Password prompt is coming on the PC: approve it"
+  assert_contains "$output" "load check: 11 MCP tools, 9 built-in tools"
+  assert_equal "${lines[-1]}" "PASS"
+  # Launched through team-worker as the T0 ops session, in the given worktree.
+  stub_calls claude | jq -e --arg wt "$(realpath "$wt")" 'select(.[0] == "--bg")
+    | (index("--restricted") != null) and (.[index("--name") + 1] == "T0-ops")
+      and (.[-1] | contains(".scratch/load-check-ops/"))' >/dev/null
+  local inventory=$TEAM_HOME/tasks/T0/inventory-prod-read.txt
+  assert_equal "$(sed '/^---$/q' "$inventory" | grep -c '^mcp__prod-read__')" 11
+  assert_contains "$(<"$inventory")" $'---\ntools: Read'
+  assert_equal "$(find "$HOME/.claude/projects" -name "$ops_uuid*")" ""
+  assert_equal "$(stub_calls claude | jq -c 'select(.[0] == "rm")')" '["rm","6f93fe38"]'
+}
+
+@test "an ops session with a stray tool, a shell or a readable /proc fails, and is still ended" {
+  ops_setup
+  local s=$STUB_FIXTURES/session
+  sed -i 's/^Bash: absent$/Bash: present/; s/^tools: Read,/tools: Read, Bash, WebFetch,/' "$s/tools.txt"
+  echo mcp__plugin_prod-read_prod-read__find >>"$s/tools.txt"
+  printf '%s\n' 'grep-environ: allowed: 42' 'read-status: allowed' >"$s/probes.txt"
+  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-read
+  assert_contains "$output" "FAIL: the MCP tools are not exactly prod-read's, once each:"$'\n'"  > mcp__plugin_prod-read_prod-read__find"
+  assert_contains "$output" "FAIL: built-in tools beyond the ops allowlist: Bash WebFetch"
+  assert_contains "$output" "FAIL: Bash is not reported absent"
+  assert_contains "$output" "FAIL: the Grep of /proc/self/environ was not refused"
+  assert_contains "$output" "FAIL: the Read of /proc/self/status was not refused"
+  assert_equal "${lines[-1]}" "load check FAILED (inventory in tasks/T0/)"
+  assert_equal "$(find "$HOME/.claude/projects" -name "$ops_uuid*")" ""
+}
+
+@test "the ops log must gain exactly a requested and a ran line for the one read" {
+  ops_setup
+  oplog_lines requested
+  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-read
+  assert_contains "$output" "FAIL: the ops log did not gain exactly a requested and a ran line for list-collections"
+
+  rm -f "$STUB_FIXTURES/launched" "$STUB_FIXTURES/removed"
+  oplog_lines requested ran ran
+  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-read
+  assert_contains "$output" "FAIL: the ops log did not gain exactly a requested and a ran line for list-collections"
+}
+
+@test "an ops session whose prod-read did not connect fails on that alone, with the notice it saw" {
+  ops_setup
+  local s=$STUB_FIXTURES/session
+  printf '%s\n' 'prod-read: failed' 'notice: prod-read (CONNECTION_CLOSED): "Connection closed"' >"$s/connect.txt"
+  rm "$s/tools.txt" "$s/probes.txt" "$s/query.txt"
+  echo 'not connected' >"$s/done.txt"
+  : >"$STUB_FIXTURES/ops-log"
+  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-read
+  assert_contains "$output" 'FAIL: prod-read did not connect: prod-read (CONNECTION_CLOSED): "Connection closed"'
+  assert_equal "$(grep -c '^FAIL' <<<"$output")" 1
+  assert_equal "$(find "$HOME/.claude/projects" -name "$ops_uuid*")" ""
+}
+
+@test "the ops form needs a worktree and exactly prod-read, and the planner form takes no worktree" {
+  run_bin -2 team-load-check --role ops --toolkit prod-read
+  assert_contains "$output" "--role ops needs --worktree"
+  run_bin -2 team-load-check --role ops --worktree "$HOME" --toolkit prod-read --toolkit prod-write
+  assert_contains "$output" "--role ops checks exactly --toolkit prod-read"
+  run_bin -2 team-load-check --role ops --worktree "$HOME"
+  assert_contains "$output" "--role ops checks exactly --toolkit prod-read"
+  run_bin -2 team-load-check --worktree "$HOME"
+  assert_contains "$output" "--worktree is for --role ops only"
+  run_bin -2 team-load-check --role builder
+  assert_contains "$output" "unknown role 'builder'"
+  run_bin -2 team-load-check --toolkit
+  assert_equal "$(stub_calls claude)" ""
 }

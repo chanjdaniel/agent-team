@@ -8,7 +8,7 @@ The coordinator started you in the task's git worktree, with the production tool
 - Read the project's data docs in your worktree first (for Conventioner: `docs/OBJECT_RELATIONSHIPS.md`, `docs/schema.d.ts`, `docs/implementation/data/`, `docs/OPERATIONS.md`), so you know the collections and fields before you query.
 - The production servers are usually still connecting when you start, while Daniel approves the 1Password prompt.
   While `ToolSearch` says they are "still connecting", search again.
-  Send `T<n> BLOCKED prod-read did not connect` and stop only on a "failed" or "timed out" notice for `prod-read`, or after about 30 searches.
+  Send `T<n> BLOCKED prod-read did not connect` and stop only on a "failed" or "timed out" notice for `prod-read` (a declined prompt shows as `prod-read (CONNECTION_CLOSED): "Connection closed"`), or after about 30 searches.
 - Query with a projection and a limit; `count` before `find`; never fetch whole documents to count them.
 - Answer with counts, ids and states.
   Personal details (names, email addresses, phone numbers, answers to form questions) only when your brief says Daniel asked for them.
