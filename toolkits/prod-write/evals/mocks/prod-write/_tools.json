@@ -1,0 +1,648 @@
+{
+  "tools": [
+    {
+      "name": "create-index",
+      "description": "Create an index for a collection",
+      "inputSchema": {
+        "type": "object",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "connectionId": {
+            "type": "string",
+            "description": "The connection to run the operation against. Use the id returned by one of the connect tools, or \"preconfigured\" to use the connection string the server was configured with."
+          },
+          "database": {
+            "type": "string",
+            "description": "Database name"
+          },
+          "collection": {
+            "type": "string",
+            "description": "Collection name"
+          },
+          "name": {
+            "description": "The name of the index",
+            "type": "string"
+          },
+          "definition": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "classic"
+                    },
+                    "keys": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "anyOf": [
+                          {
+                            "type": "number",
+                            "const": 1
+                          },
+                          {
+                            "type": "number",
+                            "const": -1
+                          },
+                          {
+                            "type": "string",
+                            "const": "2d"
+                          },
+                          {
+                            "type": "string",
+                            "const": "2dsphere"
+                          },
+                          {
+                            "type": "string",
+                            "const": "text"
+                          },
+                          {
+                            "type": "string",
+                            "const": "geoHaystack"
+                          },
+                          {
+                            "type": "string",
+                            "const": "hashed"
+                          }
+                        ],
+                        "description": "The index key and its direction"
+                      },
+                      "description": "The index definition"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "keys"
+                  ],
+                  "description": "Definition for a MongoDB index (e.g. ascending/descending/geospatial/text)."
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "vectorSearch"
+                    },
+                    "fields": {
+                      "minItems": 1,
+                      "type": "array",
+                      "items": {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "const": "filter"
+                              },
+                              "path": {
+                                "type": "string",
+                                "description": "Name of the field to index. For nested fields, use dot notation to specify path to embedded fields"
+                              }
+                            },
+                            "required": [
+                              "type",
+                              "path"
+                            ],
+                            "additionalProperties": false,
+                            "description": "Definition for a field that will be used for pre-filtering results."
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "const": "vector"
+                              },
+                              "path": {
+                                "type": "string",
+                                "description": "Name of the field containing vector embeddings as arrays of numbers. This must be a dedicated embeddings field, separate from any source text field, if any. For nested fields, use dot notation to specify path to embedded fields."
+                              },
+                              "numDimensions": {
+                                "default": 1024,
+                                "description": "Number of vector dimensions that MongoDB Vector Search enforces at index-time and query-time",
+                                "type": "number",
+                                "minimum": 1,
+                                "maximum": 8192
+                              },
+                              "similarity": {
+                                "default": "euclidean",
+                                "description": "Vector similarity function to use to search for top K-nearest neighbors. You can set this field only for vector-type fields.",
+                                "type": "string",
+                                "enum": [
+                                  "cosine",
+                                  "euclidean",
+                                  "dotProduct"
+                                ]
+                              },
+                              "quantization": {
+                                "default": "none",
+                                "description": "Type of automatic vector quantization for your vectors. Use this setting only if your embeddings are float or double vectors.",
+                                "type": "string",
+                                "enum": [
+                                  "none",
+                                  "scalar",
+                                  "binary"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "type",
+                              "path"
+                            ],
+                            "additionalProperties": false,
+                            "description": "Definition for a field that contains vector embeddings. Use this type when the field you're indexing is supposed to store vector embeddings or when the user have specified one of the relevant parameters."
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "type": {
+                                "type": "string",
+                                "const": "autoEmbed"
+                              },
+                              "path": {
+                                "type": "string",
+                                "description": "Name of the field containing the source text from which embeddings will be automatically generated by MongoDB. This should be the text field itself, NOT a separate embeddings field containing the vector embeddings. For nested fields, use dot notation to specify the path to embedded fields."
+                              },
+                              "model": {
+                                "type": "string",
+                                "enum": [
+                                  "voyage-4",
+                                  "voyage-4-large",
+                                  "voyage-4-lite",
+                                  "voyage-code-3"
+                                ],
+                                "description": "Voyage embedding model to use for automatically generating embeddings from the source text in the indexed field."
+                              },
+                              "modality": {
+                                "type": "string",
+                                "enum": [
+                                  "text"
+                                ],
+                                "description": "The data type / modality of the source content in the indexed field. Currently only 'text' is supported."
+                              }
+                            },
+                            "required": [
+                              "type",
+                              "path",
+                              "model",
+                              "modality"
+                            ],
+                            "additionalProperties": false,
+                            "description": "Definition for a field containing source text from which embeddings will be automatically generated and managed by MongoDB at indexing time. Use this type when you want MongoDB to handle all embedding generation and storage internally. If the user specifies a dedicated field name for storing embeddings, use 'vector' type instead."
+                          }
+                        ]
+                      },
+                      "description": "Definitions for the vector, autoEmbed and filter fields to index, one definition per document. Use 'vector' when user specifies a dedicated field that could contain vector embeddings. Use 'autoEmbed' when user wants MongoDB to automatically generate and manage embeddings internally from a text field (no separate embeddings field). Use 'filter' for additional fields to filter on. At least one 'vector' or 'autoEmbed' type field definition is required."
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "fields"
+                  ],
+                  "description": "Definition for a Vector Search index."
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "search"
+                    },
+                    "analyzer": {
+                      "default": "lucene.standard",
+                      "description": "The analyzer to use for the index. Can be one of the built-in lucene analyzers (`lucene.standard`, `lucene.simple`, `lucene.whitespace`, `lucene.keyword`), a language-specific analyzer, such as `lucene.cjk` or `lucene.czech`, or a custom analyzer defined by name in `analyzers`.",
+                      "type": "string"
+                    },
+                    "mappings": {
+                      "type": "object",
+                      "properties": {
+                        "dynamic": {
+                          "default": false,
+                          "description": "Enables or disables dynamic mapping of fields for this index. If set to true, Atlas Search recursively indexes all dynamically indexable fields. If set to false, you must specify individual fields to index using mappings.fields. Can also be set to `{ typeSet: '<name>' }` to reference a named entry in this index's `typeSets`, restricting dynamic mapping to only the field types listed in that type set.",
+                          "anyOf": [
+                            {
+                              "type": "boolean"
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "typeSet": {
+                                  "type": "string",
+                                  "description": "Name of a type set defined in this index's `typeSets`."
+                                }
+                              },
+                              "required": [
+                                "typeSet"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        },
+                        "fields": {
+                          "description": "The field mapping definitions. If `dynamic` is set to `false`, this is required.",
+                          "type": "object",
+                          "propertyNames": {
+                            "type": "string",
+                            "description": "The field name"
+                          },
+                          "additionalProperties": {
+                            "description": "The field index definition. It must contain the field type (e.g. `{ type: 'string' }`), as well as any additional options for that field type (e.g. `analyzer`). Field types include `autocomplete`, `boolean`, `date`, `dateFacet`, `document`, `embeddedDocuments`, `geo`, `number`, `numberFacet`, `objectId`, `string`, `stringFacet`, `token`, `uuid`. Provide an array of field definitions instead of a single object to index the same field as multiple types, e.g. `[{ type: 'string' }, { type: 'autocomplete' }]`."
+                          }
+                        }
+                      },
+                      "additionalProperties": {},
+                      "description": "Document describing the index to create. `fields` is required and must define at least one field when `dynamic` is `false` (the default). When `dynamic` is `true` or a typeSet object, `fields` may still be provided to index additional fields explicitly."
+                    },
+                    "numPartitions": {
+                      "description": "Specifies the number of sub-indexes to create if the document count exceeds two billion. If omitted, defaults to 1.",
+                      "default": "1",
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "1"
+                        },
+                        {
+                          "type": "string",
+                          "const": "2"
+                        },
+                        {
+                          "type": "string",
+                          "const": "4"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "mappings"
+                  ],
+                  "additionalProperties": {},
+                  "description": "Definition for an Atlas Search (lexical) index. Use this only if user explicitly asked for creating an Atlas search index or simply a search index.\n\nThis definition also accepts the following top-level fields, which are forwarded as-is and are not exhaustively typed here:\n- `analyzers`: array of custom analyzer definitions, e.g. `{ name: 'myAnalyzer', tokenizer: { type: 'standard' }, tokenFilters: [{ type: 'lowercase' }], charFilters: [{ type: 'htmlStrip' }] }`. Reference a custom analyzer by its `name` from a field's `analyzer`/`searchAnalyzer` option, instead of a built-in `lucene.*` analyzer. Tokenizer types include `standard`, `keyword`, `whitespace`, `nGram`, `edgeGram`, `regexSplit`, `regexCaptureGroup`, `uaxUrlEmail`. Token filter types include `lowercase`, `stopword`, `snowballStemming`, `asciiFolding`, `nGram`, `shingle`, `trim`, among others.\n- `synonyms`: array of synonym mappings, e.g. `{ name: 'mySynonyms', source: { collection: 'synonymsCollectionName' }, analyzer: 'lucene.standard' }`. The `analyzer` should match the analyzer used on the field(s) being searched.\n- `storedSource`: controls which fields are stored on search nodes for fast retrieval without a round trip to the database. `true` stores all fields, `false` (default) stores none, `{ include: ['fieldA', 'fieldB'] }` stores only the listed fields, `{ exclude: ['fieldC'] }` stores all except the listed fields.\n- `typeSets`: array of named field-type sets for use with `mappings.dynamic`, e.g. `{ name: 'myTypeSet', types: [{ type: 'string' }, { type: 'number' }] }`, to restrict dynamic mapping to only the listed types instead of every dynamically indexable type.\n"
+                }
+              ]
+            },
+            "description": "The index definition. Use 'classic' for standard indexes, 'vectorSearch' for vector search indexes, and 'search' for Atlas Search (lexical) indexes."
+          }
+        },
+        "required": [
+          "connectionId",
+          "database",
+          "collection",
+          "definition"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "create-index",
+        "openWorldHint": true,
+        "destructiveHint": false,
+        "readOnlyHint": false
+      },
+      "_meta": {
+        "com.mongodb/transport": "stdio",
+        "com.mongodb/maxRequestPayloadBytes": 52428800
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "database": {
+            "type": "string"
+          },
+          "collection": {
+            "type": "string"
+          },
+          "indexName": {
+            "type": "string"
+          },
+          "indexType": {
+            "type": "string",
+            "enum": [
+              "classic",
+              "vectorSearch",
+              "search"
+            ]
+          }
+        },
+        "required": [
+          "database",
+          "collection",
+          "indexName",
+          "indexType"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "delete-many",
+      "description": "Removes all documents that match the filter from a MongoDB collection",
+      "inputSchema": {
+        "type": "object",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "connectionId": {
+            "type": "string",
+            "description": "The connection to run the operation against. Use the id returned by one of the connect tools, or \"preconfigured\" to use the connection string the server was configured with."
+          },
+          "database": {
+            "type": "string",
+            "description": "Database name"
+          },
+          "collection": {
+            "type": "string",
+            "description": "Collection name"
+          },
+          "filter": {
+            "description": "The query filter, specifying the deletion criteria. Matches the syntax of the filter argument of db.collection.deleteMany()",
+            "type": "object",
+            "properties": {},
+            "additionalProperties": {}
+          }
+        },
+        "required": [
+          "connectionId",
+          "database",
+          "collection"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "delete-many",
+        "openWorldHint": true,
+        "readOnlyHint": false,
+        "destructiveHint": true
+      },
+      "_meta": {
+        "com.mongodb/transport": "stdio",
+        "com.mongodb/maxRequestPayloadBytes": 52428800
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "database": {
+            "type": "string"
+          },
+          "collection": {
+            "type": "string"
+          },
+          "deletedCount": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "database",
+          "collection",
+          "deletedCount"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "drop-index",
+      "description": "Drop an index for the provided database and collection.",
+      "inputSchema": {
+        "type": "object",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "connectionId": {
+            "type": "string",
+            "description": "The connection to run the operation against. Use the id returned by one of the connect tools, or \"preconfigured\" to use the connection string the server was configured with."
+          },
+          "database": {
+            "type": "string",
+            "description": "Database name"
+          },
+          "collection": {
+            "type": "string",
+            "description": "Collection name"
+          },
+          "indexName": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The name of the index to be dropped."
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "classic",
+              "search"
+            ],
+            "description": "The type of index to be deleted. Use 'classic' for standard indexes and 'search' for atlas search and vector search indexes."
+          }
+        },
+        "required": [
+          "connectionId",
+          "database",
+          "collection",
+          "indexName",
+          "type"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "drop-index",
+        "openWorldHint": true,
+        "readOnlyHint": false,
+        "destructiveHint": true
+      },
+      "_meta": {
+        "com.mongodb/transport": "stdio",
+        "com.mongodb/maxRequestPayloadBytes": 52428800
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "database": {
+            "type": "string"
+          },
+          "collection": {
+            "type": "string"
+          },
+          "indexName": {
+            "type": "string"
+          },
+          "dropped": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "database",
+          "collection",
+          "indexName",
+          "dropped"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "insert-many",
+      "description": "Insert an array of documents into a MongoDB collection. If the list of documents is above com.mongodb/maxRequestPayloadBytes, consider inserting them in batches.",
+      "inputSchema": {
+        "type": "object",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "connectionId": {
+            "type": "string",
+            "description": "The connection to run the operation against. Use the id returned by one of the connect tools, or \"preconfigured\" to use the connection string the server was configured with."
+          },
+          "database": {
+            "type": "string",
+            "description": "Database name"
+          },
+          "collection": {
+            "type": "string",
+            "description": "Collection name"
+          },
+          "documents": {
+            "type": "array",
+            "items": {
+              "description": "An individual MongoDB document",
+              "type": "object",
+              "properties": {},
+              "additionalProperties": {}
+            },
+            "description": "The array of documents to insert, matching the syntax of the document argument of db.collection.insertMany()."
+          }
+        },
+        "required": [
+          "connectionId",
+          "database",
+          "collection",
+          "documents"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "insert-many",
+        "openWorldHint": true,
+        "destructiveHint": false,
+        "readOnlyHint": false
+      },
+      "_meta": {
+        "com.mongodb/transport": "stdio",
+        "com.mongodb/maxRequestPayloadBytes": 52428800
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "database": {
+            "type": "string"
+          },
+          "collection": {
+            "type": "string"
+          },
+          "insertedCount": {
+            "type": "number"
+          },
+          "insertedIds": {
+            "type": "array",
+            "items": {}
+          }
+        },
+        "required": [
+          "database",
+          "collection",
+          "insertedCount",
+          "insertedIds"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "update-many",
+      "description": "Updates all documents that match the specified filter for a collection. If the list of documents is above com.mongodb/maxRequestPayloadBytes, consider updating them in batches.",
+      "inputSchema": {
+        "type": "object",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "connectionId": {
+            "type": "string",
+            "description": "The connection to run the operation against. Use the id returned by one of the connect tools, or \"preconfigured\" to use the connection string the server was configured with."
+          },
+          "database": {
+            "type": "string",
+            "description": "Database name"
+          },
+          "collection": {
+            "type": "string",
+            "description": "Collection name"
+          },
+          "filter": {
+            "description": "The selection criteria for the update, matching the syntax of the filter argument of db.collection.updateOne()",
+            "type": "object",
+            "properties": {},
+            "additionalProperties": {}
+          },
+          "update": {
+            "description": "An update document describing the modifications to apply using update operator expressions",
+            "type": "object",
+            "properties": {},
+            "additionalProperties": {}
+          },
+          "upsert": {
+            "description": "Controls whether to insert a new document if no documents match the filter",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "connectionId",
+          "database",
+          "collection",
+          "update"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "title": "update-many",
+        "openWorldHint": true,
+        "readOnlyHint": false,
+        "destructiveHint": true
+      },
+      "_meta": {
+        "com.mongodb/transport": "stdio",
+        "com.mongodb/maxRequestPayloadBytes": 52428800
+      },
+      "outputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "database": {
+            "type": "string"
+          },
+          "collection": {
+            "type": "string"
+          },
+          "matchedCount": {
+            "type": "number"
+          },
+          "modifiedCount": {
+            "type": "number"
+          },
+          "upsertedCount": {
+            "type": "number"
+          },
+          "upsertedId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "database",
+          "collection",
+          "matchedCount",
+          "modifiedCount",
+          "upsertedCount"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

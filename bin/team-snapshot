@@ -6,14 +6,14 @@
 # Open tasks are those with events and no closed, in task number order, each as its team-state
 # line. Live team sessions are the sessions claude agents --json lists named like a team worker
 # (T<n>-<role>) whose task is open, marked when no launch in the ledger names them; strays are
-# those whose task is closed or not in the ledger. Open PRs come from gh pr list for each project
-# in projects.toml (the first 100). Pending asks are the open tasks' asks with no answer, with
-# their text. Text lines are cut at 120 columns.
+# those whose task is closed or not in the ledger, and the load check's T0 sessions. Open PRs
+# come from gh pr list for each project in projects.toml (the first 100). Pending asks are the
+# open tasks' asks with no answer, with their text. Text lines are cut at 120 columns.
 # With --json, the versioned snapshot (schema team-snapshot/1): tasks (each team-state's JSON, or
 # {task, error} when its state could not be told, as for a PR naming an unregistered project),
 # sessions ({task, role, name, session, status, state, logged}), strays (the same with
-# task_state closed or unknown instead of logged), prs ({project, repo, prs: [{number, title,
-# url, branch, base, draft, task}]}, or {project, repo, error}), and pending_asks
+# task_state closed, unknown or load-check instead of logged), prs ({project, repo, prs:
+# [{number, title, url, branch, base, draft, task}]}, or {project, repo, error}), and pending_asks
 # ({task, id, text, ts}).
 # GitHub failures never fail it: the affected part carries an error and the text says "GitHub
 # unavailable". Exit 1 when the session list or the list of projects cannot be read.

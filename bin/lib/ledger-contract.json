@@ -24,8 +24,9 @@
     },
     "launch": {
       "writer": "team-worker",
+      "about": "request is the link to Daniel's Discord message, on an ops launch",
       "required": {"role": "string", "session": "string", "worktree": "string", "toolkits": "array"},
-      "optional": {"project": "string", "branch": "string"}
+      "optional": {"project": "string", "branch": "string", "request": "string"}
     },
     "worktree-returned": {
       "writer": "team-close",

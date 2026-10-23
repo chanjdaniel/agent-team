@@ -1,0 +1,71 @@
+{
+  "crossSessionInbound": "accept",
+  "remoteControlAtStartup": true,
+  "inputNeededNotifEnabled": true,
+  "disableBundledSkills": true,
+  "disableSkillShellExecution": true,
+  "enabledPlugins": { "cc-plugin-plugin-authoring@builtin": false },
+  "permissions": {
+    "allow": ["mcp__prod-read__*", "Edit(./.scratch/**)"],
+    "ask": [
+      "mcp__*prod-write*",
+      "mcp__prod-write__insert-many",
+      "mcp__prod-write__update-many",
+      "mcp__prod-write__delete-many",
+      "mcp__prod-write__create-index",
+      "mcp__prod-write__drop-index",
+      "mcp__plugin_prod-write_prod-write__insert-many",
+      "mcp__plugin_prod-write_prod-write__update-many",
+      "mcp__plugin_prod-write_prod-write__delete-many",
+      "mcp__plugin_prod-write_prod-write__create-index",
+      "mcp__plugin_prod-write_prod-write__drop-index"
+    ],
+    "deny": [
+      "Bash",
+      "WebFetch",
+      "WebSearch",
+      "Agent",
+      "NotebookEdit",
+      "Artifact",
+      "ArtifactComments",
+      "ArtifactData",
+      "SendUserFile",
+      "PushNotification",
+      "SendFeedback",
+      "DesignSync",
+      "EnterWorktree",
+      "CronCreate",
+      "RemoteTrigger",
+      "ScheduleWakeup",
+      "Read(//proc/**)",
+      "Read(**/.env*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [{ "type": "command", "command": "@TEAM_HOME@/bin/hooks/scratch-only-edits" }]
+      },
+      {
+        "matcher": "^mcp__.*prod-(read|write).*__",
+        "hooks": [{ "type": "command", "command": "@TEAM_HOME@/bin/hooks/ops-log", "args": ["@TASK_DIR@"], "onFailure": "block" }]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^mcp__.*prod-(read|write).*__",
+        "hooks": [{ "type": "command", "command": "@TEAM_HOME@/bin/hooks/ops-log", "args": ["@TASK_DIR@"] }]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "^mcp__.*prod-(read|write).*__",
+        "hooks": [{ "type": "command", "command": "@TEAM_HOME@/bin/hooks/ops-log", "args": ["@TASK_DIR@"] }]
+      }
+    ]
+  },
+  "env": {
+    "MCP_TIMEOUT": "120000"
+  }
+}

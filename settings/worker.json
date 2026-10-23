@@ -33,7 +33,21 @@
       "Bash(gh api*git/refs*)",
       "Bash(vercel*)",
       "Bash(*mongodb+srv://*)",
-      "Bash(*migrate_user_emails*)"
+      "Bash(*migrate_user_emails*)",
+      "Bash(op *)",
+      "Bash(* op *)",
+      "Bash(*op read*)",
+      "Bash(*op run*)",
+      "Bash(*op item*)",
+      "Bash(*op document*)",
+      "Bash(*start-server.mjs*)",
+      "Bash(*mongodb-mcp*)",
+      "Bash(*--plugin-dir*prod-*)",
+      "Bash(*--mcp-config*prod-*)",
+      "Bash(*team-worker *ops *)",
+      "Bash(*team-load-check *ops*)",
+      "Bash(*/proc/*/environ*)",
+      "Read(//proc/**)"
     ]
   },
   "attribution": {
