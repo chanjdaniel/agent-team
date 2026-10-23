@@ -18,6 +18,7 @@ The team's own work on it goes through a task and a PR to `dev`, like any projec
 | `machine/` | What a machine needs to run the team: `tools.lock`, the tools `team-doctor` checks, pinned or with a minimum, and their source per OS; `claude/`, the Claude user config every machine shares (instructions, settings, skills, plugins), which `team-config` applies and captures |
 | `ledger.jsonl` | The append-only record of every task's events |
 | `tasks/` | Each task's plan, briefs and archived scratch; history, kept as written |
+| `memory/` | Each registered project's Claude Code auto memory, `memory/<project>/`, which every machine and worktree of it shares once `team-config apply` points the project at it |
 | `manual-steps.md` | The steps only Daniel can take |
 | `sops/`, `projects/` | Standing procedures, and each project's planning (Conventioner's backlog) |
 

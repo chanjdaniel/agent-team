@@ -343,8 +343,11 @@ plugin mongodb-atlas@claude-plugins-official"
 ./skill-lock.json
 ./skills"
   # The code, its comments aside, names none of them.
-  run -1 grep -nE 'credentials|\.claude\.json|channels|transcripts|projects/' \
+  run -1 grep -nE 'credentials|\.claude\.json|channels|transcripts' \
     <(grep -v '^[[:space:]]*#' "$REPO_ROOT/bin/team-config")
+  # Of ~/.claude/projects/, it names only the memory folders.
+  run -1 grep -nE 'projects/' \
+    <(grep -v '^[[:space:]]*#' "$REPO_ROOT/bin/team-config" | grep -vE 'projects/[^[:space:]]*/memory')
 }
 
 @test "team-config refuses an unknown command or option" {

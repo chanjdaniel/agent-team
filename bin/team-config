@@ -19,6 +19,13 @@
 #                                         read against `claude plugin list --json` and
 #                                         `claude plugin marketplace list --json`; installed by
 #                                         the bootstrap, not by apply
+# memory/<project>/ in the team home holds each registered project's auto memory, so every machine
+# and every worktree of the project shares it: for each project whose primary checkout is here, its
+# .claude/settings.local.json sets autoMemoryDirectory to it (as ~/... when the team home is under
+# HOME), git ignores that file, and nothing is left in the folder Claude Code used before,
+# ~/.claude/projects/<key>/memory/ (<key> the checkout's real path with every character but letters
+# and digits as "-", as Claude Code names it). memory/ is committed by team-checkpoint and
+# team-handoff, never here.
 #
 # Usage: team-config diff [--full] [--json] | apply | capture | own [--json]
 #   diff     One line per difference, and exit 1 when there is any:
@@ -29,13 +36,22 @@
 #              plugin mongodb-atlas@claude-plugins-official not installed
 #              plugin X@Y not in plugins.txt   (installed here only)
 #              plugins unreadable              (`claude plugin list` failed)
+#              memory conv setting missing     (or setting points to <value>)
+#              memory conv settings.local.json not ignored by git
+#                                              (or tracked by git, or not JSON)
+#              memory conv notes left in ~/.claude/projects/<key>/memory/
 #            --full adds a unified diff, the team home's side first, under each text that differs;
 #            --json prints one array of {item, state} instead of the lines.
 #   apply    Installs a copy of each file and skill that differs or is missing here, first moving
 #            whatever it replaces to ~/.claude/backups/team-config-<UTC time>/ (made only when
 #            something is replaced). A skill that exists only here is left alone (diff lists it).
-#            The settings.json it installs keeps this machine's own settings. Applying twice
-#            changes nothing the second time.
+#            The settings.json it installs keeps this machine's own settings.
+#            Then, per project, it merges autoMemoryDirectory into settings.local.json, adds that
+#            file to the repository's .git/info/exclude unless git ignores it already, and moves
+#            every note of the old folder into memory/<project>/, keeping the newer file on a
+#            clash (the other goes to the backup folder) and leaving the old folder empty. A
+#            project whose settings.local.json is not JSON or is tracked by git is left as it is
+#            (exit 1). Applying twice changes nothing the second time.
 #   capture  Copies into machine/claude/ each file and skill that differs here or exists only
 #            here (settings.json without this machine's own settings), and adds to plugins.txt the
 #            user-scope plugins and marketplaces it lacks; one line per change. Nothing is
@@ -43,7 +59,7 @@
 #   own      Each of this machine's own settings and whether it is set here
 #            ("autoMode.environment set" or "... unset"); --json prints [{setting, set}].
 # Nothing else of ~/.claude is read or copied: not ~/.claude.json, the credentials file, the
-# channels' tokens, the transcripts or the projects.
+# channels' tokens or the transcripts; of ~/.claude/projects/, only the memory folders.
 # Exit 0 done (diff: no difference), 1 a difference or a refusal, 2 usage error.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
@@ -83,6 +99,19 @@ STRIP='reduce $own[] as $p (.; delpaths([$p])
   | if ($p | length) > 1 and getpath($p[:-1]) == {} then delpaths([$p[:-1]]) else . end)'
 if [[ $command == diff || $command == apply ]] && [[ ! -d $shared ]]; then
   die "no machine/claude/ in $TEAM_HOME; run team-config capture on the machine whose config the team shares"
+fi
+
+# The registered projects whose primary checkout is on this machine, in registry order: their
+# names in PROJECTS and their checkouts in CHECKOUTS. No registry, no project.
+PROJECTS=() CHECKOUTS=()
+if [[ ($command == diff || $command == apply) && -e $TEAM_HOME/projects.toml ]]; then
+  names=$(team_project --list) || exit 1
+  while IFS= read -r name; do
+    checkout=$(team_project "$name" path) || exit 1
+    [[ -d $checkout ]] || continue
+    PROJECTS+=("$name")
+    CHECKOUTS+=("$checkout")
+  done <<<"$names"
 fi
 
 # The state of a file or folder here against the team home's: same, differs, missing (here) or
@@ -187,9 +216,160 @@ paths_of() {
   esac
 }
 
+# A project's memory folder in the team home, as its autoMemoryDirectory names it:
+# memory_setting <project>
+memory_setting() {
+  local dir=$TEAM_HOME/memory/$1
+  [[ $dir != "$HOME"/* ]] || dir=\~/${dir#"$HOME"/}
+  printf '%s\n' "$dir"
+}
+
+# The autoMemoryDirectory of a settings.local.json, "" when it has none or does not exist; false
+# when it is not a JSON object: memory_value <file>
+memory_value() {
+  [[ -e $1 ]] || return 0
+  jq -rs 'if length == 0 then "" elif length == 1 and (.[0] | type) == "object"
+    then .[0].autoMemoryDirectory // "" else error end' "$1" 2>/dev/null
+}
+
+# Whether an autoMemoryDirectory value names a project's memory folder in the team home, as
+# ~/... or as an absolute path: memory_points_home <value> <project>
+memory_points_home() {
+  local dir=$1
+  [[ $dir != \~/* ]] || dir=$HOME/${dir#\~/}
+  [[ ${dir%/} == "$TEAM_HOME/memory/$2" || $1 == "$(memory_setting "$2")" ]]
+}
+
+# How git sees a checkout's .claude/settings.local.json: ignored, tracked, shown, or nothing when
+# the checkout is not a git work tree: local_settings_git <checkout>
+local_settings_git() {
+  git -C "$1" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  if git -C "$1" ls-files --error-unmatch -- .claude/settings.local.json >/dev/null 2>&1; then
+    echo tracked
+  elif git -C "$1" check-ignore -q -- .claude/settings.local.json; then
+    echo ignored
+  else
+    echo shown
+  fi
+}
+
+# The folder Claude Code keeps a checkout's auto memory in without autoMemoryDirectory, or nothing
+# when there is none: ~/.claude/projects/<key>/memory. A key longer than 200 characters is cut
+# there and suffixed with a hash of Claude Code's own, so it is found by its first 200:
+# old_memory <checkout>
+old_memory() {
+  local key dir
+  key=$(realpath -- "$1" | sed 's/[^A-Za-z0-9]/-/g')
+  if ((${#key} <= 200)); then
+    [[ ! -d $claude_dir/projects/$key/memory ]] || printf '%s\n' "$claude_dir/projects/$key/memory"
+    return 0
+  fi
+  for dir in "$claude_dir/projects/${key:0:200}"-*/memory; do
+    [[ ! -d $dir ]] || { printf '%s\n' "$dir"; return 0; }
+  done
+}
+
+# The notes of an old memory folder, NUL-separated and sorted: every entry but folders.
+old_notes() {
+  [[ -z $1 ]] || find "$1" -mindepth 1 ! -type d -print0 | LC_ALL=C sort -z
+}
+
+# Every way a project's auto memory is not set up here, as "memory <project>\t<state>" lines.
+memory_differences() {
+  local i name checkout value old
+  for i in "${!PROJECTS[@]}"; do
+    name=${PROJECTS[i]} checkout=${CHECKOUTS[i]}
+    if ! value=$(memory_value "$checkout/.claude/settings.local.json"); then
+      printf 'memory %s\tsettings.local.json not JSON\n' "$name"
+    elif [[ -z $value ]]; then
+      printf 'memory %s\tsetting missing\n' "$name"
+    elif ! memory_points_home "$value" "$name"; then
+      printf 'memory %s\tsetting points to %s\n' "$name" "$value"
+    fi
+    case $(local_settings_git "$checkout") in
+      tracked) printf 'memory %s\tsettings.local.json tracked by git\n' "$name" ;;
+      shown) printf 'memory %s\tsettings.local.json not ignored by git\n' "$name" ;;
+    esac
+    old=$(old_memory "$checkout")
+    if [[ -n $(old_notes "$old" | tr -d '\0') ]]; then
+      printf 'memory %s\tnotes left in %s/\n' "$name" "${old/#"$HOME"/\~}"
+    fi
+  done
+}
+
+# Name this apply's backup folder in $backup, on first use.
+start_backup() {
+  [[ -z $backup ]] || return 0
+  local stamp n=1
+  stamp=$(date -u +%Y%m%dT%H%M%SZ)
+  backup=$claude_dir/backups/team-config-$stamp
+  while [[ -e $backup ]]; do backup=$claude_dir/backups/team-config-$stamp-$((++n)); done
+}
+
+# Set up each project's auto memory (apply's second half); sets changed, and failed on a project
+# it leaves as it is.
+apply_memory() {
+  local i name checkout settings value old note target rel loser exclude n
+  for i in "${!PROJECTS[@]}"; do
+    name=${PROJECTS[i]} checkout=${CHECKOUTS[i]}
+    settings=$checkout/.claude/settings.local.json
+    if ! value=$(memory_value "$settings"); then
+      echo "team-config: $settings is not JSON, so $name's memory is left where it is" >&2
+      failed=1
+      continue
+    fi
+    case $(local_settings_git "$checkout") in
+      tracked)
+        echo "team-config: $settings is tracked by git, so $name's memory is left where it is" >&2
+        failed=1
+        continue
+        ;;
+      shown)
+        exclude=$(cd "$checkout" && realpath -m -- "$(git rev-parse --git-path info/exclude)")
+        mkdir -p "$(dirname "$exclude")"
+        echo /.claude/settings.local.json >>"$exclude"
+        echo "memory $name: .claude/settings.local.json excluded from git"
+        changed=1
+        ;;
+    esac
+    if [[ -z $value ]] || ! memory_points_home "$value" "$name"; then
+      mkdir -p "$checkout/.claude"
+      if [[ -e $settings ]]; then
+        jq -s --arg dir "$(memory_setting "$name")" '(.[0] // {}) + {autoMemoryDirectory: $dir}' \
+          "$settings" >"$settings.new"
+        mv -- "$settings.new" "$settings"
+      else
+        jq -n --arg dir "$(memory_setting "$name")" '{autoMemoryDirectory: $dir}' >"$settings"
+      fi
+      echo "memory $name: autoMemoryDirectory set${value:+ (was $value)}"
+      changed=1
+    fi
+    old=$(old_memory "$checkout") n=0
+    while IFS= read -r -d '' note; do
+      rel=${note#"$old"/}
+      target=$TEAM_HOME/memory/$name/$rel
+      mkdir -p "$(dirname "$target")"
+      if [[ -e $target ]] && ! cmp -s -- "$note" "$target"; then
+        # Both have it: the newer stays, the other goes to the backup folder.
+        if [[ $note -nt $target ]]; then loser=$target; else loser=$note; fi
+        start_backup
+        mkdir -p "$backup/memory/$name/$(dirname "$rel")"
+        mv -f -- "$loser" "$backup/memory/$name/$rel"
+      fi
+      if [[ -e $note ]]; then mv -f -- "$note" "$target"; fi
+      n=$((n + 1))
+    done < <(old_notes "$old")
+    if ((n)); then
+      find "$old" -mindepth 1 -type d -empty -delete
+      echo "memory $name: moved $n note$( ((n == 1)) || echo s) from ${old/#"$HOME"/\~}/"
+      changed=1
+    fi
+  done
+}
+
 do_diff() {
   local list item state ours theirs
-  list=$(differences)
+  list=$(differences; memory_differences)
   if ((json)); then
     jq -Rn '[inputs | select(length > 0) | split("\t") | {item: .[0], state: .[1]}]' <<<"$list"
   else
@@ -210,7 +390,7 @@ do_diff() {
 }
 
 do_apply() {
-  local item state ours theirs backup='' stamp n=1 changed=0
+  local item state ours theirs backup='' changed=0 failed=0
   # Global, so the EXIT trap still sees it.
   settings=$(mktemp)
   trap 'rm -f "$settings"' EXIT
@@ -226,11 +406,7 @@ do_apply() {
       ours=$settings
     fi
     if [[ -e $theirs ]]; then
-      if [[ -z $backup ]]; then
-        stamp=$(date -u +%Y%m%dT%H%M%SZ)
-        backup=$claude_dir/backups/team-config-$stamp
-        while [[ -e $backup ]]; do backup=$claude_dir/backups/team-config-$stamp-$((++n)); done
-      fi
+      start_backup
       mkdir -p "$(dirname "$backup/${theirs#"$claude_dir"/}")"
       cp -RL -- "$theirs" "$backup/${theirs#"$claude_dir"/}"
     fi
@@ -240,11 +416,13 @@ do_apply() {
     if [[ $state == missing ]]; then echo "installed $item"; else echo "replaced $item"; fi
     changed=1
   done < <(differences)
+  apply_memory
   if ((!changed)); then
     echo "nothing to apply"
   elif [[ -n $backup ]]; then
     echo "what it replaced is in ${backup/#"$HOME"/\~}/"
   fi
+  return "$failed"
 }
 
 do_capture() {

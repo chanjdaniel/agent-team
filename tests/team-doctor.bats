@@ -214,7 +214,7 @@ every_tool_fails() {
   assert_equal "$(grep -v '^PASS ' <<<"$output")" ""
   local expected
   expected=$(printf '%s\n' os; lock_tools arch | cut -f1 | sed 's/^/tool /'
-    printf '%s\n' machine 'git hooks' 'claude login' 'github login' config plugins discord 'own settings' clock lease heartbeat offline)
+    printf '%s\n' machine 'git hooks' 'claude login' 'github login' config plugins memory discord 'own settings' clock lease heartbeat offline)
   assert_equal "$(checks)" "$expected"
   assert_equal "$(line_of os)" "PASS os: Arch Linux"
   assert_equal "$(line_of 'tool claude')" "PASS tool claude: 2.1.308"
@@ -232,7 +232,7 @@ every_tool_fails() {
   assert_equal "$(grep -v '^PASS ' <<<"$output")" ""
   local expected
   expected=$(printf '%s\n' os homebrew; lock_tools macos | cut -f1 | sed 's/^/tool /'
-    printf '%s\n' machine 'git hooks' 'claude login' 'github login' config plugins discord 'own settings' clock lease heartbeat offline)
+    printf '%s\n' machine 'git hooks' 'claude login' 'github login' config plugins memory discord 'own settings' clock lease heartbeat offline)
   assert_equal "$(checks)" "$expected"
   assert_equal "$(line_of os)" "PASS os: macOS"
 }
@@ -395,6 +395,31 @@ EOF
   echo 'not json' >"$STUB_FIXTURES/plugins.json"
   run_bin -1 team-doctor
   assert_equal "$(line_of plugins)" "FAIL plugins: \`claude plugin list\` did not answer; fix: install Claude Code and sign in (the tool claude and claude login lines)"
+}
+
+@test "the memory line warns on each project whose auto memory is not in the team home, with team-config apply" {
+  tools_at arch
+  run_bin -0 team-doctor
+  assert_equal "$(line_of memory)" "PASS memory: every project here keeps its auto memory in the team home"
+  local conv key
+  conv=$(make_repo conv)
+  printf '%s\n' '[conv]' 'repo = "owner/conv"' 'path = "projects/conv"' 'base = "main"' 'delivery = "direct-pr"' \
+    'merge_method = "merge"' 'required_checks = []' 'task_dir = ".scratch/task"' 'docs = []' 'toolkits = []' \
+    '[conv.pool]' 'provider = "git"' 'slots = []' >"$TEAM_HOME/projects.toml"
+  key=${conv//[^A-Za-z0-9]/-}
+  mkdir -p "$HOME/.claude/projects/$key/memory"
+  echo "Deploys go through CI." >"$HOME/.claude/projects/$key/memory/deploys.md"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of memory)" "WARN memory: memory conv setting missing, memory conv settings.local.json not ignored by git, memory conv notes left in ~/.claude/projects/$key/memory/; fix: team-config apply"
+  # The config line is about the Claude config alone.
+  assert_equal "$(line_of config)" "PASS config: this machine's Claude config is the team home's"
+  "$REPO_ROOT/bin/team-config" apply >/dev/null
+  run_bin -0 team-doctor
+  assert_equal "$(line_of memory)" "PASS memory: every project here keeps its auto memory in the team home"
+  # team-config not answering leaves the line unknown.
+  echo 'junk = [' >>"$TEAM_HOME/projects.toml"
+  run_bin -1 team-doctor
+  assert_contains "$(line_of memory)" "WARN memory: unknown, since team-config diff did not answer: "
 }
 
 @test "the discord line fails while user settings turn the Discord plugin on, and asks claude from /" {
