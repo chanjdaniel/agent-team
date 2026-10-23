@@ -93,4 +93,4 @@ A task you park on Daniel or anything outside the team gets `team-log T<n> waiti
 - A worker is stuck, silent, or reporting the same failure twice: the `recover-worker` skill.
 - Before a compaction, a restart or a handoff: the `stow` skill.
 - Daniel asks for status, or what is going on: the `status-report` skill.
-- `team-retro status` says when the next retro is due, and `team-retro digest` what it will read.
+- A retro is due (`team-sweep` says so; `team-retro status` says when): the `retro` skill.

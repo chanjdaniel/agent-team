@@ -152,18 +152,23 @@ EOF
 
 @test "every real template renders for each delivery with no placeholder left and no em dash" {
   assert_equal "$(templates | paste -sd ' ')" \
-    "builder-deliver builder-fix builder-ticket planner-feature planner-research rereview reviewer"
+    "builder-deliver builder-fix builder-ticket planner-feature planner-research rereview retro reviewer"
   open_t12
   open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
   local task template keys sets key brief
   for task in T12 T14; do
     while IFS= read -r template; do
-      # The refusal names what the template needs beyond the task's facts.
-      run_bin -1 team-brief "$task" "$template"
-      keys=$(sed -n 's/^team-brief: unfilled placeholders: //p' <<<"$output")
-      sets=()
-      for key in ${keys//,/ }; do sets+=(--set "$key=value of $key"); done
-      run_bin -0 team-brief "$task" "$template" --name "$template" "${sets[@]}"
+      # The refusal names what the template needs beyond the task's facts; a template the
+      # facts fill alone (retro) renders at once.
+      run_bin team-brief "$task" "$template" --name "$template"
+      if ((status == 1)); then
+        keys=$(sed -n 's/^team-brief: unfilled placeholders: //p' <<<"$output")
+        [[ -n $keys ]]
+        sets=()
+        for key in ${keys//,/ }; do sets+=(--set "$key=value of $key"); done
+        run_bin -0 team-brief "$task" "$template" --name "$template" "${sets[@]}"
+      fi
+      assert_equal "$status" 0
       brief=$TEAM_HOME/tasks/$task/brief-$template.md
       assert_equal "$output" "$brief"
       refute_grep '{{\|}}' "$brief"
@@ -177,6 +182,18 @@ EOF
     'gh pr create --repo chanjdaniel/agent-team --base main --head feat/T14-team-tooling'
   refute_grep no-mistakes "$TEAM_HOME/tasks/T14/brief-builder-fix.md"
   refute_grep 'gh pr create' "$TEAM_HOME/tasks/T12/brief-builder-deliver.md"
+}
+
+@test "the retro brief renders from the task's facts alone, its digest first and read from team_bin" {
+  open_task T31 home retro research/T31-retro-2026-10-25 agent-team/.claude/worktrees/3 "Retro 2026-10-25"
+  run_bin -0 team-brief T31 retro
+  local brief=$TEAM_HOME/tasks/T31/brief.md
+  assert_equal "$output" "$brief"
+  # The first item to read is the digest, from the team home's checkout and its live ledger.
+  assert_equal "$(grep -m1 '^1\. ' "$brief")" \
+    "1. First, the ledger's evidence for this retro's window, in both forms: \`$REPO_ROOT/bin/team-retro digest T31\` and \`$REPO_ROOT/bin/team-retro digest T31 --json\`."
+  assert_contains "$(<"$brief")" 'Read `~/agent-team/sops/platform-gotchas.md` before your first command.'
+  assert_contains "$(<"$brief")" 'Send `T31 DONE .work/task/report.md` to `coordinator`.'
 }
 
 @test "no template repeats a rule from roles/" {
