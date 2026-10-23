@@ -256,6 +256,22 @@ run_fake() {
   assert_equal "$(head -n 2 "$TEAM_HOME/ledger.jsonl")" "$(cat "$BATS_TEST_TMPDIR/before")"
 }
 
+@test "after a worktree-moved the task launches in the new worktree, not the recorded one" {
+  thread T7
+  opened T7 proj feat/T7-one /home/someone/slots/proj/1
+  git -C "$primary" worktree remove "$wt2"
+  git -C "$primary" worktree move "$wt1" "$wt2"
+  ledger_line --arg wt "$wt2" '{ts: (now | todate), task: "T7", event: "worktree-moved", project: "proj",
+    branch: "feat/T7-one", from: "/home/someone/slots/proj/1", worktree: $wt, machine: "home-pc"}'
+  run_bin -0 team-worker T7 builder "$wt2" -- go
+  assert_equal "$(launches | jq -c '[.project, .branch, .worktree]')" \
+    "$(jq -cn --arg wt "$wt2" '["proj", "feat/T7-one", $wt]')"
+  git -C "$primary" worktree add -q -b feat/T9-other "$wt1"
+  run_bin -1 team-worker T7 builder "$wt1" -- go
+  assert_contains "$output" "$wt1 is not one of T7's open worktrees:"$'\n'"  $wt2 (proj, feat/T7-one)"
+  run_bin -0 team-log --check
+}
+
 @test "the launch names this machine" {
   thread T7
   opened T7 proj feat/T7-one "$wt1"

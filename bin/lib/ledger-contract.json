@@ -119,6 +119,11 @@
       "writer": "team-handoff",
       "about": "one per open task at a handoff: worktrees as {project, branch, head}, roles whose sessions were live",
       "required": {"machine": "string", "worktrees": "array", "roles": "array"}
+    },
+    "worktree-moved": {
+      "writer": "team-open",
+      "about": "team-open --resume, when this machine's worktree for the task in project is not the recorded one",
+      "required": {"project": "string", "branch": "string", "from": "string", "worktree": "string", "machine": "string"}
     }
   }
 }

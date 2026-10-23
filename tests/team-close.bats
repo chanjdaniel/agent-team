@@ -184,6 +184,29 @@ rehome_ledger() {
   run_bin -0 team-log --check
 }
 
+@test "a task whose worktree moved on another machine's resume closes the slot it moved to" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  rehome_ledger /home/someone
+  local slot=${home_slots[1]}
+  # This machine's resume found the recorded slot taken and moved the task to the next one.
+  git -C "$home" worktree move "${home_slots[0]}" "$slot"
+  ledger_line --arg wt "$slot" '{ts: "2026-10-22T02:00:00Z", task: "T1", event: "worktree-moved", project: "home",
+    branch: "feat/T1-work", from: "/home/someone/slots/home/1", worktree: $wt, machine: "laptop"}'
+  echo "spec" >"$slot/.scratch/task/spec.md"
+  work_and_push "$slot" feature.txt
+
+  run_bin -0 --separate-stderr team-close T1
+  assert_equal "$(jq -c .returned <<<"$output")" "$(jq -cn --arg wt "$slot" '[$wt]')"
+  assert_equal "$(cat "$TEAM_HOME/tasks/T1/scratch/spec.md")" "spec"
+  [[ ! -e $slot ]]
+  assert_equal "$(events worktree-returned | jq -r .worktree)" "$slot"
+  run_bin -0 team-log --check
+  stub_reply claude "[]"
+  run_bin -0 team-state T1 --json
+  assert_equal "$(jq -c .worktrees <<<"$output")" "$(jq -cn --arg wt "$slot" \
+    '[{project: "home", branch: "feat/T1-work", worktree: $wt, returned: true}]')"
+}
+
 # open_home_task: T1 open in the first home slot with a builder launched and live, its task
 # directory holding a spec; remembers the ledger so assert_unchanged can compare.
 open_home_task() {

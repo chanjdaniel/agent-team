@@ -46,6 +46,7 @@ review team-log verdict head
 merge-approved team-log url discord_message
 failed team-log reason
 stowed team-handoff machine worktrees roles
+worktree-moved team-open project branch from worktree machine
 TABLE
   )
   actual=$(jq -r '.kinds | to_entries[] | [.key, .value.writer, (.value.required | keys_unsorted[])] | join(" ")' "$CONTRACT")

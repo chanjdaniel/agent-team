@@ -97,17 +97,24 @@ def local_path($home):
     (capture("^/(home|Users)/[^/]+(?<rest>/.*)?$") | ($home | rtrimstr("/")) + (.rest // "")) // .
   else . end;
 
-# An event with its recorded worktree, when it has one, as a path on this machine (local_path).
+# An event with its recorded worktree, and the from of a worktree-moved, as paths on this machine
+# (local_path).
 def local_worktree($home):
-  if type == "object" and has("worktree") then .worktree |= local_path($home) else . end;
+  if type == "object" then
+    (if has("worktree") then .worktree |= local_path($home) else . end)
+    | if has("from") then .from |= local_path($home) else . end
+  else . end;
 
 # The open worktrees among a stream of ledger events: one {task, project, branch, worktree} per
 # opened or worktree-added event with no later worktree-returned of the same task, project and
-# worktree, in the order they were added. Worktrees are paths on this machine (local_worktree).
+# worktree, in the order they were added; a worktree-moved gives the task's open worktree in its
+# project its new path. Worktrees are paths on this machine (local_worktree).
 def open_worktrees(events; $home):
   reduce (events | local_worktree($home)) as $e ([];
     if $e.event == "opened" or $e.event == "worktree-added" then
       . + [$e | {task, project, branch, worktree}]
+    elif $e.event == "worktree-moved" then
+      map(if [.task, .project] == [$e.task, $e.project] then .worktree = $e.worktree else . end)
     elif $e.event == "worktree-returned" then
       map(select([.task, .project, .worktree] != [$e.task, $e.project, $e.worktree]))
     else . end)
@@ -204,13 +211,18 @@ def phase:
     elif any(.[]; .event == "plan-approved") then "building"
     else "planning" end;
 
-# Every worktree the task was given (opened or added), and whether it was returned since.
+# Every worktree the task was given (opened or added), at its latest path (worktree-moved), and
+# whether it was returned since.
 def worktree_list:
   . as $events
   | [to_entries[] | select(.value.event == "opened" or .value.event == "worktree-added")
     | .key as $i | .value as $w
-    | $w | {project, branch, worktree}
-      + {returned: any($events[$i + 1:][]; .event == "worktree-returned" and .project == $w.project and .worktree == $w.worktree)}];
+    | reduce ($events[$i + 1:][] | select(.project == $w.project)) as $e
+        ($w | {project, branch, worktree, returned: false};
+         if .returned then .
+         elif $e.event == "worktree-moved" then .worktree = $e.worktree
+         elif $e.event == "worktree-returned" and $e.worktree == .worktree then .returned = true
+         else . end)];
 
 # A launch's session in the session list ($sessions, from claude agents --json), or null: by the
 # short id, or by the start of the full session id (interactive sessions have no short id).
