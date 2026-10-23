@@ -14,3 +14,6 @@ servers/node_modules/
 servers/.staging.*/
 servers/.old.*/
 servers/.install.lock
+
+# The toolkits' eval runs (claude plugin eval)
+toolkits/*/evals/results/

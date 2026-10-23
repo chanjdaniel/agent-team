@@ -4,11 +4,12 @@
 //   launcherRefusalTests(toolkit, context)     inside a describe(): one test per launcher refusal;
 //                                              context() gives { value, home, marker } at run time
 //   children(pid)                              the pids of a process's children
+//   evalMockTools(toolkit, server)             the tools/list a toolkit's eval mocks give the server
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { opStub, startToolkitServer, testPath } from "./mcp.mjs";
+import { opStub, repoRoot, startToolkitServer, testPath } from "./mcp.mjs";
 
 // The marker (the test user's password) is never printed, the server wrote nothing under
 // HOME/.mongodb/ and it ran no child process.
@@ -56,4 +57,12 @@ export function launcherRefusalTests(toolkit, context) {
 export function children(pid) {
   return readdirSync(`/proc/${pid}/task`).flatMap((task) =>
     readFileSync(`/proc/${pid}/task/${task}/children`, "utf8").split(" ").filter(Boolean));
+}
+
+// The skills' evals answer from mocks, never the real server; their saved tools/list
+// (evals/mocks/<server>/_tools.json) gives the mocked tools the real names, descriptions and
+// schemas, so it must stay the server's own.
+export function evalMockTools(toolkit, server) {
+  const path = join(repoRoot, "toolkits", toolkit, "evals", "mocks", server, "_tools.json");
+  return JSON.parse(readFileSync(path, "utf8")).tools;
 }

@@ -1,5 +1,8 @@
 {
   "name": "prod-read",
   "version": "0.1.0",
-  "description": "Read-only access to Conventioner's production database through the pinned MongoDB MCP server, on a read-only Atlas user whose connection string comes from 1Password at server start. Loaded only into the ops role."
+  "description": "Read-only access to Conventioner's production database through the pinned MongoDB MCP server, on a read-only Atlas user whose connection string comes from 1Password at server start. Loaded only into the ops role.",
+  "author": {
+    "name": "Daniel Chan"
+  }
 }

@@ -13,7 +13,7 @@ The team's own work on it goes through a task and a PR to `dev`, like any projec
 | `settings/` | Worker settings: `worker.json` shared, one file per role layered on it |
 | `coordinator.settings.json` | The coordinator's own settings: Discord, its hooks and its denials |
 | `plugins/coordinator-skills/` | Skills loaded only into the coordinator by `bin/claude-coordinator` |
-| `toolkits/` | Plugin directories a worker loads with `team-worker --toolkit <name>`: MCP config (`.mcp.json`), skills, docs, scripts |
+| `toolkits/` | Plugin directories a worker loads with `team-worker --toolkit <name>`: MCP config (`.mcp.json`), skills, docs, scripts, and the skills' evals (`claude plugin eval`, on MCP mocks) |
 | `servers/` | The MCP servers the toolkits run, pinned by `package-lock.json`; `servers/install` puts them in the gitignored `servers/node_modules/` |
 | `templates/` | The task plan and the worker briefs `team-open` and `team-brief` render |
 | `projects.toml` | The project registry, read only through `bin/team-project` |

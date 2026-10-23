@@ -210,3 +210,15 @@ COMMANDS
   [[ -n $records ]]
   assert_equal "$ignored" "$records"
 }
+
+# The README's inventory is pasted from the ops load check; the eval mocks' _tools.json, which the
+# toolkit tests hold to the server's own tools/list, says what it must still be.
+@test "each production toolkit's README inventory is exactly its server's tools" {
+  local kit listed want
+  for kit in prod-read prod-write; do
+    listed=$(sed -n '/^```text$/,/^```$/p' "$REPO_ROOT/toolkits/$kit/README.md" | grep '^mcp__' | sort)
+    want=$(jq -r --arg kit "$kit" '.tools[] | "mcp__\($kit)__\(.name)"' "$REPO_ROOT/toolkits/$kit/evals/mocks/$kit/_tools.json" | sort)
+    [[ -n $want ]]
+    assert_equal "$listed" "$want"
+  done
+}

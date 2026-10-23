@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { after, before, beforeEach, describe, test } from "node:test";
 import { opStub, repoRoot, startServer, startToolkitServer, tempDir } from "./helpers/mcp.mjs";
 import { startMongo } from "./helpers/mongo.mjs";
-import { assertNoLeak, children, launcherRefusalTests } from "./helpers/toolkit.mjs";
+import { assertNoLeak, children, evalMockTools, launcherRefusalTests } from "./helpers/toolkit.mjs";
 
 const reference = "op://agent-team/conventioner-prod-write/uri";
 const writeTools = ["create-index", "delete-many", "drop-index", "insert-many", "update-many"];
@@ -133,6 +133,12 @@ describe("the tools", () => {
       assert.deepEqual(listed, writeTools);
       for (const tool of absentTools) assert.ok(!listed.includes(tool), `${tool} is listed`);
       assert.deepEqual(listed.filter((name) => name.startsWith("atlas")), []);
+    });
+  });
+
+  test("are what the skill's eval mocks hold, schemas and all", async () => {
+    await withServer(async (server) => {
+      assert.deepEqual(evalMockTools("prod-write", "prod-write"), await server.listTools());
     });
   });
 
