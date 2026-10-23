@@ -11,7 +11,9 @@
 #   tool <name>   Each tool machine/tools.lock lists for this OS, by its version_cmd: missing, a
 #                 version it cannot read, or below its min fails; a version off its pin fails, or
 #                 warns where the lock says pin_mismatch WARN (Claude Code, which updates itself).
-#                 The fix is the lock's source for this OS.
+#                 The fix is the lock's install command for this OS and machine type (uname -m),
+#                 from bin/lib/tools.jq: for a GitHub release, its archive checked against the
+#                 SHA-256 the lock records.
 #   machine       This machine's team name, ~/.config/agent-team/machine.
 #   git hooks     The team home's core.hooksPath is bin/hooks/git (relative, so each worktree runs
 #                 its own checkout's hooks): the dev guard. The fix is Daniel's, since every
@@ -344,8 +346,8 @@ if [[ -n $os ]]; then
     IFS= read -r -u 3 pin && IFS= read -r -u 3 min && IFS= read -r -u 3 mismatch &&
     IFS= read -r -u 3 source; do
     check_tool "$name" "$cmd" "$pattern" "$pin" "$min" "$mismatch" "$source"
-  done 3< <(jq -r --arg os "$os" '.tools[] | select(.source[$os])
-    | .name, .version_cmd, .version_pattern, .pin // "", .min // "", .pin_mismatch // "FAIL", .source[$os]' "$lock")
+  done 3< <(jq -L "$TEAM_LIB" -r --arg os "$os" --arg machine "$(uname -m)" 'include "tools"; tools_for($os; $machine)
+    | .name, .version_cmd, .version_pattern, .pin, .min, .pin_mismatch, .source' "$lock")
 fi
 
 # machine

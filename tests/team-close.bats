@@ -464,6 +464,7 @@ $conv_wt"
   run_bin -0 team-open conv feature feat move "Move it"
   local slot=${conv_slots[0]}
   work_and_push "$slot" move.txt
+  # treehouse 2: a dirty slot is left leased, and the return exits 0.
   cat >"$conv/scripts/th-return.sh" <<'SH'
 #!/usr/bin/env bash
 echo "Worktree has uncommitted changes. Clean and return? [Y/n] Aborted."
@@ -473,6 +474,20 @@ SH
   assert_contains "$output" "did not return $slot: it is still on a branch"
   assert_contains "$output" "T1 is half closed; fix the cause above and run team-close T1 again"
   assert_equal "$(events worktree-returned)$(events closed)" ""
+
+  # treehouse 3 (the pin): the same slot is left leased, and the return exits 3, as th-return.sh
+  # passes treehouse's status on under set -e.
+  cat >"$conv/scripts/th-return.sh" <<'SH'
+#!/usr/bin/env bash
+echo "Worktree has uncommitted changes. Clean and return? [Y/n] 🌳 worktree not returned: it has uncommitted changes and the confirmation could not be answered (stdin reached EOF)" >&2
+exit 3
+SH
+  run_bin -1 team-close T1
+  assert_contains "$output" "worktree not returned: it has uncommitted changes"
+  assert_contains "$output" "scripts/th-return.sh failed for $slot"
+  assert_contains "$output" "T1 is half closed; fix the cause above and run team-close T1 again"
+  assert_equal "$(events worktree-returned)$(events closed)" ""
+  git -C "$slot" symbolic-ref -q HEAD
 }
 
 @test "a missing or empty task directory is reported and nothing is archived from it" {

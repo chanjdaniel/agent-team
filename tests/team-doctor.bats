@@ -49,6 +49,10 @@ setup() {
   # The OS: Linux, from an Arch os-release file, until a test says Darwin.
   cp "$REPO_ROOT/tests/helpers/stub" "$BATS_TEST_TMPDIR/stubs/uname"
   stub_reply uname Linux
+  # uname -m answers the machine type (x86_64 until a test says otherwise), anything else the OS.
+  stub_script uname <<'EOF'
+if [[ ${1:-} == -m ]]; then cat "$STUB_FIXTURES/uname-m.out" 2>/dev/null || echo x86_64; else cat "$STUB_FIXTURES/uname.out"; fi
+EOF
   export TEAM_OS_RELEASE=$BATS_TEST_TMPDIR/os-release
   printf '%s\n' 'NAME="Arch Linux"' 'PRETTY_NAME="Arch Linux"' 'ID=arch' >"$TEAM_OS_RELEASE"
 
@@ -199,9 +203,13 @@ answer() {
   if (($# > 1)); then printf '%s\n' "$2" >"$file"; else : >"$file.missing"; fi
 }
 
-# The tools of <os> (arch, macos), one "name<TAB>version_cmd<TAB>pin or min<TAB>source" each.
+# The tools of <os> (arch, macos) on this machine type, one "name<TAB>version_cmd<TAB>pin or
+# min<TAB>source" each, as bin/lib/tools.jq resolves them for the doctor.
 lock_tools() {
-  jq -r --arg os "$1" '.tools[] | select(.source[$os]) | [.name, .version_cmd, (.pin // .min), .source[$os]] | @tsv' "$LOCK"
+  local machine
+  machine=$(cat "$STUB_FIXTURES/uname-m.out" 2>/dev/null || echo x86_64)
+  jq -L "$REPO_ROOT/bin/lib" -r --arg os "$1" --arg machine "$machine" \
+    'include "tools"; tools_for($os; $machine) | [.name, .version_cmd, .pin + .min, .source] | @tsv' "$LOCK"
 }
 
 # Every tool of <os> answers at <version> (default its pin or min), or is missing (version "-").
@@ -220,6 +228,7 @@ tools_at() {
 # The sandbox runs as macOS (as_macos), with the heartbeat's LaunchAgents enabled.
 on_macos() {
   as_macos
+  echo arm64 >"$STUB_FIXTURES/uname-m.out"
   "$REPO_ROOT/bin/team-timers" enable >/dev/null
 }
 
@@ -266,10 +275,22 @@ every_tool_fails() {
 @test "tools.lock lists every tool of the spec once per OS, each with a version_cmd, a pattern, a pin or a min, and its sources" {
   jq -e '.tools | length > 0 and all(.[];
       (.name | type == "string") and (.version_cmd | type == "string") and (.version_pattern | type == "string")
-      and ([has("pin"), has("min")] | map(select(.)) | length == 1)
-      and ((.pin // .min) | test("^[0-9]+(\\.[0-9]+)+"))
       and (.pin_mismatch // "FAIL" | IN("WARN", "FAIL"))
-      and (.source | type == "object" and length > 0 and (keys - ["arch", "macos"] == [])))' "$LOCK"
+      and if has("from") then
+        ([has("pin"), has("min"), has("source")] | any | not)
+        and (.dir | type == "object" and length > 0 and (keys - ["arch", "macos"] == []))
+        and if .from == "release" then
+          (.release.repo | test("^[^/]+/[^/]+$")) and (.release.tag | test("^v[0-9]+(\\.[0-9]+)+$"))
+          and (.release.sha256 | keys == ["darwin-amd64", "darwin-arm64", "linux-amd64"])
+          and (.release.sha256 | all(.[]; test("^[0-9a-f]{64}$")))
+        else .from == "fork" end
+        and ((has("fork") | not) or ((.fork.repo | test("^[^/]+/[^/]+$")) and (.fork.commit | test("^[0-9a-f]{40}$"))
+          and (.fork.version | test("^[0-9]+(\\.[0-9]+)+"))))
+      else
+        ([has("pin"), has("min")] | map(select(.)) | length == 1)
+        and ((.pin // .min) | test("^[0-9]+(\\.[0-9]+)+"))
+        and (.source | type == "object" and length > 0 and (keys - ["arch", "macos"] == []))
+      end)' "$LOCK"
   local os both=(claude node codegraph gh-axi chrome-devtools-axi lavish-axi quota-axi tasks-axi bun
     treehouse no-mistakes op git jq tmux gh rsync docker docker-compose python bash)
   local mac_only=(coreutils findutils gnu-sed grep flock)
@@ -279,8 +300,14 @@ every_tool_fails() {
     assert_equal "$(lock_tools "$os" | cut -f1 | sort)" "$(printf '%s\n' "${expected[@]}" | sort)"
   done
   # Pinned: the tools the bootstrap installs itself, op on Linux only; Claude Code only warns.
-  assert_equal "$(jq -r '[.tools[] | select(.pin) | .name] | join(" ")' "$LOCK")" \
+  assert_equal "$(jq -r '[.tools[] | select(.pin or .from) | .name] | join(" ")' "$LOCK")" \
     "claude node codegraph gh-axi chrome-devtools-axi lavish-axi quota-axi tasks-axi bun treehouse no-mistakes op"
+  # treehouse and no-mistakes are GitHub releases, each archive's checksum recorded; no-mistakes
+  # also records Daniel's fork, which from = "fork" would pin instead.
+  assert_equal "$(jq -r '[.tools[] | select(.from) | "\(.name)=\(.from):\(.release.repo)@\(.release.tag)"] | join(" ")' "$LOCK")" \
+    "treehouse=release:kunchenguid/treehouse@v3.1.5 no-mistakes=release:kunchenguid/no-mistakes@v1.84.0"
+  assert_equal "$(jq -r '.tools[] | select(.fork) | "\(.name)=\(.fork.repo)@\(.fork.commit[:7])"' "$LOCK")" \
+    "no-mistakes=chanjdaniel/no-mistakes@389716a"
   assert_equal "$(jq -r '[.tools[] | select(.pin_mismatch) | "\(.name)=\(.pin_mismatch)"] | join(" ")' "$LOCK")" "claude=WARN"
   assert_equal "$(jq -r '.tools[] | select(.name == "docker-compose") | .min' "$LOCK")" 2.24.0
 }
@@ -330,6 +357,43 @@ every_tool_fails() {
   assert_equal "$(line_of 'tool git')" "FAIL tool git: 0.1.0, below the minimum 2.40.0; fix: sudo pacman -S --needed git"
   assert_equal "$(line_of 'tool bun')" "FAIL tool bun: 0.1.0, not the pinned 1.3.14; fix: curl -fsSL https://bun.sh/install | bash -s bun-v1.3.14"
   assert_equal "$(line_of 'tool claude')" "WARN tool claude: 0.1.0, not the pinned 2.1.308; fix: curl -fsSL https://claude.ai/install.sh | bash -s 2.1.308"
+}
+
+@test "a GitHub release's fix downloads this machine's archive and checks its recorded SHA-256 before unpacking it" {
+  local sha
+  every_tool_fails arch -
+  sha=$(jq -r '.tools[] | select(.name == "treehouse") | .release.sha256["linux-amd64"]' "$LOCK")
+  assert_equal "$(line_of 'tool treehouse')" "FAIL tool treehouse: not installed; fix: f=\$(mktemp) && curl -fsSLo \"\$f\" https://github.com/kunchenguid/treehouse/releases/download/v3.1.5/treehouse-v3.1.5-linux-amd64.tar.gz && echo \"$sha  \$f\" | sha256sum -c - && sudo mkdir -p /usr/local/bin && sudo tar -xzf \"\$f\" -C /usr/local/bin treehouse && rm -f \"\$f\""
+  sha=$(jq -r '.tools[] | select(.name == "no-mistakes") | .release.sha256["linux-amd64"]' "$LOCK")
+  assert_equal "$(line_of 'tool no-mistakes')" "FAIL tool no-mistakes: not installed; fix: f=\$(mktemp) && curl -fsSLo \"\$f\" https://github.com/kunchenguid/no-mistakes/releases/download/v1.84.0/no-mistakes-v1.84.0-linux-amd64.tar.gz && echo \"$sha  \$f\" | sha256sum -c - && mkdir -p ~/.no-mistakes/bin && tar -xzf \"\$f\" -C ~/.no-mistakes/bin no-mistakes && rm -f \"\$f\""
+
+  # An Intel Mac gets its own archive, checked with macOS's shasum.
+  on_macos
+  echo x86_64 >"$STUB_FIXTURES/uname-m.out"
+  tools_at macos 0.1.0
+  run_bin -1 team-doctor
+  sha=$(jq -r '.tools[] | select(.name == "treehouse") | .release.sha256["darwin-amd64"]' "$LOCK")
+  assert_equal "$(line_of 'tool treehouse')" "FAIL tool treehouse: 0.1.0, not the pinned 3.1.5; fix: f=\$(mktemp) && curl -fsSLo \"\$f\" https://github.com/kunchenguid/treehouse/releases/download/v3.1.5/treehouse-v3.1.5-darwin-amd64.tar.gz && echo \"$sha  \$f\" | shasum -a 256 -c && mkdir -p ~/.local/bin && tar -xzf \"\$f\" -C ~/.local/bin treehouse && rm -f \"\$f\""
+}
+
+@test "a machine type the lock records no archive for gets a fix that says so" {
+  echo aarch64 >"$STUB_FIXTURES/uname-m.out"
+  tools_at arch
+  answer "treehouse --version"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of 'tool treehouse')" "FAIL tool treehouse: not installed; fix: machine/tools.lock records no linux-arm64 archive of treehouse v3.1.5; see https://github.com/kunchenguid/treehouse/releases/tag/v3.1.5"
+}
+
+@test "from = fork pins the fork's build instead of the release, a one-line change in tools.lock" {
+  local lock=$BATS_TEST_TMPDIR/tools.lock line
+  jq '(.tools[] | select(.name == "no-mistakes")).from = "fork"' "$LOCK" >"$lock"
+  assert_equal "$(diff "$LOCK" "$lock" | grep -c '^[<>]')" 2
+  line=$(jq -L "$REPO_ROOT/bin/lib" -r --arg os arch --arg machine x86_64 \
+    'include "tools"; tools_for($os; $machine) | select(.name == "no-mistakes") | "\(.pin)\t\(.source)"' "$lock")
+  assert_equal "$line" "1.37.0-4-g389716a	d=\$(mktemp -d) && git clone -q https://github.com/chanjdaniel/no-mistakes \"\$d\" && git -C \"\$d\" checkout -q 389716a49e2f3419fccedca0f9dc3f1f59c4a2ce && make -C \"\$d\" build && mkdir -p ~/.no-mistakes/bin && install -m 755 \"\$d/bin/no-mistakes\" ~/.no-mistakes/bin/no-mistakes && rm -rf \"\$d\""
+  # The other tools resolve exactly as before.
+  assert_equal "$(jq -L "$REPO_ROOT/bin/lib" -c --arg os arch --arg machine x86_64 'include "tools"; tools_for($os; $machine) | select(.name != "no-mistakes")' "$lock")" \
+    "$(jq -L "$REPO_ROOT/bin/lib" -c --arg os arch --arg machine x86_64 'include "tools"; tools_for($os; $machine) | select(.name != "no-mistakes")' "$LOCK")"
 }
 
 @test "on macOS each missing tool fails its line with its Homebrew or install command" {
