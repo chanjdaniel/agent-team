@@ -1,0 +1,491 @@
+#!/usr/bin/env bash
+# Set up a fresh Arch Linux or macOS machine for the team: from Daniel's first steps (git, gh and
+# Claude Code installed and signed in, the team home cloned at ~/agent-team) to a team-doctor where
+# only Daniel's own steps fail. Run it again after any failure or step of Daniel's: each stage is
+# skipped when its team-doctor lines pass, so a run resumes where the last one stopped.
+#
+# Usage: team-bootstrap [--name <name>] [--stage <stage>] [--dry-run]
+#   --name <name>    This machine's team name (laptop, home-pc: lower-case kebab case, never the
+#                    hostname), written once to ~/.config/agent-team/machine.
+#   --stage <stage>  Run that one stage (the setup SOP's agent goes stage by stage); every stage but
+#                    preflight reads team-doctor first.
+#   --dry-run        Say what each stage would run, and Daniel's steps, changing nothing.
+# The stages, in order, each line prefixed by its name:
+#   preflight  The OS is Arch Linux or macOS; on macOS the Xcode Command Line Tools and Homebrew
+#              are installed; jq, git and Python 3.11, which the team's scripts need to run at
+#              all, are installed (pacman, with sudo, or brew).
+#   machine    The doctor's machine line: writes --name.
+#   packages   The failing tool lines whose fix is an OS package: on Arch one
+#              `sudo pacman -S --needed --noconfirm` for them all; on macOS `brew install` (or
+#              `brew upgrade` for one below its minimum), then the run starts again under
+#              Homebrew's GNU tools if it lacked them.
+#   tools      Every other failing tool line, by its fix in machine/tools.lock: nvm (installed
+#              first when missing) with Node and the global npm tools, Bun, Claude Code, the
+#              treehouse and no-mistakes release archives for this OS and CPU, the 1Password CLI.
+#              A Claude Code newer than its pin only warns, and is left. ~/.local/bin and
+#              ~/.no-mistakes/bin, which no installer puts on PATH, get one line each in the
+#              shell's rc file (~/.zshrc or ~/.bashrc) when PATH lacks them.
+#   projects   Each registered project with a failing checkout, origin, task dir or gate line:
+#              cloned from https://github.com/<repo>.git to its registry path, that exact origin
+#              (treehouse names its pool from it), the task directory in .git/info/exclude unless
+#              git ignores it, and `no-mistakes init` for a no-mistakes project without a gate.
+#   config     The marketplaces and plugins of machine/claude/plugins.txt (claude plugin), then
+#              team-config apply when none of what it would replace differs here (a file or skill
+#              changed on this machine is Daniel's call, apply or capture), then the Discord plugin
+#              turned off in user settings if it is on.
+#   heartbeat  Left disabled: team-timers disable when it runs on a machine that does not hold the
+#              lease. team-resume enables it when this machine takes the lease.
+#   check      The doctor again, then Daniel's remaining steps in order, one line each with its
+#              command (the machine's name, logins, Docker access, the 1Password app and
+#              team-secrets restore, trust per project root, Chrome, then the rest), the doctor's WARN and FAIL lines, and a
+#              summary: set up, or ready as a standby.
+# A step only Daniel can take stops the run with one line, "<stage>: Daniel: <the step>", and
+# exit 1, without trying it: the Xcode tools or Homebrew missing, the machine's name, anything
+# needing sudo (unless stdin and stdout are a terminal, where sudo asks for the password), the
+# GitHub login the clones need, a folder in a project's way.
+# Installers' output goes to ~/.local/state/agent-team/bootstrap.log. It never runs op, never takes
+# or steals the lease, and never enables the heartbeat.
+# Exit 0 the doctor passes, 1 a step is Daniel's, a step failed or the doctor fails, 2 usage error.
+set -euo pipefail
+# A fresh Mac lacks Homebrew's GNU tools until the packages stage installs them.
+# shellcheck disable=SC2034 # read by bin/lib/platform.sh
+platform_report=1
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+STAGES=(preflight machine packages tools projects config heartbeat check)
+NVM_VERSION=v0.40.3
+# The directories the tools stage installs into that no installer puts on PATH itself.
+RC_DIRS=("$HOME/.local/bin" "$HOME/.no-mistakes/bin")
+usage="usage: team-bootstrap [--name <name>] [--stage <stage>] [--dry-run]"
+
+args=("$@") name='' only='' dry=0
+while (($#)); do
+  case $1 in
+    --name | --stage)
+      (($# > 1)) || usage_error "$usage"
+      if [[ $1 == --name ]]; then name=$2; else only=$2; fi
+      shift 2
+      ;;
+    --dry-run) dry=1 && shift ;;
+    *) usage_error "$usage" ;;
+  esac
+done
+[[ -z $only || " ${STAGES[*]} " == *" $only "* ]] || usage_error "no stage $only; the stages are ${STAGES[*]}"
+[[ -z $name || $name =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] ||
+  usage_error "--name $name is not a lower-case kebab-case name like laptop or home-pc"
+
+bin=$(dirname "$TEAM_LIB")
+lock=$(dirname "$bin")/machine/tools.lock
+self=$bin/team-bootstrap
+state=$HOME/.local/state/agent-team
+log=$state/bootstrap.log
+err=$(mktemp)
+trap 'rm -f "$err"' EXIT
+terminal=0
+if [[ -t 0 && -t 1 ]]; then terminal=1; fi
+start_path=$PATH
+# Whether this run changed anything (the check stage then asks the doctor again), and whether it
+# changed the Claude config, which loads only in a new session.
+changed=0 reloaded=0 cloned=0
+stage='' doctor=''
+
+os=$(team_os) || die "this machine runs neither Arch Linux nor macOS ($(uname -s) $(os_release PRETTY_NAME)); the team runs on those two"
+
+# <path> with $HOME as ~.
+tilde() {
+  printf '%s\n' "${1//"$HOME"/\~}"
+}
+
+# One line of the stage.
+say() {
+  printf '%s: %s\n' "$stage" "$*"
+}
+
+# A step only Daniel can take: one line, and the run stops (a dry run goes on to show the rest).
+daniel() {
+  say "Daniel: $*"
+  ((dry)) || exit 1
+}
+
+# Run the shell <command> (shown as <shown>, default the command with $HOME as ~), its output to
+# the log; a dry run only says it. A failure stops the run with the log's last lines.
+act() {
+  local command=$1 shown=${2:-$(tilde "$1")} rc=0
+  if ((dry)); then
+    say "would run: $shown"
+    return 0
+  fi
+  say "running: $shown"
+  mkdir -p "$state"
+  printf '%s %s: %s\n' "$(date -u +%FT%TZ)" "$stage" "$shown" >>"$log"
+  bash -c "$command" >>"$log" 2>&1 </dev/null || rc=$?
+  changed=1
+  if ((rc)); then
+    say "failed (exit $rc): $shown; the last lines of $(tilde "$log"):" >&2
+    tail -n 20 "$log" >&2
+    exit 1
+  fi
+}
+
+# A <command> needing sudo: run in a terminal, where sudo asks Daniel's password; otherwise
+# Daniel's, in their own terminal, with the stage that runs it.
+sudo_act() {
+  if ((terminal || dry)); then
+    act "$1"
+  else
+    daniel "in your own terminal run $(tilde "$self") --stage $stage, which runs $2 with sudo and asks for your password; then team-bootstrap again"
+  fi
+}
+
+# Ask the doctor, keeping its lines for the stages.
+run_doctor() {
+  local rc=0
+  doctor=$(TEAM_HOME=$TEAM_HOME "$bin/team-doctor" --json 2>"$err" </dev/null) || rc=$?
+  if ((rc > 1)) || ! jq -e 'type == "array"' <<<"$doctor" >/dev/null 2>&1; then
+    die "team-doctor did not answer (exit $rc): $(grep -m1 . "$err" || true); run team-bootstrap --stage preflight first"
+  fi
+}
+
+# The doctor's lines whose check matches the ERE <check>, with one of <verdicts> (default FAIL),
+# one "<check><TAB><verdict><TAB><reason><TAB><fix>" each: lines <check> [<verdicts>]
+lines() {
+  jq -r --arg re "$1" --arg verdicts "${2:-FAIL}" '.[] | select((.check | test($re))
+    and (.verdict | IN($verdicts | split(" ")[]))) | [.check, .verdict, .reason, .fix] | @tsv' <<<"$doctor"
+}
+
+# Whether no line whose check matches <check> fails.
+passes() {
+  [[ -z $(lines "$1") ]]
+}
+
+# Its arguments once each, in order, on one line: two tools may come from one package (docker
+# and docker-compose).
+unique() {
+  printf '%s\n' "$@" | awk 'NF && !seen[$0]++' | paste -sd ' ' -
+}
+
+# The directories the tools stage installs into, on this run's PATH for the stages and doctor
+# after it: ~/.local/bin, Bun's, no-mistakes', and Node's under nvm, the ones that exist.
+extend_path() {
+  local node dir
+  node=$(jq -r '.tools[] | select(.name == "node") | .pin // empty' "$lock")
+  for dir in "${RC_DIRS[@]}" "$HOME/.bun/bin" "${NVM_DIR:-$HOME/.nvm}/versions/node/v$node/bin"; do
+    [[ ! -d $dir || :$PATH: == *:"$dir":* ]] || PATH=$dir:$PATH
+  done
+  export PATH
+}
+
+stage_preflight() {
+  local missing=()
+  if [[ $os == macos ]]; then say macOS; else say "$(os_release PRETTY_NAME | grep . || echo 'Arch Linux')"; fi
+  if [[ $os == macos ]]; then
+    xcode-select -p >/dev/null 2>&1 ||
+      daniel "install the Xcode Command Line Tools: run xcode-select --install and accept its dialog; then team-bootstrap again"
+    command -v brew >/dev/null ||
+      daniel "install Homebrew as https://brew.sh says (it asks for your admin password), add the brew shellenv line it prints to ~/.zprofile, open a new terminal, then team-bootstrap again"
+  fi
+  command -v jq >/dev/null || missing+=(jq)
+  command -v git >/dev/null || missing+=(git)
+  python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' >/dev/null 2>&1 || missing+=(python)
+  if ((${#missing[@]} == 0)); then
+    say "done: jq, git and Python 3.11 are installed"
+  elif [[ $os == arch ]]; then
+    sudo_act "sudo pacman -S --needed --noconfirm ${missing[*]}" "pacman -S --needed ${missing[*]}"
+  else
+    act "brew install ${missing[*]}"
+  fi
+}
+
+stage_machine() {
+  local file=$HOME/.config/agent-team/machine current
+  if passes '^machine$'; then
+    current=$(machine_name)
+    if [[ -n $name && $name != "$current" ]]; then
+      say "done: this machine is already $current; --name $name is left unused"
+    else
+      say "done: this machine is $current"
+    fi
+  elif [[ -z $name ]]; then
+    daniel "name this machine for the team (laptop, home-pc: never the hostname), then run team-bootstrap --name <name>"
+  elif ((dry)); then
+    say "would write $name to ~/.config/agent-team/machine"
+  else
+    mkdir -p "$(dirname "$file")"
+    printf '%s\n' "$name" >"$file"
+    changed=1
+    say "named this machine $name (~/.config/agent-team/machine)"
+  fi
+}
+
+stage_packages() {
+  local check verdict reason fix words pkgs=() install=() upgrade=() casks=() cask_upgrade=()
+  while IFS=$'\t' read -r check verdict reason fix; do
+    case $fix in
+      'sudo pacman -S --needed '*) read -ra words <<<"${fix#sudo pacman -S --needed }" && pkgs+=("${words[@]}") ;;
+      'brew install --cask '*)
+        read -ra words <<<"${fix#brew install --cask }"
+        if [[ $reason == 'not installed' ]]; then casks+=("${words[@]}"); else cask_upgrade+=("${words[@]}"); fi
+        ;;
+      'brew install '*)
+        read -ra words <<<"${fix#brew install }"
+        if [[ $reason == 'not installed' ]]; then install+=("${words[@]}"); else upgrade+=("${words[@]}"); fi
+        ;;
+    esac
+  done < <(lines '^tool ')
+  if ((${#pkgs[@]} + ${#install[@]} + ${#upgrade[@]} + ${#casks[@]} + ${#cask_upgrade[@]} == 0)); then
+    say "done: every OS package is installed"
+    return
+  fi
+  if [[ $os == arch ]]; then
+    sudo_act "sudo pacman -S --needed --noconfirm $(unique "${pkgs[@]}")" "pacman -S --needed $(unique "${pkgs[@]}")"
+    return
+  fi
+  ((${#install[@]} == 0)) || act "brew install $(unique "${install[@]}")"
+  ((${#upgrade[@]} == 0)) || act "brew upgrade $(unique "${upgrade[@]}")"
+  ((${#casks[@]} == 0)) || act "brew install --cask $(unique "${casks[@]}")"
+  ((${#cask_upgrade[@]} == 0)) || act "brew upgrade --cask $(unique "${cask_upgrade[@]}")"
+  if [[ -n $PLATFORM_PROBLEM && -z ${TEAM_BOOTSTRAP_AGAIN:-} ]] && ((!dry)); then
+    say "Homebrew's GNU tools are installed: starting again under them"
+    TEAM_BOOTSTRAP_AGAIN=1 exec "$self" "${args[@]}"
+  fi
+}
+
+stage_tools() {
+  local check verdict reason fix todo=() names=() commands=() line dir file nvm_shown=0
+  while IFS=$'\t' read -r check verdict reason fix; do
+    case $fix in 'sudo pacman '* | 'brew '*) continue ;; esac
+    if [[ $fix == *'sudo '* ]]; then
+      names+=("${check#tool }") commands+=("$fix")
+    else
+      todo+=("$fix")
+    fi
+  done < <(lines '^tool ')
+  if ((${#todo[@]} + ${#commands[@]} == 0)); then
+    say "done: every tool is at its pin or above its minimum"
+    return
+  fi
+  export NVM_DIR=${NVM_DIR:-$HOME/.nvm}
+  for fix in "${todo[@]}"; do
+    if [[ $fix == 'nvm '* || $fix == 'npm '* ]]; then
+      [[ -s $NVM_DIR/nvm.sh ]] || ((dry && nvm_shown)) ||
+        { act "curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/$NVM_VERSION/install.sh | bash" && nvm_shown=1; }
+      act ". \"\$NVM_DIR/nvm.sh\" && $fix" "$fix"
+    else
+      act "$fix"
+    fi
+    extend_path
+  done
+  if ((${#commands[@]})); then
+    if ((terminal || dry)); then
+      for fix in "${commands[@]}"; do act "$fix"; done
+      extend_path
+    else
+      daniel "in your own terminal run $(tilde "$self") --stage tools, which installs ${names[*]} with sudo and asks for your password; then team-bootstrap again"
+    fi
+  fi
+
+  # The rc file of Daniel's shell, for the directories PATH lacked when this run started.
+  case ${SHELL:-} in
+    */zsh) file=$HOME/.zshrc ;;
+    */bash) file=$HOME/.bashrc ;;
+    *) file='' ;;
+  esac
+  for dir in "${RC_DIRS[@]}"; do
+    [[ -d $dir && :$start_path: != *:"$dir":* ]] || continue
+    line="export PATH=\"\$HOME/${dir#"$HOME"/}:\$PATH\" # team-bootstrap"
+    if [[ -z $file ]]; then
+      daniel "put $(tilde "$dir") on PATH in your shell's startup file: ${SHELL:-no SHELL is set}, which team-bootstrap does not know"
+    elif ! grep -qxF -- "$line" "$file" 2>/dev/null; then
+      act "printf '%s\\n' $(printf %q "$line") >>$(printf %q "$file")" "add $(tilde "$dir") to PATH in $(tilde "$file")"
+    fi
+  done
+}
+
+# Set up one registered project whose checkout, origin, task dir or gate line failed.
+setup_project() {
+  local project=$1 facts path repo task_dir url check verdict reason fix origin exclude out
+  facts=$(team_project "$project")
+  path=$(jq -r .path <<<"$facts") repo=$(jq -r .repo <<<"$facts") task_dir=$(jq -r .task_dir <<<"$facts")
+  url=https://github.com/$repo.git
+  IFS=$'\t' read -r check verdict reason fix < <(lines "^checkout $project\$") || true
+  if [[ -n $check && $reason == *' is missing' ]]; then
+    act "git clone -q $url $(printf %q "$path")"
+    cloned=1
+    if ((dry)); then
+      say "would then set up $project's task directory exclude$([[ $(jq -r .delivery <<<"$facts") != no-mistakes ]] || echo ' and its no-mistakes gate')"
+      return
+    fi
+  elif [[ -n $check ]]; then
+    daniel "$fix ($reason)"
+    return
+  fi
+  origin=$(git -C "$path" remote get-url origin 2>/dev/null) || origin=''
+  if [[ -z $origin ]]; then
+    act "git -C $(printf %q "$path") remote add origin $url"
+  elif [[ $origin != "$url" ]]; then
+    act "git -C $(printf %q "$path") remote set-url origin $url"
+  fi
+  if ! git -C "$path" check-ignore -q -- "$task_dir/"; then
+    exclude=$(git -C "$path" rev-parse --path-format=absolute --git-path info/exclude)
+    act "echo /$task_dir/ >>$(printf %q "$exclude")"
+  fi
+  if [[ $(jq -r .delivery <<<"$facts") == no-mistakes ]]; then
+    out=$(cd "$path" && no-mistakes status 2>&1 </dev/null) || true
+    grep -qE '^[[:space:]]*gate:[[:space:]]' <<<"$out" || act "cd $(printf %q "$path") && no-mistakes init"
+  fi
+  say "$project is set up in $(tilde "$path")"
+}
+
+stage_projects() {
+  local projects project todo=()
+  projects=$(team_project --list) || exit 1
+  for project in $projects; do
+    passes "^(checkout|origin|task dir|gate) $project\$" || todo+=("$project")
+  done
+  if ((${#todo[@]} == 0)); then
+    say "done: every project is cloned and set up"
+    return
+  fi
+  passes '^github login$' ||
+    daniel "sign gh in to GitHub, which the clones need: gh auth login --hostname github.com --git-protocol https --web, then gh auth setup-git; then team-bootstrap again"
+  for project in "${todo[@]}"; do setup_project "$project"; done
+}
+
+stage_config() {
+  local diff rc=0 item blocking list
+  # A project cloned just now needs its memory set up, which the doctor could not see.
+  if passes '^(plugins|discord)$' && [[ -z $(lines '^(config|memory)$' WARN) ]] && ((!cloned)); then
+    say "done: this machine's Claude config is the team home's"
+    return
+  fi
+  diff=$(TEAM_HOME=$TEAM_HOME "$bin/team-config" diff --json 2>"$err" </dev/null) || rc=$?
+  if ((rc > 1)) || ! jq -e 'type == "array"' <<<"$diff" >/dev/null 2>&1; then
+    say "team-config diff did not answer: $(grep -m1 . "$err" || echo "exit $rc")" >&2
+    exit 1
+  fi
+  if jq -e 'any(.[]; .item == "plugins")' <<<"$diff" >/dev/null; then
+    say "\`claude plugin list\` does not answer, so no plugin can be installed: see the tools stage's claude line" >&2
+    exit 1
+  fi
+  while IFS= read -r item; do
+    act "claude plugin marketplace add $item"
+    reloaded=1
+  done < <(jq -r '.[] | select(.state == "not added") | .item | ltrimstr("marketplace ")' <<<"$diff")
+  while IFS= read -r item; do
+    act "claude plugin install $item --scope user"
+    reloaded=1
+  done < <(jq -r '.[] | select(.state == "not installed") | .item | ltrimstr("plugin ")' <<<"$diff")
+  # apply replaces what differs here: that is Daniel's call, so it runs only to add what is missing.
+  blocking=$(jq -r '[.[] | select(.state == "differs" and .item != "skill-lock.json") | .item] | join(", ")' <<<"$diff")
+  if [[ -n $blocking ]]; then
+    say "left as it is: $blocking differ$( [[ $blocking == *,* ]] || echo s) here, and whether to apply or capture is Daniel's call"
+  elif jq -e 'any(.[]; .state == "missing" or (.item | startswith("memory ")))' <<<"$diff" >/dev/null; then
+    act "TEAM_HOME=$(printf %q "$TEAM_HOME") $(printf %q "$bin/team-config") apply" "team-config apply"
+    reloaded=1
+  fi
+  # A plugin install turns the plugin on; only the coordinator turns Discord on.
+  list=$(cd / && claude plugin list --json 2>/dev/null </dev/null) || list='[]'
+  if jq -e 'arrays | any(.[]; .id == "discord@claude-plugins-official" and .scope == "user" and .enabled == true)' \
+    <<<"$list" >/dev/null 2>&1; then
+    act "claude plugin disable discord@claude-plugins-official --scope user"
+    reloaded=1
+  fi
+  ((reloaded)) || say "nothing to add: what differs is Daniel's call (the check stage lists it)"
+}
+
+stage_heartbeat() {
+  local check verdict reason fix enabled
+  IFS=$'\t' read -r check verdict reason fix < <(lines '^heartbeat$' 'PASS WARN FAIL') || true
+  # The doctor cannot judge it before the machine has a name; disabled is right then.
+  if [[ $verdict == WARN ]]; then
+    enabled=$(TEAM_HOME=$TEAM_HOME "$bin/team-timers" status --json 2>/dev/null </dev/null | jq -r .enabled) || enabled=''
+    [[ $enabled != false ]] || reason='disabled, and this machine does not hold the lease'
+  fi
+  case $reason in
+    'enabled, but this machine does not hold the lease')
+      act "TEAM_HOME=$(printf %q "$TEAM_HOME") $(printf %q "$bin/team-timers") disable" "team-timers disable"
+      ;;
+    'disabled, and this machine does not hold the lease') say "done: disabled until this machine takes the lease (team-resume enables it)" ;;
+    'enabled, and this machine holds the lease') say "done: $reason" ;;
+    *) say "left as it is: ${reason:-team-doctor has no heartbeat line} (the check stage lists what to do)" ;;
+  esac
+}
+
+stage_check() {
+  local steps=() covered=() check verdict reason fix secrets fails warns passed others
+  ((!changed)) || run_doctor
+  # step <check ERE> <verdicts> [<more>]: one of Daniel's steps per matching line, its fix and <more>.
+  # A missing docker is the packages stage's, and config's missing files are apply's.
+  step() {
+    while IFS=$'\t' read -r check verdict reason fix; do
+      [[ $check != docker || $reason != 'docker is not installed' ]] || continue
+      [[ $check != config || $reason == *differs* || $reason == *'local only'* ]] || continue
+      steps+=("$check: $fix${3:-} ($reason)") covered+=("$check")
+    done < <(lines "$1" "$2")
+  }
+  # Without --name (a dry run with it would have written it).
+  if ! passes '^machine$'; then
+    [[ -n $name ]] ||
+      steps+=("machine: name this machine for the team: team-bootstrap --name <name> (laptop, home-pc: never the hostname)")
+    covered+=(machine)
+    # The lease is read by the machine's name.
+    if lines '^lease$' | grep -qF 'no team name'; then covered+=(lease); fi
+  fi
+  step '^claude login$' FAIL
+  step '^github login$' FAIL ", then gh auth setup-git"
+  step '^docker$' FAIL
+  step '^1password$' WARN
+  secrets=$(lines '^secret ' | cut -f1 | sed 's/^secret //' | paste -sd ' ' -)
+  mapfile -t -O "${#covered[@]}" covered < <(lines '^secret ' | cut -f1)
+  [[ -z $secrets ]] ||
+    steps+=("secrets: with the 1Password app signed in and its CLI integration on, in your own terminal, not through an agent: $(tilde "$bin/team-secrets") restore (missing: $secrets)")
+  step '^trust ' FAIL
+  step '^chrome$' WARN
+  step '^git hooks$' FAIL
+  step '^own settings$' WARN
+  step '^config$' WARN
+  ((!reloaded)) ||
+    steps+=("restart: exit this Claude Code session and run claude again in $(tilde "$TEAM_HOME"), so the new user settings, skills and plugins load")
+  step '^heartbeat$' FAIL
+  local i
+  for i in "${!steps[@]}"; do say "Daniel $((i + 1)): ${steps[i]}"; done
+
+  fails=$(jq '[.[] | select(.verdict == "FAIL")] | length' <<<"$doctor")
+  warns=$(jq '[.[] | select(.verdict == "WARN")] | length' <<<"$doctor")
+  passed=$(jq '[.[] | select(.verdict == "PASS")] | length' <<<"$doctor")
+  say "doctor: $passed pass, $warns warn, $fails fail"
+  jq -r '.[] | select(.verdict != "PASS") | "\(.verdict) \(.check): \(.reason)" + (if .fix != "" then "; fix: \(.fix)" else "" end)' \
+    <<<"$doctor" | sed "s/^/$stage: doctor: /"
+  if ((fails)); then
+    others=$(jq -r '[.[] | select(.verdict == "FAIL" and (.check | IN($ARGS.positional[]) | not)) | .check]
+      | join(", ")' --args "${covered[@]}" <<<"$doctor")
+    if [[ -z $others ]]; then
+      say "summary: not set up yet: only Daniel's steps above are left; then team-bootstrap again"
+    else
+      say "summary: not set up yet: besides Daniel's steps above, these failed: $others; fix them as their doctor lines say, then team-bootstrap again"
+    fi
+    exit 1
+  fi
+  IFS=$'\t' read -r check verdict reason fix < <(lines '^lease$' 'PASS WARN FAIL') || true
+  case $verdict:$reason in
+    PASS:*) say "summary: set up, and this machine holds the lease" ;;
+    WARN:'held by '*)
+      local holder=${reason#held by }
+      say "summary: ready as a standby; team-load-check proves a worker here, and to move the team here say \"hand off\" to the coordinator on ${holder%%,*}, then run team-resume here"
+      ;;
+    *) say "summary: ready; the lease is released, so team-resume here takes the team, with Daniel's yes (team-load-check first proves a worker here)" ;;
+  esac
+}
+
+if [[ -n $only ]]; then
+  [[ $only == preflight ]] || { extend_path && run_doctor; }
+  stage=$only
+  "stage_$only"
+  exit 0
+fi
+stage=preflight
+stage_preflight
+# jq is there from here on.
+extend_path
+run_doctor
+for stage in "${STAGES[@]:1}"; do "stage_$stage"; done

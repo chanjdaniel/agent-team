@@ -4,7 +4,12 @@
 # Usage: team-brief T<n> <template> [--project <name>] [--set key=value]... [--set-file key=path]...
 #                   [--name <suffix>] [--force]
 #   template    one of templates/briefs/: planner-feature, planner-research, builder-ticket,
-#               builder-fix, builder-deliver, reviewer, rereview, retro
+#               builder-fix, builder-deliver, reviewer, rereview, ops, retro, resume (a worker
+#               relaunched on another machine: --set role=, brief= its last brief, from= what it
+#               resumes after, snapshot= what became of the uncommitted changes the handoff found),
+#               resume-crash (one relaunched after its machine crashed: --set role=, brief=,
+#               machine= the machine that crashed, checkpoint= the checkpoint's time, snapshot=
+#               what became of that checkpoint's uncommitted changes)
 #   --project   the project whose worktree the brief is for; required when the task has open
 #               worktrees in two projects
 #   --set       fill the placeholder {{key}} with value; --set-file with the file's text, without
@@ -12,7 +17,8 @@
 #   --name      write tasks/T<n>/brief-<suffix>.md (kebab case) instead of tasks/T<n>/brief.md
 #   --force     replace an existing brief
 # Placeholders are {{key}}. The task's facts fill task, title, path, project, repo, base, branch,
-# worktree, task_dir, plan, thread, team_home and team_bin, from the ledger and projects.toml;
+# worktree, task_dir, plan, thread, team_home, team_bin and local_checks (the project's, each in
+# backticks and joined with ", ", or "none"), from the ledger and projects.toml;
 # paths under $HOME are written ~/..., except team_bin, this checkout's bin/, always absolute
 # because the workers' allow rules name the scripts in it by their full path. In a template,
 # {{> delivery}} stands for the delivery partial of the project's delivery,
@@ -27,7 +33,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 # Templates are code: they come from this checkout, beside bin/.
 briefs=$(dirname "$(dirname "$TEAM_LIB")")/templates/briefs
 usage="usage: team-brief T<n> <template> [--project <name>] [--set key=value]... [--set-file key=path]... [--name <suffix>] [--force]"
-fact_keys=(task title path project repo base branch worktree task_dir plan thread team_home team_bin)
+fact_keys=(task title path project repo base branch worktree task_dir plan thread team_home team_bin local_checks)
 
 positionals=() project='' name='' force=''
 declare -A sets=()
@@ -118,6 +124,7 @@ declare -A values=(
   [plan]=$(tilde "$TEAM_HOME/tasks/$task/plan.md")
   [team_home]=$(tilde "$TEAM_HOME")
   [team_bin]=$(dirname "$TEAM_LIB")
+  [local_checks]=$(jq -r '.local_checks | if . == [] then "none" else map("`\(.)`") | join(", ") end' <<<"$facts")
 )
 thread=$(jq -r 'map(select(.event == "thread")) | last | .discord_thread // empty' <<<"$events")
 [[ -z $thread ]] || values[thread]=$thread

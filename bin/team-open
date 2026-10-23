@@ -3,6 +3,7 @@
 #
 # Usage: team-open [--task T<n>] <project> <path> <type> <slug> <title...>
 #        team-open --task T<n> --add <project> <type> <slug>
+#        team-open --task T<n> --resume <project>
 #   project  a project in projects.toml (team-project --list)
 #   path     feature | bug | small | research | retro (retro marks a retro task for team-retro)
 #   type     the branch prefix: feat | fix | docs | chore | build | ci | test | refactor | perf | research
@@ -24,6 +25,27 @@
 # With --add, gives the open task T<n> a worktree in another project, on <type>/T<n>-<slug>: the
 # same pool steps, then worktree-added, with no plan, thread or opened. Refused for a task with
 # no opened event or with a closed one, and for a project the task already has an open worktree in.
+# With --resume, makes this machine's worktree for the open task T<n>'s open worktree in <project>,
+# as the machine taking the team over does: a worktree of the primary checkout already holding the
+# task's branch (the recorded one, re-rooted to this HOME, first, then a slot), else the recorded
+# slot when it is free (a git pool), else a slot from the pool as above. The branch is made equal
+# to origin's: created from it, or fast-forwarded to it (refused when the worktree holding it has
+# uncommitted changes); a branch here with commits origin's lacks is refused, with the command
+# that pushes them to salvage/T<n>-<machine>. Then the task's archive (tasks/T<n>/scratch, or
+# scratch-<project> for an added project) replaces the task directory, worktree-moved is appended
+# when the worktree is not the recorded one, and the worktree's facts are printed as JSON. For a
+# worktree that resumes from a snapshot (the task crashed: a launch after its latest stowed, or a
+# launch and no stowed, so its machine stopped without a handoff; or its latest stowed recorded
+# the worktree with uncommitted changes, which the handoff's checkpoint kept), or a branch on
+# neither origin nor here, the last checkpoint's wip/T<n> on origin is fetched: the branch head it
+# holds (a clean checkpoint's head, or a snapshot's parent) is the branch's when origin has no
+# branch or it is behind that head. For a worktree that resumes from a snapshot, the snapshot's
+# diff against its parent is then applied to the worktree as uncommitted changes, when that parent
+# is the branch's head and the worktree has no other uncommitted changes; else it is skipped with
+# the reason. Its facts are the JSON's snapshot, {ref, commit, parent, at, applied, reason},
+# parent null for a clean checkpoint's head, null for a worktree that does not resume from one.
+# Needs this machine's name; refused for a task that is not open or has no open worktree in
+# <project>; re-running after a failure finishes it.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
@@ -32,20 +54,25 @@ templates=$(dirname "$bin")/templates
 ledger=$TEAM_HOME/ledger.jsonl
 usage="usage: team-open [--task T<n>] <project> <path> <type> <slug> <title...>"
 add_usage="usage: team-open --task T<n> --add <project> <type> <slug>"
+resume_usage="usage: team-open --task T<n> --resume <project>"
 
-task='' add=''
-while [[ ${1:-} == --task || ${1:-} == --add ]]; do
-  if [[ $1 == --add ]]; then
-    add=1
-    shift
-    continue
-  fi
+task='' add='' resume=''
+while [[ ${1:-} == --task || ${1:-} == --add || ${1:-} == --resume ]]; do
+  case $1 in
+    --add) add=1 && shift && continue ;;
+    --resume) resume=1 && shift && continue ;;
+  esac
   [[ $# -ge 2 ]] || usage_error "$usage"
   task=$2
   shift 2
   [[ $task =~ ^T[1-9][0-9]*$ ]] || usage_error "task must look like T<n>, got '$task'"
 done
-if [[ -n $add ]]; then
+[[ -z $add || -z $resume ]] || usage_error "--add and --resume do not go together"
+if [[ -n $resume ]]; then
+  [[ -n $task ]] || usage_error "--resume needs --task T<n>, the open task whose worktree to make here"
+  [[ $# -eq 1 ]] || usage_error "$resume_usage"
+  project=$1 path='' type='' slug='' title=''
+elif [[ -n $add ]]; then
   [[ -n $task ]] || usage_error "--add needs --task T<n>, the open task to add a worktree to"
   [[ $# -eq 3 ]] || usage_error "$add_usage"
   project=$1 path='' type=$2 slug=$3 title=''
@@ -58,15 +85,18 @@ else
     usage_error "path must be feature, bug, small, research or retro, got '$path'"
   [[ $title =~ [^[:space:]] ]] || usage_error "$usage"
 fi
-[[ $type =~ ^(feat|fix|docs|chore|build|ci|test|refactor|perf|research)$ ]] ||
-  usage_error "type must be feat, fix, docs, chore, build, ci, test, refactor, perf or research, got '$type'"
-[[ $slug =~ ^[a-z0-9]+(-[a-z0-9]+)*$ && ${#slug} -le 40 ]] ||
-  usage_error "slug must be lower-case kebab case of at most 40 characters, got '$slug'"
+if [[ -z $resume ]]; then
+  [[ $type =~ ^(feat|fix|docs|chore|build|ci|test|refactor|perf|research)$ ]] ||
+    usage_error "type must be feat, fix, docs, chore, build, ci, test, refactor, perf or research, got '$type'"
+  [[ $slug =~ ^[a-z0-9]+(-[a-z0-9]+)*$ && ${#slug} -le 40 ]] ||
+    usage_error "slug must be lower-case kebab case of at most 40 characters, got '$slug'"
+fi
 
 # team-project refuses a broken registry itself, with every problem on stderr.
 projects=$(team_project --list)
 grep -qxF -- "$project" <<<"$projects" ||
   usage_error "unknown project '$project'; known: $(jq -Rnr '[inputs] | join(", ")' <<<"$projects")"
+if [[ -n $resume ]]; then machine=$(machine_name) || exit 1; fi
 facts=$(team_project "$project")
 primary=$(jq -r .path <<<"$facts")
 base=$(jq -r .base <<<"$facts")
@@ -82,10 +112,20 @@ if [[ $provider == treehouse ]]; then
 fi
 
 # The task number. Creating tasks/T<n>/ is the claim, so two runs never take the same number.
-# --add claims nothing: its task must be open, with no open worktree in the project yet.
+# --add claims nothing: its task must be open, with no open worktree in the project yet. --resume
+# claims nothing either: its task must be open, with an open worktree in the project, whose
+# branch, recorded path and archive it takes.
 mkdir -p "$TEAM_HOME/tasks"
 claimed=
-if [[ -n $add ]]; then
+if [[ -n $resume ]]; then
+  events=$(open_task_events "$task")
+  open=$(ledger_jq 'archived_worktrees($home) | select(.project == $project)' -c --arg project "$project" <<<"$events")
+  [[ -n $open ]] || die "$task has no open worktree in $project"
+  snapshot_due=$(ledger_jq 'snapshot_due($project)' --arg project "$project" <<<"$events")
+  branch=$(jq -r .branch <<<"$open")
+  recorded=$(jq -r .worktree <<<"$open")
+  archive=tasks/$task/$(jq -r .archive <<<"$open")
+elif [[ -n $add ]]; then
   open_task_events "$task" >/dev/null
   held=$(task_worktrees "$task" | jq -r --arg p "$project" 'select(.project == $p) | "\(.worktree) (\(.branch))"')
   [[ -z $held ]] || die "$task already has an open worktree in $project: $held"
@@ -105,7 +145,7 @@ else
   done
   task=T$n claimed=1
 fi
-branch=$type/$task-$slug
+[[ -n $resume ]] || branch=$type/$task-$slug
 
 # On failure, a slot this run leased and has not yet put on the branch is returned, and a number
 # this run claimed is given back while nothing holds it yet; once a slot holds the task's branch,
@@ -126,7 +166,10 @@ on_exit() {
     [[ -z $claimed ]] || rmdir "$TEAM_HOME/tasks/$task" 2>/dev/null || true
     return 0
   fi
-  if [[ -n $add ]]; then
+  if [[ -n $resume ]]; then
+    echo "team-open: $task's worktree in $project is $worktree, not yet finished; finish it with:" \
+      "team-open --task $task --resume $project" >&2
+  elif [[ -n $add ]]; then
     echo "team-open: $task is half open in $worktree; finish it with:" \
       "team-open --task $task --add $project $type $slug" >&2
   else
@@ -136,7 +179,47 @@ on_exit() {
 }
 trap on_exit EXIT
 
-git -C "$primary" fetch -q origin "$base" || die "cannot fetch $base from origin in $primary"
+# A new branch starts at origin's base; a resumed one is origin's branch, made here when missing.
+if [[ -n $resume ]]; then
+  remote=$(git -C "$primary" ls-remote origin "refs/heads/$branch") || die "cannot reach origin from $primary"
+  remote=${remote%%[[:space:]]*}
+  if [[ -n $remote ]]; then
+    git -C "$primary" fetch -q origin "+refs/heads/$branch:refs/remotes/origin/$branch" ||
+      die "cannot fetch $branch from origin in $primary"
+  fi
+  here=$(git -C "$primary" rev-parse -q --verify "refs/heads/$branch^{commit}") || here=''
+  # The last checkpoint's wip/T<n>, when the worktree resumes from its snapshot (after a crash, or a
+  # handoff that stopped a worker with uncommitted changes) or for a branch that is nowhere else: a
+  # snapshot (its parent is the branch head it saw) or the branch head itself. A head there that
+  # origin's branch lacks, or a branch only there, is where the branch goes: target.
+  wip='' wip_head='' target=$remote target_name="origin's $branch"
+  if [[ $snapshot_due == true || (-z $remote && -z $here) ]]; then
+    wip=$(git -C "$primary" ls-remote origin "refs/heads/wip/$task") || die "cannot reach origin from $primary"
+    wip=${wip%%[[:space:]]*}
+  fi
+  if [[ -n $wip ]]; then
+    git -C "$primary" fetch -q origin "+refs/heads/wip/$task:refs/remotes/origin/wip/$task" ||
+      die "cannot fetch wip/$task from origin in $primary"
+    wip_head=$wip
+    if is_snapshot "$primary" "$wip" "$task"; then wip_head=$(git -C "$primary" rev-parse "$wip^1"); fi
+    if [[ -z $remote ]] ||
+      { [[ $wip_head != "$remote" ]] && git -C "$primary" merge-base --is-ancestor "$remote" "$wip_head"; }; then
+      target=$wip_head target_name="origin's wip/$task"
+      if [[ -z $remote ]]; then
+        echo "team-open: $branch is not on origin; it is taken from wip/$task, at ${wip_head:0:7}" >&2
+      else
+        echo "team-open: wip/$task has commits origin's $branch lacks; $branch is taken from it, at ${wip_head:0:7}" >&2
+      fi
+    fi
+  fi
+  [[ -n $target || -n $here ]] ||
+    die "$branch is neither on origin nor here, so $task's worktree in $project cannot be made here"
+  start=''
+  [[ -n $here ]] || start=$target
+else
+  git -C "$primary" fetch -q origin "$base" || die "cannot fetch $base from origin in $primary"
+  start=origin/$base
+fi
 
 # The primary checkout's registered worktrees: real path -> checked-out branch ("" when detached).
 declare -A holds=()
@@ -161,19 +244,24 @@ list_slots() {
   done
 }
 
-# A git pool: add the first slot that is not a registered worktree, on the branch.
+# A git pool: add the slot given, else the first slot that is not a registered worktree, on the
+# branch: a new one from $start (no upstream), or the existing one when $start is empty.
 take_git_slot() {
-  local slot free=
+  local slot free=${1:-}
   for slot in "${slots[@]}"; do
-    if [[ ! -v holds[$(realpath -m -- "$slot")] ]]; then free=$slot && break; fi
+    if [[ -z $free && ! -v holds[$(realpath -m -- "$slot")] ]]; then free=$slot; fi
   done
   if [[ -z $free ]]; then
     echo "team-open: every slot of $project is taken:" >&2
     list_slots
     exit 75
   fi
-  git -C "$primary" worktree add -q --no-track -b "$branch" "$free" "origin/$base" ||
-    die "cannot add $free as a worktree of $primary"
+  if [[ -n $start ]]; then
+    git -C "$primary" worktree add -q --no-track -b "$branch" "$free" "$start" ||
+      die "cannot add $free as a worktree of $primary"
+  else
+    git -C "$primary" worktree add -q "$free" "$branch" || die "cannot add $free as a worktree of $primary"
+  fi
   worktree=$free added=1
 }
 
@@ -210,12 +298,15 @@ take_treehouse_slot() {
     die "the leased slot $trusted is not clean: ${list%; }"
   fi
 
-  git -C "$trusted" switch -q --no-track -c "$branch" "origin/$base" ||
-    die "cannot switch the leased slot $trusted to $branch"
+  if [[ -n $start ]]; then
+    git -C "$trusted" switch -q --no-track -c "$branch" "$start" || die "cannot switch the leased slot $trusted to $branch"
+  else
+    git -C "$trusted" switch -q "$branch" || die "cannot switch the leased slot $trusted to $branch"
+  fi
   worktree=$trusted added=1 leased=
 }
 
-# Undo take_*_slot for a slot this run took: remove or return it, and drop the branch.
+# Undo take_*_slot for a slot this run took: remove or return it, and drop a new branch.
 release_slot() {
   case $provider in
     git) git -C "$primary" worktree remove --force "$worktree" ;;
@@ -225,15 +316,124 @@ release_slot() {
       leased=$worktree
       ;;
   esac
-  git -C "$primary" branch -q -D "$branch"
+  [[ -n $resume ]] || git -C "$primary" branch -q -D "$branch"
   worktree=
 }
 
-# The slot already holding the task's branch (the resume case), else a slot from the pool.
+# The slot among the pool's that is the path <path>, if any.
+slot_at() {
+  local slot
+  for slot in "${slots[@]}"; do
+    if [[ $(realpath -m -- "$slot") == "$(realpath -m -- "$1")" ]]; then echo "$slot"; fi
+  done
+}
+
+# --resume: the worktree already holding the branch (the recorded one or a slot) is brought up to
+# origin's head, a branch here with commits origin's lacks is refused, and with no worktree holding
+# it, the recorded slot when free, else one from the pool, is put on it.
+resume_slot() {
+  local wt holder='' salvage found=() list
+  for wt in "${!holds[@]}"; do
+    [[ ${holds[$wt]} != "$branch" ]] && continue
+    if [[ $wt == "$(realpath -m -- "$recorded")" ]]; then
+      holder=$recorded
+    else
+      holder=$(slot_at "$wt")
+      [[ -n $holder ]] || die "$branch is checked out in $wt, which is not one of $project's slots"
+    fi
+  done
+  if [[ -n $here && -n $target && $here != "$target" ]] && ! git -C "$primary" merge-base --is-ancestor "$here" "$target"; then
+    salvage="git -C $primary push origin refs/heads/$branch:refs/heads/salvage/$task-$machine"
+    [[ -z $holder ]] || salvage="git -C $holder push origin HEAD:refs/heads/salvage/$task-$machine"
+    die "$branch here has commits that $target_name lacks; save them with: $salvage," \
+      "then make $branch here equal to $target_name and run this again"
+  fi
+  if [[ -n $holder ]]; then
+    if [[ -n $target && $here != "$target" ]]; then
+      mapfile -t found < <(worktree_changes "$holder")
+      if ((${#found[@]})); then
+        list=$(printf '%s; ' "${found[@]}")
+        die "$holder has uncommitted changes (${list%; }) on $branch at ${here:0:7}, which is behind" \
+          "$target_name at ${target:0:7}; save or discard them, then run this again"
+      fi
+      git -C "$holder" merge -q --ff-only "$target" || die "cannot fast-forward $holder to $target_name"
+    fi
+    worktree=$holder
+    return
+  fi
+  if [[ -n $here && -n $target && $here != "$target" ]]; then
+    git -C "$primary" update-ref "refs/heads/$branch" "$target" "$here"
+  fi
+  case $provider in
+    git)
+      if [[ -n $(slot_at "$recorded") && ! -v holds[$(realpath -m -- "$recorded")] ]]; then
+        take_git_slot "$(slot_at "$recorded")"
+      else
+        take_git_slot
+      fi
+      ;;
+    treehouse) take_treehouse_slot ;;
+    *) die "team-open does not take worktrees from a $provider pool" ;;
+  esac
+}
+
+# --resume of a worktree that resumes from a snapshot: the last checkpoint's (wip/T<n>, fetched
+# above) applied to the worktree as uncommitted changes when its parent is the head the branch was
+# made equal to (target), which the worktree is at now, and the worktree has no other uncommitted
+# changes.
+# Sets snapshot to its facts, {ref, commit, parent, at, applied, reason}, parent null when
+# wip/T<n> is the branch head of a clean checkpoint, and says what it did on stderr.
+apply_snapshot() {
+  local ref=wip/$task parent='' at reason='' current patch
+  if [[ -z $wip ]]; then
+    reason="origin has no $ref: no checkpoint saved this task's work"
+    echo "team-open: $ref not applied: $reason" >&2
+    snapshot=$(jq -cn --arg ref "$ref" --arg reason "$reason" \
+      '{ref: $ref, commit: null, parent: null, at: null, applied: false, reason: $reason}')
+    return
+  fi
+  at=$(git -C "$primary" show -s --format=%ct "$wip" | jq -r 'tonumber | todate')
+  current=$(worktree_tree "$worktree") || die "cannot read the changes in $worktree"
+  if [[ $wip_head == "$wip" ]]; then
+    reason="the checkpoint saw no uncommitted changes"
+  else
+    parent=$wip_head
+    if [[ $parent != "$target" ]]; then
+      if git -C "$primary" merge-base --is-ancestor "$parent" "$target"; then
+        reason="$target_name is at ${target:0:7}, past the snapshot's parent ${parent:0:7}"
+      else
+        reason="the snapshot's parent ${parent:0:7} is not on $target_name, which is at ${target:0:7}"
+      fi
+    elif [[ $current == "$(git -C "$primary" rev-parse "$wip^{tree}")" ]]; then
+      echo "team-open: $ref ${wip:0:7} (the checkpoint of $at) is already applied in $worktree" >&2
+    elif [[ $current != "$(git -C "$worktree" rev-parse "HEAD^{tree}")" ]]; then
+      reason="$worktree has uncommitted changes other than the snapshot's, so it is not applied over them"
+    else
+      patch=$(mktemp)
+      git -C "$primary" diff --binary "$parent" "$wip" >"$patch"
+      if ! git -C "$worktree" apply --whitespace=nowarn "$patch"; then
+        rm -f "$patch"
+        die "cannot apply $ref ${wip:0:7} to $worktree"
+      fi
+      rm -f "$patch"
+      echo "team-open: applied $ref ${wip:0:7} (the checkpoint of $at) to $worktree as uncommitted changes" >&2
+    fi
+  fi
+  [[ -z $reason ]] || echo "team-open: $ref ${wip:0:7} not applied: $reason" >&2
+  snapshot=$(jq -cn --arg ref "$ref" --arg commit "$wip" --arg parent "$parent" --arg at "$at" --arg reason "$reason" \
+    '{ref: $ref, commit: $commit, parent: (if $parent == "" then null else $parent end), at: $at,
+      applied: ($reason == ""), reason: (if $reason == "" then null else $reason end)}')
+}
+
+# The slot already holding the task's branch (a half-open task), else a slot from the pool.
 added=
-for slot in "${slots[@]}"; do
-  if [[ ${holds[$(realpath -m -- "$slot")]-} == "$branch" ]]; then worktree=$slot; fi
-done
+if [[ -n $resume ]]; then
+  resume_slot
+else
+  for slot in "${slots[@]}"; do
+    if [[ ${holds[$(realpath -m -- "$slot")]-} == "$branch" ]]; then worktree=$slot; fi
+  done
+fi
 if [[ -z $worktree ]]; then
   for wt in "${!holds[@]}"; do
     [[ ${holds[$wt]} != "$branch" ]] || die "$branch is checked out in $wt, which is not one of $project's slots"
@@ -246,7 +446,7 @@ if [[ -z $worktree ]]; then
     *) die "team-open does not take worktrees from a $provider pool" ;;
   esac
 fi
-base_sha=$(git -C "$worktree" merge-base HEAD "origin/$base")
+[[ -n $resume ]] || base_sha=$(git -C "$worktree" merge-base HEAD "origin/$base")
 
 # The task directory must never be committed: refuse a project whose git does not ignore it.
 mkdir -p "$worktree/$task_dir"
@@ -255,7 +455,35 @@ if ! git -C "$worktree" check-ignore -q -- "$task_dir"; then
   die "git does not ignore $task_dir in $project; add it to the project's .gitignore first"
 fi
 
-if [[ -n $add ]]; then
+if [[ -n $resume ]]; then
+  # The archive is the task directory as the last checkpoint or handoff left it, wherever it was.
+  restored=null
+  if [[ -d $TEAM_HOME/$archive ]]; then
+    rsync -a --delete -- "$TEAM_HOME/$archive/" "$worktree/$task_dir/" ||
+      die "cannot mirror $archive into $worktree/$task_dir"
+    restored=$(jq -n --arg a "$archive" '$a')
+  else
+    echo "team-open: $task has no archive at $archive; $worktree/$task_dir is left as it is" >&2
+  fi
+  snapshot=null
+  [[ $snapshot_due != true ]] || apply_snapshot
+  moved=false
+  if [[ $(realpath -m -- "$worktree") != "$(realpath -m -- "$recorded")" ]]; then
+    moved=true
+    ledger_append "$(jq -cn --arg task "$task" --arg project "$project" --arg branch "$branch" --arg from "$recorded" \
+      --arg worktree "$worktree" --arg machine "$machine" \
+      '{ts: (now | todate), task: $task, event: "worktree-moved", project: $project, branch: $branch,
+        from: $from, worktree: $worktree, machine: $machine}')"
+  fi
+
+  jq -n --arg task "$task" --arg project "$project" --arg branch "$branch" --arg worktree "$worktree" \
+    --arg task_dir "$worktree/$task_dir" --arg head "$(git -C "$worktree" rev-parse HEAD)" --arg from "$recorded" \
+    --argjson moved "$moved" --argjson archive "$restored" --argjson snapshot "$snapshot" \
+    '{task: $task, project: $project, branch: $branch, worktree: $worktree, task_dir: $task_dir, head: $head,
+      from: $from, moved: $moved, archive: $archive, snapshot: $snapshot}'
+  # The overlap with other tasks was judged when this one opened.
+  exit 0
+elif [[ -n $add ]]; then
   ledger_append "$(jq -cn --arg task "$task" --arg project "$project" --arg branch "$branch" --arg base "$base" \
     --arg base_sha "$base_sha" --arg worktree "$worktree" \
     '{ts: (now | todate), task: $task, event: "worktree-added", project: $project, branch: $branch,
@@ -290,7 +518,7 @@ fi
 # Overlap between tasks is the coordinator's judgment: show the project's other open tasks.
 others=$(ledger_jq 'ledger_events as $events
   | ($events | by_task | with_entries(select(.value | is_open))) as $open
-  | open_worktrees($events[] | select($open[.task]))
+  | open_worktrees($events[] | select($open[.task]); $home)
   | select(.project == $project and .task != $task)
   | ($open[.task] | map(select(.event == "opened")) | first | .title) as $title
   | "  \(.task) \(.branch) in \(.worktree)\(if $title then ": \($title)" else "" end)"' \

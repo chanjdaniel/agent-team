@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Drive bin/team-bootstrap on a fresh machine as the setup SOP's agent would, for the Bootstrap
+# workflow's jobs: run it with no terminal; when it stops for a step needing sudo, play Daniel by
+# running that stage in a pseudo-terminal (script), where the runner's sudo asks no password; end
+# at the first step only Daniel can take, then print the bootstrap's log.
+#
+# Usage: tests/bootstrap-drill <machine name>
+# Exit 0 when the bootstrap ends at a step of Daniel's or set up, 1 when it failed on its own.
+set -euo pipefail
+
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+[[ $# -eq 1 ]] || { echo "usage: tests/bootstrap-drill <machine name>" >&2; exit 2; }
+out=$(mktemp)
+trap 'rm -f "$out"' EXIT
+
+for round in 1 2 3 4; do
+  echo "== round $round: team-bootstrap, as the agent runs it"
+  "$root/bin/team-bootstrap" --name "$1" </dev/null | tee "$out" || true
+  last=$(tail -n 1 "$out")
+  [[ $last =~ ^[a-z]+:\ Daniel:\ in\ your\ own\ terminal\ run\ .*--stage\ ([a-z]+), ]] || break
+  echo "== Daniel's terminal: team-bootstrap --stage ${BASH_REMATCH[1]}"
+  if [[ $(uname -s) == Darwin ]]; then
+    script -q /dev/null "$root/bin/team-bootstrap" --stage "${BASH_REMATCH[1]}"
+  else
+    script -qec "$root/bin/team-bootstrap --stage ${BASH_REMATCH[1]}" /dev/null
+  fi
+done
+
+echo "== the installers' log"
+tail -n 200 "$HOME/.local/state/agent-team/bootstrap.log" 2>/dev/null || true
+echo "== it ended with: $last"
+[[ $last =~ ^[a-z]+:\ (Daniel|summary): ]]

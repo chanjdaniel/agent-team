@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "prod-write": {
+      "command": "node",
+      "args": ["@TEAM_HOME@/toolkits/prod-write/scripts/start-server.mjs"]
+    }
+  }
+}

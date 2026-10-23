@@ -132,9 +132,14 @@ Task directory: `.scratch/task/` in the worktree (excluded from git), for your s
 
 ## Deliver through no-mistakes
 
-1. Run `/no-mistakes` with this intent: "T12: rate-limit the applicant sign-in endpoints (per address and per IP, Mongo TTL counters, 429 with Retry-After), so Conventioner cannot be used to flood addresses with sign-in codes or to guess codes."
-2. The PR must target `dev`; if the gate opens it against another branch, retarget it to `dev` and close any duplicate.
-3. When the gate returns checks-passed, send `T12 PR <full url>` to `coordinator`.
+1. Bring the branch up to date with the base: `git fetch origin`; if `git merge-base --is-ancestor origin/dev HEAD` fails, merge `origin/dev` with a merge commit (`git merge origin/dev`, never a rebase), resolve any conflict and re-run what the conflicts touched.
+   A conflict whose resolution is a judgment call on behaviour goes to `coordinator` as `T12 QUESTION <the conflict> | options: ...`.
+2. Run `/no-mistakes` with this intent: "T12: rate-limit the applicant sign-in endpoints (per address and per IP, Mongo TTL counters, 429 with Retry-After), so Conventioner cannot be used to flood addresses with sign-in codes or to guess codes."
+3. The PR must target `dev`; if the gate opens it against another branch, retarget it to `dev` and close any duplicate.
+4. When the gate returns checks-passed, repeat step 1; if it merged anything, go back to step 2, so every required check passes on the new head.
+5. Then send `T12 PR <full url>` to `coordinator`.
+
+Never run a command that needs `sudo`; send `T12 BLOCKED <the command> needs sudo` to `coordinator` instead.
 
 ## Rules
 
@@ -152,7 +157,7 @@ EOF
 
 @test "every real template renders for each delivery with no placeholder left and no em dash" {
   assert_equal "$(templates | paste -sd ' ')" \
-    "builder-deliver builder-fix builder-ticket planner-feature planner-research rereview retro reviewer"
+    "builder-deliver builder-fix builder-ticket ops planner-feature planner-research rereview resume resume-crash retro reviewer"
   open_t12
   open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
   local task template keys sets key brief
@@ -199,6 +204,104 @@ EOF
   assert_contains "$(<"$brief")" 'Send `T31 DONE .work/task/report.md` to `coordinator`.'
 }
 
+@test "the resume brief sends a relaunched worker to its last brief, the handoff note and the branch" {
+  open_t12
+  run_bin -0 team-brief --help
+  assert_contains "$output" "rereview, ops, retro, resume (a worker"
+  run_bin -1 team-brief T12 resume --name resume-builder --set role=builder \
+    --set "brief=~/agent-team/tasks/T12/brief.md" --set "from=the handoff from home-pc at 2026-10-23T14:05:00Z"
+  assert_contains "$output" "snapshot"
+  run_bin -0 team-brief T12 resume --name resume-builder --set role=builder \
+    --set "brief=~/agent-team/tasks/T12/brief.md" --set "from=the handoff from home-pc at 2026-10-23T14:05:00Z" \
+    --set "snapshot=applied as uncommitted changes in your worktree"
+  local brief
+  brief=$(<"$output")
+  assert_equal "$(head -n 1 <<<"$brief")" "# T12 brief (builder): resume rate-limit the applicant sign-in endpoints"
+  assert_contains "$brief" "you are the builder, resuming the task after the handoff from home-pc at 2026-10-23T14:05:00Z."
+  assert_contains "$brief" "Worktree: \`~/.treehouse/Conventioner-d4c77a/4/Conventioner\`, branch \`fix/T12-applicant-sign-in-rate-limit\`"
+  assert_contains "$brief" "1. Read your brief \`~/agent-team/tasks/T12/brief.md\`"
+  assert_contains "$brief" "2. Then \`.scratch/task/handoff.md\` if it exists"
+  assert_contains "$brief" "The uncommitted changes the handoff found in the worktree: applied as uncommitted changes in your worktree."
+  assert_contains "$brief" "3. Check the branch: \`git status\`, \`git diff\`, and \`git log origin/dev..HEAD\`"
+}
+
+@test "the crash resume brief names the checkpoint, what may be missing, and sends the worker to check first" {
+  open_t12
+  run_bin -0 team-brief --help
+  assert_contains "$output" "resume-crash (one relaunched after its machine crashed:"
+  run_bin -0 team-brief T12 resume-crash --name resume-builder --set role=builder \
+    --set "brief=~/agent-team/tasks/T12/brief.md" --set machine=home-pc --set checkpoint=2026-10-23T13:45:00Z \
+    --set "snapshot=applied as uncommitted changes in your worktree"
+  local brief
+  brief=$(<"$output")
+  assert_equal "$(head -n 1 <<<"$brief")" "# T12 brief (builder): resume rate-limit the applicant sign-in endpoints after a crash"
+  assert_contains "$brief" "you are the builder, resuming the task from the checkpoint of 2026-10-23T13:45:00Z: home-pc stopped without a handoff."
+  assert_contains "$brief" "Worktree: \`~/.treehouse/Conventioner-d4c77a/4/Conventioner\`, branch \`fix/T12-applicant-sign-in-rate-limit\`"
+  assert_contains "$brief" "Up to 15 minutes of work before home-pc stopped may be missing, and so may any no-mistakes run that was in flight"
+  assert_contains "$brief" "The uncommitted changes of that checkpoint: applied as uncommitted changes in your worktree."
+  assert_contains "$brief" "Check before you build on any of it."
+  assert_contains "$brief" "1. Read your brief \`~/agent-team/tasks/T12/brief.md\`"
+  assert_contains "$brief" "3. Check what is here against what your brief, the tickets and the build notes say is done: \`git status\`, \`git diff\` and \`git log origin/dev..HEAD\`"
+}
+
+@test "each delivery brings the branch up to date with the base before reporting, and never uses sudo" {
+  open_t12
+  open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
+  local task base brief
+  for task in T12:dev T14:main; do
+    base=${task#*:} task=${task%:*}
+    run_bin -0 team-brief "$task" builder-deliver --set "goal=the goal"
+    brief=$(<"$output")
+    assert_contains "$brief" "if \`git merge-base --is-ancestor origin/$base HEAD\` fails, merge \`origin/$base\` with a merge commit (\`git merge origin/$base\`, never a rebase)"
+    assert_contains "$brief" "goes to \`coordinator\` as \`$task QUESTION <the conflict> | options: ...\`"
+    assert_contains "$brief" "epeat step 1; if it merged anything"
+    assert_contains "$brief" "so every required check passes on the new head."
+    assert_contains "$brief" "Never run a command that needs \`sudo\`; send \`$task BLOCKED <the command> needs sudo\` to \`coordinator\` instead."
+    # The up-to-date check replaced the old refusal when the base moved.
+    [[ $brief != *"merge-tree"* && $brief != *"moved:"* ]]
+  done
+}
+
+@test "an ops brief quotes Daniel's request, links it, and says personal details are never part of the answer" {
+  open_task T30 conv research research/T30-ops-market-phases .treehouse/Conventioner-d4c77a/3/Conventioner \
+    "markets per phase"
+  printf -- '- `docs/implementation/data/`\n- `docs/schema.d.ts`\n' >"$BATS_TEST_TMPDIR/docs.md"
+  run_bin -0 team-brief T30 ops --set request='how many markets are in each phase?' \
+    --set request_link=https://discord.com/channels/1/2/3 \
+    --set-file data_docs="$BATS_TEST_TMPDIR/docs.md"
+  assert_equal "$(<"$TEAM_HOME/tasks/T30/brief.md")" "$(
+    cat <<'EOF'
+# T30 brief (ops): markets per phase
+
+Path: research; you are the ops agent, on the one production request below.
+Project: conv (`chanjdaniel/Conventioner`).
+Worktree: `~/.treehouse/Conventioner-d4c77a/3/Conventioner`, branch `research/T30-ops-market-phases`.
+Task directory: `.scratch/task/` in the worktree (excluded from git), for an answer too long for one message.
+
+## The request
+
+Daniel asked, in https://discord.com/channels/1/2/3:
+
+> how many markets are in each phase?
+
+Personal details are never part of your answer, whatever the request asks: answer with counts, ids and states (your role says why).
+
+## Read first
+
+- `docs/implementation/data/`
+- `docs/schema.d.ts`
+
+## Report
+
+Write the answer to `.scratch/answer.md`, then send `T30 DONE <answer>` to `coordinator`.
+EOF
+  )"
+  # An answer with personal details has no path: the brief has no placeholder to ask for one.
+  run_bin -1 team-brief T30 ops --set request='every vendor email' --set request_link=https://discord.com/channels/1/2/4 \
+    --set personal=yes --set-file data_docs="$BATS_TEST_TMPDIR/docs.md" --name brief-ops-2
+  assert_contains "$output" "no placeholder in ops uses: personal"
+}
+
 @test "no template repeats a rule from roles/" {
   local file sentence
   # The rules only the role files carry: attribution, denials, the gate's own rules, merging.
@@ -228,6 +331,7 @@ plan={{plan}}
 thread={{thread}}
 team_home={{team_home}}
 team_bin={{team_bin}}
+local_checks={{local_checks}}
 EOF
   open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling & more"
   run_fake T14 facts
@@ -244,7 +348,8 @@ task_dir=.work/task
 plan=~/agent-team/tasks/T14/plan.md
 thread=1563000000000000012
 team_home=~/agent-team
-team_bin=$code/bin"
+team_bin=$code/bin
+local_checks=none"
 }
 
 @test "team_bin is this checkout's bin/, absolute even under HOME, as the allow rules name it" {
@@ -439,4 +544,28 @@ after"
   run_bin -2 team-brief T12 builder-fix --project
   assert_contains "$output" "--project needs a value"
   assert_equal "$(task_files)" ""
+}
+
+@test "a project's local checks reach the builder's delivery, the review and the rereview" {
+  sed -i '/^\[home\]$/,/^\[home.pool\]$/s|^toolkits = \[\]$|toolkits = []\nlocal_checks = ["tests/run", "make lint"]|' \
+    "$TEAM_HOME/projects.toml"
+  open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
+  open_t12
+  local brief
+  run_bin -0 team-brief T14 builder-deliver --set "goal=the goal"
+  brief=$(<"$output")
+  assert_contains "$brief" "2. Run each of the project's local checks (\`tests/run\`, \`make lint\`) from the worktree's root on the head you push"
+  assert_contains "$brief" "then a line naming the local checks that passed and the head they passed on."
+  run_bin -0 team-brief T14 reviewer --name review --set pr=https://github.com/chanjdaniel/agent-team/pull/9 \
+    --set head=abc1234 --set "checks=the checks"
+  brief=$(<"$output")
+  assert_contains "$brief" "- Local checks: \`tests/run\`, \`make lint\`."
+  assert_contains "$brief" "Run each from the worktree's root on \`abc1234\` and say in \`.work/task/review.md\` whether it passed"
+  run_bin -0 team-brief T14 rereview --name rereview --set pr=https://github.com/chanjdaniel/agent-team/pull/9 \
+    --set head=def5678 --set reviewed=abc1234 --set "since=the last review"
+  assert_contains "$(<"$output")" "3. Run each of the project's local checks (\`tests/run\`, \`make lint\`) from the worktree's root on \`def5678\`"
+  # A project without local checks says so.
+  run_bin -0 team-brief T12 reviewer --name review --set pr=https://github.com/chanjdaniel/Conventioner/pull/9 \
+    --set head=abc1234 --set "checks=the checks"
+  assert_contains "$(<"$output")" "- Local checks: none."
 }

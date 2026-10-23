@@ -155,6 +155,58 @@ rm 4f2a9c1e archive:2 worktrees:2"
   assert_contains "$output" "closed"
 }
 
+# rehome_ledger <home>: the ledger as another machine with home <home> wrote it, its recorded
+# worktree paths under that home instead of this HOME.
+rehome_ledger() {
+  jq -c --arg home "$HOME" --arg other "$1" \
+    'if (.worktree // "" | startswith("\($home)/")) then .worktree |= $other + .[($home | length):] else . end' \
+    "$TEAM_HOME/ledger.jsonl" >"$BATS_TEST_TMPDIR/ledger"
+  cp "$BATS_TEST_TMPDIR/ledger" "$TEAM_HOME/ledger.jsonl"
+}
+
+@test "a task whose worktree was recorded under another home closes this machine's slot" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  local slot=${home_slots[0]}
+  # The task was opened on another machine, whose home is /home/someone.
+  rehome_ledger /home/someone
+  assert_equal "$(events opened | jq -r .worktree)" "/home/someone/slots/home/1"
+  launch T1 builder 4f2a9c1e /Users/someone/slots/home/1
+  sessions "$(session 4f2a9c1e T1-builder idle)"
+  echo "spec" >"$slot/.scratch/task/spec.md"
+  work_and_push "$slot" feature.txt
+
+  run_bin -0 --separate-stderr team-close T1
+  assert_equal "$(jq -c .returned <<<"$output")" "$(jq -cn --arg wt "$slot" '[$wt]')"
+  assert_equal "$(cat "$TEAM_HOME/tasks/T1/scratch/spec.md")" "spec"
+  [[ ! -e $slot ]]
+  assert_equal "$(events worktree-returned | jq -r .worktree)" "$slot"
+  assert_equal "$(events opened | jq -r .worktree)" "/home/someone/slots/home/1"
+  run_bin -0 team-log --check
+}
+
+@test "a task whose worktree moved on another machine's resume closes the slot it moved to" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  rehome_ledger /home/someone
+  local slot=${home_slots[1]}
+  # This machine's resume found the recorded slot taken and moved the task to the next one.
+  git -C "$home" worktree move "${home_slots[0]}" "$slot"
+  ledger_line --arg wt "$slot" '{ts: "2026-10-22T02:00:00Z", task: "T1", event: "worktree-moved", project: "home",
+    branch: "feat/T1-work", from: "/home/someone/slots/home/1", worktree: $wt, machine: "laptop"}'
+  echo "spec" >"$slot/.scratch/task/spec.md"
+  work_and_push "$slot" feature.txt
+
+  run_bin -0 --separate-stderr team-close T1
+  assert_equal "$(jq -c .returned <<<"$output")" "$(jq -cn --arg wt "$slot" '[$wt]')"
+  assert_equal "$(cat "$TEAM_HOME/tasks/T1/scratch/spec.md")" "spec"
+  [[ ! -e $slot ]]
+  assert_equal "$(events worktree-returned | jq -r .worktree)" "$slot"
+  run_bin -0 team-log --check
+  stub_reply claude "[]"
+  run_bin -0 team-state T1 --json
+  assert_equal "$(jq -c .worktrees <<<"$output")" "$(jq -cn --arg wt "$slot" \
+    '[{project: "home", branch: "feat/T1-work", worktree: $wt, returned: true}]')"
+}
+
 # open_home_task: T1 open in the first home slot with a builder launched and live, its task
 # directory holding a spec; remembers the ledger so assert_unchanged can compare.
 open_home_task() {
@@ -431,10 +483,48 @@ $conv_wt"
   run_bin -0 team-log --check
 }
 
+@test "the task's wip/T<n> snapshots are deleted on each project's origin once its worktrees are returned" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  run_bin -0 team-open --task T1 --add conv feat move
+  run_bin -0 team-open home feature feat other "Other work"
+  local home_wt=${home_slots[0]} conv_wt=${conv_slots[0]}
+  work_and_push "$home_wt" feature.txt
+  work_and_push "$conv_wt" move.txt
+  # team-checkpoint's snapshots: T1 on home's origin alone (conv has none, which is fine), and
+  # T2's, which stays.
+  git -C "$home_wt" push -q origin HEAD:refs/heads/wip/T1
+  git -C "${home_slots[1]}" push -q origin HEAD:refs/heads/wip/T2
+  # The order: home's wip/T1 is still on origin when the last slot goes back.
+  echo 'git -C "$BATS_TEST_TMPDIR/origin/home.git" for-each-ref --format="%(refname)" refs/heads/wip/T1 >>"$BATS_TEST_TMPDIR/wip-at-return"' \
+    >>"$conv/scripts/th-return.sh"
+
+  run_bin -0 --separate-stderr team-close T1
+  local home_origin=$BATS_TEST_TMPDIR/origin/home.git conv_origin=$BATS_TEST_TMPDIR/origin/conv.git
+  assert_equal "$(git -C "$home_origin" for-each-ref --format='%(refname)' 'refs/heads/wip/*')" "refs/heads/wip/T2"
+  assert_equal "$(git -C "$conv_origin" for-each-ref --format='%(refname)' 'refs/heads/wip/*')" ""
+  assert_equal "$(cat "$BATS_TEST_TMPDIR/wip-at-return")" "refs/heads/wip/T1"
+}
+
+@test "a wip/T<n> that cannot be deleted is reported, and the close still finishes" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  local slot=${home_slots[0]}
+  work_and_push "$slot" feature.txt
+  git -C "$slot" push -q origin HEAD:refs/heads/wip/T1
+  # The origin refuses every ref update from here on.
+  printf '#!/bin/sh\nexit 1\n' >"$BATS_TEST_TMPDIR/origin/home.git/hooks/pre-receive"
+  chmod +x "$BATS_TEST_TMPDIR/origin/home.git/hooks/pre-receive"
+
+  run_bin -0 --separate-stderr team-close T1
+  assert_contains "$stderr" "team-close: cannot delete wip/T1 on home's origin"
+  assert_contains "$stderr" "delete it by hand: git -C $home push origin --delete wip/T1"
+  assert_equal "$(events closed | jq -r .event)" "closed"
+}
+
 @test "a treehouse return that leaves the slot on its branch stops the close half way" {
   run_bin -0 team-open conv feature feat move "Move it"
   local slot=${conv_slots[0]}
   work_and_push "$slot" move.txt
+  # treehouse 2: a dirty slot is left leased, and the return exits 0.
   cat >"$conv/scripts/th-return.sh" <<'SH'
 #!/usr/bin/env bash
 echo "Worktree has uncommitted changes. Clean and return? [Y/n] Aborted."
@@ -444,6 +534,20 @@ SH
   assert_contains "$output" "did not return $slot: it is still on a branch"
   assert_contains "$output" "T1 is half closed; fix the cause above and run team-close T1 again"
   assert_equal "$(events worktree-returned)$(events closed)" ""
+
+  # treehouse 3 (the pin): the same slot is left leased, and the return exits 3, as th-return.sh
+  # passes treehouse's status on under set -e.
+  cat >"$conv/scripts/th-return.sh" <<'SH'
+#!/usr/bin/env bash
+echo "Worktree has uncommitted changes. Clean and return? [Y/n] 🌳 worktree not returned: it has uncommitted changes and the confirmation could not be answered (stdin reached EOF)" >&2
+exit 3
+SH
+  run_bin -1 team-close T1
+  assert_contains "$output" "worktree not returned: it has uncommitted changes"
+  assert_contains "$output" "scripts/th-return.sh failed for $slot"
+  assert_contains "$output" "T1 is half closed; fix the cause above and run team-close T1 again"
+  assert_equal "$(events worktree-returned)$(events closed)" ""
+  git -C "$slot" symbolic-ref -q HEAD
 }
 
 @test "a missing or empty task directory is reported and nothing is archived from it" {
@@ -527,6 +631,16 @@ legacy_task() {
     '{task: "T5", event: "closed", archive: ["tasks/T5/scratch"], returned: [$wt], kept: [], note: "legacy"}')"
   assert_equal "$(claude_actions)" '["rm","bcc8f165"]
 ["rm","99cb9d02"]'
+}
+
+@test "a legacy task's --worktree matches a launch recorded under another home" {
+  local slot=${home_slots[1]}
+  legacy_task "$slot" feat/T5-sign-in-limits
+  rehome_ledger /Users/someone
+
+  run_bin -0 team-close T5 --worktree "$slot"
+  [[ ! -e $slot ]]
+  assert_equal "$(events worktree-returned | jq -r .worktree)" "$slot"
 }
 
 @test "a legacy task's --worktree with an uncommitted change is refused like any other" {

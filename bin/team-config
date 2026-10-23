@@ -1,0 +1,514 @@
+#!/usr/bin/env bash
+# Keep this machine's Claude user config and the team home's machine/claude/ in step, by copies.
+#
+# machine/claude/ in the team home (a record, like the ledger) holds what every machine shares:
+#   CLAUDE.md, AGENTS.md, settings.json  ~/.claude/ files of the same names; settings.json without
+#                                         the settings each machine keeps for itself (OWN_SETTINGS:
+#                                         autoMode.environment, which describes this machine to
+#                                         auto mode's classifier), compared as JSON with its keys
+#                                         sorted
+#   skills/<name>/                        ~/.claude/skills/<name>/: every user skill but synced/
+#                                         (claude.ai's, downloaded after login); a skill that is a
+#                                         symlink here is compared, captured and backed up as the
+#                                         folder it points at
+#   skill-lock.json                       ~/.agents/.skill-lock.json, the skills CLI's record of
+#                                         where each skill came from: diffed and captured, never
+#                                         applied, since the skills it names are vendored above
+#   plugins.txt                           `marketplace <source>` and `plugin <id>` lines (# starts
+#                                         a comment): user-scope plugins and their marketplaces,
+#                                         read against `claude plugin list --json` and
+#                                         `claude plugin marketplace list --json`; installed by
+#                                         the bootstrap, not by apply
+# memory/<project>/ in the team home holds each registered project's auto memory, so every machine
+# and every worktree of the project shares it: for each project whose primary checkout is here, its
+# .claude/settings.local.json sets autoMemoryDirectory to it (as ~/... when the team home is under
+# HOME), git ignores that file, and nothing is left in the folder Claude Code used before,
+# ~/.claude/projects/<key>/memory/ (<key> the checkout's real path with every character but letters
+# and digits as "-", as Claude Code names it). memory/ is committed by team-checkpoint and
+# team-handoff, never here.
+#
+# Usage: team-config diff [--full] [--json] | apply | capture | own [--json]
+#   diff     One line per difference, and exit 1 when there is any:
+#              settings.json differs           (or missing here, or local only)
+#              skill tdd missing               (or differs, or local only)
+#              skill-lock.json differs
+#              marketplace anthropics/claude-plugins-official not added
+#              plugin mongodb-atlas@claude-plugins-official not installed
+#              plugin X@Y not in plugins.txt   (installed here only)
+#              plugins unreadable              (`claude plugin list` failed)
+#              memory conv setting missing     (or setting points to <value>)
+#              memory conv settings.local.json not ignored by git
+#                                              (or tracked by git, or not JSON)
+#              memory conv notes left in ~/.claude/projects/<key>/memory/
+#            --full adds a unified diff, the team home's side first, under each text that differs;
+#            --json prints one array of {item, state} instead of the lines.
+#   apply    Installs a copy of each file and skill that differs or is missing here, first moving
+#            whatever it replaces to ~/.claude/backups/team-config-<UTC time>/ (made only when
+#            something is replaced). A skill that exists only here is left alone (diff lists it).
+#            The settings.json it installs keeps this machine's own settings.
+#            Then, per project, it merges autoMemoryDirectory into settings.local.json, adds that
+#            file to the repository's .git/info/exclude unless git ignores it already, and moves
+#            every note of the old folder into memory/<project>/, keeping the newer file on a
+#            clash (the other goes to the backup folder) and leaving the old folder empty. A
+#            project whose settings.local.json is not JSON or is tracked by git is left as it is
+#            (exit 1). Applying twice changes nothing the second time.
+#   capture  Copies into machine/claude/ each file and skill that differs here or exists only
+#            here (settings.json without this machine's own settings), and adds to plugins.txt the
+#            user-scope plugins and marketplaces it lacks; one line per change. Nothing is
+#            removed, and committing is the caller's. What may hold a secret is left to Daniel,
+#            uncaptured, with a line on stderr and exit 1 once the rest is captured: a
+#            settings.json with an env key ("settings.json left to Daniel: it has an env key, which
+#            may hold a secret"), or a skill folder holding a dotenv-like file (.env*, *.pem,
+#            *.key).
+#   own      Each of this machine's own settings and whether it is set here
+#            ("autoMode.environment set" or "... unset"); --json prints [{setting, set}].
+# Nothing else of ~/.claude is read or copied: not ~/.claude.json, the credentials file, the
+# channels' tokens or the transcripts; of ~/.claude/projects/, only the memory folders.
+# Exit 0 done (diff: no difference), 1 a difference or a refusal, 2 usage error.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+usage="usage: team-config diff [--full] [--json] | apply | capture | own [--json]"
+[[ $# -ge 1 ]] || usage_error "$usage"
+command=$1
+shift
+full=0 json=0
+case $command in
+  diff)
+    for arg in "$@"; do
+      case $arg in
+        --full) full=1 ;;
+        --json) json=1 ;;
+        *) usage_error "$usage" ;;
+      esac
+    done
+    ;;
+  apply | capture) [[ $# -eq 0 ]] || usage_error "$usage" ;;
+  own)
+    [[ $# -eq 0 || ($# -eq 1 && $1 == --json) ]] || usage_error "$usage"
+    [[ $# -eq 0 ]] || json=1
+    ;;
+  *) usage_error "$usage" ;;
+esac
+
+shared=$TEAM_HOME/machine/claude
+claude_dir=$HOME/.claude
+lock=$HOME/.agents/.skill-lock.json
+FILES=(CLAUDE.md AGENTS.md settings.json)
+# The settings each machine keeps for itself, as jq paths: never shared, never captured, and kept
+# by apply.
+OWN_SETTINGS='[["autoMode", "environment"]]'
+# A settings object without them, and without an object they leave empty.
+STRIP='reduce $own[] as $p (.; delpaths([$p])
+  | if ($p | length) > 1 and getpath($p[:-1]) == {} then delpaths([$p[:-1]]) else . end)'
+if [[ $command == diff || $command == apply ]] && [[ ! -d $shared ]]; then
+  die "no machine/claude/ in $TEAM_HOME; run team-config capture on the machine whose config the team shares"
+fi
+
+# The registered projects whose primary checkout is on this machine, in registry order: their
+# names in PROJECTS and their checkouts in CHECKOUTS. No registry, no project.
+PROJECTS=() CHECKOUTS=()
+if [[ ($command == diff || $command == apply) && -e $TEAM_HOME/projects.toml ]]; then
+  names=$(team_project --list) || exit 1
+  while IFS= read -r name; do
+    checkout=$(team_project "$name" path) || exit 1
+    [[ -d $checkout ]] || continue
+    PROJECTS+=("$name")
+    CHECKOUTS+=("$checkout")
+  done <<<"$names"
+fi
+
+# The state of a file or folder here against the team home's: same, differs, missing (here) or
+# local only, or nothing when neither exists: compare <team home's> <here>
+compare() {
+  if [[ -e $1 && -e $2 ]]; then
+    if diff -rq -- "$1" "$2" >/dev/null 2>&1; then echo same; else echo differs; fi
+  elif [[ -e $1 ]]; then
+    echo missing
+  elif [[ -e $2 ]]; then
+    echo local only
+  fi
+}
+
+# A settings file as diff compares it: without this machine's own settings, keys sorted; nothing
+# when it is not JSON: settings_view <file>
+settings_view() {
+  jq -S --argjson own "$OWN_SETTINGS" "$STRIP" "$1" 2>/dev/null || true
+}
+
+# compare for settings.json: compare_settings <team home's> <here>
+compare_settings() {
+  if [[ -e $1 && -e $2 ]]; then
+    if cmp -s <(settings_view "$1") <(settings_view "$2"); then echo same; else echo differs; fi
+  else
+    compare "$1" "$2"
+  fi
+}
+
+# The skills of a folder, one name per line: every folder (or symlink to one) but synced/ and
+# hidden ones: skills_in <dir>
+skills_in() {
+  local path name
+  for path in "$1"/*; do
+    name=${path##*/}
+    [[ -d $path && $name != synced ]] || continue
+    printf '%s\n' "$name"
+  done
+}
+
+# The plugins.txt lines of one kind, one value per line: listed <marketplace|plugin>
+listed() {
+  [[ -f $shared/plugins.txt ]] || return 0
+  awk -v kind="$1" '!/^[[:space:]]*(#|$)/ && $1 == kind { print $2 }' "$shared/plugins.txt"
+}
+
+# Ask claude for the user-scope plugins and the marketplaces, one per line in $installed and
+# $marketplaces; false when it does not answer.
+read_plugins() {
+  local out
+  out=$(claude plugin list --json 2>/dev/null </dev/null) &&
+    installed=$(jq -r '.[] | select(.scope == "user") | .id' <<<"$out" 2>/dev/null) &&
+    out=$(claude plugin marketplace list --json 2>/dev/null </dev/null) &&
+    marketplaces=$(jq -r '.[] | .repo // .url // .path // .name' <<<"$out" 2>/dev/null)
+}
+
+# Every difference as "<item>\t<state>", one per line, in a fixed order.
+differences() {
+  local name state
+  for name in "${FILES[@]}"; do
+    if [[ $name == settings.json ]]; then
+      state=$(compare_settings "$shared/$name" "$claude_dir/$name")
+    else
+      state=$(compare "$shared/$name" "$claude_dir/$name")
+    fi
+    [[ -z $state || $state == same ]] || printf '%s\t%s\n' "$name" "$state"
+  done
+  while IFS= read -r name; do
+    state=$(compare "$shared/skills/$name" "$claude_dir/skills/$name")
+    [[ $state == same ]] || printf 'skill %s\t%s\n' "$name" "$state"
+  done < <({ skills_in "$shared/skills"; skills_in "$claude_dir/skills"; } | LC_ALL=C sort -u)
+  # The lock is provenance: only a lock here that is not the team home's is a difference.
+  state=$(compare "$shared/skill-lock.json" "$lock")
+  [[ $state != differs && $state != 'local only' ]] || printf 'skill-lock.json\t%s\n' "$state"
+
+  local installed='' marketplaces=''
+  if ! read_plugins; then
+    printf 'plugins\tunreadable\n'
+    return 0
+  fi
+  while IFS= read -r name; do
+    grep -qxF -- "$name" <<<"$marketplaces" || printf 'marketplace %s\tnot added\n' "$name"
+  done < <(listed marketplace)
+  while IFS= read -r name; do
+    grep -qxF -- "$name" <<<"$installed" || printf 'plugin %s\tnot installed\n' "$name"
+  done < <(listed plugin)
+  while IFS= read -r name; do
+    [[ -z $name ]] || listed marketplace | grep -qxF -- "$name" ||
+      printf 'marketplace %s\tnot in plugins.txt\n' "$name"
+  done <<<"$marketplaces"
+  while IFS= read -r name; do
+    [[ -z $name ]] || listed plugin | grep -qxF -- "$name" || printf 'plugin %s\tnot in plugins.txt\n' "$name"
+  done <<<"$installed"
+}
+
+# The team home's path and this machine's path of a file item: paths_of <item>
+paths_of() {
+  case $1 in
+    skill-lock.json) printf '%s\n' "$shared/skill-lock.json" "$lock" ;;
+    'skill '*) printf '%s\n' "$shared/skills/${1#skill }" "$claude_dir/skills/${1#skill }" ;;
+    *) printf '%s\n' "$shared/$1" "$claude_dir/$1" ;;
+  esac
+}
+
+# A project's memory folder in the team home, as its autoMemoryDirectory names it:
+# memory_setting <project>
+memory_setting() {
+  local dir=$TEAM_HOME/memory/$1
+  [[ $dir != "$HOME"/* ]] || dir=\~/${dir#"$HOME"/}
+  printf '%s\n' "$dir"
+}
+
+# The autoMemoryDirectory of a settings.local.json, "" when it has none or does not exist; false
+# when it is not a JSON object: memory_value <file>
+memory_value() {
+  [[ -e $1 ]] || return 0
+  jq -rs 'if length == 0 then "" elif length == 1 and (.[0] | type) == "object"
+    then .[0].autoMemoryDirectory // "" else error end' "$1" 2>/dev/null
+}
+
+# Whether an autoMemoryDirectory value names a project's memory folder in the team home, as
+# ~/... or as an absolute path: memory_points_home <value> <project>
+memory_points_home() {
+  local dir=$1
+  [[ $dir != \~/* ]] || dir=$HOME/${dir#\~/}
+  [[ ${dir%/} == "$TEAM_HOME/memory/$2" || $1 == "$(memory_setting "$2")" ]]
+}
+
+# How git sees a checkout's .claude/settings.local.json: ignored, tracked, shown, or nothing when
+# the checkout is not a git work tree: local_settings_git <checkout>
+local_settings_git() {
+  git -C "$1" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  if git -C "$1" ls-files --error-unmatch -- .claude/settings.local.json >/dev/null 2>&1; then
+    echo tracked
+  elif git -C "$1" check-ignore -q -- .claude/settings.local.json; then
+    echo ignored
+  else
+    echo shown
+  fi
+}
+
+# The folder Claude Code keeps a checkout's auto memory in without autoMemoryDirectory, or nothing
+# when there is none: ~/.claude/projects/<key>/memory. A key longer than 200 characters is cut
+# there and suffixed with a hash of Claude Code's own, so it is found by its first 200:
+# old_memory <checkout>
+old_memory() {
+  local key dir
+  key=$(realpath -- "$1" | sed 's/[^A-Za-z0-9]/-/g')
+  if ((${#key} <= 200)); then
+    [[ ! -d $claude_dir/projects/$key/memory ]] || printf '%s\n' "$claude_dir/projects/$key/memory"
+    return 0
+  fi
+  for dir in "$claude_dir/projects/${key:0:200}"-*/memory; do
+    [[ ! -d $dir ]] || { printf '%s\n' "$dir"; return 0; }
+  done
+}
+
+# The notes of an old memory folder, NUL-separated and sorted: every entry but folders.
+old_notes() {
+  [[ -z $1 ]] || find "$1" -mindepth 1 ! -type d -print0 | LC_ALL=C sort -z
+}
+
+# Every way a project's auto memory is not set up here, as "memory <project>\t<state>" lines.
+memory_differences() {
+  local i name checkout value old
+  for i in "${!PROJECTS[@]}"; do
+    name=${PROJECTS[i]} checkout=${CHECKOUTS[i]}
+    if ! value=$(memory_value "$checkout/.claude/settings.local.json"); then
+      printf 'memory %s\tsettings.local.json not JSON\n' "$name"
+    elif [[ -z $value ]]; then
+      printf 'memory %s\tsetting missing\n' "$name"
+    elif ! memory_points_home "$value" "$name"; then
+      printf 'memory %s\tsetting points to %s\n' "$name" "$value"
+    fi
+    case $(local_settings_git "$checkout") in
+      tracked) printf 'memory %s\tsettings.local.json tracked by git\n' "$name" ;;
+      shown) printf 'memory %s\tsettings.local.json not ignored by git\n' "$name" ;;
+    esac
+    old=$(old_memory "$checkout")
+    if [[ -n $(old_notes "$old" | tr -d '\0') ]]; then
+      printf 'memory %s\tnotes left in %s/\n' "$name" "${old/#"$HOME"/\~}"
+    fi
+  done
+}
+
+# Name this apply's backup folder in $backup, on first use.
+start_backup() {
+  [[ -z $backup ]] || return 0
+  local stamp n=1
+  stamp=$(date -u +%Y%m%dT%H%M%SZ)
+  backup=$claude_dir/backups/team-config-$stamp
+  while [[ -e $backup ]]; do backup=$claude_dir/backups/team-config-$stamp-$((++n)); done
+}
+
+# Set up each project's auto memory (apply's second half); sets changed, and failed on a project
+# it leaves as it is.
+apply_memory() {
+  local i name checkout settings value old note target rel loser exclude n
+  for i in "${!PROJECTS[@]}"; do
+    name=${PROJECTS[i]} checkout=${CHECKOUTS[i]}
+    settings=$checkout/.claude/settings.local.json
+    if ! value=$(memory_value "$settings"); then
+      echo "team-config: $settings is not JSON, so $name's memory is left where it is" >&2
+      failed=1
+      continue
+    fi
+    case $(local_settings_git "$checkout") in
+      tracked)
+        echo "team-config: $settings is tracked by git, so $name's memory is left where it is" >&2
+        failed=1
+        continue
+        ;;
+      shown)
+        exclude=$(cd "$checkout" && realpath -m -- "$(git rev-parse --git-path info/exclude)")
+        mkdir -p "$(dirname "$exclude")"
+        echo /.claude/settings.local.json >>"$exclude"
+        echo "memory $name: .claude/settings.local.json excluded from git"
+        changed=1
+        ;;
+    esac
+    if [[ -z $value ]] || ! memory_points_home "$value" "$name"; then
+      mkdir -p "$checkout/.claude"
+      if [[ -e $settings ]]; then
+        jq -s --arg dir "$(memory_setting "$name")" '(.[0] // {}) + {autoMemoryDirectory: $dir}' \
+          "$settings" >"$settings.new"
+        mv -- "$settings.new" "$settings"
+      else
+        jq -n --arg dir "$(memory_setting "$name")" '{autoMemoryDirectory: $dir}' >"$settings"
+      fi
+      echo "memory $name: autoMemoryDirectory set${value:+ (was $value)}"
+      changed=1
+    fi
+    old=$(old_memory "$checkout") n=0
+    while IFS= read -r -d '' note; do
+      rel=${note#"$old"/}
+      target=$TEAM_HOME/memory/$name/$rel
+      mkdir -p "$(dirname "$target")"
+      if [[ -e $target ]] && ! cmp -s -- "$note" "$target"; then
+        # Both have it: the newer stays, the other goes to the backup folder.
+        if [[ $note -nt $target ]]; then loser=$target; else loser=$note; fi
+        start_backup
+        mkdir -p "$backup/memory/$name/$(dirname "$rel")"
+        mv -f -- "$loser" "$backup/memory/$name/$rel"
+      fi
+      if [[ -e $note ]]; then mv -f -- "$note" "$target"; fi
+      n=$((n + 1))
+    done < <(old_notes "$old")
+    if ((n)); then
+      find "$old" -mindepth 1 -type d -empty -delete
+      echo "memory $name: moved $n note$( ((n == 1)) || echo s) from ${old/#"$HOME"/\~}/"
+      changed=1
+    fi
+  done
+}
+
+do_diff() {
+  local list item state ours theirs
+  list=$(differences; memory_differences)
+  if ((json)); then
+    jq -Rn '[inputs | select(length > 0) | split("\t") | {item: .[0], state: .[1]}]' <<<"$list"
+  else
+    while IFS=$'\t' read -r item state; do
+      [[ -n $item ]] || continue
+      printf '%s %s\n' "$item" "$state"
+      if ((full)) && [[ $state == differs ]]; then
+        { read -r ours; read -r theirs; } < <(paths_of "$item")
+        if [[ $item == settings.json ]]; then
+          diff -u --label "$ours" --label "$theirs" <(settings_view "$ours") <(settings_view "$theirs") || true
+        else
+          diff -ruN -- "$ours" "$theirs" || true
+        fi
+      fi
+    done <<<"$list"
+  fi
+  [[ -z $list ]]
+}
+
+do_apply() {
+  local item state ours theirs backup='' changed=0 failed=0
+  # Global, so the EXIT trap still sees it.
+  settings=$(mktemp)
+  trap 'rm -f "$settings"' EXIT
+  while IFS=$'\t' read -r item state; do
+    [[ $state == differs || $state == missing ]] || continue
+    case $item in skill-lock.json | plugin* | marketplace*) continue ;; esac
+    { read -r ours; read -r theirs; } < <(paths_of "$item")
+    if [[ $item == settings.json ]]; then
+      # The team home's settings, with this machine's own ones where it has them.
+      jq --argjson own "$OWN_SETTINGS" --slurpfile here "$theirs" 'reduce $own[] as $p (.;
+        ($here[0] | getpath($p)) as $v | if $v == null then . else setpath($p; $v) end)' \
+        "$ours" >"$settings" 2>/dev/null || cp -- "$ours" "$settings"
+      ours=$settings
+    fi
+    if [[ -e $theirs ]]; then
+      start_backup
+      mkdir -p "$(dirname "$backup/${theirs#"$claude_dir"/}")"
+      cp -RL -- "$theirs" "$backup/${theirs#"$claude_dir"/}"
+    fi
+    rm -rf -- "$theirs"
+    mkdir -p "$(dirname "$theirs")"
+    cp -R -- "$ours" "$theirs"
+    if [[ $state == missing ]]; then echo "installed $item"; else echo "replaced $item"; fi
+    changed=1
+  done < <(differences)
+  apply_memory
+  if ((!changed)); then
+    echo "nothing to apply"
+  elif [[ -n $backup ]]; then
+    echo "what it replaced is in ${backup/#"$HOME"/\~}/"
+  fi
+  return "$failed"
+}
+
+# Why <item>, at <path> here, may hold a secret, or nothing: a settings.json with an env key
+# beside this machine's own settings, or a skill folder holding a dotenv-like file.
+# capture_risk <item> <path>
+capture_risk() {
+  local files
+  if [[ $1 == settings.json ]] &&
+    jq -e --argjson own "$OWN_SETTINGS" "$STRIP | objects | has(\"env\")" "$2" >/dev/null 2>&1; then
+    echo "it has an env key, which may hold a secret"
+  elif [[ $1 == 'skill '* ]]; then
+    files=$(find -L "$2" -type f \( -name '.env*' -o -name '*.pem' -o -name '*.key' \) -printf '%P\n' | sort | paste -sd ' ')
+    [[ -z $files ]] || echo "it holds $files, which may hold a secret"
+  fi
+}
+
+do_capture() {
+  local item state ours theirs risk changed=0 plugins_changed=0 failed=0
+  local -a marketplaces plugins
+  mkdir -p "$shared/skills"
+  mapfile -t marketplaces < <(listed marketplace)
+  mapfile -t plugins < <(listed plugin)
+  while IFS=$'\t' read -r item state; do
+    case $item in
+      plugins)
+        echo "team-config: \`claude plugin list\` did not answer, so plugins.txt is unchanged" >&2
+        failed=1
+        ;;
+      'marketplace '* | 'plugin '*)
+        [[ $state == 'not in plugins.txt' ]] || continue
+        if [[ $item == marketplace* ]]; then
+          marketplaces+=("${item#marketplace }")
+        else
+          plugins+=("${item#plugin }")
+        fi
+        echo "captured $item"
+        changed=1 plugins_changed=1
+        ;;
+      *)
+        [[ $state == differs || $state == 'local only' ]] || continue
+        { read -r ours; read -r theirs; } < <(paths_of "$item")
+        risk=$(capture_risk "$item" "$theirs")
+        if [[ -n $risk ]]; then
+          echo "team-config: $item left to Daniel: $risk" >&2
+          failed=1
+          continue
+        fi
+        if [[ $item == settings.json ]]; then
+          jq --argjson own "$OWN_SETTINGS" "$STRIP" "$theirs" >"$ours.new" ||
+            { rm -f "$ours.new"; die "$claude_dir/settings.json is not JSON, so it is not captured"; }
+          mv -- "$ours.new" "$ours"
+        else
+          rm -rf -- "$ours"
+          cp -RL -- "$theirs" "$ours"
+        fi
+        if [[ $state == differs ]]; then echo "captured $item"; else echo "captured $item (new)"; fi
+        changed=1
+        ;;
+    esac
+  done < <(differences)
+  if ((plugins_changed)); then
+    {
+      echo "# User-scope plugins every machine installs, and their marketplaces (team-config)."
+      ((${#marketplaces[@]} == 0)) || printf 'marketplace %s\n' "${marketplaces[@]}"
+      ((${#plugins[@]} == 0)) || printf 'plugin %s\n' "${plugins[@]}"
+    } >"$shared/plugins.txt"
+  fi
+  ((changed)) || echo "nothing to capture"
+  return "$failed"
+}
+
+do_own() {
+  local here=$claude_dir/settings.json out
+  [[ -e $here ]] || here=/dev/null
+  out=$(jq -n --argjson own "$OWN_SETTINGS" --slurpfile here "$here" \
+    '[$own[] as $p | {setting: ($p | join(".")), set: ((($here[0] // {}) | getpath($p)) != null)}]' 2>/dev/null) ||
+    die "$claude_dir/settings.json is not JSON"
+  if ((json)); then
+    printf '%s\n' "$out"
+  else
+    jq -r '.[] | "\(.setting) \(if .set then "set" else "unset" end)"' <<<"$out"
+  fi
+}
+
+"do_$command"

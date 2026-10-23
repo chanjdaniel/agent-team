@@ -108,6 +108,29 @@ phase_of() {
   assert_equal "$(stub_calls gh)" ""
 }
 
+@test "worktrees recorded under another home show as the same paths under this HOME" {
+  event T14 opened '{project: "proj", path: "feature", type: "feat", title: "The tooling",
+    branch: "feat/T14-tooling", base: "main", base_sha: "0123456", worktree: "/home/someone/slots/proj/1"}'
+  event T14 launch '{role: "builder", session: "59709d99", worktree: "/home/someone/slots/proj/1", toolkits: []}'
+  event T14 worktree-added '{project: "conv", branch: "feat/T14-x", base: "dev", base_sha: "89abcde",
+    worktree: "/Users/someone/slots/conv/2"}'
+  event T14 worktree-returned '{project: "conv", worktree: "/home/other/slots/conv/2"}'
+  event T14 worktree-added '{project: "tmp", branch: "feat/T14-y", base: "dev", base_sha: "89abcde", worktree: "/tmp/y"}'
+  cp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before"
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c '[.worktrees[] | [.worktree, .returned]], [.workers[].worktree]' <<<"$output")" \
+    "$(jq -cn --arg home "$HOME" '[["\($home)/slots/proj/1", false], ["\($home)/slots/conv/2", true], ["/tmp/y", false]],
+      ["\($home)/slots/proj/1"]')"
+  cmp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before"
+}
+
+@test "a legacy task's launches recorded under another home show as paths under this HOME" {
+  ledger_line '{ts: "2026-10-01T00:00:00Z", task: "T4", event: "launch", role: "builder", session: "59709d99",
+    worktree: "/home/danielc/agent-team/.claude/worktrees/1"}'
+  run_bin -0 team-state T4 --json
+  assert_equal "$(jq -r '.workers[].worktree' <<<"$output")" "$HOME/agent-team/.claude/worktrees/1"
+}
+
 @test "a legacy task with no opened event has no title, project or worktrees" {
   fixture_ledger T4 3
   run_bin -0 team-state T4 --json
@@ -344,7 +367,8 @@ EOF
 }
 
 @test "a legacy PR's repo comes from its URL, and its project's required checks from the registry" {
-  cp "$REPO_ROOT/projects.toml" "$TEAM_HOME/projects.toml"
+  # The real registry, with required checks for the team home (it has none under CI policy B).
+  sed 's/^required_checks = \[\]$/required_checks = ["shellcheck", "test"]/' "$REPO_ROOT/projects.toml" >"$TEAM_HOME/projects.toml"
   fixture_ledger T5 22
   stub_github '{"number": 4, "state": "MERGED", "baseRefName": "dev", "headRefOid": "3a66af1c99"}' \
     '[{"name": "shellcheck", "bucket": "pass", "state": "SUCCESS"}]' '[]'

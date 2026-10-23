@@ -4,11 +4,33 @@
     "mongodb-atlas@claude-plugins-official": false
   },
   "crossSessionInbound": "accept",
+  "isolatePeerMachines": true,
   "permissions": {
     "deny": [
       "Bash(gh pr merge*)",
       "Bash(gh-axi pr merge*)",
       "Bash(gh api*pulls/*/merge*)",
+      "Bash(op *)",
+      "Bash(* op *)",
+      "Bash(*op read*)",
+      "Bash(*op run*)",
+      "Bash(*op item*)",
+      "Bash(*op document*)",
+      "Bash(*start-server.mjs*)",
+      "Bash(*mongodb-mcp*)",
+      "Bash(*--plugin-dir*prod-*)",
+      "Bash(*--mcp-config*prod-*)",
+      "Bash(*/proc/*/environ*)",
+      "Read(//proc/**)",
+      "Bash(sudo)",
+      "Bash(sudo *)",
+      "Bash(*team-lease*--steal*)",
+      "Bash(*team-resume*--steal*)",
+      "Bash(git push * lease)",
+      "Bash(git push * lease *)",
+      "Bash(git push *:lease)",
+      "Bash(git push *:lease *)",
+      "Bash(git push *refs/heads/lease*)",
       "Bash(git * --no-verify)",
       "Bash(git * --no-verify *)",
       "Bash(git commit -n*)",
@@ -29,6 +51,16 @@
     "Stop": [
       {
         "hooks": [{ "type": "command", "command": "\"@TEAM_HOME@/bin/hooks/stop-sweep\"" }]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "mcp__plugin_discord_discord__reply|mcp__plugin_discord_discord__react|mcp__plugin_discord_discord__edit_message",
+        "hooks": [{ "type": "command", "command": "\"@TEAM_HOME@/bin/hooks/lease-fence\"" }]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [{ "type": "command", "command": "\"@TEAM_HOME@/bin/hooks/lease-fence\" --coordinator" }]
       }
     ]
   }

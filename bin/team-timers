@@ -1,0 +1,645 @@
+#!/usr/bin/env bash
+# Run the heartbeat on the lease holder: one job every 5 minutes running `team-timers run`.
+#
+# The job is generated from one definition here, written under the user's own unit directories,
+# and runs this checkout's bin/team-timers run with the TEAM_HOME and PATH enable ran with:
+#   Linux  systemd user units ~/.config/systemd/user/agent-team-heartbeat.{service,timer}, the
+#          timer at OnCalendar=*:0/5 with Persistent=true, so a run missed in sleep or power-off
+#          happens on wake or boot.
+#   macOS  LaunchAgents in ~/Library/LaunchAgents: agent-team.heartbeat, at minutes 0, 5, ..., 55
+#          of every hour (StartCalendarInterval, which launchd runs on wake when missed in sleep),
+#          and agent-team.caffeinate, `caffeinate -i` kept alive, so this Mac does not idle-sleep
+#          while the heartbeat is enabled.
+#
+# Usage: team-timers enable | disable | status [--json] | run | watch
+#   enable   Installs the job and starts it (and caffeinate on macOS). A job already installed
+#            as defined and running is left alone; one that differs is rewritten and reloaded.
+#            Only on the machine that holds the lease, and only with Daniel's yes.
+#   disable  Stops and removes the job (and caffeinate). Nothing installed is fine.
+#   status   installed, enabled (every job of this OS loaded and running) and the last run, the
+#            time of the heartbeat log's last line; --json prints them as one object.
+#   run      What the job runs, each step one line in the heartbeat log (and on stdout):
+#              fence  On a fenced machine, team-timers disable, and nothing else.
+#              probe  git ls-remote of origin's lease branch, at most 20 s. A network failure
+#                     (name resolution, connect, timeout, TLS, HTTP 5xx) is tried again once
+#                     after 60 s; a second one is offline. GitHub refusing the login (HTTP 401
+#                     or 403, a credential it cannot ask for, an ssh key it denies, a repository
+#                     it will not show) is not offline: it is logged, posted once to
+#                     #coordinator ("GitHub refuses home-pc's login ...") and the run exits 1.
+#                     Offline on the machine whose record says it holds the lease: the offline
+#                     flag is written with the first failure's time, and one post is tried
+#                     ("GitHub unreachable since 13:05 on home-pc; holding the team"); while the
+#                     flag stays, a run only logs, and the lease is not touched (exit 75).
+#              back   The first probe that answers while the flag exists: team-lease renew at
+#                     once; renewed, the flag goes and #coordinator is told "GitHub back at
+#                     13:40 (unreachable from 13:05); resuming T5, T8" (the tasks with a live
+#                     worker), after the outage post when that one failed; a machine another
+#                     took the lease from meanwhile is fenced by the renew instead, and posts
+#                     nothing.
+#              lease  team-lease status; on the holder, team-lease renew once the last renewal is
+#                     15 minutes old (less a minute for the timer's slack); on a machine that lost
+#                     the lease, team-lease renew at once, which fences it (stops its team
+#                     sessions and disables this heartbeat); otherwise nothing.
+#              checkpoint  On the holder, after the lease or back step: team-checkpoint, which
+#                     makes one once the last is 15 minutes old (less the same minute), one log
+#                     line per line it prints.
+#            A run that finds another still going skips. Posts go through discord_api; times in
+#            them are this machine's local time.
+#   watch    For the coordinator's Monitor, which wakes it while idle: checks the offline flag
+#            every 60 s until killed, and prints one line when it appears (at once if it is there)
+#            and one when it goes:
+#              GitHub unreachable since 2026-10-23T13:05:00Z; the team is holding
+#              GitHub answers again (unreachable from 2026-10-23T13:05:00Z); the hold is over
+# In ~/.local/state/agent-team/: heartbeat.log ("<UTC time> <step>: <what happened>", kept to its
+# last 1000 lines once it passes 2000), heartbeat.lock (one run at a time), offline ({since,
+# posted}: GitHub unreachable since the UTC time, and whether #coordinator was told; read by
+# team-lease status, the fence hook and the doctor), login-refused ({since, reason}: the refusal
+# was posted), and on macOS heartbeat.err, the job's stderr (systemd keeps it in the journal).
+# Exit 0 done, 1 refused or a step failed, 2 usage error, 75 GitHub unreachable.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+# The one definition: every INTERVAL minutes, run this checkout's team-timers run.
+INTERVAL=5
+RENEW_MINUTES=15
+# The timer may start a run up to a minute after its mark (systemd's AccuracySec).
+SLACK_SECONDS=60
+# Seconds: the most one probe of origin may take, the wait before trying a failed one again, and
+# the most one Discord post may take.
+PROBE_TIMEOUT=20
+RETRY_SECONDS=60
+POST_TIMEOUT=20
+# Seconds between the watch's looks at the offline flag.
+WATCH_SECONDS=60
+LOG_KEEP=1000
+LOG_MAX=2000
+SERVICE=agent-team-heartbeat
+HEARTBEAT_LABEL=agent-team.heartbeat
+CAFFEINATE_LABEL=agent-team.caffeinate
+
+usage="usage: team-timers enable | disable | status [--json] | run | watch"
+command=${1:-} json=0
+case $command in
+  enable | disable | run | watch) [[ $# -eq 1 ]] || usage_error "$usage" ;;
+  status) [[ $# -eq 1 || ($# -eq 2 && $2 == --json) ]] || usage_error "$usage" ;;
+  *) usage_error "$usage" ;;
+esac
+[[ ${2:-} != --json ]] || json=1
+
+bin=$(dirname "$TEAM_LIB")
+program=$bin/team-timers
+state=$HOME/.local/state/agent-team
+log=$state/heartbeat.log
+offline=$state/offline
+refused=$state/login-refused
+units=$HOME/.config/systemd/user
+agents=$HOME/Library/LaunchAgents
+domain=gui/$(id -u)
+err=$(mktemp)
+trap 'rm -f "$err"' EXIT
+
+# The service manager of this OS: systemd or launchd.
+manager() {
+  local kernel
+  kernel=$(uname -s)
+  case $kernel in
+    Linux) echo systemd ;;
+    Darwin) echo launchd ;;
+    *) die "$kernel has neither systemd nor launchd; the heartbeat runs on Linux or macOS" ;;
+  esac
+}
+
+# Refuse values a unit or plist would need escaped, so what is written is what runs: every value
+# the job carries is checked before it is generated.
+check_plain() {
+  local value
+  for value in "$@"; do
+    [[ $value != *[%\"\\\&\<\>$'\n']* ]] ||
+      die "cannot write the heartbeat's job: '$value' holds one of % \" \\ & < > or a newline"
+  done
+}
+
+systemd_service() {
+  cat <<EOF
+# Written by team-timers enable; team-timers disable removes it.
+[Unit]
+Description=agent-team heartbeat (team-timers run)
+
+[Service]
+Type=oneshot
+Environment="TEAM_HOME=$TEAM_HOME"
+Environment="PATH=$PATH"
+ExecStart="$program" run
+EOF
+}
+
+systemd_timer() {
+  cat <<EOF
+# Written by team-timers enable; team-timers disable removes it.
+[Unit]
+Description=agent-team heartbeat every $INTERVAL minutes
+
+[Timer]
+OnCalendar=*:0/$INTERVAL
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+}
+
+# The start of a plist for <label>, up to its Label.
+plist_head() {
+  cat <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Written by team-timers enable; team-timers disable removes it. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$1</string>
+EOF
+}
+
+heartbeat_plist() {
+  local minute
+  plist_head "$HEARTBEAT_LABEL"
+  cat <<EOF
+  <key>ProgramArguments</key>
+  <array>
+    <string>$program</string>
+    <string>run</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>TEAM_HOME</key>
+    <string>$TEAM_HOME</string>
+    <key>PATH</key>
+    <string>$PATH</string>
+  </dict>
+  <key>StandardErrorPath</key>
+  <string>$state/heartbeat.err</string>
+  <key>StartCalendarInterval</key>
+  <array>
+EOF
+  for ((minute = 0; minute < 60; minute += INTERVAL)); do
+    printf '    <dict>\n      <key>Minute</key>\n      <integer>%s</integer>\n    </dict>\n' "$minute"
+  done
+  printf '  </array>\n</dict>\n</plist>\n'
+}
+
+caffeinate_plist() {
+  plist_head "$CAFFEINATE_LABEL"
+  cat <<'EOF'
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/caffeinate</string>
+    <string>-i</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+</dict>
+</plist>
+EOF
+}
+
+# The plist of <label>.
+plist_of() {
+  case $1 in
+    "$HEARTBEAT_LABEL") heartbeat_plist ;;
+    "$CAFFEINATE_LABEL") caffeinate_plist ;;
+  esac
+}
+
+# Write <content> to <file> unless it already holds exactly that; fails (1) when it did.
+write_if_changed() {
+  if [[ -f $2 ]] && [[ $(cat "$2") == "$1" ]]; then return 1; fi
+  mkdir -p "${2%/*}"
+  printf '%s\n' "$1" >"$2.$$"
+  mv -f "$2.$$" "$2"
+}
+
+timer_running() {
+  systemctl --user is-enabled --quiet "$SERVICE.timer" 2>/dev/null &&
+    systemctl --user is-active --quiet "$SERVICE.timer" 2>/dev/null
+}
+
+loaded() {
+  launchctl print "$domain/$1" >/dev/null 2>&1
+}
+
+enable_systemd() {
+  local changed=0 running=0
+  write_if_changed "$(systemd_service)" "$units/$SERVICE.service" && changed=1
+  write_if_changed "$(systemd_timer)" "$units/$SERVICE.timer" && changed=1
+  ! timer_running || running=1
+  if ((!changed && running)); then
+    echo "the heartbeat is already enabled: $SERVICE.timer"
+    return
+  fi
+  ((!changed)) || systemctl --user daemon-reload
+  systemctl --user enable --now "$SERVICE.timer"
+  # A running timer keeps its old schedule until it is restarted.
+  ((!changed || !running)) || systemctl --user restart "$SERVICE.timer"
+  echo "the heartbeat is enabled: $SERVICE.timer runs $program run every $INTERVAL minutes"
+}
+
+enable_launchd() {
+  local label plist changed done=()
+  for label in "$HEARTBEAT_LABEL" "$CAFFEINATE_LABEL"; do
+    plist=$agents/$label.plist changed=0
+    write_if_changed "$(plist_of "$label")" "$plist" && changed=1
+    if loaded "$label"; then
+      ((changed)) || continue
+      launchctl bootout "$domain/$label"
+    fi
+    launchctl bootstrap "$domain" "$plist"
+    done+=("$label")
+  done
+  if ((${#done[@]} == 0)); then
+    echo "the heartbeat is already enabled: $HEARTBEAT_LABEL, $CAFFEINATE_LABEL"
+    return
+  fi
+  echo "the heartbeat is enabled: $HEARTBEAT_LABEL runs $program run every $INTERVAL minutes," \
+    "and $CAFFEINATE_LABEL keeps this Mac awake while it is enabled"
+}
+
+disable_systemd() {
+  if [[ ! -f $units/$SERVICE.timer && ! -f $units/$SERVICE.service ]]; then
+    echo "the heartbeat is not installed; nothing to disable"
+    return
+  fi
+  [[ ! -f $units/$SERVICE.timer ]] || systemctl --user disable --now "$SERVICE.timer"
+  rm -f "$units/$SERVICE.timer" "$units/$SERVICE.service"
+  systemctl --user daemon-reload
+  echo "the heartbeat is disabled: $SERVICE.timer stopped and removed"
+}
+
+disable_launchd() {
+  local label found=0
+  for label in "$HEARTBEAT_LABEL" "$CAFFEINATE_LABEL"; do
+    if loaded "$label"; then
+      launchctl bootout "$domain/$label"
+      found=1
+    fi
+    [[ ! -f $agents/$label.plist ]] || { rm -f "$agents/$label.plist"; found=1; }
+  done
+  if ((found)); then
+    echo "the heartbeat is disabled: $HEARTBEAT_LABEL, $CAFFEINATE_LABEL stopped and removed"
+  else
+    echo "the heartbeat is not installed; nothing to disable"
+  fi
+}
+
+status() {
+  local installed=false enabled=false last=null line
+  if [[ $mgr == systemd ]]; then
+    [[ ! -f $units/$SERVICE.service || ! -f $units/$SERVICE.timer ]] || installed=true
+    ! timer_running || enabled=true
+  else
+    [[ ! -f $agents/$HEARTBEAT_LABEL.plist || ! -f $agents/$CAFFEINATE_LABEL.plist ]] || installed=true
+    ! { loaded "$HEARTBEAT_LABEL" && loaded "$CAFFEINATE_LABEL"; } || enabled=true
+  fi
+  if [[ -s $log ]]; then
+    line=$(tail -n 1 "$log")
+    [[ ! ${line%% *} =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z$ ]] || last=\"${line%% *}\"
+  fi
+  if ((json)); then
+    jq -n --argjson installed "$installed" --argjson enabled "$enabled" --argjson last "$last" \
+      '{installed: $installed, enabled: $enabled, last_run: $last}'
+  else
+    printf 'installed: %s\nenabled: %s\nlast run: %s\n' "$(yes_no "$installed")" "$(yes_no "$enabled")" \
+      "$(jq -r '. // "never"' <<<"$last")"
+  fi
+}
+
+yes_no() {
+  if [[ $1 == true ]]; then echo yes; else echo no; fi
+}
+
+# One line of the heartbeat log, also on stdout: log <step> <what happened>
+log() {
+  local line
+  line="$(date -u +%FT%TZ) $1: $2"
+  printf '%s\n' "$line" >>"$log"
+  printf '%s\n' "$line"
+}
+
+# The first line a sibling command wrote to stderr (in $err), without its "<script>: " prefix.
+first_error() {
+  local line
+  line=$(grep -m1 . "$err" || true)
+  printf '%s\n' "${line#team-*: }"
+}
+
+# A sibling command of this checkout, with TEAM_HOME passed and the run's lock closed for it.
+team() {
+  TEAM_HOME=$TEAM_HOME "$bin/$1" "${@:2}" {run_fd}>&-
+}
+
+# The fence step: a fenced machine turns its heartbeat off and does nothing else; fails when it
+# is not fenced.
+fence_step() {
+  local why rc=0 out
+  why=$(fence_reason) || return 1
+  out=$(team team-timers disable 2>"$err") || rc=$?
+  ((rc == 0)) || out="the heartbeat could not be disabled: $(first_error)"
+  log lease "$machine is $why; $out"
+  exit "$rc"
+}
+
+# Ask origin for its lease branch once: 0 it answered; 1 a network failure, 2 GitHub refused the
+# login, 3 anything else, each with the reason in PROBE_REASON (credentials in a URL cut out).
+probe_once() {
+  local rc=0
+  GIT_TERMINAL_PROMPT=0 timeout "$PROBE_TIMEOUT" git -C "$TEAM_HOME" ls-remote origin refs/heads/lease \
+    >/dev/null 2>"$err" </dev/null {run_fd}>&- || rc=$?
+  ((rc)) || return 0
+  PROBE_REASON=$(grep -v '^[[:space:]]*$' "$err" | tail -n 1 | sed -E 's/^(fatal|error|remote): //; s#//[^/@[:space:]]*@#//#g')
+  if ((rc == 124)); then
+    PROBE_REASON="no answer in ${PROBE_TIMEOUT}s"
+    return 1
+  fi
+  [[ -n $PROBE_REASON ]] || PROBE_REASON="git ls-remote exited $rc"
+  if grep -qiE 'authentication failed|could not read (username|password)|invalid username or password|permission denied \(publickey|returned error: 40[13]|repository not found|access denied|403 forbidden' "$err"; then
+    return 2
+  fi
+  if grep -qiE 'could not resolve|name resolution|name or service not known|failed to connect|connect(ion)? (refused|timed out)|connection (reset|closed)|timed out|network is unreachable|no route to host|ssl|tls|gnutls|certificate|handshake|returned error: 5[0-9][0-9]|kex_exchange_identification|hung up unexpectedly|early eof|rpc failed' "$err"; then
+    return 1
+  fi
+  return 3
+}
+
+# The probe step: whether GitHub answers, tried again once after RETRY_SECONDS on a network
+# failure unless the team already holds. Returns when it answers; exits 75 offline, 1 otherwise.
+probe_step() {
+  local first rc=0
+  first=$(date -u +%FT%TZ)
+  probe_once || rc=$?
+  if ((rc == 1)) && [[ ! -e $offline ]]; then
+    log probe "GitHub unreachable ($PROBE_REASON); trying again in ${RETRY_SECONDS}s"
+    sleep "$RETRY_SECONDS"
+    rc=0
+    probe_once || rc=$?
+    ((rc)) || log probe "GitHub answered the second try"
+  fi
+  case $rc in
+    0)
+      if [[ -e $refused ]]; then
+        rm -f "$refused"
+        log probe "GitHub accepts $machine's login again"
+      fi
+      ;;
+    1) go_offline "$first" ;;
+    2) login_refused ;;
+    *)
+      log probe "cannot ask GitHub: $PROBE_REASON"
+      exit 1
+      ;;
+  esac
+}
+
+# Hold the team from <since>: write the offline flag and tell #coordinator once, on the machine
+# whose record says it holds the lease. Exits 75.
+go_offline() {
+  local since post
+  if [[ -e $offline ]]; then
+    since=$(jq -r '.since // empty' "$offline" 2>/dev/null) || since=''
+    log probe "GitHub unreachable since ${since:-an unknown time} ($PROBE_REASON); the team is still holding"
+    exit 75
+  fi
+  if ! jq -e --arg machine "$machine" '.holder == $machine and .state == "held"' "$state/lease.json" >/dev/null 2>&1; then
+    log probe "GitHub unreachable ($PROBE_REASON); $machine does not hold the lease, so there is no team to hold"
+    exit 75
+  fi
+  jq -n --arg since "$1" '{since: $since, posted: false}' >"$offline.$$"
+  mv -f "$offline.$$" "$offline"
+  if post "$(outage_text "$1")"; then
+    jq -n --arg since "$1" '{since: $since, posted: true}' >"$offline.$$"
+    mv -f "$offline.$$" "$offline"
+    post=" #coordinator is told"
+  else
+    post=" the post to #coordinator failed ($POST_ERROR); it goes with the back message"
+  fi
+  log probe "GitHub unreachable since $1 ($PROBE_REASON); the team is holding;$post"
+  exit 75
+}
+
+# GitHub refuses this machine's login: logged each run, posted once until it answers again.
+# Exits 1.
+login_refused() {
+  local post=''
+  if [[ ! -e $refused ]]; then
+    jq -n --arg since "$(date -u +%FT%TZ)" --arg reason "$PROBE_REASON" '{since: $since, reason: $reason}' >"$refused"
+    if post "GitHub refuses $machine's login ($PROBE_REASON); the heartbeat cannot renew the lease until it is fixed there (team-doctor)"; then
+      post="; #coordinator is told"
+    else
+      post="; the post to #coordinator failed ($POST_ERROR)"
+    fi
+  fi
+  log probe "GitHub refuses $machine's login ($PROBE_REASON); not offline$post"
+  exit 1
+}
+
+# The back step, on the first probe that answers while offline: renew at once; renewed, clear
+# the flag and tell #coordinator; a machine that lost the lease meanwhile is fenced by the renew.
+back_step() {
+  local since back rc=0 out text posted told
+  read -r since posted < <(jq -r '"\(.since // "") \(.posted // false)"' "$offline" 2>/dev/null) || since='' posted=false
+  out=$(team team-lease renew 2>"$err") || rc=$?
+  case $rc in
+    0) ;;
+    75)
+      log back "GitHub answers, but the renew did not: $(first_error); the team is still holding"
+      exit 75
+      ;;
+    *)
+      rm -f "$offline"
+      if [[ -e $state/fenced ]]; then
+        log back "$(first_error)"
+        return
+      fi
+      log back "GitHub answers; not renewed: $(first_error)"
+      exit 1
+      ;;
+  esac
+  rm -f "$offline"
+  back=$(date -u +%FT%TZ)
+  text="GitHub back at $(clock "$back") (unreachable from $(clock "$since")); $(held_tasks)"
+  [[ $posted == true ]] || text="$(outage_text "$since")"$'\n'"$text"
+  if post "$text"; then
+    told="#coordinator is told"
+  else
+    told="the post to #coordinator failed ($POST_ERROR)"
+  fi
+  log back "$out; GitHub back at $back (unreachable from $since); $told"
+  holding=1
+}
+
+# What the outage post says: outage_text <since>
+outage_text() {
+  printf 'GitHub unreachable since %s on %s; holding the team' "$(clock "$1")" "$machine"
+}
+
+# A UTC time as this machine's local hours and minutes, or "an unknown time": clock <time>
+clock() {
+  date -d "$1" +%H:%M 2>/dev/null || echo "an unknown time"
+}
+
+# What the back post says of the tasks: those with a live worker (T<n>-<role>) resume.
+held_tasks() {
+  local tasks
+  if ! tasks=$(claude agents --json 2>/dev/null {run_fd}>&- | jq -r '
+      [.[] | .name // "" | capture("^T(?<n>[0-9]+)-[a-z][a-z0-9-]*$") | .n | tonumber] | unique
+      | map("T\(.)") | join(", ")' 2>/dev/null); then
+    echo "resuming the held tasks (the live session list could not be read)"
+  elif [[ -z $tasks ]]; then
+    echo "no worker was live, so none was held"
+  else
+    echo "resuming $tasks"
+  fi
+}
+
+# Post <text> to #coordinator; fails with the reason in POST_ERROR.
+post() {
+  local body
+  body=$(jq -cn --arg content "$1" '{content: $content}')
+  if discord_api "channels/$COORDINATOR_CHANNEL/messages" -X POST -H "Content-Type: application/json" \
+    --max-time "$POST_TIMEOUT" -d "$body" >/dev/null 2>"$err" {run_fd}>&-; then
+    return 0
+  fi
+  POST_ERROR=$(grep -m1 . "$err" || echo "no reason given")
+  return 1
+}
+
+# The lease step: renew on the holder once the last renewal is RENEW_MINUTES old, and at once on
+# a machine that lost the lease, which renew fences.
+lease_step() {
+  local desc rc=0 holder epoch age
+  desc=$(team team-lease status --json 2>"$err") || rc=$?
+  case $rc in
+    0) ;;
+    75)
+      log lease "not checked: $(first_error)"
+      exit 75
+      ;;
+    *)
+      log lease "not checked: $(first_error)"
+      exit 1
+      ;;
+  esac
+  read -r holder epoch < <(jq -r '"\(.holder // "-") \(.epoch)"' <<<"$desc")
+  if jq -e '.lost' <<<"$desc" >/dev/null; then
+    renew
+  elif jq -e '.state == "released"' <<<"$desc" >/dev/null; then
+    log lease "the lease is released (epoch $epoch); nothing to do"
+  elif jq -e '.mine | not' <<<"$desc" >/dev/null; then
+    log lease "$holder holds the lease (epoch $epoch); nothing to do"
+  else
+    age=$(jq -r 'now - (.renewed_at | fromdateiso8601) | floor' <<<"$desc")
+    if ((age < RENEW_MINUTES * 60 - SLACK_SECONDS)); then
+      log lease "$machine holds the lease, epoch $epoch, renewed $((age / 60)) minutes ago; no renewal due"
+      holding=1
+      return
+    fi
+    renew
+    [[ -e $state/fenced ]] || holding=1
+  fi
+}
+
+# The checkpoint step, on the holder: team-checkpoint, which says when none is due yet.
+checkpoint_step() {
+  local rc=0 out line
+  out=$(team team-checkpoint 2>"$err") || rc=$?
+  while IFS= read -r line; do
+    [[ -z $line ]] || log checkpoint "$line"
+  done <<<"$out"
+  if ((rc)); then
+    log checkpoint "failed: $(first_error)"
+    exit "$rc"
+  fi
+}
+
+# team-lease renew, logged; a renew that fenced this machine did its job.
+renew() {
+  local rc=0 out
+  out=$(team team-lease renew 2>"$err") || rc=$?
+  case $rc in
+    0) log lease "$out" ;;
+    75)
+      log lease "not renewed: $(first_error)"
+      exit 75
+      ;;
+    *)
+      if [[ -e $state/fenced ]]; then
+        log lease "$(first_error)"
+        return
+      fi
+      log lease "not renewed: $(first_error)"
+      exit 1
+      ;;
+  esac
+}
+
+run_heartbeat() {
+  mkdir -p "$state"
+  exec {run_fd}>>"$state/heartbeat.lock"
+  if ! flock -n "$run_fd"; then
+    log run "another run is still going; skipped"
+    return
+  fi
+  if [[ -f $log ]] && (($(wc -l <"$log") > LOG_MAX)); then
+    tail -n "$LOG_KEEP" "$log" >"$log.$$"
+    mv -f "$log.$$" "$log"
+  fi
+  if ! machine=$(machine_name 2>"$err"); then
+    log run "$(first_error)"
+    exit 1
+  fi
+  fence_step || true
+  probe_step
+  holding=0
+  if [[ -e $offline ]]; then back_step; else lease_step; fi
+  ((!holding)) || checkpoint_step
+}
+
+# The watch: a line each time the offline flag appears or goes, until killed.
+watch() {
+  local seen='' since
+  while :; do
+    since=''
+    if [[ -e $offline ]]; then
+      since=$(jq -er '.since | strings' "$offline" 2>/dev/null) || since=$(date -u -r "$offline" +%FT%TZ)
+    fi
+    if [[ $since != "$seen" ]]; then
+      if [[ -n $since ]]; then
+        echo "GitHub unreachable since $since; the team is holding"
+      else
+        echo "GitHub answers again (unreachable from $seen); the hold is over"
+      fi
+      seen=$since
+    fi
+    sleep "$WATCH_SECONDS"
+  done
+}
+
+case $command in
+  enable)
+    mgr=$(manager) || exit 1
+    check_plain "$TEAM_HOME" "$PATH" "$program" "$state"
+    mkdir -p "$state"
+    "enable_$mgr"
+    ;;
+  disable)
+    mgr=$(manager) || exit 1
+    "disable_$mgr"
+    ;;
+  status)
+    mgr=$(manager) || exit 1
+    status
+    ;;
+  run) run_heartbeat ;;
+  watch) watch ;;
+esac

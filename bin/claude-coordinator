@@ -8,19 +8,37 @@
 # GitHub rulesets are what block force-push, reset --hard and merging unapproved PRs.
 #
 # The manual, roles/coordinator.md, is appended to the system prompt, and the coordinator's own
-# skills (recover-worker, stow, status-report) load from plugins/coordinator-skills; no worker
+# skills (handoff, recover-worker, resume, status-report, stow) load from
+# plugins/coordinator-skills; no worker
 # loads either. Its settings are coordinator.settings.json with @TEAM_HOME@ (in its hook
 # commands) naming this checkout, written to ~/.local/state/agent-team/coordinator.settings.json;
 # the manual, the skills, the settings and the hooks all come from this script's checkout.
+#
+# Only on the lease holder: it refuses (exit 1) unless `team-lease check` confirms against origin
+# that this machine holds the lease, naming the holder, or saying a coordinator never starts
+# offline when GitHub is unreachable.
 #
 # Only one coordinator: it refuses (exit 1, naming the session id) while `claude agents --json`
 # lists a live session named coordinator, so the ledger keeps one writer and Discord one
 # listener. A non-blocking flock on ~/.local/state/agent-team/coordinator-launch.lock, held from
 # that check through the launch, makes a second launch at the same moment exit 1 at once.
 #
-# Usage: claude-coordinator [working-directory]   (default: ~/agent-team)
+# Usage: claude-coordinator [--prompt <text>] [working-directory]   (default: ~/agent-team)
+#   --prompt  the session's first prompt, in place of "You are the coordinator. Daniel talks to
+#             you on Discord. Wait for their messages." (team-resume names its report and the
+#             resume skill in it)
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+usage="usage: claude-coordinator [--prompt <text>] [working-directory]"
+prompt="You are the coordinator. Daniel talks to you on Discord. Wait for their messages."
+if [[ ${1:-} == --prompt ]]; then
+  [[ $# -ge 2 && -n $2 ]] || usage_error "$usage"
+  prompt=$2
+  shift 2
+fi
+(($# <= 1)) || usage_error "$usage"
+[[ ${1:-} != -* ]] || usage_error "$usage"
 # The manual, the skills, the settings and the hooks are code: they come from this checkout,
 # beside bin/.
 code=$(dirname "$(dirname "$TEAM_LIB")")
@@ -39,7 +57,8 @@ live=$(jq -r 'map(select(.name == "coordinator")) | first
   | if . then .id // ((.sessionId // "")[:8]) else empty end' <<<"$LIVE_SESSIONS")
 [[ -z $live ]] || die "a coordinator is already live: session $live; stop it with claude stop $live first"
 
-# T6's lease check goes here, before the launch.
+# The lock's file is closed for team-lease, so no helper its git leaves running holds it.
+lease_gate "a coordinator" {lock_fd}>&-
 
 # The settings, with the hooks of this checkout; written whole, then moved into place.
 settings=$state/coordinator.settings.json
@@ -55,5 +74,5 @@ claude --bg --name coordinator \
   --append-system-prompt-file "$code/roles/coordinator.md" \
   --plugin-dir "$code/plugins/coordinator-skills" \
   --settings "$settings" \
-  "You are the coordinator. Daniel talks to you on Discord. Wait for their messages." \
+  "$prompt" \
   {lock_fd}>&-

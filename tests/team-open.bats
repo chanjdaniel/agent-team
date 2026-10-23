@@ -240,9 +240,9 @@ advance_origin() {
   assert_equal "$(events opened | jq -r '"\(.worktree) \(.base_sha)"')" "$slots/1 $start"
 }
 
-@test "stderr lists the other open tasks in the same project only" {
+@test "stderr lists the other open tasks in the same project only, with paths on this machine" {
   cat >"$TEAM_HOME/ledger.jsonl" <<'LEDGER'
-{"ts":"2026-10-22T02:00:00Z","task":"T2","event":"opened","project":"proj","path":"small","type":"fix","title":"Still going","branch":"fix/T2-going","base":"main","base_sha":"abc1234","worktree":"/w/2"}
+{"ts":"2026-10-22T02:00:00Z","task":"T2","event":"opened","project":"proj","path":"small","type":"fix","title":"Still going","branch":"fix/T2-going","base":"main","base_sha":"abc1234","worktree":"/Users/someone/w/2"}
 {"ts":"2026-10-22T02:00:01Z","task":"T3","event":"opened","project":"proj","path":"small","type":"fix","title":"Done now","branch":"fix/T3-done","base":"main","base_sha":"abc1234","worktree":"/w/3"}
 {"ts":"2026-10-22T02:00:02Z","task":"T4","event":"opened","project":"other","path":"small","type":"fix","title":"Elsewhere","branch":"fix/T4-x","base":"main","base_sha":"abc1234","worktree":"/w/4"}
 {"ts":"2026-10-22T02:00:03Z","task":"T4","event":"worktree-added","project":"proj","branch":"chore/T4-y","base":"main","base_sha":"abc1234","worktree":"/w/5"}
@@ -251,7 +251,7 @@ LEDGER
   run_bin -0 --separate-stderr team-open proj feature feat new "New"
   assert_equal "$(jq -r .task <<<"$output")" "T5"
   assert_equal "$stderr" "$(printf '%s\n' "team-open: other open tasks in proj:" \
-    "  T2 fix/T2-going in /w/2: Still going" "  T4 chore/T4-y in /w/5: Elsewhere")"
+    "  T2 fix/T2-going in $HOME/w/2: Still going" "  T4 chore/T4-y in /w/5: Elsewhere")"
 }
 
 @test "the Discord token never reaches the output" {

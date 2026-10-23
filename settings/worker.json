@@ -4,6 +4,7 @@
     "mongodb-atlas@claude-plugins-official": false
   },
   "disableClaudeAiConnectors": true,
+  "isolatePeerMachines": true,
   "permissions": {
     "deny": [
       "Bash(git push --force*)",
@@ -15,6 +16,35 @@
       "Bash(git push origin main*)",
       "Bash(git push origin HEAD:dev*)",
       "Bash(git push origin HEAD:main*)",
+      "Bash(*team-lease*--steal*)",
+      "Bash(*team-resume*--steal*)",
+      "Bash(git push * lease)",
+      "Bash(git push * lease *)",
+      "Bash(git push *:lease)",
+      "Bash(git push *:lease *)",
+      "Bash(git push *refs/heads/lease*)",
+      "Bash(sudo)",
+      "Bash(sudo *)",
+      "Bash(claude --bg*)",
+      "Bash(claude --background*)",
+      "Bash(claude -p*)",
+      "Bash(claude --print*)",
+      "Bash(claude * --bg*)",
+      "Bash(claude * --background*)",
+      "Bash(claude * -p*)",
+      "Bash(claude * --print*)",
+      "Bash(claude agents*)",
+      "Bash(claude respawn*)",
+      "Bash(*/claude --bg*)",
+      "Bash(*/claude --background*)",
+      "Bash(*/claude -p*)",
+      "Bash(*/claude --print*)",
+      "Bash(*/claude * --bg*)",
+      "Bash(*/claude * --background*)",
+      "Bash(*/claude * -p*)",
+      "Bash(*/claude * --print*)",
+      "Bash(*/claude agents*)",
+      "Bash(*/claude respawn*)",
       "Bash(git reset --hard*)",
       "Bash(git clean*)",
       "Bash(git branch -D*)",
@@ -33,10 +63,32 @@
       "Bash(gh api*git/refs*)",
       "Bash(vercel*)",
       "Bash(*mongodb+srv://*)",
-      "Bash(*migrate_user_emails*)"
+      "Bash(*migrate_user_emails*)",
+      "Bash(op *)",
+      "Bash(* op *)",
+      "Bash(*op read*)",
+      "Bash(*op run*)",
+      "Bash(*op item*)",
+      "Bash(*op document*)",
+      "Bash(*start-server.mjs*)",
+      "Bash(*mongodb-mcp*)",
+      "Bash(*--plugin-dir*prod-*)",
+      "Bash(*--mcp-config*prod-*)",
+      "Bash(*team-worker *ops *)",
+      "Bash(*team-load-check *ops*)",
+      "Bash(*/proc/*/environ*)",
+      "Read(//proc/**)"
     ]
   },
   "attribution": {
     "commit": ""
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [{ "type": "command", "command": "@TEAM_HOME@/bin/hooks/lease-fence" }]
+      }
+    ]
   }
 }

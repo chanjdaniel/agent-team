@@ -55,6 +55,8 @@ slots = [".treehouse/conv-abc123/1/conv", ".treehouse/conv-abc123/2/conv"]
 TOML
   echo '{"dmPolicy": "allowlist", "allowFrom": ["757"], "groups": {}, "pending": {}}' \
     >"$HOME/.claude/channels/discord/access.json"
+  # The team runs on this machine: its team home has an origin, and it holds the lease.
+  hold_lease >/dev/null
   export GH_DIR=$BATS_TEST_TMPDIR/gh ORIGINS=$BATS_TEST_TMPDIR/origin
   mkdir -p "$GH_DIR/checks"
   echo '[]' >"$BATS_TEST_TMPDIR/sessions.json"

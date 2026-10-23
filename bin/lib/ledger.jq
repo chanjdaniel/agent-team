@@ -89,17 +89,44 @@ def contract_table:
       | "  \(.key | pad($event_width))  \($kind.writer | pad($writer_width))  \($text)"
         + if $kind.about then "  (\($kind.about))" else "" end);
 
+# A recorded path as a path on this machine, whose home directory is $home: every machine keeps
+# the same layout under its home, so one under /home/<name> or /Users/<name> is the same path
+# under $home. Any other path, or a value that is not a string, is unchanged.
+def local_path($home):
+  if type == "string" then
+    (capture("^/(home|Users)/[^/]+(?<rest>/.*)?$") | ($home | rtrimstr("/")) + (.rest // "")) // .
+  else . end;
+
+# An event with its recorded worktree, and the from of a worktree-moved, as paths on this machine
+# (local_path).
+def local_worktree($home):
+  if type == "object" then
+    (if has("worktree") then .worktree |= local_path($home) else . end)
+    | if has("from") then .from |= local_path($home) else . end
+  else . end;
+
 # The open worktrees among a stream of ledger events: one {task, project, branch, worktree} per
 # opened or worktree-added event with no later worktree-returned of the same task, project and
-# worktree, in the order they were added.
-def open_worktrees(events):
-  reduce events as $e ([];
+# worktree, in the order they were added; a worktree-moved gives the task's open worktree in its
+# project its new path. Worktrees are paths on this machine (local_worktree).
+def open_worktrees(events; $home):
+  reduce (events | local_worktree($home)) as $e ([];
     if $e.event == "opened" or $e.event == "worktree-added" then
       . + [$e | {task, project, branch, worktree}]
+    elif $e.event == "worktree-moved" then
+      map(if [.task, .project] == [$e.task, $e.project] then .worktree = $e.worktree else . end)
     elif $e.event == "worktree-returned" then
       map(select([.task, .project, .worktree] != [$e.task, $e.project, $e.worktree]))
     else . end)
   | .[];
+
+# A task's open worktrees (open_worktrees, over its events as an array), each with the folder
+# under tasks/T<n>/ its task directory is archived to: scratch for the project the task was
+# opened in, scratch-<project> for one added later.
+def archived_worktrees($home):
+  (map(select(.event == "opened")) | first | .project) as $opened
+  | open_worktrees(.[]; $home)
+  | . + {archive: (if .project == $opened then "scratch" else "scratch-\(.project)" end)};
 
 # Whether two heads name the same commit: compared by the shorter one's prefix, which must be at
 # least 7 characters, since the ledger holds both short and full SHAs.
@@ -184,13 +211,49 @@ def phase:
     elif any(.[]; .event == "plan-approved") then "building"
     else "planning" end;
 
-# Every worktree the task was given (opened or added), and whether it was returned since.
+# The index of the task's latest stowed, or -1 when it has none.
+def latest_stowed: [to_entries[] | select(.value.event == "stowed") | .key] | last // -1;
+
+# Whether the task crashed on a machine switch: a launch after its latest stowed, or a launch and
+# no stowed at all, so the machine it last ran on stopped without handing it off.
+def crashed: latest_stowed as $stowed | any(.[$stowed + 1:][]; .event == "launch");
+
+# Whether the task's worktree in <project> resumes from the last checkpoint's snapshot: the task
+# crashed, or its latest stowed recorded that worktree with uncommitted changes, which the
+# handoff's checkpoint kept as wip/T<n>.
+def snapshot_due($project):
+  crashed or (latest_stowed as $stowed | $stowed >= 0
+    and any(.[$stowed].worktrees[]?; .project == $project and .uncommitted == true));
+
+# Whether the event ends the worker of <role>: its DONE, which the coordinator logs as a done of
+# that role, a review (a reviewer's) or a ticket-done (a builder's).
+def ends_worker($role):
+  (.event == "done" and .role == $role) or (.event == "review" and $role == "reviewer")
+  or (.event == "ticket-done" and $role == "builder");
+
+# The roles to relaunch after a crash: each role launched since the task's latest stowed whose
+# latest launch no later event ends (ends_worker), in the order of those launches. Never ops: an
+# ops session runs only on Daniel's request, so after a crash Daniel asks again.
+def crash_roles:
+  . as $events
+  | latest_stowed as $stowed
+  | [to_entries[] | select(.key > $stowed and .value.event == "launch" and .value.role != "ops")
+    | {i: .key, role: .value.role}]
+  | group_by(.role) | map(max_by(.i)) | sort_by(.i)
+  | map(.i as $i | .role as $role | select(all($events[$i + 1:][]; ends_worker($role) | not)) | .role);
+
+# Every worktree the task was given (opened or added), at its latest path (worktree-moved), and
+# whether it was returned since.
 def worktree_list:
   . as $events
   | [to_entries[] | select(.value.event == "opened" or .value.event == "worktree-added")
     | .key as $i | .value as $w
-    | $w | {project, branch, worktree}
-      + {returned: any($events[$i + 1:][]; .event == "worktree-returned" and .project == $w.project and .worktree == $w.worktree)}];
+    | reduce ($events[$i + 1:][] | select(.project == $w.project)) as $e
+        ($w | {project, branch, worktree, returned: false};
+         if .returned then .
+         elif $e.event == "worktree-moved" then .worktree = $e.worktree
+         elif $e.event == "worktree-returned" and $e.worktree == .worktree then .returned = true
+         else . end)];
 
 # A launch's session in the session list ($sessions, from claude agents --json), or null: by the
 # short id, or by the start of the full session id (interactive sessions have no short id).
@@ -209,9 +272,11 @@ def pending_asks:
   [.[] | select(.event == "answered") | .id] as $answered
   | [.[] | select(.event == "asked" and (.id | IN($answered[]) | not)) | {id, text, ts}];
 
-# A task's state from its events and the session list; team-state adds the pr part.
-def task_state($sessions):
-  (map(select(.event == "opened")) | first) as $opened
+# A task's state from its events and the session list, its worktrees as paths on this machine,
+# whose home directory is $home (local_worktree); team-state adds the pr part.
+def task_state($sessions; $home):
+  map(local_worktree($home))
+  | (map(select(.event == "opened")) | first) as $opened
   | {schema: "team-state/1", task: .[0].task, title: $opened.title, project: $opened.project,
      path: $opened.path, phase: phase, worktrees: worktree_list,
      thread: (map(select(.event == "thread") | .discord_thread) | last),
@@ -313,20 +378,24 @@ def is_open: . != null and (task_status | IN("open", "legacy"));
 
 # The live sessions named like team workers (T<n>-<role>), from the session list and every
 # task's events by id: {task, role, name, session (the short id), status, state, logged (a launch
-# of the task names it), task_state (open, closed, or unknown when not in the ledger)}.
+# of the task names it), task_state (open, closed, unknown when not in the ledger, or load-check for
+# T0, team-load-check's task, which is never in the ledger)}.
 def team_sessions($tasks; $sessions):
   [$sessions[] | . as $session
     | ((.name // "") | capture("^(?<task>T(0|[1-9][0-9]*))-(?<role>.+)$")) as $name
     | ($tasks[$name.task] // null) as $events
     | {task: $name.task, role: $name.role, name, session: (.id // ((.sessionId // "")[:8])), status, state,
        logged: ($events != null and any($events[]; .event == "launch" and live_session(.session; [$session]) != null)),
-       task_state: (if $events == null then "unknown" elif $events | is_open then "open" else "closed" end)}];
+       task_state: (if $name.task == "T0" then "load-check" elif $events == null then "unknown"
+         elif $events | is_open then "open" else "closed" end)}];
 
 # Sort by task number.
 def by_task_number: sort_by(.task[1:] | tonumber);
 
-# Why a team session is a stray, from team_sessions: "T4 is closed", "T9 is not in the ledger".
-def stray_reason: "\(.task) is \(if .task_state == "unknown" then "not in the ledger" else "closed" end)";
+# Why a team session is a stray, from team_sessions: "T4 is closed", "T9 is not in the ledger",
+# "T0 is the load check's, stray unless one is running".
+def stray_reason:
+  "\(.task) is \({unknown: "not in the ledger", "load-check": "the load check's, stray unless one is running"}[.task_state] // "closed")";
 
 # The following defs serve team-retro status and team-sweep's retro-due finding, over every ledger
 # event as one array.
@@ -366,12 +435,13 @@ def retro_due_finding:
 
 # team-sweep's findings, over every ledger event as one array and the session list: each open
 # task's unless it is parked, then the stray sessions (named like a team worker whose task is
-# closed or not in the ledger), in task number order; then the retro-due finding.
+# closed or not in the ledger, never the load check's T0, whose session the coordinator waits on
+# for up to 30 minutes), in task number order; then the retro-due finding.
 def sweep($sessions):
   . as $events
   | by_task as $tasks
   | ([($tasks[] | select(is_open) | select(parked | not) | task_findings($sessions)),
-      (team_sessions($tasks; $sessions)[] | select(.task_state != "open")
+      (team_sessions($tasks; $sessions)[] | select(.task_state | IN("closed", "unknown"))
         | finding(.task; "stray"; .session; .name;
             "\(.name) \(.session) is live but \(stray_reason)";
             "read claude logs \(.session) for anything left to log, then stop it with claude stop \(.session)"))]

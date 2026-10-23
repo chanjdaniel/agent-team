@@ -199,7 +199,7 @@ section() {
   assert_equal "$(jq -c .strays <<<"$output")" "$(jq -cn '[
     {task: "T4", role: "builder", name: "T4-builder", session: "77777777", status: "idle", state: null, task_state: "closed"},
     {task: "T99", role: "planner", name: "T99-planner", session: "88888888", status: "busy", state: "working", task_state: "unknown"},
-    {task: "T0", role: "planner", name: "T0-planner", session: "99999999", status: "idle", state: null, task_state: "unknown"}]')"
+    {task: "T0", role: "planner", name: "T0-planner", session: "99999999", status: "idle", state: null, task_state: "load-check"}]')"
 
   run_bin -0 team-snapshot
   assert_equal "$(section "Live team sessions")" "Live team sessions (2):
@@ -208,7 +208,7 @@ section() {
   assert_equal "$(section "Stray sessions")" "Stray sessions (3):
   T4-builder 77777777 idle: T4 is closed
   T99-planner 88888888 busy: T99 is not in the ledger
-  T0-planner 99999999 idle: T0 is not in the ledger"
+  T0-planner 99999999 idle: T0 is the load check's, stray unless one is running"
 }
 
 @test "open PRs come from gh pr list for each registered project, with their task from the branch" {

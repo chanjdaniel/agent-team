@@ -97,6 +97,7 @@ case "$*" in
   "pr checks 5 --repo owner/proj "*) cat "$GH_DIR/checks.json" ;;
   "api repos/owner/proj/branches/dev") cat "$GH_DIR/branch.json" ;;
   "api repos/owner/proj/pulls/5/commits --paginate") cat "$GH_DIR/commits.json" ;;
+  "api repos/owner/proj/commits/"*"/pulls") cat "$GH_DIR/pulls.json" ;;
   "pr merge 5 --repo owner/proj "*)
     if [[ -f $GH_DIR/merge.sh ]]; then source "$GH_DIR/merge.sh"; exit; fi
     jq --arg m "$MERGE_SHA" '.state = "MERGED" | .mergeCommit = {oid: $m}' "$GH_DIR/pr.json" >"$GH_DIR/pr.next"
@@ -153,6 +154,83 @@ no_merge_call() {
 
 merged_events() {
   jq -c 'select(.event == "merged") | del(.ts)' "$TEAM_HOME/ledger.jsonl"
+}
+
+# proj gets local_checks ./check.sh, and PR #5's head becomes a real commit on origin's
+# feat/T14-tooling holding check.sh, which logs where it ran to $GH_DIR/ran, prints its output
+# and exits with $GH_DIR/check.status (default 0), sourcing $GH_DIR/check.extra first when a test
+# wrote one.
+with_local_checks() {
+  local primary
+  primary=$(make_repo proj dev)
+  git -C "$primary" checkout -q -b feat/T14-tooling
+  cat >"$primary/check.sh" <<'SH'
+#!/usr/bin/env bash
+echo "$PWD $(git rev-parse HEAD)" >>"$GH_DIR/ran"
+echo "checking the head"
+if [[ -f $GH_DIR/check.extra ]]; then source "$GH_DIR/check.extra"; fi
+exit "$(cat "$GH_DIR/check.status" 2>/dev/null || echo 0)"
+SH
+  chmod +x "$primary/check.sh"
+  git -C "$primary" add check.sh
+  git -C "$primary" commit -q -m "test: the local check"
+  git -C "$primary" push -q origin feat/T14-tooling
+  git -C "$primary" checkout -q dev
+  head=$(git -C "$primary" rev-parse feat/T14-tooling)
+  sed -i 's|^toolkits = \[\]$|toolkits = []\nlocal_checks = ["./check.sh"]|' "$TEAM_HOME/projects.toml"
+  green_pr
+}
+
+# The worktrees of proj's primary checkout, one path per line.
+proj_worktrees() {
+  git -C "$HOME/projects/proj" worktree list --porcelain | sed -n 's/^worktree //p'
+}
+
+# proj is the team home itself: TEAM_HOME moves to $HOME/agent-team, a clone of a bare origin
+# whose dev is proj's base, with a merged event for an earlier PR at dev's first commit. PR #5's
+# head is a real commit on origin's feat/T14-tooling, and gh pr merge merges it on origin with a
+# merge commit that GitHub then names as PR #5's.
+as_team_home() {
+  local pr_clone=$BATS_TEST_TMPDIR/pr
+  mv "$TEAM_HOME" "$HOME/agent-team"
+  export TEAM_HOME=$HOME/agent-team
+  sed -i 's|^path = "projects/proj"$|path = "agent-team"|' "$TEAM_HOME/projects.toml"
+  export TEAM_ORIGIN
+  TEAM_ORIGIN=$(make_team_home)
+  event T13 merged "{pr: 4, merge: \"$(git -C "$TEAM_HOME" rev-parse HEAD)\", head: \"0000000\", by: \"x\", project: \"proj\"}"
+  git clone -q "$TEAM_ORIGIN" "$pr_clone"
+  git -C "$pr_clone" checkout -q -b feat/T14-tooling
+  echo "tool" >"$pr_clone/tool.sh"
+  git -C "$pr_clone" add tool.sh
+  git -C "$pr_clone" commit -q -m "feat: the tooling"
+  git -C "$pr_clone" push -q origin feat/T14-tooling
+  head=$(git -C "$pr_clone" rev-parse HEAD)
+  green_pr
+  cat >"$GH_DIR/merge.sh" <<'SH'
+clone=$GH_DIR/merging
+rm -rf "$clone"
+git clone -q "$TEAM_ORIGIN" "$clone"
+git -C "$clone" checkout -q dev
+git -C "$clone" merge -q --no-ff -m "Merge pull request #5 from owner/feat/T14-tooling" origin/feat/T14-tooling
+git -C "$clone" push -q origin dev
+m=$(git -C "$clone" rev-parse HEAD)
+jq --arg m "$m" '.state = "MERGED" | .mergeCommit = {oid: $m}' "$GH_DIR/pr.json" >"$GH_DIR/pr.next"
+mv "$GH_DIR/pr.next" "$GH_DIR/pr.json"
+jq -n --arg m "$m" --arg h "$(git -C "$clone" rev-parse HEAD^2)" \
+  '[{merge_commit_sha: $m, head: {sha: $h}, base: {ref: "dev"}, merged_at: "2026-10-23T03:00:00Z"}]' >"$GH_DIR/pulls.json"
+SH
+}
+
+# Push a commit straight to the team home origin's dev, as a web edit would, touching <path>.
+direct_commit() {
+  local clone=$BATS_TEST_TMPDIR/direct
+  git clone -q "$TEAM_ORIGIN" "$clone"
+  git -C "$clone" checkout -q dev
+  mkdir -p "$(dirname "$clone/$1")"
+  echo "direct" >"$clone/$1"
+  git -C "$clone" add "$1"
+  git -C "$clone" commit -q -m "chore: straight to dev"
+  git -C "$clone" push -q origin dev
 }
 
 @test "a malformed command line is a usage error and an unknown task is refused" {
@@ -443,4 +521,69 @@ EOF
   for file in "$REPO_ROOT/coordinator.settings.json" "$REPO_ROOT"/settings/*.json; do
     jq -e '[.permissions.allow[]? | select(test("merge"))] == []' "$file"
   done
+}
+
+@test "a project's local checks run on the PR's exact head before the merge, and the merged event records them" {
+  with_local_checks
+  run_bin -0 --separate-stderr team-merge T14
+  assert_contains "$stderr" "team-merge: running ./check.sh on ${head:0:7}"
+  # It ran once, in a checkout of the head that is gone after.
+  assert_equal "$(wc -l <"$GH_DIR/ran")" 1
+  assert_equal "$(cut -d' ' -f2 "$GH_DIR/ran")" "$head"
+  [[ ! -e $(cut -d' ' -f1 "$GH_DIR/ran") ]]
+  assert_equal "$(proj_worktrees)" "$HOME/projects/proj"
+  assert_equal "$(merged_events | jq -c '[.head, .local_checks]')" "[\"$head\",[\"./check.sh\"]]"
+  TEAM_HOME=$TEAM_HOME run -0 "$REPO_ROOT/bin/team-log" --check
+}
+
+@test "a local check that fails is refused with its last lines, and nothing merges" {
+  with_local_checks
+  echo 3 >"$GH_DIR/check.status"
+  refused "local check './check.sh' failed on the head ${head:0:7} (exit 3); its last lines:"
+  assert_contains "$stderr" "      checking the head"
+  assert_equal "$(proj_worktrees)" "$HOME/projects/proj"
+}
+
+@test "a head that moves while the local checks run is refused" {
+  with_local_checks
+  # GitHub's PR moves to another head while the check runs.
+  echo 'jq ".headRefOid = \"5555555555555555555555555555555555555555\"" "$GH_DIR/pr.json" >"$GH_DIR/pr.next" && mv "$GH_DIR/pr.next" "$GH_DIR/pr.json"' \
+    >"$GH_DIR/check.extra"
+  refused "the head moved while the local checks ran (${head:0:7}, then 5555555); run team-merge again"
+}
+
+@test "local checks never run while another reason refuses the merge" {
+  with_local_checks
+  checks '[{"name": "test", "bucket": "fail", "state": "FAILURE"}, {"name": "agent-review", "bucket": "pass", "state": "SUCCESS"}]'
+  refused "checks failing on the head: test"
+  [[ ! -e $GH_DIR/ran ]]
+}
+
+@test "merging into the team home checks dev against the records rule since the last merge" {
+  as_team_home
+  direct_commit ledger.jsonl
+  run_bin -0 --separate-stderr team-merge T14
+  assert_contains "$stderr" "2 commits on dev checked: each touches records only or is a pull request's merge into dev"
+  [[ $(stub_calls gh | jq -r 'select(.[0] == "api") | .[1]' | grep -c '/pulls$') -ge 1 ]]
+  assert_equal "$(merged_events | jq -r '.project' | tail -n 1)" proj
+}
+
+@test "a commit on the team home's dev that is neither records nor a PR's merge is reported after the merge" {
+  as_team_home
+  direct_commit bin/sneaky
+  run_bin -1 --separate-stderr team-merge T14
+  # The merge happened and is logged; the report says so and names the commit.
+  assert_equal "$(jq -r .task <<<"$output")" T14
+  assert_equal "$(merged_events | wc -l)" 2
+  assert_contains "$stderr" "chore: straight to dev"
+  assert_contains "$stderr" "bin/sneaky"
+  assert_contains "$stderr" "team-merge: PR #5 is merged and logged, but dev breaks the records rule since the last merge (above): tell Daniel"
+}
+
+@test "a project that is not the team home is not checked against the records rule" {
+  run_bin -0 team-merge T14
+  if stub_calls gh | jq -e 'select(.[0] == "api" and (.[1] | endswith("/pulls")))' >/dev/null; then
+    echo "team-records-check ran for a project that is not the team home" >&2
+    return 1
+  fi
 }

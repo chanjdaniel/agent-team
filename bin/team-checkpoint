@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+# Make the work in flight survive a dead machine: on the lease holder, every 15 minutes (the
+# heartbeat's team-timers run calls it every run) or at once with --force (a handoff).
+#
+# Usage: team-checkpoint [--force]
+# Refuses unless team-lease check says this machine holds the lease (exit 1), and exits 75 when
+# GitHub is unreachable; either way nothing changes. Without --force, a checkpoint less than 15
+# minutes (less a minute for the timer's slack) after the last does nothing but say so.
+# For each open task, in task number order, for each of its open worktrees:
+#   1. A worktree that is missing, on another branch than its recorded one, or locked by a running
+#      git command (index.lock) is skipped with a line saying why.
+#   2. Its task directory is mirrored into tasks/T<n>/scratch/ (the project the task was opened
+#      in) or tasks/T<n>/scratch-<project>/ (one added later), as team-close does; a missing or
+#      empty one is reported on stderr and archives nothing.
+#   3. Its work is kept on the project's origin as refs/heads/wip/T<n>, pushed in place of what
+#      is there (the one forced push, a script's, never on a task branch, and no PR's head): its
+#      uncommitted changes (tracked or untracked; ignored files excluded) as a snapshot commit,
+#      built from a temporary index with the worktree's HEAD as parent; untracked files that may
+#      hold a secret (a name starting with .env or ending with .pem or .key, or the end of a
+#      target in machine/secrets.json) are left out, each named on a line; with none, the branch
+#      head itself, so a branch never pushed is on origin too and an older snapshot is gone.
+#      Origin's wip/T<n> already that head, or a snapshot with the same tree and parent, is left
+#      alone. The worktree's files, index, branch and stash are never touched.
+# Then, in the team home, the ledger's lock held: commits tasks/*/scratch*/, memory/ and
+# ledger.jsonl as "chore: checkpoint" on the branch checked out (dev), leaving whatever else is
+# staged as it was, and pushes the branch when it is ahead of origin's. A rejected push fetches
+# and replays the commits origin lacks onto origin's branch when they apply cleanly and no local
+# change is in the way (what is staged stays staged), then pushes again; else they stay unpushed
+# and it says why. No change, no commit and no push.
+# Writes ~/.local/state/agent-team/last-checkpoint, dated the checkpoint's start, once every step
+# succeeded. Prints one line per step; a failed step is reported on stderr and the rest still run.
+# Exit 0 done, 1 refused or a step failed, 2 usage error, 75 GitHub unreachable or another
+# checkpoint still running.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+INTERVAL_MINUTES=15
+# The heartbeat's timer may start a run up to a minute after its mark.
+SLACK_SECONDS=60
+# Seconds: the most one call to an origin may take, and the longest wait for another checkpoint.
+NET_TIMEOUT=60
+LOCK_WAIT=120
+# What the team-home commit holds.
+RECORDS=(ledger.jsonl ':(glob)tasks/*/scratch*/**' ':(glob)memory/**')
+
+usage="usage: team-checkpoint [--force]"
+force=''
+if (($# > 1)) || [[ $# -eq 1 && $1 != --force ]]; then usage_error "$usage"; fi
+(($# == 0)) || force=1
+
+machine=$(machine_name) || exit 1
+bin=$(dirname "$TEAM_LIB")
+state=$HOME/.local/state/agent-team
+last=$state/last-checkpoint
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+NET_ERR=$scratch/err
+failed=0
+
+mkdir -p "$state"
+exec {lock_fd}>>"$state/checkpoint.lock"
+if ! flock -w "$LOCK_WAIT" "$lock_fd"; then
+  echo "team-checkpoint: another checkpoint is still running" >&2
+  exit 75
+fi
+
+start=$(date +%s)
+if [[ -z $force && -e $last ]]; then
+  age=$((start - $(date -r "$last" +%s)))
+  if ((age < INTERVAL_MINUTES * 60 - SLACK_SECONDS)); then
+    echo "not due: the last checkpoint was $((age / 60)) minutes ago (--force makes one now)"
+    exit 0
+  fi
+fi
+
+rc=0
+TEAM_HOME=$TEAM_HOME "$bin/team-lease" check >/dev/null {lock_fd}>&- || rc=$?
+case $rc in
+  0) ;;
+  75)
+    echo "team-checkpoint: GitHub unreachable; no checkpoint while offline" >&2
+    exit 75
+    ;;
+  *) die "only the machine that holds the lease checkpoints" ;;
+esac
+
+# A step's line: say <what happened>
+say() {
+  printf '%s\n' "$*"
+}
+
+# A failed step, on stderr; the checkpoint goes on and exits 1: fail <what failed>
+fail() {
+  echo "team-checkpoint: $*" >&2
+  failed=1
+}
+
+# Why the worktree <wt> of <branch> is skipped, or nothing when it is checkpointed.
+skip_reason() {
+  local wt=$1 branch=$2 top current
+  if [[ ! -d $wt ]] || ! top=$(git -C "$wt" rev-parse --show-toplevel 2>/dev/null) ||
+    [[ $(realpath "$top") != "$(realpath "$wt")" ]]; then
+    echo "$wt is missing"
+  elif ! current=$(git -C "$wt" symbolic-ref -q --short HEAD); then
+    echo "$wt is on a detached HEAD, not $branch"
+  elif [[ $current != "$branch" ]]; then
+    echo "$wt is on $current, not $branch"
+  elif [[ -e $(git -C "$wt" rev-parse --path-format=absolute --git-path index.lock) ]]; then
+    echo "a git command is running in $wt (index.lock)"
+  fi
+}
+
+# Keep the work of the worktree <wt> of <task> on its origin as wip/<task>: its branch head, or a
+# snapshot of its uncommitted changes on that head: snapshot <task> <wt> <label>
+snapshot() {
+  local task=$1 wt=$2 label=$3 tree head remote old commit what left rc=0
+  tree=$(worktree_tree "$wt")
+  left=$(snapshot_left_out "$wt" | paste -sd ' ')
+  [[ -z $left ]] || say "$label: left out of wip/$task, as files that may hold a secret: $left"
+  head=$(git -C "$wt" rev-parse HEAD)
+  remote=$(origin_git -C "$wt" ls-remote origin "refs/heads/wip/$task") || rc=$?
+  if ((rc)); then
+    fail "$label: cannot read wip/$task on origin: $(origin_reason "$rc")"
+    return
+  fi
+  old=${remote%%[[:space:]]*}
+  if [[ $tree == "$(git -C "$wt" rev-parse "HEAD^{tree}")" ]]; then
+    commit=$head what="the branch head, no uncommitted changes"
+    if [[ $old == "$head" ]]; then
+      say "$label: wip/$task is up to date (${old:0:7}, no uncommitted changes)"
+      return
+    fi
+  else
+    if [[ -n $old ]] && git -C "$wt" cat-file -e "$old^{commit}" 2>/dev/null && is_snapshot "$wt" "$old" "$task" &&
+      [[ $(git -C "$wt" rev-parse "$old^{tree}") == "$tree" && $(git -C "$wt" rev-parse "$old^1") == "$head" ]]; then
+      say "$label: wip/$task is up to date (${old:0:7})"
+      return
+    fi
+    commit=$(git -C "$wt" commit-tree "$tree" -p "$head" -m "$(snapshot_message "$task" "$machine" "$(date -u -d "@$start" +%FT%TZ)")")
+    what="uncommitted changes on ${head:0:7}"
+  fi
+  origin_git -C "$wt" push -q origin "+$commit:refs/heads/wip/$task" || rc=$?
+  if ((rc)); then
+    fail "$label: cannot push wip/$task: $(origin_reason "$rc")"
+    return
+  fi
+  say "$label: pushed wip/$task ${commit:0:7} ($what)"
+}
+
+# Each open worktree of each open task, as {task, project, branch, worktree, archive}.
+worktrees=()
+if [[ -e $TEAM_HOME/ledger.jsonl ]]; then
+  mapfile -t worktrees < <(ledger_jq 'ledger_events | by_task | to_entries | sort_by(.key[1:] | tonumber) | .[]
+    | .key as $task | .value | select(task_status == "open") | archived_worktrees($home) | . + {task: $task}' \
+    -nRc "$TEAM_HOME/ledger.jsonl")
+fi
+
+for wt_json in "${worktrees[@]}"; do
+  IFS=$'\t' read -r task project branch wt archive < <(jq -r '[.task, .project, .branch, .worktree, .archive] | @tsv' <<<"$wt_json")
+  label="$task $project"
+  why=$(skip_reason "$wt" "$branch")
+  if [[ -n $why ]]; then
+    say "$label: skipped: $why"
+    continue
+  fi
+  task_dir=$(team_project "$project" task_dir)
+  if archive_task_dir "$wt/$task_dir" "$project" "tasks/$task/$archive"; then
+    say "$label: archived $task_dir to tasks/$task/$archive"
+  fi
+  snapshot "$task" "$wt" "$label"
+done
+
+# The team home's records: commit them, then push the branch when it is ahead of origin's.
+commit_records "chore: checkpoint" "${RECORDS[@]}" || failed=1
+
+((failed == 0)) || exit 1
+date -u -d "@$start" +%FT%TZ >"$last"
+touch -d "@$start" "$last"

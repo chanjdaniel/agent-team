@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fake external command for tests: copied onto PATH as claude, gh and curl.
+# Fake external command for tests: copied onto PATH as each command `sandbox` stubs.
 # Logs its argv as one JSON array per call to $STUB_CALLS/<name>.log, then answers from the
 # test's fixture in $STUB_FIXTURES: <name>.sh is sourced with the call's arguments when present,
 # otherwise <name>.out is printed and <name>.status is the exit code (default 0).

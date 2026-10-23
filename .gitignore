@@ -8,3 +8,12 @@ tasks/T0/
 
 # The ledger's append lock (bin/lib/team.sh)
 ledger.jsonl.lock
+
+# The pinned MCP servers' install and its scratch (servers/install)
+servers/node_modules/
+servers/.staging.*/
+servers/.old.*/
+servers/.install.lock
+
+# The toolkits' eval runs (claude plugin eval)
+toolkits/*/evals/results/

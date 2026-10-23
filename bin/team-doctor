@@ -1,0 +1,662 @@
+#!/usr/bin/env bash
+# Say what this machine still lacks to run the team: one PASS, WARN or FAIL line per check, each
+# WARN and FAIL with its reason and its fix ("FAIL tool jq: 1.6, below the minimum 1.7.1; fix: ...").
+#
+# Usage: team-doctor [--json]
+#   --json   One array of {check, verdict, reason, fix} instead of the lines; fix is "" on a PASS.
+# The checks, in order:
+#   os            Arch Linux (ID or ID_LIKE arch in /etc/os-release) or macOS; on any other OS
+#                 it fails and no tool is checked.
+#   homebrew      macOS only: Homebrew's GNU tools first on PATH, as bin/lib/platform.sh puts them.
+#   tool <name>   Each tool machine/tools.lock lists for this OS, by its version_cmd: missing, a
+#                 version it cannot read, or below its min fails; a version off its pin fails, or
+#                 warns where the lock says pin_mismatch WARN (Claude Code, which updates itself).
+#                 The fix is the lock's install command for this OS and machine type (uname -m),
+#                 from bin/lib/tools.jq: for a GitHub release, its archive checked against the
+#                 SHA-256 the lock records.
+#   docker        `docker info` answers: the daemon runs and this user may reach it. Docker access
+#                 is Daniel's: on Arch the daemon enabled and the docker group (sudo, then a new
+#                 login), on macOS Docker Desktop opened once and its license accepted.
+#   chrome        Google Chrome or Chromium is installed, for chrome-devtools-axi; warns.
+#   machine       This machine's team name, ~/.config/agent-team/machine.
+#   git hooks     The team home's core.hooksPath is bin/hooks/git (relative, so each worktree runs
+#                 its own checkout's hooks): the dev guard. The fix is Daniel's, since every
+#                 session is denied touching core.hooksPath.
+#   claude login  `claude auth status`: signed in with a claude.ai account.
+#   github login  `gh auth status` for github.com.
+#   config        `team-config diff`: warns on each way this machine's Claude config differs from
+#                 the team home's machine/claude/, plugins and memory aside.
+#   plugins       Fails while a marketplace or plugin of machine/claude/plugins.txt is missing here
+#                 (`team-config diff`), with the commands that add them.
+#   memory        `team-config diff`: warns while a registered project with its primary checkout
+#                 here does not keep its auto memory in the team home's memory/<project>/.
+#   discord       Fails while `claude plugin list` (run from /, so user settings decide) shows the
+#                 Discord plugin enabled: every session that loads it logs in to Discord, so only
+#                 the coordinator turns it on.
+#   own settings  `team-config own`: warns while a setting each machine keeps for itself
+#                 (autoMode.environment, what auto mode's classifier knows of this machine) is not
+#                 set here.
+#   1password     Warns while op (the tool op line) or the 1Password app is missing, both found
+#                 without asking the vault: without them, team-secrets restore can only ask for
+#                 each secret to be pasted.
+#   secret <id>   `team-secrets check`: fails for each enabled secret of machine/secrets.json that
+#                 is missing, empty or off its mode here, with team-secrets restore (Daniel's, in
+#                 their own terminal); no byte of a secret is read.
+#   per project   For each project of projects.toml (`projects` fails when team-project refuses
+#                 the registry), the lines below with the project's name after the check's;
+#                 a missing checkout is its one line:
+#     checkout    The primary checkout at its registry path: a git checkout of its own, not a
+#                 worktree of another; missing, the fix is the clone.
+#     origin      Exactly https://github.com/<repo>.git, the URL the bootstrap clones from.
+#     task dir    git ignores the task directory, as team-open requires.
+#     gate        no-mistakes projects only: `no-mistakes status` in the checkout shows a gate.
+#     slots       treehouse pools only: every slot is in the pool treehouse names from origin,
+#                 <checkout's folder name>-<the first 3 bytes of the SHA-256 of origin's URL,
+#                 in hex>, so the registry's slots hold on any machine with that origin.
+#     trust       `claude --bg --name team-doctor-trust-<project>` with no prompt in the checkout
+#                 fails on "Workspace not trusted"; the probe session (by the id it printed, and
+#                 any session of that name) is stopped and removed either way, and one left
+#                 behind turns a pass into a warning.
+#     branches    Warns on each local branch with commits on no origin branch (no upstream and
+#                 never pushed, or ahead of what was pushed; a checkpoint's wip/T<n> is no
+#                 branch), with their count.
+#     changes     Warns while the primary checkout has changes to tracked files or untracked files.
+#   clock         Within 60 s of the Date header of https://api.github.com (curl -sI); warns.
+#   lease         `team-lease status`: passes held here, warns held elsewhere or released, fails
+#                 when GitHub is unreachable or team-lease refuses, and fails on a fenced
+#                 machine ("fenced since <time> (holder seen <name>, epoch <n>)"), reachable or not.
+#   salvage       On a fenced machine only: fails for each open task's worktree here with
+#                 commits on no origin branch (a checkpoint's wip/T<n> aside) or uncommitted
+#                 changes, the fix being the commands that push them to salvage/T<n>-<machine>
+#                 (after committing, for uncommitted changes), for Daniel to run; passes when
+#                 there is none.
+#   heartbeat     `team-timers status`: passes enabled on the lease holder, or disabled on any
+#                 other machine; fails the other way round, with the command that puts it right;
+#                 warns while the lease line cannot say whether this machine holds it.
+#   offline       Warns while the heartbeat holds the team for an outage ("offline since <time>
+#                 (<n> minutes)"): it resumes on its own once GitHub answers.
+# Logins are asked of claude and gh themselves, and trust by starting a session: no credential
+# file, ~/.claude.json or ~/.claude/channels/ is read, and no line carries a secret. Read-only,
+# but for the trust probes' sessions, which it removes.
+# TEAM_OS_RELEASE names the os-release file to read instead of /etc/os-release, TEAM_1PASSWORD_APP
+# the 1Password app to look for, and TEAM_CHROME the browser (the tests' seams).
+# Exit 0 nothing failed, 1 a check failed, 2 usage error.
+set -euo pipefail
+# The doctor reports a missing Homebrew or GNU tool as its homebrew line instead of refusing.
+# shellcheck disable=SC2034 # read by bin/lib/platform.sh
+platform_report=1
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+[[ $# -eq 0 || ($# -eq 1 && $1 == --json) ]] || usage_error "usage: team-doctor [--json]"
+json=0
+[[ ${1:-} != --json ]] || json=1
+
+bin=$(dirname "$TEAM_LIB")
+lock=$(dirname "$bin")/machine/tools.lock
+err=$(mktemp)
+trap 'rm -f "$err"' EXIT
+results=() failed=0
+# The tools whose version command answered at all, by name.
+declare -A installed=()
+
+# Record one check: report <check> <verdict> <reason> [<fix>]; the line is printed at once.
+report() {
+  local line
+  results+=("$(jq -cn --arg check "$1" --arg verdict "$2" --arg reason "$3" --arg fix "${4:-}" \
+    '{check: $check, verdict: $verdict, reason: $reason, fix: $fix}')")
+  [[ $2 != FAIL ]] || failed=1
+  if ((json)); then return 0; fi
+  line="$2 $1: $3"
+  [[ -z ${4:-} ]] || line+="; fix: $4"
+  printf '%s\n' "$line"
+}
+
+# Run <command...> for at most <seconds>, or unbounded where there is no timeout (macOS
+# without coreutils): bounded <seconds> <command...>
+bounded() {
+  if command -v timeout >/dev/null; then timeout "$@"; else "${@:2}"; fi
+}
+
+# The first line a command wrote to stderr (in $err), without its "<script>: " prefix.
+first_error() {
+  local line
+  line=$(grep -m1 . "$err" || true)
+  printf '%s\n' "${line#team-*: }"
+}
+
+# Whether version <a> is below version <b>, number by number: version_below <a> <b>
+version_below() {
+  local -a a b
+  local i
+  IFS=. read -ra a <<<"$1"
+  IFS=. read -ra b <<<"$2"
+  for ((i = 0; i < ${#a[@]} || i < ${#b[@]}; i++)); do
+    if ((10#${a[i]:-0} < 10#${b[i]:-0})); then return 0; fi
+    if ((10#${a[i]:-0} > 10#${b[i]:-0})); then return 1; fi
+  done
+  return 1
+}
+
+# <path> with $HOME as ~.
+tilde() {
+  printf '%s\n' "${1/#"$HOME"/\~}"
+}
+
+# The pool treehouse names for the checkout <path> with origin <url>: <path's folder name>-<the
+# first 3 bytes of the SHA-256 of the URL, in hex> (treehouse's ResolvePoolDir).
+pool_name() {
+  printf '%s-%s\n' "${1##*/}" "$(printf '%s' "$2" | sha256sum | cut -c1-6)"
+}
+
+# The trust line of <project>, from a promptless background session started in its checkout
+# <path>: Claude Code refuses one in an untrusted root with "Workspace not trusted". The probe
+# goes either way: the session it printed, and any session of its name (one an earlier run left).
+probe_trust() {
+  local project=$1 path=$2 name=team-doctor-trust-$1 out rc=0 ids id left=() shown reason
+  shown=$(tilde "$path")
+  out=$(cd "$path" && bounded 60 claude --bg --name "$name" 2>&1 </dev/null) || rc=$?
+  ids=$({
+    [[ $out == *"Workspace not trusted"* ]] || grep -oE '\b[0-9a-f]{8}\b' <<<"$out" | head -n 1
+    bounded 30 claude agents --json 2>/dev/null </dev/null | jq -r --arg name "$name" 'arrays | .[] | objects
+      | select(.name == $name) | .id // ((.sessionId // "")[:8]) | strings' 2>/dev/null || true
+  } | awk 'NF && !seen[$0]++')
+  for id in $ids; do
+    bounded 30 claude stop "$id" >/dev/null 2>&1 </dev/null || true
+    bounded 30 claude rm "$id" >/dev/null 2>&1 </dev/null || left+=("$id")
+  done
+  if [[ $out == *"Workspace not trusted"* ]]; then
+    reason="claude --bg in $shown says Workspace not trusted"
+    ((${#left[@]} == 0)) || reason+="; its probe session ${left[*]} is left (claude rm ${left[*]})"
+    report "trust $project" FAIL "$reason" "Daniel runs claude once in $shown and accepts the trust dialog"
+  elif ((rc == 0)) && [[ -n $ids ]]; then
+    if ((${#left[@]} == 0)); then
+      report "trust $project" PASS "claude starts background sessions in $shown"
+    else
+      report "trust $project" WARN "claude starts background sessions in $shown, but its probe session ${left[*]} is left" \
+        "claude rm ${left[*]}"
+    fi
+  else
+    report "trust $project" FAIL "\`claude --bg\` in $shown printed no session id (exit $rc): $(grep -m1 . <<<"$out" || true)" \
+      "the tool claude and claude login lines"
+  fi
+}
+
+# The lines of the registered project <name> (see the header).
+check_project() {
+  local project=$1 facts path shown repo url top common origin task_dir exclude out rc pool slot
+  local wrong=() unpushed=() found=() branch count
+  facts=$(team_project "$project")
+  path=$(jq -r .path <<<"$facts") repo=$(jq -r .repo <<<"$facts") task_dir=$(jq -r .task_dir <<<"$facts")
+  shown=$(tilde "$path") url=https://github.com/$repo.git
+
+  # checkout
+  if [[ ! -e $path ]]; then
+    report "checkout $project" FAIL "$shown is missing" "git clone $url $shown"
+    return
+  fi
+  top=$(git -C "$path" rev-parse --show-toplevel 2>/dev/null) || top=''
+  if [[ -z $top || $(realpath -m -- "$top") != "$(realpath -m -- "$path")" ]]; then
+    report "checkout $project" FAIL "$shown is not a git checkout" "move it aside, then git clone $url $shown"
+    return
+  fi
+  common=$(git -C "$path" rev-parse --path-format=absolute --git-common-dir)
+  if [[ $(realpath -m -- "$common") != "$(realpath -m -- "$(git -C "$path" rev-parse --absolute-git-dir)")" ]]; then
+    report "checkout $project" FAIL "$shown is a worktree of $(tilde "$(dirname "$(realpath -m -- "$common")")"), not a primary checkout" \
+      "move it aside, then git clone $url $shown"
+    return
+  fi
+  report "checkout $project" PASS "$shown, a primary checkout"
+
+  # origin
+  origin=$(git -C "$path" remote get-url origin 2>/dev/null) || origin=''
+  if [[ $origin == "$url" ]]; then
+    report "origin $project" PASS "$url"
+  elif [[ -z $origin ]]; then
+    report "origin $project" FAIL "no remote origin" "git -C $shown remote add origin $url"
+  else
+    report "origin $project" FAIL "origin is $origin, not $url" "git -C $shown remote set-url origin $url"
+  fi
+
+  # task dir: with its trailing slash, so a pattern for folders only matches one not made yet.
+  if git -C "$path" check-ignore -q -- "$task_dir/"; then
+    report "task dir $project" PASS "git ignores $task_dir/"
+  else
+    exclude=$(git -C "$path" rev-parse --path-format=absolute --git-path info/exclude)
+    report "task dir $project" FAIL "git does not ignore $task_dir/" "echo /$task_dir/ >> $(tilde "$exclude")"
+  fi
+
+  # gate
+  if [[ $(jq -r .delivery <<<"$facts") == no-mistakes ]]; then
+    rc=0
+    out=$(cd "$path" && bounded 30 no-mistakes status 2>&1 </dev/null) || rc=$?
+    if ((rc == 127)); then
+      report "gate $project" FAIL "no-mistakes is not installed" "the tool no-mistakes line's fix, then cd $shown && no-mistakes init"
+    elif grep -qE '^[[:space:]]*gate:[[:space:]]' <<<"$out"; then
+      report "gate $project" PASS "no-mistakes has a gate for it"
+    elif [[ $out == *"not initialized"* ]]; then
+      report "gate $project" FAIL "no-mistakes has no gate for $shown" "cd $shown && no-mistakes init"
+    else
+      report "gate $project" FAIL "\`no-mistakes status\` printed no gate: $(grep -m1 . <<<"$out" || echo "exit $rc")" \
+        "cd $shown && no-mistakes init"
+    fi
+  fi
+
+  # slots: a treehouse slot is <root>/<pool>/<n>/<folder>.
+  if [[ $(jq -r .pool.provider <<<"$facts") == treehouse ]]; then
+    if [[ -z $origin ]]; then
+      report "slots $project" FAIL "unknown, since treehouse names the pool from origin, which is missing" "the origin line's fix"
+    else
+      pool=$(pool_name "$path" "$origin")
+      while IFS= read -r slot; do
+        [[ $(basename "$(dirname "$(dirname "$slot")")") == "$pool" ]] || wrong+=("$(tilde "$slot")")
+      done < <(jq -r '.pool.slots[]' <<<"$facts")
+      if ((${#wrong[@]} == 0)); then
+        report "slots $project" PASS "every slot is in the pool $pool, as treehouse names it from origin"
+      elif [[ $origin != "$url" ]]; then
+        report "slots $project" FAIL "not in the pool $pool, as treehouse names it from origin $origin: $(printf '%s, ' "${wrong[@]}" | sed 's/, $//')" \
+          "the origin line's fix"
+      else
+        report "slots $project" FAIL "not in the pool $pool, as treehouse names it from origin: $(printf '%s, ' "${wrong[@]}" | sed 's/, $//')" \
+          "put $project's pool.slots in projects.toml under the pool's directory, ~/.treehouse/$pool/ unless its treehouse.toml sets another root"
+      fi
+    fi
+  fi
+
+  probe_trust "$project" "$path"
+
+  # branches: commits no remote-tracking branch of origin has, as of the last fetch; a
+  # checkpoint's wip/T<n> is none, since the next checkpoint replaces it and team-close deletes it.
+  while IFS= read -r branch; do
+    count=$(git -C "$path" rev-list --count "refs/heads/$branch" --not --exclude='origin/wip/*' --remotes=origin)
+    ((count == 0)) || unpushed+=("$branch ($count commit$( ((count == 1)) || echo s))")
+  done < <(git -C "$path" for-each-ref --format='%(refname:lstrip=2)' refs/heads)
+  if ((${#unpushed[@]} == 0)); then
+    report "branches $project" PASS "every local branch is on origin"
+  else
+    report "branches $project" WARN "$(printf '%s, ' "${unpushed[@]}" | sed 's/, $//') on no origin branch" \
+      "push each (git -C $shown push -u origin <branch>) or delete it"
+  fi
+
+  # changes
+  mapfile -t found < <(worktree_changes "$path")
+  if ((${#found[@]} == 0)); then
+    report "changes $project" PASS "the primary checkout is clean"
+  else
+    report "changes $project" WARN "$(printf '%s; ' "${found[@]}" | sed 's/; $//')" "commit, stash or remove them in $shown"
+  fi
+}
+
+# One tool of the lock: check_tool <name> <version_cmd> <pattern> <pin> <min> <pin_mismatch> <source>
+check_tool() {
+  local name=$1 cmd=$2 pattern=$3 pin=$4 min=$5 mismatch=$6 source=$7 words out rc=0 version
+  read -ra words <<<"$cmd"
+  out=$(bounded 30 "${words[@]}" 2>&1 </dev/null) || rc=$?
+  ((rc == 127)) || installed[$name]=1
+  if ((rc == 127)); then
+    report "tool $name" FAIL "not installed" "$source"
+  elif ((rc == 124)); then
+    report "tool $name" FAIL "\`$cmd\` did not answer within 30 s" "$source"
+  elif [[ ! $out =~ $pattern ]]; then
+    report "tool $name" FAIL "\`$cmd\` printed no version" "$source"
+  else
+    version=${BASH_REMATCH[1]}
+    if [[ -n $pin && $version == "$pin" ]]; then
+      report "tool $name" PASS "$version"
+    elif [[ -n $pin ]]; then
+      report "tool $name" "$mismatch" "$version, not the pinned $pin" "$source"
+    elif version_below "$version" "$min"; then
+      report "tool $name" FAIL "$version, below the minimum $min" "$source"
+    else
+      report "tool $name" PASS "$version (minimum $min)"
+    fi
+  fi
+}
+
+# os
+os='' kernel=$(uname -s)
+case $kernel in
+  Darwin)
+    os=macos
+    report os PASS macOS
+    ;;
+  Linux)
+    name=$(os_release PRETTY_NAME)
+    name=${name:-$(os_release ID)}
+    name=${name:-Linux}
+    if [[ $(os_release ID) == arch ]]; then
+      os=arch
+      report os PASS "$name"
+    elif [[ " $(os_release ID_LIKE) " == *" arch "* ]]; then
+      os=arch
+      report os PASS "$name, an Arch Linux"
+    else
+      report os FAIL "$name is neither Arch Linux nor macOS, so no tool is checked" "run the team on Arch Linux or macOS"
+    fi
+    ;;
+  *) report os FAIL "$kernel is neither Arch Linux nor macOS, so no tool is checked" "run the team on Arch Linux or macOS" ;;
+esac
+
+# homebrew
+if [[ $os == macos ]]; then
+  if [[ -n $PLATFORM_PROBLEM ]]; then
+    report homebrew FAIL "$PLATFORM_PROBLEM" "$PLATFORM_FIX"
+  else
+    report homebrew PASS "Homebrew's GNU tools are first on PATH"
+  fi
+fi
+
+# tool <name>; fd 3, since a tool's version command may read stdin.
+if [[ -n $os ]]; then
+  while IFS= read -r -u 3 name && IFS= read -r -u 3 cmd && IFS= read -r -u 3 pattern &&
+    IFS= read -r -u 3 pin && IFS= read -r -u 3 min && IFS= read -r -u 3 mismatch &&
+    IFS= read -r -u 3 source; do
+    check_tool "$name" "$cmd" "$pattern" "$pin" "$min" "$mismatch" "$source"
+  done 3< <(jq -L "$TEAM_LIB" -r --arg os "$os" --arg machine "$(uname -m)" 'include "tools"; tools_for($os; $machine)
+    | .name, .version_cmd, .version_pattern, .pin, .min, .pin_mismatch, .source' "$lock")
+fi
+
+# docker: asked only of an installed docker, on an OS the tools were checked for.
+if [[ -n $os && -z ${installed[docker]:-} ]]; then
+  report docker FAIL "docker is not installed" "the tool docker line's fix"
+elif [[ -n $os ]]; then
+  rc=0
+  out=$(bounded 30 docker info --format '{{.ServerVersion}}' 2>&1 </dev/null) || rc=$?
+  if ((rc == 0)); then
+    report docker PASS "the Docker daemon answers (server $(grep -m1 . <<<"$out" || true))"
+  else
+    reason=$(grep -m1 . <<<"$out" || echo "exit $rc")
+    if [[ $os == macos ]]; then
+      docker_fix="Daniel opens Docker Desktop once and accepts its license"
+    elif [[ $out == *"permission denied"* ]]; then
+      docker_fix="Daniel runs sudo usermod -aG docker \$USER, then logs out and in"
+    else
+      docker_fix="Daniel runs sudo systemctl enable --now docker.service"
+    fi
+    report docker FAIL "\`docker info\` cannot reach the daemon: $reason" "$docker_fix"
+  fi
+fi
+
+# chrome: by its app on macOS, by its command on Arch.
+if [[ -n $os ]]; then
+  if [[ -n ${TEAM_CHROME:-} ]]; then
+    browser=$TEAM_CHROME
+    [[ -e $browser ]] || browser=''
+  elif [[ $os == macos ]]; then
+    browser=/Applications/Google\ Chrome.app
+    [[ -e $browser ]] || browser=''
+  else
+    browser=$(command -v google-chrome-stable google-chrome chromium | head -n 1 || true)
+  fi
+  if [[ -n $browser ]]; then
+    report chrome PASS "$(tilde "$browser")"
+  elif [[ $os == macos ]]; then
+    report chrome WARN "Google Chrome is not installed, so chrome-devtools-axi has no browser" "brew install --cask google-chrome"
+  else
+    report chrome WARN "neither Google Chrome nor Chromium is installed, so chrome-devtools-axi has no browser" \
+      "Daniel installs google-chrome from the AUR, or runs sudo pacman -S --needed chromium"
+  fi
+fi
+
+# machine
+machine=''
+if machine=$(machine_name 2>"$err"); then
+  report machine PASS "$machine"
+else
+  reason=$(first_error)
+  report machine FAIL "${reason%%; write one with: *}" "echo <name> > ~/.config/agent-team/machine"
+fi
+
+# git hooks: read from the team home's own config, so a value set only globally does not pass.
+hooks=$(git -C "$TEAM_HOME" config --local core.hooksPath 2>/dev/null) || hooks=''
+if [[ $hooks == bin/hooks/git ]]; then
+  report "git hooks" PASS "core.hooksPath is bin/hooks/git"
+else
+  hooks_reason="core.hooksPath is unset, so git runs none of bin/hooks/git"
+  [[ -z $hooks ]] || hooks_reason="core.hooksPath is $hooks, not bin/hooks/git"
+  report "git hooks" FAIL "$hooks_reason" \
+    "Daniel runs git -C ${TEAM_HOME/#"$HOME"/\~} config core.hooksPath bin/hooks/git"
+fi
+
+# claude login: the answer is read for these two fields alone.
+login_fix="claude auth login --claudeai" rc=0
+auth=$(bounded 30 claude auth status --json 2>/dev/null </dev/null) || rc=$?
+auth=$(jq -r 'select(type == "object" and (.loggedIn | type) == "boolean")
+  | if .loggedIn then (.authMethod // "" | tostring) else "-" end' <<<"$auth" 2>/dev/null) || auth=''
+case $auth in
+  claude.ai) report "claude login" PASS "signed in with a claude.ai account" ;;
+  -) report "claude login" FAIL "not signed in" "$login_fix" ;;
+  '') report "claude login" FAIL "\`claude auth status\` did not answer (exit $rc)" "install Claude Code (see tool claude), then $login_fix" ;;
+  *) report "claude login" FAIL "signed in through $auth, not a claude.ai account" "claude auth logout, then $login_fix" ;;
+esac
+
+# github login
+if bounded 30 gh auth status --hostname github.com >/dev/null 2>&1 </dev/null; then
+  report "github login" PASS "gh is signed in to github.com"
+else
+  report "github login" FAIL "gh auth status finds no working login for github.com" \
+    "gh auth login --hostname github.com --git-protocol https --web"
+fi
+
+# config, plugins, memory: one team-config diff.
+rc=0
+config=$(TEAM_HOME=$TEAM_HOME bounded 60 "$bin/team-config" diff --json 2>"$err" </dev/null) || rc=$?
+if ((rc > 1)) || ! jq -e 'type == "array"' <<<"$config" >/dev/null 2>&1; then
+  reason=$(first_error)
+  reason=${reason:-team-config diff exited $rc}
+  report config WARN "$reason" "fix what team-config names, then run team-doctor again"
+  report plugins FAIL "unknown, since team-config diff did not answer: $reason" "the config line's fix"
+  report memory WARN "unknown, since team-config diff did not answer: $reason" "the config line's fix"
+else
+  config_others=$(jq -r '[.[] | select(.state != "not installed" and .state != "not added" and .item != "plugins"
+    and (.item | startswith("memory ") | not))
+    | "\(.item) \(.state)"] | join(", ")' <<<"$config")
+  if [[ -z $config_others ]]; then
+    report config PASS "this machine's Claude config is the team home's"
+  else
+    report config WARN "$config_others" \
+      "team-config diff --full, then team-config apply (take the team home's) or team-config capture (keep this machine's)"
+  fi
+  if jq -e 'any(.[]; .item == "plugins")' <<<"$config" >/dev/null; then
+    report plugins FAIL "\`claude plugin list\` did not answer" "install Claude Code and sign in (the tool claude and claude login lines)"
+  else
+    plugins_missing=$(jq -r '[.[] | select(.state == "not installed" or .state == "not added") | .item] | join(", ")' <<<"$config")
+    if [[ -z $plugins_missing ]]; then
+      report plugins PASS "every marketplace and plugin of plugins.txt is installed"
+    else
+      report plugins FAIL "missing $plugins_missing" "$(jq -r '[.[] | select(.state == "not added") | "claude plugin marketplace add \(.item | ltrimstr("marketplace "))"]
+        + [.[] | select(.state == "not installed") | "claude plugin install \(.item | ltrimstr("plugin ")) --scope user"]
+        | join("; ")' <<<"$config")"
+    fi
+  fi
+  memory=$(jq -r '[.[] | select(.item | startswith("memory ")) | "\(.item) \(.state)"] | join(", ")' <<<"$config")
+  if [[ -z $memory ]]; then
+    report memory PASS "every project here keeps its auto memory in the team home"
+  else
+    report memory WARN "$memory" "team-config apply"
+  fi
+fi
+
+# discord: the plugins as claude sees them outside any project.
+rc=0
+plugins=$(cd / && bounded 30 claude plugin list --json 2>/dev/null </dev/null) || rc=$?
+discord=$(jq -r 'map(select(.id == "discord@claude-plugins-official" and .scope == "user"))
+  | if length == 0 then "absent" else (.[0].enabled | tostring) end' <<<"$plugins" 2>/dev/null) || discord=''
+case $discord in
+  false) report discord PASS "the Discord plugin is off in user settings" ;;
+  absent) report discord PASS "the Discord plugin is not installed, so it is off (the plugins line says whether it should be)" ;;
+  true) report discord FAIL "the Discord plugin is on in user settings, so every session logs in to Discord" \
+    "claude plugin disable discord@claude-plugins-official --scope user" ;;
+  *) report discord FAIL "\`claude plugin list\` printed no plugin list (exit $rc)" "install Claude Code and sign in (the tool claude and claude login lines)" ;;
+esac
+
+# own settings: the ones team-config keeps per machine.
+rc=0
+own=$(TEAM_HOME=$TEAM_HOME bounded 30 "$bin/team-config" own --json 2>"$err" </dev/null) || rc=$?
+if ((rc)) || ! jq -e 'type == "array"' <<<"$own" >/dev/null 2>&1; then
+  report "own settings" WARN "$(first_error)" "fix what team-config names, then run team-doctor again"
+else
+  unset_settings=$(jq -r '[.[] | select(.set | not) | .setting] | join(", ")' <<<"$own")
+  if [[ -z $unset_settings ]]; then
+    report "own settings" PASS "$(jq -r '[.[].setting] | join(", ")' <<<"$own") set for this machine"
+  else
+    report "own settings" WARN "$unset_settings not set here, so auto mode's classifier knows nothing of this machine" \
+      "write this machine's own in ~/.claude/settings.json (\`claude auto-mode defaults\` shows the form); team-config keeps it"
+  fi
+fi
+
+# 1password: op as its tool line found it, and the app by its path.
+app=/opt/1Password/1password
+app_fix="install the native 1password package from the AUR (not the Snap or Flatpak), then turn on its Settings > Developer > Integrate with 1Password CLI"
+if [[ $os == macos ]]; then
+  app=/Applications/1Password.app
+  app_fix="brew install --cask 1password, then turn on its Settings > Developer > Integrate with 1Password CLI"
+fi
+app=${TEAM_1PASSWORD_APP:-$app}
+missing=() fixes=()
+[[ -n ${installed[op]:-} ]] || { missing+=("op is not installed"); fixes+=("the tool op line's fix"); }
+[[ -e $app ]] || { missing+=("the 1Password app is not at $app"); fixes+=("$app_fix"); }
+if ((${#missing[@]} == 0)); then
+  report 1password PASS "op and the 1Password app are installed (the vault is not asked)"
+else
+  report 1password WARN "$(printf '%s and ' "${missing[@]}" | sed 's/ and $//'), so team-secrets restore can only ask for each secret to be pasted" \
+    "$(printf '%s; ' "${fixes[@]}" | sed 's/; $//')"
+fi
+
+# secret <id>: team-secrets check, from each file's existence, size and mode alone.
+rc=0
+secrets=$(TEAM_HOME=$TEAM_HOME bounded 30 "$bin/team-secrets" check --json 2>"$err" </dev/null) || rc=$?
+if ((rc > 1)) || ! jq -e 'type == "array"' <<<"$secrets" >/dev/null 2>&1; then
+  reason=$(first_error)
+  report secrets FAIL "${reason:-team-secrets check exited $rc}" "fix what team-secrets names, then run team-doctor again"
+else
+  while IFS=$'\t' read -r id verdict reason; do
+    if [[ $verdict == PASS ]]; then
+      report "secret $id" PASS "in place"
+    elif [[ $reason == "not a file" ]]; then
+      report "secret $id" FAIL "$reason" "move aside what is at its target in machine/secrets.json, then Daniel runs team-secrets restore in their own terminal"
+    else
+      report "secret $id" FAIL "$reason" "Daniel runs team-secrets restore in their own terminal"
+    fi
+  done < <(jq -r '.[] | [.id, .verdict, .reason] | @tsv' <<<"$secrets")
+fi
+
+# per project: team-project refuses a missing or broken registry itself, the first problem first.
+if projects=$(team_project --list 2>"$err"); then
+  while IFS= read -r project; do check_project "$project"; done <<<"$projects"
+else
+  report projects FAIL "$(first_error)" "fix what team-project names (team-project --check), then run team-doctor again"
+fi
+
+# clock
+github_date=$(bounded 30 curl -sSI --max-time 20 https://api.github.com 2>/dev/null </dev/null |
+  awk 'tolower($1) == "date:" { sub(/^[^:]*:[ \t]*/, ""); sub(/\r$/, ""); print; exit }') || github_date=''
+if [[ -n $github_date ]] && github_epoch=$(date -d "$github_date" +%s 2>/dev/null); then
+  skew=$((github_epoch - $(date +%s)))
+  if ((skew > 60)); then
+    direction=behind
+  elif ((skew < -60)); then
+    direction="ahead of" skew=$((-skew))
+  else
+    direction=''
+  fi
+  if [[ -z $direction ]]; then
+    report clock PASS "within 60 s of GitHub's"
+  else
+    clock_fix="sudo timedatectl set-ntp true"
+    [[ $os != macos ]] || clock_fix="sudo systemsetup -setusingnetworktime on"
+    report clock WARN "this clock is $skew s $direction GitHub's" "$clock_fix"
+  fi
+else
+  report clock WARN "cannot read the Date of https://api.github.com" "check the network, then run team-doctor again"
+fi
+
+# lease: team-lease needs the machine's name, whose own line says how to write it. holding is
+# yes or no once the lease is confirmed.
+rc=0 holding=''
+if [[ -z $machine ]]; then
+  rc=no-name
+elif fenced=$(fence_reason); then
+  rc=fenced
+else
+  lease=$(TEAM_HOME=$TEAM_HOME "$bin/team-lease" status --json 2>"$err" </dev/null) || rc=$?
+fi
+case $rc in
+  no-name) report lease FAIL "this machine has no team name to read the lease with" "the machine line's fix, then run team-doctor again" ;;
+  fenced)
+    holding=no
+    report lease FAIL "$fenced" "hand off on the machine that holds the lease, then team-resume here (its take clears the fence)"
+    ;;
+  0)
+    read -r state holder epoch age mine < <(jq -r '[.state, .holder // "-", .epoch, .age_minutes // "-", .mine]
+      | map(tostring) | join(" ")' <<<"$lease")
+    holding=no
+    if [[ $state == held && $mine == true ]]; then
+      holding=yes
+      report lease PASS "held here, epoch $epoch"
+    elif [[ $state == held ]]; then
+      report lease WARN "held by $holder, epoch $epoch, renewed $age minutes ago" "hand off on $holder, then team-resume here"
+    else
+      report lease WARN "released, epoch $epoch" "team-lease take, with Daniel's yes"
+    fi
+    ;;
+  75) report lease FAIL "GitHub unreachable, so the lease is unconfirmed" "check the network, then run team-doctor again" ;;
+  *) report lease FAIL "$(first_error)" "fix what team-lease names, then run team-doctor again" ;;
+esac
+
+# salvage: on a fenced machine, each open task's worktree here holding what origin lacks.
+if [[ $rc == fenced ]]; then
+  salvage=0
+  if [[ -e $TEAM_HOME/ledger.jsonl ]]; then
+    while IFS=$'\t' read -r task project wt; do
+      top=$(git -C "$wt" rev-parse --show-toplevel 2>/dev/null) || continue
+      [[ $(realpath -m -- "$top") == "$(realpath -m -- "$wt")" ]] || continue
+      # Commits on no origin branch: a checkpoint's wip/T<n> is not one, since the next
+      # checkpoint replaces it and team-close deletes it.
+      count=$(git -C "$wt" rev-list --count HEAD --not --exclude='origin/wip/*' --remotes=origin)
+      mapfile -t found < <(worktree_changes "$wt")
+      ((count > 0 || ${#found[@]} > 0)) || continue
+      salvage=1
+      shown=$(tilde "$wt")
+      what=()
+      ((count == 0)) || what+=("$count commit$( ((count == 1)) || echo s) on no origin branch")
+      ((${#found[@]} == 0)) || what+=("uncommitted changes ($(printf '%s; ' "${found[@]}" | sed 's/; $//'))")
+      push="git -C $shown push origin HEAD:refs/heads/salvage/$task-$machine"
+      ((${#found[@]} == 0)) ||
+        push="git -C $shown add -A && git -C $shown commit -m \"wip: salvage from $machine\", then $push"
+      report "salvage $task $project" FAIL "$shown has $(printf '%s and ' "${what[@]}" | sed 's/ and $//')" "$push"
+    done < <(ledger_jq 'ledger_events | by_task | to_entries | sort_by(.key[1:] | tonumber) | .[]
+      | select(.value | task_status == "open") | .key as $task | open_worktrees(.value[]; $home)
+      | [$task, .project, .worktree] | @tsv' -nRr "$TEAM_HOME/ledger.jsonl")
+  fi
+  ((salvage)) || report salvage PASS "no task worktree here holds commits or changes origin lacks"
+fi
+
+# heartbeat: enabled exactly when this machine holds the lease.
+rc=0
+timers=$(TEAM_HOME=$TEAM_HOME "$bin/team-timers" status --json 2>"$err" </dev/null) || rc=$?
+if ((rc)); then
+  report heartbeat FAIL "$(first_error)" "fix what team-timers names, then run team-doctor again"
+else
+  enabled=disabled
+  [[ $(jq -r .enabled <<<"$timers") != true ]] || enabled=enabled
+  case $enabled-$holding in
+    enabled-yes) report heartbeat PASS "enabled, and this machine holds the lease" ;;
+    disabled-no) report heartbeat PASS "disabled, and this machine does not hold the lease" ;;
+    enabled-no) report heartbeat FAIL "enabled, but this machine does not hold the lease" "team-timers disable" ;;
+    disabled-yes) report heartbeat FAIL "disabled, but this machine holds the lease" "team-timers enable" ;;
+    *) report heartbeat WARN "$enabled, but whether it should be waits on the lease line" "the lease line's fix, then run team-doctor again" ;;
+  esac
+fi
+
+# offline: the heartbeat's flag, written when a probe of GitHub failed twice.
+offline=$HOME/.local/state/agent-team/offline
+if [[ -e $offline ]]; then
+  since=$(jq -er '.since | strings' "$offline" 2>/dev/null) || since=$(date -u -r "$offline" +%FT%TZ)
+  report offline WARN "offline since $since ($((($(date +%s) - $(date -d "$since" +%s)) / 60)) minutes)" \
+    "check this machine's network; the heartbeat resumes the team when GitHub answers"
+else
+  report offline PASS "the team is not holding for an outage"
+fi
+
+if ((json)); then printf '%s\n' "${results[@]}" | jq -s .; fi
+exit "$failed"

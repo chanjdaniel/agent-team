@@ -271,9 +271,55 @@ TOML
     "[\"$HOME/agent-team/.claude/worktrees/1\",\"$HOME/agent-team/.claude/worktrees/2\",\"$HOME/agent-team/.claude/worktrees/3\",\"$HOME/agent-team/.claude/worktrees/4\",\"$HOME/agent-team/.claude/worktrees/5\"]"
 }
 
-@test "the team home's required checks are the jobs of its CI workflow" {
+@test "the team home's PRs to dev are checked locally: tests/run, and no GitHub check" {
   cp "$REPO_ROOT/projects.toml" "$TEAM_HOME/projects.toml"
+  run_bin -0 team-project agent-team local_checks
+  assert_equal "$(jq -c . <<<"$output")" '["tests/run"]'
   run_bin -0 team-project agent-team required_checks
-  assert_equal "$(jq -r '.[]' <<<"$output" | sort)" \
-    "$(sed -n '/^jobs:$/,/^[^ ]/s/^  \([a-z][a-z0-9_-]*\):$/\1/p' "$REPO_ROOT/.github/workflows/ci.yml" | sort)"
+  assert_equal "$(jq -c . <<<"$output")" '[]'
+  # Conventioner has none: its PRs are checked on GitHub.
+  run_bin -0 team-project conventioner local_checks
+  assert_equal "$(jq -c . <<<"$output")" '[]'
+}
+
+@test "local_checks is optional, defaults to none, and must be one-line commands" {
+  run_bin -0 team-project alpha local_checks
+  assert_equal "$(jq -c . <<<"$output")" '[]'
+  sed -i 's|^toolkits = \[\]$|toolkits = []\nlocal_checks = ["tests/run", "make lint"]|' "$TEAM_HOME/projects.toml"
+  run_bin -0 team-project --check
+  run_bin -0 team-project beta local_checks
+  assert_equal "$(jq -c . <<<"$output")" '["tests/run","make lint"]'
+  run_bin -0 team-project --find local_checks "make lint"
+  assert_equal "$output" $'alpha\nbeta'
+
+  registry <<'TOML'
+[alpha]
+repo = "owner/alpha"
+path = "alpha"
+base = "main"
+delivery = "direct-pr"
+merge_method = "merge"
+required_checks = []
+local_checks = "tests/run"
+task_dir = ".scratch/task"
+docs = []
+toolkits = []
+pool = { provider = "git", slots = ["alpha/1"] }
+
+[beta]
+repo = "owner/beta"
+path = "beta"
+base = "main"
+delivery = "direct-pr"
+merge_method = "merge"
+required_checks = []
+local_checks = ["tests/run", " ", "a\nb"]
+task_dir = ".scratch/task"
+docs = []
+toolkits = []
+pool = { provider = "git", slots = ["beta/1"] }
+TOML
+  run_bin -1 --separate-stderr team-project --check
+  assert_contains "$stderr" "alpha.local_checks: must be a list of strings"
+  assert_contains "$stderr" "beta.local_checks: each command must be one line, not empty"
 }

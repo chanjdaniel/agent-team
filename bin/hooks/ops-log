@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# PreToolUse, PostToolUse and PostToolUseFailure hook for the ops role: appends every production
+# tool call to the task's ops log, so the record does not depend on the agent.
+#
+# Usage: ops-log <task dir>   (the team home's tasks/<task>/; Claude Code sends the event on stdin)
+#
+# Each event is one Markdown list line in <task dir>/ops-log.md, created with a header naming the
+# task: UTC time, requested, ran or failed, the toolkit, the tool and its input as compact JSON,
+# with every email-shaped string replaced by <email> and every phone-number-shaped one (7 to 15
+# digits with + ( ) . - or spaces between, or 7 to 12 bare digits; never a date, a UUID's part or an
+# epoch in milliseconds) by <phone>. A failed line adds the error's first line, masked the same way;
+# no line holds the tool's result. Lines are appended under a lock on the log.
+# A requested write with no ran or failed line after it was declined.
+#
+# A prod-write call whose requested line cannot be appended is blocked (exit 2, the reason on
+# stderr); so is any call the hook cannot tell is a prod-read one. For a read the failure is
+# reported on stderr and the call goes ahead. After a write, a lost line is shown to the agent.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/team.sh" "$@"
+
+[[ $# -eq 1 && -n $1 ]] || usage_error "usage: ops-log <task dir>"
+dir=${1%/}
+task=${dir##*/}
+log=$dir/ops-log.md
+input=$(cat)
+
+# An email-shaped string, also with its dots escaped as in a regular expression (a\.b@c\.org).
+email_re='[A-Za-z0-9._%+\\-]+@[A-Za-z0-9-]+(\\?\.[A-Za-z0-9-]+)+'
+# A phone-number-shaped string: digits with + ( ) . - or spaces between, not inside a word, a
+# UUID or an ISO date; it is masked only when it holds 7 to 15 digits, or 7 to 12 when it is bare
+# digits, which keeps an epoch in milliseconds (13 digits).
+phone_re='(?<![\w+.-])(?!\d{4}-\d{2}-\d{2})(?<p>\+?\(?\d[\d ().-]{5,}\d)(?![\w-])'
+
+# The event's facts, one per line: time, what happened, toolkit, tool, masked input, masked first
+# line of the error. Nothing when the input is not a tool event.
+facts=$(jq -r --arg re "$email_re" --arg phone "$phone_re" '
+  def phones: gsub($phone; (.p | gsub("[^0-9]"; "") | length) as $n
+    | if $n >= 7 and $n <= (if .p | test("^[0-9]+$") then 12 else 15 end) then "<phone>" else .p end);
+  def mask: if type == "string" then gsub($re; "<email>") | phones
+    elif type == "object" then with_entries(.key |= mask | .value |= mask)
+    elif type == "array" then map(mask) else . end;
+  (.tool_name | strings | ltrimstr("mcp__") | split("__")) as $parts
+  | ($parts[:-1] | join("__")) as $server
+  | {PreToolUse: "requested", PostToolUse: "ran", PostToolUseFailure: "failed"}[.hook_event_name] as $what
+  | select($what != null and ($parts | length) > 1)
+  | (now | todate),
+    $what,
+    (if $server == "prod-read" or $server == "plugin_prod-read_prod-read" then "prod-read"
+     elif $server == "prod-write" or $server == "plugin_prod-write_prod-write" then "prod-write"
+     else $server end),
+    $parts[-1],
+    (.tool_input | mask | tojson),
+    (.error // "" | tostring | split("\n")[0] | mask)' <<<"$input" 2>/dev/null) || facts=''
+event=$(jq -r '.hook_event_name // empty' <<<"$input" 2>/dev/null) || event=''
+
+# <text> as one Markdown code span, its fence longer than any run of backticks inside it.
+code_span() {
+  local fence='`' pad=''
+  while [[ $1 == *"$fence"* ]]; do fence+='`'; done
+  [[ $1 != '`'* && $1 != *'`' ]] || pad=' '
+  printf '%s%s%s%s%s' "$fence" "$pad" "$1" "$pad" "$fence"
+}
+
+# Append the event's line, writing the header first into an empty log.
+append() {
+  local time what toolkit tool tool_input error line
+  [[ -n $facts ]] || return 1
+  { IFS= read -r time && IFS= read -r what && IFS= read -r toolkit && IFS= read -r tool &&
+    IFS= read -r tool_input && IFS= read -r error; } <<<"$facts" || return 1
+  line="- $time $what $(code_span "$toolkit") $(code_span "$tool") $(code_span "$tool_input")"
+  [[ $what != failed ]] || line+=" error $(code_span "$error")"
+  {
+    flock -x 9 &&
+      { [[ -s $log ]] || printf '# Ops log of %s\n\n' "$task" >&9; } &&
+      printf '%s\n' "$line" >&9
+  } 2>/dev/null 9>>"$log"
+}
+
+if append; then exit 0; fi
+
+read=false
+[[ $(sed -n 3p <<<"$facts") != prod-read ]] || read=true
+case $event in
+  PostToolUse | PostToolUseFailure)
+    if $read; then
+      echo "ops-log: could not log this production read's result line to $log" >&2
+      exit 0
+    fi
+    [[ $event == PostToolUse ]] && what=ran || what=failed
+    echo "ops-log: this production write $what but could not be logged to $log; say so in your report." >&2
+    exit 2
+    ;;
+  *)
+    if $read; then
+      echo "ops-log: could not log this production read to $log" >&2
+      exit 0
+    fi
+    echo "Blocked: this production write could not be logged to $log, so it does not run." >&2
+    exit 2
+    ;;
+esac

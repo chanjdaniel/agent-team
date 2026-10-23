@@ -12,6 +12,8 @@ Task directory: `{{task_dir}}/` in the worktree: `spec.md`, `tickets/`, `build-n
 
 ## Deliver
 
+- Local checks: {{local_checks}}.
+  Run each from the worktree's root on `{{head}}` and say in `{{task_dir}}/review.md` whether it passed; a failure is **blocking**, and they set no GitHub status.
 - Write your findings to `{{task_dir}}/review.md`, each with its file and line and marked **blocking** or **note**; the PR comment is that file, posted with this exact command, the only comment your settings allow: `{{team_bin}}/team-review-comment {{pr}} {{task_dir}}/review.md`.
 - The status on the head you reviewed, with this exact command, the only status your settings allow: `{{team_bin}}/team-review-status {{pr}} {{head}} <success|failure> "<one line, at most 140 characters>"`.
   It sets the status on `{{head}}`, the head you reviewed, and refuses when the PR has moved past it: then set nothing and tell the coordinator.

@@ -8,12 +8,38 @@ setup() {
 }
 
 # tasks/ and projects/ hold history imported as written, so they keep their own text.
-@test "no em dash in tracked Markdown or templates outside tasks/ and projects/" {
+@test "no em dash in tracked Markdown or templates outside tasks/, projects/ and machine/claude/" {
   local files hits
-  files=$(git -C "$REPO_ROOT" ls-files -- '*.md' 'templates/**' ':!:tasks/**' ':!:projects/**')
+  files=$(git -C "$REPO_ROOT" ls-files -- '*.md' 'templates/**' ':!:tasks/**' ':!:projects/**' ':!:machine/claude/**')
   [[ -n $files ]]
   hits=$(cd "$REPO_ROOT" && xargs -d '\n' grep -n $'—' -- <<<"$files" || true)
   assert_equal "$hits" ""
+}
+
+# The machine docs: Daniel's sentence, the setup entry point, the SOPs and Daniel's steps.
+MACHINE_DOCS=(README.md SETUP.md sops/machine-setup.md sops/portability.md manual-steps.md)
+
+@test "the machine docs name only commands in bin/, with options and subcommands their --help knows" {
+  local doc span cmd i found=0 missing=() words
+  for doc in "${MACHINE_DOCS[@]}"; do
+    # Each code span's team command and what follows it: `~/agent-team/bin/team-lease take --steal`.
+    while IFS= read -r span; do
+      found=$((found + 1))
+      read -ra words <<<"$span"
+      cmd=${words[0]}
+      [[ -x $REPO_ROOT/bin/$cmd ]] || { missing+=("$doc: $cmd is not in bin/"); continue; }
+      run_bin -0 "$cmd" --help </dev/null
+      # Every option, and a subcommand right after the command (`team-config diff --full`).
+      for i in "${!words[@]}"; do
+        ((i)) || continue
+        [[ ${words[i]} == --?* ]] || { ((i == 1)) && [[ ${words[i]} =~ ^[a-z]+$ ]]; } || continue
+        grep -qwF -- "${words[i]}" <<<"$output" || missing+=("$doc: $span (${words[i]})")
+      done
+    done < <(grep -oE '`[^`]*`' "$REPO_ROOT/$doc" | tr -d '`' |
+      grep -oE '(^|[ /])(team-[a-z]+(-[a-z]+)*|claude-coordinator)( [^ ]+)*' | sed -E 's#^[ /]##')
+  done
+  assert_equal "$(printf '%s\n' "${missing[@]}")" ""
+  ((found >= 20))
 }
 
 @test "every executable in bin/ answers --help with its header and exit 0" {
@@ -26,6 +52,23 @@ setup() {
     assert_equal "${lines[0]}" "$header"
   done < <(cd "$REPO_ROOT/bin" && find . -type f -perm -u+x -printf '%P\n' | sort)
   ((found >= 5))
+}
+
+# Only Daniel's own terminal runs op (team-secrets restore and save), and only the ops role's
+# production servers fetch a credential, each through Daniel's 1Password prompt: every other
+# session is denied the 1Password CLI and other processes' environments.
+@test "the worker and coordinator settings deny the 1Password CLI and /proc environment reads" {
+  local file rule
+  for file in settings/worker.json coordinator.settings.json; do
+    for rule in 'Bash(op *)' 'Bash(* op *)' 'Bash(*op read*)' 'Bash(*op run*)' 'Bash(*op item*)' \
+      'Bash(*op document*)' 'Bash(*/proc/*/environ*)' 'Read(//proc/**)'; do
+      jq -e --arg r "$rule" '.permissions.deny | index($r) != null' "$REPO_ROOT/$file" >/dev/null ||
+        { echo "$file does not deny $rule" >&2; return 1; }
+    done
+    denied_in "$REPO_ROOT/$file" 'op read op://agent-team/discord-bot-env/.env'
+    denied_in "$REPO_ROOT/$file" 'cd ~ && op document get discord-bot-env --vault agent-team'
+    ! denied_in "$REPO_ROOT/$file" 'team-secrets check'
+  done
 }
 
 # The settings every session starts with: the coordinator's and the workers' shared ones.
@@ -61,7 +104,7 @@ assert_denies() {
   done
 }
 
-# The deny rules are a speed bump, not the guard: git's hooks and the Dev records workflow are
+# The deny rules are a speed bump, not the guard: git's hooks and team-merge's records check are
 # (CLAUDE.md). Each rule matches the commands it is for; the commands below them stay allowed.
 
 @test "the git hooks' deny rule: --no-verify last, on any git command" {
@@ -120,6 +163,55 @@ assert_denies() {
     'gh api repos/me/shop/git/refs -f ref=refs/heads/x -f sha=a1b2c3d'; do
     denied settings/worker.json "$command" || { echo "not denied: $command" >&2; return 1; }
   done
+}
+
+# The production servers' launcher runs op read itself, so a shell that starts it raises the same
+# 1Password prompt as an ops launch: every session is denied starting it, directly or through a
+# claude session given a production toolkit.
+@test "starting a production server from a shell is denied to every session" {
+  assert_denies 'Bash(*start-server.mjs*)' 'node /home/me/agent-team/toolkits/prod-write/scripts/start-server.mjs' \
+    'cd toolkits/prod-read/scripts && node start-server.mjs'
+  assert_denies 'Bash(*mongodb-mcp*)' 'node -e "import(\"/home/me/agent-team/servers/mongodb-mcp.mjs\")"' \
+    'node servers/mongodb-mcp.mjs prod-read'
+  assert_denies 'Bash(*--plugin-dir*prod-*)' 'claude -p hi --plugin-dir /home/me/agent-team/toolkits/prod-read' \
+    'claude --bg --plugin-dir=toolkits/prod-write'
+  assert_denies 'Bash(*--mcp-config*prod-*)' 'claude -p hi --mcp-config toolkits/prod-read/.mcp.json' \
+    'claude --strict-mcp-config --mcp-config /home/me/agent-team/tasks/T5/mcp.prod-write.json'
+}
+
+# Only the coordinator launches an ops session, on Daniel's request: a worker is denied team-worker's
+# ops role and the ops load check, while its own test runs of those scripts stay allowed.
+@test "an ops launch and the ops load check are denied to workers, and stay the coordinator's" {
+  local command rule
+  for rule in 'Bash(*team-worker *ops *)' 'Bash(*team-load-check *ops*)'; do
+    jq -e --arg r "$rule" '.permissions.deny | index($r)' "$REPO_ROOT/settings/worker.json" >/dev/null ||
+      { echo "settings/worker.json lacks the deny rule $rule" >&2; return 1; }
+  done
+  while IFS= read -r command; do
+    denied settings/worker.json "$command" || { echo "a worker may run: $command" >&2; return 1; }
+    if denied coordinator.settings.json "$command"; then echo "the coordinator may not run: $command" >&2; return 1; fi
+  done <<'COMMANDS'
+/home/me/agent-team/bin/team-worker T5 ops /home/me/slots/proj-1 --toolkit prod-read --request https://discord.com/channels/1/2/3 -- "$(cat /home/me/agent-team/tasks/T5/brief-ops.md)"
+team-worker "T5" ops /home/me/slots/proj-1 --toolkit prod-read --request x -- go
+/home/me/agent-team/bin/team-load-check --role ops --worktree /home/me/slots/proj-1 --toolkit prod-read
+team-load-check --role=ops --worktree /home/me/slots/proj-1 --toolkit prod-read --toolkit prod-write
+COMMANDS
+}
+
+@test "a worker's own work on the production toolkits and their tests stays allowed" {
+  local command
+  while IFS= read -r command; do
+    if denied settings/worker.json "$command"; then echo "settings/worker.json denies: $command" >&2; return 1; fi
+  done <<'COMMANDS'
+node --test tests/toolkits/prod-read.test.mjs --test-name-pattern 'the launcher refuses'
+tests/run toolkits
+tests/vendor/bats-core/bin/bats tests/team-worker.bats -f 'an ops session'
+tests/vendor/bats-core/bin/bats tests/team-load-check.bats -f 'the ops form'
+claude plugin validate --strict toolkits/prod-read
+git add toolkits/prod-write/skills/changing-production-data/SKILL.md
+git diff origin/dev -- toolkits/prod-read
+/home/me/agent-team/bin/team-worker T5 builder /home/me/slots/proj-1 -- "Read your brief"
+COMMANDS
 }
 
 @test "plain commits, pushes, config and searches for the rules' words stay allowed for every session" {
@@ -190,12 +282,30 @@ team-review-status https://github.com/me/shop/pull/5 a1b2c3d4e5f60718293a4b5c6d7
 COMMANDS
 }
 
-@test "the dev-records workflow's paths-ignore lists exactly bin/lib/records' globs" {
-  local ignored records
-  ignored=$(sed -n '/^    paths-ignore:/,/^[^ ]/s/^      - //p' "$REPO_ROOT/.github/workflows/dev-records.yml")
-  records=$(grep -v -e '^#' -e '^$' "$REPO_ROOT/bin/lib/records")
-  [[ -n $records ]]
-  assert_equal "$ignored" "$records"
+@test "GitHub's CI runs only on a pull request to main and by hand, and no workflow runs for dev" {
+  local workflow
+  # CI policy B: the top-level keys under on:, and the branches its pull_request names.
+  assert_equal "$(sed -n '/^on:$/,/^[^ ]/s/^  \([a-z_]*\):.*$/\1/p' "$REPO_ROOT/.github/workflows/ci.yml")" \
+    $'pull_request\nworkflow_dispatch'
+  assert_equal "$(sed -n '/^on:$/,/^[^ ]/s/^    branches: //p' "$REPO_ROOT/.github/workflows/ci.yml")" "[main]"
+  for workflow in "$REPO_ROOT"/.github/workflows/*.yml; do
+    if grep -nE '^\s*(push|pull_request_target|schedule):' "$workflow" || grep -nE 'branches: .*\bdev\b' "$workflow"; then
+      echo "$workflow runs for dev" >&2
+      return 1
+    fi
+  done
+}
+
+# The README's inventory is pasted from the ops load check; the eval mocks' _tools.json, which the
+# toolkit tests hold to the server's own tools/list, says what it must still be.
+@test "each production toolkit's README inventory is exactly its server's tools" {
+  local kit listed want
+  for kit in prod-read prod-write; do
+    listed=$(sed -n '/^```text$/,/^```$/p' "$REPO_ROOT/toolkits/$kit/README.md" | grep '^mcp__' | sort)
+    want=$(jq -r --arg kit "$kit" '.tools[] | "mcp__\($kit)__\(.name)"' "$REPO_ROOT/toolkits/$kit/evals/mocks/$kit/_tools.json" | sort)
+    [[ -n $want ]]
+    assert_equal "$listed" "$want"
+  done
 }
 
 # The problems with the gotchas SOP <file>, one per line, given the registry's project names:

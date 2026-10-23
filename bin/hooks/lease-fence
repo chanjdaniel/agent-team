@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# PreToolUse hook that keeps a machine that lost the lease from acting: exit 2 blocks the tool
+# call and shows stderr to the agent; anything else passes at once.
+#
+# Usage: lease-fence [--coordinator]   (the hook's input on stdin; --coordinator on its Bash)
+#   Discord (the coordinator's reply, react and edit_message): blocked while this machine is
+#     fenced, or when the lease on origin is not this machine's last write and names another
+#     holder or a higher epoch, so an old coordinator never answers in the channel the new one
+#     owns, even before its heartbeat fences it. Origin is asked at most once a minute (git
+#     ls-remote, cached in probe.json); unreachable passes, since the heartbeat owns offline.
+#   Bash (workers): a command that runs git push is blocked while this machine is fenced; while
+#     the team holds offline, one that runs git push, gh or gh-axi is blocked with the hold
+#     ("GitHub is unreachable (since 13:05); the team is holding: ..."), so no worker retries.
+#   Bash (the coordinator, --coordinator): a command that runs git push, team-merge, team-open
+#     or team-close is blocked as a Discord post is, so a coordinator left running on a machine
+#     that lost the lease merges, opens, closes and pushes nothing while the holder's does.
+# Reads, in ~/.local/state/agent-team/: fenced and lease.json (team-lease's), offline (team-timers
+# run's: {"since": "<UTC time>", ...}), and probe.json, the last probe of origin's lease branch:
+# {"checked_at": "<UTC time>", "reachable": true, "tip": "<commit>"}.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/team.sh" "$@"
+
+# Seconds a probe is good for, and the most one may take.
+PROBE_MAX_AGE=60
+PROBE_TIMEOUT=20
+
+role=worker
+case ${1:-} in
+  '') ;;
+  --coordinator) role=coordinator ;;
+  # Exit 1, not 2: a hook's exit 2 would block every call it sees.
+  *) echo "lease-fence: usage: lease-fence [--coordinator]" >&2 && exit 1 ;;
+esac
+input=$(cat)
+tool=$(jq -r '.tool_name // empty' <<<"$input")
+state=$HOME/.local/state/agent-team
+named=1
+machine=$(machine_name 2>/dev/null) || machine="this machine" named=0
+
+# A git call that reaches origin: it never prompts and gives up after PROBE_TIMEOUT seconds.
+origin_git() {
+  GIT_TERMINAL_PROMPT=0 timeout "$PROBE_TIMEOUT" git -C "$TEAM_HOME" "$@" 2>/dev/null </dev/null
+}
+
+# Set TIP to the tip of origin's lease branch (empty when there is none), from a probe at most a
+# minute old, or a new one, and PROBED to 1 when this call asked origin; fails when origin was
+# unreachable.
+lease_tip() {
+  local probe=$state/probe.json out reachable=true
+  PROBED=0
+  if jq -e --argjson max "$PROBE_MAX_AGE" 'now - (.checked_at | fromdateiso8601) < $max' "$probe" >/dev/null 2>&1; then
+    TIP=$(jq -er 'select(.reachable == true) | .tip // ""' "$probe") || return 1
+    return 0
+  fi
+  PROBED=1
+  out=$(origin_git ls-remote origin refs/heads/lease) || reachable=false
+  TIP=${out%%[[:space:]]*}
+  mkdir -p "$state"
+  jq -n --argjson reachable "$reachable" --arg tip "$TIP" \
+    '{checked_at: (now | floor | todate), reachable: $reachable} + if $reachable then {tip: $tip} else {} end' \
+    >"$probe.$$"
+  mv -f "$probe.$$" "$probe"
+  [[ $reachable == true ]]
+}
+
+# Why a Discord post must not go out, or fail when it may: a machine with no name or no origin
+# cannot tell, and passes.
+lost_lease() {
+  local tip record lease
+  ((named)) || return 1
+  git -C "$TEAM_HOME" remote get-url origin >/dev/null 2>&1 || return 1
+  lease_tip || return 1
+  tip=$TIP
+  [[ -n $tip ]] || return 1
+  record=$(jq -c 'select(type == "object")' "$state/lease.json" 2>/dev/null) || record=''
+  [[ -n $record ]] || record='{}'
+  [[ $tip != "$(jq -r '.commit // empty' <<<"$record")" ]] || return 1
+  # Fetched without moving a ref (no FETCH_HEAD, no refmap), so team-lease's refs are never raced.
+  git -C "$TEAM_HOME" cat-file -e "$tip^{commit}" 2>/dev/null ||
+    { ((PROBED)) && origin_git fetch -q --no-tags --no-write-fetch-head --refmap= origin refs/heads/lease; } || return 1
+  lease=$(git -C "$TEAM_HOME" show "$tip:lease.json" 2>/dev/null) || return 1
+  jq -er --arg machine "$machine" --argjson record "$record" '
+    select(.holder != $machine or ($record.holder == $machine and .epoch > $record.epoch))
+    | "\($machine) no longer holds the lease: origin names \(.holder) (\(.state), epoch \(.epoch))"' \
+    <<<"$lease" 2>/dev/null
+}
+
+block() {
+  echo "Blocked: $1" >&2
+  exit 2
+}
+
+case $tool in
+  mcp__plugin_discord_discord__reply | mcp__plugin_discord_discord__react | mcp__plugin_discord_discord__edit_message)
+    why=$(fence_reason) && block "$machine is $why: a fenced machine posts nothing to Discord; the coordinator on the holder answers there."
+    why=$(lost_lease) && block "$why: a machine that lost the lease posts nothing to Discord; the coordinator on the holder answers there."
+    ;;
+  Bash)
+    command=$(jq -r '.tool_input.command // empty' <<<"$input")
+    push='(^|[^[:alnum:]_.-])git([[:space:]]+(-[Cc][[:space:]]+[^[:space:]]+|-[^[:space:]]+))*[[:space:]]+push([[:space:]]|$)'
+    # gh or gh-axi where a command starts: at the start, after a separator or a line break, past
+    # any variable assignments and a directory.
+    gh=$'(^|[;&|(`\n])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|]*/)?gh(-axi)?([[:space:]]|$)'
+    # The team commands that write to GitHub and the ledger, where a command starts, as gh.
+    team_write=$'(^|[;&|(`\n])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|]*/)?team-(merge|open|close)([[:space:]]|$)'
+    if [[ $role == coordinator ]]; then
+      if [[ $command =~ $push || $command =~ $team_write ]]; then
+        why=$(fence_reason) && block "$machine is $why: a fenced machine pushes, merges, opens and closes nothing; the coordinator on the holder does."
+        why=$(lost_lease) && block "$why: a machine that lost the lease pushes, merges, opens and closes nothing; the coordinator on the holder does."
+      fi
+    elif why=$(fence_reason); then
+      [[ ! $command =~ $push ]] ||
+        block "$machine is $why: a fenced machine pushes nothing; commit locally and stop."
+    elif [[ -e $state/offline ]]; then
+      if [[ $command =~ $push || $command =~ $gh ]]; then
+        since=$(jq -er '.since | strings' "$state/offline" 2>/dev/null) || since=$(date -u -r "$state/offline" +%FT%TZ)
+        block "GitHub is unreachable (since $(date -d "$since" +%H:%M)); the team is holding: commit locally, write handoff.md, send T<n> PAUSED offline, and wait."
+      fi
+    fi
+    ;;
+esac
+exit 0
