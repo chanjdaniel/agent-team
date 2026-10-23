@@ -2,6 +2,8 @@
   "crossSessionInbound": "accept",
   "remoteControlAtStartup": true,
   "inputNeededNotifEnabled": true,
+  "disableBundledSkills": true,
+  "disableSkillShellExecution": true,
   "permissions": {
     "allow": ["mcp__prod-read__*", "Edit(./.scratch/**)"],
     "ask": [

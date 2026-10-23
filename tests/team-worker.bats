@@ -341,6 +341,12 @@ assert_prod_write_gated() {
   # The same for the push of a permission prompt to Daniel's phone: without these no write
   # prompt reached it (T16 ticket 08's first live run).
   assert_equal "$(jq -c '[.remoteControlAtStartup, .inputNeededNotifEnabled]' "$s")" '[true,true]'
+  # The Skill tool is there for the toolkits' skills only: without this the bundled skills and the
+  # built-in commands the Skill tool reaches (/init, /security-review) came too (T16 ticket 09's
+  # live check).
+  assert_equal "$(jq -r .disableBundledSkills "$s")" true
+  # A skill's inline shell would run a command in a role that has no shell.
+  assert_equal "$(jq -r .disableSkillShellExecution "$s")" true
   assert_equal "$(jq -r '.hooks.PreToolUse[0] | "\(.matcher) \(.hooks[0].command)"' "$s")" \
     "Edit|Write|MultiEdit|NotebookEdit $REPO_ROOT/bin/hooks/scratch-only-edits"
   # The ops log goes to the team home's task directory, which is not this checkout's in a test.
