@@ -930,6 +930,8 @@ EOF
   git -C "$SITE" switch -q -c feat/ahead --track origin/main
   git -C "$SITE" commit -q --allow-empty -m "feat: one"
   git -C "$SITE" commit -q --allow-empty -m "feat: two"
+  # A checkpoint's wip/T<n> holding feat/ahead's head is no origin branch: it still warns.
+  git -C "$SITE" update-ref refs/remotes/origin/wip/T7 feat/ahead
   git -C "$SITE" switch -q main
   echo changed >>"$SITE/README.md"
   echo note >"$SITE/notes.txt"

@@ -7,7 +7,7 @@
 # --help with the calling script's header (then runs the script's help_more, if it defined one
 # before sourcing), and provides die, usage_error, team_project, ledger_jq, ledger_append,
 # task_events, known_task_events, open_task_events, task_status, task_worktrees, local_path,
-# archive_task_dir, machine_name, fence_reason, lease_gate, worktree_changes, worktree_tree, non_records, commit_non_records,
+# archive_task_dir, machine_name, fence_reason, lease_gate, worktree_changes, worktree_tree, snapshot_message, is_snapshot, non_records, commit_non_records,
 # records_list, origin_git, origin_reason, commit_records, render_template, registered_pr,
 # attribution_lines, strip_attribution, live_sessions, discord_token, discord_api, github, pr_part
 # and task_state_json, and sets COORDINATOR_CHANNEL.
@@ -204,6 +204,22 @@ worktree_tree() {
     rm -f "$copy"
     return 1
   fi
+}
+
+# The message of a checkpoint's snapshot commit, which marks it as one (is_snapshot):
+# snapshot_message <task> <machine> <UTC time>
+snapshot_message() {
+  printf 'wip: %s checkpoint on %s at %s\n' "$1" "$2" "$3"
+}
+
+# Whether <commit> in the repository <dir> is a checkpoint's snapshot of <task>'s uncommitted
+# changes (one parent, snapshot_message's subject) rather than a branch head that a checkpoint of
+# a clean worktree pushed as wip/<task>: is_snapshot <dir> <commit> <task>
+is_snapshot() {
+  local subject
+  [[ $(git -C "$1" rev-list --parents -n 1 "$2" | wc -w) == 2 ]] || return 1
+  subject=$(git -C "$1" log -1 --format=%s "$2")
+  [[ $subject =~ ^wip:\ $3\ checkpoint\ on\ [a-z0-9-]+\ at\ [0-9T:-]+Z$ ]]
 }
 
 # The records as a reader's list: "ledger.jsonl, manual-steps.md, tasks/, ...".

@@ -12,11 +12,13 @@
 #   2. Its task directory is mirrored into tasks/T<n>/scratch/ (the project the task was opened
 #      in) or tasks/T<n>/scratch-<project>/ (one added later), as team-close does; a missing or
 #      empty one is reported on stderr and archives nothing.
-#   3. Its uncommitted changes (tracked or untracked; ignored files excluded) become a snapshot
-#      commit, built from a temporary index with the worktree's HEAD as parent, pushed to
-#      refs/heads/wip/T<n> on the project's origin in place of what is there: the one forced
-#      push, a script's, never on a task branch. Origin's snapshot with the same tree and parent
-#      is left alone. The worktree's files, index, branch and stash are never touched.
+#   3. Its work is kept on the project's origin as refs/heads/wip/T<n>, pushed in place of what
+#      is there (the one forced push, a script's, never on a task branch, and no PR's head): its
+#      uncommitted changes (tracked or untracked; ignored files excluded) as a snapshot commit,
+#      built from a temporary index with the worktree's HEAD as parent; with none, the branch
+#      head itself, so a branch never pushed is on origin too and an older snapshot is gone.
+#      Origin's wip/T<n> already that head, or a snapshot with the same tree and parent, is left
+#      alone. The worktree's files, index, branch and stash are never touched.
 # Then, in the team home, the ledger's lock held: commits tasks/*/scratch*/, memory/ and
 # ledger.jsonl as "chore: checkpoint" on the branch checked out (dev), leaving whatever else is
 # staged as it was, and pushes the branch when it is ahead of origin's. A rejected push fetches
@@ -106,34 +108,39 @@ skip_reason() {
   fi
 }
 
-# Push the uncommitted changes of the worktree <wt> of <task> as wip/<task> on its origin:
-# snapshot <task> <wt> <label>
+# Keep the work of the worktree <wt> of <task> on its origin as wip/<task>: its branch head, or a
+# snapshot of its uncommitted changes on that head: snapshot <task> <wt> <label>
 snapshot() {
-  local task=$1 wt=$2 label=$3 tree head remote old commit rc=0
+  local task=$1 wt=$2 label=$3 tree head remote old commit what rc=0
   tree=$(worktree_tree "$wt")
   head=$(git -C "$wt" rev-parse HEAD)
-  if [[ $tree == "$(git -C "$wt" rev-parse "HEAD^{tree}")" ]]; then
-    say "$label: no uncommitted changes"
-    return
-  fi
   remote=$(origin_git -C "$wt" ls-remote origin "refs/heads/wip/$task") || rc=$?
   if ((rc)); then
     fail "$label: cannot read wip/$task on origin: $(origin_reason "$rc")"
     return
   fi
   old=${remote%%[[:space:]]*}
-  if [[ -n $old ]] && git -C "$wt" cat-file -e "$old^{commit}" 2>/dev/null &&
-    [[ $(git -C "$wt" rev-parse "$old^{tree}") == "$tree" && $(git -C "$wt" rev-parse -q --verify "$old^1") == "$head" ]]; then
-    say "$label: wip/$task is up to date (${old:0:7})"
-    return
+  if [[ $tree == "$(git -C "$wt" rev-parse "HEAD^{tree}")" ]]; then
+    commit=$head what="the branch head, no uncommitted changes"
+    if [[ $old == "$head" ]]; then
+      say "$label: wip/$task is up to date (${old:0:7}, no uncommitted changes)"
+      return
+    fi
+  else
+    if [[ -n $old ]] && git -C "$wt" cat-file -e "$old^{commit}" 2>/dev/null && is_snapshot "$wt" "$old" "$task" &&
+      [[ $(git -C "$wt" rev-parse "$old^{tree}") == "$tree" && $(git -C "$wt" rev-parse "$old^1") == "$head" ]]; then
+      say "$label: wip/$task is up to date (${old:0:7})"
+      return
+    fi
+    commit=$(git -C "$wt" commit-tree "$tree" -p "$head" -m "$(snapshot_message "$task" "$machine" "$(date -u -d "@$start" +%FT%TZ)")")
+    what="uncommitted changes on ${head:0:7}"
   fi
-  commit=$(git -C "$wt" commit-tree "$tree" -p "$head" -m "wip: $task checkpoint on $machine at $(date -u -d "@$start" +%FT%TZ)")
   origin_git -C "$wt" push -q origin "+$commit:refs/heads/wip/$task" || rc=$?
   if ((rc)); then
     fail "$label: cannot push wip/$task: $(origin_reason "$rc")"
     return
   fi
-  say "$label: pushed wip/$task ${commit:0:7} (uncommitted changes on ${head:0:7})"
+  say "$label: pushed wip/$task ${commit:0:7} ($what)"
 }
 
 # Each open worktree of each open task, as {task, project, branch, worktree, archive}.

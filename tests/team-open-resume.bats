@@ -340,11 +340,59 @@ restored_from() {
   git -C "$home" push -q origin --delete wip/T1
 
   run_bin -0 --separate-stderr team-open --task T1 --resume home
-  local reason="origin has no wip/T1: no checkpoint saved uncommitted changes"
+  local reason="origin has no wip/T1: no checkpoint saved this task's work"
   assert_equal "$stderr" "team-open: wip/T1 not applied: $reason"
   assert_equal "$(jq -c .snapshot <<<"$output")" \
     "$(jq -cn --arg r "$reason" '{ref: "wip/T1", commit: null, parent: null, at: null, applied: false, reason: $r}')"
   assert_equal "$(git -C "$wt" status --porcelain)" ""
+}
+
+@test "a crashed task whose branch was never pushed is made from wip/T1: its commits, and its snapshot uncommitted" {
+  crash_elsewhere
+  # home-pc committed more without pushing, then checkpointed: the snapshot's parent is a head
+  # origin's branch lacks. Then the branch never reached origin at all.
+  git -C "$home" push -q origin --delete "$branch"
+  local mine
+  git -C "$home" worktree add -q "$wt" "$wip^"
+  mine=$(work "$wt" mine.txt)
+  checkpoint_of "$wt"
+  git -C "$home" worktree remove --force "$wt"
+  git -C "$home" update-ref -d refs/remotes/origin/wip/T1
+
+  run_bin -0 --separate-stderr team-open --task T1 --resume home
+  assert_contains "$stderr" "team-open: $branch is not on origin; it is taken from wip/T1, at ${mine:0:7}"
+  assert_contains "$stderr" "team-open: applied wip/T1 ${wip:0:7}"
+  assert_equal "$(jq -c .snapshot <<<"$output")" "$(snapshot_facts "$wip" "$mine" true null)"
+  assert_equal "$(git -C "$wt" rev-parse HEAD)" "$mine"
+  assert_equal "$(git -C "$wt" rev-parse --abbrev-ref HEAD)" "$branch"
+  assert_equal "$(git -C "$wt" status --porcelain)" "$(printf '%s\n' " D README.md" " M feature.txt" "?? new.txt")"
+
+  # A re-run finds the branch here, at wip/T1's head: nothing to salvage, nothing applied twice.
+  run_bin -0 --separate-stderr team-open --task T1 --resume home
+  assert_contains "$stderr" "is already applied in $wt"
+  assert_equal "$(git -C "$wt" rev-parse HEAD)" "$mine"
+}
+
+@test "a clean checkpoint's wip/T1 is the branch head: a branch origin lacks or is behind is taken from it" {
+  crash_elsewhere
+  # home-pc committed the checkpoint's changes, and a clean checkpoint pushed that head as wip/T1.
+  local committed
+  git -C "$home" worktree add -q "$wt" "$head"
+  echo "edited" >"$wt/feature.txt"
+  git -C "$wt" commit -q -am "feat: edited"
+  committed=$(git -C "$wt" rev-parse HEAD)
+  git -C "$wt" push -q origin "+$committed:refs/heads/wip/T1"
+  git -C "$home" worktree remove --force "$wt"
+  git -C "$home" update-ref -d refs/remotes/origin/wip/T1
+
+  run_bin -0 --separate-stderr team-open --task T1 --resume home
+  assert_contains "$stderr" "team-open: wip/T1 has commits origin's $branch lacks; $branch is taken from it, at ${committed:0:7}"
+  assert_contains "$stderr" "team-open: wip/T1 ${committed:0:7} not applied: the checkpoint saw no uncommitted changes"
+  assert_equal "$(jq -c '.snapshot | {commit, parent, applied}' <<<"$output")" \
+    "$(jq -cn --arg c "$committed" '{commit: $c, parent: null, applied: false}')"
+  assert_equal "$(git -C "$wt" rev-parse HEAD)" "$committed"
+  assert_equal "$(git -C "$wt" status --porcelain)" ""
+  assert_equal "$(jq -r .head <<<"$output")" "$committed"
 }
 
 @test "a leased treehouse slot that is not clean is handed back and refused" {

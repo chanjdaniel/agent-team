@@ -54,7 +54,8 @@
 #                 any session of that name) is stopped and removed either way, and one left
 #                 behind turns a pass into a warning.
 #     branches    Warns on each local branch with commits on no origin branch (no upstream and
-#                 never pushed, or ahead of what was pushed), with their count.
+#                 never pushed, or ahead of what was pushed; a checkpoint's wip/T<n> is no
+#                 branch), with their count.
 #     changes     Warns while the primary checkout has changes to tracked files or untracked files.
 #   clock         Within 60 s of the Date header of https://api.github.com (curl -sI); warns.
 #   lease         `team-lease status`: passes held here, warns held elsewhere or released, fails
@@ -265,9 +266,10 @@ check_project() {
 
   probe_trust "$project" "$path"
 
-  # branches: commits no remote-tracking branch of origin has, as of the last fetch.
+  # branches: commits no remote-tracking branch of origin has, as of the last fetch; a
+  # checkpoint's wip/T<n> is none, since the next checkpoint replaces it and team-close deletes it.
   while IFS= read -r branch; do
-    count=$(git -C "$path" rev-list --count "refs/heads/$branch" --not --remotes=origin)
+    count=$(git -C "$path" rev-list --count "refs/heads/$branch" --not --exclude='origin/wip/*' --remotes=origin)
     ((count == 0)) || unpushed+=("$branch ($count commit$( ((count == 1)) || echo s))")
   done < <(git -C "$path" for-each-ref --format='%(refname:lstrip=2)' refs/heads)
   if ((${#unpushed[@]} == 0)); then

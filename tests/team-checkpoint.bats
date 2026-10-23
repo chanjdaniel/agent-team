@@ -1,8 +1,9 @@
 #!/usr/bin/env bats
 # team-checkpoint: on the lease holder, each open task's task directories archived into the team
-# home, each worktree's uncommitted changes pushed as wip/T<n> to its project's origin, and the
-# records committed and pushed on the team home's dev. Two git-pool projects, home and site, on
-# bare origins; home-pc holds the lease on the team home's bare origin.
+# home, each worktree's work (a snapshot of its uncommitted changes, or its head) pushed as
+# wip/T<n> to its project's origin, and the records committed and pushed on the team home's dev.
+# Two git-pool projects, home and site, on bare origins; home-pc holds the lease on the team
+# home's bare origin.
 
 load helpers/common
 
@@ -178,14 +179,20 @@ more"
   assert_equal "$(team_tip)" "$tip"
   assert_equal "$(wc -l <"$STUB_CALLS/git-push.log")" 1
 
-  # Everything committed: nothing to snapshot, and the old snapshot is left as it is.
-  snap=$(git -C "$home_origin" rev-parse wip/T1)
+  # Everything committed: the branch head itself replaces the snapshot, so the commit (never
+  # pushed to the branch) is on origin, and no stale snapshot is left; then nothing new again.
+  local head
   git -C "$wt" add new.txt
   git -C "$wt" commit -q -m "feat: new"
+  head=$(git -C "$wt" rev-parse HEAD)
   run_bin -0 team-checkpoint --force
-  assert_contains "$output" "T1 home: no uncommitted changes"
-  assert_equal "$(git -C "$home_origin" rev-parse wip/T1)" "$snap"
-  assert_equal "$(wc -l <"$STUB_CALLS/git-push.log")" 1
+  assert_contains "$output" "T1 home: pushed wip/T1 ${head:0:7} (the branch head, no uncommitted changes)"
+  assert_equal "$(git -C "$home_origin" rev-parse wip/T1)" "$head"
+  run -1 git -C "$home_origin" rev-parse -q --verify refs/heads/feat/T1-work
+  assert_equal "$(wc -l <"$STUB_CALLS/git-push.log")" 2
+  run_bin -0 team-checkpoint --force
+  assert_contains "$output" "T1 home: wip/T1 is up to date (${head:0:7}, no uncommitted changes)"
+  assert_equal "$(wc -l <"$STUB_CALLS/git-push.log")" 2
 }
 
 @test "a snapshot whose head moved is pushed again, though its tree is the same" {
@@ -254,7 +261,7 @@ T4 home: archived .scratch/task to tasks/T4/scratch"
   run_bin -0 team-open home feature feat work "Do the work"
   run_bin -0 --separate-stderr team-checkpoint
   assert_equal "$stderr" "team-checkpoint: $HOME/slots/home/1/.scratch/task is empty, so nothing was archived from home"
-  assert_equal "$output" "T1 home: no uncommitted changes
+  assert_equal "$output" "T1 home: pushed wip/T1 $(git -C "$HOME/slots/home/1" rev-parse --short=7 HEAD) (the branch head, no uncommitted changes)
 team home: committed $(git -C "$TEAM_HOME" rev-parse --short HEAD) chore: checkpoint and pushed dev"
   [[ ! -e $TEAM_HOME/tasks/T1/scratch ]]
 }
