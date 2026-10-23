@@ -232,11 +232,13 @@ def ends_worker($role):
   or (.event == "ticket-done" and $role == "builder");
 
 # The roles to relaunch after a crash: each role launched since the task's latest stowed whose
-# latest launch no later event ends (ends_worker), in the order of those launches.
+# latest launch no later event ends (ends_worker), in the order of those launches. Never ops: an
+# ops session runs only on Daniel's request, so after a crash Daniel asks again.
 def crash_roles:
   . as $events
   | latest_stowed as $stowed
-  | [to_entries[] | select(.key > $stowed and .value.event == "launch") | {i: .key, role: .value.role}]
+  | [to_entries[] | select(.key > $stowed and .value.event == "launch" and .value.role != "ops")
+    | {i: .key, role: .value.role}]
   | group_by(.role) | map(max_by(.i)) | sort_by(.i)
   | map(.i as $i | .role as $role | select(all($events[$i + 1:][]; ends_worker($role) | not)) | .role);
 

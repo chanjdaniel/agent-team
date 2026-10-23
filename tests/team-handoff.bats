@@ -227,6 +227,56 @@ Config: settings.json left to Daniel: it has an env key, which may hold a secret
 Config: settings.json left to Daniel: it has an env key, which may hold a secret."
 }
 
+@test "a live ops session is ended with team-ops-end, its transcript and answer deleted, and never stowed" {
+  # T1's ops session, on Daniel's request, beside its builder: a transcript and an answer file.
+  local uuid=6f93fe38-4a6e-4b35-8f39-776a26bc624b transcript
+  transcript=$HOME/.claude/projects/-slots-home-1/$uuid.jsonl
+  mkdir -p "${transcript%.jsonl}" "$wt/.scratch"
+  echo '{"query": "results"}' >"$transcript"
+  echo "42 markets" >"$wt/.scratch/answer.md"
+  jq --arg uuid "$uuid" --arg wt "$wt" '. + [{id: "6f93fe38", sessionId: $uuid, name: "T1-ops", status: "idle",
+    state: "done", cwd: $wt}]' "$BATS_TEST_TMPDIR/sessions.json" >"$BATS_TEST_TMPDIR/sessions.next"
+  mv "$BATS_TEST_TMPDIR/sessions.next" "$BATS_TEST_TMPDIR/sessions.json"
+  stub_script claude <<'SH'
+list=$BATS_TEST_TMPDIR/sessions.json
+case "$*" in
+  'agents --json' | 'agents --json --all') cat "$list" ;;
+  'stop '*) jq --arg id "$2" 'map(if .id == $id then .status = "stopped" else . end)' "$list" >"$list.next" && mv "$list.next" "$list" ;;
+  'rm '*) jq --arg id "$2" 'map(select(.id != $id))' "$list" >"$list.next" && mv "$list.next" "$list" ;;
+  'plugin list --json' | 'plugin marketplace list --json') echo '[]' ;;
+  *) echo "claude stub: unplanned call: $*" >&2; exit 64 ;;
+esac
+SH
+
+  run_bin -0 --separate-stderr team-handoff
+  assert_contains "$output" "sessions: ended T1-ops with team-ops-end, its transcript and answer deleted; if its answer had not reached Daniel, Daniel asks again on the other machine"
+  assert_contains "$output" "sessions: stopped and removed T1-builder (81f08540)"
+  [[ ! -e $transcript && ! -e ${transcript%.jsonl} && ! -e $wt/.scratch/answer.md ]]
+  assert_equal "$(stowed_events | jq -c .roles)" '["builder"]'
+  assert_equal "$(jq -r '.[].name' "$BATS_TEST_TMPDIR/sessions.json")" "coordinator
+coordinator-notes
+my-T1-builder"
+}
+
+@test "an ops session team-ops-end cannot end refuses the handoff, naming it, with nothing released" {
+  jq '. + [{id: "6f93fe38", name: "T1-ops", status: "idle", state: "done"}]' "$BATS_TEST_TMPDIR/sessions.json" \
+    >"$BATS_TEST_TMPDIR/sessions.next"
+  mv "$BATS_TEST_TMPDIR/sessions.next" "$BATS_TEST_TMPDIR/sessions.json"
+  stub_script claude <<'SH'
+list=$BATS_TEST_TMPDIR/sessions.json
+case "$*" in
+  'agents --json' | 'agents --json --all') cat "$list" ;;
+  'stop '*) jq --arg id "$2" 'map(if .id == $id then .status = "stopped" else . end)' "$list" >"$list.next" && mv "$list.next" "$list" ;;
+  'rm '*) jq --arg id "$2" 'map(select(.id != $id))' "$list" >"$list.next" && mv "$list.next" "$list" ;;
+  *) echo "claude stub: unplanned call: $*" >&2; exit 64 ;;
+esac
+SH
+  run_bin -1 --separate-stderr team-handoff
+  assert_equal "$stderr" "team-handoff: sessions: could not end T1-ops with team-ops-end (cannot resolve the full session uuid of T1-ops (6f93fe38); nothing deleted); end it, then run team-handoff again; nothing was released"
+  assert_equal "$(lease_json | jq -r .state)" held
+  assert_equal "$(stowed_events)" ""
+}
+
 @test "--json prints the facts, with the step lines on stderr" {
   run_bin -0 --separate-stderr team-handoff --json
   assert_contains "$stderr" "stowed: T1 roles builder"

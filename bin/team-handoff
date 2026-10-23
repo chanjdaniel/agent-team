@@ -11,7 +11,9 @@
 #   2. sessions    claude stop, then claude rm, for every live session named T<n>-<role> (their
 #                  worktrees stay on disk), their names kept in handoff.json first: a worker that
 #                  has not stowed stops here, so nothing changes its worktree after the checkpoint.
-#                  The coordinator's own session is --retire's.
+#                  An ops session (T<n>-ops) is never carried over: team-ops-end T<n> ends it,
+#                  deleting its transcript and answer file, and one it cannot end refuses the
+#                  handoff, naming it. The coordinator's own session is --retire's.
 #   3. checkpoint  team-checkpoint --force: task directories archived, wip/T<n> snapshots pushed,
 #                  the records committed and pushed. Once per handoff: a run again skips it, so
 #                  the stowed events land in the handoff's own commit.
@@ -21,13 +23,13 @@
 #                  checked once before step 2 too, so it refuses while its worker still runs.
 #   5. stowed      One stowed per open task: this machine, each open worktree's
 #                  {project, branch, head} with the head origin has, and the roles of the task's
-#                  T<n>-<role> sessions step 2 stopped. A worktree with uncommitted changes is
-#                  said and gets uncommitted: true, so team-open --resume applies the checkpoint's
-#                  wip/T<n> on the other machine (else the changes are said and noted as staying
-#                  here); untracked files the snapshot leaves out as possible secrets are said and
-#                  noted as staying here. None when the task's latest machine event
-#                  (stowed, launch, worktree-moved) is already a stowed from this machine with the
-#                  same worktrees.
+#                  T<n>-<role> sessions step 2 stopped, ops never among them. A worktree with
+#                  uncommitted changes is said and gets uncommitted: true, so team-open --resume
+#                  applies the checkpoint's wip/T<n> on the other machine (else the changes are
+#                  said and noted as staying here); untracked files the snapshot leaves out as
+#                  possible secrets are said and noted as staying here. None when the task's
+#                  latest machine event (stowed, launch, worktree-moved) is already a stowed from
+#                  this machine with the same worktrees.
 #   6. config      team-config capture, each captured item listed; a capture that fails or refuses
 #                  is said, and the handoff goes on.
 #   7. commit      machine/, memory/, tasks/ and ledger.jsonl committed on the team home's branch
@@ -40,7 +42,8 @@
 #      settings.json left to Daniel: it has an env key, which may hold a secret.").
 #      --json prints {machine, epoch, released_at, message, captured, tasks} instead, captured
 #      being the message's config lines, tasks each open task's latest stowed from this machine as
-#      {task, worktrees, roles}, and the step lines go to stderr. A machine whose lease its handoff already released prints the message again.
+#      {task, worktrees, roles}, and the step lines go to stderr. A machine whose lease its
+#      handoff already released prints the message again.
 # --retire, once the message is posted: refuses while this machine holds the lease, then starts a
 # detached process (its own session) that, a few seconds after the call returns, runs claude stop
 # and claude rm for each live session named coordinator, logging to retire.log.
@@ -310,6 +313,17 @@ if [[ -z $finished ]]; then
   else
     sessions=$(read_sessions)
     live=$(jq -c --arg pattern "$WORKER_NAME" '[.[] | select(.name | strings | test($pattern))]' <<<"$sessions")
+    # An ops session holds production query results: ended, never stowed.
+    ended=''
+    while read -r name; do
+      if team team-ops-end "${name%-ops}" </dev/null >/dev/null 2>"$err"; then
+        echo "sessions: ended $name with team-ops-end, its transcript and answer deleted; if its answer had not reached Daniel, Daniel asks again on the other machine"
+        ended=1
+      else
+        die "sessions: could not end $name with team-ops-end ($(first_error)); end it, then run team-handoff again; nothing was released"
+      fi
+    done < <(jq -r '.[].name | select(test("^T[0-9]+-ops$"))' <<<"$live")
+    live=$(jq -c '[.[] | select(.name | test("^T[0-9]+-ops$") | not)]' <<<"$live")
     workers=$(jq -c --argjson live "$live" '. + [$live[].name] | unique' <<<"$workers")
     save_progress
     problems=()
@@ -325,7 +339,7 @@ if [[ -z $finished ]]; then
         problems+=("$name ($id): $(first_error)")
       fi
     done < <(jq -r '.[] | "\(.id // ((.sessionId // "")[:8])) \(.name)"' <<<"$live")
-    [[ $live != '[]' ]] || echo "sessions: no worker session was live"
+    [[ $live != '[]' || -n $ended ]] || echo "sessions: no worker session was live"
     ((${#problems[@]} == 0)) || die "sessions: could not stop $(printf '%s; ' "${problems[@]}" | sed 's/; $//'); nothing was released"
   fi
   step_done 2
@@ -364,7 +378,7 @@ if [[ -z $finished ]]; then
     event=$(jq -cn --arg task "$task" --arg machine "$machine" --argjson worktrees "${stowed_worktrees[$task]}" \
       --argjson workers "$workers" --arg note "${notes[$task]}" \
       '{ts: (now | todate), task: $task, event: "stowed", machine: $machine, worktrees: $worktrees,
-        roles: [$workers[] | select(startswith("\($task)-")) | ltrimstr("\($task)-")] | unique}
+        roles: [$workers[] | select(startswith("\($task)-")) | ltrimstr("\($task)-") | select(. != "ops")] | unique}
        + if $note == "" then {} else {note: $note} end')
     if task_events "$task" | jq -se --argjson new "$event" \
       'map(select(.event | IN("stowed", "launch", "worktree-moved"))) | last

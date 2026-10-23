@@ -268,6 +268,31 @@ EOF
   jq -e '.lost == false and .mine == true and .fenced == null and .epoch == 3' <<<"$output"
 }
 
+@test "the fence ends an ops session with team-ops-end, deleting its transcript; one it cannot end is stopped and said" {
+  local uuid=6f93fe38-4a6e-4b35-8f39-776a26bc624b transcript
+  transcript=$HOME/.claude/projects/-wt/$uuid.jsonl
+  mkdir -p "${transcript%/*}"
+  echo '{"query": "results"}' >"$transcript"
+  stub_script claude <<EOF
+case \$1 in
+  agents) echo '[{"id": "81f08540", "name": "T5-builder"}, {"id": "6f93fe38", "sessionId": "$uuid", "name": "T5-ops"},
+    {"id": "aaaaaaaa", "name": "T6-ops"}]' ;;
+  stop | rm) ;;
+esac
+EOF
+  run_bin -0 team-lease take
+  steal_lease laptop home-pc
+
+  run_bin -1 --separate-stderr team-lease renew
+  assert_contains "$stderr" "fenced home-pc: stopped T5-builder (81f08540), T5-ops (6f93fe38, ended by team-ops-end), T6-ops (aaaaaaaa)"
+  assert_contains "$stderr" "could not end T6-ops (aaaaaaaa) with team-ops-end (team-ops-end: cannot resolve the full session uuid of T6-ops (aaaaaaaa); nothing deleted), so its transcript is kept: run team-ops-end T6"
+  [[ ! -e $transcript ]]
+  assert_equal "$(stub_calls claude | jq -r 'select(.[0] == "stop" or .[0] == "rm") | join(" ")')" "stop 81f08540
+stop 6f93fe38
+rm 6f93fe38
+stop aaaaaaaa"
+}
+
 @test "a machine that released, or never held, the lease is not lost when another holds it" {
   run_bin -0 team-lease take
   run_bin -0 team-lease release

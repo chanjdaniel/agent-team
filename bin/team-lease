@@ -33,7 +33,9 @@
 #   renew    The holder only: a new renewed_at. On a machine that lost the lease it fences
 #            this machine instead, and exits 1: writes fenced (since, the holder seen and its
 #            epoch), stops every live session named coordinator or T<n>-<role> (claude agents
-#            --json, then claude stop each; no other session), and runs team-timers disable.
+#            --json, then claude stop each; no other session), ending an ops session (T<n>-ops)
+#            with team-ops-end instead, so its transcript and answer file go too (claude stop
+#            alone when that fails, said), and runs team-timers disable.
 #            A fenced machine refuses check, renew and release, posts nothing to Discord and
 #            pushes nothing (bin/hooks/lease-fence), until a take clears the fence.
 #   release  The holder only: state released. A released lease is left as it is (exit 0).
@@ -306,6 +308,14 @@ fence() {
   if sessions=$(claude agents --json 2>"$err" {lock_fd}>&- | jq -c 'select(type == "array")' 2>/dev/null) &&
     [[ -n $sessions ]]; then
     while read -r id name; do
+      # An ops session holds production query results: ended, transcript and all.
+      if [[ $name =~ ^T[0-9]+-ops$ ]]; then
+        if TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-ops-end" "${name%-ops}" </dev/null >/dev/null 2>"$err" {lock_fd}>&-; then
+          stopped+=("$name ($id, ended by team-ops-end)")
+          continue
+        fi
+        problems+=("could not end $name ($id) with team-ops-end ($(grep -m1 . "$err" || echo "it failed")), so its transcript is kept: run team-ops-end ${name%-ops}")
+      fi
       if claude stop "$id" </dev/null >/dev/null 2>"$err" {lock_fd}>&-; then
         stopped+=("$name ($id)")
       else

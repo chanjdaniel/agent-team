@@ -400,6 +400,32 @@ EVENTS
   assert_equal "$(git -C "$laptop/home/slots/home/1" status --porcelain)" ""
 }
 
+@test "a crashed task whose last launch was ops lists no role to relaunch: Daniel asks again" {
+  "$REPO_ROOT/bin/team-config" capture >/dev/null
+  git -C "$wt" push -q origin HEAD:refs/heads/feat/T1-work
+  # A planner before an earlier handoff; since it, only an ops session on Daniel's request.
+  local event
+  while IFS= read -r event; do
+    jq -c --arg wt "$wt" '{ts: "2026-10-23T09:00:00Z", task: "T1"} + . | if .event == "launch" then
+      . + {session: "81f08540", worktree: $wt, toolkits: [], machine: "home-pc"} else . end' <<<"$event" \
+      >>"$TEAM_HOME/ledger.jsonl"
+  done <<'EVENTS'
+{"event": "launch", "role": "planner"}
+{"event": "stowed", "machine": "home-pc", "worktrees": [], "roles": ["planner"]}
+{"event": "launch", "role": "ops", "toolkits": ["prod-read"], "request": "https://discord.com/channels/1/2/3"}
+EVENTS
+  git -C "$TEAM_HOME" add ledger.jsonl machine
+  git -C "$TEAM_HOME" commit -q -m "chore: the ledger"
+  git -C "$TEAM_HOME" push -q origin dev
+  age_lease 75
+
+  local tty=$BATS_TEST_TMPDIR/steal-tty
+  echo home-pc >"$tty"
+  TEAM_LEASE_TTY=$tty on_machine laptop run_bin -0 --separate-stderr team-resume --steal
+  assert_contains "$output" "T1: crashed on home-pc, with no handoff since its last launch; no checkpoint of it was found, to relaunch: no role"
+  assert_equal "$(jq -c '.tasks[0].crashed.roles' "$report")" '[]'
+}
+
 @test "the coordinator and workers are denied typing team-resume --steal" {
   local file command
   for file in "$REPO_ROOT/coordinator.settings.json" "$REPO_ROOT/settings/worker.json"; do
