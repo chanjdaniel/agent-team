@@ -42,4 +42,5 @@ No allow rule matches a `prod-write` tool.
 `tests/team-worker.bats` checks the generated settings and MCP config of a write launch.
 `evals/` holds the skill's eval cases (`claude plugin eval`), which load `prod-read` beside this toolkit: each prompt is a rendered ops brief, `prod-read` calls are answered by an agent mock over a made-up dataset and `prod-write` calls by fixed mocks (`evals/mocks/`), never by the real servers, which a run starts only with `--allow-real-servers` or `--mocks off`.
 Each `evals/mocks/<server>/_tools.json` is that server's own `tools/list`, which the toolkit tests keep in step.
+A case may load only plugins under the directory the eval runs against, so these run against `toolkits/` with `--eval-dir prod-write/evals` (and `--ablation with-without`, which a plugin target would get by default), not against this toolkit's own directory.
 Results go to `evals/results/`, which is gitignored.
