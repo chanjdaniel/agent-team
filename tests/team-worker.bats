@@ -347,6 +347,10 @@ assert_prod_write_gated() {
   assert_equal "$(jq -r .disableBundledSkills "$s")" true
   # A skill's inline shell would run a command in a role that has no shell.
   assert_equal "$(jq -r .disableSkillShellExecution "$s")" true
+  # disableBundledSkills leaves the built-in plugin that carries the plugin-authoring skill (T16
+  # ticket 09's second live check); the worker settings' own plugin entries stay.
+  assert_equal "$(jq -c .enabledPlugins "$s")" \
+    '{"discord@claude-plugins-official":false,"mongodb-atlas@claude-plugins-official":false,"cc-plugin-plugin-authoring@builtin":false}'
   assert_equal "$(jq -r '.hooks.PreToolUse[0] | "\(.matcher) \(.hooks[0].command)"' "$s")" \
     "Edit|Write|MultiEdit|NotebookEdit $REPO_ROOT/bin/hooks/scratch-only-edits"
   # The ops log goes to the team home's task directory, which is not this checkout's in a test.
