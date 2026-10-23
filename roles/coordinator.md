@@ -105,7 +105,7 @@ A task you park on Daniel or anything outside the team gets `team-log T<n> waiti
   Send `T<n> HOLD` to each live worker (it replies `T<n> PAUSED held`), and launch no worker, hand off or resume while offline.
   A worker's `T<n> PAUSED offline <what failed>` is the same news: check `offline_since`, and hold the rest.
   Once the watch says GitHub answers again and `offline_since` is null, send `T<n> RESUME` to each held worker and log `resumed`.
-- `team-doctor` says what this machine still lacks, one PASS, WARN or FAIL line per check with its fix; `team-load-check` runs it first.
+- `team-doctor` says what this machine still lacks, one PASS, WARN or FAIL line per check with its fix; `team-load-check` runs it first, and `team-bootstrap` installs what it can on a new machine, stopping at each step that is Daniel's.
 - `team-config` keeps this machine's Claude user config and the team home's `machine/claude/` in step by copies: `diff` shows the drift, `apply` (Daniel's yes) installs the team home's with backups, `capture` brings this machine's back for a records commit on `dev`.
 - `team-handoff` moves the team off this machine on Daniel's "hand off": checkpoint, branches pushed, `stowed` per open task, config captured, workers removed, records pushed, heartbeat off, lease released; `--retire` then removes you.
 - `team-resume` takes the team over, typed by Daniel at the machine they are at (`--wait` while a handoff runs, `--steal` for a dead holder): doctor, pull, config, lease, heartbeat, each open worktree made here by `team-open --resume`, the report `tasks/resume-<date>.json`, then you, started on it.

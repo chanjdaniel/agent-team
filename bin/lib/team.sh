@@ -7,7 +7,7 @@
 # --help with the calling script's header (then runs the script's help_more, if it defined one
 # before sourcing), and provides die, usage_error, team_project, ledger_jq, ledger_append,
 # task_events, known_task_events, open_task_events, task_status, task_worktrees, local_path,
-# archive_task_dir, machine_name, fence_reason, lease_gate, worktree_changes, worktree_tree, snapshot_message, is_snapshot, non_records, commit_non_records,
+# archive_task_dir, machine_name, os_release, team_os, fence_reason, lease_gate, worktree_changes, worktree_tree, snapshot_message, is_snapshot, non_records, commit_non_records,
 # records_list, origin_git, origin_reason, commit_records, render_template, registered_pr,
 # attribution_lines, strip_attribution, live_sessions, discord_token, discord_api, github, pr_part
 # and task_state_json, and sets COORDINATOR_CHANNEL.
@@ -148,6 +148,23 @@ machine_name() {
     return 1
   fi
   printf '%s\n' "$name"
+}
+
+# A value of the os-release file, unquoted: os_release <key>. TEAM_OS_RELEASE names the file to
+# read instead of /etc/os-release (the tests' seam).
+os_release() {
+  sed -n "s/^$1=//p" "${TEAM_OS_RELEASE:-/etc/os-release}" 2>/dev/null | head -n1 |
+    sed -E "s/^\"(.*)\"\$/\\1/; s/^'(.*)'\$/\\1/"
+}
+
+# This machine's OS as the team names it: arch (Arch Linux, or a derivative whose ID_LIKE names
+# arch, like EndeavourOS) or macos; fails on any other.
+team_os() {
+  case $(uname -s) in
+    Darwin) echo macos ;;
+    Linux) [[ $(os_release ID) == arch || " $(os_release ID_LIKE) " == *" arch "* ]] && echo arch ;;
+    *) return 1 ;;
+  esac
 }
 
 # Print why this machine is fenced, "fenced since <time> (holder seen <name>, epoch <n>)", from

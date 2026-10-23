@@ -36,7 +36,8 @@ sandbox() {
   git config --global init.defaultBranch main
   git config --global advice.detachedHead false
 
-  unset TEAM_COORDINATOR_CHANNEL CLAUDE_PROJECT_DIR
+  # nvm lives under HOME unless NVM_DIR says otherwise: the real one must not leak in.
+  unset TEAM_COORDINATOR_CHANNEL CLAUDE_PROJECT_DIR NVM_DIR
   guard_sandbox
 }
 

@@ -1,0 +1,42 @@
+# team-bootstrap on fresh machines, by hand only (T17 ticket 21): it installs real tools, so it never
+# runs on a pull request. Each job starts from Daniel's first steps and runs tests/bootstrap-drill,
+# which runs the bootstrap as the setup SOP's agent would, plays Daniel for the steps needing sudo,
+# and ends at the first step only Daniel can take (the GitHub login the project clones need, at
+# the latest, since the runner's gh is signed in to nothing).
+name: Bootstrap
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bootstrap-macos:
+    runs-on: macos-26
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+      HOMEBREW_NO_ENV_HINTS: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The runner has the Xcode tools, Homebrew, git and gh; the team's scripts also need
+      # Homebrew's Bash 5 to start at all, which bin/lib/platform.sh asks for on a fresh Mac.
+      - name: Daniel's first steps
+        run: brew install bash
+      - run: tests/bootstrap-drill ci-macos
+
+  bootstrap-arch:
+    runs-on: ubuntu-24.04
+    container: archlinux:latest
+    steps:
+      # git and gh, and Daniel's own user with sudo (passwordless here, where nobody can type it).
+      - name: Daniel's first steps
+        run: |
+          pacman -Syu --noconfirm --needed git github-cli sudo
+          useradd -m daniel
+          echo 'daniel ALL=(ALL) NOPASSWD: ALL' >/etc/sudoers.d/daniel
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: |
+          chown -R daniel "$GITHUB_WORKSPACE"
+          sudo -u daniel -H tests/bootstrap-drill ci-arch

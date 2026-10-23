@@ -8,7 +8,7 @@ The team's own work on it goes through a task and a PR to `dev`, like any projec
 | Path | What it holds |
 | - | - |
 | `bin/` | The team's commands, `team-*` and `claude-coordinator`; `bin/lib/` is the shared library, the ledger contract and its jq, `tools.jq` (which turns `machine/tools.lock` into each tool's pin and install command for a machine), and `records`, the paths a direct commit on `dev` may touch; `bin/hooks/` the sessions' hooks, and `bin/hooks/git/` git's |
-| `tests/` | The bats suite, one `.bats` file per script plus `task-life.bats`, a whole task's life across them, and `drill.bats`, the two-machine drill (handoff, steal, crash, outage), with `tests/helpers/` and bats-core vendored in `tests/vendor/` |
+| `tests/` | The bats suite, one `.bats` file per script plus `task-life.bats`, a whole task's life across them, and `drill.bats`, the two-machine drill (handoff, steal, crash, outage), with `tests/helpers/` and bats-core vendored in `tests/vendor/`; `tests/bootstrap-drill` runs `team-bootstrap` on a fresh runner for the by-hand Bootstrap workflow |
 | `roles/` | The role prompts each session's system prompt is appended with, one per role, the coordinator's included |
 | `settings/` | Worker settings: `worker.json` shared, one file per role layered on it |
 | `coordinator.settings.json` | The coordinator's own settings: Discord, its hooks and its denials |
@@ -40,6 +40,7 @@ The team's own work on it goes through a task and a PR to `dev`, like any projec
 - `tests/run` runs shellcheck (0.11.0) on every shell script in `bin/` and `tests/`, then the whole bats suite; `tests/run shellcheck` and `tests/run bats` run one half each, as the CI jobs do.
 - A PR to `dev` is checked locally, never on GitHub (CI policy B): `projects.toml` gives the team home `local_checks = ["tests/run"]`, which `team-merge` runs on the PR's exact head before it merges, and builders and reviewers run `tests/run` on the head they deliver or review.
   GitHub's CI (`.github/workflows/ci.yml`) runs only on a PR to `main` and by hand (`workflow_dispatch`).
+  The Bootstrap workflow (`.github/workflows/bootstrap.yml`) runs only by hand: `team-bootstrap` on a fresh macOS runner and in an Arch container, which installs real tools.
 - One file: `tests/vendor/bats-core/bin/bats tests/<name>.bats`; one test: add `-f '<part of its name>'`.
 - Tests run the real scripts in a sandbox (`load helpers/common`, then `sandbox` in `setup`): `TEAM_HOME` and `HOME` are temporary, `claude`, `gh`, `curl`, `op`, `systemctl` and `launchctl` are stubs, and git is real.
   `tests/helpers/common.bash` documents the helpers.
