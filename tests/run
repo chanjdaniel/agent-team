@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Run the team home's checks: shellcheck on every shell script in bin/ and tests/ (not the
-# vendored bats), then the whole bats suite on the vendored bats-core.
+# Run the team home's checks: shellcheck on every shell script in bin/, tests/ (not the
+# vendored bats), servers/ and toolkits/, then the whole bats suite on the vendored bats-core,
+# then the toolkit tests (node --test on tests/toolkits/, after servers/install), which need
+# Docker for their throwaway MongoDB.
 #
-# Usage: tests/run [shellcheck|bats]   (default: both)
-# Exit 0 when every check passes; CI runs each half as its own job.
+# Usage: tests/run [shellcheck|bats|toolkits]   (default: all three)
+# Exit 0 when every check passes; CI runs each part as its own job.
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -11,9 +13,10 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "$root/bin/lib/team.sh" "$@"
 
 what=${1:-all}
-[[ $# -le 1 && $what =~ ^(all|shellcheck|bats)$ ]] || usage_error "usage: tests/run [shellcheck|bats]"
+[[ $# -le 1 && $what =~ ^(all|shellcheck|bats|toolkits)$ ]] || usage_error "usage: tests/run [shellcheck|bats|toolkits]"
 
-# Every file under bin/ and tests/ that is a shell script by its shebang or extension.
+# Every file under bin/, tests/, servers/ and toolkits/ that is a shell script by its shebang or
+# extension.
 shell_scripts() {
   local file
   while IFS= read -r file; do
@@ -21,16 +24,23 @@ shell_scripts() {
       head -n 1 "$file" | grep -Eq '^#!.*\b(ba)?sh\b'; then
       echo "$file"
     fi
-  done < <(cd "$root" && find bin tests -path tests/vendor -prune -o -type f -print | sort)
+  done < <(cd "$root" && find bin tests servers toolkits \( -path tests/vendor -o -path servers/node_modules -o -path 'servers/.*' \) -prune -o -type f -print | sort)
 }
 
 fail=0
-if [[ $what != bats ]]; then
+if [[ $what == all || $what == shellcheck ]]; then
   mapfile -t scripts < <(shell_scripts)
   echo "shellcheck $(shellcheck --version | sed -n 's/^version: //p'): ${#scripts[@]} scripts"
   (cd "$root" && shellcheck -x "${scripts[@]}") || fail=1
 fi
-if [[ $what != shellcheck ]]; then
+if [[ $what == all || $what == bats ]]; then
   "$root/tests/vendor/bats-core/bin/bats" "$root/tests" || fail=1
+fi
+if [[ $what == all || $what == toolkits ]]; then
+  if "$root/servers/install"; then
+    node --test "$root"/tests/toolkits/*.test.mjs || fail=1
+  else
+    fail=1
+  fi
 fi
 exit $fail

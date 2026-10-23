@@ -3,7 +3,8 @@
 # so Actions minutes come from the free plan's 2,000 a month, macOS billed ten times; a PR to dev
 # is checked locally instead, by team-merge running projects.toml's local_checks (tests/run) on
 # its exact head. A self-hosted runner on the PC (option A) may bring dev's checks back here later.
-# The macos job runs one run per PR at a time: a re-push cancels the run it replaces.
+# The macos job runs one run per PR at a time: a re-push cancels the run it replaces. The toolkits
+# job runs the toolkits' servers over stdio against a throwaway MongoDB in Docker.
 name: CI
 
 on:
@@ -62,3 +63,13 @@ jobs:
           jq --version
           git --version
       - run: tests/run bats
+
+  # The toolkits' servers over stdio, against a throwaway MongoDB in Docker.
+  toolkits:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22.19.0
+      - run: tests/run toolkits

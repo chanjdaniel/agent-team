@@ -80,7 +80,10 @@ A task you park on Daniel or anything outside the team gets `team-log T<n> waiti
 - A Stop hook runs `team-sweep` when your turn ends and keeps the turn open once with what is unattended: a task with no worker at work (none live, or every live one idle with an event logged since its launch), a worker waiting for input or idle without reporting, a stray session.
   Act on each finding, or log why it waits.
 - At session start a hook prints the digest from `team-snapshot`: reconcile every open task, live session, open PR and pending decision in it before new work, and re-arm the idle notices it lists.
-- `team-load-check` proves what a worker can reach; run it after a change to roles, settings or toolkits.
+- `team-load-check` proves what a worker can reach; run it after a change to roles, settings or toolkits, and its `--role ops` form only with Daniel at the PC, since it reads production.
+- A production question from Daniel, and only on their request: open a `research`-path task in the project (or use the task in flight it belongs to), write the brief with `team-brief T<n> ops --set request=<their message> --set request_link=<its link> --set-file data_docs=<file>`, tell Daniel "a 1Password prompt is coming", launch `team-worker T<n> ops <worktree> --toolkit prod-read --request <link> -- "$(cat <brief path>)"` (the brief's text: an ops session reads nothing outside its worktree), relay its answer verbatim (its DONE, or `.scratch/answer.md` in its worktree when auto mode refused the DONE), then run `team-ops-end T<n>` at once: it removes the session and deletes its transcript and `.scratch/answer.md`, which hold query results.
+- A production write, only when Daniel asks for it: the same, with `--toolkit prod-write` beside `prod-read` and "two 1Password prompts are coming"; relay each `QUESTION` the ops agent sends (the count, the ids, each call's filter and change) to Daniel verbatim, the plain words the phone's prompt does not show, who then approves or declines that write's prompt on the phone; answer the agent at its Remote Control ref from `ListAgents` (the bare name does not reach it).
+  Never attach to an ops session or keep it open in `claude agents`: Claude Code skips the phone's push while its terminal has focus.
 - `bin/claude-coordinator` starts you, and refuses while another coordinator is live.
 
 ## Discord
@@ -95,14 +98,11 @@ A task you park on Daniel or anything outside the team gets `team-log T<n> waiti
 - One machine at a time runs the team, the holder of the lease: `team-lease status` names it, and `team-lease check` says whether it is this one.
   Take, renew or release it, and turn its heartbeat on with `team-timers enable`, only with Daniel's yes; a steal is typed by Daniel alone, in their own terminal.
 - `team-timers` is the heartbeat on the holder, every 5 minutes: it probes GitHub, renews the lease and checkpoints; `team-timers disable` before the lease leaves this machine (a handoff does).
-- `team-checkpoint` makes work in flight survive a dead machine: it archives each open task's task directories, keeps each worktree's work, uncommitted changes included, on `wip/T<n>` on its project's origin, and commits `tasks/*/scratch*/`, `memory/` and `ledger.jsonl` on `dev` as `chore: checkpoint`.
-  The heartbeat runs it every 15 minutes; `team-checkpoint --force` makes one now, as a handoff does.
+- `team-checkpoint` makes work in flight survive a dead machine: it archives each open task's task directories, keeps each worktree's work, uncommitted changes included, on `wip/T<n>` on its project's origin, and commits `tasks/*/scratch*/`, `memory/` and `ledger.jsonl` on `dev` as `chore: checkpoint`; the heartbeat runs it every 15 minutes, and `team-checkpoint --force` makes one now, as a handoff does.
 - A machine that finds another holder fences itself: it stops its coordinator and workers and its heartbeat, and a hook blocks its Discord posts, pushes, `team-merge`, `team-open` and `team-close`.
-  A Discord reply blocked as fenced or lost means another machine runs the team: post nothing, end the turn.
-- When GitHub is unreachable the heartbeat holds the team: it posts in `#coordinator`, `team-lease status --json` shows `offline_since`, and a hook blocks workers' pushes and `gh`.
-  The offline watch, armed as your session digest says and again each time it expires, wakes you with a line when the hold starts and when it ends.
-  Send `T<n> HOLD` to each live worker (it replies `T<n> PAUSED held`), and launch no worker, hand off or resume while offline.
-  A worker's `T<n> PAUSED offline <what failed>` is the same news: check `offline_since`, and hold the rest.
+  Such a call blocked as fenced or lost means another machine runs the team: post nothing, run nothing more, end the turn.
+- When GitHub is unreachable the heartbeat holds the team: it posts in `#coordinator`, `team-lease status --json` shows `offline_since`, and a hook blocks workers' pushes and `gh`; the offline watch, armed as your session digest says and again each time it expires, wakes you with a line when the hold starts and when it ends.
+  Send `T<n> HOLD` to each live worker (it replies `T<n> PAUSED held`), and launch no worker, hand off or resume while offline; a worker's `T<n> PAUSED offline <what failed>` is the same news: check `offline_since`, and hold the rest.
   Once the watch says GitHub answers again and `offline_since` is null, send `T<n> RESUME` to each held worker and log `resumed`.
 - `team-doctor` says what this machine still lacks, one PASS, WARN or FAIL line per check with its fix; `team-load-check` runs it first, and `team-bootstrap` installs what it can on a new machine, stopping at each step that is Daniel's.
 - `team-config` keeps this machine's Claude user config and the team home's `machine/claude/` in step by copies: `diff` shows the drift, `apply` (Daniel's yes) installs the team home's with backups, `capture` brings this machine's back for a records commit on `dev`.

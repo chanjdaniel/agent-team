@@ -157,7 +157,7 @@ EOF
 
 @test "every real template renders for each delivery with no placeholder left and no em dash" {
   assert_equal "$(templates | paste -sd ' ')" \
-    "builder-deliver builder-fix builder-ticket planner-feature planner-research rereview resume resume-crash reviewer"
+    "builder-deliver builder-fix builder-ticket ops planner-feature planner-research rereview resume resume-crash reviewer"
   open_t12
   open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
   local task template keys sets key brief
@@ -187,7 +187,7 @@ EOF
 @test "the resume brief sends a relaunched worker to its last brief, the handoff note and the branch" {
   open_t12
   run_bin -0 team-brief --help
-  assert_contains "$output" "rereview, resume (a worker relaunched on"
+  assert_contains "$output" "rereview, ops, resume (a worker relaunched"
   run_bin -1 team-brief T12 resume --name resume-builder --set role=builder \
     --set "brief=~/agent-team/tasks/T12/brief.md" --set "from=the handoff from home-pc at 2026-10-23T14:05:00Z"
   assert_contains "$output" "snapshot"
@@ -240,6 +240,46 @@ EOF
     # The up-to-date check replaced the old refusal when the base moved.
     [[ $brief != *"merge-tree"* && $brief != *"moved:"* ]]
   done
+}
+
+@test "an ops brief quotes Daniel's request, links it, and says personal details are never part of the answer" {
+  open_task T30 conv research research/T30-ops-market-phases .treehouse/Conventioner-d4c77a/3/Conventioner \
+    "markets per phase"
+  printf -- '- `docs/implementation/data/`\n- `docs/schema.d.ts`\n' >"$BATS_TEST_TMPDIR/docs.md"
+  run_bin -0 team-brief T30 ops --set request='how many markets are in each phase?' \
+    --set request_link=https://discord.com/channels/1/2/3 \
+    --set-file data_docs="$BATS_TEST_TMPDIR/docs.md"
+  assert_equal "$(<"$TEAM_HOME/tasks/T30/brief.md")" "$(
+    cat <<'EOF'
+# T30 brief (ops): markets per phase
+
+Path: research; you are the ops agent, on the one production request below.
+Project: conv (`chanjdaniel/Conventioner`).
+Worktree: `~/.treehouse/Conventioner-d4c77a/3/Conventioner`, branch `research/T30-ops-market-phases`.
+Task directory: `.scratch/task/` in the worktree (excluded from git), for an answer too long for one message.
+
+## The request
+
+Daniel asked, in https://discord.com/channels/1/2/3:
+
+> how many markets are in each phase?
+
+Personal details are never part of your answer, whatever the request asks: answer with counts, ids and states (your role says why).
+
+## Read first
+
+- `docs/implementation/data/`
+- `docs/schema.d.ts`
+
+## Report
+
+Write the answer to `.scratch/answer.md`, then send `T30 DONE <answer>` to `coordinator`.
+EOF
+  )"
+  # An answer with personal details has no path: the brief has no placeholder to ask for one.
+  run_bin -1 team-brief T30 ops --set request='every vendor email' --set request_link=https://discord.com/channels/1/2/4 \
+    --set personal=yes --set-file data_docs="$BATS_TEST_TMPDIR/docs.md" --name brief-ops-2
+  assert_contains "$output" "no placeholder in ops uses: personal"
 }
 
 @test "no template repeats a rule from roles/" {

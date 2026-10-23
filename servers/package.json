@@ -1,0 +1,9 @@
+{
+  "name": "agent-team-servers",
+  "private": true,
+  "description": "The MCP servers the team's toolkits run, pinned by package-lock.json and installed by servers/install.",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "mongodb-mcp-server": "3.1.0"
+  }
+}

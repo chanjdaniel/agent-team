@@ -376,28 +376,33 @@ def is_open: . != null and (task_status | IN("open", "legacy"));
 
 # The live sessions named like team workers (T<n>-<role>), from the session list and every
 # task's events by id: {task, role, name, session (the short id), status, state, logged (a launch
-# of the task names it), task_state (open, closed, or unknown when not in the ledger)}.
+# of the task names it), task_state (open, closed, unknown when not in the ledger, or load-check for
+# T0, team-load-check's task, which is never in the ledger)}.
 def team_sessions($tasks; $sessions):
   [$sessions[] | . as $session
     | ((.name // "") | capture("^(?<task>T(0|[1-9][0-9]*))-(?<role>.+)$")) as $name
     | ($tasks[$name.task] // null) as $events
     | {task: $name.task, role: $name.role, name, session: (.id // ((.sessionId // "")[:8])), status, state,
        logged: ($events != null and any($events[]; .event == "launch" and live_session(.session; [$session]) != null)),
-       task_state: (if $events == null then "unknown" elif $events | is_open then "open" else "closed" end)}];
+       task_state: (if $name.task == "T0" then "load-check" elif $events == null then "unknown"
+         elif $events | is_open then "open" else "closed" end)}];
 
 # Sort by task number.
 def by_task_number: sort_by(.task[1:] | tonumber);
 
-# Why a team session is a stray, from team_sessions: "T4 is closed", "T9 is not in the ledger".
-def stray_reason: "\(.task) is \(if .task_state == "unknown" then "not in the ledger" else "closed" end)";
+# Why a team session is a stray, from team_sessions: "T4 is closed", "T9 is not in the ledger",
+# "T0 is the load check's, stray unless one is running".
+def stray_reason:
+  "\(.task) is \({unknown: "not in the ledger", "load-check": "the load check's, stray unless one is running"}[.task_state] // "closed")";
 
 # team-sweep's findings, over every ledger event as one array and the session list: each open
 # task's unless it is parked, then the stray sessions (named like a team worker whose task is
-# closed or not in the ledger); in task number order.
+# closed or not in the ledger, never the load check's T0, whose session the coordinator waits on
+# for up to 30 minutes); in task number order.
 def sweep($sessions):
   by_task as $tasks
   | [($tasks[] | select(is_open) | select(parked | not) | task_findings($sessions)),
-     (team_sessions($tasks; $sessions)[] | select(.task_state != "open")
+     (team_sessions($tasks; $sessions)[] | select(.task_state | IN("closed", "unknown"))
        | finding(.task; "stray"; .session; .name;
            "\(.name) \(.session) is live but \(stray_reason)";
            "read claude logs \(.session) for anything left to log, then stop it with claude stop \(.session)"))]
