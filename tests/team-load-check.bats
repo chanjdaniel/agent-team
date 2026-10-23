@@ -51,11 +51,7 @@ inventory() {
 # The ops form. The claude stub plays the ops session: claude --bg copies $STUB_FIXTURES/session/
 # into the worktree's .scratch/load-check-ops/, appends $STUB_FIXTURES/ops-log to T0's ops log as
 # the ops-log hook would, and writes the session's transcript ($STUB_FIXTURES/transcript.jsonl, or
-# '{}'); claude agents lists it, in the state $STUB_FIXTURES/state (default done), until claude rm.
-# A session that stops after a decline writes $STUB_FIXTURES/later/ and transcript.later.jsonl
-# at the sixth claude agents call (team-worker makes the first), as if the coordinator's
-# 'T0 continue' had come.
-# team-ops-end, run for real, deletes the transcript.
+# '{}'); claude agents lists it until claude rm. team-ops-end, run for real, deletes the transcript.
 
 ops_uuid=6f93fe38-4a6e-4b35-8f39-776a26bc624b
 prod_read_tools=(aggregate aggregate-db collection-indexes collection-schema collection-storage-size
@@ -68,33 +64,20 @@ ops_setup() {
   clone=$(make_repo proj)
   wt=$HOME/wt/proj-1
   git -C "$clone" worktree add -q -b load "$wt"
-  # The check polls every 5 seconds; the tests need no real wait.
-  cp "$REPO_ROOT/tests/helpers/stub" "$(dirname "$(command -v claude)")/sleep"
-  echo : | stub_script sleep
   stub_script claude <<'SH'
 transcript=$HOME/.claude/projects/-wt/6f93fe38-4a6e-4b35-8f39-776a26bc624b.jsonl
 case $1 in
   --bg)
     touch "$STUB_FIXTURES/launched"
     cp -R "$STUB_FIXTURES/session/." .scratch/load-check-ops/
-    pwd >"$STUB_FIXTURES/cwd"
     cat "$STUB_FIXTURES/ops-log" >>"$TEAM_HOME/tasks/T0/ops-log.md"
     mkdir -p "$(dirname "$transcript")"
     cat "$STUB_FIXTURES/transcript.jsonl" 2>/dev/null >"$transcript" || echo '{}' >"$transcript"
     echo "Started background session 6f93fe38 (${*: -2:1}). Attach with: claude attach 6f93fe38"
     ;;
   agents)
-    n=$(($(cat "$STUB_FIXTURES/agents-calls" 2>/dev/null || echo 0) + 1))
-    echo "$n" >"$STUB_FIXTURES/agents-calls"
-    if [[ -d $STUB_FIXTURES/later && $n -ge 6 && ! -f $STUB_FIXTURES/continued ]]; then
-      cp -R "$STUB_FIXTURES/later/." "$(cat "$STUB_FIXTURES/cwd")/.scratch/load-check-ops/"
-      cp "$STUB_FIXTURES/transcript.later.jsonl" "$transcript"
-      echo done >"$STUB_FIXTURES/state"
-      touch "$STUB_FIXTURES/continued"
-    fi
     if [[ -f $STUB_FIXTURES/launched && ! -f $STUB_FIXTURES/removed ]]; then
-      jq -nc --arg state "$(cat "$STUB_FIXTURES/state" 2>/dev/null || echo done)" \
-        '[{id: "6f93fe38", name: "T0-ops", state: $state, sessionId: "6f93fe38-4a6e-4b35-8f39-776a26bc624b"}]'
+      echo '[{"id": "6f93fe38", "name": "T0-ops", "state": "done", "sessionId": "6f93fe38-4a6e-4b35-8f39-776a26bc624b"}]'
     else
       echo '[]'
     fi
@@ -209,8 +192,7 @@ write_session() {
 }
 
 # transcript <tool>:<outcome>...: a transcript with one call per argument, in order; the outcome
-# is 'result', 'pending' for a call still waiting on its prompt (no result yet), or the
-# toolDenialKind of a call that was refused.
+# is 'result', or the toolDenialKind of a call that was refused.
 transcript() {
   local call tool outcome i=0 server
   for call in "$@"; do
@@ -218,7 +200,6 @@ transcript() {
     [[ $tool != list-collections ]] || server=prod-read
     jq -nc --arg name "mcp__${server}__$tool" --arg id "toolu_$i" \
       '{type: "assistant", message: {content: [{type: "text", text: "calling"}, {type: "tool_use", id: $id, name: $name, input: {}}]}}'
-    [[ $outcome != pending ]] || continue
     jq -nc --arg id "toolu_$i" --arg kind "$outcome" \
       '{type: "user", message: {content: [{type: "tool_result", tool_use_id: $id, content: "x"}]}}
         + (if $kind == "result" then {} else {toolDenialKind: $kind} end)'
@@ -246,8 +227,6 @@ write_line() {
   assert_equal "$(sed '/^---$/q' "$inventory" | grep -c '^mcp__prod-read__')" 11
   [[ ! -e $TEAM_HOME/tasks/T0/inventory-prod-read.txt ]]
   assert_equal "$(find "$HOME/.claude/projects" -name "$ops_uuid*")" ""
-  # No nudge was needed: the session went on by itself.
-  [[ $output != *"T0 continue"* ]]
 }
 
 @test "a write that ran, a retried write, a missing report or tool, and a logged failure each fail the check" {
@@ -270,34 +249,6 @@ write_line() {
   [[ $output != *"FAIL: delete-many"* && $output != *"for delete-many"* ]]
   assert_equal "${lines[-1]}" "load check FAILED (inventory in tasks/T0/)"
   assert_equal "$(find "$HOME/.claude/projects" -name "$ops_uuid*")" ""
-}
-
-@test "a session stopped by a decline is waited for, and the coordinator asked to send it 'T0 continue'" {
-  ops_setup
-  write_session
-  local s=$STUB_FIXTURES/session
-  mkdir -p "$STUB_FIXTURES/later"
-  mv "$s/writes.txt" "$s/done.txt" "$STUB_FIXTURES/later/"
-  cp "$STUB_FIXTURES/transcript.jsonl" "$STUB_FIXTURES/transcript.later.jsonl"
-  transcript list-collections:result insert-many:user-rejected >"$STUB_FIXTURES/transcript.jsonl"
-  echo blocked >"$STUB_FIXTURES/state"
-  run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit prod-read --toolkit prod-write
-  assert_equal "$(grep -c "coordinator, send it 'T0 continue' (to its Remote Control ref from ListAgents)" <<<"$output")" 1
-  assert_equal "${lines[-1]}" "PASS"
-}
-
-@test "a session that went on after a decline, waiting on its next prompt, is not nudged" {
-  ops_setup
-  write_session
-  local s=$STUB_FIXTURES/session
-  mkdir -p "$STUB_FIXTURES/later"
-  mv "$s/writes.txt" "$s/done.txt" "$STUB_FIXTURES/later/"
-  cp "$STUB_FIXTURES/transcript.jsonl" "$STUB_FIXTURES/transcript.later.jsonl"
-  transcript list-collections:result insert-many:user-rejected update-many:pending >"$STUB_FIXTURES/transcript.jsonl"
-  echo blocked >"$STUB_FIXTURES/state"
-  run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit prod-read --toolkit prod-write
-  [[ $output != *"T0 continue"* ]]
-  assert_equal "${lines[-1]}" "PASS"
 }
 
 @test "the ops form needs a worktree and prod-read, alone or with prod-write, and the planner form takes no worktree" {

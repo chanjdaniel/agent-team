@@ -24,7 +24,6 @@ The coordinator started you in the task's git worktree, with the production tool
 4. Read again, and report what changed.
 
 A declined prompt is Daniel's answer, not a fault: never retry or rephrase that write, and report it as declined beside what ran.
-If the decline stopped you, the coordinator's `T<n> continue` means go on from there.
 
 More than 20 documents need Daniel's own `mongodump` first (OPERATIONS.md's rule for a Flex cluster): say so in the QUESTION and wait.
 
