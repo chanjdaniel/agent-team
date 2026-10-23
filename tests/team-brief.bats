@@ -193,6 +193,9 @@ EOF
   assert_equal "$(grep -m1 '^1\. ' "$brief")" \
     "1. First, the ledger's evidence for this retro's window, in both forms: \`$REPO_ROOT/bin/team-retro digest T31\` and \`$REPO_ROOT/bin/team-retro digest T31 --json\`."
   assert_contains "$(<"$brief")" 'Read `~/agent-team/sops/platform-gotchas.md` before your first command.'
+  # What Daniel approved and the team has not built yet is read, so it is not proposed again.
+  assert_contains "$(<"$brief")" '`~/agent-team/tasks/queued/`'
+  assert_contains "$(<"$brief")" 'Never propose again what Daniel rejected at an earlier retro, or what is already approved and queued, unless there is new evidence, which you name.'
   assert_contains "$(<"$brief")" 'Send `T31 DONE .work/task/report.md` to `coordinator`.'
 }
 
