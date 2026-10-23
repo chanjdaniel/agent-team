@@ -45,6 +45,7 @@ pr team-log url head
 review team-log verdict head
 merge-approved team-log url discord_message
 failed team-log reason
+retro-schedule team-log every_hours discord_message
 TABLE
   )
   actual=$(jq -r '.kinds | to_entries[] | [.key, .value.writer, (.value.required | keys_unsorted[])] | join(" ")' "$CONTRACT")
@@ -72,6 +73,7 @@ TABLE
   grep -Eq '^  merge-approved +team-log +url, discord_message  \(.*\)$' <<<"$output"
   grep -Eq '^  launch +team-worker +role, session, worktree, toolkits \(list\); optional project, branch$' <<<"$output"
   grep -Eq '^  resumed +team-log +- +\(clears held, blocked, paused and waiting\)$' <<<"$output"
+  grep -Eq '^  retro-schedule +team-log +every_hours \(number\), discord_message  \(.*every_hours 0 stops.*\)$' <<<"$output"
   assert_equal "$(stub_calls curl)$(stub_calls gh)" ""
 }
 
@@ -123,7 +125,7 @@ LINES
     count=$((count + 1))
     assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r '.event + " " + .note')" "$kind why $kind"
   done < <(jq -r '.kinds | to_entries[] | select(.value.writer == "team-log") | .key' "$CONTRACT")
-  assert_equal "$count" "15"
+  assert_equal "$count" "16"
   run_bin -0 team-log --check
 }
 
@@ -149,7 +151,25 @@ LINES
   run_bin -1 team-log T14 review 'note=looks fine'
   assert_contains "$output" "review needs verdict"
   assert_contains "$output" "review needs head"
+  run_bin -1 team-log T26 retro-schedule every_hours=48
+  assert_contains "$output" "retro-schedule needs discord_message"
+  run_bin -1 team-log T26 retro-schedule discord_message=1563171945980370967
+  assert_contains "$output" "retro-schedule needs every_hours"
+  run_bin -1 team-log T26 retro-schedule every_hours=often discord_message=1563171945980370967
+  assert_contains "$output" "every_hours must be a number, got a string"
   assert_ledger_empty
+}
+
+@test "retro-schedule records Daniel's cadence with the Discord message it was said in" {
+  run_bin -0 team-log T26 retro-schedule every_hours=48 discord_message=1563171945980370967
+  run_bin -0 team-log T26 retro-schedule every_hours=0 discord_message=1563171945980370999
+  assert_equal "$(ledger_without_ts)" "$(
+    cat <<'LINES'
+{"task":"T26","event":"retro-schedule","every_hours":48,"discord_message":"1563171945980370967"}
+{"task":"T26","event":"retro-schedule","every_hours":0,"discord_message":"1563171945980370999"}
+LINES
+  )"
+  run_bin -0 team-log --check
 }
 
 @test "a value of the wrong type or outside its choices is refused with nothing appended" {

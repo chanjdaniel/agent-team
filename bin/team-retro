@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# Tell when the next retro is due, and gather the ledger's evidence for a retro's window.
+#
+# Usage: team-retro status [--json]
+#        team-retro digest [T<n>] [--json]
+# A retro is a task opened with the path retro (team-open). Its schedule is the latest
+# retro-schedule across the ledger (team-log); every_hours 0 stops the retros. Reads only
+# ledger.jsonl, skipping lines that are not JSON, and writes nothing.
+# status: whether retros are scheduled, the last retro task, and when the next is due: every_hours
+# after the later of the latest retro's opening and the latest retro-schedule. It is running while
+# a retro task is open, and due when scheduled, none is running and that time is past. With
+# --json (schema team-retro-status/1): schedule ({every_hours, since, discord_message, task}, or
+# null when not scheduled), last ({task, opened, status} or null), running (T<n> or null), next
+# (or null) and due. Exit 0 whenever the ledger reads.
+# digest: the evidence for one window, each section in ledger order. With a retro task T<n>, from
+# the opening of the retro opened before it (exclusive), or the ledger's first event, to T<n>'s
+# opening (inclusive), so it is the same whenever it runs; without, a dry run, from the latest
+# retro's opening to now. A task that is not a retro task is a usage error. Sections:
+#   window      since, until, the retro task, the previous retro, the events and each kind's count
+#   blocks      every blocked and failed, a denial when its reason says denied, denies, refused,
+#               refuses or auto mode, in any case
+#   questions   each task's question and asked events, repeated with two or more
+#   reviews     each task's review verdicts, reopened when a findings is followed by another review
+#   waits       each span that parks a task: waiting (on its on) and paused until the next resumed
+#               or launch, blocked and held until the next resumed, asked (on Daniel) until the
+#               answered of its id, and each until the task's closed; a span open at the window's
+#               end ends there (open), one from before its start is clipped to it (clipped); then
+#               the hours and spans per on (in any case), most hours first
+#   rewrites    every history-rewritten
+#   injections  every injection
+#   tasks       each task with an event in the window: title, project, path, phase, its record
+#               directory under the team home, and the sessions it launched in the window
+# With --json, the digest (schema team-retro-digest/1): window, blocks, questions, reviews,
+# waits ({spans, totals}), rewrites, injections and tasks.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+usage="usage: team-retro status [--json] | team-retro digest [T<n>] [--json]"
+[[ $# -ge 1 && ($1 == status || $1 == digest) ]] || usage_error "$usage"
+command=$1
+shift
+json='' task=''
+for arg in "$@"; do
+  if [[ $arg == --json && -z $json ]]; then
+    json=1
+  elif [[ $command == digest && -z $task && $arg =~ ^T[1-9][0-9]*$ ]]; then
+    task=$arg
+  else
+    usage_error "$usage"
+  fi
+done
+
+ledger=$TEAM_HOME/ledger.jsonl
+[[ -e $ledger ]] || ledger=/dev/null
+
+if [[ $command == status ]]; then
+  result=$(ledger_jq 'ledger_events | retro_status' -nRc "$ledger")
+else
+  if [[ -n $task ]]; then
+    ledger_jq 'ledger_events | any(.[]; .task == $task and retro_opened)' -nRe --arg task "$task" "$ledger" >/dev/null ||
+      usage_error "$task is not a retro task: it has no opened event with the path retro"
+  fi
+  result=$(ledger_jq 'ledger_events | retro_digest(if $task == "" then null else $task end; $home)' -nRc \
+    --arg task "$task" --arg home "$TEAM_HOME" "$ledger")
+fi
+
+if [[ -n $json ]]; then
+  jq . <<<"$result"
+else
+  ledger_jq "retro_${command}_text" -r <<<"$result"
+fi

@@ -4,7 +4,7 @@
 # Usage: team-open [--task T<n>] <project> <path> <type> <slug> <title...>
 #        team-open --task T<n> --add <project> <type> <slug>
 #   project  a project in projects.toml (team-project --list)
-#   path     feature | bug | small | research
+#   path     feature | bug | small | research | retro (retro marks a retro task for team-retro)
 #   type     the branch prefix: feat | fix | docs | chore | build | ci | test | refactor | perf | research
 #   slug     lower-case kebab case, at most 40 characters; the branch is <type>/T<n>-<slug>
 # Without --task, claims the next task number by creating tasks/T<n>/. With --task, opens that
@@ -54,8 +54,8 @@ else
   project=$1 path=$2 type=$3 slug=$4
   shift 4
   title="$*"
-  [[ $path =~ ^(feature|bug|small|research)$ ]] ||
-    usage_error "path must be feature, bug, small or research, got '$path'"
+  [[ $path =~ ^(feature|bug|small|research|retro)$ ]] ||
+    usage_error "path must be feature, bug, small, research or retro, got '$path'"
   [[ $title =~ [^[:space:]] ]] || usage_error "$usage"
 fi
 [[ $type =~ ^(feat|fix|docs|chore|build|ci|test|refactor|perf|research)$ ]] ||

@@ -114,6 +114,11 @@
     "failed": {
       "writer": "team-log",
       "required": {"reason": "string"}
+    },
+    "retro-schedule": {
+      "writer": "team-log",
+      "about": "Daniel's word on how often a retro runs, read by team-retro from the latest across the ledger; every_hours 0 stops the retros",
+      "required": {"every_hours": "number", "discord_message": "string"}
     }
   }
 }
