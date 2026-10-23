@@ -300,7 +300,7 @@ do_own() {
   local here=$claude_dir/settings.json out
   [[ -e $here ]] || here=/dev/null
   out=$(jq -n --argjson own "$OWN_SETTINGS" --slurpfile here "$here" \
-    '[$own[] as $p | {setting: ($p | join(".")), set: (($here[0] // {}) | getpath($p)) != null}]' 2>/dev/null) ||
+    '[$own[] as $p | {setting: ($p | join(".")), set: ((($here[0] // {}) | getpath($p)) != null)}]' 2>/dev/null) ||
     die "$claude_dir/settings.json is not JSON"
   if ((json)); then
     printf '%s\n' "$out"
