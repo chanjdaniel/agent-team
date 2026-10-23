@@ -197,3 +197,37 @@ COMMANDS
   [[ -n $records ]]
   assert_equal "$ignored" "$records"
 }
+
+# The problems with the gotchas SOP <file>, one per line, given the registry's project names:
+# gotchas_problems <file> <name>...
+gotchas_problems() {
+  awk -v names="${*:2}" '
+    function close_entry() {
+      if (heading != "" && (why != 1 || seen != 1))
+        printf "%s: %d Why: and %d Seen: lines, not one each\n", heading, why, seen
+    }
+    BEGIN { n = split(tolower(names), name, " ") }
+    /^## / { close_entry(); heading = $0; why = seen = 0; entries++ }
+    /^Why: / { why++ }
+    /^Seen: / { seen++; next }
+    /(^|[^[:alnum:]_])T[0-9]+([^[:alnum:]_]|$)/ { printf "line %d names a task outside a Seen: line\n", NR }
+    {
+      for (i = 1; i <= n; i++)
+        if (index(tolower($0), name[i])) printf "line %d names the project %s outside a Seen: line\n", NR, name[i]
+    }
+    END {
+      close_entry()
+      if (entries < 1 || entries > 12) printf "%d entries, not 1 to 12\n", entries
+    }' "$1"
+}
+
+# The gotchas SOP stays a short list of general rules, the stories on their Seen: lines only.
+@test "the platform gotchas SOP: at most 12 general rules, each with one Why: and one Seen: line" {
+  local sop=$REPO_ROOT/sops/platform-gotchas.md
+  [[ -f $sop ]] || { echo "sops/platform-gotchas.md is missing" >&2; return 1; }
+  cp "$REPO_ROOT/projects.toml" "$TEAM_HOME/"
+  run_bin -0 team-project --list
+  ((${#lines[@]} >= 1))
+  run -0 gotchas_problems "$sop" "${lines[@]}"
+  assert_equal "$output" ""
+}
