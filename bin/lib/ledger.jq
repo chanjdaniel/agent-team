@@ -113,6 +113,14 @@ def open_worktrees(events; $home):
     else . end)
   | .[];
 
+# A task's open worktrees (open_worktrees, over its events as an array), each with the folder
+# under tasks/T<n>/ its task directory is archived to: scratch for the project the task was
+# opened in, scratch-<project> for one added later.
+def archived_worktrees($home):
+  (map(select(.event == "opened")) | first | .project) as $opened
+  | open_worktrees(.[]; $home)
+  | . + {archive: (if .project == $opened then "scratch" else "scratch-\(.project)" end)};
+
 # Whether two heads name the same commit: compared by the shorter one's prefix, which must be at
 # least 7 characters, since the ledger holds both short and full SHAs.
 def same_head($a; $b):

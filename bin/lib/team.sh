@@ -7,7 +7,7 @@
 # --help with the calling script's header (then runs the script's help_more, if it defined one
 # before sourcing), and provides die, usage_error, team_project, ledger_jq, ledger_append,
 # task_events, known_task_events, open_task_events, task_status, task_worktrees, local_path,
-# machine_name, fence_reason, lease_gate, worktree_changes, non_records, commit_non_records,
+# archive_task_dir, machine_name, fence_reason, lease_gate, worktree_changes, non_records, commit_non_records,
 # records_list, render_template, registered_pr, attribution_lines, strip_attribution,
 # live_sessions, discord_token, discord_api, github, pr_part and task_state_json, and sets
 # COORDINATOR_CHANNEL.
@@ -116,6 +116,22 @@ task_worktrees() {
 # path is printed unchanged. Recorded paths stay as written; readers map them: local_path <path>
 local_path() {
   ledger_jq '$path | local_path($home)' -nr --arg path "$1"
+}
+
+# Mirror the task directory <dir> of a worktree of <project> into <archive> under the team home
+# (tasks/T<n>/scratch or tasks/T<n>/scratch-<project>), so the archive is the task directory as
+# it is now; a missing or empty task directory archives nothing and is reported on stderr,
+# failing: archive_task_dir <dir> <project> <archive>
+archive_task_dir() {
+  if [[ ! -d $1 ]]; then
+    echo "${0##*/}: $1 is missing, so nothing was archived from $2" >&2
+    return 1
+  elif [[ -z $(find "$1" -mindepth 1 -maxdepth 1 -print -quit) ]]; then
+    echo "${0##*/}: $1 is empty, so nothing was archived from $2" >&2
+    return 1
+  fi
+  mkdir -p "$TEAM_HOME/$3"
+  rsync -a --delete -- "$1/" "$TEAM_HOME/$3/" || die "cannot mirror $1 into $3"
 }
 
 # Print this machine's team name, the first line of ~/.config/agent-team/machine (lower-case

@@ -40,6 +40,9 @@
 #                     15 minutes old (less a minute for the timer's slack); on a machine that lost
 #                     the lease, team-lease renew at once, which fences it (stops its team
 #                     sessions and disables this heartbeat); otherwise nothing.
+#              checkpoint  On the holder, after the lease or back step: team-checkpoint, which
+#                     makes one once the last is 15 minutes old (less the same minute), one log
+#                     line per line it prints.
 #            A run that finds another still going skips. Posts go through discord_api; times in
 #            them are this machine's local time.
 #   watch    For the coordinator's Monitor, which wakes it while idle: checks the offline flag
@@ -472,6 +475,7 @@ back_step() {
     told="the post to #coordinator failed ($POST_ERROR)"
   fi
   log back "$out; GitHub back at $back (unreachable from $since); $told"
+  holding=1
 }
 
 # What the outage post says: outage_text <since>
@@ -537,9 +541,24 @@ lease_step() {
     age=$(jq -r 'now - (.renewed_at | fromdateiso8601) | floor' <<<"$desc")
     if ((age < RENEW_MINUTES * 60 - SLACK_SECONDS)); then
       log lease "$machine holds the lease, epoch $epoch, renewed $((age / 60)) minutes ago; no renewal due"
+      holding=1
       return
     fi
     renew
+    [[ -e $state/fenced ]] || holding=1
+  fi
+}
+
+# The checkpoint step, on the holder: team-checkpoint, which says when none is due yet.
+checkpoint_step() {
+  local rc=0 out line
+  out=$(team team-checkpoint 2>"$err") || rc=$?
+  while IFS= read -r line; do
+    [[ -z $line ]] || log checkpoint "$line"
+  done <<<"$out"
+  if ((rc)); then
+    log checkpoint "failed: $(first_error)"
+    exit "$rc"
   fi
 }
 
@@ -581,7 +600,9 @@ run_heartbeat() {
   fi
   fence_step || true
   probe_step
+  holding=0
   if [[ -e $offline ]]; then back_step; else lease_step; fi
+  ((!holding)) || checkpoint_step
 }
 
 # The watch: a line each time the offline flag appears or goes, until killed.

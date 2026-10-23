@@ -243,8 +243,10 @@ EOF
   local tip
   tip=$(lease_tip)
   run_bin -0 team-timers run
-  assert_equal "$output" "$(tail -n 1 "$log")"
-  [[ $output =~ ^[0-9T:Z-]+" lease: home-pc holds the lease, epoch 1, renewed 0 minutes ago; no renewal due"$ ]]
+  # Each step's line in the log too; the checkpoint has its own test.
+  assert_equal "$output" "$(cat "$log")"
+  [[ $(head -n 1 <<<"$output") =~ ^[0-9T:Z-]+" lease: home-pc holds the lease, epoch 1, renewed 0 minutes ago; no renewal due"$ ]]
+  assert_contains "$(tail -n 1 <<<"$output")" " checkpoint: "
   assert_equal "$(lease_tip)" "$tip"
 
   age_lease 10
@@ -256,7 +258,7 @@ EOF
   age_lease 20
   tip=$(lease_tip)
   run_bin -0 team-timers run
-  [[ $output =~ ^[0-9T:Z-]+" lease: home-pc renewed the lease, epoch 1"$ ]]
+  [[ $(head -n 1 <<<"$output") =~ ^[0-9T:Z-]+" lease: home-pc renewed the lease, epoch 1"$ ]]
   [[ $(lease_tip) != "$tip" ]]
   lease_json | jq -e '.holder == "home-pc" and .epoch == 1 and (.renewed_at | fromdateiso8601) > now - 120'
 
@@ -265,7 +267,44 @@ EOF
   run_bin -0 team-timers run
   assert_contains "$output" "renewed 0 minutes ago; no renewal due"
   assert_equal "$(lease_tip)" "$tip"
-  assert_equal "$(wc -l <"$log")" 4
+  assert_equal "$(grep -c ' lease: ' "$log")" 4
+}
+
+@test "run on the holder checkpoints only once the last checkpoint is 15 minutes old" {
+  local state=$HOME/.local/state/agent-team tip
+  mkdir -p "$TEAM_HOME/memory/home" "$state"
+  echo "- a note" >"$TEAM_HOME/memory/home/MEMORY.md"
+  touch -d '-10 minutes' "$state/last-checkpoint"
+  tip=$(git -C "$origin" rev-parse dev)
+  run_bin -0 team-timers run
+  assert_contains "$output" "lease: home-pc holds the lease"
+  [[ $(tail -n 1 <<<"$output") =~ ^[0-9T:Z-]+" checkpoint: not due: the last checkpoint was 10 minutes ago (--force makes one now)"$ ]]
+  assert_equal "$(git -C "$origin" rev-parse dev)" "$tip"
+
+  touch -d '-15 minutes' "$state/last-checkpoint"
+  run_bin -0 team-timers run
+  [[ $(tail -n 1 <<<"$output") =~ ^[0-9T:Z-]+" checkpoint: team home: committed "[0-9a-f]+" chore: checkpoint and pushed dev"$ ]]
+  assert_equal "$(git -C "$origin" diff-tree -r --no-commit-id --name-only dev)" "memory/home/MEMORY.md"
+  assert_equal "$(tail -n 1 "$log")" "$(tail -n 1 <<<"$output")"
+
+  # A machine that does not hold the lease never checkpoints, however old the last one.
+  run -0 "$REPO_ROOT/bin/team-lease" release
+  echo "- another note" >>"$TEAM_HOME/memory/home/MEMORY.md"
+  touch -d '-30 minutes' "$state/last-checkpoint"
+  tip=$(git -C "$origin" rev-parse dev)
+  run_bin -0 team-timers run
+  assert_equal "$(grep -c checkpoint: <<<"$output")" 0
+  assert_equal "$(git -C "$origin" rev-parse dev)" "$tip"
+}
+
+@test "a checkpoint that fails is logged and fails the run" {
+  local state=$HOME/.local/state/agent-team
+  mkdir -p "$TEAM_HOME/memory/home"
+  echo "- a note" >"$TEAM_HOME/memory/home/MEMORY.md"
+  git -C "$TEAM_HOME" checkout -q --detach
+  run_bin -1 team-timers run
+  [[ $(tail -n 1 <<<"$output") =~ ^[0-9T:Z-]+" checkpoint: failed: team home: not on a branch, so the records are not committed"$ ]]
+  [[ ! -e $state/last-checkpoint ]]
 }
 
 @test "run on a machine that does not hold the lease logs and makes no commit" {
@@ -421,7 +460,7 @@ EOF
   [[ ! -e $HOME/.local/state/agent-team/offline ]]
   local back
   back=$(sed -nE 's/.* GitHub back at ([^ ]+) .*/\1/p' <<<"$output")
-  assert_equal "$(cut -d' ' -f2- <<<"$output")" "back: home-pc renewed the lease, epoch 1; GitHub back at $back (unreachable from $since); #coordinator is told"
+  assert_equal "$(head -n 1 <<<"$output" | cut -d' ' -f2-)" "back: home-pc renewed the lease, epoch 1; GitHub back at $back (unreachable from $since); #coordinator is told"
   assert_equal "$(posts | sed -n 2p)" "$(jq -n --arg t "GitHub back at $(clock "$back") (unreachable from $(clock "$since")); resuming T5, T8" '$t')"
 
   # The next run is an ordinary one.
@@ -589,7 +628,8 @@ EOF
   mkdir -p "${log%/*}"
   seq 1 2500 | sed 's/^/2026-10-01T00:00:00Z old line /' >"$log"
   run_bin -0 team-timers run
-  assert_equal "$(wc -l <"$log")" 1001
+  # The kept lines, then the run's lease and checkpoint lines.
+  assert_equal "$(wc -l <"$log")" 1002
   assert_equal "$(head -n 1 "$log")" "2026-10-01T00:00:00Z old line 1501"
 
   local tip
