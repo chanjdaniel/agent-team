@@ -8,6 +8,7 @@ description: Queries a project's production MongoDB database through the prod-re
 The `prod-read` server is the pinned MongoDB MCP server in read-only mode, already connected as a read-only Atlas user.
 Its tools are named `mcp__prod-read__<tool>` or `mcp__plugin_prod-read_prod-read__<tool>`, depending on how the session was launched; this skill names them by the last part (`find`, `count`, `aggregate`).
 What the toolkit can and cannot reach, and where its credential lives: [docs/access.md](${CLAUDE_PLUGIN_ROOT}/docs/access.md).
+That doc is for people: an ops session's file tools cannot open it, so never try to read it; this skill holds everything a session needs.
 
 ## Every call
 
@@ -32,10 +33,10 @@ What the toolkit can and cannot reach, and where its credential lives: [docs/acc
 
 ## Personal details
 
-Names, email addresses, phone numbers and answers to form questions (`applicant_email`, `form_data`, a user's `email`) stay in the database unless the brief says Daniel asked for them.
+Names, email addresses, phone numbers, postal addresses and answers to form questions (`applicant_email`, `form_data`, a user's `email`) stay in the database, even when Daniel asks for them: every result lands in the session's transcript, which Remote Control mirrors to claude.ai, so no call may return one.
 Leave those fields out of every projection and `$group` key, so they never reach the transcript; `_id: 0` drops the ObjectId too.
 A pipeline may still use one to count, as long as only the count comes out: distinct applicants are `{"$group": {"_id": null, "emails": {"$addToSet": "$applicant_email"}}}` then `{"$project": {"_id": 0, "applicants": {"$size": "$emails"}}}`.
-When the brief says Daniel asked, project exactly the fields asked for, and nothing beside them.
+For a request that asks for them, answer with the counts and the ids of the documents, and say that Daniel can read the details in Atlas, Data Explorer, by those ids.
 
 ## Reading a result
 

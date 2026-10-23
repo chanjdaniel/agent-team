@@ -11,7 +11,7 @@ Daniel asked, in {{request_link}}:
 
 > {{request}}
 
-Personal details asked for: {{personal}}.
+Personal details are never part of your answer, whatever the request asks: answer with counts, ids and states (your role says why).
 
 ## Read first
 

@@ -6,8 +6,9 @@
 #
 # Each event is one Markdown list line in <task dir>/ops-log.md, created with a header naming the
 # task: UTC time, requested, ran or failed, the toolkit, the tool and its input as compact JSON,
-# with every email-shaped string replaced by <email>. A failed line adds the error's first line,
-# masked the same way; no line holds the tool's result. Lines are appended under a lock on the log.
+# with every email-shaped string replaced by <email> and every phone-number-shaped one (7 to 15
+# digits, with + ( ) . - or spaces between, not a date) by <phone>. A failed line adds the error's
+# first line, masked the same way; no line holds the tool's result. Lines are appended under a lock on the log.
 # A requested write with no ran or failed line after it was declined.
 #
 # A prod-write call whose requested line cannot be appended is blocked (exit 2, the reason on
@@ -24,11 +25,16 @@ input=$(cat)
 
 # An email-shaped string, also with its dots escaped as in a regular expression (a\.b@c\.org).
 email_re='[A-Za-z0-9._%+\\-]+@[A-Za-z0-9-]+(\\?\.[A-Za-z0-9-]+)+'
+# A phone-number-shaped string: digits with + ( ) . - or spaces between, not inside a word or an
+# ISO date; it is masked only when it holds 7 to 15 digits.
+phone_re='(?<![\w+.-])(?!\d{4}-\d{2}-\d{2})(?<p>\+?\(?\d[\d ().-]{5,}\d)(?![\w])'
 
 # The event's facts, one per line: time, what happened, toolkit, tool, masked input, masked first
 # line of the error. Nothing when the input is not a tool event.
-facts=$(jq -r --arg re "$email_re" '
-  def mask: if type == "string" then gsub($re; "<email>")
+facts=$(jq -r --arg re "$email_re" --arg phone "$phone_re" '
+  def phones: gsub($phone; if (.p | gsub("[^0-9]"; "") | length) as $n | $n >= 7 and $n <= 15
+    then "<phone>" else .p end);
+  def mask: if type == "string" then gsub($re; "<email>") | phones
     elif type == "object" then with_entries(.key |= mask | .value |= mask)
     elif type == "array" then map(mask) else . end;
   (.tool_name | strings | ltrimstr("mcp__") | split("__")) as $parts

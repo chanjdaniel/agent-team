@@ -179,12 +179,12 @@ EOF
   refute_grep 'gh pr create' "$TEAM_HOME/tasks/T12/brief-builder-deliver.md"
 }
 
-@test "an ops brief quotes Daniel's request, links it, and says whether personal details were asked for" {
+@test "an ops brief quotes Daniel's request, links it, and says personal details are never part of the answer" {
   open_task T30 conv research research/T30-ops-market-phases .treehouse/Conventioner-d4c77a/3/Conventioner \
     "markets per phase"
   printf -- '- `docs/implementation/data/`\n- `docs/schema.d.ts`\n' >"$BATS_TEST_TMPDIR/docs.md"
   run_bin -0 team-brief T30 ops --set request='how many markets are in each phase?' \
-    --set request_link=https://discord.com/channels/1/2/3 --set personal=no \
+    --set request_link=https://discord.com/channels/1/2/3 \
     --set-file data_docs="$BATS_TEST_TMPDIR/docs.md"
   assert_equal "$(<"$TEAM_HOME/tasks/T30/brief.md")" "$(
     cat <<'EOF'
@@ -201,7 +201,7 @@ Daniel asked, in https://discord.com/channels/1/2/3:
 
 > how many markets are in each phase?
 
-Personal details asked for: no.
+Personal details are never part of your answer, whatever the request asks: answer with counts, ids and states (your role says why).
 
 ## Read first
 
@@ -213,6 +213,10 @@ Personal details asked for: no.
 Write the answer to `.scratch/answer.md`, then send `T30 DONE <answer>` to `coordinator`.
 EOF
   )"
+  # An answer with personal details has no path: the brief has no placeholder to ask for one.
+  run_bin -1 team-brief T30 ops --set request='every vendor email' --set request_link=https://discord.com/channels/1/2/4 \
+    --set personal=yes --set-file data_docs="$BATS_TEST_TMPDIR/docs.md" --name brief-ops-2
+  assert_contains "$output" "no placeholder in ops uses: personal"
 }
 
 @test "no template repeats a rule from roles/" {

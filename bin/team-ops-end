@@ -1,7 +1,15 @@
 #!/usr/bin/env bash
 # End a task's ops session: stop and remove the background session named <task>-ops, then delete
 # its transcript, which holds production query results that claude rm keeps:
-# ~/.claude/projects/<project slug>/<session uuid>.jsonl and the <session uuid>/ directory beside it.
+# ~/.claude/projects/<project slug>/<session uuid>.jsonl and the <session uuid>/ directory beside it,
+# and the answer file in its worktree, <cwd>/.scratch/answer.md, which the coordinator has relayed.
+#
+# It cannot delete the session's copy on claude.ai. An ops session runs with Remote Control, which
+# Daniel's phone approvals need, and while it is connected claude.ai stores its conversation, tool
+# results included; claude rm leaves that copy, which stays under Anthropic's data retention until
+# Daniel deletes it on claude.ai (the session's menu, Delete). Daniel chose to keep Remote Control
+# and keep personal details out of every ops answer and result instead (Discord
+# 1563213199313080394), so the copy holds only counts, ids and field names (roles/ops.md).
 #
 # Usage: team-ops-end <task>
 #   task  T<n>, e.g. T5 (T0 for the load check)
@@ -19,18 +27,20 @@ name=$task-ops
 
 sessions=$(claude agents --json --all | jq -ce 'select(type == "array")' 2>/dev/null) ||
   die "cannot read the session list (claude agents --json --all)"
-mapfile -t found < <(jq -r --arg name "$name" '.[] | select(.name == $name) | "\(.id) \(.sessionId // "")"' <<<"$sessions")
+# One line per session: its id, full uuid and working directory, split by the unit separator.
+mapfile -t found < <(jq -r --arg name "$name" '.[] | select(.name == $name)
+  | [.id, .sessionId // "", .cwd // ""] | join("\u001f")' <<<"$sessions")
 [[ ${#found[@]} -gt 0 ]] || die "no session named $name is listed"
 
 # Every session must resolve to its full uuid before anything is stopped or deleted.
 uuid_re='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 for entry in "${found[@]}"; do
-  read -r id uuid <<<"$entry"
+  IFS=$'\x1f' read -r id uuid cwd <<<"$entry"
   [[ $uuid =~ $uuid_re && $uuid == "$id"* ]] || die "cannot resolve the full session uuid of $name ($id); nothing deleted"
 done
 
 for entry in "${found[@]}"; do
-  read -r id uuid <<<"$entry"
+  IFS=$'\x1f' read -r id uuid cwd <<<"$entry"
   # A session that already finished has nothing to stop.
   claude stop "$id" >/dev/null 2>&1 || true
   claude rm "$id" >/dev/null || die "claude rm $id failed; its transcript is kept"
@@ -38,5 +48,10 @@ for entry in "${found[@]}"; do
     rm -rf -- "$path"
     echo "deleted $path"
   done < <(find "$HOME/.claude/projects" -mindepth 2 -maxdepth 2 \( -name "$uuid.jsonl" -o -name "$uuid" \) -print0 2>/dev/null)
+  answer=$cwd/.scratch/answer.md
+  if [[ $cwd == /* && -f $answer ]]; then
+    rm -f -- "$answer"
+    echo "deleted $answer"
+  fi
   echo "ended $name ($id)"
 done

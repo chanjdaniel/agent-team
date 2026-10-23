@@ -37,7 +37,8 @@
       "CronCreate",
       "RemoteTrigger",
       "ScheduleWakeup",
-      "Read(//proc/**)"
+      "Read(//proc/**)",
+      "Read(**/.env*)"
     ]
   },
   "hooks": {

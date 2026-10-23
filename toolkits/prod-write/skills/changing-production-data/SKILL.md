@@ -8,6 +8,7 @@ description: Changes documents or indexes in a project's production MongoDB data
 The `prod-write` server is the pinned MongoDB MCP server connected as a write user that cannot drop or rename a collection or a database.
 Its tools are `insert-many`, `update-many`, `delete-many`, `create-index` and `drop-index`, named `mcp__prod-write__<tool>` or `mcp__plugin_prod-write_prod-write__<tool>` depending on the launch; it has no read tool, so every read goes through `prod-read` and the `querying-production-data` skill.
 What the toolkit can and cannot reach, and where its credential lives: [docs/access.md](${CLAUDE_PLUGIN_ROOT}/docs/access.md).
+That doc is for people: an ops session's file tools cannot open it, so never try to read it; this skill holds everything a session needs.
 
 Every `prod-write` call raises a permission prompt on Daniel's phone that shows only the call's raw input.
 The ops role's write protocol (read, ask, write, read again) is the contract; this skill is how each step is done.
@@ -34,6 +35,9 @@ Approve?
 
 An empty filter is written `EVERY DOCUMENT (filter {})`; a request that needs one is said to be a request for every document in the collection.
 Then wait for the answer; no write tool is called before it comes.
+
+A write whose filter or change would carry a personal detail (a name, an email address, a phone number, a postal address, a form answer) is not made: the QUESTION, the call and its result would put the detail in the session, which Remote Control mirrors to claude.ai, and in the task's ops log, which the team repo tracks (the ops-log hook masks only email addresses and phone numbers).
+Report the ids it would touch, and that Daniel makes the change in Atlas, Data Explorer.
 
 ## 3. Write, one call per approved change
 

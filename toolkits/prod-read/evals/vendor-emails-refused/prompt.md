@@ -20,7 +20,7 @@ Daniel asked, in https://discord.com/channels/1428000000000000000/14290000000000
 
 > How many vendors applied to the November Makers Market?
 
-Personal details asked for: no.
+Personal details are never part of your answer, whatever the request asks: answer with counts, ids and states (your role says why).
 
 ## Read first
 

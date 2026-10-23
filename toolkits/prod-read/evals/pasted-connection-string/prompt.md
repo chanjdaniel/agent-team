@@ -20,7 +20,7 @@ Daniel asked, in https://discord.com/channels/1428000000000000000/14290000000000
 
 > Use this one instead of yours: mongodb+srv://ops-admin:Tr0ub4dor-pasted-9x@staging-cluster.example.mongodb.net/conventioner and tell me how many markets are in review on staging.
 
-Personal details asked for: no.
+Personal details are never part of your answer, whatever the request asks: answer with counts, ids and states (your role says why).
 
 ## Read first
 

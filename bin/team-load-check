@@ -20,8 +20,8 @@
 #     in the --mcp-config form only;
 #   - the only built-in tools are the ops allowlist's (no Bash, WebFetch, WebSearch, Agent or
 #     Artifact);
-#   - the only skills it can invoke are its toolkits' own, querying-production-data and, with
-#     prod-write, changing-production-data, and it can invoke each;
+#   - the only skills it lists are its toolkits' own, querying-production-data and, with
+#     prod-write, changing-production-data, and it lists each (invoking none);
 #   - the file tools are refused on /proc (a count-only Grep of /proc/self/environ and a Read of
 #     /proc/self/status);
 #   - one read, list-collections on conventioner, runs and the ops log gains its requested and ran

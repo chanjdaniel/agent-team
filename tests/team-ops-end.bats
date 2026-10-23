@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # team-ops-end: stopping and removing a task's ops session, and deleting its transcript by the
-# session's full uuid only.
+# session's full uuid only, and the answer file in its worktree.
 
 load helpers/common
 
@@ -17,6 +17,11 @@ setup() {
   echo '{}' >"$slug/4f2a9c1e-0000-4000-8000-000000000000.jsonl"
   echo '{}' >"$projects/-other/aaaaaaaa-1111-4222-8333-944455556666.jsonl"
   echo '{}' >"$slug/$uuid.jsonl.bak"
+  # The ops session's worktree and the builder's, each with an answer file.
+  ops_wt="$HOME/slots/proj 1" builder_wt=$HOME/slots/proj-2
+  mkdir -p "$ops_wt/.scratch" "$builder_wt/.scratch"
+  echo answer >"$ops_wt/.scratch/answer.md"
+  echo answer >"$builder_wt/.scratch/answer.md"
 }
 
 # agents <json>: what claude agents --json --all lists; stop and rm succeed.
@@ -32,8 +37,9 @@ SH
 }
 
 ops_session() {
-  jq -cn --arg uuid "$uuid" '[{id: "4f2a9c1e", sessionId: $uuid, name: "T5-ops", state: "done"},
-    {id: "aaaaaaaa", sessionId: "aaaaaaaa-1111-4222-8333-944455556666", name: "T5-builder", state: "working"}]'
+  jq -cn --arg uuid "$uuid" --arg ops "$ops_wt" --arg builder "$builder_wt" '[
+    {id: "4f2a9c1e", sessionId: $uuid, name: "T5-ops", state: "done", cwd: $ops},
+    {id: "aaaaaaaa", sessionId: "aaaaaaaa-1111-4222-8333-944455556666", name: "T5-builder", state: "working", cwd: $builder}]'
 }
 
 @test "the ops session is stopped, removed and its transcript and results deleted, nothing else" {
@@ -46,6 +52,9 @@ ops_session() {
   [[ -f $slug/4f2a9c1e-0000-4000-8000-000000000000.jsonl ]]
   [[ -f $projects/-other/aaaaaaaa-1111-4222-8333-944455556666.jsonl ]]
   [[ -f $slug/$uuid.jsonl.bak ]]
+  # The answer file, which holds the answer, goes with it.
+  assert_contains "$output" "deleted $ops_wt/.scratch/answer.md"
+  [[ ! -e $ops_wt/.scratch/answer.md && -d $ops_wt/.scratch && -f $builder_wt/.scratch/answer.md ]]
   assert_equal "$(stub_calls claude)" "$(printf '%s\n' '["agents","--json","--all"]' '["stop","4f2a9c1e"]' '["rm","4f2a9c1e"]')"
 }
 
@@ -60,6 +69,20 @@ esac
 SH
   run_bin -0 team-ops-end T5
   [[ ! -e $slug/$uuid.jsonl ]]
+}
+
+@test "a session with no answer file, or no worktree listed, deletes its transcript alone" {
+  rm "$ops_wt/.scratch/answer.md"
+  agents "$(ops_session)"
+  run_bin -0 team-ops-end T5
+  [[ ! -e $slug/$uuid.jsonl ]]
+  run -1 grep -q answer.md <<<"$output"
+  echo '{}' >"$slug/$uuid.jsonl"
+  echo answer >"$ops_wt/.scratch/answer.md"
+  : >"$STUB_CALLS/claude.log"
+  agents "$(ops_session | jq -c 'map(del(.cwd))')"
+  run_bin -0 team-ops-end T5
+  [[ ! -e $slug/$uuid.jsonl && -f $ops_wt/.scratch/answer.md ]]
 }
 
 @test "no ops session for the task is refused, nothing stopped or deleted" {
@@ -96,7 +119,7 @@ esac
 SH
   run_bin -1 team-ops-end T5
   assert_contains "$output" "claude rm 4f2a9c1e failed; its transcript is kept"
-  [[ -f $slug/$uuid.jsonl && -d $slug/$uuid ]]
+  [[ -f $slug/$uuid.jsonl && -d $slug/$uuid && -f $ops_wt/.scratch/answer.md ]]
 }
 
 @test "an unreadable session list and a malformed command line are refused" {
