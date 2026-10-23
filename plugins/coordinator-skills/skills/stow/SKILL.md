@@ -24,8 +24,9 @@ For each decision, answer, wait and lesson in it, write it to its one home:
 
 Write notes that point at the source of truth (the ledger, a PR URL, a file), never temp paths, versions or ids that rot.
 
-## Before a restart or a handoff
+## Before a restart
 
-Run `team-snapshot` and check every open task in it reads as you know it; fix the ledger or `tasks/` where it does not.
+A handoff to another machine is the `handoff` skill's: stow the conversation as above, then follow it.
+For a restart on this machine, run `team-snapshot` and check every open task in it reads as you know it; fix the ledger or `tasks/` where it does not.
 Write `tasks/handoff-<date>.md`: how to start the coordinator again, each task in flight with how to resume it, and what waits on Daniel.
 The next coordinator deletes it once everything in it is running again.

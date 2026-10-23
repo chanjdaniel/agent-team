@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
-# The coordinator's manual (roles/coordinator.md), its skills plugin and the root CLAUDE.md,
-# checked against bin/ so the manual and the tools cannot drift.
+# The coordinator's manual (roles/coordinator.md), its skills plugin, the worker roles' message
+# forms and the root CLAUDE.md, checked against bin/ and each other so they cannot drift.
 load helpers/common
 
 setup() {
@@ -17,6 +17,11 @@ named_commands() {
 # The skills the manual triggers: each "`<name>` skill" it names.
 triggered_skills() {
   grep -oE '`[a-z]+(-[a-z]+)*` skill' "$manual" | sed -E 's/^`([^`]*)`.*/\1/' | sort -u
+}
+
+# A role file's lines under its "## <heading>", up to the next heading, blank lines dropped.
+section() {
+  awk -v h="## $2" '$0 == h { on = 1; next } /^## / { on = 0 } on && NF' "$REPO_ROOT/roles/$1.md"
 }
 
 @test "the manual is at most 120 lines" {
@@ -66,6 +71,44 @@ triggered_skills() {
     [[ $(sed -n '1p' "$plugin/skills/$skill/SKILL.md") == --- ]]
     grep -q '^description: .' "$plugin/skills/$skill/SKILL.md"
   done
+}
+
+@test "each worker role says what to do on STOW and on a resume, within its line budget" {
+  local role body budget
+  for role in builder planner reviewer; do
+    body=$(section "$role" 'On STOW and on resume')
+    budget=4
+    [[ $role != builder ]] || budget=6
+    echo "$role: $(wc -l <<<"$body") lines" >&2
+    (($(wc -l <<<"$body") <= budget))
+    grep -qF 'On `T<n> STOW`' <<<"$body"
+    grep -qF 'write `.scratch/task/handoff.md` (done, next, anything odd) and reply `T<n> PAUSED stowed`' <<<"$body"
+    grep -qF 'On a resume, read `.scratch/task/handoff.md` first when it exists, and delete it once the work it describes is done.' <<<"$body"
+  done
+  body=$(section builder 'On STOW and on resume')
+  grep -qF 'with a no-mistakes run active, wait for it first and say so in `handoff.md`' <<<"$body"
+  grep -qF 'commit what is unfinished as `wip: <what is unfinished>` on the task branch and push it' <<<"$body"
+  grep -qF 'Never rewrite a `wip:` commit' <<<"$body"
+  # A planner and a reviewer have nothing to commit: their stow is the handoff note alone.
+  for role in planner reviewer; do
+    if section "$role" 'On STOW and on resume' | grep -Eiw 'commit|push|wip'; then
+      echo "$role's stow commits or pushes" >&2
+      return 1
+    fi
+  done
+}
+
+@test "the manual logs a worker's PAUSED stowed as paused, the answer to its STOW" {
+  grep -E '^\| `PAUSED stowed` \| `paused reason=stowed` \| .*`T<n> STOW`' "$manual"
+}
+
+@test "the stow skill leaves a machine handoff to the handoff skill" {
+  local skill=$plugin/skills/stow/SKILL.md
+  grep -qF 'the `handoff` skill' "$skill"
+  if grep -nE '^#.*handoff' "$skill"; then
+    echo "the stow skill still has a handoff section" >&2
+    return 1
+  fi
 }
 
 @test "the plugin is named in its manifest and team-load-check forbids it to workers" {

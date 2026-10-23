@@ -66,6 +66,7 @@ Each message starts with the task and a kind; log it with `team-log` before you 
 | `NEED toolkit <name>` | `blocked reason=` | A toolkit the project lists in `projects.toml`: relaunch the worker with `--toolkit <name>`; any other needs Daniel's yes. |
 | `BLOCKED <what> <why>` | `blocked reason=` | Help it, or take the problem to Daniel; a denial goes to Daniel under hard rule 2. |
 | `PAUSED <why>` | `paused reason=` | Nothing: a known wait that clears on its own; `resumed` when it does. |
+| `PAUSED stowed` | `paused reason=stowed` | The answer to your `T<n> STOW`: its work is pushed and `.scratch/task/handoff.md` says what is next, for whoever resumes it. |
 | `PR <url>` | `pr url= head=` | Start the review (step 5). |
 | `DONE ...` | `done role= session=`, `ticket-done ticket= commits=` or `review verdict= head=` | The next step of the task's life. |
 | `FAILED <why>` | `failed reason=` | Tell Daniel with the evidence. |
