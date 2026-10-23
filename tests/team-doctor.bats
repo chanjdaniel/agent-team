@@ -57,11 +57,26 @@ setup() {
   mkdir -p "$tools/answers"
   export REAL_PATH=$PATH TOOL_ANSWERS=$tools/answers PATH=$tools:$PATH
 
+  # The team home's Claude config, installed here; the plugins with Discord off.
+  mkdir -p "$TEAM_HOME/machine/claude/skills/tdd" "$HOME/.claude/skills"
+  echo '{"model": "opus"}' >"$TEAM_HOME/machine/claude/settings.json"
+  echo "Red, green, refactor." >"$TEAM_HOME/machine/claude/skills/tdd/SKILL.md"
+  printf '%s\n' 'marketplace anthropics/claude-plugins-official' 'plugin discord@claude-plugins-official' \
+    'plugin mongodb-atlas@claude-plugins-official' >"$TEAM_HOME/machine/claude/plugins.txt"
+  cp "$TEAM_HOME/machine/claude/settings.json" "$HOME/.claude/"
+  cp -R "$TEAM_HOME/machine/claude/skills/tdd" "$HOME/.claude/skills/"
+  echo '[{"id": "discord@claude-plugins-official", "scope": "user", "enabled": false},
+    {"id": "mongodb-atlas@claude-plugins-official", "scope": "user", "enabled": true}]' >"$STUB_FIXTURES/plugins.json"
+  echo '[{"name": "claude-plugins-official", "source": "github", "repo": "anthropics/claude-plugins-official"}]' \
+    >"$STUB_FIXTURES/marketplaces.json"
+
   # Signed in everywhere, the clock right.
   stub_script claude <<'EOF'
 case $* in
   'auth status --json')
     echo '{"loggedIn": true, "authMethod": "claude.ai", "email": "daniel@example.invalid", "orgId": "org-secret-0000", "subscriptionType": "pro"}' ;;
+  'plugin list --json') cat "$STUB_FIXTURES/plugins.json" ;;
+  'plugin marketplace list --json') cat "$STUB_FIXTURES/marketplaces.json" ;;
   *) echo "claude stub: unplanned call: $*" >&2; exit 127 ;;
 esac
 EOF
@@ -167,7 +182,7 @@ every_tool_fails() {
     fi
   done < <(lock_tools "$os")
   # Nothing else fails: the doctor's own git, jq and date still work.
-  assert_equal "$(grep -v '^.... tool ' <<<"$output" | grep -cv '^PASS ')" 0
+  assert_equal "$(grep -v '^.... tool ' <<<"$output" | grep -v '^PASS ' || true)" ""
 }
 
 @test "tools.lock lists every tool of the spec once per OS, each with a version_cmd, a pattern, a pin or a min, and its sources" {
@@ -195,10 +210,10 @@ every_tool_fails() {
 @test "on Arch with every tool at its version and everything set up, every line passes" {
   tools_at arch
   run_bin -0 team-doctor
-  assert_equal "$(grep -cv '^PASS ' <<<"$output")" 0
+  assert_equal "$(grep -v '^PASS ' <<<"$output")" ""
   local expected
   expected=$(printf '%s\n' os; lock_tools arch | cut -f1 | sed 's/^/tool /'
-    printf '%s\n' machine 'git hooks' 'claude login' 'github login' clock lease heartbeat offline)
+    printf '%s\n' machine 'git hooks' 'claude login' 'github login' config plugins discord clock lease heartbeat offline)
   assert_equal "$(checks)" "$expected"
   assert_equal "$(line_of os)" "PASS os: Arch Linux"
   assert_equal "$(line_of 'tool claude')" "PASS tool claude: 2.1.308"
@@ -213,10 +228,10 @@ every_tool_fails() {
   on_macos
   tools_at macos
   run_bin -0 team-doctor
-  assert_equal "$(grep -cv '^PASS ' <<<"$output")" 0
+  assert_equal "$(grep -v '^PASS ' <<<"$output")" ""
   local expected
   expected=$(printf '%s\n' os homebrew; lock_tools macos | cut -f1 | sed 's/^/tool /'
-    printf '%s\n' machine 'git hooks' 'claude login' 'github login' clock lease heartbeat offline)
+    printf '%s\n' machine 'git hooks' 'claude login' 'github login' config plugins discord clock lease heartbeat offline)
   assert_equal "$(checks)" "$expected"
   assert_equal "$(line_of os)" "PASS os: macOS"
 }
@@ -347,6 +362,56 @@ exit 1
 EOF
   run_bin -1 team-doctor
   assert_equal "$(line_of 'github login')" "FAIL github login: gh auth status finds no working login for github.com; fix: gh auth login --hostname github.com --git-protocol https --web"
+}
+
+@test "the config line warns on each difference but the plugins, with team-config's commands" {
+  tools_at arch
+  run_bin -0 team-doctor
+  assert_equal "$(line_of config)" "PASS config: this machine's Claude config is the team home's"
+  echo '{"model": "sonnet"}' >"$HOME/.claude/settings.json"
+  rm -r "$HOME/.claude/skills/tdd"
+  echo '[{"id": "discord@claude-plugins-official", "scope": "user", "enabled": false}]' >"$STUB_FIXTURES/plugins.json"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of config)" "WARN config: settings.json differs, skill tdd missing; fix: team-config diff --full, then team-config apply (take the team home's) or team-config capture (keep this machine's)"
+  # Without the team home's config, the line says what team-config said.
+  rm -r "$TEAM_HOME/machine/claude"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of config)" "WARN config: no machine/claude/ in $TEAM_HOME; run team-config capture on the machine whose config the team shares; fix: fix what team-config names, then run team-doctor again"
+  assert_contains "$(line_of plugins)" "FAIL plugins: unknown, since team-config diff did not answer: no machine/claude/"
+}
+
+@test "the plugins line fails on each marketplace or plugin of plugins.txt missing here, with the commands that add them" {
+  tools_at arch
+  run_bin -0 team-doctor
+  assert_equal "$(line_of plugins)" "PASS plugins: every marketplace and plugin of plugins.txt is installed"
+  echo '[]' >"$STUB_FIXTURES/marketplaces.json"
+  echo '[{"id": "discord@claude-plugins-official", "scope": "user", "enabled": false},
+    {"id": "ponder@claude-plugins-official", "scope": "user", "enabled": true}]' >"$STUB_FIXTURES/plugins.json"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of plugins)" "FAIL plugins: missing marketplace anthropics/claude-plugins-official, plugin mongodb-atlas@claude-plugins-official; fix: claude plugin marketplace add anthropics/claude-plugins-official; claude plugin install mongodb-atlas@claude-plugins-official --scope user"
+  # A plugin installed here only is a config difference, not a failure.
+  assert_equal "$(line_of config)" "WARN config: plugin ponder@claude-plugins-official not in plugins.txt; fix: team-config diff --full, then team-config apply (take the team home's) or team-config capture (keep this machine's)"
+  echo 'not json' >"$STUB_FIXTURES/plugins.json"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of plugins)" "FAIL plugins: \`claude plugin list\` did not answer; fix: install Claude Code and sign in (the tool claude and claude login lines)"
+}
+
+@test "the discord line fails while user settings turn the Discord plugin on, and asks claude from /" {
+  tools_at arch
+  run_bin -0 team-doctor
+  assert_equal "$(line_of discord)" "PASS discord: the Discord plugin is off in user settings"
+  echo '[{"id": "discord@claude-plugins-official", "scope": "user", "enabled": true},
+    {"id": "mongodb-atlas@claude-plugins-official", "scope": "user", "enabled": true}]' >"$STUB_FIXTURES/plugins.json"
+  echo 'echo "$PWD" >>"$STUB_CALLS/claude.pwd"' >>"$STUB_FIXTURES/claude.sh"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of discord)" "FAIL discord: the Discord plugin is on in user settings, so every session logs in to Discord; fix: claude plugin disable discord@claude-plugins-official --scope user"
+  grep -qx / "$STUB_CALLS/claude.pwd"
+  echo '[{"id": "mongodb-atlas@claude-plugins-official", "scope": "user", "enabled": true}]' >"$STUB_FIXTURES/plugins.json"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of discord)" "PASS discord: the Discord plugin is not installed, so it is off (the plugins line says whether it should be)"
+  echo 'not json' >"$STUB_FIXTURES/plugins.json"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of discord)" "FAIL discord: \`claude plugin list\` printed no plugin list (exit 0); fix: install Claude Code and sign in (the tool claude and claude login lines)"
 }
 
 @test "a clock more than a minute off GitHub's warns; GitHub's Date unreadable warns too" {

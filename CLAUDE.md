@@ -15,7 +15,7 @@ The team's own work on it goes through a task and a PR to `dev`, like any projec
 | `plugins/coordinator-skills/` | Skills loaded only into the coordinator by `bin/claude-coordinator` |
 | `templates/` | The task plan and the worker briefs `team-open` and `team-brief` render |
 | `projects.toml` | The project registry, read only through `bin/team-project` |
-| `machine/` | What a machine needs to run the team: `tools.lock`, the tools `team-doctor` checks, pinned or with a minimum, and their source per OS |
+| `machine/` | What a machine needs to run the team: `tools.lock`, the tools `team-doctor` checks, pinned or with a minimum, and their source per OS; `claude/`, the Claude user config every machine shares (instructions, settings, skills, plugins), which `team-config` applies and captures |
 | `ledger.jsonl` | The append-only record of every task's events |
 | `tasks/` | Each task's plan, briefs and archived scratch; history, kept as written |
 | `manual-steps.md` | The steps only Daniel can take |
@@ -43,7 +43,7 @@ The team's own work on it goes through a task and a PR to `dev`, like any projec
 - CI's runner has jq 1.7.1, so keep to jq 1.7 features.
 - Scripts and tests run on Linux and macOS: on macOS `bin/lib/platform.sh` (sourced by the library and the test helpers) puts Homebrew's GNU coreutils, findutils, sed, grep and `flock` first on `PATH`, so GNU forms are fine and BSD-only ones are not.
   CI's `macos` job runs `tests/run bats` on a macOS runner on pull requests only; pushes to `dev` changing only `tasks/**`, `ledger.jsonl` or `memory/**` run no CI.
-- Repo invariants are tests too: every executable in `bin/` answers `--help` with its header, every `bin/team-*` script is named in `roles/coordinator.md`, which stays at most 120 lines, and no tracked Markdown outside `tasks/` and `projects/` (history, kept as written) has an em dash.
+- Repo invariants are tests too: every executable in `bin/` answers `--help` with its header, every `bin/team-*` script is named in `roles/coordinator.md`, which stays at most 120 lines, and no tracked Markdown outside `tasks/` and `projects/` (history, kept as written) and `machine/claude/` (copies of the user config, kept as installed) has an em dash.
 
 ## Script conventions
 

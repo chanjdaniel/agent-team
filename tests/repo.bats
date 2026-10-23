@@ -8,9 +8,9 @@ setup() {
 }
 
 # tasks/ and projects/ hold history imported as written, so they keep their own text.
-@test "no em dash in tracked Markdown or templates outside tasks/ and projects/" {
+@test "no em dash in tracked Markdown or templates outside tasks/, projects/ and machine/claude/" {
   local files hits
-  files=$(git -C "$REPO_ROOT" ls-files -- '*.md' 'templates/**' ':!:tasks/**' ':!:projects/**')
+  files=$(git -C "$REPO_ROOT" ls-files -- '*.md' 'templates/**' ':!:tasks/**' ':!:projects/**' ':!:machine/claude/**')
   [[ -n $files ]]
   hits=$(cd "$REPO_ROOT" && xargs -d '\n' grep -n $'—' -- <<<"$files" || true)
   assert_equal "$hits" ""

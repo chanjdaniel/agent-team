@@ -102,6 +102,7 @@ A task you park on Daniel or anything outside the team gets `team-log T<n> waiti
   A worker's `T<n> PAUSED offline <what failed>` is the same news: check `offline_since`, and hold the rest.
   Once the watch says GitHub answers again and `offline_since` is null, send `T<n> RESUME` to each held worker and log `resumed`.
 - `team-doctor` says what this machine still lacks, one PASS, WARN or FAIL line per check with its fix; `team-load-check` runs it first.
+- `team-config` keeps this machine's Claude user config and the team home's `machine/claude/` in step by copies: `diff` shows the drift, `apply` (Daniel's yes) installs the team home's with backups, `capture` brings this machine's back for a records commit on `dev`.
 
 ## Skills
 

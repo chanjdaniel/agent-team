@@ -18,6 +18,13 @@
 #                 session is denied touching core.hooksPath.
 #   claude login  `claude auth status`: signed in with a claude.ai account.
 #   github login  `gh auth status` for github.com.
+#   config        `team-config diff`: warns on each way this machine's Claude config differs from
+#                 the team home's machine/claude/, plugins aside.
+#   plugins       Fails while a marketplace or plugin of machine/claude/plugins.txt is missing here
+#                 (`team-config diff`), with the commands that add them.
+#   discord       Fails while `claude plugin list` (run from /, so user settings decide) shows the
+#                 Discord plugin enabled: every session that loads it logs in to Discord, so only
+#                 the coordinator turns it on.
 #   clock         Within 60 s of the Date header of https://api.github.com (curl -sI); warns.
 #   lease         `team-lease status`: passes held here, warns held elsewhere or released, fails
 #                 when GitHub is unreachable or team-lease refuses, and fails on a fenced
@@ -198,6 +205,50 @@ else
   report "github login" FAIL "gh auth status finds no working login for github.com" \
     "gh auth login --hostname github.com --git-protocol https --web"
 fi
+
+# config, plugins: one team-config diff.
+rc=0
+config=$(TEAM_HOME=$TEAM_HOME bounded 60 "$bin/team-config" diff --json 2>"$err" </dev/null) || rc=$?
+if ((rc > 1)) || ! jq -e 'type == "array"' <<<"$config" >/dev/null 2>&1; then
+  reason=$(first_error)
+  reason=${reason:-team-config diff exited $rc}
+  report config WARN "$reason" "fix what team-config names, then run team-doctor again"
+  report plugins FAIL "unknown, since team-config diff did not answer: $reason" "the config line's fix"
+else
+  config_others=$(jq -r '[.[] | select(.state != "not installed" and .state != "not added" and .item != "plugins")
+    | "\(.item) \(.state)"] | join(", ")' <<<"$config")
+  if [[ -z $config_others ]]; then
+    report config PASS "this machine's Claude config is the team home's"
+  else
+    report config WARN "$config_others" \
+      "team-config diff --full, then team-config apply (take the team home's) or team-config capture (keep this machine's)"
+  fi
+  if jq -e 'any(.[]; .item == "plugins")' <<<"$config" >/dev/null; then
+    report plugins FAIL "\`claude plugin list\` did not answer" "install Claude Code and sign in (the tool claude and claude login lines)"
+  else
+    plugins_missing=$(jq -r '[.[] | select(.state == "not installed" or .state == "not added") | .item] | join(", ")' <<<"$config")
+    if [[ -z $plugins_missing ]]; then
+      report plugins PASS "every marketplace and plugin of plugins.txt is installed"
+    else
+      report plugins FAIL "missing $plugins_missing" "$(jq -r '[.[] | select(.state == "not added") | "claude plugin marketplace add \(.item | ltrimstr("marketplace "))"]
+        + [.[] | select(.state == "not installed") | "claude plugin install \(.item | ltrimstr("plugin ")) --scope user"]
+        | join("; ")' <<<"$config")"
+    fi
+  fi
+fi
+
+# discord: the plugins as claude sees them outside any project.
+rc=0
+plugins=$(cd / && bounded 30 claude plugin list --json 2>/dev/null </dev/null) || rc=$?
+discord=$(jq -r 'map(select(.id == "discord@claude-plugins-official" and .scope == "user"))
+  | if length == 0 then "absent" else (.[0].enabled | tostring) end' <<<"$plugins" 2>/dev/null) || discord=''
+case $discord in
+  false) report discord PASS "the Discord plugin is off in user settings" ;;
+  absent) report discord PASS "the Discord plugin is not installed, so it is off (the plugins line says whether it should be)" ;;
+  true) report discord FAIL "the Discord plugin is on in user settings, so every session logs in to Discord" \
+    "claude plugin disable discord@claude-plugins-official --scope user" ;;
+  *) report discord FAIL "\`claude plugin list\` printed no plugin list (exit $rc)" "install Claude Code and sign in (the tool claude and claude login lines)" ;;
+esac
 
 # clock
 github_date=$(bounded 30 curl -sSI --max-time 20 https://api.github.com 2>/dev/null </dev/null |
