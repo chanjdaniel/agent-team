@@ -4,13 +4,23 @@
 # work, then the live workers whose idle notices (SendMessage with notify_when_idle) to re-arm,
 # so a restarted coordinator rebuilds its picture before anything else. Claude Code adds what
 # it prints to the session's context.
-# When the snapshot fails it prints the error and what to do by hand instead. Exit 0 either way.
+# When the snapshot fails it prints the error and what to do by hand instead. Either way it ends
+# with the instruction to arm the offline watch: team-timers watch in a Monitor, whose lines wake
+# the coordinator even while idle, only when the hold starts or ends (a recurring CronCreate
+# prompt would wake it every time). Exit 0 either way.
 # Wired only in coordinator.settings.json.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/team.sh" "$@"
 
 errors=$(mktemp)
 trap 'rm -f "$errors"' EXIT
+
+watch_line() {
+  echo "Arm the offline watch unless one is running: Monitor with description \"offline watch\"," \
+    "timeout_ms 1800000 and the command '\"$(dirname "$TEAM_LIB")/team-timers\" watch', and arm it" \
+    "again each time it expires; its lines are the heartbeat holding the team and letting it go" \
+    "(roles/coordinator.md, Machines)."
+}
 
 status=0
 snapshot=$(TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-snapshot" --json </dev/null 2>"$errors") ||
@@ -20,6 +30,7 @@ if [[ $status -ne 0 ]] || ! jq -e '.schema == "team-snapshot/1"' >/dev/null 2>&1
   if [[ -s $errors ]]; then cat "$errors"; else echo "it printed no snapshot and no error"; fi
   echo "Reconcile by hand before taking new work (team-sweep, team-state T<n>, claude agents)," \
     "and re-arm the idle notice (SendMessage with notify_when_idle) for each live worker."
+  watch_line
   exit 0
 fi
 
@@ -33,3 +44,4 @@ ledger_jq 'snapshot_text,
     (.sessions[] | "  \(.name) \(.session)")
   end' -r <<<"$snapshot" ||
   echo "The digest could not be printed; run team-snapshot by hand before taking new work."
+watch_line

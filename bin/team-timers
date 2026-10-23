@@ -11,7 +11,7 @@
 #          and agent-team.caffeinate, `caffeinate -i` kept alive, so this Mac does not idle-sleep
 #          while the heartbeat is enabled.
 #
-# Usage: team-timers enable | disable | status [--json] | run
+# Usage: team-timers enable | disable | status [--json] | run | watch
 #   enable   Installs the job and starts it (and caffeinate on macOS). A job already installed
 #            as defined and running is left alone; one that differs is rewritten and reloaded.
 #            Only on the machine that holds the lease, and only with Daniel's yes.
@@ -42,6 +42,11 @@
 #                     sessions and disables this heartbeat); otherwise nothing.
 #            A run that finds another still going skips. Posts go through discord_api; times in
 #            them are this machine's local time.
+#   watch    For the coordinator's Monitor, which wakes it while idle: checks the offline flag
+#            every 60 s until killed, and prints one line when it appears (at once if it is there)
+#            and one when it goes:
+#              GitHub unreachable since 2026-10-23T13:05:00Z; the team is holding
+#              GitHub answers again (unreachable from 2026-10-23T13:05:00Z); the hold is over
 # In ~/.local/state/agent-team/: heartbeat.log ("<UTC time> <step>: <what happened>", kept to its
 # last 1000 lines once it passes 2000), heartbeat.lock (one run at a time), offline ({since,
 # posted}: GitHub unreachable since the UTC time, and whether #coordinator was told; read by
@@ -61,16 +66,18 @@ SLACK_SECONDS=60
 PROBE_TIMEOUT=20
 RETRY_SECONDS=60
 POST_TIMEOUT=20
+# Seconds between the watch's looks at the offline flag.
+WATCH_SECONDS=60
 LOG_KEEP=1000
 LOG_MAX=2000
 SERVICE=agent-team-heartbeat
 HEARTBEAT_LABEL=agent-team.heartbeat
 CAFFEINATE_LABEL=agent-team.caffeinate
 
-usage="usage: team-timers enable | disable | status [--json] | run"
+usage="usage: team-timers enable | disable | status [--json] | run | watch"
 command=${1:-} json=0
 case $command in
-  enable | disable | run) [[ $# -eq 1 ]] || usage_error "$usage" ;;
+  enable | disable | run | watch) [[ $# -eq 1 ]] || usage_error "$usage" ;;
   status) [[ $# -eq 1 || ($# -eq 2 && $2 == --json) ]] || usage_error "$usage" ;;
   *) usage_error "$usage" ;;
 esac
@@ -82,8 +89,6 @@ state=$HOME/.local/state/agent-team
 log=$state/heartbeat.log
 offline=$state/offline
 refused=$state/login-refused
-# Appended to every post while no in-session check wakes an idle coordinator (ticket 08's spike).
-RESUME_HINT=''
 units=$HOME/.config/systemd/user
 agents=$HOME/Library/LaunchAgents
 domain=gui/$(id -u)
@@ -425,7 +430,7 @@ login_refused() {
   local post=''
   if [[ ! -e $refused ]]; then
     jq -n --arg since "$(date -u +%FT%TZ)" --arg reason "$PROBE_REASON" '{since: $since, reason: $reason}' >"$refused"
-    if post "GitHub refuses $machine's login ($PROBE_REASON); the heartbeat cannot renew the lease until it is fixed there (team-doctor)$RESUME_HINT"; then
+    if post "GitHub refuses $machine's login ($PROBE_REASON); the heartbeat cannot renew the lease until it is fixed there (team-doctor)"; then
       post="; #coordinator is told"
     else
       post="; the post to #coordinator failed ($POST_ERROR)"
@@ -461,7 +466,7 @@ back_step() {
   back=$(date -u +%FT%TZ)
   text="GitHub back at $(clock "$back") (unreachable from $(clock "$since")); $(held_tasks)"
   [[ $posted == true ]] || text="$(outage_text "$since")"$'\n'"$text"
-  if post "$text$RESUME_HINT"; then
+  if post "$text"; then
     told="#coordinator is told"
   else
     told="the post to #coordinator failed ($POST_ERROR)"
@@ -471,7 +476,7 @@ back_step() {
 
 # What the outage post says: outage_text <since>
 outage_text() {
-  printf 'GitHub unreachable since %s on %s; holding the team%s' "$(clock "$1")" "$machine" "$RESUME_HINT"
+  printf 'GitHub unreachable since %s on %s; holding the team' "$(clock "$1")" "$machine"
 }
 
 # A UTC time as this machine's local hours and minutes, or "an unknown time": clock <time>
@@ -579,6 +584,26 @@ run_heartbeat() {
   if [[ -e $offline ]]; then back_step; else lease_step; fi
 }
 
+# The watch: a line each time the offline flag appears or goes, until killed.
+watch() {
+  local seen='' since
+  while :; do
+    since=''
+    if [[ -e $offline ]]; then
+      since=$(jq -er '.since | strings' "$offline" 2>/dev/null) || since=$(date -u -r "$offline" +%FT%TZ)
+    fi
+    if [[ $since != "$seen" ]]; then
+      if [[ -n $since ]]; then
+        echo "GitHub unreachable since $since; the team is holding"
+      else
+        echo "GitHub answers again (unreachable from $seen); the hold is over"
+      fi
+      seen=$since
+    fi
+    sleep "$WATCH_SECONDS"
+  done
+}
+
 case $command in
   enable)
     mgr=$(manager) || exit 1
@@ -595,4 +620,5 @@ case $command in
     status
     ;;
   run) run_heartbeat ;;
+  watch) watch ;;
 esac

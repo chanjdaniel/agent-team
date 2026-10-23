@@ -589,6 +589,43 @@ EOF
   assert_equal "$(lease_tip)" "$tip"
 }
 
+@test "watch prints a line when the offline flag appears and when it goes, checking every 60 s, and nothing in between" {
+  local flag=$HOME/.local/state/agent-team/offline
+  mkdir -p "${flag%/*}"
+  # Each wait moves the outage on: it starts, holds, ends, then the stub stops the watch.
+  stub_sleep <<EOF2
+n=\$(cat "$BATS_TEST_TMPDIR/waits" 2>/dev/null || echo 0)
+echo \$((n + 1)) >"$BATS_TEST_TMPDIR/waits"
+case \$n in
+  0) echo '{"since": "2026-10-23T13:05:00Z", "posted": true}' >"$flag" ;;
+  1) ;;
+  2) rm "$flag" ;;
+  *) exit 143 ;;
+esac
+EOF2
+  run_bin -143 --separate-stderr team-timers watch
+  assert_equal "$stderr" ""
+  assert_equal "$output" "GitHub unreachable since 2026-10-23T13:05:00Z; the team is holding
+GitHub answers again (unreachable from 2026-10-23T13:05:00Z); the hold is over"
+  assert_equal "$(stub_calls sleep)" '["60"]
+["60"]
+["60"]
+["60"]'
+}
+
+@test "watch prints the hold at once when the flag is there as it starts, and reads an unreadable flag's time from the file" {
+  local flag=$HOME/.local/state/agent-team/offline
+  mkdir -p "${flag%/*}"
+  echo '{"since": "2026-10-23T13:05:00Z", "posted": false}' >"$flag"
+  stub_sleep <<<'exit 143'
+  run_bin -143 team-timers watch
+  assert_equal "$output" "GitHub unreachable since 2026-10-23T13:05:00Z; the team is holding"
+  echo 'not json' >"$flag"
+  touch -d 2026-10-23T14:00:00Z "$flag"
+  run_bin -143 team-timers watch
+  assert_equal "$output" "GitHub unreachable since 2026-10-23T14:00:00Z; the team is holding"
+}
+
 @test "enable refuses on an OS other than Linux or macOS" {
   stub_reply uname FreeBSD
   run_bin -1 --separate-stderr team-timers enable
@@ -607,10 +644,10 @@ EOF
 
 @test "team-timers refuses a malformed command line" {
   local args
-  for args in "" "start" "enable --now" "status --yes" "run now"; do
+  for args in "" "start" "enable --now" "status --yes" "run now" "watch --json"; do
     # shellcheck disable=SC2086 # each case is its words
     run_bin -2 --separate-stderr team-timers $args
-    assert_equal "$stderr" "team-timers: usage: team-timers enable | disable | status [--json] | run"
+    assert_equal "$stderr" "team-timers: usage: team-timers enable | disable | status [--json] | run | watch"
   done
 }
 
