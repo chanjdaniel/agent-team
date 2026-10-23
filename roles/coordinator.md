@@ -64,7 +64,7 @@ Each message starts with the task and a kind; log it with `team-log` before you 
 | - | - | - |
 | `QUESTION <text>` | `question role= text=` | Answer from the plan and spec when they settle it; otherwise put it to Daniel (`asked id= text=`, then `answered id= answer=`) and relay the answer. |
 | `NEED toolkit <name>` | `blocked reason=` | A toolkit the project lists in `projects.toml`: relaunch the worker with `--toolkit <name>`; any other needs Daniel's yes. |
-| `BLOCKED <what> <why>` | `blocked reason=` | Help it, or take the problem to Daniel; a denial goes to Daniel under hard rule 2. |
+| `BLOCKED <what> <why>` | `blocked reason=` | Help it, or take the problem to Daniel; a denial goes to Daniel under hard rule 2. The next launch clears it; log `resumed` when the worker goes on without one. |
 | `PAUSED <why>` | `paused reason=` | Nothing: a known wait that clears on its own; `resumed` when it does. |
 | `PR <url>` | `pr url= head=` | Start the review (step 5). |
 | `DONE ...` | `done role= session=`, `ticket-done ticket= commits=` or `review verdict= head=` | The next step of the task's life. |

@@ -270,14 +270,14 @@ waits_ledger() {
   opened "$(at 20:00)" T10 retro
 }
 
-@test "digest: each wait runs to the event that clears it, and totals hours per whom" {
+@test "digest: each wait runs to the event that clears it, and totals hours and wall-clock hours per whom" {
   waits_ledger
   run_bin -0 team-retro digest T9 --json
   assert_equal "$(jq -r '.waits.spans[] | [.task, .kind, .on, .from[11:16], .to[11:16], .hours, .open, .clipped, .reason] | join(" ")' <<<"$output")" "$(
     cat <<'LINES'
 T1 waiting Daniel 01:00 03:00 2 false false plan
 T1 paused paused 02:00 03:00 1 false false night
-T1 blocked blocked 04:00 07:00 3 false false denied
+T1 blocked blocked 04:00 05:00 1 false false denied
 T1 held held 06:00 07:00 1 false false gate
 T1 asked Daniel 08:00 10:00 2 false false scope?
 T1 asked Daniel 08:30 09:00 0.5 false false name?
@@ -287,10 +287,10 @@ LINES
   )"
   assert_equal "$(jq -c '.waits.totals[]' <<<"$output")" "$(
     cat <<'LINES'
-{"on":"Daniel","hours":5.5,"spans":4}
-{"on":"blocked","hours":4.5,"spans":2}
-{"on":"held","hours":1,"spans":1}
-{"on":"paused","hours":1,"spans":1}
+{"on":"Daniel","hours":5.5,"wall_hours":5,"spans":4}
+{"on":"blocked","hours":2.5,"wall_hours":2.5,"spans":2}
+{"on":"held","hours":1,"wall_hours":1,"spans":1}
+{"on":"paused","hours":1,"wall_hours":1,"spans":1}
 LINES
   )"
 }
@@ -304,12 +304,28 @@ T1 waiting daniel 14:00 15:00 1 false true
 T1 waiting restart 16:00 20:00 4 true false
 LINES
   )"
-  assert_equal "$(jq -c '.waits.totals' <<<"$output")" '[{"on":"restart","hours":4,"spans":1},{"on":"daniel","hours":1,"spans":1}]'
+  assert_equal "$(jq -c '.waits.totals' <<<"$output")" '[{"on":"restart","hours":4,"wall_hours":4,"spans":1},{"on":"daniel","hours":1,"wall_hours":1,"spans":1}]'
 
   run_bin -0 team-retro digest T10
   assert_contains "$output" "  T1 waiting on daniel, 2026-10-20T14:00:00Z to 2026-10-20T15:00:00Z, 1h, clipped to the window's start: walkthrough"
   assert_contains "$output" "  T1 waiting on restart, 2026-10-20T16:00:00Z to 2026-10-20T20:00:00Z, 4h, open at the window's end: reboot"
-  assert_contains "$output" $'Wait totals (2):\n  restart: 4h over 1 span\n  daniel: 1h over 1 span'
+  assert_contains "$output" $'Wait totals (2):\n  restart: 4h over 1 span, 4h wall-clock\n  daniel: 1h over 1 span, 1h wall-clock'
+}
+
+@test "digest: overlapping waits of two tasks add up in hours and count once in wall-clock hours" {
+  opened "$(at 00:00)" T1 feature
+  opened "$(at 00:00)" T2 feature
+  event "$(at 01:00)" T1 waiting '{on: "Daniel", reason: "plan"}'
+  event "$(at 02:00)" T2 waiting '{on: "Daniel", reason: "walkthrough"}'
+  event "$(at 04:00)" T1 resumed
+  event "$(at 05:00)" T2 resumed
+  event "$(at 07:00)" T1 waiting '{on: "Daniel", reason: "merge"}'
+  event "$(at 08:30)" T1 resumed
+  opened "$(at 09:00)" T9 retro
+  run_bin -0 team-retro digest T9 --json
+  assert_equal "$(jq -c '.waits.totals' <<<"$output")" '[{"on":"Daniel","hours":7.5,"wall_hours":5.5,"spans":3}]'
+  run_bin -0 team-retro digest T9
+  assert_contains "$output" $'Wait totals (1):\n  Daniel: 7.5h over 3 spans, 5.5h wall-clock\n'
 }
 
 @test "digest: rewrites, injections and the window's tasks with their records and sessions" {
@@ -363,8 +379,8 @@ Waits (2):
   T1 blocked on blocked, 2026-10-20T01:00:00Z to 2026-10-20T05:00:00Z, 4h, open at the window's end: auto mode denied it
   T1 asked on Daniel, 2026-10-20T02:00:00Z to 2026-10-20T05:00:00Z, 3h, open at the window's end: go?
 Wait totals (2):
-  blocked: 4h over 1 span
-  Daniel: 3h over 1 span
+  blocked: 4h over 1 span, 4h wall-clock
+  Daniel: 3h over 1 span, 3h wall-clock
 Rewrites: none
 Injections: none
 Tasks (2):
@@ -380,6 +396,9 @@ TEXT
   run_bin -0 team-retro digest --json
   assert_equal "$(jq -c '[.blocks[] | select(.kind == "blocked")] | [length, map(select(.denial)) | length]' <<<"$output")" "[11,9]"
   assert_equal "$(jq -c '[.waits.spans[] | select(.kind == "waiting")] | length' <<<"$output")" 12
+  # Each block ends at the task's next launch or resumed, so none is open at the ledger's end.
+  assert_equal "$(jq -c '.waits.totals[] | select(.on == "blocked")' <<<"$output")" \
+    '{"on":"blocked","hours":31.47,"wall_hours":31.27,"spans":11}'
   assert_equal "$(jq -c '[.reviews[] | select(.reopened) | .task] | sort' <<<"$output")" '["T15","T20","T21","T5"]'
   assert_equal "$(jq -c '[.window.since, .window.events, .window.previous, (.rewrites | length)]' <<<"$output")" \
     '["2026-10-21T12:16:13Z",436,null,1]'

@@ -289,7 +289,7 @@ T42 stray: T42-reviewer 88888888 is live but T42 is not in the ledger; next: rea
   no_github
 }
 
-@test "a resumed or a later launch ends a pause, and resumed ends a hold or a block" {
+@test "a resumed or a later launch ends a pause or a block, and resumed ends a hold" {
   opened T3
   launch T3 builder 11111111
   event T3 paused '{reason: "rate limit"}'
@@ -307,9 +307,15 @@ T42 stray: T42-reviewer 88888888 is live but T42 is not in the ledger; next: rea
     event T3 resumed
     run_bin -1 team-sweep
   done
+  # A later launch ends a block: the relaunched task with no live session has no worker.
+  event T3 blocked '{reason: "a denied push"}'
+  run_bin -0 team-sweep
+  launch T3 builder 33333333
+  run_bin -1 team-sweep
+  assert_contains "$output" "T3 no-worker: no live session among its 3 launches (latest T3-builder 33333333)"
   # A later launch does not end a hold.
   event T3 held '{reason: "OS update"}'
-  launch T3 builder 33333333
+  launch T3 builder 44444444
   run_bin -0 team-sweep
 }
 

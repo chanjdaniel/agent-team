@@ -44,7 +44,7 @@ Seen: T17 ticket 08, whose builder stuck on that prompt and was relaunched (ledg
 
 Why: a reset throws away local commits and auto mode refuses it, and a force-push throws away what the tool pushed.
 
-Seen: T12, whose gate rebased and force-pushed its branch (ledger 2026-10-22T12:05:30Z).
+Seen: T12 and T22, whose gate rebased and force-pushed their branches (ledger 2026-10-22T12:05:30Z, 2026-10-23T13:57:02Z).
 
 ## After the machine's packages are upgraded, check that Docker answers before a gate run, and leave a daemon restart to Daniel
 

@@ -158,7 +158,7 @@ phase_of() {
   done
 }
 
-@test "blocked stands until resumed, and held wins over blocked" {
+@test "blocked stands until the next resumed or launch, and held wins over blocked" {
   open_task
   event T14 plan-approved '{by: "Daniel"}'
   event T14 blocked '{reason: "a denied push"}'
@@ -166,6 +166,9 @@ phase_of() {
   event T14 held '{reason: "OS update"}'
   assert_equal "$(phase_of T14)" held
   event T14 resumed
+  assert_equal "$(phase_of T14)" building
+  event T14 blocked '{reason: "a denied push"}'
+  event T14 launch '{role: "builder", session: "3ed2d1f2", worktree: "/w/1", toolkits: []}'
   assert_equal "$(phase_of T14)" building
 }
 

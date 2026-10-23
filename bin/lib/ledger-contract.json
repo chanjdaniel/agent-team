@@ -80,6 +80,7 @@
     },
     "blocked": {
       "writer": "team-log",
+      "about": "a worker stopped by an obstacle; the next launch or resumed clears it",
       "required": {"reason": "string"}
     },
     "held": {

@@ -177,7 +177,7 @@ def phase:
   | if any(.[]; .event == "closed") then "closed"
     elif any(.[]; .event == "merged") and $open == [] then "merged"
     elif standing("held") then "held"
-    elif standing("blocked") then "blocked"
+    elif standing_until_launch("blocked") then "blocked"
     elif $open != [] and all($open[]; . as $pr
       | ($events | map(select(.event == "review" and same_head(.head; $pr.head))) | last | .verdict) == "pass") then "awaiting-merge"
     elif any(.[]; .event == "pr") then "in-review"
@@ -452,13 +452,13 @@ def retro_window($task):
      end: (if $w.this == null then length else $w.this.i + 1 end)};
 
 # Every span that parks a task, over one task's events (each with its place i) in ledger order:
-# {task, kind, on, reason, start, end}, end being the event that clears it, or null. waiting and
-# paused clear at the next resumed or launch, blocked and held at the next resumed, asked at the
+# {task, kind, on, reason, start, end}, end being the event that clears it, or null. waiting,
+# paused and blocked clear at the next resumed or launch, held at the next resumed, asked at the
 # answered of its id, and every one at the task's closed.
 def wait_spans:
   . as $events
   | range(length) as $k | $events[$k] as $s
-  | {waiting: ["resumed", "launch"], paused: ["resumed", "launch"], blocked: ["resumed"], held: ["resumed"], asked: []}[$s.event | tostring] as $clears
+  | {waiting: ["resumed", "launch"], paused: ["resumed", "launch"], blocked: ["resumed", "launch"], held: ["resumed"], asked: []}[$s.event | tostring] as $clears
   | select($clears != null)
   | {task: $s.task, kind: $s.event,
      on: (if $s.event == "waiting" then $s.on // "unknown" elif $s.event == "asked" then "Daniel" else $s.event end),
@@ -466,6 +466,14 @@ def wait_spans:
      start: $s,
      end: (first($events[$k + 1:][] | select(.event == "closed" or (.event | IN($clears[]))
        or ($s.event == "asked" and .event == "answered" and .id == $s.id))) // null)};
+
+# The hours covered by the union of the spans ({from, to}), overlapping spans counted once.
+def wall_hours:
+  map([(.from | fromdate), (.to | fromdate)]) | sort
+  | reduce .[] as [$from, $to] ([];
+      if . != [] and $from <= .[length - 1][1] then .[length - 1][1] = ([.[length - 1][1], $to] | max)
+      else . + [[$from, $to]] end)
+  | map(.[1] - .[0]) | add / 3600 * 100 | round / 100;
 
 # Whether a blocked or failed reason says an action was refused.
 def denial: (. // "") | tostring | test("denied|denies|refused|refuses|auto mode"; "i");
@@ -502,7 +510,8 @@ def retro_digest($task; $home):
           verdicts: map({ts, verdict, head})}],
      waits: {spans: $spans,
        totals: ($spans | group_by(.on | tostring | ascii_downcase)
-         | map({on: .[0].on, hours: (map(.hours) | add * 100 | round / 100), spans: length}) | sort_by(-.hours))},
+         | map({on: .[0].on, hours: (map(.hours) | add * 100 | round / 100), wall_hours: wall_hours, spans: length})
+         | sort_by(-.hours))},
      rewrites: [$in[] | select(.event == "history-rewritten") | del(.i, .event)],
      injections: [$in[] | select(.event == "injection") | del(.i, .event)],
      tasks: [$in | task_groups[] | .[0].task as $id | $tasks[$id] as $all
@@ -532,7 +541,7 @@ def retro_digest_text:
   section("Waits"; [.waits.spans[] | "\(.task) \(.kind) on \(.on), \(.from) to \(.to), \(.hours)h"
     + (if .clipped then ", clipped to the window's start" else "" end)
     + (if .open then ", open at the window's end" else "" end) + ": \(.reason)"]),
-  section("Wait totals"; [.waits.totals[] | "\(.on): \(.hours)h over \(plural(.spans; "span"))"]),
+  section("Wait totals"; [.waits.totals[] | "\(.on): \(.hours)h over \(plural(.spans; "span")), \(.wall_hours)h wall-clock"]),
   section("Rewrites"; [.rewrites[] | "\(.ts) \(.task)\(if .branch then " \(.branch)" else "" end): "
     + (if .old_head then "\(.old_head) -> " else "to " end) + "\(.head)" + (if .note then " (\(.note))" else "" end)]),
   section("Injections"; [.injections[] | "\(.ts) \(.task) \(.role) at \(.source): \(.text)"]),

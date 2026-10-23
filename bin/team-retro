@@ -21,17 +21,19 @@
 #               refuses or auto mode, in any case
 #   questions   each task's question and asked events, repeated with two or more
 #   reviews     each task's review verdicts, reopened when a findings is followed by another review
-#   waits       each span that parks a task: waiting (on its on) and paused until the next resumed
-#               or launch, blocked and held until the next resumed, asked (on Daniel) until the
+#   waits       each span that parks a task: waiting (on its on), paused and blocked until the next
+#               resumed or launch, held until the next resumed, asked (on Daniel) until the
 #               answered of its id, and each until the task's closed; a span open at the window's
 #               end ends there (open), one from before its start is clipped to it (clipped); then
-#               the hours and spans per on (in any case), most hours first
+#               per on (in any case), most hours first: the hours (task-hours, summed over the
+#               spans), wall_hours (the hours their union covers, overlaps counted once) and spans
 #   rewrites    every history-rewritten
 #   injections  every injection
 #   tasks       each task with an event in the window: title, project, path, phase, its record
 #               directory under the team home, and the sessions it launched in the window
 # With --json, the digest (schema team-retro-digest/1): window, blocks, questions, reviews,
-# waits ({spans, totals}), rewrites, injections and tasks.
+# waits ({spans, totals}, each total {on, hours, wall_hours, spans}), rewrites, injections and
+# tasks.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
