@@ -31,19 +31,21 @@ The team's own work on it goes through a task and a PR to `dev`, like any projec
 - Git runs `bin/hooks/git/` as the team home's hooks once the primary checkout has `git -C ~/agent-team config core.hooksPath bin/hooks/git`, which every worktree shares, each running its own checkout's hooks.
   Its `pre-commit` (and `pre-merge-commit`) refuses a commit on `dev` that touches anything else, naming each path, and every commit on `main`.
   Its `pre-push` catches what those never see (a cherry-pick, a revert, `git am`, a fast-forward merge): a push to `dev` may only fast-forward it with commits that touch records only, and a push to `main` may only fast-forward it to a commit already on `origin/dev`.
-- The `Dev records` workflow runs `bin/team-records-check` on every push to `dev` that changes more than records: a commit that is neither records only nor a PR's merge fails it.
+- GitHub runs no check on `dev` (CI policy B: the repo is private, and its Actions minutes are few), so what reaches `dev` without a local push is checked at each merge: `team-merge` runs `bin/team-records-check` over `dev` from the last merge it logged to the new one, and reports a commit that is neither records only nor a PR's merge.
 - Every session is denied skipping the hooks (`--no-verify`, `git commit -n`) and touching `core.hooksPath`, so the setup line above is Daniel's to run.
-  Those deny rules are a speed bump, never the guarantee: git accepts too many spellings for a deny list to cover, so the hooks and the `Dev records` workflow are what hold the rule.
+  Those deny rules are a speed bump, never the guarantee: git accepts too many spellings for a deny list to cover, so the hooks and `team-merge`'s check are what hold the rule.
 
 ## Tests and shellcheck
 
 - `tests/run` runs shellcheck (0.11.0) on every shell script in `bin/` and `tests/`, then the whole bats suite; `tests/run shellcheck` and `tests/run bats` run one half each, as the CI jobs do.
+- A PR to `dev` is checked locally, never on GitHub (CI policy B): `projects.toml` gives the team home `local_checks = ["tests/run"]`, which `team-merge` runs on the PR's exact head before it merges, and builders and reviewers run `tests/run` on the head they deliver or review.
+  GitHub's CI (`.github/workflows/ci.yml`) runs only on a PR to `main` and by hand (`workflow_dispatch`).
 - One file: `tests/vendor/bats-core/bin/bats tests/<name>.bats`; one test: add `-f '<part of its name>'`.
 - Tests run the real scripts in a sandbox (`load helpers/common`, then `sandbox` in `setup`): `TEAM_HOME` and `HOME` are temporary, `claude`, `gh`, `curl`, `op`, `systemctl` and `launchctl` are stubs, and git is real.
   `tests/helpers/common.bash` documents the helpers.
 - CI's runner has jq 1.7.1, so keep to jq 1.7 features.
 - Scripts and tests run on Linux and macOS: on macOS `bin/lib/platform.sh` (sourced by the library and the test helpers) puts Homebrew's GNU coreutils, findutils, sed, grep and `flock` first on `PATH`, so GNU forms are fine and BSD-only ones are not.
-  CI's `macos` job runs `tests/run bats` on a macOS runner on pull requests only; pushes to `dev` changing only `tasks/**`, `ledger.jsonl` or `memory/**` run no CI.
+  CI's `macos` job runs `tests/run bats` on a macOS runner, with the rest of CI: on a PR to `main` or by hand.
 - Repo invariants are tests too: every executable in `bin/` answers `--help` with its header, every `bin/team-*` script is named in `roles/coordinator.md`, which stays at most 120 lines, and no tracked Markdown outside `tasks/` and `projects/` (history, kept as written) and `machine/claude/` (copies of the user config, kept as installed) has an em dash.
 
 ## Script conventions

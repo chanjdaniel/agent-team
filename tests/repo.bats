@@ -77,7 +77,7 @@ assert_denies() {
   done
 }
 
-# The deny rules are a speed bump, not the guard: git's hooks and the Dev records workflow are
+# The deny rules are a speed bump, not the guard: git's hooks and team-merge's records check are
 # (CLAUDE.md). Each rule matches the commands it is for; the commands below them stay allowed.
 
 @test "the git hooks' deny rule: --no-verify last, on any git command" {
@@ -206,10 +206,16 @@ team-review-status https://github.com/me/shop/pull/5 a1b2c3d4e5f60718293a4b5c6d7
 COMMANDS
 }
 
-@test "the dev-records workflow's paths-ignore lists exactly bin/lib/records' globs" {
-  local ignored records
-  ignored=$(sed -n '/^    paths-ignore:/,/^[^ ]/s/^      - //p' "$REPO_ROOT/.github/workflows/dev-records.yml")
-  records=$(grep -v -e '^#' -e '^$' "$REPO_ROOT/bin/lib/records")
-  [[ -n $records ]]
-  assert_equal "$ignored" "$records"
+@test "GitHub's CI runs only on a pull request to main and by hand, and no workflow runs for dev" {
+  local workflow
+  # CI policy B: the top-level keys under on:, and the branches its pull_request names.
+  assert_equal "$(sed -n '/^on:$/,/^[^ ]/s/^  \([a-z_]*\):.*$/\1/p' "$REPO_ROOT/.github/workflows/ci.yml")" \
+    $'pull_request\nworkflow_dispatch'
+  assert_equal "$(sed -n '/^on:$/,/^[^ ]/s/^    branches: //p' "$REPO_ROOT/.github/workflows/ci.yml")" "[main]"
+  for workflow in "$REPO_ROOT"/.github/workflows/*.yml; do
+    if grep -nE '^\s*(push|pull_request_target|schedule):' "$workflow" || grep -nE 'branches: .*\bdev\b' "$workflow"; then
+      echo "$workflow runs for dev" >&2
+      return 1
+    fi
+  done
 }

@@ -194,7 +194,7 @@ EOF
     brief=$(<"$output")
     assert_contains "$brief" "if \`git merge-base --is-ancestor origin/$base HEAD\` fails, merge \`origin/$base\` with a merge commit (\`git merge origin/$base\`, never a rebase)"
     assert_contains "$brief" "goes to \`coordinator\` as \`$task QUESTION <the conflict> | options: ...\`"
-    assert_contains "$brief" "step 1; if it merged anything, go back to step"
+    assert_contains "$brief" "epeat step 1; if it merged anything"
     assert_contains "$brief" "so every required check passes on the new head."
     assert_contains "$brief" "Never run a command that needs \`sudo\`; send \`$task BLOCKED <the command> needs sudo\` to \`coordinator\` instead."
     # The up-to-date check replaced the old refusal when the base moved.
@@ -231,6 +231,7 @@ plan={{plan}}
 thread={{thread}}
 team_home={{team_home}}
 team_bin={{team_bin}}
+local_checks={{local_checks}}
 EOF
   open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling & more"
   run_fake T14 facts
@@ -247,7 +248,8 @@ task_dir=.work/task
 plan=~/agent-team/tasks/T14/plan.md
 thread=1563000000000000012
 team_home=~/agent-team
-team_bin=$code/bin"
+team_bin=$code/bin
+local_checks=none"
 }
 
 @test "team_bin is this checkout's bin/, absolute even under HOME, as the allow rules name it" {
@@ -442,4 +444,28 @@ after"
   run_bin -2 team-brief T12 builder-fix --project
   assert_contains "$output" "--project needs a value"
   assert_equal "$(task_files)" ""
+}
+
+@test "a project's local checks reach the builder's delivery, the review and the rereview" {
+  sed -i '/^\[home\]$/,/^\[home.pool\]$/s|^toolkits = \[\]$|toolkits = []\nlocal_checks = ["tests/run", "make lint"]|' \
+    "$TEAM_HOME/projects.toml"
+  open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
+  open_t12
+  local brief
+  run_bin -0 team-brief T14 builder-deliver --set "goal=the goal"
+  brief=$(<"$output")
+  assert_contains "$brief" "2. Run each of the project's local checks (\`tests/run\`, \`make lint\`) from the worktree's root on the head you push"
+  assert_contains "$brief" "then a line naming the local checks that passed and the head they passed on."
+  run_bin -0 team-brief T14 reviewer --name review --set pr=https://github.com/chanjdaniel/agent-team/pull/9 \
+    --set head=abc1234 --set "checks=the checks"
+  brief=$(<"$output")
+  assert_contains "$brief" "- Local checks: \`tests/run\`, \`make lint\`."
+  assert_contains "$brief" "Run each from the worktree's root on \`abc1234\` and say in \`.work/task/review.md\` whether it passed"
+  run_bin -0 team-brief T14 rereview --name rereview --set pr=https://github.com/chanjdaniel/agent-team/pull/9 \
+    --set head=def5678 --set reviewed=abc1234 --set "since=the last review"
+  assert_contains "$(<"$output")" "3. Run each of the project's local checks (\`tests/run\`, \`make lint\`) from the worktree's root on \`def5678\`"
+  # A project without local checks says so.
+  run_bin -0 team-brief T12 reviewer --name review --set pr=https://github.com/chanjdaniel/Conventioner/pull/9 \
+    --set head=abc1234 --set "checks=the checks"
+  assert_contains "$(<"$output")" "- Local checks: none."
 }

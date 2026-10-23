@@ -364,13 +364,14 @@ EOF
 }
 
 @test "a legacy PR's repo comes from its URL, and its project's required checks from the registry" {
-  cp "$REPO_ROOT/projects.toml" "$TEAM_HOME/projects.toml"
+  # The real registry, with required checks for the team home (it has none under CI policy B).
+  sed 's/^required_checks = \[\]$/required_checks = ["shellcheck", "test"]/' "$REPO_ROOT/projects.toml" >"$TEAM_HOME/projects.toml"
   fixture_ledger T5 22
   stub_github '{"number": 4, "state": "MERGED", "baseRefName": "dev", "headRefOid": "3a66af1c99"}' \
     '[{"name": "shellcheck", "bucket": "pass", "state": "SUCCESS"}]' '[]'
   run_bin -0 team-state T5 --json
   assert_equal "$(jq -c '.pr | [.repo, .project, .number, .ledger_head, .required_missing, .head_moved]' <<<"$output")" \
-    '["chanjdaniel/agent-team","agent-team",4,"f5c35825",["macos","test"],true]'
+    '["chanjdaniel/agent-team","agent-team",4,"f5c35825",["test"],true]'
   assert_equal "$(jq -c '.phase' <<<"$output")" '"in-review"'
   assert_equal "$(stub_calls gh | jq -r '.[4]' | sort -u)" "chanjdaniel/agent-team"
 }

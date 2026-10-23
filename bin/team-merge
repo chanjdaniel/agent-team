@@ -13,12 +13,20 @@
 #   project's required_checks) is present on the head and passed (a skipped one passes);
 #   no check on the head is failing or pending; agent-review is success on the head;
 #   no commit of the PR carries an agent attribution line, and the list read ends at the head.
+# Then, for a project with local_checks, each command runs from the root of a detached worktree of
+# the primary checkout at the PR's head (fetched from origin), and must exit 0; the worktree is
+# removed after, and the head read again must not have moved.
 # Any failure is exit 1 with every reason, and gh pr merge is never called.
 # Then: gh pr merge <number> --repo <repo> --<merge_method> --match-head-commit <head>, never
 # --auto or --admin; the PR is read again and must be merged (if gh left it open with auto-merge
 # on, auto-merge is turned off and it is exit 1); then merged is appended with pr, merge, head,
 # by (naming the Discord message and its author), project, branch, discord_message,
-# discord_channel and url (the PR's). Prints {task, pr, merge, head, by}.
+# discord_channel and url (the PR's), and local_checks (the commands that passed on head) when
+# there were any. Prints {task, pr, merge, head, by}.
+# For the team home itself (the project whose checkout is TEAM_HOME), it then runs
+# team-records-check from the previous merge it logged to this one, since GitHub checks nothing
+# on dev (CI policy B): a commit that is neither records only nor a PR's merge is exit 1, after
+# the merge and its event.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
@@ -169,13 +177,50 @@ else
   done < <(jq -r '.[].sha' <<<"$commits")
 fi
 
-if ((${#problems[@]})); then
+# Refuse, with every reason, when there is any.
+refuse_on_problems() {
+  ((${#problems[@]})) || return 0
   {
     echo "team-merge: $task cannot merge PR #$number, so nothing changed:"
     printf '  %s\n' "${problems[@]}"
     if [[ -n ${attributed:-} ]]; then echo "  (team-clean-messages <worktree> strips them; push its rewrite and wait for the checks again)"; fi
   } >&2
   exit 1
+}
+refuse_on_problems
+
+# The project's local checks, last since they are the slowest: each command run from the root of a
+# detached worktree of the primary checkout at the PR's exact head, then the head read again.
+mapfile -t local_checks < <(team_project "$project" local_checks | jq -r '.[]')
+if ((${#local_checks[@]})); then
+  primary=$(team_project "$project" path)
+  checkout=$scratch/head
+  if ! git -C "$primary" fetch -q origin "+refs/heads/$branch:refs/remotes/origin/$branch" 2>"$scratch/fetch-error" ||
+    ! git -C "$primary" cat-file -e "$head^{commit}" 2>/dev/null; then
+    problems+=("the head ${head:0:7} cannot be fetched into $primary for the local checks: $(grep -m1 . "$scratch/fetch-error" || echo "origin's $branch is elsewhere")")
+    refuse_on_problems
+  fi
+  git -C "$primary" worktree add -q --detach "$checkout" "$head" 2>"$scratch/fetch-error" ||
+    die "cannot check out ${head:0:7} for the local checks: $(grep -m1 . "$scratch/fetch-error")"
+  trap 'git -C "$primary" worktree remove --force "$checkout" 2>/dev/null; rm -rf "$scratch"' EXIT
+  for command in "${local_checks[@]}"; do
+    echo "team-merge: running $command on ${head:0:7}" >&2
+    rc=0
+    (cd "$checkout" && bash -c "$command") </dev/null >"$scratch/check.log" 2>&1 || rc=$?
+    if ((rc)); then
+      problems+=("local check '$command' failed on the head ${head:0:7} (exit $rc); its last lines:"$'\n'"$(tail -n 20 "$scratch/check.log" | sed 's/^/      /')")
+    fi
+  done
+  git -C "$primary" worktree remove --force "$checkout"
+  trap 'rm -rf "$scratch"' EXIT
+  if github "$scratch" again pr view "$number" --repo "$repo" --json headRefOid; then
+    moved=$(jq -r .headRefOid "$scratch/again")
+    [[ $moved == "$head" ]] ||
+      problems+=("the head moved while the local checks ran (${head:0:7}, then ${moved:0:7}); run team-merge again")
+  else
+    problems+=("GitHub cannot be read after the local checks: $(<"$scratch/error")")
+  fi
+  refuse_on_problems
 fi
 
 gh pr merge "$number" --repo "$repo" "--$method" --match-head-commit "$head" >&2 ||
@@ -199,7 +244,24 @@ merge=$(jq -r '.mergeCommit.oid // empty' "$scratch/after")
 trap 'status=$?; rm -rf "$scratch"; ((status == 0)) || echo "team-merge: PR #$number is merged (merge $merge), but its merged event was not logged" >&2' EXIT
 ledger_append "$(jq -cn --arg task "$task" --argjson pr "$number" --arg merge "$merge" --arg head "$head" \
   --arg by "$by" --arg project "$project" --arg branch "$branch" --arg message "$message" --arg channel "$channel" \
-  --arg url "$url" '{ts: (now | todate), task: $task, event: "merged", pr: $pr, merge: $merge, head: $head, by: $by,
-    project: $project, branch: $branch, discord_message: $message, discord_channel: $channel, url: $url}')"
+  --arg url "$url" --argjson checks "$(printf '%s\n' "${local_checks[@]}" | jq -R . | jq -cs 'map(select(. != ""))')" \
+  '{ts: (now | todate), task: $task, event: "merged", pr: $pr, merge: $merge, head: $head, by: $by,
+    project: $project, branch: $branch, discord_message: $message, discord_channel: $channel, url: $url}
+    + if $checks == [] then {} else {local_checks: $checks} end')"
+trap 'rm -rf "$scratch"' EXIT
 jq -n --arg task "$task" --arg url "$url" --arg merge "$merge" --arg head "$head" --arg by "$by" \
   '{task: $task, pr: $url, merge: $merge, head: $head, by: $by}'
+
+# The team home's records rule on what reached its base since the last merge logged, since GitHub
+# checks nothing there (CI policy B): every commit along the first parent from that merge to this
+# one touches records only or is a pull request's merge.
+primary=$(team_project "$project" path)
+if [[ $(realpath -m -- "$primary") == "$(realpath -m -- "$TEAM_HOME")" ]]; then
+  since=$(ledger_jq '[inputs | fromjson? | select(type == "object" and .event == "merged" and .project == $project)]
+    | .[-2].merge // "0000000000000000000000000000000000000000"' -nRr --arg project "$project" "$TEAM_HOME/ledger.jsonl")
+  if ! git -C "$primary" fetch -q origin "+refs/heads/$base:refs/remotes/origin/$base" 2>"$scratch/fetch-error"; then
+    die "PR #$number is merged and logged, but $base cannot be fetched to check the records rule: $(grep -m1 . "$scratch/fetch-error"); run team-records-check --repo $repo $since $merge in $primary"
+  fi
+  (cd "$primary" && TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-records-check" --repo "$repo" "$since" "$merge") >&2 ||
+    die "PR #$number is merged and logged, but $base breaks the records rule since the last merge (above): tell Daniel"
+fi

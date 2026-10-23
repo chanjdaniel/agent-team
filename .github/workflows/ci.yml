@@ -1,18 +1,14 @@
-# The team home's checks. The job names `shellcheck`, `test` and `macos` are the required checks
-# for dev (projects.toml). macOS minutes cost ten Linux ones, so the macos job runs only on pull
-# requests and by hand, one run per PR at a time: a re-push cancels the run it replaces.
+# The team home's checks on GitHub: on a pull request to main (a release's promotion) and by hand,
+# never for dev. Daniel's decision, CI policy B (2026-10-23, T17 ticket 25): the repo is private,
+# so Actions minutes come from the free plan's 2,000 a month, macOS billed ten times; a PR to dev
+# is checked locally instead, by team-merge running projects.toml's local_checks (tests/run) on
+# its exact head. A self-hosted runner on the PC (option A) may bring dev's checks back here later.
+# The macos job runs one run per PR at a time: a re-push cancels the run it replaces.
 name: CI
 
 on:
   pull_request:
-    branches: [dev]
-  push:
-    branches: [dev]
-    # Records, committed directly to dev, need no checks.
-    paths-ignore:
-      - "tasks/**"
-      - ledger.jsonl
-      - "memory/**"
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -43,7 +39,6 @@ jobs:
 
   # The bats suite on macOS, under Homebrew's Bash 5 and GNU tools (bin/lib/platform.sh).
   macos:
-    if: github.event_name != 'push'
     runs-on: macos-26
     concurrency:
       group: macos-${{ github.event.pull_request.number || github.ref }}
