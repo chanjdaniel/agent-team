@@ -34,16 +34,18 @@
 # that pushes them to salvage/T<n>-<machine>. Then the task's archive (tasks/T<n>/scratch, or
 # scratch-<project> for an added project) replaces the task directory, worktree-moved is appended
 # when the worktree is not the recorded one, and the worktree's facts are printed as JSON. For a
-# task that crashed (a launch after its latest stowed, or a launch and no stowed: its machine
-# stopped without a handoff), or a branch on neither origin nor here, the last checkpoint's
-# wip/T<n> on origin is fetched: the branch head it holds (a clean checkpoint's head, or a
-# snapshot's parent) is the branch's when origin has no branch or it is behind that head. For a
-# crashed task, a snapshot's diff against its parent is then applied to the worktree as
-# uncommitted changes, when that parent is the branch's head and the worktree has no other
-# uncommitted changes; else it is skipped with the reason. Its facts are the JSON's snapshot,
-# {ref, commit, parent, at, applied, reason}, parent null for a clean checkpoint's head, null for
-# a task that did not crash. Needs this machine's name; refused for a task that
-# is not open or has no open worktree in <project>; re-running after a failure finishes it.
+# worktree that resumes from a snapshot (the task crashed: a launch after its latest stowed, or a
+# launch and no stowed, so its machine stopped without a handoff; or its latest stowed recorded
+# the worktree with uncommitted changes, which the handoff's checkpoint kept), or a branch on
+# neither origin nor here, the last checkpoint's wip/T<n> on origin is fetched: the branch head it
+# holds (a clean checkpoint's head, or a snapshot's parent) is the branch's when origin has no
+# branch or it is behind that head. For a worktree that resumes from a snapshot, the snapshot's
+# diff against its parent is then applied to the worktree as uncommitted changes, when that parent
+# is the branch's head and the worktree has no other uncommitted changes; else it is skipped with
+# the reason. Its facts are the JSON's snapshot, {ref, commit, parent, at, applied, reason},
+# parent null for a clean checkpoint's head, null for a worktree that does not resume from one.
+# Needs this machine's name; refused for a task that is not open or has no open worktree in
+# <project>; re-running after a failure finishes it.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
@@ -119,7 +121,7 @@ if [[ -n $resume ]]; then
   events=$(open_task_events "$task")
   open=$(ledger_jq 'archived_worktrees($home) | select(.project == $project)' -c --arg project "$project" <<<"$events")
   [[ -n $open ]] || die "$task has no open worktree in $project"
-  crashed=$(ledger_jq crashed <<<"$events")
+  snapshot_due=$(ledger_jq 'snapshot_due($project)' --arg project "$project" <<<"$events")
   branch=$(jq -r .branch <<<"$open")
   recorded=$(jq -r .worktree <<<"$open")
   archive=tasks/$task/$(jq -r .archive <<<"$open")
@@ -186,11 +188,12 @@ if [[ -n $resume ]]; then
       die "cannot fetch $branch from origin in $primary"
   fi
   here=$(git -C "$primary" rev-parse -q --verify "refs/heads/$branch^{commit}") || here=''
-  # The last checkpoint's wip/T<n>, after a crash or for a branch that is nowhere else: a
+  # The last checkpoint's wip/T<n>, when the worktree resumes from its snapshot (after a crash, or a
+  # handoff that stopped a worker with uncommitted changes) or for a branch that is nowhere else: a
   # snapshot (its parent is the branch head it saw) or the branch head itself. A head there that
   # origin's branch lacks, or a branch only there, is where the branch goes: target.
   wip='' wip_head='' target=$remote target_name="origin's $branch"
-  if [[ $crashed == true || (-z $remote && -z $here) ]]; then
+  if [[ $snapshot_due == true || (-z $remote && -z $here) ]]; then
     wip=$(git -C "$primary" ls-remote origin "refs/heads/wip/$task") || die "cannot reach origin from $primary"
     wip=${wip%%[[:space:]]*}
   fi
@@ -374,9 +377,10 @@ resume_slot() {
   esac
 }
 
-# --resume of a crashed task: the last checkpoint's snapshot (wip/T<n>, fetched above) applied to
-# the worktree as uncommitted changes when its parent is the head the branch was made equal to
-# (target), which the worktree is at now, and the worktree has no other uncommitted changes.
+# --resume of a worktree that resumes from a snapshot: the last checkpoint's (wip/T<n>, fetched
+# above) applied to the worktree as uncommitted changes when its parent is the head the branch was
+# made equal to (target), which the worktree is at now, and the worktree has no other uncommitted
+# changes.
 # Sets snapshot to its facts, {ref, commit, parent, at, applied, reason}, parent null when
 # wip/T<n> is the branch head of a clean checkpoint, and says what it did on stderr.
 apply_snapshot() {
@@ -462,7 +466,7 @@ if [[ -n $resume ]]; then
     echo "team-open: $task has no archive at $archive; $worktree/$task_dir is left as it is" >&2
   fi
   snapshot=null
-  [[ $crashed != true ]] || apply_snapshot
+  [[ $snapshot_due != true ]] || apply_snapshot
   moved=false
   if [[ $(realpath -m -- "$worktree") != "$(realpath -m -- "$recorded")" ]]; then
     moved=true

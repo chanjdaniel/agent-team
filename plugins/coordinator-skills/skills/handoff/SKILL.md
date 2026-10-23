@@ -13,11 +13,11 @@ Never hand off while GitHub is unreachable: say so to Daniel and wait.
 2. **Stow yourself.** Follow the `stow` skill's walk through the conversation, so nothing you know lives only here.
 3. **Post.** In `#coordinator`: the handoff has started, and what is in flight (each open task, its phase and live workers, from `team-snapshot`).
 4. **STOW the workers.** Send `T<n> STOW` to each live worker and log each `T<n> PAUSED stowed` as `paused reason=stowed`.
-   Wait up to 10 minutes for every answer; a worker that has not answered by then is stopped by the handoff as it stands, and the checkpoint keeps its uncommitted work as `wip/T<n>`.
+   Wait up to 10 minutes for every answer; a worker that has not answered by then is stopped by the handoff as it stands, before its checkpoint, which keeps its uncommitted work as `wip/T<n>` for `team-resume` to apply on the other machine (untracked files that may hold a secret stay here, and the handoff names them).
    Name each one that did not answer in the final post.
 5. **Run.** `team-handoff`.
-   It checkpoints, pushes the task branches, logs `stowed` per open task, captures the Claude config, stops and removes the workers' sessions, commits and pushes the team home, disables the heartbeat, releases the lease, and prints the final message.
+   It stops and removes the workers' sessions, checkpoints, pushes the task branches, logs `stowed` per open task, captures the Claude config, commits and pushes the team home, disables the heartbeat, releases the lease, and prints the final message: the release line, then what config it captured and any it refused (a `settings.json` with an `env` key, a skill holding a dotenv-like file), which stay for Daniel to review.
    A failure stops it before the release with the reason: fix what it names (a diverged branch goes back to its builder's word, or Daniel's), then run `team-handoff` again, which picks up where it stopped.
    Exit 75: GitHub went away; wait, then run it again.
-6. **Post the final message.** What `team-handoff` printed last goes in `#coordinator` word for word, with any worker that did not answer STOW.
+6. **Post the final message.** What `team-handoff` printed from `Released at` to its end goes in `#coordinator` word for word, with any worker that did not answer STOW.
 7. **Retire.** Run `team-handoff --retire` and end your turn: a few seconds later it stops and removes this session.

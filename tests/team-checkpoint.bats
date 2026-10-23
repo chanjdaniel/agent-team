@@ -151,6 +151,31 @@ tasks/T1/scratch/spec.md"
   [[ -f $state/last-checkpoint ]]
 }
 
+@test "untracked files that may hold a secret are left out of the snapshot, each named" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  local wt=$HOME/slots/home/1
+  echo "spec" >"$wt/.scratch/task/spec.md"
+  mkdir -p "$wt/back-end" "$wt/certs"
+  echo "new" >"$wt/new.txt"
+  echo "DB=1" >"$wt/back-end/.env.test"
+  echo "pem" >"$wt/certs/server.pem"
+  echo "key" >"$wt/certs/server.key"
+  echo "keys" >"$wt/keys.txt"
+  echo '{}' >"$wt/access.json"
+  mkdir -p "$TEAM_HOME/machine"
+  echo '{"secrets": [{"id": "discord-access-json", "target": ".claude/channels/discord/access.json"}]}' \
+    >"$TEAM_HOME/machine/secrets.json"
+
+  run_bin -0 --separate-stderr team-checkpoint
+  assert_contains "$output" "T1 home: left out of wip/T1, as files that may hold a secret: access.json back-end/.env.test certs/server.key certs/server.pem"
+  assert_equal "$(git -C "$home_origin" ls-tree -r --name-only wip/T1 | paste -sd ' ')" ".gitignore README.md keys.txt new.txt"
+
+  # Only secrets left untracked: the worktree is clean as far as the snapshot goes.
+  rm "$wt/new.txt" "$wt/keys.txt"
+  run_bin -0 --separate-stderr team-checkpoint --force
+  assert_contains "$output" "T1 home: pushed wip/T1 $(git -C "$wt" rev-parse --short HEAD) (the branch head, no uncommitted changes)"
+}
+
 @test "a second checkpoint with nothing new makes no commit and no push; a new change pushes a new snapshot" {
   run_bin -0 team-open home feature feat work "Do the work"
   local wt=$HOME/slots/home/1 tip snap

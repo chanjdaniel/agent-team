@@ -117,7 +117,7 @@
     },
     "stowed": {
       "writer": "team-handoff",
-      "about": "one per open task at a handoff: worktrees as {project, branch, head}, roles whose sessions were live",
+      "about": "one per open task at a handoff: worktrees as {project, branch, head}, with uncommitted: true for one whose changes the checkpoint kept as wip/T<n>; roles whose sessions the handoff stopped",
       "required": {"machine": "string", "worktrees": "array", "roles": "array"}
     },
     "worktree-moved": {

@@ -218,6 +218,13 @@ def latest_stowed: [to_entries[] | select(.value.event == "stowed") | .key] | la
 # no stowed at all, so the machine it last ran on stopped without handing it off.
 def crashed: latest_stowed as $stowed | any(.[$stowed + 1:][]; .event == "launch");
 
+# Whether the task's worktree in <project> resumes from the last checkpoint's snapshot: the task
+# crashed, or its latest stowed recorded that worktree with uncommitted changes, which the
+# handoff's checkpoint kept as wip/T<n>.
+def snapshot_due($project):
+  crashed or (latest_stowed as $stowed | $stowed >= 0
+    and any(.[$stowed].worktrees[]?; .project == $project and .uncommitted == true));
+
 # Whether the event ends the worker of <role>: its DONE, which the coordinator logs as a done of
 # that role, a review (a reviewer's) or a ticket-done (a builder's).
 def ends_worker($role):

@@ -15,7 +15,9 @@
 #   3. Its work is kept on the project's origin as refs/heads/wip/T<n>, pushed in place of what
 #      is there (the one forced push, a script's, never on a task branch, and no PR's head): its
 #      uncommitted changes (tracked or untracked; ignored files excluded) as a snapshot commit,
-#      built from a temporary index with the worktree's HEAD as parent; with none, the branch
+#      built from a temporary index with the worktree's HEAD as parent; untracked files that may
+#      hold a secret (a name starting with .env or ending with .pem or .key, or the end of a
+#      target in machine/secrets.json) are left out, each named on a line; with none, the branch
 #      head itself, so a branch never pushed is on origin too and an older snapshot is gone.
 #      Origin's wip/T<n> already that head, or a snapshot with the same tree and parent, is left
 #      alone. The worktree's files, index, branch and stash are never touched.
@@ -111,8 +113,10 @@ skip_reason() {
 # Keep the work of the worktree <wt> of <task> on its origin as wip/<task>: its branch head, or a
 # snapshot of its uncommitted changes on that head: snapshot <task> <wt> <label>
 snapshot() {
-  local task=$1 wt=$2 label=$3 tree head remote old commit what rc=0
+  local task=$1 wt=$2 label=$3 tree head remote old commit what left rc=0
   tree=$(worktree_tree "$wt")
+  left=$(snapshot_left_out "$wt" | paste -sd ' ')
+  [[ -z $left ]] || say "$label: left out of wip/$task, as files that may hold a secret: $left"
   head=$(git -C "$wt" rev-parse HEAD)
   remote=$(origin_git -C "$wt" ls-remote origin "refs/heads/wip/$task") || rc=$?
   if ((rc)); then

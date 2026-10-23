@@ -309,6 +309,28 @@ plugin mongodb-atlas@claude-plugins-official"
   assert_equal "$output" " M machine/claude/CLAUDE.md"
 }
 
+@test "capture leaves to Daniel a settings.json with an env key and a skill holding a dotenv-like file, and captures the rest" {
+  jq '.env = {API_TOKEN: "secret"} | .model = "sonnet"' "$HOME/.claude/settings.json" >"$BATS_TEST_TMPDIR/s"
+  mv "$BATS_TEST_TMPDIR/s" "$HOME/.claude/settings.json"
+  mkdir -p "$HOME/.claude/skills/deploy/conf" "$HOME/.claude/skills/retro"
+  echo "Deploy." >"$HOME/.claude/skills/deploy/SKILL.md"
+  echo "TOKEN=x" >"$HOME/.claude/skills/deploy/conf/.env.prod"
+  echo "key" >"$HOME/.claude/skills/deploy/id.key"
+  echo "Look back." >"$HOME/.claude/skills/retro/SKILL.md"
+  echo "More." >>"$HOME/.claude/CLAUDE.md"
+
+  run_bin -1 --separate-stderr team-config capture
+  assert_equal "$output" "captured CLAUDE.md
+captured skill retro (new)"
+  assert_equal "$stderr" "team-config: settings.json left to Daniel: it has an env key, which may hold a secret
+team-config: skill deploy left to Daniel: it holds conf/.env.prod id.key, which may hold a secret"
+  assert_equal "$(jq -r .model "$shared/settings.json")" opus
+  [[ ! -e $shared/skills/deploy ]]
+  run_bin -1 team-config diff
+  assert_equal "$output" "settings.json differs
+skill deploy local only"
+}
+
 @test "no output or copy carries the credentials, ~/.claude.json, the channels' tokens or a transcript" {
   local secrets=(sk-ant-oat-fake-secret daniel@example.invalid "$FAKE_DISCORD_TOKEN" transcript-fake-line project-fake-line)
   echo '{"claudeAiOauth": {"accessToken": "sk-ant-oat-fake-secret"}}' >"$HOME/.claude/.credentials.json"

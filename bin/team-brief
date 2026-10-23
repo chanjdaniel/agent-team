@@ -5,8 +5,8 @@
 #                   [--name <suffix>] [--force]
 #   template    one of templates/briefs/: planner-feature, planner-research, builder-ticket,
 #               builder-fix, builder-deliver, reviewer, rereview, resume (a worker relaunched on
-#               another machine: --set role=, brief= its last brief, from= what it resumes after),
-#               resume-crash (one relaunched after its machine crashed: --set role=, brief=,
+#               another machine: --set role=, brief= its last brief, from= what it resumes after,
+#               snapshot= what became of the uncommitted changes the handoff found), resume-crash (one relaunched after its machine crashed: --set role=, brief=,
 #               machine= the machine that crashed, checkpoint= the checkpoint's time, snapshot=
 #               what became of that checkpoint's uncommitted changes)
 #   --project   the project whose worktree the brief is for; required when the task has open

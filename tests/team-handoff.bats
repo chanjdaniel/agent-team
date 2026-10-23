@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
-# team-handoff: the machine being left checkpoints, pushes its task branches, stows each open task
-# in the ledger, captures its Claude config, stops its workers' sessions, commits and pushes the
+# team-handoff: the machine being left stops its workers' sessions, checkpoints, pushes its task
+# branches, stows each open task in the ledger, captures its Claude config, commits and pushes the
 # team home, disables its heartbeat and releases the lease; then --retire removes the coordinator.
 # One git-pool project, home, on a bare origin; home-pc holds the lease on the team home's bare
 # origin with its heartbeat enabled, and T1 is open there with a live builder (stubbed claude).
@@ -103,7 +103,8 @@ interrupt_after() {
   assert_contains "$stderr" "team-handoff: stopped after step $1 (TEAM_HANDOFF_STOP_AFTER)"
 
   run_bin -0 team-handoff
-  [[ ${lines[-1]} == "Released at "* ]]
+  [[ ${lines[-2]} == "Released at "* ]]
+  assert_equal "${lines[-1]}" "Config captured: CLAUDE.md (new)."
   assert_equal "$(stowed_events | jq -c 'del(.ts)')" \
     "{\"task\":\"T1\",\"event\":\"stowed\",\"machine\":\"home-pc\",\"worktrees\":[{\"project\":\"home\",\"branch\":\"feat/T1-work\",\"head\":\"$head\"}],\"roles\":[\"builder\"]}"
   assert_equal "$(team_subjects | grep -c '^chore: handoff from home-pc$')" 1
@@ -118,7 +119,8 @@ rm 81f08540"
   lease_commits=$(git -C "$team_origin" rev-parse lease dev)
   run_bin -0 team-handoff
   assert_equal "${lines[0]}" "lease: released by this handoff already, epoch 1"
-  [[ ${lines[-1]} == "Released at "* ]]
+  [[ ${lines[-2]} == "Released at "* ]]
+  assert_equal "${lines[-1]}" "Config captured: CLAUDE.md (new)."
   assert_equal "$(git -C "$team_origin" rev-parse lease dev)" "$lease_commits"
   assert_equal "$(stowed_events | wc -l)" 1
 }
@@ -138,7 +140,10 @@ rm 81f08540"
   assert_contains "$output" "team home: committed $(git -C "$TEAM_HOME" rev-parse --short HEAD) chore: handoff from home-pc and pushed dev"
   assert_contains "$output" "heartbeat: "
   assert_contains "$output" "lease: home-pc released the lease, epoch 1"
-  [[ ${lines[-1]} =~ ^"Released at "[0-9]{2}:[0-9]{2}" from home-pc. On the other machine run \`team-resume\`."$ ]]
+  [[ ${lines[-2]} =~ ^"Released at "[0-9]{2}:[0-9]{2}" from home-pc. On the other machine run \`team-resume\`."$ ]]
+  assert_equal "${lines[-1]}" "Config captured: CLAUDE.md (new)."
+  # The workers stop before the checkpoint, so it holds their worktrees' last state.
+  [[ $output == *"sessions: stopped and removed T1-builder"*"checkpoint: T1 home: "* ]]
 
   # Origin has the task branch at the worktree's commit.
   assert_equal "$(git -C "$home_origin" rev-parse feat/T1-work)" "$head"
@@ -172,6 +177,56 @@ rm 81f08540"
   assert_equal "$(jq -r 'select(.event == "stowed") | .worktrees[0].head' "$BATS_TEST_TMPDIR/machines/laptop/team/ledger.jsonl")" "$head"
 }
 
+@test "a worker that never stowed is stopped before the checkpoint, and its uncommitted changes are stowed as wip/T1" {
+  # The builder edits, adds a file and a secret, and never answers STOW; stopping its session is
+  # the last thing that happens to its worktree before the checkpoint.
+  echo "edited" >"$wt/a.txt"
+  echo "b" >"$wt/b.txt"
+  echo "TOKEN=x" >"$wt/.env.local"
+  stub_script claude <<'SH'
+list=$BATS_TEST_TMPDIR/sessions.json
+case "$*" in
+  'agents --json') cat "$list" ;;
+  'stop '*) jq --arg id "$2" 'map(if .id == $id then .status = "stopped" else . end)' "$list" >"$list.next" && mv "$list.next" "$list"
+    echo "late" >"$HOME/slots/home/1/late.txt" ;;
+  'rm '*) jq --arg id "$2" 'map(select(.id != $id))' "$list" >"$list.next" && mv "$list.next" "$list" ;;
+  'plugin list --json' | 'plugin marketplace list --json') echo '[]' ;;
+  *) echo "claude stub: unplanned call: $*" >&2; exit 64 ;;
+esac
+SH
+
+  run_bin -0 --separate-stderr team-handoff
+  assert_contains "$output" "checkpoint: T1 home: left out of wip/T1, as files that may hold a secret: .env.local"
+  assert_contains "$output" "branches: T1 home: uncommitted changes in $wt go with the checkpoint's wip/T1, which team-resume applies"
+  assert_contains "$output" "branches: T1 home: untracked files that may hold a secret, left out of wip/T1, stay on home-pc: .env.local"
+  assert_contains "$output" "stowed: T1 roles builder; home feat/T1-work at ${head:0:7} with uncommitted changes"
+
+  # The snapshot holds what the session left as it stopped, the secret aside.
+  local wip
+  wip=$(git -C "$home_origin" rev-parse wip/T1)
+  assert_equal "$(git -C "$home_origin" rev-parse "$wip^")" "$head"
+  assert_equal "$(git -C "$home_origin" show "$wip:a.txt")" "edited"
+  assert_equal "$(git -C "$home_origin" show "$wip:late.txt")" "late"
+  assert_equal "$(git -C "$home_origin" ls-tree --name-only "$wip" | paste -sd ' ')" ".gitignore README.md a.txt b.txt late.txt"
+  assert_equal "$(stowed_events | jq -c 'del(.ts)')" "$(jq -cn --arg h "$head" --arg wt "$wt" '{task: "T1", event: "stowed",
+    machine: "home-pc", worktrees: [{project: "home", branch: "feat/T1-work", head: $h, uncommitted: true}],
+    roles: ["builder"], note: "untracked files left out of wip/T1 stay on home-pc in \($wt): .env.local"}')"
+}
+
+@test "the final message lists the config captured and what was left to Daniel, again on a run after the release" {
+  jq -n '{env: {API_TOKEN: "x"}}' >"$HOME/.claude/settings.json"
+  run_bin -0 --separate-stderr team-handoff
+  assert_contains "$stderr" "team-handoff: config: team-config capture did not capture everything; the handoff goes on
+team-handoff: config: settings.json left to Daniel: it has an env key, which may hold a secret"
+  assert_equal "$(printf '%s\n' "${lines[@]: -2}")" "Config captured: CLAUDE.md (new).
+Config: settings.json left to Daniel: it has an env key, which may hold a secret."
+  [[ ! -e $TEAM_HOME/machine/claude/settings.json ]]
+
+  run_bin -0 team-handoff
+  assert_equal "$(printf '%s\n' "${lines[@]: -2}")" "Config captured: CLAUDE.md (new).
+Config: settings.json left to Daniel: it has an env key, which may hold a secret."
+}
+
 @test "--json prints the facts, with the step lines on stderr" {
   run_bin -0 --separate-stderr team-handoff --json
   assert_contains "$stderr" "stowed: T1 roles builder"
@@ -179,6 +234,7 @@ rm 81f08540"
     "{\"machine\":\"home-pc\",\"epoch\":1,\"tasks\":[{\"task\":\"T1\",\"worktrees\":[{\"project\":\"home\",\"branch\":\"feat/T1-work\",\"head\":\"$head\"}],\"roles\":[\"builder\"]}]}"
   [[ $(jq -r .released_at <<<"$output") =~ ^[0-9-]+T[0-9:]+Z$ ]]
   assert_contains "$(jq -r .message <<<"$output")" "from home-pc. On the other machine run \`team-resume\`."
+  assert_equal "$(jq -c .captured <<<"$output")" '["Config captured: CLAUDE.md (new)."]'
 }
 
 @test "a task branch that has diverged from origin refuses the handoff before anything is pushed or released" {

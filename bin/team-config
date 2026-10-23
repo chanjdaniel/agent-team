@@ -55,7 +55,11 @@
 #   capture  Copies into machine/claude/ each file and skill that differs here or exists only
 #            here (settings.json without this machine's own settings), and adds to plugins.txt the
 #            user-scope plugins and marketplaces it lacks; one line per change. Nothing is
-#            removed, and committing is the caller's.
+#            removed, and committing is the caller's. What may hold a secret is left to Daniel,
+#            uncaptured, with a line on stderr and exit 1 once the rest is captured: a
+#            settings.json with an env key ("settings.json left to Daniel: it has an env key, which
+#            may hold a secret"), or a skill folder holding a dotenv-like file (.env*, *.pem,
+#            *.key).
 #   own      Each of this machine's own settings and whether it is set here
 #            ("autoMode.environment set" or "... unset"); --json prints [{setting, set}].
 # Nothing else of ~/.claude is read or copied: not ~/.claude.json, the credentials file, the
@@ -425,8 +429,22 @@ do_apply() {
   return "$failed"
 }
 
+# Why <item>, at <path> here, may hold a secret, or nothing: a settings.json with an env key
+# beside this machine's own settings, or a skill folder holding a dotenv-like file.
+# capture_risk <item> <path>
+capture_risk() {
+  local files
+  if [[ $1 == settings.json ]] &&
+    jq -e --argjson own "$OWN_SETTINGS" "$STRIP | objects | has(\"env\")" "$2" >/dev/null 2>&1; then
+    echo "it has an env key, which may hold a secret"
+  elif [[ $1 == 'skill '* ]]; then
+    files=$(find -L "$2" -type f \( -name '.env*' -o -name '*.pem' -o -name '*.key' \) -printf '%P\n' | sort | paste -sd ' ')
+    [[ -z $files ]] || echo "it holds $files, which may hold a secret"
+  fi
+}
+
 do_capture() {
-  local item state ours theirs changed=0 plugins_changed=0 failed=0
+  local item state ours theirs risk changed=0 plugins_changed=0 failed=0
   local -a marketplaces plugins
   mkdir -p "$shared/skills"
   mapfile -t marketplaces < <(listed marketplace)
@@ -450,6 +468,12 @@ do_capture() {
       *)
         [[ $state == differs || $state == 'local only' ]] || continue
         { read -r ours; read -r theirs; } < <(paths_of "$item")
+        risk=$(capture_risk "$item" "$theirs")
+        if [[ -n $risk ]]; then
+          echo "team-config: $item left to Daniel: $risk" >&2
+          failed=1
+          continue
+        fi
         if [[ $item == settings.json ]]; then
           jq --argjson own "$OWN_SETTINGS" "$STRIP" "$theirs" >"$ours.new" ||
             { rm -f "$ours.new"; die "$claude_dir/settings.json is not JSON, so it is not captured"; }

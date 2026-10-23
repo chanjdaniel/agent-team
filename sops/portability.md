@@ -54,6 +54,8 @@ It is enabled only on the holder: `team-resume` enables it, `team-handoff` disab
 
 - each open task's task directory is mirrored into its archive in the team home;
 - each worktree's work is kept on its project's origin as `wip/T<n>`: the branch head, or, with uncommitted changes, a snapshot commit on it built from a temporary index (untracked files included), never touching the worktree's files, index or stash;
+- untracked files that may hold a secret are left out of the snapshot, each named in the checkpoint's output: a name starting with `.env` or ending with `.pem` or `.key`, or a path that a target in `machine/secrets.json` ends with.
+  A project's origin may be public (Conventioner's is), and its `.gitignore` need not cover every `.env` variant a worker makes; such a file stays only on the machine it was made on;
 - `tasks/*/scratch*/`, `memory/` and `ledger.jsonl` are committed as `chore: checkpoint` and pushed.
 
 Nothing new means no commit and no push; `team-close` deletes the task's `wip/T<n>`.
@@ -78,12 +80,14 @@ The `lease-fence` hook blocks the coordinator's Discord replies from the moment 
 
 1. Daniel says "hand off" to the coordinator on Discord.
    Its `handoff` skill checks (`team-handoff --check`), posts what is in flight, sends `T<n> STOW` to each live worker and waits up to 10 minutes for `T<n> PAUSED stowed` (a builder pushes a `wip:` commit and writes `handoff.md`).
-2. It runs `team-handoff`: a forced checkpoint, task branches pushed, one `stowed` per open task, `team-config capture`, workers stopped and removed, the records committed as `chore: handoff from <machine>` (all of `tasks/`, `machine/`, `memory/`, the ledger) and pushed, the heartbeat disabled, the lease released.
+2. It runs `team-handoff`: workers stopped and removed, a forced checkpoint, task branches pushed, one `stowed` per open task, `team-config capture`, the records committed as `chore: handoff from <machine>` (all of `tasks/`, `machine/`, `memory/`, the ledger) and pushed, the heartbeat disabled, the lease released.
+   The workers stop before the checkpoint, so it holds their worktrees' last state: a worker that never answered STOW leaves its uncommitted changes in `wip/T<n>`, and its `stowed` marks that worktree `uncommitted`.
+   A diverged task branch refuses the handoff before any worker stops.
    Each step is idempotent: a run interrupted anywhere finishes when run again, and the lease is released last.
-3. It posts "Released at 14:05 from home-pc. On the other machine run `team-resume`." and `team-handoff --retire` removes the coordinator.
+3. It posts "Released at 14:05 from home-pc. On the other machine run `team-resume`." with what config it captured (and any it left to Daniel: a `settings.json` with an `env` key, or a skill folder holding a dotenv-like file), and `team-handoff --retire` removes the coordinator.
 4. At the other machine, Daniel runs (or tells the setup session to run) `team-resume`, or `team-resume --wait` started before the handoff ends.
-   It reads the lease first: held elsewhere and fresh is refused with nothing changed ("say 'hand off' to the coordinator there"), and only then does it run the doctor, pull the team home, apply the config, take the lease, enable the heartbeat, re-home each open worktree with `team-open --task T<n> --resume <project>` (from origin's branch and the task's archive), write `tasks/resume-<date>.json` and start the coordinator.
-5. The coordinator's `resume` skill reads the report, catches up on Discord messages sent while no coordinator listened, relaunches each stowed role with a `resume` brief, logs `resumed`, and posts what resumed and what did not.
+   It reads the lease first: held elsewhere and fresh is refused with nothing changed ("say 'hand off' to the coordinator there"), and only then does it run the doctor, pull the team home, apply the config, take the lease, enable the heartbeat, re-home each open worktree with `team-open --task T<n> --resume <project>` (from origin's branch and the task's archive, with `wip/T<n>` applied as uncommitted changes to a worktree its `stowed` marks `uncommitted`), write `tasks/resume-<date>.json` and start the coordinator.
+5. The coordinator's `resume` skill reads the report, catches up on Discord messages sent while no coordinator listened, relaunches each stowed role with a `resume` brief (which says what became of the uncommitted changes), logs `resumed`, and posts what resumed and what did not.
 6. Daniel pins the coordinator in `claude agents`.
 
 ## A crash

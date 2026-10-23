@@ -335,6 +335,29 @@ restored_from() {
   assert_equal "$(jq -r .snapshot.applied <<<"$output")" true
 }
 
+@test "a task stowed with uncommitted changes in its worktree gets the handoff's snapshot applied, as after a crash" {
+  crash_elsewhere
+  # home-pc handed off a builder that never stowed: its stowed records the uncommitted changes the
+  # handoff's checkpoint kept, and only for that project.
+  jq -cn --arg b "$branch" --arg h "$head" '{ts: (now | todate), task: "T1", event: "stowed", machine: "home-pc",
+    worktrees: [{project: "home", branch: $b, head: $h, uncommitted: true}], roles: ["builder"]}' >>"$TEAM_HOME/ledger.jsonl"
+
+  run_bin -0 --separate-stderr team-open --task T1 --resume home
+  assert_equal "$stderr" "team-open: applied wip/T1 ${wip:0:7} (the checkpoint of $(jq -r .snapshot.at <<<"$output")) to $wt as uncommitted changes"
+  assert_equal "$(jq -c .snapshot <<<"$output")" "$(snapshot_facts "$wip" "$head" true null)"
+  assert_equal "$(git -C "$wt" rev-parse HEAD)" "$head"
+  assert_equal "$(git -C "$wt" status --porcelain)" "$(printf '%s\n' " D README.md" " M feature.txt" "?? new.txt")"
+
+  # A stowed whose worktree in home was clean leaves wip/T1 alone.
+  git -C "$wt" reset -q --hard && git -C "$wt" clean -qfd
+  jq -cn --arg b "$branch" --arg h "$head" '{ts: (now | todate), task: "T1", event: "stowed", machine: "home-pc",
+    worktrees: [{project: "home", branch: $b, head: $h}], roles: ["builder"]}' >>"$TEAM_HOME/ledger.jsonl"
+  run_bin -0 --separate-stderr team-open --task T1 --resume home
+  assert_equal "$stderr" ""
+  assert_equal "$(jq -c .snapshot <<<"$output")" null
+  assert_equal "$(git -C "$wt" status --porcelain)" ""
+}
+
 @test "a crashed task with no snapshot on origin says so" {
   crash_elsewhere
   git -C "$home" push -q origin --delete wip/T1

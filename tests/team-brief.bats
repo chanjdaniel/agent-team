@@ -188,8 +188,12 @@ EOF
   open_t12
   run_bin -0 team-brief --help
   assert_contains "$output" "rereview, resume (a worker relaunched on"
-  run_bin -0 team-brief T12 resume --name resume-builder --set role=builder \
+  run_bin -1 team-brief T12 resume --name resume-builder --set role=builder \
     --set "brief=~/agent-team/tasks/T12/brief.md" --set "from=the handoff from home-pc at 2026-10-23T14:05:00Z"
+  assert_contains "$output" "snapshot"
+  run_bin -0 team-brief T12 resume --name resume-builder --set role=builder \
+    --set "brief=~/agent-team/tasks/T12/brief.md" --set "from=the handoff from home-pc at 2026-10-23T14:05:00Z" \
+    --set "snapshot=applied as uncommitted changes in your worktree"
   local brief
   brief=$(<"$output")
   assert_equal "$(head -n 1 <<<"$brief")" "# T12 brief (builder): resume rate-limit the applicant sign-in endpoints"
@@ -197,7 +201,8 @@ EOF
   assert_contains "$brief" "Worktree: \`~/.treehouse/Conventioner-d4c77a/4/Conventioner\`, branch \`fix/T12-applicant-sign-in-rate-limit\`"
   assert_contains "$brief" "1. Read your brief \`~/agent-team/tasks/T12/brief.md\`"
   assert_contains "$brief" "2. Then \`.scratch/task/handoff.md\` if it exists"
-  assert_contains "$brief" "3. Check the branch: \`git status\`, and \`git log origin/dev..HEAD\`"
+  assert_contains "$brief" "The uncommitted changes the handoff found in the worktree: applied as uncommitted changes in your worktree."
+  assert_contains "$brief" "3. Check the branch: \`git status\`, \`git diff\`, and \`git log origin/dev..HEAD\`"
 }
 
 @test "the crash resume brief names the checkpoint, what may be missing, and sends the worker to check first" {

@@ -27,7 +27,9 @@
 #                   on stderr and in the report, and the others still resume. A task that crashed
 #                   (a launch after its latest stowed, or a launch and no stowed) gets its last
 #                   checkpoint's snapshot applied by team-open, and one more line: the machine,
-#                   the checkpoint it resumes from and the roles to relaunch.
+#                   the checkpoint it resumes from and the roles to relaunch. So does a worktree
+#                   its latest stowed recorded with uncommitted changes (a worker the handoff
+#                   stopped before it stowed), whose snapshot team-open's line reports.
 #   9. report       tasks/resume-<date>.json (this machine's date): {machine, epoch, stolen_from,
 #                   written_at, tasks}, each task {task, stowed, crashed, worktrees, failures}:
 #                   stowed the task's latest stowed event ({ts, machine, roles, note}) or null,
@@ -36,7 +38,8 @@
 #                   null, and the roles whose latest launch since that stowed nothing ended (a
 #                   done of the role, a review, a ticket-done); worktrees team-open's facts
 #                   ({project, branch, worktree, from, moved, head, archive, snapshot}, archive
-#                   null when no scratch was restored, snapshot null unless crashed), failures
+#                   null when no scratch was restored, snapshot null unless the worktree resumed
+#                   from one, after a crash or a stowed with uncommitted changes), failures
 #                   [{project, branch, reason}]. Not committed: the resume skill deletes it.
 #  10. coordinator  claude-coordinator, with a first prompt naming the report and the resume skill;
 #                   then "Pin the coordinator in `claude agents` (Ctrl+T)."
