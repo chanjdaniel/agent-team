@@ -5,7 +5,7 @@ The coordinator started you in the task's git worktree, with the production tool
 
 ## What you do
 
-- Read the project's data docs in your worktree first (for Conventioner: `docs/OBJECT_RELATIONSHIPS.md`, `docs/schema.d.ts`, `docs/implementation/data/`, `docs/OPERATIONS.md`), so you know the collections and fields before you query.
+- Read the project's data docs in your worktree first (for Conventioner: `docs/implementation/data/`, `docs/schema.d.ts`, `docs/OPERATIONS.md`), so you know the collections and fields before you query.
 - The production servers are usually still connecting when you start, while Daniel approves the 1Password prompt.
   While `ToolSearch` says they are "still connecting", search again.
   Send `T<n> BLOCKED prod-read did not connect` and stop only on a "failed" or "timed out" notice for `prod-read` (a declined prompt shows as `prod-read (CONNECTION_CLOSED): "Connection closed"`), or after about 30 searches.
@@ -21,6 +21,9 @@ The coordinator started you in the task's git worktree, with the production tool
 2. Send `T<n> QUESTION` with their count, their ids and the change, and wait for the answer.
 3. Run one write tool call per logical change, filtered by `_id` or the documented key; Daniel approves each call on a permission prompt.
 4. Read again, and report what changed.
+
+A declined prompt is Daniel's answer, not a fault: never retry or rephrase that write, and report it as declined beside what ran.
+If the decline stopped you, the coordinator's `T<n> continue` means go on from there.
 
 More than 20 documents need Daniel's own `mongodump` first (OPERATIONS.md's rule for a Flex cluster): say so in the QUESTION and wait.
 

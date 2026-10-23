@@ -50,12 +50,17 @@ inventory() {
 
 # The ops form. The claude stub plays the ops session: claude --bg copies $STUB_FIXTURES/session/
 # into the worktree's .scratch/load-check-ops/, appends $STUB_FIXTURES/ops-log to T0's ops log as
-# the ops-log hook would, and writes the session's transcript; claude agents lists it until
-# claude rm. team-ops-end, run for real, deletes the transcript.
+# the ops-log hook would, and writes the session's transcript ($STUB_FIXTURES/transcript.jsonl, or
+# '{}'); claude agents lists it, in the state $STUB_FIXTURES/state (default done), until claude rm.
+# A session that stops after a decline writes $STUB_FIXTURES/later/ and transcript.later.jsonl
+# at the sixth claude agents call (team-worker makes the first), as if the coordinator's
+# 'T0 continue' had come.
+# team-ops-end, run for real, deletes the transcript.
 
 ops_uuid=6f93fe38-4a6e-4b35-8f39-776a26bc624b
 prod_read_tools=(aggregate aggregate-db collection-indexes collection-schema collection-storage-size
   count db-stats explain find list-collections list-databases)
+prod_write_tools=(insert-many update-many delete-many create-index drop-index)
 
 # ops_setup: a linked worktree, the stub, and a session that passes every check
 ops_setup() {
@@ -63,19 +68,33 @@ ops_setup() {
   clone=$(make_repo proj)
   wt=$HOME/wt/proj-1
   git -C "$clone" worktree add -q -b load "$wt"
+  # The check polls every 5 seconds; the tests need no real wait.
+  cp "$REPO_ROOT/tests/helpers/stub" "$(dirname "$(command -v claude)")/sleep"
+  echo : | stub_script sleep
   stub_script claude <<'SH'
+transcript=$HOME/.claude/projects/-wt/6f93fe38-4a6e-4b35-8f39-776a26bc624b.jsonl
 case $1 in
   --bg)
     touch "$STUB_FIXTURES/launched"
     cp -R "$STUB_FIXTURES/session/." .scratch/load-check-ops/
+    pwd >"$STUB_FIXTURES/cwd"
     cat "$STUB_FIXTURES/ops-log" >>"$TEAM_HOME/tasks/T0/ops-log.md"
-    mkdir -p "$HOME/.claude/projects/-wt"
-    echo '{}' >"$HOME/.claude/projects/-wt/6f93fe38-4a6e-4b35-8f39-776a26bc624b.jsonl"
+    mkdir -p "$(dirname "$transcript")"
+    cat "$STUB_FIXTURES/transcript.jsonl" 2>/dev/null >"$transcript" || echo '{}' >"$transcript"
     echo "Started background session 6f93fe38 (${*: -2:1}). Attach with: claude attach 6f93fe38"
     ;;
   agents)
+    n=$(($(cat "$STUB_FIXTURES/agents-calls" 2>/dev/null || echo 0) + 1))
+    echo "$n" >"$STUB_FIXTURES/agents-calls"
+    if [[ -d $STUB_FIXTURES/later && $n -ge 6 && ! -f $STUB_FIXTURES/continued ]]; then
+      cp -R "$STUB_FIXTURES/later/." "$(cat "$STUB_FIXTURES/cwd")/.scratch/load-check-ops/"
+      cp "$STUB_FIXTURES/transcript.later.jsonl" "$transcript"
+      echo done >"$STUB_FIXTURES/state"
+      touch "$STUB_FIXTURES/continued"
+    fi
     if [[ -f $STUB_FIXTURES/launched && ! -f $STUB_FIXTURES/removed ]]; then
-      echo '[{"id": "6f93fe38", "name": "T0-ops", "state": "done", "sessionId": "6f93fe38-4a6e-4b35-8f39-776a26bc624b"}]'
+      jq -nc --arg state "$(cat "$STUB_FIXTURES/state" 2>/dev/null || echo done)" \
+        '[{id: "6f93fe38", name: "T0-ops", state: $state, sessionId: "6f93fe38-4a6e-4b35-8f39-776a26bc624b"}]'
     else
       echo '[]'
     fi
@@ -134,7 +153,7 @@ oplog_lines() {
   echo mcp__plugin_prod-read_prod-read__find >>"$s/tools.txt"
   printf '%s\n' 'grep-environ: allowed: 42' 'read-status: allowed' >"$s/probes.txt"
   run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-read
-  assert_contains "$output" "FAIL: the MCP tools are not exactly prod-read's, once each:"$'\n'"  > mcp__plugin_prod-read_prod-read__find"
+  assert_contains "$output" "FAIL: the MCP tools are not exactly the toolkits' sets, once each:"$'\n'"  > mcp__plugin_prod-read_prod-read__find"
   assert_contains "$output" "FAIL: built-in tools beyond the ops allowlist: Bash WebFetch"
   assert_contains "$output" "FAIL: Bash is not reported absent"
   assert_contains "$output" "FAIL: the Grep of /proc/self/environ was not refused"
@@ -163,18 +182,133 @@ oplog_lines() {
   echo 'not connected' >"$s/done.txt"
   : >"$STUB_FIXTURES/ops-log"
   run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-read
-  assert_contains "$output" 'FAIL: prod-read did not connect: prod-read (CONNECTION_CLOSED): "Connection closed"'
+  assert_contains "$output" 'FAIL: a production server did not connect: prod-read (CONNECTION_CLOSED): "Connection closed"'
   assert_equal "$(grep -c '^FAIL' <<<"$output")" 1
   assert_equal "$(find "$HOME/.claude/projects" -name "$ops_uuid*")" ""
 }
 
-@test "the ops form needs a worktree and exactly prod-read, and the planner form takes no worktree" {
+# The write form: the session has both toolkits, makes the five write calls, Daniel declines each.
+
+# write_session: both servers connected, both tool sets, and every write reported denied
+write_session() {
+  local s=$STUB_FIXTURES/session
+  printf '%s\n' 'prod-read: connected' 'notice: connected' 'prod-write: connected' 'notice: connected' >"$s/connect.txt"
+  {
+    echo "tools: Read, Glob, Grep, Edit, Write, ToolSearch, SendMessage, ListAgents, EndConversation"
+    printf 'mcp__prod-read__%s\n' "${prod_read_tools[@]}"
+    printf 'mcp__prod-write__%s\n' "${prod_write_tools[@]}"
+    printf '%s: absent\n' Bash WebFetch WebSearch Agent Artifact
+  } >"$s/tools.txt"
+  local tool
+  for tool in "${prod_write_tools[@]}"; do
+    printf '%s\n' "$tool: calling" "$tool: denied: The user doesn't want to proceed with this tool use."
+  done >"$s/writes.txt"
+  transcript list-collections:result "${prod_write_tools[@]/%/:user-rejected}" >"$STUB_FIXTURES/transcript.jsonl"
+  oplog_lines requested ran
+  for tool in "${prod_write_tools[@]}"; do write_line requested "$tool"; done >>"$STUB_FIXTURES/ops-log"
+}
+
+# transcript <tool>:<outcome>...: a transcript with one call per argument, in order; the outcome
+# is 'result', or the toolDenialKind of a call that was refused.
+transcript() {
+  local call tool outcome i=0 server
+  for call in "$@"; do
+    tool=${call%%:*} outcome=${call#*:} i=$((i + 1)) server=prod-write
+    [[ $tool != list-collections ]] || server=prod-read
+    jq -nc --arg name "mcp__${server}__$tool" --arg id "toolu_$i" \
+      '{type: "assistant", message: {content: [{type: "text", text: "calling"}, {type: "tool_use", id: $id, name: $name, input: {}}]}}'
+    jq -nc --arg id "toolu_$i" --arg kind "$outcome" \
+      '{type: "user", message: {content: [{type: "tool_result", tool_use_id: $id, content: "x"}]}}
+        + (if $kind == "result" then {} else {toolDenialKind: $kind} end)'
+  done
+}
+
+# write_line <kind> <tool>: the hook's line for a prod-write call
+write_line() {
+  echo "- 2026-10-23T12:30:00Z $1 \`prod-write\` \`$2\` \`{\"collection\":\"ops_checks\"}\`"
+}
+
+@test "an ops session whose five writes are each declined at a prompt passes, and keeps the write inventory" {
+  ops_setup
+  write_session
+  run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit prod-read --toolkit prod-write
+  assert_contains "$output" "load check: Daniel, two 1Password prompts are coming on the PC: approve them; then decline each of the five write prompts on the phone"
+  assert_contains "$output" "load check: 16 MCP tools, 9 built-in tools"
+  assert_equal "${lines[-1]}" "PASS"
+  # Both toolkits reach team-worker, and the prompt has the empty delete-many filter.
+  stub_calls claude | jq -e 'select(.[0] == "--bg")
+    | ([.[] | select(endswith("/toolkits/prod-write") or endswith("/toolkits/prod-read"))] | length == 2)
+      and (.[-1] | contains("mcp__prod-write__delete-many with filter {} (exactly an empty filter)"))' >/dev/null
+  local inventory=$TEAM_HOME/tasks/T0/inventory-prod-write.txt
+  assert_equal "$(sed '/^---$/q' "$inventory" | grep -c '^mcp__prod-write__')" 5
+  assert_equal "$(sed '/^---$/q' "$inventory" | grep -c '^mcp__prod-read__')" 11
+  [[ ! -e $TEAM_HOME/tasks/T0/inventory-prod-read.txt ]]
+  assert_equal "$(find "$HOME/.claude/projects" -name "$ops_uuid*")" ""
+  # No nudge was needed: the session went on by itself.
+  [[ $output != *"T0 continue"* ]]
+}
+
+@test "a write that ran, a retried write, a missing report or tool, and a logged failure each fail the check" {
+  ops_setup
+  write_session
+  local s=$STUB_FIXTURES/session
+  sed -i '/^mcp__prod-write__drop-index$/d' "$s/tools.txt"
+  sed -i '/^drop-index: denied/d' "$s/writes.txt"
+  transcript list-collections:result insert-many:user-rejected insert-many:user-rejected update-many:result \
+    delete-many:user-rejected create-index:user-rejected drop-index:user-rejected >"$STUB_FIXTURES/transcript.jsonl"
+  { write_line ran update-many; write_line failed create-index; } >>"$STUB_FIXTURES/ops-log"
+  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-read --toolkit prod-write
+  assert_contains "$output" "FAIL: the MCP tools are not exactly the toolkits' sets, once each:"$'\n'"  < mcp__prod-write__drop-index"
+  assert_contains "$output" "FAIL: insert-many was not called once and declined at its prompt (transcript: 2 call(s))"
+  assert_contains "$output" "FAIL: update-many was not called once and declined at its prompt (transcript: 1 call(s))"
+  assert_contains "$output" "FAIL: the session did not report drop-index as denied"
+  assert_contains "$output" "FAIL: the ops log did not gain exactly a requested line for update-many"
+  assert_contains "$output" "FAIL: the ops log did not gain exactly a requested line for create-index"
+  assert_contains "$output" "FAIL: the ops log gained 9 event lines, not one per call made"
+  [[ $output != *"FAIL: delete-many"* && $output != *"for delete-many"* ]]
+  assert_equal "${lines[-1]}" "load check FAILED (inventory in tasks/T0/)"
+  assert_equal "$(find "$HOME/.claude/projects" -name "$ops_uuid*")" ""
+}
+
+@test "a session stopped by a decline is waited for, and the coordinator asked to send it 'T0 continue'" {
+  ops_setup
+  write_session
+  local s=$STUB_FIXTURES/session
+  mkdir -p "$STUB_FIXTURES/later"
+  mv "$s/writes.txt" "$s/done.txt" "$STUB_FIXTURES/later/"
+  echo 'insert-many: calling' >"$s/writes.txt"
+  cp "$STUB_FIXTURES/transcript.jsonl" "$STUB_FIXTURES/transcript.later.jsonl"
+  transcript list-collections:result insert-many:user-rejected >"$STUB_FIXTURES/transcript.jsonl"
+  echo blocked >"$STUB_FIXTURES/state"
+  run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit prod-read --toolkit prod-write
+  assert_equal "$(grep -c "coordinator, send T0-ops the message 'T0 continue'" <<<"$output")" 1
+  assert_equal "${lines[-1]}" "PASS"
+}
+
+@test "a session waiting on a prompt, not stopped by a decline, is not nudged" {
+  ops_setup
+  write_session
+  local s=$STUB_FIXTURES/session
+  mkdir -p "$STUB_FIXTURES/later"
+  mv "$s/writes.txt" "$s/done.txt" "$STUB_FIXTURES/later/"
+  printf '%s\n' 'insert-many: calling' 'insert-many: denied: no' 'update-many: calling' >"$s/writes.txt"
+  cp "$STUB_FIXTURES/transcript.jsonl" "$STUB_FIXTURES/transcript.later.jsonl"
+  transcript list-collections:result insert-many:user-rejected >"$STUB_FIXTURES/transcript.jsonl"
+  echo blocked >"$STUB_FIXTURES/state"
+  run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit prod-read --toolkit prod-write
+  [[ $output != *"T0 continue"* ]]
+  assert_equal "${lines[-1]}" "PASS"
+}
+
+@test "the ops form needs a worktree and prod-read, alone or with prod-write, and the planner form takes no worktree" {
   run_bin -2 team-load-check --role ops --toolkit prod-read
   assert_contains "$output" "--role ops needs --worktree"
-  run_bin -2 team-load-check --role ops --worktree "$HOME" --toolkit prod-read --toolkit prod-write
-  assert_contains "$output" "--role ops checks exactly --toolkit prod-read"
+  run_bin -2 team-load-check --role ops --worktree "$HOME" --toolkit prod-write
+  assert_contains "$output" "--role ops checks --toolkit prod-read, alone or with --toolkit prod-write"
+  run_bin -2 team-load-check --role ops --worktree "$HOME" --toolkit prod-read --toolkit find
+  assert_contains "$output" "--role ops checks --toolkit prod-read, alone or with --toolkit prod-write"
   run_bin -2 team-load-check --role ops --worktree "$HOME"
-  assert_contains "$output" "--role ops checks exactly --toolkit prod-read"
+  assert_contains "$output" "--role ops checks --toolkit prod-read, alone or with --toolkit prod-write"
   run_bin -2 team-load-check --worktree "$HOME"
   assert_contains "$output" "--worktree is for --role ops only"
   run_bin -2 team-load-check --role builder
