@@ -34,6 +34,7 @@ What the toolkit can and cannot reach, and where its credential lives: [docs/acc
 
 Names, email addresses, phone numbers and answers to form questions (`applicant_email`, `form_data`, a user's `email`) stay in the database unless the brief says Daniel asked for them.
 Leave those fields out of every projection and `$group` key, so they never reach the transcript; `_id: 0` drops the ObjectId too.
+A pipeline may still use one to count, as long as only the count comes out: distinct applicants are `{"$group": {"_id": null, "emails": {"$addToSet": "$applicant_email"}}}` then `{"$project": {"_id": 0, "applicants": {"$size": "$emails"}}}`.
 When the brief says Daniel asked, project exactly the fields asked for, and nothing beside them.
 
 ## Reading a result

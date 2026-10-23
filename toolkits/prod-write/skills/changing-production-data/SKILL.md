@@ -37,7 +37,9 @@ Then wait for the answer; no write tool is called before it comes.
 
 ## 3. Write, one call per approved change
 
-Send each call with exactly the input the QUESTION showed, since Daniel compares the two on the prompt:
+Right after the answer, read the same filter again: when the documents no longer match what the QUESTION stated (another count, a field already changed), send no write, and report what changed since the QUESTION.
+
+Then send each call with exactly the input the QUESTION showed, since Daniel compares the two on the prompt:
 
 | Tool | Input beside `connectionId: "preconfigured"`, `database`, `collection` |
 | - | - |
@@ -65,5 +67,6 @@ Daniel asks to fix the typo in the November market's name.
 1. `prod-read` `find` on `markets`, `filter: {"name": {"$regex": "^Novmber", "$options": "i"}}`, `projection: {"_id": 0, "id": 1, "name": 1, "slug": 1, "phase": 1}`, `limit: 21`: one document, `id` `6c1e...`, phase `draft`.
 2. The data docs: `slug` derives from `name` and is stored; `name` may change only while the market is a draft, which it is.
 3. The QUESTION above, sent to the coordinator; Daniel answers yes.
-4. `prod-write` `update-many` with `filter: {"id": "6c1e..."}` and `update: {"$set": {"name": "November Makers Market"}}`: "Matched 1 document(s). Modified 1 document(s)."
-5. `prod-read` `find` with the same filter and projection shows the new name and the old slug; the report says so, and that the slug changes only through the app or its migration.
+4. The same `find` again: still one document, still "Novmber Makers Market".
+5. `prod-write` `update-many` with `filter: {"id": "6c1e..."}` and `update: {"$set": {"name": "November Makers Market"}}`: "Matched 1 document(s). Modified 1 document(s)."
+6. `prod-read` `find` with the same filter and projection shows the new name and the old slug; the report says so, and that the slug changes only through the app or its migration.

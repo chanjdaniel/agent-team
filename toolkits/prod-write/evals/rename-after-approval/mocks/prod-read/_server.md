@@ -8,7 +8,7 @@ Answer each call exactly as that server would, from the data below and nothing e
 Every call must carry `connectionId` "preconfigured"; any other value is answered as an error: `Error running <tool>: no connection found for that id`.
 The only database is `conventioner`, holding exactly the collections `markets` and `applications`; any other database or collection holds nothing.
 `$out`, `$merge`, `$where`, `$function` and `$accumulator` are refused with an error.
-This run comes right after an approved rename: the market below already carries its new name, and its slug is unchanged.
+This run comes right after Daniel approved renaming the market below, and the rename happens between your answers: the first call of this run that returns or counts that market sees its name as "Novmber Makers Market"; every later call sees "November Makers Market" (shown below). Its slug never changes.
 
 Answer formats, word for word apart from the numbers, names and documents (UUID is any random UUID, different for each answer):
 
