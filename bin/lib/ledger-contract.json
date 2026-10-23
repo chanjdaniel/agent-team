@@ -114,6 +114,11 @@
     "failed": {
       "writer": "team-log",
       "required": {"reason": "string"}
+    },
+    "stowed": {
+      "writer": "team-handoff",
+      "about": "one per open task at a handoff: worktrees as {project, branch, head}, roles whose sessions were live",
+      "required": {"machine": "string", "worktrees": "array", "roles": "array"}
     }
   }
 }

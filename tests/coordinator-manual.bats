@@ -59,11 +59,11 @@ section() {
   assert_equal "${unnamed[*]}" ""
 }
 
-@test "the manual triggers exactly the plugin's skills, recover-worker, stow and status-report" {
+@test "the manual triggers exactly the plugin's skills, handoff, recover-worker, stow and status-report" {
   local skill
-  assert_equal "$(triggered_skills | paste -sd ' ')" "recover-worker status-report stow"
+  assert_equal "$(triggered_skills | paste -sd ' ')" "handoff recover-worker status-report stow"
   assert_equal "$(cd "$plugin/skills" && find . -mindepth 1 -maxdepth 1 -type d -printf '%P\n' | sort | paste -sd ' ')" \
-    "recover-worker status-report stow"
+    "handoff recover-worker status-report stow"
   for skill in $(triggered_skills); do
     # One line per trigger, so each stays a one-line pointer.
     assert_equal "$(grep -c "\`$skill\` skill" "$manual")" 1
@@ -149,4 +149,15 @@ section() {
   assert_equal "$joined" ""
   joined=$(grep -nEiw 'he|him|his|she|her|hers' "${files[@]}" || true)
   assert_equal "$joined" ""
+}
+
+@test "the handoff skill holds the procedure in order: check, post, STOW and wait, run, post, retire" {
+  local skill=$plugin/skills/handoff/SKILL.md steps
+  steps=$(grep -oE '^[0-9]+\. \*\*[A-Za-z ]+\.\*\*' "$skill" | sed -E 's/^[0-9]+\. \*\*(.*)\.\*\*$/\1/' | paste -sd ,)
+  assert_equal "$steps" "Check,Stow yourself,Post,STOW the workers,Run,Post the final message,Retire"
+  grep -qF '`team-handoff --check`' "$skill"
+  grep -qF 'Send `T<n> STOW` to each live worker' "$skill"
+  grep -qF 'up to 10 minutes' "$skill"
+  grep -qF '`team-handoff --retire`' "$skill"
+  grep -qF '`team-handoff` moves the team off this machine' "$manual"
 }

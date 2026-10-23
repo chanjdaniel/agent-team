@@ -106,10 +106,12 @@ A task you park on Daniel or anything outside the team gets `team-log T<n> waiti
   Once the watch says GitHub answers again and `offline_since` is null, send `T<n> RESUME` to each held worker and log `resumed`.
 - `team-doctor` says what this machine still lacks, one PASS, WARN or FAIL line per check with its fix; `team-load-check` runs it first.
 - `team-config` keeps this machine's Claude user config and the team home's `machine/claude/` in step by copies: `diff` shows the drift, `apply` (Daniel's yes) installs the team home's with backups, `capture` brings this machine's back for a records commit on `dev`.
+- `team-handoff` moves the team off this machine on Daniel's "hand off": checkpoint, branches pushed, `stowed` per open task, config captured, workers removed, records pushed, heartbeat off, lease released; `--retire` then removes you.
 - `team-secrets check` names the secret files this machine lacks, by id, never a value; `restore` and `save` are Daniel's, typed in their own terminal: never run `op` or read a secret file.
 
 ## Skills
 
 - A worker is stuck, silent, or reporting the same failure twice: the `recover-worker` skill.
-- Before a compaction, a restart or a handoff: the `stow` skill.
+- Before a compaction or a restart: the `stow` skill.
+- Daniel says "hand off": the `handoff` skill.
 - Daniel asks for status, or what is going on: the `status-report` skill.

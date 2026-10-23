@@ -1,0 +1,351 @@
+#!/usr/bin/env bash
+# Hand the team off to another machine: run on the machine being left, once its workers have
+# stowed (the coordinator's handoff skill sends each live worker T<n> STOW first).
+#
+# Usage: team-handoff [--check | --json | --retire]
+# One line per step; each step is idempotent, so a run interrupted anywhere, run again, finishes
+# the handoff. In order:
+#   1. lease       This machine holds the lease, confirmed against origin (team-lease check), or
+#                  exit 1 (75 when GitHub is unreachable) with nothing changed. --check is this
+#                  step alone.
+#   2. checkpoint  team-checkpoint --force: task directories archived, wip/T<n> snapshots pushed,
+#                  the records committed and pushed. Once per handoff: a run again skips it, so
+#                  the stowed events land in the handoff's own commit.
+#   3. branches    Each open worktree's task branch pushed to its project's origin when it is
+#                  strictly ahead of origin's (a plain push). A branch that has diverged from
+#                  origin's refuses the handoff, naming the task, before anything is pushed.
+#   4. stowed      One stowed per open task: this machine, each open worktree's
+#                  {project, branch, head} with the head origin has, and the roles of the task's
+#                  live T<n>-<role> sessions; a worktree with uncommitted changes is said and
+#                  noted. None when the task's latest machine event (stowed, launch,
+#                  worktree-moved) is already a stowed from this machine with the same worktrees.
+#   5. config      team-config capture, each captured item listed; a capture that fails is said,
+#                  and the handoff goes on.
+#   6. sessions    claude stop, then claude rm, for every live session named T<n>-<role> (their
+#                  worktrees stay on disk); the coordinator's own session is --retire's.
+#   7. commit      machine/, memory/, tasks/ and ledger.jsonl committed on the team home's branch
+#                  as "chore: handoff from <machine>" and pushed (as team-checkpoint commits).
+#   8. heartbeat   team-timers disable.
+#   9. release     team-lease release.
+#  10. The message: "Released at 14:05 from home-pc. On the other machine run `team-resume`."
+#      --json prints {machine, epoch, released_at, message, tasks} instead, tasks being each open
+#      task's latest stowed from this machine as {task, worktrees, roles}, and the step lines go to
+#      stderr. A machine whose lease its handoff already released prints the message again.
+# --retire, once the message is posted: refuses while this machine holds the lease, then starts a
+# detached process (its own session) that, a few seconds after the call returns, runs claude stop
+# and claude rm for each live session named coordinator, logging to retire.log.
+# In ~/.local/state/agent-team/: handoff.json, this handoff's progress (the lease's epoch and
+# taken_at, and the last step done); handoff.lock, one handoff at a time; retire.log.
+# TEAM_HANDOFF_STOP_AFTER=<n> (the tests' seam) exits 1 right after step n, as an interruption.
+# Exit 0 done, 1 refused or a step failed, 2 usage error, 75 GitHub unreachable or another
+# handoff running.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+# Seconds: the most one call to an origin may take, and the coordinator's retirement delay.
+NET_TIMEOUT=60
+RETIRE_SECONDS=3
+# What the handoff's team-home commit holds.
+RECORDS=(ledger.jsonl tasks memory machine)
+# A team worker's session name.
+WORKER_NAME='^T[0-9]+-[a-z][a-z0-9-]*$'
+
+usage="usage: team-handoff [--check | --json | --retire]"
+mode=run
+if (($# > 1)); then usage_error "$usage"; fi
+case ${1:-} in
+  '') ;;
+  --check) mode=check ;;
+  --json) mode=json ;;
+  --retire) mode=retire ;;
+  *) usage_error "$usage" ;;
+esac
+
+machine=$(machine_name) || exit 1
+bin=$(dirname "$TEAM_LIB")
+state=$HOME/.local/state/agent-team
+progress=$state/handoff.json
+record=$state/lease.json
+mkdir -p "$state"
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+NET_ERR=$scratch/net-err
+err=$scratch/err
+
+# The first line of a sibling's stderr, without its "<script>: " prefix.
+first_error() {
+  grep -m1 . "$err" | sed -E 's/^team-[a-z-]+: //' || true
+}
+
+# Each line of stdin as "<step>: <line>": prefixed <step>
+prefixed() {
+  local line
+  while IFS= read -r line; do printf '%s: %s\n' "$1" "$line"; done
+}
+
+# The live session list, claude agents --json.
+read_sessions() {
+  claude agents --json 2>"$err" | jq -ce 'select(type == "array")' 2>/dev/null ||
+    die "cannot read the live session list (claude agents --json)"
+}
+
+if [[ $mode == retire ]]; then
+  if jq -e --arg machine "$machine" '.holder == $machine and .state == "held"' "$record" >/dev/null 2>&1; then
+    die "$machine still holds the lease; run team-handoff first"
+  fi
+  sessions=$(read_sessions)
+  mapfile -t ids < <(jq -r '.[] | select(.name == "coordinator") | .id // ((.sessionId // "")[:8])' <<<"$sessions")
+  ((${#ids[@]})) || die "no live session is named coordinator"
+  # The detached process: its own session, so stopping the coordinator's process tree spares it,
+# and no descriptor of the caller's but the log, so nothing waits on it.
+  # shellcheck disable=SC2016 # the script runs in the detached bash
+  python3 -c 'import os, sys
+if os.fork() == 0:
+    os.setsid()
+    os.closerange(3, 1024)
+    os.execvp(sys.argv[1], sys.argv[1:])' bash -c '
+    sleep "$1"
+    shift
+    for id; do
+      echo "$(date -u +%FT%TZ) retiring $id"
+      claude stop "$id" || echo "$(date -u +%FT%TZ) claude stop $id failed"
+      claude rm "$id" || echo "$(date -u +%FT%TZ) claude rm $id failed"
+    done' team-handoff-retire "$RETIRE_SECONDS" "${ids[@]}" </dev/null >>"$state/retire.log" 2>&1 ||
+    die "cannot start the process that retires the coordinator"
+  echo "the coordinator (${ids[*]}) is stopped and removed in ${RETIRE_SECONDS}s; see ~/.local/state/agent-team/retire.log"
+  exit 0
+fi
+
+exec {lock_fd}>>"$state/handoff.lock"
+if ! flock -n "$lock_fd"; then
+  echo "team-handoff: another handoff is running" >&2
+  exit 75
+fi
+
+# With --json, the step lines go to stderr and the JSON to the real stdout.
+if [[ $mode == json ]]; then exec {json_fd}>&1 1>&2; fi
+
+# A sibling command of this checkout, with TEAM_HOME passed and the lock closed for it.
+team() {
+  TEAM_HOME=$TEAM_HOME "$bin/$1" "${@:2}" {lock_fd}>&-
+}
+
+# Record step <n> as done in this handoff, and stop there when the test seam says so.
+step_done() {
+  ((done_before >= $1)) || done_before=$1
+  jq -n --argjson epoch "$epoch" --arg taken "$taken_at" --argjson n "$done_before" \
+    '{epoch: $epoch, taken_at: $taken, done: $n}' >"$progress.$$"
+  mv -f "$progress.$$" "$progress"
+  if [[ ${TEAM_HANDOFF_STOP_AFTER:-} == "$1" ]]; then
+    echo "team-handoff: stopped after step $1 (TEAM_HANDOFF_STOP_AFTER)" >&2
+    exit 1
+  fi
+}
+
+# 1. The lease: held here, or released by this very handoff.
+held_rc=0
+team team-lease check >/dev/null 2>"$err" || held_rc=$?
+if ((held_rc == 75)); then
+  echo "team-handoff: GitHub unreachable; no handoff while offline ($(first_error))" >&2
+  exit 75
+fi
+held_why=$(first_error)
+rc=0
+lease=$(team team-lease status --json 2>"$err") || rc=$?
+if ((rc == 75)); then
+  echo "team-handoff: GitHub unreachable; no handoff while offline ($(first_error))" >&2
+  exit 75
+elif ((rc)); then
+  die "cannot read the lease: $(first_error)"
+fi
+epoch=$(jq -r .epoch <<<"$lease") taken_at=$(jq -r '.taken_at // ""' <<<"$lease")
+done_before=$(jq -r --argjson epoch "$epoch" --arg taken "$taken_at" \
+  'select(.epoch == $epoch and .taken_at == $taken) | .done' "$progress" 2>/dev/null) || done_before=''
+[[ $done_before =~ ^[0-9]+$ ]] || done_before=0
+finished=''
+if ((held_rc)); then
+  if jq -e --arg machine "$machine" '.state == "released" and .holder == $machine' <<<"$lease" >/dev/null &&
+    ((done_before >= 8)); then
+    finished=1
+    echo "lease: released by this handoff already, epoch $epoch"
+  else
+    die "${held_why:-this machine does not hold the lease}; nothing changed"
+  fi
+else
+  echo "lease: $machine holds the lease, epoch $epoch"
+fi
+[[ $mode != check ]] || exit 0
+
+if [[ -z $finished ]]; then
+  step_done 1
+
+  # 2. The checkpoint, once per handoff.
+  if ((done_before >= 2)); then
+    echo "checkpoint: made earlier in this handoff"
+  else
+    rc=0
+    out=$(team team-checkpoint --force 2>"$err") || rc=$?
+    [[ -z $out ]] || prefixed checkpoint <<<"$out"
+    ((rc)) || cat "$err" >&2
+    if ((rc == 75)); then
+      echo "team-handoff: checkpoint: $(first_error)" >&2
+      exit 75
+    elif ((rc)); then
+      die "checkpoint: $(first_error); fix it and run team-handoff again"
+    fi
+  fi
+  step_done 2
+
+  # Each open task and its open worktrees, in task number order: {task, worktrees}.
+  open=()
+  if [[ -e $TEAM_HOME/ledger.jsonl ]]; then
+    mapfile -t open < <(ledger_jq 'ledger_events | by_task | . as $tasks | open_tasks[]
+      | {task: ., worktrees: [open_worktrees($tasks[.][]; $home) | {project, branch, worktree}]}' \
+      -nRc "$TEAM_HOME/ledger.jsonl")
+  fi
+
+  # 3. The task branches: every one checked before any is pushed.
+  declare -A stowed_worktrees=() notes=()
+  problems=() pushes=()
+  for entry in "${open[@]}"; do
+    task=$(jq -r .task <<<"$entry")
+    list='[]' note=''
+    while IFS=$'\t' read -r project branch wt; do
+      label="$task $project"
+      repo=$wt
+      git -C "$wt" rev-parse --git-dir >/dev/null 2>&1 || repo=$(team_project "$project" path)
+      mine=$(git -C "$repo" rev-parse -q --verify "refs/heads/$branch^{commit}") || mine=''
+      rc=0
+      remote=$(origin_git -C "$repo" ls-remote origin "refs/heads/$branch") || rc=$?
+      ((rc == 0)) || die "$label: cannot read $branch on origin: $(origin_reason "$rc"); nothing was pushed or released"
+      origin_head=${remote%%[[:space:]]*}
+      if [[ -n $origin_head ]] && ! git -C "$repo" cat-file -e "$origin_head^{commit}" 2>/dev/null; then
+        origin_git -C "$repo" fetch -q --no-write-fetch-head origin "+refs/heads/$branch:refs/remotes/origin/$branch" || rc=$?
+        ((rc == 0)) || die "$label: cannot fetch $branch from origin: $(origin_reason "$rc"); nothing was pushed or released"
+      fi
+      head=$origin_head
+      if [[ -z $mine && -z $origin_head ]]; then
+        problems+=("$task: $branch ($project) is neither here nor on origin")
+        continue
+      elif [[ -z $mine ]]; then
+        echo "branches: $label: $branch is not here; origin has it at ${origin_head:0:7}"
+      elif [[ $mine == "$origin_head" ]]; then
+        echo "branches: $label: $branch is on origin at ${mine:0:7}"
+      elif [[ -z $origin_head ]] || git -C "$repo" merge-base --is-ancestor "$origin_head" "$mine"; then
+        head=$mine
+        pushes+=("$label"$'\t'"$repo"$'\t'"$branch"$'\t'"$mine")
+      elif git -C "$repo" merge-base --is-ancestor "$mine" "$origin_head"; then
+        echo "branches: $label: origin's $branch is ahead of this machine's, at ${origin_head:0:7}"
+      else
+        problems+=("$task: $branch ($project) has diverged from origin: $(git -C "$repo" rev-list --count "$origin_head..$mine") commits here and $(git -C "$repo" rev-list --count "$mine..$origin_head") there")
+        continue
+      fi
+      if [[ -d $wt && -n $(worktree_changes "$wt") ]]; then
+        echo "branches: $label: uncommitted changes in $wt stay on $machine (the checkpoint's wip/$task has them)"
+        note+="uncommitted changes in $wt stay on $machine; "
+      fi
+      list=$(jq -c --arg p "$project" --arg b "$branch" --arg h "$head" '. + [{project: $p, branch: $b, head: $h}]' <<<"$list")
+    done < <(jq -r '.worktrees[] | [.project, .branch, .worktree] | @tsv' <<<"$entry")
+    stowed_worktrees[$task]=$list
+    notes[$task]=${note%; }
+  done
+  if ((${#problems[@]})); then
+    {
+      echo "team-handoff: the handoff stops here, before anything is pushed or released:"
+      printf '  %s\n' "${problems[@]}"
+      echo "  (bring each branch level with origin, then run team-handoff again)"
+    } >&2
+    exit 1
+  fi
+  for push in "${pushes[@]}"; do
+    IFS=$'\t' read -r label repo branch mine <<<"$push"
+    rc=0
+    origin_git -C "$repo" push -q origin "refs/heads/$branch:refs/heads/$branch" || rc=$?
+    ((rc == 0)) || die "$label: cannot push $branch: $(origin_reason "$rc"); nothing was released"
+    echo "branches: $label: pushed $branch at ${mine:0:7}"
+  done
+  step_done 3
+
+  # 4. One stowed per open task.
+  sessions=$(read_sessions)
+  for entry in "${open[@]}"; do
+    task=$(jq -r .task <<<"$entry")
+    event=$(jq -cn --arg task "$task" --arg machine "$machine" --argjson worktrees "${stowed_worktrees[$task]}" \
+      --argjson sessions "$sessions" --arg pattern "$WORKER_NAME" --arg note "${notes[$task]}" \
+      '{ts: (now | todate), task: $task, event: "stowed", machine: $machine, worktrees: $worktrees,
+        roles: [$sessions[] | .name | strings | select(test($pattern) and startswith("\($task)-")) | ltrimstr("\($task)-")] | unique}
+       + if $note == "" then {} else {note: $note} end')
+    if task_events "$task" | jq -se --argjson new "$event" \
+      'map(select(.event | IN("stowed", "launch", "worktree-moved"))) | last
+        | .event == "stowed" and .machine == $new.machine and .worktrees == $new.worktrees' >/dev/null; then
+      echo "stowed: $task already stowed from $machine"
+    else
+      ledger_append "$event"
+      echo "stowed: $task $(jq -r '"roles \(.roles | join(", ") | if . == "" then "none" else . end); " + ([.worktrees[] | "\(.project) \(.branch) at \(.head[:7])"] | join(", ") | if . == "" then "no worktree" else . end)' <<<"$event")"
+    fi
+  done
+  step_done 4
+
+  # 5. This machine's Claude config, captured for the team.
+  rc=0
+  out=$(team team-config capture 2>"$err") || rc=$?
+  [[ -z $out ]] || prefixed config <<<"$out"
+  ((rc == 0)) || echo "team-handoff: config: team-config capture failed ($(first_error)); the handoff goes on" >&2
+  step_done 5
+
+  # 6. The workers' sessions: stopped, then removed.
+  problems=()
+  any=''
+  while read -r id name; do
+    stop_ok=1 rm_ok=1
+    claude stop "$id" </dev/null >/dev/null 2>"$err" || stop_ok=''
+    claude rm "$id" </dev/null >/dev/null 2>>"$err" || rm_ok=''
+    any=1
+    if [[ -n $rm_ok ]]; then
+      echo "sessions: stopped and removed $name ($id)"
+    elif [[ -n $stop_ok ]]; then
+      echo "team-handoff: sessions: stopped $name ($id), but claude rm failed ($(first_error)); remove it by hand" >&2
+    else
+      problems+=("$name ($id): $(first_error)")
+    fi
+  done < <(jq -r --arg pattern "$WORKER_NAME" '.[] | select(.name | strings | test($pattern))
+    | "\(.id // ((.sessionId // "")[:8])) \(.name)"' <<<"$sessions")
+  [[ -n $any ]] || echo "sessions: no worker session was live"
+  ((${#problems[@]} == 0)) || die "sessions: could not stop $(printf '%s; ' "${problems[@]}" | sed 's/; $//'); nothing was released"
+  step_done 6
+
+  # 7. The records, in the handoff's own commit.
+  commit_records "chore: handoff from $machine" "${RECORDS[@]}" || die "commit: the records are not on origin; nothing was released"
+  step_done 7
+
+  # 8. The heartbeat.
+  out=$(team team-timers disable 2>"$err") || die "heartbeat: $(first_error); nothing was released"
+  echo "heartbeat: $out"
+  step_done 8
+
+  # 9. The lease.
+  rc=0
+  out=$(team team-lease release 2>"$err") || rc=$?
+  if ((rc == 75)); then
+    echo "team-handoff: release: GitHub unreachable ($(first_error)); run team-handoff again" >&2
+    exit 75
+  fi
+  ((rc == 0)) || die "release: $(first_error)"
+  echo "lease: $out"
+  step_done 9
+fi
+
+# 10. The message.
+released_at=$(jq -r '.written_at // empty' "$record" 2>/dev/null) || released_at=''
+[[ -n $released_at ]] || released_at=$(date -u +%FT%TZ)
+message="Released at $(date -d "$released_at" +%H:%M) from $machine. On the other machine run \`team-resume\`."
+if [[ $mode == json ]]; then
+  ledger_jq 'ledger_events | by_task | . as $tasks | [open_tasks[] | . as $task
+      | $tasks[$task] | map(select(.event == "stowed" and .machine == $machine)) | last
+      | select(. != null) | {task: $task, worktrees, roles}]
+    | {machine: $machine, epoch: $epoch, released_at: $released, message: $message, tasks: .}' \
+    -nR --arg machine "$machine" --argjson epoch "$epoch" --arg released "$released_at" --arg message "$message" \
+    "$TEAM_HOME/ledger.jsonl" >&"$json_fd"
+else
+  echo "$message"
+fi

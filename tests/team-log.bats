@@ -45,6 +45,7 @@ pr team-log url head
 review team-log verdict head
 merge-approved team-log url discord_message
 failed team-log reason
+stowed team-handoff machine worktrees roles
 TABLE
   )
   actual=$(jq -r '.kinds | to_entries[] | [.key, .value.writer, (.value.required | keys_unsorted[])] | join(" ")' "$CONTRACT")
@@ -72,6 +73,7 @@ TABLE
   grep -Eq '^  merge-approved +team-log +url, discord_message  \(.*\)$' <<<"$output"
   grep -Eq '^  launch +team-worker +role, session, worktree, toolkits \(list\); optional project, branch, machine$' <<<"$output"
   grep -Eq '^  resumed +team-log +- +\(clears held, blocked, paused and waiting\)$' <<<"$output"
+  grep -Eq '^  stowed +team-handoff +machine, worktrees \(list\), roles \(list\)  \(one per open task at a handoff: .*\)$' <<<"$output"
   assert_equal "$(stub_calls curl)$(stub_calls gh)" ""
 }
 

@@ -8,9 +8,9 @@
 # before sourcing), and provides die, usage_error, team_project, ledger_jq, ledger_append,
 # task_events, known_task_events, open_task_events, task_status, task_worktrees, local_path,
 # archive_task_dir, machine_name, fence_reason, lease_gate, worktree_changes, non_records, commit_non_records,
-# records_list, render_template, registered_pr, attribution_lines, strip_attribution,
-# live_sessions, discord_token, discord_api, github, pr_part and task_state_json, and sets
-# COORDINATOR_CHANNEL.
+# records_list, origin_git, origin_reason, commit_records, render_template, registered_pr,
+# attribution_lines, strip_attribution, live_sessions, discord_token, discord_api, github, pr_part
+# and task_state_json, and sets COORDINATOR_CHANNEL.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
 # shellcheck shell=bash
 
@@ -218,6 +218,151 @@ commit_non_records() {
   else
     git diff-tree -r --root --no-commit-id --name-only --no-renames -z "$1" | non_records
   fi
+}
+
+# Run git against an origin: no credential prompt, at most NET_TIMEOUT seconds (the caller's
+# constant, 60 when unset), stdin closed, stderr into the file NET_ERR (the caller's), and the
+# caller's lock, the file descriptor in lock_fd when it is set, closed for it, so a credential
+# helper or ssh master left running never holds the lock: origin_git <git arguments...>
+origin_git() {
+  if [[ -n ${lock_fd:-} ]]; then
+    GIT_TERMINAL_PROMPT=0 timeout "${NET_TIMEOUT:-60}" git "$@" 2>"$NET_ERR" </dev/null {lock_fd}>&-
+  else
+    GIT_TERMINAL_PROMPT=0 timeout "${NET_TIMEOUT:-60}" git "$@" 2>"$NET_ERR" </dev/null
+  fi
+}
+
+# Why the last origin_git failed: its first fatal or error line (credentials in a URL cut out),
+# else its exit status: origin_reason <exit status>
+origin_reason() {
+  local why
+  why=$(sed -nE 's/^(fatal|error): //p' "$NET_ERR" | head -n 1 | sed -E 's#//[^/@[:space:]]*@#//#g')
+  if [[ -n $why ]]; then
+    printf '%s\n' "$why"
+  elif (($1 == 124)); then
+    echo "no answer in ${NET_TIMEOUT:-60}s"
+  else
+    echo "exit $1"
+  fi
+}
+
+# Commit the records among <pathspec>... in the team home as <message>, on the branch checked out,
+# then push the branch when it is ahead of origin's (or origin's is unknown). The commit is made
+# under the ledger's lock and holds those paths alone, so whatever else is staged stays staged; the
+# team home's hooks run. A push origin rejects fetches its branch and replays the commits it lacks
+# onto it, when they apply cleanly and no local change is in the way (a branch switch's two-tree
+# merge, so what is staged stays staged), then pushes again once. Prints one line on stdout, like
+# "team home: committed <sha> <message> and pushed dev" or "team home: nothing to commit"; a
+# failure adds its reason on stderr and returns 1. Network calls go through origin_git, so
+# NET_ERR must name a file: commit_records <message> <pathspec>...
+commit_records() {
+  local message=$1 branch committed upstream out rc=0
+  local -a record_paths
+  shift
+  if ! branch=$(git -C "$TEAM_HOME" symbolic-ref -q --short HEAD); then
+    echo "${0##*/}: team home: not on a branch, so the records are not committed" >&2
+    return 1
+  fi
+  committed="nothing to commit"
+  {
+    flock -x 9
+    mapfile -d '' -t record_paths < <(git -C "$TEAM_HOME" ls-files -z -m -d -o --exclude-standard -- "$@")
+    ((${#record_paths[@]} == 0)) || GIT_LITERAL_PATHSPECS=1 git -C "$TEAM_HOME" add -A -- "${record_paths[@]}"
+    mapfile -d '' -t record_paths < <(git -C "$TEAM_HOME" diff --cached -z --name-only --no-renames HEAD -- "$@")
+    if ((${#record_paths[@]})); then
+      if GIT_LITERAL_PATHSPECS=1 git -C "$TEAM_HOME" commit -q -m "$message" --only -- "${record_paths[@]}" >"$NET_ERR" 2>&1; then
+        committed="committed $(git -C "$TEAM_HOME" rev-parse --short HEAD) $message"
+      else
+        committed=''
+        echo "${0##*/}: team home: cannot commit the records: $(grep -m1 . "$NET_ERR" || echo "git commit failed")" >&2
+      fi
+    fi
+  } 9>>"$TEAM_HOME/ledger.jsonl.lock"
+  [[ -n $committed ]] || return 1
+  upstream=refs/remotes/origin/$branch
+  if git -C "$TEAM_HOME" rev-parse -q --verify "$upstream" >/dev/null &&
+    [[ -z $(git -C "$TEAM_HOME" rev-list -n 1 "$upstream..HEAD") ]]; then
+    echo "team home: $committed"
+    return 0
+  fi
+  out=$(origin_git -C "$TEAM_HOME" push --porcelain origin "refs/heads/$branch:refs/heads/$branch") || rc=$?
+  if ((rc == 0)); then
+    echo "team home: $committed and pushed $branch"
+    return 0
+  fi
+  if ! grep -q '^!' <<<"$out"; then
+    echo "${0##*/}: team home: $committed; cannot push $branch: $(origin_reason "$rc")" >&2
+    return 1
+  fi
+  if ! replay_records "$branch"; then
+    echo "team home: $committed"
+    echo "${0##*/}: team home: origin's $branch has moved and the commits not on it cannot be replayed onto it ($REPLAY_REASON); they stay unpushed" >&2
+    return 1
+  fi
+  rc=0
+  origin_git -C "$TEAM_HOME" push -q origin "refs/heads/$branch:refs/heads/$branch" || rc=$?
+  if ((rc)); then
+    echo "${0##*/}: team home: $committed; replayed onto origin's $branch, but cannot push it: $(origin_reason "$rc")" >&2
+    return 1
+  fi
+  echo "team home: $committed; origin's $branch had moved; replayed onto it and pushed $branch"
+}
+
+# The local paths in the way of moving the team home from HEAD to <commit>: changed there and
+# here (staged, unstaged or untracked), on one line.
+records_in_the_way() {
+  local their_paths=()
+  mapfile -d '' -t their_paths < <(git -C "$TEAM_HOME" diff -z --name-only --no-renames HEAD "$1")
+  ((${#their_paths[@]})) || return 0
+  git -C "$TEAM_HOME" -c core.quotePath=false status --porcelain --untracked-files=all -- "${their_paths[@]}" | cut -c4- | paste -sd ' '
+}
+
+# Replay the commits on the team home's <branch> that origin's lacks onto origin's, moving the
+# branch, index and working tree as a branch switch would (commit_records); fails with the reason
+# in REPLAY_REASON.
+replay_records() {
+  local branch=$1 base old onto commit tree conflicts way rc=0
+  local -a replayed replay_author
+  origin_git -C "$TEAM_HOME" fetch -q origin "refs/heads/$branch:refs/remotes/origin/$branch" || rc=$?
+  if ((rc)); then
+    REPLAY_REASON="cannot fetch it: $(origin_reason "$rc")"
+    return 1
+  fi
+  base=$(git -C "$TEAM_HOME" rev-parse "refs/remotes/origin/$branch")
+  old=$(git -C "$TEAM_HOME" rev-parse HEAD)
+  if [[ -n $(git -C "$TEAM_HOME" rev-list --merges "$base..$old") ]]; then
+    REPLAY_REASON="a merge commit is among them"
+    return 1
+  fi
+  mapfile -t replayed < <(git -C "$TEAM_HOME" rev-list --reverse "$base..$old")
+  onto=$base
+  for commit in "${replayed[@]}"; do
+    rc=0
+    tree=$(git -C "$TEAM_HOME" merge-tree --write-tree --name-only --no-messages --merge-base="$commit^" "$onto" "$commit") || rc=$?
+    if ((rc)); then
+      conflicts=$(tail -n +2 <<<"$tree" | paste -sd ' ')
+      REPLAY_REASON="a conflict in ${conflicts:-what $(git -C "$TEAM_HOME" rev-parse --short "$commit") changes}"
+      return 1
+    fi
+    mapfile -t replay_author < <(git -C "$TEAM_HOME" log -1 --format='%an%n%ae%n%aI' "$commit")
+    onto=$(git -C "$TEAM_HOME" log -1 --format=%B "$commit" |
+      GIT_AUTHOR_NAME=${replay_author[0]} GIT_AUTHOR_EMAIL=${replay_author[1]} GIT_AUTHOR_DATE=${replay_author[2]} \
+        git -C "$TEAM_HOME" commit-tree "$tree" -p "$onto" -F -)
+  done
+  {
+    flock -x 9
+    git -C "$TEAM_HOME" update-index -q --refresh || true
+    way=$(records_in_the_way "$onto")
+    if [[ -n $way ]]; then
+      REPLAY_REASON="local changes to $way are in the way"
+      return 1
+    fi
+    if ! git -C "$TEAM_HOME" read-tree -m -u HEAD "$onto" 2>"$NET_ERR"; then
+      REPLAY_REASON="moving the working tree failed: $(grep -m1 . "$NET_ERR" | sed -E 's/^(fatal|error): //')"
+      return 1
+    fi
+    git -C "$TEAM_HOME" update-ref -m "${0##*/}: replayed onto origin/$branch" "refs/heads/$branch" "$onto" "$old"
+  } 9>>"$TEAM_HOME/ledger.jsonl.lock"
 }
 
 # The agent attribution lines no commit message may carry, one case-insensitive ERE over whole
