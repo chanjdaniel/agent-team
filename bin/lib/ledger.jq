@@ -328,17 +328,55 @@ def by_task_number: sort_by(.task[1:] | tonumber);
 # Why a team session is a stray, from team_sessions: "T4 is closed", "T9 is not in the ledger".
 def stray_reason: "\(.task) is \(if .task_state == "unknown" then "not in the ledger" else "closed" end)";
 
+# The following defs serve team-retro status and team-sweep's retro-due finding, over every ledger
+# event as one array.
+
+# Whether an event opens a retro task: an opened event with the path retro.
+def retro_opened: .event == "opened" and .path == "retro";
+
+# The retro tasks' opened events in ledger order, each with its place in the ledger as i.
+def retros: [to_entries[] | select(.value | retro_opened) | .value + {i: .key}];
+
+# team-retro status's JSON. The schedule is the latest retro-schedule, on while every_hours is
+# above 0; the next retro is due every_hours after the later of its time and the latest retro
+# task's opening, unless a retro task is still open.
+def retro_status:
+  . as $events
+  | retros as $retros
+  | ($events | map(select(.event == "retro-schedule")) | last
+     | if . != null and (.every_hours | type) == "number" and .every_hours > 0 then {every_hours, since: .ts, discord_message, task}
+       else null end) as $schedule
+  | ($retros | last) as $last
+  | ([$retros[] | .task as $task | select($events | map(select(.task == $task)) | task_status == "open")] | last | .task) as $running
+  | (if $schedule == null then null
+     else ([$schedule.since, ($last.ts // empty)] | max | fromdate) + $schedule.every_hours * 3600 | floor | todate end) as $next
+  | {schema: "team-retro-status/1",
+     schedule: $schedule,
+     last: ($last | if . == null then null else .task as $task
+       | {task: $task, opened: .ts, status: ($events | map(select(.task == $task)) | task_status)} end),
+     running: $running,
+     next: $next,
+     due: ($schedule != null and $running == null and now >= ($next | fromdate))};
+
+# team-sweep's retro-due finding, from team-retro status's JSON: one while a retro is due, else none.
+def retro_due_finding:
+  select(.due)
+  | {task: null, kind: "retro-due", session: null, name: null, next: "run the retro skill",
+     text: "retro due since \(.next) (every \(.schedule.every_hours)h, last retro \(.last.task // "none")): run the retro skill"};
+
 # team-sweep's findings, over every ledger event as one array and the session list: each open
 # task's unless it is parked, then the stray sessions (named like a team worker whose task is
-# closed or not in the ledger); in task number order.
+# closed or not in the ledger), in task number order; then the retro-due finding.
 def sweep($sessions):
-  by_task as $tasks
-  | [($tasks[] | select(is_open) | select(parked | not) | task_findings($sessions)),
-     (team_sessions($tasks; $sessions)[] | select(.task_state != "open")
-       | finding(.task; "stray"; .session; .name;
-           "\(.name) \(.session) is live but \(stray_reason)";
-           "read claude logs \(.session) for anything left to log, then stop it with claude stop \(.session)"))]
-  | by_task_number;
+  . as $events
+  | by_task as $tasks
+  | ([($tasks[] | select(is_open) | select(parked | not) | task_findings($sessions)),
+      (team_sessions($tasks; $sessions)[] | select(.task_state != "open")
+        | finding(.task; "stray"; .session; .name;
+            "\(.name) \(.session) is live but \(stray_reason)";
+            "read claude logs \(.session) for anything left to log, then stop it with claude stop \(.session)"))]
+     | by_task_number)
+    + [$events | retro_status | retro_due_finding];
 
 # The ids of the open tasks among every task's events by id, in task number order.
 def open_tasks: [to_entries[] | select(.value | is_open) | .key] | sort_by(.[1:] | tonumber);
@@ -385,35 +423,8 @@ def snapshot_text:
 
 # The following defs serve team-retro, over every ledger event as one array.
 
-# Whether an event opens a retro task: an opened event with the path retro.
-def retro_opened: .event == "opened" and .path == "retro";
-
-# The retro tasks' opened events in ledger order, each with its place in the ledger as i.
-def retros: [to_entries[] | select(.value | retro_opened) | .value + {i: .key}];
-
 # The hours from one UTC time to another, to two decimals.
 def hours($from; $to): (($to | fromdate) - ($from | fromdate)) / 3600 * 100 | round / 100;
-
-# team-retro status's JSON. The schedule is the latest retro-schedule, on while every_hours is
-# above 0; the next retro is due every_hours after the later of its time and the latest retro
-# task's opening, unless a retro task is still open.
-def retro_status:
-  . as $events
-  | retros as $retros
-  | ($events | map(select(.event == "retro-schedule")) | last
-     | if . != null and (.every_hours | type) == "number" and .every_hours > 0 then {every_hours, since: .ts, discord_message, task}
-       else null end) as $schedule
-  | ($retros | last) as $last
-  | ([$retros[] | .task as $task | select($events | map(select(.task == $task)) | task_status == "open")] | last | .task) as $running
-  | (if $schedule == null then null
-     else ([$schedule.since, ($last.ts // empty)] | max | fromdate) + $schedule.every_hours * 3600 | floor | todate end) as $next
-  | {schema: "team-retro-status/1",
-     schedule: $schedule,
-     last: ($last | if . == null then null else .task as $task
-       | {task: $task, opened: .ts, status: ($events | map(select(.task == $task)) | task_status)} end),
-     running: $running,
-     next: $next,
-     due: ($schedule != null and $running == null and now >= ($next | fromdate))};
 
 # team-retro status's text form, one line, from its JSON.
 def retro_status_text:
