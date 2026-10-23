@@ -8,7 +8,7 @@ The team's own work on it goes through a task and a PR to `dev`, like any projec
 | Path | What it holds |
 | - | - |
 | `bin/` | The team's commands, `team-*` and `claude-coordinator`; `bin/lib/` is the shared library, the ledger contract and its jq, `tools.jq` (which turns `machine/tools.lock` into each tool's pin and install command for a machine), and `records`, the paths a direct commit on `dev` may touch; `bin/hooks/` the sessions' hooks, and `bin/hooks/git/` git's |
-| `tests/` | The bats suite, one `.bats` file per script plus `task-life.bats`, a whole task's life across them, with `tests/helpers/` and bats-core vendored in `tests/vendor/` |
+| `tests/` | The bats suite, one `.bats` file per script plus `task-life.bats`, a whole task's life across them, and `drill.bats`, the two-machine drill (handoff, steal, crash, outage), with `tests/helpers/` and bats-core vendored in `tests/vendor/` |
 | `roles/` | The role prompts each session's system prompt is appended with, one per role, the coordinator's included |
 | `settings/` | Worker settings: `worker.json` shared, one file per role layered on it |
 | `coordinator.settings.json` | The coordinator's own settings: Discord, its hooks and its denials |
