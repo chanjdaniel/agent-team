@@ -702,6 +702,53 @@ EOF
   assert_equal "$(line_of lease)" "FAIL lease: fenced since 2026-10-22T14:00:00Z (holder seen laptop, epoch 2); fix: hand off on the machine that holds the lease, then team-resume here (its take clears the fence)"
 }
 
+@test "on a fenced machine, each open task's worktree holding what origin lacks gets a salvage line" {
+  tools_at arch
+  # Five tasks in site, each in a worktree of its own: T1 with a commit pushed only inside a
+  # checkpoint's wip/T1, T2 with uncommitted changes, T3 clean, T4's worktree gone, T5 closed.
+  local n wt=() slots=$HOME/site-wt
+  for n in 1 2 3 4 5; do
+    wt[n]=$slots/$n
+    git -C "$SITE" worktree add -q -b "feat/T$n-x" "${wt[n]}" origin/main
+    jq -cn --arg t "T$n" --arg wt "${wt[n]}" --arg b "feat/T$n-x" '{ts: "2026-10-23T09:00:00Z", task: $t,
+      event: "opened", project: "site", path: "small", type: "feat", title: "x", branch: $b, base: "main",
+      base_sha: "0000000", worktree: $wt}' >>"$TEAM_HOME/ledger.jsonl"
+  done
+  echo one >"${wt[1]}/one.txt"
+  git -C "${wt[1]}" add one.txt
+  git -C "${wt[1]}" commit -q -m "feat: one"
+  git -C "$SITE" update-ref refs/remotes/origin/wip/T1 \
+    "$(git -C "${wt[1]}" commit-tree -p HEAD -m wip "$(git -C "${wt[1]}" rev-parse 'HEAD^{tree}')")"
+  echo edited >"${wt[2]}/README.md"
+  echo new >"${wt[2]}/new.txt"
+  git -C "$SITE" worktree remove --force "${wt[4]}"
+  echo stray >"${wt[5]}/stray.txt"
+  echo '{"ts":"2026-10-23T10:00:00Z","task":"T5","event":"closed","archive":[],"returned":[],"kept":[]}' \
+    >>"$TEAM_HOME/ledger.jsonl"
+
+  # Not fenced: no salvage line at all.
+  run_bin -0 team-doctor
+  [[ $output != *salvage* ]]
+
+  make_machine laptop
+  steal_lease laptop home-pc
+  "$REPO_ROOT/bin/team-timers" disable >/dev/null
+  echo '{"since": "2026-10-22T14:00:00Z", "holder": "laptop", "epoch": 2}' >"$HOME/.local/state/agent-team/fenced"
+  run_bin -1 team-doctor
+  assert_equal "$(grep salvage <<<"$output")" \
+"FAIL salvage T1 site: ~/site-wt/1 has 1 commit on no origin branch; fix: git -C ~/site-wt/1 push origin HEAD:refs/heads/salvage/T1-home-pc
+FAIL salvage T2 site: ~/site-wt/2 has uncommitted changes (changes to tracked files: README.md; untracked files: new.txt); fix: git -C ~/site-wt/2 add -A && git -C ~/site-wt/2 commit -m \"wip: salvage from home-pc\", then git -C ~/site-wt/2 push origin HEAD:refs/heads/salvage/T2-home-pc"
+  # Right after the lease line.
+  assert_equal "$(checks | grep -A2 -x lease | paste -sd ,)" "lease,salvage T1 site,salvage T2 site"
+
+  # Once both are pushed and clean, it passes.
+  git -C "$SITE" update-ref refs/remotes/origin/feat/T1-x "$(git -C "${wt[1]}" rev-parse HEAD)"
+  git -C "${wt[2]}" checkout -q -- README.md
+  rm "${wt[2]}/new.txt"
+  run_bin -1 team-doctor
+  assert_equal "$(grep salvage <<<"$output")" "PASS salvage: no task worktree here holds commits or changes origin lacks"
+}
+
 @test "the offline line warns with the outage's start and age while the heartbeat holds the team" {
   tools_at arch
   run_bin -0 team-doctor

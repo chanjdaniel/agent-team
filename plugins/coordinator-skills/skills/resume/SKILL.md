@@ -9,15 +9,19 @@ description: Bring the team back after team-resume started you on the machine ta
 Never resume while GitHub is unreachable: say so to Daniel and wait.
 
 1. **Read.** Read the report and run `team-snapshot`.
-   Each task in the report has `stowed` (its latest `stowed`: the machine left, its time, the roles whose sessions were live), `worktrees` (where each is now, `moved` from where, and `archive`, null when no scratch was restored) and `failures` (each worktree not made here, with the reason).
+   Each task in the report has `stowed` (its latest `stowed`: the machine left, its time, the roles whose sessions were live), `crashed` (null, or the machine that stopped without a handoff since the task's last launch, the `checkpoint` it resumes from and the `roles` to relaunch), `worktrees` (where each is now, `moved` from where, `archive`, null when no scratch was restored, and after a crash `snapshot`, whether the checkpoint's uncommitted changes were applied and why not) and `failures` (each worktree not made here, with the reason).
 2. **Catch up on Discord.** Messages sent while no coordinator listened are never delivered to you, only readable.
    For `#coordinator` and each open task's thread (`thread` in `team-state T<n> --json`), read the history with the Discord plugin's `fetch_messages` back to your own last message there; it reads at most 100 messages, so tell Daniel when your last message is further back.
    Log and answer anything Daniel asked that has no answer, before anything else.
-3. **Relaunch.** For each task whose `stowed` names roles, for each role:
+3. **Relaunch.** For each task whose `crashed` is null and whose `stowed` names roles, for each role:
    - its last brief: the newest `tasks/T<n>/brief*.md` whose first line is `# T<n> brief (<role>)`, other than a `brief-resume-*.md`;
    - the brief: `team-brief T<n> resume --name resume-<role> --force --set role=<role> --set brief=<that brief> --set from="the handoff from <machine> at <stowed time>"` (`--project <name>` for a task in two projects);
    - the launch: `team-worker T<n> <role> <worktree> -- "Read your brief at <path>"`, with each `--toolkit` of the role's last launch, the worktree being the report's.
+
+   For each task whose `crashed` is not null, for each role of `crashed.roles` (its latest launch since the task's last `stowed` that no `done`, `review` or `ticket-done` ended), the same, but the brief is the crash one, which tells the worker what may be missing:
+   `team-brief T<n> resume-crash --name resume-<role> --force --set role=<role> --set brief=<that brief> --set machine=<crashed.machine> --set checkpoint=<crashed.checkpoint> --set snapshot=<what became of it>`, the snapshot being the worktree's `snapshot`: "applied as uncommitted changes in your worktree", "not applied: <its reason>; it is on `origin/wip/T<n>`", or "none was saved" when its `commit` is null.
+   A null `checkpoint` is `checkpoint="an unknown time: no checkpoint of the task was found"`.
    A task with failures is relaunched only once its worktrees are made: fix what the reason names (a salvage push or a dirty slot is Daniel's word), run `team-open --task T<n> --resume <project>`, then relaunch.
 4. **Log.** `team-log T<n> resumed` for each task paused for the handoff (its workers' `paused reason=stowed`), once its workers run again.
-5. **Post.** In `#coordinator`: each task that resumed (roles relaunched, worktrees moved), and each that did not, with the reason and what it waits on.
+5. **Post.** In `#coordinator`: each task that resumed (roles relaunched, worktrees moved, and for a crash the checkpoint it resumed from and whether its snapshot was applied), and each that did not, with the reason and what it waits on.
 6. **Clean up.** Delete the report once everything in it runs again.

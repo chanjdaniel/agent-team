@@ -33,9 +33,14 @@
 # uncommitted changes); a branch here with commits origin's lacks is refused, with the command
 # that pushes them to salvage/T<n>-<machine>. Then the task's archive (tasks/T<n>/scratch, or
 # scratch-<project> for an added project) replaces the task directory, worktree-moved is appended
-# when the worktree is not the recorded one, and the worktree's facts are printed as JSON. Needs
-# this machine's name; refused for a task that is not open or has no open worktree in <project>;
-# re-running after a failure finishes it.
+# when the worktree is not the recorded one, and the worktree's facts are printed as JSON. For a
+# task that crashed (a launch after its latest stowed, or a launch and no stowed: its machine
+# stopped without a handoff), the last checkpoint's snapshot, wip/T<n> on origin, is fetched and
+# its diff against its parent applied to the worktree as uncommitted changes, when that parent is
+# origin's head of the branch and the worktree has no other uncommitted changes; else it is
+# skipped with the reason. Its facts are the JSON's snapshot, {ref, commit, parent, at, applied,
+# reason}, null for a task that did not crash. Needs this machine's name; refused for a task that
+# is not open or has no open worktree in <project>; re-running after a failure finishes it.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
@@ -108,8 +113,10 @@ fi
 mkdir -p "$TEAM_HOME/tasks"
 claimed=
 if [[ -n $resume ]]; then
-  open=$(open_task_events "$task" | ledger_jq 'archived_worktrees($home) | select(.project == $project)' -c --arg project "$project")
+  events=$(open_task_events "$task")
+  open=$(ledger_jq 'archived_worktrees($home) | select(.project == $project)' -c --arg project "$project" <<<"$events")
   [[ -n $open ]] || die "$task has no open worktree in $project"
+  crashed=$(ledger_jq crashed <<<"$events")
   branch=$(jq -r .branch <<<"$open")
   recorded=$(jq -r .worktree <<<"$open")
   archive=tasks/$task/$(jq -r .archive <<<"$open")
@@ -341,6 +348,54 @@ resume_slot() {
   esac
 }
 
+# --resume of a crashed task: the last checkpoint's snapshot, wip/T<n> on origin, applied to the
+# worktree as uncommitted changes when its parent is origin's head of the branch, which the
+# worktree is at now, and the worktree has no other uncommitted changes. Sets snapshot to its
+# facts, {ref, commit, parent, at, applied, reason}, and says what it did on stderr.
+apply_snapshot() {
+  local ref=wip/$task commit parent at reason='' current patch
+  commit=$(git -C "$primary" ls-remote origin "refs/heads/$ref") || die "cannot reach origin from $primary"
+  commit=${commit%%[[:space:]]*}
+  if [[ -z $commit ]]; then
+    reason="origin has no $ref: no checkpoint saved uncommitted changes"
+    echo "team-open: $ref not applied: $reason" >&2
+    snapshot=$(jq -cn --arg ref "$ref" --arg reason "$reason" \
+      '{ref: $ref, commit: null, parent: null, at: null, applied: false, reason: $reason}')
+    return
+  fi
+  git -C "$primary" fetch -q origin "+refs/heads/$ref:refs/remotes/origin/$ref" ||
+    die "cannot fetch $ref from origin in $primary"
+  parent=$(git -C "$primary" rev-parse -q --verify "$commit^1") || die "origin's $ref ${commit:0:7} has no parent"
+  at=$(git -C "$primary" show -s --format=%ct "$commit" | jq -r 'tonumber | todate')
+  current=$(worktree_tree "$worktree") || die "cannot read the changes in $worktree"
+  if [[ -z $remote ]]; then
+    reason="origin has no $branch for it to apply on"
+  elif [[ $parent != "$remote" ]]; then
+    if git -C "$primary" merge-base --is-ancestor "$parent" "$remote"; then
+      reason="origin's $branch is at ${remote:0:7}, past the snapshot's parent ${parent:0:7}"
+    else
+      reason="the snapshot's parent ${parent:0:7} is not on origin's $branch, which is at ${remote:0:7}"
+    fi
+  elif [[ $current == "$(git -C "$primary" rev-parse "$commit^{tree}")" ]]; then
+    echo "team-open: $ref ${commit:0:7} (the checkpoint of $at) is already applied in $worktree" >&2
+  elif [[ $current != "$(git -C "$worktree" rev-parse "HEAD^{tree}")" ]]; then
+    reason="$worktree has uncommitted changes other than the snapshot's, so it is not applied over them"
+  else
+    patch=$(mktemp)
+    git -C "$primary" diff --binary "$parent" "$commit" >"$patch"
+    if ! git -C "$worktree" apply --whitespace=nowarn "$patch"; then
+      rm -f "$patch"
+      die "cannot apply $ref ${commit:0:7} to $worktree"
+    fi
+    rm -f "$patch"
+    echo "team-open: applied $ref ${commit:0:7} (the checkpoint of $at) to $worktree as uncommitted changes" >&2
+  fi
+  [[ -z $reason ]] || echo "team-open: $ref ${commit:0:7} not applied: $reason" >&2
+  snapshot=$(jq -cn --arg ref "$ref" --arg commit "$commit" --arg parent "$parent" --arg at "$at" --arg reason "$reason" \
+    '{ref: $ref, commit: $commit, parent: $parent, at: $at, applied: ($reason == ""),
+      reason: (if $reason == "" then null else $reason end)}')
+}
+
 # The slot already holding the task's branch (a half-open task), else a slot from the pool.
 added=
 if [[ -n $resume ]]; then
@@ -381,6 +436,8 @@ if [[ -n $resume ]]; then
   else
     echo "team-open: $task has no archive at $archive; $worktree/$task_dir is left as it is" >&2
   fi
+  snapshot=null
+  [[ $crashed != true ]] || apply_snapshot
   moved=false
   if [[ $(realpath -m -- "$worktree") != "$(realpath -m -- "$recorded")" ]]; then
     moved=true
@@ -392,9 +449,9 @@ if [[ -n $resume ]]; then
 
   jq -n --arg task "$task" --arg project "$project" --arg branch "$branch" --arg worktree "$worktree" \
     --arg task_dir "$worktree/$task_dir" --arg head "$(git -C "$worktree" rev-parse HEAD)" --arg from "$recorded" \
-    --argjson moved "$moved" --argjson archive "$restored" \
+    --argjson moved "$moved" --argjson archive "$restored" --argjson snapshot "$snapshot" \
     '{task: $task, project: $project, branch: $branch, worktree: $worktree, task_dir: $task_dir, head: $head,
-      from: $from, moved: $moved, archive: $archive}'
+      from: $from, moved: $moved, archive: $archive, snapshot: $snapshot}'
   # The overlap with other tasks was judged when this one opened.
   exit 0
 elif [[ -n $add ]]; then

@@ -109,13 +109,8 @@ skip_reason() {
 # Push the uncommitted changes of the worktree <wt> of <task> as wip/<task> on its origin:
 # snapshot <task> <wt> <label>
 snapshot() {
-  local task=$1 wt=$2 label=$3 index tree head remote old commit rc=0
-  index=$(git -C "$wt" rev-parse --path-format=absolute --git-path index)
-  rm -f "$scratch/index"
-  # A copy of the real index, so what git knows of each file's state is kept, and so is the index.
-  if [[ -f $index ]]; then cp "$index" "$scratch/index"; else GIT_INDEX_FILE=$scratch/index git -C "$wt" read-tree HEAD; fi
-  GIT_INDEX_FILE=$scratch/index git -C "$wt" add -A
-  tree=$(GIT_INDEX_FILE=$scratch/index git -C "$wt" write-tree)
+  local task=$1 wt=$2 label=$3 tree head remote old commit rc=0
+  tree=$(worktree_tree "$wt")
   head=$(git -C "$wt" rev-parse HEAD)
   if [[ $tree == "$(git -C "$wt" rev-parse "HEAD^{tree}")" ]]; then
     say "$label: no uncommitted changes"

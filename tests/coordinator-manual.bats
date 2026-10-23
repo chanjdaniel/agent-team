@@ -172,6 +172,9 @@ section() {
   grep -qF 'answer anything Daniel asked that has no answer, before anything else' "$skill"
   grep -qF '`team-brief T<n> resume --name resume-<role> --force --set role=<role> --set brief=<that brief> --set from=' "$skill"
   grep -qF '`team-worker T<n> <role> <worktree>' "$skill"
+  # A crashed task: the roles of its latest launches nothing ended, with the crash brief.
+  grep -qF 'For each task whose `crashed` is not null, for each role of `crashed.roles`' "$skill"
+  grep -qF '`team-brief T<n> resume-crash --name resume-<role> --force --set role=<role> --set brief=<that brief> --set machine=<crashed.machine> --set checkpoint=<crashed.checkpoint> --set snapshot=' "$skill"
   grep -qF '`team-log T<n> resumed`' "$skill"
   grep -qF 'Delete the report once everything in it runs again.' "$skill"
   # The manual names the command, the skill and the missed Discord history.

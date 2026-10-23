@@ -211,6 +211,28 @@ def phase:
     elif any(.[]; .event == "plan-approved") then "building"
     else "planning" end;
 
+# The index of the task's latest stowed, or -1 when it has none.
+def latest_stowed: [to_entries[] | select(.value.event == "stowed") | .key] | last // -1;
+
+# Whether the task crashed on a machine switch: a launch after its latest stowed, or a launch and
+# no stowed at all, so the machine it last ran on stopped without handing it off.
+def crashed: latest_stowed as $stowed | any(.[$stowed + 1:][]; .event == "launch");
+
+# Whether the event ends the worker of <role>: its DONE, which the coordinator logs as a done of
+# that role, a review (a reviewer's) or a ticket-done (a builder's).
+def ends_worker($role):
+  (.event == "done" and .role == $role) or (.event == "review" and $role == "reviewer")
+  or (.event == "ticket-done" and $role == "builder");
+
+# The roles to relaunch after a crash: each role launched since the task's latest stowed whose
+# latest launch no later event ends (ends_worker), in the order of those launches.
+def crash_roles:
+  . as $events
+  | latest_stowed as $stowed
+  | [to_entries[] | select(.key > $stowed and .value.event == "launch") | {i: .key, role: .value.role}]
+  | group_by(.role) | map(max_by(.i)) | sort_by(.i)
+  | map(.i as $i | .role as $role | select(all($events[$i + 1:][]; ends_worker($role) | not)) | .role);
+
 # Every worktree the task was given (opened or added), at its latest path (worktree-moved), and
 # whether it was returned since.
 def worktree_list:

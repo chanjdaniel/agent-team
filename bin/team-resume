@@ -24,13 +24,20 @@
 #   7. heartbeat    team-timers enable.
 #   8. worktrees    team-open --task T<n> --resume <project> for each open worktree of each open
 #                   task, one line each ("T1 home: ..."); one that fails is said with its reason
-#                   on stderr and in the report, and the others still resume.
+#                   on stderr and in the report, and the others still resume. A task that crashed
+#                   (a launch after its latest stowed, or a launch and no stowed) gets its last
+#                   checkpoint's snapshot applied by team-open, and one more line: the machine,
+#                   the checkpoint it resumes from and the roles to relaunch.
 #   9. report       tasks/resume-<date>.json (this machine's date): {machine, epoch, stolen_from,
-#                   written_at, tasks}, each task {task, stowed, worktrees, failures}: stowed the
-#                   task's latest stowed event ({ts, machine, roles, note}) or null, worktrees
-#                   team-open's facts ({project, branch, worktree, from, moved, head, archive},
-#                   archive null when no scratch was restored), failures [{project, branch,
-#                   reason}]. Not committed: the coordinator's resume skill deletes it.
+#                   written_at, tasks}, each task {task, stowed, crashed, worktrees, failures}:
+#                   stowed the task's latest stowed event ({ts, machine, roles, note}) or null,
+#                   crashed null or {machine, checkpoint, roles}: the machine it crashed on, the
+#                   latest time any of it was saved (its snapshots, its archive's last commit) or
+#                   null, and the roles whose latest launch since that stowed nothing ended (a
+#                   done of the role, a review, a ticket-done); worktrees team-open's facts
+#                   ({project, branch, worktree, from, moved, head, archive, snapshot}, archive
+#                   null when no scratch was restored, snapshot null unless crashed), failures
+#                   [{project, branch, reason}]. Not committed: the resume skill deletes it.
 #  10. coordinator  claude-coordinator, with a first prompt naming the report and the resume skill;
 #                   then "Pin the coordinator in `claude agents` (Ctrl+T)."
 # Only Daniel steals: --steal needs this terminal, and deny rules stop the team's sessions typing
@@ -109,6 +116,19 @@ read_lease() {
 elsewhere() {
   jq -r 'if .state == "held" and (.mine | not) and .holder != $machine then
       if .stale then "stale" else "fresh" end else "no" end' --arg machine "$machine" <<<"$1"
+}
+
+# A crashed task's facts <task json> with its crash filled in: the machine it crashed on (its
+# last launch's, else the one the lease <lease json> was stolen from) and the checkpoint it
+# resumes from, the latest time any of it was saved: its snapshots (applied or not) and its
+# archive's last commit in the team home; null when nothing was. crash_facts <task> <json> <lease>
+crash_facts() {
+  local archived
+  archived=$(git -C "$TEAM_HOME" log -1 --format=%ct -- ":(glob)tasks/$1/scratch*/**" 2>/dev/null) || archived=''
+  jq -c --arg archived "$archived" --argjson lease "$3" \
+    '.crashed = {machine: (.crashed.machine // $lease.stolen_from),
+      checkpoint: ([.worktrees[].snapshot.at // empty] + [$archived | select(. != "") | tonumber | todate] | max),
+      roles: .crashed.roles}' <<<"$2"
 }
 
 # The whole run is one function, read before it starts, so the pull of step 4 may change this
@@ -206,11 +226,13 @@ main() {
       | {task: $task,
          stowed: ($tasks[$task] | map(select(.event == "stowed")) | last
            | if . then {ts, machine, roles} + (if .note then {note} else {} end) else null end),
+         crashed: ($tasks[$task] | if crashed then
+           {machine: (map(select(.event == "launch")) | last | .machine), roles: crash_roles} else null end),
          open: [$tasks[$task] | open_worktrees(.[]; $home) | {project, branch}]}' -nRc "$TEAM_HOME/ledger.jsonl")
   fi
   for entry in "${open[@]}"; do
     task=$(jq -r .task <<<"$entry")
-    task_json=$(jq -c '{task, stowed, worktrees: [], failures: []}' <<<"$entry")
+    task_json=$(jq -c '{task, stowed, crashed, worktrees: [], failures: []}' <<<"$entry")
     if [[ $(jq '.open | length' <<<"$entry") == 0 ]]; then echo "$task: no open worktree"; fi
     while IFS=$'\t' read -r project branch; do
       rc=0
@@ -221,7 +243,7 @@ main() {
           + if .archive then ", scratch restored from \(.archive)" else ", no scratch to restore" end' <<<"$out")
         echo "$task $project: $(jq -r '"\(.worktree) on \(.branch) at \(.head[:7])"' <<<"$out")$moved"
         task_json=$(jq -c --argjson wt "$out" \
-          '.worktrees += [$wt | {project, branch, worktree, from, moved, head, archive}]' <<<"$task_json")
+          '.worktrees += [$wt | {project, branch, worktree, from, moved, head, archive, snapshot}]' <<<"$task_json")
       else
         failed=$((failed + 1))
         reason=$(grep . "$err" | sed -E 's/^team-open: //' | paste -sd ' ' || true)
@@ -231,6 +253,12 @@ main() {
           '.failures += [{project: $p, branch: $b, reason: $r}]' <<<"$task_json")
       fi
     done < <(jq -r '.open[] | [.project, .branch] | @tsv' <<<"$entry")
+    if [[ $(jq -r '.crashed != null' <<<"$task_json") == true ]]; then
+      task_json=$(crash_facts "$task" "$task_json" "$lease")
+      echo "$task: $(jq -r '.crashed | "crashed on \(.machine // "the machine it last ran on"), with no handoff since its last launch; "
+        + if .checkpoint then "resuming from the checkpoint of \(.checkpoint)" else "no checkpoint of it was found" end
+        + ", to relaunch: " + if .roles == [] then "no role" else (.roles | join(", ")) end' <<<"$task_json")"
+    fi
     tasks=$(jq -c --argjson t "$task_json" '. + [$t]' <<<"$tasks")
   done
   ((${#open[@]})) || echo "worktrees: no open task"

@@ -146,10 +146,10 @@ laptop_state() {
 
   # The report.
   assert_equal "$(jq -c '{machine, epoch, stolen_from}' "$report")" '{"machine":"laptop","epoch":2,"stolen_from":null}'
-  assert_equal "$(jq -c '.tasks | map({task, roles: .stowed.roles, from: .stowed.machine, failures})' "$report")" \
-    '[{"task":"T1","roles":["builder"],"from":"home-pc","failures":[]}]'
+  assert_equal "$(jq -c '.tasks | map({task, roles: .stowed.roles, from: .stowed.machine, crashed, failures})' "$report")" \
+    '[{"task":"T1","roles":["builder"],"from":"home-pc","crashed":null,"failures":[]}]'
   assert_equal "$(jq -c '.tasks[0].worktrees' "$report")" \
-    "[{\"project\":\"home\",\"branch\":\"feat/T1-work\",\"worktree\":\"$laptop/home/slots/home/1\",\"from\":\"$wt\",\"moved\":true,\"head\":\"$head\",\"archive\":\"tasks/T1/scratch\"}]"
+    "[{\"project\":\"home\",\"branch\":\"feat/T1-work\",\"worktree\":\"$laptop/home/slots/home/1\",\"from\":\"$wt\",\"moved\":true,\"head\":\"$head\",\"archive\":\"tasks/T1/scratch\",\"snapshot\":null}]"
 
   # The coordinator, started from laptop's team home, its prompt naming the report and the skill.
   assert_equal "$(coordinator_launches | wc -l)" 1
@@ -284,6 +284,95 @@ laptop_state() {
   assert_equal "$(lease_json | jq -c '[.holder, .epoch, .stolen_from]')" '["laptop",2,"home-pc"]'
   assert_equal "$(jq -r .stolen_from "$report")" home-pc
   assert_equal "$(coordinator_launches | wc -l)" 1
+}
+
+@test "after home-pc crashed, --steal resumes T1 from its last checkpoint, and home-pc fences itself and lists what to salvage" {
+  # The team's config was shared earlier; home-pc pushed T1's branch and launched its builder.
+  "$REPO_ROOT/bin/team-config" capture >/dev/null
+  git -C "$TEAM_HOME" add machine
+  git -C "$TEAM_HOME" commit -q -m "chore: capture the config"
+  git -C "$TEAM_HOME" push -q origin dev
+  git -C "$wt" push -q origin HEAD:refs/heads/feat/T1-work
+  jq -cn --arg wt "$wt" '{ts: (now | todate), task: "T1", event: "launch", role: "builder", session: "81f08540",
+    worktree: $wt, toolkits: [], machine: "home-pc"}' >>"$TEAM_HOME/ledger.jsonl"
+  # A checkpoint of a tracked edit and a new file.
+  echo "edited" >"$wt/a.txt"
+  echo "b" >"$wt/b.txt"
+  run_bin -0 team-checkpoint --force
+  local wip at checkpoint
+  wip=$(git -C "$BATS_TEST_TMPDIR/origin/home.git" rev-parse wip/T1)
+  at=$(git -C "$BATS_TEST_TMPDIR/origin/home.git" show -s --format=%ct "$wip")
+  checkpoint=$(git -C "$team_origin" log -1 --format=%ct dev -- tasks/T1/scratch | jq -r 'tonumber | todate')
+  # home-pc worked on, then died: no handoff, and no heartbeat run since.
+  echo "later" >"$wt/a.txt"
+  echo "c" >"$wt/c.txt"
+  git -C "$wt" add c.txt
+  git -C "$wt" commit -q -m "feat: c"
+  age_lease 75
+
+  local tty=$BATS_TEST_TMPDIR/steal-tty lt=$laptop/home/slots/home/1
+  echo home-pc >"$tty"
+  TEAM_LEASE_TTY=$tty on_machine laptop run_bin -0 --separate-stderr team-resume --steal
+  assert_equal "$stderr" ""
+  assert_equal "$(lease_json | jq -c '[.holder, .epoch, .stolen_from]')" '["laptop",2,"home-pc"]'
+  assert_contains "$output" "T1 home: applied wip/T1 ${wip:0:7} (the checkpoint of $(jq -nr --argjson t "$at" '$t | todate')) to $lt as uncommitted changes"
+  assert_contains "$output" "T1: crashed on home-pc, with no handoff since its last launch; resuming from the checkpoint of $checkpoint, to relaunch: builder"
+  # The worktree is the pushed branch with the checkpoint's changes uncommitted, not the later ones.
+  assert_equal "$(git -C "$lt" rev-parse HEAD)" "$head"
+  assert_equal "$(git -C "$lt" status --porcelain)" "$(printf '%s\n' " M a.txt" "?? b.txt")"
+  assert_equal "$(cat "$lt/a.txt")" "edited"
+  [[ ! -e $lt/c.txt ]]
+  # The report marks T1 crashed, with the checkpoint's time and the snapshot applied.
+  [[ $checkpoint > $(jq -nr --argjson t "$at" '$t | todate') || $checkpoint == $(jq -nr --argjson t "$at" '$t | todate') ]]
+  assert_equal "$(jq -c '.tasks[0] | {stowed, crashed}' "$report")" \
+    "{\"stowed\":null,\"crashed\":{\"machine\":\"home-pc\",\"checkpoint\":\"$checkpoint\",\"roles\":[\"builder\"]}}"
+  assert_equal "$(jq -c '.tasks[0].worktrees[0].snapshot | {commit, parent, applied, reason}' "$report")" \
+    "{\"commit\":\"$wip\",\"parent\":\"$head\",\"applied\":true,\"reason\":null}"
+
+  # home-pc boots: its heartbeat's next run finds laptop's lease and fences home-pc.
+  run -0 "$REPO_ROOT/bin/team-timers" run
+  [[ -e $HOME/.local/state/agent-team/fenced ]]
+  # Its doctor then lists what only home-pc holds, with the commands that push it to a salvage
+  # branch, and fails.
+  run -1 --separate-stderr "$REPO_ROOT/bin/team-doctor" --json
+  assert_equal "$(jq -c '.[] | select(.check | startswith("salvage")) | [.check, .verdict, .reason, .fix]' <<<"$output")" \
+    "$(jq -cn '["salvage T1 home", "FAIL",
+      "~/slots/home/1 has 1 commit on no origin branch and uncommitted changes (changes to tracked files: a.txt; untracked files: b.txt)",
+      "git -C ~/slots/home/1 add -A && git -C ~/slots/home/1 commit -m \"wip: salvage from home-pc\", then git -C ~/slots/home/1 push origin HEAD:refs/heads/salvage/T1-home-pc"]')"
+}
+
+@test "a crash relaunches each role whose latest launch since the last stowed nothing ended; no checkpoint is said" {
+  "$REPO_ROOT/bin/team-config" capture >/dev/null
+  git -C "$wt" push -q origin HEAD:refs/heads/feat/T1-work
+  # A planner before an earlier handoff; since it, a builder that finished its ticket, a reviewer
+  # that reviewed, then a builder and a reviewer that nothing ended.
+  local event
+  while IFS= read -r event; do
+    jq -c --arg wt "$wt" '{ts: "2026-10-23T09:00:00Z", task: "T1"} + . | if .event == "launch" then
+      . + {session: "81f08540", worktree: $wt, toolkits: [], machine: "home-pc"} else . end' <<<"$event" \
+      >>"$TEAM_HOME/ledger.jsonl"
+  done <<'EVENTS'
+{"event": "launch", "role": "planner"}
+{"event": "stowed", "machine": "home-pc", "worktrees": [], "roles": ["planner"]}
+{"event": "launch", "role": "builder"}
+{"event": "ticket-done", "ticket": "01", "commits": ["abc1234"]}
+{"event": "launch", "role": "reviewer"}
+{"event": "review", "verdict": "findings", "head": "abc1234"}
+{"event": "launch", "role": "builder"}
+{"event": "launch", "role": "reviewer"}
+EVENTS
+  git -C "$TEAM_HOME" add ledger.jsonl machine
+  git -C "$TEAM_HOME" commit -q -m "chore: the ledger"
+  git -C "$TEAM_HOME" push -q origin dev
+  age_lease 75
+
+  local tty=$BATS_TEST_TMPDIR/steal-tty
+  echo home-pc >"$tty"
+  TEAM_LEASE_TTY=$tty on_machine laptop run_bin -0 --separate-stderr team-resume --steal
+  assert_contains "$output" "T1 home: wip/T1 not applied: origin has no wip/T1: no checkpoint saved uncommitted changes"
+  assert_contains "$output" "T1: crashed on home-pc, with no handoff since its last launch; no checkpoint of it was found, to relaunch: builder, reviewer"
+  assert_equal "$(jq -c '.tasks[0].crashed' "$report")" '{"machine":"home-pc","checkpoint":null,"roles":["builder","reviewer"]}'
+  assert_equal "$(git -C "$laptop/home/slots/home/1" status --porcelain)" ""
 }
 
 @test "the coordinator and workers are denied typing team-resume --steal" {

@@ -157,7 +157,7 @@ EOF
 
 @test "every real template renders for each delivery with no placeholder left and no em dash" {
   assert_equal "$(templates | paste -sd ' ')" \
-    "builder-deliver builder-fix builder-ticket planner-feature planner-research rereview resume reviewer"
+    "builder-deliver builder-fix builder-ticket planner-feature planner-research rereview resume resume-crash reviewer"
   open_t12
   open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
   local task template keys sets key brief
@@ -198,6 +198,25 @@ EOF
   assert_contains "$brief" "1. Read your brief \`~/agent-team/tasks/T12/brief.md\`"
   assert_contains "$brief" "2. Then \`.scratch/task/handoff.md\` if it exists"
   assert_contains "$brief" "3. Check the branch: \`git status\`, and \`git log origin/dev..HEAD\`"
+}
+
+@test "the crash resume brief names the checkpoint, what may be missing, and sends the worker to check first" {
+  open_t12
+  run_bin -0 team-brief --help
+  assert_contains "$output" "resume-crash (one relaunched after its machine crashed:"
+  run_bin -0 team-brief T12 resume-crash --name resume-builder --set role=builder \
+    --set "brief=~/agent-team/tasks/T12/brief.md" --set machine=home-pc --set checkpoint=2026-10-23T13:45:00Z \
+    --set "snapshot=applied as uncommitted changes in your worktree"
+  local brief
+  brief=$(<"$output")
+  assert_equal "$(head -n 1 <<<"$brief")" "# T12 brief (builder): resume rate-limit the applicant sign-in endpoints after a crash"
+  assert_contains "$brief" "you are the builder, resuming the task from the checkpoint of 2026-10-23T13:45:00Z: home-pc stopped without a handoff."
+  assert_contains "$brief" "Worktree: \`~/.treehouse/Conventioner-d4c77a/4/Conventioner\`, branch \`fix/T12-applicant-sign-in-rate-limit\`"
+  assert_contains "$brief" "Up to 15 minutes of work before home-pc stopped may be missing, and so may any no-mistakes run that was in flight"
+  assert_contains "$brief" "The uncommitted changes of that checkpoint: applied as uncommitted changes in your worktree."
+  assert_contains "$brief" "Check before you build on any of it."
+  assert_contains "$brief" "1. Read your brief \`~/agent-team/tasks/T12/brief.md\`"
+  assert_contains "$brief" "3. Check what is here against what your brief, the tickets and the build notes say is done: \`git status\`, \`git diff\` and \`git log origin/dev..HEAD\`"
 }
 
 @test "each delivery brings the branch up to date with the base before reporting, and never uses sudo" {

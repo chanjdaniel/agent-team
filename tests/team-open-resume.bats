@@ -128,11 +128,59 @@ open_elsewhere() {
 }
 
 # The facts --resume prints for T1's worktree <wt> of <project> on <branch> at <head>, recorded
-# at <from>, restored from <archive> (a JSON string or null).
+# at <from>, restored from <archive> (a JSON string or null), with no snapshot (a task that did
+# not crash).
 facts() {
   jq -cn --arg project "$1" --arg branch "$2" --arg wt "$3" --arg head "$4" --arg from "$5" \
     --argjson archive "$6" '{task: "T1", project: $project, branch: $branch, worktree: $wt,
-      task_dir: "\($wt)/.scratch/task", head: $head, from: $from, moved: ($wt != $from), archive: $archive}'
+      task_dir: "\($wt)/.scratch/task", head: $head, from: $from, moved: ($wt != $from), archive: $archive,
+      snapshot: null}'
+}
+
+# launch <role> <worktree>: T1's worker launched on home-pc, as team-worker logs it.
+launch() {
+  jq -cn --arg role "$1" --arg wt "$2" '{ts: (now | todate), task: "T1", event: "launch", role: $role,
+    session: "81f08540", worktree: $wt, toolkits: [], machine: "home-pc"}' >>"$TEAM_HOME/ledger.jsonl"
+}
+
+# checkpoint_of <wt>: home-pc's checkpoint of the worktree <wt> of T1, as team-checkpoint makes
+# it: feature.txt edited, new.txt added and README.md deleted, uncommitted, pushed as wip/T1 with
+# the worktree's HEAD as parent. Sets wip; the worktree keeps the changes.
+checkpoint_of() {
+  local wt=$1 index=$BATS_TEST_TMPDIR/wip-index tree
+  echo "edited" >"$wt/feature.txt"
+  echo "new" >"$wt/new.txt"
+  rm "$wt/README.md"
+  rm -f "$index"
+  GIT_INDEX_FILE=$index git -C "$wt" read-tree HEAD
+  GIT_INDEX_FILE=$index git -C "$wt" add -A
+  tree=$(GIT_INDEX_FILE=$index git -C "$wt" write-tree)
+  wip=$(git -C "$wt" commit-tree "$tree" -p HEAD -m "wip: T1 checkpoint on home-pc at 2026-10-23T10:00:00Z")
+  git -C "$wt" push -q origin "+$wip:refs/heads/wip/T1"
+}
+
+# crash_elsewhere: T1 opened in home on home-pc, with a pushed commit, a builder launched and a
+# checkpoint (checkpoint_of) pushed, archived; then home-pc died, without a handoff, and nothing
+# of it is on this machine. Sets wt, branch, head and wip.
+crash_elsewhere() {
+  run_bin -0 --separate-stderr team-open home feature feat work "Work in home"
+  wt=$(jq -r .worktree <<<"$output") branch=$(jq -r .branch <<<"$output")
+  head=$(work "$wt" feature.txt)
+  push "$wt"
+  launch builder "$wt"
+  checkpoint_of "$wt"
+  archive T1 scratch
+  forget_here "$home" "$branch" "$wt"
+  git -C "$home" update-ref -d refs/remotes/origin/wip/T1
+  rehome_ledger
+}
+
+# The snapshot facts of wip/T1 <wip> on <parent>, applied (true or false) for <reason> (a JSON
+# string or null).
+snapshot_facts() {
+  jq -cn --arg commit "$1" --arg parent "$2" --argjson applied "$3" --argjson reason "$4" \
+    --arg at "$(git -C "$home" show -s --format=%ct "$1" | jq -r 'tonumber | todate')" \
+    '{ref: "wip/T1", commit: $commit, parent: $parent, at: $at, applied: $applied, reason: $reason}'
 }
 
 # Fail unless the task directory <dir> holds exactly the archive <folder> of T1.
@@ -204,6 +252,99 @@ restored_from() {
   restored_from "$moved/.scratch/task" scratch
   assert_equal "$(events worktree-moved | jq -r '"\(.from) \(.worktree) \(.machine)"')" "$wt $moved laptop"
   run_bin -0 team-log --check
+}
+
+@test "a crashed task gets its checkpoint's uncommitted changes applied on origin's head, once" {
+  crash_elsewhere
+  cp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before"
+
+  run_bin -0 --separate-stderr team-open --task T1 --resume home
+  assert_equal "$stderr" "team-open: applied wip/T1 ${wip:0:7} (the checkpoint of $(jq -r .snapshot.at <<<"$output")) to $wt as uncommitted changes"
+  assert_equal "$(jq -c .snapshot <<<"$output")" "$(snapshot_facts "$wip" "$head" true null)"
+  assert_equal "$(jq -c 'del(.snapshot)' <<<"$output")" \
+    "$(facts home "$branch" "$wt" "$head" "$wt" '"tasks/T1/scratch"' | jq -c 'del(.snapshot)')"
+  # On the branch at origin's head, the checkpoint's changes uncommitted: nothing staged, the new
+  # file untracked, and the task directory the archive's.
+  assert_equal "$(git -C "$wt" rev-parse HEAD)" "$head"
+  assert_equal "$(git -C "$wt" status --porcelain)" "$(printf '%s\n' " D README.md" " M feature.txt" "?? new.txt")"
+  assert_equal "$(cat "$wt/feature.txt")" "edited"
+  assert_equal "$(cat "$wt/new.txt")" "new"
+  assert_equal "$(git -C "$wt" diff --cached --name-only)" ""
+  restored_from "$wt/.scratch/task" scratch
+  # The snapshot stays readable here, as origin/wip/T1.
+  assert_equal "$(git -C "$home" rev-parse refs/remotes/origin/wip/T1)" "$wip"
+  cmp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before"
+
+  # A second run finds it applied and changes nothing.
+  run_bin -0 --separate-stderr team-open --task T1 --resume home
+  assert_equal "$stderr" "team-open: wip/T1 ${wip:0:7} (the checkpoint of $(jq -r .snapshot.at <<<"$output")) is already applied in $wt"
+  assert_equal "$(jq -c .snapshot <<<"$output")" "$(snapshot_facts "$wip" "$head" true null)"
+  assert_equal "$(git -C "$wt" status --porcelain)" "$(printf '%s\n' " D README.md" " M feature.txt" "?? new.txt")"
+
+  # Other uncommitted changes in the worktree are never mixed with it.
+  echo "mine" >"$wt/mine.txt"
+  run_bin -0 --separate-stderr team-open --task T1 --resume home
+  local reason="$wt has uncommitted changes other than the snapshot's, so it is not applied over them"
+  assert_equal "$stderr" "team-open: wip/T1 ${wip:0:7} not applied: $reason"
+  assert_equal "$(jq -c .snapshot <<<"$output")" "$(snapshot_facts "$wip" "$head" false "$(jq -n --arg r "$reason" '$r')")"
+  assert_equal "$(git -C "$wt" status --porcelain | wc -l)" 4
+}
+
+@test "a crashed task's snapshot is not applied when origin's branch has moved past its parent" {
+  crash_elsewhere
+  # After the checkpoint, the branch was pushed on: the snapshot's parent is behind origin's head.
+  local other=$BATS_TEST_TMPDIR/other later
+  git clone -q -b "$branch" "$BATS_TEST_TMPDIR/origin/home.git" "$other" 2>/dev/null
+  later=$(work "$other" later.txt)
+  push "$other"
+
+  run_bin -0 --separate-stderr team-open --task T1 --resume home
+  local reason="origin's $branch is at ${later:0:7}, past the snapshot's parent ${head:0:7}"
+  assert_equal "$stderr" "team-open: wip/T1 ${wip:0:7} not applied: $reason"
+  assert_equal "$(jq -c .snapshot <<<"$output")" "$(snapshot_facts "$wip" "$head" false "$(jq -n --arg r "$reason" '$r')")"
+  assert_equal "$(git -C "$wt" rev-parse HEAD)" "$later"
+  assert_equal "$(git -C "$wt" status --porcelain)" ""
+
+  # A parent origin's branch never had (commits lost with the machine) is said too.
+  git -C "$other" reset -q --hard "$head~1"
+  work "$other" elsewhere.txt >/dev/null
+  git -C "$other" push -q -f origin "HEAD:refs/heads/$branch"
+  git -C "$home" fetch -q origin "$branch"
+  git -C "$wt" reset -q --hard "$(git -C "$other" rev-parse HEAD)"
+  run_bin -0 --separate-stderr team-open --task T1 --resume home
+  assert_equal "$(jq -r .snapshot.reason <<<"$output")" \
+    "the snapshot's parent ${head:0:7} is not on origin's $branch, which is at $(git -C "$other" rev-parse --short=7 HEAD)"
+  assert_equal "$(jq -r .snapshot.applied <<<"$output")" false
+}
+
+@test "a task stowed after its last launch did not crash: its snapshot is left alone" {
+  crash_elsewhere
+  # home-pc handed off: its stowed came after the launch.
+  jq -cn --arg b "$branch" --arg h "$head" '{ts: (now | todate), task: "T1", event: "stowed", machine: "home-pc",
+    worktrees: [{project: "home", branch: $b, head: $h}], roles: ["builder"]}' >>"$TEAM_HOME/ledger.jsonl"
+
+  run_bin -0 --separate-stderr team-open --task T1 --resume home
+  assert_equal "$stderr" ""
+  assert_equal "$(jq -c . <<<"$output")" "$(facts home "$branch" "$wt" "$head" "$wt" '"tasks/T1/scratch"')"
+  assert_equal "$(git -C "$wt" status --porcelain)" ""
+  run -1 git -C "$home" rev-parse -q --verify refs/remotes/origin/wip/T1
+
+  # A launch after that stowed, with no handoff since, is a crash again.
+  launch reviewer "$wt"
+  run_bin -0 --separate-stderr team-open --task T1 --resume home
+  assert_equal "$(jq -r .snapshot.applied <<<"$output")" true
+}
+
+@test "a crashed task with no snapshot on origin says so" {
+  crash_elsewhere
+  git -C "$home" push -q origin --delete wip/T1
+
+  run_bin -0 --separate-stderr team-open --task T1 --resume home
+  local reason="origin has no wip/T1: no checkpoint saved uncommitted changes"
+  assert_equal "$stderr" "team-open: wip/T1 not applied: $reason"
+  assert_equal "$(jq -c .snapshot <<<"$output")" \
+    "$(jq -cn --arg r "$reason" '{ref: "wip/T1", commit: null, parent: null, at: null, applied: false, reason: $r}')"
+  assert_equal "$(git -C "$wt" status --porcelain)" ""
 }
 
 @test "a leased treehouse slot that is not clean is handed back and refused" {
@@ -359,4 +500,5 @@ restored_from() {
   run_bin -0 team-open --help
   assert_contains "$output" "team-open --task T<n> --resume <project>"
   assert_contains "$output" "worktree-moved"
+  assert_contains "$output" "wip/T<n>"
 }

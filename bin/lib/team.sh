@@ -7,7 +7,7 @@
 # --help with the calling script's header (then runs the script's help_more, if it defined one
 # before sourcing), and provides die, usage_error, team_project, ledger_jq, ledger_append,
 # task_events, known_task_events, open_task_events, task_status, task_worktrees, local_path,
-# archive_task_dir, machine_name, fence_reason, lease_gate, worktree_changes, non_records, commit_non_records,
+# archive_task_dir, machine_name, fence_reason, lease_gate, worktree_changes, worktree_tree, non_records, commit_non_records,
 # records_list, origin_git, origin_reason, commit_records, render_template, registered_pr,
 # attribution_lines, strip_attribution, live_sessions, discord_token, discord_api, github, pr_part
 # and task_state_json, and sets COORDINATOR_CHANNEL.
@@ -186,6 +186,24 @@ worktree_changes() {
   [[ -z $list ]] || echo "changes to tracked files: $list"
   list=$(git -C "$1" ls-files --others --exclude-standard | paste -sd ' ')
   [[ -z $list ]] || echo "untracked files: $list"
+}
+
+# The tree of the worktree <wt> as it is, uncommitted changes and untracked files included (files
+# git ignores are not), built in a copy of its index so the worktree's own index is never
+# touched; it equals HEAD's tree when the worktree is clean: worktree_tree <wt>
+worktree_tree() {
+  local wt=$1 index copy tree
+  index=$(git -C "$wt" rev-parse --path-format=absolute --git-path index) || return 1
+  copy=$(mktemp)
+  # A copy of the real index keeps what git knows of each file's state; with none, HEAD's.
+  if [[ -f $index ]]; then cp "$index" "$copy"; else GIT_INDEX_FILE=$copy git -C "$wt" read-tree HEAD; fi
+  if GIT_INDEX_FILE=$copy git -C "$wt" add -A && tree=$(GIT_INDEX_FILE=$copy git -C "$wt" write-tree); then
+    rm -f "$copy"
+    printf '%s\n' "$tree"
+  else
+    rm -f "$copy"
+    return 1
+  fi
 }
 
 # The records as a reader's list: "ledger.jsonl, manual-steps.md, tasks/, ...".
