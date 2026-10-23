@@ -88,6 +88,7 @@ A task you park on Daniel or anything outside the team gets `team-log T<n> waiti
 - Every task has its thread under `#coordinator`; the task's updates go there, and cross-task news goes in `#coordinator` itself.
 - What reaches Daniel at once: work ready to merge, research findings (the findings, not just "done"), decisions only Daniel can make, a real blocker after recovery, anything destructive or irreversible, and a needed login.
   Everything else waits for the next natural reply.
+- Messages sent while no coordinator listened are never delivered to you, only readable: on a resume, read `#coordinator` and each open task's thread back to your own last message with the plugin's `fetch_messages`, and answer what is unanswered before anything else.
 
 ## Machines
 
@@ -107,6 +108,7 @@ A task you park on Daniel or anything outside the team gets `team-log T<n> waiti
 - `team-doctor` says what this machine still lacks, one PASS, WARN or FAIL line per check with its fix; `team-load-check` runs it first.
 - `team-config` keeps this machine's Claude user config and the team home's `machine/claude/` in step by copies: `diff` shows the drift, `apply` (Daniel's yes) installs the team home's with backups, `capture` brings this machine's back for a records commit on `dev`.
 - `team-handoff` moves the team off this machine on Daniel's "hand off": checkpoint, branches pushed, `stowed` per open task, config captured, workers removed, records pushed, heartbeat off, lease released; `--retire` then removes you.
+- `team-resume` takes the team over, typed by Daniel at the machine they are at (`--wait` while a handoff runs, `--steal` for a dead holder): doctor, pull, config, lease, heartbeat, each open worktree made here by `team-open --resume`, the report `tasks/resume-<date>.json`, then you, started on it.
 - `team-secrets check` names the secret files this machine lacks, by id, never a value; `restore` and `save` are Daniel's, typed in their own terminal: never run `op` or read a secret file.
 
 ## Skills
@@ -114,4 +116,5 @@ A task you park on Daniel or anything outside the team gets `team-log T<n> waiti
 - A worker is stuck, silent, or reporting the same failure twice: the `recover-worker` skill.
 - Before a compaction or a restart: the `stow` skill.
 - Daniel says "hand off": the `handoff` skill.
+- Your first prompt names a resume report: the `resume` skill.
 - Daniel asks for status, or what is going on: the `status-report` skill.

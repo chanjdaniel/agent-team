@@ -66,7 +66,7 @@ assert_not_launched() {
 @test "--help prints the header" {
   run_bin -0 claude-coordinator --help
   assert_contains "$output" "Start the one session that owns Discord: the team's coordinator."
-  assert_contains "$output" "Usage: claude-coordinator [working-directory]"
+  assert_contains "$output" "Usage: claude-coordinator [--prompt <text>] [working-directory]"
   assert_equal "$(stub_calls claude)" ""
 }
 
@@ -131,6 +131,22 @@ assert_not_launched() {
   run_bin -0 claude-coordinator "$BATS_TEST_TMPDIR/elsewhere"
   assert_equal "$(cat "$STUB_CALLS/claude.cwd")" "$BATS_TEST_TMPDIR/elsewhere"
   assert_equal "$(stub_calls claude | tail -n 1)" "$(launch_argv)"
+}
+
+@test "--prompt replaces the first prompt, as team-resume starts it" {
+  mkdir -p "$BATS_TEST_TMPDIR/elsewhere"
+  run_bin -0 claude-coordinator --prompt "Follow the resume skill." "$BATS_TEST_TMPDIR/elsewhere"
+  assert_equal "$(cat "$STUB_CALLS/claude.cwd")" "$BATS_TEST_TMPDIR/elsewhere"
+  assert_equal "$(stub_calls claude | tail -n 1)" "$(launch_argv | jq -c '.[-1] = "Follow the resume skill."')"
+}
+
+@test "a malformed command line is a usage error, launching nothing" {
+  local args
+  for args in "--prompt" "--prompt ''" "a b" "--other" "$HOME/agent-team --prompt x"; do
+    eval "run_bin -2 --separate-stderr claude-coordinator $args"
+    assert_contains "$stderr" "usage: claude-coordinator [--prompt <text>] [working-directory]"
+  done
+  assert_equal "$(stub_calls claude)" ""
 }
 
 @test "a live coordinator refuses the launch, naming its session id" {

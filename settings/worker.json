@@ -17,6 +17,7 @@
       "Bash(git push origin HEAD:dev*)",
       "Bash(git push origin HEAD:main*)",
       "Bash(*team-lease*--steal*)",
+      "Bash(*team-resume*--steal*)",
       "Bash(git push * lease)",
       "Bash(git push * lease *)",
       "Bash(git push *:lease)",

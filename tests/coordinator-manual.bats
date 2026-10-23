@@ -59,11 +59,11 @@ section() {
   assert_equal "${unnamed[*]}" ""
 }
 
-@test "the manual triggers exactly the plugin's skills, handoff, recover-worker, stow and status-report" {
+@test "the manual triggers exactly the plugin's skills, handoff, recover-worker, resume, stow and status-report" {
   local skill
-  assert_equal "$(triggered_skills | paste -sd ' ')" "handoff recover-worker status-report stow"
+  assert_equal "$(triggered_skills | paste -sd ' ')" "handoff recover-worker resume status-report stow"
   assert_equal "$(cd "$plugin/skills" && find . -mindepth 1 -maxdepth 1 -type d -printf '%P\n' | sort | paste -sd ' ')" \
-    "handoff recover-worker status-report stow"
+    "handoff recover-worker resume status-report stow"
   for skill in $(triggered_skills); do
     # One line per trigger, so each stays a one-line pointer.
     assert_equal "$(grep -c "\`$skill\` skill" "$manual")" 1
@@ -160,4 +160,22 @@ section() {
   grep -qF 'up to 10 minutes' "$skill"
   grep -qF '`team-handoff --retire`' "$skill"
   grep -qF '`team-handoff` moves the team off this machine' "$manual"
+}
+
+@test "the resume skill holds the procedure in order: read, catch up on Discord, relaunch, log, post, clean up" {
+  local skill=$plugin/skills/resume/SKILL.md steps
+  steps=$(grep -oE '^[0-9]+\. \*\*[A-Za-z ]+\.\*\*' "$skill" | sed -E 's/^[0-9]+\. \*\*(.*)\.\*\*$/\1/' | paste -sd ,)
+  assert_equal "$steps" "Read,Catch up on Discord,Relaunch,Log,Post,Clean up"
+  grep -qF 'Read the report and run `team-snapshot`.' "$skill"
+  grep -qF 'Messages sent while no coordinator listened are never delivered to you, only readable.' "$skill"
+  grep -qF '`fetch_messages` back to your own last message there' "$skill"
+  grep -qF 'answer anything Daniel asked that has no answer, before anything else' "$skill"
+  grep -qF '`team-brief T<n> resume --name resume-<role> --force --set role=<role> --set brief=<that brief> --set from=' "$skill"
+  grep -qF '`team-worker T<n> <role> <worktree>' "$skill"
+  grep -qF '`team-log T<n> resumed`' "$skill"
+  grep -qF 'Delete the report once everything in it runs again.' "$skill"
+  # The manual names the command, the skill and the missed Discord history.
+  grep -qF '`team-resume` takes the team over' "$manual"
+  grep -qF 'Your first prompt names a resume report: the `resume` skill.' "$manual"
+  grep -qF 'Messages sent while no coordinator listened are never delivered to you, only readable: on a resume, read `#coordinator` and each open task'"'"'s thread back to your own last message' "$manual"
 }

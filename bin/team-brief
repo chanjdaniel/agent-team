@@ -4,7 +4,8 @@
 # Usage: team-brief T<n> <template> [--project <name>] [--set key=value]... [--set-file key=path]...
 #                   [--name <suffix>] [--force]
 #   template    one of templates/briefs/: planner-feature, planner-research, builder-ticket,
-#               builder-fix, builder-deliver, reviewer, rereview
+#               builder-fix, builder-deliver, reviewer, rereview, resume (a worker relaunched on
+#               another machine: --set role=, brief= its last brief, from= what it resumes after)
 #   --project   the project whose worktree the brief is for; required when the task has open
 #               worktrees in two projects
 #   --set       fill the placeholder {{key}} with value; --set-file with the file's text, without

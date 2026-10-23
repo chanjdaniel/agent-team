@@ -1,0 +1,262 @@
+#!/usr/bin/env bash
+# Take the team over on this machine, the one Daniel is at: run in a terminal here, once the
+# machine being left has handed off (its coordinator's handoff skill, on Daniel's "hand off").
+#
+# Usage: team-resume [--wait | --steal]
+# One line per step, each prefixed by the step; each step is idempotent, so a run that stopped
+# anywhere, run again, finishes the resume. In order:
+#   1. github       team-lease status reads the lease from origin: GitHub unreachable is exit 75
+#                   with nothing changed, as at any later step that reaches origin.
+#   2. doctor       team-doctor; any FAIL stops the resume with every FAIL listed and nothing
+#                   changed, but for the lease and heartbeat lines, which steps 3, 6 and 7 put
+#                   right (a fenced machine's lease line among them: the take clears the fence).
+#   3. lease        Read again. Held by another machine and fresh: refused, "home-pc holds the
+#                   lease (renewed 4 min ago): say 'hand off' to the coordinator there, then run
+#                   `team-resume --wait` here"; with --wait, read again every 30 s until it is
+#                   released (or goes stale, which refuses as below). Held elsewhere and stale:
+#                   refused, naming --steal. Before the pull, so a refusal changes nothing and a
+#                   wait ends before the handoff's records are pulled.
+#   4. team home    The team home's branch fast-forwarded to origin's (fetch, then merge
+#                   --ff-only); a branch that has diverged, or local changes in the way, refuses.
+#   5. config       team-config apply: the team's Claude config and each project's auto memory.
+#   6. lease        team-lease take; with --steal, team-lease take --steal on a lease another
+#                   machine holds, which asks for the holder's name typed on this terminal.
+#   7. heartbeat    team-timers enable.
+#   8. worktrees    team-open --task T<n> --resume <project> for each open worktree of each open
+#                   task, one line each ("T1 home: ..."); one that fails is said with its reason
+#                   on stderr and in the report, and the others still resume.
+#   9. report       tasks/resume-<date>.json (this machine's date): {machine, epoch, stolen_from,
+#                   written_at, tasks}, each task {task, stowed, worktrees, failures}: stowed the
+#                   task's latest stowed event ({ts, machine, roles, note}) or null, worktrees
+#                   team-open's facts ({project, branch, worktree, from, moved, head, archive},
+#                   archive null when no scratch was restored), failures [{project, branch,
+#                   reason}]. Not committed: the coordinator's resume skill deletes it.
+#  10. coordinator  claude-coordinator, with a first prompt naming the report and the resume skill;
+#                   then "Pin the coordinator in `claude agents` (Ctrl+T)."
+# Only Daniel steals: --steal needs this terminal, and deny rules stop the team's sessions typing
+# it. In ~/.local/state/agent-team/: resume.lock, one resume at a time.
+# TEAM_DOCTOR names the doctor to run instead of this checkout's team-doctor, and
+# TEAM_RESUME_POLL_SECONDS the seconds between --wait's reads (the tests' seams).
+# Exit 0 done, 1 refused or a step failed (a worktree that could not be re-homed included, after
+# the coordinator starts), 2 usage error, 75 GitHub unreachable or another resume running.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+# Seconds: the most one call to an origin may take, and --wait's interval.
+NET_TIMEOUT=60
+POLL_SECONDS=${TEAM_RESUME_POLL_SECONDS:-30}
+# The doctor's lines the resume itself puts right.
+OWN_CHECKS='["lease", "heartbeat"]'
+
+usage="usage: team-resume [--wait | --steal]"
+wait='' steal=''
+if (($# > 1)); then usage_error "$usage"; fi
+case ${1:-} in
+  '') ;;
+  --wait) wait=1 ;;
+  --steal) steal=1 ;;
+  *) usage_error "$usage" ;;
+esac
+[[ $POLL_SECONDS =~ ^[0-9]+$ ]] || usage_error "TEAM_RESUME_POLL_SECONDS must be a number of seconds"
+
+machine=$(machine_name) || exit 1
+bin=$(dirname "$TEAM_LIB")
+doctor=${TEAM_DOCTOR:-$bin/team-doctor}
+state=$HOME/.local/state/agent-team
+mkdir -p "$state"
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+NET_ERR=$scratch/net-err
+err=$scratch/err
+
+exec {lock_fd}>>"$state/resume.lock"
+if ! flock -n "$lock_fd"; then
+  echo "team-resume: another team-resume is running" >&2
+  exit 75
+fi
+
+# The first line of a sibling's stderr, without its "<script>: " prefix.
+first_error() {
+  grep -m1 . "$err" | sed -E 's/^(team-[a-z-]+|claude-coordinator): //' || true
+}
+
+# Each line of stdin as "<step>: <line>": prefixed <step>
+prefixed() {
+  local line
+  while IFS= read -r line; do printf '%s: %s\n' "$1" "$line"; done
+}
+
+# A sibling command of this checkout, with TEAM_HOME passed and the lock closed for it.
+team() {
+  TEAM_HOME=$TEAM_HOME "$bin/$1" "${@:2}" {lock_fd}>&-
+}
+
+offline() {
+  echo "team-resume: GitHub unreachable; no resume while offline ($1)" >&2
+  exit 75
+}
+
+# The lease as team-lease status --json reads it from origin; exit 75 when origin is unreachable.
+read_lease() {
+  local rc=0 out
+  out=$(team team-lease status --json 2>"$err") || rc=$?
+  ((rc != 75)) || offline "$(first_error)"
+  ((rc == 0)) || die "lease: cannot read the lease: $(first_error)"
+  printf '%s\n' "$out"
+}
+
+# What a lease held by another machine is: fresh, stale or not (held here, or released).
+elsewhere() {
+  jq -r 'if .state == "held" and (.mine | not) and .holder != $machine then
+      if .stale then "stale" else "fresh" end else "no" end' --arg machine "$machine" <<<"$1"
+}
+
+# The whole run is one function, read before it starts, so the pull of step 4 may change this
+# very file under it.
+main() {
+  local lease out rc fails holder age where branch before after
+
+  # 1. GitHub.
+  lease=$(read_lease)
+  echo "github: origin answers; $(jq -r '"the lease is \(.state)" + if .holder then " by \(.holder)" else "" end + ", epoch \(.epoch)"' <<<"$lease")"
+
+  # 2. The doctor.
+  rc=0
+  out=$(TEAM_HOME=$TEAM_HOME "$doctor" --json 2>"$err" {lock_fd}>&-) || rc=$?
+  jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1 || die "doctor: team-doctor did not answer (exit $rc): $(first_error)"
+  jq -r '.[] | select(.verdict == "WARN") | "doctor: WARN \(.check): \(.reason)"' <<<"$out"
+  fails=$(jq -r --argjson own "$OWN_CHECKS" '.[] | select(.verdict == "FAIL" and (.check | IN($own[]) | not))
+    | "  FAIL \(.check): \(.reason)" + if .fix == "" then "" else "; fix: \(.fix)" end' <<<"$out")
+  if [[ -n $fails ]]; then
+    printf 'team-resume: team-doctor reports what this machine lacks; fix each, then run team-resume again (nothing changed):\n%s\n' "$fails" >&2
+    exit 1
+  fi
+  echo "doctor: $(jq -r --argjson own "$OWN_CHECKS" '"\(map(select(.verdict == "PASS")) | length) passed, \(map(select(.verdict == "WARN")) | length) warned"
+    + ([.[] | select(.verdict == "FAIL") | .check] | if . == [] then "" else ", \(join(" and ")) left to the resume" end)' <<<"$out")"
+
+  # 3. The lease, read again: another machine's fresh lease refuses, or is waited for.
+  local said=''
+  while true; do
+    lease=$(read_lease)
+    where=$(elsewhere "$lease")
+    holder=$(jq -r .holder <<<"$lease") age=$(jq -r .age_minutes <<<"$lease")
+    case $where in
+      fresh)
+        [[ -z $steal ]] || break
+        [[ -n $wait ]] || die "$holder holds the lease (renewed $age min ago): say 'hand off' to the coordinator there, then run \`team-resume --wait\` here"
+        if [[ -z $said ]]; then
+          echo "lease: $holder holds the lease (renewed $age min ago); waiting for its release, reading it every ${POLL_SECONDS}s (Ctrl+C stops, changing nothing)"
+          said=1
+        fi
+        sleep "$POLL_SECONDS"
+        ;;
+      stale)
+        [[ -z $steal ]] || break
+        die "$holder holds the lease, but has not renewed it for $age min: if $holder is gone for good, run \`team-resume --steal\` here, typing its name when asked"
+        ;;
+      *) break ;;
+    esac
+  done
+  [[ -z $said ]] || echo "lease: $(jq -r 'if .state == "released" then "released by \(.holder)" else "held by \(.holder)" end + ", epoch \(.epoch)"' <<<"$lease")"
+
+  # 4. The team home, up to date with origin's.
+  branch=$(git -C "$TEAM_HOME" symbolic-ref -q --short HEAD) ||
+    die "team home: $TEAM_HOME is on a detached HEAD; check out its branch, then run team-resume again"
+  before=$(git -C "$TEAM_HOME" rev-parse HEAD)
+  rc=0
+  origin_git -C "$TEAM_HOME" fetch -q --no-write-fetch-head origin "+refs/heads/$branch:refs/remotes/origin/$branch" || rc=$?
+  ((rc == 0)) || offline "cannot fetch $branch: $(origin_reason "$rc")"
+  git -C "$TEAM_HOME" merge -q --ff-only "refs/remotes/origin/$branch" >/dev/null 2>"$err" ||
+    die "team home: $branch cannot be fast-forwarded to origin's ($(grep -m1 . "$err" | sed -E 's/^(fatal|error): //')); bring it level with origin, then run team-resume again"
+  after=$(git -C "$TEAM_HOME" rev-parse HEAD)
+  if [[ $before == "$after" ]]; then
+    echo "team home: $branch is up to date at ${after:0:7}"
+  else
+    echo "team home: $branch fast-forwarded to ${after:0:7}"
+  fi
+
+  # 5. The team's Claude config.
+  rc=0
+  out=$(team team-config apply 2>"$err") || rc=$?
+  ((rc == 0)) || die "config: team-config apply failed: $(first_error); run team-resume again once it is fixed"
+  [[ -z $out ]] || prefixed config <<<"$out"
+
+  # 6. The lease.
+  rc=0
+  if [[ -n $steal && $(elsewhere "$(read_lease)") != no ]]; then
+    out=$(team team-lease take --steal 2>"$err") || rc=$?
+  else
+    [[ -z $steal ]] || echo "lease: nothing to steal, so a plain take"
+    out=$(team team-lease take 2>"$err") || rc=$?
+  fi
+  ((rc != 75)) || offline "$(first_error)"
+  ((rc == 0)) || die "lease: $(first_error)"
+  echo "lease: $out"
+  lease=$(read_lease)
+
+  # 7. The heartbeat.
+  out=$(team team-timers enable 2>"$err") || die "heartbeat: $(first_error); run team-resume again"
+  echo "heartbeat: $out"
+
+  # 8. Each open task's worktrees, made here.
+  local entry task project reason tasks='[]' failed=0 task_json moved
+  local -a open=()
+  if [[ -e $TEAM_HOME/ledger.jsonl ]]; then
+    mapfile -t open < <(ledger_jq 'ledger_events | by_task | . as $tasks | open_tasks[] | . as $task
+      | {task: $task,
+         stowed: ($tasks[$task] | map(select(.event == "stowed")) | last
+           | if . then {ts, machine, roles} + (if .note then {note} else {} end) else null end),
+         open: [$tasks[$task] | open_worktrees(.[]; $home) | {project, branch}]}' -nRc "$TEAM_HOME/ledger.jsonl")
+  fi
+  for entry in "${open[@]}"; do
+    task=$(jq -r .task <<<"$entry")
+    task_json=$(jq -c '{task, stowed, worktrees: [], failures: []}' <<<"$entry")
+    if [[ $(jq '.open | length' <<<"$entry") == 0 ]]; then echo "$task: no open worktree"; fi
+    while IFS=$'\t' read -r project branch; do
+      rc=0
+      out=$(team team-open --task "$task" --resume "$project" 2>"$err") || rc=$?
+      if ((rc == 0)); then
+        sed -E 's/^team-open: //' "$err" | prefixed "$task $project"
+        moved=$(jq -r 'if .moved then ", moved from \(.from)" else "" end
+          + if .archive then ", scratch restored from \(.archive)" else ", no scratch to restore" end' <<<"$out")
+        echo "$task $project: $(jq -r '"\(.worktree) on \(.branch) at \(.head[:7])"' <<<"$out")$moved"
+        task_json=$(jq -c --argjson wt "$out" \
+          '.worktrees += [$wt | {project, branch, worktree, from, moved, head, archive}]' <<<"$task_json")
+      else
+        failed=$((failed + 1))
+        reason=$(grep . "$err" | sed -E 's/^team-open: //' | paste -sd ' ' || true)
+        [[ -n $reason ]] || reason="team-open exited $rc"
+        echo "team-resume: $task $project: not re-homed: $reason" >&2
+        task_json=$(jq -c --arg p "$project" --arg b "$branch" --arg r "$reason" \
+          '.failures += [{project: $p, branch: $b, reason: $r}]' <<<"$task_json")
+      fi
+    done < <(jq -r '.open[] | [.project, .branch] | @tsv' <<<"$entry")
+    tasks=$(jq -c --argjson t "$task_json" '. + [$t]' <<<"$tasks")
+  done
+  ((${#open[@]})) || echo "worktrees: no open task"
+
+  # 9. The report.
+  local report
+  report=$TEAM_HOME/tasks/resume-$(date +%F).json
+  mkdir -p "$TEAM_HOME/tasks"
+  jq -n --arg machine "$machine" --argjson lease "$lease" --argjson tasks "$tasks" \
+    '{machine: $machine, epoch: $lease.epoch, stolen_from: $lease.stolen_from,
+      written_at: (now | todate), tasks: $tasks}' >"$report.$$"
+  mv -f "$report.$$" "$report"
+  echo "report: $report"
+
+  # 10. The coordinator.
+  rc=0
+  out=$(team claude-coordinator --prompt "You are the coordinator, resuming the team on $machine. Follow the \`resume\` skill with the report $report." "$TEAM_HOME" 2>"$err") || rc=$?
+  ((rc == 0)) || die "coordinator: $(first_error); start it with claude-coordinator once that is fixed, and tell it to follow the resume skill with $report"
+  [[ -z $out ]] || prefixed coordinator <<<"$out"
+  echo "coordinator: started, with the resume skill and the report"
+  echo "Pin the coordinator in \`claude agents\` (Ctrl+T)."
+  if ((failed)); then
+    echo "team-resume: $failed worktree(s) could not be re-homed; the report names each, and the coordinator says so on Discord" >&2
+    exit 1
+  fi
+}
+
+main "$@"
+exit

@@ -21,6 +21,7 @@
       "Bash(sudo)",
       "Bash(sudo *)",
       "Bash(*team-lease*--steal*)",
+      "Bash(*team-resume*--steal*)",
       "Bash(git push * lease)",
       "Bash(git push * lease *)",
       "Bash(git push *:lease)",

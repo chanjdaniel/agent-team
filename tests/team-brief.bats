@@ -157,7 +157,7 @@ EOF
 
 @test "every real template renders for each delivery with no placeholder left and no em dash" {
   assert_equal "$(templates | paste -sd ' ')" \
-    "builder-deliver builder-fix builder-ticket planner-feature planner-research rereview reviewer"
+    "builder-deliver builder-fix builder-ticket planner-feature planner-research rereview resume reviewer"
   open_t12
   open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
   local task template keys sets key brief
@@ -182,6 +182,22 @@ EOF
     'gh pr create --repo chanjdaniel/agent-team --base main --head feat/T14-team-tooling'
   refute_grep no-mistakes "$TEAM_HOME/tasks/T14/brief-builder-fix.md"
   refute_grep 'gh pr create' "$TEAM_HOME/tasks/T12/brief-builder-deliver.md"
+}
+
+@test "the resume brief sends a relaunched worker to its last brief, the handoff note and the branch" {
+  open_t12
+  run_bin -0 team-brief --help
+  assert_contains "$output" "rereview, resume (a worker relaunched on"
+  run_bin -0 team-brief T12 resume --name resume-builder --set role=builder \
+    --set "brief=~/agent-team/tasks/T12/brief.md" --set "from=the handoff from home-pc at 2026-10-23T14:05:00Z"
+  local brief
+  brief=$(<"$output")
+  assert_equal "$(head -n 1 <<<"$brief")" "# T12 brief (builder): resume rate-limit the applicant sign-in endpoints"
+  assert_contains "$brief" "you are the builder, resuming the task after the handoff from home-pc at 2026-10-23T14:05:00Z."
+  assert_contains "$brief" "Worktree: \`~/.treehouse/Conventioner-d4c77a/4/Conventioner\`, branch \`fix/T12-applicant-sign-in-rate-limit\`"
+  assert_contains "$brief" "1. Read your brief \`~/agent-team/tasks/T12/brief.md\`"
+  assert_contains "$brief" "2. Then \`.scratch/task/handoff.md\` if it exists"
+  assert_contains "$brief" "3. Check the branch: \`git status\`, and \`git log origin/dev..HEAD\`"
 }
 
 @test "each delivery brings the branch up to date with the base before reporting, and never uses sudo" {
