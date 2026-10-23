@@ -338,14 +338,21 @@ assert_prod_write_gated() {
   # --restricted ignores the user settings, and without this the coordinator's replies (the
   # write protocol's answers) never reach the session (T16 ticket 04's live check).
   assert_equal "$(jq -r .crossSessionInbound "$s")" accept
+  # The same for the push of a permission prompt to Daniel's phone: without these no write
+  # prompt reached it (T16 ticket 08's first live run).
+  assert_equal "$(jq -c '[.remoteControlAtStartup, .inputNeededNotifEnabled]' "$s")" '[true,true]'
   assert_equal "$(jq -r '.hooks.PreToolUse[0] | "\(.matcher) \(.hooks[0].command)"' "$s")" \
     "Edit|Write|MultiEdit|NotebookEdit $REPO_ROOT/bin/hooks/scratch-only-edits"
   # The ops log goes to the team home's task directory, which is not this checkout's in a test.
   local event
   for event in PreToolUse PostToolUse PostToolUseFailure; do
-    assert_equal "$(jq -c --arg e "$event" '.hooks[$e][-1].hooks[0] | [.command, .args]' "$s")" \
-      "$(jq -cn --arg c "$REPO_ROOT/bin/hooks/ops-log" --arg t "$TEAM_HOME/tasks/T7" '[$c, [$t]]')"
+    assert_equal "$(jq -c --arg e "$event" '[.hooks[$e][].hooks[0] | select(.command | endswith("/ops-log"))
+      | [.command, .args]]' "$s")" \
+      "$(jq -cn --arg c "$REPO_ROOT/bin/hooks/ops-log" --arg t "$TEAM_HOME/tasks/T7" '[[$c, [$t]]]')"
   done
+  # Each write's prompt carries the hook's summary of it.
+  assert_equal "$(jq -r '.hooks.PreToolUse[-1] | "\(.matcher) \(.hooks[0].command)"' "$s")" \
+    "^mcp__.*prod-write.*__ $REPO_ROOT/bin/hooks/ops-write-prompt"
 }
 
 @test "a write launch adds prod-write's plugin and server beside prod-read's, every write tool behind an ask rule" {
@@ -372,8 +379,8 @@ assert_prod_write_gated() {
   assert_prod_write_gated "$s"
   assert_equal "$(jq -c .permissions.allow "$s")" '["mcp__prod-read__*","Edit(./.scratch/**)"]'
   # The ops log's hooks cover both toolkits' tools, and block a write whose line is lost.
-  assert_equal "$(jq -r '.hooks.PreToolUse[-1] | "\(.matcher) \(.hooks[0].onFailure)"' "$s")" \
-    '^mcp__.*prod-(read|write).*__ block'
+  assert_equal "$(jq -r '.hooks.PreToolUse[] | select(.hooks[0].command | endswith("/ops-log"))
+    | "\(.matcher) \(.hooks[0].onFailure)"' "$s")" '^mcp__.*prod-(read|write).*__ block'
   run -1 grep -Eq 'mongodb(\+srv)?://|MDB_MCP_CONNECTION|op://|password' <(jq 'del(.permissions.deny)' "$s")
 
   assert_equal "$(launches | jq -c '[.toolkits, .request]')" "$(jq -cn --arg r "$request" '[["prod-read", "prod-write"], $r]')"

@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# PreToolUse hook for the ops role's prod-write tools: answers "ask" with a one-line summary of the
+# write, which Claude Code shows Daniel in the permission prompt beside the tool's input, so the
+# prompt on the phone says plainly what will change.
+#
+# Usage: ops-write-prompt   (Claude Code sends the event on stdin)
+#
+# The summary names the database and collection and, per tool: the number of documents to insert;
+# the filter and the change of an update (and an upsert); the filter of a delete; the index to
+# create or drop. An empty or missing filter reads "DELETE EVERY DOCUMENT" or "UPDATE EVERY
+# DOCUMENT". A filter or change longer than 160 characters is cut. A tool or input the hook cannot
+# read still gets "ask", with a reason saying to read the input. It never approves anything: the
+# ask rules in settings/ops.json prompt for every write with or without it. A call that is not a
+# prod-write one gets no answer.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/team.sh" "$@"
+
+[[ $# -eq 0 ]] || usage_error "usage: ops-write-prompt"
+input=$(cat)
+
+# Not a prod-write call (in either tool name form): no answer.
+if jq -e '.tool_name | strings | test("^mcp__(prod-write|plugin_prod-write_prod-write)__")' <<<"$input" >/dev/null 2>&1 ||
+  ! jq -e . <<<"$input" >/dev/null 2>&1; then
+  reason=$(jq -r '
+    def clip: tojson | if length > 160 then .[:157] + "..." else . end;
+    def empty_filter: . == null or . == {};
+    (.tool_name | split("__")[-1]) as $tool
+    | .tool_input as $in
+    | "\($in.database // "?").\($in.collection // "?")" as $on
+    | "PRODUCTION WRITE: " + (
+        if $tool == "insert-many" then
+          ($in.documents | length) as $n | "insert \($n) document\(if $n == 1 then "" else "s" end) into \($on)"
+        elif $tool == "delete-many" then
+          if $in.filter | empty_filter then "DELETE EVERY DOCUMENT in \($on) (the filter is empty: {})"
+          else "delete the documents matching \($in.filter | clip) in \($on)" end
+        elif $tool == "update-many" then
+          (if $in.filter | empty_filter then "UPDATE EVERY DOCUMENT in \($on) (the filter is empty: {})"
+           else "update the documents matching \($in.filter | clip) in \($on)" end)
+          + " with \($in.update | clip)"
+          + (if $in.upsert == true then ", inserting one if none matches" else "" end)
+        elif $tool == "create-index" then
+          "create the index \($in.name // "?") on \($on), keys \([$in.definition[]?.keys] | if length == 1 then .[0] else . end | clip)"
+        elif $tool == "drop-index" then "drop the index \($in.indexName // "?") from \($on)"
+        else "\($tool) on \($on); read its input before you approve" end)' <<<"$input" 2>/dev/null) ||
+    reason='PRODUCTION WRITE: read its input before you approve'
+  jq -cn --arg reason "$reason" \
+    '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "ask", permissionDecisionReason: $reason}}'
+fi

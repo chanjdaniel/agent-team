@@ -1,5 +1,7 @@
 {
   "crossSessionInbound": "accept",
+  "remoteControlAtStartup": true,
+  "inputNeededNotifEnabled": true,
   "permissions": {
     "allow": ["mcp__prod-read__*", "Edit(./.scratch/**)"],
     "ask": [
@@ -44,6 +46,10 @@
       {
         "matcher": "^mcp__.*prod-(read|write).*__",
         "hooks": [{ "type": "command", "command": "@TEAM_HOME@/bin/hooks/ops-log", "args": ["@TASK_DIR@"], "onFailure": "block" }]
+      },
+      {
+        "matcher": "^mcp__.*prod-write.*__",
+        "hooks": [{ "type": "command", "command": "@TEAM_HOME@/bin/hooks/ops-write-prompt" }]
       }
     ],
     "PostToolUse": [

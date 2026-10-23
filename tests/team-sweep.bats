@@ -219,6 +219,12 @@ T5 no-worker: no live session among its 1 launch (latest T5-builder 33333333); n
 T42 stray: T42-reviewer 88888888 is live but T42 is not in the ledger; next: read claude logs 88888888 for anything left to log, then stop it with claude stop 88888888"
 }
 
+@test "the load check's T0 sessions are never stray: T0 is the load check, not a task" {
+  sessions "$(session 6f93fe38 T0-ops busy blocked)" "$(session 4f2a9c1e T0-planner idle)"
+  run_bin -0 team-sweep
+  assert_equal "$output" ""
+}
+
 @test "a closed task finds nothing but its stray sessions" {
   opened T7
   event T7 closed '{archive: [], returned: [], kept: []}'

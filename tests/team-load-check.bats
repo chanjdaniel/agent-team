@@ -201,7 +201,7 @@ write_session() {
   } >"$s/tools.txt"
   local tool
   for tool in "${prod_write_tools[@]}"; do
-    printf '%s\n' "$tool: calling" "$tool: denied: The user doesn't want to proceed with this tool use."
+    echo "$tool: denied: The user doesn't want to proceed with this tool use."
   done >"$s/writes.txt"
   transcript list-collections:result "${prod_write_tools[@]/%/:user-rejected}" >"$STUB_FIXTURES/transcript.jsonl"
   oplog_lines requested ran
@@ -209,7 +209,8 @@ write_session() {
 }
 
 # transcript <tool>:<outcome>...: a transcript with one call per argument, in order; the outcome
-# is 'result', or the toolDenialKind of a call that was refused.
+# is 'result', 'pending' for a call still waiting on its prompt (no result yet), or the
+# toolDenialKind of a call that was refused.
 transcript() {
   local call tool outcome i=0 server
   for call in "$@"; do
@@ -217,6 +218,7 @@ transcript() {
     [[ $tool != list-collections ]] || server=prod-read
     jq -nc --arg name "mcp__${server}__$tool" --arg id "toolu_$i" \
       '{type: "assistant", message: {content: [{type: "text", text: "calling"}, {type: "tool_use", id: $id, name: $name, input: {}}]}}'
+    [[ $outcome != pending ]] || continue
     jq -nc --arg id "toolu_$i" --arg kind "$outcome" \
       '{type: "user", message: {content: [{type: "tool_result", tool_use_id: $id, content: "x"}]}}
         + (if $kind == "result" then {} else {toolDenialKind: $kind} end)'
@@ -276,24 +278,22 @@ write_line() {
   local s=$STUB_FIXTURES/session
   mkdir -p "$STUB_FIXTURES/later"
   mv "$s/writes.txt" "$s/done.txt" "$STUB_FIXTURES/later/"
-  echo 'insert-many: calling' >"$s/writes.txt"
   cp "$STUB_FIXTURES/transcript.jsonl" "$STUB_FIXTURES/transcript.later.jsonl"
   transcript list-collections:result insert-many:user-rejected >"$STUB_FIXTURES/transcript.jsonl"
   echo blocked >"$STUB_FIXTURES/state"
   run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit prod-read --toolkit prod-write
-  assert_equal "$(grep -c "coordinator, send T0-ops the message 'T0 continue'" <<<"$output")" 1
+  assert_equal "$(grep -c "coordinator, send it 'T0 continue' (to its Remote Control ref from ListAgents)" <<<"$output")" 1
   assert_equal "${lines[-1]}" "PASS"
 }
 
-@test "a session waiting on a prompt, not stopped by a decline, is not nudged" {
+@test "a session that went on after a decline, waiting on its next prompt, is not nudged" {
   ops_setup
   write_session
   local s=$STUB_FIXTURES/session
   mkdir -p "$STUB_FIXTURES/later"
   mv "$s/writes.txt" "$s/done.txt" "$STUB_FIXTURES/later/"
-  printf '%s\n' 'insert-many: calling' 'insert-many: denied: no' 'update-many: calling' >"$s/writes.txt"
   cp "$STUB_FIXTURES/transcript.jsonl" "$STUB_FIXTURES/transcript.later.jsonl"
-  transcript list-collections:result insert-many:user-rejected >"$STUB_FIXTURES/transcript.jsonl"
+  transcript list-collections:result insert-many:user-rejected update-many:pending >"$STUB_FIXTURES/transcript.jsonl"
   echo blocked >"$STUB_FIXTURES/state"
   run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit prod-read --toolkit prod-write
   [[ $output != *"T0 continue"* ]]

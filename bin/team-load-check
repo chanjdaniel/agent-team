@@ -152,13 +152,14 @@ This is an automated load check of the ops role on task T0, request 'load-check'
 EOF
   if [[ -n $writes ]]; then
     cat <<'EOF'
-5. Five write calls, each expected to raise a permission prompt that Daniel declines. A decline is the expected result: it is not a reason to send BLOCKED, and a declined call is never retried. Every call takes connectionId 'preconfigured', database 'conventioner' and collection 'ops_checks' (load the tools' schemas with ToolSearch first). For each call in order: first add the line '<tool>: calling' to writes.txt (rewrite the file with its earlier lines kept), then make the call alone in its message, then add '<tool>: denied: <first line of the refusal>', '<tool>: ran' or '<tool>: error: <first line of the error>'. If a decline stops you, the coordinator sends you 'T0 continue': then add that call's line and go on with the next call.
+5. Five write calls, each expected to raise a permission prompt that Daniel declines. A decline is the expected result: it is not a reason to send BLOCKED, and a declined call is never retried. Every call takes connectionId 'preconfigured', database 'conventioner' and collection 'ops_checks' (load the tools' schemas with ToolSearch first). Make the five calls in this order, each alone in its message, one right after the other, and write no file between them; remember each call's outcome. If a decline stops you, the coordinator sends you 'T0 continue': then go on with the next call.
  a. mcp__prod-write__insert-many with documents [{"check": "load-check"}]
  b. mcp__prod-write__update-many with filter {"check": "load-check"} and update {"$set": {"checked": true}}
  c. mcp__prod-write__delete-many with filter {} (exactly an empty filter)
  d. mcp__prod-write__create-index with name 'check_1' and definition [{"type": "classic", "keys": {"check": 1}}]
  e. mcp__prod-write__drop-index with indexName 'check_1' and type 'classic'
-6. Write done.txt with the line 'done'. Then stop, sending no message.
+6. After the fifth call, write writes.txt with one line per call, in order: '<tool>: denied: <first line of the refusal>', '<tool>: ran' or '<tool>: error: <first line of the error>', where <tool> is the name after mcp__prod-write__ (insert-many and so on).
+7. Write done.txt with the line 'done'. Then stop, sending no message.
 EOF
   else
     echo "5. Write done.txt with the line 'done'. Then stop, sending no message."
@@ -173,6 +174,15 @@ transcript_calls() {
     | ([$entries[] | .message.content? | arrays | .[] | select(.type == "tool_use") | {(.id): .name}] | add // {}) as $names
     | $entries[] | . as $entry | .message.content? | arrays | .[] | select(.type == "tool_result")
     | "\($names[.tool_use_id] // "unknown") \($entry.toolDenialKind // "result")"' "$1" 2>/dev/null || true
+}
+
+# stopped_after_decline <transcript>: whether a decline stopped the session: a user-rejected call
+# with no assistant message after it. A session waiting on its next prompt has its call after the
+# decline, and one that went on by itself has its words.
+stopped_after_decline() {
+  jq -en '[inputs | select(.type == "assistant" or .type == "user")] as $messages
+    | ([$messages | to_entries[] | select(.value.type == "assistant") | .key] | max // -1) as $last
+    | any($messages[$last + 1:][]; .toolDenialKind == "user-rejected")' "$1" >/dev/null 2>&1
 }
 
 # ops_events <ops log> <its line count before the launch>: the event lines since the launch; the
@@ -270,7 +280,7 @@ ops_check() {
   # 8 minutes for the 1Password prompts, the servers' 120-second timeout and the agent's searches,
   # and 22 more with prod-write for Daniel's five declines. A session that ended its turn on a
   # report can show as blocked, so only done.txt counts.
-  local s=working polls=96 declined=0 recorded=0 asked=0 waited=0
+  local s=working polls=96 declined=0 asked=0 waited=0
   [[ -z $writes ]] || polls=360
   for _ in $(seq 1 "$polls"); do
     s=$(state "$id")
@@ -280,11 +290,10 @@ ops_check() {
       # sends when asked: once per decline, and again every 2 minutes while it stays stopped.
       [[ -n $uuid ]] || uuid=$(claude agents --json --all 2>/dev/null | jq -r --arg id "$id" '(.[] | select(.id == $id) | .sessionId) // empty')
       [[ -z $uuid ]] || transcript=$(transcript_of "$uuid" | grep '\.jsonl$' || true)
-      declined=$(transcript_calls "${transcript:-/dev/null}" | grep -c ' user-rejected$' || true)
-      recorded=$(grep -cE '^[a-z-]+: (denied|ran|error)' "$dir/writes.txt" 2>/dev/null || true)
-      if [[ $s != working && $declined -gt $recorded ]]; then
+      if [[ $s != working && -n $transcript ]] && stopped_after_decline "$transcript"; then
+        declined=$(transcript_calls "$transcript" | grep -c ' user-rejected$' || true)
         if [[ $declined -gt $asked || $waited -ge 24 ]]; then
-          echo "load check: T0-ops stopped after Daniel declined a write: coordinator, send T0-ops the message 'T0 continue'"
+          echo "load check: T0-ops stopped after Daniel declined a write: coordinator, send it 'T0 continue' (to its Remote Control ref from ListAgents)"
           asked=$declined waited=0
         fi
         waited=$((waited + 1))
