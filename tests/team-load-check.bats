@@ -91,13 +91,14 @@ SH
   mkdir -p "$s"
   printf '%s\n' 'prod-read: connected' 'notice: connected' >"$s/connect.txt"
   {
-    echo "tools: Read, Glob, Grep, Edit, Write, ToolSearch, SendMessage, ListAgents, EndConversation, $(printf 'mcp__prod-read__%s, ' "${prod_read_tools[@]}" | sed 's/, $//')"
+    echo "tools: Read, Glob, Grep, Edit, Write, ToolSearch, SendMessage, ListAgents, Skill, EndConversation, $(printf 'mcp__prod-read__%s, ' "${prod_read_tools[@]}" | sed 's/, $//')"
     printf 'mcp__prod-read__%s\n' "${prod_read_tools[@]}"
     printf '%s: absent\n' Bash WebFetch WebSearch Agent Artifact
   } >"$s/tools.txt"
   printf '%s\n' 'grep-environ: refused: Permission to read /proc/self/environ has been denied.' \
     'read-status: refused: File is in a directory that is denied by your permission settings.' >"$s/probes.txt"
   printf '%s\n' 'list-collections: ok' 'count: 2' 'names: markets, stalls' >"$s/query.txt"
+  echo 'prod-read:querying-production-data' >"$s/skills.txt"
   echo 'done' >"$s/done.txt"
   oplog_lines requested ran
 }
@@ -116,7 +117,7 @@ oplog_lines() {
   printf '%s\n' '# Ops log of T0' '' '- 2026-10-22T00:00:00Z requested `prod-read` `find` `{}`' >"$TEAM_HOME/tasks/T0/ops-log.md"
   run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit prod-read
   assert_contains "$output" "load check: Daniel, a 1Password prompt is coming on the PC: approve it"
-  assert_contains "$output" "load check: 11 MCP tools, 9 built-in tools"
+  assert_contains "$output" "load check: 11 MCP tools, 10 built-in tools"
   assert_equal "${lines[-1]}" "PASS"
   # Launched through team-worker as the T0 ops session, in the given worktree.
   stub_calls claude | jq -e --arg wt "$(realpath "$wt")" 'select(.[0] == "--bg")
@@ -125,6 +126,7 @@ oplog_lines() {
   local inventory=$TEAM_HOME/tasks/T0/inventory-prod-read.txt
   assert_equal "$(sed '/^---$/q' "$inventory" | grep -c '^mcp__prod-read__')" 11
   assert_contains "$(<"$inventory")" $'---\ntools: Read'
+  assert_contains "$(<"$inventory")" $'\nskill: prod-read:querying-production-data'
   assert_equal "$(find "$HOME/.claude/projects" -name "$ops_uuid*")" ""
   assert_equal "$(stub_calls claude | jq -c 'select(.[0] == "rm")')" '["rm","6f93fe38"]'
 }
@@ -143,6 +145,32 @@ oplog_lines() {
   assert_contains "$output" "FAIL: the Read of /proc/self/status was not refused"
   assert_equal "${lines[-1]}" "load check FAILED (inventory in tasks/T0/)"
   assert_equal "$(find "$HOME/.claude/projects" -name "$ops_uuid*")" ""
+}
+
+@test "an ops session must see its toolkits' skills and no other skill" {
+  ops_setup
+  local s=$STUB_FIXTURES/session
+  printf '%s\n' simplify prod-write:changing-production-data loop >"$s/skills.txt"
+  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-read
+  assert_contains "$output" "FAIL: skills beyond the toolkits': simplify prod-write:changing-production-data loop"
+  assert_contains "$output" "FAIL: the session cannot invoke querying-production-data"
+  assert_equal "${lines[-1]}" "load check FAILED (inventory in tasks/T0/)"
+
+  # The bare names count as well as the namespaced ones; no skills file is no skill.
+  rm -f "$STUB_FIXTURES/launched" "$STUB_FIXTURES/removed"
+  echo querying-production-data >"$s/skills.txt"
+  run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit prod-read
+  rm -f "$STUB_FIXTURES/launched" "$STUB_FIXTURES/removed" "$s/skills.txt"
+  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-read
+  assert_contains "$output" "FAIL: the session cannot invoke querying-production-data"
+
+  # A write session needs both.
+  rm -f "$STUB_FIXTURES/launched" "$STUB_FIXTURES/removed"
+  write_session
+  echo prod-read:querying-production-data >"$s/skills.txt"
+  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-read --toolkit prod-write
+  assert_contains "$output" "FAIL: the session cannot invoke changing-production-data"
+  [[ $output != *"skills beyond"* ]]
 }
 
 @test "the ops log must gain exactly a requested and a ran line for the one read" {
@@ -177,11 +205,12 @@ write_session() {
   local s=$STUB_FIXTURES/session
   printf '%s\n' 'prod-read: connected' 'notice: connected' 'prod-write: connected' 'notice: connected' >"$s/connect.txt"
   {
-    echo "tools: Read, Glob, Grep, Edit, Write, ToolSearch, SendMessage, ListAgents, EndConversation"
+    echo "tools: Read, Glob, Grep, Edit, Write, ToolSearch, SendMessage, ListAgents, Skill, EndConversation"
     printf 'mcp__prod-read__%s\n' "${prod_read_tools[@]}"
     printf 'mcp__prod-write__%s\n' "${prod_write_tools[@]}"
     printf '%s: absent\n' Bash WebFetch WebSearch Agent Artifact
   } >"$s/tools.txt"
+  printf '%s\n' prod-read:querying-production-data prod-write:changing-production-data >"$s/skills.txt"
   local tool
   for tool in "${prod_write_tools[@]}"; do
     echo "$tool: denied: The user doesn't want to proceed with this tool use."
@@ -216,7 +245,7 @@ write_line() {
   write_session
   run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit prod-read --toolkit prod-write
   assert_contains "$output" "load check: Daniel, two 1Password prompts are coming on the PC: approve them; then decline each of the five write prompts on the phone"
-  assert_contains "$output" "load check: 16 MCP tools, 9 built-in tools"
+  assert_contains "$output" "load check: 16 MCP tools, 10 built-in tools"
   assert_equal "${lines[-1]}" "PASS"
   # Both toolkits reach team-worker, and the prompt has the empty delete-many filter.
   stub_calls claude | jq -e 'select(.[0] == "--bg")

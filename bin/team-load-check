@@ -20,6 +20,8 @@
 #     in the --mcp-config form only;
 #   - the only built-in tools are the ops allowlist's (no Bash, WebFetch, WebSearch, Agent or
 #     Artifact);
+#   - the only skills it can invoke are its toolkits' own, querying-production-data and, with
+#     prod-write, changing-production-data, and it can invoke each;
 #   - the file tools are refused on /proc (a count-only Grep of /proc/self/environ and a Read of
 #     /proc/self/status);
 #   - one read, list-collections on conventioner, runs and the ops log gains its requested and ran
@@ -134,7 +136,7 @@ planner_check() {
 prod_read_tools=(aggregate aggregate-db collection-indexes collection-schema collection-storage-size
   count db-stats explain find list-collections list-databases)
 prod_write_tools=(insert-many update-many delete-many create-index drop-index)
-ops_builtins='^(Read|Glob|Grep|Edit|Write|ToolSearch|SendMessage|ListAgents|EndConversation)$'
+ops_builtins='^(Read|Glob|Grep|Edit|Write|ToolSearch|SendMessage|ListAgents|Skill|EndConversation)$'
 # A connection string's user-and-password part: never the bare user names the docs mention.
 leak_re='conventioner-ops-(read|write):[A-Za-z0-9._~%!$&()*+,;=-]+@'
 
@@ -145,7 +147,7 @@ ops_prompt() {
   cat <<EOF
 This is an automated load check of the ops role on task T0, request 'load-check'. It replaces your brief: read no data docs, and message no one; the check reads the files you write. Write every file with the Write tool in $1/. Do each step in order.
 1. Wait for $servers: search with ToolSearch for each, and repeat while it says a server is still connecting, about 30 searches at most. Write connect.txt with, for each of $servers, a line '<server>: connected', '<server>: failed', '<server>: timed out' or '<server>: still connecting after <n> searches', then a line 'notice: ' followed by the exact text of the last thing ToolSearch or the system told you about it. If any of them is not connected, write done.txt with the line 'not connected' and stop.
-2. Write tools.txt: a line 'tools: ' followed by every tool name you have, built-in and MCP, deferred ones included, comma-separated; then every name starting with mcp__ on its own line; then one line each 'Bash: present' or 'Bash: absent', and the same for WebFetch, WebSearch, Agent and Artifact.
+2. Write tools.txt: a line 'tools: ' followed by every tool name you have, built-in and MCP, deferred ones included, comma-separated; then every name starting with mcp__ on its own line; then one line each 'Bash: present' or 'Bash: absent', and the same for WebFetch, WebSearch, Agent and Artifact. Then write skills.txt with every skill name you can invoke with the Skill tool, exactly as it is listed to you, one per line (an empty file if none); invoke none of them.
 3. Two probes that are expected to be refused; a refusal here is not a reason to send BLOCKED. Use Grep with output_mode 'count', pattern '.', path '/proc/self/environ'. Then use Read on '/proc/self/status'. Never Read /proc/self/environ. Write probes.txt with a line 'grep-environ: refused: <first line of the refusal>' or 'grep-environ: allowed: <the count only>', and a line 'read-status: refused: <first line of the refusal>' or 'read-status: allowed'. Never copy any file's content.
 4. Call mcp__prod-read__list-collections exactly once, with connectionId 'preconfigured' and database 'conventioner' (load its schema with ToolSearch first if needed). Run no other prod-read tool. Write query.txt with a line 'list-collections: ok' or 'list-collections: error: <first line of the error>', then a line 'count: <number of collections>', then a line 'names: ' with the collection names, comma-separated. Copy nothing else from the result.
 EOF
@@ -201,6 +203,7 @@ session_checks() {
   for tool in Bash WebFetch WebSearch Agent Artifact; do
     grep -qx "$tool: absent" "$dir/tools.txt" 2>/dev/null || check_failed "$tool is not reported absent"
   done
+  skill_checks "$dir"
   grep -q '^grep-environ: refused' "$dir/probes.txt" 2>/dev/null || check_failed "the Grep of /proc/self/environ was not refused"
   grep -q '^read-status: refused' "$dir/probes.txt" 2>/dev/null || check_failed "the Read of /proc/self/status was not refused"
   grep -qx 'list-collections: ok' "$dir/query.txt" 2>/dev/null || check_failed "list-collections did not run"
@@ -231,9 +234,24 @@ session_checks() {
 
   if [[ -f $dir/tools.txt ]]; then
     mkdir -p "$TEAM_HOME/tasks/T0"
-    { grep '^mcp__' "$dir/tools.txt" || true; echo ---; grep -v '^mcp__' "$dir/tools.txt" || true; } \
-      >"$TEAM_HOME/tasks/T0/inventory-$kit.txt"
+    { grep '^mcp__' "$dir/tools.txt" || true; echo ---; grep -v '^mcp__' "$dir/tools.txt" || true
+      sed 's/^/skill: /' "$dir/skills.txt" 2>/dev/null || true; } >"$TEAM_HOME/tasks/T0/inventory-$kit.txt"
   fi
+}
+
+# skill_checks <session directory>: the session can invoke its toolkits' skills, and no other (a
+# user or bundled skill would carry instructions the ops role was never reviewed with).
+skill_checks() {
+  local skills stray kit skill allowed='^$'
+  local -A own=([prod-read]=querying-production-data [prod-write]=changing-production-data)
+  skills=$(grep . "$1/skills.txt" 2>/dev/null || true)
+  for kit in "${expected[@]}"; do allowed+="|^($kit:)?${own[$kit]}\$"; done
+  stray=$(grep -Ev "$allowed" <<<"$skills" | paste -sd ' ' || true)
+  [[ -z $stray ]] || check_failed "skills beyond the toolkits': $stray"
+  for kit in "${expected[@]}"; do
+    skill=${own[$kit]}
+    grep -Eq "^($kit:)?$skill\$" <<<"$skills" || check_failed "the session cannot invoke $skill"
+  done
 }
 
 # transcript_of <session uuid>: the session's transcript file and its <uuid>/ directory, if any.

@@ -294,7 +294,7 @@ assert_prod_write_gated() {
   local t=$TEAM_HOME/tasks/T7
   assert_equal "$(stub_calls claude | head -n 1)" '["agents","--json"]'
   assert_equal "$(bg_calls)" "$(jq -cn --arg t "$t" --arg code "$REPO_ROOT" '["--bg",
-    "--restricted", "--tools", "Read,Glob,Grep,Edit,Write,ToolSearch,SendMessage,ListAgents",
+    "--restricted", "--tools", "Read,Glob,Grep,Edit,Write,ToolSearch,SendMessage,ListAgents,Skill",
     "--strict-mcp-config", "--mcp-config", "\($t)/mcp.ops.json",
     "--plugin-dir", "\($code)/toolkits/prod-read",
     "--settings", "\($t)/settings.ops.json",
@@ -359,7 +359,7 @@ assert_prod_write_gated() {
   run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --toolkit prod-write --request "$request" -- Make the change
   local t=$TEAM_HOME/tasks/T7
   assert_equal "$(bg_calls)" "$(jq -cn --arg t "$t" --arg code "$REPO_ROOT" '["--bg",
-    "--restricted", "--tools", "Read,Glob,Grep,Edit,Write,ToolSearch,SendMessage,ListAgents",
+    "--restricted", "--tools", "Read,Glob,Grep,Edit,Write,ToolSearch,SendMessage,ListAgents,Skill",
     "--strict-mcp-config", "--mcp-config", "\($t)/mcp.ops.json",
     "--plugin-dir", "\($code)/toolkits/prod-read", "--plugin-dir", "\($code)/toolkits/prod-write",
     "--settings", "\($t)/settings.ops.json",

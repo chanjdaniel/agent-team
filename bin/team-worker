@@ -18,8 +18,8 @@
 # Production toolkits (prod-*) are for the ops role only, which needs prod-read (prod-write comes
 # only beside it) and --request, and is refused while any T<n>-ops session is listed by claude
 # agents (one at a time; end it with team-ops-end). An ops session runs with --restricted and only
-# the built-in tools Read, Glob, Grep, Edit, Write, ToolSearch, SendMessage and ListAgents: no
-# shell, no web.
+# the built-in tools Read, Glob, Grep, Edit, Write, ToolSearch, SendMessage, ListAgents and Skill
+# (for its toolkits' skills): no shell, no web.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
@@ -142,7 +142,7 @@ fi
 # An ops session gets no shell, no web and no other outbound tool.
 restricted=()
 if [[ $role == ops ]]; then
-  restricted=(--restricted --tools "Read,Glob,Grep,Edit,Write,ToolSearch,SendMessage,ListAgents")
+  restricted=(--restricted --tools "Read,Glob,Grep,Edit,Write,ToolSearch,SendMessage,ListAgents,Skill")
 fi
 
 name=$task-$role
