@@ -37,6 +37,7 @@ Names, email addresses, phone numbers, postal addresses and answers to form ques
 Leave those fields out of every projection and `$group` key, so they never reach the transcript; `_id: 0` drops the ObjectId too.
 A pipeline may still use one to count, as long as only the count comes out: distinct applicants are `{"$group": {"_id": null, "emails": {"$addToSet": "$applicant_email"}}}` then `{"$project": {"_id": 0, "applicants": {"$size": "$emails"}}}`.
 For a request that asks for them, answer with the counts and the ids of the documents, and say that Daniel can read the details in Atlas, Data Explorer, by those ids.
+A filter carries a personal detail too, since each call's input is mirrored and goes to the tracked ops log: locate documents by their ids, or by an email address or phone number Daniel's request itself gave (the ops log masks those two, and the answer never repeats it); when only another personal detail would find them, say that Daniel can look them up in Atlas, Data Explorer.
 
 ## Reading a result
 

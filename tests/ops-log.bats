@@ -65,10 +65,10 @@ READ_INPUT='{"database":"conventioner","collection":"markets","filter":{"phase":
   run -1 grep -q -e @ -e Matched "$log"
 }
 
-@test "a write's phone numbers are masked in any common form, and its dates, ids and counts are kept" {
-  local input='{"database":"conventioner","collection":"vendors","filter":{"_id":"65a1f3c2b9e8d7a6f5e4d3c2","since":"2026-10-23T12:28:00Z","day":"2026-10-23"},"update":{"$set":{"phone":"+1 604 555 0101","alt":["(604) 555-0102","6045550103","604.555.0105"],"note":"call +16045550104 or room 12, ref x6045550106"}},"limit":20}'
+@test "a write's phone numbers are masked in any common form, and its dates, ids, UUIDs, epochs and counts are kept" {
+  local input='{"database":"conventioner","collection":"vendors","filter":{"_id":"65a1f3c2b9e8d7a6f5e4d3c2","id":"12345678-1234-4abc-8def-123456789012","market_id":"6c1e9a4e-2b7d-4f0c-9d3e-8a1b2c3d4e5f","since":"2026-10-23T12:28:00Z","day":"2026-10-23","at":"1729700000000"},"update":{"$set":{"phone":"+1 604 555 0101","alt":["(604) 555-0102","6045550103","604.555.0105"],"note":"call +16045550104 or room 12, ref x6045550106"}},"limit":20}'
   hook -0 "$(hook_input PreToolUse mcp__prod-write__update-many "$input")"
-  local masked='{"database":"conventioner","collection":"vendors","filter":{"_id":"65a1f3c2b9e8d7a6f5e4d3c2","since":"2026-10-23T12:28:00Z","day":"2026-10-23"},"update":{"$set":{"phone":"<phone>","alt":["<phone>","<phone>","<phone>"],"note":"call <phone> or room 12, ref x6045550106"}},"limit":20}'
+  local masked='{"database":"conventioner","collection":"vendors","filter":{"_id":"65a1f3c2b9e8d7a6f5e4d3c2","id":"12345678-1234-4abc-8def-123456789012","market_id":"6c1e9a4e-2b7d-4f0c-9d3e-8a1b2c3d4e5f","since":"2026-10-23T12:28:00Z","day":"2026-10-23","at":"1729700000000"},"update":{"$set":{"phone":"<phone>","alt":["<phone>","<phone>","<phone>"],"note":"call <phone> or room 12, ref x6045550106"}},"limit":20}'
   assert_equal "$(entries)" "- TIME requested \`prod-write\` \`update-many\` \`$masked\`"
   run -1 grep -q -e '555 0101' -e '555-0102' -e 6045550103 -e +16045550104 -e '555.0105' "$log"
 }
