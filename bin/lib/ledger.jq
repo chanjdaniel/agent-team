@@ -551,9 +551,9 @@ def denial: (. // "") | tostring | test("denied|denies|refused|refuses|auto mode
 # Events grouped by task, the groups in the order of each task's first event.
 def task_groups: group_by(.task) | sort_by(.[0].i);
 
-# team-retro digest's JSON for the retro task $task (null for a dry run), the team home $home
+# team-retro digest's JSON for the retro task $task (null for a dry run), the team home $team_home
 # naming each task's record directory. Every section is in ledger order.
-def retro_digest($task; $home):
+def retro_digest($task; $team_home):
   . as $events
   | retro_window($task) as $w
   | [to_entries[] | .value + {i: .key}] as $placed
@@ -587,7 +587,7 @@ def retro_digest($task; $home):
      tasks: [$in | task_groups[] | .[0].task as $id | $tasks[$id] as $all
        | ($all | map(select(.event == "opened")) | first) as $opened
        | {task: $id, title: $opened.title, project: $opened.project, path: $opened.path, phase: ($all | phase),
-          record: "\($home)/tasks/\($id)/",
+          record: "\($team_home)/tasks/\($id)/",
           sessions: [.[] | select(.event == "launch") | {session, role, launched: .ts}]}]};
 
 # team-retro digest's text form, one line per string, from its JSON: a heading per section and a

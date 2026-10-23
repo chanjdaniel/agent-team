@@ -62,8 +62,8 @@ else
     ledger_jq 'ledger_events | any(.[]; .task == $task and retro_opened)' -nRe --arg task "$task" "$ledger" >/dev/null ||
       usage_error "$task is not a retro task: it has no opened event with the path retro"
   fi
-  result=$(ledger_jq 'ledger_events | retro_digest(if $task == "" then null else $task end; $home)' -nRc \
-    --arg task "$task" --arg home "$TEAM_HOME" "$ledger")
+  result=$(ledger_jq 'ledger_events | retro_digest(if $task == "" then null else $task end; $team_home)' -nRc \
+    --arg task "$task" --arg team_home "$TEAM_HOME" "$ledger")
 fi
 
 if [[ -n $json ]]; then
