@@ -13,6 +13,9 @@
 #                 warns where the lock says pin_mismatch WARN (Claude Code, which updates itself).
 #                 The fix is the lock's source for this OS.
 #   machine       This machine's team name, ~/.config/agent-team/machine.
+#   git hooks     The team home's core.hooksPath is bin/hooks/git (relative, so each worktree runs
+#                 its own checkout's hooks): the dev guard. The fix is Daniel's, since every
+#                 session is denied touching core.hooksPath.
 #   claude login  `claude auth status`: signed in with a claude.ai account.
 #   github login  `gh auth status` for github.com.
 #   clock         Within 60 s of the Date header of https://api.github.com (curl -sI); warns.
@@ -163,6 +166,17 @@ if machine=$(machine_name 2>"$err"); then
 else
   reason=$(first_error)
   report machine FAIL "${reason%%; write one with: *}" "echo <name> > ~/.config/agent-team/machine"
+fi
+
+# git hooks: read from the team home's own config, so a value set only globally does not pass.
+hooks=$(git -C "$TEAM_HOME" config --local core.hooksPath 2>/dev/null) || hooks=''
+if [[ $hooks == bin/hooks/git ]]; then
+  report "git hooks" PASS "core.hooksPath is bin/hooks/git"
+else
+  hooks_reason="core.hooksPath is unset, so git runs none of bin/hooks/git"
+  [[ -z $hooks ]] || hooks_reason="core.hooksPath is $hooks, not bin/hooks/git"
+  report "git hooks" FAIL "$hooks_reason" \
+    "Daniel runs git -C ${TEAM_HOME/#"$HOME"/\~} config core.hooksPath bin/hooks/git"
 fi
 
 # claude login: the answer is read for these two fields alone.

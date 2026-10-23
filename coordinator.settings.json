@@ -17,7 +17,16 @@
       "Bash(git push * lease *)",
       "Bash(git push *:lease)",
       "Bash(git push *:lease *)",
-      "Bash(git push *refs/heads/lease*)"
+      "Bash(git push *refs/heads/lease*)",
+      "Bash(git * --no-verify)",
+      "Bash(git * --no-verify *)",
+      "Bash(git commit -n*)",
+      "Bash(git commit * -n)",
+      "Bash(git commit * -n -*)",
+      "Bash(git *config*core.hooksPath*)",
+      "Bash(git *config*core.hookspath*)",
+      "Bash(git *-c core.hooksPath*)",
+      "Bash(git *-c core.hookspath*)"
     ]
   },
   "hooks": {

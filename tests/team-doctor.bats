@@ -43,6 +43,8 @@ setup() {
   sandbox
   hold_lease home-pc >/dev/null
   fake_service_managers
+  # The dev guard is on, as Daniel turns it on.
+  git -C "$TEAM_HOME" config core.hooksPath bin/hooks/git
 
   # The OS: Linux, from an Arch os-release file, until a test says Darwin.
   cp "$REPO_ROOT/tests/helpers/stub" "$BATS_TEST_TMPDIR/stubs/uname"
@@ -196,7 +198,7 @@ every_tool_fails() {
   assert_equal "$(grep -cv '^PASS ' <<<"$output")" 0
   local expected
   expected=$(printf '%s\n' os; lock_tools arch | cut -f1 | sed 's/^/tool /'
-    printf '%s\n' machine 'claude login' 'github login' clock lease heartbeat offline)
+    printf '%s\n' machine 'git hooks' 'claude login' 'github login' clock lease heartbeat offline)
   assert_equal "$(checks)" "$expected"
   assert_equal "$(line_of os)" "PASS os: Arch Linux"
   assert_equal "$(line_of 'tool claude')" "PASS tool claude: 2.1.308"
@@ -214,7 +216,7 @@ every_tool_fails() {
   assert_equal "$(grep -cv '^PASS ' <<<"$output")" 0
   local expected
   expected=$(printf '%s\n' os homebrew; lock_tools macos | cut -f1 | sed 's/^/tool /'
-    printf '%s\n' machine 'claude login' 'github login' clock lease heartbeat offline)
+    printf '%s\n' machine 'git hooks' 'claude login' 'github login' clock lease heartbeat offline)
   assert_equal "$(checks)" "$expected"
   assert_equal "$(line_of os)" "PASS os: macOS"
 }
@@ -291,6 +293,27 @@ every_tool_fails() {
   echo Home_PC >"$HOME/.config/agent-team/machine"
   run_bin -1 team-doctor
   assert_equal "$(line_of machine)" "FAIL machine: ~/.config/agent-team/machine names 'Home_PC', not a lower-case kebab-case name like home-pc; fix: echo <name> > ~/.config/agent-team/machine"
+}
+
+@test "the git hooks line fails unless the team home's own core.hooksPath is bin/hooks/git, with Daniel's command" {
+  tools_at arch
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'git hooks')" "PASS git hooks: core.hooksPath is bin/hooks/git"
+  local fix="fix: Daniel runs git -C $TEAM_HOME config core.hooksPath bin/hooks/git"
+  git -C "$TEAM_HOME" config core.hooksPath .git/hooks
+  run_bin -1 team-doctor
+  assert_equal "$(line_of 'git hooks')" "FAIL git hooks: core.hooksPath is .git/hooks, not bin/hooks/git; $fix"
+  # Set only globally, it does not count: the guard is the team home's.
+  git -C "$TEAM_HOME" config --unset core.hooksPath
+  git config --global core.hooksPath bin/hooks/git
+  run_bin -1 team-doctor
+  assert_equal "$(line_of 'git hooks')" "FAIL git hooks: core.hooksPath is unset, so git runs none of bin/hooks/git; $fix"
+  # Under HOME, the command names the team home from ~.
+  git config --global --unset core.hooksPath
+  mv "$TEAM_HOME" "$HOME/agent-team"
+  TEAM_HOME=$HOME/agent-team run_bin -1 team-doctor
+  assert_equal "$(line_of 'git hooks')" \
+    "FAIL git hooks: core.hooksPath is unset, so git runs none of bin/hooks/git; fix: Daniel runs git -C ~/agent-team config core.hooksPath bin/hooks/git"
 }
 
 @test "Claude Code signed out, or signed in without a claude.ai account, fails the claude login line" {

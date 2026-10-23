@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Set the agent-review status on the head a reviewer reviewed: the reviewer's only way to set a status.
+# The script builds the whole gh call itself, so the reviewer's allow rule for it lets nothing else
+# through, as no glob over a raw gh api command can.
+#
+# Usage: team-review-status <pr url> <reviewed sha> <success|failure> <description>
+#   pr url        https://github.com/<owner>/<name>/pull/<n>, in a registered project's repo
+#   reviewed sha  the full 40-hex sha of the head the review read, which must still be the PR's head
+#   description   one line of at most 140 characters, GitHub's limit
+# The status goes on exactly the reviewed sha, with context agent-review, so it never approves a
+# commit pushed after the review.
+# Refused, exit 2 with nothing set: any other command line; exit 1: a repo no project has, a PR
+# whose head is no longer the reviewed sha, and a status GitHub refuses.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+[[ $# -eq 4 ]] || usage_error "usage: team-review-status <pr url> <reviewed sha> <success|failure> <description>"
+url=$1 reviewed=$2 state=$3 description=$4
+[[ $reviewed =~ ^[0-9a-f]{40}$ ]] || usage_error "the reviewed sha is a full 40-hex commit sha, got '$reviewed'"
+[[ $state == success || $state == failure ]] || usage_error "the state is success or failure, got '$state'"
+[[ -n $description && ! $description =~ [[:cntrl:]] ]] ||
+  usage_error "the description is one non-empty line"
+((${#description} <= 140)) || usage_error "the description is at most 140 characters, got ${#description}"
+pr=$(registered_pr "$url")
+{ read -r _ && read -r repo && read -r number; } <<<"$pr"
+
+head=$(gh pr view "$number" --repo "$repo" --json headRefOid --jq .headRefOid) ||
+  die "gh cannot read the head of $url"
+[[ $head == "$reviewed" ]] ||
+  die "$url moved past the reviewed $reviewed: its head is now $head; nothing set"
+gh api --method POST "repos/$repo/statuses/$reviewed" \
+  -f state="$state" -f context=agent-review -f description="$description" >/dev/null ||
+  die "GitHub refused the status on $repo@$reviewed"
+echo "agent-review $state on $repo@$reviewed"

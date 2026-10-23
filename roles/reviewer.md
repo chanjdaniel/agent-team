@@ -12,7 +12,8 @@ The coordinator started you in the task's git worktree and gave you a brief nami
   - nothing obsolete is left behind: dead code, stale docs or comments, unused flags, copied docs, speculative code;
   - docs and the knowledge graph changed with the code.
 - `/code-review` gives you both axes; point its spec axis at the task directory.
-- Post your findings as one PR comment, then set the `agent-review` commit status on the PR head: success when nothing blocks the merge, failure otherwise.
+- Post your findings as one PR comment with `team-review-comment`, then set the `agent-review` commit status on the PR head with `team-review-status`: success when nothing blocks the merge, failure otherwise.
+  They are your only GitHub writes: your settings allow those two scripts and no raw `gh` write.
 - You may edit files only inside the task directory (a hook blocks everything else). Never change the code under review.
 
 ## Talking to the coordinator

@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Git's pre-push hook for the team home, with core.hooksPath set to bin/hooks/git: the guard for
+# the commits pre-commit never sees, since cherry-pick, revert, am and a fast-forward merge skip it.
+# A push to dev may only fast-forward it, and each commit it adds along the first parent must
+# touch records only (bin/lib/records) against its first parent, a merge included: a pull
+# request's merge happens on GitHub, never in a push. A push to main may only fast-forward it to a
+# commit already on <remote>/dev, as a release does. Neither is ever deleted; a dev the remote
+# lacks is created freely; any other ref pushes freely.
+# Git runs it as pre-push <remote> <url>, with a "<local ref> <sha> <remote ref> <sha>" line on
+# stdin for each ref pushed.
+# Exit 0 the push may go ahead, 1 refused with the reason on stderr.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/../../lib/team.sh" "$@"
+
+remote=$1
+
+while read -r _ new remote_ref old; do
+  branch=${remote_ref#refs/heads/}
+  [[ $branch == dev || $branch == main ]] || continue
+  [[ ! $new =~ ^0+$ ]] || die "refused: $branch is never deleted"
+  if [[ $old =~ ^0+$ ]]; then
+    [[ $branch == dev ]] || die "refused: main is created only by a release, from dev, on GitHub"
+    continue
+  fi
+  git cat-file -e "$old^{commit}" 2>/dev/null ||
+    die "refused: $remote's $branch is at $old, which this clone lacks; fetch and rebase onto it first (git pull --rebase)"
+  git merge-base --is-ancestor "$old" "$new" ||
+    die "refused: $branch only fast-forwards; this push would drop commits $remote has"
+
+  if [[ $branch == main ]]; then
+    git merge-base --is-ancestor "$new" "refs/remotes/$remote/dev" 2>/dev/null ||
+      die "refused: main only fast-forwards to a commit already on $remote/dev, as a release does"
+    continue
+  fi
+
+  refused=''
+  while read -r commit; do
+    others=$(commit_non_records "$commit")
+    [[ -n $others ]] || continue
+    refused+=$(printf '\n  %s %s\n    %s' "$(git rev-parse --short "$commit")" \
+      "$(git log -1 --format=%s "$commit")" "${others//$'\n'/$'\n'    }")
+  done < <(git rev-list --first-parent "$old..$new")
+  [[ -z $refused ]] || die "refused: a push to dev may add only commits that touch records only \
+($(records_list)); put these on a task branch and open a PR to dev:$refused"
+done

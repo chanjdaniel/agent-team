@@ -230,6 +230,7 @@ task_dir={{task_dir}}
 plan={{plan}}
 thread={{thread}}
 team_home={{team_home}}
+team_bin={{team_bin}}
 EOF
   open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling & more"
   run_fake T14 facts
@@ -245,7 +246,20 @@ worktree=~/agent-team/.claude/worktrees/2
 task_dir=.work/task
 plan=~/agent-team/tasks/T14/plan.md
 thread=1563000000000000012
-team_home=~/agent-team"
+team_home=~/agent-team
+team_bin=$code/bin"
+}
+
+@test "team_bin is this checkout's bin/, absolute even under HOME, as the allow rules name it" {
+  local checkout=$HOME/agent-team
+  mkdir -p "$checkout/templates/briefs/delivery"
+  cp -R "$REPO_ROOT/bin" "$checkout/bin"
+  echo '{{team_bin}}/team-review-status' >"$checkout/templates/briefs/bin.md"
+  open_t12
+  guard_sandbox
+  run "$checkout/bin/team-brief" T12 bin
+  assert_equal "$status" 0
+  assert_equal "$(<"$TEAM_HOME/tasks/T12/brief.md")" "$HOME/agent-team/bin/team-review-status"
 }
 
 @test "paths outside HOME stay absolute" {

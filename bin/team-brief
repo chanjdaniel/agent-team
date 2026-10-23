@@ -12,9 +12,11 @@
 #   --name      write tasks/T<n>/brief-<suffix>.md (kebab case) instead of tasks/T<n>/brief.md
 #   --force     replace an existing brief
 # Placeholders are {{key}}. The task's facts fill task, title, path, project, repo, base, branch,
-# worktree, task_dir, plan, thread and team_home, from the ledger and projects.toml; paths under
-# $HOME are written ~/... In a template, {{> delivery}} stands for the delivery partial of the
-# project's delivery, templates/briefs/delivery/<delivery>.md.
+# worktree, task_dir, plan, thread, team_home and team_bin, from the ledger and projects.toml;
+# paths under $HOME are written ~/..., except team_bin, this checkout's bin/, always absolute
+# because the workers' allow rules name the scripts in it by their full path. In a template,
+# {{> delivery}} stands for the delivery partial of the project's delivery,
+# templates/briefs/delivery/<delivery>.md.
 # Refused, exit 1 with nothing written: an unknown template, a task that is not open (no opened
 # event, or closed) or has no open worktree, a placeholder left unfilled (each named), a --set key
 # no placeholder uses, a --set of a task fact, and an existing brief without --force.
@@ -25,7 +27,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 # Templates are code: they come from this checkout, beside bin/.
 briefs=$(dirname "$(dirname "$TEAM_LIB")")/templates/briefs
 usage="usage: team-brief T<n> <template> [--project <name>] [--set key=value]... [--set-file key=path]... [--name <suffix>] [--force]"
-fact_keys=(task title path project repo base branch worktree task_dir plan thread team_home)
+fact_keys=(task title path project repo base branch worktree task_dir plan thread team_home team_bin)
 
 positionals=() project='' name='' force=''
 declare -A sets=()
@@ -115,6 +117,7 @@ declare -A values=(
   [task_dir]=$(jq -r .task_dir <<<"$facts")
   [plan]=$(tilde "$TEAM_HOME/tasks/$task/plan.md")
   [team_home]=$(tilde "$TEAM_HOME")
+  [team_bin]=$(dirname "$TEAM_LIB")
 )
 thread=$(jq -r 'map(select(.event == "thread")) | last | .discord_thread // empty' <<<"$events")
 [[ -z $thread ]] || values[thread]=$thread
