@@ -53,6 +53,10 @@
       {
         "matcher": "mcp__plugin_discord_discord__reply|mcp__plugin_discord_discord__react|mcp__plugin_discord_discord__edit_message",
         "hooks": [{ "type": "command", "command": "\"@TEAM_HOME@/bin/hooks/lease-fence\"" }]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [{ "type": "command", "command": "\"@TEAM_HOME@/bin/hooks/lease-fence\" --coordinator" }]
       }
     ]
   }

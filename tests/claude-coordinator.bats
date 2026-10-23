@@ -96,14 +96,14 @@ assert_not_launched() {
     "$(jq -c --arg code "$REPO_ROOT" 'walk(if type == "string" then gsub("@TEAM_HOME@"; $code) else . end)' \
       "$REPO_ROOT/coordinator.settings.json")"
   assert_equal "$(jq -r '[.hooks[][].hooks[].command] | .[]' "$settings")" \
-    "\"$REPO_ROOT/bin/hooks/session-digest\""$'\n'"\"$REPO_ROOT/bin/hooks/stop-sweep\""$'\n'"\"$REPO_ROOT/bin/hooks/lease-fence\""
+    "\"$REPO_ROOT/bin/hooks/session-digest\""$'\n'"\"$REPO_ROOT/bin/hooks/stop-sweep\""$'\n'"\"$REPO_ROOT/bin/hooks/lease-fence\""$'\n'"\"$REPO_ROOT/bin/hooks/lease-fence\" --coordinator"
   [[ -x $REPO_ROOT/bin/hooks/session-digest && -x $REPO_ROOT/bin/hooks/stop-sweep && -x $REPO_ROOT/bin/hooks/lease-fence ]]
   [[ $(cat "$settings") != *"@TEAM_HOME@"* ]]
   assert_equal "$(jq .isolatePeerMachines "$settings")" true
   assert_equal "$(find "${settings%/*}" -name '*.json.*')" ""
 }
 
-@test "its Discord reply, react and edit_message, and nothing else, go through the fence hook" {
+@test "its Discord reply, react and edit_message, and its Bash, and nothing else, go through the fence hook" {
   run_bin -0 claude-coordinator
   local settings=$HOME/.local/state/agent-team/coordinator.settings.json tool
   # A matcher of names and | lists those tools exactly.
@@ -111,7 +111,9 @@ assert_not_launched() {
     assert_equal "$(jq -r --arg tool "mcp__plugin_discord_discord__$tool" '.hooks.PreToolUse[]
       | select(.matcher | split("|") | index($tool)) | .hooks[].command' "$settings")" "\"$REPO_ROOT/bin/hooks/lease-fence\""
   done
-  assert_equal "$(jq -r '.hooks.PreToolUse[].matcher | split("|") | length' "$settings")" 3
+  assert_equal "$(jq -r '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].command' "$settings")" \
+    "\"$REPO_ROOT/bin/hooks/lease-fence\" --coordinator"
+  assert_equal "$(jq -r '[.hooks.PreToolUse[].matcher | split("|") | length] | add' "$settings")" 4
   jq -e '.hooks.PreToolUse[].matcher | test("^[A-Za-z0-9_|]+$")' "$settings"
 }
 

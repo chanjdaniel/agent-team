@@ -97,7 +97,7 @@ A task you park on Daniel or anything outside the team gets `team-log T<n> waiti
 - `team-timers` is the heartbeat on the holder, every 5 minutes: it probes GitHub, renews the lease and checkpoints; `team-timers disable` before the lease leaves this machine (a handoff does).
 - `team-checkpoint` makes work in flight survive a dead machine: it archives each open task's task directories, keeps each worktree's work, uncommitted changes included, on `wip/T<n>` on its project's origin, and commits `tasks/*/scratch*/`, `memory/` and `ledger.jsonl` on `dev` as `chore: checkpoint`.
   The heartbeat runs it every 15 minutes; `team-checkpoint --force` makes one now, as a handoff does.
-- A machine that finds another holder fences itself: it stops its coordinator and workers and its heartbeat, and a hook blocks its Discord posts and pushes.
+- A machine that finds another holder fences itself: it stops its coordinator and workers and its heartbeat, and a hook blocks its Discord posts, pushes, `team-merge`, `team-open` and `team-close`.
   A Discord reply blocked as fenced or lost means another machine runs the team: post nothing, end the turn.
 - When GitHub is unreachable the heartbeat holds the team: it posts in `#coordinator`, `team-lease status --json` shows `offline_since`, and a hook blocks workers' pushes and `gh`.
   The offline watch, armed as your session digest says and again each time it expires, wakes you with a line when the hold starts and when it ends.

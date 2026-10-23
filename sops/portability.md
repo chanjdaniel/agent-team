@@ -63,7 +63,8 @@ Nothing new means no commit and no push; `team-close` deletes the task's `wip/T<
 ## Fencing
 
 A machine that finds another holder or a higher epoch (its renew, its heartbeat) fences itself: it writes `fenced`, stops its own coordinator and `T<n>-<role>` sessions, and disables its heartbeat.
-The `lease-fence` hook blocks the coordinator's Discord replies from the moment a fenced machine wakes, before any heartbeat runs (it checks the remote lease at most once a minute), and blocks workers' pushes.
+The `lease-fence` hook blocks the coordinator's Discord replies, and its `git push`, `team-merge`, `team-open` and `team-close`, from the moment a fenced machine wakes, before any heartbeat runs (it checks the remote lease at most once a minute), and blocks workers' pushes.
+So a coordinator left running on a machine that lost the lease (its fence's `claude stop` failed, or `team-handoff --retire` never ran) acts on nothing the holder's coordinator owns.
 `team-doctor` on a fenced machine lists, per task worktree with work origin lacks, the command that pushes it to `salvage/T<n>-<machine>`, for Daniel to run.
 `team-lease take` (inside `team-resume`) clears the fence.
 
