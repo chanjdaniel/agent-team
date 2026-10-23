@@ -19,4 +19,4 @@ Personal details asked for: {{personal}}.
 
 ## Report
 
-Send `{{task}} DONE <answer>` to `coordinator` when you have the answer.
+Write the answer to `.scratch/answer.md`, then send `{{task}} DONE <answer>` to `coordinator`.

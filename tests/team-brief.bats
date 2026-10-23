@@ -210,7 +210,7 @@ Personal details asked for: no.
 
 ## Report
 
-Send `T30 DONE <answer>` to `coordinator` when you have the answer.
+Write the answer to `.scratch/answer.md`, then send `T30 DONE <answer>` to `coordinator`.
 EOF
   )"
 }

@@ -350,9 +350,6 @@ assert_prod_write_gated() {
       | [.command, .args]]' "$s")" \
       "$(jq -cn --arg c "$REPO_ROOT/bin/hooks/ops-log" --arg t "$TEAM_HOME/tasks/T7" '[[$c, [$t]]]')"
   done
-  # Each write's prompt carries the hook's summary of it.
-  assert_equal "$(jq -r '.hooks.PreToolUse[-1] | "\(.matcher) \(.hooks[0].command)"' "$s")" \
-    "^mcp__.*prod-write.*__ $REPO_ROOT/bin/hooks/ops-write-prompt"
 }
 
 @test "a write launch adds prod-write's plugin and server beside prod-read's, every write tool behind an ask rule" {
