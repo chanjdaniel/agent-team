@@ -296,6 +296,11 @@ cut_origin() {
   git -C "${1:-$TEAM_HOME}" remote set-url origin https://127.0.0.1:9/agent-team.git
 }
 
+# git's reason for a cut origin, whose wording after "Failed to connect to 127.0.0.1" changes
+# with curl's version ("127.0.0.1:9 ... Could not connect" or "127.0.0.1 port 9 ... Couldn't").
+# An ERE, so a pattern holding it goes unquoted after =~.
+REFUSED="unable to access 'https://127\\.0\\.0\\.1:9/agent-team\\.git/': Failed to connect to 127\\.0\\.0\\.1[^)]*"
+
 # Make the 60-second wait before the probe's second try return at once, running <script> (read
 # from stdin, may be empty) in its place: the uname stub keeps the sandbox's stubs ahead of
 # Homebrew's GNU sleep on macOS too.
@@ -332,12 +337,16 @@ clock() {
 http_origin() {
   local port=$BATS_TEST_TMPDIR/http.port
   rm -f "$port"
-  python3 -I "$REPO_ROOT/tests/helpers/http-status.py" "$1" "$port" </dev/null >/dev/null 2>&1 3>&- &
+  python3 -I "$REPO_ROOT/tests/helpers/http-status.py" "$1" "$port" </dev/null >/dev/null 2>"$port.err" 3>&- &
   echo $! >>"$BATS_TEST_TMPDIR/http.pids"
-  for _ in $(seq 1 100); do
+  for _ in $(seq 1 200); do
     [[ ! -s $port ]] || break
     sleep 0.05
   done
+  if [[ ! -s $port ]]; then
+    echo "http_origin: the server wrote no port in 10 s: $(cat "$port.err")" >&2
+    return 1
+  fi
   echo "http://127.0.0.1:$(cat "$port")/agent-team.git"
 }
 
@@ -353,7 +362,8 @@ EOF
   cut_origin
   run_bin -0 team-timers run
   assert_equal "$(stub_calls sleep)" '["60"]'
-  assert_equal "$(sed -n 1p <<<"$output" | cut -d' ' -f2-)" "probe: GitHub unreachable (unable to access 'https://127.0.0.1:9/agent-team.git/': Failed to connect to 127.0.0.1:9 after 0 ms: Could not connect to server); trying again in 60s"
+  local pattern="^probe: GitHub unreachable \\($REFUSED\\); trying again in 60s$"
+  [[ $(sed -n 1p <<<"$output" | cut -d' ' -f2-) =~ $pattern ]]
   assert_contains "$(sed -n 2p <<<"$output")" " probe: GitHub answered the second try"
   assert_contains "$(sed -n 3p <<<"$output")" " lease: home-pc renewed the lease, epoch 1"
   [[ ! -e $HOME/.local/state/agent-team/offline ]]
@@ -383,7 +393,8 @@ EOF
   # Still offline: no second try (the team already holds), no post, the same since.
   : >"$STUB_CALLS/sleep.log"
   run_bin -75 team-timers run
-  assert_equal "$(cut -d' ' -f2- <<<"$output")" "probe: GitHub unreachable since $since (unable to access 'https://127.0.0.1:9/agent-team.git/': Failed to connect to 127.0.0.1:9 after 0 ms: Could not connect to server); the team is still holding"
+  local pattern="^probe: GitHub unreachable since $since \\($REFUSED\\); the team is still holding$"
+  [[ $(cut -d' ' -f2- <<<"$output") =~ $pattern ]]
   assert_equal "$(stub_calls sleep)" ""
   assert_equal "$(posts | wc -l)" 1
   assert_equal "$(jq -r .since "$flag")" "$since"
