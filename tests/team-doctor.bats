@@ -63,7 +63,8 @@ setup() {
   echo "Red, green, refactor." >"$TEAM_HOME/machine/claude/skills/tdd/SKILL.md"
   printf '%s\n' 'marketplace anthropics/claude-plugins-official' 'plugin discord@claude-plugins-official' \
     'plugin mongodb-atlas@claude-plugins-official' >"$TEAM_HOME/machine/claude/plugins.txt"
-  cp "$TEAM_HOME/machine/claude/settings.json" "$HOME/.claude/"
+  echo '{"model": "opus", "autoMode": {"environment": ["**Organization**: None configured"]}}' \
+    >"$HOME/.claude/settings.json"
   cp -R "$TEAM_HOME/machine/claude/skills/tdd" "$HOME/.claude/skills/"
   echo '[{"id": "discord@claude-plugins-official", "scope": "user", "enabled": false},
     {"id": "mongodb-atlas@claude-plugins-official", "scope": "user", "enabled": true}]' >"$STUB_FIXTURES/plugins.json"
@@ -213,7 +214,7 @@ every_tool_fails() {
   assert_equal "$(grep -v '^PASS ' <<<"$output")" ""
   local expected
   expected=$(printf '%s\n' os; lock_tools arch | cut -f1 | sed 's/^/tool /'
-    printf '%s\n' machine 'git hooks' 'claude login' 'github login' config plugins discord clock lease heartbeat offline)
+    printf '%s\n' machine 'git hooks' 'claude login' 'github login' config plugins discord 'own settings' clock lease heartbeat offline)
   assert_equal "$(checks)" "$expected"
   assert_equal "$(line_of os)" "PASS os: Arch Linux"
   assert_equal "$(line_of 'tool claude')" "PASS tool claude: 2.1.308"
@@ -231,7 +232,7 @@ every_tool_fails() {
   assert_equal "$(grep -v '^PASS ' <<<"$output")" ""
   local expected
   expected=$(printf '%s\n' os homebrew; lock_tools macos | cut -f1 | sed 's/^/tool /'
-    printf '%s\n' machine 'git hooks' 'claude login' 'github login' config plugins discord clock lease heartbeat offline)
+    printf '%s\n' machine 'git hooks' 'claude login' 'github login' config plugins discord 'own settings' clock lease heartbeat offline)
   assert_equal "$(checks)" "$expected"
   assert_equal "$(line_of os)" "PASS os: macOS"
 }
@@ -412,6 +413,18 @@ EOF
   echo 'not json' >"$STUB_FIXTURES/plugins.json"
   run_bin -1 team-doctor
   assert_equal "$(line_of discord)" "FAIL discord: \`claude plugin list\` printed no plugin list (exit 0); fix: install Claude Code and sign in (the tool claude and claude login lines)"
+}
+
+@test "the own settings line warns while this machine has no autoMode.environment of its own" {
+  tools_at arch
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'own settings')" "PASS own settings: autoMode.environment set for this machine"
+  echo '{"model": "opus"}' >"$HOME/.claude/settings.json"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'own settings')" "WARN own settings: autoMode.environment not set here, so auto mode's classifier knows nothing of this machine; fix: write this machine's own in ~/.claude/settings.json (\`claude auto-mode defaults\` shows the form); team-config keeps it"
+  echo 'not json' >"$HOME/.claude/settings.json"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'own settings')" "WARN own settings: $HOME/.claude/settings.json is not JSON; fix: fix what team-config names, then run team-doctor again"
 }
 
 @test "a clock more than a minute off GitHub's warns; GitHub's Date unreadable warns too" {

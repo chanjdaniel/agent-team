@@ -81,15 +81,15 @@ plugin ponder@claude-plugins-official not in plugins.txt"
   jq -e 'length == 8 and .[1] == {item: "settings.json", state: "differs"} and .[2] == {item: "skill retro", state: "local only"}' <<<"$output"
 }
 
-@test "diff --full adds a unified diff, the team home's side first, under each text that differs" {
+@test "diff --full adds a unified diff, the team home's side first, under each text that differs; settings as sorted JSON" {
   echo '{"model": "sonnet"}' >"$HOME/.claude/settings.json"
   echo "Changed here." >>"$HOME/.claude/skills/wizard/references/steps.md"
   run_bin -1 team-config diff --full
   assert_equal "$(sed -n 1p <<<"$output")" "settings.json differs"
   assert_contains "$output" "--- $shared/settings.json"
   assert_contains "$output" "+++ $HOME/.claude/settings.json"
-  assert_contains "$output" '-  "model": "opus",'
-  assert_contains "$output" '+{"model": "sonnet"}'
+  assert_contains "$output" '-  "model": "opus"'
+  assert_contains "$output" '+  "model": "sonnet"'
   assert_contains "$output" "skill wizard differs"
   assert_contains "$output" "+Changed here."
 }
@@ -227,6 +227,54 @@ plugin ponder@claude-plugins-official"
   assert_equal "$output" "nothing to capture"
 }
 
+@test "settings.json is compared as JSON without this machine's autoMode.environment, which apply keeps and capture leaves out" {
+  local environment='["**Organization**: None configured", "**Trusted repo**: the working directory"]'
+  # Its own environment, another key order and layout: no difference.
+  jq -c --argjson e "$environment" '{autoMode: {environment: $e}, enabledPlugins, model}' "$shared/settings.json" \
+    >"$HOME/.claude/settings.json"
+  run_bin -0 team-config diff
+  # A shared autoMode rule beside it is shared; the environment is still this machine's.
+  jq --argjson e '["something else"]' '.autoMode = {environment: $e, allow: ["Run the tests"]}' "$shared/settings.json" >"$BATS_TEST_TMPDIR/s"
+  mv "$BATS_TEST_TMPDIR/s" "$shared/settings.json"
+  run_bin -1 team-config diff --full
+  assert_equal "$(sed -n 1p <<<"$output")" "settings.json differs"
+  assert_contains "$output" '-    "allow": ['
+  [[ $output != *"something else"* && $output != *"Trusted repo"* ]]
+
+  run_bin -0 team-config apply
+  assert_equal "$(sed -n 1p <<<"$output")" "replaced settings.json"
+  assert_equal "$(jq -c .autoMode "$HOME/.claude/settings.json")" \
+    "$(jq -nc --argjson e "$environment" '{environment: $e, allow: ["Run the tests"]}')"
+  assert_equal "$(jq -c .autoMode.environment "$(backups)/settings.json")" "$(jq -nc --argjson e "$environment" '$e')"
+  run_bin -0 team-config diff
+
+  # Captured, it leaves the environment out, and an autoMode with nothing else goes too.
+  jq 'del(.autoMode.allow) | .model = "sonnet"' "$HOME/.claude/settings.json" >"$BATS_TEST_TMPDIR/s"
+  mv "$BATS_TEST_TMPDIR/s" "$HOME/.claude/settings.json"
+  run_bin -0 team-config capture
+  assert_equal "$output" "captured settings.json"
+  jq -e '.model == "sonnet" and (has("autoMode") | not)' "$shared/settings.json"
+  run_bin -0 team-config diff
+}
+
+@test "own says whether each of this machine's own settings is set here" {
+  run_bin -0 team-config own
+  assert_equal "$output" "autoMode.environment unset"
+  run_bin -0 team-config own --json
+  assert_equal "$(jq -c . <<<"$output")" '[{"setting":"autoMode.environment","set":false}]'
+  jq '.autoMode.environment = ["**Organization**: None configured"]' "$HOME/.claude/settings.json" >"$BATS_TEST_TMPDIR/s"
+  mv "$BATS_TEST_TMPDIR/s" "$HOME/.claude/settings.json"
+  run_bin -0 team-config own
+  assert_equal "$output" "autoMode.environment set"
+  # It needs no team home config, and no settings file is unset.
+  rm -r "$shared" "$HOME/.claude/settings.json"
+  run_bin -0 team-config own
+  assert_equal "$output" "autoMode.environment unset"
+  echo 'not json' >"$HOME/.claude/settings.json"
+  run_bin -1 --separate-stderr team-config own
+  assert_equal "$stderr" "team-config: $HOME/.claude/settings.json is not JSON"
+}
+
 @test "the first capture makes machine/claude/; diff and apply refuse without it" {
   rm -rf "$shared"
   run_bin -1 --separate-stderr team-config diff
@@ -301,8 +349,9 @@ plugin mongodb-atlas@claude-plugins-official"
 
 @test "team-config refuses an unknown command or option" {
   run_bin -2 --separate-stderr team-config
-  assert_equal "$stderr" "team-config: usage: team-config diff [--full] [--json] | apply | capture"
+  assert_equal "$stderr" "team-config: usage: team-config diff [--full] [--json] | apply | capture | own [--json]"
   run_bin -2 team-config diff --yes
   run_bin -2 team-config apply --full
   run_bin -2 team-config push
+  run_bin -2 team-config own --full
 }

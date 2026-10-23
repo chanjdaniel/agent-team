@@ -2,7 +2,11 @@
 # Keep this machine's Claude user config and the team home's machine/claude/ in step, by copies.
 #
 # machine/claude/ in the team home (a record, like the ledger) holds what every machine shares:
-#   CLAUDE.md, AGENTS.md, settings.json  ~/.claude/ files of the same names
+#   CLAUDE.md, AGENTS.md, settings.json  ~/.claude/ files of the same names; settings.json without
+#                                         the settings each machine keeps for itself (OWN_SETTINGS:
+#                                         autoMode.environment, which describes this machine to
+#                                         auto mode's classifier), compared as JSON with its keys
+#                                         sorted
 #   skills/<name>/                        ~/.claude/skills/<name>/: every user skill but synced/
 #                                         (claude.ai's, downloaded after login); a skill that is a
 #                                         symlink here is compared, captured and backed up as the
@@ -16,7 +20,7 @@
 #                                         `claude plugin marketplace list --json`; installed by
 #                                         the bootstrap, not by apply
 #
-# Usage: team-config diff [--full] [--json] | apply | capture
+# Usage: team-config diff [--full] [--json] | apply | capture | own [--json]
 #   diff     One line per difference, and exit 1 when there is any:
 #              settings.json differs           (or missing here, or local only)
 #              skill tdd missing               (or differs, or local only)
@@ -30,17 +34,21 @@
 #   apply    Installs a copy of each file and skill that differs or is missing here, first moving
 #            whatever it replaces to ~/.claude/backups/team-config-<UTC time>/ (made only when
 #            something is replaced). A skill that exists only here is left alone (diff lists it).
-#            Applying twice changes nothing the second time.
+#            The settings.json it installs keeps this machine's own settings. Applying twice
+#            changes nothing the second time.
 #   capture  Copies into machine/claude/ each file and skill that differs here or exists only
-#            here, and adds to plugins.txt the user-scope plugins and marketplaces it lacks; one
-#            line per change. Nothing is removed, and committing is the caller's.
+#            here (settings.json without this machine's own settings), and adds to plugins.txt the
+#            user-scope plugins and marketplaces it lacks; one line per change. Nothing is
+#            removed, and committing is the caller's.
+#   own      Each of this machine's own settings and whether it is set here
+#            ("autoMode.environment set" or "... unset"); --json prints [{setting, set}].
 # Nothing else of ~/.claude is read or copied: not ~/.claude.json, the credentials file, the
 # channels' tokens, the transcripts or the projects.
 # Exit 0 done (diff: no difference), 1 a difference or a refusal, 2 usage error.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
-usage="usage: team-config diff [--full] [--json] | apply | capture"
+usage="usage: team-config diff [--full] [--json] | apply | capture | own [--json]"
 [[ $# -ge 1 ]] || usage_error "$usage"
 command=$1
 shift
@@ -56,6 +64,10 @@ case $command in
     done
     ;;
   apply | capture) [[ $# -eq 0 ]] || usage_error "$usage" ;;
+  own)
+    [[ $# -eq 0 || ($# -eq 1 && $1 == --json) ]] || usage_error "$usage"
+    [[ $# -eq 0 ]] || json=1
+    ;;
   *) usage_error "$usage" ;;
 esac
 
@@ -63,7 +75,13 @@ shared=$TEAM_HOME/machine/claude
 claude_dir=$HOME/.claude
 lock=$HOME/.agents/.skill-lock.json
 FILES=(CLAUDE.md AGENTS.md settings.json)
-if [[ $command != capture && ! -d $shared ]]; then
+# The settings each machine keeps for itself, as jq paths: never shared, never captured, and kept
+# by apply.
+OWN_SETTINGS='[["autoMode", "environment"]]'
+# A settings object without them, and without an object they leave empty.
+STRIP='reduce $own[] as $p (.; delpaths([$p])
+  | if ($p | length) > 1 and getpath($p[:-1]) == {} then delpaths([$p[:-1]]) else . end)'
+if [[ $command == diff || $command == apply ]] && [[ ! -d $shared ]]; then
   die "no machine/claude/ in $TEAM_HOME; run team-config capture on the machine whose config the team shares"
 fi
 
@@ -76,6 +94,21 @@ compare() {
     echo missing
   elif [[ -e $2 ]]; then
     echo local only
+  fi
+}
+
+# A settings file as diff compares it: without this machine's own settings, keys sorted; nothing
+# when it is not JSON: settings_view <file>
+settings_view() {
+  jq -S --argjson own "$OWN_SETTINGS" "$STRIP" "$1" 2>/dev/null || true
+}
+
+# compare for settings.json: compare_settings <team home's> <here>
+compare_settings() {
+  if [[ -e $1 && -e $2 ]]; then
+    if cmp -s <(settings_view "$1") <(settings_view "$2"); then echo same; else echo differs; fi
+  else
+    compare "$1" "$2"
   fi
 }
 
@@ -110,7 +143,11 @@ read_plugins() {
 differences() {
   local name state
   for name in "${FILES[@]}"; do
-    state=$(compare "$shared/$name" "$claude_dir/$name")
+    if [[ $name == settings.json ]]; then
+      state=$(compare_settings "$shared/$name" "$claude_dir/$name")
+    else
+      state=$(compare "$shared/$name" "$claude_dir/$name")
+    fi
     [[ -z $state || $state == same ]] || printf '%s\t%s\n' "$name" "$state"
   done
   while IFS= read -r name; do
@@ -161,7 +198,11 @@ do_diff() {
       printf '%s %s\n' "$item" "$state"
       if ((full)) && [[ $state == differs ]]; then
         { read -r ours; read -r theirs; } < <(paths_of "$item")
-        diff -ruN -- "$ours" "$theirs" || true
+        if [[ $item == settings.json ]]; then
+          diff -u --label "$ours" --label "$theirs" <(settings_view "$ours") <(settings_view "$theirs") || true
+        else
+          diff -ruN -- "$ours" "$theirs" || true
+        fi
       fi
     done <<<"$list"
   fi
@@ -170,10 +211,20 @@ do_diff() {
 
 do_apply() {
   local item state ours theirs backup='' stamp n=1 changed=0
+  # Global, so the EXIT trap still sees it.
+  settings=$(mktemp)
+  trap 'rm -f "$settings"' EXIT
   while IFS=$'\t' read -r item state; do
     [[ $state == differs || $state == missing ]] || continue
     case $item in skill-lock.json | plugin* | marketplace*) continue ;; esac
     { read -r ours; read -r theirs; } < <(paths_of "$item")
+    if [[ $item == settings.json ]]; then
+      # The team home's settings, with this machine's own ones where it has them.
+      jq --argjson own "$OWN_SETTINGS" --slurpfile here "$theirs" 'reduce $own[] as $p (.;
+        ($here[0] | getpath($p)) as $v | if $v == null then . else setpath($p; $v) end)' \
+        "$ours" >"$settings" 2>/dev/null || cp -- "$ours" "$settings"
+      ours=$settings
+    fi
     if [[ -e $theirs ]]; then
       if [[ -z $backup ]]; then
         stamp=$(date -u +%Y%m%dT%H%M%SZ)
@@ -197,7 +248,7 @@ do_apply() {
 }
 
 do_capture() {
-  local item state ours theirs changed=0 failed=0
+  local item state ours theirs changed=0 plugins_changed=0 failed=0
   local -a marketplaces plugins
   mkdir -p "$shared/skills"
   mapfile -t marketplaces < <(listed marketplace)
@@ -216,19 +267,25 @@ do_capture() {
           plugins+=("${item#plugin }")
         fi
         echo "captured $item"
-        changed=2
+        changed=1 plugins_changed=1
         ;;
       *)
         [[ $state == differs || $state == 'local only' ]] || continue
         { read -r ours; read -r theirs; } < <(paths_of "$item")
-        rm -rf -- "$ours"
-        cp -RL -- "$theirs" "$ours"
+        if [[ $item == settings.json ]]; then
+          jq --argjson own "$OWN_SETTINGS" "$STRIP" "$theirs" >"$ours.new" ||
+            { rm -f "$ours.new"; die "$claude_dir/settings.json is not JSON, so it is not captured"; }
+          mv -- "$ours.new" "$ours"
+        else
+          rm -rf -- "$ours"
+          cp -RL -- "$theirs" "$ours"
+        fi
         if [[ $state == differs ]]; then echo "captured $item"; else echo "captured $item (new)"; fi
         changed=1
         ;;
     esac
   done < <(differences)
-  if ((changed == 2)); then
+  if ((plugins_changed)); then
     {
       echo "# User-scope plugins every machine installs, and their marketplaces (team-config)."
       ((${#marketplaces[@]} == 0)) || printf 'marketplace %s\n' "${marketplaces[@]}"
@@ -237,6 +294,19 @@ do_capture() {
   fi
   ((changed)) || echo "nothing to capture"
   return "$failed"
+}
+
+do_own() {
+  local here=$claude_dir/settings.json out
+  [[ -e $here ]] || here=/dev/null
+  out=$(jq -n --argjson own "$OWN_SETTINGS" --slurpfile here "$here" \
+    '[$own[] as $p | {setting: ($p | join(".")), set: (($here[0] // {}) | getpath($p)) != null}]' 2>/dev/null) ||
+    die "$claude_dir/settings.json is not JSON"
+  if ((json)); then
+    printf '%s\n' "$out"
+  else
+    jq -r '.[] | "\(.setting) \(if .set then "set" else "unset" end)"' <<<"$out"
+  fi
 }
 
 "do_$command"

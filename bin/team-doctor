@@ -25,6 +25,9 @@
 #   discord       Fails while `claude plugin list` (run from /, so user settings decide) shows the
 #                 Discord plugin enabled: every session that loads it logs in to Discord, so only
 #                 the coordinator turns it on.
+#   own settings  `team-config own`: warns while a setting each machine keeps for itself
+#                 (autoMode.environment, what auto mode's classifier knows of this machine) is not
+#                 set here.
 #   clock         Within 60 s of the Date header of https://api.github.com (curl -sI); warns.
 #   lease         `team-lease status`: passes held here, warns held elsewhere or released, fails
 #                 when GitHub is unreachable or team-lease refuses, and fails on a fenced
@@ -249,6 +252,21 @@ case $discord in
     "claude plugin disable discord@claude-plugins-official --scope user" ;;
   *) report discord FAIL "\`claude plugin list\` printed no plugin list (exit $rc)" "install Claude Code and sign in (the tool claude and claude login lines)" ;;
 esac
+
+# own settings: the ones team-config keeps per machine.
+rc=0
+own=$(TEAM_HOME=$TEAM_HOME bounded 30 "$bin/team-config" own --json 2>"$err" </dev/null) || rc=$?
+if ((rc)) || ! jq -e 'type == "array"' <<<"$own" >/dev/null 2>&1; then
+  report "own settings" WARN "$(first_error)" "fix what team-config names, then run team-doctor again"
+else
+  unset_settings=$(jq -r '[.[] | select(.set | not) | .setting] | join(", ")' <<<"$own")
+  if [[ -z $unset_settings ]]; then
+    report "own settings" PASS "$(jq -r '[.[].setting] | join(", ")' <<<"$own") set for this machine"
+  else
+    report "own settings" WARN "$unset_settings not set here, so auto mode's classifier knows nothing of this machine" \
+      "write this machine's own in ~/.claude/settings.json (\`claude auto-mode defaults\` shows the form); team-config keeps it"
+  fi
+fi
 
 # clock
 github_date=$(bounded 30 curl -sSI --max-time 20 https://api.github.com 2>/dev/null </dev/null |
