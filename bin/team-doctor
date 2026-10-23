@@ -30,6 +30,12 @@
 #   own settings  `team-config own`: warns while a setting each machine keeps for itself
 #                 (autoMode.environment, what auto mode's classifier knows of this machine) is not
 #                 set here.
+#   1password     Warns while op (the tool op line) or the 1Password app is missing, both found
+#                 without asking the vault: without them, team-secrets restore can only ask for
+#                 each secret to be pasted.
+#   secret <id>   `team-secrets check`: fails for each enabled secret of machine/secrets.json that
+#                 is missing, empty or off its mode here, with team-secrets restore (Daniel's, in
+#                 their own terminal); no byte of a secret is read.
 #   clock         Within 60 s of the Date header of https://api.github.com (curl -sI); warns.
 #   lease         `team-lease status`: passes held here, warns held elsewhere or released, fails
 #                 when GitHub is unreachable or team-lease refuses, and fails on a fenced
@@ -41,7 +47,8 @@
 #                 (<n> minutes)"): it resumes on its own once GitHub answers.
 # Logins are asked of claude and gh themselves: no credential file, ~/.claude.json or
 # ~/.claude/channels/ is read, and no line carries a secret. Read-only.
-# TEAM_OS_RELEASE names the os-release file to read instead of /etc/os-release (the tests' seam).
+# TEAM_OS_RELEASE names the os-release file to read instead of /etc/os-release, and
+# TEAM_1PASSWORD_APP the 1Password app to look for (the tests' seams).
 # Exit 0 nothing failed, 1 a check failed, 2 usage error.
 set -euo pipefail
 # The doctor reports a missing Homebrew or GNU tool as its homebrew line instead of refusing.
@@ -58,6 +65,8 @@ lock=$(dirname "$bin")/machine/tools.lock
 err=$(mktemp)
 trap 'rm -f "$err"' EXIT
 results=() failed=0
+# The tools whose version command answered at all, by name.
+declare -A installed=()
 
 # Record one check: report <check> <verdict> <reason> [<fix>]; the line is printed at once.
 report() {
@@ -108,6 +117,7 @@ check_tool() {
   local name=$1 cmd=$2 pattern=$3 pin=$4 min=$5 mismatch=$6 source=$7 words out rc=0 version
   read -ra words <<<"$cmd"
   out=$(bounded 30 "${words[@]}" 2>&1 </dev/null) || rc=$?
+  ((rc == 127)) || installed[$name]=1
   if ((rc == 127)); then
     report "tool $name" FAIL "not installed" "$source"
   elif ((rc == 124)); then
@@ -276,6 +286,42 @@ else
     report "own settings" WARN "$unset_settings not set here, so auto mode's classifier knows nothing of this machine" \
       "write this machine's own in ~/.claude/settings.json (\`claude auto-mode defaults\` shows the form); team-config keeps it"
   fi
+fi
+
+# 1password: op as its tool line found it, and the app by its path.
+app=/opt/1Password/1password
+app_fix="install the native 1password package from the AUR (not the Snap or Flatpak), then turn on its Settings > Developer > Integrate with 1Password CLI"
+if [[ $os == macos ]]; then
+  app=/Applications/1Password.app
+  app_fix="brew install --cask 1password, then turn on its Settings > Developer > Integrate with 1Password CLI"
+fi
+app=${TEAM_1PASSWORD_APP:-$app}
+missing=() fixes=()
+[[ -n ${installed[op]:-} ]] || { missing+=("op is not installed"); fixes+=("the tool op line's fix"); }
+[[ -e $app ]] || { missing+=("the 1Password app is not at $app"); fixes+=("$app_fix"); }
+if ((${#missing[@]} == 0)); then
+  report 1password PASS "op and the 1Password app are installed (the vault is not asked)"
+else
+  report 1password WARN "$(printf '%s and ' "${missing[@]}" | sed 's/ and $//'), so team-secrets restore can only ask for each secret to be pasted" \
+    "$(printf '%s; ' "${fixes[@]}" | sed 's/; $//')"
+fi
+
+# secret <id>: team-secrets check, from each file's existence, size and mode alone.
+rc=0
+secrets=$(TEAM_HOME=$TEAM_HOME bounded 30 "$bin/team-secrets" check --json 2>"$err" </dev/null) || rc=$?
+if ((rc > 1)) || ! jq -e 'type == "array"' <<<"$secrets" >/dev/null 2>&1; then
+  reason=$(first_error)
+  report secrets FAIL "${reason:-team-secrets check exited $rc}" "fix what team-secrets names, then run team-doctor again"
+else
+  while IFS=$'\t' read -r id verdict reason; do
+    if [[ $verdict == PASS ]]; then
+      report "secret $id" PASS "in place"
+    elif [[ $reason == "not a file" ]]; then
+      report "secret $id" FAIL "$reason" "move aside what is at its target in machine/secrets.json, then Daniel runs team-secrets restore in their own terminal"
+    else
+      report "secret $id" FAIL "$reason" "Daniel runs team-secrets restore in their own terminal"
+    fi
+  done < <(jq -r '.[] | [.id, .verdict, .reason] | @tsv' <<<"$secrets")
 fi
 
 # clock

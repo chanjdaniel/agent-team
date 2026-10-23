@@ -88,6 +88,17 @@ case $* in
 esac
 EOF
   clock_offset 0
+  # Every secret of the team home's manifest in place with its mode, holding a dummy value; the
+  # 1Password app installed.
+  cp "$REPO_ROOT/machine/secrets.json" "$TEAM_HOME/machine/secrets.json"
+  local target
+  while IFS= read -r target; do
+    mkdir -p "$(dirname "$HOME/$target")"
+    echo "TOKEN=dummy-secret-value" >"$HOME/$target"
+    chmod 600 "$HOME/$target"
+  done < <(jq -r '.secrets[] | select(.enabled != false) | .target' "$TEAM_HOME/machine/secrets.json")
+  export TEAM_1PASSWORD_APP=$BATS_TEST_TMPDIR/1Password
+  touch "$TEAM_1PASSWORD_APP"
   # The heartbeat runs, as it should on the holder.
   "$REPO_ROOT/bin/team-timers" enable >/dev/null
 }
@@ -155,6 +166,11 @@ on_macos() {
   "$REPO_ROOT/bin/team-timers" enable >/dev/null
 }
 
+# The ids of the manifest's enabled secrets, in order.
+secret_ids() {
+  jq -r '.secrets[] | select(.enabled != false) | .id' "$REPO_ROOT/machine/secrets.json"
+}
+
 # The line of check <name> in the output.
 line_of() {
   grep -E "^(PASS|WARN|FAIL) $1: " <<<"$output"
@@ -182,8 +198,12 @@ every_tool_fails() {
         { echo "tool $name: $line" >&2; return 1; }
     fi
   done < <(lock_tools "$os")
-  # Nothing else fails: the doctor's own git, jq and date still work.
-  assert_equal "$(grep -v '^.... tool ' <<<"$output" | grep -v '^PASS ' || true)" ""
+  # Nothing else fails: the doctor's own git, jq and date still work. Without op, the 1password
+  # line warns too.
+  if [[ $version == - ]]; then
+    assert_contains "$(line_of 1password)" "WARN 1password: op is not installed,"
+  fi
+  assert_equal "$(grep -v '^.... tool ' <<<"$output" | grep -v '^PASS ' | grep -v '^WARN 1password: op ' || true)" ""
 }
 
 @test "tools.lock lists every tool of the spec once per OS, each with a version_cmd, a pattern, a pin or a min, and its sources" {
@@ -214,7 +234,9 @@ every_tool_fails() {
   assert_equal "$(grep -v '^PASS ' <<<"$output")" ""
   local expected
   expected=$(printf '%s\n' os; lock_tools arch | cut -f1 | sed 's/^/tool /'
-    printf '%s\n' machine 'git hooks' 'claude login' 'github login' config plugins memory discord 'own settings' clock lease heartbeat offline)
+    printf '%s\n' machine 'git hooks' 'claude login' 'github login' config plugins memory discord 'own settings' 1password
+    secret_ids | sed 's/^/secret /'
+    printf '%s\n' clock lease heartbeat offline)
   assert_equal "$(checks)" "$expected"
   assert_equal "$(line_of os)" "PASS os: Arch Linux"
   assert_equal "$(line_of 'tool claude')" "PASS tool claude: 2.1.308"
@@ -232,7 +254,9 @@ every_tool_fails() {
   assert_equal "$(grep -v '^PASS ' <<<"$output")" ""
   local expected
   expected=$(printf '%s\n' os homebrew; lock_tools macos | cut -f1 | sed 's/^/tool /'
-    printf '%s\n' machine 'git hooks' 'claude login' 'github login' config plugins memory discord 'own settings' clock lease heartbeat offline)
+    printf '%s\n' machine 'git hooks' 'claude login' 'github login' config plugins memory discord 'own settings' 1password
+    secret_ids | sed 's/^/secret /'
+    printf '%s\n' clock lease heartbeat offline)
   assert_equal "$(checks)" "$expected"
   assert_equal "$(line_of os)" "PASS os: macOS"
 }
@@ -452,6 +476,52 @@ EOF
   assert_equal "$(line_of 'own settings')" "WARN own settings: $HOME/.claude/settings.json is not JSON; fix: fix what team-config names, then run team-doctor again"
 }
 
+@test "the 1password line warns without op or the app, never asking the vault" {
+  tools_at arch
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 1password)" "PASS 1password: op and the 1Password app are installed (the vault is not asked)"
+  rm "$TEAM_1PASSWORD_APP"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 1password)" "WARN 1password: the 1Password app is not at $TEAM_1PASSWORD_APP, so team-secrets restore can only ask for each secret to be pasted; fix: install the native 1password package from the AUR (not the Snap or Flatpak), then turn on its Settings > Developer > Integrate with 1Password CLI"
+  answer "op --version"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of 1password)" "WARN 1password: op is not installed and the 1Password app is not at $TEAM_1PASSWORD_APP, so team-secrets restore can only ask for each secret to be pasted; fix: the tool op line's fix; install the native 1password package from the AUR (not the Snap or Flatpak), then turn on its Settings > Developer > Integrate with 1Password CLI"
+  on_macos
+  tools_at macos
+  touch "$TEAM_1PASSWORD_APP"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 1password)" "PASS 1password: op and the 1Password app are installed (the vault is not asked)"
+  unset TEAM_1PASSWORD_APP
+  run_bin -0 team-doctor
+  [[ -e /Applications/1Password.app ]] ||
+    assert_equal "$(line_of 1password)" "WARN 1password: the 1Password app is not at /Applications/1Password.app, so team-secrets restore can only ask for each secret to be pasted; fix: brew install --cask 1password, then turn on its Settings > Developer > Integrate with 1Password CLI"
+  # op was asked its version alone, by its tool line, never the vault.
+  assert_equal "$(stub_calls op)" ""
+}
+
+@test "the secret lines fail per missing, empty, open or misplaced secret with team-secrets restore; a broken manifest fails" {
+  tools_at arch
+  rm "$HOME/.claude/channels/discord/.env"
+  : >"$HOME/.claude/channels/discord/access.json"
+  chmod 644 "$HOME/Documents/projects/personal/Conventioner/.env"
+  rm "$HOME/Documents/projects/personal/Conventioner/back-end/.env"
+  mkdir "$HOME/Documents/projects/personal/Conventioner/back-end/.env"
+  run_bin -1 team-doctor
+  assert_equal "$(grep -E '^.... secret' <<<"$output")" "FAIL secret discord-bot-env: missing; fix: Daniel runs team-secrets restore in their own terminal
+FAIL secret discord-access-json: empty; fix: Daniel runs team-secrets restore in their own terminal
+FAIL secret conventioner-env: mode 644; fix: Daniel runs team-secrets restore in their own terminal
+PASS secret conventioner-front-end-env: in place
+FAIL secret conventioner-back-end-env: not a file; fix: move aside what is at its target in machine/secrets.json, then Daniel runs team-secrets restore in their own terminal"
+  # Nothing else fails.
+  assert_equal "$(grep -v '^PASS ' <<<"$output" | grep -v '^FAIL secret ' || true)" ""
+  echo '[]' >"$TEAM_HOME/machine/secrets.json"
+  run_bin -1 team-doctor
+  assert_equal "$(grep -E '^.... secret' <<<"$output")" "FAIL secrets: machine/secrets.json: it has no secrets array; fix: fix what team-secrets names, then run team-doctor again"
+  rm "$TEAM_HOME/machine/secrets.json"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of secrets)" "FAIL secrets: no machine/secrets.json in $TEAM_HOME; fix: fix what team-secrets names, then run team-doctor again"
+}
+
 @test "a clock more than a minute off GitHub's warns; GitHub's Date unreadable warns too" {
   tools_at arch
   # The Date header is in whole seconds, so the skew read may be a second off the one set.
@@ -570,7 +640,7 @@ EOF
   local text=$output
   run_bin -0 team-doctor --json
   local secret
-  for secret in sk-ant-oat-fake-secret daniel@example.invalid org-secret-0000 gho_fakefakefakefake "$FAKE_DISCORD_TOKEN"; do
+  for secret in sk-ant-oat-fake-secret daniel@example.invalid org-secret-0000 gho_fakefakefakefake "$FAKE_DISCORD_TOKEN" dummy-secret-value; do
     [[ $text$output != *"$secret"* ]] || { echo "the doctor printed $secret" >&2; return 1; }
   done
   # The code, its comments aside, names none of them.

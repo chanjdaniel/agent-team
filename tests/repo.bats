@@ -28,6 +28,22 @@ setup() {
   ((found >= 5))
 }
 
+# Only Daniel's own terminal runs op (team-secrets restore and save), behind Daniel's 1Password
+# prompt: every session is denied the 1Password CLI and other processes' environments.
+@test "the worker and coordinator settings deny the 1Password CLI and /proc environment reads" {
+  local file rule
+  for file in settings/worker.json coordinator.settings.json; do
+    for rule in 'Bash(op *)' 'Bash(* op *)' 'Bash(*op read*)' 'Bash(*op run*)' 'Bash(*op item*)' \
+      'Bash(*op document*)' 'Bash(*/proc/*/environ*)' 'Read(//proc/**)'; do
+      jq -e --arg r "$rule" '.permissions.deny | index($r) != null' "$REPO_ROOT/$file" >/dev/null ||
+        { echo "$file does not deny $rule" >&2; return 1; }
+    done
+    denied_in "$REPO_ROOT/$file" 'op read op://agent-team/discord-bot-env/.env'
+    denied_in "$REPO_ROOT/$file" 'cd ~ && op document get discord-bot-env --vault agent-team'
+    ! denied_in "$REPO_ROOT/$file" 'team-secrets check'
+  done
+}
+
 # The settings every session starts with: the coordinator's and the workers' shared ones.
 SETTINGS=(coordinator.settings.json settings/worker.json)
 

@@ -15,7 +15,7 @@ The team's own work on it goes through a task and a PR to `dev`, like any projec
 | `plugins/coordinator-skills/` | Skills loaded only into the coordinator by `bin/claude-coordinator` |
 | `templates/` | The task plan and the worker briefs `team-open` and `team-brief` render |
 | `projects.toml` | The project registry, read only through `bin/team-project` |
-| `machine/` | What a machine needs to run the team: `tools.lock`, the tools `team-doctor` checks, pinned or with a minimum, and their source per OS; `claude/`, the Claude user config every machine shares (instructions, settings, skills, plugins), which `team-config` applies and captures |
+| `machine/` | What a machine needs to run the team: `tools.lock`, the tools `team-doctor` checks, pinned or with a minimum, and their source per OS; `claude/`, the Claude user config every machine shares (instructions, settings, skills, plugins), which `team-config` applies and captures; `secrets.json`, every secret file a machine needs, never a value, which `team-secrets` checks and restores from 1Password, described for Daniel in `secrets.md` |
 | `ledger.jsonl` | The append-only record of every task's events |
 | `tasks/` | Each task's plan, briefs and archived scratch; history, kept as written |
 | `memory/` | Each registered project's Claude Code auto memory, `memory/<project>/`, which every machine and worktree of it shares once `team-config apply` points the project at it |
@@ -39,7 +39,7 @@ The team's own work on it goes through a task and a PR to `dev`, like any projec
 
 - `tests/run` runs shellcheck (0.11.0) on every shell script in `bin/` and `tests/`, then the whole bats suite; `tests/run shellcheck` and `tests/run bats` run one half each, as the CI jobs do.
 - One file: `tests/vendor/bats-core/bin/bats tests/<name>.bats`; one test: add `-f '<part of its name>'`.
-- Tests run the real scripts in a sandbox (`load helpers/common`, then `sandbox` in `setup`): `TEAM_HOME` and `HOME` are temporary, `claude`, `gh` and `curl` are stubs, and git is real.
+- Tests run the real scripts in a sandbox (`load helpers/common`, then `sandbox` in `setup`): `TEAM_HOME` and `HOME` are temporary, `claude`, `gh`, `curl`, `op`, `systemctl` and `launchctl` are stubs, and git is real.
   `tests/helpers/common.bash` documents the helpers.
 - CI's runner has jq 1.7.1, so keep to jq 1.7 features.
 - Scripts and tests run on Linux and macOS: on macOS `bin/lib/platform.sh` (sourced by the library and the test helpers) puts Homebrew's GNU coreutils, findutils, sed, grep and `flock` first on `PATH`, so GNU forms are fine and BSD-only ones are not.

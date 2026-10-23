@@ -1,7 +1,7 @@
 # Shared setup for the team home's bats tests: load it with `load helpers/common` and call
 # `sandbox` from `setup`. Every test then runs real scripts from this checkout's bin/ against a
-# temporary team home and HOME, with claude, gh, curl, systemctl and launchctl replaced by
-# logging stubs, so no test reaches this machine's own service managers.
+# temporary team home and HOME, with claude, gh, curl, op, systemctl and launchctl replaced by
+# logging stubs, so no test reaches this machine's own service managers or 1Password.
 # shellcheck shell=bash
 
 bats_require_minimum_version 1.5.0
@@ -25,7 +25,7 @@ sandbox() {
   echo "DISCORD_BOT_TOKEN=$FAKE_DISCORD_TOKEN" >"$HOME/.claude/channels/discord/.env"
 
   local cmd
-  for cmd in claude gh curl systemctl launchctl; do cp "$REPO_ROOT/tests/helpers/stub" "$root/stubs/$cmd"; done
+  for cmd in claude gh curl op systemctl launchctl; do cp "$REPO_ROOT/tests/helpers/stub" "$root/stubs/$cmd"; done
   export PATH=$root/stubs:$PATH
 
   # git reads only the sandbox's config.
