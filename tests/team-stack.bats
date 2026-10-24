@@ -145,6 +145,21 @@ unowned 4"
   [[ $(grep -E '^team +conventioner/backend ' <<<"$output" | sed -E 's/ +/ /g') == "team conventioner/backend 2 1 1.1 GB" ]]
 }
 
+@test "a gate run started from a task's shell is a gate stack, though owner=agent-team" {
+  # nm-test.sh sets owner=agent-team and the task whenever TEAM_TASK is in its environment, as
+  # after eval "$(team-stack env)".
+  local relabel='select(.["com.docker.compose.project"] == "nmtest-1895520")
+    |= (.["io.github.chanjdaniel.team.owner"] = "agent-team" | .["io.github.chanjdaniel.team.task"] = "T7")'
+  docker_state containers ".[].Config.Labels |= ($relabel)"
+  docker_state volumes ".[].Labels |= ($relabel)"
+  docker_state networks ".[].Labels |= ($relabel)"
+  run_bin -0 team-stack ls --all --json
+  assert_equal "$(jq -c '.projects[] | select(.name == "nmtest-1895520") | [.class, .owner, .task, .kind]' <<<"$output")" \
+    '["gate","agent-team","T7","gate"]'
+  assert_equal "$(class_of volumes nmtest-1895520_mongodb_data)" gate
+  assert_equal "$(class_of networks nmtest-1895520_conventioner_network)" gate
+}
+
 @test "without stack blocks in the registry nothing is a legacy gate and every image is unowned" {
   sed -i '/^\[conventioner.stack\]$/,/^$/d' "$TEAM_HOME/projects.toml"
   sed -i '/^\[shop.stack\]$/,$d' "$TEAM_HOME/projects.toml"

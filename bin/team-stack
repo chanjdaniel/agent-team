@@ -68,8 +68,9 @@
 #
 # The owner classes, from each object's own labels and its Compose project, and the registry's
 # stack blocks (team-project --help):
-#   team       owner=agent-team
-#   gate       kind=gate, or no team label set and a project name matching a legacy_gate
+#   gate       kind=gate, whatever its owner (a gate run from a task's shell is owner=agent-team
+#              too), or no team label set and a project name matching a legacy_gate
+#   team       owner=agent-team, and not kind=gate
 #   unowned    everything else, Daniel's primary stack and hand-made stacks included
 # An anonymous volume a container mounts takes that container's class, and one no container
 # mounts is anonymous; an image is team when its repository is in a project's images, legacy

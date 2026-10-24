@@ -16,11 +16,12 @@ def has_team_labels($labels):
 def compose_project($labels): ($labels // {})["com.docker.compose.project"] // null;
 
 # The owner class of an object with the labels <labels> in the Compose project <project> (or
-# null), given $stacks, the registry's stack blocks: team (owner=agent-team), gate (kind=gate,
-# or no team label set and a project name matching a legacy_gate), else unowned.
+# null), given $stacks, the registry's stack blocks: gate (kind=gate, whatever its owner, since a
+# gate run from a task's shell is labelled owner=agent-team too, or no team label set and a
+# project name matching a legacy_gate), team (owner=agent-team), else unowned.
 def owner_class($labels; $project; $stacks):
-  if team_label($labels; "owner") == "agent-team" then "team"
-  elif team_label($labels; "kind") == "gate" then "gate"
+  if team_label($labels; "kind") == "gate" then "gate"
+  elif team_label($labels; "owner") == "agent-team" then "team"
   elif (has_team_labels($labels) | not) and $project != null
     and any($stacks[] | .legacy_gate // empty; . as $gate | $project | test("^(?:" + $gate + ")$"))
   then "gate"

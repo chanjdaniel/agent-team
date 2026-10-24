@@ -27,8 +27,8 @@ Every Docker object the team makes says whose it is, in labels under `io.github.
 
 `team-stack ls` sorts every object into one class, from its own labels and its Compose project (Docker's `com.docker.compose.project` label):
 
-- **team**: `owner=agent-team`.
-- **gate**: `kind=gate`; or, with no team label set to a value, a Compose project whose name matches a project's `legacy_gate` (gate runs from before the labels).
+- **gate**: `kind=gate`, whatever its `owner` (a gate run from a shell with `team-stack env`'s exports is labelled `owner=agent-team` too); or, with no team label set to a value, a Compose project whose name matches a project's `legacy_gate` (gate runs from before the labels).
+- **team**: `owner=agent-team`, and not `kind=gate`.
 - **unowned**: everything else, Daniel's primary stack and stacks started by hand included.
   A slot stack started with `th-compose.sh up` and no `TEAM_*` variables has every team label empty, so it is unowned.
 - **anonymous**: an anonymous volume no container mounts; one a container mounts takes that container's class.
