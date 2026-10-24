@@ -667,13 +667,13 @@ EOF
   assert_equal "$(line_of clock)" "WARN clock: cannot read the Date of https://api.github.com; fix: check the network, then run team-doctor again"
 }
 
-@test "the clock line reads the Date even when curl writes more headers after it, as the real one does" {
+@test "GitHub's Date is read even when curl writes the headers after it in a later write" {
   tools_at arch
-  # The headers after the Date arrive in a later write, once whatever reads them may have stopped.
+  # The later write fails with a broken pipe if the reader stopped at the Date line.
   stub_script curl <<'EOF'
 printf 'HTTP/2 200\r\ndate: %s\r\n' "$(LC_ALL=C date -u '+%a, %d %b %Y %H:%M:%S GMT')"
 sleep 0.5
-printf 'server: github.com\r\ncontent-type: application/json\r\n\r\n'
+printf 'server: github.com\r\n\r\n'
 EOF
   run_bin -0 team-doctor
   assert_equal "$(line_of clock)" "PASS clock: within 60 s of GitHub's"

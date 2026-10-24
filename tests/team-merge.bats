@@ -97,6 +97,7 @@ case "$*" in
   "pr checks 5 --repo owner/proj "*) cat "$GH_DIR/checks.json" ;;
   "api repos/owner/proj/branches/dev") cat "$GH_DIR/branch.json" ;;
   "api repos/owner/proj/pulls/5/commits --paginate") cat "$GH_DIR/commits.json" ;;
+  "api repos/owner/proj/pulls/5") cat "$GH_DIR/pull.json" ;;
   "api repos/owner/proj/commits/"*"/pulls") cat "$GH_DIR/pulls.json" ;;
   "pr merge 5 --repo owner/proj "*)
     if [[ -f $GH_DIR/merge.sh ]]; then source "$GH_DIR/merge.sh"; exit; fi
@@ -222,8 +223,10 @@ git -C "$clone" push -q origin dev
 m=$(git -C "$clone" rev-parse HEAD)
 jq --arg m "$m" '.state = "MERGED" | .mergeCommit = {oid: $m}' "$GH_DIR/pr.json" >"$GH_DIR/pr.next"
 mv "$GH_DIR/pr.next" "$GH_DIR/pr.json"
+# GitHub answers the PR at once, and indexes the merge commit's pull requests only later.
 jq -n --arg m "$m" --arg h "$(git -C "$clone" rev-parse HEAD^2)" \
-  '[{merge_commit_sha: $m, head: {sha: $h}, base: {ref: "dev"}, merged_at: "2026-10-23T03:00:00Z"}]' >"$GH_DIR/pulls.json"
+  '{number: 5, merge_commit_sha: $m, head: {sha: $h}, base: {ref: "dev"}, merged_at: "2026-10-23T03:00:00Z"}' >"$GH_DIR/pull.json"
+echo '[]' >"$GH_DIR/pulls.json"
 SH
 }
 
@@ -570,7 +573,8 @@ EOF
   direct_commit ledger.jsonl
   run_bin -0 --separate-stderr team-merge T14
   assert_contains "$stderr" "2 commits on dev checked: each touches records only or is a pull request's merge into dev"
-  [[ $(stub_calls gh | jq -r 'select(.[0] == "api") | .[1]' | grep -c '/pulls$') -ge 1 ]]
+  # The PR's own merge passed on the PR it names, before GitHub indexed the merge commit.
+  stub_calls gh | jq -e 'select(. == ["api", "repos/owner/proj/pulls/5"])' >/dev/null
   assert_equal "$(merged_events | jq -r '.project' | tail -n 1)" proj
 }
 

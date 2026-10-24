@@ -3,20 +3,42 @@
 # must touch records only (bin/lib/records) against its first parent, or be a pull request's merge
 # into dev. Run in the clone, with the pushed commits fetched.
 #
-# Usage: team-records-check --repo <owner/name> <before> <after>
+# Usage: team-records-check --repo <owner/name> [--pr <number>] <before> <after>
 #   <before>, <after>   the push's old and new tips; a <before> of all zeros (a new branch)
 #                       checks <after> alone, and one the clone lacks (a force-push) fails.
+#   --pr <number>       the pull request just merged (team-merge passes it): GitHub answers
+#                       repos/<owner/name>/pulls/<number> at once, while it may index the merge
+#                       commit's pull requests only a minute later.
 # A merge commit that brings in more than records passes only when GitHub names it as the merge
-# commit of a merged pull request into dev whose head is its second parent
-# (gh api repos/<owner/name>/commits/<sha>/pulls); the pull request's own commits are not walked.
+# commit of a merged pull request into dev whose head is its second parent: the --pr pull request
+# when its merge_commit_sha is this commit, otherwise one of
+# gh api repos/<owner/name>/commits/<sha>/pulls; the pull request's own commits are not walked.
 # Prints each refused commit with its paths that are not records, or one line counting the
 # commits that passed. Exit 0 every commit passed, 1 one was refused or GitHub failed.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
-usage="usage: team-records-check --repo <owner/name> <before> <after>"
-[[ $# -eq 4 && $1 == --repo && -n $2 ]] || usage_error "$usage"
-repo=$2 before=$3 after=$4
+usage="usage: team-records-check --repo <owner/name> [--pr <number>] <before> <after>"
+repo='' pr='' tips=()
+while (($#)); do
+  case $1 in
+    --repo)
+      [[ $# -ge 2 && -n $2 ]] || usage_error "$usage"
+      repo=$2
+      shift
+      ;;
+    --pr)
+      [[ $# -ge 2 && $2 =~ ^[1-9][0-9]*$ ]] || usage_error "$usage"
+      pr=$2
+      shift
+      ;;
+    -*) usage_error "$usage" ;;
+    *) tips+=("$1") ;;
+  esac
+  shift
+done
+[[ -n $repo && ${#tips[@]} -eq 2 ]] || usage_error "$usage"
+before=${tips[0]} after=${tips[1]}
 
 if [[ $before =~ ^0+$ ]]; then
   range=(-1 "$after")
@@ -27,14 +49,30 @@ else
 fi
 mapfile -t commits < <(git rev-list --first-parent "${range[@]}")
 
+# Whether one of the pull requests in the JSON list <pulls> is merged into dev with merge commit
+# <merge> and head <head>: names_merge <pulls> <merge> <head>
+names_merge() {
+  jq -e --arg merge "$2" --arg head "$3" 'any(.[]; .merge_commit_sha == $merge and
+    .head.sha == $head and .base.ref == "dev" and .merged_at != null)' <<<"$1" >/dev/null
+}
+
+# The --pr pull request as GitHub answers it, read once, when a merge first needs it.
+pull=''
+
 # Whether GitHub names <merge> as a merged pull request's merge into dev with head <head>:
 # pull_request_merge <merge> <head>
 pull_request_merge() {
   local pulls
+  if [[ -n $pr ]]; then
+    if [[ -z $pull ]]; then
+      pull=$(gh api "repos/$repo/pulls/$pr" 2>&1) ||
+        die "cannot ask GitHub about PR #$pr: gh api: $(grep -m1 . <<<"$pull")"
+    fi
+    if names_merge "[$pull]" "$1" "$2"; then return 0; fi
+  fi
   pulls=$(gh api "repos/$repo/commits/$1/pulls" 2>&1) ||
     die "cannot ask GitHub about merge $1: gh api: $(grep -m1 . <<<"$pulls")"
-  jq -e --arg merge "$1" --arg head "$2" 'any(.[]; .merge_commit_sha == $merge and
-    .head.sha == $head and .base.ref == "dev" and .merged_at != null)' <<<"$pulls" >/dev/null
+  names_merge "$pulls" "$1" "$2"
 }
 
 refused=0

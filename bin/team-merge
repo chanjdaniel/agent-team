@@ -25,8 +25,9 @@
 # there were any. Prints {task, pr, merge, head, by}.
 # For the team home's repo (the project whose repo the team home's origin names, whichever
 # checkout is its primary), it then runs team-records-check in the primary checkout from the
-# previous merge it logged to this one, since GitHub checks nothing on dev (CI policy B): a commit
-# that is neither records only nor a PR's merge is exit 1, after the merge and its event.
+# previous merge it logged to this one, with --pr naming the PR it just merged, since GitHub
+# checks nothing on dev (CI policy B): a commit that is neither records only nor a PR's merge is
+# exit 1, after the merge and its event.
 # Last, when the project's primary checkout is the code checkout this runs from, that checkout
 # follows the base, so merged code reaches the scripts: on the base branch and clean (untracked
 # files aside), it is fast-forwarded to origin's, said on one line; on another branch or a
@@ -268,9 +269,9 @@ if home=$(home_repo) && [[ ${home,,} == "${repo,,}" ]]; then
   since=$(ledger_jq '[inputs | fromjson? | select(type == "object" and .event == "merged" and .project == $project)]
     | .[-2].merge // "0000000000000000000000000000000000000000"' -nRr --arg project "$project" "$TEAM_HOME/ledger.jsonl")
   if ! git -C "$primary" fetch -q origin "+refs/heads/$base:refs/remotes/origin/$base" 2>"$scratch/fetch-error"; then
-    die "PR #$number is merged and logged, but $base cannot be fetched to check the records rule: $(grep -m1 . "$scratch/fetch-error"); run team-records-check --repo $repo $since $merge in $primary"
+    die "PR #$number is merged and logged, but $base cannot be fetched to check the records rule: $(grep -m1 . "$scratch/fetch-error"); run team-records-check --repo $repo --pr $number $since $merge in $primary"
   fi
-  (cd "$primary" && TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-records-check" --repo "$repo" "$since" "$merge") >&2 ||
+  (cd "$primary" && TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-records-check" --repo "$repo" --pr "$number" "$since" "$merge") >&2 ||
     die "PR #$number is merged and logged, but $base breaks the records rule since the last merge (above): tell Daniel"
 fi
 
