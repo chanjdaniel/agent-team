@@ -20,7 +20,7 @@ Setting up a machine is `sops/machine-setup.md`.
 
 | What | Where | Moved by |
 | - | - | - |
-| Scripts, roles, settings, hooks, templates, plugins, toolkits | the code checkout, `dev` | git, through merged PRs |
+| Scripts, roles, settings, hooks, templates, plugins, toolkits | the code checkout, `dev` | git, through merged PRs: `team-merge` fast-forwards the code checkout after merging its own project, and `team-resume` on the machine taking over |
 | Plans, briefs, the ledger, the registry | the team home, `dev` | git |
 | The lease | the team home's origin, orphan branch `lease`, one `lease.json` | `team-lease` |
 | Each task's scratch (spec, tickets, notes, `handoff.md`) | `tasks/T<n>/scratch/` (`scratch-<project>/` for an added project) | `team-checkpoint`, `team-handoff`; restored by `team-open --resume` |
@@ -90,7 +90,7 @@ So a coordinator left running on a machine that lost the lease (its fence's `cla
    Each step is idempotent: a run interrupted anywhere finishes when run again, and the lease is released last.
 3. It posts "Released at 14:05 from home-pc. On the other machine run `team-resume`." with what config it captured (and any it left to Daniel: a `settings.json` with an `env` key, or a skill folder holding a dotenv-like file), and `team-handoff --retire` removes the coordinator.
 4. At the other machine, Daniel runs (or tells the setup session to run) `team-resume`, or `team-resume --wait` started before the handoff ends.
-   It reads the lease first: held elsewhere and fresh is refused with nothing changed ("say 'hand off' to the coordinator there"), and only then does it run the doctor, pull the team home, apply the config, take the lease, enable the heartbeat, re-home each open worktree with `team-open --task T<n> --resume <project>` (from origin's branch and the task's archive, with `wip/<project>/T<n>` applied as uncommitted changes to a worktree its `stowed` marks `uncommitted`), write `tasks/resume-<date>.json` and start the coordinator.
+   It reads the lease first: held elsewhere and fresh is refused with nothing changed ("say 'hand off' to the coordinator there"), and only then does it run the doctor, pull the team home and then the code checkout (skipped when it is the team home), apply the config, take the lease, enable the heartbeat, re-home each open worktree with `team-open --task T<n> --resume <project>` (from origin's branch and the task's archive, with `wip/<project>/T<n>` applied as uncommitted changes to a worktree its `stowed` marks `uncommitted`), write `tasks/resume-<date>.json` and start the coordinator.
 5. The coordinator's `resume` skill reads the report, catches up on Discord messages sent while no coordinator listened, relaunches each stowed role with a `resume` brief (which says what became of the uncommitted changes), logs `resumed`, and posts what resumed and what did not.
 6. Daniel pins the coordinator in `claude agents`.
 

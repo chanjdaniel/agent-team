@@ -9,7 +9,7 @@
 # task_events, known_task_events, open_task_events, task_status, task_worktrees, local_path,
 # archive_task_dir, machine_name, os_release, team_os, fence_reason, lease_gate, worktree_changes,
 # snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin, home_repo, non_records,
-# commit_non_records, records_list, origin_git, origin_reason, commit_records, render_template,
+# commit_non_records, records_list, origin_git, origin_reason, commit_records, fast_forward, render_template,
 # registered_pr, attribution_lines, strip_attribution, live_sessions, discord_token, discord_api,
 # github, pr_part and task_state_json, and sets COORDINATOR_CHANNEL.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
@@ -415,13 +415,54 @@ commit_records() {
   echo "team home: $committed; origin's $branch had moved; replayed onto it and pushed $branch"
 }
 
-# The local paths in the way of moving the team home from HEAD to <commit>: changed there and
-# here (staged, unstaged or untracked), on one line.
-records_in_the_way() {
+# The local paths in the way of moving <checkout> from HEAD to <commit>: changed there and here
+# (staged, unstaged or untracked), on one line: in_the_way <checkout> <commit>
+in_the_way() {
   local their_paths=()
-  mapfile -d '' -t their_paths < <(git -C "$TEAM_HOME" diff -z --name-only --no-renames HEAD "$1")
+  mapfile -d '' -t their_paths < <(git -C "$1" diff -z --name-only --no-renames HEAD "$2")
   ((${#their_paths[@]})) || return 0
-  git -C "$TEAM_HOME" -c core.quotePath=false status --porcelain --untracked-files=all -- "${their_paths[@]}" | cut -c4- | paste -sd ' '
+  git -C "$1" -c core.quotePath=false status --porcelain --untracked-files=all -- "${their_paths[@]}" | cut -c4- | paste -sd ' '
+}
+
+# Fast-forward <branch>, the branch checked out in <checkout>, to origin's: fetch it, then move
+# the branch, index and working tree, local changes that are not in the way staying as they are.
+# FF_RESULT says what it did: "<branch> fast-forwarded to <sha>" or "<branch> is up to date at
+# <sha>" (also when it is ahead of origin's). On failure FF_REASON says why, and it returns 75 when
+# origin cannot be fetched, 1 when origin has no <branch>, the branch has diverged from origin's or
+# local changes are in the way. The fetch goes through origin_git, so NET_ERR must name a file:
+# fast_forward <checkout> <branch>
+# shellcheck disable=SC2034 # FF_RESULT and FF_REASON are the caller's to read
+fast_forward() {
+  local checkout=$1 branch=$2 theirs way rc=0
+  FF_RESULT='' FF_REASON=''
+  origin_git -C "$checkout" fetch -q --no-write-fetch-head origin "+refs/heads/$branch:refs/remotes/origin/$branch" || rc=$?
+  if ((rc)) && grep -q "couldn't find remote ref" "$NET_ERR"; then
+    FF_REASON="origin has no $branch"
+    return 1
+  elif ((rc)); then
+    FF_REASON="cannot fetch $branch: $(origin_reason "$rc")"
+    return 75
+  fi
+  theirs=$(git -C "$checkout" rev-parse "refs/remotes/origin/$branch")
+  if git -C "$checkout" merge-base --is-ancestor "$theirs" HEAD; then
+    FF_RESULT="$branch is up to date at $(git -C "$checkout" rev-parse --short=7 HEAD)"
+    return 0
+  fi
+  if ! git -C "$checkout" merge-base --is-ancestor HEAD "$theirs"; then
+    FF_REASON="$branch has diverged from origin's"
+    return 1
+  fi
+  git -C "$checkout" update-index -q --refresh || true
+  way=$(in_the_way "$checkout" "$theirs")
+  if [[ -n $way ]]; then
+    FF_REASON="local changes to $way are in the way"
+    return 1
+  fi
+  if ! git -C "$checkout" merge -q --ff-only "$theirs" >/dev/null 2>"$NET_ERR"; then
+    FF_REASON=$(grep -m1 . "$NET_ERR" | sed -E 's/^(fatal|error): //')
+    return 1
+  fi
+  FF_RESULT="$branch fast-forwarded to ${theirs:0:7}"
 }
 
 # Replay the commits on the team home's <branch> that origin's lacks onto origin's, moving the
@@ -459,7 +500,7 @@ replay_records() {
   {
     flock -x 9
     git -C "$TEAM_HOME" update-index -q --refresh || true
-    way=$(records_in_the_way "$onto")
+    way=$(in_the_way "$TEAM_HOME" "$onto")
     if [[ -n $way ]]; then
       REPLAY_REASON="local changes to $way are in the way"
       return 1

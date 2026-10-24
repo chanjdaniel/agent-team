@@ -94,6 +94,7 @@ SH
 
   make_machine laptop
   laptop=$BATS_TEST_TMPDIR/machines/laptop
+  code_checkout
   lt=$laptop/home/slots/home/1
   report=$laptop/team/tasks/resume-$(date +%F).json
   state=$HOME/.local/state/agent-team

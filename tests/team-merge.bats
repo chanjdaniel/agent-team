@@ -614,3 +614,102 @@ EOF
     return 1
   fi
 }
+
+# proj is the team home's repo, and its primary checkout at $HOME/agent-team, a second clone
+# (as_team_home apart), is the code checkout team-merge runs from.
+merging_the_code() {
+  as_team_home apart
+  code_checkout "$HOME/agent-team"
+  code=$CODE_CHECKOUT
+}
+
+@test "after a merge of its own project, the code checkout's base is fast-forwarded to origin's, untracked files aside" {
+  merging_the_code
+  echo "a note" >"$code/notes.txt"
+  run_bin -0 --separate-stderr team-merge T14
+  merge=$(jq -r .merge <<<"$output")
+  assert_equal "$(git -C "$code" rev-parse HEAD)" "$merge"
+  assert_equal "$(git -C "$code" rev-parse HEAD)" "$(git -C "$TEAM_ORIGIN" rev-parse dev)"
+  assert_equal "$(cat "$code/tool.sh")" tool
+  assert_equal "$(grep -c 'code checkout' <<<"$stderr")" 1
+  assert_contains "$stderr" "team-merge: the code checkout $code: dev fast-forwarded to ${merge:0:7}"
+}
+
+@test "a code checkout on another branch is left as it is, saying why and how, and the merge exits 0" {
+  merging_the_code
+  git -C "$code" switch -q -c feat/elsewhere
+  before=$(git -C "$code" rev-parse HEAD)
+  run_bin -0 --separate-stderr team-merge T14
+  assert_equal "$(merged_events | wc -l)" 2
+  assert_equal "$(git -C "$code" rev-parse HEAD)" "$before"
+  assert_equal "$(git -C "$code" rev-parse dev)" "$before"
+  assert_contains "$stderr" "team-merge: the code checkout $code is left as it is: it is on feat/elsewhere, not dev; to bring in the merged code: git -C $code switch dev && git -C $code pull --ff-only origin dev"
+}
+
+@test "a code checkout on a detached HEAD is left as it is" {
+  merging_the_code
+  git -C "$code" switch -q --detach
+  before=$(git -C "$code" rev-parse HEAD)
+  run_bin -0 --separate-stderr team-merge T14
+  assert_equal "$(git -C "$code" rev-parse HEAD)" "$before"
+  assert_contains "$stderr" "team-merge: the code checkout $code is left as it is: it is on a detached HEAD, not dev; to bring in the merged code: git -C $code switch dev && git -C $code pull --ff-only origin dev"
+}
+
+@test "a code checkout with local changes is left as it is, even when they are not in the way" {
+  merging_the_code
+  echo "edited" >>"$code/ledger.jsonl"
+  before=$(git -C "$code" rev-parse HEAD)
+  run_bin -0 --separate-stderr team-merge T14
+  assert_equal "$(git -C "$code" rev-parse HEAD)" "$before"
+  assert_equal "$(tail -n 1 "$code/ledger.jsonl")" edited
+  assert_contains "$stderr" "team-merge: the code checkout $code is left as it is: it has local changes to ledger.jsonl; to bring in the merged code: git -C $code switch dev && git -C $code pull --ff-only origin dev"
+}
+
+@test "a code checkout whose base has diverged from origin's is left as it is" {
+  merging_the_code
+  echo "mine" >"$code/mine.txt"
+  git -C "$code" add mine.txt
+  git -C "$code" commit -q -m "chore: a commit of its own"
+  before=$(git -C "$code" rev-parse HEAD)
+  run_bin -0 --separate-stderr team-merge T14
+  assert_equal "$(git -C "$code" rev-parse HEAD)" "$before"
+  assert_contains "$stderr" "team-merge: the code checkout $code is left as it is: dev has diverged from origin's; to bring in the merged code: git -C $code switch dev && git -C $code pull --ff-only origin dev"
+}
+
+@test "an untracked file in the way leaves the code checkout as it is" {
+  merging_the_code
+  echo "mine" >"$code/tool.sh"
+  before=$(git -C "$code" rev-parse HEAD)
+  run_bin -0 --separate-stderr team-merge T14
+  assert_equal "$(git -C "$code" rev-parse HEAD)" "$before"
+  assert_equal "$(cat "$code/tool.sh")" mine
+  assert_contains "$stderr" "team-merge: the code checkout $code is left as it is: local changes to tool.sh are in the way; to bring in the merged code: git -C $code switch dev && git -C $code pull --ff-only origin dev"
+}
+
+@test "a base that breaks the records rule is not brought into the code checkout" {
+  merging_the_code
+  direct_commit bin/sneaky
+  before=$(git -C "$code" rev-parse HEAD)
+  run_bin -1 --separate-stderr team-merge T14
+  assert_equal "$(git -C "$code" rev-parse HEAD)" "$before"
+  assert_contains "$stderr" "breaks the records rule"
+}
+
+@test "a code checkout that is the team home is left to the next records push" {
+  as_team_home
+  code_checkout "$TEAM_HOME"
+  before=$(git -C "$TEAM_HOME" rev-parse HEAD)
+  run_bin -0 --separate-stderr team-merge T14
+  assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$before"
+  assert_contains "$stderr" "team-merge: the code checkout is the team home, so the next records push (team-checkpoint, team-handoff) brings it level with origin's dev"
+}
+
+@test "a merge of any other project leaves the code checkout alone" {
+  code_checkout
+  push_to_dev "$CODE_ORIGIN" bin-change.txt >/dev/null
+  before=$(git -C "$CODE_CHECKOUT" rev-parse HEAD)
+  run_bin -0 --separate-stderr team-merge T14
+  assert_equal "$(git -C "$CODE_CHECKOUT" rev-parse HEAD)" "$before"
+  [[ $stderr != *"code checkout"* ]]
+  [[ -z $(git -C "$CODE_CHECKOUT" for-each-ref refs/remotes/origin/dev --contains "$(git -C "$CODE_ORIGIN" rev-parse dev)") ]]
+}

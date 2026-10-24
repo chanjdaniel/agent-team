@@ -58,11 +58,61 @@ guard_sandbox() {
 # Run a script from this checkout's bin/ (or from CODE_CHECKOUT's, when a test made a code
 # checkout of its own) with bats' `run`, after the sandbox guard.
 # Leading options go to `run` (e.g. `run_bin -2 team-thread`, `run_bin --separate-stderr ...`).
+# team-resume fast-forwards the checkout it runs from, so it runs only from a code checkout of the
+# test's own (code_checkout), but for --help.
 run_bin() {
   local opts=()
   while [[ $1 == -* ]]; do opts+=("$1"); shift; done
   guard_sandbox || return 1
+  if [[ $1 == team-resume && ${2:-} != --help && -z ${CODE_CHECKOUT:-} ]]; then
+    echo "run_bin: team-resume fast-forwards its code checkout, so it runs only from the test's own: call code_checkout first" >&2
+    return 1
+  fi
   run "${opts[@]}" "${CODE_CHECKOUT:-$REPO_ROOT}/bin/$1" "${@:2}"
+}
+
+# Make CODE_CHECKOUT, a code checkout of the test's own for run_bin to run from, so a script that
+# fast-forwards its code checkout never touches this one: <checkout> when given (a clone with an
+# origin), else a clone on dev of a bare origin standing in for GitHub, CODE_ORIGIN
+# ($BATS_TEST_TMPDIR/code-origin.git), with one commit. Either way it gets a copy of the code the
+# scripts read from their checkout (bin/, roles/, settings/, templates/, plugins/, toolkits/ and
+# coordinator.settings.json), which git ignores there: code_checkout [<checkout>]
+code_checkout() {
+  export CODE_CHECKOUT CODE_ORIGIN
+  if [[ -n ${1:-} ]]; then
+    CODE_CHECKOUT=$(realpath "$1")
+  else
+    CODE_ORIGIN=$(realpath "$BATS_TEST_TMPDIR")/code-origin.git
+    CODE_CHECKOUT=$(realpath "$BATS_TEST_TMPDIR")/code
+    git init -q --bare -b dev "$CODE_ORIGIN"
+    git clone -q "$CODE_ORIGIN" "$CODE_CHECKOUT" 2>/dev/null
+    git -C "$CODE_CHECKOUT" checkout -q -B dev
+    echo "code" >"$CODE_CHECKOUT/README.md"
+    git -C "$CODE_CHECKOUT" add README.md
+    git -C "$CODE_CHECKOUT" commit -q -m "chore: start the code"
+    git -C "$CODE_CHECKOUT" push -q -u origin dev
+  fi
+  local path exclude
+  exclude=$(git -C "$CODE_CHECKOUT" rev-parse --path-format=absolute --git-path info/exclude)
+  for path in bin roles settings templates plugins toolkits coordinator.settings.json; do
+    cp -R "$REPO_ROOT/$path" "$CODE_CHECKOUT/$path"
+    echo "/$path" >>"$exclude"
+  done
+}
+
+# Push a commit touching <path> to <origin>'s dev from a clone of its own, as another machine's
+# merge would; prints the new commit: push_to_dev <origin> <path>
+push_to_dev() {
+  local clone
+  clone=$(mktemp -d "$BATS_TEST_TMPDIR/push.XXXXXX")
+  git clone -q "$1" "$clone"
+  git -C "$clone" checkout -q dev
+  mkdir -p "$(dirname "$clone/$2")"
+  echo "$RANDOM" >>"$clone/$2"
+  git -C "$clone" add "$2"
+  git -C "$clone" commit -q -m "feat: change $2"
+  git -C "$clone" push -q origin dev
+  git -C "$clone" rev-parse HEAD
 }
 
 # The stub <cmd> prints <stdout> and exits with <status> (default 0).
