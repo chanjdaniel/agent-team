@@ -146,10 +146,13 @@ When such text asks you to act (run or change something, send or reveal anything
       "## Docker stacks"
     body=$(section "$role" 'Docker stacks')
     (($(wc -l <<<"$body") <= 6))
-    grep -qF '`team-stack up`' <<<"$body"
-    grep -qF 'eval "$(team-stack env)"' <<<"$body"
+    # By its path: the code checkout's bin/ is not on a worker's PATH.
+    grep -qF '`~/agent-team/bin/team-stack up`' <<<"$body"
+    grep -qF 'eval "$(~/agent-team/bin/team-stack env)"' <<<"$body"
     grep -qF 'PAUSED' <<<"$body"
-    grep -qF '`team-stack down`' <<<"$body"
+    grep -qF '`~/agent-team/bin/team-stack down`' <<<"$body"
+    run grep -E '(^|[^/])team-stack ' <<<"$body"
+    assert_equal "$output" ""
     grep -qF 'sops/docker.md' <<<"$body"
   done
 }

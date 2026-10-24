@@ -1,7 +1,8 @@
 # SOP: Docker stacks
 
 How the team runs the Docker stacks of a project's worktrees, and how it tells its own Docker objects from everyone else's.
-`team-stack` is the one way an agent starts, reaches, stops and removes a stack; `team-stack --help` is its exact reference.
+`team-stack` is the one way an agent starts, reaches, stops and removes a stack; `~/agent-team/bin/team-stack --help` is its exact reference.
+The code checkout's `bin/` is not on a worker's `PATH`, so an agent runs it by that path.
 A project's stacks are the team's to manage only when the registry gives it a `stack` block (`team-project --help` documents its keys).
 
 ## The labels contract
@@ -51,13 +52,13 @@ A caller clears its own stack identity (`COMPOSE_PROJECT_NAME`, `TH_PORTS` and e
 
 ## Running a worktree's stack
 
-An agent starts, reaches, stops and removes its stack with `team-stack`, never with `docker compose up`, the wrapper's `up` or `docker run`.
+An agent starts, reaches, stops and removes its stack with `~/agent-team/bin/team-stack`, never with `docker compose up`, the wrapper's `up` or `docker run`.
 
-- `team-stack up` starts the worktree's stack once the machine has room for it ("Admission"), labelled with its task, and seeds a new database.
-- `eval "$(team-stack env)"` exports what reaches it: `COMPOSE_PROJECT_NAME`, a `TH_<SERVICE>_PORT` per service (the wrapper's `ports`) and the stack's five `TEAM_*` labels, so the seed, Playwright, `mongosh` and a hand-run wrapper call reach the same stack without changing its labels.
-- `team-stack seed` runs the project's seed command again, from the worktree, with those exports.
-- `team-stack stop` stops its containers and keeps its data; the next `up` starts them again and does not seed.
-- `team-stack down` saves its logs and removes it, leaving no container, volume (named or anonymous) or network of it.
+- `~/agent-team/bin/team-stack up` starts the worktree's stack once the machine has room for it ("Admission"), labelled with its task, and seeds a new database.
+- `eval "$(~/agent-team/bin/team-stack env)"` exports what reaches it: `COMPOSE_PROJECT_NAME`, a `TH_<SERVICE>_PORT` per service (the wrapper's `ports`) and the stack's five `TEAM_*` labels, so the seed, Playwright, `mongosh` and a hand-run wrapper call reach the same stack without changing its labels.
+- `~/agent-team/bin/team-stack seed` runs the project's seed command again, from the worktree, with those exports.
+- `~/agent-team/bin/team-stack stop` stops its containers and keeps its data; the next `up` starts them again and does not seed.
+- `~/agent-team/bin/team-stack down` saves its logs and removes it, leaving no container, volume (named or anonymous) or network of it.
 
 Each acts on the worktree it is run in (or `--worktree <path>`), resolved the same way:
 
@@ -124,9 +125,9 @@ On macOS, Docker runs in Docker Desktop's VM, so the readings differ, and both a
 
 Builders, planners and reviewers carry these rules in a short `## Docker stacks` section of their role:
 
-- Start the worktree's stack only with `team-stack up`, never `docker compose up`, the wrapper's `up` or `docker run`, and reach it with `eval "$(team-stack env)"`.
-- On `team-stack up`'s exit 75, send `T<n> PAUSED <its reason line>` and wait, rather than fighting for room.
-- `team-stack stop` a stack no longer needed, and `team-stack down` it when done.
+- Start the worktree's stack only with `~/agent-team/bin/team-stack up`, never `docker compose up`, the wrapper's `up` or `docker run`, and reach it with `eval "$(~/agent-team/bin/team-stack env)"`.
+- On `up`'s exit 75, send `T<n> PAUSED <its reason line>` and wait, rather than fighting for room.
+- `~/agent-team/bin/team-stack stop` a stack no longer needed, and `~/agent-team/bin/team-stack down` it when done.
 - Never prune, and never remove another task's or project's containers, volumes or networks; never test against Daniel's primary stack.
 
 Every worker's settings (`settings/worker.json`) deny Docker's prune commands, `docker <object> prune` for `system`, `volume`, `image`, `network`, `builder`, `container` and `buildx`, each in three spellings: `docker <object> prune*`, `docker * <object> prune*` (global options first) and `*/docker <object> prune*` (by path).
@@ -134,8 +135,8 @@ These are a speed bump, as every deny rule is; the guarantee is that no script t
 
 ## Seeing what Docker holds
 
-- `team-stack ls` lists every Compose project with its status, class, task, kind, worktree, age and memory.
-- `team-stack ls --all` adds the volumes, images and networks, grouped by class with their totals; `--json` gives every object with its class.
+- `~/agent-team/bin/team-stack ls` lists every Compose project with its status, class, task, kind, worktree, age and memory.
+- `~/agent-team/bin/team-stack ls --all` adds the volumes, images and networks, grouped by class with their totals; `--json` gives every object with its class.
 - It only reads, so it is safe at any time, a gate run's end-to-end phase included.
 
 ## Testing
