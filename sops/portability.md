@@ -9,7 +9,8 @@ Setting up a machine is `sops/machine-setup.md`.
 - Exactly one machine runs the team at a time: the holder of the lease.
   No confirmed lease, no coordinator and no worker.
 - Git is the transport and GitHub the meeting point; nothing moves by copying directories between machines.
-- Every machine has the same layout under `$HOME`: the team home at `~/agent-team` and each project at its registry path; a path recorded under any home directory (`/home/<name>/...`, `/Users/<name>/...`) means the same path under this machine's `$HOME`.
+- Every machine has the same layout under `$HOME`: the code checkout at `~/agent-team`, the team home at the path `~/.config/agent-team/home` names (relative to `$HOME`; without that file, the team home is the code checkout itself) and each project at its registry path; a path recorded under any home directory (`/home/<name>/...`, `/Users/<name>/...`) means the same path under this machine's `$HOME`.
+- Every script finds the team home the same way: `TEAM_HOME` when set (the tests, and a script calling a sibling), else `~/.config/agent-team/home`, else the directory above `bin/`; code (scripts, roles, settings, hooks, templates, plugins, toolkits) always comes from the code checkout.
 - Conversations are a cache and never move: a resume rebuilds every session from the ledger, the briefs, the tickets, `handoff.md`, the branch and the archived scratch.
 - Secrets never touch git, logs, Discord or transcripts.
 - The home PC is the default holder; the laptop takes the team when Daniel travels, and hands it back after.
@@ -19,7 +20,8 @@ Setting up a machine is `sops/machine-setup.md`.
 
 | What | Where | Moved by |
 | - | - | - |
-| Scripts, roles, settings, plans, briefs, the ledger | the team home, `dev` | git |
+| Scripts, roles, settings, hooks, templates, plugins, toolkits | the code checkout, `dev` | git, through merged PRs |
+| Plans, briefs, the ledger, the registry | the team home, `dev` | git |
 | The lease | the team home's origin, orphan branch `lease`, one `lease.json` | `team-lease` |
 | Each task's scratch (spec, tickets, notes, `handoff.md`) | `tasks/T<n>/scratch/` (`scratch-<project>/` for an added project) | `team-checkpoint`, `team-handoff`; restored by `team-open --resume` |
 | Work in flight | each project's origin: the task branch; the team home's origin: `wip/<project>/T<n>` | workers' pushes; `team-checkpoint` |
@@ -28,7 +30,7 @@ Setting up a machine is `sops/machine-setup.md`.
 | Tool versions | `bin/lib/tools.lock` | read by `team-doctor` and `team-bootstrap` |
 | Which secrets a machine needs (never a value) | `machine/secrets.json`, described in `machine/secrets.md` | read by `team-secrets` |
 | Secret values | 1Password, the `agent-team` vault | `team-secrets restore` and `save`, in Daniel's own terminal only |
-| This machine's name and state (lease record, fence, offline flag, logs) | `~/.config/agent-team/machine`, `~/.local/state/agent-team/` | never moved |
+| This machine's name, its team home's path and its state (lease record, fence, offline flag, logs) | `~/.config/agent-team/machine`, `~/.config/agent-team/home`, `~/.local/state/agent-team/` | never moved |
 
 `machine/`, `memory/`, `tasks/` and the ledger are records, committed straight to `dev` by the scripts.
 
@@ -106,4 +108,4 @@ So a coordinator left running on a machine that lost the lease (its fence's `cla
 - Supervision: the coordinator under a systemd service that checks the lease before it starts, since agent view does not restart sessions after a reboot.
 - Trust accepted once per root over SSH; the doctor's check is the same.
 - Sizing: each worker's treehouse slot has its own `node_modules` and Docker stack, so RAM and disk set the pool caps.
-- The team home's checks could then run on GitHub again from a self-hosted runner, as `manual-steps.md` keeps as option A.
+- The code's checks could then run on GitHub again from a self-hosted runner, as `manual-steps.md` keeps as option A.

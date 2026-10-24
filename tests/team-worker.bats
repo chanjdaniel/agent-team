@@ -49,12 +49,12 @@ fake_checkout() {
   cat >"$code/settings/worker.json" <<'JSON'
 {"disableClaudeAiConnectors": true, "env": {"A": "worker", "B": "worker"},
  "permissions": {"deny": ["Bash(git clean*)", "Bash(gh pr merge*)"], "allow": ["Read"]},
- "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "@TEAM_HOME@/bin/hooks/w"}]}],
+ "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "@TEAM_CODE@/bin/hooks/w"}]}],
    "Stop": [{"hooks": [{"type": "command", "command": "s"}]}]}}
 JSON
   cat >"$code/settings/planner.json" <<'JSON'
 {"env": {"B": "planner"}, "permissions": {"deny": ["Bash(git push*)"], "allow": ["Edit"]},
- "hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "@TEAM_HOME@/bin/hooks/x @TEAM_HOME@"}]}]}}
+ "hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "@TEAM_CODE@/bin/hooks/x @TEAM_CODE@"}]}]}}
 JSON
   echo '{"mcpServers": {"alpha": {"command": "a"}}}' >"$code/toolkits/kit-a/.mcp.json"
   echo '{"mcpServers": {"beta": {"command": "b"}, "gamma": {"command": "c"}}}' >"$code/toolkits/kit-c/.mcp.json"
@@ -446,7 +446,7 @@ assert_prod_write_gated() {
   local mcp=$TEAM_HOME/tasks/T7/mcp.ops.json
   assert_equal "$(jq -c . "$mcp")" "$(jq -cn --arg code "$REPO_ROOT" '{mcpServers: {"prod-read": {command: "node",
     args: ["\($code)/toolkits/prod-read/scripts/start-server.mjs"]}}}')"
-  run -1 grep -Eq '@TEAM_HOME@|@TASK@|mongodb(\+srv)?://|MDB_MCP|op://|password' "$mcp"
+  run -1 grep -Eq '@TEAM_CODE@|@TASK@|mongodb(\+srv)?://|MDB_MCP|op://|password' "$mcp"
   # The worker settings' deny rules name mongodb+srv:// themselves.
   run -1 grep -Eq 'mongodb(\+srv)?://|MDB_MCP_CONNECTION|op://|password' \
     <(jq 'del(.permissions.deny)' "$TEAM_HOME/tasks/T7/settings.ops.json")
@@ -519,7 +519,7 @@ Edit|Write|MultiEdit|NotebookEdit $REPO_ROOT/bin/hooks/scratch-only-edits"
   assert_equal "$(jq -c . "$mcp")" "$(jq -cn --arg code "$REPO_ROOT" '{mcpServers: {
     "prod-read": {command: "node", args: ["\($code)/toolkits/prod-read/scripts/start-server.mjs"]},
     "prod-write": {command: "node", args: ["\($code)/toolkits/prod-write/scripts/start-server.mjs"]}}}')"
-  run -1 grep -Eq '@TEAM_HOME@|@TASK@|mongodb(\+srv)?://|MDB_MCP|op://|password' "$mcp"
+  run -1 grep -Eq '@TEAM_CODE@|@TASK@|mongodb(\+srv)?://|MDB_MCP|op://|password' "$mcp"
 
   local s=$t/settings.ops.json
   assert_prod_write_gated "$s"
@@ -596,11 +596,25 @@ Edit|Write|MultiEdit|NotebookEdit $REPO_ROOT/bin/hooks/scratch-only-edits"
   assert_equal "$(bg_calls)" ""
 }
 
-@test "@TEAM_HOME@, @TASK@ and @TASK_DIR@ are substituted in the settings and the MCP config" {
+@test "no placeholder is left in any role's generated settings and MCP config from this checkout" {
+  thread T7
+  local role
+  for role in planner builder reviewer; do
+    run_bin -0 team-worker T7 "$role" "$wt1" -- go
+    run -1 grep -Eq '@[A-Z_]+@' "$TEAM_HOME/tasks/T7/settings.$role.json" "$TEAM_HOME/tasks/T7/mcp.$role.json"
+  done
+  ops_stub
+  run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --toolkit prod-write --request "$request" -- go
+  grep -q "$REPO_ROOT/bin/hooks/ops-log" "$TEAM_HOME/tasks/T7/settings.ops.json"
+  grep -q "$REPO_ROOT/toolkits/prod-write/" "$TEAM_HOME/tasks/T7/mcp.ops.json"
+  run -1 grep -Eq '@[A-Z_]+@' "$TEAM_HOME/tasks/T7/settings.ops.json" "$TEAM_HOME/tasks/T7/mcp.ops.json"
+}
+
+@test "@TEAM_CODE@, @TASK@ and @TASK_DIR@ are substituted in the settings and the MCP config" {
   fake_checkout
-  echo '{"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "@TEAM_HOME@/bin/hooks/x @TASK@", "args": ["@TASK_DIR@"]}]}]}}' \
+  echo '{"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "@TEAM_CODE@/bin/hooks/x @TASK@", "args": ["@TASK_DIR@"]}]}]}}' \
     >"$code/settings/planner.json"
-  echo '{"mcpServers": {"alpha": {"command": "@TEAM_HOME@/a", "args": ["--task", "@TASK@", "@TASK_DIR@"]}}}' >"$code/toolkits/kit-a/.mcp.json"
+  echo '{"mcpServers": {"alpha": {"command": "@TEAM_CODE@/a", "args": ["--task", "@TASK@", "@TASK_DIR@"]}}}' >"$code/toolkits/kit-a/.mcp.json"
   thread T7
   run_fake T7 planner "$wt1" --toolkit kit-a -- go
   assert_equal "$status" 0

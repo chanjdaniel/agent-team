@@ -186,17 +186,23 @@ proj_worktrees() {
   git -C "$HOME/projects/proj" worktree list --porcelain | sed -n 's/^worktree //p'
 }
 
-# proj is the team home itself: TEAM_HOME moves to $HOME/agent-team, a clone of a bare origin
-# whose dev is proj's base, with a merged event for an earlier PR at dev's first commit. PR #5's
-# head is a real commit on origin's feat/T14-tooling, and gh pr merge merges it on origin with a
-# merge commit that GitHub then names as PR #5's.
+# proj is the team home's repo: TEAM_HOME is a clone of a bare origin whose dev is proj's base,
+# named https://github.com/owner/proj.git (git's url.insteadOf leads there), with a merged event
+# for an earlier PR at dev's first commit. Its primary checkout is the team home itself, at
+# $HOME/agent-team; or, with `apart`, a second clone of the same origin there while the team home
+# is $HOME/agent-team-records. PR #5's head is a real commit on origin's feat/T14-tooling, and gh
+# pr merge merges it on origin with a merge commit that GitHub then names as PR #5's.
 as_team_home() {
-  local pr_clone=$BATS_TEST_TMPDIR/pr
-  mv "$TEAM_HOME" "$HOME/agent-team"
-  export TEAM_HOME=$HOME/agent-team
+  local pr_clone=$BATS_TEST_TMPDIR/pr home=$HOME/agent-team
+  [[ ${1:-} != apart ]] || home=$HOME/agent-team-records
+  mv "$TEAM_HOME" "$home"
+  export TEAM_HOME=$home
   sed -i 's|^path = "projects/proj"$|path = "agent-team"|' "$TEAM_HOME/projects.toml"
   export TEAM_ORIGIN
   TEAM_ORIGIN=$(make_team_home)
+  git config --global url."$TEAM_ORIGIN".insteadOf https://github.com/owner/proj.git
+  git -C "$TEAM_HOME" remote set-url origin https://github.com/owner/proj.git
+  [[ ${1:-} != apart ]] || git clone -q https://github.com/owner/proj.git "$HOME/agent-team"
   event T13 merged "{pr: 4, merge: \"$(git -C "$TEAM_HOME" rev-parse HEAD)\", head: \"0000000\", by: \"x\", project: \"proj\"}"
   git clone -q "$TEAM_ORIGIN" "$pr_clone"
   git -C "$pr_clone" checkout -q -b feat/T14-tooling
@@ -578,6 +584,27 @@ EOF
   assert_contains "$stderr" "chore: straight to dev"
   assert_contains "$stderr" "bin/sneaky"
   assert_contains "$stderr" "team-merge: PR #5 is merged and logged, but dev breaks the records rule since the last merge (above): tell Daniel"
+}
+
+@test "the team home's repo is checked against the records rule when its primary checkout is a second clone" {
+  as_team_home apart
+  direct_commit bin/sneaky
+  run_bin -1 --separate-stderr team-merge T14
+  assert_equal "$(merged_events | wc -l)" 2
+  assert_contains "$stderr" "bin/sneaky"
+  assert_contains "$stderr" "team-merge: PR #5 is merged and logged, but dev breaks the records rule since the last merge (above): tell Daniel"
+}
+
+@test "a project whose repo is not the team home's origin's is not checked, whatever its primary checkout" {
+  as_team_home
+  git -C "$TEAM_HOME" remote set-url origin https://github.com/owner/agent-team-records.git
+  git config --global url."$TEAM_ORIGIN".insteadOf https://github.com/owner/agent-team-records.git
+  direct_commit bin/sneaky
+  run_bin -0 team-merge T14
+  if stub_calls gh | jq -e 'select(.[0] == "api" and (.[1] | endswith("/pulls")))' >/dev/null; then
+    echo "team-records-check ran for a project that is not the team home's repo" >&2
+    return 1
+  fi
 }
 
 @test "a project that is not the team home is not checked against the records rule" {

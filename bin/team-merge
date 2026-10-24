@@ -23,10 +23,10 @@
 # by (naming the Discord message and its author), project, branch, discord_message,
 # discord_channel and url (the PR's), and local_checks (the commands that passed on head) when
 # there were any. Prints {task, pr, merge, head, by}.
-# For the team home itself (the project whose checkout is TEAM_HOME), it then runs
-# team-records-check from the previous merge it logged to this one, since GitHub checks nothing
-# on dev (CI policy B): a commit that is neither records only nor a PR's merge is exit 1, after
-# the merge and its event.
+# For the team home's repo (the project whose repo the team home's origin names, whichever
+# checkout is its primary), it then runs team-records-check in the primary checkout from the
+# previous merge it logged to this one, since GitHub checks nothing on dev (CI policy B): a commit
+# that is neither records only nor a PR's merge is exit 1, after the merge and its event.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
@@ -254,9 +254,10 @@ jq -n --arg task "$task" --arg url "$url" --arg merge "$merge" --arg head "$head
 
 # The team home's records rule on what reached its base since the last merge logged, since GitHub
 # checks nothing there (CI policy B): every commit along the first parent from that merge to this
-# one touches records only or is a pull request's merge.
+# one touches records only or is a pull request's merge. It holds for the team home's repo, from
+# whichever checkout is the project's primary.
 primary=$(team_project "$project" path)
-if [[ $(realpath -m -- "$primary") == "$(realpath -m -- "$TEAM_HOME")" ]]; then
+if home=$(home_repo) && [[ ${home,,} == "${repo,,}" ]]; then
   since=$(ledger_jq '[inputs | fromjson? | select(type == "object" and .event == "merged" and .project == $project)]
     | .[-2].merge // "0000000000000000000000000000000000000000"' -nRr --arg project "$project" "$TEAM_HOME/ledger.jsonl")
   if ! git -C "$primary" fetch -q origin "+refs/heads/$base:refs/remotes/origin/$base" 2>"$scratch/fetch-error"; then

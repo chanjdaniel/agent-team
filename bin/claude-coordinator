@@ -10,7 +10,7 @@
 # The manual, roles/coordinator.md, is appended to the system prompt, and the coordinator's own
 # skills (handoff, recover-worker, resume, status-report, stow) load from
 # plugins/coordinator-skills; no worker
-# loads either. Its settings are coordinator.settings.json with @TEAM_HOME@ (in its hook
+# loads either. Its settings are coordinator.settings.json with @TEAM_CODE@ (in its hook
 # commands) naming this checkout, written to ~/.local/state/agent-team/coordinator.settings.json;
 # the manual, the skills, the settings and the hooks all come from this script's checkout.
 #
@@ -23,7 +23,7 @@
 # listener. A non-blocking flock on ~/.local/state/agent-team/coordinator-launch.lock, held from
 # that check through the launch, makes a second launch at the same moment exit 1 at once.
 #
-# Usage: claude-coordinator [--prompt <text>] [working-directory]   (default: ~/agent-team)
+# Usage: claude-coordinator [--prompt <text>] [working-directory]   (default: the team home)
 #   --prompt  the session's first prompt, in place of "You are the coordinator. Daniel talks to
 #             you on Discord. Wait for their messages." (team-resume names its report and the
 #             resume skill in it)
@@ -42,7 +42,7 @@ fi
 # The manual, the skills, the settings and the hooks are code: they come from this checkout,
 # beside bin/.
 code=$(dirname "$(dirname "$TEAM_LIB")")
-cd "${1:-$HOME/agent-team}"
+cd "${1:-$TEAM_HOME}"
 
 # The lock only serialises launches: `claude --bg` returns at once, so the session list, not
 # the lock, says whether a coordinator is alive.
@@ -62,7 +62,7 @@ lease_gate "a coordinator" {lock_fd}>&-
 
 # The settings, with the hooks of this checkout; written whole, then moved into place.
 settings=$state/coordinator.settings.json
-jq --arg code "$code" 'walk(if type == "string" then gsub("@TEAM_HOME@"; $code) else . end)' \
+jq --arg code "$code" 'walk(if type == "string" then gsub("@TEAM_CODE@"; $code) else . end)' \
   "$code/coordinator.settings.json" >"$settings.$$"
 mv -f "$settings.$$" "$settings"
 

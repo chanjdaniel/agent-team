@@ -87,7 +87,7 @@
     "PreToolUse": [
       {
         "matcher": "Bash",
-        "hooks": [{ "type": "command", "command": "@TEAM_HOME@/bin/hooks/lease-fence" }]
+        "hooks": [{ "type": "command", "command": "@TEAM_CODE@/bin/hooks/lease-fence" }]
       }
     ]
   }

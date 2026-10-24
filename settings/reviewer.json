@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "@TEAM_HOME@/bin/hooks/scratch-only-edits"
+            "command": "@TEAM_CODE@/bin/hooks/scratch-only-edits"
           }
         ]
       }
@@ -14,8 +14,8 @@
   },
   "permissions": {
     "allow": [
-      "Bash(@TEAM_HOME@/bin/team-review-status *)",
-      "Bash(@TEAM_HOME@/bin/team-review-comment *)"
+      "Bash(@TEAM_CODE@/bin/team-review-status *)",
+      "Bash(@TEAM_CODE@/bin/team-review-comment *)"
     ]
   }
 }

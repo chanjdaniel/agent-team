@@ -33,7 +33,7 @@ The team's own work on it goes through a task and a PR to `dev`, like any projec
 - A commit straight to `dev` may touch records only, the paths `bin/lib/records` lists: `ledger.jsonl`, `manual-steps.md`, `projects.toml`, `tasks/`, `projects/`, `memory/` and `machine/`.
   Everything else reaches `dev` through a PR, and nothing is committed on `main`, which a release fast-forwards from `dev`.
   Every tracked path that is not a record is code, listed in `bin/lib/code`, the paths the public repository will hold; `tests/repo.bats` checks that each tracked path is in exactly one of the two lists, so a new path is assigned in its PR.
-- Git runs `bin/hooks/git/` as the team home's hooks once the primary checkout has `git -C ~/agent-team config core.hooksPath bin/hooks/git`, which every worktree shares, each running its own checkout's hooks.
+- Git runs `bin/hooks/git/` as the code checkout's hooks once it has `git -C ~/agent-team config core.hooksPath bin/hooks/git`, which every worktree shares, each running its own checkout's hooks.
   Its `pre-commit` (and `pre-merge-commit`) refuses a commit on `dev` that touches anything else, naming each path, and every commit on `main`.
   Its `pre-push` catches what those never see (a cherry-pick, a revert, `git am`, a fast-forward merge): a push to `dev` may only fast-forward it with commits that touch records only, and a push to `main` may only fast-forward it to a commit already on `origin/dev`.
 - GitHub runs no check on `dev` (CI policy B: the repo is private, and its Actions minutes are few), so what reaches `dev` without a local push is checked at each merge: `team-merge` runs `bin/team-records-check` over `dev` from the last merge it logged to the new one, and reports a commit that is neither records only nor a PR's merge.
@@ -43,7 +43,7 @@ The team's own work on it goes through a task and a PR to `dev`, like any projec
 ## Tests and shellcheck
 
 - `tests/run` runs shellcheck (0.11.0) on every shell script in `bin/`, `tests/`, `servers/` and `toolkits/`, then the whole bats suite, then the toolkit tests; `tests/run shellcheck`, `tests/run bats` and `tests/run toolkits` run one part each, as the CI jobs do.
-- A PR to `dev` is checked locally, never on GitHub (CI policy B): `projects.toml` gives the team home `local_checks = ["tests/run"]`, which `team-merge` runs on the PR's exact head before it merges, and builders and reviewers run `tests/run` on the head they deliver or review.
+- A PR to `dev` is checked locally, never on GitHub (CI policy B): `projects.toml` gives `agent-team` `local_checks = ["tests/run"]`, which `team-merge` runs on the PR's exact head before it merges, and builders and reviewers run `tests/run` on the head they deliver or review.
   GitHub's CI (`.github/workflows/ci.yml`) runs only on a PR to `main` and by hand (`workflow_dispatch`).
   The Bootstrap workflow (`.github/workflows/bootstrap.yml`) runs only by hand: `team-bootstrap` on a fresh macOS runner and in an Arch container, which installs real tools.
 - The toolkit tests are `node --test` files in `tests/toolkits/`, run after `servers/install`: each starts a toolkit's server exactly as its `.mcp.json` declares, with `op` stubbed and a throwaway MongoDB in Docker, and speaks MCP to it over stdio (`tests/toolkits/helpers/` documents the helpers).
@@ -62,8 +62,10 @@ The team's own work on it goes through a task and a PR to `dev`, like any projec
 
 - Bash 5 (the library refuses older), `set -euo pipefail`, then the library: `source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"`; `bin/lib/team.sh`'s header lists what it provides.
 - The header (the comment block under the shebang) is the script's usage and its `--help`, which the library prints; exact commands live there and nowhere else.
-- `TEAM_HOME` (the ledger, `tasks/`, `projects.toml`) is the directory above `bin/` unless set, and is not exported: pass it to a sibling script explicitly.
-  Code (roles, settings, templates, plugins, hooks) comes from the script's own checkout, beside `bin/`, never from `TEAM_HOME`.
+- The team home (the ledger, `tasks/`, `projects.toml` and the other records) is `TEAM_HOME` when set, else the first line of `~/.config/agent-team/home` (a path relative to `$HOME`, or absolute), else the directory above `bin/`; the library and `team-project` find it the same way, and refuse a setting that names no directory.
+  `TEAM_HOME` is not exported: pass it to a sibling script explicitly.
+- The code checkout is the directory above `bin/` (`~/agent-team`): code (roles, settings, templates, plugins, hooks, toolkits) comes from the script's own checkout, never from the team home.
+  In settings files and a toolkit's `.mcp.json`, `@TEAM_CODE@` names the code checkout and `@TASK_DIR@` the team home's `tasks/T<n>/`; `team-worker` and `claude-coordinator` fill them in.
 - Exit codes: 0 done, 1 refused or a check failed (`die`), 2 a malformed command line (`usage_error`), 75 try again later.
 - The ledger changes only through the library's `ledger_append`, which checks each event against `bin/lib/ledger-contract.json` and the script named as its kind's writer; a new kind or field goes in the contract first.
 - The registry is read only through `team-project`; a new key goes in its key lists and in the comment block of `projects.toml`.

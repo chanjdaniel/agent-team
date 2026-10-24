@@ -69,9 +69,25 @@ def print_help():
             print(re.sub(r"^# ?", "", line), end="")
 
 
-# The team home: the directory above bin/, unless TEAM_HOME is set.
+# The team home, found as the library finds it: TEAM_HOME when set; else the first line of
+# ~/.config/agent-team/home, a path relative to HOME unless it is absolute; else the directory
+# above bin/.
 def team_home():
-    home = os.environ.get("TEAM_HOME") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    home = os.environ.get("TEAM_HOME")
+    setting = os.path.join(os.environ.get("HOME", ""), ".config", "agent-team", "home")
+    if not home and os.path.isfile(setting):
+        fix = (
+            "name its checkout there, relative to your home directory:"
+            " echo agent-team-records > ~/.config/agent-team/home"
+        )
+        with open(setting, encoding="utf-8") as file:
+            home = file.readline().rstrip("\n")
+        if not home:
+            fail(f"the setting ~/.config/agent-team/home names no team home; {fix}")
+        home = os.path.join(os.environ["HOME"], home)
+        if not os.path.isdir(home):
+            fail(f"the team home {home}, named by ~/.config/agent-team/home, is not a directory; {fix}")
+    home = home or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if not os.path.isdir(home):
         fail(f"team home {home} is not a directory")
     return home

@@ -246,14 +246,62 @@ TOML
   assert_contains "$stderr" "alpha: missing required key 'base'"
 }
 
-@test "without TEAM_HOME it reads the registry of the checkout it runs from" {
-  local co=$BATS_TEST_TMPDIR/checkout
-  mkdir -p "$co/bin"
-  cp "$REPO_ROOT/bin/team-project" "$co/bin/"
-  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$co/"
+# A copy of team-project in a code checkout of its own, $BATS_TEST_TMPDIR/code, with the fixture
+# registry beside bin/ as the fallback's team home; prints the checkout's path.
+code_checkout() {
+  local code=$BATS_TEST_TMPDIR/code
+  mkdir -p "$code/bin"
+  cp "$REPO_ROOT/bin/team-project" "$code/bin/"
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$code/"
+  echo "$code"
+}
+
+# The team home this machine names: home_setting <first line>
+home_setting() {
+  mkdir -p "$HOME/.config/agent-team"
+  printf '%s\nignored\n' "$1" >"$HOME/.config/agent-team/home"
+}
+
+@test "with TEAM_HOME unset it reads the registry of the team home ~/.config/agent-team/home names" {
+  local code
+  code=$(code_checkout)
+  mkdir -p "$HOME/agent-team-records"
+  mv "$TEAM_HOME/projects.toml" "$HOME/agent-team-records/"
+  home_setting agent-team-records
   unset TEAM_HOME
-  run -0 "$co/bin/team-project" --list
+  run -0 "$code/bin/team-project" --list
+  assert_equal "$output" $'alpha\nbeta'
+  home_setting "$HOME/agent-team-records"
+  run -0 "$code/bin/team-project" --list
+  assert_equal "$output" $'alpha\nbeta'
+}
+
+@test "TEAM_HOME, when set, wins over ~/.config/agent-team/home" {
+  local code
+  code=$(code_checkout)
+  home_setting agent-team-records
+  run -0 "$code/bin/team-project" --list
+  assert_equal "$output" $'alpha\nbeta'
+}
+
+@test "with neither TEAM_HOME nor ~/.config/agent-team/home it reads the registry of the checkout it runs from" {
+  local code
+  code=$(code_checkout)
+  unset TEAM_HOME
+  run -0 "$code/bin/team-project" --list
   assert_equal "$output" $'conventioner\nagent-team'
+}
+
+@test "a setting naming a missing directory, or none, is refused with the path and the file it came from" {
+  local code
+  code=$(code_checkout)
+  unset TEAM_HOME
+  home_setting agent-team-records
+  run -1 "$code/bin/team-project" --list
+  assert_equal "$output" "team-project: the team home $HOME/agent-team-records, named by ~/.config/agent-team/home, is not a directory; name its checkout there, relative to your home directory: echo agent-team-records > ~/.config/agent-team/home"
+  home_setting ''
+  run -1 "$code/bin/team-project" --list
+  assert_equal "$output" "team-project: the setting ~/.config/agent-team/home names no team home; name its checkout there, relative to your home directory: echo agent-team-records > ~/.config/agent-team/home"
 }
 
 @test "a registry shaped like the team home's passes --check and holds both projects" {

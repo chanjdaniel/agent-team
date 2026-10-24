@@ -2,7 +2,7 @@
   "mcpServers": {
     "prod-read": {
       "command": "node",
-      "args": ["@TEAM_HOME@/toolkits/prod-read/scripts/start-server.mjs"]
+      "args": ["@TEAM_CODE@/toolkits/prod-read/scripts/start-server.mjs"]
     }
   }
 }

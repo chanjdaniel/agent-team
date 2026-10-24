@@ -1,4 +1,4 @@
-// A toolkit's MCP server started exactly as its .mcp.json declares, with @TEAM_HOME@ resolved to
+// A toolkit's MCP server started exactly as its .mcp.json declares, with @TEAM_CODE@ resolved to
 // this checkout (what team-worker does), spoken to over stdio by a minimal MCP client.
 //
 //   const server = startToolkitServer("prod-read", { home, opDir, env, path });
@@ -30,7 +30,7 @@ export const tempDir = (prefix) => mkdtempSync(join(tempRoot, `${prefix}-`));
 // The toolkit's server entry from its MCP config, as Claude Code would read it.
 export function serverConfig(toolkit) {
   const text = readFileSync(join(repoRoot, "toolkits", toolkit, ".mcp.json"), "utf8");
-  const config = JSON.parse(text.replaceAll("@TEAM_HOME@", repoRoot));
+  const config = JSON.parse(text.replaceAll("@TEAM_CODE@", repoRoot));
   return config.mcpServers[toolkit];
 }
 

@@ -3,7 +3,7 @@
     "PreToolUse": [
       {
         "matcher": "Edit|Write|MultiEdit|NotebookEdit",
-        "hooks": [{ "type": "command", "command": "@TEAM_HOME@/bin/hooks/scratch-only-edits" }]
+        "hooks": [{ "type": "command", "command": "@TEAM_CODE@/bin/hooks/scratch-only-edits" }]
       }
     ]
   }

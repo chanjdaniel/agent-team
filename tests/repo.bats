@@ -288,22 +288,22 @@ COMMANDS
   done
 }
 
-# Whether one of the Bash allow rules in settings/reviewer.json, with @TEAM_HOME@ as team-worker
+# Whether one of the Bash allow rules in settings/reviewer.json, with @TEAM_CODE@ as team-worker
 # renders it (this checkout), matches <command>: reviewer_allows <command>
 # Claude Code checks each part of a compound command (;, &&, |) on its own, so a rule's * never
 # lets a second command ride along; this model checks one simple command.
 reviewer_allows() {
   local rule
   while IFS= read -r rule; do
-    rule_matches "${rule//@TEAM_HOME@/$REPO_ROOT}" "$1" && return 0
+    rule_matches "${rule//@TEAM_CODE@/$REPO_ROOT}" "$1" && return 0
   done < <(jq -r '.permissions.allow[]' "$REPO_ROOT/settings/reviewer.json")
   return 1
 }
 
 @test "the reviewer's allow rules are the agent-review status and the review comment scripts only" {
   assert_equal "$(jq -r '.permissions.allow[]' "$REPO_ROOT/settings/reviewer.json")" \
-    'Bash(@TEAM_HOME@/bin/team-review-status *)
-Bash(@TEAM_HOME@/bin/team-review-comment *)'
+    'Bash(@TEAM_CODE@/bin/team-review-status *)
+Bash(@TEAM_CODE@/bin/team-review-comment *)'
   # The commands as templates/briefs/reviewer.md and rereview.md give them, team_bin being
   # this checkout's bin/ in full.
   local brief

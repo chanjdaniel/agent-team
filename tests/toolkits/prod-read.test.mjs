@@ -65,12 +65,12 @@ const names = (tools) => tools.map((tool) => tool.name).sort();
 const documents = async (collection) =>
   db.client.db("conventioner").collection(collection).find({}, { projection: { _id: 0 } }).toArray();
 
-test("the MCP config names one server, prod-read, with no secret and no path but through @TEAM_HOME@", () => {
+test("the MCP config names one server, prod-read, with no secret and no path but through @TEAM_CODE@", () => {
   const config = JSON.parse(readFileSync(join(repoRoot, "toolkits", "prod-read", ".mcp.json"), "utf8"));
   assert.deepEqual(Object.keys(config.mcpServers), ["prod-read"]);
   const { command, args, env } = config.mcpServers["prod-read"];
   assert.equal(command, "node");
-  assert.deepEqual(args, ["@TEAM_HOME@/toolkits/prod-read/scripts/start-server.mjs"]);
+  assert.deepEqual(args, ["@TEAM_CODE@/toolkits/prod-read/scripts/start-server.mjs"]);
   assert.equal(env, undefined);
 });
 
