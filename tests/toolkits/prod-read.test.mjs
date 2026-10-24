@@ -3,12 +3,13 @@
 // The test user may write, so every refusal here is the server's own, not the database's.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { readFileSync, readdirSync, readlinkSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, beforeEach, describe, test } from "node:test";
 import { opStub, repoRoot, startToolkitServer, tempDir } from "./helpers/mcp.mjs";
 import { startMongo } from "./helpers/mongo.mjs";
-import { assertNoLeak, children, evalMockTools, launcherRefusalTests } from "./helpers/toolkit.mjs";
+import { children, inetPeers, startingEnvironment } from "./helpers/process.mjs";
+import { assertNoLeak, evalMockTools, launcherRefusalTests } from "./helpers/toolkit.mjs";
 
 const reference = "op://agent-team/conventioner-prod-read/uri";
 const readTools = [
@@ -168,10 +169,11 @@ describe("the secret", () => {
   });
 
   test("is not in the server's starting environment, and the server has no child process", async () => {
-    await withServer(async (server) => {
+    await withServer(async (server, op) => {
       const check = () => {
-        const environ = readFileSync(`/proc/${server.pid}/environ`, "utf8");
-        assert.ok(!environ.includes(marker), "the password marker is in /proc/<pid>/environ");
+        const environ = startingEnvironment(server.pid);
+        assert.ok(environ.includes(`OP_STUB_DIR=${op.dir}`), "the starting environment was not read");
+        assert.ok(!environ.includes(marker), "the password marker is in the starting environment");
         assert.ok(!environ.includes("MDB_MCP_CONNECTION_STRING"));
         assert.deepEqual(children(server.pid), []);
       };
@@ -210,35 +212,3 @@ describe("the secret", () => {
 describe("the launcher refuses before the server starts", () => {
   launcherRefusalTests("prod-read", () => ({ value: db.uri("ops-read", marker), home, marker }));
 });
-
-// The remote address of every TCP and UDP socket the process holds, as "host:port".
-function inetPeers(pid) {
-  const inodes = new Set();
-  for (const fd of readdirSync(`/proc/${pid}/fd`)) {
-    try {
-      const link = readlinkSync(`/proc/${pid}/fd/${fd}`);
-      if (link.startsWith("socket:[")) inodes.add(link.slice(8, -1));
-    } catch {
-      // The descriptor closed while we looked.
-    }
-  }
-  const peers = [];
-  for (const table of ["tcp", "tcp6", "udp", "udp6"]) {
-    for (const line of readFileSync(`/proc/${pid}/net/${table}`, "utf8").trim().split("\n").slice(1)) {
-      const fields = line.trim().split(/\s+/);
-      if (inodes.has(fields[9])) peers.push(address(fields[2]));
-    }
-  }
-  return peers;
-}
-
-// /proc/net's hex address: IPv4 as one little-endian word, IPv6 as four.
-function address(hex) {
-  const [host, port] = hex.toLowerCase().split(":");
-  const words = host.match(/.{8}/g).map((word) => word.match(/../g).reverse().join(""));
-  const ipv4 = (word) => word.match(/../g).map((byte) => parseInt(byte, 16)).join(".");
-  const ip = words.length === 1 ? ipv4(words[0])
-    : words.slice(0, 3).join("") === "00000000000000000000ffff" ? ipv4(words[3])
-    : words.join("").match(/.{4}/g).join(":");
-  return `${ip}:${parseInt(port, 16)}`;
-}

@@ -9,7 +9,8 @@ import { join } from "node:path";
 import { after, before, beforeEach, describe, test } from "node:test";
 import { opStub, repoRoot, startServer, startToolkitServer, tempDir } from "./helpers/mcp.mjs";
 import { startMongo } from "./helpers/mongo.mjs";
-import { assertNoLeak, children, evalMockTools, launcherRefusalTests } from "./helpers/toolkit.mjs";
+import { children, startingEnvironment } from "./helpers/process.mjs";
+import { assertNoLeak, evalMockTools, launcherRefusalTests } from "./helpers/toolkit.mjs";
 
 const reference = "op://agent-team/conventioner-prod-write/uri";
 const writeTools = ["create-index", "delete-many", "drop-index", "insert-many", "update-many"];
@@ -232,10 +233,11 @@ describe("the secret", () => {
   });
 
   test("is not in the server's starting environment, and the server has no child process", async () => {
-    await withServer(async (server) => {
+    await withServer(async (server, op) => {
       const check = () => {
-        const environ = readFileSync(`/proc/${server.pid}/environ`, "utf8");
-        assert.ok(!environ.includes(marker), "the password marker is in /proc/<pid>/environ");
+        const environ = startingEnvironment(server.pid);
+        assert.ok(environ.includes(`OP_STUB_DIR=${op.dir}`), "the starting environment was not read");
+        assert.ok(!environ.includes(marker), "the password marker is in the starting environment");
         assert.ok(!environ.includes("MDB_MCP_CONNECTION_STRING"));
         assert.deepEqual(children(server.pid), []);
       };
