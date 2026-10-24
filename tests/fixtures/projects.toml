@@ -67,3 +67,27 @@ slots = [
   "agent-team/.claude/worktrees/4",
   "agent-team/.claude/worktrees/5",
 ]
+
+[no-mistakes]
+# Daniel's fork of kunchenguid/no-mistakes, the gate's build (T34). Merge commits only: a squash
+# would flatten upstream's history, and the next update from upstream would conflict on everything.
+# Upstream's no-mistakes-required.yml fails any PR not raised through a gate, so GitHub's CI on the
+# fork is information; team-merge runs the fork's own checks on the PR's head instead.
+repo = "chanjdaniel/no-mistakes"
+path = "Documents/projects/personal/no-mistakes"
+base = "main"
+delivery = "direct-pr"
+merge_method = "merge"
+required_checks = []
+local_checks = ['test -z "$(gofmt -l .)"', "make lint", "go test -race ./...", "bash scripts/e2e.sh"]
+task_dir = ".scratch/task"
+docs = ["AGENTS.md"]
+toolkits = []
+
+[no-mistakes.pool]
+provider = "git"
+slots = [
+  "Documents/projects/personal/no-mistakes/.claude/worktrees/1",
+  "Documents/projects/personal/no-mistakes/.claude/worktrees/2",
+  "Documents/projects/personal/no-mistakes/.claude/worktrees/3",
+]

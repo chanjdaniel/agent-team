@@ -297,7 +297,7 @@ home_setting() {
   code=$(code_checkout)
   unset TEAM_HOME
   run -0 "$code/bin/team-project" --list
-  assert_equal "$output" $'conventioner\nagent-team'
+  assert_equal "$output" $'conventioner\nagent-team\nno-mistakes'
 }
 
 @test "a setting naming a missing directory, or none, is refused with the path and the file it came from" {
@@ -312,11 +312,11 @@ home_setting() {
   assert_equal "$output" "team-project: the setting ~/.config/agent-team/home names no team home; name its checkout there, relative to your home directory: echo agent-team-records > ~/.config/agent-team/home"
 }
 
-@test "a registry shaped like the team home's passes --check and holds both projects" {
+@test "a registry shaped like the team home's passes --check and holds every project" {
   cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
   run_bin -0 team-project --check
   run_bin -0 team-project --list
-  assert_equal "$output" $'conventioner\nagent-team'
+  assert_equal "$output" $'conventioner\nagent-team\nno-mistakes'
 
   run_bin -0 team-project conventioner
   assert_equal "$(jq -r '[.repo, .base, .delivery, .merge_method, .task_dir, .pool.provider] | join(" ")' <<<"$output")" \
@@ -329,6 +329,17 @@ home_setting() {
     "chanjdaniel/agent-team dev direct-pr merge git"
   assert_equal "$(jq -c .pool.slots <<<"$output")" \
     "[\"$HOME/agent-team/.claude/worktrees/1\",\"$HOME/agent-team/.claude/worktrees/2\",\"$HOME/agent-team/.claude/worktrees/3\",\"$HOME/agent-team/.claude/worktrees/4\",\"$HOME/agent-team/.claude/worktrees/5\"]"
+
+  # Daniel's no-mistakes fork: merge commits keep upstream's history, so the next update is a merge.
+  run_bin -0 team-project no-mistakes
+  assert_equal "$(jq -r '[.repo, .base, .delivery, .merge_method, .task_dir, .pool.provider] | join(" ")' <<<"$output")" \
+    "chanjdaniel/no-mistakes main direct-pr merge .scratch/task git"
+  assert_equal "$(jq -r .path <<<"$output")" "$HOME/Documents/projects/personal/no-mistakes"
+  assert_equal "$(jq -c '[.required_checks, .docs, .toolkits]' <<<"$output")" '[[],["AGENTS.md"],[]]'
+  assert_equal "$(jq -c .local_checks <<<"$output")" \
+    '["test -z \"$(gofmt -l .)\"","make lint","go test -race ./...","bash scripts/e2e.sh"]'
+  assert_equal "$(jq -c .pool.slots <<<"$output")" \
+    "[\"$HOME/Documents/projects/personal/no-mistakes/.claude/worktrees/1\",\"$HOME/Documents/projects/personal/no-mistakes/.claude/worktrees/2\",\"$HOME/Documents/projects/personal/no-mistakes/.claude/worktrees/3\"]"
 }
 
 @test "local_checks is optional, defaults to none, and must be one-line commands" {
