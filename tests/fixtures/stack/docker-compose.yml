@@ -1,0 +1,30 @@
+# The fixture project's stack (tests/fixtures/stack/compose.sh): one busybox service with a named
+# volume, an anonymous one and the default network, each labelled from the TEAM_* variables, as
+# team-stack's labels contract asks (sops/docker.md).
+x-team-labels: &team-labels
+  io.github.chanjdaniel.team.owner: ${TEAM_OWNER:-}
+  io.github.chanjdaniel.team.task: ${TEAM_TASK:-}
+  io.github.chanjdaniel.team.kind: ${TEAM_KIND:-}
+  io.github.chanjdaniel.team.worktree: ${TEAM_WORKTREE:-}
+  io.github.chanjdaniel.team.expires: ${TEAM_EXPIRES:-}
+
+services:
+  web:
+    image: busybox:1.36
+    command: ["httpd", "-f", "-p", "80", "-h", "/data"]
+    ports:
+      - "127.0.0.1:${TH_WEB_PORT:-}:80"
+    mem_limit: 64m
+    restart: "no"
+    labels: *team-labels
+    volumes:
+      - data:/data
+      - /cache
+
+volumes:
+  data:
+    labels: *team-labels
+
+networks:
+  default:
+    labels: *team-labels

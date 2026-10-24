@@ -32,8 +32,23 @@
 #   provider         "treehouse" (leased pre-warmed slots) or "git" (plain git worktrees)
 #   lease, return    treehouse only: the lease and return commands
 #   slots            the trusted slot paths a task's worktree may be
+# Per project stack ([<name>.stack]), optional: the Docker stacks team-stack manages for the
+# project's worktrees (sops/docker.md); a project without one has none:
+#   compose          the project's compose wrapper, which meets the wrapper contract
+#   seed             the command that seeds a stack, run with team-stack env's exports
+#   log_services     the services whose logs team-stack down saves
+#   images           optional: the shared image repositories the reaper manages (default none)
+#   legacy_images    optional: patterns of image repositories reap --legacy may remove
+#                    (default none)
+#   legacy_gate      optional: the pattern of the project names of gate stacks with no team
+#                    labels (default none)
+# A pattern is an extended regular expression matched against a whole name, kept to what
+# Python, jq and Bash read alike: literals, ., bracket expressions, *, +, ?, {n,m}, | and
+# groups; --check refuses one that does not compile, a backslash class such as \d, and a (?...)
+# group such as a lookaround.
 # Paths in the file are relative to $HOME, except pool.lease and pool.return (relative to the
-# primary checkout) and task_dir and docs (relative to a worktree, so they stay relative).
+# primary checkout) and task_dir, docs, stack.compose and stack.seed (relative to a worktree, so
+# they stay relative).
 # A new key goes in this list and in the script's key lists.
 #
 # Every command refuses a registry that fails --check. Exit 0 done, 1 refused or a check
@@ -69,6 +84,11 @@ RESERVED = {"coordinator": "the team home's auto memory, memory/coordinator/"}
 # Optional keys, with the value a project without one has.
 PROJECT_OPTIONAL = {"local_checks": []}
 POOL_KEYS = ("provider", "lease", "return", "slots")
+# A stack block's keys: its required strings and list, then its optional lists and pattern, with
+# the value a block without one has (legacy_gate has none).
+STACK_KEYS = ("compose", "seed", "log_services", "images", "legacy_images", "legacy_gate")
+STACK_REQUIRED = ("compose", "seed", "log_services")
+STACK_OPTIONAL = {"images": [], "legacy_images": []}
 TREEHOUSE_ONLY = ("lease", "return")
 ENUMS = {
     "delivery": ("no-mistakes", "direct-pr"),
@@ -177,6 +197,53 @@ def check_pool(name, pool, slot_owners, problems):
         seen.add(key)
 
 
+# The problem with the pattern <pattern> at <where>, or None: it must compile in Python and keep
+# to what jq and Bash's =~ read alike.
+def pattern_problem(where, pattern):
+    if re.search(r"\\[A-Za-z0-9]", pattern):
+        return (
+            f"{where}: '{pattern}' uses a backslash class, which Bash and jq read differently;"
+            " use a bracket expression such as [0-9]"
+        )
+    if "(?" in pattern:
+        return f"{where}: '{pattern}' uses a (?...) group, a lookaround or another extension Bash does not read"
+    try:
+        re.compile(pattern)
+    except re.error as error:
+        return f"{where}: '{pattern}' is not a valid pattern: {error}"
+    return None
+
+
+# Check one project's stack block.
+def check_stack(name, stack, problems):
+    where = f"{name}.stack"
+    if not isinstance(stack, dict):
+        problems.append(f"{where}: must be a table")
+        return
+    check_keys(where, stack, STACK_KEYS, STACK_REQUIRED, problems)
+    for key in ("compose", "seed"):
+        if key not in stack:
+            continue
+        if not isinstance(stack[key], str):
+            problems.append(f"{where}.{key}: must be a string")
+        elif not is_relative_path(stack[key]):
+            problems.append(f"{where}.{key}: '{stack[key]}' must be a relative path")
+    patterns = []
+    for key in ("log_services", "images", "legacy_images"):
+        if key in stack and not is_string_list(stack[key]):
+            problems.append(f"{where}.{key}: must be a list of strings")
+        elif key == "legacy_images":
+            patterns.extend((key, pattern) for pattern in stack.get(key, []))
+    if "legacy_gate" in stack and not isinstance(stack["legacy_gate"], str):
+        problems.append(f"{where}.legacy_gate: must be a string")
+    elif "legacy_gate" in stack:
+        patterns.append(("legacy_gate", stack["legacy_gate"]))
+    for key, pattern in patterns:
+        problem = pattern_problem(f"{where}.{key}", pattern)
+        if problem:
+            problems.append(problem)
+
+
 # Every problem with the registry, as one line each; none means it is valid.
 def check(registry):
     problems = [] if registry else ["defines no projects"]
@@ -189,7 +256,7 @@ def check(registry):
         if not isinstance(project, dict):
             problems.append(f"{name}: must be a table")
             continue
-        check_keys(name, project, PROJECT_KEYS + tuple(PROJECT_OPTIONAL), PROJECT_KEYS, problems)
+        check_keys(name, project, PROJECT_KEYS + tuple(PROJECT_OPTIONAL) + ("stack",), PROJECT_KEYS, problems)
         for key in PROJECT_STRINGS:
             if key in project:
                 check_string(name, key, project[key], problems)
@@ -209,6 +276,8 @@ def check(registry):
             )
         if "pool" in project:
             check_pool(name, project["pool"], slot_owners, problems)
+        if "stack" in project:
+            check_stack(name, project["stack"], problems)
     return problems
 
 
@@ -233,6 +302,10 @@ def resolve(project, home):
     resolved = dict(project, pool=dict(project["pool"]))
     for key, default in PROJECT_OPTIONAL.items():
         resolved.setdefault(key, default)
+    if "stack" in project:
+        resolved["stack"] = dict(project["stack"])
+        for key, default in STACK_OPTIONAL.items():
+            resolved["stack"].setdefault(key, default)
     pool = resolved["pool"]
     resolved["path"] = os.path.normpath(os.path.join(home, project["path"]))
     pool["slots"] = [os.path.normpath(os.path.join(home, slot)) for slot in pool["slots"]]

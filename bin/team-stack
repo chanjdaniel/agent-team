@@ -1,0 +1,219 @@
+#!/usr/bin/env bash
+# The one way the team starts, reaches, stops and removes a Docker stack, and lists what Docker
+# runs and whose it is (sops/docker.md: the labels contract, the wrapper contract, the classes).
+#
+# Usage: team-stack ls [--all] [--json]
+#
+# ls        every Compose project on the machine (docker compose ls --all), one line each under
+#           a header: its name, status, owner class, task, kind, worktree (~ for the home
+#           directory, with "(gone)" when the directory is gone), age (since its oldest container was created) and the memory
+#           its running containers use. With --all, then a table each, one line per group with
+#           its totals: volumes by class (how many, how many attached, size), images by class
+#           and repository (tags, how many in use, size) and networks by class. With --json,
+#           one object, {projects} and with --all also {volumes, images, networks}, each item
+#           with its class. It changes nothing: it runs only docker compose ls, ps, inspect,
+#           stats --no-stream and, with --all, system df, volume ls and network ls.
+#
+# The owner classes, from each object's own labels and its Compose project, and the registry's
+# stack blocks (team-project --help):
+#   team       owner=agent-team
+#   gate       kind=gate, or no team label set and a project name matching a legacy_gate
+#   unowned    everything else, Daniel's primary stack and hand-made stacks included
+# An anonymous volume a container mounts takes that container's class, and one no container
+# mounts is anonymous; an image is team when its repository is in a project's images, legacy
+# when it matches a legacy_images pattern, else unowned.
+#
+# Exit 0 done, 1 refused or failed (Docker not answering, with its reason), 2 usage error,
+# 75 try again later.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+LS_USAGE="usage: team-stack ls [--all] [--json]"
+
+(($#)) || usage_error "$LS_USAGE"
+case $1 in
+  ls) ;;
+  *) usage_error "unknown subcommand '$1'; the subcommands are: ls" ;;
+esac
+shift
+
+# Docker's answers go through files: a machine's hundreds of volumes are too long for an argument.
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
+DOCKER_ERR=$WORK/stderr
+
+# Run a read-only docker call, its output in DOCKER_OUT; a failure dies naming the call and
+# Docker's reason: docker_read <name> <docker arguments...>
+docker_read() {
+  local name=$1
+  shift
+  DOCKER_OUT=$(docker "$@" 2>"$DOCKER_ERR") ||
+    die "docker $name failed: $(grep -m1 . "$DOCKER_ERR" || echo "no reason given")"
+}
+
+# Inspect the objects of <type> named <names...>, 500 to a call, into the file <file> as one
+# JSON array: one removed since it was listed is left out, as Docker answers the others and
+# names it on stderr: docker_inspect <type> <file> <names...>
+docker_inspect() {
+  local type=$1 file=$2 out
+  shift 2
+  : >"$file.parts"
+  while (($#)); do
+    if ! out=$(docker inspect --type "$type" "${@:1:500}" 2>"$DOCKER_ERR"); then
+      if ! jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1 || grep -qviE 'no such|not found' "$DOCKER_ERR"; then
+        die "docker inspect failed: $(grep -m1 . "$DOCKER_ERR" || echo "no reason given")"
+      fi
+    fi
+    printf '%s\n' "$out" >>"$file.parts"
+    shift $(($# < 500 ? $# : 500))
+  done
+  jq -cs 'add // []' "$file.parts" >"$file"
+}
+
+# The memory use of the running containers <ids...> as a JSON array of docker stats' lines; a
+# container stopped since it was listed is left out.
+docker_stats() {
+  local id line
+  (($#)) || { echo '[]'; return 0; }
+  if DOCKER_OUT=$(docker stats --no-stream --format json "$@" 2>"$DOCKER_ERR"); then
+    jq -cs . <<<"$DOCKER_OUT"
+    return 0
+  fi
+  grep -qiE 'no such' "$DOCKER_ERR" || die "docker stats failed: $(grep -m1 . "$DOCKER_ERR" || echo "no reason given")"
+  # One at a time, so each that is gone is skipped alone.
+  for id in "$@"; do
+    line=$(docker stats --no-stream --format json "$id" 2>/dev/null) || continue
+    printf '%s\n' "$line"
+  done | jq -cs .
+}
+
+# The stack blocks of the registered projects, as one JSON array.
+stack_blocks() {
+  local names name
+  names=$(team_project --list) || exit 1
+  for name in $names; do
+    team_project "$name" | jq -c '.stack // empty' || exit 1
+  done | jq -cs .
+}
+
+cmd_ls() {
+  local all='' json='' arg
+  for arg in "$@"; do
+    case $arg in
+      --all) all=1 ;;
+      --json) json=1 ;;
+      *) usage_error "$LS_USAGE" ;;
+    esac
+  done
+
+  local ids running worktree
+  docker compose ls --all --format json >"$WORK/projects.json" 2>"$DOCKER_ERR" ||
+    die "Docker does not answer: $(grep -m1 . "$DOCKER_ERR" || echo "docker compose ls failed")"
+  docker_read ps ps --all --quiet --no-trunc
+  mapfile -t ids < <(grep . <<<"$DOCKER_OUT" || true)
+  docker_inspect container "$WORK/containers.json" "${ids[@]}"
+  mapfile -t running < <(jq -r '.[] | select(.State.Running) | .Id' "$WORK/containers.json")
+  docker_stats "${running[@]}" >"$WORK/stats.json"
+  stack_blocks >"$WORK/stacks.json" || exit 1
+
+  # The worktrees the labels name that are gone from this machine.
+  while IFS= read -r worktree; do
+    [[ -d $worktree ]] || printf '%s\n' "$worktree"
+  done < <(jq -r --arg key "io.github.chanjdaniel.team.worktree" \
+    '[.[].Config.Labels[$key] // empty | select(. != "")] | unique[]' "$WORK/containers.json") |
+    jq -Rcs 'split("\n") | map(select(. != ""))' >"$WORK/gone.json"
+
+  echo '{}' >"$WORK/df.json"
+  local file
+  for file in volumes images networks; do echo '[]' >"$WORK/$file.json"; done
+  if [[ -n $all ]]; then
+    docker_read 'system df' system df -v --format json
+    printf '%s\n' "$DOCKER_OUT" >"$WORK/df.json"
+    jq -c '.Images // []' "$WORK/df.json" >"$WORK/images.json"
+    docker_read 'volume ls' volume ls --quiet
+    mapfile -t ids < <(grep . <<<"$DOCKER_OUT" || true)
+    docker_inspect volume "$WORK/volumes.json" "${ids[@]}"
+    docker_read 'network ls' network ls --quiet --no-trunc
+    mapfile -t ids < <(grep . <<<"$DOCKER_OUT" || true)
+    docker_inspect network "$WORK/networks.json" "${ids[@]}"
+  fi
+
+  local listing
+  listing=$(jq -n -L "$TEAM_LIB" 'include "stack";
+    $projects[0] as $projects | $stats[0] as $stats | $stacks[0] as $stacks | $gone[0] as $gone
+    | $df[0] as $df | $volumes[0] as $volumes | $images[0] as $images | $networks[0] as $networks
+    | ($containers[0] | map(. + {project: compose_project(.Config.Labels)})) as $containers
+    | {projects: [$projects[] | .Name as $name
+        | [$containers[] | select(.project == $name)] as $mine
+        # The team labels any of its containers set, as the project'"'"'s.
+        | ([$mine[].Config.Labels // {} | to_entries[] | select((.key | startswith(team_prefix)) and .value != "")]
+            | from_entries) as $labels
+        | [$mine[] | select(.State.Running) | .Id as $id
+            | $stats[] | select(.ID as $short | $id | startswith($short)) | .MemUsage | split(" / ")[0] | bytes]
+          as $memory
+        | team_label($labels; "worktree") as $worktree
+        | {name: $name, status: .Status, class: owner_class($labels; $name; $stacks),
+           owner: team_label($labels; "owner"), task: team_label($labels; "task"),
+           kind: team_label($labels; "kind"), worktree: $worktree,
+           worktree_gone: (if $worktree == null then null else $gone | index($worktree) != null end),
+           created: ([$mine[].Created | utc_time] | min),
+           containers: ($mine | length), running: ([$mine[] | select(.State.Running)] | length),
+           memory_bytes: (if $memory == [] then null else $memory | add end)}]
+      | sort_by(.name)}
+    + if $all then
+        # Who mounts each volume: the containers, by volume name.
+        ([$containers[] | . as $c | .Mounts[]? | select(.Type == "volume" and .Name) | {key: .Name, value: $c}]
+          | group_by(.key) | map({key: .[0].key, value: map(.value)}) | from_entries) as $mounts
+        | ($df.Volumes // [] | map({key: .Name, value: (.Size | bytes)}) | from_entries) as $sizes
+        | ([$containers[].Image] | unique) as $used
+        | {volumes: [$volumes[] | (.Labels // {}) as $labels | ($mounts[.Name] // []) as $by
+            | (($labels | has("com.docker.volume.anonymous"))
+                or ((.Name | test("^[0-9a-f]{64}$")) and compose_project($labels) == null)) as $anonymous
+            | (if $anonymous and $by != [] then $by[0].Config.Labels else $labels end) as $owner
+            | (if $anonymous and $by != [] then $by[0].project else compose_project($labels) end) as $project
+            | {name: .Name, class: (if $anonymous and $by == [] then "anonymous" else owner_class($owner; $project; $stacks) end),
+               project: $project, anonymous: $anonymous, attached: ($by != []),
+               owner: team_label($owner; "owner"), task: team_label($owner; "task"), kind: team_label($owner; "kind"),
+               worktree: team_label($owner; "worktree"), size_bytes: $sizes[.Name], created: .CreatedAt}]
+            | sort_by((.class | class_rank), .name),
+           images: [$images[] | {id: .ID, repository: .Repository, tag: .Tag,
+               class: image_class(.Repository; $stacks), in_use: (.ID as $id | $used | index($id) != null),
+               dangling: (.Repository == "<none>"), size_bytes: (.Size | bytes), created: .CreatedAt}]
+            | sort_by((.class | class_rank), .repository, .tag),
+           networks: [$networks[] | (.Labels // {}) as $labels
+            | {name: .Name, id: .Id, class: owner_class($labels; compose_project($labels); $stacks),
+               project: compose_project($labels), owner: team_label($labels; "owner"), task: team_label($labels; "task"),
+               kind: team_label($labels; "kind"), worktree: team_label($labels; "worktree"), created: .Created}]
+            | sort_by((.class | class_rank), .name)}
+      else {} end' \
+    --argjson all "$([[ -n $all ]] && echo true || echo false)" \
+    --slurpfile projects "$WORK/projects.json" --slurpfile containers "$WORK/containers.json" \
+    --slurpfile stats "$WORK/stats.json" --slurpfile stacks "$WORK/stacks.json" --slurpfile gone "$WORK/gone.json" \
+    --slurpfile df "$WORK/df.json" --slurpfile volumes "$WORK/volumes.json" --slurpfile images "$WORK/images.json" \
+    --slurpfile networks "$WORK/networks.json")
+
+  if [[ -n $json ]]; then
+    jq . <<<"$listing"
+    return 0
+  fi
+  jq -r -L "$TEAM_LIB" 'include "stack";
+    def dash: . // "-";
+    # A path under the home directory as ~/...
+    def short: if startswith($home + "/") then "~" + .[$home | length:] else . end;
+    # One table per kind of object, a blank line between those that have rows.
+    [ ([.projects[] | [.name, .status, .class, (.task | dash), (.kind | dash),
+          (if .worktree == null then "-" elif .worktree_gone then "\(.worktree | short) (gone)" else .worktree | short end),
+          (.created | if . == null then "-" else age end), (.memory_bytes | memory_size)]]
+        | if . == [] then empty else [["PROJECT", "STATUS", "CLASS", "TASK", "KIND", "WORKTREE", "AGE", "MEMORY"]] + . end),
+      (.volumes // [] | group_by(.class | class_rank) | map([.[0].class, (length | tostring),
+          (map(select(.attached)) | length | tostring), (map(.size_bytes // 0) | add | disk_size)])
+        | if . == [] then empty else [["VOLUMES", "COUNT", "ATTACHED", "SIZE"]] + . end),
+      (.images // [] | group_by([(.class | class_rank), .repository]) | map([.[0].class, .[0].repository,
+          (length | tostring), (map(select(.in_use)) | length | tostring), (map(.size_bytes // 0) | add | disk_size)])
+        | if . == [] then empty else [["IMAGES", "REPOSITORY", "TAGS", "IN USE", "SIZE"]] + . end),
+      (.networks // [] | group_by(.class | class_rank) | map([.[0].class, (length | tostring)])
+        | if . == [] then empty else [["NETWORKS", "COUNT"]] + . end)
+    ] | to_entries[] | (if .key > 0 then "" else empty end), (.value | table)' --arg home "$HOME" <<<"$listing"
+}
+
+cmd_ls "$@"

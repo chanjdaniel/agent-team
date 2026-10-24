@@ -8,8 +8,8 @@ The team's own work on this repo goes through a task and a PR to `dev`, like any
 
 | Path | What it holds |
 | - | - |
-| `bin/` | The team's commands, `team-*` and `claude-coordinator`; `bin/lib/` is the shared library, the ledger contract and its jq, `tools.lock`, the tools `team-doctor` checks, pinned or with a minimum, and their source per OS (for treehouse and no-mistakes, a GitHub release with each archive's checksum, or a fork's commit), `tools.jq` (which turns `tools.lock` into each tool's pin and install command for a machine), `opencode-gate`, the gate's opencode wrapper, which `team-bootstrap` installs in `~/.no-mistakes/bin` and Daniel's no-mistakes config names, `records`, the paths a direct commit on `dev` may touch, and `code`, every other tracked path; `bin/hooks/` the sessions' hooks, and `bin/hooks/git/` git's |
-| `tests/` | The bats suite, one `.bats` file per script plus `task-life.bats`, a whole task's life across them, and `drill.bats`, the two-machine drill (handoff, steal, crash, outage), with `tests/helpers/` and bats-core vendored in `tests/vendor/`; `tests/toolkits/` the toolkits' Node tests; `tests/bootstrap-drill` runs `team-bootstrap` on a fresh runner for the by-hand Bootstrap workflow |
+| `bin/` | The team's commands, `team-*` and `claude-coordinator`; `bin/lib/` is the shared library, the ledger contract and its jq, `stack.jq` (`team-stack`'s owner classes and Docker's sizes), `tools.lock`, the tools `team-doctor` checks, pinned or with a minimum, and their source per OS (for treehouse and no-mistakes, a GitHub release with each archive's checksum, or a fork's commit), `tools.jq` (which turns `tools.lock` into each tool's pin and install command for a machine), `opencode-gate`, the gate's opencode wrapper, which `team-bootstrap` installs in `~/.no-mistakes/bin` and Daniel's no-mistakes config names, `records`, the paths a direct commit on `dev` may touch, and `code`, every other tracked path; `bin/hooks/` the sessions' hooks, and `bin/hooks/git/` git's |
+| `tests/` | The bats suite, one `.bats` file per script plus `task-life.bats`, a whole task's life across them, and `drill.bats`, the two-machine drill (handoff, steal, crash, outage), with `tests/helpers/` (`docker.bash`, the opt-in stub `docker`) and bats-core vendored in `tests/vendor/`; `tests/toolkits/` the toolkits' Node tests; `tests/bootstrap-drill` runs `team-bootstrap` on a fresh runner for the by-hand Bootstrap workflow |
 | `roles/` | The role prompts each session's system prompt is appended with, one per role, the coordinator's included |
 | `settings/` | Worker settings: `worker.json` shared, one file per role layered on it |
 | `coordinator.settings.json` | The coordinator's own settings: Discord, its hooks and its denials |
@@ -19,7 +19,7 @@ The team's own work on this repo goes through a task and a PR to `dev`, like any
 | `templates/` | The task plan and the worker briefs `team-open` and `team-brief` render |
 | `README.md`, `SETUP.md` | What a stranger reads first, with the sentence Daniel types on a new machine, and the agent's entry point for "set up as host" |
 | `LICENSE` | The Apache License 2.0; vendored bats-core keeps its own |
-| `sops/` | Standing procedures: `machine-setup.md` (a new machine, driven by `SETUP.md`), `portability.md` (moving the team between machines), `knowledge-graph.md`, `platform-gotchas.md` (general rules about the tools the team runs on, which every brief points at and the retro keeps short) |
+| `sops/` | Standing procedures: `machine-setup.md` (a new machine, driven by `SETUP.md`), `portability.md` (moving the team between machines), `docker.md` (the team's Docker stacks: labels, owner classes, the wrapper contract), `knowledge-graph.md`, `platform-gotchas.md` (general rules about the tools the team runs on, which every brief points at and the retro keeps short) |
 
 `.scratch/task/` is the task directory of a task on this repo, ignored by git.
 

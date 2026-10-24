@@ -1,0 +1,174 @@
+[
+  {
+    "CreatedAt": "2026-07-15T19:26:05+08:00",
+    "Driver": "local",
+    "Labels": {
+      "com.docker.compose.config-hash": "078a51ee97dc67c01539eaf6de6d3919ba63b6f38b6f4a28a0fcb71153c84e38",
+      "com.docker.compose.project": "conventioner",
+      "com.docker.compose.version": "5.6.1",
+      "com.docker.compose.volume": "mongodb_data"
+    },
+    "Mountpoint": "/var/lib/docker/volumes/conventioner_mongodb_data/_data",
+    "Name": "conventioner_mongodb_data",
+    "Options": null,
+    "Scope": "local",
+    "Size": "1.31GB"
+  },
+  {
+    "CreatedAt": "2026-10-19T00:54:02+08:00",
+    "Driver": "local",
+    "Labels": {
+      "com.docker.volume.anonymous": ""
+    },
+    "Mountpoint": "/var/lib/docker/volumes/f8d96e008758d020ea34d0411633d8ca076069b3efe8f765778a74259c7d8cc2/_data",
+    "Name": "f8d96e008758d020ea34d0411633d8ca076069b3efe8f765778a74259c7d8cc2",
+    "Options": null,
+    "Scope": "local",
+    "Size": "0B"
+  },
+  {
+    "CreatedAt": "2026-10-19T00:54:02+08:00",
+    "Driver": "local",
+    "Labels": {
+      "com.docker.volume.anonymous": ""
+    },
+    "Mountpoint": "/var/lib/docker/volumes/0a4c042e60f521e1fe4b878ae5a0513fcfd83294279dd18fef88c940ab0120ab/_data",
+    "Name": "0a4c042e60f521e1fe4b878ae5a0513fcfd83294279dd18fef88c940ab0120ab",
+    "Options": null,
+    "Scope": "local",
+    "Size": "210.9MB"
+  },
+  {
+    "CreatedAt": "2026-10-24T17:00:00+08:00",
+    "Driver": "local",
+    "Labels": {
+      "com.docker.compose.config-hash": "8f6a8045440e53a319684dce4a84eb7f1d695eccd51c8316bd858d7470fcb539",
+      "com.docker.compose.project": "conventioner-2",
+      "com.docker.compose.version": "5.6.1",
+      "com.docker.compose.volume": "mongodb_data",
+      "io.github.chanjdaniel.team.owner": "agent-team",
+      "io.github.chanjdaniel.team.task": "T7",
+      "io.github.chanjdaniel.team.kind": "dev",
+      "io.github.chanjdaniel.team.worktree": "@WORKTREE@",
+      "io.github.chanjdaniel.team.expires": ""
+    },
+    "Mountpoint": "/var/lib/docker/volumes/conventioner-2_mongodb_data/_data",
+    "Name": "conventioner-2_mongodb_data",
+    "Options": null,
+    "Scope": "local",
+    "Size": "312.4MB"
+  },
+  {
+    "CreatedAt": "2026-10-24T17:00:00+08:00",
+    "Driver": "local",
+    "Labels": {
+      "com.docker.compose.config-hash": "c6783518bfc8e6264180e80e86394c30b9579fbb8aa3713e5eb5499dc2bd0e8f",
+      "com.docker.compose.project": "conventioner-2",
+      "com.docker.compose.version": "5.6.1",
+      "com.docker.compose.volume": "backend_sessions",
+      "io.github.chanjdaniel.team.owner": "agent-team",
+      "io.github.chanjdaniel.team.task": "T7",
+      "io.github.chanjdaniel.team.kind": "dev",
+      "io.github.chanjdaniel.team.worktree": "@WORKTREE@",
+      "io.github.chanjdaniel.team.expires": ""
+    },
+    "Mountpoint": "/var/lib/docker/volumes/conventioner-2_backend_sessions/_data",
+    "Name": "conventioner-2_backend_sessions",
+    "Options": null,
+    "Scope": "local",
+    "Size": "4.096kB"
+  },
+  {
+    "CreatedAt": "2026-10-24T17:00:00+08:00",
+    "Driver": "local",
+    "Labels": {
+      "com.docker.volume.anonymous": ""
+    },
+    "Mountpoint": "/var/lib/docker/volumes/7c0fe2adb730873a9c2c1f098ffd118cb3e139f25df2142c6149be650ce5f00e/_data",
+    "Name": "7c0fe2adb730873a9c2c1f098ffd118cb3e139f25df2142c6149be650ce5f00e",
+    "Options": null,
+    "Scope": "local",
+    "Size": "0B"
+  },
+  {
+    "CreatedAt": "2026-10-24T18:55:00+08:00",
+    "Driver": "local",
+    "Labels": {
+      "com.docker.compose.config-hash": "555916e1d844ac7fd5f144e63673d1831ee23c80b2eb48870f0eab8615256708",
+      "com.docker.compose.project": "nmtest-1895520",
+      "com.docker.compose.version": "5.6.1",
+      "com.docker.compose.volume": "mongodb_data",
+      "io.github.chanjdaniel.team.owner": "",
+      "io.github.chanjdaniel.team.task": "",
+      "io.github.chanjdaniel.team.kind": "gate",
+      "io.github.chanjdaniel.team.worktree": "@HOME@/.no-mistakes/worktrees/01KQ3V2M8Z/Conventioner",
+      "io.github.chanjdaniel.team.expires": "2026-10-24T12:55:00Z"
+    },
+    "Mountpoint": "/var/lib/docker/volumes/nmtest-1895520_mongodb_data/_data",
+    "Name": "nmtest-1895520_mongodb_data",
+    "Options": null,
+    "Scope": "local",
+    "Size": "298.2MB"
+  },
+  {
+    "CreatedAt": "2026-10-24T18:55:00+08:00",
+    "Driver": "local",
+    "Labels": {
+      "com.docker.volume.anonymous": ""
+    },
+    "Mountpoint": "/var/lib/docker/volumes/bc17ebee5bc23731a063ae52f70ff70fd2524946f265a54cebf6bd4ae9e22161/_data",
+    "Name": "bc17ebee5bc23731a063ae52f70ff70fd2524946f265a54cebf6bd4ae9e22161",
+    "Options": null,
+    "Scope": "local",
+    "Size": "210.9MB"
+  },
+  {
+    "CreatedAt": "2026-10-21T16:00:00+08:00",
+    "Driver": "local",
+    "Labels": {
+      "com.docker.compose.config-hash": "841f75e9eee3fd51d2cde38c03bfbd630d4e90f16e78bcb3112aad70d56cc2d2",
+      "com.docker.compose.project": "nmtest-12822",
+      "com.docker.compose.version": "5.6.1",
+      "com.docker.compose.volume": "backend_sessions"
+    },
+    "Mountpoint": "/var/lib/docker/volumes/nmtest-12822_backend_sessions/_data",
+    "Name": "nmtest-12822_backend_sessions",
+    "Options": null,
+    "Scope": "local",
+    "Size": "0B"
+  },
+  {
+    "CreatedAt": "2026-10-24T17:23:01+08:00",
+    "Driver": "local",
+    "Labels": {
+      "com.docker.volume.anonymous": ""
+    },
+    "Mountpoint": "/var/lib/docker/volumes/d34171881feb5b31166cdd67ec7d406dc769ac4c3c5dafb72ee98f6ef0a9e7ce/_data",
+    "Name": "d34171881feb5b31166cdd67ec7d406dc769ac4c3c5dafb72ee98f6ef0a9e7ce",
+    "Options": null,
+    "Scope": "local",
+    "Size": "210.9MB"
+  },
+  {
+    "CreatedAt": "2026-10-24T17:23:01+08:00",
+    "Driver": "local",
+    "Labels": {
+      "com.docker.volume.anonymous": ""
+    },
+    "Mountpoint": "/var/lib/docker/volumes/05ab97f3ee4e69dfc7abe03f10bb3cb0115bfafead15e5f74babe7e369cda85e/_data",
+    "Name": "05ab97f3ee4e69dfc7abe03f10bb3cb0115bfafead15e5f74babe7e369cda85e",
+    "Options": null,
+    "Scope": "local",
+    "Size": "0B"
+  },
+  {
+    "CreatedAt": "2026-09-30T10:00:00+08:00",
+    "Driver": "local",
+    "Labels": {},
+    "Mountpoint": "/var/lib/docker/volumes/scratch-data/_data",
+    "Name": "scratch-data",
+    "Options": null,
+    "Scope": "local",
+    "Size": "12.5MB"
+  }
+]

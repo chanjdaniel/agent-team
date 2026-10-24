@@ -1,0 +1,86 @@
+[
+  {
+    "Containers": "3",
+    "CreatedAt": "2026-10-24 19:31:13 +0800 CST",
+    "CreatedSince": "",
+    "Digest": "",
+    "ID": "sha256:bdd239294826103d6254a6d94bacc82e822885185f56c69cb799ec5124c0aa40",
+    "Repository": "conventioner/backend",
+    "SharedSize": "N/A",
+    "Size": "534MB",
+    "Tag": "4943b69bbb33",
+    "UniqueSize": "N/A"
+  },
+  {
+    "Containers": "1",
+    "CreatedAt": "2026-10-24 20:02:28 +0800 CST",
+    "CreatedSince": "",
+    "Digest": "",
+    "ID": "sha256:89655cdcf97b72908a20c0df012670c51f076a057fa8c4a61a33102c61849d07",
+    "Repository": "conventioner/frontend",
+    "SharedSize": "N/A",
+    "Size": "397MB",
+    "Tag": "2a5cc542bea3",
+    "UniqueSize": "N/A"
+  },
+  {
+    "Containers": "0",
+    "CreatedAt": "2026-10-18 00:50:00 +0800 CST",
+    "CreatedSince": "",
+    "Digest": "",
+    "ID": "sha256:97b907f5a41be387fcff035860d47c97ebb41302c8293ca95fb89cdb5b185d36",
+    "Repository": "conventioner-backend",
+    "SharedSize": "N/A",
+    "Size": "534MB",
+    "Tag": "latest",
+    "UniqueSize": "N/A"
+  },
+  {
+    "Containers": "1",
+    "CreatedAt": "2026-10-18 00:51:00 +0800 CST",
+    "CreatedSince": "",
+    "Digest": "",
+    "ID": "sha256:d8758aaef417acd76a51870aff9bcb713acea43f4b5de0a62152f1db765bb32c",
+    "Repository": "conventioner-frontend",
+    "SharedSize": "N/A",
+    "Size": "640MB",
+    "Tag": "latest",
+    "UniqueSize": "N/A"
+  },
+  {
+    "Containers": "1",
+    "CreatedAt": "2026-10-21 15:55:00 +0800 CST",
+    "CreatedSince": "",
+    "Digest": "",
+    "ID": "sha256:013e41f802a42ca7289b5248632c8fe5386b972e8fde6585068c5cb8e2948489",
+    "Repository": "nmtest-12822-backend",
+    "SharedSize": "N/A",
+    "Size": "534MB",
+    "Tag": "latest",
+    "UniqueSize": "N/A"
+  },
+  {
+    "Containers": "2",
+    "CreatedAt": "2026-10-17 08:33:15 +0800 CST",
+    "CreatedSince": "",
+    "Digest": "",
+    "ID": "sha256:72404c1083af5306608b7487184154a199b7d183f4ef250339f3c1a0b72e2523",
+    "Repository": "mongo",
+    "SharedSize": "N/A",
+    "Size": "867MB",
+    "Tag": "7",
+    "UniqueSize": "N/A"
+  },
+  {
+    "Containers": "0",
+    "CreatedAt": "2026-10-24 18:41:35 +0800 CST",
+    "CreatedSince": "",
+    "Digest": "",
+    "ID": "sha256:0d844b0c5069e564525790f621405b87d60a4ba153c70c45d9df6166627625d7",
+    "Repository": "<none>",
+    "SharedSize": "N/A",
+    "Size": "397MB",
+    "Tag": "<none>",
+    "UniqueSize": "N/A"
+  }
+]
