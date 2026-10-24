@@ -18,8 +18,8 @@ Read it, borrow from it, fork it; issues and pull requests may go unanswered.
 
 The team runs from two checkouts on each machine:
 
-- **The code**, this repository, checked out at `~/agent-team`, with the tasks' worktrees under it.
-- **The team home**, a private repository of records, checked out beside it and named in `~/.config/agent-team/home`.
+- **The code**, this repository (`chanjdaniel/agent-team`, public), checked out at `~/agent-team`, with the tasks' worktrees under it.
+- **The team home**, a private repository of records (`chanjdaniel/agent-team-records` for Daniel), checked out beside it at `~/agent-team-records` and named in `~/.config/agent-team/home`.
 
 The scripts depend on the team home holding:
 
@@ -57,7 +57,7 @@ The vendored bats-core in `tests/vendor/bats-core/` keeps its own license.
 
 To set up a machine as a host, open `claude` in any folder on a machine with only Claude Code installed and send:
 
-> Set up this machine as a host for my agent team. The repo is github.com/chanjdaniel/agent-team and it is private: install gh, sign me in to GitHub with it, clone the repo to ~/agent-team, then follow its SETUP.md.
+> Set up this machine as a host for my agent team. The code is github.com/chanjdaniel/agent-team, which is public, and the team home is github.com/chanjdaniel/agent-team-records, which is private: install gh, sign me in to GitHub with it, clone the code to ~/agent-team and the team home to ~/agent-team-records, write agent-team-records to ~/.config/agent-team/home, then follow ~/agent-team/SETUP.md.
 
 From there `SETUP.md` drives the setup and asks for each step that is yours.
 Say "set up as host" again in a later session to pick up where it stopped.

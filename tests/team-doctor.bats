@@ -305,9 +305,9 @@ every_tool_fails() {
   git -C "$CODE_CHECKOUT" remote add origin https://github.com/chanjdaniel/agent-team.git
   unset TEAM_HOME
   run -1 "$CODE_CHECKOUT/bin/team-doctor"
-  # With no ~/agent-team-records the fix names no setting, which would name a missing directory.
+  # With no ~/agent-team-records the fix clones it first, since the setting would name a missing directory.
   assert_equal "$(line_of 'team home')" \
-    "WARN team home: $CODE_CHECKOUT, the code checkout, since neither TEAM_HOME nor ~/.config/agent-team/home names one; fix: nothing until the team home has a repository of its own; then clone it to ~/agent-team-records and run team-bootstrap --home agent-team-records"
+    "WARN team home: $CODE_CHECKOUT, the code checkout, since neither TEAM_HOME nor ~/.config/agent-team/home names one; fix: clone the team home: git clone https://github.com/chanjdaniel/agent-team-records.git ~/agent-team-records, then team-bootstrap --home agent-team-records"
   mkdir "$HOME/agent-team-records"
   run -1 "$CODE_CHECKOUT/bin/team-doctor"
   assert_equal "$(line_of 'team home')" \

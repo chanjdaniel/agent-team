@@ -357,7 +357,7 @@ preflight: Daniel: in your own terminal run $CODE_CHECKOUT/bin/team-bootstrap --
   # Every tool line passes now; what is left is Daniel's own.
   assert_contains "$output" "check: summary: not set up yet: only Daniel's steps above are left; then team-bootstrap again"
   [[ $output != *"FAIL tool "* ]]
-  # With no ~/agent-team-records the code checkout is the team home, and nothing is to be named.
+  # With no ~/agent-team-records there is nothing to name yet: the doctor's team home line says to clone it.
   [[ $output != *"team home: name"* ]]
   assert_contains "$output" "check: Daniel 1: docker: Daniel runs sudo systemctl enable --now docker.service ("
 }

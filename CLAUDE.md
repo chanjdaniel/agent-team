@@ -40,7 +40,6 @@ It holds:
 
 - The scripts find it as `TEAM_HOME` when set, else the first line of `~/.config/agent-team/home` (a path relative to `$HOME`, or absolute), else the directory above `bin/`; the library and `team-project` find it the same way, and refuse a setting that names no directory.
 - Code never comes from the team home, and records never go into this repo: `bin/lib/records` lists the records paths, and the `pre-push` hook (below) keeps a tree holding any of them away from every repository but the team home's origin.
-- Until T31's split moves them out, the records are still tracked here too, under the rules of "Direct commits on dev".
 
 ## Direct commits on dev
 

@@ -31,8 +31,8 @@ Each stage after the first is one `~/agent-team/bin/team-bootstrap` run; read it
 
 | # | Stage | Who | Done when |
 | - | - | - | - |
-| 1 | git, gh, GitHub login, the code checkout and the team home cloned | agent, Daniel logs in | `SETUP.md` stage 1's checks pass |
-| 2 | Preflight, the machine's name and the team home's setting | agent, Daniel names it | `machine: named this machine <name>` or `done`, and, once `~/agent-team-records` is cloned, `machine: named the team home <path>` or `done` |
+| 1 | git, gh, GitHub login, the code checkout and the team home cloned, the team home's setting written | agent, Daniel logs in | `SETUP.md` stage 1's checks pass |
+| 2 | Preflight and the machine's name | agent, Daniel names it | `machine: named this machine <name>` or `done`, and `machine: done: ~/.config/agent-team/home names ~/agent-team-records` |
 | 3 | OS packages | agent; Daniel's terminal on Arch | `packages: done` |
 | 4 | Tools at their pins | agent; Daniel's terminal for `sudo` | `tools: done` |
 | 5 | Projects | agent | `projects: done` |
@@ -41,9 +41,9 @@ Each stage after the first is one `~/agent-team/bin/team-bootstrap` run; read it
 | 8 | Verification and the summary | agent | `team-doctor` has no FAIL and `team-load-check` passes |
 | 9 | Taking the team (only when Daniel says so) | Daniel decides, agent runs | the coordinator runs here and is pinned |
 
-### Stage 1: git, gh and the team home
+### Stage 1: git, gh and the two checkouts
 
-`SETUP.md`, stage 1: on macOS the Xcode Command Line Tools and Homebrew, then git, gh and Homebrew's Bash 5, the GitHub login (`gh auth login --web`, then `gh auth setup-git`), the clone of `https://github.com/chanjdaniel/agent-team.git` at `~/agent-team` (the code checkout), and, once the team home is a repository of its own, the clone of `https://github.com/chanjdaniel/agent-team-records.git` at `~/agent-team-records`.
+`SETUP.md`, stage 1: on macOS the Xcode Command Line Tools and Homebrew, then git, gh and Homebrew's Bash 5, the GitHub login (`gh auth login --web`, then `gh auth setup-git`), the clone of the public `https://github.com/chanjdaniel/agent-team.git` at `~/agent-team` (the code checkout), the clone of the private `https://github.com/chanjdaniel/agent-team-records.git` at `~/agent-team-records` (the team home), and `agent-team-records` written to `~/.config/agent-team/home`.
 
 ### Stage 2: preflight and the machine's name
 
@@ -51,10 +51,10 @@ Each stage after the first is one `~/agent-team/bin/team-bootstrap` run; read it
    On Arch, missing ones stop it with Daniel's `sudo` command (stage 3 says how to ask).
 2. Ask Daniel for the machine's team name (`laptop`, `home-pc`, or a new one in lower-case kebab case; never the hostname), then `~/agent-team/bin/team-bootstrap --name <name> --stage machine`.
    The name goes in `~/.config/agent-team/machine` and is what the lease and the ledger call this machine.
-3. Once `~/agent-team-records` is cloned, `~/agent-team/bin/team-bootstrap --home agent-team-records --stage machine` (it can go with `--name` in one run).
-   The path goes in `~/.config/agent-team/home`, relative to `$HOME` (or absolute), and is how every script, hook and session on this machine finds the team home; like the machine's name it is this machine's own and never moved.
+3. The machine stage also reports the team home's setting, which stage 1 wrote: `~/.config/agent-team/home` holds the team home's path, relative to `$HOME` (or absolute), and is how every script, hook and session on this machine finds the team home; like the machine's name it is this machine's own and never moved.
+   When it is missing, `~/agent-team/bin/team-bootstrap --home agent-team-records --stage machine` writes it (it can go with `--name` in one run).
    The bootstrap writes it once: a setting that names another checkout is left as it is, and a path with no checkout yet is refused until the clone is there.
-   Until it is written, the doctor's `team home` line warns that the code checkout is the team home (true on every machine until the team home has its own repository), and once `~/agent-team-records` is there stage 7 lists the setting among Daniel's steps.
+   Until it is written, the doctor's `team home` line warns that the team home is the code checkout, which holds no records, and its fix clones `~/agent-team-records` first when it is missing; once the clone is there, stage 7 lists the setting among Daniel's steps.
 
 ### Stage 3: OS packages
 
@@ -85,7 +85,7 @@ Then it installs the gate's opencode wrapper, `~/.no-mistakes/bin/opencode-gate`
 
 ### Stage 6: Claude config, plugins and the heartbeat
 
-1. `~/agent-team/bin/team-bootstrap --stage config`: the marketplaces and plugins of `machine/claude/plugins.txt`, then `team-config apply` (the shared `CLAUDE.md`, `AGENTS.md`, `settings.json` and skills copied into `~/.claude`, and each project's auto memory pointed at `~/agent-team/memory/<project>`, the team home's at `memory/coordinator` once it is no project's primary checkout), then the Discord plugin turned off in user settings.
+1. `~/agent-team/bin/team-bootstrap --stage config`: the marketplaces and plugins of `machine/claude/plugins.txt`, then `team-config apply` (the shared `CLAUDE.md`, `AGENTS.md`, `settings.json` and skills copied into `~/.claude`, and each project's auto memory pointed at the team home's `memory/<project>`, `~/agent-team-records/memory/<project>`, the team home's own at `memory/coordinator` once it is no project's primary checkout), then the Discord plugin turned off in user settings.
    When a file or skill already differs here, apply is skipped and listed: show Daniel `~/agent-team/bin/team-config diff --full` and ask which they want.
    On a new machine that is almost always `~/agent-team/bin/team-config apply` (whatever it replaces goes to `~/.claude/backups/`); `team-config capture` instead keeps this machine's version, for a records commit on `dev`.
 2. `~/agent-team/bin/team-bootstrap --stage heartbeat`: the heartbeat stays disabled; `team-resume` enables it when this machine takes the lease.
@@ -124,7 +124,7 @@ Done when `check` lists no `Daniel <n>:` line.
 | git and gh (Arch) | 1 | own terminal: `sudo pacman -S --needed git github-cli` | `sudo` |
 | GitHub login | 1 | browser, with the code the agent relays | account login |
 | The machine's name | 2 | the conversation | Daniel's naming |
-| The team home's setting, when stage 7 lists it | 2 | the conversation: Daniel says the team home is cloned at `~/agent-team-records`, then the agent runs `team-bootstrap --home agent-team-records` | where the records live is Daniel's layout |
+| The team home's setting, when stage 7 lists it (stage 1 writes it, so only when that was skipped) | 7 | the conversation: Daniel says the team home is cloned at `~/agent-team-records`, then the agent runs `team-bootstrap --home agent-team-records` | where the records live is Daniel's layout |
 | `sudo` stages (Arch: preflight, packages, tools) | 2 to 4 | own terminal: the `team-bootstrap --stage <stage>` it names | password |
 | Choosing apply or capture when config differs | 6 | the conversation | whose config wins |
 | Restarting the session after the config changed | 6 | exit, `claude` in `~/agent-team` | a session cannot reload itself |
