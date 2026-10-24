@@ -16,16 +16,41 @@ setup() {
   assert_equal "$hits" ""
 }
 
-# D6 (T31): the production toolkits go public without the Atlas cluster's host, which only the
-# 1Password item's connection string holds. A placeholder host is at example.mongodb.net. The
-# failure names the file, never the host.
-@test "no tracked code file names an Atlas cluster host" {
-  local files hits
-  files=$(git -C "$REPO_ROOT" ls-files -z | bash -c 'source "$1/bin/lib/team.sh"; non_records' _ "$REPO_ROOT")
+# The tracked code files of the checkout <dir> that name an Atlas cluster host, in any case, one
+# per line; a placeholder host is at example.mongodb.net. Names the file, never the host:
+# atlas_host_files <dir>
+atlas_host_files() {
+  local files
+  files=$(git -C "$1" ls-files -z | bash -c 'source "$1/bin/lib/team.sh"; non_records' _ "$REPO_ROOT")
   [[ -n $files ]]
-  hits=$(cd "$REPO_ROOT" && xargs -d '\n' grep -I -o -E '[A-Za-z0-9-]+\.[A-Za-z0-9-]+\.mongodb\.net' -- <<<"$files" \
-    | grep -v '\.example\.mongodb\.net$' | cut -d: -f1 | sort -u || true)
-  assert_equal "$hits" ""
+  (cd "$1" && xargs -d '\n' grep -I -H -i -o -E '[a-z0-9-]+\.[a-z0-9-]+\.mongodb\.net' -- <<<"$files" \
+    | grep -v -i '\.example\.mongodb\.net$' | cut -d: -f1 | sort -u || true)
+}
+
+# D6 (T31): the production toolkits go public without the Atlas cluster's host, which only the
+# 1Password item's connection string holds.
+@test "no tracked code file names an Atlas cluster host" {
+  run -0 atlas_host_files "$REPO_ROOT"
+  assert_equal "$output" ""
+}
+
+# The hosts are composed at run time, so this file names none.
+@test "an Atlas cluster host is named by its file, alone or in upper case, and a placeholder is not" {
+  local copy=$BATS_TEST_TMPDIR/copy domain=mongodb.net
+  git init -q "$copy"
+  mkdir "$copy/toolkits"
+  echo "host: made-up.zz9zz9z.$domain" >"$copy/toolkits/one.md"
+  git -C "$copy" add toolkits/one.md
+  run -0 atlas_host_files "$copy"
+  assert_equal "$output" "toolkits/one.md"
+  echo "host: MADE-UP.ZZ9ZZ9Z.${domain^^}" >"$copy/toolkits/one.md"
+  run -0 atlas_host_files "$copy"
+  assert_equal "$output" "toolkits/one.md"
+  echo "host: X.EXAMPLE.${domain^^}" >"$copy/toolkits/one.md"
+  echo "host: x.example.$domain" >"$copy/toolkits/two.md"
+  git -C "$copy" add toolkits/two.md
+  run -0 atlas_host_files "$copy"
+  assert_equal "$output" ""
 }
 
 # Each tracked path of the checkout <dir> that matches neither or both of its lists, bin/lib/code
