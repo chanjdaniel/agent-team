@@ -86,6 +86,7 @@ every_tool_fails() {
   expected=$(printf '%s\n' os; lock_tools arch | cut -f1 | sed 's/^/tool /'
     printf '%s\n' docker chrome machine 'git hooks' 'claude login' 'github login' config plugins memory discord 'own settings' 1password
     secret_ids | sed 's/^/secret /'
+    echo records
     project_checks
     printf '%s\n' clock lease heartbeat offline)
   assert_equal "$(checks)" "$expected"
@@ -94,6 +95,7 @@ every_tool_fails() {
   assert_equal "$(line_of 'tool jq')" "PASS tool jq: 1.7.1 (minimum 1.7.1)"
   assert_equal "$(line_of machine)" "PASS machine: home-pc"
   assert_equal "$(line_of 'claude login')" "PASS claude login: signed in with a claude.ai account"
+  assert_equal "$(line_of records)" "PASS records: the ledger meets its contract (0 lines), the registry passes (2 projects) and machine/secrets.md describes every enabled secret"
   assert_contains "$(line_of lease)" "PASS lease: held here, epoch 1"
   assert_equal "$(line_of heartbeat)" "PASS heartbeat: enabled, and this machine holds the lease"
 }
@@ -107,6 +109,7 @@ every_tool_fails() {
   expected=$(printf '%s\n' os homebrew; lock_tools macos | cut -f1 | sed 's/^/tool /'
     printf '%s\n' docker chrome machine 'git hooks' 'claude login' 'github login' config plugins memory discord 'own settings' 1password
     secret_ids | sed 's/^/secret /'
+    echo records
     project_checks
     printf '%s\n' clock lease heartbeat offline)
   assert_equal "$(checks)" "$expected"
@@ -449,6 +452,45 @@ FAIL secret conventioner-back-end-env: not a file; fix: move aside what is at it
   assert_equal "$(line_of secrets)" "FAIL secrets: no machine/secrets.json in $TEAM_HOME; fix: fix what team-secrets names, then run team-doctor again"
 }
 
+# The records line's fix, after the problems it names.
+RECORDS_FIX="fix what it names in the team home (team-log --check and team-project --check list every problem), then run team-doctor again"
+
+@test "the records line fails on a ledger that breaks its contract, naming its first problem and the count" {
+  tools_at arch
+  printf '%s\n' '{"ts": "2026-10-24T01:00:00Z", "task": "T1", "event": "launch", "role": "builder", "session": "a1", "worktree": "/w"}' \
+    'not json' >>"$TEAM_HOME/ledger.jsonl"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of records)" "FAIL records: $TEAM_HOME/ledger.jsonl:1: launch needs toolkits (2 of 2 lines break the ledger contract); fix: $RECORDS_FIX"
+  # Nothing else fails.
+  assert_equal "$(grep -v '^PASS ' <<<"$output" | grep -v '^FAIL records: ' || true)" ""
+  rm "$TEAM_HOME/ledger.jsonl"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of records)" "FAIL records: no ledger at $TEAM_HOME/ledger.jsonl; fix: $RECORDS_FIX"
+}
+
+@test "the records line fails on a registry team-project --check refuses, naming its first problem and the count" {
+  tools_at arch
+  sed -i 's/^base = "main"$/base = 5/' "$TEAM_HOME/projects.toml"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of records)" "FAIL records: $TEAM_HOME/projects.toml: conventioner.base: must be a string (2 problems); fix: $RECORDS_FIX"
+  # team-config diff and the projects line refuse the same registry; nothing else fails.
+  assert_equal "$(grep -v '^PASS ' <<<"$output" | grep -v '^FAIL records: ' | cut -d: -f1 | paste -sd , || true)" \
+    "WARN config,FAIL plugins,WARN memory,FAIL projects"
+}
+
+@test "the records line fails on each enabled secret machine/secrets.md has no row for; a disabled one needs none" {
+  tools_at arch
+  sed -i -e '/^| `conventioner-env` |/d' -e '/^| `discord-bot-env` |/d' -e '/^| `hub-env` |/d' "$TEAM_HOME/machine/secrets.md"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of records)" "FAIL records: machine/secrets.md has no row for discord-bot-env, conventioner-env; fix: $RECORDS_FIX"
+  assert_equal "$(grep -v '^PASS ' <<<"$output" | grep -v '^FAIL records: ' || true)" ""
+  # Every problem at once, one after another.
+  echo 'not json' >>"$TEAM_HOME/ledger.jsonl"
+  rm "$TEAM_HOME/machine/secrets.md"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of records)" "FAIL records: $TEAM_HOME/ledger.jsonl:1: not JSON (1 of 1 lines break the ledger contract); no machine/secrets.md in $TEAM_HOME; fix: $RECORDS_FIX"
+}
+
 @test "a clock more than a minute off GitHub's warns; GitHub's Date unreadable warns too" {
   tools_at arch
   # The Date header is in whole seconds, so the skew read may be a second off the one set.
@@ -754,7 +796,8 @@ WARN changes site: changes to tracked files: README.md; untracked files: notes.t
   tools_at arch
   rm "$TEAM_HOME/projects.toml"
   run_bin -1 team-doctor
-  assert_equal "$(grep -v '^PASS ' <<<"$output" | grep -v '^WARN memory' || true)" "FAIL projects: no registry at $TEAM_HOME/projects.toml; fix: fix what team-project names (team-project --check), then run team-doctor again"
+  assert_equal "$(grep -v '^PASS ' <<<"$output" | grep -v -e '^WARN memory' -e '^FAIL records' || true)" "FAIL projects: no registry at $TEAM_HOME/projects.toml; fix: fix what team-project names (team-project --check), then run team-doctor again"
+  assert_contains "$(line_of records)" "FAIL records: no registry at $TEAM_HOME/projects.toml;"
   echo '[broken]' >"$TEAM_HOME/projects.toml"
   run_bin -1 team-doctor
   assert_contains "$(line_of projects)" "FAIL projects: $TEAM_HOME/projects.toml: broken: missing required key 'repo'"

@@ -247,13 +247,17 @@ TOML
 }
 
 @test "without TEAM_HOME it reads the registry of the checkout it runs from" {
+  local co=$BATS_TEST_TMPDIR/checkout
+  mkdir -p "$co/bin"
+  cp "$REPO_ROOT/bin/team-project" "$co/bin/"
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$co/"
   unset TEAM_HOME
-  run -0 "$REPO_ROOT/bin/team-project" --list
-  assert_equal "$output" "$(cd "$REPO_ROOT" && python3 -I -c 'import tomllib; print("\n".join(tomllib.load(open("projects.toml", "rb"))))')"
+  run -0 "$co/bin/team-project" --list
+  assert_equal "$output" $'conventioner\nagent-team'
 }
 
-@test "the real projects.toml passes --check and holds both projects" {
-  cp "$REPO_ROOT/projects.toml" "$TEAM_HOME/projects.toml"
+@test "a registry shaped like the team home's passes --check and holds both projects" {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
   run_bin -0 team-project --check
   run_bin -0 team-project --list
   assert_equal "$output" $'conventioner\nagent-team'
@@ -269,17 +273,6 @@ TOML
     "chanjdaniel/agent-team dev direct-pr merge git"
   assert_equal "$(jq -c .pool.slots <<<"$output")" \
     "[\"$HOME/agent-team/.claude/worktrees/1\",\"$HOME/agent-team/.claude/worktrees/2\",\"$HOME/agent-team/.claude/worktrees/3\",\"$HOME/agent-team/.claude/worktrees/4\",\"$HOME/agent-team/.claude/worktrees/5\"]"
-}
-
-@test "the team home's PRs to dev are checked locally: tests/run, and no GitHub check" {
-  cp "$REPO_ROOT/projects.toml" "$TEAM_HOME/projects.toml"
-  run_bin -0 team-project agent-team local_checks
-  assert_equal "$(jq -c . <<<"$output")" '["tests/run"]'
-  run_bin -0 team-project agent-team required_checks
-  assert_equal "$(jq -c . <<<"$output")" '[]'
-  # Conventioner has none: its PRs are checked on GitHub.
-  run_bin -0 team-project conventioner local_checks
-  assert_equal "$(jq -c . <<<"$output")" '[]'
 }
 
 @test "local_checks is optional, defaults to none, and must be one-line commands" {

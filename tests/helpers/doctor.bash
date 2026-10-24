@@ -107,9 +107,9 @@ case $* in
 esac
 EOF
   clock_offset 0
-  # Every secret of the team home's manifest in place with its mode, holding a dummy value; the
-  # 1Password app installed.
-  cp "$REPO_ROOT/machine/secrets.json" "$TEAM_HOME/machine/secrets.json"
+  # The team home's secrets manifest and its description (fixtures shaped like the real ones),
+  # every secret in place with its mode, holding a dummy value; the 1Password app installed.
+  cp "$BATS_TEST_DIRNAME/fixtures/secrets.json" "$BATS_TEST_DIRNAME/fixtures/secrets.md" "$TEAM_HOME/machine/"
   local target
   while IFS= read -r target; do
     mkdir -p "$(dirname "$HOME/$target")"
@@ -244,7 +244,7 @@ on_macos() {
 
 # The ids of the manifest's enabled secrets, in order.
 secret_ids() {
-  jq -r '.secrets[] | select(.enabled != false) | .id' "$REPO_ROOT/machine/secrets.json"
+  jq -r '.secrets[] | select(.enabled != false) | .id' "$BATS_TEST_DIRNAME/fixtures/secrets.json"
 }
 
 # The line of check <name> in the output.

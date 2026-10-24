@@ -42,6 +42,10 @@
 #   secret <id>   `team-secrets check`: fails for each enabled secret of machine/secrets.json that
 #                 is missing, empty or off its mode here, with team-secrets restore (Daniel's, in
 #                 their own terminal); no byte of a secret is read.
+#   records       The team home's records pass the checks the code holds them to: the ledger
+#                 `team-log --check`, the registry `team-project --check`, and every enabled
+#                 secret of machine/secrets.json has its row in machine/secrets.md; fails naming
+#                 each problem (a check's first, with its count).
 #   per project   For each project of projects.toml (`projects` fails when team-project refuses
 #                 the registry), the lines below with the project's name after the check's;
 #                 a missing checkout is its one line:
@@ -122,6 +126,17 @@ first_error() {
   local line
   line=$(grep -m1 . "$err" || true)
   printf '%s\n' "${line#team-*: }"
+}
+
+# A check's first problem (first_error), with the count its last line gives when it wrote more:
+# "<file>:1: not JSON (2 of 2 lines break the ledger contract)".
+first_problem() {
+  local first last
+  first=$(first_error)
+  last=$(grep . "$err" | tail -n 1)
+  last=${last#team-*: }
+  [[ $last == "$first" ]] || first+=" (${last##*: })"
+  printf '%s\n' "$first"
 }
 
 # Whether version <a> is below version <b>, number by number: version_below <a> <b>
@@ -527,7 +542,9 @@ fi
 # secret <id>: team-secrets check, from each file's existence, size and mode alone.
 rc=0
 secrets=$(TEAM_HOME=$TEAM_HOME bounded 30 "$bin/team-secrets" check --json 2>"$err" </dev/null) || rc=$?
+secrets_read=1
 if ((rc > 1)) || ! jq -e 'type == "array"' <<<"$secrets" >/dev/null 2>&1; then
+  secrets_read=0
   reason=$(first_error)
   report secrets FAIL "${reason:-team-secrets check exited $rc}" "fix what team-secrets names, then run team-doctor again"
 else
@@ -540,6 +557,37 @@ else
       report "secret $id" FAIL "$reason" "Daniel runs team-secrets restore in their own terminal"
     fi
   done < <(jq -r '.[] | [.id, .verdict, .reason] | @tsv' <<<"$secrets")
+fi
+
+# records: the team home's ledger, registry and secrets description, each problem named.
+records_problems=()
+if ledger_out=$(TEAM_HOME=$TEAM_HOME "$bin/team-log" --check 2>"$err" </dev/null); then
+  ledger_count=$(cut -d' ' -f1,2 <<<"${ledger_out##*: }")
+else
+  records_problems+=("$(first_problem)")
+fi
+if registry_out=$(team_project --check 2>"$err" </dev/null); then
+  registry_count=$(cut -d' ' -f1,2 <<<"${registry_out##*: }")
+else
+  records_problems+=("$(first_problem)")
+fi
+if [[ ! -f $TEAM_HOME/machine/secrets.md ]]; then
+  records_problems+=("no machine/secrets.md in $TEAM_HOME")
+elif ((!secrets_read)); then
+  records_problems+=("machine/secrets.md unchecked, since team-secrets refused the manifest (the secrets line)")
+else
+  undescribed=()
+  while IFS= read -r id; do
+    grep -qF "| \`$id\` |" "$TEAM_HOME/machine/secrets.md" || undescribed+=("$id")
+  done < <(jq -r '.[].id' <<<"$secrets")
+  ((${#undescribed[@]} == 0)) ||
+    records_problems+=("machine/secrets.md has no row for $(printf '%s, ' "${undescribed[@]}" | sed 's/, $//')")
+fi
+if ((${#records_problems[@]} == 0)); then
+  report records PASS "the ledger meets its contract ($ledger_count), the registry passes ($registry_count) and machine/secrets.md describes every enabled secret"
+else
+  report records FAIL "$(printf '%s; ' "${records_problems[@]}" | sed 's/; $//')" \
+    "fix what it names in the team home (team-log --check and team-project --check list every problem), then run team-doctor again"
 fi
 
 # per project: team-project refuses a missing or broken registry itself, the first problem first.

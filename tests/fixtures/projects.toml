@@ -1,0 +1,69 @@
+# A fixture shaped like the team home's projects.toml (2026-10-24), for the tests that read a real registry.
+# The project registry: one table per project the team works on, keyed by its short name.
+# Read it only through bin/team-project, which checks it and prints JSON for jq; CI runs
+# `team-project --check` on it. Paths are relative to $HOME unless a comment says otherwise.
+#
+# Per project:
+#   repo             the GitHub repository, owner/name
+#   path             the primary checkout
+#   base             the branch tasks start from and PRs target
+#   delivery         how a builder delivers: "no-mistakes" (the gate opens the PR) or "direct-pr"
+#   merge_method     how team-merge merges a PR: "merge", "squash" or "rebase"
+#   required_checks  checks that must be present and green on the PR's head, beyond the
+#                    server's own required checks
+#   local_checks     optional: shell commands, run from the root of a checkout of the PR's exact
+#                    head, that must all pass before team-merge merges it (default none)
+#   task_dir         a task's scratch directory, relative to a worktree
+#   docs             what a worker reads first, relative to a worktree
+#   toolkits         the toolkits a worker of this project may be given
+# Per project pool ([<name>.pool]), where task worktrees come from:
+#   provider         "treehouse" (leased pre-warmed slots) or "git" (plain git worktrees)
+#   lease, return    treehouse only: the lease and return commands, relative to the primary checkout
+#   slots            the trusted slot paths a task's worktree may be
+
+[conventioner]
+repo = "chanjdaniel/Conventioner"
+path = "Documents/projects/personal/Conventioner"
+base = "dev"
+delivery = "no-mistakes"
+merge_method = "merge"
+required_checks = []
+task_dir = ".scratch/task"
+docs = ["AGENTS.md", "docs/README.md"]
+toolkits = ["prod-read", "prod-write"]
+
+[conventioner.pool]
+provider = "treehouse"
+lease = "scripts/th-lease.sh"
+return = "scripts/th-return.sh"
+slots = [
+  ".treehouse/Conventioner-d4c77a/1/Conventioner",
+  ".treehouse/Conventioner-d4c77a/2/Conventioner",
+  ".treehouse/Conventioner-d4c77a/3/Conventioner",
+  ".treehouse/Conventioner-d4c77a/4/Conventioner",
+]
+
+[agent-team]
+repo = "chanjdaniel/agent-team"
+path = "agent-team"
+base = "dev"
+delivery = "direct-pr"
+merge_method = "merge"
+# CI policy B (Daniel, 2026-10-23): the private repo runs no GitHub Actions for dev, so a PR to
+# dev has no GitHub checks; team-merge runs tests/run (shellcheck, bats and the toolkit tests, which
+# need Docker) on its head instead.
+required_checks = []
+local_checks = ["tests/run"]
+task_dir = ".scratch/task"
+docs = ["CLAUDE.md"]
+toolkits = []
+
+[agent-team.pool]
+provider = "git"
+slots = [
+  "agent-team/.claude/worktrees/1",
+  "agent-team/.claude/worktrees/2",
+  "agent-team/.claude/worktrees/3",
+  "agent-team/.claude/worktrees/4",
+  "agent-team/.claude/worktrees/5",
+]

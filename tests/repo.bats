@@ -7,17 +7,17 @@ setup() {
   sandbox
 }
 
-# tasks/ and projects/ hold history imported as written, so they keep their own text.
-@test "no em dash in tracked Markdown or templates outside tasks/, projects/ and machine/claude/" {
+# The records (bin/lib/records) are history and notes written outside any PR, kept as written.
+@test "no em dash in tracked Markdown or templates outside the records" {
   local files hits
-  files=$(git -C "$REPO_ROOT" ls-files -- '*.md' 'templates/**' ':!:tasks/**' ':!:projects/**' ':!:machine/claude/**')
+  files=$(git -C "$REPO_ROOT" ls-files -z -- '*.md' 'templates/**' | bash -c 'source "$1/bin/lib/team.sh"; non_records' _ "$REPO_ROOT")
   [[ -n $files ]]
   hits=$(cd "$REPO_ROOT" && xargs -d '\n' grep -n $'—' -- <<<"$files" || true)
   assert_equal "$hits" ""
 }
 
-# The machine docs: Daniel's sentence, the setup entry point, the SOPs and Daniel's steps.
-MACHINE_DOCS=(README.md SETUP.md sops/machine-setup.md sops/portability.md manual-steps.md)
+# The machine docs: Daniel's sentence, the setup entry point and the SOPs.
+MACHINE_DOCS=(README.md SETUP.md sops/machine-setup.md sops/portability.md)
 
 @test "the machine docs name only commands in bin/, with options and subcommands their --help knows" {
   local doc span cmd i found=0 missing=() words
