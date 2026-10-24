@@ -49,7 +49,7 @@ Every command below answers `--help` with its exact usage; this manual says when
    On Daniel's "merge it", log the message it came in with `team-log T<n> merge-approved url=<PR url> discord_message=<id>`, then run `team-merge T<n>` (`--pr <url>` for each PR of a task in two repos); merging the code checkout's own project also fast-forwards that checkout, which is how merged code reaches the scripts, or says why it did not and the command for Daniel.
    Only a message sent since the PR's `pr` event counts, so ask again after a new PR.
    `team-merge` refuses with every reason and merges nothing; for attribution lines run `team-clean-messages <worktree>`, run the push it prints only with Daniel's OK, and re-review the new head.
-7. **Close.** Run `team-close T<n>` once the PRs are merged: it archives the task directory to `tasks/T<n>/scratch/`, removes the task's sessions and returns its worktrees.
+7. **Close.** Run `team-close T<n>` once the PRs are merged: it takes each returned worktree's stacks down (`team-stack down`), then archives the task directory to `tasks/T<n>/scratch/`, removes the task's sessions and returns its worktrees.
    It refuses a worktree whose work has not landed and a busy worker; `--keep-worktree` and `--stop-busy` are for when Daniel decides so.
    A task left half closed is finished by running `team-close T<n>` again.
    Post the outcome in the thread.

@@ -111,6 +111,27 @@ A file that is not one JSON object, a key of the wrong type or an unknown key is
 
 On macOS, Docker runs in Docker Desktop's VM, so the readings differ, and both are **unverified** on a Mac: the memory is `docker info`'s `MemTotal` (the VM's) less what the running containers use (`docker stats`), and the disk is the file system holding the home directory, where Docker Desktop keeps its disk image.
 
+## Closing a task
+
+`team-close` takes the stacks of a task down before it archives the task's directories, so a closed task leaves nothing running and its stack logs are archived with it.
+
+- For each worktree it is about to return whose project has a `stack` block, it runs `team-stack down --worktree <path>`, which saves the logs into the worktree's task directory; the archive then copies them to `tasks/T<n>/`.
+- A worktree kept with `--keep-worktree` keeps its stack, and a project without a `stack` block is never asked of Docker.
+- A teardown that fails stops the close with `team-stack`'s reason, the task half closed: fix the cause and run `team-close T<n>` again.
+- A project's own return command may tear its stack down as a second line (Conventioner's `th-return.sh` does).
+
+## Rules for agents
+
+Builders, planners and reviewers carry these rules in a short `## Docker stacks` section of their role:
+
+- Start the worktree's stack only with `team-stack up`, never `docker compose up`, the wrapper's `up` or `docker run`, and reach it with `eval "$(team-stack env)"`.
+- On `team-stack up`'s exit 75, send `T<n> PAUSED <its reason line>` and wait, rather than fighting for room.
+- `team-stack stop` a stack no longer needed, and `team-stack down` it when done.
+- Never prune, and never remove another task's or project's containers, volumes or networks; never test against Daniel's primary stack.
+
+Every worker's settings (`settings/worker.json`) deny Docker's prune commands, `docker <object> prune` for `system`, `volume`, `image`, `network`, `builder`, `container` and `buildx`, each in three spellings: `docker <object> prune*`, `docker * <object> prune*` (global options first) and `*/docker <object> prune*` (by path).
+These are a speed bump, as every deny rule is; the guarantee is that no script the team runs prunes.
+
 ## Seeing what Docker holds
 
 - `team-stack ls` lists every Compose project with its status, class, task, kind, worktree, age and memory.

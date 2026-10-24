@@ -15,7 +15,9 @@
 # Then, in order: claude stop <id> for each live session of the task's launch events (by id,
 # never another task's), then, when any was stopped, the landed check again for each worktree to
 # return (one that no longer has landed is kept with --keep-worktree, else exit 1 with the task
-# half closed); the stack teardown (empty until T9's team-stack); each worktree's task
+# half closed); team-stack down --worktree <path> for each worktree to return whose project has a
+# stack block, so its logs are archived with its task directory (a kept worktree keeps its stack;
+# a failed teardown stops the close with the reason, the task half closed); each worktree's task
 # directory mirrored to tasks/T<n>/scratch/ (the opened project) or tasks/T<n>/scratch-<project>/
 # (an added one), less its nested repositories, files over 1 MiB and paths that may hold a secret,
 # each named on stderr, a missing or empty one reported on stderr; claude rm <id> for each of the
@@ -203,10 +205,19 @@ if ((${#stopped[@]})); then
   fi
 fi
 
-# The stack teardown goes here, before the archive, so that the stack's logs land in the
-# worktree's .scratch/ and are archived with it: T9's ticket 08 (tasks/T9/tickets/08-rules-and-
-# return.md) runs team-stack down in each worktree. Until team-stack exists there is nothing to do.
-teardown_stacks() { :; }
+# Take down the stack of each worktree to be returned whose project has a stack block, before the
+# archive, so that its logs land in the worktree's task directory and are archived with it; a
+# kept worktree keeps its stack.
+teardown_stacks() {
+  local wt project path
+  for wt in "${returning[@]}"; do
+    project=$(field project "$wt") path=$(field worktree "$wt")
+    team_project "$project" >"$scratch/project.json" || exit 1
+    jq -e 'has("stack")' "$scratch/project.json" >/dev/null || continue
+    TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-stack" down --worktree "$path" </dev/null >&2 ||
+      die "cannot take down the stack of $path ($project); its reason is above"
+  done
+}
 teardown_stacks
 
 # Mirror each worktree's task directory into tasks/T<n>/.
