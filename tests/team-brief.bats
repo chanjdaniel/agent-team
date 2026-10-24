@@ -1,13 +1,14 @@
 #!/usr/bin/env bats
 # team-brief: a worker's brief rendered from templates/briefs/, the task's facts from the ledger
 # and the registry, the rest from --set and --set-file. Projects conv (no-mistakes) and home
-# (direct-pr); the team home is ~/agent-team, so its paths render as ~/... as in production.
+# (direct-pr); the team home is ~/agent-team-records, so its paths render as ~/... as in production.
+# The code checkout is this one, outside the sandbox HOME, so team_code and team_bin render absolute.
 
 load helpers/common
 
 setup() {
   sandbox
-  export TEAM_HOME=$HOME/agent-team
+  export TEAM_HOME=$HOME/agent-team-records
   mkdir -p "$TEAM_HOME/tasks"
   : >"$TEAM_HOME/ledger.jsonl"
   cat >"$TEAM_HOME/projects.toml" <<'TOML'
@@ -122,7 +123,7 @@ Task directory: `.scratch/task/` in the worktree (excluded from git), for your s
 
 ## Read first
 
-- The high-level plan: `~/agent-team/tasks/T12/plan.md`.
+- The high-level plan: `~/agent-team-records/tasks/T12/plan.md`.
 - `AGENTS.md` and the code it names.
 
 ## Do
@@ -144,10 +145,12 @@ Never run a command that needs `sudo`; send `T12 BLOCKED <the command> needs sud
 
 ## Rules
 
-Read `~/agent-team/sops/platform-gotchas.md` before your first command.
+Read `@CODE@/sops/platform-gotchas.md` before your first command.
 Never the em dash in docs; refer to Daniel with they/them.
 EOF
   )
+  # The code checkout is this one, written whole: it is outside the sandbox HOME.
+  expected=${expected//@CODE@/$REPO_ROOT}
   local -a want got
   mapfile -t want <<<"$expected"
   mapfile -t got <"$TEAM_HOME/tasks/T12/brief.md"
@@ -181,7 +184,14 @@ EOF
       refute_grep '{{\|}}' "$brief"
       refute_grep $'—' "$brief"
       assert_contains "$(<"$brief")" "# $task brief ("
-      assert_contains "$(<"$brief")" 'Read `~/agent-team/sops/platform-gotchas.md` before your first command.'
+      # The gotchas SOP is code, read from the code checkout; the ops session reads nothing
+      # outside its worktree and runs no shell, so its brief has no gotchas line.
+      if [[ $template == ops ]]; then
+        refute_grep platform-gotchas "$brief"
+      else
+        assert_contains "$(<"$brief")" "Read \`$REPO_ROOT/sops/platform-gotchas.md\` before your first command."
+      fi
+      refute_grep -F 'agent-team-records/sops/' "$brief"
     done < <(templates)
   done
   # The delivery partial follows the project's delivery.
@@ -200,9 +210,9 @@ EOF
   # The first item to read is the digest, from the team home's checkout and its live ledger.
   assert_equal "$(grep -m1 '^1\. ' "$brief")" \
     "1. First, the ledger's evidence for this retro's window, in both forms: \`$REPO_ROOT/bin/team-retro digest T31\` and \`$REPO_ROOT/bin/team-retro digest T31 --json\`."
-  assert_contains "$(<"$brief")" 'Read `~/agent-team/sops/platform-gotchas.md` before your first command.'
+  assert_contains "$(<"$brief")" "Read \`$REPO_ROOT/sops/platform-gotchas.md\` before your first command."
   # What Daniel approved and the team has not built yet is read, so it is not proposed again.
-  assert_contains "$(<"$brief")" '`~/agent-team/tasks/queued/`'
+  assert_contains "$(<"$brief")" '`~/agent-team-records/tasks/queued/`'
   assert_contains "$(<"$brief")" 'Never propose again what Daniel rejected at an earlier retro, or what is already approved and queued, unless there is new evidence, which you name.'
   assert_contains "$(<"$brief")" 'Send `T31 DONE .work/task/report.md` to `coordinator`.'
 }
@@ -212,17 +222,17 @@ EOF
   run_bin -0 team-brief --help
   assert_contains "$output" "rereview, ops, retro, resume (a worker"
   run_bin -1 team-brief T12 resume --name resume-builder --set role=builder \
-    --set "brief=~/agent-team/tasks/T12/brief.md" --set "from=the handoff from home-pc at 2026-10-23T14:05:00Z"
+    --set "brief=~/agent-team-records/tasks/T12/brief.md" --set "from=the handoff from home-pc at 2026-10-23T14:05:00Z"
   assert_contains "$output" "snapshot"
   run_bin -0 team-brief T12 resume --name resume-builder --set role=builder \
-    --set "brief=~/agent-team/tasks/T12/brief.md" --set "from=the handoff from home-pc at 2026-10-23T14:05:00Z" \
+    --set "brief=~/agent-team-records/tasks/T12/brief.md" --set "from=the handoff from home-pc at 2026-10-23T14:05:00Z" \
     --set "snapshot=applied as uncommitted changes in your worktree"
   local brief
   brief=$(<"$output")
   assert_equal "$(head -n 1 <<<"$brief")" "# T12 brief (builder): resume rate-limit the applicant sign-in endpoints"
   assert_contains "$brief" "you are the builder, resuming the task after the handoff from home-pc at 2026-10-23T14:05:00Z."
   assert_contains "$brief" "Worktree: \`~/.treehouse/Conventioner-d4c77a/4/Conventioner\`, branch \`fix/T12-applicant-sign-in-rate-limit\`"
-  assert_contains "$brief" "1. Read your brief \`~/agent-team/tasks/T12/brief.md\`"
+  assert_contains "$brief" "1. Read your brief \`~/agent-team-records/tasks/T12/brief.md\`"
   assert_contains "$brief" "2. Then \`.scratch/task/handoff.md\` if it exists"
   assert_contains "$brief" "The uncommitted changes the handoff found in the worktree: applied as uncommitted changes in your worktree."
   assert_contains "$brief" "3. Check the branch: \`git status\`, \`git diff\`, and \`git log origin/dev..HEAD\`"
@@ -233,7 +243,7 @@ EOF
   run_bin -0 team-brief --help
   assert_contains "$output" "resume-crash (one relaunched after its machine crashed:"
   run_bin -0 team-brief T12 resume-crash --name resume-builder --set role=builder \
-    --set "brief=~/agent-team/tasks/T12/brief.md" --set machine=home-pc --set checkpoint=2026-10-23T13:45:00Z \
+    --set "brief=~/agent-team-records/tasks/T12/brief.md" --set machine=home-pc --set checkpoint=2026-10-23T13:45:00Z \
     --set "snapshot=applied as uncommitted changes in your worktree"
   local brief
   brief=$(<"$output")
@@ -243,7 +253,7 @@ EOF
   assert_contains "$brief" "Up to 15 minutes of work before home-pc stopped may be missing, and so may any no-mistakes run that was in flight"
   assert_contains "$brief" "The uncommitted changes of that checkpoint: applied as uncommitted changes in your worktree."
   assert_contains "$brief" "Check before you build on any of it."
-  assert_contains "$brief" "1. Read your brief \`~/agent-team/tasks/T12/brief.md\`"
+  assert_contains "$brief" "1. Read your brief \`~/agent-team-records/tasks/T12/brief.md\`"
   assert_contains "$brief" "3. Check what is here against what your brief, the tickets and the build notes say is done: \`git status\`, \`git diff\` and \`git log origin/dev..HEAD\`"
 }
 
@@ -297,10 +307,6 @@ Personal details are never part of your answer, whatever the request asks: answe
 ## Report
 
 Write the answer to `.scratch/answer.md`, then send `T30 DONE <answer>` to `coordinator`.
-
-## Rules
-
-Read `~/agent-team/sops/platform-gotchas.md` before your first command.
 EOF
   )"
   # An answer with personal details has no path: the brief has no placeholder to ask for one.
@@ -337,6 +343,7 @@ task_dir={{task_dir}}
 plan={{plan}}
 thread={{thread}}
 team_home={{team_home}}
+team_code={{team_code}}
 team_bin={{team_bin}}
 local_checks={{local_checks}}
 EOF
@@ -352,9 +359,10 @@ base=main
 branch=feat/T14-team-tooling
 worktree=~/agent-team/.claude/worktrees/2
 task_dir=.work/task
-plan=~/agent-team/tasks/T14/plan.md
+plan=~/agent-team-records/tasks/T14/plan.md
 thread=1563000000000000012
-team_home=~/agent-team
+team_home=~/agent-team-records
+team_code=$code
 team_bin=$code/bin
 local_checks=none"
 }
@@ -369,6 +377,19 @@ local_checks=none"
   run "$checkout/bin/team-brief" T12 bin
   assert_equal "$status" 0
   assert_equal "$(<"$TEAM_HOME/tasks/T12/brief.md")" "$HOME/agent-team/bin/team-review-status"
+}
+
+@test "team_code is this checkout, written ~/... under HOME, apart from the team home" {
+  local checkout=$HOME/agent-team
+  mkdir -p "$checkout/templates/briefs/delivery"
+  cp -R "$REPO_ROOT/bin" "$checkout/bin"
+  echo '{{team_code}}/sops/platform-gotchas.md {{team_home}}/tasks/' >"$checkout/templates/briefs/code.md"
+  open_t12
+  guard_sandbox
+  run "$checkout/bin/team-brief" T12 code
+  assert_equal "$status" 0
+  # shellcheck disable=SC2088 # the literal ~ is the point: the brief is read, not run
+  assert_equal "$(<"$TEAM_HOME/tasks/T12/brief.md")" "~/agent-team/sops/platform-gotchas.md ~/agent-team-records/tasks/"
 }
 
 @test "paths outside HOME stay absolute" {

@@ -19,5 +19,5 @@ Task directory: `{{task_dir}}/` in the worktree (excluded from git), for your sp
 
 ## Rules
 
-Read `{{team_home}}/sops/platform-gotchas.md` before your first command.
+Read `{{team_code}}/sops/platform-gotchas.md` before your first command.
 Never the em dash in docs; refer to Daniel with they/them.

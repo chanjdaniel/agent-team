@@ -21,5 +21,5 @@ Task directory: `{{task_dir}}/` in the worktree: `spec.md`, `tickets/`, `build-n
 
 ## Rules
 
-Read `{{team_home}}/sops/platform-gotchas.md` before your first command.
+Read `{{team_code}}/sops/platform-gotchas.md` before your first command.
 Never the em dash; refer to Daniel with they/them.

@@ -18,6 +18,6 @@ Its blockers are done on this branch.
 
 ## Rules
 
-Read `{{team_home}}/sops/platform-gotchas.md` before your first command.
+Read `{{team_code}}/sops/platform-gotchas.md` before your first command.
 Stay inside your ticket.
 Never the em dash; refer to Daniel with they/them.

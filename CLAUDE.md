@@ -19,7 +19,7 @@ The team's own work on this repo goes through a task and a PR to `dev`, like any
 | `templates/` | The task plan and the worker briefs `team-open` and `team-brief` render |
 | `README.md`, `SETUP.md` | What a stranger reads first, with the sentence Daniel types on a new machine, and the agent's entry point for "set up as host" |
 | `LICENSE` | The Apache License 2.0; vendored bats-core keeps its own |
-| `sops/` | Standing procedures: `machine-setup.md` (a new machine, driven by `SETUP.md`), `portability.md` (moving the team between machines), `knowledge-graph.md`, `platform-gotchas.md` (general rules about the tools the team runs on, which every brief points at and the retro keeps short) |
+| `sops/` | Standing procedures: `machine-setup.md` (a new machine, driven by `SETUP.md`), `portability.md` (moving the team between machines), `knowledge-graph.md`, `platform-gotchas.md` (general rules about the tools the team runs on, which every brief but the ops one points at in the code checkout, never the team home; the retro proposes keeping it short, and each change Daniel approves lands through a PR on this repository) |
 
 `.scratch/task/` is the task directory of a task on this repo, ignored by git.
 

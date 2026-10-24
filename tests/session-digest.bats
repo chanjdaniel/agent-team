@@ -42,7 +42,7 @@ event() {
 
 # The last line of every digest: arm the offline watch (team-timers watch in a Monitor).
 watch_line() {
-  echo "Arm the offline watch unless one is running: Monitor with description \"offline watch\", timeout_ms 1800000 and the command '\"$REPO_ROOT/bin/team-timers\" watch', and arm it again each time it expires; its lines are the heartbeat holding the team and letting it go (roles/coordinator.md, Machines)."
+  echo "Arm the offline watch unless one is running: Monitor with description \"offline watch\", timeout_ms 1800000 and the command '\"$REPO_ROOT/bin/team-timers\" watch', and arm it again each time it expires; its lines are the heartbeat holding the team and letting it go ($REPO_ROOT/roles/coordinator.md, Machines)."
 }
 
 # Two open tasks with live builders, one stray.
