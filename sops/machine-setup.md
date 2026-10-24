@@ -32,7 +32,7 @@ Each stage after the first is one `~/agent-team/bin/team-bootstrap` run; read it
 | # | Stage | Who | Done when |
 | - | - | - | - |
 | 1 | git, gh, GitHub login, the code checkout and the team home cloned | agent, Daniel logs in | `SETUP.md` stage 1's checks pass |
-| 2 | Preflight, the machine's name and the team home's setting | agent, Daniel names it | `machine: named this machine <name>` or `done`, and `machine: named the team home <path>` or `done` |
+| 2 | Preflight, the machine's name and the team home's setting | agent, Daniel names it | `machine: named this machine <name>` or `done`, and, once `~/agent-team-records` is cloned, `machine: named the team home <path>` or `done` |
 | 3 | OS packages | agent; Daniel's terminal on Arch | `packages: done` |
 | 4 | Tools at their pins | agent; Daniel's terminal for `sudo` | `tools: done` |
 | 5 | Projects | agent | `projects: done` |
@@ -54,7 +54,7 @@ Each stage after the first is one `~/agent-team/bin/team-bootstrap` run; read it
 3. Once `~/agent-team-records` is cloned, `~/agent-team/bin/team-bootstrap --home agent-team-records --stage machine` (it can go with `--name` in one run).
    The path goes in `~/.config/agent-team/home`, relative to `$HOME` (or absolute), and is how every script, hook and session on this machine finds the team home; like the machine's name it is this machine's own and never moved.
    The bootstrap writes it once: a setting that names another checkout is left as it is, and a path with no checkout yet is refused until the clone is there.
-   Until it is written, the doctor's `team home` line warns that the code checkout is the team home (true on every machine until the team home has its own repository), and stage 7 lists the setting among Daniel's steps.
+   Until it is written, the doctor's `team home` line warns that the code checkout is the team home (true on every machine until the team home has its own repository), and once `~/agent-team-records` is there stage 7 lists the setting among Daniel's steps.
 
 ### Stage 3: OS packages
 

@@ -325,9 +325,9 @@ preflight: Daniel: in your own terminal run $CODE_CHECKOUT/bin/team-bootstrap --
   # Every tool line passes now; what is left is Daniel's own.
   assert_contains "$output" "check: summary: not set up yet: only Daniel's steps above are left; then team-bootstrap again"
   [[ $output != *"FAIL tool "* ]]
-  # Without --home the team home's setting is Daniel's first step.
-  assert_contains "$output" "check: Daniel 1: team home: name the team home's checkout for this machine: team-bootstrap --home agent-team-records (~/.config/agent-team/home is missing)"
-  assert_contains "$output" "check: Daniel 2: docker: Daniel runs sudo systemctl enable --now docker.service ("
+  # With no ~/agent-team-records the code checkout is the team home, and nothing is to be named.
+  [[ $output != *"team home: name"* ]]
+  assert_contains "$output" "check: Daniel 1: docker: Daniel runs sudo systemctl enable --now docker.service ("
 }
 
 # run_in_terminal [-<status>] -- <command...>: bats' run in a pseudo-terminal, as Daniel's own.
@@ -478,8 +478,7 @@ would then set up conventioner's task directory exclude and its no-mistakes gate
   run_bin -1 team-bootstrap --dry-run
   assert_contains "$output" "machine: Daniel: name this machine"
   assert_contains "$output" "check: Daniel 1: machine: name this machine for the team: team-bootstrap --name <name> (laptop, home-pc: never the hostname)"
-  assert_contains "$output" "check: Daniel 2: team home: name the team home's checkout for this machine: team-bootstrap --home agent-team-records"
-  [[ $output != *"these failed: "*lease* ]]
+  [[ $output != *"team home: name"* && $output != *"these failed: "*lease* ]]
   assert_contains "$output" "packages: would run: brew install 1password-cli"
   assert_contains "$output" "check: summary: "
   assert_equal "$(footprint)" "$before"
@@ -499,11 +498,16 @@ preflight: done: jq, git and Python 3.11 are installed"
 
 @test "--home writes the team home's setting once, relative to HOME, and never over another or for a missing checkout" {
   fresh arch
+  # Until ~/agent-team-records is cloned the check stage asks for no setting, which --home would refuse.
+  run_bin -1 team-bootstrap --stage check
+  [[ $output != *"team home: name"* ]]
   run_bin -1 team-bootstrap --stage machine --name laptop --home agent-team-records
   assert_equal "$output" "machine: named this machine laptop (~/.config/agent-team/machine)
 machine: ~/agent-team-records is not a directory: clone the team home there first, then team-bootstrap --home agent-team-records again"
   [[ ! -e $HOME/.config/agent-team/home ]]
   mkdir "$HOME/agent-team-records"
+  run_bin -1 team-bootstrap --stage check
+  assert_contains "$output" ": team home: name the team home's checkout for this machine: team-bootstrap --home agent-team-records (~/.config/agent-team/home is missing)"
   run_bin -0 team-bootstrap --stage machine --home agent-team-records
   assert_equal "$output" "machine: done: this machine is laptop
 machine: named the team home ~/agent-team-records (~/.config/agent-team/home)"

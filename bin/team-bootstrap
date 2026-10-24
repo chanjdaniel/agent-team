@@ -40,8 +40,9 @@
 #   heartbeat  Left disabled: team-timers disable when it runs on a machine that does not hold the
 #              lease. team-resume enables it when this machine takes the lease.
 #   check      The doctor again, then Daniel's remaining steps in order, one line each with its
-#              command (the machine's name, the team home's setting, logins, Docker access, the 1Password app and
-#              team-secrets restore, trust per project root, Chrome, then the rest), the doctor's WARN and FAIL lines, and a
+#              command (the machine's name, the team home's setting once ~/agent-team-records is
+#              there, logins, Docker access, the 1Password app and team-secrets restore, trust per
+#              project root, Chrome, then the rest), the doctor's WARN and FAIL lines, and a
 #              summary: set up, or ready as a standby.
 # A step only Daniel can take stops the run with one line, "<stage>: Daniel: <the step>", and
 # exit 1, without trying it: the Xcode tools or Homebrew missing, the machine's name, anything
@@ -474,8 +475,9 @@ stage_check() {
     # The lease is read by the machine's name.
     if lines '^lease$' | grep -qF 'no team name'; then covered+=(lease); fi
   fi
-  # Without --home (a dry run with it would have written it).
-  [[ -f $HOME/.config/agent-team/home || -n $home ]] ||
+  # Without --home (a dry run with it would have written it), once there is a checkout to name:
+  # until then the code checkout is the team home, and --home would refuse.
+  [[ -f $HOME/.config/agent-team/home || -n $home || ! -d $HOME/agent-team-records ]] ||
     steps+=("team home: name the team home's checkout for this machine: team-bootstrap --home agent-team-records (~/.config/agent-team/home is missing)")
   step '^claude login$' FAIL
   step '^github login$' FAIL ", then gh auth setup-git"

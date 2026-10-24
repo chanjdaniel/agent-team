@@ -23,7 +23,8 @@
 #                 ~/.config/agent-team/home (relative to HOME unless absolute). Fails while that
 #                 is not a directory, not a git checkout of its own (a subdirectory or a worktree
 #                 of another), has no remote origin or is on a detached HEAD; warns while neither
-#                 names one, so the team home is the code checkout, the directory above bin/.
+#                 names one, so the team home is the code checkout, the directory above bin/
+#                 (its fix names the setting only once ~/agent-team-records is there).
 #   git hooks     The code checkout's (the directory above bin/) core.hooksPath is bin/hooks/git
 #                 (relative, so each worktree runs its own checkout's hooks): the dev guard. The
 #                 fix is Daniel's, since every session is denied touching core.hooksPath.
@@ -462,6 +463,9 @@ elif ! home_branch=$(git -C "$TEAM_HOME" symbolic-ref -q --short HEAD); then
   report "team home" FAIL "$home_shown$home_named is on a detached HEAD, so its records would be committed on no branch" \
     "git -C $home_shown switch dev"
 elif [[ $TEAM_HOME_FROM == fallback ]]; then
+  # Until the team home has a repository of its own there is no checkout for the setting to name.
+  [[ -d $HOME/agent-team-records ]] ||
+    name_fix="nothing until the team home has a repository of its own; then clone it to ~/agent-team-records and run team-bootstrap --home agent-team-records"
   report "team home" WARN "$home_shown$home_named since neither TEAM_HOME nor ~/.config/agent-team/home names one" "$name_fix"
 else
   report "team home" PASS "$home_shown${home_named%,}: a checkout of its own on $home_branch, with an origin"
