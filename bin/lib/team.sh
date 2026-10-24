@@ -4,7 +4,7 @@
 #
 # It first applies bin/lib/platform.sh (Bash 5 or later; on macOS, Homebrew's GNU tools first on
 # PATH). It sets TEAM_HOME (unless already set, the first line of ~/.config/agent-team/home under
-# HOME, else the directory above bin/), answers --help with the calling script's header (then runs
+# HOME, else the directory above bin/) and TEAM_HOME_FROM, answers --help with the calling script's header (then runs
 # the script's help_more, if it defined one before sourcing), and provides die, usage_error, team_project, ledger_jq, ledger_append,
 # task_events, known_task_events, open_task_events, task_status, task_worktrees, local_path,
 # archive_task_dir, machine_name, os_release, team_os, fence_reason, lease_gate, worktree_changes,
@@ -20,10 +20,15 @@ source "$(dirname "${BASH_SOURCE[0]}")/platform.sh"
 
 # The team home, where the records live: TEAM_HOME when set; else the first line of
 # ~/.config/agent-team/home, a path relative to HOME unless it is absolute; else the directory
-# above bin/. TEAM_HOME_PROBLEM is the refusal when the setting names no directory, given after
-# --help has had its chance.
+# above bin/. TEAM_HOME_FROM says which (variable, setting or fallback). TEAM_HOME_PROBLEM is the
+# refusal when the setting names no directory, given after --help has had its chance; a script
+# that sets team_home_report before sourcing (team-doctor) is not refused, and reports it itself.
 TEAM_HOME_PROBLEM='' TEAM_HOME_FIX='name its checkout there, relative to your home directory: echo agent-team-records > ~/.config/agent-team/home'
+TEAM_HOME_FROM=variable
+if [[ -z ${TEAM_HOME:-} ]]; then TEAM_HOME_FROM=fallback; fi
+# shellcheck disable=SC2034 # TEAM_HOME_FROM is read by team-doctor and team-bootstrap
 if [[ -z ${TEAM_HOME:-} && -f $HOME/.config/agent-team/home ]]; then
+  TEAM_HOME_FROM=setting
   IFS= read -r TEAM_HOME <"$HOME/.config/agent-team/home" || true
   if [[ -z $TEAM_HOME ]]; then
     TEAM_HOME_PROBLEM="the setting ~/.config/agent-team/home names no team home; $TEAM_HOME_FIX"
@@ -634,5 +639,7 @@ if [[ ${1:-} == --help || ${1:-} == -h ]]; then
   exit 0
 fi
 
-[[ -z $TEAM_HOME_PROBLEM ]] || die "$TEAM_HOME_PROBLEM"
-[[ -d $TEAM_HOME ]] || die "team home $TEAM_HOME is not a directory"
+if [[ -z ${team_home_report:-} ]]; then
+  [[ -z $TEAM_HOME_PROBLEM ]] || die "$TEAM_HOME_PROBLEM"
+  [[ -d $TEAM_HOME ]] || die "team home $TEAM_HOME is not a directory"
+fi

@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # Set up a fresh Arch Linux or macOS machine for the team: from Daniel's first steps (git, gh and
-# Claude Code installed and signed in, the team home cloned at ~/agent-team) to a team-doctor where
+# Claude Code installed and signed in, the code checkout cloned at ~/agent-team and, once the team
+# home is a repository of its own, the team home at ~/agent-team-records) to a team-doctor where
 # only Daniel's own steps fail. Run it again after any failure or step of Daniel's: each stage is
 # skipped when its team-doctor lines pass, so a run resumes where the last one stopped.
 #
-# Usage: team-bootstrap [--name <name>] [--stage <stage>] [--dry-run]
+# Usage: team-bootstrap [--name <name>] [--home <path>] [--stage <stage>] [--dry-run]
 #   --name <name>    This machine's team name (laptop, home-pc: lower-case kebab case, never the
 #                    hostname), written once to ~/.config/agent-team/machine.
+#   --home <path>    The team home's checkout, relative to HOME unless absolute (agent-team-records),
+#                    written once to ~/.config/agent-team/home; it must be there already.
 #   --stage <stage>  Run that one stage (the setup SOP's agent goes stage by stage); every stage but
 #                    preflight reads team-doctor first.
 #   --dry-run        Say what each stage would run, and Daniel's steps, changing nothing.
@@ -14,7 +17,8 @@
 #   preflight  The OS is Arch Linux or macOS; on macOS the Xcode Command Line Tools and Homebrew
 #              are installed; jq, git and Python 3.11, which the team's scripts need to run at
 #              all, are installed (pacman, with sudo, or brew).
-#   machine    The doctor's machine line: writes --name.
+#   machine    The doctor's machine line: writes --name; then writes --home, unless the setting
+#              names a team home already.
 #   packages   The failing tool lines whose fix is an OS package: on Arch one
 #              `sudo pacman -S --needed --noconfirm` for them all; on macOS `brew install` (or
 #              `brew upgrade` for one below its minimum), then the run starts again under
@@ -36,7 +40,7 @@
 #   heartbeat  Left disabled: team-timers disable when it runs on a machine that does not hold the
 #              lease. team-resume enables it when this machine takes the lease.
 #   check      The doctor again, then Daniel's remaining steps in order, one line each with its
-#              command (the machine's name, logins, Docker access, the 1Password app and
+#              command (the machine's name, the team home's setting, logins, Docker access, the 1Password app and
 #              team-secrets restore, trust per project root, Chrome, then the rest), the doctor's WARN and FAIL lines, and a
 #              summary: set up, or ready as a standby.
 # A step only Daniel can take stops the run with one line, "<stage>: Daniel: <the step>", and
@@ -56,14 +60,18 @@ STAGES=(preflight machine packages tools projects config heartbeat check)
 NVM_VERSION=v0.40.3
 # The directories the tools stage installs into that no installer puts on PATH itself.
 RC_DIRS=("$HOME/.local/bin" "$HOME/.no-mistakes/bin")
-usage="usage: team-bootstrap [--name <name>] [--stage <stage>] [--dry-run]"
+usage="usage: team-bootstrap [--name <name>] [--home <path>] [--stage <stage>] [--dry-run]"
 
-args=("$@") name='' only='' dry=0
+args=("$@") name='' home='' only='' dry=0
 while (($#)); do
   case $1 in
-    --name | --stage)
-      (($# > 1)) || usage_error "$usage"
-      if [[ $1 == --name ]]; then name=$2; else only=$2; fi
+    --name | --home | --stage)
+      (($# > 1)) && [[ -n $2 ]] || usage_error "$usage"
+      case $1 in
+        --name) name=$2 ;;
+        --home) home=$2 ;;
+        *) only=$2 ;;
+      esac
       shift 2
       ;;
     --dry-run) dry=1 && shift ;;
@@ -137,10 +145,12 @@ sudo_act() {
   fi
 }
 
-# Ask the doctor, keeping its lines for the stages.
+# Ask the doctor, keeping its lines for the stages. TEAM_HOME reaches it only when it came from
+# the environment, so its team home line says what named the team home, and sees a setting the
+# machine stage wrote.
 run_doctor() {
   local rc=0
-  doctor=$(TEAM_HOME=$TEAM_HOME "$bin/team-doctor" --json 2>"$err" </dev/null) || rc=$?
+  doctor=$("$bin/team-doctor" --json 2>"$err" </dev/null) || rc=$?
   if ((rc > 1)) || ! jq -e 'type == "array"' <<<"$doctor" >/dev/null 2>&1; then
     die "team-doctor did not answer (exit $rc): $(grep -m1 . "$err" || true); run team-bootstrap --stage preflight first"
   fi
@@ -214,6 +224,39 @@ stage_machine() {
     printf '%s\n' "$name" >"$file"
     changed=1
     say "named this machine $name (~/.config/agent-team/machine)"
+  fi
+  stage_home
+}
+
+# The team home's setting, ~/.config/agent-team/home: --home written once, never over another.
+stage_home() {
+  local file=$HOME/.config/agent-team/home current='' path=$home
+  [[ -z $path || $path == /* ]] || path=$HOME/$path
+  if [[ -f $file ]]; then
+    IFS= read -r current <"$file" || true
+    [[ -z $current || $current == /* ]] || current=$HOME/$current
+    if [[ -n $home && $(realpath -m -- "$path") != "$(realpath -m -- "$current")" ]]; then
+      say "done: ~/.config/agent-team/home already names $(tilde "$current"); --home $home is left unused"
+    else
+      say "done: ~/.config/agent-team/home names $(tilde "$current")"
+    fi
+  elif [[ -z $home ]]; then
+    return 0
+  elif [[ ! -d $path ]]; then
+    say "$(tilde "$path") is not a directory: clone the team home there first, then team-bootstrap --home $home again" >&2
+    ((dry)) || exit 1
+  elif ((dry)); then
+    say "would write $home to ~/.config/agent-team/home"
+  else
+    mkdir -p "$(dirname "$file")"
+    printf '%s\n' "$home" >"$file"
+    changed=1
+    say "named the team home $(tilde "$path") (~/.config/agent-team/home)"
+    # The team home moved for this run: the stages after this one read the doctor on it.
+    if [[ $TEAM_HOME_FROM != variable && $(realpath -m -- "$path") != "$(realpath -m -- "$TEAM_HOME")" ]]; then
+      TEAM_HOME=$path
+      run_doctor
+    fi
   fi
 }
 
@@ -431,6 +474,9 @@ stage_check() {
     # The lease is read by the machine's name.
     if lines '^lease$' | grep -qF 'no team name'; then covered+=(lease); fi
   fi
+  # Without --home (a dry run with it would have written it).
+  [[ -f $HOME/.config/agent-team/home || -n $home ]] ||
+    steps+=("team home: name the team home's checkout for this machine: team-bootstrap --home agent-team-records (~/.config/agent-team/home is missing)")
   step '^claude login$' FAIL
   step '^github login$' FAIL ", then gh auth setup-git"
   step '^docker$' FAIL
@@ -445,7 +491,7 @@ stage_check() {
   step '^own settings$' WARN
   step '^config$' WARN
   ((!reloaded)) ||
-    steps+=("restart: exit this Claude Code session and run claude again in $(tilde "$TEAM_HOME"), so the new user settings, skills and plugins load")
+    steps+=("restart: exit this Claude Code session and run claude again in $(tilde "$(dirname "$bin")"), so the new user settings, skills and plugins load")
   step '^heartbeat$' FAIL
   local i
   for i in "${!steps[@]}"; do say "Daniel $((i + 1)): ${steps[i]}"; done

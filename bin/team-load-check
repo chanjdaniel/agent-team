@@ -69,7 +69,8 @@ case $role in
   *) usage_error "unknown role '$role'; known: planner, ops" ;;
 esac
 
-TEAM_HOME=$TEAM_HOME "${TEAM_DOCTOR:-$home/bin/team-doctor}" || {
+# TEAM_HOME reaches the doctor only from the environment, so its team home line says what named it.
+"${TEAM_DOCTOR:-$home/bin/team-doctor}" || {
   echo "load check: team-doctor reports a FAIL above; fix it, then run the load check again" >&2
   exit 1
 }

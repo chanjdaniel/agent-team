@@ -55,13 +55,14 @@ guard_sandbox() {
   done
 }
 
-# Run a script from this checkout's bin/ with bats' `run`, after the sandbox guard.
+# Run a script from this checkout's bin/ (or from CODE_CHECKOUT's, when a test made a code
+# checkout of its own) with bats' `run`, after the sandbox guard.
 # Leading options go to `run` (e.g. `run_bin -2 team-thread`, `run_bin --separate-stderr ...`).
 run_bin() {
   local opts=()
   while [[ $1 == -* ]]; do opts+=("$1"); shift; done
   guard_sandbox || return 1
-  run "${opts[@]}" "$REPO_ROOT/bin/$1" "${@:2}"
+  run "${opts[@]}" "${CODE_CHECKOUT:-$REPO_ROOT}/bin/$1" "${@:2}"
 }
 
 # The stub <cmd> prints <stdout> and exits with <status> (default 0).

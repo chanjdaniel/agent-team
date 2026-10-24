@@ -143,9 +143,10 @@ main() {
   lease=$(read_lease)
   echo "github: origin answers; $(jq -r '"the lease is \(.state)" + if .holder then " by \(.holder)" else "" end + ", epoch \(.epoch)"' <<<"$lease")"
 
-  # 2. The doctor.
+  # 2. The doctor: TEAM_HOME reaches it only from the environment, so its team home line says
+  # what named the team home.
   rc=0
-  out=$(TEAM_HOME=$TEAM_HOME "$doctor" --json 2>"$err" {lock_fd}>&-) || rc=$?
+  out=$("$doctor" --json 2>"$err" {lock_fd}>&-) || rc=$?
   jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1 || die "doctor: team-doctor did not answer (exit $rc): $(first_error)"
   jq -r '.[] | select(.verdict == "WARN") | "doctor: WARN \(.check): \(.reason)"' <<<"$out"
   fails=$(jq -r --argjson own "$OWN_CHECKS" '.[] | select(.verdict == "FAIL" and (.check | IN($own[]) | not))

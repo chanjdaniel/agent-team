@@ -19,9 +19,14 @@
 #                 login), on macOS Docker Desktop opened once and its license accepted.
 #   chrome        Google Chrome or Chromium is installed, for chrome-devtools-axi; warns.
 #   machine       This machine's team name, ~/.config/agent-team/machine.
-#   git hooks     The team home's core.hooksPath is bin/hooks/git (relative, so each worktree runs
-#                 its own checkout's hooks): the dev guard. The fix is Daniel's, since every
-#                 session is denied touching core.hooksPath.
+#   team home     Where the records are, and where it was named: TEAM_HOME, or the first line of
+#                 ~/.config/agent-team/home (relative to HOME unless absolute). Fails while that
+#                 is not a directory, not a git checkout of its own (a subdirectory or a worktree
+#                 of another), has no remote origin or is on a detached HEAD; warns while neither
+#                 names one, so the team home is the code checkout, the directory above bin/.
+#   git hooks     The code checkout's (the directory above bin/) core.hooksPath is bin/hooks/git
+#                 (relative, so each worktree runs its own checkout's hooks): the dev guard. The
+#                 fix is Daniel's, since every session is denied touching core.hooksPath.
 #   claude login  `claude auth status`: signed in with a claude.ai account.
 #   github login  `gh auth status` for github.com.
 #   config        `team-config diff`: warns on each way this machine's Claude config differs from
@@ -89,6 +94,9 @@ set -euo pipefail
 # The doctor reports a missing Homebrew or GNU tool as its homebrew line instead of refusing.
 # shellcheck disable=SC2034 # read by bin/lib/platform.sh
 platform_report=1
+# Nor a team home setting that names no directory: the team home line reports it.
+# shellcheck disable=SC2034 # read by bin/lib/team.sh
+team_home_report=1
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
 [[ $# -eq 0 || ($# -eq 1 && $1 == --json) ]] || usage_error "usage: team-doctor [--json]"
@@ -423,15 +431,49 @@ else
   report machine FAIL "${reason%%; write one with: *}" "echo <name> > ~/.config/agent-team/machine"
 fi
 
-# git hooks: read from the team home's own config, so a value set only globally does not pass.
-hooks=$(git -C "$TEAM_HOME" config --local core.hooksPath 2>/dev/null) || hooks=''
+# team home: as the library found it, each way it can be unusable named.
+home_shown=$(tilde "$TEAM_HOME")
+case $TEAM_HOME_FROM in
+  variable) home_named=", named by TEAM_HOME," ;;
+  setting) home_named=", named by ~/.config/agent-team/home," ;;
+  *) home_named=", the code checkout," ;;
+esac
+name_fix="name the team home's checkout, relative to your home directory: echo agent-team-records > ~/.config/agent-team/home"
+home_line=''
+[[ $TEAM_HOME_FROM != setting ]] || IFS= read -r home_line <"$HOME/.config/agent-team/home" || true
+home_top=$(git -C "$TEAM_HOME" rev-parse --show-toplevel 2>/dev/null) || home_top=''
+if [[ $TEAM_HOME_FROM == setting && -z $home_line ]]; then
+  report "team home" FAIL "the setting ~/.config/agent-team/home names no team home" "$name_fix"
+elif [[ ! -d $TEAM_HOME && $TEAM_HOME_FROM == variable ]]; then
+  report "team home" FAIL "$home_shown$home_named is not a directory" "clone the team home to $home_shown, or set TEAM_HOME to its checkout"
+elif [[ ! -d $TEAM_HOME ]]; then
+  report "team home" FAIL "$home_shown$home_named is not a directory" "clone the team home to $home_shown, or $name_fix"
+elif [[ -z $home_top || $(realpath -m -- "$home_top") != "$(realpath -m -- "$TEAM_HOME")" ]]; then
+  report "team home" FAIL "$home_shown$home_named is not a git checkout of its own" "move it aside, then clone the team home to $home_shown"
+elif home_common=$(git -C "$TEAM_HOME" rev-parse --path-format=absolute --git-common-dir) &&
+  [[ $(realpath -m -- "$home_common") != "$(realpath -m -- "$(git -C "$TEAM_HOME" rev-parse --absolute-git-dir)")" ]]; then
+  report "team home" FAIL "$home_shown$home_named is a worktree of $(tilde "$(dirname "$(realpath -m -- "$home_common")")"), not a checkout of its own" \
+    "move it aside, then clone the team home to $home_shown"
+elif ! git -C "$TEAM_HOME" remote get-url origin >/dev/null 2>&1; then
+  report "team home" FAIL "$home_shown$home_named has no remote origin" "git -C $home_shown remote add origin <the team home's repository URL>"
+elif ! home_branch=$(git -C "$TEAM_HOME" symbolic-ref -q --short HEAD); then
+  report "team home" FAIL "$home_shown$home_named is on a detached HEAD, so its records would be committed on no branch" \
+    "git -C $home_shown switch dev"
+elif [[ $TEAM_HOME_FROM == fallback ]]; then
+  report "team home" WARN "$home_shown$home_named since neither TEAM_HOME nor ~/.config/agent-team/home names one" "$name_fix"
+else
+  report "team home" PASS "$home_shown${home_named%,}: a checkout of its own on $home_branch, with an origin"
+fi
+
+# git hooks: read from the code checkout's own config, so a value set only globally does not pass.
+code=$(dirname "$bin")
+hooks=$(git -C "$code" config --local core.hooksPath 2>/dev/null) || hooks=''
 if [[ $hooks == bin/hooks/git ]]; then
   report "git hooks" PASS "core.hooksPath is bin/hooks/git"
 else
   hooks_reason="core.hooksPath is unset, so git runs none of bin/hooks/git"
   [[ -z $hooks ]] || hooks_reason="core.hooksPath is $hooks, not bin/hooks/git"
-  report "git hooks" FAIL "$hooks_reason" \
-    "Daniel runs git -C ${TEAM_HOME/#"$HOME"/\~} config core.hooksPath bin/hooks/git"
+  report "git hooks" FAIL "$hooks_reason" "Daniel runs git -C $(tilde "$code") config core.hooksPath bin/hooks/git"
 fi
 
 # claude login: the answer is read for these two fields alone.

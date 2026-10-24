@@ -39,10 +39,13 @@ Skip each step whose check already passes.
    Otherwise run `gh auth login --web --git-protocol https --hostname github.com` yourself in the background: it prints a one-time code and https://github.com/login/device, then waits.
    Give Daniel the code and the link to open in a browser, and wait for the command to finish.
    Then run `gh auth setup-git`, so git uses the same login.
-5. **The team home.** Check: `git -C ~/agent-team remote get-url origin` prints `https://github.com/chanjdaniel/agent-team.git`.
+5. **The code checkout.** Check: `git -C ~/agent-team remote get-url origin` prints `https://github.com/chanjdaniel/agent-team.git`.
    Otherwise run `git clone https://github.com/chanjdaniel/agent-team.git ~/agent-team` (exactly this URL: the doctor checks it).
+6. **The team home, once it is a repository of its own.** Check: `git -C ~/agent-team-records remote get-url origin` prints `https://github.com/chanjdaniel/agent-team-records.git`.
+   Otherwise, when that repository exists, run `git clone https://github.com/chanjdaniel/agent-team-records.git ~/agent-team-records`; stage 2 names it in `~/.config/agent-team/home`.
+   Until it exists the code checkout is the team home too, and there is nothing to clone or name.
 
-Done when all five checks pass and you are reading `~/agent-team/SETUP.md`.
+Done when every check that applies passes and you are reading `~/agent-team/SETUP.md`.
 
 ## Stages 2 to 8, and 9 on Daniel's word
 
