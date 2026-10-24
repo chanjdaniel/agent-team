@@ -13,7 +13,8 @@
 #                 warns where the lock says pin_mismatch WARN (Claude Code, which updates itself).
 #                 The fix is the lock's install command for this OS and machine type (uname -m),
 #                 from bin/lib/tools.jq: for a GitHub release, its archive checked against the
-#                 SHA-256 the lock records.
+#                 SHA-256 the lock records; for a fork (no-mistakes), a build of its pinned
+#                 commit, with Go and make from their own tool lines.
 #   docker        `docker info` answers: the daemon runs and this user may reach it. Docker access
 #                 is Daniel's: on Arch the daemon enabled and the docker group (sudo, then a new
 #                 login), on macOS Docker Desktop opened once and its license accepted.
@@ -48,6 +49,10 @@
 #   secret <id>   `team-secrets check`: fails for each enabled secret of machine/secrets.json that
 #                 is missing, empty or off its mode here, with team-secrets restore (Daniel's, in
 #                 their own terminal); no byte of a secret is read.
+#   opencode-gate ~/.no-mistakes/bin/opencode-gate, the gate's opencode, which sets its
+#                 environment (bin/lib/opencode-gate): installed, the code's bytes, executable,
+#                 and named by ~/.no-mistakes/config.yaml's agent_path_override for opencode, the
+#                 one key of that file read (it holds no credential), none of it printed.
 #   records       The team home's records pass the checks the code holds them to: the ledger
 #                 `team-log --check`, the registry `team-project --check`, and every enabled
 #                 secret of machine/secrets.json has its row in machine/secrets.md; fails naming
@@ -605,6 +610,41 @@ else
       report "secret $id" FAIL "$reason" "Daniel runs team-secrets restore in their own terminal"
     fi
   done < <(jq -r '.[] | [.id, .verdict, .reason] | @tsv' <<<"$secrets")
+fi
+
+# opencode-gate: the wrapper by its bytes and mode; of config.yaml, agent_path_override's opencode
+# alone, in block or flow form.
+wrapper=$HOME/.no-mistakes/bin/opencode-gate gate_config=$HOME/.no-mistakes/config.yaml
+wrapper_fix="mkdir -p ~/.no-mistakes/bin && install -m 755 $(tilde "$bin/lib/opencode-gate") ~/.no-mistakes/bin/opencode-gate"
+setting="agent_path_override: {opencode: $wrapper}" step="as manual-steps.md's install of the no-mistakes fork says"
+if [[ ! -e $wrapper ]]; then
+  report opencode-gate FAIL "$(tilde "$wrapper") is not installed" "$wrapper_fix"
+elif ! cmp -s "$bin/lib/opencode-gate" "$wrapper"; then
+  report opencode-gate FAIL "$(tilde "$wrapper") is not the code's bin/lib/opencode-gate" "$wrapper_fix"
+elif [[ ! -x $wrapper ]]; then
+  report opencode-gate FAIL "$(tilde "$wrapper") is not executable" "$wrapper_fix"
+elif [[ ! -f $gate_config ]]; then
+  report opencode-gate FAIL "$(tilde "$gate_config") is not there" \
+    "Daniel runs team-secrets restore in their own terminal (the secret no-mistakes-config) and sets $setting in it, $step"
+elif [[ $(awk '
+    function value(v) { sub(/[ \t]+#.*$/, "", v); sub(/[ \t]+$/, "", v); gsub(/^["\047]|["\047]$/, "", v); print v; exit }
+    /^agent_path_override:/ {
+      rest = $0; sub(/^agent_path_override:[ \t]*/, "", rest)
+      if (rest ~ /^\{/) {
+        if (match(rest, /(^\{|,)[ \t]*opencode:[ \t]*[^,}]+/)) {
+          v = substr(rest, RSTART, RLENGTH); sub(/^[{,][ \t]*opencode:[ \t]*/, "", v); value(v)
+        }
+        exit
+      }
+      block = 1; next
+    }
+    block && /^[^ \t#]/ { exit }
+    block && /^[ \t]+opencode:/ { v = $0; sub(/^[ \t]+opencode:[ \t]*/, "", v); value(v) }
+  ' "$gate_config") != "$wrapper" ]]; then
+  report opencode-gate FAIL "$(tilde "$gate_config")'s agent_path_override does not name $(tilde "$wrapper") for opencode, so the gate's opencode reads Claude Code's config and not the gate's own" \
+    "Daniel sets $setting in ~/.no-mistakes/config.yaml, $step"
+else
+  report opencode-gate PASS "$(tilde "$wrapper") is the code's bin/lib/opencode-gate, and config.yaml's agent_path_override names it for opencode"
 fi
 
 # records: the team home's ledger, registry and secrets description, each problem named.

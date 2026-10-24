@@ -115,7 +115,7 @@
       "name": "no-mistakes",
       "version_cmd": "no-mistakes --version",
       "version_pattern": "no-mistakes version v([0-9]+\\.[0-9]+\\.[0-9]+[^ ]*)",
-      "from": "release",
+      "from": "fork",
       "release": {
         "repo": "kunchenguid/no-mistakes",
         "tag": "v1.84.0",
@@ -127,8 +127,8 @@
       },
       "fork": {
         "repo": "chanjdaniel/no-mistakes",
-        "commit": "389716a49e2f3419fccedca0f9dc3f1f59c4a2ce",
-        "version": "1.37.0-4-g389716a"
+        "commit": "ac6b53fbbac10a4ca6c940b004fd9c5f557f983e",
+        "version": "1.84.0-13-gac6b53f"
       },
       "dir": {
         "arch": "~/.no-mistakes/bin",
@@ -241,6 +241,25 @@
       "source": {
         "arch": "sudo pacman -S --needed bash",
         "macos": "brew install bash"
+      }
+    },
+    {
+      "name": "go",
+      "version_cmd": "go version",
+      "version_pattern": "go version go([0-9]+\\.[0-9]+(\\.[0-9]+)?)",
+      "min": "1.25.0",
+      "source": {
+        "arch": "sudo pacman -S --needed go",
+        "macos": "brew install go"
+      }
+    },
+    {
+      "name": "make",
+      "version_cmd": "make --version",
+      "version_pattern": "^GNU Make ([0-9]+\\.[0-9]+(\\.[0-9]+)?)",
+      "min": "4.0",
+      "source": {
+        "arch": "sudo pacman -S --needed make"
       }
     },
     {
