@@ -252,11 +252,11 @@ TOML
   assert_equal "$output" "$(cd "$REPO_ROOT" && python3 -I -c 'import tomllib; print("\n".join(tomllib.load(open("projects.toml", "rb"))))')"
 }
 
-@test "the real projects.toml passes --check and holds both projects" {
+@test "the real projects.toml passes --check and holds every project" {
   cp "$REPO_ROOT/projects.toml" "$TEAM_HOME/projects.toml"
   run_bin -0 team-project --check
   run_bin -0 team-project --list
-  assert_equal "$output" $'conventioner\nagent-team'
+  assert_equal "$output" $'conventioner\nagent-team\nno-mistakes'
 
   run_bin -0 team-project conventioner
   assert_equal "$(jq -r '[.repo, .base, .delivery, .merge_method, .task_dir, .pool.provider] | join(" ")' <<<"$output")" \
@@ -269,6 +269,17 @@ TOML
     "chanjdaniel/agent-team dev direct-pr merge git"
   assert_equal "$(jq -c .pool.slots <<<"$output")" \
     "[\"$HOME/agent-team/.claude/worktrees/1\",\"$HOME/agent-team/.claude/worktrees/2\",\"$HOME/agent-team/.claude/worktrees/3\",\"$HOME/agent-team/.claude/worktrees/4\",\"$HOME/agent-team/.claude/worktrees/5\"]"
+
+  # Daniel's no-mistakes fork: merge commits keep upstream's history, so the next update is a merge.
+  run_bin -0 team-project no-mistakes
+  assert_equal "$(jq -r '[.repo, .base, .delivery, .merge_method, .task_dir, .pool.provider] | join(" ")' <<<"$output")" \
+    "chanjdaniel/no-mistakes main direct-pr merge .scratch/task git"
+  assert_equal "$(jq -r .path <<<"$output")" "$HOME/Documents/projects/personal/no-mistakes"
+  assert_equal "$(jq -c '[.required_checks, .docs, .toolkits]' <<<"$output")" '[[],["AGENTS.md"],[]]'
+  assert_equal "$(jq -c .local_checks <<<"$output")" \
+    '["test -z \"$(gofmt -l .)\"","make lint","go test -race ./...","bash scripts/e2e.sh"]'
+  assert_equal "$(jq -c .pool.slots <<<"$output")" \
+    "[\"$HOME/Documents/projects/personal/no-mistakes/.claude/worktrees/1\",\"$HOME/Documents/projects/personal/no-mistakes/.claude/worktrees/2\",\"$HOME/Documents/projects/personal/no-mistakes/.claude/worktrees/3\"]"
 }
 
 @test "the team home's PRs to dev are checked locally: tests/run, and no GitHub check" {
