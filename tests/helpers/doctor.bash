@@ -23,7 +23,7 @@ declare -gA FORMAT=(
   [tasks-axi]='%s'
   [bun]='%s'
   [treehouse]='v%s'
-  [no-mistakes]='no-mistakes version v%s (389716a) 2026-07-14T22:29:23Z'
+  [no-mistakes]='no-mistakes version v%s (ac6b53f) 2026-10-24T07:09:23Z'
   [op]='%s'
   [git]='git version %s'
   [jq]='jq-%s'
@@ -34,6 +34,8 @@ declare -gA FORMAT=(
   [docker-compose]='Docker Compose version v%s'
   [python]='Python %s'
   [bash]='GNU bash, version %s(1)-release (x86_64-pc-linux-gnu)'
+  [go]='go version go%s linux/amd64'
+  [make]=$'GNU Make %s\nBuilt for x86_64-pc-linux-gnu'
   [unzip]=$'UnZip %s of 20 April 2009, by Debian. Original by Info-ZIP.\n\nLatest sources and executables are at ftp://ftp.info-zip.org/pub/infozip/ ;'
   [coreutils]='date (GNU coreutils) %s'
   [findutils]='find (GNU findutils) %s'
@@ -44,9 +46,9 @@ declare -gA FORMAT=(
 
 # Set up the doctor's machine (team-doctor.bats' every test starts here): home-pc holds the lease
 # with its heartbeat enabled, every tool answers nothing yet (tools_at gives them versions), the
-# team's Claude config and plugins are installed, every secret is in place, and two projects are
-# registered and cloned as the bootstrap clones them, and ~/.config/agent-team/home names the
-# team home.
+# team's Claude config and plugins are installed, every secret is in place, the gate's opencode
+# wrapper is installed and named by config.yaml, two projects are registered and cloned as the
+# bootstrap clones them, and ~/.config/agent-team/home names the team home.
 doctor_machine() {
   hold_lease home-pc >/dev/null
   fake_service_managers
@@ -74,6 +76,12 @@ EOF
   export TOOL_STUBS=$BATS_TEST_TMPDIR/tools
   mkdir -p "$TOOL_STUBS/answers"
   export REAL_PATH=$PATH TOOL_ANSWERS=$TOOL_STUBS/answers PATH=$TOOL_STUBS:$PATH
+
+  # The gate's opencode wrapper, installed and named by config.yaml as the install step says.
+  mkdir -p "$HOME/.no-mistakes/bin"
+  install -m 755 "$REPO_ROOT/bin/lib/opencode-gate" "$HOME/.no-mistakes/bin/opencode-gate"
+  printf '%s\n' 'agent: opencode' 'agent_path_override:' "  opencode: $HOME/.no-mistakes/bin/opencode-gate" \
+    'log_level: info' >"$HOME/.no-mistakes/config.yaml"
 
   # The team home's Claude config, installed here; the plugins with Discord off.
   mkdir -p "$TEAM_HOME/machine/claude/skills/tdd" "$HOME/.claude/skills"
