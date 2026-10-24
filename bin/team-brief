@@ -148,7 +148,9 @@ for key in "${used[@]}"; do
   fi
 done
 for key in "${!sets[@]}"; do
-  printf '%s\n' "${used[@]}" | grep -qxF -- "$key" || unused+=("$key")
+  # A here-string, not a pipe: grep -q stops at the first match, which would break printf's later
+  # writes and, under pipefail, fail the test.
+  grep -qxF -- "$key" <<<"$(printf '%s\n' "${used[@]}")" || unused+=("$key")
 done
 if ((${#missing[@]})); then die "unfilled placeholders: $(printf '%s\n' "${missing[@]}" | paste -sd ',' | sed 's/,/, /g')"; fi
 if ((${#unused[@]})); then
