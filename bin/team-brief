@@ -4,9 +4,9 @@
 # Usage: team-brief T<n> <template> [--project <name>] [--set key=value]... [--set-file key=path]...
 #                   [--name <suffix>] [--force]
 #   template    one of templates/briefs/: planner-feature, planner-research, builder-ticket,
-#               builder-fix, builder-deliver, reviewer, rereview, ops, resume (a worker relaunched
-#               on another machine: --set role=, brief= its last brief, from= what it resumes
-#               after, snapshot= what became of the uncommitted changes the handoff found),
+#               builder-fix, builder-deliver, reviewer, rereview, ops, retro, resume (a worker
+#               relaunched on another machine: --set role=, brief= its last brief, from= what it
+#               resumes after, snapshot= what became of the uncommitted changes the handoff found),
 #               resume-crash (one relaunched after its machine crashed: --set role=, brief=,
 #               machine= the machine that crashed, checkpoint= the checkpoint's time, snapshot=
 #               what became of that checkpoint's uncommitted changes)

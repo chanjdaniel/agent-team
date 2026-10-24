@@ -84,6 +84,14 @@ advance_origin() {
   assert_equal "$output" "0"
 }
 
+@test "a retro opens with the retro path on a research branch" {
+  run_bin -0 --separate-stderr team-open proj retro research retro-2026-10-25 "Retro 2026-10-25"
+  assert_equal "$(jq -r '[.path, .branch] | join(" ")' <<<"$output")" "retro research/T1-retro-2026-10-25"
+  assert_equal "$(events opened | jq -r '[.path, .type, .title] | join(" ")')" "retro research Retro 2026-10-25"
+  assert_equal "$(sed -n 5p "$TEAM_HOME/tasks/T1/plan.md")" 'Path: retro.'
+  run_bin -0 team-log --check
+}
+
 @test "the plan is filled in one pass, so a title is never read for placeholders itself" {
   run_bin -0 team-open proj small chore q-and-a 'Q&A {{date}} and {{task}}'
   assert_equal "$(sed -n 1p "$TEAM_HOME/tasks/T1/plan.md")" '# T1: Q&A {{date}} and {{task}}'
@@ -129,7 +137,7 @@ advance_origin() {
   run_bin -2 team-open --task 13 proj feature feat slug "Title"
   assert_contains "$output" "task must look like T<n>, got '13'"
   run_bin -2 team-open proj hotfix feat slug "Title"
-  assert_contains "$output" "path must be feature, bug, small or research, got 'hotfix'"
+  assert_contains "$output" "path must be feature, bug, small, research or retro, got 'hotfix'"
   run_bin -2 team-open proj feature feature slug "Title"
   assert_contains "$output" "type must be feat, fix, docs, chore, build, ci, test, refactor, perf or research, got 'feature'"
   local slug

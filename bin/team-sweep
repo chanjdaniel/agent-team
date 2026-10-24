@@ -15,6 +15,10 @@
 #                  task after that session's latest launch (one waiting for input is not also silent)
 #   stray          a live session named like a team worker (T<n>-<role>) whose task is closed or
 #                  not in the ledger; never one of T0, the load check's task
+#   retro-due      after every task finding, with task and session null: a retro is due, as
+#                  team-retro status computes it (retros scheduled, no retro task open, the due
+#                  time past): "retro due since <time> (every <n>h, last retro <T<n> or none>):
+#                  run the retro skill"
 # With --json, the findings as a list of {task, kind, session, name, next, text}.
 # Exit 0 with no findings (and nothing printed but --json's []), 1 with findings, and 1 with the
 # reason on stderr and nothing on stdout when the session list cannot be read.

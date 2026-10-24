@@ -204,7 +204,7 @@ def phase:
   | if any(.[]; .event == "closed") then "closed"
     elif any(.[]; .event == "merged") and $open == [] then "merged"
     elif standing("held") then "held"
-    elif standing("blocked") then "blocked"
+    elif standing_until_launch("blocked") then "blocked"
     elif $open != [] and all($open[]; . as $pr
       | ($events | map(select(.event == "review" and same_head(.head; $pr.head))) | last | .verdict) == "pass") then "awaiting-merge"
     elif any(.[]; .event == "pr") then "in-review"
@@ -397,18 +397,56 @@ def by_task_number: sort_by(.task[1:] | tonumber);
 def stray_reason:
   "\(.task) is \({unknown: "not in the ledger", "load-check": "the load check's, stray unless one is running"}[.task_state] // "closed")";
 
+# The following defs serve team-retro status and team-sweep's retro-due finding, over every ledger
+# event as one array.
+
+# Whether an event opens a retro task: an opened event with the path retro.
+def retro_opened: .event == "opened" and .path == "retro";
+
+# The retro tasks' opened events in ledger order, each with its place in the ledger as i.
+def retros: [to_entries[] | select(.value | retro_opened) | .value + {i: .key}];
+
+# team-retro status's JSON. The schedule is the latest retro-schedule, on while every_hours is
+# above 0; the next retro is due every_hours after the later of its time and the latest retro
+# task's opening, unless a retro task is still open.
+def retro_status:
+  . as $events
+  | retros as $retros
+  | ($events | map(select(.event == "retro-schedule")) | last
+     | if . != null and (.every_hours | type) == "number" and .every_hours > 0 then {every_hours, since: .ts, discord_message, task}
+       else null end) as $schedule
+  | ($retros | last) as $last
+  | ([$retros[] | .task as $task | select($events | map(select(.task == $task)) | task_status == "open")] | last | .task) as $running
+  | (if $schedule == null then null
+     else ([$schedule.since, ($last.ts // empty)] | max | fromdate) + $schedule.every_hours * 3600 | floor | todate end) as $next
+  | {schema: "team-retro-status/1",
+     schedule: $schedule,
+     last: ($last | if . == null then null else .task as $task
+       | {task: $task, opened: .ts, status: ($events | map(select(.task == $task)) | task_status)} end),
+     running: $running,
+     next: $next,
+     due: ($schedule != null and $running == null and now >= ($next | fromdate))};
+
+# team-sweep's retro-due finding, from team-retro status's JSON: one while a retro is due, else none.
+def retro_due_finding:
+  select(.due)
+  | {task: null, kind: "retro-due", session: null, name: null, next: "run the retro skill",
+     text: "retro due since \(.next) (every \(.schedule.every_hours)h, last retro \(.last.task // "none")): run the retro skill"};
+
 # team-sweep's findings, over every ledger event as one array and the session list: each open
 # task's unless it is parked, then the stray sessions (named like a team worker whose task is
 # closed or not in the ledger, never the load check's T0, whose session the coordinator waits on
-# for up to 30 minutes); in task number order.
+# for up to 30 minutes), in task number order; then the retro-due finding.
 def sweep($sessions):
-  by_task as $tasks
-  | [($tasks[] | select(is_open) | select(parked | not) | task_findings($sessions)),
-     (team_sessions($tasks; $sessions)[] | select(.task_state | IN("closed", "unknown"))
-       | finding(.task; "stray"; .session; .name;
-           "\(.name) \(.session) is live but \(stray_reason)";
-           "read claude logs \(.session) for anything left to log, then stop it with claude stop \(.session)"))]
-  | by_task_number;
+  . as $events
+  | by_task as $tasks
+  | ([($tasks[] | select(is_open) | select(parked | not) | task_findings($sessions)),
+      (team_sessions($tasks; $sessions)[] | select(.task_state | IN("closed", "unknown"))
+        | finding(.task; "stray"; .session; .name;
+            "\(.name) \(.session) is live but \(stray_reason)";
+            "read claude logs \(.session) for anything left to log, then stop it with claude stop \(.session)"))]
+     | by_task_number)
+    + [$events | retro_status | retro_due_finding];
 
 # The ids of the open tasks among every task's events by id, in task number order.
 def open_tasks: [to_entries[] | select(.value | is_open) | .key] | sort_by(.[1:] | tonumber);
@@ -452,3 +490,131 @@ def snapshot_text:
          end)
    end),
   section("Pending asks"; [.pending_asks[] | "\(.task) \(.id): \(.text)"]);
+
+# The following defs serve team-retro, over every ledger event as one array.
+
+# The hours from one UTC time to another, to two decimals.
+def hours($from; $to): (($to | fromdate) - ($from | fromdate)) / 3600 * 100 | round / 100;
+
+# team-retro status's text form, one line, from its JSON.
+def retro_status_text:
+  (if .last == null then "" else " Last: \(.last.task), opened \(.last.opened), \(.last.status)." end) as $last
+  | (if .running == null then "" else " Running \(.running)." end) as $running
+  | if .schedule == null then "Retros are not scheduled." + $last + $running
+    else "Retros every \(.schedule.every_hours)h since \(.schedule.since) (Discord \(.schedule.discord_message))."
+      + (if .last == null then " No retro yet." else $last end)
+      + if .running != null then $running elif .due then " Due since \(.next)." else " Next due \(.next)." end
+    end;
+
+# A retro's window as {task, previous, since, until, start, end}, start and end being places in
+# the ledger (end exclusive). For the retro task $task: after the opening of the retro opened
+# before it, or from the first event, up to and including its own opening. For a dry run ($task
+# null): after the latest retro's opening, up to now.
+def retro_window($task):
+  . as $events
+  | retros as $retros
+  | (if $task == null then {this: null, previous: ($retros | last)}
+     else ($retros | map(.task == $task) | index(true)) as $k
+       | {this: $retros[$k], previous: (if $k > 0 then $retros[$k - 1] else null end)} end) as $w
+  | {task: $task, previous: $w.previous.task,
+     since: ($w.previous.ts // $events[0].ts), until: ($w.this.ts // (now | todate)),
+     start: (if $w.previous == null then 0 else $w.previous.i + 1 end),
+     end: (if $w.this == null then length else $w.this.i + 1 end)};
+
+# Every span that parks a task, over one task's events (each with its place i) in ledger order:
+# {task, kind, on, reason, start, end}, end being the event that clears it, or null. waiting,
+# paused and blocked clear at the next resumed or launch, held at the next resumed, asked at the
+# answered of its id, and every one at the task's closed.
+def wait_spans:
+  . as $events
+  | range(length) as $k | $events[$k] as $s
+  | {waiting: ["resumed", "launch"], paused: ["resumed", "launch"], blocked: ["resumed", "launch"], held: ["resumed"], asked: []}[$s.event | tostring] as $clears
+  | select($clears != null)
+  | {task: $s.task, kind: $s.event,
+     on: (if $s.event == "waiting" then $s.on // "unknown" elif $s.event == "asked" then "Daniel" else $s.event end),
+     reason: (if $s.event == "asked" then $s.text else $s.reason end),
+     start: $s,
+     end: (first($events[$k + 1:][] | select(.event == "closed" or (.event | IN($clears[]))
+       or ($s.event == "asked" and .event == "answered" and .id == $s.id))) // null)};
+
+# The hours covered by the union of the spans ({from, to}), overlapping spans counted once.
+def wall_hours:
+  map([(.from | fromdate), (.to | fromdate)]) | sort
+  | reduce .[] as [$from, $to] ([];
+      if . != [] and $from <= .[length - 1][1] then .[length - 1][1] = ([.[length - 1][1], $to] | max)
+      else . + [[$from, $to]] end)
+  | map(.[1] - .[0]) | add / 3600 * 100 | round / 100;
+
+# Whether a blocked or failed reason says an action was refused.
+def denial: (. // "") | tostring | test("denied|denies|refused|refuses|auto mode"; "i");
+
+# Events grouped by task, the groups in the order of each task's first event.
+def task_groups: group_by(.task) | sort_by(.[0].i);
+
+# team-retro digest's JSON for the retro task $task (null for a dry run), the team home $team_home
+# naming each task's record directory. Every section is in ledger order.
+def retro_digest($task; $team_home):
+  . as $events
+  | retro_window($task) as $w
+  | [to_entries[] | .value + {i: .key}] as $placed
+  | $placed[$w.start:$w.end] as $in
+  | ([$placed | task_groups[] | wait_spans | .end as $end
+      | select(.start.i < $w.end and ($end == null or $end.i >= $w.start))
+      | (.start.i < $w.start) as $clipped
+      | ($end == null or $end.i >= $w.end) as $open
+      | (if $clipped then $w.since else .start.ts end) as $from
+      | (if $open then $w.until else $end.ts end) as $to
+      | {task, kind, on, reason, from: $from, to: $to, hours: hours($from; $to), open: $open, clipped: $clipped, i: .start.i}]
+     | sort_by(.i) | map(del(.i))) as $spans
+  | ($events | by_task) as $tasks
+  | {schema: "team-retro-digest/1",
+     window: ($w | {task, previous, since, until}
+       + {events: ($in | length), kinds: ($in | group_by(.event) | map({key: (.[0].event | tostring), value: length}) | from_entries)}),
+     blocks: [$in[] | select(.event == "blocked" or .event == "failed") | {ts, task, kind: .event, reason, denial: (.reason | denial)}],
+     questions: [$in | map(select(.event == "question" or .event == "asked")) | task_groups[]
+       | {task: .[0].task, repeated: (length >= 2),
+          events: map({ts, kind: .event, text} + if .event == "asked" then {id} else {role} end)}],
+     reviews: [$in | map(select(.event == "review")) | task_groups[]
+       | . as $reviews
+       | {task: .[0].task, reopened: any(range(length - 1); $reviews[.].verdict == "findings"),
+          verdicts: map({ts, verdict, head})}],
+     waits: {spans: $spans,
+       totals: ($spans | group_by(.on | tostring | ascii_downcase)
+         | map({on: .[0].on, hours: (map(.hours) | add * 100 | round / 100), wall_hours: wall_hours, spans: length})
+         | sort_by(-.hours))},
+     rewrites: [$in[] | select(.event == "history-rewritten") | del(.i, .event)],
+     injections: [$in[] | select(.event == "injection") | del(.i, .event)],
+     tasks: [$in | task_groups[] | .[0].task as $id | $tasks[$id] as $all
+       | ($all | map(select(.event == "opened")) | first) as $opened
+       | {task: $id, title: $opened.title, project: $opened.project, path: $opened.path, phase: ($all | phase),
+          record: "\($team_home)/tasks/\($id)/",
+          sessions: [.[] | select(.event == "launch") | {session, role, launched: .ts}]}]};
+
+# team-retro digest's text form, one line per string, from its JSON: a heading per section and a
+# line per item, uncut, for the retro to read.
+def retro_digest_text:
+  def plural($n; $word): "\($n) \($word)\(if $n == 1 then "" else "s" end)";
+  def section($title; $count; $lines):
+    if $lines == [] then "\($title): none" else "\($title) (\($count)):", ($lines[] | "  " + .) end;
+  def section($title; $lines): section($title; $lines | length; $lines);
+  .window as $w
+  | "Window: \($w.since // "the start") to \($w.until), \(plural($w.events; "event")), "
+    + (if $w.task == null then "dry run" else "retro \($w.task)" end) + ", previous retro \($w.previous // "none")",
+  "  kinds: " + ($w.kinds | to_entries | map("\(.key) \(.value)") | if . == [] then "none" else join(", ") end),
+  section("Blocks"; [.blocks[] | "\(.ts) \(.task) \(.kind)\(if .denial then ", denial" else "" end): \(.reason)"]),
+  section("Questions"; .questions | length | plural(.; "task");
+    [.questions[] | "\(.task)\(if .repeated then ", repeated" else "" end):",
+      (.events[] | "  \(.ts) " + if .kind == "asked" then "asked \(.id)" else "question from \(.role)" end + ": \(.text)")]),
+  section("Reviews"; .reviews | length | plural(.; "task");
+    [.reviews[] | "\(.task)\(if .reopened then ", reopened" else "" end): "
+      + (.verdicts | map("\(.verdict) \(.head | tostring | .[:7]) \(.ts)") | join(", "))]),
+  section("Waits"; [.waits.spans[] | "\(.task) \(.kind) on \(.on), \(.from) to \(.to), \(.hours)h"
+    + (if .clipped then ", clipped to the window's start" else "" end)
+    + (if .open then ", open at the window's end" else "" end) + ": \(.reason)"]),
+  section("Wait totals"; [.waits.totals[] | "\(.on): \(.hours)h over \(plural(.spans; "span")), \(.wall_hours)h wall-clock"]),
+  section("Rewrites"; [.rewrites[] | "\(.ts) \(.task)\(if .branch then " \(.branch)" else "" end): "
+    + (if .old_head then "\(.old_head) -> " else "to " end) + "\(.head)" + (if .note then " (\(.note))" else "" end)]),
+  section("Injections"; [.injections[] | "\(.ts) \(.task) \(.role) at \(.source): \(.text)"]),
+  section("Tasks"; [.tasks[] | "\(.task) \([.project, .path, .phase] | map(select(. != null)) | join(" ")): \(.title // "untitled")"
+    + "; record \(.record); sessions "
+    + (.sessions | map("\(.role) \(.session)") | if . == [] then "none" else join(", ") end)]);
