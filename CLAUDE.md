@@ -61,7 +61,7 @@ It holds:
 - A PR to `dev` is checked locally, never on GitHub (CI policy B): `projects.toml` gives `agent-team` `local_checks = ["tests/run"]`, which `team-merge` runs on the PR's exact head before it merges, and builders and reviewers run `tests/run` on the head they deliver or review.
   GitHub's CI (`.github/workflows/ci.yml`) runs only on a PR to `main` and by hand (`workflow_dispatch`).
   The Bootstrap workflow (`.github/workflows/bootstrap.yml`) runs only by hand: `team-bootstrap` on a fresh macOS runner and in an Arch container, which installs real tools.
-- The toolkit tests are `node --test` files in `tests/toolkits/`, run after `servers/install`: each starts a toolkit's server exactly as its `.mcp.json` declares, with `op` stubbed and a throwaway MongoDB in Docker, and speaks MCP to it over stdio (`tests/toolkits/helpers/` documents the helpers); `mongo-helper.test.mjs` tests the throwaway MongoDB's own wait.
+- The toolkit tests are `node --test` files in `tests/toolkits/`, run after `servers/install`: each starts a toolkit's server exactly as its `.mcp.json` declares, with `op` stubbed and a throwaway MongoDB in Docker, and speaks MCP to it over stdio (`tests/toolkits/helpers/` documents the helpers); `mongo-helper.test.mjs` tests the throwaway MongoDB's own wait, and that its removal takes its anonymous volumes with it.
   No test reaches 1Password or production: the test `PATH` refuses to start if a real `op` is on it.
 - One file: `tests/vendor/bats-core/bin/bats tests/<name>.bats`; one test: add `-f '<part of its name>'`.
   A toolkit test file: `node --test tests/toolkits/<name>.test.mjs`; one test: add `--test-name-pattern '<part of its name>'`.
