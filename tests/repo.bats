@@ -134,11 +134,19 @@ assert_denies() {
     'git -C /home/me/agent-team config core.hooksPath x' 'git config set --global core.hooksPath x'
   assert_denies 'Bash(git *config*unset* core.hooksPath*)' 'git config --unset core.hooksPath' \
     'git config --unset-all core.hooksPath' 'git config unset --local core.hooksPath'
+  assert_denies 'Bash(git *config* "core.hooksPath" *)' 'git config "core.hooksPath" /dev/null'
+  assert_denies "Bash(git *config* 'core.hooksPath' *)" "git config 'core.hooksPath' /dev/null"
+  assert_denies 'Bash(git *config*unset* "core.hooksPath"*)' 'git config --unset "core.hooksPath"'
+  assert_denies "Bash(git *config*unset* 'core.hooksPath'*)" "git config --unset 'core.hooksPath'"
 }
 
 @test "the git hooks' deny rule: git config of core.hookspath, the same key in git's lower case" {
   assert_denies 'Bash(git *config* core.hookspath *)' 'git config core.hookspath x'
   assert_denies 'Bash(git *config*unset* core.hookspath*)' 'git config --unset core.hookspath'
+  assert_denies 'Bash(git *config* "core.hookspath" *)' 'git config "core.hookspath" x'
+  assert_denies "Bash(git *config* 'core.hookspath' *)" "git config 'core.hookspath' x"
+  assert_denies 'Bash(git *config*unset* "core.hookspath"*)' 'git config --unset "core.hookspath"'
+  assert_denies "Bash(git *config*unset* 'core.hookspath'*)" "git config --unset 'core.hookspath'"
 }
 
 @test "the git hooks' deny rule: core.hooksPath overridden for one command" {
@@ -159,10 +167,11 @@ assert_denies() {
 
 @test "a ref written through gh api, a branch delete included, is denied to every worker" {
   local command rule
-  # gh api writes only with a method or a field: each flag, after the ref path or before it.
+  # gh api writes only with a method or a field: each flag, after the ref path or before it, its
+  # value apart or attached.
   for rule in 'Bash(gh api*git/refs* -X*)' 'Bash(gh api* -X*git/refs*)' 'Bash(gh api*git/refs* --method*)' \
-    'Bash(gh api* --method*git/refs*)' 'Bash(gh api*git/refs* -f *)' 'Bash(gh api* -f *git/refs*)' \
-    'Bash(gh api*git/refs* -F *)' 'Bash(gh api* -F *git/refs*)' 'Bash(gh api*git/refs* --field*)' \
+    'Bash(gh api* --method*git/refs*)' 'Bash(gh api*git/refs* -f*)' 'Bash(gh api* -f*git/refs*)' \
+    'Bash(gh api*git/refs* -F*)' 'Bash(gh api* -F*git/refs*)' 'Bash(gh api*git/refs* --field*)' \
     'Bash(gh api* --field*git/refs*)' 'Bash(gh api*git/refs* --raw-field*)' 'Bash(gh api* --raw-field*git/refs*)' \
     'Bash(gh api*git/refs* --input*)' 'Bash(gh api* --input*git/refs*)'; do
     jq -e --arg r "$rule" '.permissions.deny | index($r)' "$REPO_ROOT/settings/worker.json" >/dev/null ||
@@ -180,6 +189,9 @@ gh api -F force=true repos/me/shop/git/refs/heads/dev
 gh api --field sha=a1b2c3d repos/me/shop/git/refs/heads/dev
 gh api repos/me/shop/git/refs --raw-field ref=refs/heads/x --raw-field sha=a1b2c3d
 gh api --input ref.json repos/me/shop/git/refs
+gh api repos/me/shop/git/refs -fref=refs/heads/x -fsha=a1b2c3d
+gh api repos/me/shop/git/refs -f=ref=refs/heads/x -Fsha=a1b2c3d
+gh api -fref=refs/heads/x -fsha=a1b2c3d repos/me/shop/git/refs
 COMMANDS
 }
 
@@ -200,10 +212,30 @@ COMMANDS
     'servers/node_modules/.bin/mongodb-mcp-server --readOnly'
   assert_denies 'Bash(*npx *mongodb-mcp*)' 'npx -y mongodb-mcp-server --readOnly'
   assert_denies 'Bash(*npm exec *mongodb-mcp*)' 'npm exec -- mongodb-mcp-server --readOnly'
+  assert_denies 'Bash(*node_modules/.bin/mongodb-mcp*)' 'cd servers && node_modules/.bin/mongodb-mcp-server'
+  # Run by a path relative to its toolkit, or through a wrapper or another runtime.
+  assert_denies 'Bash(scripts/*start-server.mjs*)' 'scripts/start-server.mjs'
+  assert_denies 'Bash(*&& scripts/*start-server.mjs*)' 'cd toolkits/prod-read && scripts/start-server.mjs'
+  assert_denies 'Bash(*; scripts/*start-server.mjs*)' 'cd toolkits/prod-read; scripts/start-server.mjs'
+  assert_denies 'Bash(env *start-server.mjs*)' 'env toolkits/prod-read/scripts/start-server.mjs'
+  assert_denies 'Bash(bun *start-server.mjs*)' 'bun toolkits/prod-read/scripts/start-server.mjs'
+  assert_denies 'Bash(deno *start-server.mjs*)' 'deno run -A toolkits/prod-read/scripts/start-server.mjs'
+  assert_denies 'Bash(env *mongodb-mcp*)' 'env servers/mongodb-mcp.mjs prod-read'
+  assert_denies 'Bash(bun *mongodb-mcp*)' 'bun servers/mongodb-mcp.mjs prod-read'
+  assert_denies 'Bash(deno *mongodb-mcp*)' 'deno run -A servers/mongodb-mcp.mjs prod-read'
   assert_denies 'Bash(*--plugin-dir*prod-*)' 'claude -p hi --plugin-dir /home/me/agent-team/toolkits/prod-read' \
     'claude --bg --plugin-dir=toolkits/prod-write'
   assert_denies 'Bash(*--mcp-config*prod-*)' 'claude -p hi --mcp-config toolkits/prod-read/.mcp.json' \
     'claude --strict-mcp-config --mcp-config /home/me/agent-team/tasks/T5/mcp.prod-write.json'
+}
+
+# The deny rules name the runtimes; a launcher without its exec bit cannot be run by its path at all.
+@test "the production launchers and the MCP server's entry are not executable" {
+  local modes
+  modes=$(git -C "$REPO_ROOT" ls-files -s toolkits/prod-read/scripts toolkits/prod-write/scripts servers/mongodb-mcp.mjs |
+    awk '{print $1, $4}')
+  assert_equal "$(wc -l <<<"$modes")" 3
+  if grep -v '^100644 ' <<<"$modes"; then echo "executable in git (above)" >&2; return 1; fi
 }
 
 # Conventioner's email migration rewrites every account's address: a worker is denied running it
@@ -293,6 +325,8 @@ COMMANDS
     done <<'COMMANDS'
 git config --get core.hooksPath
 git config --show-origin --get-all core.hooksPath
+git config --get "core.hooksPath"
+sed -n 1,20p scripts/start-server.mjs
 gh api repos/me/shop/git/refs/tags/v1.0.0
 gh api repos/me/shop/git/refs/tags/v1.0.0 --jq .object.sha
 sed -n 1,60p toolkits/prod-read/scripts/start-server.mjs
