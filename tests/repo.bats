@@ -16,6 +16,18 @@ setup() {
   assert_equal "$hits" ""
 }
 
+# D6 (T31): the production toolkits go public without the Atlas cluster's host, which only the
+# 1Password item's connection string holds. A placeholder host is at example.mongodb.net. The
+# failure names the file, never the host.
+@test "no tracked code file names an Atlas cluster host" {
+  local files hits
+  files=$(git -C "$REPO_ROOT" ls-files -z | bash -c 'source "$1/bin/lib/team.sh"; non_records' _ "$REPO_ROOT")
+  [[ -n $files ]]
+  hits=$(cd "$REPO_ROOT" && xargs -d '\n' grep -I -o -E '[A-Za-z0-9-]+\.[A-Za-z0-9-]+\.mongodb\.net' -- <<<"$files" \
+    | grep -v '\.example\.mongodb\.net$' | cut -d: -f1 | sort -u || true)
+  assert_equal "$hits" ""
+}
+
 # Each tracked path of the checkout <dir> that matches neither or both of its lists, bin/lib/code
 # and bin/lib/records, with which, one per line: unassigned_paths <dir>
 unassigned_paths() {
