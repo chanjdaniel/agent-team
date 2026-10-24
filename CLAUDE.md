@@ -23,7 +23,7 @@ The team's own work on it goes through a task and a PR to `dev`, like any projec
 | `memory/` | Each registered project's Claude Code auto memory, `memory/<project>/`, which every machine and worktree of it shares once `team-config apply` points the project at it |
 | `manual-steps.md` | The steps only Daniel can take |
 | `README.md`, `SETUP.md` | The sentence Daniel types on a new machine, and the agent's entry point for "set up as host" |
-| `sops/` | Standing procedures: `machine-setup.md` (a new machine, driven by `SETUP.md`), `portability.md` (moving the team between machines), `knowledge-graph.md` |
+| `sops/` | Standing procedures: `machine-setup.md` (a new machine, driven by `SETUP.md`), `portability.md` (moving the team between machines), `knowledge-graph.md`, `platform-gotchas.md` (general rules about the tools the team runs on, which every brief points at and the retro keeps short) |
 | `projects/` | Each project's planning (Conventioner's backlog) |
 
 `.scratch/task/` is a team-home task's own task directory, ignored by git.
@@ -54,7 +54,7 @@ The team's own work on it goes through a task and a PR to `dev`, like any projec
 - CI's runner has jq 1.7.1, so keep to jq 1.7 features.
 - Scripts and tests run on Linux and macOS: on macOS `bin/lib/platform.sh` (sourced by the library and the test helpers) puts Homebrew's GNU coreutils, findutils, sed, grep and `flock` first on `PATH`, so GNU forms are fine and BSD-only ones are not.
   CI's `macos` job runs `tests/run bats` on a macOS runner, with the rest of CI: on a PR to `main` or by hand.
-- Repo invariants are tests too: every executable in `bin/` answers `--help` with its header, every `bin/team-*` script is named in `roles/coordinator.md`, which stays at most 120 lines, and no tracked Markdown outside `tasks/` and `projects/` (history, kept as written) and `machine/claude/` (copies of the user config, kept as installed) has an em dash.
+- Repo invariants are tests too: every executable in `bin/` answers `--help` with its header, every `bin/team-*` script is named in `roles/coordinator.md`, which stays at most 120 lines, and no tracked Markdown outside `tasks/` and `projects/` (history, kept as written), `memory/` (the auto memory sessions write outside any PR) and `machine/claude/` (copies of the user config, kept as installed) has an em dash.
 
 ## Script conventions
 
