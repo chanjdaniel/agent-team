@@ -685,9 +685,10 @@ else
   report projects FAIL "$(first_error)" "fix what team-project names (team-project --check), then run team-doctor again"
 fi
 
-# clock
+# clock: awk reads every header, since stopping at the Date would end curl on its next write
+# (SIGPIPE), and pipefail would then throw away the Date it read.
 github_date=$(bounded 30 curl -sSI --max-time 20 https://api.github.com 2>/dev/null </dev/null |
-  awk 'tolower($1) == "date:" { sub(/^[^:]*:[ \t]*/, ""); sub(/\r$/, ""); print; exit }') || github_date=''
+  awk '!found && tolower($1) == "date:" { sub(/^[^:]*:[ \t]*/, ""); sub(/\r$/, ""); print; found = 1 }') || github_date=''
 if [[ -n $github_date ]] && github_epoch=$(date -d "$github_date" +%s 2>/dev/null); then
   skew=$((github_epoch - $(date +%s)))
   if ((skew > 60)); then

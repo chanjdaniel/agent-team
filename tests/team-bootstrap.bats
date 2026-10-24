@@ -447,6 +447,26 @@ site is set up in ~/projects/site"
 site is set up in ~/projects/site"
 }
 
+@test "a git pool's slots inside the checkout are ignored there once, so they never show as untracked in it" {
+  tools_at arch
+  register fork owner/fork direct-pr git projects/fork/.claude/worktrees/1 projects/fork/.claude/worktrees/2
+  local fork=$HOME/projects/fork
+  rm -rf "$fork"
+  run_bin -0 team-bootstrap
+  assert_equal "$(stage_lines projects)" "running: git clone -q https://github.com/owner/fork.git ~/projects/fork
+running: echo /.scratch/task/ >>~/projects/fork/.git/info/exclude
+running: echo /.claude/worktrees/ >>~/projects/fork/.git/info/exclude
+fork is set up in ~/projects/fork"
+  git -C "$fork" worktree add -q "$fork/.claude/worktrees/1"
+  assert_equal "$(git -C "$fork" status --porcelain)" ""
+  # A pool outside the checkout (site's) adds nothing.
+  assert_equal "$(grep -c worktrees "$SITE/.git/info/exclude" || true)" 0
+  # A dry run says so before the clone.
+  rm -rf "$fork"
+  run_bin -1 team-bootstrap --dry-run
+  assert_contains "$output" "projects: would then set up fork's task directory exclude, its pool slots' exclude"
+}
+
 @test "config: the plugins first, apply only to add what is missing, and Discord off; a file changed here is Daniel's call" {
   tools_at arch
   # Discord on, mongodb-atlas missing.

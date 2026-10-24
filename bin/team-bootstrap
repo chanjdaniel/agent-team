@@ -34,8 +34,9 @@
 #              shell's rc file (~/.zshrc or ~/.bashrc) when PATH lacks them.
 #   projects   Each registered project with a failing checkout, origin, task dir or gate line:
 #              cloned from https://github.com/<repo>.git to its registry path, that exact origin
-#              (treehouse names its pool from it), the task directory in .git/info/exclude unless
-#              git ignores it, and `no-mistakes init` for a no-mistakes project without a gate.
+#              (treehouse names its pool from it), the task directory and the folder of a git
+#              pool's slots inside the checkout in .git/info/exclude unless git ignores them, and
+#              `no-mistakes init` for a no-mistakes project without a gate.
 #   config     The marketplaces and plugins of machine/claude/plugins.txt (claude plugin), then
 #              team-config apply when none of what it would replace differs here (a file or skill
 #              changed on this machine is Daniel's call, apply or capture), then the Discord plugin
@@ -364,7 +365,9 @@ setup_project() {
     act "git clone -q $url $(printf %q "$path")"
     cloned=1
     if ((dry)); then
-      say "would then set up $project's task directory exclude$([[ $(jq -r .delivery <<<"$facts") != no-mistakes ]] || echo ' and its no-mistakes gate')"
+      say "would then set up $project's task directory exclude$(jq -r --arg path "$path/" 'if .pool.provider == "git"
+        and any(.pool.slots[]; startswith($path)) then ", its pool slots'"'"' exclude" else "" end' <<<"$facts")$(
+        [[ $(jq -r .delivery <<<"$facts") != no-mistakes ]] || echo ' and its no-mistakes gate')"
       return
     fi
   elif [[ -n $check ]]; then
@@ -377,10 +380,13 @@ setup_project() {
   elif [[ $origin != "$url" ]]; then
     act "git -C $(printf %q "$path") remote set-url origin $url"
   fi
-  if ! git -C "$path" check-ignore -q -- "$task_dir/"; then
-    exclude=$(git -C "$path" rev-parse --path-format=absolute --git-path info/exclude)
-    act "echo /$task_dir/ >>$(printf %q "$exclude")"
-  fi
+  exclude=$(git -C "$path" rev-parse --path-format=absolute --git-path info/exclude)
+  git -C "$path" check-ignore -q -- "$task_dir/" || act "echo /$task_dir/ >>$(printf %q "$exclude")"
+  # A git pool's slots inside the checkout (.claude/worktrees/ say): their folder, once.
+  while IFS= read -r dir; do
+    git -C "$path" check-ignore -q -- "$dir/" || act "echo /$dir/ >>$(printf %q "$exclude")"
+  done < <(jq -r --arg path "$path/" 'select(.pool.provider == "git") | [.pool.slots[]
+    | select(startswith($path)) | ltrimstr($path) | sub("/[^/]*$"; "")] | unique[]' <<<"$facts")
   if [[ $(jq -r .delivery <<<"$facts") == no-mistakes ]]; then
     out=$(cd "$path" && no-mistakes status 2>&1 </dev/null) || true
     grep -qE '^[[:space:]]*gate:[[:space:]]' <<<"$out" || act "cd $(printf %q "$path") && no-mistakes init"

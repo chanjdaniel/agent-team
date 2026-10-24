@@ -76,7 +76,7 @@ Then it installs the gate's opencode wrapper, `~/.no-mistakes/bin/opencode-gate`
 
 ### Stage 5: projects
 
-`~/agent-team/bin/team-bootstrap --stage projects`: each project in `projects.toml` cloned from `https://github.com/<repo>.git` to its registry path (treehouse names its pool from that exact origin, so the registry's slots hold here), its task directory added to `.git/info/exclude`, and `no-mistakes init` for a no-mistakes project.
+`~/agent-team/bin/team-bootstrap --stage projects`: each project in `projects.toml` cloned from `https://github.com/<repo>.git` to its registry path (treehouse names its pool from that exact origin, so the registry's slots hold here), its task directory added to `.git/info/exclude` (and the folder of a git pool's slots inside the checkout, `.claude/worktrees/` for the fork), and `no-mistakes init` for a no-mistakes project.
 
 - It needs the GitHub login from stage 1; a missing one stops it, and stage 1's step 4 is the fix.
 - A folder already in a project's way is Daniel's: show the doctor's line and ask whether to move it.
