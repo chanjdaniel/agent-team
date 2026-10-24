@@ -19,7 +19,7 @@ watch_line() {
   echo "Arm the offline watch unless one is running: Monitor with description \"offline watch\"," \
     "timeout_ms 1800000 and the command '\"$(dirname "$TEAM_LIB")/team-timers\" watch', and arm it" \
     "again each time it expires; its lines are the heartbeat holding the team and letting it go" \
-    "(roles/coordinator.md, Machines)."
+    "($(dirname "$(dirname "$TEAM_LIB")")/roles/coordinator.md, Machines)."
 }
 
 status=0
