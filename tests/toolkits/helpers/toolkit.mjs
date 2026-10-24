@@ -3,10 +3,9 @@
 //   assertNoLeak(server, { marker, home })     after every run: the secret never got out
 //   launcherRefusalTests(toolkit, context)     inside a describe(): one test per launcher refusal;
 //                                              context() gives { value, home, marker } at run time
-//   children(pid)                              the pids of a process's children
 //   evalMockTools(toolkit, server)             the tools/list a toolkit's eval mocks give the server
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { opStub, repoRoot, startToolkitServer, testPath } from "./mcp.mjs";
@@ -51,12 +50,6 @@ export function launcherRefusalTests(toolkit, context) {
       assertNoLeak(server, run);
     });
   }
-}
-
-// The pids of a process's children, across all its threads.
-export function children(pid) {
-  return readdirSync(`/proc/${pid}/task`).flatMap((task) =>
-    readFileSync(`/proc/${pid}/task/${task}/children`, "utf8").split(" ").filter(Boolean));
 }
 
 // The skills' evals answer from mocks, never the real server; their saved tools/list

@@ -685,7 +685,7 @@ GitHub answers again (unreachable from 2026-10-23T13:05:00Z); the hold is over"
 
 @test "enable refuses a path the unit or plist would need escaped, and writes nothing" {
   local odd
-  odd=$(realpath "$BATS_TEST_TMPDIR")/team\&co
+  odd=$BATS_TEST_TMPDIR/team\&co
   mkdir "$odd"
   TEAM_HOME=$odd run_bin -1 --separate-stderr team-timers enable
   assert_equal "$stderr" "team-timers: cannot write the heartbeat's job: '$odd' holds one of % \" \\ & < > or a newline"
@@ -703,6 +703,6 @@ GitHub answers again (unreachable from 2026-10-23T13:05:00Z); the hold is over"
 }
 
 @test "no test reaches this machine's service managers: systemctl and launchctl are the sandbox's stubs" {
-  assert_equal "$(command -v systemctl)" "$(realpath "$BATS_TEST_TMPDIR")/stubs/systemctl"
-  assert_equal "$(command -v launchctl)" "$(realpath "$BATS_TEST_TMPDIR")/stubs/launchctl"
+  assert_equal "$(command -v systemctl)" "$BATS_TEST_TMPDIR/stubs/systemctl"
+  assert_equal "$(command -v launchctl)" "$BATS_TEST_TMPDIR/stubs/launchctl"
 }

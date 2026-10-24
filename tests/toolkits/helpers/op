@@ -5,14 +5,19 @@
 #   value    what `op read` prints, with no newline
 #   mode     ok (the default), fail (op read fails like a declined prompt), signout-fail
 #   calls    appended: one line per call, its arguments and where its stdin points
-# It runs no command from PATH but readlink, so the tests' spies on cat, head and hostname see
-# only what the server itself runs.
+# It runs no command from PATH, so the tests' spies on cat, head and hostname see only what the
+# server itself runs.
 set -euo pipefail
 
 dir=${OP_STUB_DIR:?OP_STUB_DIR is not set}
 mode=ok
 if [[ -f $dir/mode ]]; then mode=$(<"$dir/mode"); fi
-echo "$* stdin=$(readlink /proc/self/fd/0 || echo none)" >>"$dir/calls"
+# Where stdin points, by what it is rather than through /proc, which macOS has none of.
+if [[ /dev/stdin -ef /dev/null ]]; then stdin=/dev/null
+elif [[ -p /dev/stdin ]]; then stdin=pipe
+elif [[ -t 0 ]]; then stdin=terminal
+else stdin=other; fi
+echo "$* stdin=$stdin" >>"$dir/calls"
 
 case $1 in
   read)
