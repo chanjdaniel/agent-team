@@ -300,8 +300,8 @@ laptop_state() {
   echo "b" >"$wt/b.txt"
   run_bin -0 team-checkpoint --force
   local wip at checkpoint
-  wip=$(git -C "$BATS_TEST_TMPDIR/origin/home.git" rev-parse wip/T1)
-  at=$(git -C "$BATS_TEST_TMPDIR/origin/home.git" show -s --format=%ct "$wip")
+  wip=$(git -C "$team_origin" rev-parse wip/home/T1)
+  at=$(git -C "$team_origin" show -s --format=%ct "$wip")
   checkpoint=$(git -C "$team_origin" log -1 --format=%ct dev -- tasks/T1/scratch | jq -r 'tonumber | todate')
   # home-pc worked on, then died: no handoff, and no heartbeat run since.
   echo "later" >"$wt/a.txt"
@@ -315,7 +315,7 @@ laptop_state() {
   TEAM_LEASE_TTY=$tty on_machine laptop run_bin -0 --separate-stderr team-resume --steal
   assert_equal "$stderr" ""
   assert_equal "$(lease_json | jq -c '[.holder, .epoch, .stolen_from]')" '["laptop",2,"home-pc"]'
-  assert_contains "$output" "T1 home: applied wip/T1 ${wip:0:7} (the checkpoint of $(jq -nr --argjson t "$at" '$t | todate')) to $lt as uncommitted changes"
+  assert_contains "$output" "T1 home: applied wip/home/T1 ${wip:0:7} (the checkpoint of $(jq -nr --argjson t "$at" '$t | todate')) to $lt as uncommitted changes"
   assert_contains "$output" "T1: crashed on home-pc, with no handoff since its last launch; resuming from the checkpoint of $checkpoint, to relaunch: builder"
   # The worktree is the pushed branch with the checkpoint's changes uncommitted, not the later ones.
   assert_equal "$(git -C "$lt" rev-parse HEAD)" "$head"
@@ -341,7 +341,7 @@ laptop_state() {
       "git -C ~/slots/home/1 add -A && git -C ~/slots/home/1 commit -m \"wip: salvage from home-pc\", then git -C ~/slots/home/1 push origin HEAD:refs/heads/salvage/T1-home-pc"]')"
 }
 
-@test "a crash before T1's branch was ever pushed resumes it from wip/T1: the branch's commits, and the checkpoint's changes uncommitted" {
+@test "a crash before T1's branch was ever pushed resumes it from wip/home/T1: the branch's commits, and the checkpoint's changes uncommitted" {
   "$REPO_ROOT/bin/team-config" capture >/dev/null
   git -C "$TEAM_HOME" add machine
   git -C "$TEAM_HOME" commit -q -m "chore: capture the config"
@@ -358,8 +358,8 @@ laptop_state() {
   echo home-pc >"$tty"
   TEAM_LEASE_TTY=$tty on_machine laptop run_bin -0 --separate-stderr team-resume --steal
   assert_equal "$stderr" ""
-  assert_contains "$output" "T1 home: feat/T1-work is not on origin; it is taken from wip/T1, at ${head:0:7}"
-  assert_contains "$output" "T1 home: applied wip/T1 "
+  assert_contains "$output" "T1 home: feat/T1-work is not on origin; it is taken from wip/home/T1, at ${head:0:7}"
+  assert_contains "$output" "T1 home: applied wip/home/T1 "
   assert_equal "$(git -C "$lt" rev-parse HEAD)" "$head"
   assert_equal "$(git -C "$lt" log -1 --format=%s)" "feat: a"
   assert_equal "$(git -C "$lt" status --porcelain)" " M a.txt"
@@ -394,7 +394,7 @@ EVENTS
   local tty=$BATS_TEST_TMPDIR/steal-tty
   echo home-pc >"$tty"
   TEAM_LEASE_TTY=$tty on_machine laptop run_bin -0 --separate-stderr team-resume --steal
-  assert_contains "$output" "T1 home: wip/T1 not applied: origin has no wip/T1: no checkpoint saved this task's work"
+  assert_contains "$output" "T1 home: wip/home/T1 not applied: the team home's origin has no wip/home/T1: no checkpoint saved this task's work"
   assert_contains "$output" "T1: crashed on home-pc, with no handoff since its last launch; no checkpoint of it was found, to relaunch: builder, reviewer"
   assert_equal "$(jq -c '.tasks[0].crashed' "$report")" '{"machine":"home-pc","checkpoint":null,"roles":["builder","reviewer"]}'
   assert_equal "$(git -C "$laptop/home/slots/home/1" status --porcelain)" ""

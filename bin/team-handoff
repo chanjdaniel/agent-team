@@ -14,8 +14,8 @@
 #                  An ops session (T<n>-ops) is never carried over: team-ops-end T<n> ends it,
 #                  deleting its transcript and answer file, and one it cannot end refuses the
 #                  handoff, naming it. The coordinator's own session is --retire's.
-#   3. checkpoint  team-checkpoint --force: task directories archived, wip/T<n> snapshots pushed,
-#                  the records committed and pushed. Once per handoff: a run again skips it, so
+#   3. checkpoint  team-checkpoint --force: task directories archived, wip/<project>/T<n>
+#                  snapshots pushed to the team home's origin, the records committed and pushed. Once per handoff: a run again skips it, so
 #                  the stowed events land in the handoff's own commit.
 #   4. branches    Each open worktree's task branch pushed to its project's origin when it is
 #                  strictly ahead of origin's (a plain push). A branch that has diverged from
@@ -25,7 +25,7 @@
 #                  {project, branch, head} with the head origin has, and the roles of the task's
 #                  T<n>-<role> sessions step 2 stopped, ops never among them. A worktree with
 #                  uncommitted changes is said and gets uncommitted: true, so team-open --resume
-#                  applies the checkpoint's wip/T<n> on the other machine (else the changes are
+#                  applies the checkpoint's wip/<project>/T<n> on the other machine (else the changes are
 #                  said and noted as staying here); untracked files the snapshot leaves out as
 #                  possible secrets are said and noted as staying here. None when the task's
 #                  latest machine event (stowed, launch, worktree-moved) is already a stowed from
@@ -146,17 +146,17 @@ check_branches() {
       fi
       uncommitted=false
       if ((!quiet)) && [[ -d $wt && -n $(worktree_changes "$wt") ]]; then
-        if kept_in_wip "$task" "$wt"; then
+        if kept_in_wip "$task" "$project" "$wt"; then
           uncommitted=true
-          say "branches: $label: uncommitted changes in $wt go with the checkpoint's wip/$task, which team-resume applies"
+          say "branches: $label: uncommitted changes in $wt go with the checkpoint's wip/$project/$task, which team-resume applies"
         else
-          say "branches: $label: uncommitted changes in $wt stay on $machine: the checkpoint's wip/$task does not hold them"
+          say "branches: $label: uncommitted changes in $wt stay on $machine: the checkpoint's wip/$project/$task does not hold them"
           note+="uncommitted changes in $wt stay on $machine; "
         fi
         left=$(snapshot_left_out "$wt" | paste -sd ' ')
         if [[ -n $left ]]; then
-          say "branches: $label: untracked files that may hold a secret, left out of wip/$task, stay on $machine: $left"
-          note+="untracked files left out of wip/$task stay on $machine in $wt: $left; "
+          say "branches: $label: untracked files that may hold a secret, left out of wip/$project/$task, stay on $machine: $left"
+          note+="untracked files left out of wip/$project/$task stay on $machine in $wt: $left; "
         fi
       fi
       list=$(jq -c --arg p "$project" --arg b "$branch" --arg h "$head" --argjson u "$uncommitted" \
@@ -180,15 +180,17 @@ say() {
   ((quiet)) || printf '%s\n' "$*"
 }
 
-# Whether origin's wip/<task> is the checkpoint's snapshot of the worktree <wt> as it is now: a
-# snapshot whose parent is its HEAD and whose tree is its tree: kept_in_wip <task> <wt>
+# Whether wip/<project>/<task> on the team home's origin is the checkpoint's snapshot of the
+# worktree <wt> as it is now: a snapshot whose parent is its HEAD and whose tree is its tree:
+# kept_in_wip <task> <project> <wt>
 kept_in_wip() {
-  local remote wip
-  remote=$(origin_git -C "$2" ls-remote origin "refs/heads/wip/$1") || return 1
+  local task=$1 project=$2 wt=$3 url remote wip
+  url=$(wip_origin) || return 1
+  remote=$(origin_git -C "$wt" ls-remote "$url" "refs/heads/wip/$project/$task") || return 1
   wip=${remote%%[[:space:]]*}
-  [[ -n $wip ]] && git -C "$2" cat-file -e "$wip^{commit}" 2>/dev/null && is_snapshot "$2" "$wip" "$1" &&
-    [[ $(git -C "$2" rev-parse "$wip^1") == "$(git -C "$2" rev-parse HEAD)" ]] &&
-    [[ $(git -C "$2" rev-parse "$wip^{tree}") == "$(worktree_tree "$2")" ]]
+  [[ -n $wip ]] && git -C "$wt" cat-file -e "$wip^{commit}" 2>/dev/null && is_snapshot "$wt" "$wip" "$task" &&
+    [[ $(git -C "$wt" rev-parse "$wip^1") == "$(git -C "$wt" rev-parse HEAD)" ]] &&
+    [[ $(git -C "$wt" rev-parse "$wip^{tree}") == "$(worktree_tree "$wt")" ]]
 }
 
 if [[ $mode == retire ]]; then

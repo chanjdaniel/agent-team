@@ -512,7 +512,7 @@ EOF
 @test "on a fenced machine, each open task's worktree holding what origin lacks gets a salvage line" {
   tools_at arch
   # Five tasks in site, each in a worktree of its own: T1 with a commit pushed only inside a
-  # checkpoint's wip/T1, T2 with uncommitted changes, T3 clean, T4's worktree gone, T5 closed.
+  # checkpoint's wip/site/T1 (as team-open --resume fetches it from the team home's origin), T2 with uncommitted changes, T3 clean, T4's worktree gone, T5 closed.
   local n wt=() slots=$HOME/site-wt
   for n in 1 2 3 4 5; do
     wt[n]=$slots/$n
@@ -524,7 +524,7 @@ EOF
   echo one >"${wt[1]}/one.txt"
   git -C "${wt[1]}" add one.txt
   git -C "${wt[1]}" commit -q -m "feat: one"
-  git -C "$SITE" update-ref refs/remotes/origin/wip/T1 \
+  git -C "$SITE" update-ref refs/remotes/team-home/wip/site/T1 \
     "$(git -C "${wt[1]}" commit-tree -p HEAD -m wip "$(git -C "${wt[1]}" rev-parse 'HEAD^{tree}')")"
   echo edited >"${wt[2]}/README.md"
   echo new >"${wt[2]}/new.txt"
@@ -737,8 +737,11 @@ EOF
   git -C "$SITE" switch -q -c feat/ahead --track origin/main
   git -C "$SITE" commit -q --allow-empty -m "feat: one"
   git -C "$SITE" commit -q --allow-empty -m "feat: two"
-  # A checkpoint's wip/T<n> holding feat/ahead's head is no origin branch: it still warns.
-  git -C "$SITE" update-ref refs/remotes/origin/wip/T7 feat/ahead
+  # A checkpoint's wip/site/T7 holding feat/ahead's head is no origin branch, whether fetched from
+  # the team home's origin by team-open --resume or on origin (a project whose origin is the team
+  # home's): it still warns.
+  git -C "$SITE" update-ref refs/remotes/team-home/wip/site/T7 feat/ahead
+  git -C "$SITE" update-ref refs/remotes/origin/wip/site/T7 feat/ahead
   git -C "$SITE" switch -q main
   echo changed >>"$SITE/README.md"
   echo note >"$SITE/notes.txt"

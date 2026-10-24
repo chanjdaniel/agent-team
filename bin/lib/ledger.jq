@@ -220,7 +220,7 @@ def crashed: latest_stowed as $stowed | any(.[$stowed + 1:][]; .event == "launch
 
 # Whether the task's worktree in <project> resumes from the last checkpoint's snapshot: the task
 # crashed, or its latest stowed recorded that worktree with uncommitted changes, which the
-# handoff's checkpoint kept as wip/T<n>.
+# handoff's checkpoint kept as wip/<project>/T<n> on the team home's origin.
 def snapshot_due($project):
   crashed or (latest_stowed as $stowed | $stowed >= 0
     and any(.[$stowed].worktrees[]?; .project == $project and .uncommitted == true));

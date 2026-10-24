@@ -13,7 +13,7 @@ Never hand off while GitHub is unreachable: say so to Daniel and wait.
 2. **Stow yourself.** Follow the `stow` skill's walk through the conversation, so nothing you know lives only here.
 3. **Post.** In `#coordinator`: the handoff has started, and what is in flight (each open task, its phase and live workers, from `team-snapshot`).
 4. **STOW the workers.** Send `T<n> STOW` to each live worker and log each `T<n> PAUSED stowed` as `paused reason=stowed`.
-   Wait up to 10 minutes for every answer; a worker that has not answered by then is stopped by the handoff as it stands, before its checkpoint, which keeps its uncommitted work as `wip/T<n>` for `team-resume` to apply on the other machine (untracked files that may hold a secret stay here, and the handoff names them).
+   Wait up to 10 minutes for every answer; a worker that has not answered by then is stopped by the handoff as it stands, before its checkpoint, which keeps its uncommitted work as `wip/<project>/T<n>` on the team home's origin for `team-resume` to apply on the other machine (untracked files that may hold a secret stay here, and the handoff names them).
    Name each one that did not answer in the final post.
    Never send `STOW` to an ops session (`T<n>-ops`): it is never carried over, and `team-handoff` ends it with `team-ops-end`, deleting its transcript and answer file.
    If its answer had not reached Daniel yet, say so in the final post: Daniel asks again on the other machine.

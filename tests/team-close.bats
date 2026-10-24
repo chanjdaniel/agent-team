@@ -51,6 +51,7 @@ lease = "scripts/th-lease.sh"
 return = "scripts/th-return.sh"
 slots = [".treehouse/conv-abc123/1/conv", ".treehouse/conv-abc123/2/conv"]
 TOML
+  team_origin=$(make_team_home)
   stub_reply curl '{"id":"1563000000000000001"}'
   sessions
   # claude: agents --json answers the session list; stop and rm note what the archive and the
@@ -483,40 +484,41 @@ $conv_wt"
   run_bin -0 team-log --check
 }
 
-@test "the task's wip/T<n> snapshots are deleted on each project's origin once its worktrees are returned" {
+@test "the task's wip/<project>/T<n> snapshots are deleted on the team home's origin once its worktrees are returned" {
   run_bin -0 team-open home feature feat work "Do the work"
   run_bin -0 team-open --task T1 --add conv feat move
   run_bin -0 team-open home feature feat other "Other work"
   local home_wt=${home_slots[0]} conv_wt=${conv_slots[0]}
   work_and_push "$home_wt" feature.txt
   work_and_push "$conv_wt" move.txt
-  # team-checkpoint's snapshots: T1 on home's origin alone (conv has none, which is fine), and
-  # T2's, which stays.
-  git -C "$home_wt" push -q origin HEAD:refs/heads/wip/T1
-  git -C "${home_slots[1]}" push -q origin HEAD:refs/heads/wip/T2
-  # The order: home's wip/T1 is still on origin when the last slot goes back.
-  echo 'git -C "$BATS_TEST_TMPDIR/origin/home.git" for-each-ref --format="%(refname)" refs/heads/wip/T1 >>"$BATS_TEST_TMPDIR/wip-at-return"' \
+  # team-checkpoint's snapshots: T1's of home alone (conv has none, which is fine), and T2's,
+  # which stays; and a same-named branch on home's own origin, which is not the team's to delete.
+  git -C "$home_wt" push -q "$team_origin" HEAD:refs/heads/wip/home/T1
+  git -C "${home_slots[1]}" push -q "$team_origin" HEAD:refs/heads/wip/home/T2
+  git -C "$home_wt" push -q origin HEAD:refs/heads/wip/home/T1
+  # The order: home's wip/home/T1 is still there when the last slot goes back.
+  echo 'git -C "$BATS_TEST_TMPDIR/origin/agent-team.git" for-each-ref --format="%(refname)" refs/heads/wip/home/T1 >>"$BATS_TEST_TMPDIR/wip-at-return"' \
     >>"$conv/scripts/th-return.sh"
 
   run_bin -0 --separate-stderr team-close T1
-  local home_origin=$BATS_TEST_TMPDIR/origin/home.git conv_origin=$BATS_TEST_TMPDIR/origin/conv.git
-  assert_equal "$(git -C "$home_origin" for-each-ref --format='%(refname)' 'refs/heads/wip/*')" "refs/heads/wip/T2"
-  assert_equal "$(git -C "$conv_origin" for-each-ref --format='%(refname)' 'refs/heads/wip/*')" ""
-  assert_equal "$(cat "$BATS_TEST_TMPDIR/wip-at-return")" "refs/heads/wip/T1"
+  [[ $stderr != *"cannot delete"* ]]
+  assert_equal "$(git -C "$team_origin" for-each-ref --format='%(refname)' refs/heads/wip/)" "refs/heads/wip/home/T2"
+  assert_equal "$(git -C "$BATS_TEST_TMPDIR/origin/home.git" for-each-ref --format='%(refname)' refs/heads/wip/)" "refs/heads/wip/home/T1"
+  assert_equal "$(cat "$BATS_TEST_TMPDIR/wip-at-return")" "refs/heads/wip/home/T1"
 }
 
-@test "a wip/T<n> that cannot be deleted is reported, and the close still finishes" {
+@test "a wip/<project>/T<n> that cannot be deleted is reported, and the close still finishes" {
   run_bin -0 team-open home feature feat work "Do the work"
   local slot=${home_slots[0]}
   work_and_push "$slot" feature.txt
-  git -C "$slot" push -q origin HEAD:refs/heads/wip/T1
-  # The origin refuses every ref update from here on.
-  printf '#!/bin/sh\nexit 1\n' >"$BATS_TEST_TMPDIR/origin/home.git/hooks/pre-receive"
-  chmod +x "$BATS_TEST_TMPDIR/origin/home.git/hooks/pre-receive"
+  git -C "$slot" push -q "$team_origin" HEAD:refs/heads/wip/home/T1
+  # The team home's origin refuses every ref update from here on.
+  printf '#!/bin/sh\nexit 1\n' >"$team_origin/hooks/pre-receive"
+  chmod +x "$team_origin/hooks/pre-receive"
 
   run_bin -0 --separate-stderr team-close T1
-  assert_contains "$stderr" "team-close: cannot delete wip/T1 on home's origin"
-  assert_contains "$stderr" "delete it by hand: git -C $home push origin --delete wip/T1"
+  assert_contains "$stderr" "team-close: cannot delete wip/home/T1 on the team home's origin"
+  assert_contains "$stderr" "delete it by hand: git -C $TEAM_HOME push origin --delete wip/home/T1"
   assert_equal "$(events closed | jq -r .event)" "closed"
 }
 

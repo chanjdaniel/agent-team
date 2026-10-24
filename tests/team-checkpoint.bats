@@ -1,7 +1,8 @@
 #!/usr/bin/env bats
 # team-checkpoint: on the lease holder, each open task's task directories archived into the team
 # home, each worktree's work (a snapshot of its uncommitted changes, or its head) pushed as
-# wip/T<n> to its project's origin, and the records committed and pushed on the team home's dev.
+# wip/<project>/T<n> to the team home's origin, never the project's, and the records committed and
+# pushed on the team home's dev.
 # Two git-pool projects, home and site, on bare origins; home-pc holds the lease on the team
 # home's bare origin.
 
@@ -98,7 +99,7 @@ changed_in() {
   git -C "$team_origin" diff-tree -r --no-commit-id --name-only "$1"
 }
 
-@test "one checkpoint archives the scratch, pushes the worktree's changes as wip/T1 and commits the records" {
+@test "one checkpoint archives the scratch, pushes the worktree's changes as wip/home/T1 to the team home's origin and commits the records" {
   run_bin -0 team-open home feature feat work "Do the work"
   local wt=$HOME/slots/home/1 head before
   echo "stashed" >>"$wt/README.md"
@@ -116,9 +117,9 @@ changed_in() {
 
   run_bin -0 --separate-stderr team-checkpoint
   local snap
-  snap=$(git -C "$home_origin" rev-parse wip/T1)
+  snap=$(git -C "$team_origin" rev-parse wip/home/T1)
   assert_equal "$output" "T1 home: archived .scratch/task to tasks/T1/scratch
-T1 home: pushed wip/T1 ${snap:0:7} (uncommitted changes on ${head:0:7})
+T1 home: pushed wip/home/T1 ${snap:0:7} (uncommitted changes on ${head:0:7})
 team home: committed $(git -C "$TEAM_HOME" rev-parse --short HEAD) chore: checkpoint and pushed dev"
   assert_equal "$stderr" ""
 
@@ -130,17 +131,19 @@ team home: committed $(git -C "$TEAM_HOME" rev-parse --short HEAD) chore: checkp
 
   # The snapshot: the tracked edit, the staged and the untracked file, on the worktree's head;
   # never ignored files or the task directory.
-  assert_equal "$(git -C "$home_origin" rev-parse wip/T1^)" "$head"
-  assert_equal "$(git -C "$home_origin" show wip/T1:README.md)" "home
+  assert_equal "$(git -C "$team_origin" rev-parse wip/home/T1^)" "$head"
+  assert_equal "$(git -C "$team_origin" show wip/home/T1:README.md)" "home
 edited"
-  assert_equal "$(git -C "$home_origin" show wip/T1:staged.txt)" "staged"
-  assert_equal "$(git -C "$home_origin" show wip/T1:new.txt)" "new"
-  run -128 git -C "$home_origin" cat-file -e wip/T1:.env
-  run -128 git -C "$home_origin" cat-file -e wip/T1:.scratch/task/spec.md
-  [[ $(git -C "$home_origin" log -1 --format=%s wip/T1) =~ ^"wip: T1 checkpoint on home-pc at "[0-9T:-]+Z$ ]]
-  # Only that one ref is new on origin.
-  assert_equal "$(git -C "$home_origin" for-each-ref --format='%(refname)')" "refs/heads/main
-refs/heads/wip/T1"
+  assert_equal "$(git -C "$team_origin" show wip/home/T1:staged.txt)" "staged"
+  assert_equal "$(git -C "$team_origin" show wip/home/T1:new.txt)" "new"
+  run -128 git -C "$team_origin" cat-file -e wip/home/T1:.env
+  run -128 git -C "$team_origin" cat-file -e wip/home/T1:.scratch/task/spec.md
+  [[ $(git -C "$team_origin" log -1 --format=%s wip/home/T1) =~ ^"wip: T1 checkpoint on home-pc at "[0-9T:-]+Z$ ]]
+  # Only that one ref is new on the team home's origin, and nothing is new on the project's.
+  assert_equal "$(git -C "$team_origin" for-each-ref --format='%(refname)')" "refs/heads/dev
+refs/heads/lease
+refs/heads/wip/home/T1"
+  assert_equal "$(git -C "$home_origin" for-each-ref --format='%(refname)')" "refs/heads/main"
 
   # The team home: one commit of the records alone, pushed; the plan team-open wrote stays out.
   assert_equal "$(team_tip)" "$(git -C "$TEAM_HOME" rev-parse HEAD)"
@@ -167,13 +170,13 @@ tasks/T1/scratch/spec.md"
     >"$TEAM_HOME/machine/secrets.json"
 
   run_bin -0 --separate-stderr team-checkpoint
-  assert_contains "$output" "T1 home: left out of wip/T1, as files that may hold a secret: access.json back-end/.env.test certs/server.key certs/server.pem"
-  assert_equal "$(git -C "$home_origin" ls-tree -r --name-only wip/T1 | paste -sd ' ')" ".gitignore README.md keys.txt new.txt"
+  assert_contains "$output" "T1 home: left out of wip/home/T1, as files that may hold a secret: access.json back-end/.env.test certs/server.key certs/server.pem"
+  assert_equal "$(git -C "$team_origin" ls-tree -r --name-only wip/home/T1 | paste -sd ' ')" ".gitignore README.md keys.txt new.txt"
 
   # Only secrets left untracked: the worktree is clean as far as the snapshot goes.
   rm "$wt/new.txt" "$wt/keys.txt"
   run_bin -0 --separate-stderr team-checkpoint --force
-  assert_contains "$output" "T1 home: pushed wip/T1 $(git -C "$wt" rev-parse --short HEAD) (the branch head, no uncommitted changes)"
+  assert_contains "$output" "T1 home: pushed wip/home/T1 $(git -C "$wt" rev-parse --short HEAD) (the branch head, no uncommitted changes)"
 }
 
 @test "a second checkpoint with nothing new makes no commit and no push; a new change pushes a new snapshot" {
@@ -182,24 +185,24 @@ tasks/T1/scratch/spec.md"
   echo "spec" >"$wt/.scratch/task/spec.md"
   echo "new" >"$wt/new.txt"
   run_bin -0 team-checkpoint
-  tip=$(team_tip) snap=$(git -C "$home_origin" rev-parse wip/T1)
+  tip=$(team_tip) snap=$(git -C "$team_origin" rev-parse wip/home/T1)
 
   log_pushes
   run_bin -0 team-checkpoint --force
   assert_equal "$output" "T1 home: archived .scratch/task to tasks/T1/scratch
-T1 home: wip/T1 is up to date (${snap:0:7})
+T1 home: wip/home/T1 is up to date (${snap:0:7})
 team home: nothing to commit"
   assert_equal "$(stub_calls git-push)" ""
   assert_equal "$(team_tip)" "$tip"
-  assert_equal "$(git -C "$home_origin" rev-parse wip/T1)" "$snap"
+  assert_equal "$(git -C "$team_origin" rev-parse wip/home/T1)" "$snap"
 
   # A new change replaces the snapshot; no record changed, so no team-home commit.
   echo "more" >>"$wt/new.txt"
   run_bin -0 team-checkpoint --force
-  assert_contains "$output" "T1 home: pushed wip/T1"
+  assert_contains "$output" "T1 home: pushed wip/home/T1"
   assert_contains "$output" "team home: nothing to commit"
-  [[ $(git -C "$home_origin" rev-parse wip/T1) != "$snap" ]]
-  assert_equal "$(git -C "$home_origin" show wip/T1:new.txt)" "new
+  [[ $(git -C "$team_origin" rev-parse wip/home/T1) != "$snap" ]]
+  assert_equal "$(git -C "$team_origin" show wip/home/T1:new.txt)" "new
 more"
   assert_equal "$(team_tip)" "$tip"
   assert_equal "$(wc -l <"$STUB_CALLS/git-push.log")" 1
@@ -211,12 +214,12 @@ more"
   git -C "$wt" commit -q -m "feat: new"
   head=$(git -C "$wt" rev-parse HEAD)
   run_bin -0 team-checkpoint --force
-  assert_contains "$output" "T1 home: pushed wip/T1 ${head:0:7} (the branch head, no uncommitted changes)"
-  assert_equal "$(git -C "$home_origin" rev-parse wip/T1)" "$head"
+  assert_contains "$output" "T1 home: pushed wip/home/T1 ${head:0:7} (the branch head, no uncommitted changes)"
+  assert_equal "$(git -C "$team_origin" rev-parse wip/home/T1)" "$head"
   run -1 git -C "$home_origin" rev-parse -q --verify refs/heads/feat/T1-work
   assert_equal "$(wc -l <"$STUB_CALLS/git-push.log")" 2
   run_bin -0 team-checkpoint --force
-  assert_contains "$output" "T1 home: wip/T1 is up to date (${head:0:7}, no uncommitted changes)"
+  assert_contains "$output" "T1 home: wip/home/T1 is up to date (${head:0:7}, no uncommitted changes)"
   assert_equal "$(wc -l <"$STUB_CALLS/git-push.log")" 2
 }
 
@@ -226,17 +229,17 @@ more"
   echo "a" >"$wt/a.txt"
   echo "b" >"$wt/b.txt"
   run_bin -0 team-checkpoint
-  snap=$(git -C "$home_origin" rev-parse wip/T1)
+  snap=$(git -C "$team_origin" rev-parse wip/home/T1)
   git -C "$wt" add a.txt
   git -C "$wt" commit -q -m "feat: a"
 
   run_bin -0 team-checkpoint --force
-  assert_contains "$output" "T1 home: pushed wip/T1"
-  assert_equal "$(git -C "$home_origin" rev-parse 'wip/T1^{tree}')" "$(git -C "$home_origin" rev-parse "$snap^{tree}")"
-  assert_equal "$(git -C "$home_origin" rev-parse wip/T1^)" "$(git -C "$wt" rev-parse HEAD)"
+  assert_contains "$output" "T1 home: pushed wip/home/T1"
+  assert_equal "$(git -C "$team_origin" rev-parse 'wip/home/T1^{tree}')" "$(git -C "$team_origin" rev-parse "$snap^{tree}")"
+  assert_equal "$(git -C "$team_origin" rev-parse wip/home/T1^)" "$(git -C "$wt" rev-parse HEAD)"
 }
 
-@test "a task with worktrees in two projects archives to scratch/ and scratch-<project>/ and pushes wip/T1 to each origin" {
+@test "a task with worktrees in two projects archives to scratch/ and scratch-<project>/ and pushes wip/<project>/T1 for each to the team home's origin" {
   run_bin -0 team-open home feature feat work "Do the work"
   run_bin -0 team-open --task T1 --add site feat move
   local home_wt=$HOME/slots/home/1 site_wt=$HOME/slots/site/1
@@ -248,9 +251,11 @@ more"
   run_bin -0 team-checkpoint
   assert_equal "$(cat "$TEAM_HOME/tasks/T1/scratch/spec.md")" "home spec"
   assert_equal "$(cat "$TEAM_HOME/tasks/T1/scratch-site/notes.md")" "site notes"
-  assert_equal "$(git -C "$home_origin" show wip/T1:change.txt)" "home change"
-  assert_equal "$(git -C "$site_origin" show wip/T1:change.txt)" "site change"
-  assert_equal "$(git -C "$site_origin" rev-parse wip/T1^)" "$(git -C "$site_wt" rev-parse HEAD)"
+  assert_equal "$(git -C "$team_origin" show wip/home/T1:change.txt)" "home change"
+  assert_equal "$(git -C "$team_origin" show wip/site/T1:change.txt)" "site change"
+  assert_equal "$(git -C "$team_origin" rev-parse wip/site/T1^)" "$(git -C "$site_wt" rev-parse HEAD)"
+  assert_equal "$(git -C "$home_origin" for-each-ref --format='%(refname)' refs/heads/wip/)" ""
+  assert_equal "$(git -C "$site_origin" for-each-ref --format='%(refname)' refs/heads/wip/)" ""
   assert_equal "$(changed_in dev)" "ledger.jsonl
 tasks/T1/scratch-site/notes.md
 tasks/T1/scratch/spec.md"
@@ -274,9 +279,9 @@ tasks/T1/scratch/spec.md"
 T2 home: skipped: $HOME/slots/home/2 is on other, not feat/T2-work-2
 T3 home: skipped: a git command is running in $HOME/slots/home/3 (index.lock)
 T4 home: archived .scratch/task to tasks/T4/scratch"
-  assert_contains "$output" "T4 home: pushed wip/T4"
+  assert_contains "$output" "T4 home: pushed wip/home/T4"
   [[ ! -e $TEAM_HOME/tasks/T1/scratch && ! -e $TEAM_HOME/tasks/T2/scratch && ! -e $TEAM_HOME/tasks/T3/scratch ]]
-  assert_equal "$(git -C "$home_origin" for-each-ref --format='%(refname)' 'refs/heads/wip/*')" "refs/heads/wip/T4"
+  assert_equal "$(git -C "$team_origin" for-each-ref --format='%(refname)' refs/heads/wip/)" "refs/heads/wip/home/T4"
   # The lock is the running command's: left in place.
   [[ -e $lock ]]
   [[ -f $state/last-checkpoint ]]
@@ -286,7 +291,7 @@ T4 home: archived .scratch/task to tasks/T4/scratch"
   run_bin -0 team-open home feature feat work "Do the work"
   run_bin -0 --separate-stderr team-checkpoint
   assert_equal "$stderr" "team-checkpoint: $HOME/slots/home/1/.scratch/task is empty, so nothing was archived from home"
-  assert_equal "$output" "T1 home: pushed wip/T1 $(git -C "$HOME/slots/home/1" rev-parse --short=7 HEAD) (the branch head, no uncommitted changes)
+  assert_equal "$output" "T1 home: pushed wip/home/T1 $(git -C "$HOME/slots/home/1" rev-parse --short=7 HEAD) (the branch head, no uncommitted changes)
 team home: committed $(git -C "$TEAM_HOME" rev-parse --short HEAD) chore: checkpoint and pushed dev"
   [[ ! -e $TEAM_HOME/tasks/T1/scratch ]]
 }
@@ -406,7 +411,7 @@ tasks/T1/scratch/spec.md"
   assert_contains "$stderr" "team-checkpoint: GitHub unreachable; no checkpoint while offline"
 
   [[ ! -e $TEAM_HOME/tasks/T1/scratch ]]
-  run -1 git -C "$home_origin" rev-parse -q --verify refs/heads/wip/T1
+  run -1 git -C "$team_origin" rev-parse -q --verify refs/heads/wip/home/T1
   assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$head"
   assert_equal "$(team_tip)" "$tip"
   [[ ! -e $state/last-checkpoint ]]
@@ -420,11 +425,11 @@ tasks/T1/scratch/spec.md"
   touch -d '-10 minutes' "$state/last-checkpoint"
   run_bin -0 team-checkpoint
   assert_equal "$output" "not due: the last checkpoint was 10 minutes ago (--force makes one now)"
-  run -1 git -C "$home_origin" rev-parse -q --verify refs/heads/wip/T1
+  run -1 git -C "$team_origin" rev-parse -q --verify refs/heads/wip/home/T1
 
   touch -d '-15 minutes' "$state/last-checkpoint"
   run_bin -0 team-checkpoint
-  assert_contains "$output" "T1 home: pushed wip/T1"
+  assert_contains "$output" "T1 home: pushed wip/home/T1"
   (($(date +%s) - $(date -r "$state/last-checkpoint" +%s) < 60))
 }
 

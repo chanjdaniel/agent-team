@@ -58,18 +58,18 @@
 #                 any session of that name) is stopped and removed either way, and one left
 #                 behind turns a pass into a warning.
 #     branches    Warns on each local branch with commits on no origin branch (no upstream and
-#                 never pushed, or ahead of what was pushed; a checkpoint's wip/T<n> is no
-#                 branch), with their count.
+#                 never pushed, or ahead of what was pushed; a checkpoint's wip/<project>/T<n>
+#                 on the team home's origin is no branch), with their count.
 #     changes     Warns while the primary checkout has changes to tracked files or untracked files.
 #   clock         Within 60 s of the Date header of https://api.github.com (curl -sI); warns.
 #   lease         `team-lease status`: passes held here, warns held elsewhere or released, fails
 #                 when GitHub is unreachable or team-lease refuses, and fails on a fenced
 #                 machine ("fenced since <time> (holder seen <name>, epoch <n>)"), reachable or not.
 #   salvage       On a fenced machine only: fails for each open task's worktree here with
-#                 commits on no origin branch (a checkpoint's wip/T<n> aside) or uncommitted
-#                 changes, the fix being the commands that push them to salvage/T<n>-<machine>
-#                 (after committing, for uncommitted changes), for Daniel to run; passes when
-#                 there is none.
+#                 commits on no origin branch (a checkpoint's wip/<project>/T<n> aside) or
+#                 uncommitted changes, the fix being the commands that push them to
+#                 salvage/T<n>-<machine> (after committing, for uncommitted changes), for Daniel
+#                 to run; passes when there is none.
 #   heartbeat     `team-timers status`: passes enabled on the lease holder, or disabled on any
 #                 other machine; fails the other way round, with the command that puts it right;
 #                 warns while the lease line cannot say whether this machine holds it.
@@ -264,8 +264,10 @@ check_project() {
 
   probe_trust "$project" "$path"
 
-  # branches: commits no remote-tracking branch of origin has, as of the last fetch; a
-  # checkpoint's wip/T<n> is none, since the next checkpoint replaces it and team-close deletes it.
+  # branches: commits no remote-tracking branch of origin has, as of the last fetch. A checkpoint's
+  # wip/<project>/T<n> is none, since the next checkpoint replaces it and team-close deletes it:
+  # team-open --resume fetches it into refs/remotes/team-home/, and origin/wip/* is left out for a
+  # project whose origin is the team home's (or a snapshot from before they moved there).
   while IFS= read -r branch; do
     count=$(git -C "$path" rev-list --count "refs/heads/$branch" --not --exclude='origin/wip/*' --remotes=origin)
     ((count == 0)) || unpushed+=("$branch ($count commit$( ((count == 1)) || echo s))")
@@ -610,7 +612,7 @@ if [[ $rc == fenced ]]; then
     while IFS=$'\t' read -r task project wt; do
       top=$(git -C "$wt" rev-parse --show-toplevel 2>/dev/null) || continue
       [[ $(realpath -m -- "$top") == "$(realpath -m -- "$wt")" ]] || continue
-      # Commits on no origin branch: a checkpoint's wip/T<n> is not one, since the next
+      # Commits on no origin branch: a checkpoint's wip/<project>/T<n> is not one, since the next
       # checkpoint replaces it and team-close deletes it.
       count=$(git -C "$wt" rev-list --count HEAD --not --exclude='origin/wip/*' --remotes=origin)
       mapfile -t found < <(worktree_changes "$wt")

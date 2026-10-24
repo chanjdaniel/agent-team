@@ -22,7 +22,7 @@ Setting up a machine is `sops/machine-setup.md`.
 | Scripts, roles, settings, plans, briefs, the ledger | the team home, `dev` | git |
 | The lease | the team home's origin, orphan branch `lease`, one `lease.json` | `team-lease` |
 | Each task's scratch (spec, tickets, notes, `handoff.md`) | `tasks/T<n>/scratch/` (`scratch-<project>/` for an added project) | `team-checkpoint`, `team-handoff`; restored by `team-open --resume` |
-| Work in flight | each project's origin: the task branch, and `wip/T<n>` | workers' pushes; `team-checkpoint` |
+| Work in flight | each project's origin: the task branch; the team home's origin: `wip/<project>/T<n>` | workers' pushes; `team-checkpoint` |
 | Claude user config (instructions, settings, skills, plugins) | `machine/claude/` | `team-config capture` (in a handoff), `team-config apply` (in a resume) |
 | Auto memory | `memory/<project>/`, which every worktree of the project uses through `autoMemoryDirectory` | `team-checkpoint`, `team-handoff` |
 | Tool versions | `machine/tools.lock` | read by `team-doctor` and `team-bootstrap` |
@@ -53,12 +53,12 @@ It is enabled only on the holder: `team-resume` enables it, `team-handoff` disab
 `team-checkpoint` makes a dead machine lose at most 15 minutes:
 
 - each open task's task directory is mirrored into its archive in the team home;
-- each worktree's work is kept on its project's origin as `wip/T<n>`: the branch head, or, with uncommitted changes, a snapshot commit on it built from a temporary index (untracked files included), never touching the worktree's files, index or stash;
+- each worktree's work is kept on the team home's origin as `wip/<project>/T<n>`, pushed from the worktree to that origin's URL and never to the project's origin, which may be public (Conventioner's is): the branch head, or, with uncommitted changes, a snapshot commit on it built from a temporary index (untracked files included), never touching the worktree's files, index or stash;
 - untracked files that may hold a secret are left out of the snapshot, each named in the checkpoint's output: a name starting with `.env` or ending with `.pem` or `.key`, or a path that a target in `machine/secrets.json` ends with.
-  A project's origin may be public (Conventioner's is), and its `.gitignore` need not cover every `.env` variant a worker makes; such a file stays only on the machine it was made on;
+  A secret has no place in git even in a private repository, and a project's `.gitignore` need not cover every `.env` variant a worker makes; such a file stays only on the machine it was made on;
 - `tasks/*/scratch*/`, `memory/` and `ledger.jsonl` are committed as `chore: checkpoint` and pushed.
 
-Nothing new means no commit and no push; `team-close` deletes the task's `wip/T<n>`.
+Nothing new means no commit and no push; `team-close` deletes the task's `wip/<project>/T<n>`.
 
 ## Fencing
 
@@ -82,20 +82,20 @@ So a coordinator left running on a machine that lost the lease (its fence's `cla
 1. Daniel says "hand off" to the coordinator on Discord.
    Its `handoff` skill checks (`team-handoff --check`), posts what is in flight, sends `T<n> STOW` to each live worker and waits up to 10 minutes for `T<n> PAUSED stowed` (a builder pushes a `wip:` commit and writes `handoff.md`).
 2. It runs `team-handoff`: workers stopped and removed, a forced checkpoint, task branches pushed, one `stowed` per open task, `team-config capture`, the records committed as `chore: handoff from <machine>` (all of `tasks/`, `machine/`, `memory/`, the ledger) and pushed, the heartbeat disabled, the lease released.
-   The workers stop before the checkpoint, so it holds their worktrees' last state: a worker that never answered STOW leaves its uncommitted changes in `wip/T<n>`, and its `stowed` marks that worktree `uncommitted`.
+   The workers stop before the checkpoint, so it holds their worktrees' last state: a worker that never answered STOW leaves its uncommitted changes in `wip/<project>/T<n>`, and its `stowed` marks that worktree `uncommitted`.
    A diverged task branch refuses the handoff before any worker stops.
    An ops session is never carried over: `team-ops-end` ends it, deleting its transcript and answer file (the fence does the same), `ops` is never a role to relaunch, and a production question left unanswered is Daniel's to ask again on the new machine.
    Each step is idempotent: a run interrupted anywhere finishes when run again, and the lease is released last.
 3. It posts "Released at 14:05 from home-pc. On the other machine run `team-resume`." with what config it captured (and any it left to Daniel: a `settings.json` with an `env` key, or a skill folder holding a dotenv-like file), and `team-handoff --retire` removes the coordinator.
 4. At the other machine, Daniel runs (or tells the setup session to run) `team-resume`, or `team-resume --wait` started before the handoff ends.
-   It reads the lease first: held elsewhere and fresh is refused with nothing changed ("say 'hand off' to the coordinator there"), and only then does it run the doctor, pull the team home, apply the config, take the lease, enable the heartbeat, re-home each open worktree with `team-open --task T<n> --resume <project>` (from origin's branch and the task's archive, with `wip/T<n>` applied as uncommitted changes to a worktree its `stowed` marks `uncommitted`), write `tasks/resume-<date>.json` and start the coordinator.
+   It reads the lease first: held elsewhere and fresh is refused with nothing changed ("say 'hand off' to the coordinator there"), and only then does it run the doctor, pull the team home, apply the config, take the lease, enable the heartbeat, re-home each open worktree with `team-open --task T<n> --resume <project>` (from origin's branch and the task's archive, with `wip/<project>/T<n>` applied as uncommitted changes to a worktree its `stowed` marks `uncommitted`), write `tasks/resume-<date>.json` and start the coordinator.
 5. The coordinator's `resume` skill reads the report, catches up on Discord messages sent while no coordinator listened, relaunches each stowed role with a `resume` brief (which says what became of the uncommitted changes), logs `resumed`, and posts what resumed and what did not.
 6. Daniel pins the coordinator in `claude agents`.
 
 ## A crash
 
 - The surviving machine: Daniel runs `team-resume --steal` in their own terminal and types the dead holder's name.
-- A task with a launch after its latest `stowed` crashed: `team-open --resume` resumes it from the later of origin's branch and the head `wip/T<n>` holds, and applies the snapshot as uncommitted changes only when its parent is that head.
+- A task with a launch after its latest `stowed` crashed: `team-open --resume` resumes it from the later of origin's branch and the head `wip/<project>/T<n>` holds, and applies the snapshot as uncommitted changes only when its parent is that head.
 - The resume brief tells each worker the checkpoint it starts from and that up to 15 minutes of work, and any no-mistakes run in flight, may be missing, so it checks before building on it.
 - When the dead machine boots, its still-enabled heartbeat finds the new holder and fences it before anyone could start a coordinator there (sessions do not restart on their own after a shutdown); its doctor then lists the salvage commands.
 
