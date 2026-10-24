@@ -25,7 +25,7 @@ Setting up a machine is `sops/machine-setup.md`.
 | Work in flight | each project's origin: the task branch; the team home's origin: `wip/<project>/T<n>` | workers' pushes; `team-checkpoint` |
 | Claude user config (instructions, settings, skills, plugins) | `machine/claude/` | `team-config capture` (in a handoff), `team-config apply` (in a resume) |
 | Auto memory | `memory/<project>/`, which every worktree of the project uses through `autoMemoryDirectory` | `team-checkpoint`, `team-handoff` |
-| Tool versions | `machine/tools.lock` | read by `team-doctor` and `team-bootstrap` |
+| Tool versions | `bin/lib/tools.lock` | read by `team-doctor` and `team-bootstrap` |
 | Which secrets a machine needs (never a value) | `machine/secrets.json`, described in `machine/secrets.md` | read by `team-secrets` |
 | Secret values | 1Password, the `agent-team` vault | `team-secrets restore` and `save`, in Daniel's own terminal only |
 | This machine's name and state (lease record, fence, offline flag, logs) | `~/.config/agent-team/machine`, `~/.local/state/agent-team/` | never moved |

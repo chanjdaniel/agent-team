@@ -39,8 +39,8 @@ origin_tip() {
 # Refused, naming the commits and their paths that are not records: assert_refused <expected list>
 assert_refused() {
   assert_equal "$stderr" "pre-push: refused: a push to dev may add only commits that touch \
-records only (ledger.jsonl, manual-steps.md, tasks/, projects/, memory/, machine/); put these on \
-a task branch and open a PR to dev:$1"
+records only (ledger.jsonl, manual-steps.md, projects.toml, tasks/, projects/, memory/, \
+machine/); put these on a task branch and open a PR to dev:$1"
 }
 
 @test "a push to dev of commits that touch records only goes through, a local merge of records too" {
@@ -59,7 +59,7 @@ a task branch and open a PR to dev:$1"
   start=$(origin_tip dev)
   git -C "$repo" checkout -q -b feat/T1-fix
   commit_paths "fix: the fix" bin/team-open
-  commit_paths "fix: more" projects.toml
+  commit_paths "fix: more" coordinator.settings.json
   git -C "$repo" format-patch -q -1 -o "$BATS_TEST_TMPDIR/patches"
   git -C "$repo" checkout -q dev
   git -C "$repo" cherry-pick feat/T1-fix~1 >/dev/null
@@ -69,7 +69,7 @@ a task branch and open a PR to dev:$1"
   push -1
   assert_refused "
   $(git -C "$repo" rev-parse --short HEAD) fix: more
-    projects.toml
+    coordinator.settings.json
   $(git -C "$repo" rev-parse --short HEAD~1) Revert \"fix: the fix\"
     bin/team-open
   $(git -C "$repo" rev-parse --short HEAD~3) fix: the fix
@@ -80,7 +80,7 @@ a task branch and open a PR to dev:$1"
   git -C "$repo" merge -q --ff-only feat/T1-fix
   push -1
   assert_contains "$stderr" $'\n    bin/team-open'
-  assert_contains "$stderr" $'\n    projects.toml'
+  assert_contains "$stderr" $'\n    coordinator.settings.json'
   assert_equal "$(origin_tip dev)" "$start"
 }
 

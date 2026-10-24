@@ -62,7 +62,7 @@ Each stage after the first is one `~/agent-team/bin/team-bootstrap` run; read it
 
 ### Stage 4: tools
 
-`~/agent-team/bin/team-bootstrap --stage tools`: everything else `machine/tools.lock` pins for this OS: Claude Code, nvm with Node and the global npm tools, Bun, the treehouse and no-mistakes release archives (each checked against its SHA-256), and on Arch the 1Password CLI.
+`~/agent-team/bin/team-bootstrap --stage tools`: everything else `bin/lib/tools.lock` pins for this OS: Claude Code, nvm with Node and the global npm tools, Bun, the treehouse and no-mistakes release archives (each checked against its SHA-256), and on Arch the 1Password CLI.
 
 - On Arch, treehouse and `op` install with `sudo`: the same stop and the same request as stage 3, with `--stage tools`.
 - `~/.local/bin` and `~/.no-mistakes/bin` get one `export PATH=...  # team-bootstrap` line each in `~/.zshrc` or `~/.bashrc` (by `$SHELL`); for another shell, ask Daniel to add them.

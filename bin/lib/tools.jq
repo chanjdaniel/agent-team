@@ -1,4 +1,4 @@
-# machine/tools.lock, resolved for one machine: include "tools"; tools_for($os; $machine).
+# bin/lib/tools.lock, resolved for one machine: include "tools"; tools_for($os; $machine).
 # $os is arch or macos (team-doctor's os line), $machine what `uname -m` prints.
 # Each result is {name, version_cmd, version_pattern, pin, min, pin_mismatch, source}, source being
 # the exact install command for this machine; a tool whose lock entry does not name $os is left out.
@@ -24,7 +24,7 @@ def release_source($os; $machine):
   .name as $name | .release as $r | .dir[$os] as $dir | platform($os; $machine) as $p
   | "\($name)-\($r.tag)-\($p).tar.gz" as $archive
   | if $r.sha256[$p] == null then
-      "machine/tools.lock records no \($p) archive of \($name) \($r.tag); see https://github.com/\($r.repo)/releases/tag/\($r.tag)"
+      "bin/lib/tools.lock records no \($p) archive of \($name) \($r.tag); see https://github.com/\($r.repo)/releases/tag/\($r.tag)"
     else
       (if $os == "macos" then "shasum -a 256 -c" else "sha256sum -c -" end) as $check
       | "f=$(mktemp) && curl -fsSLo \"$f\" https://github.com/\($r.repo)/releases/download/\($r.tag)/\($archive)"

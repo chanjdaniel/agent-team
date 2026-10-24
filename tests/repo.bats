@@ -16,6 +16,58 @@ setup() {
   assert_equal "$hits" ""
 }
 
+# Each tracked path of the checkout <dir> that matches neither or both of its lists, bin/lib/code
+# and bin/lib/records, with which, one per line: unassigned_paths <dir>
+unassigned_paths() {
+  local path glob in_code in_records
+  local -a code records
+  mapfile -t code < <(grep -v -e '^#' -e '^$' "$1/bin/lib/code")
+  mapfile -t records < <(grep -v -e '^#' -e '^$' "$1/bin/lib/records")
+  while IFS= read -r -d '' path; do
+    in_code=0 in_records=0
+    for glob in "${code[@]}"; do
+      # shellcheck disable=SC2053 # the list's line is a glob
+      [[ $path != $glob ]] || { in_code=1; break; }
+    done
+    for glob in "${records[@]}"; do
+      # shellcheck disable=SC2053 # the list's line is a glob
+      [[ $path != $glob ]] || { in_records=1; break; }
+    done
+    case $in_code$in_records in
+      00) echo "$path: neither code nor records" ;;
+      11) echo "$path: both code and records" ;;
+    esac
+  done < <(git -C "$1" ls-files -z)
+}
+
+# A sandbox copy of this checkout's tracked paths (empty files, the two lists as they are) at
+# <dir>: path_copy <dir>
+path_copy() {
+  git init -q "$1"
+  git -C "$REPO_ROOT" ls-files -s -z | git -C "$1" update-index -z --index-info
+  mkdir -p "$1/bin/lib"
+  cp "$REPO_ROOT/bin/lib/code" "$REPO_ROOT/bin/lib/records" "$1/bin/lib/"
+}
+
+# The public repository takes the code list only, so a new path must be assigned before it lands.
+@test "every tracked path is exactly one of code (bin/lib/code) and records (bin/lib/records)" {
+  run -0 unassigned_paths "$REPO_ROOT"
+  assert_equal "$output" ""
+}
+
+@test "a tracked path in neither list, or in both, is named" {
+  local copy=$BATS_TEST_TMPDIR/copy
+  path_copy "$copy"
+  run -0 unassigned_paths "$copy"
+  assert_equal "$output" ""
+  touch "$copy/NOTES.md"
+  git -C "$copy" add NOTES.md
+  echo 'sops/machine-setup.md' >>"$copy/bin/lib/records"
+  run -0 unassigned_paths "$copy"
+  assert_equal "$output" "NOTES.md: neither code nor records
+sops/machine-setup.md: both code and records"
+}
+
 # The machine docs: Daniel's sentence, the setup entry point and the SOPs.
 MACHINE_DOCS=(README.md SETUP.md sops/machine-setup.md sops/portability.md)
 

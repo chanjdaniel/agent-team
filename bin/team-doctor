@@ -8,7 +8,7 @@
 #   os            Arch Linux (ID or ID_LIKE arch in /etc/os-release) or macOS; on any other OS
 #                 it fails and no tool is checked.
 #   homebrew      macOS only: Homebrew's GNU tools first on PATH, as bin/lib/platform.sh puts them.
-#   tool <name>   Each tool machine/tools.lock lists for this OS, by its version_cmd: missing, a
+#   tool <name>   Each tool bin/lib/tools.lock lists for this OS, by its version_cmd: missing, a
 #                 version it cannot read, or below its min fails; a version off its pin fails, or
 #                 warns where the lock says pin_mismatch WARN (Claude Code, which updates itself).
 #                 The fix is the lock's install command for this OS and machine type (uname -m),
@@ -96,7 +96,7 @@ json=0
 [[ ${1:-} != --json ]] || json=1
 
 bin=$(dirname "$TEAM_LIB")
-lock=$(dirname "$bin")/machine/tools.lock
+lock=$TEAM_LIB/tools.lock
 err=$(mktemp)
 trap 'rm -f "$err"' EXIT
 results=() failed=0

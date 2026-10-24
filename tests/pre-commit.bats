@@ -27,7 +27,7 @@ commit() {
 }
 
 @test "on dev, a commit of records only goes through" {
-  stage ledger.jsonl manual-steps.md tasks/T1/plan.md tasks/T1/scratch/notes.md \
+  stage ledger.jsonl manual-steps.md projects.toml tasks/T1/plan.md tasks/T1/scratch/notes.md \
     projects/shop/backlog.md memory/agent-team/note.md machine/claude/settings.json
   commit -0
   assert_equal "$stderr" ""
@@ -37,14 +37,14 @@ commit() {
 @test "on dev, a commit touching anything else is refused, naming each path that is not a record" {
   local head
   head=$(git -C "$repo" rev-parse HEAD)
-  stage tasks/T1/plan.md bin/team-open projects.toml "a dir/with space.md"
+  stage tasks/T1/plan.md bin/team-open coordinator.settings.json "a dir/with space.md"
   commit -1
   assert_equal "$stderr" "pre-commit: refused: a direct commit on dev may touch records only \
-(ledger.jsonl, manual-steps.md, tasks/, projects/, memory/, machine/); commit these on a task \
-branch and open a PR to dev:
+(ledger.jsonl, manual-steps.md, projects.toml, tasks/, projects/, memory/, machine/); commit these \
+on a task branch and open a PR to dev:
   a dir/with space.md
   bin/team-open
-  projects.toml"
+  coordinator.settings.json"
   assert_equal "$(git -C "$repo" rev-parse HEAD)" "$head"
 }
 
@@ -76,7 +76,7 @@ by fast-forward from dev"
   stage bin/team-open
   commit -0
   git -C "$repo" checkout -q --detach
-  stage projects.toml
+  stage coordinator.settings.json
   commit -0
 }
 

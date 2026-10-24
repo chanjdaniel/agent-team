@@ -150,7 +150,7 @@ every_tool_fails() {
   tools_at arch
   answer "treehouse --version"
   run_bin -1 team-doctor
-  assert_equal "$(line_of 'tool treehouse')" "FAIL tool treehouse: not installed; fix: machine/tools.lock records no linux-arm64 archive of treehouse v3.1.5; see https://github.com/kunchenguid/treehouse/releases/tag/v3.1.5"
+  assert_equal "$(line_of 'tool treehouse')" "FAIL tool treehouse: not installed; fix: bin/lib/tools.lock records no linux-arm64 archive of treehouse v3.1.5; see https://github.com/kunchenguid/treehouse/releases/tag/v3.1.5"
 }
 
 @test "from = fork pins the fork's build instead of the release, a one-line change in tools.lock" {

@@ -1,13 +1,13 @@
 # A machine as team-doctor sees it, for the tests of the doctor and of what acts on its lines
 # (team-bootstrap): load it after helpers/common, and call doctor_machine after sandbox. Every
-# tool in machine/tools.lock is then a version stub on PATH ($TOOL_STUBS) that answers its
+# tool in bin/lib/tools.lock is then a version stub on PATH ($TOOL_STUBS) that answers its
 # version_cmd as the real tool does and hands every other call to the real command (or the
 # sandbox's logging stub), so the doctor's own git, jq and date keep working while a tool reads as
 # missing or old. A stubbed uname picks the OS: Linux with an Arch os-release file, or Darwin with
 # a fake Homebrew prefix. The stubs' own scripts may source this file too, for mark_installed.
 # shellcheck shell=bash
 
-LOCK=$REPO_ROOT/machine/tools.lock
+LOCK=$REPO_ROOT/bin/lib/tools.lock
 
 # What each tool prints for its version_cmd, %s being the version, as the real tool does.
 declare -gA FORMAT=(

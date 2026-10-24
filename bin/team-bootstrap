@@ -19,7 +19,7 @@
 #              `sudo pacman -S --needed --noconfirm` for them all; on macOS `brew install` (or
 #              `brew upgrade` for one below its minimum), then the run starts again under
 #              Homebrew's GNU tools if it lacked them.
-#   tools      Every other failing tool line, by its fix in machine/tools.lock: nvm (installed
+#   tools      Every other failing tool line, by its fix in bin/lib/tools.lock: nvm (installed
 #              first when missing) with Node and the global npm tools, Bun, Claude Code, the
 #              treehouse and no-mistakes release archives for this OS and CPU, the 1Password CLI.
 #              A Claude Code newer than its pin only warns, and is left. ~/.local/bin and
@@ -75,7 +75,7 @@ done
   usage_error "--name $name is not a lower-case kebab-case name like laptop or home-pc"
 
 bin=$(dirname "$TEAM_LIB")
-lock=$(dirname "$bin")/machine/tools.lock
+lock=$TEAM_LIB/tools.lock
 self=$bin/team-bootstrap
 state=$HOME/.local/state/agent-team
 log=$state/bootstrap.log
