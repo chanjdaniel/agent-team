@@ -1,8 +1,10 @@
 #!/usr/bin/env bats
-# team-config's auto memory: every registered project's memory in the team home's memory/<project>/.
+# team-config's auto memory: every registered project's memory in the team home's memory/<project>/,
+# and the team home's own in memory/coordinator/ when it is no project's primary checkout.
 # The team home is at ~/agent-team, as on Daniel's machines, and registers itself and two projects
-# with primary checkouts here (conv, site) and one with none (away). machine/claude/ is empty and
-# claude lists no plugins, so diff prints memory lines alone.
+# with primary checkouts here (conv, site) and one with none (away); `apart` registers the team
+# home no more. machine/claude/ is empty and claude lists no plugins, so diff prints memory lines
+# alone.
 
 # shellcheck disable=SC2088 # autoMemoryDirectory holds the ~ itself, for Claude Code to expand
 load helpers/common
@@ -48,6 +50,16 @@ provider = "git"
 slots = []
 
 TOML
+}
+
+# The registry without the team home's own project, as once the code lives in a checkout of its own.
+apart() {
+  {
+    project conv projects/conv
+    project site projects/site
+    project away projects/away
+  } >"$TEAM_HOME/projects.toml"
+  git -C "$TEAM_HOME" commit -q -m "chore: the team home apart" projects.toml
 }
 
 # The folder Claude Code keeps a checkout's auto memory in by default: every character of its
@@ -202,9 +214,57 @@ memory site setting points to ~/elsewhere"
   assert_equal "$(git -C "$TEAM_HOME" ls-files memory)" ""
 }
 
-@test "without a registry there is no project to set up" {
-  rm "$TEAM_HOME/projects.toml"
-  run_bin -0 team-config diff
+@test "a team home apart from every project keeps its memory in memory/coordinator/, with each fix" {
+  apart
+  note "$(old_memory "$TEAM_HOME")/MEMORY.md" "- [Team](team.md)" "2026-10-02 10:00"
+  note "$(old_memory "$TEAM_HOME")/team.md" "The team's own." "2026-10-02 10:00"
+  run_bin -1 team-config diff
+  assert_equal "$(grep coordinator <<<"$output")" "memory coordinator setting missing
+memory coordinator settings.local.json not ignored by git
+memory coordinator notes left in ~/.claude/projects/$(basename "$(dirname "$(old_memory "$TEAM_HOME")")")/memory/"
   run_bin -0 team-config apply
-  assert_equal "$output" "nothing to apply"
+  assert_contains "$output" "memory coordinator: .claude/settings.local.json excluded from git
+memory coordinator: autoMemoryDirectory set
+memory coordinator: moved 2 notes from ~/.claude/projects/"
+  assert_equal "$(jq -r .autoMemoryDirectory "$TEAM_HOME/.claude/settings.local.json")" "~/agent-team/memory/coordinator"
+  assert_equal "$(cat "$TEAM_HOME/memory/coordinator/team.md")" "The team's own."
+  assert_equal "$(find "$(old_memory "$TEAM_HOME")" -mindepth 1)" ""
+  [[ ! -e $TEAM_HOME/memory/agent-team ]]
+  assert_equal "$(git -C "$TEAM_HOME" status --porcelain)" "?? memory/"
+  run_bin -0 team-config diff
+
+  jq '.autoMemoryDirectory = "~/elsewhere"' "$TEAM_HOME/.claude/settings.local.json" >"$BATS_TEST_TMPDIR/s"
+  mv "$BATS_TEST_TMPDIR/s" "$TEAM_HOME/.claude/settings.local.json"
+  run_bin -1 team-config diff
+  assert_equal "$output" "memory coordinator setting points to ~/elsewhere"
+  run_bin -1 team-config diff --json
+  assert_equal "$(jq -c . <<<"$output")" '[{"item":"memory coordinator","state":"setting points to ~/elsewhere"}]'
+  run_bin -0 team-config apply
+  assert_equal "$output" "memory coordinator: autoMemoryDirectory set (was ~/elsewhere)"
+  run_bin -0 team-config diff
+}
+
+@test "a team home that is a project's primary checkout keeps its memory in that project's folder alone" {
+  # The setup registers agent-team at ~/agent-team, the team home, reached here through a symlink.
+  ln -s agent-team "$HOME/team-link"
+  note "$(old_memory "$TEAM_HOME")/team.md" "The team's own." "2026-10-02 10:00"
+  run_bin -1 team-config diff
+  [[ $output != *coordinator* ]]
+  TEAM_HOME=$HOME/team-link run_bin -1 team-config diff
+  [[ $output != *coordinator* ]]
+  run_bin -0 team-config apply
+  [[ $output != *coordinator* ]]
+  assert_equal "$(jq -r .autoMemoryDirectory "$TEAM_HOME/.claude/settings.local.json")" "~/agent-team/memory/agent-team"
+  [[ ! -e $TEAM_HOME/memory/coordinator ]]
+}
+
+@test "without a registry the team home's memory is the only one set up" {
+  rm "$TEAM_HOME/projects.toml"
+  run_bin -1 team-config diff
+  assert_equal "$output" "memory coordinator setting missing
+memory coordinator settings.local.json not ignored by git"
+  run_bin -0 team-config apply
+  assert_equal "$output" "memory coordinator: .claude/settings.local.json excluded from git
+memory coordinator: autoMemoryDirectory set"
+  run_bin -0 team-config diff
 }

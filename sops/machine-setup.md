@@ -79,7 +79,7 @@ Each stage after the first is one `~/agent-team/bin/team-bootstrap` run; read it
 
 ### Stage 6: Claude config, plugins and the heartbeat
 
-1. `~/agent-team/bin/team-bootstrap --stage config`: the marketplaces and plugins of `machine/claude/plugins.txt`, then `team-config apply` (the shared `CLAUDE.md`, `AGENTS.md`, `settings.json` and skills copied into `~/.claude`, and each project's auto memory pointed at `~/agent-team/memory/<project>`), then the Discord plugin turned off in user settings.
+1. `~/agent-team/bin/team-bootstrap --stage config`: the marketplaces and plugins of `machine/claude/plugins.txt`, then `team-config apply` (the shared `CLAUDE.md`, `AGENTS.md`, `settings.json` and skills copied into `~/.claude`, and each project's auto memory pointed at `~/agent-team/memory/<project>`, the team home's at `memory/coordinator` once it is no project's primary checkout), then the Discord plugin turned off in user settings.
    When a file or skill already differs here, apply is skipped and listed: show Daniel `~/agent-team/bin/team-config diff --full` and ask which they want.
    On a new machine that is almost always `~/agent-team/bin/team-config apply` (whatever it replaces goes to `~/.claude/backups/`); `team-config capture` instead keeps this machine's version, for a records commit on `dev`.
 2. `~/agent-team/bin/team-bootstrap --stage heartbeat`: the heartbeat stays disabled; `team-resume` enables it when this machine takes the lease.

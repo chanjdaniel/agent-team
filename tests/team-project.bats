@@ -227,6 +227,14 @@ TOML
   done
 }
 
+@test "--check refuses a project named coordinator, the team home's memory folder" {
+  sed 's/^\[beta/[coordinator/' "$TEAM_HOME/projects.toml" >"$BATS_TEST_TMPDIR/projects.toml"
+  registry <"$BATS_TEST_TMPDIR/projects.toml"
+  run_bin -1 --separate-stderr team-project --check
+  assert_contains "$stderr" "coordinator: the name is reserved for the team home's auto memory, memory/coordinator/"
+  [[ $stderr != *alpha* ]]
+}
+
 @test "--check refuses TOML that does not parse and a registry that is missing" {
   registry <<<'[alpha'
   run_bin -1 --separate-stderr team-project --check

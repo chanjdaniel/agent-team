@@ -20,7 +20,7 @@ The team's own work on it goes through a task and a PR to `dev`, like any projec
 | `machine/` | What a machine needs to run the team, beyond the tools `bin/lib/tools.lock` pins: `claude/`, the Claude user config every machine shares (instructions, settings, skills, plugins), which `team-config` applies and captures; `secrets.json`, every secret file a machine needs, never a value, which `team-secrets` checks and restores from 1Password, described for Daniel in `secrets.md` |
 | `ledger.jsonl` | The append-only record of every task's events |
 | `tasks/` | Each task's plan, briefs and archived scratch; history, kept as written |
-| `memory/` | Each registered project's Claude Code auto memory, `memory/<project>/`, which every machine and worktree of it shares once `team-config apply` points the project at it |
+| `memory/` | Each registered project's Claude Code auto memory, `memory/<project>/`, which every machine and worktree of it shares once `team-config apply` points the project at it, and the coordinator's, `memory/coordinator/`, the team home's own while it is no project's primary checkout |
 | `manual-steps.md` | The steps only Daniel can take |
 | `README.md`, `SETUP.md` | The sentence Daniel types on a new machine, and the agent's entry point for "set up as host" |
 | `sops/` | Standing procedures: `machine-setup.md` (a new machine, driven by `SETUP.md`), `portability.md` (moving the team between machines), `knowledge-graph.md`, `platform-gotchas.md` (general rules about the tools the team runs on, which every brief points at and the retro keeps short) |

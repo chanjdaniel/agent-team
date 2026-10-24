@@ -10,7 +10,9 @@
 #                                     holds it when a list, one per line; repo compares in any
 #                                     case, and path, pool.slots, pool.lease and pool.return by
 #                                     real path; a key no project has is refused
-#        team-project --check         check the whole file and list every problem
+#        team-project --check         check the whole file and list every problem; the name
+#                                     coordinator is reserved (team-config's folder for the
+#                                     team home's own auto memory)
 # Paths in the file are relative to $HOME, except pool.lease and pool.return (relative to the
 # primary checkout) and task_dir and docs (relative to a worktree, so they stay relative).
 # Every command refuses a registry that fails --check. Exit 0 done, 1 refused or a check
@@ -40,6 +42,9 @@ USAGE = "usage: team-project <name> [<key>] | --list | --find <key> <value> | --
 PROJECT_STRINGS = ("repo", "path", "base", "delivery", "merge_method", "task_dir")
 PROJECT_LISTS = ("required_checks", "docs", "toolkits")
 PROJECT_KEYS = PROJECT_STRINGS + PROJECT_LISTS + ("pool",)
+# Names no project may take: coordinator is the team home's own auto memory folder,
+# memory/coordinator/ (team-config).
+RESERVED = {"coordinator": "the team home's auto memory, memory/coordinator/"}
 # Optional keys, with the value a project without one has.
 PROJECT_OPTIONAL = {"local_checks": []}
 POOL_KEYS = ("provider", "lease", "return", "slots")
@@ -158,6 +163,8 @@ def check(registry):
     for name, project in registry.items():
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name):
             problems.append(f"{name}: a project name is lowercase letters, digits and dashes")
+        if name in RESERVED:
+            problems.append(f"{name}: the name is reserved for {RESERVED[name]}")
         if not isinstance(project, dict):
             problems.append(f"{name}: must be a table")
             continue
