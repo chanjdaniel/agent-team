@@ -22,7 +22,7 @@ setup() {
 # The installers' stubs (see the header).
 installers() {
   local cmd origins
-  origins=$(realpath "$BATS_TEST_TMPDIR")/origin
+  origins=$BATS_TEST_TMPDIR/origin
   for cmd in brew pacman npm sudo xcode-select; do cp "$REPO_ROOT/tests/helpers/stub" "$BATS_TEST_TMPDIR/stubs/$cmd"; done
   stub_reply xcode-select /Library/Developer/CommandLineTools
 

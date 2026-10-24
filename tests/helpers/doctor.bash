@@ -56,7 +56,7 @@ doctor_machine() {
   echo "$TEAM_HOME" >"$HOME/.config/agent-team/home"
   # The code checkout, with the dev guard on, as Daniel turns it on.
   export CODE_CHECKOUT
-  CODE_CHECKOUT=$(realpath "$BATS_TEST_TMPDIR")/code
+  CODE_CHECKOUT=$BATS_TEST_TMPDIR/code
   mkdir -p "$CODE_CHECKOUT"
   cp -R "$REPO_ROOT/bin" "$CODE_CHECKOUT/bin"
   git init -q "$CODE_CHECKOUT"

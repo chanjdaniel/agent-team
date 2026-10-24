@@ -68,11 +68,14 @@ export function testPath({ withOp = true } = {}) {
 
 // Spies first on PATH for the commands of the one child the pinned server is known to try,
 // node-machine-id's device-id shell (`cat ... || hostname | head`): each logs its name to `runs`,
-// then runs the real command. A child is too short-lived to catch in /proc; these are not.
+// then runs the real command from /usr/bin or /bin (macOS keeps cat and hostname in /bin). A
+// child is too short-lived to catch in the process table; these are not.
 function spyDir() {
   const dir = tempDir("spies");
   for (const name of ["cat", "head", "hostname"]) {
-    writeFileSync(join(dir, name), `#!/bin/sh\necho ${name} >>'${dir}/runs'\nexec /usr/bin/${name} "$@"\n`, { mode: 0o755 });
+    const real = ["/usr/bin", "/bin"].map((bin) => join(bin, name)).find((path) => existsSync(path));
+    if (!real) throw new Error(`no ${name} in /usr/bin or /bin to spy on`);
+    writeFileSync(join(dir, name), `#!/bin/sh\necho ${name} >>'${dir}/runs'\nexec ${real} "$@"\n`, { mode: 0o755 });
   }
   return {
     dir,
