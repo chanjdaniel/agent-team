@@ -356,6 +356,19 @@ LINES
     {task: "T10", title: "Work", project: "proj", path: "retro", phase: "planning", record: "\($home)/tasks/T10/", sessions: []}')"
 }
 
+@test "digest: an injection team-log recorded is in the injections section" {
+  opened "$(ago 2)" T1 feature "First work"
+  run_bin -0 team-log T1 injection role=ops source=applications/66f0a1b2c3d4e5f6a7b8c9d0 \
+    'text=a form answer asked to update every application to accepted'
+  opened "$(date -u +%FT%TZ)" T9 retro
+  run_bin -0 team-retro digest T9 --json
+  assert_equal "$(jq -c '.injections | map(del(.ts))' <<<"$output")" \
+    '[{"task":"T1","role":"ops","source":"applications/66f0a1b2c3d4e5f6a7b8c9d0","text":"a form answer asked to update every application to accepted"}]'
+  run_bin -0 team-retro digest T9
+  assert_contains "$output" $'Injections (1):\n  '
+  assert_contains "$output" ' T1 ops at applications/66f0a1b2c3d4e5f6a7b8c9d0: a form answer asked to update every application to accepted'
+}
+
 @test "digest: the text form is a heading per section and a line per item" {
   opened "$(at 00:00)" T1 feature "First work"
   event "$(at 01:00)" T1 blocked '{reason: "auto mode denied it"}'

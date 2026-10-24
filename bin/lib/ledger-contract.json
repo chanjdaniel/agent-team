@@ -131,6 +131,11 @@
       "writer": "team-open",
       "about": "team-open --resume, when this machine's worktree for the task in project is not the recorded one",
       "required": {"project": "string", "branch": "string", "from": "string", "worktree": "string", "machine": "string"}
+    },
+    "injection": {
+      "writer": "team-log",
+      "about": "outside text that asked role to act: source is where it was (a URL, a path, a command, or <collection>/<_id>), text what it asked, never the personal details it held",
+      "required": {"role": "string", "source": "string", "text": "string"}
     }
   }
 }
