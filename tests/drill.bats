@@ -285,9 +285,19 @@ posts() {
   [[ -e $state/fenced ]]
   run -1 --separate-stderr "$REPO_ROOT/bin/team-doctor" --json
   assert_equal "$(jq -c '.[] | select(.check | startswith("salvage")) | [.check, .verdict, .reason, .fix]' <<<"$output")" \
-    "$(jq -cn '["salvage T1 home", "FAIL",
+    "$(jq -cn --arg url "$team_origin" '["salvage T1 home", "FAIL",
       "~/slots/home/1 has 1 commit on no origin branch and uncommitted changes (changes to tracked files: a.txt; untracked files: b.txt)",
-      "git -C ~/slots/home/1 add -A && git -C ~/slots/home/1 commit -m \"wip: salvage from home-pc\", then git -C ~/slots/home/1 push origin HEAD:refs/heads/salvage/T1-home-pc"]')"
+      "git -C ~/slots/home/1 add -A && git -C ~/slots/home/1 commit -m \"wip: salvage from home-pc\", then git -C ~/slots/home/1 push \($url) HEAD:refs/heads/salvage/home/T1-home-pc"]')"
+  # Daniel runs it: the work is on the team home's origin only, and the line passes.
+  local fix
+  fix=$(jq -r '.[] | select(.check == "salvage T1 home") | .fix' <<<"$output")
+  eval "${fix%%, then *}" >/dev/null 2>&1
+  eval "${fix#*, then }" >/dev/null 2>&1
+  assert_equal "$(git -C "$team_origin" rev-parse refs/heads/salvage/home/T1-home-pc)" "$(git -C "$wt" rev-parse HEAD)"
+  assert_equal "$(git -C "$team_origin" show refs/heads/salvage/home/T1-home-pc:a.txt)" "later"
+  assert_equal "$(git -C "$home_origin" for-each-ref refs/heads/salvage/)" ""
+  run -1 --separate-stderr "$REPO_ROOT/bin/team-doctor" --json
+  assert_equal "$(jq -c '.[] | select(.check | startswith("salvage")) | [.check, .verdict]' <<<"$output")" '["salvage","PASS"]'
 }
 
 @test "outage: home-pc's heartbeat holds the team offline, posting once and changing nothing on origin; when GitHub is back it renews, clears the hold and posts the window" {

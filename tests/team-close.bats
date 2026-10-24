@@ -258,6 +258,25 @@ assert_unchanged() {
   assert_unchanged
 }
 
+@test "a head held only by a snapshot or salvage branch on origin has not landed" {
+  open_home_task
+  work_and_push "$wt" pushed.txt
+  echo one >"$wt/a.txt"
+  git -C "$wt" add a.txt
+  git -C "$wt" commit -q -m "feat: a"
+  # A project whose origin is the team home's (agent-team until the split) fetches the team's
+  # snapshots and salvages with its branches; none of them is where the work landed.
+  git -C "$wt" push -q origin HEAD:refs/heads/wip/agent-team/T1 HEAD:refs/heads/wip/T1 \
+    HEAD:refs/heads/salvage/agent-team/T1-laptop
+  stub_reply gh '[]'
+
+  run_bin -1 team-close T1
+  assert_contains "$output" "$wt (home, feat/T1-work) has not landed: head $(git -C "$wt" rev-parse --short=7 HEAD) is on no branch of origin (1 commit not pushed) and is not the head of a merged PR"
+  assert_equal "$(git -C "$wt" for-each-ref --contains HEAD --format='%(refname)' refs/remotes/origin | paste -sd ,)" \
+    "refs/remotes/origin/salvage/agent-team/T1-laptop,refs/remotes/origin/wip/T1,refs/remotes/origin/wip/agent-team/T1"
+  assert_unchanged
+}
+
 @test "an uncommitted change refuses the close and changes nothing" {
   open_home_task
   echo changed >>"$wt/README.md"
@@ -484,7 +503,7 @@ $conv_wt"
   run_bin -0 team-log --check
 }
 
-@test "the task's wip/<project>/T<n> snapshots are deleted on the team home's origin once its worktrees are returned" {
+@test "the task's wip/<project>/T<n> snapshots are deleted on the team home's origin and in each primary checkout once its worktrees are returned" {
   run_bin -0 team-open home feature feat work "Do the work"
   run_bin -0 team-open --task T1 --add conv feat move
   run_bin -0 team-open home feature feat other "Other work"
@@ -500,9 +519,16 @@ $conv_wt"
   echo 'git -C "$BATS_TEST_TMPDIR/origin/agent-team.git" for-each-ref --format="%(refname)" refs/heads/wip/home/T1 >>"$BATS_TEST_TMPDIR/wip-at-return"' \
     >>"$conv/scripts/th-return.sh"
 
+  # team-open --resume's copies of the snapshots in the primary checkouts: T1's go, T2's stays.
+  git -C "$home" update-ref refs/remotes/team-home/wip/home/T1 "$(git -C "$home_wt" rev-parse HEAD)"
+  git -C "$home" update-ref refs/remotes/team-home/wip/home/T2 "$(git -C "${home_slots[1]}" rev-parse HEAD)"
+  git -C "$conv" update-ref refs/remotes/team-home/wip/conv/T1 "$(git -C "$conv_wt" rev-parse HEAD)"
+
   run_bin -0 --separate-stderr team-close T1
   [[ $stderr != *"cannot delete"* ]]
   assert_equal "$(git -C "$team_origin" for-each-ref --format='%(refname)' refs/heads/wip/)" "refs/heads/wip/home/T2"
+  assert_equal "$(git -C "$home" for-each-ref --format='%(refname)' refs/remotes/team-home/)" "refs/remotes/team-home/wip/home/T2"
+  assert_equal "$(git -C "$conv" for-each-ref --format='%(refname)' refs/remotes/team-home/)" ""
   assert_equal "$(git -C "$BATS_TEST_TMPDIR/origin/home.git" for-each-ref --format='%(refname)' refs/heads/wip/)" "refs/heads/wip/home/T1"
   assert_equal "$(cat "$BATS_TEST_TMPDIR/wip-at-return")" "refs/heads/wip/home/T1"
 }

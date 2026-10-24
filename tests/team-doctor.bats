@@ -662,18 +662,39 @@ EOF
   "$REPO_ROOT/bin/team-timers" disable >/dev/null
   echo '{"since": "2026-10-22T14:00:00Z", "holder": "laptop", "epoch": 2}' >"$HOME/.local/state/agent-team/fenced"
   run_bin -1 team-doctor
+  # The salvage goes to the team home's origin, never the project's, which may be public.
+  local team_origin
+  team_origin=$(git -C "$TEAM_HOME" remote get-url origin)
   assert_equal "$(grep salvage <<<"$output")" \
-"FAIL salvage T1 site: ~/site-wt/1 has 1 commit on no origin branch; fix: git -C ~/site-wt/1 push origin HEAD:refs/heads/salvage/T1-home-pc
-FAIL salvage T2 site: ~/site-wt/2 has uncommitted changes (changes to tracked files: README.md; untracked files: new.txt); fix: git -C ~/site-wt/2 add -A && git -C ~/site-wt/2 commit -m \"wip: salvage from home-pc\", then git -C ~/site-wt/2 push origin HEAD:refs/heads/salvage/T2-home-pc"
+"FAIL salvage T1 site: ~/site-wt/1 has 1 commit on no origin branch; fix: git -C ~/site-wt/1 push $team_origin HEAD:refs/heads/salvage/site/T1-home-pc
+FAIL salvage T2 site: ~/site-wt/2 has uncommitted changes (changes to tracked files: README.md; untracked files: new.txt); fix: git -C ~/site-wt/2 add -A && git -C ~/site-wt/2 commit -m \"wip: salvage from home-pc\", then git -C ~/site-wt/2 push $team_origin HEAD:refs/heads/salvage/site/T2-home-pc"
   # Right after the lease line.
   assert_equal "$(checks | grep -A2 -x lease | paste -sd ,)" "lease,salvage T1 site,salvage T2 site"
 
-  # Once both are pushed and clean, it passes.
-  git -C "$SITE" update-ref refs/remotes/origin/feat/T1-x "$(git -C "${wt[1]}" rev-parse HEAD)"
-  git -C "${wt[2]}" checkout -q -- README.md
-  rm "${wt[2]}/new.txt"
+  # Once Daniel has run both fixes, the work is on the team home's origin, none on site's, and the
+  # line passes.
+  local fix
+  while IFS= read -r fix; do eval "$fix" >/dev/null 2>&1; done < <(grep '^FAIL salvage' <<<"$output" | sed 's/.*; fix: //; s/, then / \&\& /')
+  assert_equal "$(git -C "$team_origin" rev-parse refs/heads/salvage/site/T1-home-pc)" "$(git -C "${wt[1]}" rev-parse HEAD)"
+  assert_equal "$(git -C "$team_origin" rev-parse refs/heads/salvage/site/T2-home-pc)" "$(git -C "${wt[2]}" rev-parse HEAD)"
+  assert_equal "$(git -C "$BATS_TEST_TMPDIR/origin/site.git" for-each-ref refs/heads/salvage/)" ""
   run_bin -1 team-doctor
-  assert_equal "$(grep salvage <<<"$output")" "PASS salvage: no task worktree here holds commits or changes origin lacks"
+  assert_equal "$(grep salvage <<<"$output")" "PASS salvage: no task worktree here holds work that neither origin nor a salvage branch keeps"
+
+  # A change after the salvage needs salvaging again.
+  echo two >"${wt[1]}/two.txt"
+  echo more >"${wt[2]}/new.txt"
+  run_bin -1 team-doctor
+  assert_equal "$(grep salvage <<<"$output" | cut -d: -f1)" "FAIL salvage T1 site
+FAIL salvage T2 site"
+
+  # A commit pushed to origin's branch, and clean, passes too.
+  git -C "${wt[1]}" add two.txt
+  git -C "${wt[1]}" commit -q -m "feat: two"
+  git -C "${wt[2]}" checkout -q -- new.txt
+  git -C "$SITE" update-ref refs/remotes/origin/feat/T1-x "$(git -C "${wt[1]}" rev-parse HEAD)"
+  run_bin -1 team-doctor
+  assert_equal "$(grep salvage <<<"$output")" "PASS salvage: no task worktree here holds work that neither origin nor a salvage branch keeps"
 }
 
 @test "the offline line warns with the outage's start and age while the heartbeat holds the team" {

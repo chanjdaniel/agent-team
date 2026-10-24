@@ -60,14 +60,16 @@ It is enabled only on the holder: `team-resume` enables it, `team-handoff` disab
   A secret has no place in git even in a private repository, and a project's `.gitignore` need not cover every `.env` variant a worker makes; such a file stays only on the machine it was made on;
 - `tasks/*/scratch*/`, `memory/` and `ledger.jsonl` are committed as `chore: checkpoint` and pushed.
 
-Nothing new means no commit and no push; `team-close` deletes the task's `wip/<project>/T<n>`.
+Nothing new means no commit and no push; `team-close` deletes the task's `wip/<project>/T<n>`, and the copy of it that `team-open --resume` fetched into the primary checkout.
 
 ## Fencing
 
 A machine that finds another holder or a higher epoch (its renew, its heartbeat) fences itself: it writes `fenced`, stops its own coordinator and `T<n>-<role>` sessions, and disables its heartbeat.
 The `lease-fence` hook blocks the coordinator's Discord replies, and its `git push`, `team-merge`, `team-open` and `team-close`, from the moment a fenced machine wakes, before any heartbeat runs (it checks the remote lease at most once a minute), and blocks workers' pushes.
 So a coordinator left running on a machine that lost the lease (its fence's `claude stop` failed, or `team-handoff --retire` never ran) acts on nothing the holder's coordinator owns.
-`team-doctor` on a fenced machine lists, per task worktree with work origin lacks, the command that pushes it to `salvage/T<n>-<machine>`, for Daniel to run.
+`team-doctor` on a fenced machine lists, per task worktree with work origin lacks, the command that pushes it to the team home's origin as `salvage/<project>/T<n>-<machine>`, for Daniel to run.
+Like a snapshot, a salvage never goes to the project's origin, which may be public; `team-open --resume` names the same place for a branch here with commits origin's lacks.
+A worktree whose head a salvage branch holds, with nothing uncommitted, is salvaged, and neither a salvage nor a snapshot ever counts as landed for `team-close`.
 `team-lease take` (inside `team-resume`) clears the fence.
 
 ## Offline

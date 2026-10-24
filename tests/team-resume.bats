@@ -324,14 +324,14 @@ laptop_state() {
 
   on_machine laptop run_bin -1 --separate-stderr team-resume
   assert_contains "$stderr" "team-resume: T1 home: not re-homed: "
-  assert_contains "$stderr" "salvage/T1-laptop"
+  assert_contains "$stderr" "salvage/home/T1-laptop"
   assert_contains "$stderr" "team-resume: 1 worktree(s) could not be re-homed; the report names each, and the coordinator says so on Discord"
   assert_contains "$output" "T2 home: $laptop/home/slots/home/1 on feat/T2-other at "
   assert_equal "$(cat "$laptop/home/slots/home/1/.scratch/task/spec.md")" "spec 2"
 
   assert_equal "$(jq -c '.tasks | map({task, worktrees: (.worktrees | length), failures: (.failures | map({project, branch}))})' "$report")" \
     '[{"task":"T1","worktrees":0,"failures":[{"project":"home","branch":"feat/T1-work"}]},{"task":"T2","worktrees":1,"failures":[]}]'
-  assert_contains "$(jq -r '.tasks[0].failures[0].reason' "$report")" "salvage/T1-laptop"
+  assert_contains "$(jq -r '.tasks[0].failures[0].reason' "$report")" "salvage/home/T1-laptop"
   # The coordinator still starts, to say what did not resume.
   assert_equal "$(coordinator_launches | wc -l)" 1
 }
@@ -405,9 +405,9 @@ laptop_state() {
   # branch, and fails.
   run -1 --separate-stderr "$REPO_ROOT/bin/team-doctor" --json
   assert_equal "$(jq -c '.[] | select(.check | startswith("salvage")) | [.check, .verdict, .reason, .fix]' <<<"$output")" \
-    "$(jq -cn '["salvage T1 home", "FAIL",
+    "$(jq -cn --arg url "$team_origin" '["salvage T1 home", "FAIL",
       "~/slots/home/1 has 1 commit on no origin branch and uncommitted changes (changes to tracked files: a.txt; untracked files: b.txt)",
-      "git -C ~/slots/home/1 add -A && git -C ~/slots/home/1 commit -m \"wip: salvage from home-pc\", then git -C ~/slots/home/1 push origin HEAD:refs/heads/salvage/T1-home-pc"]')"
+      "git -C ~/slots/home/1 add -A && git -C ~/slots/home/1 commit -m \"wip: salvage from home-pc\", then git -C ~/slots/home/1 push \($url) HEAD:refs/heads/salvage/home/T1-home-pc"]')"
 }
 
 @test "a crash before T1's branch was ever pushed resumes it from wip/home/T1: the branch's commits, and the checkpoint's changes uncommitted" {
