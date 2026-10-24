@@ -2,7 +2,7 @@
 
 Every worker reads this before its first command, as its brief says.
 Each entry is a general rule about the tools the team runs on (Claude Code, git, the gate, Docker, the machine), with why it holds and where the team hit it.
-The retro proposes adding, merging and dropping entries, and Daniel approves every change.
+The retro proposes adding, merging and dropping entries, and Daniel approves every change, which lands through a PR on the code repository, since this file is code.
 
 ## Put a flag that takes many values before the other options, or end the options with `--`
 

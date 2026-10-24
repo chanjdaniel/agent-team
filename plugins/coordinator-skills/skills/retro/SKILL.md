@@ -17,7 +17,7 @@ The retro itself changes nothing; what Daniel approves becomes its own work.
    Log the ask with `team-log T<n> asked id=retro text="<each proposal's number and title>"`.
 4. **Record the answer.** Daniel answers per number; log `team-log T<n> answered id=retro answer="<the answer>"`.
    A change to the schedule in it (a new cadence, or stop) is logged on the same task: `team-log T<n> retro-schedule every_hours=<hours, 0 to stop> discord_message=<id>`.
-5. **Act.** Commit approved changes to records (the paths `bin/lib/records` lists) on `dev` directly.
+5. **Act.** Commit approved changes to records (the paths `~/agent-team/bin/lib/records` lists) on `dev` directly.
    Every other approved change becomes one follow-up task, `team-open agent-team small <type> <slug> <title>` (or the project's own task, for a project's file), whose plan lists the approved proposals by number and points at the retro's report.
    A rejected proposal needs nothing more: the `answered` event and the archived report keep the next retro from proposing it again.
 6. **Close.** Run `team-close T<n>`: it archives the report to `tasks/T<n>/scratch/report.md`, where the next retro reads it.
