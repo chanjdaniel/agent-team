@@ -195,13 +195,36 @@ phase_of() {
   assert_equal "$(phase_of T14)" building
 }
 
-@test "merged wins over held, and closed over merged" {
+@test "merged wins over a held from before it, and closed over merged" {
   open_task
   event T14 held '{reason: "OS update"}'
   event T14 merged '{pr: 5, merge: "fedcba9", head: "a1b2c3d", by: "1563"}'
   assert_equal "$(phase_of T14)" merged
   event T14 closed '{archive: [], returned: [], kept: []}'
   assert_equal "$(phase_of T14)" closed
+}
+
+@test "a held or blocked logged after the merge outranks it while it stands, for a later part still to come" {
+  open_task
+  event T14 merged '{pr: 5, merge: "fedcba9", head: "a1b2c3d", by: "1563"}'
+  event T14 blocked '{reason: "the second half waits on T31"}'
+  assert_equal "$(phase_of T14)" blocked
+  event T14 held '{reason: "OS update"}'
+  assert_equal "$(phase_of T14)" held
+  event T14 resumed
+  assert_equal "$(phase_of T14)" merged
+}
+
+@test "a task blocked, relaunched and then merged is merged" {
+  open_task
+  event T14 blocked '{reason: "a denied push"}'
+  event T14 launch '{role: "builder", session: "3ed2d1f2", worktree: "/w/1", toolkits: []}'
+  event T14 merged '{pr: 5, merge: "fedcba9", head: "a1b2c3d", by: "1563"}'
+  assert_equal "$(phase_of T14)" merged
+  # A block still standing from before the merge changes nothing either.
+  event T14 blocked '{reason: "a denied push"}'
+  event T14 merged '{pr: 6, merge: "0123456", head: "b2c3d4e", by: "1563"}'
+  assert_equal "$(phase_of T14)" merged
 }
 
 @test "heads compare by the shorter one's prefix, at least 7 characters" {

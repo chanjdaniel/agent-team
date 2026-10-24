@@ -11,7 +11,8 @@
 #      git command (index.lock) is skipped with a line saying why.
 #   2. Its task directory is mirrored into tasks/T<n>/scratch/ (the project the task was opened
 #      in) or tasks/T<n>/scratch-<project>/ (one added later), as team-close does; a missing or
-#      empty one is reported on stderr and archives nothing.
+#      empty one is reported on stderr and archives nothing. Nested repositories, files over
+#      1 MiB and paths that may hold a secret are left out, each named on stderr.
 #   3. Its work is kept on the team home's origin, never the project's (which may be public), as
 #      refs/heads/wip/<project>/T<n>, pushed from the worktree to that origin's URL in place of
 #      what is there (the one forced push, a script's, never on a task branch, and no PR's head;

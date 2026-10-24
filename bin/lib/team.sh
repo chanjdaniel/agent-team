@@ -7,8 +7,8 @@
 # HOME, else the directory above bin/) and TEAM_HOME_FROM, answers --help with the calling script's header (then runs
 # the script's help_more, if it defined one before sourcing), and provides die, usage_error, team_project, ledger_jq, ledger_append,
 # task_events, known_task_events, open_task_events, task_status, task_worktrees, local_path,
-# archive_task_dir, machine_name, os_release, team_os, fence_reason, lease_gate, worktree_changes,
-# snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin, home_repo, non_records,
+# archive_left_out, rsync_rule, archive_task_dir, machine_name, os_release, team_os, fence_reason, lease_gate, worktree_changes,
+# secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin, home_repo, non_records,
 # only_records, commit_non_records, records_list, origin_git, origin_reason, commit_records, fast_forward, render_template,
 # registered_pr, attribution_lines, strip_attribution, live_sessions, discord_token, discord_api,
 # github, pr_part and task_state_json, and sets COORDINATOR_CHANNEL.
@@ -139,20 +139,61 @@ local_path() {
   ledger_jq '$path | local_path($home)' -nr --arg path "$1"
 }
 
+# The paths of the task directory <dir> that have no place in the team home's history, so its
+# archive leaves them out, each as "<why>\t<path>" (relative to <dir>), NUL-terminated: each
+# directory holding a .git (nested repository), never looked inside; each file over 1 MiB (over
+# 1 MiB); and each path secret_paths names (may hold a secret); in that order, sorted within each.
+# A missing directory has none: archive_left_out <dir>
+archive_left_out() {
+  (
+    export LC_ALL=C
+    cd "$1" 2>/dev/null || exit 0
+    # find, never inside a nested repository, which it names when given no other test.
+    outside() { find . -mindepth 1 -type d -exec test -e '{}/.git' ';' -prune "$@"; }
+    outside -printf 'nested repository\t%P\0' | sort -z
+    outside -o -type f -size +1048576c -printf 'over 1 MiB\t%P\0' | sort -z
+    outside -o \( -type f -o -type l \) -size -1048577c -printf '%P\0' |
+      secret_paths | sort | tr '\n' '\0' | sed -z 's/^/may hold a secret\t/'
+  )
+}
+
+# The rsync rule, NUL-terminated (for --from0), that matches the relative <path> alone, anchored
+# at the transfer's root: rsync reads backslash escapes only in a rule with a wildcard, so in one
+# with a wildcard every wildcard and backslash is escaped: rsync_rule <path>
+rsync_rule() {
+  local path=$1
+  if [[ $path == *[*?[]* ]]; then
+    path=${path//\\/"\\\\"} path=${path//\*/"\\*"} path=${path//\?/"\\?"} path=${path//\[/"\\["}
+  fi
+  printf '/%s\0' "$path"
+}
+
 # Mirror the task directory <dir> of a worktree of <project> into <archive> under the team home
 # (tasks/T<n>/scratch or tasks/T<n>/scratch-<project>), so the archive is the task directory as
-# it is now; a missing or empty task directory archives nothing and is reported on stderr,
-# failing: archive_task_dir <dir> <project> <archive>
+# it is now, less what archive_left_out names, each named on stderr as "left out of <archive>:
+# <path> (<why>)", and removed from an archive made before it was left out. A missing or empty
+# task directory archives nothing and is reported on stderr, failing:
+# archive_task_dir <dir> <project> <archive>
 archive_task_dir() {
-  if [[ ! -d $1 ]]; then
-    echo "${0##*/}: $1 is missing, so nothing was archived from $2" >&2
+  local dir=$1 why path rules
+  if [[ ! -d $dir ]]; then
+    echo "${0##*/}: $dir is missing, so nothing was archived from $2" >&2
     return 1
-  elif [[ -z $(find "$1" -mindepth 1 -maxdepth 1 -print -quit) ]]; then
-    echo "${0##*/}: $1 is empty, so nothing was archived from $2" >&2
+  elif [[ -z $(find "$dir" -mindepth 1 -maxdepth 1 -print -quit) ]]; then
+    echo "${0##*/}: $dir is empty, so nothing was archived from $2" >&2
     return 1
   fi
+  rules=$(mktemp)
+  while IFS=$'\t' read -r -d '' why path; do
+    echo "${0##*/}: left out of $3: $path ($why)" >&2
+    rsync_rule "$path" >>"$rules"
+  done < <(archive_left_out "$dir")
   mkdir -p "$TEAM_HOME/$3"
-  rsync -a --delete -- "$1/" "$TEAM_HOME/$3/" || die "cannot mirror $1 into $3"
+  if ! rsync -a --delete --delete-excluded --from0 --exclude-from="$rules" -- "$dir/" "$TEAM_HOME/$3/"; then
+    rm -f "$rules"
+    die "cannot mirror $dir into $3"
+  fi
+  rm -f "$rules"
 }
 
 # Print this machine's team name, the first line of ~/.config/agent-team/machine (lower-case
@@ -226,17 +267,22 @@ worktree_changes() {
   [[ -z $list ]] || echo "untracked files: $list"
 }
 
-# The untracked files of the worktree <wt> that may hold a secret, one per line, which a snapshot
-# leaves out (files git ignores are never in one): a name that starts with .env or ends with .pem
-# or .key, or a path that a secret file's target in the team home's machine/secrets.json ends
-# with: snapshot_left_out <wt>
-snapshot_left_out() {
+# Of the relative paths on stdin, NUL-separated, those that may hold a secret, one per line: a
+# name that starts with .env or ends with .pem or .key, or a path that a secret file's target in
+# the team home's machine/secrets.json ends with. A snapshot and a task directory's archive both
+# leave them out: secret_paths
+secret_paths() {
   local targets
   targets=$(jq -c '[.secrets[]?.target | strings]' "$TEAM_HOME/machine/secrets.json" 2>/dev/null) || targets='[]'
-  git -C "$1" ls-files -z --others --exclude-standard |
-    jq -Rrs --argjson targets "$targets" 'split("\u0000")[] | select(. != "") | . as $path
-      | select((split("/") | last | test("^\\.env|\\.(pem|key)$"))
-        or any($targets[]; . == $path or endswith("/" + $path)))'
+  jq -Rrs --argjson targets "$targets" 'split("\u0000")[] | select(. != "") | . as $path
+    | select((split("/") | last | test("^\\.env|\\.(pem|key)$"))
+      or any($targets[]; . == $path or endswith("/" + $path)))'
+}
+
+# The untracked files of the worktree <wt> that may hold a secret (secret_paths), one per line,
+# which a snapshot leaves out (files git ignores are never in one): snapshot_left_out <wt>
+snapshot_left_out() {
+  git -C "$1" ls-files -z --others --exclude-standard | secret_paths
 }
 
 # The tree of the worktree <wt> as it is, uncommitted changes and untracked files included (files

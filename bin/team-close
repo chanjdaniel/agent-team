@@ -17,7 +17,8 @@
 # return (one that no longer has landed is kept with --keep-worktree, else exit 1 with the task
 # half closed); the stack teardown (empty until T9's team-stack); each worktree's task
 # directory mirrored to tasks/T<n>/scratch/ (the opened project) or tasks/T<n>/scratch-<project>/
-# (an added one), a missing or empty one reported on stderr; claude rm <id> for each of the
+# (an added one), less its nested repositories, files over 1 MiB and paths that may hold a secret,
+# each named on stderr, a missing or empty one reported on stderr; claude rm <id> for each of the
 # task's sessions; each landed worktree returned through its pool (git: git worktree remove,
 # never --force; treehouse: its task directory emptied, then the project's return command run
 # from the primary checkout with the path), each return appending worktree-returned; the task's

@@ -535,6 +535,28 @@ restored_from() {
   assert_equal "$(cat "$slot/.scratch/task/notes.md")" "notes"
 }
 
+@test "what the archive leaves out of the task directory stays in the worktree when the archive replaces it" {
+  run_bin -0 team-open home feature feat work "Work in home"
+  local dir=${home_slots[0]}/.scratch/task
+  echo "stale" >"$dir/stale.md"
+  git init -q "$dir/clone"
+  echo "tool" >"$dir/clone/tool.txt"
+  head -c 2M /dev/zero >"$dir/big[1].bin"
+  echo "SECRET=1" >"$dir/.env.local"
+  archive T1 scratch
+
+  run_bin -0 --separate-stderr team-open --task T1 --resume home
+  assert_equal "$stderr" ""
+  assert_equal "$(cd "$dir" && find . -mindepth 1 -not -path './clone/.git/*' | LC_ALL=C sort)" "./.env.local
+./big[1].bin
+./clone
+./clone/.git
+./clone/tool.txt
+./spec.md
+./tickets
+./tickets/01.md"
+}
+
 @test "an added project's worktree is restored from its own archive" {
   run_bin -0 team-open conv feature feat work "Work in conv"
   run_bin -0 team-open --task T1 --add home feat home-side

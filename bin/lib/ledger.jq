@@ -195,14 +195,22 @@ def waiting:
     map(select(.event == "waiting")) | last | {on, reason, since: .ts}
   else null end;
 
-# The task's phase, first match wins. Merged needs every PR of task_prs merged; awaiting-merge
-# needs each PR not merged yet to have, as the latest review of its head, a pass.
+# The index of the task's latest event of $kind, or -1 when it has none.
+def latest_index($kind): [to_entries[] | select(.value.event == $kind) | .key] | last // -1;
+
+# The task's phase, first match wins. Merged needs every PR of task_prs merged, and no held or
+# blocked standing that was logged after the latest merged (a later part of the task still to
+# come); awaiting-merge needs each PR not merged yet to have, as the latest review of its head, a
+# pass.
 def phase:
   . as $events
   | task_prs as $prs
   | [$prs[] | select(pr_merged($events; $prs) | not)] as $open
+  | latest_index("merged") as $merged
+  | ((standing("held") and latest_index("held") > $merged)
+     or (standing_until_launch("blocked") and latest_index("blocked") > $merged)) as $parked_since_merge
   | if any(.[]; .event == "closed") then "closed"
-    elif any(.[]; .event == "merged") and $open == [] then "merged"
+    elif $merged >= 0 and $open == [] and ($parked_since_merge | not) then "merged"
     elif standing("held") then "held"
     elif standing_until_launch("blocked") then "blocked"
     elif $open != [] and all($open[]; . as $pr
@@ -212,7 +220,7 @@ def phase:
     else "planning" end;
 
 # The index of the task's latest stowed, or -1 when it has none.
-def latest_stowed: [to_entries[] | select(.value.event == "stowed") | .key] | last // -1;
+def latest_stowed: latest_index("stowed");
 
 # Whether the task crashed on a machine switch: a launch after its latest stowed, or a launch and
 # no stowed at all, so the machine it last ran on stopped without handing it off.
