@@ -19,4 +19,5 @@ Changes from a session the handoff stopped before it stowed may be half done, an
 
 ## Rules
 
+Read `{{team_home}}/sops/platform-gotchas.md` before your first command.
 Never the em dash; refer to Daniel with they/them.

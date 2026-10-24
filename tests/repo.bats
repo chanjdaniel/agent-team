@@ -341,3 +341,23 @@ gotchas_problems() {
   run -0 gotchas_problems "$sop" "${lines[@]}"
   assert_equal "$output" ""
 }
+
+# The templates in templates/briefs/ (not the delivery partials) whose ## Rules section lacks the
+# gotchas line, one per line: briefs_without_gotchas <dir>
+briefs_without_gotchas() {
+  local file
+  for file in "$1"/*.md; do
+    awk '/^## / { rules = ($0 == "## Rules") }
+      rules && $0 == "Read `{{team_home}}/sops/platform-gotchas.md` before your first command." { found = 1 }
+      END { exit !found }' "$file" || basename "$file"
+  done
+}
+
+# Every worker reads the gotchas SOP first, whatever its brief, a template added later included.
+@test "every brief template tells its worker to read the gotchas SOP before its first command" {
+  [[ -f $REPO_ROOT/sops/platform-gotchas.md ]] || { echo "sops/platform-gotchas.md is missing" >&2; return 1; }
+  run -0 find "$REPO_ROOT/templates/briefs" -maxdepth 1 -name '*.md'
+  ((${#lines[@]} >= 11))
+  run -0 briefs_without_gotchas "$REPO_ROOT/templates/briefs"
+  assert_equal "$output" ""
+}

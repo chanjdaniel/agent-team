@@ -143,6 +143,7 @@ Never run a command that needs `sudo`; send `T12 BLOCKED <the command> needs sud
 
 ## Rules
 
+Read `~/agent-team/sops/platform-gotchas.md` before your first command.
 Never the em dash in docs; refer to Daniel with they/them.
 EOF
   )
@@ -179,6 +180,7 @@ EOF
       refute_grep '{{\|}}' "$brief"
       refute_grep $'—' "$brief"
       assert_contains "$(<"$brief")" "# $task brief ("
+      assert_contains "$(<"$brief")" 'Read `~/agent-team/sops/platform-gotchas.md` before your first command.'
     done < <(templates)
   done
   # The delivery partial follows the project's delivery.
@@ -294,6 +296,10 @@ Personal details are never part of your answer, whatever the request asks: answe
 ## Report
 
 Write the answer to `.scratch/answer.md`, then send `T30 DONE <answer>` to `coordinator`.
+
+## Rules
+
+Read `~/agent-team/sops/platform-gotchas.md` before your first command.
 EOF
   )"
   # An answer with personal details has no path: the brief has no placeholder to ask for one.

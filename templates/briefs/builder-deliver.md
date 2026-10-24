@@ -13,4 +13,5 @@ Task directory: `{{task_dir}}/` in the worktree (excluded from git): `spec.md`, 
 
 ## Rules
 
+Read `{{team_home}}/sops/platform-gotchas.md` before your first command.
 Never the em dash; refer to Daniel with they/them.

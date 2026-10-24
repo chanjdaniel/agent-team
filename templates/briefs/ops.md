@@ -20,3 +20,7 @@ Personal details are never part of your answer, whatever the request asks: answe
 ## Report
 
 Write the answer to `.scratch/answer.md`, then send `{{task}} DONE <answer>` to `coordinator`.
+
+## Rules
+
+Read `{{team_home}}/sops/platform-gotchas.md` before your first command.

@@ -21,4 +21,5 @@ Check before you build on any of it.
 
 ## Rules
 
+Read `{{team_home}}/sops/platform-gotchas.md` before your first command.
 Never the em dash; refer to Daniel with they/them.
