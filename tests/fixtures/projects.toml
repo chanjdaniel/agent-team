@@ -1,25 +1,5 @@
 # A fixture shaped like the team home's projects.toml (2026-10-24), for the tests that read a real registry.
-# The project registry: one table per project the team works on, keyed by its short name.
-# Read it only through bin/team-project, which checks it and prints JSON for jq; CI runs
-# `team-project --check` on it. Paths are relative to $HOME unless a comment says otherwise.
-#
-# Per project:
-#   repo             the GitHub repository, owner/name
-#   path             the primary checkout
-#   base             the branch tasks start from and PRs target
-#   delivery         how a builder delivers: "no-mistakes" (the gate opens the PR) or "direct-pr"
-#   merge_method     how team-merge merges a PR: "merge", "squash" or "rebase"
-#   required_checks  checks that must be present and green on the PR's head, beyond the
-#                    server's own required checks
-#   local_checks     optional: shell commands, run from the root of a checkout of the PR's exact
-#                    head, that must all pass before team-merge merges it (default none)
-#   task_dir         a task's scratch directory, relative to a worktree
-#   docs             what a worker reads first, relative to a worktree
-#   toolkits         the toolkits a worker of this project may be given
-# Per project pool ([<name>.pool]), where task worktrees come from:
-#   provider         "treehouse" (leased pre-warmed slots) or "git" (plain git worktrees)
-#   lease, return    treehouse only: the lease and return commands, relative to the primary checkout
-#   slots            the trusted slot paths a task's worktree may be
+# The project registry, read only through bin/team-project; `team-project --help` documents every key.
 
 [conventioner]
 repo = "chanjdaniel/Conventioner"
@@ -49,9 +29,6 @@ path = "agent-team"
 base = "dev"
 delivery = "direct-pr"
 merge_method = "merge"
-# CI policy B (Daniel, 2026-10-23): the private repo runs no GitHub Actions for dev, so a PR to
-# dev has no GitHub checks; team-merge runs tests/run (shellcheck, bats and the toolkit tests, which
-# need Docker) on its head instead.
 required_checks = []
 local_checks = ["tests/run"]
 task_dir = ".scratch/task"
