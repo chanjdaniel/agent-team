@@ -296,6 +296,41 @@ team home: committed $(git -C "$TEAM_HOME" rev-parse --short HEAD) chore: checkp
   [[ ! -e $TEAM_HOME/tasks/T1/scratch ]]
 }
 
+@test "the archive leaves out nested repositories, files over 1 MiB and names that may hold a secret, each named" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  local dir=$HOME/slots/home/1/.scratch/task
+  echo "notes" >"$dir/notes.md"
+  git init -q "$dir/clone"
+  head -c 3M /dev/zero >"$dir/clone/tool.bin"
+  git -C "$dir/clone" add tool.bin
+  git -C "$dir/clone" commit -q -m "feat: tool"
+  head -c 2M /dev/zero >"$dir/big.bin"
+  echo "SECRET=1" >"$dir/.env.local"
+  echo '{}' >"$dir/access.json"
+  mkdir -p "$TEAM_HOME/machine"
+  echo '{"secrets": [{"id": "discord-access-json", "target": ".claude/channels/discord/access.json"}]}' \
+    >"$TEAM_HOME/machine/secrets.json"
+  # An archive made before these were left out loses them on the next mirror.
+  mkdir -p "$TEAM_HOME/tasks/T1/scratch"
+  echo "old" >"$TEAM_HOME/tasks/T1/scratch/big.bin"
+
+  run_bin -0 --separate-stderr team-checkpoint
+  assert_equal "$stderr" "team-checkpoint: left out of tasks/T1/scratch: clone (nested repository)
+team-checkpoint: left out of tasks/T1/scratch: big.bin (over 1 MiB)
+team-checkpoint: left out of tasks/T1/scratch: .env.local (may hold a secret)
+team-checkpoint: left out of tasks/T1/scratch: access.json (may hold a secret)"
+  assert_contains "$output" "T1 home: archived .scratch/task to tasks/T1/scratch"
+  assert_equal "$(cd "$TEAM_HOME/tasks/T1/scratch" && find . -mindepth 1 | sort)" "./notes.md"
+  # The checkpoint's commit holds the notes alone: no gitlink, no large file, no secret.
+  assert_equal "$(git -C "$team_origin" ls-tree -r dev tasks/T1/scratch)" \
+    "100644 blob $(git -C "$TEAM_HOME" hash-object "$dir/notes.md")	tasks/T1/scratch/notes.md"
+  # A file of exactly 1 MiB is not over it.
+  head -c 1M /dev/zero >"$dir/big.bin"
+  run_bin -0 --separate-stderr team-checkpoint --force
+  assert_equal "$(cd "$TEAM_HOME/tasks/T1/scratch" && find . -mindepth 1 | sort)" "./big.bin
+./notes.md"
+}
+
 @test "the team-home commit holds only the scratch archives, memory and the ledger, whatever else is staged" {
   run_bin -0 team-open home feature feat work "Do the work"
   echo "spec" >"$HOME/slots/home/1/.scratch/task/spec.md"
