@@ -58,8 +58,8 @@ every_tool_fails() {
         and (.source | type == "object" and length > 0 and (keys - ["arch", "macos"] == []))
       end)' "$LOCK"
   local os both=(claude node codegraph gh-axi chrome-devtools-axi lavish-axi quota-axi tasks-axi bun
-    treehouse no-mistakes op git jq tmux gh rsync docker docker-compose python bash)
-  local mac_only=(coreutils findutils gnu-sed grep flock) arch_only=(unzip)
+    treehouse no-mistakes op git jq tmux gh rsync docker docker-compose python bash go)
+  local mac_only=(coreutils findutils gnu-sed grep flock) arch_only=(make unzip)
   for os in arch macos; do
     local expected=("${both[@]}")
     if [[ $os == arch ]]; then expected+=("${arch_only[@]}"); else expected+=("${mac_only[@]}"); fi
@@ -68,12 +68,18 @@ every_tool_fails() {
   # Pinned: the tools the bootstrap installs itself, op on Linux only; Claude Code only warns.
   assert_equal "$(jq -r '[.tools[] | select(.pin or .from) | .name] | join(" ")' "$LOCK")" \
     "claude node codegraph gh-axi chrome-devtools-axi lavish-axi quota-axi tasks-axi bun treehouse no-mistakes op"
-  # treehouse and no-mistakes are GitHub releases, each archive's checksum recorded; no-mistakes
-  # also records Daniel's fork, which from = "fork" would pin instead.
-  assert_equal "$(jq -r '[.tools[] | select(.from) | "\(.name)=\(.from):\(.release.repo)@\(.release.tag)"] | join(" ")' "$LOCK")" \
-    "treehouse=release:kunchenguid/treehouse@v3.1.5 no-mistakes=release:kunchenguid/no-mistakes@v1.84.0"
-  assert_equal "$(jq -r '.tools[] | select(.fork) | "\(.name)=\(.fork.repo)@\(.fork.commit[:7])"' "$LOCK")" \
-    "no-mistakes=chanjdaniel/no-mistakes@389716a"
+  # treehouse is a GitHub release, each archive's checksum recorded; no-mistakes is Daniel's fork,
+  # built at the commit on its main that merged upstream v1.84.0, and keeps upstream's release,
+  # which from = "release" would pin instead.
+  assert_equal "$(jq -r '[.tools[] | select(.from) | "\(.name)=\(.from)"] | join(" ")' "$LOCK")" \
+    "treehouse=release no-mistakes=fork"
+  assert_equal "$(jq -r '[.tools[] | select(.release) | "\(.name)=\(.release.repo)@\(.release.tag)"] | join(" ")' "$LOCK")" \
+    "treehouse=kunchenguid/treehouse@v3.1.5 no-mistakes=kunchenguid/no-mistakes@v1.84.0"
+  assert_equal "$(jq -r '.tools[] | select(.fork) | "\(.name)=\(.fork.repo)@\(.fork.commit[:7]) \(.fork.version)"' "$LOCK")" \
+    "no-mistakes=chanjdaniel/no-mistakes@ac6b53f 1.84.0-13-gac6b53f"
+  # The fork builds with Go (its go.mod's version) and make, from the OS packages.
+  assert_equal "$(jq -r '[.tools[] | select(.name | IN("go", "make")) | "\(.name)>=\(.min):\(.source | keys | join(","))"] | join(" ")' "$LOCK")" \
+    "go>=1.25.0:arch,macos make>=4.0:arch"
   assert_equal "$(jq -r '[.tools[] | select(.pin_mismatch) | "\(.name)=\(.pin_mismatch)"] | join(" ")' "$LOCK")" "claude=WARN"
   assert_equal "$(jq -r '.tools[] | select(.name == "docker-compose") | .min' "$LOCK")" 2.24.0
 }
@@ -86,6 +92,7 @@ every_tool_fails() {
   expected=$(printf '%s\n' os; lock_tools arch | cut -f1 | sed 's/^/tool /'
     printf '%s\n' docker chrome machine 'team home' 'git hooks' 'claude login' 'github login' config plugins memory discord 'own settings' 1password
     secret_ids | sed 's/^/secret /'
+    echo opencode-gate
     echo records
     project_checks
     printf '%s\n' clock lease heartbeat offline)
@@ -110,6 +117,7 @@ every_tool_fails() {
   expected=$(printf '%s\n' os homebrew; lock_tools macos | cut -f1 | sed 's/^/tool /'
     printf '%s\n' docker chrome machine 'team home' 'git hooks' 'claude login' 'github login' config plugins memory discord 'own settings' 1password
     secret_ids | sed 's/^/secret /'
+    echo opencode-gate
     echo records
     project_checks
     printf '%s\n' clock lease heartbeat offline)
@@ -134,8 +142,6 @@ every_tool_fails() {
   every_tool_fails arch -
   sha=$(jq -r '.tools[] | select(.name == "treehouse") | .release.sha256["linux-amd64"]' "$LOCK")
   assert_equal "$(line_of 'tool treehouse')" "FAIL tool treehouse: not installed; fix: f=\$(mktemp) && curl -fsSLo \"\$f\" https://github.com/kunchenguid/treehouse/releases/download/v3.1.5/treehouse-v3.1.5-linux-amd64.tar.gz && echo \"$sha  \$f\" | sha256sum -c - && sudo mkdir -p /usr/local/bin && sudo tar -xzf \"\$f\" -C /usr/local/bin treehouse && rm -f \"\$f\""
-  sha=$(jq -r '.tools[] | select(.name == "no-mistakes") | .release.sha256["linux-amd64"]' "$LOCK")
-  assert_equal "$(line_of 'tool no-mistakes')" "FAIL tool no-mistakes: not installed; fix: f=\$(mktemp) && curl -fsSLo \"\$f\" https://github.com/kunchenguid/no-mistakes/releases/download/v1.84.0/no-mistakes-v1.84.0-linux-amd64.tar.gz && echo \"$sha  \$f\" | sha256sum -c - && mkdir -p ~/.no-mistakes/bin && tar -xzf \"\$f\" -C ~/.no-mistakes/bin no-mistakes && rm -f \"\$f\""
 
   # An Intel Mac gets its own archive, checked with macOS's shasum.
   on_macos
@@ -154,13 +160,35 @@ every_tool_fails() {
   assert_equal "$(line_of 'tool treehouse')" "FAIL tool treehouse: not installed; fix: bin/lib/tools.lock records no linux-arm64 archive of treehouse v3.1.5; see https://github.com/kunchenguid/treehouse/releases/tag/v3.1.5"
 }
 
-@test "from = fork pins the fork's build instead of the release, a one-line change in tools.lock" {
-  local lock=$BATS_TEST_TMPDIR/tools.lock line
-  jq '(.tools[] | select(.name == "no-mistakes")).from = "fork"' "$LOCK" >"$lock"
+@test "no-mistakes is built from Daniel's fork at its pinned commit, on Arch and macOS alike" {
+  local fix='d=$(mktemp -d) && git clone -q https://github.com/chanjdaniel/no-mistakes "$d" && git -C "$d" checkout -q ac6b53fbbac10a4ca6c940b004fd9c5f557f983e && make -C "$d" build && mkdir -p ~/.no-mistakes/bin && install -m 755 "$d/bin/no-mistakes" ~/.no-mistakes/bin/no-mistakes && rm -rf "$d"'
+  every_tool_fails arch -
+  assert_equal "$(line_of 'tool no-mistakes')" "FAIL tool no-mistakes: not installed; fix: $fix"
+  assert_equal "$(line_of 'tool go')" "FAIL tool go: not installed; fix: sudo pacman -S --needed go"
+  assert_equal "$(line_of 'tool make')" "FAIL tool make: not installed; fix: sudo pacman -S --needed make"
+  # The build of an older commit (the fork's v1.37.0 build) is off the pin.
+  tools_at arch
+  answer "no-mistakes --version" "no-mistakes version v1.37.0-4-g389716a (389716a) 2026-07-14T22:29:23Z"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of 'tool no-mistakes')" "FAIL tool no-mistakes: 1.37.0-4-g389716a, not the pinned 1.84.0-13-gac6b53f; fix: $fix"
+
+  on_macos
+  tools_at macos
+  answer "no-mistakes --version"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of 'tool no-mistakes')" "FAIL tool no-mistakes: not installed; fix: $fix"
+  assert_equal "$(line_of 'tool go')" "PASS tool go: 1.25.0 (minimum 1.25.0)"
+  [[ -z $(line_of 'tool make') ]]
+}
+
+@test "from = release pins upstream's release instead of the fork, a one-line change in tools.lock" {
+  local lock=$BATS_TEST_TMPDIR/tools.lock line sha
+  jq '(.tools[] | select(.name == "no-mistakes")).from = "release"' "$LOCK" >"$lock"
   assert_equal "$(diff "$LOCK" "$lock" | grep -c '^[<>]')" 2
+  sha=$(jq -r '.tools[] | select(.name == "no-mistakes") | .release.sha256["linux-amd64"]' "$LOCK")
   line=$(jq -L "$REPO_ROOT/bin/lib" -r --arg os arch --arg machine x86_64 \
     'include "tools"; tools_for($os; $machine) | select(.name == "no-mistakes") | "\(.pin)\t\(.source)"' "$lock")
-  assert_equal "$line" "1.37.0-4-g389716a	d=\$(mktemp -d) && git clone -q https://github.com/chanjdaniel/no-mistakes \"\$d\" && git -C \"\$d\" checkout -q 389716a49e2f3419fccedca0f9dc3f1f59c4a2ce && make -C \"\$d\" build && mkdir -p ~/.no-mistakes/bin && install -m 755 \"\$d/bin/no-mistakes\" ~/.no-mistakes/bin/no-mistakes && rm -rf \"\$d\""
+  assert_equal "$line" "1.84.0	f=\$(mktemp) && curl -fsSLo \"\$f\" https://github.com/kunchenguid/no-mistakes/releases/download/v1.84.0/no-mistakes-v1.84.0-linux-amd64.tar.gz && echo \"$sha  \$f\" | sha256sum -c - && mkdir -p ~/.no-mistakes/bin && tar -xzf \"\$f\" -C ~/.no-mistakes/bin no-mistakes && rm -f \"\$f\""
   # The other tools resolve exactly as before.
   assert_equal "$(jq -L "$REPO_ROOT/bin/lib" -c --arg os arch --arg machine x86_64 'include "tools"; tools_for($os; $machine) | select(.name != "no-mistakes")' "$lock")" \
     "$(jq -L "$REPO_ROOT/bin/lib" -c --arg os arch --arg machine x86_64 'include "tools"; tools_for($os; $machine) | select(.name != "no-mistakes")' "$LOCK")"
@@ -534,6 +562,47 @@ FAIL secret conventioner-back-end-env: not a file; fix: move aside what is at it
   rm "$TEAM_HOME/machine/secrets.json"
   run_bin -1 team-doctor
   assert_equal "$(line_of secrets)" "FAIL secrets: no machine/secrets.json in $TEAM_HOME; fix: fix what team-secrets names, then run team-doctor again"
+}
+
+@test "the opencode-gate line fails while the gate's opencode wrapper is missing, stale or not executable, or config.yaml does not name it" {
+  local wrapper=$HOME/.no-mistakes/bin/opencode-gate config=$HOME/.no-mistakes/config.yaml
+  local install="mkdir -p ~/.no-mistakes/bin && install -m 755 $CODE_CHECKOUT/bin/lib/opencode-gate ~/.no-mistakes/bin/opencode-gate"
+  local setting="agent_path_override: {opencode: $wrapper}" step="as manual-steps.md's install of the no-mistakes fork says"
+  tools_at arch
+  run_bin -0 team-doctor
+  assert_equal "$(line_of opencode-gate)" "PASS opencode-gate: ~/.no-mistakes/bin/opencode-gate is the code's bin/lib/opencode-gate, and config.yaml's agent_path_override names it for opencode"
+  # The flow form, quoted, is read too; a comment after it is not part of the path.
+  printf '%s\n' 'agent: opencode' "agent_path_override: {codex: /x/codex, opencode: \"$wrapper\"} # the gate's" >"$config"
+  run_bin -0 team-doctor
+  assert_contains "$(line_of opencode-gate)" "PASS opencode-gate: "
+
+  printf '%s\n' 'agent: opencode' 'agent_path_override:' '  opencode: /usr/bin/opencode' 'log_level: info' >"$config"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of opencode-gate)" "FAIL opencode-gate: ~/.no-mistakes/config.yaml's agent_path_override does not name ~/.no-mistakes/bin/opencode-gate for opencode, so the gate's opencode reads Claude Code's config and not the gate's own; fix: Daniel sets $setting in ~/.no-mistakes/config.yaml, $step"
+  # A key of that name under another block is not the setting.
+  printf '%s\n' 'agent: opencode' 'agent_args_override:' "  opencode: $wrapper" >"$config"
+  run_bin -1 team-doctor
+  assert_contains "$(line_of opencode-gate)" "FAIL opencode-gate: ~/.no-mistakes/config.yaml's agent_path_override does not name"
+  rm "$config"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of opencode-gate)" "FAIL opencode-gate: ~/.no-mistakes/config.yaml is not there; fix: Daniel runs team-secrets restore in their own terminal (the secret no-mistakes-config) and sets $setting in it, $step"
+
+  chmod 644 "$wrapper"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of opencode-gate)" "FAIL opencode-gate: ~/.no-mistakes/bin/opencode-gate is not executable; fix: $install"
+  echo 'exec opencode "$@"' >>"$wrapper"
+  chmod 755 "$wrapper"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of opencode-gate)" "FAIL opencode-gate: ~/.no-mistakes/bin/opencode-gate is not the code's bin/lib/opencode-gate; fix: $install"
+  rm "$wrapper"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of opencode-gate)" "FAIL opencode-gate: ~/.no-mistakes/bin/opencode-gate is not installed; fix: $install"
+  # Nothing else fails, on macOS alike.
+  assert_equal "$(grep -v '^PASS ' <<<"$output" || true)" "$(line_of opencode-gate)"
+  on_macos
+  tools_at macos
+  run_bin -1 team-doctor
+  assert_equal "$(line_of opencode-gate)" "FAIL opencode-gate: ~/.no-mistakes/bin/opencode-gate is not installed; fix: $install"
 }
 
 # The records line's fix, after the problems it names.

@@ -4,8 +4,9 @@
 # builds. Every installer is a stub that installs by making the tool's version stub answer its
 # pin or min (mark_installed): brew, pacman (behind a sudo stub that runs nothing else), npm, the
 # curl | bash installers and nvm's, the release archives (curl, sha256sum or shasum, tar), the
-# clones (git clone of a GitHub URL comes from the test's bare origin of the same name), the
-# no-mistakes gate and claude's plugin commands. Nothing reaches this machine's own HOME, package
+# fork's build (its clone, checkout, make build and install, logged to fork-build.log), the clones
+# (git clone of a GitHub URL comes from the test's bare origin of the same name), the no-mistakes
+# gate and claude's plugin commands. Nothing reaches this machine's own HOME, package
 # managers or GitHub.
 
 load helpers/common
@@ -105,8 +106,18 @@ echo "$PWD" >>"$STUB_FIXTURES/gates"
 echo "$PWD" >>"$STUB_CALLS/no-mistakes-init.log"
 EOF
 
-  # Version stubs that also stand in for what the release archives' commands do.
+  # Version stubs that also stand in for what the release archives' commands and the fork's
+  # build do: the fork's clone is an empty directory its checkout and make build go along with.
   wrapper git <<EOF
+if [[ \${1:-} == clone && \${3:-} == https://github.com/chanjdaniel/no-mistakes ]]; then
+  echo "\$*" >>"\$STUB_CALLS/fork-build.log"
+  mkdir -p "\${!#}" && : >"\${!#}/.fork"
+  exit
+fi
+if [[ \${1:-} == -C && -f \${2:-}/.fork ]]; then
+  echo "git \${*:3}" >>"\$STUB_CALLS/fork-build.log"
+  exit
+fi
 if [[ \${1:-} == clone && \${3:-} == https://github.com/* ]]; then
   echo "\$*" >>"\$STUB_CALLS/git-clone.log"
   url=\$3
@@ -116,6 +127,16 @@ fi
 EOF
   wrapper tar <<'EOF'
 if [[ $1 == -xzf ]]; then mark_installed "${!#}"; exit 0; fi
+EOF
+  wrapper make <<'EOF'
+if [[ $1 == -C && -f $2/.fork ]]; then echo "make ${*:3}" >>"$STUB_CALLS/fork-build.log"; exit 0; fi
+EOF
+  wrapper install <<'EOF'
+if [[ ${!#} == "$HOME/.no-mistakes/bin/no-mistakes" ]]; then
+  echo "install $*" >>"$STUB_CALLS/fork-build.log"
+  mark_installed no-mistakes
+  exit 0
+fi
 EOF
   wrapper sha256sum <<'EOF'
 if [[ $1 == -c ]]; then cat >/dev/null; echo "-: OK"; exit 0; fi
@@ -156,7 +177,7 @@ fresh() {
     export SHELL=/bin/zsh
   fi
   tools_at "$1" -
-  rm -rf "$HOME/.claude/settings.json" "$HOME/.claude/skills" "$CONVENTIONER" "$SITE"
+  rm -rf "$HOME/.claude/settings.json" "$HOME/.claude/skills" "$HOME/.no-mistakes" "$CONVENTIONER" "$SITE"
   echo '[]' >"$STUB_FIXTURES/plugins.json"
   echo '[]' >"$STUB_FIXTURES/marketplaces.json"
   : >"$STUB_FIXTURES/gates"
@@ -174,7 +195,7 @@ install_calls() {
   for cmd in brew pacman npm sudo; do stub_calls "$cmd" | sed "s/^/$cmd /"; done
   stub_calls curl | grep -v '"-sSI"' | sed 's/^/curl /' || true
   stub_calls claude | grep -E '^\["plugin","(marketplace","add|install|disable)"' | sed 's/^/claude /' || true
-  cat "$STUB_CALLS"/{git-clone,no-mistakes-init,nvm}.log 2>/dev/null || true
+  cat "$STUB_CALLS"/{git-clone,fork-build,no-mistakes-init,nvm}.log 2>/dev/null || true
 }
 
 # What a run may change, listed with each file's size and modification time: HOME (the stubs'
@@ -183,6 +204,9 @@ footprint() {
   find "$HOME" "$TEAM_HOME" -path "$TEAM_HOME/.git" -prune -o -printf '%p %s %T@\n' | sort
   git -C "$TEAM_HOME" status --porcelain
 }
+
+# The install of no-mistakes: a build of Daniel's fork at its pinned commit, on either OS.
+FORK_BUILD='d=$(mktemp -d) && git clone -q https://github.com/chanjdaniel/no-mistakes "$d" && git -C "$d" checkout -q ac6b53fbbac10a4ca6c940b004fd9c5f557f983e && make -C "$d" build && mkdir -p ~/.no-mistakes/bin && install -m 755 "$d/bin/no-mistakes" ~/.no-mistakes/bin/no-mistakes && rm -rf "$d"'
 
 # The lines of <stage> in the output, without the prefix.
 stage_lines() {
@@ -227,14 +251,20 @@ summary: set up, and this machine holds the lease"
 named the team home $TEAM_HOME (~/.config/agent-team/home)"
   assert_equal "$(head -n1 "$HOME/.config/agent-team/machine")" laptop
   assert_equal "$(cat "$HOME/.config/agent-team/home")" "$TEAM_HOME"
-  assert_equal "$(stage_lines packages)" "running: brew install 1password-cli git jq tmux gh rsync python bash coreutils findutils gnu-sed grep flock
+  assert_equal "$(stage_lines packages)" "running: brew install 1password-cli git jq tmux gh rsync python bash go coreutils findutils gnu-sed grep flock
 running: brew install --cask docker-desktop"
-  assert_equal "$(stage_lines tools | sed -n '1,4p;11,12p')" "running: curl -fsSL https://claude.ai/install.sh | bash -s 2.1.308
+  assert_equal "$(stage_lines tools | sed -n '1,4p;11,13p')" "running: curl -fsSL https://claude.ai/install.sh | bash -s 2.1.308
 running: curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
 running: nvm install 22.19.0 && nvm alias default 22.19.0
 running: npm install -g @colbymchenry/codegraph@1.6.0
 running: f=\$(mktemp) && curl -fsSLo \"\$f\" https://github.com/kunchenguid/treehouse/releases/download/v3.1.5/treehouse-v3.1.5-darwin-arm64.tar.gz && echo \"$sha  \$f\" | shasum -a 256 -c && mkdir -p ~/.local/bin && tar -xzf \"\$f\" -C ~/.local/bin treehouse && rm -f \"\$f\"
-running: f=\$(mktemp) && curl -fsSLo \"\$f\" https://github.com/kunchenguid/no-mistakes/releases/download/v1.84.0/no-mistakes-v1.84.0-darwin-arm64.tar.gz && echo \"$(jq -r '.tools[] | select(.name == "no-mistakes") | .release.sha256["darwin-arm64"]' "$LOCK")  \$f\" | shasum -a 256 -c && mkdir -p ~/.no-mistakes/bin && tar -xzf \"\$f\" -C ~/.no-mistakes/bin no-mistakes && rm -f \"\$f\""
+running: $FORK_BUILD
+running: mkdir -p ~/.no-mistakes/bin && install -m 755 $CODE_CHECKOUT/bin/lib/opencode-gate ~/.no-mistakes/bin/opencode-gate"
+  # The build: the fork cloned into a new temporary directory (<d> here), built there and installed.
+  assert_equal "$(sed -E 's#[^ ]*/tmp\.[[:alnum:]]+#<d>#g' "$STUB_CALLS/fork-build.log")" "clone -q https://github.com/chanjdaniel/no-mistakes <d>
+git checkout -q ac6b53fbbac10a4ca6c940b004fd9c5f557f983e
+make build
+install -m 755 <d>/bin/no-mistakes $HOME/.no-mistakes/bin/no-mistakes"
   assert_equal "$(stage_lines tools | tail -n 2)" "running: add ~/.local/bin to PATH in ~/.zshrc
 running: add ~/.no-mistakes/bin to PATH in ~/.zshrc"
   assert_equal "$(cat "$HOME/.zshrc")" "export PATH=\"\$HOME/.local/bin:\$PATH\" # team-bootstrap
@@ -250,14 +280,16 @@ running: claude plugin disable discord@claude-plugins-official --scope user"
   assert_equal "$(stage_lines check | grep '^Daniel')" "Daniel 1: docker: Daniel opens Docker Desktop once and accepts its license (\`docker info\` cannot reach the daemon: Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?)
 Daniel 2: 1password: brew install --cask 1password, then turn on its Settings > Developer > Integrate with 1Password CLI (the 1Password app is not at $TEAM_1PASSWORD_APP, so team-secrets restore can only ask for each secret to be pasted)
 Daniel 3: secrets: with the 1Password app signed in and its CLI integration on, in your own terminal, not through an agent: $CODE_CHECKOUT/bin/team-secrets restore (missing: discord-bot-env discord-access-json conventioner-env conventioner-front-end-env conventioner-back-end-env)
-Daniel 4: trust conventioner: Daniel runs claude once in ~/projects/Conventioner and accepts the trust dialog (claude --bg in ~/projects/Conventioner says Workspace not trusted)
-Daniel 5: trust site: Daniel runs claude once in ~/projects/site and accepts the trust dialog (claude --bg in ~/projects/site says Workspace not trusted)
-Daniel 6: chrome: brew install --cask google-chrome (Google Chrome is not installed, so chrome-devtools-axi has no browser)
-Daniel 7: own settings: write this machine's own in ~/.claude/settings.json (\`claude auto-mode defaults\` shows the form); team-config keeps it (autoMode.environment not set here, so auto mode's classifier knows nothing of this machine)
-Daniel 8: restart: exit this Claude Code session and run claude again in $CODE_CHECKOUT, so the new user settings, skills and plugins load"
+Daniel 4: opencode-gate: Daniel runs team-secrets restore in their own terminal (the secret no-mistakes-config) and sets agent_path_override: {opencode: $HOME/.no-mistakes/bin/opencode-gate} in it, as manual-steps.md's install of the no-mistakes fork says (~/.no-mistakes/config.yaml is not there)
+Daniel 5: trust conventioner: Daniel runs claude once in ~/projects/Conventioner and accepts the trust dialog (claude --bg in ~/projects/Conventioner says Workspace not trusted)
+Daniel 6: trust site: Daniel runs claude once in ~/projects/site and accepts the trust dialog (claude --bg in ~/projects/site says Workspace not trusted)
+Daniel 7: chrome: brew install --cask google-chrome (Google Chrome is not installed, so chrome-devtools-axi has no browser)
+Daniel 8: own settings: write this machine's own in ~/.claude/settings.json (\`claude auto-mode defaults\` shows the form); team-config keeps it (autoMode.environment not set here, so auto mode's classifier knows nothing of this machine)
+Daniel 9: restart: exit this Claude Code session and run claude again in $CODE_CHECKOUT, so the new user settings, skills and plugins load"
   # Only Daniel's steps fail: every tool line passes, and so do the projects' and the config's.
   assert_equal "$(stage_lines check | sed -n 's/^doctor: FAIL \([^:]*\):.*/\1/p' | sed 's/^secret .*/secret/' | uniq)" "docker
 secret
+opencode-gate
 trust conventioner
 trust site"
   assert_equal "$(stage_lines check | tail -n1)" "summary: not set up yet: only Daniel's steps above are left; then team-bootstrap again"
@@ -274,11 +306,11 @@ trust site"
   assert_equal "$(install_calls)" "$calls"
   assert_equal "$(grep -v '^check: ' <<<"$output" | grep -vc ': done')" 1
   assert_equal "$(stage_lines preflight | head -n1)" "macOS"
-  assert_equal "$(stage_lines check | grep -c '^Daniel')" 7
+  assert_equal "$(stage_lines check | grep -c '^Daniel')" 8
 }
 
 # The Arch packages of the lock, in its order.
-ARCH_PACKAGES="git jq tmux github-cli rsync docker docker-compose python bash unzip"
+ARCH_PACKAGES="git jq tmux github-cli rsync docker docker-compose python bash go make unzip"
 
 @test "on Arch a step needing sudo is Daniel's without a terminal: one line naming it, exit 1, nothing tried" {
   fresh arch
@@ -293,7 +325,7 @@ ARCH_PACKAGES="git jq tmux github-cli rsync docker docker-compose python bash un
   run_bin -1 team-bootstrap
   assert_equal "$(tail -n1 <<<"$output")" "tools: Daniel: in your own terminal run $CODE_CHECKOUT/bin/team-bootstrap --stage tools, which installs treehouse op with sudo and asks for your password; then team-bootstrap again"
   assert_equal "$(stub_calls npm | wc -l)" 6
-  assert_contains "$output" "tools: running: f=\$(mktemp) && curl -fsSLo \"\$f\" https://github.com/kunchenguid/no-mistakes/releases/download/v1.84.0/no-mistakes-v1.84.0-linux-amd64.tar.gz"
+  assert_contains "$output" "tools: running: $FORK_BUILD"
   assert_equal "$(stub_calls sudo)" ""
   [[ $output != *projects:* ]]
 }
@@ -463,7 +495,7 @@ nothing to add: what differs is Daniel's call (the check stage lists it)"
   assert_equal "$(install_calls)" ""
   assert_equal "$(stage_lines machine)" "would write laptop to ~/.config/agent-team/machine
 would write $TEAM_HOME to ~/.config/agent-team/home"
-  assert_equal "$(stage_lines packages)" "would run: brew install 1password-cli git jq tmux gh rsync python bash coreutils findutils gnu-sed grep flock
+  assert_equal "$(stage_lines packages)" "would run: brew install 1password-cli git jq tmux gh rsync python bash go coreutils findutils gnu-sed grep flock
 would run: brew install --cask docker-desktop"
   assert_equal "$(stage_lines tools | sed -n '2,3p')" "would run: curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
 would run: nvm install 22.19.0 && nvm alias default 22.19.0"

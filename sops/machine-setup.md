@@ -66,11 +66,13 @@ Each stage after the first is one `~/agent-team/bin/team-bootstrap` run; read it
 
 ### Stage 4: tools
 
-`~/agent-team/bin/team-bootstrap --stage tools`: everything else `bin/lib/tools.lock` pins for this OS: Claude Code, nvm with Node and the global npm tools, Bun, the treehouse and no-mistakes release archives (each checked against its SHA-256), and on Arch the 1Password CLI.
+`~/agent-team/bin/team-bootstrap --stage tools`: everything else `bin/lib/tools.lock` pins for this OS: Claude Code, nvm with Node and the global npm tools, Bun, the treehouse release archive (checked against its SHA-256), no-mistakes built from Daniel's fork at its pinned commit (with stage 3's Go and make), and on Arch the 1Password CLI.
+Then it installs the gate's opencode wrapper, `~/.no-mistakes/bin/opencode-gate`, from `bin/lib/opencode-gate`: it gives every opencode the gate starts the gate-only config, on Arch and macOS alike.
 
 - On Arch, treehouse and `op` install with `sudo`: the same stop and the same request as stage 3, with `--stage tools`.
 - `~/.local/bin` and `~/.no-mistakes/bin` get one `export PATH=...  # team-bootstrap` line each in `~/.zshrc` or `~/.bashrc` (by `$SHELL`); for another shell, ask Daniel to add them.
 - A Claude Code newer than its pin is a WARN and is left alone.
+- `~/.no-mistakes/config.yaml` comes back with `team-secrets restore`, one of stage 7's steps; until it names the wrapper as `agent_path_override`'s `opencode`, the doctor's `opencode-gate` line fails, and stage 7 lists the edit as Daniel's step.
 
 ### Stage 5: projects
 
@@ -130,6 +132,7 @@ Done when `check` lists no `Daniel <n>:` line.
 | Docker access | 7 | macOS: open Docker Desktop, accept its license; Arch: own terminal, `sudo systemctl enable --now docker.service`, then `sudo usermod -aG docker $USER` and a new login if the doctor then says permission denied | GUI or `sudo` |
 | 1Password app: install, sign in, CLI integration (and on Arch, unlock with system authentication) | 7 | macOS: `brew install --cask 1password`; Arch: the native AUR package; then the app's Settings > Developer > Integrate with 1Password CLI | account login, app settings |
 | `team-secrets restore` | 7 | own terminal: `~/agent-team/bin/team-secrets restore` | Touch ID or system authentication; values never reach an agent |
+| `~/.no-mistakes/config.yaml` naming the gate's opencode wrapper, when restore did not bring it in | 7 | Daniel's own edit: `agent_path_override: {opencode: <HOME>/.no-mistakes/bin/opencode-gate}`, the path written out in full (the doctor's fix names it) | it is Daniel's own config file |
 | Trust, once per project root (the team home included) | 7 | own terminal: `claude` in the root, accept, `/exit` | interactive dialog |
 | Chrome | 7 | macOS: `brew install --cask google-chrome`; Arch: `google-chrome` from the AUR, or `sudo pacman -S --needed chromium` | browser sign-in, `sudo` on Arch |
 | The dev guard | 7 | this session: `! git -C ~/agent-team config core.hooksPath bin/hooks/git` | every team session is denied `core.hooksPath` |
@@ -160,6 +163,7 @@ On a fresh machine, Daniel meets them in this order (recorded from `team-bootstr
 | Home path | `/home/<user>` | `/Users/<user>`; recorded paths under either are read as the same path under this `$HOME` |
 | Filesystem | case-sensitive | APFS, case-insensitive by default; no repo has case-only name clashes today |
 | Release archives | `linux-amd64` | `darwin-arm64` or `darwin-amd64` |
+| The gate's environment | the no-mistakes daemon is a systemd user unit; `~/.no-mistakes/bin/opencode-gate` sets opencode's environment, so the unit needs no drop-in | a LaunchAgent that no-mistakes rewrites on each start, keeping only `HOME`, `PATH` and proxy variables; the same wrapper sets opencode's environment |
 
 ## 5. When something fails
 
