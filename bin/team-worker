@@ -86,7 +86,7 @@ if [[ $task != T0 ]]; then
   [[ $status != closed ]] || die "$task is closed"
   # Every task has its Discord thread before any worker starts (bin/team-thread).
   jq -e 'any(.[]; .event == "thread")' <<<"$events" >/dev/null ||
-    die "$task has no Discord thread; open one first with bin/team-thread"
+    die "$task has no Discord thread; open one first with team-thread"
 
   # A task opened by team-open launches only in one of its open worktrees; tasks from before
   # team-open (no opened event) launch in any linked worktree.

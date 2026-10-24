@@ -34,7 +34,7 @@ Prefer sharpening, merging or dropping entries to adding them, and keep the list
 
 ## Rules
 
-Read `{{team_home}}/sops/platform-gotchas.md` before your first command.
+Read `{{team_code}}/sops/platform-gotchas.md` before your first command.
 Propose, and change nothing else: Daniel approves every proposal, and an approved one becomes its own task.
 Never propose again what Daniel rejected at an earlier retro, or what is already approved and queued, unless there is new evidence, which you name.
 Never read or print secrets (`.env` values, tokens).

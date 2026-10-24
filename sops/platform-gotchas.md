@@ -2,13 +2,14 @@
 
 Every worker reads this before its first command, as its brief says.
 Each entry is a general rule about the tools the team runs on (Claude Code, git, the gate, Docker, the machine), with why it holds and where the team hit it.
-The retro proposes adding, merging and dropping entries, and Daniel approves every change.
+The retro proposes adding, merging and dropping entries, and Daniel approves every change, which lands through a PR on the code repository, since this file is code.
+A `Seen:` line's `tasks/`, `memory/` and ledger citations are records: read them in the team home, never in the code checkout.
 
 ## Put a flag that takes many values before the other options, or end the options with `--`
 
 Why: a variadic flag such as `--mcp-config`, `--add-dir` or `--allowedTools` takes every argument after it as one of its values, so a positional argument right behind it, a prompt say, is swallowed.
 
-Seen: `team-worker`'s launch, whose first prompt was swallowed so the session started idle (2026-10-21; the launch comment in `bin/team-worker`, and the coordinator's memory `~/.claude/projects/-home-danielc-agent-team/memory/agent-team-design-decisions.md`).
+Seen: `team-worker`'s launch, whose first prompt was swallowed so the session started idle (2026-10-21; the launch comment in `bin/team-worker`, and the coordinator's memory `memory/coordinator/agent-team-design-decisions.md`).
 
 ## Keep a background session's working files out of `.claude/` directories, except `.claude/worktrees/`
 

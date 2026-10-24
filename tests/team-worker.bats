@@ -90,7 +90,7 @@ run_fake() {
 
 @test "a task with no Discord thread is refused" {
   run_bin -1 team-worker T7 builder "$wt1" -- go
-  assert_contains "$output" "T7 has no Discord thread; open one first with bin/team-thread"
+  assert_contains "$output" "T7 has no Discord thread; open one first with team-thread"
   thread T8
   run_bin -1 team-worker T7 builder "$wt1" -- go
   assert_contains "$output" "T7 has no Discord thread"
