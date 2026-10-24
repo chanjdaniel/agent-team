@@ -53,7 +53,7 @@ A caller clears its own stack identity (`COMPOSE_PROJECT_NAME`, `TH_PORTS` and e
 
 An agent starts, reaches, stops and removes its stack with `team-stack`, never with `docker compose up`, the wrapper's `up` or `docker run`.
 
-- `team-stack up` starts the worktree's stack, labelled with its task, and seeds a new database.
+- `team-stack up` starts the worktree's stack once the machine has room for it ("Admission"), labelled with its task, and seeds a new database.
 - `eval "$(team-stack env)"` exports what reaches it: `COMPOSE_PROJECT_NAME`, a `TH_<SERVICE>_PORT` per service (the wrapper's `ports`) and the stack's five `TEAM_*` labels, so the seed, Playwright, `mongosh` and a hand-run wrapper call reach the same stack without changing its labels.
 - `team-stack seed` runs the project's seed command again, from the worktree, with those exports.
 - `team-stack stop` stops its containers and keeps its data; the next `up` starts them again and does not seed.
@@ -77,7 +77,39 @@ Every stack starts fresh for its task:
 It then runs `docker compose -p <project> down -v --remove-orphans`, removes any anonymous volume the stack's containers mounted that is still there, and fails naming each object of the stack left.
 With no stack, `stop` and `down` say so and exit 0; `env` and `seed` refuse.
 
-Exit codes: 0 done, 1 refused or failed (with the reason), 2 a malformed command line, 75 try again later.
+Exit codes: 0 done, 1 refused or failed (with the reason), 2 a malformed command line, 75 try again later (no room for the stack, see "Admission").
+
+## Admission
+
+`team-stack up` starts a stack that is not running only when the machine has room for it, so the stacks of every task, gate and person never together outgrow the PC.
+
+- It holds an exclusive lock, `~/.local/state/agent-team/stacks.lock`, from its first check until the wrapper's `up -d --wait` returns, so two racing `up` calls at the cap start exactly one stack.
+- A stack already running is admitted without a check; a stopped one is counted as new.
+- When `team-capacity` is on `PATH` or at `~/.local/bin/team-capacity`, `team-capacity admit --kind stack:<registered project>` decides: 0 admits, 75 refuses with its stderr as the reason, anything else fails `up`.
+  Until that controller exists (T19's design), `team-stack`'s own three checks decide, and all three must hold:
+  - **cap**: fewer Compose projects running on the machine (`docker compose ls`, every owner's: gates, Daniel's primary stack and hand-made stacks count too) than `stack_cap`;
+  - **memory**: the memory available, less the sum of the stack's `mem_limit`s (a Conventioner stack is about 2.75 GiB), at least `memory_floor_gib` GiB; on Linux `MemAvailable` from `/proc/meminfo`;
+  - **disk**: the free space of the file system holding Docker's root (`docker info`'s `DockerRootDir`, measured with `df`) at least `disk_floor_gb` GB.
+- With no room, `up` says once on stderr that it waits and why, re-checks every 30 seconds (letting go of the lock between checks) up to `wait_minutes`, and then exits 75 naming every failing check with its numbers, for example `team-stack: no room for conventioner-1: 6 of 6 stacks running (stack_cap 6); 4.1 GiB available after this stack's 2.8 GiB (memory_floor_gib 6)`.
+  An agent that gets 75 reports `PAUSED` with that line rather than fighting for room.
+- Gate runs never call `team-stack`, so they are counted and never held back; their own turn-taking is Conventioner's end-to-end lock.
+- Each wait that ends, admitted or not, a refusal with `wait_minutes` 0 included, adds one line to `~/.local/state/agent-team/stacks/waits.jsonl`: `{start, end, project, task, admitted, reasons}`, the reasons being the last refusal's; the janitor reads it.
+
+The machine's settings live in `~/.config/agent-team/stack.json`, a JSON object whose keys are all optional:
+
+| Key | Default | What it sets |
+| - | - | - |
+| `stack_cap` | 6 | the most Compose projects running at once, a whole number of 1 or more |
+| `memory_floor_gib` | 6 | the GiB of memory left free after a new stack's limits |
+| `disk_floor_gb` | 30 | the GB left free on Docker's file system |
+| `wait_minutes` | 15 | how long `up` waits for room; 0 does not wait |
+| `idle_minutes` | 30 | how long a team stack may go without a busy session before the sweep stops it |
+| `heartbeat_sweep` | false | whether the heartbeat runs the sweep |
+| `heartbeat_janitor` | false | whether the heartbeat runs the janitor |
+
+A file that is not one JSON object, a key of the wrong type or an unknown key is refused with the reason (exit 1), so a typo never silently keeps a default.
+
+On macOS, Docker runs in Docker Desktop's VM, so the readings differ, and both are **unverified** on a Mac: the memory is `docker info`'s `MemTotal` (the VM's) less what the running containers use (`docker stats`), and the disk is the file system holding the home directory, where Docker Desktop keeps its disk image.
 
 ## Seeing what Docker holds
 
@@ -89,4 +121,5 @@ Exit codes: 0 done, 1 refused or failed (with the reason), 2 a malformed command
 
 - The bats tests never reach the machine's Docker: `tests/helpers/docker.bash` installs a stub `docker` that answers from fixtures recorded on this machine (`tests/fixtures/docker/`) and logs every call.
 - The stub also models the fixture project's stack (`tests/fixtures/stack/`), so `up`, `env`, `seed`, `stop` and `down` are tested through the wrapper contract rather than Conventioner.
-- `tests/team-stack-live.bats` runs against the real Docker only with `TEAM_LIVE_DOCKER=1`, since a test that creates a network can break a gate run's end to end; it starts and removes the fixture's one-service stack under a project name of its own.
+- The stub also stands in for the machine's memory and disk: `TEAM_MEMINFO` names a file read in place of `/proc/meminfo`, a stub `df` answers from the test's numbers, and `TEAM_STACK_RECHECK_SECONDS` shortens the 30 seconds between admission checks.
+- `tests/team-stack-live.bats` runs against the real Docker only with `TEAM_LIVE_DOCKER=1`, since a test that creates a network can break a gate run's end to end; it starts and removes the fixture's one-service stack under a project name of its own, and races two `up` calls for the last place under `stack_cap`.

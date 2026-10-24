@@ -2,9 +2,9 @@
 # team-stack against this machine's real Docker, run only when asked for: TEAM_LIVE_DOCKER=1
 # tests/vendor/bats-core/bin/bats tests/team-stack-live.bats. Skipped otherwise, so tests/run at
 # a merge never reaches Docker while a gate run's end to end runs (sops/docker.md). The first
-# two only read (ls, and the fixture wrapper's compose config, which starts nothing); the last
-# starts and removes a stack of the fixture project's one busybox service, under a project name
-# of its own, which teardown removes whatever happened.
+# two only read (ls, and the fixture wrapper's compose config, which starts nothing); the others
+# start and remove stacks of the fixture project's one busybox service, under project names of
+# their own, which teardown removes whatever happened.
 
 load helpers/common
 load helpers/docker
@@ -52,8 +52,10 @@ setup() {
 }
 
 teardown() {
-  [[ -n ${LIVE_PROJECT:-} ]] || return 0
-  docker compose -p "$LIVE_PROJECT" down -v --remove-orphans >/dev/null 2>&1 || true
+  local project
+  for project in ${LIVE_PROJECT:-} ${LIVE_PROJECTS[@]+"${LIVE_PROJECTS[@]}"}; do
+    docker compose -p "$project" down -v --remove-orphans >/dev/null 2>&1 || true
+  done
   if [[ -n ${LIVE_ANONYMOUS:-} ]]; then docker volume rm "$LIVE_ANONYMOUS" >/dev/null 2>&1 || true; fi
 }
 
@@ -120,4 +122,43 @@ live_get() {
   assert_equal "$status" 1
   run_bin -0 team-stack down
   assert_equal "$output" "team-stack: $LIVE_PROJECT has no stack, so there is nothing to remove"
+}
+
+@test "live: two ups racing for the last place under stack_cap start exactly one stack, and the other exits 75" {
+  local a=liva$RANDOM$$ b=livb$RANDOM$$ wt_a wt_b
+  stack_project "$a"
+  wt_a=$STACK_WORKTREE
+  stack_project "$b"
+  wt_b=$STACK_WORKTREE
+  LIVE_PROJECTS=("stackfix-$a-1" "stackfix-$b-1")
+  jq -cn --arg a "$a" --arg wa "$wt_a" --arg b "$b" --arg wb "$wt_b" '
+    {ts: "2026-10-24T09:00:00Z", event: "opened", path: "feature", type: "feature", title: "Live", branch: "work",
+     base: "main", base_sha: "0000000"} as $e
+    | ($e + {task: "T22", project: $a, worktree: $wa}), ($e + {task: "T23", project: $b, worktree: $wb})' \
+    >>"$TEAM_HOME/ledger.jsonl"
+  # Room for one more stack than runs now, whatever the memory and disk.
+  local running
+  running=$(docker compose ls --format json | jq length)
+  mkdir -p "$HOME/.config/agent-team"
+  jq -n --argjson cap $((running + 1)) '{stack_cap: $cap, memory_floor_gib: 0, disk_floor_gb: 0, wait_minutes: 0}' \
+    >"$HOME/.config/agent-team/stack.json"
+
+  local dir=$BATS_TEST_TMPDIR pid_a pid_b status_a=0 status_b=0
+  "$REPO_ROOT/bin/team-stack" up --worktree "$wt_a" --no-seed >"$dir/a.out" 2>"$dir/a.err" &
+  pid_a=$!
+  "$REPO_ROOT/bin/team-stack" up --worktree "$wt_b" --no-seed >"$dir/b.out" 2>"$dir/b.err" &
+  pid_b=$!
+  wait "$pid_a" || status_a=$?
+  wait "$pid_b" || status_b=$?
+  assert_equal "$(printf '%s\n' "$status_a" "$status_b" | sort -n | paste -sd ' ')" "0 75"
+  assert_contains "$(cat "$dir/a.err" "$dir/b.err")" "$((running + 1)) of $((running + 1)) stacks running (stack_cap $((running + 1)))"
+  # Exactly one of the two runs.
+  local started
+  started=$(docker compose ls --format json | jq -c --arg a "stackfix-$a-1" --arg b "stackfix-$b-1" '[.[].Name | select(. == $a or . == $b)]')
+  assert_equal "$(jq length <<<"$started")" 1
+  assert_equal "$(jq -c '[.[] | select(.admitted == false)] | length' -s "$HOME/.local/state/agent-team/stacks/waits.jsonl")" 1
+
+  local winner
+  if ((status_a == 0)); then winner=$wt_a; else winner=$wt_b; fi
+  run_bin -0 team-stack down --worktree "$winner"
 }

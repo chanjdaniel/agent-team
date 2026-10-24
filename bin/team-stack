@@ -36,6 +36,22 @@
 #           TEAM_KIND=dev, TEAM_WORKTREE (the worktree) and an empty TEAM_EXPIRES; then, for a
 #           new stack none of whose named volumes was there before, the stack block's seed command
 #           as seed runs it, unless --no-seed. Prints one line saying whether it seeded.
+#           A stack not running is first admitted, under an exclusive flock on
+#           ~/.local/state/agent-team/stacks.lock held until its up -d --wait returns (a running
+#           one is not checked): with team-capacity on PATH or at ~/.local/bin/team-capacity,
+#           team-capacity admit --kind stack:<registered project> decides (0 admits, 75 refuses
+#           with its stderr as the reason, anything else fails up); else there is room when all
+#           three hold: fewer Compose projects running (docker compose ls, every owner's) than
+#           stack_cap; memory available less the sum of the stack's mem_limits at least
+#           memory_floor_gib GiB (Linux: MemAvailable from /proc/meminfo; macOS, unverified:
+#           docker info's MemTotal less docker stats' use of the running containers); and free
+#           space (df -Pk) at least disk_floor_gb GB on the file system of docker info's
+#           DockerRootDir (macOS, unverified: of the home directory). With no room, it says once
+#           on stderr that it waits and why, re-checks every 30 seconds (the lock let go between
+#           checks) up to wait_minutes, then exits 75 naming every failing check with its numbers.
+#           Each wait that ends, admitted or not (a refusal with wait_minutes 0 included), adds
+#           {start, end, project, task, admitted, reasons} to
+#           ~/.local/state/agent-team/stacks/waits.jsonl, its reasons the last refusal's.
 # env       Prints export lines that reach the running stack: the wrapper's ports
 #           (COMPOSE_PROJECT_NAME and a TH_<SERVICE>_PORT per service), then TEAM_OWNER,
 #           TEAM_TASK, TEAM_KIND, TEAM_WORKTREE and TEAM_EXPIRES as the stack carries them; use
@@ -59,8 +75,16 @@
 # mounts is anonymous; an image is team when its repository is in a project's images, legacy
 # when it matches a legacy_images pattern, else unowned.
 #
+# The machine's settings, ~/.config/agent-team/stack.json, a JSON object whose keys are all
+# optional: stack_cap (a whole number of 1 or more, default 6), memory_floor_gib (6), disk_floor_gb (30),
+# wait_minutes (15), idle_minutes (30), each a number of 0 or more, heartbeat_sweep and
+# heartbeat_janitor (true or false, default false). up refuses a file that is not one JSON
+# object, a key of the wrong type and an unknown key, naming each.
+# Test seams: TEAM_MEMINFO names a file read in place of /proc/meminfo, and
+# TEAM_STACK_RECHECK_SECONDS replaces the 30 seconds between admission checks.
+#
 # Exit 0 done, 1 refused or failed (Docker not answering, with its reason), 2 usage error,
-# 75 try again later.
+# 75 try again later (no room for the stack when its wait ran out).
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
@@ -323,10 +347,14 @@ resolve_task() {
 declare -A LABELS=()
 LABEL_KEYS=(owner task kind worktree expires)
 
+# The admission lock's file descriptor while up holds it (admit), else empty.
+LOCK_FD=''
+
 # Run the project's compose wrapper, as the wrapper contract says: from the worktree, with
-# TH_DIR and the labels in LABELS: wrapper <arguments...>
+# TH_DIR and the labels in LABELS, and never the admission lock: wrapper <arguments...>
 wrapper() {
   (
+    if [[ -n $LOCK_FD ]]; then exec {LOCK_FD}>&-; fi
     cd "$WT"
     export TH_DIR=$WT
     local key
@@ -455,8 +483,158 @@ run_seed() {
     die "the seed command $seed failed (exit $?) for $STACK_NAME"
 }
 
+# The machine's stack settings, every key optional, into $WORK/settings.json with the defaults
+# filled in; a file that is not one JSON object, a key of the wrong type or an unknown key is
+# refused with the reason.
+stack_settings() {
+  local file=$HOME/.config/agent-team/stack.json problems
+  echo '{}' >"$WORK/settings-given.json"
+  if [[ -e $file ]]; then
+    jq -s . "$file" >"$WORK/settings-given.json" 2>"$WORK/settings.err" ||
+      die "$file is not JSON: $(last_reason "$WORK/settings.err" "jq could not read it")"
+    problems=$(jq -r '
+      {stack_cap: "count", memory_floor_gib: "amount", disk_floor_gb: "amount", wait_minutes: "amount",
+       idle_minutes: "amount", heartbeat_sweep: "boolean", heartbeat_janitor: "boolean"} as $kinds
+      | if length != 1 or (.[0] | type) != "object" then "is not one JSON object"
+        else [.[0] | to_entries[] | $kinds[.key] as $kind | (.value | tojson) as $value
+          | if $kind == null then "\(.key) is not a setting (they are: \($kinds | keys_unsorted | join(", ")))"
+            elif $kind == "count" and ((.value | type) != "number" or .value < 1 or .value != (.value | floor)) then
+              "\(.key) must be a whole number of 1 or more, not \($value)"
+            elif $kind == "amount" and ((.value | type) != "number" or .value < 0) then
+              "\(.key) must be a number of 0 or more, not \($value)"
+            elif $kind == "boolean" and (.value | type) != "boolean" then "\(.key) must be true or false, not \($value)"
+            else empty end]
+          | if . == [] then "" else ": " + join("; ") end
+        end' "$WORK/settings-given.json")
+    [[ -z $problems ]] || die "$file$([[ $problems == :* ]] || echo ' ')$problems"
+    jq '.[0]' "$WORK/settings-given.json" >"$WORK/settings-file.json"
+    mv "$WORK/settings-file.json" "$WORK/settings-given.json"
+  fi
+  jq '{stack_cap: 6, memory_floor_gib: 6, disk_floor_gb: 30, wait_minutes: 15, idle_minutes: 30,
+    heartbeat_sweep: false, heartbeat_janitor: false} + .' "$WORK/settings-given.json" >"$WORK/settings.json"
+}
+
+# The setting <key>, from $WORK/settings.json.
+setting() {
+  jq -r --arg key "$1" '.[$key]' "$WORK/settings.json"
+}
+
+# Whether the machine has room for the stack STACK_NAME now, the reasons it has not in REASONS:
+# team-capacity's admit when there is one, else the cap and both floors.
+room_check() {
+  REASONS=()
+  local capacity rc=0 os dir free
+  capacity=$(command -v team-capacity || true)
+  [[ -n $capacity || ! -x $HOME/.local/bin/team-capacity ]] || capacity=$HOME/.local/bin/team-capacity
+  if [[ -n $capacity ]]; then
+    "$capacity" admit --kind "stack:$PROJECT" >/dev/null 2>"$WORK/capacity.err" {LOCK_FD}>&- || rc=$?
+    case $rc in
+      0) return 0 ;;
+      75)
+        mapfile -t REASONS < <(grep . "$WORK/capacity.err" || true)
+        ((${#REASONS[@]})) || REASONS=("team-capacity refused it")
+        REASONS=("$(reasons_line)")
+        return 1
+        ;;
+      *) die "team-capacity admit --kind stack:$PROJECT failed (exit $rc): $(last_reason "$WORK/capacity.err" "no reason given")" ;;
+    esac
+  fi
+
+  docker_read 'compose ls' compose ls --format json
+  printf '%s\n' "$DOCKER_OUT" >"$WORK/running.json"
+  docker_read info info --format json
+  printf '%s\n' "$DOCKER_OUT" >"$WORK/info.json"
+  os=$(uname -s)
+  if [[ $os == Darwin ]]; then
+    # Docker Desktop's VM: its memory less what its running containers use; its disk image under
+    # the home directory. Unverified on a Mac.
+    local -a running
+    docker_read ps ps --quiet --no-trunc
+    mapfile -t running < <(grep . <<<"$DOCKER_OUT" || true)
+    docker_stats "${running[@]}" >"$WORK/admit-stats.json"
+    jq -L "$TEAM_LIB" 'include "stack"; .MemTotal - ([$stats[0][] | .MemUsage | split(" / ")[0] | bytes // 0] | add // 0)' \
+      --slurpfile stats "$WORK/admit-stats.json" "$WORK/info.json" >"$WORK/available"
+    dir=$HOME
+  else
+    awk '$1 == "MemAvailable:" { print $2 * 1024; found = 1 } END { exit !found }' "${TEAM_MEMINFO:-/proc/meminfo}" \
+      >"$WORK/available" || die "no MemAvailable in ${TEAM_MEMINFO:-/proc/meminfo}"
+    dir=$(jq -r '.DockerRootDir // empty' "$WORK/info.json")
+    [[ -n $dir ]] || die "docker info names no DockerRootDir"
+  fi
+  free=$(df -Pk "$dir" 2>"$WORK/df.err" | awk 'NR == 2 { print $4 * 1024 }') && [[ -n $free ]] ||
+    die "df could not read the free space of $dir: $(last_reason "$WORK/df.err" "no reason given")"
+
+  jq -nr -L "$TEAM_LIB" 'include "stack";
+    $settings[0] as $s | ($running[0] | length) as $running
+    | ([$config[0].services[]?.mem_limit // 0 | tonumber] | add // 0) as $limits
+    | ($available - $limits) as $left
+    | (if $running < $s.stack_cap then empty
+       else "\($running) of \($s.stack_cap) stacks running (stack_cap \($s.stack_cap))" end),
+      (if $left >= $s.memory_floor_gib * 1073741824 then empty
+       else "\($left / 1073741824 | one_decimal) GiB available after this stack'"'"'s \($limits / 1073741824 | one_decimal) GiB (memory_floor_gib \($s.memory_floor_gib))" end),
+      (if $free >= $s.disk_floor_gb * 1e9 then empty
+       else "\($free / 1e9 | one_decimal) GB free on the file system of \($dir) (disk_floor_gb \($s.disk_floor_gb))" end)' \
+    --slurpfile settings "$WORK/settings.json" --slurpfile running "$WORK/running.json" \
+    --slurpfile config "$WORK/config.json" --argjson available "$(cat "$WORK/available")" \
+    --argjson free "$free" --arg dir "$dir" >"$WORK/reasons" || die "could not weigh the room for $STACK_NAME"
+  mapfile -t REASONS <"$WORK/reasons"
+  ((${#REASONS[@]} == 0))
+}
+
+# REASONS on one line, "; " between them.
+reasons_line() {
+  local line
+  printf -v line '%s; ' "${REASONS[@]}"
+  echo "${line%; }"
+}
+
+# Log one finished admission wait in the state directory's waits.jsonl: log_wait <start> <admitted>
+log_wait() {
+  local state=$HOME/.local/state/agent-team/stacks
+  mkdir -p "$state"
+  jq -cn --argjson start "$1" --argjson admitted "$2" --arg project "$STACK_NAME" --arg task "$TASK" '
+    {start: ($start | todate), end: (now | floor | todate), project: $project, task: $task, admitted: $admitted,
+     reasons: $ARGS.positional}' --args "${REASONS[@]}" >>"$state/waits.jsonl"
+}
+
+# Admit the stack STACK_NAME, or wait for room up to wait_minutes, re-checking every
+# TEAM_STACK_RECHECK_SECONDS (30); exit 75 with every failing check when the wait runs out.
+# Returns with the admission lock held on LOCK_FD, which the caller closes after its up.
+admit() {
+  local state=$HOME/.local/state/agent-team start minutes seconds deadline now waited=''
+  local -a refused=()
+  mkdir -p "$state"
+  exec {LOCK_FD}>>"$state/stacks.lock"
+  flock -x "$LOCK_FD"
+  start=$(date +%s)
+  minutes=$(setting wait_minutes)
+  seconds=$(jq -n --argjson m "$minutes" '$m * 60 | ceil')
+  deadline=$((start + seconds))
+  until room_check; do
+    now=$(date +%s)
+    if ((now >= deadline)); then
+      log_wait "$start" false
+      echo "${0##*/}: no room for $STACK_NAME: $(reasons_line)" >&2
+      exit 75
+    fi
+    if [[ -z $waited ]]; then
+      waited=1
+      echo "${0##*/}: no room for $STACK_NAME yet, waiting up to $minutes minutes: $(reasons_line)" >&2
+    fi
+    refused=("${REASONS[@]}")
+    flock -u "$LOCK_FD"
+    sleep $((deadline - now < ${TEAM_STACK_RECHECK_SECONDS:-30} ? deadline - now : ${TEAM_STACK_RECHECK_SECONDS:-30}))
+    flock -x "$LOCK_FD"
+  done
+  if [[ -n $waited ]]; then
+    REASONS=("${refused[@]}")
+    log_wait "$start" true
+  fi
+}
+
 cmd_up() {
   local seed=$1 fresh=1 note old key
+  stack_settings
   resolve_task "$2"
   stack_config
   stack_state
@@ -474,7 +652,10 @@ cmd_up() {
     LABELS=([owner]=agent-team [task]=$TASK [kind]=dev [worktree]=$WT [expires]='')
     if [[ -n $(volumes_left "${NAMED_VOLUMES[@]}") ]]; then fresh=''; fi
   fi
+  # A running stack of the task is admitted without a check; a stopped one is counted as new.
+  jq -e .running "$WORK/stack.json" >/dev/null || admit
   wrapper up -d --wait >&2 || die "${WRAPPER#"$WT/"} up -d --wait failed for $STACK_NAME (exit $?)"
+  if [[ -n $LOCK_FD ]]; then exec {LOCK_FD}>&-; fi
   if [[ -z $seed ]]; then
     note="not seeded: --no-seed"
   elif [[ -z $fresh ]]; then

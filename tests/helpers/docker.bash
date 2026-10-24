@@ -14,6 +14,7 @@
 #   images.json       the Images of docker system df -v --format json
 #   networks.json     docker inspect --type network of every network
 #   stats.json        docker stats --no-stream --format json of the running containers
+#   info.json         docker info --format json, trimmed
 # The calls it answers, each from that state as Docker would:
 #   compose ls [--all] --format json    the Compose projects of the containers, running ones
 #                                       only without --all, with Compose's status and files
@@ -25,6 +26,7 @@
 #   system df -v --format json          {Images, Containers, Volumes, BuildCache}
 #   volume ls --quiet, network ls --quiet --no-trunc, each with any --filter label=<key>[=<value>]
 #   volume rm <names>...                a volume missing or mounted by a container is refused
+#   info --format json
 # and, modelling the fixture project's stack (stack_project) as Compose 5.6.1 makes it, from the
 # TEAM_* variables, COMPOSE_PROJECT_NAME and TH_WEB_PORT the call sees:
 #   compose [-f <file>] config --format json
@@ -37,6 +39,10 @@
 #                                       wrote one, else one line
 #   compose -p <project> stop, compose -p <project> down -v --remove-orphans
 # Each compose call is logged with what it sees (docker_compose_env).
+# The machine's memory and disk, which team-stack's admission reads, are the sandbox's too: a
+# stub df answers df -Pk <path> from $DOCKER_STATE/disk-free (machine_disk_free; 200 GiB free
+# unless a test says otherwise), and TEAM_MEMINFO names $DOCKER_STATE/meminfo, read in place of
+# /proc/meminfo (machine_memory; 24 GiB available unless a test says otherwise).
 # Any other call fails (exit 127), so a test never passes on an unplanned call.
 # docker_down makes every call fail as Docker does when its daemon does not answer,
 # docker_fail <call> <message> makes one call (its key: "compose ls", "ps", "inspect",
@@ -56,6 +62,23 @@ docker_stub() {
     sed -e "s#@WORKTREE@#$worktree#g" -e "s#@HOME@#$HOME#g" "$file" >"$DOCKER_STATE/${file##*/}"
   done
   printf 'source %q\ndocker_stub_answer "$@"\n' "$REPO_ROOT/tests/helpers/docker-answer.bash" >"$STUB_FIXTURES/docker.sh"
+  cp "$REPO_ROOT/tests/helpers/stub" "$BATS_TEST_TMPDIR/stubs/df"
+  printf 'source %q\ndocker_stub_df "$@"\n' "$REPO_ROOT/tests/helpers/docker-answer.bash" >"$STUB_FIXTURES/df.sh"
+  export TEAM_MEMINFO=$DOCKER_STATE/meminfo
+  machine_disk_free $((200 * 1024 * 1024))
+  machine_memory $((24 * 1024 * 1024))
+}
+
+# The free space df gives on every file system, in 1024-byte blocks: machine_disk_free <blocks>...,
+# one per df call in turn, the last for every call after.
+machine_disk_free() {
+  printf '%s\n' "$@" >"$DOCKER_STATE/disk-free"
+}
+
+# The machine's memory available, in kB, as /proc/meminfo gives it: machine_memory <kB>
+machine_memory() {
+  printf 'MemTotal:       %s kB\nMemFree:         1048576 kB\nMemAvailable:   %s kB\n' $((32 * 1024 * 1024)) "$1" \
+    >"$DOCKER_STATE/meminfo"
 }
 
 # An empty machine: no container, volume, image or network.

@@ -1,0 +1,8 @@
+{
+  "DockerRootDir": "/var/lib/docker",
+  "MemTotal": 32811069440,
+  "NCPU": 12,
+  "OSType": "linux",
+  "OperatingSystem": "EndeavourOS",
+  "ServerVersion": "29.9.2"
+}

@@ -309,8 +309,10 @@ compose_env_since() {
   # The named volume and the network carry the task's labels too.
   assert_equal "$(jq -r --arg n "${PROJECT}_data" '.[] | select(.Name == $n) | .Labels["io.github.chanjdaniel.team.task"]' "$DOCKER_STATE/volumes.json")" T22
   assert_equal "$(jq -r --arg n "${PROJECT}_default" '.[] | select(.Name == $n) | .Labels["io.github.chanjdaniel.team.task"]' "$DOCKER_STATE/networks.json")" T22
-  # Through the wrapper: its config for the project, then up, then its ports for the seed.
+  # Through the wrapper: its config for the project, then (after admission counted the running
+  # projects) up, then its ports for the seed.
   assert_equal "$(docker_compose_env | jq -r '.call | sub(" -f [^ ]+"; "")')" "compose config --format json
+compose ls --format json
 compose up -d --wait
 compose port web 80"
   # The other stacks are untouched.
@@ -587,4 +589,247 @@ team-stack: $PROJECT is not all gone after its down: volume $anonymous, network 
   assert_equal "$(stack_left)" ""
   run_bin -0 team-stack ls --json
   assert_equal "$(jq -r '.projects[] | select(.name == "conventioner-2") | .status' <<<"$output")" "running(2)"
+}
+
+# Admission: up starts a new stack only within the machine's cap and floors, or team-capacity's
+# yes. The fixture machine runs three Compose projects (conventioner-2, conventioner-3 and
+# nmtest-1895520), the fixture stack's limits add up to 64 MiB, and docker_stub gives 24 GiB of
+# memory available and 200 GiB of disk free.
+
+# Write the machine's stack settings, ~/.config/agent-team/stack.json: stack_settings <JSON>
+stack_settings() {
+  mkdir -p "$HOME/.config/agent-team"
+  printf '%s\n' "$1" >"$HOME/.config/agent-team/stack.json"
+}
+
+# The admission waits logged, one compact JSON object per line.
+waits_log() {
+  jq -c . "$HOME/.local/state/agent-team/stacks/waits.jsonl" 2>/dev/null || true
+}
+
+# How many times the fixture stack was started.
+ups() {
+  docker_calls | grep -c '^compose -f [^ ]* up -d --wait$' || true
+}
+
+@test "up under the cap and above both floors starts the stack at once, without a wait" {
+  open_task T22
+  run_bin -0 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
+  assert_equal "$output" "team-stack: $PROJECT is up for T22, seeded: a new database"
+  [[ $stderr != *room* ]]
+  assert_equal "$(ups)" 1
+  # It counted the running projects and read Docker's root, whose file system df measured.
+  assert_contains "$(docker_calls)" "compose ls --format json"
+  assert_contains "$(docker_calls)" "info --format json"
+  assert_equal "$(stub_calls df)" '["-Pk","/var/lib/docker"]'
+  assert_equal "$(waits_log)" ""
+}
+
+@test "up at the cap, counting every owner's running projects, exits 75 naming the cap and starts nothing" {
+  open_task T22
+  stack_settings '{"stack_cap": 3, "wait_minutes": 0}'
+  run_bin -75 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
+  assert_equal "$stderr" "team-stack: no room for $PROJECT: 3 of 3 stacks running (stack_cap 3)"
+  assert_equal "$output" ""
+  assert_equal "$(ups)" 0
+  # One fewer running project is room.
+  docker_state containers 'map(select(.Name != "/conventioner-3-backend-1"))'
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE"
+  assert_equal "$(ups)" 1
+}
+
+@test "up refuses when the memory left after the stack's limits is under memory_floor_gib" {
+  open_task T22
+  stack_settings '{"wait_minutes": 0}'
+  machine_memory $((6 * 1024 * 1024))
+  run_bin -75 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
+  assert_equal "$stderr" "team-stack: no room for $PROJECT: 5.9 GiB available after this stack's 0.1 GiB (memory_floor_gib 6)"
+  assert_equal "$(ups)" 0
+  stack_settings '{"wait_minutes": 0, "memory_floor_gib": 5.5}'
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE"
+}
+
+@test "up refuses when the free disk of Docker's root is under disk_floor_gb" {
+  open_task T22
+  stack_settings '{"wait_minutes": 0}'
+  machine_disk_free $((20000000000 / 1024))
+  run_bin -75 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
+  assert_equal "$stderr" "team-stack: no room for $PROJECT: 20.0 GB free on the file system of /var/lib/docker (disk_floor_gb 30)"
+  assert_equal "$(ups)" 0
+  stack_settings '{"wait_minutes": 0, "disk_floor_gb": 20}'
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE"
+}
+
+@test "with every check failing, the refusal names each with its numbers, and the waits log has them" {
+  open_task T22
+  stack_settings '{"stack_cap": 2, "memory_floor_gib": 8, "disk_floor_gb": 300, "wait_minutes": 0}'
+  machine_memory $((4 * 1024 * 1024))
+  run_bin -75 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
+  local reasons='["3 of 2 stacks running (stack_cap 2)","3.9 GiB available after this stack'"'"'s 0.1 GiB (memory_floor_gib 8)","214.7 GB free on the file system of /var/lib/docker (disk_floor_gb 300)"]'
+  assert_equal "$stderr" "team-stack: no room for $PROJECT: $(jq -r 'join("; ")' <<<"$reasons")"
+  # wait_minutes 0: no wait announced, one wait logged, not admitted.
+  assert_equal "$(waits_log | wc -l)" 1
+  assert_equal "$(waits_log | jq -c '[.project, .task, .admitted, .reasons]')" "[\"$PROJECT\",\"T22\",false,$reasons]"
+  assert_equal "$(waits_log | jq -c '[.start, .end] | map(test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))')" '[true,true]'
+}
+
+@test "a refused up says once that it waits and why, re-checks, and starts the stack when room comes" {
+  open_task T22
+  stack_settings '{"wait_minutes": 1}'
+  # The disk is short for two checks, then has room.
+  machine_disk_free 1000 1000 $((200 * 1024 * 1024))
+  TEAM_STACK_RECHECK_SECONDS=1 run_bin -0 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
+  assert_equal "$(grep -c 'no room' <<<"$stderr")" 1
+  assert_contains "$stderr" "team-stack: no room for $PROJECT yet, waiting up to 1 minutes: 0.0 GB free on the file system of /var/lib/docker (disk_floor_gb 30)"
+  assert_equal "$output" "team-stack: $PROJECT is up for T22, seeded: a new database"
+  assert_equal "$(stub_calls df | wc -l)" 3
+  assert_equal "$(waits_log | jq -c '[.admitted, .reasons]')" '[true,["0.0 GB free on the file system of /var/lib/docker (disk_floor_gb 30)"]]'
+  local start end
+  start=$(waits_log | jq '.start | fromdate')
+  end=$(waits_log | jq '.end | fromdate')
+  ((end - start >= 2))
+}
+
+@test "a wait that runs out exits 75 with every failing check, and logs the wait" {
+  open_task T22
+  stack_settings '{"stack_cap": 3, "wait_minutes": 0.03}'
+  TEAM_STACK_RECHECK_SECONDS=1 run_bin -75 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
+  assert_equal "$stderr" "team-stack: no room for $PROJECT yet, waiting up to 0.03 minutes: 3 of 3 stacks running (stack_cap 3)
+team-stack: no room for $PROJECT: 3 of 3 stacks running (stack_cap 3)"
+  ((${#lines[@]} == 0))
+  # Checked at the start and again after a second at least, within the wait's 2 s.
+  local checks
+  checks=$(docker_calls | grep -c '^compose ls --format json$')
+  ((checks >= 2 && checks <= 3))
+  assert_equal "$(waits_log | jq -c '[.admitted, .reasons]')" '[false,["3 of 3 stacks running (stack_cap 3)"]]'
+  assert_equal "$(ups)" 0
+}
+
+@test "the admission lock is held through up -d --wait and released before the seed" {
+  open_task T22
+  local lock=$HOME/.local/state/agent-team/stacks.lock
+  local log=$BATS_TEST_TMPDIR/lock
+  # The wrapper's up and the seed each try the lock.
+  mv "$STACK_WORKTREE/scripts/compose.sh" "$STACK_WORKTREE/scripts/compose-real.sh"
+  cat >"$STACK_WORKTREE/scripts/compose.sh" <<SH
+#!/usr/bin/env bash
+if [[ \${1:-} == up ]]; then if flock -n "$lock" true; then echo free; else echo held; fi >>"$log"; fi
+exec "\$(dirname "\$0")/compose-real.sh" "\$@"
+SH
+  chmod +x "$STACK_WORKTREE/scripts/compose.sh"
+  printf 'if flock -n %q true; then echo free; else echo held; fi >>%q\n' "$lock" "$log" >>"$STACK_WORKTREE/scripts/seed.sh"
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE"
+  assert_equal "$(cat "$BATS_TEST_TMPDIR/lock")" "held
+free"
+}
+
+@test "two ups racing for the last place start exactly one stack, and the other exits 75" {
+  open_task T22
+  local first=$STACK_WORKTREE
+  stack_project mall
+  open_task T23 "$STACK_WORKTREE"
+  stack_settings '{"stack_cap": 4, "wait_minutes": 0}'
+  local dir=$BATS_TEST_TMPDIR a b
+  "$REPO_ROOT/bin/team-stack" up --worktree "$first" --no-seed >"$dir/a.out" 2>"$dir/a.err" &
+  a=$!
+  "$REPO_ROOT/bin/team-stack" up --worktree "$STACK_WORKTREE" --no-seed >"$dir/b.out" 2>"$dir/b.err" &
+  b=$!
+  local status_a=0 status_b=0
+  wait "$a" || status_a=$?
+  wait "$b" || status_b=$?
+  assert_equal "$(printf '%s\n' "$status_a" "$status_b" | sort -n | paste -sd ' ')" "0 75"
+  assert_equal "$(ups)" 1
+  assert_contains "$(cat "$dir/a.err" "$dir/b.err")" "4 of 4 stacks running (stack_cap 4)"
+}
+
+@test "a re-up of a running stack is admitted without a check, and a stopped one is counted as new" {
+  open_task T22
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE"
+  stack_settings '{"stack_cap": 1, "wait_minutes": 0}'
+  local before
+  before=$(docker_calls | wc -l)
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE"
+  assert_equal "$(docker_calls | tail -n "+$((before + 1))" | grep -cE '^(compose ls|info)( |$)' || true)" 0
+  run_bin -0 team-stack stop --worktree "$STACK_WORKTREE"
+  run_bin -75 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
+  assert_equal "$stderr" "team-stack: no room for $PROJECT: 3 of 1 stacks running (stack_cap 1)"
+}
+
+@test "with team-capacity, its admit decides: 0 admits, 75 refuses with its reason, anything else fails" {
+  open_task T22
+  stack_settings '{"stack_cap": 1, "wait_minutes": 0}'
+  mkdir -p "$HOME/.local/bin"
+  cp "$REPO_ROOT/tests/helpers/stub" "$HOME/.local/bin/team-capacity"
+  stub_reply team-capacity ""
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
+  assert_equal "$(stub_calls team-capacity)" '["admit","--kind","stack:shop"]'
+  # Its own checks are not made.
+  assert_equal "$(docker_calls | grep -cE '^(compose ls|info)( |$)' || true)" 0
+  assert_equal "$(stub_calls df)" ""
+  run_bin -0 team-stack down --worktree "$STACK_WORKTREE"
+
+  stub_script team-capacity <<'SH'
+echo "2 of 2 stack tokens held" >&2
+exit 75
+SH
+  run_bin -75 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
+  assert_equal "$stderr" "team-stack: no room for $PROJECT: 2 of 2 stack tokens held"
+  assert_equal "$(waits_log | jq -c '[.admitted, .reasons]')" '[false,["2 of 2 stack tokens held"]]'
+
+  stub_script team-capacity <<'SH'
+echo "team-capacity: no such kind" >&2
+exit 3
+SH
+  run_bin -1 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
+  assert_equal "$stderr" "team-stack: team-capacity admit --kind stack:shop failed (exit 3): team-capacity: no such kind"
+  # Only the first, admitted up started it.
+  assert_equal "$(ups)" 1
+}
+
+@test "team-capacity on PATH is found as well" {
+  open_task T22
+  cp "$REPO_ROOT/tests/helpers/stub" "$BATS_TEST_TMPDIR/stubs/team-capacity"
+  stub_reply team-capacity "" 75
+  stack_settings '{"wait_minutes": 0}'
+  run_bin -75 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
+  assert_equal "$stderr" "team-stack: no room for $PROJECT: team-capacity refused it"
+}
+
+@test "on macOS, memory is Docker's VM's total less its running containers' use, and the disk is the home directory's" {
+  as_macos
+  open_task T22
+  stack_settings '{"wait_minutes": 0}'
+  # 8 GiB less the 1061 MiB the three running projects use, less the stack's 64 MiB.
+  docker_state info '.MemTotal = 8589934592'
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
+  assert_equal "$(stub_calls df)" "[\"-Pk\",\"$HOME\"]"
+  run_bin -0 team-stack down --worktree "$STACK_WORKTREE"
+  stack_settings '{"wait_minutes": 0, "memory_floor_gib": 7}'
+  run_bin -75 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
+  assert_equal "$stderr" "team-stack: no room for $PROJECT: 6.9 GiB available after this stack's 0.1 GiB (memory_floor_gib 7)"
+  machine_disk_free $((20000000000 / 1024))
+  stack_settings '{"wait_minutes": 0}'
+  run_bin -75 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
+  assert_equal "$stderr" "team-stack: no room for $PROJECT: 20.0 GB free on the file system of $HOME (disk_floor_gb 30)"
+}
+
+@test "a malformed stack.json is exit 1 with the reason, before Docker is asked anything" {
+  open_task T22
+  local file=$HOME/.config/agent-team/stack.json
+  stack_settings '{"stack_cap": 6,'
+  run_bin -1 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
+  assert_contains "$stderr" "team-stack: $file is not JSON: "
+  stack_settings '[6]'
+  run_bin -1 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
+  assert_equal "$stderr" "team-stack: $file is not one JSON object"
+  stack_settings '{"stack_cap": "6", "wait_minutes": -1, "heartbeat_sweep": "yes", "stack_caps": 4}'
+  run_bin -1 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
+  assert_equal "$stderr" "team-stack: $file: stack_cap must be a whole number of 1 or more, not \"6\"; wait_minutes must be a number of 0 or more, not -1; heartbeat_sweep must be true or false, not \"yes\"; stack_caps is not a setting (they are: stack_cap, memory_floor_gib, disk_floor_gb, wait_minutes, idle_minutes, heartbeat_sweep, heartbeat_janitor)"
+  stack_settings '{"stack_cap": 2.5}'
+  run_bin -1 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
+  assert_equal "$stderr" "team-stack: $file: stack_cap must be a whole number of 1 or more, not 2.5"
+  assert_equal "$(docker_calls)" ""
+  # Every key, of the right types, is accepted.
+  stack_settings '{"stack_cap": 6, "memory_floor_gib": 6, "disk_floor_gb": 30, "wait_minutes": 15, "idle_minutes": 30, "heartbeat_sweep": false, "heartbeat_janitor": false}'
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE"
 }

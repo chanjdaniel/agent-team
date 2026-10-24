@@ -72,6 +72,7 @@ docker_stub_answer() {
     'compose stop') docker_stub_compose_stop "${args[@]}" ;;
     'compose down') docker_stub_compose_down "${args[@]}" ;;
     'volume rm') docker_stub_volume_rm "${args[@]}" ;;
+    info) docker_stub_info "${args[@]}" ;;
     *) docker_stub_unplanned ;;
   esac
 }
@@ -223,6 +224,12 @@ docker_stub_list() {
   esac
   jq -r --argjson filters "$filters" "$DOCKER_STUB_JQ map(select(.Labels // {} | has_labels(\$filters))) | .[] | $field" \
     "$DOCKER_STATE/$file.json"
+}
+
+# info --format json: the daemon's information, $DOCKER_STATE/info.json.
+docker_stub_info() {
+  docker_stub_options $# "$@" --format json || docker_stub_unplanned
+  jq -c . "$DOCKER_STATE/info.json"
 }
 
 # The calls below model the fixture project's stack (tests/fixtures/stack/docker-compose.yml):
@@ -439,4 +446,19 @@ docker_stub_volume_rm() {
     fi
   done
   exit "$status"
+}
+
+# df -Pk <path>: one file system holding <path>, whose free space is the first line of
+# $DOCKER_STATE/disk-free (in 1024-byte blocks), each call taking the next line while there is
+# one (machine_disk_free); sourced by the stub df that docker_stub installs.
+docker_stub_df() {
+  if [[ $# -ne 2 || $1 != -Pk ]]; then
+    echo "stub df: no answer planned for this call: df $*" >&2
+    exit 127
+  fi
+  local file=$DOCKER_STATE/disk-free free
+  free=$(head -n 1 "$file")
+  if (($(wc -l <"$file") > 1)); then sed -i 1d "$file"; fi
+  echo "Filesystem     1024-blocks      Used Available Capacity Mounted on"
+  echo "/dev/stub        999999999 100000000 $free 10% /"
 }
