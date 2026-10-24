@@ -42,7 +42,8 @@
 # The machine's memory and disk, which team-stack's admission reads, are the sandbox's too: a
 # stub df answers df -Pk <path> from $DOCKER_STATE/disk-free (machine_disk_free; 200 GiB free
 # unless a test says otherwise), and TEAM_MEMINFO names $DOCKER_STATE/meminfo, read in place of
-# /proc/meminfo (machine_memory; 24 GiB available unless a test says otherwise).
+# /proc/meminfo (machine_memory; 24 GiB available unless a test says otherwise). A stub uname
+# says Linux, so admission reads them the Linux way on any host; as_macos makes it say Darwin.
 # Any other call fails (exit 127), so a test never passes on an unplanned call.
 # docker_down makes every call fail as Docker does when its daemon does not answer,
 # docker_fail <call> <message> makes one call (its key: "compose ls", "ps", "inspect",
@@ -65,6 +66,8 @@ docker_stub() {
   cp "$REPO_ROOT/tests/helpers/stub" "$BATS_TEST_TMPDIR/stubs/df"
   printf 'source %q\ndocker_stub_df "$@"\n' "$REPO_ROOT/tests/helpers/docker-answer.bash" >"$STUB_FIXTURES/df.sh"
   export TEAM_MEMINFO=$DOCKER_STATE/meminfo
+  cp "$REPO_ROOT/tests/helpers/stub" "$BATS_TEST_TMPDIR/stubs/uname"
+  stub_reply uname Linux
   machine_disk_free $((200 * 1024 * 1024))
   machine_memory $((24 * 1024 * 1024))
 }
