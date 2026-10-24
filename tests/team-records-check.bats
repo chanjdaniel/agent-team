@@ -87,6 +87,59 @@ anything else reaches dev through a pull request"
   run_bin -1 team-records-check --repo o/r "$start" HEAD
 }
 
+# GitHub has not yet indexed the merge (commits/<sha>/pulls answers []) and answers pulls/<number>
+# with one PR: pull_reply <number> <merge_commit_sha> <head sha> <base> <merged_at>
+pull_reply() {
+  local pull
+  pull=$(jq -cn --argjson n "$1" --arg m "$2" --arg h "$3" --arg b "$4" --arg at "$5" \
+    '{number: $n, merge_commit_sha: $m, head: {sha: $h}, base: {ref: $b}, merged_at: (if $at == "" then null else $at end)}')
+  stub_script gh <<EOF
+case "\$*" in
+  "api repos/o/r/pulls/$1") echo '$pull' ;;
+  "api repos/o/r/commits/"*"/pulls") echo '[]' ;;
+  *) echo "unplanned gh call: \$*" >&2; exit 1 ;;
+esac
+EOF
+}
+
+@test "with --pr, that pull request's own merge passes before GitHub indexes the merge commit" {
+  merge_a_pr
+  pull_reply 7 "$merge" "$head" dev 2026-10-22T12:00:00Z
+  run_bin -0 team-records-check --repo o/r --pr 7 "$start" HEAD
+  assert_equal "$output" "1 commit on dev checked: each touches records only or is a pull request's merge into dev"
+  assert_equal "$(stub_calls gh)" '["api","repos/o/r/pulls/7"]'
+}
+
+@test "without --pr, or with another pull request's, a merge GitHub has not indexed is refused" {
+  merge_a_pr
+  local refusal
+  refusal="refused $(git rev-parse --short "$merge") Merge pull request #7 from o/feat/T1 (a merge, not a pull request's into dev)
+  bin/team-thing"
+  pull_reply 7 "$merge" "$head" dev 2026-10-22T12:00:00Z
+  run_bin -1 --separate-stderr team-records-check --repo o/r "$start" HEAD
+  assert_equal "$output" "$refusal"
+  pull_reply 8 "$(git rev-parse dev~1)" "$head" dev 2026-10-22T12:00:00Z
+  run_bin -1 --separate-stderr team-records-check --repo o/r --pr 8 "$start" HEAD
+  assert_equal "$output" "$refusal"
+  # The PR names this merge, but not as a merged pull request's into dev with this head.
+  for reply in "$(git rev-parse dev~1) dev 2026-10-22T12:00:00Z" "$head main 2026-10-22T12:00:00Z" "$head dev "; do
+    read -r h b at <<<"$reply"
+    pull_reply 7 "$merge" "$h" "$b" "${at:-}"
+    run_bin -1 --separate-stderr team-records-check --repo o/r --pr 7 "$start" HEAD
+    assert_equal "$output" "$refusal"
+  done
+}
+
+@test "with --pr, a GitHub failure reading the pull request fails the check with gh's reason" {
+  merge_a_pr
+  stub_script gh <<'FIXTURE'
+echo "HTTP 404: Not Found" >&2
+exit 1
+FIXTURE
+  run_bin -1 --separate-stderr team-records-check --repo o/r --pr 7 "$start" HEAD
+  assert_equal "$stderr" "team-records-check: cannot ask GitHub about PR #7: gh api: HTTP 404: Not Found"
+}
+
 @test "a merge that brings in records only passes, without asking GitHub" {
   git checkout -q -b elsewhere dev
   commit_paths "chore: there" tasks/T2/plan.md
@@ -122,4 +175,6 @@ FIXTURE
   run_bin -2 team-records-check "$start" HEAD
   run_bin -2 team-records-check --repo o/r "$start"
   run_bin -2 team-records-check --repo o/r "$start" HEAD extra
+  run_bin -2 team-records-check --repo o/r --pr "$start" HEAD
+  run_bin -2 team-records-check --repo o/r --pr x7 "$start" HEAD
 }

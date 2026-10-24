@@ -8,7 +8,8 @@
 //   await db.seed(database, { collection: [documents] })   beforeEach(): drop, then insert
 //   db.client                                a driver client as root, for checking the data
 //   await db.stop();                         after()
-import { execFileSync } from "node:child_process";
+// startMongo waits for the server with connectWhenReady, exported for its own test.
+import { execFileSync, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createRequire } from "node:module";
 import { join } from "node:path";
@@ -36,7 +37,7 @@ export async function startMongo() {
     const port = Number(docker("port", name, "27017/tcp").split("\n")[0].split(":").at(-1));
     const uri = (user, password, options = "") =>
       `mongodb://${user}:${password}@127.0.0.1:${port}/?authSource=admin${options}`;
-    const client = await connectWhenReady(uri("root", rootPassword));
+    const client = await connectWhenReady(uri("root", rootPassword), name);
     return {
       name,
       port,
@@ -63,9 +64,10 @@ export async function startMongo() {
 }
 
 // The image's entrypoint restarts mongod once after creating the root user, so wait for a ping
-// that holds.
-async function connectWhenReady(uri) {
-  const deadline = Date.now() + 60_000;
+// that holds: up to <waitMs> (180 s, since a Docker busy starting other stacks can take minutes),
+// then fail with the time waited and container <name>'s last log lines.
+export async function connectWhenReady(uri, name, waitMs = 180_000) {
+  const start = Date.now();
   for (;;) {
     const client = new MongoClient(uri, { serverSelectionTimeoutMS: 1_000 });
     try {
@@ -74,8 +76,24 @@ async function connectWhenReady(uri) {
       return client;
     } catch (error) {
       await client.close().catch(() => {});
-      if (Date.now() > deadline) throw error;
+      if (Date.now() - start > waitMs) {
+        const waited = Math.round((Date.now() - start) / 1_000);
+        throw new Error(
+          `MongoDB in container ${name} was not ready after ${waited} s: ${error.message}\n` +
+            `docker logs --tail 20 ${name}:\n${lastLogLines(name)}`,
+          { cause: error },
+        );
+      }
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
   }
+}
+
+// Container <name>'s last 20 log lines, stdout and stderr, or why docker could not read them.
+function lastLogLines(name) {
+  const logs = spawnSync("docker", ["logs", "--tail", "20", name], { encoding: "utf8" });
+  if (logs.error || logs.status !== 0) {
+    return `(docker logs failed: ${(logs.error?.message ?? logs.stderr).trim()})`;
+  }
+  return `${logs.stdout}${logs.stderr}`.trim() || "(nothing logged)";
 }

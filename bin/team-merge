@@ -24,9 +24,9 @@
 # discord_channel and url (the PR's), and local_checks (the commands that passed on head) when
 # there were any. Prints {task, pr, merge, head, by}.
 # For the team home itself (the project whose checkout is TEAM_HOME), it then runs
-# team-records-check from the previous merge it logged to this one, since GitHub checks nothing
-# on dev (CI policy B): a commit that is neither records only nor a PR's merge is exit 1, after
-# the merge and its event.
+# team-records-check from the previous merge it logged to this one, with --pr naming the PR it
+# just merged, since GitHub checks nothing on dev (CI policy B): a commit that is neither records
+# only nor a PR's merge is exit 1, after the merge and its event.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
@@ -260,8 +260,8 @@ if [[ $(realpath -m -- "$primary") == "$(realpath -m -- "$TEAM_HOME")" ]]; then
   since=$(ledger_jq '[inputs | fromjson? | select(type == "object" and .event == "merged" and .project == $project)]
     | .[-2].merge // "0000000000000000000000000000000000000000"' -nRr --arg project "$project" "$TEAM_HOME/ledger.jsonl")
   if ! git -C "$primary" fetch -q origin "+refs/heads/$base:refs/remotes/origin/$base" 2>"$scratch/fetch-error"; then
-    die "PR #$number is merged and logged, but $base cannot be fetched to check the records rule: $(grep -m1 . "$scratch/fetch-error"); run team-records-check --repo $repo $since $merge in $primary"
+    die "PR #$number is merged and logged, but $base cannot be fetched to check the records rule: $(grep -m1 . "$scratch/fetch-error"); run team-records-check --repo $repo --pr $number $since $merge in $primary"
   fi
-  (cd "$primary" && TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-records-check" --repo "$repo" "$since" "$merge") >&2 ||
+  (cd "$primary" && TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-records-check" --repo "$repo" --pr "$number" "$since" "$merge") >&2 ||
     die "PR #$number is merged and logged, but $base breaks the records rule since the last merge (above): tell Daniel"
 fi
