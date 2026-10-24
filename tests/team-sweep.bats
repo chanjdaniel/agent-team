@@ -55,6 +55,29 @@ no_github() {
   assert_equal "$(stub_calls gh)$(stub_calls curl)" ""
 }
 
+# schedule <ts> <every_hours>: Daniel's retro schedule, logged on T26.
+schedule() {
+  ledger_line --arg ts "$1" --argjson every "$2" \
+    '{ts: $ts, task: "T26", event: "retro-schedule", every_hours: $every, discord_message: "1563171945980370967"}'
+}
+
+# retro <ts> <task>: a retro task opened at <ts>.
+retro() {
+  ledger_line --arg ts "$1" --arg t "$2" \
+    '{ts: $ts, task: $t, event: "opened", project: "agent-team", path: "retro", type: "research",
+      title: "Retro", branch: "research/\($t)-retro", base: "dev", base_sha: "0123456", worktree: "/w/2"}'
+}
+
+# ago <hours>: the UTC time that many hours before now.
+ago() {
+  date -u -d "$1 hours ago" +%FT%TZ
+}
+
+# plus <time> <hours>: the UTC time that many hours after <time>.
+plus() {
+  date -u -d "@$(($(date -u -d "$1" +%s) + $2 * 3600))" +%FT%TZ
+}
+
 @test "nothing to find is exit 0 with nothing printed, and --json prints an empty list" {
   opened T3
   launch T3 builder 4f2a9c1e
@@ -272,7 +295,7 @@ T42 stray: T42-reviewer 88888888 is live but T42 is not in the ledger; next: rea
   no_github
 }
 
-@test "a resumed or a later launch ends a pause, and resumed ends a hold or a block" {
+@test "a resumed or a later launch ends a pause or a block, and resumed ends a hold" {
   opened T3
   launch T3 builder 11111111
   event T3 paused '{reason: "rate limit"}'
@@ -290,9 +313,15 @@ T42 stray: T42-reviewer 88888888 is live but T42 is not in the ledger; next: rea
     event T3 resumed
     run_bin -1 team-sweep
   done
+  # A later launch ends a block: the relaunched task with no live session has no worker.
+  event T3 blocked '{reason: "a denied push"}'
+  run_bin -0 team-sweep
+  launch T3 builder 33333333
+  run_bin -1 team-sweep
+  assert_contains "$output" "T3 no-worker: no live session among its 3 launches (latest T3-builder 33333333)"
   # A later launch does not end a hold.
   event T3 held '{reason: "OS update"}'
-  launch T3 builder 33333333
+  launch T3 builder 44444444
   run_bin -0 team-sweep
 }
 
@@ -374,6 +403,64 @@ T42 stray: T42-reviewer 88888888 is live but T42 is not in the ledger; next: rea
   run_bin -2 team-sweep --all
   assert_contains "$output" "usage: team-sweep [--json]"
   run_bin -2 team-sweep T3
+}
+
+@test "retro-due: none without a schedule, with every_hours 0, or before the due time" {
+  retro "$(ago 200)" T2
+  event T2 closed '{archive: [], returned: [], kept: []}'
+  run_bin -0 team-sweep
+  schedule "$(ago 150)" 48
+  schedule "$(ago 100)" 0
+  run_bin -0 team-sweep
+  schedule "$(ago 47)" 48
+  run_bin -0 team-sweep
+  assert_equal "$output" ""
+}
+
+@test "retro-due: once due, one line after every task finding, alone still exit 1" {
+  local since
+  since=$(ago 50)
+  schedule "$since" 48
+  run_bin -1 --separate-stderr team-sweep
+  assert_equal "$stderr" ""
+  assert_equal "$output" "retro due since $(plus "$since" 48) (every 48h, last retro none): run the retro skill"
+
+  local opened
+  opened=$(ago 30)
+  retro "$opened" T30
+  event T30 closed '{archive: [], returned: [], kept: []}'
+  schedule "$(ago 40)" 24
+  opened T3
+  sessions "$(session 88888888 T42-reviewer idle)"
+  run_bin -1 team-sweep
+  assert_equal "$output" "T3 no-worker: opened with no worker launched; next: launch one with team-worker, or log what is known with team-log
+T42 stray: T42-reviewer 88888888 is live but T42 is not in the ledger; next: read claude logs 88888888 for anything left to log, then stop it with claude stop 88888888
+retro due since $(plus "$opened" 24) (every 24h, last retro T30): run the retro skill"
+}
+
+@test "retro-due: none while a retro task is open" {
+  schedule "$(ago 100)" 48
+  retro "$(ago 60)" T31
+  launch T31 planner 31313131
+  sessions "$(session 31313131 T31-planner busy working)"
+  run_bin -0 team-sweep
+  # Its own no-worker finding still comes, with no retro-due after it.
+  sessions
+  run_bin -1 team-sweep --json
+  assert_equal "$(jq -c 'map([.task, .kind])' <<<"$output")" '[["T31","no-worker"]]'
+}
+
+@test "retro-due in --json: task, session and name null, the retro skill as its next step" {
+  local since
+  since=$(ago 50)
+  schedule "$since" 48
+  opened T3
+  run_bin -1 team-sweep --json
+  assert_equal "$(jq -c '.[1]' <<<"$output")" "$(jq -cn --arg next "$(plus "$since" 48)" '{
+    task: null, kind: "retro-due", session: null, name: null, next: "run the retro skill",
+    text: "retro due since \($next) (every 48h, last retro none): run the retro skill"}')"
+  assert_equal "$(jq -r '.[0].kind' <<<"$output")" "no-worker"
+  no_github
 }
 
 @test "a ledger of 1,000 events sweeps in under two seconds" {

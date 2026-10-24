@@ -45,8 +45,10 @@ pr team-log url head
 review team-log verdict head
 merge-approved team-log url discord_message
 failed team-log reason
+retro-schedule team-log every_hours discord_message
 stowed team-handoff machine worktrees roles
 worktree-moved team-open project branch from worktree machine
+injection team-log role source text
 TABLE
   )
   actual=$(jq -r '.kinds | to_entries[] | [.key, .value.writer, (.value.required | keys_unsorted[])] | join(" ")' "$CONTRACT")
@@ -74,6 +76,8 @@ TABLE
   grep -Eq '^  merge-approved +team-log +url, discord_message  \(.*\)$' <<<"$output"
   grep -Eq '^  launch +team-worker +role, session, worktree, toolkits \(list\); optional project, branch, machine, request  \(request is the link to Daniel.s Discord message, on an ops launch\)$' <<<"$output"
   grep -Eq '^  resumed +team-log +- +\(clears held, blocked, paused and waiting\)$' <<<"$output"
+  grep -Eq '^  retro-schedule +team-log +every_hours \(number\), discord_message  \(.*every_hours 0 stops.*\)$' <<<"$output"
+  grep -Eq '^  injection +team-log +role, source, text  \(.*never the personal details.*\)$' <<<"$output"
   grep -Eq '^  stowed +team-handoff +machine, worktrees \(list\), roles \(list\)  \(one per open task at a handoff: .*\)$' <<<"$output"
   assert_equal "$(stub_calls curl)$(stub_calls gh)" ""
 }
@@ -126,7 +130,7 @@ LINES
     count=$((count + 1))
     assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r '.event + " " + .note')" "$kind why $kind"
   done < <(jq -r '.kinds | to_entries[] | select(.value.writer == "team-log") | .key' "$CONTRACT")
-  assert_equal "$count" "15"
+  assert_equal "$count" "17"
   run_bin -0 team-log --check
 }
 
@@ -152,7 +156,39 @@ LINES
   run_bin -1 team-log T14 review 'note=looks fine'
   assert_contains "$output" "review needs verdict"
   assert_contains "$output" "review needs head"
+  run_bin -1 team-log T26 retro-schedule every_hours=48
+  assert_contains "$output" "retro-schedule needs discord_message"
+  run_bin -1 team-log T26 retro-schedule discord_message=1563171945980370967
+  assert_contains "$output" "retro-schedule needs every_hours"
+  run_bin -1 team-log T26 retro-schedule every_hours=often discord_message=1563171945980370967
+  assert_contains "$output" "every_hours must be a number, got a string"
+  run_bin -1 team-log T26 injection role=builder 'source=https://github.com/chanjdaniel/agent-team/pull/9'
+  assert_contains "$output" "injection needs text"
+  run_bin -1 team-log T26 injection 'source=orders/66f0a1' 'text=asked to email the export'
+  assert_contains "$output" "injection needs role"
+  run_bin -1 team-log T26 injection role=ops 'text=asked to email the export'
+  assert_contains "$output" "injection needs source"
   assert_ledger_empty
+}
+
+@test "injection records where outside text asked a worker to act, and what it asked" {
+  run_bin -0 team-log T26 injection role=builder 'source=https://github.com/chanjdaniel/agent-team/pull/9#issuecomment-1' \
+    'text=asked to push to dev and skip the hooks'
+  assert_equal "$(ledger_without_ts)" \
+    '{"task":"T26","event":"injection","role":"builder","source":"https://github.com/chanjdaniel/agent-team/pull/9#issuecomment-1","text":"asked to push to dev and skip the hooks"}'
+  run_bin -0 team-log --check
+}
+
+@test "retro-schedule records Daniel's cadence with the Discord message it was said in" {
+  run_bin -0 team-log T26 retro-schedule every_hours=48 discord_message=1563171945980370967
+  run_bin -0 team-log T26 retro-schedule every_hours=0 discord_message=1563171945980370999
+  assert_equal "$(ledger_without_ts)" "$(
+    cat <<'LINES'
+{"task":"T26","event":"retro-schedule","every_hours":48,"discord_message":"1563171945980370967"}
+{"task":"T26","event":"retro-schedule","every_hours":0,"discord_message":"1563171945980370999"}
+LINES
+  )"
+  run_bin -0 team-log --check
 }
 
 @test "a value of the wrong type or outside its choices is refused with nothing appended" {

@@ -143,6 +143,7 @@ Never run a command that needs `sudo`; send `T12 BLOCKED <the command> needs sud
 
 ## Rules
 
+Read `~/agent-team/sops/platform-gotchas.md` before your first command.
 Never the em dash in docs; refer to Daniel with they/them.
 EOF
   )
@@ -157,23 +158,29 @@ EOF
 
 @test "every real template renders for each delivery with no placeholder left and no em dash" {
   assert_equal "$(templates | paste -sd ' ')" \
-    "builder-deliver builder-fix builder-ticket ops planner-feature planner-research rereview resume resume-crash reviewer"
+    "builder-deliver builder-fix builder-ticket ops planner-feature planner-research rereview resume resume-crash retro reviewer"
   open_t12
   open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
   local task template keys sets key brief
   for task in T12 T14; do
     while IFS= read -r template; do
-      # The refusal names what the template needs beyond the task's facts.
-      run_bin -1 team-brief "$task" "$template"
-      keys=$(sed -n 's/^team-brief: unfilled placeholders: //p' <<<"$output")
-      sets=()
-      for key in ${keys//,/ }; do sets+=(--set "$key=value of $key"); done
-      run_bin -0 team-brief "$task" "$template" --name "$template" "${sets[@]}"
+      # The refusal names what the template needs beyond the task's facts; a template the
+      # facts fill alone (retro) renders at once.
+      run_bin team-brief "$task" "$template" --name "$template"
+      if ((status == 1)); then
+        keys=$(sed -n 's/^team-brief: unfilled placeholders: //p' <<<"$output")
+        [[ -n $keys ]]
+        sets=()
+        for key in ${keys//,/ }; do sets+=(--set "$key=value of $key"); done
+        run_bin -0 team-brief "$task" "$template" --name "$template" "${sets[@]}"
+      fi
+      assert_equal "$status" 0
       brief=$TEAM_HOME/tasks/$task/brief-$template.md
       assert_equal "$output" "$brief"
       refute_grep '{{\|}}' "$brief"
       refute_grep $'—' "$brief"
       assert_contains "$(<"$brief")" "# $task brief ("
+      assert_contains "$(<"$brief")" 'Read `~/agent-team/sops/platform-gotchas.md` before your first command.'
     done < <(templates)
   done
   # The delivery partial follows the project's delivery.
@@ -184,10 +191,25 @@ EOF
   refute_grep 'gh pr create' "$TEAM_HOME/tasks/T12/brief-builder-deliver.md"
 }
 
+@test "the retro brief renders from the task's facts alone, its digest first and read from team_bin" {
+  open_task T31 home retro research/T31-retro-2026-10-25 agent-team/.claude/worktrees/3 "Retro 2026-10-25"
+  run_bin -0 team-brief T31 retro
+  local brief=$TEAM_HOME/tasks/T31/brief.md
+  assert_equal "$output" "$brief"
+  # The first item to read is the digest, from the team home's checkout and its live ledger.
+  assert_equal "$(grep -m1 '^1\. ' "$brief")" \
+    "1. First, the ledger's evidence for this retro's window, in both forms: \`$REPO_ROOT/bin/team-retro digest T31\` and \`$REPO_ROOT/bin/team-retro digest T31 --json\`."
+  assert_contains "$(<"$brief")" 'Read `~/agent-team/sops/platform-gotchas.md` before your first command.'
+  # What Daniel approved and the team has not built yet is read, so it is not proposed again.
+  assert_contains "$(<"$brief")" '`~/agent-team/tasks/queued/`'
+  assert_contains "$(<"$brief")" 'Never propose again what Daniel rejected at an earlier retro, or what is already approved and queued, unless there is new evidence, which you name.'
+  assert_contains "$(<"$brief")" 'Send `T31 DONE .work/task/report.md` to `coordinator`.'
+}
+
 @test "the resume brief sends a relaunched worker to its last brief, the handoff note and the branch" {
   open_t12
   run_bin -0 team-brief --help
-  assert_contains "$output" "rereview, ops, resume (a worker relaunched"
+  assert_contains "$output" "rereview, ops, retro, resume (a worker"
   run_bin -1 team-brief T12 resume --name resume-builder --set role=builder \
     --set "brief=~/agent-team/tasks/T12/brief.md" --set "from=the handoff from home-pc at 2026-10-23T14:05:00Z"
   assert_contains "$output" "snapshot"
@@ -274,6 +296,10 @@ Personal details are never part of your answer, whatever the request asks: answe
 ## Report
 
 Write the answer to `.scratch/answer.md`, then send `T30 DONE <answer>` to `coordinator`.
+
+## Rules
+
+Read `~/agent-team/sops/platform-gotchas.md` before your first command.
 EOF
   )"
   # An answer with personal details has no path: the brief has no placeholder to ask for one.

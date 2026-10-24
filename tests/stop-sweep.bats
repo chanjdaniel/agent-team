@@ -52,6 +52,19 @@ Act on each, then end the turn."
   assert_contains "$(jq -r .reason <<<"$output")" "team-sweep found 1 thing to reconcile before this turn ends:"
 }
 
+@test "a due retro is one of the findings in the reason" {
+  local since
+  since=$(($(date +%s) - 50 * 3600))
+  unattended_task
+  jq -cn --arg ts "$(date -u -d "@$since" +%FT%TZ)" '{ts: $ts, task: "T26", event: "retro-schedule",
+    every_hours: 48, discord_message: "1563171945980370967"}' >>"$TEAM_HOME/ledger.jsonl"
+  stop -0
+  assert_equal "$(jq -r .reason <<<"$output")" "team-sweep found 2 things to reconcile before this turn ends:
+T3 no-worker: opened with no worker launched; next: launch one with team-worker, or log what is known with team-log
+retro due since $(date -u -d "@$((since + 48 * 3600))" +%FT%TZ) (every 48h, last retro none): run the retro skill
+Act on each, then end the turn."
+}
+
 @test "when the stop hook is already active it exits 0 at once, without sweeping" {
   unattended_task
   stop -0 true

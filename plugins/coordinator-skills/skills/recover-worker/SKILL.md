@@ -14,7 +14,7 @@ Run `team-state T<n>` first, so you act on the task's state, not on the last mes
    Ask for the idle notice again (`notify_when_idle`) and give it the time to act.
 3. **Stop and respawn.** `claude stop <session id>`, then add a "Progress so far" section at the top of its brief in `tasks/T<n>/`: what is done (commits, ticked boxes), what is left, and what went wrong.
    Launch a fresh worker with the same `team-worker` command and brief.
-   Log why: `team-log T<n> blocked reason="<what stuck it>"` before the stop, `team-log T<n> resumed` after the launch.
+   Log why: `team-log T<n> blocked reason="<what stuck it>"` before the stop; the launch clears it.
 4. **Escalate.** When a second respawn fails the same way, run `team-log T<n> failed reason="<evidence>"` and send Daniel FAILED in the task's thread: what the task needed, what each attempt did, and the log lines that show it.
 
 A low context reading is not a reason to intervene: a worker compacts and goes on.

@@ -9,9 +9,9 @@
 # lists its session, with that session's status and state), last_event, pending_asks, and pr.
 # Recorded worktree paths under another machine's home (/home/<name>, /Users/<name>) show as the
 # same paths under this HOME.
-# Phase, first match wins: closed, merged (every PR merged), held or blocked (with no later
-# resumed), awaiting-merge (every PR not merged has a pass as the latest review of its head),
-# in-review (a pr event), building (plan-approved), planning. A task's PRs are the latest pr event
+# Phase, first match wins: closed, merged (every PR merged), held (with no later resumed), blocked
+# (with no later resumed or launch), awaiting-merge (every PR not merged has a pass as the latest
+# review of its head), in-review (a pr event), building (plan-approved), planning. A task's PRs are the latest pr event
 # in each repo; a PR's head is that event's, moved by each later history-rewritten from it (or from
 # a head no PR has); a PR is merged by a merged event naming its URL (legacy: its number).
 # Heads compare by the shorter one's prefix, at least 7 characters.
