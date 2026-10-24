@@ -8,10 +8,10 @@
 # before sourcing), and provides die, usage_error, team_project, ledger_jq, ledger_append,
 # task_events, known_task_events, open_task_events, task_status, task_worktrees, local_path,
 # archive_task_dir, machine_name, os_release, team_os, fence_reason, lease_gate, worktree_changes,
-# snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, non_records, commit_non_records,
-# records_list, origin_git, origin_reason, commit_records, render_template, registered_pr,
-# attribution_lines, strip_attribution, live_sessions, discord_token, discord_api, github, pr_part
-# and task_state_json, and sets COORDINATOR_CHANNEL.
+# snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin, non_records,
+# commit_non_records, records_list, origin_git, origin_reason, commit_records, render_template,
+# registered_pr, attribution_lines, strip_attribution, live_sessions, discord_token, discord_api,
+# github, pr_part and task_state_json, and sets COORDINATOR_CHANNEL.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
 # shellcheck shell=bash
 
@@ -248,12 +248,19 @@ snapshot_message() {
 
 # Whether <commit> in the repository <dir> is a checkpoint's snapshot of <task>'s uncommitted
 # changes (one parent, snapshot_message's subject) rather than a branch head that a checkpoint of
-# a clean worktree pushed as wip/<task>: is_snapshot <dir> <commit> <task>
+# a clean worktree pushed as wip/<project>/<task>: is_snapshot <dir> <commit> <task>
 is_snapshot() {
   local subject
   [[ $(git -C "$1" rev-list --parents -n 1 "$2" | wc -w) == 2 ]] || return 1
   subject=$(git -C "$1" log -1 --format=%s "$2")
   [[ $subject =~ ^wip:\ $3\ checkpoint\ on\ [a-z0-9-]+\ at\ [0-9T:-]+Z$ ]]
+}
+
+# The URL of the team home's origin, where team-checkpoint keeps each worktree's work in flight as
+# wip/<project>/T<n>, so a snapshot never reaches a project's own origin, which may be public:
+# wip_origin
+wip_origin() {
+  git -C "$TEAM_HOME" remote get-url origin 2>/dev/null || die "the team home $TEAM_HOME has no remote origin"
 }
 
 # The records as a reader's list: "ledger.jsonl, manual-steps.md, tasks/, ...".

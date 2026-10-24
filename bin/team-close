@@ -19,8 +19,8 @@
 # task's sessions; each landed worktree returned through its pool (git: git worktree remove,
 # never --force; treehouse: its task directory emptied, then the project's return command run
 # from the primary checkout with the path), each return appending worktree-returned; the task's
-# wip/T<n> (team-checkpoint's snapshot) deleted on each of its projects' origins, one that cannot
-# be deleted reported on stderr with the command that deletes it; and closed with archive,
+# wip/<project>/T<n> (team-checkpoint's snapshots) deleted on the team home's origin, one that
+# cannot be deleted reported on stderr with the command that deletes it; and closed with archive,
 # returned and kept. Prints {task, stopped, removed, archive, returned, kept}.
 # A legacy task (events but no opened) has no worktrees in the ledger: its sessions are stopped
 # and removed and closed carries the note legacy. --worktree names a slot it still holds; the
@@ -247,18 +247,18 @@ for wt in "${returning[@]}"; do
   returned+=("$path")
 done
 
-# Delete the task's work-in-progress snapshots, team-checkpoint's wip/T<n>, on each of its projects'
-# origins, now that nothing is left to recover from them; a project without one is fine, and one
-# that cannot be deleted is reported and left.
+# Delete the task's work-in-progress snapshots, team-checkpoint's wip/<project>/T<n> on the team
+# home's origin, now that nothing is left to recover from them; a project without one is fine, and
+# one that cannot be deleted is reported and left.
 declare -A seen=()
 for wt in "${worktrees[@]}"; do
   project=$(field project "$wt")
   [[ -z ${seen[$project]:-} ]] || continue
   seen[$project]=1
-  primary=$(team_project "$project" path)
-  if ! refs=$(GIT_TERMINAL_PROMPT=0 git -C "$primary" ls-remote origin "refs/heads/wip/$task" 2>"$scratch/error") ||
-    { [[ -n $refs ]] && ! GIT_TERMINAL_PROMPT=0 git -C "$primary" push -q origin --delete "wip/$task" 2>"$scratch/error"; }; then
-    echo "team-close: cannot delete wip/$task on $project's origin ($(grep -m1 . "$scratch/error" || echo "no reason given")); delete it by hand: git -C $primary push origin --delete wip/$task" >&2
+  wip=wip/$project/$task
+  if ! refs=$(GIT_TERMINAL_PROMPT=0 git -C "$TEAM_HOME" ls-remote origin "refs/heads/$wip" 2>"$scratch/error") ||
+    { [[ -n $refs ]] && ! GIT_TERMINAL_PROMPT=0 git -C "$TEAM_HOME" push -q origin --delete "$wip" 2>"$scratch/error"; }; then
+    echo "team-close: cannot delete $wip on the team home's origin ($(grep -m1 . "$scratch/error" || echo "no reason given")); delete it by hand: git -C $TEAM_HOME push origin --delete $wip" >&2
   fi
 done
 

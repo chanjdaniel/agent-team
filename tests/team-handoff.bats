@@ -177,7 +177,7 @@ rm 81f08540"
   assert_equal "$(jq -r 'select(.event == "stowed") | .worktrees[0].head' "$BATS_TEST_TMPDIR/machines/laptop/team/ledger.jsonl")" "$head"
 }
 
-@test "a worker that never stowed is stopped before the checkpoint, and its uncommitted changes are stowed as wip/T1" {
+@test "a worker that never stowed is stopped before the checkpoint, and its uncommitted changes are stowed as wip/home/T1 on the team home's origin" {
   # The builder edits, adds a file and a secret, and never answers STOW; stopping its session is
   # the last thing that happens to its worktree before the checkpoint.
   echo "edited" >"$wt/a.txt"
@@ -196,21 +196,21 @@ esac
 SH
 
   run_bin -0 --separate-stderr team-handoff
-  assert_contains "$output" "checkpoint: T1 home: left out of wip/T1, as files that may hold a secret: .env.local"
-  assert_contains "$output" "branches: T1 home: uncommitted changes in $wt go with the checkpoint's wip/T1, which team-resume applies"
-  assert_contains "$output" "branches: T1 home: untracked files that may hold a secret, left out of wip/T1, stay on home-pc: .env.local"
+  assert_contains "$output" "checkpoint: T1 home: left out of wip/home/T1, as files that may hold a secret: .env.local"
+  assert_contains "$output" "branches: T1 home: uncommitted changes in $wt go with the checkpoint's wip/home/T1, which team-resume applies"
+  assert_contains "$output" "branches: T1 home: untracked files that may hold a secret, left out of wip/home/T1, stay on home-pc: .env.local"
   assert_contains "$output" "stowed: T1 roles builder; home feat/T1-work at ${head:0:7} with uncommitted changes"
 
   # The snapshot holds what the session left as it stopped, the secret aside.
   local wip
-  wip=$(git -C "$home_origin" rev-parse wip/T1)
-  assert_equal "$(git -C "$home_origin" rev-parse "$wip^")" "$head"
-  assert_equal "$(git -C "$home_origin" show "$wip:a.txt")" "edited"
-  assert_equal "$(git -C "$home_origin" show "$wip:late.txt")" "late"
-  assert_equal "$(git -C "$home_origin" ls-tree --name-only "$wip" | paste -sd ' ')" ".gitignore README.md a.txt b.txt late.txt"
+  wip=$(git -C "$team_origin" rev-parse wip/home/T1)
+  assert_equal "$(git -C "$team_origin" rev-parse "$wip^")" "$head"
+  assert_equal "$(git -C "$team_origin" show "$wip:a.txt")" "edited"
+  assert_equal "$(git -C "$team_origin" show "$wip:late.txt")" "late"
+  assert_equal "$(git -C "$team_origin" ls-tree --name-only "$wip" | paste -sd ' ')" ".gitignore README.md a.txt b.txt late.txt"
   assert_equal "$(stowed_events | jq -c 'del(.ts)')" "$(jq -cn --arg h "$head" --arg wt "$wt" '{task: "T1", event: "stowed",
     machine: "home-pc", worktrees: [{project: "home", branch: "feat/T1-work", head: $h, uncommitted: true}],
-    roles: ["builder"], note: "untracked files left out of wip/T1 stay on home-pc in \($wt): .env.local"}')"
+    roles: ["builder"], note: "untracked files left out of wip/home/T1 stay on home-pc in \($wt): .env.local"}')"
 }
 
 @test "the final message lists the config captured and what was left to Daniel, again on a run after the release" {

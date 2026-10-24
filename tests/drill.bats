@@ -194,13 +194,13 @@ posts() {
   echo "b" >"$wt/b.txt"
 
   run_bin -0 team-handoff
-  [[ $output == *"sessions: stopped and removed T1-builder ($builder)"*"checkpoint: T1 home: pushed wip/T1 "* ]]
+  [[ $output == *"sessions: stopped and removed T1-builder ($builder)"*"checkpoint: T1 home: pushed wip/home/T1 "* ]]
   assert_contains "$output" "stowed: T1 roles builder; home feat/T1-work at ${head:0:7} with uncommitted changes"
   assert_equal "$(home_pc_sessions)" "coordinator busy"
 
   on_machine laptop run_bin -0 --separate-stderr team-resume
   assert_equal "$stderr" ""
-  assert_contains "$output" "T1 home: applied wip/T1 "
+  assert_contains "$output" "T1 home: applied wip/home/T1 "
   # laptop's worktree is the pushed branch with the builder's uncommitted work, as it left it.
   assert_equal "$(git -C "$lt" rev-parse HEAD)" "$head"
   assert_equal "$(git -C "$lt" status --porcelain)" "$(printf '%s\n' " M a.txt" "?? b.txt")"
@@ -208,15 +208,15 @@ posts() {
   assert_equal "$(jq -c '.tasks[0] | {crashed, roles: .stowed.roles, applied: [.worktrees[].snapshot.applied]}' "$report")" \
     '{"crashed":null,"roles":["builder"],"applied":[true]}'
 
-  # laptop's first checkpoint finds that very work in its worktree, so origin's wip/T1 keeps it.
+  # laptop's first checkpoint finds that very work in its worktree, so wip/home/T1 keeps it.
   local wip
-  wip=$(git -C "$home_origin" rev-parse wip/T1)
+  wip=$(git -C "$team_origin" rev-parse wip/home/T1)
   on_machine laptop run_bin -0 team-checkpoint --force
-  assert_contains "$output" "T1 home: wip/T1 is up to date (${wip:0:7})"
-  assert_equal "$(git -C "$home_origin" rev-parse wip/T1)" "$wip"
-  assert_equal "$(git -C "$home_origin" rev-parse "$wip^")" "$head"
-  assert_equal "$(git -C "$home_origin" show "$wip:a.txt")" "edited"
-  assert_equal "$(git -C "$home_origin" show "$wip:b.txt")" "b"
+  assert_contains "$output" "T1 home: wip/home/T1 is up to date (${wip:0:7})"
+  assert_equal "$(git -C "$team_origin" rev-parse wip/home/T1)" "$wip"
+  assert_equal "$(git -C "$team_origin" rev-parse "$wip^")" "$head"
+  assert_equal "$(git -C "$team_origin" show "$wip:a.txt")" "edited"
+  assert_equal "$(git -C "$team_origin" show "$wip:b.txt")" "b"
 }
 
 @test "stale lease: laptop takes it only once it is stale and with --steal; home-pc's next heartbeat fences it, and its hook blocks a reply and a push" {
@@ -258,7 +258,7 @@ posts() {
   echo "edited" >"$wt/a.txt"
   echo "b" >"$wt/b.txt"
   run_bin -0 team-timers run
-  assert_contains "$output" "checkpoint: T1 home: pushed wip/T1 "
+  assert_contains "$output" "checkpoint: T1 home: pushed wip/home/T1 "
   # It works on (a commit and an edit no checkpoint saw), then dies: no handoff, no heartbeat.
   echo "c" >"$wt/c.txt"
   git -C "$wt" add c.txt
@@ -323,7 +323,7 @@ posts() {
   fence_hook -0 Bash '{"command": "git -C . commit -m wip"}'
 
   # Nothing changed on origin: no checkpoint (no wip ref, no team-home commit), the same lease.
-  run -1 git -C "$home_origin" rev-parse -q --verify refs/heads/wip/T1
+  run -1 git -C "$team_origin" rev-parse -q --verify refs/heads/wip/home/T1
   assert_equal "$(git -C "$team_origin" rev-parse dev)" "$dev"
   assert_equal "$(lease_json)" "$lease"
 
@@ -338,5 +338,5 @@ posts() {
   assert_equal "$(posts | sed -n 2p)" \
     "$(jq -n --arg t "GitHub back at $(date -d "$back" +%H:%M) (unreachable from $(date -d "$since" +%H:%M)); resuming T1" '$t')"
   assert_equal "$(posts | wc -l)" 2
-  git -C "$home_origin" rev-parse -q --verify refs/heads/wip/T1
+  git -C "$team_origin" rev-parse -q --verify refs/heads/wip/home/T1
 }

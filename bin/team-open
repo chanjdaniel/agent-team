@@ -37,9 +37,10 @@
 # worktree that resumes from a snapshot (the task crashed: a launch after its latest stowed, or a
 # launch and no stowed, so its machine stopped without a handoff; or its latest stowed recorded
 # the worktree with uncommitted changes, which the handoff's checkpoint kept), or a branch on
-# neither origin nor here, the last checkpoint's wip/T<n> on origin is fetched: the branch head it
-# holds (a clean checkpoint's head, or a snapshot's parent) is the branch's when origin has no
-# branch or it is behind that head. For a worktree that resumes from a snapshot, the snapshot's
+# neither origin nor here, the last checkpoint's wip/<project>/T<n> is fetched from the team home's
+# origin into refs/remotes/team-home/ (so nothing counts it as on the project's origin): the
+# branch head it holds (a clean checkpoint's head, or a snapshot's parent) is the branch's when
+# origin has no branch or it is behind that head. For a worktree that resumes from a snapshot, the snapshot's
 # diff against its parent is then applied to the worktree as uncommitted changes, when that parent
 # is the branch's head and the worktree has no other uncommitted changes; else it is skipped with
 # the reason. Its facts are the JSON's snapshot, {ref, commit, parent, at, applied, reason},
@@ -188,27 +189,30 @@ if [[ -n $resume ]]; then
       die "cannot fetch $branch from origin in $primary"
   fi
   here=$(git -C "$primary" rev-parse -q --verify "refs/heads/$branch^{commit}") || here=''
-  # The last checkpoint's wip/T<n>, when the worktree resumes from its snapshot (after a crash, or a
-  # handoff that stopped a worker with uncommitted changes) or for a branch that is nowhere else: a
-  # snapshot (its parent is the branch head it saw) or the branch head itself. A head there that
-  # origin's branch lacks, or a branch only there, is where the branch goes: target.
-  wip='' wip_head='' target=$remote target_name="origin's $branch"
+  # The last checkpoint's wip/<project>/T<n> on the team home's origin, when the worktree resumes
+  # from its snapshot (after a crash, or a handoff that stopped a worker with uncommitted changes)
+  # or for a branch that is nowhere else: a snapshot (its parent is the branch head it saw) or the
+  # branch head itself. A head there that origin's branch lacks, or a branch only there, is where
+  # the branch goes: target.
+  wip='' wip_head='' target=$remote target_name="origin's $branch" wip_ref=wip/$project/$task
   if [[ $snapshot_due == true || (-z $remote && -z $here) ]]; then
-    wip=$(git -C "$primary" ls-remote origin "refs/heads/wip/$task") || die "cannot reach origin from $primary"
+    wip_url=$(wip_origin) || exit 1
+    wip=$(git -C "$primary" ls-remote "$wip_url" "refs/heads/$wip_ref") ||
+      die "cannot reach the team home's origin from $primary"
     wip=${wip%%[[:space:]]*}
   fi
   if [[ -n $wip ]]; then
-    git -C "$primary" fetch -q origin "+refs/heads/wip/$task:refs/remotes/origin/wip/$task" ||
-      die "cannot fetch wip/$task from origin in $primary"
+    git -C "$primary" fetch -q "$wip_url" "+refs/heads/$wip_ref:refs/remotes/team-home/$wip_ref" ||
+      die "cannot fetch $wip_ref from the team home's origin in $primary"
     wip_head=$wip
     if is_snapshot "$primary" "$wip" "$task"; then wip_head=$(git -C "$primary" rev-parse "$wip^1"); fi
     if [[ -z $remote ]] ||
       { [[ $wip_head != "$remote" ]] && git -C "$primary" merge-base --is-ancestor "$remote" "$wip_head"; }; then
-      target=$wip_head target_name="origin's wip/$task"
+      target=$wip_head target_name=$wip_ref
       if [[ -z $remote ]]; then
-        echo "team-open: $branch is not on origin; it is taken from wip/$task, at ${wip_head:0:7}" >&2
+        echo "team-open: $branch is not on origin; it is taken from $wip_ref, at ${wip_head:0:7}" >&2
       else
-        echo "team-open: wip/$task has commits origin's $branch lacks; $branch is taken from it, at ${wip_head:0:7}" >&2
+        echo "team-open: $wip_ref has commits origin's $branch lacks; $branch is taken from it, at ${wip_head:0:7}" >&2
       fi
     fi
   fi
@@ -377,16 +381,16 @@ resume_slot() {
   esac
 }
 
-# --resume of a worktree that resumes from a snapshot: the last checkpoint's (wip/T<n>, fetched
-# above) applied to the worktree as uncommitted changes when its parent is the head the branch was
+# --resume of a worktree that resumes from a snapshot: the last checkpoint's (wip/<project>/T<n>,
+# fetched above) applied to the worktree as uncommitted changes when its parent is the head the branch was
 # made equal to (target), which the worktree is at now, and the worktree has no other uncommitted
 # changes.
 # Sets snapshot to its facts, {ref, commit, parent, at, applied, reason}, parent null when
-# wip/T<n> is the branch head of a clean checkpoint, and says what it did on stderr.
+# wip/<project>/T<n> is the branch head of a clean checkpoint, and says what it did on stderr.
 apply_snapshot() {
-  local ref=wip/$task parent='' at reason='' current patch
+  local ref=$wip_ref parent='' at reason='' current patch
   if [[ -z $wip ]]; then
-    reason="origin has no $ref: no checkpoint saved this task's work"
+    reason="the team home's origin has no $ref: no checkpoint saved this task's work"
     echo "team-open: $ref not applied: $reason" >&2
     snapshot=$(jq -cn --arg ref "$ref" --arg reason "$reason" \
       '{ref: $ref, commit: null, parent: null, at: null, applied: false, reason: $reason}')
