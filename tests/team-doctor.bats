@@ -323,7 +323,7 @@ every_tool_fails() {
 @test "a team home that is missing, no checkout of its own, without an origin or on a detached HEAD fails the team home line" {
   tools_at arch
   local home=$TEAM_HOME named="named by TEAM_HOME" tmp
-  tmp=$(realpath "$BATS_TEST_TMPDIR")
+  tmp=$BATS_TEST_TMPDIR
   # Missing, named by the variable or by the setting (which no other script gets past).
   TEAM_HOME=$tmp/gone run_bin -1 team-doctor
   assert_equal "$(line_of 'team home')" \

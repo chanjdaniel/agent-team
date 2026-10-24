@@ -22,7 +22,7 @@ toolkits = []
 provider = "git"
 slots = ["slots/proj/1"]
 TOML
-  wt=$(realpath "$BATS_TEST_TMPDIR")/wt
+  wt=$BATS_TEST_TMPDIR/wt
   git init -q "$wt"
   mkdir -p "$wt/.scratch/task"
   echo "# Review" >"$wt/.scratch/task/review.md"

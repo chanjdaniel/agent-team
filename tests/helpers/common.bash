@@ -16,8 +16,11 @@ FAKE_DISCORD_TOKEN=fake-discord-token-for-tests
 
 # Build the test's sandbox and point TEAM_HOME, HOME and PATH into it.
 sandbox() {
-  local root
-  root=$(realpath "$BATS_TEST_TMPDIR")
+  # macOS keeps temporary directories under /var, a symlink to /private/var, and the scripts see
+  # the resolved path (from pwd, git or realpath): resolve it once, so every path a test builds
+  # from BATS_TEST_TMPDIR is the one the scripts print, on Linux and macOS alike.
+  BATS_TEST_TMPDIR=$(realpath "$BATS_TEST_TMPDIR")
+  local root=$BATS_TEST_TMPDIR
   export TEAM_HOME=$root/team HOME=$root/home
   export STUB_CALLS=$root/calls STUB_FIXTURES=$root/fixtures
   mkdir -p "$TEAM_HOME" "$HOME/.claude/channels/discord" "$STUB_CALLS" "$STUB_FIXTURES" "$root/stubs"
@@ -82,8 +85,8 @@ code_checkout() {
   if [[ -n ${1:-} ]]; then
     CODE_CHECKOUT=$(realpath "$1")
   else
-    CODE_ORIGIN=$(realpath "$BATS_TEST_TMPDIR")/code-origin.git
-    CODE_CHECKOUT=$(realpath "$BATS_TEST_TMPDIR")/code
+    CODE_ORIGIN=$BATS_TEST_TMPDIR/code-origin.git
+    CODE_CHECKOUT=$BATS_TEST_TMPDIR/code
     git init -q --bare -b dev "$CODE_ORIGIN"
     git clone -q "$CODE_ORIGIN" "$CODE_CHECKOUT" 2>/dev/null
     git -C "$CODE_CHECKOUT" checkout -q -B dev
@@ -226,7 +229,7 @@ make_repo() {
 # this machine <name> (default home-pc); prints the origin's path.
 make_team_home() {
   local origin
-  origin=$(realpath "$BATS_TEST_TMPDIR")/origin/agent-team.git
+  origin=$BATS_TEST_TMPDIR/origin/agent-team.git
   git init -q --bare -b dev "$origin"
   git -C "$TEAM_HOME" init -q -b dev
   git -C "$TEAM_HOME" remote add origin "$origin"
@@ -251,14 +254,14 @@ hold_lease() {
 # lease_json [<git dir>]: the lease on the lease branch of the team home's origin (make_team_home),
 # or of <git dir>.
 lease_json() {
-  git -C "${1:-$(realpath "$BATS_TEST_TMPDIR")/origin/agent-team.git}" show lease:lease.json
+  git -C "${1:-$BATS_TEST_TMPDIR/origin/agent-team.git}" show lease:lease.json
 }
 
 # Rewrite the lease on the team home's origin as if its holder last renewed <minutes> ago: a new
 # commit on the branch.
 age_lease() {
   local origin blob tree commit
-  origin=$(realpath "$BATS_TEST_TMPDIR")/origin/agent-team.git
+  origin=$BATS_TEST_TMPDIR/origin/agent-team.git
   blob=$(lease_json | jq -c --argjson m "$1" '.renewed_at = (now - $m * 60 | floor | todate)' |
     git -C "$origin" hash-object -w --stdin)
   tree=$(printf '100644 blob %s\tlease.json\n' "$blob" | git -C "$origin" mktree)
@@ -272,13 +275,13 @@ age_lease() {
 # far (make_repo). Run commands there with on_machine.
 make_machine() {
   local name=$1 root origin repo
-  root=$(realpath "$BATS_TEST_TMPDIR")/machines/$name
+  root=$BATS_TEST_TMPDIR/machines/$name
   mkdir -p "$root/home/.config/agent-team" "$root/home/.claude/channels/discord"
   cp "$HOME/.gitconfig" "$root/home/.gitconfig"
   cp "$HOME/.claude/channels/discord/.env" "$root/home/.claude/channels/discord/.env"
   echo "$name" >"$root/home/.config/agent-team/machine"
-  git clone -q "$(realpath "$BATS_TEST_TMPDIR")/origin/agent-team.git" "$root/team"
-  for origin in "$(realpath "$BATS_TEST_TMPDIR")"/origin/*.git; do
+  git clone -q "$BATS_TEST_TMPDIR/origin/agent-team.git" "$root/team"
+  for origin in "$BATS_TEST_TMPDIR"/origin/*.git; do
     repo=${origin##*/}
     repo=${repo%.git}
     [[ $repo != agent-team ]] || continue
@@ -290,7 +293,7 @@ make_machine() {
 # `on_machine laptop run_bin -0 team-lease take`.
 on_machine() {
   local root
-  root=$(realpath "$BATS_TEST_TMPDIR")/machines/$1
+  root=$BATS_TEST_TMPDIR/machines/$1
   [[ -d $root ]] || { echo "on_machine: no machine $1 (make_machine $1 first)" >&2; return 1; }
   HOME=$root/home TEAM_HOME=$root/team "${@:2}"
 }
@@ -299,7 +302,7 @@ on_machine() {
 # name on the steal's terminal as Daniel would: steal_lease <name> <holder>
 steal_lease() {
   local tty
-  tty=$(realpath "$BATS_TEST_TMPDIR")/steal-tty
+  tty=$BATS_TEST_TMPDIR/steal-tty
   echo "$2" >"$tty"
   TEAM_LEASE_TTY=$tty on_machine "$1" "$REPO_ROOT/bin/team-lease" take --steal >/dev/null
 }
