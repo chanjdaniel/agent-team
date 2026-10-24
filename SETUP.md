@@ -22,9 +22,10 @@ Each request names one of three places:
 Run everything else yourself.
 The rules for what you never touch (secrets, `op`, the lease) are in `sops/machine-setup.md`, "Rules for the agent"; read them before stage 2.
 
-## Stage 1: git, gh and the team home
+## Stage 1: git, gh and the two checkouts
 
-The team home is private, so this stage is the one Daniel's sentence describes before anything here is readable: get `gh`, sign Daniel in, clone, read this file.
+This stage is the one Daniel's sentence describes, so it may be done before you read this file: get `gh`, sign Daniel in, clone the code and the team home, write `agent-team-records` to `~/.config/agent-team/home`, read this file.
+The code (`chanjdaniel/agent-team`) is public, but the team home (`chanjdaniel/agent-team-records`) is private, so its clone needs the GitHub login first.
 Skip each step whose check already passes.
 
 1. **macOS only, Xcode Command Line Tools.** Check: `xcode-select -p` prints a path.
@@ -41,9 +42,11 @@ Skip each step whose check already passes.
    Then run `gh auth setup-git`, so git uses the same login.
 5. **The code checkout.** Check: `git -C ~/agent-team remote get-url origin` prints `https://github.com/chanjdaniel/agent-team.git`.
    Otherwise run `git clone https://github.com/chanjdaniel/agent-team.git ~/agent-team` (exactly this URL: the doctor checks it).
-6. **The team home, once it is a repository of its own.** Check: `git -C ~/agent-team-records remote get-url origin` prints `https://github.com/chanjdaniel/agent-team-records.git`.
-   Otherwise, when that repository exists, run `git clone https://github.com/chanjdaniel/agent-team-records.git ~/agent-team-records`; stage 2 names it in `~/.config/agent-team/home`.
-   Until it exists the code checkout is the team home too, and there is nothing to clone or name.
+6. **The team home checkout.** Check: `git -C ~/agent-team-records remote get-url origin` prints `https://github.com/chanjdaniel/agent-team-records.git`.
+   Otherwise run `git clone https://github.com/chanjdaniel/agent-team-records.git ~/agent-team-records` (it needs step 4's login, since the repository is private).
+7. **The team home's setting.** Check: the first line of `~/.config/agent-team/home` is `agent-team-records`.
+   Otherwise, when the file is missing, run `mkdir -p ~/.config/agent-team && echo agent-team-records > ~/.config/agent-team/home`: it is how every script, hook and session on this machine finds the team home.
+   A file naming another path is Daniel's layout: show Daniel what it names and ask before changing it.
 
 Done when every check that applies passes and you are reading `~/agent-team/SETUP.md`.
 

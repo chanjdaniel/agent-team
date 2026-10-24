@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Set up a fresh Arch Linux or macOS machine for the team: from Daniel's first steps (git, gh and
-# Claude Code installed and signed in, the code checkout cloned at ~/agent-team and, once the team
-# home is a repository of its own, the team home at ~/agent-team-records) to a team-doctor where
-# only Daniel's own steps fail. Run it again after any failure or step of Daniel's: each stage is
-# skipped when its team-doctor lines pass, so a run resumes where the last one stopped.
+# Claude Code installed and signed in, the code checkout cloned at ~/agent-team and the team home
+# at ~/agent-team-records) to a team-doctor where only Daniel's own steps fail. Run it again after
+# any failure or step of Daniel's: each stage is skipped when its team-doctor lines pass, so a run
+# resumes where the last one stopped.
 #
 # Usage: team-bootstrap [--name <name>] [--home <path>] [--stage <stage>] [--dry-run]
 #   --name <name>    This machine's team name (laptop, home-pc: lower-case kebab case, never the
@@ -490,7 +490,7 @@ stage_check() {
     if lines '^lease$' | grep -qF 'no team name'; then covered+=(lease); fi
   fi
   # Without --home (a dry run with it would have written it), once there is a checkout to name:
-  # until then the code checkout is the team home, and --home would refuse.
+  # without one --home would refuse, and the doctor's team home line says to clone it.
   [[ -f $HOME/.config/agent-team/home || -n $home || ! -d $HOME/agent-team-records ]] ||
     steps+=("team home: name the team home's checkout for this machine: team-bootstrap --home agent-team-records (~/.config/agent-team/home is missing)")
   step '^claude login$' FAIL

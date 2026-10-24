@@ -9,7 +9,7 @@ Setting up a machine is `sops/machine-setup.md`.
 - Exactly one machine runs the team at a time: the holder of the lease.
   No confirmed lease, no coordinator and no worker.
 - Git is the transport and GitHub the meeting point; nothing moves by copying directories between machines.
-- Every machine has the same layout under `$HOME`: the code checkout at `~/agent-team`, the team home at the path `~/.config/agent-team/home` names (relative to `$HOME`; without that file, the team home is the code checkout itself) and each project at its registry path; a path recorded under any home directory (`/home/<name>/...`, `/Users/<name>/...`) means the same path under this machine's `$HOME`.
+- Every machine has the same layout under `$HOME`: the code checkout at `~/agent-team`, the team home at `~/agent-team-records`, the path `~/.config/agent-team/home` names (relative to `$HOME`), and each project at its registry path; a path recorded under any home directory (`/home/<name>/...`, `/Users/<name>/...`) means the same path under this machine's `$HOME`.
 - Every script finds the team home the same way: `TEAM_HOME` when set (the tests, and a script calling a sibling), else `~/.config/agent-team/home`, else the directory above `bin/`; code (scripts, roles, settings, hooks, templates, plugins, toolkits) always comes from the code checkout.
 - Conversations are a cache and never move: a resume rebuilds every session from the ledger, the briefs, the tickets, `handoff.md`, the branch and the archived scratch.
 - Secrets never touch git, logs, Discord or transcripts.
@@ -18,10 +18,15 @@ Setting up a machine is `sops/machine-setup.md`.
 
 ## What lives where
 
+Two repositories hold the team, each checked out on every machine:
+
+- **The code**, `chanjdaniel/agent-team`, public, at `~/agent-team`: the scripts, roles, settings, hooks, templates, plugins, toolkits and tests, and nothing from the records; changed only through merged PRs to `dev`.
+- **The team home**, `chanjdaniel/agent-team-records`, private, at `~/agent-team-records`: the records (the ledger, the registry, `tasks/`, `projects/`, `memory/`, `machine/`, `manual-steps.md`), committed straight to `dev` by the scripts, and the `lease` branch; its origin also holds the work a project's origin must not see (`wip/<project>/T<n>` snapshots and `salvage/` branches), since a project's origin may be public.
+
 | What | Where | Moved by |
 | - | - | - |
-| Scripts, roles, settings, hooks, templates, plugins, toolkits | the code checkout, `dev` | git, through merged PRs: `team-merge` fast-forwards the code checkout after merging its own project, and `team-resume` on the machine taking over |
-| Plans, briefs, the ledger, the registry | the team home, `dev` | git |
+| Scripts, roles, settings, hooks, templates, plugins, toolkits | the code checkout (`chanjdaniel/agent-team`), `dev` | git, through merged PRs: `team-merge` fast-forwards the code checkout after merging its own project, and `team-resume` on the machine taking over |
+| Plans, briefs, the ledger, the registry | the team home (`chanjdaniel/agent-team-records`), `dev` | git |
 | The lease | the team home's origin, orphan branch `lease`, one `lease.json` | `team-lease` |
 | Each task's scratch (spec, tickets, notes, `handoff.md`) | `tasks/T<n>/scratch/` (`scratch-<project>/` for an added project) | `team-checkpoint`, `team-handoff`; restored by `team-open --resume` |
 | Work in flight | each project's origin: the task branch; the team home's origin: `wip/<project>/T<n>` | workers' pushes; `team-checkpoint` |
