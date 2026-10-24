@@ -8,13 +8,14 @@
 #
 # ls        every Compose project on the machine (docker compose ls --all), one line each under
 #           a header: its name, status, owner class, task, kind, worktree (~ for the home
-#           directory, with "(gone)" when the directory is gone), age (since its oldest container was created) and the memory
-#           its running containers use. With --all, then a table each, one line per group with
-#           its totals: volumes by class (how many, how many attached, size), images by class
-#           and repository (tags, how many in use, size) and networks by class. With --json,
-#           one object, {projects} and with --all also {volumes, images, networks}, each item
-#           with its class. It changes nothing: it runs only docker compose ls, ps, inspect,
-#           stats --no-stream and, with --all, system df, volume ls and network ls.
+#           directory, with "(gone)" when the directory is gone), age (since its oldest
+#           container was created) and the memory its running containers use. With --all, then
+#           a table each, one line per group with its totals: volumes by class (how many, how
+#           many attached, size), images by class and repository (tags, how many in use, size)
+#           and networks by class. With --json, one object, {projects} and with --all also
+#           {volumes, images, networks}, each item with its class. It changes nothing: it runs
+#           only docker compose ls, ps, inspect, stats --no-stream and, with --all, system df,
+#           volume ls and network ls.
 #
 # The other subcommands act on one worktree's stack. The worktree is --worktree, else the git
 # top level of the current directory, and must be a linked worktree: a primary checkout's stack
@@ -77,10 +78,10 @@
 # when it matches a legacy_images pattern, else unowned.
 #
 # The machine's settings, ~/.config/agent-team/stack.json, a JSON object whose keys are all
-# optional: stack_cap (a whole number of 1 or more, default 6), memory_floor_gib (6), disk_floor_gb (30),
-# wait_minutes (15), idle_minutes (30), each a number of 0 or more, heartbeat_sweep and
-# heartbeat_janitor (true or false, default false). up refuses a file that is not one JSON
-# object, a key of the wrong type and an unknown key, naming each.
+# optional: stack_cap (a whole number of 1 or more, default 6), memory_floor_gib (6),
+# disk_floor_gb (30), wait_minutes (15), idle_minutes (30), each a number of 0 or more,
+# heartbeat_sweep and heartbeat_janitor (true or false, default false). up refuses a file that is
+# not one JSON object, a key of the wrong type and an unknown key, naming each.
 # Test seams: TEAM_MEMINFO names a file read in place of /proc/meminfo, and
 # TEAM_STACK_RECHECK_SECONDS replaces the 30 seconds between admission checks.
 #
