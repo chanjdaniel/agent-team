@@ -127,6 +127,9 @@ T5 no-worker: no live session among its 1 launch (latest T5-builder 33333333); n
   event T7 merged '{pr: 5, merge: "abcdef0", head: "1234567", by: "daniel"}'
   run_bin -1 team-sweep
   assert_equal "$output" "T7 no-worker: merged and not closed, with no live worker (latest T7-builder 22222222); next: close it with team-close T7"
+  # Blocked after the merge, a later part is still to come: the task is parked, not to be closed.
+  event T7 blocked '{reason: "the second half waits on T31"}'
+  run_bin -0 team-sweep
 }
 
 @test "no-worker: every live worker idle since a report leaves the next step to the coordinator" {
