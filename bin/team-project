@@ -13,8 +13,29 @@
 #        team-project --check         check the whole file and list every problem; the name
 #                                     coordinator is reserved (team-config's folder for the
 #                                     team home's own auto memory)
+#
+# The registry has one table per project the team works on, keyed by its short name.
+# Per project:
+#   repo             the GitHub repository, owner/name
+#   path             the primary checkout
+#   base             the branch tasks start from and PRs target
+#   delivery         how a builder delivers: "no-mistakes" (the gate opens the PR) or "direct-pr"
+#   merge_method     how team-merge merges a PR: "merge", "squash" or "rebase"
+#   required_checks  checks that must be present and green on the PR's head, beyond the
+#                    server's own required checks
+#   local_checks     optional: shell commands, run from the root of a checkout of the PR's exact
+#                    head, that must all pass before team-merge merges it (default none)
+#   task_dir         a task's scratch directory
+#   docs             what a worker reads first
+#   toolkits         the toolkits a worker of this project may be given
+# Per project pool ([<name>.pool]), where task worktrees come from:
+#   provider         "treehouse" (leased pre-warmed slots) or "git" (plain git worktrees)
+#   lease, return    treehouse only: the lease and return commands
+#   slots            the trusted slot paths a task's worktree may be
 # Paths in the file are relative to $HOME, except pool.lease and pool.return (relative to the
 # primary checkout) and task_dir and docs (relative to a worktree, so they stay relative).
+# A new key goes in this list and in the script's key lists.
+#
 # Every command refuses a registry that fails --check. Exit 0 done, 1 refused or a check
 # failed, 2 usage error. Python standard library only (tomllib, Python 3.11 or later).
 

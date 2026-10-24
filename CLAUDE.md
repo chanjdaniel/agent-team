@@ -1,7 +1,8 @@
-# The agent team's home
+# The agent team's code
 
-This repo is the home of Daniel's agent team: the scripts that run a task's life, the prompts and settings each session starts with, and the team's records.
-The team's own work on it goes through a task and a PR to `dev`, like any project's.
+This repo is the code of Daniel's agent team: the scripts that run a task's life, the prompts and settings each session starts with, the hooks, the toolkits and the tests.
+The team's records live in the team home, a private repository of their own (see "The team home").
+The team's own work on this repo goes through a task and a PR to `dev`, like any project's.
 
 ## Layout
 
@@ -16,17 +17,30 @@ The team's own work on it goes through a task and a PR to `dev`, like any projec
 | `toolkits/` | Plugin directories a worker loads with `team-worker --toolkit <name>`: MCP config (`.mcp.json`), skills, docs, scripts, and the skills' evals (`claude plugin eval`, on MCP mocks) |
 | `servers/` | The MCP servers the toolkits run, pinned by `package-lock.json`; `servers/install` puts them in the gitignored `servers/node_modules/` |
 | `templates/` | The task plan and the worker briefs `team-open` and `team-brief` render |
-| `projects.toml` | The project registry, read only through `bin/team-project` |
-| `machine/` | What a machine needs to run the team, beyond the tools `bin/lib/tools.lock` pins: `claude/`, the Claude user config every machine shares (instructions, settings, skills, plugins), which `team-config` applies and captures; `secrets.json`, every secret file a machine needs, never a value, which `team-secrets` checks and restores from 1Password, described for Daniel in `secrets.md` |
-| `ledger.jsonl` | The append-only record of every task's events |
-| `tasks/` | Each task's plan, briefs and archived scratch; history, kept as written |
-| `memory/` | Each registered project's Claude Code auto memory, `memory/<project>/`, which every machine and worktree of it shares once `team-config apply` points the project at it, and the coordinator's, `memory/coordinator/`, the team home's own while it is no project's primary checkout |
-| `manual-steps.md` | The steps only Daniel can take |
-| `README.md`, `SETUP.md` | The sentence Daniel types on a new machine, and the agent's entry point for "set up as host" |
+| `README.md`, `SETUP.md` | What a stranger reads first, with the sentence Daniel types on a new machine, and the agent's entry point for "set up as host" |
+| `LICENSE` | The Apache License 2.0; vendored bats-core keeps its own |
 | `sops/` | Standing procedures: `machine-setup.md` (a new machine, driven by `SETUP.md`), `portability.md` (moving the team between machines), `knowledge-graph.md`, `platform-gotchas.md` (general rules about the tools the team runs on, which every brief points at and the retro keeps short) |
-| `projects/` | Each project's planning (Conventioner's backlog) |
 
-`.scratch/task/` is a team-home task's own task directory, ignored by git.
+`.scratch/task/` is the task directory of a task on this repo, ignored by git.
+
+## The team home
+
+The team home is the records the scripts read and write: a git checkout of a private repository of its own, never part of this repo.
+It holds:
+
+| Path | What it holds |
+| - | - |
+| `ledger.jsonl` | The append-only record of every task's events |
+| `projects.toml` | The project registry, read only through `bin/team-project`, whose `--help` documents every key |
+| `tasks/` | Each task's plan, briefs and archived scratch; history, kept as written |
+| `projects/` | Each project's planning (Conventioner's backlog) |
+| `memory/` | Each registered project's Claude Code auto memory, `memory/<project>/`, which every machine and worktree of it shares once `team-config apply` points the project at it, and the coordinator's, `memory/coordinator/`, the team home's own while it is no project's primary checkout |
+| `machine/` | What a machine needs to run the team, beyond the tools `bin/lib/tools.lock` pins: `claude/`, the Claude user config every machine shares (instructions, settings, skills, plugins), which `team-config` applies and captures; `secrets.json`, every secret file a machine needs, never a value, which `team-secrets` checks and restores from 1Password, described for Daniel in `secrets.md` |
+| `manual-steps.md` | The steps only Daniel can take |
+
+- The scripts find it as `TEAM_HOME` when set, else the first line of `~/.config/agent-team/home` (a path relative to `$HOME`, or absolute), else the directory above `bin/`; the library and `team-project` find it the same way, and refuse a setting that names no directory.
+- Code never comes from the team home, and records never go into this repo: `bin/lib/records` lists the records paths, and the `pre-push` hook (below) keeps a tree holding any of them away from every repository but the team home's origin.
+- Until T31's split moves them out, the records are still tracked here too, under the rules of "Direct commits on dev".
 
 ## Direct commits on dev
 
@@ -63,13 +77,12 @@ The team's own work on it goes through a task and a PR to `dev`, like any projec
 
 - Bash 5 (the library refuses older), `set -euo pipefail`, then the library: `source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"`; `bin/lib/team.sh`'s header lists what it provides.
 - The header (the comment block under the shebang) is the script's usage and its `--help`, which the library prints; exact commands live there and nowhere else.
-- The team home (the ledger, `tasks/`, `projects.toml` and the other records) is `TEAM_HOME` when set, else the first line of `~/.config/agent-team/home` (a path relative to `$HOME`, or absolute), else the directory above `bin/`; the library and `team-project` find it the same way, and refuse a setting that names no directory.
-  `TEAM_HOME` is not exported: pass it to a sibling script explicitly.
+- The team home is found as "The team home" says; `TEAM_HOME` is not exported, so pass it to a sibling script explicitly.
 - The code checkout is the directory above `bin/` (`~/agent-team`): code (roles, settings, templates, plugins, hooks, toolkits) comes from the script's own checkout, never from the team home.
   In settings files and a toolkit's `.mcp.json`, `@TEAM_CODE@` names the code checkout and `@TASK_DIR@` the team home's `tasks/T<n>/`; `team-worker` and `claude-coordinator` fill them in.
 - Exit codes: 0 done, 1 refused or a check failed (`die`), 2 a malformed command line (`usage_error`), 75 try again later.
 - The ledger changes only through the library's `ledger_append`, which checks each event against `bin/lib/ledger-contract.json` and the script named as its kind's writer; a new kind or field goes in the contract first.
-- The registry is read only through `team-project`; a new key goes in its key lists and in the comment block of `projects.toml`.
+- The registry is read only through `team-project`; a new key goes in its key lists and in its header, which documents every key.
 - A script reaches Discord only through `discord_api` and GitHub through `gh`, and never prints a secret.
 
 ## Markdown

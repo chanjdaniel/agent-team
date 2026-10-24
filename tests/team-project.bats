@@ -383,3 +383,25 @@ TOML
   assert_contains "$stderr" "alpha.local_checks: must be a list of strings"
   assert_contains "$stderr" "beta.local_checks: each command must be one line, not empty"
 }
+
+@test "--help documents every key the registry may hold, and no other" {
+  local known documented
+  # The keys from the script's own lists: a project's, its optional ones, and its pool's.
+  known=$(python3 -I - "$REPO_ROOT/bin/team-project" <<'PY'
+import ast, sys
+lists = {}
+for node in ast.parse(open(sys.argv[1]).read()).body:
+    if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
+        name = node.targets[0].id
+        if name in ("PROJECT_STRINGS", "PROJECT_LISTS", "PROJECT_OPTIONAL", "POOL_KEYS"):
+            value = node.value
+            lists[name] = [ast.literal_eval(k) for k in (value.keys if isinstance(value, ast.Dict) else value.elts)]
+print("\n".join(sorted(k for keys in lists.values() for k in keys)))
+PY
+)
+  run_bin -0 team-project --help
+  # Each key is a word at the start of a line indented two spaces ("lease, return" names two).
+  documented=$(grep -E '^  [a-z_]+(, [a-z_]+)* {2,}' <<<"$output" | sed -E 's/^  //; s/ {2,}.*//; s/, /\n/g' | sort)
+  assert_equal "$documented" "$known"
+  [[ $(wc -l <<<"$known") -ge 14 ]]
+}
