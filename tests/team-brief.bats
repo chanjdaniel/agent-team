@@ -134,10 +134,11 @@ Task directory: `.scratch/task/` in the worktree (excluded from git), for your s
 
 1. Bring the branch up to date with the base: `git fetch origin`; if `git merge-base --is-ancestor origin/dev HEAD` fails, merge `origin/dev` with a merge commit (`git merge origin/dev`, never a rebase), resolve any conflict and re-run what the conflicts touched.
    A conflict whose resolution is a judgment call on behaviour goes to `coordinator` as `T12 QUESTION <the conflict> | options: ...`.
-2. Run `/no-mistakes` with this intent: "T12: rate-limit the applicant sign-in endpoints (per address and per IP, Mongo TTL counters, 429 with Retry-After), so Conventioner cannot be used to flood addresses with sign-in codes or to guess codes."
-3. The PR must target `dev`; if the gate opens it against another branch, retarget it to `dev` and close any duplicate.
-4. When the gate returns checks-passed, repeat step 1; if it merged anything, go back to step 2, so every required check passes on the new head.
-5. Then send `T12 PR <full url>` to `coordinator`.
+2. Find what your branch made false: for each file, command, flag, setting and path it adds, renames or removes (`git diff --stat origin/dev...HEAD`), `git grep` its name in the repository's Markdown, `CLAUDE.md`, `AGENTS.md` and script headers, and fix every line that no longer holds, in the same PR.
+3. Run `/no-mistakes` with this intent: "T12: rate-limit the applicant sign-in endpoints (per address and per IP, Mongo TTL counters, 429 with Retry-After), so Conventioner cannot be used to flood addresses with sign-in codes or to guess codes."
+4. The PR must target `dev`; if the gate opens it against another branch, retarget it to `dev` and close any duplicate.
+5. When the gate returns checks-passed, repeat step 1; if it merged anything, go back to step 3, so every required check passes on the new head.
+6. Then send `T12 PR <full url>` to `coordinator`.
 
 Never run a command that needs `sudo`; send `T12 BLOCKED <the command> needs sudo` to `coordinator` instead.
 
@@ -560,7 +561,7 @@ after"
   local brief
   run_bin -0 team-brief T14 builder-deliver --set "goal=the goal"
   brief=$(<"$output")
-  assert_contains "$brief" "2. Run each of the project's local checks (\`tests/run\`, \`make lint\`) from the worktree's root on the head you push"
+  assert_contains "$brief" "3. Run each of the project's local checks (\`tests/run\`, \`make lint\`) from the worktree's root on the head you push"
   assert_contains "$brief" "then a line naming the local checks that passed and the head they passed on."
   run_bin -0 team-brief T14 reviewer --name review --set pr=https://github.com/chanjdaniel/agent-team/pull/9 \
     --set head=abc1234 --set "checks=the checks"

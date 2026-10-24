@@ -26,7 +26,7 @@ Seen: T18, whose test script's Playwright `--with-deps` locked Daniel's account 
 
 Why: Docker creates a missing source directory as root, and a container running as root writes root-owned files into the worktree, which no session can remove without `sudo`.
 
-Seen: T3's `npm ci` EACCES on a root-owned `node_modules` mount (`tasks/T3/report.md`); T21's root-owned gate worktree (ledger 2026-10-23T06:14:20Z).
+Seen: T3's `npm ci` EACCES on a root-owned `node_modules` mount (`tasks/T3/report.md`); T21's root-owned gate worktree (ledger 2026-10-23T06:14:20Z); T24's re-clone, stopped by two root-owned gate worktrees (ledger 2026-10-23T15:36:38Z).
 
 ## Once a PR is open and its checks are green, stop the gate run, and treat any commit that lands after the review as unreviewed
 
@@ -44,7 +44,7 @@ Seen: T17 ticket 08, whose builder stuck on that prompt and was relaunched (ledg
 
 Why: a reset throws away local commits and auto mode refuses it, and a force-push throws away what the tool pushed.
 
-Seen: T12 and T22, whose gate rebased and force-pushed their branches (ledger 2026-10-22T12:05:30Z, 2026-10-23T13:57:02Z).
+Seen: T12 and T22 (twice), whose gate rebased and force-pushed their branches (ledger 2026-10-22T12:05:30Z, 2026-10-23T13:57:02Z; T22 builder `b782adf4` at 2026-10-23T23:27Z).
 
 ## After the machine's packages are upgraded, check that Docker answers before a gate run, and leave a daemon restart to Daniel
 
@@ -56,4 +56,10 @@ Seen: T5, T12 and T15, which waited on Daniel's restart (ledger 2026-10-22T00:09
 
 Why: `*` matches any text, spaces and other arguments included, so a rule matches more commands than it looks: an allow rule lets more through, and a deny rule refuses commands that only quote its words.
 
-Seen: T20's review of the reviewer's allow rules (`tasks/T20/scratch/review.md`); T25, where a deny rule refused a quoted jq filter and a heredoc naming a script (ledger 2026-10-23T12:58:54Z, 2026-10-23T13:15:36Z).
+Seen: T20's review of the reviewer's allow rules (`tasks/T20/scratch/review.md`); T25, where a deny rule refused a quoted jq filter and a heredoc naming a script (ledger 2026-10-23T12:58:54Z, 2026-10-23T13:15:36Z); T34's `gh api*git/refs*` and T24's `git *config*core.hooksPath*`, which refused reads (ledger 2026-10-24T00:04:36Z, 2026-10-24T01:28:18Z).
+
+## To know what a CI or deploy run built, read the commit its checkout fetched, never the run's branch and commit label
+
+Why: GitHub labels a run started by another workflow (`workflow_run`) or a schedule with the default branch and that branch's tip when it started, whatever it checked out, so the label can name code that never ran; the checkout step's log (`HEAD is now at`) and `workflow_run.head_sha` say what did.
+
+Seen: T24's force-push, where a Deploy labelled "dev 5694c2af" had deployed `main` at `0fa47646`, and production was nearly migrated for code it did not run (ledger 2026-10-23T15:13:26Z to 15:20:46Z; `tasks/T29/scratch/early-finding.md`).
