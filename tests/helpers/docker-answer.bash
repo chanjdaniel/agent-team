@@ -6,6 +6,12 @@
 # The message Docker gives when its daemon does not answer.
 DOCKER_DOWN='Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?'
 
+# The jq definitions the answers share: whether a labels object has every one of the label
+# filters <filters> ("<key>" or "<key>=<value>"), as Docker's --filter label= matches.
+DOCKER_STUB_JQ='def has_labels($filters): . as $labels | all($filters[];
+  (split("=") | .[0]) as $k | ($labels | has($k))
+  and (if contains("=") then $labels[$k] == .[($k | length) + 1:] else true end)); '
+
 # Answer one docker call: docker_stub_answer <arguments...>
 docker_stub_answer() {
   DOCKER_STUB_CALL=$*
@@ -19,18 +25,23 @@ docker_stub_answer() {
   done
   local cmd=${args[0]:-} key
   args=("${args[@]:1}")
+  # The project and file of a compose call (-p, -f).
+  COMPOSE_P='' COMPOSE_F=''
   case $cmd in
     compose)
       # Compose's global options, before its subcommand.
       while [[ ${args[0]:-} == -* ]]; do
         case ${args[0]} in
-          -f | --file | -p | --project-name | --profile | --env-file | --project-directory | --ansi | --progress | --parallel)
+          -p | --project-name) COMPOSE_P=${args[1]:-}; args=("${args[@]:2}") ;;
+          -f | --file) COMPOSE_F=${args[1]:-}; args=("${args[@]:2}") ;;
+          --profile | --env-file | --project-directory | --ansi | --progress | --parallel)
             args=("${args[@]:2}") ;;
           *) args=("${args[@]:1}") ;;
         esac
       done
       key="compose ${args[0]:-}"
       args=("${args[@]:1}")
+      docker_stub_compose_env
       ;;
     volume | image | network | system | container | builder | buildx)
       key="$cmd ${args[0]:-}"
@@ -54,6 +65,13 @@ docker_stub_answer() {
     'system df') docker_stub_system_df "${args[@]}" ;;
     'volume ls') docker_stub_list volumes .Name "${args[@]}" ;;
     'network ls') docker_stub_list networks .Id "${args[@]}" ;;
+    'compose config') docker_stub_compose_config "${args[@]}" ;;
+    'compose up') docker_stub_compose_up "${args[@]}" ;;
+    'compose port') docker_stub_compose_port "${args[@]}" ;;
+    'compose logs') docker_stub_compose_logs "${args[@]}" ;;
+    'compose stop') docker_stub_compose_stop "${args[@]}" ;;
+    'compose down') docker_stub_compose_down "${args[@]}" ;;
+    'volume rm') docker_stub_volume_rm "${args[@]}" ;;
     *) docker_stub_unplanned ;;
   esac
 }
@@ -116,10 +134,8 @@ docker_stub_ps() {
     shift
   done
   [[ $quiet == true ]] || docker_stub_unplanned
-  jq -r --argjson all "$all" --argjson filters "$filters" '
-    map(select($all or .State.Running) | . as $c
-      | select(all($filters[]; (split("=") | .[0]) as $k | ($c.Config.Labels | has($k))
-          and (if contains("=") then $c.Config.Labels[$k] == (.[($k | length) + 1:]) else true end))))
+  jq -r --argjson all "$all" --argjson filters "$filters" "$DOCKER_STUB_JQ"'
+    map(select(($all or .State.Running) and (.Config.Labels // {} | has_labels($filters))))
     | sort_by(.Created) | reverse | .[].Id' "$DOCKER_STATE/containers.json"
   # Containers removed since they were listed (docker_vanish).
   cat "$DOCKER_STATE/vanished" 2>/dev/null || true
@@ -185,14 +201,242 @@ docker_stub_system_df() {
        Mountpoint, Name, Scope, Size, Status: "N/A"}]}' "$DOCKER_STATE/images.json"
 }
 
-# volume ls --quiet, network ls --quiet --no-trunc: one <field> per object of <file>:
-# docker_stub_list <file> <field> <options...>
+# volume ls --quiet, network ls --quiet --no-trunc, each with any --filter label=<key>[=<value>]:
+# one <field> per object of <file>: docker_stub_list <file> <field> <options...>
 docker_stub_list() {
-  local file=$1 field=$2
+  local file=$1 field=$2 filters='[]'
   shift 2
+  local -a options=()
+  while (($#)); do
+    if [[ $1 == --filter ]]; then
+      [[ ${2:-} == label=* ]] || docker_stub_unplanned
+      filters=$(jq -c --arg f "${2#label=}" '. + [$f]' <<<"$filters")
+      shift 2
+      continue
+    fi
+    options+=("$1")
+    shift
+  done
   case $file in
-    volumes) docker_stub_options $# "$@" --quiet || docker_stub_unplanned ;;
-    networks) docker_stub_options $# "$@" --quiet --no-trunc || docker_stub_unplanned ;;
+    volumes) docker_stub_options ${#options[@]} "${options[@]}" --quiet || docker_stub_unplanned ;;
+    networks) docker_stub_options ${#options[@]} "${options[@]}" --quiet --no-trunc || docker_stub_unplanned ;;
   esac
-  jq -r ".[] | $field" "$DOCKER_STATE/$file.json"
+  jq -r --argjson filters "$filters" "$DOCKER_STUB_JQ map(select(.Labels // {} | has_labels(\$filters))) | .[] | $field" \
+    "$DOCKER_STATE/$file.json"
+}
+
+# The calls below model the fixture project's stack (tests/fixtures/stack/docker-compose.yml):
+# one service, web, mounting the named volume data at /data and an anonymous one at /cache, on
+# the network default, each labelled from the TEAM_* variables the call sees, as Compose 5.6.1
+# makes them.
+
+# The project of a compose call: -p, else COMPOSE_PROJECT_NAME, else the directory of the -f file.
+docker_stub_project() {
+  if [[ -n $COMPOSE_P ]]; then
+    echo "$COMPOSE_P"
+  elif [[ -n ${COMPOSE_PROJECT_NAME:-} ]]; then
+    echo "$COMPOSE_PROJECT_NAME"
+  else
+    local dir=${COMPOSE_F%/*}
+    echo "${dir##*/}"
+  fi
+}
+
+# Log the compose call with the stack identity and the team labels it sees, one JSON object per
+# line in $DOCKER_STATE/compose-env.jsonl (docker_compose_env).
+docker_stub_compose_env() {
+  jq -cn --arg call "$DOCKER_STUB_CALL" --arg project "$(docker_stub_project)" '
+    {call: $call, project: $project, COMPOSE_PROJECT_NAME: ($ENV.COMPOSE_PROJECT_NAME // null),
+     TH_PORTS: ($ENV.TH_PORTS // null), TH_WEB_PORT: ($ENV.TH_WEB_PORT // null),
+     labels: {owner: $ENV.TEAM_OWNER, task: $ENV.TEAM_TASK, kind: $ENV.TEAM_KIND,
+       worktree: $ENV.TEAM_WORKTREE, expires: $ENV.TEAM_EXPIRES}}' >>"$DOCKER_STATE/compose-env.jsonl"
+}
+
+# The team labels the call's TEAM_* variables give, each empty when unset, as a labels object.
+docker_stub_team_labels() {
+  jq -cn '{owner: "TEAM_OWNER", task: "TEAM_TASK", kind: "TEAM_KIND", worktree: "TEAM_WORKTREE", expires: "TEAM_EXPIRES"}
+    | with_entries(.key |= "io.github.chanjdaniel.team." + . | .value |= ($ENV[.] // ""))'
+}
+
+# Replace the state file <file> with jq's <filter> of it: docker_stub_update <file> <filter> [jq options...]
+docker_stub_update() {
+  local file=$DOCKER_STATE/$1.json filter=$2
+  shift 2
+  jq "$@" "$DOCKER_STUB_JQ $filter" "$file" >"$file.new"
+  mv "$file.new" "$file"
+}
+
+# A new 64-hex id.
+docker_stub_id() {
+  sha256sum <<<"$RANDOM-$RANDOM-$(date +%s%N)-$BASHPID" | cut -d ' ' -f 1
+}
+
+# compose config --format json: the fixture's config as Compose renders it.
+docker_stub_compose_config() {
+  docker_stub_options $# "$@" --format json || docker_stub_unplanned
+  jq -n --arg project "$(docker_stub_project)" --arg port "${TH_WEB_PORT:-}" --argjson labels "$(docker_stub_team_labels)" '
+    {name: $project,
+     networks: {default: {name: "\($project)_default", ipam: {}, labels: $labels}},
+     services: {web: {restart: "no", command: ["httpd", "-f", "-v", "-p", "80", "-h", "/data"], entrypoint: null,
+       image: "busybox:1.36", labels: $labels, mem_limit: "67108864", networks: {default: null},
+       volumes: [{type: "volume", source: "data", target: "/data", volume: {}}, {type: "volume", target: "/cache", volume: {}}],
+       ports: [{mode: "ingress", host_ip: "127.0.0.1", target: 80, published: $port, protocol: "tcp"}]}},
+     volumes: {data: {name: "\($project)_data", labels: $labels}},
+     "x-team-labels": $labels}'
+}
+
+# compose up -d --wait: the project's network and named volume made when missing (an existing
+# one keeps its labels, as Docker's do); its web container made, started when stopped, or
+# recreated with its anonymous volume when its labels changed; started with its port, TH_WEB_PORT
+# or, empty, one Docker picks.
+docker_stub_compose_up() {
+  docker_stub_options $# "$@" -d --wait || docker_stub_unplanned
+  local project labels now hash port id anonymous
+  project=$(docker_stub_project)
+  labels=$(docker_stub_team_labels)
+  now=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)
+  hash=$(sha256sum <<<"$labels" | cut -d ' ' -f 1)
+  docker_stub_update networks '
+    if any(.[]; .Name == "\($p)_default") then . else . + [{Name: "\($p)_default", Id: $id, Created: $now,
+      Scope: "local", Driver: "bridge", Labels: ({"com.docker.compose.network": "default",
+      "com.docker.compose.project": $p, "com.docker.compose.version": "5.6.1"} + $labels)}] end' \
+    --arg p "$project" --arg id "$(docker_stub_id)" --arg now "$now" --argjson labels "$labels"
+  docker_stub_update volumes '
+    if any(.[]; .Name == "\($p)_data") then . else . + [{Name: "\($p)_data", CreatedAt: $now, Driver: "local",
+      Mountpoint: "/var/lib/docker/volumes/\($p)_data/_data", Scope: "local", Size: "0B",
+      Labels: ({"com.docker.compose.project": $p, "com.docker.compose.version": "5.6.1",
+      "com.docker.compose.volume": "data"} + $labels)}] end' \
+    --arg p "$project" --arg now "$now" --argjson labels "$labels"
+  # The anonymous volume: the existing container's, else a new one.
+  anonymous=$(jq -r --arg name "/$project-web-1" \
+    '.[] | select(.Name == $name) | .Mounts[] | select(.Destination == "/cache") | .Name' "$DOCKER_STATE/containers.json")
+  if [[ -z $anonymous ]]; then
+    anonymous=$(docker_stub_id)
+    docker_stub_update volumes '. + [{Name: $name, CreatedAt: $now, Driver: "local", Scope: "local", Size: "0B",
+      Mountpoint: "/var/lib/docker/volumes/\($name)/_data", Labels: {"com.docker.volume.anonymous": ""}}]' \
+      --arg name "$anonymous" --arg now "$now"
+  fi
+  port=${TH_WEB_PORT:-}
+  [[ -n $port ]] || port=$((32768 + $(jq length "$DOCKER_STATE/containers.json")))
+  id=$(docker_stub_id)
+  docker_stub_update containers '
+    (map(select(.Name == "/\($p)-web-1")) | first) as $old
+    | if $old != null and $old.Config.Labels["com.docker.compose.config-hash"] == $hash then
+        map(if .Name == "/\($p)-web-1" and (.State.Running | not) then
+          .State += {Status: "running", Running: true, StartedAt: $now} else . end)
+      else map(select(.Name != "/\($p)-web-1")) + [{Name: "/\($p)-web-1", Id: $id, Created: $now,
+        State: {Status: "running", Running: true, OOMKilled: false, ExitCode: 0, StartedAt: $now,
+          FinishedAt: "0001-01-01T00:00:00Z"},
+        Image: "sha256:\("b" * 64)",
+        Config: {Labels: ({"com.docker.compose.config-hash": $hash, "com.docker.compose.container-number": "1",
+          "com.docker.compose.oneoff": "False", "com.docker.compose.project": $p,
+          "com.docker.compose.project.config_files": $file, "com.docker.compose.project.working_dir": ($file | sub("/[^/]*$"; "")),
+          "com.docker.compose.service": "web", "com.docker.compose.version": "5.6.1"} + $labels)},
+        Mounts: [{Type: "volume", Name: "\($p)_data", Source: "/var/lib/docker/volumes/\($p)_data/_data",
+            Destination: "/data", Driver: "local"},
+          {Type: "volume", Name: $anonymous, Source: "/var/lib/docker/volumes/\($anonymous)/_data",
+            Destination: "/cache", Driver: "local"}],
+        NetworkSettings: {Ports: {"80/tcp": [{HostIp: "127.0.0.1", HostPort: $port}]}}}] end' \
+    --arg p "$project" --arg id "$id" --arg now "$now" --arg hash "$hash" --arg port "$port" \
+    --arg file "$COMPOSE_F" --arg anonymous "$anonymous" --argjson labels "$labels"
+  docker_stub_running_stats
+}
+
+# The stats of the running containers: each keeps its line, and a new one uses 1.2 MiB.
+docker_stub_running_stats() {
+  jq --slurpfile containers "$DOCKER_STATE/containers.json" '
+    . as $stats | [$containers[0][] | select(.State.Running) | .Id as $id | (.Name | ltrimstr("/")) as $name
+      | (first($stats[] | select(.ID as $short | $id | startswith($short)))
+         // {BlockIO: "0B / 0B", CPUPerc: "0.00%", Container: $id[:12], ID: $id[:12], MemPerc: "1.88%",
+             MemUsage: "1.2MiB / 64MiB", Name: $name, NetIO: "0B / 0B", PIDs: "1"})]' \
+    "$DOCKER_STATE/stats.json" >"$DOCKER_STATE/stats.json.new"
+  mv "$DOCKER_STATE/stats.json.new" "$DOCKER_STATE/stats.json"
+}
+
+# compose port <service> <port>: the running service's published address, as Compose prints it.
+docker_stub_compose_port() {
+  [[ $# -eq 2 ]] || docker_stub_unplanned
+  local project published
+  project=$(docker_stub_project)
+  published=$(jq -r --arg p "$project" --arg s "$1" --arg port "$2/tcp" '
+    .[] | select(.Config.Labels["com.docker.compose.project"] == $p and .Config.Labels["com.docker.compose.service"] == $s
+      and .State.Running) | .NetworkSettings.Ports[$port][0] | "\(.HostIp):\(.HostPort)"' "$DOCKER_STATE/containers.json")
+  if [[ -z $published ]]; then
+    echo "service \"$1\" is not running" >&2
+    exit 1
+  fi
+  echo "$published"
+}
+
+# compose -p <project> logs --no-color --timestamps <service>: $DOCKER_STATE/logs/<project>-<service>.log
+# when a test wrote one, else one line; a service with no container is refused as Compose does.
+docker_stub_compose_logs() {
+  if [[ $# -ne 3 ]] || ! docker_stub_options 2 "$1" "$2" --no-color --timestamps; then docker_stub_unplanned; fi
+  local project service=$3
+  project=$(docker_stub_project)
+  if ! jq -e --arg p "$project" --arg s "$service" \
+    'any(.[]; .Config.Labels["com.docker.compose.project"] == $p and .Config.Labels["com.docker.compose.service"] == $s)' \
+    "$DOCKER_STATE/containers.json" >/dev/null; then
+    echo "no such service: $service" >&2
+    exit 1
+  fi
+  if [[ -f $DOCKER_STATE/logs/$project-$service.log ]]; then
+    cat "$DOCKER_STATE/logs/$project-$service.log"
+  else
+    echo "$service-1  | 2026-10-24T09:00:00.000000000Z $project's $service started"
+  fi
+}
+
+# compose -p <project> stop: every container of the project stopped.
+docker_stub_compose_stop() {
+  (($# == 0)) || docker_stub_unplanned
+  local now
+  now=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)
+  docker_stub_update containers 'map(if .Config.Labels["com.docker.compose.project"] == $p and .State.Running
+    then .State += {Status: "exited", Running: false, ExitCode: 137, FinishedAt: $now} else . end)' \
+    --arg p "$(docker_stub_project)" --arg now "$now"
+  docker_stub_running_stats
+}
+
+# compose -p <project> down -v --remove-orphans: the project's containers, its named volumes,
+# the anonymous volumes its containers mount and its networks removed; docker_leak leaves some.
+docker_stub_compose_down() {
+  docker_stub_options $# "$@" -v --remove-orphans || docker_stub_unplanned
+  local project leak_anonymous=false leak_network=false leak_container=false
+  project=$(docker_stub_project)
+  [[ ! -e $DOCKER_STATE/leak-anonymous ]] || leak_anonymous=true
+  [[ ! -e $DOCKER_STATE/leak-network ]] || leak_network=true
+  [[ ! -e $DOCKER_STATE/leak-container ]] || leak_container=true
+  local anonymous
+  anonymous=$(jq -c --arg p "$project" '[.[] | select(.Config.Labels["com.docker.compose.project"] == $p)
+    | .Mounts[] | select(.Type == "volume" and (.Name | test("^[0-9a-f]{64}$"))) | .Name]' "$DOCKER_STATE/containers.json")
+  [[ $leak_container == true ]] ||
+    docker_stub_update containers 'map(select(.Config.Labels["com.docker.compose.project"] != $p))' --arg p "$project"
+  docker_stub_update volumes 'map(select(.Labels["com.docker.compose.project"] != $p
+      and ($leak or (.Name as $name | $anonymous | index($name) | not))))' \
+    --arg p "$project" --argjson anonymous "$anonymous" --argjson leak "$leak_anonymous"
+  [[ $leak_network == true ]] ||
+    docker_stub_update networks 'map(select(.Labels["com.docker.compose.project"] != $p))' --arg p "$project"
+  docker_stub_running_stats
+}
+
+# volume rm <names>...: each removed; one missing or mounted by a container is refused as
+# Docker refuses it, after the others are removed.
+docker_stub_volume_rm() {
+  (($#)) || docker_stub_unplanned
+  local name status=0
+  for name in "$@"; do
+    if ! jq -e --arg n "$name" 'any(.[]; .Name == $n)' "$DOCKER_STATE/volumes.json" >/dev/null; then
+      echo "Error response from daemon: get $name: no such volume" >&2
+      status=1
+    elif jq -e --arg n "$name" 'any(.[]; any(.Mounts[]?; .Type == "volume" and .Name == $n))' \
+      "$DOCKER_STATE/containers.json" >/dev/null; then
+      echo "Error response from daemon: remove $name: volume is in use" >&2
+      status=1
+    else
+      docker_stub_update volumes 'map(select(.Name != $n))' --arg n "$name"
+      echo "$name"
+    fi
+  done
+  exit "$status"
 }

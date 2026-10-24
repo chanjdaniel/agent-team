@@ -11,7 +11,7 @@ x-team-labels: &team-labels
 services:
   web:
     image: busybox:1.36
-    command: ["httpd", "-f", "-p", "80", "-h", "/data"]
+    command: ["httpd", "-f", "-v", "-p", "80", "-h", "/data"]
     ports:
       - "127.0.0.1:${TH_WEB_PORT:-}:80"
     mem_limit: 64m

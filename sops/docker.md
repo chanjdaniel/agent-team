@@ -49,6 +49,36 @@ The wrapper:
 
 A caller clears its own stack identity (`COMPOSE_PROJECT_NAME`, `TH_PORTS` and every `TH_*_PORT`) before calling the wrapper and sets only what it means, so a shell that once exported another stack's never redirects a call.
 
+## Running a worktree's stack
+
+An agent starts, reaches, stops and removes its stack with `team-stack`, never with `docker compose up`, the wrapper's `up` or `docker run`.
+
+- `team-stack up` starts the worktree's stack, labelled with its task, and seeds a new database.
+- `eval "$(team-stack env)"` exports what reaches it: `COMPOSE_PROJECT_NAME`, a `TH_<SERVICE>_PORT` per service (the wrapper's `ports`) and the stack's five `TEAM_*` labels, so the seed, Playwright, `mongosh` and a hand-run wrapper call reach the same stack without changing its labels.
+- `team-stack seed` runs the project's seed command again, from the worktree, with those exports.
+- `team-stack stop` stops its containers and keeps its data; the next `up` starts them again and does not seed.
+- `team-stack down` saves its logs and removes it, leaving no container, volume (named or anonymous) or network of it.
+
+Each acts on the worktree it is run in (or `--worktree <path>`), resolved the same way:
+
+- **The worktree** must be a linked worktree: in a primary checkout, whose stack is Daniel's primary stack, every subcommand refuses.
+- **The project** is the registered one whose primary checkout the worktree belongs to, and it must have a `stack` block.
+- **The stack** is the one the wrapper resolves for the worktree, named by its `config --format json`: the containers, volumes and networks Docker labels with that Compose project.
+  A stack with any object that is not of class team is refused by every subcommand, naming its class: removing it is Daniel's or the coordinator's call.
+- **The task**, for `up` only, is the open task whose ledger worktree (opened or added, not returned) is this one, compared by real path; `--task T<n>` names one when the ledger gives the worktree to none, and must agree with it when it does.
+
+Every stack starts fresh for its task:
+
+- A team stack of another task in the worktree's slot is taken down first, exactly as `down` does, its logs saved as `stack-logs/<old task>-<project>-<service>.log`, so the new task gets an empty database and volumes carrying its own labels.
+- A new stack gets `TEAM_OWNER=agent-team`, its task, `TEAM_KIND=dev`, the worktree's path and an empty `TEAM_EXPIRES`; an existing one of the same task is always called with the labels read back from its containers.
+- The seed runs only when the stack is new and none of its named volumes was there before, and not with `up --no-seed`.
+
+`down` saves the last 1 MiB of each `log_services` service's log to `<worktree>/<task_dir>/stack-logs/<project>-<service>.log`, so `team-close`'s archive keeps it.
+It then runs `docker compose -p <project> down -v --remove-orphans`, removes any anonymous volume the stack's containers mounted that is still there, and fails naming each object of the stack left.
+With no stack, `stop` and `down` say so and exit 0; `env` and `seed` refuse.
+
+Exit codes: 0 done, 1 refused or failed (with the reason), 2 a malformed command line, 75 try again later.
+
 ## Seeing what Docker holds
 
 - `team-stack ls` lists every Compose project with its status, class, task, kind, worktree, age and memory.
@@ -58,4 +88,5 @@ A caller clears its own stack identity (`COMPOSE_PROJECT_NAME`, `TH_PORTS` and e
 ## Testing
 
 - The bats tests never reach the machine's Docker: `tests/helpers/docker.bash` installs a stub `docker` that answers from fixtures recorded on this machine (`tests/fixtures/docker/`) and logs every call.
-- `tests/team-stack-live.bats` runs against the real Docker only with `TEAM_LIVE_DOCKER=1`, since a test that creates a network can break a gate run's end to end.
+- The stub also models the fixture project's stack (`tests/fixtures/stack/`), so `up`, `env`, `seed`, `stop` and `down` are tested through the wrapper contract rather than Conventioner.
+- `tests/team-stack-live.bats` runs against the real Docker only with `TEAM_LIVE_DOCKER=1`, since a test that creates a network can break a gate run's end to end; it starts and removes the fixture's one-service stack under a project name of its own.

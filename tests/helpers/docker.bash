@@ -23,12 +23,26 @@
 #                                       object" on stderr and exit 1, as Docker does
 #   stats --no-stream --format json <names or ids>...
 #   system df -v --format json          {Images, Containers, Volumes, BuildCache}
-#   volume ls --quiet, network ls --quiet --no-trunc
+#   volume ls --quiet, network ls --quiet --no-trunc, each with any --filter label=<key>[=<value>]
+#   volume rm <names>...                a volume missing or mounted by a container is refused
+# and, modelling the fixture project's stack (stack_project) as Compose 5.6.1 makes it, from the
+# TEAM_* variables, COMPOSE_PROJECT_NAME and TH_WEB_PORT the call sees:
+#   compose [-f <file>] config --format json
+#   compose [-f <file>] up -d --wait    the network and named volume made when missing (an
+#                                       existing one keeps its labels), the web container made,
+#                                       started, or recreated when its labels changed
+#   compose [-f <file>] port web 80     the running web's address
+#   compose -p <project> logs --no-color --timestamps <service>
+#                                       $DOCKER_STATE/logs/<project>-<service>.log when the test
+#                                       wrote one, else one line
+#   compose -p <project> stop, compose -p <project> down -v --remove-orphans
+# Each compose call is logged with what it sees (docker_compose_env).
 # Any other call fails (exit 127), so a test never passes on an unplanned call.
 # docker_down makes every call fail as Docker does when its daemon does not answer,
 # docker_fail <call> <message> makes one call (its key: "compose ls", "ps", "inspect",
 # "system df"...) fail with <message>, and docker_vanish <id> makes ps list a container that is
-# gone when it is inspected.
+# gone when it is inspected, and docker_leak <anonymous|network|container> makes compose down
+# leave the project's anonymous volumes, its networks or its containers behind.
 # shellcheck shell=bash
 
 # docker_stub [<worktree>]: install the stub docker on the machine state of the fixtures, the
@@ -74,6 +88,18 @@ docker_vanish() {
   echo "$1" >>"$DOCKER_STATE/vanished"
 }
 
+# compose down leaves what it should remove: docker_leak <anonymous|network|container>
+docker_leak() {
+  touch "$DOCKER_STATE/leak-$1"
+}
+
+# The compose calls made, one compact JSON object per line: {call, project, COMPOSE_PROJECT_NAME,
+# TH_PORTS, TH_WEB_PORT, labels: {owner, task, kind, worktree, expires}}, each as the call saw
+# it (null when unset).
+docker_compose_env() {
+  cat "$DOCKER_STATE/compose-env.jsonl" 2>/dev/null || true
+}
+
 # The docker calls made, one line each as typed (arguments joined by spaces).
 docker_calls() {
   stub_calls docker | jq -r 'join(" ")'
@@ -81,7 +107,9 @@ docker_calls() {
 
 # stack_project <name>: a project the team manages stacks of, in the sandbox: a repository whose
 # primary checkout is $HOME/projects/<name> (make_repo), holding the fixture wrapper
-# (tests/fixtures/stack/) as scripts/compose.sh and its docker-compose.yml, with a linked
+# (tests/fixtures/stack/) as scripts/compose.sh and its docker-compose.yml, a scripts/seed.sh
+# that says what it seeded ("seeded <project> on port <TH_WEB_PORT> for <TEAM_TASK> from <its
+# directory>"), with a linked
 # worktree at $HOME/worktrees/<name>-1 on the branch work, and registered in the sandbox's
 # projects.toml with a stack block naming the wrapper. Sets STACK_PRIMARY and STACK_WORKTREE.
 stack_project() {
@@ -91,7 +119,8 @@ stack_project() {
   mkdir -p "$STACK_PRIMARY/scripts" "$HOME/worktrees"
   cp "$REPO_ROOT/tests/fixtures/stack/compose.sh" "$STACK_PRIMARY/scripts/compose.sh"
   cp "$REPO_ROOT/tests/fixtures/stack/docker-compose.yml" "$STACK_PRIMARY/docker-compose.yml"
-  printf '#!/usr/bin/env bash\necho "seeded $COMPOSE_PROJECT_NAME"\n' >"$STACK_PRIMARY/scripts/seed.sh"
+  printf '#!/usr/bin/env bash\necho "seeded $COMPOSE_PROJECT_NAME on port $TH_WEB_PORT for $TEAM_TASK from $PWD"\n' \
+    >"$STACK_PRIMARY/scripts/seed.sh"
   chmod +x "$STACK_PRIMARY/scripts/seed.sh"
   git -C "$STACK_PRIMARY" add scripts docker-compose.yml
   git -C "$STACK_PRIMARY" commit -q -m "feat: add the stack"
