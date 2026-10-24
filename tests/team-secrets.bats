@@ -175,8 +175,8 @@ PASS write-only"
   assert_equal "$(stub_calls op)" ""
 }
 
-@test "the team home's manifest lists the six secrets, hub-env disabled, each ref naming its Document and file" {
-  cp "$REPO_ROOT/machine/secrets.json" "$TEAM_HOME/machine/secrets.json"
+@test "check on a manifest shaped like the team home's fails each enabled secret it lacks, and not the disabled one" {
+  cp "$BATS_TEST_DIRNAME/fixtures/secrets.json" "$TEAM_HOME/machine/secrets.json"
   # The sandbox's Discord token, written with the default umask.
   run_bin -1 team-secrets check
   assert_equal "$output" "FAIL discord-bot-env: mode 644
@@ -184,15 +184,6 @@ FAIL discord-access-json: missing
 FAIL conventioner-env: missing
 FAIL conventioner-front-end-env: missing
 FAIL conventioner-back-end-env: missing"
-  local file=$REPO_ROOT/machine/secrets.json
-  assert_equal "$(jq -r '[.secrets[].id] | join(" ")' "$file")" \
-    "discord-bot-env discord-access-json conventioner-env conventioner-front-end-env conventioner-back-end-env hub-env"
-  assert_equal "$(jq -r '[.secrets[] | select(.enabled == false) | .id] | join(" ")' "$file")" hub-env
-  jq -e 'all(.secrets[]; .mode == "600" and .ref == "op://agent-team/\(.id)/\(.target | split("/") | last)"
-    and (.about | length > 0) and (keys - ["id", "target", "mode", "ref", "about", "enabled"] == []))' "$file"
-  # machine/secrets.md describes each, and no value is anywhere near them.
-  local id
-  for id in $(jq -r '.secrets[].id' "$file"); do grep -qF "| \`$id\` |" "$REPO_ROOT/machine/secrets.md"; done
 }
 
 @test "check refuses a missing or malformed manifest, naming each problem" {

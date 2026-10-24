@@ -7,7 +7,6 @@ setup() {
   # This machine, home-pc, holds the lease; make_machine laptop builds the other one.
   hold_lease home-pc >/dev/null
   lock=$HOME/.local/state/agent-team/coordinator-launch.lock
-  mkdir -p "$HOME/agent-team"
   # claude answers `agents` from $BATS_TEST_TMPDIR/sessions.json; a launch records its cwd and
   # whether the launch lock was free while it ran, and whether it inherited the lock's file.
   echo '[]' >"$BATS_TEST_TMPDIR/sessions.json"
@@ -70,12 +69,12 @@ assert_not_launched() {
   assert_equal "$(stub_calls claude)" ""
 }
 
-@test "with no coordinator live it launches as before, from ~/agent-team by default" {
+@test "with no coordinator live it launches as before, from the team home by default" {
   sessions "$(session 0a1b2c3d 0a1b2c3d-1111 T14-builder busy)" "$(session - 9f9f9f9f-2222 '' idle interactive)"
   run_bin -0 claude-coordinator
   assert_contains "$output" "Started background session 7c3e9a10"
   assert_equal "$(stub_calls claude)" "$(printf '%s\n%s' '["agents","--json"]' "$(launch_argv)")"
-  assert_equal "$(cat "$STUB_CALLS/claude.cwd")" "$HOME/agent-team"
+  assert_equal "$(cat "$STUB_CALLS/claude.cwd")" "$TEAM_HOME"
 }
 
 @test "the launch appends the manual and loads the skills plugin, both from its own checkout" {
@@ -93,12 +92,12 @@ assert_not_launched() {
   run_bin -0 claude-coordinator
   local settings=$HOME/.local/state/agent-team/coordinator.settings.json
   assert_equal "$(jq -c . "$settings")" \
-    "$(jq -c --arg code "$REPO_ROOT" 'walk(if type == "string" then gsub("@TEAM_HOME@"; $code) else . end)' \
+    "$(jq -c --arg code "$REPO_ROOT" 'walk(if type == "string" then gsub("@TEAM_CODE@"; $code) else . end)' \
       "$REPO_ROOT/coordinator.settings.json")"
   assert_equal "$(jq -r '[.hooks[][].hooks[].command] | .[]' "$settings")" \
     "\"$REPO_ROOT/bin/hooks/session-digest\""$'\n'"\"$REPO_ROOT/bin/hooks/stop-sweep\""$'\n'"\"$REPO_ROOT/bin/hooks/lease-fence\""$'\n'"\"$REPO_ROOT/bin/hooks/lease-fence\" --coordinator"
   [[ -x $REPO_ROOT/bin/hooks/session-digest && -x $REPO_ROOT/bin/hooks/stop-sweep && -x $REPO_ROOT/bin/hooks/lease-fence ]]
-  [[ $(cat "$settings") != *"@TEAM_HOME@"* ]]
+  [[ $(cat "$settings") != *"@TEAM_CODE@"* ]]
   assert_equal "$(jq .isolatePeerMachines "$settings")" true
   assert_equal "$(find "${settings%/*}" -name '*.json.*')" ""
 }

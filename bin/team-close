@@ -6,8 +6,10 @@
 # Checks first, changing nothing: the task has events and no closed; each of its open worktrees
 # (opened and added, minus returned) has landed after git fetch --prune origin; no live session of its
 # launch events is busy. Landed means no changes to tracked files and no untracked files (ignored
-# files are fine), and the head on a remote-tracking branch of origin or the head of a merged PR
-# of the branch in the project's repo (gh); a worktree with no commits of its own has landed.
+# files are fine), and the head on a remote-tracking branch of origin (not wip/* or salvage/*,
+# which a project whose origin is the team home's fetches, holding work that has not landed) or
+# the head of a merged PR of the branch in the project's repo (gh); a worktree with no commits of
+# its own has landed.
 # Any failure is exit 1 with every reason. --keep-worktree keeps unlanded worktrees instead of
 # refusing, and --stop-busy stops busy sessions instead of refusing.
 # Then, in order: claude stop <id> for each live session of the task's launch events (by id,
@@ -19,9 +21,10 @@
 # task's sessions; each landed worktree returned through its pool (git: git worktree remove,
 # never --force; treehouse: its task directory emptied, then the project's return command run
 # from the primary checkout with the path), each return appending worktree-returned; the task's
-# wip/<project>/T<n> (team-checkpoint's snapshots) deleted on the team home's origin, one that
-# cannot be deleted reported on stderr with the command that deletes it; and closed with archive,
-# returned and kept. Prints {task, stopped, removed, archive, returned, kept}.
+# wip/<project>/T<n> (team-checkpoint's snapshots) deleted on the team home's origin, and its
+# copy refs/remotes/team-home/wip/<project>/T<n> (team-open --resume's) in the project's primary
+# checkout, one that cannot be deleted reported on stderr with the command that deletes it; and
+# closed with archive, returned and kept. Prints {task, stopped, removed, archive, returned, kept}.
 # A legacy task (events but no opened) has no worktrees in the ledger: its sessions are stopped
 # and removed and closed carries the note legacy. --worktree names a slot it still holds; the
 # path must be a trusted slot of a project in projects.toml, appear in one of the task's launch
@@ -112,7 +115,10 @@ unlanded() {
   }
   mapfile -t found < <(worktree_changes "$wt")
   head=$(git -C "$wt" rev-parse HEAD)
-  if [[ -z $(git -C "$wt" for-each-ref --contains "$head" --count=1 refs/remotes/origin) ]]; then
+  # A snapshot's wip/* or a salvage/* on origin (a project whose origin is the team home's) holds
+  # work that never landed, so neither counts.
+  ahead=$(git -C "$wt" rev-list --count "$head" --not --exclude='origin/wip/*' --exclude='origin/salvage/*' --remotes=origin)
+  if ((ahead > 0)); then
     # Not on origin: a squash or rebase merge leaves the head only as a merged PR's head.
     repo=$(team_project "$project" repo) || {
       echo "cannot read $project's repo from projects.toml"
@@ -123,7 +129,6 @@ unlanded() {
     elif ! github "$scratch" prs pr list --repo "$repo" --head "$branch" --state merged --json number,headRefOid; then
       found+=("head ${head:0:7} is on no branch of origin, and GitHub cannot tell whether a PR merged it ($(<"$scratch/error"))")
     elif ! jq -e --arg head "$head" 'any(.[]; .headRefOid == $head)' "$scratch/prs" >/dev/null; then
-      ahead=$(git -C "$wt" rev-list --count "$head" --not --remotes=origin)
       ((ahead == 1)) && ahead="1 commit" || ahead="$ahead commits"
       found+=("head ${head:0:7} is on no branch of origin ($ahead not pushed) and is not the head of a merged PR")
     fi
@@ -248,14 +253,20 @@ for wt in "${returning[@]}"; do
 done
 
 # Delete the task's work-in-progress snapshots, team-checkpoint's wip/<project>/T<n> on the team
-# home's origin, now that nothing is left to recover from them; a project without one is fine, and
-# one that cannot be deleted is reported and left.
+# home's origin and team-open --resume's copy of it in the primary checkout, now that nothing is
+# left to recover from them; a project without one is fine, and one that cannot be deleted is
+# reported and left.
 declare -A seen=()
 for wt in "${worktrees[@]}"; do
   project=$(field project "$wt")
   [[ -z ${seen[$project]:-} ]] || continue
   seen[$project]=1
   wip=wip/$project/$task
+  primary=$(team_project "$project" | jq -r .path)
+  if git -C "$primary" rev-parse -q --verify "refs/remotes/team-home/$wip" >/dev/null &&
+    ! git -C "$primary" update-ref -d "refs/remotes/team-home/$wip" 2>"$scratch/error"; then
+    echo "team-close: cannot delete team-home/$wip in $primary ($(grep -m1 . "$scratch/error" || echo "no reason given")); delete it by hand: git -C $primary update-ref -d refs/remotes/team-home/$wip" >&2
+  fi
   if ! refs=$(GIT_TERMINAL_PROMPT=0 git -C "$TEAM_HOME" ls-remote origin "refs/heads/$wip" 2>"$scratch/error") ||
     { [[ -n $refs ]] && ! GIT_TERMINAL_PROMPT=0 git -C "$TEAM_HOME" push -q origin --delete "$wip" 2>"$scratch/error"; }; then
     echo "team-close: cannot delete $wip on the team home's origin ($(grep -m1 . "$scratch/error" || echo "no reason given")); delete it by hand: git -C $TEAM_HOME push origin --delete $wip" >&2

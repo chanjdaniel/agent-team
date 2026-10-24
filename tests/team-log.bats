@@ -321,8 +321,3 @@ EXPECTED
   run_bin -1 team-log --check
   assert_contains "$output" "no ledger at $TEAM_HOME/ledger.jsonl"
 }
-
-@test "--check passes the real ledger" {
-  run_bin -0 team-log --check "$REPO_ROOT/ledger.jsonl"
-  assert_contains "$output" "lines meet the ledger contract"
-}

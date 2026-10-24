@@ -31,7 +31,8 @@
 # slot when it is free (a git pool), else a slot from the pool as above. The branch is made equal
 # to origin's: created from it, or fast-forwarded to it (refused when the worktree holding it has
 # uncommitted changes); a branch here with commits origin's lacks is refused, with the command
-# that pushes them to salvage/T<n>-<machine>. Then the task's archive (tasks/T<n>/scratch, or
+# that pushes them to the team home's origin (never the project's) as
+# salvage/<project>/T<n>-<machine>. Then the task's archive (tasks/T<n>/scratch, or
 # scratch-<project> for an added project) replaces the task directory, worktree-moved is appended
 # when the worktree is not the recorded one, and the worktree's facts are printed as JSON. For a
 # worktree that resumes from a snapshot (the task crashed: a launch after its latest stowed, or a
@@ -336,7 +337,7 @@ slot_at() {
 # origin's head, a branch here with commits origin's lacks is refused, and with no worktree holding
 # it, the recorded slot when free, else one from the pool, is put on it.
 resume_slot() {
-  local wt holder='' salvage found=() list
+  local wt holder='' salvage url found=() list
   for wt in "${!holds[@]}"; do
     [[ ${holds[$wt]} != "$branch" ]] && continue
     if [[ $wt == "$(realpath -m -- "$recorded")" ]]; then
@@ -347,8 +348,10 @@ resume_slot() {
     fi
   done
   if [[ -n $here && -n $target && $here != "$target" ]] && ! git -C "$primary" merge-base --is-ancestor "$here" "$target"; then
-    salvage="git -C $primary push origin refs/heads/$branch:refs/heads/salvage/$task-$machine"
-    [[ -z $holder ]] || salvage="git -C $holder push origin HEAD:refs/heads/salvage/$task-$machine"
+    # To the team home's origin, as a snapshot goes: the project's origin may be public.
+    url=$(wip_origin) || exit 1
+    salvage="git -C $primary push $url refs/heads/$branch:refs/heads/salvage/$project/$task-$machine"
+    [[ -z $holder ]] || salvage="git -C $holder push $url HEAD:refs/heads/salvage/$project/$task-$machine"
     die "$branch here has commits that $target_name lacks; save them with: $salvage," \
       "then make $branch here equal to $target_name and run this again"
   fi

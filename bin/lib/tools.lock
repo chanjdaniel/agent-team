@@ -1,0 +1,301 @@
+{
+  "about": "The tools a machine needs to run the team, read by team-doctor through bin/lib/tools.jq. version_cmd is run with no shell (words split on spaces); version_pattern is an ERE whose first group is the version. pin is exact (the tools installed by the bootstrap itself); min is a floor, compared number by number (OS-package tools). pin_mismatch is the verdict on a different version than the pin (default FAIL). A tool is checked on each OS its source names (arch, macos), and the source is the package or the exact install command, which doctor prints as the fix. A tool built on GitHub has from instead of pin and source: from picks release ({repo, tag, sha256 per <os>-<arch> archive}) or fork ({repo, commit, version}), dir names where the binary goes on each OS, and bin/lib/tools.jq makes the pin and the install command from them.",
+  "tools": [
+    {
+      "name": "claude",
+      "version_cmd": "claude --version",
+      "version_pattern": "([0-9]+\\.[0-9]+\\.[0-9]+) \\(Claude Code\\)",
+      "pin": "2.1.308",
+      "pin_mismatch": "WARN",
+      "source": {
+        "arch": "curl -fsSL https://claude.ai/install.sh | bash -s 2.1.308",
+        "macos": "curl -fsSL https://claude.ai/install.sh | bash -s 2.1.308"
+      }
+    },
+    {
+      "name": "node",
+      "version_cmd": "node --version",
+      "version_pattern": "^v([0-9]+\\.[0-9]+\\.[0-9]+)",
+      "pin": "22.19.0",
+      "source": {
+        "arch": "nvm install 22.19.0 && nvm alias default 22.19.0",
+        "macos": "nvm install 22.19.0 && nvm alias default 22.19.0"
+      }
+    },
+    {
+      "name": "codegraph",
+      "version_cmd": "codegraph --version",
+      "version_pattern": "([0-9]+\\.[0-9]+\\.[0-9]+)",
+      "pin": "1.6.0",
+      "source": {
+        "arch": "npm install -g @colbymchenry/codegraph@1.6.0",
+        "macos": "npm install -g @colbymchenry/codegraph@1.6.0"
+      }
+    },
+    {
+      "name": "gh-axi",
+      "version_cmd": "gh-axi --version",
+      "version_pattern": "([0-9]+\\.[0-9]+\\.[0-9]+)",
+      "pin": "0.1.25",
+      "source": {
+        "arch": "npm install -g gh-axi@0.1.25",
+        "macos": "npm install -g gh-axi@0.1.25"
+      }
+    },
+    {
+      "name": "chrome-devtools-axi",
+      "version_cmd": "chrome-devtools-axi --version",
+      "version_pattern": "([0-9]+\\.[0-9]+\\.[0-9]+)",
+      "pin": "0.1.26",
+      "source": {
+        "arch": "npm install -g chrome-devtools-axi@0.1.26",
+        "macos": "npm install -g chrome-devtools-axi@0.1.26"
+      }
+    },
+    {
+      "name": "lavish-axi",
+      "version_cmd": "lavish-axi --version",
+      "version_pattern": "([0-9]+\\.[0-9]+\\.[0-9]+)",
+      "pin": "0.1.36",
+      "source": {
+        "arch": "npm install -g lavish-axi@0.1.36",
+        "macos": "npm install -g lavish-axi@0.1.36"
+      }
+    },
+    {
+      "name": "quota-axi",
+      "version_cmd": "quota-axi --version",
+      "version_pattern": "([0-9]+\\.[0-9]+\\.[0-9]+)",
+      "pin": "0.1.5",
+      "source": {
+        "arch": "npm install -g quota-axi@0.1.5",
+        "macos": "npm install -g quota-axi@0.1.5"
+      }
+    },
+    {
+      "name": "tasks-axi",
+      "version_cmd": "tasks-axi --version",
+      "version_pattern": "([0-9]+\\.[0-9]+\\.[0-9]+)",
+      "pin": "0.2.3",
+      "source": {
+        "arch": "npm install -g tasks-axi@0.2.3",
+        "macos": "npm install -g tasks-axi@0.2.3"
+      }
+    },
+    {
+      "name": "bun",
+      "version_cmd": "bun --version",
+      "version_pattern": "^([0-9]+\\.[0-9]+\\.[0-9]+)",
+      "pin": "1.3.14",
+      "source": {
+        "arch": "curl -fsSL https://bun.sh/install | bash -s bun-v1.3.14",
+        "macos": "curl -fsSL https://bun.sh/install | bash -s bun-v1.3.14"
+      }
+    },
+    {
+      "name": "treehouse",
+      "version_cmd": "treehouse --version",
+      "version_pattern": "^v?([0-9]+\\.[0-9]+\\.[0-9]+)",
+      "from": "release",
+      "release": {
+        "repo": "kunchenguid/treehouse",
+        "tag": "v3.1.5",
+        "sha256": {
+          "linux-amd64": "69f83270056650b1049d95229e8348153f7052f11b9d3fd634acb0f368abd14f",
+          "darwin-arm64": "6ac9a12070584e7d1ac79e61343baf8283e8f5ad02b5f6d9d3bba6f45729bedd",
+          "darwin-amd64": "e0946ef36d7d147a60f07286243598a00c9c7ac1ce0cc04eb294d9cfff651364"
+        }
+      },
+      "dir": {
+        "arch": "/usr/local/bin",
+        "macos": "~/.local/bin"
+      }
+    },
+    {
+      "name": "no-mistakes",
+      "version_cmd": "no-mistakes --version",
+      "version_pattern": "no-mistakes version v([0-9]+\\.[0-9]+\\.[0-9]+[^ ]*)",
+      "from": "release",
+      "release": {
+        "repo": "kunchenguid/no-mistakes",
+        "tag": "v1.84.0",
+        "sha256": {
+          "linux-amd64": "b0fb8a9df412c5fa1fb92a3584ffa1d4d5b4d6e0d1738efa2f8b88320f8bf1c2",
+          "darwin-arm64": "2e5f838303ab727edccd1a60a4834068024606c68ae7d97fdc0fdeecd7bd4d90",
+          "darwin-amd64": "88b1a481924488f55456b3f96070f739b109e19555232e4f8be0a7ebae7c08ac"
+        }
+      },
+      "fork": {
+        "repo": "chanjdaniel/no-mistakes",
+        "commit": "389716a49e2f3419fccedca0f9dc3f1f59c4a2ce",
+        "version": "1.37.0-4-g389716a"
+      },
+      "dir": {
+        "arch": "~/.no-mistakes/bin",
+        "macos": "~/.no-mistakes/bin"
+      }
+    },
+    {
+      "name": "op",
+      "version_cmd": "op --version",
+      "version_pattern": "^([0-9]+\\.[0-9]+\\.[0-9]+)",
+      "pin": "2.41.1",
+      "source": {
+        "arch": "curl -fsSLo /tmp/op.zip https://cache.agilebits.com/dist/1P/op2/pkg/v2.41.1/op_linux_amd64_v2.41.1.zip && sudo unzip -od /usr/local/bin /tmp/op.zip op && sudo groupadd -f onepassword-cli && sudo chgrp onepassword-cli /usr/local/bin/op && sudo chmod g+s /usr/local/bin/op"
+      }
+    },
+    {
+      "name": "op",
+      "version_cmd": "op --version",
+      "version_pattern": "^([0-9]+\\.[0-9]+\\.[0-9]+)",
+      "min": "2.41.1",
+      "source": {
+        "macos": "brew install 1password-cli"
+      }
+    },
+    {
+      "name": "git",
+      "version_cmd": "git --version",
+      "version_pattern": "git version ([0-9]+\\.[0-9]+\\.[0-9]+)",
+      "min": "2.40.0",
+      "source": {
+        "arch": "sudo pacman -S --needed git",
+        "macos": "brew install git"
+      }
+    },
+    {
+      "name": "jq",
+      "version_cmd": "jq --version",
+      "version_pattern": "jq-([0-9]+\\.[0-9]+(\\.[0-9]+)?)",
+      "min": "1.7.1",
+      "source": {
+        "arch": "sudo pacman -S --needed jq",
+        "macos": "brew install jq"
+      }
+    },
+    {
+      "name": "tmux",
+      "version_cmd": "tmux -V",
+      "version_pattern": "tmux ([0-9]+\\.[0-9]+)",
+      "min": "3.2",
+      "source": {
+        "arch": "sudo pacman -S --needed tmux",
+        "macos": "brew install tmux"
+      }
+    },
+    {
+      "name": "gh",
+      "version_cmd": "gh --version",
+      "version_pattern": "gh version ([0-9]+\\.[0-9]+\\.[0-9]+)",
+      "min": "2.40.0",
+      "source": {
+        "arch": "sudo pacman -S --needed github-cli",
+        "macos": "brew install gh"
+      }
+    },
+    {
+      "name": "rsync",
+      "version_cmd": "rsync --version",
+      "version_pattern": "rsync +version v?([0-9]+\\.[0-9]+\\.[0-9]+)",
+      "min": "3.2.0",
+      "source": {
+        "arch": "sudo pacman -S --needed rsync",
+        "macos": "brew install rsync"
+      }
+    },
+    {
+      "name": "docker",
+      "version_cmd": "docker --version",
+      "version_pattern": "Docker version ([0-9]+\\.[0-9]+\\.[0-9]+)",
+      "min": "24.0.0",
+      "source": {
+        "arch": "sudo pacman -S --needed docker docker-compose",
+        "macos": "brew install --cask docker-desktop"
+      }
+    },
+    {
+      "name": "docker-compose",
+      "version_cmd": "docker compose version",
+      "version_pattern": "Docker Compose version v?([0-9]+\\.[0-9]+\\.[0-9]+)",
+      "min": "2.24.0",
+      "source": {
+        "arch": "sudo pacman -S --needed docker-compose",
+        "macos": "brew install --cask docker-desktop"
+      }
+    },
+    {
+      "name": "python",
+      "version_cmd": "python3 --version",
+      "version_pattern": "Python ([0-9]+\\.[0-9]+\\.[0-9]+)",
+      "min": "3.11.0",
+      "source": {
+        "arch": "sudo pacman -S --needed python",
+        "macos": "brew install python"
+      }
+    },
+    {
+      "name": "bash",
+      "version_cmd": "bash --version",
+      "version_pattern": "GNU bash, version ([0-9]+\\.[0-9]+\\.[0-9]+)",
+      "min": "5.0.0",
+      "source": {
+        "arch": "sudo pacman -S --needed bash",
+        "macos": "brew install bash"
+      }
+    },
+    {
+      "name": "unzip",
+      "version_cmd": "unzip -v",
+      "version_pattern": "^UnZip ([0-9]+\\.[0-9]+)",
+      "min": "6.0",
+      "source": {
+        "arch": "sudo pacman -S --needed unzip"
+      }
+    },
+    {
+      "name": "coreutils",
+      "version_cmd": "date --version",
+      "version_pattern": "\\(GNU coreutils\\) ([0-9]+\\.[0-9]+)",
+      "min": "9.0",
+      "source": {
+        "macos": "brew install coreutils"
+      }
+    },
+    {
+      "name": "findutils",
+      "version_cmd": "find --version",
+      "version_pattern": "\\(GNU findutils\\) ([0-9]+\\.[0-9]+(\\.[0-9]+)?)",
+      "min": "4.9.0",
+      "source": {
+        "macos": "brew install findutils"
+      }
+    },
+    {
+      "name": "gnu-sed",
+      "version_cmd": "sed --version",
+      "version_pattern": "\\(GNU sed\\) ([0-9]+\\.[0-9]+)",
+      "min": "4.8",
+      "source": {
+        "macos": "brew install gnu-sed"
+      }
+    },
+    {
+      "name": "grep",
+      "version_cmd": "grep --version",
+      "version_pattern": "\\(GNU grep\\) ([0-9]+\\.[0-9]+(\\.[0-9]+)?)",
+      "min": "3.8",
+      "source": {
+        "macos": "brew install grep"
+      }
+    },
+    {
+      "name": "flock",
+      "version_cmd": "flock --version",
+      "version_pattern": "^flock ([0-9]+\\.[0-9]+\\.[0-9]+)",
+      "min": "0.4.0",
+      "source": {
+        "macos": "brew install flock"
+      }
+    }
+  ]
+}

@@ -24,8 +24,10 @@
 # .claude/settings.local.json sets autoMemoryDirectory to it (as ~/... when the team home is under
 # HOME), git ignores that file, and nothing is left in the folder Claude Code used before,
 # ~/.claude/projects/<key>/memory/ (<key> the checkout's real path with every character but letters
-# and digits as "-", as Claude Code names it). memory/ is committed by team-checkpoint and
-# team-handoff, never here.
+# and digits as "-", as Claude Code names it). The team home itself, where the coordinator runs,
+# is set up the same way with memory/coordinator/, listed as "coordinator" (a name team-project
+# reserves), unless it is a registered project's primary checkout, whose folder then serves.
+# memory/ is committed by team-checkpoint and team-handoff, never here.
 #
 # Usage: team-config diff [--full] [--json] | apply | capture | own [--json]
 #   diff     One line per difference, and exit 1 when there is any:
@@ -36,7 +38,8 @@
 #              plugin mongodb-atlas@claude-plugins-official not installed
 #              plugin X@Y not in plugins.txt   (installed here only)
 #              plugins unreadable              (`claude plugin list` failed)
-#              memory conv setting missing     (or setting points to <value>)
+#              memory conv setting missing     (or setting points to <value>; coordinator for
+#                                              the team home's own)
 #              memory conv settings.local.json not ignored by git
 #                                              (or tracked by git, or not JSON)
 #              memory conv notes left in ~/.claude/projects/<key>/memory/
@@ -46,12 +49,12 @@
 #            whatever it replaces to ~/.claude/backups/team-config-<UTC time>/ (made only when
 #            something is replaced). A skill that exists only here is left alone (diff lists it).
 #            The settings.json it installs keeps this machine's own settings.
-#            Then, per project, it merges autoMemoryDirectory into settings.local.json, adds that
-#            file to the repository's .git/info/exclude unless git ignores it already, and moves
-#            every note of the old folder into memory/<project>/, keeping the newer file on a
-#            clash (the other goes to the backup folder) and leaving the old folder empty. A
-#            project whose settings.local.json is not JSON or is tracked by git is left as it is
-#            (exit 1). Applying twice changes nothing the second time.
+#            Then, per project (coordinator included), it merges autoMemoryDirectory into
+#            settings.local.json, adds that file to the repository's .git/info/exclude unless git
+#            ignores it already, and moves every note of the old folder into memory/<project>/,
+#            keeping the newer file on a clash (the other goes to the backup folder) and leaving
+#            the old folder empty. A project whose settings.local.json is not JSON or is tracked
+#            by git is left as it is (exit 1). Applying twice changes nothing the second time.
 #   capture  Copies into machine/claude/ each file and skill that differs here or exists only
 #            here (settings.json without this machine's own settings), and adds to plugins.txt the
 #            user-scope plugins and marketplaces it lacks; one line per change. Nothing is
@@ -116,6 +119,18 @@ if [[ ($command == diff || $command == apply) && -e $TEAM_HOME/projects.toml ]];
     PROJECTS+=("$name")
     CHECKOUTS+=("$checkout")
   done <<<"$names"
+fi
+# The team home's own auto memory goes in memory/coordinator/, named like a project's (team-project
+# reserves the name), unless the team home is a project's primary checkout, whose folder serves.
+if [[ $command == diff || $command == apply ]]; then
+  home=$(realpath -- "$TEAM_HOME")
+  for checkout in "${CHECKOUTS[@]}"; do
+    [[ $(realpath -- "$checkout") != "$home" ]] || home=''
+  done
+  if [[ -n $home ]]; then
+    PROJECTS+=(coordinator)
+    CHECKOUTS+=("$TEAM_HOME")
+  fi
 fi
 
 # The state of a file or folder here against the team home's: same, differs, missing (here) or

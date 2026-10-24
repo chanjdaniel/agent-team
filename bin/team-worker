@@ -16,7 +16,7 @@
 # (~/.config/agent-team/machine), and the request for ops. T0, the load check, needs no thread and
 # no lease, and is not logged. Recorded worktrees are compared as paths on this machine: one
 # recorded under another machine's home is the same path under this HOME.
-# The merged settings and MCP config are generated into tasks/<task>/ (gitignored); @TEAM_HOME@
+# The merged settings and MCP config are generated into tasks/<task>/ (gitignored); @TEAM_CODE@
 # in either names this checkout, @TASK@ the task, and @TASK_DIR@ the team home's tasks/<task>/.
 #
 # Production toolkits (prod-*) are for the ops role only, which needs prod-read (prod-write comes
@@ -114,9 +114,9 @@ if [[ $role == ops ]]; then
   [[ -z $busy ]] || die "an ops session is already listed: $busy; end it with team-ops-end first"
 fi
 
-# @TEAM_HOME@ names this checkout, where the hooks and toolkits live; @TASK@ names the task, and
+# @TEAM_CODE@ names this checkout, where the hooks and toolkits live; @TASK@ names the task, and
 # @TASK_DIR@ its directory in the team home, where its records live (the ops log).
-substitute='walk(if type == "string" then gsub("@TEAM_HOME@"; $code) | gsub("@TASK@"; $task)
+substitute='walk(if type == "string" then gsub("@TEAM_CODE@"; $code) | gsub("@TASK@"; $task)
   | gsub("@TASK_DIR@"; $taskdir) else . end)'
 
 # Role settings layered on the shared worker settings; permission lists and each event's hook

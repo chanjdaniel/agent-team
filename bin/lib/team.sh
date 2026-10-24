@@ -3,13 +3,13 @@
 #   source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 #
 # It first applies bin/lib/platform.sh (Bash 5 or later; on macOS, Homebrew's GNU tools first on
-# PATH). It sets TEAM_HOME (the directory above bin/, unless TEAM_HOME is already set), answers
-# --help with the calling script's header (then runs the script's help_more, if it defined one
-# before sourcing), and provides die, usage_error, team_project, ledger_jq, ledger_append,
+# PATH). It sets TEAM_HOME (unless already set, the first line of ~/.config/agent-team/home under
+# HOME, else the directory above bin/) and TEAM_HOME_FROM, answers --help with the calling script's header (then runs
+# the script's help_more, if it defined one before sourcing), and provides die, usage_error, team_project, ledger_jq, ledger_append,
 # task_events, known_task_events, open_task_events, task_status, task_worktrees, local_path,
 # archive_task_dir, machine_name, os_release, team_os, fence_reason, lease_gate, worktree_changes,
-# snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin, non_records,
-# commit_non_records, records_list, origin_git, origin_reason, commit_records, render_template,
+# snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin, home_repo, non_records,
+# only_records, commit_non_records, records_list, origin_git, origin_reason, commit_records, fast_forward, render_template,
 # registered_pr, attribution_lines, strip_attribution, live_sessions, discord_token, discord_api,
 # github, pr_part and task_state_json, and sets COORDINATOR_CHANNEL.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
@@ -18,6 +18,26 @@
 # shellcheck source=bin/lib/platform.sh
 source "$(dirname "${BASH_SOURCE[0]}")/platform.sh"
 
+# The team home, where the records live: TEAM_HOME when set; else the first line of
+# ~/.config/agent-team/home, a path relative to HOME unless it is absolute; else the directory
+# above bin/. TEAM_HOME_FROM says which (variable, setting or fallback). TEAM_HOME_PROBLEM is the
+# refusal when the setting names no directory, given after --help has had its chance; a script
+# that sets team_home_report before sourcing (team-doctor) is not refused, and reports it itself.
+TEAM_HOME_PROBLEM='' TEAM_HOME_FIX='name its checkout there, relative to your home directory: echo agent-team-records > ~/.config/agent-team/home'
+TEAM_HOME_FROM=variable
+if [[ -z ${TEAM_HOME:-} ]]; then TEAM_HOME_FROM=fallback; fi
+# shellcheck disable=SC2034 # TEAM_HOME_FROM is read by team-doctor and team-bootstrap
+if [[ -z ${TEAM_HOME:-} && -f $HOME/.config/agent-team/home ]]; then
+  TEAM_HOME_FROM=setting
+  IFS= read -r TEAM_HOME <"$HOME/.config/agent-team/home" || true
+  if [[ -z $TEAM_HOME ]]; then
+    TEAM_HOME_PROBLEM="the setting ~/.config/agent-team/home names no team home; $TEAM_HOME_FIX"
+  else
+    [[ $TEAM_HOME == /* ]] || TEAM_HOME=$HOME/$TEAM_HOME
+    [[ -d $TEAM_HOME ]] ||
+      TEAM_HOME_PROBLEM="the team home $TEAM_HOME, named by ~/.config/agent-team/home, is not a directory; $TEAM_HOME_FIX"
+  fi
+fi
 TEAM_HOME=${TEAM_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
 # This library's directory, which holds the ledger contract: code, never the team home's data.
 TEAM_LIB=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -263,6 +283,18 @@ wip_origin() {
   git -C "$TEAM_HOME" remote get-url origin 2>/dev/null || die "the team home $TEAM_HOME has no remote origin"
 }
 
+# The GitHub repo the team home's origin names, as owner/name, read from its URL as configured
+# (https://github.com/<owner>/<name>[.git], git@github.com:<owner>/<name>[.git] or
+# ssh://git@github.com/<owner>/<name>[.git]); fails for no origin or any other URL: home_repo
+home_repo() {
+  local url
+  url=$(git -C "$TEAM_HOME" config --get remote.origin.url 2>/dev/null) || return 1
+  url=${url%/}
+  url=${url%.git}
+  [[ $url =~ ^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)([^/]+/[^/]+)$ ]] || return 1
+  printf '%s\n' "${BASH_REMATCH[2]}"
+}
+
 # The records as a reader's list: "ledger.jsonl, manual-steps.md, tasks/, ...".
 records_list() {
   local globs
@@ -272,16 +304,25 @@ records_list() {
 
 # The paths of the NUL-separated list on stdin that are not records (bin/lib/records), one per
 # line, in order: non_records
-non_records() {
-  local path record
+non_records() { pick_records 0; }
+
+# The paths of the NUL-separated list on stdin that are records, one per line, in order:
+# only_records
+only_records() { pick_records 1; }
+
+# The paths of the NUL-separated list on stdin that are records (1) or are not (0), one per line,
+# in order: pick_records <1|0>
+pick_records() {
+  local path record is
   local -a records
   mapfile -t records < <(grep -v -e '^#' -e '^$' "$TEAM_LIB/records")
   while IFS= read -r -d '' path; do
+    is=0
     for record in "${records[@]}"; do
       # shellcheck disable=SC2053 # the record is a glob
-      [[ $path != $record ]] || continue 2
+      if [[ $path == $record ]]; then is=1 && break; fi
     done
-    printf '%s\n' "$path"
+    [[ $is != "$1" ]] || printf '%s\n' "$path"
   done
 }
 
@@ -383,13 +424,54 @@ commit_records() {
   echo "team home: $committed; origin's $branch had moved; replayed onto it and pushed $branch"
 }
 
-# The local paths in the way of moving the team home from HEAD to <commit>: changed there and
-# here (staged, unstaged or untracked), on one line.
-records_in_the_way() {
+# The local paths in the way of moving <checkout> from HEAD to <commit>: changed there and here
+# (staged, unstaged or untracked), on one line: in_the_way <checkout> <commit>
+in_the_way() {
   local their_paths=()
-  mapfile -d '' -t their_paths < <(git -C "$TEAM_HOME" diff -z --name-only --no-renames HEAD "$1")
+  mapfile -d '' -t their_paths < <(git -C "$1" diff -z --name-only --no-renames HEAD "$2")
   ((${#their_paths[@]})) || return 0
-  git -C "$TEAM_HOME" -c core.quotePath=false status --porcelain --untracked-files=all -- "${their_paths[@]}" | cut -c4- | paste -sd ' '
+  git -C "$1" -c core.quotePath=false status --porcelain --untracked-files=all -- "${their_paths[@]}" | cut -c4- | paste -sd ' '
+}
+
+# Fast-forward <branch>, the branch checked out in <checkout>, to origin's: fetch it, then move
+# the branch, index and working tree, local changes that are not in the way staying as they are.
+# FF_RESULT says what it did: "<branch> fast-forwarded to <sha>" or "<branch> is up to date at
+# <sha>" (also when it is ahead of origin's). On failure FF_REASON says why, and it returns 75 when
+# origin cannot be fetched, 1 when origin has no <branch>, the branch has diverged from origin's or
+# local changes are in the way. The fetch goes through origin_git, so NET_ERR must name a file:
+# fast_forward <checkout> <branch>
+# shellcheck disable=SC2034 # FF_RESULT and FF_REASON are the caller's to read
+fast_forward() {
+  local checkout=$1 branch=$2 theirs way rc=0
+  FF_RESULT='' FF_REASON=''
+  origin_git -C "$checkout" fetch -q --no-write-fetch-head origin "+refs/heads/$branch:refs/remotes/origin/$branch" || rc=$?
+  if ((rc)) && grep -q "couldn't find remote ref" "$NET_ERR"; then
+    FF_REASON="origin has no $branch"
+    return 1
+  elif ((rc)); then
+    FF_REASON="cannot fetch $branch: $(origin_reason "$rc")"
+    return 75
+  fi
+  theirs=$(git -C "$checkout" rev-parse "refs/remotes/origin/$branch")
+  if git -C "$checkout" merge-base --is-ancestor "$theirs" HEAD; then
+    FF_RESULT="$branch is up to date at $(git -C "$checkout" rev-parse --short=7 HEAD)"
+    return 0
+  fi
+  if ! git -C "$checkout" merge-base --is-ancestor HEAD "$theirs"; then
+    FF_REASON="$branch has diverged from origin's"
+    return 1
+  fi
+  git -C "$checkout" update-index -q --refresh || true
+  way=$(in_the_way "$checkout" "$theirs")
+  if [[ -n $way ]]; then
+    FF_REASON="local changes to $way are in the way"
+    return 1
+  fi
+  if ! git -C "$checkout" merge -q --ff-only "$theirs" >/dev/null 2>"$NET_ERR"; then
+    FF_REASON=$(grep -m1 . "$NET_ERR" | sed -E 's/^(fatal|error): //')
+    return 1
+  fi
+  FF_RESULT="$branch fast-forwarded to ${theirs:0:7}"
 }
 
 # Replay the commits on the team home's <branch> that origin's lacks onto origin's, moving the
@@ -427,7 +509,7 @@ replay_records() {
   {
     flock -x 9
     git -C "$TEAM_HOME" update-index -q --refresh || true
-    way=$(records_in_the_way "$onto")
+    way=$(in_the_way "$TEAM_HOME" "$onto")
     if [[ -n $way ]]; then
       REPLAY_REASON="local changes to $way are in the way"
       return 1
@@ -607,4 +689,7 @@ if [[ ${1:-} == --help || ${1:-} == -h ]]; then
   exit 0
 fi
 
-[[ -d $TEAM_HOME ]] || die "team home $TEAM_HOME is not a directory"
+if [[ -z ${team_home_report:-} ]]; then
+  [[ -z $TEAM_HOME_PROBLEM ]] || die "$TEAM_HOME_PROBLEM"
+  [[ -d $TEAM_HOME ]] || die "team home $TEAM_HOME is not a directory"
+fi

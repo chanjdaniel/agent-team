@@ -7,17 +7,69 @@ setup() {
   sandbox
 }
 
-# tasks/ and projects/ hold history imported as written, and memory/ the auto memory sessions write outside any PR, so they keep their own text.
-@test "no em dash in tracked Markdown or templates outside tasks/, projects/, memory/ and machine/claude/" {
+# The records (bin/lib/records) are history and notes written outside any PR, kept as written.
+@test "no em dash in tracked Markdown or templates outside the records" {
   local files hits
-  files=$(git -C "$REPO_ROOT" ls-files -- '*.md' 'templates/**' ':!:tasks/**' ':!:projects/**' ':!:memory/**' ':!:machine/claude/**')
+  files=$(git -C "$REPO_ROOT" ls-files -z -- '*.md' 'templates/**' | bash -c 'source "$1/bin/lib/team.sh"; non_records' _ "$REPO_ROOT")
   [[ -n $files ]]
   hits=$(cd "$REPO_ROOT" && xargs -d '\n' grep -n $'—' -- <<<"$files" || true)
   assert_equal "$hits" ""
 }
 
-# The machine docs: Daniel's sentence, the setup entry point, the SOPs and Daniel's steps.
-MACHINE_DOCS=(README.md SETUP.md sops/machine-setup.md sops/portability.md manual-steps.md)
+# Each tracked path of the checkout <dir> that matches neither or both of its lists, bin/lib/code
+# and bin/lib/records, with which, one per line: unassigned_paths <dir>
+unassigned_paths() {
+  local path glob in_code in_records
+  local -a code records
+  mapfile -t code < <(grep -v -e '^#' -e '^$' "$1/bin/lib/code")
+  mapfile -t records < <(grep -v -e '^#' -e '^$' "$1/bin/lib/records")
+  while IFS= read -r -d '' path; do
+    in_code=0 in_records=0
+    for glob in "${code[@]}"; do
+      # shellcheck disable=SC2053 # the list's line is a glob
+      [[ $path != $glob ]] || { in_code=1; break; }
+    done
+    for glob in "${records[@]}"; do
+      # shellcheck disable=SC2053 # the list's line is a glob
+      [[ $path != $glob ]] || { in_records=1; break; }
+    done
+    case $in_code$in_records in
+      00) echo "$path: neither code nor records" ;;
+      11) echo "$path: both code and records" ;;
+    esac
+  done < <(git -C "$1" ls-files -z)
+}
+
+# A sandbox copy of this checkout's tracked paths (empty files, the two lists as they are) at
+# <dir>: path_copy <dir>
+path_copy() {
+  git init -q "$1"
+  git -C "$REPO_ROOT" ls-files -s -z | git -C "$1" update-index -z --index-info
+  mkdir -p "$1/bin/lib"
+  cp "$REPO_ROOT/bin/lib/code" "$REPO_ROOT/bin/lib/records" "$1/bin/lib/"
+}
+
+# The public repository takes the code list only, so a new path must be assigned before it lands.
+@test "every tracked path is exactly one of code (bin/lib/code) and records (bin/lib/records)" {
+  run -0 unassigned_paths "$REPO_ROOT"
+  assert_equal "$output" ""
+}
+
+@test "a tracked path in neither list, or in both, is named" {
+  local copy=$BATS_TEST_TMPDIR/copy
+  path_copy "$copy"
+  run -0 unassigned_paths "$copy"
+  assert_equal "$output" ""
+  touch "$copy/NOTES.md"
+  git -C "$copy" add NOTES.md
+  echo 'sops/machine-setup.md' >>"$copy/bin/lib/records"
+  run -0 unassigned_paths "$copy"
+  assert_equal "$output" "NOTES.md: neither code nor records
+sops/machine-setup.md: both code and records"
+}
+
+# The machine docs: Daniel's sentence, the setup entry point and the SOPs.
+MACHINE_DOCS=(README.md SETUP.md sops/machine-setup.md sops/portability.md)
 
 @test "the machine docs name only commands in bin/, with options and subcommands their --help knows" {
   local doc span cmd i found=0 missing=() words
@@ -339,22 +391,22 @@ COMMANDS
   done
 }
 
-# Whether one of the Bash allow rules in settings/reviewer.json, with @TEAM_HOME@ as team-worker
+# Whether one of the Bash allow rules in settings/reviewer.json, with @TEAM_CODE@ as team-worker
 # renders it (this checkout), matches <command>: reviewer_allows <command>
 # Claude Code checks each part of a compound command (;, &&, |) on its own, so a rule's * never
 # lets a second command ride along; this model checks one simple command.
 reviewer_allows() {
   local rule
   while IFS= read -r rule; do
-    rule_matches "${rule//@TEAM_HOME@/$REPO_ROOT}" "$1" && return 0
+    rule_matches "${rule//@TEAM_CODE@/$REPO_ROOT}" "$1" && return 0
   done < <(jq -r '.permissions.allow[]' "$REPO_ROOT/settings/reviewer.json")
   return 1
 }
 
 @test "the reviewer's allow rules are the agent-review status and the review comment scripts only" {
   assert_equal "$(jq -r '.permissions.allow[]' "$REPO_ROOT/settings/reviewer.json")" \
-    'Bash(@TEAM_HOME@/bin/team-review-status *)
-Bash(@TEAM_HOME@/bin/team-review-comment *)'
+    'Bash(@TEAM_CODE@/bin/team-review-status *)
+Bash(@TEAM_CODE@/bin/team-review-comment *)'
   # The commands as templates/briefs/reviewer.md and rereview.md give them, team_bin being
   # this checkout's bin/ in full.
   local brief
@@ -438,7 +490,7 @@ gotchas_problems() {
 @test "the platform gotchas SOP: at most 12 general rules, each with one Why: and one Seen: line" {
   local sop=$REPO_ROOT/sops/platform-gotchas.md
   [[ -f $sop ]] || { echo "sops/platform-gotchas.md is missing" >&2; return 1; }
-  cp "$REPO_ROOT/projects.toml" "$TEAM_HOME/"
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/"
   run_bin -0 team-project --list
   ((${#lines[@]} >= 1))
   run -0 gotchas_problems "$sop" "${lines[@]}"

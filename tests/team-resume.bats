@@ -1,10 +1,11 @@
 #!/usr/bin/env bats
 # team-resume: the machine taking the team over reads the lease, runs the doctor, waits for or
-# refuses another machine's fresh lease, pulls the team home, applies the config, takes the lease,
-# enables the heartbeat, makes each open task's worktrees here, writes the report and starts the
-# coordinator. Two machines: home-pc (this sandbox's HOME) opens T1 in a git pool project, home,
-# with a live builder and a pushed commit; laptop (make_machine) resumes. The doctor is a stub
-# (TEAM_DOCTOR) whose lines a test sets; claude is a stub with a session list per machine.
+# refuses another machine's fresh lease, pulls the team home and the code checkout, applies the
+# config, takes the lease, enables the heartbeat, makes each open task's worktrees here, writes the
+# report and starts the coordinator. Two machines: home-pc (this sandbox's HOME) opens T1 in a git
+# pool project, home, with a live builder and a pushed commit; laptop (make_machine) resumes, from
+# a code checkout of the test's own (code_checkout). The doctor is a stub (TEAM_DOCTOR) whose lines
+# a test sets; claude is a stub with a session list per machine.
 
 load helpers/common
 
@@ -81,6 +82,7 @@ SH
 
   make_machine laptop
   laptop=$BATS_TEST_TMPDIR/machines/laptop
+  code_checkout
   report=$laptop/team/tasks/resume-$(date +%F).json
 }
 
@@ -109,7 +111,7 @@ laptop_state() {
     -name sessions.json -prune -o -print 2>/dev/null | sort
 }
 
-@test "after a handoff, laptop resumes: doctor, pull, config, lease, heartbeat, worktree, report and coordinator" {
+@test "after a handoff, laptop resumes: doctor, pull, code, config, lease, heartbeat, worktree, report and coordinator" {
   hand_off
 
   on_machine laptop run_bin -0 --separate-stderr team-resume
@@ -118,6 +120,7 @@ laptop_state() {
   assert_contains "$output" "doctor: WARN lease: released, epoch 1"
   assert_contains "$output" "doctor: 1 passed, 1 warned"
   assert_contains "$output" "team home: dev fast-forwarded to $(git -C "$team_origin" rev-parse --short=7 dev)"
+  assert_contains "$output" "code: dev is up to date at $(git -C "$CODE_ORIGIN" rev-parse --short=7 dev)"
   assert_contains "$output" "lease: laptop holds the lease, epoch 2"
   assert_contains "$output" "heartbeat: "
   # The sandbox's paths are not under /home/<name>, so the recorded slot is not re-rooted: the
@@ -184,7 +187,7 @@ laptop_state() {
 
 @test "--wait reads the lease until home-pc releases it, then resumes" {
   local out=$BATS_TEST_TMPDIR/wait.out pid i
-  TEAM_RESUME_POLL_SECONDS=1 on_machine laptop "$REPO_ROOT/bin/team-resume" --wait >"$out" 2>&1 3>&- &
+  TEAM_RESUME_POLL_SECONDS=1 on_machine laptop "$CODE_CHECKOUT/bin/team-resume" --wait >"$out" 2>&1 3>&- &
   pid=$!
   for ((i = 0; i < 60; i++)); do
     grep -q 'waiting for its release' "$out" && break
@@ -228,6 +231,72 @@ laptop_state() {
   assert_equal "$(lease_json | jq -c '[.holder, .state]')" '["laptop","held"]'
 }
 
+@test "the code checkout's branch is fast-forwarded to origin's after the team home, before the config" {
+  hand_off
+  moved=$(push_to_dev "$CODE_ORIGIN" bin/team-new)
+
+  on_machine laptop run_bin -0 --separate-stderr team-resume
+  assert_equal "$stderr" ""
+  assert_equal "$(grep -E '^(team home|code|config|lease): ' <<<"$output" | cut -d: -f1 | uniq | paste -sd ' ')" "team home code config lease"
+  assert_contains "$output" "code: dev fast-forwarded to ${moved:0:7}"
+  assert_equal "$(git -C "$CODE_CHECKOUT" rev-parse HEAD)" "$moved"
+  [[ -e $CODE_CHECKOUT/bin/team-new ]]
+}
+
+@test "a code checkout that has diverged refuses the resume before the config and the lease" {
+  hand_off
+  push_to_dev "$CODE_ORIGIN" README.md >/dev/null
+  echo "mine" >"$CODE_CHECKOUT/mine.txt"
+  git -C "$CODE_CHECKOUT" add mine.txt
+  git -C "$CODE_CHECKOUT" commit -q -m "chore: a commit of its own"
+  before=$(git -C "$CODE_CHECKOUT" rev-parse HEAD)
+
+  on_machine laptop run_bin -1 --separate-stderr team-resume
+  assert_contains "$output" "team home: dev fast-forwarded to"
+  assert_equal "$stderr" "team-resume: code: dev has diverged from origin's; bring $CODE_CHECKOUT level with origin's dev, then run team-resume again"
+  assert_equal "$(git -C "$CODE_CHECKOUT" rev-parse HEAD)" "$before"
+  [[ ! -e $laptop/home/.claude/CLAUDE.md ]]
+  assert_equal "$(lease_json | jq -r .state)" released
+  assert_equal "$(coordinator_launches)" ""
+}
+
+@test "local changes in the way refuse the resume at the code step, and others are carried along" {
+  hand_off
+  moved=$(push_to_dev "$CODE_ORIGIN" tool.sh)
+  echo "mine" >"$CODE_CHECKOUT/tool.sh"
+  before=$(git -C "$CODE_CHECKOUT" rev-parse HEAD)
+
+  on_machine laptop run_bin -1 --separate-stderr team-resume
+  assert_equal "$stderr" "team-resume: code: local changes to tool.sh are in the way; bring $CODE_CHECKOUT level with origin's dev, then run team-resume again"
+  assert_equal "$(git -C "$CODE_CHECKOUT" rev-parse HEAD)" "$before"
+  assert_equal "$(cat "$CODE_CHECKOUT/tool.sh")" mine
+
+  # Out of the way, a change to another file stays, and the resume goes on.
+  rm "$CODE_CHECKOUT/tool.sh"
+  echo "edited" >>"$CODE_CHECKOUT/README.md"
+  on_machine laptop run_bin -0 team-resume
+  assert_contains "$output" "code: dev fast-forwarded to ${moved:0:7}"
+  assert_equal "$(tail -n 1 "$CODE_CHECKOUT/README.md")" edited
+}
+
+@test "a code checkout on a detached HEAD refuses the resume" {
+  hand_off
+  git -C "$CODE_CHECKOUT" switch -q --detach
+
+  on_machine laptop run_bin -1 --separate-stderr team-resume
+  assert_equal "$stderr" "team-resume: code: $CODE_CHECKOUT is on a detached HEAD; check out its branch, then run team-resume again"
+  assert_equal "$(lease_json | jq -r .state)" released
+}
+
+@test "a code checkout that is the team home is skipped, saying so" {
+  hand_off
+  code_checkout "$laptop/team"
+
+  on_machine laptop run_bin -0 --separate-stderr team-resume
+  assert_contains "$output" "team home: dev fast-forwarded to $(git -C "$team_origin" rev-parse --short=7 dev)"
+  assert_contains "$output" "code: the code checkout is the team home, brought up to date above"
+}
+
 @test "offline, the resume exits 75 at its first step, before the doctor, changing nothing" {
   hand_off
   git -C "$laptop/team" remote set-url origin "https://127.0.0.1:9/agent-team.git"
@@ -255,14 +324,14 @@ laptop_state() {
 
   on_machine laptop run_bin -1 --separate-stderr team-resume
   assert_contains "$stderr" "team-resume: T1 home: not re-homed: "
-  assert_contains "$stderr" "salvage/T1-laptop"
+  assert_contains "$stderr" "salvage/home/T1-laptop"
   assert_contains "$stderr" "team-resume: 1 worktree(s) could not be re-homed; the report names each, and the coordinator says so on Discord"
   assert_contains "$output" "T2 home: $laptop/home/slots/home/1 on feat/T2-other at "
   assert_equal "$(cat "$laptop/home/slots/home/1/.scratch/task/spec.md")" "spec 2"
 
   assert_equal "$(jq -c '.tasks | map({task, worktrees: (.worktrees | length), failures: (.failures | map({project, branch}))})' "$report")" \
     '[{"task":"T1","worktrees":0,"failures":[{"project":"home","branch":"feat/T1-work"}]},{"task":"T2","worktrees":1,"failures":[]}]'
-  assert_contains "$(jq -r '.tasks[0].failures[0].reason' "$report")" "salvage/T1-laptop"
+  assert_contains "$(jq -r '.tasks[0].failures[0].reason' "$report")" "salvage/home/T1-laptop"
   # The coordinator still starts, to say what did not resume.
   assert_equal "$(coordinator_launches | wc -l)" 1
 }
@@ -336,9 +405,9 @@ laptop_state() {
   # branch, and fails.
   run -1 --separate-stderr "$REPO_ROOT/bin/team-doctor" --json
   assert_equal "$(jq -c '.[] | select(.check | startswith("salvage")) | [.check, .verdict, .reason, .fix]' <<<"$output")" \
-    "$(jq -cn '["salvage T1 home", "FAIL",
+    "$(jq -cn --arg url "$team_origin" '["salvage T1 home", "FAIL",
       "~/slots/home/1 has 1 commit on no origin branch and uncommitted changes (changes to tracked files: a.txt; untracked files: b.txt)",
-      "git -C ~/slots/home/1 add -A && git -C ~/slots/home/1 commit -m \"wip: salvage from home-pc\", then git -C ~/slots/home/1 push origin HEAD:refs/heads/salvage/T1-home-pc"]')"
+      "git -C ~/slots/home/1 add -A && git -C ~/slots/home/1 commit -m \"wip: salvage from home-pc\", then git -C ~/slots/home/1 push \($url) HEAD:refs/heads/salvage/home/T1-home-pc"]')"
 }
 
 @test "a crash before T1's branch was ever pushed resumes it from wip/home/T1: the branch's commits, and the checkpoint's changes uncommitted" {

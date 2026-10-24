@@ -1,0 +1,21 @@
+# The code: the paths the public repository holds, one glob per line, where a * matches across
+# directories. Every other tracked path is a record (bin/lib/records); tests/repo.bats checks that
+# each tracked path matches exactly one of the two lists.
+bin/**
+tests/**
+roles/**
+settings/**
+templates/**
+plugins/**
+toolkits/**
+servers/**
+sops/**
+.github/**
+.claude/settings.json
+CLAUDE.md
+README.md
+SETUP.md
+LICENSE
+coordinator.settings.json
+.gitignore
+.shellcheckrc

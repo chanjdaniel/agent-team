@@ -227,6 +227,14 @@ TOML
   done
 }
 
+@test "--check refuses a project named coordinator, the team home's memory folder" {
+  sed 's/^\[beta/[coordinator/' "$TEAM_HOME/projects.toml" >"$BATS_TEST_TMPDIR/projects.toml"
+  registry <"$BATS_TEST_TMPDIR/projects.toml"
+  run_bin -1 --separate-stderr team-project --check
+  assert_contains "$stderr" "coordinator: the name is reserved for the team home's auto memory, memory/coordinator/"
+  [[ $stderr != *alpha* ]]
+}
+
 @test "--check refuses TOML that does not parse and a registry that is missing" {
   registry <<<'[alpha'
   run_bin -1 --separate-stderr team-project --check
@@ -246,14 +254,66 @@ TOML
   assert_contains "$stderr" "alpha: missing required key 'base'"
 }
 
-@test "without TEAM_HOME it reads the registry of the checkout it runs from" {
-  unset TEAM_HOME
-  run -0 "$REPO_ROOT/bin/team-project" --list
-  assert_equal "$output" "$(cd "$REPO_ROOT" && python3 -I -c 'import tomllib; print("\n".join(tomllib.load(open("projects.toml", "rb"))))')"
+# A copy of team-project in a code checkout of its own, $BATS_TEST_TMPDIR/code, with the fixture
+# registry beside bin/ as the fallback's team home; prints the checkout's path.
+code_checkout() {
+  local code=$BATS_TEST_TMPDIR/code
+  mkdir -p "$code/bin"
+  cp "$REPO_ROOT/bin/team-project" "$code/bin/"
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$code/"
+  echo "$code"
 }
 
-@test "the real projects.toml passes --check and holds every project" {
-  cp "$REPO_ROOT/projects.toml" "$TEAM_HOME/projects.toml"
+# The team home this machine names: home_setting <first line>
+home_setting() {
+  mkdir -p "$HOME/.config/agent-team"
+  printf '%s\nignored\n' "$1" >"$HOME/.config/agent-team/home"
+}
+
+@test "with TEAM_HOME unset it reads the registry of the team home ~/.config/agent-team/home names" {
+  local code
+  code=$(code_checkout)
+  mkdir -p "$HOME/agent-team-records"
+  mv "$TEAM_HOME/projects.toml" "$HOME/agent-team-records/"
+  home_setting agent-team-records
+  unset TEAM_HOME
+  run -0 "$code/bin/team-project" --list
+  assert_equal "$output" $'alpha\nbeta'
+  home_setting "$HOME/agent-team-records"
+  run -0 "$code/bin/team-project" --list
+  assert_equal "$output" $'alpha\nbeta'
+}
+
+@test "TEAM_HOME, when set, wins over ~/.config/agent-team/home" {
+  local code
+  code=$(code_checkout)
+  home_setting agent-team-records
+  run -0 "$code/bin/team-project" --list
+  assert_equal "$output" $'alpha\nbeta'
+}
+
+@test "with neither TEAM_HOME nor ~/.config/agent-team/home it reads the registry of the checkout it runs from" {
+  local code
+  code=$(code_checkout)
+  unset TEAM_HOME
+  run -0 "$code/bin/team-project" --list
+  assert_equal "$output" $'conventioner\nagent-team\nno-mistakes'
+}
+
+@test "a setting naming a missing directory, or none, is refused with the path and the file it came from" {
+  local code
+  code=$(code_checkout)
+  unset TEAM_HOME
+  home_setting agent-team-records
+  run -1 "$code/bin/team-project" --list
+  assert_equal "$output" "team-project: the team home $HOME/agent-team-records, named by ~/.config/agent-team/home, is not a directory; name its checkout there, relative to your home directory: echo agent-team-records > ~/.config/agent-team/home"
+  home_setting ''
+  run -1 "$code/bin/team-project" --list
+  assert_equal "$output" "team-project: the setting ~/.config/agent-team/home names no team home; name its checkout there, relative to your home directory: echo agent-team-records > ~/.config/agent-team/home"
+}
+
+@test "a registry shaped like the team home's passes --check and holds every project" {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
   run_bin -0 team-project --check
   run_bin -0 team-project --list
   assert_equal "$output" $'conventioner\nagent-team\nno-mistakes'
@@ -280,17 +340,6 @@ TOML
     '["test -z \"$(gofmt -l .)\"","make lint","go test -race ./...","bash scripts/e2e.sh"]'
   assert_equal "$(jq -c .pool.slots <<<"$output")" \
     "[\"$HOME/Documents/projects/personal/no-mistakes/.claude/worktrees/1\",\"$HOME/Documents/projects/personal/no-mistakes/.claude/worktrees/2\",\"$HOME/Documents/projects/personal/no-mistakes/.claude/worktrees/3\"]"
-}
-
-@test "the team home's PRs to dev are checked locally: tests/run, and no GitHub check" {
-  cp "$REPO_ROOT/projects.toml" "$TEAM_HOME/projects.toml"
-  run_bin -0 team-project agent-team local_checks
-  assert_equal "$(jq -c . <<<"$output")" '["tests/run"]'
-  run_bin -0 team-project agent-team required_checks
-  assert_equal "$(jq -c . <<<"$output")" '[]'
-  # Conventioner has none: its PRs are checked on GitHub.
-  run_bin -0 team-project conventioner local_checks
-  assert_equal "$(jq -c . <<<"$output")" '[]'
 }
 
 @test "local_checks is optional, defaults to none, and must be one-line commands" {
@@ -333,4 +382,26 @@ TOML
   run_bin -1 --separate-stderr team-project --check
   assert_contains "$stderr" "alpha.local_checks: must be a list of strings"
   assert_contains "$stderr" "beta.local_checks: each command must be one line, not empty"
+}
+
+@test "--help documents every key the registry may hold, and no other" {
+  local known documented
+  # The keys from the script's own lists: a project's, its optional ones, and its pool's.
+  known=$(python3 -I - "$REPO_ROOT/bin/team-project" <<'PY'
+import ast, sys
+lists = {}
+for node in ast.parse(open(sys.argv[1]).read()).body:
+    if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
+        name = node.targets[0].id
+        if name in ("PROJECT_STRINGS", "PROJECT_LISTS", "PROJECT_OPTIONAL", "POOL_KEYS"):
+            value = node.value
+            lists[name] = [ast.literal_eval(k) for k in (value.keys if isinstance(value, ast.Dict) else value.elts)]
+print("\n".join(sorted(k for keys in lists.values() for k in keys)))
+PY
+)
+  run_bin -0 team-project --help
+  # Each key is a word at the start of a line indented two spaces ("lease, return" names two).
+  documented=$(grep -E '^  [a-z_]+(, [a-z_]+)* {2,}' <<<"$output" | sed -E 's/^  //; s/ {2,}.*//; s/, /\n/g' | sort)
+  assert_equal "$documented" "$known"
+  [[ $(wc -l <<<"$known") -ge 14 ]]
 }

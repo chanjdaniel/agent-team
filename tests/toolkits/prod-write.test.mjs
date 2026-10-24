@@ -117,12 +117,12 @@ const writes = [
   },
 ];
 
-test("the MCP config names one server, prod-write, with no secret and no path but through @TEAM_HOME@", () => {
+test("the MCP config names one server, prod-write, with no secret and no path but through @TEAM_CODE@", () => {
   const config = JSON.parse(readFileSync(join(repoRoot, "toolkits", "prod-write", ".mcp.json"), "utf8"));
   assert.deepEqual(Object.keys(config.mcpServers), ["prod-write"]);
   const { command, args, env } = config.mcpServers["prod-write"];
   assert.equal(command, "node");
-  assert.deepEqual(args, ["@TEAM_HOME@/toolkits/prod-write/scripts/start-server.mjs"]);
+  assert.deepEqual(args, ["@TEAM_CODE@/toolkits/prod-write/scripts/start-server.mjs"]);
   assert.equal(env, undefined);
 });
 

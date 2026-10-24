@@ -25,8 +25,8 @@ The write user's connection string lives only in 1Password, at `op://agent-team/
 
 ## What it runs
 
-- One stdio MCP server, `prod-write`, declared in `.mcp.json`: `node @TEAM_HOME@/toolkits/prod-write/scripts/start-server.mjs`.
-  `team-worker` replaces `@TEAM_HOME@` with its checkout, since Claude Code does not substitute `${CLAUDE_PLUGIN_ROOT}` under `--mcp-config`.
+- One stdio MCP server, `prod-write`, declared in `.mcp.json`: `node @TEAM_CODE@/toolkits/prod-write/scripts/start-server.mjs`.
+  `team-worker` replaces `@TEAM_CODE@` with its checkout, since Claude Code does not substitute `${CLAUDE_PLUGIN_ROOT}` under `--mcp-config`.
 - The launcher reads the reference with `op read` (its own 1Password prompt on the PC), signs `op` out, and starts the pinned MongoDB MCP server (`servers/`, installed by `servers/install`) in the same process, so the connection string is never in a starting environment.
   The shared body is `servers/mongodb-mcp.mjs`.
 - Only an ops launch starts it: every other session's settings deny a shell command that runs the launcher or the MongoDB MCP server (with `node`, `bun`, `deno`, `env`, `npx` or `npm exec`, or by its path, though neither file is executable), while reading them stays allowed, or a `claude` given a production toolkit by `--plugin-dir` or `--mcp-config`, and a worker is denied `team-worker`'s ops role and the ops load check.

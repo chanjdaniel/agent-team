@@ -128,8 +128,8 @@ $(watch_line)"
   local settings=$REPO_ROOT/coordinator.settings.json commands command
   commands=$(jq -r '[.hooks.SessionStart[] | select(has("matcher") | not) | .hooks[] | select(.type == "command") | .command] | .[]' "$settings")
   assert_equal "$(wc -l <<<"$commands")" 1
-  # claude-coordinator fills in @TEAM_HOME@ with its own checkout.
-  command=${commands//@TEAM_HOME@/$REPO_ROOT}
+  # claude-coordinator fills in @TEAM_CODE@ with its own checkout.
+  command=${commands//@TEAM_CODE@/$REPO_ROOT}
   assert_equal "$command" "\"$REPO_ROOT/bin/hooks/session-digest\""
   # The Stop hook stays beside it.
   assert_contains "$(jq -r '.hooks.Stop[].hooks[].command' "$settings")" "bin/hooks/stop-sweep"

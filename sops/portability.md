@@ -9,7 +9,8 @@ Setting up a machine is `sops/machine-setup.md`.
 - Exactly one machine runs the team at a time: the holder of the lease.
   No confirmed lease, no coordinator and no worker.
 - Git is the transport and GitHub the meeting point; nothing moves by copying directories between machines.
-- Every machine has the same layout under `$HOME`: the team home at `~/agent-team` and each project at its registry path; a path recorded under any home directory (`/home/<name>/...`, `/Users/<name>/...`) means the same path under this machine's `$HOME`.
+- Every machine has the same layout under `$HOME`: the code checkout at `~/agent-team`, the team home at the path `~/.config/agent-team/home` names (relative to `$HOME`; without that file, the team home is the code checkout itself) and each project at its registry path; a path recorded under any home directory (`/home/<name>/...`, `/Users/<name>/...`) means the same path under this machine's `$HOME`.
+- Every script finds the team home the same way: `TEAM_HOME` when set (the tests, and a script calling a sibling), else `~/.config/agent-team/home`, else the directory above `bin/`; code (scripts, roles, settings, hooks, templates, plugins, toolkits) always comes from the code checkout.
 - Conversations are a cache and never move: a resume rebuilds every session from the ledger, the briefs, the tickets, `handoff.md`, the branch and the archived scratch.
 - Secrets never touch git, logs, Discord or transcripts.
 - The home PC is the default holder; the laptop takes the team when Daniel travels, and hands it back after.
@@ -19,16 +20,17 @@ Setting up a machine is `sops/machine-setup.md`.
 
 | What | Where | Moved by |
 | - | - | - |
-| Scripts, roles, settings, plans, briefs, the ledger | the team home, `dev` | git |
+| Scripts, roles, settings, hooks, templates, plugins, toolkits | the code checkout, `dev` | git, through merged PRs: `team-merge` fast-forwards the code checkout after merging its own project, and `team-resume` on the machine taking over |
+| Plans, briefs, the ledger, the registry | the team home, `dev` | git |
 | The lease | the team home's origin, orphan branch `lease`, one `lease.json` | `team-lease` |
 | Each task's scratch (spec, tickets, notes, `handoff.md`) | `tasks/T<n>/scratch/` (`scratch-<project>/` for an added project) | `team-checkpoint`, `team-handoff`; restored by `team-open --resume` |
 | Work in flight | each project's origin: the task branch; the team home's origin: `wip/<project>/T<n>` | workers' pushes; `team-checkpoint` |
 | Claude user config (instructions, settings, skills, plugins) | `machine/claude/` | `team-config capture` (in a handoff), `team-config apply` (in a resume) |
-| Auto memory | `memory/<project>/`, which every worktree of the project uses through `autoMemoryDirectory` | `team-checkpoint`, `team-handoff` |
-| Tool versions | `machine/tools.lock` | read by `team-doctor` and `team-bootstrap` |
+| Auto memory | `memory/<project>/`, which every worktree of the project uses through `autoMemoryDirectory`, and `memory/coordinator/`, the team home's own once it is no project's primary checkout | `team-checkpoint`, `team-handoff` |
+| Tool versions | `bin/lib/tools.lock` | read by `team-doctor` and `team-bootstrap` |
 | Which secrets a machine needs (never a value) | `machine/secrets.json`, described in `machine/secrets.md` | read by `team-secrets` |
 | Secret values | 1Password, the `agent-team` vault | `team-secrets restore` and `save`, in Daniel's own terminal only |
-| This machine's name and state (lease record, fence, offline flag, logs) | `~/.config/agent-team/machine`, `~/.local/state/agent-team/` | never moved |
+| This machine's name, its team home's path and its state (lease record, fence, offline flag, logs) | `~/.config/agent-team/machine`, `~/.config/agent-team/home`, `~/.local/state/agent-team/` | never moved |
 
 `machine/`, `memory/`, `tasks/` and the ledger are records, committed straight to `dev` by the scripts.
 
@@ -58,14 +60,16 @@ It is enabled only on the holder: `team-resume` enables it, `team-handoff` disab
   A secret has no place in git even in a private repository, and a project's `.gitignore` need not cover every `.env` variant a worker makes; such a file stays only on the machine it was made on;
 - `tasks/*/scratch*/`, `memory/` and `ledger.jsonl` are committed as `chore: checkpoint` and pushed.
 
-Nothing new means no commit and no push; `team-close` deletes the task's `wip/<project>/T<n>`.
+Nothing new means no commit and no push; `team-close` deletes the task's `wip/<project>/T<n>`, and the copy of it that `team-open --resume` fetched into the primary checkout.
 
 ## Fencing
 
 A machine that finds another holder or a higher epoch (its renew, its heartbeat) fences itself: it writes `fenced`, stops its own coordinator and `T<n>-<role>` sessions, and disables its heartbeat.
 The `lease-fence` hook blocks the coordinator's Discord replies, and its `git push`, `team-merge`, `team-open` and `team-close`, from the moment a fenced machine wakes, before any heartbeat runs (it checks the remote lease at most once a minute), and blocks workers' pushes.
 So a coordinator left running on a machine that lost the lease (its fence's `claude stop` failed, or `team-handoff --retire` never ran) acts on nothing the holder's coordinator owns.
-`team-doctor` on a fenced machine lists, per task worktree with work origin lacks, the command that pushes it to `salvage/T<n>-<machine>`, for Daniel to run.
+`team-doctor` on a fenced machine lists, per task worktree with work origin lacks, the command that pushes it to the team home's origin as `salvage/<project>/T<n>-<machine>`, for Daniel to run.
+Like a snapshot, a salvage never goes to the project's origin, which may be public; `team-open --resume` names the same place for a branch here with commits origin's lacks.
+A worktree whose head a salvage branch holds, with nothing uncommitted, is salvaged, and neither a salvage nor a snapshot ever counts as landed for `team-close`.
 `team-lease take` (inside `team-resume`) clears the fence.
 
 ## Offline
@@ -88,7 +92,7 @@ So a coordinator left running on a machine that lost the lease (its fence's `cla
    Each step is idempotent: a run interrupted anywhere finishes when run again, and the lease is released last.
 3. It posts "Released at 14:05 from home-pc. On the other machine run `team-resume`." with what config it captured (and any it left to Daniel: a `settings.json` with an `env` key, or a skill folder holding a dotenv-like file), and `team-handoff --retire` removes the coordinator.
 4. At the other machine, Daniel runs (or tells the setup session to run) `team-resume`, or `team-resume --wait` started before the handoff ends.
-   It reads the lease first: held elsewhere and fresh is refused with nothing changed ("say 'hand off' to the coordinator there"), and only then does it run the doctor, pull the team home, apply the config, take the lease, enable the heartbeat, re-home each open worktree with `team-open --task T<n> --resume <project>` (from origin's branch and the task's archive, with `wip/<project>/T<n>` applied as uncommitted changes to a worktree its `stowed` marks `uncommitted`), write `tasks/resume-<date>.json` and start the coordinator.
+   It reads the lease first: held elsewhere and fresh is refused with nothing changed ("say 'hand off' to the coordinator there"), and only then does it run the doctor, pull the team home and then the code checkout (skipped when it is the team home), apply the config, take the lease, enable the heartbeat, re-home each open worktree with `team-open --task T<n> --resume <project>` (from origin's branch and the task's archive, with `wip/<project>/T<n>` applied as uncommitted changes to a worktree its `stowed` marks `uncommitted`), write `tasks/resume-<date>.json` and start the coordinator.
 5. The coordinator's `resume` skill reads the report, catches up on Discord messages sent while no coordinator listened, relaunches each stowed role with a `resume` brief (which says what became of the uncommitted changes), logs `resumed`, and posts what resumed and what did not.
 6. Daniel pins the coordinator in `claude agents`.
 
@@ -106,4 +110,4 @@ So a coordinator left running on a machine that lost the lease (its fence's `cla
 - Supervision: the coordinator under a systemd service that checks the lease before it starts, since agent view does not restart sessions after a reboot.
 - Trust accepted once per root over SSH; the doctor's check is the same.
 - Sizing: each worker's treehouse slot has its own `node_modules` and Docker stack, so RAM and disk set the pool caps.
-- The team home's checks could then run on GitHub again from a self-hosted runner, as `manual-steps.md` keeps as option A.
+- The code's checks could then run on GitHub again from a self-hosted runner, as `manual-steps.md` keeps as option A.

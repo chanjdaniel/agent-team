@@ -41,7 +41,8 @@ pr_reply() {
 
 @test "commits of records only pass, without asking GitHub" {
   commit_paths "chore(T1): opened" ledger.jsonl tasks/T1/plan.md
-  commit_paths "chore: steps" manual-steps.md projects/shop/backlog.md memory/a/n.md machine/x.json
+  commit_paths "chore: steps" manual-steps.md projects.toml projects/shop/backlog.md memory/a/n.md \
+    machine/x.json
   run_bin -0 team-records-check --repo o/r "$start" HEAD
   assert_equal "$output" "2 commits on dev checked: each touches records only or is a pull request's merge into dev"
   assert_equal "$(stub_calls gh)" ""
@@ -49,18 +50,18 @@ pr_reply() {
 
 @test "a commit touching anything else fails, naming the commit and each path that is not a record" {
   commit_paths "chore(T1): opened" tasks/T1/plan.md
-  commit_paths "chore: a slot" projects.toml tasks/T1/plan.md
+  commit_paths "chore: a setting" coordinator.settings.json tasks/T1/plan.md
   local bad
   bad=$(git rev-parse --short HEAD)
   commit_paths "test: fix" tests/x.bats
   run_bin -1 --separate-stderr team-records-check --repo o/r "$start" HEAD
   assert_equal "$output" "refused $(git rev-parse --short HEAD) test: fix
   tests/x.bats
-refused $bad chore: a slot
-  projects.toml"
+refused $bad chore: a setting
+  coordinator.settings.json"
   assert_equal "$stderr" "team-records-check: 2 of 3 commits on dev refused: a direct commit on dev \
-may touch records only (ledger.jsonl, manual-steps.md, tasks/, projects/, memory/, machine/), and \
-anything else reaches dev through a pull request"
+may touch records only (ledger.jsonl, manual-steps.md, projects.toml, tasks/, projects/, memory/, \
+machine/), and anything else reaches dev through a pull request"
 }
 
 @test "a pull request's merge passes, and the pull request's own commits are not walked" {

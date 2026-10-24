@@ -83,6 +83,19 @@ push() {
   git -C "$1" push -q origin "HEAD:refs/heads/$(git -C "$1" rev-parse --abbrev-ref HEAD)"
 }
 
+# Run the salvage command team-open printed in $output, then check that it kept <commit> on the
+# team home's origin as salvage/<project>/T1-laptop and put no salvage/ branch on any project's
+# origin: salvaged <project> <commit>
+salvaged() {
+  local command
+  command=$(sed -n 's/.*save them with: \(.*\), then make .*/\1/p' <<<"$output")
+  [[ -n $command ]]
+  eval "$command" 2>/dev/null
+  assert_equal "$(git -C "$team_origin" rev-parse "refs/heads/salvage/$1/T1-laptop")" "$2"
+  assert_equal "$(git -C "$BATS_TEST_TMPDIR/origin/home.git" for-each-ref refs/heads/salvage/)" ""
+  assert_equal "$(git -C "$BATS_TEST_TMPDIR/origin/conv.git" for-each-ref refs/heads/salvage/)" ""
+}
+
 # Archive a task directory for T<n> in the team home's <folder> (scratch or scratch-<project>), as
 # a checkpoint or a handoff left it: a spec and a ticket.
 archive() {
@@ -467,7 +480,7 @@ restored_from() {
 
   run_bin -1 team-open --task T1 --resume home
   assert_contains "$output" "$br here has commits that origin's $br lacks"
-  assert_contains "$output" "git -C $slot push origin HEAD:refs/heads/salvage/T1-laptop"
+  assert_contains "$output" "save them with: git -C $slot push $team_origin HEAD:refs/heads/salvage/home/T1-laptop, then"
   assert_equal "$(git -C "$slot" rev-parse HEAD)" "$mine"
   assert_equal "$(cat "$slot/.scratch/task/notes.md")" "mine"
   cmp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before"
@@ -478,8 +491,9 @@ restored_from() {
   work "$other" theirs.txt >/dev/null
   push "$other"
   run_bin -1 team-open --task T1 --resume home
-  assert_contains "$output" "git -C $slot push origin HEAD:refs/heads/salvage/T1-laptop"
+  assert_contains "$output" "save them with: git -C $slot push $team_origin HEAD:refs/heads/salvage/home/T1-laptop, then"
   assert_equal "$(git -C "$slot" rev-parse HEAD)" "$mine"
+  salvaged home "$mine"
 }
 
 @test "a local branch no slot holds, with commits origin lacks, is refused with the salvage command" {
@@ -487,8 +501,9 @@ restored_from() {
   git -C "$home" update-ref "refs/heads/$branch" "$(git -C "$home" commit-tree -p "$head" -m "feat: mine" "$head^{tree}")"
 
   run_bin -1 team-open --task T1 --resume home
-  assert_contains "$output" "git -C $home push origin refs/heads/$branch:refs/heads/salvage/T1-laptop"
+  assert_contains "$output" "save them with: git -C $home push $team_origin refs/heads/$branch:refs/heads/salvage/home/T1-laptop, then"
   [[ ! -e $wt ]]
+  salvaged home "$(git -C "$home" rev-parse "refs/heads/$branch")"
 }
 
 @test "a stale slot with uncommitted changes is refused rather than fast-forwarded under them" {

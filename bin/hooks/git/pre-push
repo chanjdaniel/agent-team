@@ -5,17 +5,46 @@
 # touch records only (bin/lib/records) against its first parent, a merge included: a pull
 # request's merge happens on GitHub, never in a push. A push to main may only fast-forward it to a
 # commit already on <remote>/dev, as a release does. Neither is ever deleted; a dev the remote
-# lacks is created freely; any other ref pushes freely.
+# lacks is created freely. And on every remote and ref: a tip whose tree holds a records path goes
+# only to the team home's origin (its fetch or push URL, alike after dropping a trailing slash and
+# .git), so a checkout whose origin names another repository never takes the records there.
 # Git runs it as pre-push <remote> <url>, with a "<local ref> <sha> <remote ref> <sha>" line on
 # stdin for each ref pushed.
 # Exit 0 the push may go ahead, 1 refused with the reason on stderr.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../../lib/team.sh" "$@"
 
-remote=$1
+remote=$1 url=$2
+where=$url
+[[ $remote == "$url" ]] || where="$remote ($url)"
+
+# A URL without a trailing slash, then a trailing .git: bare_url <url>
+bare_url() {
+  local bare=${1%/}
+  printf '%s\n' "${bare%.git}"
+}
+
+home_urls=$({ git -C "$TEAM_HOME" remote get-url --all origin
+  git -C "$TEAM_HOME" remote get-url --push --all origin; } 2>/dev/null || true)
+to_home=''
+while read -r home_url; do
+  [[ -z $home_url || $(bare_url "$home_url") != "$(bare_url "$url")" ]] || to_home=1
+done <<<"$home_urls"
 
 while read -r _ new remote_ref old; do
   branch=${remote_ref#refs/heads/}
+  if [[ -z $to_home && ! $new =~ ^0+$ ]] && git cat-file -e "$new^{tree}" 2>/dev/null; then
+    mapfile -t held < <(git ls-tree -r --name-only -z "$new" | only_records)
+    if ((${#held[@]})); then
+      list=$(printf '%s, ' "${held[@]:0:3}")
+      list=${list%, }
+      ((${#held[@]} <= 3)) || list+=" and $((${#held[@]} - 3)) more"
+      [[ -n $home_urls ]] || die "refused: $branch holds records ($list), which go only to the team \
+home's origin, and the team home $TEAM_HOME has none"
+      die "refused: $branch holds records ($list), which go only to the team home's origin, \
+${home_urls%%$'\n'*}, not to $where"
+    fi
+  fi
   [[ $branch == dev || $branch == main ]] || continue
   [[ ! $new =~ ^0+$ ]] || die "refused: $branch is never deleted"
   if [[ $old =~ ^0+$ ]]; then

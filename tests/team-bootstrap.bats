@@ -144,12 +144,12 @@ wrapper() {
 }
 
 # A machine fresh from Daniel's first steps, running <os> (arch or macos): no tool of the lock,
-# no team name, no lease record or heartbeat, none of the team's Claude config or plugins, no
+# no team name or team home setting, no lease record or heartbeat, none of the team's Claude config or plugins, no
 # project cloned, no secret, no 1Password app or browser, and the Docker daemon not reachable.
 # The team home is cloned with its dev guard on, and home-pc holds the lease.
 fresh() {
   "$REPO_ROOT/bin/team-timers" disable >/dev/null
-  rm -rf "$HOME/.local/state/agent-team" "$HOME/.config/agent-team/machine"
+  rm -rf "$HOME/.local/state/agent-team" "$HOME/.config/agent-team/machine" "$HOME/.config/agent-team/home"
   if [[ $1 == macos ]]; then
     on_macos
     "$REPO_ROOT/bin/team-timers" disable >/dev/null
@@ -197,6 +197,7 @@ stage_lines() {
   assert_equal "$(grep -v '^check: ' <<<"$output")" "preflight: Arch Linux
 preflight: done: jq, git and Python 3.11 are installed
 machine: done: this machine is home-pc
+machine: done: ~/.config/agent-team/home names $TEAM_HOME
 packages: done: every OS package is installed
 tools: done: every tool is at its pin or above its minimum
 projects: done: every project is cloned and set up
@@ -219,11 +220,13 @@ summary: set up, and this machine holds the lease"
 
 @test "a fresh Mac: every stage installs what its doctor lines lack, then Daniel's steps in order; a second run installs nothing" {
   fresh macos
-  run_bin -1 team-bootstrap --name laptop
+  run_bin -1 team-bootstrap --name laptop --home "$TEAM_HOME"
   local sha
   sha=$(jq -r '.tools[] | select(.name == "treehouse") | .release.sha256["darwin-arm64"]' "$LOCK")
-  assert_equal "$(stage_lines machine)" "named this machine laptop (~/.config/agent-team/machine)"
+  assert_equal "$(stage_lines machine)" "named this machine laptop (~/.config/agent-team/machine)
+named the team home $TEAM_HOME (~/.config/agent-team/home)"
   assert_equal "$(head -n1 "$HOME/.config/agent-team/machine")" laptop
+  assert_equal "$(cat "$HOME/.config/agent-team/home")" "$TEAM_HOME"
   assert_equal "$(stage_lines packages)" "running: brew install 1password-cli git jq tmux gh rsync python bash coreutils findutils gnu-sed grep flock
 running: brew install --cask docker-desktop"
   assert_equal "$(stage_lines tools | sed -n '1,4p;11,12p')" "running: curl -fsSL https://claude.ai/install.sh | bash -s 2.1.308
@@ -246,12 +249,12 @@ running: claude plugin disable discord@claude-plugins-official --scope user"
   assert_equal "$(stage_lines heartbeat)" "done: disabled until this machine takes the lease (team-resume enables it)"
   assert_equal "$(stage_lines check | grep '^Daniel')" "Daniel 1: docker: Daniel opens Docker Desktop once and accepts its license (\`docker info\` cannot reach the daemon: Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?)
 Daniel 2: 1password: brew install --cask 1password, then turn on its Settings > Developer > Integrate with 1Password CLI (the 1Password app is not at $TEAM_1PASSWORD_APP, so team-secrets restore can only ask for each secret to be pasted)
-Daniel 3: secrets: with the 1Password app signed in and its CLI integration on, in your own terminal, not through an agent: $REPO_ROOT/bin/team-secrets restore (missing: discord-bot-env discord-access-json conventioner-env conventioner-front-end-env conventioner-back-end-env)
+Daniel 3: secrets: with the 1Password app signed in and its CLI integration on, in your own terminal, not through an agent: $CODE_CHECKOUT/bin/team-secrets restore (missing: discord-bot-env discord-access-json conventioner-env conventioner-front-end-env conventioner-back-end-env)
 Daniel 4: trust conventioner: Daniel runs claude once in ~/projects/Conventioner and accepts the trust dialog (claude --bg in ~/projects/Conventioner says Workspace not trusted)
 Daniel 5: trust site: Daniel runs claude once in ~/projects/site and accepts the trust dialog (claude --bg in ~/projects/site says Workspace not trusted)
 Daniel 6: chrome: brew install --cask google-chrome (Google Chrome is not installed, so chrome-devtools-axi has no browser)
 Daniel 7: own settings: write this machine's own in ~/.claude/settings.json (\`claude auto-mode defaults\` shows the form); team-config keeps it (autoMode.environment not set here, so auto mode's classifier knows nothing of this machine)
-Daniel 8: restart: exit this Claude Code session and run claude again in $TEAM_HOME, so the new user settings, skills and plugins load"
+Daniel 8: restart: exit this Claude Code session and run claude again in $CODE_CHECKOUT, so the new user settings, skills and plugins load"
   # Only Daniel's steps fail: every tool line passes, and so do the projects' and the config's.
   assert_equal "$(stage_lines check | sed -n 's/^doctor: FAIL \([^:]*\):.*/\1/p' | sed 's/^secret .*/secret/' | uniq)" "docker
 secret
@@ -280,7 +283,7 @@ ARCH_PACKAGES="git jq tmux github-cli rsync docker docker-compose python bash un
 @test "on Arch a step needing sudo is Daniel's without a terminal: one line naming it, exit 1, nothing tried" {
   fresh arch
   run_bin -1 team-bootstrap --name laptop
-  assert_equal "$(tail -n1 <<<"$output")" "packages: Daniel: in your own terminal run $REPO_ROOT/bin/team-bootstrap --stage packages, which runs pacman -S --needed $ARCH_PACKAGES with sudo and asks for your password; then team-bootstrap again"
+  assert_equal "$(tail -n1 <<<"$output")" "packages: Daniel: in your own terminal run $CODE_CHECKOUT/bin/team-bootstrap --stage packages, which runs pacman -S --needed $ARCH_PACKAGES with sudo and asks for your password; then team-bootstrap again"
   assert_equal "$(install_calls)" ""
 
   # Once Daniel has run it, the tools stage installs what needs no sudo and stops the same way
@@ -288,7 +291,7 @@ ARCH_PACKAGES="git jq tmux github-cli rsync docker docker-compose python bash un
   # shellcheck disable=SC2086 # the list splits into packages
   installed_from "sudo pacman -S --needed " $ARCH_PACKAGES
   run_bin -1 team-bootstrap
-  assert_equal "$(tail -n1 <<<"$output")" "tools: Daniel: in your own terminal run $REPO_ROOT/bin/team-bootstrap --stage tools, which installs treehouse op with sudo and asks for your password; then team-bootstrap again"
+  assert_equal "$(tail -n1 <<<"$output")" "tools: Daniel: in your own terminal run $CODE_CHECKOUT/bin/team-bootstrap --stage tools, which installs treehouse op with sudo and asks for your password; then team-bootstrap again"
   assert_equal "$(stub_calls npm | wc -l)" 6
   assert_contains "$output" "tools: running: f=\$(mktemp) && curl -fsSLo \"\$f\" https://github.com/kunchenguid/no-mistakes/releases/download/v1.84.0/no-mistakes-v1.84.0-linux-amd64.tar.gz"
   assert_equal "$(stub_calls sudo)" ""
@@ -309,19 +312,21 @@ ARCH_PACKAGES="git jq tmux github-cli rsync docker docker-compose python bash un
   chmod +x "$bin/uname"
   PATH=$bin run_bin -1 team-bootstrap --name laptop
   assert_equal "$output" "preflight: Arch Linux
-preflight: Daniel: in your own terminal run $REPO_ROOT/bin/team-bootstrap --stage preflight, which runs pacman -S --needed jq python with sudo and asks for your password; then team-bootstrap again"
+preflight: Daniel: in your own terminal run $CODE_CHECKOUT/bin/team-bootstrap --stage preflight, which runs pacman -S --needed jq python with sudo and asks for your password; then team-bootstrap again"
   assert_equal "$(install_calls)" ""
 }
 
 @test "in Daniel's own terminal the sudo steps run, sudo asking for the password" {
   fresh arch
-  run_in_terminal -1 -- "$REPO_ROOT/bin/team-bootstrap" --name laptop
+  run_in_terminal -1 -- "$CODE_CHECKOUT/bin/team-bootstrap" --name laptop
   assert_contains "$output" "packages: running: sudo pacman -S --needed --noconfirm $ARCH_PACKAGES"
   assert_equal "$(stub_calls sudo | jq -r '.[0]' | uniq | paste -sd ' ' -)" "pacman mkdir tar unzip groupadd chgrp chmod"
   assert_equal "$(stub_calls sudo | jq -c 'select(.[0] == "tar") | .[3:]')" '["-C","/usr/local/bin","treehouse"]'
   # Every tool line passes now; what is left is Daniel's own.
   assert_contains "$output" "check: summary: not set up yet: only Daniel's steps above are left; then team-bootstrap again"
   [[ $output != *"FAIL tool "* ]]
+  # With no ~/agent-team-records the code checkout is the team home, and nothing is to be named.
+  [[ $output != *"team home: name"* ]]
   assert_contains "$output" "check: Daniel 1: docker: Daniel runs sudo systemctl enable --now docker.service ("
 }
 
@@ -453,10 +458,11 @@ nothing to add: what differs is Daniel's call (the check stage lists it)"
   fresh macos
   local before
   before=$(footprint)
-  run_bin -1 team-bootstrap --name laptop --dry-run
+  run_bin -1 team-bootstrap --name laptop --home "$TEAM_HOME" --dry-run
   assert_equal "$(footprint)" "$before"
   assert_equal "$(install_calls)" ""
-  assert_equal "$(stage_lines machine)" "would write laptop to ~/.config/agent-team/machine"
+  assert_equal "$(stage_lines machine)" "would write laptop to ~/.config/agent-team/machine
+would write $TEAM_HOME to ~/.config/agent-team/home"
   assert_equal "$(stage_lines packages)" "would run: brew install 1password-cli git jq tmux gh rsync python bash coreutils findutils gnu-sed grep flock
 would run: brew install --cask docker-desktop"
   assert_equal "$(stage_lines tools | sed -n '2,3p')" "would run: curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
@@ -472,7 +478,7 @@ would then set up conventioner's task directory exclude and its no-mistakes gate
   run_bin -1 team-bootstrap --dry-run
   assert_contains "$output" "machine: Daniel: name this machine"
   assert_contains "$output" "check: Daniel 1: machine: name this machine for the team: team-bootstrap --name <name> (laptop, home-pc: never the hostname)"
-  [[ $output != *"these failed: "*lease* ]]
+  [[ $output != *"team home: name"* && $output != *"these failed: "*lease* ]]
   assert_contains "$output" "packages: would run: brew install 1password-cli"
   assert_contains "$output" "check: summary: "
   assert_equal "$(footprint)" "$before"
@@ -483,11 +489,55 @@ would then set up conventioner's task directory exclude and its no-mistakes gate
   run_bin -0 team-bootstrap --stage machine --name laptop
   assert_equal "$output" "machine: named this machine laptop (~/.config/agent-team/machine)"
   run_bin -1 team-bootstrap --stage packages
-  assert_equal "$output" "packages: Daniel: in your own terminal run $REPO_ROOT/bin/team-bootstrap --stage packages, which runs pacman -S --needed $ARCH_PACKAGES with sudo and asks for your password; then team-bootstrap again"
+  assert_equal "$output" "packages: Daniel: in your own terminal run $CODE_CHECKOUT/bin/team-bootstrap --stage packages, which runs pacman -S --needed $ARCH_PACKAGES with sudo and asks for your password; then team-bootstrap again"
   run_bin -0 team-bootstrap --stage preflight
   assert_equal "$output" "preflight: Arch Linux
 preflight: done: jq, git and Python 3.11 are installed"
   assert_equal "$(install_calls)" ""
+}
+
+@test "--home writes the team home's setting once, relative to HOME, and never over another or for a missing checkout" {
+  fresh arch
+  # Until ~/agent-team-records is cloned the check stage asks for no setting, which --home would refuse.
+  run_bin -1 team-bootstrap --stage check
+  [[ $output != *"team home: name"* ]]
+  run_bin -1 team-bootstrap --stage machine --name laptop --home agent-team-records
+  assert_equal "$output" "machine: named this machine laptop (~/.config/agent-team/machine)
+machine: ~/agent-team-records is not a directory: clone the team home there first, then team-bootstrap --home agent-team-records again"
+  [[ ! -e $HOME/.config/agent-team/home ]]
+  mkdir "$HOME/agent-team-records"
+  run_bin -1 team-bootstrap --stage check
+  assert_contains "$output" ": team home: name the team home's checkout for this machine: team-bootstrap --home agent-team-records (~/.config/agent-team/home is missing)"
+  run_bin -0 team-bootstrap --stage machine --home agent-team-records
+  assert_equal "$output" "machine: done: this machine is laptop
+machine: named the team home ~/agent-team-records (~/.config/agent-team/home)"
+  assert_equal "$(cat "$HOME/.config/agent-team/home")" agent-team-records
+  # Once written, the same checkout (however named) is done, and another is left unused.
+  run_bin -0 team-bootstrap --stage machine --home "$HOME/agent-team-records"
+  assert_equal "$(stage_lines machine | tail -n1)" "done: ~/.config/agent-team/home names ~/agent-team-records"
+  mkdir "$HOME/elsewhere"
+  run_bin -0 team-bootstrap --stage machine --home elsewhere
+  assert_equal "$(stage_lines machine | tail -n1)" "done: ~/.config/agent-team/home already names ~/agent-team-records; --home elsewhere is left unused"
+  assert_equal "$(cat "$HOME/.config/agent-team/home")" agent-team-records
+  # The check stage no longer lists it.
+  run_bin -1 team-bootstrap --stage check
+  [[ $output != *"team home: name"* ]]
+}
+
+@test "the setting --home writes is the team home for the rest of the run when TEAM_HOME is unset" {
+  fresh arch
+  tools_at arch
+  echo laptop >"$HOME/.config/agent-team/machine"
+  mv "$TEAM_HOME" "$HOME/agent-team-records"
+  unset TEAM_HOME
+  run -1 "$CODE_CHECKOUT/bin/team-bootstrap" --home agent-team-records
+  assert_contains "$output" "machine: named the team home ~/agent-team-records (~/.config/agent-team/home)"
+  assert_contains "$output" "check: doctor: "
+  # The stages after it read the doctor on that team home: its projects are cloned.
+  assert_equal "$(cat "$STUB_CALLS/git-clone.log")" "clone -q https://github.com/chanjdaniel/Conventioner.git $CONVENTIONER
+clone -q https://github.com/owner/site.git $SITE"
+  assert_contains "$output" "check: doctor: "
+  [[ $output != *" team home: "* && $output != *" records: "* && $output != *"FAIL checkout "* ]]
 }
 
 @test "on a Mac without Homebrew's GNU tools the run starts again under them once the packages stage has them" {
@@ -502,14 +552,14 @@ preflight: done: jq, git and Python 3.11 are installed"
 
 @test "usage errors and --help" {
   run_bin -2 team-bootstrap --bogus
-  assert_equal "$output" "team-bootstrap: usage: team-bootstrap [--name <name>] [--stage <stage>] [--dry-run]"
+  assert_equal "$output" "team-bootstrap: usage: team-bootstrap [--name <name>] [--home <path>] [--stage <stage>] [--dry-run]"
   run_bin -2 team-bootstrap --name
   run_bin -2 team-bootstrap --name Home_PC
   assert_equal "$output" "team-bootstrap: --name Home_PC is not a lower-case kebab-case name like laptop or home-pc"
   run_bin -2 team-bootstrap --stage nope
   assert_equal "$output" "team-bootstrap: no stage nope; the stages are preflight machine packages tools projects config heartbeat check"
   run_bin -0 team-bootstrap --help
-  assert_contains "$output" "Usage: team-bootstrap [--name <name>] [--stage <stage>] [--dry-run]"
+  assert_contains "$output" "Usage: team-bootstrap [--name <name>] [--home <path>] [--stage <stage>] [--dry-run]"
   # An OS the team does not run on is refused before anything.
   printf '%s\n' 'PRETTY_NAME="Ubuntu 24.04.3 LTS"' 'ID=ubuntu' >"$TEAM_OS_RELEASE"
   run_bin -1 team-bootstrap

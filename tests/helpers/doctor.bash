@@ -1,13 +1,15 @@
 # A machine as team-doctor sees it, for the tests of the doctor and of what acts on its lines
-# (team-bootstrap): load it after helpers/common, and call doctor_machine after sandbox. Every
-# tool in machine/tools.lock is then a version stub on PATH ($TOOL_STUBS) that answers its
+# (team-bootstrap): load it after helpers/common, and call doctor_machine after sandbox. run_bin
+# then runs a copy of bin/ in a code checkout of its own ($CODE_CHECKOUT), whose git config the
+# git hooks line reads, never this checkout's. Every
+# tool in bin/lib/tools.lock is then a version stub on PATH ($TOOL_STUBS) that answers its
 # version_cmd as the real tool does and hands every other call to the real command (or the
 # sandbox's logging stub), so the doctor's own git, jq and date keep working while a tool reads as
 # missing or old. A stubbed uname picks the OS: Linux with an Arch os-release file, or Darwin with
 # a fake Homebrew prefix. The stubs' own scripts may source this file too, for mark_installed.
 # shellcheck shell=bash
 
-LOCK=$REPO_ROOT/machine/tools.lock
+LOCK=$REPO_ROOT/bin/lib/tools.lock
 
 # What each tool prints for its version_cmd, %s being the version, as the real tool does.
 declare -gA FORMAT=(
@@ -43,13 +45,20 @@ declare -gA FORMAT=(
 # Set up the doctor's machine (team-doctor.bats' every test starts here): home-pc holds the lease
 # with its heartbeat enabled, every tool answers nothing yet (tools_at gives them versions), the
 # team's Claude config and plugins are installed, every secret is in place, and two projects are
-# registered and cloned as the bootstrap clones them.
+# registered and cloned as the bootstrap clones them, and ~/.config/agent-team/home names the
+# team home.
 doctor_machine() {
   hold_lease home-pc >/dev/null
   fake_service_managers
-  # The dev guard is on, as Daniel turns it on.
   # shellcheck disable=SC2153 # sandbox sets TEAM_HOME
-  git -C "$TEAM_HOME" config core.hooksPath bin/hooks/git
+  echo "$TEAM_HOME" >"$HOME/.config/agent-team/home"
+  # The code checkout, with the dev guard on, as Daniel turns it on.
+  export CODE_CHECKOUT
+  CODE_CHECKOUT=$(realpath "$BATS_TEST_TMPDIR")/code
+  mkdir -p "$CODE_CHECKOUT"
+  cp -R "$REPO_ROOT/bin" "$CODE_CHECKOUT/bin"
+  git init -q "$CODE_CHECKOUT"
+  git -C "$CODE_CHECKOUT" config core.hooksPath bin/hooks/git
 
   # The OS: Linux, from an Arch os-release file, until a test says Darwin.
   cp "$REPO_ROOT/tests/helpers/stub" "$BATS_TEST_TMPDIR/stubs/uname"
@@ -107,9 +116,9 @@ case $* in
 esac
 EOF
   clock_offset 0
-  # Every secret of the team home's manifest in place with its mode, holding a dummy value; the
-  # 1Password app installed.
-  cp "$REPO_ROOT/machine/secrets.json" "$TEAM_HOME/machine/secrets.json"
+  # The team home's secrets manifest and its description (fixtures shaped like the real ones),
+  # every secret in place with its mode, holding a dummy value; the 1Password app installed.
+  cp "$BATS_TEST_DIRNAME/fixtures/secrets.json" "$BATS_TEST_DIRNAME/fixtures/secrets.md" "$TEAM_HOME/machine/"
   local target
   while IFS= read -r target; do
     mkdir -p "$(dirname "$HOME/$target")"
@@ -244,7 +253,7 @@ on_macos() {
 
 # The ids of the manifest's enabled secrets, in order.
 secret_ids() {
-  jq -r '.secrets[] | select(.enabled != false) | .id' "$REPO_ROOT/machine/secrets.json"
+  jq -r '.secrets[] | select(.enabled != false) | .id' "$BATS_TEST_DIRNAME/fixtures/secrets.json"
 }
 
 # The line of check <name> in the output.

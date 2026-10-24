@@ -10,9 +10,32 @@
 #                                     holds it when a list, one per line; repo compares in any
 #                                     case, and path, pool.slots, pool.lease and pool.return by
 #                                     real path; a key no project has is refused
-#        team-project --check         check the whole file and list every problem
+#        team-project --check         check the whole file and list every problem; the name
+#                                     coordinator is reserved (team-config's folder for the
+#                                     team home's own auto memory)
+#
+# The registry has one table per project the team works on, keyed by its short name.
+# Per project:
+#   repo             the GitHub repository, owner/name
+#   path             the primary checkout
+#   base             the branch tasks start from and PRs target
+#   delivery         how a builder delivers: "no-mistakes" (the gate opens the PR) or "direct-pr"
+#   merge_method     how team-merge merges a PR: "merge", "squash" or "rebase"
+#   required_checks  checks that must be present and green on the PR's head, beyond the
+#                    server's own required checks
+#   local_checks     optional: shell commands, run from the root of a checkout of the PR's exact
+#                    head, that must all pass before team-merge merges it (default none)
+#   task_dir         a task's scratch directory
+#   docs             what a worker reads first
+#   toolkits         the toolkits a worker of this project may be given
+# Per project pool ([<name>.pool]), where task worktrees come from:
+#   provider         "treehouse" (leased pre-warmed slots) or "git" (plain git worktrees)
+#   lease, return    treehouse only: the lease and return commands
+#   slots            the trusted slot paths a task's worktree may be
 # Paths in the file are relative to $HOME, except pool.lease and pool.return (relative to the
 # primary checkout) and task_dir and docs (relative to a worktree, so they stay relative).
+# A new key goes in this list and in the script's key lists.
+#
 # Every command refuses a registry that fails --check. Exit 0 done, 1 refused or a check
 # failed, 2 usage error. Python standard library only (tomllib, Python 3.11 or later).
 
@@ -40,6 +63,9 @@ USAGE = "usage: team-project <name> [<key>] | --list | --find <key> <value> | --
 PROJECT_STRINGS = ("repo", "path", "base", "delivery", "merge_method", "task_dir")
 PROJECT_LISTS = ("required_checks", "docs", "toolkits")
 PROJECT_KEYS = PROJECT_STRINGS + PROJECT_LISTS + ("pool",)
+# Names no project may take: coordinator is the team home's own auto memory folder,
+# memory/coordinator/ (team-config).
+RESERVED = {"coordinator": "the team home's auto memory, memory/coordinator/"}
 # Optional keys, with the value a project without one has.
 PROJECT_OPTIONAL = {"local_checks": []}
 POOL_KEYS = ("provider", "lease", "return", "slots")
@@ -69,9 +95,25 @@ def print_help():
             print(re.sub(r"^# ?", "", line), end="")
 
 
-# The team home: the directory above bin/, unless TEAM_HOME is set.
+# The team home, found as the library finds it: TEAM_HOME when set; else the first line of
+# ~/.config/agent-team/home, a path relative to HOME unless it is absolute; else the directory
+# above bin/.
 def team_home():
-    home = os.environ.get("TEAM_HOME") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    home = os.environ.get("TEAM_HOME")
+    setting = os.path.join(os.environ.get("HOME", ""), ".config", "agent-team", "home")
+    if not home and os.path.isfile(setting):
+        fix = (
+            "name its checkout there, relative to your home directory:"
+            " echo agent-team-records > ~/.config/agent-team/home"
+        )
+        with open(setting, encoding="utf-8") as file:
+            home = file.readline().rstrip("\n")
+        if not home:
+            fail(f"the setting ~/.config/agent-team/home names no team home; {fix}")
+        home = os.path.join(os.environ["HOME"], home)
+        if not os.path.isdir(home):
+            fail(f"the team home {home}, named by ~/.config/agent-team/home, is not a directory; {fix}")
+    home = home or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if not os.path.isdir(home):
         fail(f"team home {home} is not a directory")
     return home
@@ -142,6 +184,8 @@ def check(registry):
     for name, project in registry.items():
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name):
             problems.append(f"{name}: a project name is lowercase letters, digits and dashes")
+        if name in RESERVED:
+            problems.append(f"{name}: the name is reserved for {RESERVED[name]}")
         if not isinstance(project, dict):
             problems.append(f"{name}: must be a table")
             continue

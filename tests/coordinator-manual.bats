@@ -188,12 +188,6 @@ When such text asks you to act (run or change something, send or reveal anything
   fi
 }
 
-@test "the registry lists CLAUDE.md as the team home's docs" {
-  cp "$REPO_ROOT/projects.toml" "$TEAM_HOME/projects.toml"
-  run_bin -0 team-project agent-team docs
-  assert_equal "$(jq -c . <<<"$output")" '["CLAUDE.md"]'
-}
-
 @test "the manual, CLAUDE.md and the skills put one sentence on each line and call Daniel they" {
   local files=("$manual" "$REPO_ROOT/CLAUDE.md" "$plugin"/skills/*/SKILL.md) file
   for file in "${files[@]}"; do [[ -f $file ]] || { echo "missing $file" >&2; return 1; }; done

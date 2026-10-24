@@ -170,7 +170,7 @@ phase_of() {
 }
 
 @test "T4's real history gives the right phase at each point" {
-  cp "$REPO_ROOT/projects.toml" "$TEAM_HOME/projects.toml"
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
   github_down
   local lines=(1 3 50 51 54 57 59 60 61)
   local phases=(planning building in-review awaiting-merge in-review held in-review merged closed)
@@ -367,8 +367,8 @@ EOF
 }
 
 @test "a legacy PR's repo comes from its URL, and its project's required checks from the registry" {
-  # The real registry, with required checks for the team home (it has none under CI policy B).
-  sed 's/^required_checks = \[\]$/required_checks = ["shellcheck", "test"]/' "$REPO_ROOT/projects.toml" >"$TEAM_HOME/projects.toml"
+  # A registry shaped like the team home's, with required checks for agent-team (it has none under CI policy B).
+  sed 's/^required_checks = \[\]$/required_checks = ["shellcheck", "test"]/' "$BATS_TEST_DIRNAME/fixtures/projects.toml" >"$TEAM_HOME/projects.toml"
   fixture_ledger T5 22
   stub_github '{"number": 4, "state": "MERGED", "baseRefName": "dev", "headRefOid": "3a66af1c99"}' \
     '[{"name": "shellcheck", "bucket": "pass", "state": "SUCCESS"}]' '[]'

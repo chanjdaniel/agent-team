@@ -84,8 +84,9 @@ every_tool_fails() {
   assert_equal "$(grep -v '^PASS ' <<<"$output")" ""
   local expected
   expected=$(printf '%s\n' os; lock_tools arch | cut -f1 | sed 's/^/tool /'
-    printf '%s\n' docker chrome machine 'git hooks' 'claude login' 'github login' config plugins memory discord 'own settings' 1password
+    printf '%s\n' docker chrome machine 'team home' 'git hooks' 'claude login' 'github login' config plugins memory discord 'own settings' 1password
     secret_ids | sed 's/^/secret /'
+    echo records
     project_checks
     printf '%s\n' clock lease heartbeat offline)
   assert_equal "$(checks)" "$expected"
@@ -93,7 +94,9 @@ every_tool_fails() {
   assert_equal "$(line_of 'tool claude')" "PASS tool claude: 2.1.308"
   assert_equal "$(line_of 'tool jq')" "PASS tool jq: 1.7.1 (minimum 1.7.1)"
   assert_equal "$(line_of machine)" "PASS machine: home-pc"
+  assert_equal "$(line_of 'team home')" "PASS team home: $TEAM_HOME, named by TEAM_HOME: a checkout of its own on dev, with an origin"
   assert_equal "$(line_of 'claude login')" "PASS claude login: signed in with a claude.ai account"
+  assert_equal "$(line_of records)" "PASS records: the ledger meets its contract (0 lines), the registry passes (2 projects) and machine/secrets.md describes every enabled secret"
   assert_contains "$(line_of lease)" "PASS lease: held here, epoch 1"
   assert_equal "$(line_of heartbeat)" "PASS heartbeat: enabled, and this machine holds the lease"
 }
@@ -105,8 +108,9 @@ every_tool_fails() {
   assert_equal "$(grep -v '^PASS ' <<<"$output")" ""
   local expected
   expected=$(printf '%s\n' os homebrew; lock_tools macos | cut -f1 | sed 's/^/tool /'
-    printf '%s\n' docker chrome machine 'git hooks' 'claude login' 'github login' config plugins memory discord 'own settings' 1password
+    printf '%s\n' docker chrome machine 'team home' 'git hooks' 'claude login' 'github login' config plugins memory discord 'own settings' 1password
     secret_ids | sed 's/^/secret /'
+    echo records
     project_checks
     printf '%s\n' clock lease heartbeat offline)
   assert_equal "$(checks)" "$expected"
@@ -147,7 +151,7 @@ every_tool_fails() {
   tools_at arch
   answer "treehouse --version"
   run_bin -1 team-doctor
-  assert_equal "$(line_of 'tool treehouse')" "FAIL tool treehouse: not installed; fix: machine/tools.lock records no linux-arm64 archive of treehouse v3.1.5; see https://github.com/kunchenguid/treehouse/releases/tag/v3.1.5"
+  assert_equal "$(line_of 'tool treehouse')" "FAIL tool treehouse: not installed; fix: bin/lib/tools.lock records no linux-arm64 archive of treehouse v3.1.5; see https://github.com/kunchenguid/treehouse/releases/tag/v3.1.5"
 }
 
 @test "from = fork pins the fork's build instead of the release, a one-line change in tools.lock" {
@@ -224,25 +228,108 @@ every_tool_fails() {
   assert_equal "$(line_of machine)" "FAIL machine: ~/.config/agent-team/machine names 'Home_PC', not a lower-case kebab-case name like home-pc; fix: echo <name> > ~/.config/agent-team/machine"
 }
 
-@test "the git hooks line fails unless the team home's own core.hooksPath is bin/hooks/git, with Daniel's command" {
+@test "the git hooks line fails unless the code checkout's own core.hooksPath is bin/hooks/git, with Daniel's command" {
   tools_at arch
   run_bin -0 team-doctor
   assert_equal "$(line_of 'git hooks')" "PASS git hooks: core.hooksPath is bin/hooks/git"
-  local fix="fix: Daniel runs git -C $TEAM_HOME config core.hooksPath bin/hooks/git"
-  git -C "$TEAM_HOME" config core.hooksPath .git/hooks
+  local fix="fix: Daniel runs git -C $CODE_CHECKOUT config core.hooksPath bin/hooks/git"
+  git -C "$CODE_CHECKOUT" config core.hooksPath .git/hooks
   run_bin -1 team-doctor
   assert_equal "$(line_of 'git hooks')" "FAIL git hooks: core.hooksPath is .git/hooks, not bin/hooks/git; $fix"
-  # Set only globally, it does not count: the guard is the team home's.
-  git -C "$TEAM_HOME" config --unset core.hooksPath
+  # Set only globally, it does not count: the guard is the code checkout's.
+  git -C "$CODE_CHECKOUT" config --unset core.hooksPath
   git config --global core.hooksPath bin/hooks/git
   run_bin -1 team-doctor
   assert_equal "$(line_of 'git hooks')" "FAIL git hooks: core.hooksPath is unset, so git runs none of bin/hooks/git; $fix"
-  # Under HOME, the command names the team home from ~.
   git config --global --unset core.hooksPath
-  mv "$TEAM_HOME" "$HOME/agent-team"
-  TEAM_HOME=$HOME/agent-team run_bin -1 team-doctor
+  # Nor in the team home: the code checkout is the one the line reads.
+  git -C "$TEAM_HOME" config core.hooksPath bin/hooks/git
+  run_bin -1 team-doctor
+  assert_equal "$(line_of 'git hooks')" "FAIL git hooks: core.hooksPath is unset, so git runs none of bin/hooks/git; $fix"
+  # Under HOME, the command names the code checkout from ~.
+  mv "$CODE_CHECKOUT" "$HOME/agent-team"
+  CODE_CHECKOUT=$HOME/agent-team run_bin -1 team-doctor
   assert_equal "$(line_of 'git hooks')" \
     "FAIL git hooks: core.hooksPath is unset, so git runs none of bin/hooks/git; fix: Daniel runs git -C ~/agent-team config core.hooksPath bin/hooks/git"
+}
+
+@test "the team home line names the team home and what named it: TEAM_HOME or ~/.config/agent-team/home" {
+  tools_at arch
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'team home')" "PASS team home: $TEAM_HOME, named by TEAM_HOME: a checkout of its own on dev, with an origin"
+  # The setting, relative to HOME: the doctor finds the team home as every script does.
+  mv "$TEAM_HOME" "$HOME/agent-team-records"
+  echo agent-team-records >"$HOME/.config/agent-team/home"
+  unset TEAM_HOME
+  run "$CODE_CHECKOUT/bin/team-doctor"
+  assert_equal "$(line_of 'team home')" \
+    "PASS team home: ~/agent-team-records, named by ~/.config/agent-team/home: a checkout of its own on dev, with an origin"
+  # TEAM_HOME wins over the setting.
+  echo elsewhere >"$HOME/.config/agent-team/home"
+  TEAM_HOME=$HOME/agent-team-records run "$CODE_CHECKOUT/bin/team-doctor"
+  assert_equal "$(line_of 'team home')" \
+    "PASS team home: ~/agent-team-records, named by TEAM_HOME: a checkout of its own on dev, with an origin"
+}
+
+@test "with neither TEAM_HOME nor the setting, the team home line warns that the team home is the code checkout" {
+  tools_at arch
+  rm "$HOME/.config/agent-team/home"
+  git -C "$CODE_CHECKOUT" remote add origin https://github.com/chanjdaniel/agent-team.git
+  unset TEAM_HOME
+  run -1 "$CODE_CHECKOUT/bin/team-doctor"
+  # With no ~/agent-team-records the fix names no setting, which would name a missing directory.
+  assert_equal "$(line_of 'team home')" \
+    "WARN team home: $CODE_CHECKOUT, the code checkout, since neither TEAM_HOME nor ~/.config/agent-team/home names one; fix: nothing until the team home has a repository of its own; then clone it to ~/agent-team-records and run team-bootstrap --home agent-team-records"
+  mkdir "$HOME/agent-team-records"
+  run -1 "$CODE_CHECKOUT/bin/team-doctor"
+  assert_equal "$(line_of 'team home')" \
+    "WARN team home: $CODE_CHECKOUT, the code checkout, since neither TEAM_HOME nor ~/.config/agent-team/home names one; fix: name the team home's checkout, relative to your home directory: echo agent-team-records > ~/.config/agent-team/home"
+  rmdir "$HOME/agent-team-records"
+  # It is still checked: without an origin it fails.
+  git -C "$CODE_CHECKOUT" remote remove origin
+  run -1 "$CODE_CHECKOUT/bin/team-doctor"
+  assert_equal "$(line_of 'team home')" \
+    "FAIL team home: $CODE_CHECKOUT, the code checkout, has no remote origin; fix: git -C $CODE_CHECKOUT remote add origin <the team home's repository URL>"
+}
+
+@test "a team home that is missing, no checkout of its own, without an origin or on a detached HEAD fails the team home line" {
+  tools_at arch
+  local home=$TEAM_HOME named="named by TEAM_HOME" tmp
+  tmp=$(realpath "$BATS_TEST_TMPDIR")
+  # Missing, named by the variable or by the setting (which no other script gets past).
+  TEAM_HOME=$tmp/gone run_bin -1 team-doctor
+  assert_equal "$(line_of 'team home')" \
+    "FAIL team home: $tmp/gone, $named, is not a directory; fix: clone the team home to $tmp/gone, or set TEAM_HOME to its checkout"
+  echo agent-team-records >"$HOME/.config/agent-team/home"
+  run -1 env -u TEAM_HOME "$CODE_CHECKOUT/bin/team-doctor"
+  assert_equal "$(line_of 'team home')" \
+    "FAIL team home: ~/agent-team-records, named by ~/.config/agent-team/home, is not a directory; fix: clone the team home to ~/agent-team-records, or name the team home's checkout, relative to your home directory: echo agent-team-records > ~/.config/agent-team/home"
+  : >"$HOME/.config/agent-team/home"
+  run -1 env -u TEAM_HOME "$CODE_CHECKOUT/bin/team-doctor"
+  assert_equal "$(line_of 'team home')" \
+    "FAIL team home: the setting ~/.config/agent-team/home names no team home; fix: name the team home's checkout, relative to your home directory: echo agent-team-records > ~/.config/agent-team/home"
+  # A plain directory, a subdirectory of a checkout, and a worktree of another checkout.
+  mkdir -p "$tmp/plain" "$home/tasks"
+  TEAM_HOME=$tmp/plain run_bin -1 team-doctor
+  assert_equal "$(line_of 'team home')" \
+    "FAIL team home: $tmp/plain, $named, is not a git checkout of its own; fix: move it aside, then clone the team home to $tmp/plain"
+  TEAM_HOME=$home/tasks run_bin -1 team-doctor
+  assert_equal "$(line_of 'team home')" \
+    "FAIL team home: $home/tasks, $named, is not a git checkout of its own; fix: move it aside, then clone the team home to $home/tasks"
+  git -C "$home" worktree add -q "$tmp/wt"
+  TEAM_HOME=$tmp/wt run_bin -1 team-doctor
+  assert_equal "$(line_of 'team home')" \
+    "FAIL team home: $tmp/wt, $named, is a worktree of $home, not a checkout of its own; fix: move it aside, then clone the team home to $tmp/wt"
+  # No origin, then a detached HEAD.
+  git -C "$home" remote rename origin elsewhere
+  run_bin -1 team-doctor
+  assert_equal "$(line_of 'team home')" \
+    "FAIL team home: $home, $named, has no remote origin; fix: git -C $home remote add origin <the team home's repository URL>"
+  git -C "$home" remote rename elsewhere origin
+  git -C "$home" checkout -q --detach
+  run_bin -1 team-doctor
+  assert_equal "$(line_of 'team home')" \
+    "FAIL team home: $home, $named, is on a detached HEAD, so its records would be committed on no branch; fix: git -C $home switch dev"
 }
 
 @test "Claude Code signed out, or signed in without a claude.ai account, fails the claude login line" {
@@ -449,6 +536,45 @@ FAIL secret conventioner-back-end-env: not a file; fix: move aside what is at it
   assert_equal "$(line_of secrets)" "FAIL secrets: no machine/secrets.json in $TEAM_HOME; fix: fix what team-secrets names, then run team-doctor again"
 }
 
+# The records line's fix, after the problems it names.
+RECORDS_FIX="fix what it names in the team home (team-log --check and team-project --check list every problem), then run team-doctor again"
+
+@test "the records line fails on a ledger that breaks its contract, naming its first problem and the count" {
+  tools_at arch
+  printf '%s\n' '{"ts": "2026-10-24T01:00:00Z", "task": "T1", "event": "launch", "role": "builder", "session": "a1", "worktree": "/w"}' \
+    'not json' >>"$TEAM_HOME/ledger.jsonl"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of records)" "FAIL records: $TEAM_HOME/ledger.jsonl:1: launch needs toolkits (2 of 2 lines break the ledger contract); fix: $RECORDS_FIX"
+  # Nothing else fails.
+  assert_equal "$(grep -v '^PASS ' <<<"$output" | grep -v '^FAIL records: ' || true)" ""
+  rm "$TEAM_HOME/ledger.jsonl"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of records)" "FAIL records: no ledger at $TEAM_HOME/ledger.jsonl; fix: $RECORDS_FIX"
+}
+
+@test "the records line fails on a registry team-project --check refuses, naming its first problem and the count" {
+  tools_at arch
+  sed -i 's/^base = "main"$/base = 5/' "$TEAM_HOME/projects.toml"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of records)" "FAIL records: $TEAM_HOME/projects.toml: conventioner.base: must be a string (2 problems); fix: $RECORDS_FIX"
+  # team-config diff and the projects line refuse the same registry; nothing else fails.
+  assert_equal "$(grep -v '^PASS ' <<<"$output" | grep -v '^FAIL records: ' | cut -d: -f1 | paste -sd , || true)" \
+    "WARN config,FAIL plugins,WARN memory,FAIL projects"
+}
+
+@test "the records line fails on each enabled secret machine/secrets.md has no row for; a disabled one needs none" {
+  tools_at arch
+  sed -i -e '/^| `conventioner-env` |/d' -e '/^| `discord-bot-env` |/d' -e '/^| `hub-env` |/d' "$TEAM_HOME/machine/secrets.md"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of records)" "FAIL records: machine/secrets.md has no row for discord-bot-env, conventioner-env; fix: $RECORDS_FIX"
+  assert_equal "$(grep -v '^PASS ' <<<"$output" | grep -v '^FAIL records: ' || true)" ""
+  # Every problem at once, one after another.
+  echo 'not json' >>"$TEAM_HOME/ledger.jsonl"
+  rm "$TEAM_HOME/machine/secrets.md"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of records)" "FAIL records: $TEAM_HOME/ledger.jsonl:1: not JSON (1 of 1 lines break the ledger contract); no machine/secrets.md in $TEAM_HOME; fix: $RECORDS_FIX"
+}
+
 @test "a clock more than a minute off GitHub's warns; GitHub's Date unreadable warns too" {
   tools_at arch
   # The Date header is in whole seconds, so the skew read may be a second off the one set.
@@ -554,18 +680,39 @@ EOF
   "$REPO_ROOT/bin/team-timers" disable >/dev/null
   echo '{"since": "2026-10-22T14:00:00Z", "holder": "laptop", "epoch": 2}' >"$HOME/.local/state/agent-team/fenced"
   run_bin -1 team-doctor
+  # The salvage goes to the team home's origin, never the project's, which may be public.
+  local team_origin
+  team_origin=$(git -C "$TEAM_HOME" remote get-url origin)
   assert_equal "$(grep salvage <<<"$output")" \
-"FAIL salvage T1 site: ~/site-wt/1 has 1 commit on no origin branch; fix: git -C ~/site-wt/1 push origin HEAD:refs/heads/salvage/T1-home-pc
-FAIL salvage T2 site: ~/site-wt/2 has uncommitted changes (changes to tracked files: README.md; untracked files: new.txt); fix: git -C ~/site-wt/2 add -A && git -C ~/site-wt/2 commit -m \"wip: salvage from home-pc\", then git -C ~/site-wt/2 push origin HEAD:refs/heads/salvage/T2-home-pc"
+"FAIL salvage T1 site: ~/site-wt/1 has 1 commit on no origin branch; fix: git -C ~/site-wt/1 push $team_origin HEAD:refs/heads/salvage/site/T1-home-pc
+FAIL salvage T2 site: ~/site-wt/2 has uncommitted changes (changes to tracked files: README.md; untracked files: new.txt); fix: git -C ~/site-wt/2 add -A && git -C ~/site-wt/2 commit -m \"wip: salvage from home-pc\", then git -C ~/site-wt/2 push $team_origin HEAD:refs/heads/salvage/site/T2-home-pc"
   # Right after the lease line.
   assert_equal "$(checks | grep -A2 -x lease | paste -sd ,)" "lease,salvage T1 site,salvage T2 site"
 
-  # Once both are pushed and clean, it passes.
-  git -C "$SITE" update-ref refs/remotes/origin/feat/T1-x "$(git -C "${wt[1]}" rev-parse HEAD)"
-  git -C "${wt[2]}" checkout -q -- README.md
-  rm "${wt[2]}/new.txt"
+  # Once Daniel has run both fixes, the work is on the team home's origin, none on site's, and the
+  # line passes.
+  local fix
+  while IFS= read -r fix; do eval "$fix" >/dev/null 2>&1; done < <(grep '^FAIL salvage' <<<"$output" | sed 's/.*; fix: //; s/, then / \&\& /')
+  assert_equal "$(git -C "$team_origin" rev-parse refs/heads/salvage/site/T1-home-pc)" "$(git -C "${wt[1]}" rev-parse HEAD)"
+  assert_equal "$(git -C "$team_origin" rev-parse refs/heads/salvage/site/T2-home-pc)" "$(git -C "${wt[2]}" rev-parse HEAD)"
+  assert_equal "$(git -C "$BATS_TEST_TMPDIR/origin/site.git" for-each-ref refs/heads/salvage/)" ""
   run_bin -1 team-doctor
-  assert_equal "$(grep salvage <<<"$output")" "PASS salvage: no task worktree here holds commits or changes origin lacks"
+  assert_equal "$(grep salvage <<<"$output")" "PASS salvage: no task worktree here holds work that neither origin nor a salvage branch keeps"
+
+  # A change after the salvage needs salvaging again.
+  echo two >"${wt[1]}/two.txt"
+  echo more >"${wt[2]}/new.txt"
+  run_bin -1 team-doctor
+  assert_equal "$(grep salvage <<<"$output" | cut -d: -f1)" "FAIL salvage T1 site
+FAIL salvage T2 site"
+
+  # A commit pushed to origin's branch, and clean, passes too.
+  git -C "${wt[1]}" add two.txt
+  git -C "${wt[1]}" commit -q -m "feat: two"
+  git -C "${wt[2]}" checkout -q -- new.txt
+  git -C "$SITE" update-ref refs/remotes/origin/feat/T1-x "$(git -C "${wt[1]}" rev-parse HEAD)"
+  run_bin -1 team-doctor
+  assert_equal "$(grep salvage <<<"$output")" "PASS salvage: no task worktree here holds work that neither origin nor a salvage branch keeps"
 }
 
 @test "the offline line warns with the outage's start and age while the heartbeat holds the team" {
@@ -766,7 +913,8 @@ WARN changes site: changes to tracked files: README.md; untracked files: notes.t
   tools_at arch
   rm "$TEAM_HOME/projects.toml"
   run_bin -1 team-doctor
-  assert_equal "$(grep -v '^PASS ' <<<"$output" | grep -v '^WARN memory' || true)" "FAIL projects: no registry at $TEAM_HOME/projects.toml; fix: fix what team-project names (team-project --check), then run team-doctor again"
+  assert_equal "$(grep -v '^PASS ' <<<"$output" | grep -v -e '^WARN memory' -e '^FAIL records' || true)" "FAIL projects: no registry at $TEAM_HOME/projects.toml; fix: fix what team-project names (team-project --check), then run team-doctor again"
+  assert_contains "$(line_of records)" "FAIL records: no registry at $TEAM_HOME/projects.toml;"
   echo '[broken]' >"$TEAM_HOME/projects.toml"
   run_bin -1 team-doctor
   assert_contains "$(line_of projects)" "FAIL projects: $TEAM_HOME/projects.toml: broken: missing required key 'repo'"

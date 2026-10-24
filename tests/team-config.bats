@@ -23,6 +23,11 @@ setup() {
     'plugin discord@claude-plugins-official' 'plugin mongodb-atlas@claude-plugins-official' >"$shared/plugins.txt"
   git -C "$TEAM_HOME" add -A
   git -C "$TEAM_HOME" commit -q -m "chore: the shared config"
+  # The team home's own auto memory is set up (tests/team-config-memory.bats covers it).
+  mkdir -p "$TEAM_HOME/.claude"
+  jq -n --arg dir "$TEAM_HOME/memory/coordinator" '{autoMemoryDirectory: $dir}' \
+    >"$TEAM_HOME/.claude/settings.local.json"
+  echo /.claude/settings.local.json >>"$TEAM_HOME/.git/info/exclude"
 
   # This machine has it all installed, the lock and the plugins included.
   mkdir -p "$HOME/.claude/skills" "$HOME/.agents"
