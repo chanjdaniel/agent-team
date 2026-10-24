@@ -7,7 +7,7 @@ The coordinator refines it again whenever a project's migration teaches somethin
 ## What it is for
 
 A project's durable knowledge - what its words mean, what it promises, the rules it keeps, why its code is shaped as it is, how to run it - lives in the repo, as linked Markdown files that an agent, a human on GitHub, and Obsidian all read the same way.
-Plans live with the team (`~/agent-team/projects/<project>/`).
+Plans live with the team, in the team home (`~/agent-team-records/projects/<project>/`).
 Working notes live in a transient, ignored `.scratch/` and die with the task.
 
 Three tests sort anything written down:

@@ -24,7 +24,7 @@ The rules for what you never touch (secrets, `op`, the lease) are in `sops/machi
 
 ## Stage 1: git, gh and the two checkouts
 
-This stage is the one Daniel's sentence describes, so it may be done before you read this file: get `gh`, sign Daniel in, clone the code and the team home, name the team home, read this file.
+This stage is the one Daniel's sentence describes, so it may be done before you read this file: get `gh`, sign Daniel in, clone the code and the team home, write `agent-team-records` to `~/.config/agent-team/home`, read this file.
 The code (`chanjdaniel/agent-team`) is public, but the team home (`chanjdaniel/agent-team-records`) is private, so its clone needs the GitHub login first.
 Skip each step whose check already passes.
 

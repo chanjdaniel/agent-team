@@ -57,7 +57,7 @@ The vendored bats-core in `tests/vendor/bats-core/` keeps its own license.
 
 To set up a machine as a host, open `claude` in any folder on a machine with only Claude Code installed and send:
 
-> Set up this machine as a host for my agent team. The code is github.com/chanjdaniel/agent-team, which is public, and the team home is github.com/chanjdaniel/agent-team-records, which is private: install gh, sign me in to GitHub with it, clone the code to ~/agent-team and the team home to ~/agent-team-records, name the team home in ~/.config/agent-team/home, then follow ~/agent-team/SETUP.md.
+> Set up this machine as a host for my agent team. The code is github.com/chanjdaniel/agent-team, which is public, and the team home is github.com/chanjdaniel/agent-team-records, which is private: install gh, sign me in to GitHub with it, clone the code to ~/agent-team and the team home to ~/agent-team-records, write agent-team-records to ~/.config/agent-team/home, then follow ~/agent-team/SETUP.md.
 
 From there `SETUP.md` drives the setup and asks for each step that is yours.
 Say "set up as host" again in a later session to pick up where it stopped.
