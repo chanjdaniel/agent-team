@@ -36,7 +36,7 @@ The team's own work on it goes through a task and a PR to `dev`, like any projec
   Its `pre-commit` (and `pre-merge-commit`) refuses a commit on `dev` that touches anything else, naming each path, and every commit on `main`.
   Its `pre-push` catches what those never see (a cherry-pick, a revert, `git am`, a fast-forward merge): a push to `dev` may only fast-forward it with commits that touch records only, and a push to `main` may only fast-forward it to a commit already on `origin/dev`.
 - GitHub runs no check on `dev` (CI policy B: the repo is private, and its Actions minutes are few), so what reaches `dev` without a local push is checked at each merge: `team-merge` runs `bin/team-records-check` over `dev` from the last merge it logged to the new one, and reports a commit that is neither records only nor a PR's merge.
-- Every session is denied skipping the hooks (`--no-verify`, `git commit -n`) and touching `core.hooksPath`, so the setup line above is Daniel's to run.
+- Every session is denied skipping the hooks (`--no-verify`, `git commit -n`) and setting, unsetting or overriding `core.hooksPath` (reading it stays allowed), so the setup line above is Daniel's to run.
   Those deny rules are a speed bump, never the guarantee: git accepts too many spellings for a deny list to cover, so the hooks and `team-merge`'s check are what hold the rule.
 
 ## Tests and shellcheck

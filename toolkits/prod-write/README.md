@@ -29,7 +29,7 @@ The write user's connection string lives only in 1Password, at `op://agent-team/
   `team-worker` replaces `@TEAM_HOME@` with its checkout, since Claude Code does not substitute `${CLAUDE_PLUGIN_ROOT}` under `--mcp-config`.
 - The launcher reads the reference with `op read` (its own 1Password prompt on the PC), signs `op` out, and starts the pinned MongoDB MCP server (`servers/`, installed by `servers/install`) in the same process, so the connection string is never in a starting environment.
   The shared body is `servers/mongodb-mcp.mjs`.
-- Only an ops launch starts it: every other session's settings deny a shell command naming the launcher or `servers/mongodb-mcp.mjs`, or a `claude` given a production toolkit by `--plugin-dir` or `--mcp-config`, and a worker is denied `team-worker`'s ops role and the ops load check.
+- Only an ops launch starts it: every other session's settings deny a shell command that runs the launcher or the MongoDB MCP server (with `node`, `npx` or `npm exec`, or by its path), while reading them stays allowed, or a `claude` given a production toolkit by `--plugin-dir` or `--mcp-config`, and a worker is denied `team-worker`'s ops role and the ops load check.
   These are speed bumps (`tests/repo.bats`): Daniel's rule of approving a 1Password prompt only right after an announced launch is what holds.
 - The server writes, with server-side JavaScript, telemetry and disk logs off, and its own confirmation list empty: it never asks the client to confirm a call.
 - The Atlas user it connects as, `conventioner-ops-write`, holds the custom role `conventionerOpsWrite` (document writes and index changes on `conventioner`), so the database refuses dropping or renaming a collection and dropping the database.

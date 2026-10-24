@@ -130,12 +130,15 @@ assert_denies() {
 }
 
 @test "the git hooks' deny rule: git config of core.hooksPath, set or unset" {
-  assert_denies 'Bash(git *config*core.hooksPath*)' 'git config core.hooksPath /dev/null' \
-    'git config --unset core.hooksPath' 'git -C /home/me/agent-team config core.hooksPath x'
+  assert_denies 'Bash(git *config* core.hooksPath *)' 'git config core.hooksPath /dev/null' \
+    'git -C /home/me/agent-team config core.hooksPath x' 'git config set --global core.hooksPath x'
+  assert_denies 'Bash(git *config*unset* core.hooksPath*)' 'git config --unset core.hooksPath' \
+    'git config --unset-all core.hooksPath' 'git config unset --local core.hooksPath'
 }
 
 @test "the git hooks' deny rule: git config of core.hookspath, the same key in git's lower case" {
-  assert_denies 'Bash(git *config*core.hookspath*)' 'git config core.hookspath x'
+  assert_denies 'Bash(git *config* core.hookspath *)' 'git config core.hookspath x'
+  assert_denies 'Bash(git *config*unset* core.hookspath*)' 'git config --unset core.hookspath'
 }
 
 @test "the git hooks' deny rule: core.hooksPath overridden for one command" {
@@ -155,28 +158,72 @@ assert_denies() {
 }
 
 @test "a ref written through gh api, a branch delete included, is denied to every worker" {
-  local command
-  jq -e '.permissions.deny | index("Bash(gh api*git/refs*)")' "$REPO_ROOT/settings/worker.json" >/dev/null
-  for command in \
-    'gh api repos/me/shop/git/refs/heads/dev -X DELETE' \
-    'gh api -X PATCH repos/me/shop/git/refs/heads/dev -f sha=a1b2c3d -F force=true' \
-    'gh api repos/me/shop/git/refs -f ref=refs/heads/x -f sha=a1b2c3d'; do
-    denied settings/worker.json "$command" || { echo "not denied: $command" >&2; return 1; }
+  local command rule
+  # gh api writes only with a method or a field: each flag, after the ref path or before it.
+  for rule in 'Bash(gh api*git/refs* -X*)' 'Bash(gh api* -X*git/refs*)' 'Bash(gh api*git/refs* --method*)' \
+    'Bash(gh api* --method*git/refs*)' 'Bash(gh api*git/refs* -f *)' 'Bash(gh api* -f *git/refs*)' \
+    'Bash(gh api*git/refs* -F *)' 'Bash(gh api* -F *git/refs*)' 'Bash(gh api*git/refs* --field*)' \
+    'Bash(gh api* --field*git/refs*)' 'Bash(gh api*git/refs* --raw-field*)' 'Bash(gh api* --raw-field*git/refs*)' \
+    'Bash(gh api*git/refs* --input*)' 'Bash(gh api* --input*git/refs*)'; do
+    jq -e --arg r "$rule" '.permissions.deny | index($r)' "$REPO_ROOT/settings/worker.json" >/dev/null ||
+      { echo "settings/worker.json lacks the deny rule $rule" >&2; return 1; }
   done
+  while IFS= read -r command; do
+    denied settings/worker.json "$command" || { echo "not denied: $command" >&2; return 1; }
+  done <<'COMMANDS'
+gh api repos/me/shop/git/refs/heads/dev -X DELETE
+gh api -X PATCH repos/me/shop/git/refs/heads/dev -f sha=a1b2c3d -F force=true
+gh api repos/me/shop/git/refs -f ref=refs/heads/x -f sha=a1b2c3d
+gh api --method DELETE repos/me/shop/git/refs/heads/dev
+gh api repos/me/shop/git/refs/heads/dev --method PATCH
+gh api -F force=true repos/me/shop/git/refs/heads/dev
+gh api --field sha=a1b2c3d repos/me/shop/git/refs/heads/dev
+gh api repos/me/shop/git/refs --raw-field ref=refs/heads/x --raw-field sha=a1b2c3d
+gh api --input ref.json repos/me/shop/git/refs
+COMMANDS
 }
 
 # The production servers' launcher runs op read itself, so a shell that starts it raises the same
 # 1Password prompt as an ops launch: every session is denied starting it, directly or through a
 # claude session given a production toolkit.
 @test "starting a production server from a shell is denied to every session" {
-  assert_denies 'Bash(*start-server.mjs*)' 'node /home/me/agent-team/toolkits/prod-write/scripts/start-server.mjs' \
-    'cd toolkits/prod-read/scripts && node start-server.mjs'
-  assert_denies 'Bash(*mongodb-mcp*)' 'node -e "import(\"/home/me/agent-team/servers/mongodb-mcp.mjs\")"' \
+  assert_denies 'Bash(*node *start-server.mjs*)' 'node /home/me/agent-team/toolkits/prod-write/scripts/start-server.mjs' \
+    'cd toolkits/prod-read/scripts && node start-server.mjs' 'node --env-file=x toolkits/prod-read/scripts/start-server.mjs'
+  assert_denies 'Bash(./*start-server.mjs*)' './start-server.mjs' './toolkits/prod-read/scripts/start-server.mjs'
+  assert_denies 'Bash(/*start-server.mjs*)' '/home/me/agent-team/toolkits/prod-write/scripts/start-server.mjs'
+  assert_denies 'Bash(toolkits/*start-server.mjs*)' 'toolkits/prod-read/scripts/start-server.mjs'
+  assert_denies 'Bash(*node *mongodb-mcp*)' 'node -e "import(\"/home/me/agent-team/servers/mongodb-mcp.mjs\")"' \
     'node servers/mongodb-mcp.mjs prod-read'
+  assert_denies 'Bash(./*mongodb-mcp*)' './mongodb-mcp.mjs prod-read'
+  assert_denies 'Bash(/*mongodb-mcp*)' '/home/me/agent-team/servers/mongodb-mcp.mjs prod-read'
+  assert_denies 'Bash(servers/*mongodb-mcp*)' 'servers/mongodb-mcp.mjs prod-read' \
+    'servers/node_modules/.bin/mongodb-mcp-server --readOnly'
+  assert_denies 'Bash(*npx *mongodb-mcp*)' 'npx -y mongodb-mcp-server --readOnly'
+  assert_denies 'Bash(*npm exec *mongodb-mcp*)' 'npm exec -- mongodb-mcp-server --readOnly'
   assert_denies 'Bash(*--plugin-dir*prod-*)' 'claude -p hi --plugin-dir /home/me/agent-team/toolkits/prod-read' \
     'claude --bg --plugin-dir=toolkits/prod-write'
   assert_denies 'Bash(*--mcp-config*prod-*)' 'claude -p hi --mcp-config toolkits/prod-read/.mcp.json' \
     'claude --strict-mcp-config --mcp-config /home/me/agent-team/tasks/T5/mcp.prod-write.json'
+}
+
+# Conventioner's email migration rewrites every account's address: a worker is denied running it
+# through Python, the stack's compose wrapper or uv, while reading and searching it stay allowed.
+@test "running the email migration script is denied to every worker" {
+  local command rule
+  for rule in 'Bash(*python* *migrate_user_emails*)' 'Bash(*th-compose* *migrate_user_emails*)' \
+    'Bash(*uv run* *migrate_user_emails*)'; do
+    jq -e --arg r "$rule" '.permissions.deny | index($r)' "$REPO_ROOT/settings/worker.json" >/dev/null ||
+      { echo "settings/worker.json lacks the deny rule $rule" >&2; return 1; }
+  done
+  while IFS= read -r command; do
+    denied settings/worker.json "$command" || { echo "not denied: $command" >&2; return 1; }
+  done <<'COMMANDS'
+python back-end/migrations/migrate_user_emails.py --apply
+cd back-end && python3 -m migrations.migrate_user_emails
+scripts/th-compose.sh exec api python migrations/migrate_user_emails.py
+scripts/th-compose.sh run --rm api migrate_user_emails
+uv run back-end/migrations/migrate_user_emails.py
+COMMANDS
 }
 
 # Only the coordinator launches an ops session, on Daniel's request: a worker is denied team-worker's
@@ -233,6 +280,28 @@ gh pr view https://github.com/me/shop/pull/5 --json headRefOid
 gh pr checks https://github.com/me/shop/pull/5 --watch
 gh api repos/me/shop/pulls/5/comments
 COMMANDS
+  done
+}
+
+# A Bash deny rule matches the command's whole text, so a rule written as a name refuses every read
+# of the thing it names. Each command below was refused once (T36's retro, 2026-10-23 and 24).
+@test "the deny rules refuse actions, not the names of things" {
+  local file command
+  for file in "${SETTINGS[@]}"; do
+    while IFS= read -r command; do
+      if denied "$file" "$command"; then echo "$file denies: $command" >&2; return 1; fi
+    done <<'COMMANDS'
+git config --get core.hooksPath
+git config --show-origin --get-all core.hooksPath
+gh api repos/me/shop/git/refs/tags/v1.0.0
+gh api repos/me/shop/git/refs/tags/v1.0.0 --jq .object.sha
+sed -n 1,60p toolkits/prod-read/scripts/start-server.mjs
+cat servers/mongodb-mcp.mjs
+grep -n migrate_user_emails docs/RELEASING.md
+git log -S migrate_user_emails
+COMMANDS
+    command=$'cat > tickets/11-x.md <<\'EOF\'\nNarrow the deny rule on migrate_user_emails.py to its execution forms.\nEOF'
+    if denied "$file" "$command"; then echo "$file denies: $command" >&2; return 1; fi
   done
 }
 
