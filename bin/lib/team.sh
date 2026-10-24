@@ -9,7 +9,7 @@
 # task_events, known_task_events, open_task_events, task_status, task_worktrees, local_path,
 # archive_task_dir, machine_name, os_release, team_os, fence_reason, lease_gate, worktree_changes,
 # snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin, home_repo, non_records,
-# commit_non_records, records_list, origin_git, origin_reason, commit_records, fast_forward, render_template,
+# only_records, commit_non_records, records_list, origin_git, origin_reason, commit_records, fast_forward, render_template,
 # registered_pr, attribution_lines, strip_attribution, live_sessions, discord_token, discord_api,
 # github, pr_part and task_state_json, and sets COORDINATOR_CHANNEL.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
@@ -304,16 +304,25 @@ records_list() {
 
 # The paths of the NUL-separated list on stdin that are not records (bin/lib/records), one per
 # line, in order: non_records
-non_records() {
-  local path record
+non_records() { pick_records 0; }
+
+# The paths of the NUL-separated list on stdin that are records, one per line, in order:
+# only_records
+only_records() { pick_records 1; }
+
+# The paths of the NUL-separated list on stdin that are records (1) or are not (0), one per line,
+# in order: pick_records <1|0>
+pick_records() {
+  local path record is
   local -a records
   mapfile -t records < <(grep -v -e '^#' -e '^$' "$TEAM_LIB/records")
   while IFS= read -r -d '' path; do
+    is=0
     for record in "${records[@]}"; do
       # shellcheck disable=SC2053 # the record is a glob
-      [[ $path != $record ]] || continue 2
+      if [[ $path == $record ]]; then is=1 && break; fi
     done
-    printf '%s\n' "$path"
+    [[ $is != "$1" ]] || printf '%s\n' "$path"
   done
 }
 
