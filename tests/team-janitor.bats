@@ -185,10 +185,12 @@ wait_for() {
   assert_equal "$(section Alerts)" "- waits: stacks waited 65 minutes for room in the last 24 hours, over an hour (3 waits, 0 not admitted); posted to #coordinator"
 }
 
-@test "a failed removal is an alert, the others still made, and the run exits 1" {
-  docker_fail 'compose down' "Error response from daemon: removal of container nmtest-12822-backend-1 is already in progress"
+@test "a failed removal is an alert, posted with Docker's reason as it gave it, the others still made, and the run exits 1" {
+  # A backslash in the reason reaches the report and the post unescaped.
+  docker_fail 'compose down' 'Error response from daemon: removal of container nmtest-12822-backend-1 is already in progress on \\.\pipe\docker_engine'
   run_bin -1 --separate-stderr team-janitor
-  local alert="removal: 3 removals failed: stack conventioner-4 (team, 0 B): docker compose down of conventioner-4 failed: Error response from daemon: removal of container nmtest-12822-backend-1 is already in progress"
+  local alert='removal: 3 removals failed: stack conventioner-4 (team, 0 B): docker compose down of conventioner-4 failed: Error response from daemon: removal of container nmtest-12822-backend-1 is already in progress on \\.\pipe\docker_engine'
+
   [[ $(section Alerts) == "- $alert; "*"; posted to #coordinator" ]]
   assert_equal "$(section Removed | grep -c '^- could not remove ')" 3
   assert_equal "$(section Removed | tail -n 1)" "Removed nothing; 3 removals failed; kept 14 objects that are not the team's, 4.7 GB."

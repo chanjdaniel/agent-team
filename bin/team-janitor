@@ -24,10 +24,12 @@
 #   waits    admission waits (~/.local/state/agent-team/stacks/waits.jsonl) adding up to more than
 #            an hour in the last 24 hours, each counted for its part inside them
 #   removal  a removal the reaper could not make
-# Each kind is posted to #coordinator ("Docker on home-pc: <alert>. The day's report: <path>") at
-# most once a local day, through discord_api with a 20 s timeout, remembered in
+# Each kind is posted to #coordinator ("Docker on <machine>: <kind>: <alert>. The day's report:
+# <path>") at most once a local day, through discord_api with a 20 s timeout, remembered in
 # janitor/posted-<local date>.json ({<kind>: <UTC time posted>}). A post that fails is in the
-# report and on stderr, is tried again on the next run, and changes no exit code.
+# report and on stderr, is tried again on the next run (the heartbeat's is the next day's, since
+# the day's report is written), and changes no exit code. An oom alert "not checked: ..." (docker
+# events failed) stays in the report, never posted, and the run exits 1.
 # Docker not answering is the report's one line, and the summary's, and exit 1.
 # --dry-run runs the reaper's dry run instead, writes <local date>-dry-run.md (never the day's
 # real report) with "Would remove" for "Removed", and posts nothing.
@@ -198,7 +200,7 @@ fi
 posted='{}'
 if [[ -f $POSTED ]]; then posted=$(jq -c 'if type == "object" then . else {} end' "$POSTED" 2>/dev/null || echo '{}'); fi
 : >"$WORK/alerts.md"
-while IFS=$'\t' read -r kind text; do
+while IFS= read -r -d '' kind && IFS= read -r -d '' text; do
   if [[ -n $DRY ]]; then
     outcome="not posted (a dry run)"
   elif [[ $text == "not checked: "* ]]; then
@@ -221,7 +223,7 @@ while IFS=$'\t' read -r kind text; do
     echo "${0##*/}: the post of the $kind alert to #coordinator failed: $reason" >&2
   fi
   echo "- $kind: $text; $outcome" >>"$WORK/alerts.md"
-done < <(jq -r '[.kind, .text] | @tsv' "$WORK/alerts.jsonl")
+done < <(jq -j '.kind, "\u0000", .text, "\u0000"' "$WORK/alerts.jsonl")
 [[ -s $WORK/alerts.md ]] || echo "None." >"$WORK/alerts.md"
 
 {
