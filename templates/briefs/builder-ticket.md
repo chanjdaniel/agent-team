@@ -6,7 +6,7 @@ Project: {{project}} (`{{repo}}`), base `{{base}}`.
 Worktree: `{{worktree}}`, branch `{{branch}}`.
 Task directory: `{{task_dir}}/` in the worktree (excluded from git): `spec.md`, `tickets/`, `build-notes/`.
 Your ticket: number {{ticket}} in `{{task_dir}}/tickets/`.
-Its blockers are done on this branch.
+Its blockers are done on this branch.{{ui}}
 
 ## Do
 

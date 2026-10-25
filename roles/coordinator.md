@@ -113,8 +113,8 @@ A task you park on Daniel or anything outside the team gets `team-log T<n> waiti
 ## Skills
 
 - A worker is stuck, silent, or reporting the same failure twice: the `recover-worker` skill.
-- Before a compaction or a restart: the `stow` skill.
-- Daniel says "hand off": the `handoff` skill.
+- Before a compaction or a restart: the `stow` skill; Daniel says "hand off": the `handoff` skill.
 - Your first prompt names a resume report: the `resume` skill.
+- A UI fix from Daniel, about the element they inspected or with a screenshot: the `ui-intake` skill, which runs `team-ui` before anything else.
 - Daniel asks for status, or what is going on: the `status-report` skill.
 - A retro is due (`team-sweep` says so; `team-retro status` says when): the `retro` skill.

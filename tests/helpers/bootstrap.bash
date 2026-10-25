@@ -165,6 +165,7 @@ fresh() {
   fi
   tools_at "$1" -
   rm -rf "$HOME/.claude/settings.json" "$HOME/.claude/skills" "$HOME/.no-mistakes" "$CONVENTIONER" "$SITE"
+  rm -rf "$CODE_CHECKOUT/servers/node_modules"
   echo '[]' >"$STUB_FIXTURES/plugins.json"
   echo '[]' >"$STUB_FIXTURES/marketplaces.json"
   : >"$STUB_FIXTURES/gates"
@@ -182,7 +183,7 @@ install_calls() {
   for cmd in brew pacman npm sudo; do stub_calls "$cmd" | sed "s/^/$cmd /"; done
   stub_calls curl | grep -v '"-sSI"' | sed 's/^/curl /' || true
   stub_calls claude | grep -E '^\["plugin","(marketplace","add|install|disable)"' | sed 's/^/claude /' || true
-  cat "$STUB_CALLS"/{git-clone,fork-build,no-mistakes-init,nvm}.log 2>/dev/null || true
+  cat "$STUB_CALLS"/{git-clone,fork-build,no-mistakes-init,nvm,servers-install}.log 2>/dev/null || true
 }
 
 # What a run may change, listed with each file's size and modification time: HOME (the stubs'

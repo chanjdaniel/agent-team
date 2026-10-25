@@ -30,13 +30,15 @@ every_tool_fails() {
     fi
   done < <(lock_tools "$os")
   # Nothing else fails: the doctor's own git, jq and date still work. Without op, the 1password
-  # line warns too, and without docker the docker line points at its tool line.
+  # line warns too, without docker the docker line points at its tool line, and without opencode
+  # the opencode-gate line does.
   if [[ $version == - ]]; then
     assert_contains "$(line_of 1password)" "WARN 1password: op is not installed,"
     assert_equal "$(line_of docker)" "FAIL docker: docker is not installed; fix: the tool docker line's fix"
+    assert_equal "$(line_of opencode-gate)" "FAIL opencode-gate: opencode is not installed, so the wrapper has nothing to run; fix: the tool opencode line's fix"
   fi
   assert_equal "$(grep -v '^.... tool ' <<<"$output" | grep -v '^PASS ' | grep -v '^WARN 1password: op ' |
-    grep -v '^FAIL docker: docker is not installed;' || true)" ""
+    grep -v '^FAIL docker: docker is not installed;' | grep -v '^FAIL opencode-gate: opencode is not installed,' || true)" ""
 }
 
 @test "tools.lock lists every tool of the spec once per OS, each with a version_cmd, a pattern, a pin or a min, and its sources" {
@@ -58,7 +60,7 @@ every_tool_fails() {
         and ((.pin // .min) | test("^[0-9]+(\\.[0-9]+)+"))
         and (.source | type == "object" and length > 0 and (keys - ["arch", "macos"] == []))
       end)' "$LOCK"
-  local os both=(claude node codegraph gh-axi chrome-devtools-axi lavish-axi quota-axi tasks-axi bun
+  local os both=(claude node codegraph gh-axi chrome-devtools-axi chrome-devtools-mcp lavish-axi opencode bun
     treehouse no-mistakes op git jq tmux gh rsync docker docker-compose python bash go)
   local mac_only=(coreutils findutils gnu-sed grep flock) arch_only=(make unzip)
   for os in arch macos; do
@@ -68,7 +70,7 @@ every_tool_fails() {
   done
   # Pinned: the tools the bootstrap installs itself, op on Linux only; Claude Code only warns.
   assert_equal "$(jq -r '[.tools[] | select(.pin or .from) | .name] | join(" ")' "$LOCK")" \
-    "claude node codegraph gh-axi chrome-devtools-axi lavish-axi quota-axi tasks-axi bun treehouse no-mistakes op"
+    "claude node codegraph gh-axi chrome-devtools-axi chrome-devtools-mcp lavish-axi opencode bun treehouse no-mistakes op"
   # treehouse is a GitHub release, each archive's checksum recorded; no-mistakes is Daniel's fork,
   # built at the commit on its main that merged upstream v1.84.0, and keeps upstream's release,
   # which from = "release" would pin instead.
@@ -91,15 +93,16 @@ every_tool_fails() {
   assert_equal "$(grep -v '^PASS ' <<<"$output")" ""
   local expected
   expected=$(printf '%s\n' os; lock_tools arch | cut -f1 | sed 's/^/tool /'
-    printf '%s\n' docker chrome machine 'team home' 'git hooks' 'claude login' 'github login' config plugins memory discord 'own settings' 1password
+    printf '%s\n' docker chrome servers machine 'team home' 'git hooks' 'claude login' 'github login' config plugins memory discord 'own settings' 1password
     secret_ids | sed 's/^/secret /'
     echo opencode-gate
     echo records
+    echo captures
     project_checks
     printf '%s\n' 'stack memory' clock lease heartbeat offline)
   assert_equal "$(checks)" "$expected"
   assert_equal "$(line_of os)" "PASS os: Arch Linux"
-  assert_equal "$(line_of 'tool claude')" "PASS tool claude: 2.1.308"
+  assert_equal "$(line_of 'tool claude')" "PASS tool claude: 2.1.310"
   assert_equal "$(line_of 'tool jq')" "PASS tool jq: 1.7.1 (minimum 1.7.1)"
   assert_equal "$(line_of machine)" "PASS machine: home-pc"
   assert_equal "$(line_of 'team home')" "PASS team home: $TEAM_HOME, named by TEAM_HOME: a checkout of its own on dev, with an origin"
@@ -116,10 +119,11 @@ every_tool_fails() {
   assert_equal "$(grep -v '^PASS ' <<<"$output")" ""
   local expected
   expected=$(printf '%s\n' os homebrew; lock_tools macos | cut -f1 | sed 's/^/tool /'
-    printf '%s\n' docker chrome machine 'team home' 'git hooks' 'claude login' 'github login' config plugins memory discord 'own settings' 1password
+    printf '%s\n' docker chrome servers machine 'team home' 'git hooks' 'claude login' 'github login' config plugins memory discord 'own settings' 1password
     secret_ids | sed 's/^/secret /'
     echo opencode-gate
     echo records
+    echo captures
     project_checks
     printf '%s\n' 'stack memory' clock lease heartbeat offline)
   assert_equal "$(checks)" "$expected"
@@ -135,7 +139,7 @@ every_tool_fails() {
   every_tool_fails arch 0.1.0
   assert_equal "$(line_of 'tool git')" "FAIL tool git: 0.1.0, below the minimum 2.40.0; fix: sudo pacman -S --needed git"
   assert_equal "$(line_of 'tool bun')" "FAIL tool bun: 0.1.0, not the pinned 1.3.14; fix: curl -fsSL https://bun.sh/install | bash -s bun-v1.3.14"
-  assert_equal "$(line_of 'tool claude')" "WARN tool claude: 0.1.0, not the pinned 2.1.308; fix: curl -fsSL https://claude.ai/install.sh | bash -s 2.1.308"
+  assert_equal "$(line_of 'tool claude')" "WARN tool claude: 0.1.0, not the pinned 2.1.310; fix: curl -fsSL https://claude.ai/install.sh | bash -s 2.1.310"
 }
 
 @test "a GitHub release's fix downloads this machine's archive and checks its recorded SHA-256 before unpacking it" {

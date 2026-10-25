@@ -1,0 +1,22 @@
+{
+  "mcpServers": {
+    "frontend": {
+      "command": "node",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/../../servers/node_modules/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js",
+        "--browser-url=http://127.0.0.1:9222",
+        "--allowedUrlPattern",
+        "http://localhost:*/*",
+        "http://127.0.0.1:*/*",
+        "devtools://devtools/*",
+        "--no-usage-statistics",
+        "--no-performance-crux",
+        "--no-page-id-routing"
+      ],
+      "env": {
+        "CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS": "1",
+        "CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS": "1"
+      }
+    }
+  }
+}

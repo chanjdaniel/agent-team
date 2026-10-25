@@ -8,7 +8,7 @@ Task directory: `{{task_dir}}/` in the worktree (excluded from git).
 ## Read first
 
 - The high-level plan: `{{plan}}`.
-{{read}}
+{{read}}{{ui}}
 
 ## Deliver, in `{{task_dir}}/`
 
