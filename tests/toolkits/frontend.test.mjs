@@ -72,11 +72,13 @@ describe("ui-capture", () => {
   });
 
   // A Chrome started under a HOME with no login keychain (a test's) and without these raises
-  // macOS's "A keychain cannot be found to store Chrome Safe Storage" on Daniel's screen.
-  test("the stand-in Chrome runs with the mock keychain and the basic password store", () => {
+  // macOS's "A keychain cannot be found to store Chrome Safe Storage" on Daniel's screen; off the
+  // record, no page's first request waits for the profile's cookie database.
+  test("the stand-in Chrome runs with the mock keychain, the basic password store and off the record", () => {
     const args = execFileSync("ps", ["-o", "args=", "-p", String(chrome.pid)], { encoding: "utf8" });
     assert.match(args, / --use-mock-keychain /);
     assert.match(args, / --password-store=basic /);
+    assert.match(args, / --incognito /);
   });
 
   test("refuses a malformed command line and answers --help with its header", async () => {

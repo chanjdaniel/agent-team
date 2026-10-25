@@ -11,7 +11,10 @@
 //
 // Chrome is the machine's (TEAM_CHROME, else Google Chrome's app on macOS, else google-chrome or
 // chromium on PATH), started with a throwaway profile, the mock keychain and the basic password
-// store (no keychain prompt under the test's HOME), and no first-run, sync or metrics. inspect
+// store (no keychain prompt under the test's HOME), and no first-run, sync or metrics; off the
+// record, so its cookies live in memory: on a fresh profile's disk, a page's first request waits
+// for the cookie database to open, which on a busy Mac can take minutes. A Chrome too old for
+// open_devtools fails startChrome at once. inspect
 // drives the DevTools window through the pinned chrome-devtools-mcp with --experimentalDevtools
 // and --devtoolsComments (which brings open_devtools),
 // setting the Elements panel's selection exactly as a click there does; ui-capture never runs
@@ -106,6 +109,7 @@ async function launchChrome(urls) {
       "--metrics-recording-only",
       "--use-mock-keychain",
       "--password-store=basic",
+      "--incognito",
       // A laptop-sized window, so DevTools docked beside the page leaves it a usable width.
       "--window-size=1600,1000",
       urls[0],
@@ -133,6 +137,19 @@ async function launchChrome(urls) {
     throw new Error(`Chrome did not open its debugging port:\n${log}`);
   }
   const browserUrl = `http://127.0.0.1:${port}`;
+  // open_devtools, which inspect drives, sends Target.openDevTools and Target.getDevToolsTarget:
+  // on a Chrome without them (138 has neither) each inspect would only time out.
+  const json = (path) => fetch(`${browserUrl}${path}`, { signal: AbortSignal.timeout(10_000) }).then((r) => r.json());
+  const target = (await json("/json/protocol")).domains.find((d) => d.domain === "Target");
+  const missing = ["openDevTools", "getDevToolsTarget"].filter((name) => !target?.commands.some((c) => c.name === name));
+  if (missing.length) {
+    const { Browser } = await json("/json/version");
+    await close();
+    throw new Error(
+      `${Browser} has no ${missing.map((name) => `Target.${name}`).join(" or ")}, which open_devtools needs: ` +
+        "update Chrome, or set TEAM_CHROME to a current one",
+    );
+  }
   // Headless Chrome opens one URL from its command line; the others are new tabs.
   for (const url of urls.slice(1)) {
     await fetch(`${browserUrl}/json/new?${encodeURI(url)}`, { method: "PUT", signal: AbortSignal.timeout(10_000) });
