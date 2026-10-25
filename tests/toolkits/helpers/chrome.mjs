@@ -55,8 +55,43 @@ export async function serveFixture(pages) {
 }
 
 // Headless Chrome on an ephemeral debugging port, a tab for each of `urls`; resolves once each
-// tab shows its URL.
+// tab has loaded (shows its URL and title). On a busy machine a tab can wait a long time for its
+// first request, and a tab that has not loaded never answers the DevTools protocol, so a tab not
+// loaded within 20 s is closed and opened again, twice, and then the whole Chrome is started
+// again, twice at most.
 export async function startChrome(urls) {
+  for (let launch = 1; ; launch++) {
+    const chrome = await launchChrome(urls);
+    let targets = [];
+    for (let round = 1; round <= 3; round++) {
+      const deadline = Date.now() + 20_000;
+      while (Date.now() < deadline) {
+        targets = await fetch(`${chrome.browserUrl}/json/list`, { signal: AbortSignal.timeout(5000) })
+          .then((r) => r.json())
+          .catch(() => []);
+        if (urls.every((url) => loaded(targets, url))) return chrome;
+        await sleep(100);
+      }
+      for (const url of urls.filter((url) => !loaded(targets, url))) {
+        for (const t of targets.filter((t) => t.type === "page" && t.url === url)) {
+          await fetch(`${chrome.browserUrl}/json/close/${t.id}`, { signal: AbortSignal.timeout(5000) }).catch(() => {});
+        }
+        await fetch(`${chrome.browserUrl}/json/new?${encodeURI(url)}`, { method: "PUT", signal: AbortSignal.timeout(10_000) }).catch(() => {});
+      }
+    }
+    await chrome.close();
+    if (launch === 3) {
+      const tabs = targets.filter((t) => t.type === "page").map((t) => `${t.url} "${t.title}"`);
+      throw new Error(`Chrome did not load ${urls.join(", ")} in three launches; its tabs: ${tabs.join(", ") || "none"}`);
+    }
+  }
+}
+
+// Whether the browser's targets show a page at `url` with its own title, loaded.
+const loaded = (targets, url) => targets.some((t) => t.type === "page" && t.url === url && t.title && t.title !== url);
+
+// One headless Chrome, its tabs opened but not waited for.
+async function launchChrome(urls) {
   const profile = tempDir("chrome-profile");
   const child = spawn(
     chromePath(),
@@ -80,8 +115,13 @@ export async function startChrome(urls) {
   // Chrome's own logging, kept for the error should it never open its port.
   let log = "";
   child.stderr.on("data", (chunk) => (log = (log + chunk).slice(-4000)));
+  const exited = new Promise((resolve) => child.once("exit", resolve));
+  const close = async () => {
+    child.kill("SIGTERM");
+    await Promise.race([exited, sleep(5000).then(() => child.kill("SIGKILL"))]);
+  };
   let port;
-  for (let i = 0; i < 200 && !port; i++) {
+  for (let i = 0; i < 600 && !port; i++) {
     try {
       port = readFileSync(join(profile, "DevToolsActivePort"), "utf8").split("\n")[0];
     } catch {
@@ -89,27 +129,15 @@ export async function startChrome(urls) {
     }
   }
   if (!port) {
-    child.kill("SIGKILL");
+    await close();
     throw new Error(`Chrome did not open its debugging port:\n${log}`);
   }
   const browserUrl = `http://127.0.0.1:${port}`;
   // Headless Chrome opens one URL from its command line; the others are new tabs.
-  for (const url of urls.slice(1)) await fetch(`${browserUrl}/json/new?${encodeURI(url)}`, { method: "PUT" });
-  // Every page has loaded once the targets list shows each URL with its title.
-  for (let i = 0; i < 200; i++) {
-    const targets = await fetch(`${browserUrl}/json/list`).then((r) => r.json()).catch(() => []);
-    if (urls.every((url) => targets.some((t) => t.type === "page" && t.url === url && t.title && t.title !== url))) break;
-    await sleep(50);
+  for (const url of urls.slice(1)) {
+    await fetch(`${browserUrl}/json/new?${encodeURI(url)}`, { method: "PUT", signal: AbortSignal.timeout(10_000) });
   }
-  const exited = new Promise((resolve) => child.once("exit", resolve));
-  return {
-    browserUrl,
-    pid: child.pid,
-    close: async () => {
-      child.kill("SIGTERM");
-      await Promise.race([exited, sleep(5000).then(() => child.kill("SIGKILL"))]);
-    },
-  };
+  return { browserUrl, pid: child.pid, close };
 }
 
 // An MCP client of the pinned chrome-devtools-mcp attached to the browser; `call` returns text.
@@ -126,7 +154,8 @@ export async function devtoolsClient(browserUrl, flags = []) {
     }),
   );
   const call = async (name, args = {}) => {
-    const result = await client.callTool({ name, arguments: args });
+    // Generous: the helper stands in for Daniel's hand on a test machine that may be very busy.
+    const result = await client.callTool({ name, arguments: args }, undefined, { timeout: 90_000 });
     const text = result.content.filter((c) => c.type === "text").map((c) => c.text).join("\n");
     if (result.isError) throw new Error(`${name}: ${text}`);
     return text;
@@ -154,49 +183,55 @@ export async function serverListing(connect, url) {
 // the Elements panel.
 export async function inspect(browserUrl, pageUrl, selector) {
   const flags = ["--experimentalDevtools", "--devtoolsComments"];
-  let devtools = await devtoolsClient(browserUrl, flags);
+  const deadline = Date.now() + 180_000;
+  const inTime = () => {
+    if (Date.now() > deadline) throw new Error(`inspect ${selector} on ${pageUrl}: not done in 180 s`);
+  };
+  let devtools;
+  const reconnect = async () => {
+    await devtools?.close().catch(() => {});
+    devtools = await devtoolsClient(browserUrl, flags);
+  };
+  await reconnect();
   try {
     const pageIds = (list, test) =>
       [...list.matchAll(/^(\d+): (.*?)( \[selected\])?$/gm)]
         .filter(([, , rest]) => test(rest.endsWith(")") ? rest.slice(rest.lastIndexOf(" (") + 2, -1) : rest))
         .map(([, id]) => Number(id));
     // The server lists a tab once it has attached to it: slowly on a busy machine, or never on
-    // that connection when the attach failed, so ask again, and twice on a new connection.
+    // that connection when the attach failed, so ask again, and after 30 asks on a new connection.
     const listed = async (test) => {
-      for (let connection = 1; connection <= 3; connection++) {
-        if (connection > 1) {
-          await devtools.close();
-          devtools = await devtoolsClient(browserUrl, flags);
-        }
+      for (;;) {
         for (let attempt = 0; attempt < 30; attempt++) {
+          inTime();
           const ids = pageIds(await devtools.call("list_pages"), test);
           if (ids.length) return ids;
           await sleep(100);
         }
+        await reconnect();
       }
-      throw new Error(`inspect: the server never listed the page (${pageUrl}) or its DevTools window`);
     };
     const [app] = await listed((url) => url === pageUrl);
     await devtools.call("select_page", { pageId: app });
     await devtools.call("open_devtools");
     if (selector === null) return;
-    // Each DevTools window, until the one inspecting that page, which the server may list only
-    // after the others.
-    let result;
-    for (let attempt = 0; attempt < 100 && !result?.includes('"selected"'); attempt++) {
-      if (attempt) await sleep(100);
+    // Each DevTools window, until the one inspecting that page. While every window listed
+    // inspects another page or has not loaded its Elements panel yet, ask again, and every tenth
+    // pass on a new connection, which attaches to a window the last one missed.
+    for (let pass = 1; ; pass++) {
       for (const window of await listed((url) => url.startsWith("devtools://"))) {
+        inTime();
         await devtools.call("select_page", { pageId: window });
-        result = await devtools.call("evaluate_script", {
+        const result = await devtools.call("evaluate_script", {
           function: `async () => {
             const SDK = await import('/bundled/core/sdk/sdk.js');
             const UI = await import('/bundled/ui/legacy/legacy.js');
             let current = null;
-            for (let i = 0; i < 100 && !current; i++) {
+            for (let i = 0; i < 20 && !current; i++) {
               current = UI.Context.Context.instance().flavor(SDK.DOMModel.DOMNode);
               if (!current) await new Promise((r) => setTimeout(r, 100));
             }
-            if (!current) return 'no DOM node in the Elements panel';
+            if (!current) return 'not loaded';
             if (current.domModel().target().inspectedURL() !== ${JSON.stringify(pageUrl)}) return 'another page';
             const dom = current.domModel();
             const doc = await dom.requestDocument();
@@ -206,11 +241,13 @@ export async function inspect(browserUrl, pageUrl, selector) {
             return 'selected';
           }`,
         });
-        if (!result.includes('"another page"')) break;
+        if (result.includes('"selected"')) return;
+        if (!result.includes('"another page"') && !result.includes('"not loaded"')) throw new Error(`inspect ${selector}: ${result}`);
       }
+      if (pass % 10 === 0) await reconnect();
+      else await sleep(200);
     }
-    if (!result?.includes('"selected"')) throw new Error(`inspect ${selector}: ${result}`);
   } finally {
-    await devtools.close();
+    await devtools?.close();
   }
 }

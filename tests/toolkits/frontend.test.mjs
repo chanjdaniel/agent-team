@@ -157,6 +157,29 @@ describe("ui-capture", () => {
   });
 });
 
+// A page that never answers the DevTools protocol (here a script that never ends; on a busy
+// machine, a starved or hung renderer) stops the capture in one line, not a stack trace, after
+// the 30 s each call is given.
+describe("ui-capture on a page that does not answer", () => {
+  let site, chrome;
+  before(async () => {
+    site = await serveFixture({ "/": "<!doctype html><title>Busy</title><script>setTimeout(() => { for (;;) {} }, 200)</script>" });
+    chrome = await startChrome([site.url]);
+  });
+  after(async () => {
+    await chrome?.close();
+    await site?.close();
+  });
+
+  test("says the page does not answer, and what to do", async () => {
+    const out = tempDir("out");
+    const result = await script("ui-capture", ["--browser-url", chrome.browserUrl, out]);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /^ui-capture: [a-z_]+ got no answer in 30 s: a page of the Agent Chrome does not answer \(a busy machine can cause it, or a hung page\); reload it, or wait, and try again\n$/);
+    assert.ok(!existsSync(join(out, "ui-pick.md")));
+  });
+});
+
 // The toolkit's server exactly as .mcp.json declares it, with ${CLAUDE_PLUGIN_ROOT} resolved as
 // Claude Code does for --plugin-dir and the Agent Chrome's port moved to the test's.
 async function declaredServer(browserUrl) {
@@ -173,7 +196,7 @@ async function declaredServer(browserUrl) {
     }),
   );
   const call = async (name, args = {}) => {
-    const result = await client.callTool({ name, arguments: args });
+    const result = await client.callTool({ name, arguments: args }, undefined, { timeout: 90_000 });
     return result.content.filter((c) => c.type === "text").map((c) => c.text).join("\n");
   };
   return { client, call, close: () => client.close() };

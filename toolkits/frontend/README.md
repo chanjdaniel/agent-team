@@ -27,7 +27,7 @@ At the laptop, in Conventioner's checkout:
 
 - `scripts/agent-chrome [--port <port>] [<url>]`: starts the Agent Chrome at the dev server (default `http://localhost:5173`), or says one already answers on the port.
 - `scripts/ui-capture [--browser-url <url>] <out-dir>`: finds the element selected in DevTools' Elements panel on a localhost page of the Agent Chrome and writes `<out-dir>/ui-pick.md` (page, route, snapshot line, the `vite-plugin-vue-inspector` source chain such as `src/views/LoginView.vue:369:11`, the component chain, its HTML and every matched CSS rule) with `element.png` and `page.png`.
-  It fails in one line, exit 1, when no Agent Chrome answers, no localhost page has DevTools open, nothing is selected, or the page carries no Vue source data (a production build).
+  It fails in one line, exit 1, when no Agent Chrome answers, no localhost page has DevTools open, nothing is selected, the page carries no Vue source data (a production build), the server never attached to a tab Chrome has open, or a page does not answer within 30 s; the last two name a busy machine as a cause.
   Each script's header is its `--help`.
 - The MCP server `frontend` (`.mcp.json`): the same pinned server with the same flags, so the agent can look again after a capture (`take_snapshot`, `take_screenshot`, `get_css_styles` and the rest of Chrome DevTools MCP's tools).
   Its path uses `${CLAUDE_PLUGIN_ROOT}`, which Claude Code fills in for `--plugin-dir` and not under `team-worker`'s `--mcp-config`: the toolkit is not for `team-worker --toolkit`, since workers read captures and never attach to Daniel's window.
