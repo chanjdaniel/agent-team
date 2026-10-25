@@ -242,6 +242,9 @@ live_busy() {
   mkdir -p "$HOME/.config/agent-team"
   echo '{"memory_floor_gib": 0, "disk_floor_gb": 0, "wait_minutes": 0, "stack_cap": 1000}' >"$HOME/.config/agent-team/stack.json"
   run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
+  # One request, which httpd -v logs, so the saved log has a line.
+  run_bin -0 team-stack env --worktree "$STACK_WORKTREE"
+  (eval "$output"; live_get "$TH_WEB_PORT" / >/dev/null)
   # A gate run's stack past its expires, and a stack made by hand with no labels, both through the wrapper.
   (cd "$STACK_WORKTREE" && COMPOSE_PROJECT_NAME=$gate TH_PORTS=auto TH_DIR=$STACK_WORKTREE TEAM_KIND=gate \
     TEAM_WORKTREE=$STACK_WORKTREE TEAM_EXPIRES=2026-01-01T00:00:00Z scripts/compose.sh up -d --wait) >/dev/null 2>&1
@@ -274,7 +277,7 @@ live_busy() {
   assert_contains "$output" "removed stack $team (team, "
   assert_contains "$output" "; its logs in $STACK_WORKTREE/.scratch/task/stack-logs"
   assert_contains "$output" "removed stack $gate (gate, "
-  [[ -s $STACK_WORKTREE/.scratch/task/stack-logs/T22-$team-web.log ]]
+  grep -q 'response:' "$STACK_WORKTREE/.scratch/task/stack-logs/T22-$team-web.log"
   for project in "$team" "$gate"; do
     assert_equal "$(docker ps --all --quiet --filter "label=com.docker.compose.project=$project")" ""
     assert_equal "$(docker volume ls --quiet --filter "label=com.docker.compose.project=$project")" ""
