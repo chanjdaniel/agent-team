@@ -106,7 +106,7 @@ Done when `check` lists no `Daniel <n>:` line.
    For each treehouse project it leases one slot through the project's lease command, checks the slot is clean after the pre-warm exactly as `team-open` would, and returns it, so a pre-warm that dirties a slot (as the laptop's did on 2026-10-24) fails here, before any handoff, with the project and the changed paths named.
    A cold slot's pre-warm can take minutes; run it in the background and wait for it to end.
    A `WARN lease <project>: no free slot` is fine on a busy machine: every slot is leased, and the line names the holders.
-   If it fails on "Workspace not trusted", ask Daniel to run `claude` once in `~/agent-team/.claude/load-check/wt` in their own terminal and accept the trust dialog, then run it again.
+   The planner runs in `~/agent-team/.claude/worktrees/load-check`, a worktree of the code checkout made fresh for the run and removed at its end, so the code checkout's trust covers it and it needs no trust step of its own.
 3. Give Daniel one summary, here in the conversation: the bootstrap's `summary:` line in plain words, any WARN left, and what comes next.
    On a standby: "This machine is ready as a standby; to move the team here, tell me to resume here: I start `team-resume --wait`, and once it says this machine is ready, you say 'hand off' to the coordinator on <holder>."
 

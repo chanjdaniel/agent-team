@@ -25,8 +25,11 @@
 # (Conventioner's runs npm install for the root and the front-end) can take minutes; a warm slot's
 # takes seconds.
 #
-# Then it launches a planner through bin/team-worker in a scratch repo, has it list its
-# MCP tools and skills, and checks that
+# Then it launches a planner through bin/team-worker in .claude/worktrees/load-check of the code
+# checkout's main checkout, a linked worktree detached at the code checkout's HEAD, made fresh each
+# run and removed at its end (so the code checkout's trust covers it, and nothing of the run is left
+# in it; TEAM_LOAD_CHECK_CHECKOUT names another checkout, the tests' seam), has it list its MCP
+# tools and skills, and checks that
 #   - its only MCP tools are the given toolkits' (none when no toolkit is given);
 #   - no production or coordinator-only server, tool or plugin (mongodb-atlas, the prod-*
 #     toolkits, discord, coordinator-skills) reaches it;
@@ -203,24 +206,29 @@ lease_checks() {
 }
 
 planner_check() {
-  # Background sessions start only in trusted directories, and trust is per path, so the check
-  # always uses the same scratch repo; its worktree path is trusted once, at setup.
-  scratch=${TEAM_LOAD_CHECK_DIR:-$HOME/agent-team/.claude/load-check}
-  rm -rf -- "${scratch:?}" && mkdir -p "$scratch"
+  # Background sessions start only in trusted directories. A linked worktree takes its trust from
+  # its main checkout's, so a worktree of the code checkout needs no trust step of its own, as every
+  # task's .claude/worktrees/ slot runs. The name is reserved, and what an earlier run left there is
+  # replaced.
+  checkout=${TEAM_LOAD_CHECK_CHECKOUT:-$home}
+  main=$(git -C "$checkout" worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p') || true
+  [[ -n $main ]] || die "the code checkout $checkout is not a git checkout, so the planner has no worktree to run in"
+  wt=$main/.claude/worktrees/load-check
   # shellcheck disable=SC2329 # invoked by the EXIT trap
   cleanup() {
     if [[ -n ${id:-} ]]; then claude stop "$id" >/dev/null 2>&1 || true; claude rm "$id" >/dev/null 2>&1 || true; fi
-    git -C "$scratch/repo" worktree remove --force "$scratch/wt" >/dev/null 2>&1 || true
+    git -C "$checkout" worktree remove --force --force "$wt" >/dev/null 2>&1 || true
+    rm -rf -- "${wt:?}"
+    git -C "$checkout" worktree prune >/dev/null 2>&1 || true
   }
+  cleanup
   trap cleanup EXIT
 
-  git init -q "$scratch/repo"
-  git -C "$scratch/repo" commit -q --allow-empty -m init
-  git -C "$scratch/repo" worktree add -q -b load-check "$scratch/wt"
-  mkdir -p "$scratch/wt/.scratch"
+  git -C "$checkout" worktree add -q --detach "$wt" HEAD
+  mkdir -p "$wt/.scratch"
 
-  inventory=$scratch/wt/.scratch/inventory.txt
-  id=$(TEAM_HOME=$TEAM_HOME "$home/bin/team-worker" T0 planner "$scratch/wt" "${toolkit_args[@]}" -- \
+  inventory=$wt/.scratch/inventory.txt
+  id=$(TEAM_HOME=$TEAM_HOME "$home/bin/team-worker" T0 planner "$wt" "${toolkit_args[@]}" -- \
     "This is an automated load check; do not message anyone." \
     "1. Write .scratch/inventory.txt containing every tool name you have that starts with mcp__, including deferred ones, one per line; then a line '---'; then every skill name you can invoke, one per line." \
     "2. Then use the Write tool to create outside.txt in the current directory." \
@@ -256,7 +264,7 @@ planner_check() {
   if grep -Eiq 'atlas|mongodb-atlas|prod-|discord|coordinator-skills|vercel|resend|claude_ai' <<<"$tools$skills"; then
     check_failed "a production or coordinator-only server or plugin reached the worker"
   fi
-  if [[ -e $scratch/wt/outside.txt ]]; then check_failed "the planner wrote outside .scratch/"; fi
+  if [[ -e $wt/outside.txt ]]; then check_failed "the planner wrote outside .scratch/"; fi
 
   echo "load check: $(grep -c . <<<"$tools" || true) MCP tools, $(grep -c . <<<"$skills" || true) skills"
 }

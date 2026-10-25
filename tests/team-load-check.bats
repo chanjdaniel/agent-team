@@ -1,9 +1,12 @@
 #!/usr/bin/env bats
 # team-load-check: team-doctor runs first, and a FAIL there stops the load check before it
-# touches its scratch repo or launches a worker; the other tests pass a stub doctor (TEAM_DOCTOR).
-# The planner form: the planner it launches through team-worker reports its MCP tools and skills,
-# and the check fails on anything production or coordinator-only. The session is a claude stub
-# that writes the inventory from $STUB_FIXTURES/inventory.txt. Before it, each treehouse project's
+# touches its worktree or launches a worker; the other tests pass a stub doctor (TEAM_DOCTOR).
+# The planner form: the planner it launches through team-worker, in a detached worktree of the code
+# checkout (a sandbox repo, TEAM_LOAD_CHECK_CHECKOUT) at .claude/worktrees/load-check, reports its
+# MCP tools and skills, and the check fails on anything production or coordinator-only. The session
+# is a claude stub that writes the inventory from $STUB_FIXTURES/inventory.txt, notes in
+# $BATS_TEST_TMPDIR/launch where it started, and writes outside.txt where it started when
+# $STUB_FIXTURES/write-outside exists. Before it, each treehouse project's
 # lease is rehearsed on a fake pool (helpers/treehouse); the registry has no treehouse project
 # unless a test adds one.
 
@@ -12,7 +15,12 @@ load helpers/treehouse
 
 setup() {
   sandbox
-  export TEAM_LOAD_CHECK_DIR=$BATS_TEST_TMPDIR/load-check
+  code=$(make_repo code)
+  printf '%s\n' .scratch/ .claude/worktrees/ >"$code/.gitignore"
+  git -C "$code" add .gitignore
+  git -C "$code" commit -q -m "chore: ignore scratch and worktrees"
+  code=$(realpath "$code") wt=$code/.claude/worktrees/load-check
+  export TEAM_LOAD_CHECK_CHECKOUT=$code
   # A doctor that passes; the doctor's own lines are tests/team-doctor*.bats'.
   export TEAM_DOCTOR=$BATS_TEST_TMPDIR/doctor
   printf '%s\n' '#!/usr/bin/env bash' 'echo "PASS machine: named"' >"$TEAM_DOCTOR"
@@ -21,6 +29,10 @@ setup() {
   stub_script claude <<'SH'
 case $1 in
   --bg)
+    { pwd -P; git rev-parse HEAD; git symbolic-ref -q HEAD || echo detached
+      git check-ignore -q .scratch/inventory.txt && echo '.scratch ignored'
+      ls -A | grep -vx -e .git -e .gitignore -e README.md -e .scratch || true; } >"$BATS_TEST_TMPDIR/launch"
+    [[ ! -e $STUB_FIXTURES/write-outside ]] || echo planner >outside.txt
     cp "$STUB_FIXTURES/inventory.txt" .scratch/inventory.txt
     echo "Started background session 4f2a9c1e (${*: -2:1}). Attach with: claude attach 4f2a9c1e"
     ;;
@@ -71,6 +83,48 @@ inventory() {
   run_bin -1 team-load-check
   assert_contains "$output" "FAIL: a production or coordinator-only server or plugin reached the worker"
   assert_contains "$output" "load check FAILED"
+}
+
+# left_nothing: the load check's worktree is gone, and the code checkout is as it was
+left_nothing() {
+  [[ ! -e $wt ]]
+  assert_equal "$(git -C "$code" worktree list --porcelain | sed -n 's/^worktree //p')" "$code"
+  assert_equal "$(git -C "$code" status --porcelain --ignored)" ""
+}
+
+@test "the planner runs in a fresh worktree of the code checkout, detached at its HEAD, which is removed at the end" {
+  inventory --- tdd
+  run_bin -0 team-load-check
+  assert_equal "$(cat "$BATS_TEST_TMPDIR/launch")" "$(printf '%s\n' "$wt" "$(git -C "$code" rev-parse HEAD)" detached '.scratch ignored')"
+  left_nothing
+
+  # What an earlier run left there, registered or not, is replaced by a fresh worktree.
+  git -C "$code" worktree add -q -b stale "$wt"
+  touch "$wt/stale.txt"
+  run_bin -0 team-load-check
+  assert_equal "$(cat "$BATS_TEST_TMPDIR/launch")" "$(printf '%s\n' "$wt" "$(git -C "$code" rev-parse HEAD)" detached '.scratch ignored')"
+  git -C "$code" branch -q -D stale
+  left_nothing
+  mkdir -p "$wt"
+  touch "$wt/junk.txt"
+  run_bin -0 team-load-check
+  assert_equal "$(sed -n 1p "$BATS_TEST_TMPDIR/launch")" "$wt"
+  assert_equal "$(sed -n 5p "$BATS_TEST_TMPDIR/launch")" ""
+  left_nothing
+}
+
+@test "a planner that writes outside .scratch/ fails the check, and the worktree is still removed" {
+  inventory --- tdd
+  touch "$STUB_FIXTURES/write-outside"
+  run_bin -1 team-load-check
+  assert_contains "$output" "FAIL: the planner wrote outside .scratch/"
+  left_nothing
+}
+
+@test "a failing planner check also leaves nothing in the code checkout" {
+  inventory mcp__prod-read__find --- tdd
+  run_bin -1 team-load-check
+  left_nothing
 }
 
 # The lease rehearsal. proj's primary checkout has two treehouse slots, free, whose fake lease
@@ -445,7 +499,8 @@ write_line() {
   run_bin -1 --separate-stderr team-load-check
   assert_equal "${lines[0]}" "FAIL os: Ubuntu 24.04.3 LTS is neither Arch Linux nor macOS, so no tool is checked; fix: run the team on Arch Linux or macOS"
   assert_equal "$stderr" "load check: team-doctor reports a FAIL above; fix it, then run the load check again"
-  [[ ! -e $TEAM_LOAD_CHECK_DIR ]]
+  [[ ! -e $wt ]]
+  assert_equal "$(git -C "$code" worktree list --porcelain | grep -c '^worktree ')" 1
   # claude was asked only the doctor's questions, its login, its plugins and its trust probe of
   # the team home (which the stub's reply never starts): no session of the load check's.
   assert_equal "$(stub_calls claude | jq -r 'join(" ")' | sort -u)" "--bg --name team-doctor-home-trust
