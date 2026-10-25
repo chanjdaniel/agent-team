@@ -774,7 +774,7 @@ free"
   open_task T22
   stack_settings '{"stack_cap": 1, "wait_minutes": 0}'
   mkdir -p "$HOME/.local/bin"
-  cp "$REPO_ROOT/tests/helpers/stub" "$HOME/.local/bin/team-capacity"
+  ln -f "$(shared stub "$REPO_ROOT/tests/helpers/stub")" "$HOME/.local/bin/team-capacity"
   stub_reply team-capacity ""
   run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
   assert_equal "$(stub_calls team-capacity)" '["admit","--kind","stack:shop"]'
