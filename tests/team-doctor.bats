@@ -29,13 +29,15 @@ every_tool_fails() {
     fi
   done < <(lock_tools "$os")
   # Nothing else fails: the doctor's own git, jq and date still work. Without op, the 1password
-  # line warns too, and without docker the docker line points at its tool line.
+  # line warns too, without docker the docker line points at its tool line, and without opencode
+  # the opencode-gate line does.
   if [[ $version == - ]]; then
     assert_contains "$(line_of 1password)" "WARN 1password: op is not installed,"
     assert_equal "$(line_of docker)" "FAIL docker: docker is not installed; fix: the tool docker line's fix"
+    assert_equal "$(line_of opencode-gate)" "FAIL opencode-gate: opencode is not installed, so the wrapper has nothing to run; fix: the tool opencode line's fix"
   fi
   assert_equal "$(grep -v '^.... tool ' <<<"$output" | grep -v '^PASS ' | grep -v '^WARN 1password: op ' |
-    grep -v '^FAIL docker: docker is not installed;' || true)" ""
+    grep -v '^FAIL docker: docker is not installed;' | grep -v '^FAIL opencode-gate: opencode is not installed,' || true)" ""
 }
 
 @test "tools.lock lists every tool of the spec once per OS, each with a version_cmd, a pattern, a pin or a min, and its sources" {
@@ -57,7 +59,7 @@ every_tool_fails() {
         and ((.pin // .min) | test("^[0-9]+(\\.[0-9]+)+"))
         and (.source | type == "object" and length > 0 and (keys - ["arch", "macos"] == []))
       end)' "$LOCK"
-  local os both=(claude node codegraph gh-axi chrome-devtools-axi lavish-axi quota-axi tasks-axi bun
+  local os both=(claude node codegraph gh-axi chrome-devtools-axi chrome-devtools-mcp lavish-axi opencode bun
     treehouse no-mistakes op git jq tmux gh rsync docker docker-compose python bash go)
   local mac_only=(coreutils findutils gnu-sed grep flock) arch_only=(make unzip)
   for os in arch macos; do
@@ -67,7 +69,7 @@ every_tool_fails() {
   done
   # Pinned: the tools the bootstrap installs itself, op on Linux only; Claude Code only warns.
   assert_equal "$(jq -r '[.tools[] | select(.pin or .from) | .name] | join(" ")' "$LOCK")" \
-    "claude node codegraph gh-axi chrome-devtools-axi lavish-axi quota-axi tasks-axi bun treehouse no-mistakes op"
+    "claude node codegraph gh-axi chrome-devtools-axi chrome-devtools-mcp lavish-axi opencode bun treehouse no-mistakes op"
   # treehouse is a GitHub release, each archive's checksum recorded; no-mistakes is Daniel's fork,
   # built at the commit on its main that merged upstream v1.84.0, and keeps upstream's release,
   # which from = "release" would pin instead.
@@ -90,7 +92,7 @@ every_tool_fails() {
   assert_equal "$(grep -v '^PASS ' <<<"$output")" ""
   local expected
   expected=$(printf '%s\n' os; lock_tools arch | cut -f1 | sed 's/^/tool /'
-    printf '%s\n' docker chrome machine 'team home' 'git hooks' 'claude login' 'github login' config plugins memory discord 'own settings' 1password
+    printf '%s\n' docker chrome servers machine 'team home' 'git hooks' 'claude login' 'github login' config plugins memory discord 'own settings' 1password
     secret_ids | sed 's/^/secret /'
     echo opencode-gate
     echo records
@@ -98,7 +100,7 @@ every_tool_fails() {
     printf '%s\n' clock lease heartbeat offline)
   assert_equal "$(checks)" "$expected"
   assert_equal "$(line_of os)" "PASS os: Arch Linux"
-  assert_equal "$(line_of 'tool claude')" "PASS tool claude: 2.1.308"
+  assert_equal "$(line_of 'tool claude')" "PASS tool claude: 2.1.310"
   assert_equal "$(line_of 'tool jq')" "PASS tool jq: 1.7.1 (minimum 1.7.1)"
   assert_equal "$(line_of machine)" "PASS machine: home-pc"
   assert_equal "$(line_of 'team home')" "PASS team home: $TEAM_HOME, named by TEAM_HOME: a checkout of its own on dev, with an origin"
@@ -115,7 +117,7 @@ every_tool_fails() {
   assert_equal "$(grep -v '^PASS ' <<<"$output")" ""
   local expected
   expected=$(printf '%s\n' os homebrew; lock_tools macos | cut -f1 | sed 's/^/tool /'
-    printf '%s\n' docker chrome machine 'team home' 'git hooks' 'claude login' 'github login' config plugins memory discord 'own settings' 1password
+    printf '%s\n' docker chrome servers machine 'team home' 'git hooks' 'claude login' 'github login' config plugins memory discord 'own settings' 1password
     secret_ids | sed 's/^/secret /'
     echo opencode-gate
     echo records
@@ -134,7 +136,7 @@ every_tool_fails() {
   every_tool_fails arch 0.1.0
   assert_equal "$(line_of 'tool git')" "FAIL tool git: 0.1.0, below the minimum 2.40.0; fix: sudo pacman -S --needed git"
   assert_equal "$(line_of 'tool bun')" "FAIL tool bun: 0.1.0, not the pinned 1.3.14; fix: curl -fsSL https://bun.sh/install | bash -s bun-v1.3.14"
-  assert_equal "$(line_of 'tool claude')" "WARN tool claude: 0.1.0, not the pinned 2.1.308; fix: curl -fsSL https://claude.ai/install.sh | bash -s 2.1.308"
+  assert_equal "$(line_of 'tool claude')" "WARN tool claude: 0.1.0, not the pinned 2.1.310; fix: curl -fsSL https://claude.ai/install.sh | bash -s 2.1.310"
 }
 
 @test "a GitHub release's fix downloads this machine's archive and checks its recorded SHA-256 before unpacking it" {
@@ -564,13 +566,13 @@ FAIL secret conventioner-back-end-env: not a file; fix: move aside what is at it
   assert_equal "$(line_of secrets)" "FAIL secrets: no machine/secrets.json in $TEAM_HOME; fix: fix what team-secrets names, then run team-doctor again"
 }
 
-@test "the opencode-gate line fails while the gate's opencode wrapper is missing, stale or not executable, or config.yaml does not name it" {
+@test "the opencode-gate line fails while the gate's opencode wrapper is missing, stale or not executable, opencode is missing, or config.yaml does not run the gate on it" {
   local wrapper=$HOME/.no-mistakes/bin/opencode-gate config=$HOME/.no-mistakes/config.yaml
   local install="mkdir -p ~/.no-mistakes/bin && install -m 755 $CODE_CHECKOUT/bin/lib/opencode-gate ~/.no-mistakes/bin/opencode-gate"
   local setting="agent_path_override: {opencode: $wrapper}" step="as manual-steps.md's install of the no-mistakes fork says"
   tools_at arch
   run_bin -0 team-doctor
-  assert_equal "$(line_of opencode-gate)" "PASS opencode-gate: ~/.no-mistakes/bin/opencode-gate is the code's bin/lib/opencode-gate, and config.yaml's agent_path_override names it for opencode"
+  assert_equal "$(line_of opencode-gate)" "PASS opencode-gate: ~/.no-mistakes/bin/opencode-gate is the code's bin/lib/opencode-gate, config.yaml runs the gate on opencode through it, and opencode is installed"
   # The flow form, quoted, is read too; a comment after it is not part of the path.
   printf '%s\n' 'agent: opencode' "agent_path_override: {codex: /x/codex, opencode: \"$wrapper\"} # the gate's" >"$config"
   run_bin -0 team-doctor
@@ -583,6 +585,27 @@ FAIL secret conventioner-back-end-env: not a file; fix: move aside what is at it
   printf '%s\n' 'agent: opencode' 'agent_args_override:' "  opencode: $wrapper" >"$config"
   run_bin -1 team-doctor
   assert_contains "$(line_of opencode-gate)" "FAIL opencode-gate: ~/.no-mistakes/config.yaml's agent_path_override does not name"
+  # The gate's agent must be opencode: auto, another agent or none runs the gate on whatever
+  # no-mistakes finds first, never through the wrapper.
+  local agent_fix="Daniel sets agent: opencode in ~/.no-mistakes/config.yaml, $step"
+  printf '%s\n' 'agent: auto # first found' 'agent_path_override:' "  opencode: $wrapper" >"$config"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of opencode-gate)" "FAIL opencode-gate: ~/.no-mistakes/config.yaml's agent is auto, not opencode, so the gate runs on whichever agent no-mistakes finds first and not through the wrapper; fix: $agent_fix"
+  printf '%s\n' 'agent: [claude, opencode]' 'agent_path_override:' "  opencode: $wrapper" >"$config"
+  run_bin -1 team-doctor
+  assert_contains "$(line_of opencode-gate)" "FAIL opencode-gate: ~/.no-mistakes/config.yaml's agent is [claude, opencode], not opencode,"
+  printf '%s\n' 'agent_path_override:' "  opencode: $wrapper" 'review:' '  agent: opencode' >"$config"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of opencode-gate)" "FAIL opencode-gate: ~/.no-mistakes/config.yaml names no agent, so the gate runs on whichever agent no-mistakes finds first and not through the wrapper; fix: $agent_fix"
+  printf '%s\n' "agent: 'opencode'" 'agent_path_override:' "  opencode: $wrapper" >"$config"
+  run_bin -0 team-doctor
+  assert_contains "$(line_of opencode-gate)" "PASS opencode-gate: "
+  # opencode itself missing: the wrapper has nothing to run, whatever config.yaml says.
+  answer "opencode --version"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of opencode-gate)" "FAIL opencode-gate: opencode is not installed, so the wrapper has nothing to run; fix: the tool opencode line's fix"
+  assert_equal "$(line_of 'tool opencode')" "FAIL tool opencode: not installed; fix: npm install -g opencode-ai@1.18.30"
+  tools_at arch
   rm "$config"
   run_bin -1 team-doctor
   assert_equal "$(line_of opencode-gate)" "FAIL opencode-gate: ~/.no-mistakes/config.yaml is not there; fix: Daniel runs team-secrets restore in their own terminal (the secret no-mistakes-config) and sets $setting in it, $step"
@@ -603,6 +626,20 @@ FAIL secret conventioner-back-end-env: not a file; fix: move aside what is at it
   tools_at macos
   run_bin -1 team-doctor
   assert_equal "$(line_of opencode-gate)" "FAIL opencode-gate: ~/.no-mistakes/bin/opencode-gate is not installed; fix: $install"
+}
+
+@test "the servers line fails while servers/node_modules is missing or not the install of servers/package-lock.json" {
+  local fix="$CODE_CHECKOUT/servers/install"
+  tools_at arch
+  run_bin -0 team-doctor
+  assert_equal "$(line_of servers)" "PASS servers: servers/node_modules is the install of servers/package-lock.json"
+  echo '{"lockfileVersion": 3}' >"$CODE_CHECKOUT/servers/package-lock.json"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of servers)" "FAIL servers: servers/node_modules is not the install of servers/package-lock.json, so a toolkit or chrome-devtools-axi may run another server; fix: $fix"
+  rm -r "$CODE_CHECKOUT/servers/node_modules"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of servers)" "FAIL servers: servers/node_modules is missing, so the toolkits' servers and the sessions' chrome-devtools-mcp cannot start; fix: $fix"
+  assert_equal "$(grep -v '^PASS ' <<<"$output" || true)" "$(line_of servers)"
 }
 
 # The records line's fix, after the problems it names.

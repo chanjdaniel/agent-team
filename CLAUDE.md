@@ -15,7 +15,7 @@ The team's own work on this repo goes through a task and a PR to `dev`, like any
 | `coordinator.settings.json` | The coordinator's own settings: Discord, its hooks and its denials |
 | `plugins/coordinator-skills/` | Skills loaded only into the coordinator by `bin/claude-coordinator` |
 | `toolkits/` | Plugin directories a worker loads with `team-worker --toolkit <name>`: MCP config (`.mcp.json`), skills, docs, scripts, and the skills' evals (`claude plugin eval`, on MCP mocks) |
-| `servers/` | The MCP servers the toolkits run, pinned by `package-lock.json`; `servers/install` puts them in the gitignored `servers/node_modules/` |
+| `servers/` | The MCP servers the toolkits and sessions run (the sessions' `chrome-devtools-mcp`, by `CHROME_DEVTOOLS_AXI_MCP_PATH` in their settings) and the MCP client `ui-capture` speaks with, pinned by `package-lock.json`; `servers/install` puts them in the gitignored `servers/node_modules/`, as `team-bootstrap` does while `team-doctor`'s `servers` line fails |
 | `templates/` | The task plan and the worker briefs `team-open` and `team-brief` render |
 | `README.md`, `SETUP.md` | What a stranger reads first, with the sentence Daniel types on a new machine, and the agent's entry point for "set up as host" |
 | `LICENSE` | The Apache License 2.0; vendored bats-core keeps its own |

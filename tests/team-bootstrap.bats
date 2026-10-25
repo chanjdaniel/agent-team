@@ -178,6 +178,7 @@ fresh() {
   fi
   tools_at "$1" -
   rm -rf "$HOME/.claude/settings.json" "$HOME/.claude/skills" "$HOME/.no-mistakes" "$CONVENTIONER" "$SITE"
+  rm -rf "$CODE_CHECKOUT/servers/node_modules"
   echo '[]' >"$STUB_FIXTURES/plugins.json"
   echo '[]' >"$STUB_FIXTURES/marketplaces.json"
   : >"$STUB_FIXTURES/gates"
@@ -195,7 +196,7 @@ install_calls() {
   for cmd in brew pacman npm sudo; do stub_calls "$cmd" | sed "s/^/$cmd /"; done
   stub_calls curl | grep -v '"-sSI"' | sed 's/^/curl /' || true
   stub_calls claude | grep -E '^\["plugin","(marketplace","add|install|disable)"' | sed 's/^/claude /' || true
-  cat "$STUB_CALLS"/{git-clone,fork-build,no-mistakes-init,nvm}.log 2>/dev/null || true
+  cat "$STUB_CALLS"/{git-clone,fork-build,no-mistakes-init,nvm,servers-install}.log 2>/dev/null || true
 }
 
 # What a run may change, listed with each file's size and modification time: HOME (the stubs'
@@ -253,9 +254,9 @@ named the team home $TEAM_HOME (~/.config/agent-team/home)"
   assert_equal "$(cat "$HOME/.config/agent-team/home")" "$TEAM_HOME"
   assert_equal "$(stage_lines packages)" "running: brew install 1password-cli git jq tmux gh rsync python bash go coreutils findutils gnu-sed grep flock
 running: brew install --cask docker-desktop"
-  assert_equal "$(stage_lines tools | sed -n '1,4p;11,13p')" "running: curl -fsSL https://claude.ai/install.sh | bash -s 2.1.308
+  assert_equal "$(stage_lines tools | sed -n '1,4p;11,13p')" "running: curl -fsSL https://claude.ai/install.sh | bash -s 2.1.310
 running: curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
-running: nvm install 22.19.0 && nvm alias default 22.19.0
+running: nvm install 24.22.1 && nvm alias default 24.22.1
 running: npm install -g @colbymchenry/codegraph@1.6.0
 running: f=\$(mktemp) && curl -fsSLo \"\$f\" https://github.com/kunchenguid/treehouse/releases/download/v3.1.5/treehouse-v3.1.5-darwin-arm64.tar.gz && echo \"$sha  \$f\" | shasum -a 256 -c && mkdir -p ~/.local/bin && tar -xzf \"\$f\" -C ~/.local/bin treehouse && rm -f \"\$f\"
 running: $FORK_BUILD
@@ -518,7 +519,7 @@ would write $TEAM_HOME to ~/.config/agent-team/home"
   assert_equal "$(stage_lines packages)" "would run: brew install 1password-cli git jq tmux gh rsync python bash go coreutils findutils gnu-sed grep flock
 would run: brew install --cask docker-desktop"
   assert_equal "$(stage_lines tools | sed -n '2,3p')" "would run: curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
-would run: nvm install 22.19.0 && nvm alias default 22.19.0"
+would run: nvm install 24.22.1 && nvm alias default 24.22.1"
   assert_equal "$(stage_lines projects | head -n2)" "would run: git clone -q https://github.com/chanjdaniel/Conventioner.git ~/projects/Conventioner
 would then set up conventioner's task directory exclude and its no-mistakes gate"
   assert_contains "$output" "check: Daniel 1: 1password: "

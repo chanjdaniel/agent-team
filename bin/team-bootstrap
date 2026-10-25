@@ -27,8 +27,9 @@
 #              first when missing) with Node and the global npm tools, Bun, Claude Code, the
 #              treehouse release archive for this OS and CPU, no-mistakes built from Daniel's
 #              fork at its pinned commit (with the packages stage's Go and make), the 1Password
-#              CLI; then the gate's opencode wrapper, ~/.no-mistakes/bin/opencode-gate, while
-#              the opencode-gate line asks for it (config.yaml naming it is Daniel's step).
+#              CLI, opencode; then the gate's opencode wrapper, ~/.no-mistakes/bin/opencode-gate,
+#              while the opencode-gate line asks for it (config.yaml running the gate on it is
+#              Daniel's step); then servers/install, while the servers line fails.
 #              A Claude Code newer than its pin only warns, and is left. ~/.local/bin and
 #              ~/.no-mistakes/bin, which no installer puts on PATH, get one line each in the
 #              shell's rc file (~/.zshrc or ~/.bashrc) when PATH lacks them.
@@ -46,9 +47,9 @@
 #   check      The doctor again, then Daniel's remaining steps in order, one line each with its
 #              command (the machine's name, the team home's setting once ~/agent-team-records is
 #              there, logins, Docker access, the 1Password app and team-secrets restore, the
-#              gate's config.yaml naming its opencode wrapper, trust per project root, Chrome,
-#              then the rest), the doctor's WARN and FAIL lines, and a summary: set up, or ready
-#              as a standby.
+#              gate's config.yaml running the gate on its opencode wrapper, trust per project
+#              root, Chrome, then the rest), the doctor's WARN and FAIL lines, and a summary: set
+#              up, or ready as a standby.
 # A step only Daniel can take stops the run with one line, "<stage>: Daniel: <the step>", and
 # exit 1, without trying it: the Xcode tools or Homebrew missing, the machine's name, anything
 # needing sudo (unless stdin and stdout are a terminal, where sudo asks for the password), the
@@ -309,17 +310,20 @@ stage_tools() {
       todo+=("$fix")
     fi
   done < <(lines '^tool ')
-  # The gate's opencode wrapper, once its line asks for the install and not Daniel's config edit.
+  # The gate's opencode wrapper, once its line asks for the install and not Daniel's config edit
+  # or opencode itself, which its own tool line installs.
   while IFS=$'\t' read -r check verdict reason fix; do
-    [[ $fix == Daniel* ]] || todo+=("$fix")
+    [[ $fix == Daniel* || $fix == 'the tool '* ]] || todo+=("$fix")
   done < <(lines '^opencode-gate$')
+  # The pinned MCP servers (servers/install), after the Node they install with.
+  while IFS=$'\t' read -r check verdict reason fix; do todo+=("$fix"); done < <(lines '^servers$')
   if ((${#todo[@]} + ${#commands[@]} == 0)); then
     say "done: every tool is at its pin or above its minimum"
     return
   fi
   export NVM_DIR=${NVM_DIR:-$HOME/.nvm}
   for fix in "${todo[@]}"; do
-    if [[ $fix == 'nvm '* || $fix == 'npm '* ]]; then
+    if [[ $fix == 'nvm '* || $fix == 'npm '* || $fix == */servers/install ]]; then
       [[ -s $NVM_DIR/nvm.sh ]] || ((dry && nvm_shown)) ||
         { act "curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/$NVM_VERSION/install.sh | bash" && nvm_shown=1; }
       act ". \"\$NVM_DIR/nvm.sh\" && $fix" "$fix"
