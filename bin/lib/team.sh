@@ -12,7 +12,7 @@
 # the script's help_more, if it defined one before sourcing), and provides die, usage_error, team_project, ledger_jq, ledger_append,
 # task_events, known_task_events, open_task_events, task_status, task_worktrees, local_path,
 # archive_left_out, rsync_rule, archive_task_dir, machine_name, os_release, team_os, tool_dirs,
-# team_tool_path, fence_reason, lease_gate, worktree_changes, same_path,
+# team_tool_path, fence_reason, lease_gate, worktree_changes, same_path, bounded, trust_probe,
 # pool_status, pool_entry, pool_slot, slot_changes, secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin, home_repo, non_records,
 # only_records, commit_non_records, records_list, origin_git, origin_reason, commit_records, fast_forward, render_template,
 # registered_pr, attribution_lines, strip_attribution, live_sessions, discord_token, discord_api,
@@ -325,13 +325,48 @@ same_path() {
   [[ $a != / && ${a##*/} == "${b##*/}" ]] && same_path "$(dirname "$a")" "$(dirname "$b")"
 }
 
+# Run <command...> for at most <seconds>, or unbounded where there is no timeout (macOS
+# without coreutils): bounded <seconds> <command...>
+bounded() {
+  if command -v timeout >/dev/null; then timeout "$@"; else "${@:2}"; fi
+}
+
+# Whether Claude Code trusts the root <path>, from a promptless background session named <name>
+# started there, which it refuses in an untrusted root with "Workspace not trusted". The probe
+# goes either way: the session it printed, and any session of its name (one an earlier probe
+# left), are stopped and removed. Sets trust_verdict (trusted, untrusted, or unknown when the
+# start printed no session id), trust_left (the sessions claude rm left), trust_rc and trust_out
+# (the start's exit code and output): trust_probe <path> <name>
+# shellcheck disable=SC2034 # trust_verdict is read by the caller
+trust_probe() {
+  local name=$2 ids id
+  trust_rc=0 trust_left=()
+  trust_out=$(cd "$1" && bounded 60 claude --bg --name "$name" 2>&1 </dev/null) || trust_rc=$?
+  ids=$({
+    [[ $trust_out == *"Workspace not trusted"* ]] || grep -oE '\b[0-9a-f]{8}\b' <<<"$trust_out" | head -n 1
+    bounded 30 claude agents --json 2>/dev/null </dev/null | jq -r --arg name "$name" 'arrays | .[] | objects
+      | select(.name == $name) | .id // ((.sessionId // "")[:8]) | strings' 2>/dev/null || true
+  } | awk 'NF && !seen[$0]++')
+  for id in $ids; do
+    bounded 30 claude stop "$id" >/dev/null 2>&1 </dev/null || true
+    bounded 30 claude rm "$id" >/dev/null 2>&1 </dev/null || trust_left+=("$id")
+  done
+  if [[ $trust_out == *"Workspace not trusted"* ]]; then
+    trust_verdict=untrusted
+  elif ((trust_rc == 0)) && [[ -n $ids ]]; then
+    trust_verdict=trusted
+  else
+    trust_verdict=unknown
+  fi
+}
+
 # The treehouse pool of the primary checkout <primary>, as `treehouse status --json` run there
 # reports it: one compact {path, status, holder} per slot, path its real path and holder its lease
 # holder ("" while nobody leases it; status leased, available, dirty or another of treehouse's).
 # Fails, printing nothing, when treehouse does not answer within 30 s with a JSON array: pool_status <primary>
 pool_status() {
   local out path resolved=()
-  out=$(cd "$1" && if command -v timeout >/dev/null; then timeout 30 treehouse status --json; else treehouse status --json; fi 2>/dev/null </dev/null) ||
+  out=$(cd "$1" && bounded 30 treehouse status --json 2>/dev/null </dev/null) ||
     return 1
   jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1 || return 1
   out=$(jq -c '.[] | objects | {path: (.path | strings), status: (.status // ""), holder: (.lease_holder // "")}' <<<"$out")

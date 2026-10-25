@@ -103,6 +103,7 @@ Then it installs the gate's opencode wrapper, `~/.no-mistakes/bin/opencode-gate`
 Take them one at a time, in that order: ask for the first, wait for Daniel's word, run `--stage check` again, and ask for the next.
 After `team-secrets restore`, run `~/agent-team/bin/team-bootstrap --stage tools` before `--stage check`, so the restored `~/.no-mistakes/config.yaml` names this machine's gate wrapper (stage 4).
 Section 3 says where each one is done.
+When two or more roots are untrusted, `check` lists them as one step, `trust: in your own terminal run ~/agent-team/bin/team-bootstrap --stage trust`: that stage refuses unless it runs in a terminal, says which root is next, starts `claude` there for Daniel to accept its trust dialog and type `/exit`, probes that root again, and goes on to the next, saying any root still untrusted and exiting 1 if one is left.
 Done when `check` lists no `Daniel <n>:` line.
 
 ### Stage 8: verification and the summary
@@ -143,7 +144,7 @@ Done when `check` lists no `Daniel <n>:` line.
 | Docker access | 7 | macOS: open Docker Desktop, accept its license; Arch: own terminal, `sudo systemctl enable --now docker.service`, then `sudo usermod -aG docker $USER` and a new login if the doctor then says permission denied | GUI or `sudo` |
 | 1Password app: install, sign in, CLI integration (and on Arch, unlock with system authentication) | 7 | macOS: `brew install --cask 1password`; Arch: the native AUR package; then the app's Settings > Developer > Integrate with 1Password CLI | account login, app settings |
 | `team-secrets restore` | 7 | own terminal: `~/agent-team/bin/team-secrets restore`; it fetches a secret that is missing, empty or off its mode (a file off its mode may be another machine's old copy, so it is replaced, the old one kept beside it as `<file>.bak-<date and time>`, mode 600) | Touch ID or system authentication; values never reach an agent |
-| Trust, once in the team home (`~/agent-team-records`, where the coordinator starts: the doctor's `trust team home` line) and once per project root (its `trust <project>` line) | 7 | own terminal: `claude` in the root, accept, `/exit` | interactive dialog |
+| Trust, once in the team home (`~/agent-team-records`, where the coordinator starts: the doctor's `trust team home` line) and once per project root (its `trust <project>` line) | 7 | own terminal: `~/agent-team/bin/team-bootstrap --stage trust`, which starts `claude` in each untrusted root in turn (accept, `/exit`); for a single root, `claude` there | interactive dialog |
 | Chrome | 7 | macOS: `brew install --cask google-chrome`; Arch: `google-chrome` from the AUR, or `sudo pacman -S --needed chromium` | browser sign-in, `sudo` on Arch |
 | The dev guard | 7 | this session: `! git -C ~/agent-team config core.hooksPath bin/hooks/git` | every team session is denied setting `core.hooksPath` |
 | `autoMode.environment` | 7 | Daniel's own edit of `~/.claude/settings.json` (`claude auto-mode defaults` shows the form) | it is what auto mode's classifier trusts about this machine |
@@ -152,8 +153,8 @@ Done when `check` lists no `Daniel <n>:` line.
 
 On a fresh machine, Daniel meets them in this order (recorded from `team-bootstrap` in a scratch `$HOME` with every installer stubbed, 2026-10-23):
 
-- macOS: Command Line Tools dialog, Homebrew, GitHub login, the name, (restart), Docker Desktop's license, the 1Password app, `team-secrets restore`, trust for the team home, then for each project root, Chrome, the dev guard, `autoMode.environment`.
-- Arch: git and gh, GitHub login, the name, `team-bootstrap --stage packages` and then `--stage tools` in their terminal, (restart), the Docker daemon (and the `docker` group), the 1Password app, `team-secrets restore`, trust for the team home, then for each project root, Chrome, the dev guard, `autoMode.environment`.
+- macOS: Command Line Tools dialog, Homebrew, GitHub login, the name, (restart), Docker Desktop's license, the 1Password app, `team-secrets restore`, trust for the team home and each project root (one `--stage trust` in their terminal), Chrome, the dev guard, `autoMode.environment`.
+- Arch: git and gh, GitHub login, the name, `team-bootstrap --stage packages` and then `--stage tools` in their terminal, (restart), the Docker daemon (and the `docker` group), the 1Password app, `team-secrets restore`, trust for the team home and each project root (one `--stage trust` in their terminal), Chrome, the dev guard, `autoMode.environment`.
 
 ## 4. macOS differences
 

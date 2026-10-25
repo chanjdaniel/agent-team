@@ -81,12 +81,10 @@ running: claude plugin disable discord@claude-plugins-official --scope user"
 Daniel 2: 1password: brew install --cask 1password, then turn on its Settings > Developer > Integrate with 1Password CLI (the 1Password app is not at $TEAM_1PASSWORD_APP, so team-secrets restore can only ask for each secret to be pasted)
 Daniel 3: secrets: with the 1Password app signed in and its CLI integration on, in your own terminal, not through an agent: $CODE_CHECKOUT/bin/team-secrets restore (discord-bot-env: missing; discord-access-json: missing; conventioner-env: missing; conventioner-front-end-env: missing; conventioner-back-end-env: missing)
 Daniel 4: opencode-gate: Daniel runs team-secrets restore in their own terminal (the secret no-mistakes-config), then $CODE_CHECKOUT/bin/team-bootstrap --stage tools sets agent_path_override: {opencode: $HOME/.no-mistakes/bin/opencode-gate} in it (~/.no-mistakes/config.yaml is not there)
-Daniel 5: trust team home: Daniel runs claude once in $TEAM_HOME and accepts the trust dialog (claude --bg in $TEAM_HOME says Workspace not trusted)
-Daniel 6: trust conventioner: Daniel runs claude once in ~/projects/Conventioner and accepts the trust dialog (claude --bg in ~/projects/Conventioner says Workspace not trusted)
-Daniel 7: trust site: Daniel runs claude once in ~/projects/site and accepts the trust dialog (claude --bg in ~/projects/site says Workspace not trusted)
-Daniel 8: chrome: brew install --cask google-chrome (Google Chrome is not installed, so chrome-devtools-axi has no browser)
-Daniel 9: own settings: write this machine's own in ~/.claude/settings.json (\`claude auto-mode defaults\` shows the form); team-config keeps it (autoMode.environment not set here, so auto mode's classifier knows nothing of this machine)
-Daniel 10: restart: exit this Claude Code session and run claude again in $CODE_CHECKOUT, so the new user settings, skills and plugins load"
+Daniel 5: trust: in your own terminal run $CODE_CHECKOUT/bin/team-bootstrap --stage trust, which starts claude in each untrusted root in turn for you to accept its trust dialog (trust team home, trust conventioner, trust site)
+Daniel 6: chrome: brew install --cask google-chrome (Google Chrome is not installed, so chrome-devtools-axi has no browser)
+Daniel 7: own settings: write this machine's own in ~/.claude/settings.json (\`claude auto-mode defaults\` shows the form); team-config keeps it (autoMode.environment not set here, so auto mode's classifier knows nothing of this machine)
+Daniel 8: restart: exit this Claude Code session and run claude again in $CODE_CHECKOUT, so the new user settings, skills and plugins load"
   # Only Daniel's steps fail: every tool line passes, and so do the projects' and the config's.
   assert_equal "$(stage_lines check | sed -n 's/^doctor: FAIL \([^:]*\):.*/\1/p' | sed 's/^secret .*/secret/' | uniq)" "docker
 secret
@@ -108,7 +106,7 @@ trust site"
   assert_equal "$(install_calls)" "$calls"
   assert_equal "$(grep -v '^check: ' <<<"$output" | grep -vc ': done')" 1
   assert_equal "$(stage_lines preflight | head -n1)" "macOS"
-  assert_equal "$(stage_lines check | grep -c '^Daniel')" 9
+  assert_equal "$(stage_lines check | grep -c '^Daniel')" 7
 }
 
 @test "--dry-run says what each stage would run and Daniel's steps, and changes nothing" {
@@ -196,7 +194,7 @@ brew ["upgrade","--cask","docker-desktop"]'
   run_bin -2 team-bootstrap --name Home_PC
   assert_equal "$output" "team-bootstrap: --name Home_PC is not a lower-case kebab-case name like laptop or home-pc"
   run_bin -2 team-bootstrap --stage nope
-  assert_equal "$output" "team-bootstrap: no stage nope; the stages are preflight machine packages tools projects config heartbeat check"
+  assert_equal "$output" "team-bootstrap: no stage nope; the stages are preflight machine packages tools projects config heartbeat check trust"
   run_bin -0 team-bootstrap --help
   assert_contains "$output" "Usage: team-bootstrap [--name <name>] [--home <path>] [--stage <stage>] [--dry-run]"
   # An OS the team does not run on is refused before anything.

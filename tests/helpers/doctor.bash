@@ -105,8 +105,13 @@ case $* in
   'plugin list --json') cat "$STUB_FIXTURES/plugins.json" ;;
   'plugin marketplace list --json') cat "$STUB_FIXTURES/marketplaces.json" ;;
   '--bg --name team-doctor-'*)
-    # A promptless background session: refused in a root listed in $STUB_FIXTURES/untrusted.
+    # A promptless background session: refused in a root listed in $STUB_FIXTURES/untrusted, and
+    # failing otherwise in one listed in $STUB_FIXTURES/no-session.
     echo "$PWD" >>"$STUB_CALLS/claude-bg.pwd"
+    if grep -qxF "$PWD" "$STUB_FIXTURES/no-session" 2>/dev/null; then
+      echo "Error: something else went wrong" >&2
+      exit 1
+    fi
     if grep -qxF "$PWD" "$STUB_FIXTURES/untrusted" 2>/dev/null; then
       echo "Error: Workspace not trusted. Run claude here once and accept the trust dialog." >&2
       exit 1

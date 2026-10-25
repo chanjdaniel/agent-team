@@ -98,10 +98,20 @@ NVM
 esac
 EOF
 
-  # claude's plugin commands change what it lists.
+  # claude's plugin commands change what it lists, and an interactive claude in a terminal shows
+  # the trust dialog Daniel accepts (logged to claude-session.pwd): the root leaves
+  # $STUB_FIXTURES/untrusted unless it is listed in $STUB_FIXTURES/declined.
   mv "$STUB_FIXTURES/claude.sh" "$STUB_FIXTURES/claude-doctor.sh"
   stub_script claude <<'EOF'
 case $* in
+  '')
+    [[ -t 0 && -t 1 ]] || { echo "claude stub: an interactive session needs a terminal" >&2; exit 1; }
+    echo "$PWD" >>"$STUB_CALLS/claude-session.pwd"
+    echo "Do you trust the files in this folder? $PWD"
+    if ! grep -qxF "$PWD" "$STUB_FIXTURES/declined" 2>/dev/null; then
+      grep -vxF "$PWD" "$STUB_FIXTURES/untrusted" >"$STUB_FIXTURES/untrusted.new" || true
+      mv "$STUB_FIXTURES/untrusted.new" "$STUB_FIXTURES/untrusted"
+    fi ;;
   'plugin marketplace add '*)
     jq --arg repo "$4" '. + [{name: ($repo | split("/")[1]), source: "github", repo: $repo}]' \
       "$STUB_FIXTURES/marketplaces.json" >"$STUB_FIXTURES/m.json"
