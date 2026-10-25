@@ -85,7 +85,7 @@ templates() {
 fake_checkout() {
   code=$BATS_TEST_TMPDIR/code
   mkdir -p "$code/templates/briefs/delivery"
-  cp -R "$REPO_ROOT/bin" "$code/bin"
+  copy_bin "$code/bin"
 }
 
 run_fake() {
@@ -370,7 +370,7 @@ local_checks=none"
 @test "team_bin is this checkout's bin/, absolute even under HOME, as the allow rules name it" {
   local checkout=$HOME/agent-team
   mkdir -p "$checkout/templates/briefs/delivery"
-  cp -R "$REPO_ROOT/bin" "$checkout/bin"
+  copy_bin "$checkout/bin"
   echo '{{team_bin}}/team-review-status' >"$checkout/templates/briefs/bin.md"
   open_t12
   guard_sandbox
@@ -382,7 +382,7 @@ local_checks=none"
 @test "team_code is this checkout, written ~/... under HOME, apart from the team home" {
   local checkout=$HOME/agent-team
   mkdir -p "$checkout/templates/briefs/delivery"
-  cp -R "$REPO_ROOT/bin" "$checkout/bin"
+  copy_bin "$checkout/bin"
   echo '{{team_code}}/sops/platform-gotchas.md {{team_home}}/tasks/' >"$checkout/templates/briefs/code.md"
   open_t12
   guard_sandbox

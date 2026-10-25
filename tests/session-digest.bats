@@ -115,9 +115,9 @@ $(watch_line)"
   mkdir -p "$HOME/.local/state/agent-team"
   echo '{"since": "2026-10-23T13:05:00Z", "posted": true}' >"$HOME/.local/state/agent-team/offline"
   # A stub sleep stops the watch; the uname stub keeps it ahead of Homebrew's GNU sleep on macOS.
-  cp "$REPO_ROOT/tests/helpers/stub" "$BATS_TEST_TMPDIR/stubs/sleep"
+  stub_command sleep
   stub_script sleep <<<'exit 143'
-  cp "$REPO_ROOT/tests/helpers/stub" "$BATS_TEST_TMPDIR/stubs/uname"
+  stub_command uname
   stub_reply uname Linux
   guard_sandbox
   run -143 sh -c "$command"

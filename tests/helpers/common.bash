@@ -16,6 +16,46 @@ source "$BATS_TEST_DIRNAME/../bin/lib/platform.sh"
 REPO_ROOT=$(cd "$BATS_TEST_DIRNAME/.." && pwd)
 FAKE_DISCORD_TOKEN=fake-discord-token-for-tests
 
+# macOS assesses every new executable file on its first run, a quarter of a second each, so a
+# test that wrote its stubs or copied bin/ afresh spent most of its time waiting on that. The
+# executables tests share are therefore made once per bats run, read-only, under
+# $BATS_RUN_TMPDIR/shared, and each test hard-links them in (link_shared): the same file to macOS,
+# a file of its own to the test, which may replace or remove it but never write into it.
+
+# shared <name> [<source>]: the path of the run's read-only <name>, made the first time from
+# <source> (a file or a directory, copied) or, without one, from stdin as an executable.
+shared() {
+  local dir=$BATS_RUN_TMPDIR/shared new
+  if [[ ! -e $dir/$1 ]]; then
+    mkdir -p "$dir/$(dirname "$1")"
+    new=$(mktemp -d "$dir/.new.XXXXXX")
+    if (($# > 1)); then cp -R "$2" "$new/it"; else cat >"$new/it" && chmod +x "$new/it"; fi
+    find "$new/it" -type f -exec chmod a-w {} +
+    # A file or directory another test made meanwhile stays: either is the same.
+    mv -T "$new/it" "$dir/$1" 2>/dev/null || true
+    rm -rf "$new"
+  fi
+  echo "$dir/$1"
+}
+
+# link_shared <name> <source> <dest>: <dest> as `cp -R <source> <dest>` makes it, but each file
+# a hard link to the run's shared copy <name> of <source>.
+link_shared() {
+  cp -Rl "$(shared "$1" "$2")" "$3"
+}
+
+# stub_command <cmd>...: each <cmd> on the sandbox's PATH is the logging stub, tests/helpers/stub.
+stub_command() {
+  local cmd
+  for cmd; do ln -f "$(shared stub "$REPO_ROOT/tests/helpers/stub")" "$BATS_TEST_TMPDIR/stubs/$cmd"; done
+}
+
+# copy_bin <dest>: a copy of this checkout's bin/ at <dest>, its files linked to the run's shared
+# copy (link_shared).
+copy_bin() {
+  link_shared bin "$REPO_ROOT/bin" "$1"
+}
+
 # Build the test's sandbox and point TEAM_HOME, HOME and PATH into it.
 sandbox() {
   # macOS keeps temporary directories under /var, a symlink to /private/var, and the scripts see
@@ -23,14 +63,20 @@ sandbox() {
   # from BATS_TEST_TMPDIR is the one the scripts print, on Linux and macOS alike.
   BATS_TEST_TMPDIR=$(realpath "$BATS_TEST_TMPDIR")
   local root=$BATS_TEST_TMPDIR
+  # The ledger reads a path under /home/<user>/ or /Users/<user>/ as under some machine's HOME
+  # (local_path in bin/lib/ledger.jq), so a sandbox there would see its own paths moved.
+  if [[ $root =~ ^/(home|Users)/[^/]+/ ]]; then
+    echo "sandbox: the test's directory $root is under a home directory, whose paths the ledger" \
+      "reads as any machine's HOME; run the tests with TMPDIR outside /home and /Users (e.g. TMPDIR=/tmp)" >&2
+    return 1
+  fi
   export TEAM_HOME=$root/team HOME=$root/home
   export STUB_CALLS=$root/calls STUB_FIXTURES=$root/fixtures
   mkdir -p "$TEAM_HOME" "$HOME/.claude/channels/discord" "$STUB_CALLS" "$STUB_FIXTURES" "$root/stubs"
   : >"$TEAM_HOME/ledger.jsonl"
   echo "DISCORD_BOT_TOKEN=$FAKE_DISCORD_TOKEN" >"$HOME/.claude/channels/discord/.env"
 
-  local cmd
-  for cmd in claude gh curl op systemctl launchctl; do cp "$REPO_ROOT/tests/helpers/stub" "$root/stubs/$cmd"; done
+  stub_command claude gh curl op systemctl launchctl
   export PATH=$root/stubs:$PATH
 
   # git reads only the sandbox's config.
@@ -99,10 +145,11 @@ code_checkout() {
   fi
   local path exclude
   exclude=$(git -C "$CODE_CHECKOUT" rev-parse --path-format=absolute --git-path info/exclude)
-  for path in bin roles settings templates plugins toolkits coordinator.settings.json; do
+  copy_bin "$CODE_CHECKOUT/bin"
+  for path in roles settings templates plugins toolkits coordinator.settings.json; do
     cp -R "$REPO_ROOT/$path" "$CODE_CHECKOUT/$path"
-    echo "/$path" >>"$exclude"
   done
+  printf '/%s\n' bin roles settings templates plugins toolkits coordinator.settings.json >>"$exclude"
 }
 
 # Push a commit touching <path> to <origin>'s dev from a clone of its own, as another machine's
@@ -200,7 +247,7 @@ EOF
 # Run the sandbox as macOS: uname stubbed to say Darwin, and a fake Homebrew (HOMEBREW_PREFIX)
 # with the directories of the GNU tools bin/lib/platform.sh puts first on PATH.
 as_macos() {
-  [[ -e $BATS_TEST_TMPDIR/stubs/uname ]] || cp "$REPO_ROOT/tests/helpers/stub" "$BATS_TEST_TMPDIR/stubs/uname"
+  [[ -e $BATS_TEST_TMPDIR/stubs/uname ]] || stub_command uname
   stub_reply uname Darwin
   export HOMEBREW_PREFIX=$BATS_TEST_TMPDIR/brew
   local dir

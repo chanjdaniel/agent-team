@@ -10,7 +10,7 @@ load helpers/common
 setup() {
   sandbox
   export TEAM_LOAD_CHECK_DIR=$BATS_TEST_TMPDIR/load-check
-  # A doctor that passes; the doctor's own lines are tests/team-doctor.bats'.
+  # A doctor that passes; the doctor's own lines are tests/team-doctor*.bats'.
   export TEAM_DOCTOR=$BATS_TEST_TMPDIR/doctor
   printf '%s\n' '#!/usr/bin/env bash' 'echo "PASS machine: named"' >"$TEAM_DOCTOR"
   chmod +x "$TEAM_DOCTOR"
@@ -307,7 +307,7 @@ write_line() {
   unset TEAM_DOCTOR
   hold_lease home-pc >/dev/null
   # An OS the team does not run on is a FAIL whatever this machine's tools are.
-  cp "$REPO_ROOT/tests/helpers/stub" "$BATS_TEST_TMPDIR/stubs/uname"
+  stub_command uname
   stub_reply uname Linux
   export TEAM_OS_RELEASE=$BATS_TEST_TMPDIR/os-release
   printf '%s\n' 'PRETTY_NAME="Ubuntu 24.04.3 LTS"' 'ID=ubuntu' >"$TEAM_OS_RELEASE"

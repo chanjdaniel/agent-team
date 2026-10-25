@@ -11,7 +11,7 @@ setup() {
   mkdir -p "$co/servers" "$co/bin"
   cp "$REPO_ROOT/servers/install" "$REPO_ROOT/servers/package.json" "$REPO_ROOT/servers/package-lock.json" "$co/servers/"
   cp -r "$REPO_ROOT/bin/lib" "$co/bin/"
-  cp "$REPO_ROOT/tests/helpers/stub" "$BATS_TEST_TMPDIR/stubs/npm"
+  stub_command npm
   # npm ci, as far as the script can tell: a node_modules beside the package files it was given.
   stub_script npm <<'EOF'
 [[ -f package.json && -f package-lock.json ]] || { echo "npm stub: no package files in $PWD" >&2; exit 1; }
