@@ -162,7 +162,7 @@ EOF
 
 @test "every real template renders for each delivery with no placeholder left and no em dash" {
   assert_equal "$(templates | paste -sd ' ')" \
-    "builder-deliver builder-fix builder-ticket ops planner-feature planner-research rereview resume resume-crash retro reviewer"
+    "builder-deliver builder-fix builder-merge-base builder-ticket ops planner-feature planner-research rereview resume resume-crash retro reviewer"
   open_t12
   open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
   local task template keys sets key brief
@@ -596,4 +596,53 @@ after"
   run_bin -0 team-brief T12 reviewer --name review --set pr=https://github.com/chanjdaniel/Conventioner/pull/9 \
     --set head=abc1234 --set "checks=the checks"
   assert_contains "$(<"$output")" "- Local checks: none."
+}
+
+@test "the merge-base brief merges the base, resolves, runs the local checks and names the conflicted files" {
+  sed -i '/^\[home\]$/,/^\[home.pool\]$/s|^toolkits = \[\]$|toolkits = []\nlocal_checks = ["tests/run"]|' \
+    "$TEAM_HOME/projects.toml"
+  open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
+  run_bin -0 --separate-stderr team-brief T14 builder-merge-base --name merge-base \
+    --set pr=https://github.com/chanjdaniel/agent-team/pull/9
+  assert_equal "$output" "$TEAM_HOME/tasks/T14/brief-merge-base.md"
+  assert_equal "$stderr" ""
+  local expected line=0
+  expected=$(
+    cat <<'EOF'
+# T14 brief (builder): merge main into the team's tooling
+
+Path: feature; you are the builder who brings the task's PR up to date with its base, which moved after the PR was opened.
+Project: home (`chanjdaniel/agent-team`), base `main`.
+Worktree: `~/agent-team/.claude/worktrees/2`, branch `feat/T14-team-tooling`.
+PR: https://github.com/chanjdaniel/agent-team/pull/9, against `main`.
+Task directory: `.work/task/` in the worktree (excluded from git): `spec.md`, `tickets/`, `build-notes/`.
+
+## Do
+
+1. Read `.work/task/spec.md` and every note in `.work/task/build-notes/`, so you resolve each conflict as the task means it.
+2. `git fetch origin`, then merge `origin/main` with a merge commit (`git merge origin/main`, never a rebase), and note each file that conflicted.
+   If `git merge-base --is-ancestor origin/main HEAD` already holds, there is nothing to merge: go to step 6 with no conflicts.
+3. Resolve each conflict so both sides keep what they meant; a resolution that is a judgment call on behaviour goes to `coordinator` as `T14 QUESTION <the conflict> | options: ...`; then commit the merge.
+   Then find what the merge made false, a file, command, flag, setting or path that one side renames or removes and the other still names, and fix it in a commit of its own.
+4. Run each of the project's local checks (`tests/run`) from the worktree's root on the merged head; fix the branch until all pass on one head.
+5. Push the branch; if the PR body names the head its local checks passed on, bring that line up to date (`gh pr edit https://github.com/chanjdaniel/agent-team/pull/9 --body-file <file>`).
+   If `gh pr checks https://github.com/chanjdaniel/agent-team/pull/9` lists any GitHub checks, wait for them (`--watch`); fix a failure and push again, back to step 4.
+6. Send `T14 DONE merged main <the full sha of the head> conflicts: <each file that conflicted, or none>` to `coordinator`, which has a fresh reviewer re-check the merge.
+
+Never run a command that needs `sudo`; send `T14 BLOCKED <the command> needs sudo` to `coordinator` instead.
+
+## Rules
+
+Read `@CODE@/sops/platform-gotchas.md` before your first command.
+Never the em dash; refer to Daniel with they/them.
+EOF
+  )
+  expected=${expected//@CODE@/$REPO_ROOT}
+  local -a want got
+  mapfile -t want <<<"$expected"
+  mapfile -t got <"$TEAM_HOME/tasks/T14/brief-merge-base.md"
+  for line in "${!want[@]}"; do
+    assert_equal "${got[line]-<missing line $((line + 1))>}" "${want[line]}"
+  done
+  assert_equal "${#got[@]}" "${#want[@]}"
 }
