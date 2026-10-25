@@ -176,7 +176,7 @@ rm 4f2a9c1e archive:2 worktrees:2"
   [[ -f $TEAM_HOME/tasks/T2/ui/page.png ]]
 }
 
-@test "the archive leaves out nested repositories, files over 1 MiB and names that may hold a secret, each named" {
+@test "the archive leaves out a UI capture, nested repositories, files over 1 MiB and names that may hold a secret, each named" {
   run_bin -0 team-open home feature feat work "Do the work"
   local slot=${home_slots[0]}
   local dir=$slot/.scratch/task
@@ -185,10 +185,15 @@ rm 4f2a9c1e archive:2 worktrees:2"
   echo "tool" >"$dir/clone/tool.txt"
   head -c 2M /dev/zero >"$dir/big.bin"
   echo "SECRET=1" >"$dir/.env.local"
+  # A frontend capture made in the task directory stays on this machine, whatever it holds.
+  mkdir -p "$dir/ui/deep"
+  echo "pick" >"$dir/ui/ui-pick.md"
+  head -c 2M /dev/zero >"$dir/ui/deep/page.png"
   work_and_push "$slot" feature.txt
 
   run_bin -0 --separate-stderr team-close T1
-  assert_equal "$stderr" "team-close: left out of tasks/T1/scratch: clone (nested repository)
+  assert_equal "$stderr" "team-close: left out of tasks/T1/scratch: ui (UI capture)
+team-close: left out of tasks/T1/scratch: clone (nested repository)
 team-close: left out of tasks/T1/scratch: big.bin (over 1 MiB)
 team-close: left out of tasks/T1/scratch: .env.local (may hold a secret)"
   assert_equal "$(jq -c .archive <<<"$output")" '["tasks/T1/scratch"]'

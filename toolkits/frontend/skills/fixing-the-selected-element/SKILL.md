@@ -16,7 +16,7 @@ Run, from the session's working directory:
 ${CLAUDE_PLUGIN_ROOT}/scripts/ui-capture .scratch/ui
 ```
 
-(`.scratch/task/ui` instead when `.scratch/task/` exists.)
+Always `.scratch/ui`, never inside `.scratch/task/`, whose contents a task's archive and checkpoints carry off the machine; git ignores `.scratch/` in the team's projects.
 A capture stays on this machine: never commit it, attach it or post it, and delete the directory once the fix is done.
 It writes `ui-pick.md`, `element.png` and `page.png` there and prints one line naming the element and its source.
 

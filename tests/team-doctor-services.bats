@@ -216,15 +216,20 @@ RECORDS_FIX="fix what it names in the team home (team-log --check and team-proje
 
 # A UI capture (team-ui) stays on the machine that took it: the team home's git ignores it, and
 # team-close removes it, so one left behind by a task that is not open is reported.
-@test "the captures line warns while the team home's git does not ignore tasks/*/ui/, or a task that is not open left captures" {
+@test "the captures line warns while the team home's git does not ignore tasks/*/ui/, or a capture is left by a task that is not open or in an archive" {
   tools_at arch
   mkdir -p "$TEAM_HOME/tasks/T4/ui" "$TEAM_HOME/tasks/T5/ui" "$TEAM_HOME/tasks/T6/ui"
   touch "$TEAM_HOME/tasks/T4/ui/ui-pick.md" "$TEAM_HOME/tasks/T5/ui/page.png"
   jq -cn '{ts: "2026-10-25T10:00:00Z", task: "T4", event: "opened", project: "conventioner", path: "small",
     type: "fix", title: "t", branch: "fix/T4-t", base: "dev", base_sha: "aba9d074", worktree: "/x/T4"}' >>"$TEAM_HOME/ledger.jsonl"
   run_bin team-doctor
-  assert_equal "$(line_of captures)" "WARN captures: tasks/T5/ui/ is left by a task that is not open (team-close removes a task's captures); fix: rm -rf $TEAM_HOME/tasks/T5/ui"
-  rm -r "$TEAM_HOME/tasks/T5/ui"
+  assert_equal "$(line_of captures)" "WARN captures: tasks/T5/ui/ is left behind, by a task that is not open or in an archive (team-close removes a task's captures, and archives leave them out); fix: rm -rf $TEAM_HOME/tasks/T5/ui"
+  # One in an archive is left whatever its task, and the fix quotes each path.
+  mkdir -p "$TEAM_HOME/tasks/T4/scratch-my site/ui"
+  touch "$TEAM_HOME/tasks/T4/scratch-my site/ui/element.png"
+  run_bin team-doctor
+  assert_equal "$(line_of captures)" "WARN captures: tasks/T5/ui/, tasks/T4/scratch-my site/ui/ are left behind, by a task that is not open or in an archive (team-close removes a task's captures, and archives leave them out); fix: rm -rf $TEAM_HOME/tasks/T5/ui $TEAM_HOME/tasks/T4/scratch-my\\ site/ui"
+  rm -r "$TEAM_HOME/tasks/T5/ui" "$TEAM_HOME/tasks/T4/scratch-my site/ui"
   run_bin team-doctor
   assert_equal "$(line_of captures)" "PASS captures: the team home's git ignores tasks/*/ui/, and every capture belongs to an open task"
   sed -i '\#^tasks/\*/ui/$#d' "$TEAM_HOME/.git/info/exclude"
