@@ -140,7 +140,7 @@ rm 81f08540"
   assert_contains "$output" "team home: committed $(git -C "$TEAM_HOME" rev-parse --short HEAD) chore: handoff from home-pc and pushed dev"
   assert_contains "$output" "heartbeat: "
   assert_contains "$output" "lease: home-pc released the lease, epoch 1"
-  [[ ${lines[-2]} =~ ^"Released at "[0-9]{2}:[0-9]{2}" from home-pc. On the other machine run \`team-resume\`."$ ]]
+  [[ ${lines[-2]} =~ ^"Released at "[0-9]{2}:[0-9]{2}" from home-pc. The \`team-resume --wait\` started on the other machine takes the team now; with none running there, run \`team-resume\` there."$ ]]
   assert_equal "${lines[-1]}" "Config captured: CLAUDE.md (new)."
   # The workers stop before the checkpoint, so it holds their worktrees' last state.
   [[ $output == *"sessions: stopped and removed T1-builder"*"checkpoint: T1 home: "* ]]
@@ -283,7 +283,7 @@ SH
   assert_equal "$(jq -c '{machine, epoch, tasks}' <<<"$output")" \
     "{\"machine\":\"home-pc\",\"epoch\":1,\"tasks\":[{\"task\":\"T1\",\"worktrees\":[{\"project\":\"home\",\"branch\":\"feat/T1-work\",\"head\":\"$head\"}],\"roles\":[\"builder\"]}]}"
   [[ $(jq -r .released_at <<<"$output") =~ ^[0-9-]+T[0-9:]+Z$ ]]
-  assert_contains "$(jq -r .message <<<"$output")" "from home-pc. On the other machine run \`team-resume\`."
+  assert_contains "$(jq -r .message <<<"$output")" "from home-pc. The \`team-resume --wait\` started on the other machine takes the team now; with none running there, run \`team-resume\` there."
   assert_equal "$(jq -c .captured <<<"$output")" '["Config captured: CLAUDE.md (new)."]'
 }
 

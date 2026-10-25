@@ -497,14 +497,16 @@ in_the_way() {
 # Fast-forward <branch>, the branch checked out in <checkout>, to origin's: fetch it, then move
 # the branch, index and working tree, local changes that are not in the way staying as they are.
 # FF_RESULT says what it did: "<branch> fast-forwarded to <sha>" or "<branch> is up to date at
-# <sha>" (also when it is ahead of origin's). On failure FF_REASON says why, and it returns 75 when
-# origin cannot be fetched, 1 when origin has no <branch>, the branch has diverged from origin's or
-# local changes are in the way. The fetch goes through origin_git, so NET_ERR must name a file:
-# fast_forward <checkout> <branch>
-# shellcheck disable=SC2034 # FF_RESULT and FF_REASON are the caller's to read
+# <sha>" (also when it is ahead of origin's, FF_AHEAD then counting the commits origin's lacks). On
+# failure FF_REASON says why, and it returns 75 when origin cannot be fetched, 1 when origin has no
+# <branch>, the branch has diverged from origin's or local changes are in the way. With --check it
+# fetches and checks the same, but moves nothing: FF_RESULT is then "<branch> can fast-forward to
+# <sha>" where it would have moved. The fetch goes through origin_git, so NET_ERR must name a file:
+# fast_forward <checkout> <branch> [--check]
+# shellcheck disable=SC2034 # FF_RESULT, FF_REASON and FF_AHEAD are the caller's to read
 fast_forward() {
-  local checkout=$1 branch=$2 theirs way rc=0
-  FF_RESULT='' FF_REASON=''
+  local checkout=$1 branch=$2 check=${3:-} theirs way rc=0
+  FF_RESULT='' FF_REASON='' FF_AHEAD=0
   origin_git -C "$checkout" fetch -q --no-write-fetch-head origin "+refs/heads/$branch:refs/remotes/origin/$branch" || rc=$?
   if ((rc)) && grep -q "couldn't find remote ref" "$NET_ERR"; then
     FF_REASON="origin has no $branch"
@@ -516,6 +518,7 @@ fast_forward() {
   theirs=$(git -C "$checkout" rev-parse "refs/remotes/origin/$branch")
   if git -C "$checkout" merge-base --is-ancestor "$theirs" HEAD; then
     FF_RESULT="$branch is up to date at $(git -C "$checkout" rev-parse --short=7 HEAD)"
+    FF_AHEAD=$(git -C "$checkout" rev-list --count "$theirs..HEAD")
     return 0
   fi
   if ! git -C "$checkout" merge-base --is-ancestor HEAD "$theirs"; then
@@ -527,6 +530,10 @@ fast_forward() {
   if [[ -n $way ]]; then
     FF_REASON="local changes to $way are in the way"
     return 1
+  fi
+  if [[ -n $check ]]; then
+    FF_RESULT="$branch can fast-forward to ${theirs:0:7}"
+    return 0
   fi
   if ! git -C "$checkout" merge -q --ff-only "$theirs" >/dev/null 2>"$NET_ERR"; then
     FF_REASON=$(grep -m1 . "$NET_ERR" | sed -E 's/^(fatal|error): //')

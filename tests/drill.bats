@@ -150,7 +150,7 @@ posts() {
   head=$(git -C "$wt" rev-parse HEAD)
 
   run_bin -0 team-handoff
-  [[ ${lines[-2]} == "Released at "*" from home-pc. On the other machine run \`team-resume\`." ]]
+  [[ ${lines[-2]} == "Released at "*" from home-pc. The \`team-resume --wait\` started on the other machine takes the team now; with none running there, run \`team-resume\` there." ]]
   assert_equal "${lines[-1]}" "Config captured: nothing."
   assert_equal "$(git -C "$home_origin" rev-parse feat/T1-work)" "$head"
   # Only the builder's session went; the coordinator retires itself after posting.

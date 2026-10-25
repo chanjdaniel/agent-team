@@ -197,24 +197,32 @@ laptop_state() {
 }
 
 @test "--wait, started before the handoff, says once the doctor passed that this machine is ready, then resumes on the release" {
-  local out=$BATS_TEST_TMPDIR/wait.out pid i
+  local out=$BATS_TEST_TMPDIR/wait.out pid i code_head moved
+  # origin's code is ahead: the check before the wait says so, and moves nothing.
+  code_head=$(git -C "$CODE_CHECKOUT" rev-parse HEAD)
+  moved=$(push_to_dev "$CODE_ORIGIN" bin/team-new)
   TEAM_RESUME_POLL_SECONDS=1 on_machine laptop "$CODE_CHECKOUT/bin/team-resume" --wait >"$out" 2>&1 3>&- &
   pid=$!
   for ((i = 0; i < 60; i++)); do
     grep -q 'waiting for its release' "$out" && break
     sleep 0.5
   done
-  # The ready line comes once, right after the doctor's, and is Daniel's cue to say "hand off".
-  assert_equal "$(grep -A1 '^doctor: [0-9]' "$out")" "doctor: 1 passed, 1 warned
+  # The ready line comes once, after the doctor's and the checks of both checkouts, and is
+  # Daniel's cue to say "hand off".
+  assert_equal "$(grep -A3 '^doctor: [0-9]' "$out")" "doctor: 1 passed, 1 warned
+team home: before the wait: dev is up to date at $(git -C "$laptop/team" rev-parse --short=7 HEAD)
+code: before the wait: dev can fast-forward to ${moved:0:7}
 lease: home-pc holds the lease; this machine is ready: say 'hand off' to the coordinator there now (waiting for its release, reading it every 1s; Ctrl+C stops, changing nothing)"
   # Still waiting a few reads later: nothing taken, nothing pulled.
   sleep 2
   assert_equal "$(lease_json | jq -r .holder)" home-pc
   [[ ! -e $laptop/home/.claude/CLAUDE.md ]]
+  assert_equal "$(git -C "$CODE_CHECKOUT" rev-parse HEAD)" "$code_head"
 
   hand_off
   wait "$pid"
   assert_equal "$(grep -c 'this machine is ready' "$out")" 1
+  assert_contains "$(cat "$out")" "code: dev fast-forwarded to ${moved:0:7}"
   assert_contains "$(cat "$out")" "lease: released by home-pc, epoch 1"
   assert_contains "$(cat "$out")" "lease: laptop holds the lease, epoch 2"
   # The pull came after the release, so laptop has the handoff's stowed.
@@ -236,6 +244,43 @@ lease: home-pc holds the lease; this machine is ready: say 'hand off' to the coo
   assert_equal "$(lease_json | jq -c '[.holder, .state]')" '["home-pc","held"]'
   assert_equal "$(laptop_state)" "$before"
   assert_equal "$(coordinator_launches)" ""
+}
+
+@test "--wait refuses before the wait a team home with commits origin's lacks, which the handoff's push would leave diverged" {
+  echo "mine" >"$laptop/team/mine.md"
+  git -C "$laptop/team" add mine.md
+  git -C "$laptop/team" commit -q -m "docs: a commit of its own"
+  local before
+  before=$(laptop_state)
+
+  on_machine laptop run_bin -1 --separate-stderr team-resume --wait
+  assert_equal "$stderr" "team-resume: team home: dev has 1 commit(s) origin's lacks, which the handoff's push would leave diverged; bring it level with origin's dev, then run \`team-resume --wait\` again (checked before the wait: nothing changed, and home-pc still runs the team)"
+  [[ $output != *'this machine is ready'* ]]
+  assert_equal "$(lease_json | jq -c '[.holder, .state]')" '["home-pc","held"]'
+  assert_equal "$(laptop_state)" "$before"
+  assert_equal "$(coordinator_launches)" ""
+}
+
+@test "--wait refuses before the wait a code checkout that has diverged, or that is on a detached HEAD" {
+  push_to_dev "$CODE_ORIGIN" README.md >/dev/null
+  echo "mine" >"$CODE_CHECKOUT/mine.txt"
+  git -C "$CODE_CHECKOUT" add mine.txt
+  git -C "$CODE_CHECKOUT" commit -q -m "chore: a commit of its own"
+  local before code_head
+  before=$(laptop_state) code_head=$(git -C "$CODE_CHECKOUT" rev-parse HEAD)
+
+  on_machine laptop run_bin -1 --separate-stderr team-resume --wait
+  assert_contains "$output" "team home: before the wait: dev is up to date at"
+  assert_equal "$stderr" "team-resume: code: dev has diverged from origin's; bring $CODE_CHECKOUT level with origin's dev, then run \`team-resume --wait\` again (checked before the wait: nothing changed, and home-pc still runs the team)"
+  [[ $output != *'this machine is ready'* ]]
+  assert_equal "$(git -C "$CODE_CHECKOUT" rev-parse HEAD)" "$code_head"
+  assert_equal "$(lease_json | jq -c '[.holder, .state]')" '["home-pc","held"]'
+  assert_equal "$(laptop_state)" "$before"
+
+  git -C "$CODE_CHECKOUT" switch -q --detach
+  on_machine laptop run_bin -1 --separate-stderr team-resume --wait
+  assert_equal "$stderr" "team-resume: code: $CODE_CHECKOUT is on a detached HEAD; check out its branch, then run \`team-resume --wait\` again (checked before the wait: nothing changed, and home-pc still runs the team)"
+  assert_equal "$(lease_json | jq -c '[.holder, .state]')" '["home-pc","held"]'
 }
 
 @test "a FAIL from the doctor stops the resume before the lease is touched; its lease and heartbeat lines do not" {

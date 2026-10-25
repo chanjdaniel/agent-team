@@ -20,7 +20,12 @@
 #                   --steal. After the doctor, so --wait started before the handoff is a preflight
 #                   whose FAIL refuses while the old machine still runs the team; before the pull,
 #                   so a refusal changes nothing and a wait ends before the handoff's records are
-#                   pulled.
+#                   pulled. Before its ready line --wait also checks steps 4 and 5 against origin as
+#                   it is, moving nothing ("team home: before the wait: ..."), so a checkout they
+#                   would refuse now (detached, diverged, local changes in the way) refuses while
+#                   the old machine still runs the team, as does a team home with commits origin's
+#                   lacks, which the handoff's push would leave diverged. Local changes to paths
+#                   only the handoff's own commit touches can still refuse step 4 after the release.
 #   4. team home    The team home's branch fast-forwarded to origin's (fetch, then merge
 #                   --ff-only); a branch that has diverged, or local changes in the way, refuses.
 #   5. code         The code checkout (the directory above this script's bin/) the same way, so
@@ -144,10 +149,28 @@ crash_facts() {
       roles: .crashed.roles}' <<<"$2"
 }
 
+# Step 4 or 5: <checkout>'s branch fast-forwarded to origin's, each line said as <step>, a refusal
+# naming the checkout as <what> and ending "then <then>"; with --check, only whether it can be
+# (and, for the team home, whether it holds commits origin's lacks), moving nothing.
+# level <step> <checkout> <what> <then> [--check]
+level() {
+  local step=$1 dir=$2 what=$3 then=$4 check=${5:-} branch rc=0
+  branch=$(git -C "$dir" symbolic-ref -q --short HEAD) ||
+    die "$step: $dir is on a detached HEAD; check out its branch, then $then"
+  fast_forward "$dir" "$branch" ${check:+"$check"} || rc=$?
+  ((rc != 75)) || offline "$FF_REASON"
+  if ((rc == 0)) && [[ -n $check && $dir == "$TEAM_HOME" ]] && ((FF_AHEAD)); then
+    FF_REASON="$branch has $FF_AHEAD commit(s) origin's lacks, which the handoff's push would leave diverged"
+    rc=1
+  fi
+  ((rc == 0)) || die "$step: $FF_REASON; bring $what level with origin's $branch, then $then"
+  echo "$step: ${check:+before the wait: }$FF_RESULT"
+}
+
 # The whole run is one function, read before it starts, so the pulls of steps 4 and 5 may change
 # this very file under it.
 main() {
-  local lease out rc fails holder age where branch code
+  local lease out rc fails holder age where code again
 
   # 1. GitHub.
   lease=$(read_lease)
@@ -169,6 +192,7 @@ main() {
     + ([.[] | select(.verdict == "FAIL") | .check] | if . == [] then "" else ", \(join(" and ")) left to the resume" end)' <<<"$out")"
 
   # 3. The lease, read again: another machine's fresh lease refuses, or is waited for.
+  code=$(cd "$bin/.." && pwd -P)
   local said=''
   while true; do
     lease=$(read_lease)
@@ -179,6 +203,9 @@ main() {
         [[ -z $steal ]] || break
         [[ -n $wait ]] || die "$holder holds the lease (renewed $age min ago): run \`team-resume --wait\` here first, then say 'hand off' to the coordinator there once it says this machine is ready"
         if [[ -z $said ]]; then
+          again="run \`team-resume --wait\` again (checked before the wait: nothing changed, and $holder still runs the team)"
+          level "team home" "$TEAM_HOME" it "$again" --check
+          [[ $code == "$(realpath -- "$TEAM_HOME")" ]] || level code "$code" "$code" "$again" --check
           echo "lease: $holder holds the lease; this machine is ready: say 'hand off' to the coordinator there now (waiting for its release, reading it every ${POLL_SECONDS}s; Ctrl+C stops, changing nothing)"
           said=1
         fi
@@ -194,26 +221,13 @@ main() {
   [[ -z $said ]] || echo "lease: $(jq -r 'if .state == "released" then "released by \(.holder)" else "held by \(.holder)" end + ", epoch \(.epoch)"' <<<"$lease")"
 
   # 4. The team home, up to date with origin's.
-  branch=$(git -C "$TEAM_HOME" symbolic-ref -q --short HEAD) ||
-    die "team home: $TEAM_HOME is on a detached HEAD; check out its branch, then run team-resume again"
-  rc=0
-  fast_forward "$TEAM_HOME" "$branch" || rc=$?
-  ((rc != 75)) || offline "$FF_REASON"
-  ((rc == 0)) || die "team home: $FF_REASON; bring it level with origin's $branch, then run team-resume again"
-  echo "team home: $FF_RESULT"
+  level "team home" "$TEAM_HOME" it "run team-resume again"
 
   # 5. The code checkout, up to date with origin's, unless it is the team home.
-  code=$(cd "$bin/.." && pwd -P)
   if [[ $code == "$(realpath -- "$TEAM_HOME")" ]]; then
     echo "code: the code checkout is the team home, brought up to date above"
   else
-    branch=$(git -C "$code" symbolic-ref -q --short HEAD) ||
-      die "code: $code is on a detached HEAD; check out its branch, then run team-resume again"
-    rc=0
-    fast_forward "$code" "$branch" || rc=$?
-    ((rc != 75)) || offline "$FF_REASON"
-    ((rc == 0)) || die "code: $FF_REASON; bring $code level with origin's $branch, then run team-resume again"
-    echo "code: $FF_RESULT"
+    level code "$code" "$code" "run team-resume again"
   fi
 
   # 6. The team's Claude config.

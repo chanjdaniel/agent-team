@@ -36,7 +36,8 @@
 #                  as "chore: handoff from <machine>" and pushed (as team-checkpoint commits).
 #   8. heartbeat   team-timers disable.
 #   9. release     team-lease release.
-#  10. The message: "Released at 14:05 from home-pc. On the other machine run `team-resume`.",
+#  10. The message: "Released at 14:05 from home-pc. The `team-resume --wait` started on the other
+#      machine takes the team now; with none running there, run `team-resume` there.",
 #      then "Config captured: CLAUDE.md (new), skills/stow (changed)." naming what step 6 captured,
 #      or "Config captured: nothing.", then a line for each thing it did not capture ("Config:
 #      settings.json left to Daniel: it has an env key, which may hold a secret.").
@@ -436,7 +437,7 @@ fi
 # 10. The message.
 released_at=$(jq -r '.written_at // empty' "$record" 2>/dev/null) || released_at=''
 [[ -n $released_at ]] || released_at=$(date -u +%FT%TZ)
-message="Released at $(date -d "$released_at" +%H:%M) from $machine. On the other machine run \`team-resume\`."
+message="Released at $(date -d "$released_at" +%H:%M) from $machine. The \`team-resume --wait\` started on the other machine takes the team now; with none running there, run \`team-resume\` there."
 # What step 6 captured and what it refused, as the message's config lines.
 captured=$(jq -c '[if . == null then "Config captured: unknown (no record of this handoff'"'"'s capture)."
   else "Config captured: \(.captured | if . == [] then "nothing" else join(", ") end).",
