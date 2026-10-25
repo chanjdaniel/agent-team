@@ -4,7 +4,9 @@ Usage: python3 -I terminal.py [--expect <text> --send <text>]... -- <command> [<
 The command's stdin, stdout and stderr are the terminal. Each --send is typed once the output
 since the previous one shows its --expect, in order; then the output is read to the end.
 Prints everything the terminal showed, with \\r\\n as \\n, and exits as the command did, or 124
-after 60 s, naming on stderr the text it was still waiting for.
+once the command hangs, naming on stderr the text it was still waiting for. A hang is 60 s with no
+new output, or 10 minutes in all for one that keeps printing: it catches a command that stops or
+loops, while a long run on a busy machine (tests/run runs the bats files in parallel) still ends.
 """
 
 import os
@@ -36,7 +38,8 @@ def main():
             os._exit(127)
 
     output, seen = b"", 0
-    deadline = time.monotonic() + 60
+    ceiling = time.monotonic() + 600
+    deadline = min(time.monotonic() + 60, ceiling)
     while True:
         if steps:
             found = output.find(steps[0][0], seen)
@@ -50,7 +53,8 @@ def main():
             os.waitpid(pid, 0)
             sys.stdout.write(output.replace(b"\r\n", b"\n").decode(errors="replace"))
             waiting = steps[0][0].decode() if steps else "the end of the output"
-            print(f"terminal.py: gave up after 60 s waiting for: {waiting}", file=sys.stderr)
+            why = "10 minutes in all" if deadline >= ceiling else "60 s with no output"
+            print(f"terminal.py: gave up after {why} waiting for: {waiting}", file=sys.stderr)
             sys.exit(124)
         ready, _, _ = select.select([fd], [], [], left)
         if not ready:
@@ -62,6 +66,7 @@ def main():
         if not chunk:  # macOS: end of file
             break
         output += chunk
+        deadline = min(time.monotonic() + 60, ceiling)
 
     _, status = os.waitpid(pid, 0)
     sys.stdout.write(output.replace(b"\r\n", b"\n").decode(errors="replace"))
