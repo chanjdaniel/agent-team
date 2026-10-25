@@ -17,8 +17,11 @@
 # first (`treehouse status --json` in the primary checkout, refused when it does not answer): a
 # slot an earlier run left leased to the task is taken again; else the project's lease command
 # runs from the primary checkout with the task as the holder, and the path it prints is taken. A
-# path that is not a trusted slot, or a slot with changes to tracked files, untracked files or a
-# non-empty task directory, is refused, naming them, and handed back through the return command:
+# treehouse pool's trusted slots are the registry's and each other numbered one in their pool's
+# folder (<pool>/<n>/<folder>, which treehouse may make past an empty folder). A path that is not
+# a trusted slot, or no worktree of the primary checkout, or a slot with changes to tracked files,
+# untracked files or a non-empty task directory, is refused, naming them, and handed back through
+# the return command:
 # with --force --if-lease-holder T<n> when this run leased it and the pool did not report it dirty
 # before, so what the lease's own pre-warm changed is discarded and the lease always ends; else
 # without, so a slot with changes stays leased, for Daniel to look at (a slot dirty before its
@@ -113,9 +116,11 @@ primary=$(jq -r .path <<<"$facts")
 base=$(jq -r .base <<<"$facts")
 task_dir=$(jq -r .task_dir <<<"$facts")
 provider=$(jq -r .pool.provider <<<"$facts")
-mapfile -t slots < <(jq -r '.pool.slots[]' <<<"$facts")
+mapfile -t registered < <(jq -r '.pool.slots[]' <<<"$facts")
+slots=("${registered[@]}")
 git -C "$primary" rev-parse --git-dir >/dev/null 2>&1 || die "the primary checkout $primary is not a git checkout"
 if [[ $provider == treehouse ]]; then
+  mapfile -t slots < <(treehouse_slots "${registered[@]}")
   lease=$(jq -r .pool.lease <<<"$facts")
   return_cmd=$(jq -r .pool.return <<<"$facts")
   [[ -x $lease ]] || die "the lease command $lease is not executable"
@@ -342,6 +347,8 @@ take_treehouse_slot() {
     dirty=$(pool_entry "$pool" "$leased" | jq -r 'select(.status == "dirty") | .path') || dirty=''
     [[ -n $dirty ]] || force_return=1
   fi
+  # The lease may have made a slot the registry lacks.
+  mapfile -t slots < <(treehouse_slots "${registered[@]}")
   trusted=$(pool_slot "$leased" "${slots[@]}") ||
     die "the lease command handed out $leased, which is not one of $project's slots"
   changes=$(slot_changes "$primary" "$trusted" "$task_dir") || die "$changes"

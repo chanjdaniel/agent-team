@@ -175,6 +175,16 @@ lease_holder() {
   [[ -e ${slots[0]}/node_modules/.warm ]]
 }
 
+@test "a numbered slot in the pool's folder that the registry does not list is rehearsed as a slot (T45)" {
+  lease_setup
+  local slot=$HOME/.treehouse/proj-abc123/5/proj
+  git -C "$primary" worktree add -q --detach "$slot" origin/main
+  echo "$slot" >"$BATS_TEST_TMPDIR/free"
+  run_bin -0 team-load-check
+  assert_contains "$output" "PASS lease proj: slot $slot leased, pre-warmed and clean, returned"
+  assert_equal "$(pool_leases)" ""
+}
+
 @test "a pre-warm that changes the slot fails the load check, naming the project and the paths, and the slot is still returned" {
   lease_setup
   echo 'echo changed >>README.md && touch new.lock' >"$BATS_TEST_TMPDIR/prewarm"

@@ -87,6 +87,8 @@ Then it installs the gate's opencode wrapper, `~/.no-mistakes/bin/opencode-gate`
 - A folder already in a project's way is Daniel's: show the doctor's line and ask whether to move it.
 - Treehouse pools start cold; the first lease warms a slot.
   Dev data is never copied: a task seeds its own.
+- Another clone of a project with the same folder name and origin (an older checkout elsewhere, say) shares its treehouse pool, and a slot that clone made is leased only to it.
+  The doctor's `slots <project>` line names such a slot with how many are left for the team; what to do with the other clone is Daniel's.
 
 ### Stage 6: Claude config, plugins and the heartbeat
 

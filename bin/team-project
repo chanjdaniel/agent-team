@@ -36,7 +36,8 @@
 #                    checkout: lease <holder> prints the leased slot's path; return <slot> hands
 #                    it back, and passes --force and --if-lease-holder <holder> on to treehouse
 #                    return (team-open forces back a slot its own lease dirtied)
-#   slots            the trusted slot paths a task's worktree may be
+#   slots            the trusted slot paths a task's worktree may be; for treehouse, each other
+#                    numbered slot in their pool's folder is trusted too (team-open)
 # Per project stack ([<name>.stack]), optional: the Docker stacks team-stack manages for the
 # project's worktrees (sops/docker.md); a project without one has none:
 #   compose          the project's compose wrapper, which meets the wrapper contract

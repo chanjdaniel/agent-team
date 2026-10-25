@@ -80,6 +80,52 @@ PASS changes site: the primary checkout is clean"
   assert_equal "$(grep -v '^PASS ' <<<"$output")" "FAIL slots conventioner: not in the pool Conventioner-d4c77a, as treehouse names it from origin: ~/.treehouse/Conventioner-8e12e0/2/Conventioner; fix: put conventioner's pool.slots in projects.toml under the pool's directory, ~/.treehouse/Conventioner-d4c77a/ unless its treehouse.toml sets another root"
 }
 
+@test "slots: a slot that is a worktree of another clone of the same origin warns, naming it and how many slots are the team's (report F13)" {
+  tools_at arch
+  local pool=$HOME/.treehouse/Conventioner-d4c77a other=$HOME/firstmate/projects/Conventioner shown remove
+  # Slot 2 is this checkout's worktree and slot 1 does not exist: both pass, as treehouse makes 1.
+  git -C "$CONVENTIONER" worktree add -q --detach "$pool/2/Conventioner"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'slots conventioner')" "PASS slots conventioner: every slot is in the pool Conventioner-d4c77a, as treehouse names it from origin"
+
+  # Another clone with the same folder name and origin shares the pool, and owns slot 1.
+  git clone -q "$CONVENTIONER" "$other"
+  git -C "$other" remote set-url origin https://github.com/chanjdaniel/Conventioner.git
+  git -C "$other" worktree add -q --detach "$pool/1/Conventioner"
+  # shellcheck disable=SC2088 # the doctor's lines name HOME as ~
+  shown='~/.treehouse/Conventioner-d4c77a'
+  remove="git -C ~/firstmate/projects/Conventioner worktree remove"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'slots conventioner')" "WARN slots conventioner: slot 1 is a worktree of ~/firstmate/projects/Conventioner, so 1 of 2 slots are the team's; fix: Daniel's, once nothing in it is needed by that clone: $remove $shown/1/Conventioner"
+
+  # Its slot 3, which the registry does not list, is the pool's too.
+  git -C "$other" worktree add -q --detach "$pool/3/Conventioner"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'slots conventioner')" "WARN slots conventioner: slot 1 is a worktree of ~/firstmate/projects/Conventioner; slot 3 is a worktree of ~/firstmate/projects/Conventioner, so 1 of 3 slots are the team's; fix: Daniel's, once nothing in it is needed by that clone: $remove $shown/1/Conventioner; $remove $shown/3/Conventioner"
+  # The doctor only looked.
+  assert_equal "$(git -C "$other" worktree list --porcelain | grep -c '^worktree ')" 3
+}
+
+@test "slots: a slot that is an empty folder, or holds no worktree, warns (T45)" {
+  tools_at arch
+  # shellcheck disable=SC2088 # the doctor's lines name HOME as ~
+  local pool=$HOME/.treehouse/Conventioner-d4c77a shown='~/.treehouse/Conventioner-d4c77a'
+  # A removed worktree leaves its numbered folder, which treehouse does not make a slot in again.
+  mkdir -p "$pool/1" "$pool/2/Conventioner" "$pool/4"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'slots conventioner')" "WARN slots conventioner: slot 1 is an empty folder, so treehouse numbers new slots past it; slot 2 is an empty folder, so treehouse numbers new slots past it; slot 4 is an empty folder, so treehouse numbers new slots past it; fix: rmdir $shown/1; rmdir $shown/2/Conventioner $shown/2; rmdir $shown/4"
+
+  # A folder holding something that is no worktree is Daniel's to look at.
+  rmdir "$pool/1" "$pool/4"
+  touch "$pool/2/Conventioner/notes.txt"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'slots conventioner')" "WARN slots conventioner: slot 2 holds no git worktree; fix: Daniel looks at $shown/2/Conventioner and moves it aside"
+
+  rm -r "$pool/2"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'slots conventioner')" "PASS slots conventioner: every slot is in the pool Conventioner-d4c77a, as treehouse names it from origin"
+}
+
 # ledger_opened <task> <slot>: <task> opened in Conventioner, in its slot <slot> (relative to HOME).
 ledger_opened() {
   jq -cn --arg task "$1" --arg wt "$HOME/$2" '{ts: "2026-10-24T10:00:00Z", task: $task, event: "opened",

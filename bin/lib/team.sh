@@ -13,7 +13,7 @@
 # task_events, known_task_events, open_task_events, task_status, task_worktrees, local_path,
 # archive_left_out, rsync_rule, archive_task_dir, machine_name, os_release, team_os, tool_dirs,
 # team_tool_path, fence_reason, lease_gate, worktree_changes, same_path, bounded, trust_probe,
-# pool_status, pool_entry, pool_slot, slot_changes, secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin, home_repo, non_records,
+# pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin, home_repo, non_records,
 # only_records, commit_non_records, records_list, origin_git, origin_reason, commit_records, fast_forward, render_template,
 # registered_pr, attribution_lines, strip_attribution, live_sessions, discord_token, discord_api,
 # github, pr_part and task_state_json, and sets COORDINATOR_CHANNEL.
@@ -383,6 +383,22 @@ pool_slot() {
     if same_path "$slot" "$1"; then echo "$slot" && return 0; fi
   done
   return 1
+}
+
+# A treehouse pool's slots: its registered slots <slot>..., then each other <dir>/<n>/<folder> that
+# exists (<n> a number) beside a registered <dir>/<m>/<folder>, by number. treehouse numbers a new
+# slot past a folder it finds in the way, an empty one too, so the registry may not list every
+# slot it makes: treehouse_slots <slot>...
+treehouse_slots() {
+  local slot found extra=()
+  for slot in "$@"; do
+    echo "$slot"
+    for found in "${slot%/*/*}"/*/"${slot##*/}"; do
+      [[ -d $found && $(basename "${found%/*}") =~ ^[0-9]+$ ]] || continue
+      pool_slot "$found" "$@" "${extra[@]}" >/dev/null || extra+=("$found")
+    done
+  done
+  ((${#extra[@]} == 0)) || printf '%s\n' "${extra[@]}" | awk -F/ '{ print $(NF - 1) "\t" $0 }' | sort -n -k1,1 | cut -f2-
 }
 
 # The slot of the pool <pool> (pool_status' lines) that is the path <path>; fails, printing

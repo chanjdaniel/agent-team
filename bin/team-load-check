@@ -173,6 +173,8 @@ lease_check() {
     return
   fi
   rm -f "$log"
+  # Every slot of the pool, the one the lease may just have made included.
+  mapfile -t slots < <(treehouse_slots "${slots[@]}")
   if ! slot=$(pool_slot "$leased" "${slots[@]}"); then
     problem="the lease command handed out $leased, which is not one of $project's slots"
   elif ! changes=$(slot_changes "$primary" "$slot" "$task_dir"); then

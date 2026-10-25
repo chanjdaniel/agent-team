@@ -80,7 +80,15 @@
 #     gate        no-mistakes projects only: `no-mistakes status` in the checkout shows a gate.
 #     slots       treehouse pools only: every slot is in the pool treehouse names from origin,
 #                 <checkout's folder name>-<the first 3 bytes of the SHA-256 of origin's URL,
-#                 in hex>, so the registry's slots hold on any machine with that origin.
+#                 in hex>, so the registry's slots hold on any machine with that origin. Then
+#                 each slot of that pool (the registry's, each other numbered slot in their
+#                 folder, and each numbered folder there) is a worktree of the checkout or
+#                 missing (treehouse makes it); warns on one that is a worktree of another
+#                 clone (a clone with the same folder name and origin shares the pool, and
+#                 treehouse leases its slots only to it), naming it and how many slots are the
+#                 team's, with git -C <clone> worktree remove <slot> as Daniel's fix; on an empty
+#                 folder, which treehouse numbers new slots past, with its rmdir; and on a
+#                 folder holding no worktree.
 #     leases      treehouse pools only: `treehouse status --json` in the checkout; warns naming
 #                 each slot of the pool leased to a closed task, to an open task whose worktree in
 #                 the project is not that slot (a lease a failed team-open left), or to a holder
@@ -219,6 +227,68 @@ probe_trust() {
   esac
 }
 
+# The slots line of <project>, whose registered slots <slot>... are all in the treehouse pool
+# <pool> of the checkout <path>: each slot of the pool (treehouse_slots) and each other numbered
+# folder beside them, by number. A slot that is a worktree of the checkout, or missing (treehouse
+# makes it), is the team's; one that is a worktree of another clone, which treehouse leases only
+# to that clone, warns, with how many are the team's; so does an empty folder, which treehouse
+# numbers new slots past, and a folder holding no worktree.
+check_slot_owners() {
+  local project=$1 path=$2 pool=$3 slot n dir mine common clone ours=0 all=0 found=() others='' rest='' reason fix
+  mine=$(git -C "$path" rev-parse --path-format=absolute --git-common-dir)
+  mapfile -t found < <(treehouse_slots "${@:4}")
+  for slot in "${@:4}"; do
+    for dir in "${slot%/*/*}"/*/; do
+      dir=${dir%/}
+      [[ -d $dir && ${dir##*/} =~ ^[0-9]+$ ]] || continue
+      pool_slot "$dir/${slot##*/}" "${found[@]}" >/dev/null || found+=("$dir/${slot##*/}")
+    done
+  done
+  # One "<n> TAB <reason> TAB <fix>" line per problem: another clone's slots in others, the rest
+  # in rest.
+  for slot in "${found[@]}"; do
+    dir=${slot%/*} n=${dir##*/}
+    if [[ -e $slot/.git ]] && common=$(git -C "$slot" rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then
+      all=$((all + 1))
+      if same_path "$common" "$mine"; then
+        ours=$((ours + 1))
+        continue
+      fi
+      clone=$common
+      [[ ${common##*/} != .git ]] || clone=${common%/*}
+      others+="$n"$'\t'"slot $n is a worktree of $(tilde "$clone")"$'\t'"git -C $(tilde "$clone") worktree remove $(tilde "$slot")"$'\n'
+    elif [[ -d $slot && -z $(ls -A "$slot") ]]; then
+      fix="rmdir $(tilde "$slot")"
+      [[ -n $(find "$dir" -mindepth 1 -maxdepth 1 ! -samefile "$slot" -print -quit) ]] || fix+=" $(tilde "$dir")"
+      rest+="$n"$'\t'"slot $n is an empty folder, so treehouse numbers new slots past it"$'\t'"$fix"$'\n'
+    elif [[ -e $slot || (-d $dir && -n $(ls -A "$dir")) ]]; then
+      [[ -e $slot ]] || slot=$dir
+      rest+="$n"$'\t'"slot $n holds no git worktree"$'\t'"Daniel looks at $(tilde "$slot") and moves it aside"$'\n'
+    elif [[ -d $dir ]]; then
+      rest+="$n"$'\t'"slot $n is an empty folder, so treehouse numbers new slots past it"$'\t'"rmdir $(tilde "$dir")"$'\n'
+    else
+      # Missing: treehouse makes it for this checkout.
+      all=$((all + 1)) ours=$((ours + 1))
+    fi
+  done
+  if [[ -z $others$rest ]]; then
+    report "slots $project" PASS "every slot is in the pool $pool, as treehouse names it from origin"
+    return
+  fi
+  others=$(sort -t$'\t' -k1,1n <<<"${others%$'\n'}") rest=$(sort -t$'\t' -k1,1n <<<"${rest%$'\n'}")
+  reason=$(cut -f2 <<<"$others" | paste -sd ';' | sed 's/;/; /g')
+  fix=$(cut -f3 <<<"$others" | paste -sd ';' | sed 's/;/; /g')
+  if [[ -n $others ]]; then
+    reason+=", so $ours of $all slots are the team's"
+    fix="Daniel's, once nothing in it is needed by that clone: $fix"
+  fi
+  if [[ -n $rest ]]; then
+    reason+="${reason:+; }$(cut -f2 <<<"$rest" | paste -sd ';' | sed 's/;/; /g')"
+    fix+="${fix:+; }$(cut -f3 <<<"$rest" | paste -sd ';' | sed 's/;/; /g')"
+  fi
+  report "slots $project" WARN "$reason" "$fix"
+}
+
 # The leases line of <project>, whose treehouse pool is that of the checkout <path>, returned
 # through <return>.
 check_leases() {
@@ -272,7 +342,7 @@ check_leases() {
 # The lines of the registered project <name> (see the header).
 check_project() {
   local project=$1 facts path shown repo url top common origin task_dir exclude out rc pool slot
-  local wrong=() unpushed=() found=() branch count
+  local wrong=() registered=() unpushed=() found=() branch count
   facts=$(team_project "$project")
   path=$(jq -r .path <<<"$facts") repo=$(jq -r .repo <<<"$facts") task_dir=$(jq -r .task_dir <<<"$facts")
   shown=$(tilde "$path") url=https://github.com/$repo.git
@@ -335,11 +405,12 @@ check_project() {
       report "slots $project" FAIL "unknown, since treehouse names the pool from origin, which is missing" "the origin line's fix"
     else
       pool=$(pool_name "$path" "$origin")
-      while IFS= read -r slot; do
+      mapfile -t registered < <(jq -r '.pool.slots[]' <<<"$facts")
+      for slot in "${registered[@]}"; do
         [[ $(basename "$(dirname "$(dirname "$slot")")") == "$pool" ]] || wrong+=("$(tilde "$slot")")
-      done < <(jq -r '.pool.slots[]' <<<"$facts")
+      done
       if ((${#wrong[@]} == 0)); then
-        report "slots $project" PASS "every slot is in the pool $pool, as treehouse names it from origin"
+        check_slot_owners "$project" "$path" "$pool" "${registered[@]}"
       elif [[ $origin != "$url" ]]; then
         report "slots $project" FAIL "not in the pool $pool, as treehouse names it from origin $origin: $(printf '%s, ' "${wrong[@]}" | sed 's/, $//')" \
           "the origin line's fix"

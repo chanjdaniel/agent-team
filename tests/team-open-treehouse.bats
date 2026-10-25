@@ -100,6 +100,27 @@ events() {
   $other/proj-abc123/2/proj: T2 (leased; detached HEAD)"
 }
 
+@test "a numbered slot in the pool's folder that the registry does not list is taken, and found again by a re-run (T45)" {
+  # treehouse numbers a new slot past an empty folder, so the slot it makes can be one the registry lacks.
+  local slot=$pool/5/proj
+  git -C "$primary" worktree add -q --detach "$slot" origin/main
+  printf '%s\n' "$slot" "${slots[@]}" >"$BATS_TEST_TMPDIR/free"
+  stub_reply curl '{"message":"Missing Access"}'
+  run_bin -1 --separate-stderr team-open proj feature feat five "Five"
+  assert_contains "$stderr" "T1 is half open in $slot; finish it with: team-open --task T1 proj feature feat five Five"
+
+  stub_reply curl '{"id":"1563000000000000005"}'
+  run_bin -0 --separate-stderr team-open --task T1 proj feature feat five "Five"
+  assert_equal "$(jq -r .worktree <<<"$output")" "$slot"
+  assert_equal "$(pool_calls th-lease.sh)" "T1"
+  assert_equal "$(git -C "$slot" rev-parse --abbrev-ref HEAD)" "feat/T1-five"
+  # It is listed with the registry's slots.
+  : >"$BATS_TEST_TMPDIR/free"
+  run_bin -75 --separate-stderr team-open proj feature feat six "Six"
+  assert_contains "$stderr" "  ${slots[1]}: no task (detached HEAD)
+  $slot: T1 (leased; feat/T1-five)"
+}
+
 @test "a leased path outside the trusted slots is returned at once and refused" {
   local stray=$HOME/.treehouse/proj-zzz999/1/proj
   git -C "$primary" worktree add -q --detach "$stray" origin/main
