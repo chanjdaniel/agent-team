@@ -235,6 +235,7 @@ every_tool_fails() {
   assert_equal "$(line_of machine)" "PASS machine: home-pc"
   # team-lease refuses without them.
   assert_contains "$(line_of lease)" "FAIL lease: missing Homebrew packages: gnu-sed flock"
+  assert_equal "$(line_of 'heavy runs')" "WARN heavy runs: \`team-heavy status\` did not answer: missing Homebrew packages: gnu-sed flock; run \`brew install gnu-sed flock\`; fix: fix what it names, then run team-doctor again"
 }
 
 @test "an OS other than Arch or macOS fails, and its tools go unchecked; an Arch derivative passes" {

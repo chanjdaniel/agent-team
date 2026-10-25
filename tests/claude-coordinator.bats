@@ -84,7 +84,7 @@ assert_not_launched() {
   echo ID=arch >"$TEAM_OS_RELEASE"
   mkdir -p "$HOME/.bun/bin"
   run_bin -0 claude-coordinator
-  [[ :$(cat "$STUB_CALLS/claude.path"): == *":$HOME/.bun/bin:"*":$BATS_TEST_TMPDIR/stubs:"* ]] ||
+  [[ :$(cat "$STUB_CALLS/claude.path"): == *":$HOME/.bun/bin:"*"$BATS_TEST_TMPDIR/stubs:"* ]] ||
     { echo "claude's PATH: $(cat "$STUB_CALLS/claude.path")" >&2; return 1; }
 }
 

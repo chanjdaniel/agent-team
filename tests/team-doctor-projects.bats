@@ -262,7 +262,8 @@ EOF
   # Before the projects' lines, after the records'.
   assert_equal "$(checks | grep -A1 -B1 '^trust team home$')" "records
 trust team home
-checkout conventioner"
+captures"
+  [[ $(checks | grep -n '^trust team home$' | cut -d: -f1) -lt $(checks | grep -n '^checkout conventioner$' | cut -d: -f1) ]]
 
   # A team home that is a registered project's primary checkout (the code checkout, agent-team's,
   # where no records were split off) is that project's trust line's to probe.

@@ -83,7 +83,8 @@
 #                 team-close removes, or an archive holds one (tasks/*/scratch*/ui/, which archives
 #                 leave out); the fix removes those, whatever their age.
 #   heavy runs    Who holds the machine's heavy-run lock (team-heavy status): free, or held by
-#                 the run its line names, which every other heavy run waits for; never warns.
+#                 the run its line names, which every other heavy run waits for; warns only when
+#                 team-heavy cannot answer (on macOS without Homebrew's GNU tools, say).
 #   per project   For each project of projects.toml (`projects` fails when team-project refuses
 #                 the registry), the lines below with the project's name after the check's;
 #                 a missing checkout is its one line:
@@ -883,8 +884,9 @@ else
 fi
 
 # heavy runs: one at a time on this machine, so a holder is the queue working, not a problem.
-heavy=$("$bin/team-heavy" status)
-if [[ $heavy == free ]]; then
+if ! heavy=$("$bin/team-heavy" status 2>"$err"); then
+  report "heavy runs" WARN "\`team-heavy status\` did not answer: $(first_error)" "fix what it names, then run team-doctor again"
+elif [[ $heavy == free ]]; then
   report "heavy runs" PASS "free (team-heavy queues full test suites and local checks)"
 else
   report "heavy runs" PASS "$heavy"
