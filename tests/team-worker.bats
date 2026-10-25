@@ -398,6 +398,43 @@ run_fake() {
   done
 }
 
+# The rules against the 1Password CLI, another process's environment and a change of the git
+# hooks setting refused commit messages, ledger lines and briefs that only named them (T41, T45).
+@test "every role's generated settings deny a real 1Password CLI call, environment read and hooks change, and no text naming them" {
+  thread T7
+  local role settings command
+  for role in planner builder reviewer; do
+    run_bin -0 team-worker T7 "$role" "$wt1" -- go
+    settings=$TEAM_HOME/tasks/T7/settings.$role.json
+    for command in "op read op://agent-team/discord-bot-env/.env" "op item list --vault agent-team" \
+      "cd ~ && op document get discord-bot-env --vault agent-team" "true || op run -- env" \
+      "x=\$(op read op://v/i/f) && echo ok" "/opt/homebrew/bin/op whoami" "env op signin" \
+      "cat /proc/1234/environ" "tr '\\0' '\\n' < /proc/1/environ" "cat /proc/self/environ | grep TOKEN" \
+      "strings /proc/1/environ > out.txt" "grep -az TOKEN /proc/*/environ 2>/dev/null" \
+      "cat /proc/1/environ && echo done" "python3 -c \"print(open('/proc/1/environ').read())\"" \
+      "echo \$(cat /proc/1/environ)" \
+      "git config core.hooksPath /dev/null" "git config --global core.hooksPath x" \
+      "git -C $HOME/agent-team config core.hooksPath bin/hooks/git" "git config set --local core.hooksPath x" \
+      "git config --unset core.hooksPath" "git -C ~/repo config --unset-all core.hooksPath" \
+      "git config unset core.hooksPath" "git config 'core.hooksPath' x" "git config \"core.hookspath\" x" \
+      "git config --add core.hooksPath x" "git -c core.hooksPath=/dev/null commit -m x" \
+      "git -C ~/repo -c core.hooksPath= commit -m x"; do
+      denied_in "$settings" "$command" || { echo "$role allows: $command" >&2; return 1; }
+    done
+    for command in \
+      "git commit -m 'deny reads of /proc/*/environ and the op CLI; op read stays Daniel'\"'\"'s'" \
+      "git commit -m \"fix: the git config core.hooksPath rule matched op read in text\"" \
+      "team-log T41 blocked \"builder: a /proc/<pid>/environ read in a message; op is Daniel's, op run too\"" \
+      "team-brief T40 builder --text 'Daniel runs git -C ~/agent-team config core.hooksPath bin/hooks/git; never op'" \
+      "printf '%s\\n' 'stop reading /proc/1/environ' >> notes.md" "git config --get core.hooksPath" \
+      "git -C ~/repo config --get core.hooksPath || echo unset" "git config core.hooksPath" \
+      "git config --show-origin --get core.hooksPath 2>&1" "team-secrets check" "npm run loop" \
+      "grep -rn 'op read' bin"; do
+      if denied_in "$settings" "$command"; then echo "$role denies: $command" >&2; return 1; fi
+    done
+  done
+}
+
 @test "a closed task is refused, opened or legacy" {
   thread T7
   opened T7 proj feat/T7-one "$wt1"
