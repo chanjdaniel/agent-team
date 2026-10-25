@@ -38,8 +38,8 @@ def main():
             os._exit(127)
 
     output, seen = b"", 0
-    ceiling = time.monotonic() + 600
-    deadline = min(time.monotonic() + 60, ceiling)
+    last = time.monotonic()
+    ceiling = last + 600
     while True:
         if steps:
             found = output.find(steps[0][0], seen)
@@ -47,13 +47,14 @@ def main():
                 seen = found + len(steps[0][0])
                 os.write(fd, steps.pop(0)[1])
                 continue
-        left = deadline - time.monotonic()
+        now = time.monotonic()
+        left = min(last + 60, ceiling) - now
         if left <= 0:
             os.kill(pid, signal.SIGKILL)
             os.waitpid(pid, 0)
             sys.stdout.write(output.replace(b"\r\n", b"\n").decode(errors="replace"))
             waiting = steps[0][0].decode() if steps else "the end of the output"
-            why = "10 minutes in all" if deadline >= ceiling else "60 s with no output"
+            why = "60 s with no output" if now - last >= 60 else "10 minutes in all"
             print(f"terminal.py: gave up after {why} waiting for: {waiting}", file=sys.stderr)
             sys.exit(124)
         ready, _, _ = select.select([fd], [], [], left)
@@ -66,7 +67,7 @@ def main():
         if not chunk:  # macOS: end of file
             break
         output += chunk
-        deadline = min(time.monotonic() + 60, ceiling)
+        last = time.monotonic()
 
     _, status = os.waitpid(pid, 0)
     sys.stdout.write(output.replace(b"\r\n", b"\n").decode(errors="replace"))
