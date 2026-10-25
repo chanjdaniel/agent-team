@@ -217,6 +217,18 @@ RECORDS_FIX="fix what it names in the team home (team-log --check and team-proje
 
 # A UI capture (team-ui) stays on the machine that took it: the team home's git ignores it, and
 # team-close removes it, so one left behind by a task that is not open is reported.
+@test "the heavy runs line names the heavy-run lock's holder, or says it is free" {
+  run_bin team-doctor
+  assert_equal "$(line_of 'heavy runs')" "PASS heavy runs: free (team-heavy queues full test suites and local checks)"
+  mkdir -p "$HOME/.local/state/agent-team"
+  exec {held}<>"$HOME/.local/state/agent-team/heavy.lock"
+  echo "tests/run all in ~/agent-team (pid 1) since 2026-10-25 10:00:00 +0000" >"$HOME/.local/state/agent-team/heavy.lock"
+  flock -x "$held"
+  run_bin team-doctor
+  exec {held}<&-
+  assert_equal "$(line_of 'heavy runs')" "PASS heavy runs: held by tests/run all in ~/agent-team (pid 1) since 2026-10-25 10:00:00 +0000"
+}
+
 @test "the captures line warns while the team home's git does not ignore tasks/*/ui/, or a capture is left by a task that is not open or in an archive" {
   tools_at arch
   mkdir -p "$TEAM_HOME/tasks/T4/ui" "$TEAM_HOME/tasks/T5/ui" "$TEAM_HOME/tasks/T6/ui"

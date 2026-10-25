@@ -6,6 +6,9 @@
 # The bats files run as many at once as the machine has CPUs, each in a bats of its own (every
 # test is sandboxed, so files share nothing), the largest first: one line per file as it ends,
 # then the whole output of each file that failed, and the count of tests passed.
+# Every part but shellcheck alone runs under the machine's heavy-run lock (team-heavy run), so a
+# suite waits for another suite or a gate's end-to-end run instead of overlapping it; under a
+# heavy run already (TEAM_HEAVY_HELD set, team-merge's local checks say), it runs at once.
 #
 # Usage: tests/run [shellcheck|bats|toolkits]   (default: all three)
 # Exit 0 when every check passes; CI runs each part as its own job. The last line is the wall
@@ -18,6 +21,11 @@ source "$root/bin/lib/team.sh" "$@"
 
 what=${1:-all}
 [[ $# -le 1 && $what =~ ^(all|shellcheck|bats|toolkits)$ ]] || usage_error "usage: tests/run [shellcheck|bats|toolkits]"
+
+# Every part but shellcheck alone runs under the machine's heavy-run lock (bin/team-heavy).
+if [[ $what != shellcheck && -z ${TEAM_HEAVY_HELD:-} ]]; then
+  exec "$root/bin/team-heavy" run --label "tests/run $what in ${root/#"$HOME"/\~}" -- "$0" "$what"
+fi
 
 # Every file under bin/, tests/, servers/ and toolkits/ that is a shell script by its shebang or
 # extension.

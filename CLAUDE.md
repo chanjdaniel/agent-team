@@ -58,6 +58,7 @@ It holds:
 
 - `tests/run` runs shellcheck (0.11.0) on every shell script in `bin/`, `tests/`, `servers/` and `toolkits/`, then the whole bats suite, then the toolkit tests; `tests/run shellcheck`, `tests/run bats` and `tests/run toolkits` run one part each, as the CI jobs do.
   Its bats files run in parallel, one bats per file and as many at once as there are CPUs, so every file must stay independent of the others; its last line is the wall time.
+  Every part but `shellcheck` alone runs under the machine's heavy-run lock (`bin/team-heavy`, which `team-merge`'s local checks take too), so two suites on one machine queue instead of overlapping, and the sandbox clears `TEAM_HEAVY_HELD` so the tests take their own.
 - A PR to `dev` is checked locally, never on GitHub (CI policy B): `projects.toml` gives `agent-team` `local_checks = ["tests/run"]`, which `team-merge` runs on the PR's exact head before it merges, and builders and reviewers run `tests/run` on the head they deliver or review.
   GitHub's CI (`.github/workflows/ci.yml`) runs only on a PR to `main` and by hand (`workflow_dispatch`).
   The Bootstrap workflow (`.github/workflows/bootstrap.yml`) runs only by hand: `team-bootstrap` on a fresh macOS runner and in an Arch container, which installs real tools.

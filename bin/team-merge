@@ -14,8 +14,9 @@
 #   no check on the head is failing or pending; agent-review is success on the head;
 #   no commit of the PR carries an agent attribution line, and the list read ends at the head.
 # Then, for a project with local_checks, each command runs from the root of a detached worktree of
-# the primary checkout at the PR's head (fetched from origin), and must exit 0; the worktree is
-# removed after, and the head read again must not have moved.
+# the primary checkout at the PR's head (fetched from origin), under the machine's heavy-run lock
+# (team-heavy run, which waits for another holder), and must exit 0 (75: the lock stayed held, try
+# again later); the worktree is removed after, and the head read again must not have moved.
 # Any failure is exit 1 with every reason, and gh pr merge is never called.
 # Then: gh pr merge <number> --repo <repo> --<merge_method> --match-head-commit <head>, never
 # --auto or --admin; the PR is read again and must be merged (if gh left it open with auto-merge
@@ -214,8 +215,11 @@ if ((${#local_checks[@]})); then
   for command in "${local_checks[@]}"; do
     echo "team-merge: running $command on ${head:0:7}" >&2
     rc=0
-    (cd "$checkout" && bash -c "$command") </dev/null >"$scratch/check.log" 2>&1 || rc=$?
-    if ((rc)); then
+    (cd "$checkout" && "$(dirname "$TEAM_LIB")/team-heavy" run --label "team-merge $task: $command on ${head:0:7}" -- bash -c "$command") \
+      </dev/null >"$scratch/check.log" 2>&1 || rc=$?
+    if ((rc == 75)); then
+      problems+=("local check '$command' could not run on the head ${head:0:7} yet (exit 75, try again later); its last lines:"$'\n'"$(tail -n 20 "$scratch/check.log" | sed 's/^/      /')")
+    elif ((rc)); then
       problems+=("local check '$command' failed on the head ${head:0:7} (exit $rc); its last lines:"$'\n'"$(tail -n 20 "$scratch/check.log" | sed 's/^/      /')")
     fi
   done

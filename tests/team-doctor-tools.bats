@@ -99,6 +99,7 @@ every_tool_fails() {
     echo records
     echo 'trust team home'
     echo captures
+    echo 'heavy runs'
     project_checks
     printf '%s\n' clock lease heartbeat offline)
   assert_equal "$(checks)" "$expected"
@@ -126,6 +127,7 @@ every_tool_fails() {
     echo records
     echo 'trust team home'
     echo captures
+    echo 'heavy runs'
     project_checks
     printf '%s\n' clock lease heartbeat offline)
   assert_equal "$(checks)" "$expected"
