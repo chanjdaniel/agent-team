@@ -333,10 +333,11 @@ live_busy() {
     assert_equal "$(live_get "${port[$project]}" /marker)" "$project"
   done
   # A hand-run wrapper call with an instance's exports reaches it and changes nothing.
+  local instance=$own-a
   run_bin -0 team-stack env --instance a
-  assert_equal "$(eval "$output"; scripts/compose.sh ports | sed -n 2p)" "export TH_WEB_PORT=${port[$own-a]}"
+  assert_equal "$(eval "$output"; scripts/compose.sh ports | sed -n 2p)" "export TH_WEB_PORT=${port[$instance]}"
   run_bin -0 team-stack env --instance a
-  assert_contains "$output" "export TH_WEB_PORT=${port[$own-a]}"
+  assert_contains "$output" "export TH_WEB_PORT=${port[$instance]}"
 
   run_bin -0 --separate-stderr team-stack down
   local logs=$STACK_WORKTREE/.scratch/task/stack-logs
