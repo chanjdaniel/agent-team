@@ -1,7 +1,7 @@
 {
   "about": [
     "The ledger contract: every event kind in ledger.jsonl, the one script that writes it, and its fields.",
-    "Each field's type is string, number or array (a list), or a list of the strings it may be.",
+    "Each field's type is string, number, array (a list) or object, or a list of the strings it may be.",
     "Every line has ts (UTC, like 2026-10-22T01:00:00Z), task (T<n>) and event; note (a string) is allowed on every kind, and other fields are allowed.",
     "Lines from strict_from on must meet their kind's fields; earlier lines are legacy and only need ts, task and event.",
     "Legacy lines keep shapes no kind has now: closes by hand with no lists, and plan-ready, which is not a kind, since a planner's report is done and a plan put to Daniel is asked.",
@@ -108,6 +108,12 @@
       "about": "sent_back: the numbers of the notes sent back to the builder before the merge, each a correctness, security or real-data note; every other note became a follow-up",
       "required": {"verdict": ["pass", "findings"], "head": "string"},
       "optional": {"agent_review": "string", "sent_back": "array"}
+    },
+    "gate-run": {
+      "writer": "team-log",
+      "about": "one per gate run, at its end: run is the gate's run id, head the commit it ran on, cause why it repeats an earlier run on the same PR, minutes each step's minutes as no-mistakes axi status --run prints them",
+      "required": {"run": "string", "head": "string", "outcome": ["pushed", "red", "aborted", "stopped-green"]},
+      "optional": {"cause": ["review", "notes", "gate-finding", "load", "tooling", "base-merge", "other"], "minutes": "object"}
     },
     "merge-approved": {
       "writer": "team-log",

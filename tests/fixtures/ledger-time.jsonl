@@ -1,0 +1,56 @@
+{"ts":"2026-10-21T22:00:00Z","task":"T62","event":"opened","project":"conventioner","path":"bug","type":"fix","title":"T62 fixture","branch":"fix/T62-fixture","base":"dev","base_sha":"0123456789abcdef","worktree":"/home/danielc/wt/T62"}
+{"ts":"2026-10-21T22:00:00Z","task":"T62","event":"launch","role":"builder","session":"s0000001","worktree":"/home/danielc/wt/T62","toolkits":[]}
+{"ts":"2026-10-21T23:00:00Z","task":"T62","event":"asked","id":"t62-scope","text":"fix the import too?"}
+{"ts":"2026-10-21T23:02:00Z","task":"T62","event":"answered","id":"t62-scope","answer":"yes"}
+{"ts":"2026-10-22T00:00:00Z","task":"T9","event":"launch","role":"builder","session":"legacy01","worktree":"/home/danielc/wt/T9","toolkits":[]}
+{"ts":"2026-10-22T00:00:00Z","task":"T60","event":"opened","project":"conventioner","path":"feature","type":"feat","title":"T60 fixture","branch":"feat/T60-fixture","base":"dev","base_sha":"0123456789abcdef","worktree":"/home/danielc/wt/T60"}
+{"ts":"2026-10-22T01:00:00Z","task":"T62","event":"done","role":"builder","session":"s0000000"}
+{"ts":"2026-10-22T01:00:00Z","task":"T62","event":"closed","archive":[],"returned":[],"kept":[]}
+{"ts":"2026-10-22T01:00:00Z","task":"T60","event":"launch","role":"planner","session":"s0000002","worktree":"/home/danielc/wt/T60","toolkits":[]}
+{"ts":"2026-10-22T02:00:00Z","task":"T60","event":"done","role":"planner","session":"s0000000"}
+{"ts":"2026-10-22T02:20:00Z","task":"T60","event":"plan-approved","by":"coordinator"}
+{"ts":"2026-10-22T02:30:00Z","task":"T60","event":"launch","role":"builder","session":"s0000003","worktree":"/home/danielc/wt/T60","toolkits":[]}
+{"ts":"2026-10-22T04:00:00Z","task":"T60","event":"asked","id":"t60-api","text":"which API?"}
+{"ts":"2026-10-22T04:00:00Z","task":"T60","event":"waiting","on":"Daniel","reason":"question t60-api"}
+{"ts":"2026-10-22T04:30:00Z","task":"T60","event":"answered","id":"t60-api","answer":"the new one"}
+{"ts":"2026-10-22T06:00:00Z","task":"T60","event":"ticket-done","ticket":"01","commits":["a1b2c3d"]}
+{"ts":"2026-10-22T06:00:00Z","task":"T60","event":"done","role":"builder","session":"s0000000"}
+{"ts":"2026-10-22T06:00:00Z","task":"T60","event":"launch","role":"builder","session":"s0000004","worktree":"/home/danielc/wt/T60","toolkits":[]}
+{"ts":"2026-10-22T07:00:00Z","task":"T60","event":"gate-run","run":"R1","head":"aaaaaaa","outcome":"red","minutes":{"review":6,"test":24}}
+{"ts":"2026-10-22T07:00:00Z","task":"T60","event":"paused","reason":"the gate re-runs once the machine's load drops"}
+{"ts":"2026-10-22T07:30:00Z","task":"T60","event":"resumed"}
+{"ts":"2026-10-22T08:30:00Z","task":"T60","event":"gate-run","run":"R2","head":"bbbbbbb","outcome":"pushed","cause":"load","minutes":{"review":5,"test":25,"document":1,"push":1,"ci":28}}
+{"ts":"2026-10-22T08:30:00Z","task":"T60","event":"pr","url":"https://github.com/chanjdaniel/Conventioner/pull/7","head":"bbbbbbb"}
+{"ts":"2026-10-22T08:30:00Z","task":"T60","event":"done","role":"builder","session":"s0000000"}
+{"ts":"2026-10-22T08:30:00Z","task":"T60","event":"launch","role":"reviewer","session":"s0000005","worktree":"/home/danielc/wt/T60","toolkits":[]}
+{"ts":"2026-10-22T09:30:00Z","task":"T60","event":"review","verdict":"findings","head":"bbbbbbb"}
+{"ts":"2026-10-22T09:30:00Z","task":"T60","event":"done","role":"reviewer","session":"s0000000"}
+{"ts":"2026-10-22T09:30:00Z","task":"T60","event":"launch","role":"builder","session":"s0000006","worktree":"/home/danielc/wt/T60","toolkits":[]}
+{"ts":"2026-10-22T10:00:00Z","task":"T60","event":"paused","reason":"gate run for the review's findings"}
+{"ts":"2026-10-22T10:00:00Z","task":"T61","event":"opened","project":"agent-team","path":"small","type":"fix","title":"T61 fixture","branch":"fix/T61-fixture","base":"dev","base_sha":"0123456789abcdef","worktree":"/home/danielc/wt/T61"}
+{"ts":"2026-10-22T10:00:00Z","task":"T61","event":"launch","role":"builder","session":"s0000007","worktree":"/home/danielc/wt/T61","toolkits":[]}
+{"ts":"2026-10-22T11:00:00Z","task":"T60","event":"gate-run","run":"R3","head":"ccccccc","outcome":"stopped-green","cause":"review","minutes":{"review":4,"test":26,"ci":30}}
+{"ts":"2026-10-22T11:00:00Z","task":"T60","event":"resumed"}
+{"ts":"2026-10-22T11:00:00Z","task":"T60","event":"pr","url":"https://github.com/chanjdaniel/Conventioner/pull/7","head":"ccccccc"}
+{"ts":"2026-10-22T11:00:00Z","task":"T60","event":"done","role":"builder","session":"s0000000"}
+{"ts":"2026-10-22T11:00:00Z","task":"T60","event":"launch","role":"reviewer","session":"s0000008","worktree":"/home/danielc/wt/T60","toolkits":[]}
+{"ts":"2026-10-22T11:00:00Z","task":"T61","event":"blocked","reason":"builder: its commit was refused by a deny rule"}
+{"ts":"2026-10-22T11:15:00Z","task":"T61","event":"resumed"}
+{"ts":"2026-10-22T11:30:00Z","task":"T60","event":"review","verdict":"pass","head":"ccccccc"}
+{"ts":"2026-10-22T11:30:00Z","task":"T60","event":"done","role":"reviewer","session":"s0000000"}
+{"ts":"2026-10-22T11:30:00Z","task":"T60","event":"waiting","on":"Daniel","reason":"merge-it on PR #7"}
+{"ts":"2026-10-22T12:00:00Z","task":"T61","event":"blocked","reason":"waits for T60: the script its PR adds"}
+{"ts":"2026-10-22T12:30:00Z","task":"T60","event":"merge-approved","url":"https://github.com/chanjdaniel/Conventioner/pull/7","discord_message":"1563000000000000001"}
+{"ts":"2026-10-22T13:00:00Z","task":"T60","event":"merged","pr":7,"merge":"ddddddd","head":"ccccccc","by":"team-merge","url":"https://github.com/chanjdaniel/Conventioner/pull/7"}
+{"ts":"2026-10-22T13:00:00Z","task":"T60","event":"closed","archive":[],"returned":[],"kept":[]}
+{"ts":"2026-10-22T14:00:00Z","task":"T61","event":"launch","role":"builder","session":"s0000009","worktree":"/home/danielc/wt/T61","toolkits":[]}
+{"ts":"2026-10-22T15:00:00Z","task":"T61","event":"waiting","on":"GitHub","reason":"GitHub Support ticket on the Actions minutes"}
+{"ts":"2026-10-22T16:00:00Z","task":"T61","event":"resumed"}
+{"ts":"2026-10-22T16:00:00Z","task":"T61","event":"paused","reason":"stowed"}
+{"ts":"2026-10-22T18:00:00Z","task":"T61","event":"resumed"}
+{"ts":"2026-10-22T18:00:00Z","task":"T61","event":"asked","id":"t61-name","text":"which name?"}
+{"ts":"2026-10-22T18:00:00Z","task":"T61","event":"waiting","on":"Daniel","reason":"question t61-name"}
+{"ts":"2026-10-22T18:12:00Z","task":"T61","event":"answered","id":"t61-name","answer":"team-time"}
+{"ts":"2026-10-22T19:00:00Z","task":"T61","event":"asked","id":"t61-later","text":"and the flag?"}
+{"ts":"2026-10-22T21:00:00Z","task":"T63","event":"opened","project":"conventioner","path":"small","type":"fix","title":"T63 fixture","branch":"fix/T63-fixture","base":"dev","base_sha":"0123456789abcdef","worktree":"/home/danielc/wt/T63"}
+{"ts":"2026-10-22T21:00:00Z","task":"T63","event":"launch","role":"builder","session":"s0000010","worktree":"/home/danielc/wt/T63","toolkits":[]}

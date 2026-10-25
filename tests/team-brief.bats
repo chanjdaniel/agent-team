@@ -144,6 +144,8 @@ Task directory: `.scratch/task/` in the worktree (excluded from git), for your s
    The gate leaves Playwright to CI, so its result arrives with CI's `e2e` checks: treat a red `e2e` as the gate's red.
 7. Then send `T12 PR <full url>` to `coordinator`.
 
+At each gate run's end (it pushed, went red, was aborted, or was stopped once its PR's checks were green), send `T12 DONE gate run=<its id> head=<the full sha it ran on> outcome=<pushed|red|aborted|stopped-green> minutes=<each step's minutes from no-mistakes axi status --run <its id>, as one JSON object>` to `coordinator`, with `cause=<review|notes|gate-finding|load|tooling|base-merge|other>` when the run repeats an earlier one on the same PR.
+
 Never run a command that needs `sudo`; send `T12 BLOCKED <the command> needs sudo` to `coordinator` instead.
 
 ## Rules
