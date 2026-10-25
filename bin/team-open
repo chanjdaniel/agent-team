@@ -20,8 +20,10 @@
 # refused. Then makes the task directory (refused, and the slot removed or returned again, unless
 # git ignores it), writes tasks/T<n>/plan.md from templates/plan.md, opens the thread
 # (team-thread) and appends opened. Prints the task's facts as JSON; the project's other open
-# tasks go to stderr. Exit 75 when every slot is taken (a git pool) or the lease command fails
-# (a treehouse pool), listing the slots and who holds them.
+# tasks go to stderr, each with the files its branch changes against the base
+# (git diff --name-only origin/<base>...<branch>, origin's branch when pushed, else the local
+# one), or "no branch yet". Exit 75 when every slot is taken (a git pool) or the lease command
+# fails (a treehouse pool), listing the slots and who holds them.
 # With --add, gives the open task T<n> a worktree in another project, on <type>/T<n>-<slug>: the
 # same pool steps, then worktree-added, with no plan, thread or opened. Refused for a task with
 # no opened event or with a closed one, and for a project the task already has an open worktree in.
@@ -529,14 +531,54 @@ else
       base_sha: $base_sha, worktree: $worktree, task_dir: $task_dir, thread: $thread, plan: $plan}'
 fi
 
-# Overlap between tasks is the coordinator's judgment: show the project's other open tasks.
-others=$(ledger_jq 'ledger_events as $events
+# Overlap between tasks is the coordinator's judgment: show the project's other open tasks, each
+# with the files its branch changes against the base, origin's branch when it is pushed, else the
+# local one. The task is open by now, so a branch that cannot be read is only said.
+others=() branches=()
+while IFS= read -r -d '' line && IFS= read -r -d '' other_branch; do
+  others+=("$line") branches+=("$other_branch")
+done < <(ledger_jq 'ledger_events as $events
   | ($events | by_task | with_entries(select(.value | is_open))) as $open
   | open_worktrees($events[] | select($open[.task]); $home)
   | select(.project == $project and .task != $task)
   | ($open[.task] | map(select(.event == "opened")) | first | .title) as $title
-  | "  \(.task) \(.branch) in \(.worktree)\(if $title then ": \($title)" else "" end)"' \
-  -nRr --arg project "$project" --arg task "$task" "$ledger")
-if [[ -n $others ]]; then
-  printf 'team-open: other open tasks in %s:\n%s\n' "$project" "$others" >&2
+  | "  \(.task) \(.branch) in \(.worktree)\(if $title then ": \($title)" else "" end)\u0000\(.branch)\u0000"' \
+  -nRj --arg project "$project" --arg task "$task" "$ledger")
+((${#others[@]})) || exit 0
+declare -A pushed=()
+refspecs=() read_origin=''
+if heads=$(git -C "$primary" ls-remote --heads origin "${branches[@]}"); then
+  read_origin=1
+  for other_branch in "${branches[@]}"; do
+    if cut -f 2 <<<"$heads" | grep -qxF -- "refs/heads/$other_branch"; then
+      pushed[$other_branch]=1
+      refspecs+=("+refs/heads/$other_branch:refs/remotes/origin/$other_branch")
+    fi
+  done
+  if ((${#refspecs[@]})) && ! git -C "$primary" fetch -q origin "${refspecs[@]}"; then read_origin=''; fi
 fi
+if [[ -z $read_origin ]]; then
+  echo "team-open: cannot read the other tasks' branches from origin; their local branches are shown" >&2
+  pushed=()
+fi
+echo "team-open: other open tasks in $project:" >&2
+for i in "${!others[@]}"; do
+  echo "${others[i]}" >&2
+  other_branch=${branches[i]}
+  if [[ -v pushed[$other_branch] ]]; then
+    ref=refs/remotes/origin/$other_branch from="origin's branch"
+  elif git -C "$primary" rev-parse -q --verify "refs/heads/$other_branch^{commit}" >/dev/null; then
+    ref=refs/heads/$other_branch from="the local branch, not pushed"
+  else
+    echo "    no branch yet" >&2
+    continue
+  fi
+  if ! files=$(git -C "$primary" diff --name-only --line-prefix='      ' "origin/$base...$ref"); then
+    echo "    cannot diff $ref against origin/$base" >&2
+  elif [[ -z $files ]]; then
+    echo "    no changes against $base yet" >&2
+  else
+    echo "    changes against $base ($from):" >&2
+    echo "$files" >&2
+  fi
+done
