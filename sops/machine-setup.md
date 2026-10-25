@@ -110,7 +110,7 @@ Done when `check` lists no `Daniel <n>:` line.
 ### Stage 9: taking the team (only when Daniel says so)
 
 - Another machine holds the lease: first run `~/agent-team/bin/team-resume --wait` here, in the background; only then does Daniel say "hand off" to the coordinator there (Discord).
-  It runs the doctor before it waits, so it is the preflight: a FAIL refuses with nothing changed while the old machine still runs the team, and you fix it and start it again.
+  It runs the doctor and checks that the team home and the code checkout can fast-forward before it waits, so it is the preflight: a FAIL or a refused checkout stops it with nothing changed while the old machine still runs the team, and you fix it and start it again.
   When it prints "this machine is ready: say 'hand off' to the coordinator there now", tell Daniel so; it then waits for the release and takes the team.
 - No machine holds it: `~/agent-team/bin/team-resume`.
 - The holder is dead or unreachable: Daniel runs `~/agent-team/bin/team-resume --steal` in their own terminal and types the holder's name.

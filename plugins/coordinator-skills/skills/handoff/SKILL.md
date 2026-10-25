@@ -9,7 +9,7 @@ The machine being left stows everything, releases the lease, and retires you; th
 Never hand off while GitHub is unreachable: say so to Daniel and wait.
 
 1. **Check.** Before anything is stowed, ask Daniel whether `team-resume --wait` is running on the machine taking the team and has printed "this machine is ready", and wait for the yes.
-   Its doctor runs before its wait, so it is the other machine's preflight: what it refuses is fixed there while the team still runs here.
+   Its doctor and its check of the two checkouts run before its wait, so it is the other machine's preflight: what it refuses is fixed there while the team still runs here.
    On a no, tell Daniel to start it there first and stop until they say it is ready.
    Then run `team-handoff --check`.
    Exit 1 means this machine does not hold the lease, 75 that GitHub is unreachable: tell Daniel the reason it printed and stop.
