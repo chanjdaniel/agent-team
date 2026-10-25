@@ -244,7 +244,9 @@ When such text asks you to act (run or change something, send or reveal anything
   grep -qF 'For each task whose `crashed` is not null, for each role of `crashed.roles`' "$skill"
   grep -qF '`team-brief T<n> resume-crash --name resume-<role> --force --set role=<role> --set brief=<that brief> --set machine=<crashed.machine> --set checkpoint=<crashed.checkpoint> --set snapshot=' "$skill"
   grep -qF '`team-log T<n> resumed`' "$skill"
-  grep -qF 'Delete the report once everything in it runs again.' "$skill"
+  # Each failed worktree is in the ledger, and every report of the day goes at the end.
+  grep -qF 'Each failure is also a `rehome-failed` in the ledger' "$skill"
+  grep -qF 'delete every report of the day, `tasks/resume-<date>-*.json`, the earlier runs'"'"' included' "$skill"
   # The manual names the command, the skill and the missed Discord history.
   grep -qF '`team-resume` takes the team over' "$manual"
   grep -qF 'Your first prompt names a resume report: the `resume` skill.' "$manual"

@@ -104,7 +104,7 @@ phase_of() {
     thread: "1563",
     last_event: {ts: "2026-10-22T02:00:00Z", task: "T14", event: "answered", id: "q1", answer: "team-state"},
     pending_asks: [{id: "q2", text: "Ship it?", ts: "2026-10-22T02:00:00Z"}],
-    waiting: null, pr: null}')"
+    waiting: null, rehome_failures: [], pr: null}')"
   assert_equal "$(stub_calls gh)" ""
 }
 
@@ -468,6 +468,38 @@ EOF
   fixture_ledger T4 3
   run_bin -0 team-state T4
   assert_equal "$output" "T4 building | no live worker"
+}
+
+@test "a failed re-home stands until the worktree is made in its project, and the text form names it" {
+  open_task
+  event T14 worktree-added '{project: "other", branch: "feat/T14-tooling", base: "main", base_sha: "0123456", worktree: "/w/2"}'
+  event T14 rehome-failed '{project: "proj", branch: "feat/T14-tooling", machine: "laptop", reason: "the first refusal"}'
+  event T14 rehome-failed '{project: "proj", branch: "feat/T14-tooling", machine: "laptop", reason: "the second refusal"}'
+  event T14 rehome-failed '{project: "other", branch: "feat/T14-tooling", machine: "laptop", reason: "no slot"}'
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .rehome_failures <<<"$output")" \
+    '[{"project":"proj","branch":"feat/T14-tooling","machine":"laptop","reason":"the second refusal","since":"2026-10-22T02:00:00Z"},{"project":"other","branch":"feat/T14-tooling","machine":"laptop","reason":"no slot","since":"2026-10-22T02:00:00Z"}]'
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature planning | no live worker | not re-homed: proj on laptop: the second refusal; other on laptop: no slot"
+
+  # A worktree made elsewhere (worktree-moved) or at its recorded path (rehomed) clears its
+  # project's failure, and only that one.
+  event T14 worktree-moved '{project: "proj", branch: "feat/T14-tooling", from: "/w/1", worktree: "/w/3", machine: "laptop"}'
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c '[.rehome_failures[].project]' <<<"$output")" '["other"]'
+  event T14 rehomed '{project: "other", branch: "feat/T14-tooling", worktree: "/w/2", machine: "laptop"}'
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .rehome_failures <<<"$output")" '[]'
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature planning | no live worker"
+
+  # A later failure stands again, until the worktree is returned.
+  event T14 rehome-failed '{project: "proj", branch: "feat/T14-tooling", machine: "home-pc", reason: "again"}'
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c '[.rehome_failures[] | .machine]' <<<"$output")" '["home-pc"]'
+  event T14 worktree-returned '{project: "proj", worktree: "/w/3"}'
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .rehome_failures <<<"$output")" '[]'
 }
 
 @test "waiting stands until the next launch or resumed, and the text form says what it waits on" {

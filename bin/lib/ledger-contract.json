@@ -137,6 +137,16 @@
       "writer": "team-log",
       "about": "outside text that asked role to act: source is where it was (a URL, a path, a command, or <collection>/<_id>), text what it asked, never the personal details it held",
       "required": {"role": "string", "source": "string", "text": "string"}
+    },
+    "rehome-failed": {
+      "writer": "team-resume",
+      "about": "a worktree of the task in project that team-open --resume could not make on machine, reason the first line team-open printed; it stands until a later opened, worktree-added, worktree-moved, rehomed or worktree-returned of the task in project",
+      "required": {"project": "string", "branch": "string", "machine": "string", "reason": "string"}
+    },
+    "rehomed": {
+      "writer": "team-open",
+      "about": "team-open --resume, when it makes the worktree at its recorded path while a rehome-failed of the task in project stands; made anywhere else, the worktree-moved clears it",
+      "required": {"project": "string", "branch": "string", "worktree": "string", "machine": "string"}
     }
   }
 }

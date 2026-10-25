@@ -195,6 +195,16 @@ def waiting:
     map(select(.event == "waiting")) | last | {on, reason, since: .ts}
   else null end;
 
+# The worktrees team-resume could not re-home that still are not made: each project's latest
+# rehome-failed with no later opened, worktree-added, worktree-moved, rehomed or worktree-returned
+# in that project, as {project, branch, machine, reason, since}, in the order they failed.
+def rehome_failures:
+  . as $events
+  | [to_entries[] | select(.value.event == "rehome-failed") | .key as $i | .value as $failed
+     | select(all($events[$i + 1:][]; .project != $failed.project
+         or (.event | IN("rehome-failed", "opened", "worktree-added", "worktree-moved", "rehomed", "worktree-returned") | not)))
+     | $failed | {project, branch, machine, reason, since: .ts}];
+
 # The index of the task's latest event of $kind, or -1 when it has none.
 def latest_index($kind): [to_entries[] | select(.value.event == $kind) | .key] | last // -1;
 
@@ -290,7 +300,8 @@ def task_state($sessions; $home):
   | {schema: "team-state/1", task: .[0].task, title: $opened.title, project: $opened.project,
      path: $opened.path, phase: phase, worktrees: worktree_list,
      thread: (map(select(.event == "thread") | .discord_thread) | last),
-     workers: workers($sessions), last_event: last, pending_asks: pending_asks, waiting: waiting, pr: null};
+     workers: workers($sessions), last_event: last, pending_asks: pending_asks, waiting: waiting,
+     rehome_failures: rehome_failures, pr: null};
 
 # A task's state (team-state's JSON) as one line of text:
 # T14 agent-team feature building | T14-builder idle | PR #5 a1b2c3d checks 2/2 agent-review missing
@@ -314,6 +325,8 @@ def state_line:
            + " agent-review \(.agent_review)"
          end
      end)
+  + (if (.rehome_failures // []) == [] then ""
+     else " | not re-homed: " + (.rehome_failures | map("\(.project) on \(.machine): \(.reason)") | join("; ")) end)
   + (if .waiting == null then "" else " | waiting on \(.waiting.on): \(.waiting.reason)" end);
 
 # Whether a task is parked, waiting on something other than a worker: held, blocked or awaiting

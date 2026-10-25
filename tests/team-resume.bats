@@ -92,7 +92,11 @@ SH
   make_machine laptop
   laptop=$BATS_TEST_TMPDIR/machines/laptop
   code_checkout
-  report=$laptop/team/tasks/resume-$(date +%F).json
+}
+
+# The report the last run wrote, as its report line names it: reported
+reported() {
+  sed -n 's/^report: //p' <<<"$output"
 }
 
 # A --wait run a failed test left waiting would hold the bats run open for good.
@@ -129,6 +133,7 @@ laptop_state() {
   hand_off
 
   on_machine laptop run_bin -0 --separate-stderr team-resume
+  report=$(reported)
   assert_equal "$stderr" ""
   assert_equal "${lines[0]}" "github: origin answers; the lease is released by home-pc, epoch 1"
   assert_contains "$output" "doctor: WARN lease: released, epoch 1"
@@ -140,7 +145,7 @@ laptop_state() {
   # The sandbox's paths are not under /home/<name>, so the recorded slot is not re-rooted: the
   # first free slot of laptop's pool is taken, and the move logged.
   assert_contains "$output" "T1 home: $laptop/home/slots/home/1 on feat/T1-work at ${head:0:7}, moved from $wt, scratch restored from tasks/T1/scratch"
-  assert_contains "$output" "report: $report"
+  [[ $report == "$laptop/team/tasks/resume-$(date +%F)-"[0-2][0-9][0-5][0-9][0-5][0-9].json ]]
   assert_contains "$output" "coordinator: started, with the resume skill and the report"
   assert_equal "${lines[-1]}" "Pin the coordinator in \`claude agents\` (Ctrl+T)."
 
@@ -175,11 +180,20 @@ laptop_state() {
     "You are the coordinator, resuming the team on laptop. Follow the \`resume\` skill with the report $report."
 
   # A second run finishes nothing new, and the live coordinator refuses a second start.
+  local first
+  first=$(cat "$report")
   on_machine laptop run_bin -1 --separate-stderr team-resume
   assert_contains "$output" "lease: laptop holds the lease, epoch 2"
   assert_contains "$stderr" "team-resume: coordinator: a coordinator is already live: session 7c3e9a10"
   assert_equal "$(lease_json | jq -c '[.holder, .epoch]')" '["laptop",2]'
   assert_equal "$(jq -c 'select(.event == "worktree-moved")' "$laptop/team/ledger.jsonl" | wc -l)" 1
+  # Each run keeps its own report: the first is still there, as it was.
+  local second
+  second=$(reported)
+  [[ $second == "$laptop/team/tasks/resume-$(date +%F)-"* && $second != "$report" ]]
+  assert_equal "$(find "$laptop/team/tasks" -maxdepth 1 -name 'resume-*.json' | sort)" "$(printf '%s\n' "$report" "$second" | sort)"
+  assert_equal "$(cat "$report")" "$first"
+  assert_equal "$(jq -r .machine "$second")" laptop
 }
 
 @test "while home-pc holds a fresh lease, the resume refuses and changes nothing" {
@@ -435,6 +449,7 @@ team-doctor-trust-home"
   git -C "$primary" checkout -q main
 
   on_machine laptop run_bin -1 --separate-stderr team-resume
+  report=$(reported)
   assert_contains "$stderr" "team-resume: T1 home: not re-homed: "
   assert_contains "$stderr" "salvage/home/T1-laptop"
   assert_contains "$stderr" "team-resume: 1 worktree(s) could not be re-homed; the report names each, and the coordinator says so on Discord"
@@ -446,6 +461,21 @@ team-doctor-trust-home"
   assert_contains "$(jq -r '.tasks[0].failures[0].reason' "$report")" "salvage/home/T1-laptop"
   # The coordinator still starts, to say what did not resume.
   assert_equal "$(coordinator_launches | wc -l)" 1
+
+  # The ledger keeps the failure, once, with the first line team-open printed, and team-state
+  # shows it until the worktree is made.
+  local reason
+  reason=$(jq -r '.tasks[0].failures[0].reason' "$report")
+  assert_equal "$(jq -c 'select(.event == "rehome-failed") | del(.ts)' "$laptop/team/ledger.jsonl")" \
+    "$(jq -cn --arg r "${reason%%$'\n'*}" '{task: "T1", event: "rehome-failed", project: "home", branch: "feat/T1-work", machine: "laptop", reason: $r}')"
+  on_machine laptop run_bin -0 team-state T1
+  assert_contains "$output" " | not re-homed: home on laptop: feat/T1-work here has commits that "
+  # Once Daniel drops laptop's commit, team-open --resume (as the resume skill runs it) makes the
+  # worktree, and the failure is cleared.
+  git -C "$primary" branch -q -D feat/T1-work
+  on_machine laptop run_bin -0 team-open --task T1 --resume home
+  on_machine laptop run_bin -0 team-state T1 --json
+  assert_equal "$(jq -c .rehome_failures <<<"$output")" '[]'
 }
 
 @test "a treehouse slot its lease's pre-warm dirties is handed back, so each run again leases no slot more" {
@@ -508,6 +538,22 @@ TOML
   assert_contains "$stderr" "team-resume: T2 conv: not re-homed: "
   assert_equal "$(pool_leases)" ""
   assert_equal "$(git -C "${laptop_slots[0]}" status --porcelain)$(git -C "${laptop_slots[1]}" status --porcelain)" ""
+  # One rehome-failed per run, each with only the first line of what team-open printed, which
+  # also said it handed the slot back.
+  report=$(reported)
+  local reason line
+  reason=$(jq -r '.tasks[] | select(.task == "T2") | .failures[0].reason' "$report")
+  assert_contains "$reason" "handed "
+  assert_equal "$(jq -r 'select(.event == "rehome-failed") | "\(.task) \(.project) \(.machine)"' "$laptop/team/ledger.jsonl")" \
+    "$(printf 'T2 conv laptop\nT2 conv laptop')"
+  local -a logged
+  mapfile -t logged < <(jq -r 'select(.event == "rehome-failed") | .reason' "$laptop/team/ledger.jsonl")
+  for line in "${logged[@]}"; do
+    assert_contains "$line" "the leased slot "
+    assert_contains "$line" "changes to tracked files: README.md"
+    [[ $line != *handed* ]]
+  done
+  [[ $reason == "${logged[-1]} "* ]]
 
   # Once the pre-warm is fixed, the next run finishes the resume in one slot.
   rm "$BATS_TEST_TMPDIR/prewarm"
@@ -516,6 +562,8 @@ TOML
   assert_contains "$output" "T2 conv: "
   assert_equal "$(pool_leases | wc -l)" "1"
   assert_equal "$(pool_leases | cut -d' ' -f2)" "T2"
+  on_machine laptop run_bin -0 team-state T2 --json
+  assert_equal "$(jq -c .rehome_failures <<<"$output")" '[]'
 }
 
 @test "a stale lease is refused naming --steal, and --steal takes it with the holder's name typed" {
@@ -532,6 +580,7 @@ TOML
   local tty=$BATS_TEST_TMPDIR/steal-tty
   echo home-pc >"$tty"
   TEAM_LEASE_TTY=$tty on_machine laptop run_bin -0 team-resume --steal
+  report=$(reported)
   assert_equal "$(lease_json | jq -c '[.holder, .epoch, .stolen_from]')" '["laptop",2,"home-pc"]'
   assert_equal "$(jq -r .stolen_from "$report")" home-pc
   assert_equal "$(coordinator_launches | wc -l)" 1
@@ -564,6 +613,7 @@ TOML
   local tty=$BATS_TEST_TMPDIR/steal-tty lt=$laptop/home/slots/home/1
   echo home-pc >"$tty"
   TEAM_LEASE_TTY=$tty on_machine laptop run_bin -0 --separate-stderr team-resume --steal
+  report=$(reported)
   assert_equal "$stderr" ""
   assert_equal "$(lease_json | jq -c '[.holder, .epoch, .stolen_from]')" '["laptop",2,"home-pc"]'
   assert_contains "$output" "T1 home: applied wip/home/T1 ${wip:0:7} (the checkpoint of $(jq -nr --argjson t "$at" '$t | todate')) to $lt as uncommitted changes"
@@ -608,6 +658,7 @@ TOML
   local tty=$BATS_TEST_TMPDIR/steal-tty lt=$laptop/home/slots/home/1
   echo home-pc >"$tty"
   TEAM_LEASE_TTY=$tty on_machine laptop run_bin -0 --separate-stderr team-resume --steal
+  report=$(reported)
   assert_equal "$stderr" ""
   assert_contains "$output" "T1 home: feat/T1-work is not on origin; it is taken from wip/home/T1, at ${head:0:7}"
   assert_contains "$output" "T1 home: applied wip/home/T1 "
@@ -645,6 +696,7 @@ EVENTS
   local tty=$BATS_TEST_TMPDIR/steal-tty
   echo home-pc >"$tty"
   TEAM_LEASE_TTY=$tty on_machine laptop run_bin -0 --separate-stderr team-resume --steal
+  report=$(reported)
   assert_contains "$output" "T1 home: wip/home/T1 not applied: the team home's origin has no wip/home/T1: no checkpoint saved this task's work"
   assert_contains "$output" "T1: crashed on home-pc, with no handoff since its last launch; no checkpoint of it was found, to relaunch: builder, reviewer"
   assert_equal "$(jq -c '.tasks[0].crashed' "$report")" '{"machine":"home-pc","checkpoint":null,"roles":["builder","reviewer"]}'
@@ -673,6 +725,7 @@ EVENTS
   local tty=$BATS_TEST_TMPDIR/steal-tty
   echo home-pc >"$tty"
   TEAM_LEASE_TTY=$tty on_machine laptop run_bin -0 --separate-stderr team-resume --steal
+  report=$(reported)
   assert_contains "$output" "T1: crashed on home-pc, with no handoff since its last launch; no checkpoint of it was found, to relaunch: no role"
   assert_equal "$(jq -c '.tasks[0].crashed.roles' "$report")" '[]'
 }

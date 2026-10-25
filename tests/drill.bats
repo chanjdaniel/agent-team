@@ -96,7 +96,6 @@ SH
   laptop=$BATS_TEST_TMPDIR/machines/laptop
   code_checkout
   lt=$laptop/home/slots/home/1
-  report=$laptop/team/tasks/resume-$(date +%F).json
   state=$HOME/.local/state/agent-team
 }
 
@@ -118,6 +117,11 @@ home_pc_sessions() {
 # The ledger's events of <kind> on <machine>'s team home, compact, without their times.
 events_of() {
   jq -c --arg kind "$1" 'select(.event == $kind) | del(.ts)' "$2/ledger.jsonl"
+}
+
+# The report the last team-resume wrote, as its report line names it: reported
+reported() {
+  sed -n 's/^report: //p' <<<"$output"
 }
 
 # Steal on laptop, as Daniel would: team-resume --steal, typing home-pc's name on its terminal.
@@ -158,6 +162,7 @@ posts() {
 
   on_machine laptop run_bin -0 --separate-stderr team-resume
   assert_equal "$stderr" ""
+  report=$(reported)
   assert_contains "$output" "lease: laptop holds the lease, epoch 2"
   assert_equal "$(lease_json | jq -c '[.holder, .epoch, .state, .stolen_from]')" '["laptop",2,"held",null]'
 
@@ -201,6 +206,7 @@ posts() {
 
   on_machine laptop run_bin -0 --separate-stderr team-resume
   assert_equal "$stderr" ""
+  report=$(reported)
   assert_contains "$output" "T1 home: applied wip/home/T1 "
   # laptop's worktree is the pushed branch with the builder's uncommitted work, as it left it.
   assert_equal "$(git -C "$lt" rev-parse HEAD)" "$head"

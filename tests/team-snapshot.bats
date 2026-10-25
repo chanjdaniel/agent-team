@@ -340,6 +340,20 @@ Pending asks: none"
   T5 proj feature planning | no live worker | waiting on Daniel: restart the Docker daemons"
 }
 
+@test "a task with a worktree not re-homed says so until the worktree is made" {
+  opened T5
+  event T5 rehome-failed '{project: "proj", branch: "feat/T5-work", machine: "laptop", reason: "every slot of proj is taken:"}'
+  run_bin -0 team-snapshot
+  assert_equal "$(section "Open tasks")" "Open tasks (1):
+  T5 proj feature planning | no live worker | not re-homed: proj on laptop: every slot of proj is taken:"
+  run_bin -0 team-snapshot --json
+  assert_equal "$(jq -c '.tasks[0].rehome_failures | map(.project)' <<<"$output")" '["proj"]'
+  event T5 rehomed '{project: "proj", branch: "feat/T5-work", worktree: "/w/1", machine: "laptop"}'
+  run_bin -0 team-snapshot
+  assert_equal "$(section "Open tasks")" "Open tasks (1):
+  T5 proj feature planning | no live worker"
+}
+
 @test "a session list that cannot be read is exit 1 with the reason" {
   opened T3
   stub_reply claude 'not json' 1

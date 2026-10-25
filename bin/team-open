@@ -41,7 +41,9 @@
 # salvage/<project>/T<n>-<machine>. Then the task's archive (tasks/T<n>/scratch, or
 # scratch-<project> for an added project) replaces the task directory, but for what no archive
 # holds (its nested repositories, files over 1 MiB and paths that may hold a secret), which stays
-# as it is; worktree-moved is appended when the worktree is not the recorded one, and the worktree's facts are printed as JSON. For a
+# as it is; worktree-moved is appended when the worktree is not the recorded one, else rehomed
+# while a rehome-failed of the task in <project> stands (team-resume's, which either clears), and
+# the worktree's facts are printed as JSON. For a
 # worktree that resumes from a snapshot (the task crashed: a launch after its latest stowed, or a
 # launch and no stowed, so its machine stopped without a handoff; or its latest stowed recorded
 # the worktree with uncommitted changes, which the handoff's checkpoint kept), or a branch on
@@ -131,6 +133,7 @@ if [[ -n $resume ]]; then
   open=$(ledger_jq 'archived_worktrees($home) | select(.project == $project)' -c --arg project "$project" <<<"$events")
   [[ -n $open ]] || die "$task has no open worktree in $project"
   snapshot_due=$(ledger_jq 'snapshot_due($project)' --arg project "$project" <<<"$events")
+  rehome_failed=$(ledger_jq 'any(rehome_failures[]; .project == $project)' --arg project "$project" <<<"$events")
   branch=$(jq -r .branch <<<"$open")
   recorded=$(jq -r .worktree <<<"$open")
   archive=tasks/$task/$(jq -r .archive <<<"$open")
@@ -521,6 +524,11 @@ if [[ -n $resume ]]; then
       --arg worktree "$worktree" --arg machine "$machine" \
       '{ts: (now | todate), task: $task, event: "worktree-moved", project: $project, branch: $branch,
         from: $from, worktree: $worktree, machine: $machine}')"
+  elif [[ $rehome_failed == true ]]; then
+    ledger_append "$(jq -cn --arg task "$task" --arg project "$project" --arg branch "$branch" \
+      --arg worktree "$worktree" --arg machine "$machine" \
+      '{ts: (now | todate), task: $task, event: "rehomed", project: $project, branch: $branch,
+        worktree: $worktree, machine: $machine}')"
   fi
 
   jq -n --arg task "$task" --arg project "$project" --arg branch "$branch" --arg worktree "$worktree" \

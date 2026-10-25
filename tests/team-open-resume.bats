@@ -218,6 +218,29 @@ restored_from() {
   cmp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before"
 }
 
+@test "made at its recorded path while a failed re-home of it stands, the worktree logs rehomed, once" {
+  open_elsewhere home feat work
+  # team-resume's failure, in home, and one in conv, which this run does not clear.
+  local failed
+  for failed in home conv; do
+    jq -cn --arg p "$failed" --arg b "$branch" '{ts: (now | todate), task: "T1", event: "rehome-failed", project: $p,
+      branch: $b, machine: "laptop", reason: "no slot"}' >>"$TEAM_HOME/ledger.jsonl"
+  done
+
+  run_bin -0 --separate-stderr team-open --task T1 --resume home
+  assert_equal "$(jq -c . <<<"$output")" "$(facts home "$branch" "$wt" "$head" "$wt" '"tasks/T1/scratch"')"
+  assert_equal "$(events rehomed | jq -c 'del(.ts)')" "$(jq -cn --arg b "$branch" --arg wt "$wt" \
+    '{task: "T1", event: "rehomed", project: "home", branch: $b, worktree: $wt, machine: "laptop"}')"
+  assert_equal "$(events worktree-moved)" ""
+  stub_reply claude '[]'
+  run_bin -0 team-state T1 --json
+  assert_equal "$(jq -c '[.rehome_failures[].project]' <<<"$output")" '["conv"]'
+
+  # Run again, with no failure standing in home: nothing more is logged.
+  run_bin -0 --separate-stderr team-open --task T1 --resume home
+  assert_equal "$(events rehomed | wc -l)" "1"
+}
+
 @test "the recorded slot is taken by another task here: the next free slot, and worktree-moved" {
   open_elsewhere home feat work
   run_bin -0 team-open --task T2 home feature feat other "Other work"

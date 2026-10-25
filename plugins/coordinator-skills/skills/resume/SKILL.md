@@ -1,6 +1,6 @@
 ---
 name: resume
-description: Bring the team back after team-resume started you on the machine taking the team over. Use when your first prompt names a resume report (tasks/resume-<date>.json) and this skill.
+description: Bring the team back after team-resume started you on the machine taking the team over. Use when your first prompt names a resume report (tasks/resume-<date>-<time>.json) and this skill.
 ---
 
 # Resume
@@ -10,6 +10,8 @@ Never resume while GitHub is unreachable: say so to Daniel and wait.
 
 1. **Read.** Read the report and run `team-snapshot`.
    Each task in the report has `stowed` (its latest `stowed`: the machine left, its time, `roles`, its unfinished work, and `sessions`, the roles whose sessions the handoff stopped, for the record only), `crashed` (null, or the machine that stopped without a handoff since the task's last launch, the `checkpoint` it resumes from and the `roles` to relaunch), `worktrees` (where each is now, `moved` from where, `archive`, null when no scratch was restored, and `snapshot`, whether the checkpoint's uncommitted changes were applied and why not, after a crash or for a worktree the handoff found with uncommitted changes, null otherwise) and `failures` (each worktree not made here, with the reason).
+   Each failure is also a `rehome-failed` in the ledger, with the first line of its reason, which `team-state T<n>` and `team-snapshot` show as "not re-homed: <project> on <machine>: <reason>" until `team-open --resume` makes the worktree.
+   Each run of `team-resume` writes its own report, so an earlier run of the day may have left one: its failures are in the ledger, and this run tried each of them again.
 2. **Catch up on Discord.** Messages sent while no coordinator listened are never delivered to you, only readable.
    For `#coordinator` and each open task's thread (`thread` in `team-state T<n> --json`), read the history with the Discord plugin's `fetch_messages` back to your own last message there; it reads at most 100 messages, so tell Daniel when your last message is further back.
    Log and answer anything Daniel asked that has no answer, before anything else.
@@ -26,4 +28,4 @@ Never resume while GitHub is unreachable: say so to Daniel and wait.
    A task with no role to relaunch has no unfinished worker: its next step comes from its state, as on any event; run `team-state T<n>`, read the stowed's `note` and the `.scratch/task/handoff.md` its last worker left in its worktree, and take the step the events table or the task's phase gives (a PR whose review found findings goes back to its builder, a passed review waits on Daniel's "merge it").
 4. **Log.** `team-log T<n> resumed` for each task paused for the handoff (its workers' `paused reason=stowed`), once its workers run again.
 5. **Post.** In `#coordinator`: each task that resumed (roles relaunched, worktrees moved, for a crash the checkpoint it resumed from, and whether each snapshot was applied), and each that did not, with the reason and what it waits on.
-6. **Clean up.** Delete the report once everything in it runs again.
+6. **Clean up.** Once everything in the report runs again, delete every report of the day, `tasks/resume-<date>-*.json`, the earlier runs' included: the ledger keeps each failure.
