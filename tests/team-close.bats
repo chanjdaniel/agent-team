@@ -157,6 +157,25 @@ rm 4f2a9c1e archive:2 worktrees:2"
   assert_contains "$output" "closed"
 }
 
+# A UI capture (team-ui) stays on the machine that took it and goes with its task, before the
+# archive, so no archive or checkpoint carries it.
+@test "the task's UI captures in tasks/T<n>/ui/ are removed before the archive" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  local slot=${home_slots[0]}
+  mkdir -p "$slot/.scratch/task" "$TEAM_HOME/tasks/T1/ui" "$TEAM_HOME/tasks/T2/ui"
+  echo "spec" >"$slot/.scratch/task/spec.md"
+  echo "png" >"$TEAM_HOME/tasks/T1/ui/page.png"
+  echo "png" >"$TEAM_HOME/tasks/T2/ui/page.png"
+  work_and_push "$slot" feature.txt
+  run_bin -0 --separate-stderr team-close T1
+  [[ ! -e $TEAM_HOME/tasks/T1/ui ]]
+  assert_contains "$stderr" "team-close: removed tasks/T1/ui/, the task's UI captures"
+  assert_equal "$(cd "$TEAM_HOME/tasks/T1" && find . -type f | sort)" "./plan.md
+./scratch/spec.md"
+  # Another task's captures are its own.
+  [[ -f $TEAM_HOME/tasks/T2/ui/page.png ]]
+}
+
 @test "the archive leaves out nested repositories, files over 1 MiB and names that may hold a secret, each named" {
   run_bin -0 team-open home feature feat work "Do the work"
   local slot=${home_slots[0]}

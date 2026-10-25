@@ -55,6 +55,8 @@ doctor_machine() {
   fake_service_managers
   # shellcheck disable=SC2153 # sandbox sets TEAM_HOME
   echo "$TEAM_HOME" >"$HOME/.config/agent-team/home"
+  # The team home's git ignores UI captures, as its .gitignore says (a record, so excluded here).
+  echo 'tasks/*/ui/' >>"$TEAM_HOME/.git/info/exclude"
   # The code checkout, with the dev guard on, as Daniel turns it on.
   export CODE_CHECKOUT
   CODE_CHECKOUT=$BATS_TEST_TMPDIR/code

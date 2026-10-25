@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Keep what Daniel pointed at for a UI fix in the task's directory, tasks/T<n>/ui/, where
-# team-brief names it in the planner's, builders' and reviewers' briefs.
+# team-brief names it in the planner's, builders' and reviewers' briefs. A capture stays on this
+# machine: the team home's git ignores tasks/*/ui/, so no checkpoint or handoff carries it, and
+# team-close removes it with the task.
 #
 # Usage: team-ui T<n> [--capture] [--attach <file>]...
 #   --capture  Run the frontend toolkit's ui-capture into tasks/T<n>/ui/: the element selected in

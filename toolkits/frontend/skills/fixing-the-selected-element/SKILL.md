@@ -17,6 +17,7 @@ ${CLAUDE_PLUGIN_ROOT}/scripts/ui-capture .scratch/ui
 ```
 
 (`.scratch/task/ui` instead when `.scratch/task/` exists.)
+A capture stays on this machine: never commit it, attach it or post it, and delete the directory once the fix is done.
 It writes `ui-pick.md`, `element.png` and `page.png` there and prints one line naming the element and its source.
 
 When it exits 1, its one line says why; tell Daniel that line and the step that fixes it, and wait, rather than guessing which element they meant:

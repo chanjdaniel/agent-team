@@ -65,6 +65,10 @@
 #                 `team-log --check`, the registry `team-project --check`, and every enabled
 #                 secret of machine/secrets.json has its row in machine/secrets.md; fails naming
 #                 each problem (a check's first, with its count).
+#   captures      Warns while the team home's git does not ignore tasks/*/ui/ (team-ui's captures
+#                 stay on the machine that took them, never committed or handed off), or a task
+#                 that is not open (closed, or unknown to the ledger) left a capture there, which
+#                 team-close removes; the fix removes those, whatever their age.
 #   per project   For each project of projects.toml (`projects` fails when team-project refuses
 #                 the registry), the lines below with the project's name after the check's;
 #                 a missing checkout is its one line:
@@ -704,6 +708,31 @@ if ((${#records_problems[@]} == 0)); then
 else
   report records FAIL "$(printf '%s; ' "${records_problems[@]}" | sed 's/; $//')" \
     "fix what it names in the team home (team-log --check and team-project --check list every problem), then run team-doctor again"
+fi
+
+# captures: what team-ui keeps stays on this machine, ignored by the team home's git, and goes
+# with its task's close.
+captures_problems=() captures_fixes=()
+if git -C "$TEAM_HOME" rev-parse --git-dir >/dev/null 2>&1 && ! git -C "$TEAM_HOME" check-ignore -q tasks/T1/ui/ui-pick.md; then
+  captures_problems+=("the team home's git does not ignore tasks/*/ui/, so a checkpoint or handoff could carry a capture off this machine")
+  captures_fixes+=("add tasks/*/ui/ to the team home's .gitignore, a records commit on dev")
+fi
+left=()
+for dir in "$TEAM_HOME"/tasks/T*/ui; do
+  [[ -d $dir && -n $(find "$dir" -mindepth 1 -print -quit) ]] || continue
+  task=$(basename "$(dirname "$dir")")
+  [[ $(task_status "$(task_events "$task" | jq -cs .)") == open ]] || left+=("$dir")
+done
+if ((${#left[@]})); then
+  verb=are
+  ((${#left[@]} > 1)) || verb=is
+  captures_problems+=("$(printf '%s/, ' "${left[@]#"$TEAM_HOME"/}" | sed 's/, $//') $verb left by a task that is not open (team-close removes a task's captures)")
+  captures_fixes+=("rm -rf ${left[*]}")
+fi
+if ((${#captures_problems[@]} == 0)); then
+  report captures PASS "the team home's git ignores tasks/*/ui/, and every capture belongs to an open task"
+else
+  report captures WARN "$(printf '%s; ' "${captures_problems[@]}" | sed 's/; $//')" "$(printf '%s; ' "${captures_fixes[@]}" | sed 's/; $//')"
 fi
 
 # per project: team-project refuses a missing or broken registry itself, the first problem first.

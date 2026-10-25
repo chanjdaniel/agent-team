@@ -213,3 +213,22 @@ RECORDS_FIX="fix what it names in the team home (team-log --check and team-proje
   run_bin -1 team-doctor
   assert_equal "$(line_of records)" "FAIL records: $TEAM_HOME/ledger.jsonl:1: not JSON (1 of 1 lines break the ledger contract); no machine/secrets.md in $TEAM_HOME; fix: $RECORDS_FIX"
 }
+
+# A UI capture (team-ui) stays on the machine that took it: the team home's git ignores it, and
+# team-close removes it, so one left behind by a task that is not open is reported.
+@test "the captures line warns while the team home's git does not ignore tasks/*/ui/, or a task that is not open left captures" {
+  tools_at arch
+  mkdir -p "$TEAM_HOME/tasks/T4/ui" "$TEAM_HOME/tasks/T5/ui" "$TEAM_HOME/tasks/T6/ui"
+  touch "$TEAM_HOME/tasks/T4/ui/ui-pick.md" "$TEAM_HOME/tasks/T5/ui/page.png"
+  jq -cn '{ts: "2026-10-25T10:00:00Z", task: "T4", event: "opened", project: "conventioner", path: "small",
+    type: "fix", title: "t", branch: "fix/T4-t", base: "dev", base_sha: "aba9d074", worktree: "/x/T4"}' >>"$TEAM_HOME/ledger.jsonl"
+  run_bin team-doctor
+  assert_equal "$(line_of captures)" "WARN captures: tasks/T5/ui/ is left by a task that is not open (team-close removes a task's captures); fix: rm -rf $TEAM_HOME/tasks/T5/ui"
+  rm -r "$TEAM_HOME/tasks/T5/ui"
+  run_bin team-doctor
+  assert_equal "$(line_of captures)" "PASS captures: the team home's git ignores tasks/*/ui/, and every capture belongs to an open task"
+  sed -i '\#^tasks/\*/ui/$#d' "$TEAM_HOME/.git/info/exclude"
+  run_bin team-doctor
+  assert_equal "$(line_of captures)" "WARN captures: the team home's git does not ignore tasks/*/ui/, so a checkpoint or handoff could carry a capture off this machine; fix: add tasks/*/ui/ to the team home's .gitignore, a records commit on dev"
+}
+

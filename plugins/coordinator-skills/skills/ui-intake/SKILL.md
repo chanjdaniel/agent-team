@@ -19,4 +19,6 @@ So keep the pointer at once, before planning.
 
 - Screenshots Daniel posts to Discord leave the laptop, so they come from the local dev stack with fixture data only, never production or a page with applicants' real data.
 - When an attachment shows real data (production's address, real names, emails or phone numbers), do not keep it: delete it from `tasks/T<n>/ui/`, and ask Daniel in the thread for one from the dev stack, or for the page's path and the element in words.
-- A capture never leaves the team home: a brief points at it, and nothing of it is posted to Discord.
+- A capture stays on the machine that took it: the team home's git ignores `tasks/*/ui/`, so no checkpoint, records commit or handoff carries it, and `team-close` removes it when the task closes.
+  A worker on another machine after a handoff has no capture: give it the page and the element in words.
+- Nothing of a capture is posted to Discord; a brief points at it.
