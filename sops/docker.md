@@ -150,7 +150,7 @@ Half admits a Conventioner stack's 2.75 GiB on a 7.7 GiB VM (Daniel's laptop's) 
 `team-stack sweep` stops the team stacks nobody is using, so a crashed or finished worker's stack does not hold memory for hours.
 The heartbeat runs it once Daniel turns `heartbeat_sweep` on ("The heartbeat's steps"); anyone may run it by hand.
 
-- It looks only at running team stacks: every container of the Compose project of class team, so gate and unowned stacks, and a project mixing them with team objects, are never stopped.
+- It looks only at running team stacks: every container of the Compose project of class team, so gate and unowned stacks, and a project whose containers mix them with team ones, are never stopped; only containers count, so a team project holding an unowned volume is stopped, which keeps every object.
 - A stack is busy while a live session (`claude agents --json`, interactive sessions included) with `status` `busy` has its `cwd` in the stack's `worktree` label or below it, compared by real path; a sibling path sharing the prefix (`shop-1-2` for `shop-1`) is not inside it.
 - For a busy stack it writes the time to `~/.local/state/agent-team/stacks/<project>.json` as `last_busy`, since the session list keeps no last-activity time.
 - A stack that is not busy is idle since its `last_busy` or its running containers' latest start, whichever is later, so one never seen busy counts from its start and one started again after its last busy time counts from that start; a missing or unreadable state file is never seen busy.
@@ -206,6 +206,8 @@ The heartbeat runs it once a day once Daniel turns `heartbeat_janitor` on ("The 
 
 - Each kind is posted to `#coordinator` at most once a local day, for example `Docker on home-pc: disk: 40.0 GB free of 1.0 TB (3.9%) on the file system of /var/lib/docker, under 15% or 50 GB. The day's report: ~/.local/state/agent-team/janitor/2026-10-25.md`, and remembered in `janitor/posted-<local date>.json`; the report says beside each alert whether it was posted, already posted that day, or why its post failed.
 - A post that fails is also on stderr, is tried again on the next run, and changes no exit code: the run exits 1 only when the reaper or a removal failed, a part of the report could not be read, or the report could not be written.
+  The heartbeat's next run of the janitor is the next day's, since the day's report is written, so a failed post waits for that day or for a run by hand.
+- An `oom` alert of `not checked: ...` (`docker events` failed) stays in the report and is never posted, and the run exits 1.
 - Docker not answering is the report's one line and the summary's, nothing is posted, and it exits 1.
 - `--dry-run` runs the reaper's dry run, writes `<local date>-dry-run.md` (never the day's real report) with "Would remove" for "Removed", and posts nothing.
 - It writes no ledger event: every ledger line needs a task, and the report belongs to none.
@@ -226,6 +228,9 @@ The heartbeat (`team-timers run`, every 5 minutes on the lease holder) can run t
 - Each logs one line in `~/.local/state/agent-team/heartbeat.log` per line its command prints, and nothing while it is off.
   A step that fails, or whose `stack.json` is malformed, is logged as `<step>: failed: <reason>`; the steps after it still run, and the run exits 1.
   A checkpoint that fails ends the run before the janitor, which then runs on the next one.
+- A hung Docker never holds the heartbeat's lock past the lease's renewals: the sweep is stopped after 5 minutes and the janitor after 20, each with every command it started, and logged as `<step>: failed: timed out after <seconds> s`.
+  A janitor stopped so wrote no report, so the next run starts it again, and its reaper goes on where the last one stopped.
+  While Docker stays hung a run takes up to 25 minutes, so the lease is still renewed well inside its hour, and a checkpoint comes about every 25 minutes instead of every 15.
 - A janitor run that fails (Docker not answering, a removal that failed) still writes the day's report, so the heartbeat runs it again only the next day; `~/agent-team/bin/team-janitor` by hand runs it again at once.
 - The job runs with the `PATH` that `team-timers enable` captured, and both steps need `docker` on it (the sweep `claude` too): on macOS Docker Desktop's `docker` is in `/usr/local/bin`.
   When Docker was installed after the heartbeat was enabled, or `docker` was not on the `PATH` of the shell that enabled it, run `team-timers enable` again, with Daniel's yes as every enable needs, from a shell where `command -v docker` answers; it rewrites the job with that `PATH`.
