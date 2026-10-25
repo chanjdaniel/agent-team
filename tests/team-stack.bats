@@ -1066,10 +1066,11 @@ busy_ago() {
   assert_equal "$(stopped)" conventioner-2
 }
 
-@test "sweep with Docker not answering says no stack runs and exits 0, without reading the session list" {
+@test "sweep with Docker not answering says on stderr that no stack runs and exits 0, without reading the session list" {
   docker_down
   run_bin -0 --separate-stderr team-stack sweep
-  assert_equal "$output" "team-stack: Docker does not answer (Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?), so no stack runs and there is nothing to sweep"
+  assert_equal "$output" ""
+  assert_equal "$stderr" "team-stack: Docker does not answer (Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?), so no stack runs and there is nothing to sweep"
   assert_equal "$(stub_calls claude)" ""
 }
 

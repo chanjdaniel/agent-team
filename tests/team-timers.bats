@@ -730,19 +730,18 @@ EOF
   assert_contains "$(grep ' janitor: ' <<<"$output")" "No alerts."
   [[ -s $(day_report) ]]
 
-  # Docker not answering: the sweep has nothing to sweep, and the janitor fails, its report then
-  # the day's, so it is not run again that day.
+  # Docker not answering: the sweep has nothing to sweep, which it logs nothing for, and the
+  # janitor fails, its report then the day's, so it is not run again that day.
   stub_reply claude '[]'
   rm "$(day_report)"
   docker_down
   run_bin -1 team-timers run
-  assert_equal "$(steps "$output")" "lease stacks checkpoint janitor"
-  assert_contains "$(grep ' stacks: ' <<<"$output")" " stacks: team-stack: Docker does not answer ("
+  assert_equal "$(steps "$output")" "lease checkpoint janitor"
   [[ $(tail -n 1 <<<"$output") =~ ^[0-9T:Z-]+" janitor: failed: Docker does not answer: " ]]
   assert_contains "$(grep ' janitor: ' <<<"$output" | head -n 1)" "Docker does not answer ("
   [[ -s $(day_report) ]]
   run_bin -0 team-timers run
-  assert_equal "$(steps "$output")" "lease stacks checkpoint"
+  assert_equal "$(steps "$output")" "lease checkpoint"
 
   # A checkpoint that fails ends the run, as it always has: the janitor waits for the next run.
   rm "$(day_report)"
@@ -751,7 +750,7 @@ EOF
   git -C "$TEAM_HOME" checkout -q --detach
   touch -d '-15 minutes' "$HOME/.local/state/agent-team/last-checkpoint"
   run_bin -1 team-timers run
-  assert_equal "$(steps "$output")" "lease stacks checkpoint"
+  assert_equal "$(steps "$output")" "lease checkpoint"
   [[ $(tail -n 1 <<<"$output") =~ " checkpoint: failed: team home: not on a branch, so the records are not committed"$ ]]
   [[ ! -e $(day_report) ]]
 }

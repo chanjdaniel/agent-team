@@ -156,7 +156,7 @@ The heartbeat runs it once Daniel turns `heartbeat_sweep` on ("The heartbeat's s
 - A stack that is not busy is idle since its `last_busy` or its running containers' latest start, whichever is later, so one never seen busy counts from its start and one started again after its last busy time counts from that start; a missing or unreadable state file is never seen busy.
 - Idle for more than `idle_minutes` ("Admission" has the settings), it is stopped with `docker compose -p <project> stop`, its data kept, and one line is printed and added to `~/.local/state/agent-team/stacks/sweep.log`, for example `2026-10-25T10:00:00Z stopped conventioner-2 of T7 in /home/daniel/.treehouse/Conventioner-d4c77a/2/Conventioner: last busy at 2026-10-25T09:20:00Z (idle_minutes 30), its data kept`.
   `~/agent-team/bin/team-stack up` starts it again with its data, without seeding.
-- Docker not answering means no stack runs: it says so and exits 0; a session list that cannot be read exits 1 and stops nothing; a stop that fails is named on stderr, the other stacks are still swept, and it exits 1.
+- Docker not answering means no stack runs: it says so on stderr and exits 0, so the heartbeat logs nothing for it; a session list that cannot be read exits 1 and stops nothing; a stop that fails is named on stderr, the other stacks are still swept, and it exits 1.
 - `down` removes the stack's state file with the stack.
 - Instances (`--instance`) are team stacks labelled with their worktree, so they are swept the same way.
 
@@ -234,7 +234,7 @@ The heartbeat (`team-timers run`, every 5 minutes on the lease holder) can run t
 - A janitor run that fails (Docker not answering, a removal that failed) still writes the day's report, so the heartbeat runs it again only the next day; `~/agent-team/bin/team-janitor` by hand runs it again at once.
 - The job runs with the `PATH` that `team-timers enable` captured, and both steps need `docker` on it (the sweep `claude` too): on macOS Docker Desktop's `docker` is in `/usr/local/bin`.
   When Docker was installed after the heartbeat was enabled, or `docker` was not on the `PATH` of the shell that enabled it, run `team-timers enable` again, with Daniel's yes as every enable needs, from a shell where `command -v docker` answers; it rewrites the job with that `PATH`.
-  Until then the sweep logs that Docker does not answer and the janitor fails.
+  Until then the sweep finds no Docker to sweep and logs nothing, and the janitor fails.
 
 ## Closing a task
 

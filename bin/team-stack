@@ -94,7 +94,8 @@
 #           ~/.local/state/agent-team/stacks/sweep.log ("<time> stopped <project> of <task> in
 #           <worktree>: last busy at <time> (idle_minutes <n>), its data kept", or "not seen busy
 #           since its start at <time>"). Gate and unowned stacks are never stopped. Docker not
-#           answering means no stack runs: it says so, exit 0. The session list is read only when a
+#           answering means no stack runs: it says so on stderr, exit 0, so the heartbeat logs
+#           nothing for it (stdout is only what was stopped). The session list is read only when a
 #           team stack runs; one that cannot be read is exit 1, nothing stopped. A stop that fails
 #           is named on stderr, the others still swept, exit 1.
 #
@@ -767,7 +768,7 @@ cmd_sweep() {
   stack_settings
   local -a ids
   if ! docker compose ls --format json >/dev/null 2>"$DOCKER_ERR"; then
-    echo "${0##*/}: Docker does not answer ($(last_reason "$DOCKER_ERR" "docker compose ls failed")), so no stack runs and there is nothing to sweep"
+    echo "${0##*/}: Docker does not answer ($(last_reason "$DOCKER_ERR" "docker compose ls failed")), so no stack runs and there is nothing to sweep" >&2
     return 0
   fi
   docker_read ps ps --all --quiet --no-trunc
