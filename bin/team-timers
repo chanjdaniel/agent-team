@@ -54,7 +54,10 @@
 #            The stacks, checkpoint and janitor steps log one line per line their command prints;
 #            a step that is off logs nothing. A stacks or janitor step that fails, or whose
 #            stack.json is malformed, is logged as "<step>: failed: <reason>", the steps after it
-#            still run, and the run exits 1 at its end. Both need docker on the PATH enable
+#            still run, and the run exits 1 at its end. A hung Docker never holds the run's lock
+#            past the lease's renewals: the sweep is stopped after 300 s and the janitor after
+#            1200 s, each logged as "<step>: failed: timed out after <n> s" (a janitor stopped so
+#            wrote no report, so the next run starts it again). Both need docker on the PATH enable
 #            captured (the sweep claude too): run enable again once it is there. A run that finds
 #            another still going skips. Posts go through discord_api; times in them are this
 #            machine's local time.
@@ -68,6 +71,8 @@
 # posted}: GitHub unreachable since the UTC time, and whether #coordinator was told; read by
 # team-lease status, the fence hook and the doctor), login-refused ({since, reason}: the refusal
 # was posted), and on macOS heartbeat.err, the job's stderr (systemd keeps it in the journal).
+# TEAM_TIMERS_SWEEP_SECONDS and TEAM_TIMERS_JANITOR_SECONDS replace the sweep's 300 s and the
+# janitor's 1200 s (the tests' seams).
 # Exit 0 done, 1 refused or a step failed, 2 usage error, 75 GitHub unreachable.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
@@ -82,6 +87,9 @@ SLACK_SECONDS=60
 PROBE_TIMEOUT=20
 RETRY_SECONDS=60
 POST_TIMEOUT=20
+# Seconds: the most the sweep and the janitor may take, together well inside the lease's hour.
+SWEEP_TIMEOUT=${TEAM_TIMERS_SWEEP_SECONDS:-300}
+JANITOR_TIMEOUT=${TEAM_TIMERS_JANITOR_SECONDS:-1200}
 # Seconds between the watch's looks at the offline flag.
 WATCH_SECONDS=60
 LOG_KEEP=1000
@@ -579,7 +587,7 @@ checkpoint_step() {
 # is on.
 stacks_step() {
   step_on stacks heartbeat_sweep || return 0
-  run_step stacks team-stack sweep
+  run_step stacks "$SWEEP_TIMEOUT" team-stack sweep
 }
 
 # The janitor step, on the holder after the checkpoint: team-janitor, when heartbeat_janitor is
@@ -587,7 +595,7 @@ stacks_step() {
 janitor_step() {
   step_on janitor heartbeat_janitor || return 0
   [[ ! -e $state/janitor/$(date +%F).md ]] || return 0
-  run_step janitor team-janitor
+  run_step janitor "$JANITOR_TIMEOUT" team-janitor
 }
 
 # Whether the step <step>'s key <key> is true in the machine's stack settings, read as team-stack
@@ -608,15 +616,20 @@ step_on() {
   jq -e -L "$TEAM_LIB" --arg key "$2" 'include "stack"; settings[$key]' <<<"$given" >/dev/null
 }
 
-# Run the step <step>'s sibling command: run_step <step> <command> [<argument>...]; one log line
-# per line it prints, and a failure logged with its first error.
+# Run the step <step>'s sibling command, stopped (with all it started) after <seconds>:
+# run_step <step> <seconds> <command> [<argument>...]; one log line per line it prints, and a
+# failure logged with its first error.
 run_step() {
   local rc=0 out line
-  out=$(team "${@:2}" 2>"$err") || rc=$?
+  out=$(TEAM_HOME=$TEAM_HOME timeout --kill-after=10 "$2" "$bin/$3" "${@:4}" 2>"$err" {run_fd}>&-) || rc=$?
   while IFS= read -r line; do
     [[ -z $line ]] || log "$1" "$line"
   done <<<"$out"
-  ((rc == 0)) || step_failed "$1" "$(grep -q . "$err" && first_error || echo "$2 exited $rc")"
+  case $rc in
+    0) ;;
+    124 | 137) step_failed "$1" "timed out after $2 s" ;;
+    *) step_failed "$1" "$(grep -q . "$err" && first_error || echo "$3 exited $rc")" ;;
+  esac
 }
 
 # A step that failed, logged as "<step>: failed: <reason>": the steps after it still run, and the

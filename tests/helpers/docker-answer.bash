@@ -49,6 +49,10 @@ docker_stub_answer() {
       ;;
     *) key=$cmd ;;
   esac
+  if [[ -e $DOCKER_STATE/hung ]]; then
+    echo "$$" >>"$DOCKER_STATE/hung"
+    exec sleep 3600
+  fi
   if [[ -e $DOCKER_STATE/down ]]; then
     echo "$DOCKER_DOWN" >&2
     exit 1

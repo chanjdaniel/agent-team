@@ -756,6 +756,29 @@ EOF
   [[ ! -e $(day_report) ]]
 }
 
+@test "a hung Docker stops each step at its time limit, logged, and the run still checkpoints and frees its lock" {
+  docker_machine
+  stack_json '{"heartbeat_sweep": true, "heartbeat_janitor": true}'
+  docker_hang
+  TEAM_TIMERS_SWEEP_SECONDS=1 TEAM_TIMERS_JANITOR_SECONDS=2 run_bin -1 team-timers run
+  assert_equal "$output" "$(cat "$log")"
+  assert_equal "$(steps "$output")" "lease stacks checkpoint janitor"
+  [[ $(grep ' stacks: ' <<<"$output") =~ ^[0-9T:Z-]+" stacks: failed: timed out after 1 s"$ ]]
+  [[ $(tail -n 1 <<<"$output") =~ ^[0-9T:Z-]+" janitor: failed: timed out after 2 s"$ ]]
+  # Nothing they started is left waiting, and the janitor stopped wrote no report, so the next
+  # run starts it again.
+  local pid
+  [[ $(grep -c . "$DOCKER_STATE/hung") == 2 ]]
+  for pid in $(cat "$DOCKER_STATE/hung"); do
+    if kill -0 "$pid" 2>/dev/null; then
+      echo "docker call $pid still waits"
+      return 1
+    fi
+  done
+  [[ ! -e $(day_report) ]]
+  flock -n "$HOME/.local/state/agent-team/heartbeat.lock" true
+}
+
 @test "a malformed stack.json fails each step with the reason, never the run, and the checkpoint still runs" {
   docker_machine
   local file=$HOME/.config/agent-team/stack.json

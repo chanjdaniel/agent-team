@@ -52,7 +52,8 @@
 # /proc/meminfo (machine_memory; 24 GiB available unless a test says otherwise). A stub uname
 # says Linux, so admission reads them the Linux way on any host; as_macos makes it say Darwin.
 # Any other call fails (exit 127), so a test never passes on an unplanned call.
-# docker_down makes every call fail as Docker does when its daemon does not answer,
+# docker_down makes every call fail as Docker does when its daemon does not answer, docker_hang
+# makes every call wait forever, as a CLI whose Docker Desktop VM is wedged does,
 # docker_fail <call> <message> makes one call (its key: "compose ls", "ps", "inspect",
 # "system df"...) fail with <message>, and docker_vanish <id> makes ps list a container that is
 # gone when it is inspected, and docker_leak <anonymous|network|container> makes compose down
@@ -120,6 +121,12 @@ docker_state() {
 # Every call fails as when the daemon does not answer.
 docker_down() {
   touch "$DOCKER_STATE/down"
+}
+
+# Every call waits, never answering, until it is killed; each call's process ID is added to
+# $DOCKER_STATE/hung.
+docker_hang() {
+  touch "$DOCKER_STATE/hung"
 }
 
 # One call fails with <message>: docker_fail <call key> <message>
