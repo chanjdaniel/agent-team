@@ -800,7 +800,7 @@ case $rc in
   no-name) report lease FAIL "this machine has no team name to read the lease with" "the machine line's fix, then run team-doctor again" ;;
   fenced)
     holding=no
-    report lease FAIL "$fenced" "hand off on the machine that holds the lease, then team-resume here (its take clears the fence)"
+    report lease FAIL "$fenced" "team-resume --wait here, then hand off on the machine that holds the lease once it says this machine is ready (its take clears the fence)"
     ;;
   0)
     read -r state holder epoch age mine < <(jq -r '[.state, .holder // "-", .epoch, .age_minutes // "-", .mine]
@@ -810,7 +810,7 @@ case $rc in
       holding=yes
       report lease PASS "held here, epoch $epoch"
     elif [[ $state == held ]]; then
-      report lease WARN "held by $holder, epoch $epoch, renewed $age minutes ago" "hand off on $holder, then team-resume here"
+      report lease WARN "held by $holder, epoch $epoch, renewed $age minutes ago" "team-resume --wait here, then hand off on $holder once it says this machine is ready"
     else
       report lease WARN "released, epoch $epoch" "team-lease take, with Daniel's yes"
     fi

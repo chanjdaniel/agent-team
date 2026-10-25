@@ -232,7 +232,7 @@ assert_not_launched() {
   run_bin -1 --separate-stderr claude-coordinator
   assert_equal "$output" ""
   assert_contains "$stderr" "team-lease: home-pc no longer holds the lease: laptop holds it (epoch 2"
-  assert_contains "$stderr" "claude-coordinator: laptop holds the lease: hand off there, then team-resume here"
+  assert_contains "$stderr" "claude-coordinator: laptop holds the lease: run team-resume --wait here, then hand off there once it says this machine is ready"
   assert_not_launched
   [[ ! -e $HOME/.local/state/agent-team/coordinator.settings.json ]]
 }

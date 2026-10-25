@@ -42,6 +42,7 @@ Skip each step whose check already passes.
    Then run `gh auth setup-git`, so git uses the same login.
 5. **The code checkout.** Check: `git -C ~/agent-team remote get-url origin` prints `https://github.com/chanjdaniel/agent-team.git`.
    Otherwise run `git clone https://github.com/chanjdaniel/agent-team.git ~/agent-team` (exactly this URL: the doctor checks it).
+   When the check passes, look at the history too: a branch with no commit in common with origin's, or with local commits origin's lacks, is Daniel's call: after `git -C ~/agent-team fetch -q origin`, show Daniel the ahead and behind counts (`git -C ~/agent-team rev-list --left-right --count HEAD...@{u}`) and whether `git -C ~/agent-team merge-base HEAD @{u}` finds a common commit, and ask before any reset.
 6. **The team home checkout.** Check: `git -C ~/agent-team-records remote get-url origin` prints `https://github.com/chanjdaniel/agent-team-records.git`.
    Otherwise run `git clone https://github.com/chanjdaniel/agent-team-records.git ~/agent-team-records` (it needs step 4's login, since the repository is private).
 7. **The team home's setting.** Check: the first line of `~/.config/agent-team/home` is `agent-team-records`.
@@ -53,5 +54,5 @@ Done when every check that applies passes and you are reading `~/agent-team/SETU
 ## Stages 2 to 8, and 9 on Daniel's word
 
 Follow `sops/machine-setup.md` from stage 2: it runs `team-bootstrap` one stage at a time and lists what each stage hands Daniel.
-Stage 8 ends it with the doctor and the load check passing and one summary for Daniel in this conversation: ready as a standby, where moving the team here is Daniel saying "hand off" to the coordinator on the machine that holds it, or ready to take the team.
+Stage 8 ends it with the doctor and the load check passing and one summary for Daniel in this conversation: ready as a standby, where moving the team here is `team-resume --wait` started here first and, once it says this machine is ready, Daniel saying "hand off" to the coordinator on the machine that holds it, or ready to take the team.
 Stage 9 takes the team only when Daniel says it should run here.

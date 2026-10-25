@@ -92,6 +92,11 @@ SH
   report=$laptop/team/tasks/resume-$(date +%F).json
 }
 
+# A --wait run a failed test left waiting would hold the bats run open for good.
+teardown() {
+  pkill -f "$CODE_CHECKOUT/bin/team-resume" 2>/dev/null || true
+}
+
 # doctor_says <check json>...: what the doctor stub prints.
 doctor_says() {
   printf '%s\n' "$@" | jq -s . >"$BATS_TEST_TMPDIR/doctor.json"
@@ -185,13 +190,13 @@ laptop_state() {
   before=$(laptop_state)
 
   on_machine laptop run_bin -1 --separate-stderr team-resume
-  assert_equal "$stderr" "team-resume: home-pc holds the lease (renewed 4 min ago): say 'hand off' to the coordinator there, then run \`team-resume --wait\` here"
+  assert_equal "$stderr" "team-resume: home-pc holds the lease (renewed 4 min ago): run \`team-resume --wait\` here first, then say 'hand off' to the coordinator there once it says this machine is ready"
   assert_equal "$(laptop_state)" "$before"
   [[ ! -e $laptop/home/.claude/CLAUDE.md ]]
   assert_equal "$(coordinator_launches)" ""
 }
 
-@test "--wait reads the lease until home-pc releases it, then resumes" {
+@test "--wait, started before the handoff, says once the doctor passed that this machine is ready, then resumes on the release" {
   local out=$BATS_TEST_TMPDIR/wait.out pid i
   TEAM_RESUME_POLL_SECONDS=1 on_machine laptop "$CODE_CHECKOUT/bin/team-resume" --wait >"$out" 2>&1 3>&- &
   pid=$!
@@ -199,7 +204,9 @@ laptop_state() {
     grep -q 'waiting for its release' "$out" && break
     sleep 0.5
   done
-  assert_contains "$(cat "$out")" "lease: home-pc holds the lease (renewed 0 min ago); waiting for its release, reading it every 1s (Ctrl+C stops, changing nothing)"
+  # The ready line comes once, right after the doctor's, and is Daniel's cue to say "hand off".
+  assert_equal "$(grep -A1 '^doctor: [0-9]' "$out")" "doctor: 1 passed, 1 warned
+lease: home-pc holds the lease; this machine is ready: say 'hand off' to the coordinator there now (waiting for its release, reading it every 1s; Ctrl+C stops, changing nothing)"
   # Still waiting a few reads later: nothing taken, nothing pulled.
   sleep 2
   assert_equal "$(lease_json | jq -r .holder)" home-pc
@@ -207,12 +214,28 @@ laptop_state() {
 
   hand_off
   wait "$pid"
+  assert_equal "$(grep -c 'this machine is ready' "$out")" 1
   assert_contains "$(cat "$out")" "lease: released by home-pc, epoch 1"
   assert_contains "$(cat "$out")" "lease: laptop holds the lease, epoch 2"
   # The pull came after the release, so laptop has the handoff's stowed.
   assert_equal "$(jq -c 'select(.event == "stowed") | .roles' "$laptop/team/ledger.jsonl")" '["builder"]'
   assert_equal "$(git -C "$laptop/home/slots/home/1" rev-parse HEAD)" "$head"
   assert_equal "$(coordinator_launches | wc -l)" 1
+}
+
+@test "--wait, started while home-pc still holds the team, is a preflight: a doctor FAIL refuses before any wait, and nothing changes" {
+  doctor_says '{"check": "trust home", "verdict": "FAIL", "reason": "claude --bg in projects/home says Workspace not trusted", "fix": "Daniel runs claude once in projects/home"}'
+  local before
+  before=$(laptop_state)
+
+  on_machine laptop run_bin -1 --separate-stderr team-resume --wait
+  assert_equal "$stderr" "team-resume: team-doctor reports what this machine lacks; fix each, then run team-resume again (nothing changed):
+  FAIL trust home: claude --bg in projects/home says Workspace not trusted; fix: Daniel runs claude once in projects/home"
+  [[ $output != *'this machine is ready'* ]]
+  # home-pc still holds the team, so Daniel fixes this before saying "hand off" there.
+  assert_equal "$(lease_json | jq -c '[.holder, .state]')" '["home-pc","held"]'
+  assert_equal "$(laptop_state)" "$before"
+  assert_equal "$(coordinator_launches)" ""
 }
 
 @test "a FAIL from the doctor stops the resume before the lease is touched; its lease and heartbeat lines do not" {

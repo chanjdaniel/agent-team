@@ -290,7 +290,7 @@ run_fake() {
   run_bin -1 --separate-stderr team-worker T7 builder "$wt1" -- go
   assert_equal "$output" ""
   assert_contains "$stderr" "team-lease: home-pc no longer holds the lease: laptop holds it (epoch 2"
-  assert_contains "$stderr" "team-worker: laptop holds the lease: hand off there, then team-resume here"
+  assert_contains "$stderr" "team-worker: laptop holds the lease: run team-resume --wait here, then hand off there once it says this machine is ready"
   assert_equal "$(stub_calls claude)" ""
   cmp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before"
   [[ ! -e $TEAM_HOME/tasks/T7/settings.builder.json ]]

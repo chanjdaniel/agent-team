@@ -534,7 +534,7 @@ stage_check() {
     PASS:*) say "summary: set up, and this machine holds the lease" ;;
     WARN:'held by '*)
       local holder=${reason#held by }
-      say "summary: ready as a standby; team-load-check proves a worker here, and to move the team here say \"hand off\" to the coordinator on ${holder%%,*}, then run team-resume here"
+      say "summary: ready as a standby; team-load-check proves a worker here, and to move the team here run team-resume --wait here, then say \"hand off\" to the coordinator on ${holder%%,*} once it says this machine is ready"
       ;;
     *) say "summary: ready; the lease is released, so team-resume here takes the team, with Daniel's yes (team-load-check first proves a worker here)" ;;
   esac

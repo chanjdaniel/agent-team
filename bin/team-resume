@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Take the team over on this machine, the one Daniel is at: run in a terminal here, once the
-# machine being left has handed off (its coordinator's handoff skill, on Daniel's "hand off").
+# Take the team over on this machine, the one Daniel is at: run in a terminal here. While another
+# machine holds the team, start it with --wait first: once it says this machine is ready, Daniel
+# says "hand off" to the coordinator there (its handoff skill), and the wait ends on the release.
 #
 # Usage: team-resume [--wait | --steal]
 # One line per step, each prefixed by the step; each step is idempotent, so a run that stopped
@@ -11,11 +12,15 @@
 #                   changed, but for the lease and heartbeat lines, which steps 3, 7 and 8 put
 #                   right (a fenced machine's lease line among them: the take clears the fence).
 #   3. lease        Read again. Held by another machine and fresh: refused, "home-pc holds the
-#                   lease (renewed 4 min ago): say 'hand off' to the coordinator there, then run
-#                   `team-resume --wait` here"; with --wait, read again every 30 s until it is
-#                   released (or goes stale, which refuses as below). Held elsewhere and stale:
-#                   refused, naming --steal. Before the pull, so a refusal changes nothing and a
-#                   wait ends before the handoff's records are pulled.
+#                   lease (renewed 4 min ago): run `team-resume --wait` here first, then say 'hand
+#                   off' to the coordinator there once it says this machine is ready"; with --wait,
+#                   "lease: home-pc holds the lease; this machine is ready: say 'hand off' to the
+#                   coordinator there now", then read again every 30 s until it is released (or
+#                   goes stale, which refuses as below). Held elsewhere and stale: refused, naming
+#                   --steal. After the doctor, so --wait started before the handoff is a preflight
+#                   whose FAIL refuses while the old machine still runs the team; before the pull,
+#                   so a refusal changes nothing and a wait ends before the handoff's records are
+#                   pulled.
 #   4. team home    The team home's branch fast-forwarded to origin's (fetch, then merge
 #                   --ff-only); a branch that has diverged, or local changes in the way, refuses.
 #   5. code         The code checkout (the directory above this script's bin/) the same way, so
@@ -172,9 +177,9 @@ main() {
     case $where in
       fresh)
         [[ -z $steal ]] || break
-        [[ -n $wait ]] || die "$holder holds the lease (renewed $age min ago): say 'hand off' to the coordinator there, then run \`team-resume --wait\` here"
+        [[ -n $wait ]] || die "$holder holds the lease (renewed $age min ago): run \`team-resume --wait\` here first, then say 'hand off' to the coordinator there once it says this machine is ready"
         if [[ -z $said ]]; then
-          echo "lease: $holder holds the lease (renewed $age min ago); waiting for its release, reading it every ${POLL_SECONDS}s (Ctrl+C stops, changing nothing)"
+          echo "lease: $holder holds the lease; this machine is ready: say 'hand off' to the coordinator there now (waiting for its release, reading it every ${POLL_SECONDS}s; Ctrl+C stops, changing nothing)"
           said=1
         fi
         sleep "$POLL_SECONDS"

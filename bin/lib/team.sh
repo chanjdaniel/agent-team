@@ -253,7 +253,7 @@ lease_gate() {
   esac
   holder=$(TEAM_HOME=$TEAM_HOME "$lease" status --json 2>/dev/null |
     jq -r 'select(.confirmed and .state == "held" and (.mine | not)) | .holder') || holder=''
-  [[ -z $holder ]] || die "$holder holds the lease: hand off there, then team-resume here"
+  [[ -z $holder ]] || die "$holder holds the lease: run team-resume --wait here, then hand off there once it says this machine is ready"
   die "$1 starts only on the machine that holds the lease"
 }
 

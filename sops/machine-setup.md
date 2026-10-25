@@ -105,11 +105,13 @@ Done when `check` lists no `Daniel <n>:` line.
 2. `~/agent-team/bin/team-load-check`: it runs the doctor first, then a throwaway planner that proves isolation, toolkits and the edit hook.
    If it fails on "Workspace not trusted", ask Daniel to run `claude` once in `~/agent-team/.claude/load-check/wt` in their own terminal and accept the trust dialog, then run it again.
 3. Give Daniel one summary, here in the conversation: the bootstrap's `summary:` line in plain words, any WARN left, and what comes next.
-   On a standby: "This machine is ready as a standby; to move the team here, say 'hand off' to the coordinator on <holder>, then tell me to resume here."
+   On a standby: "This machine is ready as a standby; to move the team here, tell me to resume here: I start `team-resume --wait`, and once it says this machine is ready, you say 'hand off' to the coordinator on <holder>."
 
 ### Stage 9: taking the team (only when Daniel says so)
 
-- Another machine holds the lease: Daniel says "hand off" to the coordinator there (Discord), and you run `~/agent-team/bin/team-resume --wait` here, which waits for the release.
+- Another machine holds the lease: first run `~/agent-team/bin/team-resume --wait` here, in the background; only then does Daniel say "hand off" to the coordinator there (Discord).
+  It runs the doctor before it waits, so it is the preflight: a FAIL refuses with nothing changed while the old machine still runs the team, and you fix it and start it again.
+  When it prints "this machine is ready: say 'hand off' to the coordinator there now", tell Daniel so; it then waits for the release and takes the team.
 - No machine holds it: `~/agent-team/bin/team-resume`.
 - The holder is dead or unreachable: Daniel runs `~/agent-team/bin/team-resume --steal` in their own terminal and types the holder's name.
 - `team-resume` ends by starting the coordinator; ask Daniel to pin it in `claude agents` (Ctrl+T).

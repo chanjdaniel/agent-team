@@ -99,7 +99,7 @@ nothing to add: what differs is Daniel's call (the check stage lists it)"
   run_bin -0 team-bootstrap
   assert_equal "$(stage_lines heartbeat)" "running: team-timers disable"
   [[ ! -e $HOME/.config/systemd/user/agent-team-heartbeat.timer ]]
-  assert_equal "$(tail -n1 <<<"$output")" "check: summary: ready as a standby; team-load-check proves a worker here, and to move the team here say \"hand off\" to the coordinator on laptop, then run team-resume here"
+  assert_equal "$(tail -n1 <<<"$output")" "check: summary: ready as a standby; team-load-check proves a worker here, and to move the team here run team-resume --wait here, then say \"hand off\" to the coordinator on laptop once it says this machine is ready"
   run_bin -0 team-bootstrap
   assert_equal "$(stage_lines heartbeat)" "done: disabled until this machine takes the lease (team-resume enables it)"
   assert_equal "$(git -C "$BATS_TEST_TMPDIR/origin/agent-team.git" rev-parse lease)" "$lease"

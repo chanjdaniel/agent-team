@@ -58,7 +58,7 @@ EOF
 
   on_machine laptop run -0 "$REPO_ROOT/bin/team-lease" take
   run_bin -0 team-doctor
-  assert_equal "$(line_of lease)" "WARN lease: held by laptop, epoch 2, renewed 0 minutes ago; fix: hand off on laptop, then team-resume here"
+  assert_equal "$(line_of lease)" "WARN lease: held by laptop, epoch 2, renewed 0 minutes ago; fix: team-resume --wait here, then hand off on laptop once it says this machine is ready"
 
   git -C "$TEAM_HOME" remote set-url origin https://127.0.0.1:9/agent-team.git
   run_bin -1 team-doctor
@@ -76,12 +76,12 @@ EOF
   "$REPO_ROOT/bin/team-timers" disable >/dev/null
   echo '{"since": "2026-10-22T14:00:00Z", "holder": "laptop", "epoch": 2}' >"$HOME/.local/state/agent-team/fenced"
   run_bin -1 team-doctor
-  assert_equal "$(line_of lease)" "FAIL lease: fenced since 2026-10-22T14:00:00Z (holder seen laptop, epoch 2); fix: hand off on the machine that holds the lease, then team-resume here (its take clears the fence)"
+  assert_equal "$(line_of lease)" "FAIL lease: fenced since 2026-10-22T14:00:00Z (holder seen laptop, epoch 2); fix: team-resume --wait here, then hand off on the machine that holds the lease once it says this machine is ready (its take clears the fence)"
   assert_equal "$(line_of heartbeat)" "PASS heartbeat: disabled, and this machine does not hold the lease"
 
   git -C "$TEAM_HOME" remote set-url origin https://127.0.0.1:9/agent-team.git
   run_bin -1 team-doctor
-  assert_equal "$(line_of lease)" "FAIL lease: fenced since 2026-10-22T14:00:00Z (holder seen laptop, epoch 2); fix: hand off on the machine that holds the lease, then team-resume here (its take clears the fence)"
+  assert_equal "$(line_of lease)" "FAIL lease: fenced since 2026-10-22T14:00:00Z (holder seen laptop, epoch 2); fix: team-resume --wait here, then hand off on the machine that holds the lease once it says this machine is ready (its take clears the fence)"
 }
 
 @test "on a fenced machine, each open task's worktree holding what origin lacks gets a salvage line" {
