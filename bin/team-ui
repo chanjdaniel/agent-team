@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Keep what Daniel pointed at for a UI fix in the task's directory, tasks/T<n>/ui/, where
+# team-brief names it in the planner's, builders' and reviewers' briefs.
+#
+# Usage: team-ui T<n> [--capture] [--attach <file>]...
+#   --capture  Run the frontend toolkit's ui-capture into tasks/T<n>/ui/: the element selected in
+#              the Agent Chrome's DevTools Elements panel, with its page, HTML, matched CSS, Vue
+#              source file and line, and screenshots (toolkits/frontend/README.md).
+#   --attach   Copy <file>, a screenshot Daniel attached in Discord as the Discord plugin's
+#              download_attachment saved it, into tasks/T<n>/ui/ under its own name, numbered
+#              (-2, -3, ... before the extension) when that name is taken.
+# At least one of the two. Attachments are copied first, so a capture that fails keeps them.
+# Prints ui-capture's line, then every file tasks/T<n>/ui/ holds.
+# Refused, exit 1: a task that is not open, an attachment that is not a readable file (nothing
+# copied), and a capture that fails, with ui-capture's own line; exit 2 a malformed command line.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+usage="usage: team-ui T<n> [--capture] [--attach <file>]..."
+task='' capture=0 attachments=()
+while (($#)); do
+  case $1 in
+    --capture) capture=1 && shift ;;
+    --attach)
+      [[ $# -ge 2 ]] || usage_error "--attach needs a file"
+      attachments+=("$2")
+      shift 2
+      ;;
+    -*) usage_error "unexpected argument '$1'" ;;
+    *)
+      [[ -z $task ]] || usage_error "$usage"
+      task=$1
+      shift
+      ;;
+  esac
+done
+[[ $task =~ ^T[1-9][0-9]*$ ]] || usage_error "$usage"
+((capture || ${#attachments[@]})) || usage_error "$usage"
+
+open_task_events "$task" >/dev/null
+for file in "${attachments[@]}"; do
+  [[ -f $file && -r $file ]] || die "cannot read $file"
+done
+
+# Code comes from this checkout, beside bin/.
+code=$(dirname "$(dirname "$TEAM_LIB")")
+ui=$TEAM_HOME/tasks/$task/ui
+mkdir -p "$ui"
+
+# A name not yet taken in tasks/T<n>/ui/: <name>, else <stem>-2<.ext>, -3, ...
+free_name() {
+  local name=$1 stem ext n=2
+  [[ -e $ui/$name ]] || { printf '%s\n' "$name"; return; }
+  if [[ $name == ?*.* ]]; then stem=${name%.*} ext=.${name##*.}; else stem=$name ext=''; fi
+  while [[ -e $ui/$stem-$n$ext ]]; do n=$((n + 1)); done
+  printf '%s\n' "$stem-$n$ext"
+}
+for file in "${attachments[@]}"; do
+  cp -- "$file" "$ui/$(free_name "$(basename -- "$file")")"
+done
+
+failed=''
+if ((capture)); then
+  if ! out=$("$code/toolkits/frontend/scripts/ui-capture" "$ui" 2>&1); then failed=$out; else printf '%s\n' "$out"; fi
+fi
+echo "tasks/$task/ui/ holds:"
+find "$ui" -maxdepth 1 -type f ! -name '.*' | sort
+[[ -z $failed ]] || die "the capture failed: $(grep -m1 . <<<"$failed")"
