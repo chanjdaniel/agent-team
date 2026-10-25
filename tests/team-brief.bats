@@ -250,7 +250,8 @@ the checks
 - Local checks: none.
   Run each from the worktree's root on `abc1234` and say in `.scratch/task/review.md` whether it passed; a failure is **blocking**, and they set no GitHub status.
 - There is no PR yet: the builder stopped before the no-mistakes gate, which runs once this review passes or its findings are fixed, and reviews the code line by line after you.
-- Write your findings to `.scratch/task/review.md`, each with its file and line and marked **blocking** or **note**, and post nothing to GitHub: the re-review of the gate's PR posts the comment and sets the status.
+- Write your findings to `.scratch/task/review.md`, numbered, each with its file and line and one kind: `blocking`, `note: correctness`, `note: security`, `note: real-data` or `note`.
+  Post nothing to GitHub: the re-review of the gate's PR posts the comment and sets the status.
 - Send `T12 DONE pass abc1234` or `T12 DONE findings .scratch/task/review.md` to `coordinator`.
 
 ## Rules
@@ -281,9 +282,30 @@ EOF
   run_bin -0 team-brief T14 reviewer --name review --set pr=$pr --set head=abc1234 --set "checks=the checks"
   brief=$(<"$output")
   assert_contains "$brief" 'branch `feat/T14-team-tooling`; review `origin/main...abc1234`.'
-  assert_contains "$brief" "the comment on PR $pr is that file, posted with this exact command, the only comment your settings allow: \`$REPO_ROOT/bin/team-review-comment $pr .work/task/review.md\`."
+  assert_contains "$brief" "The comment on PR $pr is that file, posted with this exact command, the only comment your settings allow: \`$REPO_ROOT/bin/team-review-comment $pr .work/task/review.md\`."
   assert_contains "$brief" "\`$REPO_ROOT/bin/team-review-status $pr abc1234 <success|failure> \"<one line, at most 140 characters>\"\`."
   assert_contains "$brief" "- Send \`T14 DONE pass $pr\` or \`T14 DONE findings .work/task/review.md\` to \`coordinator\`."
+}
+
+@test "each review brief gives every finding a number and a kind, so a passed review's notes follow it" {
+  open_t12
+  open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
+  local each='each with its file and line and one kind: `blocking`, `note: correctness`, `note: security`, `note: real-data` or `note`'
+  local kinds="numbered, $each"
+  run_bin -0 team-brief T12 reviewer --name review --set head=abc1234 --set "checks=the checks"
+  assert_contains "$(<"$output")" "$kinds"
+  run_bin -0 team-brief T14 reviewer --name review --set pr=https://github.com/chanjdaniel/agent-team/pull/9 \
+    --set head=abc1234 --set "checks=the checks"
+  assert_contains "$(<"$output")" "$kinds"
+  local task dir
+  for task in T12:.scratch/task T14:.work/task; do
+    dir=${task#*:} task=${task%:*}
+    run_bin -0 team-brief "$task" rereview --name rereview --set pr=https://github.com/chanjdaniel/agent-team/pull/9 \
+      --set head=def5678 --set reviewed=abc1234 --set "since=the fix"
+    assert_contains "$(<"$output")" "its new findings numbered on from the last, $each; then write the same result alone to \`$dir/rereview.md\`."
+    assert_contains "$(<"$output")" "(each \`blocking\`, \`note: correctness\`, \`note: security\` and \`note: real-data\`) is fixed at \`def5678\`"
+    refute_grep -F '**note**' "$output"
+  done
 }
 
 @test "a gated project's builder stops before the gate for the review, then runs the gate once" {

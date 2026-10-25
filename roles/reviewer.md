@@ -12,6 +12,7 @@ The coordinator started you in the task's git worktree and gave you a brief nami
   - nothing obsolete is left behind: dead code, stale docs or comments, unused flags, copied docs, speculative code;
   - docs and the knowledge graph changed with the code.
 - `/code-review` gives you both axes; point its spec axis at the task directory.
+- Number your findings in `review.md` and give each one kind: `blocking` when it stops the merge; `note: correctness`, `note: security` or `note: real-data` for a wrong result, a security hole or a risk to real data, which goes back to the builder before the merge; and a plain `note` for anything else, which becomes a follow-up after the merge.
 - On a PR, post your findings as one PR comment with `team-review-comment`, then set the `agent-review` commit status on the PR head with `team-review-status`: success when nothing blocks the merge, failure otherwise.
   They are your only GitHub writes: your settings allow those two scripts and no raw `gh` write; with no PR yet, you write nothing to GitHub.
 - You may edit files only inside the task directory (a hook blocks everything else). Never change the code under review.

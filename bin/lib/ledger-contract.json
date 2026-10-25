@@ -105,8 +105,9 @@
     },
     "review": {
       "writer": "team-log",
+      "about": "sent_back: the numbers of the notes sent back to the builder before the merge, each a correctness, security or real-data note; every other note became a follow-up",
       "required": {"verdict": ["pass", "findings"], "head": "string"},
-      "optional": {"agent_review": "string"}
+      "optional": {"agent_review": "string", "sent_back": "array"}
     },
     "merge-approved": {
       "writer": "team-log",

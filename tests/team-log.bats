@@ -71,7 +71,7 @@ TABLE
     }
   done
   grep -Eq '^  opened +team-open +project, path, type, title, branch, base, base_sha, worktree$' <<<"$output"
-  grep -Eq '^  review +team-log +verdict \(pass\|findings\), head; optional agent_review$' <<<"$output"
+  grep -Eq '^  review +team-log +verdict \(pass\|findings\), head; optional agent_review, sent_back \(list\)  \(sent_back: the numbers of the notes .*\)$' <<<"$output"
   grep -Eq '^  closed +team-close +archive \(list\), returned \(list\), kept \(list\)  \(.*legacy.*\)$' <<<"$output"
   grep -Eq '^  merge-approved +team-log +url, discord_message  \(.*\)$' <<<"$output"
   grep -Eq '^  launch +team-worker +role, session, worktree, toolkits \(list\); optional project, branch, machine, request  \(request is the link to Daniel.s Discord message, on an ops launch\)$' <<<"$output"
@@ -106,6 +106,23 @@ TABLE
     'extra={"a":1}' 'quoted="7"' 'note=two words, [not a list' nan=nan nothing=null
   assert_equal "$(ledger_without_ts)" \
     '{"task":"T14","event":"ticket-done","ticket":"03","commits":["a1b2c3d","e4f5a6b"],"count":3,"ok":true,"extra":{"a":1},"quoted":"7","note":"two words, [not a list","nan":"nan","nothing":"null"}'
+}
+
+@test "a review names the notes sent back before the merge as a list, which a non-list cannot be" {
+  run_bin -0 team-log T14 review verdict=pass head=a1b2c3d 'sent_back=[2, 4]'
+  run_bin -0 team-log T14 review verdict=pass head=e4f5a6b
+  assert_equal "$(ledger_without_ts)" "$(
+    cat <<'LINES'
+{"task":"T14","event":"review","verdict":"pass","head":"a1b2c3d","sent_back":[2,4]}
+{"task":"T14","event":"review","verdict":"pass","head":"e4f5a6b"}
+LINES
+  )"
+  local value
+  for value in 2 'note 2' '{"2":1}'; do
+    run_bin -1 team-log T14 review verdict=pass head=a1b2c3d "sent_back=$value"
+    assert_contains "$output" "sent_back must be a list, got"
+  done
+  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "2"
 }
 
 @test "a field the contract types as a string stays a string even when it looks like JSON" {

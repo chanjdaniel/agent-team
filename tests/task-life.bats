@@ -308,7 +308,7 @@ assert_closed_and_clean() {
   ok team-brief T1 reviewer --name review --set pr="$url" --set head="$head" --set-file checks="$BATS_TEST_TMPDIR/checks"
   local review_brief=$output
   assert_contains "$(cat "$review_brief")" "; review \`origin/dev...$head\`."
-  assert_contains "$(cat "$review_brief")" "the comment on PR $url is that file"
+  assert_contains "$(cat "$review_brief")" "The comment on PR $url is that file"
   step in-review no-worker:"$builder"
   ok team-worker T1 reviewer "$wt" -- "Read your brief at $review_brief"
   local reviewer=$output
