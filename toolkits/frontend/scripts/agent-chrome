@@ -51,7 +51,11 @@ if answers; then
   exit 0
 fi
 
-args=(--user-data-dir="$profile" --remote-debugging-port="$port" --no-first-run --no-default-browser-check "$url")
+# The mock keychain and basic password store keep this Chrome away from the login keychain: no
+# "Chrome Safe Storage" item of Daniel's is read or made, and no keychain prompt appears under a
+# HOME without one (a test's).
+args=(--user-data-dir="$profile" --remote-debugging-port="$port" --no-first-run --no-default-browser-check
+  --use-mock-keychain --password-store=basic "$url")
 mkdir -p "$profile"
 if [[ -n ${TEAM_CHROME:-} ]]; then
   [[ -x $TEAM_CHROME ]] || die "TEAM_CHROME is $TEAM_CHROME, which is not an executable"

@@ -3,13 +3,13 @@
 // Conventioner's dev build (vite-plugin-vue-inspector's hidden __v_inspector props), and only
 // localhost pages; agent-chrome starts Chrome with its own profile and debugging port.
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { promisify } from "node:util";
-import { chromePath, inspect, serveFixture, startChrome } from "./helpers/chrome.mjs";
+import { chromePath, inspect, serveFixture, serverListing, startChrome } from "./helpers/chrome.mjs";
 import { repoRoot, tempDir } from "./helpers/mcp.mjs";
 
 const scripts = join(repoRoot, "toolkits", "frontend", "scripts");
@@ -69,6 +69,14 @@ describe("ui-capture", () => {
   after(async () => {
     await chrome?.close();
     await site?.close();
+  });
+
+  // A Chrome started under a HOME with no login keychain (a test's) and without these raises
+  // macOS's "A keychain cannot be found to store Chrome Safe Storage" on Daniel's screen.
+  test("the stand-in Chrome runs with the mock keychain and the basic password store", () => {
+    const args = execFileSync("ps", ["-o", "args=", "-p", String(chrome.pid)], { encoding: "utf8" });
+    assert.match(args, / --use-mock-keychain /);
+    assert.match(args, / --password-store=basic /);
   });
 
   test("refuses a malformed command line and answers --help with its header", async () => {
@@ -198,9 +206,8 @@ describe("the toolkit's MCP server", () => {
 
   test("lists only the localhost pages, sees the DevTools selection, and refuses to navigate off localhost", async () => {
     await inspect(chrome.browserUrl, site.url, ".menu-button");
-    const server = await declaredServer(chrome.browserUrl);
+    const { server, pages } = await serverListing(() => declaredServer(chrome.browserUrl), site.url);
     try {
-      const pages = await server.call("list_pages");
       assert.match(pages, /^1: Fixture app \(http:\/\/127\.0\.0\.1:\d+\/\)/m);
       assert.ok(!pages.includes("Elsewhere") && !pages.includes("devtools://"), pages);
       assert.match(await server.call("take_snapshot"), /button "Open navigation" .*\[selected in the DevTools Elements panel\]/);
@@ -247,7 +254,7 @@ describe("agent-chrome", () => {
       assert.equal(first.stdout, `agent-chrome: running on 127.0.0.1:${port} with the profile ~/.local/share/agent-team/agent-chrome, at ${site.url}\n`);
       assert.equal(
         readFileSync(join(home, "chrome-args"), "utf8"),
-        `--user-data-dir=${home}/.local/share/agent-team/agent-chrome --remote-debugging-port=${port} --no-first-run --no-default-browser-check ${site.url}\n`,
+        `--user-data-dir=${home}/.local/share/agent-team/agent-chrome --remote-debugging-port=${port} --no-first-run --no-default-browser-check --use-mock-keychain --password-store=basic ${site.url}\n`,
       );
       const second = await script("agent-chrome", ["--port", String(port)], { env: env() });
       assert.equal(second.status, 0);

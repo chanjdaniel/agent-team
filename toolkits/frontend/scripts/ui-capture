@@ -24,6 +24,7 @@
 // build, or a Vue DevTools without the inspector); 2 a malformed command line.
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { setTimeout } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 const code = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
@@ -81,25 +82,35 @@ try {
   fail("the pinned MCP client and server are not installed: run servers/install");
 }
 
-const transport = new StdioClientTransport({
-  command: process.execPath,
-  args: [
-    server,
-    `--browser-url=${browserUrl}`,
-    "--allowedUrlPattern", ...allowed,
-    "--no-usage-statistics",
-    "--no-performance-crux",
-    "--no-page-id-routing",
-  ],
-  env: {
-    PATH: process.env.PATH ?? "/usr/bin:/bin",
-    HOME: process.env.HOME ?? "",
-    CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS: "1",
-    CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS: "1",
-  },
-  stderr: "pipe",
-});
-const client = new Client({ name: "ui-capture", version: "1" });
+// A connection to a new chrome-devtools-mcp process attached to the Agent Chrome.
+let client;
+async function connect() {
+  client = new Client({ name: "ui-capture", version: "1" });
+  try {
+    await client.connect(
+      new StdioClientTransport({
+        command: process.execPath,
+        args: [
+          server,
+          `--browser-url=${browserUrl}`,
+          "--allowedUrlPattern", ...allowed,
+          "--no-usage-statistics",
+          "--no-performance-crux",
+          "--no-page-id-routing",
+        ],
+        env: {
+          PATH: process.env.PATH ?? "/usr/bin:/bin",
+          HOME: process.env.HOME ?? "",
+          CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS: "1",
+          CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS: "1",
+        },
+        stderr: "pipe",
+      }),
+    );
+  } catch (error) {
+    fail(`chrome-devtools-mcp did not start: ${String(error.message ?? error).split("\n")[0]}`);
+  }
+}
 const done = async (status, reason) => {
   await client.close().catch(() => {});
   if (status) fail(reason, status);
@@ -119,11 +130,7 @@ async function call(name, args = {}) {
   return { text, images: result.content.filter((c) => c.type === "image") };
 }
 
-try {
-  await client.connect(transport);
-} catch (error) {
-  fail(`chrome-devtools-mcp did not start: ${String(error.message ?? error).split("\n")[0]}`);
-}
+await connect();
 
 // list_pages' lines, "<id>: <title> (<url>)" or "<id>: <url>" for a page with no title, each
 // maybe followed by " [selected]" and an isolated context: [{ id, url }].
@@ -140,7 +147,24 @@ function listedPages(text) {
 // accessibility tree. DevTools open with nothing marked means nothing is selected.
 const selectedMark = "[selected in the DevTools Elements panel]";
 const notInTree = /there is a selected element in the DevTools Elements panel but it is not included/;
-const pages = listedPages((await call("list_pages")).text).filter((p) => /^https?:/.test(p.url));
+// The server lists a tab once it has attached to it, and on a busy machine an attach can be slow,
+// or fail and drop the tab for the rest of that connection: until it lists every localhost tab
+// the browser itself reports, ask again, and twice start a new connection, which attaches anew.
+const localTabs = await fetch(new URL("/json/list", browserUrl))
+  .then((response) => response.json())
+  .then((targets) => targets.filter((t) => t.type === "page" && /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//.test(t.url)))
+  .catch(() => []);
+let pages = [];
+listing: for (let connection = 1; ; connection++) {
+  for (let attempt = 0; attempt < 30; attempt++) {
+    pages = listedPages((await call("list_pages")).text).filter((p) => /^https?:/.test(p.url));
+    if (localTabs.every((tab) => pages.some((p) => p.url === tab.url))) break listing;
+    await setTimeout(100);
+  }
+  if (connection === 3) break;
+  await client.close().catch(() => {});
+  await connect();
+}
 if (pages.length === 0) await done(1, "the Agent Chrome has no localhost page open");
 let pick, inspected;
 for (const page of pages) {

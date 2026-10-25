@@ -3,12 +3,15 @@
 //   const site = await serveFixture({ "/": html });   a local page server on 127.0.0.1
 //   const chrome = await startChrome([site.url, "data:text/html,..."]);
 //   chrome.browserUrl                                 http://127.0.0.1:<port>, its remote debugging
+//   chrome.pid                                        its process
 //   await inspect(chrome.browserUrl, site.url, "button.menu");   Inspect: DevTools open on that
 //                                                     page, the element selected in Elements
+//   const { server, pages } = await serverListing(connect, url);   a server whose list names url
 //   await chrome.close(); await site.close();
 //
 // Chrome is the machine's (TEAM_CHROME, else Google Chrome's app on macOS, else google-chrome or
-// chromium on PATH), started with a throwaway profile and no first-run, sync or metrics. inspect
+// chromium on PATH), started with a throwaway profile, the mock keychain and the basic password
+// store (no keychain prompt under the test's HOME), and no first-run, sync or metrics. inspect
 // drives the DevTools window through the pinned chrome-devtools-mcp with --experimentalDevtools
 // and --devtoolsComments (which brings open_devtools),
 // setting the Elements panel's selection exactly as a click there does; ui-capture never runs
@@ -101,6 +104,7 @@ export async function startChrome(urls) {
   const exited = new Promise((resolve) => child.once("exit", resolve));
   return {
     browserUrl,
+    pid: child.pid,
     close: async () => {
       child.kill("SIGTERM");
       await Promise.race([exited, sleep(5000).then(() => child.kill("SIGKILL"))]);
@@ -130,44 +134,80 @@ export async function devtoolsClient(browserUrl, flags = []) {
   return { call, close: () => client.close() };
 }
 
+// Ask `connect()` for a server until its list_pages names `url`, as `listed` in inspect does:
+// resolves to { server, pages }.
+export async function serverListing(connect, url) {
+  for (let connection = 1; connection <= 3; connection++) {
+    const server = await connect();
+    for (let attempt = 0; attempt < 30; attempt++) {
+      const pages = await server.call("list_pages");
+      if (pages.includes(`(${url})`)) return { server, pages };
+      await sleep(100);
+    }
+    await server.close();
+  }
+  throw new Error(`no server listed ${url}`);
+}
+
 // Daniel's Inspect on the page at `pageUrl`: DevTools opened on it, then (unless `selector` is
 // null, leaving DevTools' own default selection) the element matching `selector` selected in
 // the Elements panel.
 export async function inspect(browserUrl, pageUrl, selector) {
-  const devtools = await devtoolsClient(browserUrl, ["--experimentalDevtools", "--devtoolsComments"]);
+  const flags = ["--experimentalDevtools", "--devtoolsComments"];
+  let devtools = await devtoolsClient(browserUrl, flags);
   try {
     const pageIds = (list, test) =>
       [...list.matchAll(/^(\d+): (.*?)( \[selected\])?$/gm)]
         .filter(([, , rest]) => test(rest.endsWith(")") ? rest.slice(rest.lastIndexOf(" (") + 2, -1) : rest))
         .map(([, id]) => Number(id));
-    const [app] = pageIds(await devtools.call("list_pages"), (url) => url === pageUrl);
+    // The server lists a tab once it has attached to it: slowly on a busy machine, or never on
+    // that connection when the attach failed, so ask again, and twice on a new connection.
+    const listed = async (test) => {
+      for (let connection = 1; connection <= 3; connection++) {
+        if (connection > 1) {
+          await devtools.close();
+          devtools = await devtoolsClient(browserUrl, flags);
+        }
+        for (let attempt = 0; attempt < 30; attempt++) {
+          const ids = pageIds(await devtools.call("list_pages"), test);
+          if (ids.length) return ids;
+          await sleep(100);
+        }
+      }
+      throw new Error(`inspect: the server never listed the page (${pageUrl}) or its DevTools window`);
+    };
+    const [app] = await listed((url) => url === pageUrl);
     await devtools.call("select_page", { pageId: app });
     await devtools.call("open_devtools");
     if (selector === null) return;
-    // Each DevTools window, until the one inspecting that page.
+    // Each DevTools window, until the one inspecting that page, which the server may list only
+    // after the others.
     let result;
-    for (const window of pageIds(await devtools.call("list_pages"), (url) => url.startsWith("devtools://"))) {
-      await devtools.call("select_page", { pageId: window });
-      result = await devtools.call("evaluate_script", {
-        function: `async () => {
-          const SDK = await import('/bundled/core/sdk/sdk.js');
-          const UI = await import('/bundled/ui/legacy/legacy.js');
-          let current = null;
-          for (let i = 0; i < 100 && !current; i++) {
-            current = UI.Context.Context.instance().flavor(SDK.DOMModel.DOMNode);
-            if (!current) await new Promise((r) => setTimeout(r, 100));
-          }
-          if (!current) return 'no DOM node in the Elements panel';
-          if (current.domModel().target().inspectedURL() !== ${JSON.stringify(pageUrl)}) return 'another page';
-          const dom = current.domModel();
-          const doc = await dom.requestDocument();
-          const id = await dom.querySelector(doc.id, ${JSON.stringify(selector)});
-          if (!id) return 'no element matches';
-          UI.Context.Context.instance().setFlavor(SDK.DOMModel.DOMNode, dom.nodeForId(id));
-          return 'selected';
-        }`,
-      });
-      if (!result.includes('"another page"')) break;
+    for (let attempt = 0; attempt < 100 && !result?.includes('"selected"'); attempt++) {
+      if (attempt) await sleep(100);
+      for (const window of await listed((url) => url.startsWith("devtools://"))) {
+        await devtools.call("select_page", { pageId: window });
+        result = await devtools.call("evaluate_script", {
+          function: `async () => {
+            const SDK = await import('/bundled/core/sdk/sdk.js');
+            const UI = await import('/bundled/ui/legacy/legacy.js');
+            let current = null;
+            for (let i = 0; i < 100 && !current; i++) {
+              current = UI.Context.Context.instance().flavor(SDK.DOMModel.DOMNode);
+              if (!current) await new Promise((r) => setTimeout(r, 100));
+            }
+            if (!current) return 'no DOM node in the Elements panel';
+            if (current.domModel().target().inspectedURL() !== ${JSON.stringify(pageUrl)}) return 'another page';
+            const dom = current.domModel();
+            const doc = await dom.requestDocument();
+            const id = await dom.querySelector(doc.id, ${JSON.stringify(selector)});
+            if (!id) return 'no element matches';
+            UI.Context.Context.instance().setFlavor(SDK.DOMModel.DOMNode, dom.nodeForId(id));
+            return 'selected';
+          }`,
+        });
+        if (!result.includes('"another page"')) break;
+      }
     }
     if (!result?.includes('"selected"')) throw new Error(`inspect ${selector}: ${result}`);
   } finally {
