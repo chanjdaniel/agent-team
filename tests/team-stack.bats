@@ -14,6 +14,14 @@ setup() {
   docker_stub "$STACK_WORKTREE"
 }
 
+# Fail when any docker call of the test pruned: every removal names its object.
+teardown() {
+  if [[ -n ${DOCKER_STATE:-} ]] && docker_calls | grep -E '(system|volume|image|network|builder|buildx|container) prune'; then
+    echo "a docker call pruned" >&2
+    return 1
+  fi
+}
+
 # The calls a read-only command may make: their first words.
 READ_ONLY='^(compose ls|ps|inspect|stats --no-stream|system df|volume ls|network ls)( |$)'
 
@@ -1087,15 +1095,16 @@ team-stack: docker compose stop of conventioner-3 failed: Error response from da
 # objects whose rules depend on their age are made young by reap_machine, and each test ages
 # the ones it needs.
 
+# The fixture's unattached anonymous volumes, the old and young ones once a test ages them.
+OLD_ANONYMOUS=d34171881feb5b31166cdd67ec7d406dc769ac4c3c5dafb72ee98f6ef0a9e7ce
+YOUNG_ANONYMOUS=05ab97f3ee4e69dfc7abe03f10bb3cb0115bfafead15e5f74babe7e369cda85e
+
 # The fixture's dangling image and unattached anonymous volumes, made 23 hours ago.
 reap_machine() {
   docker_created image "$(jq -r '.[] | select(.Repository == "<none>") | .ID' "$DOCKER_STATE/images.json")" $((23 * 3600))
-  docker_created volume d34171881feb5b31166cdd67ec7d406dc769ac4c3c5dafb72ee98f6ef0a9e7ce $((23 * 3600))
-  docker_created volume 05ab97f3ee4e69dfc7abe03f10bb3cb0115bfafead15e5f74babe7e369cda85e $((23 * 3600))
+  docker_created volume "$OLD_ANONYMOUS" $((23 * 3600))
+  docker_created volume "$YOUNG_ANONYMOUS" $((23 * 3600))
 }
-
-OLD_ANONYMOUS=d34171881feb5b31166cdd67ec7d406dc769ac4c3c5dafb72ee98f6ef0a9e7ce
-YOUNG_ANONYMOUS=05ab97f3ee4e69dfc7abe03f10bb3cb0115bfafead15e5f74babe7e369cda85e
 
 # Add an image row to the machine: add_image <repository> <tag> <seconds ago>
 add_image() {
@@ -1116,13 +1125,6 @@ relabel() {
   done
 }
 
-# Fail when any docker call of the test pruned: every removal names its object.
-teardown() {
-  if [[ -n ${DOCKER_STATE:-} ]] && docker_calls | grep -E '(system|volume|image|network|builder|buildx|container) prune'; then
-    echo "a docker call pruned" >&2
-    return 1
-  fi
-}
 
 @test "reap's dry run prints each action with its object, rule and size, lists what it keeps that is not the team's, and changes nothing" {
   reap_machine
@@ -1134,7 +1136,7 @@ teardown() {
   assert_equal "$(removals)" "stack conventioner-4 (team, 0 B): its worktree $gone is gone
 stack nmtest-12822 (gate, 0 B): it has no expires and was created at 2026-10-21T08:00:00Z, over 2 hours ago
 stack nmtest-1895520 (gate, 509.1 MB): it expired at 2026-10-24T12:55:00Z"
-  [[ $(grep -c '^would remove ' <<<"$output") == 3 ]]
+  assert_equal "$(grep -c '^would remove ' <<<"$output")" 3
   assert_equal "$(kept)" "stack conventioner (unowned, 1.5 GB)
 stack conventioner-3 (unowned, 0 B)
 volume 0a4c042e60f521e1fe4b878ae5a0513fcfd83294279dd18fef88c940ab0120ab (unowned, 210.9 MB)
@@ -1260,20 +1262,24 @@ network conventioner_conventioner_network (unowned)"
   add_image conventioner/backend new2 $((2 * 86400))
   add_image conventioner/backend young $((7 * 86400 - 60))
   add_image conventioner/backend old $((7 * 86400 + 60))
-  # Among the 2 newest of its repository, however old.
+  # The 2 newest are images, not tags: the in-use image's second tag, latest, leaves older the
+  # second newest of conventioner/frontend, however old, and oldest not.
+  docker_state images '. + [(.[] | select(.Repository == "conventioner/frontend") | .Tag = "latest")]'
   add_image conventioner/frontend older $((20 * 86400))
+  add_image conventioner/frontend oldest $((30 * 86400))
   run_bin -0 --separate-stderr team-stack reap --apply
-  assert_equal "$(removals | grep '^image')" "image conventioner/backend:old (team, 534.0 MB): no container uses it, it was created over 7 days ago and it is not among the 2 newest of conventioner/backend"
+  assert_equal "$(removals | grep '^image')" "image conventioner/backend:old (team, 534.0 MB): no container uses it, it was created over 7 days ago and it is not among the 2 newest of conventioner/backend
+image conventioner/frontend:oldest (team, 534.0 MB): no container uses it, it was created over 7 days ago and it is not among the 2 newest of conventioner/frontend"
   assert_contains "$(docker_calls)" "image rm conventioner/backend:old"
   assert_equal "$(jq -r '[.[] | select(.Repository | startswith("conventioner/")) | .Tag] | sort | join(" ")' "$DOCKER_STATE/images.json")" \
-    "2a5cc542bea3 4943b69bbb33 new1 new2 older young"
+    "2a5cc542bea3 4943b69bbb33 latest new1 new2 older young"
   # The team's images kept are not listed.
   [[ $(kept) != *conventioner/* ]]
 }
 
 @test "reap removes a legacy image no container uses only with --legacy, and lists it as kept without" {
   reap_machine
-  add_image nmfix-abc latest $((3600))
+  add_image nmfix-abc latest 3600
   run_bin -0 team-stack reap
   [[ $(removals) != *nmfix* ]]
   assert_contains "$(kept)" "image nmfix-abc:latest (legacy, 534.0 MB)"
@@ -1332,7 +1338,8 @@ network conventioner_conventioner_network (unowned)"
   assert_equal "$(removals | grep -E '^(volume|network)')" "volume conventioner-6_mongodb_data (team, 1.0 MB): no container uses it
 network conventioner-6_conventioner_network (team): no container uses it"
   assert_contains "$(docker_calls)" "volume rm conventioner-6_mongodb_data"
-  assert_contains "$(docker_calls)" "network rm conventioner-6_conventioner_network"
+  # A network by its id, since Docker lets two networks share a name.
+  assert_contains "$(docker_calls)" "network rm $(printf '6%.0s' {1..64})"
   [[ $(docker_calls) != *"rm conventioner-2"* ]]
   jq -e 'any(.[]; .Name == "conventioner-2_conventioner_network")' "$DOCKER_STATE/networks.json" >/dev/null
 }
@@ -1365,6 +1372,17 @@ team-stack: could not remove stack nmtest-1895520 (gate, 509.1 MB): docker compo
 team-stack: could not remove volume $OLD_ANONYMOUS (anonymous, 210.9 MB): Error response from daemon: remove $OLD_ANONYMOUS: volume is in use - [abc]"
   assert_equal "$(removals)" "volume $YOUNG_ANONYMOUS (anonymous, 0 B): no container mounts it and it was created over 24 hours ago"
   assert_contains "${lines[-1]}" "team-stack: removed 1 object, 0 B: 1 unattached anonymous volume (0 B); 4 removals failed; kept "
+}
+
+@test "an object gone before its turn is told as already gone, and is no failure" {
+  reap_machine
+  docker_created volume "$OLD_ANONYMOUS" $((25 * 3600))
+  docker_refuse "$OLD_ANONYMOUS" "Error response from daemon: get $OLD_ANONYMOUS: no such volume"
+  run_bin -0 --separate-stderr team-stack reap --apply
+  assert_equal "$stderr" ""
+  assert_contains "$output" "already gone volume $OLD_ANONYMOUS (anonymous, 210.9 MB)"
+  [[ $(removals) != *"$OLD_ANONYMOUS"* ]]
+  assert_contains "${lines[-1]}" "team-stack: removed 3 objects, 509.1 MB: 1 team stack (0 B), 2 gate stacks (509.1 MB); kept "
 }
 
 @test "reap --apply holds the admission lock while it removes, so no up starts a stack meanwhile" {

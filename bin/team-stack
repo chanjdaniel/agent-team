@@ -107,14 +107,15 @@
 #             team volume   a named volume or network of class team no container (in any state)
 #             or network    uses, of no stack removed above: volume rm, network rm
 #           Without --apply (or with --dry-run) it only reads, and prints "would remove <type>
-#           <name> (<class>, <size>): <rule>" per action; with --apply it takes each under the
-#           admission lock, so no up starts a stack meanwhile, printing "removed ..." (a team
-#           stack's line ending "; its logs in <dir>"). Then "kept <type> <name> (<class>, <size>,
+#           <name> (<class>, <size>): <why the rule matches>" per action; with --apply it holds
+#           the admission lock from its first read, so no up starts a stack meanwhile, and prints
+#           "removed ..." (a team stack's line ending "; its logs in <dir>"), or "already gone ..."
+#           for an object that went before its turn. Then "kept <type> <name> (<class>, <size>,
 #           <age> old)" for every object no rule matched that is not the team's (stacks, containers
-#           of no stack, volumes, images, networks but Docker's own), and a summary line. A
-#           removal that fails is named on stderr with Docker's reason, the others still happen,
-#           exit 1. Test seam: TEAM_STACK_REAP_PROJECTS, a pattern, limits it to the Compose
-#           projects whose names match it and their objects.
+#           of no stack, volumes, images, networks but Docker's own), and a summary line, the
+#           totals by rule. A removal that fails is named on stderr with Docker's reason, the
+#           others still happen, exit 1. Test seam: TEAM_STACK_REAP_PROJECTS, a pattern, limits it
+#           to the Compose projects whose names match it and their objects.
 #
 # The owner classes, from each object's own labels and its Compose project, and the registry's
 # stack blocks (team-project --help):
@@ -348,8 +349,9 @@ clear_identity() {
 }
 
 # The worktree to act on (<path>, or the git top level it is in) and its project: WT, PROJECT,
-# STACK (its stack block, JSON), LOG_SERVICES (its log_services), TASK_DIR and WRAPPER. A primary checkout is refused, and so is
-# a worktree of no registered project or of one without a stack block: resolve_worktree <path>
+# STACK (its stack block, JSON), LOG_SERVICES (its log_services), TASK_DIR and WRAPPER. A
+# primary checkout is refused, and so is a worktree of no registered project or of one without
+# a stack block: resolve_worktree <path>
 resolve_worktree() {
   local path=$1 git_dir common primary
   git -C "$path" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "$path is not a git worktree"
@@ -430,9 +432,9 @@ stack_config() {
 }
 
 # The stack's objects as Docker has them, summed up in $WORK/stack.json: {exists, running, class
-# (team only when every object is), classes (each object's, unique), labels (read back, containers first, each "" when unset),
-# tasks, services, anonymous (the anonymous volumes its containers mount), objects ([{type,
-# name}], containers, volumes, networks)}.
+# (team only when every object is), classes (each object's, unique), labels (read back,
+# containers first, each "" when unset), tasks, services, anonymous (the anonymous volumes its
+# containers mount), objects ([{type, name}], containers, volumes, networks)}.
 stack_state() {
   local filter=label=com.docker.compose.project=$STACK_NAME
   local -a ids
@@ -813,17 +815,17 @@ sweep_busy() {
 # Remove what is left behind, by the rules table (reap_plan in bin/lib/stack.jq): only reading
 # without --apply, else under the admission lock. reap [--dry-run | --apply] [--legacy]
 cmd_reap() {
-  local mode='' legacy=false arg usage="usage: team-stack reap [--dry-run | --apply] [--legacy]"
+  local apply='' legacy=false arg usage="usage: team-stack reap [--dry-run | --apply] [--legacy]"
   for arg in "$@"; do
     case $arg in
-      --dry-run | --apply) [[ -z $mode || $mode == "$arg" ]] || usage_error "$usage"; mode=$arg ;;
+      --dry-run) [[ $apply != true ]] || usage_error "$usage"; apply=false ;;
+      --apply) [[ $apply != false ]] || usage_error "$usage"; apply=true ;;
       --legacy) legacy=true ;;
       *) usage_error "$usage" ;;
     esac
   done
-  local apply=''
-  [[ $mode != --apply ]] || apply=1
-  if [[ -n $apply ]]; then
+  apply=${apply:-false}
+  if [[ $apply == true ]]; then
     mkdir -p "$STATE"
     exec {LOCK_FD}>>"$STATE/stacks.lock"
     flock -x "$LOCK_FD"
@@ -870,29 +872,33 @@ cmd_reap() {
 
   # Each action: printed as it would be taken, or taken and printed, or named on stderr when it
   # fails; each outcome logged for the summary.
-  local action text logs reason
+  local action object why logs reason rc
   : >"$WORK/done.jsonl"
   while IFS= read -r action; do
-    text=$(jq -r -L "$TEAM_LIB" 'include "stack";
-      "\(.type) \(.name) (\(.class)\(if .size_bytes == null then "" else ", \(.size_bytes | disk_size)" end)): \(.why)"' <<<"$action")
-    if [[ -z $apply ]]; then
-      echo "would remove $text"
+    object=$(jq -r -L "$TEAM_LIB" 'include "stack"; reap_object' <<<"$action")
+    why=$(jq -r .why <<<"$action")
+    if [[ $apply == false ]]; then
+      echo "would remove $object: $why"
       printf '%s\n' "$action" >>"$WORK/done.jsonl"
       continue
     fi
-    if logs=$(reap_one "$action" 2>"$WORK/reap.err"); then
+    rc=0
+    logs=$(reap_one "$action" 2>"$WORK/reap.err") || rc=$?
+    if ((rc == 0)); then
       grep . "$WORK/reap.err" >&2 || true
-      echo "removed $text${logs:+; its logs in $logs}"
+      echo "removed $object: $why${logs:+; its logs in $logs}"
       printf '%s\n' "$action" >>"$WORK/done.jsonl"
+    elif ((rc == 3)); then
+      echo "already gone $object"
     else
       reason=$(last_reason "$WORK/reap.err" "no reason given")
-      echo "${0##*/}: could not remove ${text%%): *}): ${reason#"${0##*/}: "}" >&2
+      echo "${0##*/}: could not remove $object: ${reason#"${0##*/}: "}" >&2
       jq -c '. + {failed: true}' <<<"$action" >>"$WORK/done.jsonl"
     fi
   done < <(jq -c '.actions[]' "$WORK/plan.json")
 
   jq -r -L "$TEAM_LIB" 'include "stack";
-    .kept[] | "kept \(.type) \(.name) (\(.class)\(if .size_bytes == null then "" else ", \(.size_bytes | disk_size)" end)"
+    .kept[] | "kept " + (reap_object | rtrimstr(")"))
       + "\(if .created == null then "" else ", \(now - .created | duration) old" end))"' "$WORK/plan.json"
   jq -nr -L "$TEAM_LIB" 'include "stack";
     def count($n; $what): "\($n) \($what)\(if $n == 1 then "" else "s" end)";
@@ -902,30 +908,32 @@ cmd_reap() {
     | "\($ARGS.named.prog): "
       + (if $ok == [] then "nothing to remove"
          else "\(if $apply then "removed" else "would remove" end) \(count($ok | length; "object")), \($ok | size): "
-           + ($ok | group_by(.rule) | sort_by(.[0].rule as $r | ["team stack", "gate stack", "shared image", "legacy image",
-               "dangling image", "unattached anonymous volume", "team volume", "team network"] | index($r))
+           # In the order of the rules, which is the order of the actions.
+           + ([$ok[].rule] as $rules | $ok | group_by(.rule) | sort_by(.[0].rule as $r | $rules | index($r))
              | map("\(count(length; .[0].rule)) (\(size))") | join(", ")) end)
       + (if $failed > 0 then "; \(count($failed; "removal")) failed" else "" end)
       + "; kept \(count($kept | length; "object")) that are not the team'"'"'s, \([$kept[] | select(.type != "stack")] | size)"' \
-    --slurpfile outcomes "$WORK/done.jsonl" --slurpfile plan "$WORK/plan.json" --argjson apply "$([[ -n $apply ]] && echo true || echo false)" \
+    --slurpfile outcomes "$WORK/done.jsonl" --slurpfile plan "$WORK/plan.json" --argjson apply "$apply" \
     --arg prog "${0##*/}"
-  ! jq -e 'select(.failed)' "$WORK/done.jsonl" >/dev/null
+  [[ $(jq -s 'map(select(.failed)) | length' "$WORK/done.jsonl") == 0 ]]
 }
 
 # Take one of the reaper's actions (a JSON object of reap_plan's); run it in a subshell
 # ($(reap_one ...)), so a removal that dies is one failure. Prints where a team stack's logs
-# went: reap_one <action>
+# went; returns 3 when its object is gone already: reap_one <action>
 reap_one() {
   local action=$1 type ref class found
   type=$(jq -r .type <<<"$action")
   ref=$(jq -r .ref <<<"$action")
   class=$(jq -r .class <<<"$action")
   if [[ $type != stack ]]; then
-    docker "$type" rm "$ref" >/dev/null 2>"$DOCKER_ERR" || die "$(last_reason "$DOCKER_ERR" "docker $type rm failed")"
-    return 0
+    docker "$type" rm "$ref" >/dev/null 2>"$DOCKER_ERR" && return 0
+    if grep -qiE 'no such|not found' "$DOCKER_ERR"; then return 3; fi
+    die "$(last_reason "$DOCKER_ERR" "docker $type rm failed")"
   fi
   STACK_NAME=$ref
   stack_state
+  jq -e .exists "$WORK/stack.json" >/dev/null || return 3
   [[ $(jq -c .classes "$WORK/stack.json") == "[\"$class\"]" ]] ||
     die "$STACK_NAME is no longer wholly of class $class: $(jq -r '.classes | join(", ")' "$WORK/stack.json")"
   local dir='' prefix='' worktree

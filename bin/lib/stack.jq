@@ -107,7 +107,9 @@ def table:
 def reap_plan($in):
   $in.stacks as $stacks | $in.now as $now
   | def in_scope: $in.scope == null or (. != null and test("^(?:" + $in.scope + ")$"));
-    def plural($n): if $n == 1 then "" else "s" end;
+    # "its task T5 is closed", "its tasks T5, T6 are closed": its(<noun>; <names>; <state>)
+    def its($noun; $names; $state):
+      "its \($noun)\(if ($names | length) == 1 then " " else "s " end)\($names | join(", ")) \(if ($names | length) == 1 then "is" else "are" end) \($state)";
   ([$in.containers[] | compose_project(.Config.Labels) as $p
     | {type: "container", name: (.Name | ltrimstr("/")), project: $p, image: .Image, labels: (.Config.Labels // {}),
        class: owner_class(.Config.Labels; $p; $stacks), size_bytes: null, created: (.Created | epoch),
@@ -115,7 +117,6 @@ def reap_plan($in):
        # A stopped container is on no network's Containers, but its own settings still name them.
        networks: [(.NetworkSettings.Networks // {} | keys[]), (.HostConfig.NetworkMode // empty)]}]) as $all
   | [$all[] | select(.project | in_scope)] as $containers
-  | ([$all[].mounts[]] | unique) as $mounted
   | ([$all[].networks[]] | unique) as $networked
   | [$in.volumes[] | (.Labels // {}) as $l | .Name as $n
     | (($l | has("com.docker.volume.anonymous")) or (($n | test("^[0-9a-f]{64}$")) and compose_project($l) == null)) as $anonymous
@@ -127,7 +128,7 @@ def reap_plan($in):
        size_bytes: $in.sizes[$n], created: (.CreatedAt | epoch)}
     | select(.project | in_scope)] as $volumes
   | [$in.networks[] | (.Labels // {}) as $l | compose_project($l) as $p | .Name as $n
-    | {type: "network", name: $n, ref: $n, project: $p, labels: $l, class: owner_class($l; $p; $stacks),
+    | {type: "network", name: $n, ref: .Id, project: $p, labels: $l, class: owner_class($l; $p; $stacks),
        used: (($networked | index([$n])) != null or (.Containers // {} | length) > 0),
        predefined: (($n | IN("bridge", "host", "none")) and $l == {}), size_bytes: null, created: (.Created | epoch)}
     | select(.project | in_scope)] as $networks
@@ -147,8 +148,7 @@ def reap_plan($in):
     | (.tasks != [] and all(.tasks[]; IN($in.closed[]))) as $closed
     | select($closed or (.worktrees != [] and all(.worktrees[]; IN($in.gone[]))))
     | . + {rule: "team stack", class: "team",
-           why: (if $closed then "its task\(plural(.tasks | length)) \(.tasks | join(", ")) \(if (.tasks | length) == 1 then "is" else "are" end) closed"
-                 else "its worktree\(plural(.worktrees | length)) \(.worktrees | join(", ")) \(if (.worktrees | length) == 1 then "is" else "are" end) gone" end)}]
+           why: (if $closed then its("task"; .tasks; "closed") else its("worktree"; .worktrees; "gone") end)}]
     as $team_stacks
   | [$projects[] | select(.classes == ["gate"])
     | select(if .expires != null then .expires < $now else .created != null and .created < $now - 7200 end)
@@ -159,14 +159,16 @@ def reap_plan($in):
 
   | ([$all[].image] | unique) as $used
   | [if $in.scope == null then $in.images[] else empty end
-    | {type: "image", repository: .Repository,
+    | {type: "image", id: .ID, repository: .Repository,
        name: (if .Repository == "<none>" then .ID else "\(.Repository):\(.Tag)" end),
        ref: (if .Repository == "<none>" or .Tag == "<none>" then .ID else "\(.Repository):\(.Tag)" end),
        class: (if .Repository == "<none>" then "dangling" else image_class(.Repository; $stacks) end),
        in_use: (.ID as $id | ($used | index([$id])) != null),
        size_bytes: ((.UniqueSize | bytes) // (.Size | bytes)), created: (.CreatedAt | epoch)}] as $images
+  # The 2 newest images of each team repository, by id: every tag of either is kept.
   | ([$images[] | select(.class == "team")] | group_by(.repository)
-     | map(sort_by(-(.created // 0), .name) | .[:2][] | {key: .name, value: true}) | from_entries) as $newest
+     | map(([unique_by(.id) | sort_by(-(.created // 0), .id) | .[:2][].id]) as $ids
+       | .[] | select(.id | IN($ids[])) | {key: .name, value: true}) | from_entries) as $newest
   | [$images[] | select(.class == "team" and (.in_use | not) and .created != null and .created < $now - 7 * 86400
       and ($newest[.name] | not))
     | . + {rule: "shared image",
@@ -194,3 +196,7 @@ def reap_plan($in):
      + [$volumes[] | unacted] + [$images[] | unacted] + [$networks[] | select(.predefined | not) | unacted]
      | map({type, name, class, size_bytes, created})
      | sort_by(({stack: 0, container: 1, volume: 2, image: 3, network: 4}[.type]), (.class | class_rank), .name))};
+
+# An object of the reaper's plan as its lines name it: "<type> <name> (<class>[, <size>])".
+def reap_object:
+  "\(.type) \(.name) (\(.class)\(if .size_bytes == null then "" else ", \(.size_bytes | disk_size)" end))";
