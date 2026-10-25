@@ -37,7 +37,7 @@ setup() {
   cmp "$BATS_TEST_TMPDIR/expected" "$config"
   assert_equal "$(stat -c %a "$config")" 640
   assert_equal "$(find "$HOME/.no-mistakes" -name '.config.yaml.*')" ""
-  [[ -z $(grep -rlF fake-gate-token "$HOME/.local/state" 2>/dev/null) ]]
+  ! grep -rqF fake-gate-token "$HOME/.local/state" 2>/dev/null || { echo "a log carries the token" >&2; return 1; }
   run_bin -0 team-bootstrap --stage check
   assert_equal "$(stage_lines check | tail -n1)" "summary: set up, and this machine holds the lease"
 
