@@ -20,6 +20,7 @@ PASS origin conventioner: https://github.com/chanjdaniel/Conventioner.git
 PASS task dir conventioner: git ignores .scratch/task/
 PASS gate conventioner: no-mistakes has a gate for it
 PASS slots conventioner: every slot is in the pool Conventioner-d4c77a, as treehouse names it from origin
+PASS leases conventioner: no slot of the pool is leased
 PASS trust conventioner: claude starts background sessions in ~/projects/Conventioner
 PASS branches conventioner: every local branch is on origin
 PASS changes conventioner: the primary checkout is clean
@@ -77,6 +78,52 @@ PASS changes site: the primary checkout is clean"
   sed -i 's#\.treehouse/Conventioner-d4c77a/2/#.treehouse/Conventioner-8e12e0/2/#' "$TEAM_HOME/projects.toml"
   run_bin -1 team-doctor
   assert_equal "$(grep -v '^PASS ' <<<"$output")" "FAIL slots conventioner: not in the pool Conventioner-d4c77a, as treehouse names it from origin: ~/.treehouse/Conventioner-8e12e0/2/Conventioner; fix: put conventioner's pool.slots in projects.toml under the pool's directory, ~/.treehouse/Conventioner-d4c77a/ unless its treehouse.toml sets another root"
+}
+
+# ledger_opened <task> <slot>: <task> opened in Conventioner, in its slot <slot> (relative to HOME).
+ledger_opened() {
+  jq -cn --arg task "$1" --arg wt "$HOME/$2" '{ts: "2026-10-24T10:00:00Z", task: $task, event: "opened",
+    project: "conventioner", path: "feature", type: "feat", title: "Work", branch: "feat/\($task)-work",
+    base: "main", base_sha: "0000000", worktree: $wt}' >>"$TEAM_HOME/ledger.jsonl"
+}
+
+@test "leases: each slot the pool leases is an open task's worktree there, or a WARN naming it with the return" {
+  tools_at arch
+  local pool=.treehouse/Conventioner-d4c77a fix
+  ledger_opened T1 "$pool/1/Conventioner"
+  ledger_opened T2 "$pool/2/Conventioner"
+  leased_slots "$pool/1/Conventioner" T1 "$pool/2/Conventioner" T2
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'leases conventioner')" "PASS leases conventioner: every leased slot (2) is an open task's worktree here"
+  # The lease is asked of treehouse in the checkout.
+  assert_equal "$(git -C "$CONVENTIONER" status --porcelain)" ""
+
+  # A closed task, an open task whose worktree is elsewhere (a lease a failed team-open left), and
+  # a holder that is no task: each is named, with the return for Daniel.
+  jq -cn '{ts: "2026-10-24T11:00:00Z", task: "T1", event: "closed", archive: [], returned: [], kept: []}' >>"$TEAM_HOME/ledger.jsonl"
+  leased_slots "$pool/1/Conventioner" T1 "$pool/3/Conventioner" T2 "$pool/4/Conventioner" agent
+  run_bin -0 team-doctor
+  fix="cd ~/projects/Conventioner && ~/projects/Conventioner/scripts/th-return.sh"
+  assert_equal "$(line_of 'leases conventioner')" "WARN leases conventioner: ~/$pool/1/Conventioner is leased to T1, which is closed; ~/$pool/3/Conventioner is leased to T2, whose worktree in conventioner is not there; ~/$pool/4/Conventioner is leased to agent, no task of the ledger; fix: once nothing in it is needed, Daniel returns each in their own terminal, which asks before discarding changes: $fix ~/$pool/1/Conventioner; $fix ~/$pool/3/Conventioner; $fix ~/$pool/4/Conventioner"
+
+  # A worktree-moved to the leased slot makes it the task's again.
+  jq -cn --arg from "$HOME/$pool/2/Conventioner" --arg wt "$HOME/$pool/3/Conventioner" '{ts: "2026-10-24T12:00:00Z",
+    task: "T2", event: "worktree-moved", project: "conventioner", branch: "feat/T2-work", from: $from, worktree: $wt,
+    machine: "laptop"}' >>"$TEAM_HOME/ledger.jsonl"
+  leased_slots "$pool/3/Conventioner" T2
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'leases conventioner')" "PASS leases conventioner: every leased slot (1) is an open task's worktree here"
+}
+
+@test "leases: a treehouse that does not answer warns; a git pool has no leases line" {
+  tools_at arch
+  echo 'echo "not in a git or jj repository" >&2; exit 1' >"$TOOL_ANSWERS/treehouse/status_--json.sh"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'leases conventioner')" "WARN leases conventioner: \`treehouse status --json\` in ~/projects/Conventioner did not answer; fix: the tool treehouse line's fix"
+  echo 'echo "not json"' >"$TOOL_ANSWERS/treehouse/status_--json.sh"
+  run_bin -0 team-doctor
+  assert_contains "$(line_of 'leases conventioner')" "did not answer"
+  [[ -z $(line_of 'leases site') ]]
 }
 
 @test "a task directory git does not ignore fails, with the exclude line that ignores it" {

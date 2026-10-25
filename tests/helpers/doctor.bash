@@ -151,6 +151,11 @@ EOF
   # shellcheck disable=SC2034 # read by the tests
   CONVENTIONER=$HOME/projects/Conventioner SITE=$HOME/projects/site
   echo "$CONVENTIONER" >"$STUB_FIXTURES/gates"
+  # treehouse status --json answers with $STUB_FIXTURES/pool.json: nothing leased, until a test
+  # writes it (leased_slots).
+  echo '[]' >"$STUB_FIXTURES/pool.json"
+  tool_stub treehouse
+  echo 'cat "$STUB_FIXTURES/pool.json"' >"$TOOL_ANSWERS/treehouse/status_--json.sh"
   tool_stub no-mistakes
   cat >"$TOOL_ANSWERS/no-mistakes/status.sh" <<'EOF'
 if grep -qxF "$PWD" "$STUB_FIXTURES/gates"; then
@@ -185,8 +190,18 @@ register() {
 
 # The project lines of the setup's two projects, one check name per line, in order.
 project_checks() {
-  printf '%s conventioner\n' checkout origin 'task dir' gate slots trust branches changes
+  printf '%s conventioner\n' checkout origin 'task dir' gate slots leases trust branches changes
   printf '%s site\n' checkout origin 'task dir' trust branches changes
+}
+
+# leased_slots <slot> <holder>...: treehouse status --json reports each Conventioner slot <slot>
+# (relative to HOME) leased to its <holder>, and nothing else.
+leased_slots() {
+  while (($#)); do
+    jq -cn --arg path "$HOME/$1" --arg holder "$2" \
+      '{name: ($path | split("/") | .[-2]), path: $path, status: "leased", branch: "", lease_holder: $holder}'
+    shift 2
+  done | jq -s . >"$STUB_FIXTURES/pool.json"
 }
 
 # GitHub's API answers HEAD with a Date header <seconds> away from this clock.

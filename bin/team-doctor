@@ -69,6 +69,12 @@
 #     slots       treehouse pools only: every slot is in the pool treehouse names from origin,
 #                 <checkout's folder name>-<the first 3 bytes of the SHA-256 of origin's URL,
 #                 in hex>, so the registry's slots hold on any machine with that origin.
+#     leases      treehouse pools only: `treehouse status --json` in the checkout; warns naming
+#                 each slot of the pool leased to a closed task, to an open task whose worktree in
+#                 the project is not that slot (a lease a failed team-open left), or to a holder
+#                 that is no task of the ledger (another clone's agent, say), with the return
+#                 command for Daniel to run in their own terminal, which asks before discarding
+#                 changes; warns when treehouse does not answer.
 #     trust       `claude --bg --name team-doctor-trust-<project>` with no prompt in the checkout
 #                 fails on "Workspace not trusted"; the probe session (by the id it printed, and
 #                 any session of that name) is stopped and removed either way, and one left
@@ -213,6 +219,45 @@ probe_trust() {
   fi
 }
 
+# The leases line of <project>, whose treehouse pool is that of the checkout <path>, returned
+# through <return>.
+check_leases() {
+  local project=$1 path=$2 return_cmd=$3 shown leases problems count fix ledger=$TEAM_HOME/ledger.jsonl
+  shown=$(tilde "$path")
+  # No ledger is the records line's FAIL; here it holds no task.
+  [[ -f $ledger ]] || ledger=/dev/null
+  if ! leases=$(pool_status "$path"); then
+    report "leases $project" WARN "\`treehouse status --json\` in $shown did not answer" "the tool treehouse line's fix"
+    return
+  fi
+  count=$(jq -s 'map(select(.holder != "")) | length' <<<"$leases")
+  problems=$(ledger_jq 'ledger_events as $events | ($events | by_task) as $tasks
+    | [open_worktrees($events[] | select($tasks[.task] | is_open); $home) | select(.project == $project)] as $open
+    | $leases[] | select(.holder != "") | . as $slot
+    | ($tasks[.holder] // null) as $held
+    | (.path | if startswith($home + "/") then "~" + .[($home | length):] else . end) as $shown
+    | if $held == null then "\($shown) is leased to \(.holder), no task of the ledger"
+      elif ($held | is_open | not) then "\($shown) is leased to \(.holder), which is closed"
+      elif any($open[]; .task == $slot.holder and .worktree == $slot.path) | not then
+        "\($shown) is leased to \(.holder), whose worktree in \($project) is not there"
+      else empty end
+    | [., $slot.path] | @tsv' -nRr --arg project "$project" --argjson leases "$(jq -s . <<<"$leases")" \
+    "$ledger")
+  if [[ -z $problems ]]; then
+    if ((count == 0)); then
+      report "leases $project" PASS "no slot of the pool is leased"
+    else
+      report "leases $project" PASS "every leased slot ($count) is an open task's worktree here"
+    fi
+    return
+  fi
+  fix=$(cut -f2 <<<"$problems" | while IFS= read -r slot; do
+    printf 'cd %s && %s %s; ' "$shown" "$(tilde "$return_cmd")" "$(tilde "$slot")"
+  done)
+  report "leases $project" WARN "$(cut -f1 <<<"$problems" | paste -sd ';' | sed 's/;/; /g')" \
+    "once nothing in it is needed, Daniel returns each in their own terminal, which asks before discarding changes: ${fix%; }"
+}
+
 # The lines of the registered project <name> (see the header).
 check_project() {
   local project=$1 facts path shown repo url top common origin task_dir exclude out rc pool slot
@@ -292,6 +337,11 @@ check_project() {
           "put $project's pool.slots in projects.toml under the pool's directory, ~/.treehouse/$pool/ unless its treehouse.toml sets another root"
       fi
     fi
+  fi
+
+  # leases: each slot the pool leases is an open task's worktree in this project.
+  if [[ $(jq -r .pool.provider <<<"$facts") == treehouse ]]; then
+    check_leases "$project" "$path" "$(jq -r .pool.return <<<"$facts")"
   fi
 
   probe_trust "$project" "$path"
