@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Fake external command for tests: copied onto PATH as each command `sandbox` stubs.
+# Fake external command for tests: linked onto PATH as each command `sandbox` stubs (stub_command).
 # Logs its argv as one JSON array per call to $STUB_CALLS/<name>.log, then answers from the
 # test's fixture in $STUB_FIXTURES: <name>.sh is sourced with the call's arguments when present,
 # otherwise <name>.out is printed and <name>.status is the exit code (default 0).
 # A call with no fixture at all fails, so a test never passes on an unplanned call.
 set -euo pipefail
 name=${0##*/}
-# --arg takes each value literally, even one that looks like an option.
-for arg in "$@"; do jq -cn --arg a "$arg" '$a'; done | jq -cs . >>"$STUB_CALLS/$name.log"
+# After --args --, each value is taken literally, even one that looks like an option.
+jq -cn '$ARGS.positional' --args -- "$@" >>"$STUB_CALLS/$name.log"
 fixture=$STUB_FIXTURES/$name
 if [[ -f $fixture.sh ]]; then
   # shellcheck disable=SC1090 # the per-test fixture

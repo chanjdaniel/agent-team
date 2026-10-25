@@ -44,7 +44,7 @@ declare -gA FORMAT=(
   [flock]='flock %s'
 )
 
-# Set up the doctor's machine (team-doctor.bats' every test starts here): home-pc holds the lease
+# Set up the doctor's machine (team-doctor*.bats' every test starts here): home-pc holds the lease
 # with its heartbeat enabled, every tool answers nothing yet (tools_at gives them versions), the
 # team's Claude config and plugins are installed, so are the pinned MCP servers, every secret is
 # in place, the gate's opencode wrapper is installed and config.yaml runs the gate on it, two
@@ -59,7 +59,7 @@ doctor_machine() {
   export CODE_CHECKOUT
   CODE_CHECKOUT=$BATS_TEST_TMPDIR/code
   mkdir -p "$CODE_CHECKOUT"
-  cp -R "$REPO_ROOT/bin" "$CODE_CHECKOUT/bin"
+  copy_bin "$CODE_CHECKOUT/bin"
   # The pinned MCP servers, installed: servers/install here is a stub that stamps the install as
   # the real one does (its own tests are servers-install.bats) and logs that it ran.
   mkdir -p "$CODE_CHECKOUT/servers"
@@ -79,7 +79,7 @@ EOF
   git -C "$CODE_CHECKOUT" config core.hooksPath bin/hooks/git
 
   # The OS: Linux, from an Arch os-release file, until a test says Darwin.
-  cp "$REPO_ROOT/tests/helpers/stub" "$BATS_TEST_TMPDIR/stubs/uname"
+  stub_command uname
   stub_reply uname Linux
   # uname -m answers the machine type (x86_64 until a test says otherwise), anything else the OS.
   stub_script uname <<'EOF'
@@ -217,21 +217,29 @@ EOF
 
 # The version stub for <command>, made once: it answers an argument list it has an answer for
 # (an <args>.sh answer is a script, sourced), exits 127 as a missing command for one marked
-# missing, and runs the real command otherwise.
+# missing, and runs the real command otherwise, after $TOOL_ANSWERS/<command>.wrap.sh when there
+# is one (helpers/bootstrap.bash's wrappers), which may handle the call itself. Every version stub is
+# one shared script (helpers/common's shared), named as its command.
 tool_stub() {
   [[ ! -e $TOOL_STUBS/$1 ]] || return 0
   mkdir -p "$TOOL_ANSWERS/$1"
-  cat >"$TOOL_STUBS/$1" <<EOF
+  ln "$(shared tool-stub <<EOF
 #!$(PATH=$REAL_PATH command -v bash)
+name=\${0##*/}
 key=\$*
-answer=\$TOOL_ANSWERS/$1/\${key// /_}
-if [[ -f \$answer.missing ]]; then echo "$1: command not found" >&2; exit 127; fi
+answer=\$TOOL_ANSWERS/\$name/\${key// /_}
+if [[ -f \$answer.missing ]]; then echo "\$name: command not found" >&2; exit 127; fi
 if [[ -f \$answer.sh ]]; then source "\$answer.sh"; exit 0; fi
 if [[ -f \$answer ]]; then cat "\$answer"; exit 0; fi
-real=\$(PATH=\$REAL_PATH command -v $1) || { echo "$1: command not found" >&2; exit 127; }
+real=\$(PATH=\$REAL_PATH command -v "\$name") || real=''
+if [[ -f \$TOOL_ANSWERS/\$name.wrap.sh ]]; then
+  source "\$REPO_ROOT/tests/helpers/doctor.bash"
+  source "\$TOOL_ANSWERS/\$name.wrap.sh"
+fi
+[[ -n \$real ]] || { echo "\$name: command not found" >&2; exit 127; }
 exec "\$real" "\$@"
 EOF
-  chmod +x "$TOOL_STUBS/$1"
+)" "$TOOL_STUBS/$1"
 }
 
 # answer <version_cmd> <output>: the command answers those words with <output>; with no output
@@ -291,6 +299,14 @@ checks() {
   sed -E 's/^(PASS|WARN|FAIL) ([^:]+): .*/\2/' <<<"$output"
 }
 
+# Whether <word> is one of the other arguments: among <word> <word>...
+# A loop, not printf | grep -q: under pipefail, grep leaving at its match can kill printf with
+# SIGPIPE before it is done, which reads as no match on a busy machine.
+among() {
+  local word
+  for word in "${@:2}"; do [[ $word != "$1" ]] || return 0; done
+  return 1
+}
 
 # The tool <name> of the sandbox's OS (Darwin or not, by the uname stub) answers its version_cmd
 # at its pin or min from now on, as if just installed: mark_installed <name>...
@@ -298,7 +314,7 @@ mark_installed() {
   local os=arch name cmd version
   [[ $(cat "$STUB_FIXTURES/uname.out" 2>/dev/null) != Darwin ]] || os=macos
   while IFS=$'\t' read -r name cmd version _; do
-    if printf '%s\n' "$@" | grep -qxF -- "$name"; then answer "$cmd" "${FORMAT[$name]//%s/$version}"; fi
+    if among "$name" "$@"; then answer "$cmd" "${FORMAT[$name]//%s/$version}"; fi
   done < <(lock_tools "$os")
 }
 
@@ -312,7 +328,7 @@ installed_from() {
   while IFS=$'\t' read -r name _ _ source; do
     [[ $source == "$prefix"* ]] || continue
     all=1
-    for pkg in ${source#"$prefix"}; do printf '%s\n' "$@" | grep -qxF -- "$pkg" || all=0; done
+    for pkg in ${source#"$prefix"}; do among "$pkg" "$@" || all=0; done
     ((!all)) || mark_installed "$name"
   done < <(lock_tools "$os")
 }

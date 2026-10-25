@@ -123,6 +123,7 @@ bin=$(dirname "$TEAM_LIB")
 lock=$TEAM_LIB/tools.lock
 err=$(mktemp)
 trap 'rm -f "$err"' EXIT
+# Each check's check, verdict, reason and fix, in order, for --json.
 results=() failed=0
 # The tools whose version command answered at all, by name.
 declare -A installed=()
@@ -130,8 +131,7 @@ declare -A installed=()
 # Record one check: report <check> <verdict> <reason> [<fix>]; the line is printed at once.
 report() {
   local line
-  results+=("$(jq -cn --arg check "$1" --arg verdict "$2" --arg reason "$3" --arg fix "${4:-}" \
-    '{check: $check, verdict: $verdict, reason: $reason, fix: $fix}')")
+  results+=("$1" "$2" "$3" "${4:-}")
   [[ $2 != FAIL ]] || failed=1
   if ((json)); then return 0; fi
   line="$2 $1: $3"
@@ -835,5 +835,8 @@ else
   report offline PASS "the team is not holding for an outage"
 fi
 
-if ((json)); then printf '%s\n' "${results[@]}" | jq -s .; fi
+if ((json)); then
+  printf '%s\0' "${results[@]}" | jq -Rs 'split("\u0000")[:-1] | [range(0; length; 4) as $i | .[$i:$i + 4]
+    | {check: .[0], verdict: .[1], reason: .[2], fix: .[3]}]'
+fi
 exit "$failed"

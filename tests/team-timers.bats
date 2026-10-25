@@ -10,7 +10,7 @@ setup() {
   sandbox
   origin=$(hold_lease home-pc)
   fake_service_managers
-  cp "$REPO_ROOT/tests/helpers/stub" "$BATS_TEST_TMPDIR/stubs/uname"
+  stub_command uname
   stub_reply uname Linux
   units=$HOME/.config/systemd/user agents=$HOME/Library/LaunchAgents
   log=$HOME/.local/state/agent-team/heartbeat.log
@@ -344,7 +344,7 @@ REFUSED="unable to access 'https://127\\.0\\.0\\.1:9/agent-team\\.git/': Failed 
 # from stdin, may be empty) in its place: the uname stub keeps the sandbox's stubs ahead of
 # Homebrew's GNU sleep on macOS too.
 stub_sleep() {
-  cp "$REPO_ROOT/tests/helpers/stub" "$BATS_TEST_TMPDIR/stubs/sleep"
+  stub_command sleep
   stub_script sleep
 }
 
