@@ -234,15 +234,17 @@ def snapshot_due($project):
     and any(.[$stowed].worktrees[]?; .project == $project and .uncommitted == true));
 
 # Whether the event ends the worker of <role>: its DONE, which the coordinator logs as a done of
-# that role, a review (a reviewer's) or a ticket-done (a builder's).
+# that role, a review (a reviewer's), or a ticket-done or a pr (a builder's: a delivering
+# builder's PR <url> is logged as a pr, not a done).
 def ends_worker($role):
   (.event == "done" and .role == $role) or (.event == "review" and $role == "reviewer")
-  or (.event == "ticket-done" and $role == "builder");
+  or ((.event == "ticket-done" or .event == "pr") and $role == "builder");
 
-# The roles to relaunch after a crash: each role launched since the task's latest stowed whose
-# latest launch no later event ends (ends_worker), in the order of those launches. Never ops: an
-# ops session runs only on Daniel's request, so after a crash Daniel asks again.
-def crash_roles:
+# The task's unfinished work: each role launched since its latest stowed whose latest launch no
+# later event ends (ends_worker), in the order of those launches. The roles a handoff's stowed
+# records and a crash relaunches. Never ops: an ops session runs only on Daniel's request, so on
+# the other machine Daniel asks again.
+def unfinished_roles:
   . as $events
   | latest_stowed as $stowed
   | [to_entries[] | select(.key > $stowed and .value.event == "launch" and .value.role != "ops")

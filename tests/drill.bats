@@ -171,7 +171,7 @@ posts() {
   # The ledger, as laptop has it: home-pc's stowed, then laptop's move of the worktree (the
   # sandbox's paths are not under /home/<name>, so the slot is laptop's own, not re-rooted).
   assert_equal "$(events_of stowed "$laptop/team")" \
-    "{\"task\":\"T1\",\"event\":\"stowed\",\"machine\":\"home-pc\",\"worktrees\":[{\"project\":\"home\",\"branch\":\"feat/T1-work\",\"head\":\"$head\"}],\"roles\":[\"builder\"]}"
+    "{\"task\":\"T1\",\"event\":\"stowed\",\"machine\":\"home-pc\",\"worktrees\":[{\"project\":\"home\",\"branch\":\"feat/T1-work\",\"head\":\"$head\"}],\"roles\":[\"builder\"],\"sessions\":[\"builder\"]}"
   assert_equal "$(events_of worktree-moved "$laptop/team")" \
     "{\"task\":\"T1\",\"event\":\"worktree-moved\",\"project\":\"home\",\"branch\":\"feat/T1-work\",\"from\":\"$wt\",\"worktree\":\"$lt\",\"machine\":\"laptop\"}"
 

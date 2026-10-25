@@ -47,11 +47,12 @@
 #                   reports.
 #  10. report       tasks/resume-<date>.json (this machine's date): {machine, epoch, stolen_from,
 #                   written_at, tasks}, each task {task, stowed, crashed, worktrees, failures}:
-#                   stowed the task's latest stowed event ({ts, machine, roles, note}) or null,
+#                   stowed the task's latest stowed event ({ts, machine, roles, sessions, note},
+#                   roles its unfinished work, sessions the sessions the handoff stopped) or null,
 #                   crashed null or {machine, checkpoint, roles}: the machine it crashed on, the
 #                   latest time any of it was saved (its snapshots, its archive's last commit) or
 #                   null, and the roles whose latest launch since that stowed nothing ended (a
-#                   done of the role, a review, a ticket-done); worktrees team-open's facts
+#                   done of the role, a review, a ticket-done or a pr); worktrees team-open's facts
 #                   ({project, branch, worktree, from, moved, head, archive, snapshot}, archive
 #                   null when no scratch was restored, snapshot null unless the worktree resumed
 #                   from one, after a crash or a stowed with uncommitted changes), failures
@@ -260,9 +261,9 @@ main() {
     mapfile -t open < <(ledger_jq 'ledger_events | by_task | . as $tasks | open_tasks[] | . as $task
       | {task: $task,
          stowed: ($tasks[$task] | map(select(.event == "stowed")) | last
-           | if . then {ts, machine, roles} + (if .note then {note} else {} end) else null end),
+           | if . then {ts, machine, roles, sessions} + (if .note then {note} else {} end) else null end),
          crashed: ($tasks[$task] | if crashed then
-           {machine: (map(select(.event == "launch")) | last | .machine), roles: crash_roles} else null end),
+           {machine: (map(select(.event == "launch")) | last | .machine), roles: unfinished_roles} else null end),
          open: [$tasks[$task] | open_worktrees(.[]; $home) | {project, branch}]}' -nRc "$TEAM_HOME/ledger.jsonl")
   fi
   for entry in "${open[@]}"; do

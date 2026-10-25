@@ -124,8 +124,9 @@
     },
     "stowed": {
       "writer": "team-handoff",
-      "about": "one per open task at a handoff: worktrees as {project, branch, head}, with uncommitted: true for one whose changes the checkpoint kept as wip/<project>/T<n> on the team home's origin; roles whose sessions the handoff stopped",
-      "required": {"machine": "string", "worktrees": "array", "roles": "array"}
+      "about": "one per open task at a handoff: worktrees as {project, branch, head}, with uncommitted: true for one whose changes the checkpoint kept as wip/<project>/T<n> on the team home's origin; roles the task's unfinished work, each role launched since its last stowed that nothing ended (ledger.jq's unfinished_roles), which the other machine relaunches; sessions the roles whose sessions the handoff stopped, for the record (before 2026-10-25, roles held those)",
+      "required": {"machine": "string", "worktrees": "array", "roles": "array"},
+      "optional": {"sessions": "array"}
     },
     "worktree-moved": {
       "writer": "team-open",

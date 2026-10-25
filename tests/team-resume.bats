@@ -85,6 +85,9 @@ SH
   git -C "$wt" add a.txt
   git -C "$wt" commit -q -m "feat: a"
   head=$(git -C "$wt" rev-parse HEAD)
+  # The live builder's launch, as team-worker logs it.
+  jq -cn --arg wt "$wt" '{ts: (now | todate), task: "T1", event: "launch", role: "builder", session: "81f08540",
+    worktree: $wt, toolkits: [], machine: "home-pc"}' >>"$TEAM_HOME/ledger.jsonl"
 
   make_machine laptop
   laptop=$BATS_TEST_TMPDIR/machines/laptop
@@ -160,8 +163,8 @@ laptop_state() {
 
   # The report.
   assert_equal "$(jq -c '{machine, epoch, stolen_from}' "$report")" '{"machine":"laptop","epoch":2,"stolen_from":null}'
-  assert_equal "$(jq -c '.tasks | map({task, roles: .stowed.roles, from: .stowed.machine, crashed, failures})' "$report")" \
-    '[{"task":"T1","roles":["builder"],"from":"home-pc","crashed":null,"failures":[]}]'
+  assert_equal "$(jq -c '.tasks | map({task, roles: .stowed.roles, sessions: .stowed.sessions, from: .stowed.machine, crashed, failures})' "$report")" \
+    '[{"task":"T1","roles":["builder"],"sessions":["builder"],"from":"home-pc","crashed":null,"failures":[]}]'
   assert_equal "$(jq -c '.tasks[0].worktrees' "$report")" \
     "[{\"project\":\"home\",\"branch\":\"feat/T1-work\",\"worktree\":\"$laptop/home/slots/home/1\",\"from\":\"$wt\",\"moved\":true,\"head\":\"$head\",\"archive\":\"tasks/T1/scratch\",\"snapshot\":null}]"
 

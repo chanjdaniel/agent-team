@@ -22,10 +22,13 @@
 #                  origin's refuses the handoff, naming the task, before anything is pushed; it is
 #                  checked once before step 2 too, so it refuses while its worker still runs.
 #   5. stowed      One stowed per open task: this machine, each open worktree's
-#                  {project, branch, head} with the head origin has, and the roles of the task's
-#                  T<n>-<role> sessions step 2 stopped, ops never among them. A worktree with
-#                  uncommitted changes is said and gets uncommitted: true, so team-open --resume
-#                  applies the checkpoint's wip/<project>/T<n> on the other machine (else the changes are
+#                  {project, branch, head} with the head origin has, roles, the task's unfinished
+#                  work (each role launched since its last stowed whose latest launch no done,
+#                  review, ticket-done or, for a builder, pr ended), which the other machine
+#                  relaunches, and sessions, the roles of the task's T<n>-<role> sessions step 2
+#                  stopped, for the record; ops never in either. A worktree with uncommitted
+#                  changes is said and gets uncommitted: true, so team-open --resume applies the
+#                  checkpoint's wip/<project>/T<n> on the other machine (else the changes are
 #                  said and noted as staying here); untracked files the snapshot leaves out as
 #                  possible secrets are said and noted as staying here. None when the task's
 #                  latest machine event (stowed, launch, worktree-moved) is already a stowed from
@@ -43,7 +46,7 @@
 #      settings.json left to Daniel: it has an env key, which may hold a secret.").
 #      --json prints {machine, epoch, released_at, message, captured, tasks} instead, captured
 #      being the message's config lines, tasks each open task's latest stowed from this machine as
-#      {task, worktrees, roles}, and the step lines go to stderr. A machine whose lease its
+#      {task, worktrees, roles, sessions}, and the step lines go to stderr. A machine whose lease its
 #      handoff already released prints the message again.
 # --retire, once the message is posted: refuses while this machine holds the lease, then starts a
 # detached process (its own session) that, a few seconds after the call returns, runs claude stop
@@ -378,11 +381,12 @@ if [[ -z $finished ]]; then
   # 5. One stowed per open task.
   for entry in "${open[@]}"; do
     task=$(jq -r .task <<<"$entry")
-    event=$(jq -cn --arg task "$task" --arg machine "$machine" --argjson worktrees "${stowed_worktrees[$task]}" \
-      --argjson workers "$workers" --arg note "${notes[$task]}" \
-      '{ts: (now | todate), task: $task, event: "stowed", machine: $machine, worktrees: $worktrees,
-        roles: [$workers[] | select(startswith("\($task)-")) | ltrimstr("\($task)-") | select(. != "ops")] | unique}
-       + if $note == "" then {} else {note: $note} end')
+    event=$(task_events "$task" | ledger_jq '{ts: (now | todate), task: $task, event: "stowed", machine: $machine,
+        worktrees: $worktrees, roles: unfinished_roles,
+        sessions: [$workers[] | select(startswith("\($task)-")) | ltrimstr("\($task)-") | select(. != "ops")] | unique}
+       + if $note == "" then {} else {note: $note} end' \
+      -sc --arg task "$task" --arg machine "$machine" --argjson worktrees "${stowed_worktrees[$task]}" \
+      --argjson workers "$workers" --arg note "${notes[$task]}")
     if task_events "$task" | jq -se --argjson new "$event" \
       'map(select(.event | IN("stowed", "launch", "worktree-moved"))) | last
         | .event == "stowed" and .machine == $new.machine and .worktrees == $new.worktrees' >/dev/null; then
@@ -445,7 +449,7 @@ captured=$(jq -c '[if . == null then "Config captured: unknown (no record of thi
 if [[ $mode == json ]]; then
   ledger_jq 'ledger_events | by_task | . as $tasks | [open_tasks[] | . as $task
       | $tasks[$task] | map(select(.event == "stowed" and .machine == $machine)) | last
-      | select(. != null) | {task: $task, worktrees, roles}]
+      | select(. != null) | {task: $task, worktrees, roles, sessions}]
     | {machine: $machine, epoch: $epoch, released_at: $released, message: $message, captured: $captured,
       tasks: .}' \
     -nR --arg machine "$machine" --argjson epoch "$epoch" --arg released "$released_at" --arg message "$message" \
