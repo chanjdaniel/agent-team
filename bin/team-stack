@@ -108,8 +108,9 @@
 #                           ~/.local/state/agent-team/stacks/logs/<project>-<local date>/, for
 #                           every service it has
 #             gate stack    one all of whose objects are of class gate, past its expires or, with
-#                           none, created more than 2 hours ago: removed as down removes it,
-#                           without logs (docker compose -p <project> down -v --remove-orphans)
+#                           none, its newest object created more than 2 hours ago: removed as
+#                           down removes it, without logs (docker compose -p <project> down -v
+#                           --remove-orphans)
 #             shared image  in a project's images, no container uses it, created more than 7
 #                           days ago, and not among the 2 newest of its repository: image rm
 #             legacy image  with --legacy only, matching a legacy_images pattern, no container

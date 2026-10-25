@@ -1161,7 +1161,7 @@ relabel() {
   run_bin -0 --separate-stderr team-stack reap
   assert_equal "$stderr" ""
   assert_equal "$(removals)" "stack conventioner-4 (team, 0 B): its worktree $gone is gone
-stack nmtest-12822 (gate, 0 B): it has no expires and was created at 2026-10-21T08:00:00Z, over 2 hours ago
+stack nmtest-12822 (gate, 0 B): it has no expires and its newest object was created at 2026-10-21T08:00:00Z, over 2 hours ago
 stack nmtest-1895520 (gate, 509.1 MB): it expired at 2026-10-24T12:55:00Z"
   assert_equal "$(grep -c '^would remove ' <<<"$output")" 3
   assert_equal "$(kept)" "stack conventioner (unowned, 1.5 GB)
@@ -1266,17 +1266,19 @@ network conventioner_conventioner_network (unowned)"
   [[ $(removals) != *nmtest-1895520* ]]
 }
 
-@test "reap removes a gate stack with no expires once it is 2 hours old, and keeps it just before" {
+@test "reap removes a gate stack with no expires once its newest object is 2 hours old, and keeps it just before" {
   reap_machine
+  # A live run of the name of an aborted one that left its volume and network: its container is
+  # young, so the stack is kept.
   docker_created container nmtest-12822-backend-1 $((2 * 3600 - 60))
-  docker_created volume nmtest-12822_backend_sessions $((2 * 3600 - 60))
-  docker_created network nmtest-12822_conventioner_network $((2 * 3600 - 60))
+  docker_created volume nmtest-12822_backend_sessions $((5 * 3600))
+  docker_created network nmtest-12822_conventioner_network $((5 * 3600))
   run_bin -0 team-stack reap
   [[ $(removals) != *nmtest-12822* ]]
   assert_contains "$(kept)" "stack nmtest-12822 (gate, 0 B)"
-  docker_created network nmtest-12822_conventioner_network $((2 * 3600 + 60))
+  docker_created container nmtest-12822-backend-1 $((2 * 3600 + 60))
   run_bin -0 --separate-stderr team-stack reap --apply
-  assert_contains "$(removals)" "stack nmtest-12822 (gate, 0 B): it has no expires and was created at "
+  assert_contains "$(removals)" "stack nmtest-12822 (gate, 0 B): it has no expires and its newest object was created at "
   assert_contains "$(docker_calls)" "compose -p nmtest-12822 down -v --remove-orphans"
   assert_equal "$(jq -r '.[] | select(.Name | startswith("nmtest-12822")) | .Name' "$DOCKER_STATE/volumes.json" "$DOCKER_STATE/networks.json")" ""
 }

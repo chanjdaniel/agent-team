@@ -185,7 +185,7 @@ def reap_plan($in):
        tasks: ([.[] | team_label(.labels; "task") // empty] | unique),
        worktrees: ([.[] | team_label(.labels; "worktree") // empty] | unique),
        expires: ([.[] | team_label(.labels; "expires") // empty | epoch // empty] | max),
-       created: (map(.created // empty) | min),
+       created: (map(.created // empty) | min), newest: (map(.created // empty) | max),
        size_bytes: ([$volumes[] | select(.project == $p) | .size_bytes // 0] | add // 0)}) as $projects
 
   | [$projects[] | select(.classes == ["team"])
@@ -195,10 +195,12 @@ def reap_plan($in):
            why: (if $closed then its("task"; .tasks; "closed") else its("worktree"; .worktrees; "gone") end)}]
     as $team_stacks
   | [$projects[] | select(.classes == ["gate"])
-    | select(if .expires != null then .expires < $now else .created != null and .created < $now - 7200 end)
+    # Without expires, its newest object's age, so a live run's stack is never taken for an
+    # aborted run's of the same name whose objects it left behind.
+    | select(if .expires != null then .expires < $now else .newest != null and .newest < $now - 7200 end)
     | . + {rule: "gate stack", class: "gate",
            why: (if .expires != null then "it expired at \(.expires | todate)"
-                 else "it has no expires and was created at \(.created | todate), over 2 hours ago" end)}] as $gate_stacks
+                 else "it has no expires and its newest object was created at \(.newest | todate), over 2 hours ago" end)}] as $gate_stacks
   | ([$team_stacks[], $gate_stacks[] | {key: .name, value: true}] | from_entries) as $removed
 
   | ([$all[].image] | unique) as $used

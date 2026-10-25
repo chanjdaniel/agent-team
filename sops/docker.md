@@ -168,7 +168,7 @@ The janitor runs it daily with `--apply` ("The daily report and its alerts") onc
 | What | Rule | Action |
 | - | - | - |
 | team stack: a Compose project all of whose containers, volumes and networks are of class team | its tasks are all closed in the ledger, or its worktrees are all gone | logs saved, then removed as `down` removes it |
-| gate stack: one all of whose objects are of class gate | past its `expires`, or, with no `expires`, created more than 2 hours ago | `docker compose -p <project> down -v --remove-orphans`, then its anonymous volumes as `down` removes them; no logs |
+| gate stack: one all of whose objects are of class gate | past its `expires`, or, with no `expires`, its newest object created more than 2 hours ago | `docker compose -p <project> down -v --remove-orphans`, then its anonymous volumes as `down` removes them; no logs |
 | shared image (a repository in a project's `images`) | no container uses it, created more than 7 days ago, and not among the 2 newest of its repository | `docker image rm <repository>:<tag>` |
 | legacy image (matching `legacy_images`) | `--legacy` only, and no container uses it | `docker image rm <repository>:<tag>` |
 | dangling image | no container uses it, created more than 24 hours ago | `docker image rm <id>` |

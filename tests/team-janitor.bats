@@ -120,7 +120,7 @@ wait_for() {
   local removed
   removed=$(section Removed)
   assert_equal "$(sed -n 1p <<<"$removed")" "- stack conventioner-4 (team, 0 B): its worktree $gone is gone; its logs in $HOME/.local/state/agent-team/stacks/logs/conventioner-4-$TODAY"
-  assert_equal "$(sed -n 2,3p <<<"$removed")" "- stack nmtest-12822 (gate, 0 B): it has no expires and was created at 2026-10-21T08:00:00Z, over 2 hours ago
+  assert_equal "$(sed -n 2,3p <<<"$removed")" "- stack nmtest-12822 (gate, 0 B): it has no expires and its newest object was created at 2026-10-21T08:00:00Z, over 2 hours ago
 - stack nmtest-1895520 (gate, 509.1 MB): it expired at 2026-10-24T12:55:00Z"
   assert_equal "$(sed -n 4p <<<"$removed")" "Removed 3 objects, 509.1 MB: 1 team stack (0 B), 2 gate stacks (509.1 MB); kept 14 objects that are not the team's, 4.7 GB."
   [[ $(section "Kept as not the team's" | head -n 1) =~ ^-\ stack\ conventioner\ \(unowned,\ 1.5\ GB,\ [0-9]+[smhd]\ old\)$ ]]
