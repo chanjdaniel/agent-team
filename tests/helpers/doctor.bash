@@ -44,7 +44,7 @@ declare -gA FORMAT=(
   [flock]='flock %s'
 )
 
-# Set up the doctor's machine (team-doctor.bats' every test starts here): home-pc holds the lease
+# Set up the doctor's machine (team-doctor*.bats' every test starts here): home-pc holds the lease
 # with its heartbeat enabled, every tool answers nothing yet (tools_at gives them versions), the
 # team's Claude config and plugins are installed, every secret is in place, the gate's opencode
 # wrapper is installed and named by config.yaml, two projects are registered and cloned as the
@@ -58,12 +58,12 @@ doctor_machine() {
   export CODE_CHECKOUT
   CODE_CHECKOUT=$BATS_TEST_TMPDIR/code
   mkdir -p "$CODE_CHECKOUT"
-  cp -R "$REPO_ROOT/bin" "$CODE_CHECKOUT/bin"
+  copy_bin "$CODE_CHECKOUT/bin"
   git init -q "$CODE_CHECKOUT"
   git -C "$CODE_CHECKOUT" config core.hooksPath bin/hooks/git
 
   # The OS: Linux, from an Arch os-release file, until a test says Darwin.
-  cp "$REPO_ROOT/tests/helpers/stub" "$BATS_TEST_TMPDIR/stubs/uname"
+  stub_command uname
   stub_reply uname Linux
   # uname -m answers the machine type (x86_64 until a test says otherwise), anything else the OS.
   stub_script uname <<'EOF'
@@ -201,21 +201,29 @@ EOF
 
 # The version stub for <command>, made once: it answers an argument list it has an answer for
 # (an <args>.sh answer is a script, sourced), exits 127 as a missing command for one marked
-# missing, and runs the real command otherwise.
+# missing, and runs the real command otherwise, after $TOOL_ANSWERS/<command>.wrap.sh when there
+# is one (helpers/bootstrap.bash's wrappers), which may handle the call itself. Every version stub is
+# one shared script (helpers/common's shared), named as its command.
 tool_stub() {
   [[ ! -e $TOOL_STUBS/$1 ]] || return 0
   mkdir -p "$TOOL_ANSWERS/$1"
-  cat >"$TOOL_STUBS/$1" <<EOF
+  ln "$(shared tool-stub <<EOF
 #!$(PATH=$REAL_PATH command -v bash)
+name=\${0##*/}
 key=\$*
-answer=\$TOOL_ANSWERS/$1/\${key// /_}
-if [[ -f \$answer.missing ]]; then echo "$1: command not found" >&2; exit 127; fi
+answer=\$TOOL_ANSWERS/\$name/\${key// /_}
+if [[ -f \$answer.missing ]]; then echo "\$name: command not found" >&2; exit 127; fi
 if [[ -f \$answer.sh ]]; then source "\$answer.sh"; exit 0; fi
 if [[ -f \$answer ]]; then cat "\$answer"; exit 0; fi
-real=\$(PATH=\$REAL_PATH command -v $1) || { echo "$1: command not found" >&2; exit 127; }
+real=\$(PATH=\$REAL_PATH command -v "\$name") || real=''
+if [[ -f \$TOOL_ANSWERS/\$name.wrap.sh ]]; then
+  source "\$REPO_ROOT/tests/helpers/doctor.bash"
+  source "\$TOOL_ANSWERS/\$name.wrap.sh"
+fi
+[[ -n \$real ]] || { echo "\$name: command not found" >&2; exit 127; }
 exec "\$real" "\$@"
 EOF
-  chmod +x "$TOOL_STUBS/$1"
+)" "$TOOL_STUBS/$1"
 }
 
 # answer <version_cmd> <output>: the command answers those words with <output>; with no output

@@ -44,7 +44,7 @@ launches() {
 fake_checkout() {
   code=$BATS_TEST_TMPDIR/code
   mkdir -p "$code/roles" "$code/settings" "$code/toolkits/kit-a" "$code/toolkits/kit-b" "$code/toolkits/kit-c"
-  cp -R "$REPO_ROOT/bin" "$code/bin"
+  copy_bin "$code/bin"
   echo "You plan." >"$code/roles/planner.md"
   cat >"$code/settings/worker.json" <<'JSON'
 {"disableClaudeAiConnectors": true, "env": {"A": "worker", "B": "worker"},

@@ -6,7 +6,7 @@
 # home with a builder launched by team-worker and its first commit made; laptop (make_machine) is
 # the machine the team moves to. claude, gh, curl and op are the sandbox's stubs (claude keeps
 # each machine's sessions under its own HOME), and team-resume's doctor is a stub that passes
-# (TEAM_DOCTOR): the doctor's own lines are tests/team-doctor.bats', and the crash test runs the
+# (TEAM_DOCTOR): the doctor's own lines are tests/team-doctor*.bats', and the crash test runs the
 # real one on home-pc for its salvage lines.
 # Scenarios: a clean handoff and resume, a handoff of a worker that never answered STOW, a stale
 # lease stolen, a crash between checkpoints, and a GitHub outage held in offline mode.
@@ -303,9 +303,9 @@ posts() {
 @test "outage: home-pc's heartbeat holds the team offline, posting once and changing nothing on origin; when GitHub is back it renews, clears the hold and posts the window" {
   # The probe's 60-second wait returns at once; the uname stub keeps the sandbox's stubs ahead
   # of Homebrew's GNU sleep on macOS (as in tests/team-timers.bats).
-  cp "$REPO_ROOT/tests/helpers/stub" "$BATS_TEST_TMPDIR/stubs/sleep"
+  stub_command sleep
   stub_script sleep </dev/null
-  cp "$REPO_ROOT/tests/helpers/stub" "$BATS_TEST_TMPDIR/stubs/uname"
+  stub_command uname
   stub_reply uname Linux
   # A renewal and a checkpoint are both due: the builder has uncommitted work.
   echo "edited" >"$wt/a.txt"
