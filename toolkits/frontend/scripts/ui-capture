@@ -1,0 +1,250 @@
+#!/usr/bin/env node
+// Capture the element selected in the Agent Chrome's DevTools Elements panel into a directory, for
+// an agent to fix: its page, HTML, matched CSS, Vue source location and two screenshots.
+//
+// Usage: ui-capture [--browser-url <url>] <out-dir>
+//   --browser-url  The Agent Chrome's remote debugging address (default http://127.0.0.1:9222,
+//                  where scripts/agent-chrome starts it).
+// Writes, creating <out-dir> if needed:
+//   ui-pick.md    the time, the page's URL and route, the snapshot line of the selected element,
+//                 its source chain (vite-plugin-vue-inspector's file:line:column, innermost
+//                 first, relative to the front end's root) and component chain, its outerHTML
+//                 (trimmed to 4000 characters) and every matched CSS rule (get_css_styles)
+//   element.png   a screenshot of the element
+//   page.png      a screenshot of the page
+// It speaks MCP to the pinned chrome-devtools-mcp (servers/, installed by servers/install),
+// attached to the Agent Chrome with an allowlist of http://localhost:*/*, http://127.0.0.1:*/*
+// and DevTools' own frontend (devtools://devtools/*, where the selection is read; without it
+// the server waits forever), so it never lists or reads another page, and with Google's usage
+// statistics, CrUX and update checks off. It never navigates, clicks or types.
+// The element is the one DevTools marks in the page's snapshot ("selected in the DevTools
+// Elements panel"); one outside the accessibility tree is found in a verbose snapshot.
+// Exit 0 captured; 1 with one line on stderr when no Agent Chrome answers, no localhost page
+// has DevTools open, nothing is selected, or the page carries no Vue source data (a production
+// build, or a Vue DevTools without the inspector); 2 a malformed command line.
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const code = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+const modules = join(code, "servers", "node_modules");
+const server = join(modules, "chrome-devtools-mcp", "build", "src", "bin", "chrome-devtools-mcp.js");
+// The localhost pages, and DevTools' own frontend, which the server reads the Elements panel's
+// selection from; it lists DevTools windows as pages only with --experimentalDevtools, never set.
+const allowed = ["http://localhost:*/*", "http://127.0.0.1:*/*", "devtools://devtools/*"];
+const htmlLimit = 4000;
+
+const fail = (reason, status = 1) => {
+  process.stderr.write(`ui-capture: ${reason}\n`);
+  process.exit(status);
+};
+const usage = "usage: ui-capture [--browser-url <url>] <out-dir>";
+
+// The header above, without the comment marks, is the --help.
+function help() {
+  const header = [];
+  for (const line of readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1)) {
+    if (!line.startsWith("//")) break;
+    header.push(line.replace(/^\/\/ ?/, ""));
+  }
+  process.stdout.write(`${header.join("\n")}\n`);
+  process.exit(0);
+}
+
+let browserUrl = "http://127.0.0.1:9222";
+let out;
+const args = process.argv.slice(2);
+for (let i = 0; i < args.length; i++) {
+  if (args[i] === "--help" || args[i] === "-h") help();
+  else if (args[i] === "--browser-url" && i + 1 < args.length) browserUrl = args[++i];
+  else if (!args[i].startsWith("-") && out === undefined) out = args[i];
+  else fail(usage, 2);
+}
+if (out === undefined) fail(usage, 2);
+if (!/^http:\/\/(127\.0\.0\.1|localhost):\d+\/?$/.test(browserUrl)) {
+  fail(`--browser-url must be http://127.0.0.1:<port> or http://localhost:<port>, not ${browserUrl}`, 2);
+}
+
+// The Agent Chrome answers before the server is started, so its absence is one plain line.
+try {
+  const response = await fetch(new URL("/json/version", browserUrl), { signal: AbortSignal.timeout(5000) });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+} catch {
+  fail(`no Agent Chrome answers at ${browserUrl}; start it with toolkits/frontend/scripts/agent-chrome`);
+}
+
+let Client, StdioClientTransport;
+try {
+  ({ Client } = await import(join(modules, "@modelcontextprotocol", "sdk", "dist", "esm", "client", "index.js")));
+  ({ StdioClientTransport } = await import(join(modules, "@modelcontextprotocol", "sdk", "dist", "esm", "client", "stdio.js")));
+} catch {
+  fail("the pinned MCP client and server are not installed: run servers/install");
+}
+
+const transport = new StdioClientTransport({
+  command: process.execPath,
+  args: [
+    server,
+    `--browser-url=${browserUrl}`,
+    "--allowedUrlPattern", ...allowed,
+    "--no-usage-statistics",
+    "--no-performance-crux",
+    "--no-page-id-routing",
+  ],
+  env: {
+    PATH: process.env.PATH ?? "/usr/bin:/bin",
+    HOME: process.env.HOME ?? "",
+    CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS: "1",
+    CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS: "1",
+  },
+  stderr: "pipe",
+});
+const client = new Client({ name: "ui-capture", version: "1" });
+const done = async (status, reason) => {
+  await client.close().catch(() => {});
+  if (status) fail(reason, status);
+  process.exit(0);
+};
+
+// One tool call: its text and images; a tool error ends the capture with its first line.
+async function call(name, args = {}) {
+  let result;
+  try {
+    result = await client.callTool({ name, arguments: args }, undefined, { timeout: 30_000 });
+  } catch (error) {
+    await done(1, `${name} failed: ${String(error.message ?? error).split("\n")[0]}`);
+  }
+  const text = result.content.filter((c) => c.type === "text").map((c) => c.text).join("\n");
+  if (result.isError) await done(1, `${name} failed: ${text.split("\n")[0]}`);
+  return { text, images: result.content.filter((c) => c.type === "image") };
+}
+
+try {
+  await client.connect(transport);
+} catch (error) {
+  fail(`chrome-devtools-mcp did not start: ${String(error.message ?? error).split("\n")[0]}`);
+}
+
+// list_pages' lines, "<id>: <title> (<url>)" or "<id>: <url>" for a page with no title, each
+// maybe followed by " [selected]" and an isolated context: [{ id, url }].
+function listedPages(text) {
+  return [...text.matchAll(/^(\d+): (.*)$/gm)].map(([, id, rest]) => {
+    rest = rest.replace(/( \[selected\])?( isolatedContext=\S+)?$/, "");
+    const titled = rest.endsWith(")") ? rest.lastIndexOf(" (") : -1;
+    return { id: Number(id), url: titled === -1 ? rest : rest.slice(titled + 2, -1) };
+  });
+}
+
+// Each localhost page, by its id in list_pages; for each, the
+// snapshot's line marking the DevTools selection, verbose when the selection is outside the
+// accessibility tree. DevTools open with nothing marked means nothing is selected.
+const selectedMark = "[selected in the DevTools Elements panel]";
+const notInTree = /there is a selected element in the DevTools Elements panel but it is not included/;
+const pages = listedPages((await call("list_pages")).text).filter((p) => /^https?:/.test(p.url));
+if (pages.length === 0) await done(1, "the Agent Chrome has no localhost page open");
+let pick, inspected;
+for (const page of pages) {
+  await call("select_page", { pageId: page.id });
+  let snapshot = (await call("take_snapshot")).text;
+  if (!snapshot.includes(selectedMark) && notInTree.test(snapshot)) {
+    inspected ??= page;
+    snapshot = (await call("take_snapshot", { verbose: true })).text;
+  }
+  const line = snapshot.split("\n").find((l) => l.includes(selectedMark));
+  if (line) {
+    pick = { ...page, line: line.trim(), uid: line.match(/uid=(\S+)/)[1] };
+    break;
+  }
+}
+if (!pick && inspected) {
+  await done(1, `DevTools is open on ${inspected.url} but no element is selected; right-click the element and Inspect, or click it in the Elements panel`);
+}
+if (!pick) await done(1, "no localhost page of the Agent Chrome has DevTools open; right-click the element and Inspect");
+await call("select_page", { pageId: pick.id });
+
+// The element's own facts, read in the page: its route, HTML, and the inspector's source data
+// (vite-plugin-vue-inspector keeps "src/...vue:line:column" in each vnode's hidden props).
+const facts = JSON.parse(
+  (
+    await call("evaluate_script", {
+      function: `(el) => {
+        const loc = (e) => e?.__vnode?.props?.__v_inspector;
+        const source = [];
+        for (let e = el; e; e = e.parentElement) if (loc(e)) source.push(e.tagName.toLowerCase() + " " + loc(e));
+        const components = [];
+        let node = el;
+        while (node && !node.__vueParentComponent) node = node.parentElement;
+        for (let i = node?.__vueParentComponent; i; i = i.parent) {
+          const file = i.type.__file ? i.type.__file.replace(/^.*?\\/(src\\/)/, "$1") : "";
+          components.push((i.type.__name || i.type.name || "anonymous") + (file ? " " + file : ""));
+        }
+        return { tag: el.tagName, route: location.pathname + location.search + location.hash, url: location.href,
+          source, components, html: el.outerHTML };
+      }`,
+      args: [pick.uid],
+    })
+  ).text.match(/```json\n([\s\S]*?)\n```/)?.[1] ?? "null",
+);
+if (!facts) await done(1, "evaluate_script returned nothing readable for the selected element");
+// DevTools selects <body> when it opens: that is no element of Daniel's.
+if (facts.tag === "BODY" || facts.tag === "HTML") {
+  await done(1, `DevTools is open on ${pick.url} but no element is selected (it shows <${facts.tag.toLowerCase()}>); right-click the element and Inspect, or click it in the Elements panel`);
+}
+if (facts.source.length === 0) {
+  await done(1, `the page carries no Vue source data (no __v_inspector on ${pick.line.replace(/^uid=\S+ /, "")} or its parents): a production build, or a Vue DevTools without the inspector`);
+}
+
+const css = (await call("get_css_styles", { uid: pick.uid, pageSize: 1000 })).text;
+const element = (await call("take_screenshot", { uid: pick.uid })).images[0];
+const page = (await call("take_screenshot")).images[0];
+if (!element || !page) await done(1, "take_screenshot returned no image");
+
+mkdirSync(out, { recursive: true });
+writeFileSync(join(out, "element.png"), Buffer.from(element.data, "base64"));
+writeFileSync(join(out, "page.png"), Buffer.from(page.data, "base64"));
+const html = facts.html.length > htmlLimit
+  ? `${facts.html.slice(0, htmlLimit)}\n<!-- trimmed: ${facts.html.length} characters in all -->`
+  : facts.html;
+const fence = (text) => "`".repeat(Math.max(3, ...[...text.matchAll(/`+/g)].map((m) => m[0].length + 1)));
+const block = (lang, text) => `${fence(text)}${lang}\n${text}\n${fence(text)}`;
+writeFileSync(
+  join(out, "ui-pick.md"),
+  [
+    "# The selected element",
+    "",
+    `Captured ${new Date().toISOString()} by ui-capture from the Agent Chrome at ${browserUrl}.`,
+    `Page: ${facts.url}`,
+    `Route: ${facts.route}`,
+    "",
+    "## Where it is",
+    "",
+    `Snapshot line: \`${pick.line}\``,
+    "",
+    "Source, innermost first (vite-plugin-vue-inspector, relative to the front end's root):",
+    "",
+    ...facts.source.map((s) => `- ${s}`),
+    "",
+    "Components, innermost first:",
+    "",
+    ...(facts.components.length ? facts.components.map((c) => `- ${c}`) : ["- (none found)"]),
+    "",
+    "## HTML",
+    "",
+    block("html", html),
+    "",
+    "## Matched CSS",
+    "",
+    "Every rule that matches it, in cascade order, overridden declarations marked [overloaded] (get_css_styles).",
+    "In the dev server a rule's location is the injected style tag; the scoped attribute and the source chain above name the file.",
+    "",
+    block("", css),
+    "",
+    "## Screenshots",
+    "",
+    "- element.png: the element",
+    "- page.png: the page",
+    "",
+  ].join("\n"),
+);
+process.stdout.write(`ui-capture: ${pick.line.replace(/^uid=\S+ /, "")} at ${facts.source[0]} -> ${join(out, "ui-pick.md")}\n`);
+await done(0);
