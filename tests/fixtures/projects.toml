@@ -1,4 +1,5 @@
-# A fixture shaped like the team home's projects.toml (2026-10-24), for the tests that read a real registry.
+# A fixture shaped like the team home's projects.toml (2026-10-24), for the tests that read a real registry;
+# its [conventioner.stack] block is the one the coordinator adds to the real registry once team-stack lands (T22).
 # The project registry, read only through bin/team-project; `team-project --help` documents every key.
 
 [conventioner]
@@ -22,6 +23,14 @@ slots = [
   ".treehouse/Conventioner-d4c77a/3/Conventioner",
   ".treehouse/Conventioner-d4c77a/4/Conventioner",
 ]
+
+[conventioner.stack]
+compose = "scripts/th-compose.sh"
+seed = "scripts/seed_fixture.sh"
+log_services = ["backend", "frontend"]
+images = ["conventioner/backend", "conventioner/frontend"]
+legacy_images = ["nmtest-[0-9]+-(backend|frontend)", "nmfix-.*", "nmtest-t12-.*", "conventioner-[0-9]+-(backend|frontend)"]
+legacy_gate = "nmtest-[0-9]+"
 
 [agent-team]
 repo = "chanjdaniel/agent-team"

@@ -1,0 +1,735 @@
+#!/usr/bin/env bash
+# The one way the team starts, reaches, stops and removes a Docker stack, and lists what Docker
+# runs and whose it is (sops/docker.md: the labels contract, the wrapper contract, the classes).
+#
+# Usage: team-stack ls [--all] [--json]
+#        team-stack up [--worktree <path>] [--task T<n>] [--no-seed]
+#        team-stack env|seed|stop|down [--worktree <path>]
+#
+# ls        every Compose project on the machine (docker compose ls --all), one line each under
+#           a header: its name, status, owner class, task, kind, worktree (~ for the home
+#           directory, with "(gone)" when the directory is gone), age (since its oldest
+#           container was created) and the memory its running containers use. With --all, then
+#           a table each, one line per group with its totals: volumes by class (how many, how
+#           many attached, size), images by class and repository (tags, how many in use, size)
+#           and networks by class. With --json, one object, {projects} and with --all also
+#           {volumes, images, networks}, each item with its class. It changes nothing: it runs
+#           only docker compose ls, ps, inspect, stats --no-stream and, with --all, system df,
+#           volume ls and network ls.
+#
+# The other subcommands act on one worktree's stack. The worktree is --worktree, else the git
+# top level of the current directory, and must be a linked worktree: a primary checkout's stack
+# is Daniel's primary stack, which team-stack never starts, uses or removes. Its project is the
+# registered one whose primary checkout the worktree belongs to (team-project --find path), and
+# must have a stack block. Its stack is the one the stack block's compose wrapper resolves for
+# the worktree, named by <wrapper> config --format json, made of the containers, volumes and
+# networks Docker labels with that Compose project. Each refuses a stack that is not the team's
+# (any of its objects not of class team), and first clears the caller's COMPOSE_PROJECT_NAME,
+# COMPOSE_FILE, TH_DIR, TH_PORTS, every TH_*_PORT and the TEAM_* variables, so an exported
+# identity never redirects it. The wrapper runs from the worktree with TH_DIR set and, after the
+# config call, the five TEAM_* variables: the labels read back from the stack's containers for
+# a stack that exists (Compose recreates containers whose labels change), the task's for a new one.
+# up        Starts the stack of the worktree's task: the open task (opened or added, not returned,
+#           not closed) whose ledger worktree is this one, by real path, else --task, which must
+#           name an open task and agree with the ledger. A team stack of another task is taken
+#           down first, as down does, its logs saved as <its task>-<project>-<service>.log. Then
+#           <wrapper> up -d --wait, a new stack with TEAM_OWNER=agent-team, TEAM_TASK,
+#           TEAM_KIND=dev, TEAM_WORKTREE (the worktree) and an empty TEAM_EXPIRES; then, for a
+#           new stack none of whose named volumes was there before, the stack block's seed command
+#           as seed runs it, unless --no-seed. Prints one line saying whether it seeded.
+#           A stack not running is first admitted, under an exclusive flock on
+#           ~/.local/state/agent-team/stacks.lock held until its up -d --wait returns (a running
+#           one is not checked): with team-capacity on PATH or at ~/.local/bin/team-capacity,
+#           team-capacity admit --kind stack:<registered project> decides (0 admits, 75 refuses
+#           with its stderr as the reason, anything else fails up); else there is room when all
+#           three hold: fewer Compose projects running (docker compose ls, every owner's) than
+#           stack_cap; memory available less the sum of the stack's mem_limits at least
+#           memory_floor_gib GiB (Linux: MemAvailable from /proc/meminfo; macOS, unverified:
+#           docker info's MemTotal less docker stats' use of the running containers); and free
+#           space (df -Pk) at least disk_floor_gb GB on the file system of docker info's
+#           DockerRootDir (macOS, unverified: of the home directory). With no room, it says once
+#           on stderr that it waits and why, re-checks every 30 seconds (the lock let go between
+#           checks) up to wait_minutes, then exits 75 naming every failing check with its numbers.
+#           Each wait that ends, admitted or not (a refusal with wait_minutes 0 included), adds
+#           {start, end, project, task, admitted, reasons} to
+#           ~/.local/state/agent-team/stacks/waits.jsonl, its reasons the last refusal's.
+# env       Prints export lines that reach the running stack: the wrapper's ports
+#           (COMPOSE_PROJECT_NAME and a TH_<SERVICE>_PORT per service), then TEAM_OWNER,
+#           TEAM_TASK, TEAM_KIND, TEAM_WORKTREE and TEAM_EXPIRES as the stack carries them; use
+#           eval "$(team-stack env)". A stack that is not running is refused with the wrapper's
+#           reason.
+# seed      Runs the stack block's seed command from the worktree, with env's exports.
+# stop      docker compose -p <project> stop: the containers stopped, their data kept.
+# down      Saves the last 1 MiB of each log_services service's log (docker compose -p <project>
+#           logs --no-color --timestamps <service>) to
+#           <worktree>/<task_dir>/stack-logs/<project>-<service>.log, then runs docker compose -p
+#           <project> down -v --remove-orphans and docker volume rm on each anonymous volume its
+#           containers mounted that is still there, and fails naming each container, volume and
+#           network of the stack left. A worktree with no stack is told so, exit 0 (as for stop).
+#
+# The owner classes, from each object's own labels and its Compose project, and the registry's
+# stack blocks (team-project --help):
+#   gate       kind=gate, whatever its owner (a gate run from a task's shell is owner=agent-team
+#              too), or no team label set and a project name matching a legacy_gate
+#   team       owner=agent-team, and not kind=gate
+#   unowned    everything else, Daniel's primary stack and hand-made stacks included
+# An anonymous volume a container mounts takes that container's class, and one no container
+# mounts is anonymous; an image is team when its repository is in a project's images, legacy
+# when it matches a legacy_images pattern, else unowned.
+#
+# The machine's settings, ~/.config/agent-team/stack.json, a JSON object whose keys are all
+# optional: stack_cap (a whole number of 1 or more, default 6), memory_floor_gib (6),
+# disk_floor_gb (30), wait_minutes (15), idle_minutes (30), each a number of 0 or more,
+# heartbeat_sweep and heartbeat_janitor (true or false, default false). up refuses a file that is
+# not one JSON object, a key of the wrong type and an unknown key, naming each.
+# Test seams: TEAM_MEMINFO names a file read in place of /proc/meminfo, and
+# TEAM_STACK_RECHECK_SECONDS replaces the 30 seconds between admission checks.
+#
+# Exit 0 done, 1 refused or failed (Docker not answering, with its reason), 2 usage error,
+# 75 try again later (no room for the stack when its wait ran out).
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+LS_USAGE="usage: team-stack ls [--all] [--json]"
+
+(($#)) || usage_error "usage: team-stack ls|up|env|seed|stop|down [options]; team-stack --help says more"
+SUBCOMMAND=$1
+case $SUBCOMMAND in
+  ls | up | env | seed | stop | down) ;;
+  *) usage_error "unknown subcommand '$SUBCOMMAND'; the subcommands are: ls, up, env, seed, stop, down" ;;
+esac
+shift
+
+# Docker's answers go through files: a machine's hundreds of volumes are too long for an argument.
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
+DOCKER_ERR=$WORK/stderr
+
+# Run a read-only docker call, its output in DOCKER_OUT; a failure dies naming the call and
+# Docker's reason: docker_read <name> <docker arguments...>
+docker_read() {
+  local name=$1
+  shift
+  DOCKER_OUT=$(docker "$@" 2>"$DOCKER_ERR") ||
+    die "docker $name failed: $(grep -m1 . "$DOCKER_ERR" || echo "no reason given")"
+}
+
+# Inspect the objects of <type> named <names...>, 500 to a call, into the file <file> as one
+# JSON array: one removed since it was listed is left out, as Docker answers the others and
+# names it on stderr: docker_inspect <type> <file> <names...>
+docker_inspect() {
+  local type=$1 file=$2 out
+  shift 2
+  : >"$file.parts"
+  while (($#)); do
+    if ! out=$(docker inspect --type "$type" "${@:1:500}" 2>"$DOCKER_ERR"); then
+      if ! jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1 || grep -qviE 'no such|not found' "$DOCKER_ERR"; then
+        die "docker inspect failed: $(grep -m1 . "$DOCKER_ERR" || echo "no reason given")"
+      fi
+    fi
+    printf '%s\n' "$out" >>"$file.parts"
+    shift $(($# < 500 ? $# : 500))
+  done
+  jq -cs 'add // []' "$file.parts" >"$file"
+}
+
+# The memory use of the running containers <ids...> as a JSON array of docker stats' lines; a
+# container stopped since it was listed is left out.
+docker_stats() {
+  local id line
+  (($#)) || { echo '[]'; return 0; }
+  if DOCKER_OUT=$(docker stats --no-stream --format json "$@" 2>"$DOCKER_ERR"); then
+    jq -cs . <<<"$DOCKER_OUT"
+    return 0
+  fi
+  grep -qiE 'no such' "$DOCKER_ERR" || die "docker stats failed: $(grep -m1 . "$DOCKER_ERR" || echo "no reason given")"
+  # One at a time, so each that is gone is skipped alone.
+  for id in "$@"; do
+    line=$(docker stats --no-stream --format json "$id" 2>/dev/null) || continue
+    printf '%s\n' "$line"
+  done | jq -cs .
+}
+
+# The stack blocks of the registered projects, as one JSON array.
+stack_blocks() {
+  local names name
+  names=$(team_project --list) || exit 1
+  for name in $names; do
+    team_project "$name" | jq -c '.stack // empty' || exit 1
+  done | jq -cs .
+}
+
+cmd_ls() {
+  local all='' json='' arg
+  for arg in "$@"; do
+    case $arg in
+      --all) all=1 ;;
+      --json) json=1 ;;
+      *) usage_error "$LS_USAGE" ;;
+    esac
+  done
+
+  local ids running worktree
+  docker compose ls --all --format json >"$WORK/projects.json" 2>"$DOCKER_ERR" ||
+    die "Docker does not answer: $(grep -m1 . "$DOCKER_ERR" || echo "docker compose ls failed")"
+  docker_read ps ps --all --quiet --no-trunc
+  mapfile -t ids < <(grep . <<<"$DOCKER_OUT" || true)
+  docker_inspect container "$WORK/containers.json" "${ids[@]}"
+  mapfile -t running < <(jq -r '.[] | select(.State.Running) | .Id' "$WORK/containers.json")
+  docker_stats "${running[@]}" >"$WORK/stats.json"
+  stack_blocks >"$WORK/stacks.json" || exit 1
+
+  # The worktrees the labels name that are gone from this machine.
+  while IFS= read -r worktree; do
+    [[ -d $worktree ]] || printf '%s\n' "$worktree"
+  done < <(jq -r --arg key "io.github.chanjdaniel.team.worktree" \
+    '[.[].Config.Labels[$key] // empty | select(. != "")] | unique[]' "$WORK/containers.json") |
+    jq -Rcs 'split("\n") | map(select(. != ""))' >"$WORK/gone.json"
+
+  echo '{}' >"$WORK/df.json"
+  local file
+  for file in volumes images networks; do echo '[]' >"$WORK/$file.json"; done
+  if [[ -n $all ]]; then
+    docker_read 'system df' system df -v --format json
+    printf '%s\n' "$DOCKER_OUT" >"$WORK/df.json"
+    jq -c '.Images // []' "$WORK/df.json" >"$WORK/images.json"
+    docker_read 'volume ls' volume ls --quiet
+    mapfile -t ids < <(grep . <<<"$DOCKER_OUT" || true)
+    docker_inspect volume "$WORK/volumes.json" "${ids[@]}"
+    docker_read 'network ls' network ls --quiet --no-trunc
+    mapfile -t ids < <(grep . <<<"$DOCKER_OUT" || true)
+    docker_inspect network "$WORK/networks.json" "${ids[@]}"
+  fi
+
+  local listing
+  listing=$(jq -n -L "$TEAM_LIB" 'include "stack";
+    $projects[0] as $projects | $stats[0] as $stats | $stacks[0] as $stacks | $gone[0] as $gone
+    | $df[0] as $df | $volumes[0] as $volumes | $images[0] as $images | $networks[0] as $networks
+    | ($containers[0] | map(. + {project: compose_project(.Config.Labels)})) as $containers
+    | {projects: [$projects[] | .Name as $name
+        | [$containers[] | select(.project == $name)] as $mine
+        # The team labels any of its containers set, as the project'"'"'s.
+        | ([$mine[].Config.Labels // {} | to_entries[] | select((.key | startswith(team_prefix)) and .value != "")]
+            | from_entries) as $labels
+        | [$mine[] | select(.State.Running) | .Id as $id
+            | $stats[] | select(.ID as $short | $id | startswith($short)) | .MemUsage | split(" / ")[0] | bytes]
+          as $memory
+        | team_label($labels; "worktree") as $worktree
+        | {name: $name, status: .Status, class: owner_class($labels; $name; $stacks),
+           owner: team_label($labels; "owner"), task: team_label($labels; "task"),
+           kind: team_label($labels; "kind"), worktree: $worktree,
+           worktree_gone: (if $worktree == null then null else $gone | index($worktree) != null end),
+           created: ([$mine[].Created | utc_time] | min),
+           containers: ($mine | length), running: ([$mine[] | select(.State.Running)] | length),
+           memory_bytes: (if $memory == [] then null else $memory | add end)}]
+      | sort_by(.name)}
+    + if $all then
+        # Who mounts each volume: the containers, by volume name.
+        ([$containers[] | . as $c | .Mounts[]? | select(.Type == "volume" and .Name) | {key: .Name, value: $c}]
+          | group_by(.key) | map({key: .[0].key, value: map(.value)}) | from_entries) as $mounts
+        | ($df.Volumes // [] | map({key: .Name, value: (.Size | bytes)}) | from_entries) as $sizes
+        | ([$containers[].Image] | unique) as $used
+        | {volumes: [$volumes[] | (.Labels // {}) as $labels | ($mounts[.Name] // []) as $by
+            | (($labels | has("com.docker.volume.anonymous"))
+                or ((.Name | test("^[0-9a-f]{64}$")) and compose_project($labels) == null)) as $anonymous
+            | (if $anonymous and $by != [] then $by[0].Config.Labels else $labels end) as $owner
+            | (if $anonymous and $by != [] then $by[0].project else compose_project($labels) end) as $project
+            | {name: .Name, class: (if $anonymous and $by == [] then "anonymous" else owner_class($owner; $project; $stacks) end),
+               project: $project, anonymous: $anonymous, attached: ($by != []),
+               owner: team_label($owner; "owner"), task: team_label($owner; "task"), kind: team_label($owner; "kind"),
+               worktree: team_label($owner; "worktree"), size_bytes: $sizes[.Name], created: .CreatedAt}]
+            | sort_by((.class | class_rank), .name),
+           images: [$images[] | {id: .ID, repository: .Repository, tag: .Tag,
+               class: image_class(.Repository; $stacks), in_use: (.ID as $id | $used | index($id) != null),
+               dangling: (.Repository == "<none>"), size_bytes: (.Size | bytes), created: .CreatedAt}]
+            | sort_by((.class | class_rank), .repository, .tag),
+           networks: [$networks[] | (.Labels // {}) as $labels
+            | {name: .Name, id: .Id, class: owner_class($labels; compose_project($labels); $stacks),
+               project: compose_project($labels), owner: team_label($labels; "owner"), task: team_label($labels; "task"),
+               kind: team_label($labels; "kind"), worktree: team_label($labels; "worktree"), created: .Created}]
+            | sort_by((.class | class_rank), .name)}
+      else {} end' \
+    --argjson all "$([[ -n $all ]] && echo true || echo false)" \
+    --slurpfile projects "$WORK/projects.json" --slurpfile containers "$WORK/containers.json" \
+    --slurpfile stats "$WORK/stats.json" --slurpfile stacks "$WORK/stacks.json" --slurpfile gone "$WORK/gone.json" \
+    --slurpfile df "$WORK/df.json" --slurpfile volumes "$WORK/volumes.json" --slurpfile images "$WORK/images.json" \
+    --slurpfile networks "$WORK/networks.json")
+
+  if [[ -n $json ]]; then
+    jq . <<<"$listing"
+    return 0
+  fi
+  jq -r -L "$TEAM_LIB" 'include "stack";
+    def dash: . // "-";
+    # A path under the home directory as ~/...
+    def short: if startswith($home + "/") then "~" + .[$home | length:] else . end;
+    # One table per kind of object, a blank line between those that have rows.
+    [ ([.projects[] | [.name, .status, .class, (.task | dash), (.kind | dash),
+          (if .worktree == null then "-" elif .worktree_gone then "\(.worktree | short) (gone)" else .worktree | short end),
+          (.created | if . == null then "-" else age end), (.memory_bytes | memory_size)]]
+        | if . == [] then empty else [["PROJECT", "STATUS", "CLASS", "TASK", "KIND", "WORKTREE", "AGE", "MEMORY"]] + . end),
+      (.volumes // [] | group_by(.class | class_rank) | map([.[0].class, (length | tostring),
+          (map(select(.attached)) | length | tostring), (map(.size_bytes // 0) | add | disk_size)])
+        | if . == [] then empty else [["VOLUMES", "COUNT", "ATTACHED", "SIZE"]] + . end),
+      (.images // [] | group_by([(.class | class_rank), .repository]) | map([.[0].class, .[0].repository,
+          (length | tostring), (map(select(.in_use)) | length | tostring), (map(.size_bytes // 0) | add | disk_size)])
+        | if . == [] then empty else [["IMAGES", "REPOSITORY", "TAGS", "IN USE", "SIZE"]] + . end),
+      (.networks // [] | group_by(.class | class_rank) | map([.[0].class, (length | tostring)])
+        | if . == [] then empty else [["NETWORKS", "COUNT"]] + . end)
+    ] | to_entries[] | (if .key > 0 then "" else empty end), (.value | table)' --arg home "$HOME" <<<"$listing"
+}
+
+# The last line a failed command left in the file <file>, or <fallback>: last_reason <file> <fallback>
+last_reason() {
+  grep . "$1" 2>/dev/null | tail -n 1 | grep . || echo "$2"
+}
+
+# Clear the caller's stack identity, so a shell that ran eval "$(team-stack env)" for another
+# stack, or holds a gate run's, never redirects a call: each wrapper call sets only what it means.
+clear_identity() {
+  local var
+  unset COMPOSE_PROJECT_NAME COMPOSE_FILE TH_DIR TH_PORTS TEAM_OWNER TEAM_TASK TEAM_KIND TEAM_WORKTREE TEAM_EXPIRES
+  while IFS= read -r var; do
+    if [[ $var =~ ^TH_[A-Za-z0-9_]*_PORT$ ]]; then unset "$var"; fi
+  done < <(compgen -e)
+}
+
+# The worktree to act on (<path>, or the git top level it is in) and its project: WT, PROJECT,
+# STACK (its stack block, JSON), TASK_DIR and WRAPPER. A primary checkout is refused, and so is
+# a worktree of no registered project or of one without a stack block: resolve_worktree <path>
+resolve_worktree() {
+  local path=$1 git_dir common primary
+  git -C "$path" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "$path is not a git worktree"
+  WT=$(git -C "$path" rev-parse --show-toplevel)
+  git_dir=$(git -C "$WT" rev-parse --path-format=absolute --git-dir)
+  common=$(git -C "$WT" rev-parse --path-format=absolute --git-common-dir)
+  [[ $git_dir != "$common" ]] ||
+    die "$WT is a primary checkout, whose stack is Daniel's primary stack, which team-stack never starts, uses or removes; run it in a task's linked worktree"
+  primary=$(realpath -m -- "$(dirname "$common")")
+  PROJECT=$(team_project --find path "$primary") || exit 1
+  PROJECT=${PROJECT%%$'\n'*}
+  [[ -n $PROJECT ]] || die "$WT is a worktree of $primary, which is no project's primary checkout in projects.toml"
+  team_project "$PROJECT" >"$WORK/project.json" || exit 1
+  STACK=$(jq -c '.stack // empty' "$WORK/project.json")
+  [[ -n $STACK ]] || die "$PROJECT has no stack block in projects.toml, so team-stack manages no stacks of it"
+  TASK_DIR=$(jq -r .task_dir "$WORK/project.json")
+  WRAPPER=$WT/$(jq -r .compose <<<"$STACK")
+  [[ -f $WRAPPER && -x $WRAPPER ]] || die "$PROJECT's compose wrapper $WRAPPER is not an executable file"
+  stack_blocks >"$WORK/stacks.json" || exit 1
+}
+
+# The task of the worktree WT into TASK: the open task the ledger gives it (by real path), else
+# <given>, which must be open and agree with the ledger: resolve_task <given or "">
+resolve_task() {
+  local given=$1 wt task path
+  local -a found=()
+  wt=$(realpath -m -- "$WT")
+  if [[ -e $TEAM_HOME/ledger.jsonl ]]; then
+    while IFS=$'\t' read -r task path; do
+      if [[ $(realpath -m -- "$path") == "$wt" && " ${found[*]} " != *" $task "* ]]; then found+=("$task"); fi
+    done < <(ledger_jq '[inputs | fromjson? | select(type == "object" and (.task | type) == "string")] as $events
+      | [$events | group_by(.task)[] | select(task_status == "open") | .[0].task] as $open
+      | open_worktrees($events[]; $home) | select(.task | IN($open[])) | [.task, .worktree] | @tsv' \
+      -nrR "$TEAM_HOME/ledger.jsonl")
+  fi
+  ((${#found[@]} <= 1)) || die "the ledger gives $WT to more than one open task: ${found[*]}"
+  if [[ -n $given ]]; then
+    open_task_events "$given" >/dev/null || exit 1
+    [[ ${#found[@]} -eq 0 || ${found[0]} == "$given" ]] || die "the ledger gives $WT to ${found[0]}, but --task names $given"
+    TASK=$given
+  elif ((${#found[@]})); then
+    TASK=${found[0]}
+  else
+    die "no open task holds $WT in the ledger; name one with --task T<n>"
+  fi
+}
+
+# The team labels each wrapper call passes, by key (owner, task, kind, worktree, expires); none
+# until the stack is known.
+declare -A LABELS=()
+LABEL_KEYS=(owner task kind worktree expires)
+
+# The admission lock's file descriptor while up holds it (admit), else empty.
+LOCK_FD=''
+
+# Run the project's compose wrapper, as the wrapper contract says: from the worktree, with
+# TH_DIR and the labels in LABELS, and never the admission lock: wrapper <arguments...>
+wrapper() {
+  (
+    if [[ -n $LOCK_FD ]]; then exec {LOCK_FD}>&-; fi
+    cd "$WT"
+    export TH_DIR=$WT
+    local key
+    for key in "${!LABELS[@]}"; do export "TEAM_${key^^}=${LABELS[$key]}"; done
+    exec "$WRAPPER" "$@"
+  )
+}
+
+# The stack's Compose project name, STACK_NAME, and its named volumes, NAMED_VOLUMES, from the
+# wrapper's config, which starts nothing.
+stack_config() {
+  wrapper config --format json >"$WORK/config.json" 2>"$WORK/config.err" ||
+    die "${WRAPPER#"$WT/"} config --format json failed: $(last_reason "$WORK/config.err" "no reason given")"
+  STACK_NAME=$(jq -r '.name // empty' "$WORK/config.json" 2>/dev/null) || STACK_NAME=''
+  [[ -n $STACK_NAME ]] || die "${WRAPPER#"$WT/"} config --format json named no project"
+  mapfile -t NAMED_VOLUMES < <(jq -r '.volumes // {} | .[] | select(.external != true) | .name // empty' "$WORK/config.json")
+}
+
+# The stack's objects as Docker has them, summed up in $WORK/stack.json: {exists, running, class
+# (team only when every object is), labels (read back, containers first, each "" when unset),
+# tasks, services, anonymous (the anonymous volumes its containers mount), objects ([{type,
+# name}], containers, volumes, networks)}.
+stack_state() {
+  local filter=label=com.docker.compose.project=$STACK_NAME
+  local -a ids
+  docker_read ps ps --all --quiet --no-trunc --filter "$filter"
+  mapfile -t ids < <(grep . <<<"$DOCKER_OUT" || true)
+  docker_inspect container "$WORK/stack-containers.json" "${ids[@]}"
+  docker_read 'volume ls' volume ls --quiet --filter "$filter"
+  mapfile -t ids < <(grep . <<<"$DOCKER_OUT" || true)
+  docker_inspect volume "$WORK/stack-volumes.json" "${ids[@]}"
+  docker_read 'network ls' network ls --quiet --no-trunc --filter "$filter"
+  mapfile -t ids < <(grep . <<<"$DOCKER_OUT" || true)
+  docker_inspect network "$WORK/stack-networks.json" "${ids[@]}"
+  jq -n -L "$TEAM_LIB" 'include "stack";
+    $containers[0] as $containers | $volumes[0] as $volumes | $stacks[0] as $stacks
+    | ([$containers[] | {type: "container", name: (.Name | ltrimstr("/")), labels: .Config.Labels}]
+       + [$volumes[] | {type: "volume", name: .Name, labels: .Labels}]
+       + [$networks[0][] | {type: "network", name: .Name, labels: .Labels}]
+      | map(. + {class: owner_class(.labels; $project; $stacks)})) as $objects
+    | {exists: ($objects != []), running: any($containers[]; .State.Running),
+       class: (first($objects[] | select(.class != "team") | .class) // "team"),
+       labels: (first($objects[].labels) // {} | . as $labels
+         | reduce $keys[] as $key ({}; .[$key] = ($labels[team_prefix + $key] // ""))),
+       tasks: ([$objects[] | team_label(.labels; "task") // empty] | unique),
+       services: ([$containers[].Config.Labels["com.docker.compose.service"] // empty] | unique),
+       anonymous: ([$containers[].Mounts[]? | select(.Type == "volume" and (.Name // "" | test("^[0-9a-f]{64}$"))) | .Name]
+         - [$volumes[].Name] | unique),
+       objects: [$objects[] | {type, name}]}' \
+    --arg project "$STACK_NAME" --argjson keys "$(printf '%s\n' "${LABEL_KEYS[@]}" | jq -Rcs 'split("\n")[:-1]')" \
+    --slurpfile containers "$WORK/stack-containers.json" --slurpfile volumes "$WORK/stack-volumes.json" \
+    --slurpfile networks "$WORK/stack-networks.json" --slurpfile stacks "$WORK/stacks.json" >"$WORK/stack.json"
+}
+
+# Whether the stack exists, refusing one that is not the team's.
+team_stack_exists() {
+  local class
+  jq -e .exists "$WORK/stack.json" >/dev/null || return 1
+  class=$(jq -r .class "$WORK/stack.json")
+  [[ $class == team ]] ||
+    die "$STACK_NAME is not the team's (class $class), so team-stack leaves it alone: team-stack ls shows it, and removing it is Daniel's or the coordinator's call"
+}
+
+# The stack's labels, read back from its objects, into LABELS.
+read_back_labels() {
+  local key
+  for key in "${LABEL_KEYS[@]}"; do LABELS[$key]=$(jq -r --arg key "$key" '.labels[$key]' "$WORK/stack.json"); done
+}
+
+# The names in <names...> that are volumes Docker still has, one per line.
+volumes_left() {
+  (($#)) || return 0
+  docker_read 'volume ls' volume ls --quiet
+  grep -Fx -f <(printf '%s\n' "$@") <<<"$DOCKER_OUT" || true
+}
+
+# Take the stack down: each log_services service's log saved (the last 1 MiB, as
+# <prefix><project>-<service>.log in the task directory's stack-logs/), then docker compose down
+# with its volumes, then the anonymous volumes its containers mounted that are still there;
+# dies naming each object left: teardown <prefix>
+teardown() {
+  local prefix=$1 dir=$WT/$TASK_DIR/stack-logs service summary
+  local -a anonymous left
+  mkdir -p "$dir"
+  while IFS= read -r service; do
+    jq -e --arg s "$service" '.services | index($s)' "$WORK/stack.json" >/dev/null || continue
+    docker compose -p "$STACK_NAME" logs --no-color --timestamps "$service" 2>"$DOCKER_ERR" |
+      tail -c 1048576 >"$dir/$prefix$STACK_NAME-$service.log" ||
+      echo "${0##*/}: could not save $service's logs: $(last_reason "$DOCKER_ERR" "no reason given")" >&2
+  done < <(jq -r '.log_services[]' <<<"$STACK")
+  mapfile -t anonymous < <(jq -r '.anonymous[]' "$WORK/stack.json")
+  docker compose -p "$STACK_NAME" down -v --remove-orphans >"$WORK/down.log" 2>&1 ||
+    die "docker compose down of $STACK_NAME failed: $(last_reason "$WORK/down.log" "no reason given")"
+  mapfile -t left < <(volumes_left "${anonymous[@]}")
+  if ((${#left[@]})) && ! docker volume rm "${left[@]}" >/dev/null 2>"$DOCKER_ERR"; then
+    echo "${0##*/}: docker volume rm failed: $(last_reason "$DOCKER_ERR" "no reason given")" >&2
+  fi
+  mapfile -t left < <(volumes_left "${anonymous[@]}")
+  stack_state
+  summary=$(jq -r --argjson anonymous "$(printf '%s\n' "${left[@]}" | jq -Rcs 'split("\n") | map(select(. != ""))')" '
+    [(.objects | map(select(.type != "network"))), ($anonymous | map({type: "volume", name: .})),
+     (.objects | map(select(.type == "network")))] | add | map("\(.type) \(.name)") | join(", ")' "$WORK/stack.json")
+  [[ -z $summary ]] || die "$STACK_NAME is not all gone after its down: $summary"
+  TEARDOWN_LOGS=$dir
+}
+
+# The export lines that reach the running stack: the wrapper's ports, then its labels (LABELS).
+stack_env() {
+  local ports line key
+  ports=$(wrapper ports 2>"$WORK/ports.err") ||
+    die "$STACK_NAME is not running ($(last_reason "$WORK/ports.err" "its wrapper's ports failed")); start it with team-stack up"
+  while IFS= read -r line; do
+    [[ $line =~ ^export\ [A-Za-z_][A-Za-z0-9_]*= ]] ||
+      die "${WRAPPER#"$WT/"} ports printed a line that is not an export: $line"
+  done <<<"$ports"
+  printf '%s\n' "$ports"
+  for key in "${LABEL_KEYS[@]}"; do printf 'export TEAM_%s=%q\n' "${key^^}" "${LABELS[$key]}"; done
+}
+
+# Run the stack block's seed command from the worktree, with env's exports.
+run_seed() {
+  local exports seed
+  exports=$(stack_env) || exit 1
+  seed=$(jq -r .seed <<<"$STACK")
+  (cd "$WT" && eval "$exports" && exec "$WT/$seed") ||
+    die "the seed command $seed failed (exit $?) for $STACK_NAME"
+}
+
+# The machine's stack settings, every key optional, into $WORK/settings.json with the defaults
+# filled in; a file that is not one JSON object, a key of the wrong type or an unknown key is
+# refused with the reason.
+stack_settings() {
+  local file=$HOME/.config/agent-team/stack.json problems
+  echo '{}' >"$WORK/settings-given.json"
+  if [[ -e $file ]]; then
+    jq -s . "$file" >"$WORK/settings-given.json" 2>"$WORK/settings.err" ||
+      die "$file is not JSON: $(last_reason "$WORK/settings.err" "jq could not read it")"
+    problems=$(jq -r '
+      {stack_cap: "count", memory_floor_gib: "amount", disk_floor_gb: "amount", wait_minutes: "amount",
+       idle_minutes: "amount", heartbeat_sweep: "boolean", heartbeat_janitor: "boolean"} as $kinds
+      | if length != 1 or (.[0] | type) != "object" then "is not one JSON object"
+        else [.[0] | to_entries[] | $kinds[.key] as $kind | (.value | tojson) as $value
+          | if $kind == null then "\(.key) is not a setting (they are: \($kinds | keys_unsorted | join(", ")))"
+            elif $kind == "count" and ((.value | type) != "number" or .value < 1 or .value != (.value | floor)) then
+              "\(.key) must be a whole number of 1 or more, not \($value)"
+            elif $kind == "amount" and ((.value | type) != "number" or .value < 0) then
+              "\(.key) must be a number of 0 or more, not \($value)"
+            elif $kind == "boolean" and (.value | type) != "boolean" then "\(.key) must be true or false, not \($value)"
+            else empty end]
+          | if . == [] then "" else ": " + join("; ") end
+        end' "$WORK/settings-given.json")
+    [[ -z $problems ]] || die "$file$([[ $problems == :* ]] || echo ' ')$problems"
+    jq '.[0]' "$WORK/settings-given.json" >"$WORK/settings-file.json"
+    mv "$WORK/settings-file.json" "$WORK/settings-given.json"
+  fi
+  jq '{stack_cap: 6, memory_floor_gib: 6, disk_floor_gb: 30, wait_minutes: 15, idle_minutes: 30,
+    heartbeat_sweep: false, heartbeat_janitor: false} + .' "$WORK/settings-given.json" >"$WORK/settings.json"
+}
+
+# The setting <key>, from $WORK/settings.json.
+setting() {
+  jq -r --arg key "$1" '.[$key]' "$WORK/settings.json"
+}
+
+# Whether the machine has room for the stack STACK_NAME now, the reasons it has not in REASONS:
+# team-capacity's admit when there is one, else the cap and both floors.
+room_check() {
+  REASONS=()
+  local capacity rc=0 os dir free
+  capacity=$(command -v team-capacity || true)
+  [[ -n $capacity || ! -x $HOME/.local/bin/team-capacity ]] || capacity=$HOME/.local/bin/team-capacity
+  if [[ -n $capacity ]]; then
+    "$capacity" admit --kind "stack:$PROJECT" >/dev/null 2>"$WORK/capacity.err" {LOCK_FD}>&- || rc=$?
+    case $rc in
+      0) return 0 ;;
+      75)
+        mapfile -t REASONS < <(grep . "$WORK/capacity.err" || true)
+        ((${#REASONS[@]})) || REASONS=("team-capacity refused it")
+        REASONS=("$(reasons_line)")
+        return 1
+        ;;
+      *) die "team-capacity admit --kind stack:$PROJECT failed (exit $rc): $(last_reason "$WORK/capacity.err" "no reason given")" ;;
+    esac
+  fi
+
+  docker_read 'compose ls' compose ls --format json
+  printf '%s\n' "$DOCKER_OUT" >"$WORK/running.json"
+  docker_read info info --format json
+  printf '%s\n' "$DOCKER_OUT" >"$WORK/info.json"
+  os=$(uname -s)
+  if [[ $os == Darwin ]]; then
+    # Docker Desktop's VM: its memory less what its running containers use; its disk image under
+    # the home directory. Unverified on a Mac.
+    local -a running
+    docker_read ps ps --quiet --no-trunc
+    mapfile -t running < <(grep . <<<"$DOCKER_OUT" || true)
+    docker_stats "${running[@]}" >"$WORK/admit-stats.json"
+    jq -L "$TEAM_LIB" 'include "stack"; .MemTotal - ([$stats[0][] | .MemUsage | split(" / ")[0] | bytes // 0] | add // 0)' \
+      --slurpfile stats "$WORK/admit-stats.json" "$WORK/info.json" >"$WORK/available"
+    dir=$HOME
+  else
+    awk '$1 == "MemAvailable:" { print $2 * 1024; found = 1 } END { exit !found }' "${TEAM_MEMINFO:-/proc/meminfo}" \
+      >"$WORK/available" || die "no MemAvailable in ${TEAM_MEMINFO:-/proc/meminfo}"
+    dir=$(jq -r '.DockerRootDir // empty' "$WORK/info.json")
+    [[ -n $dir ]] || die "docker info names no DockerRootDir"
+  fi
+  free=$(df -Pk "$dir" 2>"$WORK/df.err" | awk 'NR == 2 { print $4 * 1024 }') && [[ -n $free ]] ||
+    die "df could not read the free space of $dir: $(last_reason "$WORK/df.err" "no reason given")"
+
+  jq -nr -L "$TEAM_LIB" 'include "stack";
+    $settings[0] as $s | ($running[0] | length) as $running
+    | ([$config[0].services[]?.mem_limit // 0 | tonumber] | add // 0) as $limits
+    | ($available - $limits) as $left
+    | (if $running < $s.stack_cap then empty
+       else "\($running) of \($s.stack_cap) stacks running (stack_cap \($s.stack_cap))" end),
+      (if $left >= $s.memory_floor_gib * 1073741824 then empty
+       else "\($left / 1073741824 | one_decimal) GiB available after this stack'"'"'s \($limits / 1073741824 | one_decimal) GiB (memory_floor_gib \($s.memory_floor_gib))" end),
+      (if $free >= $s.disk_floor_gb * 1e9 then empty
+       else "\($free / 1e9 | one_decimal) GB free on the file system of \($dir) (disk_floor_gb \($s.disk_floor_gb))" end)' \
+    --slurpfile settings "$WORK/settings.json" --slurpfile running "$WORK/running.json" \
+    --slurpfile config "$WORK/config.json" --argjson available "$(cat "$WORK/available")" \
+    --argjson free "$free" --arg dir "$dir" >"$WORK/reasons" || die "could not weigh the room for $STACK_NAME"
+  mapfile -t REASONS <"$WORK/reasons"
+  ((${#REASONS[@]} == 0))
+}
+
+# REASONS on one line, "; " between them.
+reasons_line() {
+  local line
+  printf -v line '%s; ' "${REASONS[@]}"
+  echo "${line%; }"
+}
+
+# Log one finished admission wait in the state directory's waits.jsonl: log_wait <start> <admitted>
+log_wait() {
+  local state=$HOME/.local/state/agent-team/stacks
+  mkdir -p "$state"
+  jq -cn --argjson start "$1" --argjson admitted "$2" --arg project "$STACK_NAME" --arg task "$TASK" '
+    {start: ($start | todate), end: (now | floor | todate), project: $project, task: $task, admitted: $admitted,
+     reasons: $ARGS.positional}' --args "${REASONS[@]}" >>"$state/waits.jsonl"
+}
+
+# Admit the stack STACK_NAME, or wait for room up to wait_minutes, re-checking every
+# TEAM_STACK_RECHECK_SECONDS (30); exit 75 with every failing check when the wait runs out.
+# Returns with the admission lock held on LOCK_FD, which the caller closes after its up.
+admit() {
+  local state=$HOME/.local/state/agent-team start minutes seconds deadline now waited=''
+  local -a refused=()
+  mkdir -p "$state"
+  exec {LOCK_FD}>>"$state/stacks.lock"
+  flock -x "$LOCK_FD"
+  start=$(date +%s)
+  minutes=$(setting wait_minutes)
+  seconds=$(jq -n --argjson m "$minutes" '$m * 60 | ceil')
+  deadline=$((start + seconds))
+  until room_check; do
+    now=$(date +%s)
+    if ((now >= deadline)); then
+      log_wait "$start" false
+      echo "${0##*/}: no room for $STACK_NAME: $(reasons_line)" >&2
+      exit 75
+    fi
+    if [[ -z $waited ]]; then
+      waited=1
+      echo "${0##*/}: no room for $STACK_NAME yet, waiting up to $minutes minutes: $(reasons_line)" >&2
+    fi
+    refused=("${REASONS[@]}")
+    flock -u "$LOCK_FD"
+    sleep $((deadline - now < ${TEAM_STACK_RECHECK_SECONDS:-30} ? deadline - now : ${TEAM_STACK_RECHECK_SECONDS:-30}))
+    flock -x "$LOCK_FD"
+  done
+  if [[ -n $waited ]]; then
+    REASONS=("${refused[@]}")
+    log_wait "$start" true
+  fi
+}
+
+cmd_up() {
+  local seed=$1 fresh=1 note old key
+  stack_settings
+  resolve_task "$2"
+  stack_config
+  stack_state
+  if team_stack_exists; then
+    if [[ $(jq -c .tasks "$WORK/stack.json") == "[\"$TASK\"]" ]]; then
+      read_back_labels
+      fresh=''
+    else
+      old=$(jq -r '.labels.task | if . == "" then "untasked" else . end' "$WORK/stack.json")
+      echo "${0##*/}: $STACK_NAME is $old's: taking it down first" >&2
+      teardown "$old-"
+    fi
+  fi
+  if [[ -n $fresh ]]; then
+    LABELS=([owner]=agent-team [task]=$TASK [kind]=dev [worktree]=$WT [expires]='')
+    if [[ -n $(volumes_left "${NAMED_VOLUMES[@]}") ]]; then fresh=''; fi
+  fi
+  # A running stack of the task is admitted without a check; a stopped one is counted as new.
+  jq -e .running "$WORK/stack.json" >/dev/null || admit
+  wrapper up -d --wait >&2 || die "${WRAPPER#"$WT/"} up -d --wait failed for $STACK_NAME (exit $?)"
+  if [[ -n $LOCK_FD ]]; then exec {LOCK_FD}>&-; fi
+  if [[ -z $seed ]]; then
+    note="not seeded: --no-seed"
+  elif [[ -z $fresh ]]; then
+    note="not seeded: its database was there"
+  else
+    run_seed >&2
+    note="seeded: a new database"
+  fi
+  echo "${0##*/}: $STACK_NAME is up for $TASK, $note"
+}
+
+# up, env, seed, stop and down: <subcommand> [--worktree <path>] [up's options]
+stack_command() {
+  local cmd=$1 usage path=. task='' seed=1
+  shift
+  usage="usage: team-stack $cmd [--worktree <path>]"
+  [[ $cmd != up ]] || usage="usage: team-stack up [--worktree <path>] [--task T<n>] [--no-seed]"
+  while (($#)); do
+    case $1 in
+      --worktree)
+        [[ $# -ge 2 && -n $2 ]] || usage_error "$usage"
+        path=$2
+        shift
+        ;;
+      --task)
+        [[ $cmd == up && $# -ge 2 ]] || usage_error "$usage"
+        [[ $2 =~ ^T[1-9][0-9]*$ ]] || usage_error "--task must look like T<n>, got '$2'"
+        task=$2
+        shift
+        ;;
+      --no-seed)
+        [[ $cmd == up ]] || usage_error "$usage"
+        seed=''
+        ;;
+      *) usage_error "$usage" ;;
+    esac
+    shift
+  done
+  clear_identity
+  resolve_worktree "$path"
+  if [[ $cmd == up ]]; then
+    cmd_up "$seed" "$task"
+    return
+  fi
+  stack_config
+  stack_state
+  if ! team_stack_exists; then
+    case $cmd in
+      stop) echo "${0##*/}: $STACK_NAME has no stack, so there is nothing to stop" ;;
+      down) echo "${0##*/}: $STACK_NAME has no stack, so there is nothing to remove" ;;
+      *) die "$STACK_NAME has no stack; start it with team-stack up" ;;
+    esac
+    return 0
+  fi
+  read_back_labels
+  case $cmd in
+    env) stack_env ;;
+    seed) run_seed ;;
+    stop)
+      docker compose -p "$STACK_NAME" stop >"$WORK/stop.log" 2>&1 ||
+        die "docker compose stop of $STACK_NAME failed: $(last_reason "$WORK/stop.log" "no reason given")"
+      echo "${0##*/}: $STACK_NAME is stopped, its data kept"
+      ;;
+    down)
+      teardown ''
+      echo "${0##*/}: $STACK_NAME is removed, its logs in $TEARDOWN_LOGS"
+      ;;
+  esac
+}
+
+if [[ $SUBCOMMAND == ls ]]; then
+  cmd_ls "$@"
+else
+  stack_command "$SUBCOMMAND" "$@"
+fi
