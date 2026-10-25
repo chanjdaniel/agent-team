@@ -3,8 +3,8 @@
 # runs and whose it is (sops/docker.md: the labels contract, the wrapper contract, the classes).
 #
 # Usage: team-stack ls [--all] [--json]
-#        team-stack up [--worktree <path>] [--task T<n>] [--no-seed]
-#        team-stack env|seed|stop|down [--worktree <path>]
+#        team-stack up [--worktree <path>] [--instance <name>] [--task T<n>] [--no-seed]
+#        team-stack env|seed|stop|down [--worktree <path>] [--instance <name>]
 #        team-stack sweep
 #        team-stack reap [--dry-run | --apply] [--legacy]
 #
@@ -31,6 +31,12 @@
 # identity never redirects it. The wrapper runs from the worktree with TH_DIR set and, after the
 # config call, the five TEAM_* variables: the labels read back from the stack's containers for
 # a stack that exists (Compose recreates containers whose labels change), the task's for a new one.
+# With --instance <name> ([a-z0-9][a-z0-9_-]*, Compose's rule for a project name), each acts on
+# an instance of the worktree instead: an extra stack of it, for end-to-end runs in parallel,
+# the Compose project <stack>-<name>, <stack> being the name the first config call gives. Every
+# wrapper call after that one passes COMPOSE_PROJECT_NAME=<stack>-<name> and TH_PORTS=auto, so
+# Docker assigns its ports. An instance is the worktree's task's like its stack, started with
+# TEAM_KIND=e2e, and admitted, seeded and taken down as a stack is.
 # up        Starts the stack of the worktree's task: the open task (opened or added, not returned,
 #           not closed) whose ledger worktree is this one, by real path, else --task, which must
 #           name an open task and agree with the ledger. A team stack of another task is taken
@@ -57,9 +63,9 @@
 #           ~/.local/state/agent-team/stacks/waits.jsonl, its reasons the last refusal's.
 # env       Prints export lines that reach the running stack: the wrapper's ports
 #           (COMPOSE_PROJECT_NAME and a TH_<SERVICE>_PORT per service), then TEAM_OWNER,
-#           TEAM_TASK, TEAM_KIND, TEAM_WORKTREE and TEAM_EXPIRES as the stack carries them; use
-#           eval "$(team-stack env)". A stack that is not running is refused with the wrapper's
-#           reason.
+#           TEAM_TASK, TEAM_KIND, TEAM_WORKTREE and TEAM_EXPIRES as the stack carries them, and
+#           for an instance TH_PORTS=auto after the ports; use eval "$(team-stack env)". A stack
+#           that is not running is refused with the wrapper's reason.
 # seed      Runs the stack block's seed command from the worktree, with env's exports.
 # stop      docker compose -p <project> stop: the containers stopped, their data kept.
 # down      Saves the last 1 MiB of each log_services service's log (docker compose -p <project>
@@ -68,7 +74,10 @@
 #           <project> down -v --remove-orphans and docker volume rm on each anonymous volume its
 #           containers mounted that is still there, and fails naming each container, volume and
 #           network of the stack left, and removes the stack's sweep state file. A worktree with
-#           no stack is told so, exit 0 (as for stop).
+#           no stack is told so, exit 0 (as for stop). Without --instance, it first takes down
+#           the worktree's instances in name order, each as it takes down a stack, with a line
+#           each: the team stacks whose Compose project is <stack>-<anything> and whose worktree
+#           label is the worktree, by real path (team-close's down therefore takes them too).
 #
 # sweep     Stops each running team stack (every container of its Compose project of class team)
 #           whose worktree has had no busy session for idle_minutes. A live session (claude agents
@@ -409,26 +418,49 @@ LABEL_KEYS=(owner task kind worktree expires)
 # The admission lock's file descriptor while up holds it (admit), else empty.
 LOCK_FD=''
 
+# The instance (--instance <name>), else empty, and once stack_config has learnt the worktree's
+# stack's name, the instance's Compose project, which every wrapper call then names with
+# TH_PORTS=auto.
+INSTANCE=''
+INSTANCE_PROJECT=''
+
 # Run the project's compose wrapper, as the wrapper contract says: from the worktree, with
-# TH_DIR and the labels in LABELS, and never the admission lock: wrapper <arguments...>
+# TH_DIR, the labels in LABELS and an instance's identity, and never the admission lock:
+# wrapper <arguments...>
 wrapper() {
   (
     if [[ -n $LOCK_FD ]]; then exec {LOCK_FD}>&-; fi
     cd "$WT"
     export TH_DIR=$WT
+    if [[ -n $INSTANCE_PROJECT ]]; then export COMPOSE_PROJECT_NAME=$INSTANCE_PROJECT TH_PORTS=auto; fi
     local key
     for key in "${!LABELS[@]}"; do export "TEAM_${key^^}=${LABELS[$key]}"; done
     exec "$WRAPPER" "$@"
   )
 }
 
-# The stack's Compose project name, STACK_NAME, and its named volumes, NAMED_VOLUMES, from the
-# wrapper's config, which starts nothing.
-stack_config() {
+# The wrapper's config, which starts nothing, into $WORK/config.json, and its project's name into
+# STACK_NAME.
+read_config() {
   wrapper config --format json >"$WORK/config.json" 2>"$WORK/config.err" ||
     die "${WRAPPER#"$WT/"} config --format json failed: $(last_reason "$WORK/config.err" "no reason given")"
   STACK_NAME=$(jq -r '.name // empty' "$WORK/config.json" 2>/dev/null) || STACK_NAME=''
   [[ -n $STACK_NAME ]] || die "${WRAPPER#"$WT/"} config --format json named no project"
+}
+
+# The stack's Compose project name, STACK_NAME, and its named volumes, NAMED_VOLUMES, from the
+# wrapper's config; the worktree's stack's name is OWN_NAME. An instance's project is
+# <OWN_NAME>-<instance>, whose config is read again under that name.
+stack_config() {
+  INSTANCE_PROJECT=''
+  read_config
+  OWN_NAME=$STACK_NAME
+  if [[ -n $INSTANCE ]]; then
+    INSTANCE_PROJECT=$OWN_NAME-$INSTANCE
+    read_config
+    [[ $STACK_NAME == "$INSTANCE_PROJECT" ]] ||
+      die "${WRAPPER#"$WT/"} config --format json named $STACK_NAME, not $INSTANCE_PROJECT, with COMPOSE_PROJECT_NAME=$INSTANCE_PROJECT and TH_PORTS=auto"
+  fi
   mapfile -t NAMED_VOLUMES < <(jq -r '.volumes // {} | .[] | select(.external != true) | .name // empty' "$WORK/config.json")
 }
 
@@ -523,17 +555,24 @@ teardown() {
   TEARDOWN_LOGS=$dir
 }
 
-# The export lines that reach the running stack: the wrapper's ports, then its labels (LABELS).
+# The export lines that reach the running stack: the wrapper's ports, TH_PORTS=auto for an
+# instance, then its labels (LABELS).
 stack_env() {
   local ports line key
   ports=$(wrapper ports 2>"$WORK/ports.err") ||
-    die "$STACK_NAME is not running ($(last_reason "$WORK/ports.err" "its wrapper's ports failed")); start it with team-stack up"
+    die "$STACK_NAME is not running ($(last_reason "$WORK/ports.err" "its wrapper's ports failed")); start it with $(up_command)"
   while IFS= read -r line; do
     [[ $line =~ ^export\ [A-Za-z_][A-Za-z0-9_]*= ]] ||
       die "${WRAPPER#"$WT/"} ports printed a line that is not an export: $line"
   done <<<"$ports"
   printf '%s\n' "$ports"
+  if [[ -n $INSTANCE ]]; then echo "export TH_PORTS=auto"; fi
   for key in "${LABEL_KEYS[@]}"; do printf 'export TEAM_%s=%q\n' "${key^^}" "${LABELS[$key]}"; done
+}
+
+# The command that starts the stack: up_command
+up_command() {
+  echo "team-stack up${INSTANCE:+ --instance $INSTANCE}"
 }
 
 # Run the stack block's seed command from the worktree, with env's exports.
@@ -678,7 +717,7 @@ admit() {
 }
 
 cmd_up() {
-  local seed=$1 fresh=1 note old key
+  local seed=$1 fresh=1 note old key kind=dev
   stack_settings
   resolve_task "$2"
   stack_config
@@ -694,7 +733,8 @@ cmd_up() {
     fi
   fi
   if [[ -n $fresh ]]; then
-    LABELS=([owner]=agent-team [task]=$TASK [kind]=dev [worktree]=$WT [expires]='')
+    if [[ -n $INSTANCE ]]; then kind=e2e; fi
+    LABELS=([owner]=agent-team [task]=$TASK [kind]=$kind [worktree]=$WT [expires]='')
     if [[ -n $(volumes_left "${NAMED_VOLUMES[@]}") ]]; then fresh=''; fi
   fi
   # A running stack of the task is admitted without a check; a stopped one is counted as new.
@@ -944,17 +984,59 @@ reap_one() {
   echo "$dir"
 }
 
-# up, env, seed, stop and down: <subcommand> [--worktree <path>] [up's options]
+# Take down the worktree's instances, its team stacks other than its own: those whose Compose
+# project is <OWN_NAME>-<something> and whose worktree label is WT by real path, in name order,
+# each as down does. Leaves STACK_NAME, INSTANCE_PROJECT and $WORK/stack.json as they were.
+remove_instances() {
+  local own=$STACK_NAME filter=label=io.github.chanjdaniel.team.owner=agent-team wt project worktree
+  local -a ids projects=()
+  docker_read ps ps --all --quiet --no-trunc --filter "$filter"
+  mapfile -t ids < <(grep . <<<"$DOCKER_OUT" || true)
+  docker_inspect container "$WORK/instance-containers.json" "${ids[@]}"
+  docker_read 'volume ls' volume ls --quiet --filter "$filter"
+  mapfile -t ids < <(grep . <<<"$DOCKER_OUT" || true)
+  docker_inspect volume "$WORK/instance-volumes.json" "${ids[@]}"
+  docker_read 'network ls' network ls --quiet --no-trunc --filter "$filter"
+  mapfile -t ids < <(grep . <<<"$DOCKER_OUT" || true)
+  docker_inspect network "$WORK/instance-networks.json" "${ids[@]}"
+  wt=$(realpath -m -- "$WT")
+  while IFS=$'\t' read -r project worktree; do
+    if [[ $(realpath -m -- "$worktree") == "$wt" && " ${projects[*]} " != *" $project "* ]]; then projects+=("$project"); fi
+  done < <(jq -r -s -L "$TEAM_LIB" --arg prefix "$own-" 'include "stack";
+    add | .[] | (.Config.Labels // .Labels // {}) as $labels | compose_project($labels) as $project
+    | select($project != null and ($project | startswith($prefix))) | team_label($labels; "worktree") // empty
+    | [$project, .] | @tsv' "$WORK/instance-containers.json" "$WORK/instance-volumes.json" "$WORK/instance-networks.json" |
+    sort)
+  cp "$WORK/stack.json" "$WORK/own-stack.json"
+  for project in ${projects[@]+"${projects[@]}"}; do
+    STACK_NAME=$project
+    stack_state
+    team_stack_exists || continue
+    teardown "$WT/$TASK_DIR/stack-logs" ''
+    echo "${0##*/}: $STACK_NAME is removed, its logs in $TEARDOWN_LOGS"
+  done
+  STACK_NAME=$own
+  cp "$WORK/own-stack.json" "$WORK/stack.json"
+}
+
+# up, env, seed, stop and down: <subcommand> [--worktree <path>] [--instance <name>] [up's options]
 stack_command() {
   local cmd=$1 usage path=. task='' seed=1
   shift
-  usage="usage: team-stack $cmd [--worktree <path>]"
-  [[ $cmd != up ]] || usage="usage: team-stack up [--worktree <path>] [--task T<n>] [--no-seed]"
+  usage="usage: team-stack $cmd [--worktree <path>] [--instance <name>]"
+  [[ $cmd != up ]] || usage="usage: team-stack up [--worktree <path>] [--instance <name>] [--task T<n>] [--no-seed]"
   while (($#)); do
     case $1 in
       --worktree)
         [[ $# -ge 2 && -n $2 ]] || usage_error "$usage"
         path=$2
+        shift
+        ;;
+      --instance)
+        (($# >= 2)) || usage_error "$usage"
+        # Compose's rule for a project name.
+        [[ $2 =~ ^[a-z0-9][a-z0-9_-]*$ ]] || usage_error "--instance must match [a-z0-9][a-z0-9_-]*, got '$2'"
+        INSTANCE=$2
         shift
         ;;
       --task)
@@ -979,11 +1061,16 @@ stack_command() {
   fi
   stack_config
   stack_state
-  if ! team_stack_exists; then
+  local exists=''
+  if team_stack_exists; then exists=1; fi
+  # The worktree's own down takes its instances down first, once its own stack is known to be
+  # the team's or absent.
+  if [[ $cmd == down && -z $INSTANCE ]]; then remove_instances; fi
+  if [[ -z $exists ]]; then
     case $cmd in
       stop) echo "${0##*/}: $STACK_NAME has no stack, so there is nothing to stop" ;;
       down) echo "${0##*/}: $STACK_NAME has no stack, so there is nothing to remove" ;;
-      *) die "$STACK_NAME has no stack; start it with team-stack up" ;;
+      *) die "$STACK_NAME has no stack; start it with $(up_command)" ;;
     esac
     return 0
   fi

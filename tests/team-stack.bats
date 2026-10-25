@@ -251,15 +251,15 @@ unowned 4"
   run_bin -2 --separate-stderr team-stack ls --bogus
   assert_equal "$stderr" "team-stack: usage: team-stack ls [--all] [--json]"
   run_bin -2 --separate-stderr team-stack up --bogus
-  assert_equal "$stderr" "team-stack: usage: team-stack up [--worktree <path>] [--task T<n>] [--no-seed]"
+  assert_equal "$stderr" "team-stack: usage: team-stack up [--worktree <path>] [--instance <name>] [--task T<n>] [--no-seed]"
   run_bin -2 --separate-stderr team-stack up --task 22
   assert_equal "$stderr" "team-stack: --task must look like T<n>, got '22'"
   local cmd
   for cmd in env seed stop down; do
     run_bin -2 --separate-stderr team-stack "$cmd" --task T22
-    assert_equal "$stderr" "team-stack: usage: team-stack $cmd [--worktree <path>]"
+    assert_equal "$stderr" "team-stack: usage: team-stack $cmd [--worktree <path>] [--instance <name>]"
     run_bin -2 --separate-stderr team-stack "$cmd" --worktree
-    assert_equal "$stderr" "team-stack: usage: team-stack $cmd [--worktree <path>]"
+    assert_equal "$stderr" "team-stack: usage: team-stack $cmd [--worktree <path>] [--instance <name>]"
   done
   assert_equal "$(docker_calls)" ""
 }
@@ -268,7 +268,7 @@ unowned 4"
   run_bin -0 team-stack --help
   assert_equal "${lines[0]}" "$(sed -n '2s/^# //p' "$REPO_ROOT/bin/team-stack")"
   assert_contains "$output" "team-stack ls [--all] [--json]"
-  assert_contains "$output" "team-stack up [--worktree <path>] [--task T<n>] [--no-seed]"
+  assert_contains "$output" "team-stack up [--worktree <path>] [--instance <name>] [--task T<n>] [--no-seed]"
 }
 
 # Every removal names its object, so no team script prunes (sops/docker.md).
@@ -1415,4 +1415,266 @@ team-stack: could not remove volume $OLD_ANONYMOUS (anonymous, 210.9 MB): Error 
   TEAM_STACK_REAP_PROJECTS='conventioner-[0-9]+' run_bin -0 team-stack reap
   assert_equal "$(removals)" "stack conventioner-4 (team, 0 B): its worktree $HOME/.treehouse/Conventioner-d4c77a/4/Conventioner is gone"
   assert_equal "$(kept)" "stack conventioner-3 (unowned, 0 B)"
+}
+
+# Parallel instances: up --instance <name> starts an extra stack of the worktree, the Compose
+# project <its stack>-<name>, whose ports Docker assigns (TH_PORTS=auto); the stub gives each
+# new container its own port.
+
+# The team labels of the web container of the Compose project <project>, as stack_labels.
+labels_of() {
+  jq -c --arg name "/$1-web-1" '.[] | select(.Name == $name) | .Config.Labels
+    | with_entries(select(.key | startswith("io.github.chanjdaniel.team.")) | .key |= ltrimstr("io.github.chanjdaniel.team."))
+    | {owner, task, kind, worktree, expires}' "$DOCKER_STATE/containers.json"
+}
+
+# The host port of the web container of the Compose project <project>.
+port_of() {
+  jq -r --arg name "/$1-web-1" '.[] | select(.Name == $name) | .NetworkSettings.Ports["80/tcp"][0].HostPort' \
+    "$DOCKER_STATE/containers.json"
+}
+
+# The state of the web container of the Compose project <project>, or nothing when it has none.
+state_of() {
+  jq -r --arg name "/$1-web-1" '.[] | select(.Name == $name) | .State.Status' "$DOCKER_STATE/containers.json"
+}
+
+# Whether Docker holds any object of the Compose project <project> (a function, so bats counts
+# its status).
+project_exists() {
+  jq -e --arg p "$1" 'any(.[]; (.Config.Labels // .Labels)["com.docker.compose.project"] == $p)' \
+    <(jq -s add "$DOCKER_STATE/containers.json" "$DOCKER_STATE/volumes.json" "$DOCKER_STATE/networks.json") >/dev/null
+}
+
+# Whether Docker holds no object of the Compose project <project>.
+project_gone() {
+  ! project_exists "$1"
+}
+
+# Start the fixture's stack by hand as the Compose project <project> with Docker's ports, as an
+# agent would with the wrapper, with the TEAM_* labels <name>=<value>...
+hand_instance() {
+  local project=$1
+  shift
+  (cd "$STACK_WORKTREE" && env "$@" COMPOSE_PROJECT_NAME="$project" TH_PORTS=auto TH_DIR="$STACK_WORKTREE" \
+    scripts/compose.sh up -d --wait) >/dev/null
+}
+
+# The wrapper calls since the compose call numbered <n> (1-based), one per line: "<call>
+# <project> <TH_PORTS or ->", the wrapper's compose file left out.
+wrapper_calls_since() {
+  compose_env_since "$1" | jq -r 'select(.call | test(" -f ")) | "\(.call | sub(" -f [^ ]+"; "")) \(.project) \(.TH_PORTS // "-")"'
+}
+
+@test "up --instance starts the stack <project>-<name> of the worktree's task, kind e2e, on ports Docker assigns, and seeds it" {
+  open_task T22
+  run_bin -0 --separate-stderr team-stack up --worktree "$STACK_WORKTREE" --instance a
+  assert_equal "$output" "team-stack: $PROJECT-a is up for T22, seeded: a new database"
+  assert_equal "$(labels_of "$PROJECT-a")" \
+    "$(jq -cn --arg wt "$STACK_WORKTREE" '{owner: "agent-team", task: "T22", kind: "e2e", worktree: $wt, expires: ""}')"
+  local name
+  for name in "$PROJECT-a_data:volumes" "$PROJECT-a_default:networks"; do
+    assert_equal "$(jq -r --arg n "${name%:*}" '.[] | select(.Name == $n) | .Labels
+      | "\(.["io.github.chanjdaniel.team.task"]) \(.["io.github.chanjdaniel.team.kind"])"' "$DOCKER_STATE/${name#*:}.json")" "T22 e2e"
+  done
+  assert_contains "$stderr" "seeded $PROJECT-a on port $(port_of "$PROJECT-a") for T22 from $STACK_WORKTREE"
+  # The first config call learns the worktree's stack's name; every wrapper call after it is the
+  # instance's, with Docker's ports.
+  assert_equal "$(wrapper_calls_since 1)" "compose config --format json $PROJECT -
+compose config --format json $PROJECT-a auto
+compose up -d --wait $PROJECT-a auto
+compose port web 80 $PROJECT-a auto"
+  # The worktree's own stack is not started.
+  assert_equal "$(state_of "$PROJECT")" ""
+}
+
+@test "the worktree's stack and two instances run at once on distinct ports, and env --instance reaches each with TH_PORTS=auto" {
+  open_task T22
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --instance a --no-seed
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --instance b --no-seed
+  local own a b
+  own=$(port_of "$PROJECT") a=$(port_of "$PROJECT-a") b=$(port_of "$PROJECT-b")
+  assert_equal "$(state_of "$PROJECT") $(state_of "$PROJECT-a") $(state_of "$PROJECT-b")" "running running running"
+  assert_equal "$(printf '%s\n' "$own" "$a" "$b" | sort -u | grep -c .)" 3
+  run_bin -0 --separate-stderr team-stack env --worktree "$STACK_WORKTREE" --instance a
+  assert_equal "$stderr" ""
+  assert_equal "$output" "export COMPOSE_PROJECT_NAME=$PROJECT-a
+export TH_WEB_PORT=$a
+export TH_PORTS=auto
+export TEAM_OWNER=agent-team
+export TEAM_TASK=T22
+export TEAM_KIND=e2e
+export TEAM_WORKTREE=$STACK_WORKTREE
+export TEAM_EXPIRES=''"
+  # The wrapper run by hand with those exports reaches the instance.
+  assert_equal "$(eval "$output"; cd "$STACK_WORKTREE" && scripts/compose.sh ports)" "export COMPOSE_PROJECT_NAME=$PROJECT-a
+export TH_WEB_PORT=$a"
+  run_bin -0 team-stack env --worktree "$STACK_WORKTREE" --instance b
+  assert_equal "${lines[0]} ${lines[1]} ${lines[2]}" "export COMPOSE_PROJECT_NAME=$PROJECT-b export TH_WEB_PORT=$b export TH_PORTS=auto"
+  # The worktree's own stack's env names no TH_PORTS.
+  run_bin -0 team-stack env --worktree "$STACK_WORKTREE"
+  assert_equal "${lines[0]} ${lines[1]} ${lines[2]}" "export COMPOSE_PROJECT_NAME=$PROJECT export TH_WEB_PORT=$own export TEAM_OWNER=agent-team"
+}
+
+@test "seed, stop and down --instance act on the instance alone, every wrapper call with its project and TH_PORTS=auto" {
+  open_task T22
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --instance a --no-seed
+  local n
+  n=$(($(docker_compose_env | wc -l) + 1))
+  run_bin -0 team-stack seed --worktree "$STACK_WORKTREE" --instance a
+  assert_equal "$output" "seeded $PROJECT-a on port $(port_of "$PROJECT-a") for T22 from $STACK_WORKTREE"
+  run_bin -0 team-stack stop --worktree "$STACK_WORKTREE" --instance a
+  assert_equal "$output" "team-stack: $PROJECT-a is stopped, its data kept"
+  assert_equal "$(state_of "$PROJECT") $(state_of "$PROJECT-a")" "running exited"
+  run_bin -1 --separate-stderr team-stack env --worktree "$STACK_WORKTREE" --instance a
+  assert_equal "$stderr" "team-stack: $PROJECT-a is not running (compose.sh: $PROJECT-a's web is not running); start it with team-stack up --instance a"
+  run_bin -0 team-stack down --worktree "$STACK_WORKTREE" --instance a
+  assert_equal "$output" "team-stack: $PROJECT-a is removed, its logs in $STACK_WORKTREE/.scratch/task/stack-logs"
+  [[ -s $STACK_WORKTREE/.scratch/task/stack-logs/$PROJECT-a-web.log ]]
+  [[ ! -e $STACK_WORKTREE/.scratch/task/stack-logs/$PROJECT-web.log ]]
+  project_gone "$PROJECT-a"
+  assert_equal "$(state_of "$PROJECT")" running
+  # Each config call learns the worktree's stack's name first; every other wrapper call is the instance's.
+  assert_equal "$(wrapper_calls_since "$n" | grep -v "^compose config --format json $PROJECT -$" | sort -u)" \
+    "compose config --format json $PROJECT-a auto
+compose port web 80 $PROJECT-a auto"
+  assert_equal "$(docker_calls | grep '^compose -p ' | grep -v "^compose -p $PROJECT-a " || true)" ""
+  run_bin -0 team-stack down --worktree "$STACK_WORKTREE" --instance a
+  assert_equal "$output" "team-stack: $PROJECT-a has no stack, so there is nothing to remove"
+  run_bin -1 --separate-stderr team-stack env --worktree "$STACK_WORKTREE" --instance a
+  assert_equal "$stderr" "team-stack: $PROJECT-a has no stack; start it with team-stack up --instance a"
+}
+
+@test "an instance name outside [a-z0-9][a-z0-9_-]* is a usage error, and so is --instance for ls, sweep and reap" {
+  open_task T22
+  local name cmd
+  for name in A -a _a a.b 'a b' ''; do
+    run_bin -2 --separate-stderr team-stack up --worktree "$STACK_WORKTREE" --instance "$name"
+    assert_equal "$stderr" "team-stack: --instance must match [a-z0-9][a-z0-9_-]*, got '$name'"
+  done
+  for cmd in env seed stop down; do
+    run_bin -2 --separate-stderr team-stack "$cmd" --worktree "$STACK_WORKTREE" --instance 'a/b'
+    assert_equal "$stderr" "team-stack: --instance must match [a-z0-9][a-z0-9_-]*, got 'a/b'"
+    run_bin -2 --separate-stderr team-stack "$cmd" --instance
+    assert_equal "$stderr" "team-stack: usage: team-stack $cmd [--worktree <path>] [--instance <name>]"
+  done
+  for cmd in ls sweep reap; do
+    run_bin -2 team-stack "$cmd" --instance a
+  done
+  assert_equal "$(docker_calls)" ""
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --instance 0e2e_shard-1 --no-seed
+  assert_equal "$output" "team-stack: $PROJECT-0e2e_shard-1 is up for T22, not seeded: --no-seed"
+}
+
+@test "admission counts instances as stacks, and a re-up of a running instance is admitted without a check" {
+  open_task T22
+  # The fixture machine runs three projects; the worktree's stack and one instance make five.
+  stack_settings '{"stack_cap": 5, "wait_minutes": 0}'
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --instance a --no-seed
+  run_bin -75 --separate-stderr team-stack up --worktree "$STACK_WORKTREE" --instance b --no-seed
+  assert_equal "$stderr" "team-stack: no room for $PROJECT-b: 5 of 5 stacks running (stack_cap 5)"
+  assert_equal "$(state_of "$PROJECT-b")" ""
+  assert_equal "$(waits_log | jq -r '"\(.project) \(.task) \(.admitted)"')" "$PROJECT-b T22 false"
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --instance a --no-seed
+  # A stopped instance is counted as new, and room is made by stopping one.
+  run_bin -0 team-stack stop --worktree "$STACK_WORKTREE" --instance a
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --instance b --no-seed
+  run_bin -75 team-stack up --worktree "$STACK_WORKTREE" --instance a --no-seed
+}
+
+@test "down removes the worktree's instances before its own stack, and nothing of another worktree or project" {
+  open_task T22
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --instance b --no-seed
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --instance a --no-seed
+  # An instance labelled with the worktree by another spelling is the worktree's too; a team stack
+  # of another worktree named like an instance, and one of this worktree whose name only starts
+  # like the stack's, are not.
+  hand_instance "$PROJECT-c" TEAM_OWNER=agent-team TEAM_TASK=T22 TEAM_KIND=e2e TEAM_WORKTREE="$STACK_WORKTREE/" TEAM_EXPIRES=
+  hand_instance "$PROJECT-z" TEAM_OWNER=agent-team TEAM_TASK=T9 TEAM_KIND=dev TEAM_WORKTREE="$HOME/worktrees/shop-1-z" TEAM_EXPIRES=
+  hand_instance "${PROJECT}0" TEAM_OWNER=agent-team TEAM_TASK=T22 TEAM_KIND=e2e TEAM_WORKTREE="$STACK_WORKTREE" TEAM_EXPIRES=
+  run_bin -0 --separate-stderr team-stack down --worktree "$STACK_WORKTREE"
+  local logs=$STACK_WORKTREE/.scratch/task/stack-logs
+  assert_equal "$output" "team-stack: $PROJECT-a is removed, its logs in $logs
+team-stack: $PROJECT-b is removed, its logs in $logs
+team-stack: $PROJECT-c is removed, its logs in $logs
+team-stack: $PROJECT is removed, its logs in $logs"
+  assert_equal "$(docker_calls | sed -n -E 's/^compose -p ([^ ]+) down -v --remove-orphans$/\1/p')" "$PROJECT-a
+$PROJECT-b
+$PROJECT-c
+$PROJECT"
+  assert_equal "$(cd "$logs" && ls)" "$PROJECT-a-web.log
+$PROJECT-b-web.log
+$PROJECT-c-web.log
+$PROJECT-web.log"
+  local project
+  for project in "$PROJECT" "$PROJECT-a" "$PROJECT-b" "$PROJECT-c"; do project_gone "$project"; done
+  assert_equal "$(state_of "$PROJECT-z") $(state_of "${PROJECT}0")" "running running"
+  # The fixture machine's stacks are untouched.
+  run_bin -0 team-stack ls --json
+  assert_equal "$(jq -r '[.projects[].name] | join(" ")' <<<"$output")" \
+    "conventioner conventioner-2 conventioner-3 conventioner-4 nmtest-12822 nmtest-1895520 $PROJECT-z ${PROJECT}0"
+}
+
+@test "down removes the instances when the worktree has no stack of its own, and refuses an unowned stack before touching any" {
+  open_task T22
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --instance a --no-seed
+  run_bin -0 team-stack down --worktree "$STACK_WORKTREE"
+  assert_equal "$output" "team-stack: $PROJECT-a is removed, its logs in $STACK_WORKTREE/.scratch/task/stack-logs
+team-stack: $PROJECT has no stack, so there is nothing to remove"
+  project_gone "$PROJECT-a"
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --instance a --no-seed
+  hand_stack
+  run_bin -1 --separate-stderr team-stack down --worktree "$STACK_WORKTREE"
+  assert_contains "$stderr" "$PROJECT is not the team's (class unowned)"
+  assert_equal "$(state_of "$PROJECT-a")" running
+}
+
+@test "down refuses an instance of the worktree that is not wholly the team's, and leaves the worktree's stack" {
+  open_task T22
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --instance a --no-seed
+  # A hand-made volume of the instance's project, with no team labels.
+  docker_state volumes '. + [{Name: "\($p)_extra", CreatedAt: "2026-10-24T09:00:00+00:00", Driver: "local", Scope: "local",
+    Size: "0B", Mountpoint: "/var/lib/docker/volumes/\($p)_extra/_data", Labels: {"com.docker.compose.project": $p}}]' \
+    --arg p "$PROJECT-a"
+  run_bin -1 --separate-stderr team-stack down --worktree "$STACK_WORKTREE"
+  assert_equal "$stderr" "team-stack: $PROJECT-a is not the team's (class unowned), so team-stack leaves it alone: team-stack ls shows it, and removing it is Daniel's or the coordinator's call"
+  assert_equal "$(state_of "$PROJECT") $(state_of "$PROJECT-a")" "running running"
+}
+
+@test "up --instance takes down an instance of another task in the worktree first, and refuses an unowned one" {
+  hand_instance "$PROJECT-a" TEAM_OWNER=agent-team TEAM_TASK=T7 TEAM_KIND=e2e TEAM_WORKTREE="$STACK_WORKTREE" TEAM_EXPIRES=
+  open_task T22
+  run_bin -0 --separate-stderr team-stack up --worktree "$STACK_WORKTREE" --instance a
+  assert_contains "$stderr" "$PROJECT-a is T7's: taking it down first"
+  [[ -s $STACK_WORKTREE/.scratch/task/stack-logs/T7-$PROJECT-a-web.log ]]
+  assert_equal "$output" "team-stack: $PROJECT-a is up for T22, seeded: a new database"
+  assert_equal "$(labels_of "$PROJECT-a" | jq -r '"\(.task) \(.kind)"')" "T22 e2e"
+  hand_instance "$PROJECT-b"
+  run_bin -1 --separate-stderr team-stack up --worktree "$STACK_WORKTREE" --instance b
+  assert_contains "$stderr" "$PROJECT-b is not the team's (class unowned)"
+}
+
+@test "an exported instance identity never redirects a call to it" {
+  open_task T22
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --instance a --no-seed
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --instance b --no-seed
+  run_bin -0 team-stack env --worktree "$STACK_WORKTREE" --instance a
+  local n
+  n=$(($(docker_compose_env | wc -l) + 1))
+  # As in a shell that ran eval "$(team-stack env --instance a)".
+  eval "$output"
+  run_bin -0 team-stack env --worktree "$STACK_WORKTREE"
+  assert_equal "${lines[0]} ${lines[1]}" "export COMPOSE_PROJECT_NAME=$PROJECT export TH_WEB_PORT=$(port_of "$PROJECT")"
+  run_bin -0 team-stack stop --worktree "$STACK_WORKTREE" --instance b
+  assert_equal "$(state_of "$PROJECT") $(state_of "$PROJECT-a") $(state_of "$PROJECT-b")" "running running exited"
+  assert_equal "$(wrapper_calls_since "$n" | grep -c " $PROJECT-a " || true)" 0
+  run_bin -0 team-stack down --worktree "$STACK_WORKTREE"
+  local project
+  for project in "$PROJECT" "$PROJECT-a" "$PROJECT-b"; do project_gone "$project"; done
 }

@@ -80,6 +80,35 @@ With no stack, `stop` and `down` say so and exit 0; `env` and `seed` refuse.
 
 Exit codes: 0 done, 1 refused or failed (with the reason), 2 a malformed command line, 75 try again later (no room for the stack, see "Admission").
 
+## Instances: more stacks of one worktree
+
+An instance is an extra stack of the worktree, with its own database and ports, for end-to-end runs in parallel (Playwright shards) or a browser-driving agent that must not share the worktree's stack.
+
+- `~/agent-team/bin/team-stack up --instance <name>` starts the Compose project `<stack>-<name>` (`conventioner-3-shard1` in slot 3), with `TEAM_KIND=e2e`, the worktree's task, and ports Docker assigns on `127.0.0.1` (`TH_PORTS=auto` with that `COMPOSE_PROJECT_NAME`); it is admitted against the cap like any stack, each instance counting as one, and seeded as any new stack is.
+- `env`, `seed`, `stop` and `down` take `--instance <name>` too, and every wrapper call for an instance passes its project and `TH_PORTS=auto`.
+  `env --instance` also exports `TH_PORTS=auto`, so a hand-run wrapper call after its `eval` reaches the instance with the ports it started with, never the slot's fixed ones (which would recreate its containers).
+- `down` without `--instance` takes down the worktree's instances first (team stacks whose project is `<stack>-<anything>` and whose `worktree` label is the worktree), then its own stack, so `team-close` removes them with it.
+- A name is `[a-z0-9][a-z0-9_-]*`, Compose's rule for a project name; any other is exit 2.
+
+N shards against N instances, each shard in a subshell of its own so its exports reach only its run, and each with its own output directories, which Playwright would otherwise clear and overwrite under the other shard:
+
+```bash
+team_stack=~/agent-team/bin/team-stack n=2 status=0
+for i in $(seq "$n"); do "$team_stack" up --instance "shard$i" || exit; done
+pids=()
+for i in $(seq "$n"); do
+  (eval "$("$team_stack" env --instance "shard$i")" && cd front-end &&
+    PLAYWRIGHT_HTML_OUTPUT_DIR="playwright-report/shard$i" npx playwright test --shard="$i/$n" --output="test-results/shard$i") &
+  pids+=("$!")
+done
+for pid in "${pids[@]}"; do wait "$pid" || status=1; done
+for i in $(seq "$n"); do "$team_stack" down --instance "shard$i"; done
+exit "$status"
+```
+
+On `up`'s exit 75, `down --instance` the ones already up and send `T<n> PAUSED <its reason line>`, as for any stack.
+A browser-driving agent gets its own the same way: `~/agent-team/bin/team-stack up --instance browser`, then `eval "$(~/agent-team/bin/team-stack env --instance browser)"`, open `http://127.0.0.1:$TH_FRONTEND_PORT` (`127.0.0.1`, not `localhost`: on macOS another process's IPv6 listener can hold the same port), and `~/agent-team/bin/team-stack down --instance browser` when done.
+
 ## Admission
 
 `team-stack up` starts a stack that is not running only when the machine has room for it, so the stacks of every task, gate and person never together outgrow the PC.
@@ -233,4 +262,4 @@ These are a speed bump, as every deny rule is; the guarantee is that no script t
 - The sweep's tests stub `claude agents --json` (the sandbox's `claude` stub) with sessions in and around the worktree.
 - The reaper's tests age the stub's objects with `docker_created` and refuse one removal with `docker_refuse`, and every test of `tests/team-stack.bats` and `tests/team-janitor.bats` fails when a Docker call it made pruned.
 - The janitor's tests add `oom` events with `docker_event`, set the free disk through the stub `df`, and stub Discord's answers to its posts (the sandbox's `curl` stub).
-- `tests/team-stack-live.bats` runs against the real Docker only with `TEAM_LIVE_DOCKER=1`, since a test that creates a network can break a gate run's end to end; it starts and removes the fixture's one-service stack under a project name of its own, races two `up` calls for the last place under `stack_cap`, has the sweep stop an idle stack that `up` then brings back with its data, and has `reap --apply` remove a closed task's stack and an expired gate stack and keep an unowned one, limited by the test seam `TEAM_STACK_REAP_PROJECTS` to its own projects, so it never reaps the machine.
+- `tests/team-stack-live.bats` runs against the real Docker only with `TEAM_LIVE_DOCKER=1`, since a test that creates a network can break a gate run's end to end; it starts and removes the fixture's one-service stack under a project name of its own, races two `up` calls for the last place under `stack_cap`, has the sweep stop an idle stack that `up` then brings back with its data, runs the worktree's stack and two instances at once on ports of their own, and has `reap --apply` remove a closed task's stack and an expired gate stack and keep an unowned one, limited by the test seam `TEAM_STACK_REAP_PROJECTS` to its own projects, so it never reaps the machine.

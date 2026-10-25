@@ -6,7 +6,8 @@
 # start and remove stacks of the fixture project's one busybox service, under project names of
 # their own, which teardown removes whatever happened. The sweep's test shows every other team
 # stack running on the machine as busy in the stub session list, so it stops only its own, and
-# the reaper's test limits it to its own projects with TEAM_STACK_REAP_PROJECTS.
+# the reaper's test limits it to its own projects with TEAM_STACK_REAP_PROJECTS. The instances'
+# test runs the worktree's stack and two instances of it at once.
 
 load helpers/common
 load helpers/docker
@@ -290,4 +291,65 @@ live_busy() {
   assert_equal "$(docker volume ls --quiet --filter "label=com.docker.compose.project=$unowned")" "${unowned}_data"
   docker volume inspect "${anonymous[$unowned]}" >/dev/null
   LIVE_ANONYMOUS=${anonymous[$unowned]}
+}
+
+@test "live: the worktree's stack and two instances run at once on distinct ports, each with its own data, and down removes all three" {
+  local name=lin$RANDOM$$
+  stack_project "$name"
+  local own=stackfix-$name-1 project
+  LIVE_PROJECTS=("$own" "$own-a" "$own-b")
+  jq -cn --arg wt "$STACK_WORKTREE" --arg p "$name" '{ts: "2026-10-24T09:00:00Z", task: "T22", event: "opened", project: $p,
+    path: "feature", type: "feature", title: "Live", branch: "work", base: "main", base_sha: "0000000", worktree: $wt}' \
+    >>"$TEAM_HOME/ledger.jsonl"
+  mkdir -p "$HOME/.config/agent-team"
+  echo '{"memory_floor_gib": 0, "disk_floor_gb": 0, "wait_minutes": 0, "stack_cap": 1000}' >"$HOME/.config/agent-team/stack.json"
+  cd "$STACK_WORKTREE"
+  run_bin -0 team-stack up --no-seed
+  run_bin -0 --separate-stderr team-stack up --instance a --no-seed
+  assert_equal "$output" "team-stack: $own-a is up for T22, not seeded: --no-seed"
+  run_bin -0 team-stack up --instance b --no-seed
+
+  # Each runs, labelled with the task, on a port of its own, and serves its own named volume.
+  local -A port=() anonymous=()
+  local container
+  for project in "${LIVE_PROJECTS[@]}"; do
+    container=$(docker ps --quiet --filter "label=com.docker.compose.project=$project")
+    [[ -n $container ]]
+    assert_equal "$(docker inspect --format '{{index .Config.Labels "io.github.chanjdaniel.team.task"}} {{index .Config.Labels "io.github.chanjdaniel.team.kind"}} {{index .Config.Labels "io.github.chanjdaniel.team.worktree"}}' "$container")" \
+      "T22 $([[ $project == "$own" ]] && echo dev || echo e2e) $STACK_WORKTREE"
+    anonymous[$project]=$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/cache"}}{{.Name}}{{end}}{{end}}' "$container")
+    docker exec "$container" sh -c "echo $project > /data/marker"
+  done
+  run_bin -0 team-stack env
+  port[$own]=$(eval "$output"; echo "$TH_WEB_PORT")
+  for project in a b; do
+    run_bin -0 team-stack env --instance "$project"
+    assert_equal "${lines[0]}" "export COMPOSE_PROJECT_NAME=$own-$project"
+    assert_equal "${lines[2]}" "export TH_PORTS=auto"
+    port[$own-$project]=$(eval "$output"; echo "$TH_WEB_PORT")
+  done
+  assert_equal "$(printf '%s\n' "${port[@]}" | sort -u | grep -c .)" 3
+  for project in "${LIVE_PROJECTS[@]}"; do
+    assert_equal "$(live_get "${port[$project]}" /marker)" "$project"
+  done
+  # A hand-run wrapper call with an instance's exports reaches it and changes nothing.
+  run_bin -0 team-stack env --instance a
+  assert_equal "$(eval "$output"; scripts/compose.sh ports | sed -n 2p)" "export TH_WEB_PORT=${port[$own-a]}"
+  run_bin -0 team-stack env --instance a
+  assert_contains "$output" "export TH_WEB_PORT=${port[$own-a]}"
+
+  run_bin -0 --separate-stderr team-stack down
+  local logs=$STACK_WORKTREE/.scratch/task/stack-logs
+  assert_equal "$output" "team-stack: $own-a is removed, its logs in $logs
+team-stack: $own-b is removed, its logs in $logs
+team-stack: $own is removed, its logs in $logs"
+  assert_equal "$stderr" ""
+  for project in "${LIVE_PROJECTS[@]}"; do
+    [[ -f $logs/$project-web.log ]]
+    assert_equal "$(docker ps --all --quiet --filter "label=com.docker.compose.project=$project")" ""
+    assert_equal "$(docker volume ls --quiet --filter "label=com.docker.compose.project=$project")" ""
+    assert_equal "$(docker network ls --quiet --filter "label=com.docker.compose.project=$project")" ""
+    run docker volume inspect "${anonymous[$project]}"
+    assert_equal "$status" 1
+  done
 }
