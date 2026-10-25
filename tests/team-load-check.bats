@@ -320,7 +320,10 @@ write_line() {
   assert_equal "${lines[0]}" "FAIL os: Ubuntu 24.04.3 LTS is neither Arch Linux nor macOS, so no tool is checked; fix: run the team on Arch Linux or macOS"
   assert_equal "$stderr" "load check: team-doctor reports a FAIL above; fix it, then run the load check again"
   [[ ! -e $TEAM_LOAD_CHECK_DIR ]]
-  # claude was asked only the doctor's questions, its login and its plugins: no session started.
-  assert_equal "$(stub_calls claude | jq -r 'join(" ")' | sort -u)" "auth status --json
+  # claude was asked only the doctor's questions, its login, its plugins and its trust probe of
+  # the team home (which the stub's reply never starts): no session of the load check's.
+  assert_equal "$(stub_calls claude | jq -r 'join(" ")' | sort -u)" "--bg --name team-doctor-home-trust
+agents --json
+auth status --json
 plugin list --json"
 }
