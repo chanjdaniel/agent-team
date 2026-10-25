@@ -140,16 +140,19 @@ local_path() {
 }
 
 # The paths of the task directory <dir> that have no place in the team home's history, so its
-# archive leaves them out, each as "<why>\t<path>" (relative to <dir>), NUL-terminated: each
-# directory holding a .git (nested repository), never looked inside; each file over 1 MiB (over
-# 1 MiB); and each path secret_paths names (may hold a secret); in that order, sorted within each.
+# archive leaves them out, each as "<why>\t<path>" (relative to <dir>), NUL-terminated: a
+# top-level ui/ (UI capture: a frontend capture stays on the machine that took it), never looked
+# inside; each directory holding a .git (nested repository), never looked inside; each file over
+# 1 MiB (over 1 MiB); and each path secret_paths names (may hold a secret); in that order, sorted
+# within each.
 # A missing directory has none: archive_left_out <dir>
 archive_left_out() {
   (
     export LC_ALL=C
     cd "$1" 2>/dev/null || exit 0
-    # find, never inside a nested repository, which it names when given no other test.
-    outside() { find . -mindepth 1 -type d -exec test -e '{}/.git' ';' -prune "$@"; }
+    [[ ! -d ui ]] || printf 'UI capture\tui\0'
+    # find, never inside ui/ or a nested repository, which it names when given no other test.
+    outside() { find . -mindepth 1 -path ./ui -prune -o -type d -exec test -e '{}/.git' ';' -prune "$@"; }
     outside -printf 'nested repository\t%P\0' | sort -z
     outside -o -type f -size +1048576c -printf 'over 1 MiB\t%P\0' | sort -z
     outside -o \( -type f -o -type l \) -size -1048577c -printf '%P\0' |

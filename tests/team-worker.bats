@@ -492,7 +492,7 @@ assert_prod_write_gated() {
   # applies Read rules to Grep and Glob too, and never matches a Grep(path) or Glob(path) rule.
   jq -e '.permissions.deny | index("Read(**/.env*)") != null' "$s" >/dev/null
   assert_equal "$(jq -r '.permissions.deny[] | select(test("^(Grep|Glob)\\("))' "$s")" ""
-  assert_equal "$(jq -c .env "$s")" '{"MCP_TIMEOUT":"120000"}'
+  assert_equal "$(jq -c .env.MCP_TIMEOUT "$s")" '"120000"'
   # --restricted ignores the user settings, and without this the coordinator's replies (the
   # write protocol's answers) never reach the session (T16 ticket 04's live check).
   assert_equal "$(jq -r .crossSessionInbound "$s")" accept

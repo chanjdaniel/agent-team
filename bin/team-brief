@@ -19,10 +19,12 @@
 #   --force     replace an existing brief
 # Placeholders are {{key}}. The task's facts fill task, title, path, project, repo, base, branch,
 # worktree, task_dir, plan, thread, team_home, team_code (this code checkout, where a brief points
-# for code such as sops/), team_bin and local_checks (the project's, each in backticks and joined
-# with ", ", or "none"), from the ledger and projects.toml;
+# for code such as sops/), team_bin, local_checks (the project's, each in backticks and joined
+# with ", ", or "none") and ui, from the ledger and projects.toml;
 # paths under $HOME are written ~/..., except team_bin, this checkout's bin/, always absolute
-# because the workers' allow rules name the scripts in it by their full path. In a template,
+# because the workers' allow rules name the scripts in it by their full path. ui is empty unless
+# tasks/T<n>/ui/ holds files (team-ui's capture of what Daniel pointed at): then a newline and a
+# reading-list item naming them, with the rule that a worker checks a fix on its own stack. In a template,
 # {{> <name>}} stands for the partial of the project's delivery, templates/briefs/<name>/<delivery>.md:
 # delivery (how a builder delivers), review and rereview (what a reviewer reads and posts; a gated
 # project's first review reads the branch's local head before the gate, with no pr).
@@ -37,7 +39,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 code=$(dirname "$(dirname "$TEAM_LIB")")
 briefs=$code/templates/briefs
 usage="usage: team-brief T<n> <template> [--project <name>] [--set key=value]... [--set-file key=path]... [--name <suffix>] [--force]"
-fact_keys=(task title path project repo base branch worktree task_dir plan thread team_home team_code team_bin local_checks)
+fact_keys=(task title path project repo base branch worktree task_dir plan thread team_home team_code team_bin local_checks ui)
 
 positionals=() project='' name='' force=''
 declare -A sets=()
@@ -131,6 +133,14 @@ declare -A values=(
   [team_bin]=$(dirname "$TEAM_LIB")
   [local_checks]=$(jq -r '.local_checks | if . == [] then "none" else map("`\(.)`") | join(", ") end' <<<"$facts")
 )
+# What Daniel pointed at, when team-ui captured it.
+ui=$TEAM_HOME/tasks/$task/ui values[ui]=''
+mapfile -t ui_files < <(find "$ui" -maxdepth 1 -type f ! -name '.*' -printf '%f\n' 2>/dev/null | sort)
+if ((${#ui_files[@]})); then
+  values[ui]=$'\n'"- What Daniel pointed at, captured at intake: \`$(tilde "$ui")/\` ($(printf '`%s`, ' "${ui_files[@]}" | sed 's/, $//'))"
+  values[ui]+="; \`ui-pick.md\` names the element's page, its \`.vue\` source file and line, its HTML and its matched CSS."
+  values[ui]+=$'\n'"  Check your fix on your own stack with your own headless browser, never in the Agent Chrome, which is Daniel's own window."
+fi
 thread=$(jq -r 'map(select(.event == "thread")) | last | .discord_thread // empty' <<<"$events")
 [[ -z $thread ]] || values[thread]=$thread
 

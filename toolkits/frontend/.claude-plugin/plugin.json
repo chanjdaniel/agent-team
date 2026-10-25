@@ -1,0 +1,8 @@
+{
+  "name": "frontend",
+  "version": "0.1.0",
+  "description": "Front-end fixes on the element Daniel selected: the pinned Chrome DevTools MCP server attached to the Agent Chrome, seeing its localhost pages only, ui-capture, which writes the selected element's page, HTML, matched CSS, Vue source location and screenshots into a directory, and the skill that fixes it from there. For Daniel's own Claude Code session and the coordinator's intake; build workers read captures, never the Agent Chrome.",
+  "author": {
+    "name": "Daniel Chan"
+  }
+}

@@ -40,7 +40,7 @@ The scripts depend on the team home holding:
 - Arch Linux or macOS.
 - Bash 5, jq and Python 3.11 or later.
 - Claude Code, and the other tools `bin/lib/tools.lock` pins (`team-doctor` checks each one and prints its install command).
-- Docker with Compose, for `team-stack`, which runs a project's Docker stacks for its tasks (`sops/docker.md`), and for the toolkit tests, which also need Node.js.
+- Docker with Compose, for `team-stack`, which runs a project's Docker stacks for its tasks (`sops/docker.md`), and for the toolkit tests, which also need Node.js and Google Chrome or Chromium (the frontend toolkit's, run headless).
 
 ## Tests
 

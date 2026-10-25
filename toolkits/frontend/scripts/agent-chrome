@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# Start the Agent Chrome: a headed Google Chrome with a profile of its own and remote debugging on
+# 127.0.0.1, the one window ui-capture and the frontend toolkit's MCP server attach to. Use it for
+# the local dev site only, logged in with a fixture account, never production or real data.
+#
+# Usage: agent-chrome [--port <port>] [<url>]
+#   --port  The remote debugging port (default 9222, where ui-capture looks).
+#   <url>   The page to open (default http://localhost:5173, Vite's dev server).
+# When a browser already answers on the port, it says so and opens nothing.
+# The profile is ~/.local/share/agent-team/agent-chrome: Chrome serves remote debugging only for a
+# profile directory that is not its default one, and this one holds nothing of Daniel's own
+# browsing. Chrome is TEAM_CHROME when set (a binary), else Google Chrome's app on macOS (open
+# -na), else google-chrome-stable, google-chrome or chromium on PATH; its output goes to
+# chrome.log in the profile. Exit 0 once the port answers, 1 when no Chrome is found or the port
+# does not answer within 20 s, 2 a malformed command line.
+set -euo pipefail
+
+die() { echo "agent-chrome: $*" >&2; exit 1; }
+usage_error() { echo "agent-chrome: $*" >&2; exit 2; }
+# A path under HOME as ~/..., for messages.
+tilde() {
+  if [[ $1 == "$HOME"/* ]]; then printf '%s\n' "~${1#"$HOME"}"; else printf '%s\n' "$1"; fi
+}
+if [[ ${1:-} == --help || ${1:-} == -h ]]; then
+  sed -n '2,/^[^#]/{/^#/!q;s/^# \{0,1\}//;p}' "${BASH_SOURCE[0]}"
+  exit 0
+fi
+
+port=9222 url=http://localhost:5173
+while (($#)); do
+  case $1 in
+    --port)
+      (($# > 1)) && [[ $2 =~ ^[0-9]+$ ]] || usage_error "usage: agent-chrome [--port <port>] [<url>]"
+      port=$2
+      shift 2
+      ;;
+    -*) usage_error "usage: agent-chrome [--port <port>] [<url>]" ;;
+    *)
+      [[ $url == http://localhost:5173 ]] || usage_error "usage: agent-chrome [--port <port>] [<url>]"
+      url=$1
+      shift
+      ;;
+  esac
+done
+
+profile=$HOME/.local/share/agent-team/agent-chrome
+answers() { curl -fsS --max-time 2 "http://127.0.0.1:$port/json/version" >/dev/null 2>&1; }
+
+if answers; then
+  echo "agent-chrome: a browser already answers on 127.0.0.1:$port; opening nothing"
+  exit 0
+fi
+
+# The mock keychain and basic password store keep this Chrome away from the login keychain: no
+# "Chrome Safe Storage" item of Daniel's is read or made, and no keychain prompt appears under a
+# HOME without one (a test's).
+args=(--user-data-dir="$profile" --remote-debugging-port="$port" --no-first-run --no-default-browser-check
+  --use-mock-keychain --password-store=basic "$url")
+mkdir -p "$profile"
+if [[ -n ${TEAM_CHROME:-} ]]; then
+  [[ -x $TEAM_CHROME ]] || die "TEAM_CHROME is $TEAM_CHROME, which is not an executable"
+  nohup "$TEAM_CHROME" "${args[@]}" >>"$profile/chrome.log" 2>&1 &
+elif [[ $(uname -s) == Darwin ]]; then
+  [[ -d "/Applications/Google Chrome.app" ]] || die "Google Chrome is not installed (brew install --cask google-chrome)"
+  open -na "Google Chrome" --args "${args[@]}"
+else
+  chrome=$(command -v google-chrome-stable google-chrome chromium | head -n 1 || true)
+  [[ -n $chrome ]] || die "neither Google Chrome nor Chromium is on PATH"
+  nohup "$chrome" "${args[@]}" >>"$profile/chrome.log" 2>&1 &
+fi
+
+for _ in $(seq 1 40); do
+  if answers; then
+    echo "agent-chrome: running on 127.0.0.1:$port with the profile $(tilde "$profile"), at $url"
+    exit 0
+  fi
+  sleep 0.5
+done
+die "Chrome started, but nothing answers on 127.0.0.1:$port after 20 s (see $(tilde "$profile")/chrome.log)"
