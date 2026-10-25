@@ -18,9 +18,9 @@ declare -gA FORMAT=(
   [codegraph]='%s'
   [gh-axi]='%s'
   [chrome-devtools-axi]='%s'
+  [chrome-devtools-mcp]='%s'
   [lavish-axi]='%s'
-  [quota-axi]='quota-axi %s'
-  [tasks-axi]='%s'
+  [opencode]='%s'
   [bun]='%s'
   [treehouse]='v%s'
   [no-mistakes]='no-mistakes version v%s (ac6b53f) 2026-10-24T07:09:23Z'
@@ -46,19 +46,37 @@ declare -gA FORMAT=(
 
 # Set up the doctor's machine (team-doctor*.bats' every test starts here): home-pc holds the lease
 # with its heartbeat enabled, every tool answers nothing yet (tools_at gives them versions), the
-# team's Claude config and plugins are installed, every secret is in place, the gate's opencode
-# wrapper is installed and named by config.yaml, two projects are registered and cloned as the
-# bootstrap clones them, and ~/.config/agent-team/home names the team home.
+# team's Claude config and plugins are installed, so are the pinned MCP servers, every secret is
+# in place, the gate's opencode wrapper is installed and config.yaml runs the gate on it, two
+# projects are registered and cloned as the bootstrap clones them, and
+# ~/.config/agent-team/home names the team home.
 doctor_machine() {
   hold_lease home-pc >/dev/null
   fake_service_managers
   # shellcheck disable=SC2153 # sandbox sets TEAM_HOME
   echo "$TEAM_HOME" >"$HOME/.config/agent-team/home"
+  # The team home's git ignores UI captures, as its .gitignore says (a record, so excluded here).
+  echo 'tasks/*/ui/' >>"$TEAM_HOME/.git/info/exclude"
   # The code checkout, with the dev guard on, as Daniel turns it on.
   export CODE_CHECKOUT
   CODE_CHECKOUT=$BATS_TEST_TMPDIR/code
   mkdir -p "$CODE_CHECKOUT"
   copy_bin "$CODE_CHECKOUT/bin"
+  # The pinned MCP servers, installed: servers/install here is a stub that stamps the install as
+  # the real one does (its own tests are servers-install.bats) and logs that it ran.
+  mkdir -p "$CODE_CHECKOUT/servers"
+  cp "$REPO_ROOT/servers/package.json" "$REPO_ROOT/servers/package-lock.json" "$CODE_CHECKOUT/servers/"
+  cat >"$CODE_CHECKOUT/servers/install" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+mkdir -p "$dir/node_modules"
+cat "$dir/package.json" "$dir/package-lock.json" | sha256sum | cut -d' ' -f1 >"$dir/node_modules/.installed-from"
+echo "servers/install $*" >>"$STUB_CALLS/servers-install.log"
+EOF
+  chmod +x "$CODE_CHECKOUT/servers/install"
+  "$CODE_CHECKOUT/servers/install"
+  rm "$STUB_CALLS/servers-install.log"
   git init -q "$CODE_CHECKOUT"
   git -C "$CODE_CHECKOUT" config core.hooksPath bin/hooks/git
 

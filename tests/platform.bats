@@ -71,14 +71,14 @@ library_path() {
   stub_reply uname Linux
   run -0 library_tool_dirs
   assert_equal "$output" "$HOME/.local/bin
-$HOME/.nvm/versions/node/v22.19.0/bin
+$HOME/.nvm/versions/node/v24.22.1/bin
 $HOME/.bun/bin
 /usr/local/bin
 $HOME/.no-mistakes/bin"
   stub_reply uname Darwin
   NVM_DIR=$BATS_TEST_TMPDIR/nvm run -0 library_tool_dirs
   assert_equal "$output" "$HOME/.local/bin
-$BATS_TEST_TMPDIR/nvm/versions/node/v22.19.0/bin
+$BATS_TEST_TMPDIR/nvm/versions/node/v24.22.1/bin
 $HOME/.bun/bin
 $HOME/.no-mistakes/bin
 $brew/opt/python@3.12/libexec/bin"
@@ -99,7 +99,7 @@ $brew/opt/python@3.12/libexec/bin"
 
 @test "a script run with a bare PATH finds the pinned Node, Bun, treehouse and Python first" {
   stub_reply uname Darwin
-  installed "$HOME/.nvm/versions/node/v22.19.0/bin" node
+  installed "$HOME/.nvm/versions/node/v24.22.1/bin" node
   installed "$HOME/.bun/bin" bun
   installed "$HOME/.local/bin" treehouse
   installed "$brew/opt/python@3.12/libexec/bin" python3
@@ -110,7 +110,7 @@ $brew/opt/python@3.12/libexec/bin"
   chmod +x "$bare/uname"
   run -0 env PATH="$bare:/usr/bin:/bin" bash -c \
     'source "$1/bin/lib/team.sh"; for tool in node bun treehouse python3; do "$tool"; done' bare "$REPO_ROOT"
-  assert_equal "$output" "$HOME/.nvm/versions/node/v22.19.0/bin/node
+  assert_equal "$output" "$HOME/.nvm/versions/node/v24.22.1/bin/node
 $HOME/.bun/bin/bun
 $HOME/.local/bin/treehouse
 $brew/opt/python@3.12/libexec/bin/python3"

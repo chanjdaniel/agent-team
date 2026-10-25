@@ -43,10 +43,10 @@
 # that pushes them to the team home's origin (never the project's) as
 # salvage/<project>/T<n>-<machine>. Then the task's archive (tasks/T<n>/scratch, or
 # scratch-<project> for an added project) replaces the task directory, but for what no archive
-# holds (its nested repositories, files over 1 MiB and paths that may hold a secret), which stays
-# as it is; worktree-moved is appended when the worktree is not the recorded one, else rehomed
-# while a rehome-failed of the task in <project> stands (team-resume's, which either clears), and
-# the worktree's facts are printed as JSON. For a
+# holds (its top-level ui/, a UI capture, its nested repositories, files over 1 MiB and paths
+# that may hold a secret), which stays as it is; worktree-moved is appended when the worktree is
+# not the recorded one, else rehomed while a rehome-failed of the task in <project> stands
+# (team-resume's, which either clears), and the worktree's facts are printed as JSON. For a
 # worktree that resumes from a snapshot (the task crashed: a launch after its latest stowed, or a
 # launch and no stowed, so its machine stopped without a handoff; or its latest stowed recorded
 # the worktree with uncommitted changes, which the handoff's checkpoint kept), or a branch on

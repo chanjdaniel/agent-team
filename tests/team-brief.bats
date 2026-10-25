@@ -597,3 +597,29 @@ after"
     --set head=abc1234 --set "checks=the checks"
   assert_contains "$(<"$output")" "- Local checks: none."
 }
+
+# A UI fix's capture (team-ui) in tasks/T<n>/ui/: every brief of a worker who reads or changes
+# the code names it, with the rule that a worker checks its fix on its own stack.
+@test "a task with a UI capture names it in each planner, builder and reviewer brief; a task without names none" {
+  open_t12
+  local template brief ui_line rule
+  ui_line='- What Daniel pointed at, captured at intake: `~/agent-team-records/tasks/T12/ui/` (`element.png`, `page.png`, `screenshot-1.png`, `ui-pick.md`); `ui-pick.md` names the element'"'"'s page, its `.vue` source file and line, its HTML and its matched CSS.'
+  rule='  Check your fix on your own stack with your own headless browser, never in the Agent Chrome, which is Daniel'"'"'s own window.'
+  run_bin -0 team-brief T12 builder-fix --set read='- `AGENTS.md`.' --set commits=fix --set goal=g --name none
+  refute_grep -F 'tasks/T12/ui' "$TEAM_HOME/tasks/T12/brief-none.md"
+  mkdir -p "$TEAM_HOME/tasks/T12/ui"
+  touch "$TEAM_HOME/tasks/T12/ui/"{ui-pick.md,element.png,page.png,screenshot-1.png}
+  for template in builder-fix builder-ticket planner-feature planner-research reviewer; do
+    local args=()
+    [[ $template == builder-fix ]] && args=(--set 'read=- `AGENTS.md`.' --set commits=fix --set goal=g)
+    [[ $template == builder-ticket ]] && args=(--set ticket=01)
+    [[ $template == planner-* ]] && args=(--set 'read=- `AGENTS.md`.')
+    [[ $template == reviewer ]] && args=(--set pr=https://github.com/chanjdaniel/Conventioner/pull/1 --set head=abc --set checks=c)
+    run_bin -0 team-brief T12 "$template" --name "$template" "${args[@]}"
+    brief=$TEAM_HOME/tasks/T12/brief-$template.md
+    grep -qxF -- "$ui_line" "$brief" || { echo "$template lacks the UI line" >&2; cat "$brief" >&2; return 1; }
+    grep -qxF -- "$rule" "$brief" || { echo "$template lacks the rule" >&2; return 1; }
+  done
+  # In a reading list, the line follows the others with no blank line between.
+  grep -A2 -F -- '- `AGENTS.md`.' "$TEAM_HOME/tasks/T12/brief-builder-fix.md" | sed -n 2p | grep -qxF -- "$ui_line"
+}

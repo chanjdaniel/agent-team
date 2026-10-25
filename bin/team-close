@@ -17,11 +17,13 @@
 # return (one that no longer has landed is kept with --keep-worktree, else exit 1 with the task
 # half closed); team-stack down --worktree <path> for each worktree to return whose project has a
 # stack block, so its logs are archived with its task directory (a kept worktree keeps its stack;
-# a failed teardown stops the close with the reason, the task half closed); each worktree's task
-# directory mirrored to tasks/T<n>/scratch/ (the opened project) or tasks/T<n>/scratch-<project>/
-# (an added one), less its nested repositories, files over 1 MiB and paths that may hold a secret,
-# each named on stderr, a missing or empty one reported on stderr; claude rm <id> for each of the
-# task's sessions; each landed worktree returned through its pool (git: git worktree remove,
+# a failed teardown stops the close with the reason, the task half closed); tasks/T<n>/ui/, the
+# task's UI captures (team-ui), removed, since they stay on this machine and are never archived;
+# each worktree's task directory mirrored to tasks/T<n>/scratch/ (the opened project) or
+# tasks/T<n>/scratch-<project>/ (an added one), less its top-level ui/ (a UI capture), its
+# nested repositories, files over 1 MiB and paths that may hold a secret, each named on stderr,
+# a missing or empty one reported on stderr; claude rm <id> for each of the task's sessions;
+# each landed worktree returned through its pool (git: git worktree remove,
 # never --force; treehouse: its task directory emptied, then the project's return command run
 # from the primary checkout with the path), each return appending worktree-returned; the task's
 # wip/<project>/T<n> (team-checkpoint's snapshots) deleted on the team home's origin, and its
@@ -219,6 +221,12 @@ teardown_stacks() {
   done
 }
 teardown_stacks
+
+# The task's UI captures (team-ui) stay on this machine and go with the task, before the archive.
+if [[ -e $TEAM_HOME/tasks/$task/ui ]]; then
+  rm -rf -- "$TEAM_HOME/tasks/$task/ui"
+  echo "team-close: removed tasks/$task/ui/, the task's UI captures" >&2
+fi
 
 # Mirror each worktree's task directory into tasks/T<n>/.
 archived=()

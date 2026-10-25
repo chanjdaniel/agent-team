@@ -30,13 +30,15 @@ every_tool_fails() {
     fi
   done < <(lock_tools "$os")
   # Nothing else fails: the doctor's own git, jq and date still work. Without op, the 1password
-  # line warns too, and without docker the docker line points at its tool line.
+  # line warns too, without docker the docker line points at its tool line, and without opencode
+  # the opencode-gate line does.
   if [[ $version == - ]]; then
     assert_contains "$(line_of 1password)" "WARN 1password: op is not installed,"
     assert_equal "$(line_of docker)" "FAIL docker: docker is not installed; fix: the tool docker line's fix"
+    assert_equal "$(line_of opencode-gate)" "FAIL opencode-gate: opencode is not installed, so the wrapper has nothing to run; fix: the tool opencode line's fix"
   fi
   assert_equal "$(grep -v '^.... tool ' <<<"$output" | grep -v '^PASS ' | grep -v '^WARN 1password: op ' |
-    grep -v '^FAIL docker: docker is not installed;' || true)" ""
+    grep -v '^FAIL docker: docker is not installed;' | grep -v '^FAIL opencode-gate: opencode is not installed,' || true)" ""
 }
 
 @test "tools.lock lists every tool of the spec once per OS, each with a version_cmd, a pattern, a pin or a min, and its sources" {
@@ -58,7 +60,7 @@ every_tool_fails() {
         and ((.pin // .min) | test("^[0-9]+(\\.[0-9]+)+"))
         and (.source | type == "object" and length > 0 and (keys - ["arch", "macos"] == []))
       end)' "$LOCK"
-  local os both=(claude node codegraph gh-axi chrome-devtools-axi lavish-axi quota-axi tasks-axi bun
+  local os both=(claude node codegraph gh-axi chrome-devtools-axi chrome-devtools-mcp lavish-axi opencode bun
     treehouse no-mistakes op git jq tmux gh rsync docker docker-compose python bash go)
   local mac_only=(coreutils findutils gnu-sed grep flock) arch_only=(make unzip)
   for os in arch macos; do
@@ -68,7 +70,7 @@ every_tool_fails() {
   done
   # Pinned: the tools the bootstrap installs itself, op on Linux only; Claude Code only warns.
   assert_equal "$(jq -r '[.tools[] | select(.pin or .from) | .name] | join(" ")' "$LOCK")" \
-    "claude node codegraph gh-axi chrome-devtools-axi lavish-axi quota-axi tasks-axi bun treehouse no-mistakes op"
+    "claude node codegraph gh-axi chrome-devtools-axi chrome-devtools-mcp lavish-axi opencode bun treehouse no-mistakes op"
   # treehouse is a GitHub release, each archive's checksum recorded; no-mistakes is Daniel's fork,
   # built at the commit on its main that merged upstream v1.84.0, and keeps upstream's release,
   # which from = "release" would pin instead.
@@ -91,16 +93,17 @@ every_tool_fails() {
   assert_equal "$(grep -v '^PASS ' <<<"$output")" ""
   local expected
   expected=$(printf '%s\n' os; lock_tools arch | cut -f1 | sed 's/^/tool /'
-    printf '%s\n' docker chrome machine 'team home' 'git hooks' 'claude login' 'github login' config plugins memory discord 'own settings' 1password
+    printf '%s\n' docker chrome servers machine 'team home' 'git hooks' 'claude login' 'github login' config plugins memory discord 'own settings' 1password
     secret_ids | sed 's/^/secret /'
     echo opencode-gate
     echo records
     echo 'trust team home'
+    echo captures
     project_checks
     printf '%s\n' clock lease heartbeat offline)
   assert_equal "$(checks)" "$expected"
   assert_equal "$(line_of os)" "PASS os: Arch Linux"
-  assert_equal "$(line_of 'tool claude')" "PASS tool claude: 2.1.308"
+  assert_equal "$(line_of 'tool claude')" "PASS tool claude: 2.1.310"
   assert_equal "$(line_of 'tool jq')" "PASS tool jq: 1.7.1 (minimum 1.7.1)"
   assert_equal "$(line_of machine)" "PASS machine: home-pc"
   assert_equal "$(line_of 'team home')" "PASS team home: $TEAM_HOME, named by TEAM_HOME: a checkout of its own on dev, with an origin"
@@ -117,11 +120,12 @@ every_tool_fails() {
   assert_equal "$(grep -v '^PASS ' <<<"$output")" ""
   local expected
   expected=$(printf '%s\n' os homebrew; lock_tools macos | cut -f1 | sed 's/^/tool /'
-    printf '%s\n' docker chrome machine 'team home' 'git hooks' 'claude login' 'github login' config plugins memory discord 'own settings' 1password
+    printf '%s\n' docker chrome servers machine 'team home' 'git hooks' 'claude login' 'github login' config plugins memory discord 'own settings' 1password
     secret_ids | sed 's/^/secret /'
     echo opencode-gate
     echo records
     echo 'trust team home'
+    echo captures
     project_checks
     printf '%s\n' clock lease heartbeat offline)
   assert_equal "$(checks)" "$expected"
@@ -137,7 +141,7 @@ every_tool_fails() {
   every_tool_fails arch 0.1.0
   assert_equal "$(line_of 'tool git')" "FAIL tool git: 0.1.0, below the minimum 2.40.0; fix: sudo pacman -S --needed git"
   assert_equal "$(line_of 'tool bun')" "FAIL tool bun: 0.1.0, not the pinned 1.3.14; fix: curl -fsSL https://bun.sh/install | bash -s bun-v1.3.14"
-  assert_equal "$(line_of 'tool claude')" "WARN tool claude: 0.1.0, not the pinned 2.1.308; fix: curl -fsSL https://claude.ai/install.sh | bash -s 2.1.308"
+  assert_equal "$(line_of 'tool claude')" "WARN tool claude: 0.1.0, not the pinned 2.1.310; fix: curl -fsSL https://claude.ai/install.sh | bash -s 2.1.310"
 }
 
 @test "a GitHub release's fix downloads this machine's archive and checks its recorded SHA-256 before unpacking it" {
@@ -266,9 +270,9 @@ SH
   # The shell's PATH starts with another Node; the pinned one is only in nvm's directory.
   local other=$BATS_TEST_TMPDIR/other-node
   version_command "$other" node v24.19.0
-  version_command "$HOME/.nvm/versions/node/v22.19.0/bin" node v22.19.0
+  version_command "$HOME/.nvm/versions/node/v24.22.1/bin" node v24.22.1
   PATH=$other:$PATH run_bin -0 team-doctor
-  assert_equal "$(line_of 'tool node')" "PASS tool node: 22.19.0"
+  assert_equal "$(line_of 'tool node')" "PASS tool node: 24.22.1"
   PATH=$other:$PATH run_bin -0 team-bootstrap --stage check
   [[ $output != *"tool node"* ]]
 }
@@ -317,7 +321,7 @@ Error: ENOENT: no such file or directory, uv_cwd
   # Claude Code and the Node tools fail without a working directory, as on the laptop.
   local gone=$BATS_TEST_TMPDIR/load-check-wt
   cat >"$TOOL_ANSWERS/claude/--version.sh" <<'SH'
-if [[ $PWD -ef . ]]; then echo '2.1.308 (Claude Code)'; else
+if [[ $PWD -ef . ]]; then echo '2.1.310 (Claude Code)'; else
   echo "error: The current working directory was deleted, so that command didn't work." >&2; exit 1; fi
 SH
   printf '%s\n' "if [[ \$PWD -ef . ]]; then echo 0.1.36; else cat >&2 <<'CRASH'" "$lavish_crash" CRASH \
@@ -327,7 +331,7 @@ SH
   guard_sandbox
   run -0 --separate-stderr bash -c 'cd "$1" && rmdir "$1" && exec "$2"' gone "$gone" "$REPO_ROOT/bin/team-doctor"
   assert_contains "$stderr" "team-doctor: the current directory no longer exists; running from ~"
-  assert_equal "$(line_of 'tool claude')" "PASS tool claude: 2.1.308"
+  assert_equal "$(line_of 'tool claude')" "PASS tool claude: 2.1.310"
   assert_equal "$(line_of 'tool lavish-axi')" "PASS tool lavish-axi: 0.1.36"
   assert_equal "$(grep -v '^PASS ' <<<"$output" || true)" ""
 }

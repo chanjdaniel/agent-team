@@ -5,11 +5,11 @@
       "name": "claude",
       "version_cmd": "claude --version",
       "version_pattern": "([0-9]+\\.[0-9]+\\.[0-9]+) \\(Claude Code\\)",
-      "pin": "2.1.308",
+      "pin": "2.1.310",
       "pin_mismatch": "WARN",
       "source": {
-        "arch": "curl -fsSL https://claude.ai/install.sh | bash -s 2.1.308",
-        "macos": "curl -fsSL https://claude.ai/install.sh | bash -s 2.1.308"
+        "arch": "curl -fsSL https://claude.ai/install.sh | bash -s 2.1.310",
+        "macos": "curl -fsSL https://claude.ai/install.sh | bash -s 2.1.310"
       },
       "path": {
         "arch": "~/.local/bin",
@@ -20,14 +20,14 @@
       "name": "node",
       "version_cmd": "node --version",
       "version_pattern": "^v([0-9]+\\.[0-9]+\\.[0-9]+)",
-      "pin": "22.19.0",
+      "pin": "24.22.1",
       "source": {
-        "arch": "nvm install 22.19.0 && nvm alias default 22.19.0",
-        "macos": "nvm install 22.19.0 && nvm alias default 22.19.0"
+        "arch": "nvm install 24.22.1 && nvm alias default 24.22.1",
+        "macos": "nvm install 24.22.1 && nvm alias default 24.22.1"
       },
       "path": {
-        "arch": "@NVM_DIR@/versions/node/v22.19.0/bin",
-        "macos": "@NVM_DIR@/versions/node/v22.19.0/bin"
+        "arch": "@NVM_DIR@/versions/node/v24.22.1/bin",
+        "macos": "@NVM_DIR@/versions/node/v24.22.1/bin"
       }
     },
     {
@@ -54,10 +54,20 @@
       "name": "chrome-devtools-axi",
       "version_cmd": "chrome-devtools-axi --version",
       "version_pattern": "^([0-9]+\\.[0-9]+\\.[0-9]+)$",
-      "pin": "0.1.26",
+      "pin": "0.1.44",
       "source": {
-        "arch": "npm install -g chrome-devtools-axi@0.1.26",
-        "macos": "npm install -g chrome-devtools-axi@0.1.26"
+        "arch": "npm install -g chrome-devtools-axi@0.1.44",
+        "macos": "npm install -g chrome-devtools-axi@0.1.44"
+      }
+    },
+    {
+      "name": "chrome-devtools-mcp",
+      "version_cmd": "chrome-devtools-mcp --version",
+      "version_pattern": "^([0-9]+\\.[0-9]+\\.[0-9]+)",
+      "pin": "1.12.0",
+      "source": {
+        "arch": "npm install -g chrome-devtools-mcp@1.12.0",
+        "macos": "npm install -g chrome-devtools-mcp@1.12.0"
       }
     },
     {
@@ -71,23 +81,13 @@
       }
     },
     {
-      "name": "quota-axi",
-      "version_cmd": "quota-axi --version",
-      "version_pattern": "^quota-axi ([0-9]+\\.[0-9]+\\.[0-9]+)$",
-      "pin": "0.1.5",
+      "name": "opencode",
+      "version_cmd": "opencode --version",
+      "version_pattern": "^([0-9]+\\.[0-9]+\\.[0-9]+)",
+      "pin": "1.18.30",
       "source": {
-        "arch": "npm install -g quota-axi@0.1.5",
-        "macos": "npm install -g quota-axi@0.1.5"
-      }
-    },
-    {
-      "name": "tasks-axi",
-      "version_cmd": "tasks-axi --version",
-      "version_pattern": "^([0-9]+\\.[0-9]+\\.[0-9]+)$",
-      "pin": "0.2.3",
-      "source": {
-        "arch": "npm install -g tasks-axi@0.2.3",
-        "macos": "npm install -g tasks-axi@0.2.3"
+        "arch": "npm install -g opencode-ai@1.18.30",
+        "macos": "npm install -g opencode-ai@1.18.30"
       }
     },
     {

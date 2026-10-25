@@ -28,10 +28,12 @@
 #              first when missing) with Node and the global npm tools, Bun, Claude Code, the
 #              treehouse release archive for this OS and CPU, no-mistakes built from Daniel's
 #              fork at its pinned commit (with the packages stage's Go and make), the 1Password
-#              CLI; then the gate's opencode wrapper, ~/.no-mistakes/bin/opencode-gate, while
-#              the opencode-gate line asks for it, and agent_path_override.opencode in
+#              CLI, opencode; then the gate's opencode wrapper, ~/.no-mistakes/bin/opencode-gate,
+#              while the opencode-gate line asks for it, and agent_path_override.opencode in
 #              ~/.no-mistakes/config.yaml set to its full path, that key alone, the file's mode
-#              kept and none of it printed (a missing config.yaml is team-secrets restore's).
+#              kept and none of it printed (a missing config.yaml is team-secrets restore's, and
+#              its agent: opencode Daniel's step); then servers/install, while the servers line
+#              fails.
 #              A Claude Code newer than its pin only warns, and is left. ~/.local/bin and
 #              ~/.no-mistakes/bin, which no installer puts on PATH, get one line each in the
 #              shell's rc file (~/.zshrc or ~/.bashrc) when PATH lacks them.
@@ -50,10 +52,11 @@
 #              command (the machine's name, the team home's setting once ~/agent-team-records is
 #              there, logins, Docker access, the 1Password app and team-secrets restore (each
 #              failing secret with its reason, and the gate's config.yaml while it is missing),
-#              trust in the team home, where the coordinator starts, and in each project root,
-#              Chrome, then the rest), the doctor's WARN and FAIL lines, and a summary: set up, or
-#              ready as a standby. Two or more roots claude does not trust are one step, the
-#              trust stage below.
+#              the gate's config.yaml running the gate on its opencode wrapper, trust in the team
+#              home, where the coordinator starts, and in each project root, Chrome, then the
+#              rest), the doctor's WARN and FAIL lines, and a summary: set up, or ready as a
+#              standby. Two or more roots claude does not trust are one step, the trust stage
+#              below.
 # And one stage a run never reaches, only --stage trust, in Daniel's own terminal (it refuses
 # unless stdin and stdout are a terminal, but for a dry run):
 #   trust      For each root the doctor's trust lines find untrusted ("Workspace not trusted": the
@@ -338,19 +341,22 @@ stage_tools() {
     fi
   done < <(lines '^tool ')
   # The gate's opencode wrapper, once its line asks for the install, and then config.yaml naming
-  # it, unless the line waits on Daniel's team-secrets restore.
+  # it; not Daniel's team-secrets restore or config edit, nor opencode itself, which its own tool
+  # line installs.
   while IFS=$'\t' read -r check verdict reason fix; do
-    [[ $fix != Daniel* ]] || continue
+    [[ $fix != Daniel* && $fix != 'the tool '* ]] || continue
     gate=1
     [[ $fix == *'team-bootstrap --stage tools'* ]] || todo+=("$fix")
   done < <(lines '^opencode-gate$')
+  # The pinned MCP servers (servers/install), after the Node they install with.
+  while IFS=$'\t' read -r check verdict reason fix; do todo+=("$fix"); done < <(lines '^servers$')
   if ((${#todo[@]} + ${#commands[@]} == 0)); then
     if ((gate)); then name_gate_wrapper; else say "done: every tool is at its pin or above its minimum"; fi
     return
   fi
   export NVM_DIR=${NVM_DIR:-$HOME/.nvm}
   for fix in "${todo[@]}"; do
-    if [[ $fix == 'nvm '* || $fix == 'npm '* ]]; then
+    if [[ $fix == 'nvm '* || $fix == 'npm '* || $fix == */servers/install ]]; then
       [[ -s $NVM_DIR/nvm.sh ]] || ((dry && nvm_shown)) ||
         { act "curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/$NVM_VERSION/install.sh | bash" && nvm_shown=1; }
       act ". \"\$NVM_DIR/nvm.sh\" && $fix" "$fix"

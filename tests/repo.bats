@@ -166,6 +166,36 @@ MACHINE_DOCS=(README.md SETUP.md sops/machine-setup.md sops/portability.md)
 # The settings every session starts with: the coordinator's and the workers' shared ones.
 SETTINGS=(coordinator.settings.json settings/worker.json)
 
+# chrome-devtools-axi starts `npx chrome-devtools-mcp@latest` unless told which server to run, and
+# a new server broke the old client (T43's audit): every session runs the server servers/ pins,
+# workers and the coordinator by path, and any other session (Daniel's own) finds the global
+# install tools.lock pins at the same version on PATH.
+@test "every session's chrome-devtools-axi runs the chrome-devtools-mcp that servers/ pins" {
+  local file pin entry
+  pin=$(jq -r '.dependencies["chrome-devtools-mcp"]' "$REPO_ROOT/servers/package.json")
+  [[ $pin =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+  assert_equal "$(jq -r '.packages["node_modules/chrome-devtools-mcp"].version' "$REPO_ROOT/servers/package-lock.json")" "$pin"
+  entry=$(jq -r '.packages["node_modules/chrome-devtools-mcp"].bin["chrome-devtools-mcp"]' "$REPO_ROOT/servers/package-lock.json")
+  for file in "${SETTINGS[@]}"; do
+    assert_equal "$(jq -r .env.CHROME_DEVTOOLS_AXI_MCP_PATH "$REPO_ROOT/$file")" \
+      "@TEAM_CODE@/servers/node_modules/chrome-devtools-mcp/${entry#./}"
+  done
+  assert_equal "$(jq -r '.tools[] | select(.name == "chrome-devtools-mcp") | [.pin, .source.arch, .source.macos] | join(" | ")' "$REPO_ROOT/bin/lib/tools.lock")" \
+    "$pin | npm install -g chrome-devtools-mcp@$pin | npm install -g chrome-devtools-mcp@$pin"
+  # The client that speaks the server's current protocol (page ids), with the path variable.
+  assert_equal "$(jq -r '.tools[] | select(.name == "chrome-devtools-axi") | .pin' "$REPO_ROOT/bin/lib/tools.lock")" 0.1.44
+}
+
+# The tools the sessions run send usage data off the machine unless told not to (T43's audit):
+# lavish-axi's analytics, codegraph's telemetry and Chrome DevTools MCP's Google usage statistics.
+@test "the worker and coordinator settings turn off the tools' telemetry" {
+  local file
+  for file in "${SETTINGS[@]}"; do
+    assert_equal "$(jq -c '.env | {LAVISH_AXI_TELEMETRY, CODEGRAPH_TELEMETRY, CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS}' "$REPO_ROOT/$file")" \
+      '{"LAVISH_AXI_TELEMETRY":"0","CODEGRAPH_TELEMETRY":"0","CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS":"1"}'
+  done
+}
+
 # Whether one of the Bash deny rules in <settings file> matches <command>, a rule's * matching any
 # text as Claude Code's does: denied <settings file> <command>
 denied() {
