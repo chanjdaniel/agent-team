@@ -803,7 +803,7 @@ SH
 
 @test "team-capacity on PATH is found as well" {
   open_task T22
-  cp "$REPO_ROOT/tests/helpers/stub" "$BATS_TEST_TMPDIR/stubs/team-capacity"
+  stub_command team-capacity
   stub_reply team-capacity "" 75
   stack_settings '{"wait_minutes": 0}'
   run_bin -75 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
