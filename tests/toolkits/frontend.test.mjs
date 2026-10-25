@@ -13,6 +13,7 @@ import { chromePath, inspect, serveFixture, startChrome } from "./helpers/chrome
 import { repoRoot, tempDir } from "./helpers/mcp.mjs";
 
 const scripts = join(repoRoot, "toolkits", "frontend", "scripts");
+const modules = join(repoRoot, "servers", "node_modules");
 const run = promisify(execFile);
 
 // A script's exit status, stdout and stderr, whatever the status.
@@ -145,6 +146,72 @@ describe("ui-capture", () => {
     assert.equal(result.status, 1);
     assert.match(result.stderr, /^ui-capture: the page carries no Vue source data \(no __v_inspector on .* or its parents\): a production build, or a Vue DevTools without the inspector\n$/);
     assert.ok(!existsSync(join(out, "ui-pick.md")));
+  });
+});
+
+// The toolkit's server exactly as .mcp.json declares it, with ${CLAUDE_PLUGIN_ROOT} resolved as
+// Claude Code does for --plugin-dir and the Agent Chrome's port moved to the test's.
+async function declaredServer(browserUrl) {
+  const { Client } = await import(join(modules, "@modelcontextprotocol", "sdk", "dist", "esm", "client", "index.js"));
+  const { StdioClientTransport } = await import(join(modules, "@modelcontextprotocol", "sdk", "dist", "esm", "client", "stdio.js"));
+  const entry = declared();
+  const client = new Client({ name: "toolkit-test", version: "0" });
+  await client.connect(
+    new StdioClientTransport({
+      command: entry.command === "node" ? process.execPath : entry.command,
+      args: entry.args.map((arg) => (arg === "--browser-url=http://127.0.0.1:9222" ? `--browser-url=${browserUrl}` : arg)),
+      env: { PATH: process.env.PATH, HOME: process.env.HOME, ...entry.env },
+      stderr: "ignore",
+    }),
+  );
+  const call = async (name, args = {}) => {
+    const result = await client.callTool({ name, arguments: args });
+    return result.content.filter((c) => c.type === "text").map((c) => c.text).join("\n");
+  };
+  return { client, call, close: () => client.close() };
+}
+function declared() {
+  const text = readFileSync(join(repoRoot, "toolkits", "frontend", ".mcp.json"), "utf8");
+  return JSON.parse(text.replaceAll("${CLAUDE_PLUGIN_ROOT}", join(repoRoot, "toolkits", "frontend"))).mcpServers.frontend;
+}
+
+describe("the toolkit's MCP server", () => {
+  let site, chrome;
+  before(async () => {
+    site = await serveFixture({ "/": fixture });
+    chrome = await startChrome([site.url, elsewhere]);
+  });
+  after(async () => {
+    await chrome?.close();
+    await site?.close();
+  });
+
+  test("attaches to the Agent Chrome with ui-capture's allowlist, and with telemetry, CrUX and update checks off", () => {
+    const entry = declared();
+    const capture = readFileSync(join(scripts, "ui-capture"), "utf8").match(/^const allowed = (\[.*\]);$/m)[1];
+    const patterns = entry.args.slice(entry.args.indexOf("--allowedUrlPattern") + 1).filter((arg) => !arg.startsWith("--"));
+    assert.deepEqual(patterns, JSON.parse(capture));
+    assert.ok(entry.args.includes("--browser-url=http://127.0.0.1:9222"));
+    for (const flag of ["--no-usage-statistics", "--no-performance-crux", "--no-page-id-routing"]) assert.ok(entry.args.includes(flag), flag);
+    assert.deepEqual(entry.env, { CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS: "1", CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS: "1" });
+  });
+
+  test("lists only the localhost pages, sees the DevTools selection, and refuses to navigate off localhost", async () => {
+    await inspect(chrome.browserUrl, site.url, ".menu-button");
+    const server = await declaredServer(chrome.browserUrl);
+    try {
+      const pages = await server.call("list_pages");
+      assert.match(pages, /^1: Fixture app \(http:\/\/127\.0\.0\.1:\d+\/\)/m);
+      assert.ok(!pages.includes("Elsewhere") && !pages.includes("devtools://"), pages);
+      assert.match(await server.call("take_snapshot"), /button "Open navigation" .*\[selected in the DevTools Elements panel\]/);
+      assert.match(await server.call("navigate_page", { type: "url", url: "https://example.com/" }), /blocked by blocklist\/allowlist rules/);
+      // The eval mocks answer with the server's own tools/list.
+      const listed = (await server.client.listTools()).tools;
+      const mock = JSON.parse(readFileSync(join(repoRoot, "toolkits", "frontend", "evals", "mocks", "frontend", "_tools.json"), "utf8")).tools;
+      assert.deepEqual(mock, listed, "toolkits/frontend/evals/mocks/frontend/_tools.json");
+    } finally {
+      await server.close();
+    }
   });
 });
 
