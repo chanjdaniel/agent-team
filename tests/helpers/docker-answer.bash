@@ -75,6 +75,7 @@ docker_stub_answer() {
     'image rm') docker_stub_image_rm "${args[@]}" ;;
     'network rm') docker_stub_network_rm "${args[@]}" ;;
     info) docker_stub_info "${args[@]}" ;;
+    events) docker_stub_events "${args[@]}" ;;
     *) docker_stub_unplanned ;;
   esac
 }
@@ -192,8 +193,29 @@ docker_stub_stats() {
 }
 
 # system df -v --format json: one object, each volume with its labels as one string and its
-# links counted from the containers that mount it.
+# links counted from the containers that mount it. system df --format json: one line per type,
+# Docker's totals, its sizes as Docker writes them ("1.31GB"), active meaning used by a container
+# (an image, a volume) or running (a container), reclaimable the size of what is not active.
 docker_stub_system_df() {
+  if docker_stub_options $# "$@" --format json; then
+    jq -c --slurpfile containers "$DOCKER_STATE/containers.json" --slurpfile volumes "$DOCKER_STATE/volumes.json" '
+      def bytes: capture("^(?<n>[0-9.]+)(?<u>[kMGT]?B)$") // {n: "0", u: "B"}
+        | (.n | tonumber) * {B: 1, kB: 1e3, MB: 1e6, GB: 1e9, TB: 1e12}[.u];
+      def human: if . >= 1e9 then "\(. / 1e6 | round / 1e3)GB" elif . >= 1e6 then "\(. / 1e3 | round / 1e3)MB"
+        elif . >= 1e3 then "\(round / 1e3)kB" else "\(round)B" end;
+      def totals($type; $items):
+        ($items | map(.size) | add // 0) as $size | ($items | map(select(.active | not) | .size) | add // 0) as $free
+        | {Active: ($items | map(select(.active)) | length | tostring),
+           Reclaimable: "\($free | human) (\(if $size == 0 then 0 else $free * 100 / $size | floor end)%)",
+           Size: ($size | human), TotalCount: ($items | length | tostring), Type: $type};
+      $containers[0] as $cs
+      | totals("Images"; map(.ID as $id | {size: (.Size | bytes), active: any($cs[]; .Image == $id)})),
+        totals("Containers"; $cs | map({size: 0, active: .State.Running})),
+        totals("Local Volumes"; $volumes[0] | map(.Name as $n | {size: (.Size // "0B" | bytes),
+          active: any($cs[]; any(.Mounts[]?; .Type == "volume" and .Name == $n))})),
+        totals("Build Cache"; [])' "$DOCKER_STATE/images.json"
+    return
+  fi
   docker_stub_options $# "$@" -v --format json || docker_stub_unplanned
   jq -c --slurpfile containers "$DOCKER_STATE/containers.json" --slurpfile volumes "$DOCKER_STATE/volumes.json" '
     {BuildCache: [], Containers: [], Images: .,
@@ -232,6 +254,27 @@ docker_stub_list() {
 docker_stub_info() {
   docker_stub_options $# "$@" --format json || docker_stub_unplanned
   jq -c . "$DOCKER_STATE/info.json"
+}
+
+# events --since <epoch> --until <epoch> --filter event=<action> --format json: the events of
+# $DOCKER_STATE/events.json (docker_event) with that action in that time, one line each, oldest
+# first, as Docker gives them.
+docker_stub_events() {
+  local since='' until='' action=''
+  while (($#)); do
+    case $1 in
+      --since) since=$2; shift ;;
+      --until) until=$2; shift ;;
+      --filter) [[ $2 == event=* ]] || docker_stub_unplanned; action=${2#event=}; shift ;;
+      --format) [[ $2 == json ]] || docker_stub_unplanned; shift ;;
+      *) docker_stub_unplanned ;;
+    esac
+    shift
+  done
+  # Docker reads a time or a duration; the stub, as the tests plan, only seconds since the epoch.
+  [[ $since =~ ^[0-9]+$ && $until =~ ^[0-9]+$ && -n $action ]] || docker_stub_unplanned
+  jq -c --argjson since "$since" --argjson until "$until" --arg action "$action" \
+    'sort_by(.time)[] | select(.Action == $action and .time >= $since and .time <= $until)' "$DOCKER_STATE/events.json"
 }
 
 # The calls below model the fixture project's stack (tests/fixtures/stack/docker-compose.yml):

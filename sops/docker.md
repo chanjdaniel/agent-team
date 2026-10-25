@@ -130,7 +130,7 @@ The heartbeat runs it once Daniel turns `heartbeat_sweep` on; anyone may run it 
 ## Removing what is left behind
 
 `team-stack reap` removes the Docker objects the team's work leaves behind, by the rules below and nothing else.
-The janitor runs it daily with `--apply` once Daniel turns `heartbeat_janitor` on; anyone may run its dry run by hand at any time, since it only reads.
+The janitor runs it daily with `--apply` ("The daily report and its alerts") once Daniel turns `heartbeat_janitor` on; anyone may run its dry run by hand at any time, since it only reads.
 
 | What | Rule | Action |
 | - | - | - |
@@ -154,6 +154,28 @@ The janitor runs it daily with `--apply` once Daniel turns `heartbeat_janitor` o
 - A tagged image is removed by `<repository>:<tag>`, a dangling one by its id, and a network by its id, since Docker lets two networks share a name; the 2 newest of a repository are its 2 newest images, every tag of either kept.
 - A removal that fails is named on stderr with Docker's reason, the others still happen, and it exits 1; Docker not answering is exit 1 too.
 - Before a stack's removal it reads the stack again and removes it only when every object is still of the class the rule matched.
+
+## The daily report and its alerts
+
+`~/agent-team/bin/team-janitor` runs `team-stack reap --apply`, then writes the day's report, `~/.local/state/agent-team/janitor/<local date>.md`, and prints it as one paragraph, alerts first.
+The heartbeat runs it once a day once Daniel turns `heartbeat_janitor` on; `team-janitor --dry-run` previews a run at any time.
+
+- The report's sections, in order: Alerts; Disk, the free and used space on the file system Docker keeps its data on (`docker info`'s `DockerRootDir`, and on macOS the home directory, where Docker Desktop keeps its disk image), as admission reads it; Docker's totals, `docker system df`'s by type; Stacks, every Compose project left after the reap, running or stopped, with its class, task, kind, age and memory; Removed, each removal with its size and rule, the ones that failed, and the reaper's summary; and Kept as not the team's, with size and age.
+- A second run on the same day replaces the day's report.
+- The alerts, by kind:
+
+  | Kind | When |
+  | - | - |
+  | `disk` | under 15% or under 50 GB free on that file system |
+  | `oom` | a container killed for memory in the last 24 hours (`docker events --filter event=oom`) |
+  | `waits` | admission waits (`stacks/waits.jsonl`) adding up to more than an hour in the last 24 hours, each counted for its part inside them |
+  | `removal` | a removal the reaper could not make |
+
+- Each kind is posted to `#coordinator` at most once a local day, for example `Docker on home-pc: disk: 40.0 GB free of 1.0 TB (3.9%) on the file system of /var/lib/docker, under 15% or 50 GB. The day's report: ~/.local/state/agent-team/janitor/2026-10-25.md`, and remembered in `janitor/posted-<local date>.json`; the report says beside each alert whether it was posted, already posted that day, or why its post failed.
+- A post that fails is also on stderr, is tried again on the next run, and changes no exit code: the run exits 1 only when the reaper or a removal failed, a part of the report could not be read, or the report could not be written.
+- Docker not answering is the report's one line and the summary's, nothing is posted, and it exits 1.
+- `--dry-run` runs the reaper's dry run, writes `<local date>-dry-run.md` (never the day's real report) with "Would remove" for "Removed", and posts nothing.
+- It writes no ledger event: every ledger line needs a task, and the report belongs to none.
 
 ## Closing a task
 
@@ -188,5 +210,6 @@ These are a speed bump, as every deny rule is; the guarantee is that no script t
 - The stub also models the fixture project's stack (`tests/fixtures/stack/`), so `up`, `env`, `seed`, `stop` and `down` are tested through the wrapper contract rather than Conventioner.
 - The stub also stands in for the machine's memory and disk: `TEAM_MEMINFO` names a file read in place of `/proc/meminfo`, a stub `df` answers from the test's numbers, and `TEAM_STACK_RECHECK_SECONDS` shortens the 30 seconds between admission checks.
 - The sweep's tests stub `claude agents --json` (the sandbox's `claude` stub) with sessions in and around the worktree.
-- The reaper's tests age the stub's objects with `docker_created` and refuse one removal with `docker_refuse`, and every test of `tests/team-stack.bats` fails when a Docker call it made pruned.
+- The reaper's tests age the stub's objects with `docker_created` and refuse one removal with `docker_refuse`, and every test of `tests/team-stack.bats` and `tests/team-janitor.bats` fails when a Docker call it made pruned.
+- The janitor's tests add `oom` events with `docker_event`, set the free disk through the stub `df`, and stub Discord's answers to its posts (the sandbox's `curl` stub).
 - `tests/team-stack-live.bats` runs against the real Docker only with `TEAM_LIVE_DOCKER=1`, since a test that creates a network can break a gate run's end to end; it starts and removes the fixture's one-service stack under a project name of its own, races two `up` calls for the last place under `stack_cap`, has the sweep stop an idle stack that `up` then brings back with its data, and has `reap --apply` remove a closed task's stack and an expired gate stack and keep an unowned one, limited by the test seam `TEAM_STACK_REAP_PROJECTS` to its own projects, so it never reaps the machine.

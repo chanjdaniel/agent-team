@@ -1,0 +1,256 @@
+#!/usr/bin/env bash
+# The daily Docker janitor: removes what the team left behind (team-stack reap --apply), reports
+# on what Docker holds, and alerts #coordinator when something needs Daniel (sops/docker.md).
+#
+# Usage: team-janitor [--dry-run]
+#
+# Runs team-stack reap --apply, then writes the day's report,
+# ~/.local/state/agent-team/janitor/<local date>.md, a second run of the day replacing it, with
+# these sections:
+#   Alerts                  each alert, and whether it was posted
+#   Disk                    free and used space on the file system Docker keeps its data on (as
+#                           team-stack's admission reads it: docker info's DockerRootDir, and on
+#                           macOS the home directory, where Docker Desktop keeps its disk image)
+#   Docker's totals         docker system df's, by type
+#   Stacks                  every Compose project left, running or stopped, with its class, task,
+#                           kind, age and memory (team-stack ls --json)
+#   Removed                 the reaper's removals, each with its size and rule, the ones that
+#                           failed, and its summary
+#   Kept as not the team's  what the reaper kept that is not the team's, with size and age
+# and prints the report as one paragraph, alerts first.
+# The alerts, by kind:
+#   disk     under 15% or under 50 GB free on that file system
+#   oom      a container killed for memory in the last 24 hours (docker events, event oom)
+#   waits    admission waits (~/.local/state/agent-team/stacks/waits.jsonl) adding up to more than
+#            an hour in the last 24 hours, each counted for its part inside them
+#   removal  a removal the reaper could not make
+# Each kind is posted to #coordinator ("Docker on home-pc: <alert>. The day's report: <path>") at
+# most once a local day, through discord_api with a 20 s timeout, remembered in
+# janitor/posted-<local date>.json ({<kind>: <UTC time posted>}). A post that fails is in the
+# report and on stderr, is tried again on the next run, and changes no exit code.
+# Docker not answering is the report's one line, and the summary's, and exit 1.
+# --dry-run runs the reaper's dry run instead, writes <local date>-dry-run.md (never the day's
+# real report) with "Would remove" for "Removed", and posts nothing.
+#
+# Exit 0 done, 1 Docker does not answer, the reaper or a removal failed, or a part of the report
+# could not be read or written, 2 usage error.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+DRY=''
+for arg in "$@"; do
+  case $arg in
+    --dry-run) DRY=1 ;;
+    *) usage_error "usage: team-janitor [--dry-run]" ;;
+  esac
+done
+
+STATE=$HOME/.local/state/agent-team
+DIR=$STATE/janitor
+DAY=$(date +%F)
+REPORT=$DIR/$DAY${DRY:+-dry-run}.md
+POSTED=$DIR/posted-$DAY.json
+# The most one Discord post may take, as team-timers posts.
+POST_TIMEOUT=20
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
+MACHINE=$(machine_name 2>/dev/null || hostname -s 2>/dev/null || echo "this machine")
+# Set when the run ends with exit 1.
+FAILED=''
+
+# <path> with the home directory as ~.
+short() {
+  if [[ $1 == "$HOME"/* ]]; then echo "~${1#"$HOME"}"; else echo "$1"; fi
+}
+
+# <n> <word>, with an s unless <n> is 1: count <n> <word>
+count() {
+  if (($1 == 1)); then echo "$1 $2"; else echo "$1 $2s"; fi
+}
+
+# The last line of the file <file> that has text, or <fallback>: last_reason <file> <fallback>
+last_reason() {
+  grep . "$1" 2>/dev/null | tail -n 1 | grep . || echo "$2"
+}
+
+# Write the report from stdin, replacing the day's atomically.
+write_report() {
+  if ! { mkdir -p "$DIR" && cat >"$WORK/report.md" && mv "$WORK/report.md" "$REPORT"; }; then
+    die "could not write the report $REPORT"
+  fi
+}
+
+TITLE="# Docker on $MACHINE, $DAY${DRY:+ (dry run)}"
+WRITTEN="Written by team-janitor at $(date +%H:%M)"
+REPORT_SHORT=$(short "$REPORT")
+
+# Docker first: without it there is nothing to reap or report.
+if ! docker info --format json >"$WORK/info.json" 2>"$WORK/info.err"; then
+  down="Docker does not answer ($(last_reason "$WORK/info.err" "docker info failed")), so nothing was reaped and nothing of Docker is reported"
+  printf '%s\n\n%s.\n\n## Alerts\n\n- %s\n' "$TITLE" "$WRITTEN" "$down" | write_report
+  echo "$down. Report: $REPORT_SHORT."
+  die "Docker does not answer: $(last_reason "$WORK/info.err" "docker info failed")"
+fi
+
+# The reaper, for real or its dry run, its own warnings and failures passed on to stderr.
+reap_rc=0
+TEAM_HOME=$TEAM_HOME "$(dirname "${BASH_SOURCE[0]}")/team-stack" reap "$([[ -n $DRY ]] && echo --dry-run || echo --apply)" \
+  >"$WORK/reap.out" 2>"$WORK/reap.err" || reap_rc=$?
+cat "$WORK/reap.err" >&2
+((reap_rc == 0)) || FAILED=1
+{
+  sed -n -E 's/^(would remove|removed) /- /p; s/^already gone /- already gone /p' "$WORK/reap.out"
+  sed -n -E 's/^team-stack: (could not remove .*)/- \1/p' "$WORK/reap.err"
+} >"$WORK/removed"
+sed -n -E 's/^kept /- /p' "$WORK/reap.out" >"$WORK/kept"
+reaped=$(sed -n -E 's/^team-stack: (.)(.*)$/\u\1\2./p' "$WORK/reap.out" | tail -n 1)
+if [[ -z $reaped ]]; then
+  reaped=$(last_reason "$WORK/reap.err" "no reason given")
+  reaped="The reaper failed: ${reaped#team-stack: }."
+fi
+echo "$reaped" >>"$WORK/removed"
+[[ -s $WORK/kept ]] || echo "None." >"$WORK/kept"
+
+# A part of the report that could not be read says why, and fails the run: unread <what> <file>
+unread() {
+  FAILED=1
+  echo "Could not be read: $1: $(last_reason "$2" "no reason given")."
+}
+
+# The disk.
+if [[ $(uname -s) == Darwin ]]; then
+  disk_dir=$HOME
+else
+  disk_dir=$(jq -r '.DockerRootDir // empty' "$WORK/info.json")
+fi
+disk=''
+if [[ -n $disk_dir ]] && df -Pk "$disk_dir" >"$WORK/df.out" 2>"$WORK/df.err"; then
+  disk=$(awk 'NR == 2 && $2 > 0 { printf "{\"size\": %s, \"used\": %s, \"free\": %s}", $2 * 1024, $3 * 1024, $4 * 1024 }' "$WORK/df.out")
+fi
+if [[ -n $disk ]]; then
+  disk=$(jq -c --arg dir "$disk_dir" '. + {dir: $dir, percent: (.free * 100 / .size)}' <<<"$disk")
+  disk_section=$(jq -r -L "$TEAM_LIB" 'include "stack";
+    "\(.free | disk_size) free and \(.used | disk_size) used of \(.size | disk_size) (\(.percent | one_decimal)% free), on the file system of \(.dir)."' <<<"$disk")
+else
+  [[ -n $disk_dir ]] || echo "docker info names no DockerRootDir" >"$WORK/df.err"
+  disk_section=$(unread "df of ${disk_dir:-the disk}" "$WORK/df.err")
+fi
+
+# Docker's totals.
+if docker system df --format json >"$WORK/system-df" 2>"$WORK/system-df.err"; then
+  totals=$(jq -rs '"| Type | Count | Active | Size | Reclaimable |", "| - | - | - | - | - |",
+    (.[] | "| \(.Type) | \(.TotalCount) | \(.Active) | \(.Size) | \(.Reclaimable) |")' "$WORK/system-df")
+else
+  totals=$(unread "docker system df" "$WORK/system-df.err")
+fi
+
+# The stacks.
+if TEAM_HOME=$TEAM_HOME "$(dirname "${BASH_SOURCE[0]}")/team-stack" ls --json >"$WORK/ls.json" 2>"$WORK/ls.err"; then
+  stacks=$(jq -r -L "$TEAM_LIB" 'include "stack";
+    if .projects == [] then "None." else
+      "| Project | Status | Class | Task | Kind | Age | Memory |", "| - | - | - | - | - | - | - |",
+      (.projects[] | "| \(.name) | \(.status) | \(.class) | \(.task // "-") | \(.kind // "-") | \(.created | if . == null then "-" else age end) | \(.memory_bytes | memory_size) |")
+    end' "$WORK/ls.json")
+  running=$(jq '[.projects[] | select(.running > 0)] | length' "$WORK/ls.json")
+  stopped=$(jq '[.projects[] | select(.running == 0)] | length' "$WORK/ls.json")
+  stacks_line="Stacks: $running running, $stopped stopped."
+else
+  stacks=$(unread "team-stack ls" "$WORK/ls.err")
+  stacks_line="Stacks: not read."
+fi
+
+# The alerts, one JSON object each ({kind, text}), in the order of the kinds.
+: >"$WORK/alerts.jsonl"
+alert() {
+  jq -cn --arg kind "$1" --arg text "$2" '{kind: $kind, text: $text}' >>"$WORK/alerts.jsonl"
+}
+if [[ -n $disk ]] && jq -e '.free < 50e9 or .percent < 15' <<<"$disk" >/dev/null; then
+  alert disk "$(jq -r -L "$TEAM_LIB" 'include "stack";
+    "\(.free | disk_size) free of \(.size | disk_size) (\(.percent | one_decimal)%) on the file system of \(.dir), under 15% or 50 GB"' <<<"$disk")"
+fi
+now=$(date +%s)
+if docker events --since $((now - 86400)) --until "$now" --filter event=oom --format json >"$WORK/events" 2>"$WORK/events.err"; then
+  oom=$(jq -rs 'map(select(.Type == "container")) | if . == [] then empty else
+    "\(length) container\(if length == 1 then "" else "s" end) killed for memory in the last 24 hours: "
+    + (map("\(.Actor.Attributes.name // .Actor.ID[:12]) at \(.time | localtime | strftime("%H:%M"))") | join(", ")) end' "$WORK/events")
+  [[ -z $oom ]] || alert oom "$oom"
+else
+  alert oom "not checked: docker events failed: $(last_reason "$WORK/events.err" "no reason given")"
+  FAILED=1
+fi
+if [[ -s $STATE/stacks/waits.jsonl ]]; then
+  waits=$(jq -nrR --argjson now "$now" '($now - 86400) as $since
+    | [inputs | fromjson? | select(type == "object") | {start: (.start | fromdateiso8601? // null), end: (.end | fromdateiso8601? // null), admitted}
+       | select(.start != null and .end != null and .end > $since) | . + {part: (.end - ([.start, $since] | max))}]
+    | (map(.part) | add // 0) as $total
+    | if $total <= 3600 then empty else
+        "stacks waited \($total / 60 | round) minutes for room in the last 24 hours, over an hour (\(length) wait\(if length == 1 then "" else "s" end), \(map(select(.admitted != true)) | length) not admitted)"
+      end' "$STATE/stacks/waits.jsonl")
+  [[ -z $waits ]] || alert waits "$waits"
+fi
+mapfile -t failures < <(sed -n -E 's/^team-stack: could not remove (.*)/\1/p' "$WORK/reap.err")
+if ((${#failures[@]})); then
+  printf -v joined '%s; ' "${failures[@]}"
+  alert removal "$(count ${#failures[@]} removal) failed: ${joined%; }"
+fi
+
+# Each alert posted once a day, its outcome beside it in the report.
+posted='{}'
+if [[ -f $POSTED ]]; then posted=$(jq -c 'if type == "object" then . else {} end' "$POSTED" 2>/dev/null || echo '{}'); fi
+: >"$WORK/alerts.md"
+while IFS=$'\t' read -r kind text; do
+  if [[ -n $DRY ]]; then
+    outcome="not posted (a dry run)"
+  elif [[ $text == "not checked: "* ]]; then
+    outcome="not posted"
+  elif jq -e --arg kind "$kind" 'has($kind)' <<<"$posted" >/dev/null; then
+    outcome="already posted today"
+  elif discord_api "channels/$COORDINATOR_CHANNEL/messages" -X POST -H "Content-Type: application/json" \
+    --max-time "$POST_TIMEOUT" -d "$(jq -cn --arg content "Docker on $MACHINE: $kind: $text. The day's report: $REPORT_SHORT" '{content: $content}')" \
+    >/dev/null 2>"$WORK/post.err"; then
+    outcome="posted to #coordinator"
+    posted=$(jq -c --arg kind "$kind" '.[$kind] = (now | floor | todate)' <<<"$posted")
+    # Not remembered, the alert is posted again on the next run.
+    if ! { mkdir -p "$DIR" && printf '%s\n' "$posted" >"$WORK/posted.json" && mv "$WORK/posted.json" "$POSTED"; }; then
+      echo "${0##*/}: could not write $POSTED" >&2
+      FAILED=1
+    fi
+  else
+    reason=$(last_reason "$WORK/post.err" "no reason given")
+    outcome="the post to #coordinator failed: $reason"
+    echo "${0##*/}: the post of the $kind alert to #coordinator failed: $reason" >&2
+  fi
+  echo "- $kind: $text; $outcome" >>"$WORK/alerts.md"
+done < <(jq -r '[.kind, .text] | @tsv' "$WORK/alerts.jsonl")
+[[ -s $WORK/alerts.md ]] || echo "None." >"$WORK/alerts.md"
+
+{
+  printf '%s\n\n%s, after team-stack reap %s.\n\n## Alerts\n\n' "$TITLE" "$WRITTEN" \
+    "$([[ -n $DRY ]] && echo "--dry-run, which removed nothing" || echo --apply)"
+  cat "$WORK/alerts.md"
+  printf '\n## Disk\n\n%s\n' "$disk_section"
+  printf "\n## Docker's totals\n\n%s\n" "$totals"
+  printf '\n## Stacks\n\n%s\n' "$stacks"
+  printf '\n## %s\n\n' "$([[ -n $DRY ]] && echo "Would remove" || echo "Removed")"
+  # The removals, then the reaper's summary as a paragraph of its own.
+  sed '$d' "$WORK/removed"
+  if (($(wc -l <"$WORK/removed") > 1)); then echo; fi
+  tail -n 1 "$WORK/removed"
+  printf "\n## Kept as not the team's\n\n"
+  cat "$WORK/kept"
+} | write_report
+
+# The summary: the report as one paragraph, alerts first.
+alerts=$(wc -l <"$WORK/alerts.jsonl")
+if ((alerts == 0)); then
+  summary="No alerts."
+else
+  summary="$(count "$alerts" alert): $(jq -rs 'map("\(.kind): \(.text)") | join("; ")' "$WORK/alerts.jsonl")."
+fi
+if [[ -n $disk ]]; then
+  disk_line=$(jq -r -L "$TEAM_LIB" 'include "stack"; "Disk: \(.free | disk_size) free of \(.size | disk_size) (\(.percent | one_decimal)%)."' <<<"$disk")
+else
+  disk_line="Disk: not read."
+fi
+echo "$summary $reaped $disk_line $stacks_line Report: $REPORT_SHORT."
+[[ -z $FAILED ]]

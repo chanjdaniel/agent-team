@@ -906,7 +906,8 @@ cmd_reap() {
     ([$outcomes[] | select(.failed | not)]) as $ok | ([$outcomes[] | select(.failed)] | length) as $failed
     | $plan[0].kept as $kept
     | "\($ARGS.named.prog): "
-      + (if $ok == [] then "nothing to remove"
+      + (if $ok == [] and $failed == 0 then "nothing to remove"
+         elif $ok == [] then "removed nothing"
          else "\(if $apply then "removed" else "would remove" end) \(count($ok | length; "object")), \($ok | size): "
            # In the order of the rules, which is the order of the actions.
            + ([$ok[].rule] as $rules | $ok | group_by(.rule) | sort_by(.[0].rule as $r | $rules | index($r))

@@ -15,6 +15,7 @@
 #   networks.json     docker inspect --type network of every network
 #   stats.json        docker stats --no-stream --format json of the running containers
 #   info.json         docker info --format json, trimmed
+#   events.json       the events docker events gives (docker_event), none to begin with
 # The calls it answers, each from that state as Docker would:
 #   compose ls [--all] --format json    the Compose projects of the containers, running ones
 #                                       only without --all, with Compose's status and files
@@ -24,6 +25,8 @@
 #                                       object" on stderr and exit 1, as Docker does
 #   stats --no-stream --format json <names or ids>...
 #   system df -v --format json          {Images, Containers, Volumes, BuildCache}
+#   system df --format json             one line of totals per type, as Docker writes them
+#   events --since <epoch> --until <epoch> --filter event=<action> --format json
 #   volume ls --quiet, network ls --quiet --no-trunc, each with any --filter label=<key>[=<value>]
 #   volume rm <names>...                a volume missing or mounted by a container is refused
 #   image rm <repository:tag or id>...  an image missing or used by a container is refused
@@ -55,7 +58,9 @@
 # leave the project's anonymous volumes, its networks or its containers behind, and
 # docker_refuse <name> <message> makes the removal of the volume, image or network <name> fail.
 # docker_created <volume|image|network|container> <name> <seconds ago> sets an object's creation
-# time in the form Docker gives it.
+# time in the form Docker gives it, docker_event <action> <container> <seconds ago> adds an event
+# of a container, and reap_machine makes the fixture's objects whose reaping depends on their
+# age young, so the reaper's results never depend on the clock.
 # shellcheck shell=bash
 
 # docker_stub [<worktree>]: install the stub docker on the machine state of the fixtures, the
@@ -93,7 +98,7 @@ machine_memory() {
 # An empty machine: no container, volume, image or network.
 docker_empty() {
   local file
-  for file in containers volumes images networks stats; do echo '[]' >"$DOCKER_STATE/$file.json"; done
+  for file in containers volumes images networks stats events; do echo '[]' >"$DOCKER_STATE/$file.json"; done
 }
 
 # Change the machine's state: docker_state <file without .json> <jq filter> [jq options...], e.g.
@@ -129,6 +134,25 @@ docker_leak() {
 # <message>: docker_refuse <name> <message>
 docker_refuse() {
   jq -cn --arg name "$1" --arg message "$2" '{name: $name, message: $message}' >>"$DOCKER_STATE/refuse.jsonl"
+}
+
+# Add the event <action> (oom, die...) of the container <name>, <seconds> ago, as docker events
+# gives it: docker_event <action> <name> <seconds>
+docker_event() {
+  local id
+  id=$(jq -r --arg name "/$2" 'first(.[] | select(.Name == $name) | .Id) // empty' "$DOCKER_STATE/containers.json")
+  docker_state events '. + [{Type: "container", Action: $action,
+      Actor: {ID: $id, Attributes: {image: "busybox", name: $name}}, scope: "local",
+      time: (now - $seconds | floor), timeNano: ((now - $seconds | floor) * 1000000000)}]' \
+    --arg action "$1" --arg name "$2" --arg id "${id:-$(printf '%064d' 0)}" --argjson seconds "$3"
+}
+
+# The fixture's dangling image and its unattached anonymous volumes made 23 hours ago, so the
+# reaper keeps them whenever it runs; a test ages the ones it needs (docker_created).
+reap_machine() {
+  docker_created image "$(jq -r '.[] | select(.Repository == "<none>") | .ID' "$DOCKER_STATE/images.json")" $((23 * 3600))
+  docker_created volume d34171881feb5b31166cdd67ec7d406dc769ac4c3c5dafb72ee98f6ef0a9e7ce $((23 * 3600))
+  docker_created volume 05ab97f3ee4e69dfc7abe03f10bb3cb0115bfafead15e5f74babe7e369cda85e $((23 * 3600))
 }
 
 # Set the creation time of the object <name> (an image by repository:tag or id) to <seconds> ago,

@@ -1092,19 +1092,12 @@ team-stack: docker compose stop of conventioner-3 failed: Error response from da
 
 # reap, on the fixture machine: conventioner-4's worktree is gone, nmtest-1895520 is past its
 # expires and nmtest-12822 is a gate stack from before the labels, made on 2026-10-21. The other
-# objects whose rules depend on their age are made young by reap_machine, and each test ages
-# the ones it needs.
+# objects whose rules depend on their age are made young by reap_machine (tests/helpers/docker.bash),
+# and each test ages the ones it needs.
 
 # The fixture's unattached anonymous volumes, the old and young ones once a test ages them.
 OLD_ANONYMOUS=d34171881feb5b31166cdd67ec7d406dc769ac4c3c5dafb72ee98f6ef0a9e7ce
 YOUNG_ANONYMOUS=05ab97f3ee4e69dfc7abe03f10bb3cb0115bfafead15e5f74babe7e369cda85e
-
-# The fixture's dangling image and unattached anonymous volumes, made 23 hours ago.
-reap_machine() {
-  docker_created image "$(jq -r '.[] | select(.Repository == "<none>") | .ID' "$DOCKER_STATE/images.json")" $((23 * 3600))
-  docker_created volume "$OLD_ANONYMOUS" $((23 * 3600))
-  docker_created volume "$YOUNG_ANONYMOUS" $((23 * 3600))
-}
 
 # Add an image row to the machine: add_image <repository> <tag> <seconds ago>
 add_image() {
