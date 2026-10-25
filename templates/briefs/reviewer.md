@@ -4,7 +4,7 @@ Path: {{path}}; you are the reviewer.
 Project: {{project}} (`{{repo}}`), base `{{base}}`.
 Worktree: `{{worktree}}`, branch `{{branch}}`.
 PR: {{pr}} against `{{base}}`, head `{{head}}`.
-Task directory: `{{task_dir}}/` in the worktree: `spec.md`, `tickets/`, `build-notes/`.
+Task directory: `{{task_dir}}/` in the worktree: `spec.md`, `tickets/`, `build-notes/`.{{ui}}
 
 ## Check, beyond what every review covers
 

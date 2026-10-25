@@ -59,11 +59,11 @@ section() {
   assert_equal "${unnamed[*]}" ""
 }
 
-@test "the manual triggers exactly the plugin's skills, handoff, recover-worker, resume, retro, stow and status-report" {
+@test "the manual triggers exactly the plugin's skills, handoff, recover-worker, resume, retro, stow, status-report and ui-intake" {
   local skill
-  assert_equal "$(triggered_skills | paste -sd ' ')" "handoff recover-worker resume retro status-report stow"
+  assert_equal "$(triggered_skills | paste -sd ' ')" "handoff recover-worker resume retro status-report stow ui-intake"
   assert_equal "$(cd "$plugin/skills" && find . -mindepth 1 -maxdepth 1 -type d -printf '%P\n' | sort | paste -sd ' ')" \
-    "handoff recover-worker resume retro status-report stow"
+    "handoff recover-worker resume retro status-report stow ui-intake"
   for skill in $(triggered_skills); do
     # One line per trigger, so each stays a one-line pointer.
     assert_equal "$(grep -c "\`$skill\` skill" "$manual")" 1
