@@ -141,6 +141,7 @@ Task directory: `.scratch/task/` in the worktree (excluded from git), for your s
 4. Run `/no-mistakes` with this intent: "T12: rate-limit the applicant sign-in endpoints (per address and per IP, Mongo TTL counters, 429 with Retry-After), so Conventioner cannot be used to flood addresses with sign-in codes or to guess codes."
 5. The PR must target `dev`; if the gate opens it against another branch, retarget it to `dev` and close any duplicate.
 6. When the gate returns checks-passed, repeat step 1; if it merged anything, go back to step 4, so every required check passes on the new head.
+   The gate leaves Playwright to CI, so its result arrives with CI's `e2e` checks: treat a red `e2e` as the gate's red.
 7. Then send `T12 PR <full url>` to `coordinator`.
 
 Never run a command that needs `sudo`; send `T12 BLOCKED <the command> needs sudo` to `coordinator` instead.
