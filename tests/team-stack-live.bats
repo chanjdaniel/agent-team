@@ -5,7 +5,8 @@
 # two only read (ls, and the fixture wrapper's compose config, which starts nothing); the others
 # start and remove stacks of the fixture project's one busybox service, under project names of
 # their own, which teardown removes whatever happened. The sweep's test shows every other team
-# stack running on the machine as busy in the stub session list, so it stops only its own.
+# stack running on the machine as busy in the stub session list, so it stops only its own, and
+# the reaper's test limits it to its own projects with TEAM_STACK_REAP_PROJECTS.
 
 load helpers/common
 load helpers/docker
@@ -228,4 +229,62 @@ live_busy() {
   assert_equal "$(eval "$output"; live_get "$TH_WEB_PORT" /marker)" kept
   run_bin -0 team-stack down
   [[ ! -e $HOME/.local/state/agent-team/stacks/$LIVE_PROJECT.json ]]
+}
+
+@test "live: reap --apply removes a closed task's stack and an expired gate stack with their volumes, and keeps an unowned one" {
+  local name=lrp$RANDOM$$
+  stack_project "$name"
+  local team=stackfix-$name-1 gate=stackfix-$name-g unowned=stackfix-$name-u project
+  LIVE_PROJECTS=("$team" "$gate" "$unowned")
+  jq -cn --arg wt "$STACK_WORKTREE" --arg p "$name" '{ts: "2026-10-24T09:00:00Z", task: "T22", event: "opened", project: $p,
+    path: "feature", type: "feature", title: "Live", branch: "work", base: "main", base_sha: "0000000", worktree: $wt}' \
+    >>"$TEAM_HOME/ledger.jsonl"
+  mkdir -p "$HOME/.config/agent-team"
+  echo '{"memory_floor_gib": 0, "disk_floor_gb": 0, "wait_minutes": 0, "stack_cap": 1000}' >"$HOME/.config/agent-team/stack.json"
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
+  # A gate run's stack past its expires, and a stack made by hand with no labels, both through the wrapper.
+  (cd "$STACK_WORKTREE" && COMPOSE_PROJECT_NAME=$gate TH_PORTS=auto TH_DIR=$STACK_WORKTREE TEAM_KIND=gate \
+    TEAM_WORKTREE=$STACK_WORKTREE TEAM_EXPIRES=2026-01-01T00:00:00Z scripts/compose.sh up -d --wait) >/dev/null 2>&1
+  (cd "$STACK_WORKTREE" && COMPOSE_PROJECT_NAME=$unowned TH_PORTS=auto TH_DIR=$STACK_WORKTREE \
+    scripts/compose.sh up -d --wait) >/dev/null 2>&1
+  jq -cn '{ts: "2026-10-24T10:00:00Z", task: "T22", event: "closed"}' >>"$TEAM_HOME/ledger.jsonl"
+  # The anonymous volumes of all three, by project.
+  local -A anonymous=()
+  for project in "${LIVE_PROJECTS[@]}"; do
+    anonymous[$project]=$(docker ps --all --quiet --filter "label=com.docker.compose.project=$project" |
+      xargs docker inspect --format '{{range .Mounts}}{{if eq .Destination "/cache"}}{{.Name}}{{end}}{{end}}')
+    [[ -n ${anonymous[$project]} ]]
+  done
+  local scope="stackfix-$name-(1|g|u)"
+
+  # The dry run says what it would do, and does nothing.
+  TEAM_STACK_REAP_PROJECTS=$scope run_bin -0 --separate-stderr team-stack reap
+  assert_equal "$stderr" ""
+  assert_equal "$(grep -c '^would remove ' <<<"$output")" 2
+  assert_contains "$output" "would remove stack $team (team, "
+  assert_contains "$output" "): its task T22 is closed"
+  assert_contains "$output" "would remove stack $gate (gate, "
+  assert_contains "$output" "): it expired at 2026-01-01T00:00:00Z"
+  [[ $output =~ (^|$'\n')"kept stack $unowned (unowned, "[^$'\n']*" old)" ]]
+  assert_equal "$(docker compose ls --format json | jq -c --arg n "$name" '[.[].Name | select(contains($n))] | sort')" \
+    "$(jq -cn --args '$ARGS.positional | sort' "$team" "$gate" "$unowned")"
+
+  TEAM_STACK_REAP_PROJECTS=$scope run_bin -0 --separate-stderr team-stack reap --apply
+  assert_equal "$stderr" ""
+  assert_contains "$output" "removed stack $team (team, "
+  assert_contains "$output" "; its logs in $STACK_WORKTREE/.scratch/task/stack-logs"
+  assert_contains "$output" "removed stack $gate (gate, "
+  [[ -s $STACK_WORKTREE/.scratch/task/stack-logs/T22-$team-web.log ]]
+  for project in "$team" "$gate"; do
+    assert_equal "$(docker ps --all --quiet --filter "label=com.docker.compose.project=$project")" ""
+    assert_equal "$(docker volume ls --quiet --filter "label=com.docker.compose.project=$project")" ""
+    assert_equal "$(docker network ls --quiet --filter "label=com.docker.compose.project=$project")" ""
+    run docker volume inspect "${anonymous[$project]}"
+    assert_equal "$status" 1
+  done
+  # The unowned stack is untouched, its volumes with it.
+  [[ -n $(docker ps --quiet --filter "label=com.docker.compose.project=$unowned") ]]
+  assert_equal "$(docker volume ls --quiet --filter "label=com.docker.compose.project=$unowned")" "${unowned}_data"
+  docker volume inspect "${anonymous[$unowned]}" >/dev/null
+  LIVE_ANONYMOUS=${anonymous[$unowned]}
 }

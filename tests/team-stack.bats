@@ -30,6 +30,16 @@ class_of() {
   jq -r --arg list "$1" --arg name "$2" '.[$list][] | select(.name == $name or .repository == $name) | .class' <<<"$output"
 }
 
+# The reaper's lines that remove (or would), one per line, without their verb.
+removals() {
+  sed -n -E 's/^(would remove|removed) //p' <<<"$output"
+}
+
+# The reaper's kept lines without their verb and age: "<type> <name> (<class>[, <size>])".
+kept() {
+  sed -n -E 's/^kept (.*), [0-9]+[smhd] old\)$/\1)/p' <<<"$output"
+}
+
 @test "ls lists every Compose project with its status, class, task, kind, worktree, age and memory" {
   run_bin -0 --separate-stderr team-stack ls
   assert_equal "$stderr" ""
@@ -227,9 +237,9 @@ unowned 4"
 
 @test "another subcommand, a missing one or an unknown option is a usage error naming the subcommands" {
   run_bin -2 --separate-stderr team-stack start
-  assert_equal "$stderr" "team-stack: unknown subcommand 'start'; the subcommands are: ls, up, env, seed, stop, down, sweep"
+  assert_equal "$stderr" "team-stack: unknown subcommand 'start'; the subcommands are: ls, up, env, seed, stop, down, sweep, reap"
   run_bin -2 --separate-stderr team-stack
-  assert_equal "$stderr" "team-stack: usage: team-stack ls|up|env|seed|stop|down|sweep [options]; team-stack --help says more"
+  assert_equal "$stderr" "team-stack: usage: team-stack ls|up|env|seed|stop|down|sweep|reap [options]; team-stack --help says more"
   run_bin -2 --separate-stderr team-stack ls --bogus
   assert_equal "$stderr" "team-stack: usage: team-stack ls [--all] [--json]"
   run_bin -2 --separate-stderr team-stack up --bogus
@@ -1070,4 +1080,328 @@ team-stack: docker compose stop of conventioner-3 failed: Error response from da
   run_bin -0 team-stack down --worktree "$STACK_WORKTREE"
   [[ ! -e $HOME/.local/state/agent-team/stacks/$PROJECT.json ]]
   [[ -e $HOME/.local/state/agent-team/stacks/conventioner-2.json ]]
+}
+
+# reap, on the fixture machine: conventioner-4's worktree is gone, nmtest-1895520 is past its
+# expires and nmtest-12822 is a gate stack from before the labels, made on 2026-10-21. The other
+# objects whose rules depend on their age are made young by reap_machine, and each test ages
+# the ones it needs.
+
+# The fixture's dangling image and unattached anonymous volumes, made 23 hours ago.
+reap_machine() {
+  docker_created image "$(jq -r '.[] | select(.Repository == "<none>") | .ID' "$DOCKER_STATE/images.json")" $((23 * 3600))
+  docker_created volume d34171881feb5b31166cdd67ec7d406dc769ac4c3c5dafb72ee98f6ef0a9e7ce $((23 * 3600))
+  docker_created volume 05ab97f3ee4e69dfc7abe03f10bb3cb0115bfafead15e5f74babe7e369cda85e $((23 * 3600))
+}
+
+OLD_ANONYMOUS=d34171881feb5b31166cdd67ec7d406dc769ac4c3c5dafb72ee98f6ef0a9e7ce
+YOUNG_ANONYMOUS=05ab97f3ee4e69dfc7abe03f10bb3cb0115bfafead15e5f74babe7e369cda85e
+
+# Add an image row to the machine: add_image <repository> <tag> <seconds ago>
+add_image() {
+  local id
+  id=sha256:$(sha256sum <<<"$1:$2" | cut -d ' ' -f 1)
+  docker_state images '. + [{Containers: "0", CreatedAt: "", CreatedSince: "", Digest: "", ID: $id, Repository: $repo,
+    SharedSize: "N/A", Size: "534MB", Tag: $tag, UniqueSize: "N/A"}]' --arg id "$id" --arg repo "$1" --arg tag "$2"
+  docker_created image "$1:$2" "$3"
+}
+
+# Set the team label <key> to <value> on every object of the Compose project <project>.
+relabel() {
+  local file
+  for file in containers volumes networks; do
+    docker_state "$file" 'map(if ((.Config.Labels // .Labels)["com.docker.compose.project"]) == $p then
+        (if .Config then .Config.Labels else .Labels end)["io.github.chanjdaniel.team." + $k] = $v else . end)' \
+      --arg p "$1" --arg k "$2" --arg v "$3"
+  done
+}
+
+# Fail when any docker call of the test pruned: every removal names its object.
+teardown() {
+  if [[ -n ${DOCKER_STATE:-} ]] && docker_calls | grep -E '(system|volume|image|network|builder|buildx|container) prune'; then
+    echo "a docker call pruned" >&2
+    return 1
+  fi
+}
+
+@test "reap's dry run prints each action with its object, rule and size, lists what it keeps that is not the team's, and changes nothing" {
+  reap_machine
+  local before
+  before=$(cat "$DOCKER_STATE"/*.json | sha256sum)
+  local gone=$HOME/.treehouse/Conventioner-d4c77a/4/Conventioner
+  run_bin -0 --separate-stderr team-stack reap
+  assert_equal "$stderr" ""
+  assert_equal "$(removals)" "stack conventioner-4 (team, 0 B): its worktree $gone is gone
+stack nmtest-12822 (gate, 0 B): it has no expires and was created at 2026-10-21T08:00:00Z, over 2 hours ago
+stack nmtest-1895520 (gate, 509.1 MB): it expired at 2026-10-24T12:55:00Z"
+  [[ $(grep -c '^would remove ' <<<"$output") == 3 ]]
+  assert_equal "$(kept)" "stack conventioner (unowned, 1.5 GB)
+stack conventioner-3 (unowned, 0 B)
+volume 0a4c042e60f521e1fe4b878ae5a0513fcfd83294279dd18fef88c940ab0120ab (unowned, 210.9 MB)
+volume conventioner_mongodb_data (unowned, 1.3 GB)
+volume f8d96e008758d020ea34d0411633d8ca076069b3efe8f765778a74259c7d8cc2 (unowned, 0 B)
+volume scratch-data (unowned, 12.5 MB)
+volume $YOUNG_ANONYMOUS (anonymous, 0 B)
+volume $OLD_ANONYMOUS (anonymous, 210.9 MB)
+image nmtest-12822-backend:latest (legacy, 534.0 MB)
+image conventioner-backend:latest (unowned, 534.0 MB)
+image conventioner-frontend:latest (unowned, 640.0 MB)
+image mongo:7 (unowned, 867.0 MB)
+image $(jq -r '.[] | select(.Repository == "<none>") | .ID' "$DOCKER_STATE/images.json") (dangling, 397.0 MB)
+network conventioner_conventioner_network (unowned)"
+  assert_equal "${lines[-1]}" "team-stack: would remove 3 objects, 509.1 MB: 1 team stack (0 B), 2 gate stacks (509.1 MB); kept 14 objects that are not the team's, 4.7 GB"
+  # Only read: the machine is as it was.
+  assert_read_only
+  assert_equal "$(cat "$DOCKER_STATE"/*.json | sha256sum)" "$before"
+  [[ ! -e $HOME/.local/state/agent-team/stacks/logs ]]
+  # --dry-run says the same.
+  local dry=$output
+  run_bin -0 team-stack reap --dry-run
+  assert_equal "$output" "$dry"
+}
+
+@test "reap --apply removes a team stack whose task is closed, its logs saved in its worktree's task directory; one of an open task is kept" {
+  reap_machine
+  open_task T1
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
+  # The task open: kept, and not listed, being the team's.
+  run_bin -0 team-stack reap
+  [[ $output != *"$PROJECT"* ]]
+  task_event T1 closed
+  task_event T7 opened '{"project": "conventioner", "worktree": "/elsewhere"}'
+  mkdir -p "$DOCKER_STATE/logs"
+  printf 'web-1  | the web log\n' >"$DOCKER_STATE/logs/$PROJECT-web.log"
+  local anonymous
+  anonymous=$(jq -r --arg n "/$PROJECT-web-1" '.[] | select(.Name == $n) | .Mounts[] | select(.Destination == "/cache") | .Name' \
+    "$DOCKER_STATE/containers.json")
+  run_bin -0 --separate-stderr team-stack reap --apply
+  assert_equal "$stderr" ""
+  local logs=$STACK_WORKTREE/.scratch/task/stack-logs
+  assert_contains "$output" "removed stack $PROJECT (team, 0 B): its task T1 is closed; its logs in $logs"
+  assert_equal "$(cat "$logs/T1-$PROJECT-web.log")" "web-1  | the web log"
+  assert_equal "$(stack_left "$anonymous")" ""
+  assert_contains "$(docker_calls)" "compose -p $PROJECT down -v --remove-orphans"
+  # T7 is open, so its stack in a worktree that exists stays.
+  [[ $output != *conventioner-2* ]]
+  jq -e 'any(.[]; .Name == "/conventioner-2-backend-1")' "$DOCKER_STATE/containers.json" >/dev/null
+}
+
+@test "reap --apply removes a team stack whose worktree is gone, its logs in the state directory; one whose worktree exists is kept" {
+  reap_machine
+  local gone=$HOME/.treehouse/Conventioner-d4c77a/4/Conventioner logs
+  logs=$HOME/.local/state/agent-team/stacks/logs/conventioner-4-$(date +%F)
+  run_bin -0 --separate-stderr team-stack reap --apply
+  assert_contains "$output" "removed stack conventioner-4 (team, 0 B): its worktree $gone is gone; its logs in $logs"
+  # Every service it has, since no stack block can be found for a worktree that is gone.
+  assert_equal "$(ls "$logs")" T5-conventioner-4-backend.log
+  assert_contains "$(cat "$logs/T5-conventioner-4-backend.log")" "conventioner-4's backend started"
+  assert_contains "$(docker_calls)" "compose -p conventioner-4 down -v --remove-orphans"
+  assert_equal "$(jq '[.[] | select(.Name == "/conventioner-4-backend-1")] | length' "$DOCKER_STATE/containers.json")" 0
+  # conventioner-2's worktree is the fixture's, which exists.
+  jq -e 'any(.[]; .Name == "/conventioner-2-backend-1")' "$DOCKER_STATE/containers.json" >/dev/null
+  [[ $output != *conventioner-2* ]]
+}
+
+@test "reap --apply removes a gate stack past its expires by project name, with its anonymous volumes; one whose expires is in the future is kept" {
+  reap_machine
+  docker_leak anonymous
+  run_bin -0 --separate-stderr team-stack reap --apply
+  assert_contains "$output" "removed stack nmtest-1895520 (gate, 509.1 MB): it expired at 2026-10-24T12:55:00Z"
+  # By project name, without compose files, then the anonymous volume its down left.
+  assert_contains "$(docker_calls)" "compose -p nmtest-1895520 down -v --remove-orphans"
+  [[ $(docker_calls) != *"compose -f"* ]]
+  assert_contains "$(docker_calls)" "volume rm bc17ebee5bc23731a063ae52f70ff70fd2524946f265a54cebf6bd4ae9e22161"
+  assert_equal "$(jq -r '.[] | select(.Name | test("^nmtest-1895520|^bc17")) | .Name' "$DOCKER_STATE/volumes.json")" ""
+  # No logs for a gate stack.
+  [[ ! -e $HOME/.local/state/agent-team/stacks/logs/nmtest-1895520-$(date +%F) ]]
+}
+
+@test "reap keeps a gate stack whose expires is in the future, however old" {
+  reap_machine
+  relabel nmtest-1895520 expires "$(date -u -d '+1 minute' +%Y-%m-%dT%H:%M:%SZ)"
+  run_bin -0 team-stack reap --apply
+  [[ $(removals) != *nmtest-1895520* ]]
+  [[ $output =~ (^|$'\n')"kept stack nmtest-1895520 (gate, 509.1 MB, "[0-9]+[smhd]" old)" ]]
+}
+
+@test "reap removes a gate stack labelled owner=agent-team by the gate rule, never as a team stack" {
+  reap_machine
+  open_task T7 "$STACK_WORKTREE"
+  relabel nmtest-1895520 owner agent-team
+  relabel nmtest-1895520 task T7
+  run_bin -0 team-stack reap
+  assert_contains "$(removals)" "stack nmtest-1895520 (gate, 509.1 MB): it expired at 2026-10-24T12:55:00Z"
+  relabel nmtest-1895520 expires "$(date -u -d '+1 minute' +%Y-%m-%dT%H:%M:%SZ)"
+  task_event T7 closed
+  run_bin -0 team-stack reap
+  [[ $(removals) != *nmtest-1895520* ]]
+}
+
+@test "reap removes a gate stack with no expires once it is 2 hours old, and keeps it just before" {
+  reap_machine
+  docker_created container nmtest-12822-backend-1 $((2 * 3600 - 60))
+  docker_created volume nmtest-12822_backend_sessions $((2 * 3600 - 60))
+  docker_created network nmtest-12822_conventioner_network $((2 * 3600 - 60))
+  run_bin -0 team-stack reap
+  [[ $(removals) != *nmtest-12822* ]]
+  assert_contains "$(kept)" "stack nmtest-12822 (gate, 0 B)"
+  docker_created network nmtest-12822_conventioner_network $((2 * 3600 + 60))
+  run_bin -0 --separate-stderr team-stack reap --apply
+  assert_contains "$(removals)" "stack nmtest-12822 (gate, 0 B): it has no expires and was created at "
+  assert_contains "$(docker_calls)" "compose -p nmtest-12822 down -v --remove-orphans"
+  assert_equal "$(jq -r '.[] | select(.Name | startswith("nmtest-12822")) | .Name' "$DOCKER_STATE/volumes.json" "$DOCKER_STATE/networks.json")" ""
+}
+
+@test "reap removes a shared image no container uses, over 7 days old and not among its repository's 2 newest, and keeps the rest" {
+  reap_machine
+  # The tag containers use, made long ago; two new ones; one just too new; one old enough.
+  docker_created image conventioner/backend:4943b69bbb33 $((30 * 86400))
+  add_image conventioner/backend new1 86400
+  add_image conventioner/backend new2 $((2 * 86400))
+  add_image conventioner/backend young $((7 * 86400 - 60))
+  add_image conventioner/backend old $((7 * 86400 + 60))
+  # Among the 2 newest of its repository, however old.
+  add_image conventioner/frontend older $((20 * 86400))
+  run_bin -0 --separate-stderr team-stack reap --apply
+  assert_equal "$(removals | grep '^image')" "image conventioner/backend:old (team, 534.0 MB): no container uses it, it was created over 7 days ago and it is not among the 2 newest of conventioner/backend"
+  assert_contains "$(docker_calls)" "image rm conventioner/backend:old"
+  assert_equal "$(jq -r '[.[] | select(.Repository | startswith("conventioner/")) | .Tag] | sort | join(" ")' "$DOCKER_STATE/images.json")" \
+    "2a5cc542bea3 4943b69bbb33 new1 new2 older young"
+  # The team's images kept are not listed.
+  [[ $(kept) != *conventioner/* ]]
+}
+
+@test "reap removes a legacy image no container uses only with --legacy, and lists it as kept without" {
+  reap_machine
+  add_image nmfix-abc latest $((3600))
+  run_bin -0 team-stack reap
+  [[ $(removals) != *nmfix* ]]
+  assert_contains "$(kept)" "image nmfix-abc:latest (legacy, 534.0 MB)"
+  run_bin -0 --separate-stderr team-stack reap --apply --legacy
+  assert_contains "$(removals)" "image nmfix-abc:latest (legacy, 534.0 MB): a legacy image no container uses (--legacy)"
+  assert_contains "$(docker_calls)" "image rm nmfix-abc:latest"
+  # nmtest-12822-backend is legacy too, but its gate stack's container used it when the reaper looked.
+  [[ $(removals) != *nmtest-12822-backend* ]]
+  jq -e 'any(.[]; .Repository == "nmtest-12822-backend")' "$DOCKER_STATE/images.json" >/dev/null
+  assert_equal "$(jq '[.[] | select(.Repository == "nmfix-abc")] | length' "$DOCKER_STATE/images.json")" 0
+}
+
+@test "reap removes a dangling image no container uses by its id once it is 24 hours old, and keeps one just younger" {
+  reap_machine
+  local old young
+  old=$(jq -r '.[] | select(.Repository == "<none>") | .ID' "$DOCKER_STATE/images.json")
+  docker_created image "$old" $((24 * 3600 + 60))
+  docker_state images '. + [{Containers: "0", CreatedAt: "", ID: ("sha256:" + "e" * 64), Repository: "<none>", Tag: "<none>",
+    Size: "12MB", UniqueSize: "10MB"}]'
+  young=sha256:$(printf 'e%.0s' {1..64})
+  docker_created image "$young" $((24 * 3600 - 60))
+  run_bin -0 --separate-stderr team-stack reap --apply
+  assert_equal "$(removals | grep '^image')" "image $old (dangling, 397.0 MB): dangling, no container uses it and it was created over 24 hours ago"
+  assert_contains "$(docker_calls)" "image rm $old"
+  # Its unique size, when Docker gives one.
+  assert_contains "$(kept)" "image $young (dangling, 10.0 MB)"
+}
+
+@test "reap removes an unattached anonymous volume once it is 24 hours old, and keeps a younger one and an attached one" {
+  reap_machine
+  docker_created volume "$OLD_ANONYMOUS" $((24 * 3600 + 60))
+  docker_created volume "$YOUNG_ANONYMOUS" $((24 * 3600 - 60))
+  run_bin -0 --separate-stderr team-stack reap --apply
+  assert_equal "$(removals | grep '^volume')" "volume $OLD_ANONYMOUS (anonymous, 210.9 MB): no container mounts it and it was created over 24 hours ago"
+  assert_contains "$(docker_calls)" "volume rm $OLD_ANONYMOUS"
+  assert_contains "$(kept)" "volume $YOUNG_ANONYMOUS (anonymous, 0 B)"
+  # Daniel's primary stack's anonymous volume, made 2026-10-19, is mounted by its stopped container.
+  assert_contains "$(kept)" "volume f8d96e008758d020ea34d0411633d8ca076069b3efe8f765778a74259c7d8cc2 (unowned, 0 B)"
+  assert_equal "$(jq -r --arg o "$OLD_ANONYMOUS" '[.[] | select(.Name == $o)] | length' "$DOCKER_STATE/volumes.json")" 0
+}
+
+@test "reap removes team-labelled named volumes and networks no container uses, and keeps those a stopped container still uses" {
+  reap_machine
+  local labels
+  labels=$(jq -c '.[] | select(.Name == "conventioner-2_mongodb_data") | .Labels
+    | .["com.docker.compose.project"] = "conventioner-6"' "$DOCKER_STATE/volumes.json")
+  docker_state volumes '. + [{Name: "conventioner-6_mongodb_data", CreatedAt: "2026-10-25T09:00:00+08:00", Driver: "local",
+    Labels: $l, Mountpoint: "/var/lib/docker/volumes/conventioner-6_mongodb_data/_data", Scope: "local", Size: "1MB"}]' --argjson l "$labels"
+  docker_state networks '. + [{Name: "conventioner-6_conventioner_network", Id: ("6" * 64), Created: "2026-10-25T09:00:00+08:00",
+    Scope: "local", Driver: "bridge", Labels: $l}]' --argjson l "$labels"
+  # conventioner-2, of an open task, is stopped: its containers still use its volumes and network.
+  docker_state containers 'map(if .Config.Labels["com.docker.compose.project"] == "conventioner-2"
+    then .State += {Status: "exited", Running: false} else . end)'
+  open_task T7
+  run_bin -0 --separate-stderr team-stack reap --apply
+  assert_equal "$(removals | grep -E '^(volume|network)')" "volume conventioner-6_mongodb_data (team, 1.0 MB): no container uses it
+network conventioner-6_conventioner_network (team): no container uses it"
+  assert_contains "$(docker_calls)" "volume rm conventioner-6_mongodb_data"
+  assert_contains "$(docker_calls)" "network rm conventioner-6_conventioner_network"
+  [[ $(docker_calls) != *"rm conventioner-2"* ]]
+  jq -e 'any(.[]; .Name == "conventioner-2_conventioner_network")' "$DOCKER_STATE/networks.json" >/dev/null
+}
+
+@test "reap keeps every object that is not the team's and matches no rule, Daniel's primary stack and its volumes always among them" {
+  reap_machine
+  run_bin -0 --separate-stderr team-stack reap --apply --legacy
+  assert_contains "$(kept)" "stack conventioner (unowned, 1.5 GB)"
+  assert_contains "$(kept)" "volume conventioner_mongodb_data (unowned, 1.3 GB)"
+  assert_contains "$(kept)" "stack conventioner-3 (unowned, 0 B)"
+  assert_contains "$(kept)" "volume scratch-data (unowned, 12.5 MB)"
+  [[ $(docker_calls) != *"rm conventioner_"* && $(docker_calls) != *"compose -p conventioner "* ]]
+  assert_equal "$(jq -r '[.[] | select(.Config.Labels["com.docker.compose.project"] == "conventioner")] | length' "$DOCKER_STATE/containers.json")" 2
+  # Each kept line carries its age.
+  [[ $output =~ (^|$'\n')"kept volume conventioner_mongodb_data (unowned, 1.3 GB, "[0-9]+d" old)" ]]
+  # Docker's own networks are nobody's leftovers, and are not listed.
+  [[ $output != *"network bridge"* && $output != *"network host"* && $output != *"network none"* ]]
+}
+
+@test "a removal that fails is reported with Docker's reason, the others still happen, and reap exits 1" {
+  reap_machine
+  docker_created volume "$OLD_ANONYMOUS" $((25 * 3600))
+  docker_created volume "$YOUNG_ANONYMOUS" $((25 * 3600))
+  docker_refuse "$OLD_ANONYMOUS" "Error response from daemon: remove $OLD_ANONYMOUS: volume is in use - [abc]"
+  docker_fail 'compose down' 'Error response from daemon: cannot remove container: permission denied'
+  run_bin -1 --separate-stderr team-stack reap --apply
+  assert_equal "$stderr" "team-stack: could not remove stack conventioner-4 (team, 0 B): docker compose down of conventioner-4 failed: Error response from daemon: cannot remove container: permission denied
+team-stack: could not remove stack nmtest-12822 (gate, 0 B): docker compose down of nmtest-12822 failed: Error response from daemon: cannot remove container: permission denied
+team-stack: could not remove stack nmtest-1895520 (gate, 509.1 MB): docker compose down of nmtest-1895520 failed: Error response from daemon: cannot remove container: permission denied
+team-stack: could not remove volume $OLD_ANONYMOUS (anonymous, 210.9 MB): Error response from daemon: remove $OLD_ANONYMOUS: volume is in use - [abc]"
+  assert_equal "$(removals)" "volume $YOUNG_ANONYMOUS (anonymous, 0 B): no container mounts it and it was created over 24 hours ago"
+  assert_contains "${lines[-1]}" "team-stack: removed 1 object, 0 B: 1 unattached anonymous volume (0 B); 4 removals failed; kept "
+}
+
+@test "reap --apply holds the admission lock while it removes, so no up starts a stack meanwhile" {
+  reap_machine
+  local lock=$HOME/.local/state/agent-team/stacks.lock log=$BATS_TEST_TMPDIR/lock
+  mkdir -p "${lock%/*}"
+  sed -i "1i if [[ \$* == compose* ]]; then if flock -n $(printf %q "$lock") true; then echo free; else echo held; fi >>$(printf %q "$log"); fi" \
+    "$STUB_FIXTURES/docker.sh"
+  run_bin -0 team-stack reap --apply
+  assert_equal "$(sort -u "$log")" held
+  # The dry run takes no lock.
+  rm "$log"
+  run_bin -0 team-stack reap
+  [[ ! -e $log ]] || assert_equal "$(sort -u "$log")" free
+}
+
+@test "reap with nothing to remove says so" {
+  docker_empty
+  run_bin -0 --separate-stderr team-stack reap --apply
+  assert_equal "$output" "team-stack: nothing to remove; kept 0 objects that are not the team's, 0 B"
+  assert_equal "$stderr" ""
+}
+
+@test "reap refuses a malformed command line, and Docker not answering is exit 1 with its reason" {
+  run_bin -2 --separate-stderr team-stack reap --dry-run --apply
+  assert_equal "$stderr" "team-stack: usage: team-stack reap [--dry-run | --apply] [--legacy]"
+  run_bin -2 team-stack reap --all
+  assert_equal "$(docker_calls)" ""
+  docker_down
+  run_bin -1 --separate-stderr team-stack reap
+  assert_equal "$stderr" "team-stack: Docker does not answer: Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?"
+}
+
+@test "with TEAM_STACK_REAP_PROJECTS, reap considers only the Compose projects it matches and their objects" {
+  reap_machine
+  docker_created volume "$OLD_ANONYMOUS" $((25 * 3600))
+  TEAM_STACK_REAP_PROJECTS='conventioner-[0-9]+' run_bin -0 team-stack reap
+  assert_equal "$(removals)" "stack conventioner-4 (team, 0 B): its worktree $HOME/.treehouse/Conventioner-d4c77a/4/Conventioner is gone"
+  assert_equal "$(kept)" "stack conventioner-3 (unowned, 0 B)"
 }

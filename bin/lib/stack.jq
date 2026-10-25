@@ -35,7 +35,7 @@ def image_class($repository; $stacks):
   else "unowned" end;
 
 # The order classes are listed in.
-def class_rank: {team: 0, gate: 1, legacy: 1, unowned: 2, anonymous: 3}[.] // 4;
+def class_rank: {team: 0, gate: 1, legacy: 1, unowned: 2, anonymous: 3, dangling: 3}[.] // 4;
 
 # Docker's size or memory string ("210.9MB", "0B", "412.3MiB") as bytes, decimal units for kB,
 # MB, GB and TB and binary ones for KiB, MiB, GiB and TiB; null for "N/A" or anything else.
@@ -65,13 +65,26 @@ def memory_size: scaled(1024; ["KiB", "MiB", "GiB", "TiB"]);
 # A Docker time ("2026-10-24T09:00:00.123456789Z") as UTC seconds-precision ISO 8601.
 def utc_time: sub("\\.[0-9]+Z$"; "Z");
 
+# A number of seconds, at most one unit: "45s", "12m", "3h", "5d".
+def duration:
+  if . < 60 then "\(floor)s"
+  elif . < 3600 then "\(. / 60 | floor)m"
+  elif . < 86400 then "\(. / 3600 | floor)h"
+  else "\(. / 86400 | floor)d" end;
+
 # The time since the ISO 8601 UTC time <time>, at most one unit: "45s", "12m", "3h", "5d".
-def age:
-  (now - (utc_time | fromdate)) as $s
-  | if $s < 60 then "\($s | floor)s"
-    elif $s < 3600 then "\($s / 60 | floor)m"
-    elif $s < 86400 then "\($s / 3600 | floor)h"
-    else "\($s / 86400 | floor)d" end;
+def age: now - (utc_time | fromdate) | duration;
+
+# A time in any of Docker's forms ("2026-10-24T09:00:00.123456789Z", "2026-10-19T00:54:02+08:00",
+# "2026-10-24 19:31:13 +0800 CST") as seconds since the epoch; null for anything else.
+def epoch:
+  [if type == "string" then
+     capture("^(?<day>[0-9]{4}-[0-9]{2}-[0-9]{2})[T ](?<time>[0-9]{2}:[0-9]{2}:[0-9]{2})(\\.[0-9]+)? ?(?<zone>Z|[+-][0-9]{2}:?[0-9]{2})?")
+   else empty end
+   | (.zone // "Z" | sub(":"; "")) as $zone
+   | ("\(.day)T\(.time)Z" | fromdate)
+     - if $zone == "Z" then 0
+       else (if $zone[0:1] == "-" then -1 else 1 end) * (($zone[1:3] | tonumber) * 3600 + ($zone[3:5] | tonumber) * 60) end][0];
 
 # Rows (arrays of strings) as lines of left-aligned columns two spaces apart; nothing for no
 # rows.
@@ -80,3 +93,104 @@ def table:
     [range(map(length) | max) as $i | map(.[$i] // "" | length) | max] as $widths
     | .[] | [to_entries[] | .value + " " * ($widths[.key] - (.value | length) + 2)] | join("") | sub(" +$"; "")
   end;
+
+# The reaper's plan (team-stack reap, sops/docker.md "Removing what is left behind"): {actions,
+# kept} from $in: {containers, volumes, networks (docker inspect's arrays), images (docker system
+# df -v's Images), sizes (each volume's bytes by name), stacks (the registry's stack blocks),
+# closed (the tasks the ledger has closed), gone (the worktree labels whose directory is gone),
+# now (seconds since the epoch), legacy (--legacy), scope (a Compose project pattern, or null)}.
+# Each action is {rule, type, name, ref (what docker <type> rm or compose -p takes), class,
+# size_bytes, why, tasks, worktrees}, in the rules' order; each kept object {type, name, class,
+# size_bytes, created}, every object no rule matched that is not the team's but Docker's own
+# networks, a stack's containers listed as their stack. With a scope, only the Compose projects
+# it matches and their objects are looked at.
+def reap_plan($in):
+  $in.stacks as $stacks | $in.now as $now
+  | def in_scope: $in.scope == null or (. != null and test("^(?:" + $in.scope + ")$"));
+    def plural($n): if $n == 1 then "" else "s" end;
+  ([$in.containers[] | compose_project(.Config.Labels) as $p
+    | {type: "container", name: (.Name | ltrimstr("/")), project: $p, image: .Image, labels: (.Config.Labels // {}),
+       class: owner_class(.Config.Labels; $p; $stacks), size_bytes: null, created: (.Created | epoch),
+       mounts: [.Mounts[]? | select(.Type == "volume" and .Name) | .Name],
+       # A stopped container is on no network's Containers, but its own settings still name them.
+       networks: [(.NetworkSettings.Networks // {} | keys[]), (.HostConfig.NetworkMode // empty)]}]) as $all
+  | [$all[] | select(.project | in_scope)] as $containers
+  | ([$all[].mounts[]] | unique) as $mounted
+  | ([$all[].networks[]] | unique) as $networked
+  | [$in.volumes[] | (.Labels // {}) as $l | .Name as $n
+    | (($l | has("com.docker.volume.anonymous")) or (($n | test("^[0-9a-f]{64}$")) and compose_project($l) == null)) as $anonymous
+    | ([$all[] | select(any(.mounts[]; . == $n))] | first) as $by
+    | (if $anonymous and $by != null then $by.project else compose_project($l) end) as $p
+    | {type: "volume", name: $n, ref: $n, anonymous: $anonymous, attached: ($by != null), project: $p,
+       labels: (if $anonymous and $by != null then $by.labels else $l end),
+       class: (if $anonymous then (if $by != null then $by.class else "anonymous" end) else owner_class($l; $p; $stacks) end),
+       size_bytes: $in.sizes[$n], created: (.CreatedAt | epoch)}
+    | select(.project | in_scope)] as $volumes
+  | [$in.networks[] | (.Labels // {}) as $l | compose_project($l) as $p | .Name as $n
+    | {type: "network", name: $n, ref: $n, project: $p, labels: $l, class: owner_class($l; $p; $stacks),
+       used: (($networked | index([$n])) != null or (.Containers // {} | length) > 0),
+       predefined: (($n | IN("bridge", "host", "none")) and $l == {}), size_bytes: null, created: (.Created | epoch)}
+    | select(.project | in_scope)] as $networks
+
+  # The Compose projects, of the objects Docker labels with one; a stack's size is its volumes'.
+  | [$containers[], ($volumes[] | select(.anonymous | not)), $networks[] | select(.project != null)]
+  | group_by(.project)
+  | map(.[0].project as $p
+    | {type: "stack", name: $p, ref: $p, classes: (map(.class) | unique),
+       tasks: ([.[] | team_label(.labels; "task") // empty] | unique),
+       worktrees: ([.[] | team_label(.labels; "worktree") // empty] | unique),
+       expires: ([.[] | team_label(.labels; "expires") // empty | epoch // empty] | max),
+       created: (map(.created // empty) | min),
+       size_bytes: ([$volumes[] | select(.project == $p) | .size_bytes // 0] | add // 0)}) as $projects
+
+  | [$projects[] | select(.classes == ["team"])
+    | (.tasks != [] and all(.tasks[]; IN($in.closed[]))) as $closed
+    | select($closed or (.worktrees != [] and all(.worktrees[]; IN($in.gone[]))))
+    | . + {rule: "team stack", class: "team",
+           why: (if $closed then "its task\(plural(.tasks | length)) \(.tasks | join(", ")) \(if (.tasks | length) == 1 then "is" else "are" end) closed"
+                 else "its worktree\(plural(.worktrees | length)) \(.worktrees | join(", ")) \(if (.worktrees | length) == 1 then "is" else "are" end) gone" end)}]
+    as $team_stacks
+  | [$projects[] | select(.classes == ["gate"])
+    | select(if .expires != null then .expires < $now else .created != null and .created < $now - 7200 end)
+    | . + {rule: "gate stack", class: "gate",
+           why: (if .expires != null then "it expired at \(.expires | todate)"
+                 else "it has no expires and was created at \(.created | todate), over 2 hours ago" end)}] as $gate_stacks
+  | ([$team_stacks[], $gate_stacks[] | {key: .name, value: true}] | from_entries) as $removed
+
+  | ([$all[].image] | unique) as $used
+  | [if $in.scope == null then $in.images[] else empty end
+    | {type: "image", repository: .Repository,
+       name: (if .Repository == "<none>" then .ID else "\(.Repository):\(.Tag)" end),
+       ref: (if .Repository == "<none>" or .Tag == "<none>" then .ID else "\(.Repository):\(.Tag)" end),
+       class: (if .Repository == "<none>" then "dangling" else image_class(.Repository; $stacks) end),
+       in_use: (.ID as $id | ($used | index([$id])) != null),
+       size_bytes: ((.UniqueSize | bytes) // (.Size | bytes)), created: (.CreatedAt | epoch)}] as $images
+  | ([$images[] | select(.class == "team")] | group_by(.repository)
+     | map(sort_by(-(.created // 0), .name) | .[:2][] | {key: .name, value: true}) | from_entries) as $newest
+  | [$images[] | select(.class == "team" and (.in_use | not) and .created != null and .created < $now - 7 * 86400
+      and ($newest[.name] | not))
+    | . + {rule: "shared image",
+           why: "no container uses it, it was created over 7 days ago and it is not among the 2 newest of \(.repository)"}]
+    as $shared
+  | [$images[] | select($in.legacy and .class == "legacy" and (.in_use | not))
+    | . + {rule: "legacy image", why: "a legacy image no container uses (--legacy)"}] as $legacy
+  | [$images[] | select(.class == "dangling" and (.in_use | not) and .created != null and .created < $now - 86400)
+    | . + {rule: "dangling image", why: "dangling, no container uses it and it was created over 24 hours ago"}] as $dangling
+
+  | [$volumes[] | select(.anonymous and (.attached | not) and .created != null and .created < $now - 86400)
+    | . + {rule: "unattached anonymous volume", why: "no container mounts it and it was created over 24 hours ago"}]
+    as $anonymous
+  | [$volumes[] | select(.class == "team" and (.anonymous | not) and (.attached | not) and ($removed[.project // ""] | not))
+    | . + {rule: "team volume", why: "no container uses it"}] as $team_volumes
+  | [$networks[] | select(.class == "team" and (.used | not) and ($removed[.project // ""] | not))
+    | . + {rule: "team network", why: "no container uses it"}] as $team_networks
+
+  | ($team_stacks + $gate_stacks + $shared + $legacy + $dangling + $anonymous + $team_volumes + $team_networks) as $actions
+  | ([$actions[] | {key: "\(.type) \(.ref)", value: true}] | from_entries) as $acted
+  | def unacted: select((.class != "team") and ($acted["\(.type) \(.ref)"] | not) and ($removed[.project // ""] | not));
+  {actions: [$actions[] | {rule, type, name, ref, class, size_bytes, why, tasks, worktrees}],
+   kept: ([$projects[] | . + {class: (.classes | join("+"))} | unacted]
+     + [$containers[] | select(.project == null) | unacted]
+     + [$volumes[] | unacted] + [$images[] | unacted] + [$networks[] | select(.predefined | not) | unacted]
+     | map({type, name, class, size_bytes, created})
+     | sort_by(({stack: 0, container: 1, volume: 2, image: 3, network: 4}[.type]), (.class | class_rank), .name))};

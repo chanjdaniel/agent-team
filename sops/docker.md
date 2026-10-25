@@ -127,6 +127,32 @@ The heartbeat runs it once Daniel turns `heartbeat_sweep` on; anyone may run it 
 - `down` removes the stack's state file with the stack.
 - Instances (`--instance`) are team stacks labelled with their worktree, so they are swept the same way.
 
+## Removing what is left behind
+
+`team-stack reap` removes the Docker objects the team's work leaves behind, by the rules below and nothing else.
+The janitor runs it daily with `--apply` once Daniel turns `heartbeat_janitor` on; anyone may run its dry run by hand at any time, since it only reads.
+
+| What | Rule | Action |
+| - | - | - |
+| team stack: a Compose project all of whose containers, volumes and networks are of class team | its tasks are all closed in the ledger, or its worktrees are all gone | logs saved, then removed as `down` removes it |
+| gate stack: one all of whose objects are of class gate | past its `expires`, or, with no `expires`, created more than 2 hours ago | `docker compose -p <project> down -v --remove-orphans`, then its anonymous volumes as `down` removes them; no logs |
+| shared image (a repository in a project's `images`) | no container uses it, created more than 7 days ago, and not among the 2 newest of its repository | `docker image rm <repository>:<tag>` |
+| legacy image (matching `legacy_images`) | `--legacy` only, and no container uses it | `docker image rm <repository>:<tag>` |
+| dangling image | no container uses it, created more than 24 hours ago | `docker image rm <id>` |
+| unattached anonymous volume | no container mounts it, created more than 24 hours ago | `docker volume rm` |
+| team-labelled named volume or network | no container uses it, and it is no part of a stack removed above | `docker volume rm`, `docker network rm` |
+| everything else | never | listed as kept, with its size and age |
+
+- It never runs `docker system prune`, `docker volume prune`, `docker image prune`, `docker network prune`, `docker builder prune` or `docker container prune`: every removal names its object, so this table is the whole of what it can do, and a test checks that `bin/team-stack` holds none of them.
+- "No container uses it" counts containers in every state: a stopped container is on no network's list of containers, but its own settings still name its networks, and Docker would remove such a network under it.
+- A team stack's logs, the last 1 MiB of each service's, go to its worktree's task directory as `stack-logs/<task>-<project>-<service>.log` for the project's `log_services` while the worktree is still a project's linked worktree, and otherwise to `~/.local/state/agent-team/stacks/logs/<project>-<local date>/`, for every service it has, since no `stack` block can be found for a worktree that is gone.
+- A gate run's stack is past `expires` only 2 hours after its start, longer than any gate run takes (its end-to-end lock waits at most 45 minutes), so the reaper never races a live run.
+- Without `--apply` (or with `--dry-run`, the default) it only reads, and prints `would remove <type> <name> (<class>, <size>): <rule>` for each action.
+  With `--apply` it holds the admission lock (`~/.local/state/agent-team/stacks.lock`) while it reads and removes, so no `up` starts a stack under it, and prints `removed ...` for each removal, a team stack's line ending with where its logs went.
+- Then it prints `kept <type> <name> (<class>, <size>, <age> old)` for every object no rule matched that is not the team's (stacks, containers of no stack, volumes, images, and networks but Docker's own `bridge`, `host` and `none`), Daniel's primary stack and its volumes always among them, and one summary line with the totals by rule.
+- A removal that fails is named on stderr with Docker's reason, the others still happen, and it exits 1; Docker not answering is exit 1 too.
+- Before a stack's removal it reads the stack again and removes it only when every object is still of the class the rule matched.
+
 ## Closing a task
 
 `team-close` takes the stacks of a task down before it archives the task's directories, so a closed task leaves nothing running and its stack logs are archived with it.
@@ -160,4 +186,5 @@ These are a speed bump, as every deny rule is; the guarantee is that no script t
 - The stub also models the fixture project's stack (`tests/fixtures/stack/`), so `up`, `env`, `seed`, `stop` and `down` are tested through the wrapper contract rather than Conventioner.
 - The stub also stands in for the machine's memory and disk: `TEAM_MEMINFO` names a file read in place of `/proc/meminfo`, a stub `df` answers from the test's numbers, and `TEAM_STACK_RECHECK_SECONDS` shortens the 30 seconds between admission checks.
 - The sweep's tests stub `claude agents --json` (the sandbox's `claude` stub) with sessions in and around the worktree.
-- `tests/team-stack-live.bats` runs against the real Docker only with `TEAM_LIVE_DOCKER=1`, since a test that creates a network can break a gate run's end to end; it starts and removes the fixture's one-service stack under a project name of its own, races two `up` calls for the last place under `stack_cap`, and has the sweep stop an idle stack that `up` then brings back with its data.
+- The reaper's tests age the stub's objects with `docker_created` and refuse one removal with `docker_refuse`, and every test of `tests/team-stack.bats` fails when a Docker call it made pruned.
+- `tests/team-stack-live.bats` runs against the real Docker only with `TEAM_LIVE_DOCKER=1`, since a test that creates a network can break a gate run's end to end; it starts and removes the fixture's one-service stack under a project name of its own, races two `up` calls for the last place under `stack_cap`, has the sweep stop an idle stack that `up` then brings back with its data, and has `reap --apply` remove a closed task's stack and an expired gate stack and keep an unowned one, limited by the test seam `TEAM_STACK_REAP_PROJECTS` to its own projects, so it never reaps the machine.

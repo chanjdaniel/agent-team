@@ -26,6 +26,9 @@
 #   system df -v --format json          {Images, Containers, Volumes, BuildCache}
 #   volume ls --quiet, network ls --quiet --no-trunc, each with any --filter label=<key>[=<value>]
 #   volume rm <names>...                a volume missing or mounted by a container is refused
+#   image rm <repository:tag or id>...  an image missing or used by a container is refused
+#   network rm <names or ids>...        a network missing or a running container is on is
+#                                       refused (Docker removes one only stopped ones are on)
 #   info --format json
 # and, modelling the fixture project's stack (stack_project) as Compose 5.6.1 makes it, from the
 # TEAM_* variables, COMPOSE_PROJECT_NAME and TH_WEB_PORT the call sees:
@@ -49,7 +52,10 @@
 # docker_fail <call> <message> makes one call (its key: "compose ls", "ps", "inspect",
 # "system df"...) fail with <message>, and docker_vanish <id> makes ps list a container that is
 # gone when it is inspected, and docker_leak <anonymous|network|container> makes compose down
-# leave the project's anonymous volumes, its networks or its containers behind.
+# leave the project's anonymous volumes, its networks or its containers behind, and
+# docker_refuse <name> <message> makes the removal of the volume, image or network <name> fail.
+# docker_created <volume|image|network|container> <name> <seconds ago> sets an object's creation
+# time in the form Docker gives it.
 # shellcheck shell=bash
 
 # docker_stub [<worktree>]: install the stub docker on the machine state of the fixtures, the
@@ -90,12 +96,12 @@ docker_empty() {
   for file in containers volumes images networks stats; do echo '[]' >"$DOCKER_STATE/$file.json"; done
 }
 
-# Change the machine's state: docker_state <file without .json> <jq filter>, e.g.
+# Change the machine's state: docker_state <file without .json> <jq filter> [jq options...], e.g.
 # docker_state containers 'map(select(.Name != "/conventioner-3-backend-1"))'.
 docker_state() {
   local tmp
   tmp=$(mktemp)
-  jq "$2" "$DOCKER_STATE/$1.json" >"$tmp"
+  jq "$2" "${@:3}" "$DOCKER_STATE/$1.json" >"$tmp"
   mv "$tmp" "$DOCKER_STATE/$1.json"
 }
 
@@ -117,6 +123,25 @@ docker_vanish() {
 # compose down leaves what it should remove: docker_leak <anonymous|network|container>
 docker_leak() {
   touch "$DOCKER_STATE/leak-$1"
+}
+
+# The removal of the volume, image or network <name> (as the rm call names it) fails with
+# <message>: docker_refuse <name> <message>
+docker_refuse() {
+  jq -cn --arg name "$1" --arg message "$2" '{name: $name, message: $message}' >>"$DOCKER_STATE/refuse.jsonl"
+}
+
+# Set the creation time of the object <name> (an image by repository:tag or id) to <seconds> ago,
+# in the form Docker gives each type: docker_created <volume|image|network|container> <name> <seconds>
+docker_created() {
+  local -A field=([container]=Created [volume]=CreatedAt [network]=Created [image]=CreatedAt)
+  local -A file=([container]=containers [volume]=volumes [network]=networks [image]=images)
+  local -A form=([container]='%Y-%m-%dT%H:%M:%S.000000000Z' [volume]='%Y-%m-%dT%H:%M:%S+00:00'
+    [network]='%Y-%m-%dT%H:%M:%S.000000000+00:00' [image]='%Y-%m-%d %H:%M:%S +0000 UTC')
+  [[ -n ${file[$1]:-} ]] || { echo "docker_created: no type $1" >&2; return 1; }
+  docker_state "${file[$1]}" 'map(if .Name == $name or .Name == "/" + $name or .ID == $name
+      or "\(.Repository):\(.Tag)" == $name then .[$field] = (now - $seconds | strftime($form)) else . end)' \
+    --arg name "$2" --argjson seconds "$3" --arg field "${field[$1]}" --arg form "${form[$1]}"
 }
 
 # The compose calls made, one compact JSON object per line: {call, project, COMPOSE_PROJECT_NAME,

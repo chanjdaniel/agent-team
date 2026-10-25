@@ -72,6 +72,8 @@ docker_stub_answer() {
     'compose stop') docker_stub_compose_stop "${args[@]}" ;;
     'compose down') docker_stub_compose_down "${args[@]}" ;;
     'volume rm') docker_stub_volume_rm "${args[@]}" ;;
+    'image rm') docker_stub_image_rm "${args[@]}" ;;
+    'network rm') docker_stub_network_rm "${args[@]}" ;;
     info) docker_stub_info "${args[@]}" ;;
     *) docker_stub_unplanned ;;
   esac
@@ -343,7 +345,7 @@ docker_stub_compose_up() {
             Destination: "/data", Driver: "local"},
           {Type: "volume", Name: $anonymous, Source: "/var/lib/docker/volumes/\($anonymous)/_data",
             Destination: "/cache", Driver: "local"}],
-        NetworkSettings: {Ports: {"80/tcp": [{HostIp: "127.0.0.1", HostPort: $port}]}}}] end' \
+        NetworkSettings: {Ports: {"80/tcp": [{HostIp: "127.0.0.1", HostPort: $port}]}, Networks: {"\($p)_default": {}}}}] end' \
     --arg p "$project" --arg id "$id" --arg now "$now" --arg hash "$hash" --arg port "$port" \
     --arg file "$COMPOSE_F" --arg anonymous "$anonymous" --argjson labels "$labels"
   docker_stub_running_stats
@@ -427,13 +429,23 @@ docker_stub_compose_down() {
   docker_stub_running_stats
 }
 
+# Whether docker_refuse made the removal of <name> fail; its message on stderr when so.
+docker_stub_refused() {
+  local message
+  message=$(jq -r --arg n "$1" 'select(.name == $n) | .message' "$DOCKER_STATE/refuse.jsonl" 2>/dev/null | head -n 1)
+  [[ -n $message ]] || return 1
+  echo "$message" >&2
+}
+
 # volume rm <names>...: each removed; one missing or mounted by a container is refused as
 # Docker refuses it, after the others are removed.
 docker_stub_volume_rm() {
   (($#)) || docker_stub_unplanned
   local name status=0
   for name in "$@"; do
-    if ! jq -e --arg n "$name" 'any(.[]; .Name == $n)' "$DOCKER_STATE/volumes.json" >/dev/null; then
+    if docker_stub_refused "$name"; then
+      status=1
+    elif ! jq -e --arg n "$name" 'any(.[]; .Name == $n)' "$DOCKER_STATE/volumes.json" >/dev/null; then
       echo "Error response from daemon: get $name: no such volume" >&2
       status=1
     elif jq -e --arg n "$name" 'any(.[]; any(.Mounts[]?; .Type == "volume" and .Name == $n))' \
@@ -443,6 +455,57 @@ docker_stub_volume_rm() {
     else
       docker_stub_update volumes 'map(select(.Name != $n))' --arg n "$name"
       echo "$name"
+    fi
+  done
+  exit "$status"
+}
+
+# image rm <repository:tag or id>...: a tag untagged, its image gone with its last tag; an id
+# removes the image; one missing, or whose image a container (in any state) uses, is refused as
+# Docker refuses it, after the others are removed.
+docker_stub_image_rm() {
+  (($#)) || docker_stub_unplanned
+  local ref id status=0
+  for ref in "$@"; do
+    id=$(jq -r --arg r "$ref" 'first(.[] | select(.ID == $r or "\(.Repository):\(.Tag)" == $r) | .ID) // empty' \
+      "$DOCKER_STATE/images.json")
+    if docker_stub_refused "$ref"; then
+      status=1
+    elif [[ -z $id ]]; then
+      echo "Error response from daemon: No such image: $ref" >&2
+      status=1
+    elif jq -e --arg id "$id" 'any(.[]; .Image == $id)' "$DOCKER_STATE/containers.json" >/dev/null; then
+      echo "Error response from daemon: conflict: unable to remove repository reference \"$ref\" (must force) - container is using its referenced image ${id#sha256:}" >&2
+      status=1
+    else
+      docker_stub_update images 'map(select(.ID != $r and "\(.Repository):\(.Tag)" != $r))' --arg r "$ref"
+      echo "Untagged: $ref"
+    fi
+  done
+  exit "$status"
+}
+
+# network rm <names or ids>...: each removed; one missing, or that a running container is on, is
+# refused as Docker refuses it (a stopped container's network is removed, as Docker does), after
+# the others are removed.
+docker_stub_network_rm() {
+  (($#)) || docker_stub_unplanned
+  local ref name status=0
+  for ref in "$@"; do
+    name=$(jq -r --arg r "$ref" 'first(.[] | select(.Name == $r or (.Id | startswith($r))) | .Name) // empty' \
+      "$DOCKER_STATE/networks.json")
+    if docker_stub_refused "$ref"; then
+      status=1
+    elif [[ -z $name ]]; then
+      echo "Error response from daemon: network $ref not found" >&2
+      status=1
+    elif jq -e --arg n "$name" 'any(.[]; .State.Running and (.NetworkSettings.Networks // {} | has($n)))' \
+      "$DOCKER_STATE/containers.json" >/dev/null; then
+      echo "Error response from daemon: error while removing network: network $name has active endpoints" >&2
+      status=1
+    else
+      docker_stub_update networks 'map(select(.Name != $n))' --arg n "$name"
+      echo "$ref"
     fi
   done
   exit "$status"
