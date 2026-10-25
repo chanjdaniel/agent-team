@@ -62,17 +62,17 @@
 # team stack's worktree label being <worktree> (default $HOME/worktree).
 docker_stub() {
   export DOCKER_STATE=$BATS_TEST_TMPDIR/docker
-  cp "$REPO_ROOT/tests/helpers/stub" "$BATS_TEST_TMPDIR/stubs/docker"
+  stub_command docker
   mkdir -p "$DOCKER_STATE"
   local file worktree=${1:-$HOME/worktree}
   for file in "$REPO_ROOT"/tests/fixtures/docker/*.json; do
     sed -e "s#@WORKTREE@#$worktree#g" -e "s#@HOME@#$HOME#g" "$file" >"$DOCKER_STATE/${file##*/}"
   done
   printf 'source %q\ndocker_stub_answer "$@"\n' "$REPO_ROOT/tests/helpers/docker-answer.bash" >"$STUB_FIXTURES/docker.sh"
-  cp "$REPO_ROOT/tests/helpers/stub" "$BATS_TEST_TMPDIR/stubs/df"
+  stub_command df
   printf 'source %q\ndocker_stub_df "$@"\n' "$REPO_ROOT/tests/helpers/docker-answer.bash" >"$STUB_FIXTURES/df.sh"
   export TEAM_MEMINFO=$DOCKER_STATE/meminfo
-  cp "$REPO_ROOT/tests/helpers/stub" "$BATS_TEST_TMPDIR/stubs/uname"
+  stub_command uname
   stub_reply uname Linux
   machine_disk_free $((200 * 1024 * 1024))
   machine_memory $((24 * 1024 * 1024))

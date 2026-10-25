@@ -8,7 +8,7 @@ load helpers/common
 
 setup() {
   sandbox
-  cp "$REPO_ROOT/tests/helpers/stub" "$BATS_TEST_TMPDIR/stubs/uname"
+  stub_command uname
   brew=$BATS_TEST_TMPDIR/brew
   export HOMEBREW_PREFIX=$brew
   local dir
@@ -51,7 +51,7 @@ library_path() {
   [[ ! -x /opt/homebrew/bin/brew && ! -x /usr/local/bin/brew ]] ||
     skip "a standard Homebrew prefix holds brew here, so it wins"
   stub_reply uname Darwin
-  cp "$REPO_ROOT/tests/helpers/stub" "$BATS_TEST_TMPDIR/stubs/brew"
+  stub_command brew
   stub_reply brew "$brew"
   unset HOMEBREW_PREFIX
   run -0 library_path

@@ -1,0 +1,150 @@
+#!/usr/bin/env bats
+# shellcheck disable=SC2153 # TOOL_STUBS, CONVENTIONER and the other globals are helpers/doctor.bash's
+# team-bootstrap: a fresh machine set up stage by stage, on the machine tests/helpers/bootstrap.bash
+# builds. This file: Daniel's steps, sudo among them, and --home.
+
+load helpers/common
+load helpers/doctor
+load helpers/bootstrap
+
+setup() {
+  sandbox
+  bootstrap_machine
+}
+
+@test "on Arch a step needing sudo is Daniel's without a terminal: one line naming it, exit 1, nothing tried" {
+  fresh arch
+  run_bin -1 team-bootstrap --name laptop
+  assert_equal "$(tail -n1 <<<"$output")" "packages: Daniel: in your own terminal run $CODE_CHECKOUT/bin/team-bootstrap --stage packages, which runs pacman -S --needed $ARCH_PACKAGES with sudo and asks for your password; then team-bootstrap again"
+  assert_equal "$(install_calls)" ""
+
+  # Once Daniel has run it, the tools stage installs what needs no sudo and stops the same way
+  # at what does: treehouse goes to /usr/local/bin, and op is 1Password's zip.
+  # shellcheck disable=SC2086 # the list splits into packages
+  installed_from "sudo pacman -S --needed " $ARCH_PACKAGES
+  run_bin -1 team-bootstrap
+  assert_equal "$(tail -n1 <<<"$output")" "tools: Daniel: in your own terminal run $CODE_CHECKOUT/bin/team-bootstrap --stage tools, which installs treehouse op with sudo and asks for your password; then team-bootstrap again"
+  assert_equal "$(stub_calls npm | wc -l)" 6
+  assert_contains "$output" "tools: running: $FORK_BUILD"
+  assert_equal "$(stub_calls sudo)" ""
+  [[ $output != *projects:* ]]
+}
+
+@test "on a fresh Arch without jq or Python the preflight asks for them first, before anything needs jq" {
+  fresh arch
+  local bin=$BATS_TEST_TMPDIR/without-jq dir dirs
+  mkdir -p "$bin"
+  IFS=: read -ra dirs <<<"$PATH"
+  for dir in "${dirs[@]}"; do
+    [[ -d $dir ]] && ln -s "$dir"/* "$bin/" 2>/dev/null || true
+  done
+  rm -f "$bin/jq" "$bin"/python3* "$bin/uname"
+  # The sandbox's uname logs its calls with jq; this one only answers.
+  printf '#!/bin/sh\necho Linux\n' >"$bin/uname"
+  chmod +x "$bin/uname"
+  PATH=$bin run_bin -1 team-bootstrap --name laptop
+  assert_equal "$output" "preflight: Arch Linux
+preflight: Daniel: in your own terminal run $CODE_CHECKOUT/bin/team-bootstrap --stage preflight, which runs pacman -S --needed jq python with sudo and asks for your password; then team-bootstrap again"
+  assert_equal "$(install_calls)" ""
+}
+
+@test "in Daniel's own terminal the sudo steps run, sudo asking for the password" {
+  fresh arch
+  run_in_terminal -1 -- "$CODE_CHECKOUT/bin/team-bootstrap" --name laptop
+  assert_contains "$output" "packages: running: sudo pacman -S --needed --noconfirm $ARCH_PACKAGES"
+  assert_equal "$(stub_calls sudo | jq -r '.[0]' | uniq | paste -sd ' ' -)" "pacman mkdir tar unzip groupadd chgrp chmod"
+  assert_equal "$(stub_calls sudo | jq -c 'select(.[0] == "tar") | .[3:]')" '["-C","/usr/local/bin","treehouse"]'
+  # Every tool line passes now; what is left is Daniel's own.
+  assert_contains "$output" "check: summary: not set up yet: only Daniel's steps above are left; then team-bootstrap again"
+  [[ $output != *"FAIL tool "* ]]
+  # With no ~/agent-team-records there is nothing to name yet: the doctor's team home line says to clone it.
+  [[ $output != *"team home: name"* ]]
+  assert_contains "$output" "check: Daniel 1: docker: Daniel runs sudo systemctl enable --now docker.service ("
+}
+
+@test "each of Daniel's steps stops the run where it falls, with one line, without trying it" {
+  # The Xcode tools, before anything else (the doctor is not even asked).
+  fresh macos
+  stub_reply xcode-select "xcode-select: error: unable to get active developer directory" 2
+  : >"$STUB_CALLS/claude.log"
+  run_bin -1 team-bootstrap --name laptop
+  assert_equal "$output" "preflight: macOS
+preflight: Daniel: install the Xcode Command Line Tools: run xcode-select --install and accept its dialog; then team-bootstrap again"
+  assert_equal "$(stub_calls claude)" ""
+
+  # Homebrew, where no brew is on PATH.
+  stub_reply xcode-select /Library/Developer/CommandLineTools
+  rm "$BATS_TEST_TMPDIR/stubs/brew"
+  if ! command -v brew >/dev/null; then
+    run_bin -1 team-bootstrap --name laptop
+    assert_equal "$(tail -n1 <<<"$output")" "preflight: Daniel: install Homebrew as https://brew.sh says (it asks for your admin password), add the brew shellenv line it prints to ~/.zprofile, open a new terminal, then team-bootstrap again"
+  fi
+  stub_command brew
+
+  # The machine's name.
+  run_bin -1 team-bootstrap
+  assert_equal "$(tail -n1 <<<"$output")" "machine: Daniel: name this machine for the team (laptop, home-pc: never the hostname), then run team-bootstrap --name <name>"
+  assert_equal "$(install_calls)" ""
+
+  # The GitHub login the clones need; the stages before it still run.
+  stub_script gh <<'EOF2'
+exit 1
+EOF2
+  run_bin -1 team-bootstrap --name laptop
+  assert_equal "$(tail -n1 <<<"$output")" "projects: Daniel: sign gh in to GitHub, which the clones need: gh auth login --hostname github.com --git-protocol https --web, then gh auth setup-git; then team-bootstrap again"
+  assert_contains "$output" "tools: running: "
+  [[ ! -e $STUB_CALLS/git-clone.log ]]
+
+  # A folder in a project's way.
+  stub_script gh <<'EOF2'
+echo "  - Token: gho_fakefakefakefake"
+EOF2
+  mkdir -p "$CONVENTIONER"
+  run_bin -1 team-bootstrap
+  assert_equal "$(tail -n1 <<<"$output")" "projects: Daniel: move it aside, then git clone https://github.com/chanjdaniel/Conventioner.git ~/projects/Conventioner (~/projects/Conventioner is not a git checkout)"
+  [[ ! -e $STUB_CALLS/git-clone.log ]]
+}
+
+@test "--home writes the team home's setting once, relative to HOME, and never over another or for a missing checkout" {
+  fresh arch
+  # Until ~/agent-team-records is cloned the check stage asks for no setting, which --home would refuse.
+  run_bin -1 team-bootstrap --stage check
+  [[ $output != *"team home: name"* ]]
+  run_bin -1 team-bootstrap --stage machine --name laptop --home agent-team-records
+  assert_equal "$output" "machine: named this machine laptop (~/.config/agent-team/machine)
+machine: ~/agent-team-records is not a directory: clone the team home there first, then team-bootstrap --home agent-team-records again"
+  [[ ! -e $HOME/.config/agent-team/home ]]
+  mkdir "$HOME/agent-team-records"
+  run_bin -1 team-bootstrap --stage check
+  assert_contains "$output" ": team home: name the team home's checkout for this machine: team-bootstrap --home agent-team-records (~/.config/agent-team/home is missing)"
+  run_bin -0 team-bootstrap --stage machine --home agent-team-records
+  assert_equal "$output" "machine: done: this machine is laptop
+machine: named the team home ~/agent-team-records (~/.config/agent-team/home)"
+  assert_equal "$(cat "$HOME/.config/agent-team/home")" agent-team-records
+  # Once written, the same checkout (however named) is done, and another is left unused.
+  run_bin -0 team-bootstrap --stage machine --home "$HOME/agent-team-records"
+  assert_equal "$(stage_lines machine | tail -n1)" "done: ~/.config/agent-team/home names ~/agent-team-records"
+  mkdir "$HOME/elsewhere"
+  run_bin -0 team-bootstrap --stage machine --home elsewhere
+  assert_equal "$(stage_lines machine | tail -n1)" "done: ~/.config/agent-team/home already names ~/agent-team-records; --home elsewhere is left unused"
+  assert_equal "$(cat "$HOME/.config/agent-team/home")" agent-team-records
+  # The check stage no longer lists it.
+  run_bin -1 team-bootstrap --stage check
+  [[ $output != *"team home: name"* ]]
+}
+
+@test "the setting --home writes is the team home for the rest of the run when TEAM_HOME is unset" {
+  fresh arch
+  tools_at arch
+  echo laptop >"$HOME/.config/agent-team/machine"
+  mv "$TEAM_HOME" "$HOME/agent-team-records"
+  unset TEAM_HOME
+  run -1 "$CODE_CHECKOUT/bin/team-bootstrap" --home agent-team-records
+  assert_contains "$output" "machine: named the team home ~/agent-team-records (~/.config/agent-team/home)"
+  assert_contains "$output" "check: doctor: "
+  # The stages after it read the doctor on that team home: its projects are cloned.
+  assert_equal "$(cat "$STUB_CALLS/git-clone.log")" "clone -q https://github.com/chanjdaniel/Conventioner.git $CONVENTIONER
+clone -q https://github.com/owner/site.git $SITE"
+  assert_contains "$output" "check: doctor: "
+  [[ $output != *" team home: "* && $output != *" records: "* && $output != *"FAIL checkout "* ]]
+}

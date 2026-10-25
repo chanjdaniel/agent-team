@@ -3,9 +3,13 @@
 # vendored bats), servers/ and toolkits/, then the whole bats suite on the vendored bats-core,
 # then the toolkit tests (node --test on tests/toolkits/, after servers/install), which need
 # Docker for their throwaway MongoDB.
+# The bats files run as many at once as the machine has CPUs, each in a bats of its own (every
+# test is sandboxed, so files share nothing), the largest first: one line per file as it ends,
+# then the whole output of each file that failed, and the count of tests passed.
 #
 # Usage: tests/run [shellcheck|bats|toolkits]   (default: all three)
-# Exit 0 when every check passes; CI runs each part as its own job.
+# Exit 0 when every check passes; CI runs each part as its own job. The last line is the wall
+# time, so a slower suite shows.
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -27,14 +31,38 @@ shell_scripts() {
   done < <(cd "$root" && find bin tests servers toolkits \( -path tests/vendor -o -path servers/node_modules -o -path 'servers/.*' \) -prune -o -type f -print | sort)
 }
 
+# Every tests/*.bats file, in parallel (see the header); fails if any file fails.
+run_bats() {
+  local file failed=0
+  out=$(mktemp -d)
+  trap 'rm -rf "$out"' EXIT
+  # Each file's output goes to $out/<file>, with $out/<file>.failed beside it when it fails.
+  # shellcheck disable=SC2016 # expanded by each file's bash
+  # The longest files first, so none of them starts last.
+  find "$root/tests" -maxdepth 1 -name '*.bats' -printf '%s\t%p\n' | sort -rn | cut -f2- | tr '\n' '\0' |
+    xargs -0 -n 1 -P "$(nproc)" bash -c '
+      name=${2##*/} verdict=ok
+      "$0/tests/vendor/bats-core/bin/bats" "$2" >"$1/$name" 2>&1 || { verdict="not ok"; touch "$1/$name.failed"; }
+      printf "%s tests/%s (%ds)\n" "$verdict" "$name" "$SECONDS"' "$root" "$out"
+  for file in "$out"/*.bats; do
+    [[ -e $file.failed ]] || continue
+    failed=$((failed + 1))
+    printf '\n--- tests/%s\n' "${file##*/}"
+    cat "$file"
+  done
+  echo "bats: $(cat "$out"/*.bats | grep -c '^ok ') tests passed; $failed of $(find "$out" -name '*.bats' | wc -l) files failed"
+  ((failed == 0))
+}
+
 fail=0
+SECONDS=0
 if [[ $what == all || $what == shellcheck ]]; then
   mapfile -t scripts < <(shell_scripts)
   echo "shellcheck $(shellcheck --version | sed -n 's/^version: //p'): ${#scripts[@]} scripts"
   (cd "$root" && shellcheck -x "${scripts[@]}") || fail=1
 fi
 if [[ $what == all || $what == bats ]]; then
-  "$root/tests/vendor/bats-core/bin/bats" "$root/tests" || fail=1
+  run_bats || fail=1
 fi
 if [[ $what == all || $what == toolkits ]]; then
   if "$root/servers/install"; then
@@ -43,4 +71,5 @@ if [[ $what == all || $what == toolkits ]]; then
     fail=1
   fi
 fi
+printf 'tests/run %s: %dm %02ds\n' "$what" $((SECONDS / 60)) $((SECONDS % 60))
 exit $fail

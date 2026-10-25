@@ -6,7 +6,7 @@ load helpers/common
 
 setup() {
   sandbox
-  cp "$REPO_ROOT/tests/helpers/stub" "$BATS_TEST_TMPDIR/stubs/opencode"
+  stub_command opencode
   stub_script opencode <<'EOF'
 printf 'OPENCODE_CONFIG=%s\n' "${OPENCODE_CONFIG-unset}"
 printf 'OPENCODE_DISABLE_CLAUDE_CODE=%s\n' "${OPENCODE_DISABLE_CLAUDE_CODE-unset}"

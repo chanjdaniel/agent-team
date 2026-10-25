@@ -374,7 +374,12 @@ stop aaaaaaaa"
   local state=$HOME/.local/state/agent-team start
   mkdir -p "$state"
   flock -x "$state/lease.lock" sleep 2 &
-  sleep 0.5
+  # Once the holder has the lock, however long a busy machine takes to start it, up to 10 s.
+  local tries=0
+  until [[ -f $state/lease.lock ]] && ! flock -n "$state/lease.lock" true; do
+    ((++tries < 200)) || { echo "the holder never took the lock in 10 s" >&2; return 1; }
+    sleep 0.05
+  done
   start=$(date +%s%N)
   run_bin -0 team-lease take
   wait
