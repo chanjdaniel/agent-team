@@ -58,6 +58,12 @@
 #                 `team-log --check`, the registry `team-project --check`, and every enabled
 #                 secret of machine/secrets.json has its row in machine/secrets.md; fails naming
 #                 each problem (a check's first, with its count).
+#   trust team home
+#                 `claude --bg --name team-doctor-home-trust` with no prompt in the team home,
+#                 where claude-coordinator starts by default, judged as a project's trust line
+#                 below; not probed when the team home is a registered project's primary checkout
+#                 (the code checkout, say, which is agent-team's), whose own trust line probes it,
+#                 nor while it is no directory, which warns (the team home line fails).
 #   per project   For each project of projects.toml (`projects` fails when team-project refuses
 #                 the registry), the lines below with the project's name after the check's;
 #                 a missing checkout is its one line:
@@ -186,11 +192,12 @@ pool_name() {
   printf '%s-%s\n' "${1##*/}" "$(printf '%s' "$2" | sha256sum | cut -c1-6)"
 }
 
-# The trust line of <project>, from a promptless background session started in its checkout
-# <path>: Claude Code refuses one in an untrusted root with "Workspace not trusted". The probe
-# goes either way: the session it printed, and any session of its name (one an earlier run left).
+# The trust line of <project> (or "team home"), from a promptless background session started in
+# its root <path>, named <name> (team-doctor-trust-<project> by default): Claude Code refuses one
+# in an untrusted root with "Workspace not trusted". The probe goes either way: the session it
+# printed, and any session of its name (one an earlier run left).
 probe_trust() {
-  local project=$1 path=$2 name=team-doctor-trust-$1 out rc=0 ids id left=() shown reason
+  local project=$1 path=$2 name=${3:-team-doctor-trust-$1} out rc=0 ids id left=() shown reason
   shown=$(tilde "$path")
   out=$(cd "$path" && bounded 60 claude --bg --name "$name" 2>&1 </dev/null) || rc=$?
   ids=$({
@@ -727,6 +734,24 @@ if ((${#records_problems[@]} == 0)); then
 else
   report records FAIL "$(printf '%s; ' "${records_problems[@]}" | sed 's/; $//')" \
     "fix what it names in the team home (team-log --check and team-project --check list every problem), then run team-doctor again"
+fi
+
+# trust team home: its probe is team-doctor-home-trust, a name no project's probe can have. A
+# broken registry is the projects line's, and the team home is probed as if it were no project's.
+home_project=''
+if [[ -d $TEAM_HOME ]] && projects=$(team_project --list 2>/dev/null); then
+  while IFS= read -r project; do
+    [[ -n $project ]] || continue
+    [[ $(realpath -m -- "$(team_project "$project" | jq -r .path)") != "$(realpath -m -- "$TEAM_HOME")" ]] ||
+      home_project=$project
+  done <<<"$projects"
+fi
+if [[ ! -d $TEAM_HOME ]]; then
+  report "trust team home" WARN "not probed, since $home_shown is not a directory" "the team home line's fix"
+elif [[ -n $home_project ]]; then
+  report "trust team home" PASS "not probed apart, since $home_shown is $home_project's primary checkout, which the trust $home_project line probes"
+else
+  probe_trust "team home" "$TEAM_HOME" team-doctor-home-trust
 fi
 
 # per project: team-project refuses a missing or broken registry itself, the first problem first.

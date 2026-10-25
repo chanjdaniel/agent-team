@@ -133,7 +133,7 @@ Done when `check` lists no `Daniel <n>:` line.
 | 1Password app: install, sign in, CLI integration (and on Arch, unlock with system authentication) | 7 | macOS: `brew install --cask 1password`; Arch: the native AUR package; then the app's Settings > Developer > Integrate with 1Password CLI | account login, app settings |
 | `team-secrets restore` | 7 | own terminal: `~/agent-team/bin/team-secrets restore` | Touch ID or system authentication; values never reach an agent |
 | `~/.no-mistakes/config.yaml` naming the gate's opencode wrapper, when restore did not bring it in | 7 | Daniel's own edit: `agent_path_override: {opencode: <HOME>/.no-mistakes/bin/opencode-gate}`, the path written out in full (the doctor's fix names it) | it is Daniel's own config file |
-| Trust, once per project root (the team home included) | 7 | own terminal: `claude` in the root, accept, `/exit` | interactive dialog |
+| Trust, once in the team home (`~/agent-team-records`, where the coordinator starts: the doctor's `trust team home` line) and once per project root (its `trust <project>` line) | 7 | own terminal: `claude` in the root, accept, `/exit` | interactive dialog |
 | Chrome | 7 | macOS: `brew install --cask google-chrome`; Arch: `google-chrome` from the AUR, or `sudo pacman -S --needed chromium` | browser sign-in, `sudo` on Arch |
 | The dev guard | 7 | this session: `! git -C ~/agent-team config core.hooksPath bin/hooks/git` | every team session is denied setting `core.hooksPath` |
 | `autoMode.environment` | 7 | Daniel's own edit of `~/.claude/settings.json` (`claude auto-mode defaults` shows the form) | it is what auto mode's classifier trusts about this machine |
@@ -142,8 +142,8 @@ Done when `check` lists no `Daniel <n>:` line.
 
 On a fresh machine, Daniel meets them in this order (recorded from `team-bootstrap` in a scratch `$HOME` with every installer stubbed, 2026-10-23):
 
-- macOS: Command Line Tools dialog, Homebrew, GitHub login, the name, (restart), Docker Desktop's license, the 1Password app, `team-secrets restore`, trust for each project root, Chrome, the dev guard, `autoMode.environment`.
-- Arch: git and gh, GitHub login, the name, `team-bootstrap --stage packages` and then `--stage tools` in their terminal, (restart), the Docker daemon (and the `docker` group), the 1Password app, `team-secrets restore`, trust for each project root, Chrome, the dev guard, `autoMode.environment`.
+- macOS: Command Line Tools dialog, Homebrew, GitHub login, the name, (restart), Docker Desktop's license, the 1Password app, `team-secrets restore`, trust for the team home, then for each project root, Chrome, the dev guard, `autoMode.environment`.
+- Arch: git and gh, GitHub login, the name, `team-bootstrap --stage packages` and then `--stage tools` in their terminal, (restart), the Docker daemon (and the `docker` group), the 1Password app, `team-secrets restore`, trust for the team home, then for each project root, Chrome, the dev guard, `autoMode.environment`.
 
 ## 4. macOS differences
 

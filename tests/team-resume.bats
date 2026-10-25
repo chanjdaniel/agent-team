@@ -41,8 +41,9 @@ TOML
   mkdir -p "$HOME/.claude"
   echo "Shared instructions." >"$HOME/.claude/CLAUDE.md"
 
-  # claude: each machine's sessions in its own HOME's sessions.json; --bg adds one; stop marks
-  # it stopped, rm takes it off; no plugins and no marketplaces.
+  # claude: each machine's sessions in its own HOME's sessions.json; --bg adds one, but in a root
+  # listed in $BATS_TEST_TMPDIR/untrusted; stop marks it stopped, rm takes it off; no plugins and
+  # no marketplaces.
   echo '[{"id": "3169fcbd", "name": "coordinator", "status": "busy"},
     {"id": "81f08540", "name": "T1-builder", "status": "idle"}]' >"$HOME/sessions.json"
   stub_script claude <<'SH'
@@ -54,6 +55,10 @@ case "$*" in
   'rm '*) jq --arg id "$2" 'map(select(.id != $id))' "$list" >"$list.next" && mv "$list.next" "$list" ;;
   'plugin list --json' | 'plugin marketplace list --json') echo '[]' ;;
   '--bg --name '*)
+    if grep -qxF "$PWD" "$BATS_TEST_TMPDIR/untrusted" 2>/dev/null; then
+      echo "Error: Workspace not trusted. Run claude here once and accept the trust dialog." >&2
+      exit 1
+    fi
     jq --arg name "$3" '. + [{id: "7c3e9a10", name: $name, status: "idle"}]' "$list" >"$list.next" && mv "$list.next" "$list"
     echo "Started background session 7c3e9a10 ($3)" ;;
   *) echo "claude stub: unplanned call: $*" >&2; exit 64 ;;
@@ -230,6 +235,41 @@ laptop_state() {
   on_machine laptop run_bin -0 team-resume
   assert_contains "$output" "doctor: 0 passed, 0 warned, lease and heartbeat left to the resume"
   assert_equal "$(lease_json | jq -c '[.holder, .state]')" '["laptop","held"]'
+}
+
+@test "an untrusted team home, where the coordinator starts, stops the resume at the doctor with nothing changed" {
+  # The real doctor, whose trust team home line alone is passed on: this sandbox's machine lacks
+  # what the other lines check.
+  {
+    echo '#!/usr/bin/env bash'
+    printf 'doctor=%q\n' "$REPO_ROOT/bin/team-doctor"
+    cat <<'SH'
+"$doctor" --json 2>/dev/null </dev/null | jq '[.[] | select(.check == "trust team home")]' >"$BATS_TEST_TMPDIR/doctor.json"
+cat "$BATS_TEST_TMPDIR/doctor.json"
+jq -e 'length == 1 and all(.verdict != "FAIL")' "$BATS_TEST_TMPDIR/doctor.json" >/dev/null
+SH
+  } >"$TEAM_DOCTOR"
+  hand_off
+  echo "$laptop/team" >"$BATS_TEST_TMPDIR/untrusted"
+  local before
+  before=$(laptop_state)
+
+  on_machine laptop run_bin -1 --separate-stderr team-resume
+  assert_equal "$stderr" "team-resume: team-doctor reports what this machine lacks; fix each, then run team-resume again (nothing changed):
+  FAIL trust team home: claude --bg in $laptop/team says Workspace not trusted; fix: Daniel runs claude once in $laptop/team and accepts the trust dialog"
+  assert_equal "$(laptop_state)" "$before"
+  assert_equal "$(lease_json | jq -c '[.holder, .state]')" '["home-pc","released"]'
+  # Only the doctor's probes started: the team home's, and the project home's.
+  assert_equal "$(coordinator_launches | jq -r '.[2]')" "team-doctor-home-trust
+team-doctor-trust-home"
+
+  # Once Daniel has trusted it, the same resume goes through, and the coordinator starts there.
+  rm "$BATS_TEST_TMPDIR/untrusted"
+  on_machine laptop run_bin -0 team-resume
+  assert_contains "$output" "doctor: 1 passed, 0 warned"
+  assert_equal "$(lease_json | jq -c '[.holder, .state]')" '["laptop","held"]'
+  assert_equal "$(coordinator_launches | jq -r '.[2]' | tail -n 1)" coordinator
+  [[ $(jq -r '.[].name' "$laptop/home/sessions.json") == coordinator ]]
 }
 
 @test "the code checkout's branch is fast-forwarded to origin's after the team home, before the config" {

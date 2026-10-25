@@ -104,7 +104,7 @@ case $* in
     echo '{"loggedIn": true, "authMethod": "claude.ai", "email": "daniel@example.invalid", "orgId": "org-secret-0000", "subscriptionType": "pro"}' ;;
   'plugin list --json') cat "$STUB_FIXTURES/plugins.json" ;;
   'plugin marketplace list --json') cat "$STUB_FIXTURES/marketplaces.json" ;;
-  '--bg --name team-doctor-trust-'*)
+  '--bg --name team-doctor-'*)
     # A promptless background session: refused in a root listed in $STUB_FIXTURES/untrusted.
     echo "$PWD" >>"$STUB_CALLS/claude-bg.pwd"
     if grep -qxF "$PWD" "$STUB_FIXTURES/untrusted" 2>/dev/null; then

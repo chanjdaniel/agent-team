@@ -173,7 +173,7 @@ fresh() {
   rm -f "$TEAM_1PASSWORD_APP" "$TEAM_CHROME"
   printf 'echo %q >&2\nexit 1\n' "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?" \
     >"$TOOL_ANSWERS/docker/info_--format_{{.ServerVersion}}.sh"
-  printf '%s\n' "$CONVENTIONER" "$SITE" >"$STUB_FIXTURES/untrusted"
+  printf '%s\n' "$TEAM_HOME" "$CONVENTIONER" "$SITE" >"$STUB_FIXTURES/untrusted"
 }
 
 # Every call an installer stub logged, one per line: what a run that installs nothing leaves empty.

@@ -15,7 +15,7 @@ Each request names one of three places:
 
 - **In this session**, a command Daniel types with the `!` prefix, which runs it here and puts its output in the conversation: give the exact line, for example `! git -C ~/agent-team config core.hooksPath bin/hooks/git`.
   Use it for a short command that asks nothing and is Daniel's by rule.
-- **In their own terminal** (Terminal on macOS, Konsole on Arch): anything that asks for a password or a confirmation, or that must keep values away from an agent: `sudo`, the Homebrew installer, `~/agent-team/bin/team-bootstrap --stage <stage>` when the bootstrap says so, `~/agent-team/bin/team-secrets restore`, `claude` in a project root for its trust dialog, and `team-resume --steal`.
+- **In their own terminal** (Terminal on macOS, Konsole on Arch): anything that asks for a password or a confirmation, or that must keep values away from an agent: `sudo`, the Homebrew installer, `~/agent-team/bin/team-bootstrap --stage <stage>` when the bootstrap says so, `~/agent-team/bin/team-secrets restore`, `claude` in the team home or a project root for its trust dialog, and `team-resume --steal`.
   Give the exact command to paste.
 - **In a browser or an app**: a login page, a GUI dialog, an app's settings, a Touch ID prompt: say what to click.
 

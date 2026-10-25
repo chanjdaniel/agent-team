@@ -46,9 +46,9 @@
 #   check      The doctor again, then Daniel's remaining steps in order, one line each with its
 #              command (the machine's name, the team home's setting once ~/agent-team-records is
 #              there, logins, Docker access, the 1Password app and team-secrets restore, the
-#              gate's config.yaml naming its opencode wrapper, trust per project root, Chrome,
-#              then the rest), the doctor's WARN and FAIL lines, and a summary: set up, or ready
-#              as a standby.
+#              gate's config.yaml naming its opencode wrapper, trust in the team home, where
+#              the coordinator starts, and in each project root, Chrome, then the rest), the
+#              doctor's WARN and FAIL lines, and a summary: set up, or ready as a standby.
 # A step only Daniel can take stops the run with one line, "<stage>: Daniel: <the step>", and
 # exit 1, without trying it: the Xcode tools or Homebrew missing, the machine's name, anything
 # needing sudo (unless stdin and stdout are a terminal, where sudo asks for the password), the

@@ -162,11 +162,16 @@ ledger_opened() {
     {"id": "abcdef12", "name": "T9-builder", "state": "working"}]' >"$STUB_FIXTURES/agents.json"
   run_bin -1 team-doctor
   assert_equal "$(grep -v '^PASS ' <<<"$output")" "FAIL trust site: claude --bg in ~/projects/site says Workspace not trusted; fix: Daniel runs claude once in ~/projects/site and accepts the trust dialog"
-  assert_equal "$(cat "$STUB_CALLS/claude-bg.pwd")" "$CONVENTIONER
+  assert_equal "$(cat "$STUB_CALLS/claude-bg.pwd")" "$TEAM_HOME
+$CONVENTIONER
 $SITE"
-  local probe
+  local home probe
+  home=$(printf '%s' "$TEAM_HOME" | sha256sum | cut -c1-8)
   probe=$(printf '%s' "$CONVENTIONER" | sha256sum | cut -c1-8)
-  assert_equal "$(stub_calls claude | jq -r 'select(.[0] | IN("--bg", "stop", "rm")) | join(" ")')" "--bg --name team-doctor-trust-conventioner
+  assert_equal "$(stub_calls claude | jq -r 'select(.[0] | IN("--bg", "stop", "rm")) | join(" ")')" "--bg --name team-doctor-home-trust
+stop $home
+rm $home
+--bg --name team-doctor-trust-conventioner
 stop $probe
 rm $probe
 --bg --name team-doctor-trust-site
@@ -191,6 +196,35 @@ esac
 EOF
   run_bin -1 team-doctor
   assert_equal "$(line_of 'trust site')" "FAIL trust site: \`claude --bg\` in ~/projects/site printed no session id (exit 3): error: unknown option '--bg'; fix: the tool claude and claude login lines"
+}
+
+@test "trust team home: probed in the team home, where the coordinator starts, unless a project's trust line covers it" {
+  tools_at arch
+  local shown=${TEAM_HOME/#"$HOME"/\~}
+  echo "$TEAM_HOME" >"$STUB_FIXTURES/untrusted"
+  run_bin -1 team-doctor
+  assert_equal "$(grep -v '^PASS ' <<<"$output")" "FAIL trust team home: claude --bg in $shown says Workspace not trusted; fix: Daniel runs claude once in $shown and accepts the trust dialog"
+  # Before the projects' lines, after the records'.
+  assert_equal "$(checks | grep -A1 -B1 '^trust team home$')" "records
+trust team home
+checkout conventioner"
+
+  # A team home that is a registered project's primary checkout (the code checkout, agent-team's,
+  # where no records were split off) is that project's trust line's to probe.
+  cp "$TEAM_HOME/projects.toml" "$SITE/"
+  echo "$SITE" >"$STUB_FIXTURES/untrusted"
+  : >"$STUB_CALLS/claude-bg.pwd"
+  TEAM_HOME=$SITE run_bin -1 team-doctor
+  assert_equal "$(line_of 'trust team home')" "PASS trust team home: not probed apart, since ~/projects/site is site's primary checkout, which the trust site line probes"
+  assert_equal "$(line_of 'trust site')" "FAIL trust site: claude --bg in ~/projects/site says Workspace not trusted; fix: Daniel runs claude once in ~/projects/site and accepts the trust dialog"
+  assert_equal "$(cat "$STUB_CALLS/claude-bg.pwd")" "$CONVENTIONER
+$SITE"
+
+  # No directory to probe: the team home line fails, and this one only says so.
+  : >"$STUB_CALLS/claude-bg.pwd"
+  TEAM_HOME=$BATS_TEST_TMPDIR/gone run_bin -1 team-doctor
+  assert_equal "$(line_of 'trust team home')" "WARN trust team home: not probed, since $BATS_TEST_TMPDIR/gone is not a directory; fix: the team home line's fix"
+  assert_equal "$(cat "$STUB_CALLS/claude-bg.pwd")" ""
 }
 
 @test "unpushed local branches and a dirty primary checkout warn, each by name" {

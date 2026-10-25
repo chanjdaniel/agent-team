@@ -105,6 +105,18 @@ EOF2
   [[ ! -e $STUB_CALLS/git-clone.log ]]
 }
 
+@test "an untrusted team home, where the coordinator starts, is one of Daniel's steps, and the only one" {
+  tools_at arch
+  echo "$TEAM_HOME" >"$STUB_FIXTURES/untrusted"
+  run_bin -1 team-bootstrap --stage check
+  assert_equal "$(stage_lines check | grep '^Daniel')" "Daniel 1: trust team home: Daniel runs claude once in $TEAM_HOME and accepts the trust dialog (claude --bg in $TEAM_HOME says Workspace not trusted)"
+  assert_equal "$(stage_lines check | tail -n1)" "summary: not set up yet: only Daniel's steps above are left; then team-bootstrap again"
+  # Every project root was probed too, and trusted.
+  assert_equal "$(cat "$STUB_CALLS/claude-bg.pwd")" "$TEAM_HOME
+$CONVENTIONER
+$SITE"
+}
+
 @test "--home writes the team home's setting once, relative to HOME, and never over another or for a missing checkout" {
   fresh arch
   # Until ~/agent-team-records is cloned the check stage asks for no setting, which --home would refuse.

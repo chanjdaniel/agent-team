@@ -80,15 +80,17 @@ running: claude plugin disable discord@claude-plugins-official --scope user"
 Daniel 2: 1password: brew install --cask 1password, then turn on its Settings > Developer > Integrate with 1Password CLI (the 1Password app is not at $TEAM_1PASSWORD_APP, so team-secrets restore can only ask for each secret to be pasted)
 Daniel 3: secrets: with the 1Password app signed in and its CLI integration on, in your own terminal, not through an agent: $CODE_CHECKOUT/bin/team-secrets restore (missing: discord-bot-env discord-access-json conventioner-env conventioner-front-end-env conventioner-back-end-env)
 Daniel 4: opencode-gate: Daniel runs team-secrets restore in their own terminal (the secret no-mistakes-config) and sets agent_path_override: {opencode: $HOME/.no-mistakes/bin/opencode-gate} in it, as manual-steps.md's install of the no-mistakes fork says (~/.no-mistakes/config.yaml is not there)
-Daniel 5: trust conventioner: Daniel runs claude once in ~/projects/Conventioner and accepts the trust dialog (claude --bg in ~/projects/Conventioner says Workspace not trusted)
-Daniel 6: trust site: Daniel runs claude once in ~/projects/site and accepts the trust dialog (claude --bg in ~/projects/site says Workspace not trusted)
-Daniel 7: chrome: brew install --cask google-chrome (Google Chrome is not installed, so chrome-devtools-axi has no browser)
-Daniel 8: own settings: write this machine's own in ~/.claude/settings.json (\`claude auto-mode defaults\` shows the form); team-config keeps it (autoMode.environment not set here, so auto mode's classifier knows nothing of this machine)
-Daniel 9: restart: exit this Claude Code session and run claude again in $CODE_CHECKOUT, so the new user settings, skills and plugins load"
+Daniel 5: trust team home: Daniel runs claude once in $TEAM_HOME and accepts the trust dialog (claude --bg in $TEAM_HOME says Workspace not trusted)
+Daniel 6: trust conventioner: Daniel runs claude once in ~/projects/Conventioner and accepts the trust dialog (claude --bg in ~/projects/Conventioner says Workspace not trusted)
+Daniel 7: trust site: Daniel runs claude once in ~/projects/site and accepts the trust dialog (claude --bg in ~/projects/site says Workspace not trusted)
+Daniel 8: chrome: brew install --cask google-chrome (Google Chrome is not installed, so chrome-devtools-axi has no browser)
+Daniel 9: own settings: write this machine's own in ~/.claude/settings.json (\`claude auto-mode defaults\` shows the form); team-config keeps it (autoMode.environment not set here, so auto mode's classifier knows nothing of this machine)
+Daniel 10: restart: exit this Claude Code session and run claude again in $CODE_CHECKOUT, so the new user settings, skills and plugins load"
   # Only Daniel's steps fail: every tool line passes, and so do the projects' and the config's.
   assert_equal "$(stage_lines check | sed -n 's/^doctor: FAIL \([^:]*\):.*/\1/p' | sed 's/^secret .*/secret/' | uniq)" "docker
 secret
 opencode-gate
+trust team home
 trust conventioner
 trust site"
   assert_equal "$(stage_lines check | tail -n1)" "summary: not set up yet: only Daniel's steps above are left; then team-bootstrap again"
@@ -105,7 +107,7 @@ trust site"
   assert_equal "$(install_calls)" "$calls"
   assert_equal "$(grep -v '^check: ' <<<"$output" | grep -vc ': done')" 1
   assert_equal "$(stage_lines preflight | head -n1)" "macOS"
-  assert_equal "$(stage_lines check | grep -c '^Daniel')" 8
+  assert_equal "$(stage_lines check | grep -c '^Daniel')" 9
 }
 
 @test "--dry-run says what each stage would run and Daniel's steps, and changes nothing" {

@@ -95,6 +95,7 @@ every_tool_fails() {
     secret_ids | sed 's/^/secret /'
     echo opencode-gate
     echo records
+    echo 'trust team home'
     project_checks
     printf '%s\n' clock lease heartbeat offline)
   assert_equal "$(checks)" "$expected"
@@ -120,6 +121,7 @@ every_tool_fails() {
     secret_ids | sed 's/^/secret /'
     echo opencode-gate
     echo records
+    echo 'trust team home'
     project_checks
     printf '%s\n' clock lease heartbeat offline)
   assert_equal "$(checks)" "$expected"
