@@ -285,3 +285,49 @@ SH
   PATH=$old:$PATH run_bin team-doctor
   assert_equal "$(line_of 'tool python')" "PASS tool python: 3.12.4 at $brewed/python3 (minimum 3.11.0)"
 }
+
+# What lavish-axi prints, on stderr, when Node starts in a directory that no longer exists (report
+# F5): only Node's version, in its install path.
+lavish_crash="node:internal/bootstrap/switches/does_own_process_state:142
+    cachedCwd = rawMethods.cwd();
+                           ^
+
+Error: ENOENT: no such file or directory, uv_cwd
+    at process.wrappedCwd [as cwd] (node:internal/bootstrap/switches/does_own_process_state:142:28)
+    at Object.<anonymous> (/Users/danielchan/.nvm/versions/node/v22.19.0/lib/node_modules/lavish-axi/node_modules/depd/index.js:23:24)"
+
+@test "a version command that prints only another tool's version printed no version" {
+  tools_at arch
+  answer "lavish-axi --version" "$lavish_crash"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of 'tool lavish-axi')" \
+    'FAIL tool lavish-axi: `lavish-axi --version` printed no version; fix: npm install -g lavish-axi@0.1.36'
+  # A line before the version, a warning say, does not hide it.
+  answer "lavish-axi --version" $'(node:4242) Warning: something is deprecated\n0.1.36'
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'tool lavish-axi')" "PASS tool lavish-axi: 0.1.36"
+}
+
+@test "every version pattern starts at a line's start or names its tool, so another tool's version is never read as its own" {
+  jq -e '.tools | all(.[]; .version_pattern | startswith("^") or test("[A-Za-z]"))' "$LOCK"
+}
+
+@test "a doctor started in a directory that no longer exists says so, runs from HOME and passes" {
+  tools_at arch
+  # Claude Code and the Node tools fail without a working directory, as on the laptop.
+  local gone=$BATS_TEST_TMPDIR/load-check-wt
+  cat >"$TOOL_ANSWERS/claude/--version.sh" <<'SH'
+if [[ $PWD -ef . ]]; then echo '2.1.308 (Claude Code)'; else
+  echo "error: The current working directory was deleted, so that command didn't work." >&2; exit 1; fi
+SH
+  printf '%s\n' "if [[ \$PWD -ef . ]]; then echo 0.1.36; else cat >&2 <<'CRASH'" "$lavish_crash" CRASH \
+    'exit 1; fi' >"$TOOL_ANSWERS/lavish-axi/--version.sh"
+  rm "$TOOL_ANSWERS/claude/--version" "$TOOL_ANSWERS/lavish-axi/--version"
+  mkdir "$gone"
+  guard_sandbox
+  run -0 --separate-stderr bash -c 'cd "$1" && rmdir "$1" && exec "$2"' gone "$gone" "$REPO_ROOT/bin/team-doctor"
+  assert_contains "$stderr" "team-doctor: the current directory no longer exists; running from ~"
+  assert_equal "$(line_of 'tool claude')" "PASS tool claude: 2.1.308"
+  assert_equal "$(line_of 'tool lavish-axi')" "PASS tool lavish-axi: 0.1.36"
+  assert_equal "$(grep -v '^PASS ' <<<"$output" || true)" ""
+}

@@ -2,7 +2,9 @@
 #
 #   source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 #
-# It first applies bin/lib/platform.sh (Bash 5 or later; on macOS, Homebrew's GNU tools first on
+# Before anything else, a working directory that no longer exists (a folder deleted under the
+# caller's shell) is left for HOME, saying so on stderr, since Claude Code, Node and others fail
+# without one. It then applies bin/lib/platform.sh (Bash 5 or later; on macOS, Homebrew's GNU tools first on
 # PATH), and after --help puts the tool directories of bin/lib/tools.lock on PATH (team_tool_path),
 # exported, so every script and every session it starts runs with that one PATH. It sets
 # TEAM_HOME (unless already set, the first line of ~/.config/agent-team/home under
@@ -17,6 +19,13 @@
 # github, pr_part and task_state_json, and sets COORDINATOR_CHANNEL.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
 # shellcheck shell=bash
+
+# PWD names a directory other than ".", or none, once the one the shell is in is deleted. Read by
+# Bash 3.2 too, before platform.sh's version check.
+if [[ -z ${PWD:-} || ! $PWD -ef . ]]; then
+  echo "${0##*/}: the current directory no longer exists; running from ~" >&2
+  cd "$HOME" || exit 1
+fi
 
 # shellcheck source=bin/lib/platform.sh
 source "$(dirname "${BASH_SOURCE[0]}")/platform.sh"
