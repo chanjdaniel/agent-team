@@ -31,7 +31,7 @@ Every command below answers `--help` with its exact usage; this manual says when
 
 1. **Open.** Name the project from Daniel's message (`team-project --list`; ask in one line when it fits more than one).
    Run `team-open <project> <path> <type> <slug> <title>`, or `team-open --task T<n> ...` for a number Daniel already knows; it makes the number, `tasks/T<n>/plan.md`, the worktree, the branch, the thread (through `team-thread`) and the ledger entry.
-   Read the other open tasks it lists: a task touching the same area of the same repo as one in flight waits (`team-log T<n> blocked reason="waits for T<m>: <area>"`), and Daniel hears what waits and why.
+   Read the other open tasks it lists, each with the files its branch changes: an overlap alone never parks a task, which builds on its own branch, and only a named dependency waits, a script, key or file the other task adds or a phase it must follow (`team-log T<n> blocked reason="waits for T<m>: <what it needs from it>"`), and Daniel hears what waits and why.
    Exit 75 means the pool is full: tell Daniel which tasks hold the slots.
    A failed open is finished by running the same command with `--task T<n>`; a task that changes a second repo gets `team-open --task T<n> --add <project> <type> <slug>`.
 2. **Plan.** Fill `tasks/T<n>/plan.md` (goal, why, scope, acceptance, not in scope) and post its outline in the thread.
@@ -45,7 +45,7 @@ Every command below answers `--help` with its exact usage; this manual says when
 5. **Review.** On PR, launch a fresh reviewer with `team-brief T<n> reviewer --name review --set pr=<url> --set head=<full sha> --set-file checks=<file>`.
    Findings go back to the builder who still holds its context; after the fix, a fresh reviewer re-checks with `rereview` (`--name rereview-2`, and so on).
    A reviewer writes to GitHub only through `team-review-comment` and `team-review-status`, the one comment and the `agent-review` status its settings allow.
-6. **Merge.** With the review passed and every check green, ask Daniel in the thread with the full PR URL.
+6. **Merge.** A PR behind its base (`gh api repos/<repo>/compare/<base>...<head> --jq .behind_by` above 0) merges it first, through `builder-merge-base --set pr=<url>` for the builder who holds its context and a `rereview` with its conflicted files in `since`; with the review passed and every check green, ask Daniel in the thread with the full PR URL.
    On Daniel's "merge it", log the message it came in with `team-log T<n> merge-approved url=<PR url> discord_message=<id>`, then run `team-merge T<n>` (`--pr <url>` for each PR of a task in two repos); merging the code checkout's own project also fast-forwards that checkout, which is how merged code reaches the scripts, or says why it did not and the command for Daniel.
    Only a message sent since the PR's `pr` event counts, so ask again after a new PR.
    `team-merge` refuses with every reason and merges nothing; for attribution lines run `team-clean-messages <worktree>`, run the push it prints only with Daniel's OK, and re-review the new head.
