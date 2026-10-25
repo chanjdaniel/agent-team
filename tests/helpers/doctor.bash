@@ -283,6 +283,14 @@ checks() {
   sed -E 's/^(PASS|WARN|FAIL) ([^:]+): .*/\2/' <<<"$output"
 }
 
+# Whether <word> is one of the other arguments: among <word> <word>...
+# A loop, not printf | grep -q: under pipefail, grep leaving at its match can kill printf with
+# SIGPIPE before it is done, which reads as no match on a busy machine.
+among() {
+  local word
+  for word in "${@:2}"; do [[ $word != "$1" ]] || return 0; done
+  return 1
+}
 
 # The tool <name> of the sandbox's OS (Darwin or not, by the uname stub) answers its version_cmd
 # at its pin or min from now on, as if just installed: mark_installed <name>...
@@ -290,7 +298,7 @@ mark_installed() {
   local os=arch name cmd version
   [[ $(cat "$STUB_FIXTURES/uname.out" 2>/dev/null) != Darwin ]] || os=macos
   while IFS=$'\t' read -r name cmd version _; do
-    if printf '%s\n' "$@" | grep -qxF -- "$name"; then answer "$cmd" "${FORMAT[$name]//%s/$version}"; fi
+    if among "$name" "$@"; then answer "$cmd" "${FORMAT[$name]//%s/$version}"; fi
   done < <(lock_tools "$os")
 }
 
@@ -304,7 +312,7 @@ installed_from() {
   while IFS=$'\t' read -r name _ _ source; do
     [[ $source == "$prefix"* ]] || continue
     all=1
-    for pkg in ${source#"$prefix"}; do printf '%s\n' "$@" | grep -qxF -- "$pkg" || all=0; done
+    for pkg in ${source#"$prefix"}; do among "$pkg" "$@" || all=0; done
     ((!all)) || mark_installed "$name"
   done < <(lock_tools "$os")
 }
