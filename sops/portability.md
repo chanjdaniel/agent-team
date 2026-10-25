@@ -53,6 +53,7 @@ Two repositories hold the team, each checked out on every machine:
 ## The heartbeat
 
 `team-timers enable` installs one job every 5 minutes on the holder (systemd on Arch, launchd on macOS, plus `caffeinate -i` on a Mac) running `team-timers run`: probe GitHub, renew the lease once the last renewal is 15 minutes old, and checkpoint once the last checkpoint is 15 minutes old.
+Once Daniel turns each on, it also stops idle stacks and runs `team-janitor` daily (`sops/docker.md`, "The heartbeat's steps"); both ship off.
 It is enabled only on the holder: `team-resume` enables it, `team-handoff` disables it, and a run on a machine that does not hold the lease changes nothing.
 
 ## Checkpoints
