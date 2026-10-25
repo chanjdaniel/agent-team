@@ -86,6 +86,35 @@ def epoch:
      - if $zone == "Z" then 0
        else (if $zone[0:1] == "-" then -1 else 1 end) * (($zone[1:3] | tonumber) * 3600 + ($zone[3:5] | tonumber) * 60) end][0];
 
+# The machine's stack settings (~/.config/agent-team/stack.json), every key optional, each with
+# its default and its kind, which team-stack and the heartbeat (team-timers) both read.
+def settings_defaults:
+  {stack_cap: 6, memory_floor_gib: 6, disk_floor_gb: 30, wait_minutes: 15, idle_minutes: 30,
+   heartbeat_sweep: false, heartbeat_janitor: false};
+def settings_kinds:
+  {stack_cap: "count", memory_floor_gib: "amount", disk_floor_gb: "amount", wait_minutes: "amount",
+   idle_minutes: "amount", heartbeat_sweep: "boolean", heartbeat_janitor: "boolean"};
+
+# What is wrong with the settings file's JSON values (read with jq -s), to follow its name: ""
+# when nothing, " is not one JSON object", or ": <problem>; <problem>..." naming each key of the
+# wrong type and each unknown key.
+def settings_problems:
+  settings_kinds as $kinds
+  | if length != 1 or (.[0] | type) != "object" then " is not one JSON object"
+    else [.[0] | to_entries[] | $kinds[.key] as $kind | (.value | tojson) as $value
+      | if $kind == null then "\(.key) is not a setting (they are: \($kinds | keys_unsorted | join(", ")))"
+        elif $kind == "count" and ((.value | type) != "number" or .value < 1 or .value != (.value | floor)) then
+          "\(.key) must be a whole number of 1 or more, not \($value)"
+        elif $kind == "amount" and ((.value | type) != "number" or .value < 0) then
+          "\(.key) must be a number of 0 or more, not \($value)"
+        elif $kind == "boolean" and (.value | type) != "boolean" then "\(.key) must be true or false, not \($value)"
+        else empty end]
+      | if . == [] then "" else ": " + join("; ") end
+    end;
+
+# Every setting, the given ones (the settings file's one object, or none) over the defaults.
+def settings: settings_defaults + (.[0] // {});
+
 # Rows (arrays of strings) as lines of left-aligned columns two spaces apart; nothing for no
 # rows.
 def table:

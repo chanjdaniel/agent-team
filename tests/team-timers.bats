@@ -5,6 +5,7 @@
 # test reaches this machine's own systemd. home-pc holds the lease on a bare origin.
 
 load helpers/common
+load helpers/docker
 
 setup() {
   sandbox
@@ -638,6 +639,175 @@ EOF
   flock "${log%/*}/heartbeat.lock" "$REPO_ROOT/bin/team-timers" run >"$BATS_TEST_TMPDIR/out" || true
   assert_contains "$(cat "$BATS_TEST_TMPDIR/out")" "run: another run is still going; skipped"
   assert_equal "$(lease_tip)" "$tip"
+}
+
+# The machine's stack settings, ~/.config/agent-team/stack.json under <home> (default HOME):
+# stack_json <JSON> [<home>]
+stack_json() {
+  mkdir -p "${2:-$HOME}/.config/agent-team"
+  printf '%s\n' "$1" >"${2:-$HOME}/.config/agent-team/stack.json"
+}
+
+# The stub docker's fixture machine (tests/helpers/docker.bash) with no live session, so the
+# sweep stops its running team stack conventioner-2 of T7 and the reaper removes three stacks.
+docker_machine() {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  stack_project shop
+  docker_stub "$STACK_WORKTREE"
+  reap_machine
+  stub_reply claude '[]'
+  discord_answers
+}
+
+# The steps a run's output logged, in order, each run of lines once: steps <output>
+steps() {
+  sed -E 's/^[^ ]+ ([a-z]+): .*$/\1/' <<<"$1" | uniq | paste -sd ' '
+}
+
+# The day's janitor report, by local date.
+day_report() {
+  echo "$HOME/.local/state/agent-team/janitor/$(date +%F).md"
+}
+
+@test "the stacks and janitor steps are off without stack.json and while their keys are false: no line, no call" {
+  docker_machine
+  run_bin -0 team-timers run
+  assert_equal "$(steps "$output")" "lease checkpoint"
+  stack_json '{"heartbeat_sweep": false, "heartbeat_janitor": false, "idle_minutes": 0}'
+  run_bin -0 team-timers run
+  assert_equal "$(steps "$output")" "lease checkpoint"
+  assert_equal "$(docker_calls)" ""
+  [[ ! -e $HOME/.local/state/agent-team/janitor && ! -e $HOME/.local/state/agent-team/stacks ]]
+}
+
+@test "with heartbeat_sweep on, the stacks step sweeps before the checkpoint, a log line per line the sweep prints" {
+  docker_machine
+  stack_json '{"heartbeat_sweep": true}'
+  run_bin -0 team-timers run
+  assert_equal "$output" "$(cat "$log")"
+  assert_equal "$(steps "$output")" "lease stacks checkpoint"
+  [[ $(grep ' stacks: ' <<<"$output") =~ ^[0-9T:Z-]+" stacks: "[0-9T:Z-]+" stopped conventioner-2 of T7 in $STACK_WORKTREE: not seen busy since its start at "[0-9T:Z-]+" (idle_minutes 30), its data kept"$ ]]
+  assert_equal "$(docker_calls | sed -n 's/^compose -p \(.*\) stop$/\1/p')" conventioner-2
+  # A sweep that stops nothing prints nothing, so the step logs nothing; the janitor stays off.
+  run_bin -0 team-timers run
+  assert_equal "$(steps "$output")" "lease checkpoint"
+  [[ ! -e $HOME/.local/state/agent-team/janitor ]]
+}
+
+@test "with heartbeat_janitor on, the janitor step runs team-janitor after the checkpoint, once a local day" {
+  docker_machine
+  stack_json '{"heartbeat_janitor": true}'
+  local report
+  report=$(day_report)
+  # A dry run's report is no run of the day.
+  mkdir -p "${report%/*}"
+  echo "# a preview" >"${report%.md}-dry-run.md"
+  run_bin -0 team-timers run
+  assert_equal "$(steps "$output")" "lease checkpoint janitor"
+  assert_equal "$(grep -c ' janitor: ' <<<"$output")" 1
+  [[ $(tail -n 1 <<<"$output") =~ ^[0-9T:Z-]+" janitor: No alerts. Removed 3 objects, ".*" Report: ~/.local/state/agent-team/janitor/$(date +%F).md."$ ]]
+  [[ -s $report ]]
+  docker_calls | grep -qx 'compose -p conventioner-4 down -v --remove-orphans'
+  # Today's report is there, so the next runs leave Docker alone.
+  local calls
+  calls=$(docker_calls | wc -l)
+  run_bin -0 team-timers run
+  assert_equal "$(steps "$output")" "lease checkpoint"
+  assert_equal "$(docker_calls | wc -l)" "$calls"
+}
+
+@test "a failing step is logged with its reason, the steps after it still run, and the run exits 1" {
+  docker_machine
+  stack_json '{"heartbeat_sweep": true, "heartbeat_janitor": true}'
+  stub_script claude <<'EOF'
+echo "claude: the session list is down" >&2
+exit 1
+EOF
+  run_bin -1 team-timers run
+  assert_equal "$output" "$(cat "$log")"
+  assert_equal "$(steps "$output")" "lease stacks checkpoint janitor"
+  [[ $(grep ' stacks: ' <<<"$output") =~ ^[0-9T:Z-]+" stacks: failed: ".*"the session list is down" ]]
+  assert_contains "$(grep ' janitor: ' <<<"$output")" "No alerts."
+  [[ -s $(day_report) ]]
+
+  # Docker not answering: the sweep has nothing to sweep, and the janitor fails, its report then
+  # the day's, so it is not run again that day.
+  stub_reply claude '[]'
+  rm "$(day_report)"
+  docker_down
+  run_bin -1 team-timers run
+  assert_equal "$(steps "$output")" "lease stacks checkpoint janitor"
+  assert_contains "$(grep ' stacks: ' <<<"$output")" " stacks: team-stack: Docker does not answer ("
+  [[ $(tail -n 1 <<<"$output") =~ ^[0-9T:Z-]+" janitor: failed: Docker does not answer: " ]]
+  assert_contains "$(grep ' janitor: ' <<<"$output" | head -n 1)" "Docker does not answer ("
+  [[ -s $(day_report) ]]
+  run_bin -0 team-timers run
+  assert_equal "$(steps "$output")" "lease stacks checkpoint"
+
+  # A checkpoint that fails ends the run, as it always has: the janitor waits for the next run.
+  rm "$(day_report)"
+  mkdir -p "$TEAM_HOME/memory/home"
+  echo "- a note" >"$TEAM_HOME/memory/home/MEMORY.md"
+  git -C "$TEAM_HOME" checkout -q --detach
+  touch -d '-15 minutes' "$HOME/.local/state/agent-team/last-checkpoint"
+  run_bin -1 team-timers run
+  assert_equal "$(steps "$output")" "lease stacks checkpoint"
+  [[ $(tail -n 1 <<<"$output") =~ " checkpoint: failed: team home: not on a branch, so the records are not committed"$ ]]
+  [[ ! -e $(day_report) ]]
+}
+
+@test "a malformed stack.json fails each step with the reason, never the run, and the checkpoint still runs" {
+  docker_machine
+  local file=$HOME/.config/agent-team/stack.json
+  stack_json '{"heartbeat_sweep": "yes", "heartbeat_janitor": true}'
+  run_bin -1 team-timers run
+  assert_equal "$(steps "$output")" "lease stacks checkpoint janitor"
+  [[ $(grep ' stacks: ' <<<"$output") =~ ^[0-9T:Z-]+" stacks: failed: $file: heartbeat_sweep must be true or false, not \"yes\""$ ]]
+  [[ $(grep ' janitor: ' <<<"$output") =~ ^[0-9T:Z-]+" janitor: failed: $file: heartbeat_sweep must be true or false, not \"yes\""$ ]]
+  stack_json '{"heartbeat_sweep": true,'
+  run_bin -1 team-timers run
+  assert_equal "$(steps "$output")" "lease stacks checkpoint janitor"
+  assert_contains "$(grep ' stacks: ' <<<"$output")" " stacks: failed: $file is not JSON: "
+  stack_json '[true]'
+  run_bin -1 team-timers run
+  [[ $(grep ' janitor: ' <<<"$output") =~ " janitor: failed: $file is not one JSON object"$ ]]
+  assert_equal "$(docker_calls)" ""
+}
+
+@test "neither step runs off the lease, while another run holds the lock, offline or on a fenced machine; both run after the back step" {
+  docker_machine
+  stack_json '{"heartbeat_sweep": true, "heartbeat_janitor": true}'
+  local state=$HOME/.local/state/agent-team calls
+  make_machine laptop
+  stack_json '{"heartbeat_sweep": true, "heartbeat_janitor": true}' "$BATS_TEST_TMPDIR/machines/laptop/home"
+  on_machine laptop run_bin -0 team-timers run
+  assert_equal "$(steps "$output")" "lease"
+
+  mkdir -p "$state"
+  run flock "$state/heartbeat.lock" "$REPO_ROOT/bin/team-timers" run
+  assert_equal "$(steps "$output")" "run"
+
+  stub_sleep </dev/null
+  cut_origin
+  run_bin -75 team-timers run
+  assert_equal "$(steps "$output")" "probe"
+  run_bin -75 team-timers run
+  assert_equal "$(steps "$output")" "probe"
+  assert_equal "$(docker_calls)" ""
+
+  git -C "$TEAM_HOME" remote set-url origin "$origin"
+  run_bin -0 team-timers run
+  assert_equal "$(steps "$output")" "back stacks checkpoint janitor"
+
+  steal_lease laptop home-pc
+  calls=$(docker_calls | wc -l)
+  run_bin -0 team-timers run
+  assert_contains "$output" "fenced home-pc"
+  assert_equal "$(steps "$output")" "lease"
+  run_bin -0 team-timers run
+  assert_contains "$output" "home-pc is fenced since "
+  assert_equal "$(steps "$output")" "lease"
+  assert_equal "$(docker_calls | wc -l)" "$calls"
 }
 
 @test "watch prints a line when the offline flag appears and when it goes, checking every 60 s, and nothing in between" {

@@ -96,7 +96,7 @@ A task you park on Daniel or anything outside the team gets `team-log T<n> waiti
 
 - One machine at a time runs the team, the holder of the lease: `team-lease status` names it, and `team-lease check` says whether it is this one.
   Take, renew or release it, and turn its heartbeat on with `team-timers enable`, only with Daniel's yes; a steal is typed by Daniel alone, in their own terminal.
-- `team-timers` is the heartbeat on the holder, every 5 minutes: it probes GitHub, renews the lease and checkpoints; `team-timers disable` before the lease leaves this machine (a handoff does).
+- `team-timers` is the heartbeat on the holder, every 5 minutes: it probes GitHub, renews the lease and checkpoints, and once Daniel turns each on it stops idle stacks and runs `team-janitor` daily; `team-timers disable` before the lease leaves this machine (a handoff does).
 - `team-checkpoint` makes work in flight survive a dead machine: it archives each open task's task directories, keeps each worktree's work, uncommitted changes included, on `wip/<project>/T<n>` on the team home's origin, never the project's, and commits `tasks/*/scratch*/`, `memory/` and `ledger.jsonl` on `dev` as `chore: checkpoint`; the heartbeat runs it every 15 minutes, and `team-checkpoint --force` makes one now, as a handoff does.
 - A machine that finds another holder fences itself: it stops its coordinator and workers and its heartbeat, and a hook blocks its Discord posts, pushes, `team-merge`, `team-open` and `team-close`.
   Such a call blocked as fenced or lost means another machine runs the team: post nothing, run nothing more, end the turn.

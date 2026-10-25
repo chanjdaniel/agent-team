@@ -130,8 +130,9 @@
 # The machine's settings, ~/.config/agent-team/stack.json, a JSON object whose keys are all
 # optional: stack_cap (a whole number of 1 or more, default 6), memory_floor_gib (6),
 # disk_floor_gb (30), wait_minutes (15), idle_minutes (30), each a number of 0 or more,
-# heartbeat_sweep and heartbeat_janitor (true or false, default false). up and sweep refuse a file
-# that is not one JSON object, a key of the wrong type and an unknown key, naming each.
+# heartbeat_sweep and heartbeat_janitor (true or false, default false, read by team-timers run).
+# up, sweep and the heartbeat refuse a file that is not one JSON object, a key of the wrong type
+# and an unknown key, naming each.
 # Test seams: TEAM_MEMINFO names a file read in place of /proc/meminfo, and
 # TEAM_STACK_RECHECK_SECONDS replaces the 30 seconds between admission checks.
 #
@@ -545,34 +546,18 @@ run_seed() {
 }
 
 # The machine's stack settings, every key optional, into $WORK/settings.json with the defaults
-# filled in; a file that is not one JSON object, a key of the wrong type or an unknown key is
-# refused with the reason.
+# filled in (settings in bin/lib/stack.jq); a file that is not one JSON object, a key of the wrong
+# type or an unknown key is refused with the reason.
 stack_settings() {
   local file=$HOME/.config/agent-team/stack.json problems
-  echo '{}' >"$WORK/settings-given.json"
+  echo '[]' >"$WORK/settings-given.json"
   if [[ -e $file ]]; then
     jq -s . "$file" >"$WORK/settings-given.json" 2>"$WORK/settings.err" ||
       die "$file is not JSON: $(last_reason "$WORK/settings.err" "jq could not read it")"
-    problems=$(jq -r '
-      {stack_cap: "count", memory_floor_gib: "amount", disk_floor_gb: "amount", wait_minutes: "amount",
-       idle_minutes: "amount", heartbeat_sweep: "boolean", heartbeat_janitor: "boolean"} as $kinds
-      | if length != 1 or (.[0] | type) != "object" then "is not one JSON object"
-        else [.[0] | to_entries[] | $kinds[.key] as $kind | (.value | tojson) as $value
-          | if $kind == null then "\(.key) is not a setting (they are: \($kinds | keys_unsorted | join(", ")))"
-            elif $kind == "count" and ((.value | type) != "number" or .value < 1 or .value != (.value | floor)) then
-              "\(.key) must be a whole number of 1 or more, not \($value)"
-            elif $kind == "amount" and ((.value | type) != "number" or .value < 0) then
-              "\(.key) must be a number of 0 or more, not \($value)"
-            elif $kind == "boolean" and (.value | type) != "boolean" then "\(.key) must be true or false, not \($value)"
-            else empty end]
-          | if . == [] then "" else ": " + join("; ") end
-        end' "$WORK/settings-given.json")
-    [[ -z $problems ]] || die "$file$([[ $problems == :* ]] || echo ' ')$problems"
-    jq '.[0]' "$WORK/settings-given.json" >"$WORK/settings-file.json"
-    mv "$WORK/settings-file.json" "$WORK/settings-given.json"
+    problems=$(jq -r -L "$TEAM_LIB" 'include "stack"; settings_problems' "$WORK/settings-given.json")
+    [[ -z $problems ]] || die "$file$problems"
   fi
-  jq '{stack_cap: 6, memory_floor_gib: 6, disk_floor_gb: 30, wait_minutes: 15, idle_minutes: 30,
-    heartbeat_sweep: false, heartbeat_janitor: false} + .' "$WORK/settings-given.json" >"$WORK/settings.json"
+  jq -L "$TEAM_LIB" 'include "stack"; settings' "$WORK/settings-given.json" >"$WORK/settings.json"
 }
 
 # The setting <key>, from $WORK/settings.json.
