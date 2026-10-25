@@ -1,0 +1,88 @@
+[
+  {
+    "Name": "bridge",
+    "Id": "2abbb94dae4414e409d2c160168e78145e2c24dfda824d43a98b4b22cfbadd7d",
+    "Created": "2026-10-23T10:23:42.165745183+08:00",
+    "Scope": "local",
+    "Driver": "bridge",
+    "Labels": {}
+  },
+  {
+    "Name": "host",
+    "Id": "06960b01089df9d37ac792d6920b2d20da23a728b87147742ec7913d49ad6b61",
+    "Created": "2025-08-31T11:59:51.065207494+08:00",
+    "Scope": "local",
+    "Driver": "host",
+    "Labels": {}
+  },
+  {
+    "Name": "none",
+    "Id": "65f8b31dcd1f1ac3d046e652d82fbb625a13d2bf3f84426583ce622932b2b745",
+    "Created": "2025-08-31T11:59:51.057365419+08:00",
+    "Scope": "local",
+    "Driver": "null",
+    "Labels": {}
+  },
+  {
+    "Name": "conventioner_conventioner_network",
+    "Id": "52796a6a83845e4d87864f4ac0b9210c3e51695d27e5365b02db9d1704c8411a",
+    "Created": "2026-10-03T20:04:01.892913459+08:00",
+    "Scope": "local",
+    "Driver": "bridge",
+    "Labels": {
+      "com.docker.compose.config-hash": "ccd88662777c8205ac757229f3a56ea3c36f70aafc423b4a55a331692ba9b046",
+      "com.docker.compose.network": "conventioner_network",
+      "com.docker.compose.project": "conventioner",
+      "com.docker.compose.version": "5.6.1"
+    }
+  },
+  {
+    "Name": "conventioner-2_conventioner_network",
+    "Id": "43def0d8f1c6daeacba1e6acfd214c75824df3f98007ccaf8363b68a14740f99",
+    "Created": "2026-10-24T17:00:00.000000000+08:00",
+    "Scope": "local",
+    "Driver": "bridge",
+    "Labels": {
+      "com.docker.compose.config-hash": "d45c4309754dd6ea89dfc05c40bc67307533832d70f893f866e3443f4f92c999",
+      "com.docker.compose.network": "conventioner_network",
+      "com.docker.compose.project": "conventioner-2",
+      "com.docker.compose.version": "5.6.1",
+      "io.github.chanjdaniel.team.owner": "agent-team",
+      "io.github.chanjdaniel.team.task": "T7",
+      "io.github.chanjdaniel.team.kind": "dev",
+      "io.github.chanjdaniel.team.worktree": "@WORKTREE@",
+      "io.github.chanjdaniel.team.expires": ""
+    }
+  },
+  {
+    "Name": "nmtest-1895520_conventioner_network",
+    "Id": "2cdbef08f052f0bf57e9ce143df901c37f4e3dbcac3ce92c222d8eb6d057e37c",
+    "Created": "2026-10-24T18:55:00.000000000+08:00",
+    "Scope": "local",
+    "Driver": "bridge",
+    "Labels": {
+      "com.docker.compose.config-hash": "85e98773b69cca92cd03a9b3bb59631966fa3ca62f2abb1ffc643c586a1b00c1",
+      "com.docker.compose.network": "conventioner_network",
+      "com.docker.compose.project": "nmtest-1895520",
+      "com.docker.compose.version": "5.6.1",
+      "io.github.chanjdaniel.team.owner": "",
+      "io.github.chanjdaniel.team.task": "",
+      "io.github.chanjdaniel.team.kind": "gate",
+      "io.github.chanjdaniel.team.worktree": "@HOME@/.no-mistakes/worktrees/01KQ3V2M8Z/Conventioner",
+      "io.github.chanjdaniel.team.expires": "2026-10-24T12:55:00Z"
+    }
+  },
+  {
+    "Name": "nmtest-12822_conventioner_network",
+    "Id": "b7cec98abeae2737d83a18f5ebf4defe738120e9e1afab03642e3518b536855c",
+    "Created": "2026-10-21T16:00:00.000000000+08:00",
+    "Scope": "local",
+    "Driver": "bridge",
+    "Labels": {
+      "com.docker.compose.config-hash": "dd6e52f90486a36d9ab360d2a3bdf0d18f99b1e894157c2279e1f4666bbdf30e",
+      "com.docker.compose.network": "conventioner_network",
+      "com.docker.compose.project": "nmtest-12822",
+      "com.docker.compose.version": "5.6.1"
+    }
+  }
+]

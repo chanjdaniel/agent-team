@@ -1,5 +1,5 @@
 // A throwaway local MongoDB for the toolkit tests: one container per test file, at the exact
-// version production runs, on a random loopback port, removed when the file is done.
+// version production runs, on a random loopback port, removed with its volumes when the file is done.
 //
 //   const db = await startMongo();           before()
 //   db.uri(user, password, options)          a connection string for a test user
@@ -8,7 +8,8 @@
 //   await db.seed(database, { collection: [documents] })   beforeEach(): drop, then insert
 //   db.client                                a driver client as root, for checking the data
 //   await db.stop();                         after()
-// startMongo waits for the server with connectWhenReady, exported for its own test.
+// startMongo waits for the server with connectWhenReady, and stop() removes the container with
+// removeContainer; both are exported for their own tests.
 import { execFileSync, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createRequire } from "node:module";
@@ -23,6 +24,13 @@ export const mongoImage = "mongo:8.0.34@sha256:4a4ab5d4834207389e0d7270fac988e21
 const { MongoClient } = createRequire(join(repoRoot, "servers", "package.json"))("mongodb");
 
 const docker = (...args) => execFileSync("docker", args, { encoding: "utf8" }).trim();
+
+// Removes container <name> with its anonymous volumes (the image's /data/db and /data/configdb):
+// a forced removal never lets `docker run --rm` remove them, so without --volumes each container
+// left two behind.
+export function removeContainer(name) {
+  docker("rm", "--force", "--volumes", name);
+}
 
 export async function startMongo() {
   const rootPassword = randomBytes(12).toString("hex");
@@ -54,11 +62,11 @@ export async function startMongo() {
       },
       async stop() {
         await client.close();
-        docker("rm", "--force", name);
+        removeContainer(name);
       },
     };
   } catch (error) {
-    docker("rm", "--force", name);
+    removeContainer(name);
     throw error;
   }
 }

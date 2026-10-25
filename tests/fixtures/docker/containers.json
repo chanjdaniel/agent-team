@@ -1,0 +1,389 @@
+[
+  {
+    "Id": "8a6427d947e0c90052ceb7da5688b50021075f1068603fedc83b5e394d852551",
+    "Name": "/conventioner-mongodb-1",
+    "Created": "2026-10-18T16:54:02.786391686Z",
+    "State": {
+      "Status": "exited",
+      "Running": false,
+      "OOMKilled": false,
+      "ExitCode": 137,
+      "StartedAt": "2026-10-23T02:23:42.296716519Z",
+      "FinishedAt": "2026-10-23T07:13:54.565366998Z"
+    },
+    "Image": "sha256:72404c1083af5306608b7487184154a199b7d183f4ef250339f3c1a0b72e2523",
+    "Mounts": [
+      {
+        "Type": "volume",
+        "Name": "f8d96e008758d020ea34d0411633d8ca076069b3efe8f765778a74259c7d8cc2",
+        "Source": "/var/lib/docker/volumes/f8d96e008758d020ea34d0411633d8ca076069b3efe8f765778a74259c7d8cc2/_data",
+        "Destination": "/data/configdb",
+        "Driver": "local"
+      },
+      {
+        "Type": "volume",
+        "Name": "conventioner_mongodb_data",
+        "Source": "/var/lib/docker/volumes/conventioner_mongodb_data/_data",
+        "Destination": "/data/db",
+        "Driver": "local"
+      },
+      {
+        "Type": "bind",
+        "Name": null,
+        "Source": "@HOME@/Documents/projects/personal/Conventioner/back-end/mongo-init.js",
+        "Destination": "/docker-entrypoint-initdb.d/mongo-init.js",
+        "Driver": null
+      }
+    ],
+    "Config": {
+      "Image": "mongo:7",
+      "Labels": {
+        "com.docker.compose.config-hash": "3fe0c640619c6b8038403c3a0259d5bca32b072206be5b369214400eaf5d8f7f",
+        "com.docker.compose.container-number": "1",
+        "com.docker.compose.image": "sha256:72404c1083af5306608b7487184154a199b7d183f4ef250339f3c1a0b72e2523",
+        "com.docker.compose.oneoff": "False",
+        "com.docker.compose.project": "conventioner",
+        "com.docker.compose.project.config_files": "@HOME@/Documents/projects/personal/Conventioner/docker-compose.yml",
+        "com.docker.compose.project.working_dir": "@HOME@/Documents/projects/personal/Conventioner",
+        "com.docker.compose.service": "mongodb",
+        "com.docker.compose.version": "5.6.1"
+      }
+    },
+    "HostConfig": {
+      "Memory": 0
+    }
+  },
+  {
+    "Id": "9b1e28bfc32bb28b9aebba979fcd35d1d3587117efd9e34eaacf0eb14776e5c1",
+    "Name": "/conventioner-frontend-1",
+    "Created": "2026-10-18T16:54:02.891261874Z",
+    "State": {
+      "Status": "exited",
+      "Running": false,
+      "OOMKilled": false,
+      "ExitCode": 137,
+      "StartedAt": "2026-10-23T02:23:42.309772126Z",
+      "FinishedAt": "2026-10-23T07:13:54.543396205Z"
+    },
+    "Image": "sha256:d8758aaef417acd76a51870aff9bcb713acea43f4b5de0a62152f1db765bb32c",
+    "Mounts": [
+      {
+        "Type": "bind",
+        "Name": null,
+        "Source": "@HOME@/Documents/projects/personal/Conventioner/front-end",
+        "Destination": "/app",
+        "Driver": null
+      },
+      {
+        "Type": "volume",
+        "Name": "0a4c042e60f521e1fe4b878ae5a0513fcfd83294279dd18fef88c940ab0120ab",
+        "Source": "/var/lib/docker/volumes/0a4c042e60f521e1fe4b878ae5a0513fcfd83294279dd18fef88c940ab0120ab/_data",
+        "Destination": "/app/node_modules",
+        "Driver": "local"
+      }
+    ],
+    "Config": {
+      "Image": "conventioner-frontend",
+      "Labels": {
+        "com.docker.compose.config-hash": "5af953c6276e4515f661815b91ec4a33fc9cdb15e45ff96ac24eda865bbb5227",
+        "com.docker.compose.container-number": "1",
+        "com.docker.compose.image": "sha256:d8758aaef417acd76a51870aff9bcb713acea43f4b5de0a62152f1db765bb32c",
+        "com.docker.compose.oneoff": "False",
+        "com.docker.compose.project": "conventioner",
+        "com.docker.compose.project.config_files": "@HOME@/Documents/projects/personal/Conventioner/docker-compose.yml",
+        "com.docker.compose.project.working_dir": "@HOME@/Documents/projects/personal/Conventioner",
+        "com.docker.compose.service": "frontend",
+        "com.docker.compose.version": "5.6.1"
+      }
+    },
+    "HostConfig": {
+      "Memory": 0
+    }
+  },
+  {
+    "Id": "5f1f5ad99257236ecf377358e9f0711aeb3960341b480b08827137735d6bb577",
+    "Name": "/conventioner-2-mongodb-1",
+    "Created": "2026-10-24T09:00:00.000000000Z",
+    "State": {
+      "Status": "running",
+      "Running": true,
+      "OOMKilled": false,
+      "ExitCode": 0,
+      "StartedAt": "2026-10-24T09:00:01.000000000Z",
+      "FinishedAt": "0001-01-01T00:00:00Z"
+    },
+    "Image": "sha256:72404c1083af5306608b7487184154a199b7d183f4ef250339f3c1a0b72e2523",
+    "Mounts": [
+      {
+        "Type": "volume",
+        "Name": "7c0fe2adb730873a9c2c1f098ffd118cb3e139f25df2142c6149be650ce5f00e",
+        "Source": "/var/lib/docker/volumes/7c0fe2adb730873a9c2c1f098ffd118cb3e139f25df2142c6149be650ce5f00e/_data",
+        "Destination": "/data/configdb",
+        "Driver": "local"
+      },
+      {
+        "Type": "volume",
+        "Name": "conventioner-2_mongodb_data",
+        "Source": "/var/lib/docker/volumes/conventioner-2_mongodb_data/_data",
+        "Destination": "/data/db",
+        "Driver": "local"
+      }
+    ],
+    "Config": {
+      "Image": "mongo:7",
+      "Labels": {
+        "com.docker.compose.config-hash": "3a167e36d23a569750db0907bb437a91c7eb5789767736a19f86c94fcc7463f6",
+        "com.docker.compose.container-number": "1",
+        "com.docker.compose.image": "sha256:72404c1083af5306608b7487184154a199b7d183f4ef250339f3c1a0b72e2523",
+        "com.docker.compose.oneoff": "False",
+        "com.docker.compose.project": "conventioner-2",
+        "com.docker.compose.project.config_files": "@WORKTREE@/docker-compose.yml",
+        "com.docker.compose.project.working_dir": "@WORKTREE@",
+        "com.docker.compose.service": "mongodb",
+        "com.docker.compose.version": "5.6.1",
+        "io.github.chanjdaniel.team.owner": "agent-team",
+        "io.github.chanjdaniel.team.task": "T7",
+        "io.github.chanjdaniel.team.kind": "dev",
+        "io.github.chanjdaniel.team.worktree": "@WORKTREE@",
+        "io.github.chanjdaniel.team.expires": ""
+      }
+    },
+    "HostConfig": {
+      "Memory": 1073741824
+    }
+  },
+  {
+    "Id": "6ba7777f3b0ab3f527a1ad5b35b757f094f7b81ef41283e5a6c7f002431da4d1",
+    "Name": "/conventioner-2-backend-1",
+    "Created": "2026-10-24T09:00:00.100000000Z",
+    "State": {
+      "Status": "running",
+      "Running": true,
+      "OOMKilled": false,
+      "ExitCode": 0,
+      "StartedAt": "2026-10-24T09:00:02.000000000Z",
+      "FinishedAt": "0001-01-01T00:00:00Z"
+    },
+    "Image": "sha256:bdd239294826103d6254a6d94bacc82e822885185f56c69cb799ec5124c0aa40",
+    "Mounts": [
+      {
+        "Type": "bind",
+        "Name": null,
+        "Source": "@WORKTREE@/back-end",
+        "Destination": "/app",
+        "Driver": null
+      },
+      {
+        "Type": "volume",
+        "Name": "conventioner-2_backend_sessions",
+        "Source": "/var/lib/docker/volumes/conventioner-2_backend_sessions/_data",
+        "Destination": "/app/flask_session",
+        "Driver": "local"
+      }
+    ],
+    "Config": {
+      "Image": "conventioner/backend:4943b69bbb33",
+      "Labels": {
+        "com.docker.compose.config-hash": "f3d790fb9e53fe0b0277f2d0e7873a27be12ea89171b7e88294fac52cd212887",
+        "com.docker.compose.container-number": "1",
+        "com.docker.compose.image": "sha256:bdd239294826103d6254a6d94bacc82e822885185f56c69cb799ec5124c0aa40",
+        "com.docker.compose.oneoff": "False",
+        "com.docker.compose.project": "conventioner-2",
+        "com.docker.compose.project.config_files": "@WORKTREE@/docker-compose.yml",
+        "com.docker.compose.project.working_dir": "@WORKTREE@",
+        "com.docker.compose.service": "backend",
+        "com.docker.compose.version": "5.6.1",
+        "io.github.chanjdaniel.team.owner": "agent-team",
+        "io.github.chanjdaniel.team.task": "T7",
+        "io.github.chanjdaniel.team.kind": "dev",
+        "io.github.chanjdaniel.team.worktree": "@WORKTREE@",
+        "io.github.chanjdaniel.team.expires": ""
+      }
+    },
+    "HostConfig": {
+      "Memory": 805306368
+    }
+  },
+  {
+    "Id": "42f1faec4642e6a5dcc6d76ef72f90870b681578355ac8e3b5649cac8fd6cf58",
+    "Name": "/conventioner-4-backend-1",
+    "Created": "2026-10-20T03:00:00.000000000Z",
+    "State": {
+      "Status": "exited",
+      "Running": false,
+      "OOMKilled": false,
+      "ExitCode": 137,
+      "StartedAt": "2026-10-20T03:00:02.000000000Z",
+      "FinishedAt": "2026-10-20T05:00:00.000000000Z"
+    },
+    "Image": "sha256:bdd239294826103d6254a6d94bacc82e822885185f56c69cb799ec5124c0aa40",
+    "Mounts": [
+      {
+        "Type": "bind",
+        "Name": null,
+        "Source": "@HOME@/.treehouse/Conventioner-d4c77a/4/Conventioner/back-end",
+        "Destination": "/app",
+        "Driver": null
+      }
+    ],
+    "Config": {
+      "Image": "conventioner/backend:4943b69bbb33",
+      "Labels": {
+        "com.docker.compose.config-hash": "4a5e9e0b988e607e423c13d090a5477cdec8f863bdf35788ab0e93d19c157477",
+        "com.docker.compose.container-number": "1",
+        "com.docker.compose.image": "sha256:bdd239294826103d6254a6d94bacc82e822885185f56c69cb799ec5124c0aa40",
+        "com.docker.compose.oneoff": "False",
+        "com.docker.compose.project": "conventioner-4",
+        "com.docker.compose.project.config_files": "@HOME@/.treehouse/Conventioner-d4c77a/4/Conventioner/docker-compose.yml",
+        "com.docker.compose.project.working_dir": "@HOME@/.treehouse/Conventioner-d4c77a/4/Conventioner",
+        "com.docker.compose.service": "backend",
+        "com.docker.compose.version": "5.6.1",
+        "io.github.chanjdaniel.team.owner": "agent-team",
+        "io.github.chanjdaniel.team.task": "T5",
+        "io.github.chanjdaniel.team.kind": "dev",
+        "io.github.chanjdaniel.team.worktree": "@HOME@/.treehouse/Conventioner-d4c77a/4/Conventioner",
+        "io.github.chanjdaniel.team.expires": ""
+      }
+    },
+    "HostConfig": {
+      "Memory": 805306368
+    }
+  },
+  {
+    "Id": "2b13acc5108fe0497e6499e0af028283c448628d43fe9a6f00be2a37597d27eb",
+    "Name": "/conventioner-3-backend-1",
+    "Created": "2026-10-24T10:56:00.000000000Z",
+    "State": {
+      "Status": "running",
+      "Running": true,
+      "OOMKilled": false,
+      "ExitCode": 0,
+      "StartedAt": "2026-10-24T10:56:02.000000000Z",
+      "FinishedAt": "0001-01-01T00:00:00Z"
+    },
+    "Image": "sha256:bdd239294826103d6254a6d94bacc82e822885185f56c69cb799ec5124c0aa40",
+    "Mounts": [
+      {
+        "Type": "bind",
+        "Name": null,
+        "Source": "@HOME@/.treehouse/Conventioner-d4c77a/3/Conventioner/back-end",
+        "Destination": "/app",
+        "Driver": null
+      }
+    ],
+    "Config": {
+      "Image": "conventioner/backend:4943b69bbb33",
+      "Labels": {
+        "com.docker.compose.config-hash": "cef369f45d866481b1393c58c3382fd1e2b62c176acf5c0fab23b469d9f2d6d3",
+        "com.docker.compose.container-number": "1",
+        "com.docker.compose.image": "sha256:bdd239294826103d6254a6d94bacc82e822885185f56c69cb799ec5124c0aa40",
+        "com.docker.compose.oneoff": "False",
+        "com.docker.compose.project": "conventioner-3",
+        "com.docker.compose.project.config_files": "@HOME@/.treehouse/Conventioner-d4c77a/3/Conventioner/docker-compose.yml",
+        "com.docker.compose.project.working_dir": "@HOME@/.treehouse/Conventioner-d4c77a/3/Conventioner",
+        "com.docker.compose.service": "backend",
+        "com.docker.compose.version": "5.6.1",
+        "io.github.chanjdaniel.team.owner": "",
+        "io.github.chanjdaniel.team.task": "",
+        "io.github.chanjdaniel.team.kind": "",
+        "io.github.chanjdaniel.team.worktree": "",
+        "io.github.chanjdaniel.team.expires": ""
+      }
+    },
+    "HostConfig": {
+      "Memory": 805306368
+    }
+  },
+  {
+    "Id": "7b67697a2e439f53bbf9ed6f05b79335d47561a02dda6bcb585bcba49eff05b2",
+    "Name": "/nmtest-1895520-frontend-1",
+    "Created": "2026-10-24T10:55:00.000000000Z",
+    "State": {
+      "Status": "running",
+      "Running": true,
+      "OOMKilled": false,
+      "ExitCode": 0,
+      "StartedAt": "2026-10-24T10:55:03.000000000Z",
+      "FinishedAt": "0001-01-01T00:00:00Z"
+    },
+    "Image": "sha256:89655cdcf97b72908a20c0df012670c51f076a057fa8c4a61a33102c61849d07",
+    "Mounts": [
+      {
+        "Type": "bind",
+        "Name": null,
+        "Source": "@HOME@/.no-mistakes/worktrees/01KQ3V2M8Z/Conventioner/front-end",
+        "Destination": "/app",
+        "Driver": null
+      },
+      {
+        "Type": "volume",
+        "Name": "bc17ebee5bc23731a063ae52f70ff70fd2524946f265a54cebf6bd4ae9e22161",
+        "Source": "/var/lib/docker/volumes/bc17ebee5bc23731a063ae52f70ff70fd2524946f265a54cebf6bd4ae9e22161/_data",
+        "Destination": "/app/node_modules",
+        "Driver": "local"
+      }
+    ],
+    "Config": {
+      "Image": "conventioner/frontend:2a5cc542bea3",
+      "Labels": {
+        "com.docker.compose.config-hash": "f8f7a2a6eca74ec0aab78e60bb44be3812aa6234cb42cffe834206570b89bc04",
+        "com.docker.compose.container-number": "1",
+        "com.docker.compose.image": "sha256:89655cdcf97b72908a20c0df012670c51f076a057fa8c4a61a33102c61849d07",
+        "com.docker.compose.oneoff": "False",
+        "com.docker.compose.project": "nmtest-1895520",
+        "com.docker.compose.project.config_files": "@HOME@/.no-mistakes/worktrees/01KQ3V2M8Z/Conventioner/docker-compose.yml",
+        "com.docker.compose.project.working_dir": "@HOME@/.no-mistakes/worktrees/01KQ3V2M8Z/Conventioner",
+        "com.docker.compose.service": "frontend",
+        "com.docker.compose.version": "5.6.1",
+        "io.github.chanjdaniel.team.owner": "",
+        "io.github.chanjdaniel.team.task": "",
+        "io.github.chanjdaniel.team.kind": "gate",
+        "io.github.chanjdaniel.team.worktree": "@HOME@/.no-mistakes/worktrees/01KQ3V2M8Z/Conventioner",
+        "io.github.chanjdaniel.team.expires": "2026-10-24T12:55:00Z"
+      }
+    },
+    "HostConfig": {
+      "Memory": 536870912
+    }
+  },
+  {
+    "Id": "7347a339df431cc39ae4ece579676eaf93222df9f2ab1c6acd9b2f1edddcc0d5",
+    "Name": "/nmtest-12822-backend-1",
+    "Created": "2026-10-21T08:00:00.000000000Z",
+    "State": {
+      "Status": "exited",
+      "Running": false,
+      "OOMKilled": false,
+      "ExitCode": 137,
+      "StartedAt": "2026-10-21T08:00:02.000000000Z",
+      "FinishedAt": "2026-10-21T08:20:00.000000000Z"
+    },
+    "Image": "sha256:013e41f802a42ca7289b5248632c8fe5386b972e8fde6585068c5cb8e2948489",
+    "Mounts": [
+      {
+        "Type": "volume",
+        "Name": "nmtest-12822_backend_sessions",
+        "Source": "/var/lib/docker/volumes/nmtest-12822_backend_sessions/_data",
+        "Destination": "/app/flask_session",
+        "Driver": "local"
+      }
+    ],
+    "Config": {
+      "Image": "nmtest-12822-backend",
+      "Labels": {
+        "com.docker.compose.config-hash": "1179aaf6863705c9d03b24a7db177192368916d2a4ae224fa350d0628c42eeec",
+        "com.docker.compose.container-number": "1",
+        "com.docker.compose.image": "sha256:013e41f802a42ca7289b5248632c8fe5386b972e8fde6585068c5cb8e2948489",
+        "com.docker.compose.oneoff": "False",
+        "com.docker.compose.project": "nmtest-12822",
+        "com.docker.compose.project.config_files": "@HOME@/.no-mistakes/worktrees/01KPZ0ABCD/Conventioner/docker-compose.yml",
+        "com.docker.compose.project.working_dir": "@HOME@/.no-mistakes/worktrees/01KPZ0ABCD/Conventioner",
+        "com.docker.compose.service": "backend",
+        "com.docker.compose.version": "5.6.1"
+      }
+    },
+    "HostConfig": {
+      "Memory": 0
+    }
+  }
+]

@@ -5,6 +5,7 @@
 
 load helpers/common
 load helpers/treehouse
+load helpers/docker
 
 setup() {
   sandbox
@@ -430,6 +431,99 @@ SH
     '{task: "T1", event: "closed", archive: ["tasks/T1/scratch"], returned: [], kept: [$wt]}')"
   assert_equal "$(claude_actions)" '["stop","4f2a9c1e"]
 ["rm","4f2a9c1e"]'
+}
+
+# The stack teardown, on the stub docker (helpers/docker): home_stack gives home a stack block
+# naming the fixture wrapper (tests/fixtures/stack/), committed on origin's main so the slot
+# team-open makes has it, and installs the stub docker. The slot's stack is stackfix-1.
+home_stack() {
+  mkdir -p "$home/scripts"
+  cp "$REPO_ROOT/tests/fixtures/stack/compose.sh" "$home/scripts/compose.sh"
+  cp "$REPO_ROOT/tests/fixtures/stack/docker-compose.yml" "$home/docker-compose.yml"
+  git -C "$home" add scripts docker-compose.yml
+  git -C "$home" commit -q -m "feat: add the stack"
+  git -C "$home" push -q origin main
+  cat >>"$TEAM_HOME/projects.toml" <<'TOML'
+
+[home.stack]
+compose = "scripts/compose.sh"
+seed = "scripts/seed.sh"
+log_services = ["web"]
+TOML
+  docker_stub "${home_slots[0]}"
+}
+
+# Whether Docker holds any object of the Compose project <project>.
+stack_exists() {
+  jq -e --arg p "$1" 'any(.[]; .Config.Labels["com.docker.compose.project"] == $p or .Labels["com.docker.compose.project"] == $p)' \
+    <(jq -s 'add' "$DOCKER_STATE/containers.json" "$DOCKER_STATE/volumes.json" "$DOCKER_STATE/networks.json") >/dev/null
+}
+
+# Whether Docker holds no object of the Compose project <project> (a function, so that bats
+# counts its status, as it does not a bare !).
+stack_gone() {
+  ! stack_exists "$1"
+}
+
+@test "a returned worktree's stack is taken down before the archive, its logs archived with the task directory" {
+  home_stack
+  open_home_task
+  run_bin -0 team-stack up --worktree "$wt" --no-seed
+  stack_exists stackfix-1
+  work_and_push "$wt" feature.txt
+
+  run_bin -0 --separate-stderr team-close T1
+  assert_contains "$stderr" "team-stack: stackfix-1 is removed, its logs in $wt/.scratch/task/stack-logs"
+  assert_contains "$(docker_calls)" "compose -p stackfix-1 down -v --remove-orphans"
+  stack_gone stackfix-1
+  assert_equal "$(cat "$TEAM_HOME/tasks/T1/scratch/stack-logs/stackfix-1-web.log")" \
+    "web-1  | 2026-10-24T09:00:00.000000000Z stackfix-1's web started"
+  assert_equal "$(jq -c .returned <<<"$output")" "$(jq -cn --arg wt "$wt" '[$wt]')"
+}
+
+@test "a project without a stack block closes with no Docker call at all" {
+  docker_stub "${home_slots[0]}"
+  open_home_task
+  work_and_push "$wt" feature.txt
+  run_bin -0 team-close T1
+  assert_equal "$(stub_calls docker)" ""
+}
+
+@test "a worktree kept with --keep-worktree keeps its stack" {
+  home_stack
+  open_home_task
+  run_bin -0 team-stack up --worktree "$wt" --no-seed
+  local calls
+  calls=$(stub_calls docker | wc -l)
+  echo changed >>"$wt/README.md"
+
+  run_bin -0 team-close T1 --keep-worktree
+  assert_equal "$(stub_calls docker | wc -l)" "$calls"
+  stack_exists stackfix-1
+}
+
+@test "a failed stack teardown stops the close half closed, and a second close after the fix completes" {
+  home_stack
+  open_home_task
+  run_bin -0 team-stack up --worktree "$wt" --no-seed
+  work_and_push "$wt" feature.txt
+  docker_fail 'compose down' 'Error response from daemon: a stand-in failure'
+
+  run_bin -1 --separate-stderr team-close T1
+  assert_contains "$stderr" "team-stack: docker compose down of stackfix-1 failed: Error response from daemon: a stand-in failure"
+  assert_contains "$stderr" "team-close: cannot take down the stack of $wt (home)"
+  assert_contains "$stderr" "T1 is half closed; fix the cause above and run team-close T1 again"
+  [[ ! -e $TEAM_HOME/tasks/T1/scratch ]]
+  [[ -d $wt ]]
+  assert_equal "$(events worktree-returned)$(events closed)" ""
+  stack_exists stackfix-1
+
+  rm "$DOCKER_STATE/fail-compose-down"
+  run_bin -0 team-close T1
+  stack_gone stackfix-1
+  [[ -f $TEAM_HOME/tasks/T1/scratch/stack-logs/stackfix-1-web.log ]]
+  [[ ! -e $wt ]]
+  assert_equal "$(events closed | jq -c .returned)" "$(jq -cn --arg wt "$wt" '[$wt]')"
 }
 
 @test "a busy session refuses the close; --stop-busy stops it, and other tasks' sessions are never touched" {

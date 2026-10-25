@@ -356,6 +356,27 @@ run_fake() {
   done
 }
 
+@test "every role's generated settings deny Docker's prune commands, in every spelling, and nothing else of Docker" {
+  thread T7
+  local role settings command object
+  for role in planner builder reviewer; do
+    run_bin -0 team-worker T7 "$role" "$wt1" -- go
+    settings=$TEAM_HOME/tasks/T7/settings.$role.json
+    for object in system volume image network builder container buildx; do
+      for command in "docker $object prune" "docker $object prune -af" "docker --context default $object prune" \
+        "docker -H unix:///var/run/docker.sock $object prune -f" "/usr/bin/docker $object prune -a" \
+        "$HOME/.docker/bin/docker $object prune --filter until=24h"; do
+        denied_in "$settings" "$command" || { echo "$role allows: $command" >&2; return 1; }
+      done
+    done
+    for command in "docker image ls" "docker volume ls --filter dangling=true" "docker compose -p x down -v" \
+      "docker system df -v" "grep -n 'docker system prune' bin/team-stack" "team-stack down" \
+      "team-stack down --worktree $HOME/worktrees/x" "docker volume rm 1f2e3d" "git commit -m 'deny docker volume prune'"; do
+      if denied_in "$settings" "$command"; then echo "$role denies: $command" >&2; return 1; fi
+    done
+  done
+}
+
 @test "a closed task is refused, opened or legacy" {
   thread T7
   opened T7 proj feat/T7-one "$wt1"

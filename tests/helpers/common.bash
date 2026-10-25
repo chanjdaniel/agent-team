@@ -1,7 +1,9 @@
 # Shared setup for the team home's bats tests: load it with `load helpers/common` and call
 # `sandbox` from `setup`. Every test then runs real scripts from this checkout's bin/ against a
 # temporary team home and HOME, with claude, gh, curl, op, systemctl and launchctl replaced by
-# logging stubs, so no test reaches this machine's own service managers or 1Password.
+# logging stubs, so no test reaches this machine's own service managers or 1Password. A test of
+# a script that runs Docker adds a stub docker with `load helpers/docker` (tests/helpers/docker.bash
+# documents it), and never reaches this machine's Docker.
 # shellcheck shell=bash
 
 bats_require_minimum_version 1.5.0

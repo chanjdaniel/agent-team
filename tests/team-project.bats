@@ -393,7 +393,7 @@ lists = {}
 for node in ast.parse(open(sys.argv[1]).read()).body:
     if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name):
         name = node.targets[0].id
-        if name in ("PROJECT_STRINGS", "PROJECT_LISTS", "PROJECT_OPTIONAL", "POOL_KEYS"):
+        if name in ("PROJECT_STRINGS", "PROJECT_LISTS", "PROJECT_OPTIONAL", "POOL_KEYS", "STACK_KEYS"):
             value = node.value
             lists[name] = [ast.literal_eval(k) for k in (value.keys if isinstance(value, ast.Dict) else value.elts)]
 print("\n".join(sorted(k for keys in lists.values() for k in keys)))
@@ -403,5 +403,107 @@ PY
   # Each key is a word at the start of a line indented two spaces ("lease, return" names two).
   documented=$(grep -E '^  [a-z_]+(, [a-z_]+)* {2,}' <<<"$output" | sed -E 's/^  //; s/ {2,}.*//; s/, /\n/g' | sort)
   assert_equal "$documented" "$known"
-  [[ $(wc -l <<<"$known") -ge 14 ]]
+  [[ $(wc -l <<<"$known") -ge 20 ]]
+}
+
+# The stack block of the registry shaped like the team home's, on alpha: stack_block <TOML lines>
+# appended after its pool, so a test can add or change keys.
+stack_block() {
+  cat >>"$TEAM_HOME/projects.toml" <<TOML
+
+[alpha.stack]
+$(cat)
+TOML
+}
+
+@test "an optional stack block reads whole and by dotted key, with its optional lists empty" {
+  stack_block <<'TOML'
+compose = "scripts/compose.sh"
+seed = "scripts/seed.sh"
+log_services = ["backend", "frontend"]
+TOML
+  run_bin -0 team-project --check
+  run_bin -0 team-project alpha stack.compose
+  assert_equal "$output" "scripts/compose.sh"
+  run_bin -0 team-project alpha stack
+  assert_equal "$(jq -c . <<<"$output")" \
+    '{"compose":"scripts/compose.sh","seed":"scripts/seed.sh","log_services":["backend","frontend"],"images":[],"legacy_images":[]}'
+  # A project without one has none.
+  run_bin -0 team-project beta
+  assert_equal "$(jq -c 'has("stack")' <<<"$output")" false
+  run_bin -0 team-project --find stack.compose scripts/compose.sh
+  assert_equal "$output" alpha
+}
+
+@test "the fixture registry's conventioner stack block passes --check and reads back" {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  run_bin -0 team-project --check
+  run_bin -0 team-project conventioner stack
+  assert_equal "$(jq -c . <<<"$output")" \
+    '{"compose":"scripts/th-compose.sh","seed":"scripts/seed_fixture.sh","log_services":["backend","frontend"],"images":["conventioner/backend","conventioner/frontend"],"legacy_images":["nmtest-[0-9]+-(backend|frontend)","nmfix-.*","nmtest-t12-.*","conventioner-[0-9]+-(backend|frontend)"],"legacy_gate":"nmtest-[0-9]+"}'
+}
+
+@test "--check refuses a stack block's missing and unknown keys, wrong types and rooted paths" {
+  stack_block <<'TOML'
+compose = "/opt/compose.sh"
+log_services = "backend"
+images = [1]
+legacy_gate = ["nmtest-[0-9]+"]
+ports = "auto"
+TOML
+  sed -i 's|^\[beta.pool\]$|stack = "compose.sh"\n\n[beta.pool]|' "$TEAM_HOME/projects.toml"
+  cat >>"$TEAM_HOME/projects.toml" <<'TOML'
+
+[gamma]
+repo = "owner/gamma"
+path = "gamma"
+base = "main"
+delivery = "direct-pr"
+merge_method = "merge"
+required_checks = []
+task_dir = ".scratch/task"
+docs = []
+toolkits = []
+pool = { provider = "git", slots = ["gamma/1"] }
+stack = { compose = 7, seed = "../seed.sh", log_services = [], legacy_images = "nmfix-.*" }
+TOML
+  run_bin -1 --separate-stderr team-project --check
+  assert_equal "$output" ""
+  local expected
+  for expected in \
+    "alpha.stack: missing required key 'seed'" \
+    "alpha.stack: unknown key 'ports'" \
+    "alpha.stack.compose: '/opt/compose.sh' must be a relative path" \
+    "alpha.stack.log_services: must be a list of strings" \
+    "alpha.stack.images: must be a list of strings" \
+    "alpha.stack.legacy_gate: must be a string" \
+    "beta.stack: must be a table" \
+    "gamma.stack.compose: must be a string" \
+    "gamma.stack.seed: '../seed.sh' must be a relative path" \
+    "gamma.stack.legacy_images: must be a list of strings"; do
+    assert_contains "$stderr" "$expected"
+  done
+}
+
+@test "--check refuses a stack pattern that does not compile, uses a backslash class or a lookaround" {
+  stack_block <<'TOML'
+compose = "scripts/compose.sh"
+seed = "scripts/seed.sh"
+log_services = []
+images = ["conventioner/backend"]
+legacy_images = ["nmtest-(backend", 'nmtest-\d+', 'nmfix-\.old', "nmtest-(?!t12).*", "conventioner-[0-9]+-(backend|frontend)"]
+legacy_gate = 'nmtest-\w+'
+TOML
+  run_bin -1 --separate-stderr team-project --check
+  local expected
+  for expected in \
+    "alpha.stack.legacy_images: 'nmtest-(backend' is not a valid pattern: missing ), unterminated subpattern at position 7" \
+    "alpha.stack.legacy_images: 'nmtest-\\d+' uses a backslash class, which Bash and jq read differently; use a bracket expression such as [0-9]" \
+    "alpha.stack.legacy_images: 'nmtest-(?!t12).*' uses a (?...) group, a lookaround or another extension Bash does not read" \
+    "alpha.stack.legacy_gate: 'nmtest-\\w+' uses a backslash class, which Bash and jq read differently; use a bracket expression such as [0-9]"; do
+    assert_contains "$stderr" "$expected"
+  done
+  # An escaped literal and the plain forms pass.
+  [[ $stderr != *"nmfix-"* && $stderr != *"conventioner-"* ]]
+  assert_contains "$stderr" "4 problems"
 }

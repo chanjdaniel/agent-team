@@ -1,0 +1,46 @@
+[
+  {
+    "BlockIO": "2.83MB / 0B",
+    "CPUPerc": "0.12%",
+    "Container": "5f1f5ad99257",
+    "ID": "5f1f5ad99257",
+    "MemPerc": "1.31%",
+    "MemUsage": "412.3MiB / 1GiB",
+    "Name": "conventioner-2-mongodb-1",
+    "NetIO": "796B / 84B",
+    "PIDs": "12"
+  },
+  {
+    "BlockIO": "2.83MB / 0B",
+    "CPUPerc": "0.12%",
+    "Container": "6ba7777f3b0a",
+    "ID": "6ba7777f3b0a",
+    "MemPerc": "1.31%",
+    "MemUsage": "187.5MiB / 768MiB",
+    "Name": "conventioner-2-backend-1",
+    "NetIO": "796B / 84B",
+    "PIDs": "12"
+  },
+  {
+    "BlockIO": "2.83MB / 0B",
+    "CPUPerc": "0.12%",
+    "Container": "2b13acc5108f",
+    "ID": "2b13acc5108f",
+    "MemPerc": "1.31%",
+    "MemUsage": "160.2MiB / 768MiB",
+    "Name": "conventioner-3-backend-1",
+    "NetIO": "796B / 84B",
+    "PIDs": "12"
+  },
+  {
+    "BlockIO": "2.83MB / 0B",
+    "CPUPerc": "0.12%",
+    "Container": "7b67697a2e43",
+    "ID": "7b67697a2e43",
+    "MemPerc": "1.31%",
+    "MemUsage": "301MiB / 512MiB",
+    "Name": "nmtest-1895520-frontend-1",
+    "NetIO": "796B / 84B",
+    "PIDs": "12"
+  }
+]
