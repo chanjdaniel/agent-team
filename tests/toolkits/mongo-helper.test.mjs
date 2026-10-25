@@ -34,6 +34,28 @@ test("past its deadline, the wait names the time it waited and the container's l
   );
 });
 
+test("a container that exits during the wait fails it at once, with its exit code and last log lines", async () => {
+  const dying = `toolkit-test-${randomBytes(4).toString("hex")}`;
+  docker(
+    "run", "--detach", "--name", dying, "--label", "agent-team-test=toolkits",
+    mongoImage, "sh", "-c", "echo giving up; exit 3",
+  );
+  try {
+    const start = Date.now();
+    await assert.rejects(
+      connectWhenReady("mongodb://root:x@127.0.0.1:1/?authSource=admin", dying, 180_000),
+      (error) => {
+        assert.match(error.message, /^MongoDB container toolkit-test-[0-9a-f]{8} exited with code 3 after \d+ s, before it was ready\n/);
+        assert.match(error.message, /docker logs --tail 20 toolkit-test-[0-9a-f]{8}:\ngiving up$/);
+        return true;
+      },
+    );
+    assert.ok(Date.now() - start < 60_000, "the wait ends when the container does, not at its deadline");
+  } finally {
+    removeContainer(dying);
+  }
+});
+
 test("stopping the throwaway MongoDB removes its anonymous volumes with it", async () => {
   const db = await startMongo();
   const mounts = '{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}} {{end}}{{end}}';
