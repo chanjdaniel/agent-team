@@ -374,7 +374,8 @@ stop aaaaaaaa"
   local state=$HOME/.local/state/agent-team start
   mkdir -p "$state"
   flock -x "$state/lease.lock" sleep 2 &
-  sleep 0.5
+  # Once the holder has the lock, however long a busy machine takes to start it.
+  until [[ -f $state/lease.lock ]] && ! flock -n "$state/lease.lock" true; do sleep 0.05; done
   start=$(date +%s%N)
   run_bin -0 team-lease take
   wait
