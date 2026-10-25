@@ -74,7 +74,10 @@ Then it installs the gate's opencode wrapper, `~/.no-mistakes/bin/opencode-gate`
   So `team-doctor`, `team-load-check`, `team-resume` and the bootstrap's `check` give one verdict, whatever shell called them.
 - `~/.local/bin` and `~/.no-mistakes/bin` get one `export PATH=...  # team-bootstrap` line each in `~/.zshrc` or `~/.bashrc` (by `$SHELL`), for Daniel's own shell, when it lacked them; for another shell, ask Daniel to add them.
 - A Claude Code newer than its pin is a WARN and is left alone.
-- `~/.no-mistakes/config.yaml` comes back with `team-secrets restore`, one of stage 7's steps; until it names the wrapper as `agent_path_override`'s `opencode`, the doctor's `opencode-gate` line fails, and stage 7 lists the edit as Daniel's step.
+- `~/.no-mistakes/config.yaml` comes back with `team-secrets restore`, one of stage 7's steps, and the doctor's `opencode-gate` line fails until its `agent_path_override` names the wrapper for `opencode` by this machine's full path (no-mistakes does not expand `~`), and a copy saved on another machine names that machine's.
+  This stage sets that one key, which holds no credential, keeping the rest of the file byte for byte and its mode, and printing none of it; a missing file it leaves to the restore.
+  So once Daniel has run the restore, run `~/agent-team/bin/team-bootstrap --stage tools` again before the next `--stage check`: `check` shows that line among the doctor's FAILs with this fix, never as Daniel's step.
+  Only a form the edit does not change (a flow mapping over several lines, or a scalar) stops it as Daniel's hand edit.
 
 ### Stage 5: projects
 
@@ -98,6 +101,7 @@ Then it installs the gate's opencode wrapper, `~/.no-mistakes/bin/opencode-gate`
 
 `~/agent-team/bin/team-bootstrap --stage check` runs the doctor and prints Daniel's remaining steps in order, one `check: Daniel <n>: <check>: <fix> (<reason>)` line each.
 Take them one at a time, in that order: ask for the first, wait for Daniel's word, run `--stage check` again, and ask for the next.
+After `team-secrets restore`, run `~/agent-team/bin/team-bootstrap --stage tools` before `--stage check`, so the restored `~/.no-mistakes/config.yaml` names this machine's gate wrapper (stage 4).
 Section 3 says where each one is done.
 Done when `check` lists no `Daniel <n>:` line.
 
@@ -138,8 +142,7 @@ Done when `check` lists no `Daniel <n>:` line.
 | Claude Code login, if the doctor fails it | 7 | own terminal: `claude auth login --claudeai` (browser) | account login |
 | Docker access | 7 | macOS: open Docker Desktop, accept its license; Arch: own terminal, `sudo systemctl enable --now docker.service`, then `sudo usermod -aG docker $USER` and a new login if the doctor then says permission denied | GUI or `sudo` |
 | 1Password app: install, sign in, CLI integration (and on Arch, unlock with system authentication) | 7 | macOS: `brew install --cask 1password`; Arch: the native AUR package; then the app's Settings > Developer > Integrate with 1Password CLI | account login, app settings |
-| `team-secrets restore` | 7 | own terminal: `~/agent-team/bin/team-secrets restore` | Touch ID or system authentication; values never reach an agent |
-| `~/.no-mistakes/config.yaml` naming the gate's opencode wrapper, when restore did not bring it in | 7 | Daniel's own edit: `agent_path_override: {opencode: <HOME>/.no-mistakes/bin/opencode-gate}`, the path written out in full (the doctor's fix names it) | it is Daniel's own config file |
+| `team-secrets restore` | 7 | own terminal: `~/agent-team/bin/team-secrets restore`; it fetches a secret that is missing, empty or off its mode (a file off its mode may be another machine's old copy, so it is replaced, the old one kept beside it as `<file>.bak-<date and time>`, mode 600) | Touch ID or system authentication; values never reach an agent |
 | Trust, once in the team home (`~/agent-team-records`, where the coordinator starts: the doctor's `trust team home` line) and once per project root (its `trust <project>` line) | 7 | own terminal: `claude` in the root, accept, `/exit` | interactive dialog |
 | Chrome | 7 | macOS: `brew install --cask google-chrome`; Arch: `google-chrome` from the AUR, or `sudo pacman -S --needed chromium` | browser sign-in, `sudo` on Arch |
 | The dev guard | 7 | this session: `! git -C ~/agent-team config core.hooksPath bin/hooks/git` | every team session is denied setting `core.hooksPath` |

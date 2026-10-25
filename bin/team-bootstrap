@@ -29,7 +29,9 @@
 #              treehouse release archive for this OS and CPU, no-mistakes built from Daniel's
 #              fork at its pinned commit (with the packages stage's Go and make), the 1Password
 #              CLI; then the gate's opencode wrapper, ~/.no-mistakes/bin/opencode-gate, while
-#              the opencode-gate line asks for it (config.yaml naming it is Daniel's step).
+#              the opencode-gate line asks for it, and agent_path_override.opencode in
+#              ~/.no-mistakes/config.yaml set to its full path, that key alone, the file's mode
+#              kept and none of it printed (a missing config.yaml is team-secrets restore's).
 #              A Claude Code newer than its pin only warns, and is left. ~/.local/bin and
 #              ~/.no-mistakes/bin, which no installer puts on PATH, get one line each in the
 #              shell's rc file (~/.zshrc or ~/.bashrc) when PATH lacks them.
@@ -46,10 +48,11 @@
 #              lease. team-resume enables it when this machine takes the lease.
 #   check      The doctor again, then Daniel's remaining steps in order, one line each with its
 #              command (the machine's name, the team home's setting once ~/agent-team-records is
-#              there, logins, Docker access, the 1Password app and team-secrets restore, the
-#              gate's config.yaml naming its opencode wrapper, trust in the team home, where
-#              the coordinator starts, and in each project root, Chrome, then the rest), the
-#              doctor's WARN and FAIL lines, and a summary: set up, or ready as a standby.
+#              there, logins, Docker access, the 1Password app and team-secrets restore (each
+#              failing secret with its reason, and the gate's config.yaml while it is missing),
+#              trust in the team home, where the coordinator starts, and in each project root,
+#              Chrome, then the rest), the doctor's WARN and FAIL lines, and a summary: set up, or
+#              ready as a standby.
 # Every stage and the doctor run with the library's PATH, the tool directories of bin/lib/tools.lock
 # first, put on again after each install, so check's verdict is a plain team-doctor's.
 # A step only Daniel can take stops the run with one line, "<stage>: Daniel: <the step>", and
@@ -99,8 +102,8 @@ bin=$(dirname "$TEAM_LIB")
 self=$bin/team-bootstrap
 state=$HOME/.local/state/agent-team
 log=$state/bootstrap.log
-err=$(mktemp)
-trap 'rm -f "$err"' EXIT
+err=$(mktemp) gate_tmp=''
+trap 'rm -f "$err" ${gate_tmp:+"$gate_tmp"}' EXIT
 terminal=0
 if [[ -t 0 && -t 1 ]]; then terminal=1; fi
 # Daniel's shell's PATH, before the library put the tool directories on it.
@@ -313,7 +316,7 @@ stage_packages() {
 }
 
 stage_tools() {
-  local check verdict reason fix todo=() names=() commands=() line dir file nvm_shown=0
+  local check verdict reason fix todo=() names=() commands=() line dir file nvm_shown=0 gate=0
   while IFS=$'\t' read -r check verdict reason fix; do
     case $fix in 'sudo pacman '* | 'brew '*) continue ;; esac
     if [[ $fix == *'sudo '* ]]; then
@@ -322,12 +325,15 @@ stage_tools() {
       todo+=("$fix")
     fi
   done < <(lines '^tool ')
-  # The gate's opencode wrapper, once its line asks for the install and not Daniel's config edit.
+  # The gate's opencode wrapper, once its line asks for the install, and then config.yaml naming
+  # it, unless the line waits on Daniel's team-secrets restore.
   while IFS=$'\t' read -r check verdict reason fix; do
-    [[ $fix == Daniel* ]] || todo+=("$fix")
+    [[ $fix != Daniel* ]] || continue
+    gate=1
+    [[ $fix == *'team-bootstrap --stage tools'* ]] || todo+=("$fix")
   done < <(lines '^opencode-gate$')
   if ((${#todo[@]} + ${#commands[@]} == 0)); then
-    say "done: every tool is at its pin or above its minimum"
+    if ((gate)); then name_gate_wrapper; else say "done: every tool is at its pin or above its minimum"; fi
     return
   fi
   export NVM_DIR=${NVM_DIR:-$HOME/.nvm}
@@ -349,6 +355,7 @@ stage_tools() {
       daniel "in your own terminal run $(tilde "$self") --stage tools, which installs ${names[*]} with sudo and asks for your password; then team-bootstrap again"
     fi
   fi
+  ((!gate)) || name_gate_wrapper
 
   # The rc file of Daniel's shell, for the directories PATH lacked when this run started.
   case ${SHELL:-} in
@@ -365,6 +372,39 @@ stage_tools() {
       act "printf '%s\\n' $(printf %q "$line") >>$(printf %q "$file")" "add $(tilde "$dir") to PATH in $(tilde "$file")"
     fi
   done
+}
+
+# Point ~/.no-mistakes/config.yaml's agent_path_override.opencode at the gate's wrapper by its full
+# path (no-mistakes does not expand ~), changing that key alone (bin/lib/gate-config.awk) and
+# keeping the file's mode; nothing of the file is printed. A missing file is team-secrets
+# restore's, Daniel's step.
+name_gate_wrapper() {
+  local config=$HOME/.no-mistakes/config.yaml wrapper=$HOME/.no-mistakes/bin/opencode-gate target eol=1
+  local setting="agent_path_override.opencode in ~/.no-mistakes/config.yaml"
+  if [[ ! -f $config ]]; then
+    say "$(tilde "$config") is not there: Daniel's team-secrets restore brings it (the secret no-mistakes-config), then team-bootstrap --stage tools names the wrapper in it"
+    return
+  fi
+  [[ $(awk -f "$bin/lib/gate-config.awk" "$config") != "$wrapper" ]] || return 0
+  if ((dry)); then
+    say "would set $setting to $wrapper"
+    return
+  fi
+  # A link (team-config's, say) keeps pointing at the file it names.
+  target=$(realpath -- "$config")
+  [[ ! -s $target || -z $(tail -c1 -- "$target" | tr -d '\n') ]] || eol=0
+  gate_tmp=$(mktemp "$(dirname "$target")/.config.yaml.XXXXXX")
+  if ! awk -v set="$wrapper" -v eol="$eol" -f "$bin/lib/gate-config.awk" "$target" >"$gate_tmp"; then
+    rm -f -- "$gate_tmp"
+    gate_tmp=''
+    daniel "set $setting to $wrapper by hand: its agent_path_override is in a form team-bootstrap does not edit (a flow mapping over several lines, or a scalar); then team-bootstrap again"
+    return
+  fi
+  chmod --reference="$target" -- "$gate_tmp"
+  mv -f -- "$gate_tmp" "$target"
+  gate_tmp=''
+  changed=1
+  say "set $setting to $wrapper, that key alone"
 }
 
 # Set up one registered project whose checkout, origin, task dir or gate line failed.
@@ -491,6 +531,8 @@ stage_check() {
     while IFS=$'\t' read -r check verdict reason fix; do
       [[ $check != docker || $reason != 'docker is not installed' ]] || continue
       [[ $check != config || $reason == *differs* || $reason == *'local only'* ]] || continue
+      # The gate's wrapper and its config.yaml key are the tools stage's.
+      [[ $check != opencode-gate || $fix == Daniel* ]] || continue
       steps+=("$check: $fix${3:-} ($reason)") covered+=("$check")
     done < <(lines "$1" "$2")
   }
@@ -510,10 +552,10 @@ stage_check() {
   step '^github login$' FAIL ", then gh auth setup-git"
   step '^docker$' FAIL
   step '^1password$' WARN
-  secrets=$(lines '^secret ' | cut -f1 | sed 's/^secret //' | paste -sd ' ' -)
+  secrets=$(lines '^secret ' | awk -F'\t' '{ sub(/^secret /, "", $1); print $1 ": " $3 }' | paste -sd ';' - | sed 's/;/; /g')
   mapfile -t -O "${#covered[@]}" covered < <(lines '^secret ' | cut -f1)
   [[ -z $secrets ]] ||
-    steps+=("secrets: with the 1Password app signed in and its CLI integration on, in your own terminal, not through an agent: $(tilde "$bin/team-secrets") restore (missing: $secrets)")
+    steps+=("secrets: with the 1Password app signed in and its CLI integration on, in your own terminal, not through an agent: $(tilde "$bin/team-secrets") restore ($secrets)")
   step '^opencode-gate$' FAIL
   step '^trust ' FAIL
   step '^chrome$' WARN

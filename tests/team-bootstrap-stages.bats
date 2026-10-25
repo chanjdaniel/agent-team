@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 # shellcheck disable=SC2153 # TOOL_STUBS, CONVENTIONER and the other globals are helpers/doctor.bash's
 # team-bootstrap: a fresh machine set up stage by stage, on the machine tests/helpers/bootstrap.bash
-# builds. This file: the projects, config and heartbeat stages.
+# builds. This file: the tools stage's gate config, and the projects, config and heartbeat stages.
 
 load helpers/common
 load helpers/doctor
@@ -10,6 +10,76 @@ load helpers/bootstrap
 setup() {
   sandbox
   bootstrap_machine
+}
+
+@test "tools: config.yaml's agent_path_override names the gate's wrapper by its full path, that key alone, its mode kept and none of it printed (report F7)" {
+  tools_at arch
+  local config=$HOME/.no-mistakes/config.yaml wrapper=$HOME/.no-mistakes/bin/opencode-gate stamp
+  # The config restored from home-pc's 1Password document: its path, and a token.
+  printf '%s\n' 'agent: opencode' 'api_key: fake-gate-token-123' 'agent_path_override:' \
+    '  opencode: /home/danielc/.no-mistakes/bin/opencode-gate  # the gate' 'log_level: info' >"$config"
+  chmod 640 "$config"
+  cp -p "$config" "$BATS_TEST_TMPDIR/before"
+  sed "4s#/home/danielc/.no-mistakes/bin/opencode-gate#$wrapper#" "$config" >"$BATS_TEST_TMPDIR/expected"
+
+  # The check stage leaves it to the tools stage, not to Daniel.
+  run_bin -1 team-bootstrap --stage check
+  assert_equal "$(stage_lines check | grep -c '^Daniel' || true)" 0
+  assert_equal "$(stage_lines check | tail -n1)" "summary: not set up yet: besides Daniel's steps above, these failed: opencode-gate; fix them as their doctor lines say, then team-bootstrap again"
+  assert_contains "$output" "fix: $CODE_CHECKOUT/bin/team-bootstrap --stage tools, which sets agent_path_override: {opencode: $wrapper} in ~/.no-mistakes/config.yaml, that key alone"
+
+  run_bin -0 team-bootstrap --stage tools --dry-run
+  assert_equal "$output" "tools: would set agent_path_override.opencode in ~/.no-mistakes/config.yaml to $wrapper"
+  cmp "$BATS_TEST_TMPDIR/before" "$config"
+
+  run_bin -0 team-bootstrap --stage tools
+  assert_equal "$output" "tools: set agent_path_override.opencode in ~/.no-mistakes/config.yaml to $wrapper, that key alone"
+  cmp "$BATS_TEST_TMPDIR/expected" "$config"
+  assert_equal "$(stat -c %a "$config")" 640
+  assert_equal "$(find "$HOME/.no-mistakes" -name '.config.yaml.*')" ""
+  [[ -z $(grep -rlF fake-gate-token "$HOME/.local/state" 2>/dev/null) ]]
+  run_bin -0 team-bootstrap --stage check
+  assert_equal "$(stage_lines check | tail -n1)" "summary: set up, and this machine holds the lease"
+
+  # A config already naming the wrapper is left untouched.
+  stamp=$(stat -c '%i %s %Y %a' "$config")
+  run_bin -0 team-bootstrap --stage tools
+  assert_equal "$output" "tools: done: every tool is at its pin or above its minimum"
+  assert_equal "$(stat -c '%i %s %Y %a' "$config")" "$stamp"
+
+  # A link stays a link, the file it names edited; one without the key and a last newline gains it.
+  mkdir -p "$HOME/dotfiles"
+  printf 'agent: opencode\napi_key: fake-gate-token-123' >"$HOME/dotfiles/config.yaml"
+  ln -sf "$HOME/dotfiles/config.yaml" "$config"
+  run_bin -0 team-bootstrap --stage tools
+  [[ -L $config ]]
+  assert_equal "$(cat "$HOME/dotfiles/config.yaml")" "agent: opencode
+api_key: fake-gate-token-123
+agent_path_override:
+  opencode: $wrapper"
+
+  # A form it does not edit is Daniel's, the file untouched.
+  printf '%s\n' 'agent_path_override: {codex: /x,' '  opencode: /old}' >"$HOME/dotfiles/config.yaml"
+  cp "$HOME/dotfiles/config.yaml" "$BATS_TEST_TMPDIR/before"
+  run_bin -1 team-bootstrap --stage tools
+  assert_equal "$output" "tools: Daniel: set agent_path_override.opencode in ~/.no-mistakes/config.yaml to $wrapper by hand: its agent_path_override is in a form team-bootstrap does not edit (a flow mapping over several lines, or a scalar); then team-bootstrap again"
+  cmp "$BATS_TEST_TMPDIR/before" "$HOME/dotfiles/config.yaml"
+  assert_equal "$(find "$HOME/dotfiles" "$HOME/.no-mistakes" -name '.config.yaml.*')" ""
+
+  # A missing config is team-secrets restore's: the tools stage is done, and check lists it.
+  rm "$config"
+  run_bin -0 team-bootstrap --stage tools
+  assert_equal "$output" "tools: done: every tool is at its pin or above its minimum"
+  run_bin -1 team-bootstrap --stage check
+  assert_equal "$(stage_lines check | grep '^Daniel')" "Daniel 1: opencode-gate: Daniel runs team-secrets restore in their own terminal (the secret no-mistakes-config), then $CODE_CHECKOUT/bin/team-bootstrap --stage tools sets agent_path_override: {opencode: $wrapper} in it (~/.no-mistakes/config.yaml is not there)"
+}
+
+@test "check lists each failing secret with its reason, so a wrong mode is never called missing" {
+  tools_at arch
+  chmod 644 "$HOME/$(jq -r '.secrets[0].target' "$TEAM_HOME/machine/secrets.json")"
+  rm "$HOME/$(jq -r '.secrets[1].target' "$TEAM_HOME/machine/secrets.json")"
+  run_bin -1 team-bootstrap --stage check
+  assert_equal "$(stage_lines check | grep '^Daniel')" "Daniel 1: secrets: with the 1Password app signed in and its CLI integration on, in your own terminal, not through an agent: $CODE_CHECKOUT/bin/team-secrets restore (discord-bot-env: mode 644; discord-access-json: missing)"
 }
 
 @test "projects are cloned from https://github.com/<repo>.git to their registry paths; a task directory git ignores is left alone; the gate is only no-mistakes'" {
