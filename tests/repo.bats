@@ -444,14 +444,15 @@ reviewer_allows() {
   assert_equal "$(jq -r '.permissions.allow[]' "$REPO_ROOT/settings/reviewer.json")" \
     'Bash(@TEAM_CODE@/bin/team-review-status *)
 Bash(@TEAM_CODE@/bin/team-review-comment *)'
-  # The commands as templates/briefs/reviewer.md and rereview.md give them, team_bin being
-  # this checkout's bin/ in full.
+  # The commands as templates/briefs/rereview.md and the direct-PR review partial give them,
+  # team_bin being this checkout's bin/ in full; a gated project's first review posts nothing.
   local brief
-  for brief in reviewer rereview; do
+  for brief in review/direct-pr rereview; do
     grep -qF '`{{team_bin}}/team-review-status {{pr}} {{head}} <success|failure> "<one line, at most 140 characters>"`' \
       "$REPO_ROOT/templates/briefs/$brief.md"
     grep -qF '`{{team_bin}}/team-review-comment {{pr}} {{task_dir}}/' "$REPO_ROOT/templates/briefs/$brief.md"
   done
+  if grep -n team-review "$REPO_ROOT/templates/briefs/review/no-mistakes.md"; then return 1; fi
   reviewer_allows "$REPO_ROOT/bin/team-review-status https://github.com/me/shop/pull/5 a1b2c3d4e5f60718293a4b5c6d7e8f9012345678 success \"no blocking findings\""
   reviewer_allows "$REPO_ROOT/bin/team-review-comment https://github.com/me/shop/pull/5 .scratch/task/review.md"
 }
@@ -534,7 +535,7 @@ gotchas_problems() {
   assert_equal "$output" ""
 }
 
-# The templates in templates/briefs/ (not the delivery partials) but ops whose ## Rules section
+# The templates in templates/briefs/ (not the partials in its directories) but ops whose ## Rules section
 # lacks the gotchas line, read from the code checkout, one per line: briefs_without_gotchas <dir>
 briefs_without_gotchas() {
   local file

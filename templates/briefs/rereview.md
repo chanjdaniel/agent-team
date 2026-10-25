@@ -10,7 +10,7 @@ Since the last review: {{since}}
 ## Check
 
 1. Every blocking finding in `{{task_dir}}/review.md` is fixed at `{{head}}`, or the PR records Daniel's decision to keep it.
-2. Review what changed since the last review, `git diff {{reviewed}} {{head}}`, and the commit messages of `origin/{{base}}..{{head}}`.
+{{> rereview}}
 3. Run each of the project's local checks ({{local_checks}}) from the worktree's root on `{{head}}`, and if `gh pr checks {{pr}}` lists any GitHub checks, wait for them to finish (`--watch`); every one must pass, and `{{task_dir}}/review.md` says which local checks passed (they set no GitHub status).
 
 ## Deliver

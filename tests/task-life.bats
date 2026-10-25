@@ -307,7 +307,8 @@ assert_closed_and_clean() {
   echo "- The tests run the real scripts." >"$BATS_TEST_TMPDIR/checks"
   ok team-brief T1 reviewer --name review --set pr="$url" --set head="$head" --set-file checks="$BATS_TEST_TMPDIR/checks"
   local review_brief=$output
-  assert_contains "$(cat "$review_brief")" "PR: $url against \`dev\`, head \`$head\`."
+  assert_contains "$(cat "$review_brief")" "; review \`origin/dev...$head\`."
+  assert_contains "$(cat "$review_brief")" "the comment on PR $url is that file"
   step in-review no-worker:"$builder"
   ok team-worker T1 reviewer "$wt" -- "Read your brief at $review_brief"
   local reviewer=$output
@@ -407,8 +408,10 @@ assert_closed_and_clean() {
     --set-file checks="$BATS_TEST_TMPDIR/checks"
   ok team-worker T1 reviewer "$home_wt" -- "Read your brief at $output"
   local home_reviewer=$output
-  ok team-brief T1 reviewer --project conv --name review-conv --set pr="$conv_url" --set head="$conv_head" \
-    --set-file checks="$BATS_TEST_TMPDIR/checks"
+  # conv is gated: its first review read the local head before the gate ran, so its PR gets the
+  # re-review of what the gate added.
+  ok team-brief T1 rereview --project conv --name rereview-conv --set pr="$conv_url" --set head="$conv_head" \
+    --set reviewed="$conv_head" --set "since=the gate's run"
   ok team-worker T1 reviewer "$conv_wt" -- "Read your brief at $output"
   local conv_reviewer=$output
   step in-review

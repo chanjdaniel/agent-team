@@ -41,9 +41,9 @@ Every command below answers `--help` with its exact usage; this manual says when
    Log the approval with `team-log T<n> plan-approved by=<Daniel or coordinator>`.
 4. **Build.** One builder per ticket, in blocking order: `team-brief T<n> builder-ticket --set ticket=NN --name build-NN`, then `team-worker T<n> builder ...`.
    A small fix or bug gets one builder with `builder-fix` instead.
-   When every ticket is done, one builder delivers with `builder-deliver --set goal=<the plan's goal, one line>`, which opens the PR through the project's gate.
-5. **Review.** On PR, launch a fresh reviewer with `team-brief T<n> reviewer --name review --set pr=<url> --set head=<full sha> --set-file checks=<file>`.
-   Findings go back to the builder who still holds its context; after the fix, a fresh reviewer re-checks with `rereview` (`--name rereview-2`, and so on).
+   When every ticket is done, one builder delivers with `builder-deliver --set goal=<the plan's goal, one line>`: a direct-PR project's opens the PR, and a gated one's first stops before its gate with `DONE review-ready <head>`.
+5. **Review.** On PR, or on a gated project's `review-ready` (no `pr`, its head the local one), launch a fresh reviewer with `team-brief T<n> reviewer --name review --set pr=<url> --set head=<full sha> --set-file checks=<file>`.
+   Findings go back to the builder who still holds its context, and a gated builder runs its gate once they are fixed or you say the review passed; after the fix or the gate's PR, a fresh reviewer re-checks from the reviewed head with `rereview` (`--name rereview-2`, and so on).
    A reviewer writes to GitHub only through `team-review-comment` and `team-review-status`, the one comment and the `agent-review` status its settings allow.
 6. **Merge.** A PR behind its base (`gh api repos/<repo>/compare/<base>...<head> --jq .behind_by` above 0) merges it first, through `builder-merge-base --set pr=<url>` for the builder who holds its context and a `rereview` with its conflicted files in `since`; with the review passed and every check green, ask Daniel in the thread with the full PR URL.
    On Daniel's "merge it", log the message it came in with `team-log T<n> merge-approved url=<PR url> discord_message=<id>`, then run `team-merge T<n>` (`--pr <url>` for each PR of a task in two repos); merging the code checkout's own project also fast-forwards that checkout, which is how merged code reaches the scripts, or says why it did not and the command for Daniel.
