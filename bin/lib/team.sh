@@ -8,7 +8,7 @@
 # the script's help_more, if it defined one before sourcing), and provides die, usage_error, team_project, ledger_jq, ledger_append,
 # task_events, known_task_events, open_task_events, task_status, task_worktrees, local_path,
 # archive_left_out, rsync_rule, archive_task_dir, machine_name, os_release, team_os, fence_reason, lease_gate, worktree_changes,
-# pool_status, secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin, home_repo, non_records,
+# pool_status, pool_slot, slot_changes, secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin, home_repo, non_records,
 # only_records, commit_non_records, records_list, origin_git, origin_reason, commit_records, fast_forward, render_template,
 # registered_pr, attribution_lines, strip_attribution, live_sessions, discord_token, discord_api,
 # github, pr_part and task_state_json, and sets COORDINATOR_CHANNEL.
@@ -280,6 +280,38 @@ pool_status() {
   while IFS= read -r path; do resolved+=("$(realpath -m -- "$path")"); done < <(jq -r .path <<<"$out")
   jq -cn '[inputs] as $slots | $ARGS.positional as $real | range($slots | length) | $slots[.] + {path: $real[.]}' \
     --args "${resolved[@]}" <<<"$out"
+}
+
+# Of the pool's slots <slot>..., the one that is <path>, as the registry spells it; fails, printing
+# nothing, when <path> is none of them: pool_slot <path> <slot>...
+pool_slot() {
+  local path slot
+  path=$(realpath -m -- "$1")
+  for slot in "${@:2}"; do
+    if [[ $(realpath -m -- "$slot") == "$path" ]]; then echo "$slot" && return 0; fi
+  done
+  return 1
+}
+
+# What keeps the leased slot <slot> from taking a task, as team-open checks it: worktree_changes'
+# lines, then "a non-empty task directory <task_dir>: <names>"; nothing when it is clean. Fails,
+# printing why, when <slot> is no worktree of the primary checkout <primary>:
+# slot_changes <primary> <slot> <task_dir>
+slot_changes() {
+  local primary=$1 slot=$2 task_dir=$3 common list
+  common=$(git -C "$slot" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || {
+    echo "the leased slot $slot is not a git worktree"
+    return 1
+  }
+  [[ $(realpath -m -- "$common") == "$(realpath -m -- "$(git -C "$primary" rev-parse --path-format=absolute --git-common-dir)")" ]] || {
+    echo "the leased slot $slot is not a worktree of $primary"
+    return 1
+  }
+  worktree_changes "$slot"
+  if [[ -d $slot/$task_dir ]]; then
+    list=$(find "$slot/$task_dir" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | paste -sd ' ')
+    [[ -z $list ]] || echo "a non-empty task directory $task_dir: $list"
+  fi
 }
 
 # Of the relative paths on stdin, NUL-separated, those that may hold a secret, one per line: a

@@ -297,7 +297,7 @@ take_git_slot() {
 # check it is trusted and clean, then switch it to the branch. The lease command's stderr (its
 # pre-warm progress) is shown only when it fails.
 take_treehouse_slot() {
-  local slot trusted='' found=() list common pool dirty=''
+  local slot trusted='' found=() list changes pool dirty=''
   pool=$(pool_status "$primary") || die "cannot read $project's pool: treehouse status --json did not answer in $primary"
   # Never one on a branch: that is a worktree, not a lease a failed run left.
   while IFS= read -r slot; do
@@ -320,21 +320,11 @@ take_treehouse_slot() {
     dirty=$(jq -r --arg path "$(realpath -m -- "$leased")" 'select(.path == $path and .status == "dirty") | .path' <<<"$pool")
     [[ -n $dirty ]] || force_return=1
   fi
-  for slot in "${slots[@]}"; do
-    if [[ $(realpath -m -- "$slot") == "$(realpath -m -- "$leased")" ]]; then trusted=$slot; fi
-  done
-  [[ -n $trusted ]] || die "the lease command handed out $leased, which is not one of $project's slots"
-
-  common=$(git -C "$trusted" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) ||
-    die "the leased slot $trusted is not a git worktree"
-  [[ $(realpath -m -- "$common") == "$(realpath -m -- "$(git -C "$primary" rev-parse --path-format=absolute --git-common-dir)")" ]] ||
-    die "the leased slot $trusted is not a worktree of $primary"
-  mapfile -t found < <(worktree_changes "$trusted")
-  if [[ -d $trusted/$task_dir ]]; then
-    list=$(find "$trusted/$task_dir" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | paste -sd ' ')
-    [[ -z $list ]] || found+=("a non-empty task directory $task_dir: $list")
-  fi
-  if ((${#found[@]})); then
+  trusted=$(pool_slot "$leased" "${slots[@]}") ||
+    die "the lease command handed out $leased, which is not one of $project's slots"
+  changes=$(slot_changes "$primary" "$trusted" "$task_dir") || die "$changes"
+  if [[ -n $changes ]]; then
+    mapfile -t found <<<"$changes"
     list=$(printf '%s; ' "${found[@]}")
     if [[ -n $force_return ]]; then
       die "the leased slot $trusted is not clean: ${list%; }; it was clean before this lease, so the lease" \
