@@ -227,9 +227,9 @@ unowned 4"
 
 @test "another subcommand, a missing one or an unknown option is a usage error naming the subcommands" {
   run_bin -2 --separate-stderr team-stack start
-  assert_equal "$stderr" "team-stack: unknown subcommand 'start'; the subcommands are: ls, up, env, seed, stop, down"
+  assert_equal "$stderr" "team-stack: unknown subcommand 'start'; the subcommands are: ls, up, env, seed, stop, down, sweep"
   run_bin -2 --separate-stderr team-stack
-  assert_equal "$stderr" "team-stack: usage: team-stack ls|up|env|seed|stop|down [options]; team-stack --help says more"
+  assert_equal "$stderr" "team-stack: usage: team-stack ls|up|env|seed|stop|down|sweep [options]; team-stack --help says more"
   run_bin -2 --separate-stderr team-stack ls --bogus
   assert_equal "$stderr" "team-stack: usage: team-stack ls [--all] [--json]"
   run_bin -2 --separate-stderr team-stack up --bogus
@@ -847,4 +847,227 @@ SH
   # Every key, of the right types, is accepted.
   stack_settings '{"stack_cap": 6, "memory_floor_gib": 6, "disk_floor_gb": 30, "wait_minutes": 15, "idle_minutes": 30, "heartbeat_sweep": false, "heartbeat_janitor": false}'
   run_bin -0 team-stack up --worktree "$STACK_WORKTREE"
+}
+
+# session <cwd> <status> [<kind>]: one live session as claude agents --json lists it.
+session() {
+  jq -cn --arg cwd "$1" --arg status "$2" --arg kind "${3:-background}" \
+    '{pid: 4242, cwd: $cwd, kind: $kind, startedAt: 1761098400000, sessionId: "5e55a0b1-1111-4222-8333-444455556666",
+      name: "T7-builder", status: $status, id: "5e55a0b1", state: null}'
+}
+
+# sessions [<session JSON>...]: the live session list.
+sessions() {
+  stub_reply claude "$(jq -cs . <<<"$*")"
+}
+
+# The projects the sweep asked Compose to stop, one per line.
+stopped() {
+  docker_calls | sed -n 's/^compose -p \(.*\) stop$/\1/p'
+}
+
+# The running containers of <project> started <seconds> ago: started <project> <seconds>
+started() {
+  docker_state containers "map(if .Config.Labels[\"com.docker.compose.project\"] == \"$1\" and .State.Running
+    then .State.StartedAt = (now - $2 | todate) else . end)"
+}
+
+# The sweep's state file of <project>, holding <JSON>: sweep_state <project> <JSON>
+sweep_state() {
+  mkdir -p "$HOME/.local/state/agent-team/stacks"
+  printf '%s\n' "$2" >"$HOME/.local/state/agent-team/stacks/$1.json"
+}
+
+# The last_busy the sweep's state file of <project> holds, as seconds before now.
+busy_ago() {
+  jq -r '.last_busy | now - fromdate | floor' "$HOME/.local/state/agent-team/stacks/$1.json"
+}
+
+@test "sweep keeps a stack with a busy session in its worktree, interactive ones included, and writes when it was busy" {
+  sessions "$(session "$STACK_WORKTREE" busy interactive)" "$(session "$HOME/elsewhere" idle)"
+  run_bin -0 --separate-stderr team-stack sweep
+  assert_equal "$output" ""
+  assert_equal "$stderr" ""
+  assert_equal "$(stopped)" ""
+  (($(busy_ago conventioner-2) < 60))
+  assert_equal "$(jq -c 'keys' "$HOME/.local/state/agent-team/stacks/conventioner-2.json")" '["last_busy"]'
+  # Only running team stacks get a state file.
+  assert_equal "$(ls "$HOME/.local/state/agent-team/stacks")" conventioner-2.json
+  assert_equal "$(stub_calls claude)" '["agents","--json"]'
+}
+
+@test "sweep stops a stack whose last busy time is older than idle_minutes, logs the line and prints it, its data kept" {
+  sessions "$(session "$STACK_WORKTREE" idle)"
+  sweep_state conventioner-2 "{\"last_busy\": \"$(date -u -d '31 minutes ago' +%FT%TZ)\"}"
+  started conventioner-2 7200
+  local since
+  since=$(jq -r .last_busy "$HOME/.local/state/agent-team/stacks/conventioner-2.json")
+  run_bin -0 --separate-stderr team-stack sweep
+  assert_equal "$stderr" ""
+  [[ $output =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z\ stopped\ conventioner-2\ of\ T7\ in\ $STACK_WORKTREE:\ last\ busy\ at\ $since\ \(idle_minutes\ 30\),\ its\ data\ kept$ ]]
+  assert_equal "$(cat "$HOME/.local/state/agent-team/stacks/sweep.log")" "$output"
+  assert_equal "$(stopped)" conventioner-2
+  assert_equal "$(jq -r '[.[] | select(.Config.Labels["com.docker.compose.project"] == "conventioner-2") | .State.Status] | unique[]' "$DOCKER_STATE/containers.json")" exited
+  # Its volumes stay.
+  assert_equal "$(docker_calls | grep -E '^(compose -p [^ ]+ (down|rm)|volume rm|rm)( |$)' || true)" ""
+  # A second sweep finds nothing running to stop, and adds no line.
+  run_bin -0 team-stack sweep
+  assert_equal "$output" ""
+  assert_equal "$(stopped)" conventioner-2
+  assert_equal "$(wc -l <"$HOME/.local/state/agent-team/stacks/sweep.log")" 1
+}
+
+@test "sweep keeps a stack busy within idle_minutes, though no session is busy now" {
+  sessions
+  sweep_state conventioner-2 "{\"last_busy\": \"$(date -u -d '29 minutes ago' +%FT%TZ)\"}"
+  started conventioner-2 7200
+  run_bin -0 team-stack sweep
+  assert_equal "$output" ""
+  assert_equal "$(stopped)" ""
+}
+
+@test "sweep counts a stack never seen busy from its containers' start: stopped when old, kept when new" {
+  sessions "$(session "$STACK_WORKTREE" idle)"
+  started conventioner-2 600
+  stack_settings '{"idle_minutes": 15}'
+  run_bin -0 team-stack sweep
+  assert_equal "$output" ""
+  assert_equal "$(stopped)" ""
+  [[ ! -e $HOME/.local/state/agent-team/stacks/conventioner-2.json ]]
+  started conventioner-2 1000
+  local since
+  since=$(jq -r '[.[] | select(.Config.Labels["com.docker.compose.project"] == "conventioner-2") | .State.StartedAt] | max' "$DOCKER_STATE/containers.json")
+  run_bin -0 team-stack sweep
+  [[ $output == *" stopped conventioner-2 of T7 in $STACK_WORKTREE: not seen busy since its start at $since (idle_minutes 15), its data kept" ]]
+  assert_equal "$(stopped)" conventioner-2
+}
+
+@test "sweep counts a stack started again after its last busy time from that start" {
+  sessions
+  sweep_state conventioner-2 "{\"last_busy\": \"$(date -u -d '3 hours ago' +%FT%TZ)\"}"
+  started conventioner-2 120
+  run_bin -0 team-stack sweep
+  assert_equal "$(stopped)" ""
+}
+
+@test "sweep counts a busy session in a subdirectory of the worktree, never one in a sibling path with the same prefix" {
+  sessions "$(session "$STACK_WORKTREE/src/app" busy)"
+  run_bin -0 team-stack sweep
+  assert_equal "$(stopped)" ""
+  (($(busy_ago conventioner-2) < 60))
+  rm "$HOME/.local/state/agent-team/stacks/conventioner-2.json"
+  sessions "$(session "$STACK_WORKTREE-2" busy)" "$(session "${STACK_WORKTREE}x/src" busy)"
+  run_bin -0 team-stack sweep
+  assert_equal "$(stopped)" conventioner-2
+  [[ ! -e $HOME/.local/state/agent-team/stacks/conventioner-2.json ]]
+}
+
+@test "sweep never stops a gate or unowned stack, a gate run from a task's shell included, however long idle" {
+  sessions
+  # The gate run labelled from a shell with team-stack env's exports: owner agent-team, kind gate.
+  docker_state containers '(.[] | select(.Name == "/nmtest-1895520-frontend-1") | .Config.Labels)
+    |= . + {"io.github.chanjdaniel.team.owner": "agent-team", "io.github.chanjdaniel.team.task": "T7"}'
+  started nmtest-1895520 86400
+  started conventioner-3 86400
+  run_bin -0 team-stack sweep
+  # Only the idle team stack.
+  assert_equal "$(stopped)" conventioner-2
+  [[ ! -e $HOME/.local/state/agent-team/stacks/nmtest-1895520.json ]]
+  [[ ! -e $HOME/.local/state/agent-team/stacks/conventioner-3.json ]]
+  # A team project holding any object of another class is not the team's to stop either.
+  docker_state containers '(.[] | select(.Name == "/conventioner-2-mongodb-1") | .Config.Labels["io.github.chanjdaniel.team.owner"]) = ""
+    | (.[] | select(.Config.Labels["com.docker.compose.project"] == "conventioner-2") | .State) |= . + {Running: true, Status: "running"}'
+  run_bin -0 team-stack sweep
+  assert_equal "$(stopped)" conventioner-2
+}
+
+@test "sweep stops an instance's stack (kind e2e) by its worktree label like any team stack" {
+  docker_state containers '(.[] | select(.Config.Labels["com.docker.compose.project"] == "conventioner-2") | .Config.Labels)
+    |= . + {"io.github.chanjdaniel.team.kind": "e2e"}'
+  sessions "$(session "$STACK_WORKTREE" busy)"
+  run_bin -0 team-stack sweep
+  assert_equal "$(stopped)" ""
+  sessions
+  sweep_state conventioner-2 "{\"last_busy\": \"$(date -u -d '31 minutes ago' +%FT%TZ)\"}"
+  run_bin -0 team-stack sweep
+  assert_equal "$(stopped)" conventioner-2
+}
+
+@test "sweep reads a missing or unreadable state file as never seen busy, and a busy session writes it anew" {
+  sessions
+  started conventioner-2 120
+  sweep_state conventioner-2 'not json'
+  run_bin -0 --separate-stderr team-stack sweep
+  assert_equal "$stderr" ""
+  assert_equal "$(stopped)" ""
+  sweep_state conventioner-2 '{"last_busy": "yesterday"}'
+  run_bin -0 team-stack sweep
+  assert_equal "$(stopped)" ""
+  sessions "$(session "$STACK_WORKTREE" busy)"
+  run_bin -0 team-stack sweep
+  (($(busy_ago conventioner-2) < 60))
+  sessions
+  chmod 000 "$HOME/.local/state/agent-team/stacks/conventioner-2.json"
+  started conventioner-2 7200
+  run_bin -0 --separate-stderr team-stack sweep
+  chmod 644 "$HOME/.local/state/agent-team/stacks/conventioner-2.json"
+  assert_equal "$(stopped)" conventioner-2
+}
+
+@test "sweep with Docker not answering says no stack runs and exits 0, without reading the session list" {
+  docker_down
+  run_bin -0 --separate-stderr team-stack sweep
+  assert_equal "$output" "team-stack: Docker does not answer (Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?), so no stack runs and there is nothing to sweep"
+  assert_equal "$(stub_calls claude)" ""
+}
+
+@test "sweep with the session list unreadable exits 1 and stops nothing" {
+  stub_reply claude 'claude: not logged in' 1
+  run_bin -1 --separate-stderr team-stack sweep
+  assert_equal "$stderr" "team-stack: cannot read the live session list (claude agents --json)"
+  assert_equal "$output" ""
+  assert_equal "$(stopped)" ""
+  [[ ! -e $HOME/.local/state/agent-team/stacks/sweep.log ]]
+  # A list that is not a JSON array is unreadable too.
+  stub_reply claude '{"sessions": []}'
+  run_bin -1 team-stack sweep
+  assert_equal "$(stopped)" ""
+}
+
+@test "sweep with no running team stack asks nothing of the session list" {
+  docker_state containers 'map(select(.Config.Labels["com.docker.compose.project"] != "conventioner-2"))'
+  run_bin -0 --separate-stderr team-stack sweep
+  assert_equal "$output$stderr" ""
+  assert_equal "$(stub_calls claude)" ""
+}
+
+@test "a stop that fails is reported on stderr, the other stacks are still swept, and the sweep exits 1" {
+  sessions
+  docker_state containers '(.[] | select(.Name == "/conventioner-3-backend-1") | .Config.Labels)
+    |= . + {"io.github.chanjdaniel.team.owner": "agent-team", "io.github.chanjdaniel.team.task": "T8"}'
+  docker_fail 'compose stop' 'Error response from daemon: cannot stop container: permission denied'
+  run_bin -1 --separate-stderr team-stack sweep
+  assert_equal "$stderr" "team-stack: docker compose stop of conventioner-2 failed: Error response from daemon: cannot stop container: permission denied
+team-stack: docker compose stop of conventioner-3 failed: Error response from daemon: cannot stop container: permission denied"
+  assert_equal "$output" ""
+  [[ ! -e $HOME/.local/state/agent-team/stacks/sweep.log ]]
+}
+
+@test "sweep takes no options, and reads idle_minutes through the checked settings" {
+  run_bin -2 --separate-stderr team-stack sweep --all
+  assert_equal "$stderr" "team-stack: usage: team-stack sweep"
+  stack_settings '{"idle_minutes": "30"}'
+  run_bin -1 --separate-stderr team-stack sweep
+  assert_equal "$stderr" "team-stack: $HOME/.config/agent-team/stack.json: idle_minutes must be a number of 0 or more, not \"30\""
+  assert_equal "$(docker_calls)" ""
+}
+
+@test "down removes the sweep's state file of the stack" {
+  open_task T22
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
+  sweep_state "$PROJECT" '{"last_busy": "2026-10-25T09:00:00Z"}'
+  sweep_state conventioner-2 '{"last_busy": "2026-10-25T09:00:00Z"}'
+  run_bin -0 team-stack down --worktree "$STACK_WORKTREE"
+  [[ ! -e $HOME/.local/state/agent-team/stacks/$PROJECT.json ]]
+  [[ -e $HOME/.local/state/agent-team/stacks/conventioner-2.json ]]
 }

@@ -5,6 +5,7 @@
 # Usage: team-stack ls [--all] [--json]
 #        team-stack up [--worktree <path>] [--task T<n>] [--no-seed]
 #        team-stack env|seed|stop|down [--worktree <path>]
+#        team-stack sweep
 #
 # ls        every Compose project on the machine (docker compose ls --all), one line each under
 #           a header: its name, status, owner class, task, kind, worktree (~ for the home
@@ -65,7 +66,23 @@
 #           <worktree>/<task_dir>/stack-logs/<project>-<service>.log, then runs docker compose -p
 #           <project> down -v --remove-orphans and docker volume rm on each anonymous volume its
 #           containers mounted that is still there, and fails naming each container, volume and
-#           network of the stack left. A worktree with no stack is told so, exit 0 (as for stop).
+#           network of the stack left, and removes the stack's sweep state file. A worktree with
+#           no stack is told so, exit 0 (as for stop).
+#
+# sweep     Stops each running team stack (every container of its Compose project of class team)
+#           whose worktree has had no busy session for idle_minutes. A live session (claude agents
+#           --json, interactive ones included) with status busy whose cwd is the stack's worktree
+#           label or below it, by real path, makes it busy: the time is written to
+#           ~/.local/state/agent-team/stacks/<project>.json as last_busy. Otherwise it is idle
+#           since the later of that last_busy (a missing or unreadable file has none) and its
+#           running containers' latest start; idle more than idle_minutes, it is stopped with
+#           docker compose -p <project> stop, its data kept, and one line is printed and added to
+#           ~/.local/state/agent-team/stacks/sweep.log ("<time> stopped <project> of <task> in
+#           <worktree>: last busy at <time> (idle_minutes <n>), its data kept", or "not seen busy
+#           since its start at <time>"). Gate and unowned stacks are never stopped. Docker not
+#           answering means no stack runs: it says so, exit 0. The session list is read only when a
+#           team stack runs; one that cannot be read is exit 1, nothing stopped. A stop that fails
+#           is named on stderr, the others still swept, exit 1.
 #
 # The owner classes, from each object's own labels and its Compose project, and the registry's
 # stack blocks (team-project --help):
@@ -80,25 +97,29 @@
 # The machine's settings, ~/.config/agent-team/stack.json, a JSON object whose keys are all
 # optional: stack_cap (a whole number of 1 or more, default 6), memory_floor_gib (6),
 # disk_floor_gb (30), wait_minutes (15), idle_minutes (30), each a number of 0 or more,
-# heartbeat_sweep and heartbeat_janitor (true or false, default false). up refuses a file that is
-# not one JSON object, a key of the wrong type and an unknown key, naming each.
+# heartbeat_sweep and heartbeat_janitor (true or false, default false). up and sweep refuse a file
+# that is not one JSON object, a key of the wrong type and an unknown key, naming each.
 # Test seams: TEAM_MEMINFO names a file read in place of /proc/meminfo, and
 # TEAM_STACK_RECHECK_SECONDS replaces the 30 seconds between admission checks.
 #
-# Exit 0 done, 1 refused or failed (Docker not answering, with its reason), 2 usage error,
-# 75 try again later (no room for the stack when its wait ran out).
+# Exit 0 done, 1 refused or failed (Docker not answering, with its reason, but for sweep),
+# 2 usage error, 75 try again later (no room for the stack when its wait ran out).
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
 LS_USAGE="usage: team-stack ls [--all] [--json]"
 
-(($#)) || usage_error "usage: team-stack ls|up|env|seed|stop|down [options]; team-stack --help says more"
+(($#)) || usage_error "usage: team-stack ls|up|env|seed|stop|down|sweep [options]; team-stack --help says more"
 SUBCOMMAND=$1
 case $SUBCOMMAND in
-  ls | up | env | seed | stop | down) ;;
-  *) usage_error "unknown subcommand '$SUBCOMMAND'; the subcommands are: ls, up, env, seed, stop, down" ;;
+  ls | up | env | seed | stop | down | sweep) ;;
+  *) usage_error "unknown subcommand '$SUBCOMMAND'; the subcommands are: ls, up, env, seed, stop, down, sweep" ;;
 esac
 shift
+
+# The machine's stack state: the admission lock, and in stacks/ the waits log, the sweep's log
+# and each team stack's <project>.json.
+STATE=$HOME/.local/state/agent-team
 
 # Docker's answers go through files: a machine's hundreds of volumes are too long for an argument.
 WORK=$(mktemp -d)
@@ -460,6 +481,7 @@ teardown() {
     [(.objects | map(select(.type != "network"))), ($anonymous | map({type: "volume", name: .})),
      (.objects | map(select(.type == "network")))] | add | map("\(.type) \(.name)") | join(", ")' "$WORK/stack.json")
   [[ -z $summary ]] || die "$STACK_NAME is not all gone after its down: $summary"
+  rm -f "$STATE/stacks/$STACK_NAME.json"
   TEARDOWN_LOGS=$dir
 }
 
@@ -592,21 +614,20 @@ reasons_line() {
 
 # Log one finished admission wait in the state directory's waits.jsonl: log_wait <start> <admitted>
 log_wait() {
-  local state=$HOME/.local/state/agent-team/stacks
-  mkdir -p "$state"
+  mkdir -p "$STATE/stacks"
   jq -cn --argjson start "$1" --argjson admitted "$2" --arg project "$STACK_NAME" --arg task "$TASK" '
     {start: ($start | todate), end: (now | floor | todate), project: $project, task: $task, admitted: $admitted,
-     reasons: $ARGS.positional}' --args "${REASONS[@]}" >>"$state/waits.jsonl"
+     reasons: $ARGS.positional}' --args "${REASONS[@]}" >>"$STATE/stacks/waits.jsonl"
 }
 
 # Admit the stack STACK_NAME, or wait for room up to wait_minutes, re-checking every
 # TEAM_STACK_RECHECK_SECONDS (30); exit 75 with every failing check when the wait runs out.
 # Returns with the admission lock held on LOCK_FD, which the caller closes after its up.
 admit() {
-  local state=$HOME/.local/state/agent-team start minutes seconds deadline now waited=''
+  local start minutes seconds deadline now waited=''
   local -a refused=()
-  mkdir -p "$state"
-  exec {LOCK_FD}>>"$state/stacks.lock"
+  mkdir -p "$STATE"
+  exec {LOCK_FD}>>"$STATE/stacks.lock"
   flock -x "$LOCK_FD"
   start=$(date +%s)
   minutes=$(setting wait_minutes)
@@ -667,6 +688,91 @@ cmd_up() {
     note="seeded: a new database"
   fi
   echo "${0##*/}: $STACK_NAME is up for $TASK, $note"
+}
+
+# Stop each running team stack whose worktree has had no busy session for idle_minutes, its last
+# busy time kept in its state file, since the session list has none.
+cmd_sweep() {
+  (($# == 0)) || usage_error "usage: team-stack sweep"
+  stack_settings
+  local -a ids
+  if ! docker compose ls --format json >/dev/null 2>"$DOCKER_ERR"; then
+    echo "${0##*/}: Docker does not answer ($(last_reason "$DOCKER_ERR" "docker compose ls failed")), so no stack runs and there is nothing to sweep"
+    return 0
+  fi
+  docker_read ps ps --all --quiet --no-trunc
+  mapfile -t ids < <(grep . <<<"$DOCKER_OUT" || true)
+  docker_inspect container "$WORK/containers.json" "${ids[@]}"
+  stack_blocks >"$WORK/stacks.json" || exit 1
+
+  # The running team stacks, one compact {project, task, worktrees, started} per line: every
+  # container of the project of class team, one running, started its running containers' latest start.
+  jq -c -L "$TEAM_LIB" 'include "stack";
+    $stacks[0] as $stacks
+    | map(. + {project: compose_project(.Config.Labels)} | select(.project != null))
+    | group_by(.project)[]
+    | select(all(.[]; owner_class(.Config.Labels; .project; $stacks) == "team") and any(.[]; .State.Running))
+    | {project: .[0].project, task: ([.[] | team_label(.Config.Labels; "task") // empty] | unique | join(",")),
+       worktrees: ([.[] | team_label(.Config.Labels; "worktree") // empty] | unique),
+       started: ([.[] | select(.State.Running) | .State.StartedAt | utc_time | fromdate] | max)}' \
+    --slurpfile stacks "$WORK/stacks.json" "$WORK/containers.json" >"$WORK/running.jsonl"
+  [[ -s $WORK/running.jsonl ]] || return 0
+
+  # The working directories of the busy sessions, interactive ones included, by real path.
+  local -a busy=()
+  local cwd
+  live_sessions
+  while IFS= read -r cwd; do
+    busy+=("$(realpath -m -- "$cwd")")
+  done < <(jq -r '.[] | select(.status == "busy") | .cwd // empty | select(. != "")' <<<"$LIVE_SESSIONS")
+
+  local stack project worktree file now last line failed=''
+  local -a worktrees
+  mkdir -p "$STATE/stacks"
+  while IFS= read -r stack; do
+    project=$(jq -r .project <<<"$stack")
+    mapfile -t worktrees < <(jq -r '.worktrees[]' <<<"$stack")
+    file=$STATE/stacks/$project.json
+    now=$(date +%s)
+    if sweep_busy "${worktrees[@]}"; then
+      jq -n --argjson now "$now" '{last_busy: ($now | todate)}' >"$file.tmp" && mv "$file.tmp" "$file"
+      continue
+    fi
+    # A state file that is missing, unreadable or holds no time is never seen busy.
+    last=$(jq -r '.last_busy | fromdate' "$file" 2>/dev/null) || last=''
+    [[ $last =~ ^[0-9]+$ ]] || last=''
+    line=$(jq -nr --argjson stack "$stack" --argjson now "$now" --argjson idle "$(setting idle_minutes)" \
+      --argjson last "${last:-null}" '
+      ([$last, $stack.started] | max) as $since
+      | if $now - $since <= $idle * 60 then empty
+        else "\($now | todate) stopped \($stack.project) of \(if $stack.task == "" then "no task" else $stack.task end)"
+          + " in \($stack.worktrees | if . == [] then "no worktree" else join(", ") end): "
+          + (if $last != null and $last >= $stack.started then "last busy at \($last | todate)"
+             else "not seen busy since its start at \($stack.started | todate)" end)
+          + " (idle_minutes \($idle)), its data kept" end')
+    [[ -n $line ]] || continue
+    if ! docker compose -p "$project" stop >"$WORK/stop.log" 2>&1; then
+      echo "${0##*/}: docker compose stop of $project failed: $(last_reason "$WORK/stop.log" "no reason given")" >&2
+      failed=1
+      continue
+    fi
+    printf '%s\n' "$line" >>"$STATE/stacks/sweep.log"
+    printf '%s\n' "$line"
+  done <"$WORK/running.jsonl"
+  [[ -z $failed ]]
+}
+
+# Whether a busy session works in any of the worktrees <worktrees...> or below one, by real path.
+sweep_busy() {
+  local worktree cwd
+  for worktree in "$@"; do
+    worktree=$(realpath -m -- "$worktree")
+    [[ $worktree != / ]] || continue
+    for cwd in ${busy[@]+"${busy[@]}"}; do
+      [[ $cwd == "$worktree" || $cwd == "$worktree"/* ]] && return 0
+    done
+  done
+  return 1
 }
 
 # up, env, seed, stop and down: <subcommand> [--worktree <path>] [up's options]
@@ -730,6 +836,8 @@ stack_command() {
 
 if [[ $SUBCOMMAND == ls ]]; then
   cmd_ls "$@"
+elif [[ $SUBCOMMAND == sweep ]]; then
+  cmd_sweep "$@"
 else
   stack_command "$SUBCOMMAND" "$@"
 fi

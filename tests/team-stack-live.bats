@@ -4,7 +4,8 @@
 # a merge never reaches Docker while a gate run's end to end runs (sops/docker.md). The first
 # two only read (ls, and the fixture wrapper's compose config, which starts nothing); the others
 # start and remove stacks of the fixture project's one busybox service, under project names of
-# their own, which teardown removes whatever happened.
+# their own, which teardown removes whatever happened. The sweep's test shows every other team
+# stack running on the machine as busy in the stub session list, so it stops only its own.
 
 load helpers/common
 load helpers/docker
@@ -161,4 +162,70 @@ live_get() {
   local winner
   if ((status_a == 0)); then winner=$wt_a; else winner=$wt_b; fi
   run_bin -0 team-stack down --worktree "$winner"
+}
+
+# Make the stub session list hold a busy session in each of <worktrees...> and in the worktree of
+# every team container running on the machine, so a live sweep never stops another task's stack;
+# skip when a running team container has no worktree label, which no session could keep busy.
+live_busy() {
+  local -a ids worktrees=("$@")
+  local worktree
+  mapfile -t ids < <(docker ps --quiet --filter label=io.github.chanjdaniel.team.owner=agent-team)
+  if ((${#ids[@]})); then
+    while IFS= read -r worktree; do
+      [[ -n $worktree ]] || skip "a running team container has no worktree label, so a live sweep could stop it"
+      worktrees+=("$worktree")
+    done < <(docker inspect --format '{{index .Config.Labels "io.github.chanjdaniel.team.worktree"}}' "${ids[@]}")
+  fi
+  for worktree in ${worktrees[@]+"${worktrees[@]}"}; do
+    [[ $worktree != "$LIVE_IDLE" ]] || continue
+    jq -cn --arg cwd "$worktree" '{cwd: $cwd, kind: "background", status: "busy", state: null}'
+  done | jq -cs . >"$STUB_FIXTURES/claude.out"
+}
+
+@test "live: the sweep stops an idle stack with its volume intact, and up brings it back with its data" {
+  local name=lsw$RANDOM$$
+  stack_project "$name"
+  LIVE_PROJECT=stackfix-$name-1
+  jq -cn --arg wt "$STACK_WORKTREE" '{ts: "2026-10-24T09:00:00Z", task: "T22", event: "opened", project: "'"$name"'",
+    path: "feature", type: "feature", title: "Live", branch: "work", base: "main", base_sha: "0000000", worktree: $wt}' \
+    >>"$TEAM_HOME/ledger.jsonl"
+  mkdir -p "$HOME/.config/agent-team"
+  echo '{"idle_minutes": 1, "memory_floor_gib": 0, "disk_floor_gb": 0, "wait_minutes": 0, "stack_cap": 1000}' \
+    >"$HOME/.config/agent-team/stack.json"
+  cd "$STACK_WORKTREE"
+  run_bin -0 team-stack up --no-seed
+  local filter=label=com.docker.compose.project=$LIVE_PROJECT container
+  container=$(docker ps --quiet --filter "$filter")
+  docker exec "$container" sh -c 'echo kept > /data/marker'
+
+  # Busy: kept, its last busy time written.
+  LIVE_IDLE=''
+  live_busy "$STACK_WORKTREE"
+  run_bin -0 --separate-stderr team-stack sweep
+  assert_equal "$output$stderr" ""
+  jq -e .last_busy "$HOME/.local/state/agent-team/stacks/$LIVE_PROJECT.json" >/dev/null
+  # Idle, but busy less than a minute ago: kept.
+  LIVE_IDLE=$STACK_WORKTREE
+  live_busy
+  run_bin -0 team-stack sweep
+  assert_equal "$output" ""
+  [[ -n $(docker ps --quiet --filter "$filter") ]]
+  # Idle past idle_minutes: stopped, alone.
+  sleep 62
+  live_busy
+  run_bin -0 --separate-stderr team-stack sweep
+  assert_equal "$stderr" ""
+  [[ $output == *" stopped $LIVE_PROJECT of T22 in $STACK_WORKTREE: last busy at "*" (idle_minutes 1), its data kept" ]]
+  assert_equal "${#lines[@]}" 1
+  assert_equal "$(docker ps --quiet --filter "$filter")" ""
+  assert_equal "$(docker ps --all --quiet --filter "$filter")" "$container"
+  assert_equal "$(docker volume ls --quiet --filter "$filter")" "${LIVE_PROJECT}_data"
+
+  run_bin -0 --separate-stderr team-stack up
+  assert_equal "$output" "team-stack: $LIVE_PROJECT is up for T22, not seeded: its database was there"
+  run_bin -0 team-stack env
+  assert_equal "$(eval "$output"; live_get "$TH_WEB_PORT" /marker)" kept
+  run_bin -0 team-stack down
+  [[ ! -e $HOME/.local/state/agent-team/stacks/$LIVE_PROJECT.json ]]
 }

@@ -112,6 +112,21 @@ A file that is not one JSON object, a key of the wrong type or an unknown key is
 
 On macOS, Docker runs in Docker Desktop's VM, so the readings differ, and both are **unverified** on a Mac: the memory is `docker info`'s `MemTotal` (the VM's) less what the running containers use (`docker stats`), and the disk is the file system holding the home directory, where Docker Desktop keeps its disk image.
 
+## Stopping idle stacks
+
+`team-stack sweep` stops the team stacks nobody is using, so a crashed or finished worker's stack does not hold memory for hours.
+The heartbeat runs it once Daniel turns `heartbeat_sweep` on; anyone may run it by hand.
+
+- It looks only at running team stacks: every container of the Compose project of class team, so gate and unowned stacks, and a project mixing them with team objects, are never stopped.
+- A stack is busy while a live session (`claude agents --json`, interactive sessions included) with `status` `busy` has its `cwd` in the stack's `worktree` label or below it, compared by real path; a sibling path sharing the prefix (`shop-1-2` for `shop-1`) is not inside it.
+- For a busy stack it writes the time to `~/.local/state/agent-team/stacks/<project>.json` as `last_busy`, since the session list keeps no last-activity time.
+- A stack that is not busy is idle since its `last_busy` or its running containers' latest start, whichever is later, so one never seen busy counts from its start and one started again after its last busy time counts from that start; a missing or unreadable state file is never seen busy.
+- Idle for more than `idle_minutes` ("Admission" has the settings), it is stopped with `docker compose -p <project> stop`, its data kept, and one line is printed and added to `~/.local/state/agent-team/stacks/sweep.log`, for example `2026-10-25T10:00:00Z stopped conventioner-2 of T7 in /home/daniel/.treehouse/Conventioner-d4c77a/2/Conventioner: last busy at 2026-10-25T09:20:00Z (idle_minutes 30), its data kept`.
+  `~/agent-team/bin/team-stack up` starts it again with its data, without seeding.
+- Docker not answering means no stack runs: it says so and exits 0; a session list that cannot be read exits 1 and stops nothing; a stop that fails is named on stderr, the other stacks are still swept, and it exits 1.
+- `down` removes the stack's state file with the stack.
+- Instances (`--instance`) are team stacks labelled with their worktree, so they are swept the same way.
+
 ## Closing a task
 
 `team-close` takes the stacks of a task down before it archives the task's directories, so a closed task leaves nothing running and its stack logs are archived with it.
@@ -144,4 +159,5 @@ These are a speed bump, as every deny rule is; the guarantee is that no script t
 - The bats tests never reach the machine's Docker: `tests/helpers/docker.bash` installs a stub `docker` that answers from fixtures recorded on this machine (`tests/fixtures/docker/`) and logs every call.
 - The stub also models the fixture project's stack (`tests/fixtures/stack/`), so `up`, `env`, `seed`, `stop` and `down` are tested through the wrapper contract rather than Conventioner.
 - The stub also stands in for the machine's memory and disk: `TEAM_MEMINFO` names a file read in place of `/proc/meminfo`, a stub `df` answers from the test's numbers, and `TEAM_STACK_RECHECK_SECONDS` shortens the 30 seconds between admission checks.
-- `tests/team-stack-live.bats` runs against the real Docker only with `TEAM_LIVE_DOCKER=1`, since a test that creates a network can break a gate run's end to end; it starts and removes the fixture's one-service stack under a project name of its own, and races two `up` calls for the last place under `stack_cap`.
+- The sweep's tests stub `claude agents --json` (the sandbox's `claude` stub) with sessions in and around the worktree.
+- `tests/team-stack-live.bats` runs against the real Docker only with `TEAM_LIVE_DOCKER=1`, since a test that creates a network can break a gate run's end to end; it starts and removes the fixture's one-service stack under a project name of its own, races two `up` calls for the last place under `stack_cap`, and has the sweep stop an idle stack that `up` then brings back with its data.
