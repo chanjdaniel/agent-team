@@ -63,6 +63,13 @@ sandbox() {
   # from BATS_TEST_TMPDIR is the one the scripts print, on Linux and macOS alike.
   BATS_TEST_TMPDIR=$(realpath "$BATS_TEST_TMPDIR")
   local root=$BATS_TEST_TMPDIR
+  # The ledger reads a path under /home/<user>/ or /Users/<user>/ as under some machine's HOME
+  # (local_path in bin/lib/ledger.jq), so a sandbox there would see its own paths moved.
+  if [[ $root =~ ^/(home|Users)/[^/]+/ ]]; then
+    echo "sandbox: the test's directory $root is under a home directory, whose paths the ledger" \
+      "reads as any machine's HOME; run the tests with TMPDIR outside /home and /Users (e.g. TMPDIR=/tmp)" >&2
+    return 1
+  fi
   export TEAM_HOME=$root/team HOME=$root/home
   export STUB_CALLS=$root/calls STUB_FIXTURES=$root/fixtures
   mkdir -p "$TEAM_HOME" "$HOME/.claude/channels/discord" "$STUB_CALLS" "$STUB_FIXTURES" "$root/stubs"
