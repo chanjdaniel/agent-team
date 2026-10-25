@@ -772,12 +772,12 @@ EOF
   # run starts it again.
   local pid
   [[ $(grep -c . "$DOCKER_STATE/hung") == 2 ]]
-  for pid in $(cat "$DOCKER_STATE/hung"); do
-    if kill -0 "$pid" 2>/dev/null; then
+  while read -r pid; do
+    if [[ -n $pid ]] && kill -0 "$pid" 2>/dev/null; then
       echo "docker call $pid still waits"
       return 1
     fi
-  done
+  done <"$DOCKER_STATE/hung"
   [[ ! -e $(day_report) ]]
   flock -n "$HOME/.local/state/agent-team/heartbeat.lock" true
 }
