@@ -13,7 +13,12 @@
 # event; after a failure, re-running with --task finishes the half-open task in the slot that
 # holds its branch.
 # Fetches the base in the primary checkout and puts a trusted slot on the branch from origin/<base>
-# (no upstream). A git pool adds its first slot that is not yet a worktree. A treehouse pool is read
+# (no upstream). Before taking a slot, in every form, the primary checkout follows the base, so the
+# lease and return commands run from it are current: on the base, with no local changes to tracked
+# files and no commits origin's lacks, it is fast-forwarded to origin's (untracked files aside,
+# unless in the way), said on one line (nothing is said when it is level already); else it is left
+# as it is, with the reason on one line. A primary checkout that is the team home is left to the
+# next records push, said on one line. A git pool adds its first slot that is not yet a worktree. A treehouse pool is read
 # first (`treehouse status --json` in the primary checkout, refused when it does not answer): a
 # slot an earlier run left leased to the task is taken again; else the project's lease command
 # runs from the primary checkout with the task as the holder, and the path it prints is taken. A
@@ -494,6 +499,20 @@ apply_snapshot() {
     '{ref: $ref, commit: $commit, parent: (if $parent == "" then null else $parent end), at: $at,
       applied: ($reason == ""), reason: (if $reason == "" then null else $reason end)}')
 }
+
+# The primary checkout follows the base, so the pool's lease and return commands it holds, run from
+# it, are the merged ones: brought level with origin's when it can be, else left as it is.
+if same_path "$primary" "$TEAM_HOME"; then
+  echo "team-open: the primary checkout $primary is the team home, so the next records push (team-checkpoint, team-handoff) brings it level with origin's $base" >&2
+else
+  NET_ERR=$(mktemp)
+  if follow_base "$primary" "$base"; then
+    [[ $FF_RESULT == *" is up to date at "* ]] || echo "team-open: the primary checkout $primary: $FF_RESULT" >&2
+  else
+    echo "team-open: the primary checkout $primary is left as it is: $FOLLOW_REASON" >&2
+  fi
+  rm -f "$NET_ERR"
+fi
 
 # The slot already holding the task's branch (a half-open task), else a slot from the pool.
 added=

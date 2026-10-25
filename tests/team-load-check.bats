@@ -513,7 +513,7 @@ write_line() {
   assert_equal "$(git -C "$code" worktree list --porcelain | grep -c '^worktree ')" 1
   # claude was asked only the doctor's questions, its login, its plugins and its trust probe of
   # the team home (which the stub's reply never starts): no session of the load check's.
-  assert_equal "$(stub_calls claude | jq -r 'join(" ")' | sort -u)" "--bg --name team-doctor-home-trust
+  assert_equal "$(stub_calls claude | jq -r 'join(" ")' | LC_ALL=C sort -u)" "--bg --name team-doctor-home-trust
 agents --json
 auth status --json
 plugin list --json"

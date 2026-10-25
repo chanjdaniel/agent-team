@@ -94,7 +94,8 @@ ledger_line() {
   assert_equal "$(jq -c . <<<"$output")" "$(jq -cn --arg wt "$worktree" --arg sha "$ahead" '{
     task: "T1", project: "conv", branch: "chore/T1-move-planning-out", base: "main",
     base_sha: $sha, worktree: $wt, task_dir: "\($wt)/.scratch/task"}')"
-  assert_equal "$stderr" ""
+  # The lease command runs from conv's primary checkout, brought level with origin's first.
+  assert_equal "$stderr" "team-open: the primary checkout $conv: main fast-forwarded to ${ahead:0:7}"
 
   assert_equal "$(stub_calls th-lease.sh)" "$(jq -cn --arg cwd "$conv" '{cwd: $cwd, args: ["T1"]}')"
   assert_equal "$(git -C "$worktree" rev-parse --abbrev-ref HEAD)" "chore/T1-move-planning-out"

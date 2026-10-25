@@ -14,7 +14,7 @@
 # archive_left_out, rsync_rule, archive_task_dir, machine_name, os_release, team_os, tool_dirs,
 # team_tool_path, fence_reason, lease_gate, worktree_changes, same_path, bounded, trust_probe,
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin, home_repo, non_records,
-# only_records, commit_non_records, records_list, origin_git, origin_reason, commit_records, fast_forward, render_template,
+# only_records, commit_non_records, records_list, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
 # registered_pr, attribution_lines, strip_attribution, live_sessions, discord_token, discord_api,
 # github, pr_part and task_state_json, and sets COORDINATOR_CHANNEL.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
@@ -694,6 +694,33 @@ fast_forward() {
     return 1
   fi
   FF_RESULT="$branch fast-forwarded to ${theirs:0:7}"
+}
+
+# Bring <checkout> level with origin's <base> (fast_forward) when it is on <base>, has no local
+# changes to tracked files and has no commits origin's lacks, untracked files aside unless in the
+# way. FF_RESULT then says what it did; else it returns 1, moving nothing, with the reason in
+# FOLLOW_REASON ("it is on <branch>, not <base>", "it has local changes to <paths>", "<base> has
+# <n> commits origin's lacks", or fast_forward's). NET_ERR must name a file:
+# follow_base <checkout> <base>
+# shellcheck disable=SC2034 # FOLLOW_REASON is the caller's to read
+follow_base() {
+  local on changes s
+  FOLLOW_REASON=''
+  if ! on=$(git -C "$1" symbolic-ref -q --short HEAD); then
+    FOLLOW_REASON="it is on a detached HEAD, not $2"
+  elif [[ $on != "$2" ]]; then
+    FOLLOW_REASON="it is on $on, not $2"
+  elif changes=$(git -C "$1" -c core.quotePath=false status --porcelain --untracked-files=no | cut -c4- | paste -sd ' ') &&
+    [[ -n $changes ]]; then
+    FOLLOW_REASON="it has local changes to $changes"
+  elif ! fast_forward "$1" "$2"; then
+    FOLLOW_REASON=$FF_REASON
+  elif ((FF_AHEAD)); then
+    s=s
+    ((FF_AHEAD > 1)) || s=''
+    FOLLOW_REASON="$2 has $FF_AHEAD commit$s origin's lacks"
+  fi
+  [[ -z $FOLLOW_REASON ]]
 }
 
 # Replay the commits on the team home's <branch> that origin's lacks onto origin's, moving the

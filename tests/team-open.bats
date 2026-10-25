@@ -170,6 +170,43 @@ advance_origin() {
   run -128 git -C "$slots/1" rev-parse --abbrev-ref '@{upstream}'
 }
 
+@test "a primary checkout on the base, clean and behind, is fast-forwarded to origin's, untracked files aside" {
+  local ahead
+  ahead=$(advance_origin "moved on")
+  touch "$primary/notes.txt"
+  run_bin -0 --separate-stderr team-open proj feature feat late "Late"
+  assert_contains "$stderr" "team-open: the primary checkout $primary: main fast-forwarded to ${ahead:0:7}"
+  assert_equal "$(grep -c 'primary checkout' <<<"$stderr")" 1
+  assert_equal "$(git -C "$primary" rev-parse main)" "$ahead"
+  assert_equal "$(git -C "$primary" status --porcelain)" "?? notes.txt"
+  # Level with origin's, there is nothing to say.
+  run_bin -0 --separate-stderr team-open proj feature feat later "Later"
+  assert_equal "$(grep -c 'primary checkout' <<<"$stderr")" 0
+}
+
+@test "a primary checkout off the base, with local changes or ahead of origin's is left as it is, with the reason" {
+  local ahead before
+  sed -i 's|^slots = .*|slots = ["slots/proj/1", "slots/proj/2", "slots/proj/3"]|' "$TEAM_HOME/projects.toml"
+  ahead=$(advance_origin "moved on")
+  before=$(git -C "$primary" rev-parse main)
+  git -C "$primary" switch -q -c elsewhere
+  run_bin -0 --separate-stderr team-open proj feature feat one "One"
+  assert_contains "$stderr" "team-open: the primary checkout $primary is left as it is: it is on elsewhere, not main"
+  git -C "$primary" switch -q main
+  echo changed >"$primary/README.md"
+  run_bin -0 --separate-stderr team-open proj feature feat two "Two"
+  assert_contains "$stderr" "team-open: the primary checkout $primary is left as it is: it has local changes to README.md"
+  assert_equal "$(git -C "$primary" rev-parse main)" "$before"
+  git -C "$primary" checkout -q README.md
+  git -C "$primary" merge -q --ff-only origin/main
+  git -C "$primary" commit -q --allow-empty -m "feat: only here"
+  before=$(git -C "$primary" rev-parse main)
+  run_bin -0 --separate-stderr team-open proj feature feat three "Three"
+  assert_contains "$stderr" "team-open: the primary checkout $primary is left as it is: main has 1 commit origin's lacks"
+  assert_equal "$(git -C "$primary" rev-parse main)" "$before"
+  [[ $ahead == "$(git -C "$primary" rev-parse origin/main)" ]]
+}
+
 @test "with branch.autoSetupMerge=always the branch still has no upstream" {
   git config --global branch.autoSetupMerge always
   run_bin -0 team-open proj feature feat track "Track"

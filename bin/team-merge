@@ -32,8 +32,8 @@
 # Last, when the project's primary checkout is the code checkout this runs from, that checkout
 # follows the base, so merged code reaches the scripts: on the base branch and clean (untracked
 # files aside), it is fast-forwarded to origin's, said on one line; on another branch or a
-# detached HEAD, with local changes, diverged, with untracked files in the way, or with origin out
-# of reach, it is left as it is, with the reason and the command to run, and the exit stays 0. A
+# detached HEAD, with local changes, ahead or diverged, with untracked files in the way, or with
+# origin out of reach, it is left as it is, with the reason and the command to run, and the exit stays 0. A
 # code checkout that is the team home is left to the next records push, which brings it level; a
 # base that breaks the records rule never reaches it.
 set -euo pipefail
@@ -288,15 +288,9 @@ if same_path "$primary" "$code"; then
   NET_ERR=$scratch/net-err
   if same_path "$code" "$TEAM_HOME"; then
     echo "team-merge: the code checkout is the team home, so the next records push (team-checkpoint, team-handoff) brings it level with origin's $base" >&2
-  elif ! on=$(git -C "$code" symbolic-ref -q --short HEAD); then
-    echo "team-merge: the code checkout $code is left as it is: it is on a detached HEAD, not $base; $bring" >&2
-  elif [[ $on != "$base" ]]; then
-    echo "team-merge: the code checkout $code is left as it is: it is on $on, not $base; $bring" >&2
-  elif changes=$(git -C "$code" -c core.quotePath=false status --porcelain --untracked-files=no | cut -c4- | paste -sd ' ') && [[ -n $changes ]]; then
-    echo "team-merge: the code checkout $code is left as it is: it has local changes to $changes; $bring" >&2
-  elif fast_forward "$code" "$base"; then
+  elif follow_base "$code" "$base"; then
     echo "team-merge: the code checkout $code: $FF_RESULT" >&2
   else
-    echo "team-merge: the code checkout $code is left as it is: $FF_REASON; $bring" >&2
+    echo "team-merge: the code checkout $code is left as it is: $FOLLOW_REASON; $bring" >&2
   fi
 fi

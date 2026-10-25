@@ -24,7 +24,7 @@ Every command below answers `--help` with its exact usage; this manual says when
 ## Branches and merging
 
 - `dev` is every project's default branch and the base of every task; `main` changes only by an explicit release Daniel runs, never through `team-merge`.
-- A task branch is `<type>/T<n>-<slug>`, made by `team-open` from a freshly fetched `origin/<base>`.
+- A task branch is `<type>/T<n>-<slug>`, made by `team-open` from a freshly fetched `origin/<base>`; it also fast-forwards the project's primary checkout when it is on the base and clean, or names why not.
 - A PR merges only on Daniel's recorded word, and never red: every required check, the project's local checks (which `team-merge` runs) and `agent-review` green on the exact head.
 
 ## A task's life
