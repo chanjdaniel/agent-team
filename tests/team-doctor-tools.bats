@@ -96,7 +96,7 @@ every_tool_fails() {
     echo opencode-gate
     echo records
     project_checks
-    printf '%s\n' clock lease heartbeat offline)
+    printf '%s\n' 'stack memory' clock lease heartbeat offline)
   assert_equal "$(checks)" "$expected"
   assert_equal "$(line_of os)" "PASS os: Arch Linux"
   assert_equal "$(line_of 'tool claude')" "PASS tool claude: 2.1.308"
@@ -121,7 +121,7 @@ every_tool_fails() {
     echo opencode-gate
     echo records
     project_checks
-    printf '%s\n' clock lease heartbeat offline)
+    printf '%s\n' 'stack memory' clock lease heartbeat offline)
   assert_equal "$(checks)" "$expected"
   assert_equal "$(line_of os)" "PASS os: macOS"
 }

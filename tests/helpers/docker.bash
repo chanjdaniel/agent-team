@@ -36,6 +36,7 @@
 # and, modelling the fixture project's stack (stack_project) as Compose 5.6.1 makes it, from the
 # TEAM_* variables, COMPOSE_PROJECT_NAME and TH_WEB_PORT the call sees:
 #   compose [-f <file>] config --format json
+#                                       web's mem_limit 64 MiB, or stack_mem_limit's bytes
 #   compose [-f <file>] up -d --wait    the network and named volume made when missing (an
 #                                       existing one keeps its labels), the web container made,
 #                                       started, or recreated when its labels changed
@@ -93,6 +94,12 @@ machine_disk_free() {
 machine_memory() {
   printf 'MemTotal:       %s kB\nMemFree:         1048576 kB\nMemAvailable:   %s kB\n' $((32 * 1024 * 1024)) "$1" \
     >"$DOCKER_STATE/meminfo"
+}
+
+# The fixture stack's web mem_limit in its config, in bytes (64 MiB unless a test says otherwise):
+# stack_mem_limit <bytes>
+stack_mem_limit() {
+  echo "$1" >"$DOCKER_STATE/mem-limit"
 }
 
 # An empty machine: no container, volume, image or network.

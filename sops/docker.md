@@ -118,9 +118,10 @@ A browser-driving agent gets its own the same way: `~/agent-team/bin/team-stack 
 - When `team-capacity` is on `PATH` or at `~/.local/bin/team-capacity`, `team-capacity admit --kind stack:<registered project>` decides: 0 admits, 75 refuses with its stderr as the reason, anything else fails `up`.
   Until that controller exists (T19's design), `team-stack`'s own three checks decide, and all three must hold:
   - **cap**: fewer Compose projects running on the machine (`docker compose ls`, every owner's: gates, Daniel's primary stack and hand-made stacks count too) than `stack_cap`;
-  - **memory**: the memory available, less the sum of the stack's `mem_limit`s (a Conventioner stack is about 2.75 GiB), at least `memory_floor_gib` GiB; on Linux `MemAvailable` from `/proc/meminfo`;
+  - **memory**: the memory available, less the sum of the stack's `mem_limit`s (a Conventioner stack is about 2.75 GiB), at least the floor: `memory_floor_gib` GiB when it is set, else the default for what is measured (6 GiB of `MemAvailable` from `/proc/meminfo` on Linux, half of Docker's VM on macOS, below);
   - **disk**: the free space of the file system holding Docker's root (`docker info`'s `DockerRootDir`, measured with `df`) at least `disk_floor_gb` GB.
-- With no room, `up` says once on stderr that it waits and why, re-checks every 30 seconds (letting go of the lock between checks) up to `wait_minutes`, and then exits 75 naming every failing check with its numbers, for example `team-stack: no room for conventioner-1: 6 of 6 stacks running (stack_cap 6); 4.1 GiB available after this stack's 2.8 GiB (memory_floor_gib 6)`.
+- With no room, `up` says once on stderr that it waits and why, re-checks every 30 seconds (letting go of the lock between checks) up to `wait_minutes`, and then exits 75 naming every failing check with its numbers, for example `team-stack: no room for conventioner-1: 6 of 6 stacks running (stack_cap 6); 4.1 GiB available after this stack's 2.8 GiB (floor 6 GiB, the Linux default)`.
+  The memory check names the floor it used and where it came from: `memory_floor_gib in stack.json`, `the Linux default`, or `the macOS default: half of Docker's VM's 7.7 GiB`.
   An agent that gets 75 reports `PAUSED` with that line rather than fighting for room.
 - Gate runs never call `team-stack`, so they are counted and never held back; their own turn-taking is Conventioner's end-to-end lock.
 - Each wait that ends, admitted or not, a refusal with `wait_minutes` 0 included, adds one line to `~/.local/state/agent-team/stacks/waits.jsonl`: `{start, end, project, task, admitted, reasons}`, the reasons being the last refusal's; the janitor reads it.
@@ -130,7 +131,7 @@ The machine's settings live in `~/.config/agent-team/stack.json`, a JSON object 
 | Key | Default | What it sets |
 | - | - | - |
 | `stack_cap` | 6 | the most Compose projects running at once, a whole number of 1 or more |
-| `memory_floor_gib` | 6 | the GiB of memory left free after a new stack's limits |
+| `memory_floor_gib` | unset: 6 on Linux, half of Docker's VM on macOS | the GiB of memory left free after a new stack's limits |
 | `disk_floor_gb` | 30 | the GB left free on Docker's file system |
 | `wait_minutes` | 15 | how long `up` waits for room; 0 does not wait |
 | `idle_minutes` | 30 | how long a team stack may go without a busy session before the sweep stops it |
@@ -139,7 +140,10 @@ The machine's settings live in `~/.config/agent-team/stack.json`, a JSON object 
 
 A file that is not one JSON object, a key of the wrong type or an unknown key is refused with the reason (exit 1), so a typo never silently keeps a default.
 
-On macOS, Docker runs in Docker Desktop's VM, so the readings differ, and both are **unverified** on a Mac: the memory is `docker info`'s `MemTotal` (the VM's) less what the running containers use (`docker stats`), and the disk is the file system holding the home directory, where Docker Desktop keeps its disk image.
+On macOS, Docker runs in Docker Desktop's VM, so the readings differ: the memory is `docker info`'s `MemTotal` (the VM's) less what the running containers use (`docker stats`), and the disk is the file system holding the home directory, where Docker Desktop keeps its disk image (`~/Library/Containers/com.docker.docker/Data/vms/0/data/Docker.raw`, on the same file system on Daniel's laptop, 2026-10-25).
+The default floor there is half of the VM's `MemTotal`, not 6 GiB: the VM holds nothing but Docker, so there is no host load to keep room for, and what is measured is the running containers' use, not their limits, so the floor is the room they may still grow into.
+Half admits a Conventioner stack's 2.75 GiB on a 7.7 GiB VM (Daniel's laptop's) with nothing running (5.0 GiB left over a 3.9 GiB floor), and further stacks while the running ones use little (about 330 MiB each when idle), where 6 GiB admitted none (T45, 2026-10-25).
+`team-doctor`'s `stack memory` line warns when, with nothing else running, the floor leaves room for no stack of a registered project, from the VM's `MemTotal` on macOS and the host's on Linux.
 
 ## Stopping idle stacks
 

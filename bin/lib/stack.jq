@@ -87,9 +87,10 @@ def epoch:
        else (if $zone[0:1] == "-" then -1 else 1 end) * (($zone[1:3] | tonumber) * 3600 + ($zone[3:5] | tonumber) * 60) end][0];
 
 # The machine's stack settings (~/.config/agent-team/stack.json), every key optional, each with
-# its default and its kind, which team-stack and the heartbeat (team-timers) both read.
+# its default and its kind, which team-stack and the heartbeat (team-timers) both read; an unset
+# memory_floor_gib is null, its default depending on what is measured (memory_floor).
 def settings_defaults:
-  {stack_cap: 6, memory_floor_gib: 6, disk_floor_gb: 30, wait_minutes: 15, idle_minutes: 30,
+  {stack_cap: 6, memory_floor_gib: null, disk_floor_gb: 30, wait_minutes: 15, idle_minutes: 30,
    heartbeat_sweep: false, heartbeat_janitor: false};
 def settings_kinds:
   {stack_cap: "count", memory_floor_gib: "amount", disk_floor_gb: "amount", wait_minutes: "amount",
@@ -114,6 +115,20 @@ def settings_problems:
 
 # Every setting, the given ones (the settings file's one object, or none) over the defaults.
 def settings: settings_defaults + (.[0] // {});
+
+# The memory floor admission keeps, from the settings (settings' output) on macOS or not with
+# the memory reading's <total> bytes (on macOS Docker's VM's MemTotal): {bytes, says}, says what it
+# is and where it came from. memory_floor_gib when set; else on Linux 6 GiB of the host's
+# MemAvailable, and on macOS half of the VM's MemTotal, since its use and limits are all Docker's
+# (no host load to keep room for), and half leaves the running containers room to grow toward
+# their limits while a Conventioner stack's 2.75 GiB still fits Daniel's laptop's 7.7 GiB VM.
+def memory_floor($macos; $total):
+  if .memory_floor_gib != null then
+    {bytes: (.memory_floor_gib * 1073741824), says: "floor \(.memory_floor_gib) GiB, memory_floor_gib in stack.json"}
+  elif $macos then
+    {bytes: ($total / 2),
+     says: "floor \($total / 2 / 1073741824 | one_decimal) GiB, the macOS default: half of Docker's VM's \($total / 1073741824 | one_decimal) GiB"}
+  else {bytes: (6 * 1073741824), says: "floor 6 GiB, the Linux default"} end;
 
 # Rows (arrays of strings) as lines of left-aligned columns two spaces apart; nothing for no
 # rows.

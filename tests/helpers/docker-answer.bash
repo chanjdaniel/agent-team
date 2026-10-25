@@ -323,14 +323,18 @@ docker_stub_id() {
   sha256sum <<<"$RANDOM-$RANDOM-$(date +%s%N)-$BASHPID" | cut -d ' ' -f 1
 }
 
-# compose config --format json: the fixture's config as Compose renders it.
+# compose config --format json: the fixture's config as Compose renders it, web's mem_limit from
+# $DOCKER_STATE/mem-limit (stack_mem_limit) when a test wrote one.
 docker_stub_compose_config() {
   docker_stub_options $# "$@" --format json || docker_stub_unplanned
-  jq -n --arg project "$(docker_stub_project)" --arg port "${TH_WEB_PORT:-}" --argjson labels "$(docker_stub_team_labels)" '
+  local limit=67108864
+  [[ ! -f $DOCKER_STATE/mem-limit ]] || limit=$(cat "$DOCKER_STATE/mem-limit")
+  jq -n --arg project "$(docker_stub_project)" --arg port "${TH_WEB_PORT:-}" --argjson labels "$(docker_stub_team_labels)" \
+    --arg limit "$limit" '
     {name: $project,
      networks: {default: {name: "\($project)_default", ipam: {}, labels: $labels}},
      services: {web: {restart: "no", command: ["httpd", "-f", "-v", "-p", "80", "-h", "/data"], entrypoint: null,
-       image: "busybox:1.36", labels: $labels, mem_limit: "67108864", networks: {default: null},
+       image: "busybox:1.36", labels: $labels, mem_limit: $limit, networks: {default: null},
        volumes: [{type: "volume", source: "data", target: "/data", volume: {}}, {type: "volume", target: "/cache", volume: {}}],
        ports: [{mode: "ingress", host_ip: "127.0.0.1", target: 80, published: $port, protocol: "tcp"}]}},
      volumes: {data: {name: "\($project)_data", labels: $labels}},

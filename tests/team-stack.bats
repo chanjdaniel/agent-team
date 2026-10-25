@@ -671,13 +671,16 @@ ups() {
   assert_equal "$(ups)" 1
 }
 
-@test "up refuses when the memory left after the stack's limits is under memory_floor_gib" {
+@test "up refuses when the memory left after the stack's limits is under the floor, on Linux 6 GiB unless memory_floor_gib is set" {
   open_task T22
   stack_settings '{"wait_minutes": 0}'
   machine_memory $((6 * 1024 * 1024))
   run_bin -75 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
-  assert_equal "$stderr" "team-stack: no room for $PROJECT: 5.9 GiB available after this stack's 0.1 GiB (memory_floor_gib 6)"
+  assert_equal "$stderr" "team-stack: no room for $PROJECT: 5.9 GiB available after this stack's 0.1 GiB (floor 6 GiB, the Linux default)"
   assert_equal "$(ups)" 0
+  stack_settings '{"wait_minutes": 0, "memory_floor_gib": 5.95}'
+  run_bin -75 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
+  assert_equal "$stderr" "team-stack: no room for $PROJECT: 5.9 GiB available after this stack's 0.1 GiB (floor 5.95 GiB, memory_floor_gib in stack.json)"
   stack_settings '{"wait_minutes": 0, "memory_floor_gib": 5.5}'
   run_bin -0 team-stack up --worktree "$STACK_WORKTREE"
 }
@@ -698,7 +701,7 @@ ups() {
   stack_settings '{"stack_cap": 2, "memory_floor_gib": 8, "disk_floor_gb": 300, "wait_minutes": 0}'
   machine_memory $((4 * 1024 * 1024))
   run_bin -75 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
-  local reasons='["3 of 2 stacks running (stack_cap 2)","3.9 GiB available after this stack'"'"'s 0.1 GiB (memory_floor_gib 8)","214.7 GB free on the file system of /var/lib/docker (disk_floor_gb 300)"]'
+  local reasons='["3 of 2 stacks running (stack_cap 2)","3.9 GiB available after this stack'"'"'s 0.1 GiB (floor 8 GiB, memory_floor_gib in stack.json)","214.7 GB free on the file system of /var/lib/docker (disk_floor_gb 300)"]'
   assert_equal "$stderr" "team-stack: no room for $PROJECT: $(jq -r 'join("; ")' <<<"$reasons")"
   # wait_minutes 0: no wait announced, one wait logged, not admitted.
   assert_equal "$(waits_log | wc -l)" 1
@@ -839,11 +842,42 @@ SH
   run_bin -0 team-stack down --worktree "$STACK_WORKTREE"
   stack_settings '{"wait_minutes": 0, "memory_floor_gib": 7}'
   run_bin -75 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
-  assert_equal "$stderr" "team-stack: no room for $PROJECT: 6.9 GiB available after this stack's 0.1 GiB (memory_floor_gib 7)"
+  assert_equal "$stderr" "team-stack: no room for $PROJECT: 6.9 GiB available after this stack's 0.1 GiB (floor 7 GiB, memory_floor_gib in stack.json)"
   machine_disk_free $((20000000000 / 1024))
   stack_settings '{"wait_minutes": 0}'
   run_bin -75 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
   assert_equal "$stderr" "team-stack: no room for $PROJECT: 20.0 GB free on the file system of $HOME (disk_floor_gb 30)"
+}
+
+@test "on macOS with no memory_floor_gib, the floor is half of Docker's VM, so a 7.7 GiB VM with nothing running admits a 2.8 GiB stack" {
+  as_macos
+  open_task T22
+  stack_settings '{"wait_minutes": 0}'
+  # Daniel's laptop's VM (MemTotal 8319770624, 7.7 GiB) and a Conventioner stack's 2.75 GiB of
+  # mem_limits: 5.0 GiB left, over the default floor of 3.9 GiB.
+  docker_state info '.MemTotal = 8319770624'
+  stack_mem_limit $((2816 * 1024 * 1024))
+  mkdir "$BATS_TEST_TMPDIR/fixture-machine"
+  cp "$DOCKER_STATE"/*.json "$BATS_TEST_TMPDIR/fixture-machine/"
+  docker_empty
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
+  assert_equal "$(ups)" 1
+  run_bin -0 team-stack down --worktree "$STACK_WORKTREE"
+
+  # The fixture machine's three running projects, one of them using 1.2 GiB: 1.8 GiB in use leaves
+  # 3.2 GiB after the stack, under the floor, which the refusal names with where it came from.
+  cp "$BATS_TEST_TMPDIR/fixture-machine"/*.json "$DOCKER_STATE/"
+  docker_state stats 'map(if .Name == "conventioner-2-mongodb-1" then .MemUsage = "1.2GiB / 1GiB" else . end)'
+  run_bin -75 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
+  assert_equal "$stderr" "team-stack: no room for $PROJECT: 3.2 GiB available after this stack's 2.8 GiB (floor 3.9 GiB, the macOS default: half of Docker's VM's 7.7 GiB)"
+  assert_equal "$(ups)" 1
+  # A memory_floor_gib that is set is the floor as given.
+  stack_settings '{"wait_minutes": 0, "memory_floor_gib": 3.5}'
+  run_bin -75 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
+  assert_equal "$stderr" "team-stack: no room for $PROJECT: 3.2 GiB available after this stack's 2.8 GiB (floor 3.5 GiB, memory_floor_gib in stack.json)"
+  stack_settings '{"wait_minutes": 0, "memory_floor_gib": 1}'
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
+  assert_equal "$(ups)" 2
 }
 
 @test "a malformed stack.json is exit 1 with the reason, before Docker is asked anything" {
