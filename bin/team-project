@@ -66,8 +66,8 @@ import sys
 if sys.version_info < (3, 11):
     print(
         f"{os.path.basename(sys.argv[0])}: needs Python 3.11 or later (tomllib), but runs under"
-        f" Python {sys.version.split()[0]} ({sys.executable}); on macOS run `brew install python`"
-        " and put Homebrew's bin first on PATH (eval \"$(brew shellenv)\")",
+        f" Python {sys.version.split()[0]} ({sys.executable}); on macOS run `brew install python@3.12`,"
+        " whose python3 the team's scripts put first on PATH",
         file=sys.stderr,
     )
     sys.exit(1)

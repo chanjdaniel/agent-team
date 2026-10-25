@@ -48,6 +48,26 @@ preflight: Daniel: in your own terminal run $CODE_CHECKOUT/bin/team-bootstrap --
   assert_equal "$(install_calls)" ""
 }
 
+@test "on a fresh Mac without jq or Python the preflight installs them with brew, Python as the lock's formula" {
+  fresh macos
+  local bin=$BATS_TEST_TMPDIR/without-jq dir dirs formula
+  mkdir -p "$bin"
+  IFS=: read -ra dirs <<<"$PATH"
+  for dir in "${dirs[@]}"; do
+    [[ -d $dir ]] && ln -s "$dir"/* "$bin/" 2>/dev/null || true
+  done
+  rm -f "$bin/jq" "$bin"/python3* "$bin/uname" "$bin/xcode-select"
+  # The sandbox's stubs log their calls with jq; these only answer.
+  printf '#!/bin/sh\necho Darwin\n' >"$bin/uname"
+  printf '#!/bin/sh\necho /Library/Developer/CommandLineTools\n' >"$bin/xcode-select"
+  chmod +x "$bin/uname" "$bin/xcode-select"
+  formula=$(jq -r '.tools[] | select(.name == "python") | .source.macos | ltrimstr("brew install ")' "$LOCK")
+  PATH=$bin run_bin -1 team-bootstrap --name laptop --dry-run
+  assert_equal "$(head -n2 <<<"$output")" "preflight: macOS
+preflight: would run: brew install jq $formula"
+  assert_equal "$(install_calls)" ""
+}
+
 @test "in Daniel's own terminal the sudo steps run, sudo asking for the password" {
   fresh arch
   run_in_terminal -1 -- "$CODE_CHECKOUT/bin/team-bootstrap" --name laptop

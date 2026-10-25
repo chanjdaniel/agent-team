@@ -70,7 +70,9 @@ Each stage after the first is one `~/agent-team/bin/team-bootstrap` run; read it
 Then it installs the gate's opencode wrapper, `~/.no-mistakes/bin/opencode-gate`, from `bin/lib/opencode-gate`: it gives every opencode the gate starts the gate-only config, on Arch and macOS alike.
 
 - On Arch, treehouse and `op` install with `sudo`: the same stop and the same request as stage 3, with `--stage tools`.
-- `~/.local/bin` and `~/.no-mistakes/bin` get one `export PATH=...  # team-bootstrap` line each in `~/.zshrc` or `~/.bashrc` (by `$SHELL`); for another shell, ask Daniel to add them.
+- Every team script, the bootstrap included, and every session `team-worker` and `claude-coordinator` start, run with one `PATH` the library builds from `bin/lib/tools.lock`: the directories its tools install into that exist (`~/.local/bin`, nvm's directory of the pinned Node, `~/.bun/bin`, `~/.no-mistakes/bin`, and on macOS Homebrew's `python@3.12/libexec/bin`) go first, right after Homebrew's GNU tools, and on Arch `/usr/local/bin` comes last when `PATH` lacks it.
+  So `team-doctor`, `team-load-check`, `team-resume` and the bootstrap's `check` give one verdict, whatever shell called them.
+- `~/.local/bin` and `~/.no-mistakes/bin` get one `export PATH=...  # team-bootstrap` line each in `~/.zshrc` or `~/.bashrc` (by `$SHELL`), for Daniel's own shell, when it lacked them; for another shell, ask Daniel to add them.
 - A Claude Code newer than its pin is a WARN and is left alone.
 - `~/.no-mistakes/config.yaml` comes back with `team-secrets restore`, one of stage 7's steps; until it names the wrapper as `agent_path_override`'s `opencode`, the doctor's `opencode-gate` line fails, and stage 7 lists the edit as Daniel's step.
 
@@ -157,7 +159,7 @@ On a fresh machine, Daniel meets them in this order (recorded from `team-bootstr
 | Package manager | `pacman`, with `sudo` | Homebrew (`/opt/homebrew` on Apple silicon), after the Xcode Command Line Tools; no `sudo` |
 | Shell | Bash 5 is `/bin/bash` | `/bin/bash` is 3.2; the scripts refuse it and need Homebrew's `bash` first on `PATH` |
 | Userland | GNU | `bin/lib/platform.sh` puts Homebrew's GNU coreutils, findutils, sed, grep and `flock` first on `PATH` for every script, and refuses with the `brew install` line when one is missing |
-| Python | the OS's 3.11 or newer | Homebrew's (macOS's own `python3` is too old for `tomllib`) |
+| Python | the OS's 3.11 or newer | Homebrew's `python@3.12`, which the lock pins (macOS's own `python3` is too old for `tomllib`); its `python3` is only in the formula's `libexec/bin`, which the library puts first on every script's `PATH`, and the doctor's `tool python` line names the `python3` it found |
 | Docker | the daemon, enabled with `sudo`, and the `docker` group | Docker Desktop (`brew install --cask docker-desktop`), opened once to accept its license |
 | treehouse | `/usr/local/bin`, with `sudo` | `~/.local/bin` |
 | 1Password CLI | 1Password's zip into `/usr/local/bin` with the `onepassword-cli` group, with `sudo` | `brew install 1password-cli` |

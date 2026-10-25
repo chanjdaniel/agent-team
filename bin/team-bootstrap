@@ -16,7 +16,7 @@
 # The stages, in order, each line prefixed by its name:
 #   preflight  The OS is Arch Linux or macOS; on macOS the Xcode Command Line Tools and Homebrew
 #              are installed; jq, git and Python 3.11, which the team's scripts need to run at
-#              all, are installed (pacman, with sudo, or brew).
+#              all, are installed (pacman, with sudo, or brew, Python as the lock's python@3.12).
 #   machine    The doctor's machine line: writes --name; then writes --home, unless the setting
 #              names a team home already.
 #   packages   The failing tool lines whose fix is an OS package: on Arch one
@@ -49,6 +49,8 @@
 #              gate's config.yaml naming its opencode wrapper, trust in the team home, where
 #              the coordinator starts, and in each project root, Chrome, then the rest), the
 #              doctor's WARN and FAIL lines, and a summary: set up, or ready as a standby.
+# Every stage and the doctor run with the library's PATH, the tool directories of bin/lib/tools.lock
+# first, put on again after each install, so check's verdict is a plain team-doctor's.
 # A step only Daniel can take stops the run with one line, "<stage>: Daniel: <the step>", and
 # exit 1, without trying it: the Xcode tools or Homebrew missing, the machine's name, anything
 # needing sudo (unless stdin and stdout are a terminal, where sudo asks for the password), the
@@ -64,7 +66,11 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
 STAGES=(preflight machine packages tools projects config heartbeat check)
 NVM_VERSION=v0.40.3
-# The directories the tools stage installs into that no installer puts on PATH itself.
+# Homebrew's formula of the Python bin/lib/tools.lock pins on macOS, which the preflight installs
+# before there is a jq to read the lock with.
+MACOS_PYTHON=python@3.12
+# The directories the tools stage installs into that no installer puts on PATH itself, for the
+# rc file of Daniel's shell; the library puts them on every script's PATH.
 RC_DIRS=("$HOME/.local/bin" "$HOME/.no-mistakes/bin")
 usage="usage: team-bootstrap [--name <name>] [--home <path>] [--stage <stage>] [--dry-run]"
 
@@ -89,7 +95,6 @@ done
   usage_error "--name $name is not a lower-case kebab-case name like laptop or home-pc"
 
 bin=$(dirname "$TEAM_LIB")
-lock=$TEAM_LIB/tools.lock
 self=$bin/team-bootstrap
 state=$HOME/.local/state/agent-team
 log=$state/bootstrap.log
@@ -97,7 +102,8 @@ err=$(mktemp)
 trap 'rm -f "$err"' EXIT
 terminal=0
 if [[ -t 0 && -t 1 ]]; then terminal=1; fi
-start_path=$PATH
+# Daniel's shell's PATH, before the library put the tool directories on it.
+start_path=$TEAM_CALLER_PATH
 # Whether this run changed anything (the check stage then asks the doctor again), and whether it
 # changed the Claude config, which loads only in a new session.
 changed=0 reloaded=0 cloned=0
@@ -180,17 +186,6 @@ unique() {
   printf '%s\n' "$@" | awk 'NF && !seen[$0]++' | paste -sd ' ' -
 }
 
-# The directories the tools stage installs into, on this run's PATH for the stages and doctor
-# after it: ~/.local/bin, Bun's, no-mistakes', and Node's under nvm, the ones that exist.
-extend_path() {
-  local node dir
-  node=$(jq -r '.tools[] | select(.name == "node") | .pin // empty' "$lock")
-  for dir in "${RC_DIRS[@]}" "$HOME/.bun/bin" "${NVM_DIR:-$HOME/.nvm}/versions/node/v$node/bin"; do
-    [[ ! -d $dir || :$PATH: == *:"$dir":* ]] || PATH=$dir:$PATH
-  done
-  export PATH
-}
-
 stage_preflight() {
   local missing=()
   if [[ $os == macos ]]; then say macOS; else say "$(os_release PRETTY_NAME | grep . || echo 'Arch Linux')"; fi
@@ -202,7 +197,9 @@ stage_preflight() {
   fi
   command -v jq >/dev/null || missing+=(jq)
   command -v git >/dev/null || missing+=(git)
-  python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' >/dev/null 2>&1 || missing+=(python)
+  if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' >/dev/null 2>&1; then
+    if [[ $os == macos ]]; then missing+=("$MACOS_PYTHON"); else missing+=(python); fi
+  fi
   if ((${#missing[@]} == 0)); then
     say "done: jq, git and Python 3.11 are installed"
   elif [[ $os == arch ]]; then
@@ -326,12 +323,12 @@ stage_tools() {
     else
       act "$fix"
     fi
-    extend_path
+    team_tool_path
   done
   if ((${#commands[@]})); then
     if ((terminal || dry)); then
       for fix in "${commands[@]}"; do act "$fix"; done
-      extend_path
+      team_tool_path
     else
       daniel "in your own terminal run $(tilde "$self") --stage tools, which installs ${names[*]} with sudo and asks for your password; then team-bootstrap again"
     fi
@@ -541,7 +538,7 @@ stage_check() {
 }
 
 if [[ -n $only ]]; then
-  [[ $only == preflight ]] || { extend_path && run_doctor; }
+  [[ $only == preflight ]] || { team_tool_path && run_doctor; }
   stage=$only
   "stage_$only"
   exit 0
@@ -549,6 +546,6 @@ fi
 stage=preflight
 stage_preflight
 # jq is there from here on.
-extend_path
+team_tool_path
 run_doctor
 for stage in "${STAGES[@]:1}"; do "stage_$stage"; done

@@ -50,7 +50,7 @@ summary: set up, and this machine holds the lease"
 named the team home $TEAM_HOME (~/.config/agent-team/home)"
   assert_equal "$(head -n1 "$HOME/.config/agent-team/machine")" laptop
   assert_equal "$(cat "$HOME/.config/agent-team/home")" "$TEAM_HOME"
-  assert_equal "$(stage_lines packages)" "running: brew install 1password-cli git jq tmux gh rsync python bash go coreutils findutils gnu-sed grep flock
+  assert_equal "$(stage_lines packages)" "running: brew install 1password-cli git jq tmux gh rsync python@3.12 bash go coreutils findutils gnu-sed grep flock
 running: brew install --cask docker-desktop"
   assert_equal "$(stage_lines tools | sed -n '1,4p;11,13p')" "running: curl -fsSL https://claude.ai/install.sh | bash -s 2.1.308
 running: curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
@@ -119,7 +119,7 @@ trust site"
   assert_equal "$(install_calls)" ""
   assert_equal "$(stage_lines machine)" "would write laptop to ~/.config/agent-team/machine
 would write $TEAM_HOME to ~/.config/agent-team/home"
-  assert_equal "$(stage_lines packages)" "would run: brew install 1password-cli git jq tmux gh rsync python bash go coreutils findutils gnu-sed grep flock
+  assert_equal "$(stage_lines packages)" "would run: brew install 1password-cli git jq tmux gh rsync python@3.12 bash go coreutils findutils gnu-sed grep flock
 would run: brew install --cask docker-desktop"
   assert_equal "$(stage_lines tools | sed -n '2,3p')" "would run: curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
 would run: nvm install 22.19.0 && nvm alias default 22.19.0"

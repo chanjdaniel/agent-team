@@ -247,3 +247,41 @@ every_tool_fails() {
   run_bin -1 team-doctor
   assert_equal "$(line_of os)" "FAIL os: FreeBSD is neither Arch Linux nor macOS, so no tool is checked; fix: run the team on Arch Linux or macOS"
 }
+
+# version_command <dir> <name> <output>: <dir>/<name> answers --version with <output> and hands
+# every other call to the real command, as an installed tool would.
+version_command() {
+  mkdir -p "$1"
+  cat >"$1/$2" <<SH
+#!$(command -v bash)
+if [[ \$* == --version ]]; then echo '$3'; exit 0; fi
+exec "\$(PATH=\$REAL_PATH command -v $2)" "\$@"
+SH
+  chmod +x "$1/$2"
+}
+
+@test "a plain doctor and the bootstrap's check give one verdict: the pinned Node in nvm's directory beats another node first on PATH" {
+  tools_at arch
+  rm "$TOOL_STUBS/node"
+  # The shell's PATH starts with another Node; the pinned one is only in nvm's directory.
+  local other=$BATS_TEST_TMPDIR/other-node
+  version_command "$other" node v24.19.0
+  version_command "$HOME/.nvm/versions/node/v22.19.0/bin" node v22.19.0
+  PATH=$other:$PATH run_bin -0 team-doctor
+  assert_equal "$(line_of 'tool node')" "PASS tool node: 22.19.0"
+  PATH=$other:$PATH run_bin -0 team-bootstrap --stage check
+  [[ $output != *"tool node"* ]]
+}
+
+@test "on macOS python3 is Homebrew's pinned Python before an older one first on PATH, and its line says which it found" {
+  on_macos
+  tools_at macos
+  rm "$TOOL_STUBS/python3"
+  local old=$BATS_TEST_TMPDIR/system-python brewed=$HOMEBREW_PREFIX/opt/python@3.12/libexec/bin
+  version_command "$old" python3 "Python 3.9.6"
+  PATH=$old:$PATH run_bin team-doctor
+  assert_equal "$(line_of 'tool python')" "FAIL tool python: 3.9.6 at $old/python3, below the minimum 3.11.0; fix: brew install python@3.12"
+  version_command "$brewed" python3 "Python 3.12.4"
+  PATH=$old:$PATH run_bin team-doctor
+  assert_equal "$(line_of 'tool python')" "PASS tool python: 3.12.4 at $brewed/python3 (minimum 3.11.0)"
+}

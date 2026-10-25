@@ -3,11 +3,14 @@
 #   source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 #
 # It first applies bin/lib/platform.sh (Bash 5 or later; on macOS, Homebrew's GNU tools first on
-# PATH). It sets TEAM_HOME (unless already set, the first line of ~/.config/agent-team/home under
+# PATH), and after --help puts the tool directories of bin/lib/tools.lock on PATH (team_tool_path),
+# exported, so every script and every session it starts runs with that one PATH. It sets
+# TEAM_HOME (unless already set, the first line of ~/.config/agent-team/home under
 # HOME, else the directory above bin/) and TEAM_HOME_FROM, answers --help with the calling script's header (then runs
 # the script's help_more, if it defined one before sourcing), and provides die, usage_error, team_project, ledger_jq, ledger_append,
 # task_events, known_task_events, open_task_events, task_status, task_worktrees, local_path,
-# archive_left_out, rsync_rule, archive_task_dir, machine_name, os_release, team_os, fence_reason, lease_gate, worktree_changes,
+# archive_left_out, rsync_rule, archive_task_dir, machine_name, os_release, team_os, tool_dirs,
+# team_tool_path, fence_reason, lease_gate, worktree_changes,
 # pool_status, pool_slot, slot_changes, secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin, home_repo, non_records,
 # only_records, commit_non_records, records_list, origin_git, origin_reason, commit_records, fast_forward, render_template,
 # registered_pr, attribution_lines, strip_attribution, live_sessions, discord_token, discord_api,
@@ -227,6 +230,38 @@ team_os() {
     Linux) [[ $(os_release ID) == arch || " $(os_release ID_LIKE) " == *" arch "* ]] && echo arch ;;
     *) return 1 ;;
   esac
+}
+
+# The directories the tools of bin/lib/tools.lock are installed into on this OS, in the lock's
+# order, one per line, whether or not they exist (tool_dirs in bin/lib/tools.jq): nvm's under
+# NVM_DIR, else ~/.nvm, and Homebrew's under the prefix bin/lib/platform.sh found. None without jq
+# (a fresh machine's preflight) or on an OS the team does not run on.
+tool_dirs() {
+  local os
+  command -v jq >/dev/null && os=$(team_os) || return 0
+  jq -L "$TEAM_LIB" -r --arg os "$os" --arg home "$HOME" --arg nvm "${NVM_DIR:-$HOME/.nvm}" \
+    --arg brew "$TEAM_BREW_PREFIX" 'include "tools"; tool_dirs($os; $home; $nvm; $brew)' "$TEAM_LIB/tools.lock"
+}
+
+# Put the tool directories that exist on PATH, exported, so every script, the sessions it starts
+# and the tools they run find the pinned tools whatever shell called them: those under HOME or
+# Homebrew's prefix first, right after Homebrew's GNU tools, once; a system directory (treehouse's
+# /usr/local/bin on Arch) keeps its place, or comes last when PATH lacks it. The library runs it
+# once; team-bootstrap again after each install.
+team_tool_path() {
+  local dir front='' back=''
+  while IFS= read -r dir; do
+    [[ -d $dir ]] || continue
+    if [[ $dir == "$HOME"/* || (-n $TEAM_BREW_PREFIX && $dir == "$TEAM_BREW_PREFIX"/*) ]]; then
+      front+=$dir:
+    elif [[ :$PATH: != *:"$dir":* ]]; then
+      back+=:$dir
+    fi
+  done < <(tool_dirs)
+  front=$TEAM_PLATFORM_FRONT$front
+  [[ $PATH == "$front"* ]] || PATH=$front${PATH#"$TEAM_PLATFORM_FRONT"}
+  PATH+=$back
+  export PATH
 }
 
 # Print why this machine is fenced, "fenced since <time> (holder seen <name>, epoch <n>)", from
@@ -788,6 +823,8 @@ if [[ ${1:-} == --help || ${1:-} == -h ]]; then
   if declare -F help_more >/dev/null; then help_more; fi
   exit 0
 fi
+
+team_tool_path
 
 if [[ -z ${team_home_report:-} ]]; then
   [[ -z $TEAM_HOME_PROBLEM ]] || die "$TEAM_HOME_PROBLEM"

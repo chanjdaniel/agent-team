@@ -14,6 +14,7 @@ setup() {
   git -C "$primary" worktree add -q -b feat/T8-two "$wt2"
   stub_script claude <<'EOF'
 printf '%s\n' "$PWD" >>"$STUB_CALLS/claude.cwd"
+printf '%s\n' "$PATH" >>"$STUB_CALLS/claude.path"
 echo "Started background session 4f2a9c1e (${*: -2:1}). Attach with: claude attach 4f2a9c1e"
 EOF
 }
@@ -191,6 +192,16 @@ run_fake() {
   run_bin -0 team-worker T0 planner "$wt1" -- go
   assert_equal "$output" "4f2a9c1e"
   assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" ""
+}
+
+@test "the session gets the library's PATH: the tool directories from tools.lock first" {
+  # Arch, where uname says Linux; Bun installed under HOME, which the caller's PATH lacks.
+  export TEAM_OS_RELEASE=$BATS_TEST_TMPDIR/os-release
+  echo ID=arch >"$TEAM_OS_RELEASE"
+  mkdir -p "$HOME/.bun/bin"
+  run_bin -0 team-worker T0 planner "$wt1" -- go
+  [[ :$(cat "$STUB_CALLS/claude.path"): == *":$HOME/.bun/bin:"*":$BATS_TEST_TMPDIR/stubs:"* ]] ||
+    { echo "claude's PATH: $(cat "$STUB_CALLS/claude.path")" >&2; return 1; }
 }
 
 @test "a legacy task with no opened event launches in any linked worktree, without project or branch" {
