@@ -669,8 +669,12 @@ day_report() {
   echo "$HOME/.local/state/agent-team/janitor/$(date +%F).md"
 }
 
-@test "the stacks and janitor steps are off without stack.json and while their keys are false: no line, no call" {
+@test "the stacks and janitor steps are off without stack.json, without their keys and while they are false: no line, no call" {
   docker_machine
+  run_bin -0 team-timers run
+  assert_equal "$(steps "$output")" "lease checkpoint"
+  # A file holding only other keys, as a machine that set its memory floor has.
+  stack_json '{"memory_floor_gib": 1}'
   run_bin -0 team-timers run
   assert_equal "$(steps "$output")" "lease checkpoint"
   stack_json '{"heartbeat_sweep": false, "heartbeat_janitor": false, "idle_minutes": 0}'

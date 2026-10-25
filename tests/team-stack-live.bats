@@ -193,7 +193,7 @@ live_busy() {
     path: "feature", type: "feature", title: "Live", branch: "work", base: "main", base_sha: "0000000", worktree: $wt}' \
     >>"$TEAM_HOME/ledger.jsonl"
   mkdir -p "$HOME/.config/agent-team"
-  echo '{"idle_minutes": 1, "memory_floor_gib": 0, "disk_floor_gb": 0, "wait_minutes": 0, "stack_cap": 1000}' \
+  echo '{"idle_minutes": 0.1, "memory_floor_gib": 0, "disk_floor_gb": 0, "wait_minutes": 0, "stack_cap": 1000}' \
     >"$HOME/.config/agent-team/stack.json"
   cd "$STACK_WORKTREE"
   run_bin -0 team-stack up --no-seed
@@ -207,18 +207,18 @@ live_busy() {
   run_bin -0 --separate-stderr team-stack sweep
   assert_equal "$output$stderr" ""
   jq -e .last_busy "$HOME/.local/state/agent-team/stacks/$LIVE_PROJECT.json" >/dev/null
-  # Idle, but busy less than a minute ago: kept.
+  # Idle, but busy less than idle_minutes (6 seconds) ago: kept.
   LIVE_IDLE=$STACK_WORKTREE
   live_busy
   run_bin -0 team-stack sweep
   assert_equal "$output" ""
   [[ -n $(docker ps --quiet --filter "$filter") ]]
   # Idle past idle_minutes: stopped, alone.
-  sleep 62
+  sleep 7
   live_busy
   run_bin -0 --separate-stderr team-stack sweep
   assert_equal "$stderr" ""
-  [[ $output == *" stopped $LIVE_PROJECT of T22 in $STACK_WORKTREE: last busy at "*" (idle_minutes 1), its data kept" ]]
+  [[ $output == *" stopped $LIVE_PROJECT of T22 in $STACK_WORKTREE: last busy at "*" (idle_minutes 0.1), its data kept" ]]
   assert_equal "${#lines[@]}" 1
   assert_equal "$(docker ps --quiet --filter "$filter")" ""
   assert_equal "$(docker ps --all --quiet --filter "$filter")" "$container"
