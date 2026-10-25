@@ -432,16 +432,52 @@ restored_from() {
   assert_equal "$(jq -r .head <<<"$output")" "$committed"
 }
 
-@test "a leased treehouse slot that is not clean is handed back and refused" {
+@test "a slot its lease's pre-warm dirties is refused naming the changes and forced back, run after run" {
   open_elsewhere conv feat work
-  echo "left over" >"${conv_slots[1]}/stray.txt"
+  echo 'echo rewritten >>README.md; touch stray.txt' >"$BATS_TEST_TMPDIR/prewarm"
   cp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before"
+  : >"$STUB_CALLS/th-return.sh.log"
 
   run_bin -1 team-open --task T1 --resume conv
-  assert_contains "$output" "the leased slot ${conv_slots[1]} is not clean: untracked files: stray.txt"
-  assert_equal "$(stub_calls th-return.sh | tail -n 1 | jq -r '.args[0]')" "${conv_slots[1]}"
+  assert_contains "$output" "the leased slot ${conv_slots[1]} is not clean: changes to tracked files: README.md; untracked files: stray.txt;"
+  assert_contains "$output" "the lease command's pre-warm made these changes, which the return discards"
+  assert_equal "$(pool_calls th-return.sh)" "${conv_slots[1]} --force --if-lease-holder T1"
+  assert_equal "$(pool_leases)" ""
   run -1 git -C "${conv_slots[1]}" symbolic-ref -q HEAD
+
+  # Again, as team-resume runs it again: the next slot, refused and returned the same way.
+  run_bin -1 team-open --task T1 --resume conv
+  assert_contains "$output" "the leased slot ${conv_slots[0]} is not clean"
+  assert_equal "$(pool_leases)" ""
+  assert_equal "$(git -C "${conv_slots[0]}" status --porcelain)$(git -C "${conv_slots[1]}" status --porcelain)" ""
   cmp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before"
+
+  # Once the pre-warm is fixed, one run makes the worktree, in the one slot leased.
+  rm "$BATS_TEST_TMPDIR/prewarm"
+  run_bin -0 --separate-stderr team-open --task T1 --resume conv
+  assert_equal "$(pool_leases)" "$(jq -r .worktree <<<"$output") T1"
+}
+
+@test "a slot left leased to the task by a failed run is taken again by the next, which leases nothing" {
+  open_elsewhere conv feat work
+  echo "left over" >"${conv_slots[1]}/stray.txt"
+  : >"$STUB_CALLS/th-lease.sh.log"
+  run_bin -1 team-open --task T1 --resume conv
+  assert_contains "$output" "the leased slot ${conv_slots[1]} is not clean: untracked files: stray.txt;" \
+    "the pool reported it dirty before this lease"
+  assert_equal "$(pool_leases)" "${conv_slots[1]} T1"
+
+  run_bin -1 team-open --task T1 --resume conv
+  assert_contains "$output" "${conv_slots[1]} is already leased to T1, by an earlier run; it is taken again"
+  assert_equal "$(pool_calls th-lease.sh)" "T1"
+  assert_equal "$(pool_leases)" "${conv_slots[1]} T1"
+
+  rm "${conv_slots[1]}/stray.txt"
+  run_bin -0 --separate-stderr team-open --task T1 --resume conv
+  assert_equal "$(jq -r .worktree <<<"$output")" "${conv_slots[1]}"
+  assert_equal "$(git -C "${conv_slots[1]}" rev-parse HEAD)" "$head"
+  assert_equal "$(pool_calls th-lease.sh)" "T1"
+  assert_equal "$(pool_leases)" "${conv_slots[1]} T1"
 }
 
 @test "a slot here holding a stale copy behind origin is reused and fast-forwarded, its task directory replaced" {

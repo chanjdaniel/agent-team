@@ -26,12 +26,15 @@
 #   8. heartbeat    team-timers enable.
 #   9. worktrees    team-open --task T<n> --resume <project> for each open worktree of each open
 #                   task, one line each ("T1 home: ..."); one that fails is said with its reason
-#                   on stderr and in the report, and the others still resume. A task that crashed
-#                   (a launch after its latest stowed, or a launch and no stowed) gets its last
-#                   checkpoint's snapshot applied by team-open, and one more line: the machine,
-#                   the checkpoint it resumes from and the roles to relaunch. So does a worktree
-#                   its latest stowed recorded with uncommitted changes (a worker the handoff
-#                   stopped before it stowed), whose snapshot team-open's line reports.
+#                   on stderr and in the report, and the others still resume. A team-open that
+#                   fails hands back a slot it leased, or keeps it leased to the task for the next
+#                   run to take again (team-open's header), so a run again leases no slot more.
+#                   A task that crashed (a launch after its latest stowed, or a launch and no
+#                   stowed) gets its last checkpoint's snapshot applied by team-open, and one more
+#                   line: the machine, the checkpoint it resumes from and the roles to relaunch.
+#                   So does a worktree its latest stowed recorded with uncommitted changes (a
+#                   worker the handoff stopped before it stowed), whose snapshot team-open's line
+#                   reports.
 #  10. report       tasks/resume-<date>.json (this machine's date): {machine, epoch, stolen_from,
 #                   written_at, tasks}, each task {task, stowed, crashed, worktrees, failures}:
 #                   stowed the task's latest stowed event ({ts, machine, roles, note}) or null,

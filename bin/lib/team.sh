@@ -8,7 +8,7 @@
 # the script's help_more, if it defined one before sourcing), and provides die, usage_error, team_project, ledger_jq, ledger_append,
 # task_events, known_task_events, open_task_events, task_status, task_worktrees, local_path,
 # archive_left_out, rsync_rule, archive_task_dir, machine_name, os_release, team_os, fence_reason, lease_gate, worktree_changes,
-# secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin, home_repo, non_records,
+# pool_status, secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin, home_repo, non_records,
 # only_records, commit_non_records, records_list, origin_git, origin_reason, commit_records, fast_forward, render_template,
 # registered_pr, attribution_lines, strip_attribution, live_sessions, discord_token, discord_api,
 # github, pr_part and task_state_json, and sets COORDINATOR_CHANNEL.
@@ -265,6 +265,21 @@ worktree_changes() {
   [[ -z $list ]] || echo "changes to tracked files: $list"
   list=$(git -C "$1" ls-files --others --exclude-standard | paste -sd ' ')
   [[ -z $list ]] || echo "untracked files: $list"
+}
+
+# The treehouse pool of the primary checkout <primary>, as `treehouse status --json` run there
+# reports it: one compact {path, status, holder} per slot, path its real path and holder its lease
+# holder ("" while nobody leases it; status leased, available, dirty or another of treehouse's).
+# Fails, printing nothing, when treehouse does not answer within 30 s with a JSON array: pool_status <primary>
+pool_status() {
+  local out path resolved=()
+  out=$(cd "$1" && if command -v timeout >/dev/null; then timeout 30 treehouse status --json; else treehouse status --json; fi 2>/dev/null </dev/null) ||
+    return 1
+  jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1 || return 1
+  out=$(jq -c '.[] | objects | {path: (.path | strings), status: (.status // ""), holder: (.lease_holder // "")}' <<<"$out")
+  while IFS= read -r path; do resolved+=("$(realpath -m -- "$path")"); done < <(jq -r .path <<<"$out")
+  jq -cn '[inputs] as $slots | $ARGS.positional as $real | range($slots | length) | $slots[.] + {path: $real[.]}' \
+    --args "${resolved[@]}" <<<"$out"
 }
 
 # Of the relative paths on stdin, NUL-separated, those that may hold a secret, one per line: a

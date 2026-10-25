@@ -8,6 +8,7 @@
 # a test sets; claude is a stub with a session list per machine.
 
 load helpers/common
+load helpers/treehouse
 
 setup() {
   sandbox
@@ -334,6 +335,76 @@ laptop_state() {
   assert_contains "$(jq -r '.tasks[0].failures[0].reason' "$report")" "salvage/home/T1-laptop"
   # The coordinator still starts, to say what did not resume.
   assert_equal "$(coordinator_launches | wc -l)" 1
+}
+
+@test "a treehouse slot its lease's pre-warm dirties is handed back, so each run again leases no slot more" {
+  # conv, a treehouse project, with T2 open in it on home-pc.
+  local conv slots=() laptop_slots=() pool=.treehouse/conv-abc123
+  conv=$(make_repo conv)
+  printf '.scratch/\n' >"$conv/.gitignore"
+  git -C "$conv" add .gitignore
+  git -C "$conv" commit -q -m "chore: ignore scratch"
+  git -C "$conv" push -q origin main
+  cat >>"$TEAM_HOME/projects.toml" <<TOML
+
+[conv]
+repo = "owner/conv"
+path = "projects/conv"
+base = "main"
+delivery = "no-mistakes"
+merge_method = "merge"
+required_checks = []
+task_dir = ".scratch/task"
+docs = []
+toolkits = []
+
+[conv.pool]
+provider = "treehouse"
+lease = "scripts/th-lease.sh"
+return = "scripts/th-return.sh"
+slots = ["$pool/1/conv", "$pool/2/conv"]
+TOML
+  git -C "$TEAM_HOME" commit -q -m "chore: register conv" projects.toml
+  git -C "$TEAM_HOME" push -q origin dev
+  slots=("$HOME/$pool/1/conv" "$HOME/$pool/2/conv")
+  git -C "$conv" worktree add -q --detach "${slots[0]}" origin/main
+  git -C "$conv" worktree add -q --detach "${slots[1]}" origin/main
+  printf '%s\n' "${slots[@]}" >"$BATS_TEST_TMPDIR/free"
+  fake_pool_commands "$conv"
+  run_bin -0 team-open conv feature feat move "Move it"
+  git -C "${slots[0]}" push -q origin HEAD:refs/heads/feat/T2-move
+  hand_off
+
+  # laptop's clone of conv and its own pool, whose pre-warm rewrites a tracked file.
+  local lconv=$laptop/home/projects/conv
+  git clone -q "$BATS_TEST_TMPDIR/origin/conv.git" "$lconv" 2>/dev/null
+  laptop_slots=("$laptop/home/$pool/1/conv" "$laptop/home/$pool/2/conv")
+  git -C "$lconv" worktree add -q --detach "${laptop_slots[0]}" origin/main
+  git -C "$lconv" worktree add -q --detach "${laptop_slots[1]}" origin/main
+  printf '%s\n' "${laptop_slots[@]}" | tee "$BATS_TEST_TMPDIR/free" >"$BATS_TEST_TMPDIR/pool"
+  : >"$BATS_TEST_TMPDIR/leases"
+  fake_pool_commands "$lconv"
+  echo 'echo rewritten >>README.md' >"$BATS_TEST_TMPDIR/prewarm"
+
+  on_machine laptop run_bin -1 --separate-stderr team-resume
+  assert_contains "$stderr" "team-resume: T2 conv: not re-homed: "
+  assert_contains "$stderr" "changes to tracked files: README.md"
+  assert_contains "$output" "T1 home: $laptop/home/slots/home/1 on feat/T1-work"
+  assert_equal "$(pool_leases)" ""
+
+  # Run again, as the header says a stopped resume is: the same refusal, and still no lease.
+  on_machine laptop run_bin -1 --separate-stderr team-resume
+  assert_contains "$stderr" "team-resume: T2 conv: not re-homed: "
+  assert_equal "$(pool_leases)" ""
+  assert_equal "$(git -C "${laptop_slots[0]}" status --porcelain)$(git -C "${laptop_slots[1]}" status --porcelain)" ""
+
+  # Once the pre-warm is fixed, the next run finishes the resume in one slot.
+  rm "$BATS_TEST_TMPDIR/prewarm"
+  echo '[]' >"$laptop/home/sessions.json"
+  on_machine laptop run_bin -0 --separate-stderr team-resume
+  assert_contains "$output" "T2 conv: "
+  assert_equal "$(pool_leases | wc -l)" "1"
+  assert_equal "$(pool_leases | cut -d' ' -f2)" "T2"
 }
 
 @test "a stale lease is refused naming --steal, and --steal takes it with the holder's name typed" {

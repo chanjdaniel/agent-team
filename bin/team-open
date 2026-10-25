@@ -13,15 +13,21 @@
 # event; after a failure, re-running with --task finishes the half-open task in the slot that
 # holds its branch.
 # Fetches the base in the primary checkout and puts a trusted slot on the branch from origin/<base>
-# (no upstream). A git pool adds its first slot that is not yet a worktree. A treehouse pool runs
-# the project's lease command from the primary checkout with the task as the holder and takes the
-# path it prints; a path that is not a trusted slot, or a slot with changes to tracked files,
-# untracked files or a non-empty task directory, is handed back through the return command and
-# refused. Then makes the task directory (refused, and the slot removed or returned again, unless
-# git ignores it), writes tasks/T<n>/plan.md from templates/plan.md, opens the thread
-# (team-thread) and appends opened. Prints the task's facts as JSON; the project's other open
-# tasks go to stderr. Exit 75 when every slot is taken (a git pool) or the lease command fails
-# (a treehouse pool), listing the slots and who holds them.
+# (no upstream). A git pool adds its first slot that is not yet a worktree. A treehouse pool is read
+# first (`treehouse status --json` in the primary checkout, refused when it does not answer): a
+# slot an earlier run left leased to the task is taken again; else the project's lease command
+# runs from the primary checkout with the task as the holder, and the path it prints is taken. A
+# path that is not a trusted slot, or a slot with changes to tracked files, untracked files or a
+# non-empty task directory, is refused, naming them, and handed back through the return command:
+# with --force --if-lease-holder T<n> when this run leased it and the pool did not report it dirty
+# before, so what the lease's own pre-warm changed is discarded and the lease always ends; else
+# without, so a slot with changes stays leased, for Daniel to look at (a slot dirty before its
+# lease, or leased by an earlier run, may hold someone's work). Then makes the task directory
+# (refused, and the slot removed or returned again, unless git ignores it), writes
+# tasks/T<n>/plan.md from templates/plan.md, opens the thread (team-thread) and appends opened.
+# Prints the task's facts as JSON; the project's other open tasks go to stderr. Exit 75 when every
+# slot is taken (a git pool) or the lease command fails (a treehouse pool), listing the slots and
+# who holds them (a treehouse slot's lease holder, else the task its branch names).
 # With --add, gives the open task T<n> a worktree in another project, on <type>/T<n>-<slug>: the
 # same pool steps, then worktree-added, with no plan, thread or opened. Refused for a task with
 # no opened event or with a closed one, and for a project the task already has an open worktree in.
@@ -150,19 +156,28 @@ else
 fi
 [[ -n $resume ]] || branch=$type/$task-$slug
 
-# On failure, a slot this run leased and has not yet put on the branch is returned, and a number
-# this run claimed is given back while nothing holds it yet; once a slot holds the task's branch,
-# the task is half open and re-running with --task finishes it.
-worktree='' leased='' lease_log=''
+# On failure, a slot this run took and has not yet put on the branch is returned (forced when
+# force_return is set: see the header), and a number this run claimed is given back while nothing
+# holds it yet; once a slot holds the task's branch, the task is half open and re-running with
+# --task finishes it.
+worktree='' leased='' force_return='' lease_log=''
 on_exit() {
   local status=$?
   [[ -z $lease_log ]] || rm -f "$lease_log"
   ((status != 0)) || return 0
-  if [[ -n $leased ]]; then
+  if [[ -n $leased && -n $force_return ]]; then
+    if (cd "$primary" && "$return_cmd" "$leased" --force --if-lease-holder "$task") </dev/null >&2; then
+      echo "team-open: handed $leased back to $return_cmd, discarding what its lease changed" >&2
+    else
+      echo "team-open: could not return $leased through $return_cmd; it stays leased to $task, and the next" \
+        "run takes it again" >&2
+    fi
+  elif [[ -n $leased ]]; then
     if (cd "$primary" && "$return_cmd" "$leased") </dev/null >&2; then
       echo "team-open: handed $leased back to $return_cmd" >&2
     else
-      echo "team-open: could not return $leased through $return_cmd; return it by hand" >&2
+      echo "team-open: $leased stays leased to $task, which is Daniel's word: once nothing in it is needed," \
+        "return it in a terminal, which asks before discarding: cd $primary && $return_cmd $leased" >&2
     fi
   fi
   if [[ -z $worktree ]]; then
@@ -236,15 +251,22 @@ done < <(git -C "$primary" worktree list --porcelain | awk '
   /^branch refs\/heads\// { branch = substr($0, 19) }
   END { if (path != "") print path "\t" branch }')
 
-# Each slot, with the task holding it (from its branch's name) and its branch, on stderr.
+# Each slot, with the task holding it (a treehouse pool's lease holder, else from its branch's
+# name) and its branch, on stderr.
 list_slots() {
-  local slot wt_branch holder
+  local slot wt_branch holder leases=''
+  [[ $provider != treehouse ]] || leases=$(pool_status "$primary") || leases=''
   for slot in "${slots[@]}"; do
     if [[ ! -v holds[$(realpath -m -- "$slot")] ]]; then
       echo "  $slot: not a worktree" >&2
       continue
     fi
     wt_branch=${holds[$(realpath -m -- "$slot")]}
+    holder=$(jq -r --arg path "$(realpath -m -- "$slot")" 'select(.path == $path and .holder != "") | .holder' <<<"$leases")
+    if [[ -n $holder ]]; then
+      echo "  $slot: $holder (leased; ${wt_branch:-detached HEAD})" >&2
+      continue
+    fi
     holder=$(sed -nE 's#^[^/]+/(T[1-9][0-9]*)-.*#\1#p' <<<"$wt_branch")
     echo "  $slot: ${holder:-no task} (${wt_branch:-detached HEAD})" >&2
   done
@@ -271,20 +293,33 @@ take_git_slot() {
   worktree=$free added=1
 }
 
-# A treehouse pool: lease a slot for the task, check it is trusted and clean, then switch it to
-# the branch. The lease command's stderr (its pre-warm progress) is shown only when it fails.
+# A treehouse pool: take the slot an earlier run left leased to the task, else lease one for it;
+# check it is trusted and clean, then switch it to the branch. The lease command's stderr (its
+# pre-warm progress) is shown only when it fails.
 take_treehouse_slot() {
-  local slot trusted='' found=() list common
-  lease_log=$(mktemp)
-  if ! leased=$(cd "$primary" && "$lease" "$task" 2>"$lease_log"); then
-    leased=
-    echo "team-open: $project's lease command found no free slot:" >&2
-    cat "$lease_log" >&2
-    echo "team-open: $project's slots:" >&2
-    list_slots
-    exit 75
+  local slot trusted='' found=() list common pool dirty=''
+  pool=$(pool_status "$primary") || die "cannot read $project's pool: treehouse status --json did not answer in $primary"
+  # Never one on a branch: that is a worktree, not a lease a failed run left.
+  while IFS= read -r slot; do
+    if [[ -z $leased && -z ${holds[$slot]-} ]]; then leased=$slot; fi
+  done < <(jq -r --arg task "$task" 'select(.holder == $task) | .path' <<<"$pool")
+  if [[ -n $leased ]]; then
+    echo "team-open: $leased is already leased to $task, by an earlier run; it is taken again" >&2
+  else
+    lease_log=$(mktemp)
+    if ! leased=$(cd "$primary" && "$lease" "$task" 2>"$lease_log"); then
+      leased=
+      echo "team-open: $project's lease command found no free slot:" >&2
+      cat "$lease_log" >&2
+      echo "team-open: $project's slots:" >&2
+      list_slots
+      exit 75
+    fi
+    [[ -n $leased ]] || die "the lease command $lease printed no path"
+    # Leased by this run: forced back on failure, unless the pool saw it dirty before the lease.
+    dirty=$(jq -r --arg path "$(realpath -m -- "$leased")" 'select(.path == $path and .status == "dirty") | .path' <<<"$pool")
+    [[ -n $dirty ]] || force_return=1
   fi
-  [[ -n $leased ]] || die "the lease command $lease printed no path"
   for slot in "${slots[@]}"; do
     if [[ $(realpath -m -- "$slot") == "$(realpath -m -- "$leased")" ]]; then trusted=$slot; fi
   done
@@ -301,7 +336,15 @@ take_treehouse_slot() {
   fi
   if ((${#found[@]})); then
     list=$(printf '%s; ' "${found[@]}")
-    die "the leased slot $trusted is not clean: ${list%; }"
+    if [[ -n $force_return ]]; then
+      die "the leased slot $trusted is not clean: ${list%; }; it was clean before this lease, so the lease" \
+        "command's pre-warm made these changes, which the return discards"
+    elif [[ -n $dirty ]]; then
+      die "the leased slot $trusted is not clean: ${list%; }; the pool reported it dirty before this lease," \
+        "so the changes may be someone's work"
+    fi
+    die "the leased slot $trusted is not clean: ${list%; }; an earlier run leased it, so the changes may be" \
+      "someone's work"
   fi
 
   if [[ -n $start ]]; then
@@ -309,7 +352,7 @@ take_treehouse_slot() {
   else
     git -C "$trusted" switch -q "$branch" || die "cannot switch the leased slot $trusted to $branch"
   fi
-  worktree=$trusted added=1 leased=
+  worktree=$trusted added=1 leased='' force_return=''
 }
 
 # Undo take_*_slot for a slot this run took: remove or return it, and drop a new branch.

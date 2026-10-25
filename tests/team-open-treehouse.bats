@@ -43,11 +43,6 @@ events() {
   jq -c --arg e "$1" 'select(.event == $e)' "$TEAM_HOME/ledger.jsonl"
 }
 
-# The arguments of each call to a fake pool command, one line per call.
-pool_calls() {
-  stub_calls "$1" | jq -r '.args | join(" ")'
-}
-
 @test "a task opens in the leased slot, leased from the primary checkout with the task as holder" {
   git config --global branch.autoSetupMerge always
   run_bin -0 --separate-stderr team-open proj bug fix sign-in-limit "Rate-limit sign-in"
@@ -91,34 +86,83 @@ pool_calls() {
   echo "$stray" >"$BATS_TEST_TMPDIR/free"
   run_bin -1 --separate-stderr team-open proj feature feat stray "Stray"
   assert_contains "$stderr" "the lease command handed out $stray, which is not one of proj's slots"
-  assert_contains "$stderr" "handed $stray back to $primary/scripts/th-return.sh"
-  assert_equal "$(stub_calls th-return.sh)" "$(jq -cn --arg cwd "$primary" --arg p "$stray" '{cwd: $cwd, args: [$p]}')"
+  assert_contains "$stderr" "handed $stray back to $primary/scripts/th-return.sh, discarding what its lease changed"
+  assert_equal "$(stub_calls th-return.sh)" "$(jq -cn --arg cwd "$primary" --arg p "$stray" \
+    '{cwd: $cwd, args: [$p, "--force", "--if-lease-holder", "T1"]}')"
   assert_equal "$(git -C "$stray" rev-parse --abbrev-ref HEAD)" "HEAD"
+  assert_equal "$(pool_leases)" ""
   [[ ! -e $TEAM_HOME/tasks/T1 ]]
   assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" ""
   assert_equal "$(stub_calls curl)" ""
 }
 
-@test "a slot with changes to tracked files is returned and refused, naming them" {
+@test "a slot its lease's pre-warm changed is refused naming the changes, and forced back so no lease is left" {
+  echo 'echo rewritten >>README.md' >"$BATS_TEST_TMPDIR/prewarm"
+  run_bin -1 --separate-stderr team-open proj feature feat dirty "Dirty"
+  assert_contains "$stderr" "the leased slot ${slots[0]} is not clean: changes to tracked files: README.md;" \
+    "it was clean before this lease, so the lease command's pre-warm made these changes, which the return discards"
+  assert_contains "$stderr" "handed ${slots[0]} back to $primary/scripts/th-return.sh, discarding what its lease changed"
+  # Only the changed paths are said, never their content.
+  [[ $stderr != *rewritten* ]]
+  assert_equal "$(pool_calls th-return.sh)" "${slots[0]} --force --if-lease-holder T1"
+  assert_equal "$(pool_leases)" ""
+  assert_equal "$(git -C "${slots[0]}" status --porcelain)" ""
+  assert_equal "$(git -C "${slots[0]}" rev-parse --abbrev-ref HEAD)" "HEAD"
+  [[ ! -e $TEAM_HOME/tasks/T1 ]]
+  assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" ""
+}
+
+@test "a slot its lease's pre-warm left untracked files in is refused naming them, and forced back" {
+  echo 'touch stray.txt notes.md' >"$BATS_TEST_TMPDIR/prewarm"
+  run_bin -1 --separate-stderr team-open proj feature feat untracked "Untracked"
+  assert_contains "$stderr" "untracked files: notes.md stray.txt"
+  [[ $stderr != *"changes to tracked files"* ]]
+  assert_equal "$(pool_calls th-return.sh)" "${slots[0]} --force --if-lease-holder T1"
+  assert_equal "$(pool_leases)" ""
+  [[ ! -e ${slots[0]}/stray.txt ]]
+}
+
+@test "a slot the pool reported dirty before its lease is refused and stays leased, for Daniel to look at" {
   echo changed >>"${slots[0]}/README.md"
   run_bin -1 --separate-stderr team-open proj feature feat dirty "Dirty"
-  assert_contains "$stderr" "the leased slot ${slots[0]} is not clean"
-  assert_contains "$stderr" "changes to tracked files: README.md"
-  assert_contains "$stderr" "Clean and return? [Y/n] 🌳 Aborted."
+  assert_contains "$stderr" "the leased slot ${slots[0]} is not clean: changes to tracked files: README.md;" \
+    "the pool reported it dirty before this lease, so the changes may be someone's work"
+  assert_contains "$stderr" "worktree not returned: it has uncommitted changes"
+  assert_contains "$stderr" "${slots[0]} stays leased to T1, which is Daniel's word: once nothing in it is needed," \
+    "return it in a terminal, which asks before discarding: cd $primary && $primary/scripts/th-return.sh ${slots[0]}"
   assert_equal "$(pool_calls th-return.sh)" "${slots[0]}"
-  assert_equal "$(git -C "${slots[0]}" rev-parse --abbrev-ref HEAD)" "HEAD"
+  assert_equal "$(pool_leases)" "${slots[0]} T1"
   assert_equal "$(cat "${slots[0]}/README.md")" "$(printf 'proj\nchanged')"
   [[ ! -e $TEAM_HOME/tasks/T1 ]]
   assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" ""
 }
 
-@test "a slot with untracked files is returned and refused, naming them" {
-  touch "${slots[0]}/stray.txt" "${slots[0]}/notes.md"
-  run_bin -1 --separate-stderr team-open proj feature feat untracked "Untracked"
-  assert_contains "$stderr" "untracked files: notes.md stray.txt"
-  [[ $stderr != *"changes to tracked files"* ]]
-  assert_equal "$(pool_calls th-return.sh)" "${slots[0]}"
-  [[ -e ${slots[0]}/stray.txt ]]
+@test "a re-run takes the slot an earlier run left leased to the task, and never leases another" {
+  echo changed >>"${slots[0]}/README.md"
+  run_bin -1 team-open proj feature feat dirty "Dirty"
+  # Again while it is dirty: refused again, and still the one lease.
+  run_bin -1 --separate-stderr team-open proj feature feat dirty "Dirty"
+  assert_contains "$stderr" "${slots[0]} is already leased to T1, by an earlier run; it is taken again"
+  assert_contains "$stderr" "an earlier run leased it, so the changes may be someone's work"
+  assert_equal "$(pool_calls th-lease.sh)" "T1"
+  assert_equal "$(pool_leases)" "${slots[0]} T1"
+
+  # Daniel discarded the changes: the next run opens the task there.
+  git -C "${slots[0]}" checkout -q -- README.md
+  run_bin -0 --separate-stderr team-open proj feature feat dirty "Dirty"
+  assert_equal "$(jq -r .worktree <<<"$output")" "${slots[0]}"
+  assert_equal "$(pool_calls th-lease.sh)" "T1"
+  assert_equal "$(pool_leases)" "${slots[0]} T1"
+  assert_equal "$(git -C "${slots[1]}" rev-parse --abbrev-ref HEAD)" "HEAD"
+}
+
+@test "a pool treehouse cannot read is refused before any lease" {
+  stub_reply treehouse "not in a git or jj repository" 1
+  rm "$STUB_FIXTURES/treehouse.sh"
+  run_bin -1 --separate-stderr team-open proj feature feat blind "Blind"
+  assert_contains "$stderr" "cannot read proj's pool: treehouse status --json did not answer in $primary"
+  assert_equal "$(stub_calls th-lease.sh)" ""
+  [[ ! -e $TEAM_HOME/tasks/T1 ]]
 }
 
 @test "a slot with a non-empty task directory is returned and refused, naming it" {
@@ -126,7 +170,9 @@ pool_calls() {
   touch "${slots[0]}/.scratch/task/spec.md"
   run_bin -1 --separate-stderr team-open proj feature feat leftover "Leftover"
   assert_contains "$stderr" "a non-empty task directory .scratch/task: spec.md tickets"
-  assert_equal "$(pool_calls th-return.sh)" "${slots[0]}"
+  # git ignores it, so the pool saw the slot clean, and --force keeps what git ignores.
+  assert_equal "$(pool_calls th-return.sh)" "${slots[0]} --force --if-lease-holder T1"
+  assert_equal "$(pool_leases)" ""
   [[ -e ${slots[0]}/.scratch/task/spec.md ]]
   assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" ""
 }
@@ -147,6 +193,13 @@ pool_calls() {
   assert_contains "$stderr" "all 2 worktrees are in use or dirty (max_trees = 2)"
   assert_contains "$stderr" "$(printf '%s\n' "team-open: proj's slots:" \
     "  ${slots[0]}: T3 (feat/T3-busy)" "  ${slots[1]}: no task (detached HEAD)")"
+
+  # A leased slot is named by its lease holder, detached or not.
+  printf '%s\tT7\n%s\tT3\n' "${slots[1]}" "${slots[0]}" >"$BATS_TEST_TMPDIR/leases"
+  run_bin -75 --separate-stderr team-open proj feature feat late "Late"
+  assert_contains "$stderr" "$(printf '%s\n' "team-open: proj's slots:" \
+    "  ${slots[0]}: T3 (leased; feat/T3-busy)" "  ${slots[1]}: T7 (leased; detached HEAD)")"
+  : >"$BATS_TEST_TMPDIR/leases"
   assert_equal "$(stub_calls th-return.sh)" ""
   [[ ! -e $TEAM_HOME/tasks/T1 ]]
   assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" ""

@@ -30,7 +30,10 @@
 #   toolkits         the toolkits a worker of this project may be given
 # Per project pool ([<name>.pool]), where task worktrees come from:
 #   provider         "treehouse" (leased pre-warmed slots) or "git" (plain git worktrees)
-#   lease, return    treehouse only: the lease and return commands
+#   lease, return    treehouse only: the lease and return commands, run from the primary
+#                    checkout: lease <holder> prints the leased slot's path; return <slot> hands
+#                    it back, and passes --force and --if-lease-holder <holder> on to treehouse
+#                    return (team-open forces back a slot its own lease dirtied)
 #   slots            the trusted slot paths a task's worktree may be
 # Per project stack ([<name>.stack]), optional: the Docker stacks team-stack manages for the
 # project's worktrees (sops/docker.md); a project without one has none:
