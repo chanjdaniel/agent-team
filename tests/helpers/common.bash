@@ -273,6 +273,17 @@ make_repo() {
   echo "$clone"
 }
 
+# other_spelling <path>: another spelling of the existing <path>, its last part upper-cased, which
+# names the same directory: by itself on a case-insensitive filesystem (APFS, as on a Mac), where
+# realpath keeps the case it is given, else through a symlink so named.
+other_spelling() {
+  local other
+  other=$(dirname "$1")/$(basename "$1" | tr '[:lower:]' '[:upper:]')
+  [[ $other != "$1" ]] || other=$1-OTHER
+  [[ $other -ef $1 ]] || ln -s "$(basename "$1")" "$other"
+  echo "$other"
+}
+
 # Make the sandbox's team home a clone of a bare origin standing in for GitHub (at
 # $BATS_TEST_TMPDIR/origin/agent-team.git), with its files committed on dev and pushed, and name
 # this machine <name> (default home-pc); prints the origin's path.

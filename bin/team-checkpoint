@@ -105,7 +105,7 @@ fail() {
 skip_reason() {
   local wt=$1 branch=$2 top current
   if [[ ! -d $wt ]] || ! top=$(git -C "$wt" rev-parse --show-toplevel 2>/dev/null) ||
-    [[ $(realpath "$top") != "$(realpath "$wt")" ]]; then
+    ! same_path "$top" "$wt"; then
     echo "$wt is missing"
   elif ! current=$(git -C "$wt" symbolic-ref -q --short HEAD); then
     echo "$wt is on a detached HEAD, not $branch"

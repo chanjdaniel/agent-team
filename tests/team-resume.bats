@@ -423,6 +423,14 @@ team-doctor-trust-home"
   assert_contains "$output" "code: the code checkout is the team home, brought up to date above"
 }
 
+@test "a code checkout that is the team home spelled otherwise is skipped too (report F6)" {
+  hand_off
+  code_checkout "$(other_spelling "$laptop/team")"
+
+  on_machine laptop run_bin -0 --separate-stderr team-resume
+  assert_contains "$output" "code: the code checkout is the team home, brought up to date above"
+}
+
 @test "offline, the resume exits 75 at its first step, before the doctor, changing nothing" {
   hand_off
   git -C "$laptop/team" remote set-url origin "https://127.0.0.1:9/agent-team.git"

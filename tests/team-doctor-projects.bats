@@ -113,6 +113,15 @@ ledger_opened() {
   leased_slots "$pool/3/Conventioner" T2
   run_bin -0 team-doctor
   assert_equal "$(line_of 'leases conventioner')" "PASS leases conventioner: every leased slot (1) is an open task's worktree here"
+
+  # The ledger spells T5's slot otherwise than treehouse does: one directory (report F6).
+  local other
+  mkdir -p "$HOME/$pool/5/Conventioner"
+  other=$(other_spelling "$HOME/.treehouse")
+  ledger_opened T5 "${other##*/}/Conventioner-d4c77a/5/Conventioner"
+  leased_slots "$pool/3/Conventioner" T2 "$pool/5/Conventioner" T5
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'leases conventioner')" "PASS leases conventioner: every leased slot (2) is an open task's worktree here"
 }
 
 @test "leases: a treehouse that does not answer warns; a git pool has no leases line" {
@@ -260,4 +269,26 @@ WARN changes site: changes to tracked files: README.md; untracked files: notes.t
   echo '[broken]' >"$TEAM_HOME/projects.toml"
   run_bin -1 team-doctor
   assert_contains "$(line_of projects)" "FAIL projects: $TEAM_HOME/projects.toml: broken: missing required key 'repo'"
+}
+
+@test "a checkout and the team home named by another spelling of their paths pass as the directory they are (report F6)" {
+  tools_at arch
+  local site home
+  site=$(other_spelling "$SITE")
+  sed -i "s#^path = \"projects/site\"#path = \"projects/${site##*/}\"#" "$TEAM_HOME/projects.toml"
+  home=$(other_spelling "$TEAM_HOME")
+  TEAM_HOME=$home run_bin -0 team-doctor
+  assert_equal "$(line_of 'checkout site')" "PASS checkout site: ~/projects/${site##*/}, a primary checkout"
+  assert_equal "$(line_of 'team home')" "PASS team home: $home, named by TEAM_HOME: a checkout of its own on dev, with an origin"
+
+  # A team home that is a project's primary checkout is so however either is spelled.
+  cp "$TEAM_HOME/projects.toml" "$SITE/"
+  TEAM_HOME=$SITE run_bin -1 team-doctor
+  assert_equal "$(line_of 'trust team home')" "PASS trust team home: not probed apart, since ~/projects/site is site's primary checkout, which the trust site line probes"
+
+  # Still by identity: a worktree of another checkout is no primary checkout, however spelled.
+  rm -rf "$SITE"
+  git -C "$CONVENTIONER" worktree add -q --detach "$SITE"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of 'checkout site')" "FAIL checkout site: ~/projects/${site##*/} is a worktree of ~/projects/Conventioner, not a primary checkout; fix: move it aside, then git clone https://github.com/owner/site.git ~/projects/${site##*/}"
 }

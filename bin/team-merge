@@ -279,10 +279,10 @@ fi
 # base: fast-forwarded to origin's when it is on the base and clean, otherwise left as it is,
 # saying why and how. git replaces each file it changes, so a script running from it reads on.
 code=$(cd "$(dirname "$TEAM_LIB")/.." && pwd -P)
-if [[ $(realpath -m -- "$primary") == "$code" ]]; then
+if same_path "$primary" "$code"; then
   bring="to bring in the merged code: git -C $code switch $base && git -C $code pull --ff-only origin $base"
   NET_ERR=$scratch/net-err
-  if [[ $code == "$(realpath -m -- "$TEAM_HOME")" ]]; then
+  if same_path "$code" "$TEAM_HOME"; then
     echo "team-merge: the code checkout is the team home, so the next records push (team-checkpoint, team-handoff) brings it level with origin's $base" >&2
   elif ! on=$(git -C "$code" symbolic-ref -q --short HEAD); then
     echo "team-merge: the code checkout $code is left as it is: it is on a detached HEAD, not $base; $bring" >&2

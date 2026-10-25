@@ -162,6 +162,32 @@ preflight: done: jq, git and Python 3.11 are installed"
   [[ $output != *"FAIL homebrew"* ]]
 }
 
+@test "packages: what Homebrew lacks is installed whatever the doctor's reason, and what it has below its minimum is upgraded (report F11)" {
+  on_macos
+  tools_at macos
+  # macOS's own BSD date prints no version and its openrsync is below the minimum, but Homebrew
+  # installed neither coreutils nor rsync; it has jq, the 1Password CLI's cask and Docker Desktop.
+  answer "date --version" "date: illegal option -- -"
+  answer "rsync --version" "openrsync: protocol version 29
+rsync version 2.6.9 compatible"
+  answer "jq --version" "jq-1.6"
+  answer "op --version" "2.0.0"
+  answer "docker --version" "Docker version 20.10.0, build 1"
+  echo "jq 1.6" >"$STUB_FIXTURES/brew-formulae"
+  printf '%s\n' "1password-cli 2.0.0" "docker-desktop 4.0.0" >"$STUB_FIXTURES/brew-casks"
+  run_bin -0 team-bootstrap --stage packages --dry-run
+  assert_equal "$output" "packages: would run: brew install rsync coreutils
+packages: would run: brew upgrade 1password-cli jq
+packages: would run: brew upgrade --cask docker-desktop"
+  run_bin -0 team-bootstrap --stage packages
+  assert_equal "$output" "packages: running: brew install rsync coreutils
+packages: running: brew upgrade 1password-cli jq
+packages: running: brew upgrade --cask docker-desktop"
+  assert_equal "$(install_calls)" 'brew ["install","rsync","coreutils"]
+brew ["upgrade","1password-cli","jq"]
+brew ["upgrade","--cask","docker-desktop"]'
+}
+
 @test "usage errors and --help" {
   run_bin -2 team-bootstrap --bogus
   assert_equal "$output" "team-bootstrap: usage: team-bootstrap [--name <name>] [--home <path>] [--stage <stage>] [--dry-run]"

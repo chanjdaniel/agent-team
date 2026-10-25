@@ -30,10 +30,28 @@ source "$REPO_ROOT/tests/helpers/doctor.bash"
 [[ $1 == -S && $2 == --needed && $3 == --noconfirm ]] || { echo "pacman stub: unplanned call: $*" >&2; exit 1; }
 installed_from "sudo pacman -S --needed " "${@:4}"
 EOF
+  # brew lists what it installed (brew-formulae and brew-casks in the fixtures, one "<name> <version>"
+  # each), and upgrades only that, as Homebrew does.
   stub_script brew <<'EOF'
 source "$REPO_ROOT/tests/helpers/doctor.bash"
-case $1 in install | upgrade) ;; *) echo "brew stub: unplanned call: $*" >&2; exit 1 ;; esac
-if [[ $2 == --cask ]]; then installed_from "brew install --cask " "${@:3}"; exit 0; fi
+kind=formulae
+if [[ ${2:-} == --cask ]]; then kind=casks; set -- "$1" "${@:3}"; fi
+case $1 in
+  list)
+    [[ $2 == --versions && $# == 3 ]] || { echo "brew stub: unplanned call: $*" >&2; exit 1; }
+    grep -m1 "^$3 " "$STUB_FIXTURES/brew-$kind" 2>/dev/null || exit 1
+    exit 0
+    ;;
+  install) printf '%s 1.0\n' "${@:2}" >>"$STUB_FIXTURES/brew-$kind" ;;
+  upgrade)
+    for package in "${@:2}"; do
+      grep -q "^$package " "$STUB_FIXTURES/brew-formulae" "$STUB_FIXTURES/brew-casks" 2>/dev/null ||
+        { echo "Error: $package not installed" >&2; exit 1; }
+    done
+    ;;
+  *) echo "brew stub: unplanned call: $*" >&2; exit 1 ;;
+esac
+if [[ $kind == casks ]]; then installed_from "brew install --cask " "${@:2}"; exit 0; fi
 installed_from "brew install " "${@:2}"
 # Homebrew's GNU tools, where bin/lib/platform.sh looks for them.
 for package in "${@:2}"; do
@@ -179,7 +197,8 @@ fresh() {
 # Every call an installer stub logged, one per line: what a run that installs nothing leaves empty.
 install_calls() {
   local cmd
-  for cmd in brew pacman npm sudo; do stub_calls "$cmd" | sed "s/^/$cmd /"; done
+  # brew list only reads what Homebrew has.
+  for cmd in brew pacman npm sudo; do stub_calls "$cmd" | { grep -v '^\["list",' || true; } | sed "s/^/$cmd /"; done
   stub_calls curl | grep -v '"-sSI"' | sed 's/^/curl /' || true
   stub_calls claude | grep -E '^\["plugin","(marketplace","add|install|disable)"' | sed 's/^/claude /' || true
   cat "$STUB_CALLS"/{git-clone,fork-build,no-mistakes-init,nvm}.log 2>/dev/null || true

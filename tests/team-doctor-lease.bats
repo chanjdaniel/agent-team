@@ -88,11 +88,14 @@ EOF
   tools_at arch
   # Five tasks in site, each in a worktree of its own: T1 with a commit pushed only inside a
   # checkpoint's wip/site/T1 (as team-open --resume fetches it from the team home's origin), T2 with uncommitted changes, T3 clean, T4's worktree gone, T5 closed.
-  local n wt=() slots=$HOME/site-wt
+  # The ledger spells T2's worktree otherwise, as one directory (report F6).
+  local n wt=() slots=$HOME/site-wt recorded
   for n in 1 2 3 4 5; do
     wt[n]=$slots/$n
     git -C "$SITE" worktree add -q -b "feat/T$n-x" "${wt[n]}" origin/main
-    jq -cn --arg t "T$n" --arg wt "${wt[n]}" --arg b "feat/T$n-x" '{ts: "2026-10-23T09:00:00Z", task: $t,
+    recorded=${wt[n]}
+    ((n != 2)) || recorded=$(other_spelling "$slots")/2
+    jq -cn --arg t "T$n" --arg wt "$recorded" --arg b "feat/T$n-x" '{ts: "2026-10-23T09:00:00Z", task: $t,
       event: "opened", project: "site", path: "small", type: "feat", title: "x", branch: $b, base: "main",
       base_sha: "0000000", worktree: $wt}' >>"$TEAM_HOME/ledger.jsonl"
   done
@@ -122,7 +125,7 @@ EOF
   team_origin=$(git -C "$TEAM_HOME" remote get-url origin)
   assert_equal "$(grep salvage <<<"$output")" \
 "FAIL salvage T1 site: ~/site-wt/1 has 1 commit on no origin branch; fix: git -C ~/site-wt/1 push $team_origin HEAD:refs/heads/salvage/site/T1-home-pc
-FAIL salvage T2 site: ~/site-wt/2 has uncommitted changes (changes to tracked files: README.md; untracked files: new.txt); fix: git -C ~/site-wt/2 add -A && git -C ~/site-wt/2 commit -m \"wip: salvage from home-pc\", then git -C ~/site-wt/2 push $team_origin HEAD:refs/heads/salvage/site/T2-home-pc"
+FAIL salvage T2 site: ~/SITE-WT/2 has uncommitted changes (changes to tracked files: README.md; untracked files: new.txt); fix: git -C ~/SITE-WT/2 add -A && git -C ~/SITE-WT/2 commit -m \"wip: salvage from home-pc\", then git -C ~/SITE-WT/2 push $team_origin HEAD:refs/heads/salvage/site/T2-home-pc"
   # Right after the lease line.
   assert_equal "$(checks | grep -A2 -x lease | paste -sd ,)" "lease,salvage T1 site,salvage T2 site"
 

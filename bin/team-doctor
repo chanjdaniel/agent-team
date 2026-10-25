@@ -234,7 +234,7 @@ probe_trust() {
 # The leases line of <project>, whose treehouse pool is that of the checkout <path>, returned
 # through <return>.
 check_leases() {
-  local project=$1 path=$2 return_cmd=$3 shown leases problems count fix ledger=$TEAM_HOME/ledger.jsonl
+  local project=$1 path=$2 return_cmd=$3 shown leases problems count fix entry wt open=() ledger=$TEAM_HOME/ledger.jsonl
   shown=$(tilde "$path")
   # No ledger is the records line's FAIL; here it holds no task.
   [[ -f $ledger ]] || ledger=/dev/null
@@ -243,6 +243,17 @@ check_leases() {
     return
   fi
   count=$(jq -s 'map(select(.holder != "")) | length' <<<"$leases")
+  # Each slot that is an open worktree of the project, spelled as the ledger spells it, since the
+  # comparison below is by text and the two may spell one directory otherwise (same_path).
+  mapfile -t open < <(ledger_jq 'ledger_events as $events | ($events | by_task) as $tasks
+    | open_worktrees($events[] | select($tasks[.task] | is_open); $home) | select(.project == $project) | .worktree' \
+    -nRr --arg project "$project" "$ledger")
+  leases=$(while IFS= read -r entry; do
+    for wt in "${open[@]}"; do
+      if same_path "$wt" "$(jq -r .path <<<"$entry")"; then entry=$(jq -c --arg wt "$wt" '.path = $wt' <<<"$entry") && break; fi
+    done
+    echo "$entry"
+  done <<<"$leases")
   problems=$(ledger_jq 'ledger_events as $events | ($events | by_task) as $tasks
     | [open_worktrees($events[] | select($tasks[.task] | is_open); $home) | select(.project == $project)] as $open
     | $leases[] | select(.holder != "") | . as $slot
@@ -284,12 +295,12 @@ check_project() {
     return
   fi
   top=$(git -C "$path" rev-parse --show-toplevel 2>/dev/null) || top=''
-  if [[ -z $top || $(realpath -m -- "$top") != "$(realpath -m -- "$path")" ]]; then
+  if ! same_path "$top" "$path"; then
     report "checkout $project" FAIL "$shown is not a git checkout" "move it aside, then git clone $url $shown"
     return
   fi
   common=$(git -C "$path" rev-parse --path-format=absolute --git-common-dir)
-  if [[ $(realpath -m -- "$common") != "$(realpath -m -- "$(git -C "$path" rev-parse --absolute-git-dir)")" ]]; then
+  if ! same_path "$common" "$(git -C "$path" rev-parse --absolute-git-dir)"; then
     report "checkout $project" FAIL "$shown is a worktree of $(tilde "$(dirname "$(realpath -m -- "$common")")"), not a primary checkout" \
       "move it aside, then git clone $url $shown"
     return
@@ -525,10 +536,10 @@ elif [[ ! -d $TEAM_HOME && $TEAM_HOME_FROM == variable ]]; then
   report "team home" FAIL "$home_shown$home_named is not a directory" "clone the team home to $home_shown, or set TEAM_HOME to its checkout"
 elif [[ ! -d $TEAM_HOME ]]; then
   report "team home" FAIL "$home_shown$home_named is not a directory" "clone the team home to $home_shown, or $name_fix"
-elif [[ -z $home_top || $(realpath -m -- "$home_top") != "$(realpath -m -- "$TEAM_HOME")" ]]; then
+elif ! same_path "$home_top" "$TEAM_HOME"; then
   report "team home" FAIL "$home_shown$home_named is not a git checkout of its own" "move it aside, then clone the team home to $home_shown"
 elif home_common=$(git -C "$TEAM_HOME" rev-parse --path-format=absolute --git-common-dir) &&
-  [[ $(realpath -m -- "$home_common") != "$(realpath -m -- "$(git -C "$TEAM_HOME" rev-parse --absolute-git-dir)")" ]]; then
+  ! same_path "$home_common" "$(git -C "$TEAM_HOME" rev-parse --absolute-git-dir)"; then
   report "team home" FAIL "$home_shown$home_named is a worktree of $(tilde "$(dirname "$(realpath -m -- "$home_common")")"), not a checkout of its own" \
     "move it aside, then clone the team home to $home_shown"
 elif ! git -C "$TEAM_HOME" remote get-url origin >/dev/null 2>&1; then
@@ -753,8 +764,7 @@ home_project=''
 if [[ -d $TEAM_HOME ]] && projects=$(team_project --list 2>/dev/null); then
   while IFS= read -r project; do
     [[ -n $project ]] || continue
-    [[ $(realpath -m -- "$(team_project "$project" | jq -r .path)") != "$(realpath -m -- "$TEAM_HOME")" ]] ||
-      home_project=$project
+    ! same_path "$(team_project "$project" | jq -r .path)" "$TEAM_HOME" || home_project=$project
   done <<<"$projects"
 fi
 if [[ ! -d $TEAM_HOME ]]; then
@@ -840,7 +850,7 @@ if [[ $rc == fenced ]]; then
     salvaged=$(GIT_TERMINAL_PROMPT=0 git -C "$TEAM_HOME" ls-remote "$salvage_url" 'refs/heads/salvage/*' 2>/dev/null) || salvaged=''
     while IFS=$'\t' read -r task project wt; do
       top=$(git -C "$wt" rev-parse --show-toplevel 2>/dev/null) || continue
-      [[ $(realpath -m -- "$top") == "$(realpath -m -- "$wt")" ]] || continue
+      same_path "$top" "$wt" || continue
       # Commits on no origin branch: a checkpoint's wip/<project>/T<n> is not one, since the next
       # checkpoint replaces it and team-close deletes it.
       count=$(git -C "$wt" rev-list --count HEAD --not --exclude='origin/wip/*' --remotes=origin)

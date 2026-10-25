@@ -82,7 +82,7 @@ else
     [[ -n $project ]] || die "$path is not a trusted slot of any project in projects.toml"
     found=''
     for wt in "${launched[@]}"; do
-      if [[ $(realpath -m -- "$wt") == "$slot" ]]; then found=1; fi
+      if same_path "$wt" "$slot"; then found=1; fi
     done
     [[ -n $found ]] || die "$path appears in none of $task's launch events"
     branch=$(git -C "$slot" symbolic-ref -q --short HEAD 2>/dev/null) ||

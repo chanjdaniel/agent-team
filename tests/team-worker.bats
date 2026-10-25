@@ -109,6 +109,9 @@ run_fake() {
   assert_contains "$output" "$HOME/plain is not a git checkout"
   run_bin -1 team-worker T7 builder "$HOME/missing" -- go
   assert_contains "$output" "$HOME/missing does not exist"
+  # A primary checkout however it is spelled (report F6).
+  run_bin -1 team-worker T7 builder "$(other_spelling "$primary")" -- go
+  assert_contains "$output" "is a primary checkout, not a linked worktree"
   assert_equal "$(stub_calls claude)" ""
   assert_equal "$(launches)" ""
 }
@@ -249,6 +252,13 @@ run_fake() {
   assert_contains "$output" "$wt1 is not one of T7's open worktrees: it has none"
   assert_equal "$(stub_calls claude)" ""
   assert_equal "$(launches)" ""
+}
+
+@test "a worktree the ledger spells otherwise is that open worktree (report F6)" {
+  thread T7
+  opened T7 proj feat/T7-one "$(other_spelling "$(dirname "$wt1")")/${wt1##*/}"
+  run_bin -0 team-worker T7 builder "$wt1" -- go
+  assert_equal "$(launches | jq -c '[.project, .branch]')" '["proj","feat/T7-one"]'
 }
 
 @test "a worktree recorded under another home launches as the same path under this HOME" {

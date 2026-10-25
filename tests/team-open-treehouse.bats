@@ -80,6 +80,26 @@ events() {
   git -C "$primary" show-ref -q --verify refs/heads/fix/T9-old
 }
 
+@test "a pool the registry spells otherwise than treehouse and git list it is the same pool (report F6)" {
+  local other
+  other=$(other_spelling "$HOME/.treehouse")
+  sed -i "s#\".treehouse/#\"${other##*/}/#g" "$TEAM_HOME/projects.toml"
+  run_bin -0 --separate-stderr team-open proj bug fix one "One"
+  assert_equal "$(jq -r .worktree <<<"$output")" "$other/proj-abc123/1/proj"
+  assert_equal "$(git -C "${slots[0]}" rev-parse --abbrev-ref HEAD)" "fix/T1-one"
+  # A slot leased to a task is named by its holder, the next lease is the free slot, and a
+  # re-run takes the slot it left leased again.
+  echo changed >>"${slots[1]}/README.md"
+  run_bin -1 --separate-stderr team-open proj bug fix two "Two"
+  assert_contains "$stderr" "the leased slot $other/proj-abc123/2/proj is not clean"
+  run_bin -1 --separate-stderr team-open --task T2 proj bug fix two "Two"
+  assert_contains "$stderr" "${slots[1]} is already leased to T2, by an earlier run; it is taken again"
+  git -C "${slots[1]}" checkout -q -- README.md
+  run_bin -75 --separate-stderr team-open proj bug fix three "Three"
+  assert_contains "$stderr" "  $other/proj-abc123/1/proj: T1 (leased; fix/T1-one)
+  $other/proj-abc123/2/proj: T2 (leased; detached HEAD)"
+}
+
 @test "a leased path outside the trusted slots is returned at once and refused" {
   local stray=$HOME/.treehouse/proj-zzz999/1/proj
   git -C "$primary" worktree add -q --detach "$stray" origin/main

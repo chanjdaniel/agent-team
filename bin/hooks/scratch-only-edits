@@ -11,6 +11,8 @@ root=${CLAUDE_PROJECT_DIR:-${cwd:-$PWD}}
 [[ $path == /* ]] || path="${cwd:-$PWD}/$path"
 target=$(realpath -m -- "$path")
 scratch=$(realpath -m -- "$root/.scratch")
+# By text, not by identity (same_path): the file may not exist yet, and a path that names the
+# scratch directory in another case is refused, the safe side for a guard.
 if [[ $target == "$scratch" || $target == "$scratch"/* ]]; then
   exit 0
 fi

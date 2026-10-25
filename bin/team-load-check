@@ -119,6 +119,7 @@ return_leases() {
   if pool=$(pool_status "$lease_primary"); then
     while IFS= read -r slot; do
       force=(--force --if-lease-holder "$holder")
+      # By text: both paths are treehouse's own, as pool_status reads them.
       if jq -e --arg path "$slot" 'select(.path == $path and .status == "dirty")' <<<"$lease_before" >/dev/null; then
         force=()
       fi

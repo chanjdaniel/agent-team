@@ -20,8 +20,9 @@
 #   machine    The doctor's machine line: writes --name; then writes --home, unless the setting
 #              names a team home already.
 #   packages   The failing tool lines whose fix is an OS package: on Arch one
-#              `sudo pacman -S --needed --noconfirm` for them all; on macOS `brew install` (or
-#              `brew upgrade` for one below its minimum), then the run starts again under
+#              `sudo pacman -S --needed --noconfirm` for them all; on macOS `brew install` for
+#              each formula or cask Homebrew lacks (`brew list --versions`) and `brew upgrade`
+#              for each it has, whatever the doctor's reason, then the run starts again under
 #              Homebrew's GNU tools if it lacked them.
 #   tools      Every other failing tool line, by its fix in bin/lib/tools.lock: nvm (installed
 #              first when missing) with Node and the global npm tools, Bun, Claude Code, the
@@ -238,7 +239,7 @@ stage_home() {
   if [[ -f $file ]]; then
     IFS= read -r current <"$file" || true
     [[ -z $current || $current == /* ]] || current=$HOME/$current
-    if [[ -n $home && $(realpath -m -- "$path") != "$(realpath -m -- "$current")" ]]; then
+    if [[ -n $home ]] && ! same_path "$path" "$current"; then
       say "done: ~/.config/agent-team/home already names $(tilde "$current"); --home $home is left unused"
     else
       say "done: ~/.config/agent-team/home names $(tilde "$current")"
@@ -256,25 +257,40 @@ stage_home() {
     changed=1
     say "named the team home $(tilde "$path") (~/.config/agent-team/home)"
     # The team home moved for this run: the stages after this one read the doctor on it.
-    if [[ $TEAM_HOME_FROM != variable && $(realpath -m -- "$path") != "$(realpath -m -- "$TEAM_HOME")" ]]; then
+    if [[ $TEAM_HOME_FROM != variable ]] && ! same_path "$path" "$TEAM_HOME"; then
       TEAM_HOME=$path
       run_doctor
     fi
   fi
 }
 
+# Whether Homebrew installed the formula or cask <name> (with --cask, only a cask): brew_has [--cask] <name>
+brew_has() {
+  if [[ $1 == --cask ]]; then
+    brew list --cask --versions "$2" >/dev/null 2>&1
+  else
+    brew list --versions "$1" >/dev/null 2>&1 || brew list --cask --versions "$1" >/dev/null 2>&1
+  fi
+}
+
 stage_packages() {
-  local check verdict reason fix words pkgs=() install=() upgrade=() casks=() cask_upgrade=()
+  local check verdict reason fix words word pkgs=() install=() upgrade=() casks=() cask_upgrade=()
+  # Install or upgrade by what Homebrew has, never by the doctor's reason: a tool macOS ships its
+  # own of (BSD date, openrsync) prints no version or one below the minimum, from no formula.
   while IFS=$'\t' read -r check verdict reason fix; do
     case $fix in
       'sudo pacman -S --needed '*) read -ra words <<<"${fix#sudo pacman -S --needed }" && pkgs+=("${words[@]}") ;;
       'brew install --cask '*)
         read -ra words <<<"${fix#brew install --cask }"
-        if [[ $reason == 'not installed' ]]; then casks+=("${words[@]}"); else cask_upgrade+=("${words[@]}"); fi
+        for word in "${words[@]}"; do
+          if brew_has --cask "$word"; then cask_upgrade+=("$word"); else casks+=("$word"); fi
+        done
         ;;
       'brew install '*)
         read -ra words <<<"${fix#brew install }"
-        if [[ $reason == 'not installed' ]]; then install+=("${words[@]}"); else upgrade+=("${words[@]}"); fi
+        for word in "${words[@]}"; do
+          if brew_has "$word"; then upgrade+=("$word"); else install+=("$word"); fi
+        done
         ;;
     esac
   done < <(lines '^tool ')

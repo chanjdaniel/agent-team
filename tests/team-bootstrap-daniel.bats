@@ -156,6 +156,8 @@ machine: named the team home ~/agent-team-records (~/.config/agent-team/home)"
   # Once written, the same checkout (however named) is done, and another is left unused.
   run_bin -0 team-bootstrap --stage machine --home "$HOME/agent-team-records"
   assert_equal "$(stage_lines machine | tail -n1)" "done: ~/.config/agent-team/home names ~/agent-team-records"
+  run_bin -0 team-bootstrap --stage machine --home "$(other_spelling "$HOME/agent-team-records")"
+  assert_equal "$(stage_lines machine | tail -n1)" "done: ~/.config/agent-team/home names ~/agent-team-records"
   mkdir "$HOME/elsewhere"
   run_bin -0 team-bootstrap --stage machine --home elsewhere
   assert_equal "$(stage_lines machine | tail -n1)" "done: ~/.config/agent-team/home already names ~/agent-team-records; --home elsewhere is left unused"
@@ -179,4 +181,17 @@ machine: named the team home ~/agent-team-records (~/.config/agent-team/home)"
 clone -q https://github.com/owner/site.git $SITE"
   assert_contains "$output" "check: doctor: "
   [[ $output != *" team home: "* && $output != *" records: "* && $output != *"FAIL checkout "* ]]
+}
+
+@test "a --home naming the team home the run already reads, however spelled, runs the doctor once (report F6)" {
+  fresh arch
+  tools_at arch
+  echo laptop >"$HOME/.config/agent-team/machine"
+  # TEAM_HOME unset and no setting: the team home is the code checkout, the directory above bin/.
+  unset TEAM_HOME
+  local home
+  home=$(other_spelling "$CODE_CHECKOUT")
+  run "$CODE_CHECKOUT/bin/team-bootstrap" --stage machine --home "$home"
+  assert_contains "$output" "machine: named the team home $home (~/.config/agent-team/home)"
+  assert_equal "$(grep -c '"auth","status","--json"' "$STUB_CALLS/claude.log")" 1
 }

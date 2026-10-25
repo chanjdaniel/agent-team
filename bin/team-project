@@ -8,8 +8,10 @@
 #        team-project --find <key> <value>
 #                                     the projects whose key (dotted, as above) is the value, or
 #                                     holds it when a list, one per line; repo compares in any
-#                                     case, and path, pool.slots, pool.lease and pool.return by
-#                                     real path; a key no project has is refused
+#                                     case, and path, pool.slots, pool.lease and pool.return as
+#                                     the same file, however spelled (a symlink, or another case
+#                                     on a case-insensitive filesystem); a key no project has is
+#                                     refused
 #        team-project --check         check the whole file and list every problem; the name
 #                                     coordinator is reserved (team-config's folder for the
 #                                     team home's own auto memory)
@@ -99,7 +101,7 @@ ENUMS = {
     "provider": ("treehouse", "git"),
 }
 RELATIVE_PATHS = ("path", "task_dir", "lease", "return")
-# The keys --find compares by real path, once resolved.
+# The keys --find compares as paths (same_path), once resolved.
 ABSOLUTE_PATHS = ("path", "pool.slots", "pool.lease", "pool.return")
 
 
@@ -329,12 +331,27 @@ def lookup(name, project, dotted):
     return value
 
 
+# Whether the paths a and b name one file, as the library's same_path says: both existing, by
+# identity, so two spellings of one directory are one (a symlink, or another case on a
+# case-insensitive filesystem, where realpath keeps the case it is given); neither existing, when
+# their real paths have the same last name under one directory, so compared; else never.
+def same_path(a, b):
+    if not a or not b:
+        return False
+    if os.path.exists(a) and os.path.exists(b):
+        return os.path.samefile(a, b)
+    if os.path.exists(a) or os.path.exists(b):
+        return False
+    a, b = os.path.realpath(a), os.path.realpath(b)
+    return os.path.basename(a) == os.path.basename(b) and same_path(os.path.dirname(a), os.path.dirname(b))
+
+
 # The names of the projects whose dotted key is value, or holds it when a list.
 def find(registry, home, dotted, value):
     if dotted == "repo":
         same = lambda held: held.casefold() == value.casefold()
     elif dotted in ABSOLUTE_PATHS:
-        same = lambda held: os.path.realpath(held) == os.path.realpath(value)
+        same = lambda held: same_path(held, value)
     else:
         same = lambda held: held == value
     found, known = [], False

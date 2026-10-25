@@ -708,6 +708,22 @@ merging_the_code() {
   assert_contains "$stderr" "team-merge: the code checkout is the team home, so the next records push (team-checkpoint, team-handoff) brings it level with origin's dev"
 }
 
+@test "the code checkout is the merged project's primary checkout however the registry spells it (report F6)" {
+  merging_the_code
+  local other
+  other=$(other_spelling "$code")
+  sed -i "s|^path = \"agent-team\"\$|path = \"${other##*/}\"|" "$TEAM_HOME/projects.toml"
+  run_bin -0 --separate-stderr team-merge T14
+  assert_equal "$(git -C "$code" rev-parse HEAD)" "$(jq -r .merge <<<"$output")"
+}
+
+@test "a code checkout that is the team home spelled otherwise is left to the next records push (report F6)" {
+  as_team_home
+  code_checkout "$TEAM_HOME"
+  TEAM_HOME=$(other_spelling "$TEAM_HOME") run_bin -0 --separate-stderr team-merge T14
+  assert_contains "$stderr" "team-merge: the code checkout is the team home, so the next records push"
+}
+
 @test "a merge of any other project leaves the code checkout alone" {
   code_checkout
   push_to_dev "$CODE_ORIGIN" bin-change.txt >/dev/null

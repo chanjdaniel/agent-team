@@ -12,8 +12,8 @@
 # the script's help_more, if it defined one before sourcing), and provides die, usage_error, team_project, ledger_jq, ledger_append,
 # task_events, known_task_events, open_task_events, task_status, task_worktrees, local_path,
 # archive_left_out, rsync_rule, archive_task_dir, machine_name, os_release, team_os, tool_dirs,
-# team_tool_path, fence_reason, lease_gate, worktree_changes,
-# pool_status, pool_slot, slot_changes, secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin, home_repo, non_records,
+# team_tool_path, fence_reason, lease_gate, worktree_changes, same_path,
+# pool_status, pool_entry, pool_slot, slot_changes, secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin, home_repo, non_records,
 # only_records, commit_non_records, records_list, origin_git, origin_reason, commit_records, fast_forward, render_template,
 # registered_pr, attribution_lines, strip_attribution, live_sessions, discord_token, discord_api,
 # github, pr_part and task_state_json, and sets COORDINATOR_CHANNEL.
@@ -311,6 +311,20 @@ worktree_changes() {
   [[ -z $list ]] || echo "untracked files: $list"
 }
 
+# Whether the paths <a> and <b> name one file. Both existing, by identity (-ef), so two spellings
+# of one directory are one: through a symlink, or in another case on a case-insensitive filesystem
+# (APFS), where realpath keeps the case it is given. Neither existing (a slot not made yet), when
+# their realpath -m has the same last name, as text, under one directory, so compared. One
+# existing and the other not, or either empty, never: same_path <a> <b>
+same_path() {
+  local a b
+  [[ -n $1 && -n $2 ]] || return 1
+  [[ $1 -ef $2 ]] && return 0
+  [[ ! -e $1 && ! -e $2 ]] || return 1
+  a=$(realpath -m -- "$1") b=$(realpath -m -- "$2")
+  [[ $a != / && ${a##*/} == "${b##*/}" ]] && same_path "$(dirname "$a")" "$(dirname "$b")"
+}
+
 # The treehouse pool of the primary checkout <primary>, as `treehouse status --json` run there
 # reports it: one compact {path, status, holder} per slot, path its real path and holder its lease
 # holder ("" while nobody leases it; status leased, available, dirty or another of treehouse's).
@@ -329,11 +343,21 @@ pool_status() {
 # Of the pool's slots <slot>..., the one that is <path>, as the registry spells it; fails, printing
 # nothing, when <path> is none of them: pool_slot <path> <slot>...
 pool_slot() {
-  local path slot
-  path=$(realpath -m -- "$1")
+  local slot
   for slot in "${@:2}"; do
-    if [[ $(realpath -m -- "$slot") == "$path" ]]; then echo "$slot" && return 0; fi
+    if same_path "$slot" "$1"; then echo "$slot" && return 0; fi
   done
+  return 1
+}
+
+# The slot of the pool <pool> (pool_status' lines) that is the path <path>; fails, printing
+# nothing, when none is: pool_entry <pool> <path>
+pool_entry() {
+  local entry
+  while IFS= read -r entry; do
+    [[ -n $entry ]] || continue
+    if same_path "$(jq -r .path <<<"$entry")" "$2"; then echo "$entry" && return 0; fi
+  done <<<"$1"
   return 1
 }
 
@@ -347,7 +371,7 @@ slot_changes() {
     echo "the leased slot $slot is not a git worktree"
     return 1
   }
-  [[ $(realpath -m -- "$common") == "$(realpath -m -- "$(git -C "$primary" rev-parse --path-format=absolute --git-common-dir)")" ]] || {
+  same_path "$common" "$(git -C "$primary" rev-parse --path-format=absolute --git-common-dir)" || {
     echo "the leased slot $slot is not a worktree of $primary"
     return 1
   }

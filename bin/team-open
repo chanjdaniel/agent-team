@@ -245,7 +245,8 @@ else
   start=origin/$base
 fi
 
-# The primary checkout's registered worktrees: real path -> checked-out branch ("" when detached).
+# The primary checkout's registered worktrees: real path -> checked-out branch ("" when detached),
+# looked up by held and branch_at.
 declare -A holds=()
 while IFS=$'\t' read -r wt wt_branch; do
   holds[$(realpath -m -- "$wt")]=$wt_branch
@@ -254,18 +255,36 @@ done < <(git -C "$primary" worktree list --porcelain | awk '
   /^branch refs\/heads\// { branch = substr($0, 19) }
   END { if (path != "") print path "\t" branch }')
 
+# The registered worktree that is the path <path>, however either is spelled (same_path), as
+# holds names it; fails, printing nothing, when none is: held <path>
+held() {
+  local wt
+  for wt in "${!holds[@]}"; do
+    if same_path "$wt" "$1"; then echo "$wt" && return 0; fi
+  done
+  return 1
+}
+
+# The branch of the registered worktree that is the path <path>: nothing when it is detached, or
+# when no registered worktree is <path>: branch_at <path>
+branch_at() {
+  local wt
+  wt=$(held "$1") || return 0
+  echo "${holds[$wt]}"
+}
+
 # Each slot, with the task holding it (a treehouse pool's lease holder, else from its branch's
 # name) and its branch, on stderr.
 list_slots() {
   local slot wt_branch holder leases=''
   [[ $provider != treehouse ]] || leases=$(pool_status "$primary") || leases=''
   for slot in "${slots[@]}"; do
-    if [[ ! -v holds[$(realpath -m -- "$slot")] ]]; then
+    if ! held "$slot" >/dev/null; then
       echo "  $slot: not a worktree" >&2
       continue
     fi
-    wt_branch=${holds[$(realpath -m -- "$slot")]}
-    holder=$(jq -r --arg path "$(realpath -m -- "$slot")" 'select(.path == $path and .holder != "") | .holder' <<<"$leases")
+    wt_branch=$(branch_at "$slot")
+    holder=$(pool_entry "$leases" "$slot" | jq -r 'select(.holder != "") | .holder') || holder=''
     if [[ -n $holder ]]; then
       echo "  $slot: $holder (leased; ${wt_branch:-detached HEAD})" >&2
       continue
@@ -280,7 +299,7 @@ list_slots() {
 take_git_slot() {
   local slot free=${1:-}
   for slot in "${slots[@]}"; do
-    if [[ -z $free && ! -v holds[$(realpath -m -- "$slot")] ]]; then free=$slot; fi
+    if [[ -z $free ]] && ! held "$slot" >/dev/null; then free=$slot; fi
   done
   if [[ -z $free ]]; then
     echo "team-open: every slot of $project is taken:" >&2
@@ -304,7 +323,7 @@ take_treehouse_slot() {
   pool=$(pool_status "$primary") || die "cannot read $project's pool: treehouse status --json did not answer in $primary"
   # Never one on a branch: that is a worktree, not a lease a failed run left.
   while IFS= read -r slot; do
-    if [[ -z $leased && -z ${holds[$slot]-} ]]; then leased=$slot; fi
+    if [[ -z $leased && -z $(branch_at "$slot") ]]; then leased=$slot; fi
   done < <(jq -r --arg task "$task" 'select(.holder == $task) | .path' <<<"$pool")
   if [[ -n $leased ]]; then
     echo "team-open: $leased is already leased to $task, by an earlier run; it is taken again" >&2
@@ -320,7 +339,7 @@ take_treehouse_slot() {
     fi
     [[ -n $leased ]] || die "the lease command $lease printed no path"
     # Leased by this run: forced back on failure, unless the pool saw it dirty before the lease.
-    dirty=$(jq -r --arg path "$(realpath -m -- "$leased")" 'select(.path == $path and .status == "dirty") | .path' <<<"$pool")
+    dirty=$(pool_entry "$pool" "$leased" | jq -r 'select(.status == "dirty") | .path') || dirty=''
     [[ -n $dirty ]] || force_return=1
   fi
   trusted=$(pool_slot "$leased" "${slots[@]}") ||
@@ -366,7 +385,7 @@ release_slot() {
 slot_at() {
   local slot
   for slot in "${slots[@]}"; do
-    if [[ $(realpath -m -- "$slot") == "$(realpath -m -- "$1")" ]]; then echo "$slot"; fi
+    if same_path "$slot" "$1"; then echo "$slot"; fi
   done
 }
 
@@ -377,7 +396,7 @@ resume_slot() {
   local wt holder='' salvage url found=() list
   for wt in "${!holds[@]}"; do
     [[ ${holds[$wt]} != "$branch" ]] && continue
-    if [[ $wt == "$(realpath -m -- "$recorded")" ]]; then
+    if same_path "$wt" "$recorded"; then
       holder=$recorded
     else
       holder=$(slot_at "$wt")
@@ -410,7 +429,7 @@ resume_slot() {
   fi
   case $provider in
     git)
-      if [[ -n $(slot_at "$recorded") && ! -v holds[$(realpath -m -- "$recorded")] ]]; then
+      if [[ -n $(slot_at "$recorded") ]] && ! held "$recorded" >/dev/null; then
         take_git_slot "$(slot_at "$recorded")"
       else
         take_git_slot
@@ -475,7 +494,7 @@ if [[ -n $resume ]]; then
   resume_slot
 else
   for slot in "${slots[@]}"; do
-    if [[ ${holds[$(realpath -m -- "$slot")]-} == "$branch" ]]; then worktree=$slot; fi
+    if [[ $(branch_at "$slot") == "$branch" ]]; then worktree=$slot; fi
   done
 fi
 if [[ -z $worktree ]]; then
@@ -518,7 +537,7 @@ if [[ -n $resume ]]; then
   snapshot=null
   [[ $snapshot_due != true ]] || apply_snapshot
   moved=false
-  if [[ $(realpath -m -- "$worktree") != "$(realpath -m -- "$recorded")" ]]; then
+  if ! same_path "$worktree" "$recorded"; then
     moved=true
     ledger_append "$(jq -cn --arg task "$task" --arg project "$project" --arg branch "$branch" --arg from "$recorded" \
       --arg worktree "$worktree" --arg machine "$machine" \

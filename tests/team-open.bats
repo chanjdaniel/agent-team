@@ -183,6 +183,28 @@ advance_origin() {
   assert_equal "$(git -C "$slots/1" rev-parse --abbrev-ref HEAD)" "someone-else"
 }
 
+@test "slots the registry spells otherwise than git lists them are the same slots (report F6)" {
+  mkdir -p "$slots"
+  local other
+  other=$(other_spelling "$HOME/slots")
+  sed -i "s#\"slots/proj/#\"${other##*/}/proj/#g" "$TEAM_HOME/projects.toml"
+  # git lists slot 1 as it was added, by the other spelling.
+  git -C "$primary" worktree add -q "$slots/1" -b feat/T3-busy origin/main
+  run_bin -0 --separate-stderr team-open proj feature feat next "Next"
+  assert_equal "$(jq -r .worktree <<<"$output")" "$other/proj/2"
+  run_bin -75 --separate-stderr team-open proj feature feat late "Late"
+  assert_equal "$stderr" "$(printf '%s\n' "team-open: every slot of proj is taken:" \
+    "  $other/proj/1: T3 (feat/T3-busy)" "  $other/proj/2: T1 (feat/T1-next)")"
+
+  # A half-open task is finished in the slot holding its branch.
+  git -C "$primary" worktree remove "$slots/1"
+  stub_reply curl '{"message":"Missing Access"}'
+  run_bin -1 --separate-stderr team-open proj feature feat flaky "Flaky"
+  stub_reply curl '{"id":"1563000000000000009"}'
+  run_bin -0 --separate-stderr team-open --task T2 proj feature feat flaky "Flaky"
+  assert_equal "$(jq -r .worktree <<<"$output")" "$other/proj/1"
+}
+
 @test "with every slot taken it exits 75 naming the holders, and gives the number back" {
   git -C "$primary" worktree add -q "$slots/1" -b feat/T3-busy origin/main
   git -C "$primary" worktree add -q --detach "$slots/2" origin/main

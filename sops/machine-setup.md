@@ -168,7 +168,7 @@ On a fresh machine, Daniel meets them in this order (recorded from `team-bootstr
 | Heartbeat | systemd user units `agent-team-heartbeat.{service,timer}` in `~/.config/systemd/user/`, `Persistent=true` | LaunchAgents `agent-team.heartbeat` (missed runs happen on wake) and `agent-team.caffeinate` (`caffeinate -i` while the heartbeat is enabled, so the Mac does not idle-sleep) in `~/Library/LaunchAgents/` |
 | Claude Code login | `~/.claude/.credentials.json` | the macOS Keychain |
 | Home path | `/home/<user>` | `/Users/<user>`; recorded paths under either are read as the same path under this `$HOME` |
-| Filesystem | case-sensitive | APFS, case-insensitive by default; no repo has case-only name clashes today |
+| Filesystem | case-sensitive | APFS, case-insensitive by default; no repo has case-only name clashes today, and path case no longer matters for the registry: the scripts compare checkout paths by file identity, so `Documents/projects` in `projects.toml` names `~/Documents/Projects` |
 | Release archives | `linux-amd64` | `darwin-arm64` or `darwin-amd64` |
 | The gate's environment | the no-mistakes daemon is a systemd user unit; `~/.no-mistakes/bin/opencode-gate` sets opencode's environment, so the unit needs no drop-in | a LaunchAgent that no-mistakes rewrites on each start, keeping only `HOME`, `PATH` and proxy variables; the same wrapper sets opencode's environment |
 

@@ -218,6 +218,23 @@ restored_from() {
   cmp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before"
 }
 
+@test "a recorded slot the registry here spells otherwise is the same slot: made there, and not moved (report F6)" {
+  open_elsewhere home feat work
+  local other here
+  other=$(other_spelling "$HOME/slots")
+  sed -i "s#\"slots/home/#\"${other##*/}/home/#g" "$TEAM_HOME/projects.toml"
+  here=$other/home/1
+  run_bin -0 --separate-stderr team-open --task T1 --resume home
+  assert_equal "$(jq -c . <<<"$output")" "$(facts home "$branch" "$here" "$head" "$wt" '"tasks/T1/scratch"' | jq -c '.moved = false')"
+  assert_equal "$(git -C "$wt" rev-parse --abbrev-ref HEAD)" "$branch"
+  assert_equal "$(events worktree-moved)" ""
+
+  # Run again: the slot holding the branch is the recorded one.
+  run_bin -0 --separate-stderr team-open --task T1 --resume home
+  assert_equal "$(jq -r '"\(.worktree) \(.moved)"' <<<"$output")" "$wt false"
+  assert_equal "$(events worktree-moved)" ""
+}
+
 @test "made at its recorded path while a failed re-home of it stands, the worktree logs rehomed, once" {
   open_elsewhere home feat work
   # team-resume's failure, in home, and one in conv, which this run does not clear.

@@ -303,7 +303,7 @@ resolve_worktree() {
   WT=$(git -C "$path" rev-parse --show-toplevel)
   git_dir=$(git -C "$WT" rev-parse --path-format=absolute --git-dir)
   common=$(git -C "$WT" rev-parse --path-format=absolute --git-common-dir)
-  [[ $git_dir != "$common" ]] ||
+  ! same_path "$git_dir" "$common" ||
     die "$WT is a primary checkout, whose stack is Daniel's primary stack, which team-stack never starts, uses or removes; run it in a task's linked worktree"
   primary=$(realpath -m -- "$(dirname "$common")")
   PROJECT=$(team_project --find path "$primary") || exit 1
@@ -326,7 +326,7 @@ resolve_task() {
   wt=$(realpath -m -- "$WT")
   if [[ -e $TEAM_HOME/ledger.jsonl ]]; then
     while IFS=$'\t' read -r task path; do
-      if [[ $(realpath -m -- "$path") == "$wt" && " ${found[*]} " != *" $task "* ]]; then found+=("$task"); fi
+      if same_path "$path" "$wt" && [[ " ${found[*]} " != *" $task "* ]]; then found+=("$task"); fi
     done < <(ledger_jq '[inputs | fromjson? | select(type == "object" and (.task | type) == "string")] as $events
       | [$events | group_by(.task)[] | select(task_status == "open") | .[0].task] as $open
       | open_worktrees($events[]; $home) | select(.task | IN($open[])) | [.task, .worktree] | @tsv' \

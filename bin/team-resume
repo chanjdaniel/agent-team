@@ -213,7 +213,7 @@ main() {
         if [[ -z $said ]]; then
           again="run \`team-resume --wait\` again (checked before the wait: nothing changed, and $holder still runs the team)"
           level "team home" "$TEAM_HOME" it "$again" --check
-          [[ $code == "$(realpath -- "$TEAM_HOME")" ]] || level code "$code" "$code" "$again" --check
+          same_path "$code" "$TEAM_HOME" || level code "$code" "$code" "$again" --check
           echo "lease: $holder holds the lease; this machine is ready: say 'hand off' to the coordinator there now (waiting for its release, reading it every ${POLL_SECONDS}s; Ctrl+C stops, changing nothing)"
           said=1
         fi
@@ -232,7 +232,7 @@ main() {
   level "team home" "$TEAM_HOME" it "run team-resume again"
 
   # 5. The code checkout, up to date with origin's, unless it is the team home.
-  if [[ $code == "$(realpath -- "$TEAM_HOME")" ]]; then
+  if same_path "$code" "$TEAM_HOME"; then
     echo "code: the code checkout is the team home, brought up to date above"
   else
     level code "$code" "$code" "run team-resume again"
