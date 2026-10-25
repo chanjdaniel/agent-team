@@ -72,6 +72,10 @@ sandbox() {
   fi
   export TEAM_HOME=$root/team HOME=$root/home
   export STUB_CALLS=$root/calls STUB_FIXTURES=$root/fixtures
+  # The library's system tool directories (treehouse's /usr/local/bin on Arch) are under this
+  # directory, so a PATH a test trims never gets the machine's own tools back, its 1Password CLI
+  # above all (tool_dirs in bin/lib/team.sh).
+  export TEAM_SYSTEM_ROOT=$root/system
   mkdir -p "$TEAM_HOME" "$HOME/.claude/channels/discord" "$STUB_CALLS" "$STUB_FIXTURES" "$root/stubs"
   : >"$TEAM_HOME/ledger.jsonl"
   echo "DISCORD_BOT_TOKEN=$FAKE_DISCORD_TOKEN" >"$HOME/.claude/channels/discord/.env"

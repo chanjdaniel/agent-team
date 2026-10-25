@@ -247,12 +247,16 @@ team_os() {
 # The directories the tools of bin/lib/tools.lock are installed into on this OS, in the lock's
 # order, one per line, whether or not they exist (tool_dirs in bin/lib/tools.jq): nvm's under
 # NVM_DIR, else ~/.nvm, and Homebrew's under the prefix bin/lib/platform.sh found. None without jq
-# (a fresh machine's preflight) or on an OS the team does not run on.
+# (a fresh machine's preflight) or on an OS the team does not run on. Test seam: TEAM_SYSTEM_ROOT
+# stands for / in a system directory (treehouse's /usr/local/bin on Arch), so the test sandbox,
+# which sets it, never puts the machine's own system tools (its 1Password CLI) back on a PATH a
+# test trimmed.
 tool_dirs() {
   local os
   command -v jq >/dev/null && os=$(team_os) || return 0
   jq -L "$TEAM_LIB" -r --arg os "$os" --arg home "$HOME" --arg nvm "${NVM_DIR:-$HOME/.nvm}" \
-    --arg brew "$TEAM_BREW_PREFIX" 'include "tools"; tool_dirs($os; $home; $nvm; $brew)' "$TEAM_LIB/tools.lock"
+    --arg brew "$TEAM_BREW_PREFIX" --arg root "${TEAM_SYSTEM_ROOT:-}" \
+    'include "tools"; tool_dirs($os; $home; $nvm; $brew; $root)' "$TEAM_LIB/tools.lock"
 }
 
 # Put the tool directories that exist on PATH, exported, so every script, the sessions it starts

@@ -73,7 +73,7 @@ library_path() {
   assert_equal "$output" "$HOME/.local/bin
 $HOME/.nvm/versions/node/v24.22.1/bin
 $HOME/.bun/bin
-/usr/local/bin
+$TEAM_SYSTEM_ROOT/usr/local/bin
 $HOME/.no-mistakes/bin"
   stub_reply uname Darwin
   NVM_DIR=$BATS_TEST_TMPDIR/nvm run -0 library_tool_dirs
@@ -124,14 +124,36 @@ $brew/opt/python@3.12/libexec/bin/python3"
   # A script run by another one does not add them again.
   PATH=$output run -0 library_path
   assert_equal "$output" "$gnu_path:$HOME/.bun/bin:$HOME/.no-mistakes/bin:$PATH"
-  # On Arch /usr/local/bin, where treehouse goes, keeps its place, or comes last when PATH lacks it.
+  # On Arch /usr/local/bin, where treehouse goes (the sandbox's, under TEAM_SYSTEM_ROOT), keeps
+  # its place, or comes last when PATH lacks it.
   stub_reply uname Linux
   bare_bin
-  local stubs=$BATS_TEST_TMPDIR/stubs
-  PATH=$stubs:$bare:/usr/local/bin:/usr/bin:/bin run -0 library_path
-  assert_equal "$output" "$HOME/.bun/bin:$HOME/.no-mistakes/bin:$stubs:$bare:/usr/local/bin:/usr/bin:/bin"
+  local stubs=$BATS_TEST_TMPDIR/stubs system=$TEAM_SYSTEM_ROOT/usr/local/bin
+  mkdir -p "$system"
+  PATH=$stubs:$bare:$system:/usr/bin:/bin run -0 library_path
+  assert_equal "$output" "$HOME/.bun/bin:$HOME/.no-mistakes/bin:$stubs:$bare:$system:/usr/bin:/bin"
   PATH=$stubs:$bare:/usr/bin:/bin run -0 library_path
-  assert_equal "$output" "$HOME/.bun/bin:$HOME/.no-mistakes/bin:$stubs:$bare:/usr/bin:/bin:/usr/local/bin"
+  assert_equal "$output" "$HOME/.bun/bin:$HOME/.no-mistakes/bin:$stubs:$bare:/usr/bin:/bin:$system"
+}
+
+@test "in the sandbox a trimmed PATH regains no directory outside the test's own, so never the machine's 1Password CLI" {
+  [[ $TEAM_SYSTEM_ROOT == "$BATS_TEST_TMPDIR"/* ]]
+  # As team-secrets' tests trim it: one folder of links to every command on PATH but the CLI.
+  local stubs=$BATS_TEST_TMPDIR/stubs links=$BATS_TEST_TMPDIR/links trimmed os entry entries dir dirs
+  mkdir -p "$links"
+  IFS=: read -ra dirs <<<"$PATH"
+  for dir in "${dirs[@]}"; do
+    [[ -d $dir && $dir != "$stubs" ]] && ln -s "$dir"/* "$links/" 2>/dev/null || true
+  done
+  rm -f "$links/op"
+  for os in Linux Darwin; do
+    stub_reply uname "$os"
+    trimmed=$(PATH=$stubs:$links library_path)
+    IFS=: read -ra entries <<<"$trimmed"
+    for entry in "${entries[@]}"; do
+      [[ $entry == "$BATS_TEST_TMPDIR"/* ]] || { echo "$os: the library added $entry to the trimmed PATH" >&2; return 1; }
+    done
+  done
 }
 
 @test "on macOS a script refuses, naming the brew install line, while a GNU tool is missing" {
