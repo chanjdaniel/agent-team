@@ -43,6 +43,7 @@ waiting team-log on reason
 resumed team-log
 pr team-log url head
 review team-log verdict head
+gate-run team-log run head outcome
 merge-approved team-log url discord_message
 failed team-log reason
 retro-schedule team-log every_hours discord_message
@@ -73,7 +74,8 @@ TABLE
     }
   done
   grep -Eq '^  opened +team-open +project, path, type, title, branch, base, base_sha, worktree$' <<<"$output"
-  grep -Eq '^  review +team-log +verdict \(pass\|findings\), head; optional agent_review$' <<<"$output"
+  grep -Eq '^  review +team-log +verdict \(pass\|findings\), head; optional agent_review, sent_back \(list\)  \(sent_back: the numbers of the notes .*\)$' <<<"$output"
+  grep -Eq '^  gate-run +team-log +run, head, outcome \(pushed\|red\|aborted\|stopped-green\); optional cause \(review\|notes\|gate-finding\|load\|tooling\|base-merge\|other\), minutes \(object\)  \(.*\)$' <<<"$output"
   grep -Eq '^  closed +team-close +archive \(list\), returned \(list\), kept \(list\)  \(.*legacy.*\)$' <<<"$output"
   grep -Eq '^  merge-approved +team-log +url, discord_message  \(.*\)$' <<<"$output"
   grep -Eq '^  launch +team-worker +role, session, worktree, toolkits \(list\); optional project, branch, machine, request  \(request is the link to Daniel.s Discord message, on an ops launch\)$' <<<"$output"
@@ -111,6 +113,50 @@ TABLE
     '{"task":"T14","event":"ticket-done","ticket":"03","commits":["a1b2c3d","e4f5a6b"],"count":3,"ok":true,"extra":{"a":1},"quoted":"7","note":"two words, [not a list","nan":"nan","nothing":"null"}'
 }
 
+@test "a review names the notes sent back before the merge as a list, which a non-list cannot be" {
+  run_bin -0 team-log T14 review verdict=pass head=a1b2c3d 'sent_back=[2, 4]'
+  run_bin -0 team-log T14 review verdict=pass head=e4f5a6b
+  assert_equal "$(ledger_without_ts)" "$(
+    cat <<'LINES'
+{"task":"T14","event":"review","verdict":"pass","head":"a1b2c3d","sent_back":[2,4]}
+{"task":"T14","event":"review","verdict":"pass","head":"e4f5a6b"}
+LINES
+  )"
+  local value
+  for value in 2 'note 2' '{"2":1}'; do
+    run_bin -1 team-log T14 review verdict=pass head=a1b2c3d "sent_back=$value"
+    assert_contains "$output" "sent_back must be a list, got"
+  done
+  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "2"
+}
+
+@test "a gate run is logged with its run, head and outcome, the cause of a re-run and its minutes per step" {
+  run_bin -0 team-log T14 gate-run run=01M5Q9GR head=a1b2c3d outcome=pushed \
+    'minutes={"review": 3.0, "test": 49.9, "document": 0.6, "push": 0.4, "ci": 9.0}'
+  run_bin -0 team-log T14 gate-run run=01M5QDHG head=e4f5a6b outcome=stopped-green cause=notes
+  run_bin -0 team-log T14 gate-run run=01M5REA0 head=e4f5a6b outcome=red cause=load
+  assert_equal "$(ledger_without_ts)" "$(
+    cat <<'LINES'
+{"task":"T14","event":"gate-run","run":"01M5Q9GR","head":"a1b2c3d","outcome":"pushed","minutes":{"review":3.0,"test":49.9,"document":0.6,"push":0.4,"ci":9.0}}
+{"task":"T14","event":"gate-run","run":"01M5QDHG","head":"e4f5a6b","outcome":"stopped-green","cause":"notes"}
+{"task":"T14","event":"gate-run","run":"01M5REA0","head":"e4f5a6b","outcome":"red","cause":"load"}
+LINES
+  )"
+  run_bin -0 team-log --check
+}
+
+@test "a gate run with an unknown outcome or cause, or minutes that are not an object, is refused" {
+  run_bin -1 team-log T14 gate-run run=01M5Q9GR head=a1b2c3d outcome=green
+  assert_contains "$output" "outcome must be one of pushed, red, aborted, stopped-green"
+  run_bin -1 team-log T14 gate-run run=01M5Q9GR head=a1b2c3d outcome=red cause=flaky
+  assert_contains "$output" "cause must be one of review, notes, gate-finding, load, tooling, base-merge, other"
+  run_bin -1 team-log T14 gate-run run=01M5Q9GR head=a1b2c3d outcome=red minutes=44
+  assert_contains "$output" "minutes must be an object, got a number"
+  run_bin -1 team-log T14 gate-run head=a1b2c3d outcome=red
+  assert_contains "$output" "gate-run needs run"
+  assert_ledger_empty
+}
+
 @test "a field the contract types as a string stays a string even when it looks like JSON" {
   run_bin -0 team-log T14 ticket-done ticket=12 'commits=["1234567"]'
   run_bin -0 team-log T14 pr url=https://github.com/chanjdaniel/agent-team/pull/5 head=1234567 note=true
@@ -133,7 +179,7 @@ LINES
     count=$((count + 1))
     assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r '.event + " " + .note')" "$kind why $kind"
   done < <(jq -r '.kinds | to_entries[] | select(.value.writer == "team-log") | .key' "$CONTRACT")
-  assert_equal "$count" "17"
+  assert_equal "$count" "18"
   run_bin -0 team-log --check
 }
 

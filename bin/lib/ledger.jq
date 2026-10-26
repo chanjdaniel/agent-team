@@ -73,7 +73,7 @@ def pad($width): . + ([range($width - length)] | map(" ") | add // "");
 def field_text($want):
   if ($want | type) == "array" then "\(.) (\($want | join("|")))"
   elif $want == "string" then .
-  else "\(.) (\($want | noun | ltrimstr("a ")))" end;
+  else "\(.) (\($want | noun | sub("^an? "; "")))" end;
 
 # The contract as a table, one row per kind: event, writer, fields, and what the kind is about.
 def contract_table:

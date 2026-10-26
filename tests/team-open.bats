@@ -310,7 +310,65 @@ LEDGER
   run_bin -0 --separate-stderr team-open proj feature feat new "New"
   assert_equal "$(jq -r .task <<<"$output")" "T5"
   assert_equal "$stderr" "$(printf '%s\n' "team-open: other open tasks in proj:" \
-    "  T2 fix/T2-going in $HOME/w/2: Still going" "  T4 chore/T4-y in /w/5: Elsewhere")"
+    "  T2 fix/T2-going in $HOME/w/2: Still going" "    no branch yet" \
+    "  T4 chore/T4-y in /w/5: Elsewhere" "    no branch yet")"
+}
+
+@test "under each other open task, stderr lists the files its branch changes against the base" {
+  # T2 pushed its branch, then made a commit it has not pushed; T3 has only a local branch;
+  # T4 has no branch; T5's branch changes nothing yet. The base then moves on.
+  git -C "$primary" branch -q --no-track fix/T3-local origin/main
+  git -C "$primary" branch -q --no-track fix/T5-same origin/main
+  local clone=$BATS_TEST_TMPDIR/work
+  git clone -q "$BATS_TEST_TMPDIR/origin/proj.git" "$clone" 2>/dev/null
+  git -C "$clone" switch -q -c fix/T2-pushed
+  mkdir -p "$clone/bin" "$clone/docs"
+  echo a >"$clone/bin/a" && echo b >"$clone/docs/b"
+  git -C "$clone" add bin/a docs/b && git -C "$clone" commit -q -m "fix: a and b"
+  git -C "$clone" push -q origin fix/T2-pushed
+  git -C "$clone" push -q origin origin/main:refs/heads/fix/T5-same
+  git -C "$primary" fetch -q origin "+refs/heads/fix/T2-pushed:refs/heads/fix/T2-pushed"
+  git -C "$primary" worktree add -q "$BATS_TEST_TMPDIR/t2" fix/T2-pushed
+  echo c >"$BATS_TEST_TMPDIR/t2/unpushed"
+  git -C "$BATS_TEST_TMPDIR/t2" add unpushed && git -C "$BATS_TEST_TMPDIR/t2" commit -q -m "fix: unpushed"
+  git -C "$primary" worktree add -q "$BATS_TEST_TMPDIR/t3" fix/T3-local
+  echo d >"$BATS_TEST_TMPDIR/t3/local"
+  git -C "$BATS_TEST_TMPDIR/t3" add local && git -C "$BATS_TEST_TMPDIR/t3" commit -q -m "fix: local"
+  git -C "$clone" switch -q main
+  echo e >"$clone/base-only" && git -C "$clone" add base-only && git -C "$clone" commit -q -m "feat: base"
+  git -C "$clone" push -q origin main
+  cat >"$TEAM_HOME/ledger.jsonl" <<'LEDGER'
+{"ts":"2026-10-22T02:00:00Z","task":"T2","event":"opened","project":"proj","path":"small","type":"fix","title":"Pushed","branch":"fix/T2-pushed","base":"main","base_sha":"abc1234","worktree":"/w/2"}
+{"ts":"2026-10-22T02:00:01Z","task":"T3","event":"opened","project":"proj","path":"small","type":"fix","title":"Local","branch":"fix/T3-local","base":"main","base_sha":"abc1234","worktree":"/w/3"}
+{"ts":"2026-10-22T02:00:02Z","task":"T4","event":"opened","project":"proj","path":"small","type":"fix","title":"Not yet","branch":"fix/T4-none","base":"main","base_sha":"abc1234","worktree":"/w/4"}
+{"ts":"2026-10-22T02:00:03Z","task":"T5","event":"opened","project":"proj","path":"small","type":"fix","title":"Same","branch":"fix/T5-same","base":"main","base_sha":"abc1234","worktree":"/w/5"}
+LEDGER
+  run_bin -0 --separate-stderr team-open proj feature feat new "New"
+  assert_equal "$stderr" "$(printf '%s\n' "team-open: other open tasks in proj:" \
+    "  T2 fix/T2-pushed in /w/2: Pushed" "    changes against main (origin's branch):" "      bin/a" "      docs/b" \
+    "  T3 fix/T3-local in /w/3: Local" "    changes against main (the local branch, not pushed):" "      local" \
+    "  T4 fix/T4-none in /w/4: Not yet" "    no branch yet" \
+    "  T5 fix/T5-same in /w/5: Same" "    no changes against main yet")"
+}
+
+@test "the other tasks' local branches are listed when origin cannot be read after the open" {
+  git -C "$primary" branch -q --no-track fix/T2-local origin/main
+  git -C "$primary" worktree add -q "$BATS_TEST_TMPDIR/t2" fix/T2-local
+  echo a >"$BATS_TEST_TMPDIR/t2/a"
+  git -C "$BATS_TEST_TMPDIR/t2" add a && git -C "$BATS_TEST_TMPDIR/t2" commit -q -m "fix: a"
+  cat >"$TEAM_HOME/ledger.jsonl" <<'LEDGER'
+{"ts":"2026-10-22T02:00:00Z","task":"T2","event":"opened","project":"proj","path":"small","type":"fix","title":"Local","branch":"fix/T2-local","base":"main","base_sha":"abc1234","worktree":"/w/2"}
+LEDGER
+  # Origin goes away while the thread is made, after the base was fetched.
+  cat >"$STUB_FIXTURES/curl.sh" <<FIXTURE
+mv "$BATS_TEST_TMPDIR/origin/proj.git" "$BATS_TEST_TMPDIR/origin/gone.git" 2>/dev/null || true
+cat "\$STUB_FIXTURES/curl.out"
+FIXTURE
+  run_bin -0 --separate-stderr team-open proj feature feat new "New"
+  assert_equal "$(jq -r .task <<<"$output")" "T3"
+  assert_contains "$stderr" "team-open: cannot read the other tasks' branches from origin; their local branches are shown"
+  assert_contains "$stderr" "$(printf '%s\n' "  T2 fix/T2-local in /w/2: Local" \
+    "    changes against main (the local branch, not pushed):" "      a")"
 }
 
 @test "the Discord token never reaches the output" {
