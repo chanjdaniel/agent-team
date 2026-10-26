@@ -503,18 +503,27 @@ team-review-status https://github.com/me/shop/pull/5 a1b2c3d4e5f60718293a4b5c6d7
 COMMANDS
 }
 
-@test "GitHub's CI runs only on a pull request to main and by hand, and no workflow runs for dev" {
+@test "GitHub's CI runs on every pull request to dev and main and by hand, and no workflow runs on a push or for a fork's target" {
   local workflow
-  # CI policy B: the top-level keys under on:, and the branches its pull_request names.
+  # The top-level keys under on:, and the branches its pull_request names.
   assert_equal "$(sed -n '/^on:$/,/^[^ ]/s/^  \([a-z_]*\):.*$/\1/p' "$REPO_ROOT/.github/workflows/ci.yml")" \
     $'pull_request\nworkflow_dispatch'
-  assert_equal "$(sed -n '/^on:$/,/^[^ ]/s/^    branches: //p' "$REPO_ROOT/.github/workflows/ci.yml")" "[main]"
+  assert_equal "$(sed -n '/^on:$/,/^[^ ]/s/^    branches: //p' "$REPO_ROOT/.github/workflows/ci.yml")" "[dev, main]"
   for workflow in "$REPO_ROOT"/.github/workflows/*.yml; do
-    if grep -nE '^\s*(push|pull_request_target|schedule):' "$workflow" || grep -nE 'branches: .*\bdev\b' "$workflow"; then
-      echo "$workflow runs for dev" >&2
+    if grep -nE '^\s*(push|pull_request_target|schedule):' "$workflow"; then
+      echo "$workflow runs on a push, a schedule or with a fork's target's secrets" >&2
       return 1
     fi
   done
+}
+
+# The registry fixture is shaped like the team home's, whose required checks for agent-team are
+# the ones dev's protection requires: CI's job ids, each a check name on GitHub.
+@test "CI's jobs are exactly agent-team's required checks, and agent-team has no local checks" {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  run_bin -0 team-project agent-team
+  assert_equal "$(jq -c '[.required_checks, .local_checks]' <<<"$output")" \
+    "[$(sed -n '/^jobs:$/,$s/^  \([a-z_-]*\):$/\1/p' "$REPO_ROOT/.github/workflows/ci.yml" | jq -R . | jq -cs .),[]]"
 }
 
 # The README's inventory is pasted from the ops load check; the eval mocks' _tools.json, which the

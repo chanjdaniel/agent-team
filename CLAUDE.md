@@ -57,8 +57,9 @@ It holds:
 
 - `tests/run` runs shellcheck (0.11.0) on every shell script in `bin/`, `tests/`, `servers/` and `toolkits/`, then the whole bats suite, then the toolkit tests; `tests/run shellcheck`, `tests/run bats` and `tests/run toolkits` run one part each, as the CI jobs do.
   Its bats files run in parallel, one bats per file and as many at once as there are CPUs, so every file must stay independent of the others; its last line is the wall time.
-- A PR to `dev` is checked locally, never on GitHub (CI policy B): `projects.toml` gives `agent-team` `local_checks = ["tests/run"]`, which `team-merge` runs on the PR's exact head before it merges, and builders and reviewers run `tests/run` on the head they deliver or review.
-  GitHub's CI (`.github/workflows/ci.yml`) runs only on a PR to `main` and by hand (`workflow_dispatch`).
+- A PR to `dev` is checked on GitHub: `.github/workflows/ci.yml` runs its jobs (`shellcheck`, `test`, `macos` and `toolkits`) on every PR to `dev` and to `main` and by hand (`workflow_dispatch`).
+  `dev`'s protection and `projects.toml`'s `required_checks` for `agent-team` require each job by its id, so renaming a job changes a required check, and `team-merge` merges only with every one passed on the PR's exact head.
+  `tests/repo.bats` holds the jobs to the registry fixture's `required_checks`, and no workflow runs on a push, a schedule or `pull_request_target`.
   The Bootstrap workflow (`.github/workflows/bootstrap.yml`) runs only by hand: `team-bootstrap` on a fresh macOS runner and in an Arch container, which installs real tools.
 - The toolkit tests are `node --test` files in `tests/toolkits/`, run after `servers/install`: each starts a toolkit's server exactly as its `.mcp.json` declares, with `op` stubbed and a throwaway MongoDB in Docker, and speaks MCP to it over stdio (`tests/toolkits/helpers/` documents the helpers); `mongo-helper.test.mjs` tests the throwaway MongoDB's own wait, and that its removal takes its anonymous volumes with it.
   `frontend.test.mjs` runs the frontend toolkit's scripts and server against a headless Chrome (the machine's, or `TEAM_CHROME`) on a local fixture page, never a window on the screen.

@@ -1,15 +1,14 @@
-# The team home's checks on GitHub: on a pull request to main (a release's promotion) and by hand,
-# never for dev. Daniel's decision, CI policy B (2026-10-23, T17 ticket 25): the repo is private,
-# so Actions minutes come from the free plan's 2,000 a month, macOS billed ten times; a PR to dev
-# is checked locally instead, by team-merge running projects.toml's local_checks (tests/run) on
-# its exact head. A self-hosted runner on the PC (option A) may bring dev's checks back here later.
+# The code's checks on GitHub: on every pull request to dev (and to main, a release's promotion)
+# and by hand. They are the gate of a PR to dev: its protection and projects.toml's required_checks
+# for agent-team require each job by its id (shellcheck, test, macos, toolkits), so renaming a job
+# changes a required check, and team-merge merges only with every one passed on the PR's head.
 # The macos job runs one run per PR at a time: a re-push cancels the run it replaces. The toolkits
 # job runs the toolkits' servers over stdio against a throwaway MongoDB in Docker.
 name: CI
 
 on:
   pull_request:
-    branches: [main]
+    branches: [dev, main]
   workflow_dispatch:
 
 permissions:

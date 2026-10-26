@@ -116,4 +116,3 @@ A worktree whose head a salvage branch holds, with nothing uncommitted, is salva
 - Supervision: the coordinator under a systemd service that checks the lease before it starts, since agent view does not restart sessions after a reboot.
 - Trust accepted once per root over SSH; the doctor's check is the same.
 - Sizing: each worker's treehouse slot has its own `node_modules` and Docker stack, so RAM and disk set the pool caps.
-- The code's checks could then run on GitHub again from a self-hosted runner, as `manual-steps.md` keeps as option A.
