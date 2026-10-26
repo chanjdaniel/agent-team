@@ -994,10 +994,10 @@ reap_one() {
 }
 
 # Take down the worktree's instances, its team stacks other than its own: those whose Compose
-# project is <OWN_NAME>-<something> and whose worktree label is WT by real path, in name order,
+# project is <OWN_NAME>-<something> and whose worktree label names WT (same_path), in name order,
 # each as down does. Leaves STACK_NAME, INSTANCE_PROJECT and $WORK/stack.json as they were.
 remove_instances() {
-  local own=$STACK_NAME filter=label=io.github.chanjdaniel.team.owner=agent-team wt project worktree
+  local own=$STACK_NAME filter=label=io.github.chanjdaniel.team.owner=agent-team project worktree
   local -a ids projects=()
   docker_read ps ps --all --quiet --no-trunc --filter "$filter"
   mapfile -t ids < <(grep . <<<"$DOCKER_OUT" || true)
@@ -1008,9 +1008,8 @@ remove_instances() {
   docker_read 'network ls' network ls --quiet --no-trunc --filter "$filter"
   mapfile -t ids < <(grep . <<<"$DOCKER_OUT" || true)
   docker_inspect network "$WORK/instance-networks.json" "${ids[@]}"
-  wt=$(realpath -m -- "$WT")
   while IFS=$'\t' read -r project worktree; do
-    if [[ $(realpath -m -- "$worktree") == "$wt" && " ${projects[*]} " != *" $project "* ]]; then projects+=("$project"); fi
+    if same_path "$worktree" "$WT" && [[ " ${projects[*]} " != *" $project "* ]]; then projects+=("$project"); fi
   done < <(jq -r -s -L "$TEAM_LIB" --arg prefix "$own-" 'include "stack";
     add | .[] | (.Config.Labels // .Labels // {}) as $labels | compose_project($labels) as $project
     | select($project != null and ($project | startswith($prefix))) | team_label($labels; "worktree") // empty

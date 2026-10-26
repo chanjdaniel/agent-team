@@ -1635,10 +1635,11 @@ compose port web 80 $PROJECT-a auto"
   run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
   run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --instance b --no-seed
   run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --instance a --no-seed
-  # An instance labelled with the worktree by another spelling is the worktree's too; a team stack
+  # Instances labelled with the worktree by other spellings are the worktree's too; a team stack
   # of another worktree named like an instance, and one of this worktree whose name only starts
   # like the stack's, are not.
   hand_instance "$PROJECT-c" TEAM_OWNER=agent-team TEAM_TASK=T22 TEAM_KIND=e2e TEAM_WORKTREE="$STACK_WORKTREE/" TEAM_EXPIRES=
+  hand_instance "$PROJECT-d" TEAM_OWNER=agent-team TEAM_TASK=T22 TEAM_KIND=e2e TEAM_WORKTREE="$(other_spelling "$STACK_WORKTREE")" TEAM_EXPIRES=
   hand_instance "$PROJECT-z" TEAM_OWNER=agent-team TEAM_TASK=T9 TEAM_KIND=dev TEAM_WORKTREE="$HOME/worktrees/shop-1-z" TEAM_EXPIRES=
   hand_instance "${PROJECT}0" TEAM_OWNER=agent-team TEAM_TASK=T22 TEAM_KIND=e2e TEAM_WORKTREE="$STACK_WORKTREE" TEAM_EXPIRES=
   run_bin -0 --separate-stderr team-stack down --worktree "$STACK_WORKTREE"
@@ -1646,17 +1647,20 @@ compose port web 80 $PROJECT-a auto"
   assert_equal "$output" "team-stack: $PROJECT-a is removed, its logs in $logs
 team-stack: $PROJECT-b is removed, its logs in $logs
 team-stack: $PROJECT-c is removed, its logs in $logs
+team-stack: $PROJECT-d is removed, its logs in $logs
 team-stack: $PROJECT is removed, its logs in $logs"
   assert_equal "$(docker_calls | sed -n -E 's/^compose -p ([^ ]+) down -v --remove-orphans$/\1/p')" "$PROJECT-a
 $PROJECT-b
 $PROJECT-c
+$PROJECT-d
 $PROJECT"
   assert_equal "$(cd "$logs" && ls)" "$PROJECT-a-web.log
 $PROJECT-b-web.log
 $PROJECT-c-web.log
+$PROJECT-d-web.log
 $PROJECT-web.log"
   local project
-  for project in "$PROJECT" "$PROJECT-a" "$PROJECT-b" "$PROJECT-c"; do project_gone "$project"; done
+  for project in "$PROJECT" "$PROJECT-a" "$PROJECT-b" "$PROJECT-c" "$PROJECT-d"; do project_gone "$project"; done
   assert_equal "$(state_of "$PROJECT-z") $(state_of "${PROJECT}0")" "running running"
   # The fixture machine's stacks are untouched.
   run_bin -0 team-stack ls --json
