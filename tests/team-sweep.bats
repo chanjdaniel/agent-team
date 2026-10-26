@@ -57,8 +57,8 @@ no_github() {
 
 # looks <list>...: the session list claude agents --json gives at each look of --wait, the last
 # one kept from then on; the list "fail" is the command failing. The stub sleep moves on to the
-# next look and, after 40 looks (20 minutes), stops the watch with exit 99, so a watch that never
-# ends shows as that exit. The uname stub keeps the stub sleep ahead of Homebrew's GNU sleep on
+# next look and, after 40 looks (20 minutes; LOOK_LIMIT sets another number), stops the watch
+# with exit 99, so a watch that never ends shows as that exit. The uname stub keeps the stub sleep ahead of Homebrew's GNU sleep on
 # macOS. A script $BATS_TEST_TMPDIR/at-look.<n> runs just before look <n>.
 looks() {
   local i=0 list
@@ -81,7 +81,7 @@ EOF
   stub_reply uname Linux
   stub_script sleep <<EOF
 n=\$(cat "$BATS_TEST_TMPDIR/look")
-((n < 40)) || exit 99
+((n < ${LOOK_LIMIT:-40})) || exit 99
 echo \$((n + 1)) >"$BATS_TEST_TMPDIR/look"
 if [[ -f "$BATS_TEST_TMPDIR/at-look.\$((n + 1))" ]]; then source "$BATS_TEST_TMPDIR/at-look.\$((n + 1))"; fi
 EOF
@@ -467,7 +467,7 @@ T42 stray: T42-reviewer 88888888 is live but T42 is not in the ledger; next: rea
   no_github
 }
 
-@test "--wait never ends on a finding there at its first look, and one that clears and comes back is new" {
+@test "--wait never ends within 20 minutes on a finding there at its first look, and one that clears and comes back is new" {
   opened T3
   launch T3 builder 4f2a9c1e
   looks '[]'
@@ -481,6 +481,32 @@ T42 stray: T42-reviewer 88888888 is live but T42 is not in the ledger; next: rea
   run_bin -0 team-sweep --wait
   assert_contains "$output" "T3 no-worker: no live session among its 1 launch"
   assert_equal "$(waits)" 9
+}
+
+@test "--wait ends on a finding there at its first look once it has stood for 30 minutes" {
+  opened T3
+  launch T3 builder 4f2a9c1e
+  opened T4
+  launch T4 builder 5a5a5a5a
+  # T3 has no worker from the first look on, as one the coordinator just acted on; T4's goes at
+  # 0:30, a new finding, which clears again before it has stood three minutes.
+  local t4
+  t4=$(session 5a5a5a5a T4-builder busy working)
+  export LOOK_LIMIT=80
+  looks "[$t4]" '[]' '[]' "[$t4]"
+  run_bin -0 team-sweep --wait
+  assert_equal "$output" "T3 no-worker: no live session among its 1 launch (latest T3-builder 4f2a9c1e); next: read claude logs 4f2a9c1e for how it ended, then launch the next worker with team-worker or log what is known with team-log"
+  assert_equal "$(waits)" 60
+
+  # Cleared at 10:00 and back at 10:30, it is new from then: three minutes later, it ends.
+  : >"$STUB_CALLS/sleep.log"
+  local -a lists=()
+  for _ in $(seq 20); do lists+=("[$t4]"); done
+  lists+=("[$t4,$(session 4f2a9c1e T3-builder busy working)]" "[$t4]")
+  looks "${lists[@]}"
+  run_bin -0 team-sweep --wait
+  assert_contains "$output" "T3 no-worker:"
+  assert_equal "$(waits)" 27
 }
 
 @test "--wait never ends on a finding that clears within three minutes" {

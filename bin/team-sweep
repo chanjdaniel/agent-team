@@ -26,19 +26,22 @@
 # --wait is the coordinator's sweep watch, run with Bash run_in_background, which has no expiry
 # and wakes it once, when the command ends: it looks every 30 s and ends once a finding that was
 # not there at its first look has stood for three minutes, printing every finding in the text
-# form and exiting 0. A finding is its task, kind and session. One there at the first look never
-# ends it, nor does one that clears within three minutes (a no-worker between a DONE and the next
-# launch); either one, once cleared, counts as new when it comes back. It exits 1 with the reason
+# form and exiting 0. A finding is its task, kind and session. One there at the first look (most
+# often the one just acted on) ends it only once it has stood for 30 minutes, at every readable
+# look since, so a worker that stays stuck is never left unwatched for long; one that clears
+# within three minutes (a no-worker between a DONE and the next launch) never ends it; either
+# one, once cleared, counts as new when it comes back. It exits 1 with the reason
 # on stderr when the session list cannot be read for five minutes running. Time is counted in
 # looks, WAIT_SECONDS apart (a test steps it with a stub sleep). Re-arm it after acting on what it
 # printed.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
-# --wait: seconds between looks, how long a new finding must stand, and how long the session list
-# may stay unreadable.
+# --wait: seconds between looks, how long a new finding must stand, how long one there at the
+# first look must, and how long the session list may stay unreadable.
 WAIT_SECONDS=30
 STAND_SECONDS=180
+BASELINE_SECONDS=1800
 UNREADABLE_SECONDS=300
 
 usage="usage: team-sweep [--json | --wait]"
@@ -85,7 +88,14 @@ wait_for_finding() {
         fi
       done < <(jq -r '.[] | "\(.task)/\(.kind)/\(.session)"' <<<"$FINDINGS")
       first=0
-      for key in "${!initial[@]}"; do [[ -n ${now[$key]:-} ]] || unset "initial[$key]"; done
+      for key in "${!initial[@]}"; do
+        if [[ -z ${now[$key]:-} ]]; then
+          unset "initial[$key]"
+        elif ((look_n * WAIT_SECONDS >= BASELINE_SECONDS)); then
+          jq -r '.[].text' <<<"$FINDINGS"
+          return 0
+        fi
+      done
       for key in "${!since[@]}"; do
         if [[ -z ${now[$key]:-} ]]; then
           unset "since[$key]"
