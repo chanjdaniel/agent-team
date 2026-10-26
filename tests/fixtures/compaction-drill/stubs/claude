@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# The compaction drill's claude, first on the drill session's PATH, so its hooks see the
+# fixture's live sessions (sessions.json beside it) and never this machine's.
+if [[ $* == "agents --json" ]]; then
+  cat "$(dirname "${BASH_SOURCE[0]}")/sessions.json"
+else
+  echo "the compaction drill's claude answers only claude agents --json, not: claude $*" >&2
+  exit 1
+fi
