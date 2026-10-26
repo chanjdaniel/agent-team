@@ -73,7 +73,7 @@ attributed=$'feat: two\n\nBody line.\n\nCo-Authored-By: Claude Opus 5.5 <noreply
     'fix: x' '' \
     'Co-Authored-By: Claude <noreply@anthropic.com>' \
     'co-authored-by: claude-code <x@example.invalid>' \
-    'CO-AUTHORED-BY: Some Bot <bot@ANTHROPIC.COM>' \
+    'CO-AUTHORED-BY: Some Bot <NOREPLY@ANTHROPIC.COM>' \
     'Co-Authored-By: Anthropic Assistant <a@example.invalid>' \
     'Co-Authored-By: Grace Human <grace@example.invalid>' \
     'Co-Authored-By: Claudette Painter <claudette@example.invalid>' \
@@ -89,7 +89,7 @@ attributed=$'feat: two\n\nBody line.\n\nCo-Authored-By: Claude Opus 5.5 <noreply
   assert_equal "$output" "$(printf '%s\n' \
     'Co-Authored-By: Claude <noreply@anthropic.com>' \
     'co-authored-by: claude-code <x@example.invalid>' \
-    'CO-AUTHORED-BY: Some Bot <bot@ANTHROPIC.COM>' \
+    'CO-AUTHORED-BY: Some Bot <NOREPLY@ANTHROPIC.COM>' \
     'Co-Authored-By: Anthropic Assistant <a@example.invalid>' \
     'Co-Authored-By: Claude Monet <monet@example.invalid>' \
     'claude-session: abc123' \

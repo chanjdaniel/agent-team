@@ -33,6 +33,9 @@
 #   git hooks     The code checkout's (the directory above bin/) core.hooksPath is bin/hooks/git
 #                 (relative, so each worktree runs its own checkout's hooks): the dev guard. The
 #                 fix is Daniel's, since every session is denied touching core.hooksPath.
+#   records hooks The team home's own core.hooksPath is the code's bin/hooks/records-git, by
+#                 absolute path into the primary code checkout (a worktree's main one): the data
+#                 check on records commits. The fix is Daniel's, as the git hooks line's is.
 #   claude login  `claude auth status`: signed in with a claude.ai account.
 #   github login  `gh auth status` for github.com.
 #   config        `team-config diff`: warns on each way this machine's Claude config differs from
@@ -509,6 +512,28 @@ else
   hooks_reason="core.hooksPath is unset, so git runs none of bin/hooks/git"
   [[ -z $hooks ]] || hooks_reason="core.hooksPath is $hooks, not bin/hooks/git"
   report "git hooks" FAIL "$hooks_reason" "Daniel runs git -C $(tilde "$code") config core.hooksPath bin/hooks/git"
+fi
+
+# records hooks: the team home's own config, naming the primary code checkout's records hooks.
+records_hooks=$code
+code_common=$(git -C "$code" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) &&
+  records_hooks=$(dirname "$code_common")
+records_hooks+=/bin/hooks/records-git
+if [[ -z $TEAM_HOME || ! -d $TEAM_HOME ]]; then
+  report "records hooks" FAIL "no team home to read it from (the team home line)" \
+    "the team home line's fix, then run team-doctor again"
+else
+  hooks=$(git -C "$TEAM_HOME" config --local core.hooksPath 2>/dev/null) || hooks=''
+  hooks_at=${hooks/#\~/$HOME}
+  [[ -z $hooks_at || $hooks_at == /* ]] || hooks_at=$TEAM_HOME/$hooks_at
+  if [[ -n $hooks && $(realpath -m -- "$hooks_at") == "$(realpath -m -- "$records_hooks")" ]]; then
+    report "records hooks" PASS "the team home's core.hooksPath is $(tilde "$records_hooks")"
+  else
+    hooks_reason="the team home's core.hooksPath is unset, so git runs no data check on its commits"
+    [[ -z $hooks ]] || hooks_reason="the team home's core.hooksPath is $hooks, not $(tilde "$records_hooks")"
+    report "records hooks" FAIL "$hooks_reason" \
+      "Daniel runs git -C $(tilde "$TEAM_HOME") config core.hooksPath $(tilde "$records_hooks")"
+  fi
 fi
 
 # claude login: the answer is read for these two fields alone.

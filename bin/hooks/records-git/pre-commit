@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Git's pre-commit hook for the records repository (the team home), with its core.hooksPath set to
+# this directory by absolute path, since the records hold no code: it refuses a commit that adds an
+# email address at a public provider, in a file's added lines, or any image, naming each path and
+# never the address (bin/lib/data-check records). The address git commits as (user.email) is not
+# refused. team-doctor's records hooks line checks the setting.
+# Exit 0 the commit may go ahead, 1 refused with the reason on stderr.
+set -euo pipefail
+# The team home is never read here: the hook runs in it.
+# shellcheck disable=SC2034 # read by bin/lib/team.sh
+team_home_report=1
+source "$(dirname "${BASH_SOURCE[0]}")/../../lib/team.sh" "$@"
+
+exec "$(dirname "${BASH_SOURCE[0]}")/../../lib/data-check" records

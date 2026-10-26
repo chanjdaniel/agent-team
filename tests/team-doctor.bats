@@ -2,7 +2,7 @@
 # shellcheck disable=SC2153 # LOCK and the other globals are helpers/doctor.bash's
 # team-doctor: one PASS, WARN or FAIL line per thing this machine needs, on the machine
 # tests/helpers/doctor.bash builds: every tool a version stub, the OS a stubbed uname.
-# This file: the machine, team home, git hooks, logins and Claude config lines, and --json;
+# This file: the machine, team home, git hooks, records hooks, logins and Claude config lines, and --json;
 # team-doctor-*.bats hold the other lines.
 
 load helpers/common
@@ -67,6 +67,31 @@ setup() {
     "PASS team home: ~/agent-team-records, named by TEAM_HOME: a checkout of its own on dev, with an origin"
 }
 
+@test "the records hooks line fails unless the team home's own core.hooksPath is the code's records-git, by absolute path" {
+  tools_at arch
+  local want=$CODE_CHECKOUT/bin/hooks/records-git
+  local fix="fix: Daniel runs git -C $TEAM_HOME config core.hooksPath $want"
+  git -C "$TEAM_HOME" config --unset core.hooksPath || true
+  run_bin -1 team-doctor
+  assert_equal "$(line_of 'records hooks')" \
+    "FAIL records hooks: the team home's core.hooksPath is unset, so git runs no data check on its commits; $fix"
+  # The code's own hooks are the wrong ones for the records.
+  git -C "$TEAM_HOME" config core.hooksPath bin/hooks/git
+  run_bin -1 team-doctor
+  assert_equal "$(line_of 'records hooks')" \
+    "FAIL records hooks: the team home's core.hooksPath is bin/hooks/git, not $want; $fix"
+  git -C "$TEAM_HOME" config core.hooksPath "$want/"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'records hooks')" "PASS records hooks: the team home's core.hooksPath is $want"
+  # Run from a worktree of the code, the line still names the primary checkout's hooks.
+  git -C "$CODE_CHECKOUT" checkout -q -b feat/T1-thing
+  git -C "$CODE_CHECKOUT" add -A
+  git -C "$CODE_CHECKOUT" commit -q -m "chore: the code"
+  git -C "$CODE_CHECKOUT" worktree add -q "$BATS_TEST_TMPDIR/wt" -b feat/T2-other
+  CODE_CHECKOUT=$BATS_TEST_TMPDIR/wt run_bin team-doctor
+  assert_equal "$(line_of 'records hooks')" "PASS records hooks: the team home's core.hooksPath is $want"
+}
+
 @test "with neither TEAM_HOME nor the setting, the team home line fails with the setting's fix" {
   tools_at arch
   rm "$HOME/.config/agent-team/home"
@@ -81,6 +106,8 @@ setup() {
     "FAIL team home: neither TEAM_HOME nor ~/.config/agent-team/home names one; fix: name the team home's checkout, relative to your home directory: echo agent-team-records > ~/.config/agent-team/home"
   # Every other line is still there, the ones that read the team home failing with the same refusal.
   assert_contains "$(line_of records)" "FAIL records: "
+  assert_equal "$(line_of 'records hooks')" \
+    "FAIL records hooks: no team home to read it from (the team home line); fix: the team home line's fix, then run team-doctor again"
   assert_contains "$output" "neither TEAM_HOME nor ~/.config/agent-team/home names the team home; name its checkout there"
 }
 

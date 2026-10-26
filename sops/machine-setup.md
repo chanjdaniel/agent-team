@@ -19,7 +19,7 @@ The team itself (coordinator and workers) runs here only after stage 9, because 
   Leave alone every secret file, credentials file, `~/.claude.json` and `~/.claude/channels/`: never read, print, copy or hash them, and never run `op`.
 - The lease is Daniel's: run `team-resume` only when Daniel says the team should run here (stage 9); a steal is Daniel's alone, typed in their own terminal.
 - Anything needing `sudo` or an admin password is Daniel's, in their own terminal; the bootstrap stops with the exact command.
-- Three settings are Daniel's call even where you could write them: the code checkout's `core.hooksPath` (every team session is denied setting it), `autoMode.environment` (what auto mode's classifier believes about this machine), and a `team-config apply` that replaces a file or skill changed on this machine.
+- Three settings are Daniel's call even where you could write them: the code checkout's and the team home's `core.hooksPath` (every team session is denied setting it), `autoMode.environment` (what auto mode's classifier believes about this machine), and a `team-config apply` that replaces a file or skill changed on this machine.
 - Every stage is idempotent and skips what the doctor already passes, so re-running is the answer to any interruption.
 - GitHub unreachable: stop and say so; carry on from the same stage once it answers.
 - The same step failing twice: stop and give Daniel the failing doctor lines (they never hold a secret) and the last lines of `~/.local/state/agent-team/bootstrap.log`.
@@ -138,14 +138,15 @@ Done when `check` lists no `Daniel <n>:` line.
 | Trust, once per project root (the team home included) | 7 | own terminal: `claude` in the root, accept, `/exit` | interactive dialog |
 | Chrome | 7 | macOS: `brew install --cask google-chrome`; Arch: `google-chrome` from the AUR, or `sudo pacman -S --needed chromium` | browser sign-in, `sudo` on Arch |
 | The dev guard | 7 | this session: `! git -C ~/agent-team config core.hooksPath bin/hooks/git` | every team session is denied setting `core.hooksPath` |
+| The records guard | 7 | this session: `! git -C ~/agent-team-records config core.hooksPath ~/agent-team/bin/hooks/records-git` | every team session is denied setting `core.hooksPath` |
 | `autoMode.environment` | 7 | Daniel's own edit of `~/.claude/settings.json` (`claude auto-mode defaults` shows the form) | it is what auto mode's classifier trusts about this machine |
 | "hand off" on the old machine, or the steal | 9 | Discord; own terminal for `team-resume --steal` | the lease is Daniel's call |
 | Pinning the coordinator | 9 | `claude agents`, Ctrl+T | an agent-view keystroke, no CLI |
 
 On a fresh machine, Daniel meets them in this order (recorded from `team-bootstrap` in a scratch `$HOME` with every installer stubbed, 2026-10-23):
 
-- macOS: Command Line Tools dialog, Homebrew, GitHub login, the name, (restart), Docker Desktop's license, the 1Password app, `team-secrets restore`, trust for each project root, Chrome, the dev guard, `autoMode.environment`.
-- Arch: git and gh, GitHub login, the name, `team-bootstrap --stage packages` and then `--stage tools` in their terminal, (restart), the Docker daemon (and the `docker` group), the 1Password app, `team-secrets restore`, trust for each project root, Chrome, the dev guard, `autoMode.environment`.
+- macOS: Command Line Tools dialog, Homebrew, GitHub login, the name, (restart), Docker Desktop's license, the 1Password app, `team-secrets restore`, trust for each project root, Chrome, the dev guard, the records guard, `autoMode.environment`.
+- Arch: git and gh, GitHub login, the name, `team-bootstrap --stage packages` and then `--stage tools` in their terminal, (restart), the Docker daemon (and the `docker` group), the 1Password app, `team-secrets restore`, trust for each project root, Chrome, the dev guard, the records guard, `autoMode.environment`.
 
 ## 4. macOS differences
 
