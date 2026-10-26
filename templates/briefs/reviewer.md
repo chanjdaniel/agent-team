@@ -12,7 +12,7 @@ Task directory: `{{task_dir}}/` in the worktree: `spec.md`, `tickets/`, `build-n
 ## Deliver
 
 - Local checks: {{local_checks}}.
-  Run each from the worktree's root on `{{head}}` and say in `{{task_dir}}/review.md` whether it passed; a failure is **blocking**, and they set no GitHub status.
+  Run them on `{{head}}` with `{{team_bin}}/team-checks {{project}} {{head}}`, which runs them as `team-merge` does, in a fresh detached worktree of that head, and say in `{{task_dir}}/review.md` whether it passed; a failure is **blocking**, and they set no GitHub status.
 {{> review}}
 
 ## Rules

@@ -20,12 +20,12 @@
 # a failed teardown stops the close with the reason, the task half closed); tasks/T<n>/ui/, the
 # task's UI captures (team-ui), removed, since they stay on this machine and are never archived;
 # each worktree's task directory mirrored to tasks/T<n>/scratch/ (the opened project) or
-# tasks/T<n>/scratch-<project>/ (an added one), less its top-level ui/ (a UI capture), its
-# nested repositories, files over 1 MiB and paths that may hold a secret, each named on stderr,
-# a missing or empty one reported on stderr; claude rm <id> for each of the task's sessions;
-# each landed worktree returned through its pool (git: git worktree remove,
-# never --force; treehouse: its task directory emptied, then the project's return command run
-# from the primary checkout with the path), each return appending worktree-returned; the task's
+# tasks/T<n>/scratch-<project>/ (an added one), less what archive_left_out (bin/lib/team.sh)
+# leaves out, each named on stderr, a missing or empty one reported on stderr; claude rm <id>
+# for each of the task's sessions; each landed worktree returned through its pool (git: git
+# worktree remove, never --force; treehouse: its task directory emptied, then the project's
+# return command run from the primary checkout with the path), each return appending
+# worktree-returned; the task's
 # wip/<project>/T<n> (team-checkpoint's snapshots) deleted on the team home's origin, and its
 # copy refs/remotes/team-home/wip/<project>/T<n> (team-open --resume's) in the project's primary
 # checkout, one that cannot be deleted reported on stderr with the command that deletes it; and

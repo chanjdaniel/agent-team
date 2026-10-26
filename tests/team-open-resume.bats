@@ -619,18 +619,30 @@ restored_from() {
   echo "tool" >"$dir/clone/tool.txt"
   head -c 2M /dev/zero >"$dir/big[1].bin"
   echo "SECRET=1" >"$dir/.env.local"
+  git init -q --bare "$dir/mirror.git"
+  mkdir -p "$dir/.venv/lib" "$dir/trial[1]/src"
+  touch "$dir/.venv/lib/site.py" "$dir/trial[1]/src/"{1..201}.ts
+  ln -s stale.md "$dir/latest.md"
   archive T1 scratch
 
   run_bin -0 --separate-stderr team-open --task T1 --resume home
   assert_equal "$stderr" ""
-  assert_equal "$(cd "$dir" && find . -mindepth 1 -not -path './clone/.git/*' | LC_ALL=C sort)" "./.env.local
+  assert_equal "$(cd "$dir" && find . -mindepth 1 -not -path './clone/.git/*' -not -path './mirror.git/*' -not -path './trial\[1\]/src/*' | LC_ALL=C sort)" "./.env.local
+./.venv
+./.venv/lib
+./.venv/lib/site.py
 ./big[1].bin
 ./clone
 ./clone/.git
 ./clone/tool.txt
+./latest.md
+./mirror.git
 ./spec.md
 ./tickets
-./tickets/01.md"
+./tickets/01.md
+./trial[1]
+./trial[1]/src"
+  assert_equal "$(find "$dir/trial[1]/src" -type f | wc -l)" "201"
 }
 
 @test "an added project's worktree is restored from its own archive" {

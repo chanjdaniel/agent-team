@@ -535,7 +535,7 @@ EOF
 @test "a project's local checks run on the PR's exact head before the merge, and the merged event records them" {
   with_local_checks
   run_bin -0 --separate-stderr team-merge T14
-  assert_contains "$stderr" "team-merge: running ./check.sh on ${head:0:7}"
+  assert_contains "$stderr" "team-checks: running ./check.sh on ${head:0:7}"
   # It ran once, in a checkout of the head that is gone after.
   assert_equal "$(wc -l <"$GH_DIR/ran")" 1
   assert_equal "$(cut -d' ' -f2 "$GH_DIR/ran")" "$head"

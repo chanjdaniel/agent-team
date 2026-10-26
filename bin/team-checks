@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# Run a project's local checks on a head the way team-merge does: in a fresh detached worktree of it.
+#
+# Usage: team-checks <project> <head> [--from <checkout>] [--label <text>]
+# Reads the project's local_checks from projects.toml; with none, says so and exits 0. Otherwise
+# adds a detached worktree of <head> (a commit, in full or short) from <checkout> (default: the
+# repository of the current directory) under a fresh mktemp -d outside the home directory, so
+# nothing the checkout has that the head lacks (installs, builds, untracked files) can make a
+# check pass. Each command runs from the worktree's root with bash -c, TMPDIR a fresh directory
+# beside it (the test sandbox refuses one under /home or /Users), under the machine's heavy-run
+# lock (team-heavy run --label "<text>: <command> on <head>", the text "team-checks <project>"
+# by default), which waits for another holder.
+# Prints "team-checks: running <command> on <head>" on stderr before each, and its result on
+# stdout: "local check '<command>' passed on the head <head>", or failed (exit <n>), or could not
+# run yet (exit 75, the lock stayed held), with its last 20 lines indented below. The worktree
+# is removed with git worktree remove --force and its directory by the path mktemp printed.
+# Exit 0 all passed or there are none, 1 any failed, 75 none failed but one could not run yet.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+usage="usage: team-checks <project> <head> [--from <checkout>] [--label <text>]"
+
+args=() from='' label=''
+while (($#)); do
+  case $1 in
+    --from | --label)
+      [[ $# -ge 2 && -n $2 ]] || usage_error "$usage"
+      if [[ $1 == --from ]]; then from=$2; else label=$2; fi
+      shift
+      ;;
+    -*) usage_error "$usage" ;;
+    *) args+=("$1") ;;
+  esac
+  shift
+done
+[[ ${#args[@]} -eq 2 ]] || usage_error "$usage"
+project=${args[0]} rev=${args[1]}
+label=${label:-team-checks $project}
+
+checks=$(team_project "$project" local_checks) || exit 1
+mapfile -t local_checks < <(jq -r '.[]' <<<"$checks")
+if ((${#local_checks[@]} == 0)); then
+  echo "team-checks: $project has no local checks"
+  exit 0
+fi
+
+from=${from:-.}
+checkout=$(git -C "$from" rev-parse --show-toplevel 2>/dev/null) || die "$from is not a git checkout"
+head=$(git -C "$checkout" rev-parse -q --verify "$rev^{commit}") || die "$rev is not a commit in $checkout"
+
+# Outside the home directory, whose paths the ledger reads as any machine's.
+base=${TMPDIR:-/tmp}
+case $base in /home/* | /Users/* | "$HOME"/*) base=/tmp ;; esac
+scratch=$(mktemp -d "$base/team-checks.XXXXXX")
+trap 'git -C "$checkout" worktree remove --force "$scratch/head" 2>/dev/null || true; rm -rf "$scratch"' EXIT
+git -C "$checkout" worktree add -q --detach "$scratch/head" "$head" 2>"$scratch/error" ||
+  die "cannot check out ${head:0:7} for the local checks: $(grep -m1 . "$scratch/error")"
+
+failed=0 later=0
+for command in "${local_checks[@]}"; do
+  echo "team-checks: running $command on ${head:0:7}" >&2
+  rm -rf "$scratch/tmp"
+  mkdir "$scratch/tmp"
+  rc=0
+  (cd "$scratch/head" && TMPDIR=$scratch/tmp "$(dirname "$TEAM_LIB")/team-heavy" run --label "$label: $command on ${head:0:7}" -- bash -c "$command") \
+    </dev/null >"$scratch/check.log" 2>&1 || rc=$?
+  if ((rc == 0)); then
+    echo "local check '$command' passed on the head ${head:0:7}"
+    continue
+  elif ((rc == 75)); then
+    later=1
+    echo "local check '$command' could not run on the head ${head:0:7} yet (exit 75, try again later); its last lines:"
+  else
+    failed=1
+    echo "local check '$command' failed on the head ${head:0:7} (exit $rc); its last lines:"
+  fi
+  tail -n 20 "$scratch/check.log" | sed 's/^/      /'
+done
+
+if ((failed)); then exit 1; elif ((later)); then exit 75; fi

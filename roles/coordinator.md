@@ -25,7 +25,7 @@ Every command below answers `--help` with its exact usage; this manual says when
 
 - `dev` is every project's default branch and the base of every task; `main` changes only by an explicit release Daniel runs, never through `team-merge`.
 - A task branch is `<type>/T<n>-<slug>`, made by `team-open` from a freshly fetched `origin/<base>`; it also fast-forwards the project's primary checkout when it is on the base and clean, or names why not.
-- A PR merges only on Daniel's recorded word, and never red: every required check, the project's local checks (which `team-merge` runs) and `agent-review` green on the exact head.
+- A PR merges only on Daniel's recorded word, and never red: every required check, the project's local checks (which `team-merge` runs through `team-checks`) and `agent-review` green on the exact head.
 
 ## A task's life
 
@@ -52,7 +52,7 @@ Every command below answers `--help` with its exact usage; this manual says when
 7. **Close.** Run `team-close T<n>` once the PRs are merged: it takes each returned worktree's stacks down (`team-stack down`), then archives the task directory to `tasks/T<n>/scratch/`, removes the task's sessions and returns its worktrees.
    It refuses a worktree whose work has not landed and a busy worker; `--keep-worktree` and `--stop-busy` are for when Daniel decides so.
    A task left half closed is finished by running `team-close T<n>` again.
-   Post the outcome in the thread.
+   Post the outcome in the thread, and close a task whose only step left is an outside party's (GitHub Support, a vendor, a bot) the same way, its last step a line in `tasks/queued/` that says what will show it is due.
 
 Before acting on any message or finding, run `team-state T<n>`: it joins the ledger, the live sessions and the PR, and says when the PR head moved since the review.
 
@@ -103,7 +103,7 @@ A task you park on Daniel or anything outside the team gets `team-log T<n> waiti
 - When GitHub is unreachable the heartbeat holds the team: it posts in `#coordinator`, `team-lease status --json` shows `offline_since`, and a hook blocks workers' pushes and `gh`; the offline watch, armed as your session digest says and again each time it expires, wakes you with a line when the hold starts and when it ends.
   Send `T<n> HOLD` to each live worker but an ops session (it replies `T<n> PAUSED held`), and launch no worker, hand off or resume while offline; a worker's `T<n> PAUSED offline <what failed>` is the same news: check `offline_since`, and hold the rest.
   Once the watch says GitHub answers again and `offline_since` is null, send `T<n> RESUME` to each held worker and log `resumed`.
-- `team-doctor` says what this machine still lacks, one PASS, WARN or FAIL line per check with its fix; `team-load-check` runs it first, and `team-bootstrap` installs what it can on a new machine, stopping at each step that is Daniel's; its `heavy runs` line (`team-heavy status`) names the heavy run, a `tests/run` or `team-merge`'s local checks, that the others on this machine queue behind.
+- `team-doctor` says what this machine still lacks, one PASS, WARN or FAIL line per check with its fix; `team-load-check` runs it first, and `team-bootstrap` installs what it can on a new machine, stopping at each step that is Daniel's; its `heavy runs` line (`team-heavy status`) names the heavy run, a `tests/run` or the local checks `team-checks` runs, that the others on this machine queue behind.
 - `team-config` keeps this machine's Claude user config and the team home's `machine/claude/` in step by copies: `diff` shows the drift, `apply` (Daniel's yes) installs the team home's with backups, `capture` brings this machine's back for a records commit on `dev`.
 - `team-handoff` moves the team off this machine on Daniel's "hand off", run by the handoff skill once each worker has answered your `T<n> STOW`: workers removed, checkpoint, branches pushed, `stowed` per open task, config captured, records pushed, heartbeat off, lease released; `--retire` then removes you.
 - `team-resume` takes the team over, typed by Daniel at the machine they are at (`--wait` started before Daniel says "hand off", as its preflight, `--steal` for a dead holder): doctor, the team home and then the code checkout fast-forwarded to origin's, config, lease, heartbeat, each open worktree made here by `team-open --resume`, the report `tasks/resume-<date>-<time>.json` (one per run; each failed worktree is also a `rehome-failed` that `team-state` shows), then you, started on it to run the resume skill.

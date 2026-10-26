@@ -545,9 +545,10 @@ def retro_window($task):
      end: (if $w.this == null then length else $w.this.i + 1 end)};
 
 # Every span that parks a task, over one task's events (each with its place i) in ledger order:
-# {task, kind, on, reason, start, end}, end being the event that clears it, or null. waiting,
-# paused and blocked clear at the next resumed or launch, held at the next resumed, asked at the
-# answered of its id, and every one at the task's closed.
+# {task, kind, on, reason, start, from, end}, end being the event that clears it, or null, and from
+# when it began: a park's since when it was logged after the fact, else its ts. waiting, paused and
+# blocked clear at the next resumed or launch, held at the next resumed, asked at the answered of
+# its id, and every one at the task's closed.
 def wait_spans:
   . as $events
   | range(length) as $k | $events[$k] as $s
@@ -556,7 +557,7 @@ def wait_spans:
   | {task: $s.task, kind: $s.event,
      on: (if $s.event == "waiting" then $s.on // "unknown" elif $s.event == "asked" then "Daniel" else $s.event end),
      reason: (if $s.event == "asked" then $s.text else $s.reason end),
-     start: $s,
+     start: $s, from: (if $s.event != "asked" then $s.since // $s.ts else $s.ts end),
      end: (first($events[$k + 1:][] | select(.event == "closed" or (.event | IN($clears[]))
        or ($s.event == "asked" and .event == "answered" and .id == $s.id))) // null)};
 
@@ -583,9 +584,9 @@ def retro_digest($task; $team_home):
   | $placed[$w.start:$w.end] as $in
   | ([$placed | task_groups[] | wait_spans | .end as $end
       | select(.start.i < $w.end and ($end == null or $end.i >= $w.start))
-      | (.start.i < $w.start) as $clipped
+      | (.start.i < $w.start or .from < $w.since) as $clipped
       | ($end == null or $end.i >= $w.end) as $open
-      | (if $clipped then $w.since else .start.ts end) as $from
+      | (if $clipped then $w.since else .from end) as $from
       | (if $open then $w.until else $end.ts end) as $to
       | {task, kind, on, reason, from: $from, to: $to, hours: hours($from; $to), open: $open, clipped: $clipped, i: .start.i}]
      | sort_by(.i) | map(del(.i))) as $spans
