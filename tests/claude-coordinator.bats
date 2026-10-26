@@ -47,6 +47,7 @@ sessions() {
 launch_argv() {
   jq -cn --arg settings "$HOME/.local/state/agent-team/coordinator.settings.json" --arg code "$REPO_ROOT" \
     '["--bg", "--name", "coordinator",
+    "--autocompact", "200k",
     "--channels", "plugin:discord@claude-plugins-official",
     "--dangerously-skip-permissions",
     "--append-system-prompt-file", "\($code)/roles/coordinator.md",
@@ -100,6 +101,26 @@ assert_not_launched() {
   [[ $(cat "$settings") != *"@TEAM_CODE@"* ]]
   assert_equal "$(jq .isolatePeerMachines "$settings")" true
   assert_equal "$(find "${settings%/*}" -name '*.json.*')" ""
+}
+
+@test "it compacts at 200k tokens, by the launch flag, which no settings scope preempts" {
+  run_bin -0 claude-coordinator
+  local argv
+  argv=$(stub_calls claude | tail -n 1)
+  assert_equal "$(jq -r 'index("--autocompact") as $i | .[$i + 1]' <<<"$argv")" 200k
+  assert_equal "$(jq -r 'map(select(. == "--autocompact")) | length' <<<"$argv")" 1
+  # The prompt stays last, so no flag can take it as a value.
+  assert_equal "$(jq -r '.[-1]' <<<"$argv")" "You are the coordinator. Daniel talks to you on Discord. Wait for their messages."
+}
+
+@test "its settings compact it while idle from 100k tokens, and leave the compaction window to the flag" {
+  run_bin -0 claude-coordinator
+  local settings=$HOME/.local/state/agent-team/coordinator.settings.json
+  assert_equal "$(jq .idleCompaction "$settings")" true
+  assert_equal "$(jq -r '.env.CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS' "$settings")" 100000
+  assert_equal "$(jq '.env.CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS | type' "$settings")" '"string"'
+  assert_equal "$(jq 'has("autoCompactWindow")' "$settings")" false
+  assert_equal "$(jq '.env | has("CLAUDE_CODE_AUTO_COMPACT_WINDOW")' "$settings")" false
 }
 
 @test "its Discord reply, react and edit_message, and its Bash, and nothing else, go through the fence hook" {

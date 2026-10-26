@@ -5,6 +5,7 @@
   },
   "crossSessionInbound": "accept",
   "isolatePeerMachines": true,
+  "idleCompaction": true,
   "permissions": {
     "deny": [
       "Bash(gh pr merge*)",
@@ -71,6 +72,7 @@
     ]
   },
   "env": {
+    "CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS": "100000",
     "LAVISH_AXI_TELEMETRY": "0",
     "CODEGRAPH_TELEMETRY": "0",
     "CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS": "1",
