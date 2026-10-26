@@ -4,13 +4,16 @@
 # the conversation held and no ledger event records survives a compaction), then the instruction
 # to reconcile it before taking new work, so a restarted coordinator rebuilds its picture before
 # anything else. Claude Code adds what it prints to the session's context.
-# When the snapshot fails it prints the error and what to do by hand instead. Either way it ends
-# with the two standing watches to arm with Bash run_in_background, each only if it is not
-# already running (Claude Code lists the running background commands, after a compaction too),
-# with their exact commands: the sweep watch (team-sweep --wait), which ends once a new finding
-# has stood for three minutes, and the offline watch (team-timers watch --once), which ends when
-# the hold starts or ends. Each wakes the coordinator once, even while idle, and is re-armed in
-# the turn it ends. Exit 0 either way.
+# When the snapshot fails it prints the error and what to do by hand instead. Either way, while
+# the team holds (the offline flag, which team-lease status reads for offline_since, is there),
+# it then says so in one line, since the offline watch takes a hold already on as no change and
+# a compaction would otherwise lose it. It ends with the two standing watches to arm with Bash
+# run_in_background, each only if it is not already running (Claude Code lists the running
+# background commands, after a compaction too), with their exact commands: the sweep watch
+# (team-sweep --wait), which ends once a new finding has stood for three minutes or one already
+# there has stood for 30, and the offline watch (team-timers watch --once), which ends when the
+# hold starts or ends. Each wakes the coordinator once, even while idle, and is re-armed in the
+# turn it ends. Exit 0 either way.
 # Wired only in coordinator.settings.json.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/team.sh" "$@"
@@ -24,8 +27,17 @@ watch_lines() {
   echo "Arm each standing watch with Bash run_in_background unless it is already running (Claude" \
     "Code lists the background commands that run), and re-arm it in the turn it ends, after acting" \
     "on what it printed ($(dirname "$bin")/roles/coordinator.md, Watching workers and Machines):"
-  echo "  sweep watch, ends once a new finding has stood for three minutes: \"$bin/team-sweep\" --wait"
+  echo "  sweep watch, ends once a new finding has stood for three minutes, or one already there for 30: \"$bin/team-sweep\" --wait"
   echo "  offline watch, ends when the hold starts or ends: \"$bin/team-timers\" watch --once"
+}
+
+# The hold, one line, while the offline flag is there; nothing otherwise.
+hold_line() {
+  local flag=$HOME/.local/state/agent-team/offline since
+  [[ -e $flag ]] || return 0
+  since=$(jq -er '.since | strings' "$flag" 2>/dev/null) || since=$(date -u -r "$flag" +%FT%TZ)
+  echo "GitHub unreachable since $since; the team is holding: hold each live worker and launch" \
+    "nothing until the offline watch says GitHub answers again (Machines)."
 }
 
 status=0
@@ -36,6 +48,7 @@ if [[ $status -ne 0 ]] || ! jq -e '.schema == "team-snapshot/1"' >/dev/null 2>&1
   if [[ -s $errors ]]; then cat "$errors"; else echo "it printed no snapshot and no error"; fi
   echo "Reconcile by hand before taking new work (team-sweep, team-state T<n>, claude agents," \
     "tasks/current.md)."
+  hold_line
   watch_lines
   exit 0
 fi
@@ -47,4 +60,5 @@ ledger_jq 'snapshot_text,
     + " held, blocked, awaiting merge, asking, paused or waiting), and chase the pending asks and"
     + " the current items."' -r <<<"$snapshot" ||
   echo "The digest could not be printed; run team-snapshot by hand before taking new work."
+hold_line
 watch_lines

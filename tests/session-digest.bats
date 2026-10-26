@@ -43,7 +43,7 @@ event() {
 # The last lines of every digest: arm the sweep watch and the offline watch in the background.
 watch_lines() {
   echo "Arm each standing watch with Bash run_in_background unless it is already running (Claude Code lists the background commands that run), and re-arm it in the turn it ends, after acting on what it printed ($REPO_ROOT/roles/coordinator.md, Watching workers and Machines):
-  sweep watch, ends once a new finding has stood for three minutes: \"$REPO_ROOT/bin/team-sweep\" --wait
+  sweep watch, ends once a new finding has stood for three minutes, or one already there for 30: \"$REPO_ROOT/bin/team-sweep\" --wait
   offline watch, ends when the hold starts or ends: \"$REPO_ROOT/bin/team-timers\" watch --once"
 }
 
@@ -141,6 +141,32 @@ team-snapshot: cannot read the live session list (claude agents --json)
 Reconcile by hand before taking new work (team-sweep, team-state T<n>, claude agents, tasks/current.md).
 $(watch_lines)"
   refute_idle_notices "$output"
+}
+
+@test "while the team holds it says so after the reconcile line, from the offline flag, on success and on failure" {
+  team_at_work
+  local flag=$HOME/.local/state/agent-team/offline hold
+  mkdir -p "${flag%/*}"
+  echo '{"since": "2026-10-23T13:05:00Z", "posted": true}' >"$flag"
+  hold="GitHub unreachable since 2026-10-23T13:05:00Z; the team is holding: hold each live worker and launch nothing until the offline watch says GitHub answers again (Machines)."
+  start -0 compact
+  assert_contains "$output" "Current items: none
+
+$(reconcile_line)
+$hold
+$(watch_lines)"
+  # A flag with no readable since dates from its modification time.
+  echo '{}' >"$flag"
+  touch -d 2026-10-24T08:00:00Z "$flag"
+  stub_reply claude "boom" 1
+  start -0
+  assert_contains "$output" "tasks/current.md).
+GitHub unreachable since 2026-10-24T08:00:00Z; the team is holding: hold each live worker and launch nothing until the offline watch says GitHub answers again (Machines).
+$(watch_lines)"
+  # The hold over, the line goes.
+  rm "$flag"
+  start -0
+  [[ $output != *"the team is holding"* ]]
 }
 
 @test "the command it gives for the offline watch runs, and ends on the first change of the hold" {
