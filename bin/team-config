@@ -125,7 +125,7 @@ fi
 if [[ $command == diff || $command == apply ]]; then
   home=$(realpath -- "$TEAM_HOME")
   for checkout in "${CHECKOUTS[@]}"; do
-    [[ $(realpath -- "$checkout") != "$home" ]] || home=''
+    ! same_path "$checkout" "$home" || home=''
   done
   if [[ -n $home ]]; then
     PROJECTS+=(coordinator)

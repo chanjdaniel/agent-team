@@ -18,7 +18,7 @@ if [[ -n $fenced ]]; then
     salvaged=$(GIT_TERMINAL_PROMPT=0 git -C "$TEAM_HOME" ls-remote "$salvage_url" 'refs/heads/salvage/*' 2>/dev/null) || salvaged=''
     while IFS=$'\t' read -r task project wt; do
       top=$(git -C "$wt" rev-parse --show-toplevel 2>/dev/null) || continue
-      [[ $(realpath -m -- "$top") == "$(realpath -m -- "$wt")" ]] || continue
+      same_path "$top" "$wt" || continue
       # Commits on no origin branch: a checkpoint's wip/<project>/T<n> is not one, since the next
       # checkpoint replaces it and team-close deletes it.
       count=$(git -C "$wt" rev-list --count HEAD --not --exclude='origin/wip/*' --remotes=origin)

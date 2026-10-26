@@ -545,6 +545,25 @@ EOF
   TEAM_HOME=$TEAM_HOME run -0 "$REPO_ROOT/bin/team-log" --check
 }
 
+@test "a project's local checks run under the heavy-run lock, and wait for another holder" {
+  with_local_checks
+  echo "\"$REPO_ROOT/bin/team-heavy\" status >>\"\$GH_DIR/heavy\"" >"$GH_DIR/check.extra"
+  run_bin -0 --separate-stderr team-merge T14
+  [[ $(cat "$GH_DIR/heavy") =~ ^held\ by\ team-merge\ T14:\ ./check.sh\ on\ ${head:0:7}\ \(pid\ [0-9]+\)\ since\  ]]
+}
+
+@test "a local check that cannot take the heavy-run lock is refused, naming its holder" {
+  with_local_checks
+  mkdir -p "$HOME/.local/state/agent-team"
+  exec {held}<>"$HOME/.local/state/agent-team/heavy.lock"
+  echo "first (pid 1) since 2026-10-25 10:00:00 +0000" >"$HOME/.local/state/agent-team/heavy.lock"
+  flock -x "$held"
+  TEAM_HEAVY_WAIT_MINUTES=0 refused "local check './check.sh' could not run on the head ${head:0:7} yet (exit 75, try again later); its last lines:"
+  assert_contains "$stderr" "team-heavy: the heavy-run lock is held by first (pid 1) since 2026-10-25 10:00:00 +0000"
+  exec {held}<&-
+  [[ ! -e $GH_DIR/ran ]]
+}
+
 @test "a local check that fails is refused with its last lines, and nothing merges" {
   with_local_checks
   echo 3 >"$GH_DIR/check.status"
@@ -706,6 +725,22 @@ merging_the_code() {
   run_bin -0 --separate-stderr team-merge T14
   assert_equal "$(git -C "$TEAM_HOME" rev-parse HEAD)" "$before"
   assert_contains "$stderr" "team-merge: the code checkout is the team home, so the next records push (team-checkpoint, team-handoff) brings it level with origin's dev"
+}
+
+@test "the code checkout is the merged project's primary checkout however the registry spells it (report F6)" {
+  merging_the_code
+  local other
+  other=$(other_spelling "$code")
+  sed -i "s|^path = \"agent-team\"\$|path = \"${other##*/}\"|" "$TEAM_HOME/projects.toml"
+  run_bin -0 --separate-stderr team-merge T14
+  assert_equal "$(git -C "$code" rev-parse HEAD)" "$(jq -r .merge <<<"$output")"
+}
+
+@test "a code checkout that is the team home spelled otherwise is left to the next records push (report F6)" {
+  as_team_home
+  code_checkout "$TEAM_HOME"
+  TEAM_HOME=$(other_spelling "$TEAM_HOME") run_bin -0 --separate-stderr team-merge T14
+  assert_contains "$stderr" "team-merge: the code checkout is the team home, so the next records push"
 }
 
 @test "a merge of any other project leaves the code checkout alone" {

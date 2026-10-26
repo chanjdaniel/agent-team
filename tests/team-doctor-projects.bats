@@ -20,6 +20,7 @@ PASS origin conventioner: https://github.com/chanjdaniel/Conventioner.git
 PASS task dir conventioner: git ignores .scratch/task/
 PASS gate conventioner: no-mistakes has a gate for it
 PASS slots conventioner: every slot is in the pool Conventioner-d4c77a, as treehouse names it from origin
+PASS leases conventioner: no slot of the pool is leased
 PASS trust conventioner: claude starts background sessions in ~/projects/Conventioner
 PASS branches conventioner: every local branch is on origin
 PASS changes conventioner: the primary checkout is clean
@@ -79,6 +80,107 @@ PASS changes site: the primary checkout is clean"
   assert_equal "$(grep -v '^PASS ' <<<"$output")" "FAIL slots conventioner: not in the pool Conventioner-d4c77a, as treehouse names it from origin: ~/.treehouse/Conventioner-8e12e0/2/Conventioner; fix: put conventioner's pool.slots in projects.toml under the pool's directory, ~/.treehouse/Conventioner-d4c77a/ unless its treehouse.toml sets another root"
 }
 
+@test "slots: a slot that is a worktree of another clone of the same origin warns, naming it and how many slots are the team's (report F13)" {
+  tools_at arch
+  local pool=$HOME/.treehouse/Conventioner-d4c77a other=$HOME/firstmate/projects/Conventioner shown remove
+  # Slot 2 is this checkout's worktree and slot 1 does not exist: both pass, as treehouse makes 1.
+  git -C "$CONVENTIONER" worktree add -q --detach "$pool/2/Conventioner"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'slots conventioner')" "PASS slots conventioner: every slot is in the pool Conventioner-d4c77a, as treehouse names it from origin"
+
+  # Another clone with the same folder name and origin shares the pool, and owns slot 1.
+  git clone -q "$CONVENTIONER" "$other"
+  git -C "$other" remote set-url origin https://github.com/chanjdaniel/Conventioner.git
+  git -C "$other" worktree add -q --detach "$pool/1/Conventioner"
+  # shellcheck disable=SC2088 # the doctor's lines name HOME as ~
+  shown='~/.treehouse/Conventioner-d4c77a'
+  remove="git -C ~/firstmate/projects/Conventioner worktree remove"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'slots conventioner')" "WARN slots conventioner: slot 1 is a worktree of ~/firstmate/projects/Conventioner, so 1 of 2 slots are the team's; fix: Daniel's, once nothing in it is needed by that clone: $remove $shown/1/Conventioner"
+
+  # Its slot 3, which the registry does not list, is the pool's too.
+  git -C "$other" worktree add -q --detach "$pool/3/Conventioner"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'slots conventioner')" "WARN slots conventioner: slot 1 is a worktree of ~/firstmate/projects/Conventioner; slot 3 is a worktree of ~/firstmate/projects/Conventioner, so 1 of 3 slots are the team's; fix: Daniel's, once nothing in it is needed by that clone: $remove $shown/1/Conventioner; $remove $shown/3/Conventioner"
+  # The doctor only looked.
+  assert_equal "$(git -C "$other" worktree list --porcelain | grep -c '^worktree ')" 3
+}
+
+@test "slots: a slot that is an empty folder, or holds no worktree, warns (T45)" {
+  tools_at arch
+  # shellcheck disable=SC2088 # the doctor's lines name HOME as ~
+  local pool=$HOME/.treehouse/Conventioner-d4c77a shown='~/.treehouse/Conventioner-d4c77a'
+  # A removed worktree leaves its numbered folder, which treehouse does not make a slot in again.
+  mkdir -p "$pool/1" "$pool/2/Conventioner" "$pool/4"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'slots conventioner')" "WARN slots conventioner: slot 1 is an empty folder, so treehouse numbers new slots past it; slot 2 is an empty folder, so treehouse numbers new slots past it; slot 4 is an empty folder, so treehouse numbers new slots past it; fix: rmdir $shown/1; rmdir $shown/2/Conventioner $shown/2; rmdir $shown/4"
+
+  # A folder holding something that is no worktree is Daniel's to look at.
+  rmdir "$pool/1" "$pool/4"
+  touch "$pool/2/Conventioner/notes.txt"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'slots conventioner')" "WARN slots conventioner: slot 2 holds no git worktree; fix: Daniel looks at $shown/2/Conventioner and moves it aside"
+
+  rm -r "$pool/2"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'slots conventioner')" "PASS slots conventioner: every slot is in the pool Conventioner-d4c77a, as treehouse names it from origin"
+}
+
+# ledger_opened <task> <slot>: <task> opened in Conventioner, in its slot <slot> (relative to HOME).
+ledger_opened() {
+  jq -cn --arg task "$1" --arg wt "$HOME/$2" '{ts: "2026-10-24T10:00:00Z", task: $task, event: "opened",
+    project: "conventioner", path: "feature", type: "feat", title: "Work", branch: "feat/\($task)-work",
+    base: "main", base_sha: "0000000", worktree: $wt}' >>"$TEAM_HOME/ledger.jsonl"
+}
+
+@test "leases: each slot the pool leases is an open task's worktree there, or a WARN naming it with the return" {
+  tools_at arch
+  local pool=.treehouse/Conventioner-d4c77a fix
+  ledger_opened T1 "$pool/1/Conventioner"
+  ledger_opened T2 "$pool/2/Conventioner"
+  leased_slots "$pool/1/Conventioner" T1 "$pool/2/Conventioner" T2
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'leases conventioner')" "PASS leases conventioner: every leased slot (2) is an open task's worktree here"
+  # The lease is asked of treehouse in the checkout.
+  assert_equal "$(git -C "$CONVENTIONER" status --porcelain)" ""
+
+  # A closed task, an open task whose worktree is elsewhere (a lease a failed team-open left), and
+  # a holder that is no task: each is named, with the return for Daniel.
+  jq -cn '{ts: "2026-10-24T11:00:00Z", task: "T1", event: "closed", archive: [], returned: [], kept: []}' >>"$TEAM_HOME/ledger.jsonl"
+  leased_slots "$pool/1/Conventioner" T1 "$pool/3/Conventioner" T2 "$pool/4/Conventioner" agent
+  run_bin -0 team-doctor
+  fix="cd ~/projects/Conventioner && ~/projects/Conventioner/scripts/th-return.sh"
+  assert_equal "$(line_of 'leases conventioner')" "WARN leases conventioner: ~/$pool/1/Conventioner is leased to T1, which is closed; ~/$pool/3/Conventioner is leased to T2, whose worktree in conventioner is not there; ~/$pool/4/Conventioner is leased to agent, no task of the ledger; fix: once nothing in it is needed, Daniel returns each in their own terminal, which asks before discarding changes: $fix ~/$pool/1/Conventioner; $fix ~/$pool/3/Conventioner; $fix ~/$pool/4/Conventioner"
+
+  # A worktree-moved to the leased slot makes it the task's again.
+  jq -cn --arg from "$HOME/$pool/2/Conventioner" --arg wt "$HOME/$pool/3/Conventioner" '{ts: "2026-10-24T12:00:00Z",
+    task: "T2", event: "worktree-moved", project: "conventioner", branch: "feat/T2-work", from: $from, worktree: $wt,
+    machine: "laptop"}' >>"$TEAM_HOME/ledger.jsonl"
+  leased_slots "$pool/3/Conventioner" T2
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'leases conventioner')" "PASS leases conventioner: every leased slot (1) is an open task's worktree here"
+
+  # The ledger spells T5's slot otherwise than treehouse does: one directory (report F6).
+  local other
+  mkdir -p "$HOME/$pool/5/Conventioner"
+  other=$(other_spelling "$HOME/.treehouse")
+  ledger_opened T5 "${other##*/}/Conventioner-d4c77a/5/Conventioner"
+  leased_slots "$pool/3/Conventioner" T2 "$pool/5/Conventioner" T5
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'leases conventioner')" "PASS leases conventioner: every leased slot (2) is an open task's worktree here"
+}
+
+@test "leases: a treehouse that does not answer warns; a git pool has no leases line" {
+  tools_at arch
+  echo 'echo "not in a git or jj repository" >&2; exit 1' >"$TOOL_ANSWERS/treehouse/status_--json.sh"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'leases conventioner')" "WARN leases conventioner: \`treehouse status --json\` in ~/projects/Conventioner did not answer; fix: the tool treehouse line's fix"
+  echo 'echo "not json"' >"$TOOL_ANSWERS/treehouse/status_--json.sh"
+  run_bin -0 team-doctor
+  assert_contains "$(line_of 'leases conventioner')" "did not answer"
+  [[ -z $(line_of 'leases site') ]]
+}
+
 @test "a task directory git does not ignore fails, with the exclude line that ignores it" {
   tools_at arch
   sed -i '\#^/\.scratch/task/$#d' "$SITE/.git/info/exclude"
@@ -115,11 +217,16 @@ PASS changes site: the primary checkout is clean"
     {"id": "abcdef12", "name": "T9-builder", "state": "working"}]' >"$STUB_FIXTURES/agents.json"
   run_bin -1 team-doctor
   assert_equal "$(grep -v '^PASS ' <<<"$output")" "FAIL trust site: claude --bg in ~/projects/site says Workspace not trusted; fix: Daniel runs claude once in ~/projects/site and accepts the trust dialog"
-  assert_equal "$(cat "$STUB_CALLS/claude-bg.pwd")" "$CONVENTIONER
+  assert_equal "$(cat "$STUB_CALLS/claude-bg.pwd")" "$TEAM_HOME
+$CONVENTIONER
 $SITE"
-  local probe
+  local home probe
+  home=$(printf '%s' "$TEAM_HOME" | sha256sum | cut -c1-8)
   probe=$(printf '%s' "$CONVENTIONER" | sha256sum | cut -c1-8)
-  assert_equal "$(stub_calls claude | jq -r 'select(.[0] | IN("--bg", "stop", "rm")) | join(" ")')" "--bg --name team-doctor-trust-conventioner
+  assert_equal "$(stub_calls claude | jq -r 'select(.[0] | IN("--bg", "stop", "rm")) | join(" ")')" "--bg --name team-doctor-home-trust
+stop $home
+rm $home
+--bg --name team-doctor-trust-conventioner
 stop $probe
 rm $probe
 --bg --name team-doctor-trust-site
@@ -144,6 +251,36 @@ esac
 EOF
   run_bin -1 team-doctor
   assert_equal "$(line_of 'trust site')" "FAIL trust site: \`claude --bg\` in ~/projects/site printed no session id (exit 3): error: unknown option '--bg'; fix: the tool claude and claude login lines"
+}
+
+@test "trust team home: probed in the team home, where the coordinator starts, unless a project's trust line covers it" {
+  tools_at arch
+  local shown=${TEAM_HOME/#"$HOME"/\~}
+  echo "$TEAM_HOME" >"$STUB_FIXTURES/untrusted"
+  run_bin -1 team-doctor
+  assert_equal "$(grep -v '^PASS ' <<<"$output")" "FAIL trust team home: claude --bg in $shown says Workspace not trusted; fix: Daniel runs claude once in $shown and accepts the trust dialog"
+  # Before the projects' lines, after the records'.
+  assert_equal "$(checks | grep -A1 -B1 '^trust team home$')" "records
+trust team home
+captures"
+  [[ $(checks | grep -n '^trust team home$' | cut -d: -f1) -lt $(checks | grep -n '^checkout conventioner$' | cut -d: -f1) ]]
+
+  # A team home that is a registered project's primary checkout (the code checkout, agent-team's,
+  # where no records were split off) is that project's trust line's to probe.
+  cp "$TEAM_HOME/projects.toml" "$SITE/"
+  echo "$SITE" >"$STUB_FIXTURES/untrusted"
+  : >"$STUB_CALLS/claude-bg.pwd"
+  TEAM_HOME=$SITE run_bin -1 team-doctor
+  assert_equal "$(line_of 'trust team home')" "PASS trust team home: not probed apart, since ~/projects/site is site's primary checkout, which the trust site line probes"
+  assert_equal "$(line_of 'trust site')" "FAIL trust site: claude --bg in ~/projects/site says Workspace not trusted; fix: Daniel runs claude once in ~/projects/site and accepts the trust dialog"
+  assert_equal "$(cat "$STUB_CALLS/claude-bg.pwd")" "$CONVENTIONER
+$SITE"
+
+  # No directory to probe: the team home line fails, and this one only says so.
+  : >"$STUB_CALLS/claude-bg.pwd"
+  TEAM_HOME=$BATS_TEST_TMPDIR/gone run_bin -1 team-doctor
+  assert_equal "$(line_of 'trust team home')" "WARN trust team home: not probed, since $BATS_TEST_TMPDIR/gone is not a directory; fix: the team home line's fix"
+  assert_equal "$(cat "$STUB_CALLS/claude-bg.pwd")" ""
 }
 
 @test "unpushed local branches and a dirty primary checkout warn, each by name" {
@@ -179,4 +316,111 @@ WARN changes site: changes to tracked files: README.md; untracked files: notes.t
   echo '[broken]' >"$TEAM_HOME/projects.toml"
   run_bin -1 team-doctor
   assert_contains "$(line_of projects)" "FAIL projects: $TEAM_HOME/projects.toml: broken: missing required key 'repo'"
+}
+
+# A stack block for <project>, with its primary checkout <path>: its wrapper, committed there,
+# prints a config of one service per <mem_limit> (in bytes) and logs each call's directory,
+# TH_DIR, COMPOSE_PROJECT_NAME, TH_PORTS, TH_WEB_PORT and arguments in $BATS_TEST_TMPDIR/compose-calls;
+# it fails when $BATS_TEST_TMPDIR/<project>-config.fail exists. give_stack <project> <path> <mem_limit>...
+give_stack() {
+  local project=$1 path=$2 services
+  services=$(printf '%s\n' "${@:3}" | jq -sc 'to_entries | map({key: "s\(.key)", value: {mem_limit: (.value | tostring)}}) | from_entries')
+  mkdir -p "$path/scripts"
+  cat >"$path/scripts/compose.sh" <<SCRIPT
+#!/usr/bin/env bash
+echo "\$PWD \$TH_DIR \$COMPOSE_PROJECT_NAME \$TH_PORTS \${TH_WEB_PORT-unset} \$*" >>"$BATS_TEST_TMPDIR/compose-calls"
+echo "compose.sh: project=\$COMPOSE_PROJECT_NAME, ports=auto" >&2
+if [[ -e "$BATS_TEST_TMPDIR/$project-config.fail" ]]; then echo "compose.sh: no docker-compose.yml in '\$TH_DIR'" >&2; exit 1; fi
+jq -n --arg name "\$COMPOSE_PROJECT_NAME" '{name: \$name, services: $services}'
+SCRIPT
+  chmod +x "$path/scripts/compose.sh"
+  git -C "$path" add scripts/compose.sh
+  git -C "$path" commit -q -m "feat: add the stack's wrapper"
+  git -C "$path" update-ref refs/remotes/origin/main HEAD
+  printf '\n[%s.stack]\ncompose = "scripts/compose.sh"\nseed = "scripts/seed.sh"\nlog_services = ["s0"]\n' "$project" \
+    >>"$TEAM_HOME/projects.toml"
+}
+
+@test "with no registered project's stack block, the stack memory line says so and passes" {
+  tools_at arch
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'stack memory')" "PASS stack memory: no registered project has a stack block"
+}
+
+@test "on macOS the stack memory line weighs Docker's VM's MemTotal less each stack's mem_limits against the floor, half the VM unless memory_floor_gib is set" {
+  on_macos
+  tools_at macos
+  # Daniel's laptop's VM, and a Conventioner stack's 2.75 GiB of mem_limits.
+  give_stack conventioner "$CONVENTIONER" 805306368 1073741824 1073741824
+  answer "docker info --format {{.MemTotal}}" 8319770624
+  COMPOSE_PROJECT_NAME=other TH_PORTS='' TH_WEB_PORT=5000 run_bin -0 team-doctor
+  assert_equal "$(grep -v '^PASS ' <<<"$output")" ""
+  assert_equal "$(line_of 'stack memory')" "PASS stack memory: with nothing else running, Docker's VM's 7.7 GiB leaves at least the floor after a stack of each project (floor 3.9 GiB, the macOS default: half of Docker's VM's 7.7 GiB): conventioner's 2.8 GiB of mem_limits leaves 5.0 GiB"
+  # The wrapper was asked for its config in the primary checkout, as a project of its own whose
+  # ports Docker assigns, the caller's stack identity cleared.
+  assert_equal "$(cat "$BATS_TEST_TMPDIR/compose-calls")" "$CONVENTIONER $CONVENTIONER team-doctor-conventioner auto unset config --format json"
+
+  # A set floor that leaves room for no stack warns, never fails.
+  echo '{"memory_floor_gib": 6}' >"$HOME/.config/agent-team/stack.json"
+  run_bin -0 team-doctor
+  assert_equal "$(grep -v '^PASS ' <<<"$output")" "WARN stack memory: with nothing else running, Docker's VM's 7.7 GiB leaves less than the floor after a stack of conventioner (floor 6 GiB, memory_floor_gib in stack.json), so team-stack up refuses it: conventioner's 2.8 GiB of mem_limits leaves 5.0 GiB; fix: Daniel gives Docker Desktop more memory (Settings, Resources) or sets a lower memory_floor_gib in ~/.config/agent-team/stack.json"
+  echo '{"memory_floor_gib": 1}' >"$HOME/.config/agent-team/stack.json"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'stack memory')" "PASS stack memory: with nothing else running, Docker's VM's 7.7 GiB leaves at least the floor after a stack of each project (floor 1 GiB, memory_floor_gib in stack.json): conventioner's 2.8 GiB of mem_limits leaves 5.0 GiB"
+
+  # Docker not answering: the line says so and passes.
+  printf 'echo %q >&2\nexit 1\n' "Cannot connect to the Docker daemon at unix:///Users/daniel/.docker/run/docker.sock." \
+    >"$TOOL_ANSWERS/docker/info_--format_{{.MemTotal}}.sh"
+  run_bin team-doctor
+  assert_equal "$(line_of 'stack memory')" "PASS stack memory: unknown, since docker info does not answer (the docker line)"
+}
+
+@test "on Linux the stack memory line reads the host's MemTotal against 6 GiB, names each project a stack of which leaves less, and says which it cannot weigh" {
+  tools_at arch
+  export TEAM_MEMINFO=$BATS_TEST_TMPDIR/meminfo
+  printf 'MemTotal:        8388608 kB\nMemFree:          1048576 kB\nMemAvailable:    4194304 kB\n' >"$TEAM_MEMINFO"
+  give_stack conventioner "$CONVENTIONER" 805306368 1073741824 1073741824
+  give_stack site "$SITE" 536870912
+  run_bin -0 team-doctor
+  assert_equal "$(grep -v '^PASS ' <<<"$output")" "WARN stack memory: with nothing else running, this machine's 8.0 GiB (MemTotal) leaves less than the floor after a stack of conventioner (floor 6 GiB, the Linux default), so team-stack up refuses it: conventioner's 2.8 GiB of mem_limits leaves 5.3 GiB; fix: Daniel sets a lower memory_floor_gib in ~/.config/agent-team/stack.json, or gives this machine more memory"
+  echo '{"memory_floor_gib": 5}' >"$HOME/.config/agent-team/stack.json"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'stack memory')" "PASS stack memory: with nothing else running, this machine's 8.0 GiB (MemTotal) leaves at least the floor after a stack of each project (floor 5 GiB, memory_floor_gib in stack.json): conventioner's 2.8 GiB of mem_limits leaves 5.3 GiB, site's 0.5 GiB leaves 7.5 GiB"
+
+  # A wrapper whose config fails, or that is not there, leaves its project unweighed.
+  touch "$BATS_TEST_TMPDIR/site-config.fail"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'stack memory')" "PASS stack memory: with nothing else running, this machine's 8.0 GiB (MemTotal) leaves at least the floor after a stack of each project (floor 5 GiB, memory_floor_gib in stack.json): conventioner's 2.8 GiB of mem_limits leaves 5.3 GiB; unknown for site, since scripts/compose.sh config --format json failed: compose.sh: no docker-compose.yml in '$SITE'"
+  git -C "$CONVENTIONER" rm -q scripts/compose.sh
+  git -C "$CONVENTIONER" commit -q -m "chore: drop the wrapper"
+  git -C "$CONVENTIONER" update-ref refs/remotes/origin/main HEAD
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'stack memory')" "PASS stack memory: unknown for conventioner, since its checkout has no scripts/compose.sh; unknown for site, since scripts/compose.sh config --format json failed: compose.sh: no docker-compose.yml in '$SITE'"
+
+  # A stack.json team-stack would refuse warns with its problems.
+  echo '{"memory_floor_gib": "1", "stack_caps": 2}' >"$HOME/.config/agent-team/stack.json"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'stack memory')" "WARN stack memory: ~/.config/agent-team/stack.json: memory_floor_gib must be a number of 0 or more, not \"1\"; stack_caps is not a setting (they are: stack_cap, memory_floor_gib, disk_floor_gb, wait_minutes, idle_minutes, heartbeat_sweep, heartbeat_janitor); fix: correct it as team-stack --help describes, since team-stack up refuses it too"
+}
+
+@test "a checkout and the team home named by another spelling of their paths pass as the directory they are (report F6)" {
+  tools_at arch
+  local site home
+  site=$(other_spelling "$SITE")
+  sed -i "s#^path = \"projects/site\"#path = \"projects/${site##*/}\"#" "$TEAM_HOME/projects.toml"
+  home=$(other_spelling "$TEAM_HOME")
+  TEAM_HOME=$home run_bin -0 team-doctor
+  assert_equal "$(line_of 'checkout site')" "PASS checkout site: ~/projects/${site##*/}, a primary checkout"
+  assert_equal "$(line_of 'team home')" "PASS team home: $home, named by TEAM_HOME: a checkout of its own on dev, with an origin"
+
+  # A team home that is a project's primary checkout is so however either is spelled.
+  cp "$TEAM_HOME/projects.toml" "$SITE/"
+  TEAM_HOME=$SITE run_bin -1 team-doctor
+  assert_equal "$(line_of 'trust team home')" "PASS trust team home: not probed apart, since ~/projects/site is site's primary checkout, which the trust site line probes"
+
+  # Still by identity: a worktree of another checkout is no primary checkout, however spelled.
+  rm -rf "$SITE"
+  git -C "$CONVENTIONER" worktree add -q --detach "$SITE"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of 'checkout site')" "FAIL checkout site: ~/projects/${site##*/} is a worktree of ~/projects/Conventioner, not a primary checkout; fix: move it aside, then git clone https://github.com/owner/site.git ~/projects/${site##*/}"
 }

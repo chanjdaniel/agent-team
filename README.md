@@ -46,6 +46,7 @@ The scripts depend on the team home holding:
 
 `tests/run` runs shellcheck on every shell script, the bats suite (bats-core is vendored) and the toolkit tests.
 `tests/run shellcheck`, `tests/run bats` and `tests/run toolkits` run one part each.
+All but `tests/run shellcheck` wait their turn for the machine's heavy-run lock (`bin/team-heavy`), so two suites never overlap.
 The suite runs the real scripts in a sandbox with a temporary home, stubs for every outside service and a team home of fixtures, so it needs no records and reaches no real service.
 
 ## License

@@ -8,7 +8,8 @@
 # file, ~/.claude.json or ~/.claude/channels/ is read, and no line carries a secret. Read-only,
 # but for the trust probes' sessions, which it removes.
 # TEAM_OS_RELEASE names the os-release file to read instead of /etc/os-release, TEAM_1PASSWORD_APP
-# the 1Password app to look for, and TEAM_CHROME the browser (the tests' seams).
+# the 1Password app to look for, TEAM_CHROME the browser, and TEAM_MEMINFO the file read in place
+# of /proc/meminfo (the tests' seams).
 # Exit 0 nothing failed, 1 a check failed, 2 usage error.
 # The checks, in order, one file each in bin/lib/doctor.d/, sourced in the order of their names
 # (three digits by tens, so a new check goes between two without renaming any), each calling the
@@ -51,12 +52,6 @@ report() {
   printf '%s\n' "$line"
 }
 
-# Run <command...> for at most <seconds>, or unbounded where there is no timeout (macOS
-# without coreutils): bounded <seconds> <command...>
-bounded() {
-  if command -v timeout >/dev/null; then timeout "$@"; else "${@:2}"; fi
-}
-
 # The first line a command wrote to stderr (in $err), without its "<script>: " prefix.
 first_error() {
   local line
@@ -80,38 +75,31 @@ tilde() {
   printf '%s\n' "${1/#"$HOME"/\~}"
 }
 
-
-# The trust line of <project>, from a promptless background session started in its checkout
-# <path>: Claude Code refuses one in an untrusted root with "Workspace not trusted". The probe
-# goes either way: the session it printed, and any session of its name (one an earlier run left).
+# The trust line of <project> (or "team home"), from trust_probe in its root <path> with the probe
+# session <name> (team-doctor-trust-<project> by default).
 probe_trust() {
-  local project=$1 path=$2 name=team-doctor-trust-$1 out rc=0 ids id left=() shown reason
+  local project=$1 path=$2 name=${3:-team-doctor-trust-$1} shown reason
   shown=$(tilde "$path")
-  out=$(cd "$path" && bounded 60 claude --bg --name "$name" 2>&1 </dev/null) || rc=$?
-  ids=$({
-    [[ $out == *"Workspace not trusted"* ]] || grep -oE '\b[0-9a-f]{8}\b' <<<"$out" | head -n 1
-    bounded 30 claude agents --json 2>/dev/null </dev/null | jq -r --arg name "$name" 'arrays | .[] | objects
-      | select(.name == $name) | .id // ((.sessionId // "")[:8]) | strings' 2>/dev/null || true
-  } | awk 'NF && !seen[$0]++')
-  for id in $ids; do
-    bounded 30 claude stop "$id" >/dev/null 2>&1 </dev/null || true
-    bounded 30 claude rm "$id" >/dev/null 2>&1 </dev/null || left+=("$id")
-  done
-  if [[ $out == *"Workspace not trusted"* ]]; then
-    reason="claude --bg in $shown says Workspace not trusted"
-    ((${#left[@]} == 0)) || reason+="; its probe session ${left[*]} is left (claude rm ${left[*]})"
-    report "trust $project" FAIL "$reason" "Daniel runs claude once in $shown and accepts the trust dialog"
-  elif ((rc == 0)) && [[ -n $ids ]]; then
-    if ((${#left[@]} == 0)); then
-      report "trust $project" PASS "claude starts background sessions in $shown"
-    else
-      report "trust $project" WARN "claude starts background sessions in $shown, but its probe session ${left[*]} is left" \
-        "claude rm ${left[*]}"
-    fi
-  else
-    report "trust $project" FAIL "\`claude --bg\` in $shown printed no session id (exit $rc): $(grep -m1 . <<<"$out" || true)" \
-      "the tool claude and claude login lines"
-  fi
+  trust_probe "$path" "$name"
+  case $trust_verdict in
+    untrusted)
+      reason="claude --bg in $shown says Workspace not trusted"
+      ((${#trust_left[@]} == 0)) || reason+="; its probe session ${trust_left[*]} is left (claude rm ${trust_left[*]})"
+      report "trust $project" FAIL "$reason" "Daniel runs claude once in $shown and accepts the trust dialog"
+      ;;
+    trusted)
+      if ((${#trust_left[@]} == 0)); then
+        report "trust $project" PASS "claude starts background sessions in $shown"
+      else
+        report "trust $project" WARN "claude starts background sessions in $shown, but its probe session ${trust_left[*]} is left" \
+          "claude rm ${trust_left[*]}"
+      fi
+      ;;
+    *)
+      report "trust $project" FAIL "\`claude --bg\` in $shown printed no session id (exit $trust_rc): $(grep -m1 . <<<"$trust_out" || true)" \
+        "the tool claude and claude login lines"
+      ;;
+  esac
 }
 
 # What the checks read: bin/, and what a check leaves for the later ones: the OS (macos, arch, or

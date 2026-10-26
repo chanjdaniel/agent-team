@@ -14,6 +14,14 @@ setup() {
   docker_stub "$STACK_WORKTREE"
 }
 
+# Fail when any docker call of the test pruned: every removal names its object.
+teardown() {
+  if [[ -n ${DOCKER_STATE:-} ]] && docker_calls | grep -E '(system|volume|image|network|builder|buildx|container) prune'; then
+    echo "a docker call pruned" >&2
+    return 1
+  fi
+}
+
 # The calls a read-only command may make: their first words.
 READ_ONLY='^(compose ls|ps|inspect|stats --no-stream|system df|volume ls|network ls)( |$)'
 
@@ -28,6 +36,16 @@ assert_read_only() {
 # The class of the item named <name> in the list <list> of team-stack ls --all --json's output.
 class_of() {
   jq -r --arg list "$1" --arg name "$2" '.[$list][] | select(.name == $name or .repository == $name) | .class' <<<"$output"
+}
+
+# The reaper's lines that remove (or would), one per line, without their verb.
+removals() {
+  sed -n -E 's/^(would remove|removed) //p' <<<"$output"
+}
+
+# The reaper's kept lines without their verb and age: "<type> <name> (<class>[, <size>])".
+kept() {
+  sed -n -E 's/^kept (.*), [0-9]+[smhd] old\)$/\1)/p' <<<"$output"
 }
 
 @test "ls lists every Compose project with its status, class, task, kind, worktree, age and memory" {
@@ -227,21 +245,21 @@ unowned 4"
 
 @test "another subcommand, a missing one or an unknown option is a usage error naming the subcommands" {
   run_bin -2 --separate-stderr team-stack start
-  assert_equal "$stderr" "team-stack: unknown subcommand 'start'; the subcommands are: ls, up, env, seed, stop, down"
+  assert_equal "$stderr" "team-stack: unknown subcommand 'start'; the subcommands are: ls, up, env, seed, stop, down, sweep, reap"
   run_bin -2 --separate-stderr team-stack
-  assert_equal "$stderr" "team-stack: usage: team-stack ls|up|env|seed|stop|down [options]; team-stack --help says more"
+  assert_equal "$stderr" "team-stack: usage: team-stack ls|up|env|seed|stop|down|sweep|reap [options]; team-stack --help says more"
   run_bin -2 --separate-stderr team-stack ls --bogus
   assert_equal "$stderr" "team-stack: usage: team-stack ls [--all] [--json]"
   run_bin -2 --separate-stderr team-stack up --bogus
-  assert_equal "$stderr" "team-stack: usage: team-stack up [--worktree <path>] [--task T<n>] [--no-seed]"
+  assert_equal "$stderr" "team-stack: usage: team-stack up [--worktree <path>] [--instance <name>] [--task T<n>] [--no-seed]"
   run_bin -2 --separate-stderr team-stack up --task 22
   assert_equal "$stderr" "team-stack: --task must look like T<n>, got '22'"
   local cmd
   for cmd in env seed stop down; do
     run_bin -2 --separate-stderr team-stack "$cmd" --task T22
-    assert_equal "$stderr" "team-stack: usage: team-stack $cmd [--worktree <path>]"
+    assert_equal "$stderr" "team-stack: usage: team-stack $cmd [--worktree <path>] [--instance <name>]"
     run_bin -2 --separate-stderr team-stack "$cmd" --worktree
-    assert_equal "$stderr" "team-stack: usage: team-stack $cmd [--worktree <path>]"
+    assert_equal "$stderr" "team-stack: usage: team-stack $cmd [--worktree <path>] [--instance <name>]"
   done
   assert_equal "$(docker_calls)" ""
 }
@@ -250,7 +268,7 @@ unowned 4"
   run_bin -0 team-stack --help
   assert_equal "${lines[0]}" "$(sed -n '2s/^# //p' "$REPO_ROOT/bin/team-stack")"
   assert_contains "$output" "team-stack ls [--all] [--json]"
-  assert_contains "$output" "team-stack up [--worktree <path>] [--task T<n>] [--no-seed]"
+  assert_contains "$output" "team-stack up [--worktree <path>] [--instance <name>] [--task T<n>] [--no-seed]"
 }
 
 # Every removal names its object, so no team script prunes (sops/docker.md).
@@ -332,6 +350,14 @@ compose up -d --wait
 compose port web 80"
   # The other stacks are untouched.
   assert_equal "$(docker_calls | grep -E '^compose -p ' || true)" ""
+}
+
+@test "the ledger gives the worktree to its task however it spells it, and a primary checkout spelled otherwise is refused (report F6)" {
+  open_task T22 "$(other_spelling "$STACK_WORKTREE")"
+  run_bin -0 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
+  assert_equal "$(stack_labels | jq -r .task)" T22
+  run_bin -1 --separate-stderr team-stack env --worktree "$(other_spelling "$STACK_PRIMARY")"
+  assert_contains "$stderr" "is a primary checkout, whose stack is Daniel's primary stack"
 }
 
 @test "up takes --task when the ledger gives the worktree to no open task" {
@@ -653,13 +679,16 @@ ups() {
   assert_equal "$(ups)" 1
 }
 
-@test "up refuses when the memory left after the stack's limits is under memory_floor_gib" {
+@test "up refuses when the memory left after the stack's limits is under the floor, on Linux 6 GiB unless memory_floor_gib is set" {
   open_task T22
   stack_settings '{"wait_minutes": 0}'
   machine_memory $((6 * 1024 * 1024))
   run_bin -75 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
-  assert_equal "$stderr" "team-stack: no room for $PROJECT: 5.9 GiB available after this stack's 0.1 GiB (memory_floor_gib 6)"
+  assert_equal "$stderr" "team-stack: no room for $PROJECT: 5.9 GiB available after this stack's 0.1 GiB (floor 6 GiB, the Linux default)"
   assert_equal "$(ups)" 0
+  stack_settings '{"wait_minutes": 0, "memory_floor_gib": 5.95}'
+  run_bin -75 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
+  assert_equal "$stderr" "team-stack: no room for $PROJECT: 5.9 GiB available after this stack's 0.1 GiB (floor 5.95 GiB, memory_floor_gib in stack.json)"
   stack_settings '{"wait_minutes": 0, "memory_floor_gib": 5.5}'
   run_bin -0 team-stack up --worktree "$STACK_WORKTREE"
 }
@@ -680,7 +709,7 @@ ups() {
   stack_settings '{"stack_cap": 2, "memory_floor_gib": 8, "disk_floor_gb": 300, "wait_minutes": 0}'
   machine_memory $((4 * 1024 * 1024))
   run_bin -75 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
-  local reasons='["3 of 2 stacks running (stack_cap 2)","3.9 GiB available after this stack'"'"'s 0.1 GiB (memory_floor_gib 8)","214.7 GB free on the file system of /var/lib/docker (disk_floor_gb 300)"]'
+  local reasons='["3 of 2 stacks running (stack_cap 2)","3.9 GiB available after this stack'"'"'s 0.1 GiB (floor 8 GiB, memory_floor_gib in stack.json)","214.7 GB free on the file system of /var/lib/docker (disk_floor_gb 300)"]'
   assert_equal "$stderr" "team-stack: no room for $PROJECT: $(jq -r 'join("; ")' <<<"$reasons")"
   # wait_minutes 0: no wait announced, one wait logged, not admitted.
   assert_equal "$(waits_log | wc -l)" 1
@@ -821,11 +850,42 @@ SH
   run_bin -0 team-stack down --worktree "$STACK_WORKTREE"
   stack_settings '{"wait_minutes": 0, "memory_floor_gib": 7}'
   run_bin -75 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
-  assert_equal "$stderr" "team-stack: no room for $PROJECT: 6.9 GiB available after this stack's 0.1 GiB (memory_floor_gib 7)"
+  assert_equal "$stderr" "team-stack: no room for $PROJECT: 6.9 GiB available after this stack's 0.1 GiB (floor 7 GiB, memory_floor_gib in stack.json)"
   machine_disk_free $((20000000000 / 1024))
   stack_settings '{"wait_minutes": 0}'
   run_bin -75 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
   assert_equal "$stderr" "team-stack: no room for $PROJECT: 20.0 GB free on the file system of $HOME (disk_floor_gb 30)"
+}
+
+@test "on macOS with no memory_floor_gib, the floor is half of Docker's VM, so a 7.7 GiB VM with nothing running admits a 2.8 GiB stack" {
+  as_macos
+  open_task T22
+  stack_settings '{"wait_minutes": 0}'
+  # Daniel's laptop's VM (MemTotal 8319770624, 7.7 GiB) and a Conventioner stack's 2.75 GiB of
+  # mem_limits: 5.0 GiB left, over the default floor of 3.9 GiB.
+  docker_state info '.MemTotal = 8319770624'
+  stack_mem_limit $((2816 * 1024 * 1024))
+  mkdir "$BATS_TEST_TMPDIR/fixture-machine"
+  cp "$DOCKER_STATE"/*.json "$BATS_TEST_TMPDIR/fixture-machine/"
+  docker_empty
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
+  assert_equal "$(ups)" 1
+  run_bin -0 team-stack down --worktree "$STACK_WORKTREE"
+
+  # The fixture machine's three running projects, one of them using 1.2 GiB: 1.8 GiB in use leaves
+  # 3.2 GiB after the stack, under the floor, which the refusal names with where it came from.
+  cp "$BATS_TEST_TMPDIR/fixture-machine"/*.json "$DOCKER_STATE/"
+  docker_state stats 'map(if .Name == "conventioner-2-mongodb-1" then .MemUsage = "1.2GiB / 1GiB" else . end)'
+  run_bin -75 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
+  assert_equal "$stderr" "team-stack: no room for $PROJECT: 3.2 GiB available after this stack's 2.8 GiB (floor 3.9 GiB, the macOS default: half of Docker's VM's 7.7 GiB)"
+  assert_equal "$(ups)" 1
+  # A memory_floor_gib that is set is the floor as given.
+  stack_settings '{"wait_minutes": 0, "memory_floor_gib": 3.5}'
+  run_bin -75 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
+  assert_equal "$stderr" "team-stack: no room for $PROJECT: 3.2 GiB available after this stack's 2.8 GiB (floor 3.5 GiB, memory_floor_gib in stack.json)"
+  stack_settings '{"wait_minutes": 0, "memory_floor_gib": 1}'
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
+  assert_equal "$(ups)" 2
 }
 
 @test "a malformed stack.json is exit 1 with the reason, before Docker is asked anything" {
@@ -847,4 +907,841 @@ SH
   # Every key, of the right types, is accepted.
   stack_settings '{"stack_cap": 6, "memory_floor_gib": 6, "disk_floor_gb": 30, "wait_minutes": 15, "idle_minutes": 30, "heartbeat_sweep": false, "heartbeat_janitor": false}'
   run_bin -0 team-stack up --worktree "$STACK_WORKTREE"
+}
+
+# session <cwd> <status> [<kind>]: one live session as claude agents --json lists it.
+session() {
+  jq -cn --arg cwd "$1" --arg status "$2" --arg kind "${3:-background}" \
+    '{pid: 4242, cwd: $cwd, kind: $kind, startedAt: 1761098400000, sessionId: "5e55a0b1-1111-4222-8333-444455556666",
+      name: "T7-builder", status: $status, id: "5e55a0b1", state: null}'
+}
+
+# sessions [<session JSON>...]: the live session list.
+sessions() {
+  stub_reply claude "$(jq -cs . <<<"$*")"
+}
+
+# The projects the sweep asked Compose to stop, one per line.
+stopped() {
+  docker_calls | sed -n 's/^compose -p \(.*\) stop$/\1/p'
+}
+
+# The running containers of <project> started <seconds> ago: started <project> <seconds>
+started() {
+  docker_state containers "map(if .Config.Labels[\"com.docker.compose.project\"] == \"$1\" and .State.Running
+    then .State.StartedAt = (now - $2 | todate) else . end)"
+}
+
+# The sweep's state file of <project>, holding <JSON>: sweep_state <project> <JSON>
+sweep_state() {
+  mkdir -p "$HOME/.local/state/agent-team/stacks"
+  printf '%s\n' "$2" >"$HOME/.local/state/agent-team/stacks/$1.json"
+}
+
+# The last_busy the sweep's state file of <project> holds, as seconds before now.
+busy_ago() {
+  jq -r '.last_busy | now - fromdate | floor' "$HOME/.local/state/agent-team/stacks/$1.json"
+}
+
+@test "sweep keeps a stack with a busy session in its worktree, interactive ones included, and writes when it was busy" {
+  sessions "$(session "$STACK_WORKTREE" busy interactive)" "$(session "$HOME/elsewhere" idle)"
+  run_bin -0 --separate-stderr team-stack sweep
+  assert_equal "$output" ""
+  assert_equal "$stderr" ""
+  assert_equal "$(stopped)" ""
+  (($(busy_ago conventioner-2) < 60))
+  assert_equal "$(jq -c 'keys' "$HOME/.local/state/agent-team/stacks/conventioner-2.json")" '["last_busy"]'
+  # Only running team stacks get a state file.
+  assert_equal "$(ls "$HOME/.local/state/agent-team/stacks")" conventioner-2.json
+  assert_equal "$(stub_calls claude)" '["agents","--json"]'
+}
+
+@test "sweep stops a stack whose last busy time is older than idle_minutes, logs the line and prints it, its data kept" {
+  sessions "$(session "$STACK_WORKTREE" idle)"
+  sweep_state conventioner-2 "{\"last_busy\": \"$(date -u -d '31 minutes ago' +%FT%TZ)\"}"
+  started conventioner-2 7200
+  local since
+  since=$(jq -r .last_busy "$HOME/.local/state/agent-team/stacks/conventioner-2.json")
+  run_bin -0 --separate-stderr team-stack sweep
+  assert_equal "$stderr" ""
+  [[ $output =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z\ stopped\ conventioner-2\ of\ T7\ in\ $STACK_WORKTREE:\ last\ busy\ at\ $since\ \(idle_minutes\ 30\),\ its\ data\ kept$ ]]
+  assert_equal "$(cat "$HOME/.local/state/agent-team/stacks/sweep.log")" "$output"
+  assert_equal "$(stopped)" conventioner-2
+  assert_equal "$(jq -r '[.[] | select(.Config.Labels["com.docker.compose.project"] == "conventioner-2") | .State.Status] | unique[]' "$DOCKER_STATE/containers.json")" exited
+  # Its volumes stay.
+  assert_equal "$(docker_calls | grep -E '^(compose -p [^ ]+ (down|rm)|volume rm|rm)( |$)' || true)" ""
+  # A second sweep finds nothing running to stop, and adds no line.
+  run_bin -0 team-stack sweep
+  assert_equal "$output" ""
+  assert_equal "$(stopped)" conventioner-2
+  assert_equal "$(wc -l <"$HOME/.local/state/agent-team/stacks/sweep.log")" 1
+}
+
+@test "sweep keeps a stack busy within idle_minutes, though no session is busy now" {
+  sessions
+  sweep_state conventioner-2 "{\"last_busy\": \"$(date -u -d '29 minutes ago' +%FT%TZ)\"}"
+  started conventioner-2 7200
+  run_bin -0 team-stack sweep
+  assert_equal "$output" ""
+  assert_equal "$(stopped)" ""
+}
+
+@test "sweep counts a stack never seen busy from its containers' start: stopped when old, kept when new" {
+  sessions "$(session "$STACK_WORKTREE" idle)"
+  started conventioner-2 600
+  stack_settings '{"idle_minutes": 15}'
+  run_bin -0 team-stack sweep
+  assert_equal "$output" ""
+  assert_equal "$(stopped)" ""
+  [[ ! -e $HOME/.local/state/agent-team/stacks/conventioner-2.json ]]
+  started conventioner-2 1000
+  local since
+  since=$(jq -r '[.[] | select(.Config.Labels["com.docker.compose.project"] == "conventioner-2") | .State.StartedAt] | max' "$DOCKER_STATE/containers.json")
+  run_bin -0 team-stack sweep
+  [[ $output == *" stopped conventioner-2 of T7 in $STACK_WORKTREE: not seen busy since its start at $since (idle_minutes 15), its data kept" ]]
+  assert_equal "$(stopped)" conventioner-2
+}
+
+@test "sweep counts a stack started again after its last busy time from that start" {
+  sessions
+  sweep_state conventioner-2 "{\"last_busy\": \"$(date -u -d '3 hours ago' +%FT%TZ)\"}"
+  started conventioner-2 120
+  run_bin -0 team-stack sweep
+  assert_equal "$(stopped)" ""
+}
+
+@test "sweep counts a busy session in a subdirectory of the worktree, never one in a sibling path with the same prefix" {
+  sessions "$(session "$STACK_WORKTREE/src/app" busy)"
+  run_bin -0 team-stack sweep
+  assert_equal "$(stopped)" ""
+  (($(busy_ago conventioner-2) < 60))
+  rm "$HOME/.local/state/agent-team/stacks/conventioner-2.json"
+  sessions "$(session "$STACK_WORKTREE-2" busy)" "$(session "${STACK_WORKTREE}x/src" busy)"
+  run_bin -0 team-stack sweep
+  assert_equal "$(stopped)" conventioner-2
+  [[ ! -e $HOME/.local/state/agent-team/stacks/conventioner-2.json ]]
+}
+
+@test "sweep counts a busy session in the worktree or below it spelled otherwise than its label (report F6)" {
+  local other
+  other=$(other_spelling "$STACK_WORKTREE")
+  sessions "$(session "$other" busy)"
+  run_bin -0 team-stack sweep
+  assert_equal "$(stopped)" ""
+  (($(busy_ago conventioner-2) < 60))
+  rm "$HOME/.local/state/agent-team/stacks/conventioner-2.json"
+  sessions "$(session "$other/src/app" busy)"
+  run_bin -0 team-stack sweep
+  assert_equal "$(stopped)" ""
+  (($(busy_ago conventioner-2) < 60))
+  rm "$HOME/.local/state/agent-team/stacks/conventioner-2.json"
+  sessions "$(session "$(other_spelling "$(dirname "$STACK_WORKTREE")")/${STACK_WORKTREE##*/}-2" busy)"
+  run_bin -0 team-stack sweep
+  assert_equal "$(stopped)" conventioner-2
+}
+
+@test "sweep never stops a gate or unowned stack, a gate run from a task's shell included, however long idle" {
+  sessions
+  # The gate run labelled from a shell with team-stack env's exports: owner agent-team, kind gate.
+  docker_state containers '(.[] | select(.Name == "/nmtest-1895520-frontend-1") | .Config.Labels)
+    |= . + {"io.github.chanjdaniel.team.owner": "agent-team", "io.github.chanjdaniel.team.task": "T7"}'
+  started nmtest-1895520 86400
+  started conventioner-3 86400
+  run_bin -0 team-stack sweep
+  # Only the idle team stack.
+  assert_equal "$(stopped)" conventioner-2
+  [[ ! -e $HOME/.local/state/agent-team/stacks/nmtest-1895520.json ]]
+  [[ ! -e $HOME/.local/state/agent-team/stacks/conventioner-3.json ]]
+  # A team project holding any object of another class is not the team's to stop either.
+  docker_state containers '(.[] | select(.Name == "/conventioner-2-mongodb-1") | .Config.Labels["io.github.chanjdaniel.team.owner"]) = ""
+    | (.[] | select(.Config.Labels["com.docker.compose.project"] == "conventioner-2") | .State) |= . + {Running: true, Status: "running"}'
+  run_bin -0 team-stack sweep
+  assert_equal "$(stopped)" conventioner-2
+}
+
+@test "sweep stops an instance's stack (kind e2e) by its worktree label like any team stack" {
+  docker_state containers '(.[] | select(.Config.Labels["com.docker.compose.project"] == "conventioner-2") | .Config.Labels)
+    |= . + {"io.github.chanjdaniel.team.kind": "e2e"}'
+  sessions "$(session "$STACK_WORKTREE" busy)"
+  run_bin -0 team-stack sweep
+  assert_equal "$(stopped)" ""
+  sessions
+  sweep_state conventioner-2 "{\"last_busy\": \"$(date -u -d '31 minutes ago' +%FT%TZ)\"}"
+  run_bin -0 team-stack sweep
+  assert_equal "$(stopped)" conventioner-2
+}
+
+@test "sweep reads a missing or unreadable state file as never seen busy, and a busy session writes it anew" {
+  sessions
+  started conventioner-2 120
+  sweep_state conventioner-2 'not json'
+  run_bin -0 --separate-stderr team-stack sweep
+  assert_equal "$stderr" ""
+  assert_equal "$(stopped)" ""
+  sweep_state conventioner-2 '{"last_busy": "yesterday"}'
+  run_bin -0 team-stack sweep
+  assert_equal "$(stopped)" ""
+  sessions "$(session "$STACK_WORKTREE" busy)"
+  run_bin -0 team-stack sweep
+  (($(busy_ago conventioner-2) < 60))
+  sessions
+  chmod 000 "$HOME/.local/state/agent-team/stacks/conventioner-2.json"
+  started conventioner-2 7200
+  run_bin -0 --separate-stderr team-stack sweep
+  chmod 644 "$HOME/.local/state/agent-team/stacks/conventioner-2.json"
+  assert_equal "$(stopped)" conventioner-2
+}
+
+@test "sweep with Docker not answering says on stderr that no stack runs and exits 0, without reading the session list" {
+  docker_down
+  run_bin -0 --separate-stderr team-stack sweep
+  assert_equal "$output" ""
+  assert_equal "$stderr" "team-stack: Docker does not answer (Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?), so no stack runs and there is nothing to sweep"
+  assert_equal "$(stub_calls claude)" ""
+}
+
+@test "sweep with the session list unreadable exits 1 and stops nothing" {
+  stub_reply claude 'claude: not logged in' 1
+  run_bin -1 --separate-stderr team-stack sweep
+  assert_equal "$stderr" "team-stack: cannot read the live session list (claude agents --json)"
+  assert_equal "$output" ""
+  assert_equal "$(stopped)" ""
+  [[ ! -e $HOME/.local/state/agent-team/stacks/sweep.log ]]
+  # A list that is not a JSON array is unreadable too.
+  stub_reply claude '{"sessions": []}'
+  run_bin -1 team-stack sweep
+  assert_equal "$(stopped)" ""
+}
+
+@test "sweep with no running team stack asks nothing of the session list" {
+  docker_state containers 'map(select(.Config.Labels["com.docker.compose.project"] != "conventioner-2"))'
+  run_bin -0 --separate-stderr team-stack sweep
+  assert_equal "$output$stderr" ""
+  assert_equal "$(stub_calls claude)" ""
+}
+
+@test "a stop that fails is reported on stderr, the other stacks are still swept, and the sweep exits 1" {
+  sessions
+  docker_state containers '(.[] | select(.Name == "/conventioner-3-backend-1") | .Config.Labels)
+    |= . + {"io.github.chanjdaniel.team.owner": "agent-team", "io.github.chanjdaniel.team.task": "T8"}'
+  docker_fail 'compose stop' 'Error response from daemon: cannot stop container: permission denied'
+  run_bin -1 --separate-stderr team-stack sweep
+  assert_equal "$stderr" "team-stack: docker compose stop of conventioner-2 failed: Error response from daemon: cannot stop container: permission denied
+team-stack: docker compose stop of conventioner-3 failed: Error response from daemon: cannot stop container: permission denied"
+  assert_equal "$output" ""
+  [[ ! -e $HOME/.local/state/agent-team/stacks/sweep.log ]]
+}
+
+@test "sweep takes no options, and reads idle_minutes through the checked settings" {
+  run_bin -2 --separate-stderr team-stack sweep --all
+  assert_equal "$stderr" "team-stack: usage: team-stack sweep"
+  stack_settings '{"idle_minutes": "30"}'
+  run_bin -1 --separate-stderr team-stack sweep
+  assert_equal "$stderr" "team-stack: $HOME/.config/agent-team/stack.json: idle_minutes must be a number of 0 or more, not \"30\""
+  assert_equal "$(docker_calls)" ""
+}
+
+@test "down removes the sweep's state file of the stack" {
+  open_task T22
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
+  sweep_state "$PROJECT" '{"last_busy": "2026-10-25T09:00:00Z"}'
+  sweep_state conventioner-2 '{"last_busy": "2026-10-25T09:00:00Z"}'
+  run_bin -0 team-stack down --worktree "$STACK_WORKTREE"
+  [[ ! -e $HOME/.local/state/agent-team/stacks/$PROJECT.json ]]
+  [[ -e $HOME/.local/state/agent-team/stacks/conventioner-2.json ]]
+}
+
+# reap, on the fixture machine: conventioner-4's worktree is gone, nmtest-1895520 is past its
+# expires and nmtest-12822 is a gate stack from before the labels, made on 2026-10-21. The other
+# objects whose rules depend on their age are made young by reap_machine (tests/helpers/docker.bash),
+# and each test ages the ones it needs.
+
+# The fixture's unattached anonymous volumes, the old and young ones once a test ages them.
+OLD_ANONYMOUS=d34171881feb5b31166cdd67ec7d406dc769ac4c3c5dafb72ee98f6ef0a9e7ce
+YOUNG_ANONYMOUS=05ab97f3ee4e69dfc7abe03f10bb3cb0115bfafead15e5f74babe7e369cda85e
+
+# Add an image row to the machine: add_image <repository> <tag> <seconds ago>
+add_image() {
+  local id
+  id=sha256:$(sha256sum <<<"$1:$2" | cut -d ' ' -f 1)
+  docker_state images '. + [{Containers: "0", CreatedAt: "", CreatedSince: "", Digest: "", ID: $id, Repository: $repo,
+    SharedSize: "N/A", Size: "534MB", Tag: $tag, UniqueSize: "N/A"}]' --arg id "$id" --arg repo "$1" --arg tag "$2"
+  docker_created image "$1:$2" "$3"
+}
+
+# Set the team label <key> to <value> on every object of the Compose project <project>.
+relabel() {
+  local file
+  for file in containers volumes networks; do
+    docker_state "$file" 'map(if ((.Config.Labels // .Labels)["com.docker.compose.project"]) == $p then
+        (if .Config then .Config.Labels else .Labels end)["io.github.chanjdaniel.team." + $k] = $v else . end)' \
+      --arg p "$1" --arg k "$2" --arg v "$3"
+  done
+}
+
+
+@test "reap's dry run prints each action with its object, rule and size, lists what it keeps that is not the team's, and changes nothing" {
+  reap_machine
+  local before
+  before=$(cat "$DOCKER_STATE"/*.json | sha256sum)
+  local gone=$HOME/.treehouse/Conventioner-d4c77a/4/Conventioner
+  run_bin -0 --separate-stderr team-stack reap
+  assert_equal "$stderr" ""
+  assert_equal "$(removals)" "stack conventioner-4 (team, 0 B): its worktree $gone is gone
+stack nmtest-12822 (gate, 0 B): it has no expires and its newest object was created at 2026-10-21T08:00:00Z, over 2 hours ago
+stack nmtest-1895520 (gate, 509.1 MB): it expired at 2026-10-24T12:55:00Z"
+  assert_equal "$(grep -c '^would remove ' <<<"$output")" 3
+  assert_equal "$(kept)" "stack conventioner (unowned, 1.5 GB)
+stack conventioner-3 (unowned, 0 B)
+volume 0a4c042e60f521e1fe4b878ae5a0513fcfd83294279dd18fef88c940ab0120ab (unowned, 210.9 MB)
+volume conventioner_mongodb_data (unowned, 1.3 GB)
+volume f8d96e008758d020ea34d0411633d8ca076069b3efe8f765778a74259c7d8cc2 (unowned, 0 B)
+volume scratch-data (unowned, 12.5 MB)
+volume $YOUNG_ANONYMOUS (anonymous, 0 B)
+volume $OLD_ANONYMOUS (anonymous, 210.9 MB)
+image nmtest-12822-backend:latest (legacy, 534.0 MB)
+image conventioner-backend:latest (unowned, 534.0 MB)
+image conventioner-frontend:latest (unowned, 640.0 MB)
+image mongo:7 (unowned, 867.0 MB)
+image $(jq -r '.[] | select(.Repository == "<none>") | .ID' "$DOCKER_STATE/images.json") (dangling, 397.0 MB)
+network conventioner_conventioner_network (unowned)"
+  assert_equal "${lines[-1]}" "team-stack: would remove 3 objects, 509.1 MB: 1 team stack (0 B), 2 gate stacks (509.1 MB); kept 14 objects that are not the team's, 4.7 GB"
+  # Only read: the machine is as it was.
+  assert_read_only
+  assert_equal "$(cat "$DOCKER_STATE"/*.json | sha256sum)" "$before"
+  [[ ! -e $HOME/.local/state/agent-team/stacks/logs ]]
+  # --dry-run says the same.
+  local dry=$output
+  run_bin -0 team-stack reap --dry-run
+  assert_equal "$output" "$dry"
+}
+
+@test "reap --apply removes a team stack whose task is closed, its logs saved in its worktree's task directory; one of an open task is kept" {
+  reap_machine
+  open_task T1
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
+  # The task open: kept, and not listed, being the team's.
+  run_bin -0 team-stack reap
+  [[ $output != *"$PROJECT"* ]]
+  task_event T1 closed
+  task_event T7 opened '{"project": "conventioner", "worktree": "/elsewhere"}'
+  mkdir -p "$DOCKER_STATE/logs"
+  printf 'web-1  | the web log\n' >"$DOCKER_STATE/logs/$PROJECT-web.log"
+  local anonymous
+  anonymous=$(jq -r --arg n "/$PROJECT-web-1" '.[] | select(.Name == $n) | .Mounts[] | select(.Destination == "/cache") | .Name' \
+    "$DOCKER_STATE/containers.json")
+  run_bin -0 --separate-stderr team-stack reap --apply
+  assert_equal "$stderr" ""
+  local logs=$STACK_WORKTREE/.scratch/task/stack-logs
+  assert_contains "$output" "removed stack $PROJECT (team, 0 B): its task T1 is closed; its logs in $logs"
+  assert_equal "$(cat "$logs/T1-$PROJECT-web.log")" "web-1  | the web log"
+  assert_equal "$(stack_left "$anonymous")" ""
+  assert_contains "$(docker_calls)" "compose -p $PROJECT down -v --remove-orphans"
+  # T7 is open, so its stack in a worktree that exists stays.
+  [[ $output != *conventioner-2* ]]
+  jq -e 'any(.[]; .Name == "/conventioner-2-backend-1")' "$DOCKER_STATE/containers.json" >/dev/null
+}
+
+@test "reap --apply removes a team stack whose worktree is gone, its logs in the state directory; one whose worktree exists is kept" {
+  reap_machine
+  local gone=$HOME/.treehouse/Conventioner-d4c77a/4/Conventioner logs
+  logs=$HOME/.local/state/agent-team/stacks/logs/conventioner-4-$(date +%F)
+  run_bin -0 --separate-stderr team-stack reap --apply
+  assert_contains "$output" "removed stack conventioner-4 (team, 0 B): its worktree $gone is gone; its logs in $logs"
+  # Every service it has, since no stack block can be found for a worktree that is gone.
+  assert_equal "$(ls "$logs")" T5-conventioner-4-backend.log
+  assert_contains "$(cat "$logs/T5-conventioner-4-backend.log")" "conventioner-4's backend started"
+  assert_contains "$(docker_calls)" "compose -p conventioner-4 down -v --remove-orphans"
+  assert_equal "$(jq '[.[] | select(.Name == "/conventioner-4-backend-1")] | length' "$DOCKER_STATE/containers.json")" 0
+  # conventioner-2's worktree is the fixture's, which exists.
+  jq -e 'any(.[]; .Name == "/conventioner-2-backend-1")' "$DOCKER_STATE/containers.json" >/dev/null
+  [[ $output != *conventioner-2* ]]
+}
+
+@test "reap --apply removes a gate stack past its expires by project name, with its anonymous volumes; one whose expires is in the future is kept" {
+  reap_machine
+  docker_leak anonymous
+  run_bin -0 --separate-stderr team-stack reap --apply
+  assert_contains "$output" "removed stack nmtest-1895520 (gate, 509.1 MB): it expired at 2026-10-24T12:55:00Z"
+  # By project name, without compose files, then the anonymous volume its down left.
+  assert_contains "$(docker_calls)" "compose -p nmtest-1895520 down -v --remove-orphans"
+  [[ $(docker_calls) != *"compose -f"* ]]
+  assert_contains "$(docker_calls)" "volume rm bc17ebee5bc23731a063ae52f70ff70fd2524946f265a54cebf6bd4ae9e22161"
+  assert_equal "$(jq -r '.[] | select(.Name | test("^nmtest-1895520|^bc17")) | .Name' "$DOCKER_STATE/volumes.json")" ""
+  # No logs for a gate stack.
+  [[ ! -e $HOME/.local/state/agent-team/stacks/logs/nmtest-1895520-$(date +%F) ]]
+}
+
+@test "reap keeps a gate stack whose expires is in the future, however old" {
+  reap_machine
+  relabel nmtest-1895520 expires "$(date -u -d '+1 minute' +%Y-%m-%dT%H:%M:%SZ)"
+  run_bin -0 team-stack reap --apply
+  [[ $(removals) != *nmtest-1895520* ]]
+  [[ $output =~ (^|$'\n')"kept stack nmtest-1895520 (gate, 509.1 MB, "[0-9]+[smhd]" old)" ]]
+}
+
+@test "reap removes a gate stack labelled owner=agent-team by the gate rule, never as a team stack" {
+  reap_machine
+  open_task T7 "$STACK_WORKTREE"
+  relabel nmtest-1895520 owner agent-team
+  relabel nmtest-1895520 task T7
+  run_bin -0 team-stack reap
+  assert_contains "$(removals)" "stack nmtest-1895520 (gate, 509.1 MB): it expired at 2026-10-24T12:55:00Z"
+  relabel nmtest-1895520 expires "$(date -u -d '+1 minute' +%Y-%m-%dT%H:%M:%SZ)"
+  task_event T7 closed
+  run_bin -0 team-stack reap
+  [[ $(removals) != *nmtest-1895520* ]]
+}
+
+@test "reap removes a gate stack with no expires once its newest object is 2 hours old, and keeps it just before" {
+  reap_machine
+  # A live run of the name of an aborted one that left its volume and network: its container is
+  # young, so the stack is kept.
+  docker_created container nmtest-12822-backend-1 $((2 * 3600 - 60))
+  docker_created volume nmtest-12822_backend_sessions $((5 * 3600))
+  docker_created network nmtest-12822_conventioner_network $((5 * 3600))
+  run_bin -0 team-stack reap
+  [[ $(removals) != *nmtest-12822* ]]
+  assert_contains "$(kept)" "stack nmtest-12822 (gate, 0 B)"
+  docker_created container nmtest-12822-backend-1 $((2 * 3600 + 60))
+  run_bin -0 --separate-stderr team-stack reap --apply
+  assert_contains "$(removals)" "stack nmtest-12822 (gate, 0 B): it has no expires and its newest object was created at "
+  assert_contains "$(docker_calls)" "compose -p nmtest-12822 down -v --remove-orphans"
+  assert_equal "$(jq -r '.[] | select(.Name | startswith("nmtest-12822")) | .Name' "$DOCKER_STATE/volumes.json" "$DOCKER_STATE/networks.json")" ""
+}
+
+@test "reap removes a shared image no container uses, over 7 days old and not among its repository's 2 newest, and keeps the rest" {
+  reap_machine
+  # The tag containers use, made long ago; two new ones; one just too new; one old enough.
+  docker_created image conventioner/backend:4943b69bbb33 $((30 * 86400))
+  add_image conventioner/backend new1 86400
+  add_image conventioner/backend new2 $((2 * 86400))
+  add_image conventioner/backend young $((7 * 86400 - 60))
+  add_image conventioner/backend old $((7 * 86400 + 60))
+  # The 2 newest are images, not tags: the in-use image's second tag, latest, leaves older the
+  # second newest of conventioner/frontend, however old, and oldest not.
+  docker_state images '. + [(.[] | select(.Repository == "conventioner/frontend") | .Tag = "latest")]'
+  add_image conventioner/frontend older $((20 * 86400))
+  add_image conventioner/frontend oldest $((30 * 86400))
+  run_bin -0 --separate-stderr team-stack reap --apply
+  assert_equal "$(removals | grep '^image')" "image conventioner/backend:old (team, 534.0 MB): no container uses it, it was created over 7 days ago and it is not among the 2 newest of conventioner/backend
+image conventioner/frontend:oldest (team, 534.0 MB): no container uses it, it was created over 7 days ago and it is not among the 2 newest of conventioner/frontend"
+  assert_contains "$(docker_calls)" "image rm conventioner/backend:old"
+  assert_equal "$(jq -r '[.[] | select(.Repository | startswith("conventioner/")) | .Tag] | sort | join(" ")' "$DOCKER_STATE/images.json")" \
+    "2a5cc542bea3 4943b69bbb33 latest new1 new2 older young"
+  # The team's images kept are not listed.
+  [[ $(kept) != *conventioner/* ]]
+}
+
+@test "reap removes a legacy image no container uses only with --legacy, and lists it as kept without" {
+  reap_machine
+  add_image nmfix-abc latest 3600
+  run_bin -0 team-stack reap
+  [[ $(removals) != *nmfix* ]]
+  assert_contains "$(kept)" "image nmfix-abc:latest (legacy, 534.0 MB)"
+  run_bin -0 --separate-stderr team-stack reap --apply --legacy
+  assert_contains "$(removals)" "image nmfix-abc:latest (legacy, 534.0 MB): a legacy image no container uses (--legacy)"
+  assert_contains "$(docker_calls)" "image rm nmfix-abc:latest"
+  # nmtest-12822-backend is legacy too, but its gate stack's container used it when the reaper looked.
+  [[ $(removals) != *nmtest-12822-backend* ]]
+  jq -e 'any(.[]; .Repository == "nmtest-12822-backend")' "$DOCKER_STATE/images.json" >/dev/null
+  assert_equal "$(jq '[.[] | select(.Repository == "nmfix-abc")] | length' "$DOCKER_STATE/images.json")" 0
+}
+
+@test "reap removes a dangling image no container uses by its id once it is 24 hours old, and keeps one just younger" {
+  reap_machine
+  local old young
+  old=$(jq -r '.[] | select(.Repository == "<none>") | .ID' "$DOCKER_STATE/images.json")
+  docker_created image "$old" $((24 * 3600 + 60))
+  docker_state images '. + [{Containers: "0", CreatedAt: "", ID: ("sha256:" + "e" * 64), Repository: "<none>", Tag: "<none>",
+    Size: "12MB", UniqueSize: "10MB"}]'
+  young=sha256:$(printf 'e%.0s' {1..64})
+  docker_created image "$young" $((24 * 3600 - 60))
+  run_bin -0 --separate-stderr team-stack reap --apply
+  assert_equal "$(removals | grep '^image')" "image $old (dangling, 397.0 MB): dangling, no container uses it and it was created over 24 hours ago"
+  assert_contains "$(docker_calls)" "image rm $old"
+  # Its unique size, when Docker gives one.
+  assert_contains "$(kept)" "image $young (dangling, 10.0 MB)"
+}
+
+@test "reap removes an unattached anonymous volume once it is 24 hours old, and keeps a younger one and an attached one" {
+  reap_machine
+  docker_created volume "$OLD_ANONYMOUS" $((24 * 3600 + 60))
+  docker_created volume "$YOUNG_ANONYMOUS" $((24 * 3600 - 60))
+  run_bin -0 --separate-stderr team-stack reap --apply
+  assert_equal "$(removals | grep '^volume')" "volume $OLD_ANONYMOUS (anonymous, 210.9 MB): no container mounts it and it was created over 24 hours ago"
+  assert_contains "$(docker_calls)" "volume rm $OLD_ANONYMOUS"
+  assert_contains "$(kept)" "volume $YOUNG_ANONYMOUS (anonymous, 0 B)"
+  # Daniel's primary stack's anonymous volume, made 2026-10-19, is mounted by its stopped container.
+  assert_contains "$(kept)" "volume f8d96e008758d020ea34d0411633d8ca076069b3efe8f765778a74259c7d8cc2 (unowned, 0 B)"
+  assert_equal "$(jq -r --arg o "$OLD_ANONYMOUS" '[.[] | select(.Name == $o)] | length' "$DOCKER_STATE/volumes.json")" 0
+}
+
+@test "reap removes team-labelled named volumes and networks no container uses, and keeps those a stopped container still uses" {
+  reap_machine
+  local labels
+  labels=$(jq -c '.[] | select(.Name == "conventioner-2_mongodb_data") | .Labels
+    | .["com.docker.compose.project"] = "conventioner-6"' "$DOCKER_STATE/volumes.json")
+  docker_state volumes '. + [{Name: "conventioner-6_mongodb_data", CreatedAt: "2026-10-25T09:00:00+08:00", Driver: "local",
+    Labels: $l, Mountpoint: "/var/lib/docker/volumes/conventioner-6_mongodb_data/_data", Scope: "local", Size: "1MB"}]' --argjson l "$labels"
+  docker_state networks '. + [{Name: "conventioner-6_conventioner_network", Id: ("6" * 64), Created: "2026-10-25T09:00:00+08:00",
+    Scope: "local", Driver: "bridge", Labels: $l}]' --argjson l "$labels"
+  # conventioner-2, of an open task, is stopped: its containers still use its volumes and network.
+  docker_state containers 'map(if .Config.Labels["com.docker.compose.project"] == "conventioner-2"
+    then .State += {Status: "exited", Running: false} else . end)'
+  open_task T7
+  run_bin -0 --separate-stderr team-stack reap --apply
+  assert_equal "$(removals | grep -E '^(volume|network)')" "volume conventioner-6_mongodb_data (team, 1.0 MB): no container uses it
+network conventioner-6_conventioner_network (team): no container uses it"
+  assert_contains "$(docker_calls)" "volume rm conventioner-6_mongodb_data"
+  # A network by its id, since Docker lets two networks share a name.
+  assert_contains "$(docker_calls)" "network rm $(printf '6%.0s' {1..64})"
+  [[ $(docker_calls) != *"rm conventioner-2"* ]]
+  jq -e 'any(.[]; .Name == "conventioner-2_conventioner_network")' "$DOCKER_STATE/networks.json" >/dev/null
+}
+
+@test "reap keeps every object that is not the team's and matches no rule, Daniel's primary stack and its volumes always among them" {
+  reap_machine
+  run_bin -0 --separate-stderr team-stack reap --apply --legacy
+  assert_contains "$(kept)" "stack conventioner (unowned, 1.5 GB)"
+  assert_contains "$(kept)" "volume conventioner_mongodb_data (unowned, 1.3 GB)"
+  assert_contains "$(kept)" "stack conventioner-3 (unowned, 0 B)"
+  assert_contains "$(kept)" "volume scratch-data (unowned, 12.5 MB)"
+  [[ $(docker_calls) != *"rm conventioner_"* && $(docker_calls) != *"compose -p conventioner "* ]]
+  assert_equal "$(jq -r '[.[] | select(.Config.Labels["com.docker.compose.project"] == "conventioner")] | length' "$DOCKER_STATE/containers.json")" 2
+  # Each kept line carries its age.
+  [[ $output =~ (^|$'\n')"kept volume conventioner_mongodb_data (unowned, 1.3 GB, "[0-9]+d" old)" ]]
+  # Docker's own networks are nobody's leftovers, and are not listed.
+  [[ $output != *"network bridge"* && $output != *"network host"* && $output != *"network none"* ]]
+}
+
+@test "a removal that fails is reported with Docker's reason, the others still happen, and reap exits 1" {
+  reap_machine
+  docker_created volume "$OLD_ANONYMOUS" $((25 * 3600))
+  docker_created volume "$YOUNG_ANONYMOUS" $((25 * 3600))
+  docker_refuse "$OLD_ANONYMOUS" "Error response from daemon: remove $OLD_ANONYMOUS: volume is in use - [abc]"
+  docker_fail 'compose down' 'Error response from daemon: cannot remove container: permission denied'
+  run_bin -1 --separate-stderr team-stack reap --apply
+  assert_equal "$stderr" "team-stack: could not remove stack conventioner-4 (team, 0 B): docker compose down of conventioner-4 failed: Error response from daemon: cannot remove container: permission denied
+team-stack: could not remove stack nmtest-12822 (gate, 0 B): docker compose down of nmtest-12822 failed: Error response from daemon: cannot remove container: permission denied
+team-stack: could not remove stack nmtest-1895520 (gate, 509.1 MB): docker compose down of nmtest-1895520 failed: Error response from daemon: cannot remove container: permission denied
+team-stack: could not remove volume $OLD_ANONYMOUS (anonymous, 210.9 MB): Error response from daemon: remove $OLD_ANONYMOUS: volume is in use - [abc]"
+  assert_equal "$(removals)" "volume $YOUNG_ANONYMOUS (anonymous, 0 B): no container mounts it and it was created over 24 hours ago"
+  assert_contains "${lines[-1]}" "team-stack: removed 1 object, 0 B: 1 unattached anonymous volume (0 B); 4 removals failed; kept "
+}
+
+@test "an object gone before its turn is told as already gone, and is no failure" {
+  reap_machine
+  docker_created volume "$OLD_ANONYMOUS" $((25 * 3600))
+  docker_refuse "$OLD_ANONYMOUS" "Error response from daemon: get $OLD_ANONYMOUS: no such volume"
+  run_bin -0 --separate-stderr team-stack reap --apply
+  assert_equal "$stderr" ""
+  assert_contains "$output" "already gone volume $OLD_ANONYMOUS (anonymous, 210.9 MB)"
+  [[ $(removals) != *"$OLD_ANONYMOUS"* ]]
+  assert_contains "${lines[-1]}" "team-stack: removed 3 objects, 509.1 MB: 1 team stack (0 B), 2 gate stacks (509.1 MB); kept "
+}
+
+@test "reap --apply holds the admission lock while it removes, so no up starts a stack meanwhile" {
+  reap_machine
+  local lock=$HOME/.local/state/agent-team/stacks.lock log=$BATS_TEST_TMPDIR/lock
+  mkdir -p "${lock%/*}"
+  sed -i "1i if [[ \$* == compose* ]]; then if flock -n $(printf %q "$lock") true; then echo free; else echo held; fi >>$(printf %q "$log"); fi" \
+    "$STUB_FIXTURES/docker.sh"
+  run_bin -0 team-stack reap --apply
+  assert_equal "$(sort -u "$log")" held
+  # The dry run takes no lock.
+  rm "$log"
+  run_bin -0 team-stack reap
+  [[ ! -e $log ]] || assert_equal "$(sort -u "$log")" free
+}
+
+@test "reap with nothing to remove says so" {
+  docker_empty
+  run_bin -0 --separate-stderr team-stack reap --apply
+  assert_equal "$output" "team-stack: nothing to remove; kept 0 objects that are not the team's, 0 B"
+  assert_equal "$stderr" ""
+}
+
+@test "reap refuses a malformed command line, and Docker not answering is exit 1 with its reason" {
+  run_bin -2 --separate-stderr team-stack reap --dry-run --apply
+  assert_equal "$stderr" "team-stack: usage: team-stack reap [--dry-run | --apply] [--legacy]"
+  run_bin -2 team-stack reap --all
+  assert_equal "$(docker_calls)" ""
+  docker_down
+  run_bin -1 --separate-stderr team-stack reap
+  assert_equal "$stderr" "team-stack: Docker does not answer: Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?"
+}
+
+@test "with TEAM_STACK_REAP_PROJECTS, reap considers only the Compose projects it matches and their objects" {
+  reap_machine
+  docker_created volume "$OLD_ANONYMOUS" $((25 * 3600))
+  TEAM_STACK_REAP_PROJECTS='conventioner-[0-9]+' run_bin -0 team-stack reap
+  assert_equal "$(removals)" "stack conventioner-4 (team, 0 B): its worktree $HOME/.treehouse/Conventioner-d4c77a/4/Conventioner is gone"
+  assert_equal "$(kept)" "stack conventioner-3 (unowned, 0 B)"
+}
+
+# Parallel instances: up --instance <name> starts an extra stack of the worktree, the Compose
+# project <its stack>-<name>, whose ports Docker assigns (TH_PORTS=auto); the stub gives each
+# new container its own port.
+
+# The team labels of the web container of the Compose project <project>, as stack_labels.
+labels_of() {
+  jq -c --arg name "/$1-web-1" '.[] | select(.Name == $name) | .Config.Labels
+    | with_entries(select(.key | startswith("io.github.chanjdaniel.team.")) | .key |= ltrimstr("io.github.chanjdaniel.team."))
+    | {owner, task, kind, worktree, expires}' "$DOCKER_STATE/containers.json"
+}
+
+# The host port of the web container of the Compose project <project>.
+port_of() {
+  jq -r --arg name "/$1-web-1" '.[] | select(.Name == $name) | .NetworkSettings.Ports["80/tcp"][0].HostPort' \
+    "$DOCKER_STATE/containers.json"
+}
+
+# The state of the web container of the Compose project <project>, or nothing when it has none.
+state_of() {
+  jq -r --arg name "/$1-web-1" '.[] | select(.Name == $name) | .State.Status' "$DOCKER_STATE/containers.json"
+}
+
+# Whether Docker holds any object of the Compose project <project> (a function, so bats counts
+# its status).
+project_exists() {
+  jq -e --arg p "$1" 'any(.[]; (.Config.Labels // .Labels)["com.docker.compose.project"] == $p)' \
+    <(jq -s add "$DOCKER_STATE/containers.json" "$DOCKER_STATE/volumes.json" "$DOCKER_STATE/networks.json") >/dev/null
+}
+
+# Whether Docker holds no object of the Compose project <project>.
+project_gone() {
+  ! project_exists "$1"
+}
+
+# Start the fixture's stack by hand as the Compose project <project> with Docker's ports, as an
+# agent would with the wrapper, with the TEAM_* labels <name>=<value>...
+hand_instance() {
+  local project=$1
+  shift
+  (cd "$STACK_WORKTREE" && env "$@" COMPOSE_PROJECT_NAME="$project" TH_PORTS=auto TH_DIR="$STACK_WORKTREE" \
+    scripts/compose.sh up -d --wait) >/dev/null
+}
+
+# The wrapper calls since the compose call numbered <n> (1-based), one per line: "<call>
+# <project> <TH_PORTS or ->", the wrapper's compose file left out.
+wrapper_calls_since() {
+  compose_env_since "$1" | jq -r 'select(.call | test(" -f ")) | "\(.call | sub(" -f [^ ]+"; "")) \(.project) \(.TH_PORTS // "-")"'
+}
+
+@test "up --instance starts the stack <project>-<name> of the worktree's task, kind e2e, on ports Docker assigns, and seeds it" {
+  open_task T22
+  run_bin -0 --separate-stderr team-stack up --worktree "$STACK_WORKTREE" --instance a
+  assert_equal "$output" "team-stack: $PROJECT-a is up for T22, seeded: a new database"
+  assert_equal "$(labels_of "$PROJECT-a")" \
+    "$(jq -cn --arg wt "$STACK_WORKTREE" '{owner: "agent-team", task: "T22", kind: "e2e", worktree: $wt, expires: ""}')"
+  local name
+  for name in "$PROJECT-a_data:volumes" "$PROJECT-a_default:networks"; do
+    assert_equal "$(jq -r --arg n "${name%:*}" '.[] | select(.Name == $n) | .Labels
+      | "\(.["io.github.chanjdaniel.team.task"]) \(.["io.github.chanjdaniel.team.kind"])"' "$DOCKER_STATE/${name#*:}.json")" "T22 e2e"
+  done
+  assert_contains "$stderr" "seeded $PROJECT-a on port $(port_of "$PROJECT-a") for T22 from $STACK_WORKTREE"
+  # The first config call learns the worktree's stack's name; every wrapper call after it is the
+  # instance's, with Docker's ports.
+  assert_equal "$(wrapper_calls_since 1)" "compose config --format json $PROJECT -
+compose config --format json $PROJECT-a auto
+compose up -d --wait $PROJECT-a auto
+compose port web 80 $PROJECT-a auto"
+  # The worktree's own stack is not started.
+  assert_equal "$(state_of "$PROJECT")" ""
+}
+
+@test "the worktree's stack and two instances run at once on distinct ports, and env --instance reaches each with TH_PORTS=auto" {
+  open_task T22
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --instance a --no-seed
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --instance b --no-seed
+  local own a b
+  own=$(port_of "$PROJECT") a=$(port_of "$PROJECT-a") b=$(port_of "$PROJECT-b")
+  assert_equal "$(state_of "$PROJECT") $(state_of "$PROJECT-a") $(state_of "$PROJECT-b")" "running running running"
+  assert_equal "$(printf '%s\n' "$own" "$a" "$b" | sort -u | grep -c .)" 3
+  run_bin -0 --separate-stderr team-stack env --worktree "$STACK_WORKTREE" --instance a
+  assert_equal "$stderr" ""
+  assert_equal "$output" "export COMPOSE_PROJECT_NAME=$PROJECT-a
+export TH_WEB_PORT=$a
+export TH_PORTS=auto
+export TEAM_OWNER=agent-team
+export TEAM_TASK=T22
+export TEAM_KIND=e2e
+export TEAM_WORKTREE=$STACK_WORKTREE
+export TEAM_EXPIRES=''"
+  # The wrapper run by hand with those exports reaches the instance.
+  assert_equal "$(eval "$output"; cd "$STACK_WORKTREE" && scripts/compose.sh ports)" "export COMPOSE_PROJECT_NAME=$PROJECT-a
+export TH_WEB_PORT=$a"
+  run_bin -0 team-stack env --worktree "$STACK_WORKTREE" --instance b
+  assert_equal "${lines[0]} ${lines[1]} ${lines[2]}" "export COMPOSE_PROJECT_NAME=$PROJECT-b export TH_WEB_PORT=$b export TH_PORTS=auto"
+  # The worktree's own stack's env names no TH_PORTS.
+  run_bin -0 team-stack env --worktree "$STACK_WORKTREE"
+  assert_equal "${lines[0]} ${lines[1]} ${lines[2]}" "export COMPOSE_PROJECT_NAME=$PROJECT export TH_WEB_PORT=$own export TEAM_OWNER=agent-team"
+}
+
+@test "seed, stop and down --instance act on the instance alone, every wrapper call with its project and TH_PORTS=auto" {
+  open_task T22
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --instance a --no-seed
+  local n
+  n=$(($(docker_compose_env | wc -l) + 1))
+  run_bin -0 team-stack seed --worktree "$STACK_WORKTREE" --instance a
+  assert_equal "$output" "seeded $PROJECT-a on port $(port_of "$PROJECT-a") for T22 from $STACK_WORKTREE"
+  run_bin -0 team-stack stop --worktree "$STACK_WORKTREE" --instance a
+  assert_equal "$output" "team-stack: $PROJECT-a is stopped, its data kept"
+  assert_equal "$(state_of "$PROJECT") $(state_of "$PROJECT-a")" "running exited"
+  run_bin -1 --separate-stderr team-stack env --worktree "$STACK_WORKTREE" --instance a
+  assert_equal "$stderr" "team-stack: $PROJECT-a is not running (compose.sh: $PROJECT-a's web is not running); start it with team-stack up --instance a"
+  run_bin -0 team-stack down --worktree "$STACK_WORKTREE" --instance a
+  assert_equal "$output" "team-stack: $PROJECT-a is removed, its logs in $STACK_WORKTREE/.scratch/task/stack-logs"
+  [[ -s $STACK_WORKTREE/.scratch/task/stack-logs/$PROJECT-a-web.log ]]
+  [[ ! -e $STACK_WORKTREE/.scratch/task/stack-logs/$PROJECT-web.log ]]
+  project_gone "$PROJECT-a"
+  assert_equal "$(state_of "$PROJECT")" running
+  # Each config call learns the worktree's stack's name first; every other wrapper call is the instance's.
+  assert_equal "$(wrapper_calls_since "$n" | grep -v "^compose config --format json $PROJECT -$" | sort -u)" \
+    "compose config --format json $PROJECT-a auto
+compose port web 80 $PROJECT-a auto"
+  assert_equal "$(docker_calls | grep '^compose -p ' | grep -v "^compose -p $PROJECT-a " || true)" ""
+  run_bin -0 team-stack down --worktree "$STACK_WORKTREE" --instance a
+  assert_equal "$output" "team-stack: $PROJECT-a has no stack, so there is nothing to remove"
+  run_bin -1 --separate-stderr team-stack env --worktree "$STACK_WORKTREE" --instance a
+  assert_equal "$stderr" "team-stack: $PROJECT-a has no stack; start it with team-stack up --instance a"
+}
+
+@test "an instance name outside [a-z0-9][a-z0-9_-]* is a usage error, and so is --instance for ls, sweep and reap" {
+  open_task T22
+  local name cmd
+  for name in A -a _a a.b 'a b' ''; do
+    run_bin -2 --separate-stderr team-stack up --worktree "$STACK_WORKTREE" --instance "$name"
+    assert_equal "$stderr" "team-stack: --instance must match [a-z0-9][a-z0-9_-]*, got '$name'"
+  done
+  for cmd in env seed stop down; do
+    run_bin -2 --separate-stderr team-stack "$cmd" --worktree "$STACK_WORKTREE" --instance 'a/b'
+    assert_equal "$stderr" "team-stack: --instance must match [a-z0-9][a-z0-9_-]*, got 'a/b'"
+    run_bin -2 --separate-stderr team-stack "$cmd" --instance
+    assert_equal "$stderr" "team-stack: usage: team-stack $cmd [--worktree <path>] [--instance <name>]"
+  done
+  for cmd in ls sweep reap; do
+    run_bin -2 team-stack "$cmd" --instance a
+  done
+  assert_equal "$(docker_calls)" ""
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --instance 0e2e_shard-1 --no-seed
+  assert_equal "$output" "team-stack: $PROJECT-0e2e_shard-1 is up for T22, not seeded: --no-seed"
+}
+
+@test "admission counts instances as stacks, and a re-up of a running instance is admitted without a check" {
+  open_task T22
+  # The fixture machine runs three projects; the worktree's stack and one instance make five.
+  stack_settings '{"stack_cap": 5, "wait_minutes": 0}'
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --instance a --no-seed
+  run_bin -75 --separate-stderr team-stack up --worktree "$STACK_WORKTREE" --instance b --no-seed
+  assert_equal "$stderr" "team-stack: no room for $PROJECT-b: 5 of 5 stacks running (stack_cap 5)"
+  assert_equal "$(state_of "$PROJECT-b")" ""
+  assert_equal "$(waits_log | jq -r '"\(.project) \(.task) \(.admitted)"')" "$PROJECT-b T22 false"
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --instance a --no-seed
+  # A stopped instance is counted as new, and room is made by stopping one.
+  run_bin -0 team-stack stop --worktree "$STACK_WORKTREE" --instance a
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --instance b --no-seed
+  run_bin -75 team-stack up --worktree "$STACK_WORKTREE" --instance a --no-seed
+}
+
+@test "down removes the worktree's instances before its own stack, and nothing of another worktree or project" {
+  open_task T22
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --instance b --no-seed
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --instance a --no-seed
+  # Instances labelled with the worktree by other spellings are the worktree's too; a team stack
+  # of another worktree named like an instance, and one of this worktree whose name only starts
+  # like the stack's, are not.
+  hand_instance "$PROJECT-c" TEAM_OWNER=agent-team TEAM_TASK=T22 TEAM_KIND=e2e TEAM_WORKTREE="$STACK_WORKTREE/" TEAM_EXPIRES=
+  hand_instance "$PROJECT-d" TEAM_OWNER=agent-team TEAM_TASK=T22 TEAM_KIND=e2e TEAM_WORKTREE="$(other_spelling "$STACK_WORKTREE")" TEAM_EXPIRES=
+  hand_instance "$PROJECT-z" TEAM_OWNER=agent-team TEAM_TASK=T9 TEAM_KIND=dev TEAM_WORKTREE="$HOME/worktrees/shop-1-z" TEAM_EXPIRES=
+  hand_instance "${PROJECT}0" TEAM_OWNER=agent-team TEAM_TASK=T22 TEAM_KIND=e2e TEAM_WORKTREE="$STACK_WORKTREE" TEAM_EXPIRES=
+  run_bin -0 --separate-stderr team-stack down --worktree "$STACK_WORKTREE"
+  local logs=$STACK_WORKTREE/.scratch/task/stack-logs
+  assert_equal "$output" "team-stack: $PROJECT-a is removed, its logs in $logs
+team-stack: $PROJECT-b is removed, its logs in $logs
+team-stack: $PROJECT-c is removed, its logs in $logs
+team-stack: $PROJECT-d is removed, its logs in $logs
+team-stack: $PROJECT is removed, its logs in $logs"
+  assert_equal "$(docker_calls | sed -n -E 's/^compose -p ([^ ]+) down -v --remove-orphans$/\1/p')" "$PROJECT-a
+$PROJECT-b
+$PROJECT-c
+$PROJECT-d
+$PROJECT"
+  assert_equal "$(cd "$logs" && ls)" "$PROJECT-a-web.log
+$PROJECT-b-web.log
+$PROJECT-c-web.log
+$PROJECT-d-web.log
+$PROJECT-web.log"
+  local project
+  for project in "$PROJECT" "$PROJECT-a" "$PROJECT-b" "$PROJECT-c" "$PROJECT-d"; do project_gone "$project"; done
+  assert_equal "$(state_of "$PROJECT-z") $(state_of "${PROJECT}0")" "running running"
+  # The fixture machine's stacks are untouched.
+  run_bin -0 team-stack ls --json
+  assert_equal "$(jq -r '[.projects[].name] | join(" ")' <<<"$output")" \
+    "conventioner conventioner-2 conventioner-3 conventioner-4 nmtest-12822 nmtest-1895520 $PROJECT-z ${PROJECT}0"
+}
+
+@test "down removes the instances when the worktree has no stack of its own, and refuses an unowned stack before touching any" {
+  open_task T22
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --instance a --no-seed
+  run_bin -0 team-stack down --worktree "$STACK_WORKTREE"
+  assert_equal "$output" "team-stack: $PROJECT-a is removed, its logs in $STACK_WORKTREE/.scratch/task/stack-logs
+team-stack: $PROJECT has no stack, so there is nothing to remove"
+  project_gone "$PROJECT-a"
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --instance a --no-seed
+  hand_stack
+  run_bin -1 --separate-stderr team-stack down --worktree "$STACK_WORKTREE"
+  assert_contains "$stderr" "$PROJECT is not the team's (class unowned)"
+  assert_equal "$(state_of "$PROJECT-a")" running
+}
+
+@test "down refuses an instance of the worktree that is not wholly the team's, and leaves the worktree's stack" {
+  open_task T22
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --instance a --no-seed
+  # A hand-made volume of the instance's project, with no team labels.
+  docker_state volumes '. + [{Name: "\($p)_extra", CreatedAt: "2026-10-24T09:00:00+00:00", Driver: "local", Scope: "local",
+    Size: "0B", Mountpoint: "/var/lib/docker/volumes/\($p)_extra/_data", Labels: {"com.docker.compose.project": $p}}]' \
+    --arg p "$PROJECT-a"
+  run_bin -1 --separate-stderr team-stack down --worktree "$STACK_WORKTREE"
+  assert_equal "$stderr" "team-stack: $PROJECT-a is not the team's (class unowned), so team-stack leaves it alone: team-stack ls shows it, and removing it is Daniel's or the coordinator's call"
+  assert_equal "$(state_of "$PROJECT") $(state_of "$PROJECT-a")" "running running"
+}
+
+@test "up --instance takes down an instance of another task in the worktree first, and refuses an unowned one" {
+  hand_instance "$PROJECT-a" TEAM_OWNER=agent-team TEAM_TASK=T7 TEAM_KIND=e2e TEAM_WORKTREE="$STACK_WORKTREE" TEAM_EXPIRES=
+  open_task T22
+  run_bin -0 --separate-stderr team-stack up --worktree "$STACK_WORKTREE" --instance a
+  assert_contains "$stderr" "$PROJECT-a is T7's: taking it down first"
+  [[ -s $STACK_WORKTREE/.scratch/task/stack-logs/T7-$PROJECT-a-web.log ]]
+  assert_equal "$output" "team-stack: $PROJECT-a is up for T22, seeded: a new database"
+  assert_equal "$(labels_of "$PROJECT-a" | jq -r '"\(.task) \(.kind)"')" "T22 e2e"
+  hand_instance "$PROJECT-b"
+  run_bin -1 --separate-stderr team-stack up --worktree "$STACK_WORKTREE" --instance b
+  assert_contains "$stderr" "$PROJECT-b is not the team's (class unowned)"
+}
+
+@test "an exported instance identity never redirects a call to it" {
+  open_task T22
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --instance a --no-seed
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --instance b --no-seed
+  run_bin -0 team-stack env --worktree "$STACK_WORKTREE" --instance a
+  local n
+  n=$(($(docker_compose_env | wc -l) + 1))
+  # As in a shell that ran eval "$(team-stack env --instance a)".
+  eval "$output"
+  run_bin -0 team-stack env --worktree "$STACK_WORKTREE"
+  assert_equal "${lines[0]} ${lines[1]}" "export COMPOSE_PROJECT_NAME=$PROJECT export TH_WEB_PORT=$(port_of "$PROJECT")"
+  run_bin -0 team-stack stop --worktree "$STACK_WORKTREE" --instance b
+  assert_equal "$(state_of "$PROJECT") $(state_of "$PROJECT-a") $(state_of "$PROJECT-b")" "running running exited"
+  assert_equal "$(wrapper_calls_since "$n" | grep -c " $PROJECT-a " || true)" 0
+  run_bin -0 team-stack down --worktree "$STACK_WORKTREE"
+  local project
+  for project in "$PROJECT" "$PROJECT-a" "$PROJECT-b"; do project_gone "$project"; done
 }

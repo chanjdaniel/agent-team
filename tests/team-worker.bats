@@ -14,6 +14,7 @@ setup() {
   git -C "$primary" worktree add -q -b feat/T8-two "$wt2"
   stub_script claude <<'EOF'
 printf '%s\n' "$PWD" >>"$STUB_CALLS/claude.cwd"
+printf '%s\n' "$PATH" >>"$STUB_CALLS/claude.path"
 echo "Started background session 4f2a9c1e (${*: -2:1}). Attach with: claude attach 4f2a9c1e"
 EOF
 }
@@ -108,6 +109,9 @@ run_fake() {
   assert_contains "$output" "$HOME/plain is not a git checkout"
   run_bin -1 team-worker T7 builder "$HOME/missing" -- go
   assert_contains "$output" "$HOME/missing does not exist"
+  # A primary checkout however it is spelled (report F6).
+  run_bin -1 team-worker T7 builder "$(other_spelling "$primary")" -- go
+  assert_contains "$output" "is a primary checkout, not a linked worktree"
   assert_equal "$(stub_calls claude)" ""
   assert_equal "$(launches)" ""
 }
@@ -193,6 +197,16 @@ run_fake() {
   assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" ""
 }
 
+@test "the session gets the library's PATH: the tool directories from tools.lock first" {
+  # Arch, where uname says Linux; Bun installed under HOME, which the caller's PATH lacks.
+  export TEAM_OS_RELEASE=$BATS_TEST_TMPDIR/os-release
+  echo ID=arch >"$TEAM_OS_RELEASE"
+  mkdir -p "$HOME/.bun/bin"
+  run_bin -0 team-worker T0 planner "$wt1" -- go
+  [[ :$(cat "$STUB_CALLS/claude.path"): == *":$HOME/.bun/bin:"*"$BATS_TEST_TMPDIR/stubs:"* ]] ||
+    { echo "claude's PATH: $(cat "$STUB_CALLS/claude.path")" >&2; return 1; }
+}
+
 @test "a legacy task with no opened event launches in any linked worktree, without project or branch" {
   thread T7
   run_bin -0 team-worker T7 builder "$wt2" -- go
@@ -238,6 +252,13 @@ run_fake() {
   assert_contains "$output" "$wt1 is not one of T7's open worktrees: it has none"
   assert_equal "$(stub_calls claude)" ""
   assert_equal "$(launches)" ""
+}
+
+@test "a worktree the ledger spells otherwise is that open worktree (report F6)" {
+  thread T7
+  opened T7 proj feat/T7-one "$(other_spelling "$(dirname "$wt1")")/${wt1##*/}"
+  run_bin -0 team-worker T7 builder "$wt1" -- go
+  assert_equal "$(launches | jq -c '[.project, .branch]')" '["proj","feat/T7-one"]'
 }
 
 @test "a worktree recorded under another home launches as the same path under this HOME" {
@@ -290,7 +311,7 @@ run_fake() {
   run_bin -1 --separate-stderr team-worker T7 builder "$wt1" -- go
   assert_equal "$output" ""
   assert_contains "$stderr" "team-lease: home-pc no longer holds the lease: laptop holds it (epoch 2"
-  assert_contains "$stderr" "team-worker: laptop holds the lease: hand off there, then team-resume here"
+  assert_contains "$stderr" "team-worker: laptop holds the lease: run team-resume --wait here, then hand off there once it says this machine is ready"
   assert_equal "$(stub_calls claude)" ""
   cmp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before"
   [[ ! -e $TEAM_HOME/tasks/T7/settings.builder.json ]]
@@ -372,6 +393,43 @@ run_fake() {
     for command in "docker image ls" "docker volume ls --filter dangling=true" "docker compose -p x down -v" \
       "docker system df -v" "grep -n 'docker system prune' bin/team-stack" "team-stack down" \
       "team-stack down --worktree $HOME/worktrees/x" "docker volume rm 1f2e3d" "git commit -m 'deny docker volume prune'"; do
+      if denied_in "$settings" "$command"; then echo "$role denies: $command" >&2; return 1; fi
+    done
+  done
+}
+
+# The rules against the 1Password CLI, another process's environment and a change of the git
+# hooks setting refused commit messages, ledger lines and briefs that only named them (T41, T45).
+@test "every role's generated settings deny a real 1Password CLI call, environment read and hooks change, and no text naming them" {
+  thread T7
+  local role settings command
+  for role in planner builder reviewer; do
+    run_bin -0 team-worker T7 "$role" "$wt1" -- go
+    settings=$TEAM_HOME/tasks/T7/settings.$role.json
+    for command in "op read op://agent-team/discord-bot-env/.env" "op item list --vault agent-team" \
+      "cd ~ && op document get discord-bot-env --vault agent-team" "true || op run -- env" \
+      "x=\$(op read op://v/i/f) && echo ok" "/opt/homebrew/bin/op whoami" "env op signin" \
+      "cat /proc/1234/environ" "tr '\\0' '\\n' < /proc/1/environ" "cat /proc/self/environ | grep TOKEN" \
+      "strings /proc/1/environ > out.txt" "grep -az TOKEN /proc/*/environ 2>/dev/null" \
+      "cat /proc/1/environ && echo done" "python3 -c \"print(open('/proc/1/environ').read())\"" \
+      "echo \$(cat /proc/1/environ)" \
+      "git config core.hooksPath /dev/null" "git config --global core.hooksPath x" \
+      "git -C $HOME/agent-team config core.hooksPath bin/hooks/git" "git config set --local core.hooksPath x" \
+      "git config --unset core.hooksPath" "git -C ~/repo config --unset-all core.hooksPath" \
+      "git config unset core.hooksPath" "git config 'core.hooksPath' x" "git config \"core.hookspath\" x" \
+      "git config --add core.hooksPath x" "git -c core.hooksPath=/dev/null commit -m x" \
+      "git -C ~/repo -c core.hooksPath= commit -m x"; do
+      denied_in "$settings" "$command" || { echo "$role allows: $command" >&2; return 1; }
+    done
+    for command in \
+      "git commit -m 'deny reads of /proc/*/environ and the op CLI; op read stays Daniel'\"'\"'s'" \
+      "git commit -m \"fix: the git config core.hooksPath rule matched op read in text\"" \
+      "team-log T41 blocked \"builder: a /proc/<pid>/environ read in a message; op is Daniel's, op run too\"" \
+      "team-brief T40 builder --text 'Daniel runs git -C ~/agent-team config core.hooksPath bin/hooks/git; never op'" \
+      "printf '%s\\n' 'stop reading /proc/1/environ' >> notes.md" "git config --get core.hooksPath" \
+      "git -C ~/repo config --get core.hooksPath || echo unset" "git config core.hooksPath" \
+      "git config --show-origin --get core.hooksPath 2>&1" "team-secrets check" "npm run loop" \
+      "grep -rn 'op read' bin"; do
       if denied_in "$settings" "$command"; then echo "$role denies: $command" >&2; return 1; fi
     done
   done

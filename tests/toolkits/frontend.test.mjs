@@ -9,7 +9,7 @@ import { createServer } from "node:net";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { promisify } from "node:util";
-import { chromePath, inspect, serveFixture, serverListing, startChrome } from "./helpers/chrome.mjs";
+import { browserSession, chromePath, inspect, serveFixture, serverListing, startChrome } from "./helpers/chrome.mjs";
 import { repoRoot, tempDir } from "./helpers/mcp.mjs";
 
 const scripts = join(repoRoot, "toolkits", "frontend", "scripts");
@@ -77,6 +77,20 @@ describe("ui-capture", () => {
     const args = execFileSync("ps", ["-o", "args=", "-p", String(chrome.pid)], { encoding: "utf8" });
     assert.match(args, / --use-mock-keychain /);
     assert.match(args, / --password-store=basic /);
+  });
+
+  // In the default context a page's first request can wait minutes for the profile's cookie
+  // database on a busy Mac.
+  test("the stand-in Chrome's every page is off the record, none in the default context", async () => {
+    const browser = await browserSession(chrome.browserUrl);
+    try {
+      const { defaultBrowserContextId } = await browser.send("Target.getBrowserContexts");
+      const pages = (await browser.send("Target.getTargets")).targetInfos.filter((t) => t.type === "page");
+      assert.deepEqual(pages.map((t) => t.url).sort(), [site.url, elsewhere].sort());
+      for (const page of pages) assert.notEqual(page.browserContextId, defaultBrowserContextId, page.url);
+    } finally {
+      browser.close();
+    }
   });
 
   test("refuses a malformed command line and answers --help with its header", async () => {

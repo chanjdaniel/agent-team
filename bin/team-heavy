@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# Run the machine's heavy commands one at a time: a full tests/run, a project's local checks in
+# team-merge, a gate's end-to-end run, so they queue instead of overlapping and timing out.
+#
+# Usage: team-heavy run [--wait <minutes>] [--label <text>] -- <command> [<argument>...]
+#        team-heavy status
+#
+# run     Takes an exclusive flock on ~/.local/state/agent-team/heavy.lock, writes the holder's
+#         line into that file, "<label> (pid <pid>) since <YYYY-MM-DD HH:MM:SS +zzzz>" (the form
+#         of Conventioner's scripts/e2e-lock.sh, "<who> since <time>", so its end-to-end runs can
+#         take the same file), and runs the command with TEAM_HEAVY_HELD set and the lock's
+#         descriptor closed, so nothing the command leaves running keeps the lock: it goes when
+#         team-heavy ends, and team-heavy exits with the command's status. The label defaults to
+#         the command's words and the directory it runs in (~ for the home directory).
+#         While another run holds the lock, it says once on stderr that it waits and for whom,
+#         waits up to --wait minutes (default 180, or TEAM_HEAVY_WAIT_MINUTES; 0 does not wait),
+#         then exits 75 naming the holder.
+#         Under a run already (TEAM_HEAVY_HELD set), the command runs at once: a nested heavy
+#         command, tests/run as team-merge's local check say, would otherwise wait for itself.
+# status  "held by <the holder's line>" ("held by another run" before it wrote one) or "free",
+#         exit 0 either way; it waits for nothing and takes no lock a run would wait for.
+#
+# Exit 0 done (run: the command's status), 2 usage error, 75 try again later (the wait ran out).
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+USAGE="usage: team-heavy run [--wait <minutes>] [--label <text>] -- <command> [<argument>...] | team-heavy status"
+LOCK=$HOME/.local/state/agent-team/heavy.lock
+
+# The holder's line, or "another run" while the file is empty.
+holder() {
+  local line=''
+  [[ ! -s $LOCK ]] || IFS= read -r line <"$LOCK" || true
+  echo "${line:-another run}"
+}
+
+cmd_status() {
+  local fd
+  if [[ ! -e $LOCK ]]; then
+    echo free
+    return
+  fi
+  exec {fd}<"$LOCK"
+  # A shared lock is granted only while no run holds the exclusive one; it is let go at once.
+  if flock -n -s "$fd"; then
+    echo free
+  else
+    echo "held by $(holder)"
+  fi
+  exec {fd}<&-
+}
+
+cmd_run() {
+  local wait=${TEAM_HEAVY_WAIT_MINUTES:-180} label='' fd rc=0
+  while (($#)); do
+    case $1 in
+      --wait)
+        [[ ${2:-} =~ ^[0-9]+$ ]] || usage_error "--wait takes a whole number of minutes; $USAGE"
+        wait=$2
+        shift 2
+        ;;
+      --label)
+        [[ -n ${2:-} ]] || usage_error "--label takes a text; $USAGE"
+        label=$2
+        shift 2
+        ;;
+      --) shift && break ;;
+      *) usage_error "$USAGE" ;;
+    esac
+  done
+  (($#)) || usage_error "$USAGE"
+  [[ $wait =~ ^[0-9]+$ ]] || usage_error "TEAM_HEAVY_WAIT_MINUTES must be a whole number of minutes, not '$wait'"
+  if [[ -n ${TEAM_HEAVY_HELD:-} ]]; then
+    "$@" || rc=$?
+    exit "$rc"
+  fi
+  [[ -n $label ]] || label="$* in ${PWD/#"$HOME"/\~}"
+  mkdir -p "${LOCK%/*}"
+  # Read-write, so opening it never empties the holder's line a waiting run reads.
+  exec {fd}<>"$LOCK"
+  if ! flock -n -x "$fd"; then
+    ((wait > 0)) || { echo "${0##*/}: the heavy-run lock is held by $(holder)" >&2 && exit 75; }
+    echo "${0##*/}: waiting up to $wait minutes for the heavy-run lock, held by $(holder)" >&2
+    flock -w $((wait * 60)) -x "$fd" || {
+      echo "${0##*/}: the heavy-run lock is still held after $wait minutes, by $(holder)" >&2
+      exit 75
+    }
+  fi
+  printf '%s (pid %d) since %(%F %T %z)T\n' "$label" $$ -1 >"$LOCK"
+  TEAM_HEAVY_HELD=1 "$@" {fd}>&- || rc=$?
+  exit "$rc"
+}
+
+(($#)) || usage_error "$USAGE"
+case $1 in
+  run) cmd_run "${@:2}" ;;
+  status)
+    (($# == 1)) || usage_error "$USAGE"
+    cmd_status
+    ;;
+  *) usage_error "unknown subcommand '$1'; $USAGE" ;;
+esac

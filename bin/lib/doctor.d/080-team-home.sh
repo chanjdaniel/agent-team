@@ -24,10 +24,10 @@ elif [[ ! -d $TEAM_HOME && $TEAM_HOME_FROM == variable ]]; then
   report "team home" FAIL "$home_shown$home_named is not a directory" "clone the team home to $home_shown, or set TEAM_HOME to its checkout"
 elif [[ ! -d $TEAM_HOME ]]; then
   report "team home" FAIL "$home_shown$home_named is not a directory" "clone the team home to $home_shown, or $name_fix"
-elif [[ -z $home_top || $(realpath -m -- "$home_top") != "$(realpath -m -- "$TEAM_HOME")" ]]; then
+elif ! same_path "$home_top" "$TEAM_HOME"; then
   report "team home" FAIL "$home_shown$home_named is not a git checkout of its own" "move it aside, then clone the team home to $home_shown"
 elif home_common=$(git -C "$TEAM_HOME" rev-parse --path-format=absolute --git-common-dir) &&
-  [[ $(realpath -m -- "$home_common") != "$(realpath -m -- "$(git -C "$TEAM_HOME" rev-parse --absolute-git-dir)")" ]]; then
+  ! same_path "$home_common" "$(git -C "$TEAM_HOME" rev-parse --absolute-git-dir)"; then
   report "team home" FAIL "$home_shown$home_named is a worktree of $(tilde "$(dirname "$(realpath -m -- "$home_common")")"), not a checkout of its own" \
     "move it aside, then clone the team home to $home_shown"
 elif ! git -C "$TEAM_HOME" remote get-url origin >/dev/null 2>&1; then
