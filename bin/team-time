@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# Tell where the tasks' time went, from the ledger: hours per task and per phase, and the counts.
+#
+# Usage: team-time [--since <ISO>] [--until <ISO>] [--task T<n>] [--json]
+# Measures each task team-time can place, one with an opened event (legacy tasks are left out),
+# from its opened to its closed, or to --until (default now) while it is open, cut to the window
+# from --since (default the ledger's start) to --until; --task measures that task alone.
+# Each stretch of a task's time is one phase, walked through its events in ledger order:
+#   a park (waiting, blocked, paused, held) holds until the next launch or resumed, or, for a
+#   wait on Daniel, answered or merge-approved; it is classed by its on and reason, first match
+#   wins: wait:external (GitHub Support, Dependabot, on=GitHub), wait:task (on=T<n>, "waits for
+#   T<n>" and the like), wait:denial (a blocked naming a denial or refusal), wait:off (stowed,
+#   shutdown, OS update, handoff), wait:machine (load, memory, Docker, a restart, an outage),
+#   gate (a pause naming the gate), wait:daniel (a waiting, or on=Daniel), wait:other;
+#   with no park, the last marker: a planner or ops launch planning, a builder's building, a
+#   reviewer's review, merge-approved merging, and a done or merged unattributed (the
+#   coordinator's turn, or a gate run the ledger did not see); a task starts unattributed.
+# A gate-run's minutes, ending at its ts, are gate time taken from building or unattributed.
+# Then the counts, of the events in the window: gate runs per PR (a run's PR is the first pr
+# event after it, else the latest before it), by cause ("none" for a first run) and by outcome,
+# with each step's median minutes; reviews and findings per PR (a review's PR is the latest pr
+# event before it, else the first after it); builder launches and tickets done per task; denials
+# (blocked events classed wait:denial); Daniel's answers, each asked matched to the task's next
+# answered with its id, with the median and 90th percentile minutes by nearest rank; and each
+# done's seconds to the task's next event.
+# Prints the tables as text; --json prints the report (schema team-time/1): since, until, wall,
+# tasks (task, project, path, closed, wall, hours per phase), phases (all, share in percent, and
+# projects), gate_runs (per_pr, by_cause, by_outcome, step_minutes), reviews, builders, denials,
+# answers (answered, unanswered, median_minutes, p90_minutes) and done_to_next (count,
+# median_seconds, p90_seconds, within_minute). Hours have three decimals.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+usage="usage: team-time [--since <ISO>] [--until <ISO>] [--task T<n>] [--json]"
+
+since='' until='' task='' json=''
+while (($# > 0)); do
+  case $1 in
+    --since | --until | --task)
+      [[ $# -ge 2 ]] || usage_error "$usage"
+      printf -v "${1#--}" '%s' "$2"
+      shift 2
+      ;;
+    --json)
+      json=1
+      shift
+      ;;
+    *) usage_error "$usage" ;;
+  esac
+done
+iso='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
+[[ -z $since || $since =~ $iso ]] || usage_error "--since must be a UTC time like 2026-10-22T01:00:00Z"
+[[ -z $until || $until =~ $iso ]] || usage_error "--until must be a UTC time like 2026-10-22T01:00:00Z"
+[[ -z $task || $task =~ ^T[1-9][0-9]*$ ]] || usage_error "task must look like T<n>, got '$task'"
+until=${until:-$(date -u +%FT%TZ)}
+[[ -z $since || $since < $until ]] || usage_error "--since must come before --until"
+
+ledger=$TEAM_HOME/ledger.jsonl
+[[ -f $ledger ]] || die "no ledger at $ledger"
+
+report=$(jq -L "$TEAM_LIB" -nR --arg since "$since" --arg until "$until" --arg task "$task" '
+  include "time";
+  time_report(if $since == "" then 0 else $since | fromdate end; $until | fromdate;
+    if $since == "" then null else $since end; $until; if $task == "" then null else $task end)' "$ledger")
+
+if [[ -n $json ]]; then
+  jq . <<<"$report"
+else
+  jq -L "$TEAM_LIB" -r 'include "time"; time_text' <<<"$report"
+fi
