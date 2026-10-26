@@ -517,6 +517,14 @@ COMMANDS
   done
 }
 
+# CI and a stranger's fresh clone name no team home, and the suite needs none (every test makes its
+# own): a malformed command line is the usage error, never the team home's refusal.
+@test "tests/run needs no team home" {
+  unset TEAM_HOME
+  run -2 --separate-stderr "$REPO_ROOT/tests/run" nothing
+  assert_equal "$stderr" "run: usage: tests/run [shellcheck|bats|toolkits]"
+}
+
 # The registry fixture is shaped like the team home's, whose required checks for agent-team are
 # the ones dev's protection requires: CI's job ids, each a check name on GitHub.
 @test "CI's jobs are exactly agent-team's required checks, and agent-team has no local checks" {

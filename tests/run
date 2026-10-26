@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the team home's checks: shellcheck on every shell script in bin/, tests/ (not the
+# Run the code's checks: shellcheck on every shell script in bin/, tests/ (not the
 # vendored bats), servers/ and toolkits/, then the whole bats suite on the vendored bats-core,
 # then the toolkit tests (node --test on tests/toolkits/, after servers/install), which need
 # Docker for their throwaway MongoDB.
@@ -13,6 +13,9 @@
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# The suite needs no team home (every test makes its own), as on CI or a fresh clone.
+# shellcheck disable=SC2034 # read by bin/lib/team.sh
+team_home_report=1
 # shellcheck source=bin/lib/team.sh
 source "$root/bin/lib/team.sh" "$@"
 
