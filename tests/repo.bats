@@ -105,6 +105,18 @@ path_copy() {
 sops/machine-setup.md: both code and records"
 }
 
+@test "each machine's usage day files in the team home are records, never code" {
+  local copy=$BATS_TEST_TMPDIR/copy
+  path_copy "$copy"
+  mkdir -p "$copy/usage/home-pc"
+  touch "$copy/usage/home-pc/2026-10-26.jsonl"
+  git -C "$copy" add usage
+  run -0 unassigned_paths "$copy"
+  assert_equal "$output" ""
+  run -0 bash -c 'source "$1/bin/lib/team.sh"; printf "%s\0" usage/home-pc/2026-10-26.jsonl | only_records' _ "$REPO_ROOT"
+  assert_equal "$output" "usage/home-pc/2026-10-26.jsonl"
+}
+
 # The machine docs: Daniel's sentence, the setup entry point and the SOPs.
 MACHINE_DOCS=(README.md SETUP.md sops/machine-setup.md sops/portability.md)
 

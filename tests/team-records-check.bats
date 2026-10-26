@@ -61,7 +61,7 @@ refused $bad chore: a setting
   coordinator.settings.json"
   assert_equal "$stderr" "team-records-check: 2 of 3 commits on dev refused: a direct commit on dev \
 may touch records only (ledger.jsonl, manual-steps.md, projects.toml, tasks/, projects/, memory/, \
-machine/), and anything else reaches dev through a pull request"
+machine/, usage/), and anything else reaches dev through a pull request"
 }
 
 @test "a pull request's merge passes, and the pull request's own commits are not walked" {

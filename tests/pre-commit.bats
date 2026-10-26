@@ -40,7 +40,7 @@ commit() {
   stage tasks/T1/plan.md bin/team-open coordinator.settings.json "a dir/with space.md"
   commit -1
   assert_equal "$stderr" "pre-commit: refused: a direct commit on dev may touch records only \
-(ledger.jsonl, manual-steps.md, projects.toml, tasks/, projects/, memory/, machine/); commit these \
+(ledger.jsonl, manual-steps.md, projects.toml, tasks/, projects/, memory/, machine/, usage/); commit these \
 on a task branch and open a PR to dev:
   a dir/with space.md
   bin/team-open

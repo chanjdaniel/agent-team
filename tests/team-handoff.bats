@@ -190,6 +190,33 @@ rm 81f08540"
   assert_equal "$(jq -r 'select(.event == "stowed") | .worktrees[0].head' "$BATS_TEST_TMPDIR/machines/laptop/team/ledger.jsonl")" "$head"
 }
 
+@test "the handoff's commit holds this machine's usage to now, today's included" {
+  cp -R "$BATS_TEST_DIRNAME/fixtures/team-tokens/projects" "$HOME/.claude/projects"
+  local today
+  today=$(date -u +%F)
+  printf '{"type":"assistant","message":{"model":"claude-opus-5-5","usage":{"input_tokens":1,"output_tokens":2}},"requestId":"req_T1","timestamp":"%sT00:00:01.000Z","sessionId":"aaaaaaaa"}\n' \
+    "$today" >"$HOME/.claude/projects/-home-dan-agent-team/aaaaaaaa.jsonl"
+  run_bin -0 --separate-stderr team-handoff
+  assert_equal "$stderr" ""
+  assert_contains "$output" "checkpoint: usage: read 4 of 4 transcripts; wrote 2 day files; 1 reply of today left for a later export"
+  assert_contains "$output" "usage: usage/home-pc/$today.jsonl: 1 reply, 1 new
+usage: read 1 of 4 transcripts; wrote 1 day file
+team home: committed"
+  assert_equal "$(git -C "$team_origin" diff-tree -r --no-commit-id --name-only dev -- usage)" "usage/home-pc/$today.jsonl"
+  assert_equal "$(git -C "$team_origin" show "dev:usage/home-pc/$today.jsonl" | jq -r .request)" req_T1
+  assert_equal "$(git -C "$team_origin" ls-tree -r --name-only dev usage | wc -l)" 3
+}
+
+@test "a failed export is said, and the handoff goes on" {
+  cp -R "$BATS_TEST_DIRNAME/fixtures/team-tokens/projects" "$HOME/.claude/projects"
+  mkdir -p "$TEAM_HOME/usage"
+  echo "not a directory" >"$TEAM_HOME/usage/home-pc"
+  run_bin -0 --separate-stderr team-handoff
+  assert_contains "$stderr" "team-handoff: usage: cannot export: "
+  assert_contains "$stderr" "; the handoff goes on"
+  assert_contains "$output" "lease: home-pc released the lease, epoch 1"
+}
+
 @test "a worker that never stowed is stopped before the checkpoint, and its uncommitted changes are stowed as wip/home/T1 on the team home's origin" {
   # The builder edits, adds a file and a secret, and never answers STOW; stopping its session is
   # the last thing that happens to its worktree before the checkpoint.

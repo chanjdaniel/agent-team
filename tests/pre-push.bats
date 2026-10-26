@@ -44,7 +44,7 @@ origin_tip() {
 assert_refused() {
   assert_equal "$stderr" "pre-push: refused: a push to dev may add only commits that touch \
 records only (ledger.jsonl, manual-steps.md, projects.toml, tasks/, projects/, memory/, \
-machine/); put these on a task branch and open a PR to dev:$1"
+machine/, usage/); put these on a task branch and open a PR to dev:$1"
 }
 
 @test "a push to dev of commits that touch records only goes through, a local merge of records too" {

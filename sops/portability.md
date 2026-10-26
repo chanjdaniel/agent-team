@@ -21,7 +21,7 @@ Setting up a machine is `sops/machine-setup.md`.
 Two repositories hold the team, each checked out on every machine:
 
 - **The code**, `chanjdaniel/agent-team`, public, at `~/agent-team`: the scripts, roles, settings, hooks, templates, plugins, toolkits and tests, and nothing from the records; changed only through merged PRs to `dev`.
-- **The team home**, `chanjdaniel/agent-team-records`, private, at `~/agent-team-records`: the records (the ledger, the registry, `tasks/`, `projects/`, `memory/`, `machine/`, `manual-steps.md`), committed straight to `dev` by the scripts, and the `lease` branch; its origin also holds the work a project's origin must not see (`wip/<project>/T<n>` snapshots and `salvage/` branches), since a project's origin may be public.
+- **The team home**, `chanjdaniel/agent-team-records`, private, at `~/agent-team-records`: the records (the ledger, the registry, `tasks/`, `projects/`, `memory/`, `machine/`, `usage/`, `manual-steps.md`), committed straight to `dev` by the scripts, and the `lease` branch; its origin also holds the work a project's origin must not see (`wip/<project>/T<n>` snapshots and `salvage/` branches), since a project's origin may be public.
 
 | What | Where | Moved by |
 | - | - | - |
@@ -32,6 +32,7 @@ Two repositories hold the team, each checked out on every machine:
 | Work in flight | each project's origin: the task branch; the team home's origin: `wip/<project>/T<n>` | workers' pushes; `team-checkpoint` |
 | Claude user config (instructions, settings, skills, plugins) | `machine/claude/` | `team-config capture` (in a handoff), `team-config apply` (in a resume) |
 | Auto memory | `memory/<project>/`, which every worktree of the project uses through `autoMemoryDirectory`, and `memory/coordinator/`, the team home's own once it is no project's primary checkout | `team-checkpoint`, `team-handoff` |
+| Each machine's Claude usage (token counts, never content) | `usage/<machine>/` | `team-tokens export`, in `team-checkpoint` and `team-handoff` |
 | Tool versions | `bin/lib/tools.lock` | read by `team-doctor` and `team-bootstrap` |
 | Which secrets a machine needs (never a value) | `machine/secrets.json`, described in `machine/secrets.md` | read by `team-secrets` |
 | Secret values | 1Password, the `agent-team` vault | `team-secrets restore` and `save`, in Daniel's own terminal only |
@@ -65,7 +66,8 @@ It is enabled only on the holder: `team-resume` enables it, `team-handoff` disab
 - each worktree's work is kept on the team home's origin as `wip/<project>/T<n>`, pushed from the worktree to that origin's URL and never to the project's origin, which may be public (Conventioner's is): the branch head, or, with uncommitted changes, a snapshot commit on it built from a temporary index (untracked files included), never touching the worktree's files, index or stash;
 - untracked files that may hold a secret are left out of the snapshot, each named in the checkpoint's output: a name starting with `.env` or ending with `.pem` or `.key`, or a path that a target in `machine/secrets.json` ends with.
   A secret has no place in git even in a private repository, and a project's `.gitignore` need not cover every `.env` variant a worker makes; such a file stays only on the machine it was made on;
-- `tasks/*/scratch*/`, `memory/`, `tasks/current.md` (the coordinator's current items) and `ledger.jsonl` are committed as `chore: checkpoint` and pushed.
+- `team-tokens export` writes this machine's usage of each complete UTC day into `usage/<machine>/` (a failed export is reported and fails nothing).
+- `tasks/*/scratch*/`, `memory/`, `usage/`, `tasks/current.md` (the coordinator's current items) and `ledger.jsonl` are committed as `chore: checkpoint` and pushed.
 
 Nothing new means no commit and no push; `team-close` deletes the task's `wip/<project>/T<n>`, and the copy of it that `team-open --resume` fetched into the primary checkout.
 
@@ -94,7 +96,7 @@ A worktree whose head a salvage branch holds, with nothing uncommitted, is salva
    It runs the doctor first, then checks that the team home and the code checkout can fast-forward to origin's (and that the team home holds no commit origin's lacks), so either refuses with nothing changed while the old machine still runs the team; once both pass it prints "this machine is ready: say 'hand off' to the coordinator there now" and waits for the release.
 2. Then Daniel says "hand off" to the coordinator on Discord.
    Its `handoff` skill asks whether that `team-resume --wait` is running and has said so, and starts only on Daniel's yes; it checks (`team-handoff --check`), posts what is in flight, sends `T<n> STOW` to each live worker and waits up to 10 minutes for `T<n> PAUSED stowed` (a builder pushes a `wip:` commit and writes `handoff.md`).
-3. It runs `team-handoff`: workers stopped and removed, a forced checkpoint, task branches pushed, one `stowed` per open task, `team-config capture`, the records committed as `chore: handoff from <machine>` (all of `tasks/`, `machine/`, `memory/`, the ledger) and pushed, the heartbeat disabled, the lease released.
+3. It runs `team-handoff`: workers stopped and removed, a forced checkpoint, task branches pushed, one `stowed` per open task, `team-config capture`, `team-tokens export --through-now`, the records committed as `chore: handoff from <machine>` (all of `tasks/`, `machine/`, `memory/`, `usage/`, the ledger) and pushed, the heartbeat disabled, the lease released.
    The workers stop before the checkpoint, so it holds their worktrees' last state: a worker that never answered STOW leaves its uncommitted changes in `wip/<project>/T<n>`, and its `stowed` marks that worktree `uncommitted`.
    A diverged task branch refuses the handoff before any worker stops.
    An ops session is never carried over: `team-ops-end` ends it, deleting its transcript and answer file (the fence does the same), `ops` is never a role to relaunch, and a production question left unanswered is Daniel's to ask again on the new machine.
