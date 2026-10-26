@@ -76,7 +76,8 @@ jobs:
           node-version: 24.22.1
       - run: tests/run toolkits
 
-  # What the PR adds: no secret in its commits, no real email address and no image in its files.
+  # What the PR adds: no secret in its commits, no real email address, no image and no
+  # node_modules/ path in its files.
   # By hand, what the ref adds since origin/dev.
   data:
     runs-on: ubuntu-24.04
@@ -104,5 +105,5 @@ jobs:
           echo "PR_HEAD=${HEAD_SHA:-HEAD}" >>"$GITHUB_ENV"
       - name: No secret in the commits
         run: gitleaks git --no-banner --redact=100 --verbose --log-opts="$PR_BASE..$PR_HEAD" .
-      - name: No real email address and no image in what the PR adds
+      - name: No real email address, image or package tree in what the PR adds
         run: bin/lib/data-check code "$PR_BASE" "$PR_HEAD"

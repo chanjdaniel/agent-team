@@ -4,7 +4,8 @@
 # repository's pre-commit hook (bin/hooks/records-git/pre-commit).
 #
 # Usage: data-check code|records [<base> <head>]
-#   code           Refuses an email address outside the fixture domains, and any image.
+#   code           Refuses an email address outside the fixture domains, any image, and any
+#                  path under a node_modules/ directory, which the code repository never tracks.
 #   records        Refuses an email address at a public provider (gmail.com, outlook.com and the
 #                  like) other than git's user.email, and any image: a screenshot is never kept
 #                  in git, so no image's text needs reading.
@@ -15,8 +16,9 @@
 # (example.com, example.co.uk, x.example), any under .test, .invalid or .localhost, localhost,
 # and ex.com, ex.io and ex.org with their subdomains. A noreply or no-reply address, one at
 # users.noreply.github.com and git@<host> (an SSH remote) are services, never refused, and a
-# name@word.<file type> (logo@2x.png) is no address. Neither policy reads a package or vendored
-# code (a node_modules/ directory, tests/vendor/), which is its upstream's as published.
+# name@word.<file type> (logo@2x.png) is no address. Neither policy reads vendored code
+# (tests/vendor/), which is its upstream's as published, and records does not read a package
+# (a node_modules/ directory, in an archived scratch copy, say) either.
 # Exit 0 nothing refused, 1 refused with each path and kind on stderr, 2 a malformed command line.
 set -euo pipefail
 # No team home is read, so CI and a checkout that names none run it.
@@ -116,11 +118,16 @@ refused_text() {
 refusals=() refused_paths=()
 while IFS= read -r -d '' meta && IFS= read -r -d '' path; do
   read -r _ mode _ sha _ <<<"${meta#:}"
-  # A submodule's commit or a symlink's target holds no data of its own, and a package or
-  # vendored code is its upstream's, as published, its authors' addresses with it.
+  # A submodule's commit or a symlink's target holds no data of its own, and vendored code, or a
+  # package in the records, is its upstream's, as published, its authors' addresses with it.
   [[ $mode != 160000 && $mode != 120000 ]] || continue
-  [[ $path != tests/vendor/* && $path != node_modules/* && $path != */node_modules/* ]] || continue
-  if [[ -n $(image_magic "$sha") || ${path,,} =~ \.($IMAGE_TYPE)$ ]]; then
+  [[ $path != tests/vendor/* ]] || continue
+  package=0
+  [[ $path != node_modules/* && $path != */node_modules/* ]] || package=1
+  ((!package)) || [[ $policy == code ]] || continue
+  if ((package)); then
+    found="a package tree (node_modules/)"
+  elif [[ -n $(image_magic "$sha") || ${path,,} =~ \.($IMAGE_TYPE)$ ]]; then
     found="an image"
   else
     found=$(refused_text "$sha" "$path")
@@ -138,8 +145,9 @@ done < <(git diff "${range[@]}" --raw -z --no-abbrev --no-renames --diff-filter=
   verb=add
   ((${#refused_paths[@]} > 1)) || verb=adds
   if [[ $policy == code ]]; then
-    reason="$verb a real email address or an image, which the code repository never takes: a test \
-or doc uses an address at example.com or example.invalid, and an image stays out of git"
+    reason="$verb a real email address, an image or a package tree, which the code repository never \
+takes: a test or doc uses an address at example.com or example.invalid, and an image or a \
+node_modules/ directory stays out of git"
   else
     reason="$verb an email address at a public provider or an image, which the records never take: \
 other people's addresses and screenshots stay out of git"

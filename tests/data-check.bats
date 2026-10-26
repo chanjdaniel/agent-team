@@ -58,9 +58,10 @@ git@github.com:owner/site.git logo@2x.png icon@small.svg pkg@1.2.3"
   put docs/ok.md "dee@example.com"
   commit
   check -1 code "$base" HEAD
-  assert_equal "$stderr" "data-check: refused: docs/a.md, tests/b c.bats add a real email address \
-or an image, which the code repository never takes: a test or doc uses an address at example.com \
-or example.invalid, and an image stays out of git; take each out, then commit again:
+  assert_equal "$stderr" "data-check: refused: docs/a.md, tests/b c.bats add a real email address, \
+an image or a package tree, which the code repository never takes: a test or doc uses an address \
+at example.com or example.invalid, and an image or a node_modules/ directory stays out of git; take \
+each out, then commit again:
   docs/a.md: 1 email address outside the fixture domains
   docs/a.md: 2 email addresses at a public provider
   tests/b c.bats: 1 email address outside the fixture domains"
@@ -85,15 +86,13 @@ or example.invalid, and an image stays out of git; take each out, then commit ag
   check -0 code "$base" HEAD
 }
 
-@test "code: only what the change adds counts, and a package or vendored code is not read" {
+@test "code: only what the change adds counts, and vendored code is not read" {
   put docs/old.md "ann@$other"
   commit
   base=$(git rev-parse HEAD)
   printf '%s\n' "a new line" >>docs/old.md
   git add docs/old.md
   put tests/vendor/bats-core/AUTHORS "Bo <bo@$provider>"
-  put servers/node_modules/pkg/package.json "{\"author\": \"cy@$provider\"}"
-  put node_modules/pkg/LICENSE "dee@$provider"
   commit
   check -0 code "$base" HEAD
   # A rename is read whole, as an added file.
@@ -102,6 +101,23 @@ or example.invalid, and an image stays out of git; take each out, then commit ag
   commit
   check -1 code "$base" HEAD
   assert_contains "$stderr" "docs/new.md: 1 email address outside the fixture domains"
+}
+
+# The code repository never tracks a package tree, so a node_modules/ path is no way past the scan.
+@test "code: a node_modules/ path is refused whatever it holds, never read" {
+  put docs/node_modules/notes.md "ann@$provider"
+  put servers/node_modules/pkg/package.json '{}'
+  put_png node_modules/pkg/logo.png
+  commit
+  check -1 code "$base" HEAD
+  assert_equal "$stderr" "data-check: refused: docs/node_modules/notes.md, node_modules/pkg/logo.png, \
+servers/node_modules/pkg/package.json add a real email address, an image or a package tree, which \
+the code repository never takes: a test or doc uses an address at example.com or example.invalid, \
+and an image or a node_modules/ directory stays out of git; take each out, then commit again:
+  docs/node_modules/notes.md: a package tree (node_modules/)
+  node_modules/pkg/logo.png: a package tree (node_modules/)
+  servers/node_modules/pkg/package.json: a package tree (node_modules/)"
+  [[ $stderr != *ann@* ]]
 }
 
 @test "code: the range is what the head adds since its merge base with the base" {
