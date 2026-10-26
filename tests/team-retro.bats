@@ -312,6 +312,23 @@ LINES
   assert_contains "$output" $'Wait totals (2):\n  restart: 4h over 1 span, 4h wall-clock\n  daniel: 1h over 1 span, 1h wall-clock'
 }
 
+@test "digest: a park logged after the fact with since starts its wait at since, clipped to the window" {
+  opened "$(at 00:00)" T1 feature
+  opened "$(at 00:00)" T2 feature
+  event "$(at 01:00)" T1 launch '{role: "builder", session: "11111111", worktree: "/w/1", toolkits: []}'
+  event "$(at 01:00)" T2 launch '{role: "builder", session: "22222222", worktree: "/w/2", toolkits: []}'
+  opened "$(at 02:00)" T9 retro
+  event "$(at 08:00)" T1 blocked "{reason: \"usage limit: the weekly limit\", since: \"$(at 03:00)\"}"
+  event "$(at 08:00)" T2 blocked "{reason: \"usage limit: the weekly limit\", since: \"$(at 01:30)\"}"
+  event "$(at 08:01)" T1 launch '{role: "builder", session: "33333333", worktree: "/w/1", toolkits: []}'
+  event "$(at 08:01)" T2 launch '{role: "builder", session: "44444444", worktree: "/w/2", toolkits: []}'
+  opened "$(at 10:00)" T10 retro
+  run_bin -0 team-retro digest T10 --json
+  assert_equal "$(jq -r '.waits.spans[] | [.task, .kind, .from[11:16], .to[11:16], .clipped] | join(" ")' <<<"$output")" "$(
+    printf '%s\n' 'T1 blocked 03:00 08:01 false' 'T2 blocked 02:00 08:01 true'
+  )"
+}
+
 @test "digest: overlapping waits of two tasks add up in hours and count once in wall-clock hours" {
   opened "$(at 00:00)" T1 feature
   opened "$(at 00:00)" T2 feature
