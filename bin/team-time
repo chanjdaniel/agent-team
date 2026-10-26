@@ -9,9 +9,11 @@
 #   a park (waiting, blocked, paused, held) holds until the next launch or resumed, or, for a
 #   wait on Daniel, answered or merge-approved; it is classed by its on and reason, first match
 #   wins: wait:external (GitHub Support, Dependabot, on=GitHub), wait:task (on=T<n>, "waits for
-#   T<n>" and the like), wait:denial (a blocked naming a denial or refusal), wait:off (stowed,
-#   shutdown, OS update, handoff), wait:machine (load, memory, Docker, a restart, an outage),
-#   gate (a pause naming the gate), wait:daniel (a waiting, or on=Daniel), wait:other;
+#   T<n>" and the like), wait:denial (a blocked naming a denial or refusal), wait:limit (the
+#   usage, token, weekly or session limit), wait:off (stowed, shutdown, OS update, handoff),
+#   wait:machine (load, memory, Docker, a restart, an outage), gate (a pause naming the gate),
+#   wait:daniel (a waiting, or on=Daniel), wait:other; a park logged after the fact with since
+#   holds from since, not from its own ts;
 #   with no park, the last marker: a planner or ops launch planning, a builder's building, a
 #   reviewer's review, merge-approved merging, and a done or merged unattributed (the
 #   coordinator's turn, or a gate run the ledger did not see); a task starts unattributed.

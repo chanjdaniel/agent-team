@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # team-heavy: the machine's heavy commands take one flock in turn, in the sandbox's HOME; and
-# tests/run, team-merge's local checks and the doctor use it.
+# tests/run, team-checks' local checks and the doctor use it.
 
 load helpers/common
 

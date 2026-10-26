@@ -7,7 +7,9 @@
 # as JSON (a list, a number, true) and as a string otherwise; a field the contract types as a
 # string is always a string. note is allowed on every kind. Kinds written by another script
 # (opened, launch, merged, closed...) are refused, and so is a merge-approved whose url is not
-# one of the task's pr events (a trailing slash aside).
+# one of the task's pr events (a trailing slash aside). A park (waiting, blocked, paused, held)
+# logged after the fact takes since=<UTC time>, when it began: no later than now and no earlier
+# than the task's latest event, or it is refused naming both times; no other kind takes since.
 # --check checks a ledger (default: the team home's): every line is JSON with ts, task and
 # event, and lines from strict_from on meet their kind's fields; exit 1 lists each bad line.
 set -euo pipefail
@@ -63,6 +65,18 @@ if [[ $event == merge-approved && -n ${seen[url]:-} ]]; then
       elif $prs == [] then "\($url) is not a PR of \($events); it has none"
       else "\($url) is not a PR of \($events):" + ($prs | map("\n  " + .) | add) end')
   [[ -z $problem ]] || die "$problem"
+fi
+
+# A park logged after the fact says when it began: a UTC time between the task's latest event and now.
+if [[ -n ${seen[since]:-} ]]; then
+  case $event in waiting | blocked | paused | held) ;; *) die "since is taken only by a park (waiting, blocked, paused, held), not $event" ;; esac
+  since=${seen[since]}
+  jq -ne --arg t "$since" '$t | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$") and ((try fromdate catch null) | . != null and todate == $t)' >/dev/null ||
+    die "since must be a UTC time like 2026-10-22T01:00:00Z, got '$since'"
+  now=$(date -u +%FT%TZ)
+  [[ ! $since > $now ]] || die "since $since is later than now ($now)"
+  latest=$(task_events "$task" | jq -nr '[inputs | .ts | strings] | last // empty')
+  [[ -z $latest || ! $since < $latest ]] || die "since $since is earlier than $task's latest event, at $latest"
 fi
 
 # Each value is typed by the contract when it names the field, and by whether it parses as JSON

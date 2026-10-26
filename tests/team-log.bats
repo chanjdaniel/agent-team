@@ -58,6 +58,7 @@ TABLE
   assert_equal "$actual" "$expected"
   assert_equal "$(jq -c '.kinds.launch.optional' "$CONTRACT")" '{"project":"string","branch":"string","machine":"string","request":"string"}'
   assert_equal "$(jq -c '.kinds.review.required.verdict' "$CONTRACT")" '["pass","findings"]'
+  assert_equal "$(jq -c '[.kinds.waiting, .kinds.blocked, .kinds.paused, .kinds.held | .optional.since]' "$CONTRACT")" '["string","string","string","string"]'
   assert_equal "$(jq -c '[.kinds.closed.required[]]' "$CONTRACT")" '["array","array","array"]'
   [[ $STRICT_FROM =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
 }
@@ -80,6 +81,7 @@ TABLE
   grep -Eq '^  merge-approved +team-log +url, discord_message  \(.*\)$' <<<"$output"
   grep -Eq '^  launch +team-worker +role, session, worktree, toolkits \(list\); optional project, branch, machine, request  \(request is the link to Daniel.s Discord message, on an ops launch\)$' <<<"$output"
   grep -Eq '^  resumed +team-log +- +\(clears held, blocked, paused and waiting\)$' <<<"$output"
+  grep -Eq '^  blocked +team-log +reason; optional since  \(.*since: when the park began, when it is logged after the fact\)$' <<<"$output"
   grep -Eq '^  retro-schedule +team-log +every_hours \(number\), discord_message  \(.*every_hours 0 stops.*\)$' <<<"$output"
   grep -Eq '^  injection +team-log +role, source, text  \(.*never the personal details.*\)$' <<<"$output"
   grep -Eq '^  stowed +team-handoff +machine, worktrees \(list\), roles \(list\); optional sessions \(list\)  \(one per open task at a handoff: .*unfinished_roles.*\)$' <<<"$output"
@@ -298,6 +300,42 @@ LINES
   run_bin -1 team-log T14 thread discord_thread=1563
   assert_contains "$output" "thread events are written by team-thread, not team-log"
   assert_ledger_empty
+}
+
+@test "a park logged after the fact takes since, when it began, on each of the four park kinds" {
+  local task
+  for task in T14 T15 T16 T17; do
+    echo '{"ts":"2026-10-25T14:51:44Z","task":"'$task'","event":"launch","role":"builder","session":"s","worktree":"/w","toolkits":[]}'
+  done >"$TEAM_HOME/ledger.jsonl"
+  # Another task's later event does not bound it.
+  echo '{"ts":"2026-10-25T16:00:00Z","task":"T18","event":"resumed"}' >>"$TEAM_HOME/ledger.jsonl"
+  run_bin -0 team-log T14 blocked 'reason=usage limit: the weekly limit' since=2026-10-25T14:58:00Z
+  run_bin -0 team-log T15 waiting on=Daniel reason=x since=2026-10-25T14:58:00Z
+  run_bin -0 team-log T16 paused reason=x since=2026-10-25T14:51:44Z
+  run_bin -0 team-log T17 held reason=x since=2026-10-25T14:58:00Z
+  assert_equal "$(tail -n 4 "$TEAM_HOME/ledger.jsonl" | jq -r '[.event, .since] | join(" ")')" "$(
+    printf '%s\n' 'blocked 2026-10-25T14:58:00Z' 'waiting 2026-10-25T14:58:00Z' 'paused 2026-10-25T14:51:44Z' 'held 2026-10-25T14:58:00Z'
+  )"
+  run_bin -0 team-log --check
+}
+
+@test "since is refused when it is not a UTC time, later than now, or earlier than the task's latest event" {
+  printf '%s\n' '{"ts":"2026-10-25T14:51:44Z","task":"T14","event":"launch","role":"builder","session":"s","worktree":"/w","toolkits":[]}' \
+    '{"ts":"2026-10-25T15:30:00Z","task":"T15","event":"resumed"}' >"$TEAM_HOME/ledger.jsonl"
+  local before
+  before=$(cat "$TEAM_HOME/ledger.jsonl")
+  local bad
+  for bad in yesterday 2026-10-25 2026-10-25T14:58:00 '2026-10-25 14:58:00Z' 2026-10-25T25:00:00Z; do
+    run_bin -1 team-log T14 blocked reason=x "since=$bad"
+    assert_contains "$output" "since must be a UTC time like 2026-10-22T01:00:00Z, got '$bad'"
+  done
+  run_bin -1 team-log T14 blocked reason=x since=2999-01-01T00:00:00Z
+  assert_contains "$output" "since 2999-01-01T00:00:00Z is later than now ("
+  run_bin -1 team-log T14 blocked reason=x since=2026-10-25T14:00:00Z
+  assert_contains "$output" "since 2026-10-25T14:00:00Z is earlier than T14's latest event, at 2026-10-25T14:51:44Z"
+  run_bin -1 team-log T14 resumed since=2026-10-25T15:00:00Z
+  assert_contains "$output" "since is taken only by a park (waiting, blocked, paused, held), not resumed"
+  assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$before"
 }
 
 @test "too few arguments is a usage error" {

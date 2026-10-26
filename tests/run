@@ -8,7 +8,7 @@
 # then the whole output of each file that failed, and the count of tests passed.
 # Every part but shellcheck alone runs under the machine's heavy-run lock (team-heavy run), so a
 # suite waits for another suite or a gate's end-to-end run instead of overlapping it; under a
-# heavy run already (TEAM_HEAVY_HELD set, team-merge's local checks say), it runs at once.
+# heavy run already (TEAM_HEAVY_HELD set, as a local check team-checks runs), it runs at once.
 #
 # Usage: tests/run [shellcheck|bats|toolkits]   (default: all three)
 # Exit 0 when every check passes; CI runs each part as its own job. The last line is the wall

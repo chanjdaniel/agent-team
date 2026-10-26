@@ -77,22 +77,27 @@
     },
     "paused": {
       "writer": "team-log",
-      "required": {"reason": "string"}
+      "about": "since: when the park began, when it is logged after the fact",
+      "required": {"reason": "string"},
+      "optional": {"since": "string"}
     },
     "blocked": {
       "writer": "team-log",
-      "about": "a worker stopped by an obstacle; the next launch or resumed clears it",
-      "required": {"reason": "string"}
+      "about": "a worker stopped by an obstacle; the next launch or resumed clears it; since: when the park began, when it is logged after the fact",
+      "required": {"reason": "string"},
+      "optional": {"since": "string"}
     },
     "held": {
       "writer": "team-log",
+      "about": "since: when the park began, when it is logged after the fact",
       "required": {"reason": "string"},
-      "optional": {"head": "string"}
+      "optional": {"head": "string", "since": "string"}
     },
     "waiting": {
       "writer": "team-log",
-      "about": "a task parked on Daniel or something outside the team; the next launch or resumed clears it",
-      "required": {"on": "string", "reason": "string"}
+      "about": "a task parked on Daniel or something outside the team; the next launch or resumed clears it; since: when the park began, when it is logged after the fact",
+      "required": {"on": "string", "reason": "string"},
+      "optional": {"since": "string"}
     },
     "resumed": {
       "writer": "team-log",

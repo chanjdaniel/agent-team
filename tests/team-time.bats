@@ -42,7 +42,7 @@ time_json() {
     '{"building":4.75,"wait:daniel":0.2,"wait:task":2,"wait:external":1,"wait:off":2,"wait:denial":0.25}'
   assert_equal "$(jq -c '.tasks[2].hours | with_entries(select(.value != 0))' <<<"$json")" '{"building":3}'
   assert_equal "$(jq -c '.tasks[0].hours | keys_unsorted' <<<"$json")" \
-    '["planning","building","gate","review","merging","unattributed","wait:daniel","wait:task","wait:external","wait:machine","wait:off","wait:denial","wait:other"]'
+    '["planning","building","gate","review","merging","unattributed","wait:daniel","wait:task","wait:external","wait:machine","wait:limit","wait:off","wait:denial","wait:other"]'
 }
 
 @test "the phases are totalled for all tasks and per project, with each phase's share" {
@@ -58,8 +58,8 @@ time_json() {
 @test "the text form prints the per-task and per-phase tables" {
   run_bin -0 team-time --until "$until"
   assert_equal "${lines[0]}" "Task time to 2026-10-22T20:12:00Z: 3 tasks, 26.2 hours"
-  grep -Eq '^task +project +path +closed +wall +plan +build +gate +review +merge +unattr +daniel +on-task +outside +load +off +denial +other$' <<<"$output"
-  grep -Eq '^T60 +conventioner +feature +y +13\.0 +1\.0 +4\.0 +2\.5 +1\.5 +0\.5 +1\.5 +1\.5 +0\.0 +0\.0 +0\.5 +0\.0 +0\.0 +0\.0$' <<<"$output"
+  grep -Eq '^task +project +path +closed +wall +plan +build +gate +review +merge +unattr +daniel +on-task +outside +load +limit +off +denial +other$' <<<"$output"
+  grep -Eq '^T60 +conventioner +feature +y +13\.0 +1\.0 +4\.0 +2\.5 +1\.5 +0\.5 +1\.5 +1\.5 +0\.0 +0\.0 +0\.5 +0\.0 +0\.0 +0\.0 +0\.0$' <<<"$output"
   grep -Eq '^T61 +agent-team +small +open +10\.2 +0\.0 +4\.8 ' <<<"$output"
   grep -Eq '^phase +hours +share +agent-team +conventioner$' <<<"$output"
   grep -Eq '^building +11\.8 +45% +4\.8 +7\.0$' <<<"$output"
@@ -152,6 +152,48 @@ time_json() {
   json=$(time_json --until 2026-10-23T09:00:00Z)
   assert_equal "$(jq -c '.tasks[0].hours | with_entries(select(.value != 0))' <<<"$json")" \
     '{"building":2.5,"merging":0.5,"unattributed":1.5,"wait:daniel":1.5,"wait:task":1,"wait:machine":1,"wait:other":1}'
+}
+
+@test "a park logged after the fact with since is counted from since, and the usage limit is its own phase" {
+  : >"$TEAM_HOME/ledger.jsonl"
+  local d1=2026-10-25T d2=2026-10-26T task
+  for task in T71 T72; do
+    echo '{"ts":"'$d1'10:00:00Z","task":"'$task'","event":"opened","project":"p","path":"small","type":"fix","title":"x","branch":"fix/'$task'-x","base":"dev","base_sha":"0123456","worktree":"/w"}'
+    echo '{"ts":"'$d1'10:00:00Z","task":"'$task'","event":"launch","role":"builder","session":"s1","worktree":"/w","toolkits":[]}'
+  done >>"$TEAM_HOME/ledger.jsonl"
+  {
+    echo '{"ts":"'$d2'10:00:00Z","task":"T71","event":"blocked","reason":"usage limit: the weekly limit ended its session","since":"'$d1'11:00:00Z"}'
+    echo '{"ts":"'$d2'10:00:00Z","task":"T72","event":"blocked","reason":"usage limit: the weekly limit ended its session"}'
+    echo '{"ts":"'$d2'10:01:12Z","task":"T71","event":"launch","role":"builder","session":"s2","worktree":"/w","toolkits":[]}'
+    echo '{"ts":"'$d2'10:01:12Z","task":"T72","event":"launch","role":"builder","session":"s2","worktree":"/w","toolkits":[]}'
+  } >>"$TEAM_HOME/ledger.jsonl"
+  local json
+  json=$(time_json --until 2026-10-26T10:01:12Z)
+  assert_equal "$(jq -c '.tasks[0].hours | with_entries(select(.value != 0))' <<<"$json")" '{"building":1,"wait:limit":23.02}'
+  assert_equal "$(jq -c '.tasks[1].hours | with_entries(select(.value != 0))' <<<"$json")" '{"building":24,"wait:limit":0.02}'
+  assert_equal "$(jq -c '.tasks[0].hours | keys_unsorted | .[10:12]' <<<"$json")" '["wait:limit","wait:off"]'
+  # A window from since on sees the stop alone.
+  json=$(time_json --since 2026-10-25T12:00:00Z --until 2026-10-26T10:00:00Z --task T71)
+  assert_equal "$(jq -c '.tasks[0].hours | with_entries(select(.value != 0))' <<<"$json")" '{"wait:limit":22}'
+  run_bin -0 team-time --until 2026-10-26T10:01:12Z
+  grep -Eq '^task +project +path +closed +wall +.* +load +limit +off +denial +other$' <<<"$output"
+  grep -Eq '^the usage limit +23\.0 +' <<<"$output"
+}
+
+@test "the usage limit, the token limit and a session limit are classed as the limit before the machine off" {
+  : >"$TEAM_HOME/ledger.jsonl"
+  local d=2026-10-23T
+  {
+    echo '{"ts":"'$d'00:00:00Z","task":"T73","event":"opened","project":"p","path":"small","type":"fix","title":"x","branch":"fix/T73-x","base":"dev","base_sha":"0123456","worktree":"/w"}'
+    echo '{"ts":"'$d'01:00:00Z","task":"T73","event":"paused","reason":"Token limit hit, then the handoff"}'
+    echo '{"ts":"'$d'02:00:00Z","task":"T73","event":"resumed"}'
+    echo '{"ts":"'$d'02:00:00Z","task":"T73","event":"held","reason":"session limit"}'
+    echo '{"ts":"'$d'03:00:00Z","task":"T73","event":"resumed"}'
+    echo '{"ts":"'$d'03:00:00Z","task":"T73","event":"waiting","on":"Daniel","reason":"the weekly limit resets on Monday"}'
+  } >>"$TEAM_HOME/ledger.jsonl"
+  local json
+  json=$(time_json --until 2026-10-23T04:00:00Z)
+  assert_equal "$(jq -c '.tasks[0].hours | with_entries(select(.value != 0))' <<<"$json")" '{"unattributed":1,"wait:limit":3}'
 }
 
 @test "an open task is measured to now when no --until is given" {

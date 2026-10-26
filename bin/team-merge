@@ -13,10 +13,10 @@
 #   project's required_checks) is present on the head and passed (a skipped one passes);
 #   no check on the head is failing or pending; agent-review is success on the head;
 #   no commit of the PR carries an agent attribution line, and the list read ends at the head.
-# Then, for a project with local_checks, each command runs from the root of a detached worktree of
-# the primary checkout at the PR's head (fetched from origin), under the machine's heavy-run lock
-# (team-heavy run, which waits for another holder), and must exit 0 (75: the lock stayed held, try
-# again later); the worktree is removed after, and the head read again must not have moved.
+# Then, for a project with local_checks, team-checks runs them on the PR's head (fetched from
+# origin) from the primary checkout, labelled "team-merge T<n>" under the heavy-run lock, and each
+# must pass (exit 75: the lock stayed held, try again later); the head read again after must not
+# have moved.
 # Any failure is exit 1 with every reason, and gh pr merge is never called.
 # Then: gh pr merge <number> --repo <repo> --<merge_method> --match-head-commit <head>, never
 # --auto or --admin; the PR is read again and must be merged (if gh left it open with auto-merge
@@ -192,33 +192,21 @@ refuse_on_problems() {
 }
 refuse_on_problems
 
-# The project's local checks, last since they are the slowest: each command run from the root of a
-# detached worktree of the primary checkout at the PR's exact head, then the head read again.
+# The project's local checks, last since they are the slowest: team-checks runs them in a detached
+# worktree of the primary checkout at the PR's exact head, then the head is read again.
 mapfile -t local_checks < <(team_project "$project" local_checks | jq -r '.[]')
 if ((${#local_checks[@]})); then
   primary=$(team_project "$project" path)
-  checkout=$scratch/head
   if ! git -C "$primary" fetch -q origin "+refs/heads/$branch:refs/remotes/origin/$branch" 2>"$scratch/fetch-error" ||
     ! git -C "$primary" cat-file -e "$head^{commit}" 2>/dev/null; then
     problems+=("the head ${head:0:7} cannot be fetched into $primary for the local checks: $(grep -m1 . "$scratch/fetch-error" || echo "origin's $branch is elsewhere")")
     refuse_on_problems
   fi
-  git -C "$primary" worktree add -q --detach "$checkout" "$head" 2>"$scratch/fetch-error" ||
-    die "cannot check out ${head:0:7} for the local checks: $(grep -m1 . "$scratch/fetch-error")"
-  trap 'git -C "$primary" worktree remove --force "$checkout" 2>/dev/null; rm -rf "$scratch"' EXIT
-  for command in "${local_checks[@]}"; do
-    echo "team-merge: running $command on ${head:0:7}" >&2
-    rc=0
-    (cd "$checkout" && "$(dirname "$TEAM_LIB")/team-heavy" run --label "team-merge $task: $command on ${head:0:7}" -- bash -c "$command") \
-      </dev/null >"$scratch/check.log" 2>&1 || rc=$?
-    if ((rc == 75)); then
-      problems+=("local check '$command' could not run on the head ${head:0:7} yet (exit 75, try again later); its last lines:"$'\n'"$(tail -n 20 "$scratch/check.log" | sed 's/^/      /')")
-    elif ((rc)); then
-      problems+=("local check '$command' failed on the head ${head:0:7} (exit $rc); its last lines:"$'\n'"$(tail -n 20 "$scratch/check.log" | sed 's/^/      /')")
-    fi
-  done
-  git -C "$primary" worktree remove --force "$checkout"
-  trap 'rm -rf "$scratch"' EXIT
+  rc=0
+  "$(dirname "$TEAM_LIB")/team-checks" "$project" "$head" --from "$primary" --label "team-merge $task" >"$scratch/checks" || rc=$?
+  if ((rc)); then
+    problems+=("the local checks did not pass on the head ${head:0:7} (team-checks exit $rc):"$'\n'"$({ grep -v "' passed on the head " "$scratch/checks" || true; } | sed 's/^/    /')")
+  fi
   if github "$scratch" again pr view "$number" --repo "$repo" --json headRefOid; then
     moved=$(jq -r .headRefOid "$scratch/again")
     [[ $moved == "$head" ]] ||
