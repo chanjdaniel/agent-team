@@ -200,6 +200,30 @@ team-close: left out of tasks/T1/scratch: .env.local (may hold a secret)"
   assert_equal "$(cd "$TEAM_HOME/tasks/T1/scratch" && find . -mindepth 1 | sort)" "./notes.md"
 }
 
+@test "the archive leaves out bare repositories, dependency trees, directories of over 200 files and links, each named" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  local slot=${home_slots[0]}
+  local dir=$slot/.scratch/task
+  echo "notes" >"$dir/notes.md"
+  git init -q --bare "$dir/scan.git"
+  mkdir -p "$dir/node_modules/a" "$dir/trial/front-end" "$dir/py/__pycache__" "$dir/kept"
+  touch "$dir/node_modules/a/1.js" "$dir/node_modules/a/2.js" "$dir/node_modules/3.js" "$dir/py/__pycache__/m.pyc"
+  touch "$dir/trial/front-end/"{1..201}.ts "$dir/kept/"{1..200}.txt
+  ln -s ../../front-end/node_modules "$dir/deps"
+  work_and_push "$slot" feature.txt
+
+  run_bin -0 --separate-stderr team-close T1
+  assert_equal "$stderr" "team-close: left out of tasks/T1/scratch: scan.git (nested repository)
+team-close: left out of tasks/T1/scratch: node_modules (dependencies)
+team-close: left out of tasks/T1/scratch: py/__pycache__ (dependencies)
+team-close: left out of tasks/T1/scratch: trial (over 200 files)
+team-close: left out of tasks/T1/scratch: deps (link)"
+  assert_equal "$(cd "$TEAM_HOME/tasks/T1/scratch" && find . -mindepth 1 -not -path './kept/*' | sort)" "./kept
+./notes.md
+./py"
+  assert_equal "$(find "$TEAM_HOME/tasks/T1/scratch/kept" -type f | wc -l)" "200"
+}
+
 # rehome_ledger <home>: the ledger as another machine with home <home> wrote it, its recorded
 # worktree paths under that home instead of this HOME.
 rehome_ledger() {

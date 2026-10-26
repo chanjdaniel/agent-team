@@ -343,6 +343,30 @@ team-checkpoint: left out of tasks/T1/scratch: access.json (may hold a secret)"
 ./notes.md"
 }
 
+@test "the archive leaves out bare repositories, dependency trees, directories of over 200 files and links, each named" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  local dir=$HOME/slots/home/1/.scratch/task
+  echo "notes" >"$dir/notes.md"
+  git init -q --bare "$dir/mirror.git"
+  mkdir -p "$dir/tools/node_modules/a" "$dir/trial/front-end/src" "$dir/kept"
+  touch "$dir/tools/node_modules/a/1.js" "$dir/tools/node_modules/a/2.js" "$dir/tools/node_modules/3.js"
+  # 201 files, counted through trial/'s subdirectories; kept/ holds exactly 200.
+  touch "$dir/trial/front-end/src/"{1..150}.ts "$dir/trial/"{1..51}.txt "$dir/kept/"{1..200}.txt
+  ln -s ../../front-end/node_modules "$dir/node_modules"
+  ln -s notes.md "$dir/latest.md"
+
+  run_bin -0 --separate-stderr team-checkpoint
+  assert_equal "$stderr" "team-checkpoint: left out of tasks/T1/scratch: mirror.git (nested repository)
+team-checkpoint: left out of tasks/T1/scratch: tools/node_modules (dependencies)
+team-checkpoint: left out of tasks/T1/scratch: trial (over 200 files)
+team-checkpoint: left out of tasks/T1/scratch: latest.md (link)
+team-checkpoint: left out of tasks/T1/scratch: node_modules (link)"
+  assert_equal "$(cd "$TEAM_HOME/tasks/T1/scratch" && find . -mindepth 1 -not -path './kept/*' | sort)" "./kept
+./notes.md
+./tools"
+  assert_equal "$(find "$TEAM_HOME/tasks/T1/scratch/kept" -type f | wc -l)" "200"
+}
+
 @test "the team-home commit holds only the scratch archives, memory and the ledger, whatever else is staged" {
   run_bin -0 team-open home feature feat work "Do the work"
   echo "spec" >"$HOME/slots/home/1/.scratch/task/spec.md"

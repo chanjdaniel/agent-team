@@ -59,7 +59,7 @@ It is enabled only on the holder: `team-resume` enables it, `team-handoff` disab
 
 `team-checkpoint` makes a dead machine lose at most 15 minutes:
 
-- each open task's task directory is mirrored into its archive in the team home, less what has no place in its history, each named in the checkpoint's output: the task directory's top-level `ui/` (a UI capture, which stays on the machine that took it), a directory holding a `.git` (a nested repository), a file over 1 MiB, and a path that may hold a secret, by the snapshot's rule below.
+- each open task's task directory is mirrored into its archive in the team home, less what `archive_left_out` (`bin/lib/team.sh`) leaves out, each named on stderr.
   `team-close` archives the same way, and `team-open --resume` leaves those paths in the worktree as they are;
 - each worktree's work is kept on the team home's origin as `wip/<project>/T<n>`, pushed from the worktree to that origin's URL and never to the project's origin, which may be public (Conventioner's is): the branch head, or, with uncommitted changes, a snapshot commit on it built from a temporary index (untracked files included), never touching the worktree's files, index or stash;
 - untracked files that may hold a secret are left out of the snapshot, each named in the checkpoint's output: a name starting with `.env` or ending with `.pem` or `.key`, or a path that a target in `machine/secrets.json` ends with.
