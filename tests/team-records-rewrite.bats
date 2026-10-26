@@ -16,6 +16,7 @@ setup() {
   commit_paths "docs: the plan" tasks/T1/plan.md ledger.jsonl
   commit_paths "chore: archive T1's scratch" tasks/T1/scratch/notes.md tasks/T1/scratch/tools/node_modules/left-pad/index.js \
     tasks/T1/scratch/mirror.git/HEAD tasks/T31/scratch/dl/gitleaks/gitleaks tasks/T31/scratch/dl/gitleaks.sha256
+  bulk=$(git rev-parse --short=8 HEAD)
   mkdir -p "$(dirname "$S02")"
   printf 'From the export: applicant@mail.test wrote in.\nThe fixture: vendor@example.com\n' >"$S02"
   commit_paths "docs: the S02 story" projects/conventioner/lavish/qc.html projects/conventioner/lavish/shots/a.png \
@@ -26,7 +27,7 @@ setup() {
 
 Co-Authored-By: Someone <noreply@anthropic.com>"
   git rm -q -r projects/conventioner/lavish
-  commit_paths "docs: the S02 story names the fixture only" tasks/T1/plan.md
+  commit_paths "docs: the S02 story names the fixture only, after $bulk" tasks/T1/plan.md
   git push -q origin dev
   git -C "$origin" branch wip/home/T1 "$pr_head"
   refs_before=$(git -C "$origin" for-each-ref --format='%(refname) %(objectname)')
@@ -44,6 +45,25 @@ commit_paths() {
   git commit -q -m "$1"
 }
 
+# Rewrite a copy of origin's dev and lease by hand with the vendored filter-repo and <args>, as the
+# script would but with other inputs, into $check/new.git beside $check/old.git, a mirror of origin.
+rewrite_by_hand() {
+  check=$BATS_TEST_TMPDIR/check
+  git clone -q --no-local --mirror "$origin" "$check/old.git"
+  git clone -q --no-local --mirror "$check/old.git" "$check/new.git"
+  git -C "$check/new.git" for-each-ref --format='%(refname)' | { grep -vxE 'refs/heads/(dev|lease)' || true; } |
+    xargs -r -n1 git -C "$check/new.git" update-ref -d
+  (cd "$check/new.git" && python3 "$REPO_ROOT/bin/lib/vendor/git-filter-repo/git-filter-repo" --sensitive-data-removal \
+    --no-fetch "$@" --prune-empty never --prune-degenerate never) >/dev/null 2>&1
+}
+
+# verify.py over rewrite_by_hand's two repositories, with the script's inputs.
+verify_by_hand() {
+  python3 "$REPO_ROOT/bin/lib/records-rewrite/verify.py" "$check/old.git" "$check/new.git" \
+    "$REPO_ROOT/bin/lib/records-rewrite/drop.txt" "$REPO_ROOT/bin/lib/records-rewrite/message-expressions.txt" \
+    --changed F04-real-export-shapes/S02-a-timestamp-is-a-moment.md
+}
+
 # What the summary says after <prefix>: , one line each.
 said() {
   sed -n "s/^$1: //p" <<<"$output"
@@ -58,8 +78,8 @@ said() {
 commits whose tree is unchanged: 3
 dropped paths, summed over commits: 26
 callback-changed paths, summed over commits: 3
-messages changed only by hash rewriting: 0
-messages changed otherwise (message expressions): 1
+messages changed only by hash rewriting: 1
+messages changed by the message expressions: 1
 drop-list paths left in the new history: 0
 pull refs whose history holds a dropped path: 1 of 1
 failures: 0"
@@ -90,6 +110,10 @@ Co-Authored-By: Someone <noreply@anthropic.com>"
   # Nothing on origin moved, and nothing new is in the team home.
   assert_equal "$(git -C "$origin" for-each-ref --format='%(refname) %(objectname)')" "$refs_before"
   assert_equal "$(cat "$work/refs-before.txt")" "$refs_before"
+  # The mirror keeps every ref but no origin, so no bare push there reaches GitHub.
+  assert_equal "$(git -C "$work/mirror.git" for-each-ref --format='%(refname) %(objectname)')" "$refs_before"
+  assert_equal "$(git -C "$work/mirror.git" remote)" ""
+  run ! git -C "$work/mirror.git" push
   assert_equal "$(git -C "$TEAM_HOME" status --porcelain)" ""
 }
 
@@ -137,21 +161,65 @@ Co-Authored-By: Someone <noreply@anthropic.com>"
   run_bin -2 team-records-rewrite "$work" more
 }
 
+@test "an origin with only dev and lease rewrites and verifies, with no pull ref to count" {
+  git -C "$origin" update-ref -d refs/heads/wip/home/T1
+  git -C "$origin" update-ref -d refs/pull/1/head
+  run_bin -0 team-records-rewrite "$work"
+  assert_contains "$output" "verify: pull refs whose history holds a dropped path: 0 of 0"
+  assert_contains "$output" "verify: failures: 0"
+  [[ $(said 'pack after') =~ ^[0-9.]+\ MiB ]]
+}
+
+@test "a dropped path with a non-ASCII name is matched as it is: dropped, it passes; left behind, verify.py finds it" {
+  cd "$TEAM_HOME" || return
+  commit_paths "docs: a screenshot" $'shots/caf\303\251 "q".png' $'tasks/T1/scratch/node_modules/\303\244/index.js'
+  git push -q origin dev
+  run_bin -0 team-records-rewrite "$work"
+  assert_contains "$output" "verify: drop-list paths left in the new history: 0"
+  assert_contains "$output" "verify: failures: 0"
+  [[ -z $(git -C "$work/rewrite.git" ls-tree -r --name-only dev -- shots tasks/T1/scratch/node_modules) ]]
+  # A rewrite that dropped everything but those two names: verify sees them left.
+  printf '%s\n' 'glob:tasks/*/node_modules/left-pad/*' 'regex:^tasks/.+\.git/' tasks/T31/scratch/dl/ \
+    projects/conventioner/lavish/ mvp-findings.html shots/b.png >"$BATS_TEST_TMPDIR/narrower.txt"
+  rewrite_by_hand --invert-paths --paths-from-file "$BATS_TEST_TMPDIR/narrower.txt" \
+    --replace-message "$REPO_ROOT/bin/lib/records-rewrite/message-expressions.txt" \
+    --file-info-callback "$REPO_ROOT/bin/lib/records-rewrite/s02-callback.py"
+  run -1 verify_by_hand
+  assert_contains "$output" "drop-list paths left in the new history: 2"
+}
+
 @test "verify.py fails a rewrite that dropped a path off its drop list, naming the commit and the path" {
-  local repo=$BATS_TEST_TMPDIR/check
-  git clone -q --no-local --mirror "$origin" "$repo/old.git"
-  git clone -q --no-local --mirror "$repo/old.git" "$repo/new.git"
-  git -C "$repo/new.git" for-each-ref --format='%(refname)' | grep -vxE 'refs/heads/(dev|lease)' |
-    xargs -r -n1 git -C "$repo/new.git" update-ref -d
-  printf 'tasks/T1/scratch/\n' >"$repo/wider.txt"
-  (cd "$repo/new.git" && python3 "$REPO_ROOT/bin/lib/vendor/git-filter-repo/git-filter-repo" --sensitive-data-removal \
-    --no-fetch --invert-paths --paths-from-file "$repo/wider.txt" --prune-empty never --prune-degenerate never) >/dev/null 2>&1
-  run -1 python3 "$REPO_ROOT/bin/lib/records-rewrite/verify.py" "$repo/old.git" "$repo/new.git" "$REPO_ROOT/bin/lib/records-rewrite/drop.txt"
-  assert_contains "$output" "failures: 4"
+  printf 'tasks/T1/scratch/\n' >"$BATS_TEST_TMPDIR/wider.txt"
+  rewrite_by_hand --invert-paths --paths-from-file "$BATS_TEST_TMPDIR/wider.txt" \
+    --replace-message "$REPO_ROOT/bin/lib/records-rewrite/message-expressions.txt"
+  run -1 verify_by_hand
   assert_contains "$output" ": unexpected D tasks/T1/scratch/notes.md"
   # The rewrite it checked was never written to.
-  assert_equal "$(git -C "$repo/new.git" for-each-ref --format='%(refname)')" "refs/heads/dev
+  assert_equal "$(git -C "$check/new.git" for-each-ref --format='%(refname)')" "refs/heads/dev
 refs/heads/lease"
+}
+
+@test "verify.py fails a rewrite whose messages are not the old ones through the message expressions" {
+  rewrite_by_hand --invert-paths --paths-from-file "$REPO_ROOT/bin/lib/records-rewrite/drop.txt" \
+    --file-info-callback "$REPO_ROOT/bin/lib/records-rewrite/s02-callback.py"
+  run -1 verify_by_hand
+  assert_contains "$output" "failures: 1"
+  assert_contains "$output" ": the message is not the old one through the message expressions and the commit map"
+  # With them, the same rewrite passes.
+  rm -rf "$check"
+  rewrite_by_hand --invert-paths --paths-from-file "$REPO_ROOT/bin/lib/records-rewrite/drop.txt" \
+    --replace-message "$REPO_ROOT/bin/lib/records-rewrite/message-expressions.txt" \
+    --file-info-callback "$REPO_ROOT/bin/lib/records-rewrite/s02-callback.py"
+  run -0 verify_by_hand
+  assert_contains "$output" "messages changed by the message expressions: 1"
+  assert_contains "$output" "messages changed only by hash rewriting: 1"
+  # filter-repo leaves the hash of a commit it has not rewritten yet as written, which passes too.
+  rm -rf "$check"
+  rewrite_by_hand --invert-paths --paths-from-file "$REPO_ROOT/bin/lib/records-rewrite/drop.txt" \
+    --replace-message "$REPO_ROOT/bin/lib/records-rewrite/message-expressions.txt" \
+    --file-info-callback "$REPO_ROOT/bin/lib/records-rewrite/s02-callback.py" --preserve-commit-hashes
+  run -0 verify_by_hand
+  assert_contains "$output" "messages changed only by hash rewriting: 0"
 }
 
 @test "the vendored git filter-repo is 2.47.0, by the checksum the script's header names" {

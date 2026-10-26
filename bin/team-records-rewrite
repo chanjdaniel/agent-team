@@ -9,8 +9,8 @@
 # The repository is the team home's origin. In order, stopping at the first failure:
 #   1. OLD, dev's sha on origin (git ls-remote), and lease's.
 #   2. mirror.git, git clone --mirror of origin, its refs in refs-before.txt; its dev must be OLD
-#      and its lease origin's, so nothing moved during the clone. Kept: verify reads it, and it is
-#      the rollback.
+#      and its lease origin's, so nothing moved during the clone. Its origin is removed, so no bare
+#      git push there can put every ref back. Kept: verify reads it, and it is the rollback.
 #   3. rewrite.git, a --no-local mirror clone of mirror.git holding only dev and lease (the wip/*
 #      branches are projects' histories, whose shas must stay theirs, and GitHub keeps refs/pull/*
 #      read-only), rewritten by git filter-repo 2.47.0, vendored in bin/lib/vendor/git-filter-repo/
@@ -21,8 +21,9 @@
 #      never --prune-degenerate never, so the commit map is one to one; its origin removed after.
 #      filter-repo's output in filter-repo.log.
 #   4. bin/lib/records-rewrite/verify.py over every commit of the map: every difference a dropped
-#      path or the S02 story, authors, committers and parents equal, no dropped path left (its
-#      counts in verify.txt).
+#      path or the S02 story, authors, committers and parents equal, each message the old one
+#      through the message expressions and the commit map, no dropped path left (its counts in
+#      verify.txt).
 #   5. lease in rewrite.git is lease in mirror.git: an orphan branch no drop path matches.
 #   6. The pack of dev and lease before and after, each in a copy repacked from scratch the same
 #      way (git repack -a -d -f --window=250 --depth=50), the copies then removed.
@@ -67,7 +68,7 @@ since() {
 pack_of() {
   local copy=$work/pack-$2.git kib count
   git clone -q --no-local --mirror "$1" "$copy"
-  git -C "$copy" for-each-ref --format='%(refname)' | grep -vxE 'refs/heads/(dev|lease)' |
+  git -C "$copy" for-each-ref --format='%(refname)' | { grep -vxE 'refs/heads/(dev|lease)' || true; } |
     xargs -r -n1 git -C "$copy" update-ref -d
   git -C "$copy" reflog expire --expire=now --all
   git -C "$copy" repack -q -a -d -f --window=250 --depth=50
@@ -92,6 +93,9 @@ say "origin: $url, dev at $old, lease at $lease"
 rc=0
 NET_TIMEOUT=1800 origin_git clone -q --mirror "$url" "$work/mirror.git" || rc=$?
 ((rc == 0)) || { echo "${0##*/}: cannot mirror $url: $(origin_reason "$rc")" >&2; exit 75; }
+# Without its origin, a bare git push there has nowhere to go: the clone's remote.origin.mirror
+# would force every ref on GitHub back to this copy. Every ref stays.
+git -C "$work/mirror.git" remote remove origin 2>/dev/null
 git -C "$work/mirror.git" for-each-ref --format='%(refname) %(objectname)' >"$work/refs-before.txt"
 [[ $(git -C "$work/mirror.git" rev-parse refs/heads/dev) == "$old" ]] ||
   die "origin's dev moved during the mirror: the team is not frozen; hand off, then run it again in a new directory"
@@ -101,7 +105,7 @@ say "mirror: $work/mirror.git, $(wc -l <"$work/refs-before.txt") refs (refs-befo
 
 # 3. The rewrite.
 git clone -q --no-local --mirror "$work/mirror.git" "$work/rewrite.git"
-git -C "$work/rewrite.git" for-each-ref --format='%(refname)' | grep -vxE 'refs/heads/(dev|lease)' |
+git -C "$work/rewrite.git" for-each-ref --format='%(refname)' | { grep -vxE 'refs/heads/(dev|lease)' || true; } |
   xargs -r -n1 git -C "$work/rewrite.git" update-ref -d
 start=$(date +%s.%N)
 if ! (cd "$work/rewrite.git" && python3 "$filter_repo" --sensitive-data-removal --no-fetch \
@@ -118,7 +122,8 @@ say "rewrite: $work/rewrite.git in $(since "$start") s, dev at $new, $(grep -vc 
 # 4. Every commit, byte for byte.
 start=$(date +%s.%N)
 rc=0
-python3 "$lib/verify.py" "$work/mirror.git" "$work/rewrite.git" "$lib/drop.txt" --changed "$s02" >"$work/verify.txt" 2>&1 || rc=$?
+python3 "$lib/verify.py" "$work/mirror.git" "$work/rewrite.git" "$lib/drop.txt" "$lib/message-expressions.txt" \
+  --changed "$s02" >"$work/verify.txt" 2>&1 || rc=$?
 sed 's/^/verify: /' "$work/verify.txt" | tee -a "$summary"
 ((rc == 0)) || die "verify failed in $(since "$start") s (verify.txt): nothing may be pushed"
 say "verify: passed in $(since "$start") s"

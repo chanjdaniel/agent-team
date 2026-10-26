@@ -10,10 +10,10 @@ The force push and the Support request are Daniel's alone.
 - `dev` on GitHub gets a new history: every commit from `e9611631` (the PR #1 merge, 2026-10-21) on gets a new sha, since git filter-repo strips GitHub's merge signatures, and so do the imported lineage's `c7856695` and `70b4f532`.
 - Dropped from every commit: the paths of `bin/lib/records-rewrite/drop.txt` (dependencies, bare repositories, a downloaded release, a built binary, copied project trees and build output; the plan-era review pages and screenshots).
   The S02 story keeps every version, with any address not at `example.com` replaced by `vendor@example.com`; one commit message's address becomes `[email removed]`.
-- Every other file is byte-identical at every commit that had it, and authors, committers, dates and parents are kept: `team-records-rewrite` checks all of it and refuses to go on otherwise.
+- Every other file is byte-identical at every commit that had it, authors, committers, dates and parents are kept, and every message is the old one through the message expression and the commit map: `team-records-rewrite` checks all of it and refuses to go on otherwise.
 - `lease`, every `wip/*` and `salvage/*` branch, and GitHub's read-only `refs/pull/*` keep their shas.
 - The sha references in the records (about 4,200, most in T31's maps) are left as written; the commit map, committed beside them, translates each.
-- A fresh clone of `dev` and `lease` goes from about 79 MiB to about 15 MiB (the 2026-10-27 rehearsal: 79.12 MiB to 14.74 MiB).
+- A fresh clone of `dev` and `lease` goes from about 79 MiB to about 15 MiB (the 2026-10-27 rehearsal: 79.17 MiB to 14.79 MiB).
 
 ## Before the day
 
@@ -31,7 +31,7 @@ The force push and the Support request are Daniel's alone.
 5. **Daniel says "hand off"; the coordinator runs it.** The coordinator's `handoff` skill stows every worker; `team-handoff` checkpoints, commits all records, pushes `dev`, disables the heartbeat and releases the lease; then `team-handoff --retire` stops the coordinator.
 6. **Daniel.** Check the freeze: `~/agent-team/bin/team-lease status` says released, and `git -C ~/agent-team-records status --porcelain` prints nothing.
 7. **Daniel.** `~/agent-team/bin/team-records-rewrite ~/records-rewrite`, under a minute.
-   It mirrors GitHub into `~/records-rewrite/mirror.git`, rewrites `dev` and `lease` in `~/records-rewrite/rewrite.git`, checks every commit, and prints the sizes and the commands of steps 8 and 9 with the old and new `dev` filled in; it pushes nothing.
+   It mirrors GitHub into `~/records-rewrite/mirror.git` (its origin then removed, so no bare `git push` there can force every ref back), rewrites `dev` and `lease` in `~/records-rewrite/rewrite.git`, checks every commit, and prints the sizes and the commands of steps 8 and 9 with the old and new `dev` filled in; it pushes nothing.
    Go on only if it ends with the force push printed: any failed check stops it with exit 1 and no push command, and a `rehearsal:` line means the lease was not released.
 8. **Daniel alone.** The force push it printed, from `rewrite.git` only, with its lease on the old `dev`: `git -C ~/records-rewrite/rewrite.git push --force-with-lease=refs/heads/dev:<old dev> https://github.com/chanjdaniel/agent-team-records.git refs/heads/dev:refs/heads/dev`.
    Never push from `~/agent-team-records` or `~/agent-team`, whose hooks and history are the old ones.
@@ -57,4 +57,4 @@ The force push and the Support request are Daniel's alone.
 
 ## Rollback
 
-Until step 15, from the mirror, which keeps every old object: the rollback `team-records-rewrite` printed, `git -C ~/records-rewrite/mirror.git push --force-with-lease=refs/heads/dev:<new dev> https://github.com/chanjdaniel/agent-team-records.git <old dev>:refs/heads/dev`, then `mv` the old checkout back in place of the new clone on each machine that re-cloned.
+Until step 15, from the mirror, which keeps every old object and has no remote, so every push from it names GitHub's URL and the one ref, as here: the rollback `team-records-rewrite` printed, `git -C ~/records-rewrite/mirror.git push --force-with-lease=refs/heads/dev:<new dev> https://github.com/chanjdaniel/agent-team-records.git <old dev>:refs/heads/dev`, then `mv` the old checkout back in place of the new clone on each machine that re-cloned.
