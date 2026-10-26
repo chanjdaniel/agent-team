@@ -4,12 +4,12 @@
 #
 # It first applies bin/lib/platform.sh (Bash 5 or later; on macOS, Homebrew's GNU tools first on
 # PATH). It sets TEAM_HOME (unless already set, the first line of ~/.config/agent-team/home under
-# HOME, else the directory above bin/) and TEAM_HOME_FROM, answers --help with the calling script's header (then runs
+# HOME) and TEAM_HOME_FROM, answers --help with the calling script's header (then runs
 # the script's help_more, if it defined one before sourcing), and provides die, usage_error, team_project, ledger_jq, ledger_append,
 # task_events, known_task_events, open_task_events, task_status, task_worktrees, local_path,
 # archive_left_out, rsync_rule, archive_task_dir, machine_name, os_release, team_os, fence_reason, lease_gate, worktree_changes,
-# secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin, home_repo, non_records,
-# only_records, commit_non_records, records_list, origin_git, origin_reason, commit_records, fast_forward, render_template,
+# secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin, only_records,
+# records_list, origin_git, origin_reason, commit_records, fast_forward, render_template,
 # registered_pr, attribution_lines, strip_attribution, live_sessions, discord_token, discord_api,
 # github, pr_part and task_state_json, and sets COORDINATOR_CHANNEL.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
@@ -19,13 +19,14 @@
 source "$(dirname "${BASH_SOURCE[0]}")/platform.sh"
 
 # The team home, where the records live: TEAM_HOME when set; else the first line of
-# ~/.config/agent-team/home, a path relative to HOME unless it is absolute; else the directory
-# above bin/. TEAM_HOME_FROM says which (variable, setting or fallback). TEAM_HOME_PROBLEM is the
-# refusal when the setting names no directory, given after --help has had its chance; a script
-# that sets team_home_report before sourcing (team-doctor) is not refused, and reports it itself.
+# ~/.config/agent-team/home, a path relative to HOME unless it is absolute; never the code
+# checkout. TEAM_HOME_FROM says which (variable, setting, or none, where TEAM_HOME is empty).
+# TEAM_HOME_PROBLEM is the refusal when neither names a directory, given after --help has had its
+# chance; a script that sets team_home_report before sourcing (team-doctor, and the git hooks,
+# which need none) is not refused, and reports it itself, and one that sets team_home_unnamed
+# (team-bootstrap, which names it) is not refused while nothing names one.
 TEAM_HOME_PROBLEM='' TEAM_HOME_FIX='name its checkout there, relative to your home directory: echo agent-team-records > ~/.config/agent-team/home'
 TEAM_HOME_FROM=variable
-if [[ -z ${TEAM_HOME:-} ]]; then TEAM_HOME_FROM=fallback; fi
 # shellcheck disable=SC2034 # TEAM_HOME_FROM is read by team-doctor and team-bootstrap
 if [[ -z ${TEAM_HOME:-} && -f $HOME/.config/agent-team/home ]]; then
   TEAM_HOME_FROM=setting
@@ -37,8 +38,10 @@ if [[ -z ${TEAM_HOME:-} && -f $HOME/.config/agent-team/home ]]; then
     [[ -d $TEAM_HOME ]] ||
       TEAM_HOME_PROBLEM="the team home $TEAM_HOME, named by ~/.config/agent-team/home, is not a directory; $TEAM_HOME_FIX"
   fi
+elif [[ -z ${TEAM_HOME:-} ]]; then
+  TEAM_HOME_FROM=none TEAM_HOME=''
+  TEAM_HOME_PROBLEM="neither TEAM_HOME nor ~/.config/agent-team/home names the team home; $TEAM_HOME_FIX"
 fi
-TEAM_HOME=${TEAM_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
 # This library's directory, which holds the ledger contract: code, never the team home's data.
 TEAM_LIB=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
@@ -332,18 +335,6 @@ wip_origin() {
   git -C "$TEAM_HOME" remote get-url origin 2>/dev/null || die "the team home $TEAM_HOME has no remote origin"
 }
 
-# The GitHub repo the team home's origin names, as owner/name, read from its URL as configured
-# (https://github.com/<owner>/<name>[.git], git@github.com:<owner>/<name>[.git] or
-# ssh://git@github.com/<owner>/<name>[.git]); fails for no origin or any other URL: home_repo
-home_repo() {
-  local url
-  url=$(git -C "$TEAM_HOME" config --get remote.origin.url 2>/dev/null) || return 1
-  url=${url%/}
-  url=${url%.git}
-  [[ $url =~ ^(https://github\.com/|git@github\.com:|ssh://git@github\.com/)([^/]+/[^/]+)$ ]] || return 1
-  printf '%s\n' "${BASH_REMATCH[2]}"
-}
-
 # The records as a reader's list: "ledger.jsonl, manual-steps.md, tasks/, ...".
 records_list() {
   local globs
@@ -351,38 +342,18 @@ records_list() {
   printf '%s\n' "${globs//,/, }"
 }
 
-# The paths of the NUL-separated list on stdin that are not records (bin/lib/records), one per
-# line, in order: non_records
-non_records() { pick_records 0; }
-
-# The paths of the NUL-separated list on stdin that are records, one per line, in order:
-# only_records
-only_records() { pick_records 1; }
-
-# The paths of the NUL-separated list on stdin that are records (1) or are not (0), one per line,
-# in order: pick_records <1|0>
-pick_records() {
-  local path record is
+# The paths of the NUL-separated list on stdin that are records (bin/lib/records), one per line,
+# in order: only_records
+only_records() {
+  local path record
   local -a records
   mapfile -t records < <(grep -v -e '^#' -e '^$' "$TEAM_LIB/records")
   while IFS= read -r -d '' path; do
-    is=0
     for record in "${records[@]}"; do
       # shellcheck disable=SC2053 # the record is a glob
-      if [[ $path == $record ]]; then is=1 && break; fi
+      if [[ $path == $record ]]; then printf '%s\n' "$path" && break; fi
     done
-    [[ $is != "$1" ]] || printf '%s\n' "$path"
   done
-}
-
-# The paths <commit> touches against its first parent (a root commit: all its paths) that are not
-# records, one per line, in order: commit_non_records <commit>
-commit_non_records() {
-  if git rev-parse -q --verify "$1^1" >/dev/null; then
-    git diff --name-only --no-renames -z "$1^1" "$1" | non_records
-  else
-    git diff-tree -r --root --no-commit-id --name-only --no-renames -z "$1" | non_records
-  fi
 }
 
 # Run git against an origin: no credential prompt, at most NET_TIMEOUT seconds (the caller's
@@ -738,7 +709,7 @@ if [[ ${1:-} == --help || ${1:-} == -h ]]; then
   exit 0
 fi
 
-if [[ -z ${team_home_report:-} ]]; then
+if [[ -z ${team_home_report:-} && ! ($TEAM_HOME_FROM == none && -n ${team_home_unnamed:-}) ]]; then
   [[ -z $TEAM_HOME_PROBLEM ]] || die "$TEAM_HOME_PROBLEM"
   [[ -d $TEAM_HOME ]] || die "team home $TEAM_HOME is not a directory"
 fi

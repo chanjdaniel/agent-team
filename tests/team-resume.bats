@@ -288,15 +288,6 @@ laptop_state() {
   assert_equal "$(lease_json | jq -r .state)" released
 }
 
-@test "a code checkout that is the team home is skipped, saying so" {
-  hand_off
-  code_checkout "$laptop/team"
-
-  on_machine laptop run_bin -0 --separate-stderr team-resume
-  assert_contains "$output" "team home: dev fast-forwarded to $(git -C "$team_origin" rev-parse --short=7 dev)"
-  assert_contains "$output" "code: the code checkout is the team home, brought up to date above"
-}
-
 @test "offline, the resume exits 75 at its first step, before the doctor, changing nothing" {
   hand_off
   git -C "$laptop/team" remote set-url origin "https://127.0.0.1:9/agent-team.git"

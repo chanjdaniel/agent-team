@@ -1,6 +1,7 @@
-# The records: the only paths a direct commit on dev may touch, one glob per line, where a *
-# matches across directories. Read by bin/lib/team.sh's non_records and only_records, for the
-# git hooks and team-records-check. Every other tracked path is code (bin/lib/code).
+# The records: the team home's paths, which the code repository never holds, one glob per line,
+# where a * matches across directories. Read by bin/lib/team.sh's only_records, for the git hooks,
+# which keep them out of the code repository's commits and pushes; tests/repo.bats checks that no
+# tracked path matches.
 ledger.jsonl
 manual-steps.md
 projects.toml

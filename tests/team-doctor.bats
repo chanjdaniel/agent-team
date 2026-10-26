@@ -67,25 +67,21 @@ setup() {
     "PASS team home: ~/agent-team-records, named by TEAM_HOME: a checkout of its own on dev, with an origin"
 }
 
-@test "with neither TEAM_HOME nor the setting, the team home line warns that the team home is the code checkout" {
+@test "with neither TEAM_HOME nor the setting, the team home line fails with the setting's fix" {
   tools_at arch
   rm "$HOME/.config/agent-team/home"
-  git -C "$CODE_CHECKOUT" remote add origin https://github.com/chanjdaniel/agent-team.git
   unset TEAM_HOME
   run -1 "$CODE_CHECKOUT/bin/team-doctor"
   # With no ~/agent-team-records the fix clones it first, since the setting would name a missing directory.
   assert_equal "$(line_of 'team home')" \
-    "WARN team home: $CODE_CHECKOUT, the code checkout, since neither TEAM_HOME nor ~/.config/agent-team/home names one; fix: clone the team home: git clone https://github.com/chanjdaniel/agent-team-records.git ~/agent-team-records, then team-bootstrap --home agent-team-records"
+    "FAIL team home: neither TEAM_HOME nor ~/.config/agent-team/home names one; fix: clone the team home, then name it: git clone https://github.com/chanjdaniel/agent-team-records.git ~/agent-team-records && echo agent-team-records > ~/.config/agent-team/home"
   mkdir "$HOME/agent-team-records"
   run -1 "$CODE_CHECKOUT/bin/team-doctor"
   assert_equal "$(line_of 'team home')" \
-    "WARN team home: $CODE_CHECKOUT, the code checkout, since neither TEAM_HOME nor ~/.config/agent-team/home names one; fix: name the team home's checkout, relative to your home directory: echo agent-team-records > ~/.config/agent-team/home"
-  rmdir "$HOME/agent-team-records"
-  # It is still checked: without an origin it fails.
-  git -C "$CODE_CHECKOUT" remote remove origin
-  run -1 "$CODE_CHECKOUT/bin/team-doctor"
-  assert_equal "$(line_of 'team home')" \
-    "FAIL team home: $CODE_CHECKOUT, the code checkout, has no remote origin; fix: git -C $CODE_CHECKOUT remote add origin <the team home's repository URL>"
+    "FAIL team home: neither TEAM_HOME nor ~/.config/agent-team/home names one; fix: name the team home's checkout, relative to your home directory: echo agent-team-records > ~/.config/agent-team/home"
+  # Every other line is still there, the ones that read the team home failing with the same refusal.
+  assert_contains "$(line_of records)" "FAIL records: "
+  assert_contains "$output" "neither TEAM_HOME nor ~/.config/agent-team/home names the team home; name its checkout there"
 }
 
 @test "a team home that is missing, no checkout of its own, without an origin or on a detached HEAD fails the team home line" {
@@ -104,6 +100,11 @@ setup() {
   run -1 env -u TEAM_HOME "$CODE_CHECKOUT/bin/team-doctor"
   assert_equal "$(line_of 'team home')" \
     "FAIL team home: the setting ~/.config/agent-team/home names no team home; fix: name the team home's checkout, relative to your home directory: echo agent-team-records > ~/.config/agent-team/home"
+  # The code checkout, a checkout with an origin of its own, holds no records.
+  git -C "$CODE_CHECKOUT" remote add origin https://github.com/chanjdaniel/agent-team.git
+  TEAM_HOME=$CODE_CHECKOUT run_bin -1 team-doctor
+  assert_equal "$(line_of 'team home')" \
+    "FAIL team home: $CODE_CHECKOUT, $named, is the code checkout, which holds no records; fix: clone the team home to ~/agent-team-records, then name the team home's checkout, relative to your home directory: echo agent-team-records > ~/.config/agent-team/home"
   # A plain directory, a subdirectory of a checkout, and a worktree of another checkout.
   mkdir -p "$tmp/plain" "$home/tasks"
   TEAM_HOME=$tmp/plain run_bin -1 team-doctor

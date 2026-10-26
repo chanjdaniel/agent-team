@@ -148,3 +148,21 @@ clone -q https://github.com/owner/site.git $SITE"
   assert_contains "$output" "check: doctor: "
   [[ $output != *" team home: "* && $output != *" records: "* && $output != *"FAIL checkout "* ]]
 }
+
+@test "with nothing naming the team home, the machine stage stops on Daniel's step to clone and name it" {
+  fresh arch
+  tools_at arch
+  echo laptop >"$HOME/.config/agent-team/machine"
+  unset TEAM_HOME
+  run -1 "$CODE_CHECKOUT/bin/team-bootstrap"
+  assert_equal "$(tail -n1 <<<"$output")" "machine: Daniel: clone the team home, then name it for this machine: git clone https://github.com/chanjdaniel/agent-team-records.git ~/agent-team-records && team-bootstrap --home agent-team-records"
+  [[ ! -e $STUB_CALLS/git-clone.log ]]
+  # Once it is cloned, only naming it is left; the check stage says the same.
+  mkdir "$HOME/agent-team-records"
+  run -1 "$CODE_CHECKOUT/bin/team-bootstrap"
+  assert_equal "$(tail -n1 <<<"$output")" "machine: Daniel: name the team home's checkout for this machine: team-bootstrap --home agent-team-records"
+  rmdir "$HOME/agent-team-records"
+  run -1 "$CODE_CHECKOUT/bin/team-bootstrap" --stage check
+  assert_contains "$output" "check: Daniel 1: team home: clone the team home, then name it for this machine: git clone https://github.com/chanjdaniel/agent-team-records.git ~/agent-team-records && team-bootstrap --home agent-team-records (~/.config/agent-team/home is missing)"
+  [[ $output != *"these failed: "*"team home"* ]]
+}

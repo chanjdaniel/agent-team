@@ -8,7 +8,7 @@ The team's own work on this repo goes through a task and a PR to `dev`, like any
 
 | Path | What it holds |
 | - | - |
-| `bin/` | The team's commands, `team-*` and `claude-coordinator`; `bin/lib/` is the shared library, the ledger contract and its jq, `stack.jq` (`team-stack`'s owner classes and Docker's sizes), `tools.lock`, the tools `team-doctor` checks, pinned or with a minimum, and their source per OS (for treehouse and no-mistakes, a GitHub release with each archive's checksum, or a fork's commit), `tools.jq` (which turns `tools.lock` into each tool's pin and install command for a machine), `opencode-gate`, the gate's opencode wrapper, which `team-bootstrap` installs in `~/.no-mistakes/bin` and Daniel's no-mistakes config names, `records`, the paths a direct commit on `dev` may touch, and `code`, every other tracked path; `bin/hooks/` the sessions' hooks, and `bin/hooks/git/` git's |
+| `bin/` | The team's commands, `team-*` and `claude-coordinator`; `bin/lib/` is the shared library, the ledger contract and its jq, `stack.jq` (`team-stack`'s owner classes and Docker's sizes), `tools.lock`, the tools `team-doctor` checks, pinned or with a minimum, and their source per OS (for treehouse and no-mistakes, a GitHub release with each archive's checksum, or a fork's commit), `tools.jq` (which turns `tools.lock` into each tool's pin and install command for a machine), `opencode-gate`, the gate's opencode wrapper, which `team-bootstrap` installs in `~/.no-mistakes/bin` and Daniel's no-mistakes config names, `records`, the team home's paths, which no tracked path matches, and `code`, which every tracked path matches; `bin/hooks/` the sessions' hooks, and `bin/hooks/git/` git's |
 | `tests/` | The bats suite, one `.bats` file per script (a long one split by topic, as `team-doctor-*.bats`) plus `task-life.bats`, a whole task's life across them, and `drill.bats`, the two-machine drill (handoff, steal, crash, outage), with `tests/helpers/` (`docker.bash`, the opt-in stub `docker`) and bats-core vendored in `tests/vendor/`; `tests/toolkits/` the toolkits' Node tests; `tests/bootstrap-drill` runs `team-bootstrap` on a fresh runner for the by-hand Bootstrap workflow |
 | `roles/` | The role prompts each session's system prompt is appended with, one per role, the coordinator's included |
 | `settings/` | Worker settings: `worker.json` shared, one file per role layered on it |
@@ -38,21 +38,20 @@ It holds:
 | `machine/` | What a machine needs to run the team, beyond the tools `bin/lib/tools.lock` pins: `claude/`, the Claude user config every machine shares (instructions, settings, skills, plugins), which `team-config` applies and captures; `secrets.json`, every secret file a machine needs, never a value, which `team-secrets` checks and restores from 1Password, described for Daniel in `secrets.md` |
 | `manual-steps.md` | The steps only Daniel can take |
 
-- The scripts find it as `TEAM_HOME` when set, else the first line of `~/.config/agent-team/home` (a path relative to `$HOME`, or absolute), else the directory above `bin/`; the library and `team-project` find it the same way, and refuse a setting that names no directory.
+- The scripts find it as `TEAM_HOME` when set, else the first line of `~/.config/agent-team/home` (a path relative to `$HOME`, or absolute); the library and `team-project` find it the same way, and refuse to start when neither names a directory, naming the fix (`echo agent-team-records > ~/.config/agent-team/home`), never falling back to the code checkout.
 - Code never comes from the team home, and records never go into this repo: `bin/lib/records` lists the records paths, and the `pre-push` hook (below) keeps a tree holding any of them away from every repository but the team home's origin.
 
-## Direct commits on dev
+## Pull requests only
 
-- A commit straight to `dev` may touch records only, the paths `bin/lib/records` lists: `ledger.jsonl`, `manual-steps.md`, `projects.toml`, `tasks/`, `projects/`, `memory/` and `machine/`.
-  Everything else reaches `dev` through a PR, and nothing is committed on `main`, which a release fast-forwards from `dev`.
-  Every tracked path that is not a record is code, listed in `bin/lib/code`, the paths the public repository will hold; `tests/repo.bats` checks that each tracked path is in exactly one of the two lists, so a new path is assigned in its PR.
-- Git runs `bin/hooks/git/` as the code checkout's hooks once it has `git -C ~/agent-team config core.hooksPath bin/hooks/git`, which every worktree shares, each running its own checkout's hooks.
-  Its `pre-commit` (and `pre-merge-commit`) refuses a commit on `dev` that touches anything else, naming each path, and every commit on `main`.
-  Its `pre-push` catches what those never see (a cherry-pick, a revert, `git am`, a fast-forward merge): a push to `dev` may only fast-forward it with commits that touch records only, and a push to `main` may only fast-forward it to a commit already on `origin/dev`.
-  On every remote and branch, it also refuses a push whose tip tree holds a records path unless the remote's URL is the team home's origin (a trailing `.git` or slash aside), so a checkout whose origin names another repository, the public one say, never takes the records there.
-- GitHub runs no check on `dev` (CI policy B: the repo is private, and its Actions minutes are few), so what reaches `dev` without a local push is checked at each merge: `team-merge` runs `bin/team-records-check` over `dev` from the last merge it logged to the new one, and reports a commit that is neither records only nor a PR's merge.
+- The code repository changes only through pull requests to `dev`, and nothing is committed on `main`, which a release fast-forwards from `dev`.
+- GitHub holds the rule: `dev`'s protection requires a pull request, refuses force pushes and deletion, and applies to administrators.
+- Records never come here: every tracked path is code, listed in `bin/lib/code`, and none matches `bin/lib/records`; `tests/repo.bats` checks both, so a new path is listed as code in its PR.
+- Git runs `bin/hooks/git/` as the code checkout's hooks once it has `git -C ~/agent-team config core.hooksPath bin/hooks/git`, which every worktree shares, each running its own checkout's hooks; they are the local guard, and need no team home.
+  Its `pre-commit` (and `pre-merge-commit`) refuses every commit on `dev` and on `main`, and on any other branch a commit that adds or changes a records path, naming each.
+  Its `pre-push` catches what those never see (a cherry-pick, a revert, `git am`, a fast-forward merge): it refuses every push to `dev`, and a push to `main` may only fast-forward it to a commit already on `origin/dev`.
+  On every remote and branch, it also refuses a push whose tip tree holds a records path unless the remote's URL is the team home's origin (a trailing `.git` or slash aside), so the records never reach the code repository from a stale checkout.
 - Every session is denied skipping the hooks (`--no-verify`, `git commit -n`) and setting, unsetting or overriding `core.hooksPath` (reading it stays allowed), so the setup line above is Daniel's to run.
-  Those deny rules are a speed bump, never the guarantee: git accepts too many spellings for a deny list to cover, so the hooks and `team-merge`'s check are what hold the rule.
+  Those deny rules are a speed bump, never the guarantee: git accepts too many spellings for a deny list to cover, so the hooks and `dev`'s protection are what hold the rule.
 
 ## Tests and shellcheck
 

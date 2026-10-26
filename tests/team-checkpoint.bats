@@ -112,8 +112,6 @@ changed_in() {
   echo "SECRET=1" >"$wt/.env"
   head=$(git -C "$wt" rev-parse HEAD)
   before=$(worktree_state "$wt")
-  # The team home's own records guard runs on its commit.
-  git -C "$TEAM_HOME" config core.hooksPath "$REPO_ROOT/bin/hooks/git"
 
   run_bin -0 --separate-stderr team-checkpoint
   local snap

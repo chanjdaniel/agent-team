@@ -19,7 +19,7 @@
 #   4. team home    The team home's branch fast-forwarded to origin's (fetch, then merge
 #                   --ff-only); a branch that has diverged, or local changes in the way, refuses.
 #   5. code         The code checkout (the directory above this script's bin/) the same way, so
-#                   the later steps run origin's code; skipped, saying so, when it is the team home.
+#                   the later steps run origin's code.
 #   6. config       team-config apply: the team's Claude config and each project's auto memory.
 #   7. lease        team-lease take; with --steal, team-lease take --steal on a lease another
 #                   machine holds, which asks for the holder's name typed on this terminal.
@@ -194,19 +194,15 @@ main() {
   ((rc == 0)) || die "team home: $FF_REASON; bring it level with origin's $branch, then run team-resume again"
   echo "team home: $FF_RESULT"
 
-  # 5. The code checkout, up to date with origin's, unless it is the team home.
+  # 5. The code checkout, up to date with origin's.
   code=$(cd "$bin/.." && pwd -P)
-  if [[ $code == "$(realpath -- "$TEAM_HOME")" ]]; then
-    echo "code: the code checkout is the team home, brought up to date above"
-  else
-    branch=$(git -C "$code" symbolic-ref -q --short HEAD) ||
-      die "code: $code is on a detached HEAD; check out its branch, then run team-resume again"
-    rc=0
-    fast_forward "$code" "$branch" || rc=$?
-    ((rc != 75)) || offline "$FF_REASON"
-    ((rc == 0)) || die "code: $FF_REASON; bring $code level with origin's $branch, then run team-resume again"
-    echo "code: $FF_RESULT"
-  fi
+  branch=$(git -C "$code" symbolic-ref -q --short HEAD) ||
+    die "code: $code is on a detached HEAD; check out its branch, then run team-resume again"
+  rc=0
+  fast_forward "$code" "$branch" || rc=$?
+  ((rc != 75)) || offline "$FF_REASON"
+  ((rc == 0)) || die "code: $FF_REASON; bring $code level with origin's $branch, then run team-resume again"
+  echo "code: $FF_RESULT"
 
   # 6. The team's Claude config.
   rc=0

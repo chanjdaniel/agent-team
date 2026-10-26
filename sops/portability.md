@@ -10,7 +10,7 @@ Setting up a machine is `sops/machine-setup.md`.
   No confirmed lease, no coordinator and no worker.
 - Git is the transport and GitHub the meeting point; nothing moves by copying directories between machines.
 - Every machine has the same layout under `$HOME`: the code checkout at `~/agent-team`, the team home at `~/agent-team-records`, the path `~/.config/agent-team/home` names (relative to `$HOME`), and each project at its registry path; a path recorded under any home directory (`/home/<name>/...`, `/Users/<name>/...`) means the same path under this machine's `$HOME`.
-- Every script finds the team home the same way: `TEAM_HOME` when set (the tests, and a script calling a sibling), else `~/.config/agent-team/home`, else the directory above `bin/`; code (scripts, roles, settings, hooks, templates, plugins, toolkits) always comes from the code checkout.
+- Every script finds the team home the same way: `TEAM_HOME` when set (the tests, and a script calling a sibling), else `~/.config/agent-team/home`, and refuses to start when neither names it; code (scripts, roles, settings, hooks, templates, plugins, toolkits) always comes from the code checkout.
 - Conversations are a cache and never move: a resume rebuilds every session from the ledger, the briefs, the tickets, `handoff.md`, the branch and the archived scratch.
 - Secrets never touch git, logs, Discord or transcripts.
 - The home PC is the default holder; the laptop takes the team when Daniel travels, and hands it back after.

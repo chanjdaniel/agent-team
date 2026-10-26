@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Git's pre-merge-commit hook for the team home: pre-commit's check, for a merge commit git makes
-# without stopping (one that stops on a conflict is committed through pre-commit itself).
+# Git's pre-merge-commit hook for the code repository: pre-commit's check, for a merge commit git
+# makes without stopping (one that stops on a conflict is committed through pre-commit itself).
 set -euo pipefail
 # shellcheck disable=SC2034 # read by pre-commit
 merging=1

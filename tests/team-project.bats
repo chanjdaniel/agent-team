@@ -255,7 +255,7 @@ TOML
 }
 
 # A copy of team-project in a code checkout of its own, $BATS_TEST_TMPDIR/code, with the fixture
-# registry beside bin/ as the fallback's team home; prints the checkout's path.
+# registry beside bin/, where no team home is; prints the checkout's path.
 code_checkout() {
   local code=$BATS_TEST_TMPDIR/code
   mkdir -p "$code/bin"
@@ -292,12 +292,15 @@ home_setting() {
   assert_equal "$output" $'alpha\nbeta'
 }
 
-@test "with neither TEAM_HOME nor ~/.config/agent-team/home it reads the registry of the checkout it runs from" {
+@test "with neither TEAM_HOME nor ~/.config/agent-team/home it refuses with the setting's fix, never reading the checkout's registry" {
   local code
   code=$(code_checkout)
   unset TEAM_HOME
-  run -0 "$code/bin/team-project" --list
-  assert_equal "$output" $'conventioner\nagent-team\nno-mistakes'
+  run -1 "$code/bin/team-project" --list
+  assert_equal "$output" "team-project: neither TEAM_HOME nor ~/.config/agent-team/home names the team home; name its checkout there, relative to your home directory: echo agent-team-records > ~/.config/agent-team/home"
+  TEAM_HOME='' run -1 "$code/bin/team-project" --list
+  assert_contains "$output" "team-project: neither TEAM_HOME nor ~/.config/agent-team/home names the team home"
+  run -0 "$code/bin/team-project" --help
 }
 
 @test "a setting naming a missing directory, or none, is refused with the path and the file it came from" {
