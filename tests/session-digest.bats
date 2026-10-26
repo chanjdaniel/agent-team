@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
-# hooks/session-digest: the coordinator's SessionStart hook prints the team snapshot with the
-# instruction to reconcile it before new work, the live workers whose idle notices to re-arm, and
-# the instruction to arm the offline watch.
+# hooks/session-digest: the coordinator's SessionStart hook prints the team snapshot (its current
+# items included) with the instruction to reconcile it before new work, the live workers whose
+# idle notices to re-arm, and the instruction to arm the offline watch.
 
 load helpers/common
 
@@ -71,6 +71,7 @@ Stray sessions (1):
 Open PRs:
   proj (owner/proj): none
 Pending asks: none
+Current items: none
 
 Reconcile these before taking new work: log what the ledger is missing with team-log, act on what team-sweep finds (stray sessions, and tasks with no live worker that are not held, blocked, awaiting merge, asking, paused or waiting), and chase the pending asks.
 Re-arm the idle notice for each live worker (SendMessage to its name with notify_when_idle):
@@ -87,6 +88,24 @@ $(watch_line)"
   assert_contains "$output" "  T12-builder 3ed2d1f2"
   start -0 compact
   assert_contains "$output" "  T12-builder 3ed2d1f2"
+}
+
+@test "it shows the current items of tasks/current.md on start, resume and after a compaction" {
+  team_at_work
+  mkdir -p "$TEAM_HOME/tasks"
+  printf '%s\n' "# Current items" "" \
+    "- ask - which domain for the docs site, Daniel's move | https://discord.com/channels/1/2/3" \
+    "- next T12 once it merges, open the Node pin task | tasks/queued/node-pin.md" >"$TEAM_HOME/tasks/current.md"
+  local source
+  for source in startup resume compact; do
+    start -0 "$source"
+    assert_contains "$output" "Pending asks: none
+Current items (2):
+  - ask - which domain for the docs site, Daniel's move | https://discord.com/channels/1/2/3
+  - next T12 once it merges, open the Node pin task | tasks/queued/node-pin.md
+
+Reconcile these before taking new work"
+  done
 }
 
 @test "with no live workers it says there is no idle notice to re-arm, strays aside" {

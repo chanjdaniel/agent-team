@@ -1,6 +1,7 @@
 #!/usr/bin/env bats
 # team-snapshot: everything open across the team in one view: every open task's state, the live
-# team sessions and strays, open PRs in every registered project, and the asks waiting on Daniel.
+# team sessions and strays, open PRs in every registered project, the asks waiting on Daniel, and
+# the coordinator's current items (tasks/current.md).
 
 load helpers/common
 
@@ -160,7 +161,7 @@ section() {
   run_bin -0 team-snapshot --json
   local snapshot=$output
   assert_equal "$(jq -r .schema <<<"$snapshot")" "team-snapshot/1"
-  assert_equal "$(jq -c 'keys_unsorted' <<<"$snapshot")" '["schema","tasks","sessions","strays","prs","pending_asks"]'
+  assert_equal "$(jq -c 'keys_unsorted' <<<"$snapshot")" '["schema","tasks","sessions","strays","prs","pending_asks","items"]'
   assert_equal "$(jq -r '.tasks | map(.task) | join(" ")' <<<"$snapshot")" "T3 T4"
   run_bin -0 team-state T3 --json
   assert_equal "$(jq -c '.tasks[0]' <<<"$snapshot")" "$(jq -c . <<<"$output")"
@@ -287,10 +288,73 @@ Stray sessions: none
 Open PRs:
   proj (owner/proj): none
   conv (owner/conv): none
-Pending asks: none"
+Pending asks: none
+Current items: none"
   rm "$TEAM_HOME/ledger.jsonl"
   run_bin -0 team-snapshot --json
-  assert_equal "$(jq -c '[.tasks, .sessions, .strays, .pending_asks]' <<<"$output")" '[[],[],[],[]]'
+  assert_equal "$(jq -c '[.tasks, .sessions, .strays, .pending_asks, .items]' <<<"$output")" '[[],[],[],[],[]]'
+}
+
+@test "current items are the item lines of tasks/current.md, after the pending asks and in --json" {
+  open_prs owner/proj '[]'
+  open_prs owner/conv '[]'
+  mkdir -p "$TEAM_HOME/tasks"
+  cat >"$TEAM_HOME/tasks/current.md" <<'EOF'
+# Current items
+
+- owe - the T45 summary, my move | https://discord.com/channels/1/2/3
+- next T45 after it merges, open the Node pin task | tasks/queued/node-pin.md
+Not an item: a note under the list.
+  - not an item either, indented
+- queued - the lease fix, Daniel approved | tasks/queued/conventioner-lease-fix.md
+EOF
+  run_bin -0 team-snapshot
+  assert_equal "$(section "Current items")" "Current items (3):
+  - owe - the T45 summary, my move | https://discord.com/channels/1/2/3
+  - next T45 after it merges, open the Node pin task | tasks/queued/node-pin.md
+  - queued - the lease fix, Daniel approved | tasks/queued/conventioner-lease-fix.md"
+  assert_equal "${lines[-5]}" "Pending asks: none"
+  run_bin -0 team-snapshot --json
+  assert_equal "$(jq -c .items <<<"$output")" "$(jq -cn '[
+    "owe - the T45 summary, my move | https://discord.com/channels/1/2/3",
+    "next T45 after it merges, open the Node pin task | tasks/queued/node-pin.md",
+    "queued - the lease fix, Daniel approved | tasks/queued/conventioner-lease-fix.md"]')"
+  assert_equal "$(jq -r .schema <<<"$output")" "team-snapshot/1"
+}
+
+@test "a current items file with no item lines is no current items" {
+  open_prs owner/proj '[]'
+  open_prs owner/conv '[]'
+  mkdir -p "$TEAM_HOME/tasks"
+  printf '# Current items\n\n' >"$TEAM_HOME/tasks/current.md"
+  run_bin -0 team-snapshot
+  assert_equal "${lines[-1]}" "Current items: none"
+  run_bin -0 team-snapshot --json
+  assert_equal "$(jq -c .items <<<"$output")" "[]"
+}
+
+@test "the text form shows 40 current items, each whole up to 200 columns, then how many more; --json has them all" {
+  open_prs owner/proj '[]'
+  open_prs owner/conv '[]'
+  mkdir -p "$TEAM_HOME/tasks"
+  local long n items
+  long="- next - $(printf 'a long promise to keep %.0s' {1..12})| tasks/T9/plan.md"
+  {
+    echo "# Current items"
+    echo "$long"
+    for n in $(seq 2 43); do echo "- watch - item $n | tasks/T$n/plan.md"; done
+  } >"$TEAM_HOME/tasks/current.md"
+  run_bin -0 team-snapshot
+  items=$(section "Current items")
+  assert_equal "$(head -n 1 <<<"$items")" "Current items (43):"
+  assert_equal "$(wc -l <<<"$items")" 42
+  assert_equal "$(sed -n 2p <<<"$items")" "  ${long:0:195}..."
+  assert_equal "$(sed -n 3p <<<"$items")" "  - watch - item 2 | tasks/T2/plan.md"
+  assert_equal "$(sed -n 41p <<<"$items")" "  - watch - item 40 | tasks/T40/plan.md"
+  assert_equal "$(tail -n 1 <<<"$items")" "  and 3 more in tasks/current.md"
+  run_bin -0 team-snapshot --json
+  assert_equal "$(jq '.items | length' <<<"$output")" 43
+  assert_equal "$(jq -r '.items[0]' <<<"$output")" "${long:2}"
 }
 
 @test "T7 to T10, open in the real ledger (legacy, never closed), each show their state" {

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # SessionStart hook for the coordinator: on start, resume, clear or compaction, print the team
-# snapshot (team-snapshot's text form), then the instruction to reconcile it before taking new
-# work, then the live workers whose idle notices (SendMessage with notify_when_idle) to re-arm,
-# so a restarted coordinator rebuilds its picture before anything else. Claude Code adds what
-# it prints to the session's context.
+# snapshot (team-snapshot's text form, ending with the current items of tasks/current.md, so what
+# the conversation held and no ledger event records survives a compaction), then the instruction
+# to reconcile it before taking new work, then the live workers whose idle notices (SendMessage
+# with notify_when_idle) to re-arm, so a restarted coordinator rebuilds its picture before
+# anything else. Claude Code adds what it prints to the session's context.
 # When the snapshot fails it prints the error and what to do by hand instead. Either way it ends
 # with the instruction to arm the offline watch: team-timers watch in a Monitor, whose lines wake
 # the coordinator even while idle, only when the hold starts or ends (a recurring CronCreate
