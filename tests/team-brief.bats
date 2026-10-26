@@ -136,10 +136,15 @@ Task directory: `.scratch/task/` in the worktree (excluded from git), for your s
 1. Bring the branch up to date with the base: `git fetch origin`; if `git merge-base --is-ancestor origin/dev HEAD` fails, merge `origin/dev` with a merge commit (`git merge origin/dev`, never a rebase), resolve any conflict and re-run what the conflicts touched.
    A conflict whose resolution is a judgment call on behaviour goes to `coordinator` as `T12 QUESTION <the conflict> | options: ...`.
 2. Find what your branch made false: for each file, command, flag, setting and path it adds, renames or removes (`git diff --stat origin/dev...HEAD`), `git grep` its name in the repository's Markdown, `CLAUDE.md`, `AGENTS.md` and script headers, and fix every line that no longer holds, in the same PR.
-3. Run `/no-mistakes` with this intent: "T12: rate-limit the applicant sign-in endpoints (per address and per IP, Mongo TTL counters, 429 with Retry-After), so Conventioner cannot be used to flood addresses with sign-in codes or to guess codes."
-4. The PR must target `dev`; if the gate opens it against another branch, retarget it to `dev` and close any duplicate.
-5. When the gate returns checks-passed, repeat step 1; if it merged anything, go back to step 3, so every required check passes on the new head.
-6. Then send `T12 PR <full url>` to `coordinator`.
+3. Push the branch and send `T12 DONE review-ready <the full sha of HEAD>` to `coordinator`, then wait: the team reviews that head before the gate runs, so the gate runs once.
+   Fix each finding the coordinator sends you on the branch and push; once they are fixed, or the coordinator says the review passed, go on.
+4. Run `/no-mistakes` with this intent: "T12: rate-limit the applicant sign-in endpoints (per address and per IP, Mongo TTL counters, 429 with Retry-After), so Conventioner cannot be used to flood addresses with sign-in codes or to guess codes."
+5. The PR must target `dev`; if the gate opens it against another branch, retarget it to `dev` and close any duplicate.
+6. When the gate returns checks-passed, repeat step 1; if it merged anything, go back to step 4, so every required check passes on the new head.
+   The gate leaves Playwright to CI, so its result arrives with CI's `e2e` checks: treat a red `e2e` as the gate's red.
+7. Then send `T12 PR <full url>` to `coordinator`.
+
+At each gate run's end (it pushed, went red, was aborted, or was stopped once its PR's checks were green), send `T12 DONE gate run=<its id> head=<the full sha it ran on> outcome=<pushed|red|aborted|stopped-green> minutes=<each step's minutes from no-mistakes axi status --run <its id>, as one JSON object>` to `coordinator`, with `cause=<review|notes|gate-finding|load|tooling|base-merge|other>` when the run repeats an earlier one on the same PR.
 
 Never run a command that needs `sudo`; send `T12 BLOCKED <the command> needs sudo` to `coordinator` instead.
 
@@ -162,7 +167,7 @@ EOF
 
 @test "every real template renders for each delivery with no placeholder left and no em dash" {
   assert_equal "$(templates | paste -sd ' ')" \
-    "builder-deliver builder-fix builder-ticket ops planner-feature planner-research rereview resume resume-crash retro reviewer"
+    "builder-deliver builder-fix builder-merge-base builder-ticket ops planner-feature planner-research rereview resume resume-crash retro reviewer"
   open_t12
   open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
   local task template keys sets key brief
@@ -200,6 +205,137 @@ EOF
     'gh pr create --repo chanjdaniel/agent-team --base main --head feat/T14-team-tooling'
   refute_grep no-mistakes "$TEAM_HOME/tasks/T14/brief-builder-fix.md"
   refute_grep 'gh pr create' "$TEAM_HOME/tasks/T12/brief-builder-deliver.md"
+  # So do the review partials: a gated project's first review comes before its PR.
+  assert_contains "$(<"$TEAM_HOME/tasks/T14/brief-reviewer.md")" 'team-review-comment value of pr'
+  refute_grep -e team-review -e 'value of pr' "$TEAM_HOME/tasks/T12/brief-reviewer.md"
+  assert_contains "$(<"$TEAM_HOME/tasks/T12/brief-rereview.md")" "the gate's own commits"
+  refute_grep 'gate' "$TEAM_HOME/tasks/T14/brief-rereview.md"
+}
+
+@test "a partial is picked by the project's delivery, from the directory of its name" {
+  fake_checkout
+  mkdir -p "$code/templates/briefs/extra"
+  printf 'one {{> extra}} two {{> extra}}\n' >"$code/templates/briefs/x.md"
+  echo 'gated {{task}}' >"$code/templates/briefs/extra/no-mistakes.md"
+  open_t12
+  run_fake T12 x
+  assert_equal "$status" 0
+  assert_equal "$(<"$TEAM_HOME/tasks/T12/brief.md")" "one gated T12 two gated T12"
+  # A project whose delivery has no such partial is refused, with nothing written.
+  open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
+  run_fake T14 x
+  assert_equal "$status" 1
+  assert_equal "$output" "team-brief: no extra partial for home's delivery 'direct-pr'"
+  [[ ! -e $TEAM_HOME/tasks/T14/brief.md ]]
+}
+
+@test "a gated project's review reads the branch's local head before the gate, and posts nothing" {
+  open_t12
+  run_bin -0 --separate-stderr team-brief T12 reviewer --name review --set head=abc1234 --set "checks=the checks"
+  assert_equal "$output" "$TEAM_HOME/tasks/T12/brief-review.md"
+  assert_equal "$stderr" ""
+  local expected line=0
+  expected=$(
+    cat <<'EOF'
+# T12 brief (reviewer): review rate-limit the applicant sign-in endpoints
+
+Path: small; you are the reviewer.
+Project: conv (`chanjdaniel/Conventioner`), base `dev`.
+Worktree: `~/.treehouse/Conventioner-d4c77a/4/Conventioner`, branch `fix/T12-applicant-sign-in-rate-limit`; review `origin/dev...abc1234`.
+Task directory: `.scratch/task/` in the worktree: `spec.md`, `tickets/`, `build-notes/`.
+
+## Check, beyond what every review covers
+
+the checks
+
+## Deliver
+
+- Local checks: none.
+  Run each from the worktree's root on `abc1234` and say in `.scratch/task/review.md` whether it passed; a failure is **blocking**, and they set no GitHub status.
+- There is no PR yet: the builder stopped before the no-mistakes gate, which runs once this review passes or its findings are fixed, and reviews the code line by line after you.
+- Write your findings to `.scratch/task/review.md`, numbered, each with its file and line and one kind: `blocking`, `note: correctness`, `note: security`, `note: real-data` or `note`.
+  Post nothing to GitHub: the re-review of the gate's PR posts the comment and sets the status.
+- Send `T12 DONE pass abc1234` or `T12 DONE findings .scratch/task/review.md` to `coordinator`.
+
+## Rules
+
+Read `@CODE@/sops/platform-gotchas.md` before your first command.
+Never the em dash; refer to Daniel with they/them.
+EOF
+  )
+  expected=${expected//@CODE@/$REPO_ROOT}
+  local -a want got
+  mapfile -t want <<<"$expected"
+  mapfile -t got <"$TEAM_HOME/tasks/T12/brief-review.md"
+  for line in "${!want[@]}"; do
+    assert_equal "${got[line]-<missing line $((line + 1))>}" "${want[line]}"
+  done
+  assert_equal "${#got[@]}" "${#want[@]}"
+  # A PR is refused: the gate has not opened one when its project's first review runs.
+  run_bin -1 team-brief T12 reviewer --name review-pr --set head=abc1234 --set "checks=the checks" \
+    --set pr=https://github.com/chanjdaniel/Conventioner/pull/9
+  assert_equal "$output" "team-brief: no placeholder in reviewer uses: pr"
+}
+
+@test "a direct-PR project's review reads the PR, comments on it and sets its status" {
+  open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
+  local pr=https://github.com/chanjdaniel/agent-team/pull/9 brief
+  run_bin -1 team-brief T14 reviewer --name review --set head=abc1234 --set "checks=the checks"
+  assert_equal "$output" "team-brief: unfilled placeholders: pr"
+  run_bin -0 team-brief T14 reviewer --name review --set pr=$pr --set head=abc1234 --set "checks=the checks"
+  brief=$(<"$output")
+  assert_contains "$brief" 'branch `feat/T14-team-tooling`; review `origin/main...abc1234`.'
+  assert_contains "$brief" "The comment on PR $pr is that file, posted with this exact command, the only comment your settings allow: \`$REPO_ROOT/bin/team-review-comment $pr .work/task/review.md\`."
+  assert_contains "$brief" "\`$REPO_ROOT/bin/team-review-status $pr abc1234 <success|failure> \"<one line, at most 140 characters>\"\`."
+  assert_contains "$brief" "- Send \`T14 DONE pass $pr\` or \`T14 DONE findings .work/task/review.md\` to \`coordinator\`."
+}
+
+@test "each review brief gives every finding a number and a kind, so a passed review's notes follow it" {
+  open_t12
+  open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
+  local each='each with its file and line and one kind: `blocking`, `note: correctness`, `note: security`, `note: real-data` or `note`'
+  local kinds="numbered, $each"
+  run_bin -0 team-brief T12 reviewer --name review --set head=abc1234 --set "checks=the checks"
+  assert_contains "$(<"$output")" "$kinds"
+  run_bin -0 team-brief T14 reviewer --name review --set pr=https://github.com/chanjdaniel/agent-team/pull/9 \
+    --set head=abc1234 --set "checks=the checks"
+  assert_contains "$(<"$output")" "$kinds"
+  local task dir
+  for task in T12:.scratch/task T14:.work/task; do
+    dir=${task#*:} task=${task%:*}
+    run_bin -0 team-brief "$task" rereview --name rereview --set pr=https://github.com/chanjdaniel/agent-team/pull/9 \
+      --set head=def5678 --set reviewed=abc1234 --set "since=the fix"
+    assert_contains "$(<"$output")" "its new findings numbered on from the last, $each; then write the same result alone to \`$dir/rereview.md\`."
+    assert_contains "$(<"$output")" "(each \`blocking\`, \`note: correctness\`, \`note: security\` and \`note: real-data\`) is fixed at \`def5678\`"
+    refute_grep -F '**note**' "$output"
+  done
+}
+
+@test "a gated project's builder stops before the gate for the review, then runs the gate once" {
+  open_t12
+  run_bin -0 team-brief T12 builder-deliver --set "goal=the goal"
+  local brief
+  brief=$(<"$output")
+  assert_contains "$brief" "3. Push the branch and send \`T12 DONE review-ready <the full sha of HEAD>\` to \`coordinator\`, then wait: the team reviews that head before the gate runs, so the gate runs once."
+  assert_contains "$brief" "once they are fixed, or the coordinator says the review passed, go on."
+  # The review comes before the gate.
+  [[ $(grep -n 'review-ready' <<<"$brief" | cut -d: -f1) -lt $(grep -n '/no-mistakes' <<<"$brief" | cut -d: -f1) ]]
+  # A direct-PR project opens its PR first, and is reviewed on it.
+  open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
+  run_bin -0 team-brief T14 builder-deliver --set "goal=the goal"
+  refute_grep review-ready "$output"
+}
+
+@test "a gated project's re-review reads the gate's own commits from the reviewed local head" {
+  open_t12
+  run_bin -0 team-brief T12 rereview --name rereview --set pr=https://github.com/chanjdaniel/Conventioner/pull/9 \
+    --set head=def5678 --set reviewed=abc1234 --set "since=the builder fixed the findings and the gate opened the PR"
+  local brief
+  brief=$(<"$output")
+  assert_contains "$brief" 'PR: https://github.com/chanjdaniel/Conventioner/pull/9 against `dev`, reviewed at `abc1234`, now at head `def5678`.'
+  assert_contains "$brief" '2. Review what changed since the last review, `git diff abc1234 def5678`, and the commit messages of `origin/dev..def5678`.'
+  assert_contains "$brief" "   That diff holds the gate's own commits, which no reviewer has read: read them as closely as the builder's, and the PR body the gate wrote; after the gate's first run, \`abc1234\` is the branch's local head, reviewed before the gate."
+  assert_contains "$brief" '   If the gate rebased the branch, so `abc1234` is not an ancestor of `def5678`, compare with `git range-diff abc1234...def5678` instead.'
 }
 
 @test "the retro brief renders from the task's facts alone, its digest first and read from team_bin" {
@@ -210,6 +346,8 @@ EOF
   # The first item to read is the digest, from the team home's checkout and its live ledger.
   assert_equal "$(grep -m1 '^1\. ' "$brief")" \
     "1. First, the ledger's evidence for this retro's window, in both forms: \`$REPO_ROOT/bin/team-retro digest T31\` and \`$REPO_ROOT/bin/team-retro digest T31 --json\`."
+  # Then where the window's time went, measured from the same ledger.
+  assert_contains "$(<"$brief")" "Then where the window's time went: \`$REPO_ROOT/bin/team-time --since <the window's since> --until <its until>\`, hours per task and per phase, gate runs, reviews and Daniel's answer latency."
   assert_contains "$(<"$brief")" "Read \`$REPO_ROOT/sops/platform-gotchas.md\` before your first command."
   # What Daniel approved and the team has not built yet is read, so it is not proposed again.
   assert_contains "$(<"$brief")" '`~/agent-team-records/tasks/queued/`'
@@ -318,7 +456,7 @@ EOF
 @test "no template repeats a rule from roles/" {
   local file sentence
   # The rules only the role files carry: attribution, denials, the gate's own rules, merging.
-  for file in "$REPO_ROOT"/templates/briefs/*.md "$REPO_ROOT"/templates/briefs/delivery/*.md; do
+  for file in "$REPO_ROOT"/templates/briefs/*.md "$REPO_ROOT"/templates/briefs/*/*.md; do
     refute_grep -iE -e '--yes|co-authored|attribution|trailer|denied|hand-fix|/tdd|/implement|never merge|force-push|--force' \
       -e 'progress messages|order that overrides|only inside the task directory|write only there' "$file"
   done
@@ -593,9 +731,57 @@ after"
     --set head=def5678 --set reviewed=abc1234 --set "since=the last review"
   assert_contains "$(<"$output")" "3. Run each of the project's local checks (\`tests/run\`, \`make lint\`) from the worktree's root on \`def5678\`"
   # A project without local checks says so.
-  run_bin -0 team-brief T12 reviewer --name review --set pr=https://github.com/chanjdaniel/Conventioner/pull/9 \
-    --set head=abc1234 --set "checks=the checks"
+  run_bin -0 team-brief T12 reviewer --name review --set head=abc1234 --set "checks=the checks"
   assert_contains "$(<"$output")" "- Local checks: none."
+}
+
+@test "the merge-base brief merges the base, resolves, runs the local checks and names the conflicted files" {
+  sed -i '/^\[home\]$/,/^\[home.pool\]$/s|^toolkits = \[\]$|toolkits = []\nlocal_checks = ["tests/run"]|' \
+    "$TEAM_HOME/projects.toml"
+  open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
+  run_bin -0 --separate-stderr team-brief T14 builder-merge-base --name merge-base \
+    --set pr=https://github.com/chanjdaniel/agent-team/pull/9
+  assert_equal "$output" "$TEAM_HOME/tasks/T14/brief-merge-base.md"
+  assert_equal "$stderr" ""
+  local expected line=0
+  expected=$(
+    cat <<'EOF'
+# T14 brief (builder): merge main into the team's tooling
+
+Path: feature; you are the builder who brings the task's PR up to date with its base, which moved after the PR was opened.
+Project: home (`chanjdaniel/agent-team`), base `main`.
+Worktree: `~/agent-team/.claude/worktrees/2`, branch `feat/T14-team-tooling`.
+PR: https://github.com/chanjdaniel/agent-team/pull/9, against `main`.
+Task directory: `.work/task/` in the worktree (excluded from git): `spec.md`, `tickets/`, `build-notes/`.
+
+## Do
+
+1. Read `.work/task/spec.md` and every note in `.work/task/build-notes/`, so you resolve each conflict as the task means it.
+2. `git fetch origin`, then merge `origin/main` with a merge commit (`git merge origin/main`, never a rebase), and note each file that conflicted.
+   If `git merge-base --is-ancestor origin/main HEAD` already holds, there is nothing to merge: go to step 6 with no conflicts.
+3. Resolve each conflict so both sides keep what they meant; a resolution that is a judgment call on behaviour goes to `coordinator` as `T14 QUESTION <the conflict> | options: ...`; then commit the merge.
+   Then find what the merge made false, a file, command, flag, setting or path that one side renames or removes and the other still names, and fix it in a commit of its own.
+4. Run each of the project's local checks (`tests/run`) from the worktree's root on the merged head; fix the branch until all pass on one head.
+5. Push the branch; if the PR body names the head its local checks passed on, bring that line up to date (`gh pr edit https://github.com/chanjdaniel/agent-team/pull/9 --body-file <file>`).
+   If `gh pr checks https://github.com/chanjdaniel/agent-team/pull/9` lists any GitHub checks, wait for them (`--watch`); fix a failure and push again, back to step 4.
+6. Send `T14 DONE merged main <the full sha of the head> conflicts: <each file that conflicted, or none>` to `coordinator`, which has a fresh reviewer re-check the merge.
+
+Never run a command that needs `sudo`; send `T14 BLOCKED <the command> needs sudo` to `coordinator` instead.
+
+## Rules
+
+Read `@CODE@/sops/platform-gotchas.md` before your first command.
+Never the em dash; refer to Daniel with they/them.
+EOF
+  )
+  expected=${expected//@CODE@/$REPO_ROOT}
+  local -a want got
+  mapfile -t want <<<"$expected"
+  mapfile -t got <"$TEAM_HOME/tasks/T14/brief-merge-base.md"
+  for line in "${!want[@]}"; do
+    assert_equal "${got[line]-<missing line $((line + 1))>}" "${want[line]}"
+  done
+  assert_equal "${#got[@]}" "${#want[@]}"
 }
 
 # A UI fix's capture (team-ui) in tasks/T<n>/ui/: every brief of a worker who reads or changes
@@ -614,7 +800,7 @@ after"
     [[ $template == builder-fix ]] && args=(--set 'read=- `AGENTS.md`.' --set commits=fix --set goal=g)
     [[ $template == builder-ticket ]] && args=(--set ticket=01)
     [[ $template == planner-* ]] && args=(--set 'read=- `AGENTS.md`.')
-    [[ $template == reviewer ]] && args=(--set pr=https://github.com/chanjdaniel/Conventioner/pull/1 --set head=abc --set checks=c)
+    [[ $template == reviewer ]] && args=(--set head=abc --set checks=c)
     run_bin -0 team-brief T12 "$template" --name "$template" "${args[@]}"
     brief=$TEAM_HOME/tasks/T12/brief-$template.md
     grep -qxF -- "$ui_line" "$brief" || { echo "$template lacks the UI line" >&2; cat "$brief" >&2; return 1; }
