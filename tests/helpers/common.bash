@@ -72,6 +72,10 @@ sandbox() {
   fi
   export TEAM_HOME=$root/team HOME=$root/home
   export STUB_CALLS=$root/calls STUB_FIXTURES=$root/fixtures
+  # The library's system tool directories (treehouse's /usr/local/bin on Arch) are under this
+  # directory, so a PATH a test trims never gets the machine's own tools back, its 1Password CLI
+  # above all (tool_dirs in bin/lib/team.sh).
+  export TEAM_SYSTEM_ROOT=$root/system
   mkdir -p "$TEAM_HOME" "$HOME/.claude/channels/discord" "$STUB_CALLS" "$STUB_FIXTURES" "$root/stubs"
   : >"$TEAM_HOME/ledger.jsonl"
   echo "DISCORD_BOT_TOKEN=$FAKE_DISCORD_TOKEN" >"$HOME/.claude/channels/discord/.env"
@@ -87,8 +91,9 @@ sandbox() {
   git config --global init.defaultBranch main
   git config --global advice.detachedHead false
 
-  # nvm lives under HOME unless NVM_DIR says otherwise: the real one must not leak in.
-  unset TEAM_COORDINATOR_CHANNEL CLAUDE_PROJECT_DIR NVM_DIR
+  # nvm lives under HOME unless NVM_DIR says otherwise: the real one must not leak in, nor the
+  # heavy run tests/run holds (team-heavy).
+  unset TEAM_COORDINATOR_CHANNEL CLAUDE_PROJECT_DIR NVM_DIR TEAM_HEAVY_HELD TEAM_HEAVY_WAIT_MINUTES
   guard_sandbox
 }
 
@@ -271,6 +276,17 @@ make_repo() {
   git -C "$clone" push -q -u origin "$branch"
   git -C "$clone" remote set-head origin "$branch"
   echo "$clone"
+}
+
+# other_spelling <path>: another spelling of the existing <path>, its last part upper-cased, which
+# names the same directory: by itself on a case-insensitive filesystem (APFS, as on a Mac), where
+# realpath keeps the case it is given, else through a symlink so named.
+other_spelling() {
+  local other
+  other=$(dirname "$1")/$(basename "$1" | tr '[:lower:]' '[:upper:]')
+  [[ $other != "$1" ]] || other=$1-OTHER
+  [[ $other -ef $1 ]] || ln -s "$(basename "$1")" "$other"
+  echo "$other"
 }
 
 # Make the sandbox's team home a clone of a bare origin standing in for GitHub (at

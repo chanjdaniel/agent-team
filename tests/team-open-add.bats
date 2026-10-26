@@ -94,7 +94,8 @@ ledger_line() {
   assert_equal "$(jq -c . <<<"$output")" "$(jq -cn --arg wt "$worktree" --arg sha "$ahead" '{
     task: "T1", project: "conv", branch: "chore/T1-move-planning-out", base: "main",
     base_sha: $sha, worktree: $wt, task_dir: "\($wt)/.scratch/task"}')"
-  assert_equal "$stderr" ""
+  # The lease command runs from conv's primary checkout, brought level with origin's first.
+  assert_equal "$stderr" "team-open: the primary checkout $conv: main fast-forwarded to ${ahead:0:7}"
 
   assert_equal "$(stub_calls th-lease.sh)" "$(jq -cn --arg cwd "$conv" '{cwd: $cwd, args: ["T1"]}')"
   assert_equal "$(git -C "$worktree" rev-parse --abbrev-ref HEAD)" "chore/T1-move-planning-out"
@@ -211,11 +212,12 @@ ledger_line() {
 
 @test "--add returns and refuses a leased slot that is not clean" {
   run_bin -0 team-open home feature feat one "One"
-  echo junk >"${conv_slots[0]}/stray.txt"
+  echo 'echo junk >stray.txt' >"$BATS_TEST_TMPDIR/prewarm"
   run_bin -1 --separate-stderr team-open --task T1 --add conv chore two
   assert_contains "$stderr" "the leased slot ${conv_slots[0]} is not clean: untracked files: stray.txt"
-  assert_contains "$stderr" "handed ${conv_slots[0]} back to $conv/scripts/th-return.sh"
-  assert_equal "$(stub_calls th-return.sh | jq -r '.args[0]')" "${conv_slots[0]}"
+  assert_contains "$stderr" "handed ${conv_slots[0]} back to $conv/scripts/th-return.sh, discarding what its lease changed"
+  assert_equal "$(pool_calls th-return.sh)" "${conv_slots[0]} --force --if-lease-holder T1"
+  assert_equal "$(pool_leases)" ""
   run git -C "$conv" branch --list 'chore/T1-two'
   assert_equal "$output" ""
   assert_equal "$(events worktree-added)" ""

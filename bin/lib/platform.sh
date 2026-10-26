@@ -8,7 +8,10 @@
 #   prefix is $HOMEBREW_PREFIX, else /opt/homebrew or /usr/local when it holds bin/brew, else
 #   `brew --prefix`. Linux is untouched. A script that sets platform_report before sourcing
 #   (team-doctor) is not refused: it gets the problem in PLATFORM_PROBLEM and its fix in
-#   PLATFORM_FIX, with whatever GNU tools there are put first on PATH.
+#   PLATFORM_FIX, with whatever GNU tools there are put first on PATH. TEAM_BREW_PREFIX is the
+#   prefix found and TEAM_PLATFORM_FRONT the directories put first ("" for each on Linux), which
+#   the library's tool directories follow. TEAM_CALLER_PATH is PATH as the script was started
+#   with, before this file or the library changed it.
 # This file is read by Bash 3.2 too, so it uses nothing newer until the version check passes.
 # shellcheck shell=bash
 
@@ -29,8 +32,8 @@ team_platform_refuse() {
 }
 
 # The macOS PATH rule above; nothing on Linux.
-# shellcheck disable=SC2034 # read by the script that set platform_report
-PLATFORM_PROBLEM='' PLATFORM_FIX=''
+# shellcheck disable=SC2034 # read by the script that set platform_report, and by the library
+PLATFORM_PROBLEM='' PLATFORM_FIX='' TEAM_BREW_PREFIX='' TEAM_PLATFORM_FRONT='' TEAM_CALLER_PATH=$PATH
 team_platform_path() {
   [[ $(uname -s) == Darwin ]] || return 0
   local prefix=${HOMEBREW_PREFIX:-} dir
@@ -45,6 +48,8 @@ team_platform_path() {
       "install it from https://brew.sh, then run \`brew install bash coreutils findutils gnu-sed grep flock\`"
     return 0
   fi
+  # shellcheck disable=SC2034 # read by the library
+  TEAM_BREW_PREFIX=$prefix
 
   local -A dirs=(
     [coreutils]=$prefix/opt/coreutils/libexec/gnubin
@@ -60,6 +65,8 @@ team_platform_path() {
   if ((${#missing[@]})); then
     team_platform_refuse "missing Homebrew packages: ${missing[*]}" "run \`brew install ${missing[*]}\`"
   fi
+  # shellcheck disable=SC2034 # read by the library
+  TEAM_PLATFORM_FRONT=$front
   # A script run by another one finds them first already.
   [[ $PATH == "$front"* ]] || PATH=$front$PATH
   export PATH

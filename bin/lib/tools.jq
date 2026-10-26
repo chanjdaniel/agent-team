@@ -1,7 +1,9 @@
 # bin/lib/tools.lock, resolved for one machine: include "tools"; tools_for($os; $machine).
 # $os is arch or macos (team-doctor's os line), $machine what `uname -m` prints.
-# Each result is {name, version_cmd, version_pattern, pin, min, pin_mismatch, source}, source being
-# the exact install command for this machine; a tool whose lock entry does not name $os is left out.
+# Each result is {name, version_cmd, version_pattern, pin, min, pin_mismatch, show_path, source},
+# source being the exact install command for this machine; a tool whose lock entry does not name
+# $os is left out. tool_dirs($os; $home; $nvm; $brew; $root) gives the directories the tools are
+# installed into on $os, for the library's PATH.
 #
 # A tool the lock installs from GitHub has no pin or source of its own: `from` picks "release" or
 # "fork", and the pin and the command come from that object.
@@ -48,4 +50,15 @@ def tools_for($os; $machine):
       select(.source[$os]) | .source = .source[$os]
     end
   | {name, version_cmd, version_pattern, pin: (.pin // ""), min: (.min // ""),
-     pin_mismatch: (.pin_mismatch // "FAIL"), source};
+     pin_mismatch: (.pin_mismatch // "FAIL"), show_path: (.show_path // false), source};
+
+# The directories the tools are installed into on $os, in the lock's order, each once: a GitHub
+# build's dir, any other tool's path. ~ is $home, @NVM_DIR@ $nvm and @HOMEBREW_PREFIX@ $brew; a
+# directory under a prefix that is "" (no Homebrew) is left out; an absolute one (a system
+# directory) goes under $root, "" but in the test sandbox.
+def tool_dirs($os; $home; $nvm; $brew; $root):
+  [.tools[] | (if has("from") then .dir else .path end) // {} | .[$os] // empty
+   | select(contains("@HOMEBREW_PREFIX@") and $brew == "" | not)
+   | if startswith("/") then $root + . else . end
+   | sub("^~"; $home) | sub("@NVM_DIR@"; $nvm) | sub("@HOMEBREW_PREFIX@"; $brew)]
+  | reduce .[] as $dir ([]; if index([$dir]) then . else . + [$dir] end) | .[];

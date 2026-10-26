@@ -6,7 +6,8 @@
 #   T14 agent-team feature building | T14-builder idle | PR #5 a1b2c3d checks 2/2 agent-review missing
 # With --json, the versioned state (schema team-state/1): task, title, project, path, phase,
 # worktrees (returned or not), thread, workers (every launch, live when claude agents --json
-# lists its session, with that session's status and state), last_event, pending_asks, and pr.
+# lists its session, with that session's status and state), last_event, pending_asks, waiting,
+# rehome_failures, and pr.
 # Recorded worktree paths under another machine's home (/home/<name>, /Users/<name>) show as the
 # same paths under this HOME.
 # Phase, first match wins: closed, merged (every PR merged, and no held or blocked standing that
@@ -27,6 +28,10 @@
 # still 0.
 # waiting is the task's latest waiting (on, reason, since) until a later launch or resumed, or
 # null; the text form ends with "waiting on <on>: <reason>".
+# rehome_failures are the worktrees team-resume could not re-home and nothing has made since: each
+# project's latest rehome-failed, as {project, branch, machine, reason, since}, until a later
+# opened, worktree-added, worktree-moved, rehomed or worktree-returned in that project; the text
+# form says "not re-homed: <project> on <machine>: <reason>", before any waiting.
 # Exit 1 for a task with no events, or when the live session list cannot be read.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"

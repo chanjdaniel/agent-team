@@ -58,7 +58,7 @@ EOF
 
   on_machine laptop run -0 "$REPO_ROOT/bin/team-lease" take
   run_bin -0 team-doctor
-  assert_equal "$(line_of lease)" "WARN lease: held by laptop, epoch 2, renewed 0 minutes ago; fix: hand off on laptop, then team-resume here"
+  assert_equal "$(line_of lease)" "WARN lease: held by laptop, epoch 2, renewed 0 minutes ago; fix: team-resume --wait here, then hand off on laptop once it says this machine is ready"
 
   git -C "$TEAM_HOME" remote set-url origin https://127.0.0.1:9/agent-team.git
   run_bin -1 team-doctor
@@ -76,23 +76,26 @@ EOF
   "$REPO_ROOT/bin/team-timers" disable >/dev/null
   echo '{"since": "2026-10-22T14:00:00Z", "holder": "laptop", "epoch": 2}' >"$HOME/.local/state/agent-team/fenced"
   run_bin -1 team-doctor
-  assert_equal "$(line_of lease)" "FAIL lease: fenced since 2026-10-22T14:00:00Z (holder seen laptop, epoch 2); fix: hand off on the machine that holds the lease, then team-resume here (its take clears the fence)"
+  assert_equal "$(line_of lease)" "FAIL lease: fenced since 2026-10-22T14:00:00Z (holder seen laptop, epoch 2); fix: team-resume --wait here, then hand off on the machine that holds the lease once it says this machine is ready (its take clears the fence)"
   assert_equal "$(line_of heartbeat)" "PASS heartbeat: disabled, and this machine does not hold the lease"
 
   git -C "$TEAM_HOME" remote set-url origin https://127.0.0.1:9/agent-team.git
   run_bin -1 team-doctor
-  assert_equal "$(line_of lease)" "FAIL lease: fenced since 2026-10-22T14:00:00Z (holder seen laptop, epoch 2); fix: hand off on the machine that holds the lease, then team-resume here (its take clears the fence)"
+  assert_equal "$(line_of lease)" "FAIL lease: fenced since 2026-10-22T14:00:00Z (holder seen laptop, epoch 2); fix: team-resume --wait here, then hand off on the machine that holds the lease once it says this machine is ready (its take clears the fence)"
 }
 
 @test "on a fenced machine, each open task's worktree holding what origin lacks gets a salvage line" {
   tools_at arch
   # Five tasks in site, each in a worktree of its own: T1 with a commit pushed only inside a
   # checkpoint's wip/site/T1 (as team-open --resume fetches it from the team home's origin), T2 with uncommitted changes, T3 clean, T4's worktree gone, T5 closed.
-  local n wt=() slots=$HOME/site-wt
+  # The ledger spells T2's worktree otherwise, as one directory (report F6).
+  local n wt=() slots=$HOME/site-wt recorded
   for n in 1 2 3 4 5; do
     wt[n]=$slots/$n
     git -C "$SITE" worktree add -q -b "feat/T$n-x" "${wt[n]}" origin/main
-    jq -cn --arg t "T$n" --arg wt "${wt[n]}" --arg b "feat/T$n-x" '{ts: "2026-10-23T09:00:00Z", task: $t,
+    recorded=${wt[n]}
+    ((n != 2)) || recorded=$(other_spelling "$slots")/2
+    jq -cn --arg t "T$n" --arg wt "$recorded" --arg b "feat/T$n-x" '{ts: "2026-10-23T09:00:00Z", task: $t,
       event: "opened", project: "site", path: "small", type: "feat", title: "x", branch: $b, base: "main",
       base_sha: "0000000", worktree: $wt}' >>"$TEAM_HOME/ledger.jsonl"
   done
@@ -122,7 +125,7 @@ EOF
   team_origin=$(git -C "$TEAM_HOME" remote get-url origin)
   assert_equal "$(grep salvage <<<"$output")" \
 "FAIL salvage T1 site: ~/site-wt/1 has 1 commit on no origin branch; fix: git -C ~/site-wt/1 push $team_origin HEAD:refs/heads/salvage/site/T1-home-pc
-FAIL salvage T2 site: ~/site-wt/2 has uncommitted changes (changes to tracked files: README.md; untracked files: new.txt); fix: git -C ~/site-wt/2 add -A && git -C ~/site-wt/2 commit -m \"wip: salvage from home-pc\", then git -C ~/site-wt/2 push $team_origin HEAD:refs/heads/salvage/site/T2-home-pc"
+FAIL salvage T2 site: ~/SITE-WT/2 has uncommitted changes (changes to tracked files: README.md; untracked files: new.txt); fix: git -C ~/SITE-WT/2 add -A && git -C ~/SITE-WT/2 commit -m \"wip: salvage from home-pc\", then git -C ~/SITE-WT/2 push $team_origin HEAD:refs/heads/salvage/site/T2-home-pc"
   # Right after the lease line.
   assert_equal "$(checks | grep -A2 -x lease | paste -sd ,)" "lease,salvage T1 site,salvage T2 site"
 

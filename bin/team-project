@@ -8,8 +8,10 @@
 #        team-project --find <key> <value>
 #                                     the projects whose key (dotted, as above) is the value, or
 #                                     holds it when a list, one per line; repo compares in any
-#                                     case, and path, pool.slots, pool.lease and pool.return by
-#                                     real path; a key no project has is refused
+#                                     case, and path, pool.slots, pool.lease and pool.return as
+#                                     the same file, however spelled (a symlink, or another case
+#                                     on a case-insensitive filesystem); a key no project has is
+#                                     refused
 #        team-project --check         check the whole file and list every problem; the name
 #                                     coordinator is reserved (team-config's folder for the
 #                                     team home's own auto memory)
@@ -30,8 +32,12 @@
 #   toolkits         the toolkits a worker of this project may be given
 # Per project pool ([<name>.pool]), where task worktrees come from:
 #   provider         "treehouse" (leased pre-warmed slots) or "git" (plain git worktrees)
-#   lease, return    treehouse only: the lease and return commands
-#   slots            the trusted slot paths a task's worktree may be
+#   lease, return    treehouse only: the lease and return commands, run from the primary
+#                    checkout: lease <holder> prints the leased slot's path; return <slot> hands
+#                    it back, and passes --force and --if-lease-holder <holder> on to treehouse
+#                    return (team-open forces back a slot its own lease dirtied)
+#   slots            the trusted slot paths a task's worktree may be; for treehouse, each other
+#                    numbered slot in their pool's folder is trusted too (team-open)
 # Per project stack ([<name>.stack]), optional: the Docker stacks team-stack manages for the
 # project's worktrees (sops/docker.md); a project without one has none:
 #   compose          the project's compose wrapper, which meets the wrapper contract
@@ -63,8 +69,8 @@ import sys
 if sys.version_info < (3, 11):
     print(
         f"{os.path.basename(sys.argv[0])}: needs Python 3.11 or later (tomllib), but runs under"
-        f" Python {sys.version.split()[0]} ({sys.executable}); on macOS run `brew install python`"
-        " and put Homebrew's bin first on PATH (eval \"$(brew shellenv)\")",
+        f" Python {sys.version.split()[0]} ({sys.executable}); on macOS run `brew install python@3.12`,"
+        " whose python3 the team's scripts put first on PATH",
         file=sys.stderr,
     )
     sys.exit(1)
@@ -96,7 +102,7 @@ ENUMS = {
     "provider": ("treehouse", "git"),
 }
 RELATIVE_PATHS = ("path", "task_dir", "lease", "return")
-# The keys --find compares by real path, once resolved.
+# The keys --find compares as paths (same_path), once resolved.
 ABSOLUTE_PATHS = ("path", "pool.slots", "pool.lease", "pool.return")
 
 
@@ -326,12 +332,27 @@ def lookup(name, project, dotted):
     return value
 
 
+# Whether the paths a and b name one file, as the library's same_path says: both existing, by
+# identity, so two spellings of one directory are one (a symlink, or another case on a
+# case-insensitive filesystem, where realpath keeps the case it is given); neither existing, when
+# their real paths have the same last name under one directory, so compared; else never.
+def same_path(a, b):
+    if not a or not b:
+        return False
+    if os.path.exists(a) and os.path.exists(b):
+        return os.path.samefile(a, b)
+    if os.path.exists(a) or os.path.exists(b):
+        return False
+    a, b = os.path.realpath(a), os.path.realpath(b)
+    return os.path.basename(a) == os.path.basename(b) and same_path(os.path.dirname(a), os.path.dirname(b))
+
+
 # The names of the projects whose dotted key is value, or holds it when a list.
 def find(registry, home, dotted, value):
     if dotted == "repo":
         same = lambda held: held.casefold() == value.casefold()
     elif dotted in ABSOLUTE_PATHS:
-        same = lambda held: os.path.realpath(held) == os.path.realpath(value)
+        same = lambda held: same_path(held, value)
     else:
         same = lambda held: held == value
     found, known = [], False
