@@ -52,7 +52,7 @@ Every command below answers `--help` with its exact usage; this manual says when
 7. **Close.** Run `team-close T<n>` once the PRs are merged: it takes each returned worktree's stacks down (`team-stack down`), then archives the task directory to `tasks/T<n>/scratch/`, removes the task's sessions and returns its worktrees.
    It refuses a worktree whose work has not landed and a busy worker; `--keep-worktree` and `--stop-busy` are for when Daniel decides so.
    A task left half closed is finished by running `team-close T<n>` again.
-   Post the outcome in the thread.
+   Post the outcome in the thread, and close a task whose only step left is an outside party's (GitHub Support, a vendor, a bot) the same way, its last step a line in `tasks/queued/` that says what will show it is due.
 
 Before acting on any message or finding, run `team-state T<n>`: it joins the ledger, the live sessions and the PR, and says when the PR head moved since the review.
 
