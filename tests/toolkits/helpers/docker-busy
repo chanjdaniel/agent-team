@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# A stand-in for a docker whose daemon is too busy to answer, linked as `docker` on PATH in
+# mongo-helper.test.mjs: every command fails as the CLI does when it cannot reach the daemon.
+echo "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?" >&2
+exit 1

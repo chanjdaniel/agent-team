@@ -25,9 +25,8 @@ const { MongoClient } = createRequire(join(repoRoot, "servers", "package.json"))
 
 const docker = (...args) => execFileSync("docker", args, { encoding: "utf8" }).trim();
 
-// Removes container <name> with its anonymous volumes (the image's /data/db and /data/configdb):
-// a forced removal never lets `docker run --rm` remove them, so without --volumes each container
-// left two behind.
+// Removes container <name> with its anonymous volumes (the image's /data/db and /data/configdb),
+// which only --volumes removes.
 export function removeContainer(name) {
   docker("rm", "--force", "--volumes", name);
 }
@@ -108,10 +107,13 @@ export async function connectWhenReady(uri, name, waitMs = 180_000) {
   }
 }
 
-// How container <name> ended ("exited with code 137, killed out of memory"), or null while it runs.
+// How container <name> ended ("exited with code 137, killed out of memory"), or null while it runs
+// or while Docker is too busy to say.
 function exitOf(name) {
   const state = spawnSync("docker", ["inspect", "--format", "{{.State.Status}} {{.State.ExitCode}} {{.State.OOMKilled}}", name], { encoding: "utf8" });
-  if (state.error || state.status !== 0) return `was gone (${(state.error?.message ?? state.stderr).trim()})`;
+  if (state.error || state.status !== 0) {
+    return /no such object/i.test(state.stderr ?? "") ? `was gone (${state.stderr.trim()})` : null;
+  }
   const [status, code, oom] = state.stdout.trim().split(" ");
   if (["created", "running", "restarting", "paused"].includes(status)) return null;
   return `exited with code ${code}${oom === "true" ? ", killed out of memory" : ""}`;
