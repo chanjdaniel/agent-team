@@ -4,7 +4,10 @@
 # a merge never reaches Docker while a gate run's end to end runs (sops/docker.md). The first
 # two only read (ls, and the fixture wrapper's compose config, which starts nothing); the others
 # start and remove stacks of the fixture project's one busybox service, under project names of
-# their own, which teardown removes whatever happened.
+# their own, which teardown removes whatever happened. The sweep's test shows every other team
+# stack running on the machine as busy in the stub session list, so it stops only its own, and
+# the reaper's test limits it to its own projects with TEAM_STACK_REAP_PROJECTS. The instances'
+# test runs the worktree's stack and two instances of it at once.
 
 load helpers/common
 load helpers/docker
@@ -161,4 +164,193 @@ live_get() {
   local winner
   if ((status_a == 0)); then winner=$wt_a; else winner=$wt_b; fi
   run_bin -0 team-stack down --worktree "$winner"
+}
+
+# Make the stub session list hold a busy session in each of <worktrees...> and in the worktree of
+# every team container running on the machine, so a live sweep never stops another task's stack;
+# skip when a running team container has no worktree label, which no session could keep busy.
+live_busy() {
+  local -a ids worktrees=("$@")
+  local worktree
+  mapfile -t ids < <(docker ps --quiet --filter label=io.github.chanjdaniel.team.owner=agent-team)
+  if ((${#ids[@]})); then
+    while IFS= read -r worktree; do
+      [[ -n $worktree ]] || skip "a running team container has no worktree label, so a live sweep could stop it"
+      worktrees+=("$worktree")
+    done < <(docker inspect --format '{{index .Config.Labels "io.github.chanjdaniel.team.worktree"}}' "${ids[@]}")
+  fi
+  for worktree in ${worktrees[@]+"${worktrees[@]}"}; do
+    [[ $worktree != "$LIVE_IDLE" ]] || continue
+    jq -cn --arg cwd "$worktree" '{cwd: $cwd, kind: "background", status: "busy", state: null}'
+  done | jq -cs . >"$STUB_FIXTURES/claude.out"
+}
+
+@test "live: the sweep stops an idle stack with its volume intact, and up brings it back with its data" {
+  local name=lsw$RANDOM$$
+  stack_project "$name"
+  LIVE_PROJECT=stackfix-$name-1
+  jq -cn --arg wt "$STACK_WORKTREE" '{ts: "2026-10-24T09:00:00Z", task: "T22", event: "opened", project: "'"$name"'",
+    path: "feature", type: "feature", title: "Live", branch: "work", base: "main", base_sha: "0000000", worktree: $wt}' \
+    >>"$TEAM_HOME/ledger.jsonl"
+  mkdir -p "$HOME/.config/agent-team"
+  echo '{"idle_minutes": 0.1, "memory_floor_gib": 0, "disk_floor_gb": 0, "wait_minutes": 0, "stack_cap": 1000}' \
+    >"$HOME/.config/agent-team/stack.json"
+  cd "$STACK_WORKTREE"
+  run_bin -0 team-stack up --no-seed
+  local filter=label=com.docker.compose.project=$LIVE_PROJECT container
+  container=$(docker ps --quiet --filter "$filter")
+  docker exec "$container" sh -c 'echo kept > /data/marker'
+
+  # Busy: kept, its last busy time written.
+  LIVE_IDLE=''
+  live_busy "$STACK_WORKTREE"
+  run_bin -0 --separate-stderr team-stack sweep
+  assert_equal "$output$stderr" ""
+  jq -e .last_busy "$HOME/.local/state/agent-team/stacks/$LIVE_PROJECT.json" >/dev/null
+  # Idle, but busy less than idle_minutes (6 seconds) ago: kept.
+  LIVE_IDLE=$STACK_WORKTREE
+  live_busy
+  run_bin -0 team-stack sweep
+  assert_equal "$output" ""
+  [[ -n $(docker ps --quiet --filter "$filter") ]]
+  # Idle past idle_minutes: stopped, alone.
+  sleep 7
+  live_busy
+  run_bin -0 --separate-stderr team-stack sweep
+  assert_equal "$stderr" ""
+  [[ $output == *" stopped $LIVE_PROJECT of T22 in $STACK_WORKTREE: last busy at "*" (idle_minutes 0.1), its data kept" ]]
+  assert_equal "${#lines[@]}" 1
+  assert_equal "$(docker ps --quiet --filter "$filter")" ""
+  assert_equal "$(docker ps --all --quiet --filter "$filter")" "$container"
+  assert_equal "$(docker volume ls --quiet --filter "$filter")" "${LIVE_PROJECT}_data"
+
+  run_bin -0 --separate-stderr team-stack up
+  assert_equal "$output" "team-stack: $LIVE_PROJECT is up for T22, not seeded: its database was there"
+  run_bin -0 team-stack env
+  assert_equal "$(eval "$output"; live_get "$TH_WEB_PORT" /marker)" kept
+  run_bin -0 team-stack down
+  [[ ! -e $HOME/.local/state/agent-team/stacks/$LIVE_PROJECT.json ]]
+}
+
+@test "live: reap --apply removes a closed task's stack and an expired gate stack with their volumes, and keeps an unowned one" {
+  local name=lrp$RANDOM$$
+  stack_project "$name"
+  local team=stackfix-$name-1 gate=stackfix-$name-g unowned=stackfix-$name-u project
+  LIVE_PROJECTS=("$team" "$gate" "$unowned")
+  jq -cn --arg wt "$STACK_WORKTREE" --arg p "$name" '{ts: "2026-10-24T09:00:00Z", task: "T22", event: "opened", project: $p,
+    path: "feature", type: "feature", title: "Live", branch: "work", base: "main", base_sha: "0000000", worktree: $wt}' \
+    >>"$TEAM_HOME/ledger.jsonl"
+  mkdir -p "$HOME/.config/agent-team"
+  echo '{"memory_floor_gib": 0, "disk_floor_gb": 0, "wait_minutes": 0, "stack_cap": 1000}' >"$HOME/.config/agent-team/stack.json"
+  run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
+  # One request, which httpd -v logs, so the saved log has a line.
+  run_bin -0 team-stack env --worktree "$STACK_WORKTREE"
+  (eval "$output"; live_get "$TH_WEB_PORT" / >/dev/null)
+  # A gate run's stack past its expires, and a stack made by hand with no labels, both through the wrapper.
+  (cd "$STACK_WORKTREE" && COMPOSE_PROJECT_NAME=$gate TH_PORTS=auto TH_DIR=$STACK_WORKTREE TEAM_KIND=gate \
+    TEAM_WORKTREE=$STACK_WORKTREE TEAM_EXPIRES=2026-01-01T00:00:00Z scripts/compose.sh up -d --wait) >/dev/null 2>&1
+  (cd "$STACK_WORKTREE" && COMPOSE_PROJECT_NAME=$unowned TH_PORTS=auto TH_DIR=$STACK_WORKTREE \
+    scripts/compose.sh up -d --wait) >/dev/null 2>&1
+  jq -cn '{ts: "2026-10-24T10:00:00Z", task: "T22", event: "closed"}' >>"$TEAM_HOME/ledger.jsonl"
+  # The anonymous volumes of all three, by project.
+  local -A anonymous=()
+  for project in "${LIVE_PROJECTS[@]}"; do
+    anonymous[$project]=$(docker ps --all --quiet --filter "label=com.docker.compose.project=$project" |
+      xargs docker inspect --format '{{range .Mounts}}{{if eq .Destination "/cache"}}{{.Name}}{{end}}{{end}}')
+    [[ -n ${anonymous[$project]} ]]
+  done
+  local scope="stackfix-$name-(1|g|u)"
+
+  # The dry run says what it would do, and does nothing.
+  TEAM_STACK_REAP_PROJECTS=$scope run_bin -0 --separate-stderr team-stack reap
+  assert_equal "$stderr" ""
+  assert_equal "$(grep -c '^would remove ' <<<"$output")" 2
+  assert_contains "$output" "would remove stack $team (team, "
+  assert_contains "$output" "): its task T22 is closed"
+  assert_contains "$output" "would remove stack $gate (gate, "
+  assert_contains "$output" "): it expired at 2026-01-01T00:00:00Z"
+  [[ $output =~ (^|$'\n')"kept stack $unowned (unowned, "[^$'\n']*" old)" ]]
+  assert_equal "$(docker compose ls --format json | jq -c --arg n "$name" '[.[].Name | select(contains($n))] | sort')" \
+    "$(jq -cn --args '$ARGS.positional | sort' "$team" "$gate" "$unowned")"
+
+  TEAM_STACK_REAP_PROJECTS=$scope run_bin -0 --separate-stderr team-stack reap --apply
+  assert_equal "$stderr" ""
+  assert_contains "$output" "removed stack $team (team, "
+  assert_contains "$output" "; its logs in $STACK_WORKTREE/.scratch/task/stack-logs"
+  assert_contains "$output" "removed stack $gate (gate, "
+  grep -q 'response:' "$STACK_WORKTREE/.scratch/task/stack-logs/T22-$team-web.log"
+  for project in "$team" "$gate"; do
+    assert_equal "$(docker ps --all --quiet --filter "label=com.docker.compose.project=$project")" ""
+    assert_equal "$(docker volume ls --quiet --filter "label=com.docker.compose.project=$project")" ""
+    assert_equal "$(docker network ls --quiet --filter "label=com.docker.compose.project=$project")" ""
+    run docker volume inspect "${anonymous[$project]}"
+    assert_equal "$status" 1
+  done
+  # The unowned stack is untouched, its volumes with it.
+  [[ -n $(docker ps --quiet --filter "label=com.docker.compose.project=$unowned") ]]
+  assert_equal "$(docker volume ls --quiet --filter "label=com.docker.compose.project=$unowned")" "${unowned}_data"
+  docker volume inspect "${anonymous[$unowned]}" >/dev/null
+  LIVE_ANONYMOUS=${anonymous[$unowned]}
+}
+
+@test "live: the worktree's stack and two instances run at once on distinct ports, each with its own data, and down removes all three" {
+  local name=lin$RANDOM$$
+  stack_project "$name"
+  local own=stackfix-$name-1 project
+  LIVE_PROJECTS=("$own" "$own-a" "$own-b")
+  jq -cn --arg wt "$STACK_WORKTREE" --arg p "$name" '{ts: "2026-10-24T09:00:00Z", task: "T22", event: "opened", project: $p,
+    path: "feature", type: "feature", title: "Live", branch: "work", base: "main", base_sha: "0000000", worktree: $wt}' \
+    >>"$TEAM_HOME/ledger.jsonl"
+  mkdir -p "$HOME/.config/agent-team"
+  echo '{"memory_floor_gib": 0, "disk_floor_gb": 0, "wait_minutes": 0, "stack_cap": 1000}' >"$HOME/.config/agent-team/stack.json"
+  cd "$STACK_WORKTREE"
+  run_bin -0 team-stack up --no-seed
+  run_bin -0 --separate-stderr team-stack up --instance a --no-seed
+  assert_equal "$output" "team-stack: $own-a is up for T22, not seeded: --no-seed"
+  run_bin -0 team-stack up --instance b --no-seed
+
+  # Each runs, labelled with the task, on a port of its own, and serves its own named volume.
+  local -A port=() anonymous=()
+  local container
+  for project in "${LIVE_PROJECTS[@]}"; do
+    container=$(docker ps --quiet --filter "label=com.docker.compose.project=$project")
+    [[ -n $container ]]
+    assert_equal "$(docker inspect --format '{{index .Config.Labels "io.github.chanjdaniel.team.task"}} {{index .Config.Labels "io.github.chanjdaniel.team.kind"}} {{index .Config.Labels "io.github.chanjdaniel.team.worktree"}}' "$container")" \
+      "T22 $([[ $project == "$own" ]] && echo dev || echo e2e) $STACK_WORKTREE"
+    anonymous[$project]=$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/cache"}}{{.Name}}{{end}}{{end}}' "$container")
+    docker exec "$container" sh -c "echo $project > /data/marker"
+  done
+  run_bin -0 team-stack env
+  port[$own]=$(eval "$output"; echo "$TH_WEB_PORT")
+  for project in a b; do
+    run_bin -0 team-stack env --instance "$project"
+    assert_equal "${lines[0]}" "export COMPOSE_PROJECT_NAME=$own-$project"
+    assert_equal "${lines[2]}" "export TH_PORTS=auto"
+    port[$own-$project]=$(eval "$output"; echo "$TH_WEB_PORT")
+  done
+  assert_equal "$(printf '%s\n' "${port[@]}" | sort -u | grep -c .)" 3
+  for project in "${LIVE_PROJECTS[@]}"; do
+    assert_equal "$(live_get "${port[$project]}" /marker)" "$project"
+  done
+  # A hand-run wrapper call with an instance's exports reaches it and changes nothing.
+  local instance=$own-a
+  run_bin -0 team-stack env --instance a
+  assert_equal "$(eval "$output"; scripts/compose.sh ports | sed -n 2p)" "export TH_WEB_PORT=${port[$instance]}"
+  run_bin -0 team-stack env --instance a
+  assert_contains "$output" "export TH_WEB_PORT=${port[$instance]}"
+
+  run_bin -0 --separate-stderr team-stack down
+  local logs=$STACK_WORKTREE/.scratch/task/stack-logs
+  assert_equal "$output" "team-stack: $own-a is removed, its logs in $logs
+team-stack: $own-b is removed, its logs in $logs
+team-stack: $own is removed, its logs in $logs"
+  assert_equal "$stderr" ""
+  for project in "${LIVE_PROJECTS[@]}"; do
+    [[ -f $logs/$project-web.log ]]
+    assert_equal "$(docker ps --all --quiet --filter "label=com.docker.compose.project=$project")" ""
+    assert_equal "$(docker volume ls --quiet --filter "label=com.docker.compose.project=$project")" ""
+    assert_equal "$(docker network ls --quiet --filter "label=com.docker.compose.project=$project")" ""
+    run docker volume inspect "${anonymous[$project]}"
+    assert_equal "$status" 1
+  done
 }

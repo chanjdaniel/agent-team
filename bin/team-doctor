@@ -8,7 +8,8 @@
 # file, ~/.claude.json or ~/.claude/channels/ is read, and no line carries a secret. Read-only,
 # but for the trust probes' sessions, which it removes.
 # TEAM_OS_RELEASE names the os-release file to read instead of /etc/os-release, TEAM_1PASSWORD_APP
-# the 1Password app to look for, and TEAM_CHROME the browser (the tests' seams).
+# the 1Password app to look for, TEAM_CHROME the browser, and TEAM_MEMINFO the file read in place
+# of /proc/meminfo (the tests' seams).
 # Exit 0 nothing failed, 1 a check failed, 2 usage error.
 # The checks, in order, one file each in bin/lib/doctor.d/, sourced in the order of their names
 # (three digits by tens, so a new check goes between two without renaming any), each calling the
