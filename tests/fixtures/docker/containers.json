@@ -51,6 +51,11 @@
     },
     "HostConfig": {
       "Memory": 0
+    },
+    "NetworkSettings": {
+      "Networks": {
+        "conventioner_conventioner_network": {}
+      }
     }
   },
   {
@@ -98,6 +103,11 @@
     },
     "HostConfig": {
       "Memory": 0
+    },
+    "NetworkSettings": {
+      "Networks": {
+        "conventioner_conventioner_network": {}
+      }
     }
   },
   {
@@ -150,6 +160,11 @@
     },
     "HostConfig": {
       "Memory": 1073741824
+    },
+    "NetworkSettings": {
+      "Networks": {
+        "conventioner-2_conventioner_network": {}
+      }
     }
   },
   {
@@ -202,6 +217,11 @@
     },
     "HostConfig": {
       "Memory": 805306368
+    },
+    "NetworkSettings": {
+      "Networks": {
+        "conventioner-2_conventioner_network": {}
+      }
     }
   },
   {
@@ -247,6 +267,11 @@
     },
     "HostConfig": {
       "Memory": 805306368
+    },
+    "NetworkSettings": {
+      "Networks": {
+        "conventioner-4_conventioner_network": {}
+      }
     }
   },
   {
@@ -292,6 +317,11 @@
     },
     "HostConfig": {
       "Memory": 805306368
+    },
+    "NetworkSettings": {
+      "Networks": {
+        "conventioner-3_conventioner_network": {}
+      }
     }
   },
   {
@@ -344,6 +374,11 @@
     },
     "HostConfig": {
       "Memory": 536870912
+    },
+    "NetworkSettings": {
+      "Networks": {
+        "nmtest-1895520_conventioner_network": {}
+      }
     }
   },
   {
@@ -384,6 +419,11 @@
     },
     "HostConfig": {
       "Memory": 0
+    },
+    "NetworkSettings": {
+      "Networks": {
+        "nmtest-12822_conventioner_network": {}
+      }
     }
   }
 ]

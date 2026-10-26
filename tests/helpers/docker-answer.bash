@@ -49,6 +49,10 @@ docker_stub_answer() {
       ;;
     *) key=$cmd ;;
   esac
+  if [[ -e $DOCKER_STATE/hung ]]; then
+    echo "$$" >>"$DOCKER_STATE/hung"
+    exec sleep 3600
+  fi
   if [[ -e $DOCKER_STATE/down ]]; then
     echo "$DOCKER_DOWN" >&2
     exit 1
@@ -72,7 +76,10 @@ docker_stub_answer() {
     'compose stop') docker_stub_compose_stop "${args[@]}" ;;
     'compose down') docker_stub_compose_down "${args[@]}" ;;
     'volume rm') docker_stub_volume_rm "${args[@]}" ;;
+    'image rm') docker_stub_image_rm "${args[@]}" ;;
+    'network rm') docker_stub_network_rm "${args[@]}" ;;
     info) docker_stub_info "${args[@]}" ;;
+    events) docker_stub_events "${args[@]}" ;;
     *) docker_stub_unplanned ;;
   esac
 }
@@ -190,8 +197,29 @@ docker_stub_stats() {
 }
 
 # system df -v --format json: one object, each volume with its labels as one string and its
-# links counted from the containers that mount it.
+# links counted from the containers that mount it. system df --format json: one line per type,
+# Docker's totals, its sizes as Docker writes them ("1.31GB"), active meaning used by a container
+# (an image, a volume) or running (a container), reclaimable the size of what is not active.
 docker_stub_system_df() {
+  if docker_stub_options $# "$@" --format json; then
+    jq -c --slurpfile containers "$DOCKER_STATE/containers.json" --slurpfile volumes "$DOCKER_STATE/volumes.json" '
+      def bytes: capture("^(?<n>[0-9.]+)(?<u>[kMGT]?B)$") // {n: "0", u: "B"}
+        | (.n | tonumber) * {B: 1, kB: 1e3, MB: 1e6, GB: 1e9, TB: 1e12}[.u];
+      def human: if . >= 1e9 then "\(. / 1e6 | round / 1e3)GB" elif . >= 1e6 then "\(. / 1e3 | round / 1e3)MB"
+        elif . >= 1e3 then "\(round / 1e3)kB" else "\(round)B" end;
+      def totals($type; $items):
+        ($items | map(.size) | add // 0) as $size | ($items | map(select(.active | not) | .size) | add // 0) as $free
+        | {Active: ($items | map(select(.active)) | length | tostring),
+           Reclaimable: "\($free | human) (\(if $size == 0 then 0 else $free * 100 / $size | floor end)%)",
+           Size: ($size | human), TotalCount: ($items | length | tostring), Type: $type};
+      $containers[0] as $cs
+      | totals("Images"; map(.ID as $id | {size: (.Size | bytes), active: any($cs[]; .Image == $id)})),
+        totals("Containers"; $cs | map({size: 0, active: .State.Running})),
+        totals("Local Volumes"; $volumes[0] | map(.Name as $n | {size: (.Size // "0B" | bytes),
+          active: any($cs[]; any(.Mounts[]?; .Type == "volume" and .Name == $n))})),
+        totals("Build Cache"; [])' "$DOCKER_STATE/images.json"
+    return
+  fi
   docker_stub_options $# "$@" -v --format json || docker_stub_unplanned
   jq -c --slurpfile containers "$DOCKER_STATE/containers.json" --slurpfile volumes "$DOCKER_STATE/volumes.json" '
     {BuildCache: [], Containers: [], Images: .,
@@ -230,6 +258,27 @@ docker_stub_list() {
 docker_stub_info() {
   docker_stub_options $# "$@" --format json || docker_stub_unplanned
   jq -c . "$DOCKER_STATE/info.json"
+}
+
+# events --since <epoch> --until <epoch> --filter event=<action> --format json: the events of
+# $DOCKER_STATE/events.json (docker_event) with that action in that time, one line each, oldest
+# first, as Docker gives them.
+docker_stub_events() {
+  local since='' until='' action=''
+  while (($#)); do
+    case $1 in
+      --since) since=$2; shift ;;
+      --until) until=$2; shift ;;
+      --filter) [[ $2 == event=* ]] || docker_stub_unplanned; action=${2#event=}; shift ;;
+      --format) [[ $2 == json ]] || docker_stub_unplanned; shift ;;
+      *) docker_stub_unplanned ;;
+    esac
+    shift
+  done
+  # Docker reads a time or a duration; the stub, as the tests plan, only seconds since the epoch.
+  [[ $since =~ ^[0-9]+$ && $until =~ ^[0-9]+$ && -n $action ]] || docker_stub_unplanned
+  jq -c --argjson since "$since" --argjson until "$until" --arg action "$action" \
+    'sort_by(.time)[] | select(.Action == $action and .time >= $since and .time <= $until)' "$DOCKER_STATE/events.json"
 }
 
 # The calls below model the fixture project's stack (tests/fixtures/stack/docker-compose.yml):
@@ -278,14 +327,18 @@ docker_stub_id() {
   sha256sum <<<"$RANDOM-$RANDOM-$(date +%s%N)-$BASHPID" | cut -d ' ' -f 1
 }
 
-# compose config --format json: the fixture's config as Compose renders it.
+# compose config --format json: the fixture's config as Compose renders it, web's mem_limit from
+# $DOCKER_STATE/mem-limit (stack_mem_limit) when a test wrote one.
 docker_stub_compose_config() {
   docker_stub_options $# "$@" --format json || docker_stub_unplanned
-  jq -n --arg project "$(docker_stub_project)" --arg port "${TH_WEB_PORT:-}" --argjson labels "$(docker_stub_team_labels)" '
+  local limit=67108864
+  [[ ! -f $DOCKER_STATE/mem-limit ]] || limit=$(cat "$DOCKER_STATE/mem-limit")
+  jq -n --arg project "$(docker_stub_project)" --arg port "${TH_WEB_PORT:-}" --argjson labels "$(docker_stub_team_labels)" \
+    --arg limit "$limit" '
     {name: $project,
      networks: {default: {name: "\($project)_default", ipam: {}, labels: $labels}},
      services: {web: {restart: "no", command: ["httpd", "-f", "-v", "-p", "80", "-h", "/data"], entrypoint: null,
-       image: "busybox:1.36", labels: $labels, mem_limit: "67108864", networks: {default: null},
+       image: "busybox:1.36", labels: $labels, mem_limit: $limit, networks: {default: null},
        volumes: [{type: "volume", source: "data", target: "/data", volume: {}}, {type: "volume", target: "/cache", volume: {}}],
        ports: [{mode: "ingress", host_ip: "127.0.0.1", target: 80, published: $port, protocol: "tcp"}]}},
      volumes: {data: {name: "\($project)_data", labels: $labels}},
@@ -343,7 +396,7 @@ docker_stub_compose_up() {
             Destination: "/data", Driver: "local"},
           {Type: "volume", Name: $anonymous, Source: "/var/lib/docker/volumes/\($anonymous)/_data",
             Destination: "/cache", Driver: "local"}],
-        NetworkSettings: {Ports: {"80/tcp": [{HostIp: "127.0.0.1", HostPort: $port}]}}}] end' \
+        NetworkSettings: {Ports: {"80/tcp": [{HostIp: "127.0.0.1", HostPort: $port}]}, Networks: {"\($p)_default": {}}}}] end' \
     --arg p "$project" --arg id "$id" --arg now "$now" --arg hash "$hash" --arg port "$port" \
     --arg file "$COMPOSE_F" --arg anonymous "$anonymous" --argjson labels "$labels"
   docker_stub_running_stats
@@ -427,13 +480,23 @@ docker_stub_compose_down() {
   docker_stub_running_stats
 }
 
+# Whether docker_refuse made the removal of <name> fail; its message on stderr when so.
+docker_stub_refused() {
+  local message
+  message=$(jq -r --arg n "$1" 'select(.name == $n) | .message' "$DOCKER_STATE/refuse.jsonl" 2>/dev/null | head -n 1)
+  [[ -n $message ]] || return 1
+  echo "$message" >&2
+}
+
 # volume rm <names>...: each removed; one missing or mounted by a container is refused as
 # Docker refuses it, after the others are removed.
 docker_stub_volume_rm() {
   (($#)) || docker_stub_unplanned
   local name status=0
   for name in "$@"; do
-    if ! jq -e --arg n "$name" 'any(.[]; .Name == $n)' "$DOCKER_STATE/volumes.json" >/dev/null; then
+    if docker_stub_refused "$name"; then
+      status=1
+    elif ! jq -e --arg n "$name" 'any(.[]; .Name == $n)' "$DOCKER_STATE/volumes.json" >/dev/null; then
       echo "Error response from daemon: get $name: no such volume" >&2
       status=1
     elif jq -e --arg n "$name" 'any(.[]; any(.Mounts[]?; .Type == "volume" and .Name == $n))' \
@@ -443,6 +506,57 @@ docker_stub_volume_rm() {
     else
       docker_stub_update volumes 'map(select(.Name != $n))' --arg n "$name"
       echo "$name"
+    fi
+  done
+  exit "$status"
+}
+
+# image rm <repository:tag or id>...: a tag untagged, its image gone with its last tag; an id
+# removes the image; one missing, or whose image a container (in any state) uses, is refused as
+# Docker refuses it, after the others are removed.
+docker_stub_image_rm() {
+  (($#)) || docker_stub_unplanned
+  local ref id status=0
+  for ref in "$@"; do
+    id=$(jq -r --arg r "$ref" 'first(.[] | select(.ID == $r or "\(.Repository):\(.Tag)" == $r) | .ID) // empty' \
+      "$DOCKER_STATE/images.json")
+    if docker_stub_refused "$ref"; then
+      status=1
+    elif [[ -z $id ]]; then
+      echo "Error response from daemon: No such image: $ref" >&2
+      status=1
+    elif jq -e --arg id "$id" 'any(.[]; .Image == $id)' "$DOCKER_STATE/containers.json" >/dev/null; then
+      echo "Error response from daemon: conflict: unable to remove repository reference \"$ref\" (must force) - container is using its referenced image ${id#sha256:}" >&2
+      status=1
+    else
+      docker_stub_update images 'map(select(.ID != $r and "\(.Repository):\(.Tag)" != $r))' --arg r "$ref"
+      echo "Untagged: $ref"
+    fi
+  done
+  exit "$status"
+}
+
+# network rm <names or ids>...: each removed; one missing, or that a running container is on, is
+# refused as Docker refuses it (a stopped container's network is removed, as Docker does), after
+# the others are removed.
+docker_stub_network_rm() {
+  (($#)) || docker_stub_unplanned
+  local ref name status=0
+  for ref in "$@"; do
+    name=$(jq -r --arg r "$ref" 'first(.[] | select(.Name == $r or (.Id | startswith($r))) | .Name) // empty' \
+      "$DOCKER_STATE/networks.json")
+    if docker_stub_refused "$ref"; then
+      status=1
+    elif [[ -z $name ]]; then
+      echo "Error response from daemon: network $ref not found" >&2
+      status=1
+    elif jq -e --arg n "$name" 'any(.[]; .State.Running and (.NetworkSettings.Networks // {} | has($n)))' \
+      "$DOCKER_STATE/containers.json" >/dev/null; then
+      echo "Error response from daemon: error while removing network: network $name has active endpoints" >&2
+      status=1
+    else
+      docker_stub_update networks 'map(select(.Name != $n))' --arg n "$name"
+      echo "$ref"
     fi
   done
   exit "$status"
