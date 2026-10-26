@@ -66,7 +66,7 @@ It is enabled only on the holder: `team-resume` enables it, `team-handoff` disab
 - each worktree's work is kept on the team home's origin as `wip/<project>/T<n>`, pushed from the worktree to that origin's URL and never to the project's origin, which may be public (Conventioner's is): the branch head, or, with uncommitted changes, a snapshot commit on it built from a temporary index (untracked files included), never touching the worktree's files, index or stash;
 - untracked files that may hold a secret are left out of the snapshot, each named in the checkpoint's output: a name starting with `.env` or ending with `.pem` or `.key`, or a path that a target in `machine/secrets.json` ends with.
   A secret has no place in git even in a private repository, and a project's `.gitignore` need not cover every `.env` variant a worker makes; such a file stays only on the machine it was made on;
-- `tasks/*/scratch*/`, `memory/` and `ledger.jsonl` are committed as `chore: checkpoint` and pushed.
+- `tasks/*/scratch*/`, `memory/`, `tasks/current.md` (the coordinator's current items) and `ledger.jsonl` are committed as `chore: checkpoint` and pushed.
 
 Nothing new means no commit and no push; `team-close` deletes the task's `wip/<project>/T<n>`, and the copy of it that `team-open --resume` fetched into the primary checkout.
 
@@ -85,7 +85,7 @@ A worktree whose head a salvage branch holds, with nothing uncommitted, is salva
 - The probe is `git ls-remote` of the lease branch, 20 seconds at most; a network failure is tried again after 60 seconds, and a second one means offline.
   GitHub refusing the login is not offline: it is posted once and the doctor fails it.
 - Offline, the holder keeps the lease and holds the team: the heartbeat posts the hold in `#coordinator` once, the hook blocks workers' pushes and `gh` with the hold message, and no worker starts, no coordinator starts, and no checkpoint, handoff, resume or take runs.
-- The coordinator learns of it through its Monitor on `team-timers watch` (or a worker's `T<n> PAUSED offline`), sends `T<n> HOLD` to each live worker, and each commits locally, writes `handoff.md` and answers `T<n> PAUSED held`.
+- The coordinator learns of it through its offline watch, `team-timers watch --once` in the background (or a worker's `T<n> PAUSED offline`), sends `T<n> HOLD` to each live worker, and each commits locally, writes `handoff.md` and answers `T<n> PAUSED held`.
 - The first probe that answers renews the lease, clears the flag and posts "GitHub back"; the coordinator sends `T<n> RESUME`.
   If another machine took the lease meanwhile, the renew fences this one instead.
 

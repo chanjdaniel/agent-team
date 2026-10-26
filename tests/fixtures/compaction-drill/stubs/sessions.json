@@ -1,0 +1,3 @@
+[
+  {"pid": 4242, "cwd": "/home/daniel/drill/.claude/worktrees/1", "kind": "background", "startedAt": 1792836000000, "sessionId": "c3d4e5f6-1111-4222-8333-444455556666", "name": "T94-builder", "status": "busy", "id": "c3d4e5f6", "state": "working"}
+]

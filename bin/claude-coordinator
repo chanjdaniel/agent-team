@@ -14,6 +14,12 @@
 # commands) naming this checkout, written to ~/.local/state/agent-team/coordinator.settings.json;
 # the manual, the skills, the settings and the hooks all come from this script's checkout.
 #
+# It compacts at 200k tokens, by the launch's --autocompact flag rather than autoCompactWindow in
+# its settings: the flag is not preempted by a higher-priority settings scope, so a /autocompact
+# Daniel once ran in their own session (saved in user settings) cannot widen the coordinator's
+# window; CLAUDE_CODE_AUTO_COMPACT_WINDOW, which would override the flag, stays unset. Its
+# settings add idle compaction from 100k tokens, so a long idle does not rewrite a large cache.
+#
 # Only on the lease holder: it refuses (exit 1) unless `team-lease check` confirms against origin
 # that this machine holds the lease, naming the holder, or saying a coordinator never starts
 # offline when GitHub is unreachable.
@@ -69,6 +75,7 @@ mv -f "$settings.$$" "$settings"
 # Not exec: this shell keeps the lock until claude returns, and the session it starts does not
 # inherit the lock's file, so a running coordinator never holds the next launch's lock.
 claude --bg --name coordinator \
+  --autocompact 200k \
   --channels plugin:discord@claude-plugins-official \
   --dangerously-skip-permissions \
   --append-system-prompt-file "$code/roles/coordinator.md" \
