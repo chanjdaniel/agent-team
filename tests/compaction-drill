@@ -11,8 +11,10 @@
 # tests/fixtures/compaction-drill/team, a team home with one project, drill, whose GitHub is never
 # reached; four open tasks, T91 on an unanswered ask, T92 waiting on Daniel, T93 blocked on T92
 # and T94 with its builder at work; and tasks/current.md with an owe, a next and a queued item.
-# stubs/ goes first on the session's PATH, so its hooks see the fixture's live sessions (claude
-# agents --json) and no open PRs (gh pr list), never this machine's. The session runs in team/
+# stubs/ goes first on the session's PATH, as TEAM_PATH_FIRST, which keeps it ahead of the tool
+# directories the hooks' library puts first (the machine's own claude among them), so its hooks
+# see the fixture's live sessions (claude agents --json) and no open PRs (gh pr list), never this
+# machine's. The session runs in team/
 # with TEAM_HOME naming it, the coordinator's manual appended to its system prompt, settings
 # holding only the coordinator's SessionStart hook (session-digest: no Discord, no Stop hook, no
 # lease fence) over the user's own, no MCP servers, and only the tools Read, Glob, Grep, Edit and
@@ -76,7 +78,7 @@ for turn in 1 2 3; do
   started=1
   status=0
   # --tools takes many values, so it comes first, and the prompt last, after a one-value flag.
-  (cd "$team" && PATH="$sandbox/stubs:$PATH" TEAM_HOME="$team" "$claude" \
+  (cd "$team" && PATH="$sandbox/stubs:$PATH" TEAM_PATH_FIRST="$sandbox/stubs" TEAM_HOME="$team" "$claude" \
     --tools Read,Glob,Grep,Edit,Write \
     --print --verbose --output-format stream-json \
     --append-system-prompt-file "$root/roles/coordinator.md" \
@@ -125,6 +127,10 @@ waits() {
   jq -e --arg task "$1" --arg re "$2" \
     'any(.tasks[]?; .task == $task and (.waits_on | tostring | test($re; "i")))' "$sandbox/answer.json"
 }
+# waits_not <task> <pattern> <not>: as waits, and the wait matches no part of <not>.
+waits_not() {
+  waits "$1" "$2" && ! waits "$1" "$3"
+}
 # item <pattern>: an item of the answer matches the pattern, in any case.
 item() {
   jq -e --arg re "$1" 'any(.items[]?; tostring | test($re; "i"))' "$sandbox/answer.json"
@@ -138,7 +144,7 @@ check "the answer is one JSON object with tasks and items" \
 check "T91 waits on its unanswered ask, q1 on the licence" waits T91 'licen[cs]e|q1'
 check "T92 waits on Daniel to rotate the staging database password" waits T92 'password'
 check "T93 is blocked on T92" waits T93 'T92'
-check "T94 has its builder at work" waits T94 'builder'
+check "T94 has its builder at work" waits_not T94 'builder' 'no(t| longer)? live|unattended|dead|gone|stopped'
 check "the owe item: the weekly status report (message 1300000000000000001)" item '1300000000000000001'
 check "the next item: the licence file task once q1 is answered" item 'licen[cs]e file'
 check "the queued item: the lint cleanup (tasks/queued/lint-cleanup.md)" item 'lint'

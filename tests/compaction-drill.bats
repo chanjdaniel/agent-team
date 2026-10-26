@@ -189,6 +189,28 @@ Current items (3):
   assert_contains "$(cat "$STUB_FIXTURES/turn-3.digest")" "Current items (4):"
 }
 
+@test "a claude and gh in the machine's tool directories, which the library puts first on PATH, never reach the session's hooks" {
+  full_answer
+  # ~/.local/bin is one of tools.lock's directories under HOME, which every script's library puts
+  # ahead of the PATH it was given; there the machine's own claude would list its own sessions.
+  mkdir -p "$HOME/.local/bin"
+  printf '#!/usr/bin/env bash\necho %s\n' \
+    "'[{\"pid\": 1, \"cwd\": \"/elsewhere\", \"kind\": \"background\", \"sessionId\": \"edd90326-0000-4000-8000-000000000000\", \"name\": \"T31-builder\", \"status\": \"busy\", \"id\": \"edd90326\"}]'" \
+    >"$HOME/.local/bin/claude"
+  printf '#!/usr/bin/env bash\necho "the machine'"'"'s gh, not the drill'"'"'s" >&2; exit 1\n' >"$HOME/.local/bin/gh"
+  chmod +x "$HOME/.local/bin/claude" "$HOME/.local/bin/gh"
+  run -0 "$REPO_ROOT/tests/compaction-drill"
+  local digest
+  digest=$(cat "$STUB_FIXTURES/turn-1.digest")
+  assert_contains "$digest" "  T94 drill feature planning | T94-builder busy
+Live team sessions (1):
+  T94-builder c3d4e5f6 busy
+Stray sessions: none
+Open PRs:
+  drill (example/drill): none
+"
+}
+
 @test "it removes the sandbox and never touches the team home or HOME it was run with" {
   full_answer
   run -0 "$REPO_ROOT/tests/compaction-drill"
@@ -226,6 +248,22 @@ FAIL the new promise: a next item to pin Node 22, in tasks/current.md
   assert_equal "${lines[-1]}" "== 8 of 11 checks passed"
   [[ ! -e $(drill_sandbox) ]]
   assert_equal "$(calls | sed -n 4p | jq -r '.[0]')" purge
+}
+
+@test "an answer that gives T94's builder as no longer live fails its check, though it names the builder" {
+  answer '{tasks: [
+      {task: "T91", waits_on: "Daniel'\''s answer to q1, the licence question"},
+      {task: "T92", waits_on: "Daniel: rotate the staging database password"},
+      {task: "T93", waits_on: "blocked until T92 is on the new database"},
+      {task: "T94", waits_on: "nothing recorded; its builder c3d4e5f6 is no longer live, so it is unattended"}],
+    items: [
+      "owe - the weekly status report | 1300000000000000001",
+      "next T91 open the licence file task once Daniel answers q1",
+      "queued - the lint cleanup | tasks/queued/lint-cleanup.md",
+      "next T92 open a task to pin Node 22 in CI once T92 merges"]}'
+  run -1 "$REPO_ROOT/tests/compaction-drill"
+  assert_contains "$output" "FAIL T94 has its builder at work"
+  assert_equal "${lines[-1]}" "== 10 of 11 checks passed"
 }
 
 @test "a turn 2 that reports no compaction fails that check" {
