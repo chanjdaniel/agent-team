@@ -4,7 +4,8 @@
 # Usage: team-brief T<n> <template> [--project <name>] [--set key=value]... [--set-file key=path]...
 #                   [--name <suffix>] [--force]
 #   template    one of templates/briefs/: planner-feature, planner-research, builder-ticket,
-#               builder-fix, builder-deliver, reviewer, rereview, ops, retro, resume (a worker
+#               builder-fix, builder-deliver, builder-merge-base (--set pr=, a PR behind its
+#               base), reviewer, rereview, ops, retro, resume (a worker
 #               relaunched on another machine: --set role=, brief= its last brief, from= what it
 #               resumes after, snapshot= what became of the uncommitted changes the handoff found),
 #               resume-crash (one relaunched after its machine crashed: --set role=, brief=,
@@ -24,8 +25,9 @@
 # because the workers' allow rules name the scripts in it by their full path. ui is empty unless
 # tasks/T<n>/ui/ holds files (team-ui's capture of what Daniel pointed at): then a newline and a
 # reading-list item naming them, with the rule that a worker checks a fix on its own stack. In a template,
-# {{> delivery}} stands for the delivery partial of the project's delivery,
-# templates/briefs/delivery/<delivery>.md.
+# {{> <name>}} stands for the partial of the project's delivery, templates/briefs/<name>/<delivery>.md:
+# delivery (how a builder delivers), review and rereview (what a reviewer reads and posts; a gated
+# project's first review reads the branch's local head before the gate, with no pr).
 # Refused, exit 1 with nothing written: an unknown template, a task that is not open (no opened
 # event, or closed) or has no open worktree, a placeholder left unfilled (each named), a --set key
 # no placeholder uses, a --set of a task fact, and an existing brief without --force.
@@ -142,12 +144,15 @@ fi
 thread=$(jq -r 'map(select(.event == "thread")) | last | .discord_thread // empty' <<<"$events")
 [[ -z $thread ]] || values[thread]=$thread
 
-# The template, with the delivery partial in place of {{> delivery}}.
+# The template, with each partial of the project's delivery in place of its {{> <name>}}.
 text=$(<"$briefs/$template.md")
-if [[ $text == *"{{> delivery}}"* ]]; then
+mapfile -t partials < <(grep -oE '\{\{> [a-z]+\}\}' <<<"$text" | sed 's/^{{> //; s/}}$//' | sort -u)
+if ((${#partials[@]})); then
   delivery=$(jq -r .delivery <<<"$facts")
-  [[ -f $briefs/delivery/$delivery.md ]] || die "no delivery partial for $project's delivery '$delivery'"
-  text=${text//"{{> delivery}}"/"$(<"$briefs/delivery/$delivery.md")"}
+  for partial in "${partials[@]}"; do
+    [[ -f $briefs/$partial/$delivery.md ]] || die "no $partial partial for $project's delivery '$delivery'"
+    text=${text//"{{> $partial}}"/"$(<"$briefs/$partial/$delivery.md")"}
+  done
 fi
 
 # Every placeholder needs a value, and every --set value a placeholder.

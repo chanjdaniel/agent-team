@@ -66,7 +66,7 @@ Each acts on the worktree it is run in (or `--worktree <path>`), resolved the sa
 - **The project** is the registered one whose primary checkout the worktree belongs to, and it must have a `stack` block.
 - **The stack** is the one the wrapper resolves for the worktree, named by its `config --format json`: the containers, volumes and networks Docker labels with that Compose project.
   A stack with any object that is not of class team is refused by every subcommand, naming its class: removing it is Daniel's or the coordinator's call.
-- **The task**, for `up` only, is the open task whose ledger worktree (opened or added, not returned) is this one, compared by real path; `--task T<n>` names one when the ledger gives the worktree to none, and must agree with it when it does.
+- **The task**, for `up` only, is the open task whose ledger worktree (opened or added, not returned) is this one, however either is spelled; `--task T<n>` names one when the ledger gives the worktree to none, and must agree with it when it does.
 
 Every stack starts fresh for its task:
 
@@ -80,6 +80,35 @@ With no stack, `stop` and `down` say so and exit 0; `env` and `seed` refuse.
 
 Exit codes: 0 done, 1 refused or failed (with the reason), 2 a malformed command line, 75 try again later (no room for the stack, see "Admission").
 
+## Instances: more stacks of one worktree
+
+An instance is an extra stack of the worktree, with its own database and ports, for end-to-end runs in parallel (Playwright shards) or a browser-driving agent that must not share the worktree's stack.
+
+- `~/agent-team/bin/team-stack up --instance <name>` starts the Compose project `<stack>-<name>` (`conventioner-3-shard1` in slot 3), with `TEAM_KIND=e2e`, the worktree's task, and ports Docker assigns on `127.0.0.1` (`TH_PORTS=auto` with that `COMPOSE_PROJECT_NAME`); it is admitted against the cap like any stack, each instance counting as one, and seeded as any new stack is.
+- `env`, `seed`, `stop` and `down` take `--instance <name>` too, and every wrapper call for an instance passes its project and `TH_PORTS=auto`.
+  `env --instance` also exports `TH_PORTS=auto`, so a hand-run wrapper call after its `eval` reaches the instance with the ports it started with, never the slot's fixed ones (which would recreate its containers).
+- `down` without `--instance` takes down the worktree's instances first (team stacks whose project is `<stack>-<anything>` and whose `worktree` label is the worktree), then its own stack, so `team-close` removes them with it.
+- A name is `[a-z0-9][a-z0-9_-]*`, Compose's rule for a project name; any other is exit 2.
+
+N shards against N instances, each shard in a subshell of its own so its exports reach only its run, and each with its own output directories, which Playwright would otherwise clear and overwrite under the other shard:
+
+```bash
+team_stack=~/agent-team/bin/team-stack n=2 status=0
+for i in $(seq "$n"); do "$team_stack" up --instance "shard$i" || exit; done
+pids=()
+for i in $(seq "$n"); do
+  (eval "$("$team_stack" env --instance "shard$i")" && cd front-end &&
+    PLAYWRIGHT_HTML_OUTPUT_DIR="playwright-report/shard$i" npx playwright test --shard="$i/$n" --output="test-results/shard$i") &
+  pids+=("$!")
+done
+for pid in "${pids[@]}"; do wait "$pid" || status=1; done
+for i in $(seq "$n"); do "$team_stack" down --instance "shard$i"; done
+exit "$status"
+```
+
+On `up`'s exit 75, `down --instance` the ones already up and send `T<n> PAUSED <its reason line>`, as for any stack.
+A browser-driving agent gets its own the same way: `~/agent-team/bin/team-stack up --instance browser`, then `eval "$(~/agent-team/bin/team-stack env --instance browser)"`, open `http://127.0.0.1:$TH_FRONTEND_PORT` (`127.0.0.1`, not `localhost`: on macOS another process's IPv6 listener can hold the same port), and `~/agent-team/bin/team-stack down --instance browser` when done.
+
 ## Admission
 
 `team-stack up` starts a stack that is not running only when the machine has room for it, so the stacks of every task, gate and person never together outgrow the PC.
@@ -89,9 +118,10 @@ Exit codes: 0 done, 1 refused or failed (with the reason), 2 a malformed command
 - When `team-capacity` is on `PATH` or at `~/.local/bin/team-capacity`, `team-capacity admit --kind stack:<registered project>` decides: 0 admits, 75 refuses with its stderr as the reason, anything else fails `up`.
   Until that controller exists (T19's design), `team-stack`'s own three checks decide, and all three must hold:
   - **cap**: fewer Compose projects running on the machine (`docker compose ls`, every owner's: gates, Daniel's primary stack and hand-made stacks count too) than `stack_cap`;
-  - **memory**: the memory available, less the sum of the stack's `mem_limit`s (a Conventioner stack is about 2.75 GiB), at least `memory_floor_gib` GiB; on Linux `MemAvailable` from `/proc/meminfo`;
+  - **memory**: the memory available, less the sum of the stack's `mem_limit`s (a Conventioner stack is about 2.75 GiB), at least the floor: `memory_floor_gib` GiB when it is set, else the default for what is measured (6 GiB of `MemAvailable` from `/proc/meminfo` on Linux, half of Docker's VM on macOS, below);
   - **disk**: the free space of the file system holding Docker's root (`docker info`'s `DockerRootDir`, measured with `df`) at least `disk_floor_gb` GB.
-- With no room, `up` says once on stderr that it waits and why, re-checks every 30 seconds (letting go of the lock between checks) up to `wait_minutes`, and then exits 75 naming every failing check with its numbers, for example `team-stack: no room for conventioner-1: 6 of 6 stacks running (stack_cap 6); 4.1 GiB available after this stack's 2.8 GiB (memory_floor_gib 6)`.
+- With no room, `up` says once on stderr that it waits and why, re-checks every 30 seconds (letting go of the lock between checks) up to `wait_minutes`, and then exits 75 naming every failing check with its numbers, for example `team-stack: no room for conventioner-1: 6 of 6 stacks running (stack_cap 6); 4.1 GiB available after this stack's 2.8 GiB (floor 6 GiB, the Linux default)`.
+  The memory check names the floor it used and where it came from: `memory_floor_gib in stack.json`, `the Linux default`, or `the macOS default: half of Docker's VM's 7.7 GiB`.
   An agent that gets 75 reports `PAUSED` with that line rather than fighting for room.
 - Gate runs never call `team-stack`, so they are counted and never held back; their own turn-taking is Conventioner's end-to-end lock.
 - Each wait that ends, admitted or not, a refusal with `wait_minutes` 0 included, adds one line to `~/.local/state/agent-team/stacks/waits.jsonl`: `{start, end, project, task, admitted, reasons}`, the reasons being the last refusal's; the janitor reads it.
@@ -101,7 +131,7 @@ The machine's settings live in `~/.config/agent-team/stack.json`, a JSON object 
 | Key | Default | What it sets |
 | - | - | - |
 | `stack_cap` | 6 | the most Compose projects running at once, a whole number of 1 or more |
-| `memory_floor_gib` | 6 | the GiB of memory left free after a new stack's limits |
+| `memory_floor_gib` | unset: 6 on Linux, half of Docker's VM on macOS | the GiB of memory left free after a new stack's limits |
 | `disk_floor_gb` | 30 | the GB left free on Docker's file system |
 | `wait_minutes` | 15 | how long `up` waits for room; 0 does not wait |
 | `idle_minutes` | 30 | how long a team stack may go without a busy session before the sweep stops it |
@@ -110,7 +140,101 @@ The machine's settings live in `~/.config/agent-team/stack.json`, a JSON object 
 
 A file that is not one JSON object, a key of the wrong type or an unknown key is refused with the reason (exit 1), so a typo never silently keeps a default.
 
-On macOS, Docker runs in Docker Desktop's VM, so the readings differ, and both are **unverified** on a Mac: the memory is `docker info`'s `MemTotal` (the VM's) less what the running containers use (`docker stats`), and the disk is the file system holding the home directory, where Docker Desktop keeps its disk image.
+On macOS, Docker runs in Docker Desktop's VM, so the readings differ: the memory is `docker info`'s `MemTotal` (the VM's) less what the running containers use (`docker stats`), and the disk is the file system holding the home directory, where Docker Desktop keeps its disk image (`~/Library/Containers/com.docker.docker/Data/vms/0/data/Docker.raw`, on the same file system on Daniel's laptop, 2026-10-25).
+The default floor there is half of the VM's `MemTotal`, not 6 GiB: the VM holds nothing but Docker, so there is no host load to keep room for, and what is measured is the running containers' use, not their limits, so the floor is the room they may still grow into.
+Half admits a Conventioner stack's 2.75 GiB on a 7.7 GiB VM (Daniel's laptop's) with nothing running (5.0 GiB left over a 3.9 GiB floor), and further stacks while the running ones use little (about 330 MiB each when idle), where 6 GiB admitted none (T45, 2026-10-25).
+`team-doctor`'s `stack memory` line warns when, with nothing else running, the floor leaves room for no stack of a registered project, from the VM's `MemTotal` on macOS and the host's on Linux.
+
+## Stopping idle stacks
+
+`team-stack sweep` stops the team stacks nobody is using, so a crashed or finished worker's stack does not hold memory for hours.
+The heartbeat runs it once Daniel turns `heartbeat_sweep` on ("The heartbeat's steps"); anyone may run it by hand.
+
+- It looks only at running team stacks: every container of the Compose project of class team, so gate and unowned stacks, and a project whose containers mix them with team ones, are never stopped; only containers count, so a team project holding an unowned volume is stopped, which keeps every object.
+- A stack is busy while a live session (`claude agents --json`, interactive sessions included) with `status` `busy` has its `cwd` in the stack's `worktree` label or below it: the `cwd` or one of its parents names the same directory as the label, however either is spelled (a symlink, or another case on a case-insensitive filesystem), so a sibling path sharing the prefix (`shop-1-2` for `shop-1`) is not inside it.
+- For a busy stack it writes the time to `~/.local/state/agent-team/stacks/<project>.json` as `last_busy`, since the session list keeps no last-activity time.
+- A stack that is not busy is idle since its `last_busy` or its running containers' latest start, whichever is later, so one never seen busy counts from its start and one started again after its last busy time counts from that start; a missing or unreadable state file is never seen busy.
+- Idle for more than `idle_minutes` ("Admission" has the settings), it is stopped with `docker compose -p <project> stop`, its data kept, and one line is printed and added to `~/.local/state/agent-team/stacks/sweep.log`, for example `2026-10-25T10:00:00Z stopped conventioner-2 of T7 in /home/daniel/.treehouse/Conventioner-d4c77a/2/Conventioner: last busy at 2026-10-25T09:20:00Z (idle_minutes 30), its data kept`.
+  `~/agent-team/bin/team-stack up` starts it again with its data, without seeding.
+- Docker not answering means no stack runs: it says so on stderr and exits 0, so the heartbeat logs nothing for it; a session list that cannot be read exits 1 and stops nothing; a stop that fails is named on stderr, the other stacks are still swept, and it exits 1.
+- `down` removes the stack's state file with the stack.
+- Instances (`--instance`) are team stacks labelled with their worktree, so they are swept the same way.
+
+## Removing what is left behind
+
+`team-stack reap` removes the Docker objects the team's work leaves behind, by the rules below and nothing else.
+The janitor runs it daily with `--apply` ("The daily report and its alerts") once Daniel turns `heartbeat_janitor` on; anyone may run its dry run by hand at any time, since it only reads.
+
+| What | Rule | Action |
+| - | - | - |
+| team stack: a Compose project all of whose containers, volumes and networks are of class team | its tasks are all closed in the ledger, or its worktrees are all gone | logs saved, then removed as `down` removes it |
+| gate stack: one all of whose objects are of class gate | past its `expires`, or, with no `expires`, its newest object created more than 2 hours ago | `docker compose -p <project> down -v --remove-orphans`, then its anonymous volumes as `down` removes them; no logs |
+| shared image (a repository in a project's `images`) | no container uses it, created more than 7 days ago, and not among the 2 newest of its repository | `docker image rm <repository>:<tag>` |
+| legacy image (matching `legacy_images`) | `--legacy` only, and no container uses it | `docker image rm <repository>:<tag>` |
+| dangling image | no container uses it, created more than 24 hours ago | `docker image rm <id>` |
+| unattached anonymous volume | no container mounts it, created more than 24 hours ago | `docker volume rm` |
+| team-labelled named volume or network | no container uses it, and it is no part of a stack removed above | `docker volume rm`, `docker network rm` |
+| everything else | never | listed as kept, with its size and age |
+
+- It never runs `docker system prune`, `docker volume prune`, `docker image prune`, `docker network prune`, `docker builder prune` or `docker container prune`: every removal names its object, so this table is the whole of what it can do, and a test checks that `bin/team-stack` holds none of them.
+- "No container uses it" counts containers in every state: a stopped container is on no network's list of containers, but its own settings still name its networks, and Docker would remove such a network under it.
+- A team stack's logs, the last 1 MiB of each service's, go to its worktree's task directory as `stack-logs/<task>-<project>-<service>.log` for the project's `log_services` while the worktree is still a project's linked worktree, and otherwise to `~/.local/state/agent-team/stacks/logs/<project>-<local date>/`, for every service it has, since no `stack` block can be found for a worktree that is gone.
+- A gate run's stack is past `expires` only 2 hours after its start, longer than any gate run takes (its end-to-end lock waits at most 45 minutes), so the reaper never races a live run.
+- Without `--apply` (or with `--dry-run`, the default) it only reads, and prints `would remove <type> <name> (<class>, <size>): <why the rule matches>` for each action.
+  With `--apply` it holds the admission lock (`~/.local/state/agent-team/stacks.lock`) while it reads and removes, so no `up` starts a stack under it, and prints `removed ...` for each removal, a team stack's line ending with where its logs went, or `already gone ...` for an object that went before its turn.
+- Then it prints `kept <type> <name> (<class>, <size>, <age> old)` for every object no rule matched that is not the team's (stacks, containers of no stack, volumes, images, and networks but Docker's own `bridge`, `host` and `none`), Daniel's primary stack and its volumes always among them, and one summary line with the totals by rule.
+  A stack's size is its volumes'; a network has none, and a container of no stack shows none, since Docker gives a container's size only to a slower `docker ps --size`.
+- A tagged image is removed by `<repository>:<tag>`, a dangling one by its id, and a network by its id, since Docker lets two networks share a name; the 2 newest of a repository are its 2 newest images, every tag of either kept.
+- A removal that fails is named on stderr with Docker's reason, the others still happen, and it exits 1; Docker not answering is exit 1 too.
+- Before a stack's removal it reads the stack again and removes it only when every object is still of the class the rule matched.
+
+## The daily report and its alerts
+
+`~/agent-team/bin/team-janitor` runs `team-stack reap --apply`, then writes the day's report, `~/.local/state/agent-team/janitor/<local date>.md`, and prints it as one paragraph, alerts first.
+The heartbeat runs it once a day once Daniel turns `heartbeat_janitor` on ("The heartbeat's steps"); `team-janitor --dry-run` previews a run at any time.
+
+- The report's sections, in order: Alerts; Disk, the free and used space on the file system Docker keeps its data on (`docker info`'s `DockerRootDir`, and on macOS the home directory, where Docker Desktop keeps its disk image), as admission reads it; Docker's totals, `docker system df`'s by type; Stacks, every Compose project left after the reap, running or stopped, with its class, task, kind, age and memory; Removed, each removal with its size and rule, the ones that failed, and the reaper's summary; and Kept as not the team's, with size and age.
+- A second run on the same day replaces the day's report.
+- The alerts, by kind:
+
+  | Kind | When |
+  | - | - |
+  | `disk` | under 15% or under 50 GB free on that file system |
+  | `oom` | a container killed for memory in the last 24 hours (`docker events --filter event=oom`) |
+  | `waits` | admission waits (`stacks/waits.jsonl`) adding up to more than an hour in the last 24 hours, each counted for its part inside them |
+  | `removal` | a removal the reaper could not make |
+
+- Each kind is posted to `#coordinator` at most once a local day, for example `Docker on home-pc: disk: 40.0 GB free of 1.0 TB (3.9%) on the file system of /var/lib/docker, under 15% or 50 GB. The day's report: ~/.local/state/agent-team/janitor/2026-10-25.md`, and remembered in `janitor/posted-<local date>.json`; the report says beside each alert whether it was posted, already posted that day, or why its post failed.
+- A post that fails is also on stderr, is tried again on the next run, and changes no exit code: the run exits 1 only when the reaper or a removal failed, a part of the report could not be read, or the report could not be written.
+  The heartbeat's next run of the janitor is the next day's, since the day's report is written, so a failed post waits for that day or for a run by hand.
+- An `oom` alert of `not checked: ...` (`docker events` failed) stays in the report and is never posted, and the run exits 1.
+- Docker not answering is the report's one line and the summary's, nothing is posted, and it exits 1.
+- `--dry-run` runs the reaper's dry run, writes `<local date>-dry-run.md` (never the day's real report) with "Would remove" for "Removed", and posts nothing.
+- It writes no ledger event: every ledger line needs a task, and the report belongs to none.
+
+## The heartbeat's steps
+
+The heartbeat (`team-timers run`, every 5 minutes on the lease holder) can run the sweep and the janitor, each only once Daniel turns it on; both ship off, so nothing new runs on a machine until then.
+
+| Step | Key in `~/.config/agent-team/stack.json` | What it runs | When |
+| - | - | - | - |
+| `stacks` | `heartbeat_sweep` | `team-stack sweep` | every run, before the checkpoint |
+| `janitor` | `heartbeat_janitor` | `team-janitor` | after the checkpoint, while no report of today's local date is there yet (a dry run's is none) |
+
+- To turn a step on, Daniel sets its key to `true` in `stack.json`, keeping any other key there, for example `{"heartbeat_sweep": true}`; turning the sweep on first and the janitor a day later lets each be checked on its own.
+  The next run picks it up: there is nothing to restart.
+- To turn it off, they set the key to `false` or remove it; a missing file is every key off.
+- Both run only where the checkpoint runs: on the lease holder, after the lease step (or the back step, after an outage), never on a fenced machine, while GitHub is unreachable, on a machine that does not hold the lease, or while another run holds the heartbeat's lock.
+- Each logs one line in `~/.local/state/agent-team/heartbeat.log` per line its command prints, and nothing while it is off.
+  A step that fails, or whose `stack.json` is malformed, is logged as `<step>: failed: <reason>`; the steps after it still run, and the run exits 1.
+  A checkpoint that fails ends the run before the janitor, which then runs on the next one.
+- A hung Docker never holds the heartbeat's lock past the lease's renewals: the sweep is stopped after 5 minutes and the janitor after 20, each with every command it started, and logged as `<step>: failed: timed out after <seconds> s`.
+  A janitor stopped so wrote no report, so the next run starts it again, and its reaper goes on where the last one stopped.
+  While Docker stays hung a run takes up to 25 minutes, so the lease is still renewed well inside its hour, and a checkpoint comes about every 25 minutes instead of every 15.
+- A janitor run that fails (Docker not answering, a removal that failed) still writes the day's report, so the heartbeat runs it again only the next day; `~/agent-team/bin/team-janitor` by hand runs it again at once.
+- The job runs with the `PATH` that `team-timers enable` captured, and both steps need `docker` on it (the sweep `claude` too): on macOS Docker Desktop's `docker` is in `/usr/local/bin`.
+  When Docker was installed after the heartbeat was enabled, or `docker` was not on the `PATH` of the shell that enabled it, run `team-timers enable` again, with Daniel's yes as every enable needs, from a shell where `command -v docker` answers; it rewrites the job with that `PATH`.
+  Until then the sweep finds no Docker to sweep and logs nothing, and the janitor fails.
 
 ## Closing a task
 
@@ -144,4 +268,7 @@ These are a speed bump, as every deny rule is; the guarantee is that no script t
 - The bats tests never reach the machine's Docker: `tests/helpers/docker.bash` installs a stub `docker` that answers from fixtures recorded on this machine (`tests/fixtures/docker/`) and logs every call.
 - The stub also models the fixture project's stack (`tests/fixtures/stack/`), so `up`, `env`, `seed`, `stop` and `down` are tested through the wrapper contract rather than Conventioner.
 - The stub also stands in for the machine's memory and disk: `TEAM_MEMINFO` names a file read in place of `/proc/meminfo`, a stub `df` answers from the test's numbers, and `TEAM_STACK_RECHECK_SECONDS` shortens the 30 seconds between admission checks.
-- `tests/team-stack-live.bats` runs against the real Docker only with `TEAM_LIVE_DOCKER=1`, since a test that creates a network can break a gate run's end to end; it starts and removes the fixture's one-service stack under a project name of its own, and races two `up` calls for the last place under `stack_cap`.
+- The sweep's tests stub `claude agents --json` (the sandbox's `claude` stub) with sessions in and around the worktree.
+- The reaper's tests age the stub's objects with `docker_created` and refuse one removal with `docker_refuse`, and every test of `tests/team-stack.bats` and `tests/team-janitor.bats` fails when a Docker call it made pruned.
+- The janitor's tests add `oom` events with `docker_event`, set the free disk through the stub `df`, and stub Discord's answers to its posts (the sandbox's `curl` stub).
+- `tests/team-stack-live.bats` runs against the real Docker only with `TEAM_LIVE_DOCKER=1`, since a test that creates a network can break a gate run's end to end; it starts and removes the fixture's one-service stack under a project name of its own, races two `up` calls for the last place under `stack_cap`, has the sweep stop an idle stack that `up` then brings back with its data, runs the worktree's stack and two instances at once on ports of their own, and has `reap --apply` remove a closed task's stack and an expired gate stack and keep an unowned one, limited by the test seam `TEAM_STACK_REAP_PROJECTS` to its own projects, so it never reaps the machine.

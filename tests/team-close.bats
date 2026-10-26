@@ -489,19 +489,26 @@ stack_gone() {
   ! stack_exists "$1"
 }
 
-@test "a returned worktree's stack is taken down before the archive, its logs archived with the task directory" {
+@test "a returned worktree's stack and its instances are taken down before the archive, their logs archived with the task directory" {
   home_stack
   open_home_task
   run_bin -0 team-stack up --worktree "$wt" --no-seed
+  run_bin -0 team-stack up --worktree "$wt" --instance a --no-seed
   stack_exists stackfix-1
+  stack_exists stackfix-1-a
   work_and_push "$wt" feature.txt
 
   run_bin -0 --separate-stderr team-close T1
-  assert_contains "$stderr" "team-stack: stackfix-1 is removed, its logs in $wt/.scratch/task/stack-logs"
+  assert_contains "$stderr" "team-stack: stackfix-1-a is removed, its logs in $wt/.scratch/task/stack-logs
+team-stack: stackfix-1 is removed, its logs in $wt/.scratch/task/stack-logs"
   assert_contains "$(docker_calls)" "compose -p stackfix-1 down -v --remove-orphans"
+  assert_contains "$(docker_calls)" "compose -p stackfix-1-a down -v --remove-orphans"
   stack_gone stackfix-1
+  stack_gone stackfix-1-a
   assert_equal "$(cat "$TEAM_HOME/tasks/T1/scratch/stack-logs/stackfix-1-web.log")" \
     "web-1  | 2026-10-24T09:00:00.000000000Z stackfix-1's web started"
+  assert_equal "$(cat "$TEAM_HOME/tasks/T1/scratch/stack-logs/stackfix-1-a-web.log")" \
+    "web-1  | 2026-10-24T09:00:00.000000000Z stackfix-1-a's web started"
   assert_equal "$(jq -c .returned <<<"$output")" "$(jq -cn --arg wt "$wt" '[$wt]')"
 }
 
@@ -806,6 +813,14 @@ legacy_task() {
   run_bin -0 team-close T5 --worktree "$slot"
   [[ ! -e $slot ]]
   assert_equal "$(events worktree-returned | jq -r .worktree)" "$slot"
+}
+
+@test "a legacy task's --worktree spelled otherwise than its launch is that slot (report F6)" {
+  local slot=${home_slots[1]}
+  legacy_task "$slot" feat/T5-sign-in-limits
+  run_bin -0 team-close T5 --worktree "$(other_spelling "$(dirname "$slot")")/${slot##*/}"
+  [[ ! -e $slot ]]
+  assert_equal "$(events worktree-returned | wc -l)" 1
 }
 
 @test "a legacy task's --worktree with an uncommitted change is refused like any other" {

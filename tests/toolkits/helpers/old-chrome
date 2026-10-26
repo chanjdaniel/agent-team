@@ -1,0 +1,30 @@
+#!/usr/bin/env node
+// A stand-in for a Chrome too old for open_devtools, run as TEAM_CHROME in the toolkit tests: it
+// opens remote debugging as Chrome does (port 0, its port in <user-data-dir>/DevToolsActivePort)
+// and describes, as Chrome 138 does, a protocol whose Target domain has neither openDevTools nor
+// getDevToolsTarget. It serves /json/version, /json/protocol and an empty /json/list, until
+// SIGTERM.
+import { writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import { join } from "node:path";
+
+const profile = process.argv.find((arg) => arg.startsWith("--user-data-dir="))?.slice("--user-data-dir=".length);
+if (!profile) {
+  console.error("old-chrome: no --user-data-dir");
+  process.exit(2);
+}
+const answers = {
+  "/json/version": { Browser: "Chrome/138.0.7204.183", "Protocol-Version": "1.3" },
+  "/json/protocol": {
+    domains: [{ domain: "Target", commands: [{ name: "attachToTarget" }, { name: "createTarget" }, { name: "getTargets" }] }],
+  },
+  "/json/list": [],
+};
+const server = createServer((request, response) => {
+  const answer = answers[new URL(request.url, "http://x").pathname];
+  response.writeHead(answer === undefined ? 404 : 200, { "content-type": "application/json" });
+  response.end(JSON.stringify(answer ?? {}));
+});
+server.listen(0, "127.0.0.1", () => {
+  writeFileSync(join(profile, "DevToolsActivePort"), `${server.address().port}\n/devtools/browser/old-chrome\n`);
+});

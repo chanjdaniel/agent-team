@@ -2,7 +2,8 @@
 # shellcheck disable=SC2153 # LOCK and the other globals are helpers/doctor.bash's
 # team-doctor: one PASS, WARN or FAIL line per thing this machine needs, on the machine
 # tests/helpers/doctor.bash builds: every tool a version stub, the OS a stubbed uname.
-# This file: the machine, team home, git hooks, records hooks, logins and Claude config lines, and --json;
+# This file: the machine, team home, git hooks, records hooks, logins and Claude config lines, --json,
+# and the checks of bin/lib/doctor.d/ in name order;
 # team-doctor-*.bats hold the other lines.
 
 load helpers/common
@@ -108,6 +109,8 @@ setup() {
   assert_contains "$(line_of records)" "FAIL records: "
   assert_equal "$(line_of 'records hooks')" \
     "FAIL records hooks: no team home to read it from (the team home line); fix: the team home line's fix, then run team-doctor again"
+  assert_equal "$(line_of 'trust team home')" "WARN trust team home: not probed, since no team home is named; fix: the team home line's fix"
+  assert_contains "$(line_of heartbeat)" "heartbeat: "
   assert_contains "$output" "neither TEAM_HOME nor ~/.config/agent-team/home names the team home; name its checkout there"
 }
 
@@ -300,7 +303,28 @@ EOF
   done
   # The code, its comments aside, names none of them.
   run -1 grep -nE 'credentials|\.claude\.json|channels|hosts\.yml|discord_|[Kk]eychain|security find' \
-    <(grep -v '^[[:space:]]*#' "$REPO_ROOT/bin/team-doctor")
+    <(grep -hv '^[[:space:]]*#' "$REPO_ROOT/bin/team-doctor" "$REPO_ROOT"/bin/lib/doctor.d/*.sh)
+}
+
+@test "each file of bin/lib/doctor.d/ is a check, run in the order of its name, with its lines of --help" {
+  tools_at arch
+  # The sandbox's doctor.d/ is a directory of its own, its files links: add files, never edit one.
+  local checks_dir=$CODE_CHECKOUT/bin/lib/doctor.d
+  printf '%s\n' '# early         A check dropped in between the first two.' '# shellcheck shell=bash' '' \
+    'report early PASS "after os"' >"$checks_dir/015-early.sh"
+  printf '%s\n' '# late          A check dropped in after the last,' '#               on two lines.' '# shellcheck shell=bash' '' \
+    'report late WARN "after offline" "nothing"' >"$checks_dir/999-late.sh"
+  run_bin -0 team-doctor
+  assert_equal "$(checks | head -n 2)" $'os\nearly'
+  assert_equal "$(checks | tail -n 2)" $'offline\nlate'
+  assert_equal "$(line_of late)" "WARN late: after offline; fix: nothing"
+  local order
+  order=$(checks)
+  run_bin -0 --separate-stderr team-doctor --json
+  assert_equal "$(jq -r '.[].check' <<<"$output")" "$order"
+  run_bin -0 team-doctor --help
+  assert_equal "$(grep -A 2 '^  os  ' <<<"$output" | tail -n 1)" "  early         A check dropped in between the first two."
+  assert_equal "$(tail -n 2 <<<"$output")" $'  late          A check dropped in after the last,\n                on two lines.'
 }
 
 @test "team-doctor refuses arguments other than --json" {

@@ -2,18 +2,30 @@
 #
 #   source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 #
-# It first applies bin/lib/platform.sh (Bash 5 or later; on macOS, Homebrew's GNU tools first on
-# PATH). It sets TEAM_HOME (unless already set, the first line of ~/.config/agent-team/home under
+# Before anything else, a working directory that no longer exists (a folder deleted under the
+# caller's shell) is left for HOME, saying so on stderr, since Claude Code, Node and others fail
+# without one. It then applies bin/lib/platform.sh (Bash 5 or later; on macOS, Homebrew's GNU tools first on
+# PATH), and after --help puts the tool directories of bin/lib/tools.lock on PATH (team_tool_path),
+# exported, so every script and every session it starts runs with that one PATH. It sets
+# TEAM_HOME (unless already set, the first line of ~/.config/agent-team/home under
 # HOME) and TEAM_HOME_FROM, answers --help with the calling script's header (then runs
 # the script's help_more, if it defined one before sourcing), and provides die, usage_error, team_project, ledger_jq, ledger_append,
 # task_events, known_task_events, open_task_events, task_status, task_worktrees, local_path,
-# archive_left_out, rsync_rule, archive_task_dir, machine_name, os_release, team_os, fence_reason, lease_gate, worktree_changes,
-# secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin, only_records,
-# records_list, origin_git, origin_reason, commit_records, fast_forward, render_template,
+# archive_left_out, rsync_rule, archive_task_dir, machine_name, os_release, team_os, tool_dirs,
+# team_tool_path, fence_reason, lease_gate, worktree_changes, same_path, bounded, trust_probe,
+# pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin,
+# only_records, records_list, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
 # registered_pr, attribution_lines, strip_attribution, live_sessions, discord_token, discord_api,
 # github, pr_part and task_state_json, and sets COORDINATOR_CHANNEL.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
 # shellcheck shell=bash
+
+# PWD names a directory other than ".", or none, once the one the shell is in is deleted. Read by
+# Bash 3.2 too, before platform.sh's version check.
+if [[ -z ${PWD:-} || ! $PWD -ef . ]]; then
+  echo "${0##*/}: the current directory no longer exists; running from ~" >&2
+  cd "$HOME" || exit 1
+fi
 
 # shellcheck source=bin/lib/platform.sh
 source "$(dirname "${BASH_SOURCE[0]}")/platform.sh"
@@ -236,6 +248,42 @@ team_os() {
   esac
 }
 
+# The directories the tools of bin/lib/tools.lock are installed into on this OS, in the lock's
+# order, one per line, whether or not they exist (tool_dirs in bin/lib/tools.jq): nvm's under
+# NVM_DIR, else ~/.nvm, and Homebrew's under the prefix bin/lib/platform.sh found. None without jq
+# (a fresh machine's preflight) or on an OS the team does not run on. Test seam: TEAM_SYSTEM_ROOT
+# stands for / in a system directory (treehouse's /usr/local/bin on Arch), so the test sandbox,
+# which sets it, never puts the machine's own system tools (its 1Password CLI) back on a PATH a
+# test trimmed.
+tool_dirs() {
+  local os
+  command -v jq >/dev/null && os=$(team_os) || return 0
+  jq -L "$TEAM_LIB" -r --arg os "$os" --arg home "$HOME" --arg nvm "${NVM_DIR:-$HOME/.nvm}" \
+    --arg brew "$TEAM_BREW_PREFIX" --arg root "${TEAM_SYSTEM_ROOT:-}" \
+    'include "tools"; tool_dirs($os; $home; $nvm; $brew; $root)' "$TEAM_LIB/tools.lock"
+}
+
+# Put the tool directories that exist on PATH, exported, so every script, the sessions it starts
+# and the tools they run find the pinned tools whatever shell called them: those under HOME or
+# Homebrew's prefix first, right after Homebrew's GNU tools, once; a system directory (treehouse's
+# /usr/local/bin on Arch) keeps its place, or comes last when PATH lacks it. The library runs it
+# once; team-bootstrap again after each install.
+team_tool_path() {
+  local dir front='' back=''
+  while IFS= read -r dir; do
+    [[ -d $dir ]] || continue
+    if [[ $dir == "$HOME"/* || (-n $TEAM_BREW_PREFIX && $dir == "$TEAM_BREW_PREFIX"/*) ]]; then
+      front+=$dir:
+    elif [[ :$PATH: != *:"$dir":* ]]; then
+      back+=:$dir
+    fi
+  done < <(tool_dirs)
+  front=$TEAM_PLATFORM_FRONT$front
+  [[ $PATH == "$front"* ]] || PATH=$front${PATH#"$TEAM_PLATFORM_FRONT"}
+  PATH+=$back
+  export PATH
+}
+
 # Print why this machine is fenced, "fenced since <time> (holder seen <name>, epoch <n>)", from
 # ~/.local/state/agent-team/fenced, which team-lease writes when it finds the lease lost; fails
 # when this machine is not fenced. A fence file without a since dates from its modification time.
@@ -260,7 +308,7 @@ lease_gate() {
   esac
   holder=$(TEAM_HOME=$TEAM_HOME "$lease" status --json 2>/dev/null |
     jq -r 'select(.confirmed and .state == "held" and (.mine | not)) | .holder') || holder=''
-  [[ -z $holder ]] || die "$holder holds the lease: hand off there, then team-resume here"
+  [[ -z $holder ]] || die "$holder holds the lease: run team-resume --wait here, then hand off there once it says this machine is ready"
   die "$1 starts only on the machine that holds the lease"
 }
 
@@ -272,6 +320,128 @@ worktree_changes() {
   [[ -z $list ]] || echo "changes to tracked files: $list"
   list=$(git -C "$1" ls-files --others --exclude-standard | paste -sd ' ')
   [[ -z $list ]] || echo "untracked files: $list"
+}
+
+# Whether the paths <a> and <b> name one file. Both existing, by identity (-ef), so two spellings
+# of one directory are one: through a symlink, or in another case on a case-insensitive filesystem
+# (APFS), where realpath keeps the case it is given. Neither existing (a slot not made yet), when
+# their realpath -m has the same last name, as text, under one directory, so compared. One
+# existing and the other not, or either empty, never: same_path <a> <b>
+same_path() {
+  local a b
+  [[ -n $1 && -n $2 ]] || return 1
+  [[ $1 -ef $2 ]] && return 0
+  [[ ! -e $1 && ! -e $2 ]] || return 1
+  a=$(realpath -m -- "$1") b=$(realpath -m -- "$2")
+  [[ $a != / && ${a##*/} == "${b##*/}" ]] && same_path "$(dirname "$a")" "$(dirname "$b")"
+}
+
+# Run <command...> for at most <seconds>, or unbounded where there is no timeout (macOS
+# without coreutils): bounded <seconds> <command...>
+bounded() {
+  if command -v timeout >/dev/null; then timeout "$@"; else "${@:2}"; fi
+}
+
+# Whether Claude Code trusts the root <path>, from a promptless background session named <name>
+# started there, which it refuses in an untrusted root with "Workspace not trusted". The probe
+# goes either way: the session it printed, and any session of its name (one an earlier probe
+# left), are stopped and removed. Sets trust_verdict (trusted, untrusted, or unknown when the
+# start printed no session id), trust_left (the sessions claude rm left), trust_rc and trust_out
+# (the start's exit code and output): trust_probe <path> <name>
+# shellcheck disable=SC2034 # trust_verdict is read by the caller
+trust_probe() {
+  local name=$2 ids id
+  trust_rc=0 trust_left=()
+  trust_out=$(cd "$1" && bounded 60 claude --bg --name "$name" 2>&1 </dev/null) || trust_rc=$?
+  ids=$({
+    [[ $trust_out == *"Workspace not trusted"* ]] || grep -oE '\b[0-9a-f]{8}\b' <<<"$trust_out" | head -n 1
+    bounded 30 claude agents --json 2>/dev/null </dev/null | jq -r --arg name "$name" 'arrays | .[] | objects
+      | select(.name == $name) | .id // ((.sessionId // "")[:8]) | strings' 2>/dev/null || true
+  } | awk 'NF && !seen[$0]++')
+  for id in $ids; do
+    bounded 30 claude stop "$id" >/dev/null 2>&1 </dev/null || true
+    bounded 30 claude rm "$id" >/dev/null 2>&1 </dev/null || trust_left+=("$id")
+  done
+  if [[ $trust_out == *"Workspace not trusted"* ]]; then
+    trust_verdict=untrusted
+  elif ((trust_rc == 0)) && [[ -n $ids ]]; then
+    trust_verdict=trusted
+  else
+    trust_verdict=unknown
+  fi
+}
+
+# The treehouse pool of the primary checkout <primary>, as `treehouse status --json` run there
+# reports it: one compact {path, status, holder} per slot, path its real path and holder its lease
+# holder ("" while nobody leases it; status leased, available, dirty or another of treehouse's).
+# Fails, printing nothing, when treehouse does not answer within 30 s with a JSON array: pool_status <primary>
+pool_status() {
+  local out path resolved=()
+  out=$(cd "$1" && bounded 30 treehouse status --json 2>/dev/null </dev/null) ||
+    return 1
+  jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1 || return 1
+  out=$(jq -c '.[] | objects | {path: (.path | strings), status: (.status // ""), holder: (.lease_holder // "")}' <<<"$out")
+  while IFS= read -r path; do resolved+=("$(realpath -m -- "$path")"); done < <(jq -r .path <<<"$out")
+  jq -cn '[inputs] as $slots | $ARGS.positional as $real | range($slots | length) | $slots[.] + {path: $real[.]}' \
+    --args "${resolved[@]}" <<<"$out"
+}
+
+# Of the pool's slots <slot>..., the one that is <path>, as the registry spells it; fails, printing
+# nothing, when <path> is none of them: pool_slot <path> <slot>...
+pool_slot() {
+  local slot
+  for slot in "${@:2}"; do
+    if same_path "$slot" "$1"; then echo "$slot" && return 0; fi
+  done
+  return 1
+}
+
+# A treehouse pool's slots: its registered slots <slot>..., then each other <dir>/<n>/<folder> that
+# exists (<n> a number) beside a registered <dir>/<m>/<folder>, by number. treehouse numbers a new
+# slot past a folder it finds in the way, an empty one too, so the registry may not list every
+# slot it makes: treehouse_slots <slot>...
+treehouse_slots() {
+  local slot found extra=()
+  for slot in "$@"; do
+    echo "$slot"
+    for found in "${slot%/*/*}"/*/"${slot##*/}"; do
+      [[ -d $found && $(basename "${found%/*}") =~ ^[0-9]+$ ]] || continue
+      pool_slot "$found" "$@" "${extra[@]}" >/dev/null || extra+=("$found")
+    done
+  done
+  ((${#extra[@]} == 0)) || printf '%s\n' "${extra[@]}" | awk -F/ '{ print $(NF - 1) "\t" $0 }' | sort -n -k1,1 | cut -f2-
+}
+
+# The slot of the pool <pool> (pool_status' lines) that is the path <path>; fails, printing
+# nothing, when none is: pool_entry <pool> <path>
+pool_entry() {
+  local entry
+  while IFS= read -r entry; do
+    [[ -n $entry ]] || continue
+    if same_path "$(jq -r .path <<<"$entry")" "$2"; then echo "$entry" && return 0; fi
+  done <<<"$1"
+  return 1
+}
+
+# What keeps the leased slot <slot> from taking a task, as team-open checks it: worktree_changes'
+# lines, then "a non-empty task directory <task_dir>: <names>"; nothing when it is clean. Fails,
+# printing why, when <slot> is no worktree of the primary checkout <primary>:
+# slot_changes <primary> <slot> <task_dir>
+slot_changes() {
+  local primary=$1 slot=$2 task_dir=$3 common list
+  common=$(git -C "$slot" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || {
+    echo "the leased slot $slot is not a git worktree"
+    return 1
+  }
+  same_path "$common" "$(git -C "$primary" rev-parse --path-format=absolute --git-common-dir)" || {
+    echo "the leased slot $slot is not a worktree of $primary"
+    return 1
+  }
+  worktree_changes "$slot"
+  if [[ -d $slot/$task_dir ]]; then
+    list=$(find "$slot/$task_dir" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | paste -sd ' ')
+    [[ -z $list ]] || echo "a non-empty task directory $task_dir: $list"
+  fi
 }
 
 # Of the relative paths on stdin, NUL-separated, those that may hold a secret, one per line: a
@@ -457,14 +627,16 @@ in_the_way() {
 # Fast-forward <branch>, the branch checked out in <checkout>, to origin's: fetch it, then move
 # the branch, index and working tree, local changes that are not in the way staying as they are.
 # FF_RESULT says what it did: "<branch> fast-forwarded to <sha>" or "<branch> is up to date at
-# <sha>" (also when it is ahead of origin's). On failure FF_REASON says why, and it returns 75 when
-# origin cannot be fetched, 1 when origin has no <branch>, the branch has diverged from origin's or
-# local changes are in the way. The fetch goes through origin_git, so NET_ERR must name a file:
-# fast_forward <checkout> <branch>
-# shellcheck disable=SC2034 # FF_RESULT and FF_REASON are the caller's to read
+# <sha>" (also when it is ahead of origin's, FF_AHEAD then counting the commits origin's lacks). On
+# failure FF_REASON says why, and it returns 75 when origin cannot be fetched, 1 when origin has no
+# <branch>, the branch has diverged from origin's or local changes are in the way. With --check it
+# fetches and checks the same, but moves nothing: FF_RESULT is then "<branch> can fast-forward to
+# <sha>" where it would have moved. The fetch goes through origin_git, so NET_ERR must name a file:
+# fast_forward <checkout> <branch> [--check]
+# shellcheck disable=SC2034 # FF_RESULT, FF_REASON and FF_AHEAD are the caller's to read
 fast_forward() {
-  local checkout=$1 branch=$2 theirs way rc=0
-  FF_RESULT='' FF_REASON=''
+  local checkout=$1 branch=$2 check=${3:-} theirs way rc=0
+  FF_RESULT='' FF_REASON='' FF_AHEAD=0
   origin_git -C "$checkout" fetch -q --no-write-fetch-head origin "+refs/heads/$branch:refs/remotes/origin/$branch" || rc=$?
   if ((rc)) && grep -q "couldn't find remote ref" "$NET_ERR"; then
     FF_REASON="origin has no $branch"
@@ -476,6 +648,7 @@ fast_forward() {
   theirs=$(git -C "$checkout" rev-parse "refs/remotes/origin/$branch")
   if git -C "$checkout" merge-base --is-ancestor "$theirs" HEAD; then
     FF_RESULT="$branch is up to date at $(git -C "$checkout" rev-parse --short=7 HEAD)"
+    FF_AHEAD=$(git -C "$checkout" rev-list --count "$theirs..HEAD")
     return 0
   fi
   if ! git -C "$checkout" merge-base --is-ancestor HEAD "$theirs"; then
@@ -488,11 +661,42 @@ fast_forward() {
     FF_REASON="local changes to $way are in the way"
     return 1
   fi
+  if [[ -n $check ]]; then
+    FF_RESULT="$branch can fast-forward to ${theirs:0:7}"
+    return 0
+  fi
   if ! git -C "$checkout" merge -q --ff-only "$theirs" >/dev/null 2>"$NET_ERR"; then
     FF_REASON=$(grep -m1 . "$NET_ERR" | sed -E 's/^(fatal|error): //')
     return 1
   fi
   FF_RESULT="$branch fast-forwarded to ${theirs:0:7}"
+}
+
+# Bring <checkout> level with origin's <base> (fast_forward) when it is on <base>, has no local
+# changes to tracked files and has no commits origin's lacks, untracked files aside unless in the
+# way. FF_RESULT then says what it did; else it returns 1, moving nothing, with the reason in
+# FOLLOW_REASON ("it is on <branch>, not <base>", "it has local changes to <paths>", "<base> has
+# <n> commits origin's lacks", or fast_forward's). NET_ERR must name a file:
+# follow_base <checkout> <base>
+# shellcheck disable=SC2034 # FOLLOW_REASON is the caller's to read
+follow_base() {
+  local on changes s
+  FOLLOW_REASON=''
+  if ! on=$(git -C "$1" symbolic-ref -q --short HEAD); then
+    FOLLOW_REASON="it is on a detached HEAD, not $2"
+  elif [[ $on != "$2" ]]; then
+    FOLLOW_REASON="it is on $on, not $2"
+  elif changes=$(git -C "$1" -c core.quotePath=false status --porcelain --untracked-files=no | cut -c4- | paste -sd ' ') &&
+    [[ -n $changes ]]; then
+    FOLLOW_REASON="it has local changes to $changes"
+  elif ! fast_forward "$1" "$2"; then
+    FOLLOW_REASON=$FF_REASON
+  elif ((FF_AHEAD)); then
+    s=s
+    ((FF_AHEAD > 1)) || s=''
+    FOLLOW_REASON="$2 has $FF_AHEAD commit$s origin's lacks"
+  fi
+  [[ -z $FOLLOW_REASON ]]
 }
 
 # Replay the commits on the team home's <branch> that origin's lacks onto origin's, moving the
@@ -709,6 +913,8 @@ if [[ ${1:-} == --help || ${1:-} == -h ]]; then
   if declare -F help_more >/dev/null; then help_more; fi
   exit 0
 fi
+
+team_tool_path
 
 if [[ -z ${team_home_report:-} && ! ($TEAM_HOME_FROM == none && -n ${team_home_unnamed:-}) ]]; then
   [[ -z $TEAM_HOME_PROBLEM ]] || die "$TEAM_HOME_PROBLEM"
