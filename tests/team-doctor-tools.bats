@@ -332,7 +332,7 @@ SH
   rm "$TOOL_ANSWERS/claude/--version" "$TOOL_ANSWERS/lavish-axi/--version"
   mkdir "$gone"
   guard_sandbox
-  run -0 --separate-stderr bash -c 'cd "$1" && rmdir "$1" && exec "$2"' gone "$gone" "$REPO_ROOT/bin/team-doctor"
+  run -0 --separate-stderr bash -c 'cd "$1" && rmdir "$1" && exec "$2"' gone "$gone" "$CODE_CHECKOUT/bin/team-doctor"
   assert_contains "$stderr" "team-doctor: the current directory no longer exists; running from ~"
   assert_equal "$(line_of 'tool claude')" "PASS tool claude: 2.1.310"
   assert_equal "$(line_of 'tool lavish-axi')" "PASS tool lavish-axi: 0.1.36"
