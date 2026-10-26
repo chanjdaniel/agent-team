@@ -131,12 +131,13 @@ home_setting() {
   run -0 "$code/bin/team-x" --help
 }
 
-@test "with neither, every script of bin/ but the doctor and bootstrap refuses before it does anything" {
+# team-heavy takes the machine's lock, which tests/run runs under where no team home is named.
+@test "with neither, every script of bin/ but the doctor, bootstrap and team-heavy refuses before it does anything" {
   local script name args
   unset TEAM_HOME
   for script in "$REPO_ROOT"/bin/*; do
     name=${script##*/}
-    [[ -f $script && -x $script && $name != team-doctor && $name != team-bootstrap ]] || continue
+    [[ -f $script && -x $script && $name != team-doctor && $name != team-bootstrap && $name != team-heavy ]] || continue
     # team-project reads its command line first.
     args=()
     [[ $name != team-project ]] || args=(--list)
