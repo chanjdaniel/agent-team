@@ -7,18 +7,18 @@
 //   await inspect(chrome.browserUrl, site.url, "button.menu");   Inspect: DevTools open on that
 //                                                     page, the element selected in Elements
 //   const { server, pages } = await serverListing(connect, url);   a server whose list names url
+//   const browser = await browserSession(chrome.browserUrl);   CDP to the browser itself:
+//   await browser.send("Target.getTargets"); browser.close();
 //   await chrome.close(); await site.close();
 //
 // Chrome is the machine's (TEAM_CHROME, else Google Chrome's app on macOS, else google-chrome or
 // chromium on PATH), started with a throwaway profile, the mock keychain and the basic password
-// store (no keychain prompt under the test's HOME), and no first-run, sync or metrics; off the
-// record, so its cookies live in memory: on a fresh profile's disk, a page's first request waits
-// for the cookie database to open, which on a busy Mac can take minutes. A Chrome too old for
-// open_devtools fails startChrome at once. inspect
-// drives the DevTools window through the pinned chrome-devtools-mcp with --experimentalDevtools
-// and --devtoolsComments (which brings open_devtools),
-// setting the Elements panel's selection exactly as a click there does; ui-capture never runs
-// with that flag.
+// store (no keychain prompt under the test's HOME), and no first-run, sync or metrics; its tabs
+// are off the record, so no page's first request waits for the profile's cookie database. A
+// Chrome too old for open_devtools fails startChrome at once. inspect drives the DevTools window
+// through the pinned chrome-devtools-mcp with --experimentalDevtools and --devtoolsComments
+// (which brings open_devtools), setting the Elements panel's selection exactly as a click there
+// does; ui-capture never runs with that flag.
 import { spawn, execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -57,44 +57,100 @@ export async function serveFixture(pages) {
   };
 }
 
-// Headless Chrome on an ephemeral debugging port, a tab for each of `urls`; resolves once each
-// tab has loaded (shows its URL and title). On a busy machine a tab can wait a long time for its
-// first request, and a tab that has not loaded never answers the DevTools protocol, so a tab not
-// loaded within 20 s is closed and opened again, twice, and then the whole Chrome is started
-// again, twice at most.
+// Headless Chrome on an ephemeral debugging port, a tab for each of `urls` in one off-the-record
+// browser context and no page outside it; resolves once each tab has loaded (shows its URL and
+// title). On a busy machine a tab can wait a long time for its first request, and a tab that has
+// not loaded never answers the DevTools protocol, so a tab not loaded within 20 s is closed and
+// opened again, twice, and then the whole Chrome is started again, twice at most.
 export async function startChrome(urls) {
   for (let launch = 1; ; launch++) {
-    const chrome = await launchChrome(urls);
-    let targets = [];
-    for (let round = 1; round <= 3; round++) {
-      const deadline = Date.now() + 20_000;
-      while (Date.now() < deadline) {
-        targets = await fetch(`${chrome.browserUrl}/json/list`, { signal: AbortSignal.timeout(5000) })
-          .then((r) => r.json())
-          .catch(() => []);
-        if (urls.every((url) => loaded(targets, url))) return chrome;
-        await sleep(100);
-      }
-      for (const url of urls.filter((url) => !loaded(targets, url))) {
-        for (const t of targets.filter((t) => t.type === "page" && t.url === url)) {
-          await fetch(`${chrome.browserUrl}/json/close/${t.id}`, { signal: AbortSignal.timeout(5000) }).catch(() => {});
+    const chrome = await launchChrome();
+    const browser = await browserSession(chrome.browserUrl);
+    let pages = [];
+    try {
+      // Off the record, the context's cookies live in memory: in the profile's on-disk cookie
+      // database, which a fresh profile opens on its first request, a busy Mac can hold every
+      // page's first request for minutes. chrome-devtools-mcp lists its pages with an
+      // isolatedContext, as it would a page the Agent Chrome opened in one.
+      const { browserContextId } = await browser.send("Target.createBrowserContext");
+      const open = (url) => browser.send("Target.createTarget", { url, browserContextId });
+      for (const url of urls) await open(url);
+      for (let round = 1; round <= 3; round++) {
+        const deadline = Date.now() + 20_000;
+        while (Date.now() < deadline) {
+          pages = (await browser.send("Target.getTargets")).targetInfos.filter((t) => t.type === "page");
+          // The tab Chrome opens at its start, in the default context.
+          for (const t of pages.filter((t) => t.browserContextId !== browserContextId)) {
+            await browser.send("Target.closeTarget", { targetId: t.targetId }).catch(() => {});
+          }
+          if (pages.every((t) => t.browserContextId === browserContextId) && urls.every((url) => loaded(pages, url))) {
+            return chrome;
+          }
+          await sleep(100);
         }
-        await fetch(`${chrome.browserUrl}/json/new?${encodeURI(url)}`, { method: "PUT", signal: AbortSignal.timeout(10_000) }).catch(() => {});
+        for (const url of urls.filter((url) => !loaded(pages, url))) {
+          for (const t of pages.filter((t) => t.url === url)) {
+            await browser.send("Target.closeTarget", { targetId: t.targetId }).catch(() => {});
+          }
+          await open(url);
+        }
       }
+    } catch (error) {
+      await chrome.close();
+      throw error;
+    } finally {
+      browser.close();
     }
     await chrome.close();
     if (launch === 3) {
-      const tabs = targets.filter((t) => t.type === "page").map((t) => `${t.url} "${t.title}"`);
+      const tabs = pages.map((t) => `${t.url} "${t.title}"`);
       throw new Error(`Chrome did not load ${urls.join(", ")} in three launches; its tabs: ${tabs.join(", ") || "none"}`);
     }
   }
 }
 
-// Whether the browser's targets show a page at `url` with its own title, loaded.
-const loaded = (targets, url) => targets.some((t) => t.type === "page" && t.url === url && t.title && t.title !== url);
+// Whether `pages` (Target.getTargets' page targets) show a page at `url` with its own title, loaded.
+const loaded = (pages, url) => pages.some((t) => t.url === url && t.title && t.title !== url);
 
-// One headless Chrome, its tabs opened but not waited for.
-async function launchChrome(urls) {
+// A CDP session on the browser itself at `browserUrl`: `send(method, params)` resolves to the
+// command's result, or rejects with its error or after 30 s.
+export async function browserSession(browserUrl) {
+  const { webSocketDebuggerUrl } = await fetch(`${browserUrl}/json/version`, { signal: AbortSignal.timeout(10_000) }).then((r) => r.json());
+  const socket = new WebSocket(webSocketDebuggerUrl);
+  await new Promise((resolve, reject) => {
+    socket.onopen = resolve;
+    socket.onerror = () => reject(new Error(`could not connect to ${webSocketDebuggerUrl}`));
+  });
+  const pending = new Map();
+  let lastId = 0;
+  socket.onmessage = ({ data }) => {
+    const { id, result, error } = JSON.parse(data);
+    const call = pending.get(id);
+    if (!call) return;
+    pending.delete(id);
+    if (error) call.reject(new Error(`${call.method}: ${error.message}`));
+    else call.resolve(result);
+  };
+  socket.onclose = () => {
+    for (const call of pending.values()) call.reject(new Error(`${call.method}: the browser closed the session`));
+    pending.clear();
+  };
+  const send = (method, params = {}) => {
+    const id = ++lastId;
+    const answered = new Promise((resolve, reject) => pending.set(id, { method, resolve, reject }));
+    socket.send(JSON.stringify({ id, method, params }));
+    return Promise.race([
+      answered,
+      sleep(30_000, undefined, { ref: false }).then(() => {
+        throw new Error(`${method}: no answer in 30 s`);
+      }),
+    ]).finally(() => pending.delete(id));
+  };
+  return { send, close: () => socket.close() };
+}
+
+// One headless Chrome, at the tab it opens at its start.
+async function launchChrome() {
   const profile = tempDir("chrome-profile");
   const child = spawn(
     chromePath(),
@@ -109,10 +165,8 @@ async function launchChrome(urls) {
       "--metrics-recording-only",
       "--use-mock-keychain",
       "--password-store=basic",
-      "--incognito",
       // A laptop-sized window, so DevTools docked beside the page leaves it a usable width.
       "--window-size=1600,1000",
-      urls[0],
     ],
     { stdio: ["ignore", "ignore", "pipe"] },
   );
@@ -149,10 +203,6 @@ async function launchChrome(urls) {
       `${Browser} has no ${missing.map((name) => `Target.${name}`).join(" or ")}, which open_devtools needs: ` +
         "update Chrome, or set TEAM_CHROME to a current one",
     );
-  }
-  // Headless Chrome opens one URL from its command line; the others are new tabs.
-  for (const url of urls.slice(1)) {
-    await fetch(`${browserUrl}/json/new?${encodeURI(url)}`, { method: "PUT", signal: AbortSignal.timeout(10_000) });
   }
   return { browserUrl, pid: child.pid, close };
 }
@@ -212,7 +262,7 @@ export async function inspect(browserUrl, pageUrl, selector) {
   await reconnect();
   try {
     const pageIds = (list, test) =>
-      [...list.matchAll(/^(\d+): (.*?)( \[selected\])?$/gm)]
+      [...list.matchAll(/^(\d+): (.*?)( \[selected\])?( isolatedContext=\S+)?$/gm)]
         .filter(([, , rest]) => test(rest.endsWith(")") ? rest.slice(rest.lastIndexOf(" (") + 2, -1) : rest))
         .map(([, id]) => Number(id));
     // The server lists a tab once it has attached to it: slowly on a busy machine, or never on
