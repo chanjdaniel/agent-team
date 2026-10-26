@@ -65,3 +65,44 @@ SCRIPT
   run_bin -0 team-thread T7 conventioner "Sign-in limits"
   run_bin -0 team-log --check
 }
+
+# The library's unfinished_roles over a task's events, given one JSON event per line.
+unfinished_roles() {
+  jq -L "$REPO_ROOT/bin/lib" -sc 'include "ledger"; map({ts: "2026-10-24T12:00:00Z", task: "T1"} + .) | unfinished_roles'
+}
+
+@test "a builder that delivered a PR is finished: pr ends a builder, as done, review and ticket-done end theirs" {
+  assert_equal "$(unfinished_roles <<'EVENTS'
+{"event": "launch", "role": "builder"}
+{"event": "pr", "url": "https://github.com/o/r/pull/3", "head": "abc1234"}
+EVENTS
+)" '[]'
+  # A pr ends no other role.
+  assert_equal "$(unfinished_roles <<'EVENTS'
+{"event": "launch", "role": "reviewer"}
+{"event": "pr", "url": "https://github.com/o/r/pull/3", "head": "abc1234"}
+EVENTS
+)" '["reviewer"]'
+  # A builder launched again after its pr, to fix review findings, is unfinished.
+  assert_equal "$(unfinished_roles <<'EVENTS'
+{"event": "launch", "role": "builder"}
+{"event": "pr", "url": "https://github.com/o/r/pull/3", "head": "abc1234"}
+{"event": "launch", "role": "reviewer"}
+{"event": "review", "verdict": "findings", "head": "abc1234"}
+{"event": "launch", "role": "builder"}
+EVENTS
+)" '["builder"]'
+}
+
+@test "the unfinished roles are those launched since the latest stowed that no later event ended, never ops" {
+  assert_equal "$(unfinished_roles <<'EVENTS'
+{"event": "launch", "role": "planner"}
+{"event": "stowed", "machine": "home-pc", "worktrees": [], "roles": ["planner"], "sessions": ["planner"]}
+{"event": "launch", "role": "builder"}
+{"event": "launch", "role": "reviewer"}
+{"event": "review", "verdict": "pass", "head": "abc1234"}
+{"event": "done", "role": "reviewer", "session": "6493aef7"}
+{"event": "launch", "role": "ops", "toolkits": ["prod-read"], "request": "https://discord.com/channels/1/2/3"}
+EVENTS
+)" '["builder"]'
+}

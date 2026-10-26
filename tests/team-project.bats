@@ -88,7 +88,7 @@ registry() {
   assert_contains "$stderr" "alpha has no key 'base.name'; base is not a table"
 }
 
-@test "--find names the projects whose key holds a value: repo in any case, paths by their real path" {
+@test "--find names the projects whose key holds a value: repo in any case, paths as the same file however spelled" {
   run_bin -0 team-project --find repo owner/beta
   assert_equal "$output" beta
   run_bin -0 team-project --find repo Owner/ALPHA
@@ -115,6 +115,14 @@ registry() {
   assert_equal "$output" alpha
   # A primary checkout is not a slot.
   run_bin -0 team-project --find pool.slots "$HOME/projects/alpha"
+  assert_equal "$output" ""
+  # Another spelling of one directory is that directory, and a slot not made yet is the slot of
+  # that name in another spelling of the directory it will be in (report F6).
+  run_bin -0 team-project --find path "$(other_spelling "$HOME/projects/alpha")"
+  assert_equal "$output" alpha
+  run_bin -0 team-project --find pool.slots "$(other_spelling "$HOME/.treehouse")/alpha/1/alpha"
+  assert_equal "$output" alpha
+  run_bin -0 team-project --find pool.slots "$HOME/.treehouse/alpha/1/other"
   assert_equal "$output" ""
 
   run_bin -1 team-project --find pool.color red

@@ -54,7 +54,7 @@ Each stage after the first is one `~/agent-team/bin/team-bootstrap` run; read it
 3. The machine stage also reports the team home's setting, which stage 1 wrote: `~/.config/agent-team/home` holds the team home's path, relative to `$HOME` (or absolute), and is how every script, hook and session on this machine finds the team home; like the machine's name it is this machine's own and never moved.
    When it is missing, `~/agent-team/bin/team-bootstrap --home agent-team-records --stage machine` writes it (it can go with `--name` in one run).
    The bootstrap writes it once: a setting that names another checkout is left as it is, and a path with no checkout yet is refused until the clone is there.
-   Until it is written, the doctor's `team home` line warns that the team home is the code checkout, which holds no records, and its fix clones `~/agent-team-records` first when it is missing; once the clone is there, stage 7 lists the setting among Daniel's steps.
+   Until it is written, nothing names the team home: every script but the bootstrap refuses, naming the setting, the doctor's `team home` line fails, and the machine stage stops on Daniel's step to clone `~/agent-team-records` (when it is missing) and name it.
 
 ### Stage 3: OS packages
 
@@ -71,10 +71,15 @@ Then it installs the gate's opencode wrapper, `~/.no-mistakes/bin/opencode-gate`
 Last, `servers/install` puts the pinned MCP servers in `~/agent-team/servers/node_modules/` while the doctor's `servers` line fails: the toolkits' servers, and the `chrome-devtools-mcp` every session's `chrome-devtools-axi` runs.
 
 - On Arch, treehouse and `op` install with `sudo`: the same stop and the same request as stage 3, with `--stage tools`.
-- `~/.local/bin` and `~/.no-mistakes/bin` get one `export PATH=...  # team-bootstrap` line each in `~/.zshrc` or `~/.bashrc` (by `$SHELL`); for another shell, ask Daniel to add them.
+- Every team script, the bootstrap included, and every session `team-worker` and `claude-coordinator` start, run with one `PATH` the library builds from `bin/lib/tools.lock`: the directories its tools install into that exist (`~/.local/bin`, nvm's directory of the pinned Node, `~/.bun/bin`, `~/.no-mistakes/bin`, and on macOS Homebrew's `python@3.12/libexec/bin`) go first, right after Homebrew's GNU tools, and on Arch `/usr/local/bin` comes last when `PATH` lacks it.
+  So `team-doctor`, `team-load-check`, `team-resume` and the bootstrap's `check` give one verdict, whatever shell called them.
+- `~/.local/bin` and `~/.no-mistakes/bin` get one `export PATH=...  # team-bootstrap` line each in `~/.zshrc` or `~/.bashrc` (by `$SHELL`), for Daniel's own shell, when it lacked them; for another shell, ask Daniel to add them.
 - A Claude Code newer than its pin is a WARN and is left alone.
-- `~/.no-mistakes/config.yaml` comes back with `team-secrets restore`, one of stage 7's steps; until it runs the gate on the wrapper (`agent: opencode`, and the wrapper as `agent_path_override`'s `opencode`), the doctor's `opencode-gate` line fails, and stage 7 lists the edit as Daniel's step.
+- `~/.no-mistakes/config.yaml` comes back with `team-secrets restore`, one of stage 7's steps, and the doctor's `opencode-gate` line fails until it runs the gate on the wrapper: `agent: opencode`, and `agent_path_override` naming the wrapper for `opencode` by this machine's full path (no-mistakes does not expand `~`), where a copy saved on another machine names that machine's.
   With `agent: auto` the gate would run on whichever agent no-mistakes finds first, Claude on a machine without opencode.
+  This stage sets the `agent_path_override` key, which holds no credential, keeping the rest of the file byte for byte and its mode, and printing none of it; a missing file it leaves to the restore, and `agent: opencode` to Daniel, as one of stage 7's steps.
+  So once Daniel has run the restore, run `~/agent-team/bin/team-bootstrap --stage tools` again before the next `--stage check`: `check` shows the `agent_path_override` failure among the doctor's FAILs with this fix, never as Daniel's step.
+  Only a form the edit does not change (a flow mapping over several lines, or a scalar) stops it as Daniel's hand edit.
 
 ### Stage 5: projects
 
@@ -84,6 +89,8 @@ Last, `servers/install` puts the pinned MCP servers in `~/agent-team/servers/nod
 - A folder already in a project's way is Daniel's: show the doctor's line and ask whether to move it.
 - Treehouse pools start cold; the first lease warms a slot.
   Dev data is never copied: a task seeds its own.
+- Another clone of a project with the same folder name and origin (an older checkout elsewhere, say) shares its treehouse pool, and a slot that clone made is leased only to it.
+  The doctor's `slots <project>` line names such a slot with how many are left for the team; what to do with the other clone is Daniel's.
 
 ### Stage 6: Claude config, plugins and the heartbeat
 
@@ -98,20 +105,27 @@ Last, `servers/install` puts the pinned MCP servers in `~/agent-team/servers/nod
 
 `~/agent-team/bin/team-bootstrap --stage check` runs the doctor and prints Daniel's remaining steps in order, one `check: Daniel <n>: <check>: <fix> (<reason>)` line each.
 Take them one at a time, in that order: ask for the first, wait for Daniel's word, run `--stage check` again, and ask for the next.
+After `team-secrets restore`, run `~/agent-team/bin/team-bootstrap --stage tools` before `--stage check`, so the restored `~/.no-mistakes/config.yaml` names this machine's gate wrapper (stage 4).
 Section 3 says where each one is done.
+When two or more roots are untrusted, `check` lists them as one step, `trust: in your own terminal run ~/agent-team/bin/team-bootstrap --stage trust`: that stage refuses unless it runs in a terminal, says which root is next, starts `claude` there for Daniel to accept its trust dialog and type `/exit`, probes that root again, and goes on to the next, saying any root still untrusted and exiting 1 if one is left.
 Done when `check` lists no `Daniel <n>:` line.
 
 ### Stage 8: verification and the summary
 
 1. `~/agent-team/bin/team-doctor`: no FAIL; a WARN is fine when its reason is stated (the lease held by another machine is one).
-2. `~/agent-team/bin/team-load-check`: it runs the doctor first, then a throwaway planner that proves isolation, toolkits and the edit hook.
-   If it fails on "Workspace not trusted", ask Daniel to run `claude` once in `~/agent-team/.claude/load-check/wt` in their own terminal and accept the trust dialog, then run it again.
+2. `~/agent-team/bin/team-load-check`: it runs the doctor first, then proves each treehouse project's pool, then runs a throwaway planner that proves isolation, toolkits and the edit hook.
+   For each treehouse project it leases one slot through the project's lease command, checks the slot is clean after the pre-warm exactly as `team-open` would, and returns it, so a pre-warm that dirties a slot (as the laptop's did on 2026-10-24) fails here, before any handoff, with the project and the changed paths named.
+   A cold slot's pre-warm can take minutes; run it in the background and wait for it to end.
+   A `WARN lease <project>: no free slot` is fine on a busy machine: every slot is leased, and the line names the holders.
+   The planner runs in `~/agent-team/.claude/worktrees/load-check`, a worktree of the code checkout made fresh for the run and removed at its end, so the code checkout's trust covers it and it needs no trust step of its own.
 3. Give Daniel one summary, here in the conversation: the bootstrap's `summary:` line in plain words, any WARN left, and what comes next.
-   On a standby: "This machine is ready as a standby; to move the team here, say 'hand off' to the coordinator on <holder>, then tell me to resume here."
+   On a standby: "This machine is ready as a standby; to move the team here, tell me to resume here: I start `team-resume --wait`, and once it says this machine is ready, you say 'hand off' to the coordinator on <holder>."
 
 ### Stage 9: taking the team (only when Daniel says so)
 
-- Another machine holds the lease: Daniel says "hand off" to the coordinator there (Discord), and you run `~/agent-team/bin/team-resume --wait` here, which waits for the release.
+- Another machine holds the lease: first run `~/agent-team/bin/team-resume --wait` here, in the background; only then does Daniel say "hand off" to the coordinator there (Discord).
+  It runs the doctor and checks that the team home and the code checkout can fast-forward before it waits, so it is the preflight: a FAIL or a refused checkout stops it with nothing changed while the old machine still runs the team, and you fix it and start it again.
+  When it prints "this machine is ready: say 'hand off' to the coordinator there now", tell Daniel so; it then waits for the release and takes the team.
 - No machine holds it: `~/agent-team/bin/team-resume`.
 - The holder is dead or unreachable: Daniel runs `~/agent-team/bin/team-resume --steal` in their own terminal and types the holder's name.
 - `team-resume` ends by starting the coordinator; ask Daniel to pin it in `claude agents` (Ctrl+T).
@@ -133,9 +147,9 @@ Done when `check` lists no `Daniel <n>:` line.
 | Claude Code login, if the doctor fails it | 7 | own terminal: `claude auth login --claudeai` (browser) | account login |
 | Docker access | 7 | macOS: open Docker Desktop, accept its license; Arch: own terminal, `sudo systemctl enable --now docker.service`, then `sudo usermod -aG docker $USER` and a new login if the doctor then says permission denied | GUI or `sudo` |
 | 1Password app: install, sign in, CLI integration (and on Arch, unlock with system authentication) | 7 | macOS: `brew install --cask 1password`; Arch: the native AUR package; then the app's Settings > Developer > Integrate with 1Password CLI | account login, app settings |
-| `team-secrets restore` | 7 | own terminal: `~/agent-team/bin/team-secrets restore` | Touch ID or system authentication; values never reach an agent |
-| `~/.no-mistakes/config.yaml` running the gate on its opencode wrapper, when restore did not bring it in | 7 | Daniel's own edit: `agent: opencode` and `agent_path_override: {opencode: <HOME>/.no-mistakes/bin/opencode-gate}`, the path written out in full (the doctor's fix names it) | it is Daniel's own config file |
-| Trust, once per project root (the team home included) | 7 | own terminal: `claude` in the root, accept, `/exit` | interactive dialog |
+| `team-secrets restore` | 7 | own terminal: `~/agent-team/bin/team-secrets restore`; it fetches a secret that is missing, empty or off its mode (a file off its mode may be another machine's old copy, so it is replaced, the old one kept beside it as `<file>.bak-<date and time>`, mode 600) | Touch ID or system authentication; values never reach an agent |
+| `~/.no-mistakes/config.yaml` running the gate on opencode, when restore did not bring it in | 7 | Daniel's own edit: `agent: opencode` (the tools stage sets `agent_path_override`'s `opencode` to the wrapper) | it is Daniel's own config file |
+| Trust, once in the team home (`~/agent-team-records`, where the coordinator starts: the doctor's `trust team home` line) and once per project root (its `trust <project>` line) | 7 | own terminal: `~/agent-team/bin/team-bootstrap --stage trust`, which starts `claude` in each untrusted root in turn (accept, `/exit`); for a single root, `claude` there | interactive dialog |
 | Chrome | 7 | macOS: `brew install --cask google-chrome`; Arch: `google-chrome` from the AUR, or `sudo pacman -S --needed chromium` | browser sign-in, `sudo` on Arch |
 | The dev guard | 7 | this session: `! git -C ~/agent-team config core.hooksPath bin/hooks/git` | every team session is denied setting `core.hooksPath` |
 | The records guard | 7 | this session: `! git -C ~/agent-team-records config core.hooksPath ~/agent-team/bin/hooks/records-git` | every team session is denied setting `core.hooksPath` |
@@ -145,8 +159,8 @@ Done when `check` lists no `Daniel <n>:` line.
 
 On a fresh machine, Daniel meets them in this order (recorded from `team-bootstrap` in a scratch `$HOME` with every installer stubbed, 2026-10-23):
 
-- macOS: Command Line Tools dialog, Homebrew, GitHub login, the name, (restart), Docker Desktop's license, the 1Password app, `team-secrets restore`, trust for each project root, Chrome, the dev guard, the records guard, `autoMode.environment`.
-- Arch: git and gh, GitHub login, the name, `team-bootstrap --stage packages` and then `--stage tools` in their terminal, (restart), the Docker daemon (and the `docker` group), the 1Password app, `team-secrets restore`, trust for each project root, Chrome, the dev guard, the records guard, `autoMode.environment`.
+- macOS: Command Line Tools dialog, Homebrew, GitHub login, the name, (restart), Docker Desktop's license, the 1Password app, `team-secrets restore`, trust for the team home and each project root (one `--stage trust` in their terminal), Chrome, the dev guard, the records guard, `autoMode.environment`.
+- Arch: git and gh, GitHub login, the name, `team-bootstrap --stage packages` and then `--stage tools` in their terminal, (restart), the Docker daemon (and the `docker` group), the 1Password app, `team-secrets restore`, trust for the team home and each project root (one `--stage trust` in their terminal), Chrome, the dev guard, the records guard, `autoMode.environment`.
 
 ## 4. macOS differences
 
@@ -155,7 +169,7 @@ On a fresh machine, Daniel meets them in this order (recorded from `team-bootstr
 | Package manager | `pacman`, with `sudo` | Homebrew (`/opt/homebrew` on Apple silicon), after the Xcode Command Line Tools; no `sudo` |
 | Shell | Bash 5 is `/bin/bash` | `/bin/bash` is 3.2; the scripts refuse it and need Homebrew's `bash` first on `PATH` |
 | Userland | GNU | `bin/lib/platform.sh` puts Homebrew's GNU coreutils, findutils, sed, grep and `flock` first on `PATH` for every script, and refuses with the `brew install` line when one is missing |
-| Python | the OS's 3.11 or newer | Homebrew's (macOS's own `python3` is too old for `tomllib`) |
+| Python | the OS's 3.11 or newer | Homebrew's `python@3.12`, which the lock pins (macOS's own `python3` is too old for `tomllib`); its `python3` is only in the formula's `libexec/bin`, which the library puts first on every script's `PATH`, and the doctor's `tool python` line names the `python3` it found |
 | Docker | the daemon, enabled with `sudo`, and the `docker` group | Docker Desktop (`brew install --cask docker-desktop`), opened once to accept its license |
 | treehouse | `/usr/local/bin`, with `sudo` | `~/.local/bin` |
 | 1Password CLI | 1Password's zip into `/usr/local/bin` with the `onepassword-cli` group, with `sudo` | `brew install 1password-cli` |
@@ -164,7 +178,7 @@ On a fresh machine, Daniel meets them in this order (recorded from `team-bootstr
 | Heartbeat | systemd user units `agent-team-heartbeat.{service,timer}` in `~/.config/systemd/user/`, `Persistent=true` | LaunchAgents `agent-team.heartbeat` (missed runs happen on wake) and `agent-team.caffeinate` (`caffeinate -i` while the heartbeat is enabled, so the Mac does not idle-sleep) in `~/Library/LaunchAgents/` |
 | Claude Code login | `~/.claude/.credentials.json` | the macOS Keychain |
 | Home path | `/home/<user>` | `/Users/<user>`; recorded paths under either are read as the same path under this `$HOME` |
-| Filesystem | case-sensitive | APFS, case-insensitive by default; no repo has case-only name clashes today |
+| Filesystem | case-sensitive | APFS, case-insensitive by default; no repo has case-only name clashes today, and path case no longer matters for the registry: the scripts compare checkout paths by file identity, so `Documents/projects` in `projects.toml` names `~/Documents/Projects` |
 | Release archives | `linux-amd64` | `darwin-arm64` or `darwin-amd64` |
 | The gate's environment | the no-mistakes daemon is a systemd user unit; `~/.no-mistakes/bin/opencode-gate` sets opencode's environment, so the unit needs no drop-in | a LaunchAgent that no-mistakes rewrites on each start, keeping only `HOME`, `PATH` and proxy variables; the same wrapper sets opencode's environment |
 

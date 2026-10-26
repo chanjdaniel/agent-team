@@ -1,5 +1,5 @@
 {
-  "about": "The tools a machine needs to run the team, read by team-doctor through bin/lib/tools.jq. version_cmd is run with no shell (words split on spaces); version_pattern is an ERE whose first group is the version. pin is exact (the tools installed by the bootstrap itself); min is a floor, compared number by number (OS-package tools). pin_mismatch is the verdict on a different version than the pin (default FAIL). A tool is checked on each OS its source names (arch, macos), and the source is the package or the exact install command, which doctor prints as the fix. A tool built on GitHub has from instead of pin and source: from picks release ({repo, tag, sha256 per <os>-<arch> archive}) or fork ({repo, commit, version}), dir names where the binary goes on each OS, and bin/lib/tools.jq makes the pin and the install command from them.",
+  "about": "The tools a machine needs to run the team, read by team-doctor through bin/lib/tools.jq. version_cmd is run with no shell (words split on spaces); version_pattern is an ERE whose first group is the version, matched against each line of the command's output (stdout and stderr) in turn, the first that matches giving it, so ^ and $ anchor to a line; a pattern starts at a line's start or names its tool, so another tool's version in a stray line (Node's path in a crash) is never read as this one's. pin is exact (the tools installed by the bootstrap itself); min is a floor, compared number by number (OS-package tools). pin_mismatch is the verdict on a different version than the pin (default FAIL). A tool is checked on each OS its source names (arch, macos), and the source is the package or the exact install command, which doctor prints as the fix. A tool built on GitHub has from instead of pin and source: from picks release ({repo, tag, sha256 per <os>-<arch> archive}) or fork ({repo, commit, version}), dir names where the binary goes on each OS, and bin/lib/tools.jq makes the pin and the install command from them. path names, per OS, the directory a tool that is not built on GitHub is installed into, ~ being HOME, @NVM_DIR@ nvm's directory (NVM_DIR, else ~/.nvm) and @HOMEBREW_PREFIX@ Homebrew's prefix: with each dir, it is what bin/lib/tools.jq's tool_dirs gives the library to put on PATH. show_path true makes the doctor name where it found the tool's command.",
   "tools": [
     {
       "name": "claude",
@@ -10,6 +10,10 @@
       "source": {
         "arch": "curl -fsSL https://claude.ai/install.sh | bash -s 2.1.310",
         "macos": "curl -fsSL https://claude.ai/install.sh | bash -s 2.1.310"
+      },
+      "path": {
+        "arch": "~/.local/bin",
+        "macos": "~/.local/bin"
       }
     },
     {
@@ -20,12 +24,16 @@
       "source": {
         "arch": "nvm install 24.22.1 && nvm alias default 24.22.1",
         "macos": "nvm install 24.22.1 && nvm alias default 24.22.1"
+      },
+      "path": {
+        "arch": "@NVM_DIR@/versions/node/v24.22.1/bin",
+        "macos": "@NVM_DIR@/versions/node/v24.22.1/bin"
       }
     },
     {
       "name": "codegraph",
       "version_cmd": "codegraph --version",
-      "version_pattern": "([0-9]+\\.[0-9]+\\.[0-9]+)",
+      "version_pattern": "^([0-9]+\\.[0-9]+\\.[0-9]+)$",
       "pin": "1.6.0",
       "source": {
         "arch": "npm install -g @colbymchenry/codegraph@1.6.0",
@@ -35,7 +43,7 @@
     {
       "name": "gh-axi",
       "version_cmd": "gh-axi --version",
-      "version_pattern": "([0-9]+\\.[0-9]+\\.[0-9]+)",
+      "version_pattern": "^([0-9]+\\.[0-9]+\\.[0-9]+)$",
       "pin": "0.1.25",
       "source": {
         "arch": "npm install -g gh-axi@0.1.25",
@@ -45,7 +53,7 @@
     {
       "name": "chrome-devtools-axi",
       "version_cmd": "chrome-devtools-axi --version",
-      "version_pattern": "([0-9]+\\.[0-9]+\\.[0-9]+)",
+      "version_pattern": "^([0-9]+\\.[0-9]+\\.[0-9]+)$",
       "pin": "0.1.44",
       "source": {
         "arch": "npm install -g chrome-devtools-axi@0.1.44",
@@ -65,7 +73,7 @@
     {
       "name": "lavish-axi",
       "version_cmd": "lavish-axi --version",
-      "version_pattern": "([0-9]+\\.[0-9]+\\.[0-9]+)",
+      "version_pattern": "^([0-9]+\\.[0-9]+\\.[0-9]+)$",
       "pin": "0.1.36",
       "source": {
         "arch": "npm install -g lavish-axi@0.1.36",
@@ -90,6 +98,10 @@
       "source": {
         "arch": "curl -fsSL https://bun.sh/install | bash -s bun-v1.3.14",
         "macos": "curl -fsSL https://bun.sh/install | bash -s bun-v1.3.14"
+      },
+      "path": {
+        "arch": "~/.bun/bin",
+        "macos": "~/.bun/bin"
       }
     },
     {
@@ -230,8 +242,12 @@
       "min": "3.11.0",
       "source": {
         "arch": "sudo pacman -S --needed python",
-        "macos": "brew install python"
-      }
+        "macos": "brew install python@3.12"
+      },
+      "path": {
+        "macos": "@HOMEBREW_PREFIX@/opt/python@3.12/libexec/bin"
+      },
+      "show_path": true
     },
     {
       "name": "bash",

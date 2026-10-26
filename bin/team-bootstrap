@@ -11,26 +11,30 @@
 #   --home <path>    The team home's checkout, relative to HOME unless absolute (agent-team-records),
 #                    written once to ~/.config/agent-team/home; it must be there already.
 #   --stage <stage>  Run that one stage (the setup SOP's agent goes stage by stage); every stage but
-#                    preflight reads team-doctor first.
+#                    preflight reads team-doctor first, and trust runs only this way.
 #   --dry-run        Say what each stage would run, and Daniel's steps, changing nothing.
 # The stages, in order, each line prefixed by its name:
 #   preflight  The OS is Arch Linux or macOS; on macOS the Xcode Command Line Tools and Homebrew
 #              are installed; jq, git and Python 3.11, which the team's scripts need to run at
-#              all, are installed (pacman, with sudo, or brew).
+#              all, are installed (pacman, with sudo, or brew, Python as the lock's python@3.12).
 #   machine    The doctor's machine line: writes --name; then writes --home, unless the setting
 #              names a team home already; with neither, and no TEAM_HOME, naming the team home is
 #              Daniel's step (cloning it first when ~/agent-team-records is missing).
 #   packages   The failing tool lines whose fix is an OS package: on Arch one
-#              `sudo pacman -S --needed --noconfirm` for them all; on macOS `brew install` (or
-#              `brew upgrade` for one below its minimum), then the run starts again under
+#              `sudo pacman -S --needed --noconfirm` for them all; on macOS `brew install` for
+#              each formula or cask Homebrew lacks (`brew list --versions`) and `brew upgrade`
+#              for each it has, whatever the doctor's reason, then the run starts again under
 #              Homebrew's GNU tools if it lacked them.
 #   tools      Every other failing tool line, by its fix in bin/lib/tools.lock: nvm (installed
 #              first when missing) with Node and the global npm tools, Bun, Claude Code, the
 #              treehouse release archive for this OS and CPU, no-mistakes built from Daniel's
 #              fork at its pinned commit (with the packages stage's Go and make), the 1Password
 #              CLI, opencode; then the gate's opencode wrapper, ~/.no-mistakes/bin/opencode-gate,
-#              while the opencode-gate line asks for it (config.yaml running the gate on it is
-#              Daniel's step); then servers/install, while the servers line fails.
+#              while the opencode-gate line asks for it, and agent_path_override.opencode in
+#              ~/.no-mistakes/config.yaml set to its full path, that key alone, the file's mode
+#              kept and none of it printed (a missing config.yaml is team-secrets restore's, and
+#              its agent: opencode Daniel's step); then servers/install, while the servers line
+#              fails.
 #              A Claude Code newer than its pin only warns, and is left. ~/.local/bin and
 #              ~/.no-mistakes/bin, which no installer puts on PATH, get one line each in the
 #              shell's rc file (~/.zshrc or ~/.bashrc) when PATH lacks them.
@@ -47,10 +51,23 @@
 #              lease. team-resume enables it when this machine takes the lease.
 #   check      The doctor again, then Daniel's remaining steps in order, one line each with its
 #              command (the machine's name, the team home's setting once ~/agent-team-records is
-#              there, logins, Docker access, the 1Password app and team-secrets restore, the
-#              gate's config.yaml running the gate on its opencode wrapper, trust per project
-#              root, Chrome, then the rest), the doctor's WARN and FAIL lines, and a summary: set
-#              up, or ready as a standby.
+#              there, logins, Docker access, the 1Password app and team-secrets restore (each
+#              failing secret with its reason, and the gate's config.yaml while it is missing),
+#              the gate's config.yaml running the gate on its opencode wrapper, trust in the team
+#              home, where the coordinator starts, and in each project root, Chrome, then the
+#              rest), the doctor's WARN and FAIL lines, and a summary: set up, or ready as a
+#              standby. Two or more roots claude does not trust are one step, the trust stage
+#              below.
+# And one stage a run never reaches, only --stage trust, in Daniel's own terminal (it refuses
+# unless stdin and stdout are a terminal, but for a dry run):
+#   trust      For each root the doctor's trust lines find untrusted ("Workspace not trusted": the
+#              team home, then each project root, in the doctor's order), says which root is next,
+#              starts claude there for Daniel to accept its trust dialog and type /exit, then probes
+#              that root again as the doctor does, saying a root still untrusted and going on to
+#              the next; exits 1 when any is left. A trust line failing otherwise (claude printing
+#              no session id) is said with the doctor's fix, and left.
+# Every stage and the doctor run with the library's PATH, the tool directories of bin/lib/tools.lock
+# first, put on again after each install, so check's verdict is a plain team-doctor's.
 # A step only Daniel can take stops the run with one line, "<stage>: Daniel: <the step>", and
 # exit 1, without trying it: the Xcode tools or Homebrew missing, the machine's name, anything
 # needing sudo (unless stdin and stdout are a terminal, where sudo asks for the password), the
@@ -68,8 +85,14 @@ team_home_unnamed=1
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
 STAGES=(preflight machine packages tools projects config heartbeat check)
+# The stages only --stage runs.
+OWN_STAGES=(trust)
 NVM_VERSION=v0.40.3
-# The directories the tools stage installs into that no installer puts on PATH itself.
+# Homebrew's formula of the Python bin/lib/tools.lock pins on macOS, which the preflight installs
+# before there is a jq to read the lock with.
+MACOS_PYTHON=python@3.12
+# The directories the tools stage installs into that no installer puts on PATH itself, for the
+# rc file of Daniel's shell; the library puts them on every script's PATH.
 RC_DIRS=("$HOME/.local/bin" "$HOME/.no-mistakes/bin")
 usage="usage: team-bootstrap [--name <name>] [--home <path>] [--stage <stage>] [--dry-run]"
 
@@ -89,20 +112,21 @@ while (($#)); do
     *) usage_error "$usage" ;;
   esac
 done
-[[ -z $only || " ${STAGES[*]} " == *" $only "* ]] || usage_error "no stage $only; the stages are ${STAGES[*]}"
+[[ -z $only || " ${STAGES[*]} ${OWN_STAGES[*]} " == *" $only "* ]] ||
+  usage_error "no stage $only; the stages are ${STAGES[*]} ${OWN_STAGES[*]}"
 [[ -z $name || $name =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] ||
   usage_error "--name $name is not a lower-case kebab-case name like laptop or home-pc"
 
 bin=$(dirname "$TEAM_LIB")
-lock=$TEAM_LIB/tools.lock
 self=$bin/team-bootstrap
 state=$HOME/.local/state/agent-team
 log=$state/bootstrap.log
-err=$(mktemp)
-trap 'rm -f "$err"' EXIT
+err=$(mktemp) gate_tmp=''
+trap 'rm -f "$err" ${gate_tmp:+"$gate_tmp"}' EXIT
 terminal=0
 if [[ -t 0 && -t 1 ]]; then terminal=1; fi
-start_path=$PATH
+# Daniel's shell's PATH, before the library put the tool directories on it.
+start_path=$TEAM_CALLER_PATH
 # Whether this run changed anything (the check stage then asks the doctor again), and whether it
 # changed the Claude config, which loads only in a new session.
 changed=0 reloaded=0 cloned=0
@@ -185,17 +209,6 @@ unique() {
   printf '%s\n' "$@" | awk 'NF && !seen[$0]++' | paste -sd ' ' -
 }
 
-# The directories the tools stage installs into, on this run's PATH for the stages and doctor
-# after it: ~/.local/bin, Bun's, no-mistakes', and Node's under nvm, the ones that exist.
-extend_path() {
-  local node dir
-  node=$(jq -r '.tools[] | select(.name == "node") | .pin // empty' "$lock")
-  for dir in "${RC_DIRS[@]}" "$HOME/.bun/bin" "${NVM_DIR:-$HOME/.nvm}/versions/node/v$node/bin"; do
-    [[ ! -d $dir || :$PATH: == *:"$dir":* ]] || PATH=$dir:$PATH
-  done
-  export PATH
-}
-
 stage_preflight() {
   local missing=()
   if [[ $os == macos ]]; then say macOS; else say "$(os_release PRETTY_NAME | grep . || echo 'Arch Linux')"; fi
@@ -207,7 +220,9 @@ stage_preflight() {
   fi
   command -v jq >/dev/null || missing+=(jq)
   command -v git >/dev/null || missing+=(git)
-  python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' >/dev/null 2>&1 || missing+=(python)
+  if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' >/dev/null 2>&1; then
+    if [[ $os == macos ]]; then missing+=("$MACOS_PYTHON"); else missing+=(python); fi
+  fi
   if ((${#missing[@]} == 0)); then
     say "done: jq, git and Python 3.11 are installed"
   elif [[ $os == arch ]]; then
@@ -257,7 +272,7 @@ stage_home() {
   if [[ -f $file ]]; then
     IFS= read -r current <"$file" || true
     [[ -z $current || $current == /* ]] || current=$HOME/$current
-    if [[ -n $home && $(realpath -m -- "$path") != "$(realpath -m -- "$current")" ]]; then
+    if [[ -n $home ]] && ! same_path "$path" "$current"; then
       say "done: ~/.config/agent-team/home already names $(tilde "$current"); --home $home is left unused"
     else
       say "done: ~/.config/agent-team/home names $(tilde "$current")"
@@ -274,26 +289,41 @@ stage_home() {
     printf '%s\n' "$home" >"$file"
     changed=1
     say "named the team home $(tilde "$path") (~/.config/agent-team/home)"
-    # The team home moved for this run: the stages after this one read the doctor on it.
-    if [[ $TEAM_HOME_FROM != variable && $(realpath -m -- "$path") != "$(realpath -m -- "$TEAM_HOME")" ]]; then
+    # Nothing named the team home for this run: the stages after this one read the doctor on it.
+    if [[ $TEAM_HOME_FROM == none ]]; then
       TEAM_HOME=$path
       run_doctor
     fi
   fi
 }
 
+# Whether Homebrew installed the formula or cask <name> (with --cask, only a cask): brew_has [--cask] <name>
+brew_has() {
+  if [[ $1 == --cask ]]; then
+    brew list --cask --versions "$2" >/dev/null 2>&1
+  else
+    brew list --versions "$1" >/dev/null 2>&1 || brew list --cask --versions "$1" >/dev/null 2>&1
+  fi
+}
+
 stage_packages() {
-  local check verdict reason fix words pkgs=() install=() upgrade=() casks=() cask_upgrade=()
+  local check verdict reason fix words word pkgs=() install=() upgrade=() casks=() cask_upgrade=()
+  # Install or upgrade by what Homebrew has, never by the doctor's reason: a tool macOS ships its
+  # own of (BSD date, openrsync) prints no version or one below the minimum, from no formula.
   while IFS=$'\t' read -r check verdict reason fix; do
     case $fix in
       'sudo pacman -S --needed '*) read -ra words <<<"${fix#sudo pacman -S --needed }" && pkgs+=("${words[@]}") ;;
       'brew install --cask '*)
         read -ra words <<<"${fix#brew install --cask }"
-        if [[ $reason == 'not installed' ]]; then casks+=("${words[@]}"); else cask_upgrade+=("${words[@]}"); fi
+        for word in "${words[@]}"; do
+          if brew_has --cask "$word"; then cask_upgrade+=("$word"); else casks+=("$word"); fi
+        done
         ;;
       'brew install '*)
         read -ra words <<<"${fix#brew install }"
-        if [[ $reason == 'not installed' ]]; then install+=("${words[@]}"); else upgrade+=("${words[@]}"); fi
+        for word in "${words[@]}"; do
+          if brew_has "$word"; then upgrade+=("$word"); else install+=("$word"); fi
+        done
         ;;
     esac
   done < <(lines '^tool ')
@@ -316,7 +346,7 @@ stage_packages() {
 }
 
 stage_tools() {
-  local check verdict reason fix todo=() names=() commands=() line dir file nvm_shown=0
+  local check verdict reason fix todo=() names=() commands=() line dir file nvm_shown=0 gate=0
   while IFS=$'\t' read -r check verdict reason fix; do
     case $fix in 'sudo pacman '* | 'brew '*) continue ;; esac
     if [[ $fix == *'sudo '* ]]; then
@@ -325,15 +355,18 @@ stage_tools() {
       todo+=("$fix")
     fi
   done < <(lines '^tool ')
-  # The gate's opencode wrapper, once its line asks for the install and not Daniel's config edit
-  # or opencode itself, which its own tool line installs.
+  # The gate's opencode wrapper, once its line asks for the install, and then config.yaml naming
+  # it; not Daniel's team-secrets restore or config edit, nor opencode itself, which its own tool
+  # line installs.
   while IFS=$'\t' read -r check verdict reason fix; do
-    [[ $fix == Daniel* || $fix == 'the tool '* ]] || todo+=("$fix")
+    [[ $fix != Daniel* && $fix != 'the tool '* ]] || continue
+    gate=1
+    [[ $fix == *'team-bootstrap --stage tools'* ]] || todo+=("$fix")
   done < <(lines '^opencode-gate$')
   # The pinned MCP servers (servers/install), after the Node they install with.
   while IFS=$'\t' read -r check verdict reason fix; do todo+=("$fix"); done < <(lines '^servers$')
   if ((${#todo[@]} + ${#commands[@]} == 0)); then
-    say "done: every tool is at its pin or above its minimum"
+    if ((gate)); then name_gate_wrapper; else say "done: every tool is at its pin or above its minimum"; fi
     return
   fi
   export NVM_DIR=${NVM_DIR:-$HOME/.nvm}
@@ -345,16 +378,17 @@ stage_tools() {
     else
       act "$fix"
     fi
-    extend_path
+    team_tool_path
   done
   if ((${#commands[@]})); then
     if ((terminal || dry)); then
       for fix in "${commands[@]}"; do act "$fix"; done
-      extend_path
+      team_tool_path
     else
       daniel "in your own terminal run $(tilde "$self") --stage tools, which installs ${names[*]} with sudo and asks for your password; then team-bootstrap again"
     fi
   fi
+  ((!gate)) || name_gate_wrapper
 
   # The rc file of Daniel's shell, for the directories PATH lacked when this run started.
   case ${SHELL:-} in
@@ -371,6 +405,39 @@ stage_tools() {
       act "printf '%s\\n' $(printf %q "$line") >>$(printf %q "$file")" "add $(tilde "$dir") to PATH in $(tilde "$file")"
     fi
   done
+}
+
+# Point ~/.no-mistakes/config.yaml's agent_path_override.opencode at the gate's wrapper by its full
+# path (no-mistakes does not expand ~), changing that key alone (bin/lib/gate-config.awk) and
+# keeping the file's mode; nothing of the file is printed. A missing file is team-secrets
+# restore's, Daniel's step.
+name_gate_wrapper() {
+  local config=$HOME/.no-mistakes/config.yaml wrapper=$HOME/.no-mistakes/bin/opencode-gate target eol=1
+  local setting="agent_path_override.opencode in ~/.no-mistakes/config.yaml"
+  if [[ ! -f $config ]]; then
+    say "$(tilde "$config") is not there: Daniel's team-secrets restore brings it (the secret no-mistakes-config), then team-bootstrap --stage tools names the wrapper in it"
+    return
+  fi
+  [[ $(awk -f "$bin/lib/gate-config.awk" "$config") != "$wrapper" ]] || return 0
+  if ((dry)); then
+    say "would set $setting to $wrapper"
+    return
+  fi
+  # A link (team-config's, say) keeps pointing at the file it names.
+  target=$(realpath -- "$config")
+  [[ ! -s $target || -z $(tail -c1 -- "$target" | tr -d '\n') ]] || eol=0
+  gate_tmp=$(mktemp "$(dirname "$target")/.config.yaml.XXXXXX")
+  if ! awk -v set="$wrapper" -v eol="$eol" -f "$bin/lib/gate-config.awk" "$target" >"$gate_tmp"; then
+    rm -f -- "$gate_tmp"
+    gate_tmp=''
+    daniel "set $setting to $wrapper by hand: its agent_path_override is in a form team-bootstrap does not edit (a flow mapping over several lines, or a scalar); then team-bootstrap again"
+    return
+  fi
+  chmod --reference="$target" -- "$gate_tmp"
+  mv -f -- "$gate_tmp" "$target"
+  gate_tmp=''
+  changed=1
+  say "set $setting to $wrapper, that key alone"
 }
 
 # Set up one registered project whose checkout, origin, task dir or gate line failed.
@@ -489,7 +556,7 @@ stage_heartbeat() {
 }
 
 stage_check() {
-  local steps=() covered=() check verdict reason fix secrets fails warns passed others
+  local steps=() covered=() untrusted=() check verdict reason fix secrets fails warns passed others
   ((!changed)) || run_doctor
   # step <check ERE> <verdicts> [<more>]: one of Daniel's steps per matching line, its fix and <more>.
   # A missing docker is the packages stage's, and config's missing files are apply's.
@@ -497,6 +564,10 @@ stage_check() {
     while IFS=$'\t' read -r check verdict reason fix; do
       [[ $check != docker || $reason != 'docker is not installed' ]] || continue
       [[ $check != config || $reason == *differs* || $reason == *'local only'* ]] || continue
+      # The gate's wrapper and its config.yaml key are the tools stage's.
+      [[ $check != opencode-gate || $fix == Daniel* ]] || continue
+      # Two or more untrusted roots are the trust stage's one step.
+      [[ $check != trust\ * || $reason != *"Workspace not trusted"* || ${#untrusted[@]} -lt 2 ]] || continue
       steps+=("$check: $fix${3:-} ($reason)") covered+=("$check")
     done < <(lines "$1" "$2")
   }
@@ -518,11 +589,16 @@ stage_check() {
   step '^github login$' FAIL ", then gh auth setup-git"
   step '^docker$' FAIL
   step '^1password$' WARN
-  secrets=$(lines '^secret ' | cut -f1 | sed 's/^secret //' | paste -sd ' ' -)
+  secrets=$(lines '^secret ' | awk -F'\t' '{ sub(/^secret /, "", $1); print $1 ": " $3 }' | paste -sd ';' - | sed 's/;/; /g')
   mapfile -t -O "${#covered[@]}" covered < <(lines '^secret ' | cut -f1)
   [[ -z $secrets ]] ||
-    steps+=("secrets: with the 1Password app signed in and its CLI integration on, in your own terminal, not through an agent: $(tilde "$bin/team-secrets") restore (missing: $secrets)")
+    steps+=("secrets: with the 1Password app signed in and its CLI integration on, in your own terminal, not through an agent: $(tilde "$bin/team-secrets") restore ($secrets)")
   step '^opencode-gate$' FAIL
+  mapfile -t untrusted < <(untrusted_roots | cut -f1)
+  if ((${#untrusted[@]} > 1)); then
+    steps+=("trust: in your own terminal run $(tilde "$self") --stage trust, which starts claude in each untrusted root in turn for you to accept its trust dialog ($(printf '%s, ' "${untrusted[@]}" | sed 's/, $//'))")
+    covered+=("${untrusted[@]}")
+  fi
   step '^trust ' FAIL
   step '^chrome$' WARN
   step '^git hooks$' FAIL
@@ -555,14 +631,75 @@ stage_check() {
     PASS:*) say "summary: set up, and this machine holds the lease" ;;
     WARN:'held by '*)
       local holder=${reason#held by }
-      say "summary: ready as a standby; team-load-check proves a worker here, and to move the team here say \"hand off\" to the coordinator on ${holder%%,*}, then run team-resume here"
+      say "summary: ready as a standby; team-load-check proves a worker here, and to move the team here run team-resume --wait here, then say \"hand off\" to the coordinator on ${holder%%,*} once it says this machine is ready"
       ;;
     *) say "summary: ready; the lease is released, so team-resume here takes the team, with Daniel's yes (team-load-check first proves a worker here)" ;;
   esac
 }
 
+# The roots of the doctor's failing trust lines, in its order (the team home's, then each project's
+# checkout), one "<check><TAB><root><TAB><probe session's name><TAB><reason><TAB><fix>" each.
+trust_fails() {
+  local check reason fix root probe
+  while IFS=$'\t' read -r check _ reason fix; do
+    if [[ $check == 'trust team home' ]]; then
+      root=$TEAM_HOME probe=team-doctor-home-trust
+    else
+      root=$(team_project "${check#trust }" | jq -r .path) probe=team-doctor-trust-${check#trust }
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\n' "$check" "$root" "$probe" "$reason" "$fix"
+  done < <(lines '^trust ')
+}
+
+# Of those, the roots claude refuses as untrusted, the ones the trust stage visits.
+untrusted_roots() {
+  trust_fails | awk -F'\t' '$4 ~ /Workspace not trusted/'
+}
+
+stage_trust() {
+  local roots=() left=() check root probe reason fix shown i
+  while IFS=$'\t' read -r check root _ reason fix; do
+    [[ $reason != *"Workspace not trusted"* ]] || continue
+    say "left: $check: $reason; fix: $fix"
+    left+=("$(tilde "$root")")
+  done < <(trust_fails)
+  mapfile -t roots < <(untrusted_roots)
+  for i in "${!roots[@]}"; do
+    IFS=$'\t' read -r check root probe _ <<<"${roots[i]}"
+    shown=$(tilde "$root")
+    if ((dry)); then
+      say "would start claude in $shown ($check) for you to accept its trust dialog"
+      continue
+    fi
+    say "$((i + 1)) of ${#roots[@]}: $shown ($check): accept Claude Code's trust dialog, then type /exit"
+    # Its exit status says nothing of the dialog: the probe after it does.
+    (cd "$root" && claude) || true
+    trust_probe "$root" "$probe"
+    ((${#trust_left[@]} == 0)) || say "its probe session ${trust_left[*]} is left: claude rm ${trust_left[*]}"
+    case $trust_verdict in
+      trusted) say "trusted: $shown" ;;
+      untrusted)
+        say "still not trusted: $shown (claude --bg in $shown says Workspace not trusted); on to the next"
+        left+=("$shown")
+        ;;
+      *)
+        say "unknown: \`claude --bg\` in $shown printed no session id (exit $trust_rc): $(grep -m1 . <<<"$trust_out" || true); on to the next"
+        left+=("$shown")
+        ;;
+    esac
+  done
+  if ((${#left[@]})); then
+    say "not done: claude does not trust $(printf '%s, ' "${left[@]}" | sed 's/, $//') yet; run $(tilde "$self") --stage trust again and accept its dialog"
+    ((dry)) || exit 1
+  elif ((!dry || ${#roots[@]} == 0)); then
+    say "done: claude trusts the team home and every project root"
+  fi
+}
+
 if [[ -n $only ]]; then
-  [[ $only == preflight ]] || { extend_path && run_doctor; }
+  [[ $only != trust ]] || ((terminal || dry)) ||
+    die "--stage trust runs only in Daniel's own terminal (stdin and stdout a terminal), never in an agent's shell: type $(tilde "$self") --stage trust there"
+  [[ $only == preflight ]] || { team_tool_path && run_doctor; }
   stage=$only
   "stage_$only"
   exit 0
@@ -570,6 +707,6 @@ fi
 stage=preflight
 stage_preflight
 # jq is there from here on.
-extend_path
+team_tool_path
 run_doctor
 for stage in "${STAGES[@]:1}"; do "stage_$stage"; done

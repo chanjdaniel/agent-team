@@ -218,6 +218,46 @@ restored_from() {
   cmp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before"
 }
 
+@test "a recorded slot the registry here spells otherwise is the same slot: made there, and not moved (report F6)" {
+  open_elsewhere home feat work
+  local other here
+  other=$(other_spelling "$HOME/slots")
+  sed -i "s#\"slots/home/#\"${other##*/}/home/#g" "$TEAM_HOME/projects.toml"
+  here=$other/home/1
+  run_bin -0 --separate-stderr team-open --task T1 --resume home
+  assert_equal "$(jq -c . <<<"$output")" "$(facts home "$branch" "$here" "$head" "$wt" '"tasks/T1/scratch"' | jq -c '.moved = false')"
+  assert_equal "$(git -C "$wt" rev-parse --abbrev-ref HEAD)" "$branch"
+  assert_equal "$(events worktree-moved)" ""
+
+  # Run again: the slot holding the branch is the recorded one.
+  run_bin -0 --separate-stderr team-open --task T1 --resume home
+  assert_equal "$(jq -r '"\(.worktree) \(.moved)"' <<<"$output")" "$wt false"
+  assert_equal "$(events worktree-moved)" ""
+}
+
+@test "made at its recorded path while a failed re-home of it stands, the worktree logs rehomed, once" {
+  open_elsewhere home feat work
+  # team-resume's failure, in home, and one in conv, which this run does not clear.
+  local failed
+  for failed in home conv; do
+    jq -cn --arg p "$failed" --arg b "$branch" '{ts: (now | todate), task: "T1", event: "rehome-failed", project: $p,
+      branch: $b, machine: "laptop", reason: "no slot"}' >>"$TEAM_HOME/ledger.jsonl"
+  done
+
+  run_bin -0 --separate-stderr team-open --task T1 --resume home
+  assert_equal "$(jq -c . <<<"$output")" "$(facts home "$branch" "$wt" "$head" "$wt" '"tasks/T1/scratch"')"
+  assert_equal "$(events rehomed | jq -c 'del(.ts)')" "$(jq -cn --arg b "$branch" --arg wt "$wt" \
+    '{task: "T1", event: "rehomed", project: "home", branch: $b, worktree: $wt, machine: "laptop"}')"
+  assert_equal "$(events worktree-moved)" ""
+  stub_reply claude '[]'
+  run_bin -0 team-state T1 --json
+  assert_equal "$(jq -c '[.rehome_failures[].project]' <<<"$output")" '["conv"]'
+
+  # Run again, with no failure standing in home: nothing more is logged.
+  run_bin -0 --separate-stderr team-open --task T1 --resume home
+  assert_equal "$(events rehomed | wc -l)" "1"
+}
+
 @test "the recorded slot is taken by another task here: the next free slot, and worktree-moved" {
   open_elsewhere home feat work
   run_bin -0 team-open --task T2 home feature feat other "Other work"
@@ -432,16 +472,52 @@ restored_from() {
   assert_equal "$(jq -r .head <<<"$output")" "$committed"
 }
 
-@test "a leased treehouse slot that is not clean is handed back and refused" {
+@test "a slot its lease's pre-warm dirties is refused naming the changes and forced back, run after run" {
   open_elsewhere conv feat work
-  echo "left over" >"${conv_slots[1]}/stray.txt"
+  echo 'echo rewritten >>README.md; touch stray.txt' >"$BATS_TEST_TMPDIR/prewarm"
   cp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before"
+  : >"$STUB_CALLS/th-return.sh.log"
 
   run_bin -1 team-open --task T1 --resume conv
-  assert_contains "$output" "the leased slot ${conv_slots[1]} is not clean: untracked files: stray.txt"
-  assert_equal "$(stub_calls th-return.sh | tail -n 1 | jq -r '.args[0]')" "${conv_slots[1]}"
+  assert_contains "$output" "the leased slot ${conv_slots[1]} is not clean: changes to tracked files: README.md; untracked files: stray.txt;"
+  assert_contains "$output" "the lease command's pre-warm made these changes, which the return discards"
+  assert_equal "$(pool_calls th-return.sh)" "${conv_slots[1]} --force --if-lease-holder T1"
+  assert_equal "$(pool_leases)" ""
   run -1 git -C "${conv_slots[1]}" symbolic-ref -q HEAD
+
+  # Again, as team-resume runs it again: the next slot, refused and returned the same way.
+  run_bin -1 team-open --task T1 --resume conv
+  assert_contains "$output" "the leased slot ${conv_slots[0]} is not clean"
+  assert_equal "$(pool_leases)" ""
+  assert_equal "$(git -C "${conv_slots[0]}" status --porcelain)$(git -C "${conv_slots[1]}" status --porcelain)" ""
   cmp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before"
+
+  # Once the pre-warm is fixed, one run makes the worktree, in the one slot leased.
+  rm "$BATS_TEST_TMPDIR/prewarm"
+  run_bin -0 --separate-stderr team-open --task T1 --resume conv
+  assert_equal "$(pool_leases)" "$(jq -r .worktree <<<"$output") T1"
+}
+
+@test "a slot left leased to the task by a failed run is taken again by the next, which leases nothing" {
+  open_elsewhere conv feat work
+  echo "left over" >"${conv_slots[1]}/stray.txt"
+  : >"$STUB_CALLS/th-lease.sh.log"
+  run_bin -1 team-open --task T1 --resume conv
+  assert_contains "$output" "the leased slot ${conv_slots[1]} is not clean: untracked files: stray.txt;" \
+    "the pool reported it dirty before this lease"
+  assert_equal "$(pool_leases)" "${conv_slots[1]} T1"
+
+  run_bin -1 team-open --task T1 --resume conv
+  assert_contains "$output" "${conv_slots[1]} is already leased to T1, by an earlier run; it is taken again"
+  assert_equal "$(pool_calls th-lease.sh)" "T1"
+  assert_equal "$(pool_leases)" "${conv_slots[1]} T1"
+
+  rm "${conv_slots[1]}/stray.txt"
+  run_bin -0 --separate-stderr team-open --task T1 --resume conv
+  assert_equal "$(jq -r .worktree <<<"$output")" "${conv_slots[1]}"
+  assert_equal "$(git -C "${conv_slots[1]}" rev-parse HEAD)" "$head"
+  assert_equal "$(pool_calls th-lease.sh)" "T1"
+  assert_equal "$(pool_leases)" "${conv_slots[1]} T1"
 }
 
 @test "a slot here holding a stale copy behind origin is reused and fast-forwarded, its task directory replaced" {

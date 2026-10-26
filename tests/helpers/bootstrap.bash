@@ -30,10 +30,28 @@ source "$REPO_ROOT/tests/helpers/doctor.bash"
 [[ $1 == -S && $2 == --needed && $3 == --noconfirm ]] || { echo "pacman stub: unplanned call: $*" >&2; exit 1; }
 installed_from "sudo pacman -S --needed " "${@:4}"
 EOF
+  # brew lists what it installed (brew-formulae and brew-casks in the fixtures, one "<name> <version>"
+  # each), and upgrades only that, as Homebrew does.
   stub_script brew <<'EOF'
 source "$REPO_ROOT/tests/helpers/doctor.bash"
-case $1 in install | upgrade) ;; *) echo "brew stub: unplanned call: $*" >&2; exit 1 ;; esac
-if [[ $2 == --cask ]]; then installed_from "brew install --cask " "${@:3}"; exit 0; fi
+kind=formulae
+if [[ ${2:-} == --cask ]]; then kind=casks; set -- "$1" "${@:3}"; fi
+case $1 in
+  list)
+    [[ $2 == --versions && $# == 3 ]] || { echo "brew stub: unplanned call: $*" >&2; exit 1; }
+    grep -m1 "^$3 " "$STUB_FIXTURES/brew-$kind" 2>/dev/null || exit 1
+    exit 0
+    ;;
+  install) printf '%s 1.0\n' "${@:2}" >>"$STUB_FIXTURES/brew-$kind" ;;
+  upgrade)
+    for package in "${@:2}"; do
+      grep -q "^$package " "$STUB_FIXTURES/brew-formulae" "$STUB_FIXTURES/brew-casks" 2>/dev/null ||
+        { echo "Error: $package not installed" >&2; exit 1; }
+    done
+    ;;
+  *) echo "brew stub: unplanned call: $*" >&2; exit 1 ;;
+esac
+if [[ $kind == casks ]]; then installed_from "brew install --cask " "${@:2}"; exit 0; fi
 installed_from "brew install " "${@:2}"
 # Homebrew's GNU tools, where bin/lib/platform.sh looks for them.
 for package in "${@:2}"; do
@@ -80,10 +98,20 @@ NVM
 esac
 EOF
 
-  # claude's plugin commands change what it lists.
+  # claude's plugin commands change what it lists, and an interactive claude in a terminal shows
+  # the trust dialog Daniel accepts (logged to claude-session.pwd): the root leaves
+  # $STUB_FIXTURES/untrusted unless it is listed in $STUB_FIXTURES/declined.
   mv "$STUB_FIXTURES/claude.sh" "$STUB_FIXTURES/claude-doctor.sh"
   stub_script claude <<'EOF'
 case $* in
+  '')
+    [[ -t 0 && -t 1 ]] || { echo "claude stub: an interactive session needs a terminal" >&2; exit 1; }
+    echo "$PWD" >>"$STUB_CALLS/claude-session.pwd"
+    echo "Do you trust the files in this folder? $PWD"
+    if ! grep -qxF "$PWD" "$STUB_FIXTURES/declined" 2>/dev/null; then
+      grep -vxF "$PWD" "$STUB_FIXTURES/untrusted" >"$STUB_FIXTURES/untrusted.new" || true
+      mv "$STUB_FIXTURES/untrusted.new" "$STUB_FIXTURES/untrusted"
+    fi ;;
   'plugin marketplace add '*)
     jq --arg repo "$4" '. + [{name: ($repo | split("/")[1]), source: "github", repo: $repo}]' \
       "$STUB_FIXTURES/marketplaces.json" >"$STUB_FIXTURES/m.json"
@@ -174,13 +202,14 @@ fresh() {
   rm -f "$TEAM_1PASSWORD_APP" "$TEAM_CHROME"
   printf 'echo %q >&2\nexit 1\n' "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?" \
     >"$TOOL_ANSWERS/docker/info_--format_{{.ServerVersion}}.sh"
-  printf '%s\n' "$CONVENTIONER" "$SITE" >"$STUB_FIXTURES/untrusted"
+  printf '%s\n' "$TEAM_HOME" "$CONVENTIONER" "$SITE" >"$STUB_FIXTURES/untrusted"
 }
 
 # Every call an installer stub logged, one per line: what a run that installs nothing leaves empty.
 install_calls() {
   local cmd
-  for cmd in brew pacman npm sudo; do stub_calls "$cmd" | sed "s/^/$cmd /"; done
+  # brew list only reads what Homebrew has.
+  for cmd in brew pacman npm sudo; do stub_calls "$cmd" | { grep -v '^\["list",' || true; } | sed "s/^/$cmd /"; done
   stub_calls curl | grep -v '"-sSI"' | sed 's/^/curl /' || true
   stub_calls claude | grep -E '^\["plugin","(marketplace","add|install|disable)"' | sed 's/^/claude /' || true
   cat "$STUB_CALLS"/{git-clone,fork-build,no-mistakes-init,nvm,servers-install}.log 2>/dev/null || true

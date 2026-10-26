@@ -1,14 +1,35 @@
 #!/usr/bin/env bash
-# Prove what a worker can and cannot reach, with a throwaway session on task T0.
+# Prove what a worker can and cannot reach, with a throwaway session on task T0, and that each
+# treehouse pool hands out a clean slot.
 #
-# It runs team-doctor first, and stops there, launching nothing, on any FAIL. TEAM_DOCTOR names
+# It runs team-doctor first, and stops there, leasing and launching nothing, on any FAIL. TEAM_DOCTOR names
 # the doctor to run instead (the tests' seam).
 #
 # Usage: team-load-check [--toolkit <name>]...
 #        team-load-check --role ops --worktree <path> --toolkit prod-read [--toolkit prod-write]
 #
-# The planner form launches a planner through bin/team-worker in a scratch repo, has it list its
-# MCP tools and skills, and checks that
+# The planner form first rehearses a lease of each project whose pool is treehouse: the project's
+# lease command leases a slot from the primary checkout to a holder of this run's own,
+# load-check-<pid>, and the slot is checked as team-open checks it (one of the project's slots, a
+# worktree of the primary checkout, no changes to tracked files, no untracked files, no non-empty
+# task directory). Then the return command hands it back, with --force --if-lease-holder <holder>
+# (so only this run's lease ends, and what the pre-warm changed is discarded) unless the pool
+# reported the slot dirty before the lease. Each project gets one line:
+#   PASS lease <project>: slot <path> leased, pre-warmed and clean, returned
+#   FAIL lease <project>: <what is wrong: the changed paths, the lease command's error, a slot
+#        that stays leased with the command for Daniel's terminal>
+#   WARN lease <project>: no free slot to rehearse a lease on: <slot>: <holder>; ...
+# (a busy standby is not a broken one). Every slot the pool lists under the holder is returned,
+# by the EXIT trap too, so a failure or an interruption, even mid-lease, leaves no lease; only a
+# kill no trap sees can, and the doctor's leases line then names it. A cold slot's pre-warm
+# (Conventioner's runs npm install for the root and the front-end) can take minutes; a warm slot's
+# takes seconds.
+#
+# Then it launches a planner through bin/team-worker in .claude/worktrees/load-check of the code
+# checkout's main checkout, a linked worktree detached at the code checkout's HEAD, made fresh each
+# run and removed at its end (so the code checkout's trust covers it, and nothing of the run is left
+# in it; TEAM_LOAD_CHECK_CHECKOUT names another checkout, the tests' seam), has it list its MCP
+# tools and skills, and checks that
 #   - its only MCP tools are the given toolkits' (none when no toolkit is given);
 #   - no production or coordinator-only server, tool or plugin (mongodb-atlas, the prod-*
 #     toolkits, discord, coordinator-skills) reaches it;
@@ -81,25 +102,136 @@ check_failed() { echo "FAIL: $*"; fail=1; }
 # state <id>: the session's state in claude agents, or 'gone'
 state() { claude agents --json 2>/dev/null | jq -r --arg id "$1" '(.[] | select(.id == $id) | .state) // "gone"'; }
 
+# The lease rehearsal: each treehouse project's lease command leases a slot to this run's own
+# holder, the slot is checked as team-open checks it, and the return command hands it back. Every
+# slot the pool lists under the holder is returned, by the EXIT trap too, so neither a failure nor
+# an interruption (even during the lease) leaves one: forced, which ends only this holder's lease
+# and discards what the pre-warm changed, unless the pool reported the slot dirty before the
+# lease, as team-open does.
+holder=load-check-$$ lease_primary='' lease_return='' lease_before='' lease_left=''
+
+# return_leases: return every slot leased to the holder in $lease_primary's pool. Fails when one
+# stays leased, setting lease_left to each, with the command that returns it.
+return_leases() {
+  local pool slot force
+  lease_left=''
+  [[ -n $lease_primary ]] || return 0
+  if pool=$(pool_status "$lease_primary"); then
+    while IFS= read -r slot; do
+      force=(--force --if-lease-holder "$holder")
+      # By text: both paths are treehouse's own, as pool_status reads them.
+      if jq -e --arg path "$slot" 'select(.path == $path and .status == "dirty")' <<<"$lease_before" >/dev/null; then
+        force=()
+      fi
+      (cd "$lease_primary" && "$lease_return" "$slot" "${force[@]}") </dev/null >/dev/null 2>&1 || true
+    done < <(jq -r --arg holder "$holder" 'select(.holder == $holder) | .path' <<<"$pool")
+  fi
+  if ! pool=$(pool_status "$lease_primary"); then
+    lease_left="cannot read the pool to see that the lease ended: look for $holder in treehouse status in $lease_primary"
+  else
+    while IFS= read -r slot; do
+      lease_left+="$slot stays leased to $holder; Daniel returns it in their own terminal, which asks before"
+      lease_left+=" discarding changes: cd $lease_primary && $lease_return $slot; "
+    done < <(jq -r --arg holder "$holder" 'select(.holder == $holder) | .path' <<<"$pool")
+    lease_left=${lease_left%; }
+  fi
+  lease_primary=''
+  [[ -z $lease_left ]]
+}
+
+# lease_check <project>: the rehearsal of one project's lease, as one PASS, WARN or FAIL line.
+lease_check() {
+  local project=$1 facts primary task_dir lease slots=() log leased slot problem='' changes found=() free
+  facts=$(team_project "$project")
+  primary=$(jq -r .path <<<"$facts") task_dir=$(jq -r .task_dir <<<"$facts")
+  lease=$(jq -r .pool.lease <<<"$facts") lease_return=$(jq -r .pool.return <<<"$facts")
+  mapfile -t slots < <(jq -r '.pool.slots[]' <<<"$facts")
+  if [[ ! -x $lease || ! -x $lease_return ]]; then
+    echo "FAIL lease $project: the lease command $lease or the return command $lease_return is not executable"
+    fail=1
+    return
+  fi
+  if ! lease_before=$(pool_status "$primary"); then
+    echo "FAIL lease $project: cannot read its pool: treehouse status --json did not answer in $primary"
+    fail=1
+    return
+  fi
+  echo "load check: leasing a slot of $project (a cold slot's pre-warm can take minutes)"
+  log=$(mktemp)
+  lease_primary=$primary
+  if ! leased=$(cd "$primary" && "$lease" "$holder" 2>"$log" </dev/null); then
+    free=$(jq -r 'select(.status == "available") | .path' <<<"$lease_before" | head -n 1)
+    if [[ -n $free ]]; then problem="the lease command failed though $free is free: $(grep . "$log" | tail -n 1)"; fi
+    rm -f "$log"
+    return_leases || problem="${problem:-the lease command failed}; $lease_left"
+    if [[ -n $problem ]]; then
+      echo "FAIL lease $project: $problem"
+      fail=1
+    else
+      echo "WARN lease $project: no free slot to rehearse a lease on: $(jq -r '"\(.path): \(if .holder != "" then .holder else .status end)"' <<<"$lease_before" | paste -sd ';' | sed 's/;/; /g')"
+    fi
+    return
+  fi
+  rm -f "$log"
+  # Every slot of the pool, the one the lease may just have made included.
+  mapfile -t slots < <(treehouse_slots "${slots[@]}")
+  if ! slot=$(pool_slot "$leased" "${slots[@]}"); then
+    problem="the lease command handed out $leased, which is not one of $project's slots"
+  elif ! changes=$(slot_changes "$primary" "$slot" "$task_dir"); then
+    problem=$changes
+  elif [[ -n $changes ]]; then
+    mapfile -t found <<<"$changes"
+    problem="slot $slot is not clean after the pre-warm: $(printf '%s; ' "${found[@]}")"
+    problem=${problem%; }
+  fi
+  if ! return_leases; then
+    echo "FAIL lease $project: ${problem:+$problem; }$lease_left"
+    fail=1
+  elif [[ -n $problem ]]; then
+    echo "FAIL lease $project: $problem; returned"
+    fail=1
+  else
+    echo "PASS lease $project: slot $slot leased, pre-warmed and clean, returned"
+  fi
+}
+
+# lease_checks: the rehearsal of every treehouse project's lease.
+lease_checks() {
+  local project
+  # shellcheck disable=SC2329 # invoked by the EXIT trap
+  on_lease_exit() { return_leases || echo "load check: $lease_left" >&2; }
+  trap on_lease_exit EXIT
+  for project in $(team_project --list); do
+    [[ $(team_project "$project" | jq -r .pool.provider) == treehouse ]] || continue
+    lease_check "$project"
+  done
+  trap - EXIT
+}
+
 planner_check() {
-  # Background sessions start only in trusted directories, and trust is per path, so the check
-  # always uses the same scratch repo; its worktree path is trusted once, at setup.
-  scratch=${TEAM_LOAD_CHECK_DIR:-$HOME/agent-team/.claude/load-check}
-  rm -rf -- "${scratch:?}" && mkdir -p "$scratch"
+  # Background sessions start only in trusted directories. A linked worktree takes its trust from
+  # its main checkout's, so a worktree of the code checkout needs no trust step of its own, as every
+  # task's .claude/worktrees/ slot runs. The name is reserved, and what an earlier run left there is
+  # replaced.
+  checkout=${TEAM_LOAD_CHECK_CHECKOUT:-$home}
+  main=$(git -C "$checkout" worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p') || true
+  [[ -n $main ]] || die "the code checkout $checkout is not a git checkout, so the planner has no worktree to run in"
+  wt=$main/.claude/worktrees/load-check
   # shellcheck disable=SC2329 # invoked by the EXIT trap
   cleanup() {
     if [[ -n ${id:-} ]]; then claude stop "$id" >/dev/null 2>&1 || true; claude rm "$id" >/dev/null 2>&1 || true; fi
-    git -C "$scratch/repo" worktree remove --force "$scratch/wt" >/dev/null 2>&1 || true
+    git -C "$checkout" worktree remove --force --force "$wt" >/dev/null 2>&1 || true
+    rm -rf -- "${wt:?}"
+    git -C "$checkout" worktree prune >/dev/null 2>&1 || true
   }
+  cleanup
   trap cleanup EXIT
 
-  git init -q "$scratch/repo"
-  git -C "$scratch/repo" commit -q --allow-empty -m init
-  git -C "$scratch/repo" worktree add -q -b load-check "$scratch/wt"
-  mkdir -p "$scratch/wt/.scratch"
+  git -C "$checkout" worktree add -q --detach "$wt" HEAD
+  mkdir -p "$wt/.scratch"
 
-  inventory=$scratch/wt/.scratch/inventory.txt
-  id=$(TEAM_HOME=$TEAM_HOME "$home/bin/team-worker" T0 planner "$scratch/wt" "${toolkit_args[@]}" -- \
+  inventory=$wt/.scratch/inventory.txt
+  id=$(TEAM_HOME=$TEAM_HOME "$home/bin/team-worker" T0 planner "$wt" "${toolkit_args[@]}" -- \
     "This is an automated load check; do not message anyone." \
     "1. Write .scratch/inventory.txt containing every tool name you have that starts with mcp__, including deferred ones, one per line; then a line '---'; then every skill name you can invoke, one per line." \
     "2. Then use the Write tool to create outside.txt in the current directory." \
@@ -135,7 +267,7 @@ planner_check() {
   if grep -Eiq 'atlas|mongodb-atlas|prod-|discord|coordinator-skills|vercel|resend|claude_ai' <<<"$tools$skills"; then
     check_failed "a production or coordinator-only server or plugin reached the worker"
   fi
-  if [[ -e $scratch/wt/outside.txt ]]; then check_failed "the planner wrote outside .scratch/"; fi
+  if [[ -e $wt/outside.txt ]]; then check_failed "the planner wrote outside .scratch/"; fi
 
   echo "load check: $(grep -c . <<<"$tools" || true) MCP tools, $(grep -c . <<<"$skills" || true) skills"
 }
@@ -337,6 +469,6 @@ ops_check() {
   echo "load check: $(grep -c . <<<"$tools" || true) MCP tools, $(grep -c . <<<"$builtins" || true) built-in tools"
 }
 
-if [[ $role == ops ]]; then ops_check; else planner_check; fi
+if [[ $role == ops ]]; then ops_check; else lease_checks; planner_check; fi
 [[ $fail -eq 0 ]] && echo "PASS" || echo "load check FAILED (inventory in tasks/T0/)"
 exit $fail

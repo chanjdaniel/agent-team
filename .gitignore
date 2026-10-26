@@ -2,6 +2,8 @@
 tasks/*/settings.*.json
 tasks/*/mcp.*.json
 .claude/worktrees/
+# The load check's scratch from before it ran in .claude/worktrees/load-check, still on the machines
+# that ran it then: drop the line once no machine has it
 .claude/load-check/
 tasks/T0/
 .scratch/

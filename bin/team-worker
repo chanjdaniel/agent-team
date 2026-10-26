@@ -76,7 +76,7 @@ real=$(realpath -e -- "$worktree" 2>/dev/null) || die "$worktree does not exist"
 worktree=$real
 git_dir=$(git -C "$worktree" rev-parse --absolute-git-dir 2>/dev/null) || die "$worktree is not a git checkout"
 common_dir=$(realpath -- "$(git -C "$worktree" rev-parse --path-format=absolute --git-common-dir)")
-[[ $git_dir != "$common_dir" ]] || die "$worktree is a primary checkout, not a linked worktree"
+! same_path "$git_dir" "$common_dir" || die "$worktree is a primary checkout, not a linked worktree"
 
 # T0 is the load check, not a task: it has no ledger entry and stays out of the ledger.
 worktree_event=
@@ -94,7 +94,7 @@ if [[ $task != T0 ]]; then
     open=
     while IFS= read -r line; do
       wt=$(jq -r .worktree <<<"$line")
-      if [[ $(realpath -m -- "$wt") == "$worktree" ]]; then worktree_event=$line; fi
+      if same_path "$wt" "$worktree"; then worktree_event=$line; fi
       open+=$'\n'"  $(jq -r '"\(.worktree) (\(.project), \(.branch))"' <<<"$line")"
     done < <(task_worktrees "$task")
     [[ -n $worktree_event ]] || die "$worktree is not one of $task's open worktrees:${open:- it has none}"

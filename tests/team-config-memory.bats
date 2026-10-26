@@ -252,6 +252,9 @@ memory coordinator: moved 2 notes from ~/.claude/projects/"
   [[ $output != *coordinator* ]]
   TEAM_HOME=$HOME/team-link run_bin -1 team-config diff
   [[ $output != *coordinator* ]]
+  # Or by another case of its path (report F6).
+  TEAM_HOME=$(other_spelling "$TEAM_HOME") run_bin -1 team-config diff
+  [[ $output != *coordinator* ]]
   run_bin -0 team-config apply
   [[ $output != *coordinator* ]]
   assert_equal "$(jq -r .autoMemoryDirectory "$TEAM_HOME/.claude/settings.local.json")" "~/agent-team/memory/agent-team"
