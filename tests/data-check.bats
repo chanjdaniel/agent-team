@@ -128,7 +128,8 @@ or example.invalid, and an image stays out of git; take each out, then commit ag
   put tasks/T1/notes.md "from ann@$other, a fixture bo@example.com, and the owner daniel.owner@$provider"
   check -0 records
   put tasks/T1/plan.md "Discord: please reply to cy.applicant@$provider"
-  put ledger.jsonl "{\"note\": \"dee@outlook.com and eve@yahoo.co.uk\"}"
+  local outlook=outlook.com yahoo=yahoo.co.uk
+  put ledger.jsonl "{\"note\": \"dee@$outlook and eve@$yahoo\"}"
   check -1 records
   assert_equal "$stderr" "data-check: refused: ledger.jsonl, tasks/T1/plan.md add an email address \
 at a public provider or an image, which the records never take: other people's addresses and \
