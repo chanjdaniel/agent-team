@@ -496,10 +496,11 @@ reviewer_allows() {
   return 1
 }
 
-@test "the reviewer's allow rules are the agent-review status and the review comment scripts only" {
+@test "the reviewer's allow rules are the agent-review status, the review comment and the local checks scripts only" {
   assert_equal "$(jq -r '.permissions.allow[]' "$REPO_ROOT/settings/reviewer.json")" \
     'Bash(@TEAM_CODE@/bin/team-review-status *)
-Bash(@TEAM_CODE@/bin/team-review-comment *)'
+Bash(@TEAM_CODE@/bin/team-review-comment *)
+Bash(@TEAM_CODE@/bin/team-checks *)'
   # The commands as templates/briefs/rereview.md and the direct-PR review partial give them,
   # team_bin being this checkout's bin/ in full; a gated project's first review posts nothing.
   local brief
@@ -511,6 +512,18 @@ Bash(@TEAM_CODE@/bin/team-review-comment *)'
   if grep -n team-review "$REPO_ROOT/templates/briefs/review/no-mistakes.md"; then return 1; fi
   reviewer_allows "$REPO_ROOT/bin/team-review-status https://github.com/me/shop/pull/5 a1b2c3d4e5f60718293a4b5c6d7e8f9012345678 success \"no blocking findings\""
   reviewer_allows "$REPO_ROOT/bin/team-review-comment https://github.com/me/shop/pull/5 .scratch/task/review.md"
+  reviewer_allows "$REPO_ROOT/bin/team-checks agent-team a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
+}
+
+@test "the builder's one allow rule is the local checks script, as the briefs give it" {
+  assert_equal "$(jq -r '.permissions.allow[]' "$REPO_ROOT/settings/builder.json")" 'Bash(@TEAM_CODE@/bin/team-checks *)'
+  local brief
+  for brief in delivery/direct-pr builder-merge-base; do
+    grep -qF '`{{team_bin}}/team-checks {{project}} <full sha>`' "$REPO_ROOT/templates/briefs/$brief.md"
+  done
+  for brief in reviewer rereview; do
+    grep -qF '`{{team_bin}}/team-checks {{project}} {{head}}`' "$REPO_ROOT/templates/briefs/$brief.md"
+  done
 }
 
 @test "the reviewer's allow rules let no raw gh write through, statuses in the command or not" {

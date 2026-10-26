@@ -11,7 +11,7 @@ Since the last review: {{since}}
 
 1. Every finding in `{{task_dir}}/review.md` that went back to the builder (each `blocking`, `note: correctness`, `note: security` and `note: real-data`) is fixed at `{{head}}`, or the PR records Daniel's decision to keep it; a plain `note` is a follow-up, not for this PR.
 {{> rereview}}
-3. Run each of the project's local checks ({{local_checks}}) from the worktree's root on `{{head}}`, and if `gh pr checks {{pr}}` lists any GitHub checks, wait for them to finish (`--watch`); every one must pass, and `{{task_dir}}/review.md` says which local checks passed (they set no GitHub status).
+3. Run the project's local checks ({{local_checks}}) on `{{head}}` with `{{team_bin}}/team-checks {{project}} {{head}}`, which runs them as `team-merge` does, in a fresh detached worktree of that head, and if `gh pr checks {{pr}}` lists any GitHub checks, wait for them to finish (`--watch`); every one must pass, and `{{task_dir}}/review.md` says which local checks passed (they set no GitHub status).
 
 ## Deliver
 

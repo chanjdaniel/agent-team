@@ -152,22 +152,43 @@ local_path() {
 }
 
 # The paths of the task directory <dir> that have no place in the team home's history, so its
-# archive leaves them out, each as "<why>\t<path>" (relative to <dir>), NUL-terminated: a
-# top-level ui/ (UI capture: a frontend capture stays on the machine that took it), never looked
-# inside; each directory holding a .git (nested repository), never looked inside; each file over
-# 1 MiB (over 1 MiB); and each path secret_paths names (may hold a secret); in that order, sorted
-# within each.
+# archive leaves them out, each as "<why>\t<path>" (relative to <dir>), NUL-terminated, in this
+# order, sorted within each:
+#   UI capture         a top-level ui/ (a frontend capture stays on the machine that took it)
+#   nested repository  a directory holding .git, or a bare repository's HEAD, objects/ and refs/
+#   dependencies       a directory named node_modules, .venv, venv or __pycache__
+#   over 200 files     any other directory holding more than 200 files through its
+#                      subdirectories, the outermost one only
+#   link               a symbolic link
+#   over 1 MiB         a file over 1 MiB
+#   may hold a secret  a path secret_paths names
+# Nothing is looked for inside a path named by an earlier reason. This is the one place the list
+# is written; the scripts that archive, and their docs, point here.
 # A missing directory has none: archive_left_out <dir>
 archive_left_out() {
   (
     export LC_ALL=C
     cd "$1" 2>/dev/null || exit 0
     [[ ! -d ui ]] || printf 'UI capture\tui\0'
-    # find, never inside ui/ or a nested repository, which it names when given no other test.
-    outside() { find . -mindepth 1 -path ./ui -prune -o -type d -exec test -e '{}/.git' ';' -prune "$@"; }
-    outside -printf 'nested repository\t%P\0' | sort -z
-    outside -o -type f -size +1048576c -printf 'over 1 MiB\t%P\0' | sort -z
-    outside -o \( -type f -o -type l \) -size -1048577c -printf '%P\0' |
+    local skip=(-path ./ui) dir pattern
+    local is_repo=(-type d \( -exec test -e '{}/.git' ';' -o -exec test -f '{}/HEAD' ';' -exec test -d '{}/objects' ';' -exec test -d '{}/refs' ';' \))
+    local is_deps=(-type d \( -name node_modules -o -name .venv -o -name venv -o -name __pycache__ \))
+    # walk <from> <expression>: find under <from>, never inside what skip, is_repo or is_deps match; the
+    # expression applies to every other path.
+    walk() { find "$1" -mindepth 1 \( \( "${skip[@]}" \) -o \( "${is_repo[@]}" \) -o \( "${is_deps[@]}" \) \) -prune -o "${@:2}"; }
+    find . -mindepth 1 \( "${skip[@]}" \) -prune -o \( "${is_repo[@]}" \) -printf 'nested repository\t%P\0' -prune | sort -z
+    find . -mindepth 1 \( \( "${skip[@]}" \) -o \( "${is_repo[@]}" \) \) -prune -o \( "${is_deps[@]}" \) -printf 'dependencies\t%P\0' -prune | sort -z
+    # A directory never holds more files than its parent, so the outermost crowded directories are
+    # among the top-level ones.
+    while IFS= read -r -d '' dir; do
+      (($(walk "./$dir" ! -type d -printf . | wc -c) > 200)) || continue
+      printf 'over 200 files\t%s\0' "$dir"
+      pattern=${dir//\\/\\\\} pattern=${pattern//\*/\\*} pattern=${pattern//\?/\\?} pattern=${pattern//\[/\\[}
+      skip+=(-o -path "./$pattern")
+    done < <(find . -mindepth 1 -maxdepth 1 -type d ! \( \( "${skip[@]}" \) -o \( "${is_repo[@]}" \) -o \( "${is_deps[@]}" \) \) -printf '%P\0' | sort -z)
+    walk . -type l -printf 'link\t%P\0' | sort -z
+    walk . -type f -size +1048576c -printf 'over 1 MiB\t%P\0' | sort -z
+    walk . -type f -size -1048577c -printf '%P\0' |
       secret_paths | sort | tr '\n' '\0' | sed -z 's/^/may hold a secret\t/'
   )
 }

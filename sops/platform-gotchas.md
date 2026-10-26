@@ -17,11 +17,11 @@ Why: Claude Code protects `.claude/` paths, so allow rules never pre-approve a w
 
 Seen: T16 ticket 04's load check, whose sessions in `.claude/load-check/wt` blocked on their first write (ledger 2026-10-22T14:09:42Z; T16 build note 04, archived under `tasks/T16/` at its close).
 
-## Never run a command that may call `sudo`
+## Never run a command that may call `sudo`, and leave to Daniel what needs it: a system package, a daemon restart
 
-Why: with no terminal each `sudo` attempt counts as a failed login, enough of them lock Daniel's account, and installer flags and system package steps call it unasked.
+Why: with no terminal each `sudo` attempt counts as a failed login, enough of them lock Daniel's account, and installer flags and system package steps call it unasked; after the machine's packages are upgraded, a daemon keeps running its old binaries until that restart, so check that it answers (`docker info`) before a heavy run.
 
-Seen: T18, whose test script's Playwright `--with-deps` locked Daniel's account (ledger 2026-10-22T12:16:15Z, `tasks/T18/plan.md`).
+Seen: T18, whose test script's Playwright `--with-deps` locked Daniel's account (ledger 2026-10-22T12:16:15Z, `tasks/T18/plan.md`); T5, T12 and T15, which waited on Daniel's Docker restart (ledger 2026-10-22T00:09:49Z to 2026-10-22T11:08:03Z); T49, which asked Daniel to upgrade Chrome (ledger 2026-10-25T14:30:56Z).
 
 ## Create a bind mount's host directory before starting the container, and run containers as your own user
 
@@ -47,20 +47,20 @@ Why: a reset throws away local commits and auto mode refuses it, and a force-pus
 
 Seen: T12 and T22 (twice), whose gate rebased and force-pushed their branches (ledger 2026-10-22T12:05:30Z, 2026-10-23T13:57:02Z; T22 builder `b782adf4` at 2026-10-23T23:27Z).
 
-## After the machine's packages are upgraded, check that Docker answers before a gate run, and leave a daemon restart to Daniel
+## Permission rules match a Bash call's whole text: pin a rule's fixed parts on both sides of each `*`, and make each call one action with no prose in it
 
-Why: daemons keep running their old binaries until restarted, a restart needs `sudo`, and `docker info` shows whether Docker still answers.
+Why: `*` matches any text, spaces and other arguments included, and a deny rule or auto mode judges the whole call, so a rule matches more commands than it looks, and one matching part (a word in a commit message, a grep pattern or a heredoc, or one guarded step of a chain) refuses the whole call; write messages and file contents with the Write or Edit tool and pass the file (`git commit -F <file>`, `gh pr edit --body-file <file>`), and run each commit, push and edit as its own call.
 
-Seen: T5, T12 and T15, which waited on Daniel's restart (ledger 2026-10-22T00:09:49Z to 2026-10-22T11:08:03Z).
-
-## In a permission rule, pin the command's fixed parts on both sides of each `*`
-
-Why: `*` matches any text, spaces and other arguments included, so a rule matches more commands than it looks: an allow rule lets more through, and a deny rule refuses commands that only quote its words.
-
-Seen: T20's review of the reviewer's allow rules (`tasks/T20/scratch/review.md`); T25, where a deny rule refused a quoted jq filter and a heredoc naming a script (ledger 2026-10-23T12:58:54Z, 2026-10-23T13:15:36Z); T34's `gh api*git/refs*` and T24's `git *config*core.hooksPath*`, which refused reads (ledger 2026-10-24T00:04:36Z, 2026-10-24T01:28:18Z).
+Seen: T20's review of the reviewer's allow rules (`tasks/T20/scratch/review.md`); T25, T34 and T24, whose deny rules refused a quoted jq filter, a heredoc and reads (ledger 2026-10-23T12:58:54Z, 2026-10-24T00:04:36Z, 01:28:18Z); T37's push chained with a PR body edit (2026-10-24T07:19:08Z); T41's commit, refused three times for its message's words (16:30:37Z to 16:39:42Z); T40's heredoc and a lookup chained to a test run (2026-10-25T13:11:44Z, 14:29:23Z).
 
 ## To know what a CI or deploy run built, read the commit its checkout fetched, never the run's branch and commit label
 
 Why: GitHub labels a run started by another workflow (`workflow_run`) or a schedule with the default branch and that branch's tip when it started, whatever it checked out, so the label can name code that never ran; the checkout step's log (`HEAD is now at`) and `workflow_run.head_sha` say what did.
 
 Seen: T24's force-push, where a Deploy labelled "dev 5694c2af" had deployed `main` at `0fa47646`, and production was nearly migrated for code it did not run (ledger 2026-10-23T15:13:26Z to 15:20:46Z; `tasks/T29/scratch/early-finding.md`).
+
+## Clean up only what you made, by the exact path or process id you noted when you made it
+
+Why: the sessions on a machine share `/tmp` and the process table, so a glob or a name match reaches other sessions' live files and processes, and Claude Code refuses an `rm -rf` of a variable path; make scratch with `mktemp -d`, keep the path it prints, remove it by that literal path, and leave what you cannot prove is yours.
+
+Seen: T44's builder, whose `rm -rf` of every `bats-run-*` under `$TMPDIR` took other sessions' live test directories (ledger 2026-10-25T02:59:06Z); T41's and T43's reviewers, refused an `rm -rf` of a variable path (2026-10-24T18:20:29Z, 2026-10-25T06:49:39Z); T22's builder, which could not tell two leftover processes were its own (2026-10-25T13:58:12Z).

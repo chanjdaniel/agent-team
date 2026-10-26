@@ -15,7 +15,8 @@
   "permissions": {
     "allow": [
       "Bash(@TEAM_CODE@/bin/team-review-status *)",
-      "Bash(@TEAM_CODE@/bin/team-review-comment *)"
+      "Bash(@TEAM_CODE@/bin/team-review-comment *)",
+      "Bash(@TEAM_CODE@/bin/team-checks *)"
     ]
   }
 }

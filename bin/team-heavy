@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run the machine's heavy commands one at a time: a full tests/run, a project's local checks in
-# team-merge, a gate's end-to-end run, so they queue instead of overlapping and timing out.
+# team-checks, a gate's end-to-end run, so they queue instead of overlapping and timing out.
 #
 # Usage: team-heavy run [--wait <minutes>] [--label <text>] -- <command> [<argument>...]
 #        team-heavy status
@@ -16,7 +16,7 @@
 #         waits up to --wait minutes (default 180, or TEAM_HEAVY_WAIT_MINUTES; 0 does not wait),
 #         then exits 75 naming the holder.
 #         Under a run already (TEAM_HEAVY_HELD set), the command runs at once: a nested heavy
-#         command, tests/run as team-merge's local check say, would otherwise wait for itself.
+#         command, tests/run as a local check in team-checks say, would otherwise wait for itself.
 # status  "held by <the holder's line>" ("held by another run" before it wrote one) or "free",
 #         exit 0 either way; it waits for nothing and takes no lock a run would wait for.
 #
