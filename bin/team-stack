@@ -38,7 +38,7 @@
 # Docker assigns its ports. An instance is the worktree's task's like its stack, started with
 # TEAM_KIND=e2e, and admitted, seeded and taken down as a stack is.
 # up        Starts the stack of the worktree's task: the open task (opened or added, not returned,
-#           not closed) whose ledger worktree is this one, by real path, else --task, which must
+#           not closed) whose ledger worktree is this one, however spelled, else --task, which must
 #           name an open task and agree with the ledger. A team stack of another task is taken
 #           down first, as down does, its logs saved as <its task>-<project>-<service>.log. Then
 #           <wrapper> up -d --wait, a new stack with TEAM_OWNER=agent-team, TEAM_TASK,
@@ -81,15 +81,16 @@
 #           no stack is told so, exit 0 (as for stop). Without --instance, it first takes down
 #           the worktree's instances in name order, each as it takes down a stack, with a line
 #           each: the team stacks whose Compose project is <stack>-<anything> and whose worktree
-#           label is the worktree, by real path (team-close's down therefore takes them too).
+#           label names the worktree, another spelling of it included (team-close's down
+#           therefore takes them too).
 #
 # sweep     Stops each running team stack (every container of its Compose project of class team)
 #           whose worktree has had no busy session for idle_minutes. A live session (claude agents
 #           --json, interactive ones included) with status busy whose cwd is the stack's worktree
-#           label or below it, by real path, makes it busy: the time is written to
-#           ~/.local/state/agent-team/stacks/<project>.json as last_busy. Otherwise it is idle
-#           since the later of that last_busy (a missing or unreadable file has none) and its
-#           running containers' latest start; idle more than idle_minutes, it is stopped with
+#           label or below it, another spelling of it included, makes it busy: the time is
+#           written to ~/.local/state/agent-team/stacks/<project>.json as last_busy. Otherwise it
+#           is idle since the later of that last_busy (a missing or unreadable file has none) and
+#           its running containers' latest start; idle more than idle_minutes, it is stopped with
 #           docker compose -p <project> stop, its data kept, and one line is printed and added to
 #           ~/.local/state/agent-team/stacks/sweep.log ("<time> stopped <project> of <task> in
 #           <worktree>: last busy at <time> (idle_minutes <n>), its data kept", or "not seen busy
@@ -391,7 +392,7 @@ resolve_worktree() {
   stack_blocks >"$WORK/stacks.json" || exit 1
 }
 
-# The task of the worktree WT into TASK: the open task the ledger gives it (by real path), else
+# The task of the worktree WT into TASK: the open task the ledger gives it (same_path), else
 # <given>, which must be open and agree with the ledger: resolve_task <given or "">
 resolve_task() {
   local given=$1 wt task path
@@ -789,7 +790,8 @@ cmd_sweep() {
     --slurpfile stacks "$WORK/stacks.json" "$WORK/containers.json" >"$WORK/running.jsonl"
   [[ -s $WORK/running.jsonl ]] || return 0
 
-  # The working directories of the busy sessions, interactive ones included, by real path.
+  # The working directories of the busy sessions, interactive ones included, each made absolute
+  # and normal, so sweep_busy can walk up its parents.
   local -a busy=()
   local cwd
   live_sessions
@@ -833,14 +835,17 @@ cmd_sweep() {
   [[ -z $failed ]]
 }
 
-# Whether a busy session works in any of the worktrees <worktrees...> or below one, by real path.
+# Whether a busy session works in any of the worktrees <worktrees...> or below one: its cwd or
+# one of its parents names the worktree (same_path), so a sibling sharing the prefix is not inside.
 sweep_busy() {
   local worktree cwd
   for worktree in "$@"; do
-    worktree=$(realpath -m -- "$worktree")
-    [[ $worktree != / ]] || continue
+    [[ $(realpath -m -- "$worktree") != / ]] || continue
     for cwd in ${busy[@]+"${busy[@]}"}; do
-      [[ $cwd == "$worktree" || $cwd == "$worktree"/* ]] && return 0
+      while [[ $cwd != / ]]; do
+        same_path "$cwd" "$worktree" && return 0
+        cwd=$(dirname "$cwd")
+      done
     done
   done
   return 1

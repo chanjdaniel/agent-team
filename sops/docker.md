@@ -66,7 +66,7 @@ Each acts on the worktree it is run in (or `--worktree <path>`), resolved the sa
 - **The project** is the registered one whose primary checkout the worktree belongs to, and it must have a `stack` block.
 - **The stack** is the one the wrapper resolves for the worktree, named by its `config --format json`: the containers, volumes and networks Docker labels with that Compose project.
   A stack with any object that is not of class team is refused by every subcommand, naming its class: removing it is Daniel's or the coordinator's call.
-- **The task**, for `up` only, is the open task whose ledger worktree (opened or added, not returned) is this one, compared by real path; `--task T<n>` names one when the ledger gives the worktree to none, and must agree with it when it does.
+- **The task**, for `up` only, is the open task whose ledger worktree (opened or added, not returned) is this one, however either is spelled; `--task T<n>` names one when the ledger gives the worktree to none, and must agree with it when it does.
 
 Every stack starts fresh for its task:
 
@@ -151,7 +151,7 @@ Half admits a Conventioner stack's 2.75 GiB on a 7.7 GiB VM (Daniel's laptop's) 
 The heartbeat runs it once Daniel turns `heartbeat_sweep` on ("The heartbeat's steps"); anyone may run it by hand.
 
 - It looks only at running team stacks: every container of the Compose project of class team, so gate and unowned stacks, and a project whose containers mix them with team ones, are never stopped; only containers count, so a team project holding an unowned volume is stopped, which keeps every object.
-- A stack is busy while a live session (`claude agents --json`, interactive sessions included) with `status` `busy` has its `cwd` in the stack's `worktree` label or below it, compared by real path; a sibling path sharing the prefix (`shop-1-2` for `shop-1`) is not inside it.
+- A stack is busy while a live session (`claude agents --json`, interactive sessions included) with `status` `busy` has its `cwd` in the stack's `worktree` label or below it: the `cwd` or one of its parents names the same directory as the label, however either is spelled (a symlink, or another case on a case-insensitive filesystem), so a sibling path sharing the prefix (`shop-1-2` for `shop-1`) is not inside it.
 - For a busy stack it writes the time to `~/.local/state/agent-team/stacks/<project>.json` as `last_busy`, since the session list keeps no last-activity time.
 - A stack that is not busy is idle since its `last_busy` or its running containers' latest start, whichever is later, so one never seen busy counts from its start and one started again after its last busy time counts from that start; a missing or unreadable state file is never seen busy.
 - Idle for more than `idle_minutes` ("Admission" has the settings), it is stopped with `docker compose -p <project> stop`, its data kept, and one line is printed and added to `~/.local/state/agent-team/stacks/sweep.log`, for example `2026-10-25T10:00:00Z stopped conventioner-2 of T7 in /home/daniel/.treehouse/Conventioner-d4c77a/2/Conventioner: last busy at 2026-10-25T09:20:00Z (idle_minutes 30), its data kept`.

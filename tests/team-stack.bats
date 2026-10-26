@@ -1022,6 +1022,24 @@ busy_ago() {
   [[ ! -e $HOME/.local/state/agent-team/stacks/conventioner-2.json ]]
 }
 
+@test "sweep counts a busy session in the worktree or below it spelled otherwise than its label (report F6)" {
+  local other
+  other=$(other_spelling "$STACK_WORKTREE")
+  sessions "$(session "$other" busy)"
+  run_bin -0 team-stack sweep
+  assert_equal "$(stopped)" ""
+  (($(busy_ago conventioner-2) < 60))
+  rm "$HOME/.local/state/agent-team/stacks/conventioner-2.json"
+  sessions "$(session "$other/src/app" busy)"
+  run_bin -0 team-stack sweep
+  assert_equal "$(stopped)" ""
+  (($(busy_ago conventioner-2) < 60))
+  rm "$HOME/.local/state/agent-team/stacks/conventioner-2.json"
+  sessions "$(session "$(other_spelling "$(dirname "$STACK_WORKTREE")")/${STACK_WORKTREE##*/}-2" busy)"
+  run_bin -0 team-stack sweep
+  assert_equal "$(stopped)" conventioner-2
+}
+
 @test "sweep never stops a gate or unowned stack, a gate run from a task's shell included, however long idle" {
   sessions
   # The gate run labelled from a shell with team-stack env's exports: owner agent-team, kind gate.
