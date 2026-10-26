@@ -41,6 +41,13 @@ TOML
   } >"$TEAM_HOME/projects.toml"
 }
 
+# commit_file <file> <message>: commit <file> of proj's primary checkout, and make head that commit.
+commit_file() {
+  git -C "$primary" add "$1"
+  git -C "$primary" commit -q -m "$2"
+  head=$(git -C "$primary" rev-parse HEAD)
+}
+
 # The worktrees of proj's primary checkout, one path per line.
 proj_worktrees() {
   git -C "$primary" worktree list --porcelain | sed -n 's/^worktree //p'
@@ -63,9 +70,7 @@ proj_worktrees() {
 
 @test "a passing check exits 0 from a detached worktree of the head, with TMPDIR outside the home directory, and leaves no worktree behind" {
   echo "needed" >"$primary/needed.txt"
-  git -C "$primary" add needed.txt
-  git -C "$primary" commit -q -m "test: what the check needs"
-  head=$(git -C "$primary" rev-parse HEAD)
+  commit_file needed.txt "test: what the check needs"
   # The calling checkout has moved on: the check runs on the head it is given.
   git -C "$primary" commit -q --allow-empty -m "chore: later"
   run_bin -0 --separate-stderr team-checks proj "$head" --from "$primary"
@@ -81,9 +86,7 @@ proj_worktrees() {
 
 @test "the checkout defaults to the repository of the current directory, and a head is given in full or short" {
   echo "needed" >"$primary/needed.txt"
-  git -C "$primary" add needed.txt
-  git -C "$primary" commit -q -m "test: what the check needs"
-  head=$(git -C "$primary" rev-parse HEAD)
+  commit_file needed.txt "test: what the check needs"
   mkdir -p "$primary/sub"
   cd "$primary/sub"
   run_bin -0 --separate-stderr team-checks proj "${head:0:12}"
@@ -103,9 +106,7 @@ local check 'echo fine && exit 4' failed on the head ${head:0:7} (exit 4); its l
 @test "the checks run under the heavy-run lock with the label given, and one that cannot take it exits 75" {
   printf '#!/usr/bin/env bash\n"$HEAVY" status >>"$CHECKS_DIR/heavy"\n' >"$primary/heavy.sh"
   chmod +x "$primary/heavy.sh"
-  git -C "$primary" add heavy.sh
-  git -C "$primary" commit -q -m "test: a check that reads the lock"
-  head=$(git -C "$primary" rev-parse HEAD)
+  commit_file heavy.sh "test: a check that reads the lock"
   registry '["./heavy.sh"]'
   HEAVY=$REPO_ROOT/bin/team-heavy run_bin -0 team-checks proj "$head" --from "$primary" --label "team-merge T14"
   [[ $(cat "$CHECKS_DIR/heavy") =~ ^held\ by\ team-merge\ T14:\ ./heavy.sh\ on\ ${head:0:7}\ \(pid\ [0-9]+\)\ since\  ]]
