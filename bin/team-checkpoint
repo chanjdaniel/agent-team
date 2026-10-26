@@ -184,7 +184,7 @@ done
 # This machine's usage, each complete day of it, for the commit.
 rc=0
 out=$(TEAM_HOME=$TEAM_HOME "$bin/team-tokens" export 2>"$scratch/tokens-err" {lock_fd}>&-) || rc=$?
-[[ -z $out ]] || sed 's/^/usage: /' <<<"$out"
+while IFS= read -r line; do say "usage: $line"; done < <(grep . <<<"$out")
 ((rc == 0)) || echo "team-checkpoint: usage: $(sed -n '1s/^team-tokens: //p' "$scratch/tokens-err"); the next checkpoint exports it" >&2
 
 # The team home's records: commit them, then push the branch when it is ahead of origin's.
