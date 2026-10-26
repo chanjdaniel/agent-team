@@ -251,7 +251,7 @@ the checks
 ## Deliver
 
 - Local checks: none.
-  Run each from the worktree's root on `abc1234` and say in `.scratch/task/review.md` whether it passed; a failure is **blocking**, and they set no GitHub status.
+  Run them on `abc1234` with `@CODE@/bin/team-checks conv abc1234`, which runs them as `team-merge` does, in a fresh detached worktree of that head, and say in `.scratch/task/review.md` whether it passed; a failure is **blocking**, and they set no GitHub status.
 - There is no PR yet: the builder stopped before the no-mistakes gate, which runs once this review passes or its findings are fixed, and reviews the code line by line after you.
 - Write your findings to `.scratch/task/review.md`, numbered, each with its file and line and one kind: `blocking`, `note: correctness`, `note: security`, `note: real-data` or `note`.
   Post nothing to GitHub: the re-review of the gate's PR posts the comment and sets the status.
@@ -720,16 +720,16 @@ after"
   local brief
   run_bin -0 team-brief T14 builder-deliver --set "goal=the goal"
   brief=$(<"$output")
-  assert_contains "$brief" "3. Run each of the project's local checks (\`tests/run\`, \`make lint\`) from the worktree's root on the head you push"
+  assert_contains "$brief" "3. Run the project's local checks (\`tests/run\`, \`make lint\`) on the head you push with \`$REPO_ROOT/bin/team-checks home <full sha>\`, which runs them as \`team-merge\` does, in a fresh detached worktree of that head; fix"
   assert_contains "$brief" "then a line naming the local checks that passed and the head they passed on."
   run_bin -0 team-brief T14 reviewer --name review --set pr=https://github.com/chanjdaniel/agent-team/pull/9 \
     --set head=abc1234 --set "checks=the checks"
   brief=$(<"$output")
   assert_contains "$brief" "- Local checks: \`tests/run\`, \`make lint\`."
-  assert_contains "$brief" "Run each from the worktree's root on \`abc1234\` and say in \`.work/task/review.md\` whether it passed"
+  assert_contains "$brief" "Run them on \`abc1234\` with \`$REPO_ROOT/bin/team-checks home abc1234\`, which runs them as \`team-merge\` does, in a fresh detached worktree of that head, and say in \`.work/task/review.md\` whether it passed"
   run_bin -0 team-brief T14 rereview --name rereview --set pr=https://github.com/chanjdaniel/agent-team/pull/9 \
     --set head=def5678 --set reviewed=abc1234 --set "since=the last review"
-  assert_contains "$(<"$output")" "3. Run each of the project's local checks (\`tests/run\`, \`make lint\`) from the worktree's root on \`def5678\`"
+  assert_contains "$(<"$output")" "3. Run the project's local checks (\`tests/run\`, \`make lint\`) on \`def5678\` with \`$REPO_ROOT/bin/team-checks home def5678\`, which runs them as \`team-merge\` does"
   # A project without local checks says so.
   run_bin -0 team-brief T12 reviewer --name review --set head=abc1234 --set "checks=the checks"
   assert_contains "$(<"$output")" "- Local checks: none."
@@ -761,7 +761,7 @@ Task directory: `.work/task/` in the worktree (excluded from git): `spec.md`, `t
    If `git merge-base --is-ancestor origin/main HEAD` already holds, there is nothing to merge: go to step 6 with no conflicts.
 3. Resolve each conflict so both sides keep what they meant; a resolution that is a judgment call on behaviour goes to `coordinator` as `T14 QUESTION <the conflict> | options: ...`; then commit the merge.
    Then find what the merge made false, a file, command, flag, setting or path that one side renames or removes and the other still names, and fix it in a commit of its own.
-4. Run each of the project's local checks (`tests/run`) from the worktree's root on the merged head; fix the branch until all pass on one head.
+4. Run the project's local checks (`tests/run`) on the merged head with `@CODE@/bin/team-checks home <full sha>`, which runs them as `team-merge` does, in a fresh detached worktree of that head; fix the branch until all pass on one head.
 5. Push the branch; if the PR body names the head its local checks passed on, bring that line up to date (`gh pr edit https://github.com/chanjdaniel/agent-team/pull/9 --body-file <file>`).
    If `gh pr checks https://github.com/chanjdaniel/agent-team/pull/9` lists any GitHub checks, wait for them (`--watch`); fix a failure and push again, back to step 4.
 6. Send `T14 DONE merged main <the full sha of the head> conflicts: <each file that conflicted, or none>` to `coordinator`, which has a fresh reviewer re-check the merge.
