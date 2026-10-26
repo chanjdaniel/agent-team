@@ -337,6 +337,8 @@ LEDGER
   git -C "$clone" switch -q main
   echo e >"$clone/base-only" && git -C "$clone" add base-only && git -C "$clone" commit -q -m "feat: base"
   git -C "$clone" push -q origin main
+  local base
+  base=$(git -C "$clone" rev-parse HEAD)
   cat >"$TEAM_HOME/ledger.jsonl" <<'LEDGER'
 {"ts":"2026-10-22T02:00:00Z","task":"T2","event":"opened","project":"proj","path":"small","type":"fix","title":"Pushed","branch":"fix/T2-pushed","base":"main","base_sha":"abc1234","worktree":"/w/2"}
 {"ts":"2026-10-22T02:00:01Z","task":"T3","event":"opened","project":"proj","path":"small","type":"fix","title":"Local","branch":"fix/T3-local","base":"main","base_sha":"abc1234","worktree":"/w/3"}
@@ -344,7 +346,9 @@ LEDGER
 {"ts":"2026-10-22T02:00:03Z","task":"T5","event":"opened","project":"proj","path":"small","type":"fix","title":"Same","branch":"fix/T5-same","base":"main","base_sha":"abc1234","worktree":"/w/5"}
 LEDGER
   run_bin -0 --separate-stderr team-open proj feature feat new "New"
-  assert_equal "$stderr" "$(printf '%s\n' "team-open: other open tasks in proj:" \
+  # The primary checkout follows the moved base before the listing.
+  assert_equal "$stderr" "$(printf '%s\n' "team-open: the primary checkout $primary: main fast-forwarded to ${base:0:7}" \
+    "team-open: other open tasks in proj:" \
     "  T2 fix/T2-pushed in /w/2: Pushed" "    changes against main (origin's branch):" "      bin/a" "      docs/b" \
     "  T3 fix/T3-local in /w/3: Local" "    changes against main (the local branch, not pushed):" "      local" \
     "  T4 fix/T4-none in /w/4: Not yet" "    no branch yet" \
