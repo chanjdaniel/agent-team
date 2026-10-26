@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 # hooks/session-digest: the coordinator's SessionStart hook prints the team snapshot (its current
-# items included) with the instruction to reconcile it before new work, the live workers whose
-# idle notices to re-arm, and the instruction to arm the offline watch.
+# items included) with the instruction to reconcile it before new work, then the two standing
+# watches to arm in the background: the sweep watch and the offline watch.
 
 load helpers/common
 
@@ -40,9 +40,26 @@ event() {
     >>"$TEAM_HOME/ledger.jsonl"
 }
 
-# The last line of every digest: arm the offline watch (team-timers watch in a Monitor).
-watch_line() {
-  echo "Arm the offline watch unless one is running: Monitor with description \"offline watch\", timeout_ms 1800000 and the command '\"$REPO_ROOT/bin/team-timers\" watch', and arm it again each time it expires; its lines are the heartbeat holding the team and letting it go ($REPO_ROOT/roles/coordinator.md, Machines)."
+# The last lines of every digest: arm the sweep watch and the offline watch in the background.
+watch_lines() {
+  echo "Arm each standing watch with Bash run_in_background unless it is already running (Claude Code lists the background commands that run), and re-arm it in the turn it ends, after acting on what it printed ($REPO_ROOT/roles/coordinator.md, Watching workers and Machines):
+  sweep watch, ends once a new finding has stood for three minutes: \"$REPO_ROOT/bin/team-sweep\" --wait
+  offline watch, ends when the hold starts or ends: \"$REPO_ROOT/bin/team-timers\" watch --once"
+}
+
+# The command the digest gives for the watch named <name>.
+watch_command() {
+  watch_lines | sed -nE "s/^  $1 watch, [^:]*: //p"
+}
+
+# No digest asks for idle notices or a Monitor any more: refute_idle_notices <digest>
+refute_idle_notices() {
+  [[ $1 != *notify_when_idle* && $1 != *"idle notice"* && $1 != *Monitor* ]]
+}
+
+# The reconcile line every digest has.
+reconcile_line() {
+  echo "Reconcile these before taking new work: log what the ledger is missing with team-log, act on what team-sweep finds (stray sessions, and tasks with no live worker that are not held, blocked, awaiting merge, asking, paused or waiting), and chase the pending asks and the current items."
 }
 
 # Two open tasks with live builders, one stray.
@@ -56,7 +73,7 @@ team_at_work() {
     {"id": "77777777", "sessionId": "77777777-1111", "name": "T4-reviewer", "status": "idle"}]'
 }
 
-@test "it prints the snapshot, then the instruction to reconcile, the workers whose idle notices to re-arm and the offline watch to arm" {
+@test "it prints the snapshot, then the instruction to reconcile and the two watches to arm, and no idle notices" {
   team_at_work
   start -0
   assert_equal "$stderr" ""
@@ -73,11 +90,9 @@ Open PRs:
 Pending asks: none
 Current items: none
 
-Reconcile these before taking new work: log what the ledger is missing with team-log, act on what team-sweep finds (stray sessions, and tasks with no live worker that are not held, blocked, awaiting merge, asking, paused or waiting), and chase the pending asks.
-Re-arm the idle notice for each live worker (SendMessage to its name with notify_when_idle):
-  T3-builder 59709d99
-  T12-builder 3ed2d1f2
-$(watch_line)"
+$(reconcile_line)
+$(watch_lines)"
+  refute_idle_notices "$output"
   # One snapshot: the session list is read once.
   assert_equal "$(stub_calls claude)" '["agents","--json"]'
 }
@@ -108,39 +123,60 @@ Reconcile these before taking new work"
   done
 }
 
-@test "with no live workers it says there is no idle notice to re-arm, strays aside" {
+@test "with no live workers the closing lines are the same, strays aside" {
   event T4 closed '{archive: [], returned: [], kept: []}'
   stub_reply claude '[{"id": "77777777", "sessionId": "77777777-1111", "name": "T4-reviewer", "status": "idle"}]'
   start -0
-  assert_equal "$(tail -n 3 <<<"$output")" "Reconcile these before taking new work: log what the ledger is missing with team-log, act on what team-sweep finds (stray sessions, and tasks with no live worker that are not held, blocked, awaiting merge, asking, paused or waiting), and chase the pending asks.
-No live workers, so no idle notices to re-arm.
-$(watch_line)"
+  assert_equal "$(tail -n 4 <<<"$output")" "$(reconcile_line)
+$(watch_lines)"
 }
 
-@test "when the snapshot fails it prints the error, still asks for the offline watch and exits 0" {
+@test "when the snapshot fails it prints the error, still asks for both watches and exits 0" {
   team_at_work
   stub_reply claude "boom" 1
   start -0
   assert_equal "$stderr" ""
   assert_equal "$output" "team-snapshot failed (exit 1), so there is no digest:
 team-snapshot: cannot read the live session list (claude agents --json)
-Reconcile by hand before taking new work (team-sweep, team-state T<n>, claude agents), and re-arm the idle notice (SendMessage with notify_when_idle) for each live worker.
-$(watch_line)"
+Reconcile by hand before taking new work (team-sweep, team-state T<n>, claude agents, tasks/current.md).
+$(watch_lines)"
+  refute_idle_notices "$output"
 }
 
-@test "the command it gives for the offline watch runs, and prints the hold when the team holds" {
-  local command
-  command=$(watch_line | sed -E "s/.*the command '(.*)', and arm.*/\1/")
-  mkdir -p "$HOME/.local/state/agent-team"
-  echo '{"since": "2026-10-23T13:05:00Z", "posted": true}' >"$HOME/.local/state/agent-team/offline"
-  # A stub sleep stops the watch; the uname stub keeps it ahead of Homebrew's GNU sleep on macOS.
-  stub_command sleep
-  stub_script sleep <<<'exit 143'
-  stub_command uname
+@test "the command it gives for the offline watch runs, and ends on the first change of the hold" {
+  local command flag=$HOME/.local/state/agent-team/offline
+  command=$(watch_command offline)
+  assert_equal "$command" "\"$REPO_ROOT/bin/team-timers\" watch --once"
+  mkdir -p "${flag%/*}"
+  # The first wait starts the hold. The uname stub keeps the stub sleep ahead of Homebrew's GNU
+  # sleep on macOS.
+  stub_command sleep uname
+  stub_script sleep <<<"echo '{\"since\": \"2026-10-23T13:05:00Z\", \"posted\": true}' >'$flag'"
   stub_reply uname Linux
   guard_sandbox
-  run -143 sh -c "$command"
+  run -0 sh -c "$command"
   assert_equal "$output" "GitHub unreachable since 2026-10-23T13:05:00Z; the team is holding"
+}
+
+@test "the command it gives for the sweep watch runs, and ends on a finding that stands" {
+  local command
+  command=$(watch_command sweep)
+  assert_equal "$command" "\"$REPO_ROOT/bin/team-sweep\" --wait"
+  event T3 opened '{project: "proj", path: "feature", type: "feat", title: "Work", branch: "feat/T3-work",
+    base: "main", base_sha: "0123456", worktree: "/w/1"}'
+  # T3 has no worker from the second look on; the uname stub keeps the stub sleep ahead of
+  # Homebrew's GNU sleep on macOS.
+  stub_script claude <<EOF
+if [[ -e "$BATS_TEST_TMPDIR/slept" ]]; then echo '[]'; else echo '[{"id": "4f2a9c1e", "sessionId": "4f2a9c1e-1111", "name": "T3-builder", "status": "busy", "state": "working"}]'; fi
+EOF
+  event T3 launch '{role: "builder", session: "4f2a9c1e", worktree: "/w/1", toolkits: []}'
+  stub_command sleep uname
+  stub_script sleep <<<"touch '$BATS_TEST_TMPDIR/slept'"
+  stub_reply uname Linux
+  guard_sandbox
+  run -0 sh -c "$command"
+  assert_contains "$output" "T3 no-worker: no live session among its 1 launch (latest T3-builder 4f2a9c1e)"
+  assert_equal "$(stub_calls sleep | grep -c .)" 7
 }
 
 @test "coordinator.settings.json wires the hook on SessionStart, and no worker settings file mentions it" {

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Find what the coordinator must not leave unattended, from the ledger and the live session list.
 #
-# Usage: team-sweep [--json]
+# Usage: team-sweep [--json | --wait]
 # Reads only ledger.jsonl and claude agents --json (never GitHub), so it runs in about a second.
 # A task is open when it has events and no closed; it is parked when its phase is held, blocked
 # or awaiting-merge, when it has an ask with no answer, or when its latest paused or waiting has
@@ -22,25 +22,100 @@
 # With --json, the findings as a list of {task, kind, session, name, next, text}.
 # Exit 0 with no findings (and nothing printed but --json's []), 1 with findings, and 1 with the
 # reason on stderr and nothing on stdout when the session list cannot be read.
+#
+# --wait is the coordinator's sweep watch, run with Bash run_in_background, which has no expiry
+# and wakes it once, when the command ends: it looks every 30 s and ends once a finding that was
+# not there at its first look has stood for three minutes, printing every finding in the text
+# form and exiting 0. A finding is its task, kind and session. One there at the first look never
+# ends it, nor does one that clears within three minutes (a no-worker between a DONE and the next
+# launch); either one, once cleared, counts as new when it comes back. It exits 1 with the reason
+# on stderr when the session list cannot be read for five minutes running. Time is counted in
+# looks, WAIT_SECONDS apart (a test steps it with a stub sleep). Re-arm it after acting on what it
+# printed.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
-json=''
-for arg in "$@"; do
-  case $arg in
-    --json) json=1 ;;
-    *) usage_error "usage: team-sweep [--json]" ;;
-  esac
-done
+# --wait: seconds between looks, how long a new finding must stand, and how long the session list
+# may stay unreadable.
+WAIT_SECONDS=30
+STAND_SECONDS=180
+UNREADABLE_SECONDS=300
+
+usage="usage: team-sweep [--json | --wait]"
+mode=text
+case $# in
+  0) ;;
+  1)
+    case $1 in
+      --json) mode=json ;;
+      --wait) mode=watch ;;
+      *) usage_error "$usage" ;;
+    esac
+    ;;
+  *) usage_error "$usage" ;;
+esac
 
 ledger=$TEAM_HOME/ledger.jsonl
 [[ -e $ledger ]] || ledger=/dev/null
-live_sessions
-findings=$(ledger_jq 'ledger_events | sweep($sessions)' -nRc --argjson sessions "$LIVE_SESSIONS" "$ledger")
 
-if [[ -n $json ]]; then
-  jq . <<<"$findings"
-else
-  jq -r '.[].text' <<<"$findings"
-fi
-[[ $findings == '[]' ]]
+# The findings now, as JSON in FINDINGS, from the ledger and a fresh read of the session list;
+# fails with the reason on stderr when the session list cannot be read.
+look() {
+  local sessions
+  sessions=$(LIVE_SESSIONS='' && live_sessions && printf '%s' "$LIVE_SESSIONS") || return 1
+  FINDINGS=$(ledger_jq 'ledger_events | sweep($sessions)' -nRc --argjson sessions "$sessions" "$ledger")
+}
+
+# The sweep watch: see --wait in the header.
+wait_for_finding() {
+  local look_n=0 failing_since='' key first=1
+  local -A initial=() since=() now=()
+  err=$(mktemp)
+  trap 'rm -f "$err"' EXIT
+  while :; do
+    if look 2>"$err"; then
+      failing_since=''
+      now=()
+      while IFS= read -r key; do
+        now[$key]=1
+        if ((first)); then
+          initial[$key]=1
+        elif [[ -z ${initial[$key]:-} && -z ${since[$key]:-} ]]; then
+          since[$key]=$look_n
+        fi
+      done < <(jq -r '.[] | "\(.task)/\(.kind)/\(.session)"' <<<"$FINDINGS")
+      first=0
+      for key in "${!initial[@]}"; do [[ -n ${now[$key]:-} ]] || unset "initial[$key]"; done
+      for key in "${!since[@]}"; do
+        if [[ -z ${now[$key]:-} ]]; then
+          unset "since[$key]"
+        elif (((look_n - since[$key]) * WAIT_SECONDS >= STAND_SECONDS)); then
+          jq -r '.[].text' <<<"$FINDINGS"
+          return 0
+        fi
+      done
+    else
+      [[ -n $failing_since ]] || failing_since=$look_n
+      if (((look_n - failing_since) * WAIT_SECONDS >= UNREADABLE_SECONDS)); then
+        echo "team-sweep: $(sed -n 's/^team-sweep: //p' "$err" | tail -n 1), for $((UNREADABLE_SECONDS / 60)) minutes running" >&2
+        return 1
+      fi
+    fi
+    sleep "$WAIT_SECONDS"
+    look_n=$((look_n + 1))
+  done
+}
+
+case $mode in
+  watch) wait_for_finding ;;
+  json)
+    look
+    jq . <<<"$FINDINGS"
+    [[ $FINDINGS == '[]' ]]
+    ;;
+  text)
+    look
+    jq -r '.[].text' <<<"$FINDINGS"
+    [[ $FINDINGS == '[]' ]]
+    ;;
+esac

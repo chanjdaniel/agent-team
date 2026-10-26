@@ -677,6 +677,59 @@ GitHub answers again (unreachable from 2026-10-23T13:05:00Z); the hold is over"
   assert_equal "$output" "GitHub unreachable since 2026-10-23T14:00:00Z; the team is holding"
 }
 
+@test "watch --once prints the hold starting and exits 0, checking every 60 s" {
+  local flag=$HOME/.local/state/agent-team/offline
+  mkdir -p "${flag%/*}"
+  # The outage starts during the second wait; a fifth wait would stop the stub with 143.
+  stub_sleep <<EOF2
+n=\$(cat "$BATS_TEST_TMPDIR/waits" 2>/dev/null || echo 0)
+echo \$((n + 1)) >"$BATS_TEST_TMPDIR/waits"
+case \$n in
+  1) echo '{"since": "2026-10-23T13:05:00Z", "posted": true}' >"$flag" ;;
+  4) exit 143 ;;
+esac
+EOF2
+  run_bin -0 --separate-stderr team-timers watch --once
+  assert_equal "$stderr" ""
+  assert_equal "$output" "GitHub unreachable since 2026-10-23T13:05:00Z; the team is holding"
+  assert_equal "$(stub_calls sleep)" '["60"]
+["60"]'
+}
+
+@test "watch --once takes a hold already on as no change, and prints its end and exits 0" {
+  local flag=$HOME/.local/state/agent-team/offline
+  mkdir -p "${flag%/*}"
+  echo '{"since": "2026-10-23T13:05:00Z", "posted": false}' >"$flag"
+  stub_sleep <<EOF2
+n=\$(cat "$BATS_TEST_TMPDIR/waits" 2>/dev/null || echo 0)
+echo \$((n + 1)) >"$BATS_TEST_TMPDIR/waits"
+case \$n in
+  2) rm "$flag" ;;
+  4) exit 143 ;;
+esac
+EOF2
+  run_bin -0 team-timers watch --once
+  assert_equal "$output" "GitHub answers again (unreachable from 2026-10-23T13:05:00Z); the hold is over"
+  assert_equal "$(stub_calls sleep | grep -c .)" 3
+}
+
+@test "watch --once never ends while the flag stays as it found it" {
+  local flag=$HOME/.local/state/agent-team/offline
+  stub_sleep <<EOF2
+n=\$(cat "$BATS_TEST_TMPDIR/waits" 2>/dev/null || echo 0)
+echo \$((n + 1)) >"$BATS_TEST_TMPDIR/waits"
+((n < 5)) || exit 143
+EOF2
+  run_bin -143 team-timers watch --once
+  assert_equal "$output" ""
+  # The same with a hold on all along.
+  mkdir -p "${flag%/*}"
+  echo '{"since": "2026-10-23T13:05:00Z", "posted": true}' >"$flag"
+  rm "$BATS_TEST_TMPDIR/waits"
+  run_bin -143 team-timers watch --once
+  assert_equal "$output" ""
+}
+
 @test "enable refuses on an OS other than Linux or macOS" {
   stub_reply uname FreeBSD
   run_bin -1 --separate-stderr team-timers enable
@@ -695,10 +748,10 @@ GitHub answers again (unreachable from 2026-10-23T13:05:00Z); the hold is over"
 
 @test "team-timers refuses a malformed command line" {
   local args
-  for args in "" "start" "enable --now" "status --yes" "run now" "watch --json"; do
+  for args in "" "start" "enable --now" "status --yes" "run now" "run --once" "watch --json" "watch --once --once"; do
     # shellcheck disable=SC2086 # each case is its words
     run_bin -2 --separate-stderr team-timers $args
-    assert_equal "$stderr" "team-timers: usage: team-timers enable | disable | status [--json] | run | watch"
+    assert_equal "$stderr" "team-timers: usage: team-timers enable | disable | status [--json] | run | watch [--once]"
   done
 }
 

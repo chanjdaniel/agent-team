@@ -11,7 +11,7 @@ Run `team-state T<n>` first, so you act on the task's state, not on the last mes
 1. **Read its log.** `claude logs <session id>` shows what the worker last did and where it stands.
    Often the answer is there: a prompt it is waiting on, a question it asked in the wrong place, a finished step it never reported.
 2. **Send one line.** SendMessage to the worker's name with the one thing it needs: the answer, the next step, or "report where you stand with the protocol's kind".
-   Ask for the idle notice again (`notify_when_idle`) and give it the time to act.
+   Check the sweep watch (`team-sweep --wait`) is running, arming it if not, and give the worker the time to act: the watch wakes you if it stays stuck.
 3. **Stop and respawn.** `claude stop <session id>`, then add a "Progress so far" section at the top of its brief in `tasks/T<n>/`: what is done (commits, ticked boxes), what is left, and what went wrong.
    Launch a fresh worker with the same `team-worker` command and brief.
    Log why: `team-log T<n> blocked reason="<what stuck it>"` before the stop; the launch clears it.

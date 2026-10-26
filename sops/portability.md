@@ -83,7 +83,7 @@ A worktree whose head a salvage branch holds, with nothing uncommitted, is salva
 - The probe is `git ls-remote` of the lease branch, 20 seconds at most; a network failure is tried again after 60 seconds, and a second one means offline.
   GitHub refusing the login is not offline: it is posted once and the doctor fails it.
 - Offline, the holder keeps the lease and holds the team: the heartbeat posts the hold in `#coordinator` once, the hook blocks workers' pushes and `gh` with the hold message, and no worker starts, no coordinator starts, and no checkpoint, handoff, resume or take runs.
-- The coordinator learns of it through its Monitor on `team-timers watch` (or a worker's `T<n> PAUSED offline`), sends `T<n> HOLD` to each live worker, and each commits locally, writes `handoff.md` and answers `T<n> PAUSED held`.
+- The coordinator learns of it through its offline watch, `team-timers watch --once` in the background (or a worker's `T<n> PAUSED offline`), sends `T<n> HOLD` to each live worker, and each commits locally, writes `handoff.md` and answers `T<n> PAUSED held`.
 - The first probe that answers renews the lease, clears the flag and posts "GitHub back"; the coordinator sends `T<n> RESUME`.
   If another machine took the lease meanwhile, the renew fences this one instead.
 

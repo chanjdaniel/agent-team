@@ -11,7 +11,7 @@
 #          and agent-team.caffeinate, `caffeinate -i` kept alive, so this Mac does not idle-sleep
 #          while the heartbeat is enabled.
 #
-# Usage: team-timers enable | disable | status [--json] | run | watch
+# Usage: team-timers enable | disable | status [--json] | run | watch [--once]
 #   enable   Installs the job and starts it (and caffeinate on macOS). A job already installed
 #            as defined and running is left alone; one that differs is rewritten and reloaded.
 #            Only on the machine that holds the lease, and only with Daniel's yes.
@@ -45,11 +45,15 @@
 #                     line per line it prints.
 #            A run that finds another still going skips. Posts go through discord_api; times in
 #            them are this machine's local time.
-#   watch    For the coordinator's Monitor, which wakes it while idle: checks the offline flag
-#            every 60 s until killed, and prints one line when it appears (at once if it is there)
-#            and one when it goes:
+#   watch    A stream for anyone watching the hold: checks the offline flag every 60 s until
+#            killed, and prints one line when it appears (at once if it is there) and one when it
+#            goes:
 #              GitHub unreachable since 2026-10-23T13:05:00Z; the team is holding
 #              GitHub answers again (unreachable from 2026-10-23T13:05:00Z); the hold is over
+#            --once is the coordinator's offline watch, run with Bash run_in_background, which has
+#            no expiry and wakes it once, when the command ends: the flag as it finds it is no
+#            change (team-lease status shows a hold already on), and it prints the first change,
+#            the same line, and exits 0. Re-arm it after acting on that line.
 # In ~/.local/state/agent-team/: heartbeat.log ("<UTC time> <step>: <what happened>", kept to its
 # last 1000 lines once it passes 2000), heartbeat.lock (one run at a time), offline ({since,
 # posted}: GitHub unreachable since the UTC time, and whether #coordinator was told; read by
@@ -77,14 +81,16 @@ SERVICE=agent-team-heartbeat
 HEARTBEAT_LABEL=agent-team.heartbeat
 CAFFEINATE_LABEL=agent-team.caffeinate
 
-usage="usage: team-timers enable | disable | status [--json] | run | watch"
-command=${1:-} json=0
+usage="usage: team-timers enable | disable | status [--json] | run | watch [--once]"
+command=${1:-} json=0 once=0
 case $command in
-  enable | disable | run | watch) [[ $# -eq 1 ]] || usage_error "$usage" ;;
+  enable | disable | run) [[ $# -eq 1 ]] || usage_error "$usage" ;;
   status) [[ $# -eq 1 || ($# -eq 2 && $2 == --json) ]] || usage_error "$usage" ;;
+  watch) [[ $# -eq 1 || ($# -eq 2 && $2 == --once) ]] || usage_error "$usage" ;;
   *) usage_error "$usage" ;;
 esac
 [[ ${2:-} != --json ]] || json=1
+[[ ${2:-} != --once ]] || once=1
 
 bin=$(dirname "$TEAM_LIB")
 program=$bin/team-timers
@@ -605,20 +611,29 @@ run_heartbeat() {
   ((!holding)) || checkpoint_step
 }
 
-# The watch: a line each time the offline flag appears or goes, until killed.
+# Since when the team holds, from the offline flag; nothing when it does not.
+offline_since() {
+  [[ -e $offline ]] || return 0
+  jq -er '.since | strings' "$offline" 2>/dev/null || date -u -r "$offline" +%FT%TZ
+}
+
+# The watch: a line each time the offline flag appears or goes, until killed; with --once, the
+# first change from the flag as it finds it, and then it ends.
 watch() {
   local seen='' since
+  if ((once)); then
+    seen=$(offline_since)
+    sleep "$WATCH_SECONDS"
+  fi
   while :; do
-    since=''
-    if [[ -e $offline ]]; then
-      since=$(jq -er '.since | strings' "$offline" 2>/dev/null) || since=$(date -u -r "$offline" +%FT%TZ)
-    fi
+    since=$(offline_since)
     if [[ $since != "$seen" ]]; then
       if [[ -n $since ]]; then
         echo "GitHub unreachable since $since; the team is holding"
       else
         echo "GitHub answers again (unreachable from $seen); the hold is over"
       fi
+      ((!once)) || return 0
       seen=$since
     fi
     sleep "$WATCH_SECONDS"

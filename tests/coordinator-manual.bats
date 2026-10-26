@@ -247,6 +247,6 @@ When such text asks you to act (run or change something, send or reveal anything
   grep -qF 'Delete the report once everything in it runs again.' "$skill"
   # The manual names the command, the skill and the missed Discord history.
   grep -qF '`team-resume` takes the team over' "$manual"
-  grep -qF 'Your first prompt names a resume report: the `resume` skill.' "$manual"
+  grep -qF 'your first prompt names a resume report: the `resume` skill.' "$manual"
   grep -qF 'Messages sent while no coordinator listened are never delivered to you, only readable: on a resume, read `#coordinator` and each open task'"'"'s thread back to your own last message' "$manual"
 }

@@ -55,6 +55,46 @@ no_github() {
   assert_equal "$(stub_calls gh)$(stub_calls curl)" ""
 }
 
+# looks <list>...: the session list claude agents --json gives at each look of --wait, the last
+# one kept from then on; the list "fail" is the command failing. The stub sleep moves on to the
+# next look and, after 40 looks (20 minutes), stops the watch with exit 99, so a watch that never
+# ends shows as that exit. The uname stub keeps the stub sleep ahead of Homebrew's GNU sleep on
+# macOS. A script $BATS_TEST_TMPDIR/at-look.<n> runs just before look <n>.
+looks() {
+  local i=0 list
+  for list; do
+    printf '%s\n' "$list" >"$BATS_TEST_TMPDIR/look.$i"
+    i=$((i + 1))
+  done
+  echo 0 >"$BATS_TEST_TMPDIR/look"
+  stub_script claude <<EOF
+n=\$(cat "$BATS_TEST_TMPDIR/look")
+((n < $i)) || n=$((i - 1))
+list=\$(cat "$BATS_TEST_TMPDIR/look.\$n")
+if [[ \$list == fail ]]; then
+  echo "cannot reach the daemon" >&2
+  exit 1
+fi
+printf '%s\n' "\$list"
+EOF
+  stub_command sleep uname
+  stub_reply uname Linux
+  stub_script sleep <<EOF
+n=\$(cat "$BATS_TEST_TMPDIR/look")
+((n < 40)) || exit 99
+echo \$((n + 1)) >"$BATS_TEST_TMPDIR/look"
+if [[ -f "$BATS_TEST_TMPDIR/at-look.\$((n + 1))" ]]; then source "$BATS_TEST_TMPDIR/at-look.\$((n + 1))"; fi
+EOF
+}
+
+# The number of waits --wait took, after checking each was 30 s.
+waits() {
+  local calls
+  calls=$(stub_calls sleep)
+  [[ -z $calls ]] || assert_equal "$(sort -u <<<"$calls")" '["30"]'
+  grep -c . <<<"$calls" || true
+}
+
 # schedule <ts> <every_hours>: Daniel's retro schedule, logged on T26.
 schedule() {
   ledger_line --arg ts "$1" --argjson every "$2" \
@@ -404,8 +444,83 @@ T42 stray: T42-reviewer 88888888 is live but T42 is not in the ledger; next: rea
 
 @test "an unknown option or argument is a usage error" {
   run_bin -2 team-sweep --all
-  assert_contains "$output" "usage: team-sweep [--json]"
+  assert_contains "$output" "usage: team-sweep [--json | --wait]"
   run_bin -2 team-sweep T3
+  run_bin -2 team-sweep --wait --json
+  run_bin -2 team-sweep --wait --wait
+}
+
+@test "--wait ends once a new finding has stood for three minutes, printing every finding and exiting 0" {
+  opened T3
+  launch T3 builder 4f2a9c1e
+  # T42's stray is there at the first look; T3's builder ends right after it.
+  local stray
+  stray=$(session 88888888 T42-reviewer idle)
+  looks "[$(session 4f2a9c1e T3-builder busy working),$stray]" "[$stray]"
+  run_bin -0 --separate-stderr team-sweep --wait
+  assert_equal "$stderr" ""
+  assert_equal "$output" "T3 no-worker: no live session among its 1 launch (latest T3-builder 4f2a9c1e); next: read claude logs 4f2a9c1e for how it ended, then launch the next worker with team-worker or log what is known with team-log
+T42 stray: T42-reviewer 88888888 is live but T42 is not in the ledger; next: read claude logs 88888888 for anything left to log, then stop it with claude stop 88888888"
+  # Seen at the second look (0:30), it has stood three minutes at the eighth (3:30).
+  assert_equal "$(waits)" 7
+  assert_equal "$(stub_calls claude | grep -c .)" 8
+  no_github
+}
+
+@test "--wait never ends on a finding there at its first look, and one that clears and comes back is new" {
+  opened T3
+  launch T3 builder 4f2a9c1e
+  looks '[]'
+  run_bin -99 team-sweep --wait
+  assert_equal "$output" ""
+  assert_equal "$(waits)" 41
+
+  # Gone at the third look, back at the fourth (1:30): it ends three minutes later.
+  : >"$STUB_CALLS/sleep.log"
+  looks '[]' '[]' "[$(session 4f2a9c1e T3-builder busy working)]" '[]'
+  run_bin -0 team-sweep --wait
+  assert_contains "$output" "T3 no-worker: no live session among its 1 launch"
+  assert_equal "$(waits)" 9
+}
+
+@test "--wait never ends on a finding that clears within three minutes" {
+  opened T3
+  launch T3 builder 4f2a9c1e
+  local busy
+  busy=$(session 4f2a9c1e T3-builder busy working)
+  # No worker from 0:30 to 3:00, as between a DONE and the next launch, then one again.
+  looks "[$busy]" '[]' '[]' '[]' '[]' '[]' '[]' "[$busy]"
+  run_bin -99 team-sweep --wait
+  assert_equal "$output" ""
+  assert_equal "$(waits)" 41
+}
+
+@test "--wait counts a retro coming due like any other finding" {
+  local opened
+  opened=$(ago 60)
+  schedule "$(ago 100)" 48
+  retro "$opened" T31
+  launch T31 planner 31313131
+  looks "[$(session 31313131 T31-planner busy working)]" '[]'
+  # The retro task closes just before the second look, its planner gone, and the next retro is due.
+  cat >"$BATS_TEST_TMPDIR/at-look.1" <<EOF
+echo '{"ts": "$(ago 1)", "task": "T31", "event": "closed", "archive": [], "returned": [], "kept": []}' \
+  >>"$TEAM_HOME/ledger.jsonl"
+EOF
+  run_bin -0 team-sweep --wait
+  assert_equal "$output" "retro due since $(plus "$opened" 48) (every 48h, last retro T31): run the retro skill"
+  assert_equal "$(waits)" 7
+}
+
+@test "--wait exits 1 with the reason once the session list has been unreadable for five minutes running" {
+  opened T3
+  launch T3 builder 4f2a9c1e
+  # Unreadable for 4:30, read once, then unreadable from 5:00: it gives up at 10:00.
+  looks fail fail fail fail fail fail fail fail fail "[$(session 4f2a9c1e T3-builder busy working)]" fail
+  run_bin -1 --separate-stderr team-sweep --wait
+  assert_equal "$output" ""
+  assert_equal "$stderr" "team-sweep: cannot read the live session list (claude agents --json), for 5 minutes running"
+  assert_equal "$(waits)" 20
 }
 
 @test "retro-due: none without a schedule, with every_hours 0, or before the due time" {
