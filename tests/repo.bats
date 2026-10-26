@@ -546,10 +546,12 @@ COMMANDS
 
 # CI and a stranger's fresh clone name no team home, and the checks need none (every test makes
 # its own): a malformed command line is the usage error, never the team home's refusal.
-@test "tests/run and servers/install, which its toolkit tests run, need no team home" {
+@test "tests/run, the team-heavy lock it runs under, and servers/install, which its toolkit tests run, need no team home" {
   unset TEAM_HOME
   run -2 --separate-stderr "$REPO_ROOT/tests/run" nothing
   assert_equal "$stderr" "run: usage: tests/run [shellcheck|bats|toolkits]"
+  run -0 --separate-stderr "$REPO_ROOT/bin/team-heavy" run -- echo ran
+  assert_equal "$output" ran
   run -2 --separate-stderr "$REPO_ROOT/servers/install" nothing
   assert_equal "$stderr" "install: usage: servers/install [--force]"
 }
