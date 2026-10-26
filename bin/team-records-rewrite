@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# Rewrite the records repository's history in a work directory, touching no remote: T56's tier 2,
+# the non-record bulk and T31 ticket 20's scrub of the applicants' data dropped from dev and lease,
+# every commit checked byte for byte, and the force push printed for Daniel, never run.
+#
+# Usage: team-records-rewrite <work-dir>
+#   <work-dir>  A new or empty directory outside every git checkout: never the team home, a task
+#               directory or a worktree, where a checkpoint would archive the repositories.
+# The repository is the team home's origin. In order, stopping at the first failure:
+#   1. OLD, dev's sha on origin (git ls-remote), and lease's.
+#   2. mirror.git, git clone --mirror of origin, its refs in refs-before.txt; its dev must be OLD
+#      and its lease origin's, so nothing moved during the clone. Kept: verify reads it, and it is
+#      the rollback.
+#   3. rewrite.git, a --no-local mirror clone of mirror.git holding only dev and lease (the wip/*
+#      branches are projects' histories, whose shas must stay theirs, and GitHub keeps refs/pull/*
+#      read-only), rewritten by git filter-repo 2.47.0, vendored in bin/lib/vendor/git-filter-repo/
+#      (sha256 67447413e273fc76809289111748870b6f6072f08b17efe94863a92d810b7d94): the paths of
+#      bin/lib/records-rewrite/drop.txt dropped, every commit message through its
+#      message-expressions.txt (no comments there: filter-repo reads every line as one), the S02
+#      story through its s02-callback.py, with --sensitive-data-removal --no-fetch --prune-empty
+#      never --prune-degenerate never, so the commit map is one to one; its origin removed after.
+#      filter-repo's output in filter-repo.log.
+#   4. bin/lib/records-rewrite/verify.py over every commit of the map: every difference a dropped
+#      path or the S02 story, authors, committers and parents equal, no dropped path left (its
+#      counts in verify.txt).
+#   5. lease in rewrite.git is lease in mirror.git: an orphan branch no drop path matches.
+#   6. The pack of dev and lease before and after, each in a copy repacked from scratch the same
+#      way (git repack -a -d -f --window=250 --depth=50), the copies then removed.
+#   7. The new dev, filter-repo/first-changed-commits, and, once origin's lease is released, the
+#      force push, the check after it and the rollback, filled in, printed and never run; while the
+#      lease is held the run was a rehearsal, and says so instead.
+# What it prints is also in summary.txt. sops/records-rewrite.md is the cutover around it.
+# Exit 0 every check passed, 1 refused or a check failed, 2 usage error, 75 origin unreachable.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+[[ $# -eq 1 && -n $1 && $1 != -* ]] || usage_error "usage: team-records-rewrite <work-dir>"
+lib=$TEAM_LIB/records-rewrite
+filter_repo=$TEAM_LIB/vendor/git-filter-repo/git-filter-repo
+# The S02 story s02-callback.py changes, the one path verify.py lets differ but for a deletion.
+s02=F04-real-export-shapes/S02-a-timestamp-is-a-moment.md
+
+# Checked at its nearest existing directory, so a refused one is never made.
+work=$(realpath -m -- "$1")
+probe=$work
+until [[ -d $probe ]]; do probe=$(dirname "$probe"); done
+if top=$(git -C "$probe" rev-parse --absolute-git-dir 2>/dev/null); then
+  die "$work is inside the git repository $top: make the work directory outside every checkout, where no checkpoint archives it"
+fi
+mkdir -p "$work"
+[[ -z $(find "$work" -mindepth 1 -maxdepth 1 -print -quit) ]] || die "$work is not empty: give a new directory"
+url=$(git -C "$TEAM_HOME" remote get-url origin 2>/dev/null) || die "the team home $TEAM_HOME has no origin"
+command -v python3 >/dev/null || die "python3 is not on PATH, and git filter-repo and verify.py need it"
+
+summary=$work/summary.txt
+NET_ERR=$work/net.err
+# One line of what it found, on stdout and in summary.txt.
+say() {
+  printf '%s\n' "$*" | tee -a "$summary"
+}
+# The seconds since <start>, to a tenth.
+since() {
+  awk -v a="$(date +%s.%N)" -v b="$1" 'BEGIN { printf "%.1f", a - b }'
+}
+# The pack of <git dir>'s dev and lease, repacked from scratch in a copy, as "<MiB> MiB, <n>
+# objects"; the copy is removed.
+pack_of() {
+  local copy=$work/pack-$2.git kib count
+  git clone -q --no-local --mirror "$1" "$copy"
+  git -C "$copy" for-each-ref --format='%(refname)' | grep -vxE 'refs/heads/(dev|lease)' |
+    xargs -r -n1 git -C "$copy" update-ref -d
+  git -C "$copy" reflog expire --expire=now --all
+  git -C "$copy" repack -q -a -d -f --window=250 --depth=50
+  git -C "$copy" prune --expire=now
+  kib=$(git -C "$copy" count-objects -v | awk '$1 == "size-pack:" { print $2 }')
+  count=$(git -C "$copy" count-objects -v | awk '$1 == "in-pack:" { print $2 }')
+  rm -rf "$copy"
+  awk -v k="$kib" -v n="$count" 'BEGIN { printf "%.2f MiB, %d objects\n", k / 1024, n }'
+}
+
+# 1. origin's dev and lease.
+rc=0
+heads=$(origin_git ls-remote "$url" refs/heads/dev refs/heads/lease) || rc=$?
+((rc == 0)) || { echo "${0##*/}: cannot read $url: $(origin_reason "$rc")" >&2; exit 75; }
+old=$(awk '$2 == "refs/heads/dev" { print $1 }' <<<"$heads")
+lease=$(awk '$2 == "refs/heads/lease" { print $1 }' <<<"$heads")
+[[ -n $old ]] || die "$url has no dev"
+[[ -n $lease ]] || die "$url has no lease"
+say "origin: $url, dev at $old, lease at $lease"
+
+# 2. The mirror.
+rc=0
+NET_TIMEOUT=1800 origin_git clone -q --mirror "$url" "$work/mirror.git" || rc=$?
+((rc == 0)) || { echo "${0##*/}: cannot mirror $url: $(origin_reason "$rc")" >&2; exit 75; }
+git -C "$work/mirror.git" for-each-ref --format='%(refname) %(objectname)' >"$work/refs-before.txt"
+[[ $(git -C "$work/mirror.git" rev-parse refs/heads/dev) == "$old" ]] ||
+  die "origin's dev moved during the mirror: the team is not frozen; hand off, then run it again in a new directory"
+[[ $(git -C "$work/mirror.git" rev-parse refs/heads/lease) == "$lease" ]] ||
+  die "origin's lease moved during the mirror: the team is not frozen; hand off, then run it again in a new directory"
+say "mirror: $work/mirror.git, $(wc -l <"$work/refs-before.txt") refs (refs-before.txt)"
+
+# 3. The rewrite.
+git clone -q --no-local --mirror "$work/mirror.git" "$work/rewrite.git"
+git -C "$work/rewrite.git" for-each-ref --format='%(refname)' | grep -vxE 'refs/heads/(dev|lease)' |
+  xargs -r -n1 git -C "$work/rewrite.git" update-ref -d
+start=$(date +%s.%N)
+if ! (cd "$work/rewrite.git" && python3 "$filter_repo" --sensitive-data-removal --no-fetch \
+  --invert-paths --paths-from-file "$lib/drop.txt" \
+  --replace-message "$lib/message-expressions.txt" \
+  --file-info-callback "$lib/s02-callback.py" \
+  --prune-empty never --prune-degenerate never) >"$work/filter-repo.log" 2>&1; then
+  die "git filter-repo failed; its last lines, in $work/filter-repo.log: $(tail -n 3 "$work/filter-repo.log" | paste -sd ' ')"
+fi
+git -C "$work/rewrite.git" remote remove origin 2>/dev/null || true
+new=$(git -C "$work/rewrite.git" rev-parse refs/heads/dev)
+say "rewrite: $work/rewrite.git in $(since "$start") s, dev at $new, $(grep -vc '^old ' "$work/rewrite.git/filter-repo/commit-map") commits mapped"
+
+# 4. Every commit, byte for byte.
+start=$(date +%s.%N)
+rc=0
+python3 "$lib/verify.py" "$work/mirror.git" "$work/rewrite.git" "$lib/drop.txt" --changed "$s02" >"$work/verify.txt" 2>&1 || rc=$?
+sed 's/^/verify: /' "$work/verify.txt" | tee -a "$summary"
+((rc == 0)) || die "verify failed in $(since "$start") s (verify.txt): nothing may be pushed"
+say "verify: passed in $(since "$start") s"
+
+# 5. lease.
+[[ $(git -C "$work/rewrite.git" rev-parse refs/heads/lease) == "$lease" ]] ||
+  die "the rewrite changed lease: nothing may be pushed"
+say "lease: unchanged at $lease"
+
+# 6. The sizes.
+say "pack before: $(pack_of "$work/mirror.git" before)"
+say "pack after: $(pack_of "$work/rewrite.git" after)"
+
+# 7. What Daniel runs.
+say "first changed commits: $(paste -sd ' ' "$work/rewrite.git/filter-repo/first-changed-commits")"
+lease_state=$(git -C "$work/mirror.git" show "$lease:lease.json" 2>/dev/null | jq -r '.state // empty' 2>/dev/null) || lease_state=''
+if [[ $lease_state != released ]]; then
+  say "rehearsal: origin's lease is ${lease_state:-unreadable}, not released, so the team was not frozen: no push from this run"
+  exit 0
+fi
+say "The force push, Daniel's alone, from rewrite.git only:"
+say "  git -C $work/rewrite.git push --force-with-lease=refs/heads/dev:$old $url refs/heads/dev:refs/heads/dev"
+say "Then: git ls-remote $url shows dev at $new, lease at $lease, and every other ref as in $work/refs-before.txt."
+say "Rollback, from the mirror, which keeps every old object:"
+say "  git -C $work/mirror.git push --force-with-lease=refs/heads/dev:$new $url $old:refs/heads/dev"
