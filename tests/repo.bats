@@ -145,18 +145,21 @@ MACHINE_DOCS=(README.md SETUP.md sops/machine-setup.md sops/portability.md)
 
 # Only Daniel's own terminal runs op (team-secrets restore and save), and only the ops role's
 # production servers fetch a credential, each through Daniel's 1Password prompt: every other
-# session is denied the 1Password CLI and other processes' environments.
+# session is denied the 1Password CLI and other processes' environments. The rules match the CLI
+# as a command and the environment path as a file read, never text naming them (a commit message,
+# a ledger line, a brief), which tests/team-worker.bats checks on each role's settings.
 @test "the worker and coordinator settings deny the 1Password CLI and /proc environment reads" {
   local file rule
   for file in settings/worker.json coordinator.settings.json; do
-    for rule in 'Bash(op *)' 'Bash(* op *)' 'Bash(*op read*)' 'Bash(*op run*)' 'Bash(*op item*)' \
-      'Bash(*op document*)' 'Bash(*/proc/*/environ*)' 'Read(//proc/**)'; do
+    for rule in 'Bash(op *)' 'Bash(*&& op *)' 'Bash(*/proc/*/environ)' 'Read(//proc/**)'; do
       jq -e --arg r "$rule" '.permissions.deny | index($r) != null' "$REPO_ROOT/$file" >/dev/null ||
         { echo "$file does not deny $rule" >&2; return 1; }
     done
     denied_in "$REPO_ROOT/$file" 'op read op://agent-team/discord-bot-env/.env'
     denied_in "$REPO_ROOT/$file" 'cd ~ && op document get discord-bot-env --vault agent-team'
+    denied_in "$REPO_ROOT/$file" 'cat /proc/1/environ | tr "\0" "\n"'
     ! denied_in "$REPO_ROOT/$file" 'team-secrets check'
+    ! denied_in "$REPO_ROOT/$file" "team-log T41 blocked 'a read of /proc/1/environ; op read is Daniel's'"
   done
 }
 
@@ -248,33 +251,56 @@ assert_denies() {
   assert_denies 'Bash(git commit * -n -*)' 'git commit -a -n -m "x"'
 }
 
+# The hooks rules start at git config (from any directory) and name the key right after a scope or
+# subcommand, so a commit message quoting the command and a read of the key stay allowed.
 @test "the git hooks' deny rule: git config of core.hooksPath, set or unset" {
-  assert_denies 'Bash(git *config* core.hooksPath *)' 'git config core.hooksPath /dev/null' \
-    'git -C /home/me/agent-team config core.hooksPath x' 'git config set --global core.hooksPath x'
-  assert_denies 'Bash(git *config*unset* core.hooksPath*)' 'git config --unset core.hooksPath' \
-    'git config --unset-all core.hooksPath' 'git config unset --local core.hooksPath'
-  assert_denies 'Bash(git *config* "core.hooksPath" *)' 'git config "core.hooksPath" /dev/null'
-  assert_denies "Bash(git *config* 'core.hooksPath' *)" "git config 'core.hooksPath' /dev/null"
-  assert_denies 'Bash(git *config*unset* "core.hooksPath"*)' 'git config --unset "core.hooksPath"'
-  assert_denies "Bash(git *config*unset* 'core.hooksPath'*)" "git config --unset 'core.hooksPath'"
+  assert_denies 'Bash(git config core.hooksPath *)' 'git config core.hooksPath /dev/null'
+  assert_denies 'Bash(git -C * config core.hooksPath *)' 'git -C /home/me/agent-team config core.hooksPath x'
+  assert_denies 'Bash(git config --global core.hooksPath *)' 'git config --global core.hooksPath x'
+  assert_denies 'Bash(git config --local core.hooksPath *)' 'git config --local core.hooksPath x'
+  assert_denies 'Bash(git config --system core.hooksPath *)' 'git config --system core.hooksPath x'
+  assert_denies 'Bash(git config --worktree core.hooksPath *)' 'git config --worktree core.hooksPath x'
+  assert_denies 'Bash(git config set *core.hooksPath*)' 'git config set --global core.hooksPath x'
+  assert_denies 'Bash(git config --add *core.hooksPath*)' 'git config --add core.hooksPath x'
+  assert_denies 'Bash(git config *--unset*core.hooksPath*)' 'git config --unset core.hooksPath' \
+    'git config --unset-all core.hooksPath' 'git config --global --unset "core.hooksPath"'
+  assert_denies 'Bash(git config unset *core.hooksPath*)' 'git config unset --local core.hooksPath'
+  assert_denies 'Bash(git -C * config *--unset*core.hooksPath*)' 'git -C ~/repo config --unset core.hooksPath'
+  assert_denies 'Bash(git config "core.hooksPath" *)' 'git config "core.hooksPath" /dev/null'
+  assert_denies "Bash(git config 'core.hooksPath' *)" "git config 'core.hooksPath' /dev/null"
+  assert_denies 'Bash(git -C * config "core.hooksPath" *)' 'git -C ~/repo config "core.hooksPath" x'
 }
 
 @test "the git hooks' deny rule: git config of core.hookspath, the same key in git's lower case" {
-  assert_denies 'Bash(git *config* core.hookspath *)' 'git config core.hookspath x'
-  assert_denies 'Bash(git *config*unset* core.hookspath*)' 'git config --unset core.hookspath'
-  assert_denies 'Bash(git *config* "core.hookspath" *)' 'git config "core.hookspath" x'
-  assert_denies "Bash(git *config* 'core.hookspath' *)" "git config 'core.hookspath' x"
-  assert_denies 'Bash(git *config*unset* "core.hookspath"*)' 'git config --unset "core.hookspath"'
-  assert_denies "Bash(git *config*unset* 'core.hookspath'*)" "git config --unset 'core.hookspath'"
+  assert_denies 'Bash(git config core.hookspath *)' 'git config core.hookspath x'
+  assert_denies 'Bash(git -C * config core.hookspath *)' 'git -C ~/repo config core.hookspath x'
+  assert_denies 'Bash(git config *--unset*core.hookspath*)' 'git config --unset core.hookspath'
+  assert_denies 'Bash(git config set *core.hookspath*)' 'git config set core.hookspath x'
+  assert_denies 'Bash(git config "core.hookspath" *)' 'git config "core.hookspath" x'
+  assert_denies "Bash(git config 'core.hookspath' *)" "git config 'core.hookspath' x"
 }
 
 @test "the git hooks' deny rule: core.hooksPath overridden for one command" {
-  assert_denies 'Bash(git *-c core.hooksPath*)' 'git -c core.hooksPath=/dev/null commit -m "x"' \
-    'git -C /home/me/agent-team -c core.hooksPath= commit -m "x"'
+  assert_denies 'Bash(git -c core.hooksPath*)' 'git -c core.hooksPath=/dev/null commit -m "x"'
+  assert_denies 'Bash(git -C * -c core.hooksPath*)' 'git -C /home/me/agent-team -c core.hooksPath= commit -m "x"'
 }
 
 @test "the git hooks' deny rule: core.hookspath overridden for one command, in git's lower case" {
-  assert_denies 'Bash(git *-c core.hookspath*)' 'git -c core.hookspath= commit'
+  assert_denies 'Bash(git -c core.hookspath*)' 'git -c core.hookspath= commit'
+  assert_denies 'Bash(git -C * -c core.hookspath*)' 'git -C ~/repo -c core.hookspath= commit'
+}
+
+@test "the git hooks' deny rules leave a read of core.hooksPath and a message naming it to every session" {
+  local file command
+  for file in "${SETTINGS[@]}"; do
+    for command in 'git config core.hooksPath' 'git config --get core.hooksPath' \
+      'git -C ~/repo config --get core.hooksPath || echo unset' 'git config get core.hooksPath 2>&1' \
+      'git config --show-origin --get-all core.hooksPath; git status' \
+      'git commit -m "docs: Daniel runs git config core.hooksPath bin/hooks/git, never git -c core.hooksPath="' \
+      "team-log T45 blocked 'a read of git config core.hooksPath x was refused'"; do
+      if denied "$file" "$command"; then echo "$file denies: $command" >&2; return 1; fi
+    done
+  done
 }
 
 @test "a PR merge through gh api is denied to every session" {

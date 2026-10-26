@@ -90,18 +90,20 @@ A worktree whose head a salvage branch holds, with nothing uncommitted, is salva
 
 ## Moving the team: handoff, then resume
 
-1. Daniel says "hand off" to the coordinator on Discord.
-   Its `handoff` skill checks (`team-handoff --check`), posts what is in flight, sends `T<n> STOW` to each live worker and waits up to 10 minutes for `T<n> PAUSED stowed` (a builder pushes a `wip:` commit and writes `handoff.md`).
-2. It runs `team-handoff`: workers stopped and removed, a forced checkpoint, task branches pushed, one `stowed` per open task, `team-config capture`, the records committed as `chore: handoff from <machine>` (all of `tasks/`, `machine/`, `memory/`, the ledger) and pushed, the heartbeat disabled, the lease released.
+1. At the machine taking the team, Daniel starts `team-resume --wait` (or tells the setup session to run it) before anything else.
+   It runs the doctor first, then checks that the team home and the code checkout can fast-forward to origin's (and that the team home holds no commit origin's lacks), so either refuses with nothing changed while the old machine still runs the team; once both pass it prints "this machine is ready: say 'hand off' to the coordinator there now" and waits for the release.
+2. Then Daniel says "hand off" to the coordinator on Discord.
+   Its `handoff` skill asks whether that `team-resume --wait` is running and has said so, and starts only on Daniel's yes; it checks (`team-handoff --check`), posts what is in flight, sends `T<n> STOW` to each live worker and waits up to 10 minutes for `T<n> PAUSED stowed` (a builder pushes a `wip:` commit and writes `handoff.md`).
+3. It runs `team-handoff`: workers stopped and removed, a forced checkpoint, task branches pushed, one `stowed` per open task, `team-config capture`, the records committed as `chore: handoff from <machine>` (all of `tasks/`, `machine/`, `memory/`, the ledger) and pushed, the heartbeat disabled, the lease released.
    The workers stop before the checkpoint, so it holds their worktrees' last state: a worker that never answered STOW leaves its uncommitted changes in `wip/<project>/T<n>`, and its `stowed` marks that worktree `uncommitted`.
    A diverged task branch refuses the handoff before any worker stops.
    An ops session is never carried over: `team-ops-end` ends it, deleting its transcript and answer file (the fence does the same), `ops` is never a role to relaunch, and a production question left unanswered is Daniel's to ask again on the new machine.
    Each step is idempotent: a run interrupted anywhere finishes when run again, and the lease is released last.
-3. It posts "Released at 14:05 from home-pc. On the other machine run `team-resume`." with what config it captured (and any it left to Daniel: a `settings.json` with an `env` key, or a skill folder holding a dotenv-like file), and `team-handoff --retire` removes the coordinator.
-4. At the other machine, Daniel runs (or tells the setup session to run) `team-resume`, or `team-resume --wait` started before the handoff ends.
-   It reads the lease first: held elsewhere and fresh is refused with nothing changed ("say 'hand off' to the coordinator there"), and only then does it run the doctor, pull the team home and then the code checkout (skipped when it is the team home), apply the config, take the lease, enable the heartbeat, re-home each open worktree with `team-open --task T<n> --resume <project>` (from origin's branch and the task's archive, with `wip/<project>/T<n>` applied as uncommitted changes to a worktree its `stowed` marks `uncommitted`), write `tasks/resume-<date>.json` and start the coordinator.
-5. The coordinator's `resume` skill reads the report, catches up on Discord messages sent while no coordinator listened, relaunches each stowed role with a `resume` brief (which says what became of the uncommitted changes), logs `resumed`, and posts what resumed and what did not.
-6. Daniel pins the coordinator in `claude agents`.
+4. It posts "Released at 14:05 from home-pc. The `team-resume --wait` started on the other machine takes the team now; with none running there, run `team-resume` there." with what config it captured (and any it left to Daniel: a `settings.json` with an `env` key, or a skill folder holding a dotenv-like file), and `team-handoff --retire` removes the coordinator.
+5. The release ends the wait of step 1 (with no `--wait` running, Daniel runs `team-resume` at the other machine, which refuses a fresh lease held elsewhere with nothing changed).
+   After the release it pulls the team home and then the code checkout (skipped when it is the team home), applies the config, takes the lease, enables the heartbeat, re-homes each open worktree with `team-open --task T<n> --resume <project>` (from origin's branch and the task's archive, with `wip/<project>/T<n>` applied as uncommitted changes to a worktree its `stowed` marks `uncommitted`), writes `tasks/resume-<date>-<time>.json` (one report per run, never overwritten; each worktree it could not re-home is also a `rehome-failed` in the ledger, which `team-state` shows until the worktree is made) and starts the coordinator.
+6. The coordinator's `resume` skill reads the report, catches up on Discord messages sent while no coordinator listened, relaunches each stowed role with a `resume` brief (which says what became of the uncommitted changes), logs `resumed`, and posts what resumed and what did not.
+7. Daniel pins the coordinator in `claude agents`.
 
 ## A crash
 

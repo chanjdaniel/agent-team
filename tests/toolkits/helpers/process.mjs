@@ -1,11 +1,17 @@
-// What a running process holds, read the same way on Linux and macOS. Linux reads /proc; macOS
-// has none, so it reads the same facts through ps and lsof.
+// What a running process holds, read on Linux and macOS: the environment and the sockets from
+// /proc on Linux, and through ps and lsof on macOS, which has no /proc; the children through ps
+// on both.
 //
 //   startingEnvironment(pid)   the environment the process started with (Linux: its
 //                              /proc/<pid>/environ; macOS: what `ps -E` appends to its command)
-//   children(pid)              the pids of the process's children
+//   children(pid)              the pids of the process's children (`ps -A`, on both systems)
 //   inetPeers(pid)             the remote address of every TCP and UDP socket it holds, as
-//                              "host:port"; a socket with no remote end is "0.0.0.0:0"
+//                              "host:port": an IPv4 address, or an IPv4-mapped IPv6 one, as
+//                              dotted IPv4 on both systems; any other IPv6 address in each
+//                              system's own form (Linux: eight groups of four hex digits, none
+//                              left out; macOS: lsof's, shortened with "::"), never bracketed.
+//                              A socket with no remote end is "0.0.0.0:0" on macOS, and on Linux
+//                              its zero address in the same forms ("0.0.0.0:0" for IPv4).
 import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync, readlinkSync } from "node:fs";
 

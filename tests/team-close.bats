@@ -815,6 +815,14 @@ legacy_task() {
   assert_equal "$(events worktree-returned | jq -r .worktree)" "$slot"
 }
 
+@test "a legacy task's --worktree spelled otherwise than its launch is that slot (report F6)" {
+  local slot=${home_slots[1]}
+  legacy_task "$slot" feat/T5-sign-in-limits
+  run_bin -0 team-close T5 --worktree "$(other_spelling "$(dirname "$slot")")/${slot##*/}"
+  [[ ! -e $slot ]]
+  assert_equal "$(events worktree-returned | wc -l)" 1
+}
+
 @test "a legacy task's --worktree with an uncommitted change is refused like any other" {
   local slot=${home_slots[1]}
   legacy_task "$slot" feat/T5-sign-in-limits

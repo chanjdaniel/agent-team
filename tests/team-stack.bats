@@ -352,6 +352,14 @@ compose port web 80"
   assert_equal "$(docker_calls | grep -E '^compose -p ' || true)" ""
 }
 
+@test "the ledger gives the worktree to its task however it spells it, and a primary checkout spelled otherwise is refused (report F6)" {
+  open_task T22 "$(other_spelling "$STACK_WORKTREE")"
+  run_bin -0 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
+  assert_equal "$(stack_labels | jq -r .task)" T22
+  run_bin -1 --separate-stderr team-stack env --worktree "$(other_spelling "$STACK_PRIMARY")"
+  assert_contains "$stderr" "is a primary checkout, whose stack is Daniel's primary stack"
+}
+
 @test "up takes --task when the ledger gives the worktree to no open task" {
   open_task T9 "$HOME/elsewhere"
   run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --task T9

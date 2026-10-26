@@ -1,22 +1,38 @@
 #!/usr/bin/env bats
 # team-load-check: team-doctor runs first, and a FAIL there stops the load check before it
-# touches its scratch repo or launches a worker; the other tests pass a stub doctor (TEAM_DOCTOR).
-# The planner form: the planner it launches through team-worker reports its MCP tools and skills,
-# and the check fails on anything production or coordinator-only. The session is a claude stub
-# that writes the inventory from $STUB_FIXTURES/inventory.txt.
+# touches its worktree or launches a worker; the other tests pass a stub doctor (TEAM_DOCTOR).
+# The planner form: the planner it launches through team-worker, in a detached worktree of the code
+# checkout (a sandbox repo, TEAM_LOAD_CHECK_CHECKOUT) at .claude/worktrees/load-check, reports its
+# MCP tools and skills, and the check fails on anything production or coordinator-only. The session
+# is a claude stub that writes the inventory from $STUB_FIXTURES/inventory.txt, notes in
+# $BATS_TEST_TMPDIR/launch where it started, and writes outside.txt where it started when
+# $STUB_FIXTURES/write-outside exists. Before it, each treehouse project's
+# lease is rehearsed on a fake pool (helpers/treehouse); the registry has no treehouse project
+# unless a test adds one.
 
 load helpers/common
+load helpers/treehouse
 
 setup() {
   sandbox
-  export TEAM_LOAD_CHECK_DIR=$BATS_TEST_TMPDIR/load-check
+  code=$(make_repo code)
+  printf '%s\n' .scratch/ .claude/worktrees/ >"$code/.gitignore"
+  git -C "$code" add .gitignore
+  git -C "$code" commit -q -m "chore: ignore scratch and worktrees"
+  code=$(realpath "$code") wt=$code/.claude/worktrees/load-check
+  export TEAM_LOAD_CHECK_CHECKOUT=$code
   # A doctor that passes; the doctor's own lines are tests/team-doctor*.bats'.
   export TEAM_DOCTOR=$BATS_TEST_TMPDIR/doctor
   printf '%s\n' '#!/usr/bin/env bash' 'echo "PASS machine: named"' >"$TEAM_DOCTOR"
   chmod +x "$TEAM_DOCTOR"
+  registry
   stub_script claude <<'SH'
 case $1 in
   --bg)
+    { pwd -P; git rev-parse HEAD; git symbolic-ref -q HEAD || echo detached
+      git check-ignore -q .scratch/inventory.txt && echo '.scratch ignored'
+      ls -A | grep -vx -e .git -e .gitignore -e README.md -e .scratch || true; } >"$BATS_TEST_TMPDIR/launch"
+    [[ ! -e $STUB_FIXTURES/write-outside ]] || echo planner >outside.txt
     cp "$STUB_FIXTURES/inventory.txt" .scratch/inventory.txt
     echo "Started background session 4f2a9c1e (${*: -2:1}). Attach with: claude attach 4f2a9c1e"
     ;;
@@ -25,6 +41,21 @@ case $1 in
   *) exit 64 ;;
 esac
 SH
+}
+
+# registry [<treehouse project's pool block>]: projects.toml with a git pool project, site, and,
+# when given, a treehouse one, proj, with that pool
+registry() {
+  {
+    project site
+    printf '%s\n' '[site.pool]' 'provider = "git"' 'slots = []'
+    if [[ -n ${1:-} ]]; then project proj && echo "$1"; fi
+  } >"$TEAM_HOME/projects.toml"
+}
+
+project() {
+  printf '%s\n' "[$1]" "repo = \"owner/$1\"" "path = \"projects/$1\"" 'base = "main"' 'delivery = "no-mistakes"' \
+    'merge_method = "merge"' 'required_checks = []' 'task_dir = ".scratch/task"' 'docs = []' 'toolkits = []'
 }
 
 # inventory <line>...: what the planner reports
@@ -52,6 +83,165 @@ inventory() {
   run_bin -1 team-load-check
   assert_contains "$output" "FAIL: a production or coordinator-only server or plugin reached the worker"
   assert_contains "$output" "load check FAILED"
+}
+
+# left_nothing: the load check's worktree is gone, and the code checkout is as it was
+left_nothing() {
+  [[ ! -e $wt ]]
+  assert_equal "$(git -C "$code" worktree list --porcelain | sed -n 's/^worktree //p')" "$code"
+  assert_equal "$(git -C "$code" status --porcelain --ignored)" ""
+}
+
+@test "the planner runs in a fresh worktree of the code checkout, detached at its HEAD, which is removed at the end" {
+  inventory --- tdd
+  run_bin -0 team-load-check
+  assert_equal "$(cat "$BATS_TEST_TMPDIR/launch")" "$(printf '%s\n' "$wt" "$(git -C "$code" rev-parse HEAD)" detached '.scratch ignored')"
+  left_nothing
+
+  # What an earlier run left there, registered or not, is replaced by a fresh worktree.
+  git -C "$code" worktree add -q -b stale "$wt"
+  touch "$wt/stale.txt"
+  run_bin -0 team-load-check
+  assert_equal "$(cat "$BATS_TEST_TMPDIR/launch")" "$(printf '%s\n' "$wt" "$(git -C "$code" rev-parse HEAD)" detached '.scratch ignored')"
+  git -C "$code" branch -q -D stale
+  left_nothing
+  mkdir -p "$wt"
+  touch "$wt/junk.txt"
+  run_bin -0 team-load-check
+  assert_equal "$(sed -n 1p "$BATS_TEST_TMPDIR/launch")" "$wt"
+  assert_equal "$(sed -n 5p "$BATS_TEST_TMPDIR/launch")" ""
+  left_nothing
+}
+
+@test "a planner that writes outside .scratch/ fails the check, and the worktree is still removed" {
+  inventory --- tdd
+  touch "$STUB_FIXTURES/write-outside"
+  run_bin -1 team-load-check
+  assert_contains "$output" "FAIL: the planner wrote outside .scratch/"
+  left_nothing
+}
+
+@test "a failing planner check also leaves nothing in the code checkout" {
+  inventory mcp__prod-read__find --- tdd
+  run_bin -1 team-load-check
+  left_nothing
+}
+
+# The lease rehearsal. proj's primary checkout has two treehouse slots, free, whose fake lease
+# runs $BATS_TEST_TMPDIR/prewarm in the slot it hands out (helpers/treehouse).
+
+# lease_setup: proj with a treehouse pool of two free slots
+lease_setup() {
+  primary=$(make_repo proj)
+  printf '%s\n' .scratch/ node_modules/ >"$primary/.gitignore"
+  git -C "$primary" add .gitignore
+  git -C "$primary" commit -q -m "chore: ignore scratch"
+  git -C "$primary" push -q origin main
+  local pool=$HOME/.treehouse/proj-abc123 slot
+  slots=("$pool/1/proj" "$pool/2/proj")
+  for slot in "${slots[@]}"; do git -C "$primary" worktree add -q --detach "$slot" origin/main; done
+  printf '%s\n' "${slots[@]}" >"$BATS_TEST_TMPDIR/free"
+  fake_pool_commands "$primary"
+  registry "$(printf '%s\n' '[proj.pool]' 'provider = "treehouse"' 'lease = "scripts/th-lease.sh"' \
+    'return = "scripts/th-return.sh"' \
+    'slots = [".treehouse/proj-abc123/1/proj", ".treehouse/proj-abc123/2/proj"]')"
+  inventory --- tdd
+}
+
+# The holder the load check leased to, from the lease command's first call.
+lease_holder() {
+  stub_calls th-lease.sh | jq -r '.args[0]' | head -n 1
+}
+
+@test "each treehouse project's slot is leased, pre-warmed, found clean and returned, before the planner runs" {
+  lease_setup
+  echo 'mkdir -p node_modules && touch node_modules/.warm' >"$BATS_TEST_TMPDIR/prewarm"
+  run_bin -0 team-load-check
+  local holder
+  holder=$(lease_holder)
+  [[ $holder == load-check-* ]]
+  assert_equal "$(pool_calls th-lease.sh)" "$holder"
+  assert_equal "$(stub_calls th-lease.sh | jq -r .cwd)" "$primary"
+  assert_contains "$output" "load check: leasing a slot of proj (a cold slot's pre-warm can take minutes)"
+  assert_contains "$output" "PASS lease proj: slot ${slots[0]} leased, pre-warmed and clean, returned"
+  # Only the treehouse project is rehearsed; the planner runs after it.
+  [[ $output != *"lease site"* ]]
+  assert_contains "$output" $'returned\nload check: worker 4f2a9c1e started'
+  assert_equal "${lines[-1]}" "PASS"
+  # Returned through the return command, forced back only from this run's holder; the warm
+  # node_modules git ignores is left.
+  assert_equal "$(pool_calls th-return.sh)" "${slots[0]} --force --if-lease-holder $holder"
+  assert_equal "$(pool_leases)" ""
+  [[ -e ${slots[0]}/node_modules/.warm ]]
+}
+
+@test "a numbered slot in the pool's folder that the registry does not list is rehearsed as a slot (T45)" {
+  lease_setup
+  local slot=$HOME/.treehouse/proj-abc123/5/proj
+  git -C "$primary" worktree add -q --detach "$slot" origin/main
+  echo "$slot" >"$BATS_TEST_TMPDIR/free"
+  run_bin -0 team-load-check
+  assert_contains "$output" "PASS lease proj: slot $slot leased, pre-warmed and clean, returned"
+  assert_equal "$(pool_leases)" ""
+}
+
+@test "a pre-warm that changes the slot fails the load check, naming the project and the paths, and the slot is still returned" {
+  lease_setup
+  echo 'echo changed >>README.md && touch new.lock' >"$BATS_TEST_TMPDIR/prewarm"
+  run_bin -1 team-load-check
+  assert_contains "$output" "FAIL lease proj: slot ${slots[0]} is not clean after the pre-warm: changes to tracked files: README.md; untracked files: new.lock; returned"
+  assert_equal "${lines[-1]}" "load check FAILED (inventory in tasks/T0/)"
+  assert_equal "$(pool_leases)" ""
+  assert_equal "$(git -C "${slots[0]}" status --porcelain)" ""
+
+  # A non-empty task directory fails it as team-open would.
+  rm "$BATS_TEST_TMPDIR/prewarm"
+  local next
+  next=$(head -n 1 "$BATS_TEST_TMPDIR/free")
+  mkdir -p "$next/.scratch/task" && touch "$next/.scratch/task/plan.md"
+  run_bin -1 team-load-check
+  assert_contains "$output" "FAIL lease proj: slot $next is not clean after the pre-warm: a non-empty task directory .scratch/task: plan.md; returned"
+  assert_equal "$(pool_leases)" ""
+}
+
+@test "a project with no free slot is a WARN naming the holders, and a lease command that fails with a slot free is a FAIL" {
+  lease_setup
+  : >"$BATS_TEST_TMPDIR/free"
+  printf '%s\tT7\n%s\tT9\n' "${slots[@]}" >"$BATS_TEST_TMPDIR/leases"
+  run_bin -0 team-load-check
+  assert_contains "$output" "WARN lease proj: no free slot to rehearse a lease on: ${slots[0]}: T7; ${slots[1]}: T9"
+  assert_equal "${lines[-1]}" "PASS"
+  assert_equal "$(pool_leases)" "$(printf '%s T7\n%s T9' "${slots[@]}")"
+
+  # A slot is free, yet the lease fails: the standby is broken.
+  printf '%s\tT7\n' "${slots[0]}" >"$BATS_TEST_TMPDIR/leases"
+  run_bin -1 team-load-check
+  assert_contains "$output" "FAIL lease proj: the lease command failed though ${slots[1]} is free: all 2 worktrees are in use or dirty"
+
+  # A pool treehouse cannot read is a FAIL, leasing nothing.
+  rm "$STUB_FIXTURES/treehouse.sh"
+  stub_reply treehouse 'not json'
+  rm "$STUB_CALLS/th-lease.sh.log"
+  run_bin -1 team-load-check
+  assert_contains "$output" "FAIL lease proj: cannot read its pool: treehouse status --json did not answer in $primary"
+  assert_equal "$(stub_calls th-lease.sh)" ""
+}
+
+@test "a load check stopped during the lease still returns the slot" {
+  lease_setup
+  printf '%s\n' "touch '$BATS_TEST_TMPDIR/leasing'" 'echo changed >>README.md' 'sleep 1' >"$BATS_TEST_TMPDIR/prewarm"
+  guard_sandbox
+  "$REPO_ROOT/bin/team-load-check" >"$BATS_TEST_TMPDIR/out" 2>&1 &
+  local pid=$!
+  for _ in $(seq 1 100); do [[ ! -e $BATS_TEST_TMPDIR/leasing ]] || break; sleep 0.1; done
+  kill -TERM "$pid"
+  [[ -e $BATS_TEST_TMPDIR/leasing ]]
+  local status=0
+  wait "$pid" || status=$?
+  assert_equal "$status" 143
+  assert_equal "$(pool_leases)" ""
+  assert_equal "$(git -C "${slots[0]}" status --porcelain)" ""
+  assert_equal "$(stub_calls claude)" ""
 }
 
 # The ops form. The claude stub plays the ops session: claude --bg copies $STUB_FIXTURES/session/
@@ -319,8 +509,12 @@ write_line() {
   run_bin -1 --separate-stderr team-load-check
   assert_equal "${lines[0]}" "FAIL os: Ubuntu 24.04.3 LTS is neither Arch Linux nor macOS, so no tool is checked; fix: run the team on Arch Linux or macOS"
   assert_equal "$stderr" "load check: team-doctor reports a FAIL above; fix it, then run the load check again"
-  [[ ! -e $TEAM_LOAD_CHECK_DIR ]]
-  # claude was asked only the doctor's questions, its login and its plugins: no session started.
-  assert_equal "$(stub_calls claude | jq -r 'join(" ")' | sort -u)" "auth status --json
+  [[ ! -e $wt ]]
+  assert_equal "$(git -C "$code" worktree list --porcelain | grep -c '^worktree ')" 1
+  # claude was asked only the doctor's questions, its login, its plugins and its trust probe of
+  # the team home (which the stub's reply never starts): no session of the load check's.
+  assert_equal "$(stub_calls claude | jq -r 'join(" ")' | LC_ALL=C sort -u)" "--bg --name team-doctor-home-trust
+agents --json
+auth status --json
 plugin list --json"
 }

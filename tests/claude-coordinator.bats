@@ -20,6 +20,7 @@ if [[ $1 == agents ]]; then
 fi
 echo "launch $held" >>"$STUB_CALLS/claude.lock"
 printf '%s\n' "$PWD" >>"$STUB_CALLS/claude.cwd"
+printf '%s\n' "$PATH" >>"$STUB_CALLS/claude.path"
 # Each open file by device and inode, through /dev/fd as both Linux and macOS have it.
 for fd in /dev/fd/*; do
   if [[ $(stat -L -c %d:%i "$fd" 2>/dev/null) == "$(stat -c %d:%i "$lock")" ]]; then
@@ -75,6 +76,16 @@ assert_not_launched() {
   assert_contains "$output" "Started background session 7c3e9a10"
   assert_equal "$(stub_calls claude)" "$(printf '%s\n%s' '["agents","--json"]' "$(launch_argv)")"
   assert_equal "$(cat "$STUB_CALLS/claude.cwd")" "$TEAM_HOME"
+}
+
+@test "the session gets the library's PATH: the tool directories from tools.lock first" {
+  # Arch, where uname says Linux; Bun installed under HOME, which the caller's PATH lacks.
+  export TEAM_OS_RELEASE=$BATS_TEST_TMPDIR/os-release
+  echo ID=arch >"$TEAM_OS_RELEASE"
+  mkdir -p "$HOME/.bun/bin"
+  run_bin -0 claude-coordinator
+  [[ :$(cat "$STUB_CALLS/claude.path"): == *":$HOME/.bun/bin:"*"$BATS_TEST_TMPDIR/stubs:"* ]] ||
+    { echo "claude's PATH: $(cat "$STUB_CALLS/claude.path")" >&2; return 1; }
 }
 
 @test "the launch appends the manual and loads the skills plugin, both from its own checkout" {
@@ -232,7 +243,7 @@ assert_not_launched() {
   run_bin -1 --separate-stderr claude-coordinator
   assert_equal "$output" ""
   assert_contains "$stderr" "team-lease: home-pc no longer holds the lease: laptop holds it (epoch 2"
-  assert_contains "$stderr" "claude-coordinator: laptop holds the lease: hand off there, then team-resume here"
+  assert_contains "$stderr" "claude-coordinator: laptop holds the lease: run team-resume --wait here, then hand off there once it says this machine is ready"
   assert_not_launched
   [[ ! -e $HOME/.local/state/agent-team/coordinator.settings.json ]]
 }

@@ -50,6 +50,8 @@ retro-schedule team-log every_hours discord_message
 stowed team-handoff machine worktrees roles
 worktree-moved team-open project branch from worktree machine
 injection team-log role source text
+rehome-failed team-resume project branch machine reason
+rehomed team-open project branch worktree machine
 TABLE
   )
   actual=$(jq -r '.kinds | to_entries[] | [.key, .value.writer, (.value.required | keys_unsorted[])] | join(" ")' "$CONTRACT")
@@ -80,7 +82,8 @@ TABLE
   grep -Eq '^  resumed +team-log +- +\(clears held, blocked, paused and waiting\)$' <<<"$output"
   grep -Eq '^  retro-schedule +team-log +every_hours \(number\), discord_message  \(.*every_hours 0 stops.*\)$' <<<"$output"
   grep -Eq '^  injection +team-log +role, source, text  \(.*never the personal details.*\)$' <<<"$output"
-  grep -Eq '^  stowed +team-handoff +machine, worktrees \(list\), roles \(list\)  \(one per open task at a handoff: .*\)$' <<<"$output"
+  grep -Eq '^  stowed +team-handoff +machine, worktrees \(list\), roles \(list\); optional sessions \(list\)  \(one per open task at a handoff: .*unfinished_roles.*\)$' <<<"$output"
+  grep -Eq '^  rehome-failed +team-resume +project, branch, machine, reason  \(.*stands until a later opened, worktree-added, worktree-moved, rehomed or worktree-returned.*\)$' <<<"$output"
   assert_equal "$(stub_calls curl)$(stub_calls gh)" ""
 }
 
@@ -319,6 +322,21 @@ LINES
 LEDGER
   run_bin -0 team-log --check
   assert_equal "$output" "$TEAM_HOME/ledger.jsonl: 8 lines meet the ledger contract"
+}
+
+@test "--check accepts a failed re-home and the re-home that clears it, and refuses one with no reason" {
+  cat >"$TEAM_HOME/ledger.jsonl" <<LEDGER
+{"ts":"$STRICT_FROM","task":"T14","event":"rehome-failed","project":"home","branch":"feat/T14-x","machine":"laptop","reason":"feat/T14-x here has commits that origin's lacks"}
+{"ts":"$STRICT_FROM","task":"T14","event":"rehomed","project":"home","branch":"feat/T14-x","worktree":"/w","machine":"laptop"}
+LEDGER
+  run_bin -0 team-log --check
+  assert_equal "$output" "$TEAM_HOME/ledger.jsonl: 2 lines meet the ledger contract"
+  echo "{\"ts\":\"$STRICT_FROM\",\"task\":\"T14\",\"event\":\"rehome-failed\",\"project\":\"home\",\"branch\":\"b\",\"machine\":\"laptop\"}" >>"$TEAM_HOME/ledger.jsonl"
+  run_bin -1 team-log --check
+  assert_contains "$output" "ledger.jsonl:3: rehome-failed needs reason"
+  # Only team-resume writes it.
+  run_bin -1 team-log T14 rehome-failed project=home branch=b machine=laptop reason=r
+  assert_contains "$output" "team-resume"
 }
 
 @test "--check lists every bad line by number and exits 1" {

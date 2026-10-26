@@ -170,6 +170,43 @@ advance_origin() {
   run -128 git -C "$slots/1" rev-parse --abbrev-ref '@{upstream}'
 }
 
+@test "a primary checkout on the base, clean and behind, is fast-forwarded to origin's, untracked files aside" {
+  local ahead
+  ahead=$(advance_origin "moved on")
+  touch "$primary/notes.txt"
+  run_bin -0 --separate-stderr team-open proj feature feat late "Late"
+  assert_contains "$stderr" "team-open: the primary checkout $primary: main fast-forwarded to ${ahead:0:7}"
+  assert_equal "$(grep -c 'primary checkout' <<<"$stderr")" 1
+  assert_equal "$(git -C "$primary" rev-parse main)" "$ahead"
+  assert_equal "$(git -C "$primary" status --porcelain)" "?? notes.txt"
+  # Level with origin's, there is nothing to say.
+  run_bin -0 --separate-stderr team-open proj feature feat later "Later"
+  assert_equal "$(grep -c 'primary checkout' <<<"$stderr")" 0
+}
+
+@test "a primary checkout off the base, with local changes or ahead of origin's is left as it is, with the reason" {
+  local ahead before
+  sed -i 's|^slots = .*|slots = ["slots/proj/1", "slots/proj/2", "slots/proj/3"]|' "$TEAM_HOME/projects.toml"
+  ahead=$(advance_origin "moved on")
+  before=$(git -C "$primary" rev-parse main)
+  git -C "$primary" switch -q -c elsewhere
+  run_bin -0 --separate-stderr team-open proj feature feat one "One"
+  assert_contains "$stderr" "team-open: the primary checkout $primary is left as it is: it is on elsewhere, not main"
+  git -C "$primary" switch -q main
+  echo changed >"$primary/README.md"
+  run_bin -0 --separate-stderr team-open proj feature feat two "Two"
+  assert_contains "$stderr" "team-open: the primary checkout $primary is left as it is: it has local changes to README.md"
+  assert_equal "$(git -C "$primary" rev-parse main)" "$before"
+  git -C "$primary" checkout -q README.md
+  git -C "$primary" merge -q --ff-only origin/main
+  git -C "$primary" commit -q --allow-empty -m "feat: only here"
+  before=$(git -C "$primary" rev-parse main)
+  run_bin -0 --separate-stderr team-open proj feature feat three "Three"
+  assert_contains "$stderr" "team-open: the primary checkout $primary is left as it is: main has 1 commit origin's lacks"
+  assert_equal "$(git -C "$primary" rev-parse main)" "$before"
+  [[ $ahead == "$(git -C "$primary" rev-parse origin/main)" ]]
+}
+
 @test "with branch.autoSetupMerge=always the branch still has no upstream" {
   git config --global branch.autoSetupMerge always
   run_bin -0 team-open proj feature feat track "Track"
@@ -181,6 +218,28 @@ advance_origin() {
   run_bin -0 --separate-stderr team-open proj feature feat next "Next"
   assert_equal "$(jq -r .worktree <<<"$output")" "$slots/2"
   assert_equal "$(git -C "$slots/1" rev-parse --abbrev-ref HEAD)" "someone-else"
+}
+
+@test "slots the registry spells otherwise than git lists them are the same slots (report F6)" {
+  mkdir -p "$slots"
+  local other
+  other=$(other_spelling "$HOME/slots")
+  sed -i "s#\"slots/proj/#\"${other##*/}/proj/#g" "$TEAM_HOME/projects.toml"
+  # git lists slot 1 as it was added, by the other spelling.
+  git -C "$primary" worktree add -q "$slots/1" -b feat/T3-busy origin/main
+  run_bin -0 --separate-stderr team-open proj feature feat next "Next"
+  assert_equal "$(jq -r .worktree <<<"$output")" "$other/proj/2"
+  run_bin -75 --separate-stderr team-open proj feature feat late "Late"
+  assert_equal "$stderr" "$(printf '%s\n' "team-open: every slot of proj is taken:" \
+    "  $other/proj/1: T3 (feat/T3-busy)" "  $other/proj/2: T1 (feat/T1-next)")"
+
+  # A half-open task is finished in the slot holding its branch.
+  git -C "$primary" worktree remove "$slots/1"
+  stub_reply curl '{"message":"Missing Access"}'
+  run_bin -1 --separate-stderr team-open proj feature feat flaky "Flaky"
+  stub_reply curl '{"id":"1563000000000000009"}'
+  run_bin -0 --separate-stderr team-open --task T2 proj feature feat flaky "Flaky"
+  assert_equal "$(jq -r .worktree <<<"$output")" "$other/proj/1"
 }
 
 @test "with every slot taken it exits 75 naming the holders, and gives the number back" {
@@ -278,6 +337,8 @@ LEDGER
   git -C "$clone" switch -q main
   echo e >"$clone/base-only" && git -C "$clone" add base-only && git -C "$clone" commit -q -m "feat: base"
   git -C "$clone" push -q origin main
+  local base
+  base=$(git -C "$clone" rev-parse HEAD)
   cat >"$TEAM_HOME/ledger.jsonl" <<'LEDGER'
 {"ts":"2026-10-22T02:00:00Z","task":"T2","event":"opened","project":"proj","path":"small","type":"fix","title":"Pushed","branch":"fix/T2-pushed","base":"main","base_sha":"abc1234","worktree":"/w/2"}
 {"ts":"2026-10-22T02:00:01Z","task":"T3","event":"opened","project":"proj","path":"small","type":"fix","title":"Local","branch":"fix/T3-local","base":"main","base_sha":"abc1234","worktree":"/w/3"}
@@ -285,7 +346,9 @@ LEDGER
 {"ts":"2026-10-22T02:00:03Z","task":"T5","event":"opened","project":"proj","path":"small","type":"fix","title":"Same","branch":"fix/T5-same","base":"main","base_sha":"abc1234","worktree":"/w/5"}
 LEDGER
   run_bin -0 --separate-stderr team-open proj feature feat new "New"
-  assert_equal "$stderr" "$(printf '%s\n' "team-open: other open tasks in proj:" \
+  # The primary checkout follows the moved base before the listing.
+  assert_equal "$stderr" "$(printf '%s\n' "team-open: the primary checkout $primary: main fast-forwarded to ${base:0:7}" \
+    "team-open: other open tasks in proj:" \
     "  T2 fix/T2-pushed in /w/2: Pushed" "    changes against main (origin's branch):" "      bin/a" "      docs/b" \
     "  T3 fix/T3-local in /w/3: Local" "    changes against main (the local branch, not pushed):" "      local" \
     "  T4 fix/T4-none in /w/4: Not yet" "    no branch yet" \

@@ -61,11 +61,24 @@ SH
 
   run_bin -0 team-open home feature feat work "Do the work"
   wt=$HOME/slots/home/1
+  launch builder 81f08540
   echo "spec" >"$wt/.scratch/task/spec.md"
   echo "a" >"$wt/a.txt"
   git -C "$wt" add a.txt
   git -C "$wt" commit -q -m "feat: a"
   head=$(git -C "$wt" rev-parse HEAD)
+}
+
+# Log T1's launch of <role> in session <id> on home-pc, as team-worker does.
+launch() {
+  jq -cn --arg role "$1" --arg session "$2" --arg wt "$HOME/slots/home/1" '{ts: (now | todate), task: "T1",
+    event: "launch", role: $role, session: $session, worktree: $wt, toolkits: [], machine: "home-pc"}' \
+    >>"$TEAM_HOME/ledger.jsonl"
+}
+
+# Log one more T1 event, given as JSON without ts and task.
+log_event() {
+  jq -c '{ts: (now | todate), task: "T1"} + .' <<<"$1" >>"$TEAM_HOME/ledger.jsonl"
 }
 
 # The claude stop and rm calls, one "<verb> <id>" per line.
@@ -106,7 +119,7 @@ interrupt_after() {
   [[ ${lines[-2]} == "Released at "* ]]
   assert_equal "${lines[-1]}" "Config captured: CLAUDE.md (new)."
   assert_equal "$(stowed_events | jq -c 'del(.ts)')" \
-    "{\"task\":\"T1\",\"event\":\"stowed\",\"machine\":\"home-pc\",\"worktrees\":[{\"project\":\"home\",\"branch\":\"feat/T1-work\",\"head\":\"$head\"}],\"roles\":[\"builder\"]}"
+    "{\"task\":\"T1\",\"event\":\"stowed\",\"machine\":\"home-pc\",\"worktrees\":[{\"project\":\"home\",\"branch\":\"feat/T1-work\",\"head\":\"$head\"}],\"roles\":[\"builder\"],\"sessions\":[\"builder\"]}"
   assert_equal "$(team_subjects | grep -c '^chore: handoff from home-pc$')" 1
   # The stowed lands in the handoff's own commit, whatever step was interrupted.
   assert_contains "$(git -C "$team_origin" show "$(git -C "$team_origin" log --format=%H --grep '^chore: handoff' dev)" -- ledger.jsonl)" '"event":"stowed"'
@@ -140,7 +153,7 @@ rm 81f08540"
   assert_contains "$output" "team home: committed $(git -C "$TEAM_HOME" rev-parse --short HEAD) chore: handoff from home-pc and pushed dev"
   assert_contains "$output" "heartbeat: "
   assert_contains "$output" "lease: home-pc released the lease, epoch 1"
-  [[ ${lines[-2]} =~ ^"Released at "[0-9]{2}:[0-9]{2}" from home-pc. On the other machine run \`team-resume\`."$ ]]
+  [[ ${lines[-2]} =~ ^"Released at "[0-9]{2}:[0-9]{2}" from home-pc. The \`team-resume --wait\` started on the other machine takes the team now; with none running there, run \`team-resume\` there."$ ]]
   assert_equal "${lines[-1]}" "Config captured: CLAUDE.md (new)."
   # The workers stop before the checkpoint, so it holds their worktrees' last state.
   [[ $output == *"sessions: stopped and removed T1-builder"*"checkpoint: T1 home: "* ]]
@@ -150,7 +163,7 @@ rm 81f08540"
 
   # One stowed, with that head and the live builder's role.
   assert_equal "$(stowed_events | jq -c 'del(.ts)')" \
-    "{\"task\":\"T1\",\"event\":\"stowed\",\"machine\":\"home-pc\",\"worktrees\":[{\"project\":\"home\",\"branch\":\"feat/T1-work\",\"head\":\"$head\"}],\"roles\":[\"builder\"]}"
+    "{\"task\":\"T1\",\"event\":\"stowed\",\"machine\":\"home-pc\",\"worktrees\":[{\"project\":\"home\",\"branch\":\"feat/T1-work\",\"head\":\"$head\"}],\"roles\":[\"builder\"],\"sessions\":[\"builder\"]}"
 
   # The worker's session alone was stopped and removed; the coordinator stays for --retire.
   assert_equal "$(stops_and_removes)" "stop 81f08540
@@ -210,7 +223,7 @@ SH
   assert_equal "$(git -C "$team_origin" ls-tree --name-only "$wip" | paste -sd ' ')" ".gitignore README.md a.txt b.txt late.txt"
   assert_equal "$(stowed_events | jq -c 'del(.ts)')" "$(jq -cn --arg h "$head" --arg wt "$wt" '{task: "T1", event: "stowed",
     machine: "home-pc", worktrees: [{project: "home", branch: "feat/T1-work", head: $h, uncommitted: true}],
-    roles: ["builder"], note: "untracked files left out of wip/home/T1 stay on home-pc in \($wt): .env.local"}')"
+    roles: ["builder"], sessions: ["builder"], note: "untracked files left out of wip/home/T1 stay on home-pc in \($wt): .env.local"}')"
 }
 
 @test "the final message lists the config captured and what was left to Daniel, again on a run after the release" {
@@ -281,10 +294,33 @@ SH
   run_bin -0 --separate-stderr team-handoff --json
   assert_contains "$stderr" "stowed: T1 roles builder"
   assert_equal "$(jq -c '{machine, epoch, tasks}' <<<"$output")" \
-    "{\"machine\":\"home-pc\",\"epoch\":1,\"tasks\":[{\"task\":\"T1\",\"worktrees\":[{\"project\":\"home\",\"branch\":\"feat/T1-work\",\"head\":\"$head\"}],\"roles\":[\"builder\"]}]}"
+    "{\"machine\":\"home-pc\",\"epoch\":1,\"tasks\":[{\"task\":\"T1\",\"worktrees\":[{\"project\":\"home\",\"branch\":\"feat/T1-work\",\"head\":\"$head\"}],\"roles\":[\"builder\"],\"sessions\":[\"builder\"]}]}"
   [[ $(jq -r .released_at <<<"$output") =~ ^[0-9-]+T[0-9:]+Z$ ]]
-  assert_contains "$(jq -r .message <<<"$output")" "from home-pc. On the other machine run \`team-resume\`."
+  assert_contains "$(jq -r .message <<<"$output")" "from home-pc. The \`team-resume --wait\` started on the other machine takes the team now; with none running there, run \`team-resume\` there."
   assert_equal "$(jq -c .captured <<<"$output")" '["Config captured: CLAUDE.md (new)."]'
+}
+
+@test "stowed.roles names the unfinished work, not the sessions: a finished reviewer's live session is a session only" {
+  # A reviewer reviewed and reported DONE, its session still listed; the builder fixes findings.
+  launch reviewer 6493aef7
+  log_event '{"event": "review", "verdict": "findings", "head": "abc1234"}'
+  log_event '{"event": "done", "role": "reviewer", "session": "6493aef7"}'
+  launch builder 85353e1e
+  jq '. + [{id: "6493aef7", sessionId: "6493aef7-1111", name: "T1-reviewer", status: "idle", state: "done"}]' \
+    "$BATS_TEST_TMPDIR/sessions.json" >"$BATS_TEST_TMPDIR/sessions.next"
+  mv "$BATS_TEST_TMPDIR/sessions.next" "$BATS_TEST_TMPDIR/sessions.json"
+
+  run_bin -0 team-handoff
+  assert_contains "$output" "stowed: T1 roles builder; home feat/T1-work at ${head:0:7}"
+  assert_equal "$(stowed_events | jq -c '{roles, sessions}')" '{"roles":["builder"],"sessions":["builder","reviewer"]}'
+}
+
+@test "a builder that delivered its PR is finished: the task is stowed with no role, its session kept as a session" {
+  log_event "$(jq -cn --arg head "$head" '{event: "pr", url: "https://github.com/owner/home/pull/1", head: $head}')"
+
+  run_bin -0 team-handoff
+  assert_contains "$output" "stowed: T1 roles none; home feat/T1-work at ${head:0:7}"
+  assert_equal "$(stowed_events | jq -c '{roles, sessions}')" '{"roles":[],"sessions":["builder"]}'
 }
 
 @test "a task branch that has diverged from origin refuses the handoff before anything is pushed or released" {

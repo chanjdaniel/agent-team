@@ -287,6 +287,18 @@ T4 home: archived .scratch/task to tasks/T4/scratch"
   [[ -f $state/last-checkpoint ]]
 }
 
+@test "a worktree the ledger spells otherwise than git is checkpointed, not skipped as missing (report F6)" {
+  local other
+  mkdir -p "$HOME/slots"
+  other=$(other_spelling "$HOME/slots")
+  sed -i "s#\"slots/home/#\"${other##*/}/home/#g" "$TEAM_HOME/projects.toml"
+  run_bin -0 team-open home feature feat work "Work"
+  assert_equal "$(jq -r .worktree <<<"$output")" "$other/home/1"
+  echo spec >"$other/home/1/.scratch/task/spec.md"
+  run_bin -0 --separate-stderr team-checkpoint
+  assert_equal "$(head -n 1 <<<"$output")" "T1 home: archived .scratch/task to tasks/T1/scratch"
+}
+
 @test "an empty task directory is reported and archives nothing" {
   run_bin -0 team-open home feature feat work "Do the work"
   run_bin -0 --separate-stderr team-checkpoint

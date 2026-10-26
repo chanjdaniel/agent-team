@@ -222,7 +222,7 @@ FAIL conventioner-back-end-env: missing"
   [[ ! -e $HOME/.config/bot/.env ]]
 }
 
-@test "restore fetches each missing or empty secret beside its target with mode 600, sets a wrong mode, pastes what 1Password lacks, and ends with check" {
+@test "restore fetches each missing, empty or wrong-mode secret beside its target with mode 600, backing up a wrong-mode one, pastes what 1Password lacks, and ends with check" {
   manifest ok-env:projects/app/.env bot-env:.config/bot/.env empty-env:projects/app/web/.env \
     open-env:projects/app/api/.env paste-env:projects/paste/.env skip-env:projects/skip/.env \
     dir-env:.config/dir/.env hub-env:hub/.env:disabled
@@ -240,11 +240,14 @@ FAIL conventioner-back-end-env: missing"
 
   run_in_terminal -1 --expect "paste-env: paste" --send $'PASTE_DUMMY_TOKEN=paste-dummy-value\n\x04' \
     --expect "skip-env: paste" --send $'\x04' -- "$REPO_ROOT/bin/team-secrets" restore
+  local backup
+  backup=$(find "$HOME/projects/app/api" -name '.env.bak-*')
+  [[ ${backup##*/} =~ ^\.env\.bak-[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}$ ]] || { echo "not a backup name: $backup" >&2; return 1; }
   assert_equal "$output" "ok-env: in place; untouched
 bot-env: restored from 1Password (op read)
 empty-env: op read gave nothing: could not read secret 'op://agent-team/empty-env/.env': \".env\" isn't a field in the item
 empty-env: restored from 1Password (op document get)
-open-env: mode 644, now 600
+open-env: replaced from 1Password (op read); the old one (mode 644) is ~/projects/app/api/${backup##*/}, mode 600
 paste-env: op read gave nothing: \"paste-env\" isn't an item in the \"agent-team\" vault
 paste-env: op document get gave nothing: \"paste-env\" isn't an item in the \"agent-team\" vault
 paste-env: paste ~/projects/paste/.env (the paste-env file), then Ctrl-D on a line of its own; Ctrl-D alone skips it. What you paste is not shown.
@@ -274,19 +277,22 @@ FAIL dir-env: not a file"
   assert_equal "$(cat "$HOME/projects/paste/.env")" "PASTE_DUMMY_TOKEN=paste-dummy-value"
   assert_equal "$(stat -c %a "$HOME/.config/bot/.env" "$HOME/projects/app/web/.env" "$HOME/projects/paste/.env" | sort -u)" 600
   assert_equal "$(stat -c %a "$HOME/.config/bot")" 700
-  # The wrong mode was set, its content kept; a passing secret was not touched at all.
-  cmp "$BATS_TEST_TMPDIR/open-before" "$HOME/projects/app/api/.env"
+  # The wrong-mode one holds 1Password's, its old content kept beside it with mode 600; a passing
+  # secret was not touched at all.
+  cmp "$FAKE_VAULT/open-env" "$HOME/projects/app/api/.env"
+  cmp "$BATS_TEST_TMPDIR/open-before" "$backup"
+  assert_equal "$(stat -c %a "$HOME/projects/app/api/.env" "$backup" | sort -u)" 600
   assert_equal "$(stat -c '%i %s %y %a' "$HOME/projects/app/.env")" "$ok_before"
   [[ ! -e $HOME/hub/.env && ! -e $HOME/projects/skip/.env ]]
 
   # Every download went to a new temporary file beside its target, with mode 0600; none is left.
   assert_equal "$(op_verbs | sort | uniq -c | sed 's/^ *//')" "3 document get
-4 read"
+5 read"
   local out
   while IFS= read -r out; do
     [[ ${out##*/} =~ ^\.\.env\.restore\.[A-Za-z0-9]{6}$ ]] || { echo "not a temporary name: $out" >&2; return 1; }
   done < <(out_files)
-  assert_equal "$(out_files | xargs -n1 dirname | sort -u)" "$(printf '%s\n' "$HOME/.config/bot" "$HOME/projects/app/web" "$HOME/projects/paste" "$HOME/projects/skip" | sort)"
+  assert_equal "$(out_files | xargs -n1 dirname | sort -u)" "$(printf '%s\n' "$HOME/.config/bot" "$HOME/projects/app/web" "$HOME/projects/app/api" "$HOME/projects/paste" "$HOME/projects/skip" | sort)"
   assert_equal "$(stub_calls op | jq -r 'index("--file-mode") as $i | .[$i + 1]' | sort -u)" 0600
   assert_equal "$(find "$HOME" -name '*.restore.*')" ""
   # op read on the ref, then op document get on the id in the agent-team vault.
@@ -303,6 +309,21 @@ FAIL dir-env: not a file"
 document get"
   assert_equal "$(tail -n2 <<<"$output")" "FAIL skip-env: missing
 PASS dir-env"
+}
+
+@test "a wrong-mode secret 1Password and Daniel do not replace is left as it was, with no backup" {
+  manifest open-env:.config/open/.env
+  in_vault open-env
+  local_secret .config/open/.env 644
+  cp "$HOME/.config/open/.env" "$BATS_TEST_TMPDIR/open-before"
+  printf '%s\n' read "document get" >"$STUB_FIXTURES/op-fails"
+  run_in_terminal -1 --expect "open-env: paste" --send $'\x04' -- "$REPO_ROOT/bin/team-secrets" restore
+  assert_contains "$output" "open-env: skipped; still mode 644"
+  assert_equal "$(tail -n1 <<<"$output")" "FAIL open-env: mode 644"
+  no_dummy_values
+  cmp "$BATS_TEST_TMPDIR/open-before" "$HOME/.config/open/.env"
+  assert_equal "$(stat -c %a "$HOME/.config/open/.env")" 644
+  assert_equal "$(find "$HOME" -name '*.bak-*' -o -name '*.restore.*')" ""
 }
 
 @test "restore with every secret fetched exits 0; an op failure falls back to the paste, leaving no temporary file" {

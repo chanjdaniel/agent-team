@@ -102,7 +102,8 @@ FAIL secret conventioner-back-end-env: not a file; fix: move aside what is at it
 @test "the opencode-gate line fails while the gate's opencode wrapper is missing, stale or not executable, opencode is missing, or config.yaml does not run the gate on it" {
   local wrapper=$HOME/.no-mistakes/bin/opencode-gate config=$HOME/.no-mistakes/config.yaml
   local install="mkdir -p ~/.no-mistakes/bin && install -m 755 $CODE_CHECKOUT/bin/lib/opencode-gate ~/.no-mistakes/bin/opencode-gate"
-  local setting="agent_path_override: {opencode: $wrapper}" step="as manual-steps.md's install of the no-mistakes fork says"
+  local setting="agent_path_override: {opencode: $wrapper}" tools="$CODE_CHECKOUT/bin/team-bootstrap --stage tools"
+  local step="as manual-steps.md's install of the no-mistakes fork says"
   tools_at arch
   run_bin -0 team-doctor
   assert_equal "$(line_of opencode-gate)" "PASS opencode-gate: ~/.no-mistakes/bin/opencode-gate is the code's bin/lib/opencode-gate, config.yaml runs the gate on opencode through it, and opencode is installed"
@@ -113,7 +114,7 @@ FAIL secret conventioner-back-end-env: not a file; fix: move aside what is at it
 
   printf '%s\n' 'agent: opencode' 'agent_path_override:' '  opencode: /usr/bin/opencode' 'log_level: info' >"$config"
   run_bin -1 team-doctor
-  assert_equal "$(line_of opencode-gate)" "FAIL opencode-gate: ~/.no-mistakes/config.yaml's agent_path_override does not name ~/.no-mistakes/bin/opencode-gate for opencode, so the gate's opencode reads Claude Code's config and not the gate's own; fix: Daniel sets $setting in ~/.no-mistakes/config.yaml, $step"
+  assert_equal "$(line_of opencode-gate)" "FAIL opencode-gate: ~/.no-mistakes/config.yaml's agent_path_override does not name ~/.no-mistakes/bin/opencode-gate for opencode, so the gate's opencode reads Claude Code's config and not the gate's own; fix: $tools, which sets $setting in ~/.no-mistakes/config.yaml, that key alone"
   # A key of that name under another block is not the setting.
   printf '%s\n' 'agent: opencode' 'agent_args_override:' "  opencode: $wrapper" >"$config"
   run_bin -1 team-doctor
@@ -141,7 +142,7 @@ FAIL secret conventioner-back-end-env: not a file; fix: move aside what is at it
   tools_at arch
   rm "$config"
   run_bin -1 team-doctor
-  assert_equal "$(line_of opencode-gate)" "FAIL opencode-gate: ~/.no-mistakes/config.yaml is not there; fix: Daniel runs team-secrets restore in their own terminal (the secret no-mistakes-config) and sets $setting in it, $step"
+  assert_equal "$(line_of opencode-gate)" "FAIL opencode-gate: ~/.no-mistakes/config.yaml is not there; fix: Daniel runs team-secrets restore in their own terminal (the secret no-mistakes-config), then $tools sets $setting in it"
 
   chmod 644 "$wrapper"
   run_bin -1 team-doctor
@@ -216,6 +217,18 @@ RECORDS_FIX="fix what it names in the team home (team-log --check and team-proje
 
 # A UI capture (team-ui) stays on the machine that took it: the team home's git ignores it, and
 # team-close removes it, so one left behind by a task that is not open is reported.
+@test "the heavy runs line names the heavy-run lock's holder, or says it is free" {
+  run_bin team-doctor
+  assert_equal "$(line_of 'heavy runs')" "PASS heavy runs: free (team-heavy queues full test suites and local checks)"
+  mkdir -p "$HOME/.local/state/agent-team"
+  exec {held}<>"$HOME/.local/state/agent-team/heavy.lock"
+  echo "tests/run all in ~/agent-team (pid 1) since 2026-10-25 10:00:00 +0000" >"$HOME/.local/state/agent-team/heavy.lock"
+  flock -x "$held"
+  run_bin team-doctor
+  exec {held}<&-
+  assert_equal "$(line_of 'heavy runs')" "PASS heavy runs: held by tests/run all in ~/agent-team (pid 1) since 2026-10-25 10:00:00 +0000"
+}
+
 @test "the captures line warns while the team home's git does not ignore tasks/*/ui/, or a capture is left by a task that is not open or in an archive" {
   tools_at arch
   mkdir -p "$TEAM_HOME/tasks/T4/ui" "$TEAM_HOME/tasks/T5/ui" "$TEAM_HOME/tasks/T6/ui"

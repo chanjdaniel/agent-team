@@ -97,7 +97,9 @@ every_tool_fails() {
     secret_ids | sed 's/^/secret /'
     echo opencode-gate
     echo records
+    echo 'trust team home'
     echo captures
+    echo 'heavy runs'
     project_checks
     printf '%s\n' 'stack memory' clock lease heartbeat offline)
   assert_equal "$(checks)" "$expected"
@@ -123,7 +125,9 @@ every_tool_fails() {
     secret_ids | sed 's/^/secret /'
     echo opencode-gate
     echo records
+    echo 'trust team home'
     echo captures
+    echo 'heavy runs'
     project_checks
     printf '%s\n' 'stack memory' clock lease heartbeat offline)
   assert_equal "$(checks)" "$expected"
@@ -231,6 +235,7 @@ every_tool_fails() {
   assert_equal "$(line_of machine)" "PASS machine: home-pc"
   # team-lease refuses without them.
   assert_contains "$(line_of lease)" "FAIL lease: missing Homebrew packages: gnu-sed flock"
+  assert_equal "$(line_of 'heavy runs')" "WARN heavy runs: \`team-heavy status\` did not answer: missing Homebrew packages: gnu-sed flock; run \`brew install gnu-sed flock\`; fix: fix what it names, then run team-doctor again"
 }
 
 @test "an OS other than Arch or macOS fails, and its tools go unchecked; an Arch derivative passes" {
@@ -248,4 +253,88 @@ every_tool_fails() {
   stub_reply uname FreeBSD
   run_bin -1 team-doctor
   assert_equal "$(line_of os)" "FAIL os: FreeBSD is neither Arch Linux nor macOS, so no tool is checked; fix: run the team on Arch Linux or macOS"
+}
+
+# version_command <dir> <name> <output>: <dir>/<name> answers --version with <output> and hands
+# every other call to the real command, as an installed tool would.
+version_command() {
+  mkdir -p "$1"
+  cat >"$1/$2" <<SH
+#!$(command -v bash)
+if [[ \$* == --version ]]; then echo '$3'; exit 0; fi
+exec "\$(PATH=\$REAL_PATH command -v $2)" "\$@"
+SH
+  chmod +x "$1/$2"
+}
+
+@test "a plain doctor and the bootstrap's check give one verdict: the pinned Node in nvm's directory beats another node first on PATH" {
+  tools_at arch
+  rm "$TOOL_STUBS/node"
+  # The shell's PATH starts with another Node; the pinned one is only in nvm's directory.
+  local other=$BATS_TEST_TMPDIR/other-node
+  version_command "$other" node v24.19.0
+  version_command "$HOME/.nvm/versions/node/v24.22.1/bin" node v24.22.1
+  PATH=$other:$PATH run_bin -0 team-doctor
+  assert_equal "$(line_of 'tool node')" "PASS tool node: 24.22.1"
+  PATH=$other:$PATH run_bin -0 team-bootstrap --stage check
+  [[ $output != *"tool node"* ]]
+}
+
+@test "on macOS python3 is Homebrew's pinned Python before an older one first on PATH, and its line says which it found" {
+  on_macos
+  tools_at macos
+  rm "$TOOL_STUBS/python3"
+  local old=$BATS_TEST_TMPDIR/system-python brewed=$HOMEBREW_PREFIX/opt/python@3.12/libexec/bin
+  version_command "$old" python3 "Python 3.9.6"
+  PATH=$old:$PATH run_bin team-doctor
+  assert_equal "$(line_of 'tool python')" "FAIL tool python: 3.9.6 at $old/python3, below the minimum 3.11.0; fix: brew install python@3.12"
+  version_command "$brewed" python3 "Python 3.12.4"
+  PATH=$old:$PATH run_bin team-doctor
+  assert_equal "$(line_of 'tool python')" "PASS tool python: 3.12.4 at $brewed/python3 (minimum 3.11.0)"
+}
+
+# What lavish-axi prints, on stderr, when Node starts in a directory that no longer exists (report
+# F5): only Node's version, in its install path.
+lavish_crash="node:internal/bootstrap/switches/does_own_process_state:142
+    cachedCwd = rawMethods.cwd();
+                           ^
+
+Error: ENOENT: no such file or directory, uv_cwd
+    at process.wrappedCwd [as cwd] (node:internal/bootstrap/switches/does_own_process_state:142:28)
+    at Object.<anonymous> (/Users/danielchan/.nvm/versions/node/v22.19.0/lib/node_modules/lavish-axi/node_modules/depd/index.js:23:24)"
+
+@test "a version command that prints only another tool's version printed no version" {
+  tools_at arch
+  answer "lavish-axi --version" "$lavish_crash"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of 'tool lavish-axi')" \
+    'FAIL tool lavish-axi: `lavish-axi --version` printed no version; fix: npm install -g lavish-axi@0.1.36'
+  # A line before the version, a warning say, does not hide it.
+  answer "lavish-axi --version" $'(node:4242) Warning: something is deprecated\n0.1.36'
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'tool lavish-axi')" "PASS tool lavish-axi: 0.1.36"
+}
+
+@test "every version pattern starts at a line's start or names its tool, so another tool's version is never read as its own" {
+  jq -e '.tools | all(.[]; .version_pattern | startswith("^") or test("[A-Za-z]"))' "$LOCK"
+}
+
+@test "a doctor started in a directory that no longer exists says so, runs from HOME and passes" {
+  tools_at arch
+  # Claude Code and the Node tools fail without a working directory, as on the laptop.
+  local gone=$BATS_TEST_TMPDIR/load-check-wt
+  cat >"$TOOL_ANSWERS/claude/--version.sh" <<'SH'
+if [[ $PWD -ef . ]]; then echo '2.1.310 (Claude Code)'; else
+  echo "error: The current working directory was deleted, so that command didn't work." >&2; exit 1; fi
+SH
+  printf '%s\n' "if [[ \$PWD -ef . ]]; then echo 0.1.36; else cat >&2 <<'CRASH'" "$lavish_crash" CRASH \
+    'exit 1; fi' >"$TOOL_ANSWERS/lavish-axi/--version.sh"
+  rm "$TOOL_ANSWERS/claude/--version" "$TOOL_ANSWERS/lavish-axi/--version"
+  mkdir "$gone"
+  guard_sandbox
+  run -0 --separate-stderr bash -c 'cd "$1" && rmdir "$1" && exec "$2"' gone "$gone" "$CODE_CHECKOUT/bin/team-doctor"
+  assert_contains "$stderr" "team-doctor: the current directory no longer exists; running from ~"
+  assert_equal "$(line_of 'tool claude')" "PASS tool claude: 2.1.310"
+  assert_equal "$(line_of 'tool lavish-axi')" "PASS tool lavish-axi: 0.1.36"
+  assert_equal "$(grep -v '^PASS ' <<<"$output" || true)" ""
 }

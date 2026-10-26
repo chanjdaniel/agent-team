@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Take the team over on this machine, the one Daniel is at: run in a terminal here, once the
-# machine being left has handed off (its coordinator's handoff skill, on Daniel's "hand off").
+# Take the team over on this machine, the one Daniel is at: run in a terminal here. While another
+# machine holds the team, start it with --wait first: once it says this machine is ready, Daniel
+# says "hand off" to the coordinator there (its handoff skill), and the wait ends on the release.
 #
 # Usage: team-resume [--wait | --steal]
 # One line per step, each prefixed by the step; each step is idempotent, so a run that stopped
@@ -11,11 +12,20 @@
 #                   changed, but for the lease and heartbeat lines, which steps 3, 7 and 8 put
 #                   right (a fenced machine's lease line among them: the take clears the fence).
 #   3. lease        Read again. Held by another machine and fresh: refused, "home-pc holds the
-#                   lease (renewed 4 min ago): say 'hand off' to the coordinator there, then run
-#                   `team-resume --wait` here"; with --wait, read again every 30 s until it is
-#                   released (or goes stale, which refuses as below). Held elsewhere and stale:
-#                   refused, naming --steal. Before the pull, so a refusal changes nothing and a
-#                   wait ends before the handoff's records are pulled.
+#                   lease (renewed 4 min ago): run `team-resume --wait` here first, then say 'hand
+#                   off' to the coordinator there once it says this machine is ready"; with --wait,
+#                   "lease: home-pc holds the lease; this machine is ready: say 'hand off' to the
+#                   coordinator there now", then read again every 30 s until it is released (or
+#                   goes stale, which refuses as below). Held elsewhere and stale: refused, naming
+#                   --steal. After the doctor, so --wait started before the handoff is a preflight
+#                   whose FAIL refuses while the old machine still runs the team; before the pull,
+#                   so a refusal changes nothing and a wait ends before the handoff's records are
+#                   pulled. Before its ready line --wait also checks steps 4 and 5 against origin as
+#                   it is, moving nothing ("team home: before the wait: ..."), so a checkout they
+#                   would refuse now (detached, diverged, local changes in the way) refuses while
+#                   the old machine still runs the team, as does a team home with commits origin's
+#                   lacks, which the handoff's push would leave diverged. Local changes to paths
+#                   only the handoff's own commit touches can still refuse step 4 after the release.
 #   4. team home    The team home's branch fast-forwarded to origin's (fetch, then merge
 #                   --ff-only); a branch that has diverged, or local changes in the way, refuses.
 #   5. code         The code checkout (the directory above this script's bin/) the same way, so
@@ -26,23 +36,34 @@
 #   8. heartbeat    team-timers enable.
 #   9. worktrees    team-open --task T<n> --resume <project> for each open worktree of each open
 #                   task, one line each ("T1 home: ..."); one that fails is said with its reason
-#                   on stderr and in the report, and the others still resume. A task that crashed
-#                   (a launch after its latest stowed, or a launch and no stowed) gets its last
-#                   checkpoint's snapshot applied by team-open, and one more line: the machine,
-#                   the checkpoint it resumes from and the roles to relaunch. So does a worktree
-#                   its latest stowed recorded with uncommitted changes (a worker the handoff
-#                   stopped before it stowed), whose snapshot team-open's line reports.
-#  10. report       tasks/resume-<date>.json (this machine's date): {machine, epoch, stolen_from,
+#                   on stderr and in the report, and the others still resume. Each failure is
+#                   also one rehome-failed in the ledger ({project, branch, machine, reason}, the
+#                   reason the first line team-open printed), which team-state and team-snapshot
+#                   show until team-open makes the worktree (its worktree-moved or rehomed). A
+#                   team-open that fails hands back a slot it leased, or keeps it leased to the
+#                   task for the next run to take again (team-open's header), so a run again
+#                   leases no slot more.
+#                   A task that crashed (a launch after its latest stowed, or a launch and no
+#                   stowed) gets its last checkpoint's snapshot applied by team-open, and one more
+#                   line: the machine, the checkpoint it resumes from and the roles to relaunch.
+#                   So does a worktree its latest stowed recorded with uncommitted changes (a
+#                   worker the handoff stopped before it stowed), whose snapshot team-open's line
+#                   reports.
+#  10. report       tasks/resume-<date>-<time>.json (this machine's date and time, HHMMSS, with
+#                   -2, -3 ... after it should a report of that second exist), one per run, so a
+#                   run never overwrites an earlier one: {machine, epoch, stolen_from,
 #                   written_at, tasks}, each task {task, stowed, crashed, worktrees, failures}:
-#                   stowed the task's latest stowed event ({ts, machine, roles, note}) or null,
+#                   stowed the task's latest stowed event ({ts, machine, roles, sessions, note},
+#                   roles its unfinished work, sessions the sessions the handoff stopped) or null,
 #                   crashed null or {machine, checkpoint, roles}: the machine it crashed on, the
 #                   latest time any of it was saved (its snapshots, its archive's last commit) or
 #                   null, and the roles whose latest launch since that stowed nothing ended (a
-#                   done of the role, a review, a ticket-done); worktrees team-open's facts
+#                   done of the role, a review, a ticket-done or a pr); worktrees team-open's facts
 #                   ({project, branch, worktree, from, moved, head, archive, snapshot}, archive
 #                   null when no scratch was restored, snapshot null unless the worktree resumed
 #                   from one, after a crash or a stowed with uncommitted changes), failures
-#                   [{project, branch, reason}]. Not committed: the resume skill deletes it.
+#                   [{project, branch, reason}], reason all team-open printed. Not committed:
+#                   the resume skill deletes the day's reports.
 #  11. coordinator  claude-coordinator, with a first prompt naming the report and the resume skill;
 #                   then "Pin the coordinator in `claude agents` (Ctrl+T)."
 # Only Daniel steals: --steal needs this terminal, and deny rules stop the team's sessions typing
@@ -136,10 +157,28 @@ crash_facts() {
       roles: .crashed.roles}' <<<"$2"
 }
 
+# Step 4 or 5: <checkout>'s branch fast-forwarded to origin's, each line said as <step>, a refusal
+# naming the checkout as <what> and ending "then <then>"; with --check, only whether it can be
+# (and, for the team home, whether it holds commits origin's lacks), moving nothing.
+# level <step> <checkout> <what> <then> [--check]
+level() {
+  local step=$1 dir=$2 what=$3 then=$4 check=${5:-} branch rc=0
+  branch=$(git -C "$dir" symbolic-ref -q --short HEAD) ||
+    die "$step: $dir is on a detached HEAD; check out its branch, then $then"
+  fast_forward "$dir" "$branch" ${check:+"$check"} || rc=$?
+  ((rc != 75)) || offline "$FF_REASON"
+  if ((rc == 0)) && [[ -n $check && $dir == "$TEAM_HOME" ]] && ((FF_AHEAD)); then
+    FF_REASON="$branch has $FF_AHEAD commit(s) origin's lacks, which the handoff's push would leave diverged"
+    rc=1
+  fi
+  ((rc == 0)) || die "$step: $FF_REASON; bring $what level with origin's $branch, then $then"
+  echo "$step: ${check:+before the wait: }$FF_RESULT"
+}
+
 # The whole run is one function, read before it starts, so the pulls of steps 4 and 5 may change
 # this very file under it.
 main() {
-  local lease out rc fails holder age where branch code
+  local lease out rc fails holder age where code again
 
   # 1. GitHub.
   lease=$(read_lease)
@@ -161,6 +200,7 @@ main() {
     + ([.[] | select(.verdict == "FAIL") | .check] | if . == [] then "" else ", \(join(" and ")) left to the resume" end)' <<<"$out")"
 
   # 3. The lease, read again: another machine's fresh lease refuses, or is waited for.
+  code=$(cd "$bin/.." && pwd -P)
   local said=''
   while true; do
     lease=$(read_lease)
@@ -169,9 +209,12 @@ main() {
     case $where in
       fresh)
         [[ -z $steal ]] || break
-        [[ -n $wait ]] || die "$holder holds the lease (renewed $age min ago): say 'hand off' to the coordinator there, then run \`team-resume --wait\` here"
+        [[ -n $wait ]] || die "$holder holds the lease (renewed $age min ago): run \`team-resume --wait\` here first, then say 'hand off' to the coordinator there once it says this machine is ready"
         if [[ -z $said ]]; then
-          echo "lease: $holder holds the lease (renewed $age min ago); waiting for its release, reading it every ${POLL_SECONDS}s (Ctrl+C stops, changing nothing)"
+          again="run \`team-resume --wait\` again (checked before the wait: nothing changed, and $holder still runs the team)"
+          level "team home" "$TEAM_HOME" it "$again" --check
+          same_path "$code" "$TEAM_HOME" || level code "$code" "$code" "$again" --check
+          echo "lease: $holder holds the lease; this machine is ready: say 'hand off' to the coordinator there now (waiting for its release, reading it every ${POLL_SECONDS}s; Ctrl+C stops, changing nothing)"
           said=1
         fi
         sleep "$POLL_SECONDS"
@@ -186,26 +229,13 @@ main() {
   [[ -z $said ]] || echo "lease: $(jq -r 'if .state == "released" then "released by \(.holder)" else "held by \(.holder)" end + ", epoch \(.epoch)"' <<<"$lease")"
 
   # 4. The team home, up to date with origin's.
-  branch=$(git -C "$TEAM_HOME" symbolic-ref -q --short HEAD) ||
-    die "team home: $TEAM_HOME is on a detached HEAD; check out its branch, then run team-resume again"
-  rc=0
-  fast_forward "$TEAM_HOME" "$branch" || rc=$?
-  ((rc != 75)) || offline "$FF_REASON"
-  ((rc == 0)) || die "team home: $FF_REASON; bring it level with origin's $branch, then run team-resume again"
-  echo "team home: $FF_RESULT"
+  level "team home" "$TEAM_HOME" it "run team-resume again"
 
   # 5. The code checkout, up to date with origin's, unless it is the team home.
-  code=$(cd "$bin/.." && pwd -P)
-  if [[ $code == "$(realpath -- "$TEAM_HOME")" ]]; then
+  if same_path "$code" "$TEAM_HOME"; then
     echo "code: the code checkout is the team home, brought up to date above"
   else
-    branch=$(git -C "$code" symbolic-ref -q --short HEAD) ||
-      die "code: $code is on a detached HEAD; check out its branch, then run team-resume again"
-    rc=0
-    fast_forward "$code" "$branch" || rc=$?
-    ((rc != 75)) || offline "$FF_REASON"
-    ((rc == 0)) || die "code: $FF_REASON; bring $code level with origin's $branch, then run team-resume again"
-    echo "code: $FF_RESULT"
+    level code "$code" "$code" "run team-resume again"
   fi
 
   # 6. The team's Claude config.
@@ -238,9 +268,9 @@ main() {
     mapfile -t open < <(ledger_jq 'ledger_events | by_task | . as $tasks | open_tasks[] | . as $task
       | {task: $task,
          stowed: ($tasks[$task] | map(select(.event == "stowed")) | last
-           | if . then {ts, machine, roles} + (if .note then {note} else {} end) else null end),
+           | if . then {ts, machine, roles, sessions} + (if .note then {note} else {} end) else null end),
          crashed: ($tasks[$task] | if crashed then
-           {machine: (map(select(.event == "launch")) | last | .machine), roles: crash_roles} else null end),
+           {machine: (map(select(.event == "launch")) | last | .machine), roles: unfinished_roles} else null end),
          open: [$tasks[$task] | open_worktrees(.[]; $home) | {project, branch}]}' -nRc "$TEAM_HOME/ledger.jsonl")
   fi
   for entry in "${open[@]}"; do
@@ -262,6 +292,12 @@ main() {
         reason=$(grep . "$err" | sed -E 's/^team-open: //' | paste -sd ' ' || true)
         [[ -n $reason ]] || reason="team-open exited $rc"
         echo "team-resume: $task $project: not re-homed: $reason" >&2
+        # The ledger keeps it, where team-state shows it until the worktree is made, with only the
+        # first line team-open printed.
+        ledger_append "$(jq -cn --arg task "$task" --arg p "$project" --arg b "$branch" --arg m "$machine" \
+          --arg r "$(first_error)" --arg all "$reason" \
+          '{ts: (now | todate), task: $task, event: "rehome-failed", project: $p, branch: $b, machine: $m,
+            reason: (if $r == "" then $all else $r end)}')"
         task_json=$(jq -c --arg p "$project" --arg b "$branch" --arg r "$reason" \
           '.failures += [{project: $p, branch: $b, reason: $r}]' <<<"$task_json")
       fi
@@ -277,8 +313,13 @@ main() {
   ((${#open[@]})) || echo "worktrees: no open task"
 
   # 10. The report.
-  local report
-  report=$TEAM_HOME/tasks/resume-$(date +%F).json
+  local report stamp n=1
+  stamp=$(date +%F-%H%M%S)
+  report=$TEAM_HOME/tasks/resume-$stamp.json
+  while [[ -e $report ]]; do
+    n=$((n + 1))
+    report=$TEAM_HOME/tasks/resume-$stamp-$n.json
+  done
   mkdir -p "$TEAM_HOME/tasks"
   jq -n --arg machine "$machine" --argjson lease "$lease" --argjson tasks "$tasks" \
     '{machine: $machine, epoch: $lease.epoch, stolen_from: $lease.stolen_from,
