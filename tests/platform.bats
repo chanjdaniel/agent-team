@@ -136,6 +136,19 @@ $brew/opt/python@3.12/libexec/bin/python3"
   assert_equal "$output" "$HOME/.bun/bin:$HOME/.no-mistakes/bin:$stubs:$bare:/usr/bin:/bin:$system"
 }
 
+@test "TEAM_PATH_FIRST stays first on PATH, ahead of Homebrew's GNU tools and the tool directories, once" {
+  stub_reply uname Darwin
+  mkdir -p "$HOME/.bun/bin"
+  local first=$BATS_TEST_TMPDIR/first
+  TEAM_PATH_FIRST=$first run -0 library_path
+  assert_equal "$output" "$first:$gnu_path:$HOME/.bun/bin:$PATH"
+  # Already first, or elsewhere on PATH, it is moved there, never added twice; nor are the others.
+  PATH=$output TEAM_PATH_FIRST=$first run -0 library_path
+  assert_equal "$output" "$first:$gnu_path:$HOME/.bun/bin:$PATH"
+  PATH=$PATH:$first TEAM_PATH_FIRST=$first run -0 library_path
+  assert_equal "$output" "$first:$gnu_path:$HOME/.bun/bin:$PATH"
+}
+
 @test "in the sandbox a trimmed PATH regains no directory outside the test's own, so never the machine's 1Password CLI" {
   [[ $TEAM_SYSTEM_ROOT == "$BATS_TEST_TMPDIR"/* ]]
   # As team-secrets' tests trim it: one folder of links to every command on PATH but the CLI.

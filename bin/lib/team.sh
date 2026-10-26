@@ -287,10 +287,12 @@ tool_dirs() {
 # Put the tool directories that exist on PATH, exported, so every script, the sessions it starts
 # and the tools they run find the pinned tools whatever shell called them: those under HOME or
 # Homebrew's prefix first, right after Homebrew's GNU tools, once; a system directory (treehouse's
-# /usr/local/bin on Arch) keeps its place, or comes last when PATH lacks it. The library runs it
-# once; team-bootstrap again after each install.
+# /usr/local/bin on Arch) keeps its place, or comes last when PATH lacks it; TEAM_PATH_FIRST, when
+# set, goes before all of them (bin/lib/platform.sh). The library runs it once; team-bootstrap
+# again after each install.
 team_tool_path() {
   local dir front='' back=''
+  team_path_without_first
   while IFS= read -r dir; do
     [[ -d $dir ]] || continue
     if [[ $dir == "$HOME"/* || (-n $TEAM_BREW_PREFIX && $dir == "$TEAM_BREW_PREFIX"/*) ]]; then
@@ -302,6 +304,7 @@ team_tool_path() {
   front=$TEAM_PLATFORM_FRONT$front
   [[ $PATH == "$front"* ]] || PATH=$front${PATH#"$TEAM_PLATFORM_FRONT"}
   PATH+=$back
+  [[ -z ${TEAM_PATH_FIRST:-} ]] || PATH=$TEAM_PATH_FIRST:$PATH
   export PATH
 }
 

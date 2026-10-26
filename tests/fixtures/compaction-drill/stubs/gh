@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# The compaction drill's gh, first on the drill session's PATH, so its hooks never reach GitHub:
+# the fixture's project has no open PRs.
+if [[ ${1:-} == pr && ${2:-} == list ]]; then
+  echo '[]'
+else
+  echo "the compaction drill's gh answers only gh pr list, not: gh $*" >&2
+  exit 1
+fi

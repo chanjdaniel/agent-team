@@ -12,6 +12,10 @@
 #   prefix found and TEAM_PLATFORM_FRONT the directories put first ("" for each on Linux), which
 #   the library's tool directories follow. TEAM_CALLER_PATH is PATH as the script was started
 #   with, before this file or the library changed it.
+# - TEAM_PATH_FIRST, when set, is a directory taken off PATH here and put back first by the
+#   library's team_tool_path, ahead of the GNU tools and the tool directories: a test seam for a
+#   directory of stand-ins that must win over the machine's own tools (tests/compaction-drill's
+#   stubs, whose real session's hooks run with the real HOME).
 # This file is read by Bash 3.2 too, so it uses nothing newer until the version check passes.
 # shellcheck shell=bash
 
@@ -34,7 +38,16 @@ team_platform_refuse() {
 # The macOS PATH rule above; nothing on Linux.
 # shellcheck disable=SC2034 # read by the script that set platform_report, and by the library
 PLATFORM_PROBLEM='' PLATFORM_FIX='' TEAM_BREW_PREFIX='' TEAM_PLATFORM_FRONT='' TEAM_CALLER_PATH=$PATH
+# PATH without TEAM_PATH_FIRST, wherever and however often it is on it.
+team_path_without_first() {
+  [[ -n ${TEAM_PATH_FIRST:-} ]] || return 0
+  local path=:$PATH:
+  while [[ $path == *:"$TEAM_PATH_FIRST":* ]]; do path=${path//:"$TEAM_PATH_FIRST":/:}; done
+  path=${path#:}
+  PATH=${path%:}
+}
 team_platform_path() {
+  team_path_without_first
   [[ $(uname -s) == Darwin ]] || return 0
   local prefix=${HOMEBREW_PREFIX:-} dir
   if [[ -z $prefix ]]; then

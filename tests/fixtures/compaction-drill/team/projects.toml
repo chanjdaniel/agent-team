@@ -1,0 +1,17 @@
+# The compaction drill's registry: one project, whose repository is never reached (the drill's
+# stub gh answers it with no open PRs).
+
+[drill]
+repo = "example/drill"
+path = "drill"
+base = "main"
+delivery = "direct-pr"
+merge_method = "merge"
+required_checks = []
+task_dir = ".scratch/task"
+docs = ["README.md"]
+toolkits = []
+
+[drill.pool]
+provider = "git"
+slots = ["drill/.claude/worktrees/1", "drill/.claude/worktrees/2", "drill/.claude/worktrees/3"]

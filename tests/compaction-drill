@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+# The compaction drill, run by hand: compact a coordinator-shaped Claude session mid-task in a
+# sandbox team home, then check it still answers what each open task waits on and every current
+# item, the one it learned from the conversation just before the compaction included. It starts
+# a real Claude session and spends allowance, so it never runs in tests/run; workers may not start
+# sessions, so the coordinator runs it, and tests/compaction-drill.bats dry-runs it on a stub
+# claude.
+#
+# The sandbox is a new directory under TMPDIR (under /tmp when TMPDIR is inside a .claude
+# directory, where every write of the session would prompt): team/ is a copy of
+# tests/fixtures/compaction-drill/team, a team home with one project, drill, whose GitHub is never
+# reached; four open tasks, T91 on an unanswered ask, T92 waiting on Daniel, T93 blocked on T92
+# and T94 with its builder at work; and tasks/current.md with an owe, a next and a queued item.
+# stubs/ goes first on the session's PATH, as TEAM_PATH_FIRST, which keeps it ahead of the tool
+# directories the hooks' library puts first (the machine's own claude among them), so its hooks
+# see the fixture's live sessions (claude agents --json) and no open PRs (gh pr list), never this
+# machine's. The session runs in team/
+# with TEAM_HOME naming it, the coordinator's manual appended to its system prompt, settings
+# holding only the coordinator's SessionStart hook (session-digest: no Discord, no Stop hook, no
+# lease fence) over the user's own, no MCP servers, and only the tools Read, Glob, Grep, Edit and
+# Write, its edits accepted and anything else refused.
+#
+# Three print-mode turns on one session: a message from Daniel with a new promise; /compact,
+# resumed; and, resumed, a question asking for each open task's wait and every current item as
+# JSON. Then the answer, tasks/current.md, one PASS or FAIL line per check (the compaction ran;
+# each task's wait; each item, the new promise included; the new promise as a next item in
+# tasks/current.md) and each turn's token totals. A turn that fails ends the drill with its error.
+# The sandbox and the session's state (claude purge) are removed either way.
+#
+# Usage: tests/compaction-drill
+# Exit 0 when every check passes, 1 when any fails or a turn fails, 2 on a malformed command line.
+set -euo pipefail
+
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+if [[ ${1:-} == --help || ${1:-} == -h ]]; then
+  sed -n '2,/^[^#]/{/^#/!q;s/^# \{0,1\}//;p}' "$0"
+  exit 0
+fi
+[[ $# -eq 0 ]] || { echo "usage: tests/compaction-drill" >&2; exit 2; }
+claude=$(command -v claude) || { echo "compaction-drill: no claude on PATH" >&2; exit 1; }
+
+base=${TMPDIR:-/tmp}
+[[ $base != */.claude/* && $base != */.claude ]] || base=/tmp
+sandbox=$(cd "$(mktemp -d "$base/compaction-drill.XXXXXX")" && pwd -P)
+team=$sandbox/team
+started=''
+cleanup() {
+  if [[ -n $started ]]; then
+    "$claude" purge -y "$team" >/dev/null 2>&1 ||
+      echo "compaction-drill: claude purge -y $team failed; remove the session's state by hand" >&2
+  fi
+  rm -rf "$sandbox"
+}
+trap cleanup EXIT
+cp -R "$root/tests/fixtures/compaction-drill/." "$sandbox/"
+
+# The coordinator's SessionStart hook, from coordinator.settings.json as claude-coordinator
+# fills it in, and nothing else of its settings.
+jq --arg code "$root" --arg team "$team" '
+  {enabledPlugins: {"discord@claude-plugins-official": false},
+   env: {TEAM_HOME: $team},
+   hooks: {SessionStart: .hooks.SessionStart}}
+  | walk(if type == "string" then gsub("@TEAM_CODE@"; $code) else . end)' \
+  "$root/coordinator.settings.json" >"$sandbox/settings.json"
+
+id=$(python3 -I -c 'import uuid; print(uuid.uuid4())')
+names=("Daniel's message" "/compact" "the question")
+prompts=(
+  "This is the compaction drill: the team home is a sandbox, Discord is not connected and you have no Bash, so neither reply nor run team scripts. This message from Daniel just arrived on Discord (channel 1200000000000000000, message 1300000000000000042, link https://discord.com/channels/1100000000000000000/1200000000000000000/1300000000000000042): \"Once T92 merges, open a task to pin Node 22 in the drill project's CI.\" Do everything else your manual says for it with the tools you have, then end your turn."
+  "/compact"
+  "List every open task with what it waits on, and every current item, as you hold them now; look in the team home if you need to, as you would after any compaction. Answer with one JSON object and nothing else, shaped {\"tasks\": [{\"task\": \"T<n>\", \"waits_on\": \"<what it waits on>\"}], \"items\": [\"<each current item, as its line in tasks/current.md reads>\"]}."
+)
+
+echo "== the compaction drill, in $sandbox"
+for turn in 1 2 3; do
+  echo "== turn $turn: ${names[turn - 1]}"
+  if [[ $turn == 1 ]]; then session=(--session-id "$id"); else session=(--resume "$id"); fi
+  started=1
+  status=0
+  # --tools takes many values, so it comes first, and the prompt last, after a one-value flag.
+  (cd "$team" && PATH="$sandbox/stubs:$PATH" TEAM_PATH_FIRST="$sandbox/stubs" TEAM_HOME="$team" "$claude" \
+    --tools Read,Glob,Grep,Edit,Write \
+    --print --verbose --output-format stream-json \
+    --append-system-prompt-file "$root/roles/coordinator.md" \
+    --settings "$sandbox/settings.json" \
+    --strict-mcp-config \
+    --permission-mode acceptEdits \
+    --no-chrome \
+    "${session[@]}" \
+    --permission-prompts none \
+    "${prompts[turn - 1]}") >"$sandbox/turn-$turn.jsonl" 2>"$sandbox/turn-$turn.err" </dev/null || status=$?
+  # The stream's last result line, a line that is not JSON skipped.
+  result=$(jq -Rc 'fromjson? | select(.type? == "result")' "$sandbox/turn-$turn.jsonl" | tail -n 1)
+  result=${result:-null}
+  if [[ $status -ne 0 || $result == null ]] || jq -e '.is_error' >/dev/null <<<"$result"; then
+    echo "FAIL turn $turn (${names[turn - 1]}) failed (exit $status):"
+    cat "$sandbox/turn-$turn.err"
+    jq -r '.result // empty' <<<"$result" 2>/dev/null || true
+    exit 1
+  fi
+  printf '%s\n' "$result" >"$sandbox/result-$turn.json"
+done
+
+echo "== the answer (turn 3)"
+jq -r '.result' "$sandbox/result-3.json" | tee "$sandbox/answer.txt"
+echo "== tasks/current.md after the drill"
+cat "$team/tasks/current.md"
+
+# The answer's JSON object: the text from its first { to its last }, or null.
+jq -Rsc 'capture("(?s)(?<json>\\{.*\\})").json | fromjson? // null' "$sandbox/answer.txt" >"$sandbox/answer.json" ||
+  echo null >"$sandbox/answer.json"
+
+echo "== checks"
+passed=0 checks=0
+# check <what> <command...>: PASS or FAIL as the command succeeds.
+check() {
+  checks=$((checks + 1))
+  if "${@:2}" >/dev/null 2>&1; then
+    passed=$((passed + 1))
+    echo "PASS $1"
+  else
+    echo "FAIL $1"
+  fi
+}
+# waits <task> <pattern>: the answer gives the task a wait matching the pattern, in any case.
+waits() {
+  jq -e --arg task "$1" --arg re "$2" \
+    'any(.tasks[]?; .task == $task and (.waits_on | tostring | test($re; "i")))' "$sandbox/answer.json"
+}
+# waits_not <task> <pattern> <not>: as waits, and the wait matches no part of <not>.
+waits_not() {
+  waits "$1" "$2" && ! waits "$1" "$3"
+}
+# item <pattern>: an item of the answer matches the pattern, in any case.
+item() {
+  jq -e --arg re "$1" 'any(.items[]?; tostring | test($re; "i"))' "$sandbox/answer.json"
+}
+
+check "the compaction ran (turn 2 reported a compact_boundary)" \
+  grep -q '"subtype":"compact_boundary"' <(jq -Rc 'fromjson? | select(.type? == "system")' "$sandbox/turn-2.jsonl")
+check "the answer is one JSON object with tasks and items" \
+  jq -e '(.tasks | type) == "array" and (.items | type) == "array"' "$sandbox/answer.json"
+# Each wait and item as the fixture sets them.
+check "T91 waits on its unanswered ask, q1 on the licence" waits T91 'licen[cs]e|q1'
+check "T92 waits on Daniel to rotate the staging database password" waits T92 'password'
+check "T93 is blocked on T92" waits T93 'T92'
+check "T94 has its builder at work" waits_not T94 'builder' 'no(t| longer)? live|unattended|dead|gone|stopped'
+check "the owe item: the weekly status report (message 1300000000000000001)" item '1300000000000000001'
+check "the next item: the licence file task once q1 is answered" item 'licen[cs]e file'
+check "the queued item: the lint cleanup (tasks/queued/lint-cleanup.md)" item 'lint'
+check "the new promise: a task to pin Node 22, in the answer" item 'node ?22'
+check "the new promise: a next item to pin Node 22, in tasks/current.md" \
+  grep -Eiq '^- next .*node ?22' "$team/tasks/current.md"
+
+echo "== tokens: input, cache write, cache read, output, cost (USD)"
+jq -rs --argjson names "$(printf '%s\n' "${names[@]}" | jq -Rsc 'split("\n")[:-1]')" '
+  def row: [.usage.input_tokens, .usage.cache_creation_input_tokens, .usage.cache_read_input_tokens,
+    .usage.output_tokens] | map(. // 0);
+  def cost: (. * 100 | round) as $c | "\($c / 100 | floor).\($c % 100 | tostring | if length == 1 then "0" + . else . end)";
+  (to_entries[] | "turn \(.key + 1) (\($names[.key])): \(.value | row | join(" ")) \(.value.total_cost_usd // 0 | cost)"),
+  "total: \(map(row) | transpose | map(add) | join(" ")) \(map(.total_cost_usd // 0) | add | cost)"' \
+  "$sandbox/result-1.json" "$sandbox/result-2.json" "$sandbox/result-3.json"
+
+echo "== $passed of $checks checks passed"
+((passed == checks))

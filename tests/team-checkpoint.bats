@@ -365,11 +365,13 @@ team-checkpoint: left out of tasks/T1/scratch: node_modules (link)"
   assert_equal "$(find "$TEAM_HOME/tasks/T1/scratch/kept" -type f | wc -l)" "200"
 }
 
-@test "the team-home commit holds only the scratch archives, memory and the ledger, whatever else is staged" {
+@test "the team-home commit holds only the scratch archives, memory, the current items and the ledger, whatever else is staged" {
   run_bin -0 team-open home feature feat work "Do the work"
   echo "spec" >"$HOME/slots/home/1/.scratch/task/spec.md"
   mkdir -p "$TEAM_HOME/memory/home"
   echo "- a note" >"$TEAM_HOME/memory/home/MEMORY.md"
+  printf '# Current items\n- owe - the T1 summary | tasks/T1/plan.md\n' >"$TEAM_HOME/tasks/current.md"
+  echo "a queued task" >"$TEAM_HOME/tasks/queued.md"
   echo "# changed" >>"$TEAM_HOME/projects.toml"
   echo "steps" >"$TEAM_HOME/manual-steps.md"
   git -C "$TEAM_HOME" add projects.toml manual-steps.md tasks/T1/plan.md
@@ -379,7 +381,18 @@ team-checkpoint: left out of tasks/T1/scratch: node_modules (link)"
   run_bin -0 team-checkpoint
   assert_equal "$(changed_in dev)" "ledger.jsonl
 memory/home/MEMORY.md
-tasks/T1/scratch/spec.md"
+tasks/T1/scratch/spec.md
+tasks/current.md"
+  assert_equal "$(git -C "$team_origin" show dev:tasks/current.md)" "# Current items
+- owe - the T1 summary | tasks/T1/plan.md"
+  # The next checkpoint carries an emptied list, and its removal.
+  echo "# Current items" >"$TEAM_HOME/tasks/current.md"
+  run_bin -0 team-checkpoint --force
+  assert_equal "$(changed_in dev)" "tasks/current.md"
+  rm "$TEAM_HOME/tasks/current.md"
+  run_bin -0 team-checkpoint --force
+  assert_equal "$(changed_in dev)" "tasks/current.md"
+  run -128 git -C "$team_origin" cat-file -e dev:tasks/current.md
   # What was staged is still staged, exactly.
   assert_equal "$(git -C "$TEAM_HOME" diff --cached)" "$staged"
   assert_equal "$(git -C "$TEAM_HOME" diff --cached --name-only)" "manual-steps.md
