@@ -477,14 +477,18 @@ def open_tasks: [to_entries[] | select(.value | is_open) | .key] | sort_by(.[1:]
 # team-snapshot's JSON from every task's events by id ($tasks), the open tasks' team-state JSON
 # in task number order ($states; {task, error} for a task whose state could not be told), the
 # session list, and each registered project's open PRs ($prs).
-def snapshot($tasks; $states; $sessions; $prs):
+def snapshot($tasks; $states; $sessions; $prs; $items):
   team_sessions($tasks; $sessions) as $team
   | {schema: "team-snapshot/1",
      tasks: $states,
      sessions: [$team[] | select(.task_state == "open") | del(.task_state)],
      strays: [$team[] | select(.task_state != "open") | del(.logged)],
      prs: $prs,
-     pending_asks: [$states[] | .task as $task | (.pending_asks // [])[] | {task: $task} + .]};
+     pending_asks: [$states[] | .task as $task | (.pending_asks // [])[] | {task: $task} + .],
+     items: $items};
+
+# The current items of tasks/current.md, over its lines (-R): each line starting "- ", without it.
+def current_items: [inputs | rtrimstr("\r") | select(startswith("- ")) | .[2:]];
 
 # Cut a line to $n characters, showing the cut.
 def clip($n): if length > $n then .[:$n - 3] + "..." else . end;
@@ -494,7 +498,7 @@ def session_text:
   "\(.name) \(.session) \(.status)" + if .state == null or .state == "working" then "" else " \(.state)" end;
 
 # team-snapshot's text form, one line per string, from its JSON. Lines are cut at 120 columns, so
-# ten open tasks fit one screen.
+# ten open tasks fit one screen, but current items at 200, each being a whole thought.
 def snapshot_text:
   def section($title; $lines):
     if $lines == [] then "\($title): none" else "\($title) (\($lines | length)):", ($lines[] | "  " + . | clip(120)) end;
@@ -512,7 +516,12 @@ def snapshot_text:
            (.prs[] | "    #\(.number) \(.branch)" + (if .draft then " (draft)" else "" end) + ": \(.title)" | clip(120))
          end)
    end),
-  section("Pending asks"; [.pending_asks[] | "\(.task) \(.id): \(.text)"]);
+  section("Pending asks"; [.pending_asks[] | "\(.task) \(.id): \(.text)"]),
+  ((.items // []) as $items
+   | if $items == [] then "Current items: none"
+     else "Current items (\($items | length)):", ($items[:40][] | "  - " + . | clip(200)),
+       if $items | length > 40 then "  and \($items | length - 40) more in tasks/current.md" else empty end
+     end);
 
 # The following defs serve team-retro, over every ledger event as one array.
 
