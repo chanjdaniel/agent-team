@@ -114,6 +114,34 @@ assert_not_launched() {
   assert_equal "$(find "${settings%/*}" -name '*.json.*')" ""
 }
 
+@test "its settings keep every tool and skill its manual and skills name, and what it uses with Daniel" {
+  run_bin -0 claude-coordinator
+  local settings=$HOME/.local/state/agent-team/coordinator.settings.json skill tool
+  keeps_named "$settings" "$REPO_ROOT/roles/coordinator.md" "$REPO_ROOT"/plugins/coordinator-skills/skills/*/SKILL.md
+  # Its own skills, by their bare names too, which an override might reach.
+  for skill in "$REPO_ROOT"/plugins/coordinator-skills/skills/*/; do
+    skill=$(basename "$skill")
+    assert_equal "$(jq -r --arg s "$skill" '.skillOverrides[$s] // "on"' "$settings")" on
+  done
+  # Discord, the claude.ai docs connector and the synced docs skill that guides it, and artifacts.
+  assert_equal "$(jq -c '[.enabledPlugins["discord@claude-plugins-official"], .disableClaudeAiConnectors, .syncClaudeAiSkills,
+    .syncClaudeAiPlugins, .enabledPlugins["cc-plugin-plugin-authoring@builtin"]]' "$settings")" '[true,null,null,false,false]'
+  for tool in Artifact ArtifactComments ArtifactData SendUserFile PushNotification CronCreate CronList CronDelete \
+    ScheduleWakeup Monitor SendMessage ListAgents Agent WebFetch WebSearch; do
+    if jq -e --arg t "$tool" '.permissions.deny | index($t) != null' "$settings" >/dev/null; then
+      echo "denies $tool, which the coordinator may use with Daniel" >&2 && return 1
+    fi
+  done
+  for skill in artifact-design artifact-capabilities artifact-diagramming dataviz writing-for-agents grilling; do
+    assert_equal "$(jq -r --arg s "$skill" '.skillOverrides[$s] // "on"' "$settings")" on
+  done
+  # A background session nobody watches cannot answer a question or leave plan mode.
+  for tool in AskUserQuestion EnterPlanMode ExitPlanMode SendFeedback; do
+    jq -e --arg t "$tool" '.permissions.deny | index($t) != null' "$settings" >/dev/null ||
+      { echo "no deny rule for $tool" >&2; return 1; }
+  done
+}
+
 @test "it compacts at 200k tokens, by the launch flag, which no settings scope preempts" {
   run_bin -0 claude-coordinator
   local argv

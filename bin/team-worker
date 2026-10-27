@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Start one agent-team worker as its own background session, in auto mode, with its role's
-# settings and nothing else: no user-level MCP servers, no plugin MCP, no claude.ai connectors.
+# settings and nothing else: no user-level MCP servers, no plugin MCP, no claude.ai connectors or
+# synced skills and plugins, and none of the tools and skills its role never uses (settings/).
 #
 # Usage: team-worker <task> <role> <worktree> [--toolkit <name>]... [--model <alias>] [--request <link>] -- <first prompt>
 #   task       T<n>, e.g. T1

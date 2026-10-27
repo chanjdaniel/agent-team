@@ -1,13 +1,22 @@
 {
   "enabledPlugins": {
     "discord@claude-plugins-official": true,
-    "mongodb-atlas@claude-plugins-official": false
+    "mongodb-atlas@claude-plugins-official": false,
+    "cc-plugin-plugin-authoring@builtin": false
   },
+  "syncClaudeAiPlugins": false,
   "crossSessionInbound": "accept",
   "isolatePeerMachines": true,
   "idleCompaction": true,
   "permissions": {
     "deny": [
+      "AskUserQuestion",
+      "EnterPlanMode",
+      "ExitPlanMode",
+      "EnterWorktree",
+      "ExitWorktree",
+      "NotebookEdit",
+      "SendFeedback",
       "Bash(gh pr merge*)",
       "Bash(gh-axi pr merge*)",
       "Bash(gh api*pulls/*/merge*)",
@@ -118,6 +127,27 @@
       "Bash(git -c core.hookspath*)",
       "Bash(git -C * -c core.hookspath*)"
     ]
+  },
+  "skillOverrides": {
+    "code-review": "name-only",
+    "codebase-design": "name-only",
+    "diagnosing-bugs": "name-only",
+    "domain-modeling": "name-only",
+    "fewer-permission-prompts": "off",
+    "git-guardrails-claude-code": "off",
+    "implement": "off",
+    "init": "off",
+    "keybindings-help": "off",
+    "migrate-to-shoehorn": "off",
+    "no-mistakes": "name-only",
+    "prototype": "name-only",
+    "resolving-merge-conflicts": "name-only",
+    "run": "name-only",
+    "scaffold-exercises": "off",
+    "security-review": "name-only",
+    "setup-pre-commit": "off",
+    "simplify": "off",
+    "tdd": "off"
   },
   "env": {
     "CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS": "100000",

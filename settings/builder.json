@@ -3,5 +3,12 @@
     "allow": [
       "Bash(@TEAM_CODE@/bin/team-checks *)"
     ]
+  },
+  "skillOverrides": {
+    "domain-modeling": "name-only",
+    "prototype": "off",
+    "research": "off",
+    "security-review": "name-only",
+    "simplify": "name-only"
   }
 }

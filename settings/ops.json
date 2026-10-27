@@ -4,7 +4,6 @@
   "inputNeededNotifEnabled": true,
   "disableBundledSkills": true,
   "disableSkillShellExecution": true,
-  "enabledPlugins": { "cc-plugin-plugin-authoring@builtin": false },
   "permissions": {
     "allow": ["mcp__prod-read__*", "Edit(./.scratch/**)"],
     "ask": [
@@ -25,18 +24,6 @@
       "WebFetch",
       "WebSearch",
       "Agent",
-      "NotebookEdit",
-      "Artifact",
-      "ArtifactComments",
-      "ArtifactData",
-      "SendUserFile",
-      "PushNotification",
-      "SendFeedback",
-      "DesignSync",
-      "EnterWorktree",
-      "CronCreate",
-      "RemoteTrigger",
-      "ScheduleWakeup",
       "Read(//proc/**)",
       "Read(**/.env*)"
     ]

@@ -22,7 +22,7 @@ mcp__prod-read__list-databases
 ```
 
 Nothing else: no `connect`, `export`, `mongodb-logs` or `list-connections`, and no Atlas, Atlas Local or assistant tools.
-The skill is `querying-production-data` (`skills/`), the only one an ops session can invoke: the load check's inventory of 2026-10-23 15:12Z lists `skill: prod-read:querying-production-data` and no other, since `settings/ops.json` turns off Claude Code's bundled skills and its built-in `plugin-authoring` plugin.
+The skill is `querying-production-data` (`skills/`), the only one an ops session can invoke: the load check's inventory of 2026-10-23 15:12Z lists `skill: prod-read:querying-production-data` and no other, since `settings/ops.json` turns off Claude Code's bundled skills and `settings/worker.json` its built-in `plugin-authoring` plugin.
 `docs/access.md` says what the toolkit can and cannot reach.
 
 ## Its credential

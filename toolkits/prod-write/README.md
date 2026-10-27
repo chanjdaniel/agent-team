@@ -17,7 +17,7 @@ mcp__prod-write__update-many
 
 Nothing else: no reads (a write session reads through `prod-read`), no `connect`, `export`, `mongodb-logs` or `list-connections`, no create, drop or rename of a collection or database, and no Atlas, Atlas Local or assistant tools.
 The skill is `changing-production-data` (`skills/`), and `docs/access.md` says what the toolkit can and cannot reach.
-With `prod-read` beside it, the load check's inventory of 2026-10-23 15:33Z lists `skill: prod-read:querying-production-data` and `skill: prod-write:changing-production-data` and no other, since `settings/ops.json` turns off Claude Code's bundled skills and its built-in `plugin-authoring` plugin.
+With `prod-read` beside it, the load check's inventory of 2026-10-23 15:33Z lists `skill: prod-read:querying-production-data` and `skill: prod-write:changing-production-data` and no other, since `settings/ops.json` turns off Claude Code's bundled skills and `settings/worker.json` its built-in `plugin-authoring` plugin.
 
 ## Its credential
 

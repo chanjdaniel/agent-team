@@ -461,6 +461,72 @@ run_fake() {
   assert_equal "$(launches)" ""
 }
 
+# The role prompt and every brief template written for <role>, by the role its first line names
+# (or {{role}}, a brief for any role), with the partials each includes: role_texts <role>
+role_texts() {
+  local brief partial
+  echo "$REPO_ROOT/roles/$1.md"
+  for brief in "$REPO_ROOT"/templates/briefs/*.md; do
+    head -n 1 "$brief" | grep -qE "\((\{\{role\}\}|$1)\)" || continue
+    echo "$brief"
+    while IFS= read -r partial; do
+      printf '%s\n' "$REPO_ROOT/templates/briefs/$partial"/*.md
+    done < <(grep -oE '\{\{> [a-z-]+\}\}' "$brief" | sed -E 's/^\{\{> //; s/\}\}$//')
+  done
+}
+
+@test "each role's settings parse, layer on the worker settings, and keep every tool and skill its prompt and briefs name" {
+  thread T7
+  ops_stub
+  local role settings worker=$REPO_ROOT/settings/worker.json texts
+  for role in planner builder reviewer ops; do
+    if [[ $role == ops ]]; then
+      run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$request" -- go
+    else
+      run_bin -0 team-worker T7 "$role" "$wt1" -- go
+    fi
+    settings=$TEAM_HOME/tasks/T7/settings.$role.json
+    jq -e . "$settings" >/dev/null
+    # The worker settings' rules come first, and its skill overrides hold unless the role's own
+    # file overrides the same skill.
+    assert_equal "$(jq -c --slurpfile w "$worker" '.permissions.deny[:($w[0].permissions.deny | length)]' "$settings")" \
+      "$(jq -c .permissions.deny "$worker")"
+    assert_equal "$(jq -c --slurpfile w "$worker" --slurpfile r "$REPO_ROOT/settings/$role.json" \
+      '.skillOverrides == ($w[0].skillOverrides * ($r[0].skillOverrides // {}))' "$settings")" true
+    assert_equal "$(jq -c '[.syncClaudeAiPlugins, .syncClaudeAiSkills, .enabledPlugins["cc-plugin-plugin-authoring@builtin"]]' "$settings")" \
+      '[false,false,false]'
+    mapfile -t texts < <(role_texts "$role")
+    ((${#texts[@]} > 1)) || { echo "no brief template found for $role" >&2; return 1; }
+    keeps_named "$settings" "${texts[@]}" || { echo "in $role's settings" >&2; return 1; }
+  done
+}
+
+@test "the worker settings take away the tools and skills no worker uses, and the check notices a named one" {
+  thread T7
+  run_bin -0 team-worker T7 reviewer "$wt1" -- go
+  local settings=$TEAM_HOME/tasks/T7/settings.reviewer.json tool
+  for tool in Artifact DesignSync ScheduleWakeup CronCreate RemoteTrigger SendFeedback AskUserQuestion EnterWorktree; do
+    jq -e --arg t "$tool" '.permissions.deny | index($t) != null' "$settings" >/dev/null ||
+      { echo "no deny rule for $tool" >&2; return 1; }
+  done
+  for tool in Bash Read Edit Write Agent Skill ToolSearch SendMessage ListAgents Monitor WebFetch WebSearch; do
+    if jq -e --arg t "$tool" '.permissions.deny | index($t) != null' "$settings" >/dev/null; then
+      echo "denies $tool, which workers use" >&2 && return 1
+    fi
+  done
+  assert_equal "$(jq -c '.skillOverrides | [.lavish, .loop, .implement, .["code-review"]]' "$settings")" '["off","off","off",null]'
+  # A brief that names a skill or tool the settings take away fails the check.
+  echo 'Run `/implement` on it.' >"$BATS_TEST_TMPDIR/brief.md"
+  run keeps_named "$settings" "$BATS_TEST_TMPDIR/brief.md"
+  assert_equal "$status" 1
+  echo 'Then post it with ScheduleWakeup.' >"$BATS_TEST_TMPDIR/brief.md"
+  run keeps_named "$settings" "$BATS_TEST_TMPDIR/brief.md"
+  assert_equal "$status" 1
+  echo 'Read `skills/code-review/SKILL.md` and use the `tdd` skill.' >"$BATS_TEST_TMPDIR/brief.md"
+  run keeps_named "$settings" "$BATS_TEST_TMPDIR/brief.md"
+  assert_equal "$status" 0
+}
+
 @test "every role's generated settings isolate peer machines" {
   thread T7
   local role
@@ -680,7 +746,7 @@ assert_prod_write_gated() {
   # A skill's inline shell would run a command in a role that has no shell.
   assert_equal "$(jq -r .disableSkillShellExecution "$s")" true
   # disableBundledSkills leaves the built-in plugin that carries the plugin-authoring skill (T16
-  # ticket 09's second live check); the worker settings' own plugin entries stay.
+  # ticket 09's second live check), which the worker settings turn off for every worker.
   assert_equal "$(jq -c .enabledPlugins "$s")" \
     '{"discord@claude-plugins-official":false,"mongodb-atlas@claude-plugins-official":false,"cc-plugin-plugin-authoring@builtin":false}'
   # The shared hooks come first (lease-fence on Bash, a tool ops lacks), then the role's own.
