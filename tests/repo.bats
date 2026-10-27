@@ -194,8 +194,13 @@ SETTINGS=(coordinator.settings.json settings/worker.json)
   done
   assert_equal "$(jq -r '.tools[] | select(.name == "chrome-devtools-mcp") | [.pin, .source.arch, .source.macos] | join(" | ")' "$REPO_ROOT/bin/lib/tools.lock")" \
     "$pin | npm install -g chrome-devtools-mcp@$pin | npm install -g chrome-devtools-mcp@$pin"
-  # The client that speaks the server's current protocol (page ids), with the path variable.
-  assert_equal "$(jq -r '.tools[] | select(.name == "chrome-devtools-axi") | .pin' "$REPO_ROOT/bin/lib/tools.lock")" 0.1.44
+  # The client that speaks the server's current protocol (page ids), with the path variable; the
+  # browser toolkit's test runs the copy servers/ pins, which CI's runner has no global install of,
+  # so it is the client the sessions run.
+  pin=$(jq -r '.tools[] | select(.name == "chrome-devtools-axi") | .pin' "$REPO_ROOT/bin/lib/tools.lock")
+  assert_equal "$pin" 0.1.44
+  assert_equal "$(jq -r '.dependencies["chrome-devtools-axi"]' "$REPO_ROOT/servers/package.json")" "$pin"
+  assert_equal "$(jq -r '.packages["node_modules/chrome-devtools-axi"].version' "$REPO_ROOT/servers/package-lock.json")" "$pin"
 }
 
 # chrome-devtools-axi runs one bridge and browser per session name, and a session's Bash calls keep
