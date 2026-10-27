@@ -104,7 +104,7 @@ every_tool_fails() {
     printf '%s\n' 'stack memory' clock lease heartbeat offline)
   assert_equal "$(checks)" "$expected"
   assert_equal "$(line_of os)" "PASS os: Arch Linux"
-  assert_equal "$(line_of 'tool claude')" "PASS tool claude: 2.1.310"
+  assert_equal "$(line_of 'tool claude')" "PASS tool claude: 2.1.311"
   assert_equal "$(line_of 'tool jq')" "PASS tool jq: 1.7.1 (minimum 1.7.1)"
   assert_equal "$(line_of machine)" "PASS machine: home-pc"
   assert_equal "$(line_of 'team home')" "PASS team home: $TEAM_HOME, named by TEAM_HOME: a checkout of its own on dev, with an origin"
@@ -143,7 +143,7 @@ every_tool_fails() {
   every_tool_fails arch 0.1.0
   assert_equal "$(line_of 'tool git')" "FAIL tool git: 0.1.0, below the minimum 2.40.0; fix: sudo pacman -S --needed git"
   assert_equal "$(line_of 'tool bun')" "FAIL tool bun: 0.1.0, not the pinned 1.3.14; fix: curl -fsSL https://bun.sh/install | bash -s bun-v1.3.14"
-  assert_equal "$(line_of 'tool claude')" "WARN tool claude: 0.1.0, not the pinned 2.1.310; fix: curl -fsSL https://claude.ai/install.sh | bash -s 2.1.310"
+  assert_equal "$(line_of 'tool claude')" "WARN tool claude: 0.1.0, not the pinned 2.1.311; fix: curl -fsSL https://claude.ai/install.sh | bash -s 2.1.311"
 }
 
 @test "a GitHub release's fix downloads this machine's archive and checks its recorded SHA-256 before unpacking it" {
@@ -324,7 +324,7 @@ Error: ENOENT: no such file or directory, uv_cwd
   # Claude Code and the Node tools fail without a working directory, as on the laptop.
   local gone=$BATS_TEST_TMPDIR/load-check-wt
   cat >"$TOOL_ANSWERS/claude/--version.sh" <<'SH'
-if [[ $PWD -ef . ]]; then echo '2.1.310 (Claude Code)'; else
+if [[ $PWD -ef . ]]; then echo '2.1.311 (Claude Code)'; else
   echo "error: The current working directory was deleted, so that command didn't work." >&2; exit 1; fi
 SH
   printf '%s\n' "if [[ \$PWD -ef . ]]; then echo 0.1.36; else cat >&2 <<'CRASH'" "$lavish_crash" CRASH \
@@ -334,7 +334,7 @@ SH
   guard_sandbox
   run -0 --separate-stderr bash -c 'cd "$1" && rmdir "$1" && exec "$2"' gone "$gone" "$CODE_CHECKOUT/bin/team-doctor"
   assert_contains "$stderr" "team-doctor: the current directory no longer exists; running from ~"
-  assert_equal "$(line_of 'tool claude')" "PASS tool claude: 2.1.310"
+  assert_equal "$(line_of 'tool claude')" "PASS tool claude: 2.1.311"
   assert_equal "$(line_of 'tool lavish-axi')" "PASS tool lavish-axi: 0.1.36"
   assert_equal "$(grep -v '^PASS ' <<<"$output" || true)" ""
 }
