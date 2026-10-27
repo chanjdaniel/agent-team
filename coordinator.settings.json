@@ -129,6 +129,7 @@
     ]
   },
   "skillOverrides": {
+    "anthropic-skills:docs": "off",
     "code-review": "name-only",
     "codebase-design": "name-only",
     "diagnosing-bugs": "name-only",

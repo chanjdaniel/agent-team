@@ -148,10 +148,11 @@ assert_not_launched() {
     skill=$(basename "$skill")
     assert_equal "$(jq -r --arg s "$skill" '.skillOverrides[$s] // "on"' "$settings")" on
   done
-  # Discord, the claude.ai docs connector (its toolkit keeps it) and the synced docs skill that
-  # guides it, and artifacts.
+  # Discord, the synced claude.ai skills and artifacts; but not the synced docs skill, which steers
+  # a session to the Claude Docs connector the launch denies (Daniel's choice of 2026-10-27).
   assert_equal "$(jq -c '[.enabledPlugins["discord@claude-plugins-official"], .disableClaudeAiConnectors, .syncClaudeAiSkills,
     .syncClaudeAiPlugins, .enabledPlugins["cc-plugin-plugin-authoring@builtin"]]' "$settings")" '[true,null,null,false,false]'
+  assert_equal "$(jq -r '.skillOverrides["anthropic-skills:docs"]' "$settings")" off
   for tool in Artifact ArtifactComments ArtifactData SendUserFile PushNotification CronCreate CronList CronDelete \
     ScheduleWakeup Monitor SendMessage ListAgents Agent WebFetch WebSearch; do
     if jq -e --arg t "$tool" '.permissions.deny | index($t) != null' "$settings" >/dev/null; then
@@ -185,24 +186,27 @@ denied() {
   assert_equal "$(find "${mcp%/*}" -name '*.json.*')" ""
 }
 
-@test "its settings deny every server claude mcp list names in its working directory, but the claude.ai connectors its toolkit keeps" {
+@test "its settings deny every server claude mcp list names in its working directory, every claude.ai connector included" {
   printf '%s\n' 'claude.ai Gmail: https://gmail.mcp.claude.com/mcp - ✔ Connected' >>"$BATS_TEST_TMPDIR/mcp-list.txt"
   run_bin -0 claude-coordinator
   assert_equal "$(cat "$STUB_CALLS/claude.mcp-cwd")" "$TEAM_HOME"
-  assert_equal "$(denied)" "$(printf '%s\n' 'claude.ai Gmail' codegraph playwright plugin:mongodb-atlas:mongodb-atlas resend vercel)"
-  assert_equal "$(jq -c . "$REPO_ROOT/toolkits/coordinator/connectors.json")" '["claude.ai Claude Docs"]'
-  # The connectors stay on, so a kept one loads; every other is denied by name.
+  assert_equal "$(denied)" "$(printf '%s\n' 'claude.ai Claude Docs' 'claude.ai Gmail' codegraph playwright \
+    plugin:mongodb-atlas:mongodb-atlas resend vercel)"
+  # Its toolkit keeps no connector, by Daniel's choice of 2026-10-27: its records stay in local
+  # files and the team home.
+  assert_equal "$(jq -c . "$REPO_ROOT/toolkits/coordinator/connectors.json")" '[]'
+  # The connectors stay on, so one its toolkit keeps would load; every other is denied by name.
   local settings=$HOME/.local/state/agent-team/coordinator.settings.json
   assert_equal "$(jq 'has("disableClaudeAiConnectors")' "$settings")" false
   # The checkout's own settings name no server: the list is the launch's.
   assert_equal "$(jq 'has("deniedMcpServers")' "$REPO_ROOT/coordinator.settings.json")" false
 }
 
-@test "a connector its toolkit keeps is kept by its exact name, and with none kept every connector is denied" {
+@test "a connector its toolkit keeps is kept by its exact name" {
   code_checkout
-  echo '[]' >"$CODE_CHECKOUT/toolkits/coordinator/connectors.json"
+  echo '["claude.ai Claude Docs"]' >"$CODE_CHECKOUT/toolkits/coordinator/connectors.json"
   run_bin -0 claude-coordinator
-  assert_equal "$(denied | grep -c '^claude\.ai ')" 1
+  assert_equal "$(denied | grep -c '^claude\.ai ')" 0
   echo '["claude.ai Claude"]' >"$CODE_CHECKOUT/toolkits/coordinator/connectors.json"
   run_bin -0 claude-coordinator
   assert_equal "$(denied | grep '^claude\.ai ')" 'claude.ai Claude Docs'
