@@ -46,6 +46,7 @@ Skip each step whose check already passes.
 6. **The team home checkout.** Check: `git -C ~/agent-team-records remote get-url origin` prints `https://github.com/chanjdaniel/agent-team-records.git`.
    Otherwise run `git clone --single-branch --branch dev https://github.com/chanjdaniel/agent-team-records.git ~/agent-team-records`, then `git -C ~/agent-team-records remote set-branches --add origin lease` and `git -C ~/agent-team-records fetch origin` (it needs step 4's login, since the repository is private).
    The team home fetches only `dev` and `lease`: its origin's `wip/*` and `salvage/*` branches are whole project histories, which the scripts reach by URL; the doctor's `team home fetch` line checks it, and the bootstrap's machine stage narrows an older clone.
+   Its records guard (`core.hooksPath`) is Daniel's to turn on, at `sops/machine-setup.md`'s stage 7, Daniel's steps, since every team session is denied setting it.
 7. **The team home's setting.** Check: the first line of `~/.config/agent-team/home` is `agent-team-records`.
    Otherwise, when the file is missing, run `mkdir -p ~/.config/agent-team && echo agent-team-records > ~/.config/agent-team/home`: it is how every script, hook and session on this machine finds the team home.
    A file naming another path is Daniel's layout: show Daniel what it names and ask before changing it.
