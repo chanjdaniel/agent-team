@@ -18,8 +18,9 @@
 # @TEAM_CODE@ is replaced, as ~/.local/state/agent-team/coordinator.mcp.json. --strict-mcp-config
 # connects no plugin server, the Discord channel's included, so it is not used: instead the
 # launch runs `claude mcp list` in the working directory and its settings deny
-# (deniedMcpServers) every server the list names but the toolkit's and those of a plugin they
-# enable, and turn off every claude.ai connector. A failed list refuses the launch (exit 1).
+# (deniedMcpServers) every server the list names but the toolkit's, those of a plugin they
+# enable, and the claude.ai connectors the toolkit's connectors.json keeps, by exact name. A
+# failed list refuses the launch (exit 1).
 #
 # It compacts at 200k tokens, by the launch's --autocompact flag rather than autoCompactWindow in
 # its settings: the flag is not preempted by a higher-priority settings scope, so a /autocompact
@@ -92,12 +93,13 @@ done <<<"$listed"
 # The settings, with the hooks of this checkout and those servers denied; written whole, then
 # moved into place. A plugin's servers are named plugin:<plugin>:<server>.
 settings=$state/coordinator.settings.json
-jq --arg code "$code" --slurpfile mcp "$mcp" "$substitute"' as $settings
-  | ($mcp[0].mcpServers // {} | keys) as $own
+jq --arg code "$code" --slurpfile mcp "$mcp" --slurpfile connectors "$code/toolkits/coordinator/connectors.json" \
+  "$substitute"' as $settings
+  | ($mcp[0].mcpServers // {} | keys) + $connectors[0] as $own
   | [$settings.enabledPlugins // {} | to_entries[] | select(.value == true) | "plugin:\(.key | split("@")[0]):"] as $plugins
   | $settings
   | .deniedMcpServers = [$ARGS.positional | unique[]
-      | select(. as $name | ($own | index($name)) == null and all($plugins[]; . as $p | $name | startswith($p) | not))
+      | select(. as $name | (IN($own[]) | not) and all($plugins[]; . as $p | $name | startswith($p) | not))
       | {serverName: .}]' "$code/coordinator.settings.json" --args "${servers[@]}" >"$settings.$$"
 mv -f "$settings.$$" "$settings"
 
