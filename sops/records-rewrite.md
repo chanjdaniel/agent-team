@@ -41,6 +41,7 @@ The force push and the Support request are Daniel's alone.
     `git clone --single-branch --branch dev https://github.com/chanjdaniel/agent-team-records.git ~/agent-team-records`;
     `git -C ~/agent-team-records remote set-branches --add origin lease`;
     `git -C ~/agent-team-records fetch origin`;
+    `git -C ~/agent-team-records config core.hooksPath ~/agent-team/bin/hooks/records-git`, the records guard, which a clone never carries over and without which step 11's `team-resume` stops on the doctor's `records hooks` line;
     `git -C ~/agent-team-records.pre-rewrite ls-files -z --others --ignored --exclude-standard | rsync -a --from0 --files-from=- ~/agent-team-records.pre-rewrite/ ~/agent-team-records/`.
     Then `diff -rq --exclude=.git ~/agent-team-records.pre-rewrite ~/agent-team-records` lists only dropped paths (and empty folders, which git never holds).
 11. **Daniel.** `~/agent-team/bin/team-resume` on this machine: it takes the lease, enables the heartbeat, re-homes every open worktree and starts the coordinator.
@@ -48,7 +49,7 @@ The force push and the Support request are Daniel's alone.
 12. **Coordinator.** Record the rewrite in the team home, under the cutover task's `tasks/T<n>/`, as a records-only commit on `dev`: `filter-repo/commit-map` and `filter-repo/first-changed-commits` from `~/records-rewrite/rewrite.git`, and `summary.txt` and `verify.txt` from `~/records-rewrite`.
     Add a line to the records' `README.md`: the history was rewritten on that date (tier 2), every sha from `e9611631` on changed, the old and new `dev`, and where the map is.
     Log it: `team-log T<n> ticket-done ticket=<nn> commits='["<new dev>"]' repo=chanjdaniel/agent-team-records note="records history rewritten, dev <old dev> to <new dev>; commit map at tasks/T<n>/commit-map"`.
-13. **Daniel, at the laptop, before it next takes the team.** The re-clone of step 10 there.
+13. **Daniel, at the laptop, before it next takes the team.** The re-clone of step 10 there, its records guard included.
     Its `team-resume` refuses the old clone as diverged, which guards it, but a hand `git pull` would merge the old history back: never pull into an old clone, replace it.
 14. **Daniel alone.** Ask GitHub Support to purge the old objects, as T31 ticket 20 planned and T24 did for Conventioner (`tasks/T24/keep/support-request.txt` is the precedent's wording): the repository `chanjdaniel/agent-team-records` (private), the number of affected pull requests (the rewrite's `verify: pull refs whose history holds a dropped path:` line; 15 in the rehearsal), the first changed commits (`first changed commits:`), and a request to dereference the PR refs and run garbage collection.
     The coordinator records the request's number, then Support's answer, in `manual-steps.md`.
