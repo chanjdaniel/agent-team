@@ -8,8 +8,9 @@
 # each machine's sessions under its own HOME), and team-resume's doctor is a stub that passes
 # (TEAM_DOCTOR): the doctor's own lines are tests/team-doctor*.bats', and the crash test runs the
 # real one on home-pc for its salvage lines.
-# Scenarios: a clean handoff and resume, a handoff of a worker that never answered STOW, a stale
-# lease stolen, a crash between checkpoints, and a GitHub outage held in offline mode.
+# Scenarios: a clean handoff and resume, the records rewrite's cutover (sops/records-rewrite.md)
+# with home-pc resuming after its own handoff, a handoff of a worker that never answered STOW, a
+# stale lease stolen, a crash between checkpoints, and a GitHub outage held in offline mode.
 
 load helpers/common
 
@@ -189,6 +190,69 @@ posts() {
     "You are the coordinator, resuming the team on laptop. Follow the \`resume\` skill with the report $report."
   assert_equal "$(jq -c '.tasks | map({task, roles: .stowed.roles, crashed, failures})' "$report")" \
     '[{"task":"T1","roles":["builder"],"crashed":null,"failures":[]}]'
+}
+
+@test "records rewrite: home-pc hands off, dev is rewritten and force-pushed, home-pc re-clones its team home and resumes T1 on the same machine" {
+  # A bare repository copied into the records, on dev; the builder's stow, as above.
+  mkdir -p "$TEAM_HOME/tasks/T1/old.git"
+  echo "ref: refs/heads/main" >"$TEAM_HOME/tasks/T1/old.git/HEAD"
+  echo "kept" >"$TEAM_HOME/tasks/T1/notes.md"
+  git -C "$TEAM_HOME" add tasks/T1
+  git -C "$TEAM_HOME" commit -q -m "chore: an old copy beside T1's notes"
+  git -C "$TEAM_HOME" push -q origin dev
+  echo "half" >"$wt/b.txt"
+  git -C "$wt" add b.txt
+  git -C "$wt" commit -q -m "wip: b is half done"
+  echo "next: finish b" >"$wt/.scratch/task/handoff.md"
+  local head
+  head=$(git -C "$wt" rev-parse HEAD)
+  run_bin -0 team-handoff
+  # The coordinator retires, as its handoff skill ends, so the same machine can start one again.
+  run_bin -0 team-handoff --retire
+  local tries=0
+  until [[ -z $(session_id coordinator) ]] || ((tries++ > 100)); do sleep 0.1; done
+  assert_equal "$(home_pc_sessions)" ""
+
+  # The freeze holds: the lease is released and the team home is clean. Daniel runs the rewrite,
+  # then the force push it printed.
+  assert_equal "$(lease_json | jq -r .state)" released
+  assert_equal "$(git -C "$TEAM_HOME" status --porcelain)" ""
+  local old new
+  old=$(git -C "$team_origin" rev-parse dev)
+  run_bin -0 team-records-rewrite "$BATS_TEST_TMPDIR/rewrite"
+  assert_contains "$output" "verify: failures: 0"
+  new=$(git -C "$BATS_TEST_TMPDIR/rewrite/rewrite.git" rev-parse dev)
+  eval "$(grep -A1 '^The force push' <<<"$output" | tail -n1)" 2>/dev/null
+  assert_equal "$(git -C "$team_origin" rev-parse dev)" "$new"
+
+  # The re-clone, as sops/records-rewrite.md says: the old checkout moved aside, a clone of dev and
+  # lease, and the files git ignores carried over.
+  mv "$TEAM_HOME" "$TEAM_HOME.pre-rewrite"
+  git clone -q --single-branch --branch dev "$team_origin" "$TEAM_HOME"
+  git -C "$TEAM_HOME" remote set-branches --add origin lease
+  git -C "$TEAM_HOME" fetch -q origin
+  git -C "$TEAM_HOME.pre-rewrite" ls-files -z --others --ignored --exclude-standard |
+    rsync -a --from0 --files-from=- "$TEAM_HOME.pre-rewrite/" "$TEAM_HOME/"
+  # Only the dropped path differs, and the handoff's capture's empty skills folder, which git never holds.
+  assert_equal "$(diff -rq --exclude=.git "$TEAM_HOME.pre-rewrite" "$TEAM_HOME")" \
+    "Only in $TEAM_HOME.pre-rewrite/machine/claude: skills
+Only in $TEAM_HOME.pre-rewrite/tasks/T1: old.git"
+  [[ -z $(ls -A "$TEAM_HOME.pre-rewrite/machine/claude/skills") ]]
+
+  # home-pc resumes as it handed off: the lease, the heartbeat, T1's worktree and the coordinator.
+  run_bin -0 --separate-stderr team-resume
+  assert_equal "$stderr" ""
+  assert_contains "$output" "lease: home-pc holds the lease"
+  assert_equal "$(lease_json | jq -c '[.holder, .state]')" '["home-pc","held"]'
+  assert_equal "$(git -C "$wt" rev-parse HEAD)" "$head"
+  assert_equal "$(cat "$wt/.scratch/task/handoff.md")" "next: finish b"
+  assert_equal "$(jq -c '.tasks | map({task, roles: .stowed.roles, failures})' "$(reported)")" \
+    '[{"task":"T1","roles":["builder"],"failures":[]}]'
+  # The team home is on the new history, with what the resume committed on top.
+  git -C "$TEAM_HOME" merge-base --is-ancestor "$new" HEAD
+  run ! git -C "$TEAM_HOME" merge-base --is-ancestor "$old" HEAD
+  assert_equal "$(git -C "$TEAM_HOME" config --get-all remote.origin.fetch)" "+refs/heads/dev:refs/remotes/origin/dev
++refs/heads/lease:refs/remotes/origin/lease"
 }
 
 @test "a worker that never answers STOW: the handoff stops it, then checkpoints; laptop resumes with its uncommitted work, and its first checkpoint keeps it" {

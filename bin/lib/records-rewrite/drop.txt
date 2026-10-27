@@ -1,0 +1,36 @@
+# The paths team-records-rewrite drops from every commit of the records repository's dev and
+# lease, as git filter-repo's --paths-from-file reads them (a plain line is a path or a directory,
+# glob: and regex: match the whole path) and verify.py matches them: T56's tier 2, its report's
+# "What may go, and what stays". None holds a value.
+
+# Tier 1, bulk that is not a record: a copy of something that lives elsewhere or can be rebuilt.
+# Dependencies, which package.json and package-lock.json beside them rebuild.
+glob:tasks/*/node_modules
+glob:tasks/*/node_modules/*
+glob:tasks/*/__pycache__/*
+# Bare repositories in a task directory: copies of a history that lives on elsewhere.
+regex:^tasks/.+\.git/
+# T31's gitleaks release download, a public archive.
+tasks/T31/scratch/dl/
+# T34's gitlink and built no-mistakes binary.
+tasks/T34/scratch/clone/nm
+tasks/T34/scratch/clone/nm-trial
+# T43's copy of agent-team's bin/ and tests/ at an old commit.
+tasks/T43/scratch/repro-old/
+# T45's copy of Conventioner's front end, and its build output.
+tasks/T45/scratch/trial/front-end/
+tasks/T45/scratch/rr/dist-base/
+tasks/T45/scratch/rr/dist-head/
+
+# Tier 2, T31 ticket 20's scrub (T31's option A): the plan-era review pages and screenshots, seven
+# of which showed real applicants' data, under projects/conventioner/lavish/ and, in the imported
+# lineage before T5, at the root.
+projects/conventioner/lavish/
+mvp-findings.html
+qc-2026-09-15.html
+qc-2026-09-20.html
+proto-06-phase-rail.html
+shots/
+shots-qc/
+shots-qc2/
+shots-proto/

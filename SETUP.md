@@ -44,7 +44,8 @@ Skip each step whose check already passes.
    Otherwise run `git clone https://github.com/chanjdaniel/agent-team.git ~/agent-team` (exactly this URL: the doctor checks it).
    When the check passes, look at the history too: a branch with no commit in common with origin's, or with local commits origin's lacks, is Daniel's call: after `git -C ~/agent-team fetch -q origin`, show Daniel the ahead and behind counts (`git -C ~/agent-team rev-list --left-right --count HEAD...@{u}`) and whether `git -C ~/agent-team merge-base HEAD @{u}` finds a common commit, and ask before any reset.
 6. **The team home checkout.** Check: `git -C ~/agent-team-records remote get-url origin` prints `https://github.com/chanjdaniel/agent-team-records.git`.
-   Otherwise run `git clone https://github.com/chanjdaniel/agent-team-records.git ~/agent-team-records` (it needs step 4's login, since the repository is private).
+   Otherwise run `git clone --single-branch --branch dev https://github.com/chanjdaniel/agent-team-records.git ~/agent-team-records`, then `git -C ~/agent-team-records remote set-branches --add origin lease` and `git -C ~/agent-team-records fetch origin` (it needs step 4's login, since the repository is private).
+   The team home fetches only `dev` and `lease`: its origin's `wip/*` and `salvage/*` branches are whole project histories, which the scripts reach by URL; the doctor's `team home fetch` line checks it, and the bootstrap's machine stage narrows an older clone.
 7. **The team home's setting.** Check: the first line of `~/.config/agent-team/home` is `agent-team-records`.
    Otherwise, when the file is missing, run `mkdir -p ~/.config/agent-team && echo agent-team-records > ~/.config/agent-team/home`: it is how every script, hook and session on this machine finds the team home.
    A file naming another path is Daniel's layout: show Daniel what it names and ask before changing it.
