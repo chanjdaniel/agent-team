@@ -5,7 +5,7 @@
 #               the scripts reach by URL and a fetch of every branch downloads for nothing (T56).
 #               Warns otherwise, its fix `git remote set-branches origin dev lease` and the
 #               `git branch -r -d` of the others; team-bootstrap's machine stage runs it. Left
-#               out while the team home line fails or warns.
+#               out while the team home line fails.
 # shellcheck shell=bash
 # shellcheck disable=SC2154 # home_ok and home_shown, from the team home check
 
