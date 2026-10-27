@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# SessionStart hook for team sessions: print one axi tool's banner (gh-axi, chrome-devtools-axi),
+# which tells the session how to drive it.
+#
+# Usage: axi-banner <tool>
+#
+# The user settings (${CLAUDE_CONFIG_DIR:-~/.claude}/settings.json, from the team home's
+# machine/claude/settings.json) print the axi banners in every session, team sessions included,
+# until Daniel guards each one to print nothing when AGENT_TEAM_ROLE is set, which the worker and
+# coordinator settings set through env. So this prints nothing while a SessionStart hook in the
+# user settings runs the tool without that guard, and runs the tool otherwise; the team adds it
+# back where a role uses it: gh-axi for every worker (settings/worker.json), chrome-devtools-axi
+# through the browser toolkit. An ops session, which has no shell, gets none, and a tool not on
+# PATH prints nothing. Exit 0, or 2 on anything but one tool name.
+set -euo pipefail
+# The team home is never read here, so a machine that names none still starts its sessions.
+# shellcheck disable=SC2034 # read by bin/lib/team.sh
+team_home_report=1
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/team.sh" "$@"
+
+[[ $# -eq 1 && $1 =~ ^[a-z][a-z0-9-]*$ ]] || usage_error "usage: axi-banner <tool>"
+tool=$1
+
+[[ ${AGENT_TEAM_ROLE:-} != ops ]] || exit 0
+command -v "$tool" >/dev/null || exit 0
+
+user=${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json
+if [[ -f $user ]] && jq -e --arg tool "$tool" '[.hooks.SessionStart[]?.hooks[]?.command // empty
+    | select(test("(^|[^A-Za-z0-9_-])\($tool)($|[^A-Za-z0-9_-])") and (contains("AGENT_TEAM_ROLE") | not))]
+    | length > 0' "$user" >/dev/null 2>&1; then
+  exit 0
+fi
+
+exec "$tool" </dev/null

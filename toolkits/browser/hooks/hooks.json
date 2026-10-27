@@ -1,0 +1,16 @@
+{
+  "description": "The chrome-devtools-axi banner at session start, through the team's axi-banner hook, which prints it once whether or not the user settings still print it in every session.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/../../bin/hooks/axi-banner\" chrome-devtools-axi",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

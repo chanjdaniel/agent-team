@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Start one agent-team worker as its own background session, in auto mode, with its role's
-# settings and nothing else: no user-level MCP servers, no plugin MCP, no claude.ai connectors.
+# settings and nothing else: no user-level MCP servers, no plugin MCP, no claude.ai connectors or
+# synced skills and plugins, and none of the tools and skills its role never uses (settings/).
 #
 # Usage: team-worker <task> <role> <worktree> [--toolkit <name>]... [--model <alias>] [--request <link>] -- <first prompt>
 #   task       T<n>, e.g. T1
@@ -23,8 +24,10 @@
 # model; otherwise it runs on the user settings' model, and logs none. Ops never takes one, and
 # T0 and tasks from before team-open none from the registry.
 # The merged settings and MCP config are generated into tasks/<task>/ (gitignored); @TEAM_CODE@
-# in either names this checkout, @TASK@ the task, and @TASK_DIR@ the team home's tasks/<task>/.
+# in either names this checkout, @TASK@ the task, @TASK_DIR@ the team home's tasks/<task>/, and
+# @ROLE@ the role (the settings' AGENT_TEAM_ROLE, the signal a hook sees in a team session).
 #
+# The coordinator toolkit is claude-coordinator's alone, never a worker's.
 # Production toolkits (prod-*) are for the ops role only, which needs prod-read (prod-write comes
 # only beside it) and --request, and is refused while any T<n>-ops session is listed by claude
 # agents (one at a time; end it with team-ops-end). An ops session runs with --restricted and only
@@ -48,6 +51,7 @@ while [[ $# -gt 0 && $1 != -- ]]; do
     --toolkit)
       [[ $# -ge 2 ]] || usage_error "--toolkit needs a name"
       [[ -d $code/toolkits/$2 ]] || usage_error "unknown toolkit '$2'"
+      [[ $2 != coordinator ]] || usage_error "toolkit 'coordinator' is the coordinator's own (claude-coordinator loads it)"
       toolkits+=("$2")
       shift 2
       ;;
@@ -138,22 +142,22 @@ if [[ $role == ops ]]; then
 fi
 
 # @TEAM_CODE@ names this checkout, where the hooks and toolkits live; @TASK@ names the task, and
-# @TASK_DIR@ its directory in the team home, where its records live (the ops log).
+# @TASK_DIR@ its directory in the team home, where its records live (the ops log); @ROLE@ the role.
 substitute='walk(if type == "string" then gsub("@TEAM_CODE@"; $code) | gsub("@TASK@"; $task)
-  | gsub("@TASK_DIR@"; $taskdir) else . end)'
+  | gsub("@TASK_DIR@"; $taskdir) | gsub("@ROLE@"; $role) else . end)'
 
 # Role settings layered on the shared worker settings; permission lists and each event's hook
 # list are concatenated, the shared ones first, so a role's hooks add to the shared hooks.
 settings=$taskdir/settings.$role.json
-jq -s --arg code "$code" --arg task "$task" --arg taskdir "$taskdir" '.[0] as $base | .[1] as $role
-  | ($base * $role)
-  | .permissions.deny = (($base.permissions.deny // []) + ($role.permissions.deny // []))
-  | .permissions.allow = (($base.permissions.allow // []) + ($role.permissions.allow // []))
-  | .permissions.ask = (($base.permissions.ask // []) + ($role.permissions.ask // []))
+jq -s --arg code "$code" --arg task "$task" --arg taskdir "$taskdir" --arg role "$role" '.[0] as $base | .[1] as $own
+  | ($base * $own)
+  | .permissions.deny = (($base.permissions.deny // []) + ($own.permissions.deny // []))
+  | .permissions.allow = (($base.permissions.allow // []) + ($own.permissions.allow // []))
+  | .permissions.ask = (($base.permissions.ask // []) + ($own.permissions.ask // []))
   | .permissions |= with_entries(select(.value != []))
-  | if $base.hooks or $role.hooks then
-      .hooks = reduce ((($base.hooks // {}) + ($role.hooks // {})) | keys[]) as $event ({};
-        .[$event] = (($base.hooks[$event] // []) + ($role.hooks[$event] // [])))
+  | if $base.hooks or $own.hooks then
+      .hooks = reduce ((($base.hooks // {}) + ($own.hooks // {})) | keys[]) as $event ({};
+        .[$event] = (($base.hooks[$event] // []) + ($own.hooks[$event] // [])))
     else . end
   | '"$substitute" \
   "$code/settings/worker.json" "$code/settings/$role.json" >"$settings"
@@ -168,7 +172,7 @@ for kit in "${toolkits[@]}"; do
   if [[ -f $dir/.mcp.json ]]; then mcp_files+=("$dir/.mcp.json"); fi
 done
 if [[ ${#mcp_files[@]} -gt 0 ]]; then
-  jq -s --arg code "$code" --arg task "$task" --arg taskdir "$taskdir" '{mcpServers: (map(.mcpServers // {}) | add)} | '"$substitute" \
+  jq -s --arg code "$code" --arg task "$task" --arg taskdir "$taskdir" --arg role "$role" '{mcpServers: (map(.mcpServers // {}) | add)} | '"$substitute" \
     "${mcp_files[@]}" >"$mcp"
 else
   echo '{"mcpServers": {}}' >"$mcp"

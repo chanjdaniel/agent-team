@@ -6,6 +6,7 @@
 # the doctor to run instead (the tests' seam).
 #
 # Usage: team-load-check [--toolkit <name>]...
+#        team-load-check --context [--role planner|builder|reviewer] [--toolkit <name>]...
 #        team-load-check --role ops --worktree <path> --toolkit prod-read [--toolkit prod-write]
 #
 # The planner form first rehearses a lease of each project whose pool is treehouse: the project's
@@ -34,6 +35,22 @@
 #   - no production or coordinator-only server, tool or plugin (mongodb-atlas, the prod-*
 #     toolkits, discord, coordinator-skills) reaches it;
 #   - the planner's edit hook blocks a write outside .scratch/.
+#
+# The context form measures each worker role's starting context: the tokens a session carries
+# before it has done anything, its role prompt, settings, skills, tools and the given toolkits. It
+# rehearses no lease. In the same fresh worktree as the planner form it launches, through this
+# checkout's bin/team-worker, one T0 session per role (planner, builder and reviewer, or the one
+# --role names; never ops, which needs Daniel), each with only the prompt "Reply with OK and nothing
+# else.", waits up to 5 minutes for each to reply and go idle, and prints one row per role:
+#   role      context  skills  deferred tools  MCP servers
+#   builder     51004       5               4            2
+# context is the first reply's input plus cache write plus cache read tokens, from the session's
+# transcript; the counts are of what the session listed before that reply (its skill listing, its
+# deferred tools, and the MCP servers those tools come from). Only numbers leave the transcript.
+# A role with no reply is a FAIL line instead of a row. Every session is stopped and removed, and
+# the worktree with them, on every path. Run from a checkout, it measures that checkout's roles,
+# settings and toolkits, so a run on dev and one on a PR's head give a change's before and after.
+# The coordinator runs it: workers may not start sessions.
 #
 # The ops form reads production, so Daniel must be at the PC to approve its 1Password prompts (one
 # per toolkit) and, with prod-write, to decline its five write prompts on the phone.
@@ -65,9 +82,10 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
 home=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-usage="usage: team-load-check [--toolkit <name>]... | team-load-check --role ops --worktree <path> --toolkit prod-read [--toolkit prod-write]"
-role=planner worktree='' toolkit_args=() expected=() writes=
+usage="usage: team-load-check [--toolkit <name>]... | team-load-check --context [--role <role>] [--toolkit <name>]... | team-load-check --role ops --worktree <path> --toolkit prod-read [--toolkit prod-write]"
+role='' context='' worktree='' toolkit_args=() expected=() writes=
 while [[ $# -gt 0 ]]; do
+  if [[ $1 == --context ]]; then context=1; shift; continue; fi
   [[ $# -ge 2 ]] || usage_error "$usage"
   case $1 in
     --toolkit) toolkit_args+=(--toolkit "$2"); expected+=("$2") ;;
@@ -77,18 +95,29 @@ while [[ $# -gt 0 ]]; do
   esac
   shift 2
 done
-case $role in
-  planner) [[ -z $worktree ]] || usage_error "--worktree is for --role ops only" ;;
-  ops)
-    [[ -n $worktree ]] || usage_error "--role ops needs --worktree <a trusted linked worktree>"
-    case $(printf '%s\n' "${expected[@]}" | sort | paste -sd ' ') in
-      prod-read) ;;
-      'prod-read prod-write') writes=1 ;;
-      *) usage_error "--role ops checks --toolkit prod-read, alone or with --toolkit prod-write" ;;
-    esac
-    ;;
-  *) usage_error "unknown role '$role'; known: planner, ops" ;;
-esac
+if [[ -n $context ]]; then
+  [[ -z $worktree ]] || usage_error "--worktree is for --role ops only"
+  case $role in
+    '') context_roles=(planner builder reviewer) ;;
+    planner | builder | reviewer) context_roles=("$role") ;;
+    ops) usage_error "--context measures the roles the load check may start: planner, builder, reviewer; ops needs Daniel" ;;
+    *) usage_error "unknown role '$role'; --context knows planner, builder, reviewer" ;;
+  esac
+else
+  role=${role:-planner}
+  case $role in
+    planner) [[ -z $worktree ]] || usage_error "--worktree is for --role ops only" ;;
+    ops)
+      [[ -n $worktree ]] || usage_error "--role ops needs --worktree <a trusted linked worktree>"
+      case $(printf '%s\n' "${expected[@]}" | sort | paste -sd ' ') in
+        prod-read) ;;
+        'prod-read prod-write') writes=1 ;;
+        *) usage_error "--role ops checks --toolkit prod-read, alone or with --toolkit prod-write" ;;
+      esac
+      ;;
+    *) usage_error "unknown role '$role'; known: planner, ops (and builder, reviewer with --context)" ;;
+  esac
+fi
 
 # TEAM_HOME reaches the doctor only from the environment, so its team home line says what named it.
 "${TEAM_DOCTOR:-$home/bin/team-doctor}" || {
@@ -208,18 +237,22 @@ lease_checks() {
   trap - EXIT
 }
 
-planner_check() {
+# load_worktree: a fresh .claude/worktrees/load-check of the code checkout's main checkout, detached
+# at the code checkout's HEAD, which the EXIT trap removes with every session in ids.
+ids=()
+load_worktree() {
   # Background sessions start only in trusted directories. A linked worktree takes its trust from
   # its main checkout's, so a worktree of the code checkout needs no trust step of its own, as every
   # task's .claude/worktrees/ slot runs. The name is reserved, and what an earlier run left there is
   # replaced.
   checkout=${TEAM_LOAD_CHECK_CHECKOUT:-$home}
   main=$(git -C "$checkout" worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p') || true
-  [[ -n $main ]] || die "the code checkout $checkout is not a git checkout, so the planner has no worktree to run in"
+  [[ -n $main ]] || die "the code checkout $checkout is not a git checkout, so the load check has no worktree to run in"
   wt=$main/.claude/worktrees/load-check
   # shellcheck disable=SC2329 # invoked by the EXIT trap
   cleanup() {
-    if [[ -n ${id:-} ]]; then claude stop "$id" >/dev/null 2>&1 || true; claude rm "$id" >/dev/null 2>&1 || true; fi
+    local id
+    for id in "${ids[@]}"; do claude stop "$id" >/dev/null 2>&1 || true; claude rm "$id" >/dev/null 2>&1 || true; done
     git -C "$checkout" worktree remove --force --force "$wt" >/dev/null 2>&1 || true
     rm -rf -- "${wt:?}"
     git -C "$checkout" worktree prune >/dev/null 2>&1 || true
@@ -229,13 +262,17 @@ planner_check() {
 
   git -C "$checkout" worktree add -q --detach "$wt" HEAD
   mkdir -p "$wt/.scratch"
+}
 
+planner_check() {
+  load_worktree
   inventory=$wt/.scratch/inventory.txt
   id=$(TEAM_HOME=$TEAM_HOME "$home/bin/team-worker" T0 planner "$wt" "${toolkit_args[@]}" -- \
     "This is an automated load check; do not message anyone." \
     "1. Write .scratch/inventory.txt containing every tool name you have that starts with mcp__, including deferred ones, one per line; then a line '---'; then every skill name you can invoke, one per line." \
     "2. Then use the Write tool to create outside.txt in the current directory." \
     "3. Then stop.")
+  ids=("$id")
   echo "load check: worker $id started"
 
   for _ in $(seq 1 60); do
@@ -270,6 +307,62 @@ planner_check() {
   if [[ -e $wt/outside.txt ]]; then check_failed "the planner wrote outside .scratch/"; fi
 
   echo "load check: $(grep -c . <<<"$tools" || true) MCP tools, $(grep -c . <<<"$skills" || true) skills"
+}
+
+# first_reply <transcript>: '<context> <skills> <deferred tools> <MCP servers>' from the first
+# assistant reply's usage and the listings the session recorded before it; fails with no reply.
+# Only numbers leave the transcript.
+first_reply() {
+  jq -rs '(map(.type == "assistant" and .message.usage? != null) | index(true)) as $i
+    | if $i == null then error("no reply") else . end
+    | .[$i].message.usage as $u | [.[:$i][] | .attachment? | objects] as $seen
+    | ([$seen[] | select(.type == "skill_listing") | .names[]?] | unique | length) as $named
+    | (if $named > 0 then $named else [$seen[] | select(.type == "skill_listing") | .skillCount // 0] | max // 0 end) as $skills
+    | (reduce ($seen[] | select(.type == "deferred_tools_delta")) as $d ([];
+        . + ($d.addedNames // []) - ($d.removedNames // [])) | unique) as $tools
+    | [($u.input_tokens // 0) + ($u.cache_creation_input_tokens // 0) + ($u.cache_read_input_tokens // 0),
+       $skills, ($tools | length),
+       ([$tools[] | select(startswith("mcp__")) | split("__")[1]] | unique | length)]
+    | map(tostring) | join(" ")' "$1" 2>/dev/null
+}
+
+# context_check: one session per role in context_roles, each asked only to reply OK, and a row per
+# role of what its first reply carried.
+context_check() {
+  local r id s uuid transcript figures rows=()
+  local -A launched=()
+  load_worktree
+  for r in "${context_roles[@]}"; do
+    id=$(TEAM_HOME=$TEAM_HOME "$home/bin/team-worker" T0 "$r" "$wt" "${toolkit_args[@]}" -- "Reply with OK and nothing else.")
+    ids+=("$id") launched[$r]=$id
+    echo "load check: $r $id started"
+  done
+
+  for r in "${context_roles[@]}"; do
+    id=${launched[$r]} figures='' s=working
+    # Up to 5 minutes for the session to reply and go idle.
+    for _ in $(seq 1 60); do
+      s=$(state "$id")
+      uuid=$(claude agents --json --all 2>/dev/null | jq -r --arg id "$id" '(.[] | select(.id == $id) | .sessionId) // empty')
+      transcript=$(transcript_of "$uuid" | grep '\.jsonl$' || true)
+      figures=$(first_reply "${transcript:-/dev/null}") || figures=''
+      if [[ -n $figures && $s != working ]] || [[ $s == gone ]]; then break; fi
+      sleep 5
+    done
+    if [[ -n $figures ]]; then
+      rows+=("$r $figures")
+    else
+      echo "FAIL $r: no first reply in its transcript (state '$s')"
+      fail=1
+    fi
+  done
+
+  echo "load check: each role's starting context, the tokens its first reply carried (input + cache write + cache read)"
+  printf '%-8s %8s %7s %15s %12s\n' role context skills 'deferred tools' 'MCP servers'
+  for r in "${rows[@]}"; do
+    # shellcheck disable=SC2086 # a row is five words
+    printf '%-8s %8s %7s %15s %12s\n' $r
+  done
 }
 
 # The spec's sets; tests/toolkits/prod-read.test.mjs and prod-write.test.mjs prove the servers list
@@ -469,6 +562,9 @@ ops_check() {
   echo "load check: $(grep -c . <<<"$tools" || true) MCP tools, $(grep -c . <<<"$builtins" || true) built-in tools"
 }
 
-if [[ $role == ops ]]; then ops_check; else lease_checks; planner_check; fi
-[[ $fail -eq 0 ]] && echo "PASS" || echo "load check FAILED (inventory in tasks/T0/)"
+if [[ -n $context ]]; then context_check
+elif [[ $role == ops ]]; then ops_check
+else lease_checks; planner_check; fi
+[[ -n $context ]] || where=' (inventory in tasks/T0/)'
+[[ $fail -eq 0 ]] && echo "PASS" || echo "load check FAILED${where:-}"
 exit $fail

@@ -111,6 +111,8 @@ run_fake() {
   assert_contains "$output" "unknown role 'coordinator'"
   run_bin -2 team-worker T7 builder "$wt1" --toolkit nope -- go
   assert_contains "$output" "unknown toolkit 'nope'"
+  run_bin -2 team-worker T7 builder "$wt1" --toolkit coordinator -- go
+  assert_contains "$output" "toolkit 'coordinator' is the coordinator's own"
   local bad
   for bad in "" "-x" "a b"; do
     run_bin -2 team-worker T7 reviewer "$wt1" --model "$bad" -- go
@@ -461,6 +463,99 @@ run_fake() {
   assert_equal "$(launches)" ""
 }
 
+# The role prompt and every brief template written for <role>, by the role its first line names
+# (or {{role}}, a brief for any role), with the partials each includes: role_texts <role>
+role_texts() {
+  local brief partial
+  echo "$REPO_ROOT/roles/$1.md"
+  for brief in "$REPO_ROOT"/templates/briefs/*.md; do
+    head -n 1 "$brief" | grep -qE "\((\{\{role\}\}|$1)\)" || continue
+    echo "$brief"
+    while IFS= read -r partial; do
+      printf '%s\n' "$REPO_ROOT/templates/briefs/$partial"/*.md
+    done < <(grep -oE '\{\{> [a-z-]+\}\}' "$brief" | sed -E 's/^\{\{> //; s/\}\}$//')
+  done
+}
+
+@test "each role's settings parse, layer on the worker settings, and keep every tool and skill its prompt and briefs name" {
+  thread T7
+  ops_stub
+  local role settings worker=$REPO_ROOT/settings/worker.json texts
+  for role in planner builder reviewer ops; do
+    if [[ $role == ops ]]; then
+      run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$request" -- go
+    else
+      run_bin -0 team-worker T7 "$role" "$wt1" -- go
+    fi
+    settings=$TEAM_HOME/tasks/T7/settings.$role.json
+    jq -e . "$settings" >/dev/null
+    # The worker settings' rules come first, and its skill overrides hold unless the role's own
+    # file overrides the same skill.
+    assert_equal "$(jq -c --slurpfile w "$worker" '.permissions.deny[:($w[0].permissions.deny | length)]' "$settings")" \
+      "$(jq -c .permissions.deny "$worker")"
+    assert_equal "$(jq -c --slurpfile w "$worker" --slurpfile r "$REPO_ROOT/settings/$role.json" \
+      '.skillOverrides == ($w[0].skillOverrides * ($r[0].skillOverrides // {}))' "$settings")" true
+    assert_equal "$(jq -c '[.syncClaudeAiPlugins, .syncClaudeAiSkills, .enabledPlugins["cc-plugin-plugin-authoring@builtin"]]' "$settings")" \
+      '[false,false,false]'
+    mapfile -t texts < <(role_texts "$role")
+    ((${#texts[@]} > 1)) || { echo "no brief template found for $role" >&2; return 1; }
+    keeps_named "$settings" "${texts[@]}" || { echo "in $role's settings" >&2; return 1; }
+  done
+}
+
+@test "every role's settings name its role in AGENT_TEAM_ROLE and print the gh-axi banner at session start" {
+  thread T7
+  ops_stub
+  local role settings
+  for role in planner builder reviewer ops; do
+    if [[ $role == ops ]]; then
+      run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$request" -- go
+    else
+      run_bin -0 team-worker T7 "$role" "$wt1" -- go
+    fi
+    settings=$TEAM_HOME/tasks/T7/settings.$role.json
+    assert_equal "$(jq -r .env.AGENT_TEAM_ROLE "$settings")" "$role"
+    assert_equal "$(jq -c '[.hooks.SessionStart[].hooks[] | [.command, .timeout]]' "$settings")" \
+      "$(jq -cn --arg code "$REPO_ROOT" '[["\"\($code)/bin/hooks/axi-banner\" gh-axi", 10]]')"
+  done
+  [[ -x $REPO_ROOT/bin/hooks/axi-banner ]]
+}
+
+@test "the browser toolkit adds its plugin directory and no MCP server" {
+  thread T7
+  run_bin -0 team-worker T7 builder "$wt1" --toolkit browser -- go
+  assert_equal "$(stub_calls claude | tail -n 1 | jq -c '[index("--plugin-dir") as $i | .[$i + 1]]')" \
+    "$(jq -cn --arg code "$REPO_ROOT" '["\($code)/toolkits/browser"]')"
+  assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.builder.json")" '{"mcpServers":{}}'
+  assert_equal "$(launches | jq -c .toolkits)" '["browser"]'
+}
+
+@test "the worker settings take away the tools and skills no worker uses, and the check notices a named one" {
+  thread T7
+  run_bin -0 team-worker T7 reviewer "$wt1" -- go
+  local settings=$TEAM_HOME/tasks/T7/settings.reviewer.json tool
+  for tool in Artifact DesignSync ScheduleWakeup CronCreate RemoteTrigger SendFeedback AskUserQuestion EnterWorktree; do
+    jq -e --arg t "$tool" '.permissions.deny | index($t) != null' "$settings" >/dev/null ||
+      { echo "no deny rule for $tool" >&2; return 1; }
+  done
+  for tool in Bash Read Edit Write Agent Skill ToolSearch SendMessage ListAgents Monitor WebFetch WebSearch; do
+    if jq -e --arg t "$tool" '.permissions.deny | index($t) != null' "$settings" >/dev/null; then
+      echo "denies $tool, which workers use" >&2 && return 1
+    fi
+  done
+  assert_equal "$(jq -c '.skillOverrides | [.lavish, .loop, .implement, .["code-review"]]' "$settings")" '["off","off","off",null]'
+  # A brief that names a skill or tool the settings take away fails the check.
+  echo 'Run `/implement` on it.' >"$BATS_TEST_TMPDIR/brief.md"
+  run keeps_named "$settings" "$BATS_TEST_TMPDIR/brief.md"
+  assert_equal "$status" 1
+  echo 'Then post it with ScheduleWakeup.' >"$BATS_TEST_TMPDIR/brief.md"
+  run keeps_named "$settings" "$BATS_TEST_TMPDIR/brief.md"
+  assert_equal "$status" 1
+  echo 'Read `skills/code-review/SKILL.md` and use the `tdd` skill.' >"$BATS_TEST_TMPDIR/brief.md"
+  run keeps_named "$settings" "$BATS_TEST_TMPDIR/brief.md"
+  assert_equal "$status" 0
+}
+
 @test "every role's generated settings isolate peer machines" {
   thread T7
   local role
@@ -680,7 +775,7 @@ assert_prod_write_gated() {
   # A skill's inline shell would run a command in a role that has no shell.
   assert_equal "$(jq -r .disableSkillShellExecution "$s")" true
   # disableBundledSkills leaves the built-in plugin that carries the plugin-authoring skill (T16
-  # ticket 09's second live check); the worker settings' own plugin entries stay.
+  # ticket 09's second live check), which the worker settings turn off for every worker.
   assert_equal "$(jq -c .enabledPlugins "$s")" \
     '{"discord@claude-plugins-official":false,"mongodb-atlas@claude-plugins-official":false,"cc-plugin-plugin-authoring@builtin":false}'
   # The shared hooks come first (lease-fence on Bash, a tool ops lacks), then the role's own.
@@ -815,17 +910,18 @@ Edit|Write|MultiEdit|NotebookEdit $REPO_ROOT/bin/hooks/scratch-only-edits"
   run -1 grep -Eq '@[A-Z_]+@' "$TEAM_HOME/tasks/T7/settings.ops.json" "$TEAM_HOME/tasks/T7/mcp.ops.json"
 }
 
-@test "@TEAM_CODE@, @TASK@ and @TASK_DIR@ are substituted in the settings and the MCP config" {
+@test "@TEAM_CODE@, @TASK@, @TASK_DIR@ and @ROLE@ are substituted in the settings and the MCP config" {
   fake_checkout
-  echo '{"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "@TEAM_CODE@/bin/hooks/x @TASK@", "args": ["@TASK_DIR@"]}]}]}}' \
+  echo '{"env": {"WHO": "@ROLE@"}, "hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "@TEAM_CODE@/bin/hooks/x @TASK@", "args": ["@TASK_DIR@"]}]}]}}' \
     >"$code/settings/planner.json"
-  echo '{"mcpServers": {"alpha": {"command": "@TEAM_CODE@/a", "args": ["--task", "@TASK@", "@TASK_DIR@"]}}}' >"$code/toolkits/kit-a/.mcp.json"
+  echo '{"mcpServers": {"alpha": {"command": "@TEAM_CODE@/a", "args": ["--task", "@TASK@", "@TASK_DIR@", "@ROLE@"]}}}' >"$code/toolkits/kit-a/.mcp.json"
   thread T7
   run_fake T7 planner "$wt1" --toolkit kit-a -- go
   assert_equal "$status" 0
   # The role's hook comes after the shared settings' own.
   assert_equal "$(jq -c '.hooks.PreToolUse[-1].hooks[0] | [.command, .args[0]]' "$TEAM_HOME/tasks/T7/settings.planner.json")" \
     "$(jq -cn --arg code "$code" --arg t "$TEAM_HOME/tasks/T7" '["\($code)/bin/hooks/x T7", $t]')"
+  assert_equal "$(jq -r .env.WHO "$TEAM_HOME/tasks/T7/settings.planner.json")" planner
   assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.planner.json")" \
-    "$(jq -cn --arg code "$code" --arg t "$TEAM_HOME/tasks/T7" '{mcpServers: {alpha: {command: "\($code)/a", args: ["--task", "T7", $t]}}}')"
+    "$(jq -cn --arg code "$code" --arg t "$TEAM_HOME/tasks/T7" '{mcpServers: {alpha: {command: "\($code)/a", args: ["--task", "T7", $t, "planner"]}}}')"
 }

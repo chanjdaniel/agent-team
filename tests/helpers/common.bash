@@ -386,6 +386,25 @@ denied_in() {
   return 1
 }
 
+# Fail, naming each, when the settings file <file> takes away a tool or skill that one of the
+# prompts or briefs <text>... names: a bare tool deny rule whose tool is a word of the text, or a
+# skillOverrides entry that hides a skill the text names as `/<skill>`, as a path
+# skills/<skill>/SKILL.md, or as the `<skill>` skill. keeps_named <file> <text>...
+keeps_named() {
+  local settings=$1 tool skill found=0
+  shift
+  while IFS= read -r tool; do
+    if grep -qw -- "$tool" "$@"; then echo "denies $tool, which $(grep -lw -- "$tool" "$@" | head -n 1) names" >&2 && found=1; fi
+  done < <(jq -r '.permissions.deny // [] | .[] | select(test("^[A-Za-z][A-Za-z0-9_]*$"))' "$settings")
+  while IFS= read -r skill; do
+    case $(jq -r --arg s "$skill" '.skillOverrides[$s] // "on"' "$settings") in
+      off | user-invocable-only) echo "hides the skill $skill, which the prompt or a brief names" >&2 && found=1 ;;
+    esac
+  done < <(grep -ohE '`/[a-z][a-z0-9-]*`|skills/[a-z][a-z0-9-]*/SKILL\.md|the `[a-z][a-z0-9-]*` skill' "$@" |
+    sed -E 's#^`/##; s#`$##; s#^skills/##; s#/SKILL\.md$##; s#^the `##; s#` skill$##' | sort -u)
+  return "$found"
+}
+
 assert_equal() {
   if [[ $1 != "$2" ]]; then
     printf 'expected: %s\nactual:   %s\n' "$2" "$1" >&2

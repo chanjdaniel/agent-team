@@ -1,12 +1,34 @@
 {
   "enabledPlugins": {
     "discord@claude-plugins-official": false,
-    "mongodb-atlas@claude-plugins-official": false
+    "mongodb-atlas@claude-plugins-official": false,
+    "cc-plugin-plugin-authoring@builtin": false
   },
+  "syncClaudeAiPlugins": false,
+  "syncClaudeAiSkills": false,
   "disableClaudeAiConnectors": true,
   "isolatePeerMachines": true,
   "permissions": {
     "deny": [
+      "AskUserQuestion",
+      "Artifact",
+      "ArtifactComments",
+      "ArtifactData",
+      "CronCreate",
+      "CronDelete",
+      "CronList",
+      "DesignSync",
+      "EnterPlanMode",
+      "ExitPlanMode",
+      "EnterWorktree",
+      "ExitWorktree",
+      "NotebookEdit",
+      "PushNotification",
+      "RemoteTrigger",
+      "ReportFindings",
+      "ScheduleWakeup",
+      "SendFeedback",
+      "SendUserFile",
       "Bash(git push --force*)",
       "Bash(git push -f*)",
       "Bash(git push * --force*)",
@@ -192,16 +214,42 @@
       "Read(//proc/**)"
     ]
   },
+  "skillOverrides": {
+    "artifact-capabilities": "off",
+    "artifact-design": "off",
+    "artifact-diagramming": "off",
+    "dataviz": "off",
+    "fewer-permission-prompts": "off",
+    "find-skills": "off",
+    "git-guardrails-claude-code": "off",
+    "grilling": "off",
+    "init": "off",
+    "keybindings-help": "off",
+    "lavish": "off",
+    "loop": "off",
+    "migrate-to-shoehorn": "off",
+    "scaffold-exercises": "off",
+    "schedule": "off",
+    "setup-pre-commit": "off",
+    "update-config": "off",
+    "wizard": "off"
+  },
   "attribution": {
     "commit": ""
   },
   "env": {
+    "AGENT_TEAM_ROLE": "@ROLE@",
     "LAVISH_AXI_TELEMETRY": "0",
     "CODEGRAPH_TELEMETRY": "0",
     "CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS": "1",
     "CHROME_DEVTOOLS_AXI_MCP_PATH": "@TEAM_CODE@/servers/node_modules/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js"
   },
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [{ "type": "command", "command": "\"@TEAM_CODE@/bin/hooks/axi-banner\" gh-axi", "timeout": 10 }]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "Bash",

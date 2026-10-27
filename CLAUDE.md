@@ -14,7 +14,7 @@ The team's own work on this repo goes through a task and a PR to `dev`, like any
 | `settings/` | Worker settings: `worker.json` shared, one file per role layered on it |
 | `coordinator.settings.json` | The coordinator's own settings: Discord, its hooks and its denials |
 | `plugins/coordinator-skills/` | Skills loaded only into the coordinator by `bin/claude-coordinator` |
-| `toolkits/` | Plugin directories a worker loads with `team-worker --toolkit <name>`: MCP config (`.mcp.json`), skills, docs, scripts, and the skills' evals (`claude plugin eval`, on MCP mocks) |
+| `toolkits/` | Plugin directories a worker loads with `team-worker --toolkit <name>`: MCP config (`.mcp.json`), skills, hooks (`hooks/hooks.json`, as `browser`'s session-start banner for a UI task's builder and reviewer), docs, scripts, and the skills' evals (`claude plugin eval`, on MCP mocks); and `coordinator/`, the coordinator's MCP servers and the claude.ai connectors it keeps, no worker's, the only ones `claude-coordinator` lets it load (its README says how the others are denied and how one is added) |
 | `servers/` | The MCP servers the toolkits and sessions run (the sessions' `chrome-devtools-mcp`, by `CHROME_DEVTOOLS_AXI_MCP_PATH` in their settings) and the MCP client `ui-capture` speaks with, pinned by `package-lock.json`; `servers/install` puts them in the gitignored `servers/node_modules/`, as `team-bootstrap` does while `team-doctor`'s `servers` line fails |
 | `templates/` | The task plan and the worker briefs `team-open` and `team-brief` render |
 | `README.md`, `SETUP.md` | What a stranger reads first, with the sentence Daniel types on a new machine, and the agent's entry point for "set up as host" |
@@ -69,6 +69,7 @@ It holds:
   The Bootstrap workflow (`.github/workflows/bootstrap.yml`) runs only by hand: `team-bootstrap` on a fresh macOS runner and in an Arch container, which installs real tools.
 - The toolkit tests are `node --test` files in `tests/toolkits/`, run after `servers/install`: each starts a toolkit's server exactly as its `.mcp.json` declares, with `op` stubbed and a throwaway MongoDB in Docker, and speaks MCP to it over stdio (`tests/toolkits/helpers/` documents the helpers); `mongo-helper.test.mjs` tests the throwaway MongoDB's own wait, which a container that exits ends at once with its exit code, and that its removal takes its anonymous volumes with it.
   `frontend.test.mjs` runs the frontend toolkit's scripts and server against a headless Chrome (the machine's, or `TEAM_CHROME`) on a local fixture page, never a window on the screen; that Chrome must be current enough for `open_devtools`, which `chrome-helper.test.mjs` checks fails at once on one too old.
+  `browser.test.mjs` checks the browser toolkit's layout and runs its session-start hook as Claude Code runs a plugin's, under the user settings of today and the guarded ones.
   No test reaches 1Password or production: the test `PATH` refuses to start if a real `op` is on it.
 - One file: `tests/vendor/bats-core/bin/bats tests/<name>.bats`; one test: add `-f '<part of its name>'`.
   A toolkit test file: `node --test tests/toolkits/<name>.test.mjs`; one test: add `--test-name-pattern '<part of its name>'`.

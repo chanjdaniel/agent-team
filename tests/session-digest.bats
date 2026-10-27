@@ -219,8 +219,10 @@ EOF
   guard_sandbox
   run -0 sh -c "$command" <<<'{"hook_event_name": "SessionStart", "source": "startup"}'
   assert_contains "$output" "  T12-builder 3ed2d1f2"
-  # Workers never get the digest: no worker settings file names the hook, the snapshot or a
-  # SessionStart hook.
-  run grep -lE 'session-digest|team-snapshot|"SessionStart"' "$REPO_ROOT"/settings/*.json
+  # Workers never get the digest: no worker settings file names the hook or the snapshot, and
+  # their one SessionStart hook is the gh-axi banner.
+  run grep -lE 'session-digest|team-snapshot' "$REPO_ROOT"/settings/*.json
   assert_equal "$output" ""
+  assert_equal "$(jq -r '.hooks.SessionStart[]?.hooks[].command' "$REPO_ROOT"/settings/*.json)" \
+    '"@TEAM_CODE@/bin/hooks/axi-banner" gh-axi'
 }

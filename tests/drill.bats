@@ -49,7 +49,7 @@ TOML
   stub_reply curl '{"id":"1563000000000000001"}'
   fake_service_managers
   # claude: each machine's sessions in its own HOME's sessions.json; --bg starts one, its id from
-  # the machine and the name; stop marks it stopped, rm takes it off; no plugins.
+  # the machine and the name; stop marks it stopped, rm takes it off; no plugins and no MCP servers.
   stub_script claude <<'SH'
 list=$HOME/sessions.json
 [[ -e $list ]] || echo '[]' >"$list"
@@ -58,6 +58,7 @@ case $1 in
   stop) jq --arg id "$2" 'map(if .id == $id then .status = "stopped" else . end)' "$list" >"$list.next" && mv "$list.next" "$list" ;;
   rm) jq --arg id "$2" 'map(select(.id != $id))' "$list" >"$list.next" && mv "$list.next" "$list" ;;
   plugin) echo '[]' ;;
+  mcp) echo 'No MCP servers configured. Use `claude mcp add` to add a server.' ;;
   --bg)
     name='' prev=''
     for arg in "$@"; do

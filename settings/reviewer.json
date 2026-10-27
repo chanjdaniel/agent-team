@@ -18,5 +18,16 @@
       "Bash(@TEAM_CODE@/bin/team-review-comment *)",
       "Bash(@TEAM_CODE@/bin/team-checks *)"
     ]
+  },
+  "skillOverrides": {
+    "domain-modeling": "name-only",
+    "implement": "off",
+    "no-mistakes": "off",
+    "prototype": "off",
+    "research": "off",
+    "resolving-merge-conflicts": "off",
+    "simplify": "off",
+    "tdd": "name-only",
+    "writing-for-agents": "name-only"
   }
 }

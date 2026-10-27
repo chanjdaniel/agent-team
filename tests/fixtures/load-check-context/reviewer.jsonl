@@ -1,0 +1,4 @@
+{"type":"user","message":{"role":"user","content":"Reply with OK and nothing else."}}
+{"type":"attachment","attachment":{"type":"skill_listing","skillCount":2,"isInitial":true,"names":["code-review","tdd"]}}
+{"type":"attachment","attachment":{"type":"deferred_tools_delta","addedNames":["Monitor","TaskCreate"],"removedNames":[]}}
+{"type":"assistant","message":{"id":"msg_r1","role":"assistant","content":[{"type":"text","text":"OK"}],"usage":{"input_tokens":3,"cache_creation_input_tokens":0,"cache_read_input_tokens":45000,"output_tokens":2}}}
