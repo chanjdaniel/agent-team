@@ -1,0 +1,19 @@
+{"ts":"2026-10-20T07:59:00Z","task":"T1","event":"opened","project":"agent-team","path":"feature","type":"feature","title":"A feature","branch":"feat/T1-a","base":"dev","base_sha":"0000000","worktree":"/home/dan/agent-team/.claude/worktrees/1"}
+{"ts":"2026-10-20T07:59:30Z","task":"T2","event":"opened","project":"conventioner","path":"feature","type":"feature","title":"Another","branch":"feat/T2-b","base":"dev","base_sha":"0000000","worktree":"/Users/dan/.treehouse/Conventioner/1/Conventioner"}
+{"ts":"2026-10-20T08:05:00Z","task":"T1","event":"launch","role":"planner","session":"p1p1p1p1","worktree":"/home/dan/agent-team/.claude/worktrees/1","toolkits":[],"project":"agent-team","machine":"home-pc"}
+{"ts":"2026-10-20T08:29:00Z","task":"T0","event":"launch","role":"builder","session":"t0t0t0t0","worktree":"/home/dan/agent-team/.claude/worktrees/3","toolkits":[],"machine":"home-pc"}
+{"ts":"2026-10-20T09:00:00Z","task":"T1","event":"done","role":"planner","session":"p1p1p1p1"}
+{"ts":"2026-10-20T09:05:00Z","task":"T1","event":"launch","role":"builder","session":"b1b1b1b1","worktree":"/home/dan/agent-team/.claude/worktrees/1","toolkits":[],"project":"agent-team","machine":"home-pc"}
+{"ts":"2026-10-20T10:00:00Z","task":"T1","event":"stowed","reason":"Daniel stopped for the night"}
+{"ts":"2026-10-20T10:30:00Z","task":"T1","event":"launch","role":"builder","session":"b2b2b2b2","worktree":"/home/dan/agent-team/.claude/worktrees/1","toolkits":[]}
+{"ts":"2026-10-20T11:00:00Z","task":"T1","event":"ticket-done","ticket":"01","commits":["1111111"]}
+{"ts":"2026-10-20T11:10:00Z","task":"T1","event":"launch","role":"reviewer","session":"r1r1r1r1","worktree":"/home/dan/agent-team/.claude/worktrees/1","toolkits":[],"project":"agent-team","machine":"home-pc","model":"sonnet"}
+{"ts":"2026-10-20T11:40:00Z","task":"T1","event":"review","verdict":"findings","head":"1111111"}
+{"ts":"2026-10-20T11:45:00Z","task":"T1","event":"launch","role":"builder","session":"b3b3b3b3","worktree":"/home/dan/agent-team/.claude/worktrees/1","toolkits":[],"project":"agent-team","machine":"home-pc"}
+{"ts":"2026-10-20T12:30:00Z","task":"T1","event":"launch","role":"reviewer","session":"r2r2r2r2","worktree":"/home/dan/agent-team/.claude/worktrees/1","toolkits":[],"project":"agent-team","machine":"home-pc"}
+{"ts":"2026-10-20T13:00:00Z","task":"T1","event":"review","verdict":"pass","head":"2222222"}
+{"ts":"2026-10-20T13:30:00Z","task":"T1","event":"merged","pr":1,"merge":"3333333","head":"2222222","by":"team-merge"}
+{"ts":"2026-10-20T14:00:00Z","task":"T1","event":"closed"}
+{"ts":"2026-10-21T08:59:00Z","task":"T2","event":"launch","role":"builder","session":"l1l1l1l1","worktree":"/Users/dan/.treehouse/Conventioner/1/Conventioner","toolkits":[],"project":"conventioner","machine":"laptop"}
+{"ts":"2026-10-21T12:00:00Z","task":"T2","event":"ticket-done","ticket":"01","commits":["4444444"]}
+{"ts":"2026-10-21T12:30:00Z","task":"T2","event":"launch","role":"reviewer","session":"l2l2l2l2","worktree":"/Users/dan/.treehouse/Conventioner/1/Conventioner","toolkits":[],"project":"conventioner","machine":"laptop"}

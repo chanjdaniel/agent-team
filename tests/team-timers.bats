@@ -629,8 +629,8 @@ EOF
   mkdir -p "${log%/*}"
   seq 1 2500 | sed 's/^/2026-10-01T00:00:00Z old line /' >"$log"
   run_bin -0 team-timers run
-  # The kept lines, then the run's lease and checkpoint lines.
-  assert_equal "$(wc -l <"$log")" 1002
+  # The kept lines, then the run's lease and checkpoint lines (its usage export and its commit).
+  assert_equal "$(wc -l <"$log")" 1003
   assert_equal "$(head -n 1 "$log")" "2026-10-01T00:00:00Z old line 1501"
 
   local tip

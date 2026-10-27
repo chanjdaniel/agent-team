@@ -44,6 +44,18 @@ SCRIPT
   assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" ""
 }
 
+@test "a launch may name its model, as a string, written by team-worker" {
+  local launch='{"ts":"2026-10-27T02:00:00Z","task":"T7","event":"launch","role":"reviewer","session":"4f2a9c1e","worktree":"/w","toolkits":[]'
+  append_as team-worker "$launch,\"model\":\"sonnet\"}"
+  assert_equal "$status" "0"
+  append_as team-worker "$launch,\"model\":5}"
+  assert_equal "$status" "1"
+  assert_contains "$output" "model must be a string, got a number"
+  append_as team-worker "$launch}"
+  assert_equal "$status" "0"
+  assert_equal "$(jq -c '.model' "$TEAM_HOME/ledger.jsonl")" $'"sonnet"\nnull'
+}
+
 @test "legacy shapes are refused at append time, whatever their ts" {
   append_as team-close '{"ts":"2026-10-01T00:00:00Z","task":"T1","event":"closed"}'
   assert_equal "$status" "1"

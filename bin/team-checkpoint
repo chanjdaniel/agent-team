@@ -24,7 +24,10 @@
 #      pushed is kept too and an older snapshot is gone.
 #      A wip/<project>/T<n> already that head, or a snapshot with the same tree and parent, is
 #      left alone. The worktree's files, index, branch and stash are never touched.
-# Then, in the team home, the ledger's lock held: commits tasks/*/scratch*/, memory/,
+# Then team-tokens export writes this machine's usage of each complete UTC day into usage/<machine>/
+# (its lines prefixed "usage: "); a failed export is reported on stderr and fails nothing, since
+# the transcripts stay and the next checkpoint exports what this one could not.
+# Then, in the team home, the ledger's lock held: commits tasks/*/scratch*/, memory/, usage/,
 # tasks/current.md (the coordinator's current items, or its removal) and ledger.jsonl as
 # "chore: checkpoint" on the branch checked out (dev), leaving whatever else is staged as it
 # was, and pushes the branch when it is ahead of origin's. A rejected push fetches
@@ -45,7 +48,7 @@ SLACK_SECONDS=60
 NET_TIMEOUT=60
 LOCK_WAIT=120
 # What the team-home commit holds.
-RECORDS=(ledger.jsonl tasks/current.md ':(glob)tasks/*/scratch*/**' ':(glob)memory/**')
+RECORDS=(ledger.jsonl tasks/current.md ':(glob)tasks/*/scratch*/**' ':(glob)memory/**' ':(glob)usage/**')
 
 usage="usage: team-checkpoint [--force]"
 force=''
@@ -177,6 +180,12 @@ for wt_json in "${worktrees[@]}"; do
   fi
   snapshot "$task" "$project" "$wt" "$label"
 done
+
+# This machine's usage, each complete day of it, for the commit.
+rc=0
+out=$(TEAM_HOME=$TEAM_HOME "$bin/team-tokens" export 2>"$scratch/tokens-err" {lock_fd}>&-) || rc=$?
+while IFS= read -r line; do say "usage: $line"; done < <(grep . <<<"$out")
+((rc == 0)) || echo "team-checkpoint: usage: $(sed -n '1s/^team-tokens: //p' "$scratch/tokens-err"); the next checkpoint exports it" >&2
 
 # The team home's records: commit them, then push the branch when it is ahead of origin's.
 commit_records "chore: checkpoint" "${RECORDS[@]}" || failed=1

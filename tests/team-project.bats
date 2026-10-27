@@ -395,6 +395,61 @@ TOML
   assert_contains "$stderr" "beta.local_checks: each command must be one line, not empty"
 }
 
+@test "models is optional, defaults to none, and maps a worker role to a model alias" {
+  run_bin -0 team-project alpha models
+  assert_equal "$(jq -c . <<<"$output")" '{}'
+  run_bin -0 team-project alpha
+  assert_equal "$(jq -c .models <<<"$output")" '{}'
+  sed -i 's|^toolkits = \[\]$|toolkits = []\nmodels = { reviewer = "sonnet", builder = "claude-sonnet-5-5" }|' "$TEAM_HOME/projects.toml"
+  run_bin -0 team-project --check
+  run_bin -0 team-project beta models
+  assert_equal "$(jq -c . <<<"$output")" '{"reviewer":"sonnet","builder":"claude-sonnet-5-5"}'
+  run_bin -0 team-project beta models.reviewer
+  assert_equal "$output" "sonnet"
+  run_bin -0 team-project --find models.reviewer sonnet
+  assert_equal "$output" $'alpha\nbeta'
+
+  registry <<'TOML'
+[alpha]
+repo = "owner/alpha"
+path = "alpha"
+base = "main"
+delivery = "direct-pr"
+merge_method = "merge"
+required_checks = []
+models = "sonnet"
+task_dir = ".scratch/task"
+docs = []
+toolkits = []
+pool = { provider = "git", slots = ["alpha/1"] }
+
+[beta]
+repo = "owner/beta"
+path = "beta"
+base = "main"
+delivery = "direct-pr"
+merge_method = "merge"
+required_checks = []
+models = { ops = "sonnet", coordinator = "sonnet", tester = "sonnet", planner = 5, builder = "", reviewer = "--sonnet x" }
+task_dir = ".scratch/task"
+docs = []
+toolkits = []
+pool = { provider = "git", slots = ["beta/1"] }
+TOML
+  run_bin -1 --separate-stderr team-project --check
+  local expected
+  for expected in \
+    "alpha.models: must be a table of role to model" \
+    "beta.models: 'ops' always runs on the default model" \
+    "beta.models: 'coordinator' is not a worker role; one of planner, builder, reviewer" \
+    "beta.models: 'tester' is not a worker role; one of planner, builder, reviewer" \
+    "beta.models.planner: must be a string" \
+    "beta.models.builder: '' is not a model alias or name" \
+    "beta.models.reviewer: '--sonnet x' is not a model alias or name"; do
+    assert_contains "$stderr" "$expected"
+  done
+}
+
 @test "--help documents every key the registry may hold, and no other" {
   local known documented
   # The keys from the script's own lists: a project's, its optional ones, and its pool's.

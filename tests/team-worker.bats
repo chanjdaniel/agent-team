@@ -12,6 +12,7 @@ setup() {
   wt1=$HOME/slots/proj/1 wt2=$HOME/slots/proj/2
   git -C "$primary" worktree add -q -b feat/T7-one "$wt1"
   git -C "$primary" worktree add -q -b feat/T8-two "$wt2"
+  registry proj other
   stub_script claude <<'EOF'
 printf '%s\n' "$PWD" >>"$STUB_CALLS/claude.cwd"
 printf '%s\n' "$PATH" >>"$STUB_CALLS/claude.path"
@@ -34,6 +35,32 @@ opened() {
   ledger_line --arg t "$1" --arg p "$2" --arg b "$3" --arg wt "$4" '{ts: (now | todate), task: $t,
     event: "opened", project: $p, path: "feature", type: "feat", title: "A task", branch: $b,
     base: "main", base_sha: "0123456", worktree: $wt}'
+}
+
+# registry [--first <TOML line>] <project>...: a registry holding each project, a git pool of
+# slots/<project>/1 and 2, with the TOML line, if any, in the first project's table.
+registry() {
+  local extra='' name
+  if [[ $1 == --first ]]; then extra=$2 && shift 2; fi
+  : >"$TEAM_HOME/projects.toml"
+  for name in "$@"; do
+    cat >>"$TEAM_HOME/projects.toml" <<TOML
+[$name]
+repo = "owner/$name"
+path = "projects/$name"
+base = "main"
+delivery = "direct-pr"
+merge_method = "merge"
+required_checks = []
+task_dir = ".scratch/task"
+docs = []
+toolkits = ["prod-read", "prod-write"]
+$extra
+pool = { provider = "git", slots = ["slots/$name/1", "slots/$name/2"] }
+
+TOML
+    extra=
+  done
 }
 
 launches() {
@@ -69,7 +96,7 @@ run_fake() {
 @test "a malformed command line is a usage error, with nothing started or logged" {
   thread T7
   run_bin -2 team-worker T7 builder
-  assert_contains "$output" "usage: team-worker <task> <role> <worktree> [--toolkit <name>]... [--request <link>] -- <first prompt>"
+  assert_contains "$output" "usage: team-worker <task> <role> <worktree> [--toolkit <name>]... [--model <alias>] [--request <link>] -- <first prompt>"
   run_bin -2 team-worker 7 builder "$wt1" -- go
   assert_contains "$output" "task must look like T<n>, got '7'"
   run_bin -2 team-worker T7 builder "$wt1" go
@@ -84,6 +111,15 @@ run_fake() {
   assert_contains "$output" "unknown role 'coordinator'"
   run_bin -2 team-worker T7 builder "$wt1" --toolkit nope -- go
   assert_contains "$output" "unknown toolkit 'nope'"
+  local bad
+  for bad in "" "-x" "a b"; do
+    run_bin -2 team-worker T7 reviewer "$wt1" --model "$bad" -- go
+    assert_contains "$output" "--model needs a model alias or name"
+  done
+  run_bin -2 team-worker T7 reviewer "$wt1" --model
+  assert_contains "$output" "--model needs a model alias or name"
+  run_bin -2 team-worker T7 ops "$wt1" --toolkit prod-read --model sonnet --request https://discord.com/channels/1/2/3 -- go
+  assert_contains "$output" "--model is not for the ops role, which runs on the default model"
 
   assert_equal "$(stub_calls claude)" ""
   assert_equal "$(launches)" ""
@@ -238,6 +274,86 @@ run_fake() {
   run_bin -0 team-worker T7 builder "$HOME/slots/other/1" -- go
   assert_equal "$(launches | jq -c '[.project, .branch, .worktree]')" \
     "$(jq -cn --arg wt "$HOME/slots/other/1" '["other", "chore/T7-two", $wt]')"
+}
+
+@test "a project's model for the role is passed to claude and logged on the launch" {
+  registry --first 'models = { reviewer = "sonnet", builder = "claude-sonnet-5-5" }' proj other
+  thread T7
+  opened T7 proj feat/T7-one "$wt1"
+  run_bin -0 team-worker T7 reviewer "$wt1" -- Review it
+  local t=$TEAM_HOME/tasks/T7
+  assert_equal "$(stub_calls claude)" "$(jq -cn --arg t "$t" --arg roles "$REPO_ROOT/roles" '["--bg",
+    "--strict-mcp-config", "--mcp-config", "\($t)/mcp.reviewer.json",
+    "--settings", "\($t)/settings.reviewer.json",
+    "--append-system-prompt-file", "\($roles)/reviewer.md",
+    "--permission-mode", "auto", "--model", "sonnet", "--name", "T7-reviewer", "Review it"]')"
+  assert_equal "$(launches)" "$(jq -cn --arg wt "$wt1" '{task: "T7", event: "launch", role: "reviewer",
+    session: "4f2a9c1e", worktree: $wt, toolkits: [], project: "proj", branch: "feat/T7-one", machine: "home-pc",
+    model: "sonnet"}')"
+  run_bin -0 team-log --check
+
+  # Each role takes its own line; one the table does not name takes none.
+  : >"$STUB_CALLS/claude.log"
+  run_bin -0 team-worker T7 builder "$wt1" -- go
+  run_bin -0 team-worker T7 planner "$wt1" -- go
+  assert_equal "$(stub_calls claude | jq -c '[(index("--model") // empty) as $i | .[$i + 1]]')" $'["claude-sonnet-5-5"]\n[]'
+  assert_equal "$(launches | jq -c '[.role, .model]')" $'["reviewer","sonnet"]\n["builder","claude-sonnet-5-5"]\n["planner",null]'
+  run_bin -0 team-log --check
+}
+
+@test "the model is the launch worktree's project's: a worktree added from a second project takes that one's" {
+  registry --first 'models = { builder = "sonnet" }' other proj
+  local other
+  other=$(make_repo other)
+  git -C "$other" worktree add -q -b chore/T7-two "$HOME/slots/other/1"
+  thread T7
+  opened T7 proj feat/T7-one "$wt1"
+  ledger_line --arg wt "$HOME/slots/other/1" '{ts: (now | todate), task: "T7", event: "worktree-added",
+    project: "other", branch: "chore/T7-two", base: "main", base_sha: "0123456", worktree: $wt}'
+  run_bin -0 team-worker T7 builder "$wt1" -- go
+  run_bin -0 team-worker T7 builder "$HOME/slots/other/1" -- go
+  assert_equal "$(launches | jq -c '[.project, .model]')" $'["proj",null]\n["other","sonnet"]'
+}
+
+@test "--model launches on the model it names instead of the registry's, and logs it, for a legacy task or T0 too" {
+  registry --first 'models = { reviewer = "sonnet" }' proj other
+  thread T7
+  opened T7 proj feat/T7-one "$wt1"
+  run_bin -0 team-worker T7 reviewer "$wt1" --model opus -- Review it
+  thread T8
+  run_bin -0 team-worker T8 builder "$wt2" --model 'sonnet[1m]' -- go
+  run_bin -0 team-worker T0 planner "$wt1" --model haiku -- go
+  assert_equal "$(stub_calls claude | jq -c '[(index("--model") // empty) as $i | .[$i + 1], .[-2], .[-1]]')" \
+    $'["opus","T7-reviewer","Review it"]\n["sonnet[1m]","T8-builder","go"]\n["haiku","T0-planner","go"]'
+  assert_equal "$(launches | jq -c '[.task, .model]')" $'["T7","opus"]\n["T8","sonnet[1m]"]'
+  run_bin -0 team-log --check
+}
+
+@test "with no models key, a legacy task or T0, no model is passed or logged" {
+  thread T7
+  opened T7 proj feat/T7-one "$wt1"
+  run_bin -0 team-worker T7 reviewer "$wt1" -- go
+  # A legacy task has no project to read a model from, whatever the registry says.
+  registry --first 'models = { reviewer = "sonnet" }' proj other
+  thread T8
+  run_bin -0 team-worker T8 reviewer "$wt2" -- go
+  run_bin -0 team-worker T0 reviewer "$wt1" -- go
+  assert_equal "$(stub_calls claude | jq -c 'index("--model")')" $'null\nnull\nnull'
+  assert_equal "$(launches | jq -c '[.task, has("model")]')" $'["T7",false]\n["T8",false]'
+  run_bin -0 team-log --check
+}
+
+@test "a project missing from the registry, or a broken registry, refuses the launch: nothing started or logged" {
+  registry other
+  thread T7
+  opened T7 proj feat/T7-one "$wt1"
+  run_bin -1 --separate-stderr team-worker T7 reviewer "$wt1" -- go
+  assert_contains "$stderr" "unknown project 'proj'"
+  registry --first 'models = { reviewer = 5 }' proj
+  run_bin -1 --separate-stderr team-worker T7 reviewer "$wt1" -- go
+  assert_contains "$stderr" "proj.models.reviewer: must be a string"
+  [[ ! -s $STUB_CALLS/claude.log ]]
+  assert_equal "$(launches)" ""
 }
 
 @test "an opened task refuses a worktree that is not one of its open worktrees" {
@@ -610,6 +726,16 @@ Edit|Write|MultiEdit|NotebookEdit $REPO_ROOT/bin/hooks/scratch-only-edits"
 
   assert_equal "$(launches | jq -c '[.toolkits, .request]')" "$(jq -cn --arg r "$request" '[["prod-read", "prod-write"], $r]')"
   run_bin -0 team-log --check
+}
+
+@test "an ops launch takes no model, whatever its project's models table names" {
+  registry --first 'models = { planner = "sonnet", builder = "sonnet", reviewer = "sonnet" }' proj other
+  thread T7
+  opened T7 proj feat/T7-one "$wt1"
+  ops_stub
+  run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$request" -- Answer the request
+  assert_equal "$(bg_calls | jq -c 'index("--model")')" "null"
+  assert_equal "$(launches | jq -c 'has("model")')" "false"
 }
 
 @test "only the ops role is restricted" {

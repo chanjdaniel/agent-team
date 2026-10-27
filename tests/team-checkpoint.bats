@@ -118,6 +118,7 @@ changed_in() {
   snap=$(git -C "$team_origin" rev-parse wip/home/T1)
   assert_equal "$output" "T1 home: archived .scratch/task to tasks/T1/scratch
 T1 home: pushed wip/home/T1 ${snap:0:7} (uncommitted changes on ${head:0:7})
+usage: read 0 of 0 transcripts; no day file changed
 team home: committed $(git -C "$TEAM_HOME" rev-parse --short HEAD) chore: checkpoint and pushed dev"
   assert_equal "$stderr" ""
 
@@ -189,6 +190,7 @@ tasks/T1/scratch/spec.md"
   run_bin -0 team-checkpoint --force
   assert_equal "$output" "T1 home: archived .scratch/task to tasks/T1/scratch
 T1 home: wip/home/T1 is up to date (${snap:0:7})
+usage: read 0 of 0 transcripts; no day file changed
 team home: nothing to commit"
   assert_equal "$(stub_calls git-push)" ""
   assert_equal "$(team_tip)" "$tip"
@@ -302,6 +304,7 @@ T4 home: archived .scratch/task to tasks/T4/scratch"
   run_bin -0 --separate-stderr team-checkpoint
   assert_equal "$stderr" "team-checkpoint: $HOME/slots/home/1/.scratch/task is empty, so nothing was archived from home"
   assert_equal "$output" "T1 home: pushed wip/home/T1 $(git -C "$HOME/slots/home/1" rev-parse --short=7 HEAD) (the branch head, no uncommitted changes)
+usage: read 0 of 0 transcripts; no day file changed
 team home: committed $(git -C "$TEAM_HOME" rev-parse --short HEAD) chore: checkpoint and pushed dev"
   [[ ! -e $TEAM_HOME/tasks/T1/scratch ]]
 }
@@ -398,6 +401,40 @@ tasks/current.md"
   assert_equal "$(git -C "$TEAM_HOME" diff --cached --name-only)" "manual-steps.md
 projects.toml
 tasks/T1/plan.md"
+}
+
+@test "it exports this machine's usage of each complete day into usage/<machine>/ and commits it" {
+  cp -R "$BATS_TEST_DIRNAME/fixtures/team-tokens/projects" "$HOME/.claude/projects"
+  run_bin -0 --separate-stderr team-checkpoint
+  assert_equal "$output" "usage: usage/home-pc/2026-10-20.jsonl: 1 reply, 1 new
+usage: usage/home-pc/2026-10-21.jsonl: 3 replies, 3 new
+usage: read 3 of 3 transcripts; wrote 2 day files
+team home: committed $(git -C "$TEAM_HOME" rev-parse --short HEAD) chore: checkpoint and pushed dev"
+  assert_equal "$(changed_in dev)" "usage/home-pc/2026-10-20.jsonl
+usage/home-pc/2026-10-21.jsonl"
+  # Nothing new: no commit.
+  local tip
+  tip=$(team_tip)
+  run_bin -0 team-checkpoint --force
+  assert_equal "$output" "usage: read 0 of 3 transcripts; no day file changed
+team home: nothing to commit"
+  assert_equal "$(team_tip)" "$tip"
+}
+
+@test "a failed export is reported and fails nothing: the records are still committed and pushed" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  echo "spec" >"$HOME/slots/home/1/.scratch/task/spec.md"
+  cp -R "$BATS_TEST_DIRNAME/fixtures/team-tokens/projects" "$HOME/.claude/projects"
+  mkdir -p "$TEAM_HOME/usage/home-pc"
+  echo "not json" >"$TEAM_HOME/usage/home-pc/2026-10-21.jsonl"
+  run_bin -0 --separate-stderr team-checkpoint
+  assert_equal "$stderr" "team-checkpoint: usage: cannot export: $TEAM_HOME/usage/home-pc/2026-10-21.jsonl holds a line that is no usage line; fix or remove it; the next checkpoint exports it"
+  assert_contains "$output" "team home: committed"
+  assert_equal "$(changed_in dev)" "ledger.jsonl
+tasks/T1/scratch/spec.md
+usage/home-pc/2026-10-20.jsonl
+usage/home-pc/2026-10-21.jsonl"
+  [[ -f $state/last-checkpoint ]]
 }
 
 @test "a rejected push is replayed onto origin's dev and pushed, keeping what is staged" {
