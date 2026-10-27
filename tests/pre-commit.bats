@@ -30,7 +30,7 @@ commit() {
 # Refused for the records named, one per line: assert_records <path>...
 assert_records() {
   assert_equal "$stderr" "pre-commit: refused: records (ledger.jsonl, manual-steps.md, projects.toml, \
-tasks/, projects/, memory/, machine/) live in the team home, never in the code repository; unstage \
+tasks/, projects/, memory/, machine/, usage/) live in the team home, never in the code repository; unstage \
 them (git restore --staged -- <path>):$(printf '\n  %s' "$@")"
 }
 
@@ -113,7 +113,7 @@ by fast-forward from dev"
   git -C "$repo" checkout -q -b feat/T1-work dev
   run -1 --separate-stderr git -C "$repo" merge -q --no-ff -m "Merge feat/T1-records" feat/T1-records
   assert_equal "${stderr%$'\n'Not committing merge*}" "pre-merge-commit: refused: records (ledger.jsonl, manual-steps.md, \
-projects.toml, tasks/, projects/, memory/, machine/) live in the team home, never in the code \
+projects.toml, tasks/, projects/, memory/, machine/, usage/) live in the team home, never in the code \
 repository; unstage them (git restore --staged -- <path>):
   tasks/T1/plan.md"
   git -C "$repo" merge --abort
