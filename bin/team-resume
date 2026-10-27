@@ -29,7 +29,7 @@
 #   4. team home    The team home's branch fast-forwarded to origin's (fetch, then merge
 #                   --ff-only); a branch that has diverged, or local changes in the way, refuses.
 #   5. code         The code checkout (the directory above this script's bin/) the same way, so
-#                   the later steps run origin's code; skipped, saying so, when it is the team home.
+#                   the later steps run origin's code.
 #   6. config       team-config apply: the team's Claude config and each project's auto memory.
 #   7. lease        team-lease take; with --steal, team-lease take --steal on a lease another
 #                   machine holds, which asks for the holder's name typed on this terminal.
@@ -213,7 +213,7 @@ main() {
         if [[ -z $said ]]; then
           again="run \`team-resume --wait\` again (checked before the wait: nothing changed, and $holder still runs the team)"
           level "team home" "$TEAM_HOME" it "$again" --check
-          same_path "$code" "$TEAM_HOME" || level code "$code" "$code" "$again" --check
+          level code "$code" "$code" "$again" --check
           echo "lease: $holder holds the lease; this machine is ready: say 'hand off' to the coordinator there now (waiting for its release, reading it every ${POLL_SECONDS}s; Ctrl+C stops, changing nothing)"
           said=1
         fi
@@ -231,12 +231,8 @@ main() {
   # 4. The team home, up to date with origin's.
   level "team home" "$TEAM_HOME" it "run team-resume again"
 
-  # 5. The code checkout, up to date with origin's, unless it is the team home.
-  if same_path "$code" "$TEAM_HOME"; then
-    echo "code: the code checkout is the team home, brought up to date above"
-  else
-    level code "$code" "$code" "run team-resume again"
-  fi
+  # 5. The code checkout, up to date with origin's.
+  level code "$code" "$code" "run team-resume again"
 
   # 6. The team's Claude config.
   rc=0

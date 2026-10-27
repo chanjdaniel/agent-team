@@ -18,10 +18,12 @@
 #              are installed; jq, git and Python 3.11, which the team's scripts need to run at
 #              all, are installed (pacman, with sudo, or brew, Python as the lock's python@3.12).
 #   machine    The doctor's machine line: writes --name; then writes --home, unless the setting
-#              names a team home already; then, while the team home fetch line warns, narrows
-#              the team home's fetch to dev and lease (git remote set-branches origin dev lease)
-#              and deletes origin's other remote-tracking branches it keeps (git branch -r -d),
-#              local config and refs only, so its wip/* and salvage/* are never downloaded.
+#              names a team home already; with neither, and no TEAM_HOME, naming the team home is
+#              Daniel's step (cloning it first when ~/agent-team-records is missing, fetching only
+#              dev and lease); then, while the team home fetch line warns, narrows the team home's
+#              fetch to dev and lease (git remote set-branches origin dev lease) and deletes
+#              origin's other remote-tracking branches it keeps (git branch -r -d), local config
+#              and refs only, so its wip/* and salvage/* are never downloaded.
 #   packages   The failing tool lines whose fix is an OS package: on Arch one
 #              `sudo pacman -S --needed --noconfirm` for them all; on macOS `brew install` for
 #              each formula or cask Homebrew lacks (`brew list --versions`) and `brew upgrade`
@@ -81,6 +83,9 @@ set -euo pipefail
 # A fresh Mac lacks Homebrew's GNU tools until the packages stage installs them.
 # shellcheck disable=SC2034 # read by bin/lib/platform.sh
 platform_report=1
+# Nor while nothing names the team home: the machine stage names it, with --home.
+# shellcheck disable=SC2034 # read by bin/lib/team.sh
+team_home_unnamed=1
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
 STAGES=(preflight machine packages tools projects config heartbeat check)
@@ -251,7 +256,19 @@ stage_machine() {
     say "named this machine $name (~/.config/agent-team/machine)"
   fi
   stage_home
+  # Every stage after this one reads the team home.
+  [[ -n $TEAM_HOME || -n $home ]] || daniel "$(clone_home)"
   stage_home_fetch
+}
+
+# Daniel's step while nothing names the team home: clone it unless it is there, fetching only dev
+# and lease, then name it.
+clone_home() {
+  if [[ -d $HOME/agent-team-records ]]; then
+    echo "name the team home's checkout for this machine: team-bootstrap --home agent-team-records"
+  else
+    echo "clone the team home, then name it for this machine: git clone --single-branch --branch dev https://github.com/chanjdaniel/agent-team-records.git ~/agent-team-records && git -C ~/agent-team-records remote set-branches --add origin lease && team-bootstrap --home agent-team-records"
+  fi
 }
 
 # The team home's fetch, while the doctor's team home fetch line warns: dev and lease only, and
@@ -294,8 +311,8 @@ stage_home() {
     printf '%s\n' "$home" >"$file"
     changed=1
     say "named the team home $(tilde "$path") (~/.config/agent-team/home)"
-    # The team home moved for this run: the stages after this one read the doctor on it.
-    if [[ $TEAM_HOME_FROM != variable ]] && ! same_path "$path" "$TEAM_HOME"; then
+    # Nothing named the team home for this run: the stages after this one read the doctor on it.
+    if [[ $TEAM_HOME_FROM == none ]]; then
       TEAM_HOME=$path
       run_doctor
     fi
@@ -584,10 +601,12 @@ stage_check() {
     # The lease is read by the machine's name.
     if lines '^lease$' | grep -qF 'no team name'; then covered+=(lease); fi
   fi
-  # Without --home (a dry run with it would have written it), once there is a checkout to name:
-  # without one --home would refuse, and the doctor's team home line says to clone it.
-  [[ -f $HOME/.config/agent-team/home || -n $home || ! -d $HOME/agent-team-records ]] ||
-    steps+=("team home: name the team home's checkout for this machine: team-bootstrap --home agent-team-records (~/.config/agent-team/home is missing)")
+  # Without --home (a dry run with it would have written it), once there is a checkout to name, or
+  # while nothing names the team home.
+  if [[ ! -f $HOME/.config/agent-team/home && -z $home ]] && [[ -d $HOME/agent-team-records || $TEAM_HOME_FROM == none ]]; then
+    steps+=("team home: $(clone_home) (~/.config/agent-team/home is missing)")
+    [[ $TEAM_HOME_FROM != none ]] || covered+=("team home")
+  fi
   step '^claude login$' FAIL
   step '^github login$' FAIL ", then gh auth setup-git"
   step '^docker$' FAIL
