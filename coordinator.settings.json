@@ -5,6 +5,7 @@
     "cc-plugin-plugin-authoring@builtin": false
   },
   "syncClaudeAiPlugins": false,
+  "disableClaudeAiConnectors": true,
   "crossSessionInbound": "accept",
   "isolatePeerMachines": true,
   "idleCompaction": true,

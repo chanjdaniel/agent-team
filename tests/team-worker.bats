@@ -111,6 +111,8 @@ run_fake() {
   assert_contains "$output" "unknown role 'coordinator'"
   run_bin -2 team-worker T7 builder "$wt1" --toolkit nope -- go
   assert_contains "$output" "unknown toolkit 'nope'"
+  run_bin -2 team-worker T7 builder "$wt1" --toolkit coordinator -- go
+  assert_contains "$output" "toolkit 'coordinator' is the coordinator's own"
   local bad
   for bad in "" "-x" "a b"; do
     run_bin -2 team-worker T7 reviewer "$wt1" --model "$bad" -- go

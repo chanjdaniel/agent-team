@@ -10,6 +10,17 @@ setup() {
   # claude answers `agents` from $BATS_TEST_TMPDIR/sessions.json; a launch records its cwd and
   # whether the launch lock was free while it ran, and whether it inherited the lock's file.
   echo '[]' >"$BATS_TEST_TMPDIR/sessions.json"
+  # `claude mcp list` answers from $BATS_TEST_TMPDIR/mcp-list.txt: today's servers on home-pc.
+  cat >"$BATS_TEST_TMPDIR/mcp-list.txt" <<'TXT'
+Checking MCP server health…
+
+claude.ai Claude Docs: https://api.anthropic.com/v1/pages/mcp - ✔ Connected
+plugin:mongodb-atlas:mongodb-atlas: https://mcp.mongodb.com/ (HTTP) - ! Needs authentication
+codegraph: codegraph serve --mcp - ✔ Connected
+vercel: https://mcp.vercel.com (HTTP) - ✔ Connected
+resend: https://mcp.resend.com/mcp (HTTP) - ✔ Connected
+playwright: npx -y @playwright/mcp@0.0.83 - ✗ Failed to connect
+TXT
   stub_script claude <<'EOF'
 lock=$HOME/.local/state/agent-team/coordinator-launch.lock
 if flock -n "$lock" true; then held=free; else held=held; fi
@@ -17,6 +28,12 @@ if [[ $1 == agents ]]; then
   echo "agents $held" >>"$STUB_CALLS/claude.lock"
   cat "$BATS_TEST_TMPDIR/sessions.json"
   exit "$(cat "$BATS_TEST_TMPDIR/agents.status" 2>/dev/null || echo 0)"
+fi
+if [[ $1 == mcp ]]; then
+  echo "mcp $held" >>"$STUB_CALLS/claude.lock"
+  printf '%s\n' "$PWD" >>"$STUB_CALLS/claude.mcp-cwd"
+  cat "$BATS_TEST_TMPDIR/mcp-list.txt"
+  exit "$(cat "$BATS_TEST_TMPDIR/mcp.status" 2>/dev/null || echo 0)"
 fi
 echo "launch $held" >>"$STUB_CALLS/claude.lock"
 printf '%s\n' "$PWD" >>"$STUB_CALLS/claude.cwd"
@@ -44,16 +61,18 @@ sessions() {
   printf '%s\n' "$@" | jq -s . >"$BATS_TEST_TMPDIR/sessions.json"
 }
 
-# The launch command line: today's, plus this checkout's manual and the coordinator's skills.
+# The launch command line: today's, plus this checkout's manual, the coordinator's skills and its
+# toolkit's MCP servers.
 launch_argv() {
-  jq -cn --arg settings "$HOME/.local/state/agent-team/coordinator.settings.json" --arg code "$REPO_ROOT" \
+  jq -cn --arg state "$HOME/.local/state/agent-team" --arg code "$REPO_ROOT" \
     '["--bg", "--name", "coordinator",
     "--autocompact", "200k",
+    "--mcp-config", "\($state)/coordinator.mcp.json",
     "--channels", "plugin:discord@claude-plugins-official",
     "--dangerously-skip-permissions",
     "--append-system-prompt-file", "\($code)/roles/coordinator.md",
     "--plugin-dir", "\($code)/plugins/coordinator-skills",
-    "--settings", $settings,
+    "--settings", "\($state)/coordinator.settings.json",
     "You are the coordinator. Daniel talks to you on Discord. Wait for their messages."]'
 }
 
@@ -75,7 +94,7 @@ assert_not_launched() {
   sessions "$(session 0a1b2c3d 0a1b2c3d-1111 T14-builder busy)" "$(session - 9f9f9f9f-2222 '' idle interactive)"
   run_bin -0 claude-coordinator
   assert_contains "$output" "Started background session 7c3e9a10"
-  assert_equal "$(stub_calls claude)" "$(printf '%s\n%s' '["agents","--json"]' "$(launch_argv)")"
+  assert_equal "$(stub_calls claude)" "$(printf '%s\n%s\n%s' '["agents","--json"]' '["mcp","list"]' "$(launch_argv)")"
   assert_equal "$(cat "$STUB_CALLS/claude.cwd")" "$TEAM_HOME"
 }
 
@@ -103,7 +122,8 @@ assert_not_launched() {
 @test "its settings are the checkout's, with the hooks of the same checkout" {
   run_bin -0 claude-coordinator
   local settings=$HOME/.local/state/agent-team/coordinator.settings.json
-  assert_equal "$(jq -c . "$settings")" \
+  # All but the servers denied, which the launch adds (the toolkit's tests below).
+  assert_equal "$(jq -c 'del(.deniedMcpServers)' "$settings")" \
     "$(jq -c --arg code "$REPO_ROOT" 'walk(if type == "string" then gsub("@TEAM_CODE@"; $code) else . end)' \
       "$REPO_ROOT/coordinator.settings.json")"
   assert_equal "$(jq -r '[.hooks[][].hooks[].command] | .[]' "$settings")" \
@@ -128,9 +148,9 @@ assert_not_launched() {
     skill=$(basename "$skill")
     assert_equal "$(jq -r --arg s "$skill" '.skillOverrides[$s] // "on"' "$settings")" on
   done
-  # Discord, the claude.ai docs connector and the synced docs skill that guides it, and artifacts.
+  # Discord, the synced skills, and artifacts; no claude.ai connector (its toolkit's README).
   assert_equal "$(jq -c '[.enabledPlugins["discord@claude-plugins-official"], .disableClaudeAiConnectors, .syncClaudeAiSkills,
-    .syncClaudeAiPlugins, .enabledPlugins["cc-plugin-plugin-authoring@builtin"]]' "$settings")" '[true,null,null,false,false]'
+    .syncClaudeAiPlugins, .enabledPlugins["cc-plugin-plugin-authoring@builtin"]]' "$settings")" '[true,true,null,false,false]'
   for tool in Artifact ArtifactComments ArtifactData SendUserFile PushNotification CronCreate CronList CronDelete \
     ScheduleWakeup Monitor SendMessage ListAgents Agent WebFetch WebSearch; do
     if jq -e --arg t "$tool" '.permissions.deny | index($t) != null' "$settings" >/dev/null; then
@@ -145,6 +165,70 @@ assert_not_launched() {
     jq -e --arg t "$tool" '.permissions.deny | index($t) != null' "$settings" >/dev/null ||
       { echo "no deny rule for $tool" >&2; return 1; }
   done
+}
+
+# The names in the settings' deniedMcpServers, one per line, sorted.
+denied() {
+  jq -r '.deniedMcpServers[].serverName' "$HOME/.local/state/agent-team/coordinator.settings.json" | sort
+}
+
+@test "its MCP servers come only from its toolkit, by --mcp-config, never --strict-mcp-config, which would cut Discord" {
+  run_bin -0 claude-coordinator
+  local argv mcp=$HOME/.local/state/agent-team/coordinator.mcp.json
+  argv=$(stub_calls claude | tail -n 1)
+  assert_equal "$(jq -r 'index("--mcp-config") as $i | .[$i + 1]' <<<"$argv")" "$mcp"
+  assert_equal "$(jq -r 'map(select(. == "--mcp-config")) | length' <<<"$argv")" 1
+  assert_equal "$(jq 'index("--strict-mcp-config")' <<<"$argv")" null
+  assert_equal "$(jq -c . "$mcp")" "$(jq -c . "$REPO_ROOT/toolkits/coordinator/.mcp.json")"
+  assert_equal "$(jq -c .mcpServers "$mcp")" '{}'
+  assert_equal "$(find "${mcp%/*}" -name '*.json.*')" ""
+}
+
+@test "its settings deny every server claude mcp list names in its working directory, and turn off every claude.ai connector" {
+  run_bin -0 claude-coordinator
+  assert_equal "$(cat "$STUB_CALLS/claude.mcp-cwd")" "$TEAM_HOME"
+  assert_equal "$(denied)" "$(printf '%s\n' 'claude.ai Claude Docs' codegraph playwright plugin:mongodb-atlas:mongodb-atlas resend vercel)"
+  local settings=$HOME/.local/state/agent-team/coordinator.settings.json
+  assert_equal "$(jq .disableClaudeAiConnectors "$settings")" true
+  # The checkout's own settings name no server: the list is the launch's.
+  assert_equal "$(jq 'has("deniedMcpServers")' "$REPO_ROOT/coordinator.settings.json")" false
+}
+
+@test "the Discord plugin and its channel stay on, and its servers are never denied" {
+  printf '%s\n' 'plugin:discord:discord: bun run start - ✔ Connected' 'other: x - ✔ Connected' \
+    >"$BATS_TEST_TMPDIR/mcp-list.txt"
+  run_bin -0 claude-coordinator
+  local argv settings=$HOME/.local/state/agent-team/coordinator.settings.json
+  argv=$(stub_calls claude | tail -n 1)
+  assert_equal "$(jq -r 'index("--channels") as $i | .[$i + 1]' <<<"$argv")" plugin:discord@claude-plugins-official
+  assert_equal "$(jq '.enabledPlugins["discord@claude-plugins-official"]' "$settings")" true
+  assert_equal "$(denied)" other
+}
+
+@test "a server in its toolkit reaches it and is not denied, with @TEAM_CODE@ naming the checkout" {
+  code_checkout
+  cat >"$CODE_CHECKOUT/toolkits/coordinator/.mcp.json" <<'JSON'
+{"mcpServers": {"notes": {"command": "node", "args": ["@TEAM_CODE@/servers/notes.mjs"]}}}
+JSON
+  printf '%s\n' 'notes: node x - ✔ Connected' 'vercel: https://mcp.vercel.com (HTTP) - ✔ Connected' \
+    >"$BATS_TEST_TMPDIR/mcp-list.txt"
+  run_bin -0 claude-coordinator
+  assert_equal "$(jq -c .mcpServers "$HOME/.local/state/agent-team/coordinator.mcp.json")" \
+    "$(jq -cn --arg code "$CODE_CHECKOUT" '{notes: {command: "node", args: ["\($code)/servers/notes.mjs"]}}')"
+  assert_equal "$(denied)" vercel
+}
+
+@test "with no server listed it denies none" {
+  echo 'No MCP servers configured. Use `claude mcp add` to add a server.' >"$BATS_TEST_TMPDIR/mcp-list.txt"
+  run_bin -0 claude-coordinator
+  assert_equal "$(jq -c .deniedMcpServers "$HOME/.local/state/agent-team/coordinator.settings.json")" '[]'
+}
+
+@test "a failed claude mcp list refuses the launch, so no coordinator starts with servers it should not have" {
+  echo 1 >"$BATS_TEST_TMPDIR/mcp.status"
+  run_bin -1 --separate-stderr claude-coordinator
+  assert_contains "$stderr" "claude-coordinator: claude mcp list failed, so the servers to deny are unknown"
+  assert_not_launched
 }
 
 @test "it compacts at 200k tokens, by the launch flag, which no settings scope preempts" {
@@ -260,7 +344,7 @@ assert_not_launched() {
 
 @test "it holds the launch lock across the check and the launch, and the session does not inherit it" {
   run_bin -0 claude-coordinator
-  assert_equal "$(cat "$STUB_CALLS/claude.lock")" "$(printf 'agents held\nlaunch held')"
+  assert_equal "$(cat "$STUB_CALLS/claude.lock")" "$(printf 'agents held\nmcp held\nlaunch held')"
   [[ -f $lock ]]
 }
 

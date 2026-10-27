@@ -27,6 +27,7 @@
 # in either names this checkout, @TASK@ the task, @TASK_DIR@ the team home's tasks/<task>/, and
 # @ROLE@ the role (the settings' AGENT_TEAM_ROLE, the signal a hook sees in a team session).
 #
+# The coordinator toolkit is claude-coordinator's alone, never a worker's.
 # Production toolkits (prod-*) are for the ops role only, which needs prod-read (prod-write comes
 # only beside it) and --request, and is refused while any T<n>-ops session is listed by claude
 # agents (one at a time; end it with team-ops-end). An ops session runs with --restricted and only
@@ -50,6 +51,7 @@ while [[ $# -gt 0 && $1 != -- ]]; do
     --toolkit)
       [[ $# -ge 2 ]] || usage_error "--toolkit needs a name"
       [[ -d $code/toolkits/$2 ]] || usage_error "unknown toolkit '$2'"
+      [[ $2 != coordinator ]] || usage_error "toolkit 'coordinator' is the coordinator's own (claude-coordinator loads it)"
       toolkits+=("$2")
       shift 2
       ;;

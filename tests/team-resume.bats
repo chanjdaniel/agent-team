@@ -42,8 +42,8 @@ TOML
   echo "Shared instructions." >"$HOME/.claude/CLAUDE.md"
 
   # claude: each machine's sessions in its own HOME's sessions.json; --bg adds one, but in a root
-  # listed in $BATS_TEST_TMPDIR/untrusted; stop marks it stopped, rm takes it off; no plugins and
-  # no marketplaces.
+  # listed in $BATS_TEST_TMPDIR/untrusted; stop marks it stopped, rm takes it off; no plugins,
+  # no marketplaces and no MCP servers.
   echo '[{"id": "3169fcbd", "name": "coordinator", "status": "busy"},
     {"id": "81f08540", "name": "T1-builder", "status": "idle"}]' >"$HOME/sessions.json"
   stub_script claude <<'SH'
@@ -54,6 +54,7 @@ case "$*" in
   'stop '*) jq --arg id "$2" 'map(if .id == $id then .status = "stopped" else . end)' "$list" >"$list.next" && mv "$list.next" "$list" ;;
   'rm '*) jq --arg id "$2" 'map(select(.id != $id))' "$list" >"$list.next" && mv "$list.next" "$list" ;;
   'plugin list --json' | 'plugin marketplace list --json') echo '[]' ;;
+  'mcp list') echo 'No MCP servers configured. Use `claude mcp add` to add a server.' ;;
   '--bg --name '*)
     if grep -qxF "$PWD" "$BATS_TEST_TMPDIR/untrusted" 2>/dev/null; then
       echo "Error: Workspace not trusted. Run claude here once and accept the trust dialog." >&2
