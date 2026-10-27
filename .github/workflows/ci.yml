@@ -1,12 +1,14 @@
 # The code's checks on GitHub: on every pull request to dev (and to main, a release's promotion)
 # and by hand. They are the gate of a PR to dev: its protection and projects.toml's required_checks
-# for agent-team require each job by its id (shellcheck, test, macos, toolkits, data), so renaming
-# a job changes a required check, and team-merge merges only with every one passed on the PR's head.
+# for agent-team require each job by its id (shellcheck, test, macos, toolkits, data, zizmor), so
+# renaming a job changes a required check, and team-merge merges only with every one passed on the
+# PR's head.
 # The macos job runs one run per PR at a time: a re-push cancels the run it replaces. The toolkits
 # job runs the toolkits' servers over stdio against a throwaway MongoDB in Docker. The data job
 # refuses what the PR adds that the public repository never takes: a secret (gitleaks, over its
 # commits) and a real email address or an image (bin/lib/data-check code, over what it adds),
-# naming paths and kinds, never a value.
+# naming paths and kinds, never a value. The zizmor job audits the workflows offline and fails on
+# any finding, each accepted one ignored on its own line with its audit and reason.
 name: CI
 
 on:
@@ -25,6 +27,8 @@ jobs:
       SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install shellcheck ${{ env.SHELLCHECK_VERSION }}
         run: |
           archive=shellcheck-$SHELLCHECK_VERSION.linux.x86_64.tar.xz
@@ -38,6 +42,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - run: tests/run bats
 
   # The bats suite on macOS, under Homebrew's Bash 5 and GNU tools (bin/lib/platform.sh).
@@ -53,6 +59,8 @@ jobs:
       HOMEBREW_NO_ENV_HINTS: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install the Homebrew packages
         run: |
           # shellcheck disable=SC2086 # the list splits into formulae
@@ -71,6 +79,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.22.1
@@ -88,6 +98,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Install gitleaks ${{ env.GITLEAKS_VERSION }}
         run: |
           archive=gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz
@@ -107,3 +118,24 @@ jobs:
         run: gitleaks git --no-banner --redact=100 --verbose --log-opts="$PR_BASE..$PR_HEAD" .
       - name: No real email address, image or package tree in what the PR adds
         run: bin/lib/data-check code "$PR_BASE" "$PR_HEAD"
+
+  # The repository's workflows and any action or Dependabot config, offline, so it needs no token.
+  # zizmor-online.yml runs the same zizmor online, never required: bump the pin in both.
+  zizmor:
+    runs-on: ubuntu-24.04
+    env:
+      ZIZMOR_VERSION: 1.31.1
+      ZIZMOR_SHA256: d185f726bdaf92df78273217dfdd24ebcd6b0ef48cf3ce776ff5762b6e138c99
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install zizmor ${{ env.ZIZMOR_VERSION }}
+        run: |
+          archive=zizmor-x86_64-unknown-linux-gnu.tar.gz
+          curl -fsSLO "https://github.com/zizmorcore/zizmor/releases/download/v$ZIZMOR_VERSION/$archive"
+          echo "$ZIZMOR_SHA256  $archive" | sha256sum -c -
+          mkdir zizmor-bin
+          tar -xzf "$archive" -C zizmor-bin zizmor
+          echo "$PWD/zizmor-bin" >>"$GITHUB_PATH"
+      - run: zizmor --offline .
