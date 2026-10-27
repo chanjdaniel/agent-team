@@ -114,6 +114,11 @@ assert_not_launched() {
   assert_equal "$(find "${settings%/*}" -name '*.json.*')" ""
 }
 
+@test "its settings name it in AGENT_TEAM_ROLE, the signal a hook sees in a team session" {
+  run_bin -0 claude-coordinator
+  assert_equal "$(jq -r .env.AGENT_TEAM_ROLE "$HOME/.local/state/agent-team/coordinator.settings.json")" coordinator
+}
+
 @test "its settings keep every tool and skill its manual and skills name, and what it uses with Daniel" {
   run_bin -0 claude-coordinator
   local settings=$HOME/.local/state/agent-team/coordinator.settings.json skill tool

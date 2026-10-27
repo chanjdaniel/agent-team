@@ -501,6 +501,33 @@ role_texts() {
   done
 }
 
+@test "every role's settings name its role in AGENT_TEAM_ROLE and print the gh-axi banner at session start" {
+  thread T7
+  ops_stub
+  local role settings
+  for role in planner builder reviewer ops; do
+    if [[ $role == ops ]]; then
+      run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$request" -- go
+    else
+      run_bin -0 team-worker T7 "$role" "$wt1" -- go
+    fi
+    settings=$TEAM_HOME/tasks/T7/settings.$role.json
+    assert_equal "$(jq -r .env.AGENT_TEAM_ROLE "$settings")" "$role"
+    assert_equal "$(jq -c '[.hooks.SessionStart[].hooks[] | [.command, .timeout]]' "$settings")" \
+      "$(jq -cn --arg code "$REPO_ROOT" '[["\"\($code)/bin/hooks/axi-banner\" gh-axi", 10]]')"
+  done
+  [[ -x $REPO_ROOT/bin/hooks/axi-banner ]]
+}
+
+@test "the browser toolkit adds its plugin directory and no MCP server" {
+  thread T7
+  run_bin -0 team-worker T7 builder "$wt1" --toolkit browser -- go
+  assert_equal "$(stub_calls claude | tail -n 1 | jq -c '[index("--plugin-dir") as $i | .[$i + 1]]')" \
+    "$(jq -cn --arg code "$REPO_ROOT" '["\($code)/toolkits/browser"]')"
+  assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.builder.json")" '{"mcpServers":{}}'
+  assert_equal "$(launches | jq -c .toolkits)" '["browser"]'
+}
+
 @test "the worker settings take away the tools and skills no worker uses, and the check notices a named one" {
   thread T7
   run_bin -0 team-worker T7 reviewer "$wt1" -- go
@@ -881,17 +908,18 @@ Edit|Write|MultiEdit|NotebookEdit $REPO_ROOT/bin/hooks/scratch-only-edits"
   run -1 grep -Eq '@[A-Z_]+@' "$TEAM_HOME/tasks/T7/settings.ops.json" "$TEAM_HOME/tasks/T7/mcp.ops.json"
 }
 
-@test "@TEAM_CODE@, @TASK@ and @TASK_DIR@ are substituted in the settings and the MCP config" {
+@test "@TEAM_CODE@, @TASK@, @TASK_DIR@ and @ROLE@ are substituted in the settings and the MCP config" {
   fake_checkout
-  echo '{"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "@TEAM_CODE@/bin/hooks/x @TASK@", "args": ["@TASK_DIR@"]}]}]}}' \
+  echo '{"env": {"WHO": "@ROLE@"}, "hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "@TEAM_CODE@/bin/hooks/x @TASK@", "args": ["@TASK_DIR@"]}]}]}}' \
     >"$code/settings/planner.json"
-  echo '{"mcpServers": {"alpha": {"command": "@TEAM_CODE@/a", "args": ["--task", "@TASK@", "@TASK_DIR@"]}}}' >"$code/toolkits/kit-a/.mcp.json"
+  echo '{"mcpServers": {"alpha": {"command": "@TEAM_CODE@/a", "args": ["--task", "@TASK@", "@TASK_DIR@", "@ROLE@"]}}}' >"$code/toolkits/kit-a/.mcp.json"
   thread T7
   run_fake T7 planner "$wt1" --toolkit kit-a -- go
   assert_equal "$status" 0
   # The role's hook comes after the shared settings' own.
   assert_equal "$(jq -c '.hooks.PreToolUse[-1].hooks[0] | [.command, .args[0]]' "$TEAM_HOME/tasks/T7/settings.planner.json")" \
     "$(jq -cn --arg code "$code" --arg t "$TEAM_HOME/tasks/T7" '["\($code)/bin/hooks/x T7", $t]')"
+  assert_equal "$(jq -r .env.WHO "$TEAM_HOME/tasks/T7/settings.planner.json")" planner
   assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.planner.json")" \
-    "$(jq -cn --arg code "$code" --arg t "$TEAM_HOME/tasks/T7" '{mcpServers: {alpha: {command: "\($code)/a", args: ["--task", "T7", $t]}}}')"
+    "$(jq -cn --arg code "$code" --arg t "$TEAM_HOME/tasks/T7" '{mcpServers: {alpha: {command: "\($code)/a", args: ["--task", "T7", $t, "planner"]}}}')"
 }

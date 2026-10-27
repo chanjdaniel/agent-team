@@ -38,7 +38,7 @@ Every command below answers `--help` with its exact usage; this manual says when
    Write the planner's brief with `team-brief T<n> planner-feature --set-file read=<file>` (or `planner-research`), and launch it with `team-worker T<n> planner <worktree> -- "Read your brief at <path>"`, the path being what `team-brief` printed; `team-worker` refuses a closed task, a task with no thread, and a worktree that is not one of the task's.
 3. **Approve.** When the planner sends DONE, read the spec and tickets; approve a small plan yourself, and put anything bigger to Daniel (`team-log T<n> asked id=plan text=<the question>`).
    Log the approval with `team-log T<n> plan-approved by=<Daniel or coordinator>`.
-4. **Build.** One builder per ticket, in blocking order: `team-brief T<n> builder-ticket --set ticket=NN --name build-NN`, then `team-worker T<n> builder ...`.
+4. **Build.** One builder per ticket, in blocking order: `team-brief T<n> builder-ticket --set ticket=NN --name build-NN`, then `team-worker T<n> builder ...`, with `--toolkit browser` for a task that changes a UI, its reviewers' launches too.
    A small fix or bug gets one builder with `builder-fix` instead.
    When every ticket is done, one builder delivers with `builder-deliver --set goal=<the plan's goal, one line>`: a direct-PR project's opens the PR, and a gated one's first stops before its gate with `DONE review-ready <head>`.
 5. **Review.** On PR, or on a gated project's `review-ready` (no `pr`, its head the local one), launch a fresh reviewer with `team-brief T<n> reviewer --name review --set pr=<url> --set head=<full sha> --set-file checks=<file>`.

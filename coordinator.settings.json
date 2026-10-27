@@ -150,6 +150,7 @@
     "tdd": "off"
   },
   "env": {
+    "AGENT_TEAM_ROLE": "coordinator",
     "CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS": "100000",
     "LAVISH_AXI_TELEMETRY": "0",
     "CODEGRAPH_TELEMETRY": "0",
