@@ -47,7 +47,11 @@
 #   cost per outcome each worker role's sessions' $w, subagents included; the window's merges,
 #                    tickets done, reviews and launches; and worker $w per merged PR, per ticket
 #                    and per review over the tasks complete in the data (every launch of theirs
-#                    in the window has replies), with the coordinator's $w per merge and per launch
+#                    in the window has replies), with the coordinator's $w per merge and per launch;
+#                    and the window's reviewer launches by the model each launched on (its launch
+#                    event's model, else default), with how many have replies, the reviews they
+#                    wrote by --until (a review is its task's latest reviewer launch's), those with
+#                    findings, their $w and $w per review, and the models their replies ran on
 #   relaunches       a launch of a role for a task while that role's previous session there
 #                    finished nothing (no done; for a builder no ticket-done, for a reviewer no
 #                    review), by what came between, with the new session's warm-up (its first 10
@@ -67,11 +71,11 @@
 # filters {task, machine}, sources {machine: last day file, or null}, live (this machine's
 # replies read from its transcripts), totals {replies, sessions, tokens, w}, ledger_events (in
 # the window), token_types, models, machines, roles, projects, tasks, days, sessions, context,
-# rebuilds {roles, gap_minutes}, outcomes {sessions, counts, complete_tasks, measures},
-# relaunches {reasons, all, warmup_w}, rereviews {count, complete, w, median_w, mean_w}, blocks,
-# current_block (or null) and seven_days {from, to, machines, all}; each list's items are objects
-# named after the table's columns, tokens are counts and $w has six decimals, a whole number
-# printed as an integer.
+# rebuilds {roles, gap_minutes}, outcomes {sessions, counts, complete_tasks, measures,
+# reviewer_models}, relaunches {reasons, all, warmup_w}, rereviews {count, complete, w, median_w,
+# mean_w}, blocks, current_block (or null) and seven_days {from, to, machines, all}; each list's
+# items are objects named after the table's columns, tokens are counts and $w has six decimals, a
+# whole number printed as an integer.
 #
 # export reads this machine's Claude Code transcripts (~/.claude/projects/*/*.jsonl and each
 # session's subagents/*.jsonl) and writes one line per assistant reply into the team home's
@@ -625,6 +629,18 @@ def relaunches(ledger):
     return found
 
 
+# Each reviewer launch's reviews, by the launch's id(): a review is its task's latest reviewer
+# launch's before it, over the whole ledger in its order.
+def launch_reviews(ledger):
+    last, found = {}, collections.defaultdict(list)
+    for e in ledger:
+        if e.get("event") == "launch" and e.get("role") == "reviewer":
+            last[e.get("task")] = e
+        elif e.get("event") == "review" and e.get("task") in last:
+            found[id(last[e.get("task")])].append(e)
+    return found
+
+
 # The reviews whose task's previous review had findings, each with the builder and reviewer
 # launches since those findings: its round.
 def rereviews(ledger):
@@ -897,6 +913,31 @@ def build_report(opts):
         },
     }
 
+    # The window's reviewer launches by the model each launched on (default: none named), so a
+    # model trial's reviews compare with the baseline's (sops/model-trials.md).
+    reviewed = launch_reviews(ledger)
+    reviewer_models = []
+    for model, ls in sorted(group([e for e in events if e.get("event") == "launch" and e.get("role") == "reviewer"],
+                                  lambda e: e["model"] if isinstance(e.get("model"), str) else "default").items()):
+        seen = [e for e in ls if session_w(e) is not None]
+        reviews = [x for e in seen for x in reviewed[id(e)] if x["_t"] <= until]
+        w = sum(session_w(e) for e in seen)
+        full = {by_prefix[e["session"][:8]] for e in seen}
+        replied = group([r for r in rows if r["session"] in full], lambda r: r["model"])
+        reviewer_models.append(
+            {
+                "model": model,
+                "launches": len(ls),
+                "with_replies": len(seen),
+                "reviews": len(reviews),
+                "findings": sum(1 for x in reviews if x.get("verdict") == "findings"),
+                "w": r6(w),
+                "w_per_review": r6(ratio(w, len(reviews))),
+                "reply_models": {m: r6(total(rs)) for m, rs in sorted(replied.items())},
+            }
+        )
+    report["outcomes"]["reviewer_models"] = reviewer_models
+
     def warmup(launch):
         found = by_prefix.get(launch["session"][:8])
         return total(sessions[found][:10]) if found in sessions else None
@@ -1075,6 +1116,10 @@ def render(report):
         ["Coordinator $w per merge", fd(m["coordinator_w_per_merge"])],
         ["Coordinator $w per launch", fd(m["coordinator_w_per_launch"])],
     ]))
+    P("\nReviewer launches by the model each launched on (default: the user settings' model), the reviews and $w over those with replies:\n")
+    P(table(["Launch model", "Reviewer launches", "With replies", "Reviews", "With findings", "$w", "$w per review", "Reply models"],
+            [[x["model"], x["launches"], x["with_replies"], x["reviews"], x["findings"], fd(x["w"]), fd(x["w_per_review"]),
+              ", ".join(f"{k} {fd(v)}" for k, v in x["reply_models"].items()) or "-"] for x in o["reviewer_models"]]))
 
     P("\n## Relaunches\n")
     rl = report["relaunches"]

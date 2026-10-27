@@ -2,11 +2,13 @@
 # Start one agent-team worker as its own background session, in auto mode, with its role's
 # settings and nothing else: no user-level MCP servers, no plugin MCP, no claude.ai connectors.
 #
-# Usage: team-worker <task> <role> <worktree> [--toolkit <name>]... [--request <link>] -- <first prompt>
+# Usage: team-worker <task> <role> <worktree> [--toolkit <name>]... [--model <alias>] [--request <link>] -- <first prompt>
 #   task       T<n>, e.g. T1
 #   role       planner | builder | reviewer | ops
 #   worktree   a linked git worktree of the task's repo (never a primary checkout); for a task
 #              opened by team-open, one of its open worktrees (opened or added, not returned)
+#   --model    not for ops: the model alias or name to launch on instead of the registry's, such
+#              as opus for a model trial's paired review (sops/model-trials.md)
 #   --request  ops only, and required for it: the link to Daniel's Discord message asking
 #
 # Refuses a closed task, a task with no Discord thread, and a launch on a machine that does not
@@ -16,6 +18,10 @@
 # (~/.config/agent-team/machine), and the request for ops. T0, the load check, needs no thread and
 # no lease, and is not logged. Recorded worktrees are compared as paths on this machine: one
 # recorded under another machine's home is the same path under this HOME.
+# When the worktree's project names a model for the role in the registry (team-project's models),
+# or --model names one, the session launches on it (claude --model) and the launch logs it as
+# model; otherwise it runs on the user settings' model, and logs none. Ops never takes one, and
+# T0 and tasks from before team-open none from the registry.
 # The merged settings and MCP config are generated into tasks/<task>/ (gitignored); @TEAM_CODE@
 # in either names this checkout, @TASK@ the task, and @TASK_DIR@ the team home's tasks/<task>/.
 #
@@ -30,19 +36,25 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 # Roles, settings, toolkits and hooks are code: they come from this checkout, beside bin/.
 code=$(dirname "$(dirname "$TEAM_LIB")")
 
-[[ $# -ge 3 ]] || usage_error "usage: team-worker <task> <role> <worktree> [--toolkit <name>]... [--request <link>] -- <first prompt>"
+[[ $# -ge 3 ]] || usage_error "usage: team-worker <task> <role> <worktree> [--toolkit <name>]... [--model <alias>] [--request <link>] -- <first prompt>"
 task=$1 role=$2 worktree=$3
 shift 3
 [[ $task =~ ^T[0-9]+$ ]] || usage_error "task must look like T<n>, got '$task'"
 [[ -f $code/roles/$role.md && -f $code/settings/$role.json ]] || usage_error "unknown role '$role'"
 
-toolkits=() request=
+toolkits=() request='' model=''
 while [[ $# -gt 0 && $1 != -- ]]; do
   case $1 in
     --toolkit)
       [[ $# -ge 2 ]] || usage_error "--toolkit needs a name"
       [[ -d $code/toolkits/$2 ]] || usage_error "unknown toolkit '$2'"
       toolkits+=("$2")
+      shift 2
+      ;;
+    --model)
+      # An alias or name as claude --model takes it: sonnet, claude-sonnet-5-5, sonnet[1m].
+      [[ $# -ge 2 && $2 =~ ^[A-Za-z0-9][][A-Za-z0-9._-]*$ ]] || usage_error "--model needs a model alias or name"
+      model=$2
       shift 2
       ;;
     --request)
@@ -58,6 +70,7 @@ shift
 prompt="$*"
 [[ -n $prompt ]] || usage_error "missing first prompt"
 [[ -z $request || $role == ops ]] || usage_error "--request is for the ops role only"
+[[ -z $model || $role != ops ]] || usage_error "--model is not for the ops role, which runs on the default model"
 
 # Production reaches only the ops role, and only on Daniel's recorded request.
 for kit in "${toolkits[@]}"; do
@@ -103,6 +116,16 @@ if [[ $task != T0 ]]; then
   lease_gate "a worker"
   machine=$(machine_name) || exit 1
 fi
+
+# The project's model for the role, from the registry, unless --model named one; ops stays on the
+# default model.
+project=$(jq -r '.project // empty' <<<"${worktree_event:-null}")
+if [[ -z $model && -n $project && $role != ops ]]; then
+  models=$(team_project "$project" models) || exit 1
+  model=$(jq -r --arg role "$role" '.[$role] // empty' <<<"$models")
+fi
+model_args=()
+if [[ -n $model ]]; then model_args=(--model "$model"); fi
 
 taskdir=$TEAM_HOME/tasks/$task
 mkdir -p "$taskdir"
@@ -165,6 +188,7 @@ out=$(cd "$worktree" && claude --bg "${restricted[@]}" \
   --settings "$settings" \
   --append-system-prompt-file "$code/roles/$role.md" \
   --permission-mode auto \
+  "${model_args[@]}" \
   --name "$name" \
   "$prompt")
 [[ $out != *"send a prompt to start"* ]] || die "the session started without its prompt: $out"
@@ -172,10 +196,11 @@ id=$(grep -oE '\b[0-9a-f]{8}\b' <<<"$out" | head -n 1) || die "could not read th
 
 if [[ $task != T0 ]]; then
   ledger_append "$(jq -cn --arg task "$task" --arg role "$role" --arg session "$id" --arg worktree "$worktree" \
-    --arg machine "$machine" --arg request "$request" --argjson at "${worktree_event:-null}" --args '{ts: (now | todate), task: $task,
+    --arg machine "$machine" --arg model "$model" --arg request "$request" --argjson at "${worktree_event:-null}" --args '{ts: (now | todate), task: $task,
       event: "launch", role: $role, session: $session, worktree: $worktree, toolkits: $ARGS.positional}
       + ($at // {} | {project, branch} | with_entries(select(.value != null)))
       + {machine: $machine}
+      + (if $model == "" then {} else {model: $model} end)
       + (if $request == "" then {} else {request: $request} end)' "${toolkits[@]}")"
 fi
 

@@ -7,7 +7,7 @@
 {"ts":"2026-10-20T10:00:00Z","task":"T1","event":"stowed","reason":"Daniel stopped for the night"}
 {"ts":"2026-10-20T10:30:00Z","task":"T1","event":"launch","role":"builder","session":"b2b2b2b2","worktree":"/home/dan/agent-team/.claude/worktrees/1","toolkits":[]}
 {"ts":"2026-10-20T11:00:00Z","task":"T1","event":"ticket-done","ticket":"01","commits":["1111111"]}
-{"ts":"2026-10-20T11:10:00Z","task":"T1","event":"launch","role":"reviewer","session":"r1r1r1r1","worktree":"/home/dan/agent-team/.claude/worktrees/1","toolkits":[],"project":"agent-team","machine":"home-pc"}
+{"ts":"2026-10-20T11:10:00Z","task":"T1","event":"launch","role":"reviewer","session":"r1r1r1r1","worktree":"/home/dan/agent-team/.claude/worktrees/1","toolkits":[],"project":"agent-team","machine":"home-pc","model":"sonnet"}
 {"ts":"2026-10-20T11:40:00Z","task":"T1","event":"review","verdict":"findings","head":"1111111"}
 {"ts":"2026-10-20T11:45:00Z","task":"T1","event":"launch","role":"builder","session":"b3b3b3b3","worktree":"/home/dan/agent-team/.claude/worktrees/1","toolkits":[],"project":"agent-team","machine":"home-pc"}
 {"ts":"2026-10-20T12:30:00Z","task":"T1","event":"launch","role":"reviewer","session":"r2r2r2r2","worktree":"/home/dan/agent-team/.claude/worktrees/1","toolkits":[],"project":"agent-team","machine":"home-pc"}

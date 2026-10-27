@@ -56,7 +56,7 @@ TABLE
   )
   actual=$(jq -r '.kinds | to_entries[] | [.key, .value.writer, (.value.required | keys_unsorted[])] | join(" ")' "$CONTRACT")
   assert_equal "$actual" "$expected"
-  assert_equal "$(jq -c '.kinds.launch.optional' "$CONTRACT")" '{"project":"string","branch":"string","machine":"string","request":"string"}'
+  assert_equal "$(jq -c '.kinds.launch.optional' "$CONTRACT")" '{"project":"string","branch":"string","machine":"string","model":"string","request":"string"}'
   assert_equal "$(jq -c '.kinds.review.required.verdict' "$CONTRACT")" '["pass","findings"]'
   assert_equal "$(jq -c '[.kinds.waiting, .kinds.blocked, .kinds.paused, .kinds.held | .optional.since]' "$CONTRACT")" '["string","string","string","string"]'
   assert_equal "$(jq -c '[.kinds.closed.required[]]' "$CONTRACT")" '["array","array","array"]'
@@ -79,7 +79,7 @@ TABLE
   grep -Eq '^  gate-run +team-log +run, head, outcome \(pushed\|red\|aborted\|stopped-green\); optional cause \(review\|notes\|gate-finding\|load\|tooling\|base-merge\|other\), minutes \(object\)  \(.*\)$' <<<"$output"
   grep -Eq '^  closed +team-close +archive \(list\), returned \(list\), kept \(list\)  \(.*legacy.*\)$' <<<"$output"
   grep -Eq '^  merge-approved +team-log +url, discord_message  \(.*\)$' <<<"$output"
-  grep -Eq '^  launch +team-worker +role, session, worktree, toolkits \(list\); optional project, branch, machine, request  \(request is the link to Daniel.s Discord message, on an ops launch\)$' <<<"$output"
+  grep -Eq '^  launch +team-worker +role, session, worktree, toolkits \(list\); optional project, branch, machine, model, request  \(request is the link to Daniel.s Discord message, on an ops launch; model is the --model the session launched on, .*\)$' <<<"$output"
   grep -Eq '^  resumed +team-log +- +\(clears held, blocked, paused and waiting\)$' <<<"$output"
   grep -Eq '^  blocked +team-log +reason; optional since  \(.*since: when the park began, when it is logged after the fact\)$' <<<"$output"
   grep -Eq '^  retro-schedule +team-log +every_hours \(number\), discord_message  \(.*every_hours 0 stops.*\)$' <<<"$output"

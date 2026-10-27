@@ -31,6 +31,11 @@
 #   task_dir         a task's scratch directory
 #   docs             what a worker reads first
 #   toolkits         the toolkits a worker of this project may be given
+#   models           optional: a table of worker role (planner, builder or reviewer) to the model
+#                    alias or name its sessions launch on, such as { reviewer = "sonnet" }
+#                    (default none: every role on the user settings' model); team-worker passes
+#                    it as --model and logs it on the launch; ops always runs on the default
+#                    (sops/model-trials.md)
 # Per project pool ([<name>.pool]), where task worktrees come from:
 #   provider         "treehouse" (leased pre-warmed slots) or "git" (plain git worktrees)
 #   lease, return    treehouse only: the lease and return commands, run from the primary
@@ -89,7 +94,12 @@ PROJECT_KEYS = PROJECT_STRINGS + PROJECT_LISTS + ("pool",)
 # memory/coordinator/ (team-config).
 RESERVED = {"coordinator": "the team home's auto memory, memory/coordinator/"}
 # Optional keys, with the value a project without one has.
-PROJECT_OPTIONAL = {"local_checks": []}
+PROJECT_OPTIONAL = {"local_checks": [], "models": {}}
+# The roles a project's models table may name: the worker roles but ops, whose production work
+# stays on the default model.
+MODEL_ROLES = ("planner", "builder", "reviewer")
+# A model alias or name as claude --model takes it: sonnet, claude-sonnet-5-5, sonnet[1m].
+MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._\[\]-]*")
 POOL_KEYS = ("provider", "lease", "return", "slots")
 # A stack block's keys: its required strings and list, then its optional lists and pattern, with
 # the value a block without one has (legacy_gate has none).
@@ -251,6 +261,23 @@ def check_stack(name, stack, problems):
             problems.append(problem)
 
 
+# Check one project's models table, role to model.
+def check_models(name, models, problems):
+    where = f"{name}.models"
+    if not isinstance(models, dict):
+        problems.append(f"{where}: must be a table of role to model")
+        return
+    for role, model in models.items():
+        if role == "ops":
+            problems.append(f"{where}: 'ops' always runs on the default model")
+        elif role not in MODEL_ROLES:
+            problems.append(f"{where}: '{role}' is not a worker role; one of {', '.join(MODEL_ROLES)}")
+        elif not isinstance(model, str):
+            problems.append(f"{where}.{role}: must be a string")
+        elif not MODEL.fullmatch(model):
+            problems.append(f"{where}.{role}: '{model}' is not a model alias or name")
+
+
 # Every problem with the registry, as one line each; none means it is valid.
 def check(registry):
     problems = [] if registry else ["defines no projects"]
@@ -275,6 +302,7 @@ def check(registry):
             problems.append(f"{name}.local_checks: must be a list of strings")
         elif any(not command.strip() or "\n" in command for command in checks):
             problems.append(f"{name}.local_checks: each command must be one line, not empty")
+        check_models(name, project.get("models", {}), problems)
         if is_string_list(project.get("docs")):
             problems.extend(
                 f"{name}.docs: '{doc}' must be a relative path"

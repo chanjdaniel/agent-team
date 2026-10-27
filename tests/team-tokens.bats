@@ -46,7 +46,7 @@ add_reply() {
 #   130 minutes on) of 1.23 and a compaction to 40k of 0.34, and its subagent's 0.14 (a five-minute
 #   write); T1's planner p1 (0.5, 0.19), builder b1 (0.5, its subagent's 0.3), builder b2 (0.5,
 #   0.12; its launch, a relaunch after a stow, names no machine), builder b3 (0.5), reviewer r1 on
-#   Sonnet 5.5 (0.25) and reviewer r2 (0.5), whose pass after r1's findings is a re-review; T0's
+#   Sonnet 5.5 (0.25, its launch naming the model sonnet) and reviewer r2 (0.5), whose pass after r1's findings is a re-review; T0's
 #   builder t0, a load-check session k0 and an unlaunched worktree's u0 (0.08 each); and Daniel's own
 #   d0 on Haiku 5.5, a 200k input at its long-prompt price (0.105);
 # - laptop, 2026-10-21: the coordinator c1 (0.34) and T2's builder l1 (0.5, then 0.12 at 15:30,
@@ -277,11 +277,28 @@ read 3 of 3 transcripts; wrote 1 day file"
 @test "the report gives cost per outcome, relaunches and re-reviews from the ledger" {
   report_fixture
   report_json
-  assert_equal "$(q '.outcomes')" \
+  assert_equal "$(q '.outcomes | del(.reviewer_models)')" \
     '{"sessions":[{"role":"planner","sessions":1,"w":0.69,"median_w":0.69,"mean_w":0.69,"p90_w":0.69},{"role":"builder","sessions":4,"w":2.54,"median_w":0.62,"mean_w":0.635,"p90_w":0.8},{"role":"reviewer","sessions":2,"w":0.75,"median_w":0.375,"mean_w":0.375,"p90_w":0.5}],"counts":{"merged":1,"tickets_done":2,"reviews":2,"pass":1,"findings":1,"launches":9},"complete_tasks":{"count":1,"merged":1,"tickets_done":1,"reviews":2},"measures":{"worker_w_per_merge":3.36,"worker_w_per_ticket":3.36,"builder_w_per_ticket":1.92,"reviewer_w_per_review":0.375,"coordinator_w_per_merge":2.53,"coordinator_w_per_launch":0.281111}}'
   assert_equal "$(q '.relaunches')" \
     '{"reasons":[{"reason":"stow or handoff","count":1,"with_replies":1,"warmup_w":0.62,"median_w":0.62}],"all":1,"warmup_w":0.62}'
   assert_equal "$(q '.rereviews')" '{"count":1,"complete":1,"w":1,"median_w":1,"mean_w":1}'
+}
+
+@test "the report gives each reviewer launch model's reviews and \$w per review, a launch with no model on the default" {
+  report_fixture
+  report_json
+  # r1 (sonnet) wrote T1's findings; r2 (no model) its pass; l2 (no model) no reply and no review.
+  assert_equal "$(q '.outcomes.reviewer_models[]' | paste -sd ' ')" \
+    '{"model":"default","launches":2,"with_replies":1,"reviews":1,"findings":0,"w":0.5,"w_per_review":0.5,"reply_models":{"claude-opus-5-5":0.5}} {"model":"sonnet","launches":1,"with_replies":1,"reviews":1,"findings":1,"w":0.25,"w_per_review":0.25,"reply_models":{"claude-sonnet-5-5":0.25}}'
+  # A review after --until is not counted; a launch before --since is not either.
+  report_json --since 2026-10-20T12:00Z
+  assert_equal "$(q '[.outcomes.reviewer_models[] | [.model, .launches, .reviews]]')" '[["default",2,1]]'
+  run_bin -0 team-tokens --until 2026-10-20T11:30Z --json
+  assert_equal "$(jq -c '[.outcomes.reviewer_models[] | [.model, .launches, .reviews, .w_per_review]]' <<<"$output")" '[["sonnet",1,0,null]]'
+  run_bin -0 team-tokens --until 2026-10-21T16:00Z
+  assert_contains "$output" "| Launch model | Reviewer launches | With replies | Reviews | With findings | \$w | \$w per review | Reply models |"
+  assert_contains "$output" "| default | 2 | 1 | 1 | 0 | 0.50 | 0.50 | claude-opus-5-5 0.50 |"
+  assert_contains "$output" "| sonnet | 1 | 1 | 1 | 1 | 0.25 | 0.25 | claude-sonnet-5-5 0.25 |"
 }
 
 @test "the report gives the 5-hour blocks with the current one, and the last seven days per machine" {
