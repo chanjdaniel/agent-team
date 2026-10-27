@@ -1,10 +1,11 @@
 {
   "name": "agent-team-servers",
   "private": true,
-  "description": "The MCP servers the team's toolkits and sessions run, and the MCP client ui-capture (toolkits/frontend) speaks to one with, pinned by package-lock.json and installed by servers/install.",
+  "description": "The MCP servers the team's toolkits and sessions run, the MCP client ui-capture (toolkits/frontend) speaks to one with, and the chrome-devtools-axi client the browser toolkit's test runs, pinned by package-lock.json and installed by servers/install.",
   "license": "UNLICENSED",
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.1",
+    "chrome-devtools-axi": "0.1.44",
     "chrome-devtools-mcp": "1.12.0",
     "mongodb-mcp-server": "3.1.0"
   }

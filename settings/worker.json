@@ -242,7 +242,8 @@
     "LAVISH_AXI_TELEMETRY": "0",
     "CODEGRAPH_TELEMETRY": "0",
     "CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS": "1",
-    "CHROME_DEVTOOLS_AXI_MCP_PATH": "@TEAM_CODE@/servers/node_modules/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js"
+    "CHROME_DEVTOOLS_AXI_MCP_PATH": "@TEAM_CODE@/servers/node_modules/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js",
+    "CHROME_DEVTOOLS_AXI_SESSION": "@TASK@-@ROLE@"
   },
   "hooks": {
     "SessionStart": [

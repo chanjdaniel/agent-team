@@ -194,8 +194,39 @@ SETTINGS=(coordinator.settings.json settings/worker.json)
   done
   assert_equal "$(jq -r '.tools[] | select(.name == "chrome-devtools-mcp") | [.pin, .source.arch, .source.macos] | join(" | ")' "$REPO_ROOT/bin/lib/tools.lock")" \
     "$pin | npm install -g chrome-devtools-mcp@$pin | npm install -g chrome-devtools-mcp@$pin"
-  # The client that speaks the server's current protocol (page ids), with the path variable.
-  assert_equal "$(jq -r '.tools[] | select(.name == "chrome-devtools-axi") | .pin' "$REPO_ROOT/bin/lib/tools.lock")" 0.1.44
+  # The client that speaks the server's current protocol (page ids), with the path variable; the
+  # browser toolkit's test runs the copy servers/ pins, which CI's runner has no global install of,
+  # so it is the client the sessions run.
+  pin=$(jq -r '.tools[] | select(.name == "chrome-devtools-axi") | .pin' "$REPO_ROOT/bin/lib/tools.lock")
+  assert_equal "$pin" 0.1.44
+  assert_equal "$(jq -r '.dependencies["chrome-devtools-axi"]' "$REPO_ROOT/servers/package.json")" "$pin"
+  assert_equal "$(jq -r '.packages["node_modules/chrome-devtools-axi"].version' "$REPO_ROOT/servers/package-lock.json")" "$pin"
+}
+
+# chrome-devtools-axi runs one bridge and browser per session name, and a session's Bash calls keep
+# no exported variable, so the worker settings name each worker's session for its task and role
+# (team-worker fills both in), and two UI workers on one machine never share a browser.
+@test "each worker's chrome-devtools-axi runs in a session named for its task and role" {
+  assert_equal "$(jq -r .env.CHROME_DEVTOOLS_AXI_SESSION "$REPO_ROOT/settings/worker.json")" '@TASK@-@ROLE@'
+  assert_equal "$(jq -r '.env.CHROME_DEVTOOLS_AXI_SESSION // "unset"' "$REPO_ROOT/coordinator.settings.json")" unset
+}
+
+# Only the browser toolkit's sessions list ui-check, so the builder and reviewer roles name it, once
+# each under "What you do", for a session that lists it, and say where its record goes: a non-UI
+# session reads the line and does nothing.
+@test "the builder and reviewer roles name the browser toolkit's ui-check, where its record goes, for a session that lists it" {
+  local role body line
+  assert_equal "$(sed -n 's/^name: //p' "$REPO_ROOT/toolkits/browser/skills/ui-check/SKILL.md")" ui-check
+  for role in builder reviewer; do
+    echo "role: $role" >&2
+    assert_equal "$(grep -c 'ui-check' "$REPO_ROOT/roles/$role.md")" 1
+    body=$(awk '$0 == "## What you do" { on = 1; next } /^## / { on = 0 } on' "$REPO_ROOT/roles/$role.md")
+    line=$(grep -F '`ui-check`' <<<"$body")
+    grep -qF 'lists `ui-check`' <<<"$line"
+    grep -qF '.scratch/task/ui-check/' <<<"$line"
+  done
+  grep -qF 'PR body' <<<"$(grep -F '`ui-check`' "$REPO_ROOT/roles/builder.md")"
+  grep -qF '`review.md`' <<<"$(grep -F '`ui-check`' "$REPO_ROOT/roles/reviewer.md")"
 }
 
 # The tools the sessions run send usage data off the machine unless told not to (T43's audit):

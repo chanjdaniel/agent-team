@@ -1,7 +1,7 @@
 {
   "name": "browser",
   "version": "0.1.0",
-  "description": "For a worker whose task drives a browser, a UI change's builder or reviewer: prints the chrome-devtools-axi banner at session start, which tells the session how to drive Chrome with the tool already on the machine. No MCP server and no skill.",
+  "description": "For a worker whose task drives a browser, a UI change's builder or reviewer: prints the chrome-devtools-axi banner at session start, which tells the session how to drive Chrome with the tool already on the machine, and the ui-check skill, which decides whether a UI change needs a look, then captures the screens it touches and their siblings and judges them against the design document. No MCP server.",
   "author": {
     "name": "Daniel Chan"
   }
