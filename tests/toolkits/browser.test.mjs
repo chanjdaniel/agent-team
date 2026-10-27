@@ -199,6 +199,12 @@ describe("the ui-check skill", () => {
     assert.match(skill, /16,000 image tokens/);
   });
 
+  // As roles/builder.md says: the full walk runs once per change, never once per ticket.
+  test("limits a ticket builder to a spot check, and a fix round or rereview to what the fixes touched", () => {
+    assert.match(skill, /A ticket builder takes at most a spot check, of the states its own commits touch; walk and judge is for the builder who delivers and the reviewer\./);
+    assert.match(skill, /A fix round or rereview judges only the states the fixes touched and their siblings\./);
+  });
+
   test("credits the chrome-devtools-mcp skills whose steps it adapts", () => {
     assert.match(skill, /chrome-devtools-mcp 1\.12\.0/);
     assert.match(skill, /a11y-debugging/);

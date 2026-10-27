@@ -7,7 +7,7 @@ description: Decides from the diff whether a UI change needs a look, then captur
 
 ## Tier
 
-Decide from the diff (`git diff --name-only origin/<base>...HEAD`, or a ticket builder's own commits), never from taste:
+Decide from the diff (`git diff --name-only origin/<base>...HEAD`), never from taste:
 
 - **None**: no changed file renders.
   Components, views, pages, templates, style sheets, design tokens, the router's list of screens, layout primitives, assets shown on screen and logic whose result is shown render; tests, docs, back-end code and build or CI config do not.
@@ -15,6 +15,9 @@ Decide from the diff (`git diff --name-only origin/<base>...HEAD`, or a ticket b
 - **Spot check**: each rendering change stays inside one component's box (copy, colour, an icon, a control's look), with no change to size, spacing, position, display, flex or grid, overflow, font size or line height, no element added to or taken out of the flow, and no shared primitive or token.
   One tile per touched state, no siblings, at most 3 tiles.
 - **Walk and judge**: anything else, and whenever unsure: the touched states and their direct siblings.
+
+A ticket builder takes at most a spot check, of the states its own commits touch; walk and judge is for the builder who delivers and the reviewer.
+A fix round or rereview judges only the states the fixes touched and their siblings.
 
 Name each state before capturing anything.
 A touched state is a screen in one state that renders a changed file: a route, an open dialog, menu or drawer, a disabled, empty, loading or error state.
@@ -109,7 +112,7 @@ A throttled trace only when the change can affect load (a new route, a new or he
 - the failing audits, and the LCP breakdown when traced;
 - the run's image tokens, the sum of the rows.
 
-The tiles and reports stay on the machine; the task's archive keeps `findings.md`.
+The task's archive keeps `findings.md`, never the tiles or reports.
 
 ## Stop
 
