@@ -1,8 +1,77 @@
 #!/usr/bin/env -S python3 -I
-# Where Claude usage goes: this machine's usage exported into the team home, with no content.
+# Where Claude usage goes, across every machine: the report, and each machine's export of it.
 #
-# Usage: team-tokens export [--through-now]
-#        team-tokens          the report; not built yet, it says so in one line and exits 1
+# Usage: team-tokens [--since <ISO>] [--until <ISO>] [--task T<n>] [--machine <name>] [--json]
+#        team-tokens export [--through-now]
+#
+# The report reads every machine's day files in the team home's usage/ and this machine's
+# transcripts from the day of its last day file on (all of them when it has none), one reply per
+# request id wherever it appears, and weighs each reply at bin/lib/prices.json's list prices
+# ($w: a weight, not a bill), each cache write at its own lifetime; a model with no price is
+# weighed as claude-opus-5-5, with a warning on stderr. It joins each session to the ledger:
+#   a launch whose 8-character session id begins the session's gives its role and task (task T0
+#     is team-test); the launch's machine is its own, else the machine its session's replies
+#     came from, else that of the other launches under the same /home/<user> or /Users/<user>;
+#   with no launch, the session's directory under ~/.claude/projects (the encoded working
+#     directory) gives coordinator for the team home (TEAM_HOME's, and the one
+#     ~/.config/agent-team/home names) or the code checkout (the primary checkout above bin/,
+#     never a worktree of it), as this machine has them or under any machine's
+#     /home/<user> or /Users/<user> at the same place under it; team-test for a .claude/load-check
+#     directory; unlaunched for a team worktree (.claude/worktrees/ or .treehouse/); and daniel,
+#     Daniel's own sessions, for anything else;
+#   a subagent's reply takes its parent session's role and task.
+# A task's project is its opened event's, else its launches'. The report covers the replies from
+# --since (default the first) to --until (default now), both UTC times like 2026-10-22T01:00Z or
+# 2026-10-22T01:00:00Z; --task keeps the replies of that task's sessions and its ledger events;
+# --machine keeps that machine's replies. It prints these tables (Markdown), each over the window:
+#   token types      tokens and $w per type: input, cache_write_1h, cache_write_5m, cache_read,
+#                    output
+#   models, machines replies, tokens, $w and the first and last day of each
+#   roles            sessions, replies, tokens by type and $w per role (coordinator, planner,
+#                    builder, reviewer, ops, unlaunched, team-test, daniel), with the share of it
+#                    from subagents
+#   projects, tasks  $w per project; per task its tokens, $w, its planners', builders' and
+#                    reviewers' $w, its launches per machine, merges, tickets done and reviews in
+#                    the window, and whether it is closed by --until
+#   days             tokens and $w per UTC day, and the $w of each worker role and the coordinator
+#   sessions         per role, its main conversations' replies, $w and context (input plus cache
+#                    writes plus cache read): the median, 90th percentile (nearest rank) and
+#                    largest, and the median starting context, the first reply's, of the sessions
+#                    that started in the window
+#   context          the main conversations' replies by their context, 0-50k to 700k-2,000k:
+#                    replies, $w, $w per reply, and the share of it in cache reads
+#   cache rebuilds   per role, a reply after a session's first writing over half of a context
+#                    above 50k anew, and the extra $w (each write's price minus a read's); a
+#                    compaction, a context below half of the reply before's, from over 100k; and
+#                    the gaps before the rebuilds
+#   cost per outcome each worker role's sessions' $w, subagents included; the window's merges,
+#                    tickets done, reviews and launches; and worker $w per merged PR, per ticket
+#                    and per review over the tasks complete in the data (every launch of theirs
+#                    in the window has replies), with the coordinator's $w per merge and per launch
+#   relaunches       a launch of a role for a task while that role's previous session there
+#                    finished nothing (no done; for a builder no ticket-done, for a reviewer no
+#                    review), by what came between, with the new session's warm-up (its first 10
+#                    replies); re-reviews, a review after the task's previous one had findings,
+#                    with the $w of its round (the builders and the reviewer launched since)
+#   5-hour blocks    the fixed blocks as the limit counts them, each opening at the first reply
+#                    after the previous block's end and lasting 5 hours, over every machine; those
+#                    opening in the seven days to --until, with each machine's $w, and the current
+#                    one, open at --until
+#   the last seven days
+#                    replies, tokens and $w in the seven days to --until, per machine and in all;
+#                    the weekly limit's reset time is in no data (claude.ai shows it to Daniel),
+#                    so this is a rolling seven days
+# The 5-hour blocks and the last seven days count every reply up to --until, whatever --since and
+# --task say (the limits count them all), and keep --machine.
+# --json prints the same as one object, schema team-tokens/1: schema, since, until, prices_read,
+# filters {task, machine}, sources {machine: last day file, or null}, live (this machine's
+# replies read from its transcripts), totals {replies, sessions, tokens, w}, ledger_events (in
+# the window), token_types, models, machines, roles, projects, tasks, days, sessions, context,
+# rebuilds {roles, gap_minutes}, outcomes {sessions, counts, complete_tasks, measures},
+# relaunches {reasons, all, warmup_w}, rereviews {count, complete, w, median_w, mean_w}, blocks,
+# current_block (or null) and seven_days {from, to, machines, all}; each list's items are objects
+# named after the table's columns, tokens are counts and $w has six decimals, a whole number
+# printed as an integer.
 #
 # export reads this machine's Claude Code transcripts (~/.claude/projects/*/*.jsonl and each
 # session's subagents/*.jsonl) and writes one line per assistant reply into the team home's
@@ -30,7 +99,8 @@
 # --through-now writes today's too. A day file is rewritten only when it gains a reply or a reply
 # in it grew. A transcript is read again only when its size or modification time changed since
 # the last export (~/.local/state/agent-team/usage-scan.json), or while it holds replies of a day
-# not written yet. A rerun with nothing new changes no file.
+# not written yet; an export into another team home's usage/ than the last one reads them all.
+# A rerun with nothing new changes no file.
 # Prints a line per day file written, then "read <n> of <m> transcripts; ...".
 # team-checkpoint runs the export each time and commits usage/; team-handoff runs it with
 # --through-now before it commits and pushes the records. Claude Code deletes transcripts after
@@ -40,10 +110,12 @@
 # read and their source: the weights the report gives each reply.
 # Exit 0 done, 1 refused, 2 usage error. Python standard library only, Python 3.11 or later.
 
+import collections
 import glob
 import json
 import os
 import re
+import statistics
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -57,7 +129,10 @@ if sys.version_info < (3, 11):
     sys.exit(1)
 
 NAME = os.path.basename(sys.argv[0])
-USAGE = "usage: team-tokens [export [--through-now]]"
+USAGE = (
+    "usage: team-tokens [--since <ISO>] [--until <ISO>] [--task T<n>] [--machine <name>] [--json]"
+    " | team-tokens export [--through-now]"
+)
 # The token counts of a line, in their order; each is the largest of the reply's lines.
 COUNTS = ("input", "cache_write_1h", "cache_write_5m", "cache_read", "output", "thinking")
 # A line's fields, in the order it is written.
@@ -191,7 +266,9 @@ def dumps(row):
     return json.dumps(row, separators=(",", ":"))
 
 
-def read_day(path):
+# The lines of the day file <path> by request id; <doing> names the refusal of a line that is no
+# usage line: read_day <path> <doing>
+def read_day(path, doing):
     rows = {}
     if os.path.isfile(path):
         with open(path, encoding="utf-8") as file:
@@ -202,7 +279,7 @@ def read_day(path):
                     row = json.loads(line)
                     rows[row["request"]] = row
                 except (ValueError, TypeError, KeyError):
-                    fail(f"cannot export: {path} holds a line that is no usage line; fix or remove it")
+                    fail(f"cannot {doing}: {path} holds a line that is no usage line; fix or remove it")
     return rows
 
 
@@ -218,6 +295,14 @@ def plural(n, one, many):
     return f"{n} {one if n == 1 else many}"
 
 
+# Every transcript under <projects>, a main session's and each of its subagents'.
+def transcript_paths(projects):
+    return sorted(
+        glob.glob(os.path.join(glob.escape(projects), "*", "*.jsonl"))
+        + glob.glob(os.path.join(glob.escape(projects), "*", "*", "subagents", "*.jsonl"))
+    )
+
+
 def export(through_now):
     home = os.environ.get("HOME") or fail("HOME is not set")
     team = team_home()
@@ -225,21 +310,21 @@ def export(through_now):
     projects = os.path.join(home, ".claude", "projects")
     state_path = os.path.join(home, ".local", "state", "agent-team", "usage-scan.json")
     out_dir = os.path.join(team, "usage", machine)
+    # What the state says was read is in this usage directory only: a test team home's export
+    # never hides a transcript from the real one's.
+    target = os.path.realpath(out_dir)
 
     state = {}
     if os.path.isfile(state_path):
         try:
             with open(state_path, encoding="utf-8") as file:
                 saved = json.load(file)
-            if saved.get("version") == SCAN_VERSION and isinstance(saved.get("files"), dict):
+            if saved.get("version") == SCAN_VERSION and saved.get("usage") == target and isinstance(saved.get("files"), dict):
                 state = saved["files"]
         except (ValueError, AttributeError):
             state = {}
 
-    transcripts = sorted(
-        glob.glob(os.path.join(glob.escape(projects), "*", "*.jsonl"))
-        + glob.glob(os.path.join(glob.escape(projects), "*", "*", "subagents", "*.jsonl"))
-    )
+    transcripts = transcript_paths(projects)
     today = datetime.now(timezone.utc).date()
     # The last day written: yesterday, or today with --through-now.
     last = (today if through_now else today - timedelta(days=1)).isoformat()
@@ -274,7 +359,7 @@ def export(through_now):
             left += len(days[day])
             continue
         path = os.path.join(out_dir, f"{day}.jsonl")
-        existing = read_day(path)
+        existing = read_day(path, "export")
         merged = dict(existing)
         for row in days[day]:
             old = merged.get(row["request"])
@@ -290,7 +375,7 @@ def export(through_now):
     # A transcript holding a reply of a day not written is read again next time.
     files = {path: mark for path, mark in seen.items() if path not in pending}
     if files != state:
-        write_atomic(state_path, json.dumps({"version": SCAN_VERSION, "files": files}, indent=1, sort_keys=True) + "\n")
+        write_atomic(state_path, json.dumps({"version": SCAN_VERSION, "usage": target, "files": files}, indent=1, sort_keys=True) + "\n")
 
     summary = f"read {read} of {len(transcripts)} transcripts; "
     summary += f"wrote {plural(written, 'day file', 'day files')}" if written else "no day file changed"
@@ -300,18 +385,746 @@ def export(through_now):
     print("\n".join(lines))
 
 
+# The report.
+
+TYPES = ("input", "cache_write_1h", "cache_write_5m", "cache_read", "output")
+CLASSES = ["coordinator", "planner", "builder", "reviewer", "ops", "unlaunched", "team-test", "daniel"]
+WORKERS = ("planner", "builder", "reviewer", "ops")
+# The roles the sessions, days and rebuild tables show.
+SESSION_ROLES = ("coordinator", "planner", "builder", "reviewer", "ops")
+CONTEXT_EDGES = (0, 50e3, 100e3, 200e3, 400e3, 700e3, 2e6)
+FIVE_HOURS = timedelta(hours=5)
+WEEK = timedelta(days=7)
+TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?Z")
+DEFAULT_MODEL = "claude-opus-5-5"
+# A recorded path's home directory, as bin/lib/ledger.jq's local_path reads it.
+HOME_ROOT = re.compile(r"^/(?:home|Users)/[^/]+")
+
+
+def when(text):
+    return datetime.fromisoformat(text.replace("Z", "+00:00"))
+
+
+def stamp(moment):
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# A reply's context: what the model read, input plus cache writes plus cache read.
+def ctx(r):
+    return r["input"] + r["cache_write_1h"] + r["cache_write_5m"] + r["cache_read"]
+
+
+def tok(r):
+    return ctx(r) + r["output"]
+
+
+def total(rows, key="w"):
+    return sum(r[key] for r in rows)
+
+
+# The q-th percentile by nearest rank, as T51's tally took it.
+def pct(xs, q):
+    xs = sorted(xs)
+    if not xs:
+        return 0
+    return xs[min(len(xs) - 1, max(0, int(round(q * len(xs) + 0.5)) - 1))]
+
+
+def median(xs):
+    return r6(statistics.median(xs)) if xs else None
+
+
+def mean(xs):
+    return statistics.mean(xs) if xs else None
+
+
+def ratio(a, b):
+    return a / b if b else None
+
+
+# A figure for the JSON report: six decimals, and a whole number as an integer.
+def r6(x):
+    if x is None:
+        return None
+    x = round(x, 6)
+    return int(x) if x == int(x) else x
+
+
+# Each model's prices, the reply's weight: Prices(<path>).of(<model>, <prompt tokens>)
+class Prices:
+    def __init__(self, path):
+        try:
+            with open(path, encoding="utf-8") as file:
+                data = json.load(file)
+            self.models, self.read = data["models"], data["read"]
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            fail(f"cannot read the prices {path}: {error}")
+        self.warned = set()
+
+    def of(self, model, prompt):
+        prices = self.models.get(model)
+        if prices is None:
+            if model not in self.warned:
+                self.warned.add(model)
+                print(f"{NAME}: bin/lib/prices.json has no price for the model '{model}'; weighed as {DEFAULT_MODEL}", file=sys.stderr)
+            prices = self.models[DEFAULT_MODEL]
+        above = prices.get("above")
+        return above if above and prompt > above["tokens"] else prices
+
+
+# Every machine's replies: the team home's day files, then this machine's transcripts from the day
+# of its last day file on. Returns the replies by request id, each machine's last day file, and
+# how many replies only the transcripts held.
+def load_replies(team, home, machine):
+    replies, sources = {}, {}
+
+    def add(row):
+        old = replies.get(row["request"])
+        replies[row["request"]] = merge(old, row) if old else row
+
+    for path in sorted(glob.glob(os.path.join(glob.escape(team), "usage", "*", "*.jsonl"))):
+        name, day = os.path.basename(os.path.dirname(path)), os.path.basename(path)[: -len(".jsonl")]
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+            continue
+        sources[name] = max(sources.get(name, day), day)
+        for row in read_day(path, "read the usage").values():
+            add(row)
+    exported = set(replies)
+    last = sources.get(machine)
+    start = datetime.fromisoformat(last).replace(tzinfo=timezone.utc).timestamp() if last else None
+    projects = os.path.join(home, ".claude", "projects")
+    for path in transcript_paths(projects):
+        try:
+            if start is not None and os.stat(path).st_mtime < start:
+                continue
+        except FileNotFoundError:
+            continue
+        project_dir = os.path.relpath(path, projects).split(os.sep)[0]
+        with open(path, encoding="utf-8", errors="replace") as file:
+            for line in file:
+                row = reply(line, machine, project_dir)
+                if row is not None and (last is None or row["ts"][:10] >= last):
+                    add(row)
+    for row in replies.values():
+        try:
+            row["t"] = when(row["ts"])
+            if row["t"].tzinfo is None or not all(isinstance(row.get(k), str) for k in ("machine", "session", "project_dir")):
+                raise ValueError
+        except (ValueError, TypeError, AttributeError, KeyError):
+            fail(f"cannot read the usage: the reply {row['request']} has no time, machine, session or project_dir")
+        for key in COUNTS:
+            row[key] = count(row.get(key))
+        row["model"] = row.get("model") if isinstance(row.get("model"), str) else ""
+    return replies, sources, len(set(replies) - exported)
+
+
+def read_ledger(team):
+    path = os.path.join(team, "ledger.jsonl")
+    events = []
+    if os.path.isfile(path):
+        with open(path, encoding="utf-8") as file:
+            for number, line in enumerate(file, 1):
+                if not line.strip():
+                    continue
+                try:
+                    event = json.loads(line)
+                    event["_t"] = when(event["ts"])
+                except (ValueError, TypeError, KeyError, AttributeError):
+                    fail(f"cannot read the ledger: line {number} of {path} is no event")
+                events.append(event)
+    return events
+
+
+# A working directory as Claude Code names its directory under ~/.claude/projects.
+def encode(path):
+    return re.sub(r"[^A-Za-z0-9]", "-", path)
+
+
+# Each session's role and task, from the ledger and its directory (the header says how), and each
+# launch's machine as its _machine; <places> are the coordinator's working directories on this
+# machine. classify <rows sorted by time> <launches> <places> <home>
+def classify(rows, launches, places, home):
+    exact, under = set(), set()
+    for path in places:
+        for form in {os.path.abspath(path), os.path.realpath(path)}:
+            exact.add(encode(form))
+            if form.startswith(home.rstrip("/") + "/"):
+                under.add(encode(form[len(home.rstrip("/")) :]))
+
+    def by_dir(directory):
+        rest = re.fullmatch(r"-(?:home|Users)-[^-]+(-.+)", directory)
+        if directory in exact or (rest and rest.group(1) in under):
+            return "coordinator"
+        if "--claude-load-check" in directory:
+            return "team-test"
+        if "--claude-worktrees-" in directory or "--treehouse-" in directory:
+            return "unlaunched"
+        return "daniel"
+
+    by_prefix = {e["session"][:8]: e for e in launches}
+    first = {}
+    for r in rows:
+        first.setdefault(r["session"], r)
+    classes = {}
+    for session, r in first.items():
+        launch = by_prefix.get(session[:8])
+        if launch and launch.get("task") == "T0":
+            classes[session] = ("team-test", None)
+        elif launch:
+            classes[session] = (str(launch.get("role")), launch.get("task"))
+        else:
+            classes[session] = (by_dir(r["project_dir"]), None)
+
+    replied = {session[:8]: r["machine"] for session, r in first.items()}
+    roots = collections.defaultdict(collections.Counter)
+    for e in launches:
+        root = HOME_ROOT.match(str(e.get("worktree", "")))
+        if e.get("machine") and root:
+            roots[root.group(0)][e["machine"]] += 1
+    for e in launches:
+        root = HOME_ROOT.match(str(e.get("worktree", "")))
+        guess = roots[root.group(0)].most_common(1)[0][0] if root and roots[root.group(0)] else "unknown"
+        e["_machine"] = e.get("machine") or replied.get(e["session"][:8]) or guess
+    return classes
+
+
+# What came between a relaunch and the session before it, as T51 classed it.
+def relaunch_reason(events):
+    text = " ".join(str(x.get("reason", "")) + " " + str(x.get("event")) for x in events).lower()
+    if "session ended" in text or "token limit" in text:
+        return "session ended (limit, reboot)"
+    if "stowed" in text or "handoff" in text or "worktree-moved" in text:
+        return "stow or handoff"
+    if any(x.get("event") == "blocked" for x in events):
+        return "blocked"
+    if any(x.get("event") in ("waiting", "paused", "held") for x in events):
+        return "parked"
+    return "no event between"
+
+
+# The launches of a role for a task while that role's previous session there finished nothing,
+# each with the launch before it and what came between, over the whole ledger in its order.
+def relaunches(ledger):
+    last, between, found = {}, collections.defaultdict(list), []
+    for e in ledger:
+        task, event = e.get("task"), e.get("event")
+        if event == "launch":
+            key = (task, e.get("role"))
+            if last.get(key) is not None:
+                found.append((e, last[key], relaunch_reason(between[key])))
+            last[key], between[key] = e, []
+        elif event == "done" and e.get("role"):
+            last[(task, e["role"])] = None
+        elif event == "ticket-done":
+            last[(task, "builder")] = None
+        elif event == "review":
+            last[(task, "reviewer")] = None
+        else:
+            for key in [k for k in between if k[0] == task]:
+                between[key].append(e)
+    return found
+
+
+# The reviews whose task's previous review had findings, each with the builder and reviewer
+# launches since those findings: its round.
+def rereviews(ledger):
+    verdict, fixing, rounds = {}, {}, []
+    for e in ledger:
+        task = e.get("task")
+        if e.get("event") == "review":
+            if verdict.get(task) == "findings":
+                rounds.append((e, fixing.get(task, [])))
+            verdict[task], fixing[task] = e.get("verdict"), []
+        elif e.get("event") == "launch" and e.get("role") in ("builder", "reviewer") and verdict.get(task) == "findings":
+            fixing.setdefault(task, []).append(e)
+    return rounds
+
+
+def parse_report_args(args):
+    opts = {"since": None, "until": None, "task": None, "machine": None, "json": False}
+    i = 0
+    while i < len(args):
+        if args[i] in ("--since", "--until", "--task", "--machine") and i + 1 < len(args):
+            opts[args[i][2:]] = args[i + 1]
+            i += 2
+        elif args[i] == "--json":
+            opts["json"] = True
+            i += 1
+        else:
+            fail(USAGE, 2)
+    for flag in ("since", "until"):
+        if opts[flag] is not None:
+            if not TIME.fullmatch(opts[flag]):
+                fail(f"--{flag} must be a UTC time like 2026-10-22T01:00Z or 2026-10-22T01:00:00Z", 2)
+            opts[flag] = when(opts[flag])
+    if opts["task"] is not None and not re.fullmatch(r"T[1-9][0-9]*", opts["task"]):
+        fail(f"task must look like T<n>, got '{opts['task']}'", 2)
+    if opts["machine"] is not None and not re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", opts["machine"]):
+        fail(f"--machine must be a machine's team name like home-pc, got '{opts['machine']}'", 2)
+    if opts["since"] and opts["until"] and opts["since"] >= opts["until"]:
+        fail("--since must come before --until", 2)
+    return opts
+
+
+# The report as data, schema team-tokens/1 (the header documents it).
+def build_report(opts):
+    home = os.environ.get("HOME") or fail("HOME is not set")
+    team = team_home()
+    machine = machine_name(home)
+    here = os.path.dirname(os.path.abspath(__file__))
+    code = re.sub(r"/\.claude/worktrees/[^/]+$", "", os.path.dirname(here))
+    prices = Prices(os.path.join(here, "lib", "prices.json"))
+    replies, sources, live = load_replies(team, home, machine)
+    ledger = read_ledger(team)
+    launches = [e for e in ledger if e.get("event") == "launch" and isinstance(e.get("session"), str)]
+    every = sorted(replies.values(), key=lambda r: (r["t"], r["request"]))
+    # The coordinator runs in the team home, the one TEAM_HOME names and the one this machine's
+    # setting names, or in the code checkout.
+    places = [team, code]
+    setting = os.path.join(home, ".config", "agent-team", "home")
+    if os.path.isfile(setting):
+        with open(setting, encoding="utf-8") as file:
+            named = file.readline().rstrip("\n")
+        if named:
+            places.append(os.path.join(home, named))
+    classes = classify(every, launches, places, home)
+    project = {}
+    for e in ledger:
+        if e.get("event") == "opened" and isinstance(e.get("project"), str):
+            project[e.get("task")] = e["project"]
+    for e in launches:
+        if isinstance(e.get("project"), str):
+            project.setdefault(e.get("task"), e["project"])
+    for r in every:
+        price = prices.of(r["model"], ctx(r))
+        r["price"] = price
+        r["wt"] = {k: r[k] * price[k] / 1e6 for k in TYPES}
+        r["w"] = sum(r["wt"].values())
+        r["sub"] = "agent" in r
+        r["role"], r["task"] = classes[r["session"]]
+
+    until = opts["until"] or datetime.now(timezone.utc).replace(microsecond=0)
+    task = opts["task"]
+    counted = [r for r in every if r["t"] <= until and (not opts["machine"] or r["machine"] == opts["machine"])]
+    since = opts["since"] or (counted[0]["t"].replace(microsecond=0) if counted else until)
+    rows = [r for r in counted if r["t"] >= since and (not task or r["task"] == task)]
+    events = [e for e in ledger if since <= e["_t"] <= until and (not task or e.get("task") == task)]
+    window_w = total(rows)
+    roles = CLASSES + sorted({r["role"] for r in rows} - set(CLASSES))
+
+    def group(items, key):
+        out = collections.defaultdict(list)
+        for item in items:
+            out[key(item)].append(item)
+        return out
+
+    report = {
+        "schema": "team-tokens/1",
+        "since": stamp(since),
+        "until": stamp(until),
+        "prices_read": prices.read,
+        "filters": {"task": task, "machine": opts["machine"]},
+        "sources": {name: sources.get(name) for name in sorted(set(sources) | {machine})},
+        "live": live,
+        "totals": {"replies": len(rows), "sessions": len({r["session"] for r in rows}), "tokens": sum(map(tok, rows)), "w": r6(window_w)},
+        "ledger_events": len(events),
+    }
+    report["token_types"] = [{"type": k, "tokens": total(rows, k), "w": r6(sum(r["wt"][k] for r in rows))} for k in TYPES]
+
+    def spread(name, by):
+        return [
+            {name: key, "replies": len(rs), "tokens": sum(map(tok, rs)), "w": r6(total(rs)), "first": rs[0]["ts"][:10], "last": rs[-1]["ts"][:10]}
+            for key, rs in sorted(group(rows, by).items())
+        ]
+
+    report["models"] = spread("model", lambda r: r["model"])
+    report["machines"] = spread("machine", lambda r: r["machine"])
+
+    report["roles"] = []
+    for role, rs in sorted(group(rows, lambda r: r["role"]).items(), key=lambda x: roles.index(x[0])):
+        line = {"role": role, "sessions": len({r["session"] for r in rs}), "replies": len(rs)}
+        line.update({k: total(rs, k) for k in TYPES})
+        line.update(tokens=sum(map(tok, rs)), w=r6(total(rs)), subagent_w=r6(sum(r["w"] for r in rs if r["sub"])))
+        report["roles"].append(line)
+
+    def project_of(r):
+        if r["task"]:
+            return project.get(r["task"], "(unknown)")
+        return "(coordinator)" if r["role"] == "coordinator" else f"(none: {r['role']})"
+
+    report["projects"] = [
+        {"project": key, "w": r6(total(rs))} for key, rs in sorted(group(rows, project_of).items(), key=lambda x: (-total(x[1]), x[0]))
+    ]
+    by_task_events = group(events, lambda e: e.get("task"))
+    closed = {e.get("task") for e in ledger if e.get("event") == "closed" and e["_t"] <= until}
+    report["tasks"] = []
+    by_task = group([r for r in rows if r["task"]], lambda r: r["task"])
+    for name, rs in sorted(by_task.items(), key=lambda x: (-total(x[1]), x[0])):
+        evs = by_task_events.get(name, [])
+        kinds = collections.Counter(e.get("event") for e in evs)
+        report["tasks"].append(
+            {
+                "task": name,
+                "project": project.get(name, "(unknown)"),
+                "tokens": sum(map(tok, rs)),
+                "w": r6(total(rs)),
+                "plan_w": r6(sum(r["w"] for r in rs if r["role"] == "planner")),
+                "build_w": r6(sum(r["w"] for r in rs if r["role"] == "builder")),
+                "review_w": r6(sum(r["w"] for r in rs if r["role"] == "reviewer")),
+                "launches": dict(sorted(collections.Counter(e["_machine"] for e in evs if e.get("event") == "launch").items())),
+                "merged": kinds["merged"],
+                "tickets_done": kinds["ticket-done"],
+                "reviews": kinds["review"],
+                "closed": name in closed,
+            }
+        )
+
+    report["days"] = [
+        {"day": day, "tokens": sum(map(tok, rs)), "w": r6(total(rs)), "roles": {c: r6(sum(r["w"] for r in rs if r["role"] == c)) for c in SESSION_ROLES}}
+        for day, rs in sorted(group(rows, lambda r: r["ts"][:10]).items())
+    ]
+
+    # Each main conversation's replies in the window, and each session's first reply of all.
+    sessions = group([r for r in rows if not r["sub"]], lambda r: r["session"])
+    started = {}
+    for r in every:
+        if not r["sub"]:
+            started.setdefault(r["session"], r)
+    report["sessions"] = []
+    for role in SESSION_ROLES:
+        ss = [v for k, v in sessions.items() if classes[k][0] == role]
+        if not ss:
+            continue
+        counts, costs = [len(v) for v in ss], [total(v) for v in ss]
+        contexts = [ctx(r) for v in ss for r in v]
+        starts = [ctx(started[v[0]["session"]]) for v in ss if since <= started[v[0]["session"]]["t"] <= until]
+        report["sessions"].append(
+            {
+                "role": role,
+                "sessions": len(ss),
+                "median_replies": median(counts),
+                "p90_replies": pct(counts, 0.9),
+                "max_replies": max(counts),
+                "median_w": r6(median(costs)),
+                "mean_w": r6(mean(costs)),
+                "p90_w": r6(pct(costs, 0.9)),
+                "started": len(starts),
+                "median_start_context": median(starts),
+                "median_context": median(contexts),
+                "p90_context": pct(contexts, 0.9),
+                "max_context": max(contexts),
+            }
+        )
+
+    main_rows = [r for v in sessions.values() for r in v]
+    report["context"] = []
+    for low, high in zip(CONTEXT_EDGES, CONTEXT_EDGES[1:]):
+        rs = [r for r in main_rows if low <= ctx(r) < high]
+        if rs:
+            report["context"].append(
+                {"from": int(low), "to": int(high), "replies": len(rs), "w": r6(total(rs)), "cache_read_w": r6(sum(r["wt"]["cache_read"] for r in rs))}
+            )
+
+    rebuilds, gaps = [], []
+    for role in SESSION_ROLES:
+        ss = [v for k, v in sessions.items() if classes[k][0] == role]
+        if not ss:
+            continue
+        n_rebuilds = n_compactions = extra = 0
+        for v in ss:
+            for before, r in zip(v, v[1:]):
+                if ctx(r) > 50e3 and r["cache_write_1h"] + r["cache_write_5m"] > 0.5 * ctx(r):
+                    p = r["price"]
+                    n_rebuilds += 1
+                    extra += (r["cache_write_1h"] * (p["cache_write_1h"] - p["cache_read"]) + r["cache_write_5m"] * (p["cache_write_5m"] - p["cache_read"])) / 1e6
+                    gaps.append((r["t"] - before["t"]).total_seconds() / 60)
+                if ctx(before) > 100e3 and ctx(r) < 0.5 * ctx(before):
+                    n_compactions += 1
+        rebuilds.append({"role": role, "rebuilds": n_rebuilds, "extra_w": r6(extra), "role_w": r6(sum(total(v) for v in ss)), "compactions": n_compactions})
+    report["rebuilds"] = {
+        "roles": rebuilds,
+        "gap_minutes": {
+            "count": len(gaps),
+            "median": r6(median(gaps)),
+            "over_hour": sum(1 for g in gaps if g >= 60),
+            "five_to_sixty": sum(1 for g in gaps if 5 <= g < 60),
+        },
+    }
+
+    # Each session's $w in the window, its subagents' included, found by a launch's session id.
+    cost = collections.Counter()
+    for r in rows:
+        cost[r["session"]] += r["w"]
+    by_prefix = {s[:8]: s for s in cost}
+
+    def session_w(launch):
+        found = by_prefix.get(launch["session"][:8])
+        return None if found is None else cost[found]
+
+    outcome_sessions = []
+    for role in WORKERS:
+        xs = [w for s, w in cost.items() if classes[s][0] == role]
+        if xs:
+            outcome_sessions.append({"role": role, "sessions": len(xs), "w": r6(sum(xs)), "median_w": r6(median(xs)), "mean_w": r6(mean(xs)), "p90_w": r6(pct(xs, 0.9))})
+    kinds = collections.Counter(e.get("event") for e in events)
+    verdicts = collections.Counter(e.get("verdict") for e in events if e.get("event") == "review")
+    window_launches = group([e for e in events if e.get("event") == "launch"], lambda e: e.get("task"))
+    complete = sorted(t for t, ls in window_launches.items() if t != "T0" and all(session_w(e) is not None for e in ls))
+    done = collections.Counter(e.get("event") for t in complete for e in by_task_events.get(t, []))
+
+    def task_w(role=None):
+        return sum(r["w"] for t in complete for r in by_task.get(t, []) if r["role"] in WORKERS and (role is None or r["role"] == role))
+
+    coordinator_w = sum(r["w"] for r in rows if r["role"] == "coordinator")
+    report["outcomes"] = {
+        "sessions": outcome_sessions,
+        "counts": {
+            "merged": kinds["merged"],
+            "tickets_done": kinds["ticket-done"],
+            "reviews": kinds["review"],
+            "pass": verdicts["pass"],
+            "findings": verdicts["findings"],
+            "launches": kinds["launch"],
+        },
+        "complete_tasks": {"count": len(complete), "merged": done["merged"], "tickets_done": done["ticket-done"], "reviews": done["review"]},
+        "measures": {
+            "worker_w_per_merge": r6(ratio(task_w(), done["merged"])),
+            "worker_w_per_ticket": r6(ratio(task_w(), done["ticket-done"])),
+            "builder_w_per_ticket": r6(ratio(task_w("builder"), done["ticket-done"])),
+            "reviewer_w_per_review": r6(ratio(task_w("reviewer"), done["review"])),
+            "coordinator_w_per_merge": r6(ratio(coordinator_w, kinds["merged"])),
+            "coordinator_w_per_launch": r6(ratio(coordinator_w, kinds["launch"])),
+        },
+    }
+
+    def warmup(launch):
+        found = by_prefix.get(launch["session"][:8])
+        return total(sessions[found][:10]) if found in sessions else None
+
+    found = [
+        (e, reason)
+        for e, _, reason in relaunches(ledger)
+        if since <= e["_t"] <= until and (not task or e.get("task") == task)
+    ]
+    reasons = []
+    for reason in sorted({reason for _, reason in found}):
+        ws = [w for w in (warmup(e) for e, why in found if why == reason) if w is not None]
+        reasons.append({"reason": reason, "count": sum(1 for _, why in found if why == reason), "with_replies": len(ws), "warmup_w": r6(sum(ws)), "median_w": r6(median(ws))})
+    report["relaunches"] = {"reasons": reasons, "all": len(found), "warmup_w": r6(sum(x["warmup_w"] for x in reasons))}
+
+    rounds = [(e, ls) for e, ls in rereviews(ledger) if since <= e["_t"] <= until and (not task or e.get("task") == task)]
+    round_w = []
+    for _, ls in rounds:
+        ws = [session_w(x) for x in ls]
+        if ls and all(w is not None for w in ws):
+            round_w.append(sum(ws))
+    report["rereviews"] = {"count": len(rounds), "complete": len(round_w), "w": r6(sum(round_w)), "median_w": r6(median(round_w)), "mean_w": r6(mean(round_w))}
+
+    blocks = []
+    for r in counted:
+        if not blocks or r["t"] >= blocks[-1]["t"] + FIVE_HOURS:
+            blocks.append({"t": r["t"], "w": 0.0, "replies": 0, "machines": collections.Counter()})
+        blocks[-1]["w"] += r["w"]
+        blocks[-1]["replies"] += 1
+        blocks[-1]["machines"][r["machine"]] += r["w"]
+    report["blocks"] = [
+        {
+            "start": stamp(b["t"]),
+            "end": stamp(b["t"] + FIVE_HOURS),
+            "w": r6(b["w"]),
+            "replies": b["replies"],
+            "machines": {m: r6(w) for m, w in sorted(b["machines"].items())},
+            "current": until < b["t"] + FIVE_HOURS,
+        }
+        for b in blocks
+        if b["t"] > until - WEEK
+    ]
+    report["current_block"] = next((b for b in report["blocks"] if b["current"]), None)
+
+    week = [r for r in counted if r["t"] > until - WEEK]
+
+    def sums(rs):
+        return {"replies": len(rs), "tokens": sum(map(tok, rs)), "w": r6(total(rs))}
+
+    report["seven_days"] = {
+        "from": stamp(until - WEEK),
+        "to": stamp(until),
+        "machines": [{"machine": m, **sums(rs)} for m, rs in sorted(group(week, lambda r: r["machine"]).items())],
+        "all": sums(week),
+    }
+    return report
+
+
+def fm(x):
+    """Millions of tokens, one decimal."""
+    return f"{x / 1e6:,.1f}"
+
+
+def fd(x):
+    if x is None:
+        return "-"
+    return f"{x:,.0f}" if abs(x) >= 100 else f"{x:,.1f}" if abs(x) >= 1 else f"{x:,.2f}"
+
+
+def fk(x):
+    return "-" if x is None else f"{x / 1e3:,.0f}k"
+
+
+def share(part, whole):
+    return f"{100 * part / whole:.1f}%" if whole else "-"
+
+
+def table(head, rows):
+    if not rows:
+        return "None in the window."
+    out = ["| " + " | ".join(head) + " |", "| " + " | ".join("-" for _ in head) + " |"]
+    out += ["| " + " | ".join(str(c) for c in row) + " |" for row in rows]
+    return "\n".join(out)
+
+
+def render(report):
+    W = report["totals"]["w"]
+    out = []
+    P = out.append
+    filters = "".join(f", {k} {v}" for k, v in report["filters"].items() if v)
+    sources = ", ".join(f"{m} through {d}" if d else f"{m} none" for m, d in report["sources"].items())
+    t = report["totals"]
+    P(f"# Claude usage, {report['since']} to {report['until']}{filters}\n")
+    P(f"{t['replies']} replies in {t['sessions']} sessions, {fm(t['tokens'])}M tokens, {fd(t['w'])} $w; "
+      f"{report['ledger_events']} ledger events in the window.")
+    P(f"Day files: {sources}; and {report['live']} replies from this machine's transcripts since its last.")
+    P(f"`$w` is list-price dollars (bin/lib/prices.json, read {report['prices_read']}): a weight, not a bill.\n")
+
+    P("## Token types\n")
+    T = sum(x["tokens"] for x in report["token_types"])
+    body = [[x["type"], fm(x["tokens"]), share(x["tokens"], T), fd(x["w"]), share(x["w"], W)] for x in report["token_types"]]
+    body.append(["**all**", f"**{fm(T)}**", "100%", f"**{fd(W)}**", "100%"])
+    P(table(["Type", "Tokens (M)", "Share", "$w", "Share of $w"], body if t["replies"] else []))
+
+    P("\n## Models\n")
+    P(table(["Model", "Replies", "Tokens (M)", "$w", "First", "Last"],
+            [[x["model"], x["replies"], fm(x["tokens"]), fd(x["w"]), x["first"], x["last"]] for x in report["models"]]))
+    P("\n## Machines\n")
+    P(table(["Machine", "Replies", "Tokens (M)", "$w", "Share", "First", "Last"],
+            [[x["machine"], x["replies"], fm(x["tokens"]), fd(x["w"]), share(x["w"], W), x["first"], x["last"]] for x in report["machines"]]))
+
+    P("\n## Roles\n")
+    body = [[x["role"], x["sessions"], x["replies"], fm(x["input"]), fm(x["cache_write_1h"] + x["cache_write_5m"]), fm(x["cache_read"]),
+             fm(x["output"]), fm(x["tokens"]), fd(x["w"]), share(x["w"], W), share(x["subagent_w"], x["w"])] for x in report["roles"]]
+    if body:
+        body.append(["**all**", t["sessions"], t["replies"], "", "", "", "", fm(t["tokens"]), f"**{fd(W)}**", "100%",
+                     share(sum(x["subagent_w"] for x in report["roles"]), W)])
+    P(table(["Role", "Sessions", "Replies", "Input", "Cache write", "Cache read", "Output", "All (M)", "$w", "Share", "Of it subagents"], body))
+
+    P("\n## Projects and tasks\n")
+    P(table(["Project", "$w", "Share"], [[x["project"], fd(x["w"]), share(x["w"], W)] for x in report["projects"]]))
+    P("")
+    machines = sorted({m for x in report["tasks"] for m in x["launches"]})
+    P(table(["Task", "Project", "Tokens (M)", "$w", "Plan $w", "Build $w", "Review $w"] + [f"Launches {m}" for m in machines]
+            + ["Merged PRs", "Tickets done", "Reviews", "Closed"],
+            [[x["task"], x["project"], fm(x["tokens"]), fd(x["w"]), fd(x["plan_w"]), fd(x["build_w"]), fd(x["review_w"])]
+             + [x["launches"].get(m, 0) for m in machines] + [x["merged"], x["tickets_done"], x["reviews"], "yes" if x["closed"] else "no"]
+             for x in report["tasks"]]))
+
+    P("\n## Days (UTC)\n")
+    P(table(["Day", "Tokens (M)", "$w"] + [c.capitalize() for c in SESSION_ROLES],
+            [[x["day"], fm(x["tokens"]), fd(x["w"])] + [fd(x["roles"][c]) for c in SESSION_ROLES] for x in report["days"]]))
+
+    P("\n## Sessions and context\n")
+    P("Main conversations; a session's starting context is its first reply's, over the sessions that started in the window.\n")
+    P(table(["Role", "Sessions", "Median replies", "p90 replies", "Max replies", "Median $w per session", "Mean $w", "p90 $w",
+             "Started", "Median starting context", "Median context", "p90 context", "Max context"],
+            [[x["role"], x["sessions"], f"{x['median_replies']:g}", x["p90_replies"], x["max_replies"], fd(x["median_w"]), fd(x["mean_w"]),
+              fd(x["p90_w"]), x["started"], fk(x["median_start_context"]), fk(x["median_context"]), fk(x["p90_context"]), fk(x["max_context"])]
+             for x in report["sessions"]]))
+
+    P("\n## Context\n")
+    P("Each main-conversation reply by its context:\n")
+    main_w = sum(x["w"] for x in report["context"])
+    P(table(["Context", "Replies", "$w", "Share", "m$w per reply", "Of it cache reads"],
+            [[f"{fk(x['from'])}-{fk(x['to'])}", x["replies"], fd(x["w"]), share(x["w"], main_w), f"{1000 * x['w'] / x['replies']:.1f}",
+              share(x["cache_read_w"], x["w"])] for x in report["context"]]))
+
+    P("\n## Cache rebuilds\n")
+    P("A rebuild is a reply after a session's first writing over half of a context above 50k anew; a compaction, a context "
+      "below half of the reply before's, from over 100k.\n")
+    rb = report["rebuilds"]
+    P(table(["Role", "Rebuilds", "Their extra $w (write minus read)", "Share of the role's $w", "Compactions"],
+            [[x["role"], x["rebuilds"], fd(x["extra_w"]), share(x["extra_w"], x["role_w"]), x["compactions"]] for x in rb["roles"]]))
+    g = rb["gap_minutes"]
+    if g["count"]:
+        P(f"\nGap before a rebuild: median {g['median']:.0f} min, {g['over_hour']} of {g['count']} after an hour or more, "
+          f"{g['five_to_sixty']} after 5 to 60 minutes.")
+
+    P("\n## Cost per outcome\n")
+    o = report["outcomes"]
+    P(table(["Role", "Sessions", "$w", "Median per session", "Mean", "p90"],
+            [[x["role"], x["sessions"], fd(x["w"]), fd(x["median_w"]), fd(x["mean_w"]), fd(x["p90_w"])] for x in o["sessions"]]))
+    c, ct, m = o["counts"], o["complete_tasks"], o["measures"]
+    P(f"\nIn the window: {plural(c['merged'], 'merge', 'merges')}, {plural(c['tickets_done'], 'ticket', 'tickets')} done, "
+      f"{plural(c['reviews'], 'review', 'reviews')} ({c['pass']} pass, {c['findings']} with findings), "
+      f"{plural(c['launches'], 'launch', 'launches')}.")
+    P(f"Tasks complete in the data (each launch in the window has replies): {ct['count']}, with "
+      f"{plural(ct['merged'], 'merge', 'merges')}, {plural(ct['tickets_done'], 'ticket', 'tickets')}, "
+      f"{plural(ct['reviews'], 'review', 'reviews')}.\n")
+    P(table(["Measure", "Value"], [
+        ["Worker $w per merged PR", fd(m["worker_w_per_merge"])],
+        ["Worker $w per ticket done", fd(m["worker_w_per_ticket"])],
+        ["Builder $w per ticket done", fd(m["builder_w_per_ticket"])],
+        ["Reviewer $w per review", fd(m["reviewer_w_per_review"])],
+        ["Coordinator $w per merge", fd(m["coordinator_w_per_merge"])],
+        ["Coordinator $w per launch", fd(m["coordinator_w_per_launch"])],
+    ]))
+
+    P("\n## Relaunches\n")
+    rl = report["relaunches"]
+    P(table(["What came between", "Relaunches", "With replies", "Warm-up $w", "Median each"],
+            [[x["reason"], x["count"], x["with_replies"], fd(x["warmup_w"]), fd(x["median_w"])] for x in rl["reasons"]]))
+    P(f"\nAll relaunches: {rl['all']}; their warm-up (first 10 replies) {fd(rl['warmup_w'])} $w, {share(rl['warmup_w'], W)} of the window's $w.")
+    rr = report["rereviews"]
+    P(f"Re-reviews: {rr['count']}; {rr['complete']} with every session of their round in the data: {fd(rr['w'])} $w in all, "
+      f"median {fd(rr['median_w'])} a round, mean {fd(rr['mean_w'])}.")
+
+    P("\n## 5-hour blocks\n")
+    P("The fixed blocks opening in the seven days to the window's end, over every machine's replies:\n")
+    machines = sorted({m for b in report["blocks"] for m in b["machines"]})
+    P(table(["Opens", "Ends", "$w", "Replies"] + [f"{m} $w" for m in machines],
+            [[b["start"] + (" (current)" if b["current"] else ""), b["end"], fd(b["w"]), b["replies"]] + [fd(b["machines"].get(m, 0)) for m in machines]
+             for b in report["blocks"]]))
+    cb = report["current_block"]
+    P(f"\nThe current block opened {cb['start']} and ends {cb['end']}: {fd(cb['w'])} $w so far." if cb else
+      f"\nNo block is open at {report['until']}: the next opens at the next reply.")
+
+    P("\n## The last seven days\n")
+    s = report["seven_days"]
+    P(f"{s['from']} to {s['to']}; the weekly limit's reset time is in no data (claude.ai shows it), so this is a rolling seven days.\n")
+    rows = [[x["machine"], x["replies"], fm(x["tokens"]), fd(x["w"]), share(x["w"], s["all"]["w"])] for x in s["machines"]]
+    if rows:
+        rows.append(["**all**", s["all"]["replies"], fm(s["all"]["tokens"]), f"**{fd(s['all']['w'])}**", "100%"])
+    P(table(["Machine", "Replies", "Tokens (M)", "$w", "Share"], rows))
+    return "\n".join(out)
+
+
 def main(args):
     if args[:1] in (["--help"], ["-h"]):
         print_help()
-    elif not args:
-        fail("the report is not built yet; team-tokens export writes this machine's usage into the team home")
-    elif args[0] == "export" and args[1:] in ([], ["--through-now"]):
+    elif args[:1] == ["export"]:
+        if args[1:] not in ([], ["--through-now"]):
+            fail(USAGE, 2)
         try:
             export(args[1:] == ["--through-now"])
         except OSError as error:
             fail(f"cannot export: {error}")
     else:
-        fail(USAGE, 2)
+        opts = parse_report_args(args)
+        try:
+            report = build_report(opts)
+        except OSError as error:
+            fail(f"cannot report: {error}")
+        if opts["json"]:
+            print(json.dumps(report, indent=1))
+        else:
+            print(render(report))
 
 
 if __name__ == "__main__":
