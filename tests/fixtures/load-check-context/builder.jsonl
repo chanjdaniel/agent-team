@@ -1,0 +1,6 @@
+{"type":"user","message":{"role":"user","content":"Reply with OK and nothing else."}}
+{"type":"attachment","attachment":{"type":"skill_listing","skillCount":5,"isInitial":true,"names":["tdd","implement","no-mistakes","simplify","code-review"]}}
+{"type":"attachment","attachment":{"type":"deferred_tools_delta","addedNames":["Monitor","WebFetch","mcp__codegraph__codegraph_explore","mcp__plugin_frontend_chrome__open"],"removedNames":[]}}
+{"type":"attachment","attachment":{"type":"deferred_tools_delta","addedNames":["mcp__plugin_frontend_chrome__close"],"removedNames":["WebFetch"]}}
+{"type":"assistant","message":{"id":"msg_b1","role":"assistant","content":[{"type":"thinking","thinking":"a thought that never leaves the transcript"}],"usage":{"input_tokens":4,"cache_creation_input_tokens":20000,"cache_read_input_tokens":31000,"output_tokens":8}}}
+{"type":"assistant","message":{"id":"msg_b1","role":"assistant","content":[{"type":"text","text":"OK"}],"usage":{"input_tokens":4,"cache_creation_input_tokens":20000,"cache_read_input_tokens":31000,"output_tokens":8}}}

@@ -493,6 +493,101 @@ write_line() {
   assert_equal "$(stub_calls claude)" ""
 }
 
+# The context form. The claude stub plays one session per role, its id from the role
+# (1a1a1a1a planner, 2b2b2b2b builder, 3c3c3c3c reviewer): claude --bg notes in
+# $BATS_TEST_TMPDIR/launch-<role> where it started and with what prompt, and writes its transcript
+# from tests/fixtures/load-check-context/<role>.jsonl (or '{}' when $STUB_FIXTURES/silent-<role>
+# exists), and fails when $STUB_FIXTURES/fail-<role> exists; claude agents lists each until claude rm,
+# 'idle', or 'gone' with $STUB_FIXTURES/gone-<role>.
+
+# context_setup: the stub for the context form
+context_setup() {
+  export CONTEXT_FIXTURES=$BATS_TEST_DIRNAME/fixtures/load-check-context
+  stub_script claude <<'SH'
+declare -A ids=([planner]=1a1a1a1a [builder]=2b2b2b2b [reviewer]=3c3c3c3c)
+uuid() { echo "$1-0000-4000-8000-000000000001"; }
+case $1 in
+  --bg)
+    while [[ $1 != --name ]]; do shift; done
+    role=${2#T0-} id=${ids[${2#T0-}]}
+    [[ ! -e $STUB_FIXTURES/fail-$role ]] || { echo "launch failed" >&2; exit 1; }
+    { pwd -P; echo "${*: -1}"; } >"$BATS_TEST_TMPDIR/launch-$role"
+    transcript=$HOME/.claude/projects/-wt/$(uuid "$id").jsonl
+    mkdir -p "$(dirname "$transcript")"
+    if [[ -e $STUB_FIXTURES/silent-$role ]]; then echo '{}' >"$transcript"; else cp "$CONTEXT_FIXTURES/$role.jsonl" "$transcript"; fi
+    touch "$STUB_FIXTURES/launched-$role"
+    echo "Started background session $id ($2). Attach with: claude attach $id"
+    ;;
+  agents)
+    for role in planner builder reviewer; do
+      id=${ids[$role]}
+      [[ -f $STUB_FIXTURES/launched-$role && ! -f $STUB_FIXTURES/removed-$id && ! -f $STUB_FIXTURES/gone-$role ]] || continue
+      jq -cn --arg id "$id" --arg name "T0-$role" --arg uuid "$(uuid "$id")" '{id: $id, name: $name, state: "idle", sessionId: $uuid}'
+    done | jq -s .
+    ;;
+  stop) ;;
+  rm) touch "$STUB_FIXTURES/removed-$2" ;;
+  *) exit 64 ;;
+esac
+SH
+}
+
+@test "the context form prints each worker role's starting context and counts from its first reply, and removes the sessions" {
+  context_setup
+  run_bin -0 team-load-check --context
+  assert_equal "${lines[0]}" "PASS machine: named"
+  assert_contains "$output" "role      context  skills  deferred tools  MCP servers
+planner     42006       3               3            0
+builder     51004       5               4            2
+reviewer    45003       2               2            0"
+  assert_equal "${lines[-1]}" PASS
+  local role
+  for role in planner builder reviewer; do
+    assert_equal "$(cat "$BATS_TEST_TMPDIR/launch-$role")" "$(printf '%s\n' "$wt" 'Reply with OK and nothing else.')"
+  done
+  # Only figures leave the transcripts.
+  [[ $output != *"never leaves the transcript"* ]]
+  assert_equal "$(stub_calls claude | jq -r 'select(.[0] == "rm") | .[1]')" "$(printf '%s\n' 1a1a1a1a 2b2b2b2b 3c3c3c3c)"
+  left_nothing
+  # No lease is rehearsed and no inventory kept: the form only measures.
+  [[ ! -e $TEAM_HOME/tasks/T0/inventory.txt ]]
+}
+
+@test "the context form measures one role with --role, and refuses ops" {
+  context_setup
+  run_bin -0 team-load-check --context --role reviewer
+  assert_contains "$output" "reviewer    45003       2               2            0"
+  [[ $output != *planner* ]]
+  [[ ! -e $BATS_TEST_TMPDIR/launch-planner ]]
+
+  run_bin -2 team-load-check --context --role ops
+  assert_contains "$output" "--context measures the roles the load check may start: planner, builder, reviewer; ops needs Daniel"
+  run_bin -2 team-load-check --context --role coordinator
+  assert_contains "$output" "unknown role 'coordinator'"
+  run_bin -2 team-load-check --context --worktree "$HOME"
+  assert_contains "$output" "--worktree is for --role ops only"
+  assert_equal "$(stub_calls claude | jq -c 'select(.[0] == "--bg")' | wc -l)" 1
+}
+
+@test "a role with no first reply fails the context form, and every session is still removed" {
+  context_setup
+  touch "$STUB_FIXTURES/silent-builder" "$STUB_FIXTURES/gone-builder"
+  run_bin -1 team-load-check --context
+  assert_contains "$output" "FAIL builder: no first reply in its transcript (state 'gone')"
+  assert_contains "$output" "planner     42006"
+  assert_equal "${lines[-1]}" "load check FAILED"
+  assert_equal "$(stub_calls claude | jq -r 'select(.[0] == "rm") | .[1]')" "$(printf '%s\n' 1a1a1a1a 2b2b2b2b 3c3c3c3c)"
+  left_nothing
+}
+
+@test "a launch that fails midway in the context form still removes the sessions already started" {
+  context_setup
+  touch "$STUB_FIXTURES/fail-reviewer"
+  run_bin -1 team-load-check --context
+  assert_equal "$(stub_calls claude | jq -r 'select(.[0] == "rm") | .[1]')" "$(printf '%s\n' 1a1a1a1a 2b2b2b2b)"
+  left_nothing
+}
+
 @test "a FAIL from team-doctor stops the load check, launching nothing" {
   unset TEAM_DOCTOR
   hold_lease home-pc >/dev/null
