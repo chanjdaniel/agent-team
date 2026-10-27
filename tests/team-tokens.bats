@@ -225,6 +225,21 @@ read 3 of 3 transcripts; wrote 1 day file"
   [[ ! -e $TEAM_HOME/usage ]]
 }
 
+@test "with neither TEAM_HOME nor ~/.config/agent-team/home it refuses, never writing into its code checkout" {
+  local code=$BATS_TEST_TMPDIR/code
+  mkdir -p "$code/bin/lib"
+  cp "$REPO_ROOT/bin/team-tokens" "$code/bin/"
+  cp "$REPO_ROOT/bin/lib/prices.json" "$code/bin/lib/"
+  unset TEAM_HOME
+  local verb
+  for verb in export ""; do
+    run -1 --separate-stderr "$code/bin/team-tokens" ${verb:+"$verb"}
+    assert_equal "$stderr" "team-tokens: neither TEAM_HOME nor ~/.config/agent-team/home names the team home; name its checkout there, relative to your home directory: echo agent-team-records > ~/.config/agent-team/home"
+  done
+  [[ ! -e $code/usage ]]
+  run -0 "$code/bin/team-tokens" --help
+}
+
 @test "the prices file holds each model's five prices, the date read and the source" {
   local prices=$REPO_ROOT/bin/lib/prices.json
   assert_equal "$(jq -r '.source' "$prices")" "https://platform.claude.com/docs/en/about-claude/pricing"
