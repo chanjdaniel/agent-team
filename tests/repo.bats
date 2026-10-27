@@ -556,12 +556,14 @@ team-review-status https://github.com/me/shop/pull/5 a1b2c3d4e5f60718293a4b5c6d7
 COMMANDS
 }
 
-@test "GitHub's CI runs on every pull request to dev and main and by hand, and no workflow runs on a push or for a fork's target" {
+@test "GitHub's CI and zizmor's online run run on every pull request to dev and main and by hand, and no workflow runs on a push or for a fork's target" {
   local workflow
   # The top-level keys under on:, and the branches its pull_request names.
-  assert_equal "$(sed -n '/^on:$/,/^[^ ]/s/^  \([a-z_]*\):.*$/\1/p' "$REPO_ROOT/.github/workflows/ci.yml")" \
-    $'pull_request\nworkflow_dispatch'
-  assert_equal "$(sed -n '/^on:$/,/^[^ ]/s/^    branches: //p' "$REPO_ROOT/.github/workflows/ci.yml")" "[dev, main]"
+  for workflow in ci.yml zizmor-online.yml; do
+    assert_equal "$(sed -n '/^on:$/,/^[^ ]/s/^  \([a-z_]*\):.*$/\1/p' "$REPO_ROOT/.github/workflows/$workflow")" \
+      $'pull_request\nworkflow_dispatch'
+    assert_equal "$(sed -n '/^on:$/,/^[^ ]/s/^    branches: //p' "$REPO_ROOT/.github/workflows/$workflow")" "[dev, main]"
+  done
   for workflow in "$REPO_ROOT"/.github/workflows/*.yml; do
     if grep -nE '^\s*(push|pull_request_target|schedule):' "$workflow"; then
       echo "$workflow runs on a push, a schedule or with a fork's target's secrets" >&2
@@ -590,6 +592,16 @@ zizmor_problems() {
 @test "every zizmor ignore names its audit and its reason, and no zizmor config ignores more" {
   run -0 zizmor_problems "$REPO_ROOT"
   assert_equal "$output" ""
+}
+
+# The required offline job and the online run install the same zizmor, so they move together.
+@test "zizmor's online run installs the zizmor the required job pins" {
+  local key pin
+  for key in ZIZMOR_VERSION ZIZMOR_SHA256; do
+    pin=$(sed -n "s/^      $key: //p" "$REPO_ROOT/.github/workflows/ci.yml")
+    [[ -n $pin ]]
+    assert_equal "$(sed -n "s/^      $key: //p" "$REPO_ROOT/.github/workflows/zizmor-online.yml")" "$pin"
+  done
 }
 
 @test "a zizmor ignore without an audit or a reason, or a zizmor config, is named" {

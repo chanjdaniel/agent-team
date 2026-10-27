@@ -120,6 +120,7 @@ jobs:
         run: bin/lib/data-check code "$PR_BASE" "$PR_HEAD"
 
   # The repository's workflows and any action or Dependabot config, offline, so it needs no token.
+  # zizmor-online.yml runs the same zizmor online, never required: bump the pin in both.
   zizmor:
     runs-on: ubuntu-24.04
     env:
