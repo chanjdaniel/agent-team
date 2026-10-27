@@ -198,6 +198,14 @@ SETTINGS=(coordinator.settings.json settings/worker.json)
   assert_equal "$(jq -r '.tools[] | select(.name == "chrome-devtools-axi") | .pin' "$REPO_ROOT/bin/lib/tools.lock")" 0.1.44
 }
 
+# chrome-devtools-axi runs one bridge and browser per session name, and a session's Bash calls keep
+# no exported variable, so the worker settings name each worker's session for its task and role
+# (team-worker fills both in), and two UI workers on one machine never share a browser.
+@test "each worker's chrome-devtools-axi runs in a session named for its task and role" {
+  assert_equal "$(jq -r .env.CHROME_DEVTOOLS_AXI_SESSION "$REPO_ROOT/settings/worker.json")" '@TASK@-@ROLE@'
+  assert_equal "$(jq -r '.env.CHROME_DEVTOOLS_AXI_SESSION // "unset"' "$REPO_ROOT/coordinator.settings.json")" unset
+}
+
 # The tools the sessions run send usage data off the machine unless told not to (T43's audit):
 # lavish-axi's analytics, codegraph's telemetry and Chrome DevTools MCP's Google usage statistics.
 @test "the worker and coordinator settings turn off the tools' telemetry" {

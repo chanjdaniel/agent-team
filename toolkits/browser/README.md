@@ -3,6 +3,13 @@
 The `chrome-devtools-axi` banner for a worker whose task drives a browser.
 `chrome-devtools-axi` is already on the machine (`bin/lib/tools.lock`), with the pinned `chrome-devtools-mcp` in `servers/` behind it (`CHROME_DEVTOOLS_AXI_MCP_PATH` in the worker settings); the banner is what tells a session it is there and how to start.
 
+## Each worker's own session
+
+Every worker's `chrome-devtools-axi` commands run in an axi session named for its task and role, such as `T71-builder` (`CHROME_DEVTOOLS_AXI_SESSION` in the worker settings, which `team-worker` fills in), with no prefix on each command.
+Each session has a bridge and a Chrome of its own, so two UI workers on one machine never share a browser.
+The bridge outlives the commands that start it: `chrome-devtools-axi stop` ends the session's bridge and its Chrome, which a worker runs once it is done with the browser.
+The coordinator's settings name no session, so its own commands run in axi's default one.
+
 ## When the coordinator gives it
 
 To the builder and the reviewer of a task that changes a UI, who open the page to check the change, as Daniel's rule on pixel perfection asks: `team-worker T<n> builder <worktree> --toolkit browser -- ...`, and the same for the reviewer.
@@ -18,4 +25,5 @@ A planner, a task with no UI, and ops never get it.
 ## Tests
 
 `tests/toolkits/browser.test.mjs` checks the plugin's layout (its manifest, its one hook, no `.mcp.json` and no skills) and runs the hook's command as Claude Code would, with `CLAUDE_PLUGIN_ROOT` set and a stub `chrome-devtools-axi`, under user settings that still print the banner and under the guarded ones.
-`tests/axi-banner.bats` tests the hook itself, and `tests/team-worker.bats` that `--toolkit browser` adds the plugin directory and no MCP server.
+`tests/axi-banner.bats` tests the hook itself, and `tests/team-worker.bats` that `--toolkit browser` adds the plugin directory and no MCP server, and that a launched builder's and reviewer's settings name their session `T<n>-<role>`.
+`tests/repo.bats` holds the worker settings' session name to `@TASK@-@ROLE@` and the coordinator's settings to none.

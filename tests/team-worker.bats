@@ -521,6 +521,15 @@ role_texts() {
   [[ -x $REPO_ROOT/bin/hooks/axi-banner ]]
 }
 
+@test "a launched worker's chrome-devtools-axi session is named for its task and role" {
+  thread T7
+  local role
+  for role in builder reviewer; do
+    run_bin -0 team-worker T7 "$role" "$wt1" --toolkit browser -- go
+    assert_equal "$(jq -r .env.CHROME_DEVTOOLS_AXI_SESSION "$TEAM_HOME/tasks/T7/settings.$role.json")" "T7-$role"
+  done
+}
+
 @test "the browser toolkit adds its plugin directory and no MCP server" {
   thread T7
   run_bin -0 team-worker T7 builder "$wt1" --toolkit browser -- go
