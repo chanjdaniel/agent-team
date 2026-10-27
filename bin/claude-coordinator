@@ -95,7 +95,7 @@ done <<<"$listed"
 settings=$state/coordinator.settings.json
 jq --arg code "$code" --slurpfile mcp "$mcp" --slurpfile connectors "$code/toolkits/coordinator/connectors.json" \
   "$substitute"' as $settings
-  | ($mcp[0].mcpServers // {} | keys) + $connectors[0] as $own
+  | (($mcp[0].mcpServers // {} | keys) + $connectors[0]) as $own
   | [$settings.enabledPlugins // {} | to_entries[] | select(.value == true) | "plugin:\(.key | split("@")[0]):"] as $plugins
   | $settings
   | .deniedMcpServers = [$ARGS.positional | unique[]
