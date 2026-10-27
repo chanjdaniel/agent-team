@@ -137,6 +137,16 @@ $CONVENTIONER
 $SITE"
 }
 
+@test "the dev guard and the records guard, off, are Daniel's steps, in that order" {
+  tools_at arch
+  git -C "$CODE_CHECKOUT" config --unset core.hooksPath
+  git -C "$TEAM_HOME" config --unset core.hooksPath
+  run_bin -1 team-bootstrap --stage check
+  assert_equal "$(stage_lines check | grep '^Daniel')" "Daniel 1: git hooks: Daniel runs git -C $CODE_CHECKOUT config core.hooksPath bin/hooks/git (core.hooksPath is unset, so git runs none of bin/hooks/git)
+Daniel 2: records hooks: Daniel runs git -C $TEAM_HOME config core.hooksPath $CODE_CHECKOUT/bin/hooks/records-git (the team home's core.hooksPath is unset, so git runs no data check on its commits)"
+  assert_equal "$(stage_lines check | tail -n1)" "summary: not set up yet: only Daniel's steps above are left; then team-bootstrap again"
+}
+
 @test "two or more untrusted roots are one of Daniel's steps: the trust stage in their own terminal (report F2)" {
   tools_at arch
   printf '%s\n' "$TEAM_HOME" "$CONVENTIONER" >"$STUB_FIXTURES/untrusted"
@@ -266,7 +276,7 @@ clone -q https://github.com/owner/site.git $SITE"
   echo laptop >"$HOME/.config/agent-team/machine"
   unset TEAM_HOME
   run -1 "$CODE_CHECKOUT/bin/team-bootstrap"
-  assert_equal "$(tail -n1 <<<"$output")" "machine: Daniel: clone the team home, then name it for this machine: git clone --single-branch --branch dev https://github.com/chanjdaniel/agent-team-records.git ~/agent-team-records && git -C ~/agent-team-records remote set-branches --add origin lease && team-bootstrap --home agent-team-records"
+  assert_equal "$(tail -n1 <<<"$output")" "machine: Daniel: clone the team home, then name it for this machine: git clone --single-branch --branch dev https://github.com/chanjdaniel/agent-team-records.git ~/agent-team-records && git -C ~/agent-team-records remote set-branches --add origin lease && git -C ~/agent-team-records config core.hooksPath ~/agent-team/bin/hooks/records-git && team-bootstrap --home agent-team-records"
   [[ ! -e $STUB_CALLS/git-clone.log ]]
   # Once it is cloned, only naming it is left; the check stage says the same.
   mkdir "$HOME/agent-team-records"
@@ -274,6 +284,6 @@ clone -q https://github.com/owner/site.git $SITE"
   assert_equal "$(tail -n1 <<<"$output")" "machine: Daniel: name the team home's checkout for this machine: team-bootstrap --home agent-team-records"
   rmdir "$HOME/agent-team-records"
   run -1 "$CODE_CHECKOUT/bin/team-bootstrap" --stage check
-  assert_contains "$output" "check: Daniel 1: team home: clone the team home, then name it for this machine: git clone --single-branch --branch dev https://github.com/chanjdaniel/agent-team-records.git ~/agent-team-records && git -C ~/agent-team-records remote set-branches --add origin lease && team-bootstrap --home agent-team-records (~/.config/agent-team/home is missing)"
+  assert_contains "$output" "check: Daniel 1: team home: clone the team home, then name it for this machine: git clone --single-branch --branch dev https://github.com/chanjdaniel/agent-team-records.git ~/agent-team-records && git -C ~/agent-team-records remote set-branches --add origin lease && git -C ~/agent-team-records config core.hooksPath ~/agent-team/bin/hooks/records-git && team-bootstrap --home agent-team-records (~/.config/agent-team/home is missing)"
   [[ $output != *"these failed: "*"team home"* ]]
 }

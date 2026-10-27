@@ -262,12 +262,12 @@ stage_machine() {
 }
 
 # Daniel's step while nothing names the team home: clone it unless it is there, fetching only dev
-# and lease, then name it.
+# and lease with the records guard on, then name it.
 clone_home() {
   if [[ -d $HOME/agent-team-records ]]; then
     echo "name the team home's checkout for this machine: team-bootstrap --home agent-team-records"
   else
-    echo "clone the team home, then name it for this machine: git clone --single-branch --branch dev https://github.com/chanjdaniel/agent-team-records.git ~/agent-team-records && git -C ~/agent-team-records remote set-branches --add origin lease && team-bootstrap --home agent-team-records"
+    echo "clone the team home, then name it for this machine: git clone --single-branch --branch dev https://github.com/chanjdaniel/agent-team-records.git ~/agent-team-records && git -C ~/agent-team-records remote set-branches --add origin lease && git -C ~/agent-team-records config core.hooksPath ~/agent-team/bin/hooks/records-git && team-bootstrap --home agent-team-records"
   fi
 }
 
@@ -624,6 +624,7 @@ stage_check() {
   step '^trust ' FAIL
   step '^chrome$' WARN
   step '^git hooks$' FAIL
+  step '^records hooks$' FAIL
   step '^own settings$' WARN
   step '^config$' WARN
   ((!reloaded)) ||
