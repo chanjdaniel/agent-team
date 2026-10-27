@@ -1,7 +1,6 @@
 #!/usr/bin/env bats
-# The library's machine identity and recorded paths: the team home it finds and home_repo, the
-# repo its origin names, machine_name, the machine's team name, and local_path, a recorded path as
-# the same path under this machine's HOME.
+# The library's machine identity and recorded paths: the team home it finds, machine_name, the
+# machine's team name, and local_path, a recorded path as the same path under this machine's HOME.
 
 load helpers/common
 
@@ -119,12 +118,34 @@ home_setting() {
   assert_equal "$output" "$TEAM_HOME"
 }
 
-@test "with neither TEAM_HOME nor ~/.config/agent-team/home, the team home is the directory above bin/" {
+@test "with neither TEAM_HOME nor ~/.config/agent-team/home, the script refuses with the setting's fix" {
   local code
   code=$(code_checkout)
   unset TEAM_HOME
-  run -0 "$code/bin/team-x"
-  assert_equal "$output" "$code"
+  run -1 "$code/bin/team-x"
+  assert_equal "$output" "team-x: neither TEAM_HOME nor ~/.config/agent-team/home names the team home; name its checkout there, relative to your home directory: echo agent-team-records > ~/.config/agent-team/home"
+  # An empty TEAM_HOME names none either.
+  TEAM_HOME='' run -1 "$code/bin/team-x"
+  assert_contains "$output" "team-x: neither TEAM_HOME nor ~/.config/agent-team/home names the team home"
+  # --help still answers.
+  run -0 "$code/bin/team-x" --help
+}
+
+# team-heavy takes the machine's lock, which tests/run runs under where no team home is named.
+@test "with neither, every script of bin/ but the doctor, bootstrap and team-heavy refuses before it does anything" {
+  local script name args
+  unset TEAM_HOME
+  for script in "$REPO_ROOT"/bin/*; do
+    name=${script##*/}
+    [[ -f $script && -x $script && $name != team-doctor && $name != team-bootstrap && $name != team-heavy ]] || continue
+    # team-project reads its command line first.
+    args=()
+    [[ $name != team-project ]] || args=(--list)
+    run -1 --separate-stderr "$script" "${args[@]}"
+    assert_contains "$stderr" "$name: neither TEAM_HOME nor ~/.config/agent-team/home names the team home; name its checkout there, relative to your home directory: echo agent-team-records > ~/.config/agent-team/home"
+  done
+  # Nothing was written under HOME.
+  assert_equal "$(find "$HOME" -newer "$BATS_TEST_TMPDIR" -type f | sort)" ""
 }
 
 @test "a setting naming a missing directory, or none, is refused with the path and the file it came from" {
@@ -141,24 +162,3 @@ home_setting() {
   run -0 "$code/bin/team-x" --help
 }
 
-@test "home_repo reads owner/name from the team home's origin in each GitHub form, and fails for others" {
-  git -C "$TEAM_HOME" init -q
-  lib_run -1 team-x home_repo
-  local url
-  for url in https://github.com/Owner/agent-team.git https://github.com/Owner/agent-team \
-    https://github.com/Owner/agent-team/ git@github.com:Owner/agent-team.git ssh://git@github.com/Owner/agent-team.git; do
-    git -C "$TEAM_HOME" remote remove origin 2>/dev/null || true
-    git -C "$TEAM_HOME" remote add origin "$url"
-    lib_run -0 team-x home_repo
-    assert_equal "$output" Owner/agent-team
-  done
-  for url in "$BATS_TEST_TMPDIR/origin.git" https://gitlab.com/owner/agent-team.git https://github.com/owner/a/b; do
-    git -C "$TEAM_HOME" remote set-url origin "$url"
-    lib_run -1 team-x home_repo
-  done
-  # The URL as configured, never the one url.insteadOf leads to.
-  git -C "$TEAM_HOME" remote set-url origin https://github.com/owner/agent-team.git
-  git config --global url."$BATS_TEST_TMPDIR/origin.git".insteadOf https://github.com/owner/agent-team.git
-  lib_run -0 team-x home_repo
-  assert_equal "$output" owner/agent-team
-}

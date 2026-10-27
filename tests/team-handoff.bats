@@ -139,7 +139,6 @@ rm 81f08540"
 }
 
 @test "a handoff pushes the task branch, stows the task, stops only its worker, commits the records and releases the lease" {
-  git -C "$TEAM_HOME" config core.hooksPath "$REPO_ROOT/bin/hooks/git"
   make_machine laptop
 
   run_bin -0 --separate-stderr team-handoff

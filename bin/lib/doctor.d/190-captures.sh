@@ -8,7 +8,7 @@
 # What team-ui keeps stays on this machine, ignored by the team home's git, and goes with its
 # task's close.
 captures_problems=() captures_fixes=()
-if git -C "$TEAM_HOME" rev-parse --git-dir >/dev/null 2>&1 && ! git -C "$TEAM_HOME" check-ignore -q tasks/T1/ui/ui-pick.md; then
+if [[ -n $TEAM_HOME ]] && git -C "$TEAM_HOME" rev-parse --git-dir >/dev/null 2>&1 && ! git -C "$TEAM_HOME" check-ignore -q tasks/T1/ui/ui-pick.md; then
   captures_problems+=("the team home's git does not ignore tasks/*/ui/, so a checkpoint or handoff could carry a capture off this machine")
   captures_fixes+=("add tasks/*/ui/ to the team home's .gitignore, a records commit on dev")
 fi

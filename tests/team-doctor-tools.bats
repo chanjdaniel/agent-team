@@ -93,7 +93,7 @@ every_tool_fails() {
   assert_equal "$(grep -v '^PASS ' <<<"$output")" ""
   local expected
   expected=$(printf '%s\n' os; lock_tools arch | cut -f1 | sed 's/^/tool /'
-    printf '%s\n' docker chrome servers machine 'team home' 'team home fetch' 'git hooks' 'claude login' 'github login' config plugins memory discord 'own settings' 1password
+    printf '%s\n' docker chrome servers machine 'team home' 'team home fetch' 'git hooks' 'records hooks' 'claude login' 'github login' config plugins memory discord 'own settings' 1password
     secret_ids | sed 's/^/secret /'
     echo opencode-gate
     echo records
@@ -121,7 +121,7 @@ every_tool_fails() {
   assert_equal "$(grep -v '^PASS ' <<<"$output")" ""
   local expected
   expected=$(printf '%s\n' os homebrew; lock_tools macos | cut -f1 | sed 's/^/tool /'
-    printf '%s\n' docker chrome servers machine 'team home' 'team home fetch' 'git hooks' 'claude login' 'github login' config plugins memory discord 'own settings' 1password
+    printf '%s\n' docker chrome servers machine 'team home' 'team home fetch' 'git hooks' 'records hooks' 'claude login' 'github login' config plugins memory discord 'own settings' 1password
     secret_ids | sed 's/^/secret /'
     echo opencode-gate
     echo records

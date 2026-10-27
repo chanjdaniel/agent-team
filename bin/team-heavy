@@ -22,6 +22,9 @@
 #
 # Exit 0 done (run: the command's status), 2 usage error, 75 try again later (the wait ran out).
 set -euo pipefail
+# The lock is the machine's, not the team home's, and tests/run takes it on CI or a fresh clone.
+# shellcheck disable=SC2034 # read by bin/lib/team.sh
+team_home_report=1
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
 USAGE="usage: team-heavy run [--wait <minutes>] [--label <text>] -- <command> [<argument>...] | team-heavy status"

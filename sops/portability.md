@@ -10,7 +10,7 @@ Setting up a machine is `sops/machine-setup.md`.
   No confirmed lease, no coordinator and no worker.
 - Git is the transport and GitHub the meeting point; nothing moves by copying directories between machines.
 - Every machine has the same layout under `$HOME`: the code checkout at `~/agent-team`, the team home at `~/agent-team-records`, the path `~/.config/agent-team/home` names (relative to `$HOME`), and each project at its registry path; a path recorded under any home directory (`/home/<name>/...`, `/Users/<name>/...`) means the same path under this machine's `$HOME`.
-- Every script finds the team home the same way: `TEAM_HOME` when set (the tests, and a script calling a sibling), else `~/.config/agent-team/home`, else the directory above `bin/`; code (scripts, roles, settings, hooks, templates, plugins, toolkits) always comes from the code checkout.
+- Every script finds the team home the same way: `TEAM_HOME` when set (the tests, and a script calling a sibling), else `~/.config/agent-team/home`, and refuses to start when neither names it; code (scripts, roles, settings, hooks, templates, plugins, toolkits) always comes from the code checkout.
 - Conversations are a cache and never move: a resume rebuilds every session from the ledger, the briefs, the tickets, `handoff.md`, the branch and the archived scratch.
 - Secrets never touch git, logs, Discord or transcripts.
 - The home PC is the default holder; the laptop takes the team when Daniel travels, and hands it back after.
@@ -104,7 +104,7 @@ A worktree whose head a salvage branch holds, with nothing uncommitted, is salva
    Each step is idempotent: a run interrupted anywhere finishes when run again, and the lease is released last.
 4. It posts "Released at 14:05 from home-pc. The `team-resume --wait` started on the other machine takes the team now; with none running there, run `team-resume` there." with what config it captured (and any it left to Daniel: a `settings.json` with an `env` key, or a skill folder holding a dotenv-like file), and `team-handoff --retire` removes the coordinator.
 5. The release ends the wait of step 1 (with no `--wait` running, Daniel runs `team-resume` at the other machine, which refuses a fresh lease held elsewhere with nothing changed).
-   After the release it pulls the team home and then the code checkout (skipped when it is the team home), applies the config, takes the lease, enables the heartbeat, re-homes each open worktree with `team-open --task T<n> --resume <project>` (from origin's branch and the task's archive, with `wip/<project>/T<n>` applied as uncommitted changes to a worktree its `stowed` marks `uncommitted`), writes `tasks/resume-<date>-<time>.json` (one report per run, never overwritten; each worktree it could not re-home is also a `rehome-failed` in the ledger, which `team-state` shows until the worktree is made) and starts the coordinator.
+   After the release it pulls the team home and then the code checkout, applies the config, takes the lease, enables the heartbeat, re-homes each open worktree with `team-open --task T<n> --resume <project>` (from origin's branch and the task's archive, with `wip/<project>/T<n>` applied as uncommitted changes to a worktree its `stowed` marks `uncommitted`), writes `tasks/resume-<date>-<time>.json` (one report per run, never overwritten; each worktree it could not re-home is also a `rehome-failed` in the ledger, which `team-state` shows until the worktree is made) and starts the coordinator.
 6. The coordinator's `resume` skill reads the report, catches up on Discord messages sent while no coordinator listened, relaunches each stowed role with a `resume` brief (which says what became of the uncommitted changes), logs `resumed`, and posts what resumed and what did not.
 7. Daniel pins the coordinator in `claude agents`.
 
@@ -122,4 +122,3 @@ A worktree whose head a salvage branch holds, with nothing uncommitted, is salva
 - Supervision: the coordinator under a systemd service that checks the lease before it starts, since agent view does not restart sessions after a reboot.
 - Trust accepted once per root over SSH; the doctor's check is the same.
 - Sizing: each worker's treehouse slot has its own `node_modules` and Docker stack, so RAM and disk set the pool caps.
-- The code's checks could then run on GitHub again from a self-hosted runner, as `manual-steps.md` keeps as option A.

@@ -1,8 +1,7 @@
 #!/usr/bin/env bats
-# hooks/git/pre-push: with core.hooksPath set to bin/hooks/git, a push to dev may only fast-forward
-# it with commits that touch records only, however they were made, a push to main may only
-# fast-forward it to a commit already on origin/dev, and a tree holding records goes only to the
-# team home's origin.
+# hooks/git/pre-push: with core.hooksPath set to bin/hooks/git, a push to dev is refused, however
+# its commits were made, a push to main may only fast-forward it to a commit already on origin/dev,
+# and a tree holding records goes only to the team home's origin.
 
 load helpers/common
 
@@ -10,12 +9,13 @@ setup() {
   sandbox
   repo=$(make_repo home dev)
   git -C "$repo" config core.hooksPath "$REPO_ROOT/bin/hooks/git"
-  # The team home is a clone of the same repository, as every checkout is before the split.
+  # The team home's origin is this repository's, so the records rule's one way out is origin.
   git -C "$TEAM_HOME" init -q
   git -C "$TEAM_HOME" remote add origin "$BATS_TEST_TMPDIR/origin/home.git"
 }
 
-# Write each path and commit it on the current branch, as <subject>: commit_paths <subject> <path>...
+# Write each path and commit it on the current branch, as <subject>, past pre-commit, whose refusals
+# tests/pre-commit.bats covers: commit_paths <subject> <path>...
 commit_paths() {
   local path
   for path in "${@:2}"; do
@@ -23,7 +23,7 @@ commit_paths() {
     echo "$path $RANDOM" >>"$repo/$path"
     git -C "$repo" add -- "$path"
   done
-  git -C "$repo" commit -q -m "$1"
+  git -C "$repo" -c core.hooksPath= commit -q -m "$1"
 }
 
 # Push with bats' run, stderr without git's closing error line: push <status> [git push
@@ -40,111 +40,91 @@ origin_tip() {
   git -C "$BATS_TEST_TMPDIR/origin/home.git" rev-parse -q --verify "refs/heads/$1" || true
 }
 
-# Refused, naming the commits and their paths that are not records: assert_refused <expected list>
-assert_refused() {
-  assert_equal "$stderr" "pre-push: refused: a push to dev may add only commits that touch \
-records only (ledger.jsonl, manual-steps.md, projects.toml, tasks/, projects/, memory/, \
-machine/, usage/); put these on a task branch and open a PR to dev:$1"
+# Push to <remote>'s dev without the hooks, as a pull request's merge on GitHub moves it:
+# merge_on_github [<remote>]
+merge_on_github() {
+  git -C "$repo" -c core.hooksPath= push -q "${1:-origin}" dev
 }
 
-@test "a push to dev of commits that touch records only goes through, a local merge of records too" {
-  commit_paths "chore: ledger" ledger.jsonl tasks/T1/plan.md
-  git -C "$repo" checkout -q -b records
-  commit_paths "chore: notes" projects/shop/backlog.md
-  git -C "$repo" checkout -q dev
-  commit_paths "chore: steps" manual-steps.md
-  git -C "$repo" merge -q --no-ff -m "Merge records" records
-  push -0
-  assert_equal "$(origin_tip dev)" "$(git -C "$repo" rev-parse dev)"
-}
-
-@test "a cherry-pick, a revert, a fast-forward merge and git am skip pre-commit; the push to dev refuses each" {
-  local start
+@test "every push to dev is refused, however its commits were made, a local merge and its creation too" {
+  local start dev_refused="pre-push: refused: dev changes only through a pull request, merged on \
+GitHub; push a task branch and open a PR to dev"
   start=$(origin_tip dev)
   git -C "$repo" checkout -q -b feat/T1-fix
   commit_paths "fix: the fix" bin/team-open
-  commit_paths "fix: more" coordinator.settings.json
   git -C "$repo" format-patch -q -1 -o "$BATS_TEST_TMPDIR/patches"
   git -C "$repo" checkout -q dev
-  git -C "$repo" cherry-pick feat/T1-fix~1 >/dev/null
-  commit_paths "chore: ledger" ledger.jsonl
-  git -C "$repo" revert --no-edit HEAD~1 >/dev/null
+  # A cherry-pick, a revert and git am skip pre-commit.
+  git -C "$repo" cherry-pick feat/T1-fix >/dev/null
+  push -1
+  assert_equal "$stderr" "$dev_refused"
+  git -C "$repo" revert --no-edit HEAD >/dev/null
+  push -1
+  assert_equal "$stderr" "$dev_refused"
+  git -C "$repo" reset -q --keep "$start"
   git -C "$repo" am -q "$BATS_TEST_TMPDIR"/patches/*.patch
   push -1
-  assert_refused "
-  $(git -C "$repo" rev-parse --short HEAD) fix: more
-    coordinator.settings.json
-  $(git -C "$repo" rev-parse --short HEAD~1) Revert \"fix: the fix\"
-    bin/team-open
-  $(git -C "$repo" rev-parse --short HEAD~3) fix: the fix
-    bin/team-open"
-  assert_equal "$(origin_tip dev)" "$start"
-
+  assert_equal "$stderr" "$dev_refused"
+  # A fast-forward merge, and a merge commit made without the hooks.
   git -C "$repo" reset -q --keep "$start"
   git -C "$repo" merge -q --ff-only feat/T1-fix
   push -1
-  assert_contains "$stderr" $'\n    bin/team-open'
-  assert_contains "$stderr" $'\n    coordinator.settings.json'
-  assert_equal "$(origin_tip dev)" "$start"
-}
-
-@test "a local merge on dev that brings in more than records is refused like any other commit" {
-  git -C "$repo" checkout -q -b feat/T1-code
-  commit_paths "feat: code" bin/team-open
-  git -C "$repo" checkout -q dev
-  commit_paths "chore: ledger" ledger.jsonl
-  git -C "$repo" -c core.hooksPath= merge -q --no-ff -m "Merge feat/T1-code" feat/T1-code
+  git -C "$repo" reset -q --keep "$start"
+  git -C "$repo" -c core.hooksPath= merge -q --no-ff -m "Merge feat/T1-fix" feat/T1-fix
   push -1
-  assert_refused "
-  $(git -C "$repo" rev-parse --short HEAD) Merge feat/T1-code
-    bin/team-open"
+  assert_equal "$stderr" "$dev_refused"
+  # Deleted, and created on a remote that lacks it.
+  push -1 origin :dev
+  assert_equal "$stderr" "$dev_refused"
+  git init -q --bare "$BATS_TEST_TMPDIR/new.git"
+  git -C "$repo" remote add new "$BATS_TEST_TMPDIR/new.git"
+  push -1 new feat/T1-fix:dev
+  assert_equal "$stderr" "$dev_refused"
+  assert_equal "$(origin_tip dev)" "$start"
+  assert_equal "$(git -C "$BATS_TEST_TMPDIR/new.git" for-each-ref)" ""
 }
 
-@test "dev only fast-forwards: a push behind origin or over it is refused" {
-  local other=$HOME/projects/other
-  git clone -q "$BATS_TEST_TMPDIR/origin/home.git" "$other"
-  echo x >"$other/ledger.jsonl"
-  git -C "$other" add ledger.jsonl
-  git -C "$other" commit -q -m "chore: ledger"
-  git -C "$other" push -q origin dev
-  commit_paths "chore: plan" tasks/T1/plan.md
-  push -1 --force origin dev
-  assert_equal "$stderr" "pre-push: refused: origin's dev is at $(origin_tip dev), which this \
-clone lacks; fetch and rebase onto it first (git pull --rebase)"
-  git -C "$repo" fetch -q
-  push -1 --force origin dev
-  assert_equal "$stderr" "pre-push: refused: dev only fast-forwards; this push would drop \
-commits origin has"
-  git -C "$repo" pull -q --rebase
-  push -0
-}
-
-@test "main only fast-forwards to a commit already on origin/dev, and neither branch is deleted" {
+@test "main only fast-forwards to a commit already on origin/dev, and is never deleted" {
   git -C "$repo" -c core.hooksPath= push -q origin dev:main
-  commit_paths "chore: ledger" ledger.jsonl
+  commit_paths "feat: code" bin/team-open
   push -1 origin dev:main
   assert_equal "$stderr" "pre-push: refused: main only fast-forwards to a commit already on \
 origin/dev, as a release does"
-  push -0 origin dev
+  merge_on_github
   push -0 origin dev:main
   assert_equal "$(origin_tip main)" "$(origin_tip dev)"
+  # Over origin's main, and from behind it.
+  git -C "$repo" -c core.hooksPath= push -q --force origin dev~1:main
+  git -C "$repo" fetch -q
+  push -0 origin dev:main
+  # A main moved by another clone.
+  local other=$HOME/projects/other
+  git clone -q "$BATS_TEST_TMPDIR/origin/home.git" "$other"
+  git -C "$other" checkout -q -B main origin/dev~1
+  echo x >"$other/other.sh"
+  git -C "$other" add other.sh
+  git -C "$other" commit -q -m "feat: other"
+  git -C "$other" push -q --force origin main
+  push -1 --force origin dev:main
+  assert_equal "$stderr" "pre-push: refused: origin's main is at $(origin_tip main), which this \
+clone lacks; fetch it first (git fetch origin)"
+  git -C "$repo" fetch -q
+  push -1 --force origin dev:main
+  assert_equal "$stderr" "pre-push: refused: main only fast-forwards; this push would drop commits \
+origin has"
   push -1 origin :main
   assert_equal "$stderr" "pre-push: refused: main is never deleted"
-  push -1 origin :dev
-  assert_equal "$stderr" "pre-push: refused: dev is never deleted"
 }
 
-@test "main is never created by a push; dev is, and any other branch pushes freely" {
+@test "main is never created by a push, and any other branch pushes freely" {
   push -1 origin dev:main
   assert_equal "$stderr" "pre-push: refused: main is created only by a release, from dev, on GitHub"
   assert_equal "$(origin_tip main)" ""
   git -C "$repo" checkout -q -b feat/T1-code
   commit_paths "feat: code" bin/team-open
   push -0 origin feat/T1-code feat/T1-code:other
-  push -0 origin feat/T1-code:refs/heads/dev2
-  git init -q --bare "$BATS_TEST_TMPDIR/new.git"
-  git -C "$repo" remote add new "$BATS_TEST_TMPDIR/new.git"
-  push -0 new feat/T1-code:dev
+  push -0 origin feat/T1-code:refs/heads/dev2 feat/T1-code:refs/tags/dev
+  push -0 origin :other
 }
 
 # A bare repository that is not the team home's origin, as the remote elsewhere; prints its path.
@@ -191,6 +171,15 @@ only to the team home's origin, $home, not to elsewhere ($other)"
   assert_equal "$stderr" "pre-push: refused: feat/T1-more holds records (projects.toml), which go \
 only to the team home's origin, and the team home $TEAM_HOME has none"
   assert_equal "$(origin_tip feat/T1-more)" ""
+
+  # With no team home named, records go nowhere, and code goes anywhere.
+  unset TEAM_HOME
+  push -1 origin feat/T1-more
+  assert_equal "$stderr" "pre-push: refused: feat/T1-more holds records (projects.toml), which go \
+only to the team home's origin, and neither TEAM_HOME nor ~/.config/agent-team/home names the team home"
+  git -C "$repo" checkout -q -b feat/T1-clean dev
+  commit_paths "feat: clean" bin/team-open
+  push -0 elsewhere feat/T1-clean
 }
 
 @test "records go to the team home's origin; a tree without them goes anywhere, and deleting a branch is no push of records" {
@@ -202,9 +191,9 @@ only to the team home's origin, and the team home $TEAM_HOME has none"
 
   git -C "$repo" checkout -q -b feat/T1-code dev
   commit_paths "feat: code" bin/team-open
-  push -0 elsewhere feat/T1-code feat/T1-code:dev
-  assert_equal "$(elsewhere_refs)" "$(git -C "$repo" rev-parse feat/T1-code) refs/heads/dev
-$(git -C "$repo" rev-parse feat/T1-code) refs/heads/feat/T1-code"
+  push -0 elsewhere feat/T1-code feat/T1-code:other
+  assert_equal "$(elsewhere_refs)" "$(git -C "$repo" rev-parse feat/T1-code) refs/heads/feat/T1-code
+$(git -C "$repo" rev-parse feat/T1-code) refs/heads/other"
   git -C "$BATS_TEST_TMPDIR/elsewhere.git" fetch -q "$repo" feat/T1-plan:refs/heads/old
   push -0 elsewhere :old
   assert_equal "$(git -C "$BATS_TEST_TMPDIR/elsewhere.git" rev-parse -q --verify refs/heads/old || true)" ""

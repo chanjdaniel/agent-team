@@ -19,7 +19,7 @@ The team itself (coordinator and workers) runs here only after stage 9, because 
   Leave alone every secret file, credentials file, `~/.claude.json` and `~/.claude/channels/`: never read, print, copy or hash them, and never run `op`.
 - The lease is Daniel's: run `team-resume` only when Daniel says the team should run here (stage 9); a steal is Daniel's alone, typed in their own terminal.
 - Anything needing `sudo` or an admin password is Daniel's, in their own terminal; the bootstrap stops with the exact command.
-- Three settings are Daniel's call even where you could write them: the code checkout's `core.hooksPath` (every team session is denied setting it), `autoMode.environment` (what auto mode's classifier believes about this machine), and a `team-config apply` that replaces a file or skill changed on this machine.
+- Three settings are Daniel's call even where you could write them: the code checkout's and the team home's `core.hooksPath` (every team session is denied setting it), `autoMode.environment` (what auto mode's classifier believes about this machine), and a `team-config apply` that replaces a file or skill changed on this machine.
 - Every stage is idempotent and skips what the doctor already passes, so re-running is the answer to any interruption.
 - GitHub unreachable: stop and say so; carry on from the same stage once it answers.
 - The same step failing twice: stop and give Daniel the failing doctor lines (they never hold a secret) and the last lines of `~/.local/state/agent-team/bootstrap.log`.
@@ -54,7 +54,7 @@ Each stage after the first is one `~/agent-team/bin/team-bootstrap` run; read it
 3. The machine stage also reports the team home's setting, which stage 1 wrote: `~/.config/agent-team/home` holds the team home's path, relative to `$HOME` (or absolute), and is how every script, hook and session on this machine finds the team home; like the machine's name it is this machine's own and never moved.
    When it is missing, `~/agent-team/bin/team-bootstrap --home agent-team-records --stage machine` writes it (it can go with `--name` in one run).
    The bootstrap writes it once: a setting that names another checkout is left as it is, and a path with no checkout yet is refused until the clone is there.
-   Until it is written, the doctor's `team home` line warns that the team home is the code checkout, which holds no records, and its fix clones `~/agent-team-records` first when it is missing; once the clone is there, stage 7 lists the setting among Daniel's steps.
+   Until it is written, nothing names the team home: every script but the bootstrap refuses, naming the setting, the doctor's `team home` line fails, and the machine stage stops on Daniel's step to clone `~/agent-team-records` (when it is missing) and name it.
 
 ### Stage 3: OS packages
 
@@ -152,14 +152,15 @@ Done when `check` lists no `Daniel <n>:` line.
 | Trust, once in the team home (`~/agent-team-records`, where the coordinator starts: the doctor's `trust team home` line) and once per project root (its `trust <project>` line) | 7 | own terminal: `~/agent-team/bin/team-bootstrap --stage trust`, which starts `claude` in each untrusted root in turn (accept, `/exit`); for a single root, `claude` there | interactive dialog |
 | Chrome | 7 | macOS: `brew install --cask google-chrome`; Arch: `google-chrome` from the AUR, or `sudo pacman -S --needed chromium` | browser sign-in, `sudo` on Arch |
 | The dev guard | 7 | this session: `! git -C ~/agent-team config core.hooksPath bin/hooks/git` | every team session is denied setting `core.hooksPath` |
+| The records guard | 7 | this session: `! git -C ~/agent-team-records config core.hooksPath ~/agent-team/bin/hooks/records-git` | every team session is denied setting `core.hooksPath` |
 | `autoMode.environment` | 7 | Daniel's own edit of `~/.claude/settings.json` (`claude auto-mode defaults` shows the form) | it is what auto mode's classifier trusts about this machine |
 | "hand off" on the old machine, or the steal | 9 | Discord; own terminal for `team-resume --steal` | the lease is Daniel's call |
 | Pinning the coordinator | 9 | `claude agents`, Ctrl+T | an agent-view keystroke, no CLI |
 
 On a fresh machine, Daniel meets them in this order (recorded from `team-bootstrap` in a scratch `$HOME` with every installer stubbed, 2026-10-23):
 
-- macOS: Command Line Tools dialog, Homebrew, GitHub login, the name, (restart), Docker Desktop's license, the 1Password app, `team-secrets restore`, trust for the team home and each project root (one `--stage trust` in their terminal), Chrome, the dev guard, `autoMode.environment`.
-- Arch: git and gh, GitHub login, the name, `team-bootstrap --stage packages` and then `--stage tools` in their terminal, (restart), the Docker daemon (and the `docker` group), the 1Password app, `team-secrets restore`, trust for the team home and each project root (one `--stage trust` in their terminal), Chrome, the dev guard, `autoMode.environment`.
+- macOS: Command Line Tools dialog, Homebrew, GitHub login, the name, (restart), Docker Desktop's license, the 1Password app, `team-secrets restore`, trust for the team home and each project root (one `--stage trust` in their terminal), Chrome, the dev guard, the records guard, `autoMode.environment`.
+- Arch: git and gh, GitHub login, the name, `team-bootstrap --stage packages` and then `--stage tools` in their terminal, (restart), the Docker daemon (and the `docker` group), the 1Password app, `team-secrets restore`, trust for the team home and each project root (one `--stage trust` in their terminal), Chrome, the dev guard, the records guard, `autoMode.environment`.
 
 ## 4. macOS differences
 

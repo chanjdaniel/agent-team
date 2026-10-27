@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# Invariants of the team home itself, checked on the tracked files of this checkout.
+# Invariants of the code repository, checked on the tracked files of this checkout.
 
 load helpers/common
 
@@ -7,10 +7,9 @@ setup() {
   sandbox
 }
 
-# The records (bin/lib/records) are history and notes written outside any PR, kept as written.
-@test "no em dash in tracked Markdown or templates outside the records" {
+@test "no em dash in tracked Markdown or templates" {
   local files hits
-  files=$(git -C "$REPO_ROOT" ls-files -z -- '*.md' 'templates/**' | bash -c 'source "$1/bin/lib/team.sh"; non_records' _ "$REPO_ROOT")
+  files=$(git -C "$REPO_ROOT" ls-files -z -- '*.md' 'templates/**' | tr '\0' '\n')
   [[ -n $files ]]
   hits=$(cd "$REPO_ROOT" && xargs -d '\n' grep -n $'—' -- <<<"$files" || true)
   assert_equal "$hits" ""
@@ -21,7 +20,7 @@ setup() {
 # atlas_host_files <dir>
 atlas_host_files() {
   local files
-  files=$(git -C "$1" ls-files -z | bash -c 'source "$1/bin/lib/team.sh"; non_records' _ "$REPO_ROOT")
+  files=$(git -C "$1" ls-files -z | tr '\0' '\n')
   [[ -n $files ]]
   (cd "$1" && xargs -d '\n' grep -I -H -i -o -E '[a-z0-9-]+\.[a-z0-9-]+\.mongodb\.net' -- <<<"$files" \
     | grep -v -i '\.example\.mongodb\.net$' | cut -d: -f1 | sort -u || true)
@@ -53,8 +52,8 @@ atlas_host_files() {
   assert_equal "$output" ""
 }
 
-# Each tracked path of the checkout <dir> that matches neither or both of its lists, bin/lib/code
-# and bin/lib/records, with which, one per line: unassigned_paths <dir>
+# Each tracked path of the checkout <dir> that is not code (bin/lib/code) or is a record
+# (bin/lib/records), with which, one per line: unassigned_paths <dir>
 unassigned_paths() {
   local path glob in_code in_records
   local -a code records
@@ -70,10 +69,8 @@ unassigned_paths() {
       # shellcheck disable=SC2053 # the list's line is a glob
       [[ $path != $glob ]] || { in_records=1; break; }
     done
-    case $in_code$in_records in
-      00) echo "$path: neither code nor records" ;;
-      11) echo "$path: both code and records" ;;
-    esac
+    [[ $in_code == 1 ]] || echo "$path: not code"
+    [[ $in_records == 0 ]] || echo "$path: a record"
   done < <(git -C "$1" ls-files -z)
 }
 
@@ -86,23 +83,25 @@ path_copy() {
   cp "$REPO_ROOT/bin/lib/code" "$REPO_ROOT/bin/lib/records" "$1/bin/lib/"
 }
 
-# The public repository takes the code list only, so a new path must be assigned before it lands.
-@test "every tracked path is exactly one of code (bin/lib/code) and records (bin/lib/records)" {
+# The code repository holds code only, so a new path is listed as code in its PR.
+@test "every tracked path is code (bin/lib/code) and none is a record (bin/lib/records)" {
   run -0 unassigned_paths "$REPO_ROOT"
   assert_equal "$output" ""
 }
 
-@test "a tracked path in neither list, or in both, is named" {
+@test "a tracked path that is not code, or is a record, is named" {
   local copy=$BATS_TEST_TMPDIR/copy
   path_copy "$copy"
   run -0 unassigned_paths "$copy"
   assert_equal "$output" ""
-  touch "$copy/NOTES.md"
-  git -C "$copy" add NOTES.md
+  touch "$copy/NOTES.md" "$copy/ledger.jsonl"
+  git -C "$copy" add NOTES.md ledger.jsonl
   echo 'sops/machine-setup.md' >>"$copy/bin/lib/records"
   run -0 unassigned_paths "$copy"
-  assert_equal "$output" "NOTES.md: neither code nor records
-sops/machine-setup.md: both code and records"
+  assert_equal "$output" "NOTES.md: not code
+ledger.jsonl: not code
+ledger.jsonl: a record
+sops/machine-setup.md: a record"
 }
 
 @test "each machine's usage day files in the team home are records, never code" {
@@ -238,7 +237,7 @@ assert_denies() {
   done
 }
 
-# The deny rules are a speed bump, not the guard: git's hooks and team-merge's records check are
+# The deny rules are a speed bump, not the guard: git's hooks and dev's protection on GitHub are
 # (CLAUDE.md). Each rule matches the commands it is for; the commands below them stay allowed.
 
 @test "the git hooks' deny rule: --no-verify last, on any git command" {
@@ -556,18 +555,39 @@ team-review-status https://github.com/me/shop/pull/5 a1b2c3d4e5f60718293a4b5c6d7
 COMMANDS
 }
 
-@test "GitHub's CI runs only on a pull request to main and by hand, and no workflow runs for dev" {
+@test "GitHub's CI runs on every pull request to dev and main and by hand, and no workflow runs on a push or for a fork's target" {
   local workflow
-  # CI policy B: the top-level keys under on:, and the branches its pull_request names.
+  # The top-level keys under on:, and the branches its pull_request names.
   assert_equal "$(sed -n '/^on:$/,/^[^ ]/s/^  \([a-z_]*\):.*$/\1/p' "$REPO_ROOT/.github/workflows/ci.yml")" \
     $'pull_request\nworkflow_dispatch'
-  assert_equal "$(sed -n '/^on:$/,/^[^ ]/s/^    branches: //p' "$REPO_ROOT/.github/workflows/ci.yml")" "[main]"
+  assert_equal "$(sed -n '/^on:$/,/^[^ ]/s/^    branches: //p' "$REPO_ROOT/.github/workflows/ci.yml")" "[dev, main]"
   for workflow in "$REPO_ROOT"/.github/workflows/*.yml; do
-    if grep -nE '^\s*(push|pull_request_target|schedule):' "$workflow" || grep -nE 'branches: .*\bdev\b' "$workflow"; then
-      echo "$workflow runs for dev" >&2
+    if grep -nE '^\s*(push|pull_request_target|schedule):' "$workflow"; then
+      echo "$workflow runs on a push, a schedule or with a fork's target's secrets" >&2
       return 1
     fi
   done
+}
+
+# CI and a stranger's fresh clone name no team home, and the checks need none (every test makes
+# its own): a malformed command line is the usage error, never the team home's refusal.
+@test "tests/run, the team-heavy lock it runs under, and servers/install, which its toolkit tests run, need no team home" {
+  unset TEAM_HOME
+  run -2 --separate-stderr "$REPO_ROOT/tests/run" nothing
+  assert_equal "$stderr" "run: usage: tests/run [shellcheck|bats|toolkits]"
+  run -0 --separate-stderr "$REPO_ROOT/bin/team-heavy" run -- echo ran
+  assert_equal "$output" ran
+  run -2 --separate-stderr "$REPO_ROOT/servers/install" nothing
+  assert_equal "$stderr" "install: usage: servers/install [--force]"
+}
+
+# The registry fixture is shaped like the team home's, whose required checks for agent-team are
+# the ones dev's protection requires: CI's job ids, each a check name on GitHub.
+@test "CI's jobs are exactly agent-team's required checks, and agent-team has no local checks" {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  run_bin -0 team-project agent-team
+  assert_equal "$(jq -c '[.required_checks, .local_checks]' <<<"$output")" \
+    "[$(sed -n '/^jobs:$/,$s/^  \([a-z_-]*\):$/\1/p' "$REPO_ROOT/.github/workflows/ci.yml" | jq -R . | jq -cs .),[]]"
 }
 
 # The README's inventory is pasted from the ops load check; the eval mocks' _tools.json, which the

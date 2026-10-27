@@ -1,24 +1,31 @@
 #!/usr/bin/env bash
-# Git's pre-commit hook for the team home, with core.hooksPath set to bin/hooks/git: on dev it
-# refuses a commit that touches anything but records (bin/lib/records), naming each such path; on
-# main it refuses every commit, since a release reaches main by fast-forward from dev. Any other
-# branch, and a detached HEAD (a rebase replaying commits), commits freely.
+# Git's pre-commit hook for the code repository, with core.hooksPath set to bin/hooks/git: the
+# code changes only through pull requests and never holds records. On dev and on main it refuses
+# every commit, since dev changes only through a pull request merged on GitHub and a release
+# reaches main by fast-forward from dev. On any other branch, and on a detached HEAD, it refuses a
+# commit that adds or changes a records path (bin/lib/records), naming each; one that deletes a
+# record, or renames it to code, goes through.
 # pre-merge-commit runs it for a merge commit, which is judged by what it brings in; a commit that
 # skips both (cherry-pick, revert, am, a fast-forward merge) meets pre-push instead.
 # Exit 0 the commit may go ahead, 1 refused with the reason on stderr.
 set -euo pipefail
+# The team home is never read here, so a machine that names none still commits.
+# shellcheck disable=SC2034 # read by bin/lib/team.sh
+team_home_report=1
 source "$(dirname "${BASH_SOURCE[0]}")/../../lib/team.sh" "$@"
 
 case $(git symbolic-ref --short -q HEAD || true) in
   main) die "refused: nothing is committed on main; a release reaches it by fast-forward from dev" ;;
   dev)
-    others=$(git diff --cached --name-only --no-renames -z | non_records)
-    [[ -n $others ]] || exit 0
-    advice="commit these on a task branch and open a PR to dev"
+    advice="commit on a task branch and open a PR to dev"
     if [[ -n ${merging:-} ]] || git rev-parse -q --verify MERGE_HEAD >/dev/null; then
-      advice+=", or, for a merge from origin/dev, rebase onto it instead (git pull --rebase)"
+      advice+=", or, to bring in origin/dev, fast-forward to it (git pull --ff-only)"
     fi
-    die "refused: a direct commit on dev may touch records only ($(records_list)); $advice:
-  ${others//$'\n'/$'\n'  }"
+    die "refused: nothing is committed on dev, which changes only through a pull request; $advice"
     ;;
 esac
+
+held=$(git diff --cached --name-only --no-renames --diff-filter=d -z | only_records)
+[[ -z $held ]] || die "refused: records ($(records_list)) live in the team home, never in the code \
+repository; unstage them (git restore --staged -- <path>):
+  ${held//$'\n'/$'\n'  }"

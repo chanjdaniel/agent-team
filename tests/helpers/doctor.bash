@@ -48,8 +48,8 @@ declare -gA FORMAT=(
 # with its heartbeat enabled, every tool answers nothing yet (tools_at gives them versions), the
 # team's Claude config and plugins are installed, so are the pinned MCP servers, every secret is
 # in place, the gate's opencode wrapper is installed and config.yaml runs the gate on it, two
-# projects are registered and cloned as the bootstrap clones them, and
-# ~/.config/agent-team/home names the team home.
+# projects are registered and cloned as the bootstrap clones them,
+# ~/.config/agent-team/home names the team home, and its core.hooksPath the code's records-git.
 doctor_machine() {
   hold_lease home-pc >/dev/null
   fake_service_managers
@@ -79,6 +79,8 @@ EOF
   rm "$STUB_CALLS/servers-install.log"
   git init -q "$CODE_CHECKOUT"
   git -C "$CODE_CHECKOUT" config core.hooksPath bin/hooks/git
+  # The team home, with the records guard on, as Daniel turns it on.
+  git -C "$TEAM_HOME" config core.hooksPath "$CODE_CHECKOUT/bin/hooks/records-git"
 
   # The OS: Linux, from an Arch os-release file, until a test says Darwin.
   stub_command uname

@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+# Refuse what a change adds that a repository never takes, naming each path and the kind of data,
+# never a value: one scan for the code repository's CI (ci.yml's data job) and the records
+# repository's pre-commit hook (bin/hooks/records-git/pre-commit).
+#
+# Usage: data-check code|records [<base> <head>]
+#   code           Refuses an email address outside the fixture domains, any image, and any
+#                  path under a node_modules/ directory, which the code repository never tracks.
+#   records        Refuses an email address at a public provider (gmail.com, outlook.com and the
+#                  like) other than git's user.email, and any image: a screenshot is never kept
+#                  in git, so no image's text needs reading.
+#   <base> <head>  Scans what <head> adds since its merge base with <base>, a pull request's
+#                  commits; without them, what the index adds to HEAD, the commit being made.
+# Only what is added counts: a text file's added lines, a binary file or an image whole (an
+# image by its first bytes or its extension). The fixture domains: any with an example label
+# (example.com, example.co.uk, x.example), any under .test, .invalid or .localhost, localhost,
+# and ex.com, ex.io and ex.org with their subdomains. A noreply or no-reply address, one at
+# users.noreply.github.com and git@<host> (an SSH remote) are services, never refused, and a
+# name@word.<file type> (logo@2x.png) is no address. Neither policy reads vendored code
+# (tests/vendor/), which is its upstream's as published, and records does not read a package
+# (a node_modules/ directory, in an archived scratch copy, say) either.
+# Exit 0 nothing refused, 1 refused with each path and kind on stderr, 2 a malformed command line.
+set -euo pipefail
+# No team home is read, so CI and a checkout that names none run it.
+# shellcheck disable=SC2034 # read by bin/lib/team.sh
+team_home_report=1
+source "$(dirname "${BASH_SOURCE[0]}")/team.sh" "$@"
+
+policy=${1:-}
+[[ $policy == code || $policy == records ]] ||
+  usage_error "the first argument is code or records, not ${policy:-nothing}"
+case $# in
+  1) range=(--cached) ;;
+  3)
+    for rev in "$2" "$3"; do
+      git rev-parse -q --verify "$rev^{commit}" >/dev/null || die "$rev is no commit here"
+    done
+    range=("$2...$3")
+    ;;
+  *) usage_error "data-check $policy takes a base and a head, or neither" ;;
+esac
+
+EMAIL="[A-Za-z0-9._%+'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,24}"
+FILE_TYPE='png|jpe?g|svg|gif|webp|ico|js|ts|vue|css|scss|py|json|md|html|lock|map|mjs|cjs|txt|min'
+PROVIDER='^(gmail|googlemail|hotmail|outlook|live|msn|yahoo|ymail|icloud|me|mac|aol|protonmail|proton|pm|gmx|mail|shaw|telus|rogers|sympatico|bell|yandex|qq|163|zoho|hey|fastmail)\.[a-z.]{2,8}$'
+IMAGE_TYPE='png|jpe?g|gif|webp|bmp|tiff?|ico|svg|heic|heif|avif'
+owner=''
+[[ $policy == code ]] || owner=$(git config user.email || true)
+owner=${owner,,}
+
+# The kind of one address: none (no address), service, fixture, owner, provider or other.
+email_kind() {
+  local addr=${1,,}
+  local name=${addr%@*} domain=${addr##*@}
+  if [[ $domain =~ \.($FILE_TYPE)$ || $domain =~ ^[0-9] ]]; then
+    echo none
+  elif [[ $name =~ ^no-?reply$ || $name == git || $domain == users.noreply.github.com ]]; then
+    echo service
+  elif [[ $domain =~ (^|\.)example(\.|$) || $domain =~ \.(test|invalid|localhost)$ ||
+    $domain == localhost || $domain =~ (^|\.)ex\.(com|io|org)$ ]]; then
+    echo fixture
+  elif [[ -n $owner && $addr == "$owner" ]]; then
+    echo owner
+  elif [[ $domain =~ $PROVIDER ]]; then
+    echo provider
+  else
+    echo other
+  fi
+}
+
+# How many addresses in the text on stdin this policy refuses, as "<count> <kind words>" for
+# each kind it refuses, one per line.
+refused_emails() {
+  local addr kind noun words
+  local -A count=()
+  while IFS= read -r addr; do
+    kind=$(email_kind "$addr")
+    case $policy:$kind in
+      code:provider | code:other | records:provider) count[$kind]=$((${count[$kind]:-0} + 1)) ;;
+    esac
+  done < <(LC_ALL=C grep -aoE "$EMAIL" || true)
+  for kind in "${!count[@]}"; do
+    noun=address words="outside the fixture domains"
+    ((count[$kind] == 1)) || noun=addresses
+    [[ $kind != provider ]] || words="at a public provider"
+    echo "${count[$kind]} email $noun $words"
+  done | sort
+}
+
+# The image type of the blob <sha>, by its first bytes, or nothing: image_magic <sha>
+image_magic() {
+  local hex
+  hex=$(git cat-file blob "$1" | head -c 16 | od -An -tx1 | tr -d ' \n')
+  case $hex in
+    89504e47*) echo png ;;
+    ffd8ff*) echo jpeg ;;
+    474946383*) echo gif ;;
+    52494646????????57454250*) echo webp ;;
+    424d*) echo bmp ;;
+    49492a00* | 4d4d002a*) echo tiff ;;
+    00000100*) echo ico ;;
+    ????????66747970*) echo heif ;;
+  esac
+}
+
+# What the lines <path> adds hold that this policy refuses (the whole blob <sha> when git
+# takes it for binary), or nothing: refused_text <sha> <path>
+refused_text() {
+  local diff
+  diff=$(git diff "${range[@]}" -U0 --no-color --no-ext-diff --no-textconv -- ":(literal)$2")
+  if grep -q '^Binary files ' <<<"$diff"; then
+    git cat-file blob "$1" | refused_emails
+  else
+    sed -n '/^@@/,$p' <<<"$diff" | { grep '^+' || true; } | cut -c2- | refused_emails
+  fi
+}
+
+refusals=() refused_paths=()
+while IFS= read -r -d '' meta && IFS= read -r -d '' path; do
+  read -r _ mode _ sha _ <<<"${meta#:}"
+  # A submodule's commit or a symlink's target holds no data of its own, and vendored code, or a
+  # package in the records, is its upstream's, as published, its authors' addresses with it.
+  [[ $mode != 160000 && $mode != 120000 ]] || continue
+  [[ $path != tests/vendor/* ]] || continue
+  package=0
+  [[ $path != node_modules/* && $path != */node_modules/* ]] || package=1
+  ((!package)) || [[ $policy == code ]] || continue
+  if ((package)); then
+    found="a package tree (node_modules/)"
+  elif [[ -n $(image_magic "$sha") || ${path,,} =~ \.($IMAGE_TYPE)$ ]]; then
+    found="an image"
+  else
+    found=$(refused_text "$sha" "$path")
+  fi
+  [[ -n $found ]] || continue
+  refused_paths+=("$path")
+  while IFS= read -r words; do refusals+=("$path: $words"); done <<<"$found"
+done < <(git diff "${range[@]}" --raw -z --no-abbrev --no-renames --diff-filter=d)
+
+((${#refusals[@]} == 0)) || {
+  # The paths lead, so a caller that shows only the first line (commit_records) names them.
+  list=$(printf '%s, ' "${refused_paths[@]:0:3}")
+  list=${list%, }
+  ((${#refused_paths[@]} <= 3)) || list+=" and $((${#refused_paths[@]} - 3)) more"
+  verb=add
+  ((${#refused_paths[@]} > 1)) || verb=adds
+  if [[ $policy == code ]]; then
+    reason="$verb a real email address, an image or a package tree, which the code repository never \
+takes: a test or doc uses an address at example.com or example.invalid, and an image or a \
+node_modules/ directory stays out of git"
+  else
+    reason="$verb an email address at a public provider or an image, which the records never take: \
+other people's addresses and screenshots stay out of git"
+  fi
+  die "refused: $list $reason; take each out, then commit again:$(printf '\n  %s' "${refusals[@]}")"
+}

@@ -260,15 +260,20 @@ clone -q https://github.com/owner/site.git $SITE"
   [[ $output != *" team home: "* && $output != *" records: "* && $output != *"FAIL checkout "* ]]
 }
 
-@test "a --home naming the team home the run already reads, however spelled, runs the doctor once (report F6)" {
+@test "with nothing naming the team home, the machine stage stops on Daniel's step to clone and name it" {
   fresh arch
   tools_at arch
   echo laptop >"$HOME/.config/agent-team/machine"
-  # TEAM_HOME unset and no setting: the team home is the code checkout, the directory above bin/.
   unset TEAM_HOME
-  local home
-  home=$(other_spelling "$CODE_CHECKOUT")
-  run "$CODE_CHECKOUT/bin/team-bootstrap" --stage machine --home "$home"
-  assert_contains "$output" "machine: named the team home $home (~/.config/agent-team/home)"
-  assert_equal "$(grep -c '"auth","status","--json"' "$STUB_CALLS/claude.log")" 1
+  run -1 "$CODE_CHECKOUT/bin/team-bootstrap"
+  assert_equal "$(tail -n1 <<<"$output")" "machine: Daniel: clone the team home, then name it for this machine: git clone --single-branch --branch dev https://github.com/chanjdaniel/agent-team-records.git ~/agent-team-records && git -C ~/agent-team-records remote set-branches --add origin lease && team-bootstrap --home agent-team-records"
+  [[ ! -e $STUB_CALLS/git-clone.log ]]
+  # Once it is cloned, only naming it is left; the check stage says the same.
+  mkdir "$HOME/agent-team-records"
+  run -1 "$CODE_CHECKOUT/bin/team-bootstrap"
+  assert_equal "$(tail -n1 <<<"$output")" "machine: Daniel: name the team home's checkout for this machine: team-bootstrap --home agent-team-records"
+  rmdir "$HOME/agent-team-records"
+  run -1 "$CODE_CHECKOUT/bin/team-bootstrap" --stage check
+  assert_contains "$output" "check: Daniel 1: team home: clone the team home, then name it for this machine: git clone --single-branch --branch dev https://github.com/chanjdaniel/agent-team-records.git ~/agent-team-records && git -C ~/agent-team-records remote set-branches --add origin lease && team-bootstrap --home agent-team-records (~/.config/agent-team/home is missing)"
+  [[ $output != *"these failed: "*"team home"* ]]
 }

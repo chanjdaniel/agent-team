@@ -2,8 +2,8 @@
 # shellcheck disable=SC2153 # LOCK and the other globals are helpers/doctor.bash's
 # team-doctor: one PASS, WARN or FAIL line per thing this machine needs, on the machine
 # tests/helpers/doctor.bash builds: every tool a version stub, the OS a stubbed uname.
-# This file: the machine, team home, git hooks, logins and Claude config lines, --json, and the
-# checks of bin/lib/doctor.d/ in name order;
+# This file: the machine, team home, git hooks, records hooks, logins and Claude config lines, --json,
+# and the checks of bin/lib/doctor.d/ in name order;
 # team-doctor-*.bats hold the other lines.
 
 load helpers/common
@@ -68,27 +68,52 @@ setup() {
     "PASS team home: ~/agent-team-records, named by TEAM_HOME: a checkout of its own on dev, with an origin"
 }
 
-@test "with neither TEAM_HOME nor the setting, the team home line warns that the team home is the code checkout" {
+@test "the records hooks line fails unless the team home's own core.hooksPath is the code's records-git, by absolute path" {
+  tools_at arch
+  local want=$CODE_CHECKOUT/bin/hooks/records-git
+  local fix="fix: Daniel runs git -C $TEAM_HOME config core.hooksPath $want"
+  git -C "$TEAM_HOME" config --unset core.hooksPath || true
+  run_bin -1 team-doctor
+  assert_equal "$(line_of 'records hooks')" \
+    "FAIL records hooks: the team home's core.hooksPath is unset, so git runs no data check on its commits; $fix"
+  # The code's own hooks are the wrong ones for the records.
+  git -C "$TEAM_HOME" config core.hooksPath bin/hooks/git
+  run_bin -1 team-doctor
+  assert_equal "$(line_of 'records hooks')" \
+    "FAIL records hooks: the team home's core.hooksPath is bin/hooks/git, not $want; $fix"
+  git -C "$TEAM_HOME" config core.hooksPath "$want/"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'records hooks')" "PASS records hooks: the team home's core.hooksPath is $want"
+  # Run from a worktree of the code, the line still names the primary checkout's hooks.
+  git -C "$CODE_CHECKOUT" checkout -q -b feat/T1-thing
+  git -C "$CODE_CHECKOUT" add -A
+  git -C "$CODE_CHECKOUT" commit -q -m "chore: the code"
+  git -C "$CODE_CHECKOUT" worktree add -q "$BATS_TEST_TMPDIR/wt" -b feat/T2-other
+  CODE_CHECKOUT=$BATS_TEST_TMPDIR/wt run_bin team-doctor
+  assert_equal "$(line_of 'records hooks')" "PASS records hooks: the team home's core.hooksPath is $want"
+}
+
+@test "with neither TEAM_HOME nor the setting, the team home line fails with the setting's fix" {
   tools_at arch
   rm "$HOME/.config/agent-team/home"
-  git -C "$CODE_CHECKOUT" remote add origin https://github.com/chanjdaniel/agent-team.git
   unset TEAM_HOME
   run -1 "$CODE_CHECKOUT/bin/team-doctor"
   # With no ~/agent-team-records the fix clones it first, since the setting would name a missing directory.
   assert_equal "$(line_of 'team home')" \
-    "WARN team home: $CODE_CHECKOUT, the code checkout, since neither TEAM_HOME nor ~/.config/agent-team/home names one; fix: clone the team home: git clone --single-branch --branch dev https://github.com/chanjdaniel/agent-team-records.git ~/agent-team-records && git -C ~/agent-team-records remote set-branches --add origin lease, then team-bootstrap --home agent-team-records"
-  # The code checkout's origin is the code's repository, whose fetch is not the team home's.
+    "FAIL team home: neither TEAM_HOME nor ~/.config/agent-team/home names one; fix: clone the team home, then name it: git clone --single-branch --branch dev https://github.com/chanjdaniel/agent-team-records.git ~/agent-team-records && git -C ~/agent-team-records remote set-branches --add origin lease && echo agent-team-records > ~/.config/agent-team/home"
+  # With no team home there is no fetch to check.
   assert_equal "$(line_of 'team home fetch')" ""
   mkdir "$HOME/agent-team-records"
   run -1 "$CODE_CHECKOUT/bin/team-doctor"
   assert_equal "$(line_of 'team home')" \
-    "WARN team home: $CODE_CHECKOUT, the code checkout, since neither TEAM_HOME nor ~/.config/agent-team/home names one; fix: name the team home's checkout, relative to your home directory: echo agent-team-records > ~/.config/agent-team/home"
-  rmdir "$HOME/agent-team-records"
-  # It is still checked: without an origin it fails.
-  git -C "$CODE_CHECKOUT" remote remove origin
-  run -1 "$CODE_CHECKOUT/bin/team-doctor"
-  assert_equal "$(line_of 'team home')" \
-    "FAIL team home: $CODE_CHECKOUT, the code checkout, has no remote origin; fix: git -C $CODE_CHECKOUT remote add origin <the team home's repository URL>"
+    "FAIL team home: neither TEAM_HOME nor ~/.config/agent-team/home names one; fix: name the team home's checkout, relative to your home directory: echo agent-team-records > ~/.config/agent-team/home"
+  # Every other line is still there, the ones that read the team home failing with the same refusal.
+  assert_contains "$(line_of records)" "FAIL records: "
+  assert_equal "$(line_of 'records hooks')" \
+    "FAIL records hooks: no team home to read it from (the team home line); fix: the team home line's fix, then run team-doctor again"
+  assert_equal "$(line_of 'trust team home')" "WARN trust team home: not probed, since no team home is named; fix: the team home line's fix"
+  assert_contains "$(line_of heartbeat)" "heartbeat: "
+  assert_contains "$output" "neither TEAM_HOME nor ~/.config/agent-team/home names the team home; name its checkout there"
 }
 
 @test "a team home that is missing, no checkout of its own, without an origin or on a detached HEAD fails the team home line" {
@@ -107,6 +132,11 @@ setup() {
   run -1 env -u TEAM_HOME "$CODE_CHECKOUT/bin/team-doctor"
   assert_equal "$(line_of 'team home')" \
     "FAIL team home: the setting ~/.config/agent-team/home names no team home; fix: name the team home's checkout, relative to your home directory: echo agent-team-records > ~/.config/agent-team/home"
+  # The code checkout, a checkout with an origin of its own, holds no records.
+  git -C "$CODE_CHECKOUT" remote add origin https://github.com/chanjdaniel/agent-team.git
+  TEAM_HOME=$CODE_CHECKOUT run_bin -1 team-doctor
+  assert_equal "$(line_of 'team home')" \
+    "FAIL team home: $CODE_CHECKOUT, $named, is the code checkout, which holds no records; fix: clone the team home to ~/agent-team-records, then name the team home's checkout, relative to your home directory: echo agent-team-records > ~/.config/agent-team/home"
   # A plain directory, a subdirectory of a checkout, and a worktree of another checkout.
   mkdir -p "$tmp/plain" "$home/tasks"
   TEAM_HOME=$tmp/plain run_bin -1 team-doctor

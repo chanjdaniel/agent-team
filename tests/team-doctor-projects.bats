@@ -265,8 +265,8 @@ trust team home
 captures"
   [[ $(checks | grep -n '^trust team home$' | cut -d: -f1) -lt $(checks | grep -n '^checkout conventioner$' | cut -d: -f1) ]]
 
-  # A team home that is a registered project's primary checkout (the code checkout, agent-team's,
-  # where no records were split off) is that project's trust line's to probe.
+  # A team home that is a registered project's primary checkout is that project's trust line's to
+  # probe.
   cp "$TEAM_HOME/projects.toml" "$SITE/"
   echo "$SITE" >"$STUB_FIXTURES/untrusted"
   : >"$STUB_CALLS/claude-bg.pwd"
