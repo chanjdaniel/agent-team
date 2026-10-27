@@ -20,6 +20,8 @@ jobs:
       HOMEBREW_NO_ENV_HINTS: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       # The runner has the Xcode tools, Homebrew, git and gh; the team's scripts also need
       # Homebrew's Bash 5 to start at all, which bin/lib/platform.sh asks for on a fresh Mac.
       - name: Daniel's first steps
@@ -28,7 +30,7 @@ jobs:
 
   bootstrap-arch:
     runs-on: ubuntu-24.04
-    container: archlinux:latest
+    container: archlinux:latest # zizmor: ignore[unpinned-images] a drill run by hand on a fresh Arch install, with no secret and a read-only token
     steps:
       # git and gh, and Daniel's own user with sudo (passwordless here, where nobody can type it).
       - name: Daniel's first steps
@@ -37,6 +39,8 @@ jobs:
           useradd -m daniel
           echo 'daniel ALL=(ALL) NOPASSWD: ALL' >/etc/sudoers.d/daniel
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - run: |
           chown -R daniel "$GITHUB_WORKSPACE"
           sudo -u daniel -H tests/bootstrap-drill ci-arch

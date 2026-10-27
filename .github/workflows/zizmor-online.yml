@@ -1,0 +1,38 @@
+# zizmor's online audits, on every pull request to dev (and to main, a release's promotion) and by
+# hand: with the run's own read-only token, zizmor asks GitHub whether a pinned action is an
+# impostor commit, has a known advisory or names a ref two ways. It is information, never a
+# required check: it depends on GitHub's API, whose limits and outages must not block a merge.
+# CI's zizmor job is the required, offline audit; this run installs the same zizmor, whose version
+# and sha256 move together in both files.
+name: zizmor online
+
+on:
+  pull_request:
+    branches: [dev, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  zizmor-online:
+    runs-on: ubuntu-24.04
+    env:
+      ZIZMOR_VERSION: 1.31.1
+      ZIZMOR_SHA256: d185f726bdaf92df78273217dfdd24ebcd6b0ef48cf3ce776ff5762b6e138c99
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install zizmor ${{ env.ZIZMOR_VERSION }}
+        run: |
+          archive=zizmor-x86_64-unknown-linux-gnu.tar.gz
+          curl -fsSLO "https://github.com/zizmorcore/zizmor/releases/download/v$ZIZMOR_VERSION/$archive"
+          echo "$ZIZMOR_SHA256  $archive" | sha256sum -c -
+          mkdir zizmor-bin
+          tar -xzf "$archive" -C zizmor-bin zizmor
+          echo "$PWD/zizmor-bin" >>"$GITHUB_PATH"
+      - name: Audit online
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: zizmor .

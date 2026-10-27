@@ -556,18 +556,73 @@ team-review-status https://github.com/me/shop/pull/5 a1b2c3d4e5f60718293a4b5c6d7
 COMMANDS
 }
 
-@test "GitHub's CI runs on every pull request to dev and main and by hand, and no workflow runs on a push or for a fork's target" {
+@test "GitHub's CI and zizmor's online run run on every pull request to dev and main and by hand, and no workflow runs on a push or for a fork's target" {
   local workflow
   # The top-level keys under on:, and the branches its pull_request names.
-  assert_equal "$(sed -n '/^on:$/,/^[^ ]/s/^  \([a-z_]*\):.*$/\1/p' "$REPO_ROOT/.github/workflows/ci.yml")" \
-    $'pull_request\nworkflow_dispatch'
-  assert_equal "$(sed -n '/^on:$/,/^[^ ]/s/^    branches: //p' "$REPO_ROOT/.github/workflows/ci.yml")" "[dev, main]"
+  for workflow in ci.yml zizmor-online.yml; do
+    assert_equal "$(sed -n '/^on:$/,/^[^ ]/s/^  \([a-z_]*\):.*$/\1/p' "$REPO_ROOT/.github/workflows/$workflow")" \
+      $'pull_request\nworkflow_dispatch'
+    assert_equal "$(sed -n '/^on:$/,/^[^ ]/s/^    branches: //p' "$REPO_ROOT/.github/workflows/$workflow")" "[dev, main]"
+  done
   for workflow in "$REPO_ROOT"/.github/workflows/*.yml; do
     if grep -nE '^\s*(push|pull_request_target|schedule):' "$workflow"; then
       echo "$workflow runs on a push, a schedule or with a fork's target's secrets" >&2
       return 1
     fi
   done
+}
+
+# What breaks the zizmor rule in the checkout <dir>, one per line: each tracked YAML line whose
+# zizmor ignore names no audit or gives no reason after the bracket, as <path>:<line>, and each
+# zizmor config file, which would ignore by file or wholesale: zizmor_problems <dir>
+zizmor_problems() {
+  local config files
+  files=$(git -C "$1" ls-files -z -- '*.yml' '*.yaml' | tr '\0' '\n')
+  if [[ -n $files ]]; then
+    (cd "$1" && xargs -d '\n' grep -H -n -E 'zizmor: *ignore' -- <<<"$files" \
+      | grep -v -E ':[0-9]+:.*zizmor: ignore\[[a-z0-9-]+(, *[a-z0-9-]+)*\] +[^ ]' \
+      | cut -d: -f1,2 || true)
+  fi
+  for config in zizmor.yml zizmor.yaml .github/zizmor.yml .github/zizmor.yaml; do
+    [[ ! -e $1/$config ]] || echo "$config: a zizmor config"
+  done
+}
+
+# zizmor's findings are each fixed or ignored on their own line with the audit and its reason.
+@test "every zizmor ignore names its audit and its reason, and no zizmor config ignores more" {
+  run -0 zizmor_problems "$REPO_ROOT"
+  assert_equal "$output" ""
+}
+
+# The required offline job and the online run install the same zizmor, so they move together.
+@test "zizmor's online run installs the zizmor the required job pins" {
+  local key pin
+  for key in ZIZMOR_VERSION ZIZMOR_SHA256; do
+    pin=$(sed -n "s/^      $key: //p" "$REPO_ROOT/.github/workflows/ci.yml")
+    [[ -n $pin ]]
+    assert_equal "$(sed -n "s/^      $key: //p" "$REPO_ROOT/.github/workflows/zizmor-online.yml")" "$pin"
+  done
+}
+
+@test "a zizmor ignore without an audit or a reason, or a zizmor config, is named" {
+  local copy=$BATS_TEST_TMPDIR/copy
+  git init -q "$copy"
+  mkdir -p "$copy/.github/workflows"
+  cat >"$copy/.github/workflows/one.yml" <<'YAML'
+    container: archlinux:latest # zizmor: ignore[unpinned-images] a drill run by hand
+      - uses: a/b@main # zizmor: ignore[unpinned-uses, ref-confusion] one reason for both
+    container: archlinux:latest # zizmor: ignore[unpinned-images]
+    container: archlinux:latest # zizmor: ignore[] no audit named
+    container: archlinux:latest # zizmor:ignore[unpinned-images] spelled without its space
+YAML
+  printf '    container: archlinux:latest # zizmor: ignore[unpinned-images]   \n' >>"$copy/.github/workflows/one.yml"
+  git -C "$copy" add .github/workflows/one.yml
+  run -0 zizmor_problems "$copy"
+  assert_equal "$output" $'.github/workflows/one.yml:3\n.github/workflows/one.yml:4\n.github/workflows/one.yml:5\n.github/workflows/one.yml:6'
+  git -C "$copy" rm -q --cached .github/workflows/one.yml
+  touch "$copy/zizmor.yaml" "$copy/.github/zizmor.yml"
+  run -0 zizmor_problems "$copy"
+  assert_equal "$output" $'zizmor.yaml: a zizmor config\n.github/zizmor.yml: a zizmor config'
 }
 
 # CI and a stranger's fresh clone name no team home, and the checks need none (every test makes
