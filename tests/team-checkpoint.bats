@@ -368,6 +368,27 @@ team-checkpoint: left out of tasks/T1/scratch: node_modules (link)"
   assert_equal "$(find "$TEAM_HOME/tasks/T1/scratch/kept" -type f | wc -l)" "200"
 }
 
+@test "the archive leaves out every image anywhere in the task directory, named, and keeps the text beside it" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  local dir=$HOME/slots/home/1/.scratch/task
+  mkdir -p "$dir/ui-check/reviewer-abc1234"
+  echo "findings" >"$dir/ui-check/reviewer-abc1234/findings.md"
+  echo "png" >"$dir/ui-check/reviewer-abc1234/menu-390x844.png"
+  echo "webp" >"$dir/ui-check/reviewer-abc1234/dialog-1440x810.WEBP"
+  # An archive made before images were left out loses them on the next mirror.
+  mkdir -p "$TEAM_HOME/tasks/T1/scratch/ui-check/reviewer-abc1234"
+  echo "old" >"$TEAM_HOME/tasks/T1/scratch/ui-check/reviewer-abc1234/menu-390x844.png"
+
+  run_bin -0 --separate-stderr team-checkpoint
+  assert_equal "$stderr" "team-checkpoint: left out of tasks/T1/scratch: ui-check/reviewer-abc1234/dialog-1440x810.WEBP (image)
+team-checkpoint: left out of tasks/T1/scratch: ui-check/reviewer-abc1234/menu-390x844.png (image)"
+  assert_equal "$(cd "$TEAM_HOME/tasks/T1/scratch" && find . -mindepth 1 | sort)" "./ui-check
+./ui-check/reviewer-abc1234
+./ui-check/reviewer-abc1234/findings.md"
+  # The records hook, which refuses any image, takes the checkpoint's commit.
+  assert_equal "$(git -C "$team_origin" ls-tree -r --name-only dev tasks/T1/scratch)" "tasks/T1/scratch/ui-check/reviewer-abc1234/findings.md"
+}
+
 @test "the team-home commit holds only the scratch archives, memory, the current items and the ledger, whatever else is staged" {
   run_bin -0 team-open home feature feat work "Do the work"
   echo "spec" >"$HOME/slots/home/1/.scratch/task/spec.md"

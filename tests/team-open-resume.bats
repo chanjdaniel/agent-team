@@ -623,6 +623,8 @@ restored_from() {
   mkdir -p "$dir/.venv/lib" "$dir/trial[1]/src"
   touch "$dir/.venv/lib/site.py" "$dir/trial[1]/src/"{1..201}.ts
   ln -s stale.md "$dir/latest.md"
+  mkdir -p "$dir/ui-check/builder-abc1234"
+  echo "png" >"$dir/ui-check/builder-abc1234/result-1920x1080.png"
   archive T1 scratch
 
   run_bin -0 --separate-stderr team-open --task T1 --resume home
@@ -641,7 +643,10 @@ restored_from() {
 ./tickets
 ./tickets/01.md
 ./trial[1]
-./trial[1]/src"
+./trial[1]/src
+./ui-check
+./ui-check/builder-abc1234
+./ui-check/builder-abc1234/result-1920x1080.png"
   assert_equal "$(find "$dir/trial[1]/src" -type f | wc -l)" "201"
 }
 

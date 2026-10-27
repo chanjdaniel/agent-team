@@ -43,7 +43,6 @@ esac
 EMAIL="[A-Za-z0-9._%+'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,24}"
 FILE_TYPE='png|jpe?g|svg|gif|webp|ico|js|ts|vue|css|scss|py|json|md|html|lock|map|mjs|cjs|txt|min'
 PROVIDER='^(gmail|googlemail|hotmail|outlook|live|msn|yahoo|ymail|icloud|me|mac|aol|protonmail|proton|pm|gmx|mail|shaw|telus|rogers|sympatico|bell|yandex|qq|163|zoho|hey|fastmail)\.[a-z.]{2,8}$'
-IMAGE_TYPE='png|jpe?g|gif|webp|bmp|tiff?|ico|svg|heic|heif|avif'
 owner=''
 [[ $policy == code ]] || owner=$(git config user.email || true)
 owner=${owner,,}

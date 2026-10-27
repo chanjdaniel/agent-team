@@ -16,7 +16,7 @@
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin,
 # only_records, records_list, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
 # registered_pr, attribution_lines, strip_attribution, live_sessions, discord_token, discord_api,
-# github, pr_part and task_state_json, and sets COORDINATOR_CHANNEL.
+# github, pr_part and task_state_json, and sets IMAGE_TYPE and COORDINATOR_CHANNEL.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
 # shellcheck shell=bash
 
@@ -57,6 +57,10 @@ elif [[ -z ${TEAM_HOME:-} ]]; then
 fi
 # This library's directory, which holds the ledger contract: code, never the team home's data.
 TEAM_LIB=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# The extensions of an image, an extended regular expression's alternatives matched in any case:
+# the records hook refuses them (data-check) and a task's archive leaves them out
+# (archive_left_out), so a screenshot never reaches the team home's history.
+IMAGE_TYPE='png|jpe?g|gif|webp|bmp|tiff?|ico|svg|heic|heif|avif'
 
 # Refuse with a reason on stderr.
 die() {
@@ -164,6 +168,8 @@ local_path() {
 #   over 200 files     any other directory holding more than 200 files through its
 #                      subdirectories, the outermost one only
 #   link               a symbolic link
+#   image              a file whose extension IMAGE_TYPE names, in any case (a screenshot is
+#                      never kept in git; the records hook refuses one)
 #   over 1 MiB         a file over 1 MiB
 #   may hold a secret  a path secret_paths names
 # Nothing is looked for inside a path named by an earlier reason. This is the one place the list
@@ -177,6 +183,7 @@ archive_left_out() {
     local skip=(-path ./ui) dir pattern
     local is_repo=(-type d \( -exec test -e '{}/.git' ';' -o -exec test -f '{}/HEAD' ';' -exec test -d '{}/objects' ';' -exec test -d '{}/refs' ';' \))
     local is_deps=(-type d \( -name node_modules -o -name .venv -o -name venv -o -name __pycache__ \))
+    local is_image=(-regextype posix-extended -iregex ".*\\.($IMAGE_TYPE)")
     # walk <from> <expression>: find under <from>, never inside what skip, is_repo or is_deps match; the
     # expression applies to every other path.
     walk() { find "$1" -mindepth 1 \( \( "${skip[@]}" \) -o \( "${is_repo[@]}" \) -o \( "${is_deps[@]}" \) \) -prune -o "${@:2}"; }
@@ -191,8 +198,9 @@ archive_left_out() {
       skip+=(-o -path "./$pattern")
     done < <(find . -mindepth 1 -maxdepth 1 -type d ! \( \( "${skip[@]}" \) -o \( "${is_repo[@]}" \) -o \( "${is_deps[@]}" \) \) -printf '%P\0' | sort -z)
     walk . -type l -printf 'link\t%P\0' | sort -z
-    walk . -type f -size +1048576c -printf 'over 1 MiB\t%P\0' | sort -z
-    walk . -type f -size -1048577c -printf '%P\0' |
+    walk . -type f "${is_image[@]}" -printf 'image\t%P\0' | sort -z
+    walk . -type f ! \( "${is_image[@]}" \) -size +1048576c -printf 'over 1 MiB\t%P\0' | sort -z
+    walk . -type f ! \( "${is_image[@]}" \) -size -1048577c -printf '%P\0' |
       secret_paths | sort | tr '\n' '\0' | sed -z 's/^/may hold a secret\t/'
   )
 }

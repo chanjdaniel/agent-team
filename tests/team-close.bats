@@ -224,6 +224,27 @@ team-close: left out of tasks/T1/scratch: deps (link)"
   assert_equal "$(find "$TEAM_HOME/tasks/T1/scratch/kept" -type f | wc -l)" "200"
 }
 
+@test "the archive leaves out every image anywhere in the task directory, named, and keeps the text beside it" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  local slot=${home_slots[0]}
+  local dir=$slot/.scratch/task
+  mkdir -p "$dir/ui-check/builder-abc1234"
+  echo "findings" >"$dir/ui-check/builder-abc1234/findings.md"
+  echo "png" >"$dir/ui-check/builder-abc1234/result-1920x1080.png"
+  # A large screenshot is an image first, and the extension is matched in any case.
+  head -c 2M /dev/zero >"$dir/ui-check/builder-abc1234/result-1920x1080-2.PNG"
+  echo "jpeg" >"$dir/photo.Jpeg"
+  work_and_push "$slot" feature.txt
+
+  run_bin -0 --separate-stderr team-close T1
+  assert_equal "$stderr" "team-close: left out of tasks/T1/scratch: photo.Jpeg (image)
+team-close: left out of tasks/T1/scratch: ui-check/builder-abc1234/result-1920x1080-2.PNG (image)
+team-close: left out of tasks/T1/scratch: ui-check/builder-abc1234/result-1920x1080.png (image)"
+  assert_equal "$(cd "$TEAM_HOME/tasks/T1/scratch" && find . -mindepth 1 | sort)" "./ui-check
+./ui-check/builder-abc1234
+./ui-check/builder-abc1234/findings.md"
+}
+
 # rehome_ledger <home>: the ledger as another machine with home <home> wrote it, its recorded
 # worktree paths under that home instead of this HOME.
 rehome_ledger() {
