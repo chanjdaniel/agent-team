@@ -39,7 +39,7 @@ Two repositories hold the team, each checked out on every machine:
 | Secret values | 1Password, the `agent-team` vault | `team-secrets restore` and `save`, in Daniel's own terminal only |
 | This machine's name, its team home's path and its state (lease record, fence, offline flag, logs) | `~/.config/agent-team/machine`, `~/.config/agent-team/home`, `~/.local/state/agent-team/` | never moved |
 
-`machine/`, `memory/`, `tasks/` and the ledger are records, committed straight to `dev` by the scripts.
+`machine/`, `memory/`, `tasks/`, `usage/` and the ledger are records, committed straight to `dev` by the scripts.
 
 ## The lease
 
