@@ -570,6 +570,49 @@ COMMANDS
   done
 }
 
+# What breaks the zizmor rule in the checkout <dir>, one per line: each tracked YAML line whose
+# zizmor ignore names no audit or gives no reason after the bracket, as <path>:<line>, and each
+# zizmor config file, which would ignore by file or wholesale: zizmor_problems <dir>
+zizmor_problems() {
+  local config files
+  files=$(git -C "$1" ls-files -z -- '*.yml' '*.yaml' | tr '\0' '\n')
+  if [[ -n $files ]]; then
+    (cd "$1" && xargs -d '\n' grep -H -n -E 'zizmor: *ignore' -- <<<"$files" \
+      | grep -v -E ':[0-9]+:.*zizmor: ignore\[[a-z0-9-]+(, *[a-z0-9-]+)*\] +[^ ]' \
+      | cut -d: -f1,2 || true)
+  fi
+  for config in zizmor.yml zizmor.yaml .github/zizmor.yml .github/zizmor.yaml; do
+    [[ ! -e $1/$config ]] || echo "$config: a zizmor config"
+  done
+}
+
+# zizmor's findings are each fixed or ignored on their own line with the audit and its reason.
+@test "every zizmor ignore names its audit and its reason, and no zizmor config ignores more" {
+  run -0 zizmor_problems "$REPO_ROOT"
+  assert_equal "$output" ""
+}
+
+@test "a zizmor ignore without an audit or a reason, or a zizmor config, is named" {
+  local copy=$BATS_TEST_TMPDIR/copy
+  git init -q "$copy"
+  mkdir -p "$copy/.github/workflows"
+  cat >"$copy/.github/workflows/one.yml" <<'YAML'
+    container: archlinux:latest # zizmor: ignore[unpinned-images] a drill run by hand
+      - uses: a/b@main # zizmor: ignore[unpinned-uses, ref-confusion] one reason for both
+    container: archlinux:latest # zizmor: ignore[unpinned-images]
+    container: archlinux:latest # zizmor: ignore[] no audit named
+    container: archlinux:latest # zizmor:ignore[unpinned-images] spelled without its space
+YAML
+  printf '    container: archlinux:latest # zizmor: ignore[unpinned-images]   \n' >>"$copy/.github/workflows/one.yml"
+  git -C "$copy" add .github/workflows/one.yml
+  run -0 zizmor_problems "$copy"
+  assert_equal "$output" $'.github/workflows/one.yml:3\n.github/workflows/one.yml:4\n.github/workflows/one.yml:5\n.github/workflows/one.yml:6'
+  git -C "$copy" rm -q --cached .github/workflows/one.yml
+  touch "$copy/zizmor.yaml" "$copy/.github/zizmor.yml"
+  run -0 zizmor_problems "$copy"
+  assert_equal "$output" $'zizmor.yaml: a zizmor config\n.github/zizmor.yml: a zizmor config'
+}
+
 # CI and a stranger's fresh clone name no team home, and the checks need none (every test makes
 # its own): a malformed command line is the usage error, never the team home's refusal.
 @test "tests/run, the team-heavy lock it runs under, and servers/install, which its toolkit tests run, need no team home" {
