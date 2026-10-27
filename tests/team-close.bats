@@ -245,6 +245,30 @@ team-close: left out of tasks/T1/scratch: ui-check/builder-abc1234/result-1920x1
 ./ui-check/builder-abc1234/findings.md"
 }
 
+@test "the archive leaves out a ui-check run's Lighthouse reports and keeps the run's text" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  local slot=${home_slots[0]}
+  local run=$slot/.scratch/task/ui-check/builder-abc1234
+  mkdir -p "$run/lighthouse/result" "$run/lighthouse/menu-open"
+  echo "findings" >"$run/findings.md"
+  echo "{}" >"$run/lighthouse/result/report.json"
+  echo "<html>" >"$run/lighthouse/result/report.html"
+  echo "{}" >"$run/lighthouse/menu-open/report.json"
+  # Only a run's own lighthouse/ is a report directory.
+  mkdir -p "$slot/.scratch/task/notes/lighthouse"
+  echo "notes" >"$slot/.scratch/task/notes/lighthouse/scores.md"
+  work_and_push "$slot" feature.txt
+
+  run_bin -0 --separate-stderr team-close T1
+  assert_equal "$stderr" "team-close: left out of tasks/T1/scratch: ui-check/builder-abc1234/lighthouse (Lighthouse reports)"
+  assert_equal "$(cd "$TEAM_HOME/tasks/T1/scratch" && find . -mindepth 1 | sort)" "./notes
+./notes/lighthouse
+./notes/lighthouse/scores.md
+./ui-check
+./ui-check/builder-abc1234
+./ui-check/builder-abc1234/findings.md"
+}
+
 # rehome_ledger <home>: the ledger as another machine with home <home> wrote it, its recorded
 # worktree paths under that home instead of this HOME.
 rehome_ledger() {

@@ -389,6 +389,22 @@ team-checkpoint: left out of tasks/T1/scratch: ui-check/reviewer-abc1234/menu-39
   assert_equal "$(git -C "$team_origin" ls-tree -r --name-only dev tasks/T1/scratch)" "tasks/T1/scratch/ui-check/reviewer-abc1234/findings.md"
 }
 
+@test "the archive leaves out a ui-check run's Lighthouse reports, an image among them named once, and keeps the run's text" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  local run=$HOME/slots/home/1/.scratch/task/ui-check/reviewer-abc1234
+  mkdir -p "$run/lighthouse/dialog"
+  echo "findings" >"$run/findings.md"
+  echo "{}" >"$run/lighthouse/dialog/report.json"
+  echo "png" >"$run/lighthouse/dialog/screenshot.png"
+  # An archive made before the reports were left out loses them on the next mirror.
+  mkdir -p "$TEAM_HOME/tasks/T1/scratch/ui-check/reviewer-abc1234/lighthouse/dialog"
+  echo "{}" >"$TEAM_HOME/tasks/T1/scratch/ui-check/reviewer-abc1234/lighthouse/dialog/report.json"
+
+  run_bin -0 --separate-stderr team-checkpoint
+  assert_equal "$stderr" "team-checkpoint: left out of tasks/T1/scratch: ui-check/reviewer-abc1234/lighthouse (Lighthouse reports)"
+  assert_equal "$(git -C "$team_origin" ls-tree -r --name-only dev tasks/T1/scratch)" "tasks/T1/scratch/ui-check/reviewer-abc1234/findings.md"
+}
+
 @test "the team-home commit holds only the scratch archives, memory, the current items and the ledger, whatever else is staged" {
   run_bin -0 team-open home feature feat work "Do the work"
   echo "spec" >"$HOME/slots/home/1/.scratch/task/spec.md"

@@ -163,6 +163,8 @@ local_path() {
 # archive leaves them out, each as "<why>\t<path>" (relative to <dir>), NUL-terminated, in this
 # order, sorted within each:
 #   UI capture         a top-level ui/ (a frontend capture stays on the machine that took it)
+#   Lighthouse reports a ui-check run's lighthouse/, ui-check/<run>/lighthouse (its failing
+#                      audits are in the run's findings.md, which is kept)
 #   nested repository  a directory holding .git, or a bare repository's HEAD, objects/ and refs/
 #   dependencies       a directory named node_modules, .venv, venv or __pycache__
 #   over 200 files     any other directory holding more than 200 files through its
@@ -179,8 +181,20 @@ archive_left_out() {
   (
     export LC_ALL=C
     cd "$1" 2>/dev/null || exit 0
+    local skip=(-path ./ui) dir
+    # skip_path <path>: look for nothing inside <path>, its find wildcards escaped.
+    skip_path() {
+      local pattern=${1//\\/\\\\}
+      pattern=${pattern//\*/\\*} pattern=${pattern//\?/\\?} pattern=${pattern//\[/\\[}
+      skip+=(-o -path "./$pattern")
+    }
     [[ ! -d ui ]] || printf 'UI capture\tui\0'
-    local skip=(-path ./ui) dir pattern
+    if [[ -d ui-check && ! -L ui-check ]]; then
+      while IFS= read -r -d '' dir; do
+        printf 'Lighthouse reports\t%s\0' "$dir"
+        skip_path "$dir"
+      done < <(find ui-check -mindepth 2 -maxdepth 2 -type d -name lighthouse -print0 | sort -z)
+    fi
     local is_repo=(-type d \( -exec test -e '{}/.git' ';' -o -exec test -f '{}/HEAD' ';' -exec test -d '{}/objects' ';' -exec test -d '{}/refs' ';' \))
     local is_deps=(-type d \( -name node_modules -o -name .venv -o -name venv -o -name __pycache__ \))
     local is_image=(-regextype posix-extended -iregex ".*\\.($IMAGE_TYPE)")
@@ -194,8 +208,7 @@ archive_left_out() {
     while IFS= read -r -d '' dir; do
       (($(walk "./$dir" ! -type d -printf . | wc -c) > 200)) || continue
       printf 'over 200 files\t%s\0' "$dir"
-      pattern=${dir//\\/\\\\} pattern=${pattern//\*/\\*} pattern=${pattern//\?/\\?} pattern=${pattern//\[/\\[}
-      skip+=(-o -path "./$pattern")
+      skip_path "$dir"
     done < <(find . -mindepth 1 -maxdepth 1 -type d ! \( \( "${skip[@]}" \) -o \( "${is_repo[@]}" \) -o \( "${is_deps[@]}" \) \) -printf '%P\0' | sort -z)
     walk . -type l -printf 'link\t%P\0' | sort -z
     walk . -type f "${is_image[@]}" -printf 'image\t%P\0' | sort -z

@@ -125,9 +125,14 @@ const evalKinds = { navigate: /location\.assign/, open: /\.click\(\)/, scroll: /
 // The viewports the skill sizes its tiles with, and the image each must give.
 const viewports = {
   "1920x1080x1": [1920, 1080],
+  "1440x900x1": [1440, 900],
   "1920x1080x0.75": [1440, 810],
   "390x844x1,mobile,touch": [390, 844],
 };
+
+// The rows of the skill's budget table: each viewport with the image and the tokens beside it.
+const budget = [...skill.matchAll(/^\|.*`chrome-devtools-axi emulate --viewport "([^"]+)"` \| (\d+)x(\d+) \| ([\d,]+) \|$/gm)]
+  .map(([row, viewport, width, height, tokens]) => ({ row, viewport, image: [Number(width), Number(height)], tokens: Number(tokens.replaceAll(",", "")) }));
 
 describe("the ui-check skill", () => {
   const frontmatter = skill.match(/^---\n([\s\S]*?)\n---\n/)?.[1] ?? "";
@@ -165,7 +170,7 @@ describe("the ui-check skill", () => {
     assert.ok(!invocations.some(([command]) => command === "resize"), "the skill names resize");
   });
 
-  test("sizes its tiles with the three viewports, and names no eval the test does not run", () => {
+  test("sizes its tiles with the viewports the test runs, and names no eval the test does not run", () => {
     const named = invocations.filter(([command]) => command === "emulate").flatMap((args) => {
       const at = args.indexOf("--viewport");
       return at < 0 ? [] : [args[at + 1]];
@@ -174,6 +179,24 @@ describe("the ui-check skill", () => {
     for (const js of evals) {
       assert.ok(Object.values(evalKinds).some((kind) => kind.test(js)), `an eval the test does not run: ${js}`);
     }
+  });
+
+  // Image tokens are ceil(w/28) x ceil(h/28), as Anthropic's vision documentation gives them and
+  // T67 measured; the run checks each viewport gives the image its row names.
+  test("its budget table gives each viewport's image and its tokens as ceil(w/28) x ceil(h/28)", () => {
+    assert.deepEqual(budget.map(({ viewport }) => viewport).sort(), Object.keys(viewports).sort());
+    for (const { row, viewport, image: [width, height], tokens } of budget) {
+      assert.deepEqual([width, height], viewports[viewport], row);
+      assert.equal(tokens, Math.ceil(width / 28) * Math.ceil(height / 28), row);
+    }
+  });
+
+  // The archive, the roles and the reviewer find a run's record there.
+  test("writes its tiles and findings.md under the task directory's ui-check, and caps a run's image tokens", () => {
+    assert.match(skill, /`\.scratch\/task\/ui-check\/<role>-<short head>\/`/);
+    assert.match(skill, /`<state>-<width>x<height>\[-<n>\]\.png`/);
+    assert.match(skill, /`findings\.md`/);
+    assert.match(skill, /16,000 image tokens/);
   });
 
   test("credits the chrome-devtools-mcp skills whose steps it adapts", () => {
