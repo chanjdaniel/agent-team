@@ -227,16 +227,17 @@ machine: ~/agent-team-records is not a directory: clone the team home there firs
   assert_contains "$output" ": team home: name the team home's checkout for this machine: team-bootstrap --home agent-team-records (~/.config/agent-team/home is missing)"
   run_bin -0 team-bootstrap --stage machine --home agent-team-records
   assert_equal "$output" "machine: done: this machine is laptop
-machine: named the team home ~/agent-team-records (~/.config/agent-team/home)"
+machine: named the team home ~/agent-team-records (~/.config/agent-team/home)
+machine: done: the team home fetches only dev and lease"
   assert_equal "$(cat "$HOME/.config/agent-team/home")" agent-team-records
   # Once written, the same checkout (however named) is done, and another is left unused.
   run_bin -0 team-bootstrap --stage machine --home "$HOME/agent-team-records"
-  assert_equal "$(stage_lines machine | tail -n1)" "done: ~/.config/agent-team/home names ~/agent-team-records"
+  assert_equal "$(stage_lines machine | sed -n 2p)" "done: ~/.config/agent-team/home names ~/agent-team-records"
   run_bin -0 team-bootstrap --stage machine --home "$(other_spelling "$HOME/agent-team-records")"
-  assert_equal "$(stage_lines machine | tail -n1)" "done: ~/.config/agent-team/home names ~/agent-team-records"
+  assert_equal "$(stage_lines machine | sed -n 2p)" "done: ~/.config/agent-team/home names ~/agent-team-records"
   mkdir "$HOME/elsewhere"
   run_bin -0 team-bootstrap --stage machine --home elsewhere
-  assert_equal "$(stage_lines machine | tail -n1)" "done: ~/.config/agent-team/home already names ~/agent-team-records; --home elsewhere is left unused"
+  assert_equal "$(stage_lines machine | sed -n 2p)" "done: ~/.config/agent-team/home already names ~/agent-team-records; --home elsewhere is left unused"
   assert_equal "$(cat "$HOME/.config/agent-team/home")" agent-team-records
   # The check stage no longer lists it.
   run_bin -1 team-bootstrap --stage check

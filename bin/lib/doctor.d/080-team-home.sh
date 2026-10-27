@@ -4,8 +4,10 @@
 #               of another), has no remote origin or is on a detached HEAD; warns while neither
 #               names one, so the team home is the code checkout, the directory above bin/,
 #               which holds no records (its fix clones ~/agent-team-records when it is missing,
-#               then names it in the setting).
+#               then names it in the setting, the clone fetching only dev and lease as the
+#               team home fetch line asks).
 # shellcheck shell=bash
+# shellcheck disable=SC2034 # home_ok, for the team home fetch check
 
 # As the library found it, each way it can be unusable named.
 home_shown=$(tilde "$TEAM_HOME")
@@ -18,6 +20,8 @@ name_fix="name the team home's checkout, relative to your home directory: echo a
 home_line=''
 [[ $TEAM_HOME_FROM != setting ]] || IFS= read -r home_line <"$HOME/.config/agent-team/home" || true
 home_top=$(git -C "$TEAM_HOME" rev-parse --show-toplevel 2>/dev/null) || home_top=''
+# Whether the line passed, so the team home is a checkout of its own with an origin.
+home_ok=0
 if [[ $TEAM_HOME_FROM == setting && -z $home_line ]]; then
   report "team home" FAIL "the setting ~/.config/agent-team/home names no team home" "$name_fix"
 elif [[ ! -d $TEAM_HOME && $TEAM_HOME_FROM == variable ]]; then
@@ -38,8 +42,9 @@ elif ! home_branch=$(git -C "$TEAM_HOME" symbolic-ref -q --short HEAD); then
 elif [[ $TEAM_HOME_FROM == fallback ]]; then
   # Without the clone, the setting would name a missing directory.
   [[ -d $HOME/agent-team-records ]] ||
-    name_fix="clone the team home: git clone https://github.com/chanjdaniel/agent-team-records.git ~/agent-team-records, then team-bootstrap --home agent-team-records"
+    name_fix="clone the team home: git clone --single-branch --branch dev https://github.com/chanjdaniel/agent-team-records.git ~/agent-team-records && git -C ~/agent-team-records remote set-branches --add origin lease, then team-bootstrap --home agent-team-records"
   report "team home" WARN "$home_shown$home_named since neither TEAM_HOME nor ~/.config/agent-team/home names one" "$name_fix"
 else
+  home_ok=1
   report "team home" PASS "$home_shown${home_named%,}: a checkout of its own on $home_branch, with an origin"
 fi

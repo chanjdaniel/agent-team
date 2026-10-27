@@ -76,7 +76,9 @@ setup() {
   run -1 "$CODE_CHECKOUT/bin/team-doctor"
   # With no ~/agent-team-records the fix clones it first, since the setting would name a missing directory.
   assert_equal "$(line_of 'team home')" \
-    "WARN team home: $CODE_CHECKOUT, the code checkout, since neither TEAM_HOME nor ~/.config/agent-team/home names one; fix: clone the team home: git clone https://github.com/chanjdaniel/agent-team-records.git ~/agent-team-records, then team-bootstrap --home agent-team-records"
+    "WARN team home: $CODE_CHECKOUT, the code checkout, since neither TEAM_HOME nor ~/.config/agent-team/home names one; fix: clone the team home: git clone --single-branch --branch dev https://github.com/chanjdaniel/agent-team-records.git ~/agent-team-records && git -C ~/agent-team-records remote set-branches --add origin lease, then team-bootstrap --home agent-team-records"
+  # The code checkout's origin is the code's repository, whose fetch is not the team home's.
+  assert_equal "$(line_of 'team home fetch')" ""
   mkdir "$HOME/agent-team-records"
   run -1 "$CODE_CHECKOUT/bin/team-doctor"
   assert_equal "$(line_of 'team home')" \
@@ -127,6 +129,63 @@ setup() {
   run_bin -1 team-doctor
   assert_equal "$(line_of 'team home')" \
     "FAIL team home: $home, $named, is on a detached HEAD, so its records would be committed on no branch; fix: git -C $home switch dev"
+}
+
+@test "the team home fetch line passes on a team home cloned to fetch only dev and lease, as SETUP.md clones it" {
+  tools_at arch
+  local origin=$BATS_TEST_TMPDIR/origin/agent-team.git clone=$HOME/agent-team-records
+  git -C "$origin" branch wip/home/T1 dev
+  git clone -q --single-branch --branch dev "$origin" "$clone"
+  git -C "$clone" remote set-branches --add origin lease
+  git -C "$clone" fetch -q origin
+  assert_equal "$(git -C "$clone" for-each-ref --format='%(refname)' refs/remotes | grep -v '/HEAD$')" "refs/remotes/origin/dev
+refs/remotes/origin/lease"
+  TEAM_HOME=$clone run_bin team-doctor
+  assert_equal "$(line_of 'team home fetch')" "PASS team home fetch: fetches only dev and lease"
+}
+
+@test "the team home fetch line warns on a team home that fetches every branch, or keeps another's remote-tracking branch, with the fix" {
+  tools_at arch
+  local origin=$BATS_TEST_TMPDIR/origin/agent-team.git home=$TEAM_HOME
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'team home fetch')" "PASS team home fetch: fetches only dev and lease"
+  # A default clone's refspec, and the wip/* and salvage/* branches it fetched.
+  git -C "$origin" branch wip/home/T1 dev
+  git -C "$origin" branch salvage/home/T1-laptop dev
+  git -C "$home" config --replace-all remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
+  git -C "$home" fetch -q origin
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'team home fetch')" \
+    "WARN team home fetch: fetches +refs/heads/*:refs/remotes/origin/*, not only dev and lease, and keeps origin/salvage/home/T1-laptop, origin/wip/home/T1; fix: git -C $home remote set-branches origin dev lease && git -C $home branch -r -d origin/salvage/home/T1-laptop origin/wip/home/T1"
+  # The fix, run: the line passes, and a fetch brings no wip/* again.
+  eval "$(line_of 'team home fetch' | sed 's/.*; fix: //')"
+  git -C "$home" fetch -q origin
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'team home fetch')" "PASS team home fetch: fetches only dev and lease"
+  assert_equal "$(git -C "$home" for-each-ref --format='%(refname)' refs/remotes | grep -v '/HEAD$')" "refs/remotes/origin/dev
+refs/remotes/origin/lease"
+  # Narrowed, but a leftover branch kept, or a refspec missing.
+  git -C "$home" update-ref refs/remotes/origin/wip/home/T1 dev
+  git -C "$home" remote set-branches origin dev
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'team home fetch')" \
+    "WARN team home fetch: fetches +refs/heads/dev:refs/remotes/origin/dev, not only dev and lease, and keeps origin/wip/home/T1; fix: git -C $home remote set-branches origin dev lease && git -C $home branch -r -d origin/wip/home/T1"
+  git -C "$home" remote set-branches origin dev lease
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'team home fetch')" \
+    "WARN team home fetch: keeps origin/wip/home/T1; fix: git -C $home branch -r -d origin/wip/home/T1"
+  git -C "$home" config --unset-all remote.origin.fetch
+  git -C "$home" branch -q -r -d origin/wip/home/T1
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'team home fetch')" \
+    "WARN team home fetch: fetches no branch, not only dev and lease; fix: git -C $home remote set-branches origin dev lease"
+}
+
+@test "the team home fetch line is left out while the team home line fails" {
+  tools_at arch
+  git -C "$TEAM_HOME" remote rename origin elsewhere
+  run_bin -1 team-doctor
+  assert_equal "$(line_of 'team home fetch')" ""
 }
 
 @test "Claude Code signed out, or signed in without a claude.ai account, fails the claude login line" {

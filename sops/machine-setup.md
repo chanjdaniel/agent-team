@@ -32,7 +32,7 @@ Each stage after the first is one `~/agent-team/bin/team-bootstrap` run; read it
 | # | Stage | Who | Done when |
 | - | - | - | - |
 | 1 | git, gh, GitHub login, the code checkout and the team home cloned, the team home's setting written | agent, Daniel logs in | `SETUP.md` stage 1's checks pass |
-| 2 | Preflight and the machine's name | agent, Daniel names it | `machine: named this machine <name>` or `done`, and `machine: done: ~/.config/agent-team/home names ~/agent-team-records` |
+| 2 | Preflight and the machine's name | agent, Daniel names it | `machine: named this machine <name>` or `done`, `machine: done: ~/.config/agent-team/home names ~/agent-team-records`, and `machine: done: the team home fetches only dev and lease` |
 | 3 | OS packages | agent; Daniel's terminal on Arch | `packages: done` |
 | 4 | Tools at their pins | agent; Daniel's terminal for `sudo` | `tools: done` |
 | 5 | Projects | agent | `projects: done` |
@@ -43,7 +43,7 @@ Each stage after the first is one `~/agent-team/bin/team-bootstrap` run; read it
 
 ### Stage 1: git, gh and the two checkouts
 
-`SETUP.md`, stage 1: on macOS the Xcode Command Line Tools and Homebrew, then git, gh and Homebrew's Bash 5, the GitHub login (`gh auth login --web`, then `gh auth setup-git`), the clone of the public `https://github.com/chanjdaniel/agent-team.git` at `~/agent-team` (the code checkout), the clone of the private `https://github.com/chanjdaniel/agent-team-records.git` at `~/agent-team-records` (the team home), and `agent-team-records` written to `~/.config/agent-team/home`.
+`SETUP.md`, stage 1: on macOS the Xcode Command Line Tools and Homebrew, then git, gh and Homebrew's Bash 5, the GitHub login (`gh auth login --web`, then `gh auth setup-git`), the clone of the public `https://github.com/chanjdaniel/agent-team.git` at `~/agent-team` (the code checkout), the clone of the private `https://github.com/chanjdaniel/agent-team-records.git` at `~/agent-team-records` (the team home, fetching only `dev` and `lease`), and `agent-team-records` written to `~/.config/agent-team/home`.
 
 ### Stage 2: preflight and the machine's name
 
