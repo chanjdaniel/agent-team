@@ -290,14 +290,16 @@ other_spelling() {
 }
 
 # Make the sandbox's team home a clone of a bare origin standing in for GitHub (at
-# $BATS_TEST_TMPDIR/origin/agent-team.git), with its files committed on dev and pushed, and name
-# this machine <name> (default home-pc); prints the origin's path.
+# $BATS_TEST_TMPDIR/origin/agent-team.git), fetching only dev and lease as SETUP.md clones it,
+# with its files committed on dev and pushed, and name this machine <name> (default home-pc);
+# prints the origin's path.
 make_team_home() {
   local origin
   origin=$BATS_TEST_TMPDIR/origin/agent-team.git
   git init -q --bare -b dev "$origin"
   git -C "$TEAM_HOME" init -q -b dev
   git -C "$TEAM_HOME" remote add origin "$origin"
+  git -C "$TEAM_HOME" remote set-branches origin dev lease
   git -C "$TEAM_HOME" add -A
   git -C "$TEAM_HOME" commit -q -m "chore: start the team home"
   git -C "$TEAM_HOME" push -q -u origin dev
@@ -336,7 +338,7 @@ age_lease() {
 
 # Build a second machine named <name> (make_team_home first): its own HOME, with this HOME's git
 # identity and Discord token and its own machine name, its own team home cloned from the team
-# home's origin, and a clone at <its HOME>/projects/<repo> of every other bare origin made so
+# home's origin as SETUP.md clones it (dev and lease only), and a clone at <its HOME>/projects/<repo> of every other bare origin made so
 # far (make_repo). Run commands there with on_machine.
 make_machine() {
   local name=$1 root origin repo
@@ -345,7 +347,8 @@ make_machine() {
   cp "$HOME/.gitconfig" "$root/home/.gitconfig"
   cp "$HOME/.claude/channels/discord/.env" "$root/home/.claude/channels/discord/.env"
   echo "$name" >"$root/home/.config/agent-team/machine"
-  git clone -q "$BATS_TEST_TMPDIR/origin/agent-team.git" "$root/team"
+  git clone -q --single-branch --branch dev "$BATS_TEST_TMPDIR/origin/agent-team.git" "$root/team"
+  git -C "$root/team" remote set-branches --add origin lease
   for origin in "$BATS_TEST_TMPDIR"/origin/*.git; do
     repo=${origin##*/}
     repo=${repo%.git}

@@ -227,16 +227,17 @@ machine: ~/agent-team-records is not a directory: clone the team home there firs
   assert_contains "$output" ": team home: name the team home's checkout for this machine: team-bootstrap --home agent-team-records (~/.config/agent-team/home is missing)"
   run_bin -0 team-bootstrap --stage machine --home agent-team-records
   assert_equal "$output" "machine: done: this machine is laptop
-machine: named the team home ~/agent-team-records (~/.config/agent-team/home)"
+machine: named the team home ~/agent-team-records (~/.config/agent-team/home)
+machine: done: the team home fetches only dev and lease"
   assert_equal "$(cat "$HOME/.config/agent-team/home")" agent-team-records
   # Once written, the same checkout (however named) is done, and another is left unused.
   run_bin -0 team-bootstrap --stage machine --home "$HOME/agent-team-records"
-  assert_equal "$(stage_lines machine | tail -n1)" "done: ~/.config/agent-team/home names ~/agent-team-records"
+  assert_equal "$(stage_lines machine | sed -n 2p)" "done: ~/.config/agent-team/home names ~/agent-team-records"
   run_bin -0 team-bootstrap --stage machine --home "$(other_spelling "$HOME/agent-team-records")"
-  assert_equal "$(stage_lines machine | tail -n1)" "done: ~/.config/agent-team/home names ~/agent-team-records"
+  assert_equal "$(stage_lines machine | sed -n 2p)" "done: ~/.config/agent-team/home names ~/agent-team-records"
   mkdir "$HOME/elsewhere"
   run_bin -0 team-bootstrap --stage machine --home elsewhere
-  assert_equal "$(stage_lines machine | tail -n1)" "done: ~/.config/agent-team/home already names ~/agent-team-records; --home elsewhere is left unused"
+  assert_equal "$(stage_lines machine | sed -n 2p)" "done: ~/.config/agent-team/home already names ~/agent-team-records; --home elsewhere is left unused"
   assert_equal "$(cat "$HOME/.config/agent-team/home")" agent-team-records
   # The check stage no longer lists it.
   run_bin -1 team-bootstrap --stage check
@@ -265,7 +266,7 @@ clone -q https://github.com/owner/site.git $SITE"
   echo laptop >"$HOME/.config/agent-team/machine"
   unset TEAM_HOME
   run -1 "$CODE_CHECKOUT/bin/team-bootstrap"
-  assert_equal "$(tail -n1 <<<"$output")" "machine: Daniel: clone the team home, then name it for this machine: git clone https://github.com/chanjdaniel/agent-team-records.git ~/agent-team-records && team-bootstrap --home agent-team-records"
+  assert_equal "$(tail -n1 <<<"$output")" "machine: Daniel: clone the team home, then name it for this machine: git clone --single-branch --branch dev https://github.com/chanjdaniel/agent-team-records.git ~/agent-team-records && git -C ~/agent-team-records remote set-branches --add origin lease && team-bootstrap --home agent-team-records"
   [[ ! -e $STUB_CALLS/git-clone.log ]]
   # Once it is cloned, only naming it is left; the check stage says the same.
   mkdir "$HOME/agent-team-records"
@@ -273,6 +274,6 @@ clone -q https://github.com/owner/site.git $SITE"
   assert_equal "$(tail -n1 <<<"$output")" "machine: Daniel: name the team home's checkout for this machine: team-bootstrap --home agent-team-records"
   rmdir "$HOME/agent-team-records"
   run -1 "$CODE_CHECKOUT/bin/team-bootstrap" --stage check
-  assert_contains "$output" "check: Daniel 1: team home: clone the team home, then name it for this machine: git clone https://github.com/chanjdaniel/agent-team-records.git ~/agent-team-records && team-bootstrap --home agent-team-records (~/.config/agent-team/home is missing)"
+  assert_contains "$output" "check: Daniel 1: team home: clone the team home, then name it for this machine: git clone --single-branch --branch dev https://github.com/chanjdaniel/agent-team-records.git ~/agent-team-records && git -C ~/agent-team-records remote set-branches --add origin lease && team-bootstrap --home agent-team-records (~/.config/agent-team/home is missing)"
   [[ $output != *"these failed: "*"team home"* ]]
 }

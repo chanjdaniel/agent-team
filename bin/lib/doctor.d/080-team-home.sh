@@ -3,16 +3,20 @@
 #               is not a directory, not a git checkout of its own (a subdirectory or a worktree
 #               of another), is the code checkout, has no remote origin or is on a detached
 #               HEAD, and while neither names one (its fix clones ~/agent-team-records first
-#               when it is missing, then names it in the setting).
+#               when it is missing, fetching only dev and lease as the team home fetch line
+#               asks, then names it in the setting).
 # shellcheck shell=bash
 # shellcheck disable=SC2154 # bin, the doctor's
+# shellcheck disable=SC2034 # home_ok, for the team home fetch check
 
 # As the library found it, each way it can be unusable named.
 name_fix="name the team home's checkout, relative to your home directory: echo agent-team-records > ~/.config/agent-team/home"
+# Whether the line passed, so the team home is a checkout of its own with an origin.
+home_ok=0
 if [[ $TEAM_HOME_FROM == none ]]; then
   # Without the clone, the setting would name a missing directory.
   [[ -d $HOME/agent-team-records ]] ||
-    name_fix="clone the team home, then name it: git clone https://github.com/chanjdaniel/agent-team-records.git ~/agent-team-records && echo agent-team-records > ~/.config/agent-team/home"
+    name_fix="clone the team home, then name it: git clone --single-branch --branch dev https://github.com/chanjdaniel/agent-team-records.git ~/agent-team-records && git -C ~/agent-team-records remote set-branches --add origin lease && echo agent-team-records > ~/.config/agent-team/home"
   report "team home" FAIL "neither TEAM_HOME nor ~/.config/agent-team/home names one" "$name_fix"
 else
   home_shown=$(tilde "$TEAM_HOME")
@@ -42,6 +46,7 @@ else
     report "team home" FAIL "$home_shown$home_named is on a detached HEAD, so its records would be committed on no branch" \
       "git -C $home_shown switch dev"
   else
+    home_ok=1
     report "team home" PASS "$home_shown${home_named%,}: a checkout of its own on $home_branch, with an origin"
   fi
 fi

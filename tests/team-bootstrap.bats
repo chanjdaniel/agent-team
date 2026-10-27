@@ -21,6 +21,7 @@ setup() {
 preflight: done: jq, git and Python 3.11 are installed
 machine: done: this machine is home-pc
 machine: done: ~/.config/agent-team/home names $TEAM_HOME
+machine: done: the team home fetches only dev and lease
 packages: done: every OS package is installed
 tools: done: every tool is at its pin or above its minimum
 projects: done: every project is cloned and set up
@@ -41,13 +42,35 @@ summary: set up, and this machine holds the lease"
   assert_equal "$(install_calls)" ""
 }
 
+@test "a team home that fetches every branch is narrowed to dev and lease by the machine stage, its other remote-tracking branches deleted" {
+  tools_at arch
+  local origin=$BATS_TEST_TMPDIR/origin/agent-team.git
+  git -C "$origin" branch wip/home/T1 dev
+  git -C "$TEAM_HOME" config --replace-all remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
+  git -C "$TEAM_HOME" fetch -q origin
+  run_bin -0 team-bootstrap --stage machine --dry-run
+  assert_equal "$(stage_lines machine | tail -n2)" "would run: git -C $TEAM_HOME remote set-branches origin dev lease
+would run: git -C $TEAM_HOME branch -r -d origin/wip/home/T1"
+  assert_equal "$(git -C "$TEAM_HOME" config --get-all remote.origin.fetch)" '+refs/heads/*:refs/remotes/origin/*'
+  run_bin -0 team-bootstrap --stage machine
+  assert_equal "$(stage_lines machine | tail -n2)" "running: git -C $TEAM_HOME remote set-branches origin dev lease
+running: git -C $TEAM_HOME branch -r -d origin/wip/home/T1"
+  assert_equal "$(git -C "$TEAM_HOME" config --get-all remote.origin.fetch)" "+refs/heads/dev:refs/remotes/origin/dev
++refs/heads/lease:refs/remotes/origin/lease"
+  assert_equal "$(git -C "$TEAM_HOME" for-each-ref --format='%(refname)' refs/remotes | grep -v '/HEAD$')" "refs/remotes/origin/dev
+refs/remotes/origin/lease"
+  run_bin -0 team-bootstrap --stage machine
+  assert_equal "$(stage_lines machine | tail -n1)" "done: the team home fetches only dev and lease"
+}
+
 @test "a fresh Mac: every stage installs what its doctor lines lack, then Daniel's steps in order; a second run installs nothing" {
   fresh macos
   run_bin -1 team-bootstrap --name laptop --home "$TEAM_HOME"
   local sha
   sha=$(jq -r '.tools[] | select(.name == "treehouse") | .release.sha256["darwin-arm64"]' "$LOCK")
   assert_equal "$(stage_lines machine)" "named this machine laptop (~/.config/agent-team/machine)
-named the team home $TEAM_HOME (~/.config/agent-team/home)"
+named the team home $TEAM_HOME (~/.config/agent-team/home)
+done: the team home fetches only dev and lease"
   assert_equal "$(head -n1 "$HOME/.config/agent-team/machine")" laptop
   assert_equal "$(cat "$HOME/.config/agent-team/home")" "$TEAM_HOME"
   assert_equal "$(stage_lines packages)" "running: brew install 1password-cli git jq tmux gh rsync python@3.12 bash go coreutils findutils gnu-sed grep flock
@@ -117,7 +140,8 @@ trust site"
   assert_equal "$(footprint)" "$before"
   assert_equal "$(install_calls)" ""
   assert_equal "$(stage_lines machine)" "would write laptop to ~/.config/agent-team/machine
-would write $TEAM_HOME to ~/.config/agent-team/home"
+would write $TEAM_HOME to ~/.config/agent-team/home
+done: the team home fetches only dev and lease"
   assert_equal "$(stage_lines packages)" "would run: brew install 1password-cli git jq tmux gh rsync python@3.12 bash go coreutils findutils gnu-sed grep flock
 would run: brew install --cask docker-desktop"
   assert_equal "$(stage_lines tools | sed -n '2,3p')" "would run: curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
@@ -142,7 +166,8 @@ would then set up conventioner's task directory exclude and its no-mistakes gate
 @test "--stage runs that stage alone" {
   fresh arch
   run_bin -0 team-bootstrap --stage machine --name laptop
-  assert_equal "$output" "machine: named this machine laptop (~/.config/agent-team/machine)"
+  assert_equal "$output" "machine: named this machine laptop (~/.config/agent-team/machine)
+machine: done: the team home fetches only dev and lease"
   run_bin -1 team-bootstrap --stage packages
   assert_equal "$output" "packages: Daniel: in your own terminal run $CODE_CHECKOUT/bin/team-bootstrap --stage packages, which runs pacman -S --needed $ARCH_PACKAGES with sudo and asks for your password; then team-bootstrap again"
   run_bin -0 team-bootstrap --stage preflight

@@ -19,7 +19,11 @@
 #              all, are installed (pacman, with sudo, or brew, Python as the lock's python@3.12).
 #   machine    The doctor's machine line: writes --name; then writes --home, unless the setting
 #              names a team home already; with neither, and no TEAM_HOME, naming the team home is
-#              Daniel's step (cloning it first when ~/agent-team-records is missing).
+#              Daniel's step (cloning it first when ~/agent-team-records is missing, fetching only
+#              dev and lease); then, while the team home fetch line warns, narrows the team home's
+#              fetch to dev and lease (git remote set-branches origin dev lease) and deletes
+#              origin's other remote-tracking branches it keeps (git branch -r -d), local config
+#              and refs only, so its wip/* and salvage/* are never downloaded.
 #   packages   The failing tool lines whose fix is an OS package: on Arch one
 #              `sudo pacman -S --needed --noconfirm` for them all; on macOS `brew install` for
 #              each formula or cask Homebrew lacks (`brew list --versions`) and `brew upgrade`
@@ -254,14 +258,32 @@ stage_machine() {
   stage_home
   # Every stage after this one reads the team home.
   [[ -n $TEAM_HOME || -n $home ]] || daniel "$(clone_home)"
+  stage_home_fetch
 }
 
-# Daniel's step while nothing names the team home: clone it unless it is there, then name it.
+# Daniel's step while nothing names the team home: clone it unless it is there, fetching only dev
+# and lease, then name it.
 clone_home() {
   if [[ -d $HOME/agent-team-records ]]; then
     echo "name the team home's checkout for this machine: team-bootstrap --home agent-team-records"
   else
-    echo "clone the team home, then name it for this machine: git clone https://github.com/chanjdaniel/agent-team-records.git ~/agent-team-records && team-bootstrap --home agent-team-records"
+    echo "clone the team home, then name it for this machine: git clone --single-branch --branch dev https://github.com/chanjdaniel/agent-team-records.git ~/agent-team-records && git -C ~/agent-team-records remote set-branches --add origin lease && team-bootstrap --home agent-team-records"
+  fi
+}
+
+# The team home's fetch, while the doctor's team home fetch line warns: dev and lease only, and
+# origin's other remote-tracking branches deleted. Said done when the line passes; nothing when
+# the doctor left it out, the team home line failing or warning.
+stage_home_fetch() {
+  local home_q kept=()
+  if [[ -n $(lines '^team home fetch$' PASS) ]]; then
+    say "done: the team home fetches only dev and lease"
+  elif [[ -n $(lines '^team home fetch$' WARN) ]]; then
+    home_q=$(printf %q "$TEAM_HOME")
+    act "git -C $home_q remote set-branches origin dev lease"
+    mapfile -t kept < <(git -C "$TEAM_HOME" for-each-ref --format='%(refname:lstrip=2)' refs/remotes/origin/ |
+      grep -vxE 'origin/(HEAD|dev|lease)' || true)
+    ((${#kept[@]} == 0)) || act "git -C $home_q branch -r -d ${kept[*]}"
   fi
 }
 

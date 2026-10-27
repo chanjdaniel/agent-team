@@ -22,6 +22,7 @@ Two repositories hold the team, each checked out on every machine:
 
 - **The code**, `chanjdaniel/agent-team`, public, at `~/agent-team`: the scripts, roles, settings, hooks, templates, plugins, toolkits and tests, and nothing from the records; changed only through merged PRs to `dev`.
 - **The team home**, `chanjdaniel/agent-team-records`, private, at `~/agent-team-records`: the records (the ledger, the registry, `tasks/`, `projects/`, `memory/`, `machine/`, `manual-steps.md`), committed straight to `dev` by the scripts, and the `lease` branch; its origin also holds the work a project's origin must not see (`wip/<project>/T<n>` snapshots and `salvage/` branches), since a project's origin may be public.
+  Those branches are reached by URL, never through the team home checkout, which fetches only `dev` and `lease` (the doctor's `team home fetch` line).
 
 | What | Where | Moved by |
 | - | - | - |
