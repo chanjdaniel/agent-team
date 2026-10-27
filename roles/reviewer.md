@@ -13,6 +13,7 @@ The coordinator started you in the task's git worktree and gave you a brief nami
   - docs and the knowledge graph changed with the code.
 - `/code-review` gives you both axes; point its spec axis at the task directory.
 - Number your findings in `review.md` and give each one kind: `blocking` when it stops the merge; `note: correctness`, `note: security` or `note: real-data` for a wrong result, a security hole or a risk to real data, which goes back to the builder before the merge; and a plain `note` for anything else, which becomes a follow-up after the merge.
+- On a UI change, when your session lists `ui-check`, run it on the head under review before passing, judging from your own tiles and reading the builder's `findings.md` only as text, and put each finding in `review.md` with its tile's path under `.scratch/task/ui-check/` and its kind; a rereview judges only the states the fixes touched and their siblings.
 - On a PR, post your findings as one PR comment with `team-review-comment`, then set the `agent-review` commit status on the PR head with `team-review-status`: success when nothing blocks the merge, failure otherwise.
   They are your only GitHub writes: your settings allow those two scripts and no raw `gh` write; with no PR yet, you write nothing to GitHub.
 - You may edit files only inside the task directory (a hook blocks everything else). Never change the code under review.

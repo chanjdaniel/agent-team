@@ -15,6 +15,7 @@ The coordinator's settings name no session, so its own commands run in axi's def
 To the builder and the reviewer of a task that changes a UI, who open the page to check the change, as Daniel's rule on pixel perfection asks: `team-worker T<n> builder <worktree> --toolkit browser -- ...`, and the same for the reviewer.
 A project whose tasks mostly change a UI lists it in its `toolkits` in `projects.toml` (Conventioner does), so a worker that asks with `NEED toolkit browser` is relaunched with it at once.
 A planner, a task with no UI, and ops never get it.
+The builder and reviewer roles name `ui-check` for a session that lists it, so a session with the toolkit runs it and one without reads the line and does nothing: a ticket builder spot-checks its ticket's states, the builder who delivers runs it on the whole change and puts a "UI check" section in the PR body, a fix round rechecks what the fix touched and its siblings, and the reviewer runs it on the head under review and writes each finding into `review.md` with its tile.
 
 ## What loads
 
@@ -48,4 +49,4 @@ A typical UI change runs it twice, for the builder who delivers and for the revi
 It holds the skill's description under 250 characters and its file under 8 kB, and runs every `chrome-devtools-axi` command and flag the skill names, its evals and its `jq` filter as written, on the client `servers/` pins (`servers/node_modules/.bin/chrome-devtools-axi`), in a named session of its own and a temporary HOME, headless on the machine's Chrome, against a fixture site served on localhost: it fails when the skill names a command or flag it has not run.
 It checks what they produce: each viewport's tile size, an element tile, the phone probe's counts, the fixture's accessibility fault among the failing audits, the trace's LCP breakdown, `console` and `stop`; and that each token figure in the skill's budget table is `ceil(w/28) x ceil(h/28)` of the image beside it.
 `tests/axi-banner.bats` tests the hook itself, and `tests/team-worker.bats` that `--toolkit browser` adds the plugin directory and no MCP server, and that a launched builder's and reviewer's settings name their session `T<n>-<role>`.
-`tests/repo.bats` holds the worker settings' session name to `@TASK@-@ROLE@` and the coordinator's settings to none, and the `chrome-devtools-axi` that `servers/` pins to the version `bin/lib/tools.lock` pins.
+`tests/repo.bats` holds the worker settings' session name to `@TASK@-@ROLE@` and the coordinator's settings to none, the `chrome-devtools-axi` that `servers/` pins to the version `bin/lib/tools.lock` pins, and the builder and reviewer roles to naming `ui-check` and where its record goes.

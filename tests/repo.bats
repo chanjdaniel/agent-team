@@ -211,6 +211,24 @@ SETTINGS=(coordinator.settings.json settings/worker.json)
   assert_equal "$(jq -r '.env.CHROME_DEVTOOLS_AXI_SESSION // "unset"' "$REPO_ROOT/coordinator.settings.json")" unset
 }
 
+# Only the browser toolkit's sessions list ui-check, so the builder and reviewer roles name it, once
+# each under "What you do", for a session that lists it, and say where its record goes: a non-UI
+# session reads the line and does nothing.
+@test "the builder and reviewer roles name the browser toolkit's ui-check, where its record goes, for a session that lists it" {
+  local role body line
+  assert_equal "$(sed -n 's/^name: //p' "$REPO_ROOT/toolkits/browser/skills/ui-check/SKILL.md")" ui-check
+  for role in builder reviewer; do
+    echo "role: $role" >&2
+    assert_equal "$(grep -c 'ui-check' "$REPO_ROOT/roles/$role.md")" 1
+    body=$(awk '$0 == "## What you do" { on = 1; next } /^## / { on = 0 } on' "$REPO_ROOT/roles/$role.md")
+    line=$(grep -F '`ui-check`' <<<"$body")
+    grep -qF 'lists `ui-check`' <<<"$line"
+    grep -qF '.scratch/task/ui-check/' <<<"$line"
+  done
+  grep -qF 'PR body' <<<"$(grep -F '`ui-check`' "$REPO_ROOT/roles/builder.md")"
+  grep -qF '`review.md`' <<<"$(grep -F '`ui-check`' "$REPO_ROOT/roles/reviewer.md")"
+}
+
 # The tools the sessions run send usage data off the machine unless told not to (T43's audit):
 # lavish-axi's analytics, codegraph's telemetry and Chrome DevTools MCP's Google usage statistics.
 @test "the worker and coordinator settings turn off the tools' telemetry" {
