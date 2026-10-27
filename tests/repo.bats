@@ -111,7 +111,8 @@ sops/machine-setup.md: a record"
   touch "$copy/usage/home-pc/2026-10-26.jsonl"
   git -C "$copy" add usage
   run -0 unassigned_paths "$copy"
-  assert_equal "$output" ""
+  assert_equal "$output" "usage/home-pc/2026-10-26.jsonl: not code
+usage/home-pc/2026-10-26.jsonl: a record"
   run -0 bash -c 'source "$1/bin/lib/team.sh"; printf "%s\0" usage/home-pc/2026-10-26.jsonl | only_records' _ "$REPO_ROOT"
   assert_equal "$output" "usage/home-pc/2026-10-26.jsonl"
 }
