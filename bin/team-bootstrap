@@ -20,10 +20,11 @@
 #   machine    The doctor's machine line: writes --name; then writes --home, unless the setting
 #              names a team home already; with neither, and no TEAM_HOME, naming the team home is
 #              Daniel's step (cloning it first when ~/agent-team-records is missing, fetching only
-#              dev and lease with the records guard on); then, while the team home fetch line warns, narrows the team home's
-#              fetch to dev and lease (git remote set-branches origin dev lease) and deletes
-#              origin's other remote-tracking branches it keeps (git branch -r -d), local config
-#              and refs only, so its wip/* and salvage/* are never downloaded.
+#              dev and lease with the records guard on); then, while the team home fetch line
+#              warns, narrows the team home's fetch to dev and lease (git remote set-branches
+#              origin dev lease) and deletes origin's other remote-tracking branches it keeps
+#              (git branch -r -d), local config and refs only, so its wip/* and salvage/* are
+#              never downloaded.
 #   packages   The failing tool lines whose fix is an OS package: on Arch one
 #              `sudo pacman -S --needed --noconfirm` for them all; on macOS `brew install` for
 #              each formula or cask Homebrew lacks (`brew list --versions`) and `brew upgrade`
