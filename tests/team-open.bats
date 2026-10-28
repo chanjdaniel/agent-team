@@ -79,7 +79,7 @@ advance_origin() {
   assert_equal "$(sed -n 3p "$plan")" "High-level plan, by the coordinator, $(date +%F)."
   assert_equal "$(sed -n 4p "$plan")" 'Project: proj, base `main`, branch `fix/T1-sign-in-limit`.'
   assert_equal "$(sed -n 5p "$plan")" 'Path: bug.'
-  assert_equal "$(grep '^## ' "$plan")" "$(printf '%s\n' '## Goal' '## Why' '## Scope' '## Acceptance criteria' '## Not in scope')"
+  assert_equal "$(grep '^## ' "$plan")" "$(printf '%s\n' '## Goal' '## Why' '## Scope' '## Acceptance criteria' '## Not in scope' '## Disclosure')"
   run grep -c '{{' "$plan"
   assert_equal "$output" "0"
 }

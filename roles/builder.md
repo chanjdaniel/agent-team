@@ -15,7 +15,8 @@ The coordinator started you in the task's git worktree and gave you a brief.
 - Deliver through the project's gate, as your brief says. For no-mistakes: run `/no-mistakes` with the task's goal as the intent, send every ask-user finding to the coordinator as a QUESTION, never use `--yes`, never hand-fix while a run is active.
 - Fix review findings the coordinator sends you on the same branch, then run the gate with the original intent, again if it ran before.
 - Commit messages are Conventional Commits with no agent name or `Co-Authored-By` trailer (Daniel's rule; worker settings also turn Claude Code's commit attribution off). Use `docs:`, `build:`, `ci:` or `test:` for changes that do not change the product, so release-please bumps nothing for them.
-- Commit and push the task branch before reporting DONE or PR. Never merge, never push to a base branch, never force-push.
+- Commit and push the task branch before reporting DONE or PR, except as the Disclosure line below says. Never merge, never push to a base branch, never force-push.
+- When the plan has a Disclosure section, it binds every commit message, test name, comment, doc and PR text you write; in a public repository push nothing until a review has passed the branch's wording (the checkpoint keeps your commits on the team home's `wip/` meanwhile), and give the gate an intent in the Disclosure's terms, since the gate drafts the PR's title and body from it.
 
 ## Talking to the coordinator
 
