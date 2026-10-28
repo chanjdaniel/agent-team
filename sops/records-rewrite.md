@@ -8,7 +8,7 @@ The force push and the Support request are Daniel's alone.
 ## What changes
 
 - `dev` on GitHub gets a new history: every commit from `e9611631` (the PR #1 merge, 2026-10-21) on gets a new sha, since git filter-repo strips GitHub's merge signatures, and so do the imported lineage's `c7856695` and `70b4f532`.
-- Dropped from every commit: the paths of `bin/lib/records-rewrite/drop.txt` (dependencies, bare repositories, a downloaded release, a built binary, copied project trees and build output; the plan-era review pages and screenshots).
+- Dropped from every commit: the paths of `bin/lib/records-rewrite/drop.txt` (dependencies, bare repositories, a downloaded release, a built binary, copied project trees and build output; the plan-era review pages and screenshots; the scratch T60's rehearsal found: a build, a network log holding API keys, a screenshot).
   The S02 story keeps every version, with any address not at `example.com` replaced by `vendor@example.com`; one commit message's address becomes `[email removed]`.
 - Every other file is byte-identical at every commit that had it, authors, committers, dates and parents are kept, and every message is the old one through the message expression and the commit map: `team-records-rewrite` checks all of it and refuses to go on otherwise.
 - `lease`, every `wip/*` and `salvage/*` branch, and GitHub's read-only `refs/pull/*` keep their shas.
