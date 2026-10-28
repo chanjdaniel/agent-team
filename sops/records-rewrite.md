@@ -1,6 +1,6 @@
 # SOP: rewriting the records repository's history
 
-The cutover that takes the non-record bulk, the applicants' data and the scratch holding keys that T60's rehearsal found out of the records repository's history (`chanjdaniel/agent-team-records`): T56's tier 2, which folds in T31 ticket 20's scrub.
+The cutover that takes the non-record bulk, the applicants' data and the scratch T60's rehearsal found holding keys or an image out of the records repository's history (`chanjdaniel/agent-team-records`): T56's tier 2, which folds in T31 ticket 20's scrub.
 T56's report (`tasks/T56/scratch/report.md` in the team home) is the why, the measurements and the alternatives; this is the how, in order.
 Every step names its owner: **Daniel**, or the coordinator.
 The force push and the Support request are Daniel's alone.
