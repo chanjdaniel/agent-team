@@ -1,6 +1,6 @@
 # SOP: rewriting the records repository's history
 
-The cutover that takes the non-record bulk and the applicants' data out of the records repository's history (`chanjdaniel/agent-team-records`): T56's tier 2, which folds in T31 ticket 20's scrub.
+The cutover that takes the non-record bulk, the applicants' data and the scratch holding keys that T60's rehearsal found out of the records repository's history (`chanjdaniel/agent-team-records`): T56's tier 2, which folds in T31 ticket 20's scrub.
 T56's report (`tasks/T56/scratch/report.md` in the team home) is the why, the measurements and the alternatives; this is the how, in order.
 Every step names its owner: **Daniel**, or the coordinator.
 The force push and the Support request are Daniel's alone.
@@ -13,13 +13,13 @@ The force push and the Support request are Daniel's alone.
 - Every other file is byte-identical at every commit that had it, authors, committers, dates and parents are kept, and every message is the old one through the message expression and the commit map: `team-records-rewrite` checks all of it and refuses to go on otherwise.
 - `lease`, every `wip/*` and `salvage/*` branch, and GitHub's read-only `refs/pull/*` keep their shas.
 - The sha references in the records (about 4,200, most in T31's maps) are left as written; the commit map, committed beside them, translates each.
-- A fresh clone of `dev` and `lease` goes from about 79 MiB to about 15 MiB (the 2026-10-27 rehearsal: 79.17 MiB to 14.79 MiB).
+- A fresh clone of `dev` and `lease` goes from about 90 MiB to about 25 MiB (the 2026-10-28 cutover: 90.14 MiB to 25.42 MiB over 1925 commits).
 
 ## Before the day
 
 1. **Coordinator.** Check that what the cutover relies on has merged into the code checkout: T55's archive rule (`archive_left_out` in `bin/lib/team.sh` leaves out a bare repository and `node_modules`, so no checkpoint puts the bulk back) and the team home fetching only `dev` and `lease` (`team-doctor`'s `team home fetch` line passes on every machine; `~/agent-team/bin/team-bootstrap --stage machine` narrows a team home where it warns).
 2. **Coordinator, the day before.** Rehearse on a fresh mirror: `~/agent-team/bin/team-records-rewrite ~/records-rewrite-rehearsal`.
-   It must end with `verify: failures: 0`, `verify: drop-list paths left in the new history: 0`, `lease: unchanged`, and the `rehearsal:` line, since the team still holds the lease; `pack after:` should be within a few MiB of 14.7 MiB.
+   It must end with `verify: failures: 0`, `verify: drop-list paths left in the new history: 0`, `lease: unchanged`, and the `rehearsal:` line, since the team still holds the lease; `pack after:` should be within a few MiB of the 2026-10-28 cutover's 25.42 MiB, plus what the records have grown since.
    A new kind of bulk added since shows in `pack after:`, and goes in `drop.txt` through a PR before the day.
 3. **Coordinator, the day before.** Run T24's scans over the rehearsal's `~/records-rewrite-rehearsal/rewrite.git`, as T31's option A table did (T31 ticket 20's acceptance): `tasks/T24/keep/tools/scan.py` against the real exports T24 scanned, gitleaks 8.28.0 from its checksum-checked release with `--log-opts=--all`, and `ocr.py` only if Daniel asks for it.
    They must find no real export's address, no address in an image, and no gitleaks finding.
@@ -51,7 +51,7 @@ The force push and the Support request are Daniel's alone.
     Log it: `team-log T<n> ticket-done ticket=<nn> commits='["<new dev>"]' repo=chanjdaniel/agent-team-records note="records history rewritten, dev <old dev> to <new dev>; commit map at tasks/T<n>/commit-map"`.
 13. **Daniel, at the laptop, before it next takes the team.** The re-clone of step 10 there, its records guard included.
     Its `team-resume` refuses the old clone as diverged, which guards it, but a hand `git pull` would merge the old history back: never pull into an old clone, replace it.
-14. **Daniel alone.** Ask GitHub Support to purge the old objects, as T31 ticket 20 planned and T24 did for Conventioner (`tasks/T24/keep/support-request.txt` is the precedent's wording): the repository `chanjdaniel/agent-team-records` (private), the number of affected pull requests (the rewrite's `verify: pull refs whose history holds a dropped path:` line; 15 in the rehearsal), the first changed commits (`first changed commits:`), and a request to dereference the PR refs and run garbage collection.
+14. **Daniel alone.** Ask GitHub Support to purge the old objects, as T31 ticket 20 planned and T24 did for Conventioner (`tasks/T24/keep/support-request.txt` is the precedent's wording): the repository `chanjdaniel/agent-team-records` (private), the number of affected pull requests (the rewrite's `verify: pull refs whose history holds a dropped path:` line; 15 of 18 at the 2026-10-28 cutover), the first changed commits (`first changed commits:`), and a request to dereference the PR refs and run garbage collection.
     The coordinator records the request's number, then Support's answer, in `manual-steps.md`.
     Once Support answers, an old sha such as `c7856695` answers 404 on GitHub.
 15. **Daniel, a week later with nothing found missing.** Remove `~/agent-team-records.pre-rewrite` on each machine and `~/records-rewrite`.

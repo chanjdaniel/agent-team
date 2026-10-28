@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Rewrite the records repository's history in a work directory, touching no remote: T56's tier 2,
-# the non-record bulk and T31 ticket 20's scrub of the applicants' data dropped from dev and lease,
-# every commit checked byte for byte, and the force push printed for Daniel, never run.
+# the non-record bulk, T31 ticket 20's scrub of the applicants' data and the scratch holding keys
+# that T60's rehearsal found dropped from dev and lease, every commit checked byte for byte, and
+# the force push printed for Daniel, never run.
 #
 # Usage: team-records-rewrite <work-dir>
 #   <work-dir>  A new or empty directory outside every git checkout: never the team home, a task
