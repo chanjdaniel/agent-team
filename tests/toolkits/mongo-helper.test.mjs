@@ -1,6 +1,7 @@
 // The throwaway MongoDB (helpers/mongo.mjs): its own wait, where a start that never comes ready
 // fails with how long it waited and what the container last logged, so a slow Docker reads apart
-// from a broken one, and a container that exits or is gone fails it at once; and its stop, which leaves none of the image's anonymous volumes behind.
+// from a broken one, and a container that exits or is gone fails it at once; its stop, which leaves none of the image's anonymous volumes behind;
+// and its tcmalloc, on per-thread caches so MongoDB 8.0 starts on Linux 6.19 to 7.0.13.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -100,4 +101,14 @@ test("stopping the throwaway MongoDB removes its anonymous volumes with it", asy
     (volume) => docker("volume", "ls", "--quiet", "--filter", `name=^${volume}$`) !== "",
   );
   assert.deepEqual(left, []);
+});
+
+test("the throwaway MongoDB runs tcmalloc on per-thread caches, so it starts on Linux 6.19 to 7.0.13", async () => {
+  const db = await startMongo();
+  try {
+    const status = await db.client.db("admin").command({ serverStatus: 1, tcmalloc: 1 });
+    assert.equal(status.tcmalloc.usingPerCPUCaches, false);
+  } finally {
+    await db.stop();
+  }
 });
