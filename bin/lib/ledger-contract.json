@@ -122,7 +122,7 @@
     },
     "merge-approved": {
       "writer": "team-log",
-      "about": "Daniel's word on the PR at url, one of the task's pr events, at head, the full sha the ask named, which a pr event of url logged; team-log requires head of every new line, and earlier lines without it hold for any head; legacy lines name only the number",
+      "about": "Daniel's word on the PR at url, one of the task's pr events, at head, the full sha the ask named, which a pr event of url, or a review of the task since url's first pr event, logged, its discord_message sent no earlier than the first of those that logged it; team-log requires head of every new line, and earlier lines without it hold for any head; legacy lines name only the number",
       "required": {"url": "string", "discord_message": "string"},
       "optional": {"head": "string"}
     },

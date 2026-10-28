@@ -7,8 +7,10 @@
 # as JSON (a list, a number, true) and as a string otherwise; a field the contract types as a
 # string is always a string. note is allowed on every kind. Kinds written by another script
 # (opened, launch, merged, closed...) are refused, and so is a merge-approved whose url is not
-# one of the task's pr events (a trailing slash aside), or with no head, or a head no pr event of
-# that url logged (heads compare by the shorter one's prefix, at least 7 characters). A park
+# one of the task's pr events (a trailing slash aside), or with no head, or a head neither a pr
+# event of that url nor a review of the task since its first pr event logged (heads compare by
+# the shorter one's prefix, at least 7 characters), or whose discord_message, a Discord id, was
+# sent before the first of those events that logged the head. A park
 # (waiting, blocked, paused, held) logged after the fact takes since=<UTC time>, when it began:
 # no later than now and no earlier than the task's latest event, or it is refused naming both
 # times; no other kind takes since.
@@ -60,18 +62,30 @@ for pair in "$@"; do
 done
 
 # Daniel's word is on one PR at one head: the approval names the PR as one of the task's pr events
-# does, and the head one of that PR's pr events logged, which team-merge holds the word to.
+# does, and a head that PR's pr events, or the task's reviews since its first one, logged (pr_heads
+# in bin/lib/ledger.jq), its message sent no earlier than the first of them, as team-merge holds.
 if [[ $event == merge-approved && -n ${seen[url]:-} ]]; then
   problem=$(task_events "$task" | ledger_jq '
-    [inputs | select(.event == "pr" and (.url | type) == "string")] as $prs
-    | [$prs[] | select(.url | rtrimstr("/") == ($url | rtrimstr("/")))] as $mine
+    [inputs] as $all
+    | [$all[] | select(.event == "pr" and (.url | type) == "string")] as $prs
+    | ($all | pr_heads($url)) as $mine
     | if $mine == [] and $prs == [] then "\($url) is not a PR of \($events); it has none"
       elif $mine == [] then "\($url) is not a PR of \($events):" + ($prs | map("\n  " + .url) | add)
       elif $head == "" then "merge-approved needs head, the full sha of the PR'"'"'s head Daniel was asked on"
-      elif any($mine[]; same_head(.head; $head)) then empty
-      else "head \($head) is not a head the pr events of \($url) logged:" + ($mine | map("\n  " + (.head | tostring)) | add) end' \
+      elif ($all | head_logged($url; $head)) != null then empty
+      else "head \($head) is not a head the pr events of \($url), or the reviews since, logged:"
+        + (reduce ($mine[] | .head) as $h ([]; if IN(.[]; $h) then . else . + [$h] end) | map("\n  " + .) | add) end' \
     -nr --arg url "${seen[url]}" --arg head "${seen[head]:-}" --arg events "$task's pr events")
   [[ -z $problem ]] || die "$problem"
+  message=${seen[discord_message]:-}
+  # A Discord id holds the milliseconds since 2015-01-01 above its low 22 bits.
+  if [[ $message =~ ^[1-9][0-9]{0,18}$ ]]; then
+    logged=$(task_events "$task" | ledger_jq '[inputs] | head_logged($url; $head) | "\(.ts) \(.event)"' \
+      -nr --arg url "${seen[url]}" --arg head "${seen[head]}")
+    sent=$(((10#$message >> 22) / 1000 + 1420070400))
+    ((sent >= $(date -ud "${logged% *}" +%s))) ||
+      die "Discord message $message was sent at $(date -ud "@$sent" +%FT%TZ), before the ${logged#* } event that first logged head ${seen[head]} at ${logged% *}, so it is not Daniel's word on that head"
+  fi
 fi
 
 # A park logged after the fact says when it began: a UTC time between the task's latest event and now.

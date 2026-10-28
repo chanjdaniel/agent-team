@@ -138,6 +138,20 @@ def same_head($a; $b):
 
 # The following defs read a task's events, in ledger order, as an array.
 
+# The events that logged a head of the PR at $url, each a head Daniel may be asked on: its pr
+# events, and the task's review events after its first pr event (a fix after findings is
+# reviewed at a head no pr event logs). A trailing slash aside.
+def pr_heads($url):
+  ($url | rtrimstr("/")) as $url
+  | ([to_entries[] | select(.value.event == "pr" and (.value.url | strings | rtrimstr("/")) == $url) | .key] | first) as $first
+  | if $first == null then []
+    else [.[$first:][] | select((.event == "pr" and (.url | strings | rtrimstr("/")) == $url) or .event == "review")
+      | select(.head | type == "string")] end;
+
+# The first event of pr_heads($url) that logged $head, or null: the earliest Daniel's word on
+# $head may be sent.
+def head_logged($url; $head): first(pr_heads($url)[] | select(same_head(.head; $head))) // null;
+
 # The task's status: open (opened by team-open, not closed), closed, legacy (from before
 # team-open: events but no opened, not closed) or unknown (no events).
 def task_status:

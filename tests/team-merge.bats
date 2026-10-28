@@ -379,6 +379,30 @@ https://discord.com/api/v10/channels/1562486564871995482/messages/15626617749504
   assert_equal "$(merged_events | jq -r .head)" "$approved"
 }
 
+@test "Daniel's word on a fix head a review logged, though no pr event did, merges the PR at that head" {
+  # The pr event at A, findings, then the fix B, reviewed and passed with no new pr event.
+  moved_head own
+  jq -c 'select(.event != "merge-approved")' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
+  mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
+  review "$approved" findings
+  review "$head" pass
+  event T14 merge-approved "{url: \"https://github.com/owner/proj/pull/5\", discord_message: \"1562661774950400000\", head: \"$head\"}"
+  run_bin -0 team-merge T14
+  assert_equal "$(merged_events | jq -r .head)" "$head"
+}
+
+@test "Daniel's word is timed against the first event that logged its head, a review included" {
+  moved_head own
+  jq -c 'select(.event != "merge-approved")' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
+  mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
+  # The review of B at 03:30, after the message at 03:00; a pr event of B after it does not move it.
+  ledger_line --arg h "$head" '{ts: "2026-10-22T03:30:00Z", task: "T14", event: "review", verdict: "pass", head: $h}'
+  ledger_line --arg h "$head" '{ts: "2026-10-22T04:00:00Z", task: "T14", event: "pr", url: "https://github.com/owner/proj/pull/5", head: $h}'
+  event T14 merge-approved "{url: \"https://github.com/owner/proj/pull/5\", discord_message: \"1562661774950400000\", head: \"$head\"}"
+  refused "Discord message 1562661774950400000 was sent at 2026-10-22T03:00:00Z, before the review event of https://github.com/owner/proj/pull/5 at ${head:0:7} at 2026-10-22T03:30:00Z, so it is not Daniel's word on this PR"
+  assert_equal "$(stub_calls curl)" ""
+}
+
 @test "Daniel's word holds through a merge of the base whose passing review was logged after it" {
   moved_head base
   review "$head" pass
@@ -414,12 +438,12 @@ https://discord.com/api/v10/channels/1562486564871995482/messages/15626617749504
   refused "the head ${head:0:7} does not hold 0123456, the head Daniel's word named: ask again"
 }
 
-@test "Daniel's word on a head no pr event logged is refused without asking Discord" {
+@test "Daniel's word on a head no pr event or review logged is refused without asking Discord" {
   moved_head
   jq -c 'if .event == "merge-approved" then .head = "0123456789abcdef0123456789abcdef01234567" else . end' \
     "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
   mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
-  refused "merge-approved names the head 0123456, which no pr event of https://github.com/owner/proj/pull/5 logged: ask again on the PR's head"
+  refused "merge-approved names the head 0123456, which no pr event of https://github.com/owner/proj/pull/5, nor a review since, logged: ask again on the PR's head"
   assert_equal "$(stub_calls curl)" ""
 }
 

@@ -5,15 +5,16 @@
 # The PR is the task's latest pr event, or --pr, which must be one of the task's pr events; its
 # repo must be a project in projects.toml. Checks first, changing nothing, each failure a reason:
 #   a merge-approved event names the PR's url (the latest counts; a trailing slash aside), and
-#   its discord_message is a message sent no earlier than the pr event that logged its head (by
-#   the time in its id), in the task's thread or in #coordinator, read with the bot token through
+#   its discord_message is a message sent no earlier than the first event that logged its head
+#   (a pr event of the url, or a review of the task since the url's first pr event; by the time
+#   in its id), in the task's thread or in #coordinator, read with the bot token through
 #   the Discord API, whose author is in allowFrom of ~/.claude/channels/discord/access.json;
 #   Daniel's word holds for the PR's head when it is the approval's head, or when every commit
 #   since that head not on origin's base is a merge commit (read in the primary checkout, after
 #   fetching the PR's branch and the base) and a review with verdict pass on the head now is
 #   logged after the approval; a head that does not hold the approval's, or holds a commit of
 #   its own since it (the first is named), is refused, to ask again; the approval's head must be
-#   one a pr event of the url logged; a legacy approval with no head holds for any head, its
+#   one such an event logged; a legacy approval with no head holds for any head, its
 #   message sent no earlier than the PR's latest pr event;
 #   the PR is open, not a draft, does not conflict, and targets the project's base;
 #   every required check (the base branch's protection, gh pr checks --required and the
@@ -85,22 +86,25 @@ method=$(team_project "$project" merge_method)
 
 problems=()
 
-# Daniel's word: the latest merge-approved naming this PR's URL, its message sent since the pr
-# event that logged the head it names (a legacy one names none: the PR's latest pr event) and read
-# back from Discord. A number alone names a PR in any repo, so it never counts.
+# Daniel's word: the latest merge-approved naming this PR's URL, its message sent since the first
+# pr or review event that logged the head it names (a legacy one names none: the PR's latest pr
+# event) and read back from Discord. A number alone names a PR in any repo, so it never counts.
 by='' channel=''
 approval=$(jq -c --arg url "${url%/}" '
   [to_entries[] | .value + {i: .key}
     | select(.event == "merge-approved" and (.url | strings | rtrimstr("/")) == $url)] | last' <<<"$events")
 approved=$(jq -r '.head // empty' <<<"$approval")
-pr_ts=$(ledger_jq '
-  map(select(.event == "pr" and (.url | rtrimstr("/")) == $url and ($head == "" or same_head(.head; $head))))
-  | last | .ts // empty' -r --arg url "${url%/}" --arg head "$approved" <<<"$events")
+# The event the message is timed against: the first that logged the approval's head (head_logged),
+# or for a legacy approval the PR's latest pr event.
+logged=$(ledger_jq '
+  if $head == "" then map(select(.event == "pr" and (.url | rtrimstr("/")) == $url)) | last else head_logged($url; $head) end
+  | if . == null then empty else "\(.ts) \(.event)" end' -r --arg url "${url%/}" --arg head "$approved" <<<"$events")
+pr_ts=${logged% *}
 access=$HOME/.claude/channels/discord/access.json
 if [[ $approval == null ]]; then
   problems+=("no merge-approved event for $url: Daniel's word is not recorded")
 elif [[ -z $pr_ts ]]; then
-  problems+=("merge-approved names the head ${approved:0:7}, which no pr event of $url logged: ask again on the PR's head")
+  problems+=("merge-approved names the head ${approved:0:7}, which no pr event of $url, nor a review since, logged: ask again on the PR's head")
 else
   message=$(jq -r '.discord_message | tostring' <<<"$approval")
   thread=$(jq -r 'map(select(.event == "thread")) | last | .discord_thread // empty' <<<"$events")
@@ -111,7 +115,7 @@ else
   if [[ ! $message =~ ^[1-9][0-9]{0,18}$ ]]; then
     problems+=("merge-approved names discord_message '$message', which is not a Discord message id")
   elif ((sent < $(date -ud "$pr_ts" +%s))); then
-    problems+=("Discord message $message was sent at $(date -ud "@$sent" +%FT%TZ), before the pr event of $url${approved:+ at ${approved:0:7}} at $pr_ts, so it is not Daniel's word on this PR")
+    problems+=("Discord message $message was sent at $(date -ud "@$sent" +%FT%TZ), before the ${logged#* } event of $url${approved:+ at ${approved:0:7}} at $pr_ts, so it is not Daniel's word on this PR")
   elif ! allow=$(jq -ce '.allowFrom | select(type == "array") | map(tostring)' "$access" 2>/dev/null); then
     problems+=("cannot read allowFrom from ~/.claude/channels/discord/access.json, so the approval cannot be checked")
   elif ! discord_token >/dev/null; then
