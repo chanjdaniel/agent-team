@@ -19,6 +19,14 @@ import { repoRoot } from "./mcp.mjs";
 // Production is Atlas on MongoDB 8.0.
 export const mongoImage = "mongo:8.0.34@sha256:4a4ab5d4834207389e0d7270fac988e21ffedccecba77991a552f755df229907";
 
+// MongoDB 8.0 exits at start on Linux 6.19 to 7.0.13 when tcmalloc runs on per-CPU caches, whose
+// rseq use those kernels break (SERVER-121912, SERVER-125742). The image turns glibc's rseq off
+// (GLIBC_TUNABLES=glibc.pthread.rseq=0) so tcmalloc can take rseq for those caches; turning it back
+// on leaves tcmalloc on per-thread caches, which mongod's startup check lets start
+// (docs/v8.0/administration/tcmalloc-performance). Drop this once GitHub's runners are on 7.0.14
+// or later, where 8.0.30 and newer start with per-CPU caches.
+const perThreadCaches = ["--env", "GLIBC_TUNABLES=glibc.pthread.rseq=1"];
+
 // The driver from the pinned server's own install (servers/install), so the tests add no
 // dependency of their own.
 const { MongoClient } = createRequire(join(repoRoot, "servers", "package.json"))("mongodb");
@@ -38,6 +46,7 @@ export async function startMongo() {
     "run", "--detach", "--name", name, "--label", "agent-team-test=toolkits",
     "--publish", "127.0.0.1::27017",
     "--env", "MONGO_INITDB_ROOT_USERNAME=root", "--env", `MONGO_INITDB_ROOT_PASSWORD=${rootPassword}`,
+    ...perThreadCaches,
     mongoImage,
   );
   try {

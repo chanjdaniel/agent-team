@@ -84,6 +84,9 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.22.1
+      # MongoDB 8.0 starts or exits by the kernel's version (tests/toolkits/helpers/mongo.mjs).
+      - name: Show the kernel
+        run: uname -r
       - run: tests/run toolkits
 
   # What the PR adds: no secret in its commits, no real email address, no image and no
