@@ -180,6 +180,43 @@ SH
   green_pr
 }
 
+# PR #5's branch is real on proj's origin: commit A, its head when Daniel was asked, then what
+# the arguments add, in order: "base" (a commit on origin's dev merged into the branch) or "own"
+# (a commit of the branch's own). The ledger's pr event and Daniel's word name A, the PR's head is
+# the branch's tip, and $approved is A, $own the first commit of its own after A.
+moved_head() {
+  local primary step
+  primary=$(make_repo proj dev)
+  git -C "$primary" checkout -q -b feat/T14-tooling
+  git -C "$primary" commit -q --allow-empty -m "feat: A"
+  approved=$(git -C "$primary" rev-parse HEAD) own=''
+  for step in "$@"; do
+    if [[ $step == base ]]; then
+      git -C "$primary" checkout -q dev
+      git -C "$primary" commit -q --allow-empty -m "feat: another task on dev"
+      git -C "$primary" push -q origin dev
+      git -C "$primary" checkout -q feat/T14-tooling
+      git -C "$primary" merge -q --no-ff -m "Merge origin/dev" dev
+    else
+      git -C "$primary" commit -q --allow-empty -m "fix: after the ask"
+      own=${own:-$(git -C "$primary" rev-parse HEAD)}
+    fi
+  done
+  git -C "$primary" push -q origin feat/T14-tooling
+  git -C "$primary" checkout -q dev
+  head=$(git -C "$primary" rev-parse feat/T14-tooling)
+  green_pr
+  jq -c 'select(.event != "pr" and .event != "merge-approved")' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
+  mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
+  event T14 pr "{url: \"https://github.com/owner/proj/pull/5\", head: \"$approved\", project: \"proj\"}"
+  event T14 merge-approved "{url: \"https://github.com/owner/proj/pull/5\", discord_message: \"1562661774950400000\", head: \"$approved\"}"
+}
+
+# A review of PR #5 at <head> with <verdict>, logged now: review <head> <verdict>
+review() {
+  event T14 review "{verdict: \"$2\", head: \"$1\"}"
+}
+
 # The worktrees of proj's primary checkout, one path per line.
 proj_worktrees() {
   git -C "$HOME/projects/proj" worktree list --porcelain | sed -n 's/^worktree //p'
@@ -334,6 +371,75 @@ https://discord.com/api/v10/channels/1562486564871995482/messages/15626617749504
   mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
   refused "Discord message 1562631575961600000 was sent at 2026-10-22T01:00:00Z, before the pr event of https://github.com/owner/proj/pull/5 at 2026-10-22T02:00:00Z, so it is not Daniel's word on this PR"
   assert_equal "$(stub_calls curl)" ""
+}
+
+@test "Daniel's word on a head merges the PR at that head" {
+  moved_head
+  run_bin -0 team-merge T14
+  assert_equal "$(merged_events | jq -r .head)" "$approved"
+}
+
+@test "Daniel's word holds through a merge of the base whose passing review was logged after it" {
+  moved_head base
+  review "$head" pass
+  run_bin -0 team-merge T14
+  assert_equal "$(merged_events | jq -r .head)" "$head"
+}
+
+@test "a merge of the base after Daniel's word with no passing review of it logged after the word is refused" {
+  moved_head base
+  review "$approved" pass
+  review "$head" findings
+  refused "the head ${head:0:7} is ${approved:0:7}, Daniel's word, with merges of the base, but no passing review of ${head:0:7} is logged after the word: review it, or ask again"
+  # A pass logged before the word does not count either.
+  jq -c 'select(.event != "review" and .event != "merge-approved")' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
+  mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
+  review "$head" pass
+  event T14 merge-approved "{url: \"https://github.com/owner/proj/pull/5\", discord_message: \"1562661774950400000\", head: \"$approved\"}"
+  refused "the head ${head:0:7} is ${approved:0:7}, Daniel's word, with merges of the base, but no passing review of ${head:0:7} is logged after the word: review it, or ask again"
+}
+
+@test "a commit of the PR's own after Daniel's word is refused naming it, even with a passing review" {
+  moved_head base own base
+  review "$head" pass
+  refused "the head moved past Daniel's word with ${own:0:7}: ask again"
+}
+
+@test "a head that does not hold the one Daniel's word named is refused" {
+  moved_head
+  jq -c 'if .event == "pr" or .event == "merge-approved" then .head = "0123456789abcdef0123456789abcdef01234567" else . end' \
+    "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
+  mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
+  review "$head" pass
+  refused "the head ${head:0:7} does not hold 0123456, the head Daniel's word named: ask again"
+}
+
+@test "Daniel's word on a head no pr event logged is refused without asking Discord" {
+  moved_head
+  jq -c 'if .event == "merge-approved" then .head = "0123456789abcdef0123456789abcdef01234567" else . end' \
+    "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
+  mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
+  refused "merge-approved names the head 0123456, which no pr event of https://github.com/owner/proj/pull/5 logged: ask again on the PR's head"
+  assert_equal "$(stub_calls curl)" ""
+}
+
+@test "Daniel's word sent before the pr event of the head it names is refused, though a later pr event logged another" {
+  moved_head base
+  # The pr event of A at 03:30, after the message at 03:00; one of the PR's head at 02:00.
+  jq -c 'if .event == "pr" then .ts = "2026-10-22T03:30:00Z" else . end' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
+  mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
+  event T14 pr "{url: \"https://github.com/owner/proj/pull/5\", head: \"$head\", project: \"proj\"}"
+  review "$head" pass
+  refused "Discord message 1562661774950400000 was sent at 2026-10-22T03:00:00Z, before the pr event of https://github.com/owner/proj/pull/5 at ${approved:0:7} at 2026-10-22T03:30:00Z, so it is not Daniel's word on this PR"
+  assert_equal "$(stub_calls curl)" ""
+}
+
+@test "a legacy approval with no head holds for the PR's head, as before" {
+  moved_head own
+  jq -c 'if .event == "merge-approved" then del(.head) else . end' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
+  mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
+  run_bin -0 team-merge T14
+  assert_equal "$(merged_events | jq -r .head)" "$head"
 }
 
 @test "an approval whose message cannot be fetched is refused" {

@@ -7,7 +7,8 @@
 # as JSON (a list, a number, true) and as a string otherwise; a field the contract types as a
 # string is always a string. note is allowed on every kind. Kinds written by another script
 # (opened, launch, merged, closed...) are refused, and so is a merge-approved whose url is not
-# one of the task's pr events (a trailing slash aside). A park (waiting, blocked, paused, held)
+# one of the task's pr events (a trailing slash aside), or with no head, or a head no pr event of
+# that url logged (heads compare by the shorter one's prefix, at least 7 characters). A park (waiting, blocked, paused, held)
 # logged after the fact takes since=<UTC time>, when it began: no later than now and no earlier
 # than the task's latest event, or it is refused naming both times; no other kind takes since.
 # --check checks a ledger (default: the team home's): every line is JSON with ts, task and
@@ -57,13 +58,18 @@ for pair in "$@"; do
   pairs+=("$key" "${pair#*=}")
 done
 
-# Daniel's word is on one PR: the approval names it as one of the task's pr events does.
+# Daniel's word is on one PR at one head: the approval names the PR as one of the task's pr events
+# does, and the head one of that PR's pr events logged, which team-merge holds the word to.
 if [[ $event == merge-approved && -n ${seen[url]:-} ]]; then
-  problem=$(task_events "$task" | jq -nr --arg url "${seen[url]}" --arg events "$task's pr events" '
-    [inputs | select(.event == "pr") | .url | strings] as $prs
-    | if any($prs[]; rtrimstr("/") == ($url | rtrimstr("/"))) then empty
-      elif $prs == [] then "\($url) is not a PR of \($events); it has none"
-      else "\($url) is not a PR of \($events):" + ($prs | map("\n  " + .) | add) end')
+  problem=$(task_events "$task" | ledger_jq '
+    [inputs | select(.event == "pr" and (.url | type) == "string")] as $prs
+    | [$prs[] | select(.url | rtrimstr("/") == ($url | rtrimstr("/")))] as $mine
+    | if $mine == [] and $prs == [] then "\($url) is not a PR of \($events); it has none"
+      elif $mine == [] then "\($url) is not a PR of \($events):" + ($prs | map("\n  " + .url) | add)
+      elif $head == "" then "merge-approved needs head, the full sha of the PR'"'"'s head Daniel was asked on"
+      elif any($mine[]; same_head(.head; $head)) then empty
+      else "head \($head) is not a head the pr events of \($url) logged:" + ($mine | map("\n  " + (.head | tostring)) | add) end' \
+    -nr --arg url "${seen[url]}" --arg head "${seen[head]:-}" --arg events "$task's pr events")
   [[ -z $problem ]] || die "$problem"
 fi
 
