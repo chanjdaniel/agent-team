@@ -1,9 +1,10 @@
 #!/usr/bin/env bats
 # team-records-rewrite: the records repository's history rewritten in a work directory, on a
 # sandbox origin standing in for GitHub whose dev holds records, tier 1's bulk, tier 2's plan-era
-# pages and screenshots, the S02 story with an applicant's address and a commit message naming
-# one, beside a lease branch, a wip/* branch and a pull ref. The vendored git filter-repo runs for
-# real, as at the cutover.
+# pages and screenshots, the scratch T60's rehearsal found (a build, a network log, a screenshot),
+# the S02 story with an applicant's address and a commit message naming one, beside a lease
+# branch, a wip/* branch and a pull ref. The vendored git filter-repo runs for real, as at the
+# cutover.
 
 load helpers/common
 
@@ -15,7 +16,9 @@ setup() {
   cd "$TEAM_HOME" || return
   commit_paths "docs: the plan" tasks/T1/plan.md ledger.jsonl
   commit_paths "chore: archive T1's scratch" tasks/T1/scratch/notes.md tasks/T1/scratch/tools/node_modules/left-pad/index.js \
-    tasks/T1/scratch/mirror.git/HEAD tasks/T31/scratch/dl/gitleaks/gitleaks tasks/T31/scratch/dl/gitleaks.sha256
+    tasks/T1/scratch/mirror.git/HEAD tasks/T31/scratch/dl/gitleaks/gitleaks tasks/T31/scratch/dl/gitleaks.sha256 \
+    tasks/T76/scratch/baseline/dist/assets/index.js tasks/T49/scratch/evidence/netlog-stalled.json \
+    tasks/T49/scratch/evidence/notes.md tasks/T67/scratch/shots/dev-login-390.png
   bulk=$(git rev-parse --short=8 HEAD)
   mkdir -p "$(dirname "$S02")"
   printf 'From the export: applicant@mail.test wrote in.\nThe fixture: vendor@example.com\n' >"$S02"
@@ -76,7 +79,7 @@ said() {
   assert_equal "$(said origin)" "$origin, dev at $old, lease at $(git -C "$origin" rev-parse lease)"
   assert_equal "$(said verify | grep -v '^passed')" "commits compared: 7
 commits whose tree is unchanged: 3
-dropped paths, summed over commits: 26
+dropped paths, summed over commits: 38
 callback-changed paths, summed over commits: 3
 messages changed only by hash rewriting: 1
 messages changed by the message expressions: 1
@@ -95,7 +98,8 @@ failures: 0"
   assert_equal "$(git -C "$rw" for-each-ref --format='%(refname)')" "refs/heads/dev
 refs/heads/lease"
   assert_equal "$(git -C "$rw" log --format= --name-only dev | sort -u | grep .)" "$(printf '%s\n' "$S02" \
-    ledger.jsonl projects/conventioner/wayfinding/map.png tasks/T1/plan.md tasks/T1/scratch/notes.md | sort)"
+    ledger.jsonl projects/conventioner/wayfinding/map.png tasks/T1/plan.md tasks/T1/scratch/notes.md \
+    tasks/T49/scratch/evidence/notes.md | sort)"
   assert_equal "$(git -C "$rw" show "dev:$S02")" "From the export: vendor@example.com wrote in.
 The fixture: vendor@example.com"
   assert_equal "$(git -C "$rw" log --format=%B -n1 dev~1)" "docs: as [email removed] asked
@@ -180,7 +184,8 @@ Co-Authored-By: Someone <noreply@anthropic.com>"
   [[ -z $(git -C "$work/rewrite.git" ls-tree -r --name-only dev -- shots tasks/T1/scratch/node_modules) ]]
   # A rewrite that dropped everything but those two names: verify sees them left.
   printf '%s\n' 'glob:tasks/*/node_modules/left-pad/*' 'regex:^tasks/.+\.git/' tasks/T31/scratch/dl/ \
-    projects/conventioner/lavish/ mvp-findings.html shots/b.png >"$BATS_TEST_TMPDIR/narrower.txt"
+    projects/conventioner/lavish/ mvp-findings.html shots/b.png tasks/T76/scratch/baseline/ \
+    tasks/T49/scratch/evidence/netlog-stalled.json tasks/T67/scratch/shots/dev-login-390.png >"$BATS_TEST_TMPDIR/narrower.txt"
   rewrite_by_hand --invert-paths --paths-from-file "$BATS_TEST_TMPDIR/narrower.txt" \
     --replace-message "$REPO_ROOT/bin/lib/records-rewrite/message-expressions.txt" \
     --file-info-callback "$REPO_ROOT/bin/lib/records-rewrite/s02-callback.py"

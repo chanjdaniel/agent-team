@@ -1,7 +1,7 @@
 # The paths team-records-rewrite drops from every commit of the records repository's dev and
 # lease, as git filter-repo's --paths-from-file reads them (a plain line is a path or a directory,
 # glob: and regex: match the whole path) and verify.py matches them: T56's tier 2, its report's
-# "What may go, and what stays". None holds a value.
+# "What may go, and what stays", and what T60's rehearsal found since. None holds a value.
 
 # Tier 1, bulk that is not a record: a copy of something that lives elsewhere or can be rebuilt.
 # Dependencies, which package.json and package-lock.json beside them rebuild.
@@ -34,3 +34,13 @@ shots/
 shots-qc/
 shots-qc2/
 shots-proto/
+
+# T60's rehearsal's finds, 2026-10-28: scratch a checkpoint archived that is no record and holds
+# what a scan finds in it.
+# T76's baseline vite build, archived at 1522a153 and removed from the tip at 3e0b578b: build
+# output, with a library author's public address and a bundled site key.
+tasks/T76/scratch/baseline/
+# T49's browser network log, where gitleaks finds API keys and a token.
+tasks/T49/scratch/evidence/netlog-stalled.json
+# T67's screenshot, tracked from before the image rule.
+tasks/T67/scratch/shots/dev-login-390.png
