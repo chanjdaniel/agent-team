@@ -340,7 +340,7 @@ def state_line:
   + (if .waiting == null then "" else " | waiting on \(.waiting.on): \(.waiting.reason)" end);
 
 # Whether a task is parked, waiting on something other than a worker: held, blocked or awaiting
-# merge, an ask with no answer, or a pause or a wait still standing.
+# merge, an ask nothing settled (settles), or a pause or a wait still standing.
 def parked:
   IN(phase; "held", "blocked", "awaiting-merge") or pending_asks != [] or standing_until_launch("paused")
   or waiting != null;
