@@ -7,10 +7,11 @@ load helpers/common
 # T60, a Conventioner feature closed in 13 h: planning 1, building 4, gate 2.5 (two runs' minutes
 # taken from building, and a pause on a gate run), review 1.5, merging 0.5, unattributed 1.5,
 # Daniel 1.5, the machine's load 0.5; three gate runs on one PR, two reviews.
-# T61, an agent-team task still open from 10:00: building 4.75, a denial 0.25, another task 2,
-# GitHub 1, the machine handed over 2, Daniel 0.2, by 20:12.
-# T62, a Conventioner bug of 3 h of building from 22:00 the day before; T63, opened at 21:00; T9,
-# a legacy task with no opened event.
+# T61, an agent-team task still open from 10:00: building 3.55, a denial 0.25, another task 2,
+# GitHub 1, the machine handed over 2, Daniel 1.4 (a question answered in 0.2, then an ask still
+# open from 19:00), by 20:12.
+# T62, a Conventioner bug of 3 h from 22:00 the day before, 2 minutes of it an ask answered; T63,
+# opened at 21:00; T9, a legacy task with no opened event.
 setup() {
   sandbox
   cp "$BATS_TEST_DIRNAME/fixtures/ledger-time.jsonl" "$TEAM_HOME/ledger.jsonl"
@@ -39,8 +40,8 @@ time_json() {
   assert_equal "$(jq -c '.tasks[0].hours | with_entries(select(.value != 0))' <<<"$json")" \
     '{"planning":1,"building":4,"gate":2.5,"review":1.5,"merging":0.5,"unattributed":1.5,"wait:daniel":1.5,"wait:machine":0.5}'
   assert_equal "$(jq -c '.tasks[1].hours | with_entries(select(.value != 0))' <<<"$json")" \
-    '{"building":4.75,"wait:daniel":0.2,"wait:task":2,"wait:external":1,"wait:off":2,"wait:denial":0.25}'
-  assert_equal "$(jq -c '.tasks[2].hours | with_entries(select(.value != 0))' <<<"$json")" '{"building":3}'
+    '{"building":3.55,"wait:daniel":1.4,"wait:task":2,"wait:external":1,"wait:off":2,"wait:denial":0.25}'
+  assert_equal "$(jq -c '.tasks[2].hours | with_entries(select(.value != 0))' <<<"$json")" '{"building":2.967,"wait:daniel":0.033}'
   assert_equal "$(jq -c '.tasks[0].hours | keys_unsorted' <<<"$json")" \
     '["planning","building","gate","review","merging","unattributed","wait:daniel","wait:task","wait:external","wait:machine","wait:limit","wait:off","wait:denial","wait:other"]'
 }
@@ -49,10 +50,10 @@ time_json() {
   local json
   json=$(time_json --until "$until")
   assert_equal "$(jq -c '.phases.all | with_entries(select(.value != 0))' <<<"$json")" \
-    '{"planning":1,"building":11.75,"gate":2.5,"review":1.5,"merging":0.5,"unattributed":1.5,"wait:daniel":1.7,"wait:task":2,"wait:external":1,"wait:machine":0.5,"wait:off":2,"wait:denial":0.25}'
+    '{"planning":1,"building":10.517,"gate":2.5,"review":1.5,"merging":0.5,"unattributed":1.5,"wait:daniel":2.933,"wait:task":2,"wait:external":1,"wait:machine":0.5,"wait:off":2,"wait:denial":0.25}'
   assert_equal "$(jq -c '[.phases.projects | to_entries[] | {(.key): .value.building}] | add' <<<"$json")" \
-    '{"agent-team":4.75,"conventioner":7}'
-  assert_equal "$(jq -c '[.wall, .phases.share.building, .phases.share.gate]' <<<"$json")" '[26.2,44.8,9.5]'
+    '{"agent-team":3.55,"conventioner":6.967}'
+  assert_equal "$(jq -c '[.wall, .phases.share.building, .phases.share.gate]' <<<"$json")" '[26.2,40.1,9.5]'
 }
 
 @test "the text form prints the per-task and per-phase tables" {
@@ -60,9 +61,9 @@ time_json() {
   assert_equal "${lines[0]}" "Task time to 2026-10-22T20:12:00Z: 3 tasks, 26.2 hours"
   grep -Eq '^task +project +path +closed +wall +plan +build +gate +review +merge +unattr +daniel +on-task +outside +load +limit +off +denial +other$' <<<"$output"
   grep -Eq '^T60 +conventioner +feature +y +13\.0 +1\.0 +4\.0 +2\.5 +1\.5 +0\.5 +1\.5 +1\.5 +0\.0 +0\.0 +0\.5 +0\.0 +0\.0 +0\.0 +0\.0$' <<<"$output"
-  grep -Eq '^T61 +agent-team +small +open +10\.2 +0\.0 +4\.8 ' <<<"$output"
+  grep -Eq '^T61 +agent-team +small +open +10\.2 +0\.0 +3\.6 ' <<<"$output"
   grep -Eq '^phase +hours +share +agent-team +conventioner$' <<<"$output"
-  grep -Eq '^building +11\.8 +45% +4\.8 +7\.0$' <<<"$output"
+  grep -Eq '^building +10\.5 +40% +3\.6 +7\.0$' <<<"$output"
   grep -Eq '^waiting on another task +2\.0 +8% +2\.0 +0\.0$' <<<"$output"
   grep -Eq '^all +26\.2 +100% +10\.2 +16\.0$' <<<"$output"
 }
@@ -125,7 +126,7 @@ time_json() {
   assert_equal "${lines[0]}" "Task time from 2026-10-22T00:00:00Z to 2026-10-22T20:12:00Z: 3 tasks, 24.2 hours"
 }
 
-@test "a park ends at the next launch, resumed, merge-approved, or for a wait on Daniel answered" {
+@test "a park ends at the next launch, resumed, or for a wait on Daniel merge-approved, never at an answered" {
   : >"$TEAM_HOME/ledger.jsonl"
   local d=2026-10-23T
   {
@@ -135,7 +136,7 @@ time_json() {
     echo '{"ts":"'$d'01:00:00Z","task":"T70","event":"blocked","reason":"waits for T69: its new key"}'
     echo '{"ts":"'$d'01:30:00Z","task":"T70","event":"answered","id":"q","answer":"y"}'
     echo '{"ts":"'$d'02:00:00Z","task":"T70","event":"launch","role":"builder","session":"s2","worktree":"/w","toolkits":[]}'
-    # An answer ends a wait on Daniel.
+    # Nor a wait on Daniel: it stands until the next park.
     echo '{"ts":"'$d'03:00:00Z","task":"T70","event":"waiting","on":"Daniel","reason":"question q2"}'
     echo '{"ts":"'$d'03:30:00Z","task":"T70","event":"answered","id":"q2","answer":"y"}'
     # resumed ends a wait on the machine.
@@ -151,7 +152,70 @@ time_json() {
   local json
   json=$(time_json --until 2026-10-23T09:00:00Z)
   assert_equal "$(jq -c '.tasks[0].hours | with_entries(select(.value != 0))' <<<"$json")" \
-    '{"building":2.5,"merging":0.5,"unattributed":1.5,"wait:daniel":1.5,"wait:task":1,"wait:machine":1,"wait:other":1}'
+    '{"building":2,"merging":0.5,"unattributed":1.5,"wait:daniel":2,"wait:task":1,"wait:machine":1,"wait:other":1}'
+}
+
+@test "a park's on decides before its reason, and a paused naming Daniel waits on Daniel" {
+  : >"$TEAM_HOME/ledger.jsonl"
+  local d=2026-10-23T
+  {
+    echo '{"ts":"'$d'00:00:00Z","task":"T80","event":"opened","project":"p","path":"small","type":"fix","title":"x","branch":"fix/T80-x","base":"dev","base_sha":"0123456","worktree":"/w"}'
+    echo '{"ts":"'$d'00:00:00Z","task":"T80","event":"launch","role":"builder","session":"s1","worktree":"/w","toolkits":[]}'
+    # A word of the machine's load in the reason loses to on=Daniel.
+    echo '{"ts":"'$d'01:00:00Z","task":"T80","event":"waiting","on":"Daniel","reason":"ticket 16: the Docker cleanup and drills"}'
+    echo '{"ts":"'$d'02:00:00Z","task":"T80","event":"launch","role":"builder","session":"s2","worktree":"/w","toolkits":[]}'
+    # on is read in any case: github is an outside party, schedule another wait, coordinator its turn.
+    echo '{"ts":"'$d'03:00:00Z","task":"T80","event":"waiting","on":"github","reason":"the Actions minutes"}'
+    echo '{"ts":"'$d'04:00:00Z","task":"T80","event":"resumed"}'
+    echo '{"ts":"'$d'05:00:00Z","task":"T80","event":"waiting","on":"schedule","reason":"the cutover at 06:00"}'
+    echo '{"ts":"'$d'06:00:00Z","task":"T80","event":"resumed"}'
+    echo '{"ts":"'$d'07:00:00Z","task":"T80","event":"waiting","on":"coordinator","reason":"its next brief"}'
+    echo '{"ts":"'$d'08:00:00Z","task":"T80","event":"launch","role":"builder","session":"s3","worktree":"/w","toolkits":[]}'
+    # A worker's paused has no on: a reason naming Daniel is a wait on Daniel.
+    echo '{"ts":"'$d'09:00:00Z","task":"T80","event":"paused","reason":"waiting on Daniel'"'"'s phone-target answer"}'
+    echo '{"ts":"'$d'10:00:00Z","task":"T80","event":"resumed"}'
+    # The machine handed over still wins over on=Daniel.
+    echo '{"ts":"'$d'11:00:00Z","task":"T80","event":"waiting","on":"Daniel","reason":"handoff to the laptop"}'
+    echo '{"ts":"'$d'12:00:00Z","task":"T80","event":"launch","role":"builder","session":"s4","worktree":"/w","toolkits":[]}'
+  } >>"$TEAM_HOME/ledger.jsonl"
+  local json
+  json=$(time_json --until 2026-10-23T13:00:00Z)
+  assert_equal "$(jq -c '.tasks[0].hours | with_entries(select(.value != 0))' <<<"$json")" \
+    '{"building":7,"unattributed":1,"wait:daniel":2,"wait:external":1,"wait:off":1,"wait:other":1}'
+}
+
+@test "an open ask is a wait on Daniel until every ask it noted is settled, by its answered or a merge-approved naming its URL" {
+  : >"$TEAM_HOME/ledger.jsonl"
+  local d=2026-10-23T url=https://github.com/chanjdaniel/agent-team/pull/30
+  {
+    echo '{"ts":"'$d'00:00:00Z","task":"T81","event":"opened","project":"p","path":"small","type":"fix","title":"x","branch":"fix/T81-x","base":"dev","base_sha":"0123456","worktree":"/w"}'
+    echo '{"ts":"'$d'00:00:00Z","task":"T81","event":"launch","role":"builder","session":"s1","worktree":"/w","toolkits":[]}'
+    echo '{"ts":"'$d'01:00:00Z","task":"T81","event":"done","role":"builder","session":"s1"}'
+    echo '{"ts":"'$d'01:00:00Z","task":"T81","event":"launch","role":"reviewer","session":"s2","worktree":"/w","toolkits":[]}'
+    echo '{"ts":"'$d'02:00:00Z","task":"T81","event":"done","role":"reviewer","session":"s2"}'
+    # The merge ask has no answered: the merge-approved naming its URL settles it.
+    echo '{"ts":"'$d'02:00:00Z","task":"T81","event":"asked","id":"merge","text":"merge it? '$url' at 0123456"}'
+    echo '{"ts":"'$d'04:00:00Z","task":"T81","event":"merge-approved","url":"'$url'","discord_message":"1"}'
+    echo '{"ts":"'$d'04:30:00Z","task":"T81","event":"merged","pr":30,"merge":"m","head":"h","by":"team-merge"}'
+    echo '{"ts":"'$d'00:00:00Z","task":"T82","event":"opened","project":"p","path":"small","type":"fix","title":"x","branch":"fix/T82-x","base":"dev","base_sha":"0123456","worktree":"/w"}'
+    echo '{"ts":"'$d'00:00:00Z","task":"T82","event":"launch","role":"builder","session":"s3","worktree":"/w","toolkits":[]}'
+    # Two asks: the wait ends when both are answered.
+    echo '{"ts":"'$d'01:00:00Z","task":"T82","event":"asked","id":"a","text":"which flag?"}'
+    echo '{"ts":"'$d'01:30:00Z","task":"T82","event":"asked","id":"b","text":"which name?"}'
+    echo '{"ts":"'$d'02:00:00Z","task":"T82","event":"answered","id":"a","answer":"--x"}'
+    echo '{"ts":"'$d'03:00:00Z","task":"T82","event":"answered","id":"b","answer":"y"}'
+    # An answered with another id leaves a waiting on Daniel standing until the next launch.
+    echo '{"ts":"'$d'04:00:00Z","task":"T82","event":"waiting","on":"Daniel","reason":"item 7 needs Daniel at the PC"}'
+    echo '{"ts":"'$d'05:00:00Z","task":"T82","event":"answered","id":"item-8","answer":"z"}'
+    echo '{"ts":"'$d'06:00:00Z","task":"T82","event":"launch","role":"builder","session":"s4","worktree":"/w","toolkits":[]}'
+  } >>"$TEAM_HOME/ledger.jsonl"
+  local json
+  json=$(time_json --until 2026-10-23T07:00:00Z)
+  assert_equal "$(jq -c '.tasks[0].hours | with_entries(select(.value != 0))' <<<"$json")" \
+    '{"building":1,"review":1,"merging":0.5,"unattributed":2.5,"wait:daniel":2}'
+  assert_equal "$(jq -c '.tasks[1].hours | with_entries(select(.value != 0))' <<<"$json")" '{"building":3,"wait:daniel":4}'
+  json=$(time_json --until 2026-10-23T07:00:00Z --task T81)
+  assert_equal "$(jq -c '.answers' <<<"$json")" '{"answered":1,"unanswered":0,"median_minutes":120,"p90_minutes":120}'
 }
 
 @test "a park logged after the fact with since is counted from since, and the usage limit is its own phase" {

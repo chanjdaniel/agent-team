@@ -21,38 +21,48 @@ def time_phases: [
   ["wait:other", "other", "other waits"]
 ];
 
-# What a park event (waiting, blocked, paused, held) waits on, from its on and its reason, first
-# match wins: an outside party, another task, a denial (blocked only), the usage limit (or a token,
-# weekly or session limit), the machine off or handed over, the machine's load, the gate (a pause while a gate run goes on, which is work), Daniel, or
-# another wait.
+# What a park event (waiting, blocked, paused, held) waits on, first match wins: the usage limit
+# (or a token, weekly or session limit), the machine off or handed over; then its on, when given,
+# in any case: Daniel, another task (T<n>), the coordinator's turn (unattributed), the gate,
+# a schedule (another wait), and any other party an outside one; then its reason: an outside
+# party, another task, a denial (blocked only), Daniel named, the machine's load, the gate (a
+# pause while a gate run goes on, which is work), Daniel for a waiting, or another wait.
 def park_class:
   (.on // "" | tostring) as $on
+  | ($on | ascii_downcase) as $who
   | ((.reason // "" | tostring) + " " + $on) as $reason
   | .event as $kind
-  | if ($reason | test("GitHub Support|Dependabot|Support #"; "i")) or $on == "GitHub" then "wait:external"
-    elif ($on | test("^T[0-9]+$"))
-      or ($reason | test("\\b(waits? (for|on|behind)|after|once|until) T[0-9]+|T[0-9]+('s)? (PR|merge|merges|publish)|both merge|unblocked: T[0-9]+"; "i")) then "wait:task"
-    elif $kind == "blocked" and ($reason | test("denied|refused|deny rule|denial|permission prompt|auto mode|auto-mode"; "i")) then "wait:denial"
-    elif $reason | test("usage limit|token limit|weekly limit|session limit"; "i") then "wait:limit"
+  | if $reason | test("usage limit|token limit|weekly limit|session limit"; "i") then "wait:limit"
     elif IN($kind; "paused", "held", "waiting") and ($reason | test("stowed|shutdown|OS update|handoff"; "i")) then "wait:off"
+    elif $who == "daniel" then "wait:daniel"
+    elif $who | test("^t[0-9]+$") then "wait:task"
+    elif $who == "coordinator" then "unattributed"
+    elif $who == "gate" then "gate"
+    elif $who == "schedule" then "wait:other"
+    elif $who != "" then "wait:external"
+    elif $reason | test("GitHub Support|Dependabot|Support #"; "i") then "wait:external"
+    elif $reason | test("\\b(waits? (for|on|behind)|after|once|until) T[0-9]+|T[0-9]+('s)? (PR|merge|merges|publish)|both merge|unblocked: T[0-9]+"; "i") then "wait:task"
+    elif $kind == "blocked" and ($reason | test("denied|refused|deny rule|denial|permission prompt|auto mode|auto-mode"; "i")) then "wait:denial"
+    elif $reason | test("\\bDaniel\\b") then "wait:daniel"
     elif $reason | test("load|memory|docker|daemon|restart|machine is quiet|outage"; "i") then "wait:machine"
     elif $kind == "paused" and ($reason | test("\\bgate\\b"; "i")) then "gate"
-    elif $kind == "waiting" or ($on | ascii_downcase) == "daniel" then "wait:daniel"
+    elif $kind == "waiting" then "wait:daniel"
     else "wait:other" end;
 
 # A task's events up to $end as segments {from, to, class}, from its opened. A park sets a class
-# that the next launch or resumed clears, and so do an answered (a wait on Daniel's only) and a
-# merge-approved (likewise); with no park standing, the class is the phase the last marker set: a
-# planner or ops launch planning, a builder's building, a reviewer's review, merge-approved
-# merging, and a done or merged unattributed (the coordinator's turn, or a gate run the ledger did
-# not see). A park logged after the fact with since takes effect at since, held to the span from
-# the event before it to its own ts. The task starts unattributed, and the walk stops at the first
-# event after $end.
+# that the next launch or resumed clears, and so does a merge-approved for a wait on Daniel; an
+# asked with no park standing opens a wait on Daniel that ends once every ask it noted (that one
+# and any asked while it stands) is settled (settles), and an answered ends nothing else. With no
+# park standing, the class is the phase the last marker set: a planner or ops launch planning, a
+# builder's building, a reviewer's review, merge-approved merging, and a done or merged
+# unattributed (the coordinator's turn, or a gate run the ledger did not see). A park logged after
+# the fact with since takes effect at since, held to the span from the event before it to its own
+# ts. The task starts unattributed, and the walk stops at the first event after $end.
 def is_park: IN(.event; "waiting", "blocked", "paused", "held");
 def task_segments($end):
   ([.[] | select(.event == "opened") | .ts | fromdate] | first) as $t0
   | (([range(length) as $i | select(.[$i].ts | fromdate > $end) | $i] | first) // length) as $n
-  | reduce .[:$n][] as $e ({phase: "unattributed", park: null, cur: $t0, segments: []};
+  | reduce .[:$n][] as $e ({phase: "unattributed", park: null, asks: null, cur: $t0, segments: []};
       ($e.ts | fromdate) as $ts
       | (if ($e | is_park) and ($e.since | type) == "string" then
           [([(try ($e.since | fromdate) catch $ts), $ts] | min), .cur] | max
@@ -60,15 +70,22 @@ def task_segments($end):
       | .segments += [{from: .cur, to: $t, class: (.park // .phase)}]
       | .cur = $t
       | if $e.event == "launch" then
-          .park = null
+          .park = null | .asks = null
           | .phase = ({planner: "planning", ops: "planning", builder: "building", reviewer: "review"}[$e.role // ""] // .phase)
-        elif $e.event == "resumed" then .park = null
-        elif $e.event == "answered" and .park == "wait:daniel" then .park = null
-        elif $e | is_park then .park = ($e | park_class)
-        elif $e.event == "done" or $e.event == "merged" then .phase = "unattributed"
-        elif $e.event == "merge-approved" then
-          .phase = "merging" | if .park == "wait:daniel" then .park = null else . end
-        else . end)
+        elif $e.event == "resumed" then .park = null | .asks = null
+        elif $e.event == "asked" and .park == null then .park = "wait:daniel" | .asks = [$e]
+        elif $e.event == "asked" and .asks != null then .asks += [$e]
+        elif $e | is_park then .park = ($e | park_class) | .asks = null
+        else
+          (if .asks != null then
+            .asks |= map(select(. as $ask | $e | settles($ask) | not))
+            | if .asks == [] then .park = null | .asks = null else . end
+          else . end)
+          | if $e.event == "done" or $e.event == "merged" then .phase = "unattributed"
+            elif $e.event == "merge-approved" then
+              .phase = "merging" | if .park == "wait:daniel" then .park = null | .asks = null else . end
+            else . end
+        end)
   | .segments + [{from: .cur, to: $end, class: (.park // .phase)}]
   | map(select(.to > .from));
 
@@ -153,7 +170,7 @@ def time_report($lo; $hi; $since; $until; $task):
      | .window[] | select(.event == "review") | . + {task: $t.time.task, pr: review_pr($prs; .i)}] as $reviews
   | [.[] | .events as $events
      | .window[] | select(.event == "asked") | . as $ask
-     | ([$events[$ask.i + 1:][] | select(.event == "answered" and .id == $ask.id and (.ts | fromdate) <= $hi)] | first) as $answer
+     | ([$events[$ask.i + 1:][] | select(settles($ask) and (.ts | fromdate) <= $hi)] | first) as $answer
      | {answered: ($answer != null), minutes: (if $answer then (($answer.ts | fromdate) - ($ask.ts | fromdate)) / 60 else null end)}] as $asks
   | [.[] | .events as $events
      | .window[] | select(.event == "done") | $events[.i + 1] as $next | . as $done

@@ -108,6 +108,20 @@ phase_of() {
   assert_equal "$(stub_calls gh)" ""
 }
 
+@test "an ask is settled by a later merge-approved naming the PR URL its text names, and only that PR's" {
+  open_task
+  event T14 asked '{id: "merge", text: "merge it? https://github.com/o/r/pull/1 at 0123456"}'
+  event T14 asked '{id: "merge-12", text: "merge it? https://github.com/o/r/pull/12 at 89abcde"}'
+  event T14 merge-approved '{url: "https://github.com/o/r/pull/1/", discord_message: "1563000000000000001"}'
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c '[.pending_asks[].id]' <<<"$output")" '["merge-12"]'
+  # An answered or a merge-approved settles only an ask logged before it.
+  event T14 answered '{id: "again", answer: "y"}'
+  event T14 asked '{id: "again", text: "and https://github.com/o/r/pull/1?"}'
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c '[.pending_asks[].id]' <<<"$output")" '["merge-12","again"]'
+}
+
 @test "worktrees recorded under another home show as the same paths under this HOME" {
   event T14 opened '{project: "proj", path: "feature", type: "feat", title: "The tooling",
     branch: "feat/T14-tooling", base: "main", base_sha: "0123456", worktree: "/home/someone/slots/proj/1"}'

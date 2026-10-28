@@ -287,10 +287,20 @@ def workers($sessions):
   [.[] | select(.event == "launch") | live_session(.session; $sessions) as $live
     | {role, session, launched: .ts, worktree, live: ($live != null), status: $live.status, state: $live.state}];
 
-# The asks put to Daniel with no answer yet.
+# Whether this event, logged after the ask $ask (an asked event), settles it: the answered with its
+# id, or a merge-approved whose url (a trailing slash aside) the ask's text names, not followed by
+# a digit, since the coordinator logs a merge answer as merge-approved alone as often as not.
+def settles($ask):
+  (.event == "answered" and .id == $ask.id)
+  or (.event == "merge-approved" and (.url | type) == "string" and (.url | test("^https?://"))
+    and ((.url | rtrimstr("/")) as $url | ($ask.text // "" | tostring) as $text
+      | any($text | indices($url)[]; $text[. + ($url | length):] | test("^[0-9]") | not)));
+
+# The asks put to Daniel that no later event settles yet.
 def pending_asks:
-  [.[] | select(.event == "answered") | .id] as $answered
-  | [.[] | select(.event == "asked" and (.id | IN($answered[]) | not)) | {id, text, ts}];
+  . as $events
+  | [range(length) as $k | $events[$k] | select(.event == "asked") | . as $ask
+     | select(any($events[$k + 1:][]; settles($ask)) | not) | {id, text, ts}];
 
 # A task's state from its events and the session list, its worktrees as paths on this machine,
 # whose home directory is $home (local_worktree); team-state adds the pr part.
@@ -556,8 +566,8 @@ def retro_window($task):
 # Every span that parks a task, over one task's events (each with its place i) in ledger order:
 # {task, kind, on, reason, start, from, end}, end being the event that clears it, or null, and from
 # when it began: a park's since when it was logged after the fact, else its ts. waiting, paused and
-# blocked clear at the next resumed or launch, held at the next resumed, asked at the answered of
-# its id, and every one at the task's closed.
+# blocked clear at the next resumed or launch, held at the next resumed, asked at the event that
+# settles it (settles), and every one at the task's closed.
 def wait_spans:
   . as $events
   | range(length) as $k | $events[$k] as $s
@@ -568,7 +578,7 @@ def wait_spans:
      reason: (if $s.event == "asked" then $s.text else $s.reason end),
      start: $s, from: (if $s.event != "asked" then $s.since // $s.ts else $s.ts end),
      end: (first($events[$k + 1:][] | select(.event == "closed" or (.event | IN($clears[]))
-       or ($s.event == "asked" and .event == "answered" and .id == $s.id))) // null)};
+       or ($s.event == "asked" and settles($s)))) // null)};
 
 # The hours covered by the union of the spans ({from, to}), overlapping spans counted once.
 def wall_hours:
