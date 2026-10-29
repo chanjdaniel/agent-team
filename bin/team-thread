@@ -2,6 +2,7 @@
 # Open a task's Discord thread under #coordinator and record it in the ledger, or its interview
 # thread under the interview channel, or wait in that thread for Daniel's next messages.
 # Every task has a thread; bin/team-worker refuses to launch a worker for a task without it.
+# Discord archives either thread after 3 days with no messages.
 #
 # Usage: team-thread <task> <project> <title>
 #        team-thread T<n> --interview
@@ -40,6 +41,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 POLL_SECONDS=5
 MAX_BACKOFF=60
 READ_TIMEOUT=20
+# Minutes with no message before Discord archives a thread: 3 days (it allows 60, 1440, 4320 or 10080).
+ARCHIVE_MINUTES=4320
 USAGE="usage: team-thread <task> <project> <title> | team-thread T<n> --interview | team-thread wait T<n> [--after <message id>]"
 NO_CHANNEL="no interview channel is set: Daniel makes it (manual-steps.md), and a PR sets its id as INTERVIEW_CHANNEL in bin/lib/team.sh"
 
@@ -59,7 +62,8 @@ open_thread() {
     return 0
   fi
   discord_token >/dev/null || die "no DISCORD_BOT_TOKEN in ~/.claude/channels/discord/.env"
-  body=$(jq -cn --arg name "$4" '{name: $name[0:100], type: 11, auto_archive_duration: 10080}')
+  body=$(jq -cn --arg name "$4" --argjson archive "$ARCHIVE_MINUTES" \
+    '{name: $name[0:100], type: 11, auto_archive_duration: $archive}')
   id=$(discord_api "channels/$3/threads" -X POST -H "Content-Type: application/json" \
     -d "$body" | jq -r .id 2>/dev/null || true)
   [[ $id =~ ^[0-9]+$ ]] || die "Discord did not return a thread id"

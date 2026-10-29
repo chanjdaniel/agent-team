@@ -103,7 +103,7 @@ reads() {
   assert_equal "$(stub_calls curl | wc -l)" "1"
   assert_contains "$(stub_calls curl)" "\"https://discord.com/api/v10/channels/$INTERVIEW/threads\""
   assert_equal "$(stub_calls curl | jq -r 'index("-d") as $i | .[$i + 1]')" \
-    '{"name":"T7 · conventioner · Sign-in limits","type":11,"auto_archive_duration":10080}'
+    '{"name":"T7 · conventioner · Sign-in limits","type":11,"auto_archive_duration":4320}'
   assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -c 'del(.ts)')" \
     "{\"task\":\"T7\",\"event\":\"interview-thread\",\"discord_thread\":\"$THREAD\"}"
 
