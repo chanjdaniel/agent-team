@@ -52,6 +52,11 @@ def held_slots($events; $worktrees; $home):
       | {task: $task, project, worktree, half_open: true}]
   | sort_by((.task[1:] | tonumber), .project, .worktree);
 
+# held_slots over the ledger read as raw lines (ledger_events), so a program needs to include
+# this module alone.
+def ledger_held_slots($worktrees; $home):
+  held_slots(ledger_events; $worktrees; $home);
+
 # Whether a reading has the parts the effective cap reads: its time, its memory's total and
 # others, and its CPU's count and others or null.
 def well_formed_reading:
@@ -235,7 +240,7 @@ def slots_reading($in):
   | [$in.stacks.projects // [] | .[] | select(.class == "team" or .class == "gate")] as $stacks
   | ([$stacks[].memory_bytes // 0] | add // 0) as $stacks_memory
   | (([$stacks[].cpu_percent // 0] | add // 0) / 100) as $stacks_cpu
-  | ([$procs[] | select(.team) | .rss * 1024] | add // 0) + $stacks_memory as $team
+  | (([$procs[] | select(.team) | .rss * 1024] | add // 0) + $stacks_memory) as $team
   | {at: $in.at, os: $in.os, docker: ($in.stacks != null),
      memory: {total: $in.total, available: $in.available, team: $team,
               others: ([$in.total - $in.available - $team, 0] | max)},

@@ -165,7 +165,9 @@ elif [[ ${1:-} == check ]]; then
   done
   [[ -n $lock_fd || -z $label ]] || usage_error "--label goes with --lock; $USAGE"
   [[ -z $lock_fd || -n $label ]] || usage_error "--lock needs --label, its holder's line; $USAGE"
-  [[ -z $lock_fd || /dev/fd/$lock_fd -ef $LOCK ]] ||
+  # The descriptor's file by fstat (stat's -), since -ef on /dev/fd/<fd> is false on macOS.
+  [[ -z $lock_fd ]] || { [[ -e $LOCK ]] &&
+    [[ $(stat -L -c %d:%i - 2>/dev/null <&"$lock_fd") == "$(stat -L -c %d:%i "$LOCK")" ]]; } ||
     usage_error "--lock takes a descriptor open on $LOCK, and $lock_fd is not"
 else
   [[ ${1:-} != status ]] || shift
@@ -349,7 +351,7 @@ take_reading() {
       fi
     done <<<"$projects"
     jq -nRr -L "$TEAM_LIB" --arg home "$HOME" --argjson worktrees "$worktrees" \
-      'include "ledger"; include "slots"; held_slots(ledger_events; $worktrees; $home)[].worktree' "$ledger"
+      'include "slots"; ledger_held_slots($worktrees; $home)[].worktree' "$ledger"
   } | while IFS= read -r path; do
     [[ -z $path ]] || realpath -m -- "$path"
   done | jq -Rn '[inputs | select(. != "/")] | unique' >"$work/paths.json"
@@ -416,9 +418,9 @@ broken=$(jq .broken <<<"$readings")
 
 status=$(jq -nR -L "$TEAM_LIB" --arg home "$HOME" --argjson given "$given" --arg machine "$machine" \
   --arg project "$reserved_project" --argjson worktrees "$worktrees" --slurpfile readings <(jq .readings <<<"$readings") \
-  'include "ledger"; include "slots";
+  'include "slots";
   slots_status({given: $given, machine: ($machine | select(. != "") // null),
-    reserved_project: ($project | select(. != "") // null), held: held_slots(ledger_events; $worktrees; $home),
+    reserved_project: ($project | select(. != "") // null), held: ledger_held_slots($worktrees; $home),
     readings: $readings[0]})' "$ledger")
 
 if [[ -n $check ]]; then

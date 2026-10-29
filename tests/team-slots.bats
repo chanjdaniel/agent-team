@@ -388,6 +388,10 @@ team-slots: the slots:
   # A descriptor open on another file than the slot lock is refused.
   run_bin -2 team-slots check proj --lock 0 --label someone
   assert_contains "$output" "--lock takes a descriptor open on $HOME/.local/state/agent-team/slots.lock, and 0 is not"
+  # So is one not open at all.
+  mkdir -p "$HOME/.local/state/agent-team" && : >"$HOME/.local/state/agent-team/slots.lock"
+  run_bin -2 team-slots check proj --lock 199 --label someone
+  assert_contains "$output" "--lock takes a descriptor open on $HOME/.local/state/agent-team/slots.lock, and 199 is not"
 }
 
 @test "check --lock takes the slot lock on the caller's descriptor, keeps it past the check and writes the holder's line" {
