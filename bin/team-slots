@@ -3,7 +3,7 @@
 # across every project, how many of them are kept for the reserved project, and which tasks hold
 # them.
 #
-# Usage: team-slots [status] [--json]
+# Usage: team-slots [status] [--json] [--stored]
 #        team-slots check <project> [--lock <fd> --label <text>]
 #        team-slots sample
 #
@@ -15,7 +15,8 @@
 #           machine's name, the registry, the ledger, git (each primary checkout's worktree list)
 #           and the stored readings, never the session list; with no reading of the last 10
 #           minutes (no heartbeat takes them), it first takes one as sample does, and one it
-#           cannot take is said on stderr, the stored ones read as they are.
+#           cannot take is said on stderr, the stored ones read as they are; with --stored it
+#           never takes one, so it writes nothing (team-doctor's slots line reads it so).
 #           With --json, one object: {schema: "team-slots/1", machine (null without a name),
 #           settings (every key below, and from: each key's source, "slots.json" or "default"),
 #           reserved_project (null with none), effective: {cap, lowered_by (null, "memory" or
@@ -128,7 +129,7 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
-USAGE="usage: team-slots [status] [--json] | team-slots check <project> [--lock <fd> --label <text>] | team-slots sample"
+USAGE="usage: team-slots [status] [--json] [--stored] | team-slots check <project> [--lock <fd> --label <text>] | team-slots sample"
 SETTINGS=$HOME/.config/agent-team/slots.json
 LOCK=$HOME/.local/state/agent-team/slots.lock
 READINGS=$HOME/.local/state/agent-team/slots/readings.jsonl
@@ -140,7 +141,7 @@ if common=$(git -C "$CODE" rev-parse --path-format=absolute --git-common-dir 2>/
   CODE=$(dirname "$common")
 fi
 
-json='' check='' lock_fd='' label='' sample=''
+json='' check='' lock_fd='' label='' sample='' stored=''
 if [[ ${1:-} == sample ]]; then
   [[ $# -eq 1 ]] || usage_error "$USAGE"
   sample=1
@@ -174,6 +175,7 @@ else
   for arg; do
     case $arg in
       --json) json=1 ;;
+      --stored) stored=1 ;;
       *) usage_error "$USAGE" ;;
     esac
   done
@@ -403,10 +405,11 @@ if [[ -n $sample ]]; then
 fi
 
 # status and check take a reading first when the newest is more than 10 minutes old (no
-# heartbeat); one they cannot take is said, and they go on with the stored ones.
+# heartbeat), but status --stored; one they cannot take is said, and they go on with the stored
+# ones.
 readings_file=$READINGS
 [[ -e $readings_file ]] || readings_file=/dev/null
-if ! jq -Rne -L "$TEAM_LIB" 'include "slots"; [inputs] | slots_readings | .readings[-1].at // empty
+if [[ -z $stored ]] && ! jq -Rne -L "$TEAM_LIB" 'include "slots"; [inputs] | slots_readings | .readings[-1].at // empty
   | fromdateiso8601 > now - 600' "$readings_file" >/dev/null; then
   err=$(TEAM_HOME=$TEAM_HOME "${BASH_SOURCE[0]}" sample 2>&1 >/dev/null) ||
     echo "${0##*/}: took no reading of the machine's load: $(grep -m1 . <<<"$err" | sed 's/^team-slots: //')" >&2

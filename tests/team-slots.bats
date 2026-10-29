@@ -927,6 +927,20 @@ mac_proc() {
   assert_equal "$(wc -l <"$READINGS")" 2
 }
 
+@test "status --stored reads only the stored readings and never takes one" {
+  run_bin -0 --separate-stderr team-slots status --stored --json
+  assert_equal "$stderr" ""
+  assert_equal "$(jq -c '[(.effective.readings | length), .stale, .effective.reason]' <<<"$output")" \
+    "[0,true,\"no reading of the machine's load yet\"]"
+  [[ ! -e $READINGS && ! -e $SNAPSHOT ]]
+  reading 20 8
+  run_bin -0 team-slots --stored
+  assert_equal "$(wc -l <"$READINGS")" 1
+  assert_contains "$output" "effective 6: no reading of the machine's load in the last 15 minutes"
+  run_bin -2 team-slots check proj --stored
+  run_bin -2 team-slots sample --stored
+}
+
 @test "a reading status or check cannot take is said, and they go on with the stored ones" {
   printf 'MemTotal:       33554432 kB\n' >"$TEAM_MEMINFO"
   reading 11 8

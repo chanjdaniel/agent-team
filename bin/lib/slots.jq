@@ -219,6 +219,55 @@ def over_cap_text:
   | "\(.machine // "this machine") holds \(.counts.held) task slots, over its effective cap of \(.effective.cap)"
     + " (cap \(.settings.cap), \(.effective.reason)); no new task opens until tasks close";
 
+# team-doctor's slots line from the team-slots/1 object, as {verdict, reason, fix}, given <pools>
+# ({"<project>": its pool's slot count}, in the registry's order), <file> (slots.json's state:
+# "missing", "empty" with no key, or "set"), <holding> ("yes" when this machine holds the lease,
+# "no", or "" when the lease line cannot say) and <heartbeat> ("enabled" or "disabled").
+# It passes with the cap and where it came from, the effective cap, the slots held and kept, the
+# latest reading, and each pool smaller than the cap lets its project take (cap - reserved for
+# another project than the reserved one); it warns, the facts after the problems, on a cap
+# slots.json does not set, more held than the effective cap, and stale readings on the lease
+# holder, whose heartbeat takes them.
+def doctor_line($pools; $file; $holding; $heartbeat):
+  .settings as $s | .reserved_project as $project
+  | (if $project == null then 0 else $s.reserved end) as $kept
+  | ([$pools | to_entries[]
+      | (if .key == $project then $s.cap else $s.cap - $kept end) as $share
+      | select(.value < $share) | "\(.key) \(.value) of \($share)"]) as $small
+  | ("cap \($s.cap) (\(if $s.from.cap == "slots.json" then "slots.json" else "the default" end)), effective \(.effective.cap)"
+     + (if .effective.lowered_by == "memory" then " (lowered by memory)"
+        elif .effective.lowered_by == "cpu" then " (lowered by CPU)"
+        elif $s.dynamic == false then " (dynamic sizing is off)"
+        else "" end)
+     + ", \(.counts.held) held, "
+     + (if $project == null then "none kept, since no registered project's primary checkout is the code checkout"
+        elif $s.reserved == 0 then "none kept for \($project)"
+        else "\($s.reserved) kept for \($project)" end)
+     + "; "
+     + (if .effective.readings != [] then .effective.readings[-1] | "\(others_text) (\(reading_time))"
+        elif .effective.reason | startswith("no reading") then .effective.reason
+        else "no reading of the machine's load in the last \(counted($s.window_minutes; "minute"; "minutes"))" end)
+     + (if $small == [] then "" else "; pools smaller than the cap lets them take: \($small | join(", "))" end)) as $facts
+  | [(select($s.from.cap != "slots.json")
+      | if $file == "missing" then
+          {reason: "~/.config/agent-team/slots.json is missing, so the cap is the default \($s.cap)",
+           fix: "echo '{\"cap\": <n>}' > ~/.config/agent-team/slots.json"}
+        elif $file == "empty" then
+          {reason: "~/.config/agent-team/slots.json sets no cap, so the cap is the default \($s.cap)",
+           fix: "echo '{\"cap\": <n>}' > ~/.config/agent-team/slots.json"}
+        else
+          {reason: "~/.config/agent-team/slots.json sets no cap, so the cap is the default \($s.cap)",
+           fix: "add \"cap\": <n> to ~/.config/agent-team/slots.json"}
+        end),
+     (select(.counts.held > .effective.cap)
+      | {reason: "\(.counts.held) held, over the effective cap of \(.effective.cap)", fix: "none needed; no task opens until some close"}),
+     (select(.stale and $holding == "yes")
+      | {reason: "no reading of the machine's load in the last 15 minutes, though this machine holds the lease, whose heartbeat takes one every 5",
+         fix: (if $heartbeat == "enabled" then "the slots step's lines in ~/.local/state/agent-team/heartbeat.log say why it takes none"
+               else "team-timers enable" end)})] as $problems
+  | if $problems == [] then {verdict: "PASS", reason: $facts, fix: ""}
+    else {verdict: "WARN", reason: ($problems | map(.reason) + [$facts] | join("; ")), fix: ($problems | map(.fix) | join("; "))} end;
+
 # A reading of the machine's load, from $in: {at (UTC, YYYY-MM-DDTHH:MM:SSZ), os, total and
 # available (memory, in bytes), cpus, procs ([{pid, ppid, rss (KiB), seconds (cumulative CPU),
 # cwd ("" when unreadable)}]), paths (the team paths), stacks (team-stack ls --json's object, or
