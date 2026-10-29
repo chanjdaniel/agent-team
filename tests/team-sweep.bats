@@ -8,6 +8,14 @@ load helpers/common
 setup() {
   sandbox
   stub_reply claude '[]'
+  printf '%s\n' '[proj]' 'repo = "owner/proj"' 'path = "projects/proj"' 'base = "main"' 'delivery = "direct-pr"' \
+    'merge_method = "merge"' 'required_checks = []' 'task_dir = ".scratch/task"' 'docs = []' 'toolkits = []' \
+    '[proj.pool]' 'provider = "git"' 'slots = ["slots/proj/1"]' >"$TEAM_HOME/projects.toml"
+  # The machine has a task slot for every task a test opens, so only the slots tests find slots.
+  SETTINGS=$HOME/.config/agent-team/slots.json
+  READINGS=$HOME/.local/state/agent-team/slots/readings.jsonl
+  mkdir -p "${SETTINGS%/*}"
+  echo '{"cap": 100}' >"$SETTINGS"
 }
 
 # ledger_line [jq options...] <filter>: append the line jq builds, standing in for its writer.
@@ -106,6 +114,34 @@ retro() {
   ledger_line --arg ts "$1" --arg t "$2" \
     '{ts: $ts, task: $t, event: "opened", project: "agent-team", path: "retro", type: "research",
       title: "Retro", branch: "research/\($t)-retro", base: "dev", base_sha: "0123456", worktree: "/w/2"}'
+}
+
+# reserve_agent_team: home-pc, with agent-team registered with the code checkout as its primary,
+# so it is the project the machine's slots keep one for.
+reserve_agent_team() {
+  code_checkout
+  mkdir -p "$HOME/projects"
+  ln -s "$CODE_CHECKOUT" "$HOME/projects/agent-team"
+  printf '%s\n' '[agent-team]' 'repo = "owner/agent-team"' 'path = "projects/agent-team"' 'base = "dev"' \
+    'delivery = "direct-pr"' 'merge_method = "merge"' 'required_checks = []' 'task_dir = ".scratch/task"' 'docs = []' \
+    'toolkits = []' '[agent-team.pool]' 'provider = "git"' 'slots = ["slots/agent-team/1"]' >>"$TEAM_HOME/projects.toml"
+  echo home-pc >"$HOME/.config/agent-team/machine"
+}
+
+# slots_reading <minutes> <others GiB>: append to READINGS a reading of the machine's load taken
+# <minutes> ago on a machine shaped like home-pc (30.6 GiB, 12 cores), other programs using
+# <others GiB>, the CPU not read.
+slots_reading() {
+  mkdir -p "${READINGS%/*}"
+  jq -cn --arg at "$(date -u -d "@$(($(date +%s) - $1 * 60))" +%FT%TZ)" --argjson others "$2" '
+    (30.6 * 1073741824 | floor) as $total | ($others * 1073741824 | floor) as $others
+    | {at: $at, os: "linux", docker: true, cpu: null,
+       memory: {total: $total, available: ($total - $others - 1073741824), team: 1073741824, others: $others}}' >>"$READINGS"
+}
+
+# reading_times <n>: the local HH:MM of the last <n> stored readings, joined by " and ".
+reading_times() {
+  tail -n "$1" "$READINGS" | jq -rs 'map(.at | fromdateiso8601 | strflocaltime("%H:%M")) | join(" and ")'
 }
 
 # ago <hours>: the UTC time that many hours before now.
@@ -615,6 +651,122 @@ retro due since $(plus "$opened" 24) (every 24h, last retro T30): run the retro 
     text: "retro due since \($next) (every 48h, last retro none): run the retro skill"}')"
   assert_equal "$(jq -r '.[0].kind' <<<"$output")" "no-worker"
   no_github
+}
+
+@test "slots: none while the effective cap is the cap and no more slots are held than it" {
+  reserve_agent_team
+  echo '{"cap": 2}' >"$SETTINGS"
+  opened T3
+  launch T3 builder 4f2a9c1e
+  opened T4
+  launch T4 builder 5a5a5a5a
+  sessions "$(session 4f2a9c1e T3-builder busy working)" "$(session 5a5a5a5a T4-builder busy working)"
+  slots_reading 5 8
+  slots_reading 0 8
+  run_bin -0 --separate-stderr team-sweep
+  assert_equal "$output$stderr" ""
+}
+
+@test "slots: an effective cap below the cap is one line after every task finding and before retro-due" {
+  reserve_agent_team
+  echo '{"cap": 10}' >"$SETTINGS"
+  slots_reading 5 18
+  slots_reading 0 18
+  run_bin -1 --separate-stderr team-sweep
+  assert_equal "$stderr" ""
+  local line
+  line="slots: home-pc: 0 of 10 task slots held, 1 kept for agent-team (agent-team holds 0); effective 5; lowered by memory: other programs use 18.0 GiB of 30.6 GiB, leaving room for 5 tasks of 1.25 GiB after 6 GiB kept (the readings of $(reading_times 2)): new tasks wait; tell Daniel which wait"
+  assert_equal "$output" "$line"
+
+  local since
+  since=$(ago 50)
+  schedule "$since" 48
+  opened T3
+  sessions "$(session 88888888 T42-reviewer idle)"
+  line=${line/0 of 10/1 of 10}
+  run_bin -1 team-sweep
+  assert_equal "$output" "T3 no-worker: opened with no worker launched; next: launch one with team-worker, or log what is known with team-log
+T42 stray: T42-reviewer 88888888 is live but T42 is not in the ledger; next: read claude logs 88888888 for anything left to log, then stop it with claude stop 88888888
+$line
+retro due since $(plus "$since" 48) (every 48h, last retro none): run the retro skill"
+  run_bin -1 team-sweep --json
+  assert_equal "$(jq -c '.[2]' <<<"$output")" "$(jq -cn --arg text "$line" '{
+    task: null, kind: "slots", session: null, name: null, next: "tell Daniel which wait", text: $text}')"
+  no_github
+}
+
+@test "slots: more slots held than the effective cap is a finding, after the lowering when both" {
+  reserve_agent_team
+  echo '{"cap": 2}' >"$SETTINGS"
+  local n
+  for n in 3 4 5; do
+    opened "T$n"
+    launch "T$n" builder "${n}0000000"
+  done
+  sessions "$(session 30000000 T3-builder busy working)" "$(session 40000000 T4-builder busy working)" \
+    "$(session 50000000 T5-builder busy working)"
+  run_bin -1 team-sweep
+  assert_equal "$output" "slots: home-pc: 3 of 2 task slots held, 1 kept for agent-team (agent-team holds 0); effective 2; 3 held, over the effective cap of 2: new tasks wait; tell Daniel which wait"
+
+  echo '{"cap": 10}' >"$SETTINGS"
+  slots_reading 5 24
+  slots_reading 0 24
+  run_bin -1 team-sweep
+  assert_equal "$output" "slots: home-pc: 3 of 10 task slots held, 1 kept for agent-team (agent-team holds 0); effective 1; lowered by memory: other programs use 24.0 GiB of 30.6 GiB, leaving room for 0 tasks of 1.25 GiB after 6 GiB kept (the readings of $(reading_times 2)), and never below the 1 kept for agent-team; 3 held, over the effective cap of 1: new tasks wait; tell Daniel which wait"
+}
+
+@test "slots: the sweep never takes a reading of the machine's load, however old the stored ones" {
+  reserve_agent_team
+  opened T3
+  run_bin -1 team-sweep
+  [[ ! -e ${READINGS%/*} ]]
+  slots_reading 40 18
+  slots_reading 35 18
+  local before
+  before=$(cat "$READINGS")
+  run_bin -1 team-sweep --json
+  assert_equal "$(jq -c 'map(.kind)' <<<"$output")" '["no-worker"]'
+  assert_equal "$(cat "$READINGS")" "$before"
+  [[ ! -e ${READINGS%/*}/procs.tsv ]]
+}
+
+@test "slots: a team-slots that fails is a finding naming its reason, and the task findings still come" {
+  echo '{"cap": 0}' >"$SETTINGS"
+  opened T3
+  run_bin -1 --separate-stderr team-slots status --stored
+  local error=${stderr/"$HOME/"/"~/"}
+  assert_contains "$error" "team-slots: ~/.config/agent-team/slots.json"
+  run_bin -1 --separate-stderr team-sweep
+  assert_equal "$stderr" ""
+  assert_equal "$output" "T3 no-worker: opened with no worker launched; next: launch one with team-worker, or log what is known with team-log
+slots: $error: fix what team-slots names"
+  run_bin -1 team-sweep --json
+  assert_equal "$(jq -c '.[1] | del(.text)' <<<"$output")" \
+    '{"task":null,"kind":"slots","session":null,"name":null,"next":"fix what team-slots names"}'
+}
+
+@test "--wait counts the slots finding like any other: three minutes when new, 30 when there at the first look" {
+  reserve_agent_team
+  echo '{"cap": 10}' >"$SETTINGS"
+  looks '[]'
+  # A high reading, then two low ones that come just before the third look (1:00).
+  slots_reading 5 8
+  READINGS=$BATS_TEST_TMPDIR/low slots_reading 0 18
+  READINGS=$BATS_TEST_TMPDIR/low slots_reading 0 18
+  echo "cat '$BATS_TEST_TMPDIR/low' >>'$READINGS'" >"$BATS_TEST_TMPDIR/at-look.2"
+  run_bin -0 --separate-stderr team-sweep --wait
+  assert_equal "$stderr" ""
+  assert_equal "$output" "slots: home-pc: 0 of 10 task slots held, 1 kept for agent-team (agent-team holds 0); effective 5; lowered by memory: other programs use 18.0 GiB of 30.6 GiB, leaving room for 5 tasks of 1.25 GiB after 6 GiB kept (the readings of $(reading_times 2)): new tasks wait; tell Daniel which wait"
+  # Seen at the third look (1:00), it has stood three minutes at the ninth (4:00).
+  assert_equal "$(waits)" 8
+
+  # Lowered at the first look, as one the coordinator just told Daniel of, it ends at 30 minutes.
+  : >"$STUB_CALLS/sleep.log"
+  rm "$BATS_TEST_TMPDIR/at-look.2"
+  LOOK_LIMIT=80 looks '[]'
+  run_bin -0 team-sweep --wait
+  assert_contains "$output" "slots: home-pc: 0 of 10 task slots held"
+  assert_equal "$(waits)" 60
 }
 
 @test "a ledger of 1,000 events sweeps in under two seconds" {
