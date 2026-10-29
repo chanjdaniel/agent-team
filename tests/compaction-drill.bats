@@ -173,6 +173,7 @@ total: 60 6000 120000 600 1.50
   T92 drill feature planning | no live worker | waiting on Daniel: rotate the staging database password
   T93 drill feature blocked | no live worker
   T94 drill feature planning | T94-builder busy
+this machine: 4 of 6 task slots held, none kept, since no registered project's primary checkout is the code checkout ...
 Live team sessions (1):
   T94-builder c3d4e5f6 busy
 Stray sessions: none
@@ -203,6 +204,7 @@ Current items (3):
   local digest
   digest=$(cat "$STUB_FIXTURES/turn-1.digest")
   assert_contains "$digest" "  T94 drill feature planning | T94-builder busy
+this machine: 4 of 6 task slots held, none kept, since no registered project's primary checkout is the code checkout ...
 Live team sessions (1):
   T94-builder c3d4e5f6 busy
 Stray sessions: none

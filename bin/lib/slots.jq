@@ -142,9 +142,25 @@ def effective_cap($s; $kept; $project; $readings):
         end
     end;
 
+# <path> with ~ for the home directory <home>.
+def tilde($home):
+  if . == $home then "~" elif startswith($home + "/") then "~" + .[($home | length):] else . end;
+
+# The summary line of the team-slots/1 object, given the home directory <home> and the code
+# checkout <code>: the slots held of the cap, those kept for the reserved project, and the
+# effective cap.
+def summary_text($home; $code):
+  .settings as $s | .reserved_project as $project
+  | "\(.machine // "this machine"): \(.counts.held) of \($s.cap) task slots held, "
+    + (if $project == null then
+         "none kept, since no registered project's primary checkout is the code checkout \($code | tilde($home)) (reserved \($s.reserved) ignored)"
+       elif $s.reserved == 0 then "none kept for \($project) (reserved 0)"
+       else "\($s.reserved) kept for \($project) (\($project) holds \(.counts.reserved_held))" end)
+    + "; effective \(.effective.cap)";
+
 # The team-slots/1 object, from $in: {given (slots.json's values read with jq -s, [] with none),
 # machine (null without a name), reserved_project (null with none), held (held_slots), readings
-# (slots_readings's readings)}.
+# (slots_readings's readings), home (the home directory) and code (the code checkout)}.
 def slots_status($in):
   ($in.given | slots_settings) as $s
   | $in.reserved_project as $project
@@ -158,11 +174,8 @@ def slots_status($in):
      held: $in.held, counts: {held: $held, reserved_held: $reserved_held, others_held: $others_held},
      room: {reserved: (if $project == null then null else $free end),
             others: ([[$free, $effective.cap - $reserved - $others_held] | min, 0] | max)},
-     stale: ($in.readings == [] or ($in.readings[-1].at | fromdateiso8601) < now - 15 * 60)};
-
-# <path> with ~ for the home directory <home>.
-def tilde($home):
-  if . == $home then "~" elif startswith($home + "/") then "~" + .[($home | length):] else . end;
+     stale: ($in.readings == [] or ($in.readings[-1].at | fromdateiso8601) < now - 15 * 60)}
+  | {schema, machine, summary: summary_text($in.home; $in.code)} + .;
 
 # The cap line of the team-slots/1 object: the cap, where it came from, and the effective cap's
 # reason.
@@ -177,18 +190,12 @@ def cap_text:
 def held_text($home):
   .held[] | "  \(.task) \(.project) in \(.worktree | tilde($home))\(if .half_open then " (half open)" else "" end)";
 
-# team-slots status's lines from the team-slots/1 object, given the home directory <home> and the
-# code checkout <code>: the summary, the cap and the effective cap's reason, then one per held slot.
-def status_text($home; $code):
-  .settings as $s | .reserved_project as $project
-  | "\(.machine // "this machine"): \(.counts.held) of \($s.cap) task slots held, "
-    + (if $project == null then
-         "none kept, since no registered project's primary checkout is the code checkout \($code | tilde($home)) (reserved \($s.reserved) ignored)"
-       elif $s.reserved == 0 then "none kept for \($project) (reserved 0)"
-       else "\($s.reserved) kept for \($project) (\($project) holds \(.counts.reserved_held))" end)
-    + "; effective \(.effective.cap)",
-    cap_text,
-    held_text($home);
+# team-slots status's lines from the team-slots/1 object, given the home directory <home>: the
+# summary, the cap and the effective cap's reason, then one per held slot.
+def status_text($home):
+  .summary,
+  cap_text,
+  held_text($home);
 
 # The room the project <project> has for a new slot, from the team-slots/1 object: the reserved
 # project's, or the others'.

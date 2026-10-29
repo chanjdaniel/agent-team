@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Find what the coordinator must not leave unattended, from the ledger and the live session list.
+# Find what the coordinator must not leave unattended, from the ledger, the live session list and
+# the machine's task slots.
 #
 # Usage: team-sweep [--json | --wait]
-# Reads only ledger.jsonl and claude agents --json (never GitHub), so it runs in about a second.
+# Reads only ledger.jsonl, claude agents --json and team-slots status --stored --json (never
+# GitHub, and never a new reading of the machine's load), so it runs in about a second.
 # A task is open when it has events and no closed; it is parked when its phase is held, blocked
 # or awaiting-merge, when it has an ask nothing settled (no answered with its id, no merge-approved
 # whose url its text names), or when its latest paused or waiting has no later resumed or
@@ -16,7 +18,13 @@
 #                  task after that session's latest launch (one waiting for input is not also silent)
 #   stray          a live session named like a team worker (T<n>-<role>) whose task is closed or
 #                  not in the ledger; never one of T0, the load check's task
-#   retro-due      after every task finding, with task and session null: a retro is due, as
+#   slots          after every task finding, with task and session null: the machine's effective
+#                  cap is below its cap, or more task slots are held than the effective cap, as
+#                  team-slots says from the stored readings: "slots: <team-slots' summary line>;
+#                  <the effective cap's reason>; <n> held, over the effective cap of <e>: new
+#                  tasks wait; tell Daniel which wait", each reason only when it holds; or
+#                  team-slots failed: "slots: <its last line on stderr>: fix what team-slots names"
+#   retro-due      after the slots finding, with task and session null: a retro is due, as
 #                  team-retro status computes it (retros scheduled, no retro task open, the due
 #                  time past): "retro due since <time> (every <n>h, last retro <T<n> or none>):
 #                  run the retro skill"
@@ -62,12 +70,14 @@ esac
 ledger=$TEAM_HOME/ledger.jsonl
 [[ -e $ledger ]] || ledger=/dev/null
 
-# The findings now, as JSON in FINDINGS, from the ledger and a fresh read of the session list;
-# fails with the reason on stderr when the session list cannot be read.
+# The findings now, as JSON in FINDINGS, from the ledger, a fresh read of the session list and
+# the machine's task slots; fails with the reason on stderr when the session list cannot be read.
 look() {
-  local sessions
+  local sessions slots
   sessions=$(LIVE_SESSIONS='' && live_sessions && printf '%s' "$LIVE_SESSIONS") || return 1
-  FINDINGS=$(ledger_jq 'ledger_events | sweep($sessions)' -nRc --argjson sessions "$sessions" "$ledger")
+  slots=$(machine_slots)
+  FINDINGS=$(ledger_jq 'ledger_events | sweep($sessions; $slots)' -nRc --argjson sessions "$sessions" \
+    --argjson slots "$slots" "$ledger")
 }
 
 # The sweep watch: see --wait in the header.

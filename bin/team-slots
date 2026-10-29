@@ -18,7 +18,7 @@
 #           cannot take is said on stderr, the stored ones read as they are; with --stored it
 #           never takes one, so it writes nothing (team-doctor's slots line reads it so).
 #           With --json, one object: {schema: "team-slots/1", machine (null without a name),
-#           settings (every key below, and from: each key's source, "slots.json" or "default"),
+#           summary (the summary line), settings (every key below, and from: each key's source, "slots.json" or "default"),
 #           reserved_project (null with none), effective: {cap, lowered_by (null, "memory" or
 #           "cpu"), reason, readings (the window's, oldest first)}, held: [{task, project,
 #           worktree, half_open}], counts: {held, reserved_held, others_held}, room: {reserved
@@ -422,10 +422,10 @@ readings=$(jq -Rnc -L "$TEAM_LIB" 'include "slots"; [inputs] | slots_readings' "
 broken=$(jq .broken <<<"$readings")
 ((broken == 0)) || echo "${0##*/}: skipped $broken broken line$( ((broken == 1)) || echo s) of ${READINGS/#"$HOME"/\~}" >&2
 
-status=$(jq -nR -L "$TEAM_LIB" --arg home "$HOME" --argjson given "$given" --arg machine "$machine" \
+status=$(jq -nR -L "$TEAM_LIB" --arg home "$HOME" --arg code "$CODE" --argjson given "$given" --arg machine "$machine" \
   --arg project "$reserved_project" --argjson worktrees "$worktrees" --slurpfile readings <(jq .readings <<<"$readings") \
   "$held"' as $held | slots_status({given: $given, machine: ($machine | select(. != "") // null),
-    reserved_project: ($project | select(. != "") // null), held: $held, readings: $readings[0]})' "$ledger")
+    reserved_project: ($project | select(. != "") // null), held: $held, readings: $readings[0], home: $home, code: $code})' "$ledger")
 
 if [[ -n $check ]]; then
   room=$(jq -r --arg project "$check" -L "$TEAM_LIB" 'include "slots"; room_for($project)' <<<"$status")
@@ -436,5 +436,5 @@ if [[ -n $check ]]; then
 elif [[ -n $json ]]; then
   jq . <<<"$status"
 else
-  jq -r -L "$TEAM_LIB" --arg home "$HOME" --arg code "$CODE" 'include "slots"; status_text($home; $code)' <<<"$status"
+  jq -r -L "$TEAM_LIB" --arg home "$HOME" 'include "slots"; status_text($home)' <<<"$status"
 fi

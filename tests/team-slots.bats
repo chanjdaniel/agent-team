@@ -227,14 +227,17 @@ the cap is 10 (cap in ~/.config/agent-team/slots.json), effective 10: $(sampled_
   T4 other in ~/slots/other/1 (half open)"
 }
 
-@test "the JSON is team-slots/1, with the effective cap, the counts and the room each side has" {
+@test "the JSON is team-slots/1, with the summary line, the effective cap, the counts and the room each side has" {
   echo '{"cap": 4}' >"$SETTINGS"
   opened T1 proj 1
   opened T2 other 1
   run_bin -0 team-slots --json
-  assert_equal "$(jq -c 'del(.settings, .held, .effective.reason, .effective.readings)' <<<"$output")" '{"schema":"team-slots/1","machine":"home-pc","reserved_project":"agent-team","effective":{"cap":4,"lowered_by":null},"counts":{"held":2,"reserved_held":0,"others_held":2},"room":{"reserved":2,"others":1},"stale":false}'
-  assert_equal "$(jq -r .effective.reason <<<"$output")" "$(sampled_reason)"
-  assert_equal "$(jq -c '.effective.readings' <<<"$output")" "[$(cat "$READINGS")]"
+  assert_equal "$(jq -c 'del(.settings, .held, .effective.reason, .effective.readings)' <<<"$output")" '{"schema":"team-slots/1","machine":"home-pc","summary":"home-pc: 2 of 4 task slots held, 1 kept for agent-team (agent-team holds 0); effective 4","reserved_project":"agent-team","effective":{"cap":4,"lowered_by":null},"counts":{"held":2,"reserved_held":0,"others_held":2},"room":{"reserved":2,"others":1},"stale":false}'
+  local json=$output
+  run_bin -0 team-slots
+  assert_equal "$(jq -r .summary <<<"$json")" "${lines[0]}"
+  assert_equal "$(jq -r .effective.reason <<<"$json")" "$(sampled_reason)"
+  assert_equal "$(jq -c '.effective.readings' <<<"$json")" "[$(cat "$READINGS")]"
 }
 
 @test "the room: others stop one short of the cap while agent-team holds none, and agent-team's slot counts toward it" {
