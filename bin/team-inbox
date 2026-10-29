@@ -19,7 +19,8 @@
 # team-ask, team-answer, team-merge and team-close run it at their end (refresh_inbox in
 # bin/lib/team.sh), going on with a line on stderr when it fails; team-timers run runs it every
 # five minutes on the lease holder. It refuses on a machine that is fenced or lost the lease
-# (lease_refusal in bin/lib/team.sh), and one run at a time holds ~/.local/state/agent-team/inbox.lock.
+# (lease_refusal in bin/lib/team.sh) and in a worker session (worker_refusal), and one run at a
+# time holds ~/.local/state/agent-team/inbox.lock.
 # Prints "edited <the message's link>" or "posted <the message's link>".
 # Exit codes: 0 done; 1 refused, or Discord refused a call; 2 a malformed command line; 75 Discord
 # answered 429, or another run held the lock for a minute.
@@ -35,6 +36,7 @@ LOCK_SECONDS=60
 SUPPRESS_EMBEDS=4
 
 (($# == 0)) || usage_error "usage: team-inbox"
+why=$(worker_refusal "" "edits nothing in Discord") && die "$why"
 
 why=$(lease_refusal "posts nothing to Discord; the coordinator on the holder answers there.") && die "$why"
 discord_token >/dev/null || die "no DISCORD_BOT_TOKEN in ~/.claude/channels/discord/.env"

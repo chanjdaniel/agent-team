@@ -12,7 +12,7 @@
 # the script's help_more, if it defined one before sourcing), and provides die, usage_error, team_project, ledger_jq, ledger_append,
 # task_events, known_task_events, open_task_events, task_status, task_worktrees, local_path,
 # archive_left_out, rsync_rule, archive_task_dir, machine_name, os_release, team_os, tool_dirs,
-# team_tool_path, fence_reason, offline_hold, lease_refusal, lease_gate, worktree_changes, same_path, bounded, trust_probe,
+# team_tool_path, fence_reason, offline_hold, lease_refusal, worker_refusal, lease_gate, worktree_changes, same_path, bounded, trust_probe,
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin,
 # only_records, records_list, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
 # registered_pr, attribution_lines, strip_attribution, live_sessions, discord_token, discord_api, daniel_message, refresh_inbox,
@@ -372,6 +372,23 @@ lease_refusal() {
     printf '%s: a machine that lost the lease %s\n' "$why" "$1"
   else
     return 1
+  fi
+}
+
+# Print why this session may not <does> on Discord, or fail when it may: a worker session (its
+# settings' AGENT_TEAM_ROLE names a role other than the coordinator; Daniel's own shell and the
+# heartbeat set none) may not, except a planner on its own task (its settings' AGENT_TEAM_TASK)
+# when the caller passes --interview, for the interview thread's post and wait. Worker settings
+# deny the same commands; this holds where a deny pattern misses a spelling:
+# worker_refusal <task or ""> <does> [--interview]
+worker_refusal() {
+  local role=${AGENT_TEAM_ROLE:-} own=${AGENT_TEAM_TASK:-}
+  [[ -n $role && $role != coordinator ]] || return 1
+  if [[ ${3:-} == --interview && $role == planner ]]; then
+    [[ -z $1 || $1 != "$own" ]] || return 1
+    echo "a planner session of ${own:-no task} $2 for $1: a planner talks with Daniel only in its own task's interview thread"
+  else
+    echo "a $role session $2: that is the coordinator's; send it your message"
   fi
 }
 

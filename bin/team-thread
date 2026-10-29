@@ -28,7 +28,8 @@
 #             5xx it waits twice as long each time, up to a minute.
 # --interview and wait refuse on a machine that is fenced or that lost the lease (lease_refusal,
 # checked before each read), and with no interview channel set; wait ends with the hold's
-# message (offline_hold) when the team holds offline.
+# message (offline_hold) when the team holds offline. In a worker session only a planner's wait
+# on its own task runs (worker_refusal in bin/lib/team.sh); the coordinator opens the threads.
 # Needs the bot token in ~/.claude/channels/discord/.env.
 # Exit codes: 0 done, 1 refused or Discord refused a read, 2 a malformed command line, 75 the
 # team holds offline.
@@ -112,6 +113,7 @@ if [[ ${1:-} == wait ]]; then
     shift
   done
   [[ $task =~ ^T[1-9][0-9]*$ ]] || usage_error "$USAGE"
+  if why=$(worker_refusal "$task" "waits on Daniel in Discord" --interview); then die "$why"; fi
   [[ -n $INTERVIEW_CHANNEL ]] || die "$NO_CHANNEL"
   events=$(open_task_events "$task")
   thread=$(jq -r 'map(select(.event == "interview-thread") | .discord_thread | strings) | last // empty' <<<"$events")
@@ -153,6 +155,7 @@ fi
 if [[ $# -eq 2 && $2 == --interview ]]; then
   task=$1
   [[ $task =~ ^T[1-9][0-9]*$ ]] || usage_error "$USAGE"
+  if why=$(worker_refusal "$task" "opens a Discord thread"); then die "$why"; fi
   [[ -n $INTERVIEW_CHANNEL ]] || die "$NO_CHANNEL"
   events=$(open_task_events "$task")
   # Printing the thread already logged calls no one, so only a new one is fenced.
@@ -166,4 +169,5 @@ fi
 [[ $# -eq 3 ]] || usage_error "$USAGE"
 task=$1 project=$2 title=$3
 [[ $task =~ ^T[1-9][0-9]*$ ]] || usage_error "task must look like T<n>, got '$task'"
+if why=$(worker_refusal "$task" "opens a Discord thread"); then die "$why"; fi
 open_thread "$task" thread "$COORDINATOR_CHANNEL" "$task · $project · $title"

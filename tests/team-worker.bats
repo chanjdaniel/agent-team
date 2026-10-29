@@ -668,6 +668,60 @@ role_texts() {
   done
 }
 
+# Whether an allow rule of <settings> matches <command> and no deny rule does, a rule's * matching
+# any text as Claude Code's does: allowed_in <settings> <command>
+allowed_in() {
+  local rule
+  denied_in "$1" "$2" && return 1
+  while IFS= read -r rule; do
+    # shellcheck disable=SC2053 # the rule is a glob
+    [[ $2 == $rule ]] && return 0
+  done < <(jq -r '.permissions.allow[]? | select(startswith("Bash(")) | .[5:-1]' "$1")
+  return 1
+}
+
+@test "no worker gains Discord: a planner runs only its own task's interview post and wait, and no role reads the bot's files" {
+  thread T7
+  local role settings command bin=$REPO_ROOT/bin
+  for role in planner builder reviewer; do
+    run_bin -0 team-worker T7 "$role" "$wt1" -- go
+    settings=$TEAM_HOME/tasks/T7/settings.$role.json
+    assert_equal "$(jq -r .env.AGENT_TEAM_TASK "$settings")" T7
+    # shellcheck disable=SC2088 # ~ is part of the command as an agent types it
+    for command in "$bin/team-ask T7 sign-in --file q.md" "team-ask T7 sign-in --file q.md --from planner" \
+      "$bin/team-answer T7 sign-in 1564000000000000001" "~/agent-team/bin/team-answer T7 sign-in 1" \
+      "$bin/team-inbox" "team-inbox" "$bin/team-thread T7 --interview" "team-thread T7 conventioner title" \
+      "$bin/team-post --coordinator --file q.md" "$bin/team-post T7 --thread task --file q.md" \
+      "cat ~/.claude/channels/discord/.env" "jq . $HOME/.claude/channels/discord/access.json" \
+      "grep TOKEN ~/.claude/channels/discord/.env"; do
+      denied_in "$settings" "$command" || { echo "$role allows: $command" >&2; return 1; }
+    done
+    for command in "git add bin/team-ask bin/team-post tests/team-ask.bats" "grep -n die bin/team-inbox" \
+      "tests/vendor/bats-core/bin/bats tests/team-post.bats" "shellcheck bin/team-answer bin/team-thread" \
+      "git commit -m 'feat(team-post): post T7 --thread interview'" "$bin/team-thread --help"; do
+      if denied_in "$settings" "$command"; then echo "$role denies: $command" >&2; return 1; fi
+    done
+    jq -e '.permissions.deny | index("Read(~/.claude/channels/**)") != null' "$settings" >/dev/null
+  done
+
+  settings=$TEAM_HOME/tasks/T7/settings.planner.json
+  for command in "$bin/team-post T7 --thread interview --file $HOME/w/.scratch/task/q1.md" \
+    "$bin/team-thread wait T7" "$bin/team-thread wait T7 --after 1564000000000000001"; do
+    allowed_in "$settings" "$command" || { echo "planner may not: $command" >&2; return 1; }
+  done
+  for command in "$bin/team-post T17 --thread interview --file q.md" "$bin/team-post T7 --file q.md" \
+    "$bin/team-thread wait T17" "$bin/team-thread wait T7; $bin/team-post --coordinator --file q.md"; do
+    if allowed_in "$settings" "$command"; then echo "planner may: $command" >&2; return 1; fi
+  done
+  for role in builder reviewer; do
+    settings=$TEAM_HOME/tasks/T7/settings.$role.json
+    for command in "$bin/team-post T7 --thread interview --file q.md" "team-post T7 --file q.md" \
+      "$bin/team-thread wait T7" "team-thread wait T7 --after 1"; do
+      denied_in "$settings" "$command" || { echo "$role allows: $command" >&2; return 1; }
+    done
+  done
+}
+
 @test "a closed task is refused, opened or legacy" {
   thread T7
   opened T7 proj feat/T7-one "$wt1"

@@ -234,7 +234,7 @@ age_probe() {
     "team-ask T7 sign-in --file q.md" "TZ=UTC ~/agent-team/bin/team-ask T7 sign-in --file q.md --from planner"
     "team-inbox" "/home/x/agent-team/bin/team-inbox")
   local others=("echo team-post" "grep -rn 'team-post' bin" "team-poster T7" "team-log T7 note"
-    "team-answer T7 sign-in 1564000000000000001" "team-asked T7" "team-inboxes" "cat bin/team-inbox")
+    "team-asked T7" "team-inboxes" "cat bin/team-inbox")
   for command in "${posts[@]}" "${others[@]}"; do
     bash_call -0 "$command"
     coordinator_call -0 "$command"
@@ -257,6 +257,36 @@ age_probe() {
   for command in "${posts[@]}"; do
     bash_call -2 "$command"
     assert_equal "$stderr" "Blocked: home-pc is fenced since 2026-10-22T14:00:00Z (holder seen laptop, epoch 2): a fenced machine posts nothing to Discord; the coordinator on the holder answers there."
+    coordinator_call -2 "$command"
+  done
+}
+
+@test "team-answer is blocked for workers and the coordinator alike when fenced or when origin names another holder" {
+  local command answers=("team-answer T7 sign-in 1564000000000000001"
+    "/home/x/agent-team/bin/team-answer T7 sign-in 1564000000000000001"
+    "cd wt && TZ=UTC ~/agent-team/bin/team-answer T7 sign-in 1564000000000000001")
+  local others=("echo team-answer" "grep -rn 'team-answer' bin" "team-answered T7" "cat bin/team-answer")
+  for command in "${answers[@]}" "${others[@]}"; do
+    bash_call -0 "$command"
+    coordinator_call -0 "$command"
+  done
+
+  steal_lease laptop home-pc
+  age_probe 61
+  for command in "${answers[@]}"; do
+    bash_call -2 "$command"
+    assert_equal "$stderr" "Blocked: home-pc no longer holds the lease: origin names laptop (held, epoch 2): a machine that lost the lease logs no answer; the coordinator on the holder takes Daniel's answers."
+    coordinator_call -2 "$command"
+  done
+  for command in "${others[@]}"; do
+    bash_call -0 "$command"
+    coordinator_call -0 "$command"
+  done
+
+  fence
+  for command in "${answers[@]}"; do
+    bash_call -2 "$command"
+    assert_equal "$stderr" "Blocked: home-pc is fenced since 2026-10-22T14:00:00Z (holder seen laptop, epoch 2): a fenced machine logs no answer; the coordinator on the holder takes Daniel's answers."
     coordinator_call -2 "$command"
   done
 }

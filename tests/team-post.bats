@@ -87,6 +87,33 @@ run_of() {
 2222"
 }
 
+@test "a worker session posts only a planner's question to its own task's interview thread" {
+  echo '{"ts":"2026-10-01T10:00:03Z","task":"T7","event":"interview-thread","discord_thread":"5555"}' >>"$TEAM_HOME/ledger.jsonl"
+  echo '{"ts":"2026-10-01T10:00:04Z","task":"T17","event":"interview-thread","discord_thread":"6666"}' >>"$TEAM_HOME/ledger.jsonl"
+  AGENT_TEAM_ROLE=planner AGENT_TEAM_TASK=T7 run_bin -0 team-post T7 --thread interview --file "$BATS_TEST_TMPDIR/q.md"
+  assert_equal "$(channels)" "5555"
+
+  AGENT_TEAM_ROLE=planner AGENT_TEAM_TASK=T7 run_bin -1 team-post T17 --thread interview --file "$BATS_TEST_TMPDIR/q.md"
+  assert_equal "$output" "team-post: a planner session of T7 posts to Discord for T17: a planner talks with Daniel only in its own task's interview thread"
+  local role args
+  for args in "T7 --file q.md" "T7 --thread task --file q.md" "--coordinator --file q.md"; do
+    eval "AGENT_TEAM_ROLE=planner AGENT_TEAM_TASK=T7 run_bin -1 team-post ${args/q.md/$BATS_TEST_TMPDIR/q.md}"
+    assert_equal "$output" "team-post: a planner session posts to Discord: that is the coordinator's; send it your message"
+  done
+  for role in builder reviewer ops; do
+    AGENT_TEAM_ROLE=$role AGENT_TEAM_TASK=T7 run_bin -1 team-post T7 --thread interview --file "$BATS_TEST_TMPDIR/q.md"
+    assert_equal "$output" "team-post: a $role session posts to Discord: that is the coordinator's; send it your message"
+  done
+  assert_equal "$(channels)" "5555"
+
+  # The coordinator posts anywhere, as Daniel's own shell does.
+  AGENT_TEAM_ROLE=coordinator run_bin -0 team-post --coordinator --file "$BATS_TEST_TMPDIR/q.md"
+  AGENT_TEAM_ROLE=coordinator run_bin -0 team-post T17 --thread interview --file "$BATS_TEST_TMPDIR/q.md"
+  assert_equal "$(channels)" "5555
+1562486564871995482
+6666"
+}
+
 @test "a malformed command line is a usage error, and nothing is posted" {
   local args
   for args in "" "T7" "--file q.md" "7 --file q.md" "T0 --file q.md" "T7 --coordinator --file q.md" \

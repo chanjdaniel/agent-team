@@ -132,6 +132,16 @@ EOF
   assert_equal "$(logged)" ""
 }
 
+@test "a worker session, a planner's included, asks nothing and logs nothing" {
+  local role
+  for role in planner builder reviewer ops; do
+    AGENT_TEAM_ROLE=$role AGENT_TEAM_TASK=T7 run_bin -1 --separate-stderr team-ask T7 sign-in --file "$BATS_TEST_TMPDIR/q.md"
+    assert_equal "$stderr" "team-ask: a $role session asks Daniel nothing in Discord: that is the coordinator's; send it your message"
+  done
+  assert_equal "$(stub_calls curl)" ""
+  assert_equal "$(logged)" ""
+}
+
 @test "a task with no thread, a closed or unknown task, a blank file or no allowFrom is refused before any post" {
   run_bin -1 team-ask T8 sign-in --file "$BATS_TEST_TMPDIR/q.md"
   assert_equal "$output" "team-ask: T8 has no Discord thread in the ledger; team-thread opens one"

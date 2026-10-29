@@ -9,8 +9,9 @@
 #     coordinator or worker never posts in the channel the new one owns, even before its
 #     heartbeat fences it (lease_refusal in bin/lib/team.sh, which team-post runs itself too:
 #     origin asked at most once a minute; unreachable passes, since the heartbeat owns offline).
-#   Bash, a command of any role that runs team-thread wait (an interview's read of Discord):
-#     blocked as a post is, with what such a machine does instead.
+#   Bash, a command of any role that runs team-answer (which logs Daniel's answer) or team-thread
+#     wait (an interview's read of Discord): blocked as a post is, with what such a machine does
+#     instead.
 #   Bash (workers): a command that runs git push is blocked while this machine is fenced; while
 #     the team holds offline, one that runs git push, gh, gh-axi or team-thread wait is blocked
 #     with the hold (offline_hold: "GitHub is unreachable (since 13:05); the team is holding:
@@ -36,6 +37,8 @@ machine=$(machine_name 2>/dev/null) || machine="this machine"
 
 # What a machine that may not post does not do, for lease_refusal.
 POSTS="posts nothing to Discord; the coordinator on the holder answers there."
+# What one that may not log Daniel's answer does not do, as team-answer says it.
+ANSWERS="logs no answer; the coordinator on the holder takes Daniel's answers."
 # What one that may not wait on an interview does not do, as team-thread wait says it.
 WAITS="waits on no interview; stop, since the coordinator on the holder takes the task on."
 
@@ -59,10 +62,15 @@ case $tool in
     # team-post, team-ask, which posts through it, or team-inbox, which edits the Waiting on you
     # message, where a command starts, as gh: refused as the Discord tools are, for every role.
     post=$'(^|[;&|(`\n])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|]*/)?team-(post|ask|inbox)([[:space:]]|$)'
+    # team-answer, which logs Daniel's answer, where a command starts, as gh.
+    answer=$'(^|[;&|(`\n])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|]*/)?team-answer([[:space:]]|$)'
     # team-thread wait, the interview's blocking read of Discord, where a command starts, as gh.
     wait=$'(^|[;&|(`\n])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|]*/)?team-thread[[:space:]]+wait([[:space:]]|$)'
     if [[ $command =~ $post ]]; then
       why=$(lease_refusal "$POSTS") && block "$why"
+    fi
+    if [[ $command =~ $answer ]]; then
+      why=$(lease_refusal "$ANSWERS") && block "$why"
     fi
     if [[ $command =~ $wait ]]; then
       why=$(lease_refusal "$WAITS") && block "$why"

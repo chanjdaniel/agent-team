@@ -14,6 +14,8 @@
 # message>; waiting on=Daniel reason="ask <id>". Then team-inbox lists the ask in the Waiting on
 # you message; when that fails, a line on stderr says so, and the ask stands.
 # A post that fails logs nothing: when the ping fails, the question stays posted, its id said.
+# A worker session may not run it (worker_refusal in bin/lib/team.sh): its questions go to the
+# coordinator.
 # Prints {task, id, question: [<its message ids>], ping: <the ping's message id>}.
 # Exit codes: 0 asked; 1 refused, or Discord refused a post; 2 a malformed command line; 75
 # Discord answered 429 (team-post's message says when to try again).
@@ -39,6 +41,7 @@ while (($#)); do
   shift
 done
 [[ $task =~ ^T[1-9][0-9]*$ && $id =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && -n $file ]] || usage_error "$USAGE"
+why=$(worker_refusal "$task" "asks Daniel nothing in Discord") && die "$why"
 
 events=$(open_task_events "$task")
 thread=$(jq -r 'map(select(.event == "thread") | .discord_thread | strings) | last // empty' <<<"$events")

@@ -210,6 +210,15 @@ POST channels/1777/messages"
   assert_equal "$(stub_calls curl)" ""
 }
 
+@test "a worker session refuses before any call to Discord" {
+  local role
+  for role in planner builder reviewer ops; do
+    AGENT_TEAM_ROLE=$role AGENT_TEAM_TASK=T7 run_bin -1 --separate-stderr team-inbox
+    assert_equal "$stderr" "team-inbox: a $role session edits nothing in Discord: that is the coordinator's; send it your message"
+  done
+  assert_equal "$(stub_calls curl)" ""
+}
+
 @test "--help prints the header, and any argument is a usage error" {
   run_bin -0 team-inbox --help
   assert_contains "$output" "Usage: team-inbox"

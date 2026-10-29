@@ -243,6 +243,31 @@ channels/$THREAD/messages?after=1564000000000000200&limit=100"
   assert_equal "$output" "team-thread: cannot read allowFrom from ~/.claude/channels/discord/access.json, so no message can be known as Daniel's"
 }
 
+@test "in a worker session only a planner's wait on its own task runs; no worker opens a thread" {
+  interview_logged
+  say 1564000000000000001 "$BOT" "Q1"
+  say 1564000000000000002 "$DANIEL" "Five a minute."
+  AGENT_TEAM_ROLE=planner AGENT_TEAM_TASK=T7 run_bin -0 team-thread wait T7
+  assert_equal "$(ids)" "1564000000000000002"
+  local reads_before role
+  reads_before=$(reads | wc -l)
+
+  AGENT_TEAM_ROLE=planner AGENT_TEAM_TASK=T8 run_bin -1 team-thread wait T7
+  assert_equal "$output" "team-thread: a planner session of T8 waits on Daniel in Discord for T7: a planner talks with Daniel only in its own task's interview thread"
+  for role in builder reviewer ops; do
+    AGENT_TEAM_ROLE=$role AGENT_TEAM_TASK=T7 run_bin -1 team-thread wait T7
+    assert_equal "$output" "team-thread: a $role session waits on Daniel in Discord: that is the coordinator's; send it your message"
+  done
+  for role in planner builder; do
+    AGENT_TEAM_ROLE=$role AGENT_TEAM_TASK=T7 run_bin -1 team-thread T7 --interview
+    assert_equal "$output" "team-thread: a $role session opens a Discord thread: that is the coordinator's; send it your message"
+    AGENT_TEAM_ROLE=$role AGENT_TEAM_TASK=T7 run_bin -1 team-thread T7 conventioner "Sign-in limits"
+    assert_equal "$output" "team-thread: a $role session opens a Discord thread: that is the coordinator's; send it your message"
+  done
+  assert_equal "$(reads | wc -l)" "$reads_before"
+  assert_equal "$(stub_calls curl | jq -r '.[-1]' | grep -c '/threads$')" "0"
+}
+
 @test "a fenced machine opens and waits on nothing, and a hold offline ends the wait with the hold's message" {
   local state=$HOME/.local/state/agent-team
   mkdir -p "$state"

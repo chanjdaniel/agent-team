@@ -4,7 +4,9 @@
 # interview: the latest interview-thread event, which team-thread --interview logs) or to
 # #coordinator, never to a channel named by id. Unlike discord_api alone, it refuses on a machine
 # that is fenced or that lost the lease (lease_refusal in bin/lib/team.sh, as the lease-fence hook
-# does), and posts nothing then.
+# does), and posts nothing then; while the team holds offline it still posts, since Discord is up
+# and the plugin's posts go on too. In a worker session it posts only a planner's question to its
+# own task's interview thread (worker_refusal in bin/lib/team.sh); the coordinator posts the rest.
 #
 # Usage: team-post T<n> [--thread task|interview] --file <path>
 #        team-post --coordinator --file <path>
@@ -41,6 +43,9 @@ if ((coordinator)); then
 else
   [[ $task =~ ^T[1-9][0-9]*$ && ${thread:-task} =~ ^(task|interview)$ ]] || usage_error "$USAGE"
 fi
+interview=()
+if [[ $thread == interview ]]; then interview=(--interview); fi
+why=$(worker_refusal "$task" "posts to Discord" "${interview[@]}") && die "$why"
 
 [[ -f $file && -r $file ]] || die "no file to post: $file"
 # Each part's request body, one compact JSON object per line, cut as the plugin's chunk() does,
@@ -68,7 +73,7 @@ if ((coordinator)); then
   channel=$COORDINATOR_CHANNEL
 else
   kind=thread
-  [[ ${thread:-task} == task ]] || kind=interview-thread
+  [[ ${thread:-task} == task ]] || kind="interview-thread"
   channel=$(task_events "$task" | jq -r --arg kind "$kind" 'select(.event == $kind) | .discord_thread | strings' | tail -n 1)
   [[ -n $channel || $kind != thread ]] || die "$task has no Discord thread in the ledger; team-thread opens one"
   [[ -n $channel ]] || die "$task has no interview thread in the ledger; team-thread $task --interview opens one"

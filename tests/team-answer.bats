@@ -189,6 +189,65 @@ answered 1564000000000000002"
 resumed"
 }
 
+@test "a message sent before the ask's question, or before its asked when no question is logged, is refused without asking Discord" {
+  # team-ask logs the question's message: an answer must come after it.
+  echo '{"ts":"2026-10-30T10:00:00Z","task":"T7","event":"asked","id":"sign-in","text":"Again: which limit stays?","discord_message":"1564000000000000005"}' \
+    >>"$TEAM_HOME/ledger.jsonl"
+  local before
+  before=$(cat "$TEAM_HOME/ledger.jsonl")
+  run_bin -1 --separate-stderr team-answer T7 sign-in 1564000000000000001
+  assert_equal "$stderr" "team-answer: Discord message 1564000000000000001 was sent at 2026-10-25T19:37:37Z, before T7's question sign-in (Discord message 1564000000000000005), so it is not Daniel's answer to it"
+  message 2222 1564000000000000006 757 "Five a minute."
+  run_bin -0 team-answer T7 sign-in 1564000000000000006
+  assert_equal "$output" "Five a minute."
+  # An asked team-log wrote, with no message: the answer must be sent no earlier than its ts.
+  echo "$before" >"$TEAM_HOME/ledger.jsonl"
+  echo '{"ts":"2026-10-30T10:00:00Z","task":"T7","event":"asked","id":"reset","text":"Reset it daily?"}' >>"$TEAM_HOME/ledger.jsonl"
+  before=$(cat "$TEAM_HOME/ledger.jsonl")
+  run_bin -1 --separate-stderr team-answer T7 reset 1564000000000000001
+  assert_equal "$stderr" "team-answer: Discord message 1564000000000000001 was sent at 2026-10-25T19:37:37Z, before T7 asked reset at 2026-10-30T10:00:00Z, so it is not Daniel's answer to it"
+  assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$before"
+  assert_equal "$(reads | wc -l)" "1"
+}
+
+@test "an edited message is refused, and nothing is logged" {
+  jq '. + {edited_timestamp: "2026-10-25T19:40:00.000000+00:00"}' "$discord/2222-1564000000000000001.json" >"$discord/m"
+  mv "$discord/m" "$discord/2222-1564000000000000001.json"
+  run_bin -1 --separate-stderr team-answer T7 sign-in 1564000000000000001
+  assert_equal "$stderr" "team-answer: Discord message 1564000000000000001 was edited at 2026-10-25T19:40:00.000000+00:00, so its text may not be what Daniel first sent: ask them to send the answer again as a new message"
+  assert_equal "$(logged)" ""
+}
+
+@test "a fenced machine, or one that lost the lease, reads nothing and logs nothing" {
+  mkdir -p "$HOME/.local/state/agent-team"
+  echo '{"since": "2026-10-22T14:00:00Z", "holder": "laptop", "epoch": 2}' >"$HOME/.local/state/agent-team/fenced"
+  run_bin -1 --separate-stderr team-answer T7 sign-in 1564000000000000001
+  assert_contains "$stderr" "a fenced machine logs no answer; the coordinator on the holder takes Daniel's answers."
+  rm "$HOME/.local/state/agent-team/fenced"
+  hold_lease home-pc >/dev/null
+  make_machine laptop
+  steal_lease laptop home-pc
+  rm -f "$HOME/.local/state/agent-team/probe.json"
+  run_bin -1 --separate-stderr team-answer T7 sign-in 1564000000000000001
+  assert_contains "$stderr" "home-pc no longer holds the lease: origin names laptop"
+  assert_contains "$stderr" "a machine that lost the lease logs no answer"
+  assert_equal "$(stub_calls curl)" ""
+  assert_equal "$(logged)" ""
+}
+
+@test "a worker session is refused, and the coordinator's and Daniel's own shell are not" {
+  local role
+  for role in planner builder reviewer ops; do
+    AGENT_TEAM_ROLE=$role AGENT_TEAM_TASK=T7 run_bin -1 --separate-stderr team-answer T7 sign-in 1564000000000000001
+    assert_equal "$stderr" "team-answer: a $role session logs no answer of Daniel's: that is the coordinator's; send it your message"
+  done
+  assert_equal "$(stub_calls curl)" ""
+  assert_equal "$(logged)" ""
+  AGENT_TEAM_ROLE=coordinator run_bin -0 team-answer T7 sign-in 1564000000000000001
+  assert_equal "$(logged | jq -r .event)" "answered
+resumed"
+}
+
 @test "a malformed command line is a usage error, and nothing is read or logged" {
   local args
   for args in "" "T7" "T7 sign-in" "7 sign-in 1564000000000000001" "T7 'sign in' 1564000000000000001" \
