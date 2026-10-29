@@ -476,6 +476,24 @@ team-open: the slots:"
   [[ ! -e $HOME/slots/agent-team/1 ]]
 }
 
+@test "a refusal for the cap is said in full before team-open exits, however late its words arrive" {
+  reserve_agent_team
+  echo '{"cap": 10}' >"$HOME/.config/agent-team/slots.json"
+  holding proj 1 10
+  # The sed that says team-slots' words as team-open's takes a second to start: team-open must
+  # wait for it, or it exits 75 with nothing said.
+  local sed
+  sed=$(command -v sed)
+  ln -f "$(shared slow-sed <<EOF
+#!/usr/bin/env bash
+[[ \$1 != -u ]] || sleep 1
+exec "$sed" "\$@"
+EOF
+)" "$BATS_TEST_TMPDIR/stubs/sed"
+  run_bin -75 --separate-stderr team-open proj feature feat late "Late"
+  assert_equal "${stderr%%$'\n'*}" "team-open: no task slot for proj on home-pc: 10 of 10 held"
+}
+
 # reading <minutes> <others GiB>: append a reading taken <minutes> before $NOW on a machine of
 # 30.6 GiB and 12 cores, other programs using <others GiB> and 1 core.
 reading() {

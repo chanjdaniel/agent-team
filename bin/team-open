@@ -537,7 +537,9 @@ exec {slots_fd}<>"$HOME/.local/state/agent-team/slots.lock"
 # the slot lock), its words said as team-open's; exits as it does when it may not.
 check_slot() {
   local rc=0 say
-  TEAM_HOME=$TEAM_HOME "$bin/team-slots" check "$project" --lock "$slots_fd" --label "team-open $task $project (pid $$)" \
+  # The braces make the process substitution this shell's, so $! is its pid: on a command alone,
+  # the forked command makes it, and $! stays some earlier one's.
+  { TEAM_HOME=$TEAM_HOME "$bin/team-slots" check "$project" --lock "$slots_fd" --label "team-open $task $project (pid $$)"; } \
     2> >(sed -u 's/^team-slots: /team-open: /' >&2) || rc=$?
   say=$!
   wait "$say"
