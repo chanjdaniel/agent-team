@@ -76,7 +76,7 @@ Nothing new means no commit and no push; `team-close` deletes the task's `wip/<p
 
 A machine that finds another holder or a higher epoch (its renew, its heartbeat) fences itself: it writes `fenced`, stops its own coordinator and `T<n>-<role>` sessions, and disables its heartbeat.
 The `lease-fence` hook blocks the coordinator's Discord replies, and its `git push`, `team-merge`, `team-open` and `team-close`, from the moment a fenced machine wakes, before any heartbeat runs (it checks the remote lease at most once a minute), and blocks workers' pushes.
-It blocks `team-post` and `team-ask` for every role the same way, and `team-post`, which `team-ask` posts through, refuses there by itself too, through the same check (`lease_refusal` in `bin/lib/team.sh`).
+It blocks `team-post`, `team-ask` and `team-thread wait` for every role the same way, and `team-post`, which `team-ask` posts through, and `team-thread` refuse there by themselves too, through the same check (`lease_refusal` in `bin/lib/team.sh`).
 So a coordinator left running on a machine that lost the lease (its fence's `claude stop` failed, or `team-handoff --retire` never ran) acts on nothing the holder's coordinator owns.
 `team-doctor` on a fenced machine lists, per task worktree with work origin lacks, the command that pushes it to the team home's origin as `salvage/<project>/T<n>-<machine>`, for Daniel to run.
 Like a snapshot, a salvage never goes to the project's origin, which may be public; `team-open --resume` names the same place for a branch here with commits origin's lacks.
@@ -87,7 +87,7 @@ A worktree whose head a salvage branch holds, with nothing uncommitted, is salva
 
 - The probe is `git ls-remote` of the lease branch, 20 seconds at most; a network failure is tried again after 60 seconds, and a second one means offline.
   GitHub refusing the login is not offline: it is posted once and the doctor fails it.
-- Offline, the holder keeps the lease and holds the team: the heartbeat posts the hold in `#coordinator` once, the hook blocks workers' pushes and `gh` with the hold message, and no worker starts, no coordinator starts, and no checkpoint, handoff, resume or take runs.
+- Offline, the holder keeps the lease and holds the team: the heartbeat posts the hold in `#coordinator` once, the hook blocks workers' pushes, `gh` and `team-thread wait` with the hold message (and a wait already running ends with it), and no worker starts, no coordinator starts, and no checkpoint, handoff, resume or take runs.
 - The coordinator learns of it through its offline watch, `team-timers watch --once` in the background (or a worker's `T<n> PAUSED offline`), sends `T<n> HOLD` to each live worker, and each commits locally, writes `handoff.md` and answers `T<n> PAUSED held`.
 - The first probe that answers renews the lease, clears the flag and posts "GitHub back"; the coordinator sends `T<n> RESUME`.
   If another machine took the lease meanwhile, the renew fences this one instead.

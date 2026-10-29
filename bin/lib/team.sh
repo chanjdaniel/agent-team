@@ -12,11 +12,11 @@
 # the script's help_more, if it defined one before sourcing), and provides die, usage_error, team_project, ledger_jq, ledger_append,
 # task_events, known_task_events, open_task_events, task_status, task_worktrees, local_path,
 # archive_left_out, rsync_rule, archive_task_dir, machine_name, os_release, team_os, tool_dirs,
-# team_tool_path, fence_reason, lease_refusal, lease_gate, worktree_changes, same_path, bounded, trust_probe,
+# team_tool_path, fence_reason, offline_hold, lease_refusal, lease_gate, worktree_changes, same_path, bounded, trust_probe,
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin,
 # only_records, records_list, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
 # registered_pr, attribution_lines, strip_attribution, live_sessions, discord_token, discord_api, daniel_message,
-# github, pr_part and task_state_json, and sets IMAGE_TYPE and COORDINATOR_CHANNEL.
+# github, pr_part and task_state_json, and sets IMAGE_TYPE, COORDINATOR_CHANNEL and INTERVIEW_CHANNEL.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
 # shellcheck shell=bash
 
@@ -339,6 +339,18 @@ fence_reason() {
   jq -r --arg since "$since" '"fenced since \($since)"
     + if (.holder | type) == "string" then " (holder seen \(.holder), epoch \(.epoch // "?"))" else "" end' \
     "$file" 2>/dev/null || echo "fenced since $since"
+}
+
+# Print the hold while the team holds offline (team-timers' ~/.local/state/agent-team/offline,
+# {"since": "<UTC time>", ...}, dated from its modification time without one): "GitHub is
+# unreachable (since 13:05); the team is holding: commit locally, write handoff.md, send T<n>
+# PAUSED offline, and wait.", or fail when it does not hold. The lease-fence hook and
+# team-thread wait give it: offline_hold
+offline_hold() {
+  local file=$HOME/.local/state/agent-team/offline since
+  [[ -e $file ]] || return 1
+  since=$(jq -er '.since | strings' "$file" 2>/dev/null) || since=$(date -u -r "$file" +%FT%TZ)
+  echo "GitHub is unreachable (since $(date -d "$since" +%H:%M)); the team is holding: commit locally, write handoff.md, send T<n> PAUSED offline, and wait."
 }
 
 # Print why this machine must not <does> ("posts nothing to Discord; ..."), or fail when it may:
@@ -888,6 +900,13 @@ render_template() {
 # The Discord channel #coordinator, under which every task's thread is opened.
 # shellcheck disable=SC2034 # read by the scripts that source this library
 COORDINATOR_CHANNEL=${TEAM_COORDINATOR_CHANNEL:-1562486564871995482}
+
+# The Discord channel under which each interviewed task's interview thread is opened: Daniel's,
+# kept out of the plugin's access.json groups, so the plugin delivers none of its messages to the
+# coordinator (it keys a thread on its parent). TEAM_INTERVIEW_CHANNEL overrides it, an empty one
+# included, which the scripts refuse as none set.
+# shellcheck disable=SC2034 # read by the scripts that source this library
+INTERVIEW_CHANNEL=${TEAM_INTERVIEW_CHANNEL-1565336720998928556}
 
 # Print the Discord bot token from ~/.claude/channels/discord/.env, or fail with nothing printed.
 # Callers keep it in a variable or test for it (discord_token >/dev/null); never print it.

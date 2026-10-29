@@ -9,14 +9,17 @@
 #     coordinator or worker never posts in the channel the new one owns, even before its
 #     heartbeat fences it (lease_refusal in bin/lib/team.sh, which team-post runs itself too:
 #     origin asked at most once a minute; unreachable passes, since the heartbeat owns offline).
+#   Bash, a command of any role that runs team-thread wait (an interview's read of Discord):
+#     blocked as a post is, with what such a machine does instead.
 #   Bash (workers): a command that runs git push is blocked while this machine is fenced; while
-#     the team holds offline, one that runs git push, gh or gh-axi is blocked with the hold
-#     ("GitHub is unreachable (since 13:05); the team is holding: ..."), so no worker retries.
+#     the team holds offline, one that runs git push, gh, gh-axi or team-thread wait is blocked
+#     with the hold (offline_hold: "GitHub is unreachable (since 13:05); the team is holding:
+#     ..."), so no worker retries or waits on.
 #   Bash (the coordinator, --coordinator): a command that runs git push, team-merge, team-open
 #     or team-close is blocked as a Discord post is, so a coordinator left running on a machine
 #     that lost the lease merges, opens, closes and pushes nothing while the holder's does.
-# Reads, in ~/.local/state/agent-team/: fenced (team-lease's), offline (team-timers run's:
-# {"since": "<UTC time>", ...}), and what lease_refusal reads there.
+# Reads, in ~/.local/state/agent-team/: fenced (team-lease's), offline (team-timers run's,
+# through offline_hold in bin/lib/team.sh), and what lease_refusal reads there.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/team.sh" "$@"
 
@@ -29,11 +32,12 @@ case ${1:-} in
 esac
 input=$(cat)
 tool=$(jq -r '.tool_name // empty' <<<"$input")
-state=$HOME/.local/state/agent-team
 machine=$(machine_name 2>/dev/null) || machine="this machine"
 
 # What a machine that may not post does not do, for lease_refusal.
 POSTS="posts nothing to Discord; the coordinator on the holder answers there."
+# What one that may not wait on an interview does not do, as team-thread wait says it.
+WAITS="waits on no interview; stop, since the coordinator on the holder takes the task on."
 
 block() {
   echo "Blocked: $1" >&2
@@ -55,8 +59,13 @@ case $tool in
     # team-post, or team-ask, which posts through it, where a command starts, as gh: refused as
     # the Discord tools are, for every role.
     post=$'(^|[;&|(`\n])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|]*/)?team-(post|ask)([[:space:]]|$)'
+    # team-thread wait, the interview's blocking read of Discord, where a command starts, as gh.
+    wait=$'(^|[;&|(`\n])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|]*/)?team-thread[[:space:]]+wait([[:space:]]|$)'
     if [[ $command =~ $post ]]; then
       why=$(lease_refusal "$POSTS") && block "$why"
+    fi
+    if [[ $command =~ $wait ]]; then
+      why=$(lease_refusal "$WAITS") && block "$why"
     fi
     if [[ $role == coordinator ]]; then
       if [[ $command =~ $push || $command =~ $team_write ]]; then
@@ -65,10 +74,9 @@ case $tool in
     elif why=$(fence_reason); then
       [[ ! $command =~ $push ]] ||
         block "$machine is $why: a fenced machine pushes nothing; commit locally and stop."
-    elif [[ -e $state/offline ]]; then
-      if [[ $command =~ $push || $command =~ $gh ]]; then
-        since=$(jq -er '.since | strings' "$state/offline" 2>/dev/null) || since=$(date -u -r "$state/offline" +%FT%TZ)
-        block "GitHub is unreachable (since $(date -d "$since" +%H:%M)); the team is holding: commit locally, write handoff.md, send T<n> PAUSED offline, and wait."
+    elif hold=$(offline_hold); then
+      if [[ $command =~ $push || $command =~ $gh || $command =~ $wait ]]; then
+        block "$hold"
       fi
     fi
     ;;

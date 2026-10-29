@@ -30,6 +30,7 @@ assert_ledger_empty() {
 opened team-open project path type title branch base base_sha worktree
 worktree-added team-open project branch base base_sha worktree
 thread team-thread discord_thread
+interview-thread team-thread discord_thread
 launch team-worker role session worktree toolkits
 worktree-returned team-close project worktree
 closed team-close archive returned kept

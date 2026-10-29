@@ -2,7 +2,8 @@
 # shellcheck disable=SC2153 # LOCK and the other globals are helpers/doctor.bash's
 # team-doctor: one PASS, WARN or FAIL line per thing this machine needs, on the machine
 # tests/helpers/doctor.bash builds: every tool a version stub, the OS a stubbed uname.
-# This file: the docker, chrome, 1password, secret, discord access, opencode-gate and records lines.
+# This file: the docker, chrome, 1password, secret, discord access, interview channel, opencode-gate
+# and records lines.
 
 load helpers/common
 load helpers/doctor
@@ -89,9 +90,11 @@ FAIL secret discord-access-json: empty; fix: Daniel runs team-secrets restore in
 FAIL secret conventioner-env: mode 644; fix: Daniel runs team-secrets restore in their own terminal
 PASS secret conventioner-front-end-env: in place
 FAIL secret conventioner-back-end-env: not a file; fix: move aside what is at its target in machine/secrets.json, then Daniel runs team-secrets restore in their own terminal"
-  # Nothing else fails but the discord access line, which reads the emptied access.json.
+  # Nothing else fails but the discord access line, which reads the emptied access.json, and the
+  # interview channel line, which needs the missing bot token.
   assert_equal "$(grep -v '^PASS ' <<<"$output" | grep -v '^FAIL secret ' || true)" \
-    "FAIL discord access: ~/.claude/channels/discord/access.json is empty, so the plugin delivers nothing from #coordinator; fix: the secret discord-access-json line's fix"
+    "FAIL discord access: ~/.claude/channels/discord/access.json is empty, so the plugin delivers nothing from #coordinator; fix: the secret discord-access-json line's fix
+FAIL interview channel: no DISCORD_BOT_TOKEN in ~/.claude/channels/discord/.env, so the bot's access to the interview channel cannot be checked; fix: the secret discord-bot-env line's fix"
   echo '[]' >"$TEAM_HOME/machine/secrets.json"
   run_bin -1 team-doctor
   assert_equal "$(grep -E '^.... secret' <<<"$output")" "FAIL secrets: machine/secrets.json: it has no secrets array; fix: fix what team-secrets names, then run team-doctor again"
@@ -158,6 +161,77 @@ FAIL secret conventioner-back-end-env: not a file; fix: move aside what is at it
   assert_equal "$(line_of 'discord access')" "FAIL discord access: ~/.claude/channels/discord/access.json is missing, so the plugin delivers nothing from #coordinator; fix: the secret discord-access-json line's fix"
   # No line names a member's id.
   [[ $seen != *70000000000000000* ]] || { echo "the doctor printed a member's id" >&2; return 1; }
+}
+
+@test "the interview channel line fails unless the channel is set, has no access.json group and lets the bot read, open threads and post in them" {
+  local line="interview channel" give="fix: Daniel gives the bot's role"
+  local make="fix: Daniel makes a text channel for interviews, with no access.json group, and a PR sets its id as INTERVIEW_CHANNEL in bin/lib/team.sh"
+  tools_at arch
+  run_bin -0 team-doctor
+  assert_equal "$(line_of "$line")" "PASS interview channel: $INTERVIEW_ID has no access.json group, so the coordinator never hears an interview, and the bot may read it, open threads and post in them"
+  # Its reads, each with the token on stdin.
+  assert_equal "$(stub_calls curl | jq -r '.[-1] | select(startswith("https://discord.com/")) | ltrimstr("https://discord.com/api/v10/")')" "channels/$INTERVIEW_ID
+users/@me
+guilds/$GUILD_ID/members/$BOT_ID
+guilds/$GUILD_ID/roles"
+  [[ $(stub_calls curl) != *"$FAKE_DISCORD_TOKEN"* ]]
+
+  TEAM_INTERVIEW_CHANNEL='' run_bin -1 team-doctor
+  assert_equal "$(grep -v '^PASS ' <<<"$output")" "FAIL interview channel: no interview channel is set, so no planner can interview Daniel; $make"
+
+  jq --arg c "$INTERVIEW_ID" '.groups[$c] = {requireMention: false, allowFrom: []}' "$HOME/.claude/channels/discord/access.json" >"$BATS_TEST_TMPDIR/access.json"
+  cp "$BATS_TEST_TMPDIR/access.json" "$HOME/.claude/channels/discord/access.json"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of "$line")" "FAIL interview channel: access.json has a group for the interview channel $INTERVIEW_ID, so the plugin delivers every interview to the coordinator; fix: Daniel runs /discord:access group rm $INTERVIEW_ID in their own Claude Code session"
+  access_json "[\"$DANIEL_ID\"]" "[\"$DANIEL_ID\"]"
+
+  echo "TOKEN=dummy-secret-value" >"$HOME/.claude/channels/discord/.env"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of "$line")" "FAIL interview channel: no DISCORD_BOT_TOKEN in ~/.claude/channels/discord/.env, so the bot's access to the interview channel cannot be checked; fix: the secret discord-bot-env line's fix"
+  echo "DISCORD_BOT_TOKEN=$FAKE_DISCORD_TOKEN" >"$HOME/.claude/channels/discord/.env"
+
+  TEAM_INTERVIEW_CHANNEL=1 run_bin -1 team-doctor
+  assert_equal "$(line_of "$line")" "FAIL interview channel: Discord refused the bot's read of channels/1 (curl: (22) The requested URL returned error: 404), so the bot cannot reach the interview channel 1; $give View Channel, Read Message History, Create Public Threads, Send Messages in Threads in the interview channel's permissions"
+
+  jq '.type = 2' "$STUB_FIXTURES/discord/channels/$INTERVIEW_ID.json" >"$BATS_TEST_TMPDIR/channel.json"
+  cp "$BATS_TEST_TMPDIR/channel.json" "$STUB_FIXTURES/discord/channels/$INTERVIEW_ID.json"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of "$line")" "FAIL interview channel: $INTERVIEW_ID is not a text channel (type 2), so no thread opens under it; $make"
+
+  # The bot's role, then the channel's overwrites for @everyone, the bot's roles and the bot.
+  interview_server "$(interview_bits 10 11 16)" '[]'
+  run_bin -1 team-doctor
+  assert_equal "$(line_of "$line")" "FAIL interview channel: the bot lacks Create Public Threads, Send Messages in Threads in the interview channel $INTERVIEW_ID; $give Create Public Threads, Send Messages in Threads in the interview channel's permissions"
+  interview_server "$(interview_bits 10 16 35 38)" "[{\"id\": \"$GUILD_ID\", \"type\": 0, \"allow\": \"0\", \"deny\": \"$(interview_bits 10)\"}]"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of "$line")" "FAIL interview channel: the bot lacks View Channel in the interview channel $INTERVIEW_ID; $give View Channel in the interview channel's permissions"
+  interview_server "$(interview_bits 10 16 35 38)" "[{\"id\": \"$GUILD_ID\", \"type\": 0, \"allow\": \"0\", \"deny\": \"$(interview_bits 10)\"},
+    {\"id\": \"$BOT_ROLE\", \"type\": 0, \"allow\": \"$(interview_bits 10)\", \"deny\": \"0\"}]"
+  run_bin -0 team-doctor
+  assert_contains "$(line_of "$line")" "PASS interview channel: "
+  # Another role's overwrite is not the bot's; the bot's own deny comes last.
+  interview_server "$(interview_bits 10 16)" "[{\"id\": \"$BOT_ROLE\", \"type\": 0, \"allow\": \"$(interview_bits 35 38)\", \"deny\": \"0\"},
+    {\"id\": \"$BOT_ID\", \"type\": 1, \"allow\": \"0\", \"deny\": \"$(interview_bits 38)\"},
+    {\"id\": \"700000000000000049\", \"type\": 0, \"allow\": \"0\", \"deny\": \"$(interview_bits 10 16 35 38)\"}]"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of "$line")" "FAIL interview channel: the bot lacks Send Messages in Threads in the interview channel $INTERVIEW_ID; $give Send Messages in Threads in the interview channel's permissions"
+  # Administrator allows everything, whatever the overwrites deny.
+  interview_server "$(interview_bits 3)" "[{\"id\": \"$BOT_ID\", \"type\": 1, \"allow\": \"0\", \"deny\": \"$(interview_bits 10 16 35 38)\"}]"
+  run_bin -0 team-doctor
+  assert_contains "$(line_of "$line")" "PASS interview channel: "
+  # A permission that is not a number is never read as one.
+  interview_server '$(touch pwned)' '[]'
+  run_bin -1 team-doctor
+  assert_contains "$(line_of "$line")" "FAIL interview channel: the bot lacks View Channel, Read Message History, Create Public Threads, Send Messages in Threads"
+  [[ ! -e pwned && ! -e $HOME/pwned ]]
+
+  # Discord not answering warns.
+  stub_script curl <<'EOF'
+echo "curl: (6) Could not resolve host: discord.com" >&2
+exit 6
+EOF
+  run_bin -0 team-doctor
+  assert_equal "$(line_of "$line")" "WARN interview channel: Discord did not answer (curl: (6) Could not resolve host: discord.com), so the bot's access to the interview channel is unchecked; fix: check the network, then run team-doctor again"
 }
 
 @test "the opencode-gate line fails while the gate's opencode wrapper is missing, stale or not executable, opencode is missing, or config.yaml does not run the gate on it" {

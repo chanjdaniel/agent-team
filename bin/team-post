@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Post a file's text to Discord through its REST API, with no plugin and no gateway: to a task's
-# thread (the ledger's latest thread event for the task) or to #coordinator, never to a channel
-# named by id. Unlike discord_api alone, it refuses on a machine that is fenced or that lost the
-# lease (lease_refusal in bin/lib/team.sh, as the lease-fence hook does), and posts nothing then.
+# thread (the ledger's latest thread event for the task), its interview thread (--thread
+# interview: the latest interview-thread event, which team-thread --interview logs) or to
+# #coordinator, never to a channel named by id. Unlike discord_api alone, it refuses on a machine
+# that is fenced or that lost the lease (lease_refusal in bin/lib/team.sh, as the lease-fence hook
+# does), and posts nothing then.
 #
-# Usage: team-post T<n> [--thread task] --file <path>
+# Usage: team-post T<n> [--thread task|interview] --file <path>
 #        team-post --coordinator --file <path>
 # The message is the file's text with its trailing blank lines and spaces dropped. One over
 # Discord's 2000 characters goes as several messages, cut as the Discord plugin's chunkMode
@@ -20,7 +22,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 # Discord's limit on a message's characters, and the most one post may take, in seconds.
 LIMIT=2000
 POST_TIMEOUT=20
-USAGE="usage: team-post T<n> [--thread task] --file <path> | team-post --coordinator --file <path>"
+USAGE="usage: team-post T<n> [--thread task|interview] --file <path> | team-post --coordinator --file <path>"
 
 task='' coordinator=0 thread='' file=''
 while (($#)); do
@@ -37,7 +39,7 @@ done
 if ((coordinator)); then
   [[ -z $task && -z $thread ]] || usage_error "$USAGE"
 else
-  [[ $task =~ ^T[1-9][0-9]*$ && ${thread:-task} == task ]] || usage_error "$USAGE"
+  [[ $task =~ ^T[1-9][0-9]*$ && ${thread:-task} =~ ^(task|interview)$ ]] || usage_error "$USAGE"
 fi
 
 [[ -f $file && -r $file ]] || die "no file to post: $file"
@@ -65,8 +67,11 @@ mapfile -t bodies < <(jq -nc --rawfile text "$file" --argjson limit "$LIMIT" '
 if ((coordinator)); then
   channel=$COORDINATOR_CHANNEL
 else
-  channel=$(task_events "$task" | jq -r 'select(.event == "thread") | .discord_thread | strings' | tail -n 1)
-  [[ -n $channel ]] || die "$task has no Discord thread in the ledger; team-thread opens one"
+  kind=thread
+  [[ ${thread:-task} == task ]] || kind=interview-thread
+  channel=$(task_events "$task" | jq -r --arg kind "$kind" 'select(.event == $kind) | .discord_thread | strings' | tail -n 1)
+  [[ -n $channel || $kind != thread ]] || die "$task has no Discord thread in the ledger; team-thread opens one"
+  [[ -n $channel ]] || die "$task has no interview thread in the ledger; team-thread $task --interview opens one"
 fi
 
 why=$(lease_refusal "posts nothing to Discord; the coordinator on the holder answers there.") && die "$why"

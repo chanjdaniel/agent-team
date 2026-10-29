@@ -73,10 +73,25 @@ run_of() {
   assert_equal "$(stub_calls curl)" ""
 }
 
+@test "--thread interview posts to the task's interview thread, never its task thread" {
+  run_bin -1 team-post T7 --thread interview --file "$BATS_TEST_TMPDIR/q.md"
+  assert_equal "$output" "team-post: T7 has no interview thread in the ledger; team-thread T7 --interview opens one"
+  assert_equal "$(stub_calls curl)" ""
+
+  echo '{"ts":"2026-10-01T10:00:03Z","task":"T7","event":"interview-thread","discord_thread":"5555"}' >>"$TEAM_HOME/ledger.jsonl"
+  echo '{"ts":"2026-10-01T10:00:04Z","task":"T17","event":"interview-thread","discord_thread":"6666"}' >>"$TEAM_HOME/ledger.jsonl"
+  run_bin -0 team-post T7 --thread interview --file "$BATS_TEST_TMPDIR/q.md"
+  assert_equal "$output" "1564000000000000001"
+  run_bin -0 team-post T7 --file "$BATS_TEST_TMPDIR/q.md"
+  assert_equal "$(channels)" "5555
+2222"
+}
+
 @test "a malformed command line is a usage error, and nothing is posted" {
   local args
   for args in "" "T7" "--file q.md" "7 --file q.md" "T0 --file q.md" "T7 --coordinator --file q.md" \
-    "--coordinator --thread task --file q.md" "T7 --thread interview --file q.md" "T7 --file" \
+    "--coordinator --thread task --file q.md" "--coordinator --thread interview --file q.md" \
+    "T7 --thread interviews --file q.md" "T7 --file" \
     "T7 T8 --file q.md" "T7 --file q.md --channel 1111"; do
     # shellcheck disable=SC2086 # each case is its words
     run_bin -2 team-post $args
@@ -225,5 +240,5 @@ EOF
 
 @test "--help prints the header" {
   run_bin -0 team-post --help
-  assert_contains "$output" "Usage: team-post T<n> [--thread task] --file <path>"
+  assert_contains "$output" "Usage: team-post T<n> [--thread task|interview] --file <path>"
 }

@@ -623,6 +623,12 @@ stage_check() {
   else
     step '^discord access$' FAIL
   fi
+  # So is the interview channel's check without the bot token.
+  if lines '^interview channel$' | grep -qF "the secret discord-bot-env line's fix"; then
+    covered+=("interview channel")
+  else
+    step '^interview channel$' FAIL
+  fi
   step '^opencode-gate$' FAIL
   mapfile -t untrusted < <(untrusted_roots | cut -f1)
   if ((${#untrusted[@]} > 1)); then

@@ -112,6 +112,7 @@ Daniel 8: restart: exit this Claude Code session and run claude again in $CODE_C
   assert_equal "$(stage_lines check | sed -n 's/^doctor: FAIL \([^:]*\):.*/\1/p' | sed 's/^secret .*/secret/' | uniq)" "docker
 secret
 discord access
+interview channel
 opencode-gate
 trust team home
 trust conventioner

@@ -22,6 +22,11 @@
       "writer": "team-thread",
       "required": {"discord_thread": "string"}
     },
+    "interview-thread": {
+      "writer": "team-thread",
+      "about": "team-thread --interview: the task's thread under the interview channel, where a planner interviews Daniel",
+      "required": {"discord_thread": "string"}
+    },
     "launch": {
       "writer": "team-worker",
       "about": "request is the link to Daniel's Discord message, on an ops launch; model is the --model the session launched on, from the project's models in the registry, absent on the default",

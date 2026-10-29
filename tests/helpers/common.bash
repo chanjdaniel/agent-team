@@ -93,7 +93,7 @@ sandbox() {
 
   # nvm lives under HOME unless NVM_DIR says otherwise: the real one must not leak in, nor the
   # heavy run tests/run holds (team-heavy).
-  unset TEAM_COORDINATOR_CHANNEL CLAUDE_PROJECT_DIR NVM_DIR TEAM_HEAVY_HELD TEAM_HEAVY_WAIT_MINUTES
+  unset TEAM_COORDINATOR_CHANNEL TEAM_INTERVIEW_CHANNEL CLAUDE_PROJECT_DIR NVM_DIR TEAM_HEAVY_HELD TEAM_HEAVY_WAIT_MINUTES
   guard_sandbox
 }
 

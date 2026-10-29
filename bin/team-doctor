@@ -6,7 +6,8 @@
 #   --json   One array of {check, verdict, reason, fix} instead of the lines; fix is "" on a PASS.
 # Logins are asked of claude and gh themselves, and trust by starting a session: no credential
 # file or ~/.claude.json is read, nor of ~/.claude/channels/ anything but the Discord plugin's
-# access.json, for its allowFrom lists, whose ids no line prints; no line carries a secret.
+# access.json, for its allowFrom lists, whose ids no line prints, and the bot token, which only
+# the interview channel line uses, through discord_api to Discord alone; no line carries a secret.
 # Read-only, but for the trust probes' sessions, which it removes.
 # TEAM_OS_RELEASE names the os-release file to read instead of /etc/os-release, TEAM_1PASSWORD_APP
 # the 1Password app to look for, TEAM_CHROME the browser, and TEAM_MEMINFO the file read in place

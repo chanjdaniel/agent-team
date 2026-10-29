@@ -3,10 +3,11 @@
 #
 # Usage: team-brief T<n> <template> [--project <name>] [--set key=value]... [--set-file key=path]...
 #                   [--name <suffix>] [--force]
-#   template    one of templates/briefs/: planner-feature, planner-research, builder-ticket,
-#               builder-fix, builder-deliver, builder-merge-base (--set pr=, a PR behind its
-#               base), reviewer, rereview, ops, retro, resume (a worker
-#               relaunched on another machine: --set role=, brief= its last brief, from= what it
+#   template    one of templates/briefs/: planner-feature, planner-interview (a planner that
+#               interviews Daniel in the task's interview thread, which team-thread T<n>
+#               --interview opens first), planner-research, builder-ticket, builder-fix,
+#               builder-deliver, builder-merge-base (--set pr=, a PR behind its base), reviewer,
+#               rereview, ops, retro, resume (a worker relaunched on another machine: --set role=, brief= its last brief, from= what it
 #               resumes after, snapshot= what became of the uncommitted changes the handoff found),
 #               resume-crash (one relaunched after its machine crashed: --set role=, brief=,
 #               machine= the machine that crashed, checkpoint= the checkpoint's time, snapshot=
@@ -18,9 +19,10 @@
 #   --name      write tasks/T<n>/brief-<suffix>.md (kebab case) instead of tasks/T<n>/brief.md
 #   --force     replace an existing brief
 # Placeholders are {{key}}. The task's facts fill task, title, path, project, repo, base, branch,
-# worktree, task_dir, plan, thread, team_home, team_code (this code checkout, where a brief points
-# for code such as sops/), team_bin, local_checks (the project's, each in backticks and joined
-# with ", ", or "none") and ui, from the ledger and projects.toml;
+# worktree, task_dir, plan, thread, interview_thread (the task's latest interview-thread, unset
+# without one), team_home, team_code (this code checkout, where a brief points for code such as
+# sops/), team_bin, local_checks (the project's, each in backticks and joined with ", ", or
+# "none") and ui, from the ledger and projects.toml;
 # paths under $HOME are written ~/..., except team_bin, this checkout's bin/, always absolute
 # because the workers' allow rules name the scripts in it by their full path. ui is empty unless
 # tasks/T<n>/ui/ holds files (team-ui's capture of what Daniel pointed at): then a newline and a
@@ -39,7 +41,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 code=$(dirname "$(dirname "$TEAM_LIB")")
 briefs=$code/templates/briefs
 usage="usage: team-brief T<n> <template> [--project <name>] [--set key=value]... [--set-file key=path]... [--name <suffix>] [--force]"
-fact_keys=(task title path project repo base branch worktree task_dir plan thread team_home team_code team_bin local_checks ui)
+fact_keys=(task title path project repo base branch worktree task_dir plan thread interview_thread team_home team_code team_bin local_checks ui)
 
 positionals=() project='' name='' force=''
 declare -A sets=()
@@ -143,6 +145,8 @@ if ((${#ui_files[@]})); then
 fi
 thread=$(jq -r 'map(select(.event == "thread")) | last | .discord_thread // empty' <<<"$events")
 [[ -z $thread ]] || values[thread]=$thread
+interview=$(jq -r 'map(select(.event == "interview-thread")) | last | .discord_thread // empty' <<<"$events")
+[[ -z $interview ]] || values[interview_thread]=$interview
 
 # The template, with each partial of the project's delivery in place of its {{> <name>}}.
 text=$(<"$briefs/$template.md")
