@@ -2,7 +2,7 @@
 # shellcheck disable=SC2153 # LOCK and the other globals are helpers/doctor.bash's
 # team-doctor: one PASS, WARN or FAIL line per thing this machine needs, on the machine
 # tests/helpers/doctor.bash builds: every tool a version stub, the OS a stubbed uname.
-# This file: the docker, chrome, 1password, secret, opencode-gate and records lines.
+# This file: the docker, chrome, 1password, secret, discord access, opencode-gate and records lines.
 
 load helpers/common
 load helpers/doctor
@@ -89,14 +89,75 @@ FAIL secret discord-access-json: empty; fix: Daniel runs team-secrets restore in
 FAIL secret conventioner-env: mode 644; fix: Daniel runs team-secrets restore in their own terminal
 PASS secret conventioner-front-end-env: in place
 FAIL secret conventioner-back-end-env: not a file; fix: move aside what is at its target in machine/secrets.json, then Daniel runs team-secrets restore in their own terminal"
-  # Nothing else fails.
-  assert_equal "$(grep -v '^PASS ' <<<"$output" | grep -v '^FAIL secret ' || true)" ""
+  # Nothing else fails but the discord access line, which reads the emptied access.json.
+  assert_equal "$(grep -v '^PASS ' <<<"$output" | grep -v '^FAIL secret ' || true)" \
+    "FAIL discord access: ~/.claude/channels/discord/access.json is empty, so the plugin delivers nothing from #coordinator; fix: the secret discord-access-json line's fix"
   echo '[]' >"$TEAM_HOME/machine/secrets.json"
   run_bin -1 team-doctor
   assert_equal "$(grep -E '^.... secret' <<<"$output")" "FAIL secrets: machine/secrets.json: it has no secrets array; fix: fix what team-secrets names, then run team-doctor again"
   rm "$TEAM_HOME/machine/secrets.json"
   run_bin -1 team-doctor
   assert_equal "$(line_of secrets)" "FAIL secrets: no machine/secrets.json in $TEAM_HOME; fix: fix what team-secrets names, then run team-doctor again"
+}
+
+@test "the discord access line fails unless #coordinator's group lets in only Daniel's id, naming no id but the channel's" {
+  local file=$HOME/.claude/channels/discord/access.json
+  local fix="fix: Daniel runs /discord:access group add 1562486564871995482 --no-mention --allow <their id> in their own Claude Code session"
+  local open="so any server member's message there or in a task thread reaches the coordinator"
+  local seen=''
+  tools_at arch
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'discord access')" "PASS discord access: #coordinator's group allowFrom names only Daniel's id, so only their messages there and in task threads reach the coordinator"
+  seen+=$output
+  access_json "[\"$DANIEL_ID\"]" '[]'
+  run_bin -1 team-doctor
+  assert_equal "$(grep -v '^PASS ' <<<"$output")" "FAIL discord access: #coordinator's group allowFrom is empty, $open; $fix"
+  seen+=$output
+  # A group with no allowFrom at all is the plugin's empty one.
+  jq 'del(.groups[].allowFrom)' "$file" >"$BATS_TEST_TMPDIR/access.json"
+  cat "$BATS_TEST_TMPDIR/access.json" >"$file"
+  jq -e '.groups[] | has("allowFrom") | not' "$file"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of 'discord access')" "FAIL discord access: #coordinator's group allowFrom is empty, $open; $fix"
+  access_json "[\"$DANIEL_ID\"]" "[\"$DANIEL_ID\", \"$OTHER_ID\"]"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of 'discord access')" "FAIL discord access: #coordinator's group allowFrom names Daniel's id and 1 other id, so another member's messages there and in task threads reach the coordinator; $fix"
+  seen+=$output
+  access_json "[\"$DANIEL_ID\"]" "[\"$OTHER_ID\", \"700000000000000003\"]"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of 'discord access')" "FAIL discord access: #coordinator's group allowFrom names 2 other ids and not Daniel's, so another member's messages there and in task threads reach the coordinator; $fix"
+  seen+=$output
+  # Ids written as numbers are the same ids.
+  access_json "[$DANIEL_ID]" "[\"$DANIEL_ID\"]"
+  run_bin -0 team-doctor
+  assert_contains "$(line_of 'discord access')" "PASS discord access: "
+  # Daniel's id is the top-level allowFrom's: with none, it is unknown.
+  access_json '[]' "[\"$DANIEL_ID\"]"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of 'discord access')" "FAIL discord access: access.json's top-level allowFrom is empty, so no id is known as Daniel's; fix: Daniel runs /discord:access allow <their id>, then /discord:access group add 1562486564871995482 --no-mention --allow <their id>, in their own Claude Code session"
+  seen+=$output
+  access_json "[\"$DANIEL_ID\"]" '[]'
+  jq '.groups = {"1": .groups[]}' "$file" >"$BATS_TEST_TMPDIR/access.json"
+  cat "$BATS_TEST_TMPDIR/access.json" >"$file"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of 'discord access')" "FAIL discord access: access.json has no group for #coordinator, so the plugin delivers nothing from it or its threads; $fix"
+  # The channel is the library's: TEAM_COORDINATOR_CHANNEL names it.
+  TEAM_COORDINATOR_CHANNEL=1 run_bin -1 team-doctor
+  assert_equal "$(line_of 'discord access')" "FAIL discord access: #coordinator's group allowFrom is empty, $open; ${fix/1562486564871995482/1}"
+  echo '{"allowFrom": "nobody"}' >"$file"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of 'discord access')" "FAIL discord access: ~/.claude/channels/discord/access.json is not the plugin's access file (an object whose allowFrom lists are arrays), so the line cannot tell who #coordinator lets in; fix: Daniel moves it aside and runs team-secrets restore in their own terminal"
+  echo 'not json' >"$file"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of 'discord access')" "FAIL discord access: ~/.claude/channels/discord/access.json is not JSON, so the plugin moves it aside and delivers nothing from #coordinator; fix: Daniel moves it aside and runs team-secrets restore in their own terminal"
+  : >"$file"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of 'discord access')" "FAIL discord access: ~/.claude/channels/discord/access.json is empty, so the plugin delivers nothing from #coordinator; fix: the secret discord-access-json line's fix"
+  rm "$file"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of 'discord access')" "FAIL discord access: ~/.claude/channels/discord/access.json is missing, so the plugin delivers nothing from #coordinator; fix: the secret discord-access-json line's fix"
+  # No line names a member's id.
+  [[ $seen != *70000000000000000* ]] || { echo "the doctor printed a member's id" >&2; return 1; }
 }
 
 @test "the opencode-gate line fails while the gate's opencode wrapper is missing, stale or not executable, opencode is missing, or config.yaml does not run the gate on it" {

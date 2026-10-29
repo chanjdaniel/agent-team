@@ -47,8 +47,9 @@ declare -gA FORMAT=(
 # Set up the doctor's machine (team-doctor*.bats' every test starts here): home-pc holds the lease
 # with its heartbeat enabled, every tool answers nothing yet (tools_at gives them versions), the
 # team's Claude config and plugins are installed, so are the pinned MCP servers, every secret is
-# in place, the gate's opencode wrapper is installed and config.yaml runs the gate on it, two
-# projects are registered and cloned as the bootstrap clones them,
+# in place (access.json letting only Daniel's fixture id in #coordinator), the gate's opencode
+# wrapper is installed and config.yaml runs the gate on it, two projects are registered and
+# cloned as the bootstrap clones them,
 # ~/.config/agent-team/home names the team home, and its core.hooksPath the code's records-git.
 doctor_machine() {
   hold_lease home-pc >/dev/null
@@ -158,6 +159,7 @@ EOF
     echo "TOKEN=dummy-secret-value" >"$HOME/$target"
     chmod 600 "$HOME/$target"
   done < <(jq -r '.secrets[] | select(.enabled != false) | .target' "$TEAM_HOME/machine/secrets.json")
+  access_json "[\"$DANIEL_ID\"]" "[\"$DANIEL_ID\"]"
   export TEAM_1PASSWORD_APP=$BATS_TEST_TMPDIR/1Password
   touch "$TEAM_1PASSWORD_APP"
   # The Docker daemon answers, and a browser is installed.
@@ -316,6 +318,17 @@ secret_ids() {
 line_of() {
   # shellcheck disable=SC2154 # bats' run sets output
   grep -E "^(PASS|WARN|FAIL) $1: " <<<"$output"
+}
+
+# The Discord plugin's access.json, as /discord:access writes it, with the top-level allowFrom
+# <allow> and #coordinator's group allowFrom <group> (JSON arrays): access_json <allow> <group>.
+# Daniel's fixture id is DANIEL_ID, another member's OTHER_ID.
+# shellcheck disable=SC2034 # read by the tests
+DANIEL_ID=700000000000000001 OTHER_ID=700000000000000002
+access_json() {
+  jq -n --argjson allow "$1" --argjson group "$2" '{dmPolicy: "allowlist", allowFrom: $allow,
+    groups: {"1562486564871995482": {requireMention: false, allowFrom: $group}}, pending: {}}' \
+    >"$HOME/.claude/channels/discord/access.json"
 }
 
 # The checks of the output, one name per line.

@@ -111,6 +111,7 @@ Daniel 8: restart: exit this Claude Code session and run claude again in $CODE_C
   # Only Daniel's steps fail: every tool line passes, and so do the projects' and the config's.
   assert_equal "$(stage_lines check | sed -n 's/^doctor: FAIL \([^:]*\):.*/\1/p' | sed 's/^secret .*/secret/' | uniq)" "docker
 secret
+discord access
 opencode-gate
 trust team home
 trust conventioner
