@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Open a task's Discord thread under #coordinator and record it in the ledger.
 # Every task has one; bin/team-worker refuses to launch a worker for a task without it.
+# Discord archives the thread after 3 days with no messages.
 #
 # Usage: team-thread <task> <project> <title>
 # Prints the thread id. Needs the bot token in ~/.claude/channels/discord/.env.
@@ -19,7 +20,11 @@ fi
 
 discord_token >/dev/null || die "no DISCORD_BOT_TOKEN in ~/.claude/channels/discord/.env"
 
-body=$(jq -cn --arg name "$task · $project · $title" '{name: $name[0:100], type: 11, auto_archive_duration: 10080}')
+# Minutes with no message before Discord archives the thread: 3 days (it allows 60, 1440, 4320 or 10080).
+archive_minutes=4320
+
+body=$(jq -cn --arg name "$task · $project · $title" --argjson archive "$archive_minutes" \
+  '{name: $name[0:100], type: 11, auto_archive_duration: $archive}')
 id=$(discord_api "channels/$COORDINATOR_CHANNEL/threads" -X POST -H "Content-Type: application/json" \
   -d "$body" | jq -r .id 2>/dev/null || true)
 [[ $id =~ ^[0-9]+$ ]] || die "Discord did not return a thread id"
