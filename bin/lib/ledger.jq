@@ -138,6 +138,20 @@ def same_head($a; $b):
 
 # The following defs read a task's events, in ledger order, as an array.
 
+# The events that logged a head of the PR at $url, each a head Daniel may be asked on: its pr
+# events, and the task's review events after its first pr event (a fix after findings is
+# reviewed at a head no pr event logs). A trailing slash aside.
+def pr_heads($url):
+  ($url | rtrimstr("/")) as $url
+  | ([to_entries[] | select(.value.event == "pr" and (.value.url | strings | rtrimstr("/")) == $url) | .key] | first) as $first
+  | if $first == null then []
+    else [.[$first:][] | select((.event == "pr" and (.url | strings | rtrimstr("/")) == $url) or .event == "review")
+      | select(.head | type == "string")] end;
+
+# The first event of pr_heads($url) that logged $head, or null: the earliest Daniel's word on
+# $head may be sent.
+def head_logged($url; $head): first(pr_heads($url)[] | select(same_head(.head; $head))) // null;
+
 # The task's status: open (opened by team-open, not closed), closed, legacy (from before
 # team-open: events but no opened, not closed) or unknown (no events).
 def task_status:
@@ -287,10 +301,20 @@ def workers($sessions):
   [.[] | select(.event == "launch") | live_session(.session; $sessions) as $live
     | {role, session, launched: .ts, worktree, live: ($live != null), status: $live.status, state: $live.state}];
 
-# The asks put to Daniel with no answer yet.
+# Whether this event, logged after the ask $ask (an asked event), settles it: the answered with its
+# id, or a merge-approved whose url (a trailing slash aside) the ask's text names, not followed by
+# a digit, since the coordinator logs a merge answer as merge-approved alone as often as not.
+def settles($ask):
+  (.event == "answered" and .id == $ask.id)
+  or (.event == "merge-approved" and (.url | type) == "string" and (.url | test("^https?://"))
+    and ((.url | rtrimstr("/")) as $url | ($ask.text // "" | tostring) as $text
+      | any($text | indices($url)[]; $text[. + ($url | length):] | test("^[0-9]") | not)));
+
+# The asks put to Daniel that no later event settles yet.
 def pending_asks:
-  [.[] | select(.event == "answered") | .id] as $answered
-  | [.[] | select(.event == "asked" and (.id | IN($answered[]) | not)) | {id, text, ts}];
+  . as $events
+  | [range(length) as $k | $events[$k] | select(.event == "asked") | . as $ask
+     | select(any($events[$k + 1:][]; settles($ask)) | not) | {id, text, ts}];
 
 # A task's state from its events and the session list, its worktrees as paths on this machine,
 # whose home directory is $home (local_worktree); team-state adds the pr part.
@@ -330,7 +354,7 @@ def state_line:
   + (if .waiting == null then "" else " | waiting on \(.waiting.on): \(.waiting.reason)" end);
 
 # Whether a task is parked, waiting on something other than a worker: held, blocked or awaiting
-# merge, an ask with no answer, or a pause or a wait still standing.
+# merge, an ask nothing settled (settles), or a pause or a wait still standing.
 def parked:
   IN(phase; "held", "blocked", "awaiting-merge") or pending_asks != [] or standing_until_launch("paused")
   or waiting != null;
@@ -556,8 +580,8 @@ def retro_window($task):
 # Every span that parks a task, over one task's events (each with its place i) in ledger order:
 # {task, kind, on, reason, start, from, end}, end being the event that clears it, or null, and from
 # when it began: a park's since when it was logged after the fact, else its ts. waiting, paused and
-# blocked clear at the next resumed or launch, held at the next resumed, asked at the answered of
-# its id, and every one at the task's closed.
+# blocked clear at the next resumed or launch, held at the next resumed, asked at the event that
+# settles it (settles), and every one at the task's closed.
 def wait_spans:
   . as $events
   | range(length) as $k | $events[$k] as $s
@@ -568,7 +592,7 @@ def wait_spans:
      reason: (if $s.event == "asked" then $s.text else $s.reason end),
      start: $s, from: (if $s.event != "asked" then $s.since // $s.ts else $s.ts end),
      end: (first($events[$k + 1:][] | select(.event == "closed" or (.event | IN($clears[]))
-       or ($s.event == "asked" and .event == "answered" and .id == $s.id))) // null)};
+       or ($s.event == "asked" and settles($s)))) // null)};
 
 # The hours covered by the union of the spans ({from, to}), overlapping spans counted once.
 def wall_hours:

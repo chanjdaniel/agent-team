@@ -59,8 +59,8 @@ Why: GitHub labels a run started by another workflow (`workflow_run`) or a sched
 
 Seen: T24's force-push, where a Deploy labelled "dev 5694c2af" had deployed `main` at `0fa47646`, and production was nearly migrated for code it did not run (ledger 2026-10-23T15:13:26Z to 15:20:46Z; `tasks/T29/scratch/early-finding.md`).
 
-## Clean up only what you made, by the exact path or process id you noted when you made it
+## Clean up only what you made, by the exact path or process id you noted when you made it, and leave your task directory to `team-close`
 
-Why: the sessions on a machine share `/tmp` and the process table, so a glob or a name match reaches other sessions' live files and processes, and Claude Code refuses an `rm -rf` of a variable path; make scratch with `mktemp -d`, keep the path it prints, remove it by that literal path, and leave what you cannot prove is yours.
+Why: the sessions on a machine share `/tmp` and the process table, so a glob or a name match reaches other sessions' live files and processes, and Claude Code refuses an `rm -rf` of a variable path and may stop at a prompt for a literal one, which a background session cannot answer; make scratch with `mktemp -d`, keep the path it prints, remove it by that literal path, leave what you cannot prove is yours, and leave what is in your task directory, since `team-close` archives it and leaves out dependency trees, repositories and links.
 
-Seen: T44's builder, whose `rm -rf` of every `bats-run-*` under `$TMPDIR` took other sessions' live test directories (ledger 2026-10-25T02:59:06Z); T41's and T43's reviewers, refused an `rm -rf` of a variable path (2026-10-24T18:20:29Z, 2026-10-25T06:49:39Z); T22's builder, which could not tell two leftover processes were its own (2026-10-25T13:58:12Z).
+Seen: T44's builder, whose `rm -rf` of every `bats-run-*` under `$TMPDIR` took other sessions' live test directories (ledger 2026-10-25T02:59:06Z); T41's and T43's reviewers, refused an `rm -rf` of a variable path (2026-10-24T18:20:29Z, 2026-10-25T06:49:39Z); T22's builder, which could not tell two leftover processes were its own (2026-10-25T13:58:12Z); T63's planner, stopped at a prompt for a literal `rm -rf` of its own scratch (2026-10-27T07:07:25Z).

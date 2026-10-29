@@ -326,6 +326,16 @@ T42 stray: T42-reviewer 88888888 is live but T42 is not in the ledger; next: rea
   assert_contains "$output" "T3 no-worker"
 }
 
+@test "a merge ask settled by a merge-approved naming its URL no longer parks the task" {
+  opened T3
+  launch T3 builder 11111111
+  event T3 asked '{id: "merge", text: "merge it? https://github.com/o/r/pull/5 at 0123456"}'
+  run_bin -0 team-sweep
+  event T3 merge-approved '{url: "https://github.com/o/r/pull/5", discord_message: "1563000000000000001"}'
+  run_bin -1 team-sweep
+  assert_contains "$output" "T3 no-worker"
+}
+
 @test "awaiting merge parks a task; a later findings review on the same head does not" {
   opened T3
   launch T3 reviewer 11111111

@@ -6,20 +6,59 @@ The team's own work on this repo goes through a task and a PR to `dev`, like any
 
 ## Layout
 
-| Path | What it holds |
-| - | - |
-| `bin/` | The team's commands, `team-*` and `claude-coordinator`; `bin/lib/` is the shared library, the ledger contract and its jq, `stack.jq` (`team-stack`'s owner classes, Docker's sizes, the reaper's rules and the `stack.json` settings with their memory floor), `time.jq` (`team-time`'s split of each task's time into phases, and its counts), `doctor.d/`, `team-doctor`'s checks, one file each, which it sources in the order of their names (a new check is a new file, its number between its neighbours'), `tools.lock`, the tools `team-doctor` checks, pinned or with a minimum, and their source per OS (for treehouse and no-mistakes, a GitHub release with each archive's checksum, or a fork's commit), `tools.jq` (which turns `tools.lock` into each tool's pin and install command for a machine), `prices.json`, each model's list prices per million tokens with the date read and the source, the weights `team-tokens` gives each reply, `data-check`, the one scan the CI's `data` job and the records' hook refuse with, `opencode-gate`, the gate's opencode wrapper, which `team-bootstrap` installs in `~/.no-mistakes/bin` and Daniel's no-mistakes config names, `gate-config.awk`, which reads and sets that config's one key the team writes (`agent_path_override`'s opencode), `records-rewrite/`, `team-records-rewrite`'s drop list, message expression, S02 callback and `verify.py`, `vendor/git-filter-repo/`, git filter-repo 2.47.0 vendored with its MIT license, `records`, the team home's paths, which no tracked path matches, and `code`, which every tracked path matches; `bin/hooks/` the sessions' hooks, `bin/hooks/git/` git's for the code checkout and `bin/hooks/records-git/` for the team home |
-| `tests/` | The bats suite, one `.bats` file per script (a long one split by topic, as `team-doctor-*.bats`) plus `task-life.bats`, a whole task's life across them, and `drill.bats`, the two-machine drill (handoff, steal, crash, outage, and the records rewrite's cutover on one machine), with `tests/helpers/` (`docker.bash`, the opt-in stub `docker`) and bats-core vendored in `tests/vendor/`; `tests/toolkits/` the toolkits' Node tests; `tests/bootstrap-drill` runs `team-bootstrap` on a fresh runner for the by-hand Bootstrap workflow; `tests/compaction-drill`, run by hand by the coordinator since it starts a real Claude session, compacts a coordinator-shaped session in a sandbox team home built from `tests/fixtures/compaction-drill/` and checks it still knows each task's wait and every current item, and `compaction-drill.bats` dry-runs it on a stub `claude` |
-| `roles/` | The role prompts each session's system prompt is appended with, one per role, the coordinator's included |
-| `settings/` | Worker settings: `worker.json` shared, one file per role layered on it |
-| `coordinator.settings.json` | The coordinator's own settings: Discord, its hooks and its denials |
-| `plugins/coordinator-skills/` | Skills loaded only into the coordinator by `bin/claude-coordinator` |
-| `toolkits/` | Plugin directories a worker loads with `team-worker --toolkit <name>`: MCP config (`.mcp.json`), skills, hooks (`hooks/hooks.json`, as `browser`'s session-start banner for a UI task's builder and reviewer, whose `ui-check` skill captures and judges the screens a UI change touches), docs, scripts, and the skills' evals (`claude plugin eval`, on MCP mocks); and `coordinator/`, the coordinator's MCP servers and the claude.ai connectors it keeps, no worker's, the only ones `claude-coordinator` lets it load (its README says how the others are denied and how one is added) |
-| `servers/` | The MCP servers the toolkits and sessions run (the sessions' `chrome-devtools-mcp`, by `CHROME_DEVTOOLS_AXI_MCP_PATH` in their settings), the MCP client `ui-capture` speaks with, and the `chrome-devtools-axi` client the browser toolkit's test runs (CI's runner has no global install; sessions run the one `tools.lock` pins, at the same version), pinned by `package-lock.json`; `servers/install` puts them in the gitignored `servers/node_modules/`, as `team-bootstrap` does while `team-doctor`'s `servers` line fails |
-| `templates/` | The task plan and the worker briefs `team-open` and `team-brief` render |
-| `README.md`, `SETUP.md` | What a stranger reads first, with the sentence Daniel types on a new machine, and the agent's entry point for "set up as host" |
-| `LICENSE` | The Apache License 2.0; vendored bats-core and git filter-repo keep their own |
-| `sops/` | Standing procedures: `machine-setup.md` (a new machine, driven by `SETUP.md`), `portability.md` (moving the team between machines), `docker.md` (the team's Docker stacks: labels, owner classes, the wrapper contract, `team-stack`'s subcommands, instances, admission, the idle sweep, the reaper, `team-janitor`'s daily report, the heartbeat's steps, the close teardown and the agents' rules), `knowledge-graph.md`, `records-rewrite.md` (the cutover that rewrites the records repository's history with `team-records-rewrite`, each step Daniel's or the coordinator's), `model-trials.md` (trialling a cheaper model on one role of one project: the registry's `models`, the effort check, the paired reviews, the measures and their sources, the baseline by PR size and the note to Daniel that ends it), `platform-gotchas.md` (general rules about the tools the team runs on, which every brief but the ops one points at in the code checkout, never the team home; the retro proposes keeping it short, and each change Daniel approves lands through a PR on this repository) |
+One path per bullet and one thing per line, alphabetical within each list, so two PRs that add different things edit different lines.
+
+- `bin/`: the team's commands, `team-*` and `claude-coordinator`.
+  - `bin/hooks/`: the sessions' hooks.
+    - `git/`: git's hooks for the code checkout.
+    - `records-git/`: git's hooks for the team home.
+  - `bin/lib/`: the shared library.
+    - `code`: the paths every tracked path matches.
+    - `data-check`: the one scan the CI's `data` job and the records' hook refuse with.
+    - `doctor.d/`: `team-doctor`'s checks, one file each, which it sources in the order of their names (a new check is a new file, its number between its neighbours').
+    - `gate-config.awk`: reads and sets the one key the team writes in Daniel's no-mistakes config (`agent_path_override`'s opencode).
+    - `ledger-contract.json` and `ledger.jq`: the ledger contract and its jq.
+    - `opencode-gate`: the gate's opencode wrapper, which `team-bootstrap` installs in `~/.no-mistakes/bin` and Daniel's no-mistakes config names.
+    - `prices.json`: each model's list prices per million tokens with the date read and the source, the weights `team-tokens` gives each reply.
+    - `records`: the team home's paths, which no tracked path matches.
+    - `records-rewrite/`: `team-records-rewrite`'s drop list, message expression, S02 callback and `verify.py`.
+    - `stack.jq`: `team-stack`'s owner classes, Docker's sizes, the reaper's rules and the `stack.json` settings with their memory floor.
+    - `time.jq`: `team-time`'s split of each task's time into phases, and its counts.
+    - `tools.jq`: turns `tools.lock` into each tool's pin and install command for a machine.
+    - `tools.lock`: the tools `team-doctor` checks, pinned or with a minimum, and their source per OS (for treehouse and no-mistakes, a GitHub release with each archive's checksum, or a fork's commit).
+    - `vendor/git-filter-repo/`: git filter-repo 2.47.0, vendored with its MIT license.
+- `coordinator.settings.json`: the coordinator's own settings: Discord, its hooks and its denials.
+- `LICENSE`: the Apache License 2.0; vendored bats-core and git filter-repo keep their own.
+- `plugins/coordinator-skills/`: skills loaded only into the coordinator by `bin/claude-coordinator`.
+- `README.md`, `SETUP.md`: what a stranger reads first, with the sentence Daniel types on a new machine, and the agent's entry point for "set up as host".
+- `roles/`: the role prompts each session's system prompt is appended with, one per role, the coordinator's included.
+- `servers/`: the MCP servers the toolkits and sessions run, the MCP client `ui-capture` speaks with, and the `chrome-devtools-axi` client the browser toolkit's test runs.
+  - `install`: puts them in the gitignored `servers/node_modules/`, as `team-bootstrap` does while `team-doctor`'s `servers` line fails.
+  - `package.json` and `package-lock.json`: the packages and their pins, among them:
+    - `chrome-devtools-axi`: the client the browser toolkit's test runs, since CI's runner has no global install; sessions run the one `tools.lock` pins, at the same version.
+    - `chrome-devtools-mcp`: the sessions' MCP server, which their settings name by `CHROME_DEVTOOLS_AXI_MCP_PATH`.
+- `settings/`: worker settings: `worker.json` shared, one file per role layered on it.
+- `sops/`: standing procedures.
+  - `docker.md`: the team's Docker stacks: labels, owner classes, the wrapper contract, `team-stack`'s subcommands, instances, admission, the idle sweep, the reaper, `team-janitor`'s daily report, the heartbeat's steps, the close teardown and the agents' rules.
+  - `knowledge-graph.md`: a project's knowledge graph.
+  - `machine-setup.md`: a new machine, driven by `SETUP.md`.
+  - `model-trials.md`: trialling a cheaper model on one role of one project: the registry's `models`, the effort check, the paired reviews, the measures and their sources, the baseline by PR size and the note to Daniel that ends it.
+  - `platform-gotchas.md`: general rules about the tools the team runs on, which every brief but the ops one points at in the code checkout, never the team home; the retro proposes keeping it short, and each change Daniel approves lands through a PR on this repository.
+  - `portability.md`: moving the team between machines.
+  - `records-rewrite.md`: the cutover that rewrites the records repository's history with `team-records-rewrite`, each step Daniel's or the coordinator's.
+- `templates/`: the task plan and the worker briefs `team-open` and `team-brief` render.
+- `tests/`: the bats suite, one `.bats` file per script (a long one split by topic, as `team-doctor-*.bats`).
+  - `tests/bootstrap-drill`: runs `team-bootstrap` on a fresh runner for the by-hand Bootstrap workflow.
+  - `tests/compaction-drill`: run by hand by the coordinator, since it starts a real Claude session; it compacts a coordinator-shaped session in a sandbox team home built from `tests/fixtures/compaction-drill/` and checks it still knows each task's wait and every current item.
+  - `tests/compaction-drill.bats`: dry-runs `tests/compaction-drill` on a stub `claude`.
+  - `tests/drill.bats`: the two-machine drill (handoff, steal, crash, outage, and the records rewrite's cutover on one machine).
+  - `tests/helpers/`: the helpers, with `docker.bash`, the opt-in stub `docker`.
+  - `tests/task-life.bats`: a whole task's life across the scripts.
+  - `tests/toolkits/`: the toolkits' Node tests.
+  - `tests/vendor/`: bats-core, vendored.
+- `toolkits/`: plugin directories a worker loads with `team-worker --toolkit <name>`: MCP config (`.mcp.json`), skills, hooks (`hooks/hooks.json`), docs, scripts, and the skills' evals (`claude plugin eval`, on MCP mocks).
+  - `browser/`: its session-start hook prints a banner for a UI task's builder and reviewer, whose `ui-check` skill captures and judges the screens a UI change touches.
+  - `coordinator/`: the coordinator's MCP servers and the claude.ai connectors it keeps, no worker's, the only ones `claude-coordinator` lets it load (its README says how the others are denied and how one is added).
 
 `.scratch/task/` is the task directory of a task on this repo, ignored by git.
 
@@ -84,7 +123,7 @@ It holds:
 - CI's runner has jq 1.7.1, so keep to jq 1.7 features.
 - Scripts and tests run on Linux and macOS: on macOS `bin/lib/platform.sh` (sourced by the library and the test helpers) puts Homebrew's GNU coreutils, findutils, sed, grep and `flock` first on `PATH`, so GNU forms are fine and BSD-only ones are not.
   CI's `macos` job runs `tests/run bats` on a macOS runner, with the rest of CI: on a PR to `main` or by hand.
-- Repo invariants are tests too: every executable in `bin/` answers `--help` with its header, every `bin/team-*` script is named in `roles/coordinator.md`, which stays at most 120 lines, and no tracked Markdown or template outside the records (`bin/lib/records`, kept as written) has an em dash.
+- Repo invariants are tests too: every executable in `bin/` answers `--help` with its header, every `bin/team-*` script is named in `roles/coordinator.md`, which stays at most 120 lines, no tracked Markdown or template outside the records (`bin/lib/records`, kept as written) has an em dash, and the Layout above stays a list, one thing per line of at most 300 characters, alphabetical within each list.
 
 ## Script conventions
 

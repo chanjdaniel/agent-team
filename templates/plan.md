@@ -23,3 +23,7 @@ Path: {{path}}.
 ## Not in scope
 
 <!-- What a worker might expect to do here but must leave alone. -->
+
+## Disclosure
+
+<!-- Only for a security change in a public repository; delete otherwise. How commit messages, the PR title and body, test names, comments and docs describe the change (as hardening), and what they leave out: attack wording, how a gap is reached, alert numbers, any reference to the finding's report. -->

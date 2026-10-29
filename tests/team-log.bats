@@ -14,6 +14,11 @@ ledger_without_ts() {
   jq -c 'del(.ts)' "$TEAM_HOME/ledger.jsonl"
 }
 
+# A Discord message id sent a minute from now: soon
+soon() {
+  echo $(((($(date -u +%s) + 60 - 1420070400) * 1000) << 22))
+}
+
 assert_ledger_empty() {
   assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" ""
 }
@@ -78,7 +83,7 @@ TABLE
   grep -Eq '^  review +team-log +verdict \(pass\|findings\), head; optional agent_review, sent_back \(list\)  \(sent_back: the numbers of the notes .*\)$' <<<"$output"
   grep -Eq '^  gate-run +team-log +run, head, outcome \(pushed\|red\|aborted\|stopped-green\); optional cause \(review\|notes\|gate-finding\|load\|tooling\|base-merge\|other\), minutes \(object\)  \(.*\)$' <<<"$output"
   grep -Eq '^  closed +team-close +archive \(list\), returned \(list\), kept \(list\)  \(.*legacy.*\)$' <<<"$output"
-  grep -Eq '^  merge-approved +team-log +url, discord_message  \(.*\)$' <<<"$output"
+  grep -Eq '^  merge-approved +team-log +url, discord_message; optional head  \(.*team-log requires head of every new line.*\)$' <<<"$output"
   grep -Eq '^  launch +team-worker +role, session, worktree, toolkits \(list\); optional project, branch, machine, model, request  \(request is the link to Daniel.s Discord message, on an ops launch; model is the --model the session launched on, .*\)$' <<<"$output"
   grep -Eq '^  resumed +team-log +- +\(clears held, blocked, paused and waiting\)$' <<<"$output"
   grep -Eq '^  blocked +team-log +reason; optional since  \(.*since: when the park began, when it is logged after the fact\)$' <<<"$output"
@@ -162,12 +167,12 @@ LINES
 @test "a field the contract types as a string stays a string even when it looks like JSON" {
   run_bin -0 team-log T14 ticket-done ticket=12 'commits=["1234567"]'
   run_bin -0 team-log T14 pr url=https://github.com/chanjdaniel/agent-team/pull/5 head=1234567 note=true
-  run_bin -0 team-log T14 merge-approved url=https://github.com/chanjdaniel/agent-team/pull/5 discord_message=1563000000000000123456789
+  run_bin -0 team-log T14 merge-approved url=https://github.com/chanjdaniel/agent-team/pull/5 discord_message=1563000000000000123456789 head=1234567
   assert_equal "$(ledger_without_ts)" "$(
     cat <<'LINES'
 {"task":"T14","event":"ticket-done","ticket":"12","commits":["1234567"]}
 {"task":"T14","event":"pr","url":"https://github.com/chanjdaniel/agent-team/pull/5","head":"1234567","note":"true"}
-{"task":"T14","event":"merge-approved","url":"https://github.com/chanjdaniel/agent-team/pull/5","discord_message":"1563000000000000123456789"}
+{"task":"T14","event":"merge-approved","url":"https://github.com/chanjdaniel/agent-team/pull/5","discord_message":"1563000000000000123456789","head":"1234567"}
 LINES
   )"
 }
@@ -175,8 +180,10 @@ LINES
 @test "every kind team-log writes is appended with its required fields and a note" {
   local kind args count=0
   while IFS= read -r kind; do
-    mapfile -t args < <(jq -r --arg k "$kind" '.kinds[$k].required | to_entries[]
-      | "\(.key)=\(.value | if type == "array" then .[0] elif . == "array" then "[]" elif . == "number" then "7" else "x y" end)"' "$CONTRACT")
+    # A head is a sha, since merge-approved's must be one a pr event logged, which team-log adds.
+    mapfile -t args < <(jq -r --arg k "$kind" '(.kinds[$k].required | to_entries[]
+      | "\(.key)=\(if .key == "head" then "a1b2c3d4" else .value | if type == "array" then .[0] elif . == "array" then "[]" elif . == "number" then "7" else "x y" end end)"),
+      (select($k == "merge-approved") | "head=a1b2c3d4")' "$CONTRACT")
     run_bin -0 team-log T14 "$kind" "${args[@]}" "note=why $kind"
     count=$((count + 1))
     assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r '.event + " " + .note')" "$kind why $kind"
@@ -283,9 +290,53 @@ LINES
   run_bin -1 team-log T14 merge-approved pr=5 discord_message=1563
   assert_contains "$output" "merge-approved needs url"
   assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "3"
-  run_bin -0 team-log T14 merge-approved url=$five discord_message=1563
-  run_bin -0 team-log T14 merge-approved url=$seven/ discord_message=1564
+  run_bin -0 team-log T14 merge-approved url=$five discord_message="$(soon)" head=a1b2c3d4e5f60718293a4b5c6d7e8f9012345678
+  run_bin -0 team-log T14 merge-approved url=$seven/ discord_message="$(soon)" head=e4f5a6b
   assert_equal "$(tail -n 2 "$TEAM_HOME/ledger.jsonl" | jq -r .url)" "$five"$'\n'"$seven/"
+}
+
+@test "merge-approved names the head Daniel was asked on, one a pr event of its PR or a review since logged" {
+  local five=https://github.com/owner/proj/pull/5
+  run_bin -0 team-log T14 pr url=$five head=a1b2c3d
+  run_bin -0 team-log T14 pr url=$five head=0123456789abcdef0123456789abcdef01234567
+  run_bin -0 team-log T14 pr url=https://github.com/owner/proj/pull/6 head=e4f5a6b
+  run_bin -1 team-log T14 merge-approved url=$five discord_message=1563
+  assert_contains "$output" "merge-approved needs head, the full sha of the PR's head Daniel was asked on"
+  run_bin -1 team-log T14 merge-approved url=$five discord_message=1563 head=e4f5a6b7
+  assert_equal "$output" "team-log: head e4f5a6b7 is not a head the pr events of $five, or the reviews since, logged:
+  a1b2c3d
+  0123456789abcdef0123456789abcdef01234567"
+  run_bin -1 team-log T14 merge-approved url=$five discord_message=1563 head=a1b2c3
+  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "3"
+  run_bin -0 team-log T14 merge-approved url=$five discord_message="$(soon)" head=A1B2C3D4E5F60718293A4B5C6D7E8F9012345678
+  run_bin -0 team-log T14 merge-approved url=$five/ discord_message="$(soon)" head=0123456789abcdef0123456789abcdef01234567
+  run_bin -0 team-log --check
+}
+
+@test "merge-approved may name a fix head a review logged after the PR's first pr event, with no pr event of its own" {
+  local five=https://github.com/owner/proj/pull/5 fix=b2c3d4e5f60718293a4b5c6d7e8f901234567890
+  # A review before the PR's first pr event logs no head of it.
+  run_bin -0 team-log T14 review verdict=pass head=c3d4e5f
+  run_bin -0 team-log T14 pr url=$five head=a1b2c3d
+  run_bin -0 team-log T14 review verdict=findings head=a1b2c3d
+  run_bin -0 team-log T14 review verdict=pass head=$fix
+  run_bin -0 team-log T14 merge-approved url=$five discord_message="$(soon)" head=$fix
+  run_bin -1 team-log T14 merge-approved url=$five discord_message="$(soon)" head=c3d4e5f
+  assert_contains "$output" "team-log: head c3d4e5f is not a head the pr events of $five, or the reviews since, logged:
+  a1b2c3d
+  $fix"
+}
+
+@test "merge-approved's message must be sent no earlier than the first event that logged its head" {
+  local five=https://github.com/owner/proj/pull/5 fix=b2c3d4e5f60718293a4b5c6d7e8f901234567890
+  # 1562661774950400000 is 2026-10-22T03:00:00Z; the review of the fix is logged now, later.
+  run_bin -0 team-log T14 pr url=$five head=a1b2c3d
+  run_bin -0 team-log T14 review verdict=pass head=$fix
+  local reviewed
+  reviewed=$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r .ts)
+  run_bin -1 team-log T14 merge-approved url=$five discord_message=1562661774950400000 head=$fix
+  assert_equal "$output" "team-log: Discord message 1562661774950400000 was sent at 2026-10-22T03:00:00Z, before the review event that first logged head $fix at $reviewed, so it is not Daniel's word on that head"
+  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "2"
 }
 
 @test "a kind another script writes is refused with nothing appended" {

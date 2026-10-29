@@ -15,6 +15,41 @@ setup() {
   assert_equal "$hits" ""
 }
 
+# The lines of a CLAUDE.md's Layout section, from "## Layout" to the next heading, that break its
+# rule of one thing per line, in alphabetical lists, as "<line>: <reason>": a table row, a line
+# over 300 characters, or a bullet whose first name (in backticks, in any case) sorts before the
+# bullet above it in the same list: layout_breaks <file>
+layout_breaks() {
+  awk '
+    /^#/ { in_layout = ($0 == "## Layout"); next }
+    !in_layout { next }
+    /^\|/ { print NR ": a table row"; next }
+    length > 300 { print NR ": " length " characters"; next }
+    match($0, /^ *- `[^`]+`/) {
+      depth = index($0, "-") - 1
+      key = tolower(substr($0, depth + 4, RLENGTH - depth - 4))
+      if ((depth in last) && key < last[depth]) print NR ": " key " after " last[depth]
+      for (d in last) if (d + 0 > depth) delete last[d]
+      last[depth] = key
+    }' "$1"
+}
+
+@test "CLAUDE.md's Layout section is a list with one thing per line, alphabetical within each list" {
+  grep -qx '## Layout' "$REPO_ROOT/CLAUDE.md"
+  assert_equal "$(layout_breaks "$REPO_ROOT/CLAUDE.md")" ""
+}
+
+@test "a table row, a line over 300 characters and a bullet out of order in the Layout section are named" {
+  local long
+  long=$(printf 'x%.0s' {1..300})
+  printf '%s\n' '# Repo' '| a | b |' '## Layout' '' '| Path | What |' "- \`$long\`: x" '- `bin/`: x' \
+    '  - `lib/`: x' '    - `zz`: x' '  - `hooks/`: x' '    - `aa`: x' '- `LICENSE`: x' '- `docs/`: x' '## Next' '| a | b |' \
+    >"$BATS_TEST_TMPDIR/CLAUDE.md"
+  assert_equal "$(layout_breaks "$BATS_TEST_TMPDIR/CLAUDE.md")" "$(
+    printf '%s\n' '5: a table row' '6: 307 characters' '10: hooks/ after lib/' '13: docs/ after license'
+  )"
+}
+
 # The tracked code files of the checkout <dir> that name an Atlas cluster host, in any case, one
 # per line; a placeholder host is at example.mongodb.net. Names the file, never the host:
 # atlas_host_files <dir>

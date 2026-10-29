@@ -7,13 +7,18 @@
 # from --since (default the ledger's start) to --until; --task measures that task alone.
 # Each stretch of a task's time is one phase, walked through its events in ledger order:
 #   a park (waiting, blocked, paused, held) holds until the next launch or resumed, or, for a
-#   wait on Daniel, answered or merge-approved; it is classed by its on and reason, first match
-#   wins: wait:external (GitHub Support, Dependabot, on=GitHub), wait:task (on=T<n>, "waits for
-#   T<n>" and the like), wait:denial (a blocked naming a denial or refusal), wait:limit (the
-#   usage, token, weekly or session limit), wait:off (stowed, shutdown, OS update, handoff),
-#   wait:machine (load, memory, Docker, a restart, an outage), gate (a pause naming the gate),
-#   wait:daniel (a waiting, or on=Daniel), wait:other; a park logged after the fact with since
-#   holds from since, not from its own ts;
+#   wait on Daniel, merge-approved, never an answered; it is classed first match wins: wait:limit
+#   (the usage, token, weekly or session limit), wait:off (stowed, shutdown, OS update, handoff);
+#   then its on, when given, decides before its reason, in any case: wait:daniel (on=Daniel),
+#   wait:task (on=T<n>), unattributed (on=coordinator), gate (on=gate), wait:other
+#   (on=schedule), wait:external (any other party); then its reason: wait:external (GitHub
+#   Support, Dependabot), wait:task ("waits for T<n>" and the like), wait:denial (a blocked
+#   naming a denial or refusal), wait:daniel (naming Daniel), wait:machine (load, memory,
+#   Docker, a restart, an outage), gate (a pause naming the gate), wait:daniel (a waiting),
+#   wait:other; a park logged after the fact with since holds from since, not from its own ts;
+#   an asked with no park standing is a wait on Daniel until it and every ask asked while it
+#   stands are settled, each by an answered with its id or a merge-approved whose url its text
+#   names, or a launch, resumed or another park ends it;
 #   with no park, the last marker: a planner or ops launch planning, a builder's building, a
 #   reviewer's review, merge-approved merging, and a done or merged unattributed (the
 #   coordinator's turn, or a gate run the ledger did not see); a task starts unattributed.
@@ -23,7 +28,7 @@
 # with each step's median minutes; reviews and findings per PR (a review's PR is the latest pr
 # event before it, else the first after it); builder launches and tickets done per task; denials
 # (blocked events classed wait:denial); Daniel's answers, each asked matched to the task's next
-# answered with its id, with the median and 90th percentile minutes by nearest rank; and each
+# event that settles it, with the median and 90th percentile minutes by nearest rank; and each
 # done's seconds to the task's next event.
 # Prints the tables as text; --json prints the report (schema team-time/1): since, until, wall,
 # tasks (task, project, path, closed, wall, hours per phase), phases (all, share in percent, and

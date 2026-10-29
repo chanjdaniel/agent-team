@@ -13,6 +13,7 @@
 {"ts":"2026-10-22T04:00:00Z","task":"T60","event":"asked","id":"t60-api","text":"which API?"}
 {"ts":"2026-10-22T04:00:00Z","task":"T60","event":"waiting","on":"Daniel","reason":"question t60-api"}
 {"ts":"2026-10-22T04:30:00Z","task":"T60","event":"answered","id":"t60-api","answer":"the new one"}
+{"ts":"2026-10-22T04:30:00Z","task":"T60","event":"resumed"}
 {"ts":"2026-10-22T06:00:00Z","task":"T60","event":"ticket-done","ticket":"01","commits":["a1b2c3d"]}
 {"ts":"2026-10-22T06:00:00Z","task":"T60","event":"done","role":"builder","session":"s0000000"}
 {"ts":"2026-10-22T06:00:00Z","task":"T60","event":"launch","role":"builder","session":"s0000004","worktree":"/home/danielc/wt/T60","toolkits":[]}
@@ -51,6 +52,7 @@
 {"ts":"2026-10-22T18:00:00Z","task":"T61","event":"asked","id":"t61-name","text":"which name?"}
 {"ts":"2026-10-22T18:00:00Z","task":"T61","event":"waiting","on":"Daniel","reason":"question t61-name"}
 {"ts":"2026-10-22T18:12:00Z","task":"T61","event":"answered","id":"t61-name","answer":"team-time"}
+{"ts":"2026-10-22T18:12:00Z","task":"T61","event":"resumed"}
 {"ts":"2026-10-22T19:00:00Z","task":"T61","event":"asked","id":"t61-later","text":"and the flag?"}
 {"ts":"2026-10-22T21:00:00Z","task":"T63","event":"opened","project":"conventioner","path":"small","type":"fix","title":"T63 fixture","branch":"fix/T63-fixture","base":"dev","base_sha":"0123456789abcdef","worktree":"/home/danielc/wt/T63"}
 {"ts":"2026-10-22T21:00:00Z","task":"T63","event":"launch","role":"builder","session":"s0000010","worktree":"/home/danielc/wt/T63","toolkits":[]}

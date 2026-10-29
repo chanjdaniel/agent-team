@@ -312,6 +312,20 @@ LINES
   assert_contains "$output" $'Wait totals (2):\n  restart: 4h over 1 span, 4h wall-clock\n  daniel: 1h over 1 span, 1h wall-clock'
 }
 
+@test "digest: a merge ask's wait ends at the merge-approved naming the URL its text names" {
+  opened "$(at 00:00)" T1 feature
+  opened "$(at 00:00)" T2 feature
+  event "$(at 01:00)" T1 asked '{id: "merge", text: "merge it? https://github.com/o/r/pull/3 at 0123456"}'
+  event "$(at 01:00)" T2 asked '{id: "merge", text: "merge it? https://github.com/o/r/pull/30 at 89abcde"}'
+  event "$(at 03:00)" T1 merge-approved '{url: "https://github.com/o/r/pull/3", discord_message: "1563000000000000001"}'
+  event "$(at 03:00)" T2 merge-approved '{url: "https://github.com/o/r/pull/3", discord_message: "1563000000000000002"}'
+  opened "$(at 05:00)" T9 retro
+  run_bin -0 team-retro digest T9 --json
+  assert_equal "$(jq -r '.waits.spans[] | [.task, .kind, .from[11:16], .to[11:16], .open] | join(" ")' <<<"$output")" "$(
+    printf '%s\n' 'T1 asked 01:00 03:00 false' 'T2 asked 01:00 05:00 true'
+  )"
+}
+
 @test "digest: a park logged after the fact with since starts its wait at since, clipped to the window" {
   opened "$(at 00:00)" T1 feature
   opened "$(at 00:00)" T2 feature

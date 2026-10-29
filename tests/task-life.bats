@@ -320,7 +320,7 @@ assert_closed_and_clean() {
 
   # 6. Merge on Daniel's word in the thread.
   daniel_says "merge it"
-  ok team-log T1 merge-approved url="$url" discord_message="$message"
+  ok team-log T1 merge-approved url="$url" discord_message="$message" head="$head"
   step awaiting-merge
   ok team-merge T1
   local merge
@@ -427,9 +427,9 @@ assert_closed_and_clean() {
 
   # 5. Daniel's word for each PR; each merges on its own.
   daniel_says "merge home's"
-  ok team-log T1 merge-approved url="$home_url" discord_message="$message"
+  ok team-log T1 merge-approved url="$home_url" discord_message="$message" head="$home_head"
   daniel_says "merge conv's"
-  ok team-log T1 merge-approved url="$conv_url" discord_message="$message"
+  ok team-log T1 merge-approved url="$conv_url" discord_message="$message" head="$conv_head"
   ok team-merge T1 --pr "$home_url"
   # conv's PR still waits for its merge.
   step awaiting-merge
