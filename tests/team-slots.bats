@@ -630,12 +630,14 @@ proc() {
   printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" $(($3 * 1024)) "$4" "${5:-}" >>"$TEAM_SLOTS_PROCS"
 }
 
-# The processes' CPU seconds at the previous reading, <seconds> ago: snapshot <seconds> <pid>:<CPU seconds>...
+# The processes' CPU seconds at the previous reading, <seconds> before now (not NOW, which a slow
+# machine leaves behind): snapshot <seconds> <pid>:<CPU seconds>...; SNAPSHOT_AT is its time.
 snapshot() {
   mkdir -p "${SNAPSHOT%/*}"
   local entry
   for entry in "${@:2}"; do printf '%s\t%s\n' "${entry%%:*}" "${entry#*:}"; done >"$SNAPSHOT"
-  touch -d "@$((NOW - $1))" "$SNAPSHOT"
+  SNAPSHOT_AT=$(($(date +%s) - $1))
+  touch -d "@$SNAPSHOT_AT" "$SNAPSHOT"
 }
 
 # The team and gate stacks' memory in bytes and CPU in cores, from team-stack ls --json on the
@@ -721,7 +723,9 @@ stacks_load() {
   local docker
   docker=$(stacks_load cpu)
   run_bin -0 team-slots sample
-  assert_equal "$(jq -c --argjson docker "$docker" '.cpu as $cpu | [$cpu.cpus, ($cpu.seconds | . >= 300 and . <= 302),
+  # The seconds between are the snapshot's age when sample read it: 300, and the time it took.
+  assert_equal "$(jq -c --argjson docker "$docker" --argjson most $(($(date +%s) - SNAPSHOT_AT)) '.cpu as $cpu
+    | [$cpu.cpus, ($cpu.seconds | . >= 300 and . <= $most),
       $cpu.team == ((360 / $cpu.seconds + $docker) * 100 | round / 100),
       $cpu.others == ((1550 / $cpu.seconds - $docker) * 100 | round / 100)]' "$READINGS")" '[12,true,true,true]'
   # A snapshot under a minute old, or over 15 minutes, gives no CPU.
