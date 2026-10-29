@@ -294,7 +294,7 @@ restored_from() {
   mkdir -p "$HOME/.config/agent-team"
   echo '{"cap": 1, "reserved": 0}' >"$HOME/.config/agent-team/slots.json"
   run_bin -0 --separate-stderr team-open --task T1 --resume home
-  assert_equal "$stderr" "team-open: laptop holds 2 task slots, over its effective cap of 1 (cap 1, no reading of the machine's load yet); no new task opens until tasks close"
+  assert_equal "$stderr" "team-open: laptop holds 2 task slots, over its effective cap of 1 (cap 1, $(sampled_reason)); no new task opens until tasks close"
   assert_equal "$(jq -r .worktree <<<"$output")" "${home_slots[1]}"
   assert_equal "$(git -C "${home_slots[1]}" rev-parse --abbrev-ref HEAD)" "$branch"
 

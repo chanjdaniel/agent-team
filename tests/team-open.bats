@@ -447,7 +447,7 @@ holding() {
   assert_equal "$output" ""
   local expected n
   expected="team-open: no task slot for proj on home-pc: 9 of 10 held, and the last one is kept for agent-team (reserved 1)
-team-open: the cap is 10 (cap in ~/.config/agent-team/slots.json), effective 10: no reading of the machine's load yet
+team-open: the cap is 10 (cap in ~/.config/agent-team/slots.json), effective 10: $(sampled_reason)
 team-open: the slots:"
   for n in 1 2 3 4 5 6 7 8 9; do expected+=$'\n'"  T$n proj in ~/elsewhere/proj/$n"; done
   assert_equal "$stderr" "$expected"
@@ -527,7 +527,7 @@ team-open: the cap is 10 (cap in ~/.config/agent-team/slots.json), effective 5: 
   stub_reply curl '{"id":"1563000000000000009"}'
   run_bin -75 --separate-stderr team-open proj feature feat late "Late"
   assert_equal "$stderr" "team-open: no task slot for proj on this machine: 1 of 1 held
-team-open: the cap is 1 (cap in ~/.config/agent-team/slots.json), effective 1: no reading of the machine's load yet
+team-open: the cap is 1 (cap in ~/.config/agent-team/slots.json), effective 1: $(sampled_reason)
 team-open: the slots:
   T1 proj in ~/slots/proj/1 (half open)"
   run_bin -0 --separate-stderr team-open --task T1 proj feature feat flaky "Flaky"

@@ -206,7 +206,7 @@ ledger_line() {
   run_bin -75 --separate-stderr team-open --task T1 --add conv chore two
   assert_equal "$output" ""
   assert_equal "$stderr" "team-open: no task slot for conv on this machine: 1 of 1 held
-team-open: the cap is 1 (cap in ~/.config/agent-team/slots.json), effective 1: no reading of the machine's load yet
+team-open: the cap is 1 (cap in ~/.config/agent-team/slots.json), effective 1: $(sampled_reason)
 team-open: the slots:
   T1 home in ~/slots/home/1"
   assert_equal "$(stub_calls th-lease.sh)" ""

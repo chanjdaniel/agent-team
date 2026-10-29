@@ -350,7 +350,7 @@ SH
   # The lock goes once T5's slot holds its branch, so the second run may count it half open.
   err=${err%' (half open)'}
   assert_equal "${err#*$'\n'}" "team-open: no task slot for proj on this machine: 2 of 2 held
-team-open: the cap is 2 (cap in ~/.config/agent-team/slots.json), effective 2: no reading of the machine's load yet
+team-open: the cap is 2 (cap in ~/.config/agent-team/slots.json), effective 2: $(sampled_reason)
 team-open: the slots:
   T1 proj in ~/elsewhere/1
   T5 proj in ~/.treehouse/proj-abc123/1/proj"

@@ -2,6 +2,7 @@
 # team-slots: the machine's task slots, the one kept for the reserved project and who holds them.
 
 load helpers/common
+load helpers/docker
 
 setup() {
   sandbox
@@ -15,6 +16,8 @@ setup() {
   echo home-pc >"$HOME/.config/agent-team/machine"
   registry agent-team proj other
   NOW=$(date +%s)
+  READINGS=$HOME/.local/state/agent-team/slots/readings.jsonl
+  SNAPSHOT=$HOME/.local/state/agent-team/slots/procs.tsv
 }
 
 teardown() {
@@ -119,7 +122,7 @@ effective() {
     '{"cap":6,"reserved":1,"dynamic":true,"task_gib":1.25,"reserve_gib":6,"task_cores":0.5,"reserve_cores":2,"window_minutes":15,"wait_minutes":15}'
   assert_equal "$(jq -r .settings.from.cap <<<"$output")" default
   run_bin -0 team-slots
-  assert_equal "${lines[1]}" "the cap is 6 (the default: ~/.config/agent-team/slots.json sets no cap), effective 6: no reading of the machine's load yet"
+  assert_equal "${lines[1]}" "the cap is 6 (the default: ~/.config/agent-team/slots.json sets no cap), effective 6: $(sampled_reason)"
 }
 
 @test "every key of slots.json is read over its default" {
@@ -217,7 +220,7 @@ effective() {
   worktree_on other 1 feat/T4-half
   run_bin -0 team-slots status
   assert_equal "$output" "home-pc: 4 of 10 task slots held, 1 kept for agent-team (agent-team holds 1); effective 10
-the cap is 10 (cap in ~/.config/agent-team/slots.json), effective 10: no reading of the machine's load yet
+the cap is 10 (cap in ~/.config/agent-team/slots.json), effective 10: $(sampled_reason)
   T1 proj in ~/slots/proj/1
   T2 proj in ~/slots/proj/2
   T3 agent-team in ~/slots/agent-team/1
@@ -229,7 +232,9 @@ the cap is 10 (cap in ~/.config/agent-team/slots.json), effective 10: no reading
   opened T1 proj 1
   opened T2 other 1
   run_bin -0 team-slots --json
-  assert_equal "$(jq -c 'del(.settings, .held)' <<<"$output")" '{"schema":"team-slots/1","machine":"home-pc","reserved_project":"agent-team","effective":{"cap":4,"lowered_by":null,"reason":"no reading of the machine'"'"'s load yet","readings":[]},"counts":{"held":2,"reserved_held":0,"others_held":2},"room":{"reserved":2,"others":1},"stale":true}'
+  assert_equal "$(jq -c 'del(.settings, .held, .effective.reason, .effective.readings)' <<<"$output")" '{"schema":"team-slots/1","machine":"home-pc","reserved_project":"agent-team","effective":{"cap":4,"lowered_by":null},"counts":{"held":2,"reserved_held":0,"others_held":2},"room":{"reserved":2,"others":1},"stale":false}'
+  assert_equal "$(jq -r .effective.reason <<<"$output")" "$(sampled_reason)"
+  assert_equal "$(jq -c '.effective.readings' <<<"$output")" "[$(cat "$READINGS")]"
 }
 
 @test "the room: others stop one short of the cap while agent-team holds none, and agent-team's slot counts toward it" {
@@ -280,9 +285,10 @@ the cap is 10 (cap in ~/.config/agent-team/slots.json), effective 10: no reading
   assert_equal "$(jq -r .reserved_project <<<"$output")" agent-team
 }
 
-@test "without a machine name it says this machine, and it needs neither Docker nor the session list" {
+@test "without a machine name it says this machine, and with a reading of the last 10 minutes it reads neither Docker nor the session list" {
   rm "$HOME/.config/agent-team/machine"
   stub_command docker
+  reading 9 8
   run_bin -0 --separate-stderr team-slots
   assert_equal "${lines[0]}" "this machine: 0 of 6 task slots held, 1 kept for agent-team (agent-team holds 0); effective 6"
   assert_equal "$stderr" ""
@@ -292,7 +298,9 @@ the cap is 10 (cap in ~/.config/agent-team/slots.json), effective 10: no reading
 }
 
 @test "a malformed command line is refused" {
-  run_bin -2 team-slots sample
+  run_bin -2 team-slots sample --json
+  assert_contains "$output" "usage: team-slots [status] [--json]"
+  run_bin -2 team-slots status sample
   assert_contains "$output" "usage: team-slots [status] [--json]"
   run_bin -2 team-slots status --all
   assert_contains "$output" "usage: team-slots [status] [--json]"
@@ -306,7 +314,7 @@ the cap is 10 (cap in ~/.config/agent-team/slots.json), effective 10: no reading
   run_bin -75 --separate-stderr team-slots check proj
   assert_equal "$output" ""
   assert_equal "$stderr" "team-slots: no task slot for proj on home-pc: 9 of 10 held, and the last one is kept for agent-team (reserved 1)
-team-slots: the cap is 10 (cap in ~/.config/agent-team/slots.json), effective 10: no reading of the machine's load yet
+team-slots: the cap is 10 (cap in ~/.config/agent-team/slots.json), effective 10: $(sampled_reason)
 team-slots: the slots:
   T1 proj in ~/slots/proj/1
   T2 proj in ~/slots/proj/2
@@ -432,7 +440,7 @@ team-slots: the machine's slot lock is still held after 0.02 minutes, by team-op
 
 @test "--help documents the effective cap and the readings file" {
   run_bin -0 team-slots --help
-  assert_contains "$output" "/.local/state/agent-team/slots/readings.jsonl, one JSON object each"
+  assert_contains "$output" "/.local/state/agent-team/slots/readings.jsonl, kept to the last 24 hours"
   assert_contains "$output" "never below the slots kept for the reserved project"
 }
 
@@ -563,15 +571,26 @@ team-slots: the slots: none held"
   assert_equal "$(jq -c '[.effective.cap, .effective.lowered_by, .effective.reason, (.effective.readings | length), .stale]' <<<"$output")" \
     '[10,null,"dynamic sizing is off (dynamic in slots.json)",2,false]'
 
+  # Stored readings only, as when status cannot take one of its own.
   echo '{"cap": 10}' >"$SETTINGS"
   rm "$HOME/.local/state/agent-team/slots/readings.jsonl"
   reading 25 18 1
   reading 20 18 1
-  run_bin -0 team-slots --json
+  local meminfo
+  meminfo=$(cat "$TEAM_MEMINFO")
+  : >"$TEAM_MEMINFO"
+  run_bin -0 --separate-stderr team-slots --json
   assert_equal "$(jq -c '[.effective.cap, .effective.lowered_by, .effective.reason, .effective.readings, .stale]' <<<"$output")" \
     '[10,null,"no reading of the machine'"'"'s load in the last 15 minutes",[],true]'
+  rm "$HOME/.local/state/agent-team/slots/readings.jsonl"
+  run_bin -0 --separate-stderr team-slots --json
+  assert_equal "$(jq -c '[.effective.cap, .effective.reason, .stale]' <<<"$output")" \
+    '[10,"no reading of the machine'"'"'s load yet",true]'
 
-  # window_minutes sets how far back they count.
+  # window_minutes sets how far back they count, the reading status takes now among them.
+  printf '%s\n' "$meminfo" >"$TEAM_MEMINFO"
+  reading 25 18 1
+  reading 20 18 1
   echo '{"cap": 10, "window_minutes": 30}' >"$SETTINGS"
   assert_equal "$(effective)" "5 memory"
 }
@@ -599,4 +618,183 @@ team-slots: the slots: none held"
   assert_equal "$stderr" "team-slots: skipped 2 broken lines of ~/.local/state/agent-team/slots/readings.jsonl"
   run_bin -0 --separate-stderr team-slots check proj
   assert_equal "$stderr" "team-slots: skipped 2 broken lines of ~/.local/state/agent-team/slots/readings.jsonl"
+}
+
+# proc <pid> <parent pid> <resident MiB> <CPU seconds> [<directory>]: a process of the simulated
+# machine (TEAM_SLOTS_PROCS), its directory unreadable without one.
+proc() {
+  printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" $(($3 * 1024)) "$4" "${5:-}" >>"$TEAM_SLOTS_PROCS"
+}
+
+# The processes' CPU seconds at the previous reading, <seconds> ago: snapshot <seconds> <pid>:<CPU seconds>...
+snapshot() {
+  mkdir -p "${SNAPSHOT%/*}"
+  local entry
+  for entry in "${@:2}"; do printf '%s\t%s\n' "${entry%%:*}" "${entry#*:}"; done >"$SNAPSHOT"
+  touch -d "@$((NOW - $1))" "$SNAPSHOT"
+}
+
+# The team and gate stacks' memory in bytes and CPU in cores, from team-stack ls --json on the
+# stub docker: stacks_load <memory|cpu>
+stacks_load() {
+  "$CODE_CHECKOUT/bin/team-stack" ls --json | jq -r --arg part "$1" '[.projects[] | select(.class == "team" or .class == "gate")
+    | if $part == "memory" then .memory_bytes // 0 else (.cpu_percent // 0) / 100 end] | add'
+}
+
+@test "sample: the team's memory is its processes', by directory and parentage, and the team and gate stacks'; the rest is others'" {
+  docker_stub
+  # A ledger worktree outside every pool's slots is a team path too.
+  event T5 opened "$(jq -cn --arg wt "$HOME/elsewhere/wt" '{project: "proj", path: "feature", type: "feat", title: "Work",
+    branch: "feat/T5-work", base: "main", base_sha: "abc1234", worktree: $wt}')"
+  proc 100 1 1024 0 "$TEAM_HOME"
+  proc 101 100 512 0 /tmp
+  proc 102 101 256 0
+  proc 103 1 128 0 "$HOME/slots/proj/1/src"
+  proc 104 1 64 0 "$CODE_CHECKOUT"
+  proc 105 1 32 0 "$HOME/.no-mistakes/worktrees/abc"
+  proc 106 1 16 0 "$HOME/elsewhere/wt"
+  # Not the team's: a project's primary checkout, an unreadable directory, a slot's namesake and
+  # its child.
+  proc 200 1 2048 0 "$HOME/projects/proj"
+  proc 201 1 1024 0
+  proc 202 1 512 0 "$HOME/slots/proj/10"
+  proc 203 202 8 0 /tmp
+  local stacks
+  stacks=$(stacks_load memory)
+  # The fixture's team stacks and gate stacks run, and its unowned ones are not counted.
+  ((stacks > 0))
+  run_bin -0 --separate-stderr team-slots sample
+  assert_equal "$output$stderr" ""
+  assert_equal "$(wc -l <"$READINGS")" 1
+  assert_equal "$(jq -c --argjson stacks "$stacks" '[.os, .docker, .memory.total, .memory.available,
+      .memory.team - 2032 * 1048576 - $stacks, .memory.others - 8 * 1073741824 + 2032 * 1048576 + $stacks, .cpu]' "$READINGS")" \
+    '["linux",true,34359738368,25769803776,0,0,null]'
+  [[ $(jq -r .at "$READINGS") =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
+}
+
+@test "sample: Docker not answering is no Docker part, said in the reading, and others are never below 0" {
+  docker_stub
+  docker_down
+  proc 100 1 $((9 * 1024)) 0 "$TEAM_HOME"
+  run_bin -0 --separate-stderr team-slots sample
+  assert_equal "$output$stderr" ""
+  assert_equal "$(jq -c '[.docker, .memory.team, .memory.others]' "$READINGS")" "[false,$((9 * 1073741824)),0]"
+  # Without the stub, the sandbox's Docker answers nobody either.
+  rm "$READINGS" "$BATS_TEST_TMPDIR/stubs/docker"
+  run_bin -0 team-slots sample
+  assert_equal "$(jq -c .docker "$READINGS")" false
+}
+
+@test "sample: a Docker that hangs is no Docker part, after TEAM_SLOTS_DOCKER_SECONDS" {
+  docker_stub
+  docker_hang
+  TEAM_SLOTS_DOCKER_SECONDS=1 run_bin -0 team-slots sample
+  assert_equal "$(jq -c .docker "$READINGS")" false
+  # The docker call it started is stopped with it.
+  local pid
+  [[ -s $DOCKER_STATE/hung ]]
+  while read -r pid; do
+    ! kill -0 "$pid" 2>/dev/null || { echo "docker call $pid still waits" && return 1; }
+  done <"$DOCKER_STATE/hung"
+}
+
+@test "sample: the CPU is read against a snapshot 60 seconds to 15 minutes old, as cores busy, a new process counted whole, the stacks' CPU the team's" {
+  docker_stub
+  docker_state stats 'map(if .Name == "conventioner-2-mongodb-1" then .CPUPerc = "150.00%" else . end)'
+  proc 100 1 10 1300 "$TEAM_HOME"
+  proc 101 100 10 60 /tmp
+  proc 300 1 10 6200 /x
+  proc 301 1 10 50 /x
+  proc 400 1 10 300 /x
+  # With no snapshot, no CPU; the snapshot is then this reading's.
+  run_bin -0 team-slots sample
+  assert_equal "$(jq -c .cpu "$READINGS")" null
+  assert_equal "$(cat "$SNAPSHOT")" "$(printf '%s\t%s\n' 100 1300 101 60 300 6200 301 50 400 300)"
+  # Five minutes later: 100 used 300 s, 101 is new (60 s), 300 used 1200 s, 301's lower count is
+  # a new process's (50 s), 400 is new (300 s).
+  rm "$READINGS"
+  snapshot 300 100:1000 300:5000 301:100
+  local docker
+  docker=$(stacks_load cpu)
+  run_bin -0 team-slots sample
+  assert_equal "$(jq -c --argjson docker "$docker" '.cpu as $cpu | [$cpu.cpus, ($cpu.seconds | . >= 300 and . <= 302),
+      $cpu.team == ((360 / $cpu.seconds + $docker) * 100 | round / 100),
+      $cpu.others == ((1550 / $cpu.seconds - $docker) * 100 | round / 100)]' "$READINGS")" '[12,true,true,true]'
+  # A snapshot under a minute old, or over 15 minutes, gives no CPU.
+  for age in 30 901; do
+    rm "$READINGS"
+    snapshot "$age" 100:1000
+    run_bin -0 team-slots sample
+    assert_equal "$(jq -c .cpu "$READINGS")" null
+  done
+}
+
+@test "sample: the CPU's others are never below 0" {
+  docker_stub
+  docker_state stats 'map(if .Name == "conventioner-2-mongodb-1" then .CPUPerc = "600.00%" else . end)'
+  proc 300 1 10 5300 /x
+  snapshot 300 300:5000
+  run_bin -0 team-slots sample
+  assert_equal "$(jq -c .cpu.others "$READINGS")" 0
+}
+
+@test "sample: one a minute at most, and the readings kept to the last 24 hours" {
+  reading 1500 5
+  reading 2 5
+  echo '{"at": "broken' >>"$READINGS"
+  run_bin -0 team-slots sample
+  assert_equal "$(wc -l <"$READINGS")" 2
+  assert_equal "$(head -n 1 "$READINGS" | jq -r .at)" "$(date -u -d "@$((NOW - 120))" +%FT%TZ)"
+  local newest
+  newest=$(tail -n 1 "$READINGS")
+  run_bin -0 team-slots sample
+  assert_equal "$(wc -l <"$READINGS")" 2
+  assert_equal "$(tail -n 1 "$READINGS")" "$newest"
+}
+
+@test "sample: a reading it cannot take is its reason and exit 1, with nothing written" {
+  printf 'MemTotal:       33554432 kB\nMemFree:         1048576 kB\n' >"$TEAM_MEMINFO"
+  run_bin -1 --separate-stderr team-slots sample
+  assert_equal "$stderr" "team-slots: no MemTotal and MemAvailable in $TEAM_MEMINFO"
+  [[ ! -e $READINGS && ! -e $SNAPSHOT ]]
+  printf '%s\n' 'MemTotal:       33554432 kB' 'MemAvailable:   25165824 kB' >"$TEAM_MEMINFO"
+  echo '{"cap": 0}' >"$SETTINGS"
+  run_bin -1 --separate-stderr team-slots sample
+  assert_equal "$stderr" "team-slots: $SETTINGS: cap must be a whole number of 1 or more, not 0"
+  [[ ! -e $READINGS ]]
+}
+
+@test "status and check take a reading first only when the newest is more than 10 minutes old" {
+  run_bin -0 team-slots
+  assert_equal "$(wc -l <"$READINGS")" 1
+  # A reading taken by status counts at once: one alone never lowers the cap.
+  run_bin -0 team-slots --json
+  assert_equal "$(jq -c '[(.effective.readings | length), .stale]' <<<"$output")" '[1,false]'
+  : >"$READINGS"
+  reading 9 8
+  run_bin -0 team-slots check proj
+  assert_equal "$(wc -l <"$READINGS")" 1
+  : >"$READINGS"
+  reading 11 8
+  run_bin -0 team-slots check proj
+  assert_equal "$(wc -l <"$READINGS")" 2
+}
+
+@test "a reading status or check cannot take is said, and they go on with the stored ones" {
+  printf 'MemTotal:       33554432 kB\n' >"$TEAM_MEMINFO"
+  reading 11 8
+  run_bin -0 --separate-stderr team-slots
+  assert_equal "$stderr" "team-slots: took no reading of the machine's load: no MemTotal and MemAvailable in $TEAM_MEMINFO"
+  run_bin -0 --separate-stderr team-slots check proj
+  assert_equal "$stderr" "team-slots: took no reading of the machine's load: no MemTotal and MemAvailable in $TEAM_MEMINFO"
+  assert_equal "$(wc -l <"$READINGS")" 1
+}
+
+@test "--help documents sample and its seams" {
+  run_bin -0 team-slots --help
+  assert_contains "$output" "team-slots sample"
+  local seam
+  for seam in TEAM_MEMINFO TEAM_SLOTS_PROCS TEAM_SLOTS_CPUS TEAM_SLOTS_DOCKER_SECONDS procs.tsv; do
+    assert_contains "$output" "$seam"
+  done
 }

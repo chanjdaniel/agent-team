@@ -215,3 +215,37 @@ def over_cap_text:
   select(.counts.held > .effective.cap)
   | "\(.machine // "this machine") holds \(.counts.held) task slots, over its effective cap of \(.effective.cap)"
     + " (cap \(.settings.cap), \(.effective.reason)); no new task opens until tasks close";
+
+# A reading of the machine's load, from $in: {at (UTC, YYYY-MM-DDTHH:MM:SSZ), os, total and
+# available (memory, in bytes), cpus, procs ([{pid, ppid, rss (KiB), seconds (cumulative CPU),
+# cwd ("" when unreadable)}]), paths (the team paths), stacks (team-stack ls --json's object, or
+# null when Docker did not answer), previous (null, or {seconds: the time since the previous
+# snapshot, procs: {"<pid>": its CPU seconds then}})}. The team's processes are those whose
+# directory is a team path or below one, and every descendant of one; the team's part adds the
+# team and gate stacks' memory and CPU, which the others' part, holding the containers'
+# processes, is less of. A process whose count is new or lower than the snapshot's (a pid used
+# again) counts whole.
+def slots_reading($in):
+  def team_path: . as $cwd | $cwd != "" and any($in.paths[]; . as $path | $cwd == $path or ($cwd | startswith($path + "/")));
+  def hundredths: . * 100 | round / 100;
+  ($in.procs | map({key: (.pid | tostring), value: (.ppid | tostring)}) | from_entries) as $parent
+  | ($in.procs | map(select(.cwd | team_path) | {key: (.pid | tostring), value: true}) | from_entries) as $direct
+  | [$in.procs[] | . + {team: any(limit(64; .pid | tostring | recurse($parent[.] // empty)); $direct[.] // false)}]
+    as $procs
+  | [$in.stacks.projects // [] | .[] | select(.class == "team" or .class == "gate")] as $stacks
+  | ([$stacks[].memory_bytes // 0] | add // 0) as $stacks_memory
+  | (([$stacks[].cpu_percent // 0] | add // 0) / 100) as $stacks_cpu
+  | ([$procs[] | select(.team) | .rss * 1024] | add // 0) + $stacks_memory as $team
+  | {at: $in.at, os: $in.os, docker: ($in.stacks != null),
+     memory: {total: $in.total, available: $in.available, team: $team,
+              others: ([$in.total - $in.available - $team, 0] | max)},
+     cpu: (if $in.previous == null then null
+           else $in.previous as $previous
+             | [$procs[] | ($previous.procs[.pid | tostring]) as $then
+                 | {team, busy: (if $then != null and .seconds >= $then then .seconds - $then else .seconds end)}]
+               as $busy
+             | {cpus: $in.cpus, seconds: $previous.seconds,
+                team: (([$busy[] | select(.team) | .busy] | add // 0) / $previous.seconds + $stacks_cpu | hundredths),
+                others: ([([$busy[] | select(.team | not) | .busy] | add // 0) / $previous.seconds - $stacks_cpu, 0] | max
+                         | hundredths)}
+           end)};
