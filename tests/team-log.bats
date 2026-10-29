@@ -64,7 +64,8 @@ TABLE
   assert_equal "$actual" "$expected"
   assert_equal "$(jq -c '.kinds.launch.optional' "$CONTRACT")" '{"project":"string","branch":"string","machine":"string","model":"string","request":"string"}'
   assert_equal "$(jq -c '.kinds.review.required.verdict' "$CONTRACT")" '["pass","findings"]'
-  assert_equal "$(jq -c '.kinds.answered.optional' "$CONTRACT")" '{"discord_message":"string"}'
+  assert_equal "$(jq -c '.kinds.answered.optional' "$CONTRACT")" '{"discord_message":"id"}'
+  assert_equal "$(jq -c '[.kinds[] | (.required, .optional // {}) | to_entries[] | select(.key | startswith("discord_")) | .value] | unique' "$CONTRACT")" '["id"]'
   assert_equal "$(jq -c '[.kinds.waiting, .kinds.blocked, .kinds.paused, .kinds.held | .optional.since]' "$CONTRACT")" '["string","string","string","string"]'
   assert_equal "$(jq -c '[.kinds.closed.required[]]' "$CONTRACT")" '["array","array","array"]'
   [[ $STRICT_FROM =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
@@ -85,13 +86,13 @@ TABLE
   grep -Eq '^  review +team-log +verdict \(pass\|findings\), head; optional agent_review, sent_back \(list\)  \(sent_back: the numbers of the notes .*\)$' <<<"$output"
   grep -Eq '^  gate-run +team-log +run, head, outcome \(pushed\|red\|aborted\|stopped-green\); optional cause \(review\|notes\|gate-finding\|load\|tooling\|base-merge\|other\), minutes \(object\)  \(.*\)$' <<<"$output"
   grep -Eq '^  closed +team-close +archive \(list\), returned \(list\), kept \(list\)  \(.*legacy.*\)$' <<<"$output"
-  grep -Eq '^  merge-approved +team-log +url, discord_message; optional head  \(.*team-log requires head of every new line.*\)$' <<<"$output"
+  grep -Eq '^  merge-approved +team-log +url, discord_message \(id\); optional head  \(.*team-log requires head of every new line.*\)$' <<<"$output"
   grep -Eq '^  launch +team-worker +role, session, worktree, toolkits \(list\); optional project, branch, machine, model, request  \(request is the link to Daniel.s Discord message, on an ops launch; model is the --model the session launched on, .*\)$' <<<"$output"
-  grep -Eq '^  answered +team-log, team-answer +id, answer; optional discord_message  \(Daniel.s answer to the asked of its id; .*never logged twice for one ask\)$' <<<"$output"
+  grep -Eq '^  answered +team-log, team-answer +id, answer; optional discord_message \(id\)  \(Daniel.s answer to the asked of its id; .*never logged twice for one ask\)$' <<<"$output"
   grep -Eq '^  waiting +team-log, team-ask +on, reason; optional since  \(.*\)$' <<<"$output"
   grep -Eq '^  resumed +team-log, team-answer +- +\(clears held, blocked, paused and waiting\)$' <<<"$output"
   grep -Eq '^  blocked +team-log +reason; optional since  \(.*since: when the park began, when it is logged after the fact\)$' <<<"$output"
-  grep -Eq '^  retro-schedule +team-log +every_hours \(number\), discord_message  \(.*every_hours 0 stops.*\)$' <<<"$output"
+  grep -Eq '^  retro-schedule +team-log +every_hours \(number\), discord_message \(id\)  \(.*every_hours 0 stops.*\)$' <<<"$output"
   grep -Eq '^  injection +team-log +role, source, text  \(.*never the personal details.*\)$' <<<"$output"
   grep -Eq '^  stowed +team-handoff +machine, worktrees \(list\), roles \(list\); optional sessions \(list\)  \(one per open task at a handoff: .*unfinished_roles.*\)$' <<<"$output"
   grep -Eq '^  rehome-failed +team-resume +project, branch, machine, reason  \(.*stands until a later opened, worktree-added, worktree-moved, rehomed or worktree-returned.*\)$' <<<"$output"
@@ -181,12 +182,47 @@ LINES
   )"
 }
 
+@test "a Discord id is stored as a string, declared or not, and so is any whole number of 16 digits or more" {
+  run_bin -0 team-log T14 asked id=q1 text=Which? discord_message=1564584780744491089
+  run_bin -0 team-log T14 resumed discord_channel=1562486564871995482 ref=1565336870932582522 count=42 big=999999999999999
+  assert_equal "$(ledger_without_ts)" "$(
+    cat <<'LINES'
+{"task":"T14","event":"asked","id":"q1","text":"Which?","discord_message":"1564584780744491089"}
+{"task":"T14","event":"resumed","discord_channel":"1562486564871995482","ref":"1565336870932582522","count":42,"big":999999999999999}
+LINES
+  )"
+  # A declared id is a string of digits: anything else is refused.
+  run_bin -1 team-log T14 answered id=q1 answer=Five discord_message=m1563
+  assert_contains "$output" "discord_message must be a Discord id, a string of digits, got a string that is not one"
+  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "2"
+}
+
+@test "--check accepts a Discord id written as a whole number, as dev's team-log wrote two, and nothing else in its place" {
+  cat >"$TEAM_HOME/ledger.jsonl" <<LEDGER
+{"ts":"$STRICT_FROM","task":"T14","event":"asked","id":"q1","text":"Which?","discord_message":1564584780744491089}
+{"ts":"$STRICT_FROM","task":"T14","event":"answered","id":"q1","answer":"Five","discord_message":1565336870932582522}
+{"ts":"$STRICT_FROM","task":"T14","event":"answered","id":"q1","answer":"Five","discord_message":"1565336870932582523"}
+{"ts":"$STRICT_FROM","task":"T14","event":"thread","discord_thread":1563}
+{"ts":"$STRICT_FROM","task":"T14","event":"answered","id":"q1","answer":"Five","discord_message":1.5}
+{"ts":"$STRICT_FROM","task":"T14","event":"answered","id":"q1","answer":"Five","discord_message":-1563}
+{"ts":"$STRICT_FROM","task":"T14","event":"answered","id":"q1","answer":"Five","discord_message":"m1563"}
+LEDGER
+  run_bin -1 team-log --check
+  assert_equal "$output" "$TEAM_HOME/ledger.jsonl:5: discord_message must be a Discord id, a string of digits, got a number that is not one
+$TEAM_HOME/ledger.jsonl:6: discord_message must be a Discord id, a string of digits, got a number that is not one
+$TEAM_HOME/ledger.jsonl:7: discord_message must be a Discord id, a string of digits, got a string that is not one
+$TEAM_HOME/ledger.jsonl: 3 of 7 lines break the ledger contract"
+  # The number's digits are the id: an answer read from that message again is a repeat.
+  run_bin -1 team-log T14 answered id=q1 answer=Five discord_message=1565336870932582522
+  assert_contains "$output" "already logged answered id=q1 from Discord message 1565336870932582522"
+}
+
 @test "every kind team-log writes is appended with its required fields and a note" {
   local kind args count=0
   while IFS= read -r kind; do
     # A head is a sha, since merge-approved's must be one a pr event logged, which team-log adds.
-    mapfile -t args < <(jq -r --arg k "$kind" '(.kinds[$k].required | to_entries[]
-      | "\(.key)=\(if .key == "head" then "a1b2c3d4" else .value | if type == "array" then .[0] elif . == "array" then "[]" elif . == "number" then "7" else "x y" end end)"),
+    mapfile -t args < <(jq -r --arg k "$kind" --arg soon "$(soon)" '(.kinds[$k].required | to_entries[]
+      | "\(.key)=\(if .key == "head" then "a1b2c3d4" else .value | if type == "array" then .[0] elif . == "array" then "[]" elif . == "number" then "7" elif . == "id" then $soon else "x y" end end)"),
       (select($k == "merge-approved") | "head=a1b2c3d4")' "$CONTRACT")
     run_bin -0 team-log T14 "$kind" "${args[@]}" "note=why $kind"
     count=$((count + 1))

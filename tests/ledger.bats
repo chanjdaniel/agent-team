@@ -33,8 +33,11 @@ SCRIPT
   append_as team-thread '{"ts":"2026-10-22T02:00:00Z","task":"T7","event":"thread"}'
   assert_equal "$status" "1"
   assert_contains "$output" "team-thread: refusing a ledger event: thread needs discord_thread"
+  # A Discord id is a string of digits when appended; --check alone takes the number dev wrote.
   append_as team-thread '{"ts":"2026-10-22T02:00:00Z","task":"T7","event":"thread","discord_thread":1563}'
-  assert_contains "$output" "discord_thread must be a string, got a number"
+  assert_contains "$output" "discord_thread must be a Discord id, a string of digits, got a number"
+  append_as team-thread '{"ts":"2026-10-22T02:00:00Z","task":"T7","event":"thread","discord_thread":"t1563"}'
+  assert_contains "$output" "discord_thread must be a Discord id, a string of digits, got a string that is not one"
   append_as team-thread '{"task":"T7","event":"thread","discord_thread":"1563"}'
   assert_contains "$output" "missing ts"
   append_as team-thread '{"ts":"2026-10-22T02:00:00Z","task":"T7","event":"thred","discord_thread":"1563"}'

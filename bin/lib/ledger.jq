@@ -18,10 +18,17 @@ def line_problems:
   end;
 
 # How the value breaks field <name>'s contract type (a type name, or a list of allowed strings).
+# An id is a Discord id, a string of digits; with $legacy (--check), a whole number too, as
+# team-log wrote one before the contract typed every Discord id (its digits are the id, since jq
+# keeps a number's literal through tostring).
 # (A parameter named $type would shadow the builtin type inside the def.)
-def type_problems($name; $want):
+def type_problems($name; $want; $legacy):
   if ($want | type) == "array" then
     select(IN($want[]) | not) | "\($name) must be one of \($want | join(", "))"
+  elif $want == "id" then
+    if type == "string" then select(test("^[0-9]+$") | not) | "\($name) must be a Discord id, a string of digits, got a string that is not one"
+    elif type == "number" and $legacy then select(. < 0 or . != floor) | "\($name) must be a Discord id, a string of digits, got a number that is not one"
+    else "\($name) must be a Discord id, a string of digits, got \(type | noun)" end
   elif type != $want then
     "\($name) must be \($want | noun), got \(type | noun)"
   else empty end;
@@ -30,8 +37,8 @@ def type_problems($name; $want):
 def field_types($kind): $kind.required + ($kind.optional // {}) + {note: "string"};
 
 # What a line of a known kind must meet: its required fields present and not empty, and every
-# field the contract types holding that type.
-def kind_problems($contract):
+# field the contract types holding that type ($legacy: as --check reads an existing line).
+def kind_problems($contract; $legacy):
   . as $line
   | .event as $event
   | $contract.kinds[$event] as $kind
@@ -39,14 +46,14 @@ def kind_problems($contract):
     else
       ($kind.required | keys_unsorted[] | select($line[.] == null or $line[.] == "") | "\($event) needs \(.)"),
       (field_types($kind) | to_entries[] | .key as $name | .value as $type
-        | $line[$name] | select(. != null and . != "") | type_problems($name; $type))
+        | $line[$name] | select(. != null and . != "") | type_problems($name; $type; $legacy))
     end;
 
 # What a line in an existing ledger must meet: legacy lines (before strict_from) only the basics.
 def check_problems($contract):
   [line_problems] as $basic
   | if $basic != [] then $basic[]
-    elif .ts >= $contract.strict_from then kind_problems($contract)
+    elif .ts >= $contract.strict_from then kind_problems($contract; true)
     else empty end;
 
 # The scripts that write a kind ($kind.writer, one name or a list), as a list.
@@ -61,7 +68,7 @@ def append_problems($contract; $writer):
     // ([writers($contract.kinds[$event]) | select(. != [] and (index($writer) | not))
         | "\($event) events are written by \(join(" or ")), not \($writer)"]
       | select(. != []))
-    // [kind_problems($contract)]
+    // [kind_problems($contract; false)]
   | .[];
 
 # The report of checking a ledger read as raw lines (jq -nR): {total, bad: [{line, problems}]}.
@@ -78,6 +85,7 @@ def pad($width): . + ([range($width - length)] | map(" ") | add // "");
 def field_text($want):
   if ($want | type) == "array" then "\(.) (\($want | join("|")))"
   elif $want == "string" then .
+  elif $want == "id" then "\(.) (id)"
   else "\(.) (\($want | noun | sub("^an? "; "")))" end;
 
 # The contract as a table, one row per kind: event, writer, fields, and what the kind is about.
