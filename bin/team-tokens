@@ -65,6 +65,28 @@
 #                    replies, tokens and $w in the seven days to --until, per machine and in all;
 #                    the weekly limit's reset time is in no data (claude.ai shows it to Daniel),
 #                    so this is a rolling seven days
+#   coordinator turns
+#                    from this machine's transcripts of the sessions claude-coordinator named
+#                    coordinator, each turn: from what woke the coordinator (a message from Daniel,
+#                    a worker's message by the kind after its task, a background watch ending, the
+#                    Stop hook's feedback, the first turn after a compaction, other) to its last
+#                    reply before the next; a meta entry (a skill's body, a hook's note) starts one
+#                    only while none runs. Per waking, the turns starting in the window, their calls
+#                    (replies), calls per turn, $w, share and median turn; Daniel's turns by whether
+#                    they acted (SendMessage, or a script of bin/ other than team-checks,
+#                    team-doctor, team-heavy, team-load-check, team-project, team-retro,
+#                    team-snapshot, team-state, team-sweep, team-time and team-tokens run as a
+#                    command), only answered (a Discord reply) or did neither; and how many of the
+#                    coordinator's main-conversation replies in the window are in sessions the
+#                    tables do not read
+#   Daniel's waits   from each Discord message sent in the window (its id's time) to the
+#                    coordinator's first reply to its chat_id (the plugin's reply tool), after
+#                    --until too: the messages, those replied to, the median, 75th and 90th
+#                    percentile (nearest rank) and longest wait, by whether it arrived (first
+#                    queued, delivered or read) while a turn ran or idle; and the compactions per
+#                    UTC day
+# Those two print only kinds, counts and times, never a message's text; --task leaves them out,
+# and so does a --machine naming another machine.
 # The 5-hour blocks and the last seven days count every reply up to --until, whatever --since and
 # --task say (the limits count them all), and keep --machine.
 # --json prints the same as one object, schema team-tokens/1: schema, since, until, prices_read,
@@ -73,7 +95,9 @@
 # the window), token_types, models, machines, roles, projects, tasks, days, sessions, context,
 # rebuilds {roles, gap_minutes}, outcomes {sessions, counts, complete_tasks, measures,
 # reviewer_models}, relaunches {reasons, all, warmup_w}, rereviews {count, complete, w, median_w,
-# mean_w}, blocks, current_block (or null) and seven_days {from, to, machines, all}; each list's
+# mean_w}, blocks, current_block (or null), seven_days {from, to, machines, all} and coordinator
+# (or null) {machine, sessions, unread_replies, turns, all, daniel_turns, waits {all, idle,
+# mid_turn}, compactions}, its times in seconds; each list's
 # items are objects named after the table's columns, tokens are counts and $w has six decimals, a
 # whole number printed as an integer.
 #
@@ -117,6 +141,7 @@
 import collections
 import glob
 import json
+import math
 import os
 import re
 import statistics
@@ -426,12 +451,12 @@ def total(rows, key="w"):
     return sum(r[key] for r in rows)
 
 
-# The q-th percentile by nearest rank, as T51's tally took it.
+# The q-th percentile by nearest rank: the ceil(q * n)-th smallest.
 def pct(xs, q):
     xs = sorted(xs)
     if not xs:
         return 0
-    return xs[min(len(xs) - 1, max(0, int(round(q * len(xs) + 0.5)) - 1))]
+    return xs[min(len(xs) - 1, max(0, math.ceil(round(q * len(xs), 9)) - 1))]
 
 
 def median(xs):
@@ -654,6 +679,236 @@ def rereviews(ledger):
         elif e.get("event") == "launch" and e.get("role") in ("builder", "reviewer") and verdict.get(task) == "findings":
             fixing.setdefault(task, []).append(e)
     return rounds
+
+
+# The coordinator's turns and Daniel's waits, read from the markers Claude Code writes in its
+# transcripts; only kinds, ids and times leave them, never a message's text.
+
+# The kinds a worker's message names after its task, as the roles send them; any other is "other".
+KINDS = ("QUESTION", "NEED", "BLOCKED", "PAUSED", "PR", "DONE", "FAILED", "INJECTION")
+# The team's scripts that only read: running any other of bin/ is acting on the team.
+READERS = {
+    "team-checks", "team-doctor", "team-heavy", "team-load-check", "team-project", "team-retro",
+    "team-snapshot", "team-state", "team-sweep", "team-time", "team-tokens",
+}
+DISCORD = re.compile(r'\s*<channel source="plugin:discord[^"]*"([^>]*)>')
+WORKER = re.compile(r"<cross-session-message[^>]*>\s*T\d+\s+([A-Z]+)\b")
+ATTRIBUTE = re.compile(r'([\w-]+)="([^"]*)"')
+# Discord's epoch, in milliseconds: a snowflake id's top bits count from it.
+DISCORD_EPOCH = 1420070400000
+
+
+# The text of a message's content: a string, or its text blocks joined.
+def text_of(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str))
+    return ""
+
+
+# The Discord message <text> opens with, as (message id, chat id, sent), or None.
+def discord_message(text):
+    found = DISCORD.match(text)
+    if not found:
+        return None
+    attrs = dict(ATTRIBUTE.findall(found.group(1)))
+    mid, chat = attrs.get("message_id", ""), attrs.get("chat_id")
+    if not mid.isdigit() or not chat:
+        return None
+    return mid, chat, datetime.fromtimestamp(((int(mid) >> 22) + DISCORD_EPOCH) / 1000, timezone.utc)
+
+
+# What woke the coordinator, from the user entry's <text>, or None for no marker.
+def trigger(text):
+    if DISCORD.match(text):
+        return "daniel"
+    if "<cross-session-message" in text:
+        found = WORKER.search(text)
+        return "worker:" + (found.group(1) if found and found.group(1) in KINDS else "other")
+    start = text.lstrip()
+    if start.startswith("<task-notification>"):
+        return "watch"
+    if start.startswith("Stop hook feedback"):
+        return "stop-hook"
+    if start.startswith("This session is being continued"):
+        return "compaction"
+    return None
+
+
+# Whether the Bash <command> runs one of <scripts> that acts: the first word of each of its
+# commands (a pipeline's, a list's, a substitution's), assignments skipped, by its base name.
+def acts(command, scripts):
+    for part in re.split(r"[;&|\n(){}]+|\$\(|`", command):
+        for word in part.split():
+            word = word.strip("\"'")
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", word):
+                continue
+            name = word.rsplit("/", 1)[-1]
+            if name in scripts and name not in READERS:
+                return True
+            break
+    return False
+
+
+# One coordinator transcript's turns, Daniel's messages, the replies and the compactions, its
+# calls weighed by <weights> (request id: $w), each request in the first turn that <claimed> it
+# not: coordinator_transcript <path> <weights> <scripts> <claimed>. None when no claude-coordinator
+# named the session coordinator.
+def coordinator_transcript(path, weights, scripts, claimed):
+    named, turns, messages, replies, compactions = False, [], {}, [], []
+    turn, running = None, False
+
+    def see(text, moment):
+        found = discord_message(text)
+        if found and found[0] not in messages:
+            messages[found[0]] = {"chat": found[1], "sent": found[2], "mid_turn": running}
+
+    with open(path, encoding="utf-8", errors="replace") as file:
+        for line in file:
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(entry, dict) or entry.get("isSidechain"):
+                continue
+            kind = entry.get("type")
+            if kind == "agent-name":
+                named = named or entry.get("agentName") == "coordinator"
+                continue
+            try:
+                moment = when(entry["timestamp"])
+            except (KeyError, TypeError, ValueError, AttributeError):
+                continue
+            if kind == "system":
+                if entry.get("subtype") == "compact_boundary":
+                    compactions.append(moment)
+                elif entry.get("subtype") == "turn_duration":
+                    running = False
+            elif kind == "queue-operation":
+                if entry.get("operation") == "enqueue" and isinstance(entry.get("content"), str):
+                    see(entry["content"], moment)
+            elif kind == "attachment":
+                attachment = entry.get("attachment")
+                if isinstance(attachment, dict) and attachment.get("type") == "queued_command":
+                    see(text_of(attachment.get("prompt")), moment)
+            elif kind == "user":
+                content = (entry.get("message") or {}).get("content")
+                if isinstance(content, list) and content and isinstance(content[0], dict) and content[0].get("type") == "tool_result":
+                    continue
+                text = text_of(content)
+                if not text.strip():
+                    continue
+                woke = trigger(text)
+                if woke is None:
+                    # A meta entry inside a turn (a skill's body, a hook's note) starts none.
+                    if entry.get("isMeta") and running:
+                        continue
+                    woke = "other"
+                see(text, moment)
+                turn = {"trigger": woke, "start": moment, "end": moment, "calls": 0, "w": 0.0, "replied": False, "acted": False}
+                turns.append(turn)
+                running = True
+            elif kind == "assistant" and turn is not None:
+                message = entry.get("message") or {}
+                request = entry.get("requestId")
+                turn["end"] = moment
+                if request in weights and request not in claimed:
+                    claimed.add(request)
+                    turn["calls"] += 1
+                    turn["w"] += weights[request]
+                for block in message.get("content") or []:
+                    if not isinstance(block, dict) or block.get("type") != "tool_use":
+                        continue
+                    name, args = block.get("name", ""), block.get("input") if isinstance(block.get("input"), dict) else {}
+                    if name.startswith("mcp__plugin_discord") and name.endswith("__reply"):
+                        turn["replied"] = True
+                        replies.append((moment, args.get("chat_id")))
+                    elif name == "SendMessage" or (name == "Bash" and acts(str(args.get("command", "")), scripts)):
+                        turn["acted"] = True
+    if not named:
+        return None
+    return turns, messages, replies, compactions
+
+
+# The two coordinator tables over [<since>, <until>], from this machine's transcripts of the
+# sessions classed coordinator and named so: coordinator_tables <home> <machine> <classes>
+# <every reply> <since> <until> <bin directory>
+def coordinator_tables(home, machine, classes, every, since, until, here):
+    projects = os.path.join(home, ".claude", "projects")
+    weights = {r["request"]: r["w"] for r in every if r["model"] != "<synthetic>"}
+    scripts = {name for name in os.listdir(here) if name.startswith(("team-", "claude-"))}
+    turns, messages, replies, compactions, read, claimed = [], {}, [], [], set(), set()
+    for path in sorted(glob.glob(os.path.join(glob.escape(projects), "*", "*.jsonl"))):
+        session = os.path.basename(path)[: -len(".jsonl")]
+        if classes.get(session, ("",))[0] != "coordinator":
+            continue
+        try:
+            if os.stat(path).st_mtime < since.timestamp():
+                continue
+        except FileNotFoundError:
+            continue
+        found = coordinator_transcript(path, weights, scripts, claimed)
+        if found is None:
+            continue
+        read.add(session)
+        turns += [dict(t, session=session) for t in found[0]]
+        for mid, message in found[1].items():
+            messages.setdefault(mid, message)
+        replies += found[2]
+        compactions += found[3]
+    turns = [t for t in turns if since <= t["start"] <= until]
+
+    def seconds(t):
+        return (t["end"] - t["start"]).total_seconds()
+
+    def line(ts):
+        calls = sum(t["calls"] for t in ts)
+        return {"turns": len(ts), "calls": calls, "calls_per_turn": r6(round(calls / len(ts), 1)), "w": r6(sum(t["w"] for t in ts)),
+                "median_s": median([seconds(t) for t in ts])}
+
+    by = collections.defaultdict(list)
+    for t in turns:
+        by[t["trigger"]].append(t)
+    rows = sorted(({"trigger": k, **line(ts)} for k, ts in by.items()), key=lambda x: (-x["w"], x["trigger"]))
+    mine = by.get("daniel", [])
+
+    replies.sort(key=lambda x: x[0])
+    waits = []
+    for message in messages.values():
+        if since <= message["sent"] <= until:
+            first = next((at for at, chat in replies if at > message["sent"] and chat == message["chat"]), None)
+            waits.append((message["mid_turn"], None if first is None else (first - message["sent"]).total_seconds()))
+
+    def spread(ws):
+        xs = [x for _, x in ws if x is not None]
+        return {"messages": len(ws), "replied": len(xs), "median_s": median(xs), "p75_s": r6(pct(xs, 0.75)) if xs else None,
+                "p90_s": r6(pct(xs, 0.9)) if xs else None, "max_s": r6(max(xs)) if xs else None}
+
+    # The coordinator's main-conversation replies in the window in a session not read.
+    unread = sum(1 for r in every if since <= r["t"] <= until and not r["sub"] and r["role"] == "coordinator" and r["session"] not in read)
+    return {
+        "machine": machine,
+        "sessions": len({t["session"] for t in turns}),
+        "unread_replies": unread,
+        "turns": rows,
+        "all": line(turns) if turns else {"turns": 0, "calls": 0, "calls_per_turn": None, "w": 0, "median_s": None},
+        "daniel_turns": {
+            "turns": len(mine),
+            "acted": sum(1 for t in mine if t["acted"]),
+            "answered": sum(1 for t in mine if t["replied"] and not t["acted"]),
+            "neither": sum(1 for t in mine if not t["replied"] and not t["acted"]),
+        },
+        "waits": {
+            "all": spread(waits),
+            "idle": spread([w for w in waits if not w[0]]),
+            "mid_turn": spread([w for w in waits if w[0]]),
+        },
+        "compactions": [
+            {"day": day, "count": n}
+            for day, n in sorted(collections.Counter(stamp(c)[:10] for c in compactions if since <= c <= until).items())
+        ],
+    }
 
 
 def parse_report_args(args):
@@ -993,6 +1248,9 @@ def build_report(opts):
         "machines": [{"machine": m, **sums(rs)} for m, rs in sorted(group(week, lambda r: r["machine"]).items())],
         "all": sums(week),
     }
+    # The coordinator is no task's, and its transcripts are this machine's.
+    mine = not task and opts["machine"] in (None, machine)
+    report["coordinator"] = coordinator_tables(home, machine, classes, every, since, until, here) if mine else None
     return report
 
 
@@ -1009,6 +1267,23 @@ def fd(x):
 
 def fk(x):
     return "-" if x is None else f"{x / 1e3:,.0f}k"
+
+
+def fs(x):
+    """Seconds: one decimal under one, else whole."""
+    return "-" if x is None else f"{x:.1f} s" if x < 1 else f"{x:,.0f} s"
+
+
+def trigger_label(name):
+    labels = {
+        "daniel": "A message from Daniel",
+        "worker:other": "A worker's message of another kind",
+        "watch": "A background watch ending",
+        "stop-hook": "The Stop hook's feedback",
+        "compaction": "The first turn after a compaction",
+        "other": "Other",
+    }
+    return labels.get(name) or f"A worker's {name.split(':', 1)[1]}"
 
 
 def share(part, whole):
@@ -1147,6 +1422,37 @@ def render(report):
     if rows:
         rows.append(["**all**", s["all"]["replies"], fm(s["all"]["tokens"]), f"**{fd(s['all']['w'])}**", "100%"])
     P(table(["Machine", "Replies", "Tokens (M)", "$w", "Share"], rows))
+
+    c = report["coordinator"]
+    P("\n## Coordinator turns\n")
+    if c is None:
+        P("Not with --task: the coordinator is no task's." if report["filters"]["task"] else
+          f"Not with --machine {report['filters']['machine']}: these tables read this machine's transcripts.")
+        return "\n".join(out)
+    P(f"From this machine's transcripts of the sessions claude-coordinator named coordinator, {c['sessions']} with turns in the window: "
+      "each turn runs from what woke the coordinator to its last reply before the next, and its calls are its replies.\n")
+    a = c["all"]
+    rows = [[trigger_label(x["trigger"]), x["turns"], x["calls"], f"{x['calls_per_turn']:.1f}", fd(x["w"]), share(x["w"], a["w"]),
+             fs(x["median_s"])] for x in c["turns"]]
+    if rows:
+        rows.append(["**all**", a["turns"], a["calls"], f"{a['calls_per_turn']:.1f}", f"**{fd(a['w'])}**", "100%", fs(a["median_s"])])
+    P(table(["What woke it", "Turns", "Calls", "Calls per turn", "$w", "Share", "Median turn"], rows))
+    d = c["daniel_turns"]
+    P(f"\nDaniel's {d['turns']} turns: {d['acted']} acted (a team script that writes, or SendMessage), {d['answered']} only answered, "
+      f"{d['neither']} did neither.")
+    if c["unread_replies"]:
+        P(f"{c['unread_replies']} of the coordinator's replies in the window are in sessions these tables do not read "
+          "(another machine's, one Claude Code cleaned up, or one not named coordinator).")
+
+    P("\n## Daniel's waits\n")
+    P("From each of Daniel's messages, at its Discord id's time, to the coordinator's first reply in the same channel, "
+      "by whether it arrived while the coordinator was idle or mid-turn:\n")
+    w = c["waits"]
+    P(table(["Arrived", "Messages", "Replied", "Median", "75th", "90th", "Max"],
+            [[label, x["messages"], x["replied"], fs(x["median_s"]), fs(x["p75_s"]), fs(x["p90_s"]), fs(x["max_s"])]
+             for label, x in (("Idle", w["idle"]), ("Mid-turn", w["mid_turn"]), ("**all**", w["all"]))] if w["all"]["messages"] else []))
+    P(f"\n{w['all']['messages'] - w['all']['replied']} of Daniel's {w['all']['messages']} messages had no reply in their channel.\n")
+    P(table(["Day (UTC)", "Compactions"], [[x["day"], x["count"]] for x in c["compactions"]]))
     return "\n".join(out)
 
 

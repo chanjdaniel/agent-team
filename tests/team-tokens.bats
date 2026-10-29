@@ -78,6 +78,8 @@ q() {
   assert_contains "$output" "team-tokens export [--through-now]"
   assert_contains "$output" "the weekly limit's reset time is in no data"
   assert_contains "$output" "schema team-tokens/1"
+  assert_contains "$output" "coordinator turns"
+  assert_contains "$output" "Daniel's waits"
 }
 
 @test "a malformed command line is exit 2" {
@@ -406,4 +408,110 @@ read 3 of 3 transcripts; wrote 1 day file"
   run_bin -0 team-tokens --until 2026-10-21T16:00Z --json
   assert_equal "$(jq -c '[.since, .totals, .blocks, .current_block]' <<<"$output")" \
     '["2026-10-21T16:00:00Z",{"replies":0,"sessions":0,"tokens":0,"w":0},[],null]'
+}
+
+# fixtures/team-tokens/coordinator/ holds a coordinator's transcript, a session claude-coordinator
+# named coordinator, in the team home's directory under ~/.claude/projects, every string of message
+# content, tool input and output marked CONTENT-; each reply's $w is its output alone, 0.1 for
+# 5,000 tokens. Before the window, a worker's PR at 2026-10-21T08:00Z; in it, on 2026-10-22:
+# - 10:00 Daniel's D1 in channel A, idle: team-snapshot, a reply to A 20 s after it was sent, text
+#   (3 calls, 0.3, 30 s); answered only;
+# - 10:10 a worker's DONE: team-log, then a reply to B over two lines of one request (2 calls,
+#   0.3, 40 s); Daniel's D2 in B arrives mid-turn (25 s to the reply), and a skill's meta entry
+#   inside the turn starts none;
+# - 10:20 Daniel's D3 in A, idle: SendMessage, a reply to A 60 s on (2 calls, 0.2, 60 s); acted;
+#   then the Stop hook's feedback starts a turn (1 call, 0.1, 10 s);
+# - 10:30 Daniel's D4 in C, idle: `grep -c team-log`, a reply to B (2 calls, 0.2, 20 s);
+#   answered only, and C never gets a reply;
+# - 10:40 a compaction, then the turn after it (1 call, 15,000 output, 0.3, 30 s);
+# - 10:50 a watch ends (1 call, 0.1, 5 s); Daniel's D5 in A arrives during it at 10:50:02 and
+#   starts its own turn at its end: team-open, a reply to A 58 s after it was sent (2 calls, 0.2,
+#   54 s); acted;
+# - 11:00 a reminder, a meta entry while idle (1 call, 0.1, 10 s): other;
+# - 11:10 Daniel's D6 in A, idle: text only (1 call, 0.1, 5 s); neither, and never replied to;
+# and on 2026-10-23, a compaction at 01:00 and its turn (1 call, 0.1, 10 s), then a worker's
+# message of no known kind (1 call, 0.1, 4 s).
+coordinator_fixture() {
+  cp -R "$BATS_TEST_DIRNAME/fixtures/team-tokens/coordinator/." "$HOME/.claude/projects/"
+  echo agent-team-records >"$HOME/.config/agent-team/home"
+}
+
+@test "the coordinator's turns: by what woke it, with calls, \$w, the median turn, and what Daniel's turns did" {
+  coordinator_fixture
+  report_json --since 2026-10-22T00:00Z --until 2026-10-23T12:00Z
+  assert_equal "$(q '.coordinator | [.machine, .sessions, .unread_replies]')" '["home-pc",1,0]'
+  assert_equal "$(q '.coordinator.turns[]' | paste -sd ' ')" \
+    '{"trigger":"daniel","turns":5,"calls":10,"calls_per_turn":2,"w":1,"median_s":30} {"trigger":"compaction","turns":2,"calls":2,"calls_per_turn":1,"w":0.4,"median_s":20} {"trigger":"worker:DONE","turns":1,"calls":2,"calls_per_turn":2,"w":0.3,"median_s":40} {"trigger":"other","turns":1,"calls":1,"calls_per_turn":1,"w":0.1,"median_s":10} {"trigger":"stop-hook","turns":1,"calls":1,"calls_per_turn":1,"w":0.1,"median_s":10} {"trigger":"watch","turns":1,"calls":1,"calls_per_turn":1,"w":0.1,"median_s":5} {"trigger":"worker:other","turns":1,"calls":1,"calls_per_turn":1,"w":0.1,"median_s":4}'
+  assert_equal "$(q '.coordinator.all')" '{"turns":12,"calls":18,"calls_per_turn":1.5,"w":2.1,"median_s":15}'
+  assert_equal "$(q '.coordinator.daniel_turns')" '{"turns":5,"acted":2,"answered":2,"neither":1}'
+  # The turn before the window is in the tables once --since takes it in.
+  report_json --since 2026-10-21T00:00Z --until 2026-10-23T12:00Z
+  assert_equal "$(q '[.coordinator.all.turns, (.coordinator.turns[] | select(.trigger == "worker:PR") | .w)]')" '[13,0.1]'
+}
+
+@test "Daniel's waits: from each message's id time to the first reply in its channel, idle or mid-turn, and the compactions per day" {
+  coordinator_fixture
+  report_json --since 2026-10-22T00:00Z --until 2026-10-23T12:00Z
+  assert_equal "$(q '.coordinator.waits')" \
+    '{"all":{"messages":6,"replied":4,"median_s":41.5,"p75_s":58,"p90_s":60,"max_s":60},"idle":{"messages":4,"replied":2,"median_s":40,"p75_s":60,"p90_s":60,"max_s":60},"mid_turn":{"messages":2,"replied":2,"median_s":41.5,"p75_s":58,"p90_s":58,"max_s":58}}'
+  assert_equal "$(q '.coordinator.compactions')" '[{"day":"2026-10-22","count":1},{"day":"2026-10-23","count":1}]'
+  # A message is in the window by its id's time: D1 to D4 only.
+  report_json --since 2026-10-22T00:00Z --until 2026-10-22T10:45Z
+  assert_equal "$(q '.coordinator.waits.all | [.messages, .replied]')" '[4,3]'
+}
+
+@test "the coordinator tables read only sessions named coordinator, and count the coordinator's replies they leave out" {
+  coordinator_fixture
+  cp -R "$BATS_TEST_DIRNAME/fixtures/team-tokens/report/usage" "$TEAM_HOME/usage"
+  cp "$BATS_TEST_DIRNAME/fixtures/team-tokens/report/ledger.jsonl" "$TEAM_HOME/ledger.jsonl"
+  # A session of Daniel's own in the team home's directory: the coordinator's by its directory, never named.
+  local own=$HOME/.claude/projects/-home-dan-agent-team-records/dddddddd-4444-4444-8444-444444444444.jsonl
+  jq -c 'select(.type != "agent-name" and .type != "custom-title") | .sessionId = "dddddddd-4444-4444-8444-444444444444"
+    | if .requestId then .requestId += "-own" else . end' \
+    "$HOME/.claude/projects/-home-dan-agent-team-records/cccccccc-3333-4333-8333-333333333333.jsonl" >"$own"
+  report_json --since 2026-10-20T00:00Z --until 2026-10-23T12:00Z
+  # c0's four main replies on home-pc and c1's on laptop come from day files, the own session's 19 from
+  # its transcript: none is in a session read.
+  assert_equal "$(q '.coordinator | [.sessions, .unread_replies, .all.turns]')" '[1,24,13]'
+  run_bin -0 team-tokens --since 2026-10-20T00:00Z --until 2026-10-23T12:00Z
+  assert_contains "$output" "24 of the coordinator's replies in the window are in sessions these tables do not read"
+}
+
+@test "the coordinator tables print as text, never a message's text, and --task leaves them out" {
+  coordinator_fixture
+  run_bin -0 team-tokens --since 2026-10-22T00:00Z --until 2026-10-23T12:00Z
+  assert_contains "$output" $'\n'"## Coordinator turns"$'\n'
+  assert_contains "$output" $'\n'"## Daniel's waits"$'\n'
+  assert_contains "$output" "| A message from Daniel | 5 | 10 | 2.0 | 1.0 | 47.6% | 30 s |"
+  assert_contains "$output" "| A worker's DONE | 1 | 2 | 2.0 | 0.30 | 14.3% | 40 s |"
+  assert_contains "$output" "| A worker's message of another kind | 1 | 1 | 1.0 | 0.10 | 4.8% | 4 s |"
+  assert_contains "$output" "| The first turn after a compaction | 2 | 2 | 1.0 | 0.40 | 19.0% | 20 s |"
+  assert_contains "$output" "| **all** | 12 | 18 | 1.5 | **2.1** | 100% | 15 s |"
+  assert_contains "$output" "Daniel's 5 turns: 2 acted (a team script that writes, or SendMessage), 2 only answered, 1 did neither."
+  assert_contains "$output" "| Mid-turn | 2 | 2 | 42 s | 58 s | 58 s | 58 s |"
+  assert_contains "$output" "| **all** | 6 | 4 | 42 s | 58 s | 60 s | 60 s |"
+  assert_contains "$output" "2 of Daniel's 6 messages had no reply in their channel."
+  assert_contains "$output" "| 2026-10-22 | 1 |"
+  local printed=$output
+  run_bin -0 team-tokens --since 2026-10-22T00:00Z --until 2026-10-23T12:00Z --json
+  printed+=$output
+  # No fixture string, channel id or user id.
+  run grep -c -e CONTENT -e 1300000000000000001 -e 1400000000000000001 <<<"$printed"
+  assert_equal "$output" 0
+  report_json --task T5
+  assert_equal "$(q .coordinator)" null
+  run_bin -0 team-tokens --task T5
+  assert_contains "$output" "## Coordinator turns"$'\n\n'"Not with --task: the coordinator is no task's."
+  run_bin -0 team-tokens --machine laptop
+  assert_contains "$output" "## Coordinator turns"$'\n\n'"Not with --machine laptop: these tables read this machine's transcripts."
+}
+
+@test "every script the coordinator table counts as only reading is in bin/, and the header names each" {
+  local names name
+  names=$(sed -n '/^READERS = {/,/^}/p' "$REPO_ROOT/bin/team-tokens" | grep -o 'team-[a-z-]*')
+  assert_equal "$(wc -l <<<"$names")" 11
+  for name in $names; do
+    [[ -x $REPO_ROOT/bin/$name ]]
+    assert_contains "$(sed -n '/^#   coordinator turns/,/^#   Daniel/p' "$REPO_ROOT/bin/team-tokens")" "$name"
+  done
 }
