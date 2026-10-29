@@ -11,16 +11,15 @@
 #           the effective cap's reason, then one line per held slot: its task, project and
 #           worktree (~ for the home directory), "(half open)" when it is. Without a machine name
 #           (~/.config/agent-team/machine) it says "this machine". It reads only the settings,
-#           the machine's name, the registry, the ledger and git (each primary checkout's
-#           worktree list): never Docker or the session list.
+#           the machine's name, the registry, the ledger, git (each primary checkout's worktree
+#           list) and the stored readings: never Docker or the session list.
 #           With --json, one object: {schema: "team-slots/1", machine (null without a name),
 #           settings (every key below, and from: each key's source, "slots.json" or "default"),
-#           reserved_project (null with none), effective: {cap, lowered_by (null), reason,
-#           readings ([])}, held: [{task, project, worktree, half_open}], counts: {held,
-#           reserved_held, others_held}, room: {reserved (null with no reserved project),
-#           others}, stale (true while there is no reading)}. No reading of the machine's load is
-#           taken yet, so the effective cap is the cap, its reason "no reading of the machine's
-#           load yet".
+#           reserved_project (null with none), effective: {cap, lowered_by (null, "memory" or
+#           "cpu"), reason, readings (the window's, oldest first)}, held: [{task, project,
+#           worktree, half_open}], counts: {held, reserved_held, others_held}, room: {reserved
+#           (null with no reserved project), others}, stale (true with no reading, or the newest
+#           more than 15 minutes old)}.
 # check     Whether the registered project <project>'s task may take a new slot, by the room
 #           below: exit 0 with room, saying nothing; else exit 75 with the refusal on stderr: why
 #           ("no task slot for conventioner on home-pc: 9 of 10 held, and the last one is kept for
@@ -61,6 +60,23 @@
 # itself, whose branch names a task (<type>/T<n>-<slug>) that has no closed event and no open
 # worktree of that project in the ledger. So a failed open counts until it is finished, and a
 # closed task's kept worktree does not; a task in two projects holds two.
+# The readings of the machine's load are the lines of
+# ~/.local/state/agent-team/slots/readings.jsonl, one JSON object each: {at (UTC,
+# YYYY-MM-DDTHH:MM:SSZ), memory: {total, others, ...} in bytes, cpu: {cpus, others, ...} in cores
+# busy, or null when the CPU was not read}; a test writes the file to simulate them. A broken
+# line is skipped, and said once on stderr.
+# The effective cap: a reading's fit is how many tasks the machine carries beside the other
+# programs, the lower of memory's floor((total - others - reserve_gib) / task_gib) and, when the
+# CPU was read, the CPU's floor((cpus - others - reserve_cores) / task_cores), never below 0. Its
+# confirmed fit is the higher of its fit and the previous reading's (the one before the window
+# for the window's first, and none for the first reading ever), so a lower number holds only once
+# two readings in a row show it. The effective cap is the lowest confirmed fit of the readings in
+# the last window_minutes, at most cap and never below the slots kept for the reserved project,
+# its reason saying what lowered it ("lowered by memory: other programs use 18.2 GiB of 30.6 GiB,
+# leaving room for 6 tasks of 1.25 GiB after 6 GiB kept (the readings of 13:05 and 13:10)", in
+# local time) or what the latest reading saw. With dynamic false, or no reading in the window, it
+# is cap. So one reading never lowers it, two in a row lower it at once, and it rises back once
+# that pair is older than the window.
 # The room, with E the effective cap, R the reserved count, H every slot held and O those held by
 # projects other than the reserved one: the reserved project's task may take a slot while H < E,
 # and any other project's while H < E and O < E - R. So the reserved project always has R slots,
@@ -76,6 +92,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 USAGE="usage: team-slots [status] [--json] | team-slots check <project> [--lock <fd> --label <text>]"
 SETTINGS=$HOME/.config/agent-team/slots.json
 LOCK=$HOME/.local/state/agent-team/slots.lock
+READINGS=$HOME/.local/state/agent-team/slots/readings.jsonl
 # The code checkout, or the primary checkout of the one it is a linked worktree of.
 CODE=$(dirname "$(dirname "$TEAM_LIB")")
 if common=$(git -C "$CODE" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) &&
@@ -166,12 +183,21 @@ worktrees=$(
   done <<<"$projects" | jq -Rn '[inputs | split("\t") | {project: .[0], branch: .[1], worktree: .[2]}]'
 )
 
+# The stored readings of the machine's load, a broken line skipped and said once.
+readings_file=$READINGS
+[[ -e $readings_file ]] || readings_file=/dev/null
+readings=$(jq -Rnc -L "$TEAM_LIB" 'include "slots"; [inputs] | slots_readings' "$readings_file")
+broken=$(jq .broken <<<"$readings")
+((broken == 0)) || echo "${0##*/}: skipped $broken broken line$( ((broken == 1)) || echo s) of ${READINGS/#"$HOME"/\~}" >&2
+
 ledger=$TEAM_HOME/ledger.jsonl
 [[ -e $ledger ]] || ledger=/dev/null
 status=$(jq -nR -L "$TEAM_LIB" --arg home "$HOME" --argjson given "$given" --arg machine "$machine" \
-  --arg project "$reserved_project" --argjson worktrees "$worktrees" 'include "ledger"; include "slots";
+  --arg project "$reserved_project" --argjson worktrees "$worktrees" --slurpfile readings <(jq .readings <<<"$readings") \
+  'include "ledger"; include "slots";
   slots_status({given: $given, machine: ($machine | select(. != "") // null),
-    reserved_project: ($project | select(. != "") // null), held: held_slots(ledger_events; $worktrees; $home)})' "$ledger")
+    reserved_project: ($project | select(. != "") // null), held: held_slots(ledger_events; $worktrees; $home),
+    readings: $readings[0]})' "$ledger")
 
 if [[ -n $check ]]; then
   room=$(jq -r --arg project "$check" -L "$TEAM_LIB" 'include "slots"; room_for($project)' <<<"$status")

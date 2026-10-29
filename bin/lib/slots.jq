@@ -52,17 +52,101 @@ def held_slots($events; $worktrees; $home):
       | {task: $task, project, worktree, half_open: true}]
   | sort_by((.task[1:] | tonumber), .project, .worktree);
 
-# The effective cap from the settings <s>: the cap, with no reading of the machine's load yet.
-def effective_cap($s):
-  {cap: $s.cap, lowered_by: null, reason: "no reading of the machine's load yet", readings: []};
+# Whether a reading has the parts the effective cap reads: its time, its memory's total and
+# others, and its CPU's count and others or null.
+def well_formed_reading:
+  try (type == "object" and (.at | type == "string" and (fromdateiso8601 | type == "number"))
+       and (.memory.total | type == "number") and (.memory.others | type == "number")
+       and (.cpu == null or ((.cpu.cpus | type == "number") and (.cpu.others | type == "number"))))
+  catch false;
+
+# The readings file's lines (an array of strings), as {readings: the well-formed ones, oldest
+# first, broken: how many lines are not}; a blank line is neither.
+def slots_readings:
+  map(select(test("\\S")) | try fromjson catch null | if well_formed_reading then . else null end)
+  | {readings: (map(select(. != null)) | sort_by(.at | fromdateiso8601)), broken: (map(select(. == null)) | length)};
+
+# <n> written with one decimal place, 18.0 for 18.
+def one_decimal:
+  (. * 10 | round) as $tenths | "\($tenths / 10 | floor).\($tenths % 10)";
+
+# "<n> <one>" or "<n> <many>", by <n>.
+def counted($n; $one; $many):
+  "\($n) \(if $n == 1 then $one else $many end)";
+
+# A reading's time, as HH:MM in the local time zone.
+def reading_time:
+  .at | fromdateiso8601 | strflocaltime("%H:%M");
+
+# How many tasks the machine carries beside the other programs at a reading, by the settings <s>:
+# {fit, by}, the lower of memory's and the CPU's (memory's alone when the CPU was not read), never
+# below 0, and by the resource that sets it, "memory" or "cpu".
+def reading_fit($s):
+  ((.memory.total - .memory.others - $s.reserve_gib * 1073741824) / ($s.task_gib * 1073741824) | floor) as $memory
+  | (if .cpu == null then null else (.cpu.cpus - .cpu.others - $s.reserve_cores) / $s.task_cores | floor end) as $cpu
+  | if $cpu != null and $cpu < $memory then {fit: ([$cpu, 0] | max), by: "cpu"}
+    else {fit: ([$memory, 0] | max), by: "memory"} end;
+
+# The memory the other programs use at a reading, and the CPU.
+def memory_use:
+  "\(.memory.others / 1073741824 | one_decimal) GiB of \(.memory.total / 1073741824 | one_decimal) GiB";
+def cpu_use:
+  "\(.cpu.others | one_decimal) of \(counted(.cpu.cpus; "core"; "cores"))";
+
+# What the other programs use at a reading.
+def others_text:
+  "other programs use \(memory_use)" + (if .cpu == null then "" else " and \(cpu_use)" end);
+
+# The effective cap from the settings <s>, the slots kept <kept> for the reserved project
+# <project>, and the readings <readings> (slots_readings), as {cap, lowered_by, reason, readings
+# (the window's)}. A reading's confirmed fit is the higher of its fit and the previous reading's
+# (the one before the window for the window's first), so a lower number holds only once two
+# readings in a row show it; the cap is the lowest confirmed fit in the window, at most the cap and
+# never below <kept>. With dynamic false, or no reading in the window, it is the cap.
+def effective_cap($s; $kept; $project; $readings):
+  (now - $s.window_minutes * 60) as $since
+  | [$readings[] | select(.at | fromdateiso8601 >= $since)] as $window
+  | if $s.dynamic == false then
+      {cap: $s.cap, lowered_by: null, reason: "dynamic sizing is off (dynamic in slots.json)", readings: $window}
+    elif $window == [] then
+      {cap: $s.cap, lowered_by: null,
+       reason: (if $readings == [] then "no reading of the machine's load yet"
+                else "no reading of the machine's load in the last \(counted($s.window_minutes; "minute"; "minutes"))" end),
+       readings: []}
+    else
+      ([$readings[] | select(.at | fromdateiso8601 < $since)] | last) as $before
+      | [range($window | length) as $i
+         | (if $i == 0 then $before else $window[$i - 1] end) as $previous
+         | select($previous != null)
+         | ($previous | reading_fit($s) + {reading: .}) as $earlier
+         | ($window[$i] | reading_fit($s) + {reading: .}) as $later
+         | (if $earlier.fit > $later.fit then $earlier else $later end) + {times: [$previous, $window[$i]] | map(reading_time)}]
+      | (map(.fit) | min) as $low
+      | if $low == null or $low >= $s.cap then
+          {cap: $s.cap, lowered_by: null, reason: ($window[-1] | "\(others_text) (the reading of \(reading_time))"), readings: $window}
+        else
+          (map(select(.fit == $low)) | last) as $pair
+          | $pair.reading as $r
+          | {cap: ([$low, $kept] | max), lowered_by: $pair.by,
+             reason: ((if $pair.by == "memory" then
+                         "lowered by memory: other programs use \($r | memory_use), leaving room for \(counted($low; "task"; "tasks")) of \($s.task_gib) GiB after \($s.reserve_gib) GiB kept"
+                       else
+                         "lowered by CPU: other programs use \($r | cpu_use), leaving room for \(counted($low; "task"; "tasks")) of \(counted($s.task_cores; "core"; "cores")) after \(counted($s.reserve_cores; "core"; "cores")) kept"
+                       end)
+                      + " (the readings of \($pair.times[0]) and \($pair.times[1]))"
+                      + (if $low < $kept then ", and never below the \($kept) kept for \($project)" else "" end)),
+             readings: $window}
+        end
+    end;
 
 # The team-slots/1 object, from $in: {given (slots.json's values read with jq -s, [] with none),
-# machine (null without a name), reserved_project (null with none), held (held_slots)}.
+# machine (null without a name), reserved_project (null with none), held (held_slots), readings
+# (slots_readings's readings)}.
 def slots_status($in):
   ($in.given | slots_settings) as $s
-  | effective_cap($s) as $effective
   | $in.reserved_project as $project
   | (if $project == null then 0 else $s.reserved end) as $reserved
+  | effective_cap($s; $reserved; $project; $in.readings) as $effective
   | ($in.held | length) as $held
   | ([$in.held[] | select(.project == $project)] | length) as $reserved_held
   | ($held - $reserved_held) as $others_held
@@ -71,7 +155,7 @@ def slots_status($in):
      held: $in.held, counts: {held: $held, reserved_held: $reserved_held, others_held: $others_held},
      room: {reserved: (if $project == null then null else $free end),
             others: ([[$free, $effective.cap - $reserved - $others_held] | min, 0] | max)},
-     stale: ($effective.readings == [])};
+     stale: ($in.readings == [] or ($in.readings[-1].at | fromdateiso8601) < now - 15 * 60)};
 
 # <path> with ~ for the home directory <home>.
 def tilde($home):

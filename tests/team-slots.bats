@@ -14,6 +14,7 @@ setup() {
   mkdir -p "$HOME/.config/agent-team"
   echo home-pc >"$HOME/.config/agent-team/machine"
   registry agent-team proj other
+  NOW=$(date +%s)
 }
 
 teardown() {
@@ -88,6 +89,30 @@ held() {
   jq -c '.held[]' <<<"$output"
 }
 
+# reading <minutes> <others GiB> [<others cores>]: append a reading taken <minutes> before the test
+# began on a machine shaped like home-pc (30.6 GiB, 12 cores), other programs using <others GiB>
+# and <others cores> busy (no CPU read without it).
+reading() {
+  local file=$HOME/.local/state/agent-team/slots/readings.jsonl
+  mkdir -p "${file%/*}"
+  jq -cn --arg at "$(date -u -d "@$((NOW - $1 * 60))" +%FT%TZ)" --argjson others "$2" --arg cores "${3:-}" '
+    (30.6 * 1073741824 | floor) as $total | ($others * 1073741824 | floor) as $others
+    | {at: $at, os: "linux", docker: true,
+       memory: {total: $total, available: ($total - $others - 1073741824), team: 1073741824, others: $others},
+       cpu: (if $cores == "" then null else {cpus: 12, seconds: 300, team: 0.5, others: ($cores | tonumber)} end)}' >>"$file"
+}
+
+# The local time, as HH:MM, <minutes> before the test began.
+hm() {
+  date -d "@$((NOW - $1 * 60))" +%H:%M
+}
+
+# The effective cap of team-slots --json, as "<cap> <lowered_by>".
+effective() {
+  run_bin -0 team-slots --json
+  jq -r '"\(.effective.cap) \(.effective.lowered_by)"' <<<"$output"
+}
+
 @test "with no slots.json, every setting is its default and the cap says so" {
   run_bin -0 team-slots --json
   assert_equal "$(jq -c '.settings | del(.from)' <<<"$output")" \
@@ -106,7 +131,7 @@ held() {
   assert_equal "$(jq -c .settings.from <<<"$output")" \
     '{"cap":"slots.json","reserved":"slots.json","dynamic":"slots.json","task_gib":"slots.json","reserve_gib":"slots.json","task_cores":"slots.json","reserve_cores":"slots.json","window_minutes":"slots.json","wait_minutes":"slots.json"}'
   run_bin -0 team-slots
-  assert_equal "${lines[1]}" "the cap is 10 (cap in ~/.config/agent-team/slots.json), effective 10: no reading of the machine's load yet"
+  assert_equal "${lines[1]}" "the cap is 10 (cap in ~/.config/agent-team/slots.json), effective 10: dynamic sizing is off (dynamic in slots.json)"
 }
 
 @test "a slots.json that is not JSON, or not one object, is refused" {
@@ -403,4 +428,175 @@ team-slots: the machine's slot lock is still held after 0.02 minutes, by team-op
   run_bin -0 team-slots --help
   assert_contains "$output" "team-slots check <project> [--lock <fd> --label <text>]"
   assert_contains "$output" "agent-team/slots.lock, so the lock outlasts the check"
+}
+
+@test "--help documents the effective cap and the readings file" {
+  run_bin -0 team-slots --help
+  assert_contains "$output" "/.local/state/agent-team/slots/readings.jsonl, one JSON object each"
+  assert_contains "$output" "never below the slots kept for the reserved project"
+}
+
+@test "one reading of high load leaves the cap, two in a row lower it at once, and it rises once that pair has left the window" {
+  echo '{"cap": 10}' >"$SETTINGS"
+  local readings=$HOME/.local/state/agent-team/slots/readings.jsonl
+  reading 14 11 1
+  reading 9 18 1
+  reading 4 11 1
+  assert_equal "$(effective)" "10 null"
+  run_bin -0 team-slots
+  assert_equal "${lines[1]}" "the cap is 10 (cap in ~/.config/agent-team/slots.json), effective 10: other programs use 11.0 GiB of 30.6 GiB and 1.0 of 12 cores (the reading of $(hm 4))"
+
+  # The first reading ever has no previous one, so it alone moves nothing either.
+  rm "$readings"
+  reading 2 18 1
+  assert_equal "$(effective)" "10 null"
+
+  rm "$readings"
+  reading 14 11 1
+  reading 9 18 1
+  reading 4 18 1
+  assert_equal "$(effective)" "5 memory"
+  run_bin -0 team-slots
+  assert_equal "${lines[0]}" "home-pc: 0 of 10 task slots held, 1 kept for agent-team (agent-team holds 0); effective 5"
+  assert_equal "${lines[1]}" "the cap is 10 (cap in ~/.config/agent-team/slots.json), effective 5: lowered by memory: other programs use 18.0 GiB of 30.6 GiB, leaving room for 5 tasks of 1.25 GiB after 6 GiB kept (the readings of $(hm 9) and $(hm 4))"
+
+  # A lower pair whose second reading is in the window still holds the cap down, its first one
+  # before the window counting as the first's previous.
+  rm "$readings"
+  reading 16 18 1
+  reading 11 18 1
+  reading 6 11 1
+  reading 1 11 1
+  assert_equal "$(effective)" "5 memory"
+  run_bin -0 team-slots
+  assert_contains "${lines[1]}" "(the readings of $(hm 16) and $(hm 11))"
+
+  # Once the pair is older than the window, it is back up.
+  rm "$readings"
+  reading 21 18 1
+  reading 16 18 1
+  reading 11 11 1
+  reading 6 11 1
+  reading 1 11 1
+  assert_equal "$(effective)" "10 null"
+}
+
+@test "the fit is the lower of memory's and the CPU's, and a reading with no CPU read is memory's alone" {
+  echo '{"cap": 10}' >"$SETTINGS"
+  local readings=$HOME/.local/state/agent-team/slots/readings.jsonl
+  reading 6 11 9
+  reading 1 11 9
+  assert_equal "$(effective)" "2 cpu"
+  run_bin -0 team-slots
+  assert_equal "${lines[1]}" "the cap is 10 (cap in ~/.config/agent-team/slots.json), effective 2: lowered by CPU: other programs use 9.0 of 12 cores, leaving room for 2 tasks of 0.5 cores after 2 cores kept (the readings of $(hm 6) and $(hm 1))"
+
+  rm "$readings"
+  reading 6 20 1
+  reading 1 20 1
+  assert_equal "$(effective)" "3 memory"
+
+  rm "$readings"
+  reading 6 11
+  reading 1 11
+  assert_equal "$(effective)" "10 null"
+  run_bin -0 team-slots
+  assert_equal "${lines[1]}" "the cap is 10 (cap in ~/.config/agent-team/slots.json), effective 10: other programs use 11.0 GiB of 30.6 GiB (the reading of $(hm 1))"
+
+  rm "$readings"
+  reading 6 20
+  reading 1 20
+  assert_equal "$(effective)" "3 memory"
+
+  # The settings set each side's need and what is kept.
+  echo '{"cap": 10, "task_gib": 2, "reserve_gib": 4, "task_cores": 1, "reserve_cores": 0}' >"$SETTINGS"
+  rm "$readings"
+  reading 6 20 10
+  reading 1 20 10
+  assert_equal "$(effective)" "2 cpu"
+  run_bin -0 team-slots
+  assert_contains "${lines[1]}" "lowered by CPU: other programs use 10.0 of 12 cores, leaving room for 2 tasks of 1 core after 0 cores kept"
+  # A tie with memory's names memory.
+  rm "$readings"
+  reading 6 20 9
+  reading 1 20 9
+  assert_equal "$(effective)" "3 memory"
+}
+
+@test "on the default settings, home-pc's readings give its cap of 10, and 18 GiB used by others give 5" {
+  echo '{"cap": 10}' >"$SETTINGS"
+  reading 6 11 1
+  reading 1 11 1
+  assert_equal "$(effective)" "10 null"
+  reading 0 18 1
+  assert_equal "$(effective)" "10 null"
+  rm "$HOME/.local/state/agent-team/slots/readings.jsonl"
+  reading 6 18 1
+  reading 1 18 1
+  assert_equal "$(effective)" "5 memory"
+}
+
+@test "the effective cap never drops below reserved, so agent-team still opens on a loaded machine while others are refused" {
+  echo '{"cap": 10}' >"$SETTINGS"
+  reading 6 28 1
+  reading 1 28 1
+  assert_equal "$(effective)" "1 memory"
+  run_bin -0 team-slots
+  assert_equal "${lines[1]}" "the cap is 10 (cap in ~/.config/agent-team/slots.json), effective 1: lowered by memory: other programs use 28.0 GiB of 30.6 GiB, leaving room for 0 tasks of 1.25 GiB after 6 GiB kept (the readings of $(hm 6) and $(hm 1)), and never below the 1 kept for agent-team"
+  run_bin -75 --separate-stderr team-slots check proj
+  assert_equal "${stderr%%$'\n'*}" "team-slots: no task slot for proj on home-pc: 0 of 1 held, and the last one is kept for agent-team (reserved 1)"
+  run_bin -0 team-slots check agent-team
+
+  # With no reserved project, nothing holds it up.
+  registry proj other
+  assert_equal "$(effective)" "0 memory"
+  run_bin -75 --separate-stderr team-slots check other
+  assert_equal "$stderr" "team-slots: no task slot for other on home-pc: 0 of 0 held
+team-slots: the cap is 10 (cap in ~/.config/agent-team/slots.json), effective 0: lowered by memory: other programs use 28.0 GiB of 30.6 GiB, leaving room for 0 tasks of 1.25 GiB after 6 GiB kept (the readings of $(hm 6) and $(hm 1))
+team-slots: the slots: none held"
+}
+
+@test "dynamic false, or no reading in the window, gives the cap with its reason" {
+  echo '{"cap": 10, "dynamic": false}' >"$SETTINGS"
+  reading 6 18 1
+  reading 1 18 1
+  run_bin -0 team-slots --json
+  assert_equal "$(jq -c '[.effective.cap, .effective.lowered_by, .effective.reason, (.effective.readings | length), .stale]' <<<"$output")" \
+    '[10,null,"dynamic sizing is off (dynamic in slots.json)",2,false]'
+
+  echo '{"cap": 10}' >"$SETTINGS"
+  rm "$HOME/.local/state/agent-team/slots/readings.jsonl"
+  reading 25 18 1
+  reading 20 18 1
+  run_bin -0 team-slots --json
+  assert_equal "$(jq -c '[.effective.cap, .effective.lowered_by, .effective.reason, .effective.readings, .stale]' <<<"$output")" \
+    '[10,null,"no reading of the machine'"'"'s load in the last 15 minutes",[],true]'
+
+  # window_minutes sets how far back they count.
+  echo '{"cap": 10, "window_minutes": 30}' >"$SETTINGS"
+  assert_equal "$(effective)" "5 memory"
+}
+
+@test "the JSON's effective cap carries the window's readings, and stale says the newest is over 15 minutes old" {
+  echo '{"cap": 10}' >"$SETTINGS"
+  reading 20 18 1
+  reading 6 18 1
+  reading 1 18
+  run_bin -0 team-slots --json
+  assert_equal "$(jq -c '[.effective.cap, .effective.lowered_by, (.effective.readings | map(.memory.others / 1073741824 | floor)), (.effective.readings | map(.cpu.others)), .stale]' <<<"$output")" \
+    '[5,"memory",[18,18],[1,null],false]'
+  assert_equal "$(jq -r '.effective.readings[0].at' <<<"$output")" "$(date -u -d "@$((NOW - 360))" +%FT%TZ)"
+  assert_equal "$(jq -c .room <<<"$output")" '{"reserved":5,"others":4}'
+}
+
+@test "a broken line of the readings is skipped, saying so once on stderr" {
+  echo '{"cap": 10}' >"$SETTINGS"
+  local readings=$HOME/.local/state/agent-team/slots/readings.jsonl
+  reading 6 18 1
+  { echo '{"at": "2026-10-29T13:0'; echo '{"at": "yesterday", "memory": {}}'; echo; } >>"$readings"
+  reading 1 18 1
+  run_bin -0 --separate-stderr team-slots --json
+  assert_equal "$(jq -c '[.effective.cap, (.effective.readings | length)]' <<<"$output")" '[5,2]'
+  assert_equal "$stderr" "team-slots: skipped 2 broken lines of ~/.local/state/agent-team/slots/readings.jsonl"
+  run_bin -0 --separate-stderr team-slots check proj
+  assert_equal "$stderr" "team-slots: skipped 2 broken lines of ~/.local/state/agent-team/slots/readings.jsonl"
 }

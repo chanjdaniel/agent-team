@@ -476,6 +476,38 @@ team-open: the slots:"
   [[ ! -e $HOME/slots/agent-team/1 ]]
 }
 
+# reading <minutes> <others GiB>: append a reading taken <minutes> before $NOW on a machine of
+# 30.6 GiB and 12 cores, other programs using <others GiB> and 1 core.
+reading() {
+  local file=$HOME/.local/state/agent-team/slots/readings.jsonl
+  mkdir -p "${file%/*}"
+  jq -cn --arg at "$(date -u -d "@$((NOW - $1 * 60))" +%FT%TZ)" --argjson others "$2" '
+    (30.6 * 1073741824 | floor) as $total | ($others * 1073741824 | floor) as $others
+    | {at: $at, os: "linux", docker: true, memory: {total: $total, available: ($total - $others), team: 0, others: $others},
+       cpu: {cpus: 12, seconds: 300, team: 0, others: 1}}' >>"$file"
+}
+
+@test "an effective cap lowered by the readings refuses another project with its reason, and it opens once they leave the window" {
+  reserve_agent_team
+  echo '{"cap": 10}' >"$HOME/.config/agent-team/slots.json"
+  holding proj 1 4
+  NOW=$(date +%s)
+  reading 6 18
+  reading 1 18
+  local first second
+  first=$(date -d "@$((NOW - 360))" +%H:%M) second=$(date -d "@$((NOW - 60))" +%H:%M)
+  run_bin -75 --separate-stderr team-open proj feature feat late "Late"
+  assert_equal "$(head -n 2 <<<"$stderr")" "team-open: no task slot for proj on home-pc: 4 of 5 held, and the last one is kept for agent-team (reserved 1)
+team-open: the cap is 10 (cap in ~/.config/agent-team/slots.json), effective 5: lowered by memory: other programs use 18.0 GiB of 30.6 GiB, leaving room for 5 tasks of 1.25 GiB after 6 GiB kept (the readings of $first and $second)"
+  [[ ! -e $slots/1 && ! -e $TEAM_HOME/tasks/T5 ]]
+
+  rm "$HOME/.local/state/agent-team/slots/readings.jsonl"
+  reading 21 18
+  reading 16 18
+  run_bin -0 --separate-stderr team-open proj feature feat late "Late"
+  assert_equal "$(jq -r '"\(.task) \(.worktree)"' <<<"$output")" "T5 $slots/1"
+}
+
 @test "a full pool is refused with its own message while the cap has room" {
   mkdir -p "$HOME/.config/agent-team"
   echo '{"cap": 10}' >"$HOME/.config/agent-team/slots.json"
