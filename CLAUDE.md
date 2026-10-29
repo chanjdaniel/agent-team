@@ -22,6 +22,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
     - `prices.json`: each model's list prices per million tokens with the date read and the source, the weights `team-tokens` gives each reply.
     - `records`: the team home's paths, which no tracked path matches.
     - `records-rewrite/`: `team-records-rewrite`'s drop list, message expression, S02 callback and `verify.py`.
+    - `slots.jq`: `team-slots`'s settings of `slots.json`, the slots held and the room left for the reserved project and the others.
     - `stack.jq`: `team-stack`'s owner classes, Docker's sizes, the reaper's rules and the `stack.json` settings with their memory floor.
     - `time.jq`: `team-time`'s split of each task's time into phases, and its counts.
     - `tools.jq`: turns `tools.lock` into each tool's pin and install command for a machine.

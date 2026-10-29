@@ -601,7 +601,7 @@ stack_settings() {
   if [[ -e $file ]]; then
     jq -s . "$file" >"$WORK/settings-given.json" 2>"$WORK/settings.err" ||
       die "$file is not JSON: $(last_reason "$WORK/settings.err" "jq could not read it")"
-    problems=$(jq -r -L "$TEAM_LIB" 'include "stack"; settings_problems' "$WORK/settings-given.json")
+    problems=$(jq -r -L "$TEAM_LIB" 'include "stack"; settings_problems(settings_kinds)' "$WORK/settings-given.json")
     [[ -z $problems ]] || die "$file$problems"
   fi
   jq -L "$TEAM_LIB" 'include "stack"; settings' "$WORK/settings-given.json" >"$WORK/settings.json"

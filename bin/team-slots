@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# Say the machine's task slots: how many tasks may hold a worktree at once on this machine,
+# across every project, how many of them are kept for the reserved project, and which tasks hold
+# them.
+#
+# Usage: team-slots [status] [--json]
+#
+# status    The default. One summary line ("home-pc: 7 of 10 task slots held, 1 kept for
+#           agent-team (agent-team holds 1); effective 10"), then the cap, where it came from and
+#           the effective cap's reason, then one line per held slot: its task, project and
+#           worktree (~ for the home directory), "(half open)" when it is. Without a machine name
+#           (~/.config/agent-team/machine) it says "this machine". It reads only the settings,
+#           the machine's name, the registry, the ledger and git (each primary checkout's
+#           worktree list): never Docker or the session list.
+#           With --json, one object: {schema: "team-slots/1", machine (null without a name),
+#           settings (every key below, and from: each key's source, "slots.json" or "default"),
+#           reserved_project (null with none), effective: {cap, lowered_by (null), reason,
+#           readings ([])}, held: [{task, project, worktree, half_open}], counts: {held,
+#           reserved_held, others_held}, room: {reserved (null with no reserved project),
+#           others}, stale (true while there is no reading)}. No reading of the machine's load is
+#           taken yet, so the effective cap is the cap, its reason "no reading of the machine's
+#           load yet".
+#
+# The machine's settings, ~/.config/agent-team/slots.json, beside stack.json: one JSON object
+# whose keys are all optional:
+#   cap             a whole number of 1 or more, default 6: the most task slots held at once
+#   reserved        a whole number of 0 or more, less than cap, default 1: the slots kept for
+#                   the reserved project
+#   dynamic         true or false, default true: whether the readings may lower the cap
+#   task_gib        a number above 0, default 1.25: the memory one more task needs
+#   reserve_gib     a number of 0 or more, default 6: the memory kept free beyond the tasks
+#   task_cores      a number above 0, default 0.5: the CPU one more task needs, in cores
+#   reserve_cores   a number of 0 or more, default 2: the cores kept free beyond the tasks
+#   window_minutes  a whole number of 1 or more, default 15: how far back readings count
+#   wait_minutes    a number of 0 or more, default 15: how long team-open waits for another
+#                   run's slot lock
+# A file that is not one JSON object, a key of the wrong kind, an unknown key and a reserved not
+# less than cap are refused, naming each.
+#
+# The reserved project is the registered project whose primary checkout is this code checkout,
+# or the primary checkout of the one it is a linked worktree of (team-project --find path),
+# agent-team on Daniel's team; with none, reserved is ignored, and the summary says so.
+# A slot is held by each open worktree in the ledger (opened or added, not returned, of a task
+# not closed), across every project and wherever its path was recorded, and by each half-open
+# one: a registered worktree of a registered project's primary checkout, but the checkout
+# itself, whose branch names a task (<type>/T<n>-<slug>) that has no closed event and no open
+# worktree of that project in the ledger. So a failed open counts until it is finished, and a
+# closed task's kept worktree does not; a task in two projects holds two.
+# The room, with E the effective cap, R the reserved count, H every slot held and O those held by
+# projects other than the reserved one: the reserved project's task may take a slot while H < E,
+# and any other project's while H < E and O < E - R. So the reserved project always has R slots,
+# held or free, its held ones counting toward them; room.reserved is E - H, room.others the lower
+# of that and E - R - O, neither below 0.
+#
+# Exit 0 done, 1 refused (a malformed slots.json, with the reason, or a registry team-project
+# refuses), 2 usage error.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+USAGE="usage: team-slots [status] [--json]"
+SETTINGS=$HOME/.config/agent-team/slots.json
+# The code checkout, or the primary checkout of the one it is a linked worktree of.
+CODE=$(dirname "$(dirname "$TEAM_LIB")")
+if common=$(git -C "$CODE" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) &&
+  [[ $(basename "$common") == .git ]]; then
+  CODE=$(dirname "$common")
+fi
+
+json=''
+[[ ${1:-} != status ]] || shift
+for arg; do
+  case $arg in
+    --json) json=1 ;;
+    *) usage_error "$USAGE" ;;
+  esac
+done
+
+# slots.json's values (jq -s), [] with no file; a malformed one is refused with the reason.
+given='[]'
+if [[ -e $SETTINGS ]]; then
+  given=$(jq -s . "$SETTINGS" 2>&1) || die "$SETTINGS is not JSON: $(grep . <<<"$given" | tail -n 1)"
+  problems=$(jq -r -L "$TEAM_LIB" 'include "slots"; slots_problems' <<<"$given")
+  [[ -z $problems ]] || die "$SETTINGS$problems"
+fi
+
+machine=$(machine_name 2>/dev/null) || machine=''
+projects=$(team_project --list)
+reserved_project=''
+[[ -z $projects ]] || reserved_project=$(team_project --find path "$CODE" | head -n 1)
+
+# Every registered project's linked worktrees, but its primary checkout, each {project, branch,
+# worktree} (branch "" when detached), from its git worktree list; a primary checkout that is
+# not a git checkout has none.
+worktrees=$(
+  while IFS= read -r project; do
+    [[ -n $project ]] || continue
+    primary=$(team_project "$project" path)
+    git -C "$primary" worktree list --porcelain 2>/dev/null | awk -v project="$project" '
+      function out() { if (n++ > 0) printf "%s\t%s\t%s\n", project, branch, path }
+      /^worktree / { if (path != "") out(); path = substr($0, 10); branch = "" }
+      /^branch refs\/heads\// { branch = substr($0, 19) }
+      END { if (path != "") out() }' || true
+  done <<<"$projects" | jq -Rn '[inputs | split("\t") | {project: .[0], branch: .[1], worktree: .[2]}]'
+)
+
+ledger=$TEAM_HOME/ledger.jsonl
+[[ -e $ledger ]] || ledger=/dev/null
+status=$(jq -nR -L "$TEAM_LIB" --arg home "$HOME" --argjson given "$given" --arg machine "$machine" \
+  --arg project "$reserved_project" --argjson worktrees "$worktrees" 'include "ledger"; include "slots";
+  slots_status({given: $given, machine: ($machine | select(. != "") // null),
+    reserved_project: ($project | select(. != "") // null), held: held_slots(ledger_events; $worktrees; $home)})' "$ledger")
+
+if [[ -n $json ]]; then
+  jq . <<<"$status"
+else
+  jq -r -L "$TEAM_LIB" --arg home "$HOME" --arg code "$CODE" 'include "slots"; status_text($home; $code)' <<<"$status"
+fi
