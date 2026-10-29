@@ -351,7 +351,7 @@ take_reading() {
       fi
     done <<<"$projects"
     jq -nRr -L "$TEAM_LIB" --arg home "$HOME" --argjson worktrees "$worktrees" \
-      'include "slots"; ledger_held_slots($worktrees; $home)[].worktree' "$ledger"
+      "$held"' | .[].worktree' "$ledger"
   } | while IFS= read -r path; do
     [[ -z $path ]] || realpath -m -- "$path"
   done | jq -Rn '[inputs | select(. != "/")] | unique' >"$work/paths.json"
@@ -393,6 +393,9 @@ take_reading() {
 
 ledger=$TEAM_HOME/ledger.jsonl
 [[ -e $ledger ]] || ledger=/dev/null
+# The slots held, from the ledger as raw lines, $worktrees and $home (held_slots in slots.jq).
+held='include "ledger"; include "slots"; ledger_events as $events | ($events | by_task) as $tasks
+  | held_slots($tasks; [open_worktrees($events[] | select($tasks[.task] | is_open); $home)]; $worktrees)'
 
 if [[ -n $sample ]]; then
   take_reading
@@ -418,10 +421,8 @@ broken=$(jq .broken <<<"$readings")
 
 status=$(jq -nR -L "$TEAM_LIB" --arg home "$HOME" --argjson given "$given" --arg machine "$machine" \
   --arg project "$reserved_project" --argjson worktrees "$worktrees" --slurpfile readings <(jq .readings <<<"$readings") \
-  'include "slots";
-  slots_status({given: $given, machine: ($machine | select(. != "") // null),
-    reserved_project: ($project | select(. != "") // null), held: ledger_held_slots($worktrees; $home),
-    readings: $readings[0]})' "$ledger")
+  "$held"' as $held | slots_status({given: $given, machine: ($machine | select(. != "") // null),
+    reserved_project: ($project | select(. != "") // null), held: $held, readings: $readings[0]})' "$ledger")
 
 if [[ -n $check ]]; then
   room=$(jq -r --arg project "$check" -L "$TEAM_LIB" 'include "slots"; room_for($project)' <<<"$status")

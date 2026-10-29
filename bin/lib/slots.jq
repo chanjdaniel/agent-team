@@ -1,8 +1,10 @@
 # The definitions team-slots reads the machine's task slots with: the settings of slots.json,
 # the slots held, the room each side has, and the texts. jq 1.7.
 # Included as: jq -L bin/lib 'include "slots"; ...'
+# It includes stack alone: jq 1.8.2's compiler fails an assertion ("Unknown function type") when
+# a module's def calls another module's def that passes its $ parameter on to a def of its own,
+# as ledger's open_worktrees does, so the program, not this module, calls ledger's (held_slots).
 include "stack";
-include "ledger";
 
 # The machine's slot settings (~/.config/agent-team/slots.json), every key optional, each with its
 # default and its kind (settings_problems in stack.jq).
@@ -35,27 +37,23 @@ def task_branch_task:
   capture("^(feat|fix|docs|chore|build|ci|test|refactor|perf|research)/(?<task>T[1-9][0-9]*)-[a-z0-9]+(-[a-z0-9]+)*$")
   | .task;
 
-# The slots held, from the ledger's events <events> (an array, ledger order) and the registered
-# worktrees <worktrees> of every registered project's primary checkout but the checkout itself,
-# each {project, branch, worktree}: one {task, project, worktree, half_open} per open worktree of
-# an open task (open_worktrees, its path on this machine, whose home is <home>), and per registered
-# worktree on a task's branch whose task has no closed event and no open worktree of that project
-# (half open), by task number, then project.
-def held_slots($events; $worktrees; $home):
-  ($events | by_task) as $tasks
-  | [open_worktrees($events[] | select($tasks[.task] | is_open); $home) | {task, project, worktree, half_open: false}]
-    as $open
+# The slots held, from each task's ledger events <tasks> (by_task), the open worktrees <open> of
+# the open tasks (open_worktrees over the events of the tasks is_open keeps, each path on this
+# machine), and the registered worktrees <worktrees> of every registered project's primary
+# checkout but the checkout itself, each {project, branch, worktree}: one {task, project,
+# worktree, half_open} per open worktree, and per registered worktree on a task's branch whose
+# task has no closed event and no open worktree of that project (half open), by task number, then
+# project. The program reads the ledger as team-slots does:
+#   include "ledger"; include "slots"; ledger_events as $events | ($events | by_task) as $tasks
+#   | held_slots($tasks; [open_worktrees($events[] | select($tasks[.task] | is_open); $home)]; $worktrees)
+def held_slots($tasks; $open; $worktrees):
+  [$open[] | {task, project, worktree, half_open: false}] as $open
   | $open
     + [$worktrees[] | (.branch | task_branch_task) as $task | .project as $project
       | select(($tasks[$task] // [] | any(.[]; .event == "closed")) | not)
       | select(any($open[]; .task == $task and .project == $project) | not)
       | {task: $task, project, worktree, half_open: true}]
   | sort_by((.task[1:] | tonumber), .project, .worktree);
-
-# held_slots over the ledger read as raw lines (ledger_events), so a program needs to include
-# this module alone.
-def ledger_held_slots($worktrees; $home):
-  held_slots(ledger_events; $worktrees; $home);
 
 # Whether a reading has the parts the effective cap reads: its time, its memory's total and
 # others, and its CPU's count and others or null.
