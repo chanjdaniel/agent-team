@@ -41,16 +41,21 @@
 # sample    Takes one reading of the machine's load and appends it to the readings, printing
 #           nothing (the heartbeat's slots step runs it every 5 minutes); within 60 seconds of
 #           the newest reading it appends nothing. A reading it cannot take is its reason on
-#           stderr, exit 1, with no reading or snapshot written. Linux only: the memory is /proc/meminfo's MemTotal
-#           and MemAvailable; the processes are ps -A -o pid=,ppid=,rss=,time= with each one's
-#           working directory from /proc/<pid>/cwd (none when it cannot be read, another user's);
-#           the team's are each process whose directory is a team path or below one, and every
-#           descendant of one by parent pid, a test run in /tmp included. The team paths: the
-#           team home, the code checkout, every registered project's slots (a treehouse pool's
-#           numbered ones beside them too), each held worktree, and ~/.no-mistakes (the gate's).
+#           stderr, exit 1, with no reading or snapshot written: a command below that fails or
+#           prints what it cannot read is named. The memory: on Linux /proc/meminfo's MemTotal
+#           and MemAvailable; on macOS sysctl -n hw.memsize, and vm_stat's free, inactive,
+#           speculative and purgeable pages times its page size. The processes are ps -A -o
+#           pid=,ppid=,rss=,time= with each one's working directory, from /proc/<pid>/cwd on
+#           Linux and one lsof -a -d cwd -Fpn on macOS (none when it cannot be read, another
+#           user's); the team's are each process whose directory is a team path or below one,
+#           and every descendant of one by parent pid, a test run in /tmp included. The team
+#           paths: the team home, the code checkout, every registered project's slots (a
+#           treehouse pool's numbered ones beside them too), each held worktree, and
+#           ~/.no-mistakes (the gate's).
 #           The team's memory is their resident memory and the team and gate stacks' (team-stack
-#           ls --json's memory_bytes, given 30 seconds); the others' is MemTotal less
-#           MemAvailable less the team's, never below 0. The CPU is read against the snapshot
+#           ls --json's memory_bytes, given 30 seconds; on macOS that memory is Docker
+#           Desktop's VM's, whose process is no team process); the others' is the total less the
+#           available less the team's, never below 0. The CPU is read against the snapshot
 #           ~/.local/state/agent-team/slots/procs.tsv (each process's pid and cumulative CPU
 #           seconds, replaced by each reading) when it is 60 seconds to 15 minutes old, else
 #           not: each process's seconds since then (all of them for a process new since, or
@@ -110,9 +115,10 @@
 # held or free, its held ones counting toward them; room.reserved is E - H, room.others the lower
 # of that and E - R - O, neither below 0.
 #
-# Test seams: TEAM_MEMINFO names a file read in place of /proc/meminfo, TEAM_SLOTS_PROCS a file
-# of the processes read in place of ps and /proc, one per line, tab-separated: pid, parent pid,
-# resident KiB, cumulative CPU seconds and working directory (empty when unreadable),
+# Test seams: TEAM_MEMINFO names a file read in place of /proc/meminfo, and on macOS of sysctl
+# and vm_stat, TEAM_SLOTS_PROCS a file of the processes read in place of ps and /proc or lsof,
+# one per line, tab-separated: pid, parent pid, resident KiB, cumulative CPU seconds and working
+# directory (empty when unreadable),
 # TEAM_SLOTS_CPUS the CPU count in place of nproc's, and TEAM_SLOTS_DOCKER_SECONDS the 30
 # seconds team-stack ls is given.
 #
@@ -220,13 +226,18 @@ worktrees=$(
   done <<<"$projects" | jq -Rn '[inputs | split("\t") | {project: .[0], branch: .[1], worktree: .[2]}]'
 )
 
+# The last line <command> said on stderr ($work/err), or "no reason given".
+said() {
+  grep . "$work/err" 2>/dev/null | tail -n 1 | grep . || echo "no reason given"
+}
+
 # The processes as TEAM_SLOTS_PROCS gives them, one per line, tab-separated: pid, parent pid,
-# resident KiB, cumulative CPU seconds and working directory (empty when it cannot be read); on
-# Linux from ps and /proc/<pid>/cwd.
-linux_procs() {
-  find /proc -mindepth 2 -maxdepth 2 -name cwd -printf '%h\t%l\n' 2>/dev/null >"$work/cwds" || true
-  ps -A -o pid=,ppid=,rss=,time= | awk -F '\t' -v cwds="$work/cwds" '
-    # ps time, [[dd-]hh:]mm:ss, in whole seconds.
+# resident KiB, cumulative CPU seconds and working directory (empty when it cannot be read), from
+# ps and the working directories in $work/cwds, one "<pid><TAB><directory>" per line.
+ps_procs() {
+  ps -A -o pid=,ppid=,rss=,time= 2>"$work/err" >"$work/ps" || die "ps -A -o pid=,ppid=,rss=,time= failed: $(said)"
+  awk -F '\t' -v cwds="$work/cwds" '
+    # ps time, [[dd-]hh:]mm:ss[.ff] (macOS: mm:ss.ff, its minutes past 59), in whole seconds.
     function seconds(time,   days, n, part, i, total) {
       days = 0
       if (index(time, "-")) { days = substr(time, 1, index(time, "-") - 1); time = substr(time, index(time, "-") + 1) }
@@ -235,13 +246,56 @@ linux_procs() {
       for (i = 1; i <= n; i++) total = total * 60 + part[i]
       return int(days * 86400 + total)
     }
-    FILENAME == cwds { sub(/^\/proc\//, "", $1); cwd[$1] = $2; next }
-    { split($0, f, " "); printf "%s\t%s\t%s\t%s\t%s\n", f[1], f[2], f[3], seconds(f[4]), cwd[f[1]] }' "$work/cwds" -
+    FILENAME == cwds { cwd[$1] = $2; next }
+    {
+      n = split($0, f, " ")
+      if (n != 4 || f[1] !~ /^[0-9]+$/ || f[2] !~ /^[0-9]+$/ || f[3] !~ /^[0-9]+$/ || f[4] !~ /^([0-9]+-)?[0-9:.]+$/) {
+        line = $0; sub(/^ +/, "", line); print line > "/dev/stderr"; exit 1
+      }
+      printf "%s\t%s\t%s\t%s\t%s\n", f[1], f[2], f[3], seconds(f[4]), cwd[f[1]]
+    }' "$work/cwds" "$work/ps" 2>"$work/err" ||
+    die "ps -A -o pid=,ppid=,rss=,time= printed a line that is no process: $(said)"
+}
+
+# The working directories on Linux, from /proc/<pid>/cwd (empty when it cannot be read).
+linux_cwds() {
+  find /proc -mindepth 2 -maxdepth 2 -name cwd -printf '%h\t%l\n' 2>/dev/null | sed 's#^/proc/##' >"$work/cwds" || true
+}
+
+# The working directories on macOS, from lsof's p (pid) and n (name) fields; a process lsof
+# cannot read is not listed, and a name that is no absolute path is no directory.
+macos_cwds() {
+  lsof -a -d cwd -Fpn 2>"$work/err" >"$work/lsof" || die "lsof -a -d cwd -Fpn failed: $(said)"
+  awk '
+    /^p[0-9]+$/ { pid = substr($0, 2); next }
+    /^f/ && pid != "" { next }
+    /^n/ && pid != "" { if (substr($0, 2, 1) == "/") printf "%s\t%s\n", pid, substr($0, 2); next }
+    { print > "/dev/stderr"; exit 1 }' "$work/lsof" >"$work/cwds" 2>"$work/err" ||
+    die "lsof -a -d cwd -Fpn printed a line that is no process or directory: $(said)"
+}
+
+# The memory on macOS, "<total> <available>" in bytes: sysctl's hw.memsize, and vm_stat's free,
+# inactive, speculative and purgeable pages times its page size.
+macos_memory() {
+  local total available
+  total=$(sysctl -n hw.memsize 2>"$work/err") || die "sysctl -n hw.memsize failed: $(said)"
+  [[ $total =~ ^[0-9]+$ ]] || die "sysctl -n hw.memsize printed no memory size: $total"
+  vm_stat 2>"$work/err" >"$work/vm_stat" || die "vm_stat failed: $(said)"
+  available=$(awk '
+    /^Mach Virtual Memory Statistics: \(page size of [0-9]+ bytes\)/ { match($0, /[0-9]+/); size = substr($0, RSTART, RLENGTH) }
+    /^Pages (free|inactive|speculative|purgeable):/ {
+      count = $NF; sub(/\.$/, "", count)
+      if (count !~ /^[0-9]+$/) { bad = 1; exit }
+      pages += count; if (!($2 in seen)) { seen[$2]; kinds++ }
+    }
+    END { if (bad || size == "" || kinds != 4) exit 1; printf "%.0f\n", pages * size }' "$work/vm_stat") ||
+    die "vm_stat printed no page size and free, inactive, speculative and purgeable pages"
+  echo "$total $available"
 }
 
 # Take one reading of the machine's load and append it to the readings, as the header says.
 take_reading() {
-  local now meminfo total available cpus age previous=null stacks=null line
+  local now os meminfo memory total available cpus age previous=null stacks=null line
   mkdir -p "${READINGS%/*}"
   exec {sample_fd}>>"${READINGS%/*}/sample.lock"
   flock -w 60 "$sample_fd" || die "another reading is still being taken after 60 seconds"
@@ -251,19 +305,29 @@ take_reading() {
     "$READINGS" >/dev/null; then
     return 0
   fi
-  [[ $(uname -s) == Linux ]] || die "no reading of the machine's load on $(uname -s) yet"
-  meminfo=${TEAM_MEMINFO:-/proc/meminfo}
-  read -r total available < <(awk '$1 == "MemTotal:" { total = $2 * 1024 } $1 == "MemAvailable:" { available = $2 * 1024 }
-    END { if (total == "" || available == "") exit 1; printf "%.0f %.0f\n", total, available }' "$meminfo" 2>/dev/null) ||
-    die "no MemTotal and MemAvailable in $meminfo"
-  cpus=${TEAM_SLOTS_CPUS:-$(nproc)}
+  case $(uname -s) in
+    Linux) os=linux ;;
+    Darwin) os=macos ;;
+    *) die "no reading of the machine's load on $(uname -s)" ;;
+  esac
   work=$(mktemp -d)
   trap 'rm -rf "$work"' EXIT
+  if [[ $os == linux || -n ${TEAM_MEMINFO:-} ]]; then
+    meminfo=${TEAM_MEMINFO:-/proc/meminfo}
+    read -r total available < <(awk '$1 == "MemTotal:" { total = $2 * 1024 } $1 == "MemAvailable:" { available = $2 * 1024 }
+      END { if (total == "" || available == "") exit 1; printf "%.0f %.0f\n", total, available }' "$meminfo" 2>/dev/null) ||
+      die "no MemTotal and MemAvailable in $meminfo"
+  else
+    memory=$(macos_memory) || exit 1
+    read -r total available <<<"$memory"
+  fi
+  cpus=${TEAM_SLOTS_CPUS:-$(nproc)}
 
   if [[ -n ${TEAM_SLOTS_PROCS:-} ]]; then
     cp "$TEAM_SLOTS_PROCS" "$work/procs"
   else
-    linux_procs >"$work/procs" || die "ps could not list the processes"
+    "${os}_cwds"
+    ps_procs >"$work/procs"
   fi
   jq -Rn '[inputs | select(test("\\S")) | split("\t")
     | {pid: (.[0] | tonumber), ppid: (.[1] | tonumber), rss: (.[2] | tonumber), seconds: (.[3] | tonumber), cwd: (.[4] // "")}]' \
@@ -313,7 +377,7 @@ take_reading() {
   line=$(jq -nc -L "$TEAM_LIB" --arg at "$(date -u -d "@$now" +%FT%TZ)" --argjson total "$total" \
     --argjson available "$available" --argjson cpus "$cpus" --slurpfile procs "$work/procs.json" \
     --slurpfile paths "$work/paths.json" --argjson stacks "$stacks" --argjson previous "$previous" \
-    'include "slots"; slots_reading({at: $at, os: "linux", total: $total, available: $available, cpus: $cpus,
+    --arg os "$os" 'include "slots"; slots_reading({at: $at, os: $os, total: $total, available: $available, cpus: $cpus,
       procs: $procs[0], paths: $paths[0], stacks: $stacks, previous: $previous})')
   {
     [[ ! -e $READINGS ]] || jq -Rc -L "$TEAM_LIB" --argjson since $((now - 86400)) \

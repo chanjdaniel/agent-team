@@ -85,7 +85,8 @@ sandbox() {
 
   # The machine team-slots reads its load from (its seams): no process, 12 cores and 24 GiB of 32
   # available, and a Docker socket nothing listens on, so no reading depends on the machine the
-  # suite runs on, and no test reaches its Docker unless it stubs one (helpers/docker).
+  # suite runs on, macOS (whose sysctl and vm_stat TEAM_MEMINFO stands for too) or Linux, and no
+  # test reaches its Docker unless it stubs one (helpers/docker).
   export TEAM_SLOTS_PROCS=$root/slots-procs TEAM_SLOTS_CPUS=12 TEAM_MEMINFO=$root/meminfo
   export DOCKER_HOST=unix://$root/no-docker.sock
   : >"$TEAM_SLOTS_PROCS"

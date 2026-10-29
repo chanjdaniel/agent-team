@@ -764,6 +764,145 @@ stacks_load() {
   [[ ! -e $READINGS ]]
 }
 
+# The simulated machine as macOS gives it (uname Darwin): 32 GiB (sysctl hw.memsize) with 24 GiB
+# available (vm_stat's free, inactive, speculative and purgeable pages of 16 KiB), and the
+# processes mac_proc adds, from ps and lsof; TEAM_MEMINFO and TEAM_SLOTS_PROCS are unset, so the
+# four commands are what sample reads.
+on_macos() {
+  as_macos
+  unset TEAM_MEMINFO TEAM_SLOTS_PROCS
+  stub_command sysctl vm_stat ps lsof
+  stub_script sysctl <<<'[[ $* == "-n hw.memsize" ]] && echo 34359738368'
+  stub_reply vm_stat "$(cat <<'OUT'
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                              1000000.
+Pages active:                             300000.
+Pages inactive:                           400000.
+Pages speculative:                        100000.
+Pages throttled:                               0.
+Pages wired down:                         200000.
+Pages purgeable:                           72864.
+"Translation faults":                  123456789.
+OUT
+)"
+  : >"$BATS_TEST_TMPDIR/ps.out"
+  : >"$BATS_TEST_TMPDIR/lsof.out"
+  stub_script ps <<<"[[ \$* == '-A -o pid=,ppid=,rss=,time=' ]] && cat $(printf %q "$BATS_TEST_TMPDIR/ps.out")"
+  stub_script lsof <<<"[[ \$* == '-a -d cwd -Fpn' ]] && cat $(printf %q "$BATS_TEST_TMPDIR/lsof.out")"
+}
+
+# mac_proc <pid> <parent pid> <resident MiB> <CPU time as macOS's ps prints it> [<directory>]: a
+# process of the simulated macOS, its directory missing from lsof's list without one.
+mac_proc() {
+  printf '%5s %5s %8s %10s\n' "$1" "$2" $(($3 * 1024)) "$4" >>"$BATS_TEST_TMPDIR/ps.out"
+  [[ -z ${5:-} ]] || printf 'p%s\nfcwd\nn%s\n' "$1" "$5" >>"$BATS_TEST_TMPDIR/lsof.out"
+}
+
+@test "sample on macOS: the memory from sysctl and vm_stat, the processes from ps and lsof, attributed as on Linux" {
+  docker_stub
+  on_macos
+  mac_proc 100 1 1024 12:34.56 "$TEAM_HOME"
+  mac_proc 101 100 512 0:01.00 /tmp
+  mac_proc 102 101 256 0:00.00
+  mac_proc 103 1 128 1:00.00 "$HOME/slots/proj/1/src"
+  # Not the team's: Docker Desktop's VM, a project's primary checkout and a process lsof cannot
+  # read.
+  mac_proc 300 1 4096 123:45.67 "$HOME/Library/Containers/com.docker.docker/Data"
+  mac_proc 301 300 64 0:00.10 /
+  mac_proc 200 1 2048 0:00.00 "$HOME/projects/proj"
+  mac_proc 201 1 1024 0:00.00
+  local stacks
+  stacks=$(stacks_load memory)
+  ((stacks > 0))
+  run_bin -0 --separate-stderr team-slots sample
+  assert_equal "$output$stderr" ""
+  assert_equal "$(jq -c --argjson stacks "$stacks" '[.os, .docker, .memory.total, .memory.available,
+      .memory.team - 1920 * 1048576 - $stacks, .memory.others - 8 * 1073741824 + 1920 * 1048576 + $stacks, .cpu]' "$READINGS")" \
+    '["macos",true,34359738368,25769803776,0,0,null]'
+  # ps's minutes and seconds are the snapshot's whole seconds.
+  assert_equal "$(cat "$SNAPSHOT")" "$(printf '%s\t%s\n' 100 754 101 1 102 0 103 60 300 7425 301 0 200 0 201 0)"
+  assert_equal "$(stub_calls lsof)" '["-a","-d","cwd","-Fpn"]'
+  assert_equal "$(stub_calls ps)" '["-A","-o","pid=,ppid=,rss=,time="]'
+  assert_equal "$(stub_calls sysctl)" '["-n","hw.memsize"]'
+  # TEAM_MEMINFO stands for the memory on macOS too, as the sandbox's machine on a macOS host.
+  rm "$READINGS"
+  printf 'MemTotal:       %s kB\nMemAvailable:   %s kB\n' $((16 * 1024 * 1024)) $((8 * 1024 * 1024)) \
+    >"$BATS_TEST_TMPDIR/meminfo"
+  TEAM_MEMINFO=$BATS_TEST_TMPDIR/meminfo run_bin -0 team-slots sample
+  assert_equal "$(jq -c '[.os, .memory.total, .memory.available]' "$READINGS")" '["macos",17179869184,8589934592]'
+  assert_equal "$(stub_calls sysctl | wc -l)" 1
+}
+
+@test "sample on macOS: a command that fails or prints what cannot be read is exit 1 naming it, with nothing written" {
+  on_macos
+  mac_proc 100 1 1024 0:01.00 "$TEAM_HOME"
+  # refused <stderr>: sample exits 1 saying so, and writes no reading or snapshot.
+  refused() {
+    run_bin -1 --separate-stderr team-slots sample
+    assert_equal "$stderr" "team-slots: $1"
+    [[ ! -e $READINGS && ! -e $SNAPSHOT ]]
+  }
+  local vm_stat
+  vm_stat=$(cat "$STUB_FIXTURES/vm_stat.out")
+
+  stub_script sysctl <<<"echo \"sysctl: unknown oid 'hw.memsize'\" >&2; exit 1"
+  refused "sysctl -n hw.memsize failed: sysctl: unknown oid 'hw.memsize'"
+  stub_script sysctl <<<'echo lots'
+  refused "sysctl -n hw.memsize printed no memory size: lots"
+  stub_script sysctl <<<'echo 34359738368'
+
+  stub_reply vm_stat "vm_stat: not today" 1
+  refused "vm_stat failed: no reason given"
+  stub_reply vm_stat "$(grep -v speculative <<<"$vm_stat")"
+  refused "vm_stat printed no page size and free, inactive, speculative and purgeable pages"
+  stub_reply vm_stat "${vm_stat/page size of 16384 bytes/page size unknown}"
+  refused "vm_stat printed no page size and free, inactive, speculative and purgeable pages"
+  stub_reply vm_stat "${vm_stat/1000000./many.}"
+  refused "vm_stat printed no page size and free, inactive, speculative and purgeable pages"
+  stub_reply vm_stat "$vm_stat"
+
+  stub_script lsof <<<'echo "lsof: no kernel today" >&2; exit 1'
+  refused "lsof -a -d cwd -Fpn failed: lsof: no kernel today"
+  stub_script lsof <<<'printf "p100\nfcwd\nn/x\nCOMMAND PID\n"'
+  refused "lsof -a -d cwd -Fpn printed a line that is no process or directory: COMMAND PID"
+  stub_script lsof <<<'printf "fcwd\nn/x\n"'
+  refused "lsof -a -d cwd -Fpn printed a line that is no process or directory: fcwd"
+  stub_script lsof <<<"cat $(printf %q "$BATS_TEST_TMPDIR/lsof.out")"
+
+  stub_script ps <<<'echo "ps: no processes today" >&2; exit 1'
+  refused "ps -A -o pid=,ppid=,rss=,time= failed: ps: no processes today"
+  stub_script ps <<<'printf "  100     1  1048576    0:01.00\n  PID  PPID  RSS TIME\n"'
+  refused "ps -A -o pid=,ppid=,rss=,time= printed a line that is no process: PID  PPID  RSS TIME"
+  stub_script ps <<<"cat $(printf %q "$BATS_TEST_TMPDIR/ps.out")"
+
+  run_bin -0 team-slots sample
+  assert_equal "$(jq -r .os "$READINGS")" macos
+}
+
+@test "sample with no seam takes a real reading of this machine, Linux or macOS, of the reading's shape" {
+  unset TEAM_MEMINFO TEAM_SLOTS_PROCS TEAM_SLOTS_CPUS
+  local os=linux sleeper rss
+  [[ $(uname -s) != Darwin ]] || os=macos
+  # A process in the team home, whose memory is the team's.
+  (cd "$TEAM_HOME" && exec sleep 60) &
+  sleeper=$!
+  rss=$(ps -o rss= -p "$sleeper" | tr -d ' ')
+  run_bin -0 --separate-stderr team-slots sample
+  kill "$sleeper"
+  assert_equal "$output$stderr" ""
+  assert_equal "$(jq -c --arg os "$os" --argjson rss "$rss" '[.os == $os, .docker, .memory.total > 0,
+      .memory.available > 0 and .memory.available <= .memory.total, .memory.team >= $rss * 1024,
+      .memory.others == ([.memory.total - .memory.available - .memory.team, 0] | max), .cpu]' "$READINGS")" \
+    '[true,false,true,true,true,true,null]'
+  grep -q "^$sleeper"$'\t' "$SNAPSHOT"
+  # Against a snapshot two minutes old, the CPU of all the machine's cores.
+  rm "$READINGS"
+  touch -d "@$(($(date +%s) - 120))" "$SNAPSHOT"
+  run_bin -0 team-slots sample
+  assert_equal "$(jq -c --argjson cpus "$(nproc)" '.cpu | [.cpus == $cpus, .seconds >= 120 and .seconds <= 130,
+      .team >= 0, .others >= 0]' "$READINGS")" '[true,true,true,true]'
+}
+
 @test "status and check take a reading first only when the newest is more than 10 minutes old" {
   run_bin -0 team-slots
   assert_equal "$(wc -l <"$READINGS")" 1
