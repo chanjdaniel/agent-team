@@ -50,7 +50,8 @@ declare -gA FORMAT=(
 # in place (access.json letting only Daniel's fixture id in #coordinator), the gate's opencode
 # wrapper is installed and config.yaml runs the gate on it, two projects are registered and
 # cloned as the bootstrap clones them,
-# ~/.config/agent-team/home names the team home, and its core.hooksPath the code's records-git.
+# ~/.config/agent-team/home names the team home, and its core.hooksPath the code's records-git;
+# slots.json sets a cap of 10, and a reading of the machine's load was just taken.
 doctor_machine() {
   hold_lease home-pc >/dev/null
   fake_service_managers
@@ -197,6 +198,23 @@ else
 fi
 EOF
   "$REPO_ROOT/bin/team-config" apply >/dev/null
+  # The machine's slots set as home-pc's, and a reading of its load just taken, as its heartbeat
+  # takes them.
+  echo '{"cap": 10}' >"$HOME/.config/agent-team/slots.json"
+  slots_reading 0 8 1
+}
+
+# slots_reading <minutes> <others GiB> [<others cores>]: append a reading of the machine's load
+# taken <minutes> ago on a machine shaped like home-pc (30.6 GiB, 12 cores), other programs using
+# <others GiB> and <others cores> busy (no CPU read without it).
+slots_reading() {
+  local file=$HOME/.local/state/agent-team/slots/readings.jsonl
+  mkdir -p "${file%/*}"
+  jq -cn --arg at "$(date -u -d "@$(($(date +%s) - $1 * 60))" +%FT%TZ)" --argjson others "$2" --arg cores "${3:-}" '
+    (30.6 * 1073741824 | floor) as $total | ($others * 1073741824 | floor) as $others
+    | {at: $at, os: "linux", docker: true,
+       memory: {total: $total, available: ($total - $others - 1073741824), team: 1073741824, others: $others},
+       cpu: (if $cores == "" then null else {cpus: 12, seconds: 300, team: 0.5, others: ($cores | tonumber)} end)}' >>"$file"
 }
 
 # register <project> <repo> <delivery> <provider> [<slot>...]: a project in projects.toml whose

@@ -95,6 +95,16 @@ kept() {
   assert_read_only
 }
 
+@test "ls --json carries each project's CPU, the sum of its running containers' docker stats, null with none running" {
+  docker_state stats 'map(if .Name == "conventioner-2-mongodb-1" then .CPUPerc = "150.25%" else . end)'
+  run_bin -0 team-stack ls --json
+  assert_equal "$(jq -c '[.projects[] | [.name, .running, .cpu_percent]]' <<<"$output")" \
+    '[["conventioner",0,null],["conventioner-2",2,150.37],["conventioner-3",1,0.12],["conventioner-4",0,null],["nmtest-12822",0,null],["nmtest-1895520",1,0.12]]'
+  # The text form is as it was: no CPU column.
+  run_bin -0 team-stack ls
+  assert_equal "$(head -n 1 <<<"$output" | tr -s ' ')" "PROJECT STATUS CLASS TASK KIND WORKTREE AGE MEMORY"
+}
+
 @test "ls --all --json classifies volumes: team and gate by their labels or their project, attached anonymous ones by their container, unattached anonymous ones as anonymous" {
   run_bin -0 team-stack ls --all --json
   assert_equal "$(jq -c 'keys' <<<"$output")" '["images","networks","projects","volumes"]'

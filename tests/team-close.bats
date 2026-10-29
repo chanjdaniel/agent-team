@@ -609,8 +609,11 @@ team-stack: stackfix-1 is removed, its logs in $wt/.scratch/task/stack-logs"
   docker_stub "${home_slots[0]}"
   open_home_task
   work_and_push "$wt" feature.txt
+  # team-open's reading of the machine's load read Docker; the close reads nothing more.
+  local calls
+  calls=$(stub_calls docker | wc -l)
   run_bin -0 team-close T1
-  assert_equal "$(stub_calls docker)" ""
+  assert_equal "$(stub_calls docker | wc -l)" "$calls"
 }
 
 @test "a worktree kept with --keep-worktree keeps its stack" {

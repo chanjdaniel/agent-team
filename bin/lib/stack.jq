@@ -96,22 +96,26 @@ def settings_kinds:
   {stack_cap: "count", memory_floor_gib: "amount", disk_floor_gb: "amount", wait_minutes: "amount",
    idle_minutes: "amount", heartbeat_sweep: "boolean", heartbeat_janitor: "boolean"};
 
-# What is wrong with the settings file's JSON values (read with jq -s), to follow its name: ""
-# when nothing, " is not one JSON object", or ": <problem>; <problem>..." naming each key of the
-# wrong type and each unknown key.
-def settings_problems:
-  settings_kinds as $kinds
-  | if length != 1 or (.[0] | type) != "object" then " is not one JSON object"
-    else [.[0] | to_entries[] | $kinds[.key] as $kind | (.value | tojson) as $value
-      | if $kind == null then "\(.key) is not a setting (they are: \($kinds | keys_unsorted | join(", ")))"
-        elif $kind == "count" and ((.value | type) != "number" or .value < 1 or .value != (.value | floor)) then
-          "\(.key) must be a whole number of 1 or more, not \($value)"
-        elif $kind == "amount" and ((.value | type) != "number" or .value < 0) then
-          "\(.key) must be a number of 0 or more, not \($value)"
-        elif $kind == "boolean" and (.value | type) != "boolean" then "\(.key) must be true or false, not \($value)"
-        else empty end]
-      | if . == [] then "" else ": " + join("; ") end
-    end;
+# What is wrong with a settings file's JSON values (read with jq -s), to follow its name, given
+# its keys' kinds <kinds> (settings_kinds for stack.json): "" when nothing, " is not one JSON
+# object", or ": <problem>; <problem>..." naming each key of the wrong kind and each unknown key.
+# The kinds: count (a whole number of 1 or more), count0 (a whole number of 0 or more), amount (a
+# number of 0 or more), positive (a number above 0) and boolean.
+def settings_problems($kinds):
+  if length != 1 or (.[0] | type) != "object" then " is not one JSON object"
+  else [.[0] | to_entries[] | $kinds[.key] as $kind | (.value | tojson) as $value
+    | (.value | type == "number" and . == floor) as $whole
+    | if $kind == null then "\(.key) is not a setting (they are: \($kinds | keys_unsorted | join(", ")))"
+      elif $kind == "count" and (($whole and .value >= 1) | not) then "\(.key) must be a whole number of 1 or more, not \($value)"
+      elif $kind == "count0" and (($whole and .value >= 0) | not) then "\(.key) must be a whole number of 0 or more, not \($value)"
+      elif $kind == "amount" and ((.value | type) != "number" or .value < 0) then
+        "\(.key) must be a number of 0 or more, not \($value)"
+      elif $kind == "positive" and ((.value | type) != "number" or .value <= 0) then
+        "\(.key) must be a number above 0, not \($value)"
+      elif $kind == "boolean" and (.value | type) != "boolean" then "\(.key) must be true or false, not \($value)"
+      else empty end]
+    | if . == [] then "" else ": " + join("; ") end
+  end;
 
 # Every setting, the given ones (the settings file's one object, or none) over the defaults.
 def settings: settings_defaults + (.[0] // {});

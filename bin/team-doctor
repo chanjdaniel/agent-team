@@ -107,10 +107,11 @@ probe_trust() {
 # What the checks read: bin/, and what a check leaves for the later ones: the OS (macos, arch, or
 # empty when it is neither), the machine's team name, team-secrets check's array and whether it
 # answered, the fence's reason (empty unless fenced), whether this machine holds the lease (yes,
-# no, or empty when the lease line cannot say), and the tools whose version command answered at
-# all, by name.
+# no, or empty when the lease line cannot say), whether its heartbeat is enabled (enabled,
+# disabled, or empty when team-timers did not answer), and the tools whose version command
+# answered at all, by name.
 # shellcheck disable=SC2034
-bin=$(dirname "$TEAM_LIB") os='' machine='' secrets='' secrets_read=0 fenced='' holding=''
+bin=$(dirname "$TEAM_LIB") os='' machine='' secrets='' secrets_read=0 fenced='' holding='' heartbeat=''
 # shellcheck disable=SC2034
 declare -A installed=()
 

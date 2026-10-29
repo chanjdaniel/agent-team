@@ -7,6 +7,10 @@ load helpers/common
 setup() {
   sandbox
   stub_reply claude '[]'
+  # A registry, which team-sweep's slots finding reads through team-slots.
+  printf '%s\n' '[proj]' 'repo = "owner/proj"' 'path = "projects/proj"' 'base = "main"' 'delivery = "direct-pr"' \
+    'merge_method = "merge"' 'required_checks = []' 'task_dir = ".scratch/task"' 'docs = []' 'toolkits = []' \
+    '[proj.pool]' 'provider = "git"' 'slots = ["slots/proj/1"]' >"$TEAM_HOME/projects.toml"
 }
 
 # stop [<stop_hook_active>]: run the hook on a Stop event, as Claude Code sends it.

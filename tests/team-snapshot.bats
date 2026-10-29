@@ -121,6 +121,18 @@ pr_event() {
     >"$STUB_FIXTURES/view-$2"
 }
 
+# reserve_agent_team: register agent-team with the code checkout as its primary, so it is the
+# project the machine's slots keep one for, with no open PRs.
+reserve_agent_team() {
+  code_checkout
+  mkdir -p "$HOME/projects"
+  ln -s "$CODE_CHECKOUT" "$HOME/projects/agent-team"
+  printf '%s\n' '' '[agent-team]' 'repo = "owner/agent-team"' 'path = "projects/agent-team"' 'base = "dev"' \
+    'delivery = "direct-pr"' 'merge_method = "merge"' 'required_checks = []' 'task_dir = ".scratch/task"' 'docs = []' \
+    'toolkits = []' '[agent-team.pool]' 'provider = "git"' 'slots = ["slots/agent-team/1"]' >>"$TEAM_HOME/projects.toml"
+  open_prs owner/agent-team '[]'
+}
+
 fixture_ledger() {
   cat "$BATS_TEST_DIRNAME/fixtures/ledger-$1.jsonl" >>"$TEAM_HOME/ledger.jsonl"
 }
@@ -161,13 +173,57 @@ section() {
   run_bin -0 team-snapshot --json
   local snapshot=$output
   assert_equal "$(jq -r .schema <<<"$snapshot")" "team-snapshot/1"
-  assert_equal "$(jq -c 'keys_unsorted' <<<"$snapshot")" '["schema","tasks","sessions","strays","prs","pending_asks","items"]'
+  assert_equal "$(jq -c 'keys_unsorted' <<<"$snapshot")" '["schema","tasks","slots","sessions","strays","prs","pending_asks","items"]'
   assert_equal "$(jq -r '.tasks | map(.task) | join(" ")' <<<"$snapshot")" "T3 T4"
   run_bin -0 team-state T3 --json
   assert_equal "$(jq -c '.tasks[0]' <<<"$snapshot")" "$(jq -c . <<<"$output")"
   assert_equal "$(jq -c '.tasks[0].pr | [.number, .checks.passed]' <<<"$snapshot")" '[5,["test"]]'
   run_bin -0 team-state T4 --json
   assert_equal "$(jq -c '.tasks[1]' <<<"$snapshot")" "$(jq -c . <<<"$output")"
+}
+
+@test "the slots line follows the open tasks, and --json carries team-slots' object as slots, with no reading taken" {
+  reserve_agent_team
+  mkdir -p "$HOME/.config/agent-team"
+  echo home-pc >"$HOME/.config/agent-team/machine"
+  echo '{"cap": 10}' >"$HOME/.config/agent-team/slots.json"
+  open_prs owner/proj '[]'
+  open_prs owner/conv '[]'
+  opened T3
+  opened T4 conv
+  run_bin -0 team-snapshot
+  assert_equal "$(head -n 5 <<<"$output")" "Open tasks (2):
+  T3 proj feature planning | no live worker
+  T4 conv feature planning | no live worker
+home-pc: 2 of 10 task slots held, 1 kept for agent-team (agent-team holds 0); effective 10
+Live team sessions: none"
+  run_bin -0 team-snapshot --json
+  local snapshot=$output
+  run_bin -0 team-slots status --stored --json
+  assert_equal "$(jq -c .slots <<<"$snapshot")" "$(jq -c . <<<"$output")"
+  assert_equal "$(jq -r '.slots | [.schema, .counts.held, .effective.cap] | join(" ")' <<<"$snapshot")" "team-slots/1 2 10"
+  [[ ! -e $HOME/.local/state/agent-team/slots ]]
+}
+
+@test "a team-slots that fails gives slots its error, and the rest of the snapshot as before" {
+  opened T3
+  launch T3 builder 59709d99
+  event T3 asked '{id: "q1", text: "Which name?"}'
+  open_prs owner/proj '[]'
+  open_prs owner/conv '[]'
+  sessions "$(session 59709d99 T3-builder busy working)"
+  mkdir -p "$HOME/.config/agent-team"
+  echo '{"cap": 0}' >"$HOME/.config/agent-team/slots.json"
+  run_bin -1 --separate-stderr team-slots status --stored
+  local error=${stderr/"$HOME/"/"~/"}
+  assert_contains "$error" "team-slots: ~/.config/agent-team/slots.json"
+  run_bin -0 --separate-stderr team-snapshot --json
+  assert_equal "$stderr" ""
+  assert_equal "$(jq -c .slots <<<"$output")" "$(jq -cn --arg error "$error" '{error: $error}')"
+  assert_equal "$(jq -c '[(.tasks | length), (.sessions | length), (.pending_asks | length), (.prs | length)]' <<<"$output")" '[1,1,1,2]'
+  run_bin -0 team-snapshot
+  assert_equal "$(sed -n 3,4p <<<"$output")" "Task slots unreadable: $error
+Live team sessions (1):"
 }
 
 @test "the session list is read once, and every open task's PR part comes from GitHub" {
@@ -279,15 +335,18 @@ section() {
 }
 
 @test "an empty ledger shows every part as none" {
+  reserve_agent_team
   open_prs owner/proj '[]'
   open_prs owner/conv '[]'
   run_bin -0 team-snapshot
   assert_equal "$output" "Open tasks: none
+this machine: 0 of 6 task slots held, 1 kept for agent-team (agent-team holds 0); effective 6
 Live team sessions: none
 Stray sessions: none
 Open PRs:
   proj (owner/proj): none
   conv (owner/conv): none
+  agent-team (owner/agent-team): none
 Pending asks: none
 Current items: none"
   rm "$TEAM_HOME/ledger.jsonl"

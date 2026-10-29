@@ -10,7 +10,7 @@ The retro itself changes nothing; what Daniel approves becomes its own work.
 
 1. **Open.** Run `team-retro status`, and go on only when it says the retro is due.
    Run `team-open agent-team retro research retro-<YYYY-MM-DD> "Retro <YYYY-MM-DD>"`, fill the plan's goal ("proposals from the ledger since <since>, per the retro brief"), and post its outline in the thread as for any task.
-   Exit 75 means the pool is full: tell Daniel in `#coordinator` once which tasks hold the slots; the sweep's finding stays until a slot frees, and you open the retro then.
+   Exit 75 means a full pool or no task slot on the machine (`team-slots` says which tasks hold them and why the cap is what it is): tell Daniel in `#coordinator` once which tasks hold the slots; the sweep's finding stays until a slot frees, and you open the retro then.
 2. **Brief and launch.** Run `team-brief T<n> retro`, then `team-worker T<n> planner <worktree> -- "Read your brief at <path>"`, the path being what `team-brief` printed.
 3. **Relay.** On `T<n> DONE <path>`, log `team-log T<n> done role=planner session=<id> report=<path>`, then read the report.
    Post its proposals in the retro's thread, one line each: its number, the change, and its evidence in a phrase.

@@ -288,6 +288,23 @@ restored_from() {
   assert_equal "$(events worktree-moved | wc -l)" "1"
 }
 
+@test "on a machine over its cap, --resume is never refused, takes a new slot from the pool and says it is over" {
+  open_elsewhere home feat work
+  run_bin -0 team-open --task T2 home feature feat other "Other work"
+  mkdir -p "$HOME/.config/agent-team"
+  echo '{"cap": 1, "reserved": 0}' >"$HOME/.config/agent-team/slots.json"
+  run_bin -0 --separate-stderr team-open --task T1 --resume home
+  assert_equal "$stderr" "team-open: laptop holds 2 task slots, over its effective cap of 1 (cap 1, $(sampled_reason)); no new task opens until tasks close"
+  assert_equal "$(jq -r .worktree <<<"$output")" "${home_slots[1]}"
+  assert_equal "$(git -C "${home_slots[1]}" rev-parse --abbrev-ref HEAD)" "$branch"
+
+  # A slots.json it cannot read refuses no resume either.
+  echo '{"cap": "one"}' >"$HOME/.config/agent-team/slots.json"
+  run_bin -0 --separate-stderr team-open --task T1 --resume home
+  assert_equal "$stderr" "team-slots: $HOME/.config/agent-team/slots.json: cap must be a whole number of 1 or more, not \"one\"
+team-open: cannot read this machine's task slots; the resume carries on, since the cap never refuses it"
+}
+
 @test "a treehouse pool leases another slot, switched to the branch, and logs worktree-moved" {
   open_elsewhere conv feat work
   # The other machine's slot is free here, but the lease hands out the other one first.

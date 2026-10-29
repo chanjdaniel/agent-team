@@ -37,6 +37,14 @@
 # branch when pushed, else the local one), or "no branch yet". Exit 75 when every slot is taken (a
 # git pool) or the lease command fails (a treehouse pool), listing the slots and who holds them (a
 # treehouse slot's lease holder, else the task its branch names).
+# The machine's cap on task slots, across every project, holds too: right before it takes a slot
+# from the pool (a new task, a half-open one no slot holds the branch of yet, and --add), it asks
+# team-slots check under the machine's slot lock, which it holds until the slot holds the branch,
+# so two runs never take the last slot; with no task slot it exits 75 with team-slots' refusal
+# (the cap, the effective cap and why, the slot kept for the reserved project, and every task
+# holding one), each line said as team-open's, taking no slot and giving a claimed number back.
+# While another run holds the lock, it waits up to slots.json's wait_minutes, saying once for whom,
+# then exits 75 naming the holder. A full pool is refused as above, whichever the run meets first.
 # With --add, gives the open task T<n> a worktree in another project, on <type>/T<n>-<slug>: the
 # same pool steps, then worktree-added, with no plan, thread or opened. Refused for a task with
 # no opened event or with a closed one, and for a project the task already has an open worktree in.
@@ -65,7 +73,10 @@
 # the reason. Its facts are the JSON's snapshot, {ref, commit, parent, at, applied, reason},
 # parent null for a clean checkpoint's head, null for a worktree that does not resume from one.
 # Needs this machine's name; refused for a task that is not open or has no open worktree in
-# <project>; re-running after a failure finishes it.
+# <project>; re-running after a failure finishes it. Never refused by the cap, since the task
+# holds its slot in the ledger already, even when it takes a new slot from the pool: when the
+# machine holds more slots than its effective cap, it says so on one line ("<machine> holds 9 task
+# slots, over its effective cap of 6 (...); no new task opens until tasks close") and carries on.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
@@ -174,10 +185,12 @@ fi
 # force_return is set: see the header), and a number this run claimed is given back while nothing
 # holds it yet; once a slot holds the task's branch, the task is half open and re-running with
 # --task finishes it.
-worktree='' leased='' force_return='' lease_log=''
+worktree='' leased='' force_return='' lease_log='' slots_fd=''
 on_exit() {
   local status=$?
   [[ -z $lease_log ]] || rm -f "$lease_log"
+  # The slot lock goes first, so a return command that leaves something running never keeps it.
+  [[ -z $slots_fd ]] || exec {slots_fd}>&-
   ((status != 0)) || return 0
   if [[ -n $leased && -n $force_return ]]; then
     if (cd "$primary" && "$return_cmd" "$leased" --force --if-lease-holder "$task") </dev/null >&2; then
@@ -340,7 +353,7 @@ take_treehouse_slot() {
     echo "team-open: $leased is already leased to $task, by an earlier run; it is taken again" >&2
   else
     lease_log=$(mktemp)
-    if ! leased=$(cd "$primary" && "$lease" "$task" 2>"$lease_log"); then
+    if ! leased=$(cd "$primary" && "$lease" "$task" 2>"$lease_log" {slots_fd}>&-); then
       leased=
       echo "team-open: $project's lease command found no free slot:" >&2
       cat "$lease_log" >&2
@@ -515,9 +528,34 @@ else
   rm -f "$NET_ERR"
 fi
 
+# The machine's slot lock, ~/.local/state/agent-team/slots.lock, open on slots_fd for team-slots
+# check to take, so it is held until this run closes it; the lease command never inherits it.
+mkdir -p "$HOME/.local/state/agent-team"
+exec {slots_fd}<>"$HOME/.local/state/agent-team/slots.lock"
+
+# Whether the project's task may take a new slot under the machine's cap (team-slots check, under
+# the slot lock), its words said as team-open's; exits as it does when it may not.
+check_slot() {
+  local rc=0 say
+  # The braces make the process substitution this shell's, so $! is its pid: on a command alone,
+  # the forked command makes it, and $! stays some earlier one's.
+  { TEAM_HOME=$TEAM_HOME "$bin/team-slots" check "$project" --lock "$slots_fd" --label "team-open $task $project (pid $$)"; } \
+    2> >(sed -u 's/^team-slots: /team-open: /' >&2) || rc=$?
+  say=$!
+  wait "$say"
+  ((rc == 0)) || exit "$rc"
+}
+
 # The slot already holding the task's branch (a half-open task), else a slot from the pool.
 added=
 if [[ -n $resume ]]; then
+  # Never refused by the cap: the task holds its slot in the ledger already.
+  if slot_status=$(TEAM_HOME=$TEAM_HOME "$bin/team-slots" --json); then
+    over=$(jq -r -L "$TEAM_LIB" 'include "slots"; over_cap_text' <<<"$slot_status")
+    [[ -z $over ]] || echo "team-open: $over" >&2
+  else
+    echo "team-open: cannot read this machine's task slots; the resume carries on, since the cap never refuses it" >&2
+  fi
   resume_slot
 else
   for slot in "${slots[@]}"; do
@@ -530,12 +568,15 @@ if [[ -z $worktree ]]; then
   done
   ! git -C "$primary" show-ref -q --verify "refs/heads/$branch" ||
     die "branch $branch already exists in $primary but no slot holds it"
+  check_slot
   case $provider in
     git) take_git_slot ;;
     treehouse) take_treehouse_slot ;;
     *) die "team-open does not take worktrees from a $provider pool" ;;
   esac
 fi
+# The slot holds the branch now, so another run's count sees it: the lock goes.
+exec {slots_fd}>&-
 [[ -n $resume ]] || base_sha=$(git -C "$worktree" merge-base HEAD "origin/$base")
 
 # The task directory must never be committed: refuse a project whose git does not ignore it.

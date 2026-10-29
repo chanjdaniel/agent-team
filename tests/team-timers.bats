@@ -10,6 +10,8 @@ load helpers/inbox
 
 setup() {
   sandbox
+  # A registry, committed with the team home, for the slots step's reading.
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
   origin=$(hold_lease home-pc)
   fake_service_managers
   stub_command uname
@@ -717,6 +719,17 @@ steps() {
   sed -E 's/^[^ ]+ ([a-z]+): .*$/\1/' <<<"$1" | uniq | paste -sd ' '
 }
 
+# The docker calls made but the read-only ones of team-stack ls --json, which the slots step's
+# reading makes on the holder.
+docker_acts() {
+  docker_calls | grep -vE '^(compose ls --all --format json|ps --all --quiet --no-trunc|inspect --type container .*|stats --no-stream --format json .*)$' || true
+}
+
+# The readings the slots step took under <home> (default HOME), one per line.
+readings() {
+  cat "${1:-$HOME}/.local/state/agent-team/slots/readings.jsonl" 2>/dev/null || true
+}
+
 # The day's janitor report, by local date.
 day_report() {
   echo "$HOME/.local/state/agent-team/janitor/$(date +%F).md"
@@ -733,7 +746,7 @@ day_report() {
   stack_json '{"heartbeat_sweep": false, "heartbeat_janitor": false, "idle_minutes": 0}'
   run_bin -0 team-timers run
   assert_equal "$(steps "$output")" "lease checkpoint"
-  assert_equal "$(docker_calls)" ""
+  assert_equal "$(docker_acts)" ""
   [[ ! -e $HOME/.local/state/agent-team/janitor && ! -e $HOME/.local/state/agent-team/stacks ]]
 }
 
@@ -816,15 +829,18 @@ EOF
   docker_machine
   stack_json '{"heartbeat_sweep": true, "heartbeat_janitor": true}'
   docker_hang
-  TEAM_TIMERS_SWEEP_SECONDS=1 TEAM_TIMERS_JANITOR_SECONDS=2 run_bin -1 team-timers run
+  # The slots step gets 5 s, which team-slots needs on a slow machine (CI's macOS runner) to
+  # reach its docker call before the step stops it, still well inside its own 30 s for Docker.
+  TEAM_TIMERS_SLOTS_SECONDS=5 TEAM_TIMERS_SWEEP_SECONDS=1 TEAM_TIMERS_JANITOR_SECONDS=2 run_bin -1 team-timers run
   assert_equal "$output" "$(cat "$log")"
-  assert_equal "$(steps "$output")" "lease stacks checkpoint janitor"
+  assert_equal "$(steps "$output")" "lease slots stacks checkpoint janitor"
+  [[ $(grep ' slots: ' <<<"$output") =~ ^[0-9T:Z-]+" slots: failed: timed out after 5 s"$ ]]
   [[ $(grep ' stacks: ' <<<"$output") =~ ^[0-9T:Z-]+" stacks: failed: timed out after 1 s"$ ]]
   [[ $(tail -n 1 <<<"$output") =~ ^[0-9T:Z-]+" janitor: failed: timed out after 2 s"$ ]]
   # Nothing they started is left waiting, and the janitor stopped wrote no report, so the next
   # run starts it again.
   local pid
-  [[ $(grep -c . "$DOCKER_STATE/hung") == 2 ]]
+  [[ $(grep -c . "$DOCKER_STATE/hung") == 3 ]]
   while read -r pid; do
     if [[ -n $pid ]] && kill -0 "$pid" 2>/dev/null; then
       echo "docker call $pid still waits"
@@ -850,7 +866,29 @@ EOF
   stack_json '[true]'
   run_bin -1 team-timers run
   [[ $(grep ' janitor: ' <<<"$output") =~ " janitor: failed: $file is not one JSON object"$ ]]
-  assert_equal "$(docker_calls)" ""
+  assert_equal "$(docker_acts)" ""
+}
+
+@test "the slots step takes a reading on the holder every run, logging nothing, at most one a minute" {
+  run_bin -0 team-timers run
+  assert_equal "$(steps "$output")" "lease checkpoint"
+  assert_equal "$(readings | jq -c '[.os, .docker, .memory.total]')" '["linux",false,34359738368]'
+  run_bin -0 team-timers run
+  assert_equal "$(readings | wc -l)" 1
+  # Off the lease, none.
+  make_machine laptop
+  on_machine laptop run_bin -0 team-timers run
+  assert_equal "$(readings "$BATS_TEST_TMPDIR/machines/laptop/home")" ""
+}
+
+@test "a slots step that fails is logged with its reason, the steps after it still run, and the run exits 1" {
+  local file=$HOME/.config/agent-team/slots.json
+  echo '{"cap": "ten"}' >"$file"
+  run_bin -1 team-timers run
+  assert_equal "$output" "$(cat "$log")"
+  assert_equal "$(steps "$output")" "lease slots checkpoint"
+  [[ $(grep ' slots: ' <<<"$output") =~ ^[0-9T:Z-]+" slots: failed: $file: cap must be a whole number of 1 or more, not \"ten\""$ ]]
+  assert_equal "$(readings)" ""
 }
 
 @test "neither step runs off the lease, while another run holds the lock, offline or on a fenced machine; both run after the back step" {
@@ -861,6 +899,7 @@ EOF
   stack_json '{"heartbeat_sweep": true, "heartbeat_janitor": true}' "$BATS_TEST_TMPDIR/machines/laptop/home"
   on_machine laptop run_bin -0 team-timers run
   assert_equal "$(steps "$output")" "lease"
+  assert_equal "$(readings "$BATS_TEST_TMPDIR/machines/laptop/home")" ""
 
   mkdir -p "$state"
   run flock "$state/heartbeat.lock" "$REPO_ROOT/bin/team-timers" run
@@ -873,10 +912,12 @@ EOF
   run_bin -75 team-timers run
   assert_equal "$(steps "$output")" "probe"
   assert_equal "$(docker_calls)" ""
+  assert_equal "$(readings)" ""
 
   git -C "$TEAM_HOME" remote set-url origin "$origin"
   run_bin -0 team-timers run
   assert_equal "$(steps "$output")" "back stacks checkpoint janitor"
+  assert_equal "$(readings | wc -l)" 1
 
   steal_lease laptop home-pc
   calls=$(docker_calls | wc -l)

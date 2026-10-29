@@ -17,7 +17,10 @@ setup() {
   command -v docker >/dev/null || skip "docker is not installed"
   # The real Docker client config (its context, on Docker Desktop), whatever HOME the sandbox sets.
   export DOCKER_CONFIG=${DOCKER_CONFIG:-$HOME/.docker}
+  local docker_host=${DOCKER_HOST-}
   sandbox
+  # The sandbox points DOCKER_HOST away from the machine's Docker, which these tests reach.
+  if [[ -n $docker_host ]]; then export DOCKER_HOST=$docker_host; else unset DOCKER_HOST; fi
   cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
   stack_project shop
 }
