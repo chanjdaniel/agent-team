@@ -12,7 +12,7 @@
 # the script's help_more, if it defined one before sourcing), and provides die, usage_error, team_project, ledger_jq, ledger_append,
 # task_events, known_task_events, open_task_events, task_status, task_worktrees, local_path,
 # archive_left_out, rsync_rule, archive_task_dir, machine_name, os_release, team_os, tool_dirs,
-# team_tool_path, fence_reason, lease_gate, worktree_changes, same_path, bounded, trust_probe,
+# team_tool_path, fence_reason, lease_refusal, lease_gate, worktree_changes, same_path, bounded, trust_probe,
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin,
 # only_records, records_list, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
 # registered_pr, attribution_lines, strip_attribution, live_sessions, discord_token, discord_api,
@@ -339,6 +339,72 @@ fence_reason() {
   jq -r --arg since "$since" '"fenced since \($since)"
     + if (.holder | type) == "string" then " (holder seen \(.holder), epoch \(.epoch // "?"))" else "" end' \
     "$file" 2>/dev/null || echo "fenced since $since"
+}
+
+# Print why this machine must not <does> ("posts nothing to Discord; ..."), or fail when it may:
+# "<machine> is fenced since ...: a fenced machine <does>" (fence_reason), else "<machine> no
+# longer holds the lease: origin names <holder> (<state>, epoch <n>): a machine that lost the
+# lease <does>", when the lease on origin is not this machine's last write (team-lease's
+# lease.json) and names another holder or a higher epoch, so an old coordinator or worker acts on
+# nothing the holder owns, even before its heartbeat fences it. Origin is asked at most once a
+# minute (git ls-remote, cached in ~/.local/state/agent-team/probe.json: {"checked_at": "<UTC
+# time>", "reachable": true, "tip": "<commit>"}); a machine with no name or no origin, or an
+# unreachable origin, passes the lease part, since the heartbeat owns offline. The lease-fence
+# hook and team-post call it: lease_refusal <does>
+lease_refusal() {
+  local machine named=1 why
+  machine=$(machine_name 2>/dev/null) || machine="this machine" named=0
+  if why=$(fence_reason); then
+    printf '%s is %s: a fenced machine %s\n' "$machine" "$why" "$1"
+  elif ((named)) && why=$(lease_lost "$machine"); then
+    printf '%s: a machine that lost the lease %s\n' "$why" "$1"
+  else
+    return 1
+  fi
+}
+
+# Why <machine> no longer holds the lease on origin, or fail when it does or cannot tell
+# (lease_refusal's lease part): lease_lost <machine>
+lease_lost() {
+  local state=$HOME/.local/state/agent-team NET_ERR=/dev/null NET_TIMEOUT=20 tip record lease
+  git -C "$TEAM_HOME" remote get-url origin >/dev/null 2>&1 || return 1
+  lease_origin_tip "$state/probe.json" || return 1
+  tip=$LEASE_TIP
+  [[ -n $tip ]] || return 1
+  record=$(jq -c 'select(type == "object")' "$state/lease.json" 2>/dev/null) || record=''
+  [[ -n $record ]] || record='{}'
+  [[ $tip != "$(jq -r '.commit // empty' <<<"$record")" ]] || return 1
+  # Fetched without moving a ref (no FETCH_HEAD, no refmap), so team-lease's refs are never raced.
+  git -C "$TEAM_HOME" cat-file -e "$tip^{commit}" 2>/dev/null ||
+    { ((LEASE_PROBED)) && origin_git -C "$TEAM_HOME" fetch -q --no-tags --no-write-fetch-head --refmap= origin refs/heads/lease; } ||
+    return 1
+  lease=$(git -C "$TEAM_HOME" show "$tip:lease.json" 2>/dev/null) || return 1
+  jq -er --arg machine "$1" --argjson record "$record" '
+    select(.holder != $machine or ($record.holder == $machine and .epoch > $record.epoch))
+    | "\($machine) no longer holds the lease: origin names \(.holder) (\(.state), epoch \(.epoch))"' \
+    <<<"$lease" 2>/dev/null
+}
+
+# Set LEASE_TIP to the tip of origin's lease branch (empty when there is none), from the probe
+# file <probe> when it is at most a minute old, else from a new probe written there, and
+# LEASE_PROBED to 1 when this call asked origin; fails when origin was unreachable. Network
+# calls go through origin_git (NET_ERR and NET_TIMEOUT are the caller's): lease_origin_tip <probe>
+lease_origin_tip() {
+  local out reachable=true
+  LEASE_PROBED=0
+  if jq -e 'now - (.checked_at | fromdateiso8601) < 60' "$1" >/dev/null 2>&1; then
+    LEASE_TIP=$(jq -er 'select(.reachable == true) | .tip // ""' "$1") || return 1
+    return 0
+  fi
+  LEASE_PROBED=1
+  out=$(origin_git -C "$TEAM_HOME" ls-remote origin refs/heads/lease) || reachable=false
+  LEASE_TIP=${out%%[[:space:]]*}
+  mkdir -p "$(dirname "$1")"
+  jq -n --argjson reachable "$reachable" --arg tip "$LEASE_TIP" \
+    '{checked_at: (now | floor | todate), reachable: $reachable} + if $reachable then {tip: $tip} else {} end' \
+    >"$1.$$"
+  mv -f "$1.$$" "$1"
+  [[ $reachable == true ]]
 }
 
 # Refuse to start <what> ("a coordinator", "a worker") unless this machine holds the lease,

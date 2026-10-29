@@ -227,3 +227,33 @@ age_probe() {
   hook -0 Bash '{"command": "git push"}'
   assert_equal "$(probes)" 0
 }
+
+@test "team-post is blocked for workers and the coordinator alike when fenced or when origin names another holder" {
+  local command posts=("team-post T7 --file q.md" "/home/x/agent-team/bin/team-post --coordinator --file q.md"
+    "cd wt && team-post T7 --thread task --file q.md" $'team-log T7 note\nteam-post T7 --file q.md')
+  local others=("echo team-post" "grep -rn 'team-post' bin" "team-poster T7" "team-log T7 note")
+  for command in "${posts[@]}" "${others[@]}"; do
+    bash_call -0 "$command"
+    coordinator_call -0 "$command"
+  done
+
+  steal_lease laptop home-pc
+  age_probe 61
+  for command in "${posts[@]}"; do
+    bash_call -2 "$command"
+    assert_equal "$stderr" "Blocked: home-pc no longer holds the lease: origin names laptop (held, epoch 2): a machine that lost the lease posts nothing to Discord; the coordinator on the holder answers there."
+    coordinator_call -2 "$command"
+    assert_equal "$stderr" "Blocked: home-pc no longer holds the lease: origin names laptop (held, epoch 2): a machine that lost the lease posts nothing to Discord; the coordinator on the holder answers there."
+  done
+  for command in "${others[@]}"; do
+    bash_call -0 "$command"
+    coordinator_call -0 "$command"
+  done
+
+  fence
+  for command in "${posts[@]}"; do
+    bash_call -2 "$command"
+    assert_equal "$stderr" "Blocked: home-pc is fenced since 2026-10-22T14:00:00Z (holder seen laptop, epoch 2): a fenced machine posts nothing to Discord; the coordinator on the holder answers there."
+    coordinator_call -2 "$command"
+  done
+}
