@@ -33,7 +33,7 @@ stack_memory() {
       report "stack memory" WARN "$(tilde "$file") is not JSON" "$fix"
       return
     fi
-    problems=$(jq -r -L "$TEAM_LIB" 'include "stack"; settings_problems' <<<"$given")
+    problems=$(jq -r -L "$TEAM_LIB" 'include "stack"; settings_problems(settings_kinds)' <<<"$given")
     if [[ -n $problems ]]; then
       report "stack memory" WARN "$(tilde "$file")$problems" "$fix"
       return

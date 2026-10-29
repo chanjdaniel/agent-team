@@ -30,6 +30,12 @@ TOML
   stub_reply curl '{"id":"1563000000000000001"}'
 }
 
+teardown() {
+  # Let a slot lock holder a test left go, so bats does not wait on it.
+  touch "$BATS_TEST_TMPDIR/release"
+  wait 2>/dev/null || true
+}
+
 # The events of one kind in the sandbox ledger, one compact object per line.
 events() {
   jq -c --arg e "$1" 'select(.event == $e)' "$TEAM_HOME/ledger.jsonl"
@@ -388,4 +394,208 @@ FIXTURE
   run_bin -1 team-open --task T6 proj feature feat x "X"
   assert_contains "$output" "branch feat/T6-x already exists in $primary but no slot holds it"
   [[ ! -e $slots/1 ]]
+}
+
+# Make agent-team the reserved project, as on Daniel's machines: the code checkout is its primary
+# checkout, registered beside proj with a git pool of one slot; and name the machine home-pc.
+reserve_agent_team() {
+  local code
+  code=$(make_repo agent-team dev)
+  echo ".scratch/" >"$code/.gitignore"
+  git -C "$code" add .gitignore
+  git -C "$code" commit -q -m "chore: ignore scratch"
+  git -C "$code" push -q origin dev
+  code_checkout "$code"
+  cat >>"$TEAM_HOME/projects.toml" <<'TOML'
+
+[agent-team]
+repo = "owner/agent-team"
+path = "projects/agent-team"
+base = "dev"
+delivery = "direct-pr"
+merge_method = "merge"
+required_checks = []
+task_dir = ".scratch/task"
+docs = []
+toolkits = []
+
+[agent-team.pool]
+provider = "git"
+slots = ["slots/agent-team/1"]
+TOML
+  mkdir -p "$HOME/.config/agent-team"
+  echo home-pc >"$HOME/.config/agent-team/machine"
+}
+
+# holding <project> <first> <last>: the open tasks T<first> to T<last> of <project>, each holding
+# a slot in the ledger at ~/elsewhere/<project>/<n>.
+holding() {
+  local n
+  for ((n = $2; n <= $3; n++)); do
+    jq -cn --arg task "T$n" --arg p "$1" --arg wt "$HOME/elsewhere/$1/$n" \
+      '{ts: "2026-10-29T10:00:00Z", task: $task, event: "opened", project: $p, path: "feature", type: "feat",
+        title: "Held", branch: "feat/\($task)-held", base: "main", base_sha: "abc1234", worktree: $wt}' \
+      >>"$TEAM_HOME/ledger.jsonl"
+  done
+}
+
+@test "with cap 10 and 9 slots held by other projects, a task is refused naming the reserved slot and every holder, and agent-team's opens" {
+  reserve_agent_team
+  echo '{"cap": 10}' >"$HOME/.config/agent-team/slots.json"
+  holding proj 1 9
+  run_bin -75 --separate-stderr team-open proj feature feat late "Late"
+  assert_equal "$output" ""
+  local expected n
+  expected="team-open: no task slot for proj on home-pc: 9 of 10 held, and the last one is kept for agent-team (reserved 1)
+team-open: the cap is 10 (cap in ~/.config/agent-team/slots.json), effective 10: $(sampled_reason)
+team-open: the slots:"
+  for n in 1 2 3 4 5 6 7 8 9; do expected+=$'\n'"  T$n proj in ~/elsewhere/proj/$n"; done
+  assert_equal "$stderr" "$expected"
+  [[ ! -e $slots/1 && ! -e $TEAM_HOME/tasks/T10 ]]
+  assert_equal "$(git -C "$primary" branch --list 'feat/T10-*')" ""
+  assert_equal "$(events opened | wc -l)" "9"
+  assert_equal "$(stub_calls curl)" ""
+
+  run_bin -0 --separate-stderr team-open agent-team feature feat self "Self"
+  assert_equal "$(jq -r '"\(.task) \(.worktree)"' <<<"$output")" "T10 $HOME/slots/agent-team/1"
+}
+
+@test "with agent-team holding 3 and others 6 at cap 10, another project opens the tenth, then every project is refused for the cap" {
+  reserve_agent_team
+  echo '{"cap": 10}' >"$HOME/.config/agent-team/slots.json"
+  holding agent-team 1 3
+  holding proj 4 9
+  run_bin -0 --separate-stderr team-open proj feature feat tenth "Tenth"
+  assert_equal "$(jq -r '"\(.task) \(.worktree)"' <<<"$output")" "T10 $slots/1"
+  run_bin -75 --separate-stderr team-open proj feature feat late "Late"
+  assert_equal "${stderr%%$'\n'*}" "team-open: no task slot for proj on home-pc: 10 of 10 held"
+  [[ ! -e $slots/2 ]]
+  # agent-team's pool has a free slot, but the cap is met first.
+  run_bin -75 --separate-stderr team-open agent-team feature feat self "Self"
+  assert_equal "${stderr%%$'\n'*}" "team-open: no task slot for agent-team on home-pc: 10 of 10 held"
+  [[ ! -e $HOME/slots/agent-team/1 ]]
+}
+
+@test "a refusal for the cap is said in full before team-open exits, however late its words arrive" {
+  reserve_agent_team
+  echo '{"cap": 10}' >"$HOME/.config/agent-team/slots.json"
+  holding proj 1 10
+  # The sed that says team-slots' words as team-open's takes a second to start: team-open must
+  # wait for it, or it exits 75 with nothing said.
+  local sed
+  sed=$(command -v sed)
+  ln -f "$(shared slow-sed <<EOF
+#!/usr/bin/env bash
+[[ \$1 != -u ]] || sleep 1
+exec "$sed" "\$@"
+EOF
+)" "$BATS_TEST_TMPDIR/stubs/sed"
+  run_bin -75 --separate-stderr team-open proj feature feat late "Late"
+  assert_equal "${stderr%%$'\n'*}" "team-open: no task slot for proj on home-pc: 10 of 10 held"
+}
+
+# reading <minutes> <others GiB>: append a reading taken <minutes> before $NOW on a machine of
+# 30.6 GiB and 12 cores, other programs using <others GiB> and 1 core.
+reading() {
+  local file=$HOME/.local/state/agent-team/slots/readings.jsonl
+  mkdir -p "${file%/*}"
+  jq -cn --arg at "$(date -u -d "@$((NOW - $1 * 60))" +%FT%TZ)" --argjson others "$2" '
+    (30.6 * 1073741824 | floor) as $total | ($others * 1073741824 | floor) as $others
+    | {at: $at, os: "linux", docker: true, memory: {total: $total, available: ($total - $others), team: 0, others: $others},
+       cpu: {cpus: 12, seconds: 300, team: 0, others: 1}}' >>"$file"
+}
+
+@test "an effective cap lowered by the readings refuses another project with its reason, and it opens once they leave the window" {
+  reserve_agent_team
+  echo '{"cap": 10}' >"$HOME/.config/agent-team/slots.json"
+  holding proj 1 4
+  NOW=$(date +%s)
+  reading 6 18
+  reading 1 18
+  local first second
+  first=$(date -d "@$((NOW - 360))" +%H:%M) second=$(date -d "@$((NOW - 60))" +%H:%M)
+  run_bin -75 --separate-stderr team-open proj feature feat late "Late"
+  assert_equal "$(head -n 2 <<<"$stderr")" "team-open: no task slot for proj on home-pc: 4 of 5 held, and the last one is kept for agent-team (reserved 1)
+team-open: the cap is 10 (cap in ~/.config/agent-team/slots.json), effective 5: lowered by memory: other programs use 18.0 GiB of 30.6 GiB, leaving room for 5 tasks of 1.25 GiB after 6 GiB kept (the readings of $first and $second)"
+  [[ ! -e $slots/1 && ! -e $TEAM_HOME/tasks/T5 ]]
+
+  rm "$HOME/.local/state/agent-team/slots/readings.jsonl"
+  reading 21 18
+  reading 16 18
+  run_bin -0 --separate-stderr team-open proj feature feat late "Late"
+  assert_equal "$(jq -r '"\(.task) \(.worktree)"' <<<"$output")" "T5 $slots/1"
+}
+
+@test "a full pool is refused with its own message while the cap has room" {
+  mkdir -p "$HOME/.config/agent-team"
+  echo '{"cap": 10}' >"$HOME/.config/agent-team/slots.json"
+  git -C "$primary" worktree add -q "$slots/1" -b feat/T3-busy origin/main
+  git -C "$primary" worktree add -q "$slots/2" -b feat/T4-busy origin/main
+  run_bin -75 --separate-stderr team-open proj feature feat late "Late"
+  assert_equal "$stderr" "$(printf '%s\n' "team-open: every slot of proj is taken:" \
+    "  $slots/1: T3 (feat/T3-busy)" "  $slots/2: T4 (feat/T4-busy)")"
+}
+
+@test "a half-open re-run whose slot holds its branch is never refused by the cap; a new task is" {
+  mkdir -p "$HOME/.config/agent-team"
+  echo '{"cap": 1, "reserved": 0}' >"$HOME/.config/agent-team/slots.json"
+  stub_reply curl '{"message":"Missing Access"}'
+  run_bin -1 --separate-stderr team-open proj feature feat flaky "Flaky"
+  assert_contains "$stderr" "T1 is half open in $slots/1"
+  stub_reply curl '{"id":"1563000000000000009"}'
+  run_bin -75 --separate-stderr team-open proj feature feat late "Late"
+  assert_equal "$stderr" "team-open: no task slot for proj on this machine: 1 of 1 held
+team-open: the cap is 1 (cap in ~/.config/agent-team/slots.json), effective 1: $(sampled_reason)
+team-open: the slots:
+  T1 proj in ~/slots/proj/1 (half open)"
+  run_bin -0 --separate-stderr team-open --task T1 proj feature feat flaky "Flaky"
+  assert_equal "$(jq -r .worktree <<<"$output")" "$slots/1"
+}
+
+@test "a malformed slots.json refuses a new slot with the reason, taking none" {
+  mkdir -p "$HOME/.config/agent-team"
+  echo '{"cap": 0}' >"$HOME/.config/agent-team/slots.json"
+  run_bin -1 --separate-stderr team-open proj feature feat late "Late"
+  assert_equal "$stderr" "team-open: $HOME/.config/agent-team/slots.json: cap must be a whole number of 1 or more, not 0"
+  [[ ! -e $slots/1 && ! -e $TEAM_HOME/tasks/T1 ]]
+}
+
+# hold_slot_lock <line>: hold the machine's slot lock in the background, its holder's line <line>,
+# until $BATS_TEST_TMPDIR/release exists; returns once it is held.
+hold_slot_lock() {
+  local lock=$HOME/.local/state/agent-team/slots.lock
+  mkdir -p "${lock%/*}"
+  echo "$1" >"$lock"
+  (
+    exec {fd}<>"$lock"
+    flock -x "$fd"
+    touch "$BATS_TEST_TMPDIR/held"
+    until [[ -e $BATS_TEST_TMPDIR/release ]]; do sleep 0.1; done
+  ) 3>&- &
+  until [[ -e $BATS_TEST_TMPDIR/held ]]; do sleep 0.1; done
+}
+
+@test "a slot lock held past wait_minutes exits 75 naming its holder, taking no slot" {
+  local lock=$HOME/.local/state/agent-team/slots.lock
+  mkdir -p "${lock%/*}" "$HOME/.config/agent-team"
+  echo '{"wait_minutes": 0.02}' >"$HOME/.config/agent-team/slots.json"
+  hold_slot_lock "team-open T7 conv (pid 7) since 2026-10-29 10:00:00 +0000"
+  run_bin -75 --separate-stderr team-open proj feature feat late "Late"
+  touch "$BATS_TEST_TMPDIR/release"
+  assert_equal "$stderr" "team-open: waiting up to 0.02 minutes for the machine's slot lock, held by team-open T7 conv (pid 7) since 2026-10-29 10:00:00 +0000
+team-open: the machine's slot lock is still held after 0.02 minutes, by team-open T7 conv (pid 7) since 2026-10-29 10:00:00 +0000"
+  [[ ! -e $slots/1 && ! -e $TEAM_HOME/tasks/T1 ]]
+
+  # Once it is free, a run takes it, writes its own line and lets it go when it ends.
+  wait
+  run_bin -0 --separate-stderr team-open proj feature feat late "Late"
+  [[ $(cat "$lock") =~ ^team-open\ T1\ proj\ \(pid\ [0-9]+\)\ since\  ]]
+  run -0 flock -n "$lock" true
+}
+
+@test "--help documents the machine's cap and its refusal" {
+  run_bin -0 team-open --help
+  assert_contains "$output" "The machine's cap on task slots, across every project, holds too"
+  assert_contains "$output" "team-slots check under the machine's slot lock"
+  assert_contains "$output" "Never refused by the cap"
 }

@@ -3,7 +3,7 @@
 # temporary team home and HOME, with claude, gh, curl, op, systemctl and launchctl replaced by
 # logging stubs, so no test reaches this machine's own service managers or 1Password. A test of
 # a script that runs Docker adds a stub docker with `load helpers/docker` (tests/helpers/docker.bash
-# documents it), and never reaches this machine's Docker.
+# documents it), and never reaches this machine's Docker, which DOCKER_HOST points away from.
 # shellcheck shell=bash
 
 bats_require_minimum_version 1.5.0
@@ -82,6 +82,16 @@ sandbox() {
 
   stub_command claude gh curl op systemctl launchctl
   export PATH=$root/stubs:$PATH
+
+  # The machine team-slots reads its load from (its seams): no process, 12 cores and 24 GiB of 32
+  # available, and a Docker socket nothing listens on, so no reading depends on the machine the
+  # suite runs on, macOS (whose sysctl and vm_stat TEAM_MEMINFO stands for too) or Linux, and no
+  # test reaches its Docker unless it stubs one (helpers/docker).
+  export TEAM_SLOTS_PROCS=$root/slots-procs TEAM_SLOTS_CPUS=12 TEAM_MEMINFO=$root/meminfo
+  export DOCKER_HOST=unix://$root/no-docker.sock
+  : >"$TEAM_SLOTS_PROCS"
+  printf 'MemTotal:       %s kB\nMemFree:         1048576 kB\nMemAvailable:   %s kB\n' $((32 * 1024 * 1024)) \
+    $((24 * 1024 * 1024)) >"$TEAM_MEMINFO"
 
   # git reads only the sandbox's config.
   export GIT_CONFIG_NOSYSTEM=1
@@ -170,6 +180,13 @@ push_to_dev() {
   git -C "$clone" commit -q -m "feat: change $2"
   git -C "$clone" push -q origin dev
   git -C "$clone" rev-parse HEAD
+}
+
+# The effective cap's reason when team-slots took its own reading on the sandbox's idle machine,
+# the newest under <home> (default HOME): sampled_reason [<home>]
+sampled_reason() {
+  tail -n 1 "${1:-$HOME}/.local/state/agent-team/slots/readings.jsonl" |
+    jq -r '"other programs use 8.0 GiB of 32.0 GiB (the reading of \(.at | fromdateiso8601 | strflocaltime("%H:%M")))"'
 }
 
 # The stub <cmd> prints <stdout> and exits with <status> (default 0).

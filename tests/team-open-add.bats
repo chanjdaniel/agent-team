@@ -199,6 +199,23 @@ ledger_line() {
   assert_equal "$(events worktree-added)" ""
 }
 
+@test "--add is held to the machine's cap: with no task slot it leases nothing, and a re-run once one frees adds it" {
+  mkdir -p "$HOME/.config/agent-team"
+  echo '{"cap": 1, "reserved": 0}' >"$HOME/.config/agent-team/slots.json"
+  run_bin -0 team-open home feature feat one "One"
+  run_bin -75 --separate-stderr team-open --task T1 --add conv chore two
+  assert_equal "$output" ""
+  assert_equal "$stderr" "team-open: no task slot for conv on this machine: 1 of 1 held
+team-open: the cap is 1 (cap in ~/.config/agent-team/slots.json), effective 1: $(sampled_reason)
+team-open: the slots:
+  T1 home in ~/slots/home/1"
+  assert_equal "$(stub_calls th-lease.sh)" ""
+  assert_equal "$(events worktree-added)" ""
+  echo '{"cap": 2, "reserved": 0}' >"$HOME/.config/agent-team/slots.json"
+  run_bin -0 --separate-stderr team-open --task T1 --add conv chore two
+  assert_equal "$(jq -r .worktree <<<"$output")" "${conv_slots[0]}"
+}
+
 @test "with the treehouse pool full --add exits 75 with the lease's message" {
   run_bin -0 team-open home feature feat one "One"
   : >"$BATS_TEST_TMPDIR/free"

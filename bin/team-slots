@@ -1,0 +1,440 @@
+#!/usr/bin/env bash
+# Say the machine's task slots: how many tasks may hold a worktree at once on this machine,
+# across every project, how many of them are kept for the reserved project, and which tasks hold
+# them.
+#
+# Usage: team-slots [status] [--json] [--stored]
+#        team-slots check <project> [--lock <fd> --label <text>]
+#        team-slots sample
+#
+# status    The default. One summary line ("home-pc: 7 of 10 task slots held, 1 kept for
+#           agent-team (agent-team holds 1); effective 10"), then the cap, where it came from and
+#           the effective cap's reason, then one line per held slot: its task, project and
+#           worktree (~ for the home directory), "(half open)" when it is. Without a machine name
+#           (~/.config/agent-team/machine) it says "this machine". It reads the settings, the
+#           machine's name, the registry, the ledger, git (each primary checkout's worktree list)
+#           and the stored readings, never the session list; with no reading of the last 10
+#           minutes (no heartbeat takes them), it first takes one as sample does, and one it
+#           cannot take is said on stderr, the stored ones read as they are; with --stored it
+#           never takes one, so it writes nothing (team-doctor's slots line reads it so).
+#           With --json, one object: {schema: "team-slots/1", machine (null without a name),
+#           summary (the summary line), settings (every key below, and from: each key's source, "slots.json" or "default"),
+#           reserved_project (null with none), effective: {cap, lowered_by (null, "memory" or
+#           "cpu"), reason, readings (the window's, oldest first)}, held: [{task, project,
+#           worktree, half_open}], counts: {held, reserved_held, others_held}, room: {reserved
+#           (null with no reserved project), others}, stale (true with no reading, or the newest
+#           more than 15 minutes old)}.
+# check     Whether the registered project <project>'s task may take a new slot, by the room
+#           below: exit 0 with room, saying nothing; else exit 75 with the refusal on stderr: why
+#           ("no task slot for conventioner on home-pc: 9 of 10 held, and the last one is kept for
+#           agent-team (reserved 1)"), the cap line as status says it, then "the slots:" and one
+#           line per held slot. An unregistered project is a usage error. It takes a reading
+#           first as status does.
+#           With --lock, it first takes the machine's slot lock, an exclusive flock on the
+#           descriptor <fd>, which the caller opened read-write on
+#           ~/.local/state/agent-team/slots.lock, so the lock outlasts the check until the caller
+#           closes it (team-open holds it until the slot it takes holds the task's branch, so two
+#           runs never take the last slot), and writes "<text> since <YYYY-MM-DD HH:MM:SS +zzzz>"
+#           into that file as its holder's line (team-open's text is "team-open T<n> <project>
+#           (pid <pid>)"). While another run holds it, it says once that it waits and for whom,
+#           waits up to wait_minutes, then exits 75 naming the holder ("another run" before it
+#           wrote its line).
+# sample    Takes one reading of the machine's load and appends it to the readings, printing
+#           nothing (the heartbeat's slots step runs it every 5 minutes); within 60 seconds of
+#           the newest reading it appends nothing. A reading it cannot take is its reason on
+#           stderr, exit 1, with no reading or snapshot written: a command below that fails or
+#           prints what it cannot read is named. The memory: on Linux /proc/meminfo's MemTotal
+#           and MemAvailable; on macOS sysctl -n hw.memsize, and vm_stat's free, inactive,
+#           speculative and purgeable pages times its page size. The processes are ps -A -o
+#           pid=,ppid=,rss=,time= with each one's working directory, from /proc/<pid>/cwd on
+#           Linux and one lsof -a -d cwd -Fpn on macOS (none when it cannot be read, another
+#           user's); the team's are each process whose directory is a team path or below one,
+#           and every descendant of one by parent pid, a test run in /tmp included. The team
+#           paths: the team home, the code checkout, every registered project's slots (a
+#           treehouse pool's numbered ones beside them too), each held worktree, and
+#           ~/.no-mistakes (the gate's).
+#           The team's memory is their resident memory and the team and gate stacks' (team-stack
+#           ls --json's memory_bytes, given 30 seconds; on macOS that memory is Docker
+#           Desktop's VM's, whose process is no team process); the others' is the total less the
+#           available less the team's, never below 0. The CPU is read against the snapshot
+#           ~/.local/state/agent-team/slots/procs.tsv (each process's pid and cumulative CPU
+#           seconds, replaced by each reading) when it is 60 seconds to 15 minutes old, else
+#           not: each process's seconds since then (all of them for a process new since, or
+#           whose count is lower, its pid used again), summed for the team's and the others',
+#           over the seconds between; the team's adds the team and gate stacks' cpu_percent,
+#           which the others', holding the containers' processes, is less of, never below 0.
+#           Docker not answering in time leaves the stacks out, so they count as the others'
+#           (the cap errs lower, never higher), and the reading says "docker": false.
+#
+# The machine's settings, ~/.config/agent-team/slots.json, beside stack.json: one JSON object
+# whose keys are all optional:
+#   cap             a whole number of 1 or more, default 6: the most task slots held at once
+#   reserved        a whole number of 0 or more, less than cap, default 1: the slots kept for
+#                   the reserved project
+#   dynamic         true or false, default true: whether the readings may lower the cap
+#   task_gib        a number above 0, default 1.25: the memory one more task needs
+#   reserve_gib     a number of 0 or more, default 6: the memory kept free beyond the tasks
+#   task_cores      a number above 0, default 0.5: the CPU one more task needs, in cores
+#   reserve_cores   a number of 0 or more, default 2: the cores kept free beyond the tasks
+#   window_minutes  a whole number of 1 or more, default 15: how far back readings count
+#   wait_minutes    a number of 0 or more, default 15: how long team-open waits for another
+#                   run's slot lock
+# A file that is not one JSON object, a key of the wrong kind, an unknown key and a reserved not
+# less than cap are refused, naming each.
+#
+# The reserved project is the registered project whose primary checkout is this code checkout,
+# or the primary checkout of the one it is a linked worktree of (team-project --find path),
+# agent-team on Daniel's team; with none, reserved is ignored, and the summary says so.
+# A slot is held by each open worktree in the ledger (opened or added, not returned, of a task
+# not closed), across every project and wherever its path was recorded, and by each half-open
+# one: a registered worktree of a registered project's primary checkout, but the checkout
+# itself, whose branch names a task (<type>/T<n>-<slug>) that has no closed event and no open
+# worktree of that project in the ledger. So a failed open counts until it is finished, and a
+# closed task's kept worktree does not; a task in two projects holds two.
+# The readings of the machine's load are the lines of
+# ~/.local/state/agent-team/slots/readings.jsonl, kept to the last 24 hours (a broken line is
+# dropped when sample appends), one JSON object each: {at (UTC, YYYY-MM-DDTHH:MM:SSZ), os,
+# docker (whether Docker answered), memory: {total, available, team, others} in bytes, cpu:
+# {cpus, seconds (since the snapshot), team, others} in cores busy, or null when the CPU was not
+# read}; a test writes the file to simulate them. A broken line is skipped, and said once on
+# stderr.
+# The effective cap: a reading's fit is how many tasks the machine carries beside the other
+# programs, the lower of memory's floor((total - others - reserve_gib) / task_gib) and, when the
+# CPU was read, the CPU's floor((cpus - others - reserve_cores) / task_cores), never below 0. Its
+# confirmed fit is the higher of its fit and the previous reading's (the one before the window
+# for the window's first, and none for the first reading ever), so a lower number holds only once
+# two readings in a row show it. The effective cap is the lowest confirmed fit of the readings in
+# the last window_minutes, at most cap and never below the slots kept for the reserved project,
+# its reason saying what lowered it ("lowered by memory: other programs use 18.2 GiB of 30.6 GiB,
+# leaving room for 6 tasks of 1.25 GiB after 6 GiB kept (the readings of 13:05 and 13:10)", in
+# local time) or what the latest reading saw. With dynamic false, or no reading in the window, it
+# is cap. So one reading never lowers it, two in a row lower it at once, and it rises back once
+# that pair is older than the window.
+# The room, with E the effective cap, R the reserved count, H every slot held and O those held by
+# projects other than the reserved one: the reserved project's task may take a slot while H < E,
+# and any other project's while H < E and O < E - R. So the reserved project always has R slots,
+# held or free, its held ones counting toward them; room.reserved is E - H, room.others the lower
+# of that and E - R - O, neither below 0.
+#
+# Test seams: TEAM_MEMINFO names a file read in place of /proc/meminfo, and on macOS of sysctl
+# and vm_stat, TEAM_SLOTS_PROCS a file of the processes read in place of ps and /proc or lsof,
+# one per line, tab-separated: pid, parent pid, resident KiB, cumulative CPU seconds and working
+# directory (empty when unreadable),
+# TEAM_SLOTS_CPUS the CPU count in place of nproc's, and TEAM_SLOTS_DOCKER_SECONDS the 30
+# seconds team-stack ls is given.
+#
+# Exit 0 done (check: there is room), 1 refused (a malformed slots.json, with the reason, or a
+# registry team-project refuses), 2 usage error, 75 check: no task slot, or the slot lock still
+# held after wait_minutes.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+USAGE="usage: team-slots [status] [--json] [--stored] | team-slots check <project> [--lock <fd> --label <text>] | team-slots sample"
+SETTINGS=$HOME/.config/agent-team/slots.json
+LOCK=$HOME/.local/state/agent-team/slots.lock
+READINGS=$HOME/.local/state/agent-team/slots/readings.jsonl
+SNAPSHOT=$HOME/.local/state/agent-team/slots/procs.tsv
+# The code checkout, or the primary checkout of the one it is a linked worktree of.
+CODE=$(dirname "$(dirname "$TEAM_LIB")")
+if common=$(git -C "$CODE" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) &&
+  [[ $(basename "$common") == .git ]]; then
+  CODE=$(dirname "$common")
+fi
+
+json='' check='' lock_fd='' label='' sample='' stored=''
+if [[ ${1:-} == sample ]]; then
+  [[ $# -eq 1 ]] || usage_error "$USAGE"
+  sample=1
+elif [[ ${1:-} == check ]]; then
+  [[ $# -ge 2 && $2 != -* ]] || usage_error "$USAGE"
+  check=$2
+  shift 2
+  while (($#)); do
+    case $1 in
+      --lock)
+        [[ ${2:-} =~ ^[0-9]+$ ]] || usage_error "--lock takes a file descriptor; $USAGE"
+        lock_fd=$2
+        shift 2
+        ;;
+      --label)
+        [[ -n ${2:-} ]] || usage_error "--label takes a text; $USAGE"
+        label=$2
+        shift 2
+        ;;
+      *) usage_error "$USAGE" ;;
+    esac
+  done
+  [[ -n $lock_fd || -z $label ]] || usage_error "--label goes with --lock; $USAGE"
+  [[ -z $lock_fd || -n $label ]] || usage_error "--lock needs --label, its holder's line; $USAGE"
+  # The descriptor's file by fstat (stat's -), since -ef on /dev/fd/<fd> is false on macOS.
+  [[ -z $lock_fd ]] || { [[ -e $LOCK ]] &&
+    [[ $(stat -L -c %d:%i - 2>/dev/null <&"$lock_fd") == "$(stat -L -c %d:%i "$LOCK")" ]]; } ||
+    usage_error "--lock takes a descriptor open on $LOCK, and $lock_fd is not"
+else
+  [[ ${1:-} != status ]] || shift
+  for arg; do
+    case $arg in
+      --json) json=1 ;;
+      --stored) stored=1 ;;
+      *) usage_error "$USAGE" ;;
+    esac
+  done
+fi
+
+# slots.json's values (jq -s), [] with no file; a malformed one is refused with the reason.
+given='[]'
+if [[ -e $SETTINGS ]]; then
+  given=$(jq -s . "$SETTINGS" 2>&1) || die "$SETTINGS is not JSON: $(grep . <<<"$given" | tail -n 1)"
+  problems=$(jq -r -L "$TEAM_LIB" 'include "slots"; slots_problems' <<<"$given")
+  [[ -z $problems ]] || die "$SETTINGS$problems"
+fi
+
+machine=$(machine_name 2>/dev/null) || machine=''
+projects=$(team_project --list)
+[[ -z $check ]] || grep -qxF -- "$check" <<<"$projects" ||
+  usage_error "unknown project '$check'; known: $(jq -Rnr '[inputs] | join(", ")' <<<"$projects")"
+
+# The machine's slot lock, on the caller's descriptor, before the count.
+if [[ -n $lock_fd ]]; then
+  holder() {
+    local line=''
+    [[ ! -s $LOCK ]] || IFS= read -r line <"$LOCK" || true
+    echo "${line:-another run}"
+  }
+  if ! flock -n -x "$lock_fd"; then
+    read -r wait seconds < <(jq -r -L "$TEAM_LIB" 'include "slots"; slots_settings.wait_minutes | "\(.) \(. * 60)"' <<<"$given")
+    [[ $seconds != 0 ]] || { echo "${0##*/}: the machine's slot lock is held by $(holder)" >&2 && exit 75; }
+    echo "${0##*/}: waiting up to $wait minutes for the machine's slot lock, held by $(holder)" >&2
+    flock -w "$seconds" -x "$lock_fd" || {
+      echo "${0##*/}: the machine's slot lock is still held after $wait minutes, by $(holder)" >&2
+      exit 75
+    }
+  fi
+  printf '%s since %(%F %T %z)T\n' "$label" -1 >"$LOCK"
+fi
+reserved_project=''
+[[ -z $projects ]] || reserved_project=$(team_project --find path "$CODE" | head -n 1)
+
+# Every registered project's linked worktrees, but its primary checkout, each {project, branch,
+# worktree} (branch "" when detached), from its git worktree list; a primary checkout that is
+# not a git checkout has none.
+worktrees=$(
+  while IFS= read -r project; do
+    [[ -n $project ]] || continue
+    primary=$(team_project "$project" path)
+    git -C "$primary" worktree list --porcelain 2>/dev/null | awk -v project="$project" '
+      function out() { if (n++ > 0) printf "%s\t%s\t%s\n", project, branch, path }
+      /^worktree / { if (path != "") out(); path = substr($0, 10); branch = "" }
+      /^branch refs\/heads\// { branch = substr($0, 19) }
+      END { if (path != "") out() }' || true
+  done <<<"$projects" | jq -Rn '[inputs | split("\t") | {project: .[0], branch: .[1], worktree: .[2]}]'
+)
+
+# The last line <command> said on stderr ($work/err), or "no reason given".
+said() {
+  grep . "$work/err" 2>/dev/null | tail -n 1 | grep . || echo "no reason given"
+}
+
+# The processes as TEAM_SLOTS_PROCS gives them, one per line, tab-separated: pid, parent pid,
+# resident KiB, cumulative CPU seconds and working directory (empty when it cannot be read), from
+# ps and the working directories in $work/cwds, one "<pid><TAB><directory>" per line.
+ps_procs() {
+  ps -A -o pid=,ppid=,rss=,time= 2>"$work/err" >"$work/ps" || die "ps -A -o pid=,ppid=,rss=,time= failed: $(said)"
+  awk -F '\t' -v cwds="$work/cwds" '
+    # ps time, [[dd-]hh:]mm:ss[.ff] (macOS: mm:ss.ff, its minutes past 59), in whole seconds.
+    function seconds(time,   days, n, part, i, total) {
+      days = 0
+      if (index(time, "-")) { days = substr(time, 1, index(time, "-") - 1); time = substr(time, index(time, "-") + 1) }
+      n = split(time, part, ":")
+      total = 0
+      for (i = 1; i <= n; i++) total = total * 60 + part[i]
+      return int(days * 86400 + total)
+    }
+    FILENAME == cwds { cwd[$1] = $2; next }
+    {
+      n = split($0, f, " ")
+      if (n != 4 || f[1] !~ /^[0-9]+$/ || f[2] !~ /^[0-9]+$/ || f[3] !~ /^[0-9]+$/ || f[4] !~ /^([0-9]+-)?[0-9:.]+$/) {
+        line = $0; sub(/^ +/, "", line); print line > "/dev/stderr"; exit 1
+      }
+      printf "%s\t%s\t%s\t%s\t%s\n", f[1], f[2], f[3], seconds(f[4]), cwd[f[1]]
+    }' "$work/cwds" "$work/ps" 2>"$work/err" ||
+    die "ps -A -o pid=,ppid=,rss=,time= printed a line that is no process: $(said)"
+}
+
+# The working directories on Linux, from /proc/<pid>/cwd (empty when it cannot be read).
+linux_cwds() {
+  find /proc -mindepth 2 -maxdepth 2 -name cwd -printf '%h\t%l\n' 2>/dev/null | sed 's#^/proc/##' >"$work/cwds" || true
+}
+
+# The working directories on macOS, from lsof's p (pid) and n (name) fields; a process lsof
+# cannot read is not listed, and a name that is no absolute path is no directory.
+macos_cwds() {
+  lsof -a -d cwd -Fpn 2>"$work/err" >"$work/lsof" || die "lsof -a -d cwd -Fpn failed: $(said)"
+  awk '
+    /^p[0-9]+$/ { pid = substr($0, 2); next }
+    /^f/ && pid != "" { next }
+    /^n/ && pid != "" { if (substr($0, 2, 1) == "/") printf "%s\t%s\n", pid, substr($0, 2); next }
+    { print > "/dev/stderr"; exit 1 }' "$work/lsof" >"$work/cwds" 2>"$work/err" ||
+    die "lsof -a -d cwd -Fpn printed a line that is no process or directory: $(said)"
+}
+
+# The memory on macOS, "<total> <available>" in bytes: sysctl's hw.memsize, and vm_stat's free,
+# inactive, speculative and purgeable pages times its page size.
+macos_memory() {
+  local total available
+  total=$(sysctl -n hw.memsize 2>"$work/err") || die "sysctl -n hw.memsize failed: $(said)"
+  [[ $total =~ ^[0-9]+$ ]] || die "sysctl -n hw.memsize printed no memory size: $total"
+  vm_stat 2>"$work/err" >"$work/vm_stat" || die "vm_stat failed: $(said)"
+  available=$(awk '
+    /^Mach Virtual Memory Statistics: \(page size of [0-9]+ bytes\)/ { match($0, /[0-9]+/); size = substr($0, RSTART, RLENGTH) }
+    /^Pages (free|inactive|speculative|purgeable):/ {
+      count = $NF; sub(/\.$/, "", count)
+      if (count !~ /^[0-9]+$/) { bad = 1; exit }
+      pages += count; if (!($2 in seen)) { seen[$2]; kinds++ }
+    }
+    END { if (bad || size == "" || kinds != 4) exit 1; printf "%.0f\n", pages * size }' "$work/vm_stat") ||
+    die "vm_stat printed no page size and free, inactive, speculative and purgeable pages"
+  echo "$total $available"
+}
+
+# Take one reading of the machine's load and append it to the readings, as the header says.
+take_reading() {
+  local now os meminfo memory total available cpus age previous=null stacks=null line
+  mkdir -p "${READINGS%/*}"
+  exec {sample_fd}>>"${READINGS%/*}/sample.lock"
+  flock -w 60 "$sample_fd" || die "another reading is still being taken after 60 seconds"
+  now=$(date +%s)
+  if [[ -e $READINGS ]] && jq -Rne -L "$TEAM_LIB" --argjson now "$now" \
+    'include "slots"; [inputs] | slots_readings | .readings[-1].at // empty | fromdateiso8601 > $now - 60' \
+    "$READINGS" >/dev/null; then
+    return 0
+  fi
+  case $(uname -s) in
+    Linux) os=linux ;;
+    Darwin) os=macos ;;
+    *) die "no reading of the machine's load on $(uname -s)" ;;
+  esac
+  work=$(mktemp -d)
+  trap 'rm -rf "$work"' EXIT
+  if [[ $os == linux || -n ${TEAM_MEMINFO:-} ]]; then
+    meminfo=${TEAM_MEMINFO:-/proc/meminfo}
+    read -r total available < <(awk '$1 == "MemTotal:" { total = $2 * 1024 } $1 == "MemAvailable:" { available = $2 * 1024 }
+      END { if (total == "" || available == "") exit 1; printf "%.0f %.0f\n", total, available }' "$meminfo" 2>/dev/null) ||
+      die "no MemTotal and MemAvailable in $meminfo"
+  else
+    memory=$(macos_memory) || exit 1
+    read -r total available <<<"$memory"
+  fi
+  cpus=${TEAM_SLOTS_CPUS:-$(nproc)}
+
+  if [[ -n ${TEAM_SLOTS_PROCS:-} ]]; then
+    cp "$TEAM_SLOTS_PROCS" "$work/procs"
+  else
+    "${os}_cwds"
+    ps_procs >"$work/procs"
+  fi
+  jq -Rn '[inputs | select(test("\\S")) | split("\t")
+    | {pid: (.[0] | tonumber), ppid: (.[1] | tonumber), rss: (.[2] | tonumber), seconds: (.[3] | tonumber), cwd: (.[4] // "")}]' \
+    "$work/procs" >"$work/procs.json" 2>"$work/err" ||
+    die "the processes are malformed: $(grep -m1 . "$work/err" || echo "jq could not read them")"
+
+  # The team paths: the team home, the code checkout, every registered project's slots, each
+  # held worktree, and the gate's ~/.no-mistakes.
+  {
+    printf '%s\n' "$TEAM_HOME" "$(dirname "$TEAM_LIB")/.." "$CODE" "$HOME/.no-mistakes"
+    while IFS= read -r project; do
+      [[ -n $project ]] || continue
+      facts=$(team_project "$project")
+      mapfile -t registered < <(jq -r '.pool.slots[]' <<<"$facts")
+      if [[ $(jq -r .pool.provider <<<"$facts") == treehouse ]]; then
+        treehouse_slots "${registered[@]}"
+      else
+        printf '%s\n' "${registered[@]}"
+      fi
+    done <<<"$projects"
+    jq -nRr -L "$TEAM_LIB" --arg home "$HOME" --argjson worktrees "$worktrees" \
+      "$held"' | .[].worktree' "$ledger"
+  } | while IFS= read -r path; do
+    [[ -z $path ]] || realpath -m -- "$path"
+  done | jq -Rn '[inputs | select(. != "/")] | unique' >"$work/paths.json"
+
+  # The team and gate stacks, from team-stack; Docker not answering in time leaves them out.
+  # timeout runs it in a process group of its own, so a signal that stops this run (the
+  # heartbeat's own time limit) is passed on to it, and through it to what it started.
+  TEAM_HOME=$TEAM_HOME timeout --kill-after=5 "${TEAM_SLOTS_DOCKER_SECONDS:-30}" \
+    "$(dirname "$TEAM_LIB")/team-stack" ls --json >"$work/stacks.json" 2>/dev/null &
+  stack_pid=$!
+  trap 'kill -TERM "$stack_pid" 2>/dev/null; exit 143' TERM INT HUP
+  if wait "$stack_pid"; then stacks=$(jq -c . "$work/stacks.json"); fi
+  trap - TERM INT HUP
+
+  # The previous snapshot of the processes' CPU, when it is 60 seconds to 15 minutes old.
+  if [[ -e $SNAPSHOT ]]; then
+    age=$((now - $(date -r "$SNAPSHOT" +%s)))
+    if ((age >= 60 && age <= 900)); then
+      previous=$(jq -Rnc --argjson seconds "$age" \
+        '{seconds: $seconds, procs: ([inputs | split("\t") | select(length >= 2) | {key: .[0], value: (.[1] | tonumber)}] | from_entries)}' \
+        "$SNAPSHOT")
+    fi
+  fi
+
+  line=$(jq -nc -L "$TEAM_LIB" --arg at "$(date -u -d "@$now" +%FT%TZ)" --argjson total "$total" \
+    --argjson available "$available" --argjson cpus "$cpus" --slurpfile procs "$work/procs.json" \
+    --slurpfile paths "$work/paths.json" --argjson stacks "$stacks" --argjson previous "$previous" \
+    --arg os "$os" 'include "slots"; slots_reading({at: $at, os: $os, total: $total, available: $available, cpus: $cpus,
+      procs: $procs[0], paths: $paths[0], stacks: $stacks, previous: $previous})')
+  {
+    [[ ! -e $READINGS ]] || jq -Rc -L "$TEAM_LIB" --argjson since $((now - 86400)) \
+      'include "slots"; try fromjson catch null | select(well_formed_reading and (.at | fromdateiso8601) >= $since)' "$READINGS"
+    printf '%s\n' "$line"
+  } >"$READINGS.$$"
+  mv -f "$READINGS.$$" "$READINGS"
+  awk -F '\t' 'NF >= 4 { print $1 "\t" $4 }' "$work/procs" >"$SNAPSHOT.$$"
+  mv -f "$SNAPSHOT.$$" "$SNAPSHOT"
+}
+
+ledger=$TEAM_HOME/ledger.jsonl
+[[ -e $ledger ]] || ledger=/dev/null
+# The slots held, from the ledger as raw lines, $worktrees and $home (held_slots in slots.jq).
+held='include "ledger"; include "slots"; ledger_events as $events | ($events | by_task) as $tasks
+  | held_slots($tasks; [open_worktrees($events[] | select($tasks[.task] | is_open); $home)]; $worktrees)'
+
+if [[ -n $sample ]]; then
+  take_reading
+  exit 0
+fi
+
+# status and check take a reading first when the newest is more than 10 minutes old (no
+# heartbeat), but status --stored; one they cannot take is said, and they go on with the stored
+# ones.
+readings_file=$READINGS
+[[ -e $readings_file ]] || readings_file=/dev/null
+if [[ -z $stored ]] && ! jq -Rne -L "$TEAM_LIB" 'include "slots"; [inputs] | slots_readings | .readings[-1].at // empty
+  | fromdateiso8601 > now - 600' "$readings_file" >/dev/null; then
+  err=$(TEAM_HOME=$TEAM_HOME "${BASH_SOURCE[0]}" sample 2>&1 >/dev/null) ||
+    echo "${0##*/}: took no reading of the machine's load: $(grep -m1 . <<<"$err" | sed 's/^team-slots: //')" >&2
+fi
+
+# The stored readings of the machine's load, a broken line skipped and said once.
+readings_file=$READINGS
+[[ -e $readings_file ]] || readings_file=/dev/null
+readings=$(jq -Rnc -L "$TEAM_LIB" 'include "slots"; [inputs] | slots_readings' "$readings_file")
+broken=$(jq .broken <<<"$readings")
+((broken == 0)) || echo "${0##*/}: skipped $broken broken line$( ((broken == 1)) || echo s) of ${READINGS/#"$HOME"/\~}" >&2
+
+status=$(jq -nR -L "$TEAM_LIB" --arg home "$HOME" --arg code "$CODE" --argjson given "$given" --arg machine "$machine" \
+  --arg project "$reserved_project" --argjson worktrees "$worktrees" --slurpfile readings <(jq .readings <<<"$readings") \
+  "$held"' as $held | slots_status({given: $given, machine: ($machine | select(. != "") // null),
+    reserved_project: ($project | select(. != "") // null), held: $held, readings: $readings[0], home: $home, code: $code})' "$ledger")
+
+if [[ -n $check ]]; then
+  room=$(jq -r --arg project "$check" -L "$TEAM_LIB" 'include "slots"; room_for($project)' <<<"$status")
+  ((room > 0)) && exit 0
+  jq -r -L "$TEAM_LIB" --arg project "$check" --arg home "$HOME" 'include "slots"; refusal_text($project; $home)
+    | if startswith(" ") then . else "team-slots: " + . end' <<<"$status" >&2
+  exit 75
+elif [[ -n $json ]]; then
+  jq . <<<"$status"
+else
+  jq -r -L "$TEAM_LIB" --arg home "$HOME" 'include "slots"; status_text($home)' <<<"$status"
+fi

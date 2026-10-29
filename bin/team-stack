@@ -15,7 +15,9 @@
 #           a table each, one line per group with its totals: volumes by class (how many, how
 #           many attached, size), images by class and repository (tags, how many in use, size)
 #           and networks by class. With --json, one object, {projects} and with --all also
-#           {volumes, images, networks}, each item with its class. It changes nothing: it runs
+#           {volumes, images, networks}, each item with its class, each project with its
+#           running containers' memory_bytes and cpu_percent (docker stats' CPUPerc summed),
+#           each null when none runs. It changes nothing: it runs
 #           only docker compose ls, ps, inspect, stats --no-stream and, with --all, system df,
 #           volume ls and network ls.
 #
@@ -283,9 +285,10 @@ cmd_ls() {
         # The team labels any of its containers set, as the project'"'"'s.
         | ([$mine[].Config.Labels // {} | to_entries[] | select((.key | startswith(team_prefix)) and .value != "")]
             | from_entries) as $labels
-        | [$mine[] | select(.State.Running) | .Id as $id
-            | $stats[] | select(.ID as $short | $id | startswith($short)) | .MemUsage | split(" / ")[0] | bytes]
-          as $memory
+        | [$mine[] | select(.State.Running) | .Id as $id | $stats[] | select(.ID as $short | $id | startswith($short))]
+          as $running
+        | [$running[] | .MemUsage | split(" / ")[0] | bytes] as $memory
+        | [$running[] | .CPUPerc | rtrimstr("%") | tonumber? // empty] as $cpu
         | team_label($labels; "worktree") as $worktree
         | {name: $name, status: .Status, class: owner_class($labels; $name; $stacks),
            owner: team_label($labels; "owner"), task: team_label($labels; "task"),
@@ -293,7 +296,8 @@ cmd_ls() {
            worktree_gone: (if $worktree == null then null else $gone | index($worktree) != null end),
            created: ([$mine[].Created | utc_time] | min),
            containers: ($mine | length), running: ([$mine[] | select(.State.Running)] | length),
-           memory_bytes: (if $memory == [] then null else $memory | add end)}]
+           memory_bytes: (if $memory == [] then null else $memory | add end),
+           cpu_percent: (if $cpu == [] then null else $cpu | add * 100 | round / 100 end)}]
       | sort_by(.name)}
     + if $all then
         # Who mounts each volume: the containers, by volume name.
@@ -601,7 +605,7 @@ stack_settings() {
   if [[ -e $file ]]; then
     jq -s . "$file" >"$WORK/settings-given.json" 2>"$WORK/settings.err" ||
       die "$file is not JSON: $(last_reason "$WORK/settings.err" "jq could not read it")"
-    problems=$(jq -r -L "$TEAM_LIB" 'include "stack"; settings_problems' "$WORK/settings-given.json")
+    problems=$(jq -r -L "$TEAM_LIB" 'include "stack"; settings_problems(settings_kinds)' "$WORK/settings-given.json")
     [[ -z $problems ]] || die "$file$problems"
   fi
   jq -L "$TEAM_LIB" 'include "stack"; settings' "$WORK/settings-given.json" >"$WORK/settings.json"

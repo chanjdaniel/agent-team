@@ -22,6 +22,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
     - `prices.json`: each model's list prices per million tokens with the date read and the source, the weights `team-tokens` gives each reply.
     - `records`: the team home's paths, which no tracked path matches.
     - `records-rewrite/`: `team-records-rewrite`'s drop list, message expression, S02 callback and `verify.py`.
+    - `slots.jq`: `team-slots`'s settings of `slots.json`, the slots held, a reading of the machine's load and its fit, the effective cap, the room left for the reserved project and the others, and the texts `team-slots`, `team-open` and `team-doctor` say.
     - `stack.jq`: `team-stack`'s owner classes, Docker's sizes, the reaper's rules and the `stack.json` settings with their memory floor.
     - `time.jq`: `team-time`'s split of each task's time into phases, and its counts.
     - `tools.jq`: turns `tools.lock` into each tool's pin and install command for a machine.
@@ -46,6 +47,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
   - `platform-gotchas.md`: general rules about the tools the team runs on, which every brief but the ops one points at in the code checkout, never the team home; the retro proposes keeping it short, and each change Daniel approves lands through a PR on this repository.
   - `portability.md`: moving the team between machines.
   - `records-rewrite.md`: the cutover that rewrites the records repository's history with `team-records-rewrite`, each step Daniel's or the coordinator's.
+  - `slots.md`: the machine's task slots: why a cap and a reserved slot, the rule, `slots.json`, the measure and its evidence, the effective cap, and what the coordinator does on exit 75.
 - `templates/`: the task plan and the worker briefs `team-open` and `team-brief` render.
 - `tests/`: the bats suite, one `.bats` file per script (a long one split by topic, as `team-doctor-*.bats`).
   - `tests/bootstrap-drill`: runs `team-bootstrap` on a fresh runner for the by-hand Bootstrap workflow.
