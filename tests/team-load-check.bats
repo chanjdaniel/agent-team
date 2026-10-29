@@ -85,6 +85,42 @@ inventory() {
   assert_contains "$output" "load check FAILED"
 }
 
+# toolkit_checkout: a code checkout of the test's own for run_bin, holding this one's bin/, roles/
+# and settings/ and two fixture toolkits: served, whose .mcp.json declares the MCP servers served
+# and spare, and plain, with no .mcp.json.
+toolkit_checkout() {
+  export CODE_CHECKOUT=$BATS_TEST_TMPDIR/toolkit-code
+  mkdir -p "$CODE_CHECKOUT/toolkits/served" "$CODE_CHECKOUT/toolkits/plain"
+  copy_bin "$CODE_CHECKOUT/bin"
+  cp -R "$REPO_ROOT/roles" "$REPO_ROOT/settings" "$CODE_CHECKOUT/"
+  echo '{"mcpServers": {"served": {"command": "node"}, "spare": {"command": "node"}}}' >"$CODE_CHECKOUT/toolkits/served/.mcp.json"
+}
+
+@test "each MCP server a given toolkit declares must bring its tools to the planner, under its own name or the plugin's" {
+  toolkit_checkout
+  inventory mcp__served__look mcp__served__read mcp__plugin_served_spare__look --- served:a-skill
+  run_bin -0 team-load-check --toolkit served
+  assert_contains "$output" "load check: 3 MCP tools, 1 skills"
+  assert_equal "${lines[-1]}" PASS
+
+  # The toolkit's skill came, and none of its servers' tools.
+  inventory --- served:a-skill
+  run_bin -1 team-load-check --toolkit served
+  assert_contains "$output" "FAIL: toolkit served brought no tools from its MCP server served"
+  assert_contains "$output" "FAIL: toolkit served brought no tools from its MCP server spare"
+  assert_equal "${lines[-1]}" "load check FAILED (inventory in tasks/T0/)"
+
+  # One server's tools came, the other's did not.
+  inventory mcp__served__look --- served:a-skill
+  run_bin -1 team-load-check --toolkit served
+  assert_contains "$output" "FAIL: toolkit served brought no tools from its MCP server spare"
+  [[ $output != *"MCP server served"* ]]
+
+  # A toolkit that declares no MCP server needs none.
+  inventory --- plain:a-skill
+  run_bin -0 team-load-check --toolkit plain
+}
+
 # left_nothing: the load check's worktree is gone, and the code checkout is as it was
 left_nothing() {
   [[ ! -e $wt ]]
@@ -567,6 +603,34 @@ reviewer    45003       2               2            0"
   run_bin -2 team-load-check --context --worktree "$HOME"
   assert_contains "$output" "--worktree is for --role ops only"
   assert_equal "$(stub_calls claude | jq -c 'select(.[0] == "--bg")' | wc -l)" 1
+}
+
+@test "in the context form, a role whose given toolkit's MCP server listed no tool before its first reply fails, naming the toolkit and server" {
+  context_setup
+  toolkit_checkout
+  # The builder lists both servers' tools before its first reply; the others never do.
+  local fixtures=$BATS_TEST_TMPDIR/context-fixtures
+  mkdir -p "$fixtures"
+  cp "$CONTEXT_FIXTURES"/*.jsonl "$fixtures/"
+  sed -i '3i {"type":"attachment","attachment":{"type":"deferred_tools_delta","addedNames":["mcp__served__look","mcp__plugin_served_spare__look"],"removedNames":[]}}' \
+    "$fixtures/builder.jsonl"
+  # A tool listed only after the first reply does not count.
+  echo '{"type":"attachment","attachment":{"type":"deferred_tools_delta","addedNames":["mcp__served__look","mcp__spare__look"],"removedNames":[]}}' \
+    >>"$fixtures/reviewer.jsonl"
+  CONTEXT_FIXTURES=$fixtures
+  run_bin -1 team-load-check --context --toolkit served
+  assert_contains "$output" "builder     51004       5               6            4"
+  assert_contains "$output" "FAIL planner: toolkit served brought no tools from its MCP server served"
+  assert_contains "$output" "FAIL planner: toolkit served brought no tools from its MCP server spare"
+  assert_contains "$output" "FAIL reviewer: toolkit served brought no tools from its MCP server served"
+  [[ $output != *"FAIL builder"* ]]
+  assert_equal "${lines[-1]}" "load check FAILED"
+
+  # A toolkit that declares no MCP server needs none; the stub forgets the first run's sessions.
+  rm "$STUB_FIXTURES"/launched-* "$STUB_FIXTURES"/removed-*
+  run_bin -0 team-load-check --context --role builder --toolkit served --toolkit plain
+  [[ $output != *FAIL* ]]
+  assert_equal "${lines[-1]}" PASS
 }
 
 @test "a role with no first reply fails the context form, and every session is still removed" {

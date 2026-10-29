@@ -1,7 +1,7 @@
 # frontend
 
 Front-end fixes on the element Daniel points at: Daniel right-clicks it in the Agent Chrome and picks Inspect, and the agent gets its page, HTML, matched CSS, Vue source file and line, and screenshots.
-For Daniel's own Claude Code session, and for the coordinator's intake of a fix sent from Discord; build workers read the coordinator's capture, never the Agent Chrome.
+For Daniel's own Claude Code session, and for the coordinator's intake of a fix sent from Discord; workers read the coordinator's capture, never the Agent Chrome, and `team-worker` refuses them the toolkit.
 
 ## Use it
 
@@ -30,7 +30,8 @@ At the laptop, in Conventioner's checkout:
   It fails in one line, exit 1, when no Agent Chrome answers, no localhost page has DevTools open, nothing is selected, the page carries no Vue source data (a production build), the server never attached to a tab Chrome has open, or a page does not answer within 30 s; the last two name a busy machine as a cause.
   Each script's header is its `--help`.
 - The MCP server `frontend` (`.mcp.json`): the same pinned server with the same flags, so the agent can look again after a capture (`take_snapshot`, `take_screenshot`, `get_css_styles` and the rest of Chrome DevTools MCP's tools).
-  Its path uses `${CLAUDE_PLUGIN_ROOT}`, which Claude Code fills in for `--plugin-dir` and not under `team-worker`'s `--mcp-config`: the toolkit is not for `team-worker --toolkit`, since workers read captures and never attach to Daniel's window.
+  Its path uses `${CLAUDE_PLUGIN_ROOT}`, which Claude Code fills in for `--plugin-dir` and not under `team-worker`'s `--mcp-config`.
+  The toolkit is not for workers: every session with it shares Daniel's one Agent Chrome window, so `team-worker --toolkit frontend` is refused as a usage error, for every role and for the load check, and workers read captures instead.
 - The skill `fixing-the-selected-element` (`skills/`): when Daniel's message is about the selected element, capture it, read the capture, fix the `.vue` file it names and capture again to check.
 - All of them speak to the pinned `chrome-devtools-mcp` in `servers/` (installed by `servers/install`, checked by `team-doctor`'s `servers` line).
 

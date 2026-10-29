@@ -127,6 +127,19 @@ run_fake() {
   assert_equal "$(launches)" ""
 }
 
+@test "the frontend toolkit, Daniel's own, is refused for every role and for the load check, with nothing started or logged" {
+  thread T7
+  local role
+  for role in planner builder reviewer ops; do
+    run_bin -2 team-worker T7 "$role" "$wt1" --toolkit frontend -- go
+    assert_contains "$output" "toolkit 'frontend' is Daniel's own"
+  done
+  run_bin -2 team-worker T0 planner "$wt1" --toolkit browser --toolkit frontend -- go
+  assert_contains "$output" "toolkit 'frontend' is Daniel's own"
+  assert_equal "$(stub_calls claude)" ""
+  assert_equal "$(launches)" ""
+}
+
 @test "a task with no Discord thread is refused" {
   run_bin -1 team-worker T7 builder "$wt1" -- go
   assert_contains "$output" "T7 has no Discord thread; open one first with team-thread"

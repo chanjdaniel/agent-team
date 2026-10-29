@@ -31,7 +31,9 @@
 # run and removed at its end (so the code checkout's trust covers it, and nothing of the run is left
 # in it; TEAM_LOAD_CHECK_CHECKOUT names another checkout, the tests' seam), has it list its MCP
 # tools and skills, and checks that
-#   - its only MCP tools are the given toolkits' (none when no toolkit is given);
+#   - its only MCP tools are the given toolkits' (none when no toolkit is given), and each MCP
+#     server a given toolkit's .mcp.json declares brought at least one of them (FAIL: toolkit
+#     <name> brought no tools from its MCP server <server>);
 #   - no production or coordinator-only server, tool or plugin (mongodb-atlas, the prod-*
 #     toolkits, discord, coordinator-skills) reaches it;
 #   - the planner's edit hook blocks a write outside .scratch/.
@@ -47,7 +49,9 @@
 # context is the first reply's input plus cache write plus cache read tokens, from the session's
 # transcript; the counts are of what the session listed before that reply (its skill listing, its
 # deferred tools, and the MCP servers those tools come from). Only numbers leave the transcript.
-# A role with no reply is a FAIL line instead of a row. Every session is stopped and removed, and
+# A role with no reply is a FAIL line instead of a row, and a role that listed no tool of an MCP
+# server a given toolkit declares, before that reply, a FAIL line naming the toolkit and server
+# as well as its row. Every session is stopped and removed, and
 # the worktree with them, on every path. Run from a checkout, it measures that checkout's roles,
 # settings and toolkits, so a run on dev and one on a PR's head give a change's before and after.
 # The coordinator runs it: workers may not start sessions.
@@ -264,6 +268,11 @@ load_worktree() {
   mkdir -p "$wt/.scratch"
 }
 
+# declared_servers <toolkit>: the MCP servers the toolkit's .mcp.json declares, one per line
+declared_servers() {
+  jq -r '.mcpServers // {} | keys[]' "$home/toolkits/$1/.mcp.json" 2>/dev/null || true
+}
+
 planner_check() {
   load_worktree
   inventory=$wt/.scratch/inventory.txt
@@ -291,8 +300,10 @@ planner_check() {
   allowed='^$'
   for kit in "${expected[@]}"; do
     allowed+="|^mcp__plugin_${kit}_"
-    for server in $(jq -r '.mcpServers // {} | keys[]' "$home/toolkits/$kit/.mcp.json" 2>/dev/null); do
+    for server in $(declared_servers "$kit"); do
       allowed+="|^mcp__${server}__"
+      grep -Eq "^mcp__(plugin_${kit}_)?${server}__" <<<"$tools" ||
+        check_failed "toolkit $kit brought no tools from its MCP server $server"
     done
   done
   stray=$(grep -Ev "$allowed" <<<"$tools" || true)
@@ -309,27 +320,40 @@ planner_check() {
   echo "load check: $(grep -c . <<<"$tools" || true) MCP tools, $(grep -c . <<<"$skills" || true) skills"
 }
 
+# A transcript's first reply, read with jq -s: reply_index, the index of the first assistant reply
+# with usage (an error when there is none); seen($i), the attachments recorded before it; and
+# listed($i), the deferred tools the session listed before it.
+reply_jq='def reply_index: (map(.type == "assistant" and .message.usage? != null) | index(true))
+    | if . == null then error("no reply") else . end;
+  def seen($i): [.[:$i][] | .attachment? | objects];
+  def listed($i): reduce (seen($i)[] | select(.type == "deferred_tools_delta")) as $d ([];
+    . + ($d.addedNames // []) - ($d.removedNames // [])) | unique;'
+
 # first_reply <transcript>: '<context> <skills> <deferred tools> <MCP servers>' from the first
 # assistant reply's usage and the listings the session recorded before it; fails with no reply.
 # Only numbers leave the transcript.
 first_reply() {
-  jq -rs '(map(.type == "assistant" and .message.usage? != null) | index(true)) as $i
-    | if $i == null then error("no reply") else . end
-    | .[$i].message.usage as $u | [.[:$i][] | .attachment? | objects] as $seen
+  jq -rs "$reply_jq"' reply_index as $i
+    | .[$i].message.usage as $u | seen($i) as $seen
     | ([$seen[] | select(.type == "skill_listing") | .names[]?] | unique | length) as $named
     | (if $named > 0 then $named else [$seen[] | select(.type == "skill_listing") | .skillCount // 0] | max // 0 end) as $skills
-    | (reduce ($seen[] | select(.type == "deferred_tools_delta")) as $d ([];
-        . + ($d.addedNames // []) - ($d.removedNames // [])) | unique) as $tools
+    | listed($i) as $tools
     | [($u.input_tokens // 0) + ($u.cache_creation_input_tokens // 0) + ($u.cache_read_input_tokens // 0),
        $skills, ($tools | length),
        ([$tools[] | select(startswith("mcp__")) | split("__")[1]] | unique | length)]
     | map(tostring) | join(" ")' "$1" 2>/dev/null
 }
 
+# mcp_servers <transcript>: the MCP servers whose tools the session listed before its first reply,
+# one per line, to compare with the given toolkits' and never to print.
+mcp_servers() {
+  jq -rs "$reply_jq"' listed(reply_index)[] | select(startswith("mcp__")) | split("__")[1]' "$1" 2>/dev/null | sort -u
+}
+
 # context_check: one session per role in context_roles, each asked only to reply OK, and a row per
 # role of what its first reply carried.
 context_check() {
-  local r id s uuid transcript figures rows=()
+  local r id s uuid transcript figures servers kit server rows=()
   local -A launched=()
   load_worktree
   for r in "${context_roles[@]}"; do
@@ -351,6 +375,13 @@ context_check() {
     done
     if [[ -n $figures ]]; then
       rows+=("$r $figures")
+      servers=$(mcp_servers "$transcript")
+      for kit in "${expected[@]}"; do
+        for server in $(declared_servers "$kit"); do
+          grep -Eqx "(plugin_${kit}_)?${server}" <<<"$servers" ||
+            { echo "FAIL $r: toolkit $kit brought no tools from its MCP server $server"; fail=1; }
+        done
+      done
     else
       echo "FAIL $r: no first reply in its transcript (state '$s')"
       fail=1
