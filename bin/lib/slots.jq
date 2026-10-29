@@ -77,6 +77,19 @@ def slots_status($in):
 def tilde($home):
   if . == $home then "~" elif startswith($home + "/") then "~" + .[($home | length):] else . end;
 
+# The cap line of the team-slots/1 object: the cap, where it came from, and the effective cap's
+# reason.
+def cap_text:
+  .settings as $s
+  | "the cap is \($s.cap) "
+    + (if $s.from.cap == "slots.json" then "(cap in ~/.config/agent-team/slots.json)"
+       else "(the default: ~/.config/agent-team/slots.json sets no cap)" end)
+    + ", effective \(.effective.cap): \(.effective.reason)";
+
+# One line per held slot of the team-slots/1 object, given the home directory <home>.
+def held_text($home):
+  .held[] | "  \(.task) \(.project) in \(.worktree | tilde($home))\(if .half_open then " (half open)" else "" end)";
+
 # team-slots status's lines from the team-slots/1 object, given the home directory <home> and the
 # code checkout <code>: the summary, the cap and the effective cap's reason, then one per held slot.
 def status_text($home; $code):
@@ -87,8 +100,34 @@ def status_text($home; $code):
        elif $s.reserved == 0 then "none kept for \($project) (reserved 0)"
        else "\($s.reserved) kept for \($project) (\($project) holds \(.counts.reserved_held))" end)
     + "; effective \(.effective.cap)",
-    "the cap is \($s.cap) "
-    + (if $s.from.cap == "slots.json" then "(cap in ~/.config/agent-team/slots.json)"
-       else "(the default: ~/.config/agent-team/slots.json sets no cap)" end)
-    + ", effective \(.effective.cap): \(.effective.reason)",
-    (.held[] | "  \(.task) \(.project) in \(.worktree | tilde($home))\(if .half_open then " (half open)" else "" end)");
+    cap_text,
+    held_text($home);
+
+# The room the project <project> has for a new slot, from the team-slots/1 object: the reserved
+# project's, or the others'.
+def room_for($project):
+  if .reserved_project != null and $project == .reserved_project then .room.reserved else .room.others end;
+
+# The lines refusing the project <project> a new slot, from the team-slots/1 object, given the home
+# directory <home>: why (every slot up to the effective cap held, or the free ones kept for the
+# reserved project), the cap line, then the slots and who holds them.
+def refusal_text($project; $home):
+  .effective.cap as $cap | .counts.held as $held | .reserved_project as $reserved
+  | ($cap - $held) as $free
+  | "no task slot for \($project) on \(.machine // "this machine"): "
+    + (if $held > $cap then "\($held) held, over the effective cap of \($cap)"
+       elif $free == 0 then "\($held) of \($cap) held"
+       else "\($held) of \($cap) held, and "
+         + (if $free == 1 then "the last one is" else "the last \($free) are" end)
+         + " kept for \($reserved) (reserved \(.settings.reserved)"
+         + (if .counts.reserved_held > 0 then ", \($reserved) holds \(.counts.reserved_held)" else "" end) + ")"
+       end),
+    cap_text,
+    (if $held == 0 then "the slots: none held" else "the slots:", held_text($home) end);
+
+# The line saying the machine holds more slots than its effective cap, from the team-slots/1
+# object; nothing when it does not.
+def over_cap_text:
+  select(.counts.held > .effective.cap)
+  | "\(.machine // "this machine") holds \(.counts.held) task slots, over its effective cap of \(.effective.cap)"
+    + " (cap \(.settings.cap), \(.effective.reason)); no new task opens until tasks close";

@@ -39,8 +39,35 @@ TOML
   stub_reply curl '{"id":"1563000000000000001"}'
 }
 
+teardown() {
+  # Let a lease a test left waiting go, so bats does not wait on it.
+  touch "$BATS_TEST_TMPDIR/go"
+  wait 2>/dev/null || true
+  [[ ! -e $BATS_TEST_TMPDIR/left ]] || kill "$(cat "$BATS_TEST_TMPDIR/left")" 2>/dev/null || true
+}
+
 events() {
   jq -c --arg e "$1" 'select(.event == $e)' "$TEAM_HOME/ledger.jsonl"
+}
+
+# Wait until the file <file> exists, and holds <text> when given, up to 20 seconds.
+wait_for() {
+  local i
+  for ((i = 0; i < 200; i++)); do
+    if [[ -e $1 ]] && { [[ -z ${2:-} ]] || grep -qF -- "$2" "$1"; }; then return 0; fi
+    sleep 0.1
+  done
+  echo "wait_for: $1 never held $2" >&2
+  return 1
+}
+
+# Set this machine's slots.json to <json>, with T1 open in proj, holding a slot elsewhere.
+cap_with_one_held() {
+  mkdir -p "$HOME/.config/agent-team"
+  echo "$1" >"$HOME/.config/agent-team/slots.json"
+  jq -cn --arg wt "$HOME/elsewhere/1" '{ts: "2026-10-29T10:00:00Z", task: "T1", event: "opened", project: "proj",
+    path: "feature", type: "feat", title: "Held", branch: "feat/T1-held", base: "main", base_sha: "abc1234",
+    worktree: $wt}' >>"$TEAM_HOME/ledger.jsonl"
 }
 
 @test "a task opens in the leased slot, leased from the primary checkout with the task as holder" {
@@ -281,4 +308,54 @@ events() {
   run_bin -1 team-open proj feature feat nolease "No lease"
   assert_contains "$output" "the lease command $primary/scripts/th-lease.sh is not executable"
   [[ ! -e $TEAM_HOME/tasks/T1 ]]
+}
+
+@test "with no task slot under the machine's cap, nothing is leased and the number is given back" {
+  cap_with_one_held '{"cap": 1, "reserved": 0}'
+  run_bin -75 --separate-stderr team-open proj feature feat late "Late"
+  assert_equal "${stderr%%$'\n'*}" "team-open: no task slot for proj on this machine: 1 of 1 held"
+  assert_equal "$(stub_calls th-lease.sh)$(stub_calls th-return.sh)" ""
+  [[ ! -e $TEAM_HOME/tasks/T2 ]]
+  assert_equal "$(events opened | jq -r .task)" "T1"
+}
+
+@test "two runs at once with one slot left: the second waits for the first's slot lock, then is refused; the lease never keeps the lock" {
+  cap_with_one_held '{"cap": 2, "reserved": 0}'
+  # The first run's lease waits for go, and leaves a process running, as a pre-warm's daemon may.
+  cat >"$BATS_TEST_TMPDIR/prewarm" <<SH
+touch "$BATS_TEST_TMPDIR/leasing"
+until [[ -e $BATS_TEST_TMPDIR/go ]]; do sleep 0.1; done
+sleep 30 >/dev/null 2>&1 &
+echo \$! >"$BATS_TEST_TMPDIR/left"
+SH
+  guard_sandbox
+  "$REPO_ROOT/bin/team-open" --task T5 proj feature feat first "First" \
+    >"$BATS_TEST_TMPDIR/first.out" 2>"$BATS_TEST_TMPDIR/first.err" 3>&- &
+  local first=$! second err
+  wait_for "$BATS_TEST_TMPDIR/leasing"
+  "$REPO_ROOT/bin/team-open" --task T6 proj feature feat second "Second" \
+    >"$BATS_TEST_TMPDIR/second.out" 2>"$BATS_TEST_TMPDIR/second.err" 3>&- &
+  second=$!
+  wait_for "$BATS_TEST_TMPDIR/second.err" "waiting"
+  touch "$BATS_TEST_TMPDIR/go"
+  local rc=0
+  wait "$first" || rc=$?
+  assert_equal "$rc" 0
+  wait "$second" || rc=$?
+  assert_equal "$rc" 75
+  assert_equal "$(jq -r .worktree "$BATS_TEST_TMPDIR/first.out")" "${slots[0]}"
+  assert_equal "$(cat "$BATS_TEST_TMPDIR/second.out")" ""
+  err=$(cat "$BATS_TEST_TMPDIR/second.err")
+  [[ ${err%%$'\n'*} =~ ^team-open:\ waiting\ up\ to\ 15\ minutes\ for\ the\ machine\'s\ slot\ lock,\ held\ by\ team-open\ T5\ proj\ \(pid\ $first\)\ since\  ]]
+  # The lock goes once T5's slot holds its branch, so the second run may count it half open.
+  err=${err%' (half open)'}
+  assert_equal "${err#*$'\n'}" "team-open: no task slot for proj on this machine: 2 of 2 held
+team-open: the cap is 2 (cap in ~/.config/agent-team/slots.json), effective 2: no reading of the machine's load yet
+team-open: the slots:
+  T1 proj in ~/elsewhere/1
+  T5 proj in ~/.treehouse/proj-abc123/1/proj"
+  assert_equal "$(stub_calls th-lease.sh | jq -c .args)" '["T5"]'
+  # The pre-warm's process still runs, and the lock is free.
+  kill -0 "$(cat "$BATS_TEST_TMPDIR/left")"
+  run -0 flock -n "$HOME/.local/state/agent-team/slots.lock" true
 }

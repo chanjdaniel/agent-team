@@ -16,6 +16,12 @@ setup() {
   registry agent-team proj other
 }
 
+teardown() {
+  # Let a slot lock holder a test left go, so bats does not wait on it.
+  touch "$BATS_TEST_TMPDIR/release"
+  wait 2>/dev/null || true
+}
+
 # The registry of the projects <name>..., each a git pool of three slots under ~/slots/<name>,
 # its primary checkout at ~/projects/<name>.
 registry() {
@@ -265,4 +271,136 @@ the cap is 10 (cap in ~/.config/agent-team/slots.json), effective 10: no reading
   assert_contains "$output" "usage: team-slots [status] [--json]"
   run_bin -2 team-slots status --all
   assert_contains "$output" "usage: team-slots [status] [--json]"
+}
+
+@test "check: with cap 10 and 9 held by other projects, they are refused naming the reserved slot and each holder, and agent-team is not" {
+  echo '{"cap": 10}' >"$SETTINGS"
+  for n in 1 2 3; do opened "T$n" proj "$n"; done
+  for n in 4 5 6; do opened "T$n" other "$((n - 3))"; done
+  for n in 7 8 9; do opened "T$n" proj "$n"; done
+  run_bin -75 --separate-stderr team-slots check proj
+  assert_equal "$output" ""
+  assert_equal "$stderr" "team-slots: no task slot for proj on home-pc: 9 of 10 held, and the last one is kept for agent-team (reserved 1)
+team-slots: the cap is 10 (cap in ~/.config/agent-team/slots.json), effective 10: no reading of the machine's load yet
+team-slots: the slots:
+  T1 proj in ~/slots/proj/1
+  T2 proj in ~/slots/proj/2
+  T3 proj in ~/slots/proj/3
+  T4 other in ~/slots/other/1
+  T5 other in ~/slots/other/2
+  T6 other in ~/slots/other/3
+  T7 proj in ~/slots/proj/7
+  T8 proj in ~/slots/proj/8
+  T9 proj in ~/slots/proj/9"
+  run_bin -75 team-slots check other
+  run_bin -0 --separate-stderr team-slots check agent-team
+  assert_equal "$output$stderr" ""
+}
+
+@test "check: agent-team's held slots count toward the reservation, and a full cap refuses every project for the cap" {
+  echo '{"cap": 10, "reserved": 2}' >"$SETTINGS"
+  for n in 1 2 3; do opened "T$n" agent-team "$n"; done
+  for n in 4 5 6; do opened "T$n" proj "$((n - 3))"; done
+  for n in 7 8 9; do opened "T$n" other "$((n - 6))"; done
+  run_bin -0 team-slots check proj
+  opened T10 proj 4
+  run_bin -75 --separate-stderr team-slots check proj
+  assert_equal "${stderr%%$'\n'*}" "team-slots: no task slot for proj on home-pc: 10 of 10 held"
+  run_bin -75 --separate-stderr team-slots check agent-team
+  assert_equal "${stderr%%$'\n'*}" "team-slots: no task slot for agent-team on home-pc: 10 of 10 held"
+
+  # With 2 kept and agent-team holding 1, the last one is kept and agent-team's held one named.
+  : >"$TEAM_HOME/ledger.jsonl"
+  opened T1 agent-team 1
+  for n in 2 3 4 5 6 7 8 9; do opened "T$n" proj "$n"; done
+  run_bin -75 --separate-stderr team-slots check other
+  assert_equal "${stderr%%$'\n'*}" "team-slots: no task slot for other on home-pc: 9 of 10 held, and the last one is kept for agent-team (reserved 2, agent-team holds 1)"
+
+  # With 2 kept and none held by agent-team, the last 2 are.
+  echo '{"cap": 10, "reserved": 2}' >"$SETTINGS"
+  : >"$TEAM_HOME/ledger.jsonl"
+  for n in 1 2 3 4 5 6 7 8; do opened "T$n" proj "$n"; done
+  run_bin -75 --separate-stderr team-slots check other
+  assert_equal "${stderr%%$'\n'*}" "team-slots: no task slot for other on home-pc: 8 of 10 held, and the last 2 are kept for agent-team (reserved 2)"
+}
+
+@test "check: more held than the cap is said so, and with no reserved project none is kept" {
+  echo '{"cap": 2, "reserved": 0}' >"$SETTINGS"
+  for n in 1 2 3; do opened "T$n" proj "$n"; done
+  run_bin -75 --separate-stderr team-slots check agent-team
+  assert_equal "${stderr%%$'\n'*}" "team-slots: no task slot for agent-team on home-pc: 3 held, over the effective cap of 2"
+  # With no reserved project, every project is another's, and no slot is kept.
+  registry proj other
+  echo '{"cap": 3}' >"$SETTINGS"
+  run_bin -75 --separate-stderr team-slots check other
+  assert_equal "${stderr%%$'\n'*}" "team-slots: no task slot for other on home-pc: 3 of 3 held"
+  : >"$TEAM_HOME/ledger.jsonl"
+  run_bin -0 team-slots check other
+}
+
+@test "check: a malformed slots.json is exit 1, an unregistered project and a malformed command line exit 2" {
+  echo '{"cap": "ten"}' >"$SETTINGS"
+  run_bin -1 team-slots check proj
+  assert_equal "$output" "team-slots: $SETTINGS: cap must be a whole number of 1 or more, not \"ten\""
+  rm "$SETTINGS"
+  run_bin -2 team-slots check nope
+  assert_equal "$output" "team-slots: unknown project 'nope'; known: agent-team, proj, other"
+  run_bin -2 team-slots check
+  run_bin -2 team-slots check --json
+  run_bin -2 team-slots check proj --json
+  run_bin -2 team-slots check proj --label someone
+  run_bin -2 team-slots check proj --lock 3
+  run_bin -2 team-slots check proj --lock three --label someone
+  assert_contains "$output" "--lock takes a file descriptor"
+  # A descriptor open on another file than the slot lock is refused.
+  run_bin -2 team-slots check proj --lock 0 --label someone
+  assert_contains "$output" "--lock takes a descriptor open on $HOME/.local/state/agent-team/slots.lock, and 0 is not"
+}
+
+@test "check --lock takes the slot lock on the caller's descriptor, keeps it past the check and writes the holder's line" {
+  local lock=$HOME/.local/state/agent-team/slots.lock
+  mkdir -p "${lock%/*}"
+  exec {fd}<>"$lock"
+  run_bin -0 team-slots check proj --lock "$fd" --label "team-open T1 proj (pid 42)"
+  [[ $(cat "$lock") =~ ^team-open\ T1\ proj\ \(pid\ 42\)\ since\ [0-9]{4}-[0-9]{2}-[0-9]{2}\ [0-9:]{8}\ [+-][0-9]{4}$ ]]
+  # Held by this descriptor still, so another run cannot take it.
+  run flock -n -x "$lock" true
+  assert_equal "$status" 1
+  exec {fd}>&-
+  run -0 flock -n -x "$lock" true
+}
+
+@test "check --lock waits up to wait_minutes, saying once for whom, then exits 75 naming the holder" {
+  local lock=$HOME/.local/state/agent-team/slots.lock
+  mkdir -p "${lock%/*}"
+  echo "team-open T7 proj (pid 7) since 2026-10-29 10:00:00 +0000" >"$lock"
+  (
+    exec {holder}<>"$lock"
+    flock -x "$holder"
+    touch "$BATS_TEST_TMPDIR/held"
+    until [[ -e $BATS_TEST_TMPDIR/release ]]; do sleep 0.1; done
+  ) 3>&- &
+  until [[ -e $BATS_TEST_TMPDIR/held ]]; do sleep 0.1; done
+  echo '{"wait_minutes": 0}' >"$SETTINGS"
+  exec {fd}<>"$lock"
+  run_bin -75 --separate-stderr team-slots check proj --lock "$fd" --label "team-open T8 proj (pid 8)"
+  assert_equal "$stderr" "team-slots: the machine's slot lock is held by team-open T7 proj (pid 7) since 2026-10-29 10:00:00 +0000"
+  echo '{"wait_minutes": 0.02}' >"$SETTINGS"
+  run_bin -75 --separate-stderr team-slots check proj --lock "$fd" --label "team-open T8 proj (pid 8)"
+  assert_equal "$stderr" "team-slots: waiting up to 0.02 minutes for the machine's slot lock, held by team-open T7 proj (pid 7) since 2026-10-29 10:00:00 +0000
+team-slots: the machine's slot lock is still held after 0.02 minutes, by team-open T7 proj (pid 7) since 2026-10-29 10:00:00 +0000"
+  # Once the holder lets go, the waiting run takes it.
+  echo '{"wait_minutes": 1}' >"$SETTINGS"
+  (sleep 1 && touch "$BATS_TEST_TMPDIR/release") &
+  run_bin -0 --separate-stderr team-slots check proj --lock "$fd" --label "team-open T8 proj (pid 8)"
+  assert_equal "$(grep -c waiting <<<"$stderr")" 1
+  assert_contains "$(cat "$lock")" "team-open T8 proj (pid 8) since "
+  exec {fd}>&-
+  wait
+}
+
+@test "--help documents check and its lock" {
+  run_bin -0 team-slots --help
+  assert_contains "$output" "team-slots check <project> [--lock <fd> --label <text>]"
+  assert_contains "$output" "agent-team/slots.lock, so the lock outlasts the check"
 }

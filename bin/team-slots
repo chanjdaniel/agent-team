@@ -4,6 +4,7 @@
 # them.
 #
 # Usage: team-slots [status] [--json]
+#        team-slots check <project> [--lock <fd> --label <text>]
 #
 # status    The default. One summary line ("home-pc: 7 of 10 task slots held, 1 kept for
 #           agent-team (agent-team holds 1); effective 10"), then the cap, where it came from and
@@ -20,6 +21,20 @@
 #           others}, stale (true while there is no reading)}. No reading of the machine's load is
 #           taken yet, so the effective cap is the cap, its reason "no reading of the machine's
 #           load yet".
+# check     Whether the registered project <project>'s task may take a new slot, by the room
+#           below: exit 0 with room, saying nothing; else exit 75 with the refusal on stderr: why
+#           ("no task slot for conventioner on home-pc: 9 of 10 held, and the last one is kept for
+#           agent-team (reserved 1)"), the cap line as status says it, then "the slots:" and one
+#           line per held slot. An unregistered project is a usage error.
+#           With --lock, it first takes the machine's slot lock, an exclusive flock on the
+#           descriptor <fd>, which the caller opened read-write on
+#           ~/.local/state/agent-team/slots.lock, so the lock outlasts the check until the caller
+#           closes it (team-open holds it until the slot it takes holds the task's branch, so two
+#           runs never take the last slot), and writes "<text> since <YYYY-MM-DD HH:MM:SS +zzzz>"
+#           into that file as its holder's line (team-open's text is "team-open T<n> <project>
+#           (pid <pid>)"). While another run holds it, it says once that it waits and for whom,
+#           waits up to wait_minutes, then exits 75 naming the holder ("another run" before it
+#           wrote its line).
 #
 # The machine's settings, ~/.config/agent-team/slots.json, beside stack.json: one JSON object
 # whose keys are all optional:
@@ -52,13 +67,15 @@
 # held or free, its held ones counting toward them; room.reserved is E - H, room.others the lower
 # of that and E - R - O, neither below 0.
 #
-# Exit 0 done, 1 refused (a malformed slots.json, with the reason, or a registry team-project
-# refuses), 2 usage error.
+# Exit 0 done (check: there is room), 1 refused (a malformed slots.json, with the reason, or a
+# registry team-project refuses), 2 usage error, 75 check: no task slot, or the slot lock still
+# held after wait_minutes.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
-USAGE="usage: team-slots [status] [--json]"
+USAGE="usage: team-slots [status] [--json] | team-slots check <project> [--lock <fd> --label <text>]"
 SETTINGS=$HOME/.config/agent-team/slots.json
+LOCK=$HOME/.local/state/agent-team/slots.lock
 # The code checkout, or the primary checkout of the one it is a linked worktree of.
 CODE=$(dirname "$(dirname "$TEAM_LIB")")
 if common=$(git -C "$CODE" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) &&
@@ -66,14 +83,39 @@ if common=$(git -C "$CODE" rev-parse --path-format=absolute --git-common-dir 2>/
   CODE=$(dirname "$common")
 fi
 
-json=''
-[[ ${1:-} != status ]] || shift
-for arg; do
-  case $arg in
-    --json) json=1 ;;
-    *) usage_error "$USAGE" ;;
-  esac
-done
+json='' check='' lock_fd='' label=''
+if [[ ${1:-} == check ]]; then
+  [[ $# -ge 2 && $2 != -* ]] || usage_error "$USAGE"
+  check=$2
+  shift 2
+  while (($#)); do
+    case $1 in
+      --lock)
+        [[ ${2:-} =~ ^[0-9]+$ ]] || usage_error "--lock takes a file descriptor; $USAGE"
+        lock_fd=$2
+        shift 2
+        ;;
+      --label)
+        [[ -n ${2:-} ]] || usage_error "--label takes a text; $USAGE"
+        label=$2
+        shift 2
+        ;;
+      *) usage_error "$USAGE" ;;
+    esac
+  done
+  [[ -n $lock_fd || -z $label ]] || usage_error "--label goes with --lock; $USAGE"
+  [[ -z $lock_fd || -n $label ]] || usage_error "--lock needs --label, its holder's line; $USAGE"
+  [[ -z $lock_fd || /dev/fd/$lock_fd -ef $LOCK ]] ||
+    usage_error "--lock takes a descriptor open on $LOCK, and $lock_fd is not"
+else
+  [[ ${1:-} != status ]] || shift
+  for arg; do
+    case $arg in
+      --json) json=1 ;;
+      *) usage_error "$USAGE" ;;
+    esac
+  done
+fi
 
 # slots.json's values (jq -s), [] with no file; a malformed one is refused with the reason.
 given='[]'
@@ -85,6 +127,27 @@ fi
 
 machine=$(machine_name 2>/dev/null) || machine=''
 projects=$(team_project --list)
+[[ -z $check ]] || grep -qxF -- "$check" <<<"$projects" ||
+  usage_error "unknown project '$check'; known: $(jq -Rnr '[inputs] | join(", ")' <<<"$projects")"
+
+# The machine's slot lock, on the caller's descriptor, before the count.
+if [[ -n $lock_fd ]]; then
+  holder() {
+    local line=''
+    [[ ! -s $LOCK ]] || IFS= read -r line <"$LOCK" || true
+    echo "${line:-another run}"
+  }
+  if ! flock -n -x "$lock_fd"; then
+    read -r wait seconds < <(jq -r -L "$TEAM_LIB" 'include "slots"; slots_settings.wait_minutes | "\(.) \(. * 60)"' <<<"$given")
+    [[ $seconds != 0 ]] || { echo "${0##*/}: the machine's slot lock is held by $(holder)" >&2 && exit 75; }
+    echo "${0##*/}: waiting up to $wait minutes for the machine's slot lock, held by $(holder)" >&2
+    flock -w "$seconds" -x "$lock_fd" || {
+      echo "${0##*/}: the machine's slot lock is still held after $wait minutes, by $(holder)" >&2
+      exit 75
+    }
+  fi
+  printf '%s since %(%F %T %z)T\n' "$label" -1 >"$LOCK"
+fi
 reserved_project=''
 [[ -z $projects ]] || reserved_project=$(team_project --find path "$CODE" | head -n 1)
 
@@ -110,7 +173,13 @@ status=$(jq -nR -L "$TEAM_LIB" --arg home "$HOME" --argjson given "$given" --arg
   slots_status({given: $given, machine: ($machine | select(. != "") // null),
     reserved_project: ($project | select(. != "") // null), held: held_slots(ledger_events; $worktrees; $home)})' "$ledger")
 
-if [[ -n $json ]]; then
+if [[ -n $check ]]; then
+  room=$(jq -r --arg project "$check" -L "$TEAM_LIB" 'include "slots"; room_for($project)' <<<"$status")
+  ((room > 0)) && exit 0
+  jq -r -L "$TEAM_LIB" --arg project "$check" --arg home "$HOME" 'include "slots"; refusal_text($project; $home)
+    | if startswith(" ") then . else "team-slots: " + . end' <<<"$status" >&2
+  exit 75
+elif [[ -n $json ]]; then
   jq . <<<"$status"
 else
   jq -r -L "$TEAM_LIB" --arg home "$HOME" --arg code "$CODE" 'include "slots"; status_text($home; $code)' <<<"$status"
