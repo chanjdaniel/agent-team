@@ -15,7 +15,7 @@
 # team_tool_path, fence_reason, offline_hold, lease_refusal, lease_gate, worktree_changes, same_path, bounded, trust_probe,
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin,
 # only_records, records_list, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
-# registered_pr, attribution_lines, strip_attribution, live_sessions, discord_token, discord_api, daniel_message,
+# registered_pr, attribution_lines, strip_attribution, live_sessions, discord_token, discord_api, daniel_message, refresh_inbox,
 # github, pr_part and task_state_json, and sets IMAGE_TYPE, COORDINATOR_CHANNEL and INTERVIEW_CHANNEL.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
 # shellcheck shell=bash
@@ -970,6 +970,15 @@ daniel_message() {
   fi
   jq -c --arg place "$found" --arg channel "${found##* }" --arg who "$who" \
     '{place: $place, channel: $channel, who: $who, message: .}' <<<"$reply"
+}
+
+# Bring the Waiting on you message in #coordinator up to date with this checkout's team-inbox, at
+# the end of a script that changed what waits on Daniel; a failure is one line on stderr, "<script>:
+# the Waiting on you message is not updated: <why>", and never the caller's: refresh_inbox
+refresh_inbox() {
+  local error
+  error=$(TEAM_HOME=$TEAM_HOME "$TEAM_LIB/../team-inbox" 2>&1 >/dev/null) && return 0
+  echo "${0##*/}: the Waiting on you message is not updated: $(grep -m 1 . <<<"$error" | sed 's/^team-inbox: //' || echo "team-inbox failed")" >&2
 }
 
 # The project registry, through this checkout's team-project: team_project [<arguments>...]

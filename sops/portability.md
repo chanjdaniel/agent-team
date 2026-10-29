@@ -54,7 +54,7 @@ Two repositories hold the team, each checked out on every machine:
 
 ## The heartbeat
 
-`team-timers enable` installs one job every 5 minutes on the holder (systemd on Arch, launchd on macOS, plus `caffeinate -i` on a Mac) running `team-timers run`: probe GitHub, renew the lease once the last renewal is 15 minutes old, and checkpoint once the last checkpoint is 15 minutes old.
+`team-timers enable` installs one job every 5 minutes on the holder (systemd on Arch, launchd on macOS, plus `caffeinate -i` on a Mac) running `team-timers run`: probe GitHub, renew the lease once the last renewal is 15 minutes old, bring the Waiting on you message in `#coordinator` up to date (`team-inbox`), and checkpoint once the last checkpoint is 15 minutes old.
 Once Daniel turns each on, it also stops idle stacks and runs `team-janitor` daily (`sops/docker.md`, "The heartbeat's steps"); both ship off.
 It is enabled only on the holder: `team-resume` enables it, `team-handoff` disables it, and a run on a machine that does not hold the lease changes nothing.
 
@@ -76,7 +76,7 @@ Nothing new means no commit and no push; `team-close` deletes the task's `wip/<p
 
 A machine that finds another holder or a higher epoch (its renew, its heartbeat) fences itself: it writes `fenced`, stops its own coordinator and `T<n>-<role>` sessions, and disables its heartbeat.
 The `lease-fence` hook blocks the coordinator's Discord replies, and its `git push`, `team-merge`, `team-open` and `team-close`, from the moment a fenced machine wakes, before any heartbeat runs (it checks the remote lease at most once a minute), and blocks workers' pushes.
-It blocks `team-post`, `team-ask` and `team-thread wait` for every role the same way, and `team-post`, which `team-ask` posts through, and `team-thread`'s `--interview` and `wait` refuse there by themselves too, through the same check (`lease_refusal` in `bin/lib/team.sh`).
+It blocks `team-post`, `team-ask`, `team-inbox` and `team-thread wait` for every role the same way, and `team-post`, which `team-ask` posts through, `team-inbox`, and `team-thread`'s `--interview` and `wait` refuse there by themselves too, through the same check (`lease_refusal` in `bin/lib/team.sh`).
 So a coordinator left running on a machine that lost the lease (its fence's `claude stop` failed, or `team-handoff --retire` never ran) acts on nothing the holder's coordinator owns.
 `team-doctor` on a fenced machine lists, per task worktree with work origin lacks, the command that pushes it to the team home's origin as `salvage/<project>/T<n>-<machine>`, for Daniel to run.
 Like a snapshot, a salvage never goes to the project's origin, which may be public; `team-open --resume` names the same place for a branch here with commits origin's lacks.

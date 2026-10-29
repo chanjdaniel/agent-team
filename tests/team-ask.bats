@@ -3,6 +3,7 @@
 # #coordinator, then question, asked and waiting logged, and nothing logged when a post fails.
 
 load helpers/common
+load helpers/inbox
 
 setup() {
   sandbox
@@ -18,13 +19,16 @@ LEDGER
     >"$HOME/.claude/channels/discord/access.json"
   printf '\n  Which of the two sign-in limits stays?  \n\nFive tries a minute, or ten an hour.\n' >"$BATS_TEST_TMPDIR/q.md"
   discord_posts
+  inbox_discord
 }
 
 # The stub curl answers each post with a new message id (1564000000000000001 for the first, and
-# so on); with FAIL_POST=<n>, the n-th post fails as curl -f does on a 403.
+# so on); with FAIL_POST=<n>, the n-th post fails as curl -f does on a 403. team-inbox's calls go
+# to the fake Discord of helpers/inbox.
 discord_posts() {
   stub_script curl <<'EOF'
 cat >>"$STUB_CALLS/curl.stdin"
+[[ ! -f $STUB_FIXTURES/inbox.sh ]] || source "$STUB_FIXTURES/inbox.sh"
 n=$(wc -l <"$STUB_CALLS/curl.log")
 if [[ $n == "${FAIL_POST:-}" ]]; then
   echo "curl: (22) The requested URL returned error: 403" >&2
@@ -34,14 +38,14 @@ printf '{"id":"%d"}\n' "$((1564000000000000000 + n))"
 EOF
 }
 
-# The content of each post, one JSON string per line.
+# The content of each post team-post sent, one JSON string per line.
 posted() {
-  stub_calls curl | jq -c 'index("-d") as $i | .[$i + 1] | fromjson | .content'
+  stub_calls curl | jq -c 'index("-d") as $i | select($i) | .[$i + 1] | fromjson | .content'
 }
 
-# The channel each post went to, one per line.
+# The channel each post team-post sent went to, one per line.
 channels() {
-  stub_calls curl | jq -r '.[] | select(startswith("https://")) | capture("channels/(?<c>[0-9]+)/messages$").c'
+  stub_calls curl | jq -r 'select(index("-d")) | .[] | select(startswith("https://")) | capture("channels/(?<c>[0-9]+)/messages$").c'
 }
 
 # The ledger's events after the setup's, without their ts.
@@ -58,10 +62,22 @@ logged() {
   assert_equal "$(posted)" '"Which of the two sign-in limits stays?  \n\nFive tries a minute, or ten an hour."
 "<@757> T7 has a question for you in <#2222>: Which of the two sign-in limits stays?"'
   assert_equal "$(logged)" '{"task":"T7","event":"question","role":"planner","text":"Which of the two sign-in limits stays?  \n\nFive tries a minute, or ten an hour."}
-{"task":"T7","event":"asked","id":"sign-in","text":"Which of the two sign-in limits stays?"}
+{"task":"T7","event":"asked","id":"sign-in","text":"Which of the two sign-in limits stays?","discord_message":"1564000000000000001"}
 {"task":"T7","event":"waiting","on":"Daniel","reason":"ask sign-in"}'
   TEAM_HOME=$TEAM_HOME run "$REPO_ROOT/bin/team-log" --check
   assert_equal "$status" 0
+  # The Waiting on you message lists it by the end of the command, linked to the question.
+  assert_equal "$(inbox_items_shown)" "**Asks**
+- T7 sign-in: Which of the two sign-in limits stays? https://discord.com/channels/$INBOX_GUILD/2222/1564000000000000001"
+}
+
+@test "a Waiting on you message Discord refuses is a line on stderr, and the ask stands" {
+  echo 500 >"$STUB_FIXTURES/inbox/fail"
+  run_bin -0 --separate-stderr team-ask T7 sign-in --file "$BATS_TEST_TMPDIR/q.md"
+  assert_equal "$output" '{"task":"T7","id":"sign-in","question":["1564000000000000001"],"ping":"1564000000000000002"}'
+  assert_equal "$stderr" "team-ask: the Waiting on you message is not updated: Discord refused the read of #coordinator's channel: curl: (22) The requested URL returned error: 500"
+  assert_equal "$(logged | jq -r .event)" "asked
+waiting"
 }
 
 @test "with no --from the ask is the coordinator's own, so no question is logged" {

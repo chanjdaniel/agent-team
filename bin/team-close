@@ -30,6 +30,8 @@
 # copy refs/remotes/team-home/wip/<project>/T<n> (team-open --resume's) in the project's primary
 # checkout, one that cannot be deleted reported on stderr with the command that deletes it; and
 # closed with archive, returned and kept. Prints {task, stopped, removed, archive, returned, kept}.
+# Last, team-inbox takes the task's asks, PRs and interview out of the Waiting on you message;
+# when that fails, a line on stderr says so, and the task stays closed.
 # A legacy task (events but no opened) has no worktrees in the ledger: its sessions are stopped
 # and removed and closed carries the note legacy. --worktree names a slot it still holds; the
 # path must be a trusted slot of a project in projects.toml, appear in one of the task's launch
@@ -308,3 +310,4 @@ jq -n --arg task "$task" --argjson stopped "$(json_list "${stopped[@]}")" --argj
   --argjson archive "$(json_list "${archived[@]}")" --argjson returned "$(json_list "${returned[@]}")" \
   --argjson kept "$(json_list "${kept_paths[@]}")" \
   '{task: $task, stopped: $stopped, removed: $removed, archive: $archive, returned: $returned, kept: $kept}'
+refresh_inbox

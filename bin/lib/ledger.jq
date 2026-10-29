@@ -327,11 +327,15 @@ def settles($ask):
 def answered_from($id; $message):
   any(.[]; .event == "answered" and .id == $id and (.discord_message | tostring) == $message);
 
-# The asks put to Daniel that no later event settles yet.
-def pending_asks:
+# The asked events no later event settles yet, each as {k, ask}: its index among the events and
+# the event.
+def unsettled_asks:
   . as $events
   | [range(length) as $k | $events[$k] | select(.event == "asked") | . as $ask
-     | select(any($events[$k + 1:][]; settles($ask)) | not) | {id, text, ts}];
+     | select(any($events[$k + 1:][]; settles($ask)) | not) | {k: $k, ask: .}];
+
+# The asks put to Daniel that no later event settles yet.
+def pending_asks: [unsettled_asks[] | .ask | {id, text, ts}];
 
 # A task's state from its events and the session list, its worktrees as paths on this machine,
 # whose home directory is $home (local_worktree); team-state adds the pr part.
@@ -563,6 +567,65 @@ def snapshot_text:
      else "Current items (\($items | length)):", ($items[:40][] | "  - " + . | clip(200)),
        if $items | length > 40 then "  and \($items | length - 40) more in tasks/current.md" else empty end
      end);
+
+# The following defs serve team-inbox, a task's events as an array, then every ledger event as one.
+
+# Whether the task's latest interview thread still holds an interview: no planner's done and no
+# plan-approved logged after its interview-thread.
+def interview_under_way:
+  latest_index("interview-thread") as $i
+  | $i >= 0 and all(.[$i + 1:][]; ((.event == "done" and .role == "planner") or .event == "plan-approved") | not);
+
+# The task's PRs that wait on Daniel's word to merge, from task_prs: none unless its phase is
+# awaiting-merge, then each not merged that no merge-approved names (a trailing slash aside) at its
+# head, or at no head, as a legacy line.
+def merge_ready_prs:
+  . as $events
+  | task_prs as $prs
+  | if phase != "awaiting-merge" then []
+    else [$prs[] | select(pr_merged($events; $prs) | not) | . as $pr
+      | select(any($events[]; .event == "merge-approved" and (.url | strings | rtrimstr("/")) == ($pr.url | rtrimstr("/"))
+          and (.head == null or same_head(.head; $pr.head))) | not)] end;
+
+# What waits on Daniel, over every ledger event, each open task's in task number order:
+# {asks: [{task, id, text (its first line), thread (the task's thread when it was asked), message
+# (the question's discord_message)}], prs: [{task, title, url}], interviews: [{task, title, thread}]}.
+def inbox_items:
+  [by_task | to_entries[] | select(.value | is_open)
+    | {task: .key, events: .value, title: (.value | map(select(.event == "opened")) | first | .title)}]
+  | by_task_number
+  | {asks: [.[] | .task as $task | .events as $events | $events | unsettled_asks[]
+        | {task: $task, id: .ask.id, text: (.ask.text | tostring | split("\n")[0]),
+           thread: ([$events[:.k][] | select(.event == "thread") | .discord_thread | strings] | last),
+           message: (.ask.discord_message | if . == null then null else tostring end)}],
+     prs: [.[] | {task, title} + (.events | merge_ready_prs[] | {url})],
+     interviews: [.[] | select(.events | interview_under_way)
+        | {task, title, thread: (.events | map(select(.event == "interview-thread") | .discord_thread) | last | tostring)}]};
+
+# The Waiting on you message from inbox_items, at most $limit characters, its asks linked to the
+# question's message in guild $guild (to the thread when either is unknown), and its last line the
+# time $now (seconds since the epoch) as Discord shows it to each reader. Items past the limit are
+# left out from the end, counted in one line.
+def inbox_text($guild; $limit; $now):
+  def link:
+    if .thread == null then ""
+    elif .message != null and $guild != null then " https://discord.com/channels/\($guild)/\(.thread)/\(.message)"
+    else " <#\(.thread)>" end;
+  def named: .task + if .title == null then "" else " \(.title | clip(80))" end;
+  [["**Asks**", [.asks[] | "- \(.task) \(.id): \(.text | clip(150))" + link]],
+   ["**PRs ready to merge**", [.prs[] | "- \(named): \(.url)"]],
+   ["**Interviews under way**", [.interviews[] | "- \(named): <#\(.thread)>"]]] as $sections
+  | ([$sections[][1][]] | length) as $total
+  | "-# team-inbox keeps this current; updated <t:\($now):R>" as $foot
+  | def render($n):
+      (reduce $sections[] as $s ({left: $n, lines: []};
+        $s[1][:.left] as $take
+        | if $take == [] then . else .lines += [$s[0]] + $take | .left -= ($take | length) end)
+       | .lines)
+      + (if $n < $total then ["- and \($total - $n) more, which team-snapshot lists"] else [] end)
+      | ["**Waiting on you**"] + . + [$foot] | join("\n");
+    if $total == 0 then ["**Waiting on you**", "Nothing waits on you.", $foot] | join("\n")
+    else first(range($total; -1; -1) as $n | render($n) | select(length <= $limit)) end;
 
 # The following defs serve team-retro, over every ledger event as one array.
 

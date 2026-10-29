@@ -69,8 +69,9 @@
     },
     "asked": {
       "writer": ["team-log", "team-ask"],
-      "about": "a decision put to Daniel",
-      "required": {"id": "string", "text": "string"}
+      "about": "a decision put to Daniel; discord_message: the question's first message in the task's thread, which team-inbox links",
+      "required": {"id": "string", "text": "string"},
+      "optional": {"discord_message": "id"}
     },
     "answered": {
       "writer": ["team-log", "team-answer"],

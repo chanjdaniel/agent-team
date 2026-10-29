@@ -40,6 +40,11 @@
 #                     15 minutes old (less a minute for the timer's slack); on a machine that lost
 #                     the lease, team-lease renew at once, which fences it (stops its team
 #                     sessions and disables this heartbeat); otherwise nothing.
+#              inbox  On the holder, after the lease or back step: team-inbox, which edits the
+#                     Waiting on you message in #coordinator, so what waits on Daniel shows there
+#                     within five minutes whatever changed it. It logs only a new message
+#                     ("posted <link>", when the old one is gone) and a failure, and a failure
+#                     never fails the run.
 #              stacks On the holder, after the lease or back step, when heartbeat_sweep is true in
 #                     ~/.config/agent-team/stack.json (team-stack's settings, off by default):
 #                     team-stack sweep, which stops the team's idle stacks.
@@ -91,6 +96,8 @@ SLACK_SECONDS=60
 PROBE_TIMEOUT=20
 RETRY_SECONDS=60
 POST_TIMEOUT=20
+# Seconds: the most team-inbox may take (its lock's wait and two calls).
+INBOX_TIMEOUT=120
 # Seconds: the most the sweep and the janitor may take, together well inside the lease's hour.
 SWEEP_TIMEOUT=${TEAM_TIMERS_SWEEP_SECONDS:-300}
 JANITOR_TIMEOUT=${TEAM_TIMERS_JANITOR_SECONDS:-1200}
@@ -589,6 +596,18 @@ checkpoint_step() {
   fi
 }
 
+# The inbox step, on the holder after the lease or back step: team-inbox, logged only when it
+# posted a new message or failed, and never failing the run, since Discord holds no lease.
+inbox_step() {
+  local rc=0 out
+  out=$(TEAM_HOME=$TEAM_HOME timeout --kill-after=10 "$INBOX_TIMEOUT" "$bin/team-inbox" 2>"$err" {run_fd}>&-) || rc=$?
+  case $rc in
+    0) [[ $out != posted* ]] || log inbox "$out" ;;
+    124 | 137) log inbox "failed: timed out after $INBOX_TIMEOUT s" ;;
+    *) log inbox "failed: $(grep -q . "$err" && first_error || echo "team-inbox exited $rc")" ;;
+  esac
+}
+
 # The stacks step, on the holder before the checkpoint: team-stack sweep, when heartbeat_sweep
 # is on.
 stacks_step() {
@@ -686,6 +705,7 @@ run_heartbeat() {
   holding=0 failed=0
   if [[ -e $offline ]]; then back_step; else lease_step; fi
   if ((holding)); then
+    inbox_step
     stacks_step
     checkpoint_step
     janitor_step

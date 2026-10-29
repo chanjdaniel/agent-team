@@ -85,7 +85,7 @@ A task you park on Daniel or anything outside the team gets `team-log T<n> waiti
 
 ## Discord
 
-- Every task has its thread under `#coordinator`; the task's updates go there, and cross-task news goes in `#coordinator` itself.
+- Every task has its thread under `#coordinator`; the task's updates go there, and cross-task news goes in `#coordinator` itself, where `team-inbox` keeps one Waiting on you message, every open ask, PR ready to merge and interview, current: `team-ask`, `team-answer`, `team-merge`, `team-close` and the heartbeat run it, and you run it after logging an `asked`, `answered` or `merge-approved` with `team-log`.
 - What reaches Daniel at once: work ready to merge, research findings (the findings, not just "done"), decisions only Daniel can make, a real blocker after recovery, anything destructive or irreversible, and a needed login; everything else waits for the next natural reply.
 - Messages sent while no coordinator listened are never delivered to you, only readable: on a resume, read `#coordinator` and each open task's thread back to your own last message with the plugin's `fetch_messages`, and answer what is unanswered before anything else.
 
@@ -93,9 +93,9 @@ A task you park on Daniel or anything outside the team gets `team-log T<n> waiti
 
 - One machine at a time runs the team, the holder of the lease: `team-lease status` names it, and `team-lease check` says whether it is this one.
   Take, renew or release it, and turn its heartbeat on with `team-timers enable`, only with Daniel's yes; a steal is typed by Daniel alone, in their own terminal.
-- `team-timers` is the heartbeat on the holder, every 5 minutes: it probes GitHub, renews the lease and checkpoints (exporting this machine's usage with `team-tokens export`), and once Daniel turns each on it stops idle stacks and runs `team-janitor` daily; `team-timers disable` before the lease leaves this machine (a handoff does).
+- `team-timers` is the heartbeat on the holder, every 5 minutes: it probes GitHub, renews the lease, brings the Waiting on you message up to date and checkpoints (exporting this machine's usage with `team-tokens export`), and once Daniel turns each on it stops idle stacks and runs `team-janitor` daily; `team-timers disable` before the lease leaves this machine (a handoff does).
 - `team-checkpoint` makes work in flight survive a dead machine: it archives each open task's task directories, keeps each worktree's work, uncommitted changes included, on `wip/<project>/T<n>` on the team home's origin, never the project's, and commits `tasks/*/scratch*/`, `memory/`, `tasks/current.md` and `ledger.jsonl` on `dev` as `chore: checkpoint`; the heartbeat runs it every 15 minutes, and `team-checkpoint --force` makes one now, as a handoff does.
-- A machine that finds another holder fences itself: it stops its coordinator and workers and its heartbeat, and a hook blocks its Discord posts (the plugin's, `team-post`'s and `team-ask`'s), `team-thread wait`, pushes, `team-merge`, `team-open` and `team-close`.
+- A machine that finds another holder fences itself: it stops its coordinator and workers and its heartbeat, and a hook blocks its Discord posts (the plugin's, `team-post`'s, `team-ask`'s and `team-inbox`'s), `team-thread wait`, pushes, `team-merge`, `team-open` and `team-close`.
   Such a call blocked as fenced or lost means another machine runs the team: post nothing, run nothing more, end the turn.
 - When GitHub is unreachable the heartbeat holds the team: it posts in `#coordinator`, `team-lease status --json` shows `offline_since`, and a hook blocks workers' pushes and `gh`; the offline watch, `team-timers watch --once` with Bash `run_in_background` as your digest says, wakes you once when the hold starts or ends, and you re-arm it after acting.
   Send `T<n> HOLD` to each live worker but an ops session (it replies `T<n> PAUSED held`), and launch no worker, hand off or resume while offline; a worker's `T<n> PAUSED offline <what failed>` is the same news: check `offline_since`, and hold the rest.

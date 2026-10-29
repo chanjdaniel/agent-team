@@ -10,7 +10,9 @@
 # ~/.claude/channels/discord/access.json: "<@id> T<n> has a question for you in <#thread>: <first
 # line>", the question's first line cut to 200 characters. Once both are posted it logs, in
 # order: question role=<role> text=<the question> when --from names the worker role that asked
-# it; asked id=<id> text=<the question's first line>; waiting on=Daniel reason="ask <id>".
+# it; asked id=<id> text=<the question's first line> discord_message=<the question's first
+# message>; waiting on=Daniel reason="ask <id>". Then team-inbox lists the ask in the Waiting on
+# you message; when that fails, a line on stderr says so, and the ask stands.
 # A post that fails logs nothing: when the ping fails, the question stays posted, its id said.
 # Prints {task, id, question: [<its message ids>], ping: <the ping's message id>}.
 # Exit codes: 0 asked; 1 refused, or Discord refused a post; 2 a malformed command line; 75
@@ -86,7 +88,9 @@ if ((code)); then
 fi
 
 for event in "${lines[@]}"; do
-  ledger_append "$(jq -c --arg ts "$(date -u +%FT%TZ)" '.ts = $ts' <<<"$event")"
+  ledger_append "$(jq -c --arg ts "$(date -u +%FT%TZ)" --arg message "$(head -n 1 <<<"$asked")" \
+    '.ts = $ts | if .event == "asked" then .discord_message = $message else . end' <<<"$event")"
 done
+refresh_inbox
 jq -nc --arg task "$task" --arg id "$id" --arg asked "$asked" --arg ping "$ping" \
   '{task: $task, id: $id, question: ($asked | split("\n")), ping: $ping}'

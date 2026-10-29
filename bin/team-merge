@@ -32,12 +32,14 @@
 # by (naming the Discord message and its author), project, branch, discord_message,
 # discord_channel and url (the PR's), and local_checks (the commands that passed on head) when
 # there were any. Prints {task, pr, merge, head, by}.
-# Last, when the project's primary checkout is the code checkout this runs from, that checkout
+# Then, when the project's primary checkout is the code checkout this runs from, that checkout
 # follows the base, so merged code reaches the scripts: on the base branch and clean (untracked
 # files aside), it is fast-forwarded to origin's, said on one line; on another branch or a
 # detached HEAD, with local changes, ahead or diverged, with untracked files in the way, or with
 # origin out of reach, it is left as it is, with the reason and the command to run, and the exit
 # stays 0.
+# Last, team-inbox takes the PR out of the Waiting on you message; when that fails, a line on
+# stderr says so, and the exit stays 0.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
@@ -272,3 +274,4 @@ if same_path "$primary" "$code"; then
     echo "team-merge: the code checkout $code is left as it is: $FOLLOW_REASON; $bring" >&2
   fi
 fi
+refresh_inbox

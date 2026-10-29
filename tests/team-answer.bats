@@ -3,6 +3,7 @@
 # theirs, logged with its verbatim text, the ask's wait cleared, and the text printed.
 
 load helpers/common
+load helpers/inbox
 
 setup() {
   sandbox
@@ -18,13 +19,16 @@ LEDGER
   mkdir -p "$discord"
   export DISCORD_DIR=$discord
   stub_discord
+  inbox_discord
   message 2222 1564000000000000001 757 $'Five a minute.\n\n  Keep "ten an hour" for the API, `not` the site.  '
 }
 
 # The fake Discord API: GET channels/<c>/messages/<m> answers $DISCORD_DIR/<c>-<m>.json, a
 # missing one fails as curl -f does on a 404. The headers curl read from stdin are kept.
+# team-inbox's calls go to the fake Discord of helpers/inbox.
 stub_discord() {
   stub_script curl <<'EOF'
+[[ ! -f $STUB_FIXTURES/inbox.sh ]] || source "$STUB_FIXTURES/inbox.sh"
 cat >>"$DISCORD_DIR/stdin"
 url=${*: -1}
 if [[ $url =~ ^https://discord\.com/api/v10/channels/([0-9]+)/messages/([0-9]+)$ &&
@@ -49,9 +53,14 @@ logged() {
   tail -n +5 "$TEAM_HOME/ledger.jsonl" | jq -c 'del(.ts)'
 }
 
+# The reads of a message by id, team-inbox's calls left out.
+reads() {
+  stub_calls curl | jq -c 'select(.[-1] | test("/messages/[0-9]+$")) | select(index("-X") | not)'
+}
+
 # The channels the message was looked for in, in order.
 looked_in() {
-  stub_calls curl | jq -r '.[-1] | capture("channels/(?<c>[0-9]+)/messages/").c'
+  reads | jq -r '.[-1] | capture("channels/(?<c>[0-9]+)/messages/").c'
 }
 
 @test "an answer is logged with its verbatim text and message, the ask's wait is cleared, and the text printed" {
@@ -63,11 +72,22 @@ looked_in() {
   assert_equal "$(looked_in)" "2222"
   TEAM_HOME=$TEAM_HOME run "$REPO_ROOT/bin/team-log" --check
   assert_equal "$status" 0
+  # The Waiting on you message no longer lists the ask by the end of the command.
+  assert_equal "$(inbox_items_shown)" "Nothing waits on you."
+}
+
+@test "a Waiting on you message Discord refuses is a line on stderr, and the answer stands" {
+  echo 500 >"$STUB_FIXTURES/inbox/fail"
+  run_bin -0 --separate-stderr team-answer T7 sign-in 1564000000000000001
+  assert_equal "$output" $'Five a minute.\n\n  Keep "ten an hour" for the API, `not` the site.  '
+  assert_equal "$stderr" "team-answer: the Waiting on you message is not updated: Discord refused the read of #coordinator's channel: curl: (22) The requested URL returned error: 500"
+  assert_equal "$(logged | jq -r .event)" "answered
+resumed"
 }
 
 @test "the message is read with the bot token on stdin, never on the command line or in the output" {
   run_bin -0 team-answer T7 sign-in 1564000000000000001
-  assert_equal "$(stub_calls curl | jq -c .)" \
+  assert_equal "$(reads)" \
     '["-fsS","-H","@-","https://discord.com/api/v10/channels/2222/messages/1564000000000000001"]'
   assert_equal "$(cat "$discord/stdin")" "Authorization: Bot $FAKE_DISCORD_TOKEN"
   [[ $output != *"$FAKE_DISCORD_TOKEN"* ]]
@@ -136,7 +156,7 @@ resumed"
   run_bin -0 team-answer T7 sign-in 1564000000000000001
   run_bin -1 --separate-stderr team-answer T7 sign-in 1564000000000000001
   assert_equal "$stderr" "team-answer: T7 already logged answered id=sign-in from Discord message 1564000000000000001"
-  assert_equal "$(stub_calls curl | wc -l)" "1"
+  assert_equal "$(reads | wc -l)" "1"
   message 2222 1564000000000000002 757 "(added) And reset it daily."
   run_bin -0 team-answer T7 sign-in 1564000000000000002
   assert_equal "$output" "(added) And reset it daily."
