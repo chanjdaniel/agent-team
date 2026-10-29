@@ -776,10 +776,12 @@ EOF
   docker_machine
   stack_json '{"heartbeat_sweep": true, "heartbeat_janitor": true}'
   docker_hang
-  TEAM_TIMERS_SLOTS_SECONDS=1 TEAM_TIMERS_SWEEP_SECONDS=1 TEAM_TIMERS_JANITOR_SECONDS=2 run_bin -1 team-timers run
+  # The slots step gets 5 s, which team-slots needs on a slow machine (CI's macOS runner) to
+  # reach its docker call before the step stops it, still well inside its own 30 s for Docker.
+  TEAM_TIMERS_SLOTS_SECONDS=5 TEAM_TIMERS_SWEEP_SECONDS=1 TEAM_TIMERS_JANITOR_SECONDS=2 run_bin -1 team-timers run
   assert_equal "$output" "$(cat "$log")"
   assert_equal "$(steps "$output")" "lease slots stacks checkpoint janitor"
-  [[ $(grep ' slots: ' <<<"$output") =~ ^[0-9T:Z-]+" slots: failed: timed out after 1 s"$ ]]
+  [[ $(grep ' slots: ' <<<"$output") =~ ^[0-9T:Z-]+" slots: failed: timed out after 5 s"$ ]]
   [[ $(grep ' stacks: ' <<<"$output") =~ ^[0-9T:Z-]+" stacks: failed: timed out after 1 s"$ ]]
   [[ $(tail -n 1 <<<"$output") =~ ^[0-9T:Z-]+" janitor: failed: timed out after 2 s"$ ]]
   # Nothing they started is left waiting, and the janitor stopped wrote no report, so the next
