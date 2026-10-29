@@ -6,11 +6,12 @@
       "Bash(@TEAM_CODE@/bin/team-thread wait @TASK@ --after *)"
     ],
     "deny": [
-      "Bash(team-post *)",
+      "Bash(team-post --coordinator*)",
+      "Bash(team-post * --coordinator*)",
+      "Bash(team-post * --thread task*)",
       "Bash(*/bin/team-post --coordinator*)",
       "Bash(*/bin/team-post * --coordinator*)",
-      "Bash(*/bin/team-post * --thread task*)",
-      "Bash(team-thread wait*)"
+      "Bash(*/bin/team-post * --thread task*)"
     ]
   },
   "hooks": {

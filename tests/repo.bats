@@ -274,14 +274,10 @@ SETTINGS=(coordinator.settings.json settings/worker.json)
   done
 }
 
-# Whether one of the Bash deny rules in <settings file> matches <command>, a rule's * matching any
-# text as Claude Code's does: denied <settings file> <command>
+# Whether one of the Bash deny rules in <settings file> matches <command> in one of its
+# deny_forms, a rule's * matching any text as Claude Code's does: denied <settings file> <command>
 denied() {
-  local rule
-  while IFS= read -r rule; do
-    rule_matches "$rule" "$2" && return 0
-  done < <(jq -r '.permissions.deny[] | select(startswith("Bash("))' "$REPO_ROOT/$1")
-  return 1
+  denied_in "$REPO_ROOT/$1" "$2"
 }
 
 # Whether the Bash rule <rule> matches <command>: rule_matches <rule> <command>
