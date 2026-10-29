@@ -15,7 +15,7 @@
 # team_tool_path, fence_reason, lease_refusal, lease_gate, worktree_changes, same_path, bounded, trust_probe,
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin,
 # only_records, records_list, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
-# registered_pr, attribution_lines, strip_attribution, live_sessions, discord_token, discord_api,
+# registered_pr, attribution_lines, strip_attribution, live_sessions, discord_token, discord_api, daniel_message,
 # github, pr_part and task_state_json, and sets IMAGE_TYPE and COORDINATOR_CHANNEL.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
 # shellcheck shell=bash
@@ -908,6 +908,49 @@ discord_api() {
     return 1
   }
   curl -fsS -H @- "${@:2}" "https://discord.com/api/v10/$1" <<<"Authorization: Bot $token"
+}
+
+# Read Daniel's word from Discord: message <id> from the first of the places that has it, through
+# discord_api, its author one of Daniel's ids (the top-level allowFrom of the Discord plugin's
+# ~/.claude/channels/discord/access.json), so a decision of theirs is read from Discord, never
+# taken on a model's word. Each place is a name ending in its channel id, as "#coordinator 1562...".
+# Prints {place, channel, who: "<username> (<author id>)", message: <Discord's message>}. Fails
+# with the one reason on stderr: no allowFrom or no token ("..., so <what> cannot be checked"),
+# no place has the message (each place's error), or its author is not in allowFrom.
+# daniel_message <message id> <what> <place>...
+daniel_message() {
+  local message=$1 what=$2 allow found='' place reply miss misses=() tried who
+  allow=$(jq -ce '.allowFrom | select(type == "array") | map(tostring)' \
+    "$HOME/.claude/channels/discord/access.json" 2>/dev/null) || {
+    echo "cannot read allowFrom from ~/.claude/channels/discord/access.json, so $what cannot be checked" >&2
+    return 1
+  }
+  discord_token >/dev/null || {
+    echo "no DISCORD_BOT_TOKEN in ~/.claude/channels/discord/.env, so $what cannot be checked" >&2
+    return 1
+  }
+  miss=$(mktemp)
+  for place in "${@:3}"; do
+    if reply=$(discord_api "channels/${place##* }/messages/$message" 2>"$miss") &&
+      jq -e --arg m "$message" 'type == "object" and .id == $m and (.author.id | type) == "string"' <<<"$reply" >/dev/null 2>&1; then
+      found=$place
+      break
+    fi
+    misses+=("$(grep -m1 . "$miss" || echo "not that message")")
+  done
+  rm -f "$miss"
+  if [[ -z $found ]]; then
+    tried=$(printf '%s\n' "${@:3}" | sed '$!s/$/ or/' | paste -sd ' ')
+    echo "Discord message $message cannot be fetched from $tried: $(printf '%s\n' "${misses[@]}" | sort -u | paste -sd ';' | sed 's/;/; /g')" >&2
+    return 1
+  fi
+  who="$(jq -r '.author.username // "unknown"' <<<"$reply") ($(jq -r '.author.id' <<<"$reply"))"
+  if jq -e --argjson allow "$allow" '.author.id as $a | $allow | index($a) | not' <<<"$reply" >/dev/null; then
+    echo "Discord message $message is by $who, who is not in allowFrom of ~/.claude/channels/discord/access.json" >&2
+    return 1
+  fi
+  jq -c --arg place "$found" --arg channel "${found##* }" --arg who "$who" \
+    '{place: $place, channel: $channel, who: $who, message: .}' <<<"$reply"
 }
 
 # The project registry, through this checkout's team-project: team_project [<arguments>...]

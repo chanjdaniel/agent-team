@@ -228,10 +228,12 @@ age_probe() {
   assert_equal "$(probes)" 0
 }
 
-@test "team-post is blocked for workers and the coordinator alike when fenced or when origin names another holder" {
+@test "team-post and team-ask are blocked for workers and the coordinator alike when fenced or when origin names another holder" {
   local command posts=("team-post T7 --file q.md" "/home/x/agent-team/bin/team-post --coordinator --file q.md"
-    "cd wt && team-post T7 --thread task --file q.md" $'team-log T7 note\nteam-post T7 --file q.md')
-  local others=("echo team-post" "grep -rn 'team-post' bin" "team-poster T7" "team-log T7 note")
+    "cd wt && team-post T7 --thread task --file q.md" $'team-log T7 note\nteam-post T7 --file q.md'
+    "team-ask T7 sign-in --file q.md" "TZ=UTC ~/agent-team/bin/team-ask T7 sign-in --file q.md --from planner")
+  local others=("echo team-post" "grep -rn 'team-post' bin" "team-poster T7" "team-log T7 note"
+    "team-answer T7 sign-in 1564000000000000001" "team-asked T7")
   for command in "${posts[@]}" "${others[@]}"; do
     bash_call -0 "$command"
     coordinator_call -0 "$command"

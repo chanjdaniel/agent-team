@@ -1,0 +1,157 @@
+#!/usr/bin/env bats
+# team-ask: a question put to Daniel in one call: posted in the task's thread with a ping in
+# #coordinator, then question, asked and waiting logged, and nothing logged when a post fails.
+
+load helpers/common
+
+setup() {
+  sandbox
+  cat >"$TEAM_HOME/ledger.jsonl" <<'LEDGER'
+{"ts":"2026-10-01T10:00:00Z","task":"T7","event":"opened","project":"agent-team","path":"feature","type":"feat","title":"x","branch":"feat/T7-x","base":"dev","base_sha":"0123456","worktree":"/w/7"}
+{"ts":"2026-10-01T10:00:01Z","task":"T7","event":"thread","discord_thread":"2222"}
+{"ts":"2026-10-01T10:00:02Z","task":"T8","event":"opened","project":"agent-team","path":"feature","type":"feat","title":"y","branch":"feat/T8-y","base":"dev","base_sha":"0123456","worktree":"/w/8"}
+{"ts":"2026-10-01T10:00:03Z","task":"T9","event":"opened","project":"agent-team","path":"feature","type":"feat","title":"z","branch":"feat/T9-z","base":"dev","base_sha":"0123456","worktree":"/w/9"}
+{"ts":"2026-10-01T10:00:04Z","task":"T9","event":"thread","discord_thread":"3333"}
+{"ts":"2026-10-01T10:00:05Z","task":"T9","event":"closed","archive":[],"returned":[],"kept":[]}
+LEDGER
+  echo '{"dmPolicy": "allowlist", "allowFrom": ["757"], "groups": {}, "pending": {}}' \
+    >"$HOME/.claude/channels/discord/access.json"
+  printf '\n  Which of the two sign-in limits stays?  \n\nFive tries a minute, or ten an hour.\n' >"$BATS_TEST_TMPDIR/q.md"
+  discord_posts
+}
+
+# The stub curl answers each post with a new message id (1564000000000000001 for the first, and
+# so on); with FAIL_POST=<n>, the n-th post fails as curl -f does on a 403.
+discord_posts() {
+  stub_script curl <<'EOF'
+cat >>"$STUB_CALLS/curl.stdin"
+n=$(wc -l <"$STUB_CALLS/curl.log")
+if [[ $n == "${FAIL_POST:-}" ]]; then
+  echo "curl: (22) The requested URL returned error: 403" >&2
+  exit 22
+fi
+printf '{"id":"%d"}\n' "$((1564000000000000000 + n))"
+EOF
+}
+
+# The content of each post, one JSON string per line.
+posted() {
+  stub_calls curl | jq -c 'index("-d") as $i | .[$i + 1] | fromjson | .content'
+}
+
+# The channel each post went to, one per line.
+channels() {
+  stub_calls curl | jq -r '.[] | select(startswith("https://")) | capture("channels/(?<c>[0-9]+)/messages$").c'
+}
+
+# The ledger's events after the setup's, without their ts.
+logged() {
+  tail -n +7 "$TEAM_HOME/ledger.jsonl" | jq -c 'del(.ts)'
+}
+
+@test "an ask posts the question in the thread and a ping in #coordinator, logs question, asked and waiting, and prints the ids" {
+  run_bin -0 --separate-stderr team-ask T7 sign-in --file "$BATS_TEST_TMPDIR/q.md" --from planner
+  assert_equal "$output" '{"task":"T7","id":"sign-in","question":["1564000000000000001"],"ping":"1564000000000000002"}'
+  assert_equal "$stderr" ""
+  assert_equal "$(channels)" "2222
+1562486564871995482"
+  assert_equal "$(posted)" '"Which of the two sign-in limits stays?  \n\nFive tries a minute, or ten an hour."
+"<@757> T7 has a question for you in <#2222>: Which of the two sign-in limits stays?"'
+  assert_equal "$(logged)" '{"task":"T7","event":"question","role":"planner","text":"Which of the two sign-in limits stays?  \n\nFive tries a minute, or ten an hour."}
+{"task":"T7","event":"asked","id":"sign-in","text":"Which of the two sign-in limits stays?"}
+{"task":"T7","event":"waiting","on":"Daniel","reason":"ask sign-in"}'
+  TEAM_HOME=$TEAM_HOME run "$REPO_ROOT/bin/team-log" --check
+  assert_equal "$status" 0
+}
+
+@test "with no --from the ask is the coordinator's own, so no question is logged" {
+  run_bin -0 team-ask T7 sign-in --file "$BATS_TEST_TMPDIR/q.md"
+  assert_equal "$(logged | jq -r .event)" "asked
+waiting"
+}
+
+@test "the ping mentions each of Daniel's ids and cuts a long first line" {
+  echo '{"allowFrom": ["757", 758], "groups": {}}' >"$HOME/.claude/channels/discord/access.json"
+  local long
+  long=$(printf 'word %.0s' {1..60})
+  printf '%s\nmore\n' "$long" >"$BATS_TEST_TMPDIR/q.md"
+  run_bin -0 team-ask T7 long --file "$BATS_TEST_TMPDIR/q.md"
+  assert_equal "$(posted | tail -n 1 | jq -r .)" "<@757> <@758> T7 has a question for you in <#2222>: ${long:0:197}..."
+  # asked keeps the whole first line.
+  assert_equal "$(logged | jq -r 'select(.event == "asked") | .text')" "${long% }"
+}
+
+@test "a refused question posts no ping and logs nothing" {
+  FAIL_POST=1 run_bin -1 --separate-stderr team-ask T7 sign-in --file "$BATS_TEST_TMPDIR/q.md" --from planner
+  assert_equal "$output" ""
+  assert_contains "$stderr" "team-post: Discord refused the post: curl: (22) The requested URL returned error: 403; nothing was posted"
+  assert_contains "$stderr" "team-ask: the question was not posted, so nothing is logged"
+  assert_equal "$(channels)" "2222"
+  assert_equal "$(logged)" ""
+}
+
+@test "a refused ping logs nothing and names the question's id, posted already" {
+  FAIL_POST=2 run_bin -1 --separate-stderr team-ask T7 sign-in --file "$BATS_TEST_TMPDIR/q.md" --from planner
+  assert_equal "$output" ""
+  assert_contains "$stderr" "team-ask: the question is posted in T7's thread as 1564000000000000001, but the ping in #coordinator was not, so nothing is logged"
+  assert_equal "$(logged)" ""
+}
+
+@test "Discord's 429 exits 75 and logs nothing" {
+  stub_script curl <<'EOF'
+while (($#)); do [[ $1 == -D ]] && printf 'HTTP/2 429\r\nretry-after: 3\r\n\r\n' >"$2"; shift; done
+exit 22
+EOF
+  run_bin -75 --separate-stderr team-ask T7 sign-in --file "$BATS_TEST_TMPDIR/q.md"
+  assert_contains "$stderr" "team-post: Discord is rate-limiting the bot (429): try again in 3 s; nothing was posted"
+  assert_equal "$(logged)" ""
+}
+
+@test "a fenced machine posts nothing and logs nothing" {
+  mkdir -p "$HOME/.local/state/agent-team"
+  echo '{"since": "2026-10-22T14:00:00Z", "holder": "laptop", "epoch": 2}' >"$HOME/.local/state/agent-team/fenced"
+  run_bin -1 --separate-stderr team-ask T7 sign-in --file "$BATS_TEST_TMPDIR/q.md" --from planner
+  assert_contains "$stderr" "a fenced machine posts nothing to Discord"
+  assert_equal "$(stub_calls curl)" ""
+  assert_equal "$(logged)" ""
+}
+
+@test "a task with no thread, a closed or unknown task, a blank file or no allowFrom is refused before any post" {
+  run_bin -1 team-ask T8 sign-in --file "$BATS_TEST_TMPDIR/q.md"
+  assert_equal "$output" "team-ask: T8 has no Discord thread in the ledger; team-thread opens one"
+  run_bin -1 team-ask T9 sign-in --file "$BATS_TEST_TMPDIR/q.md"
+  assert_equal "$output" "team-ask: T9 is closed"
+  run_bin -1 team-ask T10 sign-in --file "$BATS_TEST_TMPDIR/q.md"
+  assert_equal "$output" "team-ask: T10 is not open: the ledger has no opened event for it"
+  printf ' \n\n' >"$BATS_TEST_TMPDIR/blank.md"
+  run_bin -1 team-ask T7 sign-in --file "$BATS_TEST_TMPDIR/blank.md"
+  assert_equal "$output" "team-ask: nothing to ask: $BATS_TEST_TMPDIR/blank.md is blank"
+  run_bin -1 team-ask T7 sign-in --file "$BATS_TEST_TMPDIR/none.md"
+  assert_equal "$output" "team-ask: no file to ask: $BATS_TEST_TMPDIR/none.md"
+  local access
+  for access in '' '{"allowFrom": []}' '{"allowFrom": "757"}' '{"allowFrom": ["@everyone"]}'; do
+    printf '%s' "$access" >"$HOME/.claude/channels/discord/access.json"
+    run_bin -1 team-ask T7 sign-in --file "$BATS_TEST_TMPDIR/q.md"
+    assert_equal "$output" "team-ask: no Discord user id in allowFrom of ~/.claude/channels/discord/access.json, so the ping cannot name Daniel"
+  done
+  assert_equal "$(stub_calls curl)" ""
+  assert_equal "$(logged)" ""
+}
+
+@test "a malformed command line is a usage error, and nothing is posted or logged" {
+  local args
+  for args in "" "T7" "T7 sign-in" "T7 sign-in --file" "7 sign-in --file q.md" "T7 --file q.md" \
+    "T7 'sign in' --file q.md" "T7 -x --file q.md" "T7 sign-in --file q.md --from" \
+    "T7 sign-in --file q.md --from Planner" "T7 sign-in more --file q.md" "T7 sign-in --file q.md --to 1111"; do
+    eval "run_bin -2 team-ask $args"
+    assert_contains "$output" "usage: team-ask T<n> <id> --file <question> [--from <role>]"
+  done
+  assert_equal "$(stub_calls curl)" ""
+  assert_equal "$(logged)" ""
+}
+
+@test "--help prints the header" {
+  run_bin -0 team-ask --help
+  assert_equal "${lines[0]}" "$(sed -n '2s/^# //p' "$REPO_ROOT/bin/team-ask")"
+  assert_contains "$output" "Usage: team-ask T<n> <id> --file <question> [--from <role>]"
+}

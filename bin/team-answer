@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Take Daniel's answer to an ask in one call: read their Discord message by id, check it is
+# theirs, log it as the ask's answer and clear the ask's wait, then print its text for the
+# coordinator to send on. team-ask put the question.
+#
+# Usage: team-answer T<n> <id> <discord message id>
+# The task must be open and have logged asked id=<id>, and no answered of <id> from that message
+# yet (team-log refuses that repeat too); a later message for the same ask is an addition, logged
+# as another answered. The message is read with the bot token through the Discord API from the
+# task's thread, else #coordinator, and its author must be in the top-level allowFrom of the
+# Discord plugin's ~/.claude/channels/discord/access.json, as team-merge checks merge-approved
+# (daniel_message in bin/lib/team.sh). Then it logs answered id=<id> answer=<the message's text,
+# verbatim> discord_message=<its id>, and resumed when the task's standing park is the ask's own
+# wait (the latest waiting, blocked, paused, held, resumed or launch is waiting on=Daniel
+# reason="ask <id>", as team-ask logs it).
+# Prints the message's text verbatim. Any refusal is exit 1 with nothing logged.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+USAGE="usage: team-answer T<n> <id> <discord message id>"
+
+(($# == 3)) || usage_error "$USAGE"
+task=$1 id=$2 message=$3
+[[ $task =~ ^T[1-9][0-9]*$ && $id =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && $message =~ ^[1-9][0-9]{0,18}$ ]] ||
+  usage_error "$USAGE"
+
+events=$(open_task_events "$task")
+jq -e --arg id "$id" 'any(.[]; .event == "asked" and .id == $id)' <<<"$events" >/dev/null ||
+  die "$task never asked $id; $(jq -r '[.[] | select(.event == "asked") | .id | strings] | unique
+    | if . == [] then "it has asked nothing" else "its asks: \(join(", "))" end' <<<"$events")"
+! ledger_jq 'answered_from($id; $message)' -e --arg id "$id" --arg message "$message" <<<"$events" >/dev/null ||
+  die "$task already logged answered id=$id from Discord message $message"
+
+places=()
+thread=$(jq -r 'map(select(.event == "thread") | .discord_thread | strings) | last // empty' <<<"$events")
+if [[ -n $thread ]]; then places+=("the task's thread $thread"); fi
+places+=("#coordinator $COORDINATOR_CHANNEL")
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+word=$(daniel_message "$message" "the answer" "${places[@]}" 2>"$scratch/error") || die "$(<"$scratch/error")"
+answer=$(jq -r '.message.content | strings' <<<"$word")
+[[ $answer =~ [^[:space:]] ]] || die "Discord message $message has no text to log as the answer"
+
+ledger_append "$(jq -nc --arg ts "$(date -u +%FT%TZ)" --arg task "$task" --arg id "$id" --arg message "$message" \
+  --argjson word "$word" '{ts: $ts, task: $task, event: "answered", id: $id, answer: $word.message.content, discord_message: $message}')"
+if jq -e --arg id "$id" '
+  map(select(.event | IN("waiting", "blocked", "paused", "held", "resumed", "launch"))) | last
+  | . != null and .event == "waiting" and .on == "Daniel" and .reason == "ask \($id)"' <<<"$events" >/dev/null; then
+  ledger_append "$(jq -nc --arg ts "$(date -u +%FT%TZ)" --arg task "$task" '{ts: $ts, task: $task, event: "resumed"}')"
+fi
+jq -r '.message.content' <<<"$word"

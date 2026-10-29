@@ -100,7 +100,6 @@ logged=$(ledger_jq '
   if $head == "" then map(select(.event == "pr" and (.url | rtrimstr("/")) == $url)) | last else head_logged($url; $head) end
   | if . == null then empty else "\(.ts) \(.event)" end' -r --arg url "${url%/}" --arg head "$approved" <<<"$events")
 pr_ts=${logged% *}
-access=$HOME/.claude/channels/discord/access.json
 if [[ $approval == null ]]; then
   problems+=("no merge-approved event for $url: Daniel's word is not recorded")
 elif [[ -z $pr_ts ]]; then
@@ -116,42 +115,15 @@ else
     problems+=("merge-approved names discord_message '$message', which is not a Discord message id")
   elif ((sent < $(date -ud "$pr_ts" +%s))); then
     problems+=("Discord message $message was sent at $(date -ud "@$sent" +%FT%TZ), before the ${logged#* } event of $url${approved:+ at ${approved:0:7}} at $pr_ts, so it is not Daniel's word on this PR")
-  elif ! allow=$(jq -ce '.allowFrom | select(type == "array") | map(tostring)' "$access" 2>/dev/null); then
-    problems+=("cannot read allowFrom from ~/.claude/channels/discord/access.json, so the approval cannot be checked")
-  elif ! discord_token >/dev/null; then
-    problems+=("no DISCORD_BOT_TOKEN in ~/.claude/channels/discord/.env, so the approval cannot be checked")
   else
-    found='' where=() errors=()
-    if [[ -n $thread ]]; then where+=("$thread"); fi
-    where+=("$COORDINATOR_CHANNEL")
-    for candidate in "${where[@]}"; do
-      if discord_api "channels/$candidate/messages/$message" >"$scratch/message" 2>"$scratch/discord-error" &&
-        jq -e --arg m "$message" 'type == "object" and .id == $m and (.author.id | type) == "string"' "$scratch/message" >/dev/null 2>&1; then
-        found=$candidate
-        break
-      fi
-      errors+=("$(grep -m1 . "$scratch/discord-error" || echo "not that message")")
-    done
-    if [[ $thread == "$found" && -n $thread ]]; then
-      place="the task's thread $thread"
+    places=()
+    if [[ -n $thread ]]; then places+=("the task's thread $thread"); fi
+    places+=("#coordinator $COORDINATOR_CHANNEL")
+    if word=$(daniel_message "$message" "the approval" "${places[@]}" 2>"$scratch/word"); then
+      by="Discord message $message in $(jq -r .place <<<"$word"), from $(jq -r .who <<<"$word")"
+      channel=$(jq -r .channel <<<"$word")
     else
-      place="#coordinator $COORDINATOR_CHANNEL"
-    fi
-    if [[ -z $found ]]; then
-      if [[ -n $thread ]]; then
-        tried="the task's thread $thread or #coordinator $COORDINATOR_CHANNEL"
-      else
-        tried="#coordinator $COORDINATOR_CHANNEL (the task has no thread)"
-      fi
-      problems+=("Discord message $message cannot be fetched from $tried: $(printf '%s\n' "${errors[@]}" | sort -u | paste -sd ';' | sed 's/;/; /g')")
-    else
-      author=$(jq -r '.author.id' "$scratch/message")
-      who="$(jq -r '.author.username // "unknown"' "$scratch/message") ($author)"
-      if jq -e --arg a "$author" 'index($a) | not' <<<"$allow" >/dev/null; then
-        problems+=("Discord message $message is by $who, who is not in allowFrom of ~/.claude/channels/discord/access.json")
-      else
-        by="Discord message $message in $place, from $who" channel=$found
-      fi
+      problems+=("$(<"$scratch/word")")
     fi
   fi
 fi

@@ -49,12 +49,17 @@ def check_problems($contract):
     elif .ts >= $contract.strict_from then kind_problems($contract)
     else empty end;
 
+# The scripts that write a kind ($kind.writer, one name or a list), as a list.
+def writers($kind): [$kind.writer // empty] | flatten;
+
 # What an event must meet to be appended by script $writer: the basics, then that $writer is
-# the kind's writer, then the kind's fields, whatever its ts. Only the first failing step is told.
+# one of the kind's writers, then the kind's fields, whatever its ts. Only the first failing step
+# is told.
 def append_problems($contract; $writer):
   (if type == "object" then .event else null end) as $event
   | ([line_problems] | select(. != []))
-    // ([$contract.kinds[$event].writer // empty | select(. != $writer) | "\($event) events are written by \(.), not \($writer)"]
+    // ([writers($contract.kinds[$event]) | select(. != [] and (index($writer) | not))
+        | "\($event) events are written by \(join(" or ")), not \($writer)"]
       | select(. != []))
     // [kind_problems($contract)]
   | .[];
@@ -79,14 +84,14 @@ def field_text($want):
 def contract_table:
   .kinds | to_entries
   | (map(.key | length) | max) as $event_width
-  | (map(.value.writer | length) | max) as $writer_width
+  | (map(writers(.value) | join(", ") | length) | max) as $writer_width
   | "  \("event" | pad($event_width))  \("written by" | pad($writer_width))  fields",
     (.[] | .value as $kind
       | ([$kind.required | to_entries[] | .value as $type | .key | field_text($type)] as $fields
          | [($kind.optional // {}) | to_entries[] | .value as $type | .key | field_text($type)] as $optional
          | if $fields == [] then "-" else $fields | join(", ") end
            + if $optional == [] then "" else "; optional \($optional | join(", "))" end) as $text
-      | "  \(.key | pad($event_width))  \($kind.writer | pad($writer_width))  \($text)"
+      | "  \(.key | pad($event_width))  \(writers($kind) | join(", ") | pad($writer_width))  \($text)"
         + if $kind.about then "  (\($kind.about))" else "" end);
 
 # A recorded path as a path on this machine, whose home directory is $home: every machine keeps
@@ -309,6 +314,10 @@ def settles($ask):
   or (.event == "merge-approved" and (.url | type) == "string" and (.url | test("^https?://"))
     and ((.url | rtrimstr("/")) as $url | ($ask.text // "" | tostring) as $text
       | any($text | indices($url)[]; $text[. + ($url | length):] | test("^[0-9]") | not)));
+
+# Whether the task's events hold an answered of ask $id read from Discord message $message.
+def answered_from($id; $message):
+  any(.[]; .event == "answered" and .id == $id and (.discord_message | tostring) == $message);
 
 # The asks put to Daniel that no later event settles yet.
 def pending_asks:

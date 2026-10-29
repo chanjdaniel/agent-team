@@ -1,6 +1,6 @@
 {
   "about": [
-    "The ledger contract: every event kind in ledger.jsonl, the one script that writes it, and its fields.",
+    "The ledger contract: every event kind in ledger.jsonl, the script that writes it (or the list of scripts that do), and its fields.",
     "Each field's type is string, number, array (a list) or object, or a list of the strings it may be.",
     "Every line has ts (UTC, like 2026-10-22T01:00:00Z), task (T<n>) and event; note (a string) is allowed on every kind, and other fields are allowed.",
     "Lines from strict_from on must meet their kind's fields; earlier lines are legacy and only need ts, task and event.",
@@ -59,17 +59,19 @@
       "optional": {"repo": "string"}
     },
     "question": {
-      "writer": "team-log",
+      "writer": ["team-log", "team-ask"],
       "required": {"role": "string", "text": "string"}
     },
     "asked": {
-      "writer": "team-log",
+      "writer": ["team-log", "team-ask"],
       "about": "a decision put to Daniel",
       "required": {"id": "string", "text": "string"}
     },
     "answered": {
-      "writer": "team-log",
-      "required": {"id": "string", "answer": "string"}
+      "writer": ["team-log", "team-answer"],
+      "about": "Daniel's answer to the asked of its id; discord_message: the message it was read from, never logged twice for one ask",
+      "required": {"id": "string", "answer": "string"},
+      "optional": {"discord_message": "string"}
     },
     "plan-approved": {
       "writer": "team-log",
@@ -94,13 +96,13 @@
       "optional": {"head": "string", "since": "string"}
     },
     "waiting": {
-      "writer": "team-log",
+      "writer": ["team-log", "team-ask"],
       "about": "a task parked on Daniel or something outside the team; the next launch or resumed clears it; since: when the park began, when it is logged after the fact",
       "required": {"on": "string", "reason": "string"},
       "optional": {"since": "string"}
     },
     "resumed": {
-      "writer": "team-log",
+      "writer": ["team-log", "team-answer"],
       "about": "clears held, blocked, paused and waiting",
       "required": {}
     },

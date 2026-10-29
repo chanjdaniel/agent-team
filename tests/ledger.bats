@@ -68,8 +68,20 @@ SCRIPT
   assert_equal "$status" "1"
   assert_contains "$output" "thread events are written by team-thread, not team-log"
   append_as team-thread '{"ts":"2026-10-22T02:00:00Z","task":"T7","event":"resumed"}'
-  assert_contains "$output" "resumed events are written by team-log, not team-thread"
+  assert_contains "$output" "resumed events are written by team-log or team-answer, not team-thread"
   assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" ""
+}
+
+@test "a kind with several writers is appended by each of them, and refused from any other" {
+  append_as team-ask '{"ts":"2026-10-22T02:00:00Z","task":"T7","event":"asked","id":"q1","text":"Which?"}'
+  assert_equal "$status" "0"
+  append_as team-answer '{"ts":"2026-10-22T02:00:01Z","task":"T7","event":"answered","id":"q1","answer":"That one"}'
+  assert_equal "$status" "0"
+  append_as team-ask '{"ts":"2026-10-22T02:00:02Z","task":"T7","event":"answered","id":"q1","answer":"That one"}'
+  assert_equal "$status" "1"
+  assert_contains "$output" "answered events are written by team-log or team-answer, not team-ask"
+  assert_equal "$(jq -r .event "$TEAM_HOME/ledger.jsonl")" "asked
+answered"
 }
 
 @test "team-thread's event passes the strict check" {

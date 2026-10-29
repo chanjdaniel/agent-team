@@ -4,7 +4,7 @@
 #
 # Usage: lease-fence [--coordinator]   (the hook's input on stdin; --coordinator on its Bash)
 #   Discord (the coordinator's reply, react and edit_message), and a Bash command of any role
-#     that runs team-post: blocked while this machine is fenced, or when the lease on origin is
+#     that runs team-post or team-ask: blocked while this machine is fenced, or when the lease on origin is
 #     not this machine's last write and names another holder or a higher epoch, so an old
 #     coordinator or worker never posts in the channel the new one owns, even before its
 #     heartbeat fences it (lease_refusal in bin/lib/team.sh, which team-post runs itself too:
@@ -52,8 +52,9 @@ case $tool in
     gh=$'(^|[;&|(`\n])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|]*/)?gh(-axi)?([[:space:]]|$)'
     # The team commands that write to GitHub and the ledger, where a command starts, as gh.
     team_write=$'(^|[;&|(`\n])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|]*/)?team-(merge|open|close)([[:space:]]|$)'
-    # team-post where a command starts, as gh: refused as the Discord tools are, for every role.
-    post=$'(^|[;&|(`\n])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|]*/)?team-post([[:space:]]|$)'
+    # team-post, or team-ask, which posts through it, where a command starts, as gh: refused as
+    # the Discord tools are, for every role.
+    post=$'(^|[;&|(`\n])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|]*/)?team-(post|ask)([[:space:]]|$)'
     if [[ $command =~ $post ]]; then
       why=$(lease_refusal "$POSTS") && block "$why"
     fi

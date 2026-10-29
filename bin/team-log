@@ -5,12 +5,13 @@
 #        team-log --check [<file>]
 # Appends {ts (now, UTC), task, event, key: value...}. A value is stored as JSON when it parses
 # as JSON (a list, a number, true) and as a string otherwise; a field the contract types as a
-# string is always a string. note is allowed on every kind. Kinds written by another script
+# string is always a string. note is allowed on every kind. Kinds team-log is not a writer of
 # (opened, launch, merged, closed...) are refused, and so is a merge-approved whose url is not
 # one of the task's pr events (a trailing slash aside), or with no head, or a head neither a pr
 # event of that url nor a review of the task since its first pr event logged (heads compare by
 # the shorter one's prefix, at least 7 characters), or whose discord_message, a Discord id, was
-# sent before the first of those events that logged the head. A park
+# sent before the first of those events that logged the head; so is an answered whose id and
+# discord_message an earlier answered of the task logged (team-answer reads it from Discord). A park
 # (waiting, blocked, paused, held) logged after the fact takes since=<UTC time>, when it began:
 # no later than now and no earlier than the task's latest event, or it is refused naming both
 # times; no other kind takes since.
@@ -86,6 +87,14 @@ if [[ $event == merge-approved && -n ${seen[url]:-} ]]; then
     ((sent >= $(date -ud "${logged% *}" +%s))) ||
       die "Discord message $message was sent at $(date -ud "@$sent" +%FT%TZ), before the ${logged#* } event that first logged head ${seen[head]} at ${logged% *}, so it is not Daniel's word on that head"
   fi
+fi
+
+# One Discord message answers an ask once: a second answered of the same id and message is a
+# repeat, as team-answer refuses it.
+if [[ $event == answered && -n ${seen[id]:-} && -n ${seen[discord_message]:-} ]] &&
+  task_events "$task" | ledger_jq '[inputs] | answered_from($id; $message)' -ne \
+    --arg id "${seen[id]}" --arg message "${seen[discord_message]}" >/dev/null; then
+  die "$task already logged answered id=${seen[id]} from Discord message ${seen[discord_message]}"
 fi
 
 # A park logged after the fact says when it began: a UTC time between the task's latest event and now.
