@@ -40,7 +40,7 @@ LEDGER
   assert_equal "$(stub_calls curl | wc -l)" "1"
   assert_contains "$(stub_calls curl)" '"https://discord.com/api/v10/channels/1562486564871995482/threads"'
   assert_equal "$(stub_calls curl | jq -r 'index("-d") as $i | .[$i + 1]')" \
-    '{"name":"T7 · conventioner · Sign-in limits","type":11,"auto_archive_duration":10080}'
+    '{"name":"T7 · conventioner · Sign-in limits","type":11,"auto_archive_duration":4320}'
 
   assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "1"
   assert_equal "$(jq -c 'del(.ts)' "$TEAM_HOME/ledger.jsonl")" \
