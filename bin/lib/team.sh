@@ -1127,11 +1127,11 @@ session_context() {
 # GitHub. GitHub failures are carried in the pr part; a broken registry or an unreadable session
 # list fails with the reason on stderr: task_state_json '<events>'
 task_state_json() (
-  local events=$1 state pr dir id context contexts='{}' sessions
+  local events=$1 state pr dir session_id context contexts='{}' sessions
   live_sessions
-  while IFS= read -r id; do
-    context=$(session_context "$id")
-    [[ -z $context ]] || contexts=$(jq -c --arg id "$id" --argjson n "$context" '.[$id] = $n' <<<"$contexts")
+  while IFS= read -r session_id; do
+    context=$(session_context "$session_id")
+    [[ -z $context ]] || contexts=$(jq -c --arg id "$session_id" --argjson n "$context" '.[$id] = $n' <<<"$contexts")
   done < <(ledger_jq 'live_session_ids($sessions)[]' -r --argjson sessions "$LIVE_SESSIONS" <<<"$events")
   sessions=$(jq -c --argjson contexts "$contexts" 'map(if type == "object" then
     .context = ($contexts[.sessionId // "" | tostring] // null) else . end)' <<<"$LIVE_SESSIONS") || exit 1
