@@ -218,6 +218,56 @@ time_json() {
   assert_equal "$(jq -c '.answers' <<<"$json")" '{"answered":1,"unanswered":0,"median_minutes":120,"p90_minutes":120}'
 }
 
+# The ledger holds T90, opened at 00:00 with a builder's launch, then the lines given, each
+# "<HH:MM> <event> [<jq object of more fields>]"; prints T90's hours to the last argument.
+t90_hours() {
+  local until=$1 d=2026-10-24T line at kind more
+  shift
+  {
+    echo '{"ts":"'$d'00:00:00Z","task":"T90","event":"opened","project":"p","path":"small","type":"fix","title":"x","branch":"fix/T90-x","base":"dev","base_sha":"0123456","worktree":"/w"}'
+    echo '{"ts":"'$d'00:00:00Z","task":"T90","event":"launch","role":"builder","session":"s1","worktree":"/w","toolkits":[]}'
+    for line in "$@"; do
+      read -r at kind more <<<"$line"
+      jq -cn --arg ts "${d}$at:00Z" --arg e "$kind" "{ts: \$ts, task: \"T90\", event: \$e} + (${more:-{\}})"
+    done
+  } >"$TEAM_HOME/ledger.jsonl"
+  time_json --until "${d}$until:00Z" | jq -c '.tasks[0].hours | with_entries(select(.value != 0))'
+}
+
+@test "a review's verdict ends the review phase: the hours after it are unattributed" {
+  assert_equal "$(t90_hours 06:00 '01:00 done {role: "builder", session: "s1"}' \
+    '01:00 launch {role: "reviewer", session: "s2", worktree: "/w", toolkits: []}' \
+    '03:00 review {verdict: "pass", head: "aaaaaaa"}')" '{"building":1,"review":2,"unattributed":3}'
+}
+
+@test "a gate run after a review's verdict is gate time" {
+  assert_equal "$(t90_hours 05:00 '01:00 done {role: "builder", session: "s1"}' \
+    '01:00 launch {role: "reviewer", session: "s2", worktree: "/w", toolkits: []}' \
+    '02:00 review {verdict: "findings", head: "aaaaaaa"}' \
+    '03:00 gate-run {run: "R1", head: "bbbbbbb", outcome: "pushed", minutes: {review: 10, test: 20}}')" \
+    '{"building":1,"gate":0.5,"review":1,"unattributed":2.5}'
+}
+
+@test "an ask still open when the worker's work ends is a wait on Daniel until its answer" {
+  assert_equal "$(t90_hours 08:00 '00:30 asked {id: "setup", text: "the Discord values"}' \
+    '01:00 launch {role: "builder", session: "s2", worktree: "/w", toolkits: []}' \
+    '02:00 done {role: "builder", session: "s2"}' \
+    '07:00 answered {id: "setup", answer: "set"}')" '{"building":1.5,"unattributed":1,"wait:daniel":5.5}'
+}
+
+@test "an ask answered before the work ends leaves the stretch after it unattributed" {
+  assert_equal "$(t90_hours 08:00 '00:30 asked {id: "setup", text: "the Discord values"}' \
+    '01:00 launch {role: "builder", session: "s2", worktree: "/w", toolkits: []}' \
+    '01:30 answered {id: "setup", answer: "set"}' \
+    '02:00 done {role: "builder", session: "s2"}')" '{"building":1.5,"unattributed":6,"wait:daniel":0.5}'
+}
+
+@test "a gate run inside a wait on Daniel is gate time" {
+  assert_equal "$(t90_hours 04:00 '01:00 waiting {on: "Daniel", reason: "the merge word"}' \
+    '02:00 gate-run {run: "R1", head: "bbbbbbb", outcome: "stopped-green", minutes: {review: 5, test: 15}}')" \
+    '{"building":1,"gate":0.333,"wait:daniel":2.667}'
+}
+
 @test "a park logged after the fact with since is counted from since, and the usage limit is its own phase" {
   : >"$TEAM_HOME/ledger.jsonl"
   local d1=2026-10-25T d2=2026-10-26T task

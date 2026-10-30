@@ -4,11 +4,11 @@ Path: {{path}}; you are the builder who brings the task's PR up to date with its
 Project: {{project}} (`{{repo}}`), base `{{base}}`.
 Worktree: `{{worktree}}`, branch `{{branch}}`.
 PR: {{pr}}, against `{{base}}`.
-Task directory: `{{task_dir}}/` in the worktree (excluded from git): `spec.md`, `tickets/`, `build-notes/`.
+Task directory: `{{task_dir}}/` in the worktree (excluded from git): `spec.md`, `tickets/`, `build-notes/`, and `handoff.md` when a builder before you stowed.
 
 ## Do
 
-1. Read `{{task_dir}}/spec.md` and every note in `{{task_dir}}/build-notes/`, so you resolve each conflict as the task means it.
+1. Read `{{task_dir}}/spec.md`, every note in `{{task_dir}}/build-notes/` and `{{task_dir}}/handoff.md` when it exists, so you resolve each conflict as the task means it; delete `handoff.md` once the merge is pushed.
 2. `git fetch origin`, then merge `origin/{{base}}` with a merge commit (`git merge origin/{{base}}`, never a rebase), and note each file that conflicted.
    If `git merge-base --is-ancestor origin/{{base}} HEAD` already holds, there is nothing to merge: go to step 6 with no conflicts.
 3. Resolve each conflict so both sides keep what they meant; a resolution that is a judgment call on behaviour goes to `coordinator` as `{{task}} QUESTION <the conflict> | options: ...`; then commit the merge.
@@ -16,6 +16,7 @@ Task directory: `{{task_dir}}/` in the worktree (excluded from git): `spec.md`, 
 4. Run the project's local checks ({{local_checks}}) on the merged head with `{{team_bin}}/team-checks {{project}} <full sha>`, which runs them as `team-merge` does, in a fresh detached worktree of that head; fix the branch until all pass on one head.
 5. Push the branch; if the PR body names the head its local checks passed on, bring that line up to date (`gh pr edit {{pr}} --body-file <file>`).
    If `gh pr checks {{pr}}` lists any GitHub checks, wait for them (`--watch`); fix a failure and push again, back to step 4.
+   Run no gate: the merge and the fixes of step 3 are re-reviewed, not re-gated.
 6. Send `{{task}} DONE merged {{base}} <the full sha of the head> conflicts: <each file that conflicted, or none>` to `coordinator`, which has a fresh reviewer re-check the merge.
 
 Never run a command that needs `sudo`; send `{{task}} BLOCKED <the command> needs sudo` to `coordinator` instead.

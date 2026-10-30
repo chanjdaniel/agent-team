@@ -162,9 +162,9 @@ phase_of() {
   run_bin -0 team-state T14 --json
   assert_equal "$(jq -c .workers <<<"$output")" "$(jq -cn '[
     {role: "builder", session: "59709d99", launched: "2026-10-22T02:00:00Z", worktree: "/w/1",
-     live: true, status: "idle", state: "blocked"},
+     live: true, status: "idle", state: "blocked", context: null},
     {role: "reviewer", session: "3ed2d1f2", launched: "2026-10-22T02:00:00Z", worktree: "/w/1",
-     live: false, status: null, state: null}]')"
+     live: false, status: null, state: null, context: null}]')"
   assert_equal "$(stub_calls claude)" '["agents","--json"]'
 }
 
@@ -174,6 +174,44 @@ phase_of() {
     "name": "T14-builder", "status": "busy", "state": "working"}]'
   run_bin -0 team-state T14 --json
   assert_equal "$(jq -c '.workers[0] | [.live, .status, .state]' <<<"$output")" '[true,"busy","working"]'
+}
+
+# transcript <session id> <jq array of lines>: the session's transcript under ~/.claude/projects.
+transcript() {
+  mkdir -p "$HOME/.claude/projects/-w-1"
+  jq -c '.[]' <<<"$2" >"$HOME/.claude/projects/-w-1/$1.jsonl"
+}
+
+# A reply's transcript line, of the main conversation or (with true) a sidechain's.
+reply_line() {
+  jq -cn --argjson input "$1" --argjson write "$2" --argjson read "$3" --argjson side "${4:-false}" \
+    '{type: "assistant", isSidechain: $side, message: {usage: {input_tokens: $input,
+      cache_creation_input_tokens: $write, cache_read_input_tokens: $read, output_tokens: 7}}}'
+}
+
+@test "a live worker's context is what its latest main-conversation reply read, a sidechain's after it aside" {
+  open_task
+  stub_reply claude '[{"id": "59709d99", "sessionId": "59709d99-7687-4f7b", "cwd": "/w/1",
+    "name": "T14-builder", "status": "idle", "state": "working"}]'
+  transcript 59709d99-7687-4f7b "[$(reply_line 1 2 3), {\"type\": \"user\"}, $(reply_line 10 2000 300000),
+    $(reply_line 5 5 900000 true), {\"type\": \"user\", \"isSidechain\": false}]"
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c '.workers[0].context' <<<"$output")" 302010
+
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature planning | T14-builder idle 302k"
+}
+
+@test "a live worker with no transcript has a null context and no figure" {
+  open_task
+  stub_reply claude '[{"id": "59709d99", "sessionId": "59709d99-7687-4f7b", "cwd": "/w/1",
+    "name": "T14-builder", "status": "idle", "state": "working"}]'
+  transcript 3ed2d1f2-1111 "[$(reply_line 10 2000 300000)]"
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c '.workers[0] | [.live, .context]' <<<"$output")" '[true,null]'
+
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature planning | T14-builder idle"
 }
 
 @test "a session list that cannot be read is refused" {

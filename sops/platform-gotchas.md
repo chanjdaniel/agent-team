@@ -23,12 +23,6 @@ Why: with no terminal each `sudo` attempt counts as a failed login, enough of th
 
 Seen: T18, whose test script's Playwright `--with-deps` locked Daniel's account (ledger 2026-10-22T12:16:15Z, `tasks/T18/plan.md`); T5, T12 and T15, which waited on Daniel's Docker restart (ledger 2026-10-22T00:09:49Z to 2026-10-22T11:08:03Z); T49, which asked Daniel to upgrade Chrome (ledger 2026-10-25T14:30:56Z).
 
-## Create a bind mount's host directory before starting the container, and run containers as your own user
-
-Why: Docker creates a missing source directory as root, and a container running as root writes root-owned files into the worktree, which no session can remove without `sudo`.
-
-Seen: T3's `npm ci` EACCES on a root-owned `node_modules` mount (`tasks/T3/report.md`); T21's root-owned gate worktree (ledger 2026-10-23T06:14:20Z); T24's re-clone, stopped by two root-owned gate worktrees (ledger 2026-10-23T15:36:38Z).
-
 ## Once a PR is open and its checks are green, stop the gate run, and treat any commit that lands after the review as unreviewed
 
 Why: the gate's CI step may push "apply CI fixes" commits on its own, after the reviewer has read the head.
@@ -41,17 +35,17 @@ Why: auto mode refuses a timer as persistence, three refusals in a row leave a b
 
 Seen: T17 ticket 08, whose builder stuck on that prompt and was relaunched (ledger 2026-10-22T14:40:56Z).
 
-## When a tool rewrites the remote branch under you, start a fresh local branch from the remote one and carry your commits over
+## When a tool rewrites the remote branch under you, start a fresh local branch from the remote one under a new name and carry your commits over
 
-Why: a reset throws away local commits and auto mode refuses it, and a force-push throws away what the tool pushed.
+Why: a reset throws away local commits and auto mode refuses it, a force-push throws away what the tool pushed, and a forced delete of the stale local branch (`git branch -D`) is refused too, so leave it for the task's close.
 
-Seen: T12 and T22 (twice), whose gate rebased and force-pushed their branches (ledger 2026-10-22T12:05:30Z, 2026-10-23T13:57:02Z; T22 builder `b782adf4` at 2026-10-23T23:27Z).
+Seen: T12 and T22 (twice), whose gate rebased and force-pushed their branches (ledger 2026-10-22T12:05:30Z, 2026-10-23T13:57:02Z; T22 builder `b782adf4` at 2026-10-23T23:27Z); T115, whose builder went on under `-r2` once `git branch -D` was refused (2026-10-30T06:38:26Z).
 
 ## Permission rules match a Bash call's whole text: pin a rule's fixed parts on both sides of each `*`, and make each call one action with no prose in it
 
-Why: `*` matches any text, spaces and other arguments included, and a deny rule or auto mode judges the whole call, so a rule matches more commands than it looks, and one matching part (a word in a commit message, a grep pattern or a heredoc, or one guarded step of a chain) refuses the whole call; write messages and file contents with the Write or Edit tool and pass the file (`git commit -F <file>`, `gh pr edit --body-file <file>`), and run each commit, push and edit as its own call.
+Why: `*` matches any text, spaces and other arguments included, a rule whose one `*` ends it after a space also matches the command with nothing there (two, as `**`, keep the space required), and a deny rule or auto mode judges the whole call, so a rule matches more commands than it looks, and one matching part (a word in a commit message, a grep pattern or a heredoc, or one guarded step of a chain) refuses the whole call; write messages and file contents with the Write or Edit tool and pass the file (`git commit -F <file>`, `gh pr edit --body-file <file>`), and run each commit, push and edit as its own call.
 
-Seen: T20's review of the reviewer's allow rules (`tasks/T20/scratch/review.md`); T25, T34 and T24, whose deny rules refused a quoted jq filter, a heredoc and reads (ledger 2026-10-23T12:58:54Z, 2026-10-24T00:04:36Z, 01:28:18Z); T37's push chained with a PR body edit (2026-10-24T07:19:08Z); T41's commit, refused three times for its message's words (16:30:37Z to 16:39:42Z); T40's heredoc and a lookup chained to a test run (2026-10-25T13:11:44Z, 14:29:23Z).
+Seen: T20's review of the reviewer's allow rules (`tasks/T20/scratch/review.md`); T25, T34 and T24, whose deny rules refused a quoted jq filter, a heredoc and reads (ledger 2026-10-23T12:58:54Z, 2026-10-24T00:04:36Z, 01:28:18Z); T37's push chained with a PR body edit (2026-10-24T07:19:08Z); T41's commit, refused three times for its message's words (16:30:37Z to 16:39:42Z); T40's heredoc and a lookup chained to a test run (2026-10-25T13:11:44Z, 14:29:23Z); T94's heredoc with a connection-string line (2026-10-29T09:24:23Z), and T94's and T113's read of `git config core.hooksPath`, which the write rule `git config core.hooksPath *` matched with nothing after the key (09:24:23Z, 23:45:43Z), until T134 ended the write rules in `**`.
 
 ## To know what a CI or deploy run built, read the commit its checkout fetched, never the run's branch and commit label
 
@@ -63,4 +57,4 @@ Seen: T24's force-push, where a Deploy labelled "dev 5694c2af" had deployed `mai
 
 Why: the sessions on a machine share `/tmp` and the process table, so a glob or a name match reaches other sessions' live files and processes, and Claude Code refuses an `rm -rf` of a variable path and may stop at a prompt for a literal one, which a background session cannot answer; make scratch with `mktemp -d`, keep the path it prints, remove it by that literal path, leave what you cannot prove is yours, and leave what is in your task directory, since `team-close` archives it and leaves out dependency trees, repositories and links.
 
-Seen: T44's builder, whose `rm -rf` of every `bats-run-*` under `$TMPDIR` took other sessions' live test directories (ledger 2026-10-25T02:59:06Z); T41's and T43's reviewers, refused an `rm -rf` of a variable path (2026-10-24T18:20:29Z, 2026-10-25T06:49:39Z); T22's builder, which could not tell two leftover processes were its own (2026-10-25T13:58:12Z); T63's planner, stopped at a prompt for a literal `rm -rf` of its own scratch (2026-10-27T07:07:25Z).
+Seen: T44's builder, whose `rm -rf` of every `bats-run-*` under `$TMPDIR` took other sessions' live test directories (ledger 2026-10-25T02:59:06Z); T41's and T43's reviewers, refused an `rm -rf` of a variable path (2026-10-24T18:20:29Z, 2026-10-25T06:49:39Z); T22's builder, which could not tell two leftover processes were its own (2026-10-25T13:58:12Z); T63's planner, stopped at a prompt for a literal `rm -rf` of its own scratch (2026-10-27T07:07:25Z); T115's builder, stopped at a prompt for a glob `rm` (2026-10-30T01:17:38Z).

@@ -3,10 +3,12 @@
 #
 # Usage: team-state T<n> [--json]
 # Prints one line: the task, its project and path, its phase, its live workers and its PR, as
-#   T14 agent-team feature building | T14-builder idle | PR #5 a1b2c3d checks 2/2 agent-review missing
+#   T14 agent-team feature building | T14-builder idle 302k | PR #5 a1b2c3d checks 2/2 agent-review missing
+# each live worker with its status, its state unless working or unknown, and its context in thousands.
 # With --json, the versioned state (schema team-state/1): task, title, project, path, phase,
 # worktrees (returned or not), thread, workers (every launch, live when claude agents --json
-# lists its session, with that session's status and state), last_event, pending_asks, waiting,
+# lists its session, with that session's status, state and context, the tokens its latest
+# main-conversation reply read, from its transcript, or null), last_event, pending_asks, waiting,
 # rehome_failures, and pr; pending_asks are the asks no later event settles, an answered with
 # the ask's id or a merge-approved whose url its text names.
 # Recorded worktree paths under another machine's home (/home/<name>, /Users/<name>) show as the

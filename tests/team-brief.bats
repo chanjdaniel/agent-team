@@ -140,9 +140,9 @@ Task directory: `.scratch/task/` in the worktree (excluded from git), for your s
    Fix each finding the coordinator sends you on the branch and push; once they are fixed, or the coordinator says the review passed, go on.
 4. Run `/no-mistakes` with this intent: "T12: rate-limit the applicant sign-in endpoints (per address and per IP, Mongo TTL counters, 429 with Retry-After), so Conventioner cannot be used to flood addresses with sign-in codes or to guess codes." (under a Disclosure section, put in its terms, since the gate drafts the PR's title and body from it)
 5. The PR must target `dev`; if the gate opens it against another branch, retarget it to `dev` and close any duplicate.
-6. When the gate returns checks-passed, repeat step 1; if it merged anything, go back to step 4, so every required check passes on the new head.
+6. When the gate returns checks-passed, repeat step 1; if it merged anything, push and wait for the PR's checks (`gh pr checks <full url> --watch`), noting each file that conflicted: a merge of the base is re-reviewed and checked by CI, never re-gated, so the gate runs again only for a commit of your own, such as the fix to a red check.
    The gate leaves Playwright to CI, so its result arrives with CI's `e2e` checks: treat a red `e2e` as the gate's red.
-7. Then send `T12 PR <full url>` to `coordinator`.
+7. Then send `T12 PR <full url>` to `coordinator`, followed by `merged dev conflicts: <each file that conflicted, or none>` when step 6 merged.
 
 At each gate run's end (it pushed, went red, was aborted, or was stopped once its PR's checks were green), send `T12 DONE gate run=<its id> head=<the full sha it ran on> outcome=<pushed|red|aborted|stopped-green> minutes=<each step's minutes from no-mistakes axi status --run <its id>, as one JSON object>` to `coordinator`, with `cause=<review|notes|gate-finding|load|tooling|base-merge|other>` when the run repeats an earlier one on the same PR.
 
@@ -167,7 +167,7 @@ EOF
 
 @test "every real template renders for each delivery with no placeholder left and no em dash" {
   assert_equal "$(templates | paste -sd ' ')" \
-    "builder-deliver builder-fix builder-merge-base builder-ticket ops planner-feature planner-interview planner-research rereview resume resume-crash retro reviewer"
+    "builder-deliver builder-fix builder-merge-base builder-round builder-ticket ops planner-feature planner-interview planner-research rereview resume resume-crash retro reviewer"
   open_t12
   open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
   # The interview brief's thread is a task fact, logged as team-thread --interview logs it.
@@ -427,7 +427,13 @@ EOF
     assert_contains "$brief" "if \`git merge-base --is-ancestor origin/$base HEAD\` fails, merge \`origin/$base\` with a merge commit (\`git merge origin/$base\`, never a rebase)"
     assert_contains "$brief" "goes to \`coordinator\` as \`$task QUESTION <the conflict> | options: ...\`"
     assert_contains "$brief" "epeat step 1; if it merged anything"
-    assert_contains "$brief" "so every required check passes on the new head."
+    # A direct PR runs its checks again on the merged head; a gated one's merge is checked by CI,
+    # never re-gated.
+    if [[ $task == T14 ]]; then
+      assert_contains "$brief" "so every required check passes on the new head."
+    else
+      assert_contains "$brief" "a merge of the base is re-reviewed and checked by CI, never re-gated"
+    fi
     assert_contains "$brief" "Never run a command that needs \`sudo\`; send \`$task BLOCKED <the command> needs sudo\` to \`coordinator\` instead."
     # The up-to-date check replaced the old refusal when the base moved.
     [[ $brief != *"merge-tree"* && $brief != *"moved:"* ]]
@@ -773,11 +779,11 @@ Path: feature; you are the builder who brings the task's PR up to date with its 
 Project: home (`chanjdaniel/agent-team`), base `main`.
 Worktree: `~/agent-team/.claude/worktrees/2`, branch `feat/T14-team-tooling`.
 PR: https://github.com/chanjdaniel/agent-team/pull/9, against `main`.
-Task directory: `.work/task/` in the worktree (excluded from git): `spec.md`, `tickets/`, `build-notes/`.
+Task directory: `.work/task/` in the worktree (excluded from git): `spec.md`, `tickets/`, `build-notes/`, and `handoff.md` when a builder before you stowed.
 
 ## Do
 
-1. Read `.work/task/spec.md` and every note in `.work/task/build-notes/`, so you resolve each conflict as the task means it.
+1. Read `.work/task/spec.md`, every note in `.work/task/build-notes/` and `.work/task/handoff.md` when it exists, so you resolve each conflict as the task means it; delete `handoff.md` once the merge is pushed.
 2. `git fetch origin`, then merge `origin/main` with a merge commit (`git merge origin/main`, never a rebase), and note each file that conflicted.
    If `git merge-base --is-ancestor origin/main HEAD` already holds, there is nothing to merge: go to step 6 with no conflicts.
 3. Resolve each conflict so both sides keep what they meant; a resolution that is a judgment call on behaviour goes to `coordinator` as `T14 QUESTION <the conflict> | options: ...`; then commit the merge.
@@ -785,6 +791,7 @@ Task directory: `.work/task/` in the worktree (excluded from git): `spec.md`, `t
 4. Run the project's local checks (`tests/run`) on the merged head with `@CODE@/bin/team-checks home <full sha>`, which runs them as `team-merge` does, in a fresh detached worktree of that head; fix the branch until all pass on one head.
 5. Push the branch; if the PR body names the head its local checks passed on, bring that line up to date (`gh pr edit https://github.com/chanjdaniel/agent-team/pull/9 --body-file <file>`).
    If `gh pr checks https://github.com/chanjdaniel/agent-team/pull/9` lists any GitHub checks, wait for them (`--watch`); fix a failure and push again, back to step 4.
+   Run no gate: the merge and the fixes of step 3 are re-reviewed, not re-gated.
 6. Send `T14 DONE merged main <the full sha of the head> conflicts: <each file that conflicted, or none>` to `coordinator`, which has a fresh reviewer re-check the merge.
 
 Never run a command that needs `sudo`; send `T14 BLOCKED <the command> needs sudo` to `coordinator` instead.
@@ -805,6 +812,32 @@ EOF
   assert_equal "${#got[@]}" "${#want[@]}"
 }
 
+@test "the round brief hands a fresh builder the findings, the stowed builder's handoff and the delivery" {
+  open_t12
+  run_bin -0 --separate-stderr team-brief T12 builder-round --name round-2 \
+    --set pr=https://github.com/chanjdaniel/shop/pull/5 --set findings="1 and 3" --set goal="the shop's checkout"
+  assert_equal "$output" "$TEAM_HOME/tasks/T12/brief-round-2.md"
+  local brief
+  brief=$(<"$output")
+  assert_contains "$brief" "you are a fresh builder taking over the task for one fix round"
+  assert_contains "$brief" "PR: https://github.com/chanjdaniel/shop/pull/5, against"
+  assert_contains "$brief" "and findings 1 and 3 in \`.scratch/task/review.md\`."
+  assert_contains "$brief" "\`.scratch/task/handoff.md\`"
+  assert_contains "$brief" 'Run `/no-mistakes` with this intent: "T12: the shop'"'"'s checkout"'
+  assert_contains "$brief" "when the PR exists, push to it where a step opens one"
+  # A gated project's first review comes before its gate opens the PR: the round takes none, and
+  # the builder checks its branch against what the stowed builder pushed, not a PR's head.
+  run_bin -0 team-brief T12 builder-round --name round-1 --set pr=none --set findings=2 --set goal=g
+  brief=$(<"$output")
+  assert_contains "$brief" "PR: none, against \`dev\` (none on a gated project's first review, before its gate opens the PR)."
+  assert_contains "$brief" "\`git merge-base --is-ancestor origin/fix/T12-applicant-sign-in-rate-limit HEAD\`"
+  assert_contains "$brief" "when it is none, the delivery opens it as it says."
+  assert_contains "$brief" 'Run `/no-mistakes` with this intent: "T12: g"'
+  # The round needs its PR and findings; the delivery needs the goal.
+  run_bin -1 team-brief T12 builder-round --name round-3
+  assert_contains "$output" "unfilled placeholders: findings, goal, pr"
+}
+
 # A UI fix's capture (team-ui) in tasks/T<n>/ui/: every brief of a worker who reads or changes
 # the code names it, with the rule that a worker checks its fix on its own stack.
 @test "a task with a UI capture names it in each planner, builder and reviewer brief; a task without names none" {
@@ -816,9 +849,10 @@ EOF
   refute_grep -F 'tasks/T12/ui' "$TEAM_HOME/tasks/T12/brief-none.md"
   mkdir -p "$TEAM_HOME/tasks/T12/ui"
   touch "$TEAM_HOME/tasks/T12/ui/"{ui-pick.md,element.png,page.png,screenshot-1.png}
-  for template in builder-fix builder-ticket planner-feature planner-research reviewer; do
+  for template in builder-fix builder-round builder-ticket planner-feature planner-research reviewer; do
     local args=()
     [[ $template == builder-fix ]] && args=(--set 'read=- `AGENTS.md`.' --set commits=fix --set goal=g)
+    [[ $template == builder-round ]] && args=(--set pr=none --set findings=1 --set goal=g)
     [[ $template == builder-ticket ]] && args=(--set ticket=01)
     [[ $template == planner-* ]] && args=(--set 'read=- `AGENTS.md`.')
     [[ $template == reviewer ]] && args=(--set head=abc --set checks=c)

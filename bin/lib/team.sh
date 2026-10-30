@@ -15,7 +15,7 @@
 # team_tool_path, fence_reason, offline_hold, lease_refusal, worker_refusal, lease_gate, worktree_changes, same_path, bounded, trust_probe,
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin,
 # only_records, records_list, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
-# registered_pr, attribution_lines, strip_attribution, live_sessions, machine_slots, discord_token, discord_api,
+# registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_slots, discord_token, discord_api,
 # daniel_message, refresh_inbox, github, pr_part and task_state_json, and sets IMAGE_TYPE, COORDINATOR_CHANNEL and
 # INTERVIEW_CHANNEL.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
@@ -1105,14 +1105,37 @@ pr_part() {
   fi
 }
 
+# The tokens a session's latest main-conversation reply read (input, cache writes and cache read),
+# from its transcript under ~/.claude/projects read from the end, or nothing when it has none:
+# session_context <session id>
+session_context() {
+  local file
+  [[ $1 =~ ^[A-Za-z0-9-]+$ ]] || return 0
+  for file in "$HOME"/.claude/projects/*/"$1".jsonl; do
+    [[ -f $file ]] || continue
+    # jq stops at the first reply it finds, so tac may end on a broken pipe.
+    { tac -- "$file" 2>/dev/null || true; } | jq -nR 'first(inputs | fromjson? | objects
+      | select(.type == "assistant" and (.isSidechain | not)) | .message.usage | objects
+      | (.input_tokens // 0) + (.cache_creation_input_tokens // 0) + (.cache_read_input_tokens // 0)
+      | numbers | select(. > 0))' 2>/dev/null || true
+    return 0
+  done
+}
+
 # A task's state, as team-state --json prints it but compact, from its events (one JSON array in
-# ledger order), the live session list and, when it has a pr event, GitHub. GitHub failures are
-# carried in the pr part; a broken registry or an unreadable session list fails with the reason
-# on stderr: task_state_json '<events>'
+# ledger order), the live session list, its live workers' transcripts and, when it has a pr event,
+# GitHub. GitHub failures are carried in the pr part; a broken registry or an unreadable session
+# list fails with the reason on stderr: task_state_json '<events>'
 task_state_json() (
-  local events=$1 state pr dir
+  local events=$1 state pr dir session_id context contexts='{}' sessions
   live_sessions
-  state=$(ledger_jq 'task_state($sessions; $home)' -c --argjson sessions "$LIVE_SESSIONS" <<<"$events") || exit 1
+  while IFS= read -r session_id; do
+    context=$(session_context "$session_id")
+    [[ -z $context ]] || contexts=$(jq -c --arg id "$session_id" --argjson n "$context" '.[$id] = $n' <<<"$contexts")
+  done < <(ledger_jq 'live_session_ids($sessions)[]' -r --argjson sessions "$LIVE_SESSIONS" <<<"$events")
+  sessions=$(jq -c --argjson contexts "$contexts" 'map(if type == "object" then
+    .context = ($contexts[.sessionId // "" | tostring] // null) else . end)' <<<"$LIVE_SESSIONS") || exit 1
+  state=$(ledger_jq 'task_state($sessions; $home)' -c --argjson sessions "$sessions" <<<"$events") || exit 1
   pr=$(jq -c 'map(select(.event == "pr")) | last' <<<"$events") || exit 1
   if [[ $pr != null ]]; then
     dir=$(mktemp -d) || exit 1

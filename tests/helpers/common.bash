@@ -394,29 +394,65 @@ steal_lease() {
   TEAM_LEASE_TTY=$tty on_machine "$1" "$REPO_ROOT/bin/team-lease" take --steal >/dev/null
 }
 
+# The subcommands of <command>, one per line and trimmed: its parts between the ;, &, && , | and
+# || that stand outside quotes, as Claude Code splits a chain before it matches each part against
+# the deny rules: subcommands <command>
+subcommands() {
+  local command=$1 part='' quote='' c i
+  for ((i = 0; i < ${#command}; i++)); do
+    c=${command:i:1}
+    if [[ -n $quote ]]; then
+      [[ $c != "$quote" ]] || quote=''
+    elif [[ $c == "'" || $c == '"' ]]; then
+      quote=$c
+    elif [[ $c == ';' || $c == '&' || $c == '|' ]]; then
+      printf '%s\n' "$part"
+      part=''
+      continue
+    fi
+    part+=$c
+  done
+  printf '%s\n' "$part"
+}
+
 # The texts Claude Code matches a Bash deny or ask rule against for <command>, one per line: the
-# command, the command past its leading variable assignments, and that with its first word's
-# directory dropped, so a rule naming a bare command also matches it run by path (rQ, eyt and V$
-# in Claude Code 2.1.312; allow rules get none but the first): deny_forms <command>
+# command and each of its subcommands, each also past its leading variable assignments, and that
+# with its first word's directory dropped, so a rule naming a bare command also matches it run by
+# path (rQ, eyt and V$ in Claude Code 2.1.312; allow rules get none but the first): deny_forms <command>
 deny_forms() {
-  local command=$1
-  printf '%s\n' "$1"
-  while [[ $command =~ ^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+(.*)$ ]]; do command=${BASH_REMATCH[1]}; done
-  [[ $command == "$1" ]] || printf '%s\n' "$command"
-  if [[ $command =~ ^[^[:space:]]*/([^[:space:]/]+)(.*)$ ]]; then
-    printf '%s\n' "${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
-  fi
+  local whole=$1 part command
+  printf '%s\n' "$whole"
+  while IFS= read -r part; do
+    part=${part#"${part%%[![:space:]]*}"} part=${part%"${part##*[![:space:]]}"}
+    [[ -n $part ]] || continue
+    command=$part
+    printf '%s\n' "$part"
+    while [[ $command =~ ^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+(.*)$ ]]; do command=${BASH_REMATCH[1]}; done
+    [[ $command == "$part" ]] || printf '%s\n' "$command"
+    if [[ $command =~ ^[^[:space:]]*/([^[:space:]/]+)(.*)$ ]]; then
+      printf '%s\n' "${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+    fi
+  done < <(subcommands "$whole")
+}
+
+# Whether the Bash rule's content <pattern> matches <text> as Claude Code's i8 does (2.1.314): each
+# * matches any text, and a rule whose one * ends it after a space also matches the text before
+# that space alone, so `git config core.hooksPath *` matches `git config core.hooksPath`, a read,
+# while a rule of two stars never drops its last: rule_text_matches <pattern> <text>
+rule_text_matches() {
+  local stars=${1//[^*]/}
+  # shellcheck disable=SC2053 # the rule is a glob
+  [[ $2 == $1 ]] || [[ ${#stars} -eq 1 && $1 == *' *' && $2 == "${1% \*}" ]]
 }
 
 # Whether one of the settings file <file>'s Bash deny rules matches <command> in one of its
-# deny_forms, each * in a rule matching anything: denied_in <file> <command>
+# deny_forms, as rule_text_matches says: denied_in <file> <command>
 denied_in() {
   local pattern form forms
   forms=$(deny_forms "$2")
   while IFS= read -r pattern; do
     while IFS= read -r form; do
-      # shellcheck disable=SC2053 # the rule is a glob
-      [[ $form == $pattern ]] && return 0
+      rule_text_matches "$pattern" "$form" && return 0
     done <<<"$forms"
   done < <(jq -r '.permissions.deny[] | select(startswith("Bash(")) | .[5:-1]' "$1")
   return 1
