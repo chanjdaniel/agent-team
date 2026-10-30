@@ -779,11 +779,11 @@ Path: feature; you are the builder who brings the task's PR up to date with its 
 Project: home (`chanjdaniel/agent-team`), base `main`.
 Worktree: `~/agent-team/.claude/worktrees/2`, branch `feat/T14-team-tooling`.
 PR: https://github.com/chanjdaniel/agent-team/pull/9, against `main`.
-Task directory: `.work/task/` in the worktree (excluded from git): `spec.md`, `tickets/`, `build-notes/`.
+Task directory: `.work/task/` in the worktree (excluded from git): `spec.md`, `tickets/`, `build-notes/`, and `handoff.md` when a builder before you stowed.
 
 ## Do
 
-1. Read `.work/task/spec.md` and every note in `.work/task/build-notes/`, so you resolve each conflict as the task means it.
+1. Read `.work/task/spec.md`, every note in `.work/task/build-notes/` and `.work/task/handoff.md` when it exists, so you resolve each conflict as the task means it; delete `handoff.md` once the merge is pushed.
 2. `git fetch origin`, then merge `origin/main` with a merge commit (`git merge origin/main`, never a rebase), and note each file that conflicted.
    If `git merge-base --is-ancestor origin/main HEAD` already holds, there is nothing to merge: go to step 6 with no conflicts.
 3. Resolve each conflict so both sides keep what they meant; a resolution that is a judgment call on behaviour goes to `coordinator` as `T14 QUESTION <the conflict> | options: ...`; then commit the merge.
@@ -819,11 +819,20 @@ EOF
   assert_equal "$output" "$TEAM_HOME/tasks/T12/brief-round-2.md"
   local brief
   brief=$(<"$output")
-  assert_contains "$brief" "you are a fresh builder taking over the task's PR for one fix round"
+  assert_contains "$brief" "you are a fresh builder taking over the task for one fix round"
   assert_contains "$brief" "PR: https://github.com/chanjdaniel/shop/pull/5, against"
   assert_contains "$brief" "and findings 1 and 3 in \`.scratch/task/review.md\`."
   assert_contains "$brief" "\`.scratch/task/handoff.md\`"
   assert_contains "$brief" 'Run `/no-mistakes` with this intent: "T12: the shop'"'"'s checkout"'
+  assert_contains "$brief" "when the PR exists, push to it where a step opens one"
+  # A gated project's first review comes before its gate opens the PR: the round takes none, and
+  # the builder checks its branch against what the stowed builder pushed, not a PR's head.
+  run_bin -0 team-brief T12 builder-round --name round-1 --set pr=none --set findings=2 --set goal=g
+  brief=$(<"$output")
+  assert_contains "$brief" "PR: none, against \`dev\` (none on a gated project's first review, before its gate opens the PR)."
+  assert_contains "$brief" "\`git merge-base --is-ancestor origin/fix/T12-applicant-sign-in-rate-limit HEAD\`"
+  assert_contains "$brief" "when it is none, the delivery opens it as it says."
+  assert_contains "$brief" 'Run `/no-mistakes` with this intent: "T12: g"'
   # The round needs its PR and findings; the delivery needs the goal.
   run_bin -1 team-brief T12 builder-round --name round-3
   assert_contains "$output" "unfilled placeholders: findings, goal, pr"
@@ -840,9 +849,10 @@ EOF
   refute_grep -F 'tasks/T12/ui' "$TEAM_HOME/tasks/T12/brief-none.md"
   mkdir -p "$TEAM_HOME/tasks/T12/ui"
   touch "$TEAM_HOME/tasks/T12/ui/"{ui-pick.md,element.png,page.png,screenshot-1.png}
-  for template in builder-fix builder-ticket planner-feature planner-research reviewer; do
+  for template in builder-fix builder-round builder-ticket planner-feature planner-research reviewer; do
     local args=()
     [[ $template == builder-fix ]] && args=(--set 'read=- `AGENTS.md`.' --set commits=fix --set goal=g)
+    [[ $template == builder-round ]] && args=(--set pr=none --set findings=1 --set goal=g)
     [[ $template == builder-ticket ]] && args=(--set ticket=01)
     [[ $template == planner-* ]] && args=(--set 'read=- `AGENTS.md`.')
     [[ $template == reviewer ]] && args=(--set head=abc --set checks=c)

@@ -4,11 +4,11 @@ Path: {{path}}; you are the builder who brings the task's PR up to date with its
 Project: {{project}} (`{{repo}}`), base `{{base}}`.
 Worktree: `{{worktree}}`, branch `{{branch}}`.
 PR: {{pr}}, against `{{base}}`.
-Task directory: `{{task_dir}}/` in the worktree (excluded from git): `spec.md`, `tickets/`, `build-notes/`.
+Task directory: `{{task_dir}}/` in the worktree (excluded from git): `spec.md`, `tickets/`, `build-notes/`, and `handoff.md` when a builder before you stowed.
 
 ## Do
 
-1. Read `{{task_dir}}/spec.md` and every note in `{{task_dir}}/build-notes/`, so you resolve each conflict as the task means it.
+1. Read `{{task_dir}}/spec.md`, every note in `{{task_dir}}/build-notes/` and `{{task_dir}}/handoff.md` when it exists, so you resolve each conflict as the task means it; delete `handoff.md` once the merge is pushed.
 2. `git fetch origin`, then merge `origin/{{base}}` with a merge commit (`git merge origin/{{base}}`, never a rebase), and note each file that conflicted.
    If `git merge-base --is-ancestor origin/{{base}} HEAD` already holds, there is nothing to merge: go to step 6 with no conflicts.
 3. Resolve each conflict so both sides keep what they meant; a resolution that is a judgment call on behaviour goes to `coordinator` as `{{task}} QUESTION <the conflict> | options: ...`; then commit the merge.
