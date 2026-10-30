@@ -280,12 +280,11 @@ denied() {
   denied_in "$REPO_ROOT/$1" "$2"
 }
 
-# Whether the Bash rule <rule> matches <command>: rule_matches <rule> <command>
+# Whether the Bash rule <rule> matches <command>, as rule_text_matches says: rule_matches <rule> <command>
 rule_matches() {
   local glob=${1#Bash(}
   glob=${glob%)}
-  # shellcheck disable=SC2053 # the rule is a glob
-  [[ $2 == $glob ]]
+  rule_text_matches "$glob" "$2"
 }
 
 # Every session's settings deny <rule>, and it matches each <command>: assert_denies <rule> <command>...
@@ -326,32 +325,34 @@ assert_denies() {
 }
 
 # The hooks rules start at git config (from any directory) and name the key right after a scope or
-# subcommand, so a commit message quoting the command and a read of the key stay allowed.
+# subcommand, so a commit message quoting the command and a read of the key stay allowed. A rule
+# whose one * ends it after a space also matches the key alone, a read (rule_text_matches), so the
+# rules with no -C end in ** and need a value after the key.
 @test "the git hooks' deny rule: git config of core.hooksPath, set or unset" {
-  assert_denies 'Bash(git config core.hooksPath *)' 'git config core.hooksPath /dev/null'
+  assert_denies 'Bash(git config core.hooksPath **)' 'git config core.hooksPath /dev/null'
   assert_denies 'Bash(git -C * config core.hooksPath *)' 'git -C /home/me/agent-team config core.hooksPath x'
-  assert_denies 'Bash(git config --global core.hooksPath *)' 'git config --global core.hooksPath x'
-  assert_denies 'Bash(git config --local core.hooksPath *)' 'git config --local core.hooksPath x'
-  assert_denies 'Bash(git config --system core.hooksPath *)' 'git config --system core.hooksPath x'
-  assert_denies 'Bash(git config --worktree core.hooksPath *)' 'git config --worktree core.hooksPath x'
+  assert_denies 'Bash(git config --global core.hooksPath **)' 'git config --global core.hooksPath x'
+  assert_denies 'Bash(git config --local core.hooksPath **)' 'git config --local core.hooksPath x'
+  assert_denies 'Bash(git config --system core.hooksPath **)' 'git config --system core.hooksPath x'
+  assert_denies 'Bash(git config --worktree core.hooksPath **)' 'git config --worktree core.hooksPath x'
   assert_denies 'Bash(git config set *core.hooksPath*)' 'git config set --global core.hooksPath x'
   assert_denies 'Bash(git config --add *core.hooksPath*)' 'git config --add core.hooksPath x'
   assert_denies 'Bash(git config *--unset*core.hooksPath*)' 'git config --unset core.hooksPath' \
     'git config --unset-all core.hooksPath' 'git config --global --unset "core.hooksPath"'
   assert_denies 'Bash(git config unset *core.hooksPath*)' 'git config unset --local core.hooksPath'
   assert_denies 'Bash(git -C * config *--unset*core.hooksPath*)' 'git -C ~/repo config --unset core.hooksPath'
-  assert_denies 'Bash(git config "core.hooksPath" *)' 'git config "core.hooksPath" /dev/null'
-  assert_denies "Bash(git config 'core.hooksPath' *)" "git config 'core.hooksPath' /dev/null"
+  assert_denies 'Bash(git config "core.hooksPath" **)' 'git config "core.hooksPath" /dev/null'
+  assert_denies "Bash(git config 'core.hooksPath' **)" "git config 'core.hooksPath' /dev/null"
   assert_denies 'Bash(git -C * config "core.hooksPath" *)' 'git -C ~/repo config "core.hooksPath" x'
 }
 
 @test "the git hooks' deny rule: git config of core.hookspath, the same key in git's lower case" {
-  assert_denies 'Bash(git config core.hookspath *)' 'git config core.hookspath x'
+  assert_denies 'Bash(git config core.hookspath **)' 'git config core.hookspath x'
   assert_denies 'Bash(git -C * config core.hookspath *)' 'git -C ~/repo config core.hookspath x'
   assert_denies 'Bash(git config *--unset*core.hookspath*)' 'git config --unset core.hookspath'
   assert_denies 'Bash(git config set *core.hookspath*)' 'git config set core.hookspath x'
-  assert_denies 'Bash(git config "core.hookspath" *)' 'git config "core.hookspath" x'
-  assert_denies "Bash(git config 'core.hookspath' *)" "git config 'core.hookspath' x"
+  assert_denies 'Bash(git config "core.hookspath" **)' 'git config "core.hookspath" x'
+  assert_denies "Bash(git config 'core.hookspath' **)" "git config 'core.hookspath' x"
 }
 
 @test "the git hooks' deny rule: core.hooksPath overridden for one command" {
@@ -367,13 +368,48 @@ assert_denies() {
 @test "the git hooks' deny rules leave a read of core.hooksPath and a message naming it to every session" {
   local file command
   for file in "${SETTINGS[@]}"; do
-    for command in 'git config core.hooksPath' 'git config --get core.hooksPath' \
+    for command in 'git config core.hooksPath' 'git config --get core.hooksPath' 'git config core.hookspath' \
+      'git config "core.hooksPath"' "git config 'core.hooksPath'" 'git config --global core.hooksPath' \
+      'git config --local core.hooksPath' 'git config --system core.hooksPath' 'git config --worktree core.hooksPath' \
+      'git -C ~/repo config core.hooksPath' 'git -C ~/repo config --local core.hooksPath' \
+      'cd ~/repo; git config core.hooksPath; git status --short' 'git status && git config core.hooksPath' \
       'git -C ~/repo config --get core.hooksPath || echo unset' 'git config get core.hooksPath 2>&1' \
       'git config --show-origin --get-all core.hooksPath; git status' \
       'git commit -m "docs: Daniel runs git config core.hooksPath bin/hooks/git, never git -c core.hooksPath="' \
       "team-log T45 blocked 'a read of git config core.hooksPath x was refused'"; do
       if denied "$file" "$command"; then echo "$file denies: $command" >&2; return 1; fi
     done
+  done
+}
+
+@test "the git hooks' deny rules still refuse every write, unset and override of core.hooksPath, alone or in a chain" {
+  local file command
+  for file in "${SETTINGS[@]}"; do
+    while IFS= read -r command; do
+      denied "$file" "$command" || { echo "$file allows: $command" >&2; return 1; }
+    done <<'COMMANDS'
+git config core.hooksPath /dev/null
+git config core.hookspath ""
+git config "core.hooksPath" .githooks
+git config 'core.hooksPath' x
+git config --global core.hooksPath bin/hooks/git
+git config --local core.hooksPath x
+git config --system core.hooksPath x
+git config --worktree core.hooksPath x
+git config set core.hooksPath x
+git config set --global core.hooksPath x
+git config --add core.hooksPath x
+git config --unset core.hooksPath
+git config --global --unset-all core.hooksPath
+git config unset core.hooksPath
+git -C ~/repo config core.hooksPath x
+git -C ~/repo config --local core.hooksPath x
+git -C ~/repo config --unset core.hooksPath
+git -c core.hooksPath= commit -m "x"
+git -C ~/repo -c core.hooksPath=/dev/null push
+cd ~/repo; git config core.hooksPath /dev/null; git status
+git config core.hooksPath && git config core.hooksPath /dev/null
+COMMANDS
   done
 }
 
