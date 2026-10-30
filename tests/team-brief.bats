@@ -167,7 +167,7 @@ EOF
 
 @test "every real template renders for each delivery with no placeholder left and no em dash" {
   assert_equal "$(templates | paste -sd ' ')" \
-    "builder-deliver builder-fix builder-merge-base builder-ticket ops planner-feature planner-interview planner-research rereview resume resume-crash retro reviewer"
+    "builder-deliver builder-fix builder-merge-base builder-round builder-ticket ops planner-feature planner-interview planner-research rereview resume resume-crash retro reviewer"
   open_t12
   open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
   # The interview brief's thread is a task fact, logged as team-thread --interview logs it.
@@ -803,6 +803,23 @@ EOF
     assert_equal "${got[line]-<missing line $((line + 1))>}" "${want[line]}"
   done
   assert_equal "${#got[@]}" "${#want[@]}"
+}
+
+@test "the round brief hands a fresh builder the findings, the stowed builder's handoff and the delivery" {
+  open_t12
+  run_bin -0 --separate-stderr team-brief T12 builder-round --name round-2 \
+    --set pr=https://github.com/chanjdaniel/shop/pull/5 --set findings="1 and 3" --set goal="the shop's checkout"
+  assert_equal "$output" "$TEAM_HOME/tasks/T12/brief-round-2.md"
+  local brief
+  brief=$(<"$output")
+  assert_contains "$brief" "you are a fresh builder taking over the task's PR for one fix round"
+  assert_contains "$brief" "PR: https://github.com/chanjdaniel/shop/pull/5, against"
+  assert_contains "$brief" "and findings 1 and 3 in \`.scratch/task/review.md\`."
+  assert_contains "$brief" "\`.scratch/task/handoff.md\`"
+  assert_contains "$brief" 'Run `/no-mistakes` with this intent: "T12: the shop'"'"'s checkout"'
+  # The round needs its PR and findings; the delivery needs the goal.
+  run_bin -1 team-brief T12 builder-round --name round-3
+  assert_contains "$output" "unfilled placeholders: findings, goal, pr"
 }
 
 # A UI fix's capture (team-ui) in tasks/T<n>/ui/: every brief of a worker who reads or changes

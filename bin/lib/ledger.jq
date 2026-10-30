@@ -309,10 +309,16 @@ def live_session($session; $sessions):
     $sessions | map(select(.id == $session or ((.sessionId // "") | startswith($session)))) | first
   else null end;
 
-# Every launch of the task, live when the session list has its session.
+# Every launch of the task, live when the session list has its session, with that session's context
+# when task_state_json added it.
 def workers($sessions):
   [.[] | select(.event == "launch") | live_session(.session; $sessions) as $live
-    | {role, session, launched: .ts, worktree, live: ($live != null), status: $live.status, state: $live.state}];
+    | {role, session, launched: .ts, worktree, live: ($live != null), status: $live.status, state: $live.state,
+       context: $live.context}];
+
+# The full session ids of the task's launches the session list has.
+def live_session_ids($sessions):
+  [.[] | select(.event == "launch") | live_session(.session; $sessions) | .sessionId // empty | strings] | unique;
 
 # Whether this event, logged after the ask $ask (an asked event), settles it: the answered with its
 # id, or a merge-approved whose url (a trailing slash aside) the ask's text names, not followed by
@@ -348,14 +354,15 @@ def task_state($sessions; $home):
      workers: workers($sessions), last_event: last, pending_asks: pending_asks, waiting: waiting,
      rehome_failures: rehome_failures, pr: null};
 
-# A task's state (team-state's JSON) as one line of text:
-# T14 agent-team feature building | T14-builder idle | PR #5 a1b2c3d checks 2/2 agent-review missing
+# A task's state (team-state's JSON) as one line of text, each live worker's context in thousands:
+# T14 agent-team feature building | T14-builder idle 302k | PR #5 a1b2c3d checks 2/2 agent-review missing
 def state_line:
   .task as $task
   | ([.task, .project, .path, .phase] | map(select(. != null)) | join(" "))
   + " | "
   + ([.workers[] | select(.live)
-      | "\($task)-\(.role) \(.status)" + if .state == null or .state == "working" then "" else " \(.state)" end]
+      | "\($task)-\(.role) \(.status)" + (if .state == null or .state == "working" then "" else " \(.state)" end)
+        + if (.context | type) == "number" then " \(.context / 1000 | round)k" else "" end]
      | if . == [] then "no live worker" else join(", ") end)
   + (if .pr == null then "" else
      .pr | if .number == null then " | PR \(.url) unreadable"
