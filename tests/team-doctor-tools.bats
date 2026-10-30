@@ -95,6 +95,8 @@ every_tool_fails() {
   expected=$(printf '%s\n' os; lock_tools arch | cut -f1 | sed 's/^/tool /'
     printf '%s\n' docker chrome servers machine 'team home' 'team home fetch' 'git hooks' 'records hooks' 'claude login' 'github login' config plugins memory discord 'own settings' 1password
     secret_ids | sed 's/^/secret /'
+    echo 'discord access'
+    echo 'interview channel'
     echo opencode-gate
     echo records
     echo 'trust team home'
@@ -123,6 +125,8 @@ every_tool_fails() {
   expected=$(printf '%s\n' os homebrew; lock_tools macos | cut -f1 | sed 's/^/tool /'
     printf '%s\n' docker chrome servers machine 'team home' 'team home fetch' 'git hooks' 'records hooks' 'claude login' 'github login' config plugins memory discord 'own settings' 1password
     secret_ids | sed 's/^/secret /'
+    echo 'discord access'
+    echo 'interview channel'
     echo opencode-gate
     echo records
     echo 'trust team home'

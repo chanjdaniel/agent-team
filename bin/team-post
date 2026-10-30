@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# Post a file's text to Discord through its REST API, with no plugin and no gateway: to a task's
+# thread (the ledger's latest thread event for the task), its interview thread (--thread
+# interview: the latest interview-thread event, which team-thread --interview logs) or to
+# #coordinator, never to a channel named by id. Unlike discord_api alone, it refuses on a machine
+# that is fenced or that lost the lease (lease_refusal in bin/lib/team.sh, as the lease-fence hook
+# does), and posts nothing then; while the team holds offline it still posts, since Discord is up
+# and the plugin's posts go on too. In a worker session it posts only a planner's question to its
+# own task's interview thread (worker_refusal in bin/lib/team.sh); the coordinator posts the rest.
+#
+# Usage: team-post T<n> [--thread task|interview] --file <path>
+#        team-post --coordinator --file <path>
+# The message is the file's text with its trailing blank lines and spaces dropped. One over
+# Discord's 2000 characters goes as several messages, cut as the Discord plugin's chunkMode
+# newline cuts: at the last paragraph break past half the limit, else the last line break past
+# half, else the last space, else at 2000, the line breaks at a cut dropped. Mentions ping users
+# only, never @everyone, @here or a role. Prints each sent message's id, one per line, in order.
+# Exit codes: 0 posted; 1 refused, or Discord refused a part (the parts before it stay posted,
+# their ids printed, and none after it is sent); 2 a malformed command line; 75 Discord answered
+# 429, with the retry time from its headers on stderr.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+# Discord's limit on a message's characters, and the most one post may take, in seconds.
+LIMIT=2000
+POST_TIMEOUT=20
+USAGE="usage: team-post T<n> [--thread task|interview] --file <path> | team-post --coordinator --file <path>"
+
+task='' coordinator=0 thread='' file=''
+while (($#)); do
+  case $1 in
+    --coordinator) coordinator=1 ;;
+    --thread) (($# > 1)) || usage_error "$USAGE"; thread=$2; shift ;;
+    --file) (($# > 1)) || usage_error "$USAGE"; file=$2; shift ;;
+    T*) [[ -z $task ]] || usage_error "$USAGE"; task=$1 ;;
+    *) usage_error "$USAGE" ;;
+  esac
+  shift
+done
+[[ -n $file ]] || usage_error "$USAGE"
+if ((coordinator)); then
+  [[ -z $task && -z $thread ]] || usage_error "$USAGE"
+else
+  [[ $task =~ ^T[1-9][0-9]*$ && ${thread:-task} =~ ^(task|interview)$ ]] || usage_error "$USAGE"
+fi
+interview=()
+if [[ $thread == interview ]]; then interview=(--interview); fi
+why=$(worker_refusal "$task" "posts to Discord" "${interview[@]}") && die "$why"
+
+[[ -f $file && -r $file ]] || die "no file to post: $file"
+# Each part's request body, one compact JSON object per line, cut as the plugin's chunk() does,
+# over characters (jq's code points). The file is read with --rawfile, since -R decodes a
+# character its read buffer splits as two replacement characters.
+mapfile -t bodies < <(jq -nc --rawfile text "$file" --argjson limit "$LIMIT" '
+  # The last index at or before $from where $pat (code points) starts in $c, or -1.
+  def last_at($c; $pat; $from):
+    first(range([$from, ($c | length) - ($pat | length)] | min; -1; -1)
+      | select($c[.:. + ($pat | length)] == $pat)) // -1;
+  def parts:
+    if length <= $limit then [.]
+    else . as $c
+      | last_at($c; [10, 10]; $limit) as $para | last_at($c; [10]; $limit) as $line
+      | last_at($c; [32]; $limit) as $space
+      | (if $para > $limit / 2 then $para elif $line > $limit / 2 then $line
+         elif $space > 0 then $space else $limit end) as $cut
+      | [$c[:$cut]] + ($c[$cut:] | until(.[0] != 10; .[1:]) | if length > 0 then parts else [] end)
+    end;
+  $text | sub("\\s+\\z"; "") | select(. != "")
+  | explode | parts[] | {content: implode, allowed_mentions: {parse: ["users"]}}')
+((${#bodies[@]})) || die "nothing to post: $file is blank"
+
+if ((coordinator)); then
+  channel=$COORDINATOR_CHANNEL
+else
+  kind=thread
+  [[ ${thread:-task} == task ]] || kind="interview-thread"
+  channel=$(task_events "$task" | jq -r --arg kind "$kind" 'select(.event == $kind) | .discord_thread | strings' | tail -n 1)
+  [[ -n $channel || $kind != thread ]] || die "$task has no Discord thread in the ledger; team-thread opens one"
+  [[ -n $channel ]] || die "$task has no interview thread in the ledger; team-thread $task --interview opens one"
+fi
+
+why=$(lease_refusal "posts nothing to Discord; the coordinator on the holder answers there.") && die "$why"
+discord_token >/dev/null || die "no DISCORD_BOT_TOKEN in ~/.claude/channels/discord/.env"
+
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+
+# What was posted before a failure, for its message.
+posted() {
+  case $sent in
+    0) echo "nothing was posted" ;;
+    1) echo "1 of ${#bodies[@]} parts was posted, its id above" ;;
+    *) echo "$sent of ${#bodies[@]} parts were posted, their ids above" ;;
+  esac
+}
+
+# The value of the last response header <name> in the dump, case aside: header <name>
+header() {
+  sed -nE "s/^$1:[[:space:]]*([^[:space:]]+).*/\\1/Ip" "$scratch/headers" | tail -n 1
+}
+
+sent=0
+for body in "${bodies[@]}"; do
+  rm -f "$scratch/headers"
+  if reply=$(discord_api "channels/$channel/messages" -X POST -H "Content-Type: application/json" \
+    --max-time "$POST_TIMEOUT" -D "$scratch/headers" -d "$body" 2>"$scratch/error") &&
+    id=$(jq -er '.id | strings | select(test("^[0-9]+$"))' <<<"$reply" 2>/dev/null); then
+    echo "$id"
+    sent=$((sent + 1))
+    continue
+  fi
+  # curl writes the headers it got, a failed status's included; none when it got no answer.
+  touch "$scratch/headers"
+  status=$(sed -nE 's#^HTTP/[0-9.]+ ([0-9]{3}).*#\1#p' "$scratch/headers" | tail -n 1)
+  if [[ $status == 429 ]]; then
+    retry=$(header retry-after)
+    [[ -n $retry ]] || retry=$(header x-ratelimit-reset-after)
+    echo "team-post: Discord is rate-limiting the bot (429): try again ${retry:+in $retry s}$([[ -n $retry ]] || echo later); $(posted)" >&2
+    exit 75
+  fi
+  die "Discord refused the post: $(grep -m 1 . "$scratch/error" || echo "no message id in its answer"); $(posted)"
+done

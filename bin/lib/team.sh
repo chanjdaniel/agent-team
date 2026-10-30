@@ -12,11 +12,12 @@
 # the script's help_more, if it defined one before sourcing), and provides die, usage_error, team_project, ledger_jq, ledger_append,
 # task_events, known_task_events, open_task_events, task_status, task_worktrees, local_path,
 # archive_left_out, rsync_rule, archive_task_dir, machine_name, os_release, team_os, tool_dirs,
-# team_tool_path, fence_reason, lease_gate, worktree_changes, same_path, bounded, trust_probe,
+# team_tool_path, fence_reason, offline_hold, lease_refusal, worker_refusal, lease_gate, worktree_changes, same_path, bounded, trust_probe,
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin,
 # only_records, records_list, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
 # registered_pr, attribution_lines, strip_attribution, live_sessions, machine_slots, discord_token, discord_api,
-# github, pr_part and task_state_json, and sets IMAGE_TYPE and COORDINATOR_CHANNEL.
+# daniel_message, refresh_inbox, github, pr_part and task_state_json, and sets IMAGE_TYPE, COORDINATOR_CHANNEL and
+# INTERVIEW_CHANNEL.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
 # shellcheck shell=bash
 
@@ -354,6 +355,101 @@ fence_reason() {
   jq -r --arg since "$since" '"fenced since \($since)"
     + if (.holder | type) == "string" then " (holder seen \(.holder), epoch \(.epoch // "?"))" else "" end' \
     "$file" 2>/dev/null || echo "fenced since $since"
+}
+
+# Print the hold while the team holds offline (team-timers' ~/.local/state/agent-team/offline,
+# {"since": "<UTC time>", ...}, dated from its modification time without one): "GitHub is
+# unreachable (since 13:05); the team is holding: commit locally, write handoff.md, send T<n>
+# PAUSED offline, and wait.", or fail when it does not hold. The lease-fence hook and
+# team-thread wait give it: offline_hold
+offline_hold() {
+  local file=$HOME/.local/state/agent-team/offline since
+  [[ -e $file ]] || return 1
+  since=$(jq -er '.since | strings' "$file" 2>/dev/null) || since=$(date -u -r "$file" +%FT%TZ)
+  echo "GitHub is unreachable (since $(date -d "$since" +%H:%M)); the team is holding: commit locally, write handoff.md, send T<n> PAUSED offline, and wait."
+}
+
+# Print why this machine must not <does> ("posts nothing to Discord; ..."), or fail when it may:
+# "<machine> is fenced since ...: a fenced machine <does>" (fence_reason), else "<machine> no
+# longer holds the lease: origin names <holder> (<state>, epoch <n>): a machine that lost the
+# lease <does>", when the lease on origin is not this machine's last write (team-lease's
+# lease.json) and names another holder or a higher epoch, so an old coordinator or worker acts on
+# nothing the holder owns, even before its heartbeat fences it. Origin is asked at most once a
+# minute (git ls-remote, cached in ~/.local/state/agent-team/probe.json: {"checked_at": "<UTC
+# time>", "reachable": true, "tip": "<commit>"}); a machine with no name or no origin, or an
+# unreachable origin, passes the lease part, since the heartbeat owns offline. The lease-fence
+# hook and team-post call it: lease_refusal <does>
+lease_refusal() {
+  local machine named=1 why
+  machine=$(machine_name 2>/dev/null) || machine="this machine" named=0
+  if why=$(fence_reason); then
+    printf '%s is %s: a fenced machine %s\n' "$machine" "$why" "$1"
+  elif ((named)) && why=$(lease_lost "$machine"); then
+    printf '%s: a machine that lost the lease %s\n' "$why" "$1"
+  else
+    return 1
+  fi
+}
+
+# Print why this session may not <does> on Discord, or fail when it may: a worker session (its
+# settings' AGENT_TEAM_ROLE names a role other than the coordinator; Daniel's own shell and the
+# heartbeat set none) may not, except a planner on its own task (its settings' AGENT_TEAM_TASK)
+# when the caller passes --interview, for the interview thread's post and wait. Worker settings
+# deny the same commands; this holds where a deny pattern misses a spelling:
+# worker_refusal <task or ""> <does> [--interview]
+worker_refusal() {
+  local role=${AGENT_TEAM_ROLE:-} own=${AGENT_TEAM_TASK:-}
+  [[ -n $role && $role != coordinator ]] || return 1
+  if [[ ${3:-} == --interview && $role == planner ]]; then
+    [[ -z $1 || $1 != "$own" ]] || return 1
+    echo "a planner session of ${own:-no task} $2 for $1: a planner talks with Daniel only in its own task's interview thread"
+  else
+    echo "a $role session $2: that is the coordinator's; send it your message"
+  fi
+}
+
+# Why <machine> no longer holds the lease on origin, or fail when it does or cannot tell
+# (lease_refusal's lease part): lease_lost <machine>
+lease_lost() {
+  local state=$HOME/.local/state/agent-team NET_ERR=/dev/null NET_TIMEOUT=20 tip record lease
+  git -C "$TEAM_HOME" remote get-url origin >/dev/null 2>&1 || return 1
+  lease_origin_tip "$state/probe.json" || return 1
+  tip=$LEASE_TIP
+  [[ -n $tip ]] || return 1
+  record=$(jq -c 'select(type == "object")' "$state/lease.json" 2>/dev/null) || record=''
+  [[ -n $record ]] || record='{}'
+  [[ $tip != "$(jq -r '.commit // empty' <<<"$record")" ]] || return 1
+  # Fetched without moving a ref (no FETCH_HEAD, no refmap), so team-lease's refs are never raced.
+  git -C "$TEAM_HOME" cat-file -e "$tip^{commit}" 2>/dev/null ||
+    { ((LEASE_PROBED)) && origin_git -C "$TEAM_HOME" fetch -q --no-tags --no-write-fetch-head --refmap= origin refs/heads/lease; } ||
+    return 1
+  lease=$(git -C "$TEAM_HOME" show "$tip:lease.json" 2>/dev/null) || return 1
+  jq -er --arg machine "$1" --argjson record "$record" '
+    select(.holder != $machine or ($record.holder == $machine and .epoch > $record.epoch))
+    | "\($machine) no longer holds the lease: origin names \(.holder) (\(.state), epoch \(.epoch))"' \
+    <<<"$lease" 2>/dev/null
+}
+
+# Set LEASE_TIP to the tip of origin's lease branch (empty when there is none), from the probe
+# file <probe> when it is at most a minute old, else from a new probe written there, and
+# LEASE_PROBED to 1 when this call asked origin; fails when origin was unreachable. Network
+# calls go through origin_git (NET_ERR and NET_TIMEOUT are the caller's): lease_origin_tip <probe>
+lease_origin_tip() {
+  local out reachable=true
+  LEASE_PROBED=0
+  if jq -e 'now - (.checked_at | fromdateiso8601) < 60' "$1" >/dev/null 2>&1; then
+    LEASE_TIP=$(jq -er 'select(.reachable == true) | .tip // ""' "$1") || return 1
+    return 0
+  fi
+  LEASE_PROBED=1
+  out=$(origin_git -C "$TEAM_HOME" ls-remote origin refs/heads/lease) || reachable=false
+  LEASE_TIP=${out%%[[:space:]]*}
+  mkdir -p "$(dirname "$1")"
+  jq -n --argjson reachable "$reachable" --arg tip "$LEASE_TIP" \
+    '{checked_at: (now | floor | todate), reachable: $reachable} + if $reachable then {tip: $tip} else {} end' \
+    >"$1.$$"
+  mv -f "$1.$$" "$1"
+  [[ $reachable == true ]]
 }
 
 # Refuse to start <what> ("a coordinator", "a worker") unless this machine holds the lease,
@@ -838,6 +934,13 @@ render_template() {
 # shellcheck disable=SC2034 # read by the scripts that source this library
 COORDINATOR_CHANNEL=${TEAM_COORDINATOR_CHANNEL:-1562486564871995482}
 
+# The Discord channel under which each interviewed task's interview thread is opened: Daniel's,
+# kept out of the plugin's access.json groups, so the plugin delivers none of its messages to the
+# coordinator (it keys a thread on its parent). TEAM_INTERVIEW_CHANNEL overrides it, an empty one
+# included, which the scripts refuse as none set.
+# shellcheck disable=SC2034 # read by the scripts that source this library
+INTERVIEW_CHANNEL=${TEAM_INTERVIEW_CHANNEL-1565336720998928556}
+
 # Print the Discord bot token from ~/.claude/channels/discord/.env, or fail with nothing printed.
 # Callers keep it in a variable or test for it (discord_token >/dev/null); never print it.
 discord_token() {
@@ -857,6 +960,58 @@ discord_api() {
     return 1
   }
   curl -fsS -H @- "${@:2}" "https://discord.com/api/v10/$1" <<<"Authorization: Bot $token"
+}
+
+# Read Daniel's word from Discord: message <id> from the first of the places that has it, through
+# discord_api, its author one of Daniel's ids (the top-level allowFrom of the Discord plugin's
+# ~/.claude/channels/discord/access.json), so a decision of theirs is read from Discord, never
+# taken on a model's word. Each place is a name ending in its channel id, as "#coordinator 1562...".
+# Prints {place, channel, who: "<username> (<author id>)", message: <Discord's message>}. Fails
+# with the one reason on stderr: no allowFrom or no token ("..., so <what> cannot be checked"),
+# no place has the message (each place's error), or its author is not in allowFrom.
+# daniel_message <message id> <what> <place>...
+daniel_message() {
+  local message=$1 what=$2 allow found='' place reply miss misses=() tried who
+  allow=$(jq -ce '.allowFrom | select(type == "array") | map(tostring)' \
+    "$HOME/.claude/channels/discord/access.json" 2>/dev/null) || {
+    echo "cannot read allowFrom from ~/.claude/channels/discord/access.json, so $what cannot be checked" >&2
+    return 1
+  }
+  discord_token >/dev/null || {
+    echo "no DISCORD_BOT_TOKEN in ~/.claude/channels/discord/.env, so $what cannot be checked" >&2
+    return 1
+  }
+  miss=$(mktemp)
+  for place in "${@:3}"; do
+    if reply=$(discord_api "channels/${place##* }/messages/$message" 2>"$miss") &&
+      jq -e --arg m "$message" 'type == "object" and .id == $m and (.author.id | type) == "string"' <<<"$reply" >/dev/null 2>&1; then
+      found=$place
+      break
+    fi
+    misses+=("$(grep -m1 . "$miss" || echo "not that message")")
+  done
+  rm -f "$miss"
+  if [[ -z $found ]]; then
+    tried=$(printf '%s\n' "${@:3}" | sed '$!s/$/ or/' | paste -sd ' ')
+    echo "Discord message $message cannot be fetched from $tried: $(printf '%s\n' "${misses[@]}" | sort -u | paste -sd ';' | sed 's/;/; /g')" >&2
+    return 1
+  fi
+  who="$(jq -r '.author.username // "unknown"' <<<"$reply") ($(jq -r '.author.id' <<<"$reply"))"
+  if jq -e --argjson allow "$allow" '.author.id as $a | $allow | index($a) | not' <<<"$reply" >/dev/null; then
+    echo "Discord message $message is by $who, who is not in allowFrom of ~/.claude/channels/discord/access.json" >&2
+    return 1
+  fi
+  jq -c --arg place "$found" --arg channel "${found##* }" --arg who "$who" \
+    '{place: $place, channel: $channel, who: $who, message: .}' <<<"$reply"
+}
+
+# Bring the Waiting on you message in #coordinator up to date with this checkout's team-inbox, at
+# the end of a script that changed what waits on Daniel; a failure is one line on stderr, "<script>:
+# the Waiting on you message is not updated: <why>", and never the caller's: refresh_inbox
+refresh_inbox() {
+  local error
+  error=$(TEAM_HOME=$TEAM_HOME "$TEAM_LIB/../team-inbox" 2>&1 >/dev/null) && return 0
+  echo "${0##*/}: the Waiting on you message is not updated: $(grep -m 1 . <<<"$error" | sed 's/^team-inbox: //' || echo "team-inbox failed")" >&2
 }
 
 # The project registry, through this checkout's team-project: team_project [<arguments>...]

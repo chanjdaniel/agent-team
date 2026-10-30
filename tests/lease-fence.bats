@@ -2,8 +2,8 @@
 # hooks/lease-fence: the PreToolUse hook that keeps a machine that lost the lease quiet. It blocks
 # the coordinator's Discord posts, and its git push, team-merge, team-open and team-close, when
 # this machine is fenced or the lease on origin names another holder, a worker's git push when
-# fenced, and a worker's git push and gh while the team holds offline. home-pc holds the lease on
-# a bare origin; laptop is the other machine.
+# fenced, and a worker's git push, gh and team-thread wait while the team holds offline. home-pc
+# holds the lease on a bare origin; laptop is the other machine.
 
 load helpers/common
 
@@ -226,4 +226,102 @@ age_probe() {
   rm "$state/fenced"
   hook -0 Bash '{"command": "git push"}'
   assert_equal "$(probes)" 0
+}
+
+@test "team-post, team-ask and team-inbox are blocked for workers and the coordinator alike when fenced or when origin names another holder" {
+  local command posts=("team-post T7 --file q.md" "/home/x/agent-team/bin/team-post --coordinator --file q.md"
+    "cd wt && team-post T7 --thread task --file q.md" $'team-log T7 note\nteam-post T7 --file q.md'
+    "team-ask T7 sign-in --file q.md" "TZ=UTC ~/agent-team/bin/team-ask T7 sign-in --file q.md --from planner"
+    "team-inbox" "/home/x/agent-team/bin/team-inbox")
+  local others=("echo team-post" "grep -rn 'team-post' bin" "team-poster T7" "team-log T7 note"
+    "team-asked T7" "team-inboxes" "cat bin/team-inbox")
+  for command in "${posts[@]}" "${others[@]}"; do
+    bash_call -0 "$command"
+    coordinator_call -0 "$command"
+  done
+
+  steal_lease laptop home-pc
+  age_probe 61
+  for command in "${posts[@]}"; do
+    bash_call -2 "$command"
+    assert_equal "$stderr" "Blocked: home-pc no longer holds the lease: origin names laptop (held, epoch 2): a machine that lost the lease posts nothing to Discord; the coordinator on the holder answers there."
+    coordinator_call -2 "$command"
+    assert_equal "$stderr" "Blocked: home-pc no longer holds the lease: origin names laptop (held, epoch 2): a machine that lost the lease posts nothing to Discord; the coordinator on the holder answers there."
+  done
+  for command in "${others[@]}"; do
+    bash_call -0 "$command"
+    coordinator_call -0 "$command"
+  done
+
+  fence
+  for command in "${posts[@]}"; do
+    bash_call -2 "$command"
+    assert_equal "$stderr" "Blocked: home-pc is fenced since 2026-10-22T14:00:00Z (holder seen laptop, epoch 2): a fenced machine posts nothing to Discord; the coordinator on the holder answers there."
+    coordinator_call -2 "$command"
+  done
+}
+
+@test "team-answer is blocked for workers and the coordinator alike when fenced or when origin names another holder" {
+  local command answers=("team-answer T7 sign-in 1564000000000000001"
+    "/home/x/agent-team/bin/team-answer T7 sign-in 1564000000000000001"
+    "cd wt && TZ=UTC ~/agent-team/bin/team-answer T7 sign-in 1564000000000000001")
+  local others=("echo team-answer" "grep -rn 'team-answer' bin" "team-answered T7" "cat bin/team-answer")
+  for command in "${answers[@]}" "${others[@]}"; do
+    bash_call -0 "$command"
+    coordinator_call -0 "$command"
+  done
+
+  steal_lease laptop home-pc
+  age_probe 61
+  for command in "${answers[@]}"; do
+    bash_call -2 "$command"
+    assert_equal "$stderr" "Blocked: home-pc no longer holds the lease: origin names laptop (held, epoch 2): a machine that lost the lease logs no answer; the coordinator on the holder takes Daniel's answers."
+    coordinator_call -2 "$command"
+  done
+  for command in "${others[@]}"; do
+    bash_call -0 "$command"
+    coordinator_call -0 "$command"
+  done
+
+  fence
+  for command in "${answers[@]}"; do
+    bash_call -2 "$command"
+    assert_equal "$stderr" "Blocked: home-pc is fenced since 2026-10-22T14:00:00Z (holder seen laptop, epoch 2): a fenced machine logs no answer; the coordinator on the holder takes Daniel's answers."
+    coordinator_call -2 "$command"
+  done
+}
+
+@test "team-thread wait is blocked when fenced or when origin names another holder, and a worker's while the team holds offline" {
+  local command waits=("team-thread wait T7" "/home/x/agent-team/bin/team-thread wait T7 --after 1564000000000000001"
+    "cd wt && team-thread  wait T7" $'team-log T7 note\nteam-thread wait T7')
+  local others=("team-thread T7 --interview" "team-thread T7 conventioner 'wait for it'" "echo team-thread wait"
+    "grep -rn 'team-thread wait' bin" "team-threads wait T7")
+  for command in "${waits[@]}" "${others[@]}"; do
+    bash_call -0 "$command"
+    coordinator_call -0 "$command"
+  done
+
+  mkdir -p "$state"
+  echo '{"since": "2026-10-22T13:05:00Z", "posted": true}' >"$state/offline"
+  for command in "${waits[@]}"; do
+    bash_call -2 "$command"
+    assert_equal "$stderr" "Blocked: GitHub is unreachable (since $(date -d 2026-10-22T13:05:00Z +%H:%M)); the team is holding: commit locally, write handoff.md, send T<n> PAUSED offline, and wait."
+  done
+  for command in "${others[@]}"; do bash_call -0 "$command"; done
+  rm "$state/offline"
+
+  steal_lease laptop home-pc
+  age_probe 61
+  for command in "${waits[@]}"; do
+    bash_call -2 "$command"
+    assert_equal "$stderr" "Blocked: home-pc no longer holds the lease: origin names laptop (held, epoch 2): a machine that lost the lease waits on no interview; stop, since the coordinator on the holder takes the task on."
+    coordinator_call -2 "$command"
+  done
+  for command in "${others[@]}"; do bash_call -0 "$command"; done
+
+  fence
+  for command in "${waits[@]}"; do
+    bash_call -2 "$command"
+    assert_equal "$stderr" "Blocked: home-pc is fenced since 2026-10-22T14:00:00Z (holder seen laptop, epoch 2): a fenced machine waits on no interview; stop, since the coordinator on the holder takes the task on."
+  done
 }

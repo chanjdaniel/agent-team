@@ -1,4 +1,19 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(@TEAM_CODE@/bin/team-post @TASK@ --thread interview --file *)",
+      "Bash(@TEAM_CODE@/bin/team-thread wait @TASK@)",
+      "Bash(@TEAM_CODE@/bin/team-thread wait @TASK@ --after *)"
+    ],
+    "deny": [
+      "Bash(team-post --coordinator*)",
+      "Bash(team-post * --coordinator*)",
+      "Bash(team-post * --thread task*)",
+      "Bash(*/bin/team-post --coordinator*)",
+      "Bash(*/bin/team-post * --coordinator*)",
+      "Bash(*/bin/team-post * --thread task*)"
+    ]
+  },
   "hooks": {
     "PreToolUse": [
       {

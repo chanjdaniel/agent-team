@@ -25,7 +25,8 @@
 # T0 and tasks from before team-open none from the registry.
 # The merged settings and MCP config are generated into tasks/<task>/ (gitignored); @TEAM_CODE@
 # in either names this checkout, @TASK@ the task, @TASK_DIR@ the team home's tasks/<task>/, and
-# @ROLE@ the role (the settings' AGENT_TEAM_ROLE, the signal a hook sees in a team session).
+# @ROLE@ the role (the settings' AGENT_TEAM_ROLE, the signal a hook sees in a team session, and
+# with AGENT_TEAM_TASK, the task, what worker_refusal in bin/lib/team.sh reads).
 #
 # The coordinator toolkit is claude-coordinator's alone, never a worker's, and the frontend toolkit
 # Daniel's own sessions', since it attaches to their one Agent Chrome window.

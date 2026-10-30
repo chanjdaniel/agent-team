@@ -82,6 +82,18 @@ agent_path_override:
   assert_equal "$(stage_lines check | grep '^Daniel')" "Daniel 1: secrets: with the 1Password app signed in and its CLI integration on, in your own terminal, not through an agent: $CODE_CHECKOUT/bin/team-secrets restore (discord-bot-env: mode 644; discord-access-json: missing)"
 }
 
+@test "check names Daniel's /discord:access step while #coordinator lets in others; a missing access.json is the secrets step's alone" {
+  tools_at arch
+  access_json "[\"$DANIEL_ID\"]" '[]'
+  run_bin -1 team-bootstrap --stage check
+  assert_equal "$(stage_lines check | grep '^Daniel')" "Daniel 1: discord access: Daniel runs /discord:access group add 1562486564871995482 --no-mention --allow <their id> in their own Claude Code session (#coordinator's group allowFrom is empty, so any server member's message there or in a task thread reaches the coordinator)"
+  assert_equal "$(stage_lines check | tail -n1)" "summary: not set up yet: only Daniel's steps above are left; then team-bootstrap again"
+  rm "$HOME/.claude/channels/discord/access.json"
+  run_bin -1 team-bootstrap --stage check
+  assert_equal "$(stage_lines check | grep '^Daniel')" "Daniel 1: secrets: with the 1Password app signed in and its CLI integration on, in your own terminal, not through an agent: $CODE_CHECKOUT/bin/team-secrets restore (discord-access-json: missing)"
+  assert_equal "$(stage_lines check | tail -n1)" "summary: not set up yet: only Daniel's steps above are left; then team-bootstrap again"
+}
+
 @test "projects are cloned from https://github.com/<repo>.git to their registry paths; a task directory git ignores is left alone; the gate is only no-mistakes'" {
   tools_at arch
   # site ignores its task directory itself.

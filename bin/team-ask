@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# Put a question to Daniel in one call: post it in the task's Discord thread and a one-line ping
+# in #coordinator that links there, both through team-post (so a fenced machine posts nothing),
+# then log the ask in the ledger. team-answer takes their answer back.
+#
+# Usage: team-ask T<n> <id> --file <question> [--from <role>]
+# <id> names the ask (letters, digits, dot, dash and underscore), as team-answer names it again.
+# The question is the file's text, its leading and trailing blank lines and spaces dropped. The
+# ping mentions each of Daniel's ids, the top-level allowFrom of the Discord plugin's
+# ~/.claude/channels/discord/access.json: "<@id> T<n> has a question for you in <#thread>: <first
+# line>", the question's first line cut to 200 characters. Once both are posted it logs, in
+# order: question role=<role> text=<the question> when --from names the worker role that asked
+# it; asked id=<id> text=<the question's first line> discord_message=<the question's first
+# message>; waiting on=Daniel reason="ask <id>". Then team-inbox lists the ask in the Waiting on
+# you message; when that fails, a line on stderr says so, and the ask stands.
+# A post that fails logs nothing: when the ping fails, the question stays posted, its id said.
+# A worker session may not run it (worker_refusal in bin/lib/team.sh): its questions go to the
+# coordinator.
+# Prints {task, id, question: [<its message ids>], ping: <the ping's message id>}.
+# Exit codes: 0 asked; 1 refused, or Discord refused a post; 2 a malformed command line; 75
+# Discord answered 429 (team-post's message says when to try again).
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+# The most characters of the question's first line the ping carries.
+PING_LINE=200
+USAGE="usage: team-ask T<n> <id> --file <question> [--from <role>]"
+
+task='' id='' file='' role=''
+while (($#)); do
+  case $1 in
+    --file) (($# > 1)) || usage_error "$USAGE"; file=$2; shift ;;
+    --from) (($# > 1)) || usage_error "$USAGE"; role=$2; [[ $role =~ ^[a-z]+$ ]] || usage_error "$USAGE"; shift ;;
+    -*) usage_error "$USAGE" ;;
+    *)
+      if [[ -z $task ]]; then task=$1
+      elif [[ -z $id ]]; then id=$1
+      else usage_error "$USAGE"; fi
+      ;;
+  esac
+  shift
+done
+[[ $task =~ ^T[1-9][0-9]*$ && $id =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && -n $file ]] || usage_error "$USAGE"
+why=$(worker_refusal "$task" "asks Daniel nothing in Discord") && die "$why"
+
+events=$(open_task_events "$task")
+thread=$(jq -r 'map(select(.event == "thread") | .discord_thread | strings) | last // empty' <<<"$events")
+[[ -n $thread ]] || die "$task has no Discord thread in the ledger; team-thread opens one"
+[[ -f $file && -r $file ]] || die "no file to ask: $file"
+question=$(jq -nr --rawfile text "$file" '$text | sub("^\\s+"; "") | sub("\\s+\\z"; "")')
+[[ -n $question ]] || die "nothing to ask: $file is blank"
+line=$(jq -nr --arg q "$question" '$q | split("\n")[0] | sub("\\s+\\z"; "")')
+# Daniel's ids, each a Discord snowflake, so the ping holds nothing but mentions of them.
+mentions=$(jq -r '.allowFrom | arrays | map(tostring | select(test("^[0-9]+$")) | "<@\(.)>") | join(" ")' \
+  "$HOME/.claude/channels/discord/access.json" 2>/dev/null) || mentions=''
+[[ -n $mentions ]] ||
+  die "no Discord user id in allowFrom of ~/.claude/channels/discord/access.json, so the ping cannot name Daniel"
+
+# The events, built and checked against the contract before anything is posted, so a post is
+# never left unlogged by a refused event.
+now=$(date -u +%FT%TZ)
+mapfile -t lines < <(jq -nc --arg ts "$now" --arg task "$task" --arg id "$id" --arg role "$role" \
+  --arg question "$question" --arg line "$line" '
+  {ts: $ts, task: $task} as $e
+  | (if $role != "" then $e + {event: "question", role: $role, text: $question} else empty end),
+    $e + {event: "asked", id: $id, text: $line},
+    $e + {event: "waiting", on: "Daniel", reason: "ask \($id)"}')
+for event in "${lines[@]}"; do
+  problems=$(ledger_jq '[append_problems($contract; "team-ask")] | join("; ")' -r <<<"$event")
+  [[ -z $problems ]] || die "refusing a ledger event: $problems"
+done
+
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+printf '%s\n' "$question" >"$scratch/question"
+jq -nr --arg mentions "$mentions" --arg task "$task" --arg thread "$thread" --arg line "$line" --argjson max "$PING_LINE" '
+  "\($mentions) \($task) has a question for you in <#\($thread)>: "
+  + ($line | if length > $max then .[:$max - 3] + "..." else . end)' >"$scratch/ping"
+
+bin=$(dirname "${BASH_SOURCE[0]}")
+code=0
+asked=$("$bin/team-post" "$task" --file "$scratch/question") || code=$?
+if ((code)); then
+  echo "team-ask: the question was not posted, so nothing is logged" >&2
+  exit "$code"
+fi
+ping=$("$bin/team-post" --coordinator --file "$scratch/ping") || code=$?
+if ((code)); then
+  echo "team-ask: the question is posted in $task's thread as $(paste -sd ' ' <<<"$asked"), but the ping in #coordinator was not, so nothing is logged" >&2
+  exit "$code"
+fi
+
+for event in "${lines[@]}"; do
+  ledger_append "$(jq -c --arg ts "$(date -u +%FT%TZ)" --arg message "$(head -n 1 <<<"$asked")" \
+    '.ts = $ts | if .event == "asked" then .discord_message = $message else . end' <<<"$event")"
+done
+refresh_inbox
+jq -nc --arg task "$task" --arg id "$id" --arg asked "$asked" --arg ping "$ping" \
+  '{task: $task, id: $id, question: ($asked | split("\n")), ping: $ping}'

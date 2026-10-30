@@ -58,6 +58,7 @@
 #              command (the machine's name, the team home's setting once ~/agent-team-records is
 #              there, logins, Docker access, the 1Password app and team-secrets restore (each
 #              failing secret with its reason, and the gate's config.yaml while it is missing),
+#              #coordinator's group in the Discord plugin's access.json letting in only Daniel,
 #              the gate's config.yaml running the gate on its opencode wrapper, trust in the team
 #              home, where the coordinator starts, and in each project root, Chrome, then the
 #              rest), the doctor's WARN and FAIL lines, and a summary: set up, or ready as a
@@ -616,6 +617,18 @@ stage_check() {
   mapfile -t -O "${#covered[@]}" covered < <(lines '^secret ' | cut -f1)
   [[ -z $secrets ]] ||
     steps+=("secrets: with the 1Password app signed in and its CLI integration on, in your own terminal, not through an agent: $(tilde "$bin/team-secrets") restore ($secrets)")
+  # A missing or empty access.json is the secrets step's.
+  if lines '^discord access$' | grep -qF "the secret discord-access-json line's fix"; then
+    covered+=("discord access")
+  else
+    step '^discord access$' FAIL
+  fi
+  # So is the interview channel's check without the bot token.
+  if lines '^interview channel$' | grep -qF "the secret discord-bot-env line's fix"; then
+    covered+=("interview channel")
+  else
+    step '^interview channel$' FAIL
+  fi
   step '^opencode-gate$' FAIL
   mapfile -t untrusted < <(untrusted_roots | cut -f1)
   if ((${#untrusted[@]} > 1)); then

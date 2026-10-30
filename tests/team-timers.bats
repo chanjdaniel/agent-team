@@ -6,6 +6,7 @@
 
 load helpers/common
 load helpers/docker
+load helpers/inbox
 
 setup() {
   sandbox
@@ -17,6 +18,8 @@ setup() {
   stub_reply uname Linux
   units=$HOME/.config/systemd/user agents=$HOME/Library/LaunchAgents
   log=$HOME/.local/state/agent-team/heartbeat.log
+  inbox_discord
+  inbox_kept
 }
 
 # The commit at the tip of origin's lease branch.
@@ -310,6 +313,51 @@ EOF
   [[ ! -e $state/last-checkpoint ]]
 }
 
+@test "the inbox step edits the Waiting on you message once a run on the holder, logging only a new message or a failure, which never fails the run" {
+  run_bin -0 team-timers run
+  assert_equal "$(steps "$output")" "lease checkpoint"
+  assert_equal "$(inbox_calls)" "PATCH channels/1562486564871995482/messages/1569000000000000000"
+  assert_equal "$(inbox_items_shown)" "Nothing waits on you."
+
+  # Deleted by hand: posted again, and that is logged.
+  rm "$STUB_FIXTURES/inbox/1569000000000000000.json"
+  : >"$STUB_FIXTURES/inbox/calls"
+  run_bin -0 team-timers run
+  assert_equal "$(steps "$output")" "lease inbox checkpoint"
+  [[ $(grep ' inbox: ' <<<"$output") =~ ^[0-9T:Z-]+" inbox: posted https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1569000000000000001"$ ]]
+  assert_equal "$(inbox_calls)" "PATCH channels/1562486564871995482/messages/1569000000000000000
+POST channels/1562486564871995482/messages"
+
+  echo 500 >"$STUB_FIXTURES/inbox/fail"
+  run_bin -0 team-timers run
+  assert_equal "$(steps "$output")" "lease inbox checkpoint"
+  [[ $(grep ' inbox: ' <<<"$output") =~ ^[0-9T:Z-]+" inbox: failed: Discord refused the edit of message 1569000000000000001: curl: (22) The requested URL returned error: 500"$ ]]
+}
+
+@test "the inbox step never runs off the lease, offline or on a fenced machine, and runs after the back step" {
+  make_machine laptop
+  on_machine laptop run_bin -0 team-timers run
+  assert_equal "$(inbox_calls)" ""
+
+  stub_sleep </dev/null
+  discord_answers
+  cut_origin
+  run_bin -75 team-timers run
+  run_bin -75 team-timers run
+  assert_equal "$(inbox_calls)" ""
+  git -C "$TEAM_HOME" remote set-url origin "$origin"
+  run_bin -0 team-timers run
+  assert_equal "$(steps "$output")" "back checkpoint"
+  assert_equal "$(inbox_calls)" "PATCH channels/1562486564871995482/messages/1569000000000000000"
+
+  steal_lease laptop home-pc
+  run_bin -0 team-timers run
+  assert_contains "$output" "fenced home-pc"
+  run_bin -0 team-timers run
+  assert_contains "$output" "home-pc is fenced since "
+  assert_equal "$(inbox_calls | wc -l)" 1
+}
+
 @test "run on a machine that does not hold the lease logs and makes no commit" {
   make_machine laptop
   local tip
@@ -351,22 +399,27 @@ stub_sleep() {
   stub_script sleep
 }
 
-# Discord answers each post (curl) with a message id, or with <status> and an error when given.
+# Discord answers each post (curl) with a message id, or with <status> and an error when given;
+# team-inbox's calls go to the fake Discord of helpers/inbox.
 discord_answers() {
   if [[ -z ${1:-} ]]; then
-    stub_reply curl '{"id":"1563000000000000001"}'
+    stub_script curl <<'EOF'
+[[ ! -f $STUB_FIXTURES/inbox.sh ]] || source "$STUB_FIXTURES/inbox.sh"
+echo '{"id":"1563000000000000001"}'
+EOF
   else
     stub_script curl <<EOF
+[[ ! -f \$STUB_FIXTURES/inbox.sh ]] || source "\$STUB_FIXTURES/inbox.sh"
 echo "curl: (22) The requested URL returned error: $1" >&2
 exit 22
 EOF
   fi
 }
 
-# The content of each post to #coordinator, one JSON string per line.
+# The content of each post to #coordinator, one JSON string per line, team-inbox's left out.
 posts() {
   stub_calls curl | jq -c 'select(.[-1] == "https://discord.com/api/v10/channels/1562486564871995482/messages")
-    | .[index("-d") + 1] | fromjson | .content'
+    | index("-d") as $i | select($i) | .[$i + 1] | fromjson | .content'
 }
 
 # A UTC time as the heartbeat writes it in a post: this machine's local hours and minutes.
@@ -409,7 +462,7 @@ EOF
   assert_contains "$(sed -n 2p <<<"$output")" " probe: GitHub answered the second try"
   assert_contains "$(sed -n 3p <<<"$output")" " lease: home-pc renewed the lease, epoch 1"
   [[ ! -e $HOME/.local/state/agent-team/offline ]]
-  assert_equal "$(stub_calls curl)" ""
+  assert_equal "$(posts)" ""
 }
 
 @test "two failures hold the team from the first failure's time and post once; later runs post nothing more; the lease is untouched" {

@@ -1,34 +1,177 @@
 #!/usr/bin/env bash
-# Open a task's Discord thread under #coordinator and record it in the ledger.
-# Every task has one; bin/team-worker refuses to launch a worker for a task without it.
-# Discord archives the thread after 3 days with no messages.
+# Open a task's Discord thread under #coordinator and record it in the ledger, or its interview
+# thread under the interview channel, or wait in that thread for Daniel's next messages.
+# Every task has a thread; bin/team-worker refuses to launch a worker for a task without it.
+# Discord archives either thread after 3 days with no messages.
 #
 # Usage: team-thread <task> <project> <title>
-# Prints the thread id. Needs the bot token in ~/.claude/channels/discord/.env.
+#        team-thread T<n> --interview
+#        team-thread wait T<n> [--after <message id>]
+#   <task> <project> <title>  Opens the task's thread under #coordinator, named "T<n> · <project>
+#             · <title>", logs it as thread and prints its id; one already logged is printed
+#             without calling Discord.
+#   --interview  Opens the open task's interview thread under the interview channel
+#             (INTERVIEW_CHANNEL in bin/lib/team.sh), named as its thread from its opened event,
+#             logs it as interview-thread and prints its id, or prints the one already logged.
+#             The plugin delivers nothing from that channel, so the coordinator never hears what
+#             is said there: a planner whose brief is planner-interview talks with Daniel there.
+#   wait      Blocks until Daniel posts in the open task's interview thread, then prints each of
+#             their new messages, oldest first, as one JSON line: {"id", "sent" (Discord's
+#             timestamp), "text" (verbatim), "attachments" (their links, only when there are
+#             any)}. New means after --after's message, else after the bot's latest post in the
+#             thread (the last question, so an answer that came before the wait began is still
+#             new), else every message in it. Daniel is the top-level allowFrom of the Discord
+#             plugin's ~/.claude/channels/discord/access.json; any other author's message is
+#             skipped, never printed. Run it with Bash run_in_background, and pass the last id it
+#             printed as --after to the next wait when no question was posted between.
+#             It reads the thread every 5 seconds through the REST API (discord_api), 100 messages
+#             a read; on a 429 it waits Discord's Retry-After, and on a failed connection or a
+#             5xx it waits twice as long each time, up to a minute.
+# --interview and wait refuse on a machine that is fenced or that lost the lease (lease_refusal,
+# checked before each read), and with no interview channel set; wait ends with the hold's
+# message (offline_hold) when the team holds offline. In a worker session only a planner's wait
+# on its own task runs (worker_refusal in bin/lib/team.sh); the coordinator opens the threads.
+# Needs the bot token in ~/.claude/channels/discord/.env.
+# Exit codes: 0 done, 1 refused or Discord refused a read, 2 a malformed command line, 75 the
+# team holds offline.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
-[[ $# -eq 3 ]] || usage_error "usage: team-thread <task> <project> <title>"
-task=$1 project=$2 title=$3
-[[ $task =~ ^T[1-9][0-9]*$ ]] || usage_error "task must look like T<n>, got '$task'"
+# A read's interval, the longest backoff and the most one read may take, in seconds.
+POLL_SECONDS=5
+MAX_BACKOFF=60
+READ_TIMEOUT=20
+# Minutes with no message before Discord archives a thread: 3 days (it allows 60, 1440, 4320 or 10080).
+ARCHIVE_MINUTES=4320
+USAGE="usage: team-thread <task> <project> <title> | team-thread T<n> --interview | team-thread wait T<n> [--after <message id>]"
+NO_CHANNEL="no interview channel is set: Daniel makes it (manual-steps.md), and a PR sets its id as INTERVIEW_CHANNEL in bin/lib/team.sh"
 
-existing=$(task_events "$task" | jq -r 'select(.event == "thread") | .discord_thread | strings' | tail -n 1)
-if [[ -n $existing ]]; then
-  echo "$existing"
+# Fail with why this machine must not <does>, if it must not: fenced <does>
+fenced() {
+  local why
+  if why=$(lease_refusal "$1"); then die "$why"; fi
+}
+
+# The thread under <channel> named for the task, from the ledger's <kind> event, or a new one
+# logged as <kind>: open_thread <task> <kind> <channel> <name>
+open_thread() {
+  local existing body id
+  existing=$(task_events "$1" | jq -r --arg kind "$2" 'select(.event == $kind) | .discord_thread | strings' | tail -n 1)
+  if [[ -n $existing ]]; then
+    echo "$existing"
+    return 0
+  fi
+  discord_token >/dev/null || die "no DISCORD_BOT_TOKEN in ~/.claude/channels/discord/.env"
+  body=$(jq -cn --arg name "$4" --argjson archive "$ARCHIVE_MINUTES" \
+    '{name: $name[0:100], type: 11, auto_archive_duration: $archive}')
+  id=$(discord_api "channels/$3/threads" -X POST -H "Content-Type: application/json" \
+    -d "$body" | jq -r .id 2>/dev/null || true)
+  [[ $id =~ ^[0-9]+$ ]] || die "Discord did not return a thread id"
+  ledger_append "$(jq -cn --arg task "$1" --arg kind "$2" --arg thread "$id" \
+    '{ts: (now | todate), task: $task, event: $kind, discord_thread: $thread}')"
+  echo "$id"
+}
+
+# Read the messages in <thread> at <query> into $page, as a JSON array oldest first, retrying a
+# 429, a failed connection and a 5xx after a wait, and failing on any other refusal; the hold and
+# the fence are checked before each try: read_page <thread> <query>
+read_page() {
+  local backoff=$POLL_SECONDS status retry reply hold
+  while true; do
+    if hold=$(offline_hold); then
+      echo "team-thread: $hold" >&2
+      exit 75
+    fi
+    fenced "$WAITS"
+    rm -f "$scratch/headers"
+    if reply=$(discord_api "channels/$1/messages?$2" --max-time "$READ_TIMEOUT" -D "$scratch/headers" 2>"$scratch/error") &&
+      page=$(jq -ce 'select(type == "array") | sort_by(.id | [length, .])' <<<"$reply" 2>/dev/null); then
+      return 0
+    fi
+    touch "$scratch/headers"
+    status=$(sed -nE 's#^HTTP/[0-9.]+ ([0-9]{3}).*#\1#p' "$scratch/headers" | tail -n 1)
+    if [[ $status == 429 ]]; then
+      retry=$(sed -nE 's/^retry-after:[[:space:]]*([0-9.]+).*/\1/Ip' "$scratch/headers" | tail -n 1)
+      sleep "$(jq -n --arg r "${retry:-$POLL_SECONDS}" '$r | tonumber | ceil | [., 1] | max')"
+    elif [[ -z $status || $status == 5* || $status == 200 ]]; then
+      sleep "$backoff"
+      backoff=$((backoff * 2 > MAX_BACKOFF ? MAX_BACKOFF : backoff * 2))
+    else
+      die "Discord refused reading the interview thread $1: $(grep -m 1 . "$scratch/error" || echo "HTTP $status")"
+    fi
+  done
+}
+
+# What a machine that may not wait does instead, as the lease-fence hook says it.
+WAITS="waits on no interview; stop, since the coordinator on the holder takes the task on."
+
+if [[ ${1:-} == wait ]]; then
+  shift
+  task='' after=''
+  while (($#)); do
+    case $1 in
+      --after) (($# > 1)) && [[ $2 =~ ^[0-9]{1,20}$ ]] || usage_error "$USAGE"; after=$2; shift ;;
+      T*) [[ -z $task ]] || usage_error "$USAGE"; task=$1 ;;
+      *) usage_error "$USAGE" ;;
+    esac
+    shift
+  done
+  [[ $task =~ ^T[1-9][0-9]*$ ]] || usage_error "$USAGE"
+  if why=$(worker_refusal "$task" "waits on Daniel in Discord" --interview); then die "$why"; fi
+  [[ -n $INTERVIEW_CHANNEL ]] || die "$NO_CHANNEL"
+  events=$(open_task_events "$task")
+  thread=$(jq -r 'map(select(.event == "interview-thread") | .discord_thread | strings) | last // empty' <<<"$events")
+  [[ -n $thread ]] || die "$task has no interview thread in the ledger; team-thread $task --interview opens one"
+  allow=$(jq -ce '.allowFrom | select(type == "array" and length > 0) | map(tostring)' \
+    "$HOME/.claude/channels/discord/access.json" 2>/dev/null) ||
+    die "cannot read allowFrom from ~/.claude/channels/discord/access.json, so no message can be known as Daniel's"
+  fenced "$WAITS"
+  discord_token >/dev/null || die "no DISCORD_BOT_TOKEN in ~/.claude/channels/discord/.env"
+  scratch=$(mktemp -d)
+  trap 'rm -rf "$scratch"' EXIT
+
+  if [[ -z $after ]]; then
+    read_page "$thread" "limit=100"
+    after=$(jq -r 'map(select(.author.bot == true)) | last | .id // "0"' <<<"$page")
+  fi
+  [[ $after =~ ^[0-9]+$ ]] || die "Discord answered a message id that is not a number"
+  while true; do
+    read_page "$thread" "after=$after&limit=100"
+    if [[ $page != '[]' ]]; then
+      after=$(jq -r 'last.id' <<<"$page")
+      [[ $after =~ ^[0-9]+$ ]] || die "Discord answered a message id that is not a number"
+      jq -c --argjson allow "$allow" '.[]
+        | select(.author.bot != true and (.author.id | tostring | IN($allow[])))
+        | {id, sent: .timestamp, text: (.content // "")}
+          + ([.attachments // [] | .[].url | strings] | if . == [] then {} else {attachments: .} end)' \
+        <<<"$page" >>"$scratch/found"
+    fi
+    # A full page means more may follow at once.
+    [[ $(jq length <<<"$page") -lt 100 ]] || continue
+    if [[ -s $scratch/found ]]; then
+      cat "$scratch/found"
+      exit 0
+    fi
+    sleep "$POLL_SECONDS"
+  done
+fi
+
+if [[ $# -eq 2 && $2 == --interview ]]; then
+  task=$1
+  [[ $task =~ ^T[1-9][0-9]*$ ]] || usage_error "$USAGE"
+  if why=$(worker_refusal "$task" "opens a Discord thread"); then die "$why"; fi
+  [[ -n $INTERVIEW_CHANNEL ]] || die "$NO_CHANNEL"
+  events=$(open_task_events "$task")
+  # Printing the thread already logged calls no one, so only a new one is fenced.
+  jq -e 'any(.[]; .event == "interview-thread")' <<<"$events" >/dev/null ||
+    fenced "opens no interview thread; the coordinator on the holder does."
+  open_thread "$task" interview-thread "$INTERVIEW_CHANNEL" \
+    "$(jq -r 'map(select(.event == "opened")) | last | "\(.task) · \(.project) · \(.title)"' <<<"$events")"
   exit 0
 fi
 
-discord_token >/dev/null || die "no DISCORD_BOT_TOKEN in ~/.claude/channels/discord/.env"
-
-# Minutes with no message before Discord archives the thread: 3 days (it allows 60, 1440, 4320 or 10080).
-archive_minutes=4320
-
-body=$(jq -cn --arg name "$task · $project · $title" --argjson archive "$archive_minutes" \
-  '{name: $name[0:100], type: 11, auto_archive_duration: $archive}')
-id=$(discord_api "channels/$COORDINATOR_CHANNEL/threads" -X POST -H "Content-Type: application/json" \
-  -d "$body" | jq -r .id 2>/dev/null || true)
-[[ $id =~ ^[0-9]+$ ]] || die "Discord did not return a thread id"
-
-ledger_append "$(jq -cn --arg task "$task" --arg thread "$id" \
-  '{ts: (now | todate), task: $task, event: "thread", discord_thread: $thread}')"
-echo "$id"
+[[ $# -eq 3 ]] || usage_error "$USAGE"
+task=$1 project=$2 title=$3
+[[ $task =~ ^T[1-9][0-9]*$ ]] || usage_error "task must look like T<n>, got '$task'"
+if why=$(worker_refusal "$task" "opens a Discord thread"); then die "$why"; fi
+open_thread "$task" thread "$COORDINATOR_CHANNEL" "$task · $project · $title"

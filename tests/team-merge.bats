@@ -2,6 +2,7 @@
 # team-merge: the coordinator's only merge path, on Daniel's recorded word and a green head.
 
 load helpers/common
+load helpers/inbox
 
 setup() {
   sandbox
@@ -32,6 +33,7 @@ TOML
   approved_by 757
   stub_gh
   stub_discord
+  inbox_discord
   open_task
 }
 
@@ -109,8 +111,10 @@ EOF
 
 # The fake Discord API: GET channels/<c>/messages/<m> answers $DISCORD_DIR/<c>-<m>.json, a
 # missing one fails as curl -f does on a 404. The headers curl read from stdin are kept.
+# team-inbox's calls go to the fake Discord of helpers/inbox.
 stub_discord() {
   stub_script curl <<'EOF'
+[[ ! -f $STUB_FIXTURES/inbox.sh ]] || source "$STUB_FIXTURES/inbox.sh"
 cat >>"$DISCORD_DIR/stdin"
 url=${*: -1}
 if [[ $url =~ ^https://discord\.com/api/v10/channels/([0-9]+)/messages/([0-9]+)$ &&
@@ -121,6 +125,11 @@ else
   exit 22
 fi
 EOF
+}
+
+# The reads of a message by id, team-inbox's calls left out.
+reads() {
+  stub_calls curl | jq -c 'select(.[-1] | test("/messages/[0-9]+$")) | select(index("-X") | not)'
 }
 
 # Message 1562661774950400000 in the task's thread (or the channel given), written by the user id given.
@@ -303,9 +312,31 @@ SH
   assert_equal "$status" 0
 }
 
+@test "a merge brings the Waiting on you message up to date" {
+  # Reviewed at the head and not yet approved, the PR waits on Daniel.
+  jq -c 'select(.event != "merge-approved")' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l" && mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
+  event T14 review '{head: "a1b2c3d4", verdict: "pass"}'
+  run_bin -0 team-inbox
+  assert_equal "$(inbox_items_shown)" "**PRs ready to merge**
+- T14 The tooling: https://github.com/owner/proj/pull/5"
+  event T14 merge-approved '{url: "https://github.com/owner/proj/pull/5", discord_message: "1562661774950400000", head: "a1b2c3d4"}'
+  : >"$STUB_FIXTURES/inbox/calls"
+  run_bin -0 --separate-stderr team-merge T14
+  [[ $stderr != *"Waiting on you"* ]]
+  assert_equal "$(inbox_calls)" "PATCH channels/1562486564871995482/messages/1569000000000000001"
+  assert_equal "$(inbox_items_shown)" "Nothing waits on you."
+}
+
+@test "Discord refusing the Waiting on you message is a line on stderr, and the merge stands" {
+  echo 500 >"$STUB_FIXTURES/inbox/fail"
+  run_bin -0 --separate-stderr team-merge T14
+  assert_contains "$stderr" "team-merge: the Waiting on you message is not updated: Discord refused the read of #coordinator's channel: curl: (22) The requested URL returned error: 500"
+  assert_equal "$(merged_events | wc -l)" 1
+}
+
 @test "the message is read with the bot token on stdin, never on the command line or in the output" {
   run_bin -0 team-merge T14
-  assert_equal "$(stub_calls curl | jq -c .)" \
+  assert_equal "$(reads)" \
     '["-fsS","-H","@-","https://discord.com/api/v10/channels/1563/messages/1562661774950400000"]'
   assert_equal "$(cat "$discord/stdin")" "Authorization: Bot $FAKE_DISCORD_TOKEN"
   [[ $output != *"$FAKE_DISCORD_TOKEN"* ]]
@@ -315,7 +346,7 @@ SH
 @test "Daniel's word in #coordinator counts when it is not in the task's thread" {
   approved_by 757 1562486564871995482
   run_bin -0 team-merge T14
-  assert_equal "$(stub_calls curl | jq -r '.[-1]')" \
+  assert_equal "$(reads | jq -r '.[-1]')" \
     "https://discord.com/api/v10/channels/1563/messages/1562661774950400000
 https://discord.com/api/v10/channels/1562486564871995482/messages/1562661774950400000"
   assert_equal "$(merged_events | jq -r .by)" "Discord message 1562661774950400000 in #coordinator 1562486564871995482, from daniel (757)"
@@ -325,7 +356,7 @@ https://discord.com/api/v10/channels/1562486564871995482/messages/15626617749504
   jq -c 'select(.event != "thread")' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l" && mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
   approved_by 757 1562486564871995482
   run_bin -0 team-merge T14
-  assert_equal "$(stub_calls curl | jq -r '.[-1]')" "https://discord.com/api/v10/channels/1562486564871995482/messages/1562661774950400000"
+  assert_equal "$(reads | jq -r '.[-1]')" "https://discord.com/api/v10/channels/1562486564871995482/messages/1562661774950400000"
 }
 
 @test "the PR is the latest pr event, or --pr naming one of the task's pr events" {

@@ -5,17 +5,21 @@
 #        team-log --check [<file>]
 # Appends {ts (now, UTC), task, event, key: value...}. A value is stored as JSON when it parses
 # as JSON (a list, a number, true) and as a string otherwise; a field the contract types as a
-# string is always a string. note is allowed on every kind. Kinds written by another script
+# string or an id, any discord_* field, and a whole number of 16 digits or more (which a JSON
+# number cannot hold exactly) are always strings. note is allowed on every kind. Kinds team-log is not a writer of
 # (opened, launch, merged, closed...) are refused, and so is a merge-approved whose url is not
 # one of the task's pr events (a trailing slash aside), or with no head, or a head neither a pr
 # event of that url nor a review of the task since its first pr event logged (heads compare by
 # the shorter one's prefix, at least 7 characters), or whose discord_message, a Discord id, was
-# sent before the first of those events that logged the head. A park
+# sent before the first of those events that logged the head; so is an answered whose id and
+# discord_message an earlier answered of the task logged (team-answer reads it from Discord). A park
 # (waiting, blocked, paused, held) logged after the fact takes since=<UTC time>, when it began:
 # no later than now and no earlier than the task's latest event, or it is refused naming both
 # times; no other kind takes since.
 # --check checks a ledger (default: the team home's): every line is JSON with ts, task and
-# event, and lines from strict_from on meet their kind's fields; exit 1 lists each bad line.
+# event, and lines from strict_from on meet their kind's fields, a Discord id written as a whole
+# number (as team-log wrote one before the contract typed it) passing too; exit 1 lists each bad
+# line.
 set -euo pipefail
 
 # Printed by --help after the header.
@@ -88,6 +92,14 @@ if [[ $event == merge-approved && -n ${seen[url]:-} ]]; then
   fi
 fi
 
+# One Discord message answers an ask once: a second answered of the same id and message is a
+# repeat, as team-answer refuses it.
+if [[ $event == answered && -n ${seen[id]:-} && -n ${seen[discord_message]:-} ]] &&
+  task_events "$task" | ledger_jq '[inputs] | answered_from($id; $message)' -ne \
+    --arg id "${seen[id]}" --arg message "${seen[discord_message]}" >/dev/null; then
+  die "$task already logged answered id=${seen[id]} from Discord message ${seen[discord_message]}"
+fi
+
 # A park logged after the fact says when it began: a UTC time between the task's latest event and now.
 if [[ -n ${seen[since]:-} ]]; then
   case $event in waiting | blocked | paused | held) ;; *) die "since is taken only by a park (waiting, blocked, paused, held), not $event" ;; esac
@@ -101,12 +113,15 @@ if [[ -n ${seen[since]:-} ]]; then
 fi
 
 # Each value is typed by the contract when it names the field, and by whether it parses as JSON
-# otherwise; ledger_append then checks the event against the contract.
+# otherwise, but for a Discord id (a discord_* field) and a whole number too long for a JSON
+# number to hold exactly, kept as written; ledger_append then checks the event against the
+# contract.
 ledger_append "$(ledger_jq '
   field_types($contract.kinds[$event]) as $types
   | $ARGS.positional as $pairs
   | reduce range(0; $pairs | length; 2) as $i ({ts: (now | todate), task: $task, event: $event};
       $pairs[$i] as $key | $pairs[$i + 1] as $raw
-      | .[$key] = if ($types[$key] | type) == "array" or $types[$key] == "string" then $raw
+      | .[$key] = if ($types[$key] | type) == "array" or ($types[$key] | IN("string", "id"))
+          or ($key | startswith("discord_")) or ($raw | test("^-?[0-9]{16,}$")) then $raw
         else ((try ($raw | fromjson) catch null) | if . == null or (type == "number" and isnan) then $raw else . end)
         end)' -nc --arg task "$task" --arg event "$event" --args "${pairs[@]}")"

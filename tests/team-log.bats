@@ -30,6 +30,7 @@ assert_ledger_empty() {
 opened team-open project path type title branch base base_sha worktree
 worktree-added team-open project branch base base_sha worktree
 thread team-thread discord_thread
+interview-thread team-thread discord_thread
 launch team-worker role session worktree toolkits
 worktree-returned team-close project worktree
 closed team-close archive returned kept
@@ -37,15 +38,15 @@ merged team-merge pr merge head by
 history-rewritten team-clean-messages branch old_head head
 done team-log role session
 ticket-done team-log ticket commits
-question team-log role text
-asked team-log id text
-answered team-log id answer
+question team-log,team-ask role text
+asked team-log,team-ask id text
+answered team-log,team-answer id answer
 plan-approved team-log by
 paused team-log reason
 blocked team-log reason
 held team-log reason
-waiting team-log on reason
-resumed team-log
+waiting team-log,team-ask on reason
+resumed team-log,team-answer
 pr team-log url head
 review team-log verdict head
 gate-run team-log run head outcome
@@ -59,10 +60,12 @@ rehome-failed team-resume project branch machine reason
 rehomed team-open project branch worktree machine
 TABLE
   )
-  actual=$(jq -r '.kinds | to_entries[] | [.key, .value.writer, (.value.required | keys_unsorted[])] | join(" ")' "$CONTRACT")
+  actual=$(jq -r '.kinds | to_entries[] | [.key, ([.value.writer] | flatten | join(",")), (.value.required | keys_unsorted[])] | join(" ")' "$CONTRACT")
   assert_equal "$actual" "$expected"
   assert_equal "$(jq -c '.kinds.launch.optional' "$CONTRACT")" '{"project":"string","branch":"string","machine":"string","model":"string","request":"string"}'
   assert_equal "$(jq -c '.kinds.review.required.verdict' "$CONTRACT")" '["pass","findings"]'
+  assert_equal "$(jq -c '.kinds.answered.optional' "$CONTRACT")" '{"discord_message":"id"}'
+  assert_equal "$(jq -c '[.kinds[] | (.required, .optional // {}) | to_entries[] | select(.key | startswith("discord_")) | .value] | unique' "$CONTRACT")" '["id"]'
   assert_equal "$(jq -c '[.kinds.waiting, .kinds.blocked, .kinds.paused, .kinds.held | .optional.since]' "$CONTRACT")" '["string","string","string","string"]'
   assert_equal "$(jq -c '[.kinds.closed.required[]]' "$CONTRACT")" '["array","array","array"]'
   [[ $STRICT_FROM =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
@@ -74,7 +77,7 @@ TABLE
   assert_contains "$output" "Ledger contract, strict from $STRICT_FROM"
   local kind
   for kind in $(jq -r '.kinds | keys_unsorted[]' "$CONTRACT"); do
-    grep -Eq "^  $kind +[a-z-]+ " <<<"$output" || {
+    grep -Eq "^  $kind +[a-z-]+(, [a-z-]+)* " <<<"$output" || {
       echo "no row for $kind" >&2
       return 1
     }
@@ -83,11 +86,13 @@ TABLE
   grep -Eq '^  review +team-log +verdict \(pass\|findings\), head; optional agent_review, sent_back \(list\)  \(sent_back: the numbers of the notes .*\)$' <<<"$output"
   grep -Eq '^  gate-run +team-log +run, head, outcome \(pushed\|red\|aborted\|stopped-green\); optional cause \(review\|notes\|gate-finding\|load\|tooling\|base-merge\|other\), minutes \(object\)  \(.*\)$' <<<"$output"
   grep -Eq '^  closed +team-close +archive \(list\), returned \(list\), kept \(list\)  \(.*legacy.*\)$' <<<"$output"
-  grep -Eq '^  merge-approved +team-log +url, discord_message; optional head  \(.*team-log requires head of every new line.*\)$' <<<"$output"
+  grep -Eq '^  merge-approved +team-log +url, discord_message \(id\); optional head  \(.*team-log requires head of every new line.*\)$' <<<"$output"
   grep -Eq '^  launch +team-worker +role, session, worktree, toolkits \(list\); optional project, branch, machine, model, request  \(request is the link to Daniel.s Discord message, on an ops launch; model is the --model the session launched on, .*\)$' <<<"$output"
-  grep -Eq '^  resumed +team-log +- +\(clears held, blocked, paused and waiting\)$' <<<"$output"
+  grep -Eq '^  answered +team-log, team-answer +id, answer; optional discord_message \(id\)  \(Daniel.s answer to the asked of its id; .*never logged twice for one ask\)$' <<<"$output"
+  grep -Eq '^  waiting +team-log, team-ask +on, reason; optional since  \(.*\)$' <<<"$output"
+  grep -Eq '^  resumed +team-log, team-answer +- +\(clears held, blocked, paused and waiting\)$' <<<"$output"
   grep -Eq '^  blocked +team-log +reason; optional since  \(.*since: when the park began, when it is logged after the fact\)$' <<<"$output"
-  grep -Eq '^  retro-schedule +team-log +every_hours \(number\), discord_message  \(.*every_hours 0 stops.*\)$' <<<"$output"
+  grep -Eq '^  retro-schedule +team-log +every_hours \(number\), discord_message \(id\)  \(.*every_hours 0 stops.*\)$' <<<"$output"
   grep -Eq '^  injection +team-log +role, source, text  \(.*never the personal details.*\)$' <<<"$output"
   grep -Eq '^  stowed +team-handoff +machine, worktrees \(list\), roles \(list\); optional sessions \(list\)  \(one per open task at a handoff: .*unfinished_roles.*\)$' <<<"$output"
   grep -Eq '^  rehome-failed +team-resume +project, branch, machine, reason  \(.*stands until a later opened, worktree-added, worktree-moved, rehomed or worktree-returned.*\)$' <<<"$output"
@@ -177,17 +182,52 @@ LINES
   )"
 }
 
+@test "a Discord id is stored as a string, declared or not, and so is any whole number of 16 digits or more" {
+  run_bin -0 team-log T14 asked id=q1 text=Which? discord_message=1564584780744491089
+  run_bin -0 team-log T14 resumed discord_channel=1562486564871995482 ref=1565336870932582522 count=42 big=999999999999999
+  assert_equal "$(ledger_without_ts)" "$(
+    cat <<'LINES'
+{"task":"T14","event":"asked","id":"q1","text":"Which?","discord_message":"1564584780744491089"}
+{"task":"T14","event":"resumed","discord_channel":"1562486564871995482","ref":"1565336870932582522","count":42,"big":999999999999999}
+LINES
+  )"
+  # A declared id is a string of digits: anything else is refused.
+  run_bin -1 team-log T14 answered id=q1 answer=Five discord_message=m1563
+  assert_contains "$output" "discord_message must be a Discord id, a string of digits, got a string that is not one"
+  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "2"
+}
+
+@test "--check accepts a Discord id written as a whole number, as dev's team-log wrote two, and nothing else in its place" {
+  cat >"$TEAM_HOME/ledger.jsonl" <<LEDGER
+{"ts":"$STRICT_FROM","task":"T14","event":"asked","id":"q1","text":"Which?","discord_message":1564584780744491089}
+{"ts":"$STRICT_FROM","task":"T14","event":"answered","id":"q1","answer":"Five","discord_message":1565336870932582522}
+{"ts":"$STRICT_FROM","task":"T14","event":"answered","id":"q1","answer":"Five","discord_message":"1565336870932582523"}
+{"ts":"$STRICT_FROM","task":"T14","event":"thread","discord_thread":1563}
+{"ts":"$STRICT_FROM","task":"T14","event":"answered","id":"q1","answer":"Five","discord_message":1.5}
+{"ts":"$STRICT_FROM","task":"T14","event":"answered","id":"q1","answer":"Five","discord_message":-1563}
+{"ts":"$STRICT_FROM","task":"T14","event":"answered","id":"q1","answer":"Five","discord_message":"m1563"}
+LEDGER
+  run_bin -1 team-log --check
+  assert_equal "$output" "$TEAM_HOME/ledger.jsonl:5: discord_message must be a Discord id, a string of digits, got a number that is not one
+$TEAM_HOME/ledger.jsonl:6: discord_message must be a Discord id, a string of digits, got a number that is not one
+$TEAM_HOME/ledger.jsonl:7: discord_message must be a Discord id, a string of digits, got a string that is not one
+$TEAM_HOME/ledger.jsonl: 3 of 7 lines break the ledger contract"
+  # The number's digits are the id: an answer read from that message again is a repeat.
+  run_bin -1 team-log T14 answered id=q1 answer=Five discord_message=1565336870932582522
+  assert_contains "$output" "already logged answered id=q1 from Discord message 1565336870932582522"
+}
+
 @test "every kind team-log writes is appended with its required fields and a note" {
   local kind args count=0
   while IFS= read -r kind; do
     # A head is a sha, since merge-approved's must be one a pr event logged, which team-log adds.
-    mapfile -t args < <(jq -r --arg k "$kind" '(.kinds[$k].required | to_entries[]
-      | "\(.key)=\(if .key == "head" then "a1b2c3d4" else .value | if type == "array" then .[0] elif . == "array" then "[]" elif . == "number" then "7" else "x y" end end)"),
+    mapfile -t args < <(jq -r --arg k "$kind" --arg soon "$(soon)" '(.kinds[$k].required | to_entries[]
+      | "\(.key)=\(if .key == "head" then "a1b2c3d4" else .value | if type == "array" then .[0] elif . == "array" then "[]" elif . == "number" then "7" elif . == "id" then $soon else "x y" end end)"),
       (select($k == "merge-approved") | "head=a1b2c3d4")' "$CONTRACT")
     run_bin -0 team-log T14 "$kind" "${args[@]}" "note=why $kind"
     count=$((count + 1))
     assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r '.event + " " + .note')" "$kind why $kind"
-  done < <(jq -r '.kinds | to_entries[] | select(.value.writer == "team-log") | .key' "$CONTRACT")
+  done < <(jq -r '.kinds | to_entries[] | select([.value.writer] | flatten | index("team-log")) | .key' "$CONTRACT")
   assert_equal "$count" "18"
   run_bin -0 team-log --check
 }
@@ -337,6 +377,29 @@ LINES
   run_bin -1 team-log T14 merge-approved url=$five discord_message=1562661774950400000 head=$fix
   assert_equal "$output" "team-log: Discord message 1562661774950400000 was sent at 2026-10-22T03:00:00Z, before the review event that first logged head $fix at $reviewed, so it is not Daniel's word on that head"
   assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "2"
+}
+
+@test "an answered naming the Discord message an earlier answered of the same ask logged is refused" {
+  run_bin -0 team-log T14 answered id=sign-in answer=five discord_message=1564000000000000001
+  run_bin -1 team-log T14 answered id=sign-in answer=five discord_message=1564000000000000001
+  assert_equal "$output" "team-log: T14 already logged answered id=sign-in from Discord message 1564000000000000001"
+  # Another message for the same ask is an addition, the same message may answer another ask,
+  # another task is its own, and an answer with no message is never a repeat.
+  run_bin -0 team-log T14 answered id=sign-in answer=and-six discord_message=1564000000000000002
+  run_bin -0 team-log T14 answered id=reset answer=five discord_message=1564000000000000001
+  run_bin -0 team-log T15 answered id=sign-in answer=five discord_message=1564000000000000001
+  run_bin -0 team-log T14 answered id=sign-in answer=five
+  run_bin -0 team-log T14 answered id=sign-in answer=five
+  assert_equal "$(jq -r '[.task, .id, .discord_message // "-"] | join(" ")' "$TEAM_HOME/ledger.jsonl")" "$(
+    cat <<'LINES'
+T14 sign-in 1564000000000000001
+T14 sign-in 1564000000000000002
+T14 reset 1564000000000000001
+T15 sign-in 1564000000000000001
+T14 sign-in -
+T14 sign-in -
+LINES
+  )"
 }
 
 @test "a kind another script writes is refused with nothing appended" {

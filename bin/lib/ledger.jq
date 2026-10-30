@@ -18,10 +18,17 @@ def line_problems:
   end;
 
 # How the value breaks field <name>'s contract type (a type name, or a list of allowed strings).
+# An id is a Discord id, a string of digits; with $legacy (--check), a whole number too, as
+# team-log wrote one before the contract typed every Discord id (its digits are the id, since jq
+# keeps a number's literal through tostring).
 # (A parameter named $type would shadow the builtin type inside the def.)
-def type_problems($name; $want):
+def type_problems($name; $want; $legacy):
   if ($want | type) == "array" then
     select(IN($want[]) | not) | "\($name) must be one of \($want | join(", "))"
+  elif $want == "id" then
+    if type == "string" then select(test("^[0-9]+$") | not) | "\($name) must be a Discord id, a string of digits, got a string that is not one"
+    elif type == "number" and $legacy then select(. < 0 or . != floor) | "\($name) must be a Discord id, a string of digits, got a number that is not one"
+    else "\($name) must be a Discord id, a string of digits, got \(type | noun)" end
   elif type != $want then
     "\($name) must be \($want | noun), got \(type | noun)"
   else empty end;
@@ -30,8 +37,8 @@ def type_problems($name; $want):
 def field_types($kind): $kind.required + ($kind.optional // {}) + {note: "string"};
 
 # What a line of a known kind must meet: its required fields present and not empty, and every
-# field the contract types holding that type.
-def kind_problems($contract):
+# field the contract types holding that type ($legacy: as --check reads an existing line).
+def kind_problems($contract; $legacy):
   . as $line
   | .event as $event
   | $contract.kinds[$event] as $kind
@@ -39,24 +46,29 @@ def kind_problems($contract):
     else
       ($kind.required | keys_unsorted[] | select($line[.] == null or $line[.] == "") | "\($event) needs \(.)"),
       (field_types($kind) | to_entries[] | .key as $name | .value as $type
-        | $line[$name] | select(. != null and . != "") | type_problems($name; $type))
+        | $line[$name] | select(. != null and . != "") | type_problems($name; $type; $legacy))
     end;
 
 # What a line in an existing ledger must meet: legacy lines (before strict_from) only the basics.
 def check_problems($contract):
   [line_problems] as $basic
   | if $basic != [] then $basic[]
-    elif .ts >= $contract.strict_from then kind_problems($contract)
+    elif .ts >= $contract.strict_from then kind_problems($contract; true)
     else empty end;
 
+# The scripts that write a kind ($kind.writer, one name or a list), as a list.
+def writers($kind): [$kind.writer // empty] | flatten;
+
 # What an event must meet to be appended by script $writer: the basics, then that $writer is
-# the kind's writer, then the kind's fields, whatever its ts. Only the first failing step is told.
+# one of the kind's writers, then the kind's fields, whatever its ts. Only the first failing step
+# is told.
 def append_problems($contract; $writer):
   (if type == "object" then .event else null end) as $event
   | ([line_problems] | select(. != []))
-    // ([$contract.kinds[$event].writer // empty | select(. != $writer) | "\($event) events are written by \(.), not \($writer)"]
+    // ([writers($contract.kinds[$event]) | select(. != [] and (index($writer) | not))
+        | "\($event) events are written by \(join(" or ")), not \($writer)"]
       | select(. != []))
-    // [kind_problems($contract)]
+    // [kind_problems($contract; false)]
   | .[];
 
 # The report of checking a ledger read as raw lines (jq -nR): {total, bad: [{line, problems}]}.
@@ -73,20 +85,21 @@ def pad($width): . + ([range($width - length)] | map(" ") | add // "");
 def field_text($want):
   if ($want | type) == "array" then "\(.) (\($want | join("|")))"
   elif $want == "string" then .
+  elif $want == "id" then "\(.) (id)"
   else "\(.) (\($want | noun | sub("^an? "; "")))" end;
 
 # The contract as a table, one row per kind: event, writer, fields, and what the kind is about.
 def contract_table:
   .kinds | to_entries
   | (map(.key | length) | max) as $event_width
-  | (map(.value.writer | length) | max) as $writer_width
+  | (map(writers(.value) | join(", ") | length) | max) as $writer_width
   | "  \("event" | pad($event_width))  \("written by" | pad($writer_width))  fields",
     (.[] | .value as $kind
       | ([$kind.required | to_entries[] | .value as $type | .key | field_text($type)] as $fields
          | [($kind.optional // {}) | to_entries[] | .value as $type | .key | field_text($type)] as $optional
          | if $fields == [] then "-" else $fields | join(", ") end
            + if $optional == [] then "" else "; optional \($optional | join(", "))" end) as $text
-      | "  \(.key | pad($event_width))  \($kind.writer | pad($writer_width))  \($text)"
+      | "  \(.key | pad($event_width))  \(writers($kind) | join(", ") | pad($writer_width))  \($text)"
         + if $kind.about then "  (\($kind.about))" else "" end);
 
 # A recorded path as a path on this machine, whose home directory is $home: every machine keeps
@@ -310,11 +323,19 @@ def settles($ask):
     and ((.url | rtrimstr("/")) as $url | ($ask.text // "" | tostring) as $text
       | any($text | indices($url)[]; $text[. + ($url | length):] | test("^[0-9]") | not)));
 
-# The asks put to Daniel that no later event settles yet.
-def pending_asks:
+# Whether the task's events hold an answered of ask $id read from Discord message $message.
+def answered_from($id; $message):
+  any(.[]; .event == "answered" and .id == $id and (.discord_message | tostring) == $message);
+
+# The asked events no later event settles yet, each as {k, ask}: its index among the events and
+# the event.
+def unsettled_asks:
   . as $events
   | [range(length) as $k | $events[$k] | select(.event == "asked") | . as $ask
-     | select(any($events[$k + 1:][]; settles($ask)) | not) | {id, text, ts}];
+     | select(any($events[$k + 1:][]; settles($ask)) | not) | {k: $k, ask: .}];
+
+# The asks put to Daniel that no later event settles yet.
+def pending_asks: [unsettled_asks[] | .ask | {id, text, ts}];
 
 # A task's state from its events and the session list, its worktrees as paths on this machine,
 # whose home directory is $home (local_worktree); team-state adds the pr part.
@@ -567,6 +588,65 @@ def snapshot_text:
      else "Current items (\($items | length)):", ($items[:40][] | "  - " + . | clip(200)),
        if $items | length > 40 then "  and \($items | length - 40) more in tasks/current.md" else empty end
      end);
+
+# The following defs serve team-inbox, a task's events as an array, then every ledger event as one.
+
+# Whether the task's latest interview thread still holds an interview: no planner's done and no
+# plan-approved logged after its interview-thread.
+def interview_under_way:
+  latest_index("interview-thread") as $i
+  | $i >= 0 and all(.[$i + 1:][]; ((.event == "done" and .role == "planner") or .event == "plan-approved") | not);
+
+# The task's PRs that wait on Daniel's word to merge, from task_prs: none unless its phase is
+# awaiting-merge, then each not merged that no merge-approved names (a trailing slash aside) at its
+# head, or at no head, as a legacy line.
+def merge_ready_prs:
+  . as $events
+  | task_prs as $prs
+  | if phase != "awaiting-merge" then []
+    else [$prs[] | select(pr_merged($events; $prs) | not) | . as $pr
+      | select(any($events[]; .event == "merge-approved" and (.url | strings | rtrimstr("/")) == ($pr.url | rtrimstr("/"))
+          and (.head == null or same_head(.head; $pr.head))) | not)] end;
+
+# What waits on Daniel, over every ledger event, each open task's in task number order:
+# {asks: [{task, id, text (its first line), thread (the task's thread when it was asked), message
+# (the question's discord_message)}], prs: [{task, title, url}], interviews: [{task, title, thread}]}.
+def inbox_items:
+  [by_task | to_entries[] | select(.value | is_open)
+    | {task: .key, events: .value, title: (.value | map(select(.event == "opened")) | first | .title)}]
+  | by_task_number
+  | {asks: [.[] | .task as $task | .events as $events | $events | unsettled_asks[]
+        | {task: $task, id: .ask.id, text: (.ask.text | tostring | split("\n")[0]),
+           thread: ([$events[:.k][] | select(.event == "thread") | .discord_thread | strings] | last),
+           message: (.ask.discord_message | if . == null then null else tostring end)}],
+     prs: [.[] | {task, title} + (.events | merge_ready_prs[] | {url})],
+     interviews: [.[] | select(.events | interview_under_way)
+        | {task, title, thread: (.events | map(select(.event == "interview-thread") | .discord_thread) | last | tostring)}]};
+
+# The Waiting on you message from inbox_items, at most $limit characters, its asks linked to the
+# question's message in guild $guild (to the thread when either is unknown), and its last line the
+# time $now (seconds since the epoch) as Discord shows it to each reader. Items past the limit are
+# left out from the end, counted in one line.
+def inbox_text($guild; $limit; $now):
+  def link:
+    if .thread == null then ""
+    elif .message != null and $guild != null then " https://discord.com/channels/\($guild)/\(.thread)/\(.message)"
+    else " <#\(.thread)>" end;
+  def named: .task + if .title == null then "" else " \(.title | clip(80))" end;
+  [["**Asks**", [.asks[] | "- \(.task) \(.id): \(.text | clip(150))" + link]],
+   ["**PRs ready to merge**", [.prs[] | "- \(named): \(.url)"]],
+   ["**Interviews under way**", [.interviews[] | "- \(named): <#\(.thread)>"]]] as $sections
+  | ([$sections[][1][]] | length) as $total
+  | "-# team-inbox keeps this current; updated <t:\($now):R>" as $foot
+  | def render($n):
+      (reduce $sections[] as $s ({left: $n, lines: []};
+        $s[1][:.left] as $take
+        | if $take == [] then . else .lines += [$s[0]] + $take | .left -= ($take | length) end)
+       | .lines)
+      + (if $n < $total then ["- and \($total - $n) more, which team-snapshot lists"] else [] end)
+      | ["**Waiting on you**"] + . + [$foot] | join("\n");
+    if $total == 0 then ["**Waiting on you**", "Nothing waits on you.", $foot] | join("\n")
+    else first(range($total; -1; -1) as $n | render($n) | select(length <= $limit)) end;
 
 # The following defs serve team-retro, over every ledger event as one array.
 

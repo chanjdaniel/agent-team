@@ -167,9 +167,12 @@ EOF
 
 @test "every real template renders for each delivery with no placeholder left and no em dash" {
   assert_equal "$(templates | paste -sd ' ')" \
-    "builder-deliver builder-fix builder-merge-base builder-ticket ops planner-feature planner-research rereview resume resume-crash retro reviewer"
+    "builder-deliver builder-fix builder-merge-base builder-ticket ops planner-feature planner-interview planner-research rereview resume resume-crash retro reviewer"
   open_t12
   open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
+  # The interview brief's thread is a task fact, logged as team-thread --interview logs it.
+  event T12 interview-thread '{discord_thread: "1565400000000000012"}'
+  event T14 interview-thread '{discord_thread: "1565400000000000014"}'
   local task template keys sets key brief
   for task in T12 T14; do
     while IFS= read -r template; do
@@ -210,6 +213,24 @@ EOF
   refute_grep -e team-review -e 'value of pr' "$TEAM_HOME/tasks/T12/brief-reviewer.md"
   assert_contains "$(<"$TEAM_HOME/tasks/T12/brief-rereview.md")" "the gate's own commits"
   refute_grep 'gate' "$TEAM_HOME/tasks/T14/brief-rereview.md"
+}
+
+@test "the interview brief needs the task's interview thread, names it and both scripts, and sends the coordinator no question" {
+  open_t12
+  run_bin -1 team-brief T12 planner-interview --set 'read=- `AGENTS.md`.'
+  assert_equal "$output" "team-brief: unfilled placeholders: interview_thread"
+  [[ ! -e $TEAM_HOME/tasks/T12/brief.md ]]
+  run_bin -1 team-brief T12 planner-interview --set 'read=- `AGENTS.md`.' --set interview_thread=1
+  assert_contains "$output" "interview_thread"
+  event T12 interview-thread '{discord_thread: "1565400000000000012"}'
+  run_bin -0 team-brief T12 planner-interview --set 'read=- `AGENTS.md`.'
+  local brief=$TEAM_HOME/tasks/T12/brief.md
+  grep -qxF 'Interview thread: Discord thread `1565400000000000012`, under the interview channel, which the coordinator does not read.' "$brief"
+  grep -qF "\`$REPO_ROOT/bin/team-post T12 --thread interview --file <file>\`" "$brief"
+  grep -qF "\`$REPO_ROOT/bin/team-thread wait T12\`, run with Bash \`run_in_background\`" "$brief"
+  grep -qxF 'Send the coordinator only `DONE`, `BLOCKED`, `PAUSED`, `FAILED` or `INJECTION`: your questions go to Daniel in the thread, never to the coordinator.' "$brief"
+  grep -qF "\"Please ask in #coordinator: this thread is for T12's interview only.\"" "$brief"
+  grep -qxF '4. Send `T12 DONE .scratch/task/spec.md` to `coordinator`.' "$brief"
 }
 
 @test "a partial is picked by the project's delivery, from the directory of its name" {

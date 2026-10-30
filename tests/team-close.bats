@@ -6,6 +6,7 @@
 load helpers/common
 load helpers/treehouse
 load helpers/docker
+load helpers/inbox
 
 setup() {
   sandbox
@@ -53,7 +54,12 @@ return = "scripts/th-return.sh"
 slots = [".treehouse/conv-abc123/1/conv", ".treehouse/conv-abc123/2/conv"]
 TOML
   team_origin=$(make_team_home)
-  stub_reply curl '{"id":"1563000000000000001"}'
+  # team-thread's post answers with the thread's id; team-inbox's calls go to the fake Discord.
+  stub_script curl <<'SH'
+[[ ! -f $STUB_FIXTURES/inbox.sh ]] || source "$STUB_FIXTURES/inbox.sh"
+echo '{"id":"1563000000000000001"}'
+SH
+  inbox_discord
   sessions
   # claude: agents --json answers the session list; stop and rm note what the archive and the
   # worktrees looked like at the time of the call, so the order of the steps can be checked.
@@ -155,6 +161,24 @@ rm 4f2a9c1e archive:2 worktrees:2"
   run_bin -0 team-log --check
   run_bin -0 team-state T1
   assert_contains "$output" "closed"
+}
+
+@test "a close takes the task out of the Waiting on you message, and Discord refusing that is a line on stderr" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  ledger_line '{ts: "2026-10-22T02:11:00Z", task: "T1", event: "asked", id: "go", text: "Go on?"}'
+  run_bin -0 team-inbox
+  assert_equal "$(inbox_items_shown)" "**Asks**
+- T1 go: Go on? <#1563000000000000001>"
+  run_bin -0 --separate-stderr team-close T1
+  [[ $stderr != *"Waiting on you"* ]]
+  assert_equal "$(inbox_items_shown)" "Nothing waits on you."
+
+  run_bin -0 team-open home feature feat more "Do more"
+  echo 500 >"$STUB_FIXTURES/inbox/fail"
+  run_bin -0 --separate-stderr team-close T2
+  assert_equal "$(tail -n 1 <<<"$stderr")" "team-close: the Waiting on you message is not updated: Discord refused the edit of message 1569000000000000001: curl: (22) The requested URL returned error: 500"
+  assert_equal "$(events closed | jq -r .task)" "T1
+T2"
 }
 
 # A UI capture (team-ui) stays on the machine that took it and goes with its task, before the

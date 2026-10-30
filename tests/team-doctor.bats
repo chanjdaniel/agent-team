@@ -347,7 +347,7 @@ EOF
   jq -e '.[] | select(.check == "machine") == {check: "machine", verdict: "PASS", reason: "home-pc", fix: ""}' <<<"$output"
 }
 
-@test "no line carries a secret, and the doctor reads no credential file, ~/.claude.json or ~/.claude/channels/" {
+@test "no line carries a secret, and the doctor reads no credential file, ~/.claude.json or ~/.claude/channels/ but access.json" {
   tools_at arch
   echo '{"claudeAiOauth": {"accessToken": "sk-ant-oat-fake-secret"}}' >"$HOME/.claude/.credentials.json"
   echo '{"oauthAccount": {"emailAddress": "daniel@example.invalid"}}' >"$HOME/.claude.json"
@@ -357,12 +357,19 @@ EOF
   local text=$output
   run_bin -0 team-doctor --json
   local secret
-  for secret in sk-ant-oat-fake-secret daniel@example.invalid org-secret-0000 gho_fakefakefakefake "$FAKE_DISCORD_TOKEN" dummy-secret-value; do
+  for secret in sk-ant-oat-fake-secret daniel@example.invalid org-secret-0000 gho_fakefakefakefake "$FAKE_DISCORD_TOKEN" dummy-secret-value "$DANIEL_ID"; do
     [[ $text$output != *"$secret"* ]] || { echo "the doctor printed $secret" >&2; return 1; }
   done
-  # The code, its comments aside, names none of them.
+  # The code, its comments aside, names none of them, but the Discord plugin's access.json, whose
+  # ids the discord access line never prints.
+  local interview=$REPO_ROOT/bin/lib/doctor.d/167-interview-channel.sh
   run -1 grep -nE 'credentials|\.claude\.json|channels|hosts\.yml|discord_|[Kk]eychain|security find' \
-    <(grep -hv '^[[:space:]]*#' "$REPO_ROOT/bin/team-doctor" "$REPO_ROOT"/bin/lib/doctor.d/*.sh)
+    <(for file in "$REPO_ROOT/bin/team-doctor" "$REPO_ROOT"/bin/lib/doctor.d/*.sh; do
+      [[ $file == "$interview" ]] || grep -hv '^[[:space:]]*#' "$file"; done |
+      sed 's|~/\.claude/channels/discord/access\.json||g; s|\$HOME/\.claude/channels/discord/access\.json||g')
+  # The interview channel line alone uses the bot token, only through the library's Discord calls.
+  run -1 grep -nE 'credentials|\.claude\.json|hosts\.yml|[Kk]eychain|security find|DISCORD_BOT_TOKEN=|\.env"' "$interview"
+  assert_equal "$(grep -v '^[[:space:]]*#' "$interview" | grep -oE 'discord_[a-z_]+' | sort -u | paste -sd ' ')" "discord_api discord_token"
 }
 
 @test "each file of bin/lib/doctor.d/ is a check, run in the order of its name, with its lines of --help" {

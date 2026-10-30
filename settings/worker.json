@@ -211,7 +211,20 @@
       "Bash(*/proc/*/environ))",
       "Bash(*/proc/*/environ')*)",
       "Bash(*/proc/*/environ\")*)",
-      "Read(//proc/**)"
+      "Read(//proc/**)",
+      "Bash(team-ask *)",
+      "Bash(*/bin/team-ask *)",
+      "Bash(team-answer *)",
+      "Bash(*/bin/team-answer *)",
+      "Bash(team-inbox)",
+      "Bash(team-inbox *)",
+      "Bash(*/bin/team-inbox)",
+      "Bash(*/bin/team-inbox *)",
+      "Bash(team-thread T*)",
+      "Bash(*/bin/team-thread T*)",
+      "Read(~/.claude/channels/**)",
+      "Edit(~/.claude/channels/**)",
+      "Bash(*.claude/channels*)"
     ]
   },
   "skillOverrides": {
@@ -239,6 +252,7 @@
   },
   "env": {
     "AGENT_TEAM_ROLE": "@ROLE@",
+    "AGENT_TEAM_TASK": "@TASK@",
     "LAVISH_AXI_TELEMETRY": "0",
     "CODEGRAPH_TELEMETRY": "0",
     "CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS": "1",

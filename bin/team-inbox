@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# Keep one "Waiting on you" message in #coordinator current: what waits on Daniel, from the
+# ledger alone, edited in place through the Discord REST API, so no model turn writes it.
+#
+# Usage: team-inbox
+# The message lists, for each open task in task number order: each ask nothing settled (an asked
+# with no answered of its id and no merge-approved whose url its text names, as team-sweep reads
+# it), with the task, the ask's id, its first line and a link to the question (its discord_message,
+# which team-ask logs, in the task's thread; else the thread); each PR ready to merge (the task's
+# phase awaiting-merge, the PR not merged and no merge-approved logged at its head), with its full
+# URL; and each interview under way (an interview-thread with no planner's done or plan-approved
+# after it), with its thread. With none, it says "Nothing waits on you". Its last line is the time
+# of this run. Items past Discord's 2000 characters are left out from the end, counted in a line.
+# It edits the message named in ~/.local/state/agent-team/inbox.json ({channel, guild, message})
+# and posts a new one only when there is none there, it is another channel's, or Discord no longer
+# has it (404), keeping the new one's id. It never pings: no mention in it notifies anyone, and
+# Discord sends no notice of an edit (team-ask's ping does that for a new ask). The guild, which a
+# question's link needs, is read once from #coordinator's channel and kept in the same file.
+# team-ask, team-answer, team-merge and team-close run it at their end (refresh_inbox in
+# bin/lib/team.sh), going on with a line on stderr when it fails; team-timers run runs it every
+# five minutes on the lease holder. It refuses on a machine that is fenced or lost the lease
+# (lease_refusal in bin/lib/team.sh) and in a worker session (worker_refusal), and one run at a
+# time holds ~/.local/state/agent-team/inbox.lock.
+# Prints "edited <the message's link>" or "posted <the message's link>".
+# Exit codes: 0 done; 1 refused, or Discord refused a call; 2 a malformed command line; 75 Discord
+# answered 429, or another run held the lock for a minute.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+# Discord's limit on a message's characters, the most one call may take and the longest wait for
+# another run's lock, in seconds.
+LIMIT=2000
+CALL_TIMEOUT=20
+LOCK_SECONDS=60
+# Discord's message flag SUPPRESS_EMBEDS, so a PR's link shows no preview card.
+SUPPRESS_EMBEDS=4
+
+(($# == 0)) || usage_error "usage: team-inbox"
+why=$(worker_refusal "" "edits nothing in Discord") && die "$why"
+
+why=$(lease_refusal "posts nothing to Discord; the coordinator on the holder answers there.") && die "$why"
+discord_token >/dev/null || die "no DISCORD_BOT_TOKEN in ~/.claude/channels/discord/.env"
+
+state_dir=$HOME/.local/state/agent-team
+state=$state_dir/inbox.json
+mkdir -p "$state_dir"
+exec {lock}>>"$state_dir/inbox.lock"
+flock -w "$LOCK_SECONDS" "$lock" || {
+  echo "team-inbox: another run has held $state_dir/inbox.lock for ${LOCK_SECONDS}s; try again later" >&2
+  exit 75
+}
+
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+
+# Call Discord: call <path> [<curl options>...]; writes the answer to $scratch/answer, or sets
+# STATUS (the HTTP status, empty with no answer) and ERROR (curl's first line) and fails.
+STATUS='' ERROR=''
+call() {
+  rm -f "$scratch/headers"
+  if discord_api "$1" --max-time "$CALL_TIMEOUT" -D "$scratch/headers" "${@:2}" >"$scratch/answer" 2>"$scratch/error"; then
+    return 0
+  fi
+  # curl writes the headers it got, a failed status's included; none when it got no answer.
+  touch "$scratch/headers"
+  STATUS=$(sed -nE 's#^HTTP/[0-9.]+ ([0-9]{3}).*#\1#p' "$scratch/headers" | tail -n 1)
+  ERROR=$(grep -m 1 . "$scratch/error" || echo "no reason given")
+  return 1
+}
+
+# Fail as Discord's answer says: exit 75 on a 429, with when to try again, else 1.
+refused() {
+  local retry
+  if [[ $STATUS == 429 ]]; then
+    retry=$(sed -nE 's/^(retry-after|x-ratelimit-reset-after):[[:space:]]*([^[:space:]]+).*/\2/Ip' "$scratch/headers" | head -n 1)
+    echo "team-inbox: Discord is rate-limiting the bot (429) on $1: try again ${retry:+in $retry s}$([[ -n $retry ]] || echo later)" >&2
+    exit 75
+  fi
+  die "Discord refused $1: $ERROR"
+}
+
+# The kept message, when it is #coordinator's.
+read -r guild message < <(jq -r --arg channel "$COORDINATOR_CHANNEL" '
+  select(type == "object" and (.channel | tostring) == $channel)
+  | [(.guild // "" | tostring), (.message // "" | tostring)] | map(select(test("^[0-9]+$")) // "-") | join(" ")' \
+  "$state" 2>/dev/null) || true
+[[ ${guild:--} != - ]] || guild=''
+[[ ${message:--} != - ]] || message=''
+
+if [[ -z $guild ]]; then
+  call "channels/$COORDINATOR_CHANNEL" || refused "the read of #coordinator's channel"
+  guild=$(jq -r '.guild_id | strings | select(test("^[0-9]+$"))' "$scratch/answer" 2>/dev/null) || guild=''
+  [[ -n $guild ]] || die "Discord named no guild for #coordinator ($COORDINATOR_CHANNEL)"
+fi
+
+ledger=$TEAM_HOME/ledger.jsonl
+[[ -e $ledger ]] || ledger=/dev/null
+ledger_jq 'ledger_events | inbox_items | inbox_text($guild; $limit; now | floor)
+  | {content: ., allowed_mentions: {parse: []}, flags: $flags}' -nRc \
+  --arg guild "$guild" --argjson limit "$LIMIT" --argjson flags "$SUPPRESS_EMBEDS" "$ledger" >"$scratch/body"
+
+# Keep the message's place: keep <message>
+keep() {
+  jq -n --arg channel "$COORDINATOR_CHANNEL" --arg guild "$guild" --arg message "$1" \
+    '{channel: $channel, guild: $guild, message: $message}' >"$state.$$"
+  mv -f "$state.$$" "$state"
+}
+
+done_as=edited
+if [[ -n $message ]]; then
+  if ! call "channels/$COORDINATOR_CHANNEL/messages/$message" -X PATCH -H "Content-Type: application/json" \
+    --data-binary "@$scratch/body"; then
+    [[ $STATUS == 404 ]] || refused "the edit of message $message"
+    message=''
+  fi
+fi
+if [[ -z $message ]]; then
+  call "channels/$COORDINATOR_CHANNEL/messages" -X POST -H "Content-Type: application/json" \
+    --data-binary "@$scratch/body" || refused "the post"
+  message=$(jq -r '.id | strings | select(test("^[0-9]+$"))' "$scratch/answer" 2>/dev/null) || message=''
+  [[ -n $message ]] || die "Discord's answer to the post names no message id"
+  done_as=posted
+fi
+keep "$message"
+echo "$done_as https://discord.com/channels/$guild/$COORDINATOR_CHANNEL/$message"

@@ -102,8 +102,10 @@ sandbox() {
   git config --global advice.detachedHead false
 
   # nvm lives under HOME unless NVM_DIR says otherwise: the real one must not leak in, nor the
-  # heavy run tests/run holds (team-heavy).
-  unset TEAM_COORDINATOR_CHANNEL CLAUDE_PROJECT_DIR NVM_DIR TEAM_HEAVY_HELD TEAM_HEAVY_WAIT_MINUTES
+  # heavy run tests/run holds (team-heavy), nor the role and task of the session running the suite
+  # (worker_refusal).
+  unset TEAM_COORDINATOR_CHANNEL TEAM_INTERVIEW_CHANNEL CLAUDE_PROJECT_DIR NVM_DIR TEAM_HEAVY_HELD TEAM_HEAVY_WAIT_MINUTES
+  unset AGENT_TEAM_ROLE AGENT_TEAM_TASK
   guard_sandbox
 }
 
@@ -392,13 +394,30 @@ steal_lease() {
   TEAM_LEASE_TTY=$tty on_machine "$1" "$REPO_ROOT/bin/team-lease" take --steal >/dev/null
 }
 
-# Whether one of the settings file <file>'s Bash deny rules matches <command>, each * in a rule
-# matching anything: denied_in <file> <command>
+# The texts Claude Code matches a Bash deny or ask rule against for <command>, one per line: the
+# command, the command past its leading variable assignments, and that with its first word's
+# directory dropped, so a rule naming a bare command also matches it run by path (rQ, eyt and V$
+# in Claude Code 2.1.312; allow rules get none but the first): deny_forms <command>
+deny_forms() {
+  local command=$1
+  printf '%s\n' "$1"
+  while [[ $command =~ ^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+(.*)$ ]]; do command=${BASH_REMATCH[1]}; done
+  [[ $command == "$1" ]] || printf '%s\n' "$command"
+  if [[ $command =~ ^[^[:space:]]*/([^[:space:]/]+)(.*)$ ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+  fi
+}
+
+# Whether one of the settings file <file>'s Bash deny rules matches <command> in one of its
+# deny_forms, each * in a rule matching anything: denied_in <file> <command>
 denied_in() {
-  local pattern
+  local pattern form forms
+  forms=$(deny_forms "$2")
   while IFS= read -r pattern; do
-    # shellcheck disable=SC2053 # the rule is a glob
-    [[ $2 == $pattern ]] && return 0
+    while IFS= read -r form; do
+      # shellcheck disable=SC2053 # the rule is a glob
+      [[ $form == $pattern ]] && return 0
+    done <<<"$forms"
   done < <(jq -r '.permissions.deny[] | select(startswith("Bash(")) | .[5:-1]' "$1")
   return 1
 }

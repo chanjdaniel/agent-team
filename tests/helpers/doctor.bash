@@ -47,8 +47,9 @@ declare -gA FORMAT=(
 # Set up the doctor's machine (team-doctor*.bats' every test starts here): home-pc holds the lease
 # with its heartbeat enabled, every tool answers nothing yet (tools_at gives them versions), the
 # team's Claude config and plugins are installed, so are the pinned MCP servers, every secret is
-# in place, the gate's opencode wrapper is installed and config.yaml runs the gate on it, two
-# projects are registered and cloned as the bootstrap clones them,
+# in place (access.json letting only Daniel's fixture id in #coordinator), the gate's opencode
+# wrapper is installed and config.yaml runs the gate on it, two projects are registered and
+# cloned as the bootstrap clones them,
 # ~/.config/agent-team/home names the team home, and its core.hooksPath the code's records-git;
 # slots.json sets a cap of 10, and a reading of the machine's load was just taken.
 doctor_machine() {
@@ -159,6 +160,11 @@ EOF
     echo "TOKEN=dummy-secret-value" >"$HOME/$target"
     chmod 600 "$HOME/$target"
   done < <(jq -r '.secrets[] | select(.enabled != false) | .target' "$TEAM_HOME/machine/secrets.json")
+  access_json "[\"$DANIEL_ID\"]" "[\"$DANIEL_ID\"]"
+  # The bot token is the one line the Discord API reads; the interview channel lets the bot in.
+  echo "DISCORD_BOT_TOKEN=$FAKE_DISCORD_TOKEN" >"$HOME/.claude/channels/discord/.env"
+  export TEAM_INTERVIEW_CHANNEL=$INTERVIEW_ID
+  interview_server "$(interview_bits 10 16 35 38)" '[]'
   export TEAM_1PASSWORD_APP=$BATS_TEST_TMPDIR/1Password
   touch "$TEAM_1PASSWORD_APP"
   # The Docker daemon answers, and a browser is installed.
@@ -247,10 +253,19 @@ leased_slots() {
   done | jq -s . >"$STUB_FIXTURES/pool.json"
 }
 
-# GitHub's API answers HEAD with a Date header <seconds> away from this clock.
+# GitHub's API answers HEAD with a Date header <seconds> away from this clock; the Discord API
+# answers a GET of <path> with $STUB_FIXTURES/discord/<path>.json (interview_server's), and 404
+# without one.
 clock_offset() {
   echo "$1" >"$STUB_FIXTURES/clock-offset"
   stub_script curl <<'EOF'
+url=${*: -1}
+if [[ $url == https://discord.com/api/v10/* ]]; then
+  discord=$STUB_FIXTURES/discord/${url#https://discord.com/api/v10/}.json
+  if [[ -f $discord ]]; then cat "$discord"; exit 0; fi
+  echo "curl: (22) The requested URL returned error: 404" >&2
+  exit 22
+fi
 offset=$(cat "$STUB_FIXTURES/clock-offset")
 printf 'HTTP/2 200\r\ndate: %s\r\nserver: github.com\r\n\r\n' \
   "$(LC_ALL=C date -u -d "@$(($(date +%s) + offset))" '+%a, %d %b %Y %H:%M:%S GMT')"
@@ -334,6 +349,43 @@ secret_ids() {
 line_of() {
   # shellcheck disable=SC2154 # bats' run sets output
   grep -E "^(PASS|WARN|FAIL) $1: " <<<"$output"
+}
+
+# The Discord plugin's access.json, as /discord:access writes it, with the top-level allowFrom
+# <allow> and #coordinator's group allowFrom <group> (JSON arrays): access_json <allow> <group>.
+# Daniel's fixture id is DANIEL_ID, another member's OTHER_ID.
+# shellcheck disable=SC2034 # read by the tests
+DANIEL_ID=700000000000000001 OTHER_ID=700000000000000002
+access_json() {
+  jq -n --argjson allow "$1" --argjson group "$2" '{dmPolicy: "allowlist", allowFrom: $allow,
+    groups: {"1562486564871995482": {requireMention: false, allowFrom: $group}}, pending: {}}' \
+    >"$HOME/.claude/channels/discord/access.json"
+}
+
+# The interview channel's fixture ids: its own, its server's (also @everyone's role), the bot's
+# and the bot's role.
+# shellcheck disable=SC2034 # read by the tests
+INTERVIEW_ID=700000000000000040 GUILD_ID=700000000000000041 BOT_ID=700000000000000042 BOT_ROLE=700000000000000043
+
+# The permission number with each bit <n> set: interview_bits <n>...
+interview_bits() {
+  local bits=0 n
+  for n; do bits=$((bits | (1 << n))); done
+  echo "$bits"
+}
+
+# The Discord server the doctor's interview channel line reads: the bot's role has the permissions
+# <role perms> (a number), @everyone none, and the channel the overwrites <overwrites> (a JSON
+# array): interview_server <role perms> <overwrites>
+interview_server() {
+  local api=$STUB_FIXTURES/discord
+  mkdir -p "$api/channels" "$api/users" "$api/guilds/$GUILD_ID/members"
+  jq -n --arg id "$INTERVIEW_ID" --arg guild "$GUILD_ID" --argjson overwrites "$2" \
+    '{id: $id, type: 0, guild_id: $guild, name: "interviews", permission_overwrites: $overwrites}' >"$api/channels/$INTERVIEW_ID.json"
+  jq -n --arg id "$BOT_ID" '{id: $id, username: "team-bot", bot: true}' >"$api/users/@me.json"
+  jq -n --arg role "$BOT_ROLE" '{roles: [$role]}' >"$api/guilds/$GUILD_ID/members/$BOT_ID.json"
+  jq -n --arg guild "$GUILD_ID" --arg role "$BOT_ROLE" --arg perms "$1" \
+    '[{id: $guild, name: "@everyone", permissions: "0"}, {id: $role, name: "team-bot", permissions: $perms}]' >"$api/guilds/$GUILD_ID/roles.json"
 }
 
 # The checks of the output, one name per line.

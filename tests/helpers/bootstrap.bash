@@ -210,7 +210,8 @@ install_calls() {
   local cmd
   # brew list only reads what Homebrew has.
   for cmd in brew pacman npm sudo; do stub_calls "$cmd" | { grep -v '^\["list",' || true; } | sed "s/^/$cmd /"; done
-  stub_calls curl | grep -v '"-sSI"' | sed 's/^/curl /' || true
+  # The clock line's HEAD and the interview channel line's Discord reads change nothing.
+  stub_calls curl | grep -v -e '"-sSI"' -e '"https://discord.com/api/v10/' | sed 's/^/curl /' || true
   stub_calls claude | grep -E '^\["plugin","(marketplace","add|install|disable)"' | sed 's/^/claude /' || true
   cat "$STUB_CALLS"/{git-clone,fork-build,no-mistakes-init,nvm,servers-install}.log 2>/dev/null || true
 }

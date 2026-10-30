@@ -17,6 +17,12 @@
       "Bash(@TEAM_CODE@/bin/team-review-status *)",
       "Bash(@TEAM_CODE@/bin/team-review-comment *)",
       "Bash(@TEAM_CODE@/bin/team-checks *)"
+    ],
+    "deny": [
+      "Bash(team-post *)",
+      "Bash(*/bin/team-post *)",
+      "Bash(team-thread wait*)",
+      "Bash(*/bin/team-thread wait*)"
     ]
   },
   "skillOverrides": {
