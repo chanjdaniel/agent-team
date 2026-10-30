@@ -140,9 +140,9 @@ Task directory: `.scratch/task/` in the worktree (excluded from git), for your s
    Fix each finding the coordinator sends you on the branch and push; once they are fixed, or the coordinator says the review passed, go on.
 4. Run `/no-mistakes` with this intent: "T12: rate-limit the applicant sign-in endpoints (per address and per IP, Mongo TTL counters, 429 with Retry-After), so Conventioner cannot be used to flood addresses with sign-in codes or to guess codes." (under a Disclosure section, put in its terms, since the gate drafts the PR's title and body from it)
 5. The PR must target `dev`; if the gate opens it against another branch, retarget it to `dev` and close any duplicate.
-6. When the gate returns checks-passed, repeat step 1; if it merged anything, go back to step 4, so every required check passes on the new head.
+6. When the gate returns checks-passed, repeat step 1; if it merged anything, push and wait for the PR's checks (`gh pr checks <full url> --watch`), noting each file that conflicted: a merge of the base is re-reviewed and checked by CI, never re-gated, so the gate runs again only for a commit of your own, such as the fix to a red check.
    The gate leaves Playwright to CI, so its result arrives with CI's `e2e` checks: treat a red `e2e` as the gate's red.
-7. Then send `T12 PR <full url>` to `coordinator`.
+7. Then send `T12 PR <full url>` to `coordinator`, followed by `merged dev conflicts: <each file that conflicted, or none>` when step 6 merged.
 
 At each gate run's end (it pushed, went red, was aborted, or was stopped once its PR's checks were green), send `T12 DONE gate run=<its id> head=<the full sha it ran on> outcome=<pushed|red|aborted|stopped-green> minutes=<each step's minutes from no-mistakes axi status --run <its id>, as one JSON object>` to `coordinator`, with `cause=<review|notes|gate-finding|load|tooling|base-merge|other>` when the run repeats an earlier one on the same PR.
 
@@ -427,7 +427,13 @@ EOF
     assert_contains "$brief" "if \`git merge-base --is-ancestor origin/$base HEAD\` fails, merge \`origin/$base\` with a merge commit (\`git merge origin/$base\`, never a rebase)"
     assert_contains "$brief" "goes to \`coordinator\` as \`$task QUESTION <the conflict> | options: ...\`"
     assert_contains "$brief" "epeat step 1; if it merged anything"
-    assert_contains "$brief" "so every required check passes on the new head."
+    # A direct PR runs its checks again on the merged head; a gated one's merge is checked by CI,
+    # never re-gated.
+    if [[ $task == T14 ]]; then
+      assert_contains "$brief" "so every required check passes on the new head."
+    else
+      assert_contains "$brief" "a merge of the base is re-reviewed and checked by CI, never re-gated"
+    fi
     assert_contains "$brief" "Never run a command that needs \`sudo\`; send \`$task BLOCKED <the command> needs sudo\` to \`coordinator\` instead."
     # The up-to-date check replaced the old refusal when the base moved.
     [[ $brief != *"merge-tree"* && $brief != *"moved:"* ]]
@@ -785,6 +791,7 @@ Task directory: `.work/task/` in the worktree (excluded from git): `spec.md`, `t
 4. Run the project's local checks (`tests/run`) on the merged head with `@CODE@/bin/team-checks home <full sha>`, which runs them as `team-merge` does, in a fresh detached worktree of that head; fix the branch until all pass on one head.
 5. Push the branch; if the PR body names the head its local checks passed on, bring that line up to date (`gh pr edit https://github.com/chanjdaniel/agent-team/pull/9 --body-file <file>`).
    If `gh pr checks https://github.com/chanjdaniel/agent-team/pull/9` lists any GitHub checks, wait for them (`--watch`); fix a failure and push again, back to step 4.
+   Run no gate: the merge and the fixes of step 3 are re-reviewed, not re-gated.
 6. Send `T14 DONE merged main <the full sha of the head> conflicts: <each file that conflicted, or none>` to `coordinator`, which has a fresh reviewer re-check the merge.
 
 Never run a command that needs `sudo`; send `T14 BLOCKED <the command> needs sudo` to `coordinator` instead.

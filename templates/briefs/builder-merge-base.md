@@ -16,6 +16,7 @@ Task directory: `{{task_dir}}/` in the worktree (excluded from git): `spec.md`, 
 4. Run the project's local checks ({{local_checks}}) on the merged head with `{{team_bin}}/team-checks {{project}} <full sha>`, which runs them as `team-merge` does, in a fresh detached worktree of that head; fix the branch until all pass on one head.
 5. Push the branch; if the PR body names the head its local checks passed on, bring that line up to date (`gh pr edit {{pr}} --body-file <file>`).
    If `gh pr checks {{pr}}` lists any GitHub checks, wait for them (`--watch`); fix a failure and push again, back to step 4.
+   Run no gate: the merge and the fixes of step 3 are re-reviewed, not re-gated.
 6. Send `{{task}} DONE merged {{base}} <the full sha of the head> conflicts: <each file that conflicted, or none>` to `coordinator`, which has a fresh reviewer re-check the merge.
 
 Never run a command that needs `sudo`; send `{{task}} BLOCKED <the command> needs sudo` to `coordinator` instead.
