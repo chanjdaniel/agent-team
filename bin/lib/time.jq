@@ -54,21 +54,28 @@ def park_class:
 # asked with no park standing opens a wait on Daniel that ends once every ask it noted (that one
 # and any asked while it stands) is settled (settles), and an answered ends nothing else. With no
 # park standing, the class is the phase the last marker set: a planner or ops launch planning, a
-# builder's building, a reviewer's review, merge-approved merging, and a done or merged
-# unattributed (the coordinator's turn, or a gate run the ledger did not see). A park logged after
-# the fact with since takes effect at since, held to the span from the event before it to its own
-# ts. The task starts unattributed, and the walk stops at the first event after $end.
+# builder's building, a reviewer's review, merge-approved merging, and a done, merged or review
+# unattributed (the coordinator's turn, or a gate run the ledger did not see); with no park, an ask
+# still open (open, kept across launches) while the phase is unattributed is a wait on Daniel
+# (idle_class). A park logged after the fact with since takes effect at since, held to the span
+# from the event before it to its own ts. The task starts unattributed, and the walk stops at the
+# first event after $end.
 def is_park: IN(.event; "waiting", "blocked", "paused", "held");
+
+# A walk state's class: its park, else a wait on Daniel while no worker is at work and an ask
+# is still open (open), else its phase.
+def idle_class: .park // (if .phase == "unattributed" and (.open | length) > 0 then "wait:daniel" else .phase end);
 def task_segments($end):
   ([.[] | select(.event == "opened") | .ts | fromdate] | first) as $t0
   | (([range(length) as $i | select(.[$i].ts | fromdate > $end) | $i] | first) // length) as $n
-  | reduce .[:$n][] as $e ({phase: "unattributed", park: null, asks: null, cur: $t0, segments: []};
+  | reduce .[:$n][] as $e ({phase: "unattributed", park: null, asks: null, open: [], cur: $t0, segments: []};
       ($e.ts | fromdate) as $ts
       | (if ($e | is_park) and ($e.since | type) == "string" then
           [([(try ($e.since | fromdate) catch $ts), $ts] | min), .cur] | max
         else $ts end) as $t
-      | .segments += [{from: .cur, to: $t, class: (.park // .phase)}]
+      | .segments += [{from: .cur, to: $t, class: idle_class}]
       | .cur = $t
+      | .open = (if $e.event == "asked" then .open + [$e] else .open | map(select(. as $ask | $e | settles($ask) | not)) end)
       | if $e.event == "launch" then
           .park = null | .asks = null
           | .phase = ({planner: "planning", ops: "planning", builder: "building", reviewer: "review"}[$e.role // ""] // .phase)
@@ -81,12 +88,12 @@ def task_segments($end):
             .asks |= map(select(. as $ask | $e | settles($ask) | not))
             | if .asks == [] then .park = null | .asks = null else . end
           else . end)
-          | if $e.event == "done" or $e.event == "merged" then .phase = "unattributed"
+          | if $e.event == "done" or $e.event == "merged" or $e.event == "review" then .phase = "unattributed"
             elif $e.event == "merge-approved" then
               .phase = "merging" | if .park == "wait:daniel" then .park = null | .asks = null else . end
             else . end
         end)
-  | .segments + [{from: .cur, to: $end, class: (.park // .phase)}]
+  | .segments + [{from: .cur, to: $end, class: idle_class}]
   | map(select(.to > .from));
 
 # The task's gate runs as intervals {from, to}: each gate-run ends at its ts and lasts its steps'
@@ -97,9 +104,10 @@ def gate_intervals:
     | select($minutes > 0)
     | (.ts | fromdate) as $t | {from: ($t - $minutes * 60), to: $t}];
 
-# Segments with the time of the gate runs ($runs) taken out of building and unattributed, as gate.
+# Segments with the time of the gate runs ($runs) taken out of building, unattributed and waits on
+# Daniel, as gate: a run is work going on whatever the task waits for.
 def with_gate_runs($runs):
-  map(if IN(.class; "building", "unattributed") then
+  map(if IN(.class; "building", "unattributed", "wait:daniel") then
       . as $s
       | ([$s.from, $s.to] + [$runs[] | .from, .to | select(. > $s.from and . < $s.to)] | unique) as $cuts
       | range(($cuts | length) - 1) as $i
