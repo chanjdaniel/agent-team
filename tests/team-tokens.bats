@@ -641,6 +641,33 @@ tool SendMessage: 1 1 1"
   assert_equal "$output" ""
 }
 
+@test "a turn that ends on an API error reply with no turn_duration waits from there, as wait error, whatever wakes it" {
+  local projects=$HOME/.claude/projects/-home-dan-agent-team--claude-worktrees-1
+  local session=c1000000-0000-4000-8000-000000000000
+  rm -r "$HOME/.claude/projects"
+  mkdir -p "$projects"
+  printf '{"ts":"2026-10-20T09:00:00Z","task":"T1","event":"launch","role":"builder","session":"c1000000","worktree":"/home/dan/agent-team/.claude/worktrees/1","toolkits":[]}\n' >"$TEAM_HOME/ledger.jsonl"
+  # The brief at 10:00:00, the session limit's reply at 10:00:05 and no turn_duration, then the
+  # coordinator's message queued 3 hours later and the turn it starts: model 5 s, then 10800 s
+  # waiting after the error, then model 5 s.
+  jq -nc --arg session "$session" '
+    {type: "user", timestamp: "2026-10-20T10:00:00.000Z", sessionId: $session, message: {content: "CONTENT-brief"}},
+    {type: "assistant", timestamp: "2026-10-20T10:00:05.000Z", sessionId: $session, isApiErrorMessage: true,
+     message: {model: "<synthetic>", stop_reason: "stop_sequence", content: [{type: "text", text: "CONTENT-limit"}]}},
+    {type: "queue-operation", operation: "enqueue", timestamp: "2026-10-20T13:00:05.000Z", sessionId: $session,
+     content: "<cross-session-message from=\"coordinator\">CONTENT-resume</cross-session-message>"},
+    {type: "user", timestamp: "2026-10-20T13:00:05.000Z", sessionId: $session,
+     message: {content: "<cross-session-message from=\"coordinator\">CONTENT-resume</cross-session-message>"}},
+    {type: "assistant", timestamp: "2026-10-20T13:00:10.000Z", sessionId: $session, requestId: "req_2",
+     message: {stop_reason: "end_turn", content: [{type: "text", text: "CONTENT-done"}]}},
+    {type: "system", subtype: "turn_duration", timestamp: "2026-10-20T13:00:10.000Z", sessionId: $session}' >"$projects/$session.jsonl"
+  run_bin -0 team-tokens time
+  assert_equal "$(jq -r '.keys | to_entries[] | "\(.key): \(.value.seconds + 0) \(.value.calls) \(.value.longest + 0)"' <<<"$output")" \
+    "model: 10 1 5
+wait error: 10800 1 10800"
+  assert_equal "$(jq -c .waits <<<"$output")" '[{"from":"2026-10-20T10:00:05.000Z","to":"2026-10-20T13:00:05.000Z","key":"wait error"}]'
+}
+
 @test "a call is named by its command's first program that is not plumbing, with its subcommand words" {
   # Each command, then the name it gets.
   local cases=(
@@ -667,6 +694,14 @@ tool SendMessage: 1 1 1"
     '../CONTENT/run.sh' 'other'
     'cd CONTENT-dir' 'cd'
     '' 'other'
+    'git show deadbeef1234' 'git show'
+    'git diff main' 'git diff'
+    'git grep searchterm' 'git grep'
+    'docker exec web-1 sh' 'docker exec'
+    'git stash pop' 'git stash pop'
+    'uv run pytest -x' 'uv run pytest'
+    'team-checks agent-team cafe123' 'team-checks agent-team'
+    'gh-axi pr checks 35' 'gh-axi pr checks'
   )
   local projects=$HOME/.claude/projects/-home-dan-agent-team--claude-worktrees-1 i session expected=
   rm -r "$HOME/.claude/projects"

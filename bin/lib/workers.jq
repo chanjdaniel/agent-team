@@ -13,14 +13,19 @@ def role_rank: .role as $role | [(["builder", "reviewer", "planner", "ops"] | in
 # A lifetime's minutes, unrounded, from its start to its end, or to $hi while it runs.
 def span_minutes($hi): (((if .end then .end | fromdate else $hi end) - (.start | fromdate)) / 60);
 
+# The index of a list of events' first launch of $role, else its length.
+def first_launch($role): . as $events | ([range(length) as $j | select($events[$j] | .event == "launch" and .role == $role) | $j] | first) // length;
+
 # A task's worker lifetimes (input: its events in ledger order, only those at or before $hi): one
 # per launch with a session. Its project is the launch's, else the task's opened; its path the
-# opened's, else "-" (a legacy task); its model the launch's, else "default". It ends at its
-# session's last done (done); else, for a reviewer, at the task's last review after its launch and
-# before the task's next reviewer launch (review); else at the first after its launch of the task's
-# next launch of the same role (replaced), its stowed (stowed) or its closed (closed); else it is
-# running (ended "running", end null). Its rounds are its session's dones, its first done the
-# minutes to the first of them; its phases the minutes per phase of the task's segments (gate runs
+# opened's, else "-" (a legacy task); its model the launch's, else "default". Its rounds are its
+# session's dones and, for a builder, the task's pr and ticket-done events after its launch and
+# before the task's next builder launch (which name no session: ends_worker in ledger.jq); it ends
+# at the last of them (ended done, pr or ticket-done); else, for a reviewer, at the task's last
+# review after its launch and before the task's next reviewer launch (review); else at the first
+# after its launch of the task's next launch of the same role (replaced), its stowed (stowed) or
+# its closed (closed); else it is running (ended "running", end null). Its first done is the
+# minutes to its first round; its phases the minutes per phase of the task's segments (gate runs
 # included) over its span, null for a legacy task. Its segments, those over its span, are for
 # workers_join, which drops them.
 def task_lifetimes($hi):
@@ -32,11 +37,12 @@ def task_lifetimes($hi):
   | select($l.event == "launch" and ($l.session | type) == "string" and $l.session != "")
   | $events[$k + 1:] as $after
   | ($l.ts | fromdate) as $start
-  | [$events[] | select(.event == "done" and .session == $l.session)] as $dones
-  | ((if $dones != [] then {end: $dones[-1].ts, ended: "done"} else null end)
+  | ([$events[] | select(.event == "done" and .session == $l.session)]
+     + (if $l.role == "builder" then [$after[:$after | first_launch("builder")][] | select(.event == "pr" or .event == "ticket-done")] else [] end)
+     | sort_by(.ts)) as $dones
+  | ((if $dones != [] then {end: $dones[-1].ts, ended: $dones[-1].event} else null end)
      // (if $l.role == "reviewer" then
-           ((([range($after | length) as $j | select($after[$j] | .event == "launch" and .role == "reviewer") | $j] | first) // ($after | length)) as $n
-            | [$after[:$n][] | select(.event == "review")] | last | if . then {end: .ts, ended: "review"} else null end)
+           [$after[:$after | first_launch("reviewer")][] | select(.event == "review")] | last | if . then {end: .ts, ended: "review"} else null end
          else null end)
      // ([$after[] | select((.event == "launch" and .role == $l.role) or .event == "stowed" or .event == "closed")] | first
          | if . then {end: .ts, ended: (if .event == "launch" then "replaced" else .event end)} else null end)
@@ -89,26 +95,28 @@ def workers_report($lo; $hi; $task):
 # lifetime its transcript never saw.
 def worker_classes: [
   ["model", "the model's turns"], ["compaction", "compactions"], ["wait:message", "waiting for a message"],
-  ["wait:other", "other waits"], ["checks", "local checks"], ["gate", "the gate"], ["ci", "waiting on CI"],
+  ["wait:other", "other waits"], ["wait:error", "waiting after an API error"], ["checks", "local checks"], ["gate", "the gate"], ["ci", "waiting on CI"],
   ["tests", "tests"], ["stacks", "stacks"], ["browser", "the browser"], ["subagents", "subagents"],
   ["files", "reading and editing"], ["git", "git and GitHub"], ["other", "other commands and tools"],
   ["unseen", "not in the transcript"]
 ];
 
 # A time row's key's class, first match wins, looking through "background " and the key's kind
-# (bash, monitor or tool): model, compaction, the two waits; then a command's: checks (team-checks,
-# or a name naming a linter, formatter or type checker, go vet), gate (no-mistakes, git push no-mistakes),
-# ci (gh pr checks, gh run watch, gh run view), tests (tests/run, bats, playwright, pytest, vitest,
-# jest, go test, cargo test, npm test or npm run test and the like, a program with test in its
-# name), stacks (team-stack, docker), browser (chrome-devtools-axi, team-ui), git (any other git or
-# gh); a tool's: browser (Chrome DevTools' MCP tools), subagents (Agent), files (Read, Edit, Write,
-# Grep, Glob, NotebookEdit); else other.
+# (bash, monitor or tool): model, compaction, the three waits; then a command's: checks
+# (team-checks, or a name naming a linter, formatter or type checker, go vet), gate (no-mistakes,
+# git push no-mistakes), ci (gh or gh-axi pr checks, run watch or run view), tests (tests/run,
+# bats, playwright, pytest, vitest, jest, go test, cargo test, npm test or npm run test and the
+# like, a program with test in its name), stacks (team-stack, docker), browser
+# (chrome-devtools-axi, team-ui), git (any other git, gh or gh-axi); a tool's: browser (Chrome
+# DevTools' MCP tools), subagents (Agent), files (Read, Edit, Write, Grep, Glob, NotebookEdit);
+# else other.
 def key_class:
   sub("^background "; "") as $key
   | ($key | capture("^(?<kind>bash|monitor|tool) (?<name>.+)$") // {kind: null, name: $key}) as {$kind, $name}
   | ($name | split(" ")) as $words
   | if $kind == null then
-      {"model": "model", "compaction": "compaction", "wait message": "wait:message", "wait other": "wait:other"}[$key] // "other"
+      {"model": "model", "compaction": "compaction", "wait message": "wait:message", "wait other": "wait:other",
+       "wait error": "wait:error"}[$key] // "other"
     elif $kind == "tool" then
       if $name | test("chrome[-_]devtools"; "i") then "browser"
       elif $name == "Agent" then "subagents"
@@ -116,13 +124,13 @@ def key_class:
       else "other" end
     elif $words[0] == "team-checks" or ($name | test("lint|format|fmt|type-?check|tsc|eslint|prettier|shellcheck|ruff|mypy|^go vet")) then "checks"
     elif $words[0] == "no-mistakes" or $name == "git push no-mistakes" then "gate"
-    elif IN($name; "gh pr checks", "gh run watch", "gh run view") then "ci"
+    elif IN($name; "gh pr checks", "gh run watch", "gh run view", "gh-axi pr checks", "gh-axi run watch", "gh-axi run view") then "ci"
     elif any($words[]; IN(.; "bats", "playwright", "pytest", "vitest", "jest"))
       or ($name | test("^((go|cargo|npm|pnpm|yarn|bun) test|(npm|pnpm|yarn|bun) run test)"))
       or ($words[0] != "test" and ($words[0] | test("test"))) then "tests"
     elif IN($words[0]; "team-stack", "docker") then "stacks"
     elif IN($words[0]; "chrome-devtools-axi", "team-ui") then "browser"
-    elif IN($words[0]; "git", "gh") then "git"
+    elif IN($words[0]; "git", "gh", "gh-axi") then "git"
     else "other" end;
 
 # A time row's time ("2026-10-30T07:02:30.095Z", its fraction optional) in seconds since the epoch.

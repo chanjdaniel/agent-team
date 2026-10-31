@@ -28,7 +28,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
     - `tools.jq`: turns `tools.lock` into each tool's pin and install command for a machine.
     - `tools.lock`: the tools `team-doctor` checks, pinned or with a minimum, and their source per OS (for treehouse and no-mistakes, a GitHub release with each archive's checksum, or a fork's commit).
     - `vendor/git-filter-repo/`: git filter-repo 2.47.0, vendored with its MIT license.
-    - `workers.jq`: `team-time`'s worker lifetimes, from each launch to its done, review, replacement, stow or close, with their averages by role, path, project and model, the longest, the running, and the classes and breakdown of their time rows.
+    - `workers.jq`: `team-time`'s worker lifetimes, from each launch to its done, pr or ticket-done, review, replacement, stow or close, with their averages by role, path, project and model, the longest, the running, and the classes and breakdown of their time rows.
 - `coordinator.settings.json`: the coordinator's own settings: Discord, its hooks and its denials.
 - `LICENSE`: the Apache License 2.0; vendored bats-core and git filter-repo keep their own.
 - `plugins/coordinator-skills/`: skills loaded only into the coordinator by `bin/claude-coordinator`.

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Tell where the tasks' time went, from the ledger: hours per task and per phase, and the counts.
+# Tell where the tasks' and the workers' time went: hours per task and per phase and the counts,
+# from the ledger; each worker's lifetime, from the ledger; and where it went, from the time rows.
 #
 # Usage: team-time [--since <ISO>] [--until <ISO>] [--task T<n>] [--json]
 # Measures each task team-time can place, one with an opened event (legacy tasks are left out),
@@ -33,13 +34,16 @@
 # event that settles it, with the median and 90th percentile minutes by nearest rank; and each
 # done's seconds to the task's next event.
 # Then each worker's lifetime, from the ledger's events up to --until, legacy tasks included: one
-# per launch with a session, from its launch to its session's last done (ended done); else, for a
-# reviewer, to the task's last review before its next reviewer launch (review); else to the first
-# after it of the task's next launch of the same role (replaced), its stowed (stowed) or its closed
-# (closed); else it is running. Its project is the launch's, else the task's; its path the task's,
-# else "-"; its model the launch's, else "default"; its rounds are its session's dones, and its
-# phases its task's phase minutes over its span (null for a legacy task). A lifetime is in the
-# window when it ended in it; one running at --until is listed apart with its age, in no average.
+# per launch with a session. Its rounds are its session's dones and, for a builder, the task's pr
+# and ticket-done events after its launch and before the task's next builder launch, which name no
+# session (a delivering builder's PR <url> is logged as a pr); it runs from its launch to its last
+# round (ended done, pr or ticket-done); else, for a reviewer, to the task's last review before its
+# next reviewer launch (review); else to the first after it of the task's next launch of the same
+# role (replaced), its stowed (stowed) or its closed (closed); else it is running. Its project is
+# the launch's, else the task's; its path the task's, else "-"; its model the launch's, else
+# "default"; its first done the minutes to its first round; its phases its task's phase minutes
+# over its span (null for a legacy task). A lifetime is in the window when it ended in it; one
+# running at --until is listed apart with its age, in no average.
 # The averages, over the window's lifetimes in minutes: workers, mean, median, 90th percentile by
 # nearest rank and longest, by role, by role and path, by role and project, by role and model; then
 # the ten longest. A session in a later round after --until counts again, longer, in a later window.
@@ -48,11 +52,12 @@
 # --until <until> once, and not at all with no lifetime: a lifetime's rows are all those whose
 # session begins with its own, so its transcript time can run past its end. Each row's key is
 # classed when the report runs, first match wins, looking through "background " and its kind:
-# model, compaction, wait:message, wait:other; for a command checks (team-checks, or a name naming
-# a linter, formatter or type checker, go vet), gate (no-mistakes, git push no-mistakes), ci (gh pr
-# checks, gh run watch, gh run view), tests (tests/run, bats, playwright, pytest, vitest, jest, go,
-# cargo, npm, pnpm, yarn or bun test, npm run test... and the like, a program named with test),
-# stacks (team-stack, docker), browser (chrome-devtools-axi, team-ui), git (any other git or gh);
+# model, compaction, wait:message, wait:other, wait:error; for a command checks (team-checks, or a
+# name naming a linter, formatter or type checker, go vet), gate (no-mistakes, git push
+# no-mistakes), ci (gh or gh-axi pr checks, run watch or run view), tests (tests/run, bats,
+# playwright, pytest, vitest, jest, go, cargo, npm, pnpm, yarn or bun test, npm run test... and the
+# like, a program named with test), stacks (team-stack, docker), browser (chrome-devtools-axi,
+# team-ui), git (any other git, gh or gh-axi);
 # for a tool browser (Chrome DevTools'), subagents (Agent), files (Read, Edit, Write, Grep, Glob,
 # NotebookEdit); else other. A lifetime's unseen minutes are its minutes less its transcript's,
 # when more: time before its transcript's first line or after its last, as a dead or stuck session

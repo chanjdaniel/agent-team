@@ -353,19 +353,20 @@ t90_hours() {
 # to its done at 05:20 (20); reviewer r1000003 on claude-sonnet-5-5, 07:00 to its done at 07:30
 # (30).
 # T101 (conventioner small): builder b1010001 on claude-sonnet-5-5, 10:00 replaced at 11:00
-# (60); builder b1010002 11:00 to its done at 11:46 (46); builder b1010003 12:00 to the close at
-# 13:00 (60).
+# (60); builder b1010002 11:00 to its done at 11:46 (46), the task's ticket-done at 11:20 its
+# first round (20); builder b1010003 12:00 to the task's pr at 12:40 (40, 1 round), not to the
+# close at 13:00.
 # T99, legacy (no opened): builder b0990001 of agent-team, 12:00 to its done at 12:30 (30, path
 # "-", phases null). T97, legacy: a launch with no session, no lifetime.
 # T102 (agent-team bug): planner p1020001 14:00 to the stow at 15:00 (60); builder b1020001 from
 # 16:00, running at 20:00 (240 so far, building), its done at 21:00 after the window.
-# Minutes by role: builder 300, 60, 46, 60, 30; reviewer 90, 40, 20, 30; planner 30, 60.
+# Minutes by role: builder 300, 60, 46, 40, 30; reviewer 90, 40, 20, 30; planner 30, 60.
 workers_json() {
   cp "$BATS_TEST_DIRNAME/fixtures/ledger-workers.jsonl" "$TEAM_HOME/ledger.jsonl"
   time_json --until 2026-10-28T20:00:00Z "$@"
 }
 
-@test "each worker's lifetime runs from its launch to its last done, its review, its replacement, the stow or the close" {
+@test "each worker's lifetime runs from its launch to its last done, pr or ticket-done, its review, its replacement, the stow or the close" {
   local json
   json=$(workers_json --since 2026-10-28T00:00:00Z)
   assert_equal "$(jq -r '.workers.lifetimes[] | [.task, .role, .session, .project, .path, .model, .start, .end, .ended, .minutes, .rounds, .first_done_minutes] | map(. // "null") | @tsv' <<<"$json")" "$(
@@ -377,8 +378,8 @@ workers_json() {
       $'T100\treviewer\tr1000002\tagent-team\tfeature\tdefault\t2026-10-28T05:00:00Z\t2026-10-28T05:20:00Z\tdone\t20\t1\t20' \
       $'T100\treviewer\tr1000003\tagent-team\tfeature\tclaude-sonnet-5-5\t2026-10-28T07:00:00Z\t2026-10-28T07:30:00Z\tdone\t30\t1\t30' \
       $'T101\tbuilder\tb1010001\tconventioner\tsmall\tclaude-sonnet-5-5\t2026-10-28T10:00:00Z\t2026-10-28T11:00:00Z\treplaced\t60\t0\tnull' \
-      $'T101\tbuilder\tb1010002\tconventioner\tsmall\tdefault\t2026-10-28T11:00:00Z\t2026-10-28T11:46:00Z\tdone\t46\t1\t46' \
-      $'T101\tbuilder\tb1010003\tconventioner\tsmall\tdefault\t2026-10-28T12:00:00Z\t2026-10-28T13:00:00Z\tclosed\t60\t0\tnull' \
+      $'T101\tbuilder\tb1010002\tconventioner\tsmall\tdefault\t2026-10-28T11:00:00Z\t2026-10-28T11:46:00Z\tdone\t46\t2\t20' \
+      $'T101\tbuilder\tb1010003\tconventioner\tsmall\tdefault\t2026-10-28T12:00:00Z\t2026-10-28T12:40:00Z\tpr\t40\t1\t40' \
       $'T99\tbuilder\tb0990001\tagent-team\t-\tdefault\t2026-10-28T12:00:00Z\t2026-10-28T12:30:00Z\tdone\t30\t1\t30' \
       $'T102\tplanner\tp1020001\tagent-team\tbug\tdefault\t2026-10-28T14:00:00Z\t2026-10-28T15:00:00Z\tstowed\t60\t0\tnull'
   )"
@@ -396,7 +397,7 @@ workers_json() {
     "r0980001": {"review": 90}, "p1000001": {"planning": 30},
     "b1000001": {"building": 60, "gate": 20, "review": 60, "unattributed": 160},
     "r1000001": {"review": 40}, "r1000002": {"review": 20}, "r1000003": {"review": 30},
-    "b1010001": {"building": 60}, "b1010002": {"building": 46}, "b1010003": {"building": 60},
+    "b1010001": {"building": 60}, "b1010002": {"building": 46}, "b1010003": {"building": 40},
     "b0990001": null, "p1020001": {"planning": 60}}')"
   assert_equal "$(jq -c '.workers.lifetimes[] | select(.session == "b1000001") | [.minutes, ([.phases[]] | add)]' <<<"$json")" '[300,300]'
 }
@@ -413,25 +414,25 @@ workers_json() {
   local json
   json=$(workers_json --since 2026-10-28T00:00:00Z)
   assert_equal "$(jq -r '.workers.stats.by_role[] | [.role, .workers, .mean, .median, .p90, .longest] | @tsv' <<<"$json")" "$(
-    printf '%s\n' $'builder\t5\t99.2\t60\t300\t300' $'reviewer\t4\t45\t30\t90\t90' $'planner\t2\t45\t30\t60\t60'
+    printf '%s\n' $'builder\t5\t95.2\t46\t300\t300' $'reviewer\t4\t45\t30\t90\t90' $'planner\t2\t45\t30\t60\t60'
   )"
   assert_equal "$(jq -r '.workers.stats.by_role_path[] | [.role, .path, .workers, .mean, .median, .p90, .longest] | @tsv' <<<"$json")" "$(
-    printf '%s\n' $'builder\tsmall\t3\t55.3\t60\t60\t60' $'builder\t-\t1\t30\t30\t30\t30' $'builder\tfeature\t1\t300\t300\t300\t300' \
+    printf '%s\n' $'builder\tsmall\t3\t48.7\t46\t60\t60' $'builder\t-\t1\t30\t30\t30\t30' $'builder\tfeature\t1\t300\t300\t300\t300' \
       $'reviewer\tfeature\t3\t30\t30\t40\t40' $'reviewer\tsmall\t1\t90\t90\t90\t90' \
       $'planner\tbug\t1\t60\t60\t60\t60' $'planner\tfeature\t1\t30\t30\t30\t30'
   )"
   assert_equal "$(jq -r '.workers.stats.by_role_project[] | [.role, .project, .workers, .mean, .median, .p90, .longest] | @tsv' <<<"$json")" "$(
-    printf '%s\n' $'builder\tconventioner\t3\t55.3\t60\t60\t60' $'builder\tagent-team\t2\t165\t30\t300\t300' \
+    printf '%s\n' $'builder\tconventioner\t3\t48.7\t46\t60\t60' $'builder\tagent-team\t2\t165\t30\t300\t300' \
       $'reviewer\tagent-team\t3\t30\t30\t40\t40' $'reviewer\tconventioner\t1\t90\t90\t90\t90' \
       $'planner\tagent-team\t2\t45\t30\t60\t60'
   )"
   assert_equal "$(jq -r '.workers.stats.by_role_model[] | [.role, .model, .workers, .mean, .median, .p90, .longest] | @tsv' <<<"$json")" "$(
-    printf '%s\n' $'builder\tdefault\t4\t109\t46\t300\t300' $'builder\tclaude-sonnet-5-5\t1\t60\t60\t60\t60' \
+    printf '%s\n' $'builder\tdefault\t4\t104\t40\t300\t300' $'builder\tclaude-sonnet-5-5\t1\t60\t60\t60\t60' \
       $'reviewer\tdefault\t3\t50\t40\t90\t90' $'reviewer\tclaude-sonnet-5-5\t1\t30\t30\t30\t30' \
       $'planner\tdefault\t2\t45\t30\t60\t60'
   )"
   assert_equal "$(jq -c '.workers.longest' <<<"$json")" \
-    '["b1000001","r0980001","b1010001","b1010003","p1020001","b1010002","r1000001","p1000001","r1000003","b0990001"]'
+    '["b1000001","r0980001","b1010001","p1020001","b1010002","r1000001","b1010003","p1000001","r1000003","b0990001"]'
 }
 
 @test "--task keeps that task's workers alone" {
@@ -448,8 +449,8 @@ workers_json() {
   run_bin -0 team-time --since 2026-10-28T00:00:00Z --until 2026-10-28T20:00:00Z
   assert_contains "$output" "Worker lifetimes ended in the window: 11 (5 builders, 4 reviewers, 2 planners), 1 running"
   grep -Eq '^role +path +workers +mean +median +p90 +longest$' <<<"$output"
-  grep -Eq '^builder +all +5 +99\.2 +60\.0 +300\.0 +300\.0$' <<<"$output"
-  grep -Eq '^builder +small +3 +55\.3 +60\.0 +60\.0 +60\.0$' <<<"$output"
+  grep -Eq '^builder +all +5 +95\.2 +46\.0 +300\.0 +300\.0$' <<<"$output"
+  grep -Eq '^builder +small +3 +48\.7 +46\.0 +60\.0 +60\.0$' <<<"$output"
   grep -Eq '^role +project +workers +mean +median +p90 +longest$' <<<"$output"
   grep -Eq '^builder +agent-team +2 +165\.0 +30\.0 +300\.0 +300\.0$' <<<"$output"
   grep -Eq '^role +model +workers +mean +median +p90 +longest$' <<<"$output"
@@ -457,6 +458,7 @@ workers_json() {
   grep -Eq '^task +role +session +path +project +minutes +ended +rounds +first done +top sinks$' <<<"$output"
   grep -Eq '^T100 +builder +b1000001 +feature +agent-team +300\.0 +done +3 +60\.0 +-$' <<<"$output"
   grep -Eq '^T100 +reviewer +r1000001 +feature +agent-team +40\.0 +review +0 +- +-$' <<<"$output"
+  grep -Eq '^T101 +builder +b1010003 +small +conventioner +40\.0 +pr +1 +40\.0 +-$' <<<"$output"
   grep -Eq '^task +role +session +minutes so far$' <<<"$output"
   grep -Eq '^T102 +builder +b1020001 +240\.0$' <<<"$output"
   # The task tables come first, unchanged.
@@ -560,7 +562,7 @@ time_rows() {
   mkdir -p "$HOME/.config/agent-team" "$TEAM_HOME/usage/home-pc/time"
   echo home-pc >"$HOME/.config/agent-team/machine"
   # One row for b1010002 whose keys take 15 minutes down to 1, one key per class; and one for
-  # b1010003 whose keys take 6 seconds to 48, less than any of those.
+  # b1010003 whose keys take 5 seconds to 55, less than any of those.
   jq -cn '[["model"], ["compaction"], ["wait message"], ["wait other"], ["background bash team-checks no-mistakes"],
       ["monitor npx eslint"], ["bash git push no-mistakes"], ["background bash gh pr checks"],
       ["bash npm run test:e2e"], ["bash docker compose"], ["tool mcp__chrome-devtools__take_screenshot"],
@@ -570,10 +572,11 @@ time_rows() {
        keys: ([range($keys | length) as $i | {($keys[$i][0]): {seconds: ((15 - $i) * 60), calls: 1, longest: ((15 - $i) * 60)}}] | add),
        waits: []},
     (["monitor npx eslint", "bash gofmt", "bash ./scripts/run-tests.sh", "bash chrome-devtools-axi screenshot",
-      "bash team-stack up", "bash gh run watch", "bash no-mistakes axi run", "tool Read"] as $keys
+      "bash team-stack up", "bash gh run watch", "bash no-mistakes axi run", "tool Read", "wait error",
+      "bash gh-axi pr checks", "bash gh-axi pr view"] as $keys
     | {day: "2026-10-28", machine: "home-pc", session: "b1010003-0000-4000-8000-000000000001",
-       first: "2026-10-28T12:00:00.000Z", last: "2026-10-28T12:03:36.000Z",
-       keys: ([range($keys | length) as $i | {($keys[$i]): {seconds: (($i + 1) * 6), calls: 1, longest: (($i + 1) * 6)}}] | add),
+       first: "2026-10-28T12:00:00.000Z", last: "2026-10-28T12:05:30.000Z",
+       keys: ([range($keys | length) as $i | {($keys[$i]): {seconds: (($i + 1) * 5), calls: 1, longest: (($i + 1) * 5)}}] | add),
        waits: []})' >"$TEAM_HOME/usage/home-pc/time/2026-10-28.jsonl"
   local json
   json=$(workers_json --task T101)
@@ -585,7 +588,7 @@ time_rows() {
       $'bash gh pr create\tgit' $'bash curl\tother'
   )"
   assert_equal "$(jq -c '.workers.lifetimes[] | select(.session == "b1010003") | .transcript.classes' <<<"$json")" \
-    '{"checks":0.3,"gate":0.7,"ci":0.6,"tests":0.3,"stacks":0.5,"browser":0.4,"files":0.8}'
+    '{"wait:error":0.8,"checks":0.3,"gate":0.6,"ci":1.3,"tests":0.3,"stacks":0.4,"browser":0.3,"files":0.7,"git":0.9}'
   # Its 120 minutes of transcript are past its 46 of lifetime: none unseen.
   assert_equal "$(jq -c '.workers.lifetimes[] | select(.session == "b1010002") | .transcript | [.minutes, .unseen]' <<<"$json")" '[120,0]'
 }

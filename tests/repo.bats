@@ -193,13 +193,13 @@ MACHINE_DOCS=(README.md SETUP.md sops/machine-setup.md sops/portability.md)
   ((found >= 5))
 }
 
-# The jq programs in <root>/bin (its .jq modules aside) that include a module of <root>/bin/lib
-# without each module that one includes, directly or not, after it on the same line, as
-# "<path>:<line>: <module> needs <dependency>". jq 1.8.2 loads a module before the ones it
-# includes, unless the program loaded them first, and so frees the definitions only another module
-# calls, which the calls then read after they are freed (jqlang/jq#3620, fixed after 1.8.2); a
-# program's includes load last first, so a dependency listed after its module loads before it:
-# jq_include_breaks <root>
+# The jq programs in <root>'s bin, tests and toolkits (bin/lib's .jq modules and node_modules
+# aside) that include a module of <root>/bin/lib without each module that one includes, directly
+# or not, after it on the same line, as "<path>:<line>: <module> needs <dependency>". jq 1.8.2
+# loads a module before the ones it includes, unless the program loaded them first, and so frees
+# the definitions only another module calls, which the calls then read after they are freed
+# (jqlang/jq#3620, fixed after 1.8.2); a program's includes load last first, so a dependency
+# listed after its module loads before it: jq_include_breaks <root>
 jq_include_breaks() {
   local root=$1 file m d e hit path line text rest changed=1
   local -A deps=()
@@ -224,10 +224,10 @@ jq_include_breaks() {
       [[ -n ${deps[$m]} && $text == *"include \"$m\""* ]] || continue
       rest=${text#*"include \"$m\""}
       for d in ${deps[$m]}; do
-        [[ $rest == *"include \"$d\""* ]] || echo "${path#"$root"/}:$line: $m needs $d"
+        [[ $rest == *"include \"$d\""* ]] || echo "$path:$line: $m needs $d"
       done
     done
-  done < <(grep -rn --exclude='*.jq' 'include "' "$root/bin" | sort)
+  done < <(cd "$root" && grep -rn --exclude='*.jq' --exclude-dir=node_modules 'include "' bin tests toolkits 2>/dev/null | sort)
 }
 
 @test "every jq program that includes a module of bin/lib includes the modules it includes after it, for jq 1.8.2" {
@@ -246,10 +246,16 @@ jq -n -L lib 'include "c"; include "b"; include "a"; a'
 jq -n -L lib 'include "b"; b'
 jq -n -L lib 'include "c"; c'
 EOF
+  mkdir -p "$root/tests/helpers" "$root/toolkits/x/scripts" "$root/toolkits/x/node_modules/y"
+  printf '%s\n' "jq -n -L \"\$lib\" 'include \"b\"; b'" >"$root/tests/helpers/x.bash"
+  printf '%s\n' "jq -n -L \"\$lib\" 'include \"a\"; include \"c\"; a'" >"$root/toolkits/x/scripts/run"
+  printf '%s\n' "jq -n 'include \"b\"; b'" >"$root/toolkits/x/node_modules/y/z"
   assert_equal "$(jq_include_breaks "$root" | sort)" "bin/tool:2: a needs b
 bin/tool:2: a needs c
 bin/tool:2: b needs c
-bin/tool:3: b needs c"
+bin/tool:3: b needs c
+tests/helpers/x.bash:1: b needs c
+toolkits/x/scripts/run:1: a needs b"
 }
 
 # Only Daniel's own terminal runs op (team-secrets restore and save), and only the ops role's

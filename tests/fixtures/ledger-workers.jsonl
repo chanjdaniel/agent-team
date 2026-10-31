@@ -29,10 +29,12 @@
 {"ts":"2026-10-28T10:00:00Z","task":"T101","event":"opened","project":"conventioner","path":"small","type":"feat","title":"T101 fixture","branch":"feat/T101-fixture","base":"dev","base_sha":"0123456789abcdef","worktree":"/home/danielc/wt/T101"}
 {"ts":"2026-10-28T10:00:00Z","task":"T101","event":"launch","role":"builder","session":"b1010001","worktree":"/home/danielc/wt/x","toolkits":[],"model":"claude-sonnet-5-5"}
 {"ts":"2026-10-28T11:00:00Z","task":"T101","event":"launch","role":"builder","session":"b1010002","worktree":"/home/danielc/wt/x","toolkits":[]}
+{"ts":"2026-10-28T11:20:00Z","task":"T101","event":"ticket-done","ticket":"01","commits":["ccccccc"]}
 {"ts":"2026-10-28T11:46:00Z","task":"T101","event":"done","role":"builder","session":"b1010002"}
 {"ts":"2026-10-28T12:00:00Z","task":"T101","event":"launch","role":"builder","session":"b1010003","worktree":"/home/danielc/wt/x","toolkits":[]}
 {"ts":"2026-10-28T12:00:00Z","task":"T99","event":"launch","role":"builder","session":"b0990001","worktree":"/home/danielc/wt/x","toolkits":[],"project":"agent-team"}
 {"ts":"2026-10-28T12:30:00Z","task":"T99","event":"done","role":"builder","session":"b0990001"}
+{"ts":"2026-10-28T12:40:00Z","task":"T101","event":"pr","url":"https://github.com/chanjdaniel/Conventioner/pull/12","head":"ddddddd"}
 {"ts":"2026-10-28T13:00:00Z","task":"T101","event":"closed","archive":[],"returned":[],"kept":[]}
 {"ts":"2026-10-28T14:00:00Z","task":"T102","event":"opened","project":"agent-team","path":"bug","type":"feat","title":"T102 fixture","branch":"feat/T102-fixture","base":"dev","base_sha":"0123456789abcdef","worktree":"/home/danielc/wt/T102"}
 {"ts":"2026-10-28T14:00:00Z","task":"T102","event":"launch","role":"planner","session":"p1020001","worktree":"/home/danielc/wt/x","toolkits":[]}

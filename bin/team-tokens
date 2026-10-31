@@ -169,15 +169,18 @@
 #                    with several outstanding, the one whose result comes first, so parallel calls
 #                    share the wall time and the slowest gets the tail
 #   model            a turn running with no call outstanding: the request and the reply
-#   background <key> idle, from a turn's end (its turn_duration line) to a wake (a user line that
-#                    is no tool result, or a queued message), while a background call (one with
-#                    run_in_background, or a Monitor) is outstanding: the one whose final
-#                    <task-notification> comes first (status completed, failed, killed or
-#                    stopped; a Monitor's interim events carry none)
+#   background <key> idle, from a turn's end (its turn_duration line, or an API error reply) to a
+#                    wake (a user line that is no tool result, or a queued message), while a
+#                    background call (one with run_in_background, or a Monitor) is outstanding: the
+#                    one whose final <task-notification> comes first (status completed, failed,
+#                    killed or stopped; a Monitor's interim events carry none)
 #   wait message, wait other
 #                    idle with none outstanding, by what woke it: another session's
 #                    <cross-session-message (the coordinator's next round, answer or nudge), or
 #                    anything else
+#   wait error       idle with none outstanding after a turn an API error reply ended (the usage
+#                    limit, an expired login: an isApiErrorMessage line, often with no
+#                    turn_duration after it), whatever woke it
 #   compaction       a compact_boundary's durationMs, taken out of the stretch that ends at it
 # A transcript with no turn_duration line ends a turn at a reply whose stop_reason is end_turn with
 # no call outstanding. A command's name comes from its text alone: cut at its first heredoc (<<),
@@ -186,10 +189,12 @@
 # (timeout, env, nice, nohup, command, exec, stdbuf, time) with their options and a duration, the
 # program is the first word: a path from /, ~ or $ by its base name, a relative one of up to four
 # parts with no .. as written, and anything else not 1 to 40 of [A-Za-z0-9_.+-] other; git, gh,
-# docker, npm, npx, pnpm, yarn, bun, cargo, go, make, uv, no-mistakes, claude, treehouse,
-# chrome-devtools-axi and every team-* take up to two more words of [a-z][a-z0-9:_-] (gh pr checks,
-# git push no-mistakes). The call is named after its first simple command whose program is not
-# plumbing (cd, echo, cat, grep, jq, sleep and the like), else its first, else other.
+# gh-axi, docker, npm, npx, pnpm, yarn, bun, cargo, go, make, uv, no-mistakes, claude, treehouse,
+# chrome-devtools-axi and every team-* take their next word of [a-z][a-z0-9:_-], and a second
+# after the subcommands that take one (gh pr checks, docker compose up, git push no-mistakes, npm
+# run test:e2e), never another argument (git show's sha, docker exec's container). The call is
+# named after its first simple command whose program is not plumbing (cd, echo, cat, grep, jq,
+# sleep and the like), else its first, else other.
 #
 # bin/lib/prices.json holds each model's list prices, per million tokens, with the date they were
 # read and their source: the weights the report gives each reply.
@@ -358,10 +363,17 @@ def dumps(row):
 # The time rows: where a launched worker session's time went, from its transcript, durations and
 # names only (the header says how). Times are whole microseconds since the epoch, so sums are exact.
 
-# The programs whose next words, up to two, name what they do; and every team-*.
+# The programs whose next word names what they do, each with those of its words that a second one
+# follows (gh pr checks, docker compose up, no-mistakes axi run), so no other argument (a sha, a
+# container, a search term) reaches a name; a team-* takes its next word alone.
+GH = {"auth", "cache", "issue", "label", "pr", "release", "repo", "run", "search", "secret", "variable", "workflow"}
 SUBCOMMANDS = {
-    "bun", "cargo", "chrome-devtools-axi", "claude", "docker", "gh", "git", "go", "make", "no-mistakes", "npm",
-    "npx", "pnpm", "treehouse", "uv", "yarn",
+    "bun": {"run", "x"}, "cargo": set(), "chrome-devtools-axi": set(), "claude": {"config", "mcp", "plugin"},
+    "docker": {"buildx", "compose", "container", "image", "network", "system", "volume"}, "gh": GH, "gh-axi": GH,
+    "git": {"bisect", "lfs", "notes", "push", "remote", "stash", "submodule", "worktree"}, "go": {"mod", "tool", "work"},
+    "make": set(), "no-mistakes": {"axi"}, "npm": {"exec", "run", "run-script"},
+    "npx": {"next", "playwright", "prisma", "vite", "vitest"}, "pnpm": {"dlx", "exec", "run"}, "treehouse": set(),
+    "uv": {"pip", "run", "tool"}, "yarn": {"dlx", "exec", "run"},
 }
 # The wrappers, each with its options that take the next word as their value.
 WRAPPERS = {
@@ -472,7 +484,7 @@ def simple_name(part):
     name = [program]
     if base in SUBCOMMANDS or base.startswith("team-"):
         for extra in words[i + 1 : i + 3]:
-            if not SUBWORD.fullmatch(extra):
+            if not SUBWORD.fullmatch(extra) or (len(name) == 2 and name[1] not in SUBCOMMANDS.get(base, ())):
                 break
             name.append(extra)
     return " ".join(name), False
@@ -586,10 +598,13 @@ def time_rows(path, machine, session):
         slot["calls"] += 1
 
     running, outstanding, background, order = False, {}, {}, {}
-    idle, run, last_target, pending, replies = 0, 0, None, [], set()
+    idle, run, last_target, pending, replies, errored = 0, 0, None, [], set(), False
 
-    # The idle stretches waiting for a wake, keyed by what ended them.
+    # The idle stretches waiting for a wake, keyed by what ended them, or as wait error after a turn
+    # an API error reply ended.
     def flush(key):
+        nonlocal errored
+        key, errored = "wait error" if errored else key, False
         for start, end, us in pending:
             add(start, us, key, ("wait", idle))
         for day in sorted({day_of(start) for start, _, _ in pending}):
@@ -655,7 +670,11 @@ def time_rows(path, machine, session):
                     outstanding[block["id"]] = key
                 if (block.get("name") == "Monitor" or args.get("run_in_background") is True) and notified.get(block["id"], never) > at:
                     background[block["id"]] = key
-            if not ends_turns and message.get("stop_reason") == "end_turn" and not outstanding:
+            if entry.get("isApiErrorMessage") is True:
+                running, errored = False, True
+                outstanding.clear()
+                idle += 1
+            elif not ends_turns and message.get("stop_reason") == "end_turn" and not outstanding:
                 running = False
                 idle += 1
         elif kind == "system" and entry.get("subtype") == "turn_duration":
