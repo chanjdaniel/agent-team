@@ -57,8 +57,9 @@ open_task() {
   event T14 merge-approved '{url: "https://github.com/owner/proj/pull/5", discord_message: "1562661774950400000"}'
 }
 
-# PR #5 as GitHub shows it: open, mergeable, on dev, every check green on the head, and two
-# commits with clean messages; edit the files under $GH_DIR to break one fact.
+# PR #5 as GitHub shows it: open, mergeable, on dev, every check green on the head, two
+# commits with clean messages and two changed files under src/; edit the files under $GH_DIR to
+# break one fact.
 green_pr() {
   jq -n --arg head "$head" '{number: 5, state: "OPEN", isDraft: false, mergeable: "MERGEABLE",
     baseRefName: "dev", headRefName: "feat/T14-tooling", headRefOid: $head,
@@ -75,6 +76,16 @@ green_pr() {
   jq -n --arg head "$head" '[
     {sha: "1111111111111111111111111111111111111111", commit: {message: "feat: one\n\nBody."}},
     {sha: $head, commit: {message: "test: two"}}]' >"$gh_dir/commits.json"
+  files src/tooling.py src/tooling_test.py
+}
+
+# PR #5's changed files as GitHub lists them, one page, and its changed-file count to match:
+# files <path>... (<old>=><new> is a rename)
+files() {
+  printf '%s\n' "$@" | jq -sR 'split("\n")[:-1] | map(if test("=>") then split("=>")
+    | {filename: .[1], previous_filename: .[0], status: "renamed"} else {filename: ., status: "modified"} end)' \
+    >"$gh_dir/files.json"
+  pr_field ".changedFiles = $#"
 }
 
 # Set one field of the PR as GitHub shows it: pr_field <jq assignment>
@@ -99,6 +110,7 @@ case "$*" in
   "pr checks 5 --repo owner/proj "*) cat "$GH_DIR/checks.json" ;;
   "api repos/owner/proj/branches/dev") cat "$GH_DIR/branch.json" ;;
   "api repos/owner/proj/pulls/5/commits --paginate") cat "$GH_DIR/commits.json" ;;
+  "api repos/owner/proj/pulls/5/files --paginate") cat "$GH_DIR/files.json" ;;
   "pr merge 5 --repo owner/proj "*)
     if [[ -f $GH_DIR/merge.sh ]]; then source "$GH_DIR/merge.sh"; exit; fi
     jq --arg m "$MERGE_SHA" '.state = "MERGED" | .mergeCommit = {oid: $m}' "$GH_DIR/pr.json" >"$GH_DIR/pr.next"
@@ -110,14 +122,34 @@ EOF
 }
 
 # The fake Discord API: GET channels/<c>/messages/<m> answers $DISCORD_DIR/<c>-<m>.json, a
-# missing one fails as curl -f does on a 404. The headers curl read from stdin are kept.
+# missing one fails as curl -f does on a 404. A POST to channels/<c>/messages (team-post's) is
+# kept as a line {channel, content, merged} in $DISCORD_DIR/posts, merged counting the ledger's
+# merged events when it came, and answered with a new id, or fails with a 500 when
+# $DISCORD_DIR/refuse lists the channel. The headers curl read from stdin are kept.
 # team-inbox's calls go to the fake Discord of helpers/inbox.
 stub_discord() {
   stub_script curl <<'EOF'
 [[ ! -f $STUB_FIXTURES/inbox.sh ]] || source "$STUB_FIXTURES/inbox.sh"
 cat >>"$DISCORD_DIR/stdin"
-url=${*: -1}
-if [[ $url =~ ^https://discord\.com/api/v10/channels/([0-9]+)/messages/([0-9]+)$ &&
+url=${*: -1} args=("$@")
+if [[ $url =~ ^https://discord\.com/api/v10/channels/([0-9]+)/messages$ && " $* " == *" -X POST "* ]]; then
+  channel=${BASH_REMATCH[1]}
+  for ((i = 0; i < ${#args[@]} - 1; i++)); do
+    case ${args[i]} in
+      -d) body=${args[i + 1]} ;;
+      -D) headers=${args[i + 1]} ;;
+    esac
+  done
+  if grep -qx "$channel" "$DISCORD_DIR/refuse" 2>/dev/null; then
+    echo "HTTP/1.1 500 Internal Server Error" >"$headers"
+    echo "curl: (22) The requested URL returned error: 500" >&2
+    exit 22
+  fi
+  merged=$(grep -c '"event":"merged"' "$TEAM_HOME/ledger.jsonl" || true)
+  jq -c --arg c "$channel" --argjson merged "$merged" '{channel: $c, content, merged: $merged}' <<<"$body" >>"$DISCORD_DIR/posts"
+  echo "HTTP/1.1 200 OK" >"$headers"
+  echo "{\"id\": \"$((1571000000000000000 + $(wc -l <"$DISCORD_DIR/posts")))\"}"
+elif [[ $url =~ ^https://discord\.com/api/v10/channels/([0-9]+)/messages/([0-9]+)$ &&
   -f $DISCORD_DIR/${BASH_REMATCH[1]}-${BASH_REMATCH[2]}.json ]]; then
   cat "$DISCORD_DIR/${BASH_REMATCH[1]}-${BASH_REMATCH[2]}.json"
 else
@@ -130,6 +162,26 @@ EOF
 # The reads of a message by id, team-inbox's calls left out.
 reads() {
   stub_calls curl | jq -c 'select(.[-1] | test("/messages/[0-9]+$")) | select(index("-X") | not)'
+}
+
+# What team-post sent, one "<channel> <content as JSON>" per line.
+posts() {
+  jq -r '"\(.channel) \(.content | @json)"' "$discord/posts" 2>/dev/null || true
+}
+
+# The post after a plan-time merge, Daniel's message in <channel> and <revert> the revert on dev:
+# merge_post <channel> <revert>
+merge_post() {
+  printf '%s\n' "T14 The tooling: merged https://github.com/owner/proj/pull/5 on your plan-time word, https://discord.com/channels/$INBOX_GUILD/$1/1562661774950400000" \
+    "Merge commit: $MERGE_SHA on dev." \
+    "To revert: the Revert button on the PR's page opens a revert PR; or, on dev, $2."
+}
+
+# Undo a merge for the test's next run: the merged event and the posts gone, PR #5 open and green again.
+merge_again() {
+  jq -c 'select(.event != "merged")' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l" && mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
+  rm -f "$discord/posts"
+  green_pr
 }
 
 # Message 1562661774950400000 in the task's thread (or the channel given), written by the user id given.
@@ -272,6 +324,52 @@ mv "$GH_DIR/pr.next" "$GH_DIR/pr.json"
 SH
 }
 
+# Daniel's plan-time word in place of the per-head one: proj opts in, the merge-approved is gone,
+# and T14 logs the plan ask plan-T14 at 02:00, Daniel's merge-preapproved of proj answering it in
+# message 1562661774950400000 (03:00), and a passing review of the head, its findings counted and
+# no guarded area.
+plan_word() {
+  sed -i 's|^toolkits = \[\]$|toolkits = []\nmerge_with_plan = true|' "$TEAM_HOME/projects.toml"
+  jq -c 'select(.event != "merge-approved")' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
+  mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
+  event T14 asked '{id: "plan-T14", text: "Approve the plan, and the merge with it?"}'
+  preapproved
+  passed
+}
+
+# Daniel's plan-time word on proj: preapproved [<message>] [<ask>] [<scope as JSON>]
+preapproved() {
+  event T14 merge-preapproved "{project: \"proj\", ask: \"${2:-plan-T14}\",
+    discord_message: \"${1:-1562661774950400000}\", scope: ${3:-[\"src/\"]}}"
+}
+
+# Daniel's withdrawal in message 1562676874444800000, sent at 04:00.
+withdrawn() {
+  event T14 merge-preapproval-withdrawn '{project: "proj", discord_message: "1562676874444800000"}'
+}
+
+# A passing review of <head> (the PR's by default), its findings counted, logged now: passed [<head>]
+passed() {
+  event T14 review "{verdict: \"pass\", head: \"${1:-$head}\",
+    findings: {blocking: 0, correctness: 0, security: 0, \"real-data\": 0, note: 0}, guarded: []}"
+}
+
+# The line a refusal on the plan-time word ends with.
+ask_per_head() {
+  echo "(Daniel's plan-time word does not hold: ask them for the per-head word on the head ${head:0:7} with team-ask, naming https://github.com/owner/proj/pull/5)"
+}
+
+# Run team-merge expecting the registry's refusal of merge_with_plan on the team's own project:
+# exit 1 naming it, gh pr merge never called and nothing appended to the ledger.
+registry_refused() {
+  local before
+  before=$(cat "$TEAM_HOME/ledger.jsonl")
+  run_bin -1 --separate-stderr team-merge T14
+  assert_contains "$stderr" "$1"
+  no_merge_call
+  assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$before"
+}
+
 @test "a malformed command line is a usage error and an unknown task is refused" {
   run_bin -2 team-merge
   run_bin -2 team-merge 14
@@ -300,7 +398,7 @@ SH
     pr: 5, merge: $m, head: $h,
     by: "Discord message 1562661774950400000 in the task'"'"'s thread 1563, from daniel (757)",
     project: "proj", branch: "feat/T14-tooling", discord_message: "1562661774950400000", discord_channel: "1563",
-    url: "https://github.com/owner/proj/pull/5"}')"
+    url: "https://github.com/owner/proj/pull/5", approval: "head"}')"
   assert_equal "$(jq -c . <<<"$output")" "$(jq -cn --arg m "$merge" --arg h "$head" '{task: "T14",
     pr: "https://github.com/owner/proj/pull/5", merge: $m, head: $h,
     by: "Discord message 1562661774950400000 in the task'"'"'s thread 1563, from daniel (757)"}')"
@@ -308,6 +406,9 @@ SH
   assert_equal "$(stub_calls gh | jq -r 'select(.[0:2] == ["pr", "view"]) | .[0:2] | join(" ")' | wc -l)" 3
   assert_equal "$(stub_calls gh | jq -c 'select(.[0:2] == ["pr", "view"])' | tail -n 1 | jq -r '.[-1]')" \
     "state,mergeCommit,headRefOid,autoMergeRequest"
+  # Daniel's per-head word needs no post: nothing is posted.
+  assert_equal "$(posts)" ""
+  [[ $stderr != *post* ]]
   TEAM_HOME=$TEAM_HOME run "$REPO_ROOT/bin/team-log" --check
   assert_equal "$status" 0
 }
@@ -812,4 +913,433 @@ EOF
   assert_equal "$(git -C "$CODE_CHECKOUT" rev-parse HEAD)" "$before"
   [[ $stderr != *"code checkout"* ]]
   [[ -z $(git -C "$CODE_CHECKOUT" for-each-ref refs/remotes/origin/dev --contains "$(git -C "$CODE_ORIGIN" rev-parse dev)") ]]
+}
+
+@test "a pre-approved PR of a project that opts in merges on Daniel's plan-time word, with no merge-approved" {
+  plan_word
+  run_bin -0 --separate-stderr team-merge T14
+  assert_equal "$(stub_calls gh | jq -c 'select(.[0:2] == ["pr", "merge"])')" \
+    "[\"pr\",\"merge\",\"5\",\"--repo\",\"owner/proj\",\"--squash\",\"--match-head-commit\",\"$head\"]"
+  assert_equal "$(merged_events)" "$(jq -cn --arg m "$MERGE_SHA" --arg h "$head" '{task: "T14", event: "merged",
+    pr: 5, merge: $m, head: $h,
+    by: "Discord message 1562661774950400000 in the task'"'"'s thread 1563, from daniel (757)",
+    project: "proj", branch: "feat/T14-tooling", discord_message: "1562661774950400000", discord_channel: "1563",
+    url: "https://github.com/owner/proj/pull/5", approval: "plan"}')"
+  assert_equal "$(reads | jq -r '.[-1]')" "https://discord.com/api/v10/channels/1563/messages/1562661774950400000"
+  TEAM_HOME=$TEAM_HOME run "$REPO_ROOT/bin/team-log" --check
+  assert_equal "$status" 0
+}
+
+@test "Daniel's plan-time word in #coordinator counts when it is not in the task's thread" {
+  plan_word
+  approved_by 757 1562486564871995482
+  run_bin -0 team-merge T14
+  assert_equal "$(merged_events | jq -r '[.approval, .by] | join(" ")')" \
+    "plan Discord message 1562661774950400000 in #coordinator 1562486564871995482, from daniel (757)"
+}
+
+@test "with a merge-approved for the PR, the per-head word is read as today and the plan-time one is not" {
+  plan_word
+  # The per-head word, sent at 01:00 before the pr event, is refused though the plan-time word stands.
+  event T14 merge-approved '{url: "https://github.com/owner/proj/pull/5", discord_message: "1562631575961600000"}'
+  refused "Discord message 1562631575961600000 was sent at 2026-10-22T01:00:00Z, before the pr event of https://github.com/owner/proj/pull/5 at 2026-10-22T02:00:00Z, so it is not Daniel's word on this PR"
+  [[ $stderr != *"plan-time"* ]]
+
+  event T14 merge-approved '{url: "https://github.com/owner/proj/pull/5", discord_message: "1562661774950400000"}'
+  run_bin -0 team-merge T14
+  assert_equal "$(merged_events | jq -r .approval)" head
+}
+
+@test "a withdrawn plan-time word is refused, naming the withdrawal" {
+  plan_word
+  withdrawn
+  refused "no merge-approved event for https://github.com/owner/proj/pull/5: Daniel's word is not recorded" \
+    "Daniel's plan-time word on proj, Discord message 1562661774950400000, was withdrawn at 2026-10-22T02:00:00Z in Discord message 1562676874444800000"
+  [[ $stderr != *"$(ask_per_head)"* ]]
+  assert_equal "$(stub_calls curl)" ""
+}
+
+@test "a plan-time word granted again after a withdrawal merges" {
+  plan_word
+  withdrawn
+  event T14 asked '{id: "plan-T14-again", text: "Approve the merge with the plan again?"}'
+  # Message 1562691973939200000, sent at 05:00.
+  jq '.id = "1562691973939200000"' "$discord/1563-1562661774950400000.json" >"$discord/1563-1562691973939200000.json"
+  preapproved 1562691973939200000 plan-T14-again
+  run_bin -0 team-merge T14
+  assert_equal "$(merged_events | jq -r '[.approval, .discord_message] | join(" ")')" "plan 1562691973939200000"
+}
+
+@test "a project that does not opt in now is refused on the plan-time word" {
+  plan_word
+  sed -i '/^merge_with_plan = true$/d' "$TEAM_HOME/projects.toml"
+  refused "proj does not opt in to plan-time merges now: its merge_with_plan in projects.toml is false" "$(ask_per_head)"
+}
+
+@test "the team's own project is refused on the plan-time word, by name, by path and by repo" {
+  # By repo: proj's repo is the origin of the code checkout team-merge runs from.
+  plan_word
+  code_checkout
+  git -C "$CODE_CHECKOUT" remote set-url origin git@github.com:Owner/Proj.git
+  refused "proj is the team's own project, whose PRs merge only on Daniel's word per head" "$(ask_per_head)"
+}
+
+@test "the team's own project by name is refused on the plan-time word, whatever the registry says" {
+  plan_word
+  sed -i 's/^\[proj/[agent-team/' "$TEAM_HOME/projects.toml"
+  jq -c 'if .project == "proj" then .project = "agent-team" else . end' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
+  mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
+  registry_refused "agent-team.merge_with_plan: agent-team is the team's own project"
+  sed -i '/^merge_with_plan = true$/d' "$TEAM_HOME/projects.toml"
+  refused "agent-team is the team's own project, whose PRs merge only on Daniel's word per head" "$(ask_per_head)"
+}
+
+@test "the team's own project by path is refused on the plan-time word, whatever the registry says" {
+  merging_the_code
+  plan_word
+  registry_refused "proj.merge_with_plan: its path is the code checkout team-project runs from"
+  sed -i '/^merge_with_plan = true$/d' "$TEAM_HOME/projects.toml"
+  refused "proj is the team's own project, whose PRs merge only on Daniel's word per head" "$(ask_per_head)"
+}
+
+@test "a PR from a branch that is not the task's is refused on the plan-time word" {
+  plan_word
+  pr_field '.headRefName = "feat/T15-other"'
+  refused "PR #5 comes from feat/T15-other, not feat/T14-tooling, T14's branch for proj" "$(ask_per_head)"
+}
+
+@test "a PR from the branch a branch-renamed logged for the task merges on the plan-time word, and one from the old branch does not" {
+  plan_word
+  pr_field '.headRefName = "feat/T14-tooling-fresh"'
+  refused "PR #5 comes from feat/T14-tooling-fresh, not feat/T14-tooling, T14's branch for proj" "$(ask_per_head)"
+  event T14 branch-renamed '{project: "proj", branch: "feat/T14-tooling-fresh"}'
+  run_bin -0 team-merge T14
+  assert_equal "$(merged_events | jq -r '[.approval, .branch] | join(" ")')" "plan feat/T14-tooling-fresh"
+}
+
+@test "after a branch-renamed, a PR from the task's old branch is refused on the plan-time word" {
+  plan_word
+  event T14 branch-renamed '{project: "proj", branch: "feat/T14-tooling-fresh"}'
+  refused "PR #5 comes from feat/T14-tooling, not feat/T14-tooling-fresh, T14's branch for proj" "$(ask_per_head)"
+}
+
+@test "the task's branch for a project added by team-open --add is its worktree-added event's" {
+  plan_word
+  jq -c 'if .event == "opened" then .project = "lib" | .branch = "feat/T14-lib" else . end' \
+    "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
+  mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
+  event T14 worktree-added '{project: "proj", branch: "feat/T14-tooling", base: "dev", base_sha: "0123456", worktree: "/w/4"}'
+  run_bin -0 team-merge T14
+  assert_equal "$(merged_events | jq -r .approval)" plan
+}
+
+@test "a release-shaped PR, the base into another branch, is refused on the plan-time word" {
+  plan_word
+  pr_field '.baseRefName = "main" | .headRefName = "dev"'
+  refused "PR #5 targets main, not proj's base dev" "PR #5 comes from dev, not feat/T14-tooling, T14's branch for proj" \
+    "$(ask_per_head)"
+}
+
+@test "a plan-time word sent before the ask it answers, or answering no ask of the task, is refused without asking Discord" {
+  plan_word
+  # 1562631575961600000 is 01:00, an hour before the ask at 02:00.
+  preapproved 1562631575961600000
+  refused "Discord message 1562631575961600000 was sent at 2026-10-22T01:00:00Z, before the asked plan-T14 at 2026-10-22T02:00:00Z, so it is not Daniel's word on this PR" \
+    "$(ask_per_head)"
+  assert_equal "$(stub_calls curl)" ""
+
+  preapproved 1562661774950400000 plan-T99
+  refused "merge-preapproved answers the ask plan-T99, which T14 did not log before it" "$(ask_per_head)"
+  assert_equal "$(stub_calls curl)" ""
+}
+
+@test "a plan-time word Discord cannot show, or by an author not in allowFrom, is refused" {
+  plan_word
+  rm "$discord/1563-1562661774950400000.json"
+  refused "Discord message 1562661774950400000 cannot be fetched from the task's thread 1563 or #coordinator 1562486564871995482" \
+    "$(ask_per_head)"
+  approved_by 999
+  refused "Discord message 1562661774950400000 is by daniel (999), who is not in allowFrom" "$(ask_per_head)"
+}
+
+@test "a PR with no review of its head is refused on the plan-time word" {
+  plan_word
+  jq -c 'select(.event != "review")' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
+  mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
+  passed 0fedcba9876543210
+  refused "no review of the head ${head:0:7} is logged, so no reviewer has passed it" "$(ask_per_head)"
+}
+
+@test "a PR whose latest review of its head found something is refused on the plan-time word, and a later pass merges it" {
+  plan_word
+  event T14 review "{verdict: \"findings\", head: \"${head:0:8}\",
+    findings: {blocking: 0, correctness: 1, security: 0, \"real-data\": 0, note: 0}, guarded: []}"
+  refused "the latest review of the head ${head:0:7}, at 2026-10-22T02:00:00Z, is findings, not pass" "$(ask_per_head)"
+  passed "${head:0:7}"
+  run_bin -0 team-merge T14
+  assert_equal "$(merged_events | jq -r .approval)" plan
+}
+
+@test "a refusal on the plan-time word lists every reason at once, the checks every merge gets among them" {
+  plan_word
+  review "$head" findings
+  pr_field '.headRefName = "feat/T15-other"'
+  checks '[{"name": "test", "bucket": "fail", "state": "FAILURE"},
+    {"name": "agent-review", "bucket": "pending", "state": "IN_PROGRESS"}]'
+  jq -n --arg head "$head" '[
+    {sha: "1111111111111111111111111111111111111111",
+     commit: {message: "feat: one\n\nCo-Authored-By: Claude <noreply@anthropic.com>"}},
+    {sha: $head, commit: {message: "test: two"}}]' >"$gh_dir/commits.json"
+  refused "PR #5 comes from feat/T15-other, not feat/T14-tooling, T14's branch for proj" \
+    "the latest review of the head ${head:0:7}, at 2026-10-22T02:00:00Z, is findings, not pass" \
+    "required check lint is missing on the head" "required check test has not passed on the head" \
+    "checks failing on the head: test" "checks pending on the head: agent-review" \
+    "agent-review is in_progress on the head, not success" \
+    "commit 1111111 (feat: one) carries an attribution line: Co-Authored-By: Claude <noreply@anthropic.com>"
+  assert_equal "$(tail -n 1 <<<"$stderr")" "  $(ask_per_head)"
+}
+
+@test "a per-head merge reads no file list" {
+  run_bin -0 team-merge T14
+  [[ -z $(stub_calls gh | jq -c 'select(.[1] | test("/files$"))') ]]
+}
+
+@test "the plan-time word reads the PR's files across pages, each rename's old path too" {
+  plan_word
+  files src/a.py 'old/b.py=>src/b.py'
+  jq -c '.[:1], .[1:]' "$gh_dir/files.json" >"$gh_dir/pages" && mv "$gh_dir/pages" "$gh_dir/files.json"
+  refused "old/b.py, renamed to src/b.py, is outside the scope of Daniel's plan-time word: src/" "$(ask_per_head)"
+  [[ $stderr != *"src/a.py"* ]]
+
+  files src/a.py 'src/c.py=>src/b.py'
+  jq -c '.[:1], .[1:]' "$gh_dir/files.json" >"$gh_dir/pages" && mv "$gh_dir/pages" "$gh_dir/files.json"
+  run_bin -0 team-merge T14
+  assert_equal "$(merged_events | jq -r .approval)" plan
+}
+
+@test "a file list shorter than the PR's changed-file count is refused as one not read in full" {
+  plan_word
+  pr_field '.changedFiles = 3'
+  refused "GitHub's list of PR #5's files holds 2 files, not its 3 changed files, so not every file could be checked" \
+    "$(ask_per_head)"
+  pr_field 'del(.changedFiles)'
+  refused "GitHub's list of PR #5's files holds 2 files, not its unknown number of changed files, so not every file could be checked" \
+    "$(ask_per_head)"
+}
+
+@test "each changed file outside the scope is named; a directory entry covers what is under it and a file entry that file only" {
+  plan_word
+  preapproved 1562661774950400000 plan-T14 '["src/a/", "README.md"]'
+  files src/a/b.py src/a/c/d.py src/ab.py README.md docs/README.md README.md.bak
+  refused "src/ab.py is outside the scope of Daniel's plan-time word: src/a/, README.md" \
+    "docs/README.md is outside the scope of Daniel's plan-time word: src/a/, README.md" \
+    "README.md.bak is outside the scope of Daniel's plan-time word: src/a/, README.md" "$(ask_per_head)"
+  [[ $stderr != *"src/a/b.py"* && $stderr != *"src/a/c/d.py"* && $stderr != *"  README.md is"* ]]
+}
+
+@test "each changed file a guarded pattern matches is named with its area, Conventioner's among them, and plain source and tests are not" {
+  plan_word
+  local guarded=(
+    .github/workflows/test.yml:ci .circleci/config.yml:ci .gitlab-ci.yml:ci .no-mistakes.yaml:ci
+    .pre-commit-config.yaml:ci .githooks/pre-commit:ci release-please-config.json:ci
+    .release-please-manifest.json:ci
+    front-end/package-lock.json:dependencies front-end/package.json:dependencies
+    back-end/requirements.txt:dependencies back-end/requirements-dev.in:dependencies
+    constraints.txt:dependencies npm-shrinkwrap.json:dependencies yarn.lock:dependencies
+    pnpm-lock.yaml:dependencies bun.lockb:dependencies Pipfile:dependencies Pipfile.lock:dependencies
+    pyproject.toml:dependencies poetry.lock:dependencies uv.lock:dependencies setup.py:dependencies
+    setup.cfg:dependencies go.mod:dependencies go.sum:dependencies Cargo.toml:dependencies
+    Cargo.lock:dependencies Gemfile:dependencies Gemfile.lock:dependencies composer.json:dependencies
+    composer.lock:dependencies .nvmrc:dependencies .node-version:dependencies
+    back-end/.python-version:dependencies .tool-versions:dependencies back-end/Dockerfile:dependencies
+    web.dockerfile:dependencies docker-compose.prod.yml:dependencies compose.yml:dependencies
+    .dockerignore:dependencies
+    "back-end/migrations/migrate_roles.py:migrations, permissions" db/migration/0001.py:migrations
+    "scripts/migrate_users.py:ci, migrations" "db/add_roles_migration.py:migrations, permissions" schema/init.sql:migrations
+    .vscode/launch.json:settings .mcp.json:settings CLAUDE.md:settings front-end/AGENTS.md:settings
+    front-end/.env.example:settings .env:settings back-end/settings.py:settings treehouse.toml:settings
+    back-end/api/permissions.py:permissions src/rbac/roles.py:permissions src/ACL.py:permissions
+    docs/CODEOWNERS:permissions
+    back-end/utils/secret_key.py:secrets config/credentials.json:secrets certs/server.pem:secrets
+    "deploy/id.key:settings, secrets" certs/client.p12:secrets certs/client.pfx:secrets
+    ".claude/settings.json:settings" ".github/CODEOWNERS:ci, permissions"
+    # What the workflows, hooks and gate run, deploy and agent settings, a container's entrypoint,
+    # the real-data guard and the database's shape outside migrations/, and authentication and
+    # session handling by the words in their paths.
+    scripts/nm-test.sh:ci scripts/lock-backend-requirements.sh:ci scripts/knowledge_graph.py:ci
+    front-end/scripts/no-eval.ts:ci front-end/scripts/bundle-budget.ts:ci scripts/treehouse-setup.sh:ci
+    .husky/pre-push:ci lefthook.yml:ci Makefile:ci back-end/justfile:ci
+    scripts/real_data_check.py:ci tools/real_data_terms.txt:ci
+    back-end/docker-entrypoint.sh:dependencies docker-entrypoint-initdb.d/seed.js:dependencies
+    back-end/reset_database.py:migrations back-end/init_database.py:migrations back-end/mongo-init.js:migrations
+    back-end/lookup_indexes.py:migrations back-end/db_config.py:migrations
+    front-end/vercel.json:settings back-end/vercel.json:settings netlify.toml:settings fly.toml:settings
+    Procfile:settings render.yaml:settings .agents/plugins/marketplace.json:settings .cursor/rules.md:settings
+    back-end/api/applicant_auth.py:permissions back-end/utils/cors.py:permissions
+    back-end/utils/security_headers.py:permissions back-end/utils/request_origin.py:permissions
+    back-end/utils/proxy.py:permissions back-end/utils/captcha.py:permissions back-end/sign_in_limits.py:permissions
+    back-end/guards.py:permissions src/csrf.ts:permissions src/oauth/callback.ts:permissions
+    src/login-form.tsx:permissions src/authz.py:permissions src/authentication/views.py:permissions
+    back-end/utils/tokens.py:secrets back-end/utils/application_token.py:secrets
+    back-end/utils/session_storage.py:secrets src/jwt.ts:secrets src/password_reset.py:secrets
+    back-end/api/floorplans_access.py:permissions back-end/tests/test_markets_roles.py:permissions
+    back-end/utils/env_file.py:settings front-end/env.d.ts:settings back-end/utils/deployment.py:settings
+    front-end/eslint.config.ts:ci front-end/vite.config.ts:ci front-end/playwright.config.ts:ci
+    back-end/pytest.ini:ci .gitattributes:ci front-end/tsconfig.app.json:ci
+    # A camelCase or PascalCase name counts its humps as words.
+    front-end/src/views/LoginView.vue:permissions front-end/src/utils/signedIn.ts:permissions
+    front-end/src/views/EmailVerificationView.vue:permissions front-end/src/utils/permissionTable.ts:permissions
+    front-end/src/utils/applicantSessionExpiry.ts:secrets front-end/src/views/PasswordResetView.vue:secrets
+    "src/CSRFToken.ts:permissions, secrets"
+    # The permissions words' verb forms, and a hump ending in a digit.
+    back-end/api/authenticate.py:permissions src/authorize.ts:permissions
+    front-end/src/utils/isAuthenticated.ts:permissions back-end/api/authorizedRoutes.py:permissions
+    front-end/src/views/OAuth2Callback.ts:permissions src/Login2fa.ts:permissions
+  )
+  local plain=(back-end/api/views.py front-end/src/App.test.tsx src/oracle.py src/environment.py src/keyboard.py
+    src/settled.py src/author.py src/tokenizer.py docs/scripts.md src/guardian.ts src/descriptions.py
+    src/indexes_doc/readme.md src/assigning.py front-end/src/utils/accessibleNames.ts src/AuthorList.vue
+    front-end/src/utils/marketGuide.ts src/environmentPicker.ts)
+  local entry paths=() reasons=()
+  for entry in "${guarded[@]}"; do
+    paths+=("${entry%%:*}")
+    reasons+=("${entry%%:*} is a guarded path (${entry#*:}): a change there comes back to Daniel")
+  done
+  files "${paths[@]}" "${plain[@]}"
+  refused "${reasons[@]}" "$(ask_per_head)"
+  for entry in "${plain[@]}"; do [[ $stderr != *"$entry is a guarded path"* ]]; done
+  assert_equal "$(grep -c 'is a guarded path' <<<"$stderr")" "${#guarded[@]}"
+}
+
+@test "the guarded patterns' areas are exactly the ledger's guarded areas" {
+  assert_equal "$(grep -v -e '^#' -e '^$' "$REPO_ROOT/bin/lib/guarded" | cut -d ' ' -f 1 | uniq | jq -Rsc 'split("\n")[:-1]')" \
+    "$(jq -L "$REPO_ROOT/bin/lib" -nc 'include "ledger"; guarded_areas')"
+}
+
+@test "a latest review of the head that logged no guarded areas, or named some, is refused, naming them" {
+  plan_word
+  event T14 review "{verdict: \"pass\", head: \"$head\",
+    findings: {blocking: 0, correctness: 0, security: 0, \"real-data\": 0, note: 0}}"
+  refused "the latest review of the head ${head:0:7}, at 2026-10-22T02:00:00Z, logged no guarded areas, so no reviewer has said the change touches none" \
+    "$(ask_per_head)"
+  event T14 review "{verdict: \"pass\", head: \"${head:0:7}\",
+    findings: {blocking: 0, correctness: 0, security: 0, \"real-data\": 0, note: 0}, guarded: [\"settings\", \"secrets\"]}"
+  refused "the latest review of the head ${head:0:7}, at 2026-10-22T02:00:00Z, found the change touching guarded areas: settings, secrets" \
+    "$(ask_per_head)"
+  passed
+  run_bin -0 team-merge T14
+}
+
+@test "a review of the task with a security or real-data finding, even fixed later, or with no finding counts, is refused, naming its head and time" {
+  plan_word
+  ledger_line '{ts: "2026-10-21T10:00:00Z", task: "T14", event: "review", verdict: "findings", head: "0fedcba98",
+    findings: {blocking: 1, correctness: 0, security: 1, "real-data": 0, note: 0}, guarded: []}'
+  ledger_line '{ts: "2026-10-21T11:00:00Z", task: "T14", event: "review", verdict: "findings", head: "1234567ab",
+    findings: {blocking: 0, correctness: 0, security: 2, "real-data": 3, note: 1}, guarded: []}'
+  ledger_line '{ts: "2026-10-21T12:00:00Z", task: "T14", event: "review", verdict: "findings", head: "7654321cd"}'
+  ledger_line '{ts: "2026-10-21T13:00:00Z", task: "T15", event: "review", verdict: "findings", head: "abcdef012"}'
+  passed
+  refused "the review of the head 0fedcba, at 2026-10-21T10:00:00Z, counted 1 security finding: such a finding on the task, even fixed, comes back to Daniel" \
+    "the review of the head 1234567, at 2026-10-21T11:00:00Z, counted 2 security findings and 3 real-data findings: such a finding on the task, even fixed, comes back to Daniel" \
+    "the review of the head 7654321, at 2026-10-21T12:00:00Z, logged no finding counts, so whether it found a security or real-data issue is not known" \
+    "$(ask_per_head)"
+  [[ $stderr != *abcdef0* ]]
+}
+
+@test "a changed path with a line break, which grep would read as two, is refused" {
+  plan_word
+  jq -n '[{filename: "src/a.py\n.github/workflows/test.yml", status: "added"}]' >"$gh_dir/files.json"
+  pr_field '.changedFiles = 1'
+  refused '"src/a.py\n.github/workflows/test.yml" holds a line break, so no guarded pattern can be matched against it' \
+    "$(ask_per_head)"
+}
+
+@test "a plan-time merge posts to the task's thread and #coordinator once merged is logged, before the inbox refresh" {
+  plan_word
+  run_bin -0 --separate-stderr team-merge T14
+  assert_equal "$(jq -r .merge <<<"$output")" "$MERGE_SHA"
+  assert_equal "$(posts)" "1563 $(merge_post 1563 "\`git revert $MERGE_SHA\`" | jq -Rsc 'rtrimstr("\n")')
+1562486564871995482 $(merge_post 1563 "\`git revert $MERGE_SHA\`" | jq -Rsc 'rtrimstr("\n")')"
+  assert_equal "$(jq -r .merged "$discord/posts" | sort -u)" 1
+  [[ $stderr != *post* ]]
+  # The guild for the link is read from #coordinator's channel, then the Waiting on you message is posted.
+  assert_equal "$(stub_calls curl | jq -r '.[-1] | capture("v10/(?<p>.*)").p' | grep -v '/messages/[0-9]*$')" \
+    "channels/1562486564871995482
+channels/1563/messages
+channels/1562486564871995482/messages
+channels/1562486564871995482
+channels/1562486564871995482/messages"
+  assert_equal "$(inbox_calls)" "GET channels/1562486564871995482
+GET channels/1562486564871995482
+POST channels/1562486564871995482/messages"
+}
+
+@test "the post's revert is the project's merge method's: git revert -m 1 for a merge, the rebased commits' range for a rebase" {
+  plan_word
+  sed -i 's/^merge_method = "squash"$/merge_method = "merge"/' "$TEAM_HOME/projects.toml"
+  run_bin -0 team-merge T14
+  assert_equal "$(jq -r .content "$discord/posts" | tail -n 1)" \
+    "To revert: the Revert button on the PR's page opens a revert PR; or, on dev, \`git revert -m 1 $MERGE_SHA\`."
+
+  merge_again
+  sed -i 's/^merge_method = "merge"$/merge_method = "rebase"/' "$TEAM_HOME/projects.toml"
+  # The PR's two commits and a merge of the base, which a rebase leaves out.
+  jq -n --arg head "$head" '[
+    {sha: "1111111111111111111111111111111111111111", commit: {message: "feat: one"}, parents: [{sha: "0123456"}]},
+    {sha: "2222222222222222222222222222222222222222", commit: {message: "Merge dev"}, parents: [{sha: "1111111"}, {sha: "3333333"}]},
+    {sha: $head, commit: {message: "test: two"}, parents: [{sha: "2222222"}]}]' >"$gh_dir/commits.json"
+  run_bin -0 team-merge T14
+  assert_equal "$(jq -r .content "$discord/posts" | tail -n 1)" \
+    "To revert: the Revert button on the PR's page opens a revert PR; or, on dev, \`git revert $MERGE_SHA~2..$MERGE_SHA\`, the 2 rebased commits."
+}
+
+@test "a plan-time merge with no thread posts to #coordinator alone, saying so" {
+  plan_word
+  jq -c 'select(.event != "thread")' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l" && mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
+  approved_by 757 1562486564871995482
+  run_bin -0 --separate-stderr team-merge T14
+  assert_equal "$(posts)" "1562486564871995482 $(merge_post 1562486564871995482 "\`git revert $MERGE_SHA\`" | jq -Rsc 'rtrimstr("\n")')"
+  assert_contains "$stderr" "team-merge: T14 has no Discord thread, so Daniel hears of the merge in #coordinator alone"
+}
+
+@test "a plan-time merge's post links Daniel's message with the guild the inbox kept, and names it when no guild is known" {
+  plan_word
+  inbox_kept
+  run_bin -0 team-merge T14
+  assert_equal "$(inbox_calls)" "PATCH channels/1562486564871995482/messages/1569000000000000000"
+  assert_equal "$(jq -r .content "$discord/posts" | head -n 1)" "$(merge_post 1563 x | head -n 1)"
+
+  # A guild Discord does not name leaves the message named, not linked, saying why.
+  merge_again
+  rm "$HOME/.local/state/agent-team/inbox.json"
+  echo 500 >"$STUB_FIXTURES/inbox/fail"
+  run_bin -0 --separate-stderr team-merge T14
+  assert_equal "$(jq -r .content "$discord/posts" | head -n 1)" \
+    "T14 The tooling: merged https://github.com/owner/proj/pull/5 on your plan-time word, Discord message 1562661774950400000 in the task's thread 1563, from daniel (757)"
+  assert_contains "$stderr" "team-merge: the posts name Daniel's message without a link: Discord named no guild for #coordinator: curl: (22) The requested URL returned error: 500"
+}
+
+@test "a post that fails leaves the merge logged and the exit 0, and prints which post failed and its text" {
+  plan_word
+  echo 1563 >"$discord/refuse"
+  run_bin -0 --separate-stderr team-merge T14
+  assert_equal "$(merged_events | jq -r .approval)" plan
+  assert_equal "$(jq -r .channel "$discord/posts")" 1562486564871995482
+  assert_contains "$stderr" "team-merge: PR #5 is merged, but its post to the task's thread 1563 failed (team-post: Discord refused the post: curl: (22) The requested URL returned error: 500; nothing was posted); post this text with team-post T14 --file <its file>:
+$(merge_post 1563 "\`git revert $MERGE_SHA\`")"
+  [[ $stderr != *"post to #coordinator"* ]]
+}
+
+@test "a fenced machine's posts fail, each said with its text, and the merge stands" {
+  plan_word
+  mkdir -p "$HOME/.local/state/agent-team"
+  echo '{"since": "2026-10-22T14:00:00Z", "holder": "laptop", "epoch": 2}' >"$HOME/.local/state/agent-team/fenced"
+  run_bin -0 --separate-stderr team-merge T14
+  assert_equal "$(merged_events | jq -r .approval)" plan
+  assert_equal "$(posts)" ""
+  assert_contains "$stderr" "team-merge: PR #5 is merged, but its post to the task's thread 1563 failed (team-post: "
+  assert_contains "$stderr" "team-merge: PR #5 is merged, but its post to #coordinator 1562486564871995482 failed (team-post: "
+  assert_contains "$stderr" "is fenced since 2026-10-22T14:00:00Z"
+  assert_contains "$stderr" "post this text with team-post --coordinator --file <its file>:
+$(merge_post 1563 "\`git revert $MERGE_SHA\`")"
 }

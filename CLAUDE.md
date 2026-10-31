@@ -17,6 +17,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
     - `data-check`: the one scan the CI's `data` job and the records' hook refuse with.
     - `doctor.d/`: `team-doctor`'s checks, one file each, which it sources in the order of their names (a new check is a new file, its number between its neighbours').
     - `gate-config.awk`: reads and sets the one key the team writes in Daniel's no-mistakes config (`agent_path_override`'s opencode).
+    - `guarded`: the guarded paths, one extended regular expression per line with its area, any changed path of which brings a plan-time merge back to Daniel, read by `team-merge`.
     - `ledger-contract.json` and `ledger.jq`: the ledger contract and its jq.
     - `opencode-gate`: the gate's opencode wrapper, which `team-bootstrap` installs in `~/.no-mistakes/bin` and Daniel's no-mistakes config names.
     - `prices.json`: each model's list prices per million tokens with the date read and the source, the weights `team-tokens` gives each reply.

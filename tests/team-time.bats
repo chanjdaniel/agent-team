@@ -268,6 +268,59 @@ t90_hours() {
     '{"building":1,"gate":0.333,"wait:daniel":2.667}'
 }
 
+@test "a plan ask settled by a merge-preapproved naming its id leaves no wait on Daniel after it" {
+  assert_equal "$(t90_hours 06:00 '01:00 done {role: "builder", session: "s1"}' \
+    '01:00 asked {id: "plan", text: "approve the plan, and its merge?"}' \
+    '03:00 merge-preapproved {project: "p", ask: "plan", discord_message: "1563000000000000001", scope: ["src/"]}' \
+    '05:00 launch {role: "builder", session: "s2", worktree: "/w", toolkits: []}')" '{"building":2,"unattributed":2,"wait:daniel":2}'
+  assert_equal "$(time_json --until 2026-10-24T06:00:00Z | jq -c '.answers')" \
+    '{"answered":1,"unanswered":0,"median_minutes":120,"p90_minutes":120}'
+}
+
+# The lines of a pre-approved task's review rounds after its first builder: a review with findings
+# and a fixing builder, then a passing review at 03:00 and the merge at 05:00.
+preapproved_rounds() {
+  printf '%s\n' '00:00 asked {id: "plan", text: "approve the plan, and its merge?"}' \
+    '00:00 merge-preapproved {project: "p", ask: "plan", discord_message: "1563000000000000001", scope: ["src/"]}' \
+    '01:00 done {role: "builder", session: "s1"}' \
+    '01:00 launch {role: "reviewer", session: "s2", worktree: "/w", toolkits: []}' \
+    '01:30 review {verdict: "findings", head: "aaaaaaa"}' \
+    '01:30 done {role: "reviewer", session: "s2"}' \
+    '02:00 launch {role: "builder", session: "s3", worktree: "/w", toolkits: []}' \
+    '02:30 done {role: "builder", session: "s3"}' \
+    '02:30 launch {role: "reviewer", session: "s4", worktree: "/w", toolkits: []}' \
+    '03:00 review {verdict: "pass", head: "bbbbbbb"}' \
+    '03:00 done {role: "reviewer", session: "s4"}' \
+    '05:00 merged {pr: 1, merge: "m", head: "bbbbbbb", by: "1563000000000000001", approval: "plan"}'
+}
+
+@test "a passing review while a plan-time approval stands starts merging, which runs to the merged" {
+  local rounds
+  mapfile -t rounds < <(preapproved_rounds)
+  assert_equal "$(t90_hours 06:00 "${rounds[@]}")" '{"building":1.5,"review":1,"merging":2,"unattributed":1.5}'
+
+  # Withdrawn before the review, the review leaves the coordinator's turn, as with no approval.
+  assert_equal "$(t90_hours 06:00 "${rounds[@]:0:9}" '02:45 merge-preapproval-withdrawn {project: "p", discord_message: "1563000000000000002"}' \
+    "${rounds[@]:9}")" '{"building":1.5,"review":1,"unattributed":3.5}'
+
+  # Withdrawn after it, the merging ends there; a merge-approved after it is the per-head word's merging.
+  assert_equal "$(t90_hours 06:00 "${rounds[@]:0:11}" '04:00 merge-preapproval-withdrawn {project: "p", discord_message: "1563000000000000002"}' \
+    "${rounds[@]:11}")" '{"building":1.5,"review":1,"merging":1,"unattributed":2.5}'
+  assert_equal "$(t90_hours 06:00 "${rounds[@]:0:11}" '03:30 merge-approved {url: "u", discord_message: "1563000000000000003"}' \
+    '04:00 merge-preapproval-withdrawn {project: "p", discord_message: "1563000000000000002"}' \
+    "${rounds[@]:11}")" '{"building":1.5,"review":1,"merging":2,"unattributed":1.5}'
+
+  # Another project's withdrawal leaves this one's approval standing; a re-granted one stands again.
+  assert_equal "$(t90_hours 06:00 "${rounds[@]:0:2}" \
+    '00:00 merge-preapproved {project: "q", ask: "plan", discord_message: "1563000000000000004", scope: ["lib/"]}' \
+    '00:30 merge-preapproval-withdrawn {project: "q", discord_message: "1563000000000000005"}' "${rounds[@]:2}")" \
+    '{"building":1.5,"review":1,"merging":2,"unattributed":1.5}'
+  assert_equal "$(t90_hours 06:00 "${rounds[@]:0:2}" \
+    '00:30 merge-preapproval-withdrawn {project: "p", discord_message: "1563000000000000002"}' \
+    '00:45 merge-preapproved {project: "p", ask: "plan", discord_message: "1563000000000000006", scope: ["src/"]}' "${rounds[@]:2}")" \
+    '{"building":1.5,"review":1,"merging":2,"unattributed":1.5}'
+}
+
 @test "a park logged after the fact with since is counted from since, and the usage limit is its own phase" {
   : >"$TEAM_HOME/ledger.jsonl"
   local d1=2026-10-25T d2=2026-10-26T task
