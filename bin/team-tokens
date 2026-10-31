@@ -1,8 +1,10 @@
 #!/usr/bin/env -S python3 -I
-# Where Claude usage goes, across every machine: the report, and each machine's export of it.
+# Where Claude usage goes, across every machine: the report, each machine's export of it, and
+# where each launched worker session's time went.
 #
 # Usage: team-tokens [--since <ISO>] [--until <ISO>] [--task T<n>] [--machine <name>] [--json]
 #        team-tokens export [--through-now]
+#        team-tokens time [--since <ISO>] [--until <ISO>]
 #
 # The report reads every machine's day files in the team home's usage/ and this machine's
 # transcripts from the day of its last day file on (all of them when it has none), one reply per
@@ -134,16 +136,63 @@
 # --through-now before it commits and pushes the records. Claude Code deletes transcripts after
 # 30 days by default (cleanupPeriodDays), so the day files are the lasting record.
 #
+# time prints where each launched worker session's time went, from this machine's transcripts,
+# one JSON line per main conversation whose session id begins with a launch event's session in the
+# team home's ledger (read leniently: a line that is no event is skipped) and per UTC day it has
+# time in, sorted by day, first and session; a subagent's transcript and an unlaunched session give
+# none, and it writes nothing. --since and --until (UTC times, as the report's) keep the rows whose
+# day is on or after since's day and on or before until's. Each row is a whitelist, durations and
+# names only, never a command's arguments beyond its subcommand words, an output, a file's
+# contents or a message's text:
+#   day              the UTC day
+#   machine, session this machine, and the session's full id
+#   first, last      the day's first stretch's start and its last stretch's end
+#   keys             per key below, its seconds (to the millisecond), calls (those started that
+#                    day: the replies for model, the stretches for a wait or background key, the
+#                    compactions for compaction) and longest (its longest call, run or stretch)
+#   waits            each wait as {from, to, key}
+# The walk takes the session's timestamped lines (a sidechain's left out) in time order, and gives
+# each stretch between two consecutive lines, on the UTC day it starts, to a key by the state at its
+# start:
+#   tool <name>, bash <command name>, monitor <command name>
+#                    a call, outstanding from its tool_use to its tool_result or its turn's end;
+#                    with several outstanding, the one whose result comes first, so parallel calls
+#                    share the wall time and the slowest gets the tail
+#   model            a turn running with no call outstanding: the request and the reply
+#   background <key> idle, from a turn's end (its turn_duration line) to a wake (a user line that
+#                    is no tool result, or a queued message), while a background call (one with
+#                    run_in_background, or a Monitor) is outstanding: the one whose final
+#                    <task-notification> comes first (status completed, failed, killed or
+#                    stopped; a Monitor's interim events carry none)
+#   wait message, wait other
+#                    idle with none outstanding, by what woke it: another session's
+#                    <cross-session-message (the coordinator's next round, answer or nudge), or
+#                    anything else
+#   compaction       a compact_boundary's durationMs, taken out of the stretch that ends at it
+# A transcript with no turn_duration line ends a turn at a reply whose stop_reason is end_turn with
+# no call outstanding. A command's name comes from its text alone: cut at its first heredoc (<<),
+# split into simple commands at the control operators, newlines, $(, backticks and parentheses
+# outside quotes, comments left out; past leading reserved words, assignments, and wrappers
+# (timeout, env, nice, nohup, command, exec, stdbuf, time) with their options and a duration, the
+# program is the first word: a path from /, ~ or $ by its base name, a relative one of up to four
+# parts with no .. as written, and anything else not 1 to 40 of [A-Za-z0-9_.+-] other; git, gh,
+# docker, npm, npx, pnpm, yarn, bun, cargo, go, make, uv, no-mistakes, claude, treehouse,
+# chrome-devtools-axi and every team-* take up to two more words of [a-z][a-z0-9:_-] (gh pr checks,
+# git push no-mistakes). The call is named after its first simple command whose program is not
+# plumbing (cd, echo, cat, grep, jq, sleep and the like), else its first, else other.
+#
 # bin/lib/prices.json holds each model's list prices, per million tokens, with the date they were
 # read and their source: the weights the report gives each reply.
 # Exit 0 done, 1 refused, 2 usage error. Python standard library only, Python 3.11 or later.
 
 import collections
+import functools
 import glob
 import json
 import math
 import os
 import re
+import shlex
 import statistics
 import sys
 from datetime import datetime, timedelta, timezone
@@ -160,7 +209,7 @@ if sys.version_info < (3, 11):
 NAME = os.path.basename(sys.argv[0])
 USAGE = (
     "usage: team-tokens [--since <ISO>] [--until <ISO>] [--task T<n>] [--machine <name>] [--json]"
-    " | team-tokens export [--through-now]"
+    " | team-tokens export [--through-now] | team-tokens time [--since <ISO>] [--until <ISO>]"
 )
 # The token counts of a line, in their order; each is the largest of the reply's lines.
 COUNTS = ("input", "cache_write_1h", "cache_write_5m", "cache_read", "output", "thinking")
@@ -293,6 +342,389 @@ def merge(old, new):
 
 def dumps(row):
     return json.dumps(row, separators=(",", ":"))
+
+
+# The time rows: where a launched worker session's time went, from its transcript, durations and
+# names only (the header says how). Times are whole microseconds since the epoch, so sums are exact.
+
+# The programs whose next words, up to two, name what they do; and every team-*.
+SUBCOMMANDS = {
+    "bun", "cargo", "chrome-devtools-axi", "claude", "docker", "gh", "git", "go", "make", "no-mistakes", "npm",
+    "npx", "pnpm", "treehouse", "uv", "yarn",
+}
+# The wrappers, each with its options that take the next word as their value.
+WRAPPERS = {
+    "command": set(), "exec": set(), "nohup": set(), "time": set(),
+    "env": {"-C", "-S", "-u", "--chdir", "--split-string", "--unset"},
+    "nice": {"-n", "--adjustment"},
+    "stdbuf": {"-e", "-i", "-o"},
+    "timeout": {"-k", "-s", "--kill-after", "--signal"},
+}
+RESERVED = {"!", "do", "elif", "else", "if", "then", "until", "while", "{", "}"}
+# A simple command opening with one of these names no program.
+OPENERS = {"case", "done", "esac", "fi", "for", "in", "select"}
+# The programs that only move text or set things up: a call is named after another when it has one.
+PLUMBING = {
+    ".", "[", "[[", "awk", "cat", "cd", "cp", "cut", "date", "echo", "eval", "export", "false", "grep", "head",
+    "jq", "local", "ls", "mkdir", "mv", "popd", "printf", "pushd", "read", "rm", "sed", "set", "sleep", "sort",
+    "source", "tail", "tee", "test", "touch", "tr", "true", "uniq", "unset", "wait", "wc",
+}
+PROGRAM = re.compile(r"[A-Za-z0-9_.+-]{1,40}")
+RELATIVE = re.compile(r"[A-Za-z0-9_.+-]+(?:/[A-Za-z0-9_.+-]+){0,3}")
+SUBWORD = re.compile(r"[a-z][a-z0-9:_-]{0,30}")
+ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*", re.S)
+DURATION = re.compile(r"[0-9.]+[smhd]?")
+TOOL = re.compile(r"[A-Za-z0-9_.:-]{1,80}")
+NOTIFICATION = re.compile(r"<task-notification>(.*?)(?:</task-notification>|$)", re.S)
+NOTIFIED = re.compile(r"<tool-use-id>([^<]+)</tool-use-id>")
+STATUS = re.compile(r"<status>([^<]*)</status>")
+# The statuses that end a background task; a Monitor's interim events carry none.
+FINAL = {"completed", "failed", "killed", "stopped"}
+EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+MICRO = timedelta(microseconds=1)
+
+
+# The simple commands of a Bash command's text, one at a time: cut at its first heredoc marker and
+# split at the control operators, newlines, substitutions and parentheses outside quotes, comments
+# left out.
+def simple_commands(command):
+    text, current, quote, i = command.split("<<", 1)[0], "", None, 0
+    while i < len(text):
+        c, two = text[i], text[i : i + 2]
+        if quote == "'":
+            quote = None if c == "'" else quote
+        elif quote == '"':
+            if c == "\\":
+                current, i = current + two, i + 2
+                continue
+            quote = None if c == '"' else quote
+        elif c == "\\":
+            current, i = current + two, i + 2
+            continue
+        elif c in "'\"":
+            quote = c
+        elif c == "#" and (not current or current[-1].isspace()):
+            end = text.find("\n", i)
+            i = len(text) if end < 0 else end
+            continue
+        elif two in ("&&", "||", "|&", "$("):
+            yield current
+            current, i = "", i + 2
+            continue
+        elif c in ";|\n`()" or (c == "&" and not current.endswith((">", "<")) and text[i + 1 : i + 2] != ">"):
+            yield current
+            current, i = "", i + 1
+            continue
+        current += c
+        i += 1
+    yield current
+
+
+# The name of one simple command's program, with its subcommand words, and whether it is plumbing;
+# None when it names no program.
+def simple_name(part):
+    # Only the first words can name it: a long argument is never parsed.
+    lexer, words = shlex.shlex(part, posix=True), []
+    lexer.whitespace_split = True
+    try:
+        for word in lexer:
+            words.append(word)
+            if len(words) == 24:
+                break
+    except ValueError:
+        words = part.split()[:24]
+    if not words or words[0] in OPENERS:
+        return None
+    i = 0
+    while i < len(words):
+        if words[i] in RESERVED or ASSIGNMENT.fullmatch(words[i]):
+            i += 1
+        elif words[i] in WRAPPERS:
+            valued, i = WRAPPERS[words[i]], i + 1
+            while i < len(words) and (words[i].startswith("-") or DURATION.fullmatch(words[i])):
+                i += 2 if words[i] in valued else 1
+        else:
+            break
+    if i == len(words):
+        return None
+    word = words[i]
+    if word.startswith(("/", "~", "$")):
+        base = word.rstrip("/").rsplit("/", 1)[-1]
+        program = base if PROGRAM.fullmatch(base) else "other"
+    elif "/" in word:
+        program = word if RELATIVE.fullmatch(word) and ".." not in word else "other"
+    else:
+        program = word if PROGRAM.fullmatch(word) else "other"
+    if word in PLUMBING or program in PLUMBING:
+        return program if program != "other" else word, True
+    base = program.rsplit("/", 1)[-1]
+    name = [program]
+    if base in SUBCOMMANDS or base.startswith("team-"):
+        for extra in words[i + 1 : i + 3]:
+            if not SUBWORD.fullmatch(extra):
+                break
+            name.append(extra)
+    return " ".join(name), False
+
+
+# A Bash or Monitor command's name, from its text alone: its first simple command's whose program
+# is not plumbing, else its first simple command's, else other.
+@functools.lru_cache(maxsize=4096)
+def command_name(command):
+    first = None
+    for part in simple_commands(command):
+        found = simple_name(part)
+        if found is None:
+            continue
+        if not found[1]:
+            return found[0]
+        first = first or found[0]
+    return first or "other"
+
+
+# The key a tool call's time goes to.
+def call_key(block):
+    name = block.get("name")
+    args = block.get("input") if isinstance(block.get("input"), dict) else {}
+    if name in ("Bash", "Monitor"):
+        return f"{name.lower()} {command_name(str(args.get('command', '')))}"
+    return f"tool {name if isinstance(name, str) and TOOL.fullmatch(name) else 'other'}"
+
+
+def micros(moment):
+    return (moment - EPOCH) // MICRO
+
+
+def iso(us):
+    return (EPOCH + us * MICRO).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+# A time's UTC day, as a count of days since the epoch.
+def day_of(us):
+    return us // 86_400_000_000
+
+
+# The text a user line, a queued message or a queued command carries, for its markers.
+def carried(entry):
+    kind = entry.get("type")
+    if kind == "user":
+        return text_of((entry.get("message") or {}).get("content"))
+    if kind == "queue-operation" and entry.get("operation") == "enqueue":
+        return entry.get("content") if isinstance(entry.get("content"), str) else ""
+    if kind == "attachment" and isinstance(entry.get("attachment"), dict) and entry["attachment"].get("type") == "queued_command":
+        return text_of(entry["attachment"].get("prompt"))
+    return ""
+
+
+def is_result(entry):
+    content = (entry.get("message") or {}).get("content")
+    return isinstance(content, list) and any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content)
+
+
+# One main transcript's time rows, one per UTC day it has time in: time_rows <path> <machine>
+# <session>. Each stretch between two consecutive timestamped lines goes to a key by the state at
+# its start (the header's walk).
+def time_rows(path, machine, session):
+    entries = []
+    with open(path, encoding="utf-8", errors="replace") as file:
+        for line in file:
+            # A line with no time (a request's body, the session's title) is skipped unparsed.
+            if '"timestamp"' not in line:
+                continue
+            try:
+                entry = json.loads(line)
+                if not isinstance(entry, dict) or entry.get("isSidechain") or not isinstance(entry.get("timestamp"), str):
+                    continue
+                moment = when(entry["timestamp"])
+            except ValueError:
+                continue
+            if moment.tzinfo is not None:
+                entries.append((micros(moment), len(entries), entry))
+    entries.sort(key=lambda e: e[:2])
+
+    # Each call's result and each background task's final notification, looked ahead to.
+    never = float("inf")
+    results, notified, ends_turns = {}, {}, False
+    for at, _, entry in entries:
+        if entry.get("type") == "user" and is_result(entry):
+            for block in entry["message"]["content"]:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    results.setdefault(block.get("tool_use_id"), at)
+        for note in NOTIFICATION.findall(carried(entry)):
+            found, status = NOTIFIED.search(note), STATUS.search(note)
+            if found and status and status.group(1) in FINAL:
+                notified.setdefault(found.group(1), at)
+        ends_turns = ends_turns or (entry.get("type") == "system" and entry.get("subtype") == "turn_duration")
+
+    days = collections.defaultdict(lambda: {"first": None, "last": None, "keys": {}, "waits": []})
+    started = set()
+
+    # Give <us> microseconds from <start> to <key>'s instance <instance> (a call, a run of the
+    # model's, an idle stretch), on the day it starts; <counted> counts the instance as a call.
+    def add(start, us, key, instance, counted=True):
+        day = days[day_of(start)]
+        slot = day["keys"].setdefault(key, {"us": 0, "calls": 0, "each": collections.Counter()})
+        slot["us"] += us
+        slot["each"][instance] += us
+        if counted and (key, instance) not in started:
+            started.add((key, instance))
+            slot["calls"] += 1
+
+    def call(start, key):
+        slot = days[day_of(start)]["keys"].setdefault(key, {"us": 0, "calls": 0, "each": collections.Counter()})
+        slot["calls"] += 1
+
+    running, outstanding, background, order = False, {}, {}, {}
+    idle, run, last_target, pending, replies = 0, 0, None, [], set()
+
+    # The idle stretches waiting for a wake, keyed by what ended them.
+    def flush(key):
+        for start, end, us in pending:
+            add(start, us, key, ("wait", idle))
+        for day in sorted({day_of(start) for start, _, _ in pending}):
+            mine = [p for p in pending if day_of(p[0]) == day]
+            days[day]["waits"].append({"from": iso(mine[0][0]), "to": iso(mine[-1][1]), "key": key})
+        pending.clear()
+
+    def wake(text):
+        nonlocal running
+        flush("wait message" if text.lstrip().startswith("<cross-session-message") else "wait other")
+        running = True
+
+    previous = None
+    for at, _, entry in entries:
+        kind = entry.get("type")
+        if previous is not None and at > previous:
+            us = at - previous
+            taken = 0
+            if kind == "system" and entry.get("subtype") == "compact_boundary":
+                duration = (entry.get("compactMetadata") or {}).get("durationMs")
+                if isinstance(duration, (int, float)) and not isinstance(duration, bool) and duration > 0:
+                    taken = min(us, round(duration * 1000))
+                    add(previous, taken, "compaction", ("compaction", at))
+            if outstanding:
+                first = min(outstanding, key=lambda i: (results.get(i, never), order[i]))
+                target = ("call", first)
+                add(previous, us - taken, outstanding[first], target, counted=False)
+            elif not running and background:
+                first = min(background, key=lambda i: (notified.get(i, never), order[i]))
+                target = ("background", idle, first)
+                add(previous, us - taken, f"background {background[first]}", target)
+            elif not running:
+                target = ("wait",)
+                pending.append((previous, at, us - taken))
+            else:
+                if last_target != ("model",):
+                    run += 1
+                target = ("model",)
+                add(previous, us - taken, "model", ("model", run), counted=False)
+            last_target = target
+            day = days[day_of(previous)]
+            day["first"] = day["first"] if day["first"] is not None else previous
+            day["last"] = at
+        previous = at if previous is None else max(previous, at)
+
+        if kind == "assistant":
+            if not running:
+                flush("wait other")
+                running = True
+            request = entry.get("requestId")
+            if isinstance(request, str) and request not in replies:
+                replies.add(request)
+                slot = days[day_of(at)]["keys"].setdefault("model", {"us": 0, "calls": 0, "each": collections.Counter()})
+                slot["calls"] += 1
+            message = entry.get("message") or {}
+            for block in message.get("content") or []:
+                if not isinstance(block, dict) or block.get("type") != "tool_use" or not isinstance(block.get("id"), str):
+                    continue
+                key, args = call_key(block), block.get("input") if isinstance(block.get("input"), dict) else {}
+                order[block["id"]] = len(order)
+                call(at, key)
+                if results.get(block["id"], never) > at:
+                    outstanding[block["id"]] = key
+                if (block.get("name") == "Monitor" or args.get("run_in_background") is True) and notified.get(block["id"], never) > at:
+                    background[block["id"]] = key
+            if not ends_turns and message.get("stop_reason") == "end_turn" and not outstanding:
+                running = False
+                idle += 1
+        elif kind == "system" and entry.get("subtype") == "turn_duration":
+            if running:
+                running = False
+                outstanding.clear()
+                idle += 1
+        elif kind == "user" and not is_result(entry) and not running:
+            wake(carried(entry))
+        elif kind == "queue-operation" and entry.get("operation") == "enqueue" and not running:
+            wake(carried(entry))
+        outstanding = {i: k for i, k in outstanding.items() if results.get(i, never) > at}
+        background = {i: k for i, k in background.items() if notified.get(i, never) > at}
+    flush("wait other")
+
+    rows = []
+    for day in sorted(days):
+        found = days[day]
+        if found["first"] is None:
+            continue
+        keys = {
+            key: {"seconds": round(slot["us"] / 1e6, 3), "calls": slot["calls"], "longest": round(max(slot["each"].values(), default=0) / 1e6, 3)}
+            for key, slot in sorted(found["keys"].items())
+        }
+        rows.append({"day": (EPOCH + timedelta(days=day)).strftime("%Y-%m-%d"), "machine": machine, "session": session,
+                     "first": iso(found["first"]), "last": iso(found["last"]), "keys": keys, "waits": found["waits"]})
+    return rows
+
+
+# The sessions the team home's ledger launched, read leniently: a line that is no event is skipped.
+def launched(team):
+    path = os.path.join(team, "ledger.jsonl")
+    sessions = set()
+    if os.path.isfile(path):
+        with open(path, encoding="utf-8", errors="replace") as file:
+            for line in file:
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(event, dict) and event.get("event") == "launch" and isinstance(event.get("session"), str) and event["session"]:
+                    sessions.add(event["session"])
+    return sessions
+
+
+# This machine's main transcripts of launched sessions, each as (path, session id).
+def launched_transcripts(projects, sessions):
+    found, lengths = [], {len(s) for s in sessions}
+    for path in sorted(glob.glob(os.path.join(glob.escape(projects), "*", "*.jsonl"))):
+        session = os.path.basename(path)[: -len(".jsonl")]
+        if any(session[:n] in sessions for n in lengths):
+            found.append((path, session))
+    return found
+
+
+# team-tokens time: every launched session's time rows from this machine's transcripts, by day.
+def print_time(args):
+    opts = {"since": None, "until": None}
+    i = 0
+    while i < len(args):
+        if args[i] in ("--since", "--until") and i + 1 < len(args) and opts[args[i][2:]] is None:
+            opts[args[i][2:]] = args[i + 1]
+            i += 2
+        else:
+            fail(USAGE, 2)
+    for flag in ("since", "until"):
+        if opts[flag] is not None and not TIME.fullmatch(opts[flag]):
+            fail(f"--{flag} must be a UTC time like 2026-10-22T01:00Z or 2026-10-22T01:00:00Z", 2)
+    if opts["since"] and opts["until"] and when(opts["since"]) >= when(opts["until"]):
+        fail("--since must come before --until", 2)
+    home = os.environ.get("HOME") or fail("HOME is not set")
+    team = team_home()
+    machine = machine_name(home)
+    rows = []
+    for path, session in launched_transcripts(os.path.join(home, ".claude", "projects"), launched(team)):
+        rows += time_rows(path, machine, session)
+    since, until = (opts[f][:10] if opts[f] else None for f in ("since", "until"))
+    rows = [r for r in rows if (since is None or r["day"] >= since) and (until is None or r["day"] <= until)]
+    for row in sorted(rows, key=lambda r: (r["day"], r["first"], r["session"])):
+        print(dumps(row))
 
 
 # The lines of the day file <path> by request id; <doing> names the refusal of a line that is no
@@ -1466,6 +1898,11 @@ def main(args):
             export(args[1:] == ["--through-now"])
         except OSError as error:
             fail(f"cannot export: {error}")
+    elif args[:1] == ["time"]:
+        try:
+            print_time(args[1:])
+        except OSError as error:
+            fail(f"cannot read the time: {error}")
     else:
         opts = parse_report_args(args)
         try:
