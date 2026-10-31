@@ -78,6 +78,7 @@ q() {
   assert_contains "$output" "team-tokens export [--through-now]"
   assert_contains "$output" "team-tokens time [--since <ISO>] [--until <ISO>]"
   assert_contains "$output" "time prints where each launched worker session's time went"
+  assert_contains "$output" "usage/<machine>/time/"
   assert_contains "$output" "the weekly limit's reset time is in no data"
   assert_contains "$output" "schema team-tokens/1"
   assert_contains "$output" "coordinator turns"
@@ -684,4 +685,159 @@ tool SendMessage: 1 1 1"
   done
   run_bin -0 team-tokens time
   assert_equal "$(jq -r '.keys | keys[] | select(startswith("bash "))' <<<"$output")" "${expected%$'\n'}"
+}
+
+# The time day files: the export writes the time fixture's rows into usage/home-pc/time/, and
+# time reads them back with this machine's live rows.
+time_day=usage/home-pc/time
+
+# A time row of one model stretch: time_row <machine> <session> <day> <first> <model seconds>
+time_row() {
+  printf '{"day":"%s","machine":"%s","session":"%s","first":"%s","last":"%s","keys":{"model":{"seconds":%s,"calls":1,"longest":%s}},"waits":[]}\n' \
+    "$3" "$1" "$2" "$4" "$4" "$5" "$5"
+}
+
+@test "the export writes each launched session's time rows into a day file per complete UTC day" {
+  time_fixture
+  run_bin -0 team-tokens time
+  local live=$output
+  run_bin -0 team-tokens export
+  assert_equal "$output" "usage/home-pc/2026-10-20.jsonl: 10 replies, 10 new
+usage/home-pc/2026-10-21.jsonl: 6 replies, 6 new
+usage/home-pc/time/2026-10-20.jsonl: 1 session, 1 new
+usage/home-pc/time/2026-10-21.jsonl: 1 session, 1 new
+read 3 of 3 transcripts; wrote 2 day files and 2 time files"
+  assert_equal "$(ls "$TEAM_HOME/$time_day")" "2026-10-20.jsonl
+2026-10-21.jsonl"
+  assert_equal "$(cat "$TEAM_HOME/$time_day"/*.jsonl)" "$live"
+  if grep -r CONTENT "$TEAM_HOME/usage"; then false; fi
+}
+
+@test "the usage day files come out byte for byte as with no launch, and with no ledger there are no time rows" {
+  time_fixture
+  run_bin -0 team-tokens export
+  local other=$BATS_TEST_TMPDIR/other
+  mkdir "$other"
+  TEAM_HOME=$other run_bin -0 team-tokens export
+  assert_equal "$output" "usage/home-pc/2026-10-20.jsonl: 10 replies, 10 new
+usage/home-pc/2026-10-21.jsonl: 6 replies, 6 new
+read 3 of 3 transcripts; wrote 2 day files"
+  [[ ! -e $other/$time_day ]]
+  assert_equal "$(cd "$other/usage/home-pc" && md5sum ./*.jsonl)" "$(cd "$TEAM_HOME/usage/home-pc" && md5sum ./*.jsonl)"
+}
+
+@test "a time day file keeps the row of a transcript not read again, and changes only when a row does" {
+  time_fixture
+  run_bin -0 team-tokens export
+  local before day20 projects=$HOME/.claude/projects/-home-dan-agent-team--claude-worktrees-2
+  before=$(fingerprint "$TEAM_HOME" "$scan")
+  run_bin -0 team-tokens export
+  assert_equal "$output" "read 0 of 3 transcripts; no day file changed"
+  assert_equal "$(fingerprint "$TEAM_HOME" "$scan")" "$before"
+  # Read again with its rows unchanged, the transcript rewrites no time file.
+  day20=$(fingerprint "$TEAM_HOME/$time_day/2026-10-20.jsonl")
+  touch "$projects/$dddd.jsonl"
+  run_bin -0 team-tokens export
+  assert_equal "$output" "read 1 of 3 transcripts; no day file changed"
+  assert_equal "$(fingerprint "$TEAM_HOME/$time_day/2026-10-20.jsonl")" "$day20"
+  # Cleaned up, its row stays beside a new launched session's, the copy of its first day's lines.
+  local ffff=ffffffff-6666-4666-8666-666666666666
+  printf '{"ts":"2026-10-20T09:59:30Z","task":"T2","event":"launch","role":"builder","session":"ffffffff","worktree":"/home/dan/agent-team/.claude/worktrees/3","toolkits":[]}\n' >>"$TEAM_HOME/ledger.jsonl"
+  jq -c 'select(.timestamp < "2026-10-20T10:30") | .sessionId = "'"$ffff"'" | del(.requestId)' "$projects/$dddd.jsonl" >"$projects/$ffff.jsonl"
+  rm "$projects/$dddd.jsonl"
+  run_bin -0 team-tokens export
+  assert_equal "$output" "usage/home-pc/time/2026-10-20.jsonl: 2 sessions, 1 new
+read 1 of 3 transcripts; wrote 1 time file"
+  assert_equal "$(jq -r '"\(.session) \(.first)"' "$TEAM_HOME/$time_day/2026-10-20.jsonl")" "$dddd 2026-10-20T10:00:00.000Z
+$ffff 2026-10-20T10:00:00.000Z"
+  assert_equal "$(grep -c "$dddd" "$TEAM_HOME/$time_day/2026-10-21.jsonl")" 1
+}
+
+@test "today's time rows are written only with --through-now, and the transcript is read again until then" {
+  time_fixture
+  local today session=cccccccc-3333-4333-8333-333333333333 projects=$HOME/.claude/projects/-home-dan-agent-team--claude-worktrees-2
+  today=$(date -u +%F)
+  printf '{"ts":"%sT00:00:00Z","task":"T3","event":"launch","role":"reviewer","session":"cccccccc","worktree":"/home/dan/agent-team/.claude/worktrees/2","toolkits":[]}\n' "$today" >>"$TEAM_HOME/ledger.jsonl"
+  # A turn of one second with no reply, so only its time row holds the transcript back.
+  jq -nc --arg day "$today" --arg session "$session" '
+    {type: "user", timestamp: "\($day)T00:00:01.000Z", sessionId: $session, message: {content: "CONTENT-go"}},
+    {type: "system", subtype: "turn_duration", timestamp: "\($day)T00:00:02.000Z", sessionId: $session}' >"$projects/$session.jsonl"
+  run_bin -0 team-tokens export
+  assert_equal "${lines[-1]}" "read 4 of 4 transcripts; wrote 2 day files and 2 time files"
+  [[ ! -e $TEAM_HOME/$time_day/$today.jsonl ]]
+  run_bin -0 team-tokens export
+  assert_equal "$output" "read 1 of 4 transcripts; no day file changed"
+  run_bin -0 team-tokens export --through-now
+  assert_equal "$output" "usage/home-pc/time/$today.jsonl: 1 session, 1 new
+read 1 of 4 transcripts; wrote 1 time file"
+  assert_equal "$(jq -c '[.session, .keys.model.seconds + 0]' "$TEAM_HOME/$time_day/$today.jsonl")" "[\"$session\",1]"
+  run_bin -0 team-tokens export --through-now
+  assert_equal "$output" "read 0 of 4 transcripts; no day file changed"
+}
+
+@test "a scan state of the old version leads to a full read, which fills in the time rows and leaves the usage alone" {
+  time_fixture
+  # The export before the time rows: the usage only, as with no ledger.
+  mv "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/ledger.jsonl"
+  run_bin -0 team-tokens export
+  mv "$BATS_TEST_TMPDIR/ledger.jsonl" "$TEAM_HOME/ledger.jsonl"
+  local version usage_before
+  version=$(jq .version "$scan")
+  jq ".version = $((version - 1))" "$scan" >"$BATS_TEST_TMPDIR/scan" && mv "$BATS_TEST_TMPDIR/scan" "$scan"
+  usage_before=$(fingerprint "$usage"/*.jsonl)
+  run_bin -0 team-tokens export
+  assert_equal "$output" "usage/home-pc/time/2026-10-20.jsonl: 1 session, 1 new
+usage/home-pc/time/2026-10-21.jsonl: 1 session, 1 new
+read 3 of 3 transcripts; wrote 2 time files"
+  assert_equal "$(fingerprint "$usage"/*.jsonl)" "$usage_before"
+  assert_equal "$(jq .version "$scan")" "$version"
+}
+
+@test "time prints every machine's time day files and this machine's live rows from its last one on" {
+  time_fixture
+  local ffff=ffffffff-6666-4666-8666-666666666666
+  mkdir -p "$TEAM_HOME/usage/laptop/time" "$TEAM_HOME/$time_day"
+  time_row laptop "$ffff" 2026-10-19 2026-10-19T08:00:00.000Z 7 >"$TEAM_HOME/usage/laptop/time/2026-10-19.jsonl"
+  # This machine's files: the 20th's row of dddddddd, before its last file, stands as written; the
+  # 21st's is replaced by the live one, and a session with no transcript left keeps its row.
+  time_row home-pc "$dddd" 2026-10-20 2026-10-20T10:00:00.000Z 1 >"$TEAM_HOME/$time_day/2026-10-20.jsonl"
+  { time_row home-pc "$dddd" 2026-10-21 2026-10-21T00:00:00.000Z 2 && time_row home-pc "$ffff" 2026-10-21 2026-10-21T01:00:00.000Z 3; } >"$TEAM_HOME/$time_day/2026-10-21.jsonl"
+  run_bin -0 --separate-stderr team-tokens time
+  assert_equal "$stderr" ""
+  assert_equal "$(jq -c '[.day, .machine, .session[:8], .keys.model.seconds]' <<<"$output")" '["2026-10-19","laptop","ffffffff",7]
+["2026-10-20","home-pc","dddddddd",1]
+["2026-10-21","home-pc","dddddddd",31.8]
+["2026-10-21","home-pc","ffffffff",3]'
+  run_bin -0 team-tokens time --since 2026-10-20T12:00Z --until 2026-10-21T00:00Z
+  assert_equal "$(jq -c '[.day, .session[:8]]' <<<"$output")" '["2026-10-20","dddddddd"]
+["2026-10-21","dddddddd"]
+["2026-10-21","ffffffff"]'
+  run_bin -0 team-tokens time --until 2026-10-19T23:59Z
+  assert_equal "$(jq -c '[.day, .machine]' <<<"$output")" '["2026-10-19","laptop"]'
+  # With no file of its own, this machine's rows are all live.
+  rm -r "${TEAM_HOME:?}/$time_day"
+  run_bin -0 team-tokens time
+  assert_equal "$(jq -c '[.day, .machine, .keys.model.seconds]' <<<"$output")" '["2026-10-19","laptop",7]
+["2026-10-20","home-pc",53.9]
+["2026-10-21","home-pc",31.8]'
+}
+
+@test "a time day file line that is no time row is refused in one line" {
+  time_fixture
+  mkdir -p "$TEAM_HOME/$time_day"
+  echo '{"day":"2026-10-20"}' >"$TEAM_HOME/$time_day/2026-10-20.jsonl"
+  run_bin -1 --separate-stderr team-tokens time
+  assert_equal "$stderr" "team-tokens: cannot read the time: $TEAM_HOME/$time_day/2026-10-20.jsonl holds a line that is no time row; fix or remove it"
+  run_bin -1 --separate-stderr team-tokens export
+  assert_equal "$stderr" "team-tokens: cannot export: $TEAM_HOME/$time_day/2026-10-20.jsonl holds a line that is no time row; fix or remove it"
+}
+
+@test "the report never reads a time day file" {
+  report_fixture
+  report_json
+  local without=$json
+  mkdir -p "$TEAM_HOME/usage/home-pc/time"
+  printf '{"day":"2026-10-20","machine":"home-pc","session":"c0","first":"2026-10-20T08:00:00.000Z","last":"2026-10-20T09:00:00.000Z","keys":{},"waits":[]}\n' >"$TEAM_HOME/usage/home-pc/time/2026-10-20.jsonl"
+  report_json
+  assert_equal "$json" "$without"
 }

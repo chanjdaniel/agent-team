@@ -6,8 +6,9 @@
 #        team-tokens export [--through-now]
 #        team-tokens time [--since <ISO>] [--until <ISO>]
 #
-# The report reads every machine's day files in the team home's usage/ and this machine's
-# transcripts from the day of its last day file on (all of them when it has none), one reply per
+# The report reads every machine's day files in the team home's usage/<machine>/ (never a time
+# day file) and this machine's transcripts from the day of its last day file on (all of them when
+# it has none), one reply per
 # request id wherever it appears, and weighs each reply at bin/lib/prices.json's list prices
 # ($w: a weight, not a bill), each cache write at its own lifetime; a model with no price is
 # weighed as claude-opus-5-5, with a warning on stderr. It joins each session to the ledger:
@@ -125,27 +126,36 @@
 # is one line per request id, wherever it appears (a forked session's copy included), taking each
 # count's largest value (a subagent's early lines carry a partial output) and the rest from its
 # earliest line; a line with no request id is left out.
+# It also writes time's rows (below) of each launched session into usage/<machine>/time/
+# <YYYY-MM-DD>.jsonl, a file per UTC day, one row per session sorted by first and session; with no
+# ledger it writes none.
 # Only days before today (UTC) are written, so each day file is written once in practice;
 # --through-now writes today's too. A day file is rewritten only when it gains a reply or a reply
-# in it grew. A transcript is read again only when its size or modification time changed since
-# the last export (~/.local/state/agent-team/usage-scan.json), or while it holds replies of a day
-# not written yet; an export into another team home's usage/ than the last one reads them all.
-# A rerun with nothing new changes no file.
-# Prints a line per day file written, then "read <n> of <m> transcripts; ...".
+# in it grew, a time day file only when one of its rows changed, merging by session, so the row of
+# a transcript not read again is kept. A transcript is read again only when its size or
+# modification time changed since the last export (~/.local/state/agent-team/usage-scan.json), or
+# while it holds replies or time of a day not written yet; an export into another team home's
+# usage/ than the last one, or after the state's version went up (as with the time rows), reads
+# them all. A rerun with nothing new changes no file.
+# Prints a line per day file written ("usage/<machine>/<day>.jsonl: <n> replies, <m> new") and per
+# time day file ("usage/<machine>/time/<day>.jsonl: <n> sessions, <m> new"), then "read <n> of <m>
+# transcripts; ...", counting the day files and time files written.
 # team-checkpoint runs the export each time and commits usage/; team-handoff runs it with
 # --through-now before it commits and pushes the records. Claude Code deletes transcripts after
 # 30 days by default (cleanupPeriodDays), so the day files are the lasting record.
 #
-# time prints where each launched worker session's time went, from this machine's transcripts,
-# one JSON line per main conversation whose session id begins with a launch event's session in the
-# team home's ledger (read leniently: a line that is no event is skipped) and per UTC day it has
-# time in, sorted by day, first and session; a subagent's transcript and an unlaunched session give
-# none, and it writes nothing. --since and --until (UTC times, as the report's) keep the rows whose
-# day is on or after since's day and on or before until's. Each row is a whitelist, durations and
-# names only, never a command's arguments beyond its subcommand words, an output, a file's
-# contents or a message's text:
+# time prints where each launched worker session's time went, one JSON line per main conversation
+# whose session id begins with a launch event's session in the team home's ledger (read
+# leniently: a line that is no event is skipped) and per UTC day it has time in, sorted by day,
+# first and session; a subagent's transcript and an unlaunched session give none, and it writes
+# nothing. It reads every machine's time day files in usage/*/time/, then this machine's
+# transcripts for the days from its last time day file on (all of them when it has none), a row
+# walked live replacing a file's for the same machine, session and day. --since and --until (UTC
+# times, as the report's) keep the rows whose day is on or after since's day and on or before
+# until's. Each row is a whitelist, durations and names only, never a command's arguments beyond
+# its subcommand words, an output, a file's contents or a message's text:
 #   day              the UTC day
-#   machine, session this machine, and the session's full id
+#   machine, session the machine the session ran on, and its full id
 #   first, last      the day's first stretch's start and its last stretch's end
 #   keys             per key below, its seconds (to the millisecond), calls (those started that
 #                    day: the replies for model, the stretches for a wait or background key, the
@@ -215,7 +225,8 @@ USAGE = (
 COUNTS = ("input", "cache_write_1h", "cache_write_5m", "cache_read", "output", "thinking")
 # A line's fields, in the order it is written.
 FIELDS = ["ts", "machine", "session", "agent", "project_dir", "model", "request", *COUNTS]
-SCAN_VERSION = 1
+# Raised to 2 with the time rows, so the first export after it reads every transcript again.
+SCAN_VERSION = 2
 
 
 def fail(message, status=1):
@@ -700,7 +711,29 @@ def launched_transcripts(projects, sessions):
     return found
 
 
-# team-tokens time: every launched session's time rows from this machine's transcripts, by day.
+# The rows of the time day file <path> by session; <doing> names the refusal of a line that is no
+# time row: read_time_day <path> <doing>
+def read_time_day(path, doing):
+    rows = {}
+    if os.path.isfile(path):
+        with open(path, encoding="utf-8") as file:
+            for line in file:
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                    if not all(isinstance(row.get(k), str) for k in ("day", "machine", "session", "first", "last")):
+                        raise ValueError
+                    if not isinstance(row.get("keys"), dict) or not isinstance(row.get("waits"), list):
+                        raise ValueError
+                except (ValueError, AttributeError):
+                    fail(f"cannot {doing}: {path} holds a line that is no time row; fix or remove it")
+                rows[row["session"]] = row
+    return rows
+
+
+# team-tokens time: every machine's time day files, then this machine's launched sessions' rows
+# from its transcripts for the days from its last time day file on, by day.
 def print_time(args):
     opts = {"since": None, "until": None}
     i = 0
@@ -718,11 +751,28 @@ def print_time(args):
     home = os.environ.get("HOME") or fail("HOME is not set")
     team = team_home()
     machine = machine_name(home)
-    rows = []
+    rows, sources = {}, {}
+    for path in sorted(glob.glob(os.path.join(glob.escape(team), "usage", "*", "time", "*.jsonl"))):
+        name, day = os.path.basename(os.path.dirname(os.path.dirname(path))), os.path.basename(path)[: -len(".jsonl")]
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+            continue
+        sources[name] = max(sources.get(name, day), day)
+        for row in read_time_day(path, "read the time").values():
+            rows[row["machine"], row["session"], row["day"]] = row
+    last = sources.get(machine)
+    start = datetime.fromisoformat(last).replace(tzinfo=timezone.utc).timestamp() if last else None
     for path, session in launched_transcripts(os.path.join(home, ".claude", "projects"), launched(team)):
-        rows += time_rows(path, machine, session)
+        try:
+            # A transcript last written before the last time day file's day has no row from it on.
+            if start is not None and os.stat(path).st_mtime < start:
+                continue
+        except FileNotFoundError:
+            continue
+        for row in time_rows(path, machine, session):
+            if last is None or row["day"] >= last:
+                rows[machine, session, row["day"]] = row
     since, until = (opts[f][:10] if opts[f] else None for f in ("since", "until"))
-    rows = [r for r in rows if (since is None or r["day"] >= since) and (until is None or r["day"] <= until)]
+    rows = [r for r in rows.values() if (since is None or r["day"] >= since) and (until is None or r["day"] <= until)]
     for row in sorted(rows, key=lambda r: (r["day"], r["first"], r["session"])):
         print(dumps(row))
 
@@ -786,10 +836,12 @@ def export(through_now):
             state = {}
 
     transcripts = transcript_paths(projects)
+    # The launched sessions' main transcripts, whose time rows the export writes too.
+    timed = dict(launched_transcripts(projects, launched(team)))
     today = datetime.now(timezone.utc).date()
     # The last day written: yesterday, or today with --through-now.
     last = (today if through_now else today - timedelta(days=1)).isoformat()
-    replies, read, seen, pending = {}, 0, {}, set()
+    replies, sessions, read, seen, pending = {}, {}, 0, {}, set()
     for path in transcripts:
         try:
             info = os.stat(path)
@@ -810,6 +862,12 @@ def export(through_now):
                 replies[row["request"]] = merge(old, row) if old else row
                 if row["ts"][:10] > last:
                     pending.add(path)
+        if path in timed:
+            for row in time_rows(path, machine, timed[path]):
+                if row["day"] > last:
+                    pending.add(path)
+                else:
+                    sessions.setdefault(row["day"], {})[row["session"]] = row
 
     days = {}
     for row in replies.values():
@@ -833,13 +891,29 @@ def export(through_now):
         new = len(merged) - len(existing)
         lines.append(f"usage/{machine}/{day}.jsonl: {plural(len(rows), 'reply', 'replies')}, {new} new")
 
-    # A transcript holding a reply of a day not written is read again next time.
+    # Each time day file merges by session, so a row of a transcript not read again is kept.
+    timed_written = 0
+    for day in sorted(sessions):
+        path = os.path.join(out_dir, "time", f"{day}.jsonl")
+        existing = read_time_day(path, "export")
+        merged = {**existing, **sessions[day]}
+        if merged == existing:
+            continue
+        rows = sorted(merged.values(), key=lambda r: (r["first"], r["session"]))
+        write_atomic(path, "".join(dumps(row) + "\n" for row in rows))
+        timed_written += 1
+        new = len(merged) - len(existing)
+        lines.append(f"usage/{machine}/time/{day}.jsonl: {plural(len(rows), 'session', 'sessions')}, {new} new")
+
+    # A transcript holding a reply or a time row of a day not written is read again next time.
     files = {path: mark for path, mark in seen.items() if path not in pending}
     if files != state:
         write_atomic(state_path, json.dumps({"version": SCAN_VERSION, "usage": target, "files": files}, indent=1, sort_keys=True) + "\n")
 
     summary = f"read {read} of {len(transcripts)} transcripts; "
-    summary += f"wrote {plural(written, 'day file', 'day files')}" if written else "no day file changed"
+    wrote = [plural(written, "day file", "day files")] if written else []
+    wrote += [plural(timed_written, "time file", "time files")] if timed_written else []
+    summary += f"wrote {' and '.join(wrote)}" if wrote else "no day file changed"
     if left:
         summary += f"; {plural(left, 'reply', 'replies')} of today left for a later export"
     lines.append(summary)
