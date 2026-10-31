@@ -4,6 +4,23 @@
 {"ts":"2026-10-27T09:00:00Z","task":"T96","event":"launch","role":"builder","session":"b0960002","worktree":"/home/danielc/wt/x","toolkits":[],"project":"agent-team"}
 {"ts":"2026-10-27T09:30:00Z","task":"T96","event":"done","role":"builder","session":"b0960002"}
 {"ts":"2026-10-27T09:31:00Z","task":"T96","event":"pr","url":"https://github.com/chanjdaniel/agent-team/pull/96","head":"fffffff"}
+{"ts":"2026-10-27T10:00:00Z","task":"T95","event":"launch","role":"builder","session":"b0950001","worktree":"/home/danielc/wt/x","toolkits":[],"project":"agent-team"}
+{"ts":"2026-10-27T10:30:00Z","task":"T95","event":"done","role":"builder","session":"b0950001"}
+{"ts":"2026-10-27T10:40:00Z","task":"T95","event":"pr","url":"https://github.com/chanjdaniel/agent-team/pull/95","head":"fffffff"}
+{"ts":"2026-10-27T11:00:00Z","task":"T95","event":"launch","role":"builder","session":"b0950002","worktree":"/home/danielc/wt/x","toolkits":[],"project":"agent-team"}
+{"ts":"2026-10-27T11:30:00Z","task":"T95","event":"done","role":"builder","session":"b0950002"}
+{"ts":"2026-10-27T11:33:00Z","task":"T95","event":"done","role":"builder","session":"b0950002"}
+{"ts":"2026-10-27T12:00:00Z","task":"T95","event":"launch","role":"builder","session":"b0950003","worktree":"/home/danielc/wt/x","toolkits":[],"project":"agent-team"}
+{"ts":"2026-10-27T12:20:00Z","task":"T95","event":"ticket-done","ticket":"01","commits":["eeeeeee"]}
+{"ts":"2026-10-27T12:30:00Z","task":"T95","event":"done","role":"builder","session":"b0950003"}
+{"ts":"2026-10-27T12:40:00Z","task":"T95","event":"ticket-done","ticket":"02","commits":["eeeeeee"]}
+{"ts":"2026-10-27T12:50:00Z","task":"T95","event":"done","role":"builder","session":"b0950003"}
+{"ts":"2026-10-27T13:00:00Z","task":"T95","event":"launch","role":"builder","session":"b0950004","worktree":"/home/danielc/wt/x","toolkits":[],"project":"agent-team"}
+{"ts":"2026-10-27T13:30:00Z","task":"T95","event":"done","role":"builder","session":"b0950004"}
+{"ts":"2026-10-27T13:45:00Z","task":"T95","event":"ticket-done","ticket":"03","commits":["eeeeeee"]}
+{"ts":"2026-10-27T14:00:00Z","task":"T95","event":"launch","role":"builder","session":"b0950005","worktree":"/home/danielc/wt/x","toolkits":[],"project":"agent-team"}
+{"ts":"2026-10-27T14:20:00Z","task":"T95","event":"ticket-done","ticket":"04","commits":["eeeeeee"]}
+{"ts":"2026-10-27T14:50:00Z","task":"T95","event":"ticket-done","ticket":"05","commits":["eeeeeee"]}
 {"ts":"2026-10-27T20:00:00Z","task":"T98","event":"opened","project":"conventioner","path":"small","type":"feat","title":"T98 fixture","branch":"feat/T98-fixture","base":"dev","base_sha":"0123456789abcdef","worktree":"/home/danielc/wt/T98"}
 {"ts":"2026-10-27T20:00:00Z","task":"T98","event":"launch","role":"builder","session":"b0980001","worktree":"/home/danielc/wt/x","toolkits":[]}
 {"ts":"2026-10-27T23:00:00Z","task":"T98","event":"done","role":"builder","session":"b0980001"}

@@ -20,7 +20,8 @@ def first_launch($role): . as $events | ([range(length) as $j | select($events[$
 # them with at, the time of its report. A done or a pr is a report, which ends a round; the
 # ticket-dones before it join that round, and the coordinator logs a report's done with its
 # ticket-done or pr, so an event within 5 minutes after a round's last joins it, unless both are
-# dones. A round of ticket-dones alone is at its last.
+# dones. A round of ticket-dones alone is at its last; one after the last round with a report is
+# a late log of work already reported, so it is dropped.
 def worker_rounds:
   reduce .[] as $e ([];
     ($e.event == "ticket-done" | not) as $report
@@ -31,6 +32,7 @@ def worker_rounds:
         and ($e.event == "done" and any($round.events[]; .event == "done") | not) then
         .[-1].events += [$e]
       else . + [{events: [$e], at: (if $report then $e.ts else null end)}] end)
+  | if .[-1].at == null and length > 1 then .[:-1] else . end
   | map(.at //= .events[-1].ts);
 
 # A task's worker lifetimes (input: its events in ledger order, only those at or before $hi): one
@@ -126,9 +128,9 @@ def worker_classes: [
 # A time row's key's class, first match wins, looking through "background " and the key's kind
 # (bash, monitor or tool): model, compaction, the three waits; then a command's: checks
 # (team-checks, or a name naming a linter, formatter or type checker, go vet), gate (no-mistakes,
-# git push no-mistakes), ci (gh or gh-axi pr checks, run watch or run view), tests (tests/run,
-# bats, playwright, pytest, vitest, jest, go test, cargo test, npm test or npm run test and the
-# like, a program with test in its name), stacks (team-stack, docker), browser
+# git push no-mistakes), ci (team-ci-wait, gh or gh-axi pr checks, run watch or run view), tests
+# (tests/run, bats, playwright, pytest, vitest, jest, go test, cargo test, npm test or npm run
+# test and the like, a program with test in its name), stacks (team-stack, docker), browser
 # (chrome-devtools-axi, team-ui), git (any other git, gh or gh-axi); a tool's: browser (Chrome
 # DevTools' MCP tools), subagents (Agent), files (Read, Edit, Write, Grep, Glob, NotebookEdit);
 # else other.
@@ -146,7 +148,8 @@ def key_class:
       else "other" end
     elif $words[0] == "team-checks" or ($name | test("lint|format|fmt|type-?check|tsc|eslint|prettier|shellcheck|ruff|mypy|^go vet")) then "checks"
     elif $words[0] == "no-mistakes" or $name == "git push no-mistakes" then "gate"
-    elif IN($name; "gh pr checks", "gh run watch", "gh run view", "gh-axi pr checks", "gh-axi run watch", "gh-axi run view") then "ci"
+    elif $words[0] == "team-ci-wait"
+      or IN($name; "gh pr checks", "gh run watch", "gh run view", "gh-axi pr checks", "gh-axi run watch", "gh-axi run view") then "ci"
     elif any($words[]; IN(.; "bats", "playwright", "pytest", "vitest", "jest"))
       or ($name | test("^((go|cargo|npm|pnpm|yarn|bun) test|(npm|pnpm|yarn|bun) run test)"))
       or ($words[0] != "test" and ($words[0] | test("test"))) then "tests"

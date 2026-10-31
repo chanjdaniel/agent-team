@@ -702,6 +702,7 @@ wait error: 10800 1 10800"
     'uv run pytest -x' 'uv run pytest'
     'team-checks agent-team cafe123' 'team-checks agent-team'
     'gh-axi pr checks 35' 'gh-axi pr checks'
+    '/home/x/agent-team/bin/team-ci-wait https://github.com/CONTENT/x/pull/35 cafe123' 'team-ci-wait'
   )
   local projects=$HOME/.claude/projects/-home-dan-agent-team--claude-worktrees-1 i session expected=
   rm -r "$HOME/.claude/projects"

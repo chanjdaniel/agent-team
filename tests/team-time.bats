@@ -347,6 +347,14 @@ t90_hours() {
 # T96, legacy, of agent-team, on 10-27, before any window from 10-28: builder b0960001 08:00 to
 # its ticket-done and done, both at 08:30 (30, 1 round); builder b0960002 09:00 to its done at
 # 09:30 and the task's pr 60 s later, one delivery (31, 1 round, first at 30, ended done).
+# T95, legacy, of agent-team, on 10-27, the round window's edges: builder b0950001 10:00 to its
+# done at 10:30 and the task's pr at 10:40, past 5 minutes (40, 2 rounds, first at 30, ended pr);
+# b0950002 11:00 to its dones at 11:30 and 11:33, within 5 minutes (33, 2 rounds); b0950003 12:00
+# to a ticket-done at 12:20 and its done at 12:30, then a ticket-done at 12:40, past 5 minutes,
+# and its done at 12:50 (50, 2 rounds, first at 30); b0950004 13:00 to its done at 13:30, the
+# ticket-done at 13:45 a late log with no report after it (30, 1 round, ended done); b0950005
+# 14:00 to ticket-dones at 14:20 and 14:50 with no report at all, one round at its last (50, 1
+# round, first at 50).
 # T98 (conventioner small): builder b0980001 10-27 20:00 to its done at 23:00 (180 min, before a
 # window from 10-28 00:00); reviewer r0980001 10-27 23:00 to its done at 00:30 (90, review 90).
 # T100 (agent-team feature): planner p1000001 01:00 to its done at 01:30 (30, planning 30);
@@ -393,6 +401,19 @@ workers_json() {
   json=$(workers_json)
   assert_equal "$(jq -c '[.workers.lifetimes[] | select(.task == "T96" or .task == "T98") | [.session, .end, .ended, .minutes, .rounds, .first_done_minutes]]' <<<"$json")" \
     '[["b0960001","2026-10-27T08:30:00Z","done",30,1,30],["b0960002","2026-10-27T09:31:00Z","done",31,1,30],["b0980001","2026-10-27T23:00:00Z","done",180,1,180],["r0980001","2026-10-28T00:30:00Z","done",90,1,90]]'
+}
+
+@test "a round's window is 5 minutes after its last event, two dones are two rounds, and a late lone ticket-done is no round" {
+  local json
+  json=$(workers_json --task T95)
+  assert_equal "$(jq -r '.workers.lifetimes[] | [.session, .end, .ended, .minutes, .rounds, .first_done_minutes] | @tsv' <<<"$json")" "$(
+    printf '%s\n' \
+      $'b0950001\t2026-10-27T10:40:00Z\tpr\t40\t2\t30' \
+      $'b0950002\t2026-10-27T11:33:00Z\tdone\t33\t2\t30' \
+      $'b0950003\t2026-10-27T12:50:00Z\tdone\t50\t2\t30' \
+      $'b0950004\t2026-10-27T13:30:00Z\tdone\t30\t1\t30' \
+      $'b0950005\t2026-10-27T14:50:00Z\tticket-done\t50\t1\t50'
+  )"
 }
 
 @test "each lifetime's phases are its task's over its span, gate runs included, and null for a legacy task" {
@@ -567,7 +588,8 @@ time_rows() {
   mkdir -p "$HOME/.config/agent-team" "$TEAM_HOME/usage/home-pc/time"
   echo home-pc >"$HOME/.config/agent-team/machine"
   # One row for b1010002 whose keys take 15 minutes down to 1, one key per class; and one for
-  # b1010003 whose keys take 5 seconds to 55, less than any of those.
+  # b1010003 whose keys take 4 seconds to 52, less than any of those (its ci: gh run watch 24,
+  # gh-axi pr checks 40, team-ci-wait 48 and in the background 52).
   jq -cn '[["model"], ["compaction"], ["wait message"], ["wait other"], ["background bash team-checks no-mistakes"],
       ["monitor npx eslint"], ["bash git push no-mistakes"], ["background bash gh pr checks"],
       ["bash npm run test:e2e"], ["bash docker compose"], ["tool mcp__chrome-devtools__take_screenshot"],
@@ -578,10 +600,10 @@ time_rows() {
        waits: []},
     (["monitor npx eslint", "bash gofmt", "bash ./scripts/run-tests.sh", "bash chrome-devtools-axi screenshot",
       "bash team-stack up", "bash gh run watch", "bash no-mistakes axi run", "tool Read", "wait error",
-      "bash gh-axi pr checks", "bash gh-axi pr view"] as $keys
+      "bash gh-axi pr checks", "bash gh-axi pr view", "bash team-ci-wait", "background bash team-ci-wait"] as $keys
     | {day: "2026-10-28", machine: "home-pc", session: "b1010003-0000-4000-8000-000000000001",
-       first: "2026-10-28T12:00:00.000Z", last: "2026-10-28T12:05:30.000Z",
-       keys: ([range($keys | length) as $i | {($keys[$i]): {seconds: (($i + 1) * 5), calls: 1, longest: (($i + 1) * 5)}}] | add),
+       first: "2026-10-28T12:00:00.000Z", last: "2026-10-28T12:06:04.000Z",
+       keys: ([range($keys | length) as $i | {($keys[$i]): {seconds: (($i + 1) * 4), calls: 1, longest: (($i + 1) * 4)}}] | add),
        waits: []})' >"$TEAM_HOME/usage/home-pc/time/2026-10-28.jsonl"
   local json
   json=$(workers_json --task T101)
@@ -593,7 +615,7 @@ time_rows() {
       $'bash gh pr create\tgit' $'bash curl\tother'
   )"
   assert_equal "$(jq -c '.workers.lifetimes[] | select(.session == "b1010003") | .transcript.classes' <<<"$json")" \
-    '{"wait:error":0.8,"checks":0.3,"gate":0.6,"ci":1.3,"tests":0.3,"stacks":0.4,"browser":0.3,"files":0.7,"git":0.9}'
+    '{"wait:error":0.6,"checks":0.2,"gate":0.5,"ci":2.7,"tests":0.2,"stacks":0.3,"browser":0.3,"files":0.5,"git":0.7}'
   # Its 120 minutes of transcript are past its 46 of lifetime: none unseen.
   assert_equal "$(jq -c '.workers.lifetimes[] | select(.session == "b1010002") | .transcript | [.minutes, .unseen]' <<<"$json")" '[120,0]'
 }
