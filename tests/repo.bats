@@ -238,6 +238,19 @@ SETTINGS=(coordinator.settings.json settings/worker.json)
   assert_equal "$(jq -r '.packages["node_modules/chrome-devtools-axi"].version' "$REPO_ROOT/servers/package-lock.json")" "$pin"
 }
 
+# basic-ftp before 6.2.1 parses a directory listing in quadratic time (GHSA-c475-qrg2-pj4r), and
+# get-uri (mongodb-mcp-server's PAC proxy support) asks for ^5, so servers/package.json overrides
+# it; tests/toolkits/servers-ftp.test.mjs checks get-uri still fetches over ftp:// with it.
+@test "servers/package-lock.json holds no basic-ftp before 6.2.1" {
+  local versions version
+  versions=$(jq -r '.packages | to_entries[] | select(.key | test("(^|/)node_modules/basic-ftp$")) | .value.version' "$REPO_ROOT/servers/package-lock.json")
+  [[ -n $versions ]]
+  for version in $versions; do
+    echo "basic-ftp $version" >&2
+    assert_equal "$(printf '%s\n' 6.2.1 "$version" | sort -V | head -n 1)" 6.2.1
+  done
+}
+
 # chrome-devtools-axi runs one bridge and browser per session name, and a session's Bash calls keep
 # no exported variable, so the worker settings name each worker's session for its task and role
 # (team-worker fills both in), and two UI workers on one machine never share a browser.
