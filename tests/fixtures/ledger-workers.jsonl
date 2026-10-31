@@ -1,0 +1,45 @@
+{"ts":"2026-10-27T20:00:00Z","task":"T98","event":"opened","project":"conventioner","path":"small","type":"feat","title":"T98 fixture","branch":"feat/T98-fixture","base":"dev","base_sha":"0123456789abcdef","worktree":"/home/danielc/wt/T98"}
+{"ts":"2026-10-27T20:00:00Z","task":"T98","event":"launch","role":"builder","session":"b0980001","worktree":"/home/danielc/wt/x","toolkits":[]}
+{"ts":"2026-10-27T23:00:00Z","task":"T98","event":"done","role":"builder","session":"b0980001"}
+{"ts":"2026-10-27T23:00:00Z","task":"T98","event":"launch","role":"reviewer","session":"r0980001","worktree":"/home/danielc/wt/x","toolkits":[]}
+{"ts":"2026-10-28T00:30:00Z","task":"T98","event":"review","verdict":"pass","head":"aaaaaaa"}
+{"ts":"2026-10-28T00:30:00Z","task":"T98","event":"done","role":"reviewer","session":"r0980001"}
+{"ts":"2026-10-28T01:00:00Z","task":"T98","event":"closed","archive":[],"returned":[],"kept":[]}
+{"ts":"2026-10-28T01:00:00Z","task":"T100","event":"opened","project":"agent-team","path":"feature","type":"feat","title":"T100 fixture","branch":"feat/T100-fixture","base":"dev","base_sha":"0123456789abcdef","worktree":"/home/danielc/wt/T100"}
+{"ts":"2026-10-28T01:00:00Z","task":"T100","event":"launch","role":"planner","session":"p1000001","worktree":"/home/danielc/wt/x","toolkits":[]}
+{"ts":"2026-10-28T01:30:00Z","task":"T100","event":"done","role":"planner","session":"p1000001"}
+{"ts":"2026-10-28T01:40:00Z","task":"T100","event":"plan-approved","by":"coordinator"}
+{"ts":"2026-10-28T02:00:00Z","task":"T100","event":"launch","role":"builder","session":"b1000001","worktree":"/home/danielc/wt/x","toolkits":[]}
+{"ts":"2026-10-28T03:00:00Z","task":"T100","event":"done","role":"builder","session":"b1000001"}
+{"ts":"2026-10-28T03:00:00Z","task":"T100","event":"launch","role":"reviewer","session":"r1000001","worktree":"/home/danielc/wt/x","toolkits":[]}
+{"ts":"2026-10-28T03:40:00Z","task":"T100","event":"review","verdict":"findings","head":"aaaaaaa"}
+{"ts":"2026-10-28T04:30:00Z","task":"T100","event":"gate-run","run":"R1","head":"bbbbbbb","outcome":"pushed","cause":"review","minutes":{"review":5,"test":15}}
+{"ts":"2026-10-28T05:00:00Z","task":"T100","event":"done","role":"builder","session":"b1000001"}
+{"ts":"2026-10-28T05:00:00Z","task":"T100","event":"launch","role":"reviewer","session":"r1000002","worktree":"/home/danielc/wt/x","toolkits":[]}
+{"ts":"2026-10-28T05:20:00Z","task":"T100","event":"review","verdict":"findings","head":"aaaaaaa"}
+{"ts":"2026-10-28T05:20:00Z","task":"T100","event":"done","role":"reviewer","session":"r1000002"}
+{"ts":"2026-10-28T07:00:00Z","task":"T100","event":"done","role":"builder","session":"b1000001"}
+{"ts":"2026-10-28T07:00:00Z","task":"T100","event":"launch","role":"reviewer","session":"r1000003","worktree":"/home/danielc/wt/x","toolkits":[],"model":"claude-sonnet-5-5"}
+{"ts":"2026-10-28T07:30:00Z","task":"T100","event":"review","verdict":"pass","head":"aaaaaaa"}
+{"ts":"2026-10-28T07:30:00Z","task":"T100","event":"done","role":"reviewer","session":"r1000003"}
+{"ts":"2026-10-28T08:00:00Z","task":"T100","event":"waiting","on":"Daniel","reason":"merge-it"}
+{"ts":"2026-10-28T09:00:00Z","task":"T100","event":"merge-approved","url":"https://github.com/chanjdaniel/agent-team/pull/9","discord_message":"1"}
+{"ts":"2026-10-28T09:10:00Z","task":"T100","event":"merged","pr":9,"merge":"m","head":"h","by":"team-merge"}
+{"ts":"2026-10-28T09:10:00Z","task":"T100","event":"closed","archive":[],"returned":[],"kept":[]}
+{"ts":"2026-10-28T10:00:00Z","task":"T101","event":"opened","project":"conventioner","path":"small","type":"feat","title":"T101 fixture","branch":"feat/T101-fixture","base":"dev","base_sha":"0123456789abcdef","worktree":"/home/danielc/wt/T101"}
+{"ts":"2026-10-28T10:00:00Z","task":"T101","event":"launch","role":"builder","session":"b1010001","worktree":"/home/danielc/wt/x","toolkits":[],"model":"claude-sonnet-5-5"}
+{"ts":"2026-10-28T11:00:00Z","task":"T101","event":"launch","role":"builder","session":"b1010002","worktree":"/home/danielc/wt/x","toolkits":[]}
+{"ts":"2026-10-28T11:46:00Z","task":"T101","event":"done","role":"builder","session":"b1010002"}
+{"ts":"2026-10-28T12:00:00Z","task":"T101","event":"launch","role":"builder","session":"b1010003","worktree":"/home/danielc/wt/x","toolkits":[]}
+{"ts":"2026-10-28T12:00:00Z","task":"T99","event":"launch","role":"builder","session":"b0990001","worktree":"/home/danielc/wt/x","toolkits":[],"project":"agent-team"}
+{"ts":"2026-10-28T12:30:00Z","task":"T99","event":"done","role":"builder","session":"b0990001"}
+{"ts":"2026-10-28T13:00:00Z","task":"T101","event":"closed","archive":[],"returned":[],"kept":[]}
+{"ts":"2026-10-28T14:00:00Z","task":"T102","event":"opened","project":"agent-team","path":"bug","type":"feat","title":"T102 fixture","branch":"feat/T102-fixture","base":"dev","base_sha":"0123456789abcdef","worktree":"/home/danielc/wt/T102"}
+{"ts":"2026-10-28T14:00:00Z","task":"T102","event":"launch","role":"planner","session":"p1020001","worktree":"/home/danielc/wt/x","toolkits":[]}
+{"ts":"2026-10-28T15:00:00Z","task":"T102","event":"paused","reason":"stowed"}
+{"ts":"2026-10-28T15:00:00Z","task":"T102","event":"stowed","machine":"home-pc","worktrees":[],"roles":["planner"]}
+{"ts":"2026-10-28T16:00:00Z","task":"T102","event":"resumed"}
+{"ts":"2026-10-28T16:00:00Z","task":"T102","event":"launch","role":"builder","session":"b1020001","worktree":"/home/danielc/wt/x","toolkits":[]}
+{"ts":"2026-10-28T17:00:00Z","task":"T97","event":"launch","role":"builder","worktree":"/home/danielc/wt/x","toolkits":[]}
+{"ts":"2026-10-28T21:00:00Z","task":"T102","event":"done","role":"builder","session":"b1020001"}
+{"ts":"2026-10-28T21:00:00Z","task":"T100","event":"done","role":"reviewer","session":"r1000001"}

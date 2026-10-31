@@ -341,3 +341,135 @@ t90_hours() {
   run_bin -1 team-time
   assert_contains "$output" "no ledger at $TEAM_HOME/ledger.jsonl"
 }
+
+# fixtures/ledger-workers.jsonl holds these worker lifetimes, read to 2026-10-28T20:00 (all on
+# 10-28 but where told), each from its launch:
+# T98 (conventioner small): builder b0980001 10-27 20:00 to its done at 23:00 (180 min, before a
+# window from 10-28 00:00); reviewer r0980001 10-27 23:00 to its done at 00:30 (90, review 90).
+# T100 (agent-team feature): planner p1000001 01:00 to its done at 01:30 (30, planning 30);
+# builder b1000001 02:00 to its third done at 07:00 (300, first done 60; building 60, review 60,
+# gate 20 (a gate run's minutes from 04:10), unattributed 160); reviewer r1000001 03:00 to its
+# review at 03:40, with no done (40), its done at 21:00 after the window; reviewer r1000002 05:00
+# to its done at 05:20 (20); reviewer r1000003 on claude-sonnet-5-5, 07:00 to its done at 07:30
+# (30).
+# T101 (conventioner small): builder b1010001 on claude-sonnet-5-5, 10:00 replaced at 11:00
+# (60); builder b1010002 11:00 to its done at 11:46 (46); builder b1010003 12:00 to the close at
+# 13:00 (60).
+# T99, legacy (no opened): builder b0990001 of agent-team, 12:00 to its done at 12:30 (30, path
+# "-", phases null). T97, legacy: a launch with no session, no lifetime.
+# T102 (agent-team bug): planner p1020001 14:00 to the stow at 15:00 (60); builder b1020001 from
+# 16:00, running at 20:00 (240 so far, building), its done at 21:00 after the window.
+# Minutes by role: builder 300, 60, 46, 60, 30; reviewer 90, 40, 20, 30; planner 30, 60.
+workers_json() {
+  cp "$BATS_TEST_DIRNAME/fixtures/ledger-workers.jsonl" "$TEAM_HOME/ledger.jsonl"
+  time_json --until 2026-10-28T20:00:00Z "$@"
+}
+
+@test "each worker's lifetime runs from its launch to its last done, its review, its replacement, the stow or the close" {
+  local json
+  json=$(workers_json --since 2026-10-28T00:00:00Z)
+  assert_equal "$(jq -r '.workers.lifetimes[] | [.task, .role, .session, .project, .path, .model, .start, .end, .ended, .minutes, .rounds, .first_done_minutes] | map(. // "null") | @tsv' <<<"$json")" "$(
+    printf '%s\n' \
+      $'T98\treviewer\tr0980001\tconventioner\tsmall\tdefault\t2026-10-27T23:00:00Z\t2026-10-28T00:30:00Z\tdone\t90\t1\t90' \
+      $'T100\tplanner\tp1000001\tagent-team\tfeature\tdefault\t2026-10-28T01:00:00Z\t2026-10-28T01:30:00Z\tdone\t30\t1\t30' \
+      $'T100\tbuilder\tb1000001\tagent-team\tfeature\tdefault\t2026-10-28T02:00:00Z\t2026-10-28T07:00:00Z\tdone\t300\t3\t60' \
+      $'T100\treviewer\tr1000001\tagent-team\tfeature\tdefault\t2026-10-28T03:00:00Z\t2026-10-28T03:40:00Z\treview\t40\t0\tnull' \
+      $'T100\treviewer\tr1000002\tagent-team\tfeature\tdefault\t2026-10-28T05:00:00Z\t2026-10-28T05:20:00Z\tdone\t20\t1\t20' \
+      $'T100\treviewer\tr1000003\tagent-team\tfeature\tclaude-sonnet-5-5\t2026-10-28T07:00:00Z\t2026-10-28T07:30:00Z\tdone\t30\t1\t30' \
+      $'T101\tbuilder\tb1010001\tconventioner\tsmall\tclaude-sonnet-5-5\t2026-10-28T10:00:00Z\t2026-10-28T11:00:00Z\treplaced\t60\t0\tnull' \
+      $'T101\tbuilder\tb1010002\tconventioner\tsmall\tdefault\t2026-10-28T11:00:00Z\t2026-10-28T11:46:00Z\tdone\t46\t1\t46' \
+      $'T101\tbuilder\tb1010003\tconventioner\tsmall\tdefault\t2026-10-28T12:00:00Z\t2026-10-28T13:00:00Z\tclosed\t60\t0\tnull' \
+      $'T99\tbuilder\tb0990001\tagent-team\t-\tdefault\t2026-10-28T12:00:00Z\t2026-10-28T12:30:00Z\tdone\t30\t1\t30' \
+      $'T102\tplanner\tp1020001\tagent-team\tbug\tdefault\t2026-10-28T14:00:00Z\t2026-10-28T15:00:00Z\tstowed\t60\t0\tnull'
+  )"
+  assert_equal "$(jq -c '[.workers.lifetimes[] | keys_unsorted] | unique' <<<"$json")" \
+    '[["task","project","path","role","session","model","start","end","ended","minutes","rounds","first_done_minutes","phases","transcript"]]'
+  # Without --since, the lifetime that ended before 10-28 is in the window too.
+  json=$(workers_json)
+  assert_equal "$(jq -c '[.workers.lifetimes[0] | .session, .minutes, .ended]' <<<"$json")" '["b0980001",180,"done"]'
+}
+
+@test "each lifetime's phases are its task's over its span, gate runs included, and null for a legacy task" {
+  local json
+  json=$(workers_json --since 2026-10-28T00:00:00Z)
+  assert_equal "$(jq -c '[.workers.lifetimes[] | {(.session): .phases}] | add' <<<"$json")" "$(jq -c . <<<'{
+    "r0980001": {"review": 90}, "p1000001": {"planning": 30},
+    "b1000001": {"building": 60, "gate": 20, "review": 60, "unattributed": 160},
+    "r1000001": {"review": 40}, "r1000002": {"review": 20}, "r1000003": {"review": 30},
+    "b1010001": {"building": 60}, "b1010002": {"building": 46}, "b1010003": {"building": 60},
+    "b0990001": null, "p1020001": {"planning": 60}}')"
+  assert_equal "$(jq -c '.workers.lifetimes[] | select(.session == "b1000001") | [.minutes, ([.phases[]] | add)]' <<<"$json")" '[300,300]'
+}
+
+@test "the running workers are listed apart with their age at --until, and are in no average" {
+  local json
+  json=$(workers_json --since 2026-10-28T00:00:00Z)
+  assert_equal "$(jq -c '.workers.running | map({task, role, session, start, end, ended, minutes, age_minutes, rounds, phases})' <<<"$json")" \
+    '[{"task":"T102","role":"builder","session":"b1020001","start":"2026-10-28T16:00:00Z","end":null,"ended":"running","minutes":null,"age_minutes":240,"rounds":0,"phases":{"building":240}}]'
+  assert_equal "$(jq -c '.workers.stats.by_role[] | select(.role == "builder") | .workers' <<<"$json")" '5'
+}
+
+@test "the averages are by role, role and path, role and project, and role and model, with the ten longest" {
+  local json
+  json=$(workers_json --since 2026-10-28T00:00:00Z)
+  assert_equal "$(jq -r '.workers.stats.by_role[] | [.role, .workers, .mean, .median, .p90, .longest] | @tsv' <<<"$json")" "$(
+    printf '%s\n' $'builder\t5\t99.2\t60\t300\t300' $'reviewer\t4\t45\t30\t90\t90' $'planner\t2\t45\t30\t60\t60'
+  )"
+  assert_equal "$(jq -r '.workers.stats.by_role_path[] | [.role, .path, .workers, .mean, .median, .p90, .longest] | @tsv' <<<"$json")" "$(
+    printf '%s\n' $'builder\tsmall\t3\t55.3\t60\t60\t60' $'builder\t-\t1\t30\t30\t30\t30' $'builder\tfeature\t1\t300\t300\t300\t300' \
+      $'reviewer\tfeature\t3\t30\t30\t40\t40' $'reviewer\tsmall\t1\t90\t90\t90\t90' \
+      $'planner\tbug\t1\t60\t60\t60\t60' $'planner\tfeature\t1\t30\t30\t30\t30'
+  )"
+  assert_equal "$(jq -r '.workers.stats.by_role_project[] | [.role, .project, .workers, .mean, .median, .p90, .longest] | @tsv' <<<"$json")" "$(
+    printf '%s\n' $'builder\tconventioner\t3\t55.3\t60\t60\t60' $'builder\tagent-team\t2\t165\t30\t300\t300' \
+      $'reviewer\tagent-team\t3\t30\t30\t40\t40' $'reviewer\tconventioner\t1\t90\t90\t90\t90' \
+      $'planner\tagent-team\t2\t45\t30\t60\t60'
+  )"
+  assert_equal "$(jq -r '.workers.stats.by_role_model[] | [.role, .model, .workers, .mean, .median, .p90, .longest] | @tsv' <<<"$json")" "$(
+    printf '%s\n' $'builder\tdefault\t4\t109\t46\t300\t300' $'builder\tclaude-sonnet-5-5\t1\t60\t60\t60\t60' \
+      $'reviewer\tdefault\t3\t50\t40\t90\t90' $'reviewer\tclaude-sonnet-5-5\t1\t30\t30\t30\t30' \
+      $'planner\tdefault\t2\t45\t30\t60\t60'
+  )"
+  assert_equal "$(jq -c '.workers.longest' <<<"$json")" \
+    '["b1000001","r0980001","b1010001","b1010003","p1020001","b1010002","r1000001","p1000001","r1000003","b0990001"]'
+}
+
+@test "--task keeps that task's workers alone" {
+  local json
+  json=$(workers_json --task T101)
+  assert_equal "$(jq -c '[.workers.lifetimes[].session, .workers.running, [.workers.stats.by_role[].role]]' <<<"$json")" \
+    '["b1010001","b1010002","b1010003",[],["builder"]]'
+  json=$(workers_json --task T102)
+  assert_equal "$(jq -c '[.workers.lifetimes[].session, .workers.running[].session]' <<<"$json")" '["p1020001","b1020001"]'
+}
+
+@test "the text form prints the lifetimes, the averages, the longest and the running after the task tables" {
+  cp "$BATS_TEST_DIRNAME/fixtures/ledger-workers.jsonl" "$TEAM_HOME/ledger.jsonl"
+  run_bin -0 team-time --since 2026-10-28T00:00:00Z --until 2026-10-28T20:00:00Z
+  assert_contains "$output" "Worker lifetimes ended in the window: 11 (5 builders, 4 reviewers, 2 planners), 1 running"
+  grep -Eq '^role +path +workers +mean +median +p90 +longest$' <<<"$output"
+  grep -Eq '^builder +all +5 +99\.2 +60\.0 +300\.0 +300\.0$' <<<"$output"
+  grep -Eq '^builder +small +3 +55\.3 +60\.0 +60\.0 +60\.0$' <<<"$output"
+  grep -Eq '^role +project +workers +mean +median +p90 +longest$' <<<"$output"
+  grep -Eq '^builder +agent-team +2 +165\.0 +30\.0 +300\.0 +300\.0$' <<<"$output"
+  grep -Eq '^role +model +workers +mean +median +p90 +longest$' <<<"$output"
+  grep -Eq '^reviewer +claude-sonnet-5-5 +1 +30\.0 +30\.0 +30\.0 +30\.0$' <<<"$output"
+  grep -Eq '^task +role +session +path +project +minutes +ended +rounds +first done$' <<<"$output"
+  grep -Eq '^T100 +builder +b1000001 +feature +agent-team +300\.0 +done +3 +60\.0$' <<<"$output"
+  grep -Eq '^T100 +reviewer +r1000001 +feature +agent-team +40\.0 +review +0 +-$' <<<"$output"
+  grep -Eq '^task +role +session +minutes so far$' <<<"$output"
+  grep -Eq '^T102 +builder +b1020001 +240\.0$' <<<"$output"
+  # The task tables come first, unchanged.
+  assert_equal "${lines[0]}" "Task time from 2026-10-28T00:00:00Z to 2026-10-28T20:00:00Z: 4 tasks, 18.2 hours"
+  [[ ${output%%Worker lifetimes*} == *"DONE to the task's next event"* ]]
+  run_bin -0 team-time --task T102 --until 2026-10-28T20:00:00Z
+  assert_contains "$output" "Worker lifetimes ended in the window: 1 (1 planner), 1 running"
+}
+
+@test "with no worker lifetimes the report says so" {
+  : >"$TEAM_HOME/ledger.jsonl"
+  run_bin -0 team-time --until "$until"
+  assert_contains "$output" "Worker lifetimes ended in the window: 0, 0 running"
+  [[ $output != *"Longest lifetimes"* ]]
+  assert_equal "$(time_json --until "$until" | jq -c '.workers | [.lifetimes, .running, .stats.by_role, .longest]')" '[[],[],[],[]]'
+}

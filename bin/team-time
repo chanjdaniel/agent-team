@@ -32,11 +32,26 @@
 # (blocked events classed wait:denial); Daniel's answers, each asked matched to the task's next
 # event that settles it, with the median and 90th percentile minutes by nearest rank; and each
 # done's seconds to the task's next event.
+# Then each worker's lifetime, from the ledger's events up to --until, legacy tasks included: one
+# per launch with a session, from its launch to its session's last done (ended done); else, for a
+# reviewer, to the task's last review before its next reviewer launch (review); else to the first
+# after it of the task's next launch of the same role (replaced), its stowed (stowed) or its closed
+# (closed); else it is running. Its project is the launch's, else the task's; its path the task's,
+# else "-"; its model the launch's, else "default"; its rounds are its session's dones, and its
+# phases its task's phase minutes over its span (null for a legacy task). A lifetime is in the
+# window when it ended in it; one running at --until is listed apart with its age, in no average.
+# The averages, over the window's lifetimes in minutes: workers, mean, median, 90th percentile by
+# nearest rank and longest, by role, by role and path, by role and project, by role and model; then
+# the ten longest. A session in a later round after --until counts again, longer, in a later window.
 # Prints the tables as text; --json prints the report (schema team-time/1): since, until, wall,
 # tasks (task, project, path, closed, wall, hours per phase), phases (all, share in percent, and
 # projects), gate_runs (per_pr, by_cause, by_outcome, step_minutes), reviews, builders, denials,
-# answers (answered, unanswered, median_minutes, p90_minutes) and done_to_next (count,
-# median_seconds, p90_seconds, within_minute). Hours have three decimals.
+# answers (answered, unanswered, median_minutes, p90_minutes), done_to_next (count,
+# median_seconds, p90_seconds, within_minute) and workers: lifetimes (task, project, path, role,
+# session, model, start, end, ended, minutes, rounds, first_done_minutes, phases, transcript),
+# running (the same, with age_minutes), stats (by_role, by_role_path, by_role_project,
+# by_role_model, each a list of role, the group's key, workers, mean, median, p90 and longest) and
+# longest (sessions, longest first). Hours have three decimals, minutes one.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
@@ -67,13 +82,24 @@ until=${until:-$(date -u +%FT%TZ)}
 ledger=$TEAM_HOME/ledger.jsonl
 [[ -f $ledger ]] || die "no ledger at $ledger"
 
-report=$(jq -L "$TEAM_LIB" -nR --arg since "$since" --arg until "$until" --arg task "$task" '
-  include "time";
-  time_report(if $since == "" then 0 else $since | fromdate end; $until | fromdate;
-    if $since == "" then null else $since end; $until; if $task == "" then null else $task end)' "$ledger")
+# The task report, then the workers report beside it: workers.jq reads the ledger's lines after the
+# task report's one line, since each report reads the ledger as its input and time.jq stays as is.
+report=$(
+  {
+    jq -L "$TEAM_LIB" -cnR --arg since "$since" --arg until "$until" --arg task "$task" '
+      include "time";
+      time_report(if $since == "" then 0 else $since | fromdate end; $until | fromdate;
+        if $since == "" then null else $since end; $until; if $task == "" then null else $task end)' "$ledger"
+    cat "$ledger"
+  } | jq -L "$TEAM_LIB" -cnR --arg since "$since" --arg until "$until" --arg task "$task" '
+    include "workers";
+    (input | fromjson) as $report
+    | $report + {workers: workers_report(if $since == "" then 0 else $since | fromdate end; $until | fromdate;
+        if $task == "" then null else $task end)}'
+)
 
 if [[ -n $json ]]; then
   jq . <<<"$report"
 else
-  jq -L "$TEAM_LIB" -r 'include "time"; time_text' <<<"$report"
+  jq -L "$TEAM_LIB" -r 'include "time"; include "workers"; time_text, "", workers_text' <<<"$report"
 fi
