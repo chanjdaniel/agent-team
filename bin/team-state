@@ -9,7 +9,7 @@
 # worktrees (returned or not), thread, workers (every launch, live when claude agents --json
 # lists its session, with that session's status, state and context, the tokens its latest
 # main-conversation reply read, from its transcript, or null), last_event, pending_asks, waiting,
-# rehome_failures, and pr; pending_asks are the asks no later event settles, an answered or a
+# rehome_failures, merge_preapproval, and pr; pending_asks are the asks no later event settles, an answered or a
 # merge-preapproved with the ask's id or a merge-approved whose url its text names.
 # Recorded worktree paths under another machine's home (/home/<name>, /Users/<name>) show as the
 # same paths under this HOME.
@@ -35,7 +35,15 @@
 # project's latest rehome-failed, as {project, branch, machine, reason, since}, until a later
 # opened, worktree-added, worktree-moved, rehomed or worktree-returned in that project; the text
 # form says "not re-homed: <project> on <machine>: <reason>", before any waiting.
-# Exit 1 for a task with no events, or when the live session list cannot be read.
+# merge_preapproval is Daniel's plan-time merge word: null when the task logged no
+# merge-preapproved, else its latest one's project, ask, discord_message, scope and ts, with
+# withdrawn (the first merge-preapproval-withdrawn of that project after it, as {ts,
+# discord_message}, or null while it stands), opted_in (the project's merge_with_plan in
+# projects.toml now, false for a project it no longer has) and own (the team's own project, as
+# own_project in bin/lib/team.sh reads it). The text form says the first that holds of "merge
+# pre-approval withdrawn", "merge pre-approved, but <project> is the team's own project", "merge
+# pre-approved, but <project> does not opt in" and "merge pre-approved", before any waiting.
+# Exit 1 for a task with no events, or when the live session list or the registry cannot be read.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 

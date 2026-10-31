@@ -1144,7 +1144,7 @@ session_context() {
 # GitHub. GitHub failures are carried in the pr part; a broken registry or an unreadable session
 # list fails with the reason on stderr: task_state_json '<events>'
 task_state_json() (
-  local events=$1 state pr dir session_id context contexts='{}' sessions
+  local events=$1 state pr dir session_id context contexts='{}' sessions plan_project plan_projects opted_in own
   live_sessions
   while IFS= read -r session_id; do
     context=$(session_context "$session_id")
@@ -1153,6 +1153,21 @@ task_state_json() (
   sessions=$(jq -c --argjson contexts "$contexts" 'map(if type == "object" then
     .context = ($contexts[.sessionId // "" | tostring] // null) else . end)' <<<"$LIVE_SESSIONS") || exit 1
   state=$(ledger_jq 'task_state($sessions; $home)' -c --argjson sessions "$sessions" <<<"$events") || exit 1
+  # The plan-time approval's project as the registry has it now; one it no longer has opts in to
+  # nothing, and is the team's own only by name.
+  plan_project=$(jq -r '.merge_preapproval.project // empty' <<<"$state") || exit 1
+  if [[ -n $plan_project ]]; then
+    opted_in=false own=false
+    plan_projects=$(team_project --list) || exit 1
+    if grep -Fxq -- "$plan_project" <<<"$plan_projects"; then
+      opted_in=$(team_project "$plan_project" merge_with_plan) || exit 1
+      ! own_project "$plan_project" || own=true
+    elif [[ $plan_project == agent-team ]]; then
+      own=true
+    fi
+    state=$(jq -c --argjson opted_in "$opted_in" --argjson own "$own" \
+      '.merge_preapproval += {opted_in: $opted_in, own: $own}' <<<"$state") || exit 1
+  fi
   pr=$(jq -c 'map(select(.event == "pr")) | last' <<<"$events") || exit 1
   if [[ $pr != null ]]; then
     dir=$(mktemp -d) || exit 1

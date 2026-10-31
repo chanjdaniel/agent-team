@@ -12,6 +12,13 @@
 # done or plan-approved after it), with its thread. With none, it says "Nothing waits on you". Its
 # last line is the time of this run. Items past Discord's 2000 characters are left out from the
 # end, counted in a line.
+# A PR ready to merge is left out while it waits on no word of Daniel's: the task's latest
+# merge-preapproved of the PR's project (the registered one whose repo is the URL's) stands, and
+# that project opts in now (team-project --find merge_with_plan true) and is not the team's own
+# (own_project in bin/lib/team.sh), so team-merge merges it on that plan-time word. One it
+# refuses comes back as the coordinator's ask, its text naming the PR's URL, listed with the asks.
+# The registry is read only once the ledger holds a merge-preapproved; when it cannot be read,
+# every PR ready to merge is listed, with a line on stderr saying why.
 # It edits the message named in ~/.local/state/agent-team/inbox.json ({channel, guild, message})
 # and posts a new one only when there is none there, it is another channel's, or Discord no longer
 # has it (404), keeping the new one's id. It never pings: no mention in it notifies anyone, and
@@ -96,8 +103,25 @@ fi
 
 ledger=$TEAM_HOME/ledger.jsonl
 [[ -e $ledger ]] || ledger=/dev/null
-ledger_jq 'ledger_events | inbox_items | inbox_text($guild; $limit; now | floor)
-  | {content: ., allowed_mentions: {parse: []}, flags: $flags}' -nRc \
+
+# The repos, lowercased, of the projects whose PRs may merge on Daniel's plan-time word, each to
+# its project: those that opt in now and are not the team's own. The registry is read only once
+# the ledger holds such a word, and one that cannot be read lists every PR.
+plan_repos='{}'
+if ledger_jq 'ledger_events | any(.[]; .event == "merge-preapproved")' -nRe "$ledger" >/dev/null; then
+  if projects=$(team_project --find merge_with_plan true 2>"$scratch/registry"); then
+    while IFS= read -r project; do
+      if [[ -z $project ]] || own_project "$project"; then continue; fi
+      repo=$(team_project "$project" repo) || exit 1
+      plan_repos=$(jq -c --arg repo "$repo" --arg project "$project" '.[$repo | ascii_downcase] = $project' <<<"$plan_repos")
+    done <<<"$projects"
+  else
+    echo "team-inbox: lists every PR ready to merge, Daniel's plan-time word aside, since the registry cannot be read: $(grep -m 1 . "$scratch/registry" || echo "team-project failed")" >&2
+  fi
+fi
+
+ledger_jq 'ledger_events | inbox_items($plan_repos) | inbox_text($guild; $limit; now | floor)
+  | {content: ., allowed_mentions: {parse: []}, flags: $flags}' -nRc --argjson plan_repos "$plan_repos" \
   --arg guild "$guild" --argjson limit "$LIMIT" --argjson flags "$SUPPRESS_EMBEDS" "$ledger" >"$scratch/body"
 
 # Keep the message's place: keep <message>

@@ -375,6 +375,26 @@ def merge_preapproval($project):
     else $latest.value + {withdrawn: (first(.[$latest.key + 1:][]
       | select(.event == "merge-preapproval-withdrawn" and .project == $project)) // null)} end;
 
+# The task's latest merge-preapproved, of any project, as team-state shows it, or null: its
+# project, ask, discord_message, scope and ts, withdrawn ({ts, discord_message} of the first
+# merge-preapproval-withdrawn of its project after it, or null while it stands), and opted_in and
+# own, null here, which task_state_json reads from the registry.
+def latest_merge_preapproval:
+  (map(select(.event == "merge-preapproved")) | last | .project) as $project
+  | if $project == null then null
+    else merge_preapproval($project)
+      | {project, ask, discord_message, scope, ts,
+         withdrawn: (.withdrawn | if . == null then null else {ts, discord_message} end),
+         opted_in: null, own: null} end;
+
+# The projects whose plan-time merge approval of the task stands: its latest merge-preapproved of
+# each has no withdrawal after it, in the order of their first merge-preapproved.
+def preapproved_projects:
+  . as $events
+  | reduce (.[] | select(.event == "merge-preapproved") | .project) as $project ([];
+      if IN(.[]; $project) then . else . + [$project] end)
+  | map(select(. as $project | $events | merge_preapproval($project) | .withdrawn == null));
+
 # Whether the task's events hold an answered of ask $id read from Discord message $message.
 def answered_from($id; $message):
   any(.[]; .event == "answered" and .id == $id and (.discord_message | tostring) == $message);
@@ -398,7 +418,7 @@ def task_state($sessions; $home):
      path: $opened.path, phase: phase, worktrees: worktree_list,
      thread: (map(select(.event == "thread") | .discord_thread) | last),
      workers: workers($sessions), last_event: last, pending_asks: pending_asks, waiting: waiting,
-     rehome_failures: rehome_failures, pr: null};
+     rehome_failures: rehome_failures, merge_preapproval: latest_merge_preapproval, pr: null};
 
 # A task's state (team-state's JSON) as one line of text, each live worker's context in thousands:
 # T14 agent-team feature building | T14-builder idle 302k | PR #5 a1b2c3d checks 2/2 agent-review missing
@@ -425,6 +445,12 @@ def state_line:
      end)
   + (if (.rehome_failures // []) == [] then ""
      else " | not re-homed: " + (.rehome_failures | map("\(.project) on \(.machine): \(.reason)") | join("; ")) end)
+  + (.merge_preapproval // null
+     | if . == null then ""
+       elif .withdrawn != null then " | merge pre-approval withdrawn"
+       elif .own == true then " | merge pre-approved, but \(.project) is the team's own project"
+       elif .opted_in == false then " | merge pre-approved, but \(.project) does not opt in"
+       else " | merge pre-approved" end)
   + (if .waiting == null then "" else " | waiting on \(.waiting.on): \(.waiting.reason)" end);
 
 # Whether a task is parked, waiting on something other than a worker: held, blocked or awaiting
@@ -437,6 +463,23 @@ def parked:
 def finding($task; $kind; $session; $name; $detail; $next):
   {task: $task, kind: $kind, session: $session, name: $name, next: $next,
    text: "\($task) \($kind): \($detail); next: \($next)"};
+
+# team-sweep's merge-due finding, over a task's events, or nothing: the task awaits merge, a
+# plan-time approval of it stands, and nothing else parks it (no ask nothing settled, pause or
+# wait). The ledger names no PR's project, so any standing approval of the task's counts, and
+# team-merge holds each PR to its own project's.
+def merge_due_finding:
+  .[0].task as $task
+  | . as $events
+  | preapproved_projects as $projects
+  | if phase == "awaiting-merge" and $projects != [] and pending_asks == []
+      and (standing_until_launch("paused") | not) and waiting == null then
+      task_prs as $prs
+      | finding($task; "merge-due"; null; null;
+          "awaiting the merge of \([$prs[] | select(pr_merged($events; $prs) | not) | .url] | join(", "))"
+          + " on Daniel's plan-time word on \($projects | join(", ")), with no ask open";
+          "run team-merge \($task); on a refusal, ask Daniel for the per-head word with team-ask")
+    else empty end;
 
 # The no-worker, waiting-input and silent findings of an open task that is not parked. A live
 # session is judged by its latest launch, and one waiting for input is not also called silent.
@@ -571,14 +614,16 @@ def slots_finding:
   end;
 
 # team-sweep's findings, over every ledger event as one array, the session list and the machine's
-# task slots ($slots, as slots_finding takes them): each open task's unless it is parked, then the
+# task slots ($slots, as slots_finding takes them): each open task's merge-due, else its findings
+# unless it is parked, then the
 # stray sessions (named like a team worker whose task is closed or not in the ledger, never the
 # load check's T0, whose session the coordinator waits on for up to 30 minutes), in task number
 # order; then the slots finding and the retro-due finding.
 def sweep($sessions; $slots):
   . as $events
   | by_task as $tasks
-  | ([($tasks[] | select(is_open) | select(parked | not) | task_findings($sessions)),
+  | ([($tasks[] | select(is_open) | [merge_due_finding] as $due
+        | if $due != [] then $due[] elif parked then empty else task_findings($sessions) end),
       (team_sessions($tasks; $sessions)[] | select(.task_state | IN("closed", "unknown"))
         | finding(.task; "stray"; .session; .name;
             "\(.name) \(.session) is live but \(stray_reason)";
@@ -652,19 +697,24 @@ def interview_under_way:
 
 # The task's PRs that wait on Daniel's word to merge, from task_prs: none unless its phase is
 # awaiting-merge, then each not merged that no merge-approved names (a trailing slash aside) at its
-# head, or at no head, as a legacy line.
-def merge_ready_prs:
+# head, or at no head, as a legacy line, and whose repo (lowercased) is not a key of $plan_repos
+# naming a project with a standing merge-preapproved of the task: the projects that opt in to
+# plan-time merges now and are not the team's own, which team-inbox reads from the registry.
+def merge_ready_prs($plan_repos):
   . as $events
   | task_prs as $prs
   | if phase != "awaiting-merge" then []
     else [$prs[] | select(pr_merged($events; $prs) | not) | . as $pr
       | select(any($events[]; .event == "merge-approved" and (.url | strings | rtrimstr("/")) == ($pr.url | rtrimstr("/"))
-          and (.head == null or same_head(.head; $pr.head))) | not)] end;
+          and (.head == null or same_head(.head; $pr.head))) | not)
+      | $plan_repos[first($pr.url | strings | capture("^https://github\\.com/(?<r>[^/]+/[^/]+)/") | .r | ascii_downcase) // ""] as $project
+      | select($project != null and ($events | merge_preapproval($project) | . != null and .withdrawn == null) | not)] end;
 
 # What waits on Daniel, over every ledger event, each open task's in task number order:
 # {asks: [{task, id, text (its first line), thread (the task's thread when it was asked), message
-# (the question's discord_message)}], prs: [{task, title, url}], interviews: [{task, title, thread}]}.
-def inbox_items:
+# (the question's discord_message)}], prs: [{task, title, url}], interviews: [{task, title, thread}]},
+# the PRs as merge_ready_prs($plan_repos) has them.
+def inbox_items($plan_repos):
   [by_task | to_entries[] | select(.value | is_open)
     | {task: .key, events: .value, title: (.value | map(select(.event == "opened")) | first | .title)}]
   | by_task_number
@@ -672,7 +722,7 @@ def inbox_items:
         | {task: $task, id: .ask.id, text: (.ask.text | tostring | split("\n")[0]),
            thread: ([$events[:.k][] | select(.event == "thread") | .discord_thread | strings] | last),
            message: (.ask.discord_message | if . == null then null else tostring end)}],
-     prs: [.[] | {task, title} + (.events | merge_ready_prs[] | {url})],
+     prs: [.[] | {task, title} + (.events | merge_ready_prs($plan_repos)[] | {url})],
      interviews: [.[] | select(.events | interview_under_way)
         | {task, title, thread: (.events | map(select(.event == "interview-thread") | .discord_thread) | last | tostring)}]};
 

@@ -384,6 +384,79 @@ T42 stray: T42-reviewer 88888888 is live but T42 is not in the ledger; next: rea
   no_github
 }
 
+# Task <task>'s PR 5 of proj reviewed and passed at its head, with Daniel's plan-time word on proj
+# logged, answering the plan ask.
+preapproved_pr() {
+  event "$1" asked '{id: "plan", text: "Approve the plan, and its merge?"}'
+  event "$1" merge-preapproved '{project: "proj", ask: "plan", discord_message: "1563000000000000001", scope: ["src/"]}'
+  event "$1" plan-approved '{by: "Daniel"}'
+  event "$1" pr '{url: "https://github.com/owner/proj/pull/5", head: "a1b2c3d"}'
+  event "$1" review '{verdict: "pass", head: "a1b2c3d4e5", findings: {blocking: 0, correctness: 0, security: 0, "real-data": 0, note: 0}, guarded: []}'
+}
+
+@test "merge-due: an awaiting-merge task with Daniel's standing plan-time word and nothing else parking it" {
+  opened T3
+  launch T3 reviewer 11111111
+  preapproved_pr T3
+  sessions "$(session 11111111 T3-reviewer idle)"
+  run_bin -1 team-sweep
+  assert_equal "$output" "T3 merge-due: awaiting the merge of https://github.com/owner/proj/pull/5 on Daniel's plan-time word on proj, with no ask open; next: run team-merge T3; on a refusal, ask Daniel for the per-head word with team-ask"
+  run_bin -1 team-sweep --json
+  assert_equal "$(jq -c 'map([.task, .kind, .session, .name, .next])' <<<"$output")" \
+    '[["T3","merge-due",null,null,"run team-merge T3; on a refusal, ask Daniel for the per-head word with team-ask"]]'
+  no_github
+
+  # The per-head ask naming the PR's URL parks it again, until the merge-approved settles it.
+  event T3 asked '{id: "merge", text: "Merge https://github.com/owner/proj/pull/5 at a1b2c3d?"}'
+  run_bin -0 team-sweep
+  event T3 merge-approved '{url: "https://github.com/owner/proj/pull/5", discord_message: "1563000000000000002", head: "a1b2c3d"}'
+  run_bin -1 team-sweep
+  assert_contains "$output" "T3 merge-due"
+
+  # Merged, it is told to close.
+  event T3 merged '{pr: 5, merge: "9999999", head: "a1b2c3d", by: "1563000000000000002", url: "https://github.com/owner/proj/pull/5"}'
+  run_bin -1 team-sweep
+  assert_contains "$output" "T3 no-worker: merged and not closed"
+}
+
+@test "merge-due: none once the word is withdrawn, while another park stands, or before the review passed" {
+  opened T3
+  launch T3 builder 11111111
+  preapproved_pr T3
+  run_bin -1 team-sweep
+  assert_contains "$output" "T3 merge-due"
+
+  # A withdrawn word leaves the task awaiting Daniel's per-head word: parked.
+  event T3 merge-preapproval-withdrawn '{project: "proj", discord_message: "1563000000000000002"}'
+  run_bin -0 team-sweep
+  event T3 merge-preapproved '{project: "proj", ask: "plan", discord_message: "1563000000000000003", scope: ["src/"]}'
+  run_bin -1 team-sweep
+  assert_contains "$output" "T3 merge-due"
+
+  # A pause, a wait, an open ask, a hold or a block parks it.
+  event T3 paused '{reason: "rate limit"}'
+  run_bin -0 team-sweep
+  event T3 resumed
+  event T3 waiting '{on: "Daniel", reason: "a word on the release"}'
+  run_bin -0 team-sweep
+  event T3 resumed
+  event T3 asked '{id: "q1", text: "Which name?"}'
+  run_bin -0 team-sweep
+  event T3 answered '{id: "q1", answer: "Kim"}'
+  for kind in held blocked; do
+    event T3 "$kind" '{reason: "OS update"}'
+    run_bin -0 team-sweep
+    event T3 resumed
+  done
+  run_bin -1 team-sweep
+  assert_equal "$output" "T3 merge-due: awaiting the merge of https://github.com/owner/proj/pull/5 on Daniel's plan-time word on proj, with no ask open; next: run team-merge T3; on a refusal, ask Daniel for the per-head word with team-ask"
+
+  # A new head under review is no merge yet: the task's worker findings come back.
+  event T3 pr '{url: "https://github.com/owner/proj/pull/5", head: "b2c3d4e"}'
+  run_bin -1 team-sweep
+  assert_equal "$output" "T3 no-worker: no live session among its 1 launch (latest T3-builder 11111111); next: read claude logs 11111111 for how it ended, then launch the next worker with team-worker or log what is known with team-log"
+}
+
 @test "a resumed or a later launch ends a pause or a block, and resumed ends a hold" {
   opened T3
   launch T3 builder 11111111
