@@ -139,17 +139,20 @@ ledger.jsonl: a record
 sops/machine-setup.md: a record"
 }
 
-@test "each machine's usage day files in the team home are records, never code" {
+@test "each machine's usage and time day files in the team home are records, never code" {
   local copy=$BATS_TEST_TMPDIR/copy
   path_copy "$copy"
-  mkdir -p "$copy/usage/home-pc"
-  touch "$copy/usage/home-pc/2026-10-26.jsonl"
+  mkdir -p "$copy/usage/home-pc/time"
+  touch "$copy/usage/home-pc/2026-10-26.jsonl" "$copy/usage/home-pc/time/2026-10-26.jsonl"
   git -C "$copy" add usage
   run -0 unassigned_paths "$copy"
   assert_equal "$output" "usage/home-pc/2026-10-26.jsonl: not code
-usage/home-pc/2026-10-26.jsonl: a record"
-  run -0 bash -c 'source "$1/bin/lib/team.sh"; printf "%s\0" usage/home-pc/2026-10-26.jsonl | only_records' _ "$REPO_ROOT"
-  assert_equal "$output" "usage/home-pc/2026-10-26.jsonl"
+usage/home-pc/2026-10-26.jsonl: a record
+usage/home-pc/time/2026-10-26.jsonl: not code
+usage/home-pc/time/2026-10-26.jsonl: a record"
+  run -0 bash -c 'source "$1/bin/lib/team.sh"; printf "%s\0" usage/home-pc/2026-10-26.jsonl usage/home-pc/time/2026-10-26.jsonl | only_records' _ "$REPO_ROOT"
+  assert_equal "$output" "usage/home-pc/2026-10-26.jsonl
+usage/home-pc/time/2026-10-26.jsonl"
 }
 
 # The machine docs: Daniel's sentence, the setup entry point and the SOPs.
@@ -188,6 +191,71 @@ MACHINE_DOCS=(README.md SETUP.md sops/machine-setup.md sops/portability.md)
     assert_equal "${lines[0]}" "$header"
   done < <(cd "$REPO_ROOT/bin" && find . -type f -perm -u+x -printf '%P\n' | sort)
   ((found >= 5))
+}
+
+# The jq programs in <root>'s bin, tests and toolkits (bin/lib's .jq modules and node_modules
+# aside) that include a module of <root>/bin/lib without each module that one includes, directly
+# or not, after it on the same line, as "<path>:<line>: <module> needs <dependency>". jq 1.8.2
+# loads a module before the ones it includes, unless the program loaded them first, and so frees
+# the definitions only another module calls, which the calls then read after they are freed
+# (jqlang/jq#3620, fixed after 1.8.2); a program's includes load last first, so a dependency
+# listed after its module loads before it: jq_include_breaks <root>
+jq_include_breaks() {
+  local root=$1 file m d e hit path line text rest changed=1
+  local -A deps=()
+  for file in "$root"/bin/lib/*.jq; do
+    m=$(basename "$file" .jq)
+    deps[$m]=$(sed -n 's/^include "\([^"]*\)";.*/\1/p' "$file" | tr '\n' ' ')
+  done
+  while ((changed)); do
+    changed=0
+    for m in "${!deps[@]}"; do
+      for d in ${deps[$m]}; do
+        for e in ${deps[$d]:-}; do
+          [[ " ${deps[$m]} " == *" $e "* ]] || { deps[$m]+="$e "; changed=1; }
+        done
+      done
+    done
+  done
+  while IFS= read -r hit; do
+    path=${hit%%:*} hit=${hit#*:}
+    line=${hit%%:*} text=${hit#*:}
+    for m in "${!deps[@]}"; do
+      [[ -n ${deps[$m]} && $text == *"include \"$m\""* ]] || continue
+      rest=${text#*"include \"$m\""}
+      for d in ${deps[$m]}; do
+        [[ $rest == *"include \"$d\""* ]] || echo "$path:$line: $m needs $d"
+      done
+    done
+  done < <(cd "$root" && grep -rn --exclude='*.jq' --exclude-dir=node_modules 'include "' bin tests toolkits 2>/dev/null | sort)
+}
+
+@test "every jq program that includes a module of bin/lib includes the modules it includes after it, for jq 1.8.2" {
+  assert_equal "$(jq_include_breaks "$REPO_ROOT")" ""
+}
+
+@test "a jq program that includes a module without the modules it includes after it is named" {
+  local root=$BATS_TEST_TMPDIR/code
+  mkdir -p "$root/bin/lib"
+  printf 'include "b";\ndef a: b;\n' >"$root/bin/lib/a.jq"
+  printf 'include "c";\ndef b: c;\n' >"$root/bin/lib/b.jq"
+  printf 'def c: 1;\n' >"$root/bin/lib/c.jq"
+  cat >"$root/bin/tool" <<'EOF'
+jq -n -L lib 'include "a"; include "b"; include "c"; a'
+jq -n -L lib 'include "c"; include "b"; include "a"; a'
+jq -n -L lib 'include "b"; b'
+jq -n -L lib 'include "c"; c'
+EOF
+  mkdir -p "$root/tests/helpers" "$root/toolkits/x/scripts" "$root/toolkits/x/node_modules/y"
+  printf '%s\n' "jq -n -L \"\$lib\" 'include \"b\"; b'" >"$root/tests/helpers/x.bash"
+  printf '%s\n' "jq -n -L \"\$lib\" 'include \"a\"; include \"c\"; a'" >"$root/toolkits/x/scripts/run"
+  printf '%s\n' "jq -n 'include \"b\"; b'" >"$root/toolkits/x/node_modules/y/z"
+  assert_equal "$(jq_include_breaks "$root" | sort)" "bin/tool:2: a needs b
+bin/tool:2: a needs c
+bin/tool:2: b needs c
+bin/tool:3: b needs c
+tests/helpers/x.bash:1: b needs c
+toolkits/x/scripts/run:1: a needs b"
 }
 
 # Only Daniel's own terminal runs op (team-secrets restore and save), and only the ops role's

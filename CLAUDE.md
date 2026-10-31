@@ -30,6 +30,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
     - `tools.jq`: turns `tools.lock` into each tool's pin and install command for a machine.
     - `tools.lock`: the tools `team-doctor` checks, pinned or with a minimum, and their source per OS (for treehouse and no-mistakes, a GitHub release with each archive's checksum, or a fork's commit).
     - `vendor/git-filter-repo/`: git filter-repo 2.47.0, vendored with its MIT license.
+    - `workers.jq`: `team-time`'s worker lifetimes, from each launch to its done, pr or ticket-done, review, replacement, stow or close, with their averages by role, path, project and model, the longest, the running, and the classes and breakdown of their time rows.
 - `coordinator.settings.json`: the coordinator's own settings: Discord, its hooks and its denials.
 - `LICENSE`: the Apache License 2.0; vendored bats-core and git filter-repo keep their own.
 - `plugins/coordinator-skills/`: skills loaded only into the coordinator by `bin/claude-coordinator`.
@@ -79,7 +80,7 @@ It holds:
 | `projects/` | Each project's planning (Conventioner's backlog) |
 | `memory/` | Each registered project's Claude Code auto memory, `memory/<project>/`, which every machine and worktree of it shares once `team-config apply` points the project at it, and the coordinator's, `memory/coordinator/`, the team home's own while it is no project's primary checkout |
 | `machine/` | What a machine needs to run the team, beyond the tools `bin/lib/tools.lock` pins: `claude/`, the Claude user config every machine shares (instructions, settings, skills, plugins), which `team-config` applies and captures; `secrets.json`, every secret file a machine needs, never a value, which `team-secrets` checks and restores from 1Password, described for Daniel in `secrets.md` |
-| `usage/` | Each machine's Claude usage, `usage/<machine>/<YYYY-MM-DD>.jsonl`, one line per assistant reply (token counts, model, session, never content), which `team-tokens export` writes from that machine's transcripts at each checkpoint and handoff, so it outlives Claude Code's 30-day transcript cleanup |
+| `usage/` | Each machine's Claude usage, `usage/<machine>/<YYYY-MM-DD>.jsonl`, one line per assistant reply (token counts, model, session, never content), and `usage/<machine>/time/<YYYY-MM-DD>.jsonl`, one row per launched worker session and day of where its time went (durations and tool or command names only), which `team-tokens export` writes from that machine's transcripts at each checkpoint and handoff, so they outlive Claude Code's 30-day transcript cleanup |
 | `manual-steps.md` | The steps only Daniel can take |
 
 - The scripts find it as `TEAM_HOME` when set, else the first line of `~/.config/agent-team/home` (a path relative to `$HOME`, or absolute); the library and `team-project` find it the same way, and refuse to start when neither names a directory, naming the fix (`echo agent-team-records > ~/.config/agent-team/home`), never falling back to the code checkout.
@@ -126,8 +127,10 @@ It holds:
 - macOS assesses each new executable file on its first run, about a quarter of a second each, so a test never writes or copies an executable it could share: `stub_command`, `copy_bin` and the doctor's version stubs hard-link a read-only copy made once per run (`shared` in `tests/helpers/common.bash`).
 - No test reads the records of the checkout it runs in, so the suite passes on the code alone: a test that needs a real-shaped registry or secrets manifest copies it from `tests/fixtures/`, and `team-doctor`'s `records` line checks the team home's real ledger, registry and secrets description.
 - CI's runner has jq 1.7.1, so keep to jq 1.7 features.
+- A jq program that includes a module of `bin/lib` also includes, after it, every module that one includes, directly or not (`include "workers"; include "time"; include "ledger";`), which `tests/repo.bats` holds.
+  jq 1.8.2, Homebrew's on the `macos` job, loads a module before the ones it includes unless the program loaded them first, and frees the definitions that only another module calls, so a call into one reads freed memory and may fail an assertion ("Unknown function type"); jq fixed it after 1.8.2 (jqlang/jq#3620), and a program's includes load last first.
 - Scripts and tests run on Linux and macOS: on macOS `bin/lib/platform.sh` (sourced by the library and the test helpers) puts Homebrew's GNU coreutils, findutils, sed, grep and `flock` first on `PATH`, so GNU forms are fine and BSD-only ones are not.
-  CI's `macos` job runs `tests/run bats` on a macOS runner, with the rest of CI: on a PR to `main` or by hand.
+  CI's `macos` job runs `tests/run bats` on a macOS runner, with the rest of CI: on every PR to `dev` and to `main`, and by hand.
 - Repo invariants are tests too: every executable in `bin/` answers `--help` with its header, every `bin/team-*` script is named in `roles/coordinator.md`, which stays at most 120 lines, no tracked Markdown or template outside the records (`bin/lib/records`, kept as written) has an em dash, and the Layout above stays a list, one thing per line of at most 300 characters, alphabetical within each list.
 
 ## Script conventions

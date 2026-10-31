@@ -33,7 +33,7 @@ Two repositories hold the team, each checked out on every machine:
 | Work in flight | each project's origin: the task branch; the team home's origin: `wip/<project>/T<n>` | workers' pushes; `team-checkpoint` |
 | Claude user config (instructions, settings, skills, plugins) | `machine/claude/` | `team-config capture` (in a handoff), `team-config apply` (in a resume) |
 | Auto memory | `memory/<project>/`, which every worktree of the project uses through `autoMemoryDirectory`, and `memory/coordinator/`, the team home's own once it is no project's primary checkout | `team-checkpoint`, `team-handoff` |
-| Each machine's Claude usage (token counts, never content) | `usage/<machine>/` | `team-tokens export`, in `team-checkpoint` and `team-handoff` |
+| Each machine's Claude usage (token counts, never content), and where each launched worker session's time went (durations and tool or command names only) | `usage/<machine>/`, the time rows in `usage/<machine>/time/` | `team-tokens export`, in `team-checkpoint` and `team-handoff` |
 | Tool versions | `bin/lib/tools.lock` | read by `team-doctor` and `team-bootstrap` |
 | Which secrets a machine needs (never a value) | `machine/secrets.json`, described in `machine/secrets.md` | read by `team-secrets` |
 | Secret values | 1Password, the `agent-team` vault | `team-secrets restore` and `save`, in Daniel's own terminal only |
@@ -67,7 +67,7 @@ It is enabled only on the holder: `team-resume` enables it, `team-handoff` disab
 - each worktree's work is kept on the team home's origin as `wip/<project>/T<n>`, pushed from the worktree to that origin's URL and never to the project's origin, which may be public (Conventioner's is): the branch head, or, with uncommitted changes, a snapshot commit on it built from a temporary index (untracked files included), never touching the worktree's files, index or stash;
 - untracked files that may hold a secret are left out of the snapshot, each named in the checkpoint's output: a name starting with `.env` or ending with `.pem` or `.key`, or a path that a target in `machine/secrets.json` ends with.
   A secret has no place in git even in a private repository, and a project's `.gitignore` need not cover every `.env` variant a worker makes; such a file stays only on the machine it was made on;
-- `team-tokens export` writes this machine's usage of each complete UTC day into `usage/<machine>/` (a failed export is reported and fails nothing).
+- `team-tokens export` writes this machine's usage of each complete UTC day into `usage/<machine>/`, and its launched workers' time rows into `usage/<machine>/time/` (a failed export is reported and fails nothing).
 - `tasks/*/scratch*/`, `memory/`, `usage/`, `tasks/current.md` (the coordinator's current items) and `ledger.jsonl` are committed as `chore: checkpoint` and pushed.
 
 Nothing new means no commit and no push; `team-close` deletes the task's `wip/<project>/T<n>`, and the copy of it that `team-open --resume` fetched into the primary checkout.

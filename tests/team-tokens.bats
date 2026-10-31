@@ -76,6 +76,9 @@ q() {
   assert_equal "${lines[0]}" "$(sed -n '2s/^# //p' "$REPO_ROOT/bin/team-tokens")"
   assert_contains "$output" "Usage: team-tokens [--since <ISO>] [--until <ISO>] [--task T<n>] [--machine <name>] [--json]"
   assert_contains "$output" "team-tokens export [--through-now]"
+  assert_contains "$output" "team-tokens time [--since <ISO>] [--until <ISO>]"
+  assert_contains "$output" "time prints where each launched worker session's time went"
+  assert_contains "$output" "usage/<machine>/time/"
   assert_contains "$output" "the weekly limit's reset time is in no data"
   assert_contains "$output" "schema team-tokens/1"
   assert_contains "$output" "coordinator turns"
@@ -83,10 +86,11 @@ q() {
 }
 
 @test "a malformed command line is exit 2" {
-  for args in "export --nope" "export --through-now --through-now" "export now" "report" "--json --nope" "--since"; do
+  for args in "export --nope" "export --through-now --through-now" "export now" "report" "--json --nope" "--since" \
+    "time --json" "time --since" "time --task T1" "time --until 2026-10-20T00:00Z --until 2026-10-21T00:00Z"; do
     # shellcheck disable=SC2086 # each case is its words
     run_bin -2 --separate-stderr team-tokens $args
-    assert_equal "$stderr" "team-tokens: usage: team-tokens [--since <ISO>] [--until <ISO>] [--task T<n>] [--machine <name>] [--json] | team-tokens export [--through-now]"
+    assert_equal "$stderr" "team-tokens: usage: team-tokens [--since <ISO>] [--until <ISO>] [--task T<n>] [--machine <name>] [--json] | team-tokens export [--through-now] | team-tokens time [--since <ISO>] [--until <ISO>]"
   done
   run_bin -2 --separate-stderr team-tokens --since 2026-10-20
   assert_equal "$stderr" "team-tokens: --since must be a UTC time like 2026-10-22T01:00Z or 2026-10-22T01:00:00Z"
@@ -97,6 +101,10 @@ q() {
   run_bin -2 --separate-stderr team-tokens --machine Home_PC
   assert_equal "$stderr" "team-tokens: --machine must be a machine's team name like home-pc, got 'Home_PC'"
   run_bin -2 --separate-stderr team-tokens --since 2026-10-21T00:00Z --until 2026-10-21T00:00:00Z
+  assert_equal "$stderr" "team-tokens: --since must come before --until"
+  run_bin -2 --separate-stderr team-tokens time --since 2026-10-20
+  assert_equal "$stderr" "team-tokens: --since must be a UTC time like 2026-10-22T01:00Z or 2026-10-22T01:00:00Z"
+  run_bin -2 --separate-stderr team-tokens time --since 2026-10-21T00:00Z --until 2026-10-20T00:00Z
   assert_equal "$stderr" "team-tokens: --since must come before --until"
 }
 
@@ -224,6 +232,9 @@ read 3 of 3 transcripts; wrote 1 day file"
   echo Home_PC >"$HOME/.config/agent-team/machine"
   run_bin -1 --separate-stderr team-tokens export
   assert_contains "$stderr" "names 'Home_PC', not a lower-case kebab-case name like home-pc"
+  rm "$HOME/.config/agent-team/machine"
+  run_bin -1 --separate-stderr team-tokens time
+  assert_equal "$stderr" "team-tokens: this machine has no team name; write one with: echo <name> > ~/.config/agent-team/machine"
   [[ ! -e $TEAM_HOME/usage ]]
 }
 
@@ -234,12 +245,29 @@ read 3 of 3 transcripts; wrote 1 day file"
   cp "$REPO_ROOT/bin/lib/prices.json" "$code/bin/lib/"
   unset TEAM_HOME
   local verb
-  for verb in export ""; do
+  for verb in export time ""; do
     run -1 --separate-stderr "$code/bin/team-tokens" ${verb:+"$verb"}
     assert_equal "$stderr" "team-tokens: neither TEAM_HOME nor ~/.config/agent-team/home names the team home; name its checkout there, relative to your home directory: echo agent-team-records > ~/.config/agent-team/home"
   done
   [[ ! -e $code/usage ]]
   run -0 "$code/bin/team-tokens" --help
+}
+
+@test "every subcommand refuses Python older than 3.11, naming the fix" {
+  local old='' candidate verb
+  for candidate in /usr/bin/python3 python3.10 python3.9; do
+    candidate=$(command -v "$candidate") || continue
+    if "$candidate" -c 'import sys; sys.exit(sys.version_info >= (3, 11))' 2>/dev/null; then
+      old=$candidate && break
+    fi
+  done
+  [[ -n $old ]] || skip "no Python older than 3.11 here (macOS has 3.9 at /usr/bin/python3)"
+  for verb in export time ""; do
+    run -1 --separate-stderr "$old" -I "$REPO_ROOT/bin/team-tokens" ${verb:+"$verb"}
+    assert_equal "$output" ""
+    assert_contains "$stderr" "team-tokens: needs Python 3.11 or later, but runs under Python "
+  done
+  [[ ! -e $TEAM_HOME/usage ]]
 }
 
 @test "the prices file holds each model's five prices, the date read and the source" {
@@ -514,4 +542,338 @@ coordinator_fixture() {
     [[ -x $REPO_ROOT/bin/$name ]]
     assert_contains "$(sed -n '/^#   coordinator turns/,/^#   Daniel/p' "$REPO_ROOT/bin/team-tokens")" "$name"
   done
+}
+
+# The time rows' fixture, fixtures/team-tokens/time/: its ledger launches the builder dddddddd (and
+# holds a line that is no event, skipped), and its projects/ holds, every content string marked
+# CONTENT-:
+# - -home-dan-agent-team--claude-worktrees-2/dddddddd-...: the builder's transcript, whose
+#   stretches, computed by hand, are:
+#   2026-10-20, 10:00:00.000 the brief; tests/run 10 s (10:00:05 to :15); Read 3 s; a parallel
+#   batch at 10:00:22 of npx playwright test and Grep, Grep's result at :25 and playwright's at :40
+#   (Grep 3 s, playwright the 15 s tail); a background gh pr checks (0.5 s to its result), the turn
+#   ending at 10:00:44.100, then 300 s idle on it until its task-notification at 10:05:44.100;
+#   npm test from 10:05:50 with no result when its turn ends at 10:06:00 (10 s); idle, an
+#   away_summary and a subagent's line between, until a coordinator's <cross-session-message at
+#   10:36:00 (wait message, 1800 s); bats 60 s; team-stack up 60 s; a compact_boundary at
+#   10:38:42.200 whose durationMs, 25000, comes out of the 30 s model stretch before it; the turn
+#   ending at 10:38:50.400, then Daniel's prompt at 23:59:50.000 (wait other, 48059.6 s); the model
+#   from 23:59:50 to an api-request line at midnight (10 s, its day's last stretch);
+#   so model 53.9 s in 9 replies, its longest run 13.2 s (the 5 s left of the compacted stretch
+#   and the 8.2 s after it), and the day 50400 s, 10:00:00 to midnight;
+#   2026-10-21, the model on to 00:00:10 (10 s); ./scripts/seed.sh 30 s; a Monitor (0.5 s to its
+#   result) idle 120 s to an interim event (no tool-use-id, no status) and 120 s more to its
+#   completed notification, two stretches of background monitor tail; SendMessage 1 s; model
+#   31.8 s in 6 replies, its longest run 10.1 s; the day 303.3 s, to 00:05:03.300;
+# - its subagents/agent-def456.jsonl and eeeeeeee-..., an unlaunched session: no row.
+time_fixture() {
+  rm -r "$HOME/.claude/projects"
+  cp -R "$BATS_TEST_DIRNAME/fixtures/team-tokens/time/projects" "$HOME/.claude/projects"
+  cp "$BATS_TEST_DIRNAME/fixtures/team-tokens/time/ledger.jsonl" "$TEAM_HOME/ledger.jsonl"
+  dddd=dddddddd-4444-4444-8444-444444444444
+}
+
+@test "time prints one row per launched session and UTC day, from this machine's transcripts, and writes nothing" {
+  time_fixture
+  local before
+  before=$(find "$TEAM_HOME" "$HOME" -printf '%p %T@\n' | sort)
+  run_bin -0 --separate-stderr team-tokens time
+  assert_equal "$stderr" ""
+  assert_equal "${#lines[@]}" 2
+  assert_equal "$(jq -c '{day, machine, session, first, last, waits}' <<<"${lines[0]}")" \
+    '{"day":"2026-10-20","machine":"home-pc","session":"'"$dddd"'","first":"2026-10-20T10:00:00.000Z","last":"2026-10-21T00:00:00.000Z","waits":[{"from":"2026-10-20T10:06:00.000Z","to":"2026-10-20T10:36:00.000Z","key":"wait message"},{"from":"2026-10-20T10:38:50.400Z","to":"2026-10-20T23:59:50.000Z","key":"wait other"}]}'
+  assert_equal "$(jq -r '.keys | to_entries[] | "\(.key): \(.value.seconds + 0) \(.value.calls) \(.value.longest + 0)"' <<<"${lines[0]}")" \
+    "background bash gh pr checks: 300 1 300
+bash bats: 60 1 60
+bash gh pr checks: 0.5 1 0.5
+bash npm test: 10 1 10
+bash npx playwright test: 15 1 15
+bash team-stack up: 60 1 60
+bash tests/run: 10 1 10
+compaction: 25 1 25
+model: 53.9 9 13.2
+tool Grep: 3 1 3
+tool Read: 3 1 3
+wait message: 1800 1 1800
+wait other: 48059.6 1 48059.6"
+  assert_equal "$(jq -c '{day, first, last, waits}' <<<"${lines[1]}")" \
+    '{"day":"2026-10-21","first":"2026-10-21T00:00:00.000Z","last":"2026-10-21T00:05:03.300Z","waits":[]}'
+  assert_equal "$(jq -r '.keys | to_entries[] | "\(.key): \(.value.seconds + 0) \(.value.calls) \(.value.longest + 0)"' <<<"${lines[1]}")" \
+    "background monitor tail: 240 2 120
+bash ./scripts/seed.sh: 30 1 30
+model: 31.8 6 10.1
+monitor tail: 0.5 1 0.5
+tool SendMessage: 1 1 1"
+  assert_equal "$(find "$TEAM_HOME" "$HOME" -printf '%p %T@\n' | sort)" "$before"
+}
+
+@test "time's keys add up to each day's span, parallel calls sharing the wall time" {
+  time_fixture
+  run_bin -0 team-tokens time
+  # 10:00:00 to midnight, and midnight to 00:05:03.300.
+  assert_equal "$(jq -c '[.day, ([.keys[].seconds] | add * 1000 | round)]' <<<"$output")" '["2026-10-20",50400000]
+["2026-10-21",303300]'
+}
+
+@test "no content reaches a time row: every row has only the listed fields, and no fixture string" {
+  time_fixture
+  run_bin -0 team-tokens time
+  if grep CONTENT <<<"$output"; then false; fi
+  assert_equal "$(jq -sc 'map(keys_unsorted) | unique' <<<"$output")" '[["day","machine","session","first","last","keys","waits"]]'
+  assert_equal "$(jq -sc 'map(.keys[] | keys_unsorted) | unique' <<<"$output")" '[["seconds","calls","longest"]]'
+  assert_equal "$(jq -sc 'map(.waits[] | keys_unsorted) | unique' <<<"$output")" '[["from","to","key"]]'
+  assert_equal "$(jq -sc '[.[] | .day, .machine, .session, .first, .last, .waits[].from, .waits[].to | type] | unique' <<<"$output")" '["string"]'
+  assert_equal "$(jq -sc '[.[].keys[][] | type] | unique' <<<"$output")" '["number"]'
+}
+
+@test "time keeps the rows of the days --since and --until name, and with no launch prints none" {
+  time_fixture
+  run_bin -0 team-tokens time --since 2026-10-20T23:00Z
+  assert_equal "$(jq -r .day <<<"$output" | paste -sd ' ')" "2026-10-20 2026-10-21"
+  run_bin -0 team-tokens time --since 2026-10-21T00:00Z
+  assert_equal "$(jq -r .day <<<"$output")" "2026-10-21"
+  run_bin -0 team-tokens time --until 2026-10-20T23:59:59Z
+  assert_equal "$(jq -r .day <<<"$output")" "2026-10-20"
+  run_bin -0 team-tokens time --since 2026-10-22T00:00Z
+  assert_equal "$output" ""
+  rm "$TEAM_HOME/ledger.jsonl"
+  run_bin -0 team-tokens time
+  assert_equal "$output" ""
+}
+
+@test "a turn that ends on an API error reply with no turn_duration waits from there, as wait error, whatever wakes it" {
+  local projects=$HOME/.claude/projects/-home-dan-agent-team--claude-worktrees-1
+  local session=c1000000-0000-4000-8000-000000000000
+  rm -r "$HOME/.claude/projects"
+  mkdir -p "$projects"
+  printf '{"ts":"2026-10-20T09:00:00Z","task":"T1","event":"launch","role":"builder","session":"c1000000","worktree":"/home/dan/agent-team/.claude/worktrees/1","toolkits":[]}\n' >"$TEAM_HOME/ledger.jsonl"
+  # The brief at 10:00:00, the session limit's reply at 10:00:05 and no turn_duration, then the
+  # coordinator's message queued 3 hours later and the turn it starts: model 5 s, then 10800 s
+  # waiting after the error, then model 5 s.
+  jq -nc --arg session "$session" '
+    {type: "user", timestamp: "2026-10-20T10:00:00.000Z", sessionId: $session, message: {content: "CONTENT-brief"}},
+    {type: "assistant", timestamp: "2026-10-20T10:00:05.000Z", sessionId: $session, isApiErrorMessage: true,
+     message: {model: "<synthetic>", stop_reason: "stop_sequence", content: [{type: "text", text: "CONTENT-limit"}]}},
+    {type: "queue-operation", operation: "enqueue", timestamp: "2026-10-20T13:00:05.000Z", sessionId: $session,
+     content: "<cross-session-message from=\"coordinator\">CONTENT-resume</cross-session-message>"},
+    {type: "user", timestamp: "2026-10-20T13:00:05.000Z", sessionId: $session,
+     message: {content: "<cross-session-message from=\"coordinator\">CONTENT-resume</cross-session-message>"}},
+    {type: "assistant", timestamp: "2026-10-20T13:00:10.000Z", sessionId: $session, requestId: "req_2",
+     message: {stop_reason: "end_turn", content: [{type: "text", text: "CONTENT-done"}]}},
+    {type: "system", subtype: "turn_duration", timestamp: "2026-10-20T13:00:10.000Z", sessionId: $session}' >"$projects/$session.jsonl"
+  run_bin -0 team-tokens time
+  assert_equal "$(jq -r '.keys | to_entries[] | "\(.key): \(.value.seconds + 0) \(.value.calls) \(.value.longest + 0)"' <<<"$output")" \
+    "model: 10 1 5
+wait error: 10800 1 10800"
+  assert_equal "$(jq -c .waits <<<"$output")" '[{"from":"2026-10-20T10:00:05.000Z","to":"2026-10-20T13:00:05.000Z","key":"wait error"}]'
+}
+
+@test "a call is named by its command's first program that is not plumbing, with its subcommand words" {
+  # Each command, then the name it gets.
+  local cases=(
+    'cd CONTENT-dir && tests/run' 'tests/run'
+    'npx playwright test CONTENT-spec | tail -5' 'npx playwright test'
+    'until gh pr checks 33; do sleep 30; done' 'gh pr checks'
+    $'git commit -F - <<\'EOF\'\nCONTENT-subject; rm -rf CONTENT-dir\nEOF' 'git commit'
+    'FOO=CONTENT-x npm test' 'npm test'
+    'timeout 600 bats tests/CONTENT-x.bats' 'bats'
+    '/home/x/agent-team/bin/team-stack up' 'team-stack up'
+    './scripts/seed.sh CONTENT-arg' './scripts/seed.sh'
+    'git push no-mistakes' 'git push no-mistakes'
+    'no-mistakes axi run --intent "CONTENT-intent"' 'no-mistakes axi run'
+    '"CONTENT-quoted prog" --flag' 'other'
+    'cat CONTENT-x | grep CONTENT-y' 'cat'
+    'echo "CONTENT-a; CONTENT-b | CONTENT-c" && make check' 'make check'
+    'npm run test:e2e 2>&1 | tee CONTENT-log' 'npm run test:e2e'
+    'for f in CONTENT-a CONTENT-b; do tests/run "$f"; done' 'tests/run'
+    '[[ -f CONTENT-x ]] && ~/agent-team/bin/team-checks CONTENT-x' 'team-checks'
+    $'# CONTENT-comment; CONTENT-rm\ndocker compose up -d' 'docker compose up'
+    'echo $(git rev-parse HEAD)' 'git rev-parse'
+    'env -u CONTENT-x' 'other'
+    'env -i PATH=/CONTENT-bin stdbuf -o L nice -n 5 make CONTENT-target' 'make'
+    '../CONTENT/run.sh' 'other'
+    'cd CONTENT-dir' 'cd'
+    '' 'other'
+    'git show deadbeef1234' 'git show'
+    'git diff main' 'git diff'
+    'git grep searchterm' 'git grep'
+    'docker exec web-1 sh' 'docker exec'
+    'git stash pop' 'git stash pop'
+    'uv run pytest -x' 'uv run pytest'
+    'team-checks agent-team cafe123' 'team-checks agent-team'
+    'gh-axi pr checks 35' 'gh-axi pr checks'
+    '/home/x/agent-team/bin/team-ci-wait https://github.com/CONTENT/x/pull/35 cafe123' 'team-ci-wait'
+  )
+  local projects=$HOME/.claude/projects/-home-dan-agent-team--claude-worktrees-1 i session expected=
+  rm -r "$HOME/.claude/projects"
+  mkdir -p "$projects"
+  : >"$TEAM_HOME/ledger.jsonl"
+  for ((i = 0; i < ${#cases[@]}; i += 2)); do
+    session=$(printf 'c%07d-0000-4000-8000-000000000000' "$i")
+    printf '{"ts":"2026-10-20T09:00:00Z","task":"T1","event":"launch","role":"builder","session":"%s","worktree":"/home/dan/agent-team/.claude/worktrees/1","toolkits":[]}\n' "${session:0:8}" >>"$TEAM_HOME/ledger.jsonl"
+    jq -nc --arg command "${cases[i]}" --arg session "$session" '
+      {type: "user", timestamp: "2026-10-20T10:00:00.000Z", sessionId: $session, message: {content: "go"}},
+      {type: "assistant", timestamp: "2026-10-20T10:00:01.000Z", sessionId: $session, requestId: "req",
+       message: {stop_reason: "tool_use", content: [{type: "tool_use", id: "toolu_1", name: "Bash", input: {command: $command}}]}},
+      {type: "user", timestamp: "2026-10-20T10:00:03.000Z", sessionId: $session,
+       message: {content: [{type: "tool_result", tool_use_id: "toolu_1", content: "out"}]}}' >"$projects/$session.jsonl"
+    expected+="bash ${cases[i + 1]}"$'\n'
+  done
+  run_bin -0 team-tokens time
+  assert_equal "$(jq -r '.keys | keys[] | select(startswith("bash "))' <<<"$output")" "${expected%$'\n'}"
+}
+
+# The time day files: the export writes the time fixture's rows into usage/home-pc/time/, and
+# time reads them back with this machine's live rows.
+time_day=usage/home-pc/time
+
+# A time row of one model stretch: time_row <machine> <session> <day> <first> <model seconds>
+time_row() {
+  printf '{"day":"%s","machine":"%s","session":"%s","first":"%s","last":"%s","keys":{"model":{"seconds":%s,"calls":1,"longest":%s}},"waits":[]}\n' \
+    "$3" "$1" "$2" "$4" "$4" "$5" "$5"
+}
+
+@test "the export writes each launched session's time rows into a day file per complete UTC day" {
+  time_fixture
+  run_bin -0 team-tokens time
+  local live=$output
+  run_bin -0 team-tokens export
+  assert_equal "$output" "usage/home-pc/2026-10-20.jsonl: 10 replies, 10 new
+usage/home-pc/2026-10-21.jsonl: 6 replies, 6 new
+usage/home-pc/time/2026-10-20.jsonl: 1 session, 1 new
+usage/home-pc/time/2026-10-21.jsonl: 1 session, 1 new
+read 3 of 3 transcripts; wrote 2 day files and 2 time files"
+  assert_equal "$(ls "$TEAM_HOME/$time_day")" "2026-10-20.jsonl
+2026-10-21.jsonl"
+  assert_equal "$(cat "$TEAM_HOME/$time_day"/*.jsonl)" "$live"
+  if grep -r CONTENT "$TEAM_HOME/usage"; then false; fi
+}
+
+@test "the usage day files come out byte for byte as with no launch, and with no ledger there are no time rows" {
+  time_fixture
+  run_bin -0 team-tokens export
+  local other=$BATS_TEST_TMPDIR/other
+  mkdir "$other"
+  TEAM_HOME=$other run_bin -0 team-tokens export
+  assert_equal "$output" "usage/home-pc/2026-10-20.jsonl: 10 replies, 10 new
+usage/home-pc/2026-10-21.jsonl: 6 replies, 6 new
+read 3 of 3 transcripts; wrote 2 day files"
+  [[ ! -e $other/$time_day ]]
+  assert_equal "$(cd "$other/usage/home-pc" && md5sum ./*.jsonl)" "$(cd "$TEAM_HOME/usage/home-pc" && md5sum ./*.jsonl)"
+}
+
+@test "a time day file keeps the row of a transcript not read again, and changes only when a row does" {
+  time_fixture
+  run_bin -0 team-tokens export
+  local before day20 projects=$HOME/.claude/projects/-home-dan-agent-team--claude-worktrees-2
+  before=$(fingerprint "$TEAM_HOME" "$scan")
+  run_bin -0 team-tokens export
+  assert_equal "$output" "read 0 of 3 transcripts; no day file changed"
+  assert_equal "$(fingerprint "$TEAM_HOME" "$scan")" "$before"
+  # Read again with its rows unchanged, the transcript rewrites no time file.
+  day20=$(fingerprint "$TEAM_HOME/$time_day/2026-10-20.jsonl")
+  touch "$projects/$dddd.jsonl"
+  run_bin -0 team-tokens export
+  assert_equal "$output" "read 1 of 3 transcripts; no day file changed"
+  assert_equal "$(fingerprint "$TEAM_HOME/$time_day/2026-10-20.jsonl")" "$day20"
+  # Cleaned up, its row stays beside a new launched session's, the copy of its first day's lines.
+  local ffff=ffffffff-6666-4666-8666-666666666666
+  printf '{"ts":"2026-10-20T09:59:30Z","task":"T2","event":"launch","role":"builder","session":"ffffffff","worktree":"/home/dan/agent-team/.claude/worktrees/3","toolkits":[]}\n' >>"$TEAM_HOME/ledger.jsonl"
+  jq -c 'select(.timestamp < "2026-10-20T10:30") | .sessionId = "'"$ffff"'" | del(.requestId)' "$projects/$dddd.jsonl" >"$projects/$ffff.jsonl"
+  rm "$projects/$dddd.jsonl"
+  run_bin -0 team-tokens export
+  assert_equal "$output" "usage/home-pc/time/2026-10-20.jsonl: 2 sessions, 1 new
+read 1 of 3 transcripts; wrote 1 time file"
+  assert_equal "$(jq -r '"\(.session) \(.first)"' "$TEAM_HOME/$time_day/2026-10-20.jsonl")" "$dddd 2026-10-20T10:00:00.000Z
+$ffff 2026-10-20T10:00:00.000Z"
+  assert_equal "$(grep -c "$dddd" "$TEAM_HOME/$time_day/2026-10-21.jsonl")" 1
+}
+
+@test "today's time rows are written only with --through-now, and the transcript is read again until then" {
+  time_fixture
+  local today session=cccccccc-3333-4333-8333-333333333333 projects=$HOME/.claude/projects/-home-dan-agent-team--claude-worktrees-2
+  today=$(date -u +%F)
+  printf '{"ts":"%sT00:00:00Z","task":"T3","event":"launch","role":"reviewer","session":"cccccccc","worktree":"/home/dan/agent-team/.claude/worktrees/2","toolkits":[]}\n' "$today" >>"$TEAM_HOME/ledger.jsonl"
+  # A turn of one second with no reply, so only its time row holds the transcript back.
+  jq -nc --arg day "$today" --arg session "$session" '
+    {type: "user", timestamp: "\($day)T00:00:01.000Z", sessionId: $session, message: {content: "CONTENT-go"}},
+    {type: "system", subtype: "turn_duration", timestamp: "\($day)T00:00:02.000Z", sessionId: $session}' >"$projects/$session.jsonl"
+  run_bin -0 team-tokens export
+  assert_equal "${lines[-1]}" "read 4 of 4 transcripts; wrote 2 day files and 2 time files"
+  [[ ! -e $TEAM_HOME/$time_day/$today.jsonl ]]
+  run_bin -0 team-tokens export
+  assert_equal "$output" "read 1 of 4 transcripts; no day file changed"
+  run_bin -0 team-tokens export --through-now
+  assert_equal "$output" "usage/home-pc/time/$today.jsonl: 1 session, 1 new
+read 1 of 4 transcripts; wrote 1 time file"
+  assert_equal "$(jq -c '[.session, .keys.model.seconds + 0]' "$TEAM_HOME/$time_day/$today.jsonl")" "[\"$session\",1]"
+  run_bin -0 team-tokens export --through-now
+  assert_equal "$output" "read 0 of 4 transcripts; no day file changed"
+}
+
+@test "a scan state of the old version leads to a full read, which fills in the time rows and leaves the usage alone" {
+  time_fixture
+  # The export before the time rows: the usage only, as with no ledger.
+  mv "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/ledger.jsonl"
+  run_bin -0 team-tokens export
+  mv "$BATS_TEST_TMPDIR/ledger.jsonl" "$TEAM_HOME/ledger.jsonl"
+  local version usage_before
+  version=$(jq .version "$scan")
+  jq ".version = $((version - 1))" "$scan" >"$BATS_TEST_TMPDIR/scan" && mv "$BATS_TEST_TMPDIR/scan" "$scan"
+  usage_before=$(fingerprint "$usage"/*.jsonl)
+  run_bin -0 team-tokens export
+  assert_equal "$output" "usage/home-pc/time/2026-10-20.jsonl: 1 session, 1 new
+usage/home-pc/time/2026-10-21.jsonl: 1 session, 1 new
+read 3 of 3 transcripts; wrote 2 time files"
+  assert_equal "$(fingerprint "$usage"/*.jsonl)" "$usage_before"
+  assert_equal "$(jq .version "$scan")" "$version"
+}
+
+@test "time prints every machine's time day files and this machine's live rows from its last one on" {
+  time_fixture
+  local ffff=ffffffff-6666-4666-8666-666666666666
+  mkdir -p "$TEAM_HOME/usage/laptop/time" "$TEAM_HOME/$time_day"
+  time_row laptop "$ffff" 2026-10-19 2026-10-19T08:00:00.000Z 7 >"$TEAM_HOME/usage/laptop/time/2026-10-19.jsonl"
+  # This machine's files: the 20th's row of dddddddd, before its last file, stands as written; the
+  # 21st's is replaced by the live one, and a session with no transcript left keeps its row.
+  time_row home-pc "$dddd" 2026-10-20 2026-10-20T10:00:00.000Z 1 >"$TEAM_HOME/$time_day/2026-10-20.jsonl"
+  { time_row home-pc "$dddd" 2026-10-21 2026-10-21T00:00:00.000Z 2 && time_row home-pc "$ffff" 2026-10-21 2026-10-21T01:00:00.000Z 3; } >"$TEAM_HOME/$time_day/2026-10-21.jsonl"
+  run_bin -0 --separate-stderr team-tokens time
+  assert_equal "$stderr" ""
+  assert_equal "$(jq -c '[.day, .machine, .session[:8], .keys.model.seconds]' <<<"$output")" '["2026-10-19","laptop","ffffffff",7]
+["2026-10-20","home-pc","dddddddd",1]
+["2026-10-21","home-pc","dddddddd",31.8]
+["2026-10-21","home-pc","ffffffff",3]'
+  run_bin -0 team-tokens time --since 2026-10-20T12:00Z --until 2026-10-21T00:00Z
+  assert_equal "$(jq -c '[.day, .session[:8]]' <<<"$output")" '["2026-10-20","dddddddd"]
+["2026-10-21","dddddddd"]
+["2026-10-21","ffffffff"]'
+  run_bin -0 team-tokens time --until 2026-10-19T23:59Z
+  assert_equal "$(jq -c '[.day, .machine]' <<<"$output")" '["2026-10-19","laptop"]'
+  # With no file of its own, this machine's rows are all live.
+  rm -r "${TEAM_HOME:?}/$time_day"
+  run_bin -0 team-tokens time
+  assert_equal "$(jq -c '[.day, .machine, .keys.model.seconds]' <<<"$output")" '["2026-10-19","laptop",7]
+["2026-10-20","home-pc",53.9]
+["2026-10-21","home-pc",31.8]'
+}
+
+@test "a time day file line that is no time row is refused in one line" {
+  time_fixture
+  mkdir -p "$TEAM_HOME/$time_day"
+  echo '{"day":"2026-10-20"}' >"$TEAM_HOME/$time_day/2026-10-20.jsonl"
+  run_bin -1 --separate-stderr team-tokens time
+  assert_equal "$stderr" "team-tokens: cannot read the time: $TEAM_HOME/$time_day/2026-10-20.jsonl holds a line that is no time row; fix or remove it"
+  run_bin -1 --separate-stderr team-tokens export
+  assert_equal "$stderr" "team-tokens: cannot export: $TEAM_HOME/$time_day/2026-10-20.jsonl holds a line that is no time row; fix or remove it"
+}
+
+@test "the report never reads a time day file" {
+  report_fixture
+  report_json
+  local without=$json
+  mkdir -p "$TEAM_HOME/usage/home-pc/time"
+  printf '{"day":"2026-10-20","machine":"home-pc","session":"c0","first":"2026-10-20T08:00:00.000Z","last":"2026-10-20T09:00:00.000Z","keys":{},"waits":[]}\n' >"$TEAM_HOME/usage/home-pc/time/2026-10-20.jsonl"
+  report_json
+  assert_equal "$json" "$without"
 }

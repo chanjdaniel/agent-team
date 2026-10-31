@@ -11,6 +11,7 @@ The high-level plan: `{{plan}}`.
 1. First, the ledger's evidence for this retro's window, in both forms: `{{team_bin}}/team-retro digest {{task}}` and `{{team_bin}}/team-retro digest {{task}} --json`.
    It reads the team home's live ledger: the window, blocks and denials, questions, reviews, waits by whom, history rewrites, injections, and the tasks in the window with their record directories and sessions.
    Then where the window's time went: `{{team_bin}}/team-time --since <the window's since> --until <its until>`, hours per task and per phase, gate runs, reviews and Daniel's answer latency.
+   It is also each worker's lifetime: the averages by role, path, project and model, the longest, and where the workers' time went, with what the task was doing while a worker waited.
 2. The previous retro, when the digest's window names one (`previous retro T<m>`): its report, `{{team_home}}/tasks/T<m>/scratch/report.md`, and Daniel's answer to it, T<m>'s `answered` event with `id` `retro` in `{{team_home}}/ledger.jsonl`.
 3. What Daniel approved and the team has not built yet: `{{team_home}}/tasks/queued/` and the reports its plans point at.
    A problem one of them already answers goes under "Considered, not proposed", naming it.
@@ -21,9 +22,10 @@ The high-level plan: `{{plan}}`.
 
 ## Deliver, in `{{task_dir}}/`
 
-1. `report.md`, in three parts:
-   - **Proposals**: at most seven, ranked by what the problem cost (hours lost, times repeated), the costliest first.
-     Each has a number, a title, its kind (a rule, a role line, a brief line, a settings change, an SOP entry to add, merge or drop, a script), its evidence (ledger events by time and task, file paths), the exact change (the exact text, or a diff against the file in your worktree; for a script, the behaviour and its test) and the expected effect.
+1. `report.md`, in four parts:
+   - **Worker time**: the lifetimes by role (median, 90th percentile, longest) against the previous retro's when its report has them; the five longest lifetimes, each with its top sinks and, from the task's records, why; and the top sinks across workers with the hours each cost.
+   - **Proposals**: at most seven, ranked by what the problem cost (hours lost, times repeated), the costliest first, a sink's hours from Worker time counting as cost.
+     Each has a number, a title, its kind (a rule, a role line, a brief line, a settings change, an SOP entry to add, merge or drop, a script), its evidence (ledger events by time and task, file paths, and the sink it answers, when it answers one), the exact change (the exact text, or a diff against the file in your worktree; for a script, the behaviour and its test) and the expected effect.
    - **SOP review**: each entry of `sops/platform-gotchas.md`, with keep, merge (and with which) or drop, and why.
    - **Considered, not proposed**: one line each.
 2. Send `{{task}} DONE {{task_dir}}/report.md` to `coordinator`.

@@ -1,9 +1,8 @@
 # The definitions team-slots reads the machine's task slots with: the settings of slots.json,
 # the slots held, the room each side has, and the texts. jq 1.7.
-# Included as: jq -L bin/lib 'include "slots"; ...'
-# It includes stack alone: jq 1.8.2's compiler fails an assertion ("Unknown function type") when
-# a module's def calls another module's def that passes its $ parameter on to a def of its own,
-# as ledger's open_worktrees does, so the program, not this module, calls ledger's (held_slots).
+# Included as: jq -L bin/lib 'include "slots"; include "stack"; ...', stack after it, as
+# CLAUDE.md's script conventions say for jq 1.8.2. The program, not this module, reads the ledger
+# (held_slots).
 include "stack";
 
 # The machine's slot settings (~/.config/agent-team/slots.json), every key optional, each with its

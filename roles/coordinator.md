@@ -113,7 +113,7 @@ A task you park on Daniel or anything outside the team gets `team-log T<n> waiti
 - Before a compaction or a restart: the `stow` skill; Daniel says "hand off": the `handoff` skill; your first prompt names a resume report: the `resume` skill.
 - A UI fix from Daniel, about the element they inspected or with a screenshot: the `ui-intake` skill, which runs `team-ui` before anything else.
 - Daniel asks for status, or what is going on: the `status-report` skill, with `team-tokens`' current 5-hour block and last seven days when they ask about usage.
-- A retro is due (`team-sweep` says so; `team-retro status` says when): the `retro` skill, with `team-time --since <the last retro>` for where the tasks' time went and `team-tokens --since <the last retro>` for where the allowance went.
+- A retro is due (`team-sweep` says so; `team-retro status` says when): the `retro` skill, with `team-time --since <the last retro>` for where the tasks' and the workers' time went and `team-tokens --since <the last retro>` for where the allowance went.
 
 ## Compact instructions
 

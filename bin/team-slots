@@ -185,7 +185,7 @@ fi
 given='[]'
 if [[ -e $SETTINGS ]]; then
   given=$(jq -s . "$SETTINGS" 2>&1) || die "$SETTINGS is not JSON: $(grep . <<<"$given" | tail -n 1)"
-  problems=$(jq -r -L "$TEAM_LIB" 'include "slots"; slots_problems' <<<"$given")
+  problems=$(jq -r -L "$TEAM_LIB" 'include "slots"; include "stack"; slots_problems' <<<"$given")
   [[ -z $problems ]] || die "$SETTINGS$problems"
 fi
 
@@ -202,7 +202,7 @@ if [[ -n $lock_fd ]]; then
     echo "${line:-another run}"
   }
   if ! flock -n -x "$lock_fd"; then
-    read -r wait seconds < <(jq -r -L "$TEAM_LIB" 'include "slots"; slots_settings.wait_minutes | "\(.) \(. * 60)"' <<<"$given")
+    read -r wait seconds < <(jq -r -L "$TEAM_LIB" 'include "slots"; include "stack"; slots_settings.wait_minutes | "\(.) \(. * 60)"' <<<"$given")
     [[ $seconds != 0 ]] || { echo "${0##*/}: the machine's slot lock is held by $(holder)" >&2 && exit 75; }
     echo "${0##*/}: waiting up to $wait minutes for the machine's slot lock, held by $(holder)" >&2
     flock -w "$seconds" -x "$lock_fd" || {
@@ -305,7 +305,7 @@ take_reading() {
   flock -w 60 "$sample_fd" || die "another reading is still being taken after 60 seconds"
   now=$(date +%s)
   if [[ -e $READINGS ]] && jq -Rne -L "$TEAM_LIB" --argjson now "$now" \
-    'include "slots"; [inputs] | slots_readings | .readings[-1].at // empty | fromdateiso8601 > $now - 60' \
+    'include "slots"; include "stack"; [inputs] | slots_readings | .readings[-1].at // empty | fromdateiso8601 > $now - 60' \
     "$READINGS" >/dev/null; then
     return 0
   fi
@@ -381,11 +381,11 @@ take_reading() {
   line=$(jq -nc -L "$TEAM_LIB" --arg at "$(date -u -d "@$now" +%FT%TZ)" --argjson total "$total" \
     --argjson available "$available" --argjson cpus "$cpus" --slurpfile procs "$work/procs.json" \
     --slurpfile paths "$work/paths.json" --argjson stacks "$stacks" --argjson previous "$previous" \
-    --arg os "$os" 'include "slots"; slots_reading({at: $at, os: $os, total: $total, available: $available, cpus: $cpus,
+    --arg os "$os" 'include "slots"; include "stack"; slots_reading({at: $at, os: $os, total: $total, available: $available, cpus: $cpus,
       procs: $procs[0], paths: $paths[0], stacks: $stacks, previous: $previous})')
   {
     [[ ! -e $READINGS ]] || jq -Rc -L "$TEAM_LIB" --argjson since $((now - 86400)) \
-      'include "slots"; try fromjson catch null | select(well_formed_reading and (.at | fromdateiso8601) >= $since)' "$READINGS"
+      'include "slots"; include "stack"; try fromjson catch null | select(well_formed_reading and (.at | fromdateiso8601) >= $since)' "$READINGS"
     printf '%s\n' "$line"
   } >"$READINGS.$$"
   mv -f "$READINGS.$$" "$READINGS"
@@ -396,7 +396,7 @@ take_reading() {
 ledger=$TEAM_HOME/ledger.jsonl
 [[ -e $ledger ]] || ledger=/dev/null
 # The slots held, from the ledger as raw lines, $worktrees and $home (held_slots in slots.jq).
-held='include "ledger"; include "slots"; ledger_events as $events | ($events | by_task) as $tasks
+held='include "ledger"; include "slots"; include "stack"; ledger_events as $events | ($events | by_task) as $tasks
   | held_slots($tasks; [open_worktrees($events[] | select($tasks[.task] | is_open); $home)]; $worktrees)'
 
 if [[ -n $sample ]]; then
@@ -409,7 +409,7 @@ fi
 # ones.
 readings_file=$READINGS
 [[ -e $readings_file ]] || readings_file=/dev/null
-if [[ -z $stored ]] && ! jq -Rne -L "$TEAM_LIB" 'include "slots"; [inputs] | slots_readings | .readings[-1].at // empty
+if [[ -z $stored ]] && ! jq -Rne -L "$TEAM_LIB" 'include "slots"; include "stack"; [inputs] | slots_readings | .readings[-1].at // empty
   | fromdateiso8601 > now - 600' "$readings_file" >/dev/null; then
   err=$(TEAM_HOME=$TEAM_HOME "${BASH_SOURCE[0]}" sample 2>&1 >/dev/null) ||
     echo "${0##*/}: took no reading of the machine's load: $(grep -m1 . <<<"$err" | sed 's/^team-slots: //')" >&2
@@ -418,7 +418,7 @@ fi
 # The stored readings of the machine's load, a broken line skipped and said once.
 readings_file=$READINGS
 [[ -e $readings_file ]] || readings_file=/dev/null
-readings=$(jq -Rnc -L "$TEAM_LIB" 'include "slots"; [inputs] | slots_readings' "$readings_file")
+readings=$(jq -Rnc -L "$TEAM_LIB" 'include "slots"; include "stack"; [inputs] | slots_readings' "$readings_file")
 broken=$(jq .broken <<<"$readings")
 ((broken == 0)) || echo "${0##*/}: skipped $broken broken line$( ((broken == 1)) || echo s) of ${READINGS/#"$HOME"/\~}" >&2
 
@@ -428,13 +428,13 @@ status=$(jq -nR -L "$TEAM_LIB" --arg home "$HOME" --arg code "$CODE" --argjson g
     reserved_project: ($project | select(. != "") // null), held: $held, readings: $readings[0], home: $home, code: $code})' "$ledger")
 
 if [[ -n $check ]]; then
-  room=$(jq -r --arg project "$check" -L "$TEAM_LIB" 'include "slots"; room_for($project)' <<<"$status")
+  room=$(jq -r --arg project "$check" -L "$TEAM_LIB" 'include "slots"; include "stack"; room_for($project)' <<<"$status")
   ((room > 0)) && exit 0
-  jq -r -L "$TEAM_LIB" --arg project "$check" --arg home "$HOME" 'include "slots"; refusal_text($project; $home)
+  jq -r -L "$TEAM_LIB" --arg project "$check" --arg home "$HOME" 'include "slots"; include "stack"; refusal_text($project; $home)
     | if startswith(" ") then . else "team-slots: " + . end' <<<"$status" >&2
   exit 75
 elif [[ -n $json ]]; then
   jq . <<<"$status"
 else
-  jq -r -L "$TEAM_LIB" --arg home "$HOME" 'include "slots"; status_text($home)' <<<"$status"
+  jq -r -L "$TEAM_LIB" --arg home "$HOME" 'include "slots"; include "stack"; status_text($home)' <<<"$status"
 fi
