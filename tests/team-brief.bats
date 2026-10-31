@@ -369,6 +369,13 @@ EOF
     "1. First, the ledger's evidence for this retro's window, in both forms: \`$REPO_ROOT/bin/team-retro digest T31\` and \`$REPO_ROOT/bin/team-retro digest T31 --json\`."
   # Then where the window's time went, measured from the same ledger.
   assert_contains "$(<"$brief")" "Then where the window's time went: \`$REPO_ROOT/bin/team-time --since <the window's since> --until <its until>\`, hours per task and per phase, gate runs, reviews and Daniel's answer latency."
+  # The same report holds the workers' lifetimes and where their time went, which the report's first part reasons about.
+  assert_contains "$(<"$brief")" "   It is also each worker's lifetime: the averages by role, path, project and model, the longest, and where the workers' time went, with what the task was doing while a worker waited."
+  assert_contains "$(<"$brief")" '1. `report.md`, in four parts:'
+  assert_equal "$(grep -m1 '^   - \*\*' "$brief")" \
+    "   - **Worker time**: the lifetimes by role (median, 90th percentile, longest) against the previous retro's when its report has them; the five longest lifetimes, each with its top sinks and, from the task's records, why; and the top sinks across workers with the hours each cost."
+  assert_contains "$(<"$brief")" "the costliest first, a sink's hours from Worker time counting as cost."
+  assert_contains "$(<"$brief")" 'and the sink it answers, when it answers one)'
   assert_contains "$(<"$brief")" "Read \`$REPO_ROOT/sops/platform-gotchas.md\` before your first command."
   # What Daniel approved and the team has not built yet is read, so it is not proposed again.
   assert_contains "$(<"$brief")" '`~/agent-team-records/tasks/queued/`'

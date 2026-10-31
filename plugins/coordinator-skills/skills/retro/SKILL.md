@@ -14,6 +14,7 @@ The retro itself changes nothing; what Daniel approves becomes its own work.
 2. **Brief and launch.** Run `team-brief T<n> retro`, then `team-worker T<n> planner <worktree> -- "Read your brief at <path>"`, the path being what `team-brief` printed.
 3. **Relay.** On `T<n> DONE <path>`, log `team-log T<n> done role=planner session=<id> report=<path>`, then read the report.
    Post its proposals in the retro's thread, one line each: its number, the change, and its evidence in a phrase.
+   After them, post one line from the report's Worker time: the builders' median and 90th-percentile lifetime and the top three sinks with their hours.
    Log the ask with `team-log T<n> asked id=retro text="<each proposal's number and title>"`.
 4. **Record the answer.** Daniel answers per number; log `team-log T<n> answered id=retro answer="<the answer>"`.
    A change to the schedule in it (a new cadence, or stop) is logged on the same task: `team-log T<n> retro-schedule every_hours=<hours, 0 to stop> discord_message=<id>`.
