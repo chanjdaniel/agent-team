@@ -264,6 +264,21 @@ SETTINGS=(coordinator.settings.json settings/worker.json)
   grep -qF '`review.md`' <<<"$(grep -F '`ui-check`' "$REPO_ROOT/roles/reviewer.md")"
 }
 
+# A reviewer proves nothing with a test of its own (its edit hook keeps it to the task directory):
+# it writes a suspected bug up with a test plan, and the builder writes and runs that test first.
+@test "a reviewer hands a suspected bug's test plan to the builder, who runs it before the fix" {
+  local reviewer builder
+  reviewer=$(awk '$0 == "## What you do" { on = 1; next } /^## / { on = 0 } on' "$REPO_ROOT/roles/reviewer.md")
+  builder=$(awk '$0 == "## What you do" { on = 1; next } /^## / { on = 0 } on' "$REPO_ROOT/roles/builder.md")
+  grep -qF 'suspect' <<<"$reviewer"
+  grep -qF 'test plan the builder can run: the seam, the input, the result expected and the result suspected' <<<"$reviewer"
+  grep -qF 'Never write or run a probe test of your own' <<<"$reviewer"
+  grep -qF 'finding with a test plan' <<<"$builder"
+  grep -qF 'before you change the code' <<<"$builder"
+  grep -qF 'test plan' "$REPO_ROOT/templates/briefs/builder-round.md"
+  grep -qF 'test plan' "$REPO_ROOT/templates/briefs/rereview.md"
+}
+
 # The tools the sessions run send usage data off the machine unless told not to (T43's audit):
 # lavish-axi's analytics, codegraph's telemetry and Chrome DevTools MCP's Google usage statistics.
 @test "the worker and coordinator settings turn off the tools' telemetry" {
@@ -355,6 +370,40 @@ assert_denies() {
   assert_denies "Bash(git config 'core.hookspath' **)" "git config 'core.hookspath' x"
 }
 
+# --replace-all writes the key it names; --file and -f write it in the file they name. Their rules
+# name the key right after a file whose name ends in config, as every file git reads its config
+# from does but a config.worktree, and need a value after the key, as the others do: a * between
+# the file and the key would take in a --get, and refuse a read.
+@test "the git hooks' deny rule: git config of core.hooksPath with --replace-all, --file or -f" {
+  assert_denies 'Bash(git config *--replace-all*core.hooksPath*)' 'git config --replace-all core.hooksPath x' \
+    'git config --global --replace-all core.hooksPath x'
+  assert_denies 'Bash(git -C * config *--replace-all*core.hooksPath*)' 'git -C ~/repo config --replace-all core.hooksPath x'
+  assert_denies 'Bash(git config *--file*config core.hooksPath **)' 'git config --file .git/config core.hooksPath x' \
+    'git config --file=.git/config core.hooksPath x' 'git config --file ~/.gitconfig core.hooksPath x'
+  assert_denies 'Bash(git -C * config *--file*config core.hooksPath *)' 'git -C ~/repo config --file .git/config core.hooksPath x'
+  assert_denies 'Bash(git config *-f *config core.hooksPath **)' 'git config -f .git/config core.hooksPath x' \
+    'git config --local -f .git/config core.hooksPath ""'
+  assert_denies 'Bash(git -C * config *-f *config core.hooksPath *)' 'git -C ~/repo config -f .git/config core.hooksPath x'
+  assert_denies 'Bash(git config *--replace-all*core.hookspath*)' 'git config --replace-all core.hookspath x'
+  assert_denies 'Bash(git -C * config *--replace-all*core.hookspath*)' 'git -C ~/repo config --replace-all core.hookspath x'
+  assert_denies 'Bash(git config *--file*config core.hookspath **)' 'git config --file .git/config core.hookspath x'
+  assert_denies 'Bash(git -C * config *--file*config core.hookspath *)' 'git -C ~/repo config --file=.git/config core.hookspath x'
+  assert_denies 'Bash(git config *-f *config core.hookspath **)' 'git config -f .git/config core.hookspath x'
+  assert_denies 'Bash(git -C * config *-f *config core.hookspath *)' 'git -C ~/repo config -f .git/config core.hookspath x'
+}
+
+# Git reads config from these variables on every command: a key and value pair counted by
+# GIT_CONFIG_COUNT, -c's own list in GIT_CONFIG_PARAMETERS, and another global or system file.
+# Each rule denies an assignment of one, before a command, exported or through env.
+@test "the git hooks' deny rule: git's config set through its GIT_CONFIG_ variables" {
+  local pair='GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null'
+  assert_denies 'Bash(*GIT_CONFIG_COUNT=*)' "GIT_CONFIG_COUNT=1 $pair git commit -m x" \
+    "export GIT_CONFIG_COUNT=1 $pair" "env GIT_CONFIG_COUNT=1 $pair git push" "LC_ALL=C GIT_CONFIG_COUNT=1 $pair git push"
+  assert_denies 'Bash(*GIT_CONFIG_PARAMETERS=*)' "GIT_CONFIG_PARAMETERS=\"'core.hooksPath'=''\" git commit"
+  assert_denies 'Bash(*GIT_CONFIG_GLOBAL=*)' 'GIT_CONFIG_GLOBAL=/tmp/x git commit -m x'
+  assert_denies 'Bash(*GIT_CONFIG_SYSTEM=*)' 'GIT_CONFIG_SYSTEM=/tmp/x git push'
+}
+
 @test "the git hooks' deny rule: core.hooksPath overridden for one command" {
   assert_denies 'Bash(git -c core.hooksPath*)' 'git -c core.hooksPath=/dev/null commit -m "x"'
   assert_denies 'Bash(git -C * -c core.hooksPath*)' 'git -C /home/me/agent-team -c core.hooksPath= commit -m "x"'
@@ -375,6 +424,11 @@ assert_denies() {
       'cd ~/repo; git config core.hooksPath; git status --short' 'git status && git config core.hooksPath' \
       'git -C ~/repo config --get core.hooksPath || echo unset' 'git config get core.hooksPath 2>&1' \
       'git config --show-origin --get-all core.hooksPath; git status' \
+      'git config --file .git/config core.hooksPath' 'git config -f .git/config --get core.hooksPath' \
+      'git -C ~/repo config --file=.git/config core.hooksPath' 'git -C ~/repo config -f .git/config core.hooksPath' \
+      'git config -f .git/config --get core.hooksPath 2>/dev/null' 'git config --file .git/config --get-all core.hooksPath 2>&1' \
+      'git -C ~/repo config --file .git/config --get core.hooksPath 2>/dev/null' \
+      'git grep -n GIT_CONFIG_COUNT' 'env | grep GIT_CONFIG_' 'echo "$GIT_CONFIG_GLOBAL"' \
       'git commit -m "docs: Daniel runs git config core.hooksPath bin/hooks/git, never git -c core.hooksPath="' \
       "team-log T45 blocked 'a read of git config core.hooksPath x was refused'"; do
       if denied "$file" "$command"; then echo "$file denies: $command" >&2; return 1; fi
@@ -409,6 +463,21 @@ git -c core.hooksPath= commit -m "x"
 git -C ~/repo -c core.hooksPath=/dev/null push
 cd ~/repo; git config core.hooksPath /dev/null; git status
 git config core.hooksPath && git config core.hooksPath /dev/null
+git config --replace-all core.hooksPath x
+git config --replace-all core.hookspath x
+git -C ~/repo config --replace-all core.hooksPath x
+git config --file .git/config core.hooksPath x
+git config --file=.git/config core.hookspath x
+git -C ~/repo config --file .git/config core.hooksPath x
+git config -f .git/config core.hooksPath x
+git config -f ~/.gitconfig core.hookspath ""
+git -C ~/repo config -f .git/config core.hooksPath x
+GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null git commit -m x
+export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=; git push
+env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hookspath GIT_CONFIG_VALUE_0= git push
+GIT_CONFIG_PARAMETERS="'core.hooksPath'=''" git commit -m x
+GIT_CONFIG_GLOBAL=/tmp/x git commit -m x
+GIT_CONFIG_SYSTEM=/tmp/x git push
 COMMANDS
   done
 }

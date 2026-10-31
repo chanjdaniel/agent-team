@@ -11,6 +11,7 @@ Task directory: `{{task_dir}}/` in the worktree (excluded from git): `spec.md`, 
 1. Read `{{task_dir}}/spec.md`, every note in `{{task_dir}}/build-notes/`, `{{task_dir}}/handoff.md`, and findings {{findings}} in `{{task_dir}}/review.md`.
 2. `git fetch origin`; your branch must hold what the stowed builder pushed (`git merge-base --is-ancestor origin/{{branch}} HEAD`), else send `{{task}} BLOCKED <what differs>` to `coordinator`.
 3. Fix each finding on the branch, test-first where it changes behaviour, and delete `{{task_dir}}/handoff.md` once its work is done.
+   Answer a finding with a test plan as your role says: its test first, run before you change the code, and a note in `{{task_dir}}/build-notes/` saying whether it failed.
 4. Then deliver as below; when the PR exists, push to it where a step opens one, and when it is none, the delivery opens it as it says.
 
 {{> delivery}}
