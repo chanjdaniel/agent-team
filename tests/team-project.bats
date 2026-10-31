@@ -450,6 +450,132 @@ TOML
   done
 }
 
+@test "merge_with_plan is optional, false by default, a boolean, and found by --find" {
+  run_bin -0 team-project alpha merge_with_plan
+  assert_equal "$output" false
+  run_bin -0 team-project alpha
+  assert_equal "$(jq -c .merge_with_plan <<<"$output")" false
+  sed -i 's|^docs = \[\]$|docs = []\nmerge_with_plan = true|' "$TEAM_HOME/projects.toml"
+  run_bin -0 team-project --check
+  run_bin -0 team-project beta merge_with_plan
+  assert_equal "$output" true
+  run_bin -0 team-project --find merge_with_plan true
+  assert_equal "$output" beta
+  run_bin -0 team-project --find merge_with_plan false
+  assert_equal "$output" alpha
+
+  registry <<'TOML'
+[alpha]
+repo = "owner/alpha"
+path = "alpha"
+base = "main"
+delivery = "direct-pr"
+merge_method = "merge"
+required_checks = []
+merge_with_plan = "yes"
+task_dir = ".scratch/task"
+docs = []
+toolkits = []
+pool = { provider = "git", slots = ["alpha/1"] }
+
+[beta]
+repo = "owner/beta"
+path = "beta"
+base = "main"
+delivery = "direct-pr"
+merge_method = "merge"
+required_checks = []
+merge_with_plan = 1
+task_dir = ".scratch/task"
+docs = []
+toolkits = []
+pool = { provider = "git", slots = ["beta/1"] }
+TOML
+  run_bin -1 --separate-stderr team-project --check
+  assert_contains "$stderr" "alpha.merge_with_plan: must be true or false"
+  assert_contains "$stderr" "beta.merge_with_plan: must be true or false"
+}
+
+# A registry of one project, <name>, at <path> under HOME, with merge_with_plan = <value>:
+# own_registry <name> <path> <value> [<repo>]
+own_registry() {
+  registry <<TOML
+[$1]
+repo = "${4:-owner/$1}"
+path = "$2"
+base = "dev"
+delivery = "direct-pr"
+merge_method = "merge"
+required_checks = []
+merge_with_plan = $3
+task_dir = ".scratch/task"
+docs = []
+toolkits = []
+pool = { provider = "git", slots = ["$2/1"] }
+TOML
+}
+
+# A code checkout of the test's own at ~/projects/tools, a clone with this checkout's bin/ in it,
+# which run_bin runs from: own_checkout
+own_checkout() {
+  export CODE_CHECKOUT
+  CODE_CHECKOUT=$(make_repo tools dev)
+  copy_bin "$CODE_CHECKOUT/bin"
+}
+
+@test "--check refuses merge_with_plan = true on the team's own project: agent-team, or the one at this code checkout" {
+  own_registry agent-team agent-team true
+  run_bin -1 --separate-stderr team-project --check
+  assert_contains "$stderr" "agent-team.merge_with_plan: agent-team is the team's own project, whose PRs merge only on Daniel's word per head"
+  own_registry agent-team agent-team false
+  run_bin -0 team-project --check
+
+  # The project at the code checkout team-project runs from is the team's own, whatever its name.
+  own_checkout
+  own_registry tools projects/tools true
+  run_bin -1 --separate-stderr team-project --check
+  assert_contains "$stderr" "tools.merge_with_plan: its path is the code checkout team-project runs from, $CODE_CHECKOUT, the team's own project, whose PRs merge only on Daniel's word per head"
+  own_registry tools projects/other true
+  run_bin -0 team-project --check
+}
+
+@test "own_project is true for the team's own project, by name, by path or by repo, and false for another" {
+  own_checkout
+  cat >"$CODE_CHECKOUT/bin/team-own" <<'SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+if own_project "$1"; then echo own; else echo other; fi
+SCRIPT
+  chmod +x "$CODE_CHECKOUT/bin/team-own"
+
+  own_registry agent-team elsewhere false
+  run_bin -0 team-own agent-team
+  assert_equal "$output" own
+  own_registry tools projects/tools false
+  run_bin -0 team-own tools
+  assert_equal "$output" own
+  own_registry beta beta true
+  run_bin -0 team-own beta
+  assert_equal "$output" other
+
+  # By repo: the owner/name of the code checkout's origin, in any case, however the URL is spelled.
+  local url
+  for url in git@github.com:Owner/Code.git https://github.com/owner/code https://github.com/OWNER/code.git/ \
+    ssh://git@github.com/owner/Code.git; do
+    git -C "$CODE_CHECKOUT" remote set-url origin "$url"
+    own_registry beta beta true owner/CODE
+    run_bin -0 team-own beta
+    assert_equal "$output" own
+    own_registry beta beta true owner/codex
+    run_bin -0 team-own beta
+    assert_equal "$output" other
+  done
+
+  run_bin -1 --separate-stderr team-own gamma
+  assert_contains "$stderr" "unknown project 'gamma'"
+}
+
 @test "--help documents every key the registry may hold, and no other" {
   local known documented
   # The keys from the script's own lists: a project's, its optional ones, and its pool's.
