@@ -1191,6 +1191,10 @@ EOF
     front-end/src/views/EmailVerificationView.vue:permissions front-end/src/utils/permissionTable.ts:permissions
     front-end/src/utils/applicantSessionExpiry.ts:secrets front-end/src/views/PasswordResetView.vue:secrets
     "src/CSRFToken.ts:permissions, secrets"
+    # The permissions words' verb forms, and a hump ending in a digit.
+    back-end/api/authenticate.py:permissions src/authorize.ts:permissions
+    front-end/src/utils/isAuthenticated.ts:permissions back-end/api/authorizedRoutes.py:permissions
+    front-end/src/views/OAuth2Callback.ts:permissions src/Login2fa.ts:permissions
   )
   local plain=(back-end/api/views.py front-end/src/App.test.tsx src/oracle.py src/environment.py src/keyboard.py
     src/settled.py src/author.py src/tokenizer.py docs/scripts.md src/guardian.ts src/descriptions.py

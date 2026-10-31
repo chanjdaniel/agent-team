@@ -4,9 +4,11 @@
 # One pattern per line, its area first, then one space, then an extended regular expression
 # (grep -E) matched case-insensitively against the whole repository path, and against it again
 # with each camelCase hump split off by an underscore (LoginView.vue as Login_View.vue), so a
-# word bounded by [^a-z0-9] matches inside such a name too. The areas are exactly the ledger's
-# guarded areas (guarded_areas in bin/lib/ledger.jq), kept in its order. The list errs wide: a
-# change it guards needlessly only costs Daniel's per-head word, one it misses merges unseen.
+# word bounded by [^a-z0-9] matches inside such a name too; the permissions words take a digit as
+# their right bound as well (OAuth2Callback.ts as O_Auth2_Callback.ts). The areas are exactly the
+# ledger's guarded areas (guarded_areas in bin/lib/ledger.jq), kept in its order. The list errs
+# wide: a change it guards needlessly only costs Daniel's per-head word, one it misses merges
+# unseen.
 ci (.*/)?\.github/.*
 ci (.*/)?\.circleci/.*
 ci (.*/)?\.gitlab-ci\.ya?ml
@@ -42,7 +44,7 @@ settings (.*/)?(vercel\.json|netlify\.toml|fly\.toml|procfile|render\.ya?ml|rail
 settings (.*[^a-z0-9])?(env|dotenv|deploy|deployment)([^a-z0-9].*)?
 permissions (.*[^a-z0-9])?(permissions?|rbac|acls?)([^a-z0-9].*)?
 permissions (.*/)?codeowners
-permissions (.*[^a-z0-9])?(auth[nz]?|authentication|authori[sz]ation|oauth2?|log[_-]?in|log[_-]?out|sign(ed)?[_-]?(in|up)|verify|verified|verification|access|roles?|cors|csrf|xsrf|captcha|security|guards?|proxy|request[_-]origin)([^a-z0-9].*)?
+permissions (.*[^a-z0-9])?(auth[nz]?|authenticat[a-z]*|authori[sz][a-z]*|oauth2?|log[_-]?in|log[_-]?out|sign(ed)?[_-]?(in|up)|verify|verified|verification|access|roles?|cors|csrf|xsrf|captcha|security|guards?|proxy|request[_-]origin)([^a-z].*)?
 secrets .*(secret|credential).*
 secrets .*\.(pem|key|p12|pfx)
 secrets (.*[^a-z0-9])?(tokens?|sessions?|passwords?|passwd|jwt|api[_-]?keys?)([^a-z0-9].*)?

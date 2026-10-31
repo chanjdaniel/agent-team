@@ -24,17 +24,18 @@
 #   projects.toml at each run) and is not the team's own (own_project: agent-team by name, by
 #   path or by repo); the PR's head branch is the task's branch for the project (its latest
 #   opened, worktree-added or branch-renamed event's, so a branch the gate made the builder move
-#   to counts once the coordinator logs it); the latest review of the head (by the shorter prefix) has verdict
-#   pass and logged guarded as an empty list (one that left it out, or named areas, is refused,
-#   naming them); no review of the task counted a security or real-data finding, fixed or not,
-#   or left out its findings, each such review named by its head and time; the PR's changed
-#   files, read from GitHub's paged list of its files (each filename, and each rename's previous
-#   filename), number the PR's changedFiles, else the list is refused as not read in full; each
-#   changed path is within the approval's scope (an entry ending in / covers every path under it,
-#   any other that path only), each one outside named; and no changed path matches a guarded
-#   pattern of bin/lib/guarded (CI, dependencies, migrations, settings, permissions, secrets),
-#   as it is or with its camelCase humps split off by underscores, each one named with its areas; a per-head merge checks none of these; every check below holds
-#   for it too, and a refusal ends with a line saying to ask Daniel for the per-head word on the
+#   to counts once the coordinator logs it); the latest review of the head (by the shorter
+#   prefix) has verdict pass and logged guarded as an empty list (one that left it out, or named
+#   areas, is refused, naming them); no review of the task counted a security or real-data
+#   finding, fixed or not, or left out its findings, each such review named by its head and time;
+#   the PR's changed files, read from GitHub's paged list of its files (each filename, and each
+#   rename's previous filename), number the PR's changedFiles, else the list is refused as not
+#   read in full; each changed path is within the approval's scope (an entry ending in / covers
+#   every path under it, any other that path only), each one outside named; and no changed path
+#   matches a guarded pattern of bin/lib/guarded (CI, dependencies, migrations, settings,
+#   permissions, secrets), as it is or with its camelCase humps split off by underscores, each
+#   one named with its areas; a per-head merge checks none of these; every check below holds for
+#   it too, and a refusal ends with a line saying to ask Daniel for the per-head word on the
 #   head;
 #   the PR is open, not a draft, does not conflict, and targets the project's base;
 #   every required check (the base branch's protection, gh pr checks --required and the
