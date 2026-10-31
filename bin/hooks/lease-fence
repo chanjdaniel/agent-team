@@ -4,18 +4,19 @@
 #
 # Usage: lease-fence [--coordinator]   (the hook's input on stdin; --coordinator on its Bash)
 #   Discord (the coordinator's reply, react and edit_message), and a Bash command of any role
-#     that runs team-post, team-ask or team-inbox: blocked while this machine is fenced, or when the lease on origin is
-#     not this machine's last write and names another holder or a higher epoch, so an old
-#     coordinator or worker never posts in the channel the new one owns, even before its
-#     heartbeat fences it (lease_refusal in bin/lib/team.sh, which team-post runs itself too:
-#     origin asked at most once a minute; unreachable passes, since the heartbeat owns offline).
+#     that runs team-post, team-ask or team-inbox: blocked while this machine is fenced, or when
+#     the lease on origin is not this machine's last write and names another holder or a higher
+#     epoch, so an old coordinator or worker never posts in the channel the new one owns, even
+#     before its heartbeat fences it (lease_refusal in bin/lib/team.sh, which team-post runs
+#     itself too: origin asked at most once a minute; unreachable passes, since the heartbeat
+#     owns offline).
 #   Bash, a command of any role that runs team-answer (which logs Daniel's answer) or team-thread
 #     wait (an interview's read of Discord): blocked as a post is, with what such a machine does
 #     instead.
 #   Bash (workers): a command that runs git push is blocked while this machine is fenced; while
 #     the team holds offline, one that runs git push, gh, gh-axi, team-ci-wait or team-thread wait
-#     is blocked with the hold (offline_hold: "GitHub is unreachable (since 13:05); the team is holding:
-#     ..."), so no worker retries or waits on.
+#     is blocked with the hold (offline_hold: "GitHub is unreachable (since 13:05); the team is
+#     holding: ..."), so no worker retries or waits on.
 #   Bash (the coordinator, --coordinator): a command that runs git push, team-merge, team-open
 #     or team-close is blocked as a Discord post is, so a coordinator left running on a machine
 #     that lost the lease merges, opens, closes and pushes nothing while the holder's does.

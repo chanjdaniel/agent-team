@@ -120,7 +120,8 @@ while :; do
       fi
     else
       no_checks_since=''
-      # The stuck clocks: a pending check whose run completed, from the first readable look that saw it.
+      # The stuck clocks: a pending check whose run completed, from the first readable look that
+      # saw it.
       declare -A now=()
       while IFS= read -r name; do
         now[$name]=1

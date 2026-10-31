@@ -76,9 +76,9 @@
 #                    they acted (SendMessage, or a script of bin/ other than team-checks,
 #                    team-ci-wait, team-doctor, team-heavy, team-load-check, team-project,
 #                    team-retro, team-snapshot, team-state, team-sweep, team-time and team-tokens
-#                    run as a command), only answered (a Discord reply) or did neither; and how many of the
-#                    coordinator's main-conversation replies in the window are in sessions the
-#                    tables do not read
+#                    run as a command), only answered (a Discord reply) or did neither; and how
+#                    many of the coordinator's main-conversation replies in the window are in
+#                    sessions the tables do not read
 #   Daniel's waits   from each Discord message sent in the window (its id's time) to the
 #                    coordinator's first reply to its chat_id (the plugin's reply tool), after
 #                    --until too: the messages, those replied to, the median, 75th and 90th
