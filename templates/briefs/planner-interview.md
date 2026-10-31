@@ -33,8 +33,9 @@ On `{{task}} STOW`, `handoff.md` also names the last message id you read and the
 1. `spec.md`, following `~/.claude/skills/to-spec/SKILL.md` (read and follow it; do not stop to check seams with the user: Daniel's answers in the notebook settle them, and you choose and state the rest).
 2. `tickets/NN-<slug>.md`, following `~/.claude/skills/to-tickets/SKILL.md` the same way (skip its quiz), each with `Blocked by:` and a `- [ ]` acceptance list, and small enough for one fresh builder who reads only `spec.md`, that ticket and the files it names.
    With more than eight tickets, or when another open or queued task waits on files this one changes, group them into phases in `spec.md`: each phase ends in its own PR that leaves `{{base}}` working, and the phase that changes the files others wait on comes first.
-3. Post in the interview thread that the plan is written and goes to the coordinator now.
-4. Send `{{task}} DONE {{task_dir}}/spec.md` to `coordinator`.
+3. `scope.txt`, every path the tickets change, one repository path per line: a file, or a directory ending in `/` that covers everything under it, with no leading `/`, no `.` or `..` and no glob; the coordinator puts it to Daniel with the plan, whose approval may let the PR merge with no second ask when it changes nothing outside it.
+4. Post in the interview thread that the plan is written and goes to the coordinator now.
+5. Send `{{task}} DONE {{task_dir}}/spec.md` to `coordinator`.
 
 Send the coordinator only `DONE`, `BLOCKED`, `PAUSED`, `FAILED` or `INJECTION`: your questions go to Daniel in the thread, never to the coordinator.
 

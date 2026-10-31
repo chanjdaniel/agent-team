@@ -1,4 +1,5 @@
 - There is no PR yet: the builder stopped before the no-mistakes gate, which runs once this review passes or its findings are fixed, and reviews the code line by line after you.
 - Write your findings to `{{task_dir}}/review.md`, numbered, each with its file and line and one kind: `blocking`, `note: correctness`, `note: security`, `note: real-data` or `note`.
+  End it with the count of each kind (0 for none) and the guarded areas the change touches, of `ci`, `dependencies`, `migrations`, `settings`, `permissions` and `secrets`, by the paths `{{team_code}}/bin/lib/guarded` lists or by what the code does (settings, permission or secrets handling in a file of any name), or none.
   Post nothing to GitHub: the re-review of the gate's PR posts the comment and sets the status.
-- Send `{{task}} DONE pass {{head}}` or `{{task}} DONE findings {{task_dir}}/review.md` to `coordinator`.
+- Send `{{task}} DONE pass {{head}} findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note:<n> guarded=<areas, comma-separated, or none>` or `{{task}} DONE findings {{task_dir}}/review.md findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note:<n> guarded=<areas, comma-separated, or none>` to `coordinator`, the counts and areas as `{{task_dir}}/review.md` gives them.

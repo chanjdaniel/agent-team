@@ -16,10 +16,11 @@ Since the last review: {{since}}
 ## Deliver
 
 - Add the result to `{{task_dir}}/review.md` under a heading naming `{{head}}`, its new findings numbered on from the last, each with its file and line and one kind: `blocking`, `note: correctness`, `note: security`, `note: real-data` or `note`; then write the same result alone to `{{task_dir}}/rereview.md`.
+  Give in it the count of each kind among the findings that stand at `{{head}}`, its new ones and any earlier one not fixed (0 for none), and the guarded areas the change touches, of `ci`, `dependencies`, `migrations`, `settings`, `permissions` and `secrets`, by the paths `{{team_code}}/bin/lib/guarded` lists or by what the code does (settings, permission or secrets handling in a file of any name), or none.
   Post that as one PR comment with this exact command, the only comment your settings allow: `{{team_bin}}/team-review-comment {{pr}} {{task_dir}}/rereview.md`.
 - The status on the head you reviewed, with this exact command, the only status your settings allow: `{{team_bin}}/team-review-status {{pr}} {{head}} <success|failure> "<one line, at most 140 characters>"`.
   It sets the status on `{{head}}`, the head you reviewed, and refuses when the PR has moved past it: then set nothing and tell the coordinator.
-- Send `{{task}} DONE pass {{pr}}` or `{{task}} DONE findings {{task_dir}}/review.md` to `coordinator`.
+- Send `{{task}} DONE pass {{pr}} findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note:<n> guarded=<areas, comma-separated, or none>` or `{{task}} DONE findings {{task_dir}}/review.md findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note:<n> guarded=<areas, comma-separated, or none>` to `coordinator`, the counts and areas as `{{task_dir}}/rereview.md` gives them.
 
 ## Rules
 
