@@ -1,5 +1,6 @@
-# Worker lifetimes: how long each worker lived, from its launch to its end, from the ledger. Used
-# by team-time as jq -L bin/lib -nR 'include "workers"; workers_report(...)' over the ledger's lines.
+# Worker lifetimes: how long each worker lived, from its launch to its end, from the ledger, and
+# where its time went, from its time rows. Used by team-time as jq -L bin/lib -nR 'include
+# "workers"; workers_report(...)' over the ledger's lines, then workers_join(...) on its rows.
 # Includes ledger.jq for the events and time.jq for a task's phase segments, the clipping and the
 # percentiles.
 include "ledger";
@@ -19,7 +20,8 @@ def span_minutes($hi): (((if .end then .end | fromdate else $hi end) - (.start |
 # next launch of the same role (replaced), its stowed (stowed) or its closed (closed); else it is
 # running (ended "running", end null). Its rounds are its session's dones, its first done the
 # minutes to the first of them; its phases the minutes per phase of the task's segments (gate runs
-# included) over its span, null for a legacy task.
+# included) over its span, null for a legacy task. Its segments, those over its span, are for
+# workers_join, which drops them.
 def task_lifetimes($hi):
   . as $events
   | (map(select(.event == "opened")) | first) as $opened
@@ -47,7 +49,8 @@ def task_lifetimes($hi):
      phases: (if $segments == null then null
        else (reduce ($segments[] | clip($start; $stop)) as $s ({}; .[$s.class] += $s.to - $s.from)) as $seconds
          | [time_phases[] | .[0] | select($seconds[.]) | {(.): ($seconds[.] / 60 | tenths)}] | add // {} end),
-     transcript: null}
+     transcript: null,
+     segments: (if $segments == null then null else [$segments[] | clip($start; $stop)] end)}
   | if .ended == "running" then . + {age_minutes: (($stop - $start) / 60 | tenths)} else . end;
 
 # The stats of a group of lifetimes, in minutes to one decimal: workers, mean, median and 90th
@@ -81,8 +84,166 @@ def workers_report($lo; $hi; $task):
        by_role_project: ($ended | stats_by("project"; $hi)), by_role_model: ($ended | stats_by("model"; $hi))},
      longest: ($ended | sort_by(-span_minutes($hi)) | .[:10] | map(.session))};
 
+# The classes of a time row's key in report order, with their labels; unseen is the part of a
+# lifetime its transcript never saw.
+def worker_classes: [
+  ["model", "the model's turns"], ["compaction", "compactions"], ["wait:message", "waiting for a message"],
+  ["wait:other", "other waits"], ["checks", "local checks"], ["gate", "the gate"], ["ci", "waiting on CI"],
+  ["tests", "tests"], ["stacks", "stacks"], ["browser", "the browser"], ["subagents", "subagents"],
+  ["files", "reading and editing"], ["git", "git and GitHub"], ["other", "other commands and tools"],
+  ["unseen", "not in the transcript"]
+];
+
+# A time row's key's class, first match wins, looking through "background " and the key's kind
+# (bash, monitor or tool): model, compaction, the two waits; then a command's: checks (team-checks,
+# or a name naming a linter, formatter or type checker, go vet), gate (no-mistakes, git push no-mistakes),
+# ci (gh pr checks, gh run watch, gh run view), tests (tests/run, bats, playwright, pytest, vitest,
+# jest, go test, cargo test, npm test or npm run test and the like, a program with test in its
+# name), stacks (team-stack, docker), browser (chrome-devtools-axi, team-ui), git (any other git or
+# gh); a tool's: browser (Chrome DevTools' MCP tools), subagents (Agent), files (Read, Edit, Write,
+# Grep, Glob, NotebookEdit); else other.
+def key_class:
+  sub("^background "; "") as $key
+  | ($key | capture("^(?<kind>bash|monitor|tool) (?<name>.+)$") // {kind: null, name: $key}) as {$kind, $name}
+  | ($name | split(" ")) as $words
+  | if $kind == null then
+      {"model": "model", "compaction": "compaction", "wait message": "wait:message", "wait other": "wait:other"}[$key] // "other"
+    elif $kind == "tool" then
+      if $name | test("chrome[-_]devtools"; "i") then "browser"
+      elif $name == "Agent" then "subagents"
+      elif IN($name; "Read", "Edit", "Write", "Grep", "Glob", "NotebookEdit") then "files"
+      else "other" end
+    elif $words[0] == "team-checks" or ($name | test("lint|format|fmt|type-?check|tsc|eslint|prettier|shellcheck|ruff|mypy|^go vet")) then "checks"
+    elif $words[0] == "no-mistakes" or $name == "git push no-mistakes" then "gate"
+    elif IN($name; "gh pr checks", "gh run watch", "gh run view") then "ci"
+    elif any($words[]; IN(.; "bats", "playwright", "pytest", "vitest", "jest"))
+      or ($name | test("^((go|cargo|npm|pnpm|yarn|bun) test|(npm|pnpm|yarn|bun) run test)"))
+      or ($words[0] != "test" and ($words[0] | test("test"))) then "tests"
+    elif IN($words[0]; "team-stack", "docker") then "stacks"
+    elif IN($words[0]; "chrome-devtools-axi", "team-ui") then "browser"
+    elif IN($words[0]; "git", "gh") then "git"
+    else "other" end;
+
+# A time row's time ("2026-10-30T07:02:30.095Z", its fraction optional) in seconds since the epoch.
+def instant: capture("^(?<s>[^.]+?)(?<f>\\.[0-9]+)?Z$") | (.s + "Z" | fromdate) + ("0\(.f // "")" | tonumber);
+
+# An object's entries in the order of $keys, only the keys it has.
+def ordered($keys): . as $o | [$keys[] | select($o[.] != null) | {(.): $o[.]}] | add // {};
+
+# An object of seconds as minutes to one decimal, in the order of $keys, only the keys it has.
+def minutes_in($keys): map_values(. / 60 | tenths) | ordered($keys);
+
+# The phase keys in report order: time_phases', then "-" for a legacy task, which has none.
+def phase_keys: [time_phases[] | .[0]] + ["-"];
+
+# Time rows' keys summed over the rows: {key: {seconds, calls, longest}}.
+def key_totals:
+  reduce (.[] | .keys | to_entries[]) as $e ({};
+    .[$e.key] |= {seconds: (.seconds + $e.value.seconds), calls: (.calls + $e.value.calls), longest: ([.longest // 0, $e.value.longest] | max)});
+
+# Summed keys as seconds per class.
+def class_seconds: reduce to_entries[] as $e ({}; .[$e.key | key_class] += $e.value.seconds);
+
+# Each lifetime joined to its time rows ($rows, the rows whose session begins with its own):
+# {lifetime, keys (null with no row), seconds, unseen and waits (seconds by wait class and phase,
+# each wait cut to the lifetime's span, then to its task's segments, all under "-" for a legacy
+# task)}.
+def joined($rows):
+  .[] as $l
+  | [$rows[] | select(.session | startswith($l.session))] as $mine
+  | ($l.start | fromdate) as $start | ($l.end | fromdate) as $stop
+  | if $mine == [] then {lifetime: $l, keys: null}
+    else ($mine | key_totals) as $keys
+      | ([$keys[].seconds] | add) as $seconds
+      | {lifetime: $l, keys: $keys, seconds: $seconds, first: ($mine | map(.first) | min), last: ($mine | map(.last) | max),
+         unseen: ([($stop - $start) - $seconds, 0] | max),
+         waits: (reduce ($mine[].waits[] | {from: (.from | instant), to: (.to | instant), class: (.key | key_class)} | clip($start; $stop)) as $w ({};
+           if $l.segments == null then .[$w.class]["-"] += $w.to - $w.from
+           else reduce ($l.segments[] | clip($w.from; $w.to)) as $s (.; .[$w.class][$s.class] += $s.to - $s.from) end))}
+    end;
+
+# A joined lifetime's transcript part: its minutes, first and last, class minutes, top three keys
+# (minutes, calls, longest), unseen minutes and its waits' minutes by class and phase; null with no
+# row.
+def transcript_part:
+  if .keys == null then null
+  else {minutes: (.seconds / 60 | tenths), first, last,
+    classes: (.keys | class_seconds | minutes_in(worker_classes | map(.[0]))),
+    top: (.keys | to_entries | sort_by(-.value.seconds, .key) | .[:3]
+      | map({key, minutes: (.value.seconds / 60 | tenths), calls: .value.calls, longest: (.value.longest / 60 | tenths)})),
+    unseen: (.unseen / 60 | tenths),
+    waits: (.waits | map_values(minutes_in(phase_keys)) | ordered(worker_classes | map(.[0])))}
+  end;
+
+# The breakdown over joined lifetimes: coverage (lifetimes and those with a transcript, in all and
+# per role); per role, and all, the minutes of each class (unseen included) and its share of them
+# in percent to one decimal; the fifteen keys with the most time (key, class, minutes, calls,
+# longest, lifetimes); and per role the minutes waiting for a message by the task's phase.
+def breakdown:
+  . as $all
+  | [$all[] | select(.keys)] as $with
+  | ([$all[].lifetime] | group_by(.role) | sort_by(.[0] | role_rank) | map(.[0].role)) as $roles
+  | ([$with[].lifetime] | group_by(.role) | sort_by(.[0] | role_rank) | map(.[0].role)) as $seen
+  | (worker_classes | map(.[0])) as $classes
+  | ([$seen[] as $role | {($role): (reduce ($with[] | select(.lifetime.role == $role)) as $j ({};
+       reduce ($j.keys | class_seconds | to_entries[]) as $c (.; .[$c.key] += $c.value) | .unseen += $j.unseen))}] | add // {}) as $by_role
+  | ($by_role | if . == {} then {} else . + {all: (reduce .[] as $r ({}; reduce ($r | to_entries[]) as $c (.; .[$c.key] += $c.value)))} end) as $seconds
+  | {coverage: {lifetimes: ($all | length), transcripts: ($with | length),
+       roles: [$roles[] as $role | {role: $role, lifetimes: ([$all[] | select(.lifetime.role == $role)] | length),
+         transcripts: ([$with[] | select(.lifetime.role == $role)] | length)}]},
+     classes: ($seconds | map_values(with_entries(select(.value > 0)) | minutes_in($classes))),
+     share: ($seconds | map_values(with_entries(select(.value > 0)) | ([.[]] | add) as $total
+       | map_values(. * 100 / $total | tenths) | ordered($classes))),
+     top: ([$with[] | .keys | to_entries[]] | group_by(.key)
+       | map({key: .[0].key, class: (.[0].key | key_class), seconds: (map(.value.seconds) | add),
+           calls: (map(.value.calls) | add), longest: (map(.value.longest) | max), lifetimes: length})
+       | sort_by(-.seconds, .key) | .[:15]
+       | map({key, class, minutes: (.seconds / 60 | tenths), calls, longest: (.longest / 60 | tenths), lifetimes})),
+     waits: ([$seen[] as $role | {($role): (reduce ($with[] | select(.lifetime.role == $role) | .waits["wait:message"] // {} | to_entries[]) as $p ({};
+       .[$p.key] += $p.value) | minutes_in(phase_keys))}] | add // {})};
+
+# The workers report (input: team-time/1's workers) joined to team-tokens time's rows ($rows), or,
+# when it could not run, with its error ($error, null when it ran or was not needed): each
+# lifetime's transcript, the breakdown (null with $error) and transcripts {rows, error}; the
+# lifetimes' segments are dropped.
+def workers_join($rows; $error):
+  [.lifetimes | if $error then .[] | {lifetime: ., keys: null} else joined($rows) end] as $joined
+  | .lifetimes = [$joined[] | .lifetime + {transcript: transcript_part} | del(.segments)]
+  | .running |= map(del(.segments))
+  | .breakdown = (if $error then null else $joined | breakdown end)
+  | .transcripts = {rows: (if $error then null else $rows | length end), error: $error};
+
 # A number of minutes to one decimal as text, or "-" for null.
 def m1: if . == null then "-" else h1 end;
+
+# A phase key's label: time_phases' row, or the legacy task's.
+def phase_label: . as $p | ((time_phases[] | select(.[0] == $p) | .[2]) // "no phases (a legacy task)");
+
+# Where the workers' time went (input: team-time/1's workers) as text: per class each role's
+# minutes and the share of all, the top time sinks, and the waits for a message by the task's
+# phase; or one line when team-tokens could not run.
+def breakdown_text:
+  if .transcripts.error then "Where workers' time went: unavailable: \(.transcripts.error)"
+  else .breakdown as $b
+    | ($b.classes | keys_unsorted - ["all"]) as $roles
+    | if $b.coverage.transcripts == 0 then "Where workers' time went: no transcript for any of the \($b.coverage.lifetimes) lifetimes"
+      else "Where workers' time went (transcripts for \($b.coverage.transcripts) of \($b.coverage.lifetimes) lifetimes), minutes",
+        ([["class"] + $roles + ["share"]]
+          + [worker_classes[] | .[0] as $c | select($b.classes.all[$c]) | [.[1]] + [$roles[] | $b.classes[.][$c] // 0 | m1] + ["\($b.share.all[$c] | m1)%"]]
+          + [["all"] + [$roles[] | [$b.classes[.][]] | add | m1] + ["100.0%"]]
+          | table),
+        "",
+        "Top time sinks",
+        ([["key", "class", "minutes", "calls", "longest", "lifetimes"]]
+          + [$b.top[] | [.key, .class, (.minutes | m1), (.calls | tostring), (.longest | m1), (.lifetimes | tostring)]]
+          | table),
+        "",
+        ([phase_keys[] as $p | select(any($b.waits[]; .[$p])) | $p] as $phases
+          | if $phases == [] then "Waiting for a message, by what the task was doing: none"
+            else "Waiting for a message, by what the task was doing, minutes",
+              ([["phase"] + $roles] + [$phases[] as $p | [$p | phase_label] + [$roles[] | $b.waits[.][$p] // 0 | m1]] | table) end)
+      end
+  end;
 
 # The workers report (team-time/1's workers) as text.
 def workers_text:
@@ -107,9 +268,12 @@ def workers_text:
        "",
        "Longest lifetimes",
        (($w.lifetimes | map({(.session): .}) | add) as $by
-         | [["task", "role", "session", "path", "project", "minutes", "ended", "rounds", "first done"]]
-           + [$w.longest[] | $by[.] | [.task, .role, .session, .path, .project, (.minutes | m1), .ended, (.rounds | tostring), (.first_done_minutes | m1)]]
-         | table)
+         | [["task", "role", "session", "path", "project", "minutes", "ended", "rounds", "first done", "top sinks"]]
+           + [$w.longest[] | $by[.] | [.task, .role, .session, .path, .project, (.minutes | m1), .ended, (.rounds | tostring), (.first_done_minutes | m1),
+               (.transcript.top // [] | map("\(.key) \(.minutes | round)") | if . == [] then "-" else join(", ") end)]]
+         | table),
+       "",
+       ($w | breakdown_text)
      end),
     "",
     (if $w.running == [] then "Running at the window's end: none"

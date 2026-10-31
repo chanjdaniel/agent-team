@@ -43,6 +43,25 @@
 # The averages, over the window's lifetimes in minutes: workers, mean, median, 90th percentile by
 # nearest rank and longest, by role, by role and path, by role and project, by role and model; then
 # the ten longest. A session in a later round after --until counts again, longer, in a later window.
+# Then where the workers' time went, from each launched session's time rows (team-tokens --help),
+# read by running team-tokens time --since <the earliest start among the window's lifetimes>
+# --until <until> once, and not at all with no lifetime: a lifetime's rows are all those whose
+# session begins with its own, so its transcript time can run past its end. Each row's key is
+# classed when the report runs, first match wins, looking through "background " and its kind:
+# model, compaction, wait:message, wait:other; for a command checks (team-checks, or a name naming
+# a linter, formatter or type checker, go vet), gate (no-mistakes, git push no-mistakes), ci (gh pr
+# checks, gh run watch, gh run view), tests (tests/run, bats, playwright, pytest, vitest, jest, go,
+# cargo, npm, pnpm, yarn or bun test, npm run test... and the like, a program named with test),
+# stacks (team-stack, docker), browser (chrome-devtools-axi, team-ui), git (any other git or gh);
+# for a tool browser (Chrome DevTools'), subagents (Agent), files (Read, Edit, Write, Grep, Glob,
+# NotebookEdit); else other. A lifetime's
+# unseen minutes are its minutes less its transcript's, when more: time before its transcript's
+# first line or after its last, as a dead or stuck session waiting for its replacement. Its waits
+# are cut to its span, then split by its task's phases ("-" for a legacy task). The breakdown is
+# over the window's lifetimes with rows: per role the minutes and share of each class, unseen
+# included; the fifteen keys with the most minutes; and per role the minutes waiting for a message
+# by what the task was doing. When team-tokens fails (no machine name, no Python 3.11), the rest
+# prints and the breakdown is one line, unavailable with team-tokens's first error line.
 # Prints the tables as text; --json prints the report (schema team-time/1): since, until, wall,
 # tasks (task, project, path, closed, wall, hours per phase), phases (all, share in percent, and
 # projects), gate_runs (per_pr, by_cause, by_outcome, step_minutes), reviews, builders, denials,
@@ -50,8 +69,13 @@
 # median_seconds, p90_seconds, within_minute) and workers: lifetimes (task, project, path, role,
 # session, model, start, end, ended, minutes, rounds, first_done_minutes, phases, transcript),
 # running (the same, with age_minutes), stats (by_role, by_role_path, by_role_project,
-# by_role_model, each a list of role, the group's key, workers, mean, median, p90 and longest) and
-# longest (sessions, longest first). Hours have three decimals, minutes one.
+# by_role_model, each a list of role, the group's key, workers, mean, median, p90 and longest),
+# longest (sessions, longest first), breakdown (null when team-tokens failed: coverage {lifetimes,
+# transcripts, roles}, classes and share {role and all: {class: minutes, or percent}}, top (key,
+# class, minutes, calls, longest, lifetimes) and waits {role: {phase: minutes}}) and transcripts
+# {rows (those read, null when it failed), error}; a lifetime's transcript is null with no row,
+# else minutes, first, last, classes, top (its three: key, minutes, calls, longest), unseen and
+# waits {class: {phase: minutes}}. Hours have three decimals, minutes one.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
@@ -96,6 +120,28 @@ report=$(
     (input | fromjson) as $report
     | $report + {workers: workers_report(if $since == "" then 0 else $since | fromdate end; $until | fromdate;
         if $task == "" then null else $task end)}'
+)
+
+# Where the workers' time went: the time rows of the days from the earliest lifetime's start, read
+# through team-tokens, the one transcript parser; when it cannot run, its first error line.
+first=$(jq -r '[.workers.lifetimes[].start] | min // empty' <<<"$report")
+rows='' error=''
+if [[ -n $first ]]; then
+  err=$(mktemp)
+  trap 'rm -f "$err"' EXIT
+  since_args=(--since "$first")
+  [[ $first < $until ]] || since_args=()
+  if ! rows=$(TEAM_HOME=$TEAM_HOME "$(dirname "${BASH_SOURCE[0]}")/team-tokens" time "${since_args[@]}" --until "$until" </dev/null 2>"$err"); then
+    rows=''
+    IFS= read -r error <"$err" || true
+    error=${error:-team-tokens time failed with no message}
+  fi
+fi
+report=$(
+  { printf '%s\n' "$report"; printf '%s' "$rows"; } | jq -L "$TEAM_LIB" -cn --arg error "$error" '
+    include "workers";
+    input as $report | [inputs] as $rows
+    | $report | .workers |= workers_join($rows; if $error == "" then null else $error end)'
 )
 
 if [[ -n $json ]]; then

@@ -454,9 +454,9 @@ workers_json() {
   grep -Eq '^builder +agent-team +2 +165\.0 +30\.0 +300\.0 +300\.0$' <<<"$output"
   grep -Eq '^role +model +workers +mean +median +p90 +longest$' <<<"$output"
   grep -Eq '^reviewer +claude-sonnet-5-5 +1 +30\.0 +30\.0 +30\.0 +30\.0$' <<<"$output"
-  grep -Eq '^task +role +session +path +project +minutes +ended +rounds +first done$' <<<"$output"
-  grep -Eq '^T100 +builder +b1000001 +feature +agent-team +300\.0 +done +3 +60\.0$' <<<"$output"
-  grep -Eq '^T100 +reviewer +r1000001 +feature +agent-team +40\.0 +review +0 +-$' <<<"$output"
+  grep -Eq '^task +role +session +path +project +minutes +ended +rounds +first done +top sinks$' <<<"$output"
+  grep -Eq '^T100 +builder +b1000001 +feature +agent-team +300\.0 +done +3 +60\.0 +-$' <<<"$output"
+  grep -Eq '^T100 +reviewer +r1000001 +feature +agent-team +40\.0 +review +0 +- +-$' <<<"$output"
   grep -Eq '^task +role +session +minutes so far$' <<<"$output"
   grep -Eq '^T102 +builder +b1020001 +240\.0$' <<<"$output"
   # The task tables come first, unchanged.
@@ -472,4 +472,205 @@ workers_json() {
   assert_contains "$output" "Worker lifetimes ended in the window: 0, 0 running"
   [[ $output != *"Longest lifetimes"* ]]
   assert_equal "$(time_json --until "$until" | jq -c '.workers | [.lifetimes, .running, .stats.by_role, .longest]')" '[[],[],[],[]]'
+}
+
+# fixtures/team-time/usage/ holds time rows (team-tokens --help) of these sessions of
+# fixtures/ledger-workers.jsonl, on home-pc but where told, each in minutes:
+# b0980001 on 10-27, model 180 (its lifetime ended before 10-28).
+# r0980001 on 10-27 (23:00 to 00:00) model 30, tool Read 10 and a wait for a message 23:40 to
+# 00:00 (20, all in T98's review), and on 10-28 (00:00 to 00:25) model 15 and bash gh pr view 10:
+# 85 of its 90, unseen 5.
+# b1000001 on 10-28, 02:00 to 06:50 (290 of its 300, unseen 10): model 88, waits for a message
+# 03:00 to 04:00 and 05:00 to 06:00 (120: review 03:00 to 03:40 and 05:00 to 05:20, 60;
+# unattributed 60), bash no-mistakes axi run 20, bash tests/run 15, background bash gh pr checks
+# 10, bash team-stack up 10, tool Agent 10, bash team-checks 5, tool Read 5, bash python3 3, bash
+# git push no-mistakes 2 and compaction 2.
+# b0990001 (legacy) on 10-28, 12:00 to 12:40, past its end at 12:30: model 20 and a wait for a
+# message 12:20 to 12:40 (20, of which 10 in its span, under "-"); unseen 0.
+# b1020001, running, on 10-28: model 120, in no breakdown.
+# r1000003 on work-mac on 10-28, 07:00 to 07:31 (31 of its 30, unseen 0): model 20, background
+# tool Agent 5, a Chrome DevTools screenshot 5 and bash curl 1.
+# So builders have model 108, waiting for a message 140, gate 22, tests 15, ci 10, stacks 10,
+# subagents 10, checks 5, files 5, other 3, compaction 2 and unseen 10 (340); reviewers model 65,
+# waiting for a message 20, files 10, git 10, browser 5, subagents 5, other 1 and unseen 5 (121).
+time_rows() {
+  cp -R "$BATS_TEST_DIRNAME/fixtures/team-time/usage" "$TEAM_HOME/usage"
+  mkdir -p "$HOME/.config/agent-team"
+  echo home-pc >"$HOME/.config/agent-team/machine"
+}
+
+@test "team-time reads the time rows through team-tokens time once, from the earliest lifetime's start" {
+  local code=$BATS_TEST_TMPDIR/code
+  mkdir "$code"
+  copy_bin "$code/bin"
+  rm "$code/bin/team-tokens"
+  printf '%s\n' '#!/usr/bin/env bash' \
+    "jq -cn '\$ARGS.positional' --args -- \"\$@\" >>\"\$STUB_CALLS/team-tokens.log\"" \
+    "exec \"$REPO_ROOT/bin/team-tokens\" \"\$@\"" >"$code/bin/team-tokens"
+  chmod +x "$code/bin/team-tokens"
+  cp "$BATS_TEST_DIRNAME/fixtures/ledger-workers.jsonl" "$TEAM_HOME/ledger.jsonl"
+  time_rows
+  guard_sandbox
+  run -0 "$code/bin/team-time" --json --since 2026-10-28T00:00:00Z --until 2026-10-28T20:00:00Z
+  assert_equal "$(stub_calls team-tokens)" '["time","--since","2026-10-27T23:00:00Z","--until","2026-10-28T20:00:00Z"]'
+  rm "$STUB_CALLS/team-tokens.log"
+  run -0 "$code/bin/team-time" --until 2026-10-28T20:00:00Z
+  assert_equal "$(stub_calls team-tokens)" '["time","--since","2026-10-27T20:00:00Z","--until","2026-10-28T20:00:00Z"]'
+  rm "$STUB_CALLS/team-tokens.log"
+  # With no lifetime to report, team-tokens is never run.
+  run -0 "$code/bin/team-time" --json --task T102 --since 2026-10-28T16:00:00Z --until 2026-10-28T20:00:00Z
+  assert_equal "$(stub_calls team-tokens)" ''
+  assert_equal "$(jq -c '.workers | [.lifetimes, .running[].session, .transcripts]' <<<"$output")" '[[],"b1020001",{"rows":0,"error":null}]'
+}
+
+@test "each lifetime is joined to its sessions' time rows, over days and machines" {
+  time_rows
+  local json
+  json=$(workers_json --since 2026-10-28T00:00:00Z)
+  assert_equal "$(jq -c '.workers.transcripts' <<<"$json")" '{"rows":7,"error":null}'
+  assert_equal "$(jq -c '[.workers.lifetimes[] | select(.transcript == null) | .session]' <<<"$json")" \
+    '["p1000001","r1000001","r1000002","b1010001","b1010002","b1010003","p1020001"]'
+  assert_equal "$(jq -c '.workers.running[] | [.session, .transcript]' <<<"$json")" '["b1020001",null]'
+  assert_equal "$(jq -c '.workers.lifetimes[] | select(.session == "b1000001") | .transcript' <<<"$json")" "$(jq -c . <<<'{
+    "minutes": 290, "first": "2026-10-28T02:00:00.000Z", "last": "2026-10-28T06:50:00.000Z",
+    "classes": {"model": 88, "compaction": 2, "wait:message": 120, "checks": 5, "gate": 22, "ci": 10, "tests": 15,
+      "stacks": 10, "subagents": 10, "files": 5, "other": 3},
+    "top": [{"key": "wait message", "minutes": 120, "calls": 2, "longest": 60},
+      {"key": "model", "minutes": 88, "calls": 40, "longest": 2},
+      {"key": "bash no-mistakes axi run", "minutes": 20, "calls": 2, "longest": 15}],
+    "unseen": 10, "waits": {"wait:message": {"review": 60, "unattributed": 60}}}')"
+  assert_equal "$(jq -c '.workers.lifetimes[] | select(.session == "r0980001") | .transcript' <<<"$json")" "$(jq -c . <<<'{
+    "minutes": 85, "first": "2026-10-27T23:00:00.000Z", "last": "2026-10-28T00:25:00.000Z",
+    "classes": {"model": 45, "wait:message": 20, "files": 10, "git": 10},
+    "top": [{"key": "model", "minutes": 45, "calls": 15, "longest": 5},
+      {"key": "wait message", "minutes": 20, "calls": 1, "longest": 20},
+      {"key": "bash gh pr view", "minutes": 10, "calls": 2, "longest": 6.7}],
+    "unseen": 5, "waits": {"wait:message": {"review": 20}}}')"
+  # A transcript past the lifetime's end is reported whole; its waits are cut to the span.
+  assert_equal "$(jq -c '.workers.lifetimes[] | select(.session == "b0990001") | .transcript | [.minutes, .unseen, .waits]' <<<"$json")" \
+    '[40,0,{"wait:message":{"-":10}}]'
+  assert_equal "$(jq -c '.workers.lifetimes[] | select(.session == "r1000003") | .transcript | [.minutes, .last, .classes, .unseen]' <<<"$json")" \
+    '[31,"2026-10-28T07:31:00.000Z",{"model":20,"browser":5,"subagents":5,"other":1},0]'
+  # Without --since, the lifetime that ended on 10-27 is joined too.
+  json=$(workers_json)
+  assert_equal "$(jq -c '.workers.lifetimes[0] | [.session, .transcript.minutes, .transcript.classes]' <<<"$json")" '["b0980001",180,{"model":180}]'
+}
+
+@test "each key is classed when the report runs, first match wins, looking through background and the kind" {
+  mkdir -p "$HOME/.config/agent-team" "$TEAM_HOME/usage/home-pc/time"
+  echo home-pc >"$HOME/.config/agent-team/machine"
+  # One row for b1010002 whose keys take 15 minutes down to 1, one key per class; and one for
+  # b1010003 whose keys take 6 seconds to 48, less than any of those.
+  jq -cn '[["model"], ["compaction"], ["wait message"], ["wait other"], ["background bash team-checks no-mistakes"],
+      ["monitor npx eslint"], ["bash git push no-mistakes"], ["background bash gh pr checks"],
+      ["bash npm run test:e2e"], ["bash docker compose"], ["tool mcp__chrome-devtools__take_screenshot"],
+      ["tool Agent"], ["tool Edit"], ["bash gh pr create"], ["bash curl"]] as $keys
+    | {day: "2026-10-28", machine: "home-pc", session: "b1010002-0000-4000-8000-000000000001",
+       first: "2026-10-28T11:00:00.000Z", last: "2026-10-28T13:00:00.000Z",
+       keys: ([range($keys | length) as $i | {($keys[$i][0]): {seconds: ((15 - $i) * 60), calls: 1, longest: ((15 - $i) * 60)}}] | add),
+       waits: []},
+    (["monitor npx eslint", "bash gofmt", "bash ./scripts/run-tests.sh", "bash chrome-devtools-axi screenshot",
+      "bash team-stack up", "bash gh run watch", "bash no-mistakes axi run", "tool Read"] as $keys
+    | {day: "2026-10-28", machine: "home-pc", session: "b1010003-0000-4000-8000-000000000001",
+       first: "2026-10-28T12:00:00.000Z", last: "2026-10-28T12:03:36.000Z",
+       keys: ([range($keys | length) as $i | {($keys[$i]): {seconds: (($i + 1) * 6), calls: 1, longest: (($i + 1) * 6)}}] | add),
+       waits: []})' >"$TEAM_HOME/usage/home-pc/time/2026-10-28.jsonl"
+  local json
+  json=$(workers_json --task T101)
+  assert_equal "$(jq -r '.workers.breakdown.top[] | [.key, .class] | @tsv' <<<"$json")" "$(
+    printf '%s\n' $'model\tmodel' $'compaction\tcompaction' $'wait message\twait:message' $'wait other\twait:other' \
+      $'background bash team-checks no-mistakes\tchecks' $'monitor npx eslint\tchecks' $'bash git push no-mistakes\tgate' \
+      $'background bash gh pr checks\tci' $'bash npm run test:e2e\ttests' $'bash docker compose\tstacks' \
+      $'tool mcp__chrome-devtools__take_screenshot\tbrowser' $'tool Agent\tsubagents' $'tool Edit\tfiles' \
+      $'bash gh pr create\tgit' $'bash curl\tother'
+  )"
+  assert_equal "$(jq -c '.workers.lifetimes[] | select(.session == "b1010003") | .transcript.classes' <<<"$json")" \
+    '{"checks":0.3,"gate":0.7,"ci":0.6,"tests":0.3,"stacks":0.5,"browser":0.4,"files":0.8}'
+  # Its 120 minutes of transcript are past its 46 of lifetime: none unseen.
+  assert_equal "$(jq -c '.workers.lifetimes[] | select(.session == "b1010002") | .transcript | [.minutes, .unseen]' <<<"$json")" '[120,0]'
+}
+
+@test "the breakdown gives the coverage, each role's class minutes and shares, the top fifteen keys and the waits by phase" {
+  time_rows
+  local json
+  json=$(workers_json --since 2026-10-28T00:00:00Z)
+  assert_equal "$(jq -c '.workers.breakdown | keys_unsorted' <<<"$json")" '["coverage","classes","share","top","waits"]'
+  assert_equal "$(jq -c '.workers.breakdown.coverage' <<<"$json")" \
+    '{"lifetimes":11,"transcripts":4,"roles":[{"role":"builder","lifetimes":5,"transcripts":2},{"role":"reviewer","lifetimes":4,"transcripts":2},{"role":"planner","lifetimes":2,"transcripts":0}]}'
+  assert_equal "$(jq -c '.workers.breakdown.classes' <<<"$json")" "$(jq -c . <<<'{
+    "builder": {"model": 108, "compaction": 2, "wait:message": 140, "checks": 5, "gate": 22, "ci": 10, "tests": 15,
+      "stacks": 10, "subagents": 10, "files": 5, "other": 3, "unseen": 10},
+    "reviewer": {"model": 65, "wait:message": 20, "browser": 5, "subagents": 5, "files": 10, "git": 10, "other": 1, "unseen": 5},
+    "all": {"model": 173, "compaction": 2, "wait:message": 160, "checks": 5, "gate": 22, "ci": 10, "tests": 15,
+      "stacks": 10, "browser": 5, "subagents": 15, "files": 15, "git": 10, "other": 4, "unseen": 15}}')"
+  # Shares: of the builders' 340, the reviewers' 121 and all 461 minutes.
+  assert_equal "$(jq -c '.workers.breakdown.share' <<<"$json")" "$(jq -c . <<<'{
+    "builder": {"model": 31.8, "compaction": 0.6, "wait:message": 41.2, "checks": 1.5, "gate": 6.5, "ci": 2.9, "tests": 4.4,
+      "stacks": 2.9, "subagents": 2.9, "files": 1.5, "other": 0.9, "unseen": 2.9},
+    "reviewer": {"model": 53.7, "wait:message": 16.5, "browser": 4.1, "subagents": 4.1, "files": 8.3, "git": 8.3, "other": 0.8, "unseen": 4.1},
+    "all": {"model": 37.5, "compaction": 0.4, "wait:message": 34.7, "checks": 1.1, "gate": 4.8, "ci": 2.2, "tests": 3.3,
+      "stacks": 2.2, "browser": 1.1, "subagents": 3.3, "files": 3.3, "git": 2.2, "other": 0.9, "unseen": 3.3}}')"
+  jq -e '.workers.breakdown.share[] | [.[]] | add | . >= 99.5 and . <= 100.5' <<<"$json" >/dev/null
+  # Sixteen keys, the fifteen with the most minutes kept: bash curl's one minute is left out.
+  assert_equal "$(jq -r '.workers.breakdown.top[] | [.key, .class, .minutes, .calls, .longest, .lifetimes] | @tsv' <<<"$json")" "$(
+    printf '%s\n' $'model\tmodel\t173\t75\t5\t4' $'wait message\twait:message\t160\t4\t60\t3' \
+      $'bash no-mistakes axi run\tgate\t20\t2\t15\t1' $'bash tests/run\ttests\t15\t3\t6.7\t1' $'tool Read\tfiles\t15\t42\t1\t2' \
+      $'background bash gh pr checks\tci\t10\t1\t10\t1' $'bash gh pr view\tgit\t10\t2\t6.7\t1' \
+      $'bash team-stack up\tstacks\t10\t1\t10\t1' $'tool Agent\tsubagents\t10\t1\t10\t1' \
+      $'background tool Agent\tsubagents\t5\t1\t5\t1' $'bash team-checks\tchecks\t5\t1\t5\t1' \
+      $'tool mcp__plugin_browser_chrome-devtools__take_screenshot\tbrowser\t5\t3\t2.5\t1' \
+      $'bash python3\tother\t3\t2\t2\t1' $'bash git push no-mistakes\tgate\t2\t1\t2\t1' $'compaction\tcompaction\t2\t1\t2\t1'
+  )"
+  assert_equal "$(jq -c '.workers.breakdown.waits' <<<"$json")" '{"builder":{"review":60,"unattributed":60,"-":10},"reviewer":{"review":20}}'
+  # --task keeps that task's workers alone.
+  json=$(workers_json --task T100)
+  assert_equal "$(jq -c '.workers.breakdown | [.coverage.lifetimes, .coverage.transcripts, .classes.all.model, .waits]' <<<"$json")" \
+    '[5,2,108,{"builder":{"review":60,"unattributed":60},"reviewer":{}}]'
+}
+
+@test "the text form says where the workers' time went, the top sinks and the waits by phase, and fills the longest's top sinks" {
+  cp "$BATS_TEST_DIRNAME/fixtures/ledger-workers.jsonl" "$TEAM_HOME/ledger.jsonl"
+  time_rows
+  run_bin -0 team-time --since 2026-10-28T00:00:00Z --until 2026-10-28T20:00:00Z
+  grep -Eq '^task +role +session +path +project +minutes +ended +rounds +first done +top sinks$' <<<"$output"
+  grep -Eq '^T100 +builder +b1000001 +feature +agent-team +300\.0 +done +3 +60\.0 +wait message 120, model 88, bash no-mistakes axi run 20$' <<<"$output"
+  grep -Eq '^T100 +reviewer +r1000001 +feature +agent-team +40\.0 +review +0 +- +-$' <<<"$output"
+  assert_contains "$output" "Where workers' time went (transcripts for 4 of 11 lifetimes), minutes"
+  grep -Eq '^class +builder +reviewer +share$' <<<"$output"
+  grep -Eq '^waiting for a message +140\.0 +20\.0 +34\.7%$' <<<"$output"
+  grep -Eq '^the browser +0\.0 +5\.0 +1\.1%$' <<<"$output"
+  grep -Eq '^not in the transcript +10\.0 +5\.0 +3\.3%$' <<<"$output"
+  grep -Eq '^all +340\.0 +121\.0 +100\.0%$' <<<"$output"
+  # A class with no minutes has no row.
+  assert_equal "$(grep -Ec '^other waits +[0-9.]+ +[0-9.]+ +[0-9.]+%$' <<<"$output" || true)" 0
+  assert_contains "$output" "Top time sinks"
+  grep -Eq '^key +class +minutes +calls +longest +lifetimes$' <<<"$output"
+  grep -Eq '^bash no-mistakes axi run +gate +20\.0 +2 +15\.0 +1$' <<<"$output"
+  assert_contains "$output" "Waiting for a message, by what the task was doing, minutes"
+  grep -Eq '^phase +builder +reviewer$' <<<"$output"
+  grep -Eq '^review +60\.0 +20\.0$' <<<"$output"
+  grep -Eq '^no phases \(a legacy task\) +10\.0 +0\.0$' <<<"$output"
+  # The breakdown comes between the longest and the running.
+  [[ $output == *"Longest lifetimes"*"Where workers' time went"*"Top time sinks"*"Waiting for a message"*"Running at the window's end"* ]]
+  # With rows for none of the lifetimes, it says so.
+  run_bin -0 team-time --task T101 --until 2026-10-28T20:00:00Z
+  assert_contains "$output" "Where workers' time went: no transcript for any of the 3 lifetimes"
+  [[ $output != *"Top time sinks"* ]]
+}
+
+@test "with no machine name, the ledger part prints and the breakdown says why it is unavailable" {
+  cp "$BATS_TEST_DIRNAME/fixtures/ledger-workers.jsonl" "$TEAM_HOME/ledger.jsonl"
+  cp -R "$BATS_TEST_DIRNAME/fixtures/team-time/usage" "$TEAM_HOME/usage"
+  local reason="team-tokens: this machine has no team name; write one with: echo <name> > ~/.config/agent-team/machine"
+  run_bin -0 team-time --since 2026-10-28T00:00:00Z --until 2026-10-28T20:00:00Z
+  assert_contains "$output" "Worker lifetimes ended in the window: 11 (5 builders, 4 reviewers, 2 planners), 1 running"
+  grep -Eq '^T100 +builder +b1000001 +feature +agent-team +300\.0 +done +3 +60\.0 +-$' <<<"$output"
+  assert_contains "$output" "Where workers' time went: unavailable: $reason"
+  [[ $output != *"Top time sinks"* ]]
+  assert_contains "$output" "Running at the window's end"
+  local json
+  json=$(workers_json --since 2026-10-28T00:00:00Z)
+  assert_equal "$(jq -c '.workers | [.transcripts, .breakdown, ([.lifetimes[].transcript] | unique)]' <<<"$json")" \
+    "$(jq -cn --arg reason "$reason" '[{rows: null, error: $reason}, null, [null]]')"
+  assert_equal "$(jq -c '.workers.stats.by_role[0] | [.role, .workers]' <<<"$json")" '["builder",5]'
 }
