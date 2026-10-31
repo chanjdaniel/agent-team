@@ -34,16 +34,19 @@
 # event that settles it, with the median and 90th percentile minutes by nearest rank; and each
 # done's seconds to the task's next event.
 # Then each worker's lifetime, from the ledger's events up to --until, legacy tasks included: one
-# per launch with a session. Its rounds are its session's dones and, for a builder, the task's pr
-# and ticket-done events after its launch and before the task's next builder launch, which name no
-# session (a delivering builder's PR <url> is logged as a pr); it runs from its launch to its last
-# round (ended done, pr or ticket-done); else, for a reviewer, to the task's last review before its
-# next reviewer launch (review); else to the first after it of the task's next launch of the same
-# role (replaced), its stowed (stowed) or its closed (closed); else it is running. Its project is
-# the launch's, else the task's; its path the task's, else "-"; its model the launch's, else
-# "default"; its first done the minutes to its first round; its phases its task's phase minutes
-# over its span (null for a legacy task). A lifetime is in the window when it ended in it; one
-# running at --until is listed apart with its age, in no average.
+# per launch with a session. Its rounds are its reports: its session's dones and, for a builder,
+# the task's prs, after its launch and before the task's next builder launch (a pr names no
+# session: a delivering builder's PR <url> is logged as one), each ending a round that the task's
+# ticket-dones in that span before it join (with no report after them, a round of their own); an
+# event within 5 minutes after a round's last joins it unless both are dones, since the coordinator
+# logs a report's done with its ticket-done or pr. It runs from its launch to its last round's last
+# event (ended done when that round holds a done, else pr or ticket-done); else, for a reviewer, to
+# the task's last review before its next reviewer launch (review); else to the first after it of
+# the task's next launch of the same role (replaced), its stowed (stowed) or its closed (closed);
+# else it is running. Its project is the launch's, else the task's; its path the task's, else "-";
+# its model the launch's, else "default"; its first done the minutes to its first round's report;
+# its phases its task's phase minutes over its span (null for a legacy task). A lifetime is in the
+# window when it ended in it; one running at --until is listed apart with its age, in no average.
 # The averages, over the window's lifetimes in minutes: workers, mean, median, 90th percentile by
 # nearest rank and longest, by role, by role and path, by role and project, by role and model; then
 # the ten longest. A session in a later round after --until counts again, longer, in a later window.

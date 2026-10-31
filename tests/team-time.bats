@@ -344,6 +344,9 @@ t90_hours() {
 
 # fixtures/ledger-workers.jsonl holds these worker lifetimes, read to 2026-10-28T20:00 (all on
 # 10-28 but where told), each from its launch:
+# T96, legacy, of agent-team, on 10-27, before any window from 10-28: builder b0960001 08:00 to
+# its ticket-done and done, both at 08:30 (30, 1 round); builder b0960002 09:00 to its done at
+# 09:30 and the task's pr 60 s later, one delivery (31, 1 round, first at 30, ended done).
 # T98 (conventioner small): builder b0980001 10-27 20:00 to its done at 23:00 (180 min, before a
 # window from 10-28 00:00); reviewer r0980001 10-27 23:00 to its done at 00:30 (90, review 90).
 # T100 (agent-team feature): planner p1000001 01:00 to its done at 01:30 (30, planning 30);
@@ -353,8 +356,8 @@ t90_hours() {
 # to its done at 05:20 (20); reviewer r1000003 on claude-sonnet-5-5, 07:00 to its done at 07:30
 # (30).
 # T101 (conventioner small): builder b1010001 on claude-sonnet-5-5, 10:00 replaced at 11:00
-# (60); builder b1010002 11:00 to its done at 11:46 (46), the task's ticket-done at 11:20 its
-# first round (20); builder b1010003 12:00 to the task's pr at 12:40 (40, 1 round), not to the
+# (60); builder b1010002 11:00 to its done at 11:46 (46), the task's ticket-done at 11:20 part of
+# that one round; builder b1010003 12:00 to the task's pr at 12:40 (40, 1 round), not to the
 # close at 13:00.
 # T99, legacy (no opened): builder b0990001 of agent-team, 12:00 to its done at 12:30 (30, path
 # "-", phases null). T97, legacy: a launch with no session, no lifetime.
@@ -378,16 +381,18 @@ workers_json() {
       $'T100\treviewer\tr1000002\tagent-team\tfeature\tdefault\t2026-10-28T05:00:00Z\t2026-10-28T05:20:00Z\tdone\t20\t1\t20' \
       $'T100\treviewer\tr1000003\tagent-team\tfeature\tclaude-sonnet-5-5\t2026-10-28T07:00:00Z\t2026-10-28T07:30:00Z\tdone\t30\t1\t30' \
       $'T101\tbuilder\tb1010001\tconventioner\tsmall\tclaude-sonnet-5-5\t2026-10-28T10:00:00Z\t2026-10-28T11:00:00Z\treplaced\t60\t0\tnull' \
-      $'T101\tbuilder\tb1010002\tconventioner\tsmall\tdefault\t2026-10-28T11:00:00Z\t2026-10-28T11:46:00Z\tdone\t46\t2\t20' \
+      $'T101\tbuilder\tb1010002\tconventioner\tsmall\tdefault\t2026-10-28T11:00:00Z\t2026-10-28T11:46:00Z\tdone\t46\t1\t46' \
       $'T101\tbuilder\tb1010003\tconventioner\tsmall\tdefault\t2026-10-28T12:00:00Z\t2026-10-28T12:40:00Z\tpr\t40\t1\t40' \
       $'T99\tbuilder\tb0990001\tagent-team\t-\tdefault\t2026-10-28T12:00:00Z\t2026-10-28T12:30:00Z\tdone\t30\t1\t30' \
       $'T102\tplanner\tp1020001\tagent-team\tbug\tdefault\t2026-10-28T14:00:00Z\t2026-10-28T15:00:00Z\tstowed\t60\t0\tnull'
   )"
   assert_equal "$(jq -c '[.workers.lifetimes[] | keys_unsorted] | unique' <<<"$json")" \
     '[["task","project","path","role","session","model","start","end","ended","minutes","rounds","first_done_minutes","phases","transcript"]]'
-  # Without --since, the lifetime that ended before 10-28 is in the window too.
+  # Without --since, the lifetimes that ended before 10-28 are in the window too; a done and its
+  # ticket-done or pr are one round.
   json=$(workers_json)
-  assert_equal "$(jq -c '[.workers.lifetimes[0] | .session, .minutes, .ended]' <<<"$json")" '["b0980001",180,"done"]'
+  assert_equal "$(jq -c '[.workers.lifetimes[] | select(.task == "T96" or .task == "T98") | [.session, .end, .ended, .minutes, .rounds, .first_done_minutes]]' <<<"$json")" \
+    '[["b0960001","2026-10-27T08:30:00Z","done",30,1,30],["b0960002","2026-10-27T09:31:00Z","done",31,1,30],["b0980001","2026-10-27T23:00:00Z","done",180,1,180],["r0980001","2026-10-28T00:30:00Z","done",90,1,90]]'
 }
 
 @test "each lifetime's phases are its task's over its span, gate runs included, and null for a legacy task" {
@@ -517,7 +522,7 @@ time_rows() {
   assert_equal "$(stub_calls team-tokens)" '["time","--since","2026-10-27T23:00:00Z","--until","2026-10-28T20:00:00Z"]'
   rm "$STUB_CALLS/team-tokens.log"
   run -0 "$code/bin/team-time" --until 2026-10-28T20:00:00Z
-  assert_equal "$(stub_calls team-tokens)" '["time","--since","2026-10-27T20:00:00Z","--until","2026-10-28T20:00:00Z"]'
+  assert_equal "$(stub_calls team-tokens)" '["time","--since","2026-10-27T08:00:00Z","--until","2026-10-28T20:00:00Z"]'
   rm "$STUB_CALLS/team-tokens.log"
   # With no lifetime to report, team-tokens is never run.
   run -0 "$code/bin/team-time" --json --task T102 --since 2026-10-28T16:00:00Z --until 2026-10-28T20:00:00Z
@@ -555,7 +560,7 @@ time_rows() {
     '[31,"2026-10-28T07:31:00.000Z",{"model":20,"browser":5,"subagents":5,"other":1},0]'
   # Without --since, the lifetime that ended on 10-27 is joined too.
   json=$(workers_json)
-  assert_equal "$(jq -c '.workers.lifetimes[0] | [.session, .transcript.minutes, .transcript.classes]' <<<"$json")" '["b0980001",180,{"model":180}]'
+  assert_equal "$(jq -c '.workers.lifetimes[] | select(.session == "b0980001") | [.session, .transcript.minutes, .transcript.classes]' <<<"$json")" '["b0980001",180,{"model":180}]'
 }
 
 @test "each key is classed when the report runs, first match wins, looking through background and the kind" {

@@ -1,3 +1,9 @@
+{"ts":"2026-10-27T08:00:00Z","task":"T96","event":"launch","role":"builder","session":"b0960001","worktree":"/home/danielc/wt/x","toolkits":[],"project":"agent-team"}
+{"ts":"2026-10-27T08:30:00Z","task":"T96","event":"ticket-done","ticket":"01","commits":["eeeeeee"]}
+{"ts":"2026-10-27T08:30:00Z","task":"T96","event":"done","role":"builder","session":"b0960001"}
+{"ts":"2026-10-27T09:00:00Z","task":"T96","event":"launch","role":"builder","session":"b0960002","worktree":"/home/danielc/wt/x","toolkits":[],"project":"agent-team"}
+{"ts":"2026-10-27T09:30:00Z","task":"T96","event":"done","role":"builder","session":"b0960002"}
+{"ts":"2026-10-27T09:31:00Z","task":"T96","event":"pr","url":"https://github.com/chanjdaniel/agent-team/pull/96","head":"fffffff"}
 {"ts":"2026-10-27T20:00:00Z","task":"T98","event":"opened","project":"conventioner","path":"small","type":"feat","title":"T98 fixture","branch":"feat/T98-fixture","base":"dev","base_sha":"0123456789abcdef","worktree":"/home/danielc/wt/T98"}
 {"ts":"2026-10-27T20:00:00Z","task":"T98","event":"launch","role":"builder","session":"b0980001","worktree":"/home/danielc/wt/x","toolkits":[]}
 {"ts":"2026-10-27T23:00:00Z","task":"T98","event":"done","role":"builder","session":"b0980001"}

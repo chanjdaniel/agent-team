@@ -16,18 +16,36 @@ def span_minutes($hi): (((if .end then .end | fromdate else $hi end) - (.start |
 # The index of a list of events' first launch of $role, else its length.
 def first_launch($role): . as $events | ([range(length) as $j | select($events[$j] | .event == "launch" and .role == $role) | $j] | first) // length;
 
+# A worker's rounds (input: its round events in time order, then ledger order): each a list of
+# them with at, the time of its report. A done or a pr is a report, which ends a round; the
+# ticket-dones before it join that round, and the coordinator logs a report's done with its
+# ticket-done or pr, so an event within 5 minutes after a round's last joins it, unless both are
+# dones. A round of ticket-dones alone is at its last.
+def worker_rounds:
+  reduce .[] as $e ([];
+    ($e.event == "ticket-done" | not) as $report
+    | (.[-1]) as $round
+    | if $round != null and $round.at == null then
+        .[-1] |= (.events += [$e] | .at = (if $report then $e.ts else null end))
+      elif $round != null and ($e.ts | fromdate) - ($round.events[-1].ts | fromdate) <= 300
+        and ($e.event == "done" and any($round.events[]; .event == "done") | not) then
+        .[-1].events += [$e]
+      else . + [{events: [$e], at: (if $report then $e.ts else null end)}] end)
+  | map(.at //= .events[-1].ts);
+
 # A task's worker lifetimes (input: its events in ledger order, only those at or before $hi): one
 # per launch with a session. Its project is the launch's, else the task's opened; its path the
-# opened's, else "-" (a legacy task); its model the launch's, else "default". Its rounds are its
-# session's dones and, for a builder, the task's pr and ticket-done events after its launch and
-# before the task's next builder launch (which name no session: ends_worker in ledger.jq); it ends
-# at the last of them (ended done, pr or ticket-done); else, for a reviewer, at the task's last
-# review after its launch and before the task's next reviewer launch (review); else at the first
-# after its launch of the task's next launch of the same role (replaced), its stowed (stowed) or
-# its closed (closed); else it is running (ended "running", end null). Its first done is the
-# minutes to its first round; its phases the minutes per phase of the task's segments (gate runs
-# included) over its span, null for a legacy task. Its segments, those over its span, are for
-# workers_join, which drops them.
+# opened's, else "-" (a legacy task); its model the launch's, else "default". Its rounds
+# (worker_rounds) are of its session's dones and, for a builder, the task's pr and ticket-done
+# events after its launch and before the task's next builder launch (which name no session:
+# ends_worker in ledger.jq); it ends at its last round's last event (ended done when that round
+# holds a done, else pr or ticket-done); else, for a reviewer, at the task's last review after its
+# launch and before the task's next reviewer launch (review); else at the first after its launch of
+# the task's next launch of the same role (replaced), its stowed (stowed) or its closed (closed);
+# else it is running (ended "running", end null). Its first done is the minutes to its first
+# round's report; its phases the minutes per phase of the task's segments (gate runs included)
+# over its span, null for a legacy task. Its segments, those over its span, are for workers_join,
+# which drops them.
 def task_lifetimes($hi):
   . as $events
   | (map(select(.event == "opened")) | first) as $opened
@@ -37,10 +55,14 @@ def task_lifetimes($hi):
   | select($l.event == "launch" and ($l.session | type) == "string" and $l.session != "")
   | $events[$k + 1:] as $after
   | ($l.ts | fromdate) as $start
-  | ([$events[] | select(.event == "done" and .session == $l.session)]
-     + (if $l.role == "builder" then [$after[:$after | first_launch("builder")][] | select(.event == "pr" or .event == "ticket-done")] else [] end)
-     | sort_by(.ts)) as $dones
-  | ((if $dones != [] then {end: $dones[-1].ts, ended: $dones[-1].event} else null end)
+  | ($k + 1 + (if $l.role == "builder" then $after | first_launch("builder") else 0 end)) as $delivered
+  | ([$events | to_entries[] | select(.key > $k)
+      | select((.value.event == "done" and .value.session == $l.session)
+          or (.key < $delivered and (.value.event == "pr" or .value.event == "ticket-done")))]
+     | sort_by(.value.ts, .key) | map(.value) | worker_rounds) as $rounds
+  | ((if $rounds != [] then $rounds[-1]
+        | {end: .events[-1].ts, ended: (if any(.events[]; .event == "done") then "done" elif any(.events[]; .event == "pr") then "pr" else "ticket-done" end)}
+      else null end)
      // (if $l.role == "reviewer" then
            [$after[:$after | first_launch("reviewer")][] | select(.event == "review")] | last | if . then {end: .ts, ended: "review"} else null end
          else null end)
@@ -51,8 +73,8 @@ def task_lifetimes($hi):
   | {task: $l.task, project: ($l.project // $opened.project // "-"), path: ($opened.path // "-"), role: $l.role,
      session: $l.session, model: ($l.model // "default"), start: $l.ts, end: $end.end, ended: $end.ended,
      minutes: (if $end.end then ($stop - $start) / 60 | tenths else null end),
-     rounds: ($dones | length),
-     first_done_minutes: (if $dones == [] then null else (($dones[0].ts | fromdate) - $start) / 60 | tenths end),
+     rounds: ($rounds | length),
+     first_done_minutes: (if $rounds == [] then null else (($rounds[0].at | fromdate) - $start) / 60 | tenths end),
      phases: (if $segments == null then null
        else (reduce ($segments[] | clip($start; $stop)) as $s ({}; .[$s.class] += $s.to - $s.from)) as $seconds
          | [time_phases[] | .[0] | select($seconds[.]) | {(.): ($seconds[.] / 60 | tenths)}] | add // {} end),
