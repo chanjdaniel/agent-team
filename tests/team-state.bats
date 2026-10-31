@@ -122,6 +122,22 @@ phase_of() {
   assert_equal "$(jq -c '[.pending_asks[].id]' <<<"$output")" '["merge-12","again"]'
 }
 
+@test "an ask is settled by a later merge-preapproved naming its id, as by an answered" {
+  open_task
+  event T14 asked '{id: "plan", text: "Approve the plan, and its merge?"}'
+  event T14 asked '{id: "name", text: "Which name?"}'
+  event T14 asked '{id: "other", text: "And this?"}'
+  event T14 merge-preapproved '{project: "proj", ask: "plan", discord_message: "1563000000000000001", scope: ["src/"]}'
+  event T14 answered '{id: "name", answer: "team-state"}'
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c '[.pending_asks[].id]' <<<"$output")" '["other"]'
+  # It settles only an ask logged before it, and only the one it names.
+  event T14 asked '{id: "plan", text: "Approve the new plan?"}'
+  event T15 merge-preapproved '{project: "proj", ask: "plan", discord_message: "1563000000000000002", scope: ["src/"]}'
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c '[.pending_asks[].id]' <<<"$output")" '["other","plan"]'
+}
+
 @test "worktrees recorded under another home show as the same paths under this HOME" {
   event T14 opened '{project: "proj", path: "feature", type: "feat", title: "The tooling",
     branch: "feat/T14-tooling", base: "main", base_sha: "0123456", worktree: "/home/someone/slots/proj/1"}'

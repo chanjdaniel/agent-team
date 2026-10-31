@@ -23,7 +23,8 @@
 #   reviews     each task's review verdicts, reopened when a findings is followed by another review
 #   waits       each span that parks a task: waiting (on its on), paused and blocked until the next
 #               resumed or launch, held until the next resumed, asked (on Daniel) until the
-#               answered of its id or a merge-approved whose url its text names, and each
+#               answered or merge-preapproved of its id or a merge-approved whose url its
+#               text names, and each
 #               until the task's closed, each from its since when
 #               it has one (a park logged after the fact); a span open at the window's
 #               end ends there (open), one from before its start is clipped to it (clipped); then

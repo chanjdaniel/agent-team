@@ -9,8 +9,8 @@
 # worktrees (returned or not), thread, workers (every launch, live when claude agents --json
 # lists its session, with that session's status, state and context, the tokens its latest
 # main-conversation reply read, from its transcript, or null), last_event, pending_asks, waiting,
-# rehome_failures, and pr; pending_asks are the asks no later event settles, an answered with
-# the ask's id or a merge-approved whose url its text names.
+# rehome_failures, and pr; pending_asks are the asks no later event settles, an answered or a
+# merge-preapproved with the ask's id or a merge-approved whose url its text names.
 # Recorded worktree paths under another machine's home (/home/<name>, /Users/<name>) show as the
 # same paths under this HOME.
 # Phase, first match wins: closed, merged (every PR merged, and no held or blocked standing that

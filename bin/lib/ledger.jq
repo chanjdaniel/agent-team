@@ -49,6 +49,38 @@ def kind_problems($contract; $legacy):
         | $line[$name] | select(. != null and . != "") | type_problems($name; $type; $legacy))
     end;
 
+# The shapes team-log holds beyond the contract's types, each *_problems def yielding
+# "<value>: <problem>" lines.
+
+# The finding kinds a review's findings counts, and the guarded areas its guarded may name.
+def finding_kinds: ["blocking", "correctness", "security", "real-data", "note"];
+def guarded_areas: ["ci", "dependencies", "migrations", "settings", "permissions", "secrets"];
+
+# How a review's findings, an object, is not the count of each finding kind, exactly.
+def findings_problems:
+  . as $findings
+  | (finding_kinds[] | select(in($findings)) | . as $kind | $findings[$kind]
+      | select(type != "number" or . < 0 or . != floor) | "\($kind): \(tojson) is not a whole number"),
+    (finding_kinds[] | select(in($findings) | not) | "\(.): missing"),
+    (keys_unsorted[] | select(IN(finding_kinds[]) | not) | "\(.): not a finding kind");
+
+# How a review's guarded, a list, holds something other than guarded areas.
+def guarded_problems: .[] | select(IN(guarded_areas[]) | not) | "\(tojson): not a guarded area";
+
+# How a scope entry is not a clean repository path, a file or a directory ending in /; nothing for
+# one that is.
+def path_problem:
+  if type != "string" then "not a string"
+  elif startswith("/") then "a leading /"
+  elif test("[*?\\[]") then "a glob character"
+  elif test("\\s") then "whitespace"
+  elif any(rtrimstr("/") | split("/")[]; . == "." or . == "..") then "a . or .. segment"
+  elif . == "" or any(rtrimstr("/") | split("/")[]; . == "") then "an empty segment"
+  else empty end;
+
+# How a merge-preapproved's scope, a list, holds entries that are not clean repository paths.
+def scope_problems: .[] | path_problem as $problem | "\(tojson): \($problem)";
+
 # What a line in an existing ledger must meet: legacy lines (before strict_from) only the basics.
 def check_problems($contract):
   [line_problems] as $basic
@@ -320,14 +352,28 @@ def workers($sessions):
 def live_session_ids($sessions):
   [.[] | select(.event == "launch") | live_session(.session; $sessions) | .sessionId // empty | strings] | unique;
 
-# Whether this event, logged after the ask $ask (an asked event), settles it: the answered with its
-# id, or a merge-approved whose url (a trailing slash aside) the ask's text names, not followed by
-# a digit, since the coordinator logs a merge answer as merge-approved alone as often as not.
+# Whether this event, logged after the ask $ask (an asked event), settles it: the answered or the
+# merge-preapproved with its id, or a merge-approved whose url (a trailing slash aside) the ask's
+# text names, not followed by a digit, since the coordinator logs a merge answer as merge-approved
+# alone as often as not.
 def settles($ask):
   (.event == "answered" and .id == $ask.id)
+  or (.event == "merge-preapproved" and .ask == $ask.id)
   or (.event == "merge-approved" and (.url | type) == "string" and (.url | test("^https?://"))
     and ((.url | rtrimstr("/")) as $url | ($ask.text // "" | tostring) as $text
       | any($text | indices($url)[]; $text[. + ($url | length):] | test("^[0-9]") | not)));
+
+# The latest asked of id $id among the task's events, or null: the ask a merge-preapproved of
+# that id answers.
+def latest_asked($id): [.[] | select(.event == "asked" and .id == $id)] | last;
+
+# The task's latest merge-preapproved of $project, or null, with withdrawn: the first
+# merge-preapproval-withdrawn of $project logged after it, or null while it stands.
+def merge_preapproval($project):
+  ([to_entries[] | select(.value.event == "merge-preapproved" and .value.project == $project)] | last) as $latest
+  | if $latest == null then null
+    else $latest.value + {withdrawn: (first(.[$latest.key + 1:][]
+      | select(.event == "merge-preapproval-withdrawn" and .project == $project)) // null)} end;
 
 # Whether the task's events hold an answered of ask $id read from Discord message $message.
 def answered_from($id; $message):

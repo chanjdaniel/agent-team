@@ -4,13 +4,14 @@
 #
 # Usage: team-inbox
 # The message lists, for each open task in task number order: each ask nothing settled (an asked
-# with no answered of its id and no merge-approved whose url its text names, as team-sweep reads
-# it), with the task, the ask's id, its first line and a link to the question (its discord_message,
-# which team-ask logs, in the task's thread; else the thread); each PR ready to merge (the task's
-# phase awaiting-merge, the PR not merged and no merge-approved logged at its head), with its full
-# URL; and each interview under way (an interview-thread with no planner's done or plan-approved
-# after it), with its thread. With none, it says "Nothing waits on you". Its last line is the time
-# of this run. Items past Discord's 2000 characters are left out from the end, counted in a line.
+# with no answered or merge-preapproved of its id and no merge-approved whose url its text names,
+# as team-sweep reads it), with the task, the ask's id, its first line and a link to the question
+# (its discord_message, which team-ask logs, in the task's thread; else the thread); each PR ready
+# to merge (the task's phase awaiting-merge, the PR not merged and no merge-approved logged at its
+# head), with its full URL; and each interview under way (an interview-thread with no planner's
+# done or plan-approved after it), with its thread. With none, it says "Nothing waits on you". Its
+# last line is the time of this run. Items past Discord's 2000 characters are left out from the
+# end, counted in a line.
 # It edits the message named in ~/.local/state/agent-team/inbox.json ({channel, guild, message})
 # and posts a new one only when there is none there, it is another channel's, or Discord no longer
 # has it (404), keeping the new one's id. It never pings: no mention in it notifies anyone, and

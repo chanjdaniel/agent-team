@@ -23,6 +23,48 @@ assert_ledger_empty() {
   assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" ""
 }
 
+# One project of the registry, at ~/projects/<name>, as TOML: plan_project <name> <merge_with_plan> [<repo>]
+plan_project() {
+  cat <<TOML
+[$1]
+repo = "${3:-owner/$1}"
+path = "projects/$1"
+base = "dev"
+delivery = "direct-pr"
+merge_method = "merge"
+required_checks = []
+merge_with_plan = $2
+task_dir = ".scratch/task"
+docs = []
+toolkits = []
+pool = { provider = "git", slots = ["slots/$1/1"] }
+TOML
+}
+
+# A registry of proj, which opts in to a plan-time merge approval, conv, which does not, and the
+# projects given as more TOML: plan_registry [<TOML>]
+plan_registry() {
+  {
+    plan_project proj true
+    echo
+    plan_project conv false
+    [[ -z ${1:-} ]] || printf '\n%s\n' "$1"
+  } >"$TEAM_HOME/projects.toml"
+}
+
+# A project of the task, as team-open logs it: opened <task> <project> [worktree-added]
+opened() {
+  jq -cn --arg task "$1" --arg project "$2" --arg event "${3:-opened}" \
+    '{ts: (now | todate), task: $task, event: $event, project: $project, branch: "feat/\($task)-x", base: "dev",
+      base_sha: "0123456", worktree: "/w/\($project)"}
+     + if $event == "opened" then {path: "feature", type: "feat", title: "X"} else {} end' >>"$TEAM_HOME/ledger.jsonl"
+}
+
+# The ledger's events, one per line.
+ledger_events() {
+  jq -r .event "$TEAM_HOME/ledger.jsonl"
+}
+
 @test "the contract lists every kind of the spec's table with its writer and required fields" {
   local expected actual
   expected=$(
@@ -51,6 +93,8 @@ pr team-log url head
 review team-log verdict head
 gate-run team-log run head outcome
 merge-approved team-log url discord_message
+merge-preapproved team-log project ask discord_message scope
+merge-preapproval-withdrawn team-log project discord_message
 failed team-log reason
 retro-schedule team-log every_hours discord_message
 stowed team-handoff machine worktrees roles
@@ -68,6 +112,9 @@ TABLE
   assert_equal "$(jq -c '[.kinds[] | (.required, .optional // {}) | to_entries[] | select(.key | startswith("discord_")) | .value] | unique' "$CONTRACT")" '["id"]'
   assert_equal "$(jq -c '[.kinds.waiting, .kinds.blocked, .kinds.paused, .kinds.held | .optional.since]' "$CONTRACT")" '["string","string","string","string"]'
   assert_equal "$(jq -c '[.kinds.closed.required[]]' "$CONTRACT")" '["array","array","array"]'
+  assert_equal "$(jq -c '.kinds["merge-preapproved"].required' "$CONTRACT")" '{"project":"string","ask":"string","discord_message":"id","scope":"array"}'
+  assert_equal "$(jq -c '.kinds.review.optional' "$CONTRACT")" '{"agent_review":"string","sent_back":"array","findings":"object","guarded":"array"}'
+  assert_equal "$(jq -c '.kinds.merged.optional.approval' "$CONTRACT")" '["head","plan"]'
   [[ $STRICT_FROM =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
 }
 
@@ -83,7 +130,10 @@ TABLE
     }
   done
   grep -Eq '^  opened +team-open +project, path, type, title, branch, base, base_sha, worktree$' <<<"$output"
-  grep -Eq '^  review +team-log +verdict \(pass\|findings\), head; optional agent_review, sent_back \(list\)  \(sent_back: the numbers of the notes .*\)$' <<<"$output"
+  grep -Eq '^  review +team-log +verdict \(pass\|findings\), head; optional agent_review, sent_back \(list\), findings \(object\), guarded \(list\)  \(sent_back: the numbers of the notes .*findings: the count of each kind.*guarded: the guarded areas.*\)$' <<<"$output"
+  grep -Eq '^  merge-preapproved +team-log +project, ask, discord_message \(id\), scope \(list\)  \(Daniel.s plan-time word .*\)$' <<<"$output"
+  grep -Eq '^  merge-preapproval-withdrawn +team-log +project, discord_message \(id\)  \(.*withdr.*\)$' <<<"$output"
+  grep -Eq '^  merged +team-merge +pr \(number\), merge, head, by; optional .*approval \(head\|plan\)  \(approval: .*\)$' <<<"$output"
   grep -Eq '^  gate-run +team-log +run, head, outcome \(pushed\|red\|aborted\|stopped-green\); optional cause \(review\|notes\|gate-finding\|load\|tooling\|base-merge\|other\), minutes \(object\)  \(.*\)$' <<<"$output"
   grep -Eq '^  closed +team-close +archive \(list\), returned \(list\), kept \(list\)  \(.*legacy.*\)$' <<<"$output"
   grep -Eq '^  merge-approved +team-log +url, discord_message \(id\); optional head  \(.*team-log requires head of every new line.*\)$' <<<"$output"
@@ -218,17 +268,22 @@ $TEAM_HOME/ledger.jsonl: 3 of 7 lines break the ledger contract"
 }
 
 @test "every kind team-log writes is appended with its required fields and a note" {
+  # merge-preapproved names a project of the task that opts in, and an ask it logged before.
+  plan_registry
+  opened T14 proj
   local kind args count=0
   while IFS= read -r kind; do
     # A head is a sha, since merge-approved's must be one a pr event logged, which team-log adds.
     mapfile -t args < <(jq -r --arg k "$kind" --arg soon "$(soon)" '(.kinds[$k].required | to_entries[]
-      | "\(.key)=\(if .key == "head" then "a1b2c3d4" else .value | if type == "array" then .[0] elif . == "array" then "[]" elif . == "number" then "7" elif . == "id" then $soon else "x y" end end)"),
+      | "\(.key)=\(if .key == "head" then "a1b2c3d4" elif .key == "project" then "proj" elif .key == "ask" then "x y"
+          elif .key == "scope" then "[\"src/\"]"
+          else .value | if type == "array" then .[0] elif . == "array" then "[]" elif . == "number" then "7" elif . == "id" then $soon else "x y" end end)"),
       (select($k == "merge-approved") | "head=a1b2c3d4")' "$CONTRACT")
     run_bin -0 team-log T14 "$kind" "${args[@]}" "note=why $kind"
     count=$((count + 1))
     assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r '.event + " " + .note')" "$kind why $kind"
   done < <(jq -r '.kinds | to_entries[] | select([.value.writer] | flatten | index("team-log")) | .key' "$CONTRACT")
-  assert_equal "$count" "18"
+  assert_equal "$count" "20"
   run_bin -0 team-log --check
 }
 
@@ -377,6 +432,178 @@ LINES
   run_bin -1 team-log T14 merge-approved url=$five discord_message=1562661774950400000 head=$fix
   assert_equal "$output" "team-log: Discord message 1562661774950400000 was sent at 2026-10-22T03:00:00Z, before the review event that first logged head $fix at $reviewed, so it is not Daniel's word on that head"
   assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "2"
+}
+
+@test "merge-preapproved records Daniel's plan-time word on a project of the task, with the ask it answers and the scope" {
+  plan_registry
+  opened T14 conv
+  opened T14 proj worktree-added
+  run_bin -0 team-log T14 asked id=plan 'text=Approve the plan, and its merge?'
+  local message
+  message=$(soon)
+  run_bin -0 team-log T14 merge-preapproved project=proj ask=plan discord_message="$message" \
+    'scope=["src/", "README.md", ".github/x/y.yml", "a/b-c_d.e"]'
+  assert_equal "$output" ""
+  assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -c 'del(.ts)')" \
+    "{\"task\":\"T14\",\"event\":\"merge-preapproved\",\"project\":\"proj\",\"ask\":\"plan\",\"discord_message\":\"$message\",\"scope\":[\"src/\",\"README.md\",\".github/x/y.yml\",\"a/b-c_d.e\"]}"
+  run_bin -0 team-log --check
+}
+
+@test "merge-preapproved is refused for a project that is not the task's, does not opt in now, or is the team's own" {
+  plan_registry
+  run_bin -0 team-log T14 asked id=plan 'text=Approve?'
+  run_bin -1 team-log T14 merge-preapproved project=proj ask=plan discord_message="$(soon)" 'scope=["src/"]'
+  assert_equal "$output" "team-log: proj is not a project of T14's opened or worktree-added events; it has none"
+  opened T14 proj
+  opened T14 conv worktree-added
+  opened T15 other
+  run_bin -1 team-log T14 merge-preapproved project=other ask=plan discord_message="$(soon)" 'scope=["src/"]'
+  assert_equal "$output" "team-log: other is not a project of T14's opened or worktree-added events: proj, conv"
+  run_bin -1 team-log T14 merge-preapproved project=conv ask=plan discord_message="$(soon)" 'scope=["src/"]'
+  assert_equal "$output" "team-log: conv does not opt in to a plan-time merge approval: its merge_with_plan in projects.toml is false"
+  assert_equal "$(ledger_events | grep -c merge-preapproved)" 0
+
+  # agent-team by name, even when the registry says true (which team-project --check refuses).
+  plan_registry "$(plan_project agent-team true)"
+  opened T14 agent-team worktree-added
+  run_bin -1 team-log T14 merge-preapproved project=agent-team ask=plan discord_message="$(soon)" 'scope=["src/"]'
+  assert_equal "$output" "team-log: agent-team is the team's own project, whose PRs merge only on Daniel's word per head, never on a plan-time word"
+
+  # By repo, which --check does not read, the key set to true; and by path, at the code checkout.
+  export CODE_CHECKOUT
+  CODE_CHECKOUT=$(make_repo tools dev)
+  copy_bin "$CODE_CHECKOUT/bin"
+  git -C "$CODE_CHECKOUT" remote set-url origin git@github.com:Owner/Tools.git
+  plan_registry "$(plan_project mirror true owner/tools && echo && plan_project tools false owner/elsewhere)"
+  opened T14 mirror worktree-added
+  opened T14 tools worktree-added
+  run_bin -1 team-log T14 merge-preapproved project=mirror ask=plan discord_message="$(soon)" 'scope=["src/"]'
+  assert_equal "$output" "team-log: mirror is the team's own project, whose PRs merge only on Daniel's word per head, never on a plan-time word"
+  run_bin -1 team-log T14 merge-preapproved project=tools ask=plan discord_message="$(soon)" 'scope=["src/"]'
+  assert_equal "$output" "team-log: tools is the team's own project, whose PRs merge only on Daniel's word per head, never on a plan-time word"
+  assert_equal "$(ledger_events | grep -c merge-preapproved)" 0
+}
+
+@test "merge-preapproved names an ask the task logged, and a Discord message sent no earlier than it" {
+  plan_registry
+  opened T14 proj
+  run_bin -0 team-log T15 asked id=plan 'text=Approve?'
+  run_bin -1 team-log T14 merge-preapproved project=proj ask=plan discord_message="$(soon)" 'scope=["src/"]'
+  assert_equal "$output" "team-log: T14 logged no asked with id plan, so merge-preapproved answers no ask of it"
+  run_bin -0 team-log T14 asked id=plan 'text=Approve?'
+  local asked
+  asked=$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r .ts)
+  # 1562661774950400000 is 2026-10-22T03:00:00Z, before the ask logged now.
+  run_bin -1 team-log T14 merge-preapproved project=proj ask=plan discord_message=1562661774950400000 'scope=["src/"]'
+  assert_equal "$output" "team-log: Discord message 1562661774950400000 was sent at 2026-10-22T03:00:00Z, before the asked plan at $asked, so it is not Daniel's answer to that ask"
+  local message
+  for message in 0 01563 15630000000000001234567; do
+    run_bin -1 team-log T14 merge-preapproved project=proj ask=plan discord_message=$message 'scope=["src/"]'
+    assert_equal "$output" "team-log: discord_message $message is not a Discord id"
+  done
+  run_bin -1 team-log T14 merge-preapproved project=proj ask=plan discord_message=m1563 'scope=["src/"]'
+  assert_contains "$output" "discord_message must be a Discord id"
+  run_bin -1 team-log T14 merge-preapproved project=proj ask=plan 'scope=["src/"]'
+  assert_contains "$output" "merge-preapproved needs discord_message"
+  assert_equal "$(ledger_events | grep -c merge-preapproved)" 0
+  run_bin -0 team-log T14 merge-preapproved project=proj ask=plan discord_message="$(soon)" 'scope=["src/"]'
+}
+
+@test "merge-preapproved's scope is a list of clean repository paths, each a file or a directory ending in /" {
+  plan_registry
+  opened T14 proj
+  run_bin -0 team-log T14 asked id=plan 'text=Approve?'
+  run_bin -1 team-log T14 merge-preapproved project=proj ask=plan discord_message="$(soon)" 'scope=[]'
+  assert_equal "$output" "team-log: scope is empty: it lists every path the plan may change, each a file or a directory ending in /"
+  run_bin -1 team-log T14 merge-preapproved project=proj ask=plan discord_message="$(soon)" scope=src/
+  assert_contains "$output" "scope must be a list, got a string"
+  run_bin -1 team-log T14 merge-preapproved project=proj ask=plan discord_message="$(soon)" \
+    'scope=["src/", "/etc/x", "/", "./a", "a/./b", "a/..", "..", "a//b", "src/*.py", "a?", "b[1]", "a b", "a\tb", "", 7]'
+  assert_equal "$output" "team-log: scope holds entries that are not clean repository paths:
+  \"/etc/x\": a leading /
+  \"/\": a leading /
+  \"./a\": a . or .. segment
+  \"a/./b\": a . or .. segment
+  \"a/..\": a . or .. segment
+  \"..\": a . or .. segment
+  \"a//b\": an empty segment
+  \"src/*.py\": a glob character
+  \"a?\": a glob character
+  \"b[1]\": a glob character
+  \"a b\": whitespace
+  \"a\\tb\": whitespace
+  \"\": an empty segment
+  7: not a string"
+  assert_equal "$(ledger_events | grep -c merge-preapproved)" 0
+}
+
+@test "merge-preapproval-withdrawn needs a standing merge-preapproved of its project, and a new one may follow it" {
+  plan_registry "$(plan_project web true)"
+  opened T14 proj
+  opened T14 web worktree-added
+  run_bin -0 team-log T14 asked id=plan 'text=Approve?'
+  run_bin -1 team-log T14 merge-preapproval-withdrawn project=proj discord_message="$(soon)"
+  assert_equal "$output" "team-log: T14 has no standing merge-preapproved of proj to withdraw"
+  # Another task's approval is its own.
+  opened T15 proj
+  run_bin -0 team-log T15 asked id=plan 'text=Approve?'
+  run_bin -0 team-log T15 merge-preapproved project=proj ask=plan discord_message="$(soon)" 'scope=["src/"]'
+  run_bin -1 team-log T14 merge-preapproval-withdrawn project=proj discord_message="$(soon)"
+  run_bin -0 team-log T14 merge-preapproved project=proj ask=plan discord_message="$(soon)" 'scope=["src/"]'
+  run_bin -1 team-log T14 merge-preapproval-withdrawn project=web discord_message="$(soon)"
+  assert_equal "$output" "team-log: T14 has no standing merge-preapproved of web to withdraw"
+  run_bin -1 team-log T14 merge-preapproval-withdrawn project=proj
+  assert_contains "$output" "merge-preapproval-withdrawn needs discord_message"
+  run_bin -0 team-log T14 merge-preapproval-withdrawn project=proj discord_message="$(soon)"
+  run_bin -1 team-log T14 merge-preapproval-withdrawn project=proj discord_message="$(soon)"
+  assert_equal "$output" "team-log: T14 has no standing merge-preapproved of proj to withdraw"
+  # A later approval, on a new ask, grants it again, and may be withdrawn in turn.
+  run_bin -0 team-log T14 asked id=plan-2 'text=Approve again?'
+  run_bin -0 team-log T14 merge-preapproved project=proj ask=plan-2 discord_message="$(soon)" 'scope=["src/", "docs/"]'
+  run_bin -0 team-log T14 merge-preapproval-withdrawn project=proj discord_message="$(soon)"
+  assert_equal "$(jq -r 'select(.task == "T14" and (.event | startswith("merge-pre"))) | "\(.event) \(.project)"' "$TEAM_HOME/ledger.jsonl")" "$(
+    cat <<'LINES'
+merge-preapproved proj
+merge-preapproval-withdrawn proj
+merge-preapproved proj
+merge-preapproval-withdrawn proj
+LINES
+  )"
+  run_bin -0 team-log --check
+}
+
+@test "a review logs the count of each finding kind and the guarded areas, in their shapes, or neither" {
+  run_bin -0 team-log T14 review verdict=pass head=a1b2c3d \
+    'findings={"blocking": 0, "correctness": 1, "security": 0, "real-data": 0, "note": 3}' 'guarded=["ci", "secrets"]'
+  run_bin -0 team-log T14 review verdict=pass head=e4f5a6b \
+    'findings={"note": 0, "real-data": 0, "security": 0, "correctness": 0, "blocking": 0}' 'guarded=[]'
+  run_bin -0 team-log T14 review verdict=findings head=e4f5a6b
+  assert_equal "$(ledger_without_ts)" "$(
+    cat <<'LINES'
+{"task":"T14","event":"review","verdict":"pass","head":"a1b2c3d","findings":{"blocking":0,"correctness":1,"security":0,"real-data":0,"note":3},"guarded":["ci","secrets"]}
+{"task":"T14","event":"review","verdict":"pass","head":"e4f5a6b","findings":{"note":0,"real-data":0,"security":0,"correctness":0,"blocking":0},"guarded":[]}
+{"task":"T14","event":"review","verdict":"findings","head":"e4f5a6b"}
+LINES
+  )"
+  run_bin -0 team-log --check
+
+  run_bin -1 team-log T14 review verdict=pass head=a1b2c3d findings=3
+  assert_contains "$output" "findings must be an object, got a number"
+  run_bin -1 team-log T14 review verdict=pass head=a1b2c3d \
+    'findings={"blocking": 0, "correctness": -1, "security": 1.5, "note": "2", "style": 1}'
+  assert_equal "$output" "team-log: findings holds the count of each finding kind, exactly blocking, correctness, security, real-data and note, each a whole number:
+  correctness: -1 is not a whole number
+  security: 1.5 is not a whole number
+  note: \"2\" is not a whole number
+  real-data: missing
+  style: not a finding kind"
+  run_bin -1 team-log T14 review verdict=pass head=a1b2c3d guarded=ci
+  assert_contains "$output" "guarded must be a list, got a string"
+  run_bin -1 team-log T14 review verdict=pass head=a1b2c3d 'guarded=["ci", "docs", 1]'
+  assert_equal "$output" "team-log: guarded lists the guarded areas the change touches, each one of ci, dependencies, migrations, settings, permissions and secrets:
+  \"docs\": not a guarded area
+  1: not a guarded area"
+  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "3"
 }
 
 @test "an answered naming the Discord message an earlier answered of the same ask logged is refused" {

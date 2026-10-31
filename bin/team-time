@@ -17,8 +17,8 @@
 #   Docker, a restart, an outage), gate (a pause naming the gate), wait:daniel (a waiting),
 #   wait:other; a park logged after the fact with since holds from since, not from its own ts;
 #   an asked with no park standing is a wait on Daniel until it and every ask asked while it
-#   stands are settled, each by an answered with its id or a merge-approved whose url its text
-#   names, or a launch, resumed or another park ends it;
+#   stands are settled, each by an answered or merge-preapproved with its id or a merge-approved
+#   whose url its text names, or a launch, resumed or another park ends it;
 #   with no park, the last marker: a planner or ops launch planning, a builder's building, a
 #   reviewer's review, merge-approved merging, and a done, merged or review unattributed (the
 #   coordinator's turn, or a gate run the ledger did not see); a task starts unattributed;
