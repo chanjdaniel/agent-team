@@ -1,7 +1,8 @@
 #!/usr/bin/env bats
 # team-sweep: what the coordinator must not leave unattended (a task with no live worker, a
-# worker waiting for input or idle without reporting, a team session outliving its task), from
-# the ledger and the live session list alone.
+# worker waiting for input or idle without reporting, a busy worker whose transcripts have gone
+# unwritten past its limit, a team session outliving its task, the machine's slots, a retro due),
+# from the ledger, the live session list, the stored slot readings and the transcripts' times.
 
 load helpers/common
 
@@ -40,18 +41,79 @@ launch() {
       toolkits: [], project: "proj", branch: "feat/\($t)-work"}'
 }
 
-# session <short id> <name> <status> [<state>]: one background session as claude agents --json
-# lists it.
+# session <short id> <name> <status> [<state>] [<startedAt>]: one background session as claude
+# agents --json lists it, started at <startedAt> (a JSON value; epoch milliseconds, 2025-10-22
+# by default).
 session() {
-  jq -cn --arg id "$1" --arg name "$2" --arg status "$3" --arg state "${4:-}" \
-    '{pid: 4242, cwd: "/w/1", kind: "background", startedAt: 1761098400000,
+  jq -cn --arg id "$1" --arg name "$2" --arg status "$3" --arg state "${4:-}" --argjson started "${5:-1761098400000}" \
+    '{pid: 4242, cwd: "/w/1", kind: "background", startedAt: $started,
       sessionId: "\($id)-1111-4222-8333-444455556666", name: $name, status: $status, id: $id,
       state: (if $state == "" then null else $state end)}'
+}
+
+# Transcript lines in Claude Code's shapes, at <minutes> ago, each holding a marker string where
+# a tool's output, a message's text or a notification's summary goes, which no finding may carry.
+# call <id> <minutes> <tool> [<command>] [background]: an assistant line starting a tool call.
+call() {
+  jq -cn --arg id "$1" --argjson m "$2" --arg tool "$3" --arg command "${4:-}" --arg bg "${5:-}" '
+    {type: "assistant", timestamp: ((now | floor) - $m * 60 | strftime("%Y-%m-%dT%H:%M:%S.000Z")),
+     message: {role: "assistant", content: [{type: "text", text: "TEXT-MARKER-1"},
+       {type: "tool_use", id: $id, name: $tool,
+        input: (if $command == "" then {url: "https://example.com/TEXT-MARKER-2"}
+          else {command: $command, description: "TEXT-MARKER-3"} + (if $bg == "" then {} else {run_in_background: true} end) end)}]}}'
+}
+
+# result <id> <minutes> [background]: the user line with the call's result; with background, it
+# carries a background task id, as for a call run in the background or moved there at its cap.
+result() {
+  jq -cn --arg id "$1" --argjson m "$2" --arg bg "${3:-}" '
+    {type: "user", timestamp: ((now | floor) - $m * 60 | strftime("%Y-%m-%dT%H:%M:%S.000Z")),
+     message: {role: "user", content: [{type: "tool_result", tool_use_id: $id, content: "OUTPUT-MARKER-1", is_error: false}]},
+     toolUseResult: ({stdout: "OUTPUT-MARKER-2", stderr: "", interrupted: false}
+       + if $bg == "" then {} else {backgroundTaskId: "b8k2m4q1", timedOutAfterMs: 600000} end)}'
+}
+
+# notified <id> <minutes> [user]: the task notification for a background call, as a queue
+# operation, or with user as a user message.
+notified() {
+  jq -cn --arg id "$1" --argjson m "$2" --arg how "${3:-}" '
+    ((now | floor) - $m * 60 | strftime("%Y-%m-%dT%H:%M:%S.000Z")) as $ts
+    | "<task-notification>\n<task-id>b8k2m4q1</task-id>\n<tool-use-id>\($id)</tool-use-id>\n<status>completed</status>\n<summary>SUMMARY-MARKER</summary>\n</task-notification>" as $text
+    | if $how == "user" then {type: "user", timestamp: $ts, message: {role: "user", content: $text}}
+      else {type: "queue-operation", operation: "enqueue", timestamp: $ts, content: $text} end'
+}
+
+# no_markers: no marker string reached the output.
+no_markers() {
+  [[ $output != *MARKER* ]]
 }
 
 # sessions <session JSON>...: the live session list.
 sessions() {
   stub_reply claude "$(jq -cs . <<<"$*")"
+}
+
+# transcript [-] <short id> <minutes> [<agent id>]: the transcript of the session that session
+# gives <short id>, or of its subagent <agent id>, under the sandbox HOME as Claude Code keeps
+# them, last written <minutes> ago: with -, the lines on stdin, else one user line and one reply.
+transcript() {
+  local lines=''
+  if [[ $1 == - ]]; then
+    lines=1
+    shift
+  fi
+  local file=$HOME/.claude/projects/-w-1/$1-1111-4222-8333-444455556666
+  if [[ -n ${3:-} ]]; then file=$file/subagents/agent-$3.jsonl; else file=$file.jsonl; fi
+  mkdir -p "${file%/*}"
+  if [[ -n $lines ]]; then
+    cat >"$file"
+  else
+    jq -cn --arg s "$1-1111-4222-8333-444455556666" '
+      {type: "user", timestamp: "2026-10-22T02:10:05Z", sessionId: $s, message: {role: "user", content: "Read your brief"}},
+      {type: "assistant", timestamp: "2026-10-22T02:10:09Z", sessionId: $s,
+       message: {role: "assistant", content: [{type: "text", text: "Reading it."}]}}' >"$file"
+  fi
+  touch -d "@$(($(date +%s) - $2 * 60))" "$file"
 }
 
 # The first <n> lines of a fixture ledger from the real one, as the sandbox ledger.
@@ -294,6 +356,330 @@ T5 no-worker: no live session among its 1 launch (latest T5-builder 33333333); n
   sessions "$(session 22222222 T8-builder idle)"
   run_bin -1 team-sweep
   assert_contains "$output" "T8 silent: T8-builder 22222222 is idle"
+}
+
+@test "stalled: a busy session of an open task whose transcript has not been written for 50 minutes" {
+  opened T8
+  launch T8 builder 4f2a9c1e
+  sessions "$(session 4f2a9c1e T8-builder busy working)"
+  transcript 4f2a9c1e 40
+  run_bin -0 team-sweep
+  transcript 4f2a9c1e 55
+  run_bin -1 --separate-stderr team-sweep
+  assert_equal "$stderr" ""
+  assert_equal "$output" "T8 stalled: T8-builder 4f2a9c1e has written nothing for 55m with no tool call running; next: read claude logs 4f2a9c1e, then follow the recover-worker skill's stalled rung"
+  transcript 4f2a9c1e 425
+  run_bin -1 team-sweep
+  assert_contains "$output" "T8-builder 4f2a9c1e has written nothing for 7h05m with no tool call running; next:"
+}
+
+@test "stalled: a subagent's transcript written since counts as the session's progress" {
+  opened T8
+  launch T8 builder 4f2a9c1e
+  sessions "$(session 4f2a9c1e T8-builder busy working)"
+  transcript 4f2a9c1e 120
+  transcript 4f2a9c1e 5 a1b2c3d4e5f60718
+  run_bin -0 team-sweep
+  transcript 4f2a9c1e 60 a1b2c3d4e5f60718
+  run_bin -1 team-sweep
+  assert_contains "$output" "T8 stalled: T8-builder 4f2a9c1e has written nothing for 1h00m with no tool call running; next:"
+}
+
+@test "stalled: never for an idle or blocked session, a parked task, or a session with no transcript" {
+  opened T8
+  launch T8 builder 4f2a9c1e
+  transcript 4f2a9c1e 120
+  sessions "$(session 4f2a9c1e T8-builder idle)"
+  run_bin -1 team-sweep
+  assert_equal "${#lines[@]}" 1
+  assert_contains "$output" "T8 silent: T8-builder 4f2a9c1e"
+  sessions "$(session 4f2a9c1e T8-builder busy blocked)"
+  run_bin -1 team-sweep
+  assert_equal "${#lines[@]}" 1
+  assert_contains "$output" "T8 waiting-input: T8-builder 4f2a9c1e"
+  event T8 ticket-done '{ticket: "1", commits: ["abc1234"]}'
+  sessions "$(session 4f2a9c1e T8-builder idle)"
+  run_bin -1 team-sweep
+  assert_equal "${#lines[@]}" 1
+  assert_contains "$output" "T8 no-worker: every live worker is idle"
+  sessions "$(session 4f2a9c1e T8-builder busy working)"
+  event T8 held '{reason: "waiting on Daniel"}'
+  run_bin -0 team-sweep
+  # Not held, it is stalled; without its transcript, which cannot be found, it is not.
+  event T8 resumed
+  run_bin -1 team-sweep
+  assert_contains "$output" "T8 stalled"
+  rm "$HOME/.claude/projects/-w-1/4f2a9c1e-1111-4222-8333-444455556666.jsonl"
+  run_bin -0 --separate-stderr team-sweep
+  assert_equal "$stderr" ""
+}
+
+@test "stalled: --json carries it with its task, kind, session, name and next step" {
+  opened T8
+  launch T8 builder 4f2a9c1e
+  sessions "$(session 4f2a9c1e T8-builder busy working)"
+  transcript 4f2a9c1e 55
+  run_bin -1 team-sweep --json
+  assert_equal "$(jq -c 'map(del(.text))' <<<"$output")" \
+    "[{\"task\":\"T8\",\"kind\":\"stalled\",\"session\":\"4f2a9c1e\",\"name\":\"T8-builder\",\"next\":\"read claude logs 4f2a9c1e, then follow the recover-worker skill's stalled rung\"}]"
+  assert_equal "$(jq -r '.[0].text' <<<"$output")" \
+    "T8 stalled: T8-builder 4f2a9c1e has written nothing for 55m with no tool call running; next: read claude logs 4f2a9c1e, then follow the recover-worker skill's stalled rung"
+}
+
+@test "stalled: --wait ends on a new one once it has stood for three minutes" {
+  opened T8
+  launch T8 builder 4f2a9c1e
+  transcript 4f2a9c1e 1
+  looks "[$(session 4f2a9c1e T8-builder busy working)]"
+  # Written a minute before the first look, it has been quiet for 55 minutes at the second (0:30).
+  echo "touch -d @\$((\$(date +%s) - 55 * 60)) '$HOME/.claude/projects/-w-1/4f2a9c1e-1111-4222-8333-444455556666.jsonl'" \
+    >"$BATS_TEST_TMPDIR/at-look.1"
+  run_bin -0 --separate-stderr team-sweep --wait
+  assert_equal "$stderr" ""
+  assert_contains "$output" "T8 stalled: T8-builder 4f2a9c1e has written nothing for 55m with no tool call running; next:"
+  # Seen at the second look (0:30), it has stood three minutes at the eighth (3:30).
+  assert_equal "$(waits)" 7
+}
+
+@test "stalled: a transcript quieter than the limit is never opened, so a malformed one changes nothing" {
+  opened T8
+  launch T8 builder 4f2a9c1e
+  opened T9
+  launch T9 builder 9a8b7c6d
+  sessions "$(session 4f2a9c1e T8-builder busy working)" "$(session 9a8b7c6d T9-builder busy working)"
+  printf 'not json\n\xff\xfe{"type":\n' | transcript - 4f2a9c1e 40
+  printf '{"type":"user","timestamp":\n\xff\n' | transcript - 9a8b7c6d 40
+  chmod 000 "$HOME/.claude/projects/-w-1/9a8b7c6d-1111-4222-8333-444455556666.jsonl"
+  run_bin -0 --separate-stderr team-sweep
+  assert_equal "$stderr" ""
+  # Past it, a line that is not JSON is skipped.
+  printf 'not json\n\xff\xfe{"type":\n' | transcript - 4f2a9c1e 55
+  run_bin -1 --separate-stderr team-sweep
+  assert_equal "$stderr" ""
+  assert_equal "${#lines[@]}" 1
+  assert_contains "$output" "T8 stalled: T8-builder 4f2a9c1e has written nothing for 55m with no tool call running; next:"
+}
+
+@test "stalled: T121's watch, moved to the background at its cap 7 hours ago, is named with both times and none of the transcript's content" {
+  opened T121
+  launch T121 builder 21de9a86
+  sessions "$(session 21de9a86 T121-builder busy working)"
+  { call toolu_01 435 Bash $'cd /w/1 && gh pr checks 217 --watch\necho done'; result toolu_01 425 background; } |
+    transcript - 21de9a86 425
+  run_bin -1 --separate-stderr team-sweep
+  assert_equal "$stderr" ""
+  assert_equal "$output" "T121 stalled: T121-builder 21de9a86 has written nothing for 7h05m, waiting on \"gh pr checks 217 --watch\" (Bash, in the background, running 7h15m); next: read claude logs 21de9a86, then follow the recover-worker skill's stalled rung"
+  no_markers
+  run_bin -1 team-sweep --json
+  assert_equal "$(jq -r '.[0].kind' <<<"$output")" stalled
+  no_markers
+}
+
+@test "stalled: a long test run in the background passes at 40 minutes, and is named at 55" {
+  opened T8
+  launch T8 builder 4f2a9c1e
+  opened T9
+  launch T9 builder 9a8b7c6d
+  sessions "$(session 4f2a9c1e T8-builder busy working)" "$(session 9a8b7c6d T9-builder busy working)"
+  { call toolu_01 41 Bash "npx playwright test" background; result toolu_01 41 background; } | transcript - 4f2a9c1e 40
+  call toolu_02 40 Bash "tests/run" | transcript - 9a8b7c6d 40
+  run_bin -0 team-sweep
+  { call toolu_01 56 Bash "npx playwright test" background; result toolu_01 56 background; } | transcript - 4f2a9c1e 55
+  call toolu_02 61 Bash "cd /w/1; tests/run" | transcript - 9a8b7c6d 55
+  run_bin -1 team-sweep
+  assert_equal "$output" "T8 stalled: T8-builder 4f2a9c1e has written nothing for 55m, waiting on \"npx playwright test\" (Bash, in the background, running 56m); next: read claude logs 4f2a9c1e, then follow the recover-worker skill's stalled rung
+T9 stalled: T9-builder 9a8b7c6d has written nothing for 55m, waiting on \"tests/run\" (Bash, running 1h01m); next: read claude logs 9a8b7c6d, then follow the recover-worker skill's stalled rung"
+}
+
+@test "stalled: a gate run passes at 2 hours, and is named at 3 hours 10 minutes" {
+  opened T8
+  launch T8 builder 4f2a9c1e
+  sessions "$(session 4f2a9c1e T8-builder busy working)"
+  local gate='no-mistakes axi run --intent "the wait always ends"'
+  { call toolu_01 121 Bash "$gate" background; result toolu_01 121 background; } | transcript - 4f2a9c1e 120
+  run_bin -0 team-sweep
+  { call toolu_01 191 Bash "$gate" background; result toolu_01 191 background; } | transcript - 4f2a9c1e 190
+  run_bin -1 team-sweep
+  assert_contains "$output" "T8-builder 4f2a9c1e has written nothing for 3h10m, waiting on \"$gate\" (Bash, in the background, running 3h11m); next:"
+  # A word that only contains it is not the gate.
+  { call toolu_01 191 Bash "grep -r no-mistakes-config ." background; result toolu_01 191 background; } |
+    transcript - 4f2a9c1e 120
+  run_bin -1 team-sweep
+  assert_contains "$output" "T8-builder 4f2a9c1e has written nothing for 2h00m, waiting on \"grep -r no-mistakes-config .\""
+}
+
+@test "stalled: a wait on a PR's checks passes past 50 minutes, ending at 90, and is named at 1 hour 45 minutes" {
+  opened T8
+  launch T8 builder 4f2a9c1e
+  sessions "$(session 4f2a9c1e T8-builder busy working)"
+  local wait='/home/x/agent-team/bin/team-ci-wait https://github.com/owner/proj/pull/217 a1b2c3d'
+  { call toolu_01 96 Bash "$wait" background; result toolu_01 96 background; } | transcript - 4f2a9c1e 95
+  run_bin -0 team-sweep
+  { call toolu_01 106 Bash "$wait" background; result toolu_01 106 background; } | transcript - 4f2a9c1e 105
+  run_bin -1 team-sweep
+  assert_contains "$output" "T8-builder 4f2a9c1e has written nothing for 1h45m, waiting on \"$wait\" (Bash, in the background, running 1h46m); next:"
+}
+
+@test "stalled: the gate, team-thread wait and team-ci-wait limits read the whole command, though only its first line is named" {
+  opened T8
+  launch T8 builder 4f2a9c1e
+  sessions "$(session 4f2a9c1e T8-builder busy working)"
+  call toolu_01 121 Bash $'export A=1\nno-mistakes run' | transcript - 4f2a9c1e 120
+  run_bin -0 team-sweep
+  call toolu_01 121 Bash "$(printf 'x%.0s' {1..100}) && no-mistakes run" | transcript - 4f2a9c1e 120
+  run_bin -0 team-sweep
+  call toolu_01 361 Bash $'set -e\nteam-thread wait T8 1563171945980370967' | transcript - 4f2a9c1e 360
+  run_bin -0 team-sweep
+  call toolu_01 96 Bash $'cd /w/1\nteam-ci-wait https://github.com/owner/proj/pull/217' | transcript - 4f2a9c1e 95
+  run_bin -0 team-sweep
+  call toolu_01 191 Bash $'export A=1\nno-mistakes run' | transcript - 4f2a9c1e 190
+  run_bin -1 team-sweep
+  assert_contains "$output" "T8-builder 4f2a9c1e has written nothing for 3h10m, waiting on \"export A=1\" (Bash, running 3h11m); next:"
+}
+
+@test "stalled: never while a call waits on Daniel with team-thread wait, whatever else runs" {
+  opened T8
+  launch T8 planner 4f2a9c1e
+  sessions "$(session 4f2a9c1e T8-planner busy working)"
+  { call toolu_01 400 Bash "npx playwright test" background; result toolu_01 400 background
+    call toolu_02 361 Bash '/home/x/agent-team/bin/team-thread wait T8 1563171945980370967'; } | transcript - 4f2a9c1e 360
+  run_bin -0 team-sweep
+}
+
+@test "stalled: a session with nothing running says so, and a call that ended is not running" {
+  opened T8
+  launch T8 builder 4f2a9c1e
+  sessions "$(session 4f2a9c1e T8-builder busy working)"
+  { call toolu_01 60 Bash "tests/run bats"; result toolu_01 56
+    call toolu_02 58 Bash "npx playwright test" background; result toolu_02 58 background; notified toolu_02 57
+    call toolu_03 57 Bash "team-checks" background; result toolu_03 57 background; notified toolu_03 56 user
+    call toolu_04 56 WebFetch; result toolu_04 55; } | transcript - 4f2a9c1e 55
+  run_bin -1 team-sweep
+  assert_equal "$output" "T8 stalled: T8-builder 4f2a9c1e has written nothing for 55m with no tool call running; next: read claude logs 4f2a9c1e, then follow the recover-worker skill's stalled rung"
+  no_markers
+}
+
+@test "stalled: a call started before the session's process is not running" {
+  opened T8
+  launch T8 builder 4f2a9c1e
+  # Relaunched 30 minutes ago: the watch an hour ago belongs to the session's earlier process.
+  sessions "$(session 4f2a9c1e T8-builder busy working "$((($(date +%s) - 30 * 60) * 1000))")"
+  { call toolu_01 60 Bash "gh pr checks 217 --watch" background; result toolu_01 60 background
+    call toolu_02 56 Read; } | transcript - 4f2a9c1e 55
+  run_bin -1 team-sweep
+  assert_contains "$output" "has written nothing for 55m with no tool call running; next:"
+}
+
+@test "stalled: a subagent's hung call is named as a subagent's, before the Agent call waiting on it, and other tools by name" {
+  opened T8
+  launch T8 builder 4f2a9c1e
+  sessions "$(session 4f2a9c1e T8-builder busy working)"
+  call toolu_01 70 Agent | transcript - 4f2a9c1e 70
+  call toolu_02 65 Bash "cd /w/1 && npm test -- --watch" | transcript - 4f2a9c1e 60 a1b2c3d4e5f60718
+  run_bin -1 team-sweep
+  assert_contains "$output" "has written nothing for 1h00m, waiting on \"npm test -- --watch\" (Bash in a subagent, running 1h05m), and 1 more running; next:"
+  call toolu_02 65 WebFetch | transcript - 4f2a9c1e 60 a1b2c3d4e5f60718
+  run_bin -1 team-sweep
+  assert_contains "$output" "has written nothing for 1h00m, waiting on WebFetch (in a subagent, running 1h05m), and 1 more running; next:"
+  rm "$HOME/.claude/projects/-w-1/4f2a9c1e-1111-4222-8333-444455556666/subagents/agent-a1b2c3d4e5f60718.jsonl"
+  run_bin -1 team-sweep
+  assert_contains "$output" "has written nothing for 1h10m, waiting on Agent (running 1h10m); next:"
+}
+
+@test "stalled: of two running calls the foreground one, which holds the turn, is named" {
+  opened T8
+  launch T8 builder 4f2a9c1e
+  sessions "$(session 4f2a9c1e T8-builder busy working)"
+  { call toolu_01 90 Bash "npx playwright test" background; result toolu_01 90 background
+    call toolu_02 60 Bash "$(printf 'x%.0s' {1..120})"; } | transcript - 4f2a9c1e 55
+  run_bin -1 team-sweep
+  assert_contains "$output" "has written nothing for 55m, waiting on \"$(printf 'x%.0s' {1..100})\" (Bash, running 1h00m), and 1 more running; next:"
+}
+
+@test "stalled: the reader prints only times, tool names, ids, commands, their limits and the background marks" {
+  sessions_json=$(jq -cs . <<<"$(session 4f2a9c1e T8-builder busy working)")
+  { call toolu_01 90 Bash "npx playwright test" background; result toolu_01 90 background; notified toolu_01 80
+    call toolu_02 70 Bash "tests/run" background; result toolu_02 70 background; notified toolu_02 65 user
+    call toolu_03 60 WebFetch; result toolu_03 59
+    call toolu_04 58 Bash "gh pr checks 217 --watch" background; result toolu_04 58 background
+    call toolu_05 57 Bash $'export A=1\nno-mistakes run' background; result toolu_05 57 background
+    call toolu_06 56 Read; } | transcript - 4f2a9c1e 55
+  run --separate-stderr "$REPO_ROOT/bin/lib/session-activity" --parse-after 3000 <<<"$sessions_json"
+  assert_equal "$status" 0
+  assert_equal "$stderr" ""
+  no_markers
+  assert_equal "$(jq -c '.[] | {quiet: (.quiet / 60 | floor), running: [.running[] | del(.since, .seconds)]}' <<<"$output")" \
+    '{"quiet":55,"running":[{"tool":"Bash","command":"gh pr checks 217 --watch","limit":null,"background":true,"subagent":false},{"tool":"Bash","command":"export A=1","limit":"gate","background":true,"subagent":false},{"tool":"Read","command":null,"limit":null,"background":false,"subagent":false}]}'
+  assert_equal "$(jq -r '.[].running[0] | "\(.since | test("^[0-9-]+T[0-9:.]+Z$")) \(.seconds / 60 | floor)"' <<<"$output")" "true 58"
+}
+
+@test "activity: a reader that fails is a finding naming its reason, and the other findings still come" {
+  opened T3
+  opened T8
+  launch T8 builder 4f2a9c1e
+  sessions "$(session 4f2a9c1e T8-builder busy working)"
+  transcript 4f2a9c1e 55
+  # python3 runs the reader as Python 3.9 would, and every other script (team-slots) as itself.
+  local python
+  python=$(command -v python3)
+  stub_command python3
+  stub_script python3 <<EOF
+if [[ \${2:-} == */session-activity ]]; then
+  echo "session-activity: needs Python 3.11 or later, but runs under Python 3.9.6 ($HOME/.pyenv/bin/python3)" >&2
+  exit 1
+fi
+exec "$python" "\$@"
+EOF
+  run_bin -1 --separate-stderr team-sweep
+  assert_equal "$stderr" ""
+  assert_equal "$output" "T3 no-worker: opened with no worker launched; next: launch one with team-worker, or log what is known with team-log
+activity: session-activity: needs Python 3.11 or later, but runs under Python 3.9.6 (~/.pyenv/bin/python3), so no busy worker is found stalled: fix what session-activity names"
+  run_bin -1 team-sweep --json
+  assert_equal "$(jq -c '.[1] | del(.text)' <<<"$output")" \
+    '{"task":null,"kind":"activity","session":null,"name":null,"next":"fix what session-activity names"}'
+  # A reader that prints no JSON object is as one that fails.
+  stub_script python3 <<EOF
+if [[ \${2:-} == */session-activity ]]; then
+  echo '[]'
+  exit 0
+fi
+exec "$python" "\$@"
+EOF
+  run_bin -1 --separate-stderr team-sweep
+  assert_equal "$stderr" ""
+  assert_equal "${lines[1]}" "activity: session-activity printed no JSON object, so no busy worker is found stalled: fix what session-activity names"
+}
+
+@test "activity: a session with a transcript and no startedAt in epoch milliseconds fails the reader closed" {
+  opened T8
+  launch T8 builder 4f2a9c1e
+  transcript 4f2a9c1e 1
+  transcript 9a8b7c6d 1
+  local started
+  for started in null '"2026-10-22T02:00:00Z"' 1761098400000.5 true -1; do
+    sessions "$(session 4f2a9c1e T8-builder busy working)" "$(session 9a8b7c6d other idle '' "$started")"
+    run_bin -1 --separate-stderr team-sweep
+    assert_equal "$stderr" ""
+    assert_equal "$output" "activity: session-activity: session 9a8b7c6d has no startedAt in epoch milliseconds in the session list, which tells its running tool calls from an earlier process's, so no busy worker is found stalled: fix what session-activity names"
+  done
+  # Missing, it fails the same; a session with no transcript is never read, so it does not matter.
+  sessions "$(session 4f2a9c1e T8-builder busy working)" "$(session 9a8b7c6d other idle | jq -c 'del(.startedAt)')"
+  run_bin -1 team-sweep
+  assert_contains "$output" "activity: session-activity: session 9a8b7c6d has no startedAt"
+  rm "$HOME/.claude/projects/-w-1/9a8b7c6d-1111-4222-8333-444455556666.jsonl"
+  run_bin -0 team-sweep
+}
+
+@test "activity: --wait ends on a reader that starts failing once it has stood for three minutes" {
+  opened T8
+  launch T8 builder 4f2a9c1e
+  transcript 4f2a9c1e 1
+  looks "[$(session 4f2a9c1e T8-builder busy working)]" "[$(session 4f2a9c1e T8-builder busy working null)]"
+  run_bin -0 --separate-stderr team-sweep --wait
+  assert_equal "$stderr" ""
+  assert_contains "$output" "activity: session-activity: session 4f2a9c1e has no startedAt"
+  # Seen at the second look (0:30), it has stood three minutes at the eighth (3:30).
+  assert_equal "$(waits)" 7
 }
 
 @test "findings come in task number order" {
@@ -853,11 +1239,21 @@ slots: $error: fix what team-slots names"
         elif $i % 11 == 0 then {event: "pr", url: "https://github.com/o/p/pull/\($n)", head: "a1b2c3d"}
         else {event: "ticket-done", ticket: "\($i)", commits: ["abc1234"]} end' >"$TEAM_HOME/ledger.jsonl"
   assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" 1000
-  sessions "$(session 10000007 T8-builder idle)" "$(session 10000014 T15-builder idle blocked)"
+  # Ten busy builders, each with a transcript of 20,000 lines (about 6 MB) written a minute ago.
+  local busy=() i line
+  for i in 56 63 70 77 84 91 98 105 112 119; do
+    busy+=("$(session $((i + 10000000)) "T$((i % 50 + 1))-builder" busy working)")
+    line=$(jq -cn --arg s "$((i + 10000000))-1111-4222-8333-444455556666" '{type: "assistant",
+      timestamp: "2026-10-22T02:10:09Z", sessionId: $s, message: {role: "assistant", content: [{type: "tool_use",
+      id: "toolu_01", name: "Bash", input: {command: "tests/run bats"}}, {type: "text", text: ("x" * 60)}]}}')
+    yes "$line" | head -n 20000 | transcript - $((i + 10000000)) 1
+  done
+  sessions "$(session 10000007 T8-builder idle)" "$(session 10000014 T15-builder idle blocked)" "${busy[@]}"
   local start end
   start=$(date +%s%N)
   run_bin -1 team-sweep
   end=$(date +%s%N)
-  ((${#lines[@]} > 40))
+  # Every task but the ten busy builders' finds something.
+  assert_equal "${#lines[@]}" 40
   (((end - start) < 2000000000))
 }

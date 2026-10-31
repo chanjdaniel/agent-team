@@ -31,9 +31,10 @@ Seen: T4 and T18, whose reviews found such commits (`tasks/T4/scratch/review.md`
 
 ## Wait for work with a command that blocks until it ends, never a sleep loop or a self-set timer
 
-Why: auto mode refuses a timer as persistence, three refusals in a row leave a background session on a prompt nobody sees, and commands such as `gh pr checks --watch` and `docker compose up --wait` wait without one.
+Why: auto mode refuses a timer as persistence, three refusals in a row leave a background session on a prompt nobody sees, and commands such as `team-ci-wait` and `docker compose up --wait` wait without one.
+The wait must end on its own too: `gh pr checks --watch` reads each check's status, so a job whose status GitHub lost keeps it waiting forever, and Claude Code moves a foreground call to the background after 10 minutes, so the session ends its turn and waits unseen; `team-ci-wait`, run with Bash `run_in_background`, names such a stuck check and always ends.
 
-Seen: T17 ticket 08, whose builder stuck on that prompt and was relaunched (ledger 2026-10-22T14:40:56Z).
+Seen: T17 ticket 08, whose builder stuck on that prompt and was relaunched (ledger 2026-10-22T14:40:56Z); T121, whose builder `21de9a86` watched PR 217's checks for 7 hours after run 41110572636 completed with its `e2e` job still `in_progress`, until the coordinator killed the watch (2026-10-30T19:02:24Z to 2026-10-31T02:09:45Z).
 
 ## When a tool rewrites the remote branch under you, start a fresh local branch from the remote one under a new name and carry your commits over
 

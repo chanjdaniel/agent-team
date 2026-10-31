@@ -26,7 +26,7 @@ Every command below answers `--help` with its exact usage; this manual says when
 
 - `dev` is every project's default branch and the base of every task; `main` changes only by an explicit release Daniel runs, never through `team-merge`.
 - A task branch is `<type>/T<n>-<slug>`, made by `team-open` from a freshly fetched `origin/<base>`; it also fast-forwards the project's primary checkout when it is on the base and clean, or names why not.
-- A PR merges only on Daniel's recorded word, per head or, for a project that opts in (`merge_with_plan`) and is not agent-team, at plan time as `team-merge` holds it, and never red: every required check, the project's local checks (which `team-merge` runs through `team-checks`) and `agent-review` green on the exact head.
+- A PR merges only on Daniel's recorded word, per head or, for a project that opts in (`merge_with_plan`) and is not agent-team, at plan time as `team-merge` holds it, and never red: every required check, the project's local checks (which `team-merge` runs through `team-checks`) and `agent-review` green on the exact head; a worker waits on its PR's GitHub checks with `team-ci-wait`, which always ends.
 
 ## A task's life
 
@@ -74,7 +74,7 @@ A task you park on Daniel or anything outside the team gets `team-log T<n> waiti
 ## Watching workers
 
 - Keep one sweep watch running, `team-sweep --wait` with Bash `run_in_background`: it wakes you once a finding that was not there when you armed it has stood three minutes, or one that was has stood 30, and you re-arm it in the turn it ends, after acting; launches need no idle notice.
-- A Stop hook runs `team-sweep` when your turn ends and keeps the turn open once with what is unattended: a task with no worker at work (none live, or every live one idle with an event logged since its launch), a worker waiting for input or idle without reporting, a stray session.
+- A Stop hook runs `team-sweep` when your turn ends and keeps the turn open once with what is unattended: a task with no worker at work (none live, or every live one idle with an event logged since its launch), a worker waiting for input or idle without reporting, a busy worker that has written nothing past its limit, a stray session.
   Act on each finding, or log why it waits.
 - At session start a hook prints the digest from `team-snapshot`: reconcile every open task, live session, open PR, pending decision and current item in it before new work, and arm each watch it names that is not running.
 - `team-load-check` proves what a worker can reach; run it after a change to roles, settings or toolkits, its `--context` form on `dev` and on the PR's head for each worker role's starting context before and after, and its `--role ops` form only with Daniel at the PC, since it reads production.
