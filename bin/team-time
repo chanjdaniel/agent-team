@@ -54,14 +54,14 @@
 # cargo, npm, pnpm, yarn or bun test, npm run test... and the like, a program named with test),
 # stacks (team-stack, docker), browser (chrome-devtools-axi, team-ui), git (any other git or gh);
 # for a tool browser (Chrome DevTools'), subagents (Agent), files (Read, Edit, Write, Grep, Glob,
-# NotebookEdit); else other. A lifetime's
-# unseen minutes are its minutes less its transcript's, when more: time before its transcript's
-# first line or after its last, as a dead or stuck session waiting for its replacement. Its waits
-# are cut to its span, then split by its task's phases ("-" for a legacy task). The breakdown is
-# over the window's lifetimes with rows: per role the minutes and share of each class, unseen
-# included; the fifteen keys with the most minutes; and per role the minutes waiting for a message
-# by what the task was doing. When team-tokens fails (no machine name, no Python 3.11), the rest
-# prints and the breakdown is one line, unavailable with team-tokens's first error line.
+# NotebookEdit); else other. A lifetime's unseen minutes are its minutes less its transcript's,
+# when more: time before its transcript's first line or after its last, as a dead or stuck session
+# waiting for its replacement. Its waits are cut to its span, then split by its task's phases ("-"
+# for a legacy task). The breakdown is over the window's lifetimes with rows: per role the minutes
+# and share of each class, unseen included; the fifteen keys with the most minutes; and per role
+# the minutes waiting for a message by what the task was doing. When team-tokens fails (no machine
+# name, no Python 3.11), the rest prints and the breakdown is one line, unavailable with
+# team-tokens's first error line.
 # Prints the tables as text; --json prints the report (schema team-time/1): since, until, wall,
 # tasks (task, project, path, closed, wall, hours per phase), phases (all, share in percent, and
 # projects), gate_runs (per_pr, by_cause, by_outcome, step_minutes), reviews, builders, denials,

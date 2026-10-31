@@ -8,10 +8,10 @@
 #
 # The report reads every machine's day files in the team home's usage/<machine>/ (never a time
 # day file) and this machine's transcripts from the day of its last day file on (all of them when
-# it has none), one reply per
-# request id wherever it appears, and weighs each reply at bin/lib/prices.json's list prices
-# ($w: a weight, not a bill), each cache write at its own lifetime; a model with no price is
-# weighed as claude-opus-5-5, with a warning on stderr. It joins each session to the ledger:
+# it has none), one reply per request id wherever it appears, and weighs each reply at
+# bin/lib/prices.json's list prices ($w: a weight, not a bill), each cache write at its own
+# lifetime; a model with no price is weighed as claude-opus-5-5, with a warning on stderr. It
+# joins each session to the ledger:
 #   a launch whose 8-character session id begins the session's gives its role and task (task T0
 #     is team-test); the launch's machine is its own, else the machine its session's replies
 #     came from, else that of the other launches under the same /home/<user> or /Users/<user>;
