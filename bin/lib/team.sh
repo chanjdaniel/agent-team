@@ -15,7 +15,7 @@
 # team_tool_path, fence_reason, offline_hold, lease_refusal, worker_refusal, lease_gate, worktree_changes, same_path, bounded, trust_probe,
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin,
 # only_records, records_list, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
-# registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_slots, discord_token, discord_api,
+# own_project, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_slots, discord_token, discord_api,
 # daniel_message, refresh_inbox, github, pr_part and task_state_json, and sets IMAGE_TYPE, COORDINATOR_CHANNEL and
 # INTERVIEW_CHANNEL.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
@@ -1020,6 +1020,26 @@ team_project() {
   TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-project" "$@"
 }
 
+# Whether the registered project <name> is the team's own, which never merges on a plan-time
+# word whatever the registry says: named agent-team, its primary checkout the code checkout this
+# library runs from or, when that checkout is a linked worktree, its main worktree, or its repo,
+# in any case, the owner/name of that checkout's origin (an HTTPS or SSH URL, a trailing .git or
+# slash aside). Refuses an unknown project: own_project <name>
+own_project() {
+  local project code path common url
+  [[ $1 != agent-team ]] || return 0
+  project=$(team_project "$1") || exit 1
+  code=$(dirname "$(dirname "$TEAM_LIB")")
+  path=$(jq -r .path <<<"$project")
+  same_path "$path" "$code" && return 0
+  common=$(git -C "$code" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) &&
+    [[ ${common##*/} == .git ]] && same_path "$path" "$(dirname "$common")" && return 0
+  url=$(git -C "$code" remote get-url origin 2>/dev/null) || return 1
+  url=${url%/} url=${url%.git}
+  [[ $url =~ [:/]([^/:]+/[^/:]+)$ ]] || return 1
+  [[ ${BASH_REMATCH[1],,} == "$(jq -r '.repo | ascii_downcase' <<<"$project")" ]]
+}
+
 # The project, its repo as the registry spells it, and the number of a pull request URL, one
 # per line, refusing any URL but https://github.com/<owner>/<name>/pull/<n> in a registered
 # project's repo: registered_pr <url>
@@ -1127,7 +1147,7 @@ session_context() {
 # GitHub. GitHub failures are carried in the pr part; a broken registry or an unreadable session
 # list fails with the reason on stderr: task_state_json '<events>'
 task_state_json() (
-  local events=$1 state pr dir session_id context contexts='{}' sessions
+  local events=$1 state pr dir session_id context contexts='{}' sessions plan_project plan_projects opted_in own
   live_sessions
   while IFS= read -r session_id; do
     context=$(session_context "$session_id")
@@ -1136,6 +1156,21 @@ task_state_json() (
   sessions=$(jq -c --argjson contexts "$contexts" 'map(if type == "object" then
     .context = ($contexts[.sessionId // "" | tostring] // null) else . end)' <<<"$LIVE_SESSIONS") || exit 1
   state=$(ledger_jq 'task_state($sessions; $home)' -c --argjson sessions "$sessions" <<<"$events") || exit 1
+  # The plan-time approval's project as the registry has it now; one it no longer has opts in to
+  # nothing, and is the team's own only by name.
+  plan_project=$(jq -r '.merge_preapproval.project // empty' <<<"$state") || exit 1
+  if [[ -n $plan_project ]]; then
+    opted_in=false own=false
+    plan_projects=$(team_project --list) || exit 1
+    if grep -Fxq -- "$plan_project" <<<"$plan_projects"; then
+      opted_in=$(team_project "$plan_project" merge_with_plan) || exit 1
+      ! own_project "$plan_project" || own=true
+    elif [[ $plan_project == agent-team ]]; then
+      own=true
+    fi
+    state=$(jq -c --argjson opted_in "$opted_in" --argjson own "$own" \
+      '.merge_preapproval += {opted_in: $opted_in, own: $own}' <<<"$state") || exit 1
+  fi
   pr=$(jq -c 'map(select(.event == "pr")) | last' <<<"$events") || exit 1
   if [[ $pr != null ]]; then
     dir=$(mktemp -d) || exit 1

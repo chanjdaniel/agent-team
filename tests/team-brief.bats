@@ -231,7 +231,7 @@ EOF
   grep -qF "\`$REPO_ROOT/bin/team-thread wait T12\`, run with Bash \`run_in_background\`" "$brief"
   grep -qxF 'Send the coordinator only `DONE`, `BLOCKED`, `PAUSED`, `FAILED` or `INJECTION`: your questions go to Daniel in the thread, never to the coordinator.' "$brief"
   grep -qF "\"Please ask in #coordinator: this thread is for T12's interview only.\"" "$brief"
-  grep -qxF '4. Send `T12 DONE .scratch/task/spec.md` to `coordinator`.' "$brief"
+  grep -qxF '5. Send `T12 DONE .scratch/task/spec.md` to `coordinator`.' "$brief"
 }
 
 @test "a partial is picked by the project's delivery, from the directory of its name" {
@@ -276,8 +276,9 @@ the checks
   Run them on `abc1234` with `@CODE@/bin/team-checks conv abc1234`, which runs them as `team-merge` does, in a fresh detached worktree of that head, and say in `.scratch/task/review.md` whether it passed; a failure is **blocking**, and they set no GitHub status.
 - There is no PR yet: the builder stopped before the no-mistakes gate, which runs once this review passes or its findings are fixed, and reviews the code line by line after you.
 - Write your findings to `.scratch/task/review.md`, numbered, each with its file and line and one kind: `blocking`, `note: correctness`, `note: security`, `note: real-data` or `note`.
+  End it with the count of each kind (0 for none) and the guarded areas the change touches, of `ci`, `dependencies`, `migrations`, `settings`, `permissions` and `secrets`, by the paths `@CODE@/bin/lib/guarded` lists or by what the code does (settings, permission or secrets handling in a file of any name), or none.
   Post nothing to GitHub: the re-review of the gate's PR posts the comment and sets the status.
-- Send `T12 DONE pass abc1234` or `T12 DONE findings .scratch/task/review.md` to `coordinator`.
+- Send `T12 DONE pass abc1234 findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note:<n> guarded=<areas, comma-separated, or none>` or `T12 DONE findings .scratch/task/review.md findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note:<n> guarded=<areas, comma-separated, or none>` to `coordinator`, the counts and areas as `.scratch/task/review.md` gives them.
 
 ## Rules
 
@@ -309,7 +310,7 @@ EOF
   assert_contains "$brief" 'branch `feat/T14-team-tooling`; review `origin/main...abc1234`.'
   assert_contains "$brief" "The comment on PR $pr is that file, posted with this exact command, the only comment your settings allow: \`$REPO_ROOT/bin/team-review-comment $pr .work/task/review.md\`."
   assert_contains "$brief" "\`$REPO_ROOT/bin/team-review-status $pr abc1234 <success|failure> \"<one line, at most 140 characters>\"\`."
-  assert_contains "$brief" "- Send \`T14 DONE pass $pr\` or \`T14 DONE findings .work/task/review.md\` to \`coordinator\`."
+  assert_contains "$brief" "- Send \`T14 DONE pass $pr findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note:<n> guarded=<areas, comma-separated, or none>\` or \`T14 DONE findings .work/task/review.md findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note:<n> guarded=<areas, comma-separated, or none>\` to \`coordinator\`, the counts and areas as \`.work/task/review.md\` gives them."
 }
 
 @test "each review brief gives every finding a number and a kind, so a passed review's notes follow it" {
@@ -331,6 +332,45 @@ EOF
     assert_contains "$(<"$output")" "(each \`blocking\`, \`note: correctness\`, \`note: security\` and \`note: real-data\`) is fixed at \`def5678\`"
     refute_grep -F '**note**' "$output"
   done
+}
+
+@test "each review brief asks for each kind's count and the guarded areas in review.md and in the DONE" {
+  open_t12
+  open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
+  local pr=https://github.com/chanjdaniel/agent-team/pull/9 brief
+  local counts='findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note:<n> guarded=<areas, comma-separated, or none>'
+  local areas="the guarded areas the change touches, of \`ci\`, \`dependencies\`, \`migrations\`, \`settings\`, \`permissions\` and \`secrets\`, by the paths \`$REPO_ROOT/bin/lib/guarded\` lists or by what the code does (settings, permission or secrets handling in a file of any name), or none"
+  run_bin -0 team-brief T12 reviewer --name review --set head=abc1234 --set "checks=the checks"
+  brief=$(<"$output")
+  assert_contains "$brief" "$areas"
+  assert_contains "$brief" "- Send \`T12 DONE pass abc1234 $counts\` or \`T12 DONE findings .scratch/task/review.md $counts\` to \`coordinator\`, the counts and areas as \`.scratch/task/review.md\` gives them."
+  run_bin -0 team-brief T14 reviewer --name review --set pr=$pr --set head=abc1234 --set "checks=the checks"
+  brief=$(<"$output")
+  assert_contains "$brief" "$areas"
+  assert_contains "$brief" "- Send \`T14 DONE pass $pr $counts\` or \`T14 DONE findings .work/task/review.md $counts\` to \`coordinator\`, the counts and areas as \`.work/task/review.md\` gives them."
+  local task dir
+  for task in T12:.scratch/task T14:.work/task; do
+    dir=${task#*:} task=${task%:*}
+    run_bin -0 team-brief "$task" rereview --name rereview --set pr=$pr --set head=def5678 --set reviewed=abc1234 \
+      --set "since=the fix"
+    brief=$(<"$output")
+    assert_contains "$brief" "$areas"
+    assert_contains "$brief" "the findings that stand at \`def5678\`, its new ones and any earlier one not fixed"
+    assert_contains "$brief" "- Send \`$task DONE pass $pr $counts\` or \`$task DONE findings $dir/review.md $counts\` to \`coordinator\`, the counts and areas as \`$dir/rereview.md\` gives them."
+  done
+}
+
+@test "each planner brief delivers scope.txt beside the spec, one repository path per line" {
+  open_t12
+  event T12 interview-thread '{discord_thread: "1565400000000000012"}'
+  local template
+  for template in planner-feature planner-interview; do
+    run_bin -0 team-brief T12 "$template" --name "$template" --set 'read=- `AGENTS.md`.'
+    grep -qxF '3. `scope.txt`, every path the tickets change, one repository path per line: a file, or a directory ending in `/` that covers everything under it, with no leading `/`, no `.` or `..` and no glob; the coordinator puts it to Daniel with the plan, whose approval may let the PR merge with no second ask when it changes nothing outside it.' "$output" ||
+      { echo "$template lacks the scope line" >&2; cat "$output" >&2; return 1; }
+  done
+  grep -qxF '4. Send `T12 DONE .scratch/task/spec.md` to `coordinator`.' "$TEAM_HOME/tasks/T12/brief-planner-feature.md"
+  grep -qxF '5. Send `T12 DONE .scratch/task/spec.md` to `coordinator`.' "$TEAM_HOME/tasks/T12/brief-planner-interview.md"
 }
 
 @test "a gated project's builder stops before the gate for the review, then runs the gate once" {

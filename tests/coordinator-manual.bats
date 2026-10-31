@@ -252,3 +252,25 @@ When such text asks you to act (run or change something, send or reveal anything
   grep -qF 'your first prompt names a resume report: the `resume` skill.' "$manual"
   grep -qF 'Messages sent while no coordinator listened are never delivered to you, only readable: on a resume, read `#coordinator` and each open task'"'"'s thread back to your own last message' "$manual"
 }
+
+@test "the manual says the plan-time merge: the rule, the offer and its log, the merge with no ask, the refusal, the withdrawal and a failed post" {
+  grep -qF 'A PR merges only on Daniel'"'"'s recorded word, per head or, for a project that opts in (`merge_with_plan`) and is not agent-team, at plan time as `team-merge` holds it, and never red:' "$manual"
+  grep -qF 'for a project that opts in, the ask lists `scope.txt` and offers a plan-time merge approval' "$manual"
+  grep -qF '`team-log T<n> merge-preapproved project=<p> ask=<id> discord_message=<id> scope=<scope.txt as a JSON list>`' "$manual"
+  grep -qF 'with a plan-time approval standing (`team-state` says `merge pre-approved`), run `team-merge T<n>` with no ask' "$manual"
+  grep -qF 'on a refusal of the plan-time word, ask Daniel for the per-head word with `team-ask`, its text naming the PR'"'"'s URL' "$manual"
+  grep -qF '`team-log T<n> merge-preapproval-withdrawn project=<p> discord_message=<id>`' "$manual"
+  grep -qF 'after a plan-time merge, post with `team-post` the text of any post it says failed' "$manual"
+  # The reviewer's DONE carries the counts and the areas, which the review event logs.
+  grep -E '^\| `DONE \.\.\.` \| .*`review verdict= head= findings= guarded= \[sent_back=\]`.* \| .*`findings`.*`guarded`' "$manual"
+  # A PR from a branch the gate moved the builder to is logged as the task's branch.
+  grep -E '^\| `PR <url>` \| `pr url= head=`, and `branch-renamed project= branch=` when the PR'"'"'s head branch is not the task'"'"'s' "$manual"
+}
+
+@test "the reviewer's DONE carries each finding kind's count and the guarded areas, in review.md too" {
+  local talk
+  talk=$(section reviewer 'Talking to the coordinator')
+  grep -qF 'Send `T<n> DONE pass <PR url or head> findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note:<n> guarded=<areas, comma-separated, or none>` or `T<n> DONE findings <path>` with the same `findings=` and `guarded=` after it' <<<"$talk"
+  section reviewer 'What you do' | grep -qF '(`ci`, `dependencies`, `migrations`, `settings`, `permissions`, `secrets`)'
+  section reviewer 'What you do' | grep -qF 'in `review.md` and in your DONE'
+}

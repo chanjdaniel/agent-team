@@ -49,6 +49,38 @@ def kind_problems($contract; $legacy):
         | $line[$name] | select(. != null and . != "") | type_problems($name; $type; $legacy))
     end;
 
+# The shapes team-log holds beyond the contract's types, each *_problems def yielding
+# "<value>: <problem>" lines.
+
+# The finding kinds a review's findings counts, and the guarded areas its guarded may name.
+def finding_kinds: ["blocking", "correctness", "security", "real-data", "note"];
+def guarded_areas: ["ci", "dependencies", "migrations", "settings", "permissions", "secrets"];
+
+# How a review's findings, an object, is not the count of each finding kind, exactly.
+def findings_problems:
+  . as $findings
+  | (finding_kinds[] | select(in($findings)) | . as $kind | $findings[$kind]
+      | select(type != "number" or . < 0 or . != floor) | "\($kind): \(tojson) is not a whole number"),
+    (finding_kinds[] | select(in($findings) | not) | "\(.): missing"),
+    (keys_unsorted[] | select(IN(finding_kinds[]) | not) | "\(.): not a finding kind");
+
+# How a review's guarded, a list, holds something other than guarded areas.
+def guarded_problems: .[] | select(IN(guarded_areas[]) | not) | "\(tojson): not a guarded area";
+
+# How a scope entry is not a clean repository path, a file or a directory ending in /; nothing for
+# one that is.
+def path_problem:
+  if type != "string" then "not a string"
+  elif startswith("/") then "a leading /"
+  elif test("[*?\\[]") then "a glob character"
+  elif test("\\s") then "whitespace"
+  elif any(rtrimstr("/") | split("/")[]; . == "." or . == "..") then "a . or .. segment"
+  elif . == "" or any(rtrimstr("/") | split("/")[]; . == "") then "an empty segment"
+  else empty end;
+
+# How a merge-preapproved's scope, a list, holds entries that are not clean repository paths.
+def scope_problems: .[] | path_problem as $problem | "\(tojson): \($problem)";
+
 # What a line in an existing ledger must meet: legacy lines (before strict_from) only the basics.
 def check_problems($contract):
   [line_problems] as $basic
@@ -121,13 +153,16 @@ def local_worktree($home):
 # The open worktrees among a stream of ledger events: one {task, project, branch, worktree} per
 # opened or worktree-added event with no later worktree-returned of the same task, project and
 # worktree, in the order they were added; a worktree-moved gives the task's open worktree in its
-# project its new path. Worktrees are paths on this machine (local_worktree).
+# project its new path, and a branch-renamed its new branch. Worktrees are paths on this machine
+# (local_worktree).
 def open_worktrees(events; $home):
   reduce (events | local_worktree($home)) as $e ([];
     if $e.event == "opened" or $e.event == "worktree-added" then
       . + [$e | {task, project, branch, worktree}]
     elif $e.event == "worktree-moved" then
       map(if [.task, .project] == [$e.task, $e.project] then .worktree = $e.worktree else . end)
+    elif $e.event == "branch-renamed" then
+      map(if [.task, .project] == [$e.task, $e.project] then .branch = $e.branch else . end)
     elif $e.event == "worktree-returned" then
       map(select([.task, .project, .worktree] != [$e.task, $e.project, $e.worktree]))
     else . end)
@@ -289,8 +324,8 @@ def unfinished_roles:
   | group_by(.role) | map(max_by(.i)) | sort_by(.i)
   | map(.i as $i | .role as $role | select(all($events[$i + 1:][]; ends_worker($role) | not)) | .role);
 
-# Every worktree the task was given (opened or added), at its latest path (worktree-moved), and
-# whether it was returned since.
+# Every worktree the task was given (opened or added), at its latest path (worktree-moved) and on
+# its latest branch (branch-renamed), and whether it was returned since.
 def worktree_list:
   . as $events
   | [to_entries[] | select(.value.event == "opened" or .value.event == "worktree-added")
@@ -299,8 +334,15 @@ def worktree_list:
         ($w | {project, branch, worktree, returned: false};
          if .returned then .
          elif $e.event == "worktree-moved" then .worktree = $e.worktree
+         elif $e.event == "branch-renamed" then .branch = $e.branch
          elif $e.event == "worktree-returned" and $e.worktree == .worktree then .returned = true
          else . end)];
+
+# The task's branch in <project>, over the task's events as an array: the latest opened,
+# worktree-added or branch-renamed of the project names it; null when none does.
+def task_branch($project):
+  [.[] | select((.event | IN("opened", "worktree-added", "branch-renamed")) and .project == $project)]
+  | last | .branch // null;
 
 # A launch's session in the session list ($sessions, from claude agents --json), or null: by the
 # short id, or by the start of the full session id (interactive sessions have no short id).
@@ -320,14 +362,48 @@ def workers($sessions):
 def live_session_ids($sessions):
   [.[] | select(.event == "launch") | live_session(.session; $sessions) | .sessionId // empty | strings] | unique;
 
-# Whether this event, logged after the ask $ask (an asked event), settles it: the answered with its
-# id, or a merge-approved whose url (a trailing slash aside) the ask's text names, not followed by
-# a digit, since the coordinator logs a merge answer as merge-approved alone as often as not.
+# Whether this event, logged after the ask $ask (an asked event), settles it: the answered or the
+# merge-preapproved with its id, or a merge-approved whose url (a trailing slash aside) the ask's
+# text names, not followed by a digit, since the coordinator logs a merge answer as merge-approved
+# alone as often as not.
 def settles($ask):
   (.event == "answered" and .id == $ask.id)
+  or (.event == "merge-preapproved" and .ask == $ask.id)
   or (.event == "merge-approved" and (.url | type) == "string" and (.url | test("^https?://"))
     and ((.url | rtrimstr("/")) as $url | ($ask.text // "" | tostring) as $text
       | any($text | indices($url)[]; $text[. + ($url | length):] | test("^[0-9]") | not)));
+
+# The latest asked of id $id among the task's events, or null: the ask a merge-preapproved of
+# that id answers.
+def latest_asked($id): [.[] | select(.event == "asked" and .id == $id)] | last;
+
+# The task's latest merge-preapproved of $project, or null, with withdrawn: the first
+# merge-preapproval-withdrawn of $project logged after it, or null while it stands.
+def merge_preapproval($project):
+  ([to_entries[] | select(.value.event == "merge-preapproved" and .value.project == $project)] | last) as $latest
+  | if $latest == null then null
+    else $latest.value + {withdrawn: (first(.[$latest.key + 1:][]
+      | select(.event == "merge-preapproval-withdrawn" and .project == $project)) // null)} end;
+
+# The task's latest merge-preapproved, of any project, as team-state shows it, or null: its
+# project, ask, discord_message, scope and ts, withdrawn ({ts, discord_message} of the first
+# merge-preapproval-withdrawn of its project after it, or null while it stands), and opted_in and
+# own, null here, which task_state_json reads from the registry.
+def latest_merge_preapproval:
+  (map(select(.event == "merge-preapproved")) | last | .project) as $project
+  | if $project == null then null
+    else merge_preapproval($project)
+      | {project, ask, discord_message, scope, ts,
+         withdrawn: (.withdrawn | if . == null then null else {ts, discord_message} end),
+         opted_in: null, own: null} end;
+
+# The projects whose plan-time merge approval of the task stands: its latest merge-preapproved of
+# each has no withdrawal after it, in the order of their first merge-preapproved.
+def preapproved_projects:
+  . as $events
+  | reduce (.[] | select(.event == "merge-preapproved") | .project) as $project ([];
+      if IN(.[]; $project) then . else . + [$project] end)
+  | map(select(. as $project | $events | merge_preapproval($project) | .withdrawn == null));
 
 # Whether the task's events hold an answered of ask $id read from Discord message $message.
 def answered_from($id; $message):
@@ -352,7 +428,7 @@ def task_state($sessions; $home):
      path: $opened.path, phase: phase, worktrees: worktree_list,
      thread: (map(select(.event == "thread") | .discord_thread) | last),
      workers: workers($sessions), last_event: last, pending_asks: pending_asks, waiting: waiting,
-     rehome_failures: rehome_failures, pr: null};
+     rehome_failures: rehome_failures, merge_preapproval: latest_merge_preapproval, pr: null};
 
 # A task's state (team-state's JSON) as one line of text, each live worker's context in thousands:
 # T14 agent-team feature building | T14-builder idle 302k | PR #5 a1b2c3d checks 2/2 agent-review missing
@@ -379,6 +455,12 @@ def state_line:
      end)
   + (if (.rehome_failures // []) == [] then ""
      else " | not re-homed: " + (.rehome_failures | map("\(.project) on \(.machine): \(.reason)") | join("; ")) end)
+  + (.merge_preapproval // null
+     | if . == null then ""
+       elif .withdrawn != null then " | merge pre-approval withdrawn"
+       elif .own == true then " | merge pre-approved, but \(.project) is the team's own project"
+       elif .opted_in == false then " | merge pre-approved, but \(.project) does not opt in"
+       else " | merge pre-approved" end)
   + (if .waiting == null then "" else " | waiting on \(.waiting.on): \(.waiting.reason)" end);
 
 # Whether a task is parked, waiting on something other than a worker: held, blocked or awaiting
@@ -391,6 +473,23 @@ def parked:
 def finding($task; $kind; $session; $name; $detail; $next):
   {task: $task, kind: $kind, session: $session, name: $name, next: $next,
    text: "\($task) \($kind): \($detail); next: \($next)"};
+
+# team-sweep's merge-due finding, over a task's events, or nothing: the task awaits merge, a
+# plan-time approval of it stands, and nothing else parks it (no ask nothing settled, pause or
+# wait). The ledger names no PR's project, so any standing approval of the task's counts, and
+# team-merge holds each PR to its own project's.
+def merge_due_finding:
+  .[0].task as $task
+  | . as $events
+  | preapproved_projects as $projects
+  | if phase == "awaiting-merge" and $projects != [] and pending_asks == []
+      and (standing_until_launch("paused") | not) and waiting == null then
+      task_prs as $prs
+      | finding($task; "merge-due"; null; null;
+          "awaiting the merge of \([$prs[] | select(pr_merged($events; $prs) | not) | .url] | join(", "))"
+          + " on Daniel's plan-time word on \($projects | join(", ")), with no ask open";
+          "run team-merge \($task); on a refusal, ask Daniel for the per-head word with team-ask")
+    else empty end;
 
 # A duration in seconds as <h>h<mm>m, or <m>m under an hour.
 def duration:
@@ -586,14 +685,16 @@ def activity_finding:
 
 # team-sweep's findings, over every ledger event as one array, the session list, the machine's
 # task slots ($slots, as slots_finding takes them) and session-activity's object ($activity, as
-# task_findings takes it): each open task's unless it is parked, then the
-# stray sessions (named like a team worker whose task is closed or not in the ledger, never the
-# load check's T0, whose session the coordinator waits on for up to 30 minutes), in task number
-# order; then the activity, slots and retro-due findings.
+# task_findings takes it): each open task's merge-due, else its findings unless it is parked,
+# then the stray sessions (named like a team worker whose task is closed or not in the ledger,
+# never the load check's T0, whose session the coordinator waits on for up to 30 minutes), in task
+# number order; then the activity, slots and retro-due findings.
 def sweep($sessions; $slots; $activity):
   . as $events
   | by_task as $tasks
-  | ([($tasks[] | select(is_open) | select(parked | not) | task_findings($sessions; $activity)),
+  | ([($tasks[] | select(is_open) | [merge_due_finding] as $due
+        | if $due != [] then $due[] elif parked then empty
+          else task_findings($sessions; $activity) end),
       (team_sessions($tasks; $sessions)[] | select(.task_state | IN("closed", "unknown"))
         | finding(.task; "stray"; .session; .name;
             "\(.name) \(.session) is live but \(stray_reason)";
@@ -668,19 +769,24 @@ def interview_under_way:
 
 # The task's PRs that wait on Daniel's word to merge, from task_prs: none unless its phase is
 # awaiting-merge, then each not merged that no merge-approved names (a trailing slash aside) at its
-# head, or at no head, as a legacy line.
-def merge_ready_prs:
+# head, or at no head, as a legacy line, and whose repo (lowercased) is not a key of $plan_repos
+# naming a project with a standing merge-preapproved of the task: the projects that opt in to
+# plan-time merges now and are not the team's own, which team-inbox reads from the registry.
+def merge_ready_prs($plan_repos):
   . as $events
   | task_prs as $prs
   | if phase != "awaiting-merge" then []
     else [$prs[] | select(pr_merged($events; $prs) | not) | . as $pr
       | select(any($events[]; .event == "merge-approved" and (.url | strings | rtrimstr("/")) == ($pr.url | rtrimstr("/"))
-          and (.head == null or same_head(.head; $pr.head))) | not)] end;
+          and (.head == null or same_head(.head; $pr.head))) | not)
+      | $plan_repos[first($pr.url | strings | capture("^https://github\\.com/(?<r>[^/]+/[^/]+)/") | .r | ascii_downcase) // ""] as $project
+      | select($project != null and ($events | merge_preapproval($project) | . != null and .withdrawn == null) | not)] end;
 
 # What waits on Daniel, over every ledger event, each open task's in task number order:
 # {asks: [{task, id, text (its first line), thread (the task's thread when it was asked), message
-# (the question's discord_message)}], prs: [{task, title, url}], interviews: [{task, title, thread}]}.
-def inbox_items:
+# (the question's discord_message)}], prs: [{task, title, url}], interviews: [{task, title, thread}]},
+# the PRs as merge_ready_prs($plan_repos) has them.
+def inbox_items($plan_repos):
   [by_task | to_entries[] | select(.value | is_open)
     | {task: .key, events: .value, title: (.value | map(select(.event == "opened")) | first | .title)}]
   | by_task_number
@@ -688,7 +794,7 @@ def inbox_items:
         | {task: $task, id: .ask.id, text: (.ask.text | tostring | split("\n")[0]),
            thread: ([$events[:.k][] | select(.event == "thread") | .discord_thread | strings] | last),
            message: (.ask.discord_message | if . == null then null else tostring end)}],
-     prs: [.[] | {task, title} + (.events | merge_ready_prs[] | {url})],
+     prs: [.[] | {task, title} + (.events | merge_ready_prs($plan_repos)[] | {url})],
      interviews: [.[] | select(.events | interview_under_way)
         | {task, title, thread: (.events | map(select(.event == "interview-thread") | .discord_thread) | last | tostring)}]};
 

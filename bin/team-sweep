@@ -9,9 +9,11 @@
 # background task marks (never GitHub, never a tool's output or a message's text, and never a new
 # reading of the machine's load), so it runs in about a second.
 # A task is open when it has events and no closed; it is parked when its phase is held, blocked
-# or awaiting-merge, when it has an ask nothing settled (no answered with its id, no merge-approved
-# whose url its text names), or when its latest paused or waiting has no later resumed or
-# launch. Findings, one line each with the task, the session and the next step:
+# or awaiting-merge, when it has an ask nothing settled (no answered or merge-preapproved with its
+# id, no merge-approved whose url its text names), or when its latest paused or waiting has no
+# later resumed or launch; an awaiting-merge task that nothing else parks is merge-due instead
+# while Daniel's plan-time merge word stands. Findings, one line each with the task, the session
+# and the next step:
 #   no-worker      an open task, not parked, with an opened or launch event and no live session
 #                  among its launches at work: busy, waiting for input or silent (one idle with a
 #                  ledger event since its launch has handed the next step back); merged is told
@@ -34,6 +36,14 @@
 #                  turn) or else the oldest, "Bash in a subagent" for a subagent's, a tool other
 #                  than Bash by its name, and ", and <n> more running" when others run; or " with no
 #                  tool call running". None for a session whose transcript cannot be found
+#   merge-due      an open task in awaiting-merge with a standing plan-time merge approval (its
+#                  latest merge-preapproved of a project with no later merge-preapproval-withdrawn
+#                  of it), no ask nothing settled and no paused or waiting standing, with session
+#                  null: "awaiting the merge of <PR URLs> on Daniel's plan-time word on
+#                  <projects>, with no ask open; next: run team-merge T<n>; on a refusal, ask
+#                  Daniel for the per-head word with team-ask", and no other finding of the task's;
+#                  the ledger names no PR's project, so any standing approval of the task counts,
+#                  and the registry is not read: team-merge says when a project no longer opts in
 #   stray          a live session named like a team worker (T<n>-<role>) whose task is closed or
 #                  not in the ledger; never one of T0, the load check's task
 #   activity       after every task finding, with task and session null: session-activity

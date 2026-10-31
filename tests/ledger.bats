@@ -75,6 +75,36 @@ SCRIPT
   assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" ""
 }
 
+@test "a plan-time merge approval, its withdrawal, a review's finding fields and a merge's approval meet the contract" {
+  local at='"ts":"2026-10-31T02:00:00Z","task":"T7"'
+  append_as team-log "{$at,\"event\":\"merge-preapproved\",\"project\":\"proj\",\"ask\":\"plan\",\"discord_message\":\"1563\",\"scope\":[\"src/\"]}"
+  assert_equal "$status" "0"
+  append_as team-log "{$at,\"event\":\"merge-preapproval-withdrawn\",\"project\":\"proj\",\"discord_message\":\"1564\"}"
+  assert_equal "$status" "0"
+  append_as team-log "{$at,\"event\":\"review\",\"verdict\":\"pass\",\"head\":\"a1b2c3d\",\"findings\":{\"note\":1},\"guarded\":[]}"
+  assert_equal "$status" "0"
+  append_as team-merge "{$at,\"event\":\"merged\",\"pr\":5,\"merge\":\"b2c3d4e\",\"head\":\"a1b2c3d\",\"by\":\"m\",\"approval\":\"plan\"}"
+  assert_equal "$status" "0"
+  assert_equal "$(jq -r .event "$TEAM_HOME/ledger.jsonl")" "merge-preapproved
+merge-preapproval-withdrawn
+review
+merged"
+
+  append_as team-log "{$at,\"event\":\"merge-preapproved\",\"project\":\"proj\",\"ask\":\"plan\",\"discord_message\":\"1563\",\"scope\":\"src/\"}"
+  assert_contains "$output" "scope must be a list, got a string"
+  append_as team-log "{$at,\"event\":\"merge-preapproved\",\"project\":\"proj\",\"discord_message\":\"1563\",\"scope\":[]}"
+  assert_contains "$output" "merge-preapproved needs ask"
+  append_as team-log "{$at,\"event\":\"merge-preapproval-withdrawn\",\"discord_message\":\"1564\"}"
+  assert_contains "$output" "merge-preapproval-withdrawn needs project"
+  append_as team-merge "{$at,\"event\":\"merge-preapproved\",\"project\":\"proj\",\"ask\":\"plan\",\"discord_message\":\"1563\",\"scope\":[\"src/\"]}"
+  assert_contains "$output" "merge-preapproved events are written by team-log, not team-merge"
+  append_as team-log "{$at,\"event\":\"review\",\"verdict\":\"pass\",\"head\":\"a1b2c3d\",\"findings\":[1],\"guarded\":{}}"
+  assert_contains "$output" "findings must be an object, got a list; guarded must be a list, got an object"
+  append_as team-merge "{$at,\"event\":\"merged\",\"pr\":5,\"merge\":\"b2c3d4e\",\"head\":\"a1b2c3d\",\"by\":\"m\",\"approval\":\"per-head\"}"
+  assert_contains "$output" "approval must be one of head, plan"
+  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "4"
+}
+
 @test "a kind with several writers is appended by each of them, and refused from any other" {
   append_as team-ask '{"ts":"2026-10-22T02:00:00Z","task":"T7","event":"asked","id":"q1","text":"Which?"}'
   assert_equal "$status" "0"
@@ -132,4 +162,28 @@ EVENTS
 {"event": "launch", "role": "ops", "toolkits": ["prod-read"], "request": "https://discord.com/channels/1/2/3"}
 EVENTS
 )" '["builder"]'
+}
+
+@test "a branch-renamed gives the task's worktree in its project its new branch, in task_branch, open_worktrees and worktree_list" {
+  local events='{"event": "opened", "project": "proj", "branch": "feat/T1-x", "worktree": "/w/1", "path": "feature"}
+{"event": "worktree-added", "project": "lib", "branch": "feat/T1-lib", "worktree": "/w/2"}
+{"event": "branch-renamed", "project": "proj", "branch": "feat/T1-x-fresh"}'
+  local lib=(jq -L "$REPO_ROOT/bin/lib" -sc)
+  assert_equal "$("${lib[@]}" 'include "ledger"; [task_branch("proj"), task_branch("lib"), task_branch("other")]' <<<"$events")" \
+    '["feat/T1-x-fresh","feat/T1-lib",null]'
+  assert_equal "$("${lib[@]}" 'include "ledger"; map({task: "T1"} + .) | [open_worktrees(.[]; "/home/x") | [.project, .branch]]' <<<"$events")" \
+    '[["proj","feat/T1-x-fresh"],["lib","feat/T1-lib"]]'
+  assert_equal "$("${lib[@]}" 'include "ledger"; [worktree_list[] | [.project, .branch]]' <<<"$events")" \
+    '[["proj","feat/T1-x-fresh"],["lib","feat/T1-lib"]]'
+}
+
+@test "a branch-renamed meets the contract, written by team-log" {
+  local at='"ts":"2026-10-31T02:00:00Z","task":"T7"'
+  append_as team-log "{$at,\"event\":\"branch-renamed\",\"project\":\"proj\",\"branch\":\"feat/T7-x-fresh\"}"
+  assert_equal "$status" "0"
+  append_as team-log "{$at,\"event\":\"branch-renamed\",\"project\":\"proj\"}"
+  assert_contains "$output" "branch-renamed needs branch"
+  append_as team-open "{$at,\"event\":\"branch-renamed\",\"project\":\"proj\",\"branch\":\"feat/T7-x-fresh\"}"
+  assert_contains "$output" "branch-renamed events are written by team-log, not team-open"
+  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "1"
 }
