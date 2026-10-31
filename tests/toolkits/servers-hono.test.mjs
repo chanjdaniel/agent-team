@@ -4,7 +4,8 @@
 // (tests/repo.bats holds the lock to it), and each parent's Streamable HTTP server transport,
 // which turns Node's request into a web one and back with @hono/node-server's getRequestListener,
 // must still answer an MCP initialize request on it: the test serves the transport's handler on
-// the loopback, POSTs a JSON-RPC initialize and reads the server's result.
+// the loopback, POSTs a JSON-RPC initialize and reads the server's result, within a deadline that
+// a stream which never sends its event is shown to fail.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -37,26 +38,24 @@ const atLeast = (version, floor) => {
 
 const protocolVersion = "2025-06-18";
 
-// Serves `transport` (connected to an McpServer named `name`) on the loopback, POSTs an MCP
-// initialize to it and returns the HTTP status and the JSON-RPC message it answered with, read
-// from the body as JSON or from its first server-sent event.
-const initializeOver = async (t, { McpServer, transport, name }) => {
-  const mcp = new McpServer({ name, version: "1.0.0" });
-  await mcp.connect(transport);
-  const http = createServer((req, res) => {
-    transport.handleRequest(req, res).catch((error) => {
-      res.statusCode = 500;
-      res.end(String(error));
-    });
-  });
+// Serves `handler` on the loopback until the test ends, and returns its URL.
+const serve = async (t, handler) => {
+  const http = createServer(handler);
   await new Promise((resolve) => http.listen(0, "127.0.0.1", resolve));
   t.after(async () => {
     http.closeAllConnections();
     await new Promise((resolve) => http.close(resolve));
-    await mcp.close();
   });
+  return `http://127.0.0.1:${http.address().port}/mcp`;
+};
 
-  const response = await fetch(`http://127.0.0.1:${http.address().port}/mcp`, {
+// POSTs an MCP initialize to `url` and returns the HTTP status and the JSON-RPC message it
+// answered with, read from the body as JSON or from its first server-sent event. The deadline
+// covers the whole exchange, the body's read included, so a stream that never sends its event
+// fails the test with a TimeoutError instead of hanging the run.
+const postInitialize = async (url, { deadlineMs = 30_000 } = {}) => {
+  const response = await fetch(url, {
+    signal: AbortSignal.timeout(deadlineMs),
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
     body: JSON.stringify({
@@ -79,6 +78,21 @@ const initializeOver = async (t, { McpServer, transport, name }) => {
   await reader.cancel();
   const data = text.split("\n\n")[0].split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5)).join("\n");
   return { status: response.status, type, message: JSON.parse(data) };
+};
+
+// Serves `transport` (connected to an McpServer named `name`) on the loopback and POSTs an MCP
+// initialize to it.
+const initializeOver = async (t, { McpServer, transport, name }) => {
+  const mcp = new McpServer({ name, version: "1.0.0" });
+  await mcp.connect(transport);
+  t.after(() => mcp.close());
+  const url = await serve(t, (req, res) => {
+    transport.handleRequest(req, res).catch((error) => {
+      res.statusCode = 500;
+      res.end(String(error));
+    });
+  });
+  return postInitialize(url);
 };
 
 const assertInitialized = ({ status, type, message }, name) => {
@@ -109,4 +123,14 @@ test("@modelcontextprotocol/node's Streamable HTTP server transport answers an i
   const { McpServer } = await import(pathToFileURL(serverEntry).href);
   const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined });
   assertInitialized(await initializeOver(t, { McpServer, transport, name: "node-test" }), "node-test");
+});
+
+test("an initialize whose event stream never sends an event fails within its deadline", { timeout: 5_000 }, async (t) => {
+  const url = await serve(t, (req, res) => {
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.flushHeaders();
+  });
+  const started = Date.now();
+  await assert.rejects(postInitialize(url, { deadlineMs: 500 }), { name: "TimeoutError" });
+  assert.ok(Date.now() - started < 2_000, `failed after ${Date.now() - started} ms`);
 });
