@@ -18,20 +18,22 @@
 #                  to close
 #   waiting-input  a live session of an open task, not parked, whose state is blocked
 #   silent         a live, idle session of an open task, not parked, with no ledger event for the
-#                  task after that session's latest launch (one waiting for input is not also silent)
+#                  task after that session's latest launch (one waiting for input is not also
+#                  silent)
 #   stalled        a live, busy session of an open task, not parked, not waiting for input, whose
 #                  transcripts (its own and its subagents', under ~/.claude/projects) have not been
 #                  written for longer than its limit (stall_limits in bin/lib/ledger.jq), the
-#                  largest of its running calls': 180 minutes for a command with no-mistakes as a
-#                  word (the gate), none for one that runs team-thread wait (an interview's wait on
-#                  Daniel), else 50, and 50 when none runs. A running call is a tool call started
-#                  since the session's startedAt with no result yet, or in the background with no
-#                  task notification yet. "<name> <short id> has written nothing for <h>h<mm>m"
-#                  (or <m>m under an hour), then ', waiting on "<command>" (Bash, in the
-#                  background, running <h>h<mm>m)' for the newest foreground call (it holds the
+#                  largest of its running calls', each read from its whole command: 180 minutes for
+#                  a command with no-mistakes as a word (the gate), 100 for one that runs
+#                  team-ci-wait (which ends by 90), none for one that runs team-thread wait (an
+#                  interview's wait on Daniel), else 50, and 50 when none runs. A running call is a
+#                  tool call started since the session's startedAt with no result yet, or in the
+#                  background with no task notification yet. "<name> <short id> has written nothing
+#                  for <h>h<mm>m" (or <m>m under an hour), then ', waiting on "<command>" (Bash, in
+#                  the background, running <h>h<mm>m)' for the newest foreground call (it holds the
 #                  turn) or else the oldest, "Bash in a subagent" for a subagent's, a tool other
-#                  than Bash by its name, and ", and <n> more running" when others run; or " with
-#                  no tool call running". None for a session whose transcript cannot be found
+#                  than Bash by its name, and ", and <n> more running" when others run; or " with no
+#                  tool call running". None for a session whose transcript cannot be found
 #   stray          a live session named like a team worker (T<n>-<role>) whose task is closed or
 #                  not in the ledger; never one of T0, the load check's task
 #   activity       after every task finding, with task and session null: session-activity

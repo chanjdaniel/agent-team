@@ -508,6 +508,35 @@ T9 stalled: T9-builder 9a8b7c6d has written nothing for 55m, waiting on \"tests/
   assert_contains "$output" "T8-builder 4f2a9c1e has written nothing for 2h00m, waiting on \"grep -r no-mistakes-config .\""
 }
 
+@test "stalled: a wait on a PR's checks passes past 50 minutes, ending at 90, and is named at 1 hour 45 minutes" {
+  opened T8
+  launch T8 builder 4f2a9c1e
+  sessions "$(session 4f2a9c1e T8-builder busy working)"
+  local wait='/home/x/agent-team/bin/team-ci-wait https://github.com/owner/proj/pull/217 a1b2c3d'
+  { call toolu_01 96 Bash "$wait" background; result toolu_01 96 background; } | transcript - 4f2a9c1e 95
+  run_bin -0 team-sweep
+  { call toolu_01 106 Bash "$wait" background; result toolu_01 106 background; } | transcript - 4f2a9c1e 105
+  run_bin -1 team-sweep
+  assert_contains "$output" "T8-builder 4f2a9c1e has written nothing for 1h45m, waiting on \"$wait\" (Bash, in the background, running 1h46m); next:"
+}
+
+@test "stalled: the gate, team-thread wait and team-ci-wait limits read the whole command, though only its first line is named" {
+  opened T8
+  launch T8 builder 4f2a9c1e
+  sessions "$(session 4f2a9c1e T8-builder busy working)"
+  call toolu_01 121 Bash $'export A=1\nno-mistakes run' | transcript - 4f2a9c1e 120
+  run_bin -0 team-sweep
+  call toolu_01 121 Bash "$(printf 'x%.0s' {1..100}) && no-mistakes run" | transcript - 4f2a9c1e 120
+  run_bin -0 team-sweep
+  call toolu_01 361 Bash $'set -e\nteam-thread wait T8 1563171945980370967' | transcript - 4f2a9c1e 360
+  run_bin -0 team-sweep
+  call toolu_01 96 Bash $'cd /w/1\nteam-ci-wait https://github.com/owner/proj/pull/217' | transcript - 4f2a9c1e 95
+  run_bin -0 team-sweep
+  call toolu_01 191 Bash $'export A=1\nno-mistakes run' | transcript - 4f2a9c1e 190
+  run_bin -1 team-sweep
+  assert_contains "$output" "T8-builder 4f2a9c1e has written nothing for 3h10m, waiting on \"export A=1\" (Bash, running 3h11m); next:"
+}
+
 @test "stalled: never while a call waits on Daniel with team-thread wait, whatever else runs" {
   opened T8
   launch T8 planner 4f2a9c1e
@@ -567,19 +596,20 @@ T9 stalled: T9-builder 9a8b7c6d has written nothing for 55m, waiting on \"tests/
   assert_contains "$output" "has written nothing for 55m, waiting on \"$(printf 'x%.0s' {1..100})\" (Bash, running 1h00m), and 1 more running; next:"
 }
 
-@test "stalled: the reader prints only times, tool names, ids, commands and the background marks" {
+@test "stalled: the reader prints only times, tool names, ids, commands, their limits and the background marks" {
   sessions_json=$(jq -cs . <<<"$(session 4f2a9c1e T8-builder busy working)")
   { call toolu_01 90 Bash "npx playwright test" background; result toolu_01 90 background; notified toolu_01 80
     call toolu_02 70 Bash "tests/run" background; result toolu_02 70 background; notified toolu_02 65 user
     call toolu_03 60 WebFetch; result toolu_03 59
     call toolu_04 58 Bash "gh pr checks 217 --watch" background; result toolu_04 58 background
-    call toolu_05 56 Read; } | transcript - 4f2a9c1e 55
+    call toolu_05 57 Bash $'export A=1\nno-mistakes run' background; result toolu_05 57 background
+    call toolu_06 56 Read; } | transcript - 4f2a9c1e 55
   run --separate-stderr "$REPO_ROOT/bin/lib/session-activity" --parse-after 3000 <<<"$sessions_json"
   assert_equal "$status" 0
   assert_equal "$stderr" ""
   no_markers
   assert_equal "$(jq -c '.[] | {quiet: (.quiet / 60 | floor), running: [.running[] | del(.since, .seconds)]}' <<<"$output")" \
-    '{"quiet":55,"running":[{"tool":"Bash","command":"gh pr checks 217 --watch","background":true,"subagent":false},{"tool":"Read","command":null,"background":false,"subagent":false}]}'
+    '{"quiet":55,"running":[{"tool":"Bash","command":"gh pr checks 217 --watch","limit":null,"background":true,"subagent":false},{"tool":"Bash","command":"export A=1","limit":"gate","background":true,"subagent":false},{"tool":"Read","command":null,"limit":null,"background":false,"subagent":false}]}'
   assert_equal "$(jq -r '.[].running[0] | "\(.since | test("^[0-9-]+T[0-9:.]+Z$")) \(.seconds / 60 | floor)"' <<<"$output")" "true 58"
 }
 

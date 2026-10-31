@@ -401,18 +401,16 @@ def duration:
 # team-sweep calls it stalled. default, 50 minutes, so with the sweep watch's three-minute stand
 # the coordinator is woken within the hour (a full Playwright run or tests/run, up to about 33
 # minutes seen, passes); gate, 180 minutes, while a running call runs the gate, whose runs went
-# up to about 115; interview, none (null), while a running call waits on Daniel with team-thread
-# wait. team-sweep reads the session-activity floor from default too, since no session quieter
-# than it is stalled.
-def stall_limits: {default: 3000, gate: 10800, interview: null};
+# up to about 115; ci_wait, 100 minutes, while a running call runs team-ci-wait, which ends by
+# its 90-minute deadline; interview, none (null), while a running call waits on Daniel with
+# team-thread wait. session-activity names each call's limit from its whole command. team-sweep
+# reads the session-activity floor from default too, since no session quieter than it is stalled.
+def stall_limits: {default: 3000, gate: 10800, ci_wait: 6000, interview: null};
 
-# A running call's stall limit, as session-activity lists it: interview for team-thread wait,
-# gate for a command with no-mistakes as a word, else default.
+# A running call's stall limit: the one session-activity names for it (its limit), else default.
 def call_limit:
-  (.command // "") as $command
-  | if $command | test("(^|[\\s/])team-thread\\s+wait($|\\s)") then stall_limits.interview
-    elif $command | test("(^|[^A-Za-z0-9_-])no-mistakes($|[^A-Za-z0-9_-])") then stall_limits.gate
-    else stall_limits.default end;
+  (.limit // "default") as $name
+  | if stall_limits | has($name) then stall_limits[$name] else stall_limits.default end;
 
 # A session's stall limit from its running calls (session-activity's running, or null when not
 # read): the largest of theirs, none when any has none, the default when none runs.

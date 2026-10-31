@@ -11,14 +11,18 @@
 # running is null (not read) while quiet is below --parse-after, so a session's transcripts are
 # opened only once it is that quiet, and else lists, oldest first, each tool call started since
 # the session's startedAt (the session list's epoch milliseconds) that has not ended, as
-# {tool, command, background, since, seconds, subagent}:
+# {tool, command, limit, background, since, seconds, subagent}:
 #   a foreground call is a tool_use with no tool_result naming its id yet; a background one is a
 #   call whose tool_result's toolUseResult has a backgroundTaskId (run_in_background, or moved
 #   there at Claude Code's 10-minute cap), with no <task-notification> naming its id in a
 #   <tool-use-id> yet, in a queue operation or a user message;
 #   command is a Bash call's first line, a leading "cd <dir>;" or "cd <dir> &&" dropped, clipped
-#   to 100 characters, and null for other tools; since is the tool_use line's timestamp and
-#   seconds the whole seconds since; subagent is true for a call in a subagent's transcript.
+#   to 100 characters, and null for other tools; limit names the call's stall limit (stall_limits
+#   in bin/lib/ledger.jq), read from the whole command: "interview" when it runs team-thread wait
+#   after its start, a space or a /, else "gate" with no-mistakes as a word (-, _ and alphanumerics
+#   its word characters), else "ci_wait" when it runs team-ci-wait as team-thread wait, else null;
+#   since is the tool_use line's timestamp and seconds the whole seconds since; subagent is true
+#   for a call in a subagent's transcript.
 # From each line it reads only its type, timestamp, tool call names, ids and command inputs, a
 # result's tool call id and whether a background task id is present, and a notification's tool
 # call ids (by pattern, never the rest of its text): never a tool's output, a message's text or a
@@ -78,6 +82,13 @@ def transcript_paths(projects, session_id):
 NOTIFIED = re.compile(r"<tool-use-id>([^<\s]{1,200})</tool-use-id>")
 # A leading cd, dropped from a command: "cd <dir>;" or "cd <dir> &&".
 LEADING_CD = re.compile(r"^\s*cd\s+(?:\"[^\"]*\"|'[^']*'|[^\s;&]+)\s*(?:;|&&)\s*")
+# The commands with a stall limit of their own, by its name in stall_limits, the longest first, so
+# a command that runs more than one gets the longest.
+LIMITS = (
+    ("interview", re.compile(r"(?:^|[\s/])team-thread\s+wait(?:\s|$)")),
+    ("gate", re.compile(r"(?:^|[^A-Za-z0-9_-])no-mistakes(?:[^A-Za-z0-9_-]|$)")),
+    ("ci_wait", re.compile(r"(?:^|[\s/])team-ci-wait(?:\s|$)")),
+)
 
 
 # The epoch seconds of a transcript timestamp, or None.
@@ -96,6 +107,15 @@ def shown(command):
     return LEADING_CD.sub("", lines[0] if lines else "", count=1)[:100]
 
 
+# The name of a Bash command's own stall limit, read from the whole command, or None.
+def limit(command):
+    if isinstance(command, str):
+        for name, pattern in LIMITS:
+            if pattern.search(command):
+                return name
+    return None
+
+
 # The texts of a line that may carry a task notification: a queue operation's content, a user
 # message's content or its text parts.
 def notice_texts(line):
@@ -112,9 +132,10 @@ def notice_texts(line):
                     yield part.get("text")
 
 
-# What one transcript says of its tool calls, into <calls> (by id, each {tool, command, since, at,
-# subagent}, for those started since <started>, epoch seconds), <background> (the ids of calls
-# moved to the background) and <ended> (the ids of calls with a result or a task notification).
+# What one transcript says of its tool calls, into <calls> (by id, each {tool, command, limit,
+# since, at, subagent}, for those started since <started>, epoch seconds), <background> (the ids
+# of calls moved to the background) and <ended> (the ids of calls with a result or a task
+# notification).
 def read_calls(path, started, subagent, calls, background, ended):
     try:
         with open(path, "rb") as transcript:
@@ -139,8 +160,8 @@ def read_calls(path, started, subagent, calls, background, ended):
                             continue
                         tool_input = part.get("input")
                         command = tool_input.get("command") if tool == "Bash" and isinstance(tool_input, dict) else None
-                        calls[call_id] = {"tool": tool, "command": shown(command), "since": line["timestamp"],
-                                          "at": at, "subagent": subagent}
+                        calls[call_id] = {"tool": tool, "command": shown(command), "limit": limit(command),
+                                          "since": line["timestamp"], "at": at, "subagent": subagent}
                     elif part.get("type") == "tool_result" and isinstance(part.get("tool_use_id"), str):
                         result = line.get("toolUseResult")
                         if isinstance(result, dict) and result.get("backgroundTaskId"):
@@ -180,7 +201,8 @@ def activity(projects, session_id, started, parse_after, now):
     running = sorted((call | {"id": call_id} for call_id, call in calls.items() if call_id not in ended),
                      key=lambda call: call["at"])
     return {"quiet": quiet, "running": [
-        {"tool": call["tool"], "command": call["command"], "background": call["id"] in background,
+        {"tool": call["tool"], "command": call["command"], "limit": call["limit"],
+         "background": call["id"] in background,
          "since": call["since"], "seconds": max(0, int(now - call["at"])), "subagent": call["subagent"]}
         for call in running]}
 
