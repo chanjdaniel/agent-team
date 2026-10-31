@@ -566,6 +566,7 @@ git log -S core.hooksPath
 gh pr view https://github.com/me/shop/pull/5 --json headRefOid
 gh pr checks https://github.com/me/shop/pull/5 --watch
 gh api repos/me/shop/pulls/5/comments
+/home/me/agent-team/bin/team-ci-wait https://github.com/me/shop/pull/5
 COMMANDS
   done
 }
@@ -594,23 +595,24 @@ COMMANDS
   done
 }
 
-# Whether one of the Bash allow rules in settings/reviewer.json, with @TEAM_CODE@ as team-worker
-# renders it (this checkout), matches <command>: reviewer_allows <command>
+# Whether one of the Bash allow rules in settings/<role>.json, with @TEAM_CODE@ as team-worker
+# renders it (this checkout), matches <command>: allows <role> <command>
 # Claude Code checks each part of a compound command (;, &&, |) on its own, so a rule's * never
 # lets a second command ride along; this model checks one simple command.
-reviewer_allows() {
+allows() {
   local rule
   while IFS= read -r rule; do
-    rule_matches "${rule//@TEAM_CODE@/$REPO_ROOT}" "$1" && return 0
-  done < <(jq -r '.permissions.allow[]' "$REPO_ROOT/settings/reviewer.json")
+    rule_matches "${rule//@TEAM_CODE@/$REPO_ROOT}" "$2" && return 0
+  done < <(jq -r '.permissions.allow[]' "$REPO_ROOT/settings/$1.json")
   return 1
 }
 
-@test "the reviewer's allow rules are the agent-review status, the review comment and the local checks scripts only" {
+@test "the reviewer's allow rules are the agent-review status, the review comment, the local checks and the CI wait scripts only" {
   assert_equal "$(jq -r '.permissions.allow[]' "$REPO_ROOT/settings/reviewer.json")" \
     'Bash(@TEAM_CODE@/bin/team-review-status *)
 Bash(@TEAM_CODE@/bin/team-review-comment *)
-Bash(@TEAM_CODE@/bin/team-checks *)'
+Bash(@TEAM_CODE@/bin/team-checks *)
+Bash(@TEAM_CODE@/bin/team-ci-wait *)'
   # The commands as templates/briefs/rereview.md and the direct-PR review partial give them,
   # team_bin being this checkout's bin/ in full; a gated project's first review posts nothing.
   local brief
@@ -620,13 +622,16 @@ Bash(@TEAM_CODE@/bin/team-checks *)'
     grep -qF '`{{team_bin}}/team-review-comment {{pr}} {{task_dir}}/' "$REPO_ROOT/templates/briefs/$brief.md"
   done
   if grep -n team-review "$REPO_ROOT/templates/briefs/review/no-mistakes.md"; then return 1; fi
-  reviewer_allows "$REPO_ROOT/bin/team-review-status https://github.com/me/shop/pull/5 a1b2c3d4e5f60718293a4b5c6d7e8f9012345678 success \"no blocking findings\""
-  reviewer_allows "$REPO_ROOT/bin/team-review-comment https://github.com/me/shop/pull/5 .scratch/task/review.md"
-  reviewer_allows "$REPO_ROOT/bin/team-checks agent-team a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
+  allows reviewer "$REPO_ROOT/bin/team-review-status https://github.com/me/shop/pull/5 a1b2c3d4e5f60718293a4b5c6d7e8f9012345678 success \"no blocking findings\""
+  allows reviewer "$REPO_ROOT/bin/team-review-comment https://github.com/me/shop/pull/5 .scratch/task/review.md"
+  allows reviewer "$REPO_ROOT/bin/team-checks agent-team a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
+  allows reviewer "$REPO_ROOT/bin/team-ci-wait https://github.com/me/shop/pull/5"
+  if denied settings/reviewer.json "$REPO_ROOT/bin/team-ci-wait https://github.com/me/shop/pull/5"; then return 1; fi
 }
 
-@test "the builder's one allow rule is the local checks script, as the briefs give it" {
-  assert_equal "$(jq -r '.permissions.allow[]' "$REPO_ROOT/settings/builder.json")" 'Bash(@TEAM_CODE@/bin/team-checks *)'
+@test "the builder's allow rules are the local checks and the CI wait scripts, as the briefs give them" {
+  assert_equal "$(jq -r '.permissions.allow[]' "$REPO_ROOT/settings/builder.json")" 'Bash(@TEAM_CODE@/bin/team-checks *)
+Bash(@TEAM_CODE@/bin/team-ci-wait *)'
   local brief
   for brief in delivery/direct-pr builder-merge-base; do
     grep -qF '`{{team_bin}}/team-checks {{project}} <full sha>`' "$REPO_ROOT/templates/briefs/$brief.md"
@@ -634,12 +639,20 @@ Bash(@TEAM_CODE@/bin/team-checks *)'
   for brief in reviewer rereview; do
     grep -qF '`{{team_bin}}/team-checks {{project}} {{head}}`' "$REPO_ROOT/templates/briefs/$brief.md"
   done
+  for brief in delivery/direct-pr delivery/no-mistakes builder-merge-base rereview; do
+    grep -qF '`{{team_bin}}/team-ci-wait ' "$REPO_ROOT/templates/briefs/$brief.md"
+  done
+  allows builder "$REPO_ROOT/bin/team-checks agent-team a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
+  allows builder "$REPO_ROOT/bin/team-ci-wait https://github.com/me/shop/pull/5"
+  if allows builder "team-ci-wait https://github.com/me/shop/pull/5"; then return 1; fi
+  if allows builder "/elsewhere/bin/team-ci-wait https://github.com/me/shop/pull/5"; then return 1; fi
+  if denied settings/builder.json "$REPO_ROOT/bin/team-ci-wait https://github.com/me/shop/pull/5"; then return 1; fi
 }
 
 @test "the reviewer's allow rules let no raw gh write through, statuses in the command or not" {
   local command
   while IFS= read -r command; do
-    if reviewer_allows "$command"; then echo "the reviewer may run: $command" >&2; return 1; fi
+    if allows reviewer "$command"; then echo "the reviewer may run: $command" >&2; return 1; fi
   done <<'COMMANDS'
 gh api repos/me/shop/pulls/5/merge -X PUT -f a=repos/x/statuses/y -f state=success -f context=agent-review -f description=x
 gh api repos/me/shop/git/refs/heads/dev -X DELETE -F x=repos/a/statuses/b -f state=success -f context=agent-review -f description=x

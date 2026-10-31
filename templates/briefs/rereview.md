@@ -11,7 +11,8 @@ Since the last review: {{since}}
 
 1. Every finding in `{{task_dir}}/review.md` that went back to the builder (each `blocking`, `note: correctness`, `note: security` and `note: real-data`) is fixed at `{{head}}`, or the PR records Daniel's decision to keep it; a plain `note` is a follow-up, not for this PR.
 {{> rereview}}
-3. Run the project's local checks ({{local_checks}}) on `{{head}}` with `{{team_bin}}/team-checks {{project}} {{head}}`, which runs them as `team-merge` does, in a fresh detached worktree of that head, and if `gh pr checks {{pr}}` lists any GitHub checks, wait for them to finish (`--watch`); every one must pass, and `{{task_dir}}/review.md` says which local checks passed (they set no GitHub status).
+3. Run the project's local checks ({{local_checks}}) on `{{head}}` with `{{team_bin}}/team-checks {{project}} {{head}}`, which runs them as `team-merge` does, in a fresh detached worktree of that head, and wait for the PR's GitHub checks with `{{team_bin}}/team-ci-wait {{pr}}`, run with Bash `run_in_background`; every one must pass, and `{{task_dir}}/review.md` says which local checks passed (they set no GitHub status).
+   Act on how the wait ended: exit 0, every check passed or the head has none; exit 1, each failed check it names is a `blocking` finding, while a stuck check or a head that moved past `{{head}}` goes to `coordinator` as `{{task}} BLOCKED <its message>`; exit 75, run it again, or report as its message says.
 
 ## Deliver
 

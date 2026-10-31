@@ -13,8 +13,8 @@
 #     wait (an interview's read of Discord): blocked as a post is, with what such a machine does
 #     instead.
 #   Bash (workers): a command that runs git push is blocked while this machine is fenced; while
-#     the team holds offline, one that runs git push, gh, gh-axi or team-thread wait is blocked
-#     with the hold (offline_hold: "GitHub is unreachable (since 13:05); the team is holding:
+#     the team holds offline, one that runs git push, gh, gh-axi, team-ci-wait or team-thread wait
+#     is blocked with the hold (offline_hold: "GitHub is unreachable (since 13:05); the team is holding:
 #     ..."), so no worker retries or waits on.
 #   Bash (the coordinator, --coordinator): a command that runs git push, team-merge, team-open
 #     or team-close is blocked as a Discord post is, so a coordinator left running on a machine
@@ -66,6 +66,8 @@ case $tool in
     answer=$'(^|[;&|(`\n])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|]*/)?team-answer([[:space:]]|$)'
     # team-thread wait, the interview's blocking read of Discord, where a command starts, as gh.
     wait=$'(^|[;&|(`\n])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|]*/)?team-thread[[:space:]]+wait([[:space:]]|$)'
+    # team-ci-wait, a worker's wait on a PR's GitHub checks, where a command starts, as gh.
+    ci_wait=$'(^|[;&|(`\n])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|]*/)?team-ci-wait([[:space:]]|$)'
     if [[ $command =~ $post ]]; then
       why=$(lease_refusal "$POSTS") && block "$why"
     fi
@@ -83,7 +85,7 @@ case $tool in
       [[ ! $command =~ $push ]] ||
         block "$machine is $why: a fenced machine pushes nothing; commit locally and stop."
     elif hold=$(offline_hold); then
-      if [[ $command =~ $push || $command =~ $gh || $command =~ $wait ]]; then
+      if [[ $command =~ $push || $command =~ $gh || $command =~ $ci_wait || $command =~ $wait ]]; then
         block "$hold"
       fi
     fi
