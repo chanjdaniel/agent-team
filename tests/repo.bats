@@ -319,6 +319,19 @@ SETTINGS=(coordinator.settings.json settings/worker.json)
   done
 }
 
+# servers/ takes @hono/node-server 2.1.3 or later (GHSA-rmxm-3fg6-px4f), which
+# @modelcontextprotocol/sdk and @modelcontextprotocol/node (under mongodb-mcp-server) both allow;
+# tests/toolkits/servers-hono.test.mjs checks both still load with it.
+@test "servers/package-lock.json holds no @hono/node-server before 2.1.3" {
+  local versions version
+  versions=$(jq -r '.packages | to_entries[] | select(.key | test("(^|/)node_modules/@hono/node-server$")) | .value.version' "$REPO_ROOT/servers/package-lock.json")
+  [[ -n $versions ]]
+  for version in $versions; do
+    echo "@hono/node-server $version" >&2
+    assert_equal "$(printf '%s\n' 2.1.3 "$version" | sort -V | head -n 1)" 2.1.3
+  done
+}
+
 # chrome-devtools-axi runs one bridge and browser per session name, and a session's Bash calls keep
 # no exported variable, so the worker settings name each worker's session for its task and role
 # (team-worker fills both in), and two UI workers on one machine never share a browser.
