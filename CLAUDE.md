@@ -124,8 +124,10 @@ It holds:
 - macOS assesses each new executable file on its first run, about a quarter of a second each, so a test never writes or copies an executable it could share: `stub_command`, `copy_bin` and the doctor's version stubs hard-link a read-only copy made once per run (`shared` in `tests/helpers/common.bash`).
 - No test reads the records of the checkout it runs in, so the suite passes on the code alone: a test that needs a real-shaped registry or secrets manifest copies it from `tests/fixtures/`, and `team-doctor`'s `records` line checks the team home's real ledger, registry and secrets description.
 - CI's runner has jq 1.7.1, so keep to jq 1.7 features.
+- A jq program that includes a module of `bin/lib` also includes, after it, every module that one includes, directly or not (`include "workers"; include "time"; include "ledger";`), which `tests/repo.bats` holds.
+  jq 1.8.2, Homebrew's on the `macos` job, loads a module before the ones it includes unless the program loaded them first, and frees the definitions that only another module calls, so a call into one reads freed memory and may fail an assertion ("Unknown function type"); jq fixed it after 1.8.2 (jqlang/jq#3620), and a program's includes load last first.
 - Scripts and tests run on Linux and macOS: on macOS `bin/lib/platform.sh` (sourced by the library and the test helpers) puts Homebrew's GNU coreutils, findutils, sed, grep and `flock` first on `PATH`, so GNU forms are fine and BSD-only ones are not.
-  CI's `macos` job runs `tests/run bats` on a macOS runner, with the rest of CI: on a PR to `main` or by hand.
+  CI's `macos` job runs `tests/run bats` on a macOS runner, with the rest of CI: on every PR to `dev` and to `main`, and by hand.
 - Repo invariants are tests too: every executable in `bin/` answers `--help` with its header, every `bin/team-*` script is named in `roles/coordinator.md`, which stays at most 120 lines, no tracked Markdown or template outside the records (`bin/lib/records`, kept as written) has an em dash, and the Layout above stays a list, one thing per line of at most 300 characters, alphabetical within each list.
 
 ## Script conventions

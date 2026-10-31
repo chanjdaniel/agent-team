@@ -33,7 +33,7 @@ slots_line() {
     [[ $(jq -s 'add | length' "$file") != 0 ]] || state=empty
   fi
   line=$(jq -c -L "$TEAM_LIB" --argjson pools "$pools" --arg file "$state" --arg holding "$holding" \
-    --arg heartbeat "$heartbeat" 'include "slots"; doctor_line($pools; $file; $holding; $heartbeat)' <<<"$status")
+    --arg heartbeat "$heartbeat" 'include "slots"; include "stack"; doctor_line($pools; $file; $holding; $heartbeat)' <<<"$status")
   report slots "$(jq -r .verdict <<<"$line")" "$(jq -r .reason <<<"$line")" "$(jq -r .fix <<<"$line")"
 }
 

@@ -111,12 +111,12 @@ ledger=$TEAM_HOME/ledger.jsonl
 report=$(
   {
     jq -L "$TEAM_LIB" -cnR --arg since "$since" --arg until "$until" --arg task "$task" '
-      include "time";
+      include "time"; include "ledger";
       time_report(if $since == "" then 0 else $since | fromdate end; $until | fromdate;
         if $since == "" then null else $since end; $until; if $task == "" then null else $task end)' "$ledger"
     cat "$ledger"
   } | jq -L "$TEAM_LIB" -cnR --arg since "$since" --arg until "$until" --arg task "$task" '
-    include "workers";
+    include "workers"; include "time"; include "ledger";
     (input | fromjson) as $report
     | $report + {workers: workers_report(if $since == "" then 0 else $since | fromdate end; $until | fromdate;
         if $task == "" then null else $task end)}'
@@ -139,7 +139,7 @@ if [[ -n $first ]]; then
 fi
 report=$(
   { printf '%s\n' "$report"; printf '%s' "$rows"; } | jq -L "$TEAM_LIB" -cn --arg error "$error" '
-    include "workers";
+    include "workers"; include "time"; include "ledger";
     input as $report | [inputs] as $rows
     | $report | .workers |= workers_join($rows; if $error == "" then null else $error end)'
 )
@@ -147,5 +147,5 @@ report=$(
 if [[ -n $json ]]; then
   jq . <<<"$report"
 else
-  jq -L "$TEAM_LIB" -r 'include "time"; include "workers"; time_text, "", workers_text' <<<"$report"
+  jq -L "$TEAM_LIB" -r 'include "workers"; include "time"; include "ledger"; time_text, "", workers_text' <<<"$report"
 fi

@@ -193,6 +193,65 @@ MACHINE_DOCS=(README.md SETUP.md sops/machine-setup.md sops/portability.md)
   ((found >= 5))
 }
 
+# The jq programs in <root>/bin (its .jq modules aside) that include a module of <root>/bin/lib
+# without each module that one includes, directly or not, after it on the same line, as
+# "<path>:<line>: <module> needs <dependency>". jq 1.8.2 loads a module before the ones it
+# includes, unless the program loaded them first, and so frees the definitions only another module
+# calls, which the calls then read after they are freed (jqlang/jq#3620, fixed after 1.8.2); a
+# program's includes load last first, so a dependency listed after its module loads before it:
+# jq_include_breaks <root>
+jq_include_breaks() {
+  local root=$1 file m d e hit path line text rest changed=1
+  local -A deps=()
+  for file in "$root"/bin/lib/*.jq; do
+    m=$(basename "$file" .jq)
+    deps[$m]=$(sed -n 's/^include "\([^"]*\)";.*/\1/p' "$file" | tr '\n' ' ')
+  done
+  while ((changed)); do
+    changed=0
+    for m in "${!deps[@]}"; do
+      for d in ${deps[$m]}; do
+        for e in ${deps[$d]:-}; do
+          [[ " ${deps[$m]} " == *" $e "* ]] || { deps[$m]+="$e "; changed=1; }
+        done
+      done
+    done
+  done
+  while IFS= read -r hit; do
+    path=${hit%%:*} hit=${hit#*:}
+    line=${hit%%:*} text=${hit#*:}
+    for m in "${!deps[@]}"; do
+      [[ -n ${deps[$m]} && $text == *"include \"$m\""* ]] || continue
+      rest=${text#*"include \"$m\""}
+      for d in ${deps[$m]}; do
+        [[ $rest == *"include \"$d\""* ]] || echo "${path#"$root"/}:$line: $m needs $d"
+      done
+    done
+  done < <(grep -rn --exclude='*.jq' 'include "' "$root/bin" | sort)
+}
+
+@test "every jq program that includes a module of bin/lib includes the modules it includes after it, for jq 1.8.2" {
+  assert_equal "$(jq_include_breaks "$REPO_ROOT")" ""
+}
+
+@test "a jq program that includes a module without the modules it includes after it is named" {
+  local root=$BATS_TEST_TMPDIR/code
+  mkdir -p "$root/bin/lib"
+  printf 'include "b";\ndef a: b;\n' >"$root/bin/lib/a.jq"
+  printf 'include "c";\ndef b: c;\n' >"$root/bin/lib/b.jq"
+  printf 'def c: 1;\n' >"$root/bin/lib/c.jq"
+  cat >"$root/bin/tool" <<'EOF'
+jq -n -L lib 'include "a"; include "b"; include "c"; a'
+jq -n -L lib 'include "c"; include "b"; include "a"; a'
+jq -n -L lib 'include "b"; b'
+jq -n -L lib 'include "c"; c'
+EOF
+  assert_equal "$(jq_include_breaks "$root" | sort)" "bin/tool:2: a needs b
+bin/tool:2: a needs c
+bin/tool:2: b needs c
+bin/tool:3: b needs c"
+}
+
 # Only Daniel's own terminal runs op (team-secrets restore and save), and only the ops role's
 # production servers fetch a credential, each through Daniel's 1Password prompt: every other
 # session is denied the 1Password CLI and other processes' environments. The rules match the CLI

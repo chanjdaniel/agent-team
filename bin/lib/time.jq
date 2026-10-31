@@ -1,5 +1,6 @@
 # Task time: where each task's time went, from its ledger events, and the counts beside it. Used
-# by team-time as jq -L bin/lib -nR 'include "time"; time_report(...)' over the ledger's lines.
+# by team-time as jq -L bin/lib -nR 'include "time"; include "ledger"; time_report(...)' over the
+# ledger's lines.
 # Times are seconds since the epoch until the report turns them into hours.
 include "ledger";
 

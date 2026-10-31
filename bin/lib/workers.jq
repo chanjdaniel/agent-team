@@ -1,6 +1,7 @@
 # Worker lifetimes: how long each worker lived, from its launch to its end, from the ledger, and
 # where its time went, from its time rows. Used by team-time as jq -L bin/lib -nR 'include
-# "workers"; workers_report(...)' over the ledger's lines, then workers_join(...) on its rows.
+# "workers"; include "time"; include "ledger"; workers_report(...)' over the ledger's lines, then
+# workers_join(...) on its rows.
 # Includes ledger.jq for the events and time.jq for a task's phase segments, the clipping and the
 # percentiles.
 include "ledger";
