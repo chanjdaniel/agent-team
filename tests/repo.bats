@@ -370,24 +370,26 @@ assert_denies() {
   assert_denies "Bash(git config 'core.hookspath' **)" "git config 'core.hookspath' x"
 }
 
-# --replace-all writes the key it names; --file and -f write it in the file they name, the
-# repository's own config among them, so their rules need a value after the key, as the others do.
+# --replace-all writes the key it names; --file and -f write it in the file they name. Their rules
+# name the key right after a file whose name ends in config, as every file git reads its config
+# from does but a config.worktree, and need a value after the key, as the others do: a * between
+# the file and the key would take in a --get, and refuse a read.
 @test "the git hooks' deny rule: git config of core.hooksPath with --replace-all, --file or -f" {
   assert_denies 'Bash(git config *--replace-all*core.hooksPath*)' 'git config --replace-all core.hooksPath x' \
     'git config --global --replace-all core.hooksPath x'
   assert_denies 'Bash(git -C * config *--replace-all*core.hooksPath*)' 'git -C ~/repo config --replace-all core.hooksPath x'
-  assert_denies 'Bash(git config *--file* core.hooksPath **)' 'git config --file .git/config core.hooksPath x' \
-    'git config --file=.git/config core.hooksPath x' 'git config --file ~/.gitconfig --add core.hooksPath x'
-  assert_denies 'Bash(git -C * config *--file* core.hooksPath *)' 'git -C ~/repo config --file .git/config core.hooksPath x'
-  assert_denies 'Bash(git config *-f * core.hooksPath **)' 'git config -f .git/config core.hooksPath x' \
+  assert_denies 'Bash(git config *--file*config core.hooksPath **)' 'git config --file .git/config core.hooksPath x' \
+    'git config --file=.git/config core.hooksPath x' 'git config --file ~/.gitconfig core.hooksPath x'
+  assert_denies 'Bash(git -C * config *--file*config core.hooksPath *)' 'git -C ~/repo config --file .git/config core.hooksPath x'
+  assert_denies 'Bash(git config *-f *config core.hooksPath **)' 'git config -f .git/config core.hooksPath x' \
     'git config --local -f .git/config core.hooksPath ""'
-  assert_denies 'Bash(git -C * config *-f * core.hooksPath *)' 'git -C ~/repo config -f .git/config core.hooksPath x'
+  assert_denies 'Bash(git -C * config *-f *config core.hooksPath *)' 'git -C ~/repo config -f .git/config core.hooksPath x'
   assert_denies 'Bash(git config *--replace-all*core.hookspath*)' 'git config --replace-all core.hookspath x'
   assert_denies 'Bash(git -C * config *--replace-all*core.hookspath*)' 'git -C ~/repo config --replace-all core.hookspath x'
-  assert_denies 'Bash(git config *--file* core.hookspath **)' 'git config --file .git/config core.hookspath x'
-  assert_denies 'Bash(git -C * config *--file* core.hookspath *)' 'git -C ~/repo config --file=.git/config core.hookspath x'
-  assert_denies 'Bash(git config *-f * core.hookspath **)' 'git config -f .git/config core.hookspath x'
-  assert_denies 'Bash(git -C * config *-f * core.hookspath *)' 'git -C ~/repo config -f .git/config core.hookspath x'
+  assert_denies 'Bash(git config *--file*config core.hookspath **)' 'git config --file .git/config core.hookspath x'
+  assert_denies 'Bash(git -C * config *--file*config core.hookspath *)' 'git -C ~/repo config --file=.git/config core.hookspath x'
+  assert_denies 'Bash(git config *-f *config core.hookspath **)' 'git config -f .git/config core.hookspath x'
+  assert_denies 'Bash(git -C * config *-f *config core.hookspath *)' 'git -C ~/repo config -f .git/config core.hookspath x'
 }
 
 # Git reads config from these variables on every command: a key and value pair counted by
@@ -424,6 +426,8 @@ assert_denies() {
       'git config --show-origin --get-all core.hooksPath; git status' \
       'git config --file .git/config core.hooksPath' 'git config -f .git/config --get core.hooksPath' \
       'git -C ~/repo config --file=.git/config core.hooksPath' 'git -C ~/repo config -f .git/config core.hooksPath' \
+      'git config -f .git/config --get core.hooksPath 2>/dev/null' 'git config --file .git/config --get-all core.hooksPath 2>&1' \
+      'git -C ~/repo config --file .git/config --get core.hooksPath 2>/dev/null' \
       'git grep -n GIT_CONFIG_COUNT' 'env | grep GIT_CONFIG_' 'echo "$GIT_CONFIG_GLOBAL"' \
       'git commit -m "docs: Daniel runs git config core.hooksPath bin/hooks/git, never git -c core.hooksPath="' \
       "team-log T45 blocked 'a read of git config core.hooksPath x was refused'"; do
