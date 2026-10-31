@@ -14,7 +14,7 @@ For each decision, answer, wait and lesson in it, write it to its one home:
 
 | What | Its home |
 | - | - |
-| A decision Daniel made on a task | The ledger: `team-log T<n> answered id=<ask id> answer=<text>`, or `plan-approved`, `merge-approved`, `held` as it fits |
+| A decision Daniel made on a task | The ledger: `team-log T<n> answered id=<ask id> answer=<text>`, or `plan-approved`, `merge-approved`, `merge-preapproved`, `merge-preapproval-withdrawn`, `held` as it fits |
 | A task parked on Daniel or anything outside the team | `team-log T<n> waiting on=<who> reason=<what>` |
 | A question to Daniel outside a task, a reply owed to Daniel, a promise with a trigger, approved work not yet opened, a watch you armed | One line each in `tasks/current.md`, as your manual says, pointing at the detail; task state never goes there |
 | A worker's progress, a plan change, a task's notes | `tasks/T<n>/`: the plan, the brief's "Progress so far", or a note file |

@@ -135,6 +135,85 @@ Nothing waits on you."
   assert_equal "$(inbox_items_shown)" "Nothing waits on you."
 }
 
+# A registry where proj opts in to plan-time merges, conv does not, and agent-team, the team's own
+# project, has its key left out, as the registry must.
+plan_registry() {
+  local name with
+  for name in proj conv agent-team; do
+    with=''
+    [[ $name != proj ]] || with=$'\nmerge_with_plan = true'
+    cat >>"$TEAM_HOME/projects.toml" <<TOML
+[$name]
+repo = "owner/$name"
+path = "projects/$name"
+base = "main"
+delivery = "direct-pr"
+merge_method = "merge"$with
+required_checks = []
+task_dir = ".scratch/task"
+docs = []
+toolkits = []
+
+[$name.pool]
+provider = "git"
+slots = ["slots/$name/1"]
+
+TOML
+  done
+}
+
+# Task <task> of <project>, its PR <n> in that project's repo reviewed and passed, and Daniel's
+# plan-time word on it logged.
+preapproved_pr() {
+  jq -nc --arg task "$1" --arg project "$2" '{ts: "2026-10-01T10:00:00Z", task: $task, event: "opened",
+    project: $project, path: "feature", type: "feat", title: "Task \($task)", branch: "feat/\($task)",
+    base: "main", base_sha: "0123456", worktree: "/w/\($task)"}' >>"$TEAM_HOME/ledger.jsonl"
+  log_events "{\"task\":\"$1\",\"event\":\"asked\",\"id\":\"plan\",\"text\":\"Approve the plan, and its merge?\"}" \
+    "{\"task\":\"$1\",\"event\":\"merge-preapproved\",\"project\":\"$2\",\"ask\":\"plan\",\"discord_message\":\"1564000000000000001\",\"scope\":[\"src/\"]}" \
+    "{\"task\":\"$1\",\"event\":\"pr\",\"url\":\"https://github.com/owner/$2/pull/$3\",\"head\":\"abc1234def\"}" \
+    "{\"task\":\"$1\",\"event\":\"review\",\"head\":\"abc1234def\",\"verdict\":\"pass\"}"
+}
+
+@test "a PR with Daniel's standing plan-time word, in a project that opts in and is not the team's own, waits on no word of theirs" {
+  plan_registry
+  preapproved_pr T4 proj 4
+  preapproved_pr T5 conv 5
+  preapproved_pr T6 agent-team 6
+  preapproved_pr T7 proj 7
+  log_events '{"task":"T7","event":"merge-preapproval-withdrawn","project":"proj","discord_message":"1564000000000000002"}'
+  run_bin -0 --separate-stderr team-inbox
+  assert_equal "$stderr" ""
+  assert_equal "$(inbox_items_shown)" "**PRs ready to merge**
+- T5 Task T5: https://github.com/owner/conv/pull/5
+- T6 Task T6: https://github.com/owner/agent-team/pull/6
+- T7 Task T7: https://github.com/owner/proj/pull/7"
+
+  # A refused plan-time merge comes back as an ask naming the PR's URL, which merge-approved settles.
+  log_events '{"task":"T4","event":"asked","id":"merge-4","text":"Merge https://github.com/owner/proj/pull/4 at abc1234?"}'
+  run_bin -0 team-inbox
+  assert_equal "$(inbox_items_shown | head -n 2)" "**Asks**
+- T4 merge-4: Merge https://github.com/owner/proj/pull/4 at abc1234?"
+  assert_equal "$(inbox_items_shown | grep -c 'pull/4')" 1
+  log_events '{"task":"T4","event":"merge-approved","url":"https://github.com/owner/proj/pull/4","discord_message":"1564000000000000003","head":"abc1234def"}'
+  run_bin -0 team-inbox
+  assert_equal "$(inbox_items_shown | grep -c 'pull/4')" 0
+
+  # The registry is read at each run: proj no longer opting in brings its PR back.
+  sed -i '/^merge_with_plan = true$/d' "$TEAM_HOME/projects.toml"
+  log_events '{"task":"T4","event":"merged","pr":4,"merge":"9999999aaa","head":"abc1234def","by":"x","url":"https://github.com/owner/proj/pull/4"}'
+  preapproved_pr T8 proj 8
+  run_bin -0 team-inbox
+  assert_equal "$(inbox_items_shown | grep 'pull/8')" "- T8 Task T8: https://github.com/owner/proj/pull/8"
+}
+
+@test "with a plan-time word logged and the registry unreadable, every PR ready to merge is listed and stderr says why" {
+  preapproved_pr T4 proj 4
+  run_bin -0 --separate-stderr team-inbox
+  assert_equal "$(inbox_items_shown)" "**PRs ready to merge**
+- T4 Task T4: https://github.com/owner/proj/pull/4"
+  assert_equal "$stderr" "team-inbox: lists every PR ready to merge, Daniel's plan-time word aside, since the registry cannot be read: team-project: no registry at $TEAM_HOME/projects.toml"
+}
+
 @test "a message deleted by hand, or kept for another channel, is posted again and its new id kept" {
   run_bin -0 team-inbox
   rm "$STUB_FIXTURES/inbox/1569000000000000001.json"

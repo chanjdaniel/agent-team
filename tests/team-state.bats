@@ -104,7 +104,7 @@ phase_of() {
     thread: "1563",
     last_event: {ts: "2026-10-22T02:00:00Z", task: "T14", event: "answered", id: "q1", answer: "team-state"},
     pending_asks: [{id: "q2", text: "Ship it?", ts: "2026-10-22T02:00:00Z"}],
-    waiting: null, rehome_failures: [], pr: null}')"
+    waiting: null, rehome_failures: [], merge_preapproval: null, pr: null}')"
   assert_equal "$(stub_calls gh)" ""
 }
 
@@ -120,6 +120,22 @@ phase_of() {
   event T14 asked '{id: "again", text: "and https://github.com/o/r/pull/1?"}'
   run_bin -0 team-state T14 --json
   assert_equal "$(jq -c '[.pending_asks[].id]' <<<"$output")" '["merge-12","again"]'
+}
+
+@test "an ask is settled by a later merge-preapproved naming its id, as by an answered" {
+  open_task
+  event T14 asked '{id: "plan", text: "Approve the plan, and its merge?"}'
+  event T14 asked '{id: "name", text: "Which name?"}'
+  event T14 asked '{id: "other", text: "And this?"}'
+  event T14 merge-preapproved '{project: "proj", ask: "plan", discord_message: "1563000000000000001", scope: ["src/"]}'
+  event T14 answered '{id: "name", answer: "team-state"}'
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c '[.pending_asks[].id]' <<<"$output")" '["other"]'
+  # It settles only an ask logged before it, and only the one it names.
+  event T14 asked '{id: "plan", text: "Approve the new plan?"}'
+  event T15 merge-preapproved '{project: "proj", ask: "plan", discord_message: "1563000000000000002", scope: ["src/"]}'
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c '[.pending_asks[].id]' <<<"$output")" '["other","plan"]'
 }
 
 @test "worktrees recorded under another home show as the same paths under this HOME" {
@@ -570,4 +586,105 @@ EOF
   event T14 resumed
   run_bin -0 team-state T14 --json
   assert_equal "$(jq -c .waiting <<<"$output")" null
+}
+
+@test "merge_preapproval is null with none logged, else the latest one's facts, withdrawal, opt-in and own" {
+  open_task
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .merge_preapproval <<<"$output")" null
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature planning | no live worker"
+
+  # proj opts in now and is not the team's own.
+  sed -i 's/^merge_method = "merge"$/&\nmerge_with_plan = true/' "$TEAM_HOME/projects.toml"
+  event T14 asked '{id: "plan", text: "Approve the plan, and its merge?"}'
+  ledger_line '{ts: "2026-10-22T03:00:00Z", task: "T14", event: "merge-preapproved", project: "proj", ask: "plan",
+    discord_message: "1563000000000000001", scope: ["src/", "README.md"]}'
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .merge_preapproval <<<"$output")" "$(jq -cn '{project: "proj", ask: "plan",
+    discord_message: "1563000000000000001", scope: ["src/", "README.md"], ts: "2026-10-22T03:00:00Z",
+    withdrawn: null, opted_in: true, own: false}')"
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature planning | no live worker | merge pre-approved"
+
+  # The text says it before any waiting.
+  event T14 waiting '{on: "Daniel", reason: "a word on the name"}'
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature planning | no live worker | merge pre-approved | waiting on Daniel: a word on the name"
+  event T14 resumed
+
+  # The registry is read now: a project that no longer opts in says so.
+  sed -i '/^merge_with_plan = true$/d' "$TEAM_HOME/projects.toml"
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c '.merge_preapproval | [.opted_in, .own]' <<<"$output")" '[false,false]'
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature planning | no live worker | merge pre-approved, but proj does not opt in"
+
+  # A withdrawal of it is told, whatever the registry says.
+  ledger_line '{ts: "2026-10-22T04:00:00Z", task: "T14", event: "merge-preapproval-withdrawn", project: "proj",
+    discord_message: "1563000000000000002"}'
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .merge_preapproval.withdrawn <<<"$output")" \
+    '{"ts":"2026-10-22T04:00:00Z","discord_message":"1563000000000000002"}'
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature planning | no live worker | merge pre-approval withdrawn"
+
+  # A later approval stands again, and the latest of the task's is the one read.
+  sed -i 's/^merge_method = "merge"$/&\nmerge_with_plan = true/' "$TEAM_HOME/projects.toml"
+  ledger_line '{ts: "2026-10-22T05:00:00Z", task: "T14", event: "merge-preapproved", project: "proj", ask: "plan",
+    discord_message: "1563000000000000003", scope: ["src/"]}'
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c '.merge_preapproval | [.discord_message, .scope, .withdrawn, .opted_in]' <<<"$output")" \
+    '["1563000000000000003",["src/"],null,true]'
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature planning | no live worker | merge pre-approved"
+}
+
+@test "a pre-approval of the team's own project says so, by name or by its repo, even opted in" {
+  open_task
+  sed -i 's/^merge_method = "merge"$/&\nmerge_with_plan = true/' "$TEAM_HOME/projects.toml"
+  event T14 asked '{id: "plan", text: "Approve the plan, and its merge?"}'
+  event T14 merge-preapproved '{project: "proj", ask: "plan", discord_message: "1563000000000000001", scope: ["src/"]}'
+  # proj's repo is the code checkout's origin.
+  code_checkout
+  git -C "$CODE_CHECKOUT" remote set-url origin git@github.com:Owner/proj.git
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c '.merge_preapproval | [.opted_in, .own]' <<<"$output")" '[true,true]'
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature planning | no live worker | merge pre-approved, but proj is the team's own project"
+
+  # By name, with the key left out, as the registry must have it.
+  cat >>"$TEAM_HOME/projects.toml" <<'TOML'
+
+[agent-team]
+repo = "owner/agent-team"
+path = "projects/agent-team"
+base = "dev"
+delivery = "no-mistakes"
+merge_method = "merge"
+required_checks = []
+task_dir = ".scratch/task"
+docs = []
+toolkits = []
+
+[agent-team.pool]
+provider = "git"
+slots = ["slots/agent-team/1"]
+TOML
+  event T14 merge-preapproved '{project: "agent-team", ask: "plan", discord_message: "1563000000000000002", scope: ["bin/"]}'
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c '.merge_preapproval | [.project, .opted_in, .own]' <<<"$output")" '["agent-team",false,true]'
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature planning | no live worker | merge pre-approved, but agent-team is the team's own project"
+}
+
+@test "a pre-approval of a project the registry no longer has does not opt in, and the state is still told" {
+  open_task
+  event T14 asked '{id: "plan", text: "Approve the plan, and its merge?"}'
+  event T14 merge-preapproved '{project: "gone", ask: "plan", discord_message: "1563000000000000001", scope: ["src/"]}'
+  run_bin -0 --separate-stderr team-state T14 --json
+  assert_equal "$(jq -c '.merge_preapproval | [.project, .opted_in, .own]' <<<"$output")" '["gone",false,false]'
+  assert_equal "$stderr" ""
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature planning | no live worker | merge pre-approved, but gone does not opt in"
 }

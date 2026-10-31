@@ -12,7 +12,22 @@
 # event of that url nor a review of the task since its first pr event logged (heads compare by
 # the shorter one's prefix, at least 7 characters), or whose discord_message, a Discord id, was
 # sent before the first of those events that logged the head; so is an answered whose id and
-# discord_message an earlier answered of the task logged (team-answer reads it from Discord). A park
+# discord_message an earlier answered of the task logged (team-answer reads it from Discord). A
+# merge-preapproved is refused when its project is not one of the task's opened or worktree-added
+# events, is the team's own (own_project, whatever the registry says), or does not opt in now
+# (team-project's merge_with_plan); when its ask names no asked of the task; when its
+# discord_message is a string of digits that is no Discord id, or was sent before the latest asked
+# of that id; and when its scope is empty or holds an entry that is not a clean repository path (a
+# string with no leading /, no . or .. segment, no empty segment, no glob character *?[ and no
+# whitespace; a directory ends in /). A merge-preapproval-withdrawn is refused unless a
+# merge-preapproved of its project stands for the task (its latest, with no withdrawal since). A
+# branch-renamed, the task's new branch in a project after the gate rewrote the remote one, is
+# refused when its project is not one of the task's opened or worktree-added events, its branch is
+# the task's there now (the latest opened, worktree-added or branch-renamed of the project), does
+# not name the task, or is no branch name git takes (git check-ref-format --branch). A
+# review's findings, when given, must count exactly blocking, correctness, security, real-data and
+# note, each a whole number, and its guarded list only ci, dependencies, migrations, settings,
+# permissions and secrets. A park
 # (waiting, blocked, paused, held) logged after the fact takes since=<UTC time>, when it began:
 # no later than now and no earlier than the task's latest event, or it is refused naming both
 # times; no other kind takes since.
@@ -90,6 +105,89 @@ if [[ $event == merge-approved && -n ${seen[url]:-} ]]; then
     ((sent >= $(date -ud "${logged% *}" +%s))) ||
       die "Discord message $message was sent at $(date -ud "@$sent" +%FT%TZ), before the ${logged#* } event that first logged head ${seen[head]} at ${logged% *}, so it is not Daniel's word on that head"
   fi
+fi
+
+# Daniel's plan-time word is on the task's PR in one of its projects, which opts in now and is not
+# the team's own, answering an ask the task logged, in a message sent no earlier than the latest
+# asked of that id, over a scope of clean repository paths, as team-merge holds it.
+# Refuses a project that is none of the task's opened or worktree-added events: task_project <project>
+task_project() {
+  local problem
+  problem=$(task_events "$task" | ledger_jq '
+    reduce (inputs | select(.event == "opened" or .event == "worktree-added") | .project | strings) as $p
+      ([]; if IN(.[]; $p) then . else . + [$p] end)
+    | if IN(.[]; $project) then empty
+      elif . == [] then "\($project) is not a project of \($task)'"'"'s opened or worktree-added events; it has none"
+      else "\($project) is not a project of \($task)'"'"'s opened or worktree-added events: \(join(", "))" end' \
+    -nr --arg project "$1" --arg task "$task")
+  [[ -z $problem ]] || die "$problem"
+}
+
+if [[ $event == merge-preapproved ]]; then
+  project=${seen[project]:-}
+  if [[ -n $project ]]; then
+    task_project "$project"
+    ! own_project "$project" ||
+      die "$project is the team's own project, whose PRs merge only on Daniel's word per head, never on a plan-time word"
+    opted=$(team_project "$project" merge_with_plan) || exit 1
+    [[ $opted == true ]] ||
+      die "$project does not opt in to a plan-time merge approval: its merge_with_plan in projects.toml is $opted"
+  fi
+  if [[ -n ${seen[ask]:-} ]]; then
+    asked=$(task_events "$task" | ledger_jq '[inputs] | latest_asked($id) | .ts // empty' -nr --arg id "${seen[ask]}")
+    [[ -n $asked ]] || die "$task logged no asked with id ${seen[ask]}, so merge-preapproved answers no ask of it"
+    message=${seen[discord_message]:-}
+    # A string of digits that is no Discord id the contract would take; any other string it refuses.
+    if [[ $message =~ ^[0-9]+$ ]]; then
+      [[ $message =~ ^[1-9][0-9]{0,18}$ ]] || die "discord_message $message is not a Discord id"
+      sent=$(((10#$message >> 22) / 1000 + 1420070400))
+      ((sent >= $(date -ud "$asked" +%s))) ||
+        die "Discord message $message was sent at $(date -ud "@$sent" +%FT%TZ), before the asked ${seen[ask]} at $asked, so it is not Daniel's answer to that ask"
+    fi
+  fi
+  if [[ -n ${seen[scope]:-} ]]; then
+    problem=$(ledger_jq '$raw | try fromjson catch null
+      | if type != "array" then empty
+        elif . == [] then "scope is empty: it lists every path the plan may change, each a file or a directory ending in /"
+        else [scope_problems] | select(. != []) | "scope holds entries that are not clean repository paths:" + (map("\n  " + .) | add) end' \
+      -nr --arg raw "${seen[scope]}")
+    [[ -z $problem ]] || die "$problem"
+  fi
+fi
+
+# A withdrawal ends the plan-time word standing for the project: its latest merge-preapproved,
+# with no withdrawal since.
+if [[ $event == merge-preapproval-withdrawn && -n ${seen[project]:-} ]]; then
+  task_events "$task" | ledger_jq '[inputs] | merge_preapproval($project) | . != null and .withdrawn == null' \
+    -ne --arg project "${seen[project]}" >/dev/null ||
+    die "$task has no standing merge-preapproved of ${seen[project]} to withdraw"
+fi
+
+# The task's new branch in one of its projects names the task, as team-close holds a worktree's
+# branch to, is a branch name git takes, and is not its branch there now.
+if [[ $event == branch-renamed && -n ${seen[project]:-} && -n ${seen[branch]:-} ]]; then
+  task_project "${seen[project]}"
+  branch=${seen[branch]}
+  [[ $branch != "$(task_events "$task" | ledger_jq '[inputs] | task_branch($project) // ""' -nr --arg project "${seen[project]}")" ]] ||
+    die "$branch is already $task's branch for ${seen[project]}"
+  [[ $branch =~ (^|[^[:alnum:]])$task($|[^[:digit:]]) ]] || die "$branch does not name $task, as a branch of its worktree must"
+  git check-ref-format --branch "$branch" >/dev/null 2>&1 ||
+    die "$branch is not a branch name git takes (git check-ref-format --branch)"
+fi
+
+# A review's finding counts and guarded areas, as the reviewer's DONE gives them.
+if [[ $event == review ]]; then
+  problem=$(ledger_jq '
+    def listed: (.[:-1] | join(", ")) + " and " + last;
+    def lines: map("\n  " + .) | add;
+    ($findings | try fromjson catch null) as $f
+    | ($guarded | try fromjson catch null) as $g
+    | ($f | objects | [findings_problems] | select(. != [])
+        | "findings holds the count of each finding kind, exactly \(finding_kinds | listed), each a whole number:" + lines),
+      ($g | arrays | [guarded_problems] | select(. != [])
+        | "guarded lists the guarded areas the change touches, each one of \(guarded_areas | listed):" + lines)' \
+    -nr --arg findings "${seen[findings]:-}" --arg guarded "${seen[guarded]:-}")
+  [[ -z $problem ]] || die "$problem"
 fi
 
 # One Discord message answers an ask once: a second answered of the same id and message is a

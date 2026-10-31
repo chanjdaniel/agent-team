@@ -54,12 +54,15 @@ def park_class:
 # asked with no park standing opens a wait on Daniel that ends once every ask it noted (that one
 # and any asked while it stands) is settled (settles), and an answered ends nothing else. With no
 # park standing, the class is the phase the last marker set: a planner or ops launch planning, a
-# builder's building, a reviewer's review, merge-approved merging, and a done, merged or review
-# unattributed (the coordinator's turn, or a gate run the ledger did not see); with no park, an ask
-# still open (open, kept across launches) while the phase is unattributed is a wait on Daniel
-# (idle_class). A park logged after the fact with since takes effect at since, held to the span
-# from the event before it to its own ts. The task starts unattributed, and the walk stops at the
-# first event after $end.
+# builder's building, a reviewer's review, merge-approved merging (word head), a passing review
+# while a plan-time approval of the task stands merging too (word plan; preapproved, the projects
+# whose merge-preapproved no later merge-preapproval-withdrawn of theirs ended), until the merged or
+# a withdrawal that leaves none standing while the word is still plan, and a done (save one while
+# the word plan merges), merged or review unattributed (the coordinator's turn, or a gate run the
+# ledger did not see); with no park, an ask still open (open, kept across launches) while the
+# phase is unattributed is a wait on Daniel (idle_class). A park logged after the fact with since
+# takes effect at since, held to the span from the event before it to its own ts. The task starts
+# unattributed, and the walk stops at the first event after $end.
 def is_park: IN(.event; "waiting", "blocked", "paused", "held");
 
 # A walk state's class: its park, else a wait on Daniel while no worker is at work and an ask
@@ -68,7 +71,7 @@ def idle_class: .park // (if .phase == "unattributed" and (.open | length) > 0 t
 def task_segments($end):
   ([.[] | select(.event == "opened") | .ts | fromdate] | first) as $t0
   | (([range(length) as $i | select(.[$i].ts | fromdate > $end) | $i] | first) // length) as $n
-  | reduce .[:$n][] as $e ({phase: "unattributed", park: null, asks: null, open: [], cur: $t0, segments: []};
+  | reduce .[:$n][] as $e ({phase: "unattributed", word: null, preapproved: [], park: null, asks: null, open: [], cur: $t0, segments: []};
       ($e.ts | fromdate) as $ts
       | (if ($e | is_park) and ($e.since | type) == "string" then
           [([(try ($e.since | fromdate) catch $ts), $ts] | min), .cur] | max
@@ -88,9 +91,15 @@ def task_segments($end):
             .asks |= map(select(. as $ask | $e | settles($ask) | not))
             | if .asks == [] then .park = null | .asks = null else . end
           else . end)
-          | if $e.event == "done" or $e.event == "merged" or $e.event == "review" then .phase = "unattributed"
+          | if $e.event == "review" and $e.verdict == "pass" and .preapproved != [] then .phase = "merging" | .word = "plan"
+            elif $e.event == "done" and .phase == "merging" and .word == "plan" then .
+            elif $e.event == "done" or $e.event == "merged" or $e.event == "review" then .phase = "unattributed"
             elif $e.event == "merge-approved" then
-              .phase = "merging" | if .park == "wait:daniel" then .park = null | .asks = null else . end
+              .phase = "merging" | .word = "head" | if .park == "wait:daniel" then .park = null | .asks = null else . end
+            elif $e.event == "merge-preapproved" then .preapproved = (.preapproved - [$e.project]) + [$e.project]
+            elif $e.event == "merge-preapproval-withdrawn" then
+              .preapproved -= [$e.project]
+              | if .phase == "merging" and .word == "plan" and .preapproved == [] then .phase = "unattributed" else . end
             else . end
         end)
   | .segments + [{from: .cur, to: $end, class: idle_class}]
