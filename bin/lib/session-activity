@@ -7,18 +7,35 @@
 # with a sessionId, its transcripts are its own, ~/.claude/projects/*/<sessionId>.jsonl, and its
 # subagents', ~/.claude/projects/*/<sessionId>/subagents/*.jsonl, found as team-tokens finds
 # them. It prints one JSON object keyed by full session id, holding only the sessions with a
-# transcript: {quiet: <whole seconds since the newest modification among those files>,
-# running: null}. It reads only the files' modification times, never their content: running, the
-# tool calls still running, is null (not read). --parse-after is the quiet time below which a
-# session's transcripts are never opened. A file whose modification time cannot be read is skipped.
-# Exit 0 done, 1 a session list that is not a JSON array (or Python older than 3.11), 2 a
-# malformed command line.
+# transcript: {quiet: <whole seconds since the newest modification among those files>, running}.
+# running is null (not read) while quiet is below --parse-after, so a session's transcripts are
+# opened only once it is that quiet, and else lists, oldest first, each tool call started since
+# the session's startedAt (the session list's epoch milliseconds) that has not ended, as
+# {tool, command, background, since, seconds, subagent}:
+#   a foreground call is a tool_use with no tool_result naming its id yet; a background one is a
+#   call whose tool_result's toolUseResult has a backgroundTaskId (run_in_background, or moved
+#   there at Claude Code's 10-minute cap), with no <task-notification> naming its id in a
+#   <tool-use-id> yet, in a queue operation or a user message;
+#   command is a Bash call's first line, a leading "cd <dir>;" or "cd <dir> &&" dropped, clipped
+#   to 100 characters, and null for other tools; since is the tool_use line's timestamp and
+#   seconds the whole seconds since; subagent is true for a call in a subagent's transcript.
+# From each line it reads only its type, timestamp, tool call names, ids and command inputs, a
+# result's tool call id and whether a background task id is present, and a notification's tool
+# call ids (by pattern, never the rest of its text): never a tool's output, a message's text or a
+# file's content. A line that is not JSON, a tool_use with no name, id or readable timestamp, or
+# a file (or what is left of it) that cannot be read, is skipped; a result or a notification in
+# any of a session's transcripts ends the call it names.
+# Exit 0 done; 1 a session list that is not a JSON array, a session with a transcript whose
+# startedAt is not epoch milliseconds (a whole number), since without it a call from the
+# session's earlier process would read as running, or Python older than 3.11; 2 a malformed
+# command line.
 import glob
 import json
 import os
 import re
 import sys
 import time
+from datetime import datetime
 
 if sys.version_info < (3, 11):
     print(
@@ -57,18 +74,115 @@ def transcript_paths(projects, session_id):
     )
 
 
-# A session's entry, or None when it has no transcript to read: activity <session id> <now>
-def activity(projects, session_id, now):
+# A notification's tool call ids, read by pattern from a queue operation's or a user message's text.
+NOTIFIED = re.compile(r"<tool-use-id>([^<\s]{1,200})</tool-use-id>")
+# A leading cd, dropped from a command: "cd <dir>;" or "cd <dir> &&".
+LEADING_CD = re.compile(r"^\s*cd\s+(?:\"[^\"]*\"|'[^']*'|[^\s;&]+)\s*(?:;|&&)\s*")
+
+
+# The epoch seconds of a transcript timestamp, or None.
+def epoch(timestamp):
+    try:
+        return datetime.fromisoformat(timestamp).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+# A Bash command as the finding names it: its first line, a leading cd dropped, clipped.
+def shown(command):
+    if not isinstance(command, str):
+        return None
+    lines = command.strip().splitlines()
+    return LEADING_CD.sub("", lines[0] if lines else "", count=1)[:100]
+
+
+# The texts of a line that may carry a task notification: a queue operation's content, a user
+# message's content or its text parts.
+def notice_texts(line):
+    if line.get("type") == "queue-operation":
+        yield line.get("content")
+    elif line.get("type") == "user":
+        message = line.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, str):
+            yield content
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    yield part.get("text")
+
+
+# What one transcript says of its tool calls, into <calls> (by id, each {tool, command, since, at,
+# subagent}, for those started since <started>, epoch seconds), <background> (the ids of calls
+# moved to the background) and <ended> (the ids of calls with a result or a task notification).
+def read_calls(path, started, subagent, calls, background, ended):
+    try:
+        with open(path, "rb") as transcript:
+            for raw in transcript:
+                if b"tool_use" not in raw and b"tool-use-id" not in raw:
+                    continue
+                try:
+                    line = json.loads(raw)
+                except (ValueError, UnicodeDecodeError):
+                    continue
+                if not isinstance(line, dict):
+                    continue
+                message = line.get("message")
+                content = message.get("content") if isinstance(message, dict) else None
+                for part in content if isinstance(content, list) else []:
+                    if not isinstance(part, dict):
+                        continue
+                    if part.get("type") == "tool_use" and line.get("type") == "assistant":
+                        at = epoch(line.get("timestamp"))
+                        call_id, tool = part.get("id"), part.get("name")
+                        if at is None or at < started or not isinstance(call_id, str) or not isinstance(tool, str):
+                            continue
+                        tool_input = part.get("input")
+                        command = tool_input.get("command") if tool == "Bash" and isinstance(tool_input, dict) else None
+                        calls[call_id] = {"tool": tool, "command": shown(command), "since": line["timestamp"],
+                                          "at": at, "subagent": subagent}
+                    elif part.get("type") == "tool_result" and isinstance(part.get("tool_use_id"), str):
+                        result = line.get("toolUseResult")
+                        if isinstance(result, dict) and result.get("backgroundTaskId"):
+                            background.add(part["tool_use_id"])
+                        else:
+                            ended.add(part["tool_use_id"])
+                for text in notice_texts(line):
+                    if isinstance(text, str) and "<task-notification>" in text:
+                        ended.update(NOTIFIED.findall(text))
+    except OSError:
+        pass
+
+
+# A session's entry, or None when it has no transcript to read:
+# activity <projects> <session id> <started, epoch seconds or None> <parse after> <now>
+def activity(projects, session_id, started, parse_after, now):
     newest = None
+    paths = []
     for path in transcript_paths(projects, session_id):
         try:
             modified = os.stat(path).st_mtime
         except OSError:
             continue
+        paths.append(path)
         newest = modified if newest is None else max(newest, modified)
     if newest is None:
         return None
-    return {"quiet": max(0, int(now - newest)), "running": None}
+    if started is None:
+        fail(f"session {session_id[:8]} has no startedAt in epoch milliseconds in the session list,"
+             " which tells its running tool calls from an earlier process's")
+    quiet = max(0, int(now - newest))
+    if quiet < parse_after:
+        return {"quiet": quiet, "running": None}
+    calls, background, ended = {}, set(), set()
+    for path in paths:
+        read_calls(path, started, os.sep + "subagents" + os.sep in path[len(projects):], calls, background, ended)
+    running = sorted((call | {"id": call_id} for call_id, call in calls.items() if call_id not in ended),
+                     key=lambda call: call["at"])
+    return {"quiet": quiet, "running": [
+        {"tool": call["tool"], "command": call["command"], "background": call["id"] in background,
+         "since": call["since"], "seconds": max(0, int(now - call["at"])), "subagent": call["subagent"]}
+        for call in running]}
 
 
 def main(args):
@@ -90,7 +204,10 @@ def main(args):
         session_id = session.get("sessionId") if isinstance(session, dict) else None
         if not isinstance(session_id, str) or not re.fullmatch(r"[A-Za-z0-9-]+", session_id):
             continue
-        entry = activity(projects, session_id, now)
+        started = session.get("startedAt")
+        if isinstance(started, bool) or not isinstance(started, int) or started < 0:
+            started = None
+        entry = activity(projects, session_id, None if started is None else started / 1000, int(args[1]), now)
         if entry is not None:
             found[session_id] = entry
     print(json.dumps(found, separators=(",", ":")))
