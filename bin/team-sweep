@@ -3,8 +3,11 @@
 # the machine's task slots.
 #
 # Usage: team-sweep [--json | --wait]
-# Reads only ledger.jsonl, claude agents --json and team-slots status --stored --json (never
-# GitHub, and never a new reading of the machine's load), so it runs in about a second.
+# Reads only ledger.jsonl, claude agents --json, team-slots status --stored --json and, through
+# bin/lib/session-activity, the live sessions' transcripts: their modification times, and from a
+# session's quiet past the default limit only its times, tool names, tool call ids, commands and
+# background task marks (never GitHub, never a tool's output or a message's text, and never a new
+# reading of the machine's load), so it runs in about a second.
 # A task is open when it has events and no closed; it is parked when its phase is held, blocked
 # or awaiting-merge, when it has an ask nothing settled (no answered with its id, no merge-approved
 # whose url its text names), or when its latest paused or waiting has no later resumed or
@@ -15,10 +18,30 @@
 #                  to close
 #   waiting-input  a live session of an open task, not parked, whose state is blocked
 #   silent         a live, idle session of an open task, not parked, with no ledger event for the
-#                  task after that session's latest launch (one waiting for input is not also silent)
+#                  task after that session's latest launch (one waiting for input is not also
+#                  silent)
+#   stalled        a live, busy session of an open task, not parked, not waiting for input, whose
+#                  transcripts (its own and its subagents', under ~/.claude/projects) have not been
+#                  written for longer than its limit (stall_limits in bin/lib/ledger.jq), the
+#                  largest of its running calls', each read from its whole command: 180 minutes for
+#                  a command with no-mistakes as a word (the gate), 100 for one that runs
+#                  team-ci-wait (which ends by 90), none for one that runs team-thread wait (an
+#                  interview's wait on Daniel), else 50, and 50 when none runs. A running call is a
+#                  tool call started since the session's startedAt with no result yet, or in the
+#                  background with no task notification yet. "<name> <short id> has written nothing
+#                  for <h>h<mm>m" (or <m>m under an hour), then ', waiting on "<command>" (Bash, in
+#                  the background, running <h>h<mm>m)' for the newest foreground call (it holds the
+#                  turn) or else the oldest, "Bash in a subagent" for a subagent's, a tool other
+#                  than Bash by its name, and ", and <n> more running" when others run; or " with no
+#                  tool call running". None for a session whose transcript cannot be found
 #   stray          a live session named like a team worker (T<n>-<role>) whose task is closed or
 #                  not in the ledger; never one of T0, the load check's task
-#   slots          after every task finding, with task and session null: the machine's effective
+#   activity       after every task finding, with task and session null: session-activity
+#                  failed (a Python older than 3.11, say, or a session with a transcript whose
+#                  startedAt is not epoch milliseconds) or printed no JSON object, so no busy
+#                  worker can be found stalled: "activity: <its last line on stderr>, so no busy
+#                  worker is found stalled: fix what session-activity names"
+#   slots          after the activity finding, with task and session null: the machine's effective
 #                  cap is below its cap, or more task slots are held than the effective cap, as
 #                  team-slots says from the stored readings: "slots: <team-slots' summary line>;
 #                  <the effective cap's reason>; <n> held, over the effective cap of <e>: new
@@ -70,14 +93,42 @@ esac
 ledger=$TEAM_HOME/ledger.jsonl
 [[ -e $ledger ]] || ledger=/dev/null
 
-# The findings now, as JSON in FINDINGS, from the ledger, a fresh read of the session list and
-# the machine's task slots; fails with the reason on stderr when the session list cannot be read.
+# The quiet time from which session-activity may read a session's transcripts: the default stall
+# limit, since no session quieter than that is stalled.
+parse_after=$(ledger_jq 'stall_limits.default' -nr)
+
+# session-activity's object for the session list (a JSON array), as {sessions: <its object>}:
+# session_activity <sessions>
+# When it fails, or prints no JSON object, {error: <its last line on stderr>} (~ for the home
+# directory), which is the activity finding, so no session is stalled and the other findings
+# still come.
+session_activity() {
+  local out errors status=0 reason
+  errors=$(mktemp)
+  out=$("$TEAM_LIB/session-activity" --parse-after "$parse_after" <<<"$1" 2>"$errors") || status=$?
+  if ((status)); then
+    reason=$(grep . "$errors" | tail -n 1) || reason="session-activity failed with exit $status and no reason given"
+  elif ! out=$(jq -ce 'select(type == "object")' <<<"$out" 2>/dev/null); then
+    reason="session-activity printed no JSON object"
+  fi
+  rm -f "$errors"
+  if [[ -n ${reason:-} ]]; then
+    jq -cn --arg error "${reason//"$HOME/"/"~/"}" '{error: $error}'
+  else
+    printf '{"sessions":%s}\n' "$out"
+  fi
+}
+
+# The findings now, as JSON in FINDINGS, from the ledger, a fresh read of the session list, the
+# machine's task slots and the live sessions' transcripts; fails with the reason on stderr when
+# the session list cannot be read.
 look() {
-  local sessions slots
+  local sessions slots activity
   sessions=$(LIVE_SESSIONS='' && live_sessions && printf '%s' "$LIVE_SESSIONS") || return 1
   slots=$(machine_slots)
-  FINDINGS=$(ledger_jq 'ledger_events | sweep($sessions; $slots)' -nRc --argjson sessions "$sessions" \
-    --argjson slots "$slots" "$ledger")
+  activity=$(session_activity "$sessions")
+  FINDINGS=$(ledger_jq 'ledger_events | sweep($sessions; $slots; $activity)' -nRc --argjson sessions "$sessions" \
+    --argjson slots "$slots" --argjson activity "$activity" "$ledger")
 }
 
 # The sweep watch: see --wait in the header.

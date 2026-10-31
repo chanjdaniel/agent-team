@@ -69,6 +69,18 @@ retro due since $(date -u -d "@$((since + 48 * 3600))" +%FT%TZ) (every 48h, last
 Act on each, then end the turn."
 }
 
+@test "a transcript reader that fails is one of the findings in the reason, so the stalled watch is never silently off" {
+  # A live session whose transcript is there but whose startedAt is not epoch milliseconds.
+  mkdir -p "$HOME/.claude/projects/-w-1"
+  echo '{}' >"$HOME/.claude/projects/-w-1/77777777-1111.jsonl"
+  stub_reply claude '[{"kind": "background", "id": "77777777", "sessionId": "77777777-1111", "name": "Daniel", "status": "busy", "startedAt": "today"}]'
+  stop -0
+  assert_equal "$stderr" ""
+  assert_equal "$(jq -r .reason <<<"$output")" "team-sweep found 1 thing to reconcile before this turn ends:
+activity: session-activity: session 77777777 has no startedAt in epoch milliseconds in the session list, which tells its running tool calls from an earlier process's, so no busy worker is found stalled: fix what session-activity names
+Act on each, then end the turn."
+}
+
 @test "when the stop hook is already active it exits 0 at once, without sweeping" {
   unattended_task
   stop -0 true

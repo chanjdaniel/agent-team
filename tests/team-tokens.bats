@@ -537,7 +537,7 @@ coordinator_fixture() {
 @test "every script the coordinator table counts as only reading is in bin/, and the header names each" {
   local names name
   names=$(sed -n '/^READERS = {/,/^}/p' "$REPO_ROOT/bin/team-tokens" | grep -o 'team-[a-z-]*')
-  assert_equal "$(wc -l <<<"$names")" 11
+  assert_equal "$(wc -l <<<"$names")" 12
   for name in $names; do
     [[ -x $REPO_ROOT/bin/$name ]]
     assert_contains "$(sed -n '/^#   coordinator turns/,/^#   Daniel/p' "$REPO_ROOT/bin/team-tokens")" "$name"

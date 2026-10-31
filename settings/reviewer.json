@@ -16,7 +16,8 @@
     "allow": [
       "Bash(@TEAM_CODE@/bin/team-review-status *)",
       "Bash(@TEAM_CODE@/bin/team-review-comment *)",
-      "Bash(@TEAM_CODE@/bin/team-checks *)"
+      "Bash(@TEAM_CODE@/bin/team-checks *)",
+      "Bash(@TEAM_CODE@/bin/team-ci-wait *)"
     ],
     "deny": [
       "Bash(team-post *)",
