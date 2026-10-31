@@ -2,8 +2,10 @@
 # Wait on a pull request's GitHub checks, and always end: a worker runs it with Bash
 # run_in_background and acts on how it ended.
 #
-# Usage: team-ci-wait <pr url>
+# Usage: team-ci-wait <pr url> [<sha>]
 #   pr url  https://github.com/<owner>/<name>/pull/<n>, in a registered project's repo
+#   sha     the head the worker means (the commit it pushed, the head it reviews), in full or
+#           short (7 to 40 hex characters); without it, the head of the first readable look
 # It looks every 30 s (WAIT_SECONDS), counting time in looks, so a test steps it with a stub
 # sleep. Each look reads the PR's state and head (gh pr view), its checks (gh pr checks), and,
 # once per run, the workflow run of each pending check whose link is an Actions job link
@@ -14,6 +16,8 @@
 # look, and its result when it ends, nothing in between; it ends at the first look where one of
 # these holds:
 #   the PR is merged or closed                         exit 1, naming its state
+#   the first look's head is not <sha>                 exit 1, naming both short heads: GitHub
+#                                                      may not show a push of a moment ago yet
 #   the head is not the first look's                   exit 1, naming both short heads: the new
 #                                                      head's checks need a wait of their own
 #   no check reported for 2 minutes of looks           exit 0: the head has no GitHub checks
@@ -45,7 +49,8 @@ NO_CHECKS_SECONDS=120
 FAILING_SECONDS=300
 DEADLINE_SECONDS=5400
 
-[[ $# -eq 1 ]] || usage_error "usage: team-ci-wait <pr url>"
+[[ $# -eq 1 || ($# -eq 2 && $2 =~ ^[0-9a-f]{7,40}$) ]] || usage_error "usage: team-ci-wait <pr url> [<sha>]"
+expected=${2:-}
 pr=$(registered_pr "$1")
 { read -r _ && read -r repo && read -r number; } <<<"$pr"
 
@@ -92,6 +97,10 @@ while :; do
     failing_since=''
     { read -r state && read -r head; } < <(jq -r '.state, .head' "$dir/look")
     if [[ -z $first_head ]]; then
+      if [[ $head != "$expected"* ]]; then
+        echo "team-ci-wait: the head of $repo#$number is ${head:0:7}, not ${expected:0:7}: its checks are not the ones to wait on; if you pushed ${expected:0:7} a moment ago, GitHub may not show it yet, so run team-ci-wait again"
+        exit 1
+      fi
       first_head=$head
       echo "team-ci-wait: waiting on the checks of $repo#$number at ${head:0:7}"
     fi

@@ -6,7 +6,7 @@
 3. Run the project's local checks ({{local_checks}}) on the head you push with `{{team_bin}}/team-checks {{project}} <full sha>`, which runs them as `team-merge` does, in a fresh detached worktree of that head; fix the branch and push again until all pass on one head.
    They set no GitHub status: their result goes in the PR body.
 4. Open one PR from `{{branch}}` to `{{base}}`: `gh pr create --repo {{repo}} --base {{base}} --head {{branch}}`, titled as a Conventional Commit, its body opening with the task's goal: "{{task}}: {{goal}}", then a line naming the local checks that passed and the head they passed on.
-5. Wait for the PR's GitHub checks with `{{team_bin}}/team-ci-wait <full url>`, run with Bash `run_in_background`, and act on how it ended: exit 0, every check passed or the head has none; exit 1, fix each failed check it names on the branch and push again, follow a stuck check's message, or wait again on a head that moved, until every check passes; exit 75, run it again, or report as its message says.
+5. Wait for the PR's GitHub checks with `{{team_bin}}/team-ci-wait <full url> <the full sha you pushed>`, run with Bash `run_in_background`, and act on how it ended: exit 0, every check passed or the head has none; exit 1, fix each failed check it names on the branch and push again, follow a stuck check's message, or, on a head other than the one you pushed, do as its message says, until every check passes; exit 75, run it again, or report as its message says.
 6. Repeat step 1; if it merged anything or you pushed again, go back to step 3 and bring the PR body's local checks line up to date (`gh pr edit <full url> --body-file <file>`), so every required check passes on the new head.
 7. Then send `{{task}} PR <full url>` to `coordinator`.
 

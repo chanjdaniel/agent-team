@@ -172,6 +172,27 @@ team-ci-wait: the checks on a1b2c3d did not pass:
   assert_contains "$output" "team-ci-wait: the head of owner/proj#217 moved from a1b2c3d to 9f8e7d6: the new head's checks need a wait of their own"
 }
 
+@test "a head other than the one the worker means ends the wait at the first look with exit 1, naming both" {
+  checks 0 "$(check test SUCCESS)"
+  run_bin team-ci-wait "$url" 9f8e7d6c5b4a39281706f5e4d3c2b1a098765432
+  assert_equal "$status" 1
+  assert_equal "$(ended_at)" 0
+  assert_equal "$output" "team-ci-wait: the head of owner/proj#217 is a1b2c3d, not 9f8e7d6: its checks are not the ones to wait on; if you pushed 9f8e7d6 a moment ago, GitHub may not show it yet, so run team-ci-wait again"
+}
+
+@test "the head the worker means, in full or short, is waited on" {
+  checks 0 "$(check test PENDING)"
+  checks 1 "$(check test SUCCESS)"
+  run_bin team-ci-wait "$url" "$head"
+  assert_equal "$status" 0
+  assert_contains "$output" "team-ci-wait: waiting on the checks of owner/proj#217 at a1b2c3d"
+  assert_contains "$output" "every check passed on a1b2c3d: test passed"
+  echo 0 >"$GH_DIR/look"
+  run_bin team-ci-wait "$url" "${head:0:7}"
+  assert_equal "$status" 0
+  assert_contains "$output" "every check passed on a1b2c3d: test passed"
+}
+
 @test "a merged or closed PR ends the wait with exit 1, naming its state" {
   checks 0 "$(check test PENDING)"
   pr MERGED "$head" 1
@@ -249,8 +270,12 @@ EOF
 @test "a malformed command line is a usage error, and a repo no project has is refused" {
   run_bin team-ci-wait
   assert_equal "$status" 2
-  assert_contains "$output" "usage: team-ci-wait <pr url>"
+  assert_contains "$output" "usage: team-ci-wait <pr url> [<sha>]"
   run_bin team-ci-wait "$url" extra
+  assert_equal "$status" 2
+  run_bin team-ci-wait "$url" a1b2c3
+  assert_equal "$status" 2
+  run_bin team-ci-wait "$url" "$head" extra
   assert_equal "$status" 2
   run_bin team-ci-wait https://github.com/owner/proj/issues/217
   assert_equal "$status" 2
