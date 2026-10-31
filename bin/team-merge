@@ -16,6 +16,16 @@
 #   its own since it (the first is named), is refused, to ask again; the approval's head must be
 #   one such an event logged; a legacy approval with no head holds for any head, its
 #   message sent no earlier than the PR's latest pr event;
+#   or, only when no merge-approved names the PR's url, Daniel's plan-time word: the latest
+#   merge-preapproved of the PR's project stands (no merge-preapproval-withdrawn of the project
+#   since; a withdrawn one is refused naming when and in which message), its discord_message is
+#   sent no earlier than the latest asked of the id it answers logged before it, and read back
+#   from Discord as a merge-approved's is; the project opts in now (merge_with_plan, read from
+#   projects.toml at each run) and is not the team's own (own_project: agent-team by name, by
+#   path or by repo); the PR's head branch is the task's branch for the project (its opened or
+#   worktree-added event's); and the latest review of the head (by the shorter prefix) has
+#   verdict pass; every check below holds for it too, and a refusal ends with a line saying to
+#   ask Daniel for the per-head word on the head;
 #   the PR is open, not a draft, does not conflict, and targets the project's base;
 #   every required check (the base branch's protection, gh pr checks --required and the
 #   project's required_checks) is present on the head and passed (a skipped one passes);
@@ -30,8 +40,9 @@
 # --auto or --admin; the PR is read again and must be merged (if gh left it open with auto-merge
 # on, auto-merge is turned off and it is exit 1); then merged is appended with pr, merge, head,
 # by (naming the Discord message and its author), project, branch, discord_message,
-# discord_channel and url (the PR's), and local_checks (the commands that passed on head) when
-# there were any. Prints {task, pr, merge, head, by}.
+# discord_channel, url (the PR's), approval (head for the per-head word, plan for the plan-time
+# one), and local_checks (the commands that passed on head) when there were any. Prints {task,
+# pr, merge, head, by}.
 # Then, when the project's primary checkout is the code checkout this runs from, that checkout
 # follows the base, so merged code reaches the scripts: on the base branch and clean (untracked
 # files aside), it is fast-forwarded to origin's, said on one line; on another branch or a
@@ -88,10 +99,38 @@ method=$(team_project "$project" merge_method)
 
 problems=()
 
-# Daniel's word: the latest merge-approved naming this PR's URL, its message sent since the first
-# pr or review event that logged the head it names (a legacy one names none: the PR's latest pr
-# event) and read back from Discord. A number alone names a PR in any repo, so it never counts.
+# Daniel's word on the PR, per head or at plan time. A <kind> event names Daniel's Discord message,
+# which holds when it is an id sent no earlier than <since> (the time of <what>) and Discord shows
+# it in the task's thread or #coordinator from an allowFrom author; then by and channel name it,
+# else its reason is one among the rest: word_from <kind> <message> <since> <what>
+thread=$(jq -r 'map(select(.event == "thread")) | last | .discord_thread // empty' <<<"$events")
 by='' channel=''
+word_from() {
+  local kind=$1 message=$2 since=$3 what=$4 sent places=() reply
+  if [[ ! $message =~ ^[1-9][0-9]{0,18}$ ]]; then
+    problems+=("$kind names discord_message '$message', which is not a Discord message id")
+    return
+  fi
+  # A Discord id holds the milliseconds since 2015-01-01 above its low 22 bits.
+  sent=$(((10#$message >> 22) / 1000 + 1420070400))
+  if ((sent < $(date -ud "$since" +%s))); then
+    problems+=("Discord message $message was sent at $(date -ud "@$sent" +%FT%TZ), before $what at $since, so it is not Daniel's word on this PR")
+    return
+  fi
+  if [[ -n $thread ]]; then places+=("the task's thread $thread"); fi
+  places+=("#coordinator $COORDINATOR_CHANNEL")
+  if reply=$(daniel_message "$message" "the approval" "${places[@]}" 2>"$scratch/word"); then
+    by="Discord message $message in $(jq -r .place <<<"$reply"), from $(jq -r .who <<<"$reply")"
+    channel=$(jq -r .channel <<<"$reply")
+  else
+    problems+=("$(<"$scratch/word")")
+  fi
+}
+
+# The per-head word: the latest merge-approved naming this PR's URL, its message sent since the
+# first pr or review event that logged the head it names (a legacy one names none: the PR's latest
+# pr event). A number alone names a PR in any repo, so it never counts.
+word=head message='' task_branch=''
 approval=$(jq -c --arg url "${url%/}" '
   [to_entries[] | .value + {i: .key}
     | select(.event == "merge-approved" and (.url | strings | rtrimstr("/")) == $url)] | last' <<<"$events")
@@ -102,32 +141,45 @@ logged=$(ledger_jq '
   if $head == "" then map(select(.event == "pr" and (.url | rtrimstr("/")) == $url)) | last else head_logged($url; $head) end
   | if . == null then empty else "\(.ts) \(.event)" end' -r --arg url "${url%/}" --arg head "$approved" <<<"$events")
 pr_ts=${logged% *}
+# The plan-time word, read only when no per-head word names the PR: the latest merge-preapproved of
+# the PR's project, standing until a later withdrawal, with asked, the latest asked of the id it
+# answers logged before it.
+preapproval=null
 if [[ $approval == null ]]; then
-  problems+=("no merge-approved event for $url: Daniel's word is not recorded")
-elif [[ -z $pr_ts ]]; then
-  problems+=("merge-approved names the head ${approved:0:7}, which no pr event of $url, nor a review since, logged: ask again on the PR's head")
-else
-  message=$(jq -r '.discord_message | tostring' <<<"$approval")
-  thread=$(jq -r 'map(select(.event == "thread")) | last | .discord_thread // empty' <<<"$events")
-  # A Discord id holds the milliseconds since 2015-01-01 above its low 22 bits.
-  if [[ $message =~ ^[1-9][0-9]{0,18}$ ]]; then
-    sent=$(((10#$message >> 22) / 1000 + 1420070400))
-  fi
-  if [[ ! $message =~ ^[1-9][0-9]{0,18}$ ]]; then
-    problems+=("merge-approved names discord_message '$message', which is not a Discord message id")
-  elif ((sent < $(date -ud "$pr_ts" +%s))); then
-    problems+=("Discord message $message was sent at $(date -ud "@$sent" +%FT%TZ), before the ${logged#* } event of $url${approved:+ at ${approved:0:7}} at $pr_ts, so it is not Daniel's word on this PR")
+  preapproval=$(ledger_jq '. as $events
+    | ([to_entries[] | select(.value.event == "merge-preapproved" and .value.project == $p)] | last | .key) as $k
+    | merge_preapproval($p) | if . == null then null else . as $a | . + {asked: ($events[:$k] | latest_asked($a.ask))} end' \
+    -c --arg p "$project" <<<"$events")
+fi
+if [[ $approval != null ]]; then
+  if [[ -z $pr_ts ]]; then
+    problems+=("merge-approved names the head ${approved:0:7}, which no pr event of $url, nor a review since, logged: ask again on the PR's head")
   else
-    places=()
-    if [[ -n $thread ]]; then places+=("the task's thread $thread"); fi
-    places+=("#coordinator $COORDINATOR_CHANNEL")
-    if word=$(daniel_message "$message" "the approval" "${places[@]}" 2>"$scratch/word"); then
-      by="Discord message $message in $(jq -r .place <<<"$word"), from $(jq -r .who <<<"$word")"
-      channel=$(jq -r .channel <<<"$word")
-    else
-      problems+=("$(<"$scratch/word")")
-    fi
+    message=$(jq -r '.discord_message | tostring' <<<"$approval")
+    word_from merge-approved "$message" "$pr_ts" "the ${logged#* } event of $url${approved:+ at ${approved:0:7}}"
   fi
+elif [[ $preapproval == null ]] || jq -e '.withdrawn != null' <<<"$preapproval" >/dev/null; then
+  problems+=("no merge-approved event for $url: Daniel's word is not recorded")
+  if [[ $preapproval != null ]]; then
+    problems+=("$(jq -r '"Daniel'"'"'s plan-time word on \(.project), Discord message \(.discord_message), was withdrawn at \(.withdrawn.ts) in Discord message \(.withdrawn.discord_message)"' <<<"$preapproval")")
+  fi
+else
+  word=plan
+  message=$(jq -r '.discord_message | tostring' <<<"$preapproval")
+  ask=$(jq -r .ask <<<"$preapproval")
+  if [[ $(jq -r .asked <<<"$preapproval") == null ]]; then
+    problems+=("merge-preapproved answers the ask $ask, which $task did not log before it")
+  else
+    word_from merge-preapproved "$message" "$(jq -r .asked.ts <<<"$preapproval")" "the asked $ask"
+  fi
+  # Read now, so a project that stops opting in stops merging at once.
+  if own_project "$project"; then
+    problems+=("$project is the team's own project, whose PRs merge only on Daniel's word per head")
+  elif [[ $(team_project "$project" merge_with_plan) != true ]]; then
+    problems+=("$project does not opt in to plan-time merges now: its merge_with_plan in projects.toml is false")
+  fi
+  task_branch=$(jq -r --arg p "$project" '[.[] | select((.event == "opened" or .event == "worktree-added") and .project == $p)]
+    | last | .branch // empty' <<<"$events")
 fi
 
 # GitHub's facts: the checks from pr_part, the rest from one more view, the base branch's
@@ -172,6 +224,22 @@ else
   done < <(jq -r '.[].sha' <<<"$commits")
 fi
 
+# The plan-time word holds only for the task's own branch for the project, and only on a head whose
+# latest review (by the shorter prefix) is a pass.
+if [[ $word == plan && -n $head ]]; then
+  if [[ -z $task_branch ]]; then
+    problems+=("$task logged no branch for $project: no opened or worktree-added event of it")
+  elif [[ $branch != "$task_branch" ]]; then
+    problems+=("PR #$number comes from $branch, not $task_branch, $task's branch for $project")
+  fi
+  reviewed=$(ledger_jq '[.[] | select(.event == "review" and same_head(.head; $head))] | last' -c --arg head "$head" <<<"$events")
+  if [[ $reviewed == null ]]; then
+    problems+=("no review of the head ${head:0:7} is logged, so no reviewer has passed it")
+  elif [[ $(jq -r .verdict <<<"$reviewed") != pass ]]; then
+    problems+=("$(jq -r --arg h "${head:0:7}" '"the latest review of the head \($h), at \(.ts), is \(.verdict), not pass"' <<<"$reviewed")")
+  fi
+fi
+
 # Daniel's word on a head the PR has since moved past holds only through merges of the base whose
 # passing review was logged after the word, read in the primary checkout once the PR's branch and
 # the base are fetched from origin.
@@ -201,6 +269,11 @@ refuse_on_problems() {
     echo "team-merge: $task cannot merge PR #$number, so nothing changed:"
     printf '  %s\n' "${problems[@]}"
     if [[ -n ${attributed:-} ]]; then echo "  (team-clean-messages <worktree> strips them; push its rewrite and wait for the checks again)"; fi
+    if [[ $word == plan ]]; then
+      local on="the PR's head"
+      if [[ -n $head ]]; then on="the head ${head:0:7}"; fi
+      echo "  (Daniel's plan-time word does not hold: ask them for the per-head word on $on with team-ask, naming $url)"
+    fi
   } >&2
   exit 1
 }
@@ -252,9 +325,10 @@ merge=$(jq -r '.mergeCommit.oid // empty' "$scratch/after")
 trap 'status=$?; rm -rf "$scratch"; ((status == 0)) || echo "team-merge: PR #$number is merged (merge $merge), but its merged event was not logged" >&2' EXIT
 ledger_append "$(jq -cn --arg task "$task" --argjson pr "$number" --arg merge "$merge" --arg head "$head" \
   --arg by "$by" --arg project "$project" --arg branch "$branch" --arg message "$message" --arg channel "$channel" \
-  --arg url "$url" --argjson checks "$(printf '%s\n' "${local_checks[@]}" | jq -R . | jq -cs 'map(select(. != ""))')" \
+  --arg url "$url" --arg approval "$word" --argjson checks "$(printf '%s\n' "${local_checks[@]}" | jq -R . | jq -cs 'map(select(. != ""))')" \
   '{ts: (now | todate), task: $task, event: "merged", pr: $pr, merge: $merge, head: $head, by: $by,
-    project: $project, branch: $branch, discord_message: $message, discord_channel: $channel, url: $url}
+    project: $project, branch: $branch, discord_message: $message, discord_channel: $channel, url: $url,
+    approval: $approval}
     + if $checks == [] then {} else {local_checks: $checks} end')"
 trap 'rm -rf "$scratch"' EXIT
 jq -n --arg task "$task" --arg url "$url" --arg merge "$merge" --arg head "$head" --arg by "$by" \

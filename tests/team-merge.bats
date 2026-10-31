@@ -272,6 +272,52 @@ mv "$GH_DIR/pr.next" "$GH_DIR/pr.json"
 SH
 }
 
+# Daniel's plan-time word in place of the per-head one: proj opts in, the merge-approved is gone,
+# and T14 logs the plan ask plan-T14 at 02:00, Daniel's merge-preapproved of proj answering it in
+# message 1562661774950400000 (03:00), and a passing review of the head, its findings counted and
+# no guarded area.
+plan_word() {
+  sed -i 's|^toolkits = \[\]$|toolkits = []\nmerge_with_plan = true|' "$TEAM_HOME/projects.toml"
+  jq -c 'select(.event != "merge-approved")' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
+  mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
+  event T14 asked '{id: "plan-T14", text: "Approve the plan, and the merge with it?"}'
+  preapproved
+  passed
+}
+
+# Daniel's plan-time word on proj: preapproved [<message>] [<ask>]
+preapproved() {
+  event T14 merge-preapproved "{project: \"proj\", ask: \"${2:-plan-T14}\",
+    discord_message: \"${1:-1562661774950400000}\", scope: [\"src/\"]}"
+}
+
+# Daniel's withdrawal in message 1562676874444800000, sent at 04:00.
+withdrawn() {
+  event T14 merge-preapproval-withdrawn '{project: "proj", discord_message: "1562676874444800000"}'
+}
+
+# A passing review of <head> (the PR's by default), its findings counted, logged now: passed [<head>]
+passed() {
+  event T14 review "{verdict: \"pass\", head: \"${1:-$head}\",
+    findings: {blocking: 0, correctness: 0, security: 0, \"real-data\": 0, note: 0}, guarded: []}"
+}
+
+# The line a refusal on the plan-time word ends with.
+ask_per_head() {
+  echo "(Daniel's plan-time word does not hold: ask them for the per-head word on the head ${head:0:7} with team-ask, naming https://github.com/owner/proj/pull/5)"
+}
+
+# Run team-merge expecting the registry's refusal of merge_with_plan on the team's own project:
+# exit 1 naming it, gh pr merge never called and nothing appended to the ledger.
+registry_refused() {
+  local before
+  before=$(cat "$TEAM_HOME/ledger.jsonl")
+  run_bin -1 --separate-stderr team-merge T14
+  assert_contains "$stderr" "$1"
+  no_merge_call
+  assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$before"
+}
+
 @test "a malformed command line is a usage error and an unknown task is refused" {
   run_bin -2 team-merge
   run_bin -2 team-merge 14
@@ -300,7 +346,7 @@ SH
     pr: 5, merge: $m, head: $h,
     by: "Discord message 1562661774950400000 in the task'"'"'s thread 1563, from daniel (757)",
     project: "proj", branch: "feat/T14-tooling", discord_message: "1562661774950400000", discord_channel: "1563",
-    url: "https://github.com/owner/proj/pull/5"}')"
+    url: "https://github.com/owner/proj/pull/5", approval: "head"}')"
   assert_equal "$(jq -c . <<<"$output")" "$(jq -cn --arg m "$merge" --arg h "$head" '{task: "T14",
     pr: "https://github.com/owner/proj/pull/5", merge: $m, head: $h,
     by: "Discord message 1562661774950400000 in the task'"'"'s thread 1563, from daniel (757)"}')"
@@ -812,4 +858,172 @@ EOF
   assert_equal "$(git -C "$CODE_CHECKOUT" rev-parse HEAD)" "$before"
   [[ $stderr != *"code checkout"* ]]
   [[ -z $(git -C "$CODE_CHECKOUT" for-each-ref refs/remotes/origin/dev --contains "$(git -C "$CODE_ORIGIN" rev-parse dev)") ]]
+}
+
+@test "a pre-approved PR of a project that opts in merges on Daniel's plan-time word, with no merge-approved" {
+  plan_word
+  run_bin -0 --separate-stderr team-merge T14
+  assert_equal "$(stub_calls gh | jq -c 'select(.[0:2] == ["pr", "merge"])')" \
+    "[\"pr\",\"merge\",\"5\",\"--repo\",\"owner/proj\",\"--squash\",\"--match-head-commit\",\"$head\"]"
+  assert_equal "$(merged_events)" "$(jq -cn --arg m "$MERGE_SHA" --arg h "$head" '{task: "T14", event: "merged",
+    pr: 5, merge: $m, head: $h,
+    by: "Discord message 1562661774950400000 in the task'"'"'s thread 1563, from daniel (757)",
+    project: "proj", branch: "feat/T14-tooling", discord_message: "1562661774950400000", discord_channel: "1563",
+    url: "https://github.com/owner/proj/pull/5", approval: "plan"}')"
+  assert_equal "$(reads | jq -r '.[-1]')" "https://discord.com/api/v10/channels/1563/messages/1562661774950400000"
+  TEAM_HOME=$TEAM_HOME run "$REPO_ROOT/bin/team-log" --check
+  assert_equal "$status" 0
+}
+
+@test "Daniel's plan-time word in #coordinator counts when it is not in the task's thread" {
+  plan_word
+  approved_by 757 1562486564871995482
+  run_bin -0 team-merge T14
+  assert_equal "$(merged_events | jq -r '[.approval, .by] | join(" ")')" \
+    "plan Discord message 1562661774950400000 in #coordinator 1562486564871995482, from daniel (757)"
+}
+
+@test "with a merge-approved for the PR, the per-head word is read as today and the plan-time one is not" {
+  plan_word
+  # The per-head word, sent at 01:00 before the pr event, is refused though the plan-time word stands.
+  event T14 merge-approved '{url: "https://github.com/owner/proj/pull/5", discord_message: "1562631575961600000"}'
+  refused "Discord message 1562631575961600000 was sent at 2026-10-22T01:00:00Z, before the pr event of https://github.com/owner/proj/pull/5 at 2026-10-22T02:00:00Z, so it is not Daniel's word on this PR"
+  [[ $stderr != *"plan-time"* ]]
+
+  event T14 merge-approved '{url: "https://github.com/owner/proj/pull/5", discord_message: "1562661774950400000"}'
+  run_bin -0 team-merge T14
+  assert_equal "$(merged_events | jq -r .approval)" head
+}
+
+@test "a withdrawn plan-time word is refused, naming the withdrawal" {
+  plan_word
+  withdrawn
+  refused "no merge-approved event for https://github.com/owner/proj/pull/5: Daniel's word is not recorded" \
+    "Daniel's plan-time word on proj, Discord message 1562661774950400000, was withdrawn at 2026-10-22T02:00:00Z in Discord message 1562676874444800000"
+  [[ $stderr != *"$(ask_per_head)"* ]]
+  assert_equal "$(stub_calls curl)" ""
+}
+
+@test "a plan-time word granted again after a withdrawal merges" {
+  plan_word
+  withdrawn
+  event T14 asked '{id: "plan-T14-again", text: "Approve the merge with the plan again?"}'
+  # Message 1562691973939200000, sent at 05:00.
+  jq '.id = "1562691973939200000"' "$discord/1563-1562661774950400000.json" >"$discord/1563-1562691973939200000.json"
+  preapproved 1562691973939200000 plan-T14-again
+  run_bin -0 team-merge T14
+  assert_equal "$(merged_events | jq -r '[.approval, .discord_message] | join(" ")')" "plan 1562691973939200000"
+}
+
+@test "a project that does not opt in now is refused on the plan-time word" {
+  plan_word
+  sed -i '/^merge_with_plan = true$/d' "$TEAM_HOME/projects.toml"
+  refused "proj does not opt in to plan-time merges now: its merge_with_plan in projects.toml is false" "$(ask_per_head)"
+}
+
+@test "the team's own project is refused on the plan-time word, by name, by path and by repo" {
+  # By repo: proj's repo is the origin of the code checkout team-merge runs from.
+  plan_word
+  code_checkout
+  git -C "$CODE_CHECKOUT" remote set-url origin git@github.com:Owner/Proj.git
+  refused "proj is the team's own project, whose PRs merge only on Daniel's word per head" "$(ask_per_head)"
+}
+
+@test "the team's own project by name is refused on the plan-time word, whatever the registry says" {
+  plan_word
+  sed -i 's/^\[proj/[agent-team/' "$TEAM_HOME/projects.toml"
+  jq -c 'if .project == "proj" then .project = "agent-team" else . end' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
+  mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
+  registry_refused "agent-team.merge_with_plan: agent-team is the team's own project"
+  sed -i '/^merge_with_plan = true$/d' "$TEAM_HOME/projects.toml"
+  refused "agent-team is the team's own project, whose PRs merge only on Daniel's word per head" "$(ask_per_head)"
+}
+
+@test "the team's own project by path is refused on the plan-time word, whatever the registry says" {
+  merging_the_code
+  plan_word
+  registry_refused "proj.merge_with_plan: its path is the code checkout team-project runs from"
+  sed -i '/^merge_with_plan = true$/d' "$TEAM_HOME/projects.toml"
+  refused "proj is the team's own project, whose PRs merge only on Daniel's word per head" "$(ask_per_head)"
+}
+
+@test "a PR from a branch that is not the task's is refused on the plan-time word" {
+  plan_word
+  pr_field '.headRefName = "feat/T15-other"'
+  refused "PR #5 comes from feat/T15-other, not feat/T14-tooling, T14's branch for proj" "$(ask_per_head)"
+}
+
+@test "the task's branch for a project added by team-open --add is its worktree-added event's" {
+  plan_word
+  jq -c 'if .event == "opened" then .project = "lib" | .branch = "feat/T14-lib" else . end' \
+    "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
+  mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
+  event T14 worktree-added '{project: "proj", branch: "feat/T14-tooling", base: "dev", base_sha: "0123456", worktree: "/w/4"}'
+  run_bin -0 team-merge T14
+  assert_equal "$(merged_events | jq -r .approval)" plan
+}
+
+@test "a release-shaped PR, the base into another branch, is refused on the plan-time word" {
+  plan_word
+  pr_field '.baseRefName = "main" | .headRefName = "dev"'
+  refused "PR #5 targets main, not proj's base dev" "PR #5 comes from dev, not feat/T14-tooling, T14's branch for proj" \
+    "$(ask_per_head)"
+}
+
+@test "a plan-time word sent before the ask it answers, or answering no ask of the task, is refused without asking Discord" {
+  plan_word
+  # 1562631575961600000 is 01:00, an hour before the ask at 02:00.
+  preapproved 1562631575961600000
+  refused "Discord message 1562631575961600000 was sent at 2026-10-22T01:00:00Z, before the asked plan-T14 at 2026-10-22T02:00:00Z, so it is not Daniel's word on this PR" \
+    "$(ask_per_head)"
+  assert_equal "$(stub_calls curl)" ""
+
+  preapproved 1562661774950400000 plan-T99
+  refused "merge-preapproved answers the ask plan-T99, which T14 did not log before it" "$(ask_per_head)"
+  assert_equal "$(stub_calls curl)" ""
+}
+
+@test "a plan-time word Discord cannot show, or by an author not in allowFrom, is refused" {
+  plan_word
+  rm "$discord/1563-1562661774950400000.json"
+  refused "Discord message 1562661774950400000 cannot be fetched from the task's thread 1563 or #coordinator 1562486564871995482" \
+    "$(ask_per_head)"
+  approved_by 999
+  refused "Discord message 1562661774950400000 is by daniel (999), who is not in allowFrom" "$(ask_per_head)"
+}
+
+@test "a PR with no review of its head is refused on the plan-time word" {
+  plan_word
+  jq -c 'select(.event != "review")' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
+  mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
+  passed 0fedcba9876543210
+  refused "no review of the head ${head:0:7} is logged, so no reviewer has passed it" "$(ask_per_head)"
+}
+
+@test "a PR whose latest review of its head found something is refused on the plan-time word, and a later pass merges it" {
+  plan_word
+  review "${head:0:8}" findings
+  refused "the latest review of the head ${head:0:7}, at 2026-10-22T02:00:00Z, is findings, not pass" "$(ask_per_head)"
+  passed "${head:0:7}"
+  run_bin -0 team-merge T14
+  assert_equal "$(merged_events | jq -r .approval)" plan
+}
+
+@test "a refusal on the plan-time word lists every reason at once, the checks every merge gets among them" {
+  plan_word
+  review "$head" findings
+  pr_field '.headRefName = "feat/T15-other"'
+  checks '[{"name": "test", "bucket": "fail", "state": "FAILURE"},
+    {"name": "agent-review", "bucket": "pending", "state": "IN_PROGRESS"}]'
+  jq -n --arg head "$head" '[
+    {sha: "1111111111111111111111111111111111111111",
+     commit: {message: "feat: one\n\nCo-Authored-By: Claude <noreply@anthropic.com>"}},
+    {sha: $head, commit: {message: "test: two"}}]' >"$gh_dir/commits.json"
+  refused "PR #5 comes from feat/T15-other, not feat/T14-tooling, T14's branch for proj" \
+    "the latest review of the head ${head:0:7}, at 2026-10-22T02:00:00Z, is findings, not pass" \
+    "required check lint is missing on the head" "required check test has not passed on the head" \
+    "checks failing on the head: test" "checks pending on the head: agent-review" \
+    "agent-review is in_progress on the head, not success" \
+    "commit 1111111 (feat: one) carries an attribution line: Co-Authored-By: Claude <noreply@anthropic.com>"
+  assert_equal "$(tail -n 1 <<<"$stderr")" "  $(ask_per_head)"
 }
