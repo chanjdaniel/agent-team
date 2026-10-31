@@ -264,6 +264,21 @@ SETTINGS=(coordinator.settings.json settings/worker.json)
   grep -qF '`review.md`' <<<"$(grep -F '`ui-check`' "$REPO_ROOT/roles/reviewer.md")"
 }
 
+# A reviewer proves nothing with a test of its own (its edit hook keeps it to the task directory):
+# it writes a suspected bug up with a test plan, and the builder writes and runs that test first.
+@test "a reviewer hands a suspected bug's test plan to the builder, who runs it before the fix" {
+  local reviewer builder
+  reviewer=$(awk '$0 == "## What you do" { on = 1; next } /^## / { on = 0 } on' "$REPO_ROOT/roles/reviewer.md")
+  builder=$(awk '$0 == "## What you do" { on = 1; next } /^## / { on = 0 } on' "$REPO_ROOT/roles/builder.md")
+  grep -qF 'suspect' <<<"$reviewer"
+  grep -qF 'test plan the builder can run: the seam, the input, the result expected and the result suspected' <<<"$reviewer"
+  grep -qF 'Never write or run a probe test of your own' <<<"$reviewer"
+  grep -qF 'finding with a test plan' <<<"$builder"
+  grep -qF 'before you change the code' <<<"$builder"
+  grep -qF 'test plan' "$REPO_ROOT/templates/briefs/builder-round.md"
+  grep -qF 'test plan' "$REPO_ROOT/templates/briefs/rereview.md"
+}
+
 # The tools the sessions run send usage data off the machine unless told not to (T43's audit):
 # lavish-axi's analytics, codegraph's telemetry and Chrome DevTools MCP's Google usage statistics.
 @test "the worker and coordinator settings turn off the tools' telemetry" {
