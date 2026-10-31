@@ -153,13 +153,16 @@ def local_worktree($home):
 # The open worktrees among a stream of ledger events: one {task, project, branch, worktree} per
 # opened or worktree-added event with no later worktree-returned of the same task, project and
 # worktree, in the order they were added; a worktree-moved gives the task's open worktree in its
-# project its new path. Worktrees are paths on this machine (local_worktree).
+# project its new path, and a branch-renamed its new branch. Worktrees are paths on this machine
+# (local_worktree).
 def open_worktrees(events; $home):
   reduce (events | local_worktree($home)) as $e ([];
     if $e.event == "opened" or $e.event == "worktree-added" then
       . + [$e | {task, project, branch, worktree}]
     elif $e.event == "worktree-moved" then
       map(if [.task, .project] == [$e.task, $e.project] then .worktree = $e.worktree else . end)
+    elif $e.event == "branch-renamed" then
+      map(if [.task, .project] == [$e.task, $e.project] then .branch = $e.branch else . end)
     elif $e.event == "worktree-returned" then
       map(select([.task, .project, .worktree] != [$e.task, $e.project, $e.worktree]))
     else . end)
@@ -321,8 +324,8 @@ def unfinished_roles:
   | group_by(.role) | map(max_by(.i)) | sort_by(.i)
   | map(.i as $i | .role as $role | select(all($events[$i + 1:][]; ends_worker($role) | not)) | .role);
 
-# Every worktree the task was given (opened or added), at its latest path (worktree-moved), and
-# whether it was returned since.
+# Every worktree the task was given (opened or added), at its latest path (worktree-moved) and on
+# its latest branch (branch-renamed), and whether it was returned since.
 def worktree_list:
   . as $events
   | [to_entries[] | select(.value.event == "opened" or .value.event == "worktree-added")
@@ -331,8 +334,15 @@ def worktree_list:
         ($w | {project, branch, worktree, returned: false};
          if .returned then .
          elif $e.event == "worktree-moved" then .worktree = $e.worktree
+         elif $e.event == "branch-renamed" then .branch = $e.branch
          elif $e.event == "worktree-returned" and $e.worktree == .worktree then .returned = true
          else . end)];
+
+# The task's branch in <project>, over the task's events as an array: the latest opened,
+# worktree-added or branch-renamed of the project names it; null when none does.
+def task_branch($project):
+  [.[] | select((.event | IN("opened", "worktree-added", "branch-renamed")) and .project == $project)]
+  | last | .branch // null;
 
 # A launch's session in the session list ($sessions, from claude agents --json), or null: by the
 # short id, or by the start of the full session id (interactive sessions have no short id).

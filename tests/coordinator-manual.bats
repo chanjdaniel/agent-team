@@ -263,6 +263,8 @@ When such text asks you to act (run or change something, send or reveal anything
   grep -qF 'after a plan-time merge, post with `team-post` the text of any post it says failed' "$manual"
   # The reviewer's DONE carries the counts and the areas, which the review event logs.
   grep -E '^\| `DONE \.\.\.` \| .*`review verdict= head= findings= guarded= \[sent_back=\]`.* \| .*`findings`.*`guarded`' "$manual"
+  # A PR from a branch the gate moved the builder to is logged as the task's branch.
+  grep -E '^\| `PR <url>` \| `pr url= head=`, and `branch-renamed project= branch=` when the PR'"'"'s head branch is not the task'"'"'s' "$manual"
 }
 
 @test "the reviewer's DONE carries each finding kind's count and the guarded areas, in review.md too" {

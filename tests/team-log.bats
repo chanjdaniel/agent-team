@@ -95,6 +95,7 @@ gate-run team-log run head outcome
 merge-approved team-log url discord_message
 merge-preapproved team-log project ask discord_message scope
 merge-preapproval-withdrawn team-log project discord_message
+branch-renamed team-log project branch
 failed team-log reason
 retro-schedule team-log every_hours discord_message
 stowed team-handoff machine worktrees roles
@@ -268,7 +269,8 @@ $TEAM_HOME/ledger.jsonl: 3 of 7 lines break the ledger contract"
 }
 
 @test "every kind team-log writes is appended with its required fields and a note" {
-  # merge-preapproved names a project of the task that opts in, and an ask it logged before.
+  # merge-preapproved names a project of the task that opts in, and an ask it logged before;
+  # branch-renamed a new branch of it that names the task.
   plan_registry
   opened T14 proj
   local kind args count=0
@@ -276,14 +278,14 @@ $TEAM_HOME/ledger.jsonl: 3 of 7 lines break the ledger contract"
     # A head is a sha, since merge-approved's must be one a pr event logged, which team-log adds.
     mapfile -t args < <(jq -r --arg k "$kind" --arg soon "$(soon)" '(.kinds[$k].required | to_entries[]
       | "\(.key)=\(if .key == "head" then "a1b2c3d4" elif .key == "project" then "proj" elif .key == "ask" then "x y"
-          elif .key == "scope" then "[\"src/\"]"
+          elif .key == "scope" then "[\"src/\"]" elif .key == "branch" then "feat/T14-x-fresh"
           else .value | if type == "array" then .[0] elif . == "array" then "[]" elif . == "number" then "7" elif . == "id" then $soon else "x y" end end)"),
       (select($k == "merge-approved") | "head=a1b2c3d4")' "$CONTRACT")
     run_bin -0 team-log T14 "$kind" "${args[@]}" "note=why $kind"
     count=$((count + 1))
     assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r '.event + " " + .note')" "$kind why $kind"
   done < <(jq -r '.kinds | to_entries[] | select([.value.writer] | flatten | index("team-log")) | .key' "$CONTRACT")
-  assert_equal "$count" "20"
+  assert_equal "$count" "21"
   run_bin -0 team-log --check
 }
 
@@ -569,6 +571,31 @@ merge-preapproved proj
 merge-preapproval-withdrawn proj
 LINES
   )"
+  run_bin -0 team-log --check
+}
+
+@test "branch-renamed records the task's new branch for one of its projects, which names the task and is not its branch now" {
+  opened T14 proj
+  opened T14 lib worktree-added
+  run_bin -1 team-log T14 branch-renamed project=other branch=feat/T14-x-fresh
+  assert_equal "$output" "team-log: other is not a project of T14's opened or worktree-added events: proj, lib"
+  run_bin -1 team-log T14 branch-renamed project=proj branch=feat/T14-x
+  assert_equal "$output" "team-log: feat/T14-x is already T14's branch for proj"
+  run_bin -1 team-log T14 branch-renamed project=proj branch=feat/T15-x
+  assert_equal "$output" "team-log: feat/T15-x does not name T14, as a branch of its worktree must"
+  run_bin -1 team-log T14 branch-renamed project=proj branch=feat/T140-x
+  assert_equal "$output" "team-log: feat/T140-x does not name T14, as a branch of its worktree must"
+  run_bin -1 team-log T14 branch-renamed project=proj 'branch=feat/T14..x'
+  assert_equal "$output" "team-log: feat/T14..x is not a branch name git takes (git check-ref-format --branch)"
+  assert_equal "$(ledger_events | grep -c branch-renamed)" 0
+
+  run_bin -0 team-log T14 branch-renamed project=proj branch=feat/T14-x-fresh
+  assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -c 'del(.ts)')" \
+    '{"task":"T14","event":"branch-renamed","project":"proj","branch":"feat/T14-x-fresh"}'
+  # The latest one is the task's branch now: renaming it to itself is refused, back again is not.
+  run_bin -1 team-log T14 branch-renamed project=proj branch=feat/T14-x-fresh
+  assert_equal "$output" "team-log: feat/T14-x-fresh is already T14's branch for proj"
+  run_bin -0 team-log T14 branch-renamed project=proj branch=feat/T14-x
   run_bin -0 team-log --check
 }
 

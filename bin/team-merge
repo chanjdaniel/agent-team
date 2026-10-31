@@ -22,8 +22,9 @@
 #   sent no earlier than the latest asked of the id it answers logged before it, and read back
 #   from Discord as a merge-approved's is; the project opts in now (merge_with_plan, read from
 #   projects.toml at each run) and is not the team's own (own_project: agent-team by name, by
-#   path or by repo); the PR's head branch is the task's branch for the project (its opened or
-#   worktree-added event's); the latest review of the head (by the shorter prefix) has verdict
+#   path or by repo); the PR's head branch is the task's branch for the project (its latest
+#   opened, worktree-added or branch-renamed event's, so a branch the gate made the builder move
+#   to counts once the coordinator logs it); the latest review of the head (by the shorter prefix) has verdict
 #   pass and logged guarded as an empty list (one that left it out, or named areas, is refused,
 #   naming them); no review of the task counted a security or real-data finding, fixed or not,
 #   or left out its findings, each such review named by its head and time; the PR's changed
@@ -32,7 +33,7 @@
 #   changed path is within the approval's scope (an entry ending in / covers every path under it,
 #   any other that path only), each one outside named; and no changed path matches a guarded
 #   pattern of bin/lib/guarded (CI, dependencies, migrations, settings, permissions, secrets),
-#   each one named with its areas; a per-head merge checks none of these; every check below holds
+#   as it is or with its camelCase humps split off by underscores, each one named with its areas; a per-head merge checks none of these; every check below holds
 #   for it too, and a refusal ends with a line saying to ask Daniel for the per-head word on the
 #   head;
 #   the PR is open, not a draft, does not conflict, and targets the project's base;
@@ -204,8 +205,7 @@ else
   elif [[ $(team_project "$project" merge_with_plan) != true ]]; then
     problems+=("$project does not opt in to plan-time merges now: its merge_with_plan in projects.toml is false")
   fi
-  task_branch=$(jq -r --arg p "$project" '[.[] | select((.event == "opened" or .event == "worktree-added") and .project == $p)]
-    | last | .branch // empty' <<<"$events")
+  task_branch=$(ledger_jq 'task_branch($project) // ""' -r --arg project "$project" <<<"$events")
 fi
 
 # GitHub's facts: the checks from pr_part, the rest from one more view, the base branch's
@@ -257,7 +257,7 @@ fi
 # finding, or left its counts out.
 if [[ $word == plan && -n $head ]]; then
   if [[ -z $task_branch ]]; then
-    problems+=("$task logged no branch for $project: no opened or worktree-added event of it")
+    problems+=("$task logged no branch for $project: no opened, worktree-added or branch-renamed event of it")
   elif [[ $branch != "$task_branch" ]]; then
     problems+=("PR #$number comes from $branch, not $task_branch, $task's branch for $project")
   fi
@@ -293,14 +293,25 @@ if [[ $word == plan && -n $head ]]; then
     listed=$(jq -s 'add // [] | length' "$scratch/files") count=$(jq -r '.changedFiles // "unknown number of"' "$scratch/pr")
     [[ $listed == "$count" ]] ||
       problems+=("GitHub's list of PR #$number's files holds $listed files, not its $count changed files, so not every file could be checked")
-    # Each guarded pattern's matches among the changed paths, as {path, area} lines; a path with a
-    # line break, which grep would read as two, is refused below.
+    # Each guarded pattern's matches among the changed paths, as {path, area} lines: a path matches
+    # as it is, or with each camelCase hump split off by an underscore (applicantSessionExpiry.ts
+    # as applicant_Session_Expiry.ts, CSRFToken.ts as CSRF_Token.ts), so a pattern's words match
+    # inside such a name. A path with a line break, which grep would read as two, is refused below.
     paths=$(jq -r '.[].path' <<<"$changed") guarded=''
+    humps=$(sed -E 's/([[:lower:][:digit:]])([[:upper:]])/\1_\2/g; s/([[:upper:]])([[:upper:]][[:lower:]])/\1_\2/g' <<<"$paths")
     while read -r area pattern; do
       [[ -n $area && $area != '#'* ]] || continue
-      rc=0
-      matched=$(grep -Eix -e "$pattern" <<<"$paths") || rc=$?
-      ((rc < 2)) || problems+=("the guarded pattern '$pattern' ($area) in bin/lib/guarded cannot be read by grep -E")
+      lines=''
+      for form in "$paths" "$humps"; do
+        rc=0
+        found=$(grep -Eixn -e "$pattern" <<<"$form") || rc=$?
+        if ((rc > 1)); then
+          problems+=("the guarded pattern '$pattern' ($area) in bin/lib/guarded cannot be read by grep -E")
+          break
+        fi
+        lines+=$(cut -d: -f1 <<<"$found")$'\n'
+      done
+      matched=$(awk 'NR == FNR { if ($0 != "") hit[$0]; next } FNR in hit' <(printf '%s' "$lines") <(printf '%s\n' "$paths"))
       guarded+=$(jq -cR --arg area "$area" 'select(. != "") | {path: ., area: $area}' <<<"$matched")$'\n'
     done <"$TEAM_LIB/guarded"
     add_problems --argjson scope "$(jq -c .scope <<<"$preapproval")" --argjson guarded "$(jq -cs . <<<"$guarded")" '

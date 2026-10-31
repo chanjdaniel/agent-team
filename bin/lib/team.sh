@@ -1022,15 +1022,18 @@ team_project() {
 
 # Whether the registered project <name> is the team's own, which never merges on a plan-time
 # word whatever the registry says: named agent-team, its primary checkout the code checkout this
-# library runs from, or its repo, in any case, the owner/name of that checkout's origin (an
-# HTTPS or SSH URL, a trailing .git or slash aside). Refuses an unknown project:
-# own_project <name>
+# library runs from or, when that checkout is a linked worktree, its main worktree, or its repo,
+# in any case, the owner/name of that checkout's origin (an HTTPS or SSH URL, a trailing .git or
+# slash aside). Refuses an unknown project: own_project <name>
 own_project() {
-  local project code url
+  local project code path common url
   [[ $1 != agent-team ]] || return 0
   project=$(team_project "$1") || exit 1
   code=$(dirname "$(dirname "$TEAM_LIB")")
-  same_path "$(jq -r .path <<<"$project")" "$code" && return 0
+  path=$(jq -r .path <<<"$project")
+  same_path "$path" "$code" && return 0
+  common=$(git -C "$code" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) &&
+    [[ ${common##*/} == .git ]] && same_path "$path" "$(dirname "$common")" && return 0
   url=$(git -C "$code" remote get-url origin 2>/dev/null) || return 1
   url=${url%/} url=${url%.git}
   [[ $url =~ [:/]([^/:]+/[^/:]+)$ ]] || return 1

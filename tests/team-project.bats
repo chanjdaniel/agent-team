@@ -576,6 +576,42 @@ SCRIPT
   assert_contains "$stderr" "unknown project 'gamma'"
 }
 
+# A worktree of the test's code checkout at ~/projects/tools-wt, with this checkout's bin/ in it,
+# which run_bin then runs from: own_worktree
+own_worktree() {
+  local wt=$HOME/projects/tools-wt
+  git -C "$CODE_CHECKOUT" worktree add -q --detach "$wt"
+  copy_bin "$wt/bin"
+  CODE_CHECKOUT=$wt
+}
+
+@test "run from a worktree of the code checkout, the project at the checkout's main worktree is the team's own" {
+  own_checkout
+  local main=$CODE_CHECKOUT
+  own_worktree
+  own_registry tools projects/tools true owner/elsewhere
+  run_bin -1 --separate-stderr team-project --check
+  assert_contains "$stderr" "tools.merge_with_plan: its path is $main, the main worktree of the code checkout team-project runs from, the team's own project, whose PRs merge only on Daniel's word per head"
+  own_registry tools projects/tools-wt true owner/elsewhere
+  run_bin -1 --separate-stderr team-project --check
+  assert_contains "$stderr" "tools.merge_with_plan: its path is the code checkout team-project runs from, $CODE_CHECKOUT, the team's own project"
+
+  cat >"$CODE_CHECKOUT/bin/team-own" <<'SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+if own_project "$1"; then echo own; else echo other; fi
+SCRIPT
+  chmod +x "$CODE_CHECKOUT/bin/team-own"
+  git -C "$main" remote set-url origin git@github.com:owner/tools.git
+  own_registry tools projects/tools false owner/elsewhere
+  run_bin -0 team-own tools
+  assert_equal "$output" own
+  own_registry tools projects/other false owner/elsewhere
+  run_bin -0 team-own tools
+  assert_equal "$output" other
+}
+
 @test "--help documents every key the registry may hold, and no other" {
   local known documented
   # The keys from the script's own lists: a project's, its optional ones, and its pool's.

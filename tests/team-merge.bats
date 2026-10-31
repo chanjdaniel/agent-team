@@ -1008,6 +1008,21 @@ EOF
   refused "PR #5 comes from feat/T15-other, not feat/T14-tooling, T14's branch for proj" "$(ask_per_head)"
 }
 
+@test "a PR from the branch a branch-renamed logged for the task merges on the plan-time word, and one from the old branch does not" {
+  plan_word
+  pr_field '.headRefName = "feat/T14-tooling-fresh"'
+  refused "PR #5 comes from feat/T14-tooling-fresh, not feat/T14-tooling, T14's branch for proj" "$(ask_per_head)"
+  event T14 branch-renamed '{project: "proj", branch: "feat/T14-tooling-fresh"}'
+  run_bin -0 team-merge T14
+  assert_equal "$(merged_events | jq -r '[.approval, .branch] | join(" ")')" "plan feat/T14-tooling-fresh"
+}
+
+@test "after a branch-renamed, a PR from the task's old branch is refused on the plan-time word" {
+  plan_word
+  event T14 branch-renamed '{project: "proj", branch: "feat/T14-tooling-fresh"}'
+  refused "PR #5 comes from feat/T14-tooling, not feat/T14-tooling-fresh, T14's branch for proj" "$(ask_per_head)"
+}
+
 @test "the task's branch for a project added by team-open --add is its worktree-added event's" {
   plan_word
   jq -c 'if .event == "opened" then .project = "lib" | .branch = "feat/T14-lib" else . end' \
@@ -1139,18 +1154,48 @@ EOF
     back-end/.python-version:dependencies .tool-versions:dependencies back-end/Dockerfile:dependencies
     web.dockerfile:dependencies docker-compose.prod.yml:dependencies compose.yml:dependencies
     .dockerignore:dependencies
-    back-end/migrations/migrate_roles.py:migrations db/migration/0001.py:migrations
-    scripts/migrate_users.py:migrations db/add_roles_migration.py:migrations schema/init.sql:migrations
+    "back-end/migrations/migrate_roles.py:migrations, permissions" db/migration/0001.py:migrations
+    "scripts/migrate_users.py:ci, migrations" "db/add_roles_migration.py:migrations, permissions" schema/init.sql:migrations
     .vscode/launch.json:settings .mcp.json:settings CLAUDE.md:settings front-end/AGENTS.md:settings
     front-end/.env.example:settings .env:settings back-end/settings.py:settings treehouse.toml:settings
     back-end/api/permissions.py:permissions src/rbac/roles.py:permissions src/ACL.py:permissions
     docs/CODEOWNERS:permissions
     back-end/utils/secret_key.py:secrets config/credentials.json:secrets certs/server.pem:secrets
-    deploy/id.key:secrets certs/client.p12:secrets certs/client.pfx:secrets
+    "deploy/id.key:settings, secrets" certs/client.p12:secrets certs/client.pfx:secrets
     ".claude/settings.json:settings" ".github/CODEOWNERS:ci, permissions"
+    # What the workflows, hooks and gate run, deploy and agent settings, a container's entrypoint,
+    # the real-data guard and the database's shape outside migrations/, and authentication and
+    # session handling by the words in their paths.
+    scripts/nm-test.sh:ci scripts/lock-backend-requirements.sh:ci scripts/knowledge_graph.py:ci
+    front-end/scripts/no-eval.ts:ci front-end/scripts/bundle-budget.ts:ci scripts/treehouse-setup.sh:ci
+    .husky/pre-push:ci lefthook.yml:ci Makefile:ci back-end/justfile:ci
+    scripts/real_data_check.py:ci tools/real_data_terms.txt:ci
+    back-end/docker-entrypoint.sh:dependencies docker-entrypoint-initdb.d/seed.js:dependencies
+    back-end/reset_database.py:migrations back-end/init_database.py:migrations back-end/mongo-init.js:migrations
+    back-end/lookup_indexes.py:migrations back-end/db_config.py:migrations
+    front-end/vercel.json:settings back-end/vercel.json:settings netlify.toml:settings fly.toml:settings
+    Procfile:settings render.yaml:settings .agents/plugins/marketplace.json:settings .cursor/rules.md:settings
+    back-end/api/applicant_auth.py:permissions back-end/utils/cors.py:permissions
+    back-end/utils/security_headers.py:permissions back-end/utils/request_origin.py:permissions
+    back-end/utils/proxy.py:permissions back-end/utils/captcha.py:permissions back-end/sign_in_limits.py:permissions
+    back-end/guards.py:permissions src/csrf.ts:permissions src/oauth/callback.ts:permissions
+    src/login-form.tsx:permissions src/authz.py:permissions src/authentication/views.py:permissions
+    back-end/utils/tokens.py:secrets back-end/utils/application_token.py:secrets
+    back-end/utils/session_storage.py:secrets src/jwt.ts:secrets src/password_reset.py:secrets
+    back-end/api/floorplans_access.py:permissions back-end/tests/test_markets_roles.py:permissions
+    back-end/utils/env_file.py:settings front-end/env.d.ts:settings back-end/utils/deployment.py:settings
+    front-end/eslint.config.ts:ci front-end/vite.config.ts:ci front-end/playwright.config.ts:ci
+    back-end/pytest.ini:ci .gitattributes:ci front-end/tsconfig.app.json:ci
+    # A camelCase or PascalCase name counts its humps as words.
+    front-end/src/views/LoginView.vue:permissions front-end/src/utils/signedIn.ts:permissions
+    front-end/src/views/EmailVerificationView.vue:permissions front-end/src/utils/permissionTable.ts:permissions
+    front-end/src/utils/applicantSessionExpiry.ts:secrets front-end/src/views/PasswordResetView.vue:secrets
+    "src/CSRFToken.ts:permissions, secrets"
   )
   local plain=(back-end/api/views.py front-end/src/App.test.tsx src/oracle.py src/environment.py src/keyboard.py
-    src/settled.py)
+    src/settled.py src/author.py src/tokenizer.py docs/scripts.md src/guardian.ts src/descriptions.py
+    src/indexes_doc/readme.md src/assigning.py front-end/src/utils/accessibleNames.ts src/AuthorList.vue
+    front-end/src/utils/marketGuide.ts src/environmentPicker.ts)
   local entry paths=() reasons=()
   for entry in "${guarded[@]}"; do
     paths+=("${entry%%:*}")

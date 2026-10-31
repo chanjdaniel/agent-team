@@ -163,3 +163,27 @@ EVENTS
 EVENTS
 )" '["builder"]'
 }
+
+@test "a branch-renamed gives the task's worktree in its project its new branch, in task_branch, open_worktrees and worktree_list" {
+  local events='{"event": "opened", "project": "proj", "branch": "feat/T1-x", "worktree": "/w/1", "path": "feature"}
+{"event": "worktree-added", "project": "lib", "branch": "feat/T1-lib", "worktree": "/w/2"}
+{"event": "branch-renamed", "project": "proj", "branch": "feat/T1-x-fresh"}'
+  local lib=(jq -L "$REPO_ROOT/bin/lib" -sc)
+  assert_equal "$("${lib[@]}" 'include "ledger"; [task_branch("proj"), task_branch("lib"), task_branch("other")]' <<<"$events")" \
+    '["feat/T1-x-fresh","feat/T1-lib",null]'
+  assert_equal "$("${lib[@]}" 'include "ledger"; map({task: "T1"} + .) | [open_worktrees(.[]; "/home/x") | [.project, .branch]]' <<<"$events")" \
+    '[["proj","feat/T1-x-fresh"],["lib","feat/T1-lib"]]'
+  assert_equal "$("${lib[@]}" 'include "ledger"; [worktree_list[] | [.project, .branch]]' <<<"$events")" \
+    '[["proj","feat/T1-x-fresh"],["lib","feat/T1-lib"]]'
+}
+
+@test "a branch-renamed meets the contract, written by team-log" {
+  local at='"ts":"2026-10-31T02:00:00Z","task":"T7"'
+  append_as team-log "{$at,\"event\":\"branch-renamed\",\"project\":\"proj\",\"branch\":\"feat/T7-x-fresh\"}"
+  assert_equal "$status" "0"
+  append_as team-log "{$at,\"event\":\"branch-renamed\",\"project\":\"proj\"}"
+  assert_contains "$output" "branch-renamed needs branch"
+  append_as team-open "{$at,\"event\":\"branch-renamed\",\"project\":\"proj\",\"branch\":\"feat/T7-x-fresh\"}"
+  assert_contains "$output" "branch-renamed events are written by team-log, not team-open"
+  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "1"
+}

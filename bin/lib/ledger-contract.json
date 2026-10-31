@@ -145,6 +145,11 @@
       "about": "Daniel withdrew the standing merge-preapproved of project, in discord_message",
       "required": {"project": "string", "discord_message": "id"}
     },
+    "branch-renamed": {
+      "writer": "team-log",
+      "about": "the task's branch in project is branch from now on, as when the gate rewrote the remote branch and the builder carried its commits to a new one; the latest opened, worktree-added or branch-renamed of the project names the task's branch there",
+      "required": {"project": "string", "branch": "string"}
+    },
     "failed": {
       "writer": "team-log",
       "required": {"reason": "string"}
