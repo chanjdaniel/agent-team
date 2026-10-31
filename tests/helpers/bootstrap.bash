@@ -225,7 +225,7 @@ footprint() {
 
 # The install of no-mistakes: a build of Daniel's fork at its pinned commit, on either OS.
 # shellcheck disable=SC2034 # read by the tests
-FORK_BUILD='d=$(mktemp -d) && git clone -q https://github.com/chanjdaniel/no-mistakes "$d" && git -C "$d" checkout -q ac6b53fbbac10a4ca6c940b004fd9c5f557f983e && make -C "$d" build && mkdir -p ~/.no-mistakes/bin && install -m 755 "$d/bin/no-mistakes" ~/.no-mistakes/bin/no-mistakes && rm -rf "$d"'
+FORK_BUILD='d=$(mktemp -d) && git clone -q https://github.com/chanjdaniel/no-mistakes "$d" && git -C "$d" checkout -q a544ba66594682fb8a0594de77f45ed519a41381 && make -C "$d" build && mkdir -p ~/.no-mistakes/bin && install -m 755 "$d/bin/no-mistakes" ~/.no-mistakes/bin/no-mistakes && rm -rf "$d"'
 
 # The lines of <stage> in the output, without the prefix.
 stage_lines() {

@@ -5,11 +5,11 @@
       "name": "claude",
       "version_cmd": "claude --version",
       "version_pattern": "([0-9]+\\.[0-9]+\\.[0-9]+) \\(Claude Code\\)",
-      "pin": "2.1.311",
+      "pin": "2.1.314",
       "pin_mismatch": "WARN",
       "source": {
-        "arch": "curl -fsSL https://claude.ai/install.sh | bash -s 2.1.311",
-        "macos": "curl -fsSL https://claude.ai/install.sh | bash -s 2.1.311"
+        "arch": "curl -fsSL https://claude.ai/install.sh | bash -s 2.1.314",
+        "macos": "curl -fsSL https://claude.ai/install.sh | bash -s 2.1.314"
       },
       "path": {
         "arch": "~/.local/bin",
@@ -139,8 +139,8 @@
       },
       "fork": {
         "repo": "chanjdaniel/no-mistakes",
-        "commit": "ac6b53fbbac10a4ca6c940b004fd9c5f557f983e",
-        "version": "1.84.0-13-gac6b53f"
+        "commit": "a544ba66594682fb8a0594de77f45ed519a41381",
+        "version": "1.84.0-36-ga544ba6"
       },
       "dir": {
         "arch": "~/.no-mistakes/bin",
