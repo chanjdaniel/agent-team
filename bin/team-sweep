@@ -3,8 +3,10 @@
 # the machine's task slots.
 #
 # Usage: team-sweep [--json | --wait]
-# Reads only ledger.jsonl, claude agents --json and team-slots status --stored --json (never
-# GitHub, and never a new reading of the machine's load), so it runs in about a second.
+# Reads only ledger.jsonl, claude agents --json, team-slots status --stored --json and the
+# modification times of the live sessions' transcripts, through bin/lib/session-activity (never
+# GitHub, never a transcript's content, and never a new reading of the machine's load), so it
+# runs in about a second.
 # A task is open when it has events and no closed; it is parked when its phase is held, blocked
 # or awaiting-merge, when it has an ask nothing settled (no answered with its id, no merge-approved
 # whose url its text names), or when its latest paused or waiting has no later resumed or
@@ -16,6 +18,12 @@
 #   waiting-input  a live session of an open task, not parked, whose state is blocked
 #   silent         a live, idle session of an open task, not parked, with no ledger event for the
 #                  task after that session's latest launch (one waiting for input is not also silent)
+#   stalled        a live, busy session of an open task, not parked, not waiting for input, whose
+#                  transcripts (its own and its subagents', under ~/.claude/projects) have not been
+#                  written for longer than its limit, 50 minutes (stall_limits in bin/lib/ledger.jq):
+#                  "<name> <short id> has written nothing for <h>h<mm>m" (or <m>m under an hour);
+#                  none for a session whose transcript cannot be found, nor when session-activity
+#                  fails, which says so in one line on stderr while the other findings still come
 #   stray          a live session named like a team worker (T<n>-<role>) whose task is closed or
 #                  not in the ledger; never one of T0, the load check's task
 #   slots          after every task finding, with task and session null: the machine's effective
@@ -70,14 +78,40 @@ esac
 ledger=$TEAM_HOME/ledger.jsonl
 [[ -e $ledger ]] || ledger=/dev/null
 
-# The findings now, as JSON in FINDINGS, from the ledger, a fresh read of the session list and
-# the machine's task slots; fails with the reason on stderr when the session list cannot be read.
+# The quiet time from which session-activity may read a session's transcripts: the default stall
+# limit, since no session quieter than that is stalled.
+parse_after=$(ledger_jq 'stall_limits.default' -nr)
+
+# session-activity's object for the session list (a JSON array): session_activity <sessions>
+# When it fails, or prints no JSON object, {} with one line on stderr, so no session is stalled
+# and the other findings still come.
+session_activity() {
+  local out errors status=0 reason
+  errors=$(mktemp)
+  out=$("$TEAM_LIB/session-activity" --parse-after "$parse_after" <<<"$1" 2>"$errors") || status=$?
+  if ((status)); then
+    reason=$(grep . "$errors" | tail -n 1) || reason="session-activity failed with exit $status and no reason given"
+  elif ! out=$(jq -ce 'select(type == "object")' <<<"$out" 2>/dev/null); then
+    reason="session-activity printed no JSON object"
+  fi
+  rm -f "$errors"
+  if [[ -n ${reason:-} ]]; then
+    echo "team-sweep: cannot read the sessions' transcripts, so none is found stalled: $reason" >&2
+    out='{}'
+  fi
+  printf '%s\n' "$out"
+}
+
+# The findings now, as JSON in FINDINGS, from the ledger, a fresh read of the session list, the
+# machine's task slots and the live sessions' transcripts; fails with the reason on stderr when
+# the session list cannot be read.
 look() {
-  local sessions slots
+  local sessions slots activity
   sessions=$(LIVE_SESSIONS='' && live_sessions && printf '%s' "$LIVE_SESSIONS") || return 1
   slots=$(machine_slots)
-  FINDINGS=$(ledger_jq 'ledger_events | sweep($sessions; $slots)' -nRc --argjson sessions "$sessions" \
-    --argjson slots "$slots" "$ledger")
+  activity=$(session_activity "$sessions")
+  FINDINGS=$(ledger_jq 'ledger_events | sweep($sessions; $slots; $activity)' -nRc --argjson sessions "$sessions" \
+    --argjson slots "$slots" --argjson activity "$activity" "$ledger")
 }
 
 # The sweep watch: see --wait in the header.

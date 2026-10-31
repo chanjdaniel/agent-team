@@ -1,0 +1,100 @@
+#!/usr/bin/env -S python3 -I
+# How long each live session's transcripts have gone unwritten, for team-sweep's stalled finding.
+#
+# Usage: session-activity --parse-after <seconds>   (the live session list on stdin)
+#
+# Reads the session list as claude agents --json prints it, an array, on stdin. For each session
+# with a sessionId, its transcripts are its own, ~/.claude/projects/*/<sessionId>.jsonl, and its
+# subagents', ~/.claude/projects/*/<sessionId>/subagents/*.jsonl, found as team-tokens finds
+# them. It prints one JSON object keyed by full session id, holding only the sessions with a
+# transcript: {quiet: <whole seconds since the newest modification among those files>,
+# running: null}. It reads only the files' modification times, never their content: running, the
+# tool calls still running, is null (not read). --parse-after is the quiet time below which a
+# session's transcripts are never opened. A file whose modification time cannot be read is skipped.
+# Exit 0 done, 1 a session list that is not a JSON array (or Python older than 3.11), 2 a
+# malformed command line.
+import glob
+import json
+import os
+import re
+import sys
+import time
+
+if sys.version_info < (3, 11):
+    print(
+        f"{os.path.basename(sys.argv[0])}: needs Python 3.11 or later, but runs under"
+        f" Python {sys.version.split()[0]} ({sys.executable}); on macOS run `brew install python@3.12`,"
+        " whose python3 the team's scripts put first on PATH",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+NAME = os.path.basename(sys.argv[0])
+USAGE = "usage: session-activity --parse-after <seconds>"
+
+
+def fail(message, status=1):
+    print(f"{NAME}: {message}", file=sys.stderr)
+    sys.exit(status)
+
+
+# Print this script's header: the comment block under its shebang, as bin/lib/team.sh does.
+def print_help():
+    with open(__file__, encoding="utf-8") as script:
+        next(script)
+        for line in script:
+            if not line.startswith("#"):
+                break
+            print(re.sub(r"^# ?", "", line), end="")
+
+
+# A session's transcripts under <projects>: its own and each of its subagents'.
+def transcript_paths(projects, session_id):
+    base = glob.escape(projects)
+    name = glob.escape(session_id)
+    return glob.glob(os.path.join(base, "*", f"{name}.jsonl")) + glob.glob(
+        os.path.join(base, "*", name, "subagents", "*.jsonl")
+    )
+
+
+# A session's entry, or None when it has no transcript to read: activity <session id> <now>
+def activity(projects, session_id, now):
+    newest = None
+    for path in transcript_paths(projects, session_id):
+        try:
+            modified = os.stat(path).st_mtime
+        except OSError:
+            continue
+        newest = modified if newest is None else max(newest, modified)
+    if newest is None:
+        return None
+    return {"quiet": max(0, int(now - newest)), "running": None}
+
+
+def main(args):
+    if args[:1] in (["--help"], ["-h"]):
+        print_help()
+        return
+    if len(args) != 2 or args[0] != "--parse-after" or not re.fullmatch(r"[0-9]+", args[1]):
+        fail(USAGE, 2)
+    try:
+        sessions = json.load(sys.stdin)
+    except (ValueError, UnicodeDecodeError) as error:
+        fail(f"the session list on stdin is not JSON: {error}")
+    if not isinstance(sessions, list):
+        fail("the session list on stdin is not a JSON array")
+    projects = os.path.join(os.environ.get("HOME", ""), ".claude", "projects")
+    now = time.time()
+    found = {}
+    for session in sessions:
+        session_id = session.get("sessionId") if isinstance(session, dict) else None
+        if not isinstance(session_id, str) or not re.fullmatch(r"[A-Za-z0-9-]+", session_id):
+            continue
+        entry = activity(projects, session_id, now)
+        if entry is not None:
+            found[session_id] = entry
+    print(json.dumps(found, separators=(",", ":")))
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

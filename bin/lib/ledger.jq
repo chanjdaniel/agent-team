@@ -392,12 +392,25 @@ def finding($task; $kind; $session; $name; $detail; $next):
   {task: $task, kind: $kind, session: $session, name: $name, next: $next,
    text: "\($task) \($kind): \($detail); next: \($next)"};
 
-# The no-worker, waiting-input and silent findings of an open task that is not parked. A live
-# session is judged by its latest launch, and one waiting for input is not also called silent.
+# The stall limits, in seconds: how long a busy session's transcripts may go unwritten before
+# team-sweep calls it stalled. 50 minutes, so with the sweep watch's three-minute stand the
+# coordinator is woken within the hour. team-sweep reads the session-activity floor from it too.
+def stall_limits: {default: 3000};
+
+# A duration in seconds as <h>h<mm>m, or <m>m under an hour.
+def duration:
+  (. / 60 | floor) as $m
+  | if $m < 60 then "\($m)m" else "\($m / 60 | floor)h\($m % 60 | tostring | if length < 2 then "0" + . else . end)m" end;
+
+# The no-worker, waiting-input, silent and stalled findings of an open task that is not parked,
+# the stalled one from session-activity's object ($activity, keyed by full session id). A live
+# session is judged by its latest launch, and one waiting for input is not also called silent;
+# stalled is a busy session, not waiting for input, whose transcripts have gone unwritten past
+# its limit (stall_limits).
 # A live session is at work while it is busy, waiting for input, or idle with no ledger event
 # since its launch (silent); idle with an event since, it has handed the next step back to the
 # coordinator, so a task with no session at work is no-worker however many are live.
-def task_findings($sessions):
+def task_findings($sessions; $activity):
   .[0].task as $task
   | length as $count
   | [to_entries[] | select(.value.event == "launch") | {i: .key, launch: .value}] as $launches
@@ -435,6 +448,10 @@ def task_findings($sessions):
           finding($task; "silent"; .short; .name;
             "\(.name) \(.short) is idle with no ledger event since its launch at \(.launch.ts)";
             "read claude logs \(.short), then send it one line or log what is known with team-log")
+        elif .live.status != "idle" and ($activity[.live.sessionId // ""].quiet // 0) > stall_limits.default then
+          finding($task; "stalled"; .short; .name;
+            "\(.name) \(.short) has written nothing for \($activity[.live.sessionId].quiet | duration)";
+            "read claude logs \(.short), then follow the recover-worker skill's stalled rung")
         else empty end);
 
 # The following defs read the whole ledger.
@@ -524,15 +541,16 @@ def slots_finding:
        text: "slots: \($summary); \(join("; ")): new tasks wait; tell Daniel which wait"}
   end;
 
-# team-sweep's findings, over every ledger event as one array, the session list and the machine's
-# task slots ($slots, as slots_finding takes them): each open task's unless it is parked, then the
+# team-sweep's findings, over every ledger event as one array, the session list, the machine's
+# task slots ($slots, as slots_finding takes them) and session-activity's object ($activity, as
+# task_findings takes it): each open task's unless it is parked, then the
 # stray sessions (named like a team worker whose task is closed or not in the ledger, never the
 # load check's T0, whose session the coordinator waits on for up to 30 minutes), in task number
 # order; then the slots finding and the retro-due finding.
-def sweep($sessions; $slots):
+def sweep($sessions; $slots; $activity):
   . as $events
   | by_task as $tasks
-  | ([($tasks[] | select(is_open) | select(parked | not) | task_findings($sessions)),
+  | ([($tasks[] | select(is_open) | select(parked | not) | task_findings($sessions; $activity)),
       (team_sessions($tasks; $sessions)[] | select(.task_state | IN("closed", "unknown"))
         | finding(.task; "stray"; .session; .name;
             "\(.name) \(.session) is live but \(stray_reason)";

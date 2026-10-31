@@ -74,7 +74,7 @@ A task you park on Daniel or anything outside the team gets `team-log T<n> waiti
 ## Watching workers
 
 - Keep one sweep watch running, `team-sweep --wait` with Bash `run_in_background`: it wakes you once a finding that was not there when you armed it has stood three minutes, or one that was has stood 30, and you re-arm it in the turn it ends, after acting; launches need no idle notice.
-- A Stop hook runs `team-sweep` when your turn ends and keeps the turn open once with what is unattended: a task with no worker at work (none live, or every live one idle with an event logged since its launch), a worker waiting for input or idle without reporting, a stray session.
+- A Stop hook runs `team-sweep` when your turn ends and keeps the turn open once with what is unattended: a task with no worker at work (none live, or every live one idle with an event logged since its launch), a worker waiting for input or idle without reporting, a busy worker that has written nothing past its limit, a stray session.
   Act on each finding, or log why it waits.
 - At session start a hook prints the digest from `team-snapshot`: reconcile every open task, live session, open PR, pending decision and current item in it before new work, and arm each watch it names that is not running.
 - `team-load-check` proves what a worker can reach; run it after a change to roles, settings or toolkits, its `--context` form on `dev` and on the PR's head for each worker role's starting context before and after, and its `--role ops` form only with Daniel at the PC, since it reads production.
