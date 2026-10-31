@@ -7,7 +7,8 @@
    Fix each finding the coordinator sends you on the branch and push; once they are fixed, or the coordinator says the review passed, go on.
 4. Run `/no-mistakes` with this intent: "{{task}}: {{goal}}" (under a Disclosure section, put in its terms, since the gate drafts the PR's title and body from it)
 5. The PR must target `{{base}}`; if the gate opens it against another branch, retarget it to `{{base}}` and close any duplicate.
-6. When the gate returns checks-passed, repeat step 1; if it merged anything, push and wait for the PR's checks (`gh pr checks <full url> --watch`), noting each file that conflicted: a merge of the base is re-reviewed and checked by CI, never re-gated, so the gate runs again only for a commit of your own, such as the fix to a red check.
+6. When the gate returns checks-passed, repeat step 1; if it merged anything, push and wait for the PR's checks, noting each file that conflicted: a merge of the base is re-reviewed and checked by CI, never re-gated, so the gate runs again only for a commit of your own, such as the fix to a red check.
+   Wait with `{{team_bin}}/team-ci-wait <full url> <the full sha you pushed>`, run with Bash `run_in_background`, and act on how it ended: exit 0, every check passed or the head has none; exit 1, fix each failed check it names, follow a stuck check's message, or, on a head other than the one you pushed, do as its message says; exit 75, run it again, or report as its message says.
    The gate leaves Playwright to CI, so its result arrives with CI's `e2e` checks: treat a red `e2e` as the gate's red.
 7. Then send `{{task}} PR <full url>` to `coordinator`, followed by `merged {{base}} conflicts: <each file that conflicted, or none>` when step 6 merged.
 

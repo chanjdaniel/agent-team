@@ -140,7 +140,8 @@ Task directory: `.scratch/task/` in the worktree (excluded from git), for your s
    Fix each finding the coordinator sends you on the branch and push; once they are fixed, or the coordinator says the review passed, go on.
 4. Run `/no-mistakes` with this intent: "T12: rate-limit the applicant sign-in endpoints (per address and per IP, Mongo TTL counters, 429 with Retry-After), so Conventioner cannot be used to flood addresses with sign-in codes or to guess codes." (under a Disclosure section, put in its terms, since the gate drafts the PR's title and body from it)
 5. The PR must target `dev`; if the gate opens it against another branch, retarget it to `dev` and close any duplicate.
-6. When the gate returns checks-passed, repeat step 1; if it merged anything, push and wait for the PR's checks (`gh pr checks <full url> --watch`), noting each file that conflicted: a merge of the base is re-reviewed and checked by CI, never re-gated, so the gate runs again only for a commit of your own, such as the fix to a red check.
+6. When the gate returns checks-passed, repeat step 1; if it merged anything, push and wait for the PR's checks, noting each file that conflicted: a merge of the base is re-reviewed and checked by CI, never re-gated, so the gate runs again only for a commit of your own, such as the fix to a red check.
+   Wait with `@CODE@/bin/team-ci-wait <full url> <the full sha you pushed>`, run with Bash `run_in_background`, and act on how it ended: exit 0, every check passed or the head has none; exit 1, fix each failed check it names, follow a stuck check's message, or, on a head other than the one you pushed, do as its message says; exit 75, run it again, or report as its message says.
    The gate leaves Playwright to CI, so its result arrives with CI's `e2e` checks: treat a red `e2e` as the gate's red.
 7. Then send `T12 PR <full url>` to `coordinator`, followed by `merged dev conflicts: <each file that conflicted, or none>` when step 6 merged.
 
@@ -762,6 +763,22 @@ after"
   assert_contains "$(<"$output")" "- Local checks: none."
 }
 
+@test "the direct-PR delivery and the rereview wait on the PR's GitHub checks with team-ci-wait in the background" {
+  open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
+  local brief files=()
+  run_bin -0 team-brief T14 builder-deliver --set "goal=the goal"
+  files+=("$output")
+  brief=$(<"$output")
+  assert_contains "$brief" "5. Wait for the PR's GitHub checks with \`$REPO_ROOT/bin/team-ci-wait <full url> <the full sha you pushed>\`, run with Bash \`run_in_background\`, and act on how it ended: exit 0, every check passed or the head has none; exit 1, fix each failed check it names on the branch and push again, follow a stuck check's message, or, on a head other than the one you pushed, do as its message says, until every check passes; exit 75, run it again, or report as its message says."
+  run_bin -0 team-brief T14 rereview --name rereview --set pr=https://github.com/chanjdaniel/agent-team/pull/9 \
+    --set head=def5678 --set reviewed=abc1234 --set "since=the last review"
+  files+=("$output")
+  brief=$(<"$output")
+  assert_contains "$brief" "in a fresh detached worktree of that head, and wait for the PR's GitHub checks with \`$REPO_ROOT/bin/team-ci-wait https://github.com/chanjdaniel/agent-team/pull/9 def5678\`, run with Bash \`run_in_background\`; every one must pass"
+  assert_contains "$brief" "   Act on how the wait ended: exit 0, every check passed or the head has none; exit 1, each failed check it names is a \`blocking\` finding, while a stuck check or a head other than \`def5678\` goes to \`coordinator\` as \`T14 BLOCKED <its message>\`; exit 75, run it again, or report as its message says."
+  refute_grep -- '--watch' "${files[@]}"
+}
+
 @test "the merge-base brief merges the base, resolves, runs the local checks and names the conflicted files" {
   sed -i '/^\[home\]$/,/^\[home.pool\]$/s|^toolkits = \[\]$|toolkits = []\nlocal_checks = ["tests/run"]|' \
     "$TEAM_HOME/projects.toml"
@@ -790,7 +807,7 @@ Task directory: `.work/task/` in the worktree (excluded from git): `spec.md`, `t
    Then find what the merge made false, a file, command, flag, setting or path that one side renames or removes and the other still names, and fix it in a commit of its own.
 4. Run the project's local checks (`tests/run`) on the merged head with `@CODE@/bin/team-checks home <full sha>`, which runs them as `team-merge` does, in a fresh detached worktree of that head; fix the branch until all pass on one head.
 5. Push the branch; if the PR body names the head its local checks passed on, bring that line up to date (`gh pr edit https://github.com/chanjdaniel/agent-team/pull/9 --body-file <file>`).
-   If `gh pr checks https://github.com/chanjdaniel/agent-team/pull/9` lists any GitHub checks, wait for them (`--watch`); fix a failure and push again, back to step 4.
+   Wait for the PR's GitHub checks with `@CODE@/bin/team-ci-wait https://github.com/chanjdaniel/agent-team/pull/9 <the full sha you pushed>`, run with Bash `run_in_background`, and act on how it ended: exit 0, every check passed or the head has none; exit 1, fix each failed check it names and push again, back to step 4, follow a stuck check's message, or, on a head other than the one you pushed, do as its message says; exit 75, run it again, or report as its message says.
    Run no gate: the merge and the fixes of step 3 are re-reviewed, not re-gated.
 6. Send `T14 DONE merged main <the full sha of the head> conflicts: <each file that conflicted, or none>` to `coordinator`, which has a fresh reviewer re-check the merge.
 
