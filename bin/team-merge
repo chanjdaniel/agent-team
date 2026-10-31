@@ -23,9 +23,18 @@
 #   from Discord as a merge-approved's is; the project opts in now (merge_with_plan, read from
 #   projects.toml at each run) and is not the team's own (own_project: agent-team by name, by
 #   path or by repo); the PR's head branch is the task's branch for the project (its opened or
-#   worktree-added event's); and the latest review of the head (by the shorter prefix) has
-#   verdict pass; every check below holds for it too, and a refusal ends with a line saying to
-#   ask Daniel for the per-head word on the head;
+#   worktree-added event's); the latest review of the head (by the shorter prefix) has verdict
+#   pass and logged guarded as an empty list (one that left it out, or named areas, is refused,
+#   naming them); no review of the task counted a security or real-data finding, fixed or not,
+#   or left out its findings, each such review named by its head and time; the PR's changed
+#   files, read from GitHub's paged list of its files (each filename, and each rename's previous
+#   filename), number the PR's changedFiles, else the list is refused as not read in full; each
+#   changed path is within the approval's scope (an entry ending in / covers every path under it,
+#   any other that path only), each one outside named; and no changed path matches a guarded
+#   pattern of bin/lib/guarded (CI, dependencies, migrations, settings, permissions, secrets),
+#   each one named with its areas; a per-head merge checks none of these; every check below holds
+#   for it too, and a refusal ends with a line saying to ask Daniel for the per-head word on the
+#   head;
 #   the PR is open, not a draft, does not conflict, and targets the project's base;
 #   every required check (the base branch's protection, gh pr checks --required and the
 #   project's required_checks) is present on the head and passed (a skipped one passes);
@@ -98,6 +107,13 @@ base=$(team_project "$project" base)
 method=$(team_project "$project" merge_method)
 
 problems=()
+# Each line jq prints is one reason more; a jq that fails ends the run, nothing merged:
+# add_problems <jq arguments>...
+add_problems() {
+  local out line
+  out=$(jq -r "$@") || die "PR #$number cannot be checked: jq failed (exit $?), so nothing changed"
+  while IFS= read -r line; do if [[ -n $line ]]; then problems+=("$line"); fi; done <<<"$out"
+}
 
 # Daniel's word on the PR, per head or at plan time. A <kind> event names Daniel's Discord message,
 # which holds when it is an id sent no earlier than <since> (the time of <what>) and Discord shows
@@ -187,7 +203,7 @@ fi
 head='' branch=''
 if jq -e 'has("error")' <<<"$facts" >/dev/null; then
   problems+=("GitHub cannot be read: $(jq -r .error <<<"$facts")")
-elif ! github "$scratch" pr pr view "$number" --repo "$repo" --json isDraft,mergeable,headRefName,headRefOid ||
+elif ! github "$scratch" pr pr view "$number" --repo "$repo" --json isDraft,mergeable,headRefName,headRefOid,changedFiles ||
   ! github "$scratch" branch api "repos/$repo/branches/$base" ||
   ! github "$scratch" commits api "repos/$repo/pulls/$number/commits" --paginate; then
   problems+=("GitHub cannot be read: $(<"$scratch/error")")
@@ -224,8 +240,11 @@ else
   done < <(jq -r '.[].sha' <<<"$commits")
 fi
 
-# The plan-time word holds only for the task's own branch for the project, and only on a head whose
-# latest review (by the shorter prefix) is a pass.
+# The plan-time word holds only for the task's own branch for the project, only on a head whose
+# latest review (by the shorter prefix) is a pass that found no guarded area, only for a PR whose
+# every changed path is within the scope Daniel approved and matches no guarded pattern
+# (bin/lib/guarded), and only for a task no review of which counted a security or real-data
+# finding, or left its counts out.
 if [[ $word == plan && -n $head ]]; then
   if [[ -z $task_branch ]]; then
     problems+=("$task logged no branch for $project: no opened or worktree-added event of it")
@@ -237,6 +256,51 @@ if [[ $word == plan && -n $head ]]; then
     problems+=("no review of the head ${head:0:7} is logged, so no reviewer has passed it")
   elif [[ $(jq -r .verdict <<<"$reviewed") != pass ]]; then
     problems+=("$(jq -r --arg h "${head:0:7}" '"the latest review of the head \($h), at \(.ts), is \(.verdict), not pass"' <<<"$reviewed")")
+  fi
+  add_problems --arg h "${head:0:7}" '
+    select(. != null) | "the latest review of the head \($h), at \(.ts), " as $review
+    | if has("guarded") | not then "\($review)logged no guarded areas, so no reviewer has said the change touches none"
+      elif .guarded != [] then "\($review)found the change touching guarded areas: \(.guarded | join(", "))"
+      else empty end' <<<"$reviewed"
+  add_problems '
+    .[] | select(.event == "review") | "the review of the head \(.head[:7]), at \(.ts), " as $review
+    | if has("findings") | not then
+        "\($review)logged no finding counts, so whether it found a security or real-data issue is not known"
+      else
+        [.findings | ("security", "real-data") as $kind | .[$kind] | select(. > 0)
+          | "\(.) \($kind) finding\(if . == 1 then "" else "s" end)"]
+        | select(length > 0)
+        | "\($review)counted \(join(" and ")): such a finding on the task, even fixed, comes back to Daniel"
+      end' <<<"$events"
+
+  # The PR's changed paths, each rename's old path too, from GitHub's paged list, which must hold
+  # every file the PR changes.
+  if ! github "$scratch" files api "repos/$repo/pulls/$number/files" --paginate; then
+    problems+=("GitHub cannot be read: $(<"$scratch/error")")
+  else
+    changed=$(jq -cs 'add // [] | [.[] | {path: .filename}, (select(.previous_filename) | {path: .previous_filename, renamed: .filename})]' \
+      "$scratch/files")
+    listed=$(jq -s 'add // [] | length' "$scratch/files") count=$(jq -r '.changedFiles // "unknown number of"' "$scratch/pr")
+    [[ $listed == "$count" ]] ||
+      problems+=("GitHub's list of PR #$number's files holds $listed files, not its $count changed files, so not every file could be checked")
+    # Each guarded pattern's matches among the changed paths, as {path, area} lines; a path with a
+    # line break, which grep would read as two, is refused below.
+    paths=$(jq -r '.[].path' <<<"$changed") guarded=''
+    while read -r area pattern; do
+      [[ -n $area && $area != '#'* ]] || continue
+      rc=0
+      matched=$(grep -Eix -e "$pattern" <<<"$paths") || rc=$?
+      ((rc < 2)) || problems+=("the guarded pattern '$pattern' ($area) in bin/lib/guarded cannot be read by grep -E")
+      guarded+=$(jq -cR --arg area "$area" 'select(. != "") | {path: ., area: $area}' <<<"$matched")$'\n'
+    done <"$TEAM_LIB/guarded"
+    add_problems --argjson scope "$(jq -c .scope <<<"$preapproval")" --argjson guarded "$(jq -cs . <<<"$guarded")" '
+      def name: if .renamed then "\(.path), renamed to \(.renamed)," else .path end;
+      (.[] | select(.path | test("\n")) | "\(.path | @json) holds a line break, so no guarded pattern can be matched against it"),
+      (.[] | .path as $p | select(any($scope[]; . as $entry | if endswith("/") then $p | startswith($entry) else $p == $entry end) | not)
+        | "\(name) is outside the scope of Daniel'"'"'s plan-time word: \($scope | join(", "))"),
+      (.[] | . as $file | [$guarded[] | select(.path == $file.path) | .area]
+        | reduce .[] as $a ([]; if IN(.[]; $a) then . else . + [$a] end) | select(. != [])
+        | "\($file | name) is a guarded path (\(join(", "))): a change there comes back to Daniel")' <<<"$changed"
   fi
 fi
 

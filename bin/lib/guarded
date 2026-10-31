@@ -1,0 +1,33 @@
+# The guarded paths: the changes that always come back to Daniel for the per-head word, whatever
+# the plan's scope. team-merge refuses a merge on Daniel's plan-time word when a path the PR
+# changes (each rename's old path too) matches a line, naming the path and the line's area.
+# One pattern per line, its area first, then one space, then an extended regular expression
+# (grep -E) matched case-insensitively against the whole repository path. The areas are
+# exactly the ledger's guarded areas (guarded_areas in bin/lib/ledger.jq), kept in its order.
+ci (.*/)?\.github/.*
+ci (.*/)?\.circleci/.*
+ci (.*/)?\.gitlab-ci\.ya?ml
+ci (.*/)?\.no-mistakes\.ya?ml
+ci (.*/)?\.pre-commit-config\.ya?ml
+ci (.*/)?\.githooks/.*
+ci (.*/)?release-please-config\.json
+ci (.*/)?\.release-please-manifest\.json
+dependencies (.*/)?(package|package-lock|npm-shrinkwrap)\.json
+dependencies (.*/)?(yarn\.lock|pnpm-lock\.yaml|bun\.lockb?)
+dependencies (.*/)?(requirements[^/]*\.(txt|in)|constraints[^/]*\.txt)
+dependencies (.*/)?(pipfile|pipfile\.lock|pyproject\.toml|poetry\.lock|uv\.lock|setup\.py|setup\.cfg)
+dependencies (.*/)?(go\.mod|go\.sum|cargo\.toml|cargo\.lock|gemfile|gemfile\.lock|composer\.json|composer\.lock)
+dependencies (.*/)?(\.nvmrc|\.node-version|\.python-version|\.tool-versions)
+dependencies (.*/)?(dockerfile(\.[^/]*)?|[^/]*\.dockerfile|\.dockerignore)
+dependencies (.*/)?(docker-)?compose[^/]*\.ya?ml
+migrations (.*/)?migrations?/.*
+migrations (.*/)?(migrate_[^/]*|[^/]*_migration\.[^/]*)
+migrations .*\.sql
+settings (.*/)?(\.claude|\.vscode)/.*
+settings (.*/)?(\.mcp\.json|claude\.md|agents\.md|treehouse\.toml)
+settings (.*/)?\.env(\.[^/]*)?
+settings (.*/)?settings[^/]*
+permissions (.*[^a-z0-9])?(permissions?|rbac|acls?)([^a-z0-9].*)?
+permissions (.*/)?codeowners
+secrets .*(secret|credential).*
+secrets .*\.(pem|key|p12|pfx)
