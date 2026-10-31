@@ -122,14 +122,34 @@ EOF
 }
 
 # The fake Discord API: GET channels/<c>/messages/<m> answers $DISCORD_DIR/<c>-<m>.json, a
-# missing one fails as curl -f does on a 404. The headers curl read from stdin are kept.
+# missing one fails as curl -f does on a 404. A POST to channels/<c>/messages (team-post's) is
+# kept as a line {channel, content, merged} in $DISCORD_DIR/posts, merged counting the ledger's
+# merged events when it came, and answered with a new id, or fails with a 500 when
+# $DISCORD_DIR/refuse lists the channel. The headers curl read from stdin are kept.
 # team-inbox's calls go to the fake Discord of helpers/inbox.
 stub_discord() {
   stub_script curl <<'EOF'
 [[ ! -f $STUB_FIXTURES/inbox.sh ]] || source "$STUB_FIXTURES/inbox.sh"
 cat >>"$DISCORD_DIR/stdin"
-url=${*: -1}
-if [[ $url =~ ^https://discord\.com/api/v10/channels/([0-9]+)/messages/([0-9]+)$ &&
+url=${*: -1} args=("$@")
+if [[ $url =~ ^https://discord\.com/api/v10/channels/([0-9]+)/messages$ && " $* " == *" -X POST "* ]]; then
+  channel=${BASH_REMATCH[1]}
+  for ((i = 0; i < ${#args[@]} - 1; i++)); do
+    case ${args[i]} in
+      -d) body=${args[i + 1]} ;;
+      -D) headers=${args[i + 1]} ;;
+    esac
+  done
+  if grep -qx "$channel" "$DISCORD_DIR/refuse" 2>/dev/null; then
+    echo "HTTP/1.1 500 Internal Server Error" >"$headers"
+    echo "curl: (22) The requested URL returned error: 500" >&2
+    exit 22
+  fi
+  merged=$(grep -c '"event":"merged"' "$TEAM_HOME/ledger.jsonl" || true)
+  jq -c --arg c "$channel" --argjson merged "$merged" '{channel: $c, content, merged: $merged}' <<<"$body" >>"$DISCORD_DIR/posts"
+  echo "HTTP/1.1 200 OK" >"$headers"
+  echo "{\"id\": \"$((1571000000000000000 + $(wc -l <"$DISCORD_DIR/posts")))\"}"
+elif [[ $url =~ ^https://discord\.com/api/v10/channels/([0-9]+)/messages/([0-9]+)$ &&
   -f $DISCORD_DIR/${BASH_REMATCH[1]}-${BASH_REMATCH[2]}.json ]]; then
   cat "$DISCORD_DIR/${BASH_REMATCH[1]}-${BASH_REMATCH[2]}.json"
 else
@@ -142,6 +162,26 @@ EOF
 # The reads of a message by id, team-inbox's calls left out.
 reads() {
   stub_calls curl | jq -c 'select(.[-1] | test("/messages/[0-9]+$")) | select(index("-X") | not)'
+}
+
+# What team-post sent, one "<channel> <content as JSON>" per line.
+posts() {
+  jq -r '"\(.channel) \(.content | @json)"' "$discord/posts" 2>/dev/null || true
+}
+
+# The post after a plan-time merge, Daniel's message in <channel> and <revert> the revert on dev:
+# merge_post <channel> <revert>
+merge_post() {
+  printf '%s\n' "T14 The tooling: merged https://github.com/owner/proj/pull/5 on your plan-time word, https://discord.com/channels/$INBOX_GUILD/$1/1562661774950400000" \
+    "Merge commit: $MERGE_SHA on dev." \
+    "To revert: the Revert button on the PR's page opens a revert PR; or, on dev, $2."
+}
+
+# Undo a merge for the test's next run: the merged event and the posts gone, PR #5 open and green again.
+merge_again() {
+  jq -c 'select(.event != "merged")' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l" && mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
+  rm -f "$discord/posts"
+  green_pr
 }
 
 # Message 1562661774950400000 in the task's thread (or the channel given), written by the user id given.
@@ -366,6 +406,9 @@ registry_refused() {
   assert_equal "$(stub_calls gh | jq -r 'select(.[0:2] == ["pr", "view"]) | .[0:2] | join(" ")' | wc -l)" 3
   assert_equal "$(stub_calls gh | jq -c 'select(.[0:2] == ["pr", "view"])' | tail -n 1 | jq -r '.[-1]')" \
     "state,mergeCommit,headRefOid,autoMergeRequest"
+  # Daniel's per-head word needs no post: nothing is posted.
+  assert_equal "$(posts)" ""
+  [[ $stderr != *post* ]]
   TEAM_HOME=$TEAM_HOME run "$REPO_ROOT/bin/team-log" --check
   assert_equal "$status" 0
 }
@@ -1160,4 +1203,94 @@ EOF
   pr_field '.changedFiles = 1'
   refused '"src/a.py\n.github/workflows/test.yml" holds a line break, so no guarded pattern can be matched against it' \
     "$(ask_per_head)"
+}
+
+@test "a plan-time merge posts to the task's thread and #coordinator once merged is logged, before the inbox refresh" {
+  plan_word
+  run_bin -0 --separate-stderr team-merge T14
+  assert_equal "$(jq -r .merge <<<"$output")" "$MERGE_SHA"
+  assert_equal "$(posts)" "1563 $(merge_post 1563 "\`git revert $MERGE_SHA\`" | jq -Rsc 'rtrimstr("\n")')
+1562486564871995482 $(merge_post 1563 "\`git revert $MERGE_SHA\`" | jq -Rsc 'rtrimstr("\n")')"
+  assert_equal "$(jq -r .merged "$discord/posts" | sort -u)" 1
+  [[ $stderr != *post* ]]
+  # The guild for the link is read from #coordinator's channel, then the Waiting on you message is posted.
+  assert_equal "$(stub_calls curl | jq -r '.[-1] | capture("v10/(?<p>.*)").p' | grep -v '/messages/[0-9]*$')" \
+    "channels/1562486564871995482
+channels/1563/messages
+channels/1562486564871995482/messages
+channels/1562486564871995482
+channels/1562486564871995482/messages"
+  assert_equal "$(inbox_calls)" "GET channels/1562486564871995482
+GET channels/1562486564871995482
+POST channels/1562486564871995482/messages"
+}
+
+@test "the post's revert is the project's merge method's: git revert -m 1 for a merge, the rebased commits' range for a rebase" {
+  plan_word
+  sed -i 's/^merge_method = "squash"$/merge_method = "merge"/' "$TEAM_HOME/projects.toml"
+  run_bin -0 team-merge T14
+  assert_equal "$(jq -r .content "$discord/posts" | tail -n 1)" \
+    "To revert: the Revert button on the PR's page opens a revert PR; or, on dev, \`git revert -m 1 $MERGE_SHA\`."
+
+  merge_again
+  sed -i 's/^merge_method = "merge"$/merge_method = "rebase"/' "$TEAM_HOME/projects.toml"
+  # The PR's two commits and a merge of the base, which a rebase leaves out.
+  jq -n --arg head "$head" '[
+    {sha: "1111111111111111111111111111111111111111", commit: {message: "feat: one"}, parents: [{sha: "0123456"}]},
+    {sha: "2222222222222222222222222222222222222222", commit: {message: "Merge dev"}, parents: [{sha: "1111111"}, {sha: "3333333"}]},
+    {sha: $head, commit: {message: "test: two"}, parents: [{sha: "2222222"}]}]' >"$gh_dir/commits.json"
+  run_bin -0 team-merge T14
+  assert_equal "$(jq -r .content "$discord/posts" | tail -n 1)" \
+    "To revert: the Revert button on the PR's page opens a revert PR; or, on dev, \`git revert $MERGE_SHA~2..$MERGE_SHA\`, the 2 rebased commits."
+}
+
+@test "a plan-time merge with no thread posts to #coordinator alone, saying so" {
+  plan_word
+  jq -c 'select(.event != "thread")' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l" && mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
+  approved_by 757 1562486564871995482
+  run_bin -0 --separate-stderr team-merge T14
+  assert_equal "$(posts)" "1562486564871995482 $(merge_post 1562486564871995482 "\`git revert $MERGE_SHA\`" | jq -Rsc 'rtrimstr("\n")')"
+  assert_contains "$stderr" "team-merge: T14 has no Discord thread, so Daniel hears of the merge in #coordinator alone"
+}
+
+@test "a plan-time merge's post links Daniel's message with the guild the inbox kept, and names it when no guild is known" {
+  plan_word
+  inbox_kept
+  run_bin -0 team-merge T14
+  assert_equal "$(inbox_calls)" "PATCH channels/1562486564871995482/messages/1569000000000000000"
+  assert_equal "$(jq -r .content "$discord/posts" | head -n 1)" "$(merge_post 1563 x | head -n 1)"
+
+  # A guild Discord does not name leaves the message named, not linked, saying why.
+  merge_again
+  rm "$HOME/.local/state/agent-team/inbox.json"
+  echo 500 >"$STUB_FIXTURES/inbox/fail"
+  run_bin -0 --separate-stderr team-merge T14
+  assert_equal "$(jq -r .content "$discord/posts" | head -n 1)" \
+    "T14 The tooling: merged https://github.com/owner/proj/pull/5 on your plan-time word, Discord message 1562661774950400000 in the task's thread 1563, from daniel (757)"
+  assert_contains "$stderr" "team-merge: the posts name Daniel's message without a link: Discord named no guild for #coordinator: curl: (22) The requested URL returned error: 500"
+}
+
+@test "a post that fails leaves the merge logged and the exit 0, and prints which post failed and its text" {
+  plan_word
+  echo 1563 >"$discord/refuse"
+  run_bin -0 --separate-stderr team-merge T14
+  assert_equal "$(merged_events | jq -r .approval)" plan
+  assert_equal "$(jq -r .channel "$discord/posts")" 1562486564871995482
+  assert_contains "$stderr" "team-merge: PR #5 is merged, but its post to the task's thread 1563 failed (team-post: Discord refused the post: curl: (22) The requested URL returned error: 500; nothing was posted); post this text with team-post T14 --file <its file>:
+$(merge_post 1563 "\`git revert $MERGE_SHA\`")"
+  [[ $stderr != *"post to #coordinator"* ]]
+}
+
+@test "a fenced machine's posts fail, each said with its text, and the merge stands" {
+  plan_word
+  mkdir -p "$HOME/.local/state/agent-team"
+  echo '{"since": "2026-10-22T14:00:00Z", "holder": "laptop", "epoch": 2}' >"$HOME/.local/state/agent-team/fenced"
+  run_bin -0 --separate-stderr team-merge T14
+  assert_equal "$(merged_events | jq -r .approval)" plan
+  assert_equal "$(posts)" ""
+  assert_contains "$stderr" "team-merge: PR #5 is merged, but its post to the task's thread 1563 failed (team-post: "
+  assert_contains "$stderr" "team-merge: PR #5 is merged, but its post to #coordinator 1562486564871995482 failed (team-post: "
+  assert_contains "$stderr" "is fenced since 2026-10-22T14:00:00Z"
+  assert_contains "$stderr" "post this text with team-post --coordinator --file <its file>:
+$(merge_post 1563 "\`git revert $MERGE_SHA\`")"
 }

@@ -52,6 +52,16 @@
 # discord_channel, url (the PR's), approval (head for the per-head word, plan for the plan-time
 # one), and local_checks (the commands that passed on head) when there were any. Prints {task,
 # pr, merge, head, by}.
+# Then, on the plan-time word only, team-post posts one message to the task's thread and one to
+# #coordinator: the task, the PR's URL, the merge commit, Daniel's message as a link (its guild
+# the one team-inbox keeps, else #coordinator's channel's; with none, the message is named and a
+# line on stderr says why), and how to revert: the PR page's Revert button, or on the base
+# git revert -m 1 <merge> for a merge, git revert <merge> for a squash, and for a rebase
+# git revert <merge>~<n>..<merge>, the PR's n commits less its merges; with no thread, it posts to
+# #coordinator alone, saying so on stderr. A post that fails (Discord refuses it, or team-post
+# refuses on a fenced machine) is said on stderr, naming where, with its full text, for the
+# coordinator to post with team-post; the merge stands and the exit stays 0. A per-head merge
+# posts nothing.
 # Then, when the project's primary checkout is the code checkout this runs from, that checkout
 # follows the base, so merged code reaches the scripts: on the base branch and clean (untracked
 # files aside), it is fast-forwarded to origin's, said on one line; on another branch or a
@@ -397,6 +407,50 @@ ledger_append "$(jq -cn --arg task "$task" --argjson pr "$number" --arg merge "$
 trap 'rm -rf "$scratch"' EXIT
 jq -n --arg task "$task" --arg url "$url" --arg merge "$merge" --arg head "$head" --arg by "$by" \
   '{task: $task, pr: $url, merge: $merge, head: $head, by: $by}'
+
+# On the plan-time word, Daniel hears of the merge at once, with how to revert it: one post in the
+# task's thread and one in #coordinator, through team-post. A post that fails is said on stderr
+# with its text, for the coordinator to post; the merge stands and the exit stays 0.
+if [[ $word == plan ]]; then
+  # Daniel's message as a link, which needs the guild: the one team-inbox keeps, else Discord's.
+  guild=$(jq -r --arg c "$COORDINATOR_CHANNEL" 'select((.channel | tostring) == $c) | .guild | tostring | select(test("^[0-9]+$"))' \
+    "$HOME/.local/state/agent-team/inbox.json" 2>/dev/null) || guild=''
+  if [[ -z $guild ]] && reply=$(discord_api "channels/$COORDINATOR_CHANNEL" --max-time 20 2>"$scratch/guild"); then
+    guild=$(jq -r '.guild_id | strings | select(test("^[0-9]+$"))' <<<"$reply" 2>/dev/null) || guild=''
+  fi
+  if [[ -n $guild ]]; then
+    word_link="https://discord.com/channels/$guild/$channel/$message"
+  else
+    word_link=$by
+    echo "team-merge: the posts name Daniel's message without a link: Discord named no guild for #coordinator: $(grep -m 1 . "$scratch/guild" 2>/dev/null || echo "its channel names none")" >&2
+  fi
+  case $method in
+    merge) revert="\`git revert -m 1 $merge\`" ;;
+    squash) revert="\`git revert $merge\`" ;;
+    # A rebase puts each of the PR's commits on the base, its merges of the base left out, the
+    # last of them the merge commit GitHub names.
+    rebase)
+      rebased=$(jq '[.[] | select((.parents // []) | length < 2)] | length' <<<"$commits")
+      revert="\`git revert $merge~$rebased..$merge\`, the $rebased rebased commits"
+      ;;
+  esac
+  title=$(jq -r 'map(select(.event == "opened")) | first | .title // empty' <<<"$events")
+  printf '%s\n' "$task${title:+ $title}: merged $url on your plan-time word, $word_link" \
+    "Merge commit: $merge on $base." \
+    "To revert: the Revert button on the PR's page opens a revert PR; or, on $base, $revert." >"$scratch/post"
+  # post <where> <team-post's arguments before --file>...
+  post() {
+    TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-post" "${@:2}" --file "$scratch/post" >/dev/null 2>"$scratch/post-error" && return 0
+    echo "team-merge: PR #$number is merged, but its post to $1 failed ($(grep -m 1 . "$scratch/post-error" || echo "team-post failed")); post this text with team-post ${*:2} --file <its file>:" >&2
+    cat "$scratch/post" >&2
+  }
+  if [[ -n $thread ]]; then
+    post "the task's thread $thread" "$task"
+  else
+    echo "team-merge: $task has no Discord thread, so Daniel hears of the merge in #coordinator alone" >&2
+  fi
+  post "#coordinator $COORDINATOR_CHANNEL" --coordinator
+fi
 
 # The code checkout this runs from, when it is the merged project's primary checkout, follows the
 # base: fast-forwarded to origin's when it is on the base and clean, otherwise left as it is,
