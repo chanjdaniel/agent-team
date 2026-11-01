@@ -239,7 +239,7 @@ run_fake() {
   echo "the brief" >"$TEAM_HOME/tasks/T7/brief-rereview-3.md"
   run_bin -0 team-worker T7 reviewer "$wt1" -- "Read your brief at $TEAM_HOME/tasks/T7/brief-rereview-3.md"
   assert_equal "$output" "4f2a9c1e"
-  assert_equal "$(stub_calls claude | jq -r last)" "Read your brief at $TEAM_HOME/tasks/T7/brief-rereview-3.md"
+  assert_equal "$(bg_calls | jq -r last)" "Read your brief at $TEAM_HOME/tasks/T7/brief-rereview-3.md"
   assert_equal "$(launches)" "$(jq -cn --arg wt "$wt1" '{task: "T7", event: "launch", role: "reviewer",
     session: "4f2a9c1e", worktree: $wt, toolkits: [], machine: "home-pc", brief: "brief-rereview-3"}')"
   : >"$TEAM_HOME/ledger.jsonl"
