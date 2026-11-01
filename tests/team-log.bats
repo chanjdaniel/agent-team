@@ -65,6 +65,20 @@ ledger_events() {
   jq -r .event "$TEAM_HOME/ledger.jsonl"
 }
 
+# #coordinator's channel in the sandbox, the library's default.
+COORDINATOR=1562486564871995482
+
+# A thread of the task, as team-thread logs it: thread <task> <id>
+thread() {
+  jq -cn --arg task "$1" --arg id "$2" '{ts: (now | todate), task: $task, event: "thread", discord_thread: $id}' \
+    >>"$TEAM_HOME/ledger.jsonl"
+}
+
+# The standing words and withdrawals logged, one "<event> <project>" per line.
+standing_events() {
+  jq -r 'select(.event | startswith("merge-standing")) | "\(.event) \(.project)"' "$TEAM_HOME/ledger.jsonl"
+}
+
 # --from-message: a worker's message, whole.
 
 HEAD_A=a1b2c3d4e5f60718293a4b5c6d7e8f9012345678
@@ -160,6 +174,8 @@ gate-run team-log run head outcome
 merge-approved team-log url discord_message
 merge-preapproved team-log project ask discord_message scope
 merge-preapproval-withdrawn team-log project discord_message
+merge-standing team-log project discord_message discord_channel
+merge-standing-withdrawn team-log project discord_message discord_channel
 branch-renamed team-log project branch
 failed team-log reason
 retro-schedule team-log every_hours discord_message
@@ -179,6 +195,8 @@ TABLE
   assert_equal "$(jq -c '[.kinds.waiting, .kinds.blocked, .kinds.paused, .kinds.held | .optional.since]' "$CONTRACT")" '["string","string","string","string"]'
   assert_equal "$(jq -c '[.kinds.closed.required[]]' "$CONTRACT")" '["array","array","array"]'
   assert_equal "$(jq -c '.kinds["merge-preapproved"].required' "$CONTRACT")" '{"project":"string","ask":"string","discord_message":"id","scope":"array"}'
+  assert_equal "$(jq -c '[.kinds["merge-standing", "merge-standing-withdrawn"].required]' "$CONTRACT")" \
+    '[{"project":"string","discord_message":"id","discord_channel":"id"},{"project":"string","discord_message":"id","discord_channel":"id"}]'
   assert_equal "$(jq -c '.kinds.review.optional' "$CONTRACT")" '{"agent_review":"string","sent_back":"numbers","findings":"object","before":"numbers","guarded":"array"}'
   assert_equal "$(jq -c '.kinds.merged.optional.approval' "$CONTRACT")" '["head","plan"]'
   [[ $STRICT_FROM =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
@@ -209,6 +227,8 @@ TABLE
   grep -Eq '^  review +team-log +verdict \(pass\|findings\), head; optional agent_review, sent_back \(list of whole numbers\), findings \(object\), before \(list of whole numbers\), guarded \(list\)  \(sent_back: the numbers of the findings sent back .*findings: the count of each kind.*before: the numbers of the plain notes .*guarded: the guarded areas.*\)$' <<<"$output"
   grep -Eq '^  merge-preapproved +team-log +project, ask, discord_message \(id\), scope \(list\)  \(Daniel.s plan-time word .*\)$' <<<"$output"
   grep -Eq '^  merge-preapproval-withdrawn +team-log +project, discord_message \(id\)  \(.*withdr.*\)$' <<<"$output"
+  grep -Eq '^  merge-standing +team-log +project, discord_message \(id\), discord_channel \(id\)  \(Daniel.s standing word .*every project when project is all.*across the whole ledger.*the latest merge-standing or merge-standing-withdrawn whose project is .* or all decides.*stands when that is a merge-standing.*\)$' <<<"$output"
+  grep -Eq '^  merge-standing-withdrawn +team-log +project, discord_message \(id\), discord_channel \(id\)  \(Daniel withdrew .*standing word.*every project when project is all.*across the whole ledger.*\)$' <<<"$output"
   grep -Eq '^  merged +team-merge +pr \(number\), merge, head, by; optional .*approval \(head\|plan\)  \(approval: .*\)$' <<<"$output"
   grep -Eq '^  gate-run +team-log +run, head, outcome \(pushed\|red\|aborted\|stopped-green\); optional cause \(review\|notes\|gate-finding\|load\|tooling\|base-merge\|other\), minutes \(object\)  \(.*\)$' <<<"$output"
   grep -Eq '^  closed +team-close +archive \(list\), returned \(list\), kept \(list\)  \(.*legacy.*\)$' <<<"$output"
@@ -432,22 +452,24 @@ $TEAM_HOME/ledger.jsonl: 3 of 7 lines break the ledger contract"
 
 @test "every kind team-log writes is appended with its required fields and a note" {
   # merge-preapproved names a project of the task that opts in, and an ask it logged before;
-  # branch-renamed a new branch of it that names the task.
+  # branch-renamed a new branch of it that names the task; merge-standing #coordinator's channel,
+  # and merge-standing-withdrawn, after it, the word it logged.
   plan_registry
   opened T14 proj
   local kind args count=0
   while IFS= read -r kind; do
     # A head is a sha, since merge-approved's must be one a pr event logged, which team-log adds.
-    mapfile -t args < <(jq -r --arg k "$kind" --arg soon "$(soon)" '(.kinds[$k].required | to_entries[]
+    mapfile -t args < <(jq -r --arg k "$kind" --arg soon "$(soon)" --arg coordinator "$COORDINATOR" '(.kinds[$k].required | to_entries[]
       | "\(.key)=\(if .key == "head" then "a1b2c3d4" elif .key == "project" then "proj" elif .key == "ask" then "x y"
           elif .key == "scope" then "[\"src/\"]" elif .key == "branch" then "feat/T14-x-fresh"
+          elif .key == "discord_channel" then $coordinator
           else .value | if type == "array" then .[0] elif . == "array" then "[]" elif . == "number" then "7" elif . == "id" then $soon else "x y" end end)"),
       (select($k == "merge-approved") | "head=a1b2c3d4")' "$CONTRACT")
     run_bin -0 team-log T14 "$kind" "${args[@]}" "note=why $kind"
     count=$((count + 1))
     assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r '.event + " " + .note')" "$kind why $kind"
   done < <(jq -r '.kinds | to_entries[] | select([.value.writer] | flatten | index("team-log")) | .key' "$CONTRACT")
-  assert_equal "$count" "22"
+  assert_equal "$count" "24"
   run_bin -0 team-log --check
 }
 
@@ -751,6 +773,110 @@ merge-preapproved proj
 merge-preapproval-withdrawn proj
 merge-preapproved proj
 merge-preapproval-withdrawn proj
+LINES
+  )"
+  run_bin -0 team-log --check
+}
+
+@test "merge-standing records Daniel's standing word on a project or every project, said in #coordinator or the task's thread" {
+  plan_registry
+  thread T14 1563000000000000001
+  local message
+  message=$(soon)
+  run_bin -0 team-log T14 merge-standing project=proj discord_message="$message" discord_channel=$COORDINATOR
+  assert_equal "$output" ""
+  assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -c 'del(.ts)')" \
+    "{\"task\":\"T14\",\"event\":\"merge-standing\",\"project\":\"proj\",\"discord_message\":\"$message\",\"discord_channel\":\"$COORDINATOR\"}"
+  # Every project, and a project none of the task's events name, which the word needs not.
+  run_bin -0 team-log T14 merge-standing project=all discord_message="$(soon)" discord_channel=$COORDINATOR
+  run_bin -0 team-log T14 merge-standing project=conv discord_message="$(soon)" discord_channel=1563000000000000001
+  assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r .discord_channel)" 1563000000000000001
+  assert_equal "$(standing_events)" "merge-standing proj
+merge-standing all
+merge-standing conv"
+  run_bin -0 team-log --check
+}
+
+@test "merge-standing and its withdrawal are refused for an unknown project, a message no Discord id, or a channel neither #coordinator nor the task's thread" {
+  plan_registry
+  local kind message channel
+  for kind in merge-standing merge-standing-withdrawn; do
+    run_bin -1 team-log T14 $kind project=web discord_message="$(soon)" discord_channel=$COORDINATOR
+    assert_equal "$output" "team-log: web is neither all, for every project, nor a project projects.toml names: proj, conv"
+    for message in 0 01566 15660000000000001234567; do
+      run_bin -1 team-log T14 $kind project=proj discord_message=$message discord_channel=$COORDINATOR
+      assert_equal "$output" "team-log: discord_message $message is not a Discord id"
+    done
+    run_bin -1 team-log T14 $kind project=proj discord_message="$(soon)" discord_channel=1563000000000000009
+    assert_equal "$output" "team-log: discord_channel 1563000000000000009 is neither #coordinator's channel, $COORDINATOR, nor T14's thread: it has none"
+  done
+  # The task's latest thread, never an earlier one or another task's.
+  thread T14 1563000000000000001
+  thread T14 1563000000000000002
+  thread T15 1563000000000000003
+  for kind in merge-standing merge-standing-withdrawn; do
+    for channel in 1563000000000000001 1563000000000000003; do
+      run_bin -1 team-log T14 $kind project=all discord_message="$(soon)" discord_channel=$channel
+      assert_equal "$output" "team-log: discord_channel $channel is neither #coordinator's channel, $COORDINATOR, nor T14's thread, 1563000000000000002"
+    done
+  done
+  run_bin -1 team-log T14 merge-standing project=proj discord_message="$(soon)"
+  assert_contains "$output" "merge-standing needs discord_channel"
+  # A project named all makes all name it, never every project.
+  plan_registry "$(plan_project all false)"
+  run_bin -1 team-log T14 merge-standing project=all discord_message="$(soon)" discord_channel=$COORDINATOR
+  assert_equal "$output" "team-log: projects.toml names a project all, so project=all cannot say every project"
+  assert_equal "$(standing_events)" ""
+  run_bin -0 team-log T14 merge-standing project=proj discord_message="$(soon)" discord_channel=1563000000000000002
+}
+
+@test "merge-standing-withdrawn needs a standing word for its project, or for any project when it withdraws all" {
+  plan_registry "$(plan_project web false)"
+  local said=(discord_message="$(soon)" discord_channel="$COORDINATOR")
+  run_bin -1 team-log T14 merge-standing-withdrawn project=proj "${said[@]}"
+  assert_equal "$output" "team-log: no standing word of Daniel's stands for proj, so merge-standing-withdrawn withdraws nothing"
+  run_bin -1 team-log T14 merge-standing-withdrawn project=all "${said[@]}"
+  assert_equal "$output" "team-log: no standing word of Daniel's stands for any project, so merge-standing-withdrawn withdraws nothing"
+  # A word on one project stands for it alone, whichever task logged it.
+  run_bin -0 team-log T15 merge-standing project=proj "${said[@]}"
+  run_bin -1 team-log T14 merge-standing-withdrawn project=conv "${said[@]}"
+  assert_equal "$output" "team-log: no standing word of Daniel's stands for conv, so merge-standing-withdrawn withdraws nothing"
+  run_bin -0 team-log T14 merge-standing-withdrawn project=proj "${said[@]}"
+  run_bin -1 team-log T14 merge-standing-withdrawn project=proj "${said[@]}"
+  # A word on every project, withdrawn for one, stands for the others.
+  run_bin -0 team-log T14 merge-standing project=all "${said[@]}"
+  run_bin -0 team-log T14 merge-standing-withdrawn project=conv "${said[@]}"
+  run_bin -1 team-log T14 merge-standing-withdrawn project=conv "${said[@]}"
+  assert_equal "$output" "team-log: no standing word of Daniel's stands for conv, so merge-standing-withdrawn withdraws nothing"
+  run_bin -0 team-log T14 merge-standing-withdrawn project=web "${said[@]}"
+  # A word given after a withdrawal stands again.
+  run_bin -0 team-log T14 merge-standing project=conv "${said[@]}"
+  run_bin -0 team-log T14 merge-standing-withdrawn project=conv "${said[@]}"
+  # A withdrawal of all ends every word, and none is left to withdraw.
+  run_bin -0 team-log T14 merge-standing project=web "${said[@]}"
+  run_bin -0 team-log T14 merge-standing-withdrawn project=all "${said[@]}"
+  local project
+  for project in all proj conv web; do
+    run_bin -1 team-log T14 merge-standing-withdrawn project=$project "${said[@]}"
+  done
+  assert_equal "$output" "team-log: no standing word of Daniel's stands for web, so merge-standing-withdrawn withdraws nothing"
+  # A word on a project no longer registered still stands, and a withdrawal of all ends it.
+  run_bin -0 team-log T14 merge-standing project=web "${said[@]}"
+  plan_registry
+  run_bin -0 team-log T14 merge-standing-withdrawn project=all "${said[@]}"
+  assert_equal "$(standing_events)" "$(
+    cat <<'LINES'
+merge-standing proj
+merge-standing-withdrawn proj
+merge-standing all
+merge-standing-withdrawn conv
+merge-standing-withdrawn web
+merge-standing conv
+merge-standing-withdrawn conv
+merge-standing web
+merge-standing-withdrawn all
+merge-standing web
+merge-standing-withdrawn all
 LINES
   )"
   run_bin -0 team-log --check

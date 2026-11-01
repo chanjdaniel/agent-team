@@ -30,6 +30,13 @@
 # string with no leading /, no . or .. segment, no empty segment, no glob character *?[ and no
 # whitespace; a directory ends in /). A merge-preapproval-withdrawn is refused unless a
 # merge-preapproved of its project stands for the task (its latest, with no withdrawal since). A
+# merge-standing, Daniel's standing word, or a merge-standing-withdrawn, its withdrawal, both read
+# across the whole ledger, is refused when its project is neither all nor a project team-project
+# --list names (and all when a registered project is named all), when its discord_message is a
+# string of digits that is no Discord id, and when its discord_channel is neither #coordinator's
+# channel nor the task's thread (its latest thread event), naming both; a merge-standing-withdrawn
+# is refused too when no standing word stands for its project (for all: for any project the
+# registry or a merge-standing names). A
 # branch-renamed, the task's new branch in a project after the gate rewrote the remote one, is
 # refused when its project is not one of the task's opened or worktree-added events, its branch is
 # the task's there now (the latest opened, worktree-added or branch-renamed of the project), does
@@ -263,6 +270,43 @@ if [[ $event == merge-preapproval-withdrawn && -n ${seen[project]:-} ]]; then
   task_events "$task" | ledger_jq '[inputs] | merge_preapproval($project) | . != null and .withdrawn == null' \
     -ne --arg project "${seen[project]}" >/dev/null ||
     die "$task has no standing merge-preapproved of ${seen[project]} to withdraw"
+fi
+
+# Daniel's standing word, and its withdrawal, name a project the registry names, or all for every
+# project, and a message team-merge can read back: a Discord id, in #coordinator's channel or the
+# task's latest thread. A withdrawal withdraws a word that stands (standing_words in
+# bin/lib/ledger.jq, over the whole ledger): for all, one standing for any project the registry
+# or a merge-standing names.
+if [[ $event == merge-standing || $event == merge-standing-withdrawn ]]; then
+  project=${seen[project]:-}
+  if [[ -n $project ]]; then
+    registered=$(team_project --list) || exit 1
+    if [[ $project == all ]]; then
+      ! grep -qxF all <<<"$registered" || die "projects.toml names a project all, so project=all cannot say every project"
+    elif ! grep -qxF -- "$project" <<<"$registered"; then
+      if [[ -z $registered ]]; then names=': it names none'; else names=": $(sed ':a;N;$!ba;s/\n/, /g' <<<"$registered")"; fi
+      die "$project is neither all, for every project, nor a project projects.toml names$names"
+    fi
+  fi
+  message=${seen[discord_message]:-}
+  [[ ! $message =~ ^[0-9]+$ || $message =~ ^[1-9][0-9]{0,18}$ ]] || die "discord_message $message is not a Discord id"
+  channel=${seen[discord_channel]:-}
+  if [[ -n $channel && $channel != "$COORDINATOR_CHANNEL" ]]; then
+    thread=$(task_events "$task" | jq -nr '[inputs | select(.event == "thread") | .discord_thread | select(. != null) | tostring] | last // empty')
+    [[ $channel == "$thread" ]] ||
+      die "discord_channel $channel is neither #coordinator's channel, $COORDINATOR_CHANNEL, nor $task's thread$(if [[ -n $thread ]]; then echo ", $thread"; else echo ": it has none"; fi)"
+  fi
+  if [[ $event == merge-standing-withdrawn && -n $project ]]; then
+    ledger=$TEAM_HOME/ledger.jsonl
+    [[ -e $ledger ]] || ledger=/dev/null
+    ledger_jq '[inputs | fromjson? | objects] as $events
+      | (if $project == "all" then ($registered | split("\n") | map(select(. != "")))
+           + [$events[] | select(.event == "merge-standing") | .project | strings]
+         else [$project] end) as $projects
+      | $events | standing_words($projects | unique) != []' \
+      -nRe --arg project "$project" --arg registered "$registered" <"$ledger" >/dev/null ||
+      die "no standing word of Daniel's stands for $(if [[ $project == all ]]; then echo "any project"; else echo "$project"; fi), so merge-standing-withdrawn withdraws nothing"
+  fi
 fi
 
 # The task's new branch in one of its projects names the task, as team-close holds a worktree's

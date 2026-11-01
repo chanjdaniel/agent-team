@@ -500,6 +500,28 @@ def preapproved_projects:
       if IN(.[]; $project) then . else . + [$project] end)
   | map(select(. as $project | $events | merge_preapproval($project) | .withdrawn == null));
 
+# Daniel's standing merge word on $project, over every ledger event as an array (never one task's),
+# or null when no merge-standing or merge-standing-withdrawn names $project or all: the latest of
+# those decides, so {stands: whether it is a merge-standing, word: the latest merge-standing that
+# applies, withdrawn: the latest event when it is a withdrawal, else null}, each as {project (as
+# logged), task, ts, discord_message, discord_channel}, word null when no merge-standing applies.
+def standing_word($project):
+  def said: {project, task, ts, discord_message, discord_channel};
+  [.[] | select((.event == "merge-standing" or .event == "merge-standing-withdrawn")
+    and (.project == $project or .project == "all"))] as $applying
+  | ($applying | last) as $latest
+  | if $latest == null then null
+    else {stands: ($latest.event == "merge-standing"),
+          word: ([$applying[] | select(.event == "merge-standing")] | last | if . == null then null else said end),
+          withdrawn: (if $latest.event == "merge-standing-withdrawn" then $latest | said else null end)} end;
+
+# The projects of the list $projects a standing word stands for, over every ledger event as an
+# array, in the list's order, each as {project, word} (standing_word's word).
+def standing_words($projects):
+  . as $events
+  | [$projects[] | . as $project | $events | standing_word($project)
+     | select(. != null and .stands) | {project: $project, word}];
+
 # Why the task's reviews do not let a word given on no head (the plan-time one) merge the PR's
 # head $head unasked, one string per reason, none when they do: no review of the head (by the
 # shorter prefix) is logged; the latest one is not a pass; it logged no guarded list, or named
