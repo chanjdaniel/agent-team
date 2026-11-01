@@ -6,15 +6,15 @@
 #   template    one of templates/briefs/: planner-feature, planner-interview (a planner that
 #               interviews Daniel in the task's interview thread, which team-thread T<n>
 #               --interview opens first), planner-research, builder-ticket, builder-fix,
-#               builder-deliver, builder-merge-base (--set pr=, a PR behind its base),
-#               builder-round (--set pr= the URL, or none before a gated project's gate, findings=
-#               the numbers, goal= as builder-deliver's; a fresh builder for a fix round after the
-#               holder stowed), reviewer, rereview, verify (--set pr=, head=, reviewed=, findings=
-#               the numbers sent back; the re-review of a round whose findings sent back were all
-#               plain notes on lines the PR changes, or that edited only the PR body, which reads
-#               only the fix), ops, retro, resume (a worker relaunched after a stow, for a
-#               handoff, a shutdown or the level: --set role=, brief= its last brief, from= what it
-#               resumes after, snapshot= what became of the uncommitted changes the stow found),
+#               builder-deliver (goal derived, below), builder-merge-base (pr derived, a PR behind
+#               its base), builder-round (pr, findings, findings_file and goal derived; a fresh
+#               builder for a fix round after the holder stowed), reviewer, rereview (pr, head,
+#               reviewed and since derived), verify (the same but since, and findings derived; the
+#               re-review of a round whose findings sent back were all plain notes on lines the PR
+#               changes, or that edited only the PR body, which reads only the fix), ops, retro,
+#               resume (a worker relaunched after a stow, for a handoff, a shutdown or the level:
+#               --set role=, brief= its last brief, from= what it resumes after, snapshot= what
+#               became of the uncommitted changes the stow found),
 #               resume-crash (one relaunched after its machine crashed: --set role=, brief=,
 #               machine= the machine that crashed, checkpoint= the checkpoint's time, snapshot=
 #               what became of that checkpoint's uncommitted changes)
@@ -36,11 +36,37 @@
 # {{> <name>}} stands for the partial of the project's delivery, templates/briefs/<name>/<delivery>.md:
 # delivery (how a builder delivers), review and rereview (what a reviewer reads and posts, verify
 # reading rereview's too; a gated project's first review reads the branch's local head before the
-# gate, with no pr).
+# gate, with no pr). A {{> review-rules}} line, in the reviewer, rereview and verify templates
+# where their checks are listed, is the project's standing review rules, the team home's
+# projects/<project>/review-rules.md: the coordinator's records, never code, read as written
+# before the placeholders, so they may use any, and put in as a paragraph of their own; with no
+# file, or an empty one, the line is left out. One that cannot be read is refused.
+# Derived: a template's reviewed, pr and head the caller does not --set are filled from the ledger
+# and GitHub. reviewed is the head of the task's latest review; pr the URL of the task's latest pr
+# event in the project's repo; head that event's head (moved by any history-rewritten), or the
+# PR's head on GitHub (gh pr view) when it differs, which stderr says; builder-round's pr is none
+# when a gated (no-mistakes) project has no pr event yet, before its gate. So are findings,
+# findings_file and goal: findings the latest review's sent_back, as "3, 5 and 6"; findings_file
+# the newest (by mtime) of review.md and rereview*.md in the worktree's <task_dir>/, written
+# <task_dir>/<file>; goal the first sentence of the plan's ## Goal section, its first line of text
+# past any HTML comment, a list marker dropped. A derived fact with no source is refused as
+# unfilled, naming its --set, only when the template uses it; GitHub unreadable for head is
+# refused naming --set head=.
+# since is always derived, the caller's --set or --set-file since= added after it as "The
+# coordinator adds: <text>": after fetching origin/<base> into the worktree (and reviewed and head,
+# when it lacks them; a failed fetch of the base is exit 75, nothing written), it gives the latest
+# review's head, verdict and sent_back; then, when reviewed is not an ancestor of head, that the
+# branch was rewritten and the git range-diff to compare with; else the commits reviewed..head not
+# on origin/<base>, each by short sha and subject, a merge of origin/<base> with its conflicted
+# files (git merge-tree of its parents) or no conflicts, and how many other commits came from the
+# base, not to be reviewed; and the build notes under the worktree's <task_dir>/build-notes/
+# changed after the latest review.
 # Refused, exit 1 with nothing written: an unknown template, a task that is not open (no opened
 # event, or closed) or has no open worktree, a placeholder left unfilled (each named), a --set key
 # no placeholder uses, a --set of a task fact, and an existing brief without --force.
-# Prints the brief's path, ready for team-worker's first prompt.
+# Prints the brief's path, ready for team-worker's first prompt, and writes its record beside it,
+# tasks/T<n>/brief[-<suffix>].json, replaced with it: {template, project, values}, values holding
+# every placeholder the brief fills but the task's facts, as filled, given or derived.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
@@ -166,12 +192,44 @@ if ((${#partials[@]})); then
   done
 fi
 
-# Every placeholder needs a value, and every --set value a placeholder.
+# The project's standing review rules in place of a {{> review-rules}} line: records, the
+# coordinator's to write, read from the team home before the placeholders, so they may use any.
+rules_line='{{> review-rules}}'
+if grep -qxF -- "$rules_line" <<<"$text"; then
+  rules_file=$TEAM_HOME/projects/$project/review-rules.md rules=''
+  if [[ -e $rules_file ]]; then
+    [[ -f $rules_file && -r $rules_file ]] || die "cannot read the review rules $rules_file"
+    rules=$(<"$rules_file")
+  fi
+  kept=()
+  while IFS= read -r row; do
+    if [[ $row != "$rules_line" ]]; then
+      kept+=("$row")
+    elif [[ -n $rules ]]; then
+      # A paragraph of their own; with none, the line is left out.
+      kept+=('' "$rules")
+    fi
+  done <<<"$text"
+  text=$(printf '%s\n' "${kept[@]}")
+fi
+
+file=$TEAM_HOME/tasks/$task/brief${name:+-$name}.md record=${file%.md}.json
+[[ -n $force || ! -e $file ]] || die "$file exists; pass --force to replace it, or --name <suffix> to write another brief"
+
+# Every placeholder needs a value, and every --set value a placeholder. A derivable placeholder
+# the caller does not set is derived below; since is always derived, the caller's added after it.
 mapfile -t used < <(grep -oE '\{\{[a-z][a-z0-9_]*\}\}' <<<"$text" | sed 's/^{{//; s/}}$//' | sort -u)
-missing=() unused=()
+derivable=(reviewed pr head since findings findings_file goal)
+uses() { [[ " ${used[*]} " == *" $1 "* ]]; }
+missing=() unused=() derive=()
+declare -A why=()
 for key in "${used[@]}"; do
-  if [[ -v sets[$key] ]]; then
+  if [[ $key == since ]]; then
+    derive+=("$key")
+  elif [[ -v sets[$key] ]]; then
     values[$key]=${sets[$key]}
+  elif [[ " ${derivable[*]} " == *" $key "* ]]; then
+    derive+=("$key")
   elif [[ ! -v values[$key] ]]; then
     missing+=("$key")
   fi
@@ -181,20 +239,229 @@ for key in "${!sets[@]}"; do
   # writes and, under pipefail, fail the test.
   grep -qxF -- "$key" <<<"$(printf '%s\n' "${used[@]}")" || unused+=("$key")
 done
-if ((${#missing[@]})); then die "unfilled placeholders: $(printf '%s\n' "${missing[@]}" | paste -sd ',' | sed 's/,/, /g')"; fi
 if ((${#unused[@]})); then
   die "no placeholder in $template uses: $(printf '%s\n' "${unused[@]}" | sort | paste -sd ',' | sed 's/,/, /g')"
 fi
+deriving() { [[ " ${derive[*]} " == *" $1 "* ]]; }
+# <key> cannot be derived, for <why>.
+underivable() {
+  missing+=("$1")
+  why[$1]=$2
+}
 
-args=()
-for key in "${used[@]}"; do args+=(--arg "$key" "${values[$key]}"); done
+# "3, 5 and 6" from a JSON list.
+and_list() {
+  jq -r 'map(tostring) | if length < 2 then join("") else "\(.[:-1] | join(", ")) and \(.[-1])" end' <<<"$1"
+}
+
+review=$(jq -c 'map(select(.event == "review")) | last' <<<"$events")
+if deriving reviewed; then
+  reviewed=$(jq -r '.head // empty' <<<"$review")
+  if [[ -n $reviewed ]]; then values[reviewed]=$reviewed; else underivable reviewed "$task has no review; --set reviewed="; fi
+fi
+repo=${values[repo]}
+if deriving pr; then
+  # The task's latest pr event in this project's repo, its head moved by any history-rewritten.
+  pr=$(ledger_jq '[task_prs[]
+      | select(.url | strings | ascii_downcase | startswith("https://github.com/\($repo | ascii_downcase)/pull/"))]
+    | last | .url // empty' -r --arg repo "$repo" <<<"$events")
+  if [[ -n $pr ]]; then
+    values[pr]=$pr
+  elif [[ $template == builder-round && $(jq -r .delivery <<<"$facts") == no-mistakes ]]; then
+    # A gated project's first round comes before its gate opens the PR.
+    values[pr]=none
+  else
+    underivable pr "$task has no pr event in $repo; --set pr="
+  fi
+fi
+if deriving findings; then
+  sent=$(jq -c '.sent_back // [] | select(length > 0)' <<<"$review")
+  if [[ $review == null ]]; then
+    underivable findings "$task has no review; --set findings="
+  elif [[ -z $sent ]]; then
+    underivable findings "$task's latest review sent nothing back; --set findings="
+  else
+    values[findings]=$(and_list "$sent")
+  fi
+fi
+if deriving findings_file; then
+  # The newest of the reviews' findings files in the worktree's task directory.
+  dir=$(jq -r .worktree <<<"$chosen")/${values[task_dir]}
+  newest=''
+  if [[ -d $dir ]]; then
+    newest=$(find "$dir" -maxdepth 1 -type f \( -name review.md -o -name 'rereview*.md' \) -printf '%T@ %f\n' |
+      sort -k1,1nr -k2,2 | sed -n '1s/^[^ ]* //p')
+  fi
+  if [[ -n $newest ]]; then
+    values[findings_file]=${values[task_dir]}/$newest
+  else
+    underivable findings_file "no review.md or rereview*.md in $(tilde "$dir"); --set findings_file="
+  fi
+fi
+if deriving goal; then
+  # The first sentence of the plan's ## Goal: its first line of text, one sentence per line as the
+  # team writes Markdown, past any HTML comment and without a list marker.
+  plan_file=$TEAM_HOME/tasks/$task/plan.md goal=''
+  if [[ -f $plan_file && -r $plan_file ]]; then
+    goal=$(awk '
+      /^## Goal[[:space:]]*$/ { in_goal = 1; next }
+      !in_goal { next }
+      !in_comment && /^#{1,2} / { exit }
+      {
+        # The line without its HTML comments, which may span lines.
+        line = $0; out = ""
+        while (1) {
+          if (in_comment) {
+            if (!(at = index(line, "-->"))) break
+            line = substr(line, at + 3); in_comment = 0
+          }
+          if (!(at = index(line, "<!--"))) { out = out line; break }
+          out = out substr(line, 1, at - 1); line = substr(line, at + 4); in_comment = 1
+        }
+        sub(/^[[:space:]]*([-*+]|[0-9]+[.)])[[:space:]]+/, "", out)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", out)
+        if (out != "") { print out; exit }
+      }' "$plan_file")
+  fi
+  if [[ -n $goal ]]; then values[goal]=$goal; else underivable goal "$(tilde "$plan_file") has no ## Goal sentence; --set goal="; fi
+fi
+if deriving head; then
+  if [[ ! -v values[pr] ]]; then
+    underivable head "no pr to read it from; --set head="
+  elif [[ ! ${values[pr]} =~ ^https://github\.com/([^/]+/[^/]+)/pull/([0-9]+)/?$ ]]; then
+    underivable head "${values[pr]} is not a GitHub pull request URL; --set head="
+  else
+    pr_repo=${BASH_REMATCH[1]} number=${BASH_REMATCH[2]}
+    logged=$(ledger_jq '[task_prs[] | select((.url | rtrimstr("/")) == $url)] | last | .head // empty' \
+      -r --arg url "${values[pr]%/}" <<<"$events")
+    if ! view=$(gh pr view "$number" --repo "$pr_repo" --json headRefOid 2>&1) ||
+      ! live=$(jq -er '.headRefOid | strings | select(test("^[0-9a-f]{7,40}$"))' <<<"$view" 2>/dev/null); then
+      die "cannot read the head of ${values[pr]} on GitHub ($(head -n 1 <<<"$view")); pass --set head=<full sha>"
+    fi
+    if [[ -n $logged ]] && ledger_jq 'same_head($a; $b)' -en --arg a "$logged" --arg b "$live" >/dev/null; then
+      values[head]=$logged
+    else
+      [[ -z $logged ]] || echo "${0##*/}: ${values[pr]} is at $live on GitHub, not at the ledger's $logged; the brief names GitHub's" >&2
+      values[head]=$live
+    fi
+  fi
+fi
+if deriving since; then
+  if [[ ! -v values[reviewed] || ! -v values[head] ]]; then
+    underivable since "derived from reviewed and head"
+  fi
+fi
+if ((${#missing[@]})); then
+  mapfile -t missing < <(printf '%s\n' "${missing[@]}" | sort)
+  message="unfilled placeholders: $(printf '%s\n' "${missing[@]}" | paste -sd ',' | sed 's/,/, /g')"
+  if ((${#why[@]})); then
+    # In the keys' order, which sorting the whole entries would break (findings_file, findings).
+    message+="; nothing to derive them from: $(for key in "${missing[@]}"; do
+      [[ ! -v why[$key] ]] || echo "$key (${why[$key]})"
+    done | paste -sd ',' | sed 's/,/, /g')"
+  fi
+  die "$message"
+fi
+
+# The derived since: what the branch did since the reviewed head, read from the worktree's git
+# after fetching the base (and the heads, when the worktree lacks them).
+if deriving since; then
+  wt=$(jq -r .worktree <<<"$chosen") base=${values[base]} reviewed=${values[reviewed]} head=${values[head]}
+  if [[ ! -d $wt ]] || ! git -C "$wt" rev-parse --git-dir >/dev/null 2>&1; then
+    die "cannot read the worktree $(tilde "$wt") to derive since: not a git checkout"
+  fi
+  export GIT_TERMINAL_PROMPT=0
+  if ! fetched=$(git -C "$wt" fetch --quiet origin "+refs/heads/$base:refs/remotes/origin/$base" 2>&1); then
+    echo "${0##*/}: cannot fetch origin/$base into $(tilde "$wt") ($(head -n 1 <<<"$fetched")); try again later" >&2
+    exit 75
+  fi
+  for key in reviewed head; do
+    sha=${values[$key]}
+    git -C "$wt" rev-parse --verify --quiet "$sha^{commit}" >/dev/null ||
+      git -C "$wt" fetch --quiet origin "$sha" >/dev/null 2>&1 || true
+    git -C "$wt" rev-parse --verify --quiet "$sha^{commit}" >/dev/null ||
+      die "$key $sha is in neither $(tilde "$wt") nor its origin; --set $key= to a commit it holds"
+  done
+  short() { git -C "$wt" rev-parse --short=8 "$1"; }
+  lines=()
+  if [[ $review != null ]]; then
+    of=$(jq -r .head <<<"$review")
+    case $(jq -r .verdict <<<"$review") in
+      pass) lines+=("The last review, of \`${of:0:8}\`, passed.") ;;
+      *)
+        sent=$(jq -c '.sent_back // []' <<<"$review")
+        if [[ $sent == '[]' ]]; then
+          lines+=("The last review, of \`${of:0:8}\`, had findings, none sent back.")
+        else
+          lines+=("The last review, of \`${of:0:8}\`, had findings, and sent back $(and_list "$sent").")
+        fi
+        ;;
+    esac
+  fi
+  if ! git -C "$wt" merge-base --is-ancestor "$reviewed" "$head"; then
+    lines+=("" "The branch was rewritten: \`$(short "$reviewed")\` is not an ancestor of \`$(short "$head")\`, so compare with \`git range-diff $reviewed...$head\`.")
+  else
+    mapfile -t own < <(git -C "$wt" rev-list --reverse --topo-order "$reviewed..$head" "^refs/remotes/origin/$base")
+    all=$(git -C "$wt" rev-list --count "$reviewed..$head")
+    if ((${#own[@]} == 0 && all == 0)); then
+      lines+=("" "No commit since \`$(short "$reviewed")\`.")
+    elif ((${#own[@]})); then
+      lines+=("" "The branch's own commits since \`$(short "$reviewed")\`, the ones to review:" "")
+      for commit in "${own[@]}"; do
+        line="- \`$(short "$commit")\` $(git -C "$wt" log -1 --format=%s "$commit")"
+        read -r -a parents <<<"$(git -C "$wt" log -1 --format=%P "$commit")"
+        for parent in "${parents[@]:1}"; do
+          git -C "$wt" merge-base --is-ancestor "$parent" "refs/remotes/origin/$base" || continue
+          if conflicts=$(git -C "$wt" merge-tree --write-tree --name-only --no-messages "${parents[0]}" "$parent"); then
+            line+=": a merge of \`origin/$base\`, no conflicts"
+          elif (($? == 1)); then
+            line+=": a merge of \`origin/$base\`, conflicts in $(tail -n +2 <<<"$conflicts" | sed '/^$/d; s/.*/`&`/' |
+              paste -sd ',' | sed 's/,/, /g')"
+          else
+            die "git merge-tree cannot replay the merge $(short "$commit")"
+          fi
+          break
+        done
+        lines+=("$line")
+      done
+    fi
+    others=$((all - ${#own[@]}))
+    if ((others == 1)); then
+      lines+=("" "The other commit in \`$(short "$reviewed")..$(short "$head")\` came from \`origin/$base\` and is not to be reviewed.")
+    elif ((others > 1)); then
+      lines+=("" "The other $others commits in \`$(short "$reviewed")..$(short "$head")\` came from \`origin/$base\` and are not to be reviewed.")
+    fi
+  fi
+  notes=$wt/${values[task_dir]}/build-notes
+  if [[ $review != null && -d $notes ]]; then
+    after=$(date -u -d "$(jq -r .ts <<<"$review")" +%s)
+    mapfile -t changed < <(find "$notes" -type f -newermt "@$after" -printf '%P\n' | sort)
+    if ((${#changed[@]})); then
+      lines+=("" "Build notes changed since the last review: $(printf "\`${values[task_dir]}/build-notes/%s\`\n" "${changed[@]}" |
+        paste -sd ',' | sed 's/,/, /g').")
+    fi
+  fi
+  [[ ! -v sets[since] ]] || lines+=("" "The coordinator adds: ${sets[since]}")
+  # The first line is blank when there is no review to describe.
+  [[ -n ${lines[0]} ]] || lines=("${lines[@]:1}")
+  values[since]=$(printf '%s\n' "${lines[@]}")
+fi
+
+args=() record_args=()
+for key in "${used[@]}"; do
+  args+=(--arg "$key" "${values[$key]}")
+  [[ " ${fact_keys[*]} " == *" $key "* ]] || record_args+=(--arg "$key" "${values[$key]}")
+done
 brief=$(render_template "$text" "$(jq -n '$ARGS.named' "${args[@]}")")
+# The brief's record: its template, project and every value but the task's facts, as filled.
+record_json=$(jq -n --arg template "$template" --arg project "$project" \
+  --argjson values "$(jq -n '$ARGS.named' "${record_args[@]}")" '{template: $template, project: $project, values: $values}')
 
-file=$TEAM_HOME/tasks/$task/brief${name:+-$name}.md
-[[ -n $force || ! -e $file ]] || die "$file exists; pass --force to replace it, or --name <suffix> to write another brief"
 mkdir -p "$TEAM_HOME/tasks/$task"
-tmp=$TEAM_HOME/tasks/$task/.${file##*/}.$$
-trap 'rm -f "$tmp"' EXIT
+tmp=$TEAM_HOME/tasks/$task/.${file##*/}.$$ tmp_record=$TEAM_HOME/tasks/$task/.${record##*/}.$$
+trap 'rm -f "$tmp" "$tmp_record"' EXIT
 printf '%s\n' "$brief" >"$tmp"
+printf '%s\n' "$record_json" >"$tmp_record"
+mv -f "$tmp_record" "$record"
 mv -f "$tmp" "$file"
 echo "$file"

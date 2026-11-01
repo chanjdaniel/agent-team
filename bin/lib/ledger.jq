@@ -4,7 +4,14 @@
 
 # A jq type, or a field type of the contract, as a noun: "a list", "a number", "null".
 def noun:
-  {array: "a list", object: "an object", boolean: "a boolean", number: "a number", string: "a string", null: "null"}[.];
+  {array: "a list", numbers: "a list of whole numbers", object: "an object", boolean: "a boolean", number: "a number",
+    string: "a string", null: "null"}[.];
+
+# Whether a value is a whole number: a number, 0 or more, with no fraction.
+def whole_number: type == "number" and . >= 0 and . == floor;
+
+# Whether a value is a whole number written as a string, as a comma list or an old team-log left one.
+def whole_number_string: type == "string" and test("^[0-9]{1,15}$");
 
 # What every line must meet, legacy lines included: an object with ts, task and event.
 def line_problems:
@@ -20,11 +27,19 @@ def line_problems:
 # How the value breaks field <name>'s contract type (a type name, or a list of allowed strings).
 # An id is a Discord id, a string of digits; with $legacy (--check), a whole number too, as
 # team-log wrote one before the contract typed every Discord id (its digits are the id, since jq
-# keeps a number's literal through tostring).
+# keeps a number's literal through tostring). A list of whole numbers whose other items are whole
+# numbers written as strings, as team-log stored sent_back before the contract typed it, passes
+# with $legacy too, and check_notes names it.
 # (A parameter named $type would shadow the builtin type inside the def.)
 def type_problems($name; $want; $legacy):
   if ($want | type) == "array" then
     select(IN($want[]) | not) | "\($name) must be one of \($want | join(", "))"
+  elif $want == "numbers" then
+    if type != "array" then "\($name) must be a list of whole numbers, got \(type | noun)"
+    else [.[] | select(whole_number | not)] | select(. != [])
+      | select($legacy and all(.[]; whole_number_string) | not)
+      | "\($name) must be a list of whole numbers, got \(map(tojson) | join(", "))"
+    end
   elif $want == "id" then
     if type == "string" then select(test("^[0-9]+$") | not) | "\($name) must be a Discord id, a string of digits, got a string that is not one"
     elif type == "number" and $legacy then select(. < 0 or . != floor) | "\($name) must be a Discord id, a string of digits, got a number that is not one"
@@ -48,6 +63,63 @@ def kind_problems($contract; $legacy):
       (field_types($kind) | to_entries[] | .key as $name | .value as $type
         | $line[$name] | select(. != null and . != "") | type_problems($name; $type; $legacy))
     end;
+
+# A value team-log was given for field $name, whose contract type is $want (null for a field the
+# contract does not type), as {value} or {problems}. A list (array, numbers) or an object that
+# starts with [ or { is JSON; any other list is a comma list, each item trimmed, none the empty
+# list, and any other object key:value pairs separated by commas, each trimmed, a value a number
+# when it reads as one. A list of whole numbers holds each item that is a whole number written as
+# a string as the number. A choice, a string or an id, any discord_* field, and a whole number of
+# 16 digits or more (which a JSON number cannot hold exactly) are kept as written; anything else is
+# JSON when it parses as JSON, else a string.
+def typed_value($name; $want):
+  def trimmed: sub("^\\s+"; "") | sub("\\s+$"; "");
+  def items:
+    . as $raw | split(",") | map(trimmed)
+    | if any(.[]; . == "") then {problems: ["\($name) has an empty item in '\($raw)'"]} else {value: .} end;
+  . as $raw
+  | if ($want | IN("array", "numbers", "object")) and test("^\\s*[\\[{]") then
+      try {value: fromjson} catch {problems: ["\($name) starts as JSON, but is not JSON: \($raw)"]}
+    elif ($want | IN("array", "numbers")) then
+      if trimmed == "none" then {value: []} else items end
+    elif $want == "object" then
+      items
+      | if .problems then .
+        else .value as $pairs
+          | [$pairs[] | [capture("^(?<key>[^:]*[^:\\s])\\s*:\\s*(?<value>.+)$")] | first // null] as $parsed
+          | [range($parsed | length) | select($parsed[.] == null) | "\($name): \($pairs[.]) is not a key:value pair"]
+            + [$parsed | map(.key? // empty) | group_by(.)[] | select(length > 1) | "\($name): \(first) is given twice"]
+          | if . != [] then {problems: .}
+            else {value: ($parsed | map({key, value: (.value | if test("^-?[0-9]+(\\.[0-9]+)?$") then tonumber else . end)}) | from_entries)}
+            end
+        end
+    elif ($want | type) == "array" or ($want | IN("string", "id")) or ($name | startswith("discord_"))
+      or test("^-?[0-9]{16,}$") then {value: .}
+    else {value: ((try fromjson catch null) | if . == null or (type == "number" and isnan) then $raw else . end)}
+    end
+  | if $want == "numbers" and (.value | type) == "array" then
+      .value |= map(if whole_number_string then tonumber else . end)
+      | [.value[] | select(whole_number | not) | "\($name): \(strings // tojson) is not a whole number"] as $bad
+      | if $bad == [] then . else {problems: $bad} end
+    else . end;
+
+# The fields of a ledger line, read raw, that the contract types as whole numbers and that hold
+# strings, as {field: [those strings]}: {} for a line that has none, is not a JSON object or is of
+# no kind the contract knows. team-log --fix-sent-back converts them, every line's, legacy too.
+def number_strings($contract):
+  (try fromjson catch null) as $line
+  | if ($line | type) != "object" or ($line.event | type) != "string" or $contract.kinds[$line.event] == null then {}
+    else [field_types($contract.kinds[$line.event]) | to_entries[] | select(.value == "numbers") | .key as $field
+        | $line[$field] | arrays | [.[] | strings] | select(. != []) | {key: $field, value: .}]
+      | from_entries end;
+
+# A ledger line, read raw, with the whole numbers number_strings finds stored as numbers, or
+# unchanged, byte for byte, when it finds none.
+def numbers_fixed($contract):
+  number_strings($contract) as $fields
+  | if $fields == {} then .
+    else fromjson | reduce ($fields | keys_unsorted[]) as $field (.; .[$field] |= map(if whole_number_string then tonumber else . end))
+      | tojson end;
 
 # The shapes team-log holds beyond the contract's types, each *_problems def yielding
 # "<value>: <problem>" lines.
@@ -93,6 +165,19 @@ def check_problems($contract):
     elif .ts >= $contract.strict_from then kind_problems($contract; true)
     else empty end;
 
+# What a line in an existing ledger holds in a legacy form its contract still takes, one string
+# each: a list of whole numbers from strict_from on that holds some as strings, whose conversion
+# team-log --fix-sent-back is.
+def check_notes($contract):
+  if type == "object" and ([line_problems] == []) and .ts >= $contract.strict_from
+    and $contract.kinds[.event] != null then
+    . as $line
+    | field_types($contract.kinds[.event]) | to_entries[] | select(.value == "numbers") | .key as $name
+    | $line[$name] | arrays | [.[] | select(whole_number | not)]
+    | select(. != [] and all(.[]; whole_number_string))
+    | "\($name) holds whole numbers as strings (\(map(tojson) | join(", "))): team-log --fix-sent-back stores them as numbers"
+  else empty end;
+
 # The scripts that write a kind ($kind.writer, one name or a list), as a list.
 def writers($kind): [$kind.writer // empty] | flatten;
 
@@ -108,12 +193,17 @@ def append_problems($contract; $writer):
     // [kind_problems($contract; false)]
   | .[];
 
-# The report of checking a ledger read as raw lines (jq -nR): {total, bad: [{line, problems}]}.
+# The report of checking a ledger read as raw lines (jq -nR):
+# {total, bad: [{line, problems}], noted: [{line, notes}]}, noted holding the check_notes of
+# lines with no problem.
 def check_ledger($contract):
   [inputs
     | (if test("^\\s*$") then null else (try {value: fromjson} catch null) end) as $parsed
-    | if $parsed == null then ["not JSON"] else [$parsed.value | check_problems($contract)] end]
-  | {total: length, bad: [to_entries[] | select(.value != []) | {line: (.key + 1), problems: .value}]};
+    | if $parsed == null then {problems: ["not JSON"], notes: []}
+      else {problems: [$parsed.value | check_problems($contract)], notes: [$parsed.value | check_notes($contract)]} end]
+  | {total: length,
+     bad: [to_entries[] | select(.value.problems != []) | {line: (.key + 1), problems: .value.problems}],
+     noted: [to_entries[] | select(.value.problems == [] and .value.notes != []) | {line: (.key + 1), notes: .value.notes}]};
 
 # Pad a string with spaces to $width.
 def pad($width): . + ([range($width - length)] | map(" ") | add // "");
@@ -598,9 +688,11 @@ def waiting_on:
 # its limit (stall_limits).
 # A live session is at work while it is busy, waiting for input, or idle with no ledger event
 # since its launch (silent); idle with an event since, it has handed the next step back to the
-# coordinator, so a task with no session at work is no-worker however many are live.
+# coordinator, so a task with no session at work is no-worker however many are live. A denied is
+# no report (the worker went past the denial), so these findings read the events without it.
 def task_findings($sessions; $activity):
   .[0].task as $task
+  | map(select(.event != "denied"))
   | length as $count
   | [to_entries[] | select(.value.event == "launch") | {i: .key, launch: .value}] as $launches
   | ([$launches | reverse | .[] | . + {live: live_session(.launch.session; $sessions)} | select(.live != null)
@@ -1023,7 +1115,9 @@ def retro_digest($task; $team_home):
   | {schema: "team-retro-digest/1",
      window: ($w | {task, previous, since, until}
        + {events: ($in | length), kinds: ($in | group_by(.event) | map({key: (.[0].event | tostring), value: length}) | from_entries)}),
-     blocks: [$in[] | select(.event == "blocked" or .event == "failed") | {ts, task, kind: .event, reason, denial: (.reason | denial)}],
+     blocks: [$in[] | select(.event == "blocked" or .event == "failed" or .event == "denied")
+       | if .event == "denied" then {ts, task, kind: .event, reason: "\(.role) \(.what): \(.why)", denial: true}
+         else {ts, task, kind: .event, reason, denial: (.reason | denial)} end],
      questions: [$in | map(select(.event == "question" or .event == "asked")) | task_groups[]
        | {task: .[0].task, repeated: (length >= 2),
           events: map({ts, kind: .event, text} + if .event == "asked" then {id} else {role} end)}],

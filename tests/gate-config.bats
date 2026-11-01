@@ -1,7 +1,8 @@
 #!/usr/bin/env bats
 # bin/lib/gate-config.awk: ~/.no-mistakes/config.yaml's agent_path_override.opencode, read for
-# team-doctor's opencode-gate line and set by team-bootstrap's tools stage, every other byte of
-# the file kept. The configs here hold a fake token, which no read may print.
+# team-doctor's gate-agent line and set by team-bootstrap's tools stage, every other byte of
+# the file kept; and agent_args_override's list for one agent, read for that line. The configs
+# here hold a fake token, which no read may print.
 
 load helpers/common
 
@@ -106,4 +107,114 @@ agent_path_override: {codex: /x/codex, opencode: $wrapper } # wrappers"
   printf '%s\n' 'agent_path_override:' '  opencode: /old' >"$config"
   wrapper='/Users/a"b/opencode-gate'
   run -3 set_key
+}
+
+# agent_args_override.<agent>'s items in $config, one per line.
+read_args() {
+  awk -v args="${1:-claude}" -f "$REPO_ROOT/bin/lib/gate-config.awk" "$config"
+}
+
+@test "agent_args_override's list for an agent is read in block form, one item per line, quotes and comments dropped" {
+  printf '%s\n' 'agent: claude' 'api_token: fake-token-123' 'agent_args_override:' '  codex:' '    - -c' \
+    '    - service_tier="priority"' '  claude:' '    - --setting-sources  # not the user' '' '    # the sources' \
+    "    - 'project,local'" '    - "--strict-mcp-config"' 'log_level: info' '  - stray' >"$config"
+  run -0 read_args
+  assert_equal "$output" "--setting-sources
+project,local
+--strict-mcp-config"
+  run -0 read_args codex
+  assert_equal "$output" '-c
+service_tier="priority"'
+  # The list may sit at its key's own indent, as YAML allows.
+  printf '%s\n' 'agent_args_override:' '  claude:' '  - --strict-mcp-config' '  opencode:' '  - --x' >"$config"
+  run -0 read_args
+  assert_equal "$output" --strict-mcp-config
+  # No such agent, no such key, an empty list: nothing.
+  run -0 read_args grok
+  assert_equal "$output" ""
+  printf '%s\n' 'agent: claude' 'agent_path_override:' '  claude:' '    - --strict-mcp-config' >"$config"
+  run -0 read_args
+  assert_equal "$output" ""
+  printf '%s\n' 'agent_args_override:' '  claude: []' >"$config"
+  run -0 read_args
+  assert_equal "$output" ""
+}
+
+@test "agent_args_override's list is read in flow form, split on its commas as YAML does outside quotes" {
+  printf '%s\n' 'agent_args_override:' '  claude: [--setting-sources, "project,local", --strict-mcp-config] # isolated' >"$config"
+  run -0 read_args
+  assert_equal "$output" "--setting-sources
+project,local
+--strict-mcp-config"
+  # Unquoted, project,local is two items, as no-mistakes' YAML reads it.
+  printf '%s\n' 'agent_args_override: {codex: [-c, x], claude: [--setting-sources, project,local, --strict-mcp-config]}' >"$config"
+  run -0 read_args
+  assert_equal "$output" "--setting-sources
+project
+local
+--strict-mcp-config"
+  run -0 read_args codex
+  assert_equal "$output" "-c
+x"
+  printf '%s\n' 'agent_args_override: {codex: [-c, x]}' >"$config"
+  run -0 read_args
+  assert_equal "$output" ""
+}
+
+@test "agent_args_override in a form the read leaves to Daniel exits 3 and prints nothing" {
+  printf '%s\n' 'agent_args_override:' '  claude: [--setting-sources,' '    project]' >"$config"
+  run -3 read_args
+  assert_equal "$output" ""
+  printf '%s\n' 'agent_args_override: {claude: [--x],' '  codex: []}' >"$config"
+  run -3 read_args
+  printf '%s\n' 'agent_args_override:' '  claude: --strict-mcp-config' >"$config"
+  run -3 read_args
+  printf '%s\n' 'agent_args_override: null' >"$config"
+  run -3 read_args
+  printf '%s\n' 'agent_args_override: {claude: --x}' >"$config"
+  run -3 read_args
+}
+
+@test "a top-level key of the agent's name after agent_args_override is not its child" {
+  printf '%s\n' 'agent: claude' 'agent_args_override:' 'claude: [--setting-sources, project, --strict-mcp-config]' >"$config"
+  run -0 read_args
+  assert_equal "$output" ""
+  printf '%s\n' 'agent: claude' 'agent_args_override:' '  codex: [-c, x]' 'claude: [--setting-sources, project]' >"$config"
+  run -0 read_args
+  assert_equal "$output" ""
+  printf '%s\n' 'agent: claude' 'agent_args_override:' 'claude:' '  - --strict-mcp-config' >"$config"
+  run -0 read_args
+  assert_equal "$output" ""
+}
+
+@test "in a flow mapping only the agent's own key at its top level is read, never one in a comment or a nested list" {
+  printf '%s\n' 'agent_args_override: {codex: [-c]} # , claude: [--setting-sources, project, --strict-mcp-config]' >"$config"
+  run -0 read_args
+  assert_equal "$output" ""
+  printf '%s\n' 'agent_args_override: {codex: [-c, claude: [--setting-sources, project, --strict-mcp-config]]}' >"$config"
+  run -0 read_args
+  assert_equal "$output" ""
+  printf '%s\n' "agent_args_override: {codex: ['x, claude: [--y]'], claude: [--strict-mcp-config]}" >"$config"
+  run -0 read_args
+  assert_equal "$output" --strict-mcp-config
+  printf '%s\n' 'agent_args_override: {"claude": [--strict-mcp-config]}' >"$config"
+  run -0 read_args
+  assert_equal "$output" --strict-mcp-config
+}
+
+@test "a comment inside a one-line flow collection leaves it open on its line, which exits 3" {
+  printf '%s\n' 'agent: claude' 'agent_args_override: {codex: [-c] # , claude: [--setting-sources, project, --strict-mcp-config]}' '  }' >"$config"
+  run -3 read_args
+  assert_equal "$output" ""
+  printf '%s\n' 'agent: claude' 'agent_args_override: {claude: [--strict-mcp-config # , --setting-sources, project]}' '  ]}' >"$config"
+  run -3 read_args
+  assert_equal "$output" ""
+  printf '%s\n' 'agent: claude' 'agent_args_override:' '  claude: [--strict-mcp-config # , --setting-sources, project]' '    ]' >"$config"
+  run -3 read_args
+  assert_equal "$output" ""
+  # A # in a quoted item, or with no blank before it, is no comment.
+  printf '%s\n' 'agent_args_override: {claude: ["a #b", c#d]}' >"$config"
+  run -0 read_args
+  assert_equal "$output" "a #b
+c#d"
 }
