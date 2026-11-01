@@ -777,7 +777,7 @@ preapproved_pr() {
   event "$1" merge-preapproved '{project: "proj", ask: "plan", discord_message: "1563000000000000001", scope: ["src/"]}'
   event "$1" plan-approved '{by: "Daniel"}'
   event "$1" pr '{url: "https://github.com/owner/proj/pull/5", head: "a1b2c3d"}'
-  event "$1" review '{verdict: "pass", head: "a1b2c3d4e5", findings: {blocking: 0, correctness: 0, security: 0, "real-data": 0, note: 0}, guarded: []}'
+  event "$1" review '{verdict: "pass", head: "a1b2c3d4e5", findings: {blocking: 0, correctness: 0, security: 0, "real-data": 0, "note-change": 0, "note-before": 0}, guarded: []}'
 }
 
 @test "merge-due: an awaiting-merge task with Daniel's standing plan-time word and nothing else parking it" {
