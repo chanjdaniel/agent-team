@@ -61,10 +61,10 @@ def park_class:
 # a withdrawal that leaves none standing while the word is still plan, a review that sends notes
 # back (sent_back) building (the builder's fix round, which a reviewer's done leaves building),
 # and a done (save one while the word plan merges), merged or other review unattributed (the
-# coordinator's turn, or a gate run the ledger did not see); with no park, an ask still open (open, kept across launches) while the
-# phase is unattributed is a wait on Daniel (idle_class). A park logged after the fact with since
-# takes effect at since, held to the span from the event before it to its own ts. The task starts
-# unattributed, and the walk stops at the first event after $end.
+# coordinator's turn, or a gate run the ledger did not see); with no park, an ask still open (open,
+# kept across launches) while the phase is unattributed is a wait on Daniel (idle_class). A park
+# logged after the fact with since takes effect at since, held to the span from the event before it
+# to its own ts. The task starts unattributed, and the walk stops at the first event after $end.
 def is_park: IN(.event; "waiting", "blocked", "paused", "held");
 
 # A walk state's class: its park, else a wait on Daniel while no worker is at work and an ask

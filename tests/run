@@ -6,8 +6,8 @@
 # The bats files run as many at once as the machine has CPUs, each in a bats of its own (every
 # test is sandboxed, so files share nothing), the largest first: one line per file as it ends,
 # then the whole output of each file that failed, and the count of tests passed.
-# Every part but shellcheck alone runs under the machine's heavy-run lock (team-heavy run), so a
-# suite waits for another suite or a gate's end-to-end run instead of overlapping it; under a
+# Every part but shellcheck alone and a shard's --list runs under the machine's heavy-run lock
+# (team-heavy run), so a suite waits for another suite or a gate's end-to-end run instead of overlapping it; under a
 # heavy run already (TEAM_HEAVY_HELD set, as a local check team-checks runs), it runs at once.
 #
 # Usage: tests/run [shellcheck|bats [--shard <k>/<n> [--list]]|toolkits]   (default: all three)
@@ -40,7 +40,7 @@ fi
 # Every part but shellcheck alone and a shard's list runs under the machine's heavy-run lock
 # (bin/team-heavy).
 if [[ $what != shellcheck && -z $list && -z ${TEAM_HEAVY_HELD:-} ]]; then
-  exec "$root/bin/team-heavy" run --label "tests/run $* in ${root/#"$HOME"/\~}" -- "$0" "$@"
+  exec "$root/bin/team-heavy" run --label "tests/run ${*:-all} in ${root/#"$HOME"/\~}" -- "$0" "$@"
 fi
 
 # Every file under bin/, tests/, servers/ and toolkits/ that is a shell script by its shebang or
@@ -100,7 +100,7 @@ run_bats() {
 }
 
 if [[ -n $list ]]; then
-  bats_files | sed "s|^$root/||"
+  while IFS= read -r file; do echo "${file#"$root/"}"; done < <(bats_files)
   exit
 fi
 fail=0

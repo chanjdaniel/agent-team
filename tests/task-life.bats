@@ -442,9 +442,9 @@ assert_closed_and_clean() {
   ok team-close T1
   assert_equal "$(jq -c '[.archive, .returned, .kept]' <<<"$output")" \
     "$(jq -cn --arg h "$home_wt" --arg c "$conv_wt" '[["tasks/T1/scratch", "tasks/T1/scratch-conv"], [$h, $c], []]')"
-  # The builders' launches stopped the planner and home's builder; the close stops the rest and
-  # removes all five.
-  assert_equal "$(jq -c '[.stopped, .removed] | map(length)' <<<"$output")" '[3,5]'
+  # home's builder's launch stopped the planner, and conv's builder left home's, which holds its
+  # own worktree's work; the close stops the other four and removes all five.
+  assert_equal "$(jq -c '[.stopped, .removed] | map(length)' <<<"$output")" '[4,5]'
   assert_equal "$(cat "$TEAM_HOME/tasks/T1/scratch/spec.md")" "# Spec"
   assert_equal "$(cat "$TEAM_HOME/tasks/T1/scratch-conv/build-notes/02.md")" "# 02"
   [[ ! -e $home_wt ]]
