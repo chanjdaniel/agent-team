@@ -247,8 +247,10 @@ Live team sessions: none"
   assert_equal "$stderr" ""
   assert_equal "$(jq -c '[.level, .resources, .awaiting_resume]' <<<"$output")" "$(jq -cn --arg error "$(tail -n 1 <<<"$error")" '[{error: $error}, null, []]')"
   assert_equal "$(jq -c '.tasks | length' <<<"$output")" 1
+  # Cut at 200 columns, as on macOS, whose longer temporary paths make it longer.
   run_bin -0 team-snapshot
-  assert_equal "$(sed -n 3p <<<"$output")" "Resources unreadable: $(tail -n 1 <<<"$error")"
+  assert_equal "$(sed -n 3p <<<"$output")" \
+    "$(jq -rn --arg line "Resources unreadable: $(tail -n 1 <<<"$error")" '$line | if length > 200 then .[:197] + "..." else . end')"
 }
 
 @test "a team-slots that fails gives slots its error, and the rest of the snapshot as before" {
