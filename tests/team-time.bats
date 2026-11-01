@@ -7,7 +7,8 @@ load helpers/common
 # T60, a Conventioner feature closed in 13 h: planning 1, building 4, gate 2.5 (two runs' minutes
 # taken from building, and a pause on a gate run), review 1.5, merging 0.5, unattributed 1.5,
 # Daniel 1.5, the machine's load 0.5; three gate runs on one PR, two reviews.
-# T61, an agent-team task still open from 10:00: building 3.55, a denial 0.25, another task 2,
+# T61, an agent-team task still open from 10:00: building 3.55, a denial 0.25, another task 2 (a
+# denial the builder went past, a denied, logged within it, which parks and clears nothing),
 # GitHub 1, the machine handed over 2, Daniel 1.4 (a question answered in 0.2, then an ask still
 # open from 19:00), by 20:12.
 # T62, a Conventioner bug of 3 h from 22:00 the day before, 2 minutes of it an ask answered; T63,
@@ -84,19 +85,19 @@ time_json() {
   assert_contains "$output" "Gate minutes per step (median): review 5, test 25, document 1, push 1, ci 28"
 }
 
-@test "reviews and findings per PR, builders per ticket and denials are counted" {
+@test "reviews and findings per PR, builders per ticket and denials (blocked and denied) are counted" {
   local json
   json=$(time_json --until "$until")
   assert_equal "$(jq -c '.reviews' <<<"$json")" \
     '[{"task":"T60","pr":"https://github.com/chanjdaniel/Conventioner/pull/7","reviews":2,"findings":1}]'
   assert_equal "$(jq -c '.builders' <<<"$json")" \
     '[{"task":"T60","builders":3,"tickets":1},{"task":"T61","builders":2,"tickets":0},{"task":"T62","builders":1,"tickets":0}]'
-  assert_equal "$(jq -c '.denials' <<<"$json")" '1'
+  assert_equal "$(jq -c '.denials' <<<"$json")" '2'
 
   run_bin -0 team-time --until "$until"
   grep -Eq '^T60 +https://github.com/chanjdaniel/Conventioner/pull/7 +2 +1$' <<<"$output"
   grep -Eq '^T60 +3 +1$' <<<"$output"
-  assert_contains "$output" "Denials: 1"
+  assert_contains "$output" "Denials: 2"
 }
 
 @test "Daniel's answers are matched to the asks by id, with the median and 90th percentile latency" {
@@ -450,7 +451,7 @@ preapproved_rounds() {
 @test "--task reports one task, and its counts alone" {
   local json
   json=$(time_json --task T61 --until "$until")
-  assert_equal "$(jq -c '[.tasks[].task, .wall, .denials, .answers.answered, .gate_runs.per_pr]' <<<"$json")" '["T61",10.2,1,1,[]]'
+  assert_equal "$(jq -c '[.tasks[].task, .wall, .denials, .answers.answered, .gate_runs.per_pr]' <<<"$json")" '["T61",10.2,2,1,[]]'
 }
 
 @test "a malformed command line is a usage error, and a missing ledger reports nothing" {

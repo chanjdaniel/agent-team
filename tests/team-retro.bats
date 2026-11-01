@@ -211,6 +211,24 @@ LINES
   assert_equal "$(jq -r '.blocks[0].reason' <<<"$output")" "git reset --hard denied by auto mode"
 }
 
+@test "digest: a denied the worker went past is a block and a denial, and starts or ends no wait" {
+  opened "$(at 00:00)" T1 feature
+  event "$(at 01:00)" T1 blocked '{reason: "waits for T2: its script"}'
+  event "$(at 02:00)" T1 denied '{role: "builder", session: "4f2a9c1e", what: "Bash", why: "[deny rule] git reset * --hard*"}'
+  event "$(at 03:00)" T1 resumed
+  run_bin -0 team-retro digest --json
+  assert_equal "$(jq -c '.blocks[]' <<<"$output")" "$(
+    cat <<'LINES'
+{"ts":"2026-10-20T01:00:00Z","task":"T1","kind":"blocked","reason":"waits for T2: its script","denial":false}
+{"ts":"2026-10-20T02:00:00Z","task":"T1","kind":"denied","reason":"builder Bash: [deny rule] git reset * --hard*","denial":true}
+LINES
+  )"
+  assert_equal "$(jq -c '.waits.spans | map([.kind, .from, .to])' <<<"$output")" \
+    '[["blocked","2026-10-20T01:00:00Z","2026-10-20T03:00:00Z"]]'
+  run_bin -0 team-retro digest
+  assert_contains "$output" $'\n  2026-10-20T02:00:00Z T1 denied, denial: builder Bash: [deny rule] git reset * --hard*\n'
+}
+
 @test "digest: questions per task, repeated with two or more in the window" {
   opened "$(at 00:00)" T1 feature
   event "$(at 00:30)" T1 asked '{id: "before", text: "outside the window"}'

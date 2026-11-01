@@ -224,7 +224,7 @@ def time_report($lo; $hi; $since; $until; $task):
        | map({task: .[0].task, pr: .[0].pr, reviews: length, findings: map(select(.verdict == "findings")) | length})),
      builders: map({task: .time.task, builders: ([.window[] | select(.event == "launch" and .role == "builder")] | length),
        tickets: ([.window[] | select(.event == "ticket-done") | .ticket] | unique | length)}),
-     denials: ([.[].window[] | select(.event == "blocked" and park_class == "wait:denial")] | length),
+     denials: ([.[].window[] | select(.event == "denied" or (.event == "blocked" and park_class == "wait:denial"))] | length),
      answers: {answered: ($asks | map(select(.answered)) | length), unanswered: ($asks | map(select(.answered | not)) | length),
        median_minutes: ([$asks[] | .minutes | numbers] | nearest_rank(0.5) | if . then tenths else . end),
        p90_minutes: ([$asks[] | .minutes | numbers] | nearest_rank(0.9) | if . then tenths else . end)},

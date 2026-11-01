@@ -188,7 +188,9 @@ run_fake() {
 
 @test "the session starts in the worktree with the role's settings, an empty MCP config and the prompt last" {
   thread T7
-  run_bin -0 --separate-stderr team-worker T7 builder "$wt1" -- Read your brief "at brief.md"
+  mkdir -p "$TEAM_HOME/tasks/T7"
+  echo "the brief" >"$TEAM_HOME/tasks/T7/brief.md"
+  run_bin -0 --separate-stderr team-worker T7 builder "$wt1" -- Read your brief "at $TEAM_HOME/tasks/T7/brief.md"
   assert_equal "$output" "4f2a9c1e"
   assert_equal "$(cat "$STUB_CALLS/claude.cwd")" "$wt1"
 
@@ -197,8 +199,99 @@ run_fake() {
     "--strict-mcp-config", "--mcp-config", "\($t)/mcp.builder.json",
     "--settings", "\($t)/settings.builder.json",
     "--append-system-prompt-file", "\($roles)/builder.md",
-    "--permission-mode", "auto", "--name", "T7-builder", "Read your brief at brief.md"]')"
+    "--permission-mode", "auto", "--name", "T7-builder", "Read your brief at \($t)/brief.md"]')"
   assert_equal "$(jq -c . "$t/mcp.builder.json")" '{"mcpServers":{}}'
+}
+
+@test "a prompt naming a brief that is missing or unreadable, or saying 'your brief' with none, is refused: nothing started or logged" {
+  thread T7
+  # The empty path a failed pipe into the prompt leaves.
+  run_bin -1 team-worker T7 builder "$wt1" -- "Read your brief at "
+  assert_contains "$output" "the prompt says 'your brief' but names no brief*.md file"
+  run_bin -1 team-worker T7 builder "$wt1" -- "Read YOUR BRIEF and go"
+  assert_contains "$output" "names no brief*.md file"
+  run_bin -1 team-worker T7 builder "$wt1" -- "Read your brief at ~/x/tasks/T1/brief-nope.md."
+  assert_contains "$output" "the prompt's brief $HOME/x/tasks/T1/brief-nope.md does not exist or cannot be read"
+  # A relative path is the worktree's, where the session reads it.
+  run_bin -1 team-worker T7 builder "$wt1" -- "Read your brief at brief.md"
+  assert_contains "$output" "the prompt's brief $wt1/brief.md does not exist or cannot be read"
+  # An ops prompt, the brief's text, is checked the same way.
+  run_bin -1 team-worker T7 builder "$wt1" -- "$(printf '# T7 brief (ops)\nSee `%s` first.\n' "$TEAM_HOME/tasks/T7/brief-gone.md")"
+  assert_contains "$output" "$TEAM_HOME/tasks/T7/brief-gone.md does not exist or cannot be read"
+  mkdir -p "$TEAM_HOME/tasks/T7"
+  echo "the brief" >"$TEAM_HOME/tasks/T7/brief.md"
+  chmod 000 "$TEAM_HOME/tasks/T7/brief.md"
+  run_bin -1 team-worker T7 builder "$wt1" -- "Read your brief at $TEAM_HOME/tasks/T7/brief.md"
+  assert_contains "$output" "$TEAM_HOME/tasks/T7/brief.md does not exist or cannot be read"
+  # A directory named like a brief is no brief either.
+  mkdir "$TEAM_HOME/tasks/T7/brief-dir.md"
+  run_bin -1 team-worker T7 builder "$wt1" -- "Read your brief at $TEAM_HOME/tasks/T7/brief-dir.md"
+  assert_contains "$output" "brief-dir.md does not exist or cannot be read"
+  chmod 644 "$TEAM_HOME/tasks/T7/brief.md"
+  assert_equal "$(stub_calls claude)" ""
+  assert_equal "$(launches)" ""
+  [[ ! -e $TEAM_HOME/tasks/T7/settings.builder.json ]]
+}
+
+@test "a launch logs the brief its prompt names under the task's directory, and none for a prompt naming none" {
+  thread T7
+  mkdir -p "$TEAM_HOME/tasks/T7"
+  echo "the brief" >"$TEAM_HOME/tasks/T7/brief-rereview-3.md"
+  run_bin -0 team-worker T7 reviewer "$wt1" -- "Read your brief at $TEAM_HOME/tasks/T7/brief-rereview-3.md"
+  assert_equal "$output" "4f2a9c1e"
+  assert_equal "$(bg_calls | jq -r last)" "Read your brief at $TEAM_HOME/tasks/T7/brief-rereview-3.md"
+  assert_equal "$(launches)" "$(jq -cn --arg wt "$wt1" '{task: "T7", event: "launch", role: "reviewer",
+    session: "4f2a9c1e", worktree: $wt, toolkits: [], machine: "home-pc", brief: "brief-rereview-3"}')"
+  : >"$TEAM_HOME/ledger.jsonl"
+  thread T7
+  # An ops-shaped prompt, the brief's own text, names no brief.
+  run_bin -0 team-worker T7 builder "$wt1" -- "$(printf '# T7 brief (ops): a request\nAnswer the request, then stop.\n')"
+  assert_equal "$(launches | jq -c 'has("brief")')" "false"
+}
+
+@test "a brief named with ~/, \$HOME or trailing punctuation is found; another task's brief launches with no brief logged" {
+  thread T7
+  mkdir -p "$TEAM_HOME/tasks/T7" "$TEAM_HOME/tasks/T8"
+  echo "seven" >"$TEAM_HOME/tasks/T7/brief-build-02.md"
+  echo "eight" >"$TEAM_HOME/tasks/T8/brief.md"
+  # The team home as a path from HOME (the sandbox's is beside it: ../team).
+  local rel
+  rel=$(realpath --relative-to="$HOME" "$TEAM_HOME")
+  run_bin -0 team-worker T7 builder "$wt1" -- "Read your brief at ~/$rel/tasks/T7/brief-build-02.md."
+  assert_equal "$(launches | jq -r .brief)" "brief-build-02"
+  : >"$TEAM_HOME/ledger.jsonl"
+  thread T7
+  # shellcheck disable=SC2016 # the prompt names $HOME as written
+  run_bin -0 team-worker T7 builder "$wt1" -- 'Read your brief ($HOME/'"$rel"'/tasks/T7/brief-build-02.md),'
+  assert_equal "$(launches | jq -r .brief)" "brief-build-02"
+  : >"$TEAM_HOME/ledger.jsonl"
+  thread T7
+  run_bin -0 team-worker T7 builder "$wt1" -- "Read your brief \`\${HOME}/$rel/tasks/T7/brief-build-02.md\`;"
+  assert_equal "$(launches | jq -r .brief)" "brief-build-02"
+  : >"$TEAM_HOME/ledger.jsonl"
+  thread T7
+  run_bin -0 team-worker T7 builder "$wt1" -- "Read your brief at \"$TEAM_HOME/tasks/T8/brief.md\"."
+  assert_equal "$(launches | jq -c 'has("brief")')" "false"
+  run_bin -0 team-log --check
+}
+
+@test "team-log --check accepts a launch's brief, and --help says what team-worker checks and logs" {
+  thread T7
+  mkdir -p "$TEAM_HOME/tasks/T7"
+  echo "the brief" >"$TEAM_HOME/tasks/T7/brief.md"
+  run_bin -0 team-worker T7 builder "$wt1" -- "Read your brief at $TEAM_HOME/tasks/T7/brief.md"
+  assert_equal "$(launches | jq -r .brief)" "brief"
+  run_bin -0 team-log --check
+  # A brief that is not a string is refused.
+  local bad
+  bad=$(jq -c 'select(.event == "launch") | .brief = 3' "$TEAM_HOME/ledger.jsonl")
+  echo "$bad" >>"$TEAM_HOME/ledger.jsonl"
+  run_bin -1 team-log --check
+  assert_contains "$output" "brief"
+  run_bin -0 team-worker --help
+  assert_contains "$output" "your brief"
+  assert_contains "$output" "brief*.md"
+  assert_contains "$output" "logs it as brief"
 }
 
 @test "role settings are layered on the worker settings, permission and hook lists concatenated" {
