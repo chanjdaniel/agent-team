@@ -15,12 +15,21 @@ import { connectWhenReady, dataOnTmpfs, mongoImage, removeContainer, startMongo 
 const docker = (...args) => execFileSync("docker", args, { encoding: "utf8" }).trim();
 const name = `toolkit-test-${randomBytes(4).toString("hex")}`;
 
-// The image's entrypoint runs any command that is not mongod as given: this one only logs.
+// Container <container>'s mounts as type:destination, which lists a volume or a bind mount and
+// never a --tmpfs one.
+const mounts = (container) =>
+  docker("inspect", "--format", "{{range .Mounts}}{{.Type}}:{{.Destination}} {{end}}", container)
+    .split(" ").filter(Boolean);
+
+// The image's entrypoint runs any command that is not mongod as given: this one only logs. Its
+// mounts are read at once, since its sleep ends and --rm removes it, whatever the tests take.
+let loggingMounts;
 before(() => {
   docker(
     "run", "--detach", "--rm", "--name", name, "--label", "agent-team-test=toolkits", ...dataOnTmpfs,
     mongoImage, "sh", "-c", "echo still starting up; sleep 120",
   );
+  loggingMounts = mounts(name);
 });
 
 after(() => {
@@ -92,20 +101,14 @@ test("a Docker too busy to answer keeps the wait going until its deadline", asyn
   }
 });
 
-// Container <container>'s mounts as type:destination, which lists a volume or a bind mount and
-// never a --tmpfs one.
-const mounts = (container) =>
-  docker("inspect", "--format", "{{range .Mounts}}{{.Type}}:{{.Destination}} {{end}}", container)
-    .split(" ").filter(Boolean);
-
 test("the throwaway MongoDB and the container that only logs make no volume", async () => {
+  assert.deepEqual(loggingMounts, [], "the container that only logs");
   const db = await startMongo();
   try {
     assert.deepEqual(mounts(db.name), [], "the throwaway MongoDB");
   } finally {
     await db.stop();
   }
-  assert.deepEqual(mounts(name), [], "the container that only logs");
 });
 
 test("the throwaway MongoDB runs tcmalloc on per-thread caches, so it starts on Linux 6.19 to 7.0.13", async () => {
