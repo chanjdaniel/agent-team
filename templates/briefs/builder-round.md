@@ -13,7 +13,7 @@ Task directory: `{{task_dir}}/` in the worktree (excluded from git): `spec.md`, 
 3. Fix each finding on the branch, test-first where it changes behaviour, and delete `{{task_dir}}/handoff.md` once its work is done.
    Answer a finding with a test plan as your role says: its test first, run before you change the code, and a note in `{{task_dir}}/build-notes/` saying whether it failed.
 4. Then deliver as below; when the PR exists, push to it where a step opens one, and when it is none, the delivery opens it as it says.
-   When every one of findings {{findings}} is a plain `note` and the PR exists, send `{{task}} PR <full url>` as soon as the fix is pushed and its local checks pass, without waiting for the PR's GitHub checks: the `verify` reviewer waits for them while it reads, so the run and the reading overlap; on a gated project the gate's run, CI included, goes as the delivery says.
+   When every one of findings {{findings}} is a plain `note` and the PR exists, send `{{task}} PR <full url>` as soon as the fix is pushed and its local checks pass, and stop there: skip the delivery's wait for the PR's GitHub checks and every step after it, and push nothing more, since the `verify` reviewer waits for those checks while it reads, so the run and the reading overlap, and reviews the head you pushed; a failed check comes back to you from it as a `blocking` finding; on a gated project the gate's run, CI included, goes as the delivery says.
 
 {{> delivery}}
 

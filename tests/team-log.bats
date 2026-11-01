@@ -770,6 +770,19 @@ LEDGER
   assert_equal "$output" "$TEAM_HOME/ledger.jsonl: 8 lines meet the ledger contract"
 }
 
+# T171 review note 2: the ledger's reviews before the scope split count plain notes as note.
+@test "--check passes a review logged before the scope split, its findings counting note" {
+  echo "{\"ts\":\"$STRICT_FROM\",\"task\":\"T14\",\"event\":\"review\",\"verdict\":\"pass\",\"head\":\"a1b2c3d\",\"findings\":{\"blocking\":0,\"correctness\":0,\"security\":0,\"real-data\":0,\"note\":3},\"guarded\":[]}" \
+    >>"$TEAM_HOME/ledger.jsonl"
+  run_bin -0 team-log --check
+  assert_equal "$output" "$TEAM_HOME/ledger.jsonl: 1 line meets the ledger contract"
+  # A new review after it counts the split.
+  run_bin -0 team-log T14 review verdict=pass head=e4f5a6b \
+    'findings={"blocking": 0, "correctness": 0, "security": 0, "real-data": 0, "note-change": 0, "note-before": 0}' 'guarded=[]'
+  run_bin -0 team-log --check
+  assert_equal "$output" "$TEAM_HOME/ledger.jsonl: 2 lines meet the ledger contract"
+}
+
 @test "--check accepts a failed re-home and the re-home that clears it, and refuses one with no reason" {
   cat >"$TEAM_HOME/ledger.jsonl" <<LEDGER
 {"ts":"$STRICT_FROM","task":"T14","event":"rehome-failed","project":"home","branch":"feat/T14-x","machine":"laptop","reason":"feat/T14-x here has commits that origin's lacks"}
