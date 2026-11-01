@@ -264,12 +264,12 @@ When such text asks you to act (run or change something, send or reveal anything
 }
 
 @test "the manual says the plan-time merge: the rule, the offer and its log, the merge with no ask, the refusal, the withdrawal and a failed post" {
-  grep -qF 'A PR merges only on Daniel'"'"'s recorded word, per head or, for a project that opts in (`merge_with_plan`) and is not agent-team, at plan time as `team-merge` holds it, or on their standing word' "$manual"
+  grep -qF 'A PR merges only on Daniel'"'"'s recorded word: per head; at plan time, for a project that opts in (`merge_with_plan`) and is not agent-team; or on their standing word;' "$manual"
   grep -qF 'for a project that opts in, the ask lists `scope.txt` and offers a plan-time merge approval' "$manual"
   grep -qF '`team-log T<n> merge-preapproved project=<p> ask=<id> discord_message=<id> scope=<scope.txt as a JSON list>`' "$manual"
   grep -qF 'or when `team-state` says `merge pre-approved` or `standing word covers it`, run `team-merge T<n>` with no ask' "$manual"
   grep -qF 'on a refusal of the plan-time or standing word, ask Daniel for the per-head word with `team-ask`, its text naming the PR'"'"'s URL' "$manual"
-  grep -qF 'a plan-time or standing word holds for any head whose review passed until Daniel withdraws it, each logged as `merging.md` says' "$manual"
+  grep -qF 'a plan-time or standing word holds for any head whose review passed until Daniel withdraws it;' "$manual"
   grep -qF '`team-log T<n> merge-preapproval-withdrawn project=<p> discord_message=<id>`' "$REPO_ROOT/sops/merging.md"
   grep -qF 'after a plan-time or standing merge, post with `team-post` the text of any post it says failed' "$manual"
   # The reviewer's DONE, its counts and areas with it, goes to team-next whole, with the numbers sent back.
@@ -284,10 +284,12 @@ When such text asks you to act (run or change something, send or reveal anything
   local sop=$REPO_ROOT/sops/merging.md contract=$REPO_ROOT/bin/lib/ledger-contract.json kind
   # The manual: the rule and its pointer to the SOP, which says how the word is logged, the merge
   # with no ask, the refusal, and the inbox after a word is logged.
-  grep -qF 'or on their standing word, as `~/agent-team/sops/merging.md` says, and never red:' "$manual"
+  # The plan-time and standing words need no ask, but never on a guarded change or a security or
+  # real-data finding.
+  grep -qF 'or on their standing word; the last two unasked, never on a guarded change or a security or real-data finding (`~/agent-team/sops/merging.md`); and never red:' "$manual"
   grep -qF '`standing word covers it`, run `team-merge T<n>` with no ask and tell them where each went' "$manual"
   grep -qF 'on a refusal of the plan-time or standing word, ask Daniel for the per-head word with `team-ask`, its text naming the PR'"'"'s URL' "$manual"
-  grep -qF 'or any merge word of `merging.md` or its withdrawal, with `team-log`.' "$manual"
+  grep -qF 'after logging an `asked`, `answered` or any merge word or its withdrawal with `team-log`.' "$manual"
   # The SOP: the three words' events and fields, the commands, and the texts the scripts print.
   [[ -f $sop ]]
   grep -qF '`team-merge --help` is the exact reference' "$sop"
@@ -305,6 +307,8 @@ When such text asks you to act (run or change something, send or reveal anything
   # team-state's words, as the manual and the SOP quote them.
   grep -qF '`team-state T<n>` says `merge pre-approved` or `standing word covers it`' "$sop"
   grep -qF '" | standing word covers it"' "$REPO_ROOT/bin/lib/ledger.jq"
+  grep -qF '`team-next` prints "merge on the standing word: run team-merge T<n> for ..."' "$sop"
+  grep -qF '"merge on the standing word: run team-merge \($task) for \($facts)"' "$REPO_ROOT/bin/team-next"
   grep -qF '" | merge pre-approved"' "$REPO_ROOT/bin/lib/ledger.jq"
   # Each merge kind the manual and the SOP name is a kind of the contract, written by team-log, but
   # merge-due, team-sweep's finding.

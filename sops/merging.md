@@ -58,6 +58,7 @@ The standing word also needs its `discord_channel` to be `#coordinator`'s channe
   - when `team-state T<n>` says `merge pre-approved` or `standing word covers it`, runs `team-merge T<n>` with no ask and tells Daniel where each note went;
   - otherwise asks Daniel in the task's thread to merge, with the full PR URL and where each note went, and on their "merge it" logs `team-log T<n> merge-approved url=<PR url> discord_message=<id> head=<the full sha it asked on>` and runs `team-merge T<n>`.
 - `team-state`'s `standing word covers it` reads neither Daniel's message nor the checks; `team-merge` reads both, so it is the cue to try, never the merge's guarantee.
+- On a reviewer's pass, `team-next` prints "merge on the standing word: run team-merge T<n> for ..." in place of the merge ask while a standing word stands for the PR's project and the plan-time word does not, unless the review found a guarded area or a review of the task counted a security or real-data finding or logged no counts, which it names.
 - `team-sweep`'s `merge-due` finding wakes the coordinator for a task awaiting merge with no ask open, no pause and no wait, while a plan-time or standing word stands for one of the task's projects.
 - On a merge on the plan-time or standing word, `team-merge` posts it in the task's thread and in `#coordinator`, with which word, the merge commit, the link to Daniel's message and how to revert it; the coordinator posts with `team-post` the text of any post it says failed.
   A per-head merge posts nothing.
