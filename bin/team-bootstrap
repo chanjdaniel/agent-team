@@ -35,11 +35,11 @@
 #              treehouse release archive for this OS and CPU, no-mistakes built from Daniel's
 #              fork at its pinned commit (with the packages stage's Go and make), the 1Password
 #              CLI, opencode; then the gate's opencode wrapper, ~/.no-mistakes/bin/opencode-gate,
-#              while the opencode-gate line asks for it, and agent_path_override.opencode in
-#              ~/.no-mistakes/config.yaml set to its full path, that key alone, the file's mode
-#              kept and none of it printed (a missing config.yaml is team-secrets restore's, and
-#              its agent: opencode Daniel's step); then servers/install, while the servers line
-#              fails.
+#              while the gate-agent line asks for it (on any gate but a Claude one), and
+#              agent_path_override.opencode in ~/.no-mistakes/config.yaml set to its full path,
+#              that key alone, the file's mode kept and none of it printed (a missing config.yaml
+#              is team-secrets restore's, and its agent, opencode or claude with its flags,
+#              Daniel's step); then servers/install, while the servers line fails.
 #              A Claude Code newer than its pin only warns, and is left. ~/.local/bin and
 #              ~/.no-mistakes/bin, which no installer puts on PATH, get one line each in the
 #              shell's rc file (~/.zshrc or ~/.bashrc) when PATH lacks them.
@@ -386,7 +386,7 @@ stage_tools() {
     [[ $fix != Daniel* && $fix != 'the tool '* ]] || continue
     gate=1
     [[ $fix == *'team-bootstrap --stage tools'* ]] || todo+=("$fix")
-  done < <(lines '^opencode-gate$')
+  done < <(lines '^gate-agent$')
   # The pinned MCP servers (servers/install), after the Node they install with.
   while IFS=$'\t' read -r check verdict reason fix; do todo+=("$fix"); done < <(lines '^servers$')
   if ((${#todo[@]} + ${#commands[@]} == 0)); then
@@ -589,7 +589,7 @@ stage_check() {
       [[ $check != docker || $reason != 'docker is not installed' ]] || continue
       [[ $check != config || $reason == *differs* || $reason == *'local only'* ]] || continue
       # The gate's wrapper and its config.yaml key are the tools stage's.
-      [[ $check != opencode-gate || $fix == Daniel* ]] || continue
+      [[ $check != gate-agent || $fix == Daniel* ]] || continue
       # Two or more untrusted roots are the trust stage's one step.
       [[ $check != trust\ * || $reason != *"Workspace not trusted"* || ${#untrusted[@]} -lt 2 ]] || continue
       steps+=("$check: $fix${3:-} ($reason)") covered+=("$check")
@@ -629,7 +629,7 @@ stage_check() {
   else
     step '^interview channel$' FAIL
   fi
-  step '^opencode-gate$' FAIL
+  step '^gate-agent$' FAIL
   mapfile -t untrusted < <(untrusted_roots | cut -f1)
   if ((${#untrusted[@]} > 1)); then
     steps+=("trust: in your own terminal run $(tilde "$self") --stage trust, which starts claude in each untrusted root in turn for you to accept its trust dialog ($(printf '%s, ' "${untrusted[@]}" | sed 's/, $//'))")

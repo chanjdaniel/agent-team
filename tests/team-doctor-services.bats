@@ -2,7 +2,7 @@
 # shellcheck disable=SC2153 # LOCK and the other globals are helpers/doctor.bash's
 # team-doctor: one PASS, WARN or FAIL line per thing this machine needs, on the machine
 # tests/helpers/doctor.bash builds: every tool a version stub, the OS a stubbed uname.
-# This file: the docker, chrome, 1password, secret, discord access, interview channel, opencode-gate
+# This file: the docker, chrome, 1password, secret, discord access, interview channel, gate-agent
 # and records lines.
 
 load helpers/common
@@ -234,67 +234,135 @@ EOF
   assert_equal "$(line_of "$line")" "WARN interview channel: Discord did not answer (curl: (6) Could not resolve host: discord.com), so the bot's access to the interview channel is unchecked; fix: check the network, then run team-doctor again"
 }
 
-@test "the opencode-gate line fails while the gate's opencode wrapper is missing, stale or not executable, opencode is missing, or config.yaml does not run the gate on it" {
+@test "on an opencode gate the gate-agent line fails while its wrapper is missing, stale or not executable, opencode is missing, or config.yaml does not run the gate on it" {
   local wrapper=$HOME/.no-mistakes/bin/opencode-gate config=$HOME/.no-mistakes/config.yaml
   local install="mkdir -p ~/.no-mistakes/bin && install -m 755 $CODE_CHECKOUT/bin/lib/opencode-gate ~/.no-mistakes/bin/opencode-gate"
   local setting="agent_path_override: {opencode: $wrapper}" tools="$CODE_CHECKOUT/bin/team-bootstrap --stage tools"
-  local step="as manual-steps.md's install of the no-mistakes fork says"
   tools_at arch
   run_bin -0 team-doctor
-  assert_equal "$(line_of opencode-gate)" "PASS opencode-gate: ~/.no-mistakes/bin/opencode-gate is the code's bin/lib/opencode-gate, config.yaml runs the gate on opencode through it, and opencode is installed"
+  assert_equal "$(line_of gate-agent)" "PASS gate-agent: config.yaml runs the gate on opencode through ~/.no-mistakes/bin/opencode-gate, the code's bin/lib/opencode-gate, and opencode is installed"
   # The flow form, quoted, is read too; a comment after it is not part of the path.
   printf '%s\n' 'agent: opencode' "agent_path_override: {codex: /x/codex, opencode: \"$wrapper\"} # the gate's" >"$config"
   run_bin -0 team-doctor
-  assert_contains "$(line_of opencode-gate)" "PASS opencode-gate: "
+  assert_contains "$(line_of gate-agent)" "PASS gate-agent: "
 
   printf '%s\n' 'agent: opencode' 'agent_path_override:' '  opencode: /usr/bin/opencode' 'log_level: info' >"$config"
   run_bin -1 team-doctor
-  assert_equal "$(line_of opencode-gate)" "FAIL opencode-gate: ~/.no-mistakes/config.yaml's agent_path_override does not name ~/.no-mistakes/bin/opencode-gate for opencode, so the gate's opencode reads Claude Code's config and not the gate's own; fix: $tools, which sets $setting in ~/.no-mistakes/config.yaml, that key alone"
+  assert_equal "$(line_of gate-agent)" "FAIL gate-agent: ~/.no-mistakes/config.yaml's agent_path_override does not name ~/.no-mistakes/bin/opencode-gate for opencode, so the gate's opencode reads Claude Code's config and not the gate's own; fix: $tools, which sets $setting in ~/.no-mistakes/config.yaml, that key alone"
   # A key of that name under another block is not the setting.
   printf '%s\n' 'agent: opencode' 'agent_args_override:' "  opencode: $wrapper" >"$config"
   run_bin -1 team-doctor
-  assert_contains "$(line_of opencode-gate)" "FAIL opencode-gate: ~/.no-mistakes/config.yaml's agent_path_override does not name"
-  # The gate's agent must be opencode: auto, another agent or none runs the gate on whatever
-  # no-mistakes finds first, never through the wrapper.
-  local agent_fix="Daniel sets agent: opencode in ~/.no-mistakes/config.yaml, $step"
+  assert_contains "$(line_of gate-agent)" "FAIL gate-agent: ~/.no-mistakes/config.yaml's agent_path_override does not name"
+  # The gate's agent must be opencode or claude: auto, another agent or none runs the gate on a
+  # setup the team does not check.
+  local agent_fix="Daniel sets agent: opencode in ~/.no-mistakes/config.yaml (then $tools names the wrapper in it), or agent: claude with agent_args_override: {claude: [--setting-sources, \"project,local\", --strict-mcp-config]}"
   printf '%s\n' 'agent: auto # first found' 'agent_path_override:' "  opencode: $wrapper" >"$config"
   run_bin -1 team-doctor
-  assert_equal "$(line_of opencode-gate)" "FAIL opencode-gate: ~/.no-mistakes/config.yaml's agent is auto, not opencode, so the gate runs on whichever agent no-mistakes finds first and not through the wrapper; fix: $agent_fix"
+  assert_equal "$(line_of gate-agent)" "FAIL gate-agent: ~/.no-mistakes/config.yaml's agent is auto, neither opencode nor claude, so the gate runs on neither setup the team checks; fix: $agent_fix"
   printf '%s\n' 'agent: [claude, opencode]' 'agent_path_override:' "  opencode: $wrapper" >"$config"
   run_bin -1 team-doctor
-  assert_contains "$(line_of opencode-gate)" "FAIL opencode-gate: ~/.no-mistakes/config.yaml's agent is [claude, opencode], not opencode,"
+  assert_contains "$(line_of gate-agent)" "FAIL gate-agent: ~/.no-mistakes/config.yaml's agent is [claude, opencode], neither opencode nor claude,"
+  printf '%s\n' 'agent: codex' 'agent_path_override:' "  opencode: $wrapper" >"$config"
+  run_bin -1 team-doctor
+  assert_contains "$(line_of gate-agent)" "FAIL gate-agent: ~/.no-mistakes/config.yaml's agent is codex, neither opencode nor claude,"
   printf '%s\n' 'agent_path_override:' "  opencode: $wrapper" 'review:' '  agent: opencode' >"$config"
   run_bin -1 team-doctor
-  assert_equal "$(line_of opencode-gate)" "FAIL opencode-gate: ~/.no-mistakes/config.yaml names no agent, so the gate runs on whichever agent no-mistakes finds first and not through the wrapper; fix: $agent_fix"
+  assert_equal "$(line_of gate-agent)" "FAIL gate-agent: ~/.no-mistakes/config.yaml names no agent, so the gate runs on whichever agent no-mistakes finds first; fix: $agent_fix"
   printf '%s\n' "agent: 'opencode'" 'agent_path_override:' "  opencode: $wrapper" >"$config"
   run_bin -0 team-doctor
-  assert_contains "$(line_of opencode-gate)" "PASS opencode-gate: "
+  assert_contains "$(line_of gate-agent)" "PASS gate-agent: "
   # opencode itself missing: the wrapper has nothing to run, whatever config.yaml says.
   answer "opencode --version"
   run_bin -1 team-doctor
-  assert_equal "$(line_of opencode-gate)" "FAIL opencode-gate: opencode is not installed, so the wrapper has nothing to run; fix: the tool opencode line's fix"
+  assert_equal "$(line_of gate-agent)" "FAIL gate-agent: opencode is not installed, so the wrapper has nothing to run; fix: the tool opencode line's fix"
   assert_equal "$(line_of 'tool opencode')" "FAIL tool opencode: not installed; fix: npm install -g opencode-ai@1.18.30"
   tools_at arch
   rm "$config"
   run_bin -1 team-doctor
-  assert_equal "$(line_of opencode-gate)" "FAIL opencode-gate: ~/.no-mistakes/config.yaml is not there; fix: Daniel runs team-secrets restore in their own terminal (the secret no-mistakes-config), then $tools sets $setting in it"
+  assert_equal "$(line_of gate-agent)" "FAIL gate-agent: ~/.no-mistakes/config.yaml is not there; fix: Daniel runs team-secrets restore in their own terminal (the secret no-mistakes-config), then $tools sets $setting in it"
 
   chmod 644 "$wrapper"
   run_bin -1 team-doctor
-  assert_equal "$(line_of opencode-gate)" "FAIL opencode-gate: ~/.no-mistakes/bin/opencode-gate is not executable; fix: $install"
+  assert_equal "$(line_of gate-agent)" "FAIL gate-agent: ~/.no-mistakes/bin/opencode-gate is not executable; fix: $install"
   echo 'exec opencode "$@"' >>"$wrapper"
   chmod 755 "$wrapper"
   run_bin -1 team-doctor
-  assert_equal "$(line_of opencode-gate)" "FAIL opencode-gate: ~/.no-mistakes/bin/opencode-gate is not the code's bin/lib/opencode-gate; fix: $install"
+  assert_equal "$(line_of gate-agent)" "FAIL gate-agent: ~/.no-mistakes/bin/opencode-gate is not the code's bin/lib/opencode-gate; fix: $install"
   rm "$wrapper"
   run_bin -1 team-doctor
-  assert_equal "$(line_of opencode-gate)" "FAIL opencode-gate: ~/.no-mistakes/bin/opencode-gate is not installed; fix: $install"
+  assert_equal "$(line_of gate-agent)" "FAIL gate-agent: ~/.no-mistakes/bin/opencode-gate is not installed; fix: $install"
   # Nothing else fails, on macOS alike.
-  assert_equal "$(grep -v '^PASS ' <<<"$output" || true)" "$(line_of opencode-gate)"
+  assert_equal "$(grep -v '^PASS ' <<<"$output" || true)" "$(line_of gate-agent)"
   on_macos
   tools_at macos
   run_bin -1 team-doctor
-  assert_equal "$(line_of opencode-gate)" "FAIL opencode-gate: ~/.no-mistakes/bin/opencode-gate is not installed; fix: $install"
+  assert_equal "$(line_of gate-agent)" "FAIL gate-agent: ~/.no-mistakes/bin/opencode-gate is not installed; fix: $install"
+}
+
+@test "on a Claude gate the gate-agent line passes only while claude is installed and its flags keep it off Daniel's user settings and MCP servers" {
+  local config=$HOME/.no-mistakes/config.yaml
+  local args='agent_args_override: {claude: [--setting-sources, "project,local", --strict-mcp-config]}'
+  local pass="PASS gate-agent: config.yaml runs the gate on claude with --setting-sources project,local and --strict-mcp-config, and claude is installed"
+  local user_lack="--setting-sources with sources that leave out user, so the gate's claude loads Daniel's user settings (their hooks, the Discord plugin, Remote Control)"
+  local strict_lack="--strict-mcp-config, so the gate's claude loads Daniel's MCP servers"
+  local lacks="FAIL gate-agent: ~/.no-mistakes/config.yaml runs the gate on claude, but its agent_args_override.claude lacks"
+  local fix="fix: Daniel sets $args in ~/.no-mistakes/config.yaml"
+  tools_at arch
+  # Claude's setup needs no wrapper and no agent_path_override; the token is never printed.
+  rm "$HOME/.no-mistakes/bin/opencode-gate"
+  printf '%s\n' 'agent: claude' 'api_token: fake-token-123' 'agent_config:' '  claude:' '    model: claude-haiku-5-5' \
+    'agent_args_override:' '  claude:' '    - --setting-sources' '    - project,local' '    - --strict-mcp-config' >"$config"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of gate-agent)" "$pass"
+  [[ $output != *fake-token-123* ]]
+  # The flow form, and the = form, quoted.
+  printf '%s\n' "agent: 'claude'  # the trial" "$args" >"$config"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of gate-agent)" "$pass"
+  printf '%s\n' 'agent: claude' 'agent_args_override:' '  claude: [--strict-mcp-config, "--setting-sources=project"]' >"$config"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of gate-agent)" "PASS gate-agent: config.yaml runs the gate on claude with --setting-sources project and --strict-mcp-config, and claude is installed"
+  # Unquoted in a flow sequence, project,local is two items, and claude gets project alone.
+  printf '%s\n' 'agent: claude' 'agent_args_override: {claude: [--setting-sources, project,local, --strict-mcp-config]}' >"$config"
+  run_bin -0 team-doctor
+  assert_contains "$(line_of gate-agent)" "PASS gate-agent: config.yaml runs the gate on claude with --setting-sources project and"
+
+  # Either flag missing fails, naming what it lets in.
+  printf '%s\n' 'agent: claude' 'agent_args_override:' '  claude:' '    - --setting-sources' '    - project,local' >"$config"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of gate-agent)" "$lacks $strict_lack; $fix"
+  printf '%s\n' 'agent: claude' 'agent_args_override:' '  claude: [--strict-mcp-config]' '  codex: [--setting-sources, project]' >"$config"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of gate-agent)" "$lacks $user_lack; $fix"
+  # Sources that take in user, or none, are the user settings again; one such of two is enough.
+  local sources
+  for sources in user 'project,user' 'local, user' '' ','; do
+    printf '%s\n' 'agent: claude' 'agent_args_override:' '  claude:' '    - --setting-sources' "    - \"$sources\"" \
+      '    - --strict-mcp-config' >"$config"
+    run_bin -1 team-doctor
+    assert_equal "$(line_of gate-agent)" "$lacks $user_lack; $fix"
+  done
+  printf '%s\n' 'agent: claude' 'agent_args_override:' '  claude: [--setting-sources, project, --setting-sources=user, --strict-mcp-config]' >"$config"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of gate-agent)" "$lacks $user_lack; $fix"
+  # --setting-sources last, with no value.
+  printf '%s\n' 'agent: claude' 'agent_args_override:' '  claude: [--strict-mcp-config, --setting-sources]' >"$config"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of gate-agent)" "$lacks $user_lack; $fix"
+  # No agent_args_override, or none for claude: both.
+  printf '%s\n' 'agent: claude' 'agent_path_override:' '  claude: /usr/bin/claude' >"$config"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of gate-agent)" "$lacks $user_lack; $strict_lack; $fix"
+  # A form the read leaves to Daniel.
+  printf '%s\n' 'agent: claude' 'agent_args_override:' '  claude: [--setting-sources,' '    project, --strict-mcp-config]' >"$config"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of gate-agent)" "FAIL gate-agent: ~/.no-mistakes/config.yaml's agent_args_override is in a form team-doctor does not read (a flow collection over several lines, a nested one, or a scalar); fix: Daniel writes its claude list as a block or a one-line flow sequence: $args"
+
+  # claude itself missing.
+  printf '%s\n' 'agent: claude' "$args" >"$config"
+  answer "claude --version"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of gate-agent)" "FAIL gate-agent: claude is not installed, so the gate has no agent to run; fix: the tool claude line's fix"
 }
 
 @test "the servers line fails while servers/node_modules is missing or not the install of servers/package-lock.json" {
