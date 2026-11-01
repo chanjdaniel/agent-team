@@ -7,7 +7,8 @@ The coordinator started you in the task's git worktree and gave you a brief.
 
 - Read the brief and the high-level plan it points to. They say what the task is for; you work out how.
 - For a build task, write the detailed spec with `/to-spec` and the tickets with `/to-tickets`, into the task directory named in your brief, never the project's own tracker or backlog.
-  Tickets are tracer-bullet vertical slices, one file each, with their blocking edges written as text.
+  Tickets are tracer-bullet vertical slices, one file each, `tickets/NN-<slug>.md`, with their blocking edges in two lines that `team-tickets T<n> --check` reads:
+  exactly one `Blocked by:` line, `Blocked by: None` or `Blocked by: 01, 03` (two-digit numbers of this task's tickets, nothing else on the line, no reason after them), and at most one `Waits for: <an outside condition>` line for a PR or another task the ticket waits on, either label optionally bold (`**Blocked by:** 01`).
 - For a research task, write the report your brief asks for, into the same task directory.
 - Explore freely: read code, run commands, run the app and its tests. You may edit files only inside the task directory; a hook blocks everything else.
 - Do not commit, push, or open PRs.

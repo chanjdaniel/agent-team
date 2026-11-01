@@ -293,7 +293,7 @@ EOF
   grep -qF "\`$REPO_ROOT/bin/team-thread wait T12\`, run with Bash \`run_in_background\`" "$brief"
   grep -qxF 'Send the coordinator only `DONE`, `BLOCKED`, `PAUSED`, `FAILED` or `INJECTION`: your questions go to Daniel in the thread, never to the coordinator.' "$brief"
   grep -qF "\"Please ask in #coordinator: this thread is for T12's interview only.\"" "$brief"
-  grep -qxF '5. Send `T12 DONE .scratch/task/spec.md` to `coordinator`.' "$brief"
+  grep -qxF '6. Send `T12 DONE .scratch/task/spec.md` to `coordinator`.' "$brief"
 }
 
 @test "a partial is picked by the project's delivery, from the directory of its name" {
@@ -426,7 +426,7 @@ EOF
   done
 }
 
-@test "each planner brief delivers scope.txt beside the spec, one repository path per line" {
+@test "each planner brief delivers scope.txt beside the spec, one repository path per line, and checks its tickets" {
   open_t12
   event T12 interview-thread '{discord_thread: "1565400000000000012"}'
   local template
@@ -435,8 +435,10 @@ EOF
     grep -qxF '3. `scope.txt`, every path the tickets change, one repository path per line: a file, or a directory ending in `/` that covers everything under it, with no leading `/`, no `.` or `..` and no glob; the coordinator puts it to Daniel with the plan, whose approval may let the PR merge with no second ask when it changes nothing outside it.' "$output" ||
       { echo "$template lacks the scope line" >&2; cat "$output" >&2; return 1; }
   done
-  grep -qxF '4. Send `T12 DONE .scratch/task/spec.md` to `coordinator`.' "$TEAM_HOME/tasks/T12/brief-planner-feature.md"
-  grep -qxF '5. Send `T12 DONE .scratch/task/spec.md` to `coordinator`.' "$TEAM_HOME/tasks/T12/brief-planner-interview.md"
+  grep -qxF "4. Run \`$REPO_ROOT/bin/team-tickets T12 --check\` and fix each line it names." "$TEAM_HOME/tasks/T12/brief-planner-feature.md"
+  grep -qxF '5. Send `T12 DONE .scratch/task/spec.md` to `coordinator`.' "$TEAM_HOME/tasks/T12/brief-planner-feature.md"
+  grep -qxF "5. Run \`$REPO_ROOT/bin/team-tickets T12 --check\` and fix each line it names." "$TEAM_HOME/tasks/T12/brief-planner-interview.md"
+  grep -qxF '6. Send `T12 DONE .scratch/task/spec.md` to `coordinator`.' "$TEAM_HOME/tasks/T12/brief-planner-interview.md"
 }
 
 @test "a gated project's builder stops before the gate for the review, then runs the gate once" {
