@@ -478,8 +478,11 @@ MIB=1048576
   run_bin -0 --separate-stderr team-capacity sample
   kill "$sleeper"
   assert_equal "$output$stderr" ""
-  assert_equal "$(jq -c --argjson rss "$rss" '[.memory.total > 0, (.tasks | map(.task)),
-      (.tasks[0].memory - ([.tasks[0].stacks[].memory] | add // 0) >= $rss * 1024), .tasks[0].cpu]' "$STATE_DIR/readings.jsonl")" \
+  # The machine's own team slices (the suite's heavy run, in its task's) are tasks of the reading
+  # too, so only the sandbox's are read.
+  assert_equal "$(jq -c --argjson rss "$rss" '(.tasks | map(select(.task | IN("T7", "T9"))) | INDEX(.task)) as $tasks
+      | [.memory.total > 0, ($tasks | keys),
+         ($tasks.T7.memory - ([$tasks.T7.stacks[].memory] | add // 0) >= $rss * 1024), $tasks.T7.cpu]' "$STATE_DIR/readings.jsonl")" \
     '[true,["T7","T9"],true,null]'
 }
 

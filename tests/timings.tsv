@@ -46,7 +46,7 @@ tests/team-doctor-slots.bats	63	161
 tests/team-doctor-tools.bats	140	317
 tests/team-doctor.bats	242	461
 tests/team-handoff.bats	101	225
-tests/team-heavy.bats	4	6
+tests/team-heavy.bats	14	18
 tests/team-inbox.bats	8	14
 tests/team-janitor.bats	44	58
 tests/team-lease.bats	56	70

@@ -1,9 +1,10 @@
 # Shared setup for the team home's bats tests: load it with `load helpers/common` and call
 # `sandbox` from `setup`. Every test then runs real scripts from this checkout's bin/ against a
-# temporary team home and HOME, with claude, gh, curl, op, systemctl, launchctl and busctl replaced
-# by logging stubs, so no test reaches this machine's own service managers, cgroups or 1Password. A test of
-# a script that runs Docker adds a stub docker with `load helpers/docker` (tests/helpers/docker.bash
-# documents it), and never reaches this machine's Docker, which DOCKER_HOST points away from.
+# temporary team home and HOME, with claude, gh, curl, op, systemctl, launchctl, busctl and
+# systemd-run replaced by logging stubs, so no test reaches this machine's own service managers,
+# cgroups or 1Password. A test of a script that runs Docker adds a stub docker with `load
+# helpers/docker` (tests/helpers/docker.bash documents it), and never reaches this machine's
+# Docker, which DOCKER_HOST points away from.
 # shellcheck shell=bash
 
 bats_require_minimum_version 1.5.0
@@ -86,6 +87,18 @@ sandbox() {
   # processes), and the cgroup tree and /proc team-capacity reads are under TEAM_CGROUP_ROOT, empty
   # until a test writes them (user_controllers, fake_process), never the machine's own.
   stub_reply busctl 'o "/org/freedesktop/systemd1/job/1"'
+  # systemd-run starts no scope: it runs the command after --, in place, as `--scope` does, or, once
+  # $STUB_FIXTURES/systemd-run-refuse exists, fails as one the user manager refused.
+  stub_command systemd-run
+  stub_script systemd-run <<'EOF'
+if [[ -e $STUB_FIXTURES/systemd-run-refuse ]]; then
+  echo "Failed to start transient scope unit: Access denied" >&2
+  exit 1
+fi
+while (($#)) && [[ $1 != -- ]]; do shift; done
+shift
+exec "$@"
+EOF
   export TEAM_CGROUP_ROOT=$root/cgroup-root
   mkdir -p "$TEAM_CGROUP_ROOT/proc"
 

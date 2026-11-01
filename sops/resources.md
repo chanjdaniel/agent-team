@@ -6,7 +6,7 @@ No limit is set on the team's slice yet: it holds and measures the team's work, 
 
 ## The team's slice
 
-On Linux every worker session and gate run sits in one systemd user slice, `agent-team.slice`, so the kernel can measure and later limit the team's work as one, apart from Daniel's own programs.
+On Linux every worker session, heavy run and gate run sits in one systemd user slice, `agent-team.slice`, so the kernel can measure and later limit the team's work as one, apart from Daniel's own programs.
 Each task's work is in a slice of its own inside it, `agent-team-T<n>.slice`, so each task's memory and CPU are measured apart.
 systemd nests a slice under every dash prefix of its name, so `agent-team-T175.slice` sits in `agent.slice/agent-team.slice/`, and a new slice name must keep that rule in mind.
 
@@ -55,10 +55,17 @@ So that admission can rest on what work costs on this machine, each reading also
 | `session:<role>` | the session list no longer has the session | the highest `MemoryPeak` its scope had (its tree's memory elsewhere) |
 | `stack:<project>` | Docker no longer runs the stack | the highest memory the readings saw it use |
 | `gate` | no gate pipeline runs | the highest memory its daemon used while one ran |
+| `heavy:<kind>` | `team-heavy run` ends | its scope's `MemoryPeak` (its process group's memory, sampled every 10 seconds, elsewhere) |
 
 A session list or a Docker that did not answer ends nothing, so a hiccup never writes a false sample.
 The readings are 5 minutes apart, so a peak is what they saw, and a session or a run shorter than that may never be seen; a session's `MemoryPeak` is the kernel's own, so it is exact.
 A stack's kind needs its registered project, read from the held worktree its `worktree` label names, so a gate's stack has none and writes no sample.
+
+A heavy run measures itself: `team-heavy run` runs its command in a process group of its own and, on Linux, in a transient scope `agent-team-heavy-<pid>.scope` in its task's slice (`AGENT_TEAM_TASK`'s, else `agent-team.slice`), and writes its line when the command ends.
+Its kind is `heavy:tests-run` for `tests/run`, `heavy:checks:<project>` for `team-checks`, else the label's first word.
+When systemd's user manager does not answer, the run says so once and goes in its process group alone, measured as on macOS.
+A run that was stopped, or that ended before its first sample, writes nothing, since its peak would understate the kind's.
+`team-heavy stop [--task T<n>]` ends a run's whole tree (its scope on Linux, its process group's TERM then KILL after 10 seconds), so a worker blocked in a test returns to read its STOW.
 
 `team-capacity costs` gives each kind's estimate: from 5 samples, the 90th percentile of the last 20 peaks plus 10%; before that, the seed.
 The seeds are `capacity.json`'s `session_gib` (0.5), `heavy_gib` (5) and `gate_gib` (2.2), and for a stack the sum of its services' `mem_limit`s as the readings last saw it running (`team-stack ls --json`'s `memory_limit_bytes`).
