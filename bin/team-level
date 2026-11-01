@@ -27,8 +27,9 @@
 #          limits, as apply does, and prints the acknowledgement the coordinator posts:
 #          "Resources: manual, minor (30%): 9.2 GiB and 3.6 cores for the team; 6.1 GiB
 #          reserved." A limit it could not set is said on stderr; the record stands (exit 0).
-# apply    Applies the recorded level's limits (with no record, manual full's), for the heartbeat
-#          and after a reboot, one line on stdout per limit set; exit 1 when one could not be set.
+# apply    Applies the recorded level's limits (with no record, manual full's), after a reboot or
+#          a reset slice, saying on stdout what it set on the slice and on the containers; exit 1
+#          when a limit could not be set, or there is no reading to size them by.
 #          On Linux: systemctl --user set-property --runtime agent-team.slice
 #          CPUQuota=<max(cores, min_cores) * 100>% MemoryHigh=<high> MemoryMax=<max>, high being
 #          the largest of min_gib, the memory budget less the reservations of the team's stacks
