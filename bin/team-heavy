@@ -28,14 +28,15 @@
 #         start the scope, it says so once on stderr and runs in the process group alone.
 #         At its end it appends one cost line {at, kind: "heavy:<kind>", peak_bytes, cpu_seconds,
 #         seconds} to ~/.local/state/agent-team/capacity/costs.jsonl, which team-capacity costs
-#         learns from: the kind is --kind (tests/run gives tests-run, team-checks checks:<project>),
-#         else the label's first word, its file name when it is a path (a script's kind is the
-#         same from every checkout, and no path goes in costs.jsonl); in a scope, the peak and
-#         CPU are its MemoryPeak and CPUUsageNSec, read inside it as the command ends; elsewhere the peak is the highest
-#         resident memory of its process group, sampled every 10 seconds, and the CPU the time its
-#         processes took. A run that was stopped, one that ended before its first sample, or a
-#         scope whose MemoryPeak is not set leaves no sample, said on stderr, and a sample that
-#         cannot be written is a line on stderr: neither changes the exit status.
+#         learns from: the kind is --kind (tests/run gives tests-run, team-checks
+#         checks:<project>), else the label's first word, its file name when it is a path (a
+#         script's kind is the same from every checkout, and no path goes in costs.jsonl); in a
+#         scope, the peak and CPU are its MemoryPeak and CPUUsageNSec, read inside it as the
+#         command ends; elsewhere the peak is the highest resident memory of its process group,
+#         sampled every 10 seconds, and the CPU the time its processes took. A run that was
+#         stopped, one that ended before its first sample, or a scope whose MemoryPeak is not set
+#         leaves no sample, said on stderr, and a sample that cannot be written is a line on
+#         stderr: neither changes the exit status.
 #         An INT, TERM or HUP to team-heavy (a Ctrl-C in its terminal, or stop) ends the
 #         command's whole tree, as stop says, and team-heavy then exits with the command's status.
 #         Under a run already (TEAM_HEAVY_HELD set), the command runs at once, inside its parent's
@@ -43,17 +44,16 @@
 #         check in team-checks say, would otherwise wait for itself.
 # status  "held by <the holder's line>" ("held by another run" before it wrote one) or "free",
 #         exit 0 either way; it waits for nothing and takes no lock a run would wait for.
-# stop    Ends the running command's whole tree (never a Docker container it started, which
-#         rootful Docker keeps outside its scope and group: a team stack goes with its task's
-#         stack, by team-stack, and any other container stays, listed in team-janitor's report as
-#         not the team's), only while a team-heavy run holds the lock and,
-#         with --task, its holder line names that task: it sends team-heavy TERM, which stops
-#         the run's scope on Linux (systemd stops it, KILLing what is left after 10 seconds) and
-#         sends its process group TERM, then KILL after 10 seconds (TEAM_HEAVY_KILL_SECONDS),
-#         and waits for that team-heavy to end (never for the lock, which a run queued on it
-#         takes next). Says "stopped <the holder's line>", or "nothing to stop"
-#         and why when the lock is free, held in another form, or held for another task.
-#         Exit 0 either way, 1 when the run could not be stopped.
+# stop    Ends the running command's whole tree (never a Docker container it started, which rootful
+#         Docker keeps outside its scope and group: a team stack goes with its task's stack, by
+#         team-stack, and any other container stays, listed in team-janitor's report as not the
+#         team's), only while a team-heavy run holds the lock and, with --task, its holder line
+#         names that task: it sends team-heavy TERM, which stops the run's scope on Linux (systemd
+#         stops it, KILLing what is left after 10 seconds) and sends its process group TERM, then
+#         KILL after 10 seconds (TEAM_HEAVY_KILL_SECONDS), and waits for that team-heavy to end
+#         (never for the lock, which a run queued on it takes next). Says "stopped <the holder's
+#         line>", or "nothing to stop" and why when the lock is free, held in another form, or held
+#         for another task. Exit 0 either way, 1 when the run could not be stopped.
 #
 # Exit 0 done (run: the command's status), 1 the stop failed, 2 usage error, 75 try again later
 # (the wait ran out).

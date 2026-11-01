@@ -34,20 +34,19 @@
 #          one line on stdout (with --quiet, the heartbeat's, only each placed one), each one it
 #          cannot place one line on stderr, and the others are still placed; exit 1 when any
 #          failed.
-# check    What the doctor's resources line says, as {os, verdict (PASS or WARN), reason,
-#          fix, problems: [{verdict, reason, fix}]} with --json, else the line "<verdict>
-#          <reason>" and "; fix: <fix>" when there is one, exiting 1 unless it passes. On Linux it
-#          WARNs, never FAILs, since no limit needs the slice yet: when systemctl --user does not
-#          answer or the user manager's cgroup.controllers lacks cpu or memory; when
-#          agent-team.slice is not installed as install writes it,
-#          a gate daemon unit lacks its drop-in (both fixed by team-capacity install, Daniel's
-#          yes), a running gate daemon is outside the slice (its restart waits on its pipeline),
-#          the session list cannot be read, or a live team session runs outside its task's slice
-#          (fixed by team-capacity place). On any OS, with --holding (this machine holds the
-#          lease, whose heartbeat takes a reading every 5 minutes): WARN when the newest reading
-#          is more than 15 minutes old, or there is none, its fix the heartbeat log's capacity
-#          lines, or team-timers enable with --heartbeat disabled. The passing reason names the
-#          slice and how many live team sessions are in it.
+# check    What the doctor's resources line says, as {os, verdict (PASS or WARN), reason, fix,
+#          problems: [{verdict, reason, fix}]} with --json, else the line "<verdict> <reason>" and
+#          "; fix: <fix>" when there is one, exiting 1 unless it passes. On Linux it WARNs, never
+#          FAILs, since no limit needs the slice yet: when systemctl --user does not answer or the
+#          user manager's cgroup.controllers lacks cpu or memory; when agent-team.slice is not
+#          installed as install writes it, a gate daemon unit lacks its drop-in (both fixed by
+#          team-capacity install, Daniel's yes), a running gate daemon is outside the slice (its
+#          restart waits on its pipeline), the session list cannot be read, or a live team session
+#          runs outside its task's slice (fixed by team-capacity place). On any OS, with --holding
+#          (this machine holds the lease, whose heartbeat takes a reading every 5 minutes): WARN
+#          when the newest reading is more than 15 minutes old, or there is none, its fix the
+#          heartbeat log's capacity lines, or team-timers enable with --heartbeat disabled. The
+#          passing reason names the slice and how many live team sessions are in it.
 # sample   Takes one reading of the machine's load with the team's use per task and appends it to
 #          ~/.local/state/agent-team/capacity/readings.jsonl, kept to the last 24 hours (the
 #          heartbeat's capacity step runs it every 5 minutes), printing nothing; within 60
