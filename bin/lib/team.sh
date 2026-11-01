@@ -1139,7 +1139,7 @@ pr_part() {
   fi
 }
 
-# Why the PR's changed files do not let a word given on no head (the plan-time one) merge it
+# Why the PR's changed files do not let a word given on no head (plan-time or standing) merge it
 # unasked, read from GitHub's paged list of the files of PR <number> in <repo>, using <dir> for
 # gh's answers. The reasons, one per element of PR_FILE_REASONS, none when the files allow it: the
 # list cannot be read; it holds other than <changed files> (the PR's changedFiles) files; a

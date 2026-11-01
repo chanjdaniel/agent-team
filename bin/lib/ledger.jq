@@ -548,7 +548,7 @@ def standing_word_reasons($project):
     "Daniel's standing word on \(if .word.project == "all" then "every project" else .word.project end), Discord message \(.word.discord_message), was withdrawn at \(.withdrawn.ts) in Discord message \(.withdrawn.discord_message)"
   else empty end;
 
-# Why the task's reviews do not let a word given on no head (the plan-time one) merge the PR's
+# Why the task's reviews do not let a word given on no head (plan-time or standing) merge the PR's
 # head $head unasked, one string per reason, none when they do: no review of the head (by the
 # shorter prefix) is logged; the latest one is not a pass; it logged no guarded list, or named
 # areas in it; and each review of the task, of any head, that left out its finding counts or
