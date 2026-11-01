@@ -22,11 +22,20 @@
 # first child's indent ("- <item>" lines at that indent or deeper, or a flow sequence on its line)
 # or in a flow mapping on its own line ({<agent>: [<item>, ...], ...}), by a key at the mapping's
 # own level outside quotes, never one nested in a value or after its closing brace; a flow sequence
-# splits on every comma outside quotes, as YAML does, so [a, b,c] is three items.
+# splits on every comma outside quotes, as YAML does, so [a, b,c] is three items; a comment inside
+# a one-line flow collection (a # after a blank, an opener or a comma, outside quotes) leaves it open
+# on its line, which exits 3, and a quoted item keeps its #.
 
 # A value as written, without its comment, trailing blanks or the quotes around it.
 function unquote(v) {
-  sub(/[ \t]+#.*$/, "", v); sub(/[ \t]+$/, "", v)
+  sub(/[ \t]+#.*$/, "", v)
+  return bare(v)
+}
+
+# A value without its trailing blanks or the quotes around it: a flow item, whose comment is the
+# line's.
+function bare(v) {
+  sub(/[ \t]+$/, "", v)
   if (v ~ /^".*"$/ || v ~ /^\047.*\047$/) v = substr(v, 2, length(v) - 2)
   return v
 }
@@ -122,12 +131,13 @@ function read_args(   h, rest, j, k, indent, keyre, v, at, pos) {
     if (RLENGTH == indent && line[j] ~ keyre) break
   }
   if (j > n || line[j] !~ keyre) return
-  v = line[j]; sub(keyre, "", v); sub(/(^|[ \t]+)#.*$/, "", v)
+  v = line[j]; sub(keyre, "", v)
   if (v ~ /^\[/) {
     if (!flow(v)) exit 3
     print_items()
     return
   }
+  sub(/^#.*$/, "", v)
   if (v != "") exit 3
   # A block sequence: "- item" lines at the key's indent or deeper, blank and comment lines skipped.
   for (k = j + 1; k <= n; k++) {
@@ -142,17 +152,19 @@ function read_args(   h, rest, j, k, indent, keyre, v, at, pos) {
 }
 
 # The items of the flow sequence <s> starts with into items[]: split on the commas outside quotes,
-# up to its closing bracket; 0 when it has none on this line, or holds a nested collection.
+# up to its closing bracket; 0 when it has none on this line (a comment, a # after a blank or an
+# opener outside quotes, ends the line), or holds a nested collection.
 function flow(s,   i, c, q, item) {
   q = ""; item = ""
   for (i = 2; i <= length(s); i++) {
     c = substr(s, i, 1)
     if (q != "") { if (c == q) q = ""; item = item c; continue }
+    if (comment_at(s, i)) return 0
     if (c == "\"" || c == "\047") { q = c; item = item c; continue }
     if (c == "[" || c == "{") return 0
     if (c == "," || c == "]") {
       sub(/^[ \t]+/, "", item); sub(/[ \t]+$/, "", item)
-      if (item != "") items[++count] = unquote(item)
+      if (item != "") items[++count] = bare(item)
       else if (c == ",") return 0
       if (c == "]") return 1
       item = ""
@@ -164,12 +176,14 @@ function flow(s,   i, c, q, item) {
 }
 
 # Where the value of <args>'s key starts in the one-line flow mapping <s> starts with, a key of
-# its own level outside quotes; 0 when it has none, -1 when the mapping does not close on this line.
+# its own level outside quotes; 0 when it has none, -1 when the mapping does not close on this line
+# (a comment inside it ends the line).
 function flow_key(s,   i, c, q, depth, key, value, found) {
   q = ""; depth = 0; key = ""; value = 0; found = 0
   for (i = 2; i <= length(s); i++) {
     c = substr(s, i, 1)
     if (q != "") { if (c == q) q = ""; if (!depth && !value) key = key c; continue }
+    if (comment_at(s, i)) return -1
     if (c == "\"" || c == "\047") { q = c; if (!depth && !value) key = key c; continue }
     if (c == "[" || c == "{") { depth++; continue }
     if (c == "]" || c == "}") { if (!depth) return c == "}" ? found : -1; depth--; continue }
@@ -178,7 +192,7 @@ function flow_key(s,   i, c, q, depth, key, value, found) {
     if (value) continue
     if (c == ":") {
       sub(/^[ \t]+/, "", key)
-      if (!found && unquote(key) == args) found = i + 1
+      if (!found && bare(key) == args) found = i + 1
       value = 1
       continue
     }
@@ -186,5 +200,8 @@ function flow_key(s,   i, c, q, depth, key, value, found) {
   }
   return -1
 }
+
+# Whether a comment starts at <i> in <s>, outside quotes: a # after a blank or a flow opener or comma.
+function comment_at(s, i) { return substr(s, i, 1) == "#" && substr(s, i - 1, 1) ~ /^[ \t\[{,]$/ }
 
 function print_items(   i) { for (i = 1; i <= count; i++) print items[i] }

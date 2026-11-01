@@ -201,3 +201,20 @@ x"
   run -0 read_args
   assert_equal "$output" --strict-mcp-config
 }
+
+@test "a comment inside a one-line flow collection leaves it open on its line, which exits 3" {
+  printf '%s\n' 'agent: claude' 'agent_args_override: {codex: [-c] # , claude: [--setting-sources, project, --strict-mcp-config]}' '  }' >"$config"
+  run -3 read_args
+  assert_equal "$output" ""
+  printf '%s\n' 'agent: claude' 'agent_args_override: {claude: [--strict-mcp-config # , --setting-sources, project]}' '  ]}' >"$config"
+  run -3 read_args
+  assert_equal "$output" ""
+  printf '%s\n' 'agent: claude' 'agent_args_override:' '  claude: [--strict-mcp-config # , --setting-sources, project]' '    ]' >"$config"
+  run -3 read_args
+  assert_equal "$output" ""
+  # A # in a quoted item, or with no blank before it, is no comment.
+  printf '%s\n' 'agent_args_override: {claude: ["a #b", c#d]}' >"$config"
+  run -0 read_args
+  assert_equal "$output" "a #b
+c#d"
+}

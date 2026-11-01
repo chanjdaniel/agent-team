@@ -327,6 +327,13 @@ EOF
   printf '%s\n' 'agent: claude' 'agent_args_override: {claude: [--setting-sources, project,local, --strict-mcp-config]}' >"$config"
   run_bin -0 team-doctor
   assert_equal "$(line_of gate-agent)" "WARN gate-agent: config.yaml runs the gate on claude with --setting-sources project and --strict-mcp-config, but agent_args_override.claude has local right after --setting-sources project, which claude takes as an argument of its own (an unquoted project,local in a flow list is two items); fix: Daniel quotes the sources as one item in ~/.no-mistakes/config.yaml: $args"
+  printf '%s\n' 'agent: claude' 'agent_args_override: {claude: [--setting-sources=project,local, --strict-mcp-config]}' >"$config"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of gate-agent)" "WARN gate-agent: config.yaml runs the gate on claude with --setting-sources project and --strict-mcp-config, but agent_args_override.claude has local right after --setting-sources=project, which claude takes as an argument of its own (an unquoted project,local in a flow list is two items); fix: Daniel quotes the sources as one item in ~/.no-mistakes/config.yaml: $args"
+  # A comment inside a flow mapping leaves it open on its line: a form left to Daniel.
+  printf '%s\n' 'agent: claude' 'agent_args_override: {claude: [--strict-mcp-config # , --setting-sources, project]}' '  ]}' >"$config"
+  run_bin -1 team-doctor
+  assert_contains "$(line_of gate-agent)" "FAIL gate-agent: ~/.no-mistakes/config.yaml's agent_args_override is in a form team-doctor does not read"
   # A flag after the sources is no stray argument.
   printf '%s\n' 'agent: claude' 'agent_args_override:' '  claude: [--setting-sources, project, --model, sonnet, --strict-mcp-config]' >"$config"
   run_bin -0 team-doctor

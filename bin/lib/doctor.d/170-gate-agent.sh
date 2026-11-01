@@ -41,16 +41,15 @@ if [[ $agent == claude ]]; then
   mapfile -t gate_items <<<"$gate_args"
   for ((i = 0; i < ${#gate_items[@]}; i++)); do
     case ${gate_items[i]} in
-      --strict-mcp-config) gate_strict=1 ;;
-      --setting-sources)
-        gate_sources+=("${gate_items[i + 1]:-}")
-        i=$((i + 1))
-        if [[ -z $gate_stray && $((i + 1)) -lt ${#gate_items[@]} && ${gate_items[i + 1]} != -* ]]; then
-          gate_stray="${gate_items[i + 1]} right after --setting-sources ${gate_items[i]}"
-        fi
-        ;;
-      --setting-sources=*) gate_sources+=("${gate_items[i]#--setting-sources=}") ;;
+      --strict-mcp-config) gate_strict=1 && continue ;;
+      --setting-sources) gate_shown="--setting-sources ${gate_items[i + 1]:-}" gate_value=${gate_items[i + 1]:-} && i=$((i + 1)) ;;
+      --setting-sources=*) gate_shown=${gate_items[i]} gate_value=${gate_items[i]#--setting-sources=} ;;
+      *) continue ;;
     esac
+    gate_sources+=("$gate_value")
+    if [[ -z $gate_stray ]] && ((i + 1 < ${#gate_items[@]})) && [[ ${gate_items[i + 1]} != -* ]]; then
+      gate_stray="${gate_items[i + 1]} right after $gate_shown"
+    fi
   done
   for gate_value in "${gate_sources[@]}"; do
     [[ -n ${gate_value//[ ,]/} && ,${gate_value// /}, != *,user,* ]] || gate_user=1
