@@ -67,8 +67,8 @@
 # on, auto-merge is turned off and it is exit 1); then merged is appended with pr, merge, head,
 # by (naming the Discord message and its author), project, branch, discord_message,
 # discord_channel, url (the PR's), approval (head for the per-head word, plan for the plan-time
-# one, standing for the standing one), and local_checks (the commands that passed on head) when there were any. Prints {task,
-# pr, merge, head, by}.
+# one, standing for the standing one), and local_checks (the commands that passed on head) when
+# there were any. Prints {task, pr, merge, head, by}.
 # Then, when the task's opened event names a story (team-open --story) and the PR is of the project
 # it opened in, that story's backlog file in the team home (story_file in bin/lib/team.sh) is
 # marked: its front matter's status becomes done and the PR's number joins its pr: list (in the

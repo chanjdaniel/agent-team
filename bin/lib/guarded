@@ -1,6 +1,6 @@
 # The guarded paths: the changes that always come back to Daniel for the per-head word, whatever
-# the plan's scope. team-merge refuses a merge on Daniel's plan-time word when a path the PR
-# changes (each rename's old path too) matches a line, naming the path and the line's area.
+# the plan's scope. team-merge refuses a merge on Daniel's plan-time or standing word when a path
+# the PR changes (each rename's old path too) matches a line, naming the path and the line's area.
 # One pattern per line, its area first, then one space, then an extended regular expression
 # (grep -E) matched case-insensitively against the whole repository path, and against it again
 # with each camelCase hump split off by an underscore (LoginView.vue as Login_View.vue), so a
