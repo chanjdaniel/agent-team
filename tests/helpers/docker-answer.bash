@@ -80,8 +80,31 @@ docker_stub_answer() {
     'network rm') docker_stub_network_rm "${args[@]}" ;;
     info) docker_stub_info "${args[@]}" ;;
     events) docker_stub_events "${args[@]}" ;;
+    update) docker_stub_cpus "${args[@]}" ;;
     *) docker_stub_unplanned ;;
   esac
+}
+
+# update --cpus <n> <names or ids>...: each container's HostConfig.NanoCpus set to <n> CPUs, its
+# name or id printed; one not found is "Error: No such container" on stderr, exit 1, after the
+# others are updated, as Docker does.
+docker_stub_cpus() {
+  [[ ${1:-} == --cpus && $# -ge 3 ]] || docker_stub_unplanned
+  local cpus=$2 name id missing=0
+  shift 2
+  for name in "$@"; do
+    id=$(jq -r --arg n "$name" 'first(.[] | select(.Name == "/" + $n or (.Id | startswith($n))) | .Id) // empty' \
+      "$DOCKER_STATE/containers.json")
+    if [[ -z $id ]]; then
+      echo "Error response from daemon: No such container: $name" >&2
+      missing=1
+      continue
+    fi
+    docker_stub_update containers 'map(if .Id == $id then .HostConfig.NanoCpus = ($cpus | tonumber * 1e9 | round) else . end)' \
+      --arg id "$id" --arg cpus "$cpus"
+    echo "$name"
+  done
+  exit "$missing"
 }
 
 # Fail as a stub does for a call no test planned.

@@ -28,9 +28,9 @@
 # (its lines prefixed "usage: "); a failed export is reported on stderr and fails nothing, since
 # the transcripts stay and the next checkpoint exports what this one could not.
 # Then, in the team home, the ledger's lock held: commits tasks/*/scratch*/, memory/, usage/,
-# tasks/current.md (the coordinator's current items, or its removal) and ledger.jsonl as
-# "chore: checkpoint" on the branch checked out (dev), leaving whatever else is staged as it
-# was, and pushes the branch when it is ahead of origin's. A rejected push fetches
+# tasks/current.md (the coordinator's current items, or its removal), ledger.jsonl and
+# level.jsonl as "chore: checkpoint" on the branch checked out (dev), leaving whatever else is
+# staged as it was, and pushes the branch when it is ahead of origin's. A rejected push fetches
 # and replays the commits origin lacks onto origin's branch when they apply cleanly and no local
 # change is in the way (what is staged stays staged), then pushes again; else they stay unpushed
 # and it says why. No change, no commit and no push.
@@ -48,7 +48,7 @@ SLACK_SECONDS=60
 NET_TIMEOUT=60
 LOCK_WAIT=120
 # What the team-home commit holds.
-RECORDS=(ledger.jsonl tasks/current.md ':(glob)tasks/*/scratch*/**' ':(glob)memory/**' ':(glob)usage/**')
+RECORDS=(ledger.jsonl level.jsonl tasks/current.md ':(glob)tasks/*/scratch*/**' ':(glob)memory/**' ':(glob)usage/**')
 
 usage="usage: team-checkpoint [--force]"
 force=''

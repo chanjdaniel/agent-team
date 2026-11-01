@@ -80,6 +80,7 @@ It holds:
 | Path | What it holds |
 | - | - |
 | `ledger.jsonl` | The append-only record of every task's events |
+| `level.jsonl` | The team's resource level and mode, one line per change (`team-level`), committed with the ledger so a level holds across restarts and handoffs |
 | `projects.toml` | The project registry, read only through `bin/team-project`, whose `--help` documents every key |
 | `tasks/` | Each task's plan, briefs and archived scratch; history, kept as written |
 | `projects/` | Each project's planning (Conventioner's backlog) |

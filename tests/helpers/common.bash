@@ -233,7 +233,9 @@ stub_calls() {
 # ~/.fake-systemd/<unit>.<property> (empty without one), a test's to write, and show -p
 # <property>,... <unit>..., one block of <property>=<value> lines per unit as systemd prints
 # them, a blank line between, Id the unit's name and a property with no file "[not set]" for a
-# Memory or CPU one (a unit that is not running), else empty; every call fails as a
+# Memory or CPU one (a unit that is not running), else empty, and set-property --runtime <unit>
+# <property>=<value>... on a unit file there, which keeps each value for show (CPUQuota=<n>% as
+# CPUQuotaPerSecUSec, in systemd's form: 360% is 3.600000s); every call fails as a
 # user manager that does not answer once ~/.fake-systemd/down exists; launchctl
 # bootstrap gui/<uid> <plist>, bootout gui/<uid>/<label> and print gui/<uid>/<label>, refusing as
 # launchctl does a bootstrap of a loaded job or a bootout of one not loaded.
@@ -264,6 +266,22 @@ if [[ ${2:-} == show && ${3:-} == -p ]]; then
       elif [[ $prop == Memory* || $prop == CPU* ]]; then echo "$prop=[not set]"
       else echo "$prop="; fi
     done
+  done
+  exit 0
+fi
+if [[ ${2:-} == set-property && ${3:-} == --runtime ]]; then
+  # Each property kept as show reads it: CPUQuota=<n>% as CPUQuotaPerSecUSec in systemd's timespan.
+  [[ -f $units/$4 ]] || { echo "Failed to set unit properties on $4: Unit $4 not found." >&2; exit 1; }
+  for assignment in "${@:5}"; do
+    prop=${assignment%%=*} value=${assignment#*=}
+    if [[ $prop == CPUQuota ]]; then
+      percent=${value%\%}
+      if ((percent % 100 == 0)); then value="$((percent / 100))s"
+      elif ((percent < 100)); then value="$((percent * 10))ms"
+      else value=$(printf '%d.%06ds' $((percent / 100)) $((percent % 100 * 10000))); fi
+      prop=CPUQuotaPerSecUSec
+    fi
+    echo "$value" >"$state/$4.$prop"
   done
   exit 0
 fi

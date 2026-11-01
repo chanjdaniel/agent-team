@@ -483,6 +483,24 @@ compose port web 80"
   assert_equal "$(docker_calls | grep -c ' down ' || true)" 0
 }
 
+@test "up holds a stack it starts to the CPU the level's limits give the team's containers, once a level was applied" {
+  open_task T22
+  run_bin -0 --separate-stderr team-stack up --worktree "$STACK_WORKTREE" --no-seed
+  assert_equal "$(docker_calls | grep -c '^update' || true)" 0
+  run_bin -0 team-stack down --worktree "$STACK_WORKTREE"
+
+  # team-level applied a level: its containers' --cpus is kept for the stacks that start after.
+  mkdir -p "$HOME/.local/state/agent-team/level"
+  echo '{"at": "2026-11-01T14:05:00Z", "mode": "manual", "level": "minor", "cpu_quota_percent": 360, "cpus": 3.6, "memory_high": 1, "memory_max": 2}' \
+    >"$HOME/.local/state/agent-team/level/applied.json"
+  run_bin -0 --separate-stderr team-stack up --worktree "$STACK_WORKTREE" --no-seed
+  local web
+  web=$(jq -r --arg name "/$PROJECT-web-1" '.[] | select(.Name == $name) | .Id' "$DOCKER_STATE/containers.json")
+  assert_equal "$(docker_calls | grep '^update')" "update --cpus 3.6 $web"
+  assert_equal "$(jq -r --arg name "/$PROJECT-web-1" '.[] | select(.Name == $name) | .HostConfig.NanoCpus' "$DOCKER_STATE/containers.json")" 3600000000
+  assert_contains "$stderr" "team-stack: held $PROJECT to --cpus 3.6, the level's (team-level)"
+}
+
 @test "up --no-seed starts a new stack without seeding it" {
   open_task T22
   run_bin -0 --separate-stderr team-stack up --worktree "$STACK_WORKTREE" --no-seed

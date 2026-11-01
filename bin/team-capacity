@@ -120,6 +120,7 @@
 #   heavy_gib        above 0, default 5: a heavy run's seed cost, until learned
 #   gate_gib         above 0, default 2.2: a gate run's seed cost, until learned
 #   min_cores        above 0, default 1: the CPU quota's floor
+#   min_gib          above 0, default 2: the slice's MemoryHigh floor
 # A file that is not one JSON object, a key of the wrong kind and an unknown key are refused by
 # sample, status and costs, naming each (exit 1).
 #

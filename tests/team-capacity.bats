@@ -563,7 +563,7 @@ cost() {
   echo '{"full_share": 1.5, "session_gib": 0, "slots": 3}' >"$file"
   for sub in sample status costs; do
     run_bin -1 --separate-stderr team-capacity "$sub"
-    assert_equal "$stderr" "team-capacity: $file: full_share must be a number above 0 and at most 1, not 1.5; session_gib must be a number above 0, not 0; slots is not a setting (they are: full_share, minor_share, reserve_gib, reserve_cores, auto_full_free, auto_none_below, rise_minutes, session_gib, heavy_gib, gate_gib, min_cores)"
+    assert_equal "$stderr" "team-capacity: $file: full_share must be a number above 0 and at most 1, not 1.5; session_gib must be a number above 0, not 0; slots is not a setting (they are: full_share, minor_share, reserve_gib, reserve_cores, auto_full_free, auto_none_below, rise_minutes, session_gib, heavy_gib, gate_gib, min_cores, min_gib)"
   done
   echo '[1]' >"$file"
   run_bin -1 --separate-stderr team-capacity status

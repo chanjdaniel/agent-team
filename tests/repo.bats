@@ -155,6 +155,21 @@ usage/home-pc/time/2026-10-26.jsonl: a record"
 usage/home-pc/time/2026-10-26.jsonl"
 }
 
+# A record file at the team home's root that must hold across machines is in every list that
+# keeps it: the records, both commits that carry it there (team-checkpoint's and team-handoff's
+# RECORDS) and CLAUDE.md's table of the team home.
+@test "the ledger and the level record are records, committed by team-checkpoint and team-handoff, and in CLAUDE.md's table" {
+  local file list
+  for file in ledger.jsonl level.jsonl; do
+    grep -qxF "$file" "$REPO_ROOT/bin/lib/records" || { echo "$file is not in bin/lib/records" >&2; return 1; }
+    for list in team-checkpoint team-handoff; do
+      list=$(sed -n 's/^RECORDS=(\(.*\))$/\1/p' "$REPO_ROOT/bin/$list")
+      [[ " $list " == *" $file "* ]] || { echo "$file is not in a RECORDS list: ($list)" >&2; return 1; }
+    done
+    grep -qF "| \`$file\` |" "$REPO_ROOT/CLAUDE.md" || { echo "$file is not in CLAUDE.md's team-home table" >&2; return 1; }
+  done
+}
+
 # The machine docs: Daniel's sentence, the setup entry point and the SOPs.
 MACHINE_DOCS=(README.md SETUP.md sops/machine-setup.md sops/portability.md)
 

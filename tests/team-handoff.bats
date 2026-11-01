@@ -189,6 +189,16 @@ rm 81f08540"
   assert_equal "$(jq -r 'select(.event == "stowed") | .worktrees[0].head' "$BATS_TEST_TMPDIR/machines/laptop/team/ledger.jsonl")" "$head"
 }
 
+@test "the handoff's commit holds the level record, so Daniel's level holds on the next machine" {
+  make_machine laptop
+  # The checkpoint (step 3) commits what was there; a level recorded after it is the handoff's.
+  TEAM_HANDOFF_STOP_AFTER=6 run_bin -1 team-handoff
+  echo '{"ts":"2026-11-01T14:05:00Z","mode":"manual","level":"minor","by":"Daniel","machine":"home-pc"}' >"$TEAM_HOME/level.jsonl"
+  run_bin -0 team-handoff
+  assert_contains "$(git -C "$team_origin" show --name-only --format= "$(git -C "$team_origin" log --format=%H --grep '^chore: handoff' dev)")" "level.jsonl"
+  assert_equal "$(git -C "$team_origin" show dev:level.jsonl | jq -r .level)" minor
+}
+
 @test "the handoff's commit holds this machine's usage to now, today's included" {
   cp -R "$BATS_TEST_DIRNAME/fixtures/team-tokens/projects" "$HOME/.claude/projects"
   local today

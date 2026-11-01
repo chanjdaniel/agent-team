@@ -37,8 +37,9 @@
 #                  is said, and the handoff goes on.
 #   7. commit      team-tokens export --through-now first, so today's usage is in too (its lines
 #                  prefixed "usage: "; a failed export is said, and the handoff goes on); then
-#                  machine/, memory/, tasks/, usage/ and ledger.jsonl committed on the team home's
-#                  branch as "chore: handoff from <machine>" and pushed (as team-checkpoint commits).
+#                  machine/, memory/, tasks/, usage/, ledger.jsonl and level.jsonl committed on
+#                  the team home's branch as "chore: handoff from <machine>" and pushed (as
+#                  team-checkpoint commits).
 #   8. heartbeat   team-timers disable.
 #   9. release     team-lease release.
 #  10. The message: "Released at 14:05 from home-pc. The `team-resume --wait` started on the other
@@ -66,7 +67,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 NET_TIMEOUT=60
 RETIRE_SECONDS=3
 # What the handoff's team-home commit holds.
-RECORDS=(ledger.jsonl tasks memory machine usage)
+RECORDS=(ledger.jsonl level.jsonl tasks memory machine usage)
 # A team worker's session name.
 WORKER_NAME='^T[0-9]+-[a-z][a-z0-9-]*$'
 
