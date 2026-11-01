@@ -722,9 +722,11 @@ steps() {
 }
 
 # The docker calls made but the read-only ones of team-stack ls --json, which the slots step's
-# reading makes on the holder.
+# reading makes on the holder, and the level step's, which holds the team's containers to the
+# level's CPU every run.
 docker_acts() {
-  docker_calls | grep -vE '^(compose ls --all --format json|ps --all --quiet --no-trunc|inspect --type container .*|stats --no-stream --format json .*)$' || true
+  docker_calls | grep -vE '^(compose ls --all --format json|ps --all --quiet --no-trunc|inspect --type container .*|stats --no-stream --format json .*)$' |
+    grep -vE '^(ps --quiet --filter label=io\.github\.chanjdaniel\.team\.owner=agent-team|update --cpus [0-9.]+ [0-9a-f ]+)$' || true
 }
 
 # The readings the slots step took under <home> (default HOME), one per line.
@@ -782,10 +784,10 @@ day_report() {
   docker_calls | grep -qx 'compose -p conventioner-4 down -v --remove-orphans'
   # Today's report is there, so the next runs leave Docker alone.
   local calls
-  calls=$(docker_calls | wc -l)
+  calls=$(docker_acts | wc -l)
   run_bin -0 team-timers run
   assert_equal "$(steps "$output")" "lease checkpoint"
-  assert_equal "$(docker_calls | wc -l)" "$calls"
+  assert_equal "$(docker_acts | wc -l)" "$calls"
 }
 
 @test "a failing step is logged with its reason, the steps after it still run, and the run exits 1" {
@@ -869,21 +871,28 @@ EOF
   docker_machine
   stack_json '{"heartbeat_sweep": true, "heartbeat_janitor": true}'
   docker_hang
+  # A reading of a minute ago, so the level step has limits to apply and reaches Docker.
+  mkdir -p "$HOME/.local/state/agent-team/capacity"
+  jq -cn --arg at "$(date -u -d '1 minute ago' +%FT%TZ)" \
+    '{at: $at, os: "linux", memory: {total: 34359738368, available: 25769803776, team: 0, others: 8589934592}, cpu: null}' \
+    >"$HOME/.local/state/agent-team/capacity/readings.jsonl"
   # The slots and capacity steps get 5 s each, which team-slots and team-capacity need on a slow
   # machine (CI's macOS runner) to reach their docker call before the step stops it, still well
-  # inside their own 30 s for Docker.
-  TEAM_TIMERS_SLOTS_SECONDS=5 TEAM_TIMERS_CAPACITY_SECONDS=5 TEAM_TIMERS_SWEEP_SECONDS=1 TEAM_TIMERS_JANITOR_SECONDS=2 \
-    run_bin -1 team-timers run
+  # inside their own 30 s for Docker; the level step, which first checks the lease and reads the
+  # budget, 10 s.
+  TEAM_TIMERS_SLOTS_SECONDS=5 TEAM_TIMERS_CAPACITY_SECONDS=5 TEAM_TIMERS_LEVEL_SECONDS=10 TEAM_TIMERS_SWEEP_SECONDS=1 \
+    TEAM_TIMERS_JANITOR_SECONDS=2 run_bin -1 team-timers run
   assert_equal "$output" "$(cat "$log")"
-  assert_equal "$(steps "$output")" "lease slots capacity stacks checkpoint janitor"
+  assert_equal "$(steps "$output")" "lease slots capacity level stacks checkpoint janitor"
   [[ $(grep ' slots: ' <<<"$output") =~ ^[0-9T:Z-]+" slots: failed: timed out after 5 s"$ ]]
   [[ $(grep ' capacity: ' <<<"$output") =~ ^[0-9T:Z-]+" capacity: failed: timed out after 5 s"$ ]]
+  [[ $(grep ' level: ' <<<"$output") =~ ^[0-9T:Z-]+" level: failed: timed out after 10 s"$ ]]
   [[ $(grep ' stacks: ' <<<"$output") =~ ^[0-9T:Z-]+" stacks: failed: timed out after 1 s"$ ]]
   [[ $(tail -n 1 <<<"$output") =~ ^[0-9T:Z-]+" janitor: failed: timed out after 2 s"$ ]]
   # Nothing they started is left waiting, and the janitor stopped wrote no report, so the next
   # run starts it again.
   local pid
-  [[ $(grep -c . "$DOCKER_STATE/hung") == 4 ]]
+  [[ $(grep -c . "$DOCKER_STATE/hung") == 5 ]]
   while read -r pid; do
     if [[ -n $pid ]] && kill -0 "$pid" 2>/dev/null; then
       echo "docker call $pid still waits"
@@ -958,8 +967,9 @@ EOF
   echo '{"minor_share": "a third"}' >"$file"
   run_bin -1 team-timers run
   assert_equal "$output" "$(cat "$log")"
-  assert_equal "$(steps "$output")" "lease capacity checkpoint"
+  assert_equal "$(steps "$output")" "lease capacity level checkpoint"
   [[ $(grep ' capacity: ' <<<"$output") =~ ^[0-9T:Z-]+" capacity: failed: $file: minor_share must be a number above 0 and at most 1, not \"a third\""$ ]]
+  [[ $(grep ' level: ' <<<"$output") =~ ^[0-9T:Z-]+" level: failed: $file: minor_share must be a number above 0 and at most 1, not \"a third\""$ ]]
   [[ ! -e $HOME/.local/state/agent-team/capacity/readings.jsonl ]]
   assert_equal "$(stub_calls claude)" '["agents","--json"]'
 }
@@ -1121,4 +1131,44 @@ EOF2
 @test "no test reaches this machine's service managers: systemctl and launchctl are the sandbox's stubs" {
   assert_equal "$(command -v systemctl)" "$BATS_TEST_TMPDIR/stubs/systemctl"
   assert_equal "$(command -v launchctl)" "$BATS_TEST_TMPDIR/stubs/launchctl"
+}
+
+@test "the level step runs team-level tick after the capacity step, logging an automatic change and its post" {
+  discord_answers
+  fake_placement
+  fake_process 100 99 - claude
+  stub_reply claude '[{"pid": 100, "id": "a1b2c3d4", "name": "T7-builder", "status": "idle"}]'
+  # Automatic mode at none for an hour, and a stored reading of the last hour each 5 minutes,
+  # the other programs using 8 GiB of 32: the readings span rise_minutes, so it rises to full.
+  local file=$HOME/.local/state/agent-team/capacity/readings.jsonl minutes
+  mkdir -p "${file%/*}"
+  for minutes in 25 20 15 10 5; do
+    jq -cn --arg at "$(date -u -d "$minutes minutes ago" +%FT%TZ)" \
+      '{at: $at, os: "linux", memory: {total: 34359738368, available: 25769803776, team: 0, others: 8589934592}, cpu: null}' >>"$file"
+  done
+  jq -cn --arg ts "$(date -u -d '1 hour ago' +%FT%TZ)" '{ts: $ts, mode: "auto", level: "none", by: "auto", machine: "home-pc"}' \
+    >"$TEAM_HOME/level.jsonl"
+  run_bin -0 team-timers run
+  assert_equal "$output" "$(cat "$log")"
+  assert_equal "$(steps "$output")" "lease capacity level checkpoint"
+  [[ $(grep ' level: ' <<<"$output") =~ ^[0-9T:Z-]+" level: Resources: auto raised the team to full (90%) at "[0-9:]{5}": other programs use "[0-9.]+" GiB of 32.0 GiB"$ ]]
+  assert_equal "$(posts)" "$(grep ' level: ' <<<"$output" | cut -d ' ' -f 3- | jq -R .)"
+  assert_equal "$(jq -c '[.mode, .level, .by]' <(tail -n 1 "$TEAM_HOME/level.jsonl"))" '["auto","full","auto"]'
+  # The level record went into the checkpoint.
+  assert_equal "$(git -C "$TEAM_HOME" log -1 --format=%s -- level.jsonl)" "$(git -C "$TEAM_HOME" log -1 --format=%s)"
+  # A run with nothing to change logs nothing for it.
+  run_bin -0 team-timers run
+  assert_equal "$(steps "$output")" "lease checkpoint"
+}
+
+@test "a level step that fails is logged with its reason, and the steps after it still run" {
+  docker_machine
+  stack_json '{"heartbeat_sweep": true}'
+  echo 'not a level record' >"$TEAM_HOME/level.jsonl"
+  run_bin -1 team-timers run
+  assert_equal "$output" "$(cat "$log")"
+  assert_equal "$(steps "$output")" "lease level stacks checkpoint"
+  [[ $(grep ' level: ' <<<"$output") =~ ^[0-9T:Z-]+" level: failed: $TEAM_HOME/level.jsonl has lines that are not level records ".*"line 1; fix or remove them, then run it again"$ ]]
+  # The sweep after it still ran.
+  assert_equal "$(docker_calls | sed -n 's/^compose -p \(.*\) stop$/\1/p')" conventioner-2
 }

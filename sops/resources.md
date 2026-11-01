@@ -7,16 +7,44 @@ Built by T175 (2026-11-01), toward Daniel's resource levels: full, minor and non
 
 The team runs at one of three levels, each a share of the machine: full (`full_share`, 90%), minor (`minor_share`, 30%) and none (0%).
 The coordinator runs outside the share, at every level.
-The mode is manual, which holds the level until Daniel changes it; automatic mode is not built yet.
+The mode is manual, which holds the level until Daniel changes it, or automatic, where the heartbeat picks the level from what Daniel's programs use ("Automatic mode" below).
 
-The record is the team home's `level.jsonl`, one line per change: `{ts, mode, level, by, machine}`, with `discord_message` when the change came from Daniel's message in `#coordinator`.
+The record is the team home's `level.jsonl`, one line per change: `{ts, mode, level, by, machine}`, with `discord_message` when the change came from Daniel's message in `#coordinator`, and an automatic pick's `reason` and `reading`.
 The current mode and level are the last line's; with no line the team is manual full, as it was before levels.
 It is a record, committed by `team-checkpoint` and by the handoff's records commit, so Daniel's level holds across restarts and handoffs; the ledger is not used, since every ledger line needs a task.
 
-`team-level full|minor|none [--message <id>]` records manual mode at that level, and `team-level manual` manual mode at the current one; a change to the mode and level the team is already at records nothing and says so.
+`team-level full|minor|none [--message <id>]` records manual mode at that level, `team-level manual` manual mode at the current one, and `team-level auto [--message <id>]` automatic mode at the level it picks now; a change to the mode and level the team is already at records nothing and says so, and so does `auto` while the team is already automatic.
 Each applies the limits at once and prints the acknowledgement the coordinator posts: "Resources: manual, minor (30%): 9.2 GiB and 3.6 cores for the team; 6.1 GiB reserved."
 `team-level` alone says the mode, the level, the budget and what bounds it, the team's use and the last change; `team-level apply` applies the recorded level's limits again, after a reboot or a reset slice.
-A change and `apply` refuse on a machine that does not hold the lease; `status` only reads.
+A change, `apply` and `tick` refuse on a machine that does not hold the lease; `status` only reads.
+
+## Automatic mode
+
+With `team-level auto`, the heartbeat's `level` step, `team-level tick`, runs after its `capacity` step and picks the level from the stored readings; it takes no reading itself.
+
+The pick of a reading, with `T` the memory total, `C` the cores, and `O_m` and `O_c` what the other programs use: `f` is the lower of `(T - O_m - reserve_gib) / T` and `(C - O_c - reserve_cores) / C`, memory's alone when the reading has no CPU.
+The pick is full when `f` is at least `auto_full_free`, none when it is below `auto_none_below`, and minor between.
+
+With the current level `L`:
+
+- A drop needs one reading: when the newest reading picks below `L`, the level drops to that pick at once.
+- A rise needs `rise_minutes` of headroom: the last change is at least `rise_minutes` old, a reading at least `rise_minutes` old exists, and it and every reading after it pick above `L`; the level then rises to the lowest of their picks.
+  So one spike never raises it, nor one reading after the heartbeat was off.
+- With no reading of the last 15 minutes nothing changes, and the step says so in the heartbeat log.
+
+Each change is a `level.jsonl` line `{ts, mode: "auto", level, by: "auto", machine, reason, reading}`, the reading being the one it rests on (the newest for a drop, the newest of the lowest pick for a rise, kept as `{at, total, others_memory, cpus, others_cores, free, pick}`), and one line in `#coordinator`, such as "Resources: auto lowered the team to minor (30%) at 14:05: other programs use 18.2 GiB of 30.6 GiB and 7.9 of 12 cores".
+A post Discord refuses fails the step, logged in the heartbeat log, and is kept in `~/.local/state/agent-team/level/posted.json` until a later run posts it, once.
+In both modes the step then applies the level's limits again, so the `MemoryHigh` held at the slice's use comes down as the use falls, and a reboot or a reset slice is held again within five minutes.
+
+An example day on home-pc (30.6 GiB, 12 cores, the default settings, a reading every five minutes):
+
+| Time | Other programs use | `f` | Pick | Level |
+| - | - | - | - | - |
+| 09:00 | 9.8 GiB, 2 cores | 0.55 | full | full |
+| 14:05 | 18.2 GiB, 7.9 cores | 0.26 | minor | minor, at once |
+| 14:30 | 24 GiB, 6 cores | 0.08 | none | none, at once |
+| 14:35 on | 18 GiB, 6 cores | 0.28 | minor | none until 14:50, then minor: the 14:35 reading is then 15 minutes old, and it and every one since pick minor |
+| 17:00 on | 9.8 GiB, 2 cores | 0.55 | full | minor until 17:15, then full |
 
 ## The settings
 
@@ -56,7 +84,7 @@ A page the slice's limits push to swap frees RAM for Daniel's programs, which is
 
 ## The limits
 
-On Linux `team-level` sets the slice's limits with `systemctl --user set-property --runtime agent-team.slice`, so they need no root and are gone after a reboot, until `team-level apply` sets them again:
+On Linux `team-level` sets the slice's limits with `systemctl --user set-property --runtime agent-team.slice`, so they need no root and are gone after a reboot, until the heartbeat's `level` step (every 5 minutes) or `team-level apply` sets them again:
 
 - `CPUQuota` is `max(B_c, min_cores) * 100%`, so the kernel holds the team's CPU at once, whatever a worker runs.
 - `MemoryHigh` is the largest of `min_gib`, the memory budget less the reservations of the team's stacks (which run outside the slice), and, while the slice uses more than that, the lower of its use and its `MemoryHigh` before. So a drop never throttles live sessions into reclaim: the slice is held where it is, and comes down as finished sessions stop and tasks stow.

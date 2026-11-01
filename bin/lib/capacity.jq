@@ -346,12 +346,13 @@ def level_share($s): if . == "full" then $s.full_share elif . == "minor" then $s
 
 # Whether a line of level.jsonl is a level record: {ts (UTC, YYYY-MM-DDTHH:MM:SSZ), mode (manual
 # or auto), level, by and machine (each a non-empty string)}, with discord_message and reason
-# strings when present.
+# strings and a reading object (level_reading's) when present.
 def well_formed_level:
   try (type == "object" and (.ts | type == "string" and (fromdateiso8601 | type == "number"))
        and (.mode == "manual" or .mode == "auto") and (.level as $l | capacity_levels | index($l) != null)
        and (.by | type == "string" and . != "") and (.machine | type == "string" and . != "")
-       and ((.discord_message // "") | type == "string") and ((.reason // "") | type == "string"))
+       and ((.discord_message // "") | type == "string") and ((.reason // "") | type == "string")
+       and ((.reading // {}) | type == "object"))
   catch false;
 
 # level.jsonl's lines (an array of strings) as {records: the level records in their order,
@@ -364,6 +365,64 @@ def level_records:
 # The current mode and level from level_records' object: the last record's, else manual full
 # (the team before any record), as {mode, level, last_change (the last record, or null)}.
 def level_current: {mode: (.records[-1].mode // "manual"), level: (.records[-1].level // "full"), last_change: .records[-1]};
+
+# A level's place among capacity_levels: none 0, minor 1, full 2.
+def level_rank: . as $level | capacity_levels | index($level);
+
+# The fraction of the machine a stored reading leaves the team under the settings <s>: the lower
+# of (T - O_m - reserve_gib) / T and (C - O_c - reserve_cores) / C, memory's alone when the
+# reading has no CPU.
+def level_free($s):
+  ((.memory.total - .memory.others - $s.reserve_gib * 1073741824) / .memory.total) as $memory
+  | if .cpu == null then $memory else [$memory, ((.cpu.cpus - .cpu.others - $s.reserve_cores) / .cpu.cpus)] | min end;
+
+# Automatic mode's pick of a stored reading under the settings <s>: full when level_free is at
+# least auto_full_free, none when it is below auto_none_below, minor between.
+def level_pick($s):
+  level_free($s) as $free
+  | if $free >= $s.auto_full_free then "full" elif $free < $s.auto_none_below then "none" else "minor" end;
+
+# What an automatic change keeps of the stored reading it rests on: {at, total, others_memory,
+# cpus, others_cores (null without CPU), free (level_free), pick}.
+def level_reading($s):
+  {at, total: .memory.total, others_memory: .memory.others, cpus: (.cpu.cpus // null),
+   others_cores: (.cpu.others // null), free: (level_free($s) | hundredths), pick: level_pick($s)};
+
+# The reason of an automatic change, from its reading (level_reading's): "other programs use 18.2
+# GiB of 30.6 GiB and 7.9 of 12 cores", the cores left out without CPU.
+def level_reason:
+  "other programs use \(.others_memory | gib) of \(.total | gib)"
+  + if .cpus == null then "" else " and \(.others_cores | one_decimal) of \(.cpus) cores" end;
+
+# Automatic mode's step at the time <now> (seconds), from the settings <s>, the stored readings
+# <readings> (stored_readings' readings, oldest first), the current level <level> and the last
+# change <last> (the last level record, or null), as {stale, change, level, reading}:
+#   stale    true when no reading is from the last 15 minutes, and then no change
+#   change   "lowered" when the newest reading's pick is below <level>, to that pick, at once;
+#            "raised" when the last change is at least rise_minutes old, a reading at least
+#            rise_minutes old exists, and it and every reading after it pick above <level>, to
+#            the lowest of their picks; else null
+#   level    the level after the step
+#   reading  the reading the change rests on (level_reading's): the newest for a drop, the newest
+#            of the lowest pick for a rise; null with no change
+# So one reading drops the level, and only readings spanning rise_minutes raise it.
+def level_auto($s; $readings; $level; $last; $now):
+  ($level | level_rank) as $rank
+  | ($now - $s.rise_minutes * 60) as $from
+  | [$readings[] | {r: ., t: (.at | fromdateiso8601), pick: level_pick($s)} | . + {rank: (.pick | level_rank)}] as $rs
+  | $rs[-1] as $newest
+  | if $newest == null or $newest.t < $now - 900 then {stale: true, change: null, level: $level, reading: null}
+    elif $newest.rank < $rank then {stale: false, change: "lowered", level: $newest.pick, reading: ($newest.r | level_reading($s))}
+    else
+      ([$rs[] | select(.t <= $from)] | .[-1]) as $anchor
+      | [$rs[] | select($anchor != null and .t >= $anchor.t)] as $span
+      | if $anchor == null or ($last != null and ($last.ts | fromdateiso8601) > $from) or any($span[]; .rank <= $rank)
+        then {stale: false, change: null, level: $level, reading: null}
+        else ($span | min_by(.rank) | .rank) as $lowest
+          | ([$span[] | select(.rank == $lowest)] | .[-1]) as $by
+          | {stale: false, change: "raised", level: $by.pick, reading: ($by.r | level_reading($s))}
+        end
+    end;
 
 # The team's budget at <level>, from the settings <s>, the newest reading <r> (null with none), the
 # newest reading with CPU <c> (null with none) and the machine's cores <cpus>, with T the memory
@@ -425,9 +484,10 @@ def percent: "\(. * 100 | round)%";
 def cores_short: "\(one_decimal) core\(if . == 1 then "" else "s" end)";
 
 # The level's one line from team-level's team-level/1 object, which the coordinator posts:
-# "manual, minor (30%): 9.2 GiB and 3.6 cores for the team; 6.1 GiB reserved".
+# "manual, minor (30%): 9.2 GiB and 3.6 cores for the team; 6.1 GiB reserved", and in automatic
+# mode "auto, now minor (30%): ...", since the level may change.
 def level_says:
-  "\(.mode), \(.level) (\(.share | percent)): "
+  "\(.mode), \(if .mode == "auto" then "now " else "" end)\(.level) (\(.share | percent)): "
   + if .budget.memory_bytes == null then "no reading of the machine's load yet, so no budget"
     else "\(.budget.memory_bytes | gib) and \(.budget.cores | cores_short) for the team; \(.reserved_bytes | gib) reserved" end;
 

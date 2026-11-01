@@ -41,6 +41,41 @@ reading() {
        stacks: $stacks, gate: {running: false, memory: 0, cpu_seconds: 0}}' >>"$file"
 }
 
+# A level record: change <minutes ago> <mode> <level> [<by>, default Daniel]
+change() {
+  jq -cn --arg ts "$(date -u -d "@$(($(date +%s) - $1 * 60))" +%FT%TZ)" --arg mode "$2" --arg level "$3" --arg by "${4:-Daniel}" \
+    '{ts: $ts, mode: $mode, level: $level, by: $by, machine: "home-pc"}' >>"$RECORD"
+}
+
+# The readings so far are gone.
+no_readings() {
+  rm -f "$HOME/.local/state/agent-team/capacity/readings.jsonl"
+}
+
+# The content of each post to #coordinator, one JSON string per line.
+posts() {
+  stub_calls curl | jq -c 'select(.[-1] == "https://discord.com/api/v10/channels/1562486564871995482/messages")
+    | index("-d") as $i | select($i) | .[$i + 1] | fromjson | .content'
+}
+
+# Discord answers each post with a message id, or fails with <status> when given.
+discord_answers() {
+  if [[ -z ${1:-} ]]; then
+    rm -f "$STUB_FIXTURES/curl.sh"
+    stub_reply curl '{"id":"1563000000000000001"}'
+  else
+    stub_script curl <<EOF
+echo "curl: (22) The requested URL returned error: $1" >&2
+exit 22
+EOF
+  fi
+}
+
+# The level records' [level, by], one per line.
+levels() {
+  jq -c '[.level, .by]' "$RECORD"
+}
+
 # The slice's use, as the user manager reports its MemoryCurrent: slice_use <GiB>
 slice_use() {
   jq -n --argjson g "$1" '$g * 1073741824 | floor' >"$SLICE_STATE.MemoryCurrent"
@@ -56,7 +91,7 @@ update_calls() {
   docker_calls | grep '^update' || true
 }
 
-@test "a malformed command line is a usage error, and automatic mode is not built yet" {
+@test "a malformed command line is a usage error" {
   run_bin -2 team-level nope
   assert_contains "$output" "unknown subcommand 'nope'"
   run_bin -2 team-level minor now
@@ -65,8 +100,10 @@ update_calls() {
   assert_contains "$output" "--message takes a Discord message id"
   run_bin -2 team-level status --yaml
   assert_contains "$output" "unexpected argument '--yaml'"
-  run_bin -1 team-level auto
-  assert_equal "$output" "team-level: automatic mode is not built yet: set a level with team-level full, minor or none"
+  run_bin -2 team-level auto --message x
+  assert_contains "$output" "--message takes a Discord message id"
+  run_bin -2 team-level tick now
+  assert_contains "$output" "unexpected argument 'now'"
   [[ ! -e $RECORD ]]
 }
 
@@ -267,4 +304,171 @@ CPUQuota=360% MemoryHigh=$((21 * GIB / 2)) MemoryMax=$((12 * GIB))"
   run_bin -1 --separate-stderr team-level apply
   assert_contains "$stderr" "team-level: no reading of the machine's load, so no limit is set: team-capacity sample says why it takes none"
   assert_equal "$(slice_calls)" ""
+}
+
+# On reading's 32 GiB, 12-core machine, with 4 GiB and 1 core kept free for the other programs:
+# 8 GiB and 2 cores leave (32 - 8 - 4) / 32 = 0.625 and (12 - 2 - 1) / 12 = 0.75, full;
+# 16 GiB leave 0.375, minor; 25 GiB leave 0.09, none.
+
+@test "auto records automatic mode at the level it picks now and acknowledges it" {
+  reading 1 16 2
+  run_bin -0 team-level auto --message 1234567890
+  assert_equal "$output" "Resources: auto, now minor (30%): 9.6 GiB and 3.6 cores for the team; 0.5 GiB reserved."
+  assert_equal "$(jq -c '[.mode, .level, .by, .machine, .discord_message, .reading.pick, .reading.free]' "$RECORD")" \
+    '["auto","minor","Daniel","home-pc","1234567890","minor",0.38]'
+  assert_equal "$(jq -r .reason "$RECORD")" "other programs use 16.0 GiB of 32.0 GiB and 2.0 of 12 cores"
+  # It applies the new level's limits at once.
+  assert_equal "$(slice_calls | cut -d' ' -f1)" "CPUQuota=360%"
+  # Already automatic: the level is auto's to change, so nothing is recorded.
+  reading 0 8 2
+  run_bin -0 team-level auto
+  assert_equal "${lines[0]}" "Nothing recorded: the team is already auto, now minor."
+  assert_equal "$(wc -l <"$RECORD")" 1
+  run_bin -0 team-level status
+  assert_contains "$output" "Resources: auto, now minor (30%): "
+  assert_contains "$output" "  last change: auto minor by Daniel at "
+  # From manual none, on memory alone (the newest reading has no CPU): full.
+  run_bin -0 team-level none
+  reading 0 8
+  run_bin -0 team-level auto
+  assert_equal "$(tail -n 1 "$RECORD" | jq -c '[.mode, .level, .by, .reason]')" '["auto","full","Daniel","other programs use 8.0 GiB of 32.0 GiB"]'
+}
+
+@test "tick drops the level at once on one reading that picks lower, and posts the change" {
+  discord_answers
+  change 30 auto full
+  reading 10 8 2
+  reading 5 8 2
+  reading 1 16 2
+  run_bin -0 --separate-stderr team-level tick
+  [[ $output =~ ^"Resources: auto lowered the team to minor (30%) at "[0-9]{2}:[0-9]{2}": other programs use 16.0 GiB of 32.0 GiB and 2.0 of 12 cores"$ ]]
+  assert_equal "$(levels | paste -sd' ')" '["full","Daniel"] ["minor","auto"]'
+  assert_equal "$(tail -n 1 "$RECORD" | jq -c '[.mode, .reason, .reading.others_memory, .reading.pick]')" \
+    "[\"auto\",\"other programs use 16.0 GiB of 32.0 GiB and 2.0 of 12 cores\",$((16 * GIB)),\"minor\"]"
+  assert_equal "$(posts)" "$(jq -n --arg s "$output" '$s')"
+  # The new level's limits are applied in the same step.
+  assert_equal "$(slice_calls | cut -d' ' -f1)" "CPUQuota=360%"
+  # Another reading picking none drops again, at once, though the last change is a minute old.
+  reading 0 25 2
+  run_bin -0 --separate-stderr team-level tick
+  [[ $output =~ ^"Resources: auto lowered the team to none (0%) at "[0-9:]{5}": other programs use 25.0 GiB of 32.0 GiB and 2.0 of 12 cores"$ ]]
+  assert_equal "$(levels | tail -n 1)" '["none","auto"]'
+  assert_equal "$(posts | wc -l)" 2
+  # A reading that picks the same level changes nothing and posts nothing.
+  reading 0 25 2
+  run_bin -0 --separate-stderr team-level tick
+  assert_equal "$output" ""
+  assert_equal "$(wc -l <"$RECORD")" 3
+  assert_equal "$(posts | wc -l)" 2
+}
+
+@test "tick raises the level only after rise_minutes of readings above it, to the lowest of their picks" {
+  discord_answers
+  change 60 auto none auto
+  # Higher picks for less than rise_minutes (15): the reading 20 minutes ago still picks none.
+  reading 20 25 2
+  reading 14 8 2
+  reading 10 8 2
+  reading 5 8 2
+  reading 1 8 2
+  run_bin -0 --separate-stderr team-level tick
+  assert_equal "$output" ""
+  assert_equal "$(wc -l <"$RECORD")" 1
+  # No reading rise_minutes old: one spike never raises it.
+  no_readings
+  reading 1 8 2
+  run_bin -0 --separate-stderr team-level tick
+  assert_equal "$output" ""
+  assert_equal "$(wc -l <"$RECORD")" 1
+  # Readings picking higher for rise_minutes: raised to the lowest pick among them, minor.
+  no_readings
+  reading 20 8 2
+  reading 15 16 3
+  reading 10 8 2
+  reading 5 8 2
+  reading 1 8 2
+  run_bin -0 --separate-stderr team-level tick
+  [[ $output =~ ^"Resources: auto raised the team to minor (30%) at "[0-9:]{5}": other programs use 16.0 GiB of 32.0 GiB and 3.0 of 12 cores"$ ]]
+  assert_equal "$(levels | tail -n 1)" '["minor","auto"]'
+  assert_equal "$(posts | wc -l)" 1
+  # The change is less than rise_minutes old, so full's readings wait.
+  no_readings
+  reading 20 8 2
+  reading 10 8 2
+  reading 1 8 2
+  run_bin -0 --separate-stderr team-level tick
+  assert_equal "$output" ""
+  assert_equal "$(levels | tail -n 1)" '["minor","auto"]'
+  # Once it is, they raise it to full; rise_minutes is capacity.json's.
+  change 16 auto minor auto
+  echo '{"rise_minutes": 30}' >"$HOME/.config/agent-team/capacity.json"
+  run_bin -0 --separate-stderr team-level tick
+  assert_equal "$output" ""
+  rm "$HOME/.config/agent-team/capacity.json"
+  run_bin -0 --separate-stderr team-level tick
+  [[ $output =~ ^"Resources: auto raised the team to full (90%) at "[0-9:]{5}": other programs use 8.0 GiB of 32.0 GiB and 2.0 of 12 cores"$ ]]
+  assert_equal "$(levels | tail -n 1)" '["full","auto"]'
+}
+
+@test "a post that fails is said, kept, and posted once on a later tick" {
+  discord_answers 503
+  change 30 auto full
+  reading 1 16 2
+  run_bin -1 --separate-stderr team-level tick
+  [[ $output =~ ^"Resources: auto lowered the team to minor (30%) at "[0-9:]{5}": " ]]
+  local said=$output
+  assert_equal "$stderr" "team-level: the post to #coordinator failed (curl: (22) The requested URL returned error: 503); it is tried again on the next tick"
+  # The change stands, and its limits are applied.
+  assert_equal "$(levels | tail -n 1)" '["minor","auto"]'
+  assert_equal "$(slice_calls | cut -d' ' -f1)" "CPUQuota=360%"
+  assert_equal "$(jq -c '.pending | length' "$HOME/.local/state/agent-team/level/posted.json")" 1
+  # Discord answers: the kept post goes, once, and the tick has nothing new to say.
+  : >"$STUB_CALLS/curl.log"
+  discord_answers
+  run_bin -0 --separate-stderr team-level tick
+  assert_equal "$output" ""
+  assert_equal "$(posts)" "$(jq -n --arg s "$said" '$s')"
+  run_bin -0 --separate-stderr team-level tick
+  assert_equal "$(posts | wc -l)" 1
+  assert_equal "$(jq -c '.pending' "$HOME/.local/state/agent-team/level/posted.json")" '[]'
+}
+
+@test "in manual mode tick changes no level and still applies the limits" {
+  stub_reply curl "curl must not be called" 99
+  change 30 manual minor
+  reading 1 25 2
+  run_bin -0 --separate-stderr team-level tick
+  assert_equal "$output" ""
+  assert_equal "$(levels)" '["minor","Daniel"]'
+  assert_equal "$(slice_calls | cut -d' ' -f1)" "CPUQuota=360%"
+  assert_equal "$(stub_calls curl)" ""
+  # With no record at all: manual full's limits, and still no record.
+  rm "$RECORD"
+  : >"$STUB_CALLS/systemctl.log"
+  run_bin -0 --separate-stderr team-level tick
+  [[ ! -e $RECORD ]]
+  assert_equal "$(slice_calls | cut -d' ' -f1)" "CPUQuota=900%"
+}
+
+@test "with no reading of the last 15 minutes tick changes no level and says so" {
+  stub_reply curl "curl must not be called" 99
+  change 60 auto full auto
+  reading 20 25 2
+  run_bin -0 --separate-stderr team-level tick
+  assert_equal "$output" "no reading of the machine's load in the last 15 minutes, so auto keeps the team at full"
+  assert_equal "$(wc -l <"$RECORD")" 1
+  # The limits are still applied, from the newest reading.
+  assert_equal "$(slice_calls | cut -d' ' -f1)" "CPUQuota=900%"
+  # tick takes no reading itself: the heartbeat's capacity step does.
+  assert_equal "$(wc -l <"$HOME/.local/state/agent-team/capacity/readings.jsonl")" 1
+}
+
+@test "tick refuses on a machine that does not hold the lease" {
+  change 30 auto full
+  reading 1 25 2
+  make_machine laptop
+  steal_lease laptop home-pc
+  run_bin -1 team-level tick
+  assert_contains "$output" "laptop holds the lease"
+  assert_equal "$(wc -l <"$RECORD")" 1
 }
