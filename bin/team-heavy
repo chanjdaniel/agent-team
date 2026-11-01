@@ -46,7 +46,8 @@
 #         with --task, its holder line names that task: it sends team-heavy TERM, which stops
 #         the run's scope on Linux (systemd stops it, KILLing what is left after 10 seconds) and
 #         sends its process group TERM, then KILL after 10 seconds (TEAM_HEAVY_KILL_SECONDS),
-#         and waits for the lock to go. Says "stopped <the holder's line>", or "nothing to stop"
+#         and waits for that team-heavy to end (never for the lock, which a run queued on it
+#         takes next). Says "stopped <the holder's line>", or "nothing to stop"
 #         and why when the lock is free, held in another form, or held for another task.
 #         Exit 0 either way, 1 when the run could not be stopped.
 #
@@ -88,8 +89,15 @@ cmd_status() {
   if held; then echo "held by $(holder)"; else echo free; fi
 }
 
+# Succeed while process <pid> runs and is not a zombie.
+alive() {
+  local stat
+  stat=$(ps -o stat= -p "$1" 2>/dev/null) || return 1
+  [[ -n $stat && $stat != Z* ]]
+}
+
 cmd_stop() {
-  local task='' line pid fd
+  local task='' line pid i
   while (($#)); do
     case $1 in
       --task)
@@ -119,9 +127,12 @@ cmd_stop() {
     return
   fi
   kill -TERM "$pid" 2>/dev/null || die "cannot signal the heavy run $line"
-  exec {fd}<"$LOCK"
-  flock -w $((KILL_SECONDS + 30)) -s "$fd" || die "the heavy run $line still holds the lock $((KILL_SECONDS + 30)) seconds after its stop"
-  exec {fd}<&-
+  # Wait for the holder to end, never for the lock, which a queued run may take first.
+  for ((i = 0; i < (KILL_SECONDS + 30) * 10; i++)); do
+    alive "$pid" || break
+    sleep 0.1
+  done
+  ! alive "$pid" || die "the heavy run $line still runs $((KILL_SECONDS + 30)) seconds after its stop"
   echo "stopped $line"
 }
 

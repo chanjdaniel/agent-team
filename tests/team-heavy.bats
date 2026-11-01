@@ -270,6 +270,35 @@ gone() {
   assert_equal "$output" "nothing to stop"
 }
 
+@test "stop returns once its run ends, even when a queued run takes the lock first" {
+  local round queued i
+  for round in 1 2 3 4 5 6 7 8; do
+    rm -f "$BATS_TEST_TMPDIR"/{cmd,child,run.rc,run.err,queued.err,queued.rc,queued.held}
+    stoppable T7
+    (
+      rc=0
+      AGENT_TEAM_TASK=T8 "$REPO_ROOT/bin/team-heavy" run --wait 5 --label "queued of T8" -- bash -c '
+        touch "$0/queued.held"; sleep 60' "$BATS_TEST_TMPDIR" >/dev/null 2>"$BATS_TEST_TMPDIR/queued.err" 3>&- || rc=$?
+      echo "$rc" >"$BATS_TEST_TMPDIR/queued.rc"
+    ) 3>&- &
+    queued=$!
+    for ((i = 0; i < 200; i++)); do
+      ! grep -q waiting "$BATS_TEST_TMPDIR/queued.err" 2>/dev/null || break
+      sleep 0.1
+    done
+    assert_contains "$(cat "$BATS_TEST_TMPDIR/queued.err")" "waiting up to 5 minutes for the heavy-run lock"
+    SECONDS=0
+    run_bin -0 team-heavy stop --task T7
+    [[ $output =~ ^stopped\ suite\ of\ T7\  ]]
+    ((SECONDS < 10)) || { echo "round $round: stop took $SECONDS s" && return 1; }
+    wait_for "$BATS_TEST_TMPDIR/queued.held"
+    run_bin -0 team-heavy status
+    [[ $output =~ ^held\ by\ queued\ of\ T8\ \(pid\ [0-9]+,\ T8\)\  ]]
+    run_bin -0 team-heavy stop --task T8
+    wait "$queued" || true
+  done
+}
+
 @test "stop kills a run that ignores TERM after the wait, and stops its scope on Linux" {
   fake_scopes 1 1
   export TEAM_HEAVY_KILL_SECONDS=1
