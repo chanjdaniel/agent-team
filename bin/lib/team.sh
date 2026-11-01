@@ -16,7 +16,7 @@
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin,
 # only_records, records_list, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
 # own_project, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_slots, discord_token, discord_api,
-# daniel_message, refresh_inbox, github, pr_part, task_state_json, loose_objects and pack_size, and sets IMAGE_TYPE,
+# daniel_message, refresh_inbox, github, pr_part, task_state_json, loose_objects, pack_size and story_file, and sets IMAGE_TYPE,
 # PACK_LOOSE, COORDINATOR_CHANNEL and INTERVIEW_CHANNEL.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
 # shellcheck shell=bash
@@ -1214,4 +1214,33 @@ loose_objects() {
 # The size of the team home's packs, as git prints it (38.40 MiB): pack_size
 pack_size() {
   git -C "$TEAM_HOME" count-objects -vH | sed -n 's/^size-pack: //p'
+}
+
+# The team home's backlog file of the story <id> (E<nn>/F<nn>/S<nn>) of <project>,
+# projects/<project>/backlog/E<nn>-<slug>/F<nn>-<slug>/S<nn>-<slug>.md whose front matter's id is
+# <id>; fails, saying so on stderr, unless exactly one is: story_file <project> <id>
+story_file() {
+  local backlog=$TEAM_HOME/projects/$1/backlog e f s file story_matches=()
+  if [[ ! $2 =~ ^(E[0-9]+)/(F[0-9]+)/(S[0-9]+)$ ]]; then
+    echo "${0##*/}: '$2' is no story id like E40/F01/S02" >&2
+    return 1
+  fi
+  e=${BASH_REMATCH[1]} f=${BASH_REMATCH[2]} s=${BASH_REMATCH[3]}
+  if [[ -d $backlog ]]; then
+    while IFS= read -r -d '' file; do
+      [[ $(awk 'NR == 1 && $0 != "---" { exit } NR > 1 && $0 == "---" { exit } NR > 1 && sub(/^id: */, "") { print; exit }' "$file") != "$2" ]] ||
+        story_matches+=("$file")
+    done < <(find "$backlog" -mindepth 3 -maxdepth 3 -type f -path "$backlog/$e-*/$f-*/$s-*.md" -print0)
+  fi
+  case ${#story_matches[@]} in
+    1) printf '%s\n' "${story_matches[0]}" ;;
+    0)
+      echo "${0##*/}: $1's backlog has no story $2 (a file projects/$1/backlog/$e-*/$f-*/$s-*.md whose id is $2)" >&2
+      return 1
+      ;;
+    *)
+      echo "${0##*/}: $1's backlog has ${#story_matches[@]} files of the story $2: ${story_matches[*]#"$TEAM_HOME/"}" >&2
+      return 1
+      ;;
+  esac
 }

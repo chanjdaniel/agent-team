@@ -11,7 +11,9 @@
   "kinds": {
     "opened": {
       "writer": "team-open",
-      "required": {"project": "string", "path": "string", "type": "string", "title": "string", "branch": "string", "base": "string", "base_sha": "string", "worktree": "string"}
+      "about": "story is the backlog story the task builds (team-open --story), which team-merge marks done",
+      "required": {"project": "string", "path": "string", "type": "string", "title": "string", "branch": "string", "base": "string", "base_sha": "string", "worktree": "string"},
+      "optional": {"story": "string"}
     },
     "worktree-added": {
       "writer": "team-open",

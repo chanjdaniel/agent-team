@@ -54,6 +54,13 @@
 # discord_channel, url (the PR's), approval (head for the per-head word, plan for the plan-time
 # one), and local_checks (the commands that passed on head) when there were any. Prints {task,
 # pr, merge, head, by}.
+# Then, when the task's opened event names a story (team-open --story) and the PR is of the project
+# it opened in, that story's backlog file in the team home (story_file in bin/lib/team.sh) is
+# marked: its front matter's status becomes done and the PR's number joins its pr: list (in the
+# list's style, #5 beside #-numbers, else 5), and a line on stderr names the file for the
+# coordinator to commit with the records; a story that reads so already is said and left. A story
+# that cannot be marked (no such file, no front matter, a pr: line that is no [...] list) is said
+# on stderr with why; the merge stands and the exit stays 0.
 # Then, on the plan-time word only, team-post posts one message to the task's thread and one to
 # #coordinator: the task, the PR's URL, the merge commit, Daniel's message as a link (its guild
 # the one team-inbox keeps, else #coordinator's channel's; with none, the message is named and a
@@ -419,6 +426,71 @@ ledger_append "$(jq -cn --arg task "$task" --argjson pr "$number" --arg merge "$
 trap 'rm -rf "$scratch"' EXIT
 jq -n --arg task "$task" --arg url "$url" --arg merge "$merge" --arg head "$head" --arg by "$by" \
   '{task: $task, pr: $url, merge: $merge, head: $head, by: $by}'
+
+# Mark the backlog file <file> done with PR <number> in its front matter, in place: status: done,
+# and the number added to pr: unless there; prints changed or unchanged, or fails saying why on
+# stderr, changing nothing: mark_story <file> <number>
+mark_story() {
+  local next=$1.$$
+  if ! awk -v n="$2" '
+    NR == 1 {
+      if ($0 != "---") { print "it has no front matter" >"/dev/stderr"; bad = 1; exit 1 }
+      fm = 1; print; next
+    }
+    fm && $0 == "---" {
+      if (!status) print "status: done"
+      if (!pr) print "pr: [" n "]"
+      fm = 0; print; next
+    }
+    fm && /^status:/ { status = 1; print "status: done"; next }
+    fm && /^pr:/ {
+      pr = 1
+      if ($0 !~ /^pr: *\[.*\] *$/) { print "its pr: line is no [...] list: " $0 >"/dev/stderr"; bad = 1; exit 1 }
+      inner = $0; sub(/^pr: *\[/, "", inner); sub(/\] *$/, "", inner)
+      if (inner ~ /^ *$/) { print "pr: [" n "]"; next }
+      k = split(inner, items, /,/); has = 0; hash = 0
+      for (i = 1; i <= k; i++) {
+        item = items[i]; gsub(/^ +| +$/, "", item)
+        if (item == n || item == "#" n) has = 1
+        if (i == 1 && item ~ /^#/) hash = 1
+      }
+      if (has) print; else print "pr: [" inner ", " (hash ? "#" : "") n "]"
+      next
+    }
+    { print }
+    END {
+      if (bad) exit 1
+      if (NR == 0) { print "it is empty" >"/dev/stderr"; exit 1 }
+      if (fm) { print "its front matter never ends" >"/dev/stderr"; exit 1 }
+    }' "$1" >"$next"; then
+    rm -f "$next"
+    return 1
+  fi
+  if cmp -s "$1" "$next"; then
+    rm -f "$next"
+    echo unchanged
+  else
+    mv -f "$next" "$1"
+    echo changed
+  fi
+}
+
+# The task's story, when this PR is of the project it opened in, marked done with the PR in its
+# backlog file; one that cannot be is said, and the merge stands.
+story=$(jq -r --arg p "$project" 'map(select(.event == "opened")) | first | select(.project == $p) | .story // empty' <<<"$events")
+if [[ -n $story ]]; then
+  if story_path=$(story_file "$project" "$story" 2>"$scratch/story") &&
+    marked=$(mark_story "$story_path" "$number" 2>"$scratch/story"); then
+    if [[ $marked == changed ]]; then
+      echo "team-merge: marked $story done with PR $number in ${story_path#"$TEAM_HOME/"}; commit it with the records" >&2
+    else
+      echo "team-merge: $story reads done with PR $number already in ${story_path#"$TEAM_HOME/"}" >&2
+    fi
+  else
+    reason=$(grep -m 1 . "$scratch/story" || echo "it cannot be read")
+    echo "team-merge: PR #$number is merged, but its story $story is not marked done: ${reason#team-merge: }" >&2
+  fi
+fi
 
 # On the plan-time word, Daniel hears of the merge at once, with how to revert it: one post in the
 # task's thread and one in #coordinator, through team-post. A post that fails is said on stderr

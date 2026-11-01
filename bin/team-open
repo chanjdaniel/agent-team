@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Open a task: its number, plan, worktree from the project's pool, Discord thread and ledger entry.
 #
-# Usage: team-open [--task T<n>] <project> <path> <type> <slug> <title...>
+# Usage: team-open [--task T<n>] [--story E<nn>/F<nn>/S<nn>] <project> <path> <type> <slug> <title...>
 #        team-open --task T<n> --add <project> <type> <slug>
 #        team-open --task T<n> --resume <project>
 #   project  a project in projects.toml (team-project --list)
@@ -32,6 +32,9 @@
 # slot dirty before its lease, or leased by an earlier run, may hold someone's work). Then makes the
 # task directory (refused, and the slot removed or returned again, unless git ignores it), writes
 # tasks/T<n>/plan.md from templates/plan.md, opens the thread (team-thread) and appends opened.
+# --story names the backlog story the task builds, whose file must be in the team home's
+# projects/<project>/backlog/ (story_file in bin/lib/team.sh; refused before anything is taken
+# otherwise): opened and the printed facts carry it as story, and team-merge marks it done.
 # Prints the task's facts as JSON; the project's other open tasks go to stderr, each with the files
 # its branch changes against the base (git diff --name-only origin/<base>...<branch>, origin's
 # branch when pushed, else the local one), or "no branch yet". Exit 75 when every slot is taken (a
@@ -83,22 +86,29 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 bin=$(dirname "$TEAM_LIB")
 templates=$(dirname "$bin")/templates
 ledger=$TEAM_HOME/ledger.jsonl
-usage="usage: team-open [--task T<n>] <project> <path> <type> <slug> <title...>"
+usage="usage: team-open [--task T<n>] [--story E<nn>/F<nn>/S<nn>] <project> <path> <type> <slug> <title...>"
 add_usage="usage: team-open --task T<n> --add <project> <type> <slug>"
 resume_usage="usage: team-open --task T<n> --resume <project>"
 
-task='' add='' resume=''
-while [[ ${1:-} == --task || ${1:-} == --add || ${1:-} == --resume ]]; do
+task='' add='' resume='' story=''
+while [[ ${1:-} == --task || ${1:-} == --story || ${1:-} == --add || ${1:-} == --resume ]]; do
   case $1 in
     --add) add=1 && shift && continue ;;
     --resume) resume=1 && shift && continue ;;
   esac
   [[ $# -ge 2 ]] || usage_error "$usage"
+  if [[ $1 == --story ]]; then
+    story=$2
+    shift 2
+    [[ $story =~ ^E[0-9]+/F[0-9]+/S[0-9]+$ ]] || usage_error "story must look like E<nn>/F<nn>/S<nn>, got '$story'"
+    continue
+  fi
   task=$2
   shift 2
   [[ $task =~ ^T[1-9][0-9]*$ ]] || usage_error "task must look like T<n>, got '$task'"
 done
 [[ -z $add || -z $resume ]] || usage_error "--add and --resume do not go together"
+[[ -z $story || (-z $add && -z $resume) ]] || usage_error "--story goes only with a new task, not with --add or --resume"
 if [[ -n $resume ]]; then
   [[ -n $task ]] || usage_error "--resume needs --task T<n>, the open task whose worktree to make here"
   [[ $# -eq 1 ]] || usage_error "$resume_usage"
@@ -128,6 +138,7 @@ projects=$(team_project --list)
 grep -qxF -- "$project" <<<"$projects" ||
   usage_error "unknown project '$project'; known: $(jq -Rnr '[inputs] | join(", ")' <<<"$projects")"
 if [[ -n $resume ]]; then machine=$(machine_name) || exit 1; fi
+[[ -z $story ]] || story_file "$project" "$story" >/dev/null || exit 1
 facts=$(team_project "$project")
 primary=$(jq -r .path <<<"$facts")
 base=$(jq -r .base <<<"$facts")
@@ -647,14 +658,17 @@ else
 
   ledger_append "$(jq -cn --arg task "$task" --arg project "$project" --arg path "$path" --arg type "$type" \
     --arg title "$title" --arg branch "$branch" --arg base "$base" --arg base_sha "$base_sha" --arg worktree "$worktree" \
+    --arg story "$story" \
     '{ts: (now | todate), task: $task, event: "opened", project: $project, path: $path, type: $type,
-      title: $title, branch: $branch, base: $base, base_sha: $base_sha, worktree: $worktree}')"
+      title: $title, branch: $branch, base: $base, base_sha: $base_sha, worktree: $worktree}
+      + if $story == "" then {} else {story: $story} end')"
 
   jq -n --arg task "$task" --arg project "$project" --arg path "$path" --arg title "$title" --arg branch "$branch" \
     --arg base "$base" --arg base_sha "$base_sha" --arg worktree "$worktree" --arg task_dir "$worktree/$task_dir" \
-    --arg thread "$thread" --arg plan "$plan" \
+    --arg thread "$thread" --arg plan "$plan" --arg story "$story" \
     '{task: $task, project: $project, path: $path, title: $title, branch: $branch, base: $base,
-      base_sha: $base_sha, worktree: $worktree, task_dir: $task_dir, thread: $thread, plan: $plan}'
+      base_sha: $base_sha, worktree: $worktree, task_dir: $task_dir, thread: $thread, plan: $plan}
+      + if $story == "" then {} else {story: $story} end'
 fi
 
 # Overlap between tasks is the coordinator's judgment: show the project's other open tasks, each
