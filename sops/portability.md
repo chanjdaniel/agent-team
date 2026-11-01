@@ -54,7 +54,7 @@ Two repositories hold the team, each checked out on every machine:
 
 ## The heartbeat
 
-`team-timers enable` installs one job every 5 minutes on the holder (systemd on Arch, launchd on macOS, plus `caffeinate -i` on a Mac) running `team-timers run`: probe GitHub, renew the lease once the last renewal is 15 minutes old, bring the Waiting on you message in `#coordinator` up to date (`team-inbox`), take a reading of the machine's load for its task cap (`team-slots sample`, `sops/slots.md`), and checkpoint once the last checkpoint is 15 minutes old.
+`team-timers enable` installs one job every 5 minutes on the holder (systemd on Arch, launchd on macOS, plus `caffeinate -i` on a Mac) running `team-timers run`: probe GitHub, renew the lease once the last renewal is 15 minutes old, bring the Waiting on you message in `#coordinator` up to date (`team-inbox`), take a reading of the machine's load for its task cap (`team-slots sample`, `sops/slots.md`), take the team's own reading and place its sessions in their slices (`team-capacity sample` and `place`), hold the team to its resource level (`team-level tick`, `sops/resources.md`), and checkpoint once the last checkpoint is 15 minutes old.
 After the checkpoint it packs the team home (`git gc`) once it has 200 loose objects, so the records' git stays packed on whichever machine holds the lease; `team-doctor`'s `team home pack` line warns at 400.
 Once Daniel turns each on, it also stops idle stacks and runs `team-janitor` daily (`sops/docker.md`, "The heartbeat's steps"); both ship off.
 It is enabled only on the holder: `team-resume` enables it, `team-handoff` disables it, and a run on a machine that does not hold the lease changes nothing.

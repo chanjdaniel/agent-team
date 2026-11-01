@@ -28,7 +28,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
     - `records-rewrite/`: `team-records-rewrite`'s drop list, message expression, S02 callback and `verify.py`.
     - `session-activity`: how long each live session's transcripts have gone unwritten, and the tool calls still running in a quiet one, for `team-sweep`'s stalled finding.
     - `slots.jq`: `team-slots`'s settings of `slots.json`, a reading's fit, the effective cap, the room left for the reserved project and the others, and the texts `team-slots`, `team-open` and `team-doctor` say.
-    - `stack.jq`: `team-stack`'s owner classes, Docker's sizes, the reaper's rules and the `stack.json` settings with their memory floor.
+    - `stack.jq`: `team-stack`'s owner classes, Docker's sizes, the reaper's rules and the `stack.json` settings, with the keys no longer read since the level's budget admits a stack.
     - `stow.sh`: `team-stow`'s steps, which `team-handoff` takes through `team-stow`: each task's branches checked and pushed, its sessions stopped, its ops session ended, its `stowed` logged.
     - `time.jq`: `team-time`'s split of each task's time into phases, and its counts.
     - `tools.jq`: turns `tools.lock` into each tool's pin and install command for a machine.
