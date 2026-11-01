@@ -29,8 +29,9 @@
 #         At its end it appends one cost line {at, kind: "heavy:<kind>", peak_bytes, cpu_seconds,
 #         seconds} to ~/.local/state/agent-team/capacity/costs.jsonl, which team-capacity costs
 #         learns from: the kind is --kind (tests/run gives tests-run, team-checks checks:<project>),
-#         else the label's first word; in a scope, the peak and CPU are its MemoryPeak and
-#         CPUUsageNSec, read inside it as the command ends; elsewhere the peak is the highest
+#         else the label's first word, its file name when it is a path (a script's kind is the
+#         same from every checkout, and no path goes in costs.jsonl); in a scope, the peak and
+#         CPU are its MemoryPeak and CPUUsageNSec, read inside it as the command ends; elsewhere the peak is the highest
 #         resident memory of its process group, sampled every 10 seconds, and the CPU the time its
 #         processes took. A run that was stopped, one that ended before its first sample, or a
 #         scope whose MemoryPeak is not set leaves no sample, said on stderr, and a sample that
@@ -228,7 +229,8 @@ cmd_run() {
     exit "$rc"
   fi
   [[ -n $label ]] || label="$* in ${PWD/#"$HOME"/\~}"
-  [[ -n $kind ]] || kind=${label%%[[:space:]]*}
+  # The label's first word, its file name when it is a path, so no path goes in a kind.
+  if [[ -z $kind ]]; then kind=${label%%[[:space:]]*} && kind=${kind##*/}; fi
   if [[ ${AGENT_TEAM_TASK:-} =~ ^T[0-9]+$ ]]; then task=$AGENT_TEAM_TASK slice=agent-team-$AGENT_TEAM_TASK.slice; fi
   mkdir -p "${LOCK%/*}"
   # Read-write, so opening it never empties the holder's line a waiting run reads.

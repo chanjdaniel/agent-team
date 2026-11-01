@@ -181,6 +181,9 @@ costs() {
   run_bin -0 team-heavy run --label "e2e of proj" -- true
   assert_equal "$(stub_calls systemd-run | sed -n 2p | jq -r '.[6]')" agent-team.slice
   assert_equal "$(costs | sed -n 2p)" '["heavy:e2e",3221225472,12.5]'
+  # A command given by path is its file's name, so no path goes in the kind.
+  run_bin -0 team-heavy run -- "$(type -P true)"
+  assert_equal "$(costs | sed -n 3p)" '["heavy:true",3221225472,12.5]'
   run_bin -0 team-heavy status
   assert_equal "$output" free
 }

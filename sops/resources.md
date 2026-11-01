@@ -62,7 +62,7 @@ The readings are 5 minutes apart, so a peak is what they saw, and a session or a
 A stack's kind needs its registered project, read from the held worktree its `worktree` label names, so a gate's stack has none and writes no sample.
 
 A heavy run measures itself: `team-heavy run` runs its command in a process group of its own and, on Linux, in a transient scope `agent-team-heavy-<pid>.scope` in its task's slice (`AGENT_TEAM_TASK`'s, else `agent-team.slice`), and writes its line when the command ends.
-Its kind is `heavy:tests-run` for `tests/run`, `heavy:checks:<project>` for `team-checks`, else the label's first word.
+Its kind is `heavy:tests-run` for `tests/run`, `heavy:checks:<project>` for `team-checks`, else the label's first word, its file name when it is a path, so a script's kind is one from every checkout and no path goes in `costs.jsonl`.
 When systemd's user manager does not answer, the run says so once and goes in its process group alone, measured as on macOS.
 A run that was stopped, or that ended before its first sample, writes nothing, since its peak would understate the kind's.
 `team-heavy stop [--task T<n>]` ends a run's whole tree (its scope on Linux, its process group's TERM then KILL after 10 seconds), so a worker blocked in a test returns to read its STOW.
