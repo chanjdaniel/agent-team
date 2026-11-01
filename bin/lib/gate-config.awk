@@ -152,8 +152,8 @@ function read_args(   h, rest, j, k, indent, keyre, v, at, pos) {
 }
 
 # The items of the flow sequence <s> starts with into items[]: split on the commas outside quotes,
-# up to its closing bracket; 0 when it has none on this line (a comment, a # after a blank or an
-# opener outside quotes, ends the line), or holds a nested collection.
+# up to its closing bracket; 0 when it has none on this line (a comment, a # after a blank, an
+# opener or a comma outside quotes, ends the line), or holds a nested collection.
 function flow(s,   i, c, q, item) {
   q = ""; item = ""
   for (i = 2; i <= length(s); i++) {
