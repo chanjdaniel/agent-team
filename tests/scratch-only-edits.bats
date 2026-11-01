@@ -242,6 +242,50 @@ echo b > y" "$wt/y"
   blocked 'cmd | tee >(gzip > out.gz)' "$wt/out.gz"
   blocked '( cmd ) > out' "$wt/out"
   blocked '{ cmd; } > out' "$wt/out"
+  # Inside double quotes and backticks too, at any depth.
+  blocked 'x="$(cmd > out)"' "$wt/out"
+  blocked 'x=`cmd > out`' "$wt/out"
+  blocked 'echo "$(printf x | tee out)"' "$wt/out"
+  blocked 'echo "a $(echo "$(cmd >> out)") b"' "$wt/out"
+  blocked 'x=`echo \`cmd > out\``' "$wt/out"
+  blocked 'echo "`cmd > out`"' "$wt/out"
+  blocked 'x="$(cmd "a)b" > out)"' "$wt/out"
+  # Its target is judged against the outer command's working directory.
+  blocked 'x="$(cmd > out)"' "$wt/src/out" "$wt/src"
+  # What is fine outside a substitution is fine inside it.
+  shell -0 'x="$(cmd 2>/dev/null)"'
+  shell -0 'x="$(cmd > .scratch/task/out)" && echo "$x"'
+  shell -0 'x=`cmd 2>&1`'
+  shell -0 'echo "$(( a > b ))"'
+  shell -0 'echo "it is \$(cmd > out)"'
+}
+
+@test "an ANSI-C string and an old arithmetic expansion are read whole, so what follows them is judged" {
+  blocked "echo \$'a\\'b' > out" "$wt/out"
+  blocked "echo \$'a > b' > out" "$wt/out"
+  shell -0 "echo \$'a > b'"
+  blocked 'echo $[1<<2]
+echo x > out' "$wt/out"
+  shell -0 'echo $[1 > 2]'
+}
+
+@test "a tee is found behind the wrappers, their options and their option values" {
+  blocked 'cmd | timeout 60 tee out' "$wt/out"
+  blocked 'cmd | timeout -s KILL -k 5 10s tee out' "$wt/out"
+  blocked 'cmd | nice tee out' "$wt/out"
+  blocked 'cmd | nice -n 5 tee out' "$wt/out"
+  blocked 'cmd | sudo -u me tee out' "$wt/out"
+  blocked 'cmd | sudo --user me -E tee out' "$wt/out"
+  blocked 'cmd | stdbuf -oL tee out' "$wt/out"
+  blocked 'cmd | stdbuf -o L tee out' "$wt/out"
+  blocked 'cmd | env -u X A=1 tee out' "$wt/out"
+  blocked 'cmd | exec -a name tee out' "$wt/out"
+  blocked 'cmd | builtin command nohup tee out' "$wt/out"
+  blocked 'cmd | time -p tee out' "$wt/out"
+  # A lookup runs nothing, and a wrapper's own arguments are no tee's files.
+  shell -0 'command -v tee out'
+  shell -0 'timeout 60 cmd out'
+  shell -0 'sudo -u tee cmd x'
 }
 
 @test "a long heredoc is judged quickly" {
