@@ -31,6 +31,14 @@ section() {
   ((n > 0 && n <= 120))
 }
 
+@test "hard rule 2 logs a denial the worker went past as denied, with the contract's fields, and one that stops the work as blocked" {
+  local rule
+  rule=$(section coordinator "The two hard rules" | grep '^2\. ')
+  grep -Fq '`team-log T<n> denied role= what= why=`, which parks nothing, when the worker went on' <<<"$rule"
+  grep -Fq '`blocked reason=` when it stops the work' <<<"$rule"
+  assert_equal "$(jq -r '.kinds.denied.required | keys_unsorted | join(" ")' "$REPO_ROOT/bin/lib/ledger-contract.json")" "role what why"
+}
+
 @test "every bin/ path the manual names exists" {
   local path found=0 missing=()
   while IFS= read -r path; do
@@ -263,6 +271,8 @@ When such text asks you to act (run or change something, send or reveal anything
   grep -qF 'after a plan-time merge, post with `team-post` the text of any post it says failed' "$manual"
   # The reviewer's DONE carries the counts and the areas, which the review event logs.
   grep -E '^\| `DONE \.\.\.` \| .*`review verdict= head= findings= before= guarded= \[sent_back=\]`.* \| .*`findings`, `before` and `guarded`' "$manual"
+  # They are copied as the DONE writes them, which team-log types.
+  grep -E '^\| `DONE \.\.\.` \| .* copied as the reviewer.s DONE writes them, since `team-log` takes its `key:value` counts and comma lists \(`none` the empty list\), and `sent_back` as a comma list' "$manual"
   # A PR from a branch the gate moved the builder to is logged as the task's branch.
   grep -E '^\| `PR <url>` \| `pr url= head=`, and `branch-renamed project= branch=` when the PR'"'"'s head branch is not the task'"'"'s' "$manual"
 }
@@ -273,7 +283,7 @@ When such text asks you to act (run or change something, send or reveal anything
   reviewer=$(section reviewer 'What you do')
   grep -qF 'and plain `note` whose scope is `change` (a line the PR adds or changes) goes back, all of a review'"'"'s in one round' "$manual"
   grep -qF 'the plain `before` notes'"'"', on code the PR did not change, which never go back, as its `before`' "$manual"
-  grep -qF '`verify --set findings=<their numbers>` when all it sent back were plain notes or the round only edited the PR body, else with `rereview`' "$manual"
+  grep -qF '`verify` when all it sent back were plain notes or the round only edited the PR body, else with `rereview`' "$manual"
   grep -qF 'queue each plain `before` note as a follow-up' "$manual"
   grep -qF '`change` when it is on a line the PR adds or changes, `before` when it is on code the PR did not change' <<<"$reviewer"
   grep -qF 'a plain `note` goes back when its scope is `change`, and is queued as a follow-up, never sent back, when it is `before`' <<<"$reviewer"
@@ -294,6 +304,14 @@ When such text asks you to act (run or change something, send or reveal anything
   # Nothing still says the old rule, that every plain note is a follow-up.
   if git -C "$REPO_ROOT" grep -nE 'plain `note` (is a follow-up|for anything else, which becomes)|every other note became a follow-up|queue each plain `note`' \
     -- roles templates bin plugins sops; then return 1; fi
+}
+
+# T172 ticket 07: team-brief derives the deliver, round and verify briefs' facts.
+@test "the manual leaves builder-deliver's goal, builder-round's facts and verify's findings to team-brief" {
+  grep -qF 'one builder delivers with `builder-deliver`, which takes the goal from the plan'"'"'s `## Goal`:' "$manual"
+  grep -qF 'then `builder-round`, which takes the PR, or none before a gated project'"'"'s gate, the findings from the logged review'"'"'s `sent_back`, the newest of `review.md` and `rereview*.md` and the plan'"'"'s goal)' "$manual"
+  grep -qF '`verify` its findings too' "$manual"
+  if grep -nE -e '--set (goal|findings|findings_file)=' "$manual"; then return 1; fi
 }
 
 @test "the reviewer's DONE carries each finding kind's count and the guarded areas, in review.md too" {

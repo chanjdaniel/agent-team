@@ -41,6 +41,7 @@
 {"ts":"2026-10-22T11:30:00Z","task":"T60","event":"done","role":"reviewer","session":"s0000000"}
 {"ts":"2026-10-22T11:30:00Z","task":"T60","event":"waiting","on":"Daniel","reason":"merge-it on PR #7"}
 {"ts":"2026-10-22T12:00:00Z","task":"T61","event":"blocked","reason":"waits for T60: the script its PR adds"}
+{"ts":"2026-10-22T12:30:00Z","task":"T61","event":"denied","role":"builder","session":"s0000011","what":"Bash","why":"[deny rule] git reset * --hard*"}
 {"ts":"2026-10-22T12:30:00Z","task":"T60","event":"merge-approved","url":"https://github.com/chanjdaniel/Conventioner/pull/7","discord_message":"1563000000000000001"}
 {"ts":"2026-10-22T13:00:00Z","task":"T60","event":"merged","pr":7,"merge":"ddddddd","head":"ccccccc","by":"team-merge","url":"https://github.com/chanjdaniel/Conventioner/pull/7"}
 {"ts":"2026-10-22T13:00:00Z","task":"T60","event":"closed","archive":[],"returned":[],"kept":[]}

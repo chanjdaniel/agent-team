@@ -47,6 +47,16 @@ SCRIPT
   assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" ""
 }
 
+@test "a review whose sent_back holds whole numbers as strings is refused, a form only --check takes" {
+  local review='{"ts":"2026-10-27T02:00:00Z","task":"T7","event":"review","verdict":"findings","head":"a1b2c3d","findings":{"blocking":1,"correctness":0,"security":0,"real-data":0,"note-change":0,"note-before":0},"guarded":[]'
+  append_as team-log "$review,\"sent_back\":[\"5\"]}"
+  assert_equal "$status" "1"
+  assert_contains "$output" 'team-log: refusing a ledger event: sent_back must be a list of whole numbers, got "5"'
+  assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" ""
+  append_as team-log "$review,\"sent_back\":[5]}"
+  assert_equal "$status" "0"
+}
+
 @test "a launch may name its model, as a string, written by team-worker" {
   local launch='{"ts":"2026-10-27T02:00:00Z","task":"T7","event":"launch","role":"reviewer","session":"4f2a9c1e","worktree":"/w","toolkits":[]'
   append_as team-worker "$launch,\"model\":\"sonnet\"}"

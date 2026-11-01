@@ -16,12 +16,12 @@
 # and the next step:
 #   no-worker      an open task, not parked, with an opened or launch event and no live session
 #                  among its launches at work: busy, waiting for input or silent (one idle with a
-#                  ledger event since its launch has handed the next step back); merged is told
-#                  to close
+#                  ledger event since its launch, a denied aside, has handed the next step back);
+#                  merged is told to close
 #   waiting-input  a live session of an open task, not parked, whose state is blocked
 #   silent         a live, idle session of an open task, not parked, with no ledger event for the
-#                  task after that session's latest launch (one waiting for input is not also
-#                  silent)
+#                  task after that session's latest launch but denied ones (one waiting for input
+#                  is not also silent)
 #   stalled        a live, busy session of an open task, not parked, not waiting for input, whose
 #                  transcripts (its own and its subagents', under ~/.claude/projects) have not been
 #                  written for longer than its limit (stall_limits in bin/lib/ledger.jq), the

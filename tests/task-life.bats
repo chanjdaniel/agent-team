@@ -378,8 +378,9 @@ assert_closed_and_clean() {
 
   # 3. One builder per ticket, one ticket in each project.
   ok team-brief T1 builder-ticket --project home --set ticket=01 --name build-01
+  local home_brief=$output
   step building no-worker:"$planner"
-  ok team-worker T1 builder "$home_wt" -- "Read your brief at $output"
+  ok team-worker T1 builder "$home_wt" -- "Read your brief at $home_brief"
   local home_builder=$output home_head
   step building
   home_head=$(commit_and_push "$home_wt" home.txt)

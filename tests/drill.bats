@@ -86,8 +86,9 @@ SH
   run_bin -0 team-open home feature feat work "Do the work"
   wt=$HOME/slots/home/1
   run_bin -0 team-thread T1 home "Do the work"
+  echo "the brief" >"$TEAM_HOME/tasks/T1/brief.md"
   # Its sessions list no pid, so on Linux team-capacity place warns that it cannot place it.
-  run_bin -0 --separate-stderr team-worker T1 builder "$wt" -- "Read your brief"
+  run_bin -0 --separate-stderr team-worker T1 builder "$wt" -- "Read your brief at $TEAM_HOME/tasks/T1/brief.md"
   builder=$output
   # The builder's first commit, and the task directory it works from.
   echo "spec" >"$wt/.scratch/task/spec.md"

@@ -8,6 +8,7 @@ Task directory: `{{task_dir}}/` in the worktree: `spec.md`, `tickets/`, `build-n
 ## Check, beyond what every review covers
 
 {{checks}}
+{{> review-rules}}
 
 ## Deliver
 
