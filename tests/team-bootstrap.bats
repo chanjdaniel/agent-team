@@ -84,10 +84,11 @@ running: $FORK_BUILD
 running: mkdir -p ~/.no-mistakes/bin && install -m 755 $CODE_CHECKOUT/bin/lib/opencode-gate ~/.no-mistakes/bin/opencode-gate"
   assert_equal "$(grep -m1 config.yaml <<<"$output")" "tools: ~/.no-mistakes/config.yaml is not there: Daniel's team-secrets restore brings it (the secret no-mistakes-config), then team-bootstrap --stage tools names the wrapper in it"
   # The build: the fork cloned into a new temporary directory (<d> here), built there and installed.
-  assert_equal "$(sed -E 's#[^ ]*/tmp\.[[:alnum:]]+#<d>#g' "$STUB_CALLS/fork-build.log")" "clone -q https://github.com/chanjdaniel/no-mistakes <d>
+  # HOME is named first, since a TMPDIR that mktemp made is shaped like that directory too.
+  assert_equal "$(sed -e "s#$HOME/#~/#g" -E -e 's#[^ ]*/tmp\.[[:alnum:]]+#<d>#g' "$STUB_CALLS/fork-build.log")" "clone -q https://github.com/chanjdaniel/no-mistakes <d>
 git checkout -q a544ba66594682fb8a0594de77f45ed519a41381
 make build
-install -m 755 <d>/bin/no-mistakes $HOME/.no-mistakes/bin/no-mistakes"
+install -m 755 <d>/bin/no-mistakes ~/.no-mistakes/bin/no-mistakes"
   assert_equal "$(stage_lines tools | tail -n 2)" "running: add ~/.local/bin to PATH in ~/.zshrc
 running: add ~/.no-mistakes/bin to PATH in ~/.zshrc"
   assert_equal "$(cat "$HOME/.zshrc")" "export PATH=\"\$HOME/.local/bin:\$PATH\" # team-bootstrap
