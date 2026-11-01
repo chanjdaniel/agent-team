@@ -799,10 +799,13 @@ exit 1
 EOF
   run_bin -1 team-timers run
   assert_equal "$output" "$(cat "$log")"
-  assert_equal "$(steps "$output")" "lease capacity stacks checkpoint janitor"
+  assert_equal "$(steps "$output")" "lease capacity level stacks checkpoint janitor"
   # The capacity step's reading still went in, without the sessions; its place failed.
   assert_equal "$(grep ' capacity: ' <<<"$output" | cut -d ' ' -f 2-)" \
     "capacity: failed: claude: the session list is down"
+  # The level step applied the limits, but its stow plan needs the session list.
+  assert_equal "$(grep ' level: ' <<<"$output" | cut -d ' ' -f 2-)" \
+    "level: failed: the stow plan failed: team-capacity: cannot read the live session list (claude agents --json)"
   assert_equal "$(jq -c .sessions "$HOME/.local/state/agent-team/capacity/readings.jsonl")" false
   [[ $(grep ' stacks: ' <<<"$output") =~ ^[0-9T:Z-]+" stacks: failed: ".*"the session list is down" ]]
   assert_contains "$(grep ' janitor: ' <<<"$output")" "No alerts."
@@ -1151,7 +1154,7 @@ EOF2
   run_bin -0 team-timers run
   assert_equal "$output" "$(cat "$log")"
   assert_equal "$(steps "$output")" "lease capacity level checkpoint"
-  [[ $(grep ' level: ' <<<"$output") =~ ^[0-9T:Z-]+" level: Resources: auto raised the team to full (90%) at "[0-9:]{5}": other programs use "[0-9.]+" GiB of 32.0 GiB"$ ]]
+  [[ $(grep ' level: ' <<<"$output") =~ ^[0-9T:Z-]+" level: Resources: auto raised the team to full (90%) at "[0-9:]{5}": other programs use "[0-9.]+" GiB of 32.0 GiB; nothing needs to stow"$ ]]
   assert_equal "$(posts)" "$(grep ' level: ' <<<"$output" | cut -d ' ' -f 3- | jq -R .)"
   assert_equal "$(jq -c '[.mode, .level, .by]' <(tail -n 1 "$TEAM_HOME/level.jsonl"))" '["auto","full","auto"]'
   # The level record went into the checkpoint.

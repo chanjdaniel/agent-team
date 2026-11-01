@@ -55,7 +55,9 @@
 #              level  On the holder, after the capacity step, every run: team-level tick, which in
 #                     automatic mode picks the level from the readings, records and posts each
 #                     change (logged as its post's line), and in either mode applies the level's
-#                     limits again; it logs only a change and a stale reading.
+#                     limits again and, once the team is over its budget, stops its finished
+#                     sessions and idle stacks; it logs only a change, a stale reading and each
+#                     stop.
 #              stacks On the holder, after the level step, when heartbeat_sweep is true in
 #                     ~/.config/agent-team/stack.json (team-stack's settings, off by default):
 #                     team-stack sweep, which stops the team's idle stacks.
@@ -79,8 +81,8 @@
 #            slots step, capacity.json for the capacity and level steps) is malformed, is logged as
 #            "<step>: failed: <reason>", the steps after it still run (the capacity step's place
 #            after its sample too), and the run exits 1 at its end. A hung Docker never holds the
-#            run's lock past the lease's renewals: each reading, the place and the level step are
-#            stopped after 60 s, the sweep and the pack after 300 s and the janitor after 1200 s,
+#            run's lock past the lease's renewals: each reading and the place are stopped after 60
+#            s, the level step, the sweep and the pack after 300 s and the janitor after 1200 s,
 #            each logged as "<step>: failed: timed out after <n> s" (a janitor stopped so wrote no
 #            report, so the next run starts it again). The sweep, the janitor and the level step
 #            need docker on the PATH enable captured (the sweep and the capacity step claude too),
@@ -103,7 +105,7 @@
 # was posted), and on macOS heartbeat.err, the job's stderr (systemd keeps it in the journal).
 # TEAM_TIMERS_SLOTS_SECONDS, TEAM_TIMERS_CAPACITY_SECONDS, TEAM_TIMERS_LEVEL_SECONDS,
 # TEAM_TIMERS_SWEEP_SECONDS and TEAM_TIMERS_JANITOR_SECONDS replace the slots reading's 60 s, the
-# capacity step's 60 s for each of its commands, the level step's 60 s, the sweep's 300 s and the
+# capacity step's 60 s for each of its commands, the level step's 300 s, the sweep's 300 s and the
 # janitor's 1200 s (the tests' seams).
 # Exit 0 done, 1 refused or a step failed, 2 usage error, 75 GitHub unreachable.
 set -euo pipefail
@@ -125,7 +127,7 @@ INBOX_TIMEOUT=120
 # well inside the lease's hour.
 SLOTS_TIMEOUT=${TEAM_TIMERS_SLOTS_SECONDS:-60}
 CAPACITY_TIMEOUT=${TEAM_TIMERS_CAPACITY_SECONDS:-60}
-LEVEL_TIMEOUT=${TEAM_TIMERS_LEVEL_SECONDS:-60}
+LEVEL_TIMEOUT=${TEAM_TIMERS_LEVEL_SECONDS:-300}
 SWEEP_TIMEOUT=${TEAM_TIMERS_SWEEP_SECONDS:-300}
 JANITOR_TIMEOUT=${TEAM_TIMERS_JANITOR_SECONDS:-1200}
 PACK_TIMEOUT=300

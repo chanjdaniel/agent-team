@@ -25,19 +25,20 @@ setup() {
 
 # reading <minutes ago> <others GiB> [<others cores>]: a stored reading of a 32 GiB, 12-core
 # machine whose other programs use <others GiB> and <others cores> (no CPU read without them),
-# the team using 3 GiB and 1.5 cores, with the stacks in $STACKS (a JSON array, default none).
+# the team using 3 GiB and 1.5 cores, with the tasks in $TASKS (a JSON array, default T7's builder
+# a1b2c3d4 at 0.5 GiB) and the stacks in $STACKS (a JSON array, default none).
 reading() {
   local file=$HOME/.local/state/agent-team/capacity/readings.jsonl
   mkdir -p "${file%/*}"
   jq -cn --arg at "$(date -u -d "@$(($(date +%s) - $1 * 60))" +%FT%TZ)" --argjson others "$2" --arg cores "${3:-}" \
-    --argjson stacks "${STACKS:-[]}" '
+    --argjson stacks "${STACKS:-[]}" --argjson tasks "${TASKS:-null}" '
     (32 * 1073741824) as $total | ($others * 1073741824 | floor) as $others
     | {at: $at, os: "linux", docker: true,
        memory: {total: $total, available: ($total - $others - 3 * 1073741824), team: (3 * 1073741824), others: $others},
        cpu: (if $cores == "" then null else {cpus: 12, seconds: 300, team: 1.5, others: ($cores | tonumber)} end),
        systemd: true, sessions: true,
-       tasks: [{task: "T7", memory: (3 * 1073741824), cpu: 1.5, cpu_nsec: null,
-                sessions: [{id: "a1b2c3d4", role: "builder", memory: (536870912), peak: 536870912, cpu_seconds: 10}], stacks: []}],
+       tasks: ($tasks // [{task: "T7", memory: (3 * 1073741824), cpu: 1.5, cpu_nsec: null,
+                sessions: [{id: "a1b2c3d4", role: "builder", memory: (536870912), peak: 536870912, cpu_seconds: 10}], stacks: []}]),
        stacks: $stacks, gate: {running: false, memory: 0, cpu_seconds: 0}}' >>"$file"
 }
 
@@ -122,7 +123,7 @@ update_calls() {
   assert_equal "$(wc -l <"$RECORD")" 1
   assert_equal "$(jq -c '[.mode, .level, .by, .machine, .discord_message]' "$RECORD")" '["manual","minor","Daniel","home-pc","1234567890"]'
   jq -e '.ts | fromdateiso8601 > now - 60' "$RECORD" >/dev/null
-  assert_equal "$output" "Resources: manual, minor (30%): 9.6 GiB and 3.6 cores for the team; 0.5 GiB reserved."
+  assert_equal "$output" "Resources: manual, minor (30%): 9.6 GiB and 3.6 cores for the team; 0.5 GiB reserved; nothing needs to stow."
 
   run_bin -0 team-level minor
   assert_equal "${lines[0]}" "Nothing recorded: the team is already manual, minor."
@@ -193,7 +194,7 @@ update_calls() {
   assert_equal "$(update_calls)" "update --cpus 3.6 $(jq -r '[.[] | select(.State.Running and .Config.Labels["io.github.chanjdaniel.team.owner"] == "agent-team")] | sort_by(.Created) | reverse | map(.Id) | join(" ")' "$DOCKER_STATE/containers.json")"
   assert_equal "$(jq -c '[.[] | select(.HostConfig.NanoCpus != null) | .Name]' "$DOCKER_STATE/containers.json")" '["/conventioner-2-mongodb-1","/conventioner-2-backend-1"]'
   assert_equal "$(jq -c '{mode, level, cpu_quota_percent, cpus}' "$HOME/.local/state/agent-team/level/applied.json")" '{"mode":"manual","level":"minor","cpu_quota_percent":360,"cpus":3.6}'
-  assert_equal "$output" "Resources: manual, minor (30%): 9.6 GiB and 3.6 cores for the team; 2.5 GiB reserved."
+  assert_equal "$output" "Resources: manual, minor (30%): 9.6 GiB and 3.6 cores for the team; 2.5 GiB reserved; nothing needs to stow."
   assert_equal "$stderr" ""
 
   # status splits what is reserved: the builder's use, its allowance (its 0.5 GiB seed less that
@@ -323,7 +324,7 @@ CPUQuota=360% MemoryHigh=$((21 * GIB / 2)) MemoryMax=$((12 * GIB))"
 @test "auto records automatic mode at the level it picks now and acknowledges it" {
   reading 1 16 2
   run_bin -0 team-level auto --message 1234567890
-  assert_equal "$output" "Resources: auto, now minor (30%): 9.6 GiB and 3.6 cores for the team; 0.5 GiB reserved."
+  assert_equal "$output" "Resources: auto, now minor (30%): 9.6 GiB and 3.6 cores for the team; 0.5 GiB reserved; nothing needs to stow."
   assert_equal "$(jq -c '[.mode, .level, .by, .machine, .discord_message, .reading.pick, .reading.free]' "$RECORD")" \
     '["auto","minor","Daniel","home-pc","1234567890","minor",0.38]'
   assert_equal "$(jq -r .reason "$RECORD")" "other programs use 16.0 GiB of 32.0 GiB and 2.0 of 12 cores"
@@ -351,7 +352,7 @@ CPUQuota=360% MemoryHigh=$((21 * GIB / 2)) MemoryMax=$((12 * GIB))"
   reading 5 8 2
   reading 1 16 2
   run_bin -0 --separate-stderr team-level tick
-  [[ $output =~ ^"Resources: auto lowered the team to minor (30%) at "[0-9]{2}:[0-9]{2}": other programs use 16.0 GiB of 32.0 GiB and 2.0 of 12 cores"$ ]]
+  [[ $output =~ ^"Resources: auto lowered the team to minor (30%) at "[0-9]{2}:[0-9]{2}": other programs use 16.0 GiB of 32.0 GiB and 2.0 of 12 cores; nothing needs to stow"$ ]]
   assert_equal "$(levels | paste -sd' ')" '["full","Daniel"] ["minor","auto"]'
   assert_equal "$(tail -n 1 "$RECORD" | jq -c '[.mode, .reason, .reading.others_memory, .reading.pick]')" \
     "[\"auto\",\"other programs use 16.0 GiB of 32.0 GiB and 2.0 of 12 cores\",$((16 * GIB)),\"minor\"]"
@@ -361,7 +362,7 @@ CPUQuota=360% MemoryHigh=$((21 * GIB / 2)) MemoryMax=$((12 * GIB))"
   # Another reading picking none drops again, at once, though the last change is a minute old.
   reading 0 25 2
   run_bin -0 --separate-stderr team-level tick
-  [[ $output =~ ^"Resources: auto lowered the team to none (0%) at "[0-9:]{5}": other programs use 25.0 GiB of 32.0 GiB and 2.0 of 12 cores"$ ]]
+  [[ $output =~ ^"Resources: auto lowered the team to none (0%) at "[0-9:]{5}": other programs use 25.0 GiB of 32.0 GiB and 2.0 of 12 cores; nothing needs to stow"$ ]]
   assert_equal "$(levels | tail -n 1)" '["none","auto"]'
   assert_equal "$(posts | wc -l)" 2
   # A reading that picks the same level changes nothing and posts nothing.
@@ -398,7 +399,7 @@ CPUQuota=360% MemoryHigh=$((21 * GIB / 2)) MemoryMax=$((12 * GIB))"
   reading 5 8 2
   reading 1 8 2
   run_bin -0 --separate-stderr team-level tick
-  [[ $output =~ ^"Resources: auto raised the team to minor (30%) at "[0-9:]{5}": other programs use 16.0 GiB of 32.0 GiB and 3.0 of 12 cores"$ ]]
+  [[ $output =~ ^"Resources: auto raised the team to minor (30%) at "[0-9:]{5}": other programs use 16.0 GiB of 32.0 GiB and 3.0 of 12 cores; nothing needs to stow"$ ]]
   assert_equal "$(levels | tail -n 1)" '["minor","auto"]'
   assert_equal "$(posts | wc -l)" 1
   # The change is less than rise_minutes old, so full's readings wait.
@@ -416,7 +417,7 @@ CPUQuota=360% MemoryHigh=$((21 * GIB / 2)) MemoryMax=$((12 * GIB))"
   assert_equal "$output" ""
   rm "$HOME/.config/agent-team/capacity.json"
   run_bin -0 --separate-stderr team-level tick
-  [[ $output =~ ^"Resources: auto raised the team to full (90%) at "[0-9:]{5}": other programs use 8.0 GiB of 32.0 GiB and 2.0 of 12 cores"$ ]]
+  [[ $output =~ ^"Resources: auto raised the team to full (90%) at "[0-9:]{5}": other programs use 8.0 GiB of 32.0 GiB and 2.0 of 12 cores; nothing needs to stow"$ ]]
   assert_equal "$(levels | tail -n 1)" '["full","auto"]'
 }
 
@@ -481,4 +482,127 @@ CPUQuota=360% MemoryHigh=$((21 * GIB / 2)) MemoryMax=$((12 * GIB))"
   run_bin -1 team-level tick
   assert_contains "$output" "laptop holds the lease"
   assert_equal "$(wc -l <"$RECORD")" 1
+}
+
+# work_event <task> <kind> [<jq object of more fields>]: a ledger line of <task>, standing in for
+# its writer.
+work_event() {
+  jq -cn --arg t "$1" --arg e "$2" "{ts: (now | floor | todate), task: \$t, event: \$e} + (${3:-{\}})" >>"$TEAM_HOME/ledger.jsonl"
+}
+
+# work_task <task> [<role>:<session>...]: <task> opened in Conventioner in the worktree ~/wt/<task>,
+# and each worker launched in it.
+work_task() {
+  local spec
+  work_event "$1" opened "{project: \"conventioner\", path: \"feature\", type: \"feat\", title: \"Work\",
+    branch: \"feat/$1-work\", base: \"dev\", base_sha: \"abc1234\", worktree: \"$HOME/wt/$1\"}"
+  for spec in "${@:2}"; do
+    work_event "$1" launch "{role: \"${spec%%:*}\", session: \"${spec#*:}\", worktree: \"$HOME/wt/$1\", toolkits: [],
+      project: \"conventioner\", branch: \"feat/$1-work\"}"
+  done
+}
+
+# live_sessions_are <id> <name> <status>...: the sessions claude agents --json lists, each working
+# in ~/wt/<its task>; claude stop <id> stops one (logged by the stub), and fails for an id named
+# in $STUB_FIXTURES/stop-refused.
+live_sessions_are() {
+  local list=$STUB_FIXTURES/agents.json
+  echo '[]' >"$list"
+  while (($# >= 3)); do
+    jq -c --arg id "$1" --arg name "$2" --arg status "$3" --arg cwd "$HOME/wt/${2%%-*}" \
+      '. + [{pid: 4242, id: $id, name: $name, status: $status, cwd: $cwd, kind: "background",
+             sessionId: "\($id)-1111-4222-8333-444455556666"}]' "$list" >"$list.new"
+    mv "$list.new" "$list"
+    shift 3
+  done
+  stub_script claude <<'SH'
+case "$*" in
+  'agents --json') cat "$STUB_FIXTURES/agents.json" ;;
+  'stop '*) ! grep -qx "$2" "$STUB_FIXTURES/stop-refused" 2>/dev/null || { echo "cannot stop $2" >&2; exit 1; } ;;
+  *) echo "claude stub: unplanned call: $*" >&2; exit 64 ;;
+esac
+SH
+}
+
+@test "a level change's acknowledgement ends with the tasks that must stow, or that nothing needs to" {
+  reading 1 8 2
+  work_task T7 builder:a1b2c3d4
+  work_task T9 planner:b9b9b9b9
+  live_sessions_are a1b2c3d4 T7-builder busy b9b9b9b9 T9-planner idle
+  run_bin -0 team-level minor
+  assert_equal "$output" "Resources: manual, minor (30%): 9.6 GiB and 3.6 cores for the team; 0.5 GiB reserved; nothing needs to stow."
+  # At none every task with a live worker stows, said in task number order.
+  run_bin -0 team-level none
+  assert_equal "$output" "Resources: manual, none (0%): 0.0 GiB and 0.0 cores for the team; 0.5 GiB reserved; T7 and T9 stow."
+  run_bin -0 team-level none
+  assert_equal "${lines[1]}" "Resources: manual, none (0%): 0.0 GiB and 0.0 cores for the team; 0.5 GiB reserved; T7 and T9 stow."
+  # The automatic post names them too.
+  discord_answers
+  change 30 auto full auto
+  reading 0 25 2
+  run_bin -0 team-level tick
+  [[ ${lines[0]} =~ ^"Resources: auto lowered the team to none (0%) at "[0-9:]{5}": other programs use 25.0 GiB of 32.0 GiB and 2.0 of 12 cores; T7 and T9 stow"$ ]]
+  assert_equal "$(posts)" "$(jq -n --arg s "${lines[0]}" '$s')"
+  # A plan that fails leaves the record standing, said on stderr (the other programs now leave
+  # minor 3 GiB).
+  echo 'not json' >"$STUB_FIXTURES/agents.json"
+  run_bin -0 --separate-stderr team-level minor
+  assert_equal "$(levels | tail -n 1)" '["minor","Daniel"]'
+  assert_equal "$output" "Resources: manual, minor (30%): 3.0 GiB and 3.6 cores for the team; 0.5 GiB reserved; what must stow is unknown."
+  assert_equal "$stderr" "team-level: the stow plan failed: team-capacity: cannot read the live session list (claude agents --json)"
+}
+
+@test "tick stops exactly the plan's finished sessions and idle stacks once over budget is confirmed, logging each" {
+  # bin/ copied, its team-stack a stub that logs each call, so the stop is the call it gets.
+  local code=$BATS_TEST_TMPDIR/code
+  mkdir -p "$code"
+  copy_bin "$code/bin"
+  rm -f "$code/bin/team-stack"
+  printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "$*" >>"$BATS_TEST_TMPDIR/team-stack.calls"' \
+    '[[ ! -e $BATS_TEST_TMPDIR/team-stack.refuse ]] || { echo "team-stack: docker compose stop failed" >&2; exit 1; }' \
+    >"$code/bin/team-stack"
+  chmod +x "$code/bin/team-stack"
+  # T7's reviewer and T9's planner are done; T7's builder is busy beside T7's stack, T9's builder
+  # idle, so T9's stack has no busy session. Minor leaves 9.6 GiB; the work reserves 14.
+  work_task T7 builder:a1b2c3d4 reviewer:r7r7r7r7
+  work_event T7 "done" '{role: "reviewer", session: "r7r7r7r7"}'
+  work_task T9 planner:p9p9p9p9 builder:b9b9b9b9
+  work_event T9 "done" '{role: "planner", session: "p9p9p9p9"}'
+  live_sessions_are a1b2c3d4 T7-builder busy r7r7r7r7 T7-reviewer idle p9p9p9p9 T9-planner idle b9b9b9b9 T9-builder idle
+  local stacks tasks
+  stacks=$(jq -cn --arg home "$HOME" '["T7", "T9"] | map({name: "conventioner-\(.[1:])", class: "team", task: ., project: "conventioner",
+    worktree: "\($home)/wt/\(.)", kind: "dev", memory: (2 * 1073741824), cpu: 0, limits: (3 * 1073741824)})')
+  tasks=$(jq -cn 'def s($id; $role; $g): {id: $id, role: $role, memory: ($g * 1073741824), peak: ($g * 1073741824), cpu_seconds: 1};
+    [{task: "T7", memory: 0, cpu: null, cpu_nsec: null, sessions: [s("a1b2c3d4"; "builder"; 4), s("r7r7r7r7"; "reviewer"; 1)], stacks: []},
+     {task: "T9", memory: 0, cpu: null, cpu_nsec: null, sessions: [s("p9p9p9p9"; "planner"; 1), s("b9b9b9b9"; "builder"; 2)], stacks: []}]')
+  change 60 manual minor
+  # One reading over budget after one within it: nothing stops yet.
+  reading 10 8 2
+  STACKS=$stacks TASKS=$tasks reading 5 8 2
+  run "$code/bin/team-level" tick
+  assert_equal "$status" 0
+  assert_equal "$output" ""
+  assert_equal "$(stub_calls claude | jq -c 'select(.[0] == "stop")')" ""
+  [[ ! -e $BATS_TEST_TMPDIR/team-stack.calls ]]
+
+  # A second reading over it: the two finished sessions and T9's stack stop, nothing else.
+  STACKS=$stacks TASKS=$tasks reading 0 8 2
+  run "$code/bin/team-level" tick
+  assert_equal "$status" 0
+  assert_equal "$output" "stopped T7-reviewer r7r7r7r7, its work handed on, to bring the team under its budget at minor (30%): frees 1.0 GiB
+stopped T9-planner p9p9p9p9, its work handed on, to bring the team under its budget at minor (30%): frees 1.0 GiB
+stopped conventioner-9 of T9, no busy session in its worktree, to bring the team under its budget at minor (30%): frees 3.0 GiB"
+  assert_equal "$(stub_calls claude | jq -r 'select(.[0] == "stop") | .[1]')" "r7r7r7r7
+p9p9p9p9"
+  assert_equal "$(cat "$BATS_TEST_TMPDIR/team-stack.calls")" "stop --worktree $HOME/wt/T9"
+
+  # A stop that fails is said on stderr and fails the step; the others still stop.
+  : >"$STUB_CALLS/claude.log"
+  echo r7r7r7r7 >"$STUB_FIXTURES/stop-refused"
+  touch "$BATS_TEST_TMPDIR/team-stack.refuse"
+  run --separate-stderr "$code/bin/team-level" tick
+  assert_equal "$status" 1
+  assert_equal "$output" "stopped T9-planner p9p9p9p9, its work handed on, to bring the team under its budget at minor (30%): frees 1.0 GiB"
+  assert_equal "$stderr" "team-level: could not stop T7-reviewer r7r7r7r7 (cannot stop r7r7r7r7)
+team-level: could not stop conventioner-9 of T9 (team-stack: docker compose stop failed)"
 }

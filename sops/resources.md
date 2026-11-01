@@ -14,7 +14,7 @@ The current mode and level are the last line's; with no line the team is manual 
 It is a record, committed by `team-checkpoint` and by the handoff's records commit, so Daniel's level holds across restarts and handoffs; the ledger is not used, since every ledger line needs a task.
 
 `team-level full|minor|none [--message <id>]` records manual mode at that level, `team-level manual` manual mode at the current one, and `team-level auto [--message <id>]` automatic mode at the level it picks now; a change to the mode and level the team is already at records nothing and says so, and so does `auto` while the team is already automatic.
-Each applies the limits at once and prints the acknowledgement the coordinator posts: "Resources: manual, minor (30%): 9.2 GiB and 3.6 cores for the team; 6.1 GiB reserved."
+Each applies the limits at once and prints the acknowledgement the coordinator posts: "Resources: manual, minor (30%): 9.2 GiB and 3.6 cores for the team; 6.1 GiB reserved; T171 and T174 stow.", ending with the tasks the stow plan says must stow ("Shrinking and growing back" below), or "nothing needs to stow".
 `team-level` alone says the mode, the level, the budget and what bounds it, the team's use and the last change; `team-level apply` applies the recorded level's limits again, after a reboot or a reset slice.
 A change, `apply` and `tick` refuse on a machine that does not hold the lease; `status` only reads.
 
@@ -32,9 +32,9 @@ With the current level `L`:
   So one spike never raises it, nor one reading after the heartbeat was off.
 - With no reading of the last 15 minutes nothing changes, and the step says so in the heartbeat log.
 
-Each change is a `level.jsonl` line `{ts, mode: "auto", level, by: "auto", machine, reason, reading}`, the reading being the one it rests on (the newest for a drop, the newest of the lowest pick for a rise, kept as `{at, total, others_memory, cpus, others_cores, free, pick}`), and one line in `#coordinator`, such as "Resources: auto lowered the team to minor (30%) at 14:05: other programs use 18.2 GiB of 30.6 GiB and 7.9 of 12 cores".
+Each change is a `level.jsonl` line `{ts, mode: "auto", level, by: "auto", machine, reason, reading}`, the reading being the one it rests on (the newest for a drop, the newest of the lowest pick for a rise, kept as `{at, total, others_memory, cpus, others_cores, free, pick}`), and one line in `#coordinator`, such as "Resources: auto lowered the team to minor (30%) at 14:05: other programs use 18.2 GiB of 30.6 GiB and 7.9 of 12 cores; T171 and T174 stow".
 A post Discord refuses fails the step, logged in the heartbeat log, and is kept in `~/.local/state/agent-team/level/posted.json` until a later run posts it, once.
-In both modes the step then applies the level's limits again, so the `MemoryHigh` held at the slice's use comes down as the use falls, and a reboot or a reset slice is held again within five minutes.
+In both modes the step then applies the level's limits again, so the `MemoryHigh` held at the slice's use comes down as the use falls, and a reboot or a reset slice is held again within five minutes, and takes the stow plan's first two steps, which lose nothing ("Shrinking and growing back" below).
 
 An example day on home-pc (30.6 GiB, 12 cores, the default settings, a reading every five minutes):
 
@@ -220,6 +220,30 @@ A task is stowed for the level while its latest `stowed` has `cause: level` and 
 A worker blocked in a foreground test or gate then returns and reads the STOW already sent; a manual drop runs it right after the STOWs, and an automatic one does not, so a running test or gate finishes.
 
 `team-handoff` stows through the same steps, kept in `bin/lib/stow.sh`.
+
+## Shrinking and growing back
+
+When the budget shrinks below what the team's work reserves, the team first stops what nobody needs, then stows tasks, newest first, until the rest fits; when room comes back, the tasks stowed for the level come back, oldest first.
+`team-capacity plan [--json]` says both, from the stored readings only, the ledger and the session list (an unreadable one fails it).
+
+Over budget is what the newest reading reserves (as `team-capacity status --json` counts it) above the level's memory budget, or at none any open task with a live worker or a running stack.
+It counts only once it is confirmed: the reading before the newest was over too, or the last level change is newer than that reading.
+So one spike in Daniel's use never stows a task, and a change Daniel makes takes effect at once.
+
+While it is confirmed, the plan's steps, in order, each with what it frees (the reservations it ends, the spike allowance taken again over the sessions left):
+
+1. stop each finished session: idle, its work handed on, by the rule `team-worker` stops a task's own sessions by (`handed_on_launches` in `bin/lib/ledger.jq`), over every open task; with no new launch, a builder counts only once a later builder has launched in its worktree (its work handed on, as for `team-worker`, by a `ticket-done`, `pr` or `done` after its launch), since a builder whose PR is open still takes the review's findings;
+2. stop each running team stack of an open task (its worktree's own, kind `dev`) that no busy session, Daniel's own included, works in;
+3. stow the open tasks with a live worker or a reservation left, the most recently opened first (its work the least invested), until what is left fits; at none, every one.
+
+The heartbeat's `level` step (`team-level tick`) takes steps 1 and 2 itself, since they lose nothing: `claude stop`, bounded 30 seconds, for each session, and `team-stack stop --worktree <path>`, its data kept, for each stack, one heartbeat log line each, such as "stopped T7-reviewer r7r7r7r7, its work handed on, to bring the team under its budget at minor (30%): frees 1.0 GiB".
+Step 3 is the coordinator's: `team-sweep`'s `level-stow` finding names the tasks, newest first ("level: over budget at minor (30%): stow T174, then T171"), and the coordinator sends each live worker its STOW, then runs `team-stow` with `cause` `level`.
+`team-level`'s acknowledgement of a change and its automatic post name the same tasks, in task number order.
+
+A task is stowed for the level while its latest `stowed` has `cause: level` and no launch follows it.
+The plan's resume list is those tasks, oldest stow first, each with the estimate of its roles to relaunch (its `stowed`'s `roles`, each at its `session:<role>` estimate) and whether that fits beside what is reserved now; at none nothing fits.
+`team-sweep`'s `level-resume` finding names the first that fits ("level: T171 fits again: relaunch its builder"), one task at a time, and each launch is still admitted on its own, so one refused with 75 waits for the next `level-resume`.
+A `team-capacity plan` that fails is one `level` finding naming its reason, in their place.
 
 ## What the doctor says
 

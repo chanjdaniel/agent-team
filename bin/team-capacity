@@ -11,6 +11,7 @@
 #        team-capacity status [--json] [--stored]
 #        team-capacity costs [--json]
 #        team-capacity admit --kind <kind> [--task T<n>] [--seed-bytes <n>]
+#        team-capacity plan [--json] [--sessions <file>]
 #
 # install  Daniel's yes, as team-timers enable is. On Linux writes the team's slice,
 #          ~/.config/systemd/user/agent-team.slice (a description, no limits), and for each gate
@@ -83,7 +84,8 @@
 #                      runs, whose cost is heavy:<kind>'s.
 #            stacks    each running team or gate stack: {name, class, task, project (the
 #                      registered project of the held worktree it runs for, null for a gate's),
-#                      memory, cpu (cores), limits (team-stack ls --json's memory_limit_bytes)}
+#                      worktree and kind (its labels', dev, e2e or gate), memory, cpu (cores),
+#                      limits (team-stack ls --json's memory_limit_bytes)}
 #            heavy     the running heavy run, while a team-heavy holds the heavy-run lock: {pid (its
 #                      team-heavy's), memory (on Linux its scope's, agent-team-heavy-<pid>.scope's,
 #                      MemoryCurrent, else its tree's resident memory)}, else null
@@ -156,6 +158,33 @@
 #          GiB of 9.2 GiB reserved, a reviewer needs 0.5 GiB", and at level none "the team is at
 #          level none: nothing starts". CPU is never admitted: the slice's quota holds it. Above
 #          none, with no reading to size the budget by, exit 1 with the reason.
+# plan     What brings the team back under the level's memory budget, and what may come back,
+#          from the stored readings only (it takes none, so the sweep and the heartbeat read it
+#          fast), the ledger and the session list (claude agents --json, or with --sessions the
+#          list a caller already read, such as team-sweep's, kept in <file>; an unreadable one
+#          fails it, exit 1). Over
+#          budget is what the newest reading reserves (as status --json says it) above the
+#          budget, or at none any open task with a live worker or a running stack; it is
+#          confirmed when the reading before it was over too, or the last level change is newer
+#          than that reading, so one spike in other programs' use never stows a task. While
+#          confirmed, the steps in order, each with what it frees: stop each finished session
+#          (idle, its work handed on: handed_on_launches in bin/lib/ledger.jq, the rule
+#          team-worker stops a task's own by, over every open task), stop each running team dev
+#          stack of an open task that no busy session (interactive ones too) works in, then stow
+#          open tasks with a live worker or a reservation left, the most recently opened first,
+#          until the rest fits; at none every one. Then the tasks stowed for the level (their
+#          latest stowed has cause level and no launch follows it), oldest stow first, each with
+#          the estimate of its roles to relaunch and whether that fits now (never at none). Text:
+#          "Over budget at minor (30%): 14.5 GiB reserved of 9.6 GiB.", then "  stop T1-reviewer
+#          aaaa0012, its work handed on: frees 1.0 GiB", "  stop conventioner-3 of T3, no busy
+#          session in its worktree: frees 3.0 GiB", "  stow T3: frees 4.0 GiB", then "Stowed for
+#          the level, oldest stow first:" and "  T6 (planner): needs 0.5 GiB, fits". With --json
+#          {schema: "team-capacity-plan/1", mode, level, share, budget (bytes, null with no
+#          reading above none), reserved, over, confirmed, stop_sessions: [{task, role, session,
+#          frees}], stop_stacks: [{task, name, worktree, frees}], stow: [{task, opened, frees}],
+#          resume: [{task, stowed, roles, needs, fits}]}, bytes throughout; each step list is []
+#          unless confirmed. team-level tick takes the two stop steps; the stows are the
+#          coordinator's, on team-sweep's level-stow finding.
 #
 # The machine's settings, ~/.config/agent-team/capacity.json, beside stack.json: one JSON object
 # whose keys are all optional:
@@ -187,11 +216,11 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 # shellcheck source=bin/lib/reading.sh
 source "$TEAM_LIB/reading.sh"
 
-USAGE="usage: team-capacity install | place [--quiet] [<session id>...] | check [--json] [--holding] [--heartbeat enabled|disabled] | sample | status [--json] [--stored] | costs [--json] | admit --kind <kind> [--task T<n>] [--seed-bytes <n>]"
+USAGE="usage: team-capacity install | place [--quiet] [<session id>...] | check [--json] [--holding] [--heartbeat enabled|disabled] | sample | status [--json] [--stored] | costs [--json] | admit --kind <kind> [--task T<n>] [--seed-bytes <n>] | plan [--json] [--sessions <file>]"
 [[ $# -ge 1 ]] || usage_error "$USAGE"
 command=$1
 shift
-json=0 ids=() quiet=0 holding=0 heartbeat=enabled stored=0 kind='' task='' seed=null
+json=0 ids=() quiet=0 holding=0 heartbeat=enabled stored=0 kind='' task='' seed=null sessions_file=''
 case $command in
   install | sample) [[ $# -eq 0 ]] || usage_error "unexpected argument '$1'" ;;
   place)
@@ -202,7 +231,7 @@ case $command in
     for id; do [[ $id =~ ^[0-9a-f]{8}$ ]] || usage_error "a session id is 8 hex digits, got '$id'"; done
     ids=("$@")
     ;;
-  check | status | costs)
+  check | status | costs | plan)
     while [[ $# -gt 0 ]]; do
       case $command:$1 in
         *:--json) json=1 ;;
@@ -213,6 +242,11 @@ case $command in
           shift
           ;;
         status:--stored) stored=1 ;;
+        plan:--sessions)
+          [[ -n ${2:-} ]] || usage_error "--sessions takes the file of a session list"
+          sessions_file=$2
+          shift
+          ;;
         *) usage_error "unexpected argument '$1'" ;;
       esac
       shift
@@ -788,11 +822,41 @@ admit() {
   jq -r .says "$work/admit.json"
 }
 
+# The stow and resume plans, as the header's plan says.
+plan() {
+  local ledger=$TEAM_HOME/ledger.jsonl
+  [[ -e $ledger ]] || ledger=/dev/null
+  read_settings
+  read_level
+  costs_json
+  heavy_holder >"$work/heavy.json"
+  read_admitted
+  if [[ -n $sessions_file ]]; then
+    LIVE_SESSIONS=$(jq -ce 'select(type == "array")' "$sessions_file" 2>/dev/null) ||
+      die "$sessions_file holds no session list (a JSON array, as claude agents --json prints)"
+  fi
+  live_sessions
+  ledger_jq 'ledger_events | plan_tasks($sessions)' -nRc --argjson sessions "$LIVE_SESSIONS" "$ledger" >"$work/tasks.json" ||
+    die "could not read $ledger"
+  { cat "$READINGS" 2>/dev/null || true; } | jq -Rn -L "$TEAM_LIB" --argjson given "$GIVEN" --argjson sessions "$LIVE_SESSIONS" \
+    --slurpfile level "$work/level.json" --slurpfile costs "$work/costs.json" --slurpfile heavy "$work/heavy.json" \
+    --slurpfile admitted "$work/admitted.json" --slurpfile tasks "$work/tasks.json" '
+    include "capacity"; include "stack";
+    capacity_plan({settings: ($given | capacity_settings), current: $level[0], readings: ([inputs] | stored_readings | .readings),
+                   costs: $costs[0].costs, heavy: $heavy[0], admitted: $admitted[0], now: now, tasks: $tasks[0],
+                   sessions: $sessions})' >"$work/plan.json" || die "could not make the plan"
+  if ((json)); then
+    cat "$work/plan.json"
+  else
+    jq -r -L "$TEAM_LIB" 'include "capacity"; include "stack"; plan_text' "$work/plan.json"
+  fi
+}
+
 case $command in
   install) install ;;
   place) place ;;
   sample) sample ;;
-  status | costs | admit | check)
+  status | costs | admit | check | plan)
     work=$(mktemp -d)
     trap 'rm -rf "$work"' EXIT
     "$command"

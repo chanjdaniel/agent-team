@@ -362,6 +362,51 @@ def live_session($session; $sessions):
     $sessions | map(select(.id == $session or ((.sessionId // "") | startswith($session)))) | first
   else null end;
 
+# The task's launches whose sessions a new launch of <role> may stop, over its events as an array,
+# each {session, role, worktree (local_path's), stowed, handed_on}; <role> "" stands for no new
+# launch (the heartbeat's stow plan, over every open task). They are every planner and reviewer,
+# and every builder when the new worker is a builder (team-worker keeps those of its own worktree,
+# one builder holding a worktree's work at a time), or with no new launch every builder that a
+# later logged builder launch of its worktree follows. Handed on is a launch the ledger follows
+# with a done of its session, or for a builder a pr or ticket-done, or with a paused whose reason
+# is stowed and then a logged launch of its role and worktree (a stow carries no session, so it
+# hands on only to the fresh worker that resumes the work, and a resumed does not undo it);
+# stowed is whether such a paused follows it, so team-worker can count itself as that fresh
+# worker. Any other paused is a wait the worker comes back from, and a review carries no session,
+# so a reviewer is handed on by the done logged beside its review.
+def handed_on_launches($role; $home):
+  . as $events
+  | [to_entries[] | .key as $i | .value
+     | select(.event == "launch" and (.session | type) == "string" and .session != "")
+     | . as $l | ($l.worktree | local_path($home)) as $wt
+     | select(.role == "planner" or .role == "reviewer"
+         or (.role == "builder"
+             and if $role == "" then any($events[$i + 1:][]; .event == "launch" and .role == "builder"
+                   and (.worktree | local_path($home)) == $wt)
+                 else $role == "builder" end))
+     | [range($i + 1; $events | length) | select($events[.] | .event == "paused" and .reason == "stowed")] as $stows
+     | {session, role, worktree: $wt, stowed: ($stows != []),
+        handed_on: (any($events[$i + 1:][]; (.event == "done" and .session == $l.session)
+            or ((.event == "pr" or .event == "ticket-done") and $l.role == "builder"))
+          or any($stows[] as $k | $events[$k + 1:][]; .event == "launch" and .role == $l.role
+            and (.worktree | local_path($home)) == $wt))}];
+
+# The live sessions of handed_on_launches' launches, given the session list <sessions>, each
+# {session, role, worktree, state}: state "busy", "waiting for input", "no status", "status <its
+# status>" for one that is not idle, "handed-on" for an idle one whose work is handed on (the one
+# to stop), "stowed" for an idle one a stow followed, else "idle with no event of its own since
+# its launch".
+def launch_states($sessions):
+  [.[] | live_session(.session; $sessions) as $live | select($live != null)
+   | {session, role, worktree,
+      state: (if $live.status == "busy" then "busy"
+              elif $live.state == "blocked" then "waiting for input"
+              elif $live.status == null then "no status"
+              elif $live.status != "idle" then "status \($live.status)"
+              elif .handed_on then "handed-on"
+              elif .stowed then "stowed"
+              else "idle with no event of its own since its launch" end)}];
+
 # Every launch of the task, live when the session list has its session, with that session's context
 # when task_state_json added it.
 def workers($sessions):
@@ -687,6 +732,25 @@ def slots_finding:
        text: "slots: \($summary); \(join("; ")): new tasks wait; tell Daniel which wait"}
   end;
 
+# team-sweep's level findings, from team-capacity plan --json's object (or {error} when it failed),
+# each with task and session null: level-stow while its stow list is not empty, naming the tasks
+# newest first ("level: over budget at minor (30%): stow T174, then T171"); level-resume for the
+# first task stowed for the level whose roles fit again ("level: T171 fits again: relaunch its
+# builder"); one level finding naming the error when team-capacity failed.
+def level_findings:
+  def roles: if length < 2 then join("") else "\(.[:-1] | join(", ")) and \(.[-1])" end;
+  if .error then
+    {task: null, kind: "level", session: null, name: null, next: "fix what team-capacity names",
+     text: "level: \(.error): fix what team-capacity names"}
+  else
+    (select(.stow != []) | "stow \([.stow[].task] | join(", then "))" as $next
+     | {task: null, kind: "level-stow", session: null, name: null, next: $next,
+        text: "level: over budget at \(.level) (\(.share * 100 | round)%): \($next)"}),
+    (first(.resume[] | select(.fits)) | "relaunch its \(.roles | roles)" as $next
+     | {task: null, kind: "level-resume", session: null, name: null, next: $next,
+        text: "level: \(.task) fits again: \($next)"})
+  end;
+
 # team-sweep's activity finding, from session-activity's object as task_findings takes it: one
 # naming the error when it failed, since then no busy worker can be found stalled, else none.
 def activity_finding:
@@ -695,12 +759,13 @@ def activity_finding:
      text: "activity: \(.error), so no busy worker is found stalled: fix what session-activity names"};
 
 # team-sweep's findings, over every ledger event as one array, the session list, the machine's
-# task slots ($slots, as slots_finding takes them) and session-activity's object ($activity, as
-# task_findings takes it): each open task's merge-due, else its findings unless it is parked,
-# then the stray sessions (named like a team worker whose task is closed or not in the ledger,
-# never the load check's T0, whose session the coordinator waits on for up to 30 minutes), in task
-# number order; then the activity, slots and retro-due findings.
-def sweep($sessions; $slots; $activity):
+# task slots ($slots, as slots_finding takes them), the stow plan ($plan, as level_findings takes
+# it) and session-activity's object ($activity, as task_findings takes it): each open task's
+# merge-due, else its findings unless it is parked, then the stray sessions (named like a team
+# worker whose task is closed or not in the ledger, never the load check's T0, whose session the
+# coordinator waits on for up to 30 minutes), in task number order; then the activity, slots,
+# level and retro-due findings.
+def sweep($sessions; $slots; $plan; $activity):
   . as $events
   | by_task as $tasks
   | ([($tasks[] | select(is_open) | [merge_due_finding] as $due
@@ -713,7 +778,23 @@ def sweep($sessions; $slots; $activity):
      | by_task_number)
     + [$activity | activity_finding]
     + [$slots | slots_finding]
+    + [$plan | level_findings]
     + [$events | retro_status | retro_due_finding];
+
+# What team-capacity plan reads of the ledger, over every ledger event as one array, with the
+# session list <sessions>: one {task, opened (its opened's time, else its first event's),
+# finished ([{session, role}]: the idle live sessions whose work is handed on, handed_on_launches
+# with no new launch), stowed (while it is stowed_for_level, {at, roles} of its latest stowed,
+# else null)} per open task, in task number order.
+def plan_tasks($sessions):
+  [by_task | to_entries[] | select(.value | is_open) | .key as $task | .value as $events
+   | {task: $task,
+      opened: (first($events[] | select(.event == "opened") | .ts) // $events[0].ts),
+      finished: [$events | handed_on_launches(""; $home) | launch_states($sessions)[]
+        | select(.state == "handed-on") | {session, role}],
+      stowed: (if $events | stowed_for_level then $events[$events | latest_stowed] | {at: .ts, roles: (.roles // [])}
+               else null end)}]
+  | by_task_number;
 
 # The ids of the open tasks among every task's events by id, in task number order.
 def open_tasks: [to_entries[] | select(.value | is_open) | .key] | sort_by(.[1:] | tonumber);

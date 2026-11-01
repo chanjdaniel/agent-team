@@ -1257,3 +1257,112 @@ slots: $error: fix what team-slots names"
   assert_equal "${#lines[@]}" 40
   (((end - start) < 2000000000))
 }
+
+# level_task <task> <opened at HH:MM> [<role>:<session>]: <task> opened at that time on
+# 2026-10-22 in /w/<n>, with its worker launched a minute later.
+level_task() {
+  ledger_line --arg t "$1" --arg ts "2026-10-22T$2:00Z" '{ts: $ts, task: $t, event: "opened", project: "proj",
+    path: "feature", type: "feat", title: "Work", branch: "feat/\($t)-work", base: "main", base_sha: "0123456",
+    worktree: "/w/\($t[1:])"}'
+  [[ -z ${3:-} ]] || ledger_line --arg t "$1" --arg ts "2026-10-22T${2%:*}:59:00Z" --arg r "${3%%:*}" --arg s "${3#*:}" \
+    '{ts: $ts, task: $t, event: "launch", role: $r, session: $s, worktree: "/w/\($t[1:])", toolkits: []}'
+}
+
+# capacity_reading <minutes ago> <others GiB> [<task>:<role>:<id>:<GiB>...]: a stored reading of
+# the team's capacity, taken that long ago on a 32 GiB machine whose other programs use <others
+# GiB>, with each session live.
+capacity_reading() {
+  local file=$HOME/.local/state/agent-team/capacity/readings.jsonl
+  mkdir -p "${file%/*}"
+  printf '%s\n' "${@:3}" | jq -Rnc --arg at "$(date -u -d "@$(($(date +%s) - $1 * 60))" +%FT%TZ)" --argjson others "$2" '
+    1073741824 as $gib
+    | [inputs | select(. != "") | split(":") | {task: .[0], role: .[1], id: .[2], memory: (.[3] | tonumber * $gib | round)}] as $s
+    | {at: $at, os: "linux", docker: true, cpu: null, systemd: true, sessions: true,
+       memory: {total: (32 * $gib), available: ((32 - $others) * $gib | round), team: ([$s[].memory] | add // 0),
+                others: ($others * $gib | round)},
+       tasks: [$s | group_by(.task)[] | {task: .[0].task, memory: ([.[].memory] | add), cpu: null, cpu_nsec: null,
+                sessions: map({id, role, memory, peak: .memory, cpu_seconds: 1}), stacks: []}],
+       stacks: [], heavy: null, gate: {running: false, memory: 0, cpu_seconds: 0}}' >>"$file"
+}
+
+# level_record <level>: the team set to manual <level> an hour ago.
+level_record() {
+  jq -cn --arg ts "$(date -u -d '1 hour ago' +%FT%TZ)" --arg level "$1" \
+    '{ts: $ts, mode: "manual", level: $level, by: "Daniel", machine: "home-pc"}' >"$TEAM_HOME/level.jsonl"
+}
+
+@test "level-stow: over budget in two readings names the tasks to stow, newest first, after the slots finding" {
+  # T1 (opened 03:00) and T2 (04:00) each have a busy builder using 5 GiB; minor leaves 9.6 GiB.
+  level_task T1 03:00 builder:1a1a1a1a
+  level_task T2 04:00 builder:2b2b2b2b
+  sessions "$(session 1a1a1a1a T1-builder busy working)" "$(session 2b2b2b2b T2-builder busy working)"
+  level_record minor
+  capacity_reading 10 8 T1:builder:1a1a1a1a:1 T2:builder:2b2b2b2b:1
+  capacity_reading 5 8 T1:builder:1a1a1a1a:5 T2:builder:2b2b2b2b:5
+  # One reading over budget after one within it is not enough.
+  run_bin -0 --separate-stderr team-sweep
+  assert_equal "$output$stderr" ""
+  capacity_reading 0 8 T1:builder:1a1a1a1a:5 T2:builder:2b2b2b2b:5
+  local before
+  before=$(cat "$HOME/.local/state/agent-team/capacity/readings.jsonl")
+  run_bin -1 --separate-stderr team-sweep
+  assert_equal "$stderr" ""
+  assert_equal "$output" "level: over budget at minor (30%): stow T2"
+  run_bin -1 team-sweep --json
+  assert_equal "$(jq -c '.[0]' <<<"$output")" '{"task":null,"kind":"level-stow","session":null,"name":null,"next":"stow T2","text":"level: over budget at minor (30%): stow T2"}'
+  # At none every task with a live worker stows, newest first.
+  level_record none
+  run_bin -1 team-sweep
+  assert_equal "$output" "level: over budget at none (0%): stow T2, then T1"
+  # The sweep never takes a reading.
+  assert_equal "$(cat "$HOME/.local/state/agent-team/capacity/readings.jsonl")" "$before"
+}
+
+@test "level-resume: the first task stowed for the level that fits again, with task null, before retro-due" {
+  # T4 was stowed for the level with a builder and a reviewer, T3 later with a planner; each
+  # paused stowed, so neither is missing a worker.
+  local t
+  for t in T3 T4; do level_task "$t" 03:00; done
+  ledger_line '{ts: "2026-10-22T05:00:00Z", task: "T3", event: "stowed", machine: "home-pc", worktrees: [],
+    roles: ["planner"], cause: "level"}'
+  ledger_line '{ts: "2026-10-22T04:00:00Z", task: "T4", event: "stowed", machine: "home-pc", worktrees: [],
+    roles: ["builder", "reviewer"], cause: "level"}'
+  for t in T3 T4; do event "$t" paused '{reason: "stowed"}'; done
+  level_record minor
+  # Minor leaves 9.6 GiB and a closed task's session uses 9.3: neither T3's planner (0.5 GiB) nor
+  # T4's two (1 GiB) fit.
+  capacity_reading 0 8 T9:builder:9c9c9c9c:9.3
+  run_bin -0 --separate-stderr team-sweep
+  assert_equal "$output$stderr" ""
+  # At 8.9 GiB T3's planner fits, T4's two still do not: the finding names the first that fits.
+  capacity_reading 0 8 T9:builder:9c9c9c9c:8.9
+  run_bin -1 team-sweep
+  assert_equal "$output" "level: T3 fits again: relaunch its planner"
+  # With room for both, the oldest stow comes first, after the task findings and before retro-due.
+  capacity_reading 0 8
+  schedule "$(ago 50)" 48
+  opened T5
+  run_bin -1 team-sweep --json
+  assert_equal "$(jq -c 'map(.kind)' <<<"$output")" '["no-worker","level-resume","retro-due"]'
+  assert_equal "$(jq -c '.[1]' <<<"$output")" '{"task":null,"kind":"level-resume","session":null,"name":null,"next":"relaunch its builder and reviewer","text":"level: T4 fits again: relaunch its builder and reviewer"}'
+  # At none nothing fits.
+  level_record none
+  run_bin -1 team-sweep --json
+  assert_equal "$(jq -c 'map(.kind)' <<<"$output")" '["no-worker","retro-due"]'
+}
+
+@test "level: a team-capacity plan that fails is one finding naming its reason, and the task findings still come" {
+  opened T3
+  mkdir -p "$HOME/.config/agent-team"
+  echo '{"minor_share": 2}' >"$HOME/.config/agent-team/capacity.json"
+  run_bin -1 --separate-stderr team-sweep
+  assert_equal "$stderr" ""
+  assert_equal "${lines[0]}" "T3 no-worker: opened with no worker launched; next: launch one with team-worker, or log what is known with team-log"
+  assert_equal "${lines[1]%%:*}" "level"
+  assert_contains "${lines[1]}" "level: team-capacity: ~/.config/agent-team/capacity.json"
+  assert_contains "${lines[1]}" "minor_share"
+  [[ ${lines[1]} == *": fix what team-capacity names" ]]
+  run_bin -1 team-sweep --json
+  assert_equal "$(jq -c '.[1] | del(.text)' <<<"$output")" \
+    '{"task":null,"kind":"level","session":null,"name":null,"next":"fix what team-capacity names"}'
+}

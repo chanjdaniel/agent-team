@@ -436,8 +436,8 @@ team_reading() {
   # T9's slice holds only the heavy run; its reviewer's tree is outside it.
   assert_equal "$(jq -c --argjson mib "$MIB" '.tasks[1] | [.memory / $mib, (.sessions | map(.memory /= $mib | .peak /= $mib)), .stacks]' <<<"$reading")" \
     '[390,[{"id":"b1b2c3d4","role":"reviewer","memory":320,"peak":320,"cpu_seconds":42}],[]]'
-  assert_equal "$(jq -c '.stacks' <<<"$reading")" \
-    '[{"name":"conventioner-2","class":"team","task":"T7","project":"conventioner","memory":628935884,"cpu":0,"limits":1879048192},{"name":"nmtest-1895520","class":"gate","task":null,"project":null,"memory":315621376,"cpu":0,"limits":536870912}]'
+  assert_equal "$(jq -c --arg home "$HOME" '.stacks | map(.worktree |= sub("^" + $home; "~"))' <<<"$reading")" \
+    '[{"name":"conventioner-2","class":"team","task":"T7","project":"conventioner","worktree":"~/.treehouse/Conventioner-d4c77a/1/Conventioner","kind":"dev","memory":628935884,"cpu":0,"limits":1879048192},{"name":"nmtest-1895520","class":"gate","task":null,"project":null,"worktree":"~/.no-mistakes/worktrees/01KQ3V2M8Z/Conventioner","kind":"gate","memory":315621376,"cpu":0,"limits":536870912}]'
   # The machine's part is team-slots's reading: the team's processes by directory and descent.
   assert_equal "$(jq -c --argjson mib "$MIB" '[.memory.total, .memory.team - 628935884 - 315621376, .cpu]' <<<"$reading" |
     jq -c --argjson mib "$MIB" '.[1] /= $mib')" '[34359738368,1638,null]'
@@ -893,4 +893,247 @@ team-capacity: no reading of the machine's load, so no budget to admit session:p
   assert_equal "$(printf '%s\n' "${statuses[@]}" | sort -n | paste -sd ' ')" "0 75 75"
   assert_equal "$(jq length "$STATE_DIR/admitted.json")" 1
   assert_contains "$(cat "$dir"/*.err)" "no room for session:builder at full (90%): 0.6 GiB of 1.0 GiB reserved, a builder needs 0.6 GiB"
+}
+
+# plan_event <task> <time> <kind> [<jq object of more fields>]: a ledger line of <task> at <time>
+# (HH:MM on 2026-11-01), standing in for its writer.
+plan_event() {
+  jq -cn --arg t "$1" --arg ts "2026-11-01T$2:00Z" --arg e "$3" "{ts: \$ts, task: \$t, event: \$e} + (${4:-{\}})" \
+    >>"$TEAM_HOME/ledger.jsonl"
+}
+
+# plan_task <task> <opened at HH:MM> [<role>:<session>...]: <task> opened in Conventioner at that
+# time in the worktree ~/wt/<task>, and each worker launched in it a minute later.
+plan_task() {
+  local task=$1 at=$2 spec
+  plan_event "$task" "$at" opened "{project: \"conventioner\", path: \"feature\", type: \"feat\", title: \"Work\",
+    branch: \"feat/$task-work\", base: \"dev\", base_sha: \"abc1234\", worktree: \"$HOME/wt/$task\"}"
+  for spec in "${@:3}"; do
+    plan_event "$task" "${at%:*}:$(printf '%02d' $((10#${at#*:} + 1)))" launch "{role: \"${spec%%:*}\", session: \"${spec#*:}\",
+      worktree: \"$HOME/wt/$task\", toolkits: [], project: \"conventioner\", branch: \"feat/$task-work\"}"
+  done
+}
+
+# live <id> <name> <status> [<directory>]: one more session claude agents --json lists, working in
+# <directory> (default ~/wt/<its task>).
+live() {
+  local list=$STUB_FIXTURES/agents.json
+  [[ -e $list ]] || echo '[]' >"$list"
+  jq -c --arg id "$1" --arg name "$2" --arg status "$3" --arg cwd "${4:-$HOME/wt/${2%%-*}}" \
+    '. + [{pid: 4242, id: $id, name: $name, status: $status, cwd: $cwd, kind: "background",
+           sessionId: "\($id)-1111-4222-8333-444455556666"}]' "$list" >"$list.new"
+  mv "$list.new" "$list"
+}
+
+# with_stacks <task>:<name>:<GiB>...: the newest stored reading also holds each running team dev
+# stack of Conventioner, <name> for <task>'s worktree, using <GiB> of its 3 GiB of mem_limits.
+with_stacks() {
+  local file=$STATE_DIR/readings.jsonl
+  printf '%s\n' "$@" | jq -Rn --argjson gib "$GIB" --arg home "$HOME" --slurpfile last <(tail -n 1 "$file") '
+    [inputs | split(":") | {name: .[1], class: "team", task: .[0], project: "conventioner", worktree: "\($home)/wt/\(.[0])",
+      kind: "dev", memory: (.[2] | tonumber * $gib | round), cpu: 0, limits: (3 * $gib)}] as $stacks
+    | $last[0] | .stacks = $stacks' -c >"$file.last"
+  sed -i '$d' "$file"
+  cat "$file.last" >>"$file"
+  rm -f "$file.last"
+}
+
+# The plan's steps, each [what, GiB freed or needed], one compact line per step.
+plan_steps() {
+  guard_sandbox
+  "$REPO_ROOT/bin/team-capacity" plan --json | jq -c --argjson gib "$GIB" 'def g: . / $gib | . * 100 | round / 100;
+    (.stop_sessions[] | ["stop", .task, .role, .session, (.frees | g)]),
+    (.stop_stacks[] | ["stop", .task, .name, .worktree, (.frees | g)]),
+    (.stow[] | ["stow", .task, (.frees | g)]),
+    (.resume[] | ["resume", .task, .roles, (.needs | g), .fits])'
+}
+
+# The plan's verdict: [over, confirmed, budget GiB, reserved GiB].
+plan_verdict() {
+  guard_sandbox
+  "$REPO_ROOT/bin/team-capacity" plan --json |
+    jq -c --argjson gib "$GIB" 'def g: if . == null then null else . / $gib | . * 100 | round / 100 end;
+      [.over, .confirmed, (.budget | g), (.reserved | g)]'
+}
+
+# Four open tasks of Conventioner with live workers: T1 (opened 10:00) a builder and a reviewer
+# whose review is done; T2 (11:00) a builder busy in its worktree beside its stack; T3 (12:00) a
+# builder and a planner, both idle, and its idle stack; T4 (09:00) only a planner whose plan is
+# done. Two readings five minutes apart of a 32 GiB machine whose other programs use 8 GiB see
+# them reserve 14.5 GiB: 8.5 of sessions' use and two stacks at their 3 GiB of mem_limits.
+plan_machine() {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  plan_task T1 10:00 builder:aaaa0011 reviewer:aaaa0012
+  plan_event T1 10:30 "done" '{role: "reviewer", session: "aaaa0012"}'
+  plan_task T2 11:00 builder:aaaa0021
+  plan_task T3 12:00 builder:aaaa0031 planner:aaaa0032
+  plan_task T4 09:00 planner:aaaa0041
+  plan_event T4 09:30 "done" '{role: "planner", session: "aaaa0041"}'
+  live aaaa0011 T1-builder idle
+  live aaaa0012 T1-reviewer idle
+  live aaaa0021 T2-builder busy
+  live aaaa0031 T3-builder idle
+  live aaaa0032 T3-planner idle
+  live aaaa0041 T4-planner idle
+  over_reading
+  age_by 300
+  over_reading
+}
+
+# over_reading: a stored reading, taken now, of plan_machine's work, reserving 14.5 GiB.
+over_reading() {
+  team_reading 8 "T1 builder aaaa0011 1" "T1 reviewer aaaa0012 1" "T2 builder aaaa0021 2" "T3 builder aaaa0031 3" \
+    "T3 planner aaaa0032 1" "T4 planner aaaa0041 0.5"
+  with_stacks T2:conventioner-2:2 T3:conventioner-3:2
+}
+
+# A level record made <minutes> ago: plan_level <minutes> <level>
+plan_level() {
+  jq -cn --arg ts "$(date -u -d "@$(($(date +%s) - $1 * 60))" +%FT%TZ)" --arg level "$2" \
+    '{ts: $ts, mode: "manual", level: $level, by: "Daniel", machine: "home-pc"}' >>"$TEAM_HOME/level.jsonl"
+}
+
+@test "plan: nothing under budget; over it, the finished sessions and idle stacks first, then tasks newest-opened first until the rest fits" {
+  plan_machine
+  # Full leaves the team 20 GiB, above the 14.5 GiB reserved: nothing to stop or stow.
+  assert_equal "$(plan_verdict)" '[false,false,20,14.5]'
+  assert_equal "$(plan_steps)" ''
+  run_bin -0 team-capacity plan
+  assert_equal "$output" "Within budget at full (90%): 14.5 GiB reserved of 20.0 GiB: nothing to stop or stow."
+
+  # Minor's 9.6 GiB: T1's reviewer and T4's planner are handed on, T3's stack has no busy session
+  # (T2's builder is busy beside its own), and stowing T3, the newest, brings the rest to 6 GiB.
+  plan_level 60 minor
+  assert_equal "$(plan_verdict)" '[true,true,9.6,14.5]'
+  assert_equal "$(plan_steps)" "[\"stop\",\"T1\",\"reviewer\",\"aaaa0012\",1]
+[\"stop\",\"T4\",\"planner\",\"aaaa0041\",0.5]
+[\"stop\",\"T3\",\"conventioner-3\",\"$HOME/wt/T3\",3]
+[\"stow\",\"T3\",4]"
+  run_bin -0 team-capacity plan
+  assert_equal "$output" "Over budget at minor (30%): 14.5 GiB reserved of 9.6 GiB.
+  stop T1-reviewer aaaa0012, its work handed on: frees 1.0 GiB
+  stop T4-planner aaaa0041, its work handed on: frees 0.5 GiB
+  stop conventioner-3 of T3, no busy session in its worktree: frees 3.0 GiB
+  stow T3: frees 4.0 GiB"
+
+  # None: every task with a live worker or a running stack stows, newest first, but T4, whose one
+  # session is finished.
+  plan_level 30 none
+  assert_equal "$(plan_verdict)" '[true,true,0,14.5]'
+  assert_equal "$(plan_steps)" "[\"stop\",\"T1\",\"reviewer\",\"aaaa0012\",1]
+[\"stop\",\"T4\",\"planner\",\"aaaa0041\",0.5]
+[\"stop\",\"T3\",\"conventioner-3\",\"$HOME/wt/T3\",3]
+[\"stow\",\"T3\",4]
+[\"stow\",\"T2\",5]
+[\"stow\",\"T1\",1]"
+}
+
+@test "plan: one over-budget reading is not confirmed, two in a row are, and a level change confirms at once" {
+  plan_machine
+  plan_level 60 minor
+  # The older reading is within minor's budget (T1's builder and the stacks, 7 GiB): the newer one
+  # alone does not count.
+  rm "$STATE_DIR/readings.jsonl"
+  team_reading 8 "T1 builder aaaa0011 1"
+  with_stacks T2:conventioner-2:2 T3:conventioner-3:2
+  age_by 300
+  over_reading
+  assert_equal "$(plan_verdict)" '[true,false,9.6,14.5]'
+  assert_equal "$(plan_steps)" ''
+  run_bin -0 team-capacity plan
+  assert_equal "$output" "Over budget at minor (30%) in the newest reading only: 14.5 GiB reserved of 9.6 GiB; nothing stops or stows unless the next reading shows it too."
+
+  # A level change after the older reading confirms it at once.
+  plan_level 1 minor
+  assert_equal "$(plan_verdict)" '[true,true,9.6,14.5]'
+  sed -i '$d' "$TEAM_HOME/level.jsonl"
+  assert_equal "$(plan_verdict)" '[true,false,9.6,14.5]'
+
+  # A second over-budget reading in a row confirms it.
+  age_by 300
+  over_reading
+  assert_equal "$(plan_verdict)" '[true,true,9.6,14.5]'
+  assert_equal "$(plan_steps | head -n 1)" '["stop","T1","reviewer","aaaa0012",1]'
+}
+
+@test "plan: the resume list is the tasks stowed for the level, oldest stow first, each fitting only when its roles' estimates fit" {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  local stowed='{machine: "home-pc", worktrees: [], cause: "level"}'
+  plan_task T5 08:00 builder:aaaa0051 reviewer:aaaa0052
+  plan_event T5 13:00 stowed "$stowed + {roles: [\"builder\", \"reviewer\"]}"
+  plan_task T6 08:00 planner:aaaa0061
+  plan_event T6 12:00 stowed "$stowed + {roles: [\"planner\"]}"
+  # A handoff's stow, one relaunched since, and a closed task wait for nothing.
+  plan_task T7 08:00 builder:aaaa0071
+  plan_event T7 11:00 stowed '{machine: "home-pc", worktrees: [], roles: ["builder"], cause: "handoff"}'
+  plan_task T8 08:00 builder:aaaa0081
+  plan_event T8 11:00 stowed "$stowed + {roles: [\"builder\"]}"
+  plan_event T8 11:30 launch "{role: \"builder\", session: \"aaaa0082\", worktree: \"$HOME/wt/T8\", toolkits: []}"
+  plan_task T9 08:00 builder:aaaa0091
+  plan_event T9 11:00 stowed "$stowed + {roles: [\"builder\"]}"
+  plan_event T9 11:30 closed '{archive: [], returned: [], kept: []}'
+  live aaaa0082 T8-builder busy
+
+  # Full leaves 20 GiB and T8's builder uses 19.3: T6's planner (0.5 GiB) fits, T5's builder and
+  # reviewer (1 GiB) do not.
+  team_reading 8 "T8 builder aaaa0082 19.3"
+  assert_equal "$(plan_verdict)" '[false,false,20,19.3]'
+  assert_equal "$(plan_steps)" '["resume","T6",["planner"],0.5,true]
+["resume","T5",["builder","reviewer"],1,false]'
+  run_bin -0 team-capacity plan
+  assert_equal "$output" "Within budget at full (90%): 19.3 GiB reserved of 20.0 GiB: nothing to stop or stow.
+Stowed for the level, oldest stow first:
+  T6 (planner): needs 0.5 GiB, fits
+  T5 (builder, reviewer): needs 1.0 GiB, does not fit yet"
+  run_bin -0 team-capacity plan --json
+  assert_equal "$(jq -c '.resume | map([.task, .stowed])' <<<"$output")" '[["T6","2026-11-01T12:00:00Z"],["T5","2026-11-01T13:00:00Z"]]'
+
+  # With room for both, both fit; at none, none does.
+  team_reading 8 "T8 builder aaaa0082 2"
+  assert_equal "$(plan_steps)" '["resume","T6",["planner"],0.5,true]
+["resume","T5",["builder","reviewer"],1,true]'
+  plan_level 1 none
+  assert_equal "$(plan_steps | jq -c '.[0:2] + [.[4]]' | grep resume)" '["resume","T6",false]
+["resume","T5",false]'
+}
+
+@test "plan: a builder is finished only once a later builder launched in its worktree and a ticket-done, pr or done followed it" {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  # T1's first builder delivered its ticket and the next ticket's builder launched in its worktree;
+  # T2's builder opened its PR and waits for review findings, with no builder after it.
+  plan_task T1 10:00 builder:aaaa0010
+  plan_event T1 10:30 ticket-done '{ticket: "01", commits: ["abc1234"]}'
+  plan_event T1 10:31 launch "{role: \"builder\", session: \"aaaa0011\", worktree: \"$HOME/wt/T1\", toolkits: []}"
+  plan_task T2 11:00 builder:aaaa0021
+  plan_event T2 11:30 pr '{url: "https://github.com/o/p/pull/1", head: "abc1234"}'
+  live aaaa0010 T1-builder idle
+  live aaaa0011 T1-builder busy
+  live aaaa0021 T2-builder idle
+  team_reading 8 "T1 builder aaaa0010 1" "T1 builder aaaa0011 1" "T2 builder aaaa0021 1"
+  plan_level 1 none
+  assert_equal "$(plan_steps)" '["stop","T1","builder","aaaa0010",1]
+["stow","T2",1]
+["stow","T1",1]'
+}
+
+@test "plan: with no reading there is no budget and nothing to plan, and an unreadable session list fails it" {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  run_bin -0 team-capacity plan --json
+  assert_equal "$(jq -c '[.over, .confirmed, .budget, .stop_sessions, .stop_stacks, .stow, .resume]' <<<"$output")" '[false,false,null,[],[],[],[]]'
+  run_bin -0 team-capacity plan
+  assert_equal "$output" "No reading of the machine's load, so no budget: nothing to plan."
+  # plan never takes a reading.
+  [[ ! -e $STATE_DIR/readings.jsonl ]]
+  echo 'not json' >"$STUB_FIXTURES/agents.json"
+  run_bin -1 --separate-stderr team-capacity plan
+  assert_equal "$stderr" "team-capacity: cannot read the live session list (claude agents --json)"
+  # With --sessions it reads the list its caller read, never claude's.
+  : >"$STUB_CALLS/claude.log"
+  echo '[]' >"$BATS_TEST_TMPDIR/sessions.json"
+  run_bin -0 team-capacity plan --sessions "$BATS_TEST_TMPDIR/sessions.json"
+  assert_equal "$(stub_calls claude)" ""
+  run_bin -1 --separate-stderr team-capacity plan --sessions "$STUB_FIXTURES/agents.json"
+  assert_equal "$stderr" "team-capacity: $STUB_FIXTURES/agents.json holds no session list (a JSON array, as claude agents --json prints)"
+  run_bin -2 team-capacity plan --sessions
+  assert_contains "$output" "--sessions takes the file of a session list"
 }

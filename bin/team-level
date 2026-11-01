@@ -32,13 +32,16 @@
 #          already at that mode and level it records nothing and says so. Then applies the
 #          limits, as apply does, and prints the acknowledgement the coordinator posts:
 #          "Resources: manual, minor (30%): 9.2 GiB and 3.6 cores for the team; 6.1 GiB
-#          reserved." A limit it could not set is said on stderr; the record stands (exit 0).
+#          reserved; T171 and T174 stow.", ending with the tasks team-capacity plan says must
+#          stow, in task number order, or "nothing needs to stow" ("what must stow is unknown"
+#          when the plan fails, its reason on stderr). A limit it could not set is said on
+#          stderr; the record stands (exit 0).
 # auto     Records automatic mode at the level auto picks from the newest reading (one taken
 #          first when the newest is over 10 minutes old): {ts, mode: "auto", level, by: "Daniel",
 #          machine, reason, reading} (with discord_message), then applies the limits and prints
-#          "Resources: auto, now full (90%): ...". When the team is already in automatic mode it
-#          records nothing and says so, since the level is then auto's to change. With no reading
-#          to pick from, exit 1 and nothing recorded.
+#          "Resources: auto, now full (90%): ...; nothing needs to stow." When the team is
+#          already in automatic mode it records nothing and says so, since the level is then
+#          auto's to change. With no reading to pick from, exit 1 and nothing recorded.
 #          The pick of a reading: with f the lower of (T - O_m - reserve_gib) / T and
 #          (C - O_c - reserve_cores) / C (memory's alone when the reading has no CPU), full when
 #          f >= auto_full_free, none when f < auto_none_below, minor between.
@@ -67,13 +70,21 @@
 #          of 12 cores", reading: {at, total, others_memory, cpus, others_cores, free, pick}}, the
 #          reading the newest for a drop and the newest of the lowest pick for a rise; it is
 #          printed and posted to #coordinator as one line, "Resources: auto lowered the team to
-#          minor (30%) at 14:05: other programs use ..." (raised, likewise; the time this
-#          machine's local time). A post that fails is said on stderr (exit 1) and kept in
+#          minor (30%) at 14:05: other programs use ...; T171 and T174 stow" (raised, likewise;
+#          the time this machine's local time; the stow part as the acknowledgement's). A post
+#          that fails is said on stderr (exit 1) and kept in
 #          ~/.local/state/agent-team/level/posted.json ({pending: [{ts, content}], last: {ts,
 #          at}}), and each later tick posts what is kept, in order, each line once. With no
 #          reading of the last 15 minutes it records nothing and says so. In both modes it then
-#          applies the limits, as apply does, on stdout saying nothing of them, and exits 1 when
-#          one could not be set.
+#          applies the limits, as apply does, on stdout saying nothing of them, and takes the
+#          stow plan's first two steps (team-capacity plan, once over budget is confirmed),
+#          which lose nothing: claude stop (bounded 30 s) of each finished session and
+#          team-stack stop --worktree (bounded 120 s) of each idle stack, one line each, "stopped
+#          T7-reviewer r7r7r7r7, its work handed on, to bring the team under its budget at minor
+#          (30%): frees 1.0 GiB" or "stopped conventioner-9 of T9, no busy session in its
+#          worktree, ...". The stows it leaves to the coordinator (team-sweep's level-stow). It
+#          exits 1 when a limit could not be set, the plan failed or a stop failed (each said on
+#          stderr; the other stops still run).
 # The budget, with T the memory total, C the cores, s the level's share, O_m and O_c what the
 # other programs use, from the newest reading (team-capacity sample) and capacity.json's settings:
 #   memory  max(0, min(s * T, T - O_m - reserve_gib))
@@ -268,7 +279,8 @@ record() {
     gather
   fi
   apply_limits 1 || true
-  echo "Resources: $(state .says)."
+  stow_plan || true
+  echo "Resources: $(state .says); $(stow_says)."
 }
 
 # Record Daniel's choice of automatic mode at the newest reading's pick, apply it and acknowledge it.
@@ -290,7 +302,57 @@ record_auto() {
     gather
   fi
   apply_limits 1 || true
-  echo "Resources: $(state .says)."
+  stow_plan || true
+  echo "Resources: $(state .says); $(stow_says)."
+}
+
+# The stow plan, team-capacity plan --json's, into $work/plan.json; a plan that fails is said on
+# stderr, returning 1, with no plan.json.
+stow_plan() {
+  local out
+  rm -f "$work/plan.json"
+  if ! out=$(TEAM_HOME=$TEAM_HOME "$BIN/team-capacity" plan --json 2>&1 >"$work/plan.json.new"); then
+    echo "${0##*/}: the stow plan failed: $(grep . <<<"$out" | tail -n 1 || echo "team-capacity plan failed with no reason given")" >&2
+    return 1
+  fi
+  mv -f "$work/plan.json.new" "$work/plan.json"
+}
+
+# What the stow plan says must stow ("T171 and T174 stow", or "nothing needs to stow"), or that it
+# is unknown when the plan failed.
+stow_says() {
+  if [[ -f $work/plan.json ]]; then
+    jq -r -L "$TEAM_LIB" 'include "capacity"; include "stack"; stow_words' "$work/plan.json"
+  else
+    echo "what must stow is unknown"
+  fi
+}
+
+# Stop what the stow plan's first two steps name, the finished sessions (claude stop, bounded 30 s
+# each, as team-worker stops a task's own) and the idle stacks (team-stack stop --worktree, bounded
+# 120 s), one line each on stdout; each one not stopped is a line on stderr, returning 1.
+stop_finished() {
+  local failed=0 at task role session name worktree frees out
+  at=$(jq -r -L "$TEAM_LIB" 'include "capacity"; include "stack"; plan_at' "$work/plan.json")
+  while IFS=$'\t' read -r task role session frees; do
+    if out=$(bounded 30 claude stop "$session" 2>&1 </dev/null); then
+      echo "stopped $task-$role $session, its work handed on, to bring the team under its budget at $at: frees $frees"
+    else
+      echo "${0##*/}: could not stop $task-$role $session ($(grep -m1 . <<<"$out" || echo "claude stop failed with no reason given"))" >&2
+      failed=1
+    fi
+  done < <(jq -r -L "$TEAM_LIB" 'include "capacity"; include "stack";
+    .stop_sessions[] | [.task, .role, .session, (.frees | gib)] | @tsv' "$work/plan.json")
+  while IFS=$'\t' read -r task name worktree frees; do
+    if out=$(TEAM_HOME=$TEAM_HOME bounded 120 "$BIN/team-stack" stop --worktree "$worktree" 2>&1 </dev/null); then
+      echo "stopped $name of $task, no busy session in its worktree, to bring the team under its budget at $at: frees $frees"
+    else
+      echo "${0##*/}: could not stop $name of $task ($(grep . <<<"$out" | tail -n 1 || echo "team-stack stop failed with no reason given"))" >&2
+      failed=1
+    fi
+  done < <(jq -r -L "$TEAM_LIB" 'include "capacity"; include "stack";
+    .stop_stacks[] | [.task, .name, .worktree, (.frees | gib)] | @tsv' "$work/plan.json")
+  return "$failed"
 }
 
 # Post the kept lines of posted.json to #coordinator, in order, each once; fails at the first
@@ -324,7 +386,7 @@ keep_post() {
 
 # The heartbeat's level step, as the header's tick says.
 tick() {
-  local failed=0 ts content
+  local failed=0 ts='' content planned=1
   lease_gate "the heartbeat's level step"
   gather
   if [[ $(state .mode) == auto ]]; then
@@ -339,16 +401,20 @@ tick() {
         "$(jq -c -L "$TEAM_LIB" 'include "capacity"; include "stack"; {reason: (.reading | level_reason), reading}' "$work/auto.json")"
       ts=$(tail -n 1 "$RECORD" | jq -r .ts)
       gather
-      content=$(jq -r -L "$TEAM_LIB" --arg ts "$ts" --slurpfile state "$work/state.json" '
-        include "capacity"; include "stack";
-        "Resources: auto \(.change) the team to \(.level) (\($state[0].share | percent)) at \({at: $ts} | capacity_time): \(.reading | level_reason)"
-        ' "$work/auto.json")
-      echo "$content"
-      keep_post "$ts" "$content"
     fi
+  fi
+  stow_plan || failed=1 planned=0
+  if [[ -n $ts ]]; then
+    content=$(jq -r -L "$TEAM_LIB" --arg ts "$ts" --arg stow "$(stow_says)" --slurpfile state "$work/state.json" '
+      include "capacity"; include "stack";
+      "Resources: auto \(.change) the team to \(.level) (\($state[0].share | percent)) at \({at: $ts} | capacity_time): \(.reading | level_reason); \($stow)"
+      ' "$work/auto.json")
+    echo "$content"
+    keep_post "$ts" "$content"
   fi
   post_pending || failed=1
   apply_limits 1 || failed=1
+  if ((planned)); then stop_finished || failed=1; fi
   return "$failed"
 }
 

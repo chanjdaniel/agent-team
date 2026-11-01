@@ -1,12 +1,12 @@
 # The definitions team-capacity reads the machine with and team-level sizes the team with: the
 # settings of capacity.json, the slots held, a reading of the machine's load with the team's use
 # per task, the cost samples it learns from, the estimates, the level record (level.jsonl), the
-# budget, the reservations and the room, the admission rule, the slice's limits, and the texts.
-# jq 1.7.
+# budget, the reservations and the room, the admission rule, the slice's limits, the stow and
+# resume plans, and the texts. jq 1.7.
 # Included as: jq -L bin/lib 'include "capacity"; include "stack"; ...', stack after it, as
 # CLAUDE.md's script conventions say for jq 1.8.2. The program, not this module, reads the ledger
-# (held_slots). team-slots shares the reading (machine_reading) and the slots held until its
-# retirement.
+# (held_slots; plan_tasks in ledger.jq for the plans). team-slots shares the reading
+# (machine_reading) and the slots held until its retirement.
 include "stack";
 
 # The machine's capacity settings (~/.config/agent-team/capacity.json), every key optional, each
@@ -184,7 +184,7 @@ def capacity_reading($in):
   | [$in.stacks.projects // [] | .[] | select((.class == "team" or .class == "gate") and .memory_bytes != null)
      | .worktree as $wt
      | {name, class, task, project: (if .class == "team" then first($in.held[] | select(.worktree == $wt) | .project) // null else null end),
-        memory: .memory_bytes, cpu: ((.cpu_percent // 0) / 100), limits: .memory_limit_bytes}]
+        worktree: $wt, kind, memory: .memory_bytes, cpu: ((.cpu_percent // 0) / 100), limits: .memory_limit_bytes}]
     as $stacks
   | [reading_tasks($in)[] as $task
      | unit("agent-team-\($task).slice") as $slice
@@ -622,3 +622,122 @@ def capacity_admit($status; $kind; $bytes):
 # at <path>.
 def level_broken_text($path; $broken):
   "\($path) has lines that are not level records ({ts, mode, level, by, machine}): line \($broken | map(tostring) | join(", ")); fix or remove them, then run it again";
+
+# The total of the reservations <items> (capacity_reservations') as reserved_split counts it, the
+# spike allowance taken again over the sessions_use items left, so what is left once some items go
+# is counted as the readings would count it.
+def reserved_total:
+  ([.[] | select(.part != "spike_allowance") | .bytes] | add // 0)
+  + ([.[] | select(.part == "sessions_use") | [.estimate_bytes - (.use_bytes // 0), 0] | max] | max // 0);
+
+# Whether the directory <cwd> is the worktree <wt> or below it.
+def within($wt): . as $cwd | $wt != null and ($cwd == $wt or ($cwd | startswith($wt + "/")));
+
+# Tasks as words: "T171", "T171 and T174", "T1, T2 and T3".
+def task_words: if length < 2 then join("") else "\(.[:-1] | join(", ")) and \(.[-1])" end;
+
+# The stow plan and the resume plan, team-capacity plan's object, from $in: {settings, current
+# (level_current's {mode, level, last_change}), readings (the stored readings, oldest first), costs
+# (capacity_costs' array), heavy, admitted, now (as capacity_reservations takes them), tasks
+# (ledger.jq's plan_tasks: each open task's opened, finished sessions and stowed), sessions (the
+# session list, claude agents --json's)}:
+#   budget     the memory budget at the level, from the newest reading (0 at none, null with no
+#              reading above none)
+#   reserved   what the newest reading reserves (capacity_reservations' total)
+#   over       reserved above the budget, or at none any task with a live worker or a running
+#              stack; false with no budget
+#   confirmed  over, and so was the reading before it, or the last level change is newer than that
+#              reading (or there is none before it): one spike never stows a task
+# While confirmed, the steps that bring it under, each with what it frees (bytes, the reservations
+# it ends, the spike allowance taken again over the sessions left):
+#   stop_sessions  [{task, role, session, frees}]: each finished session, by task number
+#   stop_stacks    [{task, name, worktree, frees}]: each running team dev stack of an open task
+#                  that no busy session (interactive ones too) works in, its worktree or below
+#   stow           [{task, opened, frees}]: the open tasks with a live worker or reservations left,
+#                  the most recently opened first, until what is left fits the budget; at none
+#                  every one
+# and the resume plan, whatever the budget: resume [{task, stowed, roles, needs, fits}], each task
+# stowed for the level, oldest stow first, needs its roles' session estimates and fits whether
+# needs fits beside what is reserved now (never at none). Each step list is [] when not confirmed.
+def capacity_plan($in):
+  $in.settings as $s | $in.current as $current
+  | ($in.readings | .[-1]) as $r
+  | ($in.readings | if length > 1 then .[-2] else null end) as $prev
+  | def items($reading):
+      capacity_reservations({reading: $reading, costs: $in.costs, settings: $s, heavy: $in.heavy,
+                             admitted: $in.admitted, now: $in.now, asking: null});
+    def budget($reading):
+      if $current.level == "none" then 0
+      else capacity_budget($s; $current.level; $reading; null; 0).memory_bytes end;
+    def drop(f): map(select(f | not));
+  ([$in.tasks[] | {key: .task, value: .}] | from_entries) as $open
+  | [$in.sessions // [] | .[] | select((.name // "") | test("^T[1-9][0-9]*-[a-z]+$"))
+     | {id: (.id // (.sessionId // "" | .[:8])), task: (.name | split("-")[0])}
+     | select($open[.task] != null)] as $live
+  | [$in.sessions // [] | .[] | select(.status == "busy") | .cwd // empty | strings] as $busy
+  | items($r) as $items
+  | budget($r) as $budget
+  | ($items | reserved_total) as $reserved
+  | [$in.tasks[] | .task as $task | .finished[] | {task: $task, role, session}] as $finished
+  | [$r.stacks // [] | .[]
+     | select(.class == "team" and .kind == "dev" and $open[.task // ""] != null and .worktree != null)
+     | . as $stack | select(all($busy[]; within($stack.worktree) | not))] as $idle
+  | def stowable($rest):
+      [$open[] | .task as $task
+       | select(any($live[]; .task == $task and (.id as $id | any($finished[]; .session == $id) | not))
+                or any($rest[]; .task == $task and .part != "spike_allowance"))]
+      | sort_by(.opened, (.task[1:] | tonumber)) | reverse;
+    def over($items; $budget):
+      $budget != null and (($items | reserved_total) > $budget
+        or ($current.level == "none" and stowable($items | drop(.part == "stacks" and (.name as $n | any($idle[]; .name == $n)))) != []));
+  over($items; $budget) as $over
+  | ($prev != null and over(items($prev); budget($prev))) as $prev_over
+  | ($over and ($prev_over or ($current.last_change != null
+       and ($prev == null or ($current.last_change.ts | fromdateiso8601) > ($prev.at | fromdateiso8601))))) as $confirmed
+  | (if $confirmed | not then {sessions: [], stacks: [], stow: []}
+     else
+       reduce $finished[] as $f ({rest: $items, sessions: []};
+         (.rest | drop(.name == $f.session and (.kind | startswith("session:")))) as $after
+         | .sessions += [$f + {frees: ((.rest | reserved_total) - ($after | reserved_total))}] | .rest = $after)
+       | reduce $idle[] as $st (. + {stacks: []};
+           (.rest | drop(.part == "stacks" and .name == $st.name)) as $after
+           | .stacks += [{task: $st.task, name: $st.name, worktree: $st.worktree,
+                          frees: ((.rest | reserved_total) - ($after | reserved_total))}] | .rest = $after)
+       | reduce stowable(.rest)[] as $t (. + {stow: []};
+           if $current.level != "none" and (.rest | reserved_total) <= $budget then .
+           else (.rest | drop(.task == $t.task)) as $after
+             | .stow += [{task: $t.task, opened: $t.opened, frees: ((.rest | reserved_total) - ($after | reserved_total))}]
+             | .rest = $after end)
+     end) as $steps
+  | {schema: "team-capacity-plan/1", mode: $current.mode, level: $current.level,
+     share: ($current.level | level_share($s)), budget: $budget,
+     reserved: $reserved, over: $over, confirmed: $confirmed,
+     stop_sessions: $steps.sessions, stop_stacks: $steps.stacks, stow: $steps.stow,
+     resume: [$in.tasks[] | select(.stowed != null) | {task, stowed: .stowed.at, roles: .stowed.roles}
+              | . + {needs: ([.roles[] | kind_estimate($in.costs; $s; "session:\(.)"; null).bytes] | add // 0)}
+              | . + {fits: ($current.level != "none" and $budget != null and $reserved + .needs <= $budget)}]
+             | sort_by(.stowed, (.task[1:] | tonumber))};
+
+# The level as the plan's texts say it: "minor (30%)".
+def plan_at: "\(.level) (\(.share | percent))";
+
+# team-capacity plan's lines from its team-capacity-plan/1 object: the verdict, each step, then
+# the tasks stowed for the level.
+def plan_text:
+  if .budget == null then "No reading of the machine's load, so no budget: nothing to plan."
+  elif .over | not then "Within budget at \(plan_at): \(.reserved | gib) reserved of \(.budget | gib): nothing to stop or stow."
+  elif .confirmed | not then
+    "Over budget at \(plan_at) in the newest reading only: \(.reserved | gib) reserved of \(.budget | gib); nothing stops or stows unless the next reading shows it too."
+  else
+    "Over budget at \(plan_at): \(.reserved | gib) reserved of \(.budget | gib).",
+    (.stop_sessions[] | "  stop \(.task)-\(.role) \(.session), its work handed on: frees \(.frees | gib)"),
+    (.stop_stacks[] | "  stop \(.name) of \(.task), no busy session in its worktree: frees \(.frees | gib)"),
+    (.stow[] | "  stow \(.task): frees \(.frees | gib)")
+  end,
+  (select(.resume != []) | "Stowed for the level, oldest stow first:",
+    (.resume[] | "  \(.task) (\(.roles | join(", "))): needs \(.needs | gib), \(if .fits then "fits" else "does not fit yet" end)"));
+
+# What the stow plan <plan> (capacity_plan's) says must stow, for team-level's acknowledgement and
+# its automatic post: "T171 and T174 stow", in task number order, or "nothing needs to stow".
+def stow_words:
+  if .stow == [] then "nothing needs to stow" else "\([.stow[].task] | sort_by(.[1:] | tonumber) | task_words) stow" end;
