@@ -792,9 +792,11 @@ Bash(@TEAM_CODE@/bin/team-ci-wait *)'
   if denied settings/reviewer.json "$REPO_ROOT/bin/team-ci-wait https://github.com/me/shop/pull/5"; then return 1; fi
 }
 
-@test "the builder's allow rules are the local checks and the CI wait scripts, as the briefs give them" {
+@test "the builder's allow rules are the local checks, the CI wait scripts, as the briefs give them, and marking a PR ready" {
   assert_equal "$(jq -r '.permissions.allow[]' "$REPO_ROOT/settings/builder.json")" 'Bash(@TEAM_CODE@/bin/team-checks *)
-Bash(@TEAM_CODE@/bin/team-ci-wait *)'
+Bash(@TEAM_CODE@/bin/team-ci-wait *)
+Bash(gh pr ready *)
+Bash(gh-axi pr ready *)'
   local brief
   for brief in delivery/direct-pr builder-merge-base; do
     grep -qF '`{{team_bin}}/team-checks {{project}} <full sha>`' "$REPO_ROOT/templates/briefs/$brief.md"
@@ -810,6 +812,30 @@ Bash(@TEAM_CODE@/bin/team-ci-wait *)'
   if allows builder "team-ci-wait https://github.com/me/shop/pull/5"; then return 1; fi
   if allows builder "/elsewhere/bin/team-ci-wait https://github.com/me/shop/pull/5"; then return 1; fi
   if denied settings/builder.json "$REPO_ROOT/bin/team-ci-wait https://github.com/me/shop/pull/5"; then return 1; fi
+  local command
+  for command in "gh pr ready https://github.com/me/shop/pull/5" "gh pr ready 5 --repo me/shop" \
+    "gh pr ready -R me/shop 5" "gh-axi pr ready 5"; do
+    allows builder "$command" || { echo "the builder may not run: $command" >&2; return 1; }
+    if denied settings/builder.json "$command"; then echo "settings/builder.json denies: $command" >&2; return 1; fi
+  done
+  # Turning a PR back into a draft is no builder's step, so the builder's settings deny it.
+  for command in "gh pr ready https://github.com/me/shop/pull/5 --undo" "gh pr ready --undo 5" \
+    "gh pr ready -R me/shop --undo 5" "gh-axi pr ready 5 --undo"; do
+    denied settings/builder.json "$command" || { echo "settings/builder.json allows: $command" >&2; return 1; }
+  done
+  # The rules are for marking a PR ready and nothing else: no other gh write rides on them.
+  while IFS= read -r command; do
+    if allows builder "$command"; then echo "the builder may run: $command" >&2; return 1; fi
+  done <<'COMMANDS'
+gh pr merge https://github.com/me/shop/pull/5
+gh-axi pr merge 5
+gh pr comment https://github.com/me/shop/pull/5 --body-file x.md
+gh pr edit 5 --body-file x.md
+gh pr review 5 --approve
+gh pr close 5
+gh-axi pr edit 5 --body-file x.md
+gh api repos/me/shop/pulls/5 -X PATCH -f draft=false
+COMMANDS
 }
 
 @test "the reviewer's allow rules let no raw gh write through, statuses in the command or not" {

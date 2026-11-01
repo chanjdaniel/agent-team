@@ -25,7 +25,7 @@ setup() {
   # The check stage leaves it to the tools stage, not to Daniel.
   run_bin -1 team-bootstrap --stage check
   assert_equal "$(stage_lines check | grep -c '^Daniel' || true)" 0
-  assert_equal "$(stage_lines check | tail -n1)" "summary: not set up yet: besides Daniel's steps above, these failed: opencode-gate; fix them as their doctor lines say, then team-bootstrap again"
+  assert_equal "$(stage_lines check | tail -n1)" "summary: not set up yet: besides Daniel's steps above, these failed: gate-agent; fix them as their doctor lines say, then team-bootstrap again"
   assert_contains "$output" "fix: $CODE_CHECKOUT/bin/team-bootstrap --stage tools, which sets agent_path_override: {opencode: $wrapper} in ~/.no-mistakes/config.yaml, that key alone"
 
   run_bin -0 team-bootstrap --stage tools --dry-run
@@ -71,7 +71,7 @@ agent_path_override:
   run_bin -0 team-bootstrap --stage tools
   assert_equal "$output" "tools: done: every tool is at its pin or above its minimum"
   run_bin -1 team-bootstrap --stage check
-  assert_equal "$(stage_lines check | grep '^Daniel')" "Daniel 1: opencode-gate: Daniel runs team-secrets restore in their own terminal (the secret no-mistakes-config), then $CODE_CHECKOUT/bin/team-bootstrap --stage tools sets agent_path_override: {opencode: $wrapper} in it (~/.no-mistakes/config.yaml is not there)"
+  assert_equal "$(stage_lines check | grep '^Daniel')" "Daniel 1: gate-agent: Daniel runs team-secrets restore in their own terminal (the secret no-mistakes-config), then $CODE_CHECKOUT/bin/team-bootstrap --stage tools sets agent_path_override: {opencode: $wrapper} in it (~/.no-mistakes/config.yaml is not there)"
 }
 
 @test "check lists each failing secret with its reason, so a wrong mode is never called missing" {
