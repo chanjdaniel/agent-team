@@ -227,6 +227,21 @@ launched T7-builder c0000001"
   refused "T7 is closed" T7 -- "T7 DONE 01 $sha done"
 }
 
+# The manual: a message team-next refuses for an open ask is logged with team-log --from-message,
+# and team-next runs on it once the ask is settled, logging nothing twice.
+@test "a DONE logged by team-log --from-message while an ask was open is handed off once it is answered, logged once" {
+  event asked '{id: "scope", text: "Which scope?"}'
+  refused "T7 has an unanswered ask, scope" T7 -- "T7 DONE 01 $sha done"
+  run_bin -0 team-log T7 --from-message "T7 DONE 01 $sha done"
+  event answered '{id: "scope", text: "This one.", discord_message: "1566347677472661545"}'
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE 01 $sha done"
+  assert_equal "$output" "already logged ticket-done ticket=01 commits=[\"$sha\"] note=done
+already logged done role=builder session=b0000001
+brief $TEAM_HOME/tasks/T7/brief-build-02.md
+launched T7-builder c0000001"
+  assert_equal "$(jq -c 'select(.event == "ticket-done" or .event == "done")' "$TEAM_HOME/ledger.jsonl" | wc -l)" 2
+}
+
 @test "refused with nothing changed: an unknown ticket, a sha the worktree's HEAD lacks, an unknown --next" {
   refused "T7 has no ticket 09: its tickets are 01, 02, 03, 04" T7 -- "T7 DONE 09 $sha done"
   refused "abcdef0 is not a commit the HEAD of $wt holds, so ticket 01 is not handed off" T7 -- "T7 DONE 01 $sha abcdef0 done"
@@ -517,7 +532,7 @@ launched T7-reviewer c0000001"
   grep -E '^5\. \*\*Review\.\*\*' "$manual" | grep -qF '`team-next T<n> --checks <file> -- '"'"'<the message>'"'"'`'
   grep -qF '`team-next` (no `--checks`) launches the fresh reviewer that re-checks from the reviewed head' "$manual"
   grep -qF 'your own words added with `--since <file>`' "$manual"
-  grep -E '^\| `PR <url>` \|.*\| `team-next` logs it and starts the review \(step 5\)' "$manual"
+  grep -E '^\| `PR <url>` \| `team-next` \| It starts the review \(step 5\)' "$manual"
   (($(wc -l <"$manual") <= 120))
 }
 
