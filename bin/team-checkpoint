@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Make the work in flight survive a dead machine: on the lease holder, every 15 minutes (the
-# heartbeat's team-timers run calls it every run) or at once with --force (a handoff).
+# Make the work in flight survive a dead machine: on the lease holder, on each run of the
+# heartbeat (team-timers run, every 5 minutes), or at once with --force (a handoff, or a record
+# that must be durable now).
 #
 # Usage: team-checkpoint [--force]
 # Refuses unless team-lease check says this machine holds the lease (exit 1), and exits 75 when
-# GitHub is unreachable; either way nothing changes. Without --force, a checkpoint less than 15
+# GitHub is unreachable; either way nothing changes. Without --force, a checkpoint less than 5
 # minutes (less a minute for the timer's slack) after the last does nothing but say so.
 # For each open task, in task number order, for each of its open worktrees:
 #   1. A worktree that is missing, on another branch than its recorded one, or locked by a running
@@ -27,10 +28,12 @@
 # Then team-tokens export writes this machine's usage of each complete UTC day into usage/<machine>/
 # (its lines prefixed "usage: "); a failed export is reported on stderr and fails nothing, since
 # the transcripts stay and the next checkpoint exports what this one could not.
-# Then, in the team home, the ledger's lock held: commits tasks/*/scratch*/, memory/, usage/,
-# tasks/current.md (the coordinator's current items, or its removal) and ledger.jsonl as
-# "chore: checkpoint" on the branch checked out (dev), leaving whatever else is staged as it
-# was, and pushes the branch when it is ahead of origin's. A rejected push fetches
+# Then, in the team home, the ledger's lock held: commits every records path bin/lib/records lists
+# (the ledger, tasks/ with the scratch archives, plans, briefs and their records and
+# tasks/current.md or its removal, projects/, projects.toml, memory/, machine/, usage/ and
+# manual-steps.md), less what git ignores, as "chore: checkpoint" on the branch checked out (dev),
+# leaving whatever else is staged as it was, and pushes the branch when it is ahead of origin's;
+# a path the team home's hook refuses (an image) fails the commit, named. A rejected push fetches
 # and replays the commits origin lacks onto origin's branch when they apply cleanly and no local
 # change is in the way (what is staged stays staged), then pushes again; else they stay unpushed
 # and it says why. No change, no commit and no push.
@@ -41,14 +44,12 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
-INTERVAL_MINUTES=15
+INTERVAL_MINUTES=5
 # The heartbeat's timer may start a run up to a minute after its mark.
 SLACK_SECONDS=60
 # Seconds: the most one call to an origin may take, and the longest wait for another checkpoint.
 NET_TIMEOUT=60
 LOCK_WAIT=120
-# What the team-home commit holds.
-RECORDS=(ledger.jsonl tasks/current.md ':(glob)tasks/*/scratch*/**' ':(glob)memory/**' ':(glob)usage/**')
 
 usage="usage: team-checkpoint [--force]"
 force=''
@@ -187,8 +188,8 @@ out=$(TEAM_HOME=$TEAM_HOME "$bin/team-tokens" export 2>"$scratch/tokens-err" {lo
 while IFS= read -r line; do say "usage: $line"; done < <(grep . <<<"$out")
 ((rc == 0)) || echo "team-checkpoint: usage: $(sed -n '1s/^team-tokens: //p' "$scratch/tokens-err"); the next checkpoint exports it" >&2
 
-# The team home's records: commit them, then push the branch when it is ahead of origin's.
-commit_records "chore: checkpoint" "${RECORDS[@]}" || failed=1
+# The team home's records, every one: commit them, then push the branch when it is ahead of origin's.
+commit_records "chore: checkpoint" || failed=1
 
 ((failed == 0)) || exit 1
 date -u -d "@$start" +%FT%TZ >"$last"

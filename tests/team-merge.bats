@@ -60,7 +60,7 @@ story_of() {
   backlog_story proj E40-history/F01-the-markets/S02-every-write.md E40/F01/S02 ready "[71]"
   story_of E40/F01/S02
   run_bin -0 --separate-stderr team-merge T14
-  assert_contains "$stderr" "team-merge: marked E40/F01/S02 done with PR 5 in projects/proj/backlog/E40-history/F01-the-markets/S02-every-write.md; commit it with the records"
+  assert_contains "$stderr" "team-merge: marked E40/F01/S02 done with PR 5 in projects/proj/backlog/E40-history/F01-the-markets/S02-every-write.md; the next checkpoint commits it"
   # Only the front matter changes.
   assert_equal "$(cat "$file")" "---
 id: E40/F01/S02
@@ -780,6 +780,19 @@ EOF
     findings: {blocking: 0, correctness: 1, security: 0, \"real-data\": 0, \"note-change\": 0, \"note-before\": 0}, guarded: []}"
   refused "the latest review of the head ${head:0:7}, at 2026-10-22T02:00:00Z, is findings, not pass" "$(ask_per_head)"
   passed "${head:0:7}"
+  run_bin -0 team-merge T14
+  assert_equal "$(merged_events | jq -r .approval)" plan
+}
+
+@test "a PR whose latest review of its head, a pass logged through team-log, sent findings back is refused on the plan-time word" {
+  plan_word
+  local counts='findings=blocking:0,correctness:1,security:0,real-data:0,note-change:0,note-before:0'
+  run_bin -0 team-log T14 review verdict=pass head="$head" "$counts" sent_back=1 guarded=none
+  local at
+  at=$(jq -r 'select(.event == "review") | .ts' "$TEAM_HOME/ledger.jsonl" | tail -n 1)
+  refused "the latest review of the head ${head:0:7}, at $at, is findings, not pass" "$(ask_per_head)"
+  # The verify pass that sends nothing back merges it.
+  run_bin -0 team-log T14 review verdict=pass head="$head" "$counts" sent_back=none guarded=none
   run_bin -0 team-merge T14
   assert_equal "$(merged_events | jq -r .approval)" plan
 }

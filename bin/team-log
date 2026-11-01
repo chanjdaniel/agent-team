@@ -40,16 +40,17 @@
 # branch-renamed, the task's new branch in a project after the gate rewrote the remote one, is
 # refused when its project is not one of the task's opened or worktree-added events, its branch is
 # the task's there now (the latest opened, worktree-added or branch-renamed of the project), does
-# not name the task, or is no branch name git takes (git check-ref-format --branch). A
-# review's findings, when given, must count exactly blocking, correctness, security, real-data,
-# note-change and note-before, each a whole number, and its guarded list only ci, dependencies,
-# migrations, settings, permissions, secrets and guardrails; its before, the numbers of its plain
-# notes on code the PR did not change, distinct whole numbers above 0, is required when findings
-# counts a note-before, as many as it counts, and a sent_back naming one of them is refused, since
-# such a note is queued, never sent back. A park
-# (waiting, blocked, paused, held) logged after the fact takes since=<UTC time>, when it began:
-# no later than now and no earlier than the task's latest event, or it is refused naming both
-# times; no other kind takes since.
+# not name the task, or is no branch name git takes (git check-ref-format --branch). A review
+# whose sent_back names any finding is logged with verdict findings, a pass's too, since a pass
+# whose notes go back before the merge is not ready to merge. A review's findings, when given,
+# must count exactly blocking, correctness, security, real-data, note-change and note-before, each
+# a whole number, and its guarded list only ci, dependencies, migrations, settings, permissions,
+# secrets and guardrails; its before, the numbers of its plain notes on code the PR did not
+# change, distinct whole numbers above 0, is required when findings counts a note-before, as many
+# as it counts, and a sent_back naming one of them is refused, since such a note is queued, never
+# sent back. A park (waiting, blocked, paused, held) logged after the fact takes since=<UTC time>,
+# when it began: no later than now and no earlier than the task's latest event, or it is refused
+# naming both times; no other kind takes since.
 # --from-message reads a worker's message whole (bin/lib/messages.jq) into the events the
 # coordinator's message table gives it, checks each as above, and logs them all, or with --print
 # prints them as JSON lines and logs nothing; any refusal logs none. The message starts with the
@@ -61,8 +62,9 @@
 # the shas of 7 to 40 hex digits, note the line) and the builder's done; DONE review-ready <sha> and
 # DONE merged <base> <sha> conflicts: <files or none> the builder's done, report the rest;
 # DONE pass <PR url or head> and DONE findings <path>, each followed by findings=, before= and
-# guarded= as team-log takes them, a review and the reviewer's done, findings taking
-# --sent-back's list as sent_back (no other message takes it); DONE gate <key=value>... a gate-run;
+# guarded= as team-log takes them, a review and the reviewer's done, either taking --sent-back's
+# list as sent_back (a pass's being the notes that go back before the merge, which make it a
+# findings review, as above; no other message takes it); DONE gate <key=value>... a gate-run;
 # any other DONE the sender's done, report the rest. A review's head is the head of the brief record
 # (tasks/T<n>/<brief>.json) that the reviewer's latest launch read, else a pass's own head, else
 # it is refused naming head=. The role is the kind's (builder, reviewer), else that of --from's
@@ -186,7 +188,7 @@ typed=$(ledger_jq '
   | reduce range(0; $pairs | length; 2) as $i ({line: {ts: (now | todate), task: $task, event: $event}, problems: []};
       $pairs[$i] as $key | ($pairs[$i + 1] | typed_value($key; $types[$key])) as $typed
       | .line[$key] = $typed.value | .problems += ($typed.problems // []))
-  | if .problems == [] then .line else .problems | join("; ") | halt_error(1) end' \
+  | if .problems == [] then .line | review_sent_back else .problems | join("; ") | halt_error(1) end' \
   -nc --arg task "$task" --arg event "$event" --args "${pairs[@]}" 2>&1) || die "${typed%$'\n'}"
 
 # Daniel's word is on one PR at one head: the approval names the PR as one of the task's pr events

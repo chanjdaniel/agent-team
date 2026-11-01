@@ -64,6 +64,7 @@ The standing word also needs its `discord_channel` to be `#coordinator`'s channe
 - On a refusal, `team-merge` names every reason it cannot merge, each once, with each word's it tried when the last one does not hold, and merges nothing.
   Under the plan-time or standing word its last line is the ask: "(Daniel's standing word does not hold: ask them for the per-head word on the head <short head> with team-ask, naming <url>)", or the same with "plan-time"; the coordinator asks Daniel for the per-head word with `team-ask`, its text naming the PR's URL.
   A refusal for attribution lines is fixed first: `team-clean-messages <worktree>` strips them, its push runs only with Daniel's OK, and the new head is reviewed again.
+- When Daniel withdraws a plan-time word, it logs `team-log T<n> merge-preapproval-withdrawn project=<p> discord_message=<id>`, which `team-log` refuses when no `merge-preapproved` of that project stands for the task.
 - After logging any of the merge words or their withdrawals, it runs `team-inbox`, so the Waiting on you message is current: it shows each standing word ("Standing merge word on <projects> since <link>") and leaves out of "PRs ready to merge" a PR a plan-time or standing word stands for, whose refusal comes back as an ask.
 - `team-snapshot` says at session start which projects a standing word stands for, and since which message.
 
