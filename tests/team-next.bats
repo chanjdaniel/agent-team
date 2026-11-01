@@ -39,11 +39,12 @@ TOML
   ticket 04-fourth "Blocked by: 02"
   launched b0000001 brief-build-01 '["browser"]'
   sha=$(commit one.txt "feat: ticket 01")
-  # Each launch prints the next session id, c0000001, c0000002...; the session list has none of
-  # them, so team-worker stops nothing. Once $STUB_FIXTURES/fail-once exists, the next launch
+  # Each launch prints the next session id, c0000001, c0000002...; the session list is
+  # $STUB_FIXTURES/agents, else empty, so team-worker stops nothing. Once $STUB_FIXTURES/fail-once exists, the next launch
   # fails and removes it.
   stub_script claude <<'EOF'
-if [[ $* == "agents --json" ]]; then echo '[]'; exit 0; fi
+if [[ $* == "agents --json" ]]; then cat "$STUB_FIXTURES/agents" 2>/dev/null || echo '[]'; exit 0; fi
+if [[ $1 == stop ]]; then exit 0; fi
 if [[ -e $STUB_FIXTURES/fail-once ]]; then
   rm "$STUB_FIXTURES/fail-once"
   echo "claude: could not start the session" >&2
@@ -85,11 +86,12 @@ logged_from() {
   tail -n +"$1" "$TEAM_HOME/ledger.jsonl" | jq -c 'del(.ts)'
 }
 
-# What a refusal must leave as it was: the ledger, the task's files and the claude calls.
+# What a refusal must leave as it was: the ledger, the task's files and the claude calls but its
+# reads of the session list.
 state() {
   cat "$TEAM_HOME/ledger.jsonl"
   (cd "$TEAM_HOME/tasks" && find . -type f | sort)
-  stub_calls claude
+  stub_calls claude | jq -c 'select(. != ["agents", "--json"])'
 }
 
 # refused <expected text> <team-next arguments>...: exit 1 naming it, with nothing changed.
@@ -248,7 +250,7 @@ launched T7-builder c0000001"
   count=$(wc -l <"$TEAM_HOME/ledger.jsonl")
   run_bin -0 team-next T7 -- "T7 PAUSED stowed"
   assert_equal "$output" "logged paused reason=stowed
-no hand-off for PAUSED"
+no hand-off for PAUSED stowed: no review's sent-back findings wait for a round"
   run_bin -0 team-next T7 -- "T7 QUESTION Which file holds the goal?"
   assert_equal "$output" "logged question role=builder text=Which file holds the goal?
 no hand-off for QUESTION"
@@ -516,5 +518,239 @@ launched T7-reviewer c0000001"
   grep -qF '`team-next` (no `--checks`) launches the fresh reviewer that re-checks from the reviewed head' "$manual"
   grep -qF 'your own words added with `--since <file>`' "$manual"
   grep -E '^\| `PR <url>` \|.*\| `team-next` logs it and starts the review \(step 5\)' "$manual"
+  (($(wc -l <"$manual") <= 120))
+}
+
+# T172 ticket 14: a reviewer's verdict, and the fix round's stow.
+
+counts="findings=blocking:0,correctness:0,security:0,real-data:0,note-change:0,note-before:0"
+
+# pr_on_github <head> [<behind_by>] [<checks as JSON>]: the gh stub answers team-state's reads
+# of PR 9 (open, against main, at <head>), its checks (agent-review passed by default), its
+# required checks (none) and the compare of main with <head> (0 behind by default).
+pr_on_github() {
+  export GH_HEAD=$1 GH_BEHIND=${2:-0}
+  export GH_CHECKS=${3:-'[{"name": "agent-review", "bucket": "pass", "state": "SUCCESS"}]'}
+  stub_script gh <<'SH'
+case "$*" in
+  "pr view 9 --repo owner/proj --json number,state,baseRefName,headRefOid")
+    jq -cn --arg h "$GH_HEAD" '{number: 9, state: "OPEN", baseRefName: "main", headRefOid: $h}' ;;
+  "pr checks 9 --repo owner/proj --required"*) echo '[]' ;;
+  "pr checks 9 --repo owner/proj"*) echo "$GH_CHECKS" ;;
+  "api repos/owner/proj/compare/main...$GH_HEAD --jq .behind_by") echo "$GH_BEHIND" ;;
+  *) echo "unplanned gh call: $*" >&2; exit 1 ;;
+esac
+SH
+}
+
+# reviewing <head> [<sent_back of an earlier review as JSON>]: the PR logged at <head> and a
+# reviewer launched on brief-review, whose record names <head>; with a list, an earlier review
+# and a round before it, so this reviewer is the re-review.
+reviewing() {
+  event pr "$(jq -cn --arg url "$url" --arg h "$1" '{url: $url, head: $h}')"
+  if [[ -n ${2:-} ]]; then
+    review_logged findings "$1" "$2" '{"blocking": 1}'
+    launched b0000002 brief-round-1 '["browser"]'
+  fi
+  jq -cn --arg url "$url" --arg h "$1" '{template: "reviewer", project: "proj", values: {pr: $url, head: $h}}' \
+    >"$TEAM_HOME/tasks/T7/brief-review.json"
+  launched r0000002 brief-review '["browser"]' reviewer
+}
+
+# live <session> <context in tokens>...: the session list holds each session, idle, its
+# transcript's latest reply having read that many tokens.
+live() {
+  local list='[]'
+  mkdir -p "$HOME/.claude/projects/-wt"
+  while (($#)); do
+    list=$(jq -c --arg s "$1" '. + [{id: $s, sessionId: "\($s)-0000", kind: "background", status: "idle", state: "blocked"}]' <<<"$list")
+    jq -cn --argjson n "$2" '{type: "assistant", message: {usage: {input_tokens: $n}}}' >"$HOME/.claude/projects/-wt/$1-0000.jsonl"
+    shift 2
+  done
+  echo "$list" >"$STUB_FIXTURES/agents"
+}
+
+# The calls that could reach Discord, merge or post: curl's, and gh's beyond team-state's reads.
+outside_calls() {
+  stub_calls curl
+  stub_calls gh | jq -c 'select((.[0] == "pr" and (.[1] == "view" or .[1] == "checks")) or (.[0] == "api" and (.[1] | test("/compare/"))) | not)'
+}
+
+@test "a pass whose PR head moved past the reviewed head is refused naming both, nothing logged" {
+  local moved
+  reviewing "$sha"
+  moved=$(commit two.txt "feat: after the review")
+  pr_on_github "$moved"
+  refused "the PR's head $moved moved past the reviewed head $sha, so the pass is not taken; re-review the new head" \
+    T7 -- "T7 DONE pass $url $counts before=none guarded=none"
+}
+
+@test "a pass logs the review at the reviewed head and prints the merge ask's facts, never posting or merging" {
+  local count
+  reviewing "$sha"
+  pr_on_github "$sha"
+  count=$(wc -l <"$TEAM_HOME/ledger.jsonl")
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=ci"
+  assert_equal "$output" "logged review verdict=pass head=$sha findings={\"blocking\":0,\"correctness\":0,\"security\":0,\"real-data\":0,\"note-change\":0,\"note-before\":0} before=[] guarded=[\"ci\"]
+logged done role=reviewer session=r0000002
+merge ask: $url at $sha, agent-review success, checks green; the review found guarded areas: ci"
+  assert_equal "$(logged_from $((count + 1)) | jq -c '{event, verdict, head, guarded, role, session}')" \
+    "$(jq -cn --arg h "$sha" '{event: "review", verdict: "pass", head: $h, guarded: ["ci"], role: null, session: null},
+      {event: "done", verdict: null, head: null, guarded: null, role: "reviewer", session: "r0000002"}' | jq -c .)"
+  assert_equal "$(outside_calls)" ""
+  assert_equal "$(bg_calls)" ""
+}
+
+@test "a pass with before notes and pending checks names them, and a rerun logs nothing twice" {
+  reviewing "$sha"
+  pr_on_github "$sha" 0 '[{"name": "agent-review", "bucket": "pass", "state": "SUCCESS"}, {"name": "test", "bucket": "pending", "state": "PENDING"}]'
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url ${counts%:0}:2 before=4,5 guarded=none"
+  assert_equal "$(tail -n 1 <<<"$output")" \
+    "merge ask: $url at $sha, agent-review success, checks pending: test; queue before notes 4 and 5 as follow-ups and say where each went"
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url ${counts%:0}:2 before=4,5 guarded=none"
+  assert_contains "$output" "already logged review verdict=pass head=$sha"
+  assert_contains "$output" "already logged done role=reviewer session=r0000002"
+  assert_equal "$(jq -c 'select(.event == "review")' "$TEAM_HOME/ledger.jsonl" | wc -l)" 1
+}
+
+@test "a pass on a PR behind its base prints the builder-merge-base step instead of the ask" {
+  reviewing "$sha"
+  pr_on_github "$sha" 3
+  live b0000001 120000
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
+  assert_contains "$output" "logged review verdict=pass head=$sha"
+  assert_equal "$(tail -n 1 <<<"$output")" \
+    "merge base: $url is 3 behind main, so it merges main first (step 6): render team-brief T7 builder-merge-base and send its path to T7-builder (b0000001, 120k)"
+  # Past 250k, the holder stows and a fresh builder takes the brief.
+  live b0000001 260000
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
+  assert_equal "$(tail -n 1 <<<"$output")" \
+    "merge base: $url is 3 behind main, so it merges main first (step 6): send T7 STOW to T7-builder (b0000001, 260k), then launch a fresh builder on team-brief T7 builder-merge-base"
+  assert_equal "$(outside_calls)" ""
+}
+
+@test "a pass with a standing plan-time approval says merge pre-approved, unless the review found guarded areas" {
+  sed -i 's/^merge_method = "merge"/&\nmerge_with_plan = true/' "$TEAM_HOME/projects.toml"
+  event merge-preapproved '{project: "proj", ask: "plan", discord_message: "1566347677472661545", scope: ["one.txt"]}'
+  reviewing "$sha"
+  pr_on_github "$sha"
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
+  assert_equal "$(tail -n 1 <<<"$output")" \
+    "merge pre-approved: run team-merge T7 for $url at $sha, agent-review success, checks green"
+  # A later review that found a guarded area brings the merge back to Daniel.
+  launched r0000003 brief-review '["browser"]' reviewer
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=ci,settings"
+  assert_contains "$output" "logged review verdict=pass head=$sha"
+  assert_equal "$(tail -n 1 <<<"$output")" \
+    "merge ask: $url at $sha, agent-review success, checks green; the review found guarded areas: ci, settings, so the plan-time word does not hold"
+  # A withdrawn approval no longer holds.
+  event merge-preapproval-withdrawn '{project: "proj", discord_message: "1566347677472661546"}'
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
+  assert_equal "$(tail -n 1 <<<"$output")" "merge ask: $url at $sha, agent-review success, checks green"
+  assert_equal "$(outside_calls)" ""
+}
+
+@test "a pass with no PR yet, a gated project's, tells the holding builder to go on" {
+  sed -i 's/^delivery = "direct-pr"/delivery = "no-mistakes"/' "$TEAM_HOME/projects.toml"
+  jq -cn --arg h "$sha" '{template: "reviewer", project: "proj", values: {head: $h}}' >"$TEAM_HOME/tasks/T7/brief-review.json"
+  launched r0000002 brief-review '[]' reviewer
+  live b0000001 90000
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $sha $counts before=none guarded=none"
+  assert_equal "$(tail -n 1 <<<"$output")" \
+    "send to T7-builder (b0000001, 90k): T7 the review of ${sha:0:8} passed: go on with your delivery"
+  assert_equal "$(stub_calls gh)" ""
+}
+
+@test "a findings verdict needs --sent-back, logs it as numbers and routes the findings to the holder under 250k" {
+  local count
+  reviewing "$sha"
+  pr_on_github "$sha"
+  live b0000001 120000
+  refused "a DONE findings needs --sent-back <list>, the numbers that go back to the builder (none for no fix round)" \
+    T7 -- "T7 DONE findings .scratch/task/review.md $counts before=none guarded=none"
+  count=$(wc -l <"$TEAM_HOME/ledger.jsonl")
+  run_bin -0 --separate-stderr team-next T7 --sent-back 3,5 -- "T7 DONE findings .scratch/task/review.md ${counts/blocking:0/blocking:2} before=none guarded=none"
+  assert_equal "$(logged_from $((count + 1)) | jq -c 'select(.event == "review") | {verdict, head, sent_back}')" \
+    "$(jq -cn --arg h "$sha" '{verdict: "findings", head: $h, sent_back: [3, 5]}')"
+  assert_equal "$(tail -n 1 <<<"$output")" \
+    "send to T7-builder (b0000001, 120k): T7 fix findings 3 and 5 in .scratch/task/review.md on the same branch, then deliver again as your brief says"
+  assert_equal "$(outside_calls)" ""
+  assert_equal "$(bg_calls)" ""
+}
+
+@test "a findings verdict whose holder is at 250k or more, or gone, prints the STOW to send" {
+  reviewing "$sha"
+  pr_on_github "$sha"
+  live b0000001 250000
+  run_bin -0 --separate-stderr team-next T7 --sent-back 3 -- "T7 DONE findings .scratch/task/review.md ${counts/blocking:0/blocking:1} before=none guarded=none"
+  assert_equal "$(tail -n 1 <<<"$output")" \
+    "send to T7-builder (b0000001, 250k): T7 STOW; its PAUSED stowed goes to team-next, which launches the round"
+  live
+  run_bin -0 --separate-stderr team-next T7 --sent-back 3 -- "T7 DONE findings .scratch/task/review.md ${counts/blocking:0/blocking:1} before=none guarded=none"
+  assert_contains "$output" "already logged review verdict=findings"
+  assert_equal "$(tail -n 1 <<<"$output")" \
+    "T7-builder b0000001 is gone: recover it (the recover-worker skill), then send it T7 STOW; its PAUSED stowed goes to team-next, which launches the round"
+  # Nothing sent back: no round.
+  run_bin -0 --separate-stderr team-next T7 --sent-back none -- "T7 DONE findings .scratch/task/review.md ${counts/note-before:0/note-before:1} before=2 guarded=none"
+  assert_equal "$(tail -n 1 <<<"$output")" "no hand-off: the review sent nothing back, so there is no fix round"
+}
+
+@test "a PAUSED stowed after a findings review launches the round's builder with every fact derived, once" {
+  local count
+  reviewing "$sha"
+  review_logged findings "$sha" '[3, 5]' '{"blocking": 2}'
+  event 'done' '{role: "reviewer", session: "r0000002"}'
+  echo "# review" >"$wt/.scratch/task/review.md"
+  count=$(wc -l <"$TEAM_HOME/ledger.jsonl")
+  run_bin -0 --separate-stderr team-next T7 -- "T7 PAUSED stowed"
+  assert_equal "$output" "logged paused reason=stowed
+brief $TEAM_HOME/tasks/T7/brief-round-1.md
+launched T7-builder c0000001"
+  assert_equal "$(record round-1 | jq -cS .)" "$(jq -cnS --arg url "$url" '{template: "builder-round",
+    values: {findings: "3 and 5", findings_file: ".scratch/task/review.md", goal: "Coordinator toil goes to the scripts.", pr: $url}}')"
+  assert_equal "$(logged_from $((count + 1)) | jq -c 'select(.event == "launch") | {role, worktree, toolkits, brief}')" \
+    "$(jq -cn --arg wt "$wt" '{role: "builder", worktree: $wt, toolkits: ["browser"], brief: "brief-round-1"}')"
+  # A second stow after that launch launches nothing.
+  run_bin -0 --separate-stderr team-next T7 -- "T7 PAUSED stowed"
+  assert_equal "$output" "logged paused reason=stowed
+no hand-off for PAUSED stowed: no review's sent-back findings wait for a round"
+  assert_equal "$(bg_calls | wc -l)" 1
+}
+
+@test "a PAUSED stowed whose round launch failed finishes on the rerun; one after a pass, or a re-review, launches nothing" {
+  reviewing "$sha"
+  review_logged findings "$sha" '[3]' '{"blocking": 1}'
+  echo "# review" >"$wt/.scratch/task/review.md"
+  touch "$STUB_FIXTURES/fail-once"
+  run_bin -1 team-next T7 -- "T7 PAUSED stowed"
+  run_bin -0 --separate-stderr team-next T7 -- "T7 PAUSED stowed"
+  assert_equal "$output" "already logged paused reason=stowed
+brief $TEAM_HOME/tasks/T7/brief-round-1.md
+launched T7-builder c0000001"
+  # The next round's stow after a re-review that had findings takes round-2.
+  launched r0000003 brief-rereview-2 '[]' reviewer
+  review_logged findings "$sha" '[4]' '{"blocking": 1}'
+  run_bin -0 --separate-stderr team-next T7 -- "T7 PAUSED stowed"
+  assert_contains "$output" "brief $TEAM_HOME/tasks/T7/brief-round-2.md"
+  # A reviewer launched since the findings review means they were handed on.
+  review_logged findings "$sha" '[6]' '{"blocking": 1}'
+  launched r0000004 brief-rereview-3 '[]' reviewer
+  run_bin -0 --separate-stderr team-next T7 -- "T7 PAUSED stowed"
+  assert_contains "$output" "no hand-off for PAUSED stowed"
+  # After a pass, nothing.
+  review_logged pass "$sha" '[]'
+  run_bin -0 --separate-stderr team-next T7 -- "T7 PAUSED stowed"
+  assert_contains "$output" "no hand-off for PAUSED stowed"
+  # The failed launch, round-1's and round-2's.
+  assert_equal "$(bg_calls | wc -l)" 3
+}
+
+@test "team-next never runs team-post, team-merge or Discord, and the manual's steps 5 and 6 name the verdicts and the stow" {
+  if grep -En 'sibling team-(post|merge|ask|answer|inbox|thread)|/team-(post|merge|ask|answer|inbox|thread)\b|discord_api|\bcurl\b' \
+    "$REPO_ROOT/bin/team-next"; then return 1; fi
+  local manual=$REPO_ROOT/roles/coordinator.md
+  grep -qF '`team-next` logs a `DONE pass` and prints the merge ask' "$manual"
+  grep -qF 'a `DONE findings` with `--sent-back <list>`' "$manual"
+  grep -E '^\| `PAUSED stowed` \|.*`team-next`' "$manual"
   (($(wc -l <"$manual") <= 120))
 }

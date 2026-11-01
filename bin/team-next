@@ -4,7 +4,8 @@
 # Usage: team-next T<n> [--from <session>] [--sent-back <list>] [--next <NN>] [--checks <file>]
 #                  [--since <file>] [--template rereview|verify] -- '<the worker's message>'
 #   --from       the sender, as team-log --from-message takes it, when the message cannot tell it
-#   --sent-back  with a DONE findings message, the numbers sent back, logged as the review's sent_back
+#   --sent-back  with a DONE findings message, required, the numbers sent back (none for none), logged
+#                as the review's sent_back
 #   --next       with a builder's DONE <NN>, the ticket to launch next instead of the lowest-numbered
 #                ready one; a ticket with a Waits for: line is launched only so
 #   --checks     with a review launch, the first review's checks file (the reviewer's checks);
@@ -50,7 +51,28 @@
 # from GitHub, and its since naming the merge's conflicted files), --since added after the
 # derived since. It launches as a reviewer with the toolkits of the task's latest reviewer
 # launch, else of its latest builder launch.
-# Either hand-off's brief is refused when a launch already read it, and rendered again with
+# A reviewer's DONE pass or DONE findings launches nothing: refused, before anything is logged,
+# when the task has no plan-approved, a DONE findings without --sent-back, and a pass whose PR
+# head on GitHub (team-state T<n> --json) is not the reviewed head, naming both (exit 75 when
+# GitHub cannot be read). Once the review and its done are logged, the last line is what is
+# left for the coordinator, the holder being the task's latest builder launch, under 250k while
+# team-state reads its context under 250,000 tokens or none, and gone when its session is not
+# live. For a pass on a PR: "merge ask: <full PR URL> at <head>, agent-review <state>, checks
+# green" (or the failing, pending and missing checks), "merge pre-approved: run team-merge T<n>
+# for ..." instead while team-state's plan-time approval stands and the review found no guarded
+# area, each guarded area named, and the before notes to queue as follow-ups; for a PR behind
+# its base, "merge base: ..." instead, the builder-merge-base brief for the holder under 250k,
+# else a fresh builder, after the holder's STOW when it is live. For a pass with no PR (a gated project's review-ready), the
+# message telling the holder to go on with its delivery. For findings: the message for the
+# holder under 250k (its name, the findings sent back and the findings file the message names),
+# else the T<n> STOW to send it (after recovering it when gone), or no hand-off when nothing was
+# sent back.
+# A PAUSED stowed while the latest review had findings and sent some back, with no launch since
+# it but an ops session's, launches the fix round: team-brief T<n> builder-round --name
+# round-<k>, the lowest k from 1 whose brief no launch read, every fact derived (the findings,
+# the newest findings file, the PR and the plan's goal), in the project of the task's latest
+# builder launch, as a builder with its toolkits; any other PAUSED stowed has no hand-off.
+# Each hand-off's brief is refused when a launch already read it, and rendered again with
 # --force when none did (a rerun after a failed launch). The brief is rendered before the events
 # are logged, then team-worker launches it, and the last line is "launched T<n>-<role> <session
 # id>". A launch that fails is finished by running the same command again, which logs nothing
@@ -124,9 +146,15 @@ kind=$(jq -rn --arg m "$message" '$m | gsub("^\\s+"; "") | [splits("\\s+")] | .[
   | if .[0] == "DONE" and ($sub | test("^[0-9]{2}$")) then "DONE <NN>"
     elif .[0] == "DONE" and ($sub | IN("review-ready", "merged", "pass", "findings", "gate")) then join(" ")
     else .[0] end')
+# A PAUSED stowed is the answer to a STOW, whatever words follow: its paused event says so.
+if [[ $kind == PAUSED ]] && jq -e 'any(.[]; .event == "paused" and .reason == "stowed")' <<<"$parsed" >/dev/null; then
+  kind="PAUSED stowed"
+fi
 case $kind in
   "DONE <NN>") handoff=ticket ;;
   PR | "DONE review-ready" | "DONE merged") handoff=review ;;
+  "DONE pass" | "DONE findings") handoff=verdict ;;
+  "PAUSED stowed") handoff=round ;;
   *) handoff=none ;;
 esac
 [[ -z $next || $handoff == ticket ]] || usage_error "--next is taken only with a builder's DONE <NN> message, not $kind"
@@ -134,6 +162,8 @@ for opt in --checks --since --template; do
   [[ -z ${given[$opt]:-} || $handoff == review ]] ||
     usage_error "$opt is taken only with a builder's PR, DONE review-ready or DONE merged message, not $kind"
 done
+[[ $kind != "DONE findings" || -n ${given[--sent-back]:-} ]] ||
+  die "a DONE findings needs --sent-back <list>, the numbers that go back to the builder (none for no fix round)"
 
 # same($p): whether the event is the parsed event $p, as a rerun finds it logged.
 same_def='def same($p): .event == $p.event and
@@ -214,6 +244,16 @@ sender_launch() {
     | . + {worktree: (.worktree | local_path($home))}' -c --arg session "$session" <<<"$events"
 }
 
+# A stow hands a round on only while the latest review sent findings back and no launch (an ops
+# session's aside) has taken them since.
+if [[ $handoff == round ]] && ! jq -e '(to_entries | map(select(.value.event == "review")) | last) as $r
+    | $r != null and $r.value.verdict == "findings" and ($r.value.sent_back // []) != []
+      and (any(.[$r.key + 1:][]; .event == "launch" and .role != "ops") | not)' <<<"$events" >/dev/null; then
+  log_events
+  echo "no hand-off for $kind: no review's sent-back findings wait for a round"
+  exit 0
+fi
+
 if [[ $handoff == none ]]; then
   log_events
   echo "no hand-off for $kind"
@@ -222,6 +262,102 @@ fi
 
 jq -e 'any(.[]; .event == "plan-approved")' <<<"$events" >/dev/null ||
   die "$task has no plan-approved, so no $handoff hand-off; approve the plan first (step 3 of the manual)"
+
+# "3, 5 and 6" from a JSON list.
+and_list() {
+  jq -r 'map(tostring) | if length < 2 then join("") else "\(.[:-1] | join(", ")) and \(.[-1])" end' <<<"$1"
+}
+
+if [[ $handoff == verdict ]]; then
+  state=$(sibling team-state "$task" --json) || exit
+  review=$(jq -c 'map(select(.event == "review")) | first' <<<"$parsed")
+  pr=$(jq -c .pr <<<"$state")
+  # The builder who holds the worktree's context: the task's latest builder launch, as
+  # "T<n>-builder (<session>, <context>k)", live and under 250k or not.
+  holder=$(jq -c '[.workers[] | select(.role == "builder")] | last' <<<"$state")
+  [[ $holder != null ]] || die "$task has no builder launch, so no builder holds the review's work"
+  session=$(jq -r .session <<<"$holder")
+  holds=$(jq -r 'if .live | not then "gone" elif (.context | type) == "number" and .context >= 250000 then "full" else "holds" end' <<<"$holder")
+  who="$task-builder ($session, $(jq -r 'if .live | not then "gone" elif (.context | type) == "number" then "\(.context / 1000 | round)k" else "context unknown" end' <<<"$holder"))"
+  gone="$task-builder $session is gone: recover it (the recover-worker skill), then send it"
+  if [[ $kind == "DONE pass" && $pr != null ]]; then
+    # A pass is taken only on the PR's head as GitHub has it now.
+    if jq -e 'has("error")' <<<"$pr" >/dev/null; then
+      echo "${0##*/}: GitHub cannot be read for $(jq -r .url <<<"$pr") ($(jq -r .error <<<"$pr")); run the same command again" >&2
+      exit 75
+    fi
+    live_head=$(jq -r .head <<<"$pr")
+    reviewed=$(jq -r .head <<<"$review")
+    ledger_jq 'same_head($a; $b)' -n -e --arg a "$live_head" --arg b "$reviewed" >/dev/null ||
+      die "the PR's head $live_head moved past the reviewed head $reviewed, so the pass is not taken; re-review the new head"
+  fi
+  log_events
+
+  if [[ $kind == "DONE findings" ]]; then
+    sent=$(jq -c '.sent_back // []' <<<"$review")
+    if [[ $sent == '[]' ]]; then
+      echo "no hand-off: the review sent nothing back, so there is no fix round"
+    else
+      file=$(jq -rn --arg m "$message" '$m | gsub("^\\s+"; "") | [splits("\\s+")] | .[3]')
+      stow="$task STOW; its PAUSED stowed goes to team-next, which launches the round"
+      case $holds in
+        holds) echo "send to $who: $task fix findings $(and_list "$sent") in $file on the same branch, then deliver again as your brief says" ;;
+        full) echo "send to $who: $stow" ;;
+        gone) echo "$gone $stow" ;;
+      esac
+    fi
+    exit 0
+  fi
+
+  if [[ $pr == null ]]; then
+    # No PR yet: a gated project's builder waits for the pass to run its gate.
+    go_on="$task the review of $(jq -r '.head[:8]' <<<"$review") passed: go on with your delivery"
+    if [[ $holds == gone ]]; then echo "$gone $go_on"; else echo "send to $who: $go_on"; fi
+    exit 0
+  fi
+  url=$(jq -r .url <<<"$pr")
+  behind=$(jq -r '.behind_by // 0' <<<"$pr")
+  if ((behind > 0)); then
+    base=$(jq -r .base <<<"$pr")
+    step="merge base: $url is $behind behind $base, so it merges $base first (step 6):"
+    case $holds in
+      holds) echo "$step render team-brief $task builder-merge-base and send its path to $who" ;;
+      full) echo "$step send $task STOW to $who, then launch a fresh builder on team-brief $task builder-merge-base" ;;
+      gone) echo "$step $task-builder $session is gone, so launch a fresh builder on team-brief $task builder-merge-base" ;;
+    esac
+    exit 0
+  fi
+  # The merge ask's facts, or the plan-time word's merge.
+  jq -r --arg task "$task" --argjson review "$review" --arg before "$(and_list "$(jq -c '.before // []' <<<"$review")")" '
+    (.pr | "\(.url) at \(.head), agent-review \(.agent_review), "
+      + ([(.checks.failing | select(. != []) | "failing: \(join(", "))"),
+          (.checks.pending | select(. != []) | "pending: \(join(", "))"),
+          (.required_missing | select(. != []) | "missing: \(join(", "))")]
+        | if . == [] then "checks green" else "checks \(join("; "))" end)) as $facts
+    | (.merge_preapproval | . != null and .withdrawn == null and .opted_in == true and .own != true) as $planned
+    | ($review.guarded // []) as $guarded
+    | if $planned and $guarded == [] then "merge pre-approved: run team-merge \($task) for \($facts)"
+      else "merge ask: \($facts)" end
+    + (if $guarded == [] then ""
+       else "; the review found guarded areas: \($guarded | join(", "))\(if $planned then ", so the plan-time word does not hold" else "" end)" end)
+    + (if $before == "" then "" else "; queue before notes \($before) as follow-ups and say where each went" end)' <<<"$state"
+  exit 0
+fi
+
+if [[ $handoff == round ]]; then
+  # The stowed builder's round goes to a fresh builder in the latest builder launch's project.
+  project=$(jq -r 'map(select(.event == "launch" and .role == "builder")) | last | .project // empty' <<<"$events")
+  [[ -n $project ]] || die "$task has no builder launch naming a project, so the round has none"
+  worktree=$(project_worktree "$project") || exit
+  # round-<k>: the lowest k from 1 whose brief no launch read.
+  k=1
+  while [[ -e $TEAM_HOME/tasks/$task/brief-round-$k.md ]] &&
+    jq -e --arg b "brief-round-$k" 'any(.[]; .event == "launch" and .brief == $b)' <<<"$events" >/dev/null; do
+    k=$((k + 1))
+  done
+  hand_off builder builder-round "round-$k" "$project" "$worktree"
+  exit 0
+fi
 
 if [[ $handoff == review ]]; then
   # The event the hand-off follows: the pr of a PR, else the builder's done.
