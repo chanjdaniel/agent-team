@@ -177,6 +177,8 @@ SETTINGS=$HOME/.config/agent-team/capacity.json
 STATE=$HOME/.local/state/agent-team/capacity
 READINGS=$STATE/readings.jsonl
 HEAVY_LOCK=$HOME/.local/state/agent-team/heavy.lock
+# team-heavy's HOLDER_FORM: a holder line of its own form, its label, pid and task.
+HEAVY_HOLDER_FORM='^(.*) \(pid ([0-9]+)(, (T[0-9]+))?\) since '
 SLICE=agent-team.slice
 DROP_IN=agent-team.conf
 uid=$(id -u)
@@ -463,6 +465,23 @@ unit_values() {
     | from_entries'
 }
 
+# The pid of the team-heavy that holds the heavy-run lock, from its holder line, or null while the
+# lock is free (the line stays after a run ends) or held in another form. Its tree is its own cost,
+# never a session's. The lock test and the form are team-heavy's own.
+heavy_pid() {
+  local fd line='' held=0
+  if [[ -s $HEAVY_LOCK ]]; then
+    exec {fd}<"$HEAVY_LOCK"
+    flock -n -s "$fd" || held=1
+    exec {fd}<&-
+  fi
+  if ((held)) && IFS= read -r line <"$HEAVY_LOCK" && [[ $line =~ $HEAVY_HOLDER_FORM ]]; then
+    echo "${BASH_REMATCH[2]}"
+  else
+    echo null
+  fi
+}
+
 # The capacity reading's line from take_reading's input (bin/lib/reading.sh), then the cost
 # samples of what it ended, as the header's sample says.
 capacity_line() {
@@ -473,10 +492,7 @@ capacity_line() {
     sessions=$out
   fi
   mapfile -t gates < <(gate_units)
-  # The heavy run's team-heavy, from its holder line, whose tree is its own cost, not a session's.
-  if [[ -s $HEAVY_LOCK ]] && IFS= read -r out <"$HEAVY_LOCK" && [[ $out =~ \(pid\ ([0-9]+)(,\ T[0-9]+)?\)\ since\  ]]; then
-    heavy=${BASH_REMATCH[1]}
-  fi
+  heavy=$(heavy_pid)
   jq -c --argjson sessions "$sessions" --slurpfile held "$work/held.json" --arg gate_root "$HOME/.no-mistakes" \
     --argjson heavy "$heavy" \
     '. + {sessions: $sessions, held: $held[0], gate_root: $gate_root, gate_units: $ARGS.positional, heavy: $heavy}' \

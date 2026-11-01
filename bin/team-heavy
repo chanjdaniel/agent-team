@@ -68,7 +68,8 @@ LOCK=$HOME/.local/state/agent-team/heavy.lock
 COSTS=$HOME/.local/state/agent-team/capacity/costs.jsonl
 KILL_SECONDS=${TEAM_HEAVY_KILL_SECONDS:-10}
 SAMPLE_SECONDS=10
-# A holder line of team-heavy's own form: its label, pid and task.
+# A holder line of team-heavy's own form: its label, pid and task (team-capacity's
+# HEAVY_HOLDER_FORM is the same, which tests/team-capacity.bats holds).
 HOLDER_FORM='^(.*) \(pid ([0-9]+)(, (T[0-9]+))?\) since '
 
 # The holder's line, or "another run" while the file is empty.

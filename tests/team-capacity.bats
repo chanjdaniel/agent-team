@@ -391,6 +391,11 @@ MIB=1048576
       .tasks[0].cpu_nsec]')" '[true,true,true,240000000000]'
 }
 
+@test "the reading reads a heavy run's holder line by team-heavy's own form" {
+  assert_equal "$(sed -n "s/^HEAVY_HOLDER_FORM=//p" "$REPO_ROOT/bin/team-capacity")" "$(sed -n "s/^HOLDER_FORM=//p" "$REPO_ROOT/bin/team-heavy")"
+  [[ -n $(sed -n "s/^HOLDER_FORM=//p" "$REPO_ROOT/bin/team-heavy") ]]
+}
+
 @test "sample on macOS: each task's use is its processes' by directory and descent, each session its tree's but its heavy run, and systemd is not asked" {
   sample_machine
   as_macos
@@ -401,6 +406,10 @@ MIB=1048576
   proc 103 102 1000 100 "$T7_WT"
   mkdir -p "$HOME/.local/state/agent-team"
   echo "tests/run all in ~/t7 (pid 102, T7) since 2026-11-01 10:00:00 +0000" >"$HOME/.local/state/agent-team/heavy.lock"
+  # The run holds the lock, as team-heavy does.
+  local lock_fd
+  exec {lock_fd}<"$HOME/.local/state/agent-team/heavy.lock"
+  flock -x "$lock_fd"
   proc 200 1 300 40 "$T9_WT"
   proc 201 200 20 2 /tmp
   sessions "a1b2c3d4 T7-builder 100"
@@ -411,6 +420,14 @@ MIB=1048576
   assert_equal "$(jq -c --argjson mib "$MIB" '.tasks[0].sessions | map(.memory /= $mib | .peak /= $mib)' "$STATE_DIR/readings.jsonl")" \
     '[{"id":"a1b2c3d4","role":"builder","memory":768,"peak":768,"cpu_seconds":90}]'
   assert_equal "$(stub_calls systemctl)" ""
+
+  exec {lock_fd}<&-
+  # With the lock free, the holder line is the last run's and its pid is no heavy run: pid 102,
+  # the builder's child now, stays the builder's.
+  age_by 120
+  run_bin -0 --separate-stderr team-capacity sample
+  assert_equal "$(tail -n 1 "$STATE_DIR/readings.jsonl" | jq -c --argjson mib "$MIB" '.tasks[0].sessions | map(.memory /= $mib | .peak /= $mib | del(.cpu_seconds))')" \
+    '[{"id":"a1b2c3d4","role":"builder","memory":1818,"peak":1818}]'
 }
 
 @test "sample: a user manager or a session list that does not answer is said in the reading, and the processes count by directory" {
