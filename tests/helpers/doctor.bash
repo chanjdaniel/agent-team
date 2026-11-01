@@ -51,6 +51,7 @@ declare -gA FORMAT=(
 # wrapper is installed and config.yaml runs the gate on it, two projects are registered and
 # cloned as the bootstrap clones them,
 # ~/.config/agent-team/home names the team home, and its core.hooksPath the code's records-git;
+# the user manager delegates cpu and memory and the team's slice is installed (team-capacity);
 # slots.json sets a cap of 10, and a reading of the machine's load was just taken.
 doctor_machine() {
   hold_lease home-pc >/dev/null
@@ -173,6 +174,9 @@ EOF
   touch "$TEAM_CHROME"
   # The heartbeat runs, as it should on the holder.
   "$REPO_ROOT/bin/team-timers" enable >/dev/null
+  # The user manager delegates cpu and memory, as home-pc's does, and the team's slice is installed.
+  user_controllers cpu memory pids
+  "$REPO_ROOT/bin/team-capacity" install >/dev/null
 
   # Two projects, cloned as the bootstrap clones them: Conventioner gated by no-mistakes with a
   # treehouse pool, site with a git pool; no-mistakes has a gate for each checkout listed in
@@ -202,6 +206,21 @@ EOF
   # takes them.
   echo '{"cap": 10}' >"$HOME/.config/agent-team/slots.json"
   slots_reading 0 8 1
+  capacity_reading 0
+}
+
+# capacity_reading <minutes>: append a reading of the machine's load with the team's use per task,
+# as team-capacity sample writes it, taken <minutes> ago on a machine shaped like home-pc, other
+# programs using 8 GiB and no team work.
+capacity_reading() {
+  local file=$HOME/.local/state/agent-team/capacity/readings.jsonl
+  mkdir -p "${file%/*}"
+  jq -cn --arg at "$(date -u -d "@$(($(date +%s) - $1 * 60))" +%FT%TZ)" '
+    (30.6 * 1073741824 | floor) as $total | (8 * 1073741824) as $others
+    | {at: $at, os: "linux", docker: true,
+       memory: {total: $total, available: ($total - $others - 1073741824), team: 1073741824, others: $others},
+       cpu: {cpus: 12, seconds: 300, team: 0.5, others: 1}, systemd: true, sessions: true, tasks: [], stacks: [],
+       gate: {running: false, memory: 0, cpu_seconds: 0}}' >>"$file"
 }
 
 # slots_reading <minutes> <others GiB> [<others cores>]: append a reading of the machine's load

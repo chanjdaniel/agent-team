@@ -9,7 +9,7 @@
 # check pass. Each command runs from the worktree's root with bash -c, TMPDIR a fresh directory
 # beside it (the test sandbox refuses one under /home or /Users), under the machine's heavy-run
 # lock (team-heavy run --label "<text>: <command> on <head>", the text "team-checks <project>"
-# by default), which waits for another holder.
+# by default, its cost sample heavy:checks:<project>), which waits for another holder.
 # Prints "team-checks: running <command> on <head>" on stderr before each, and its result on
 # stdout: "local check '<command>' passed on the head <head>", or failed (exit <n>), or could not
 # run yet (exit 75, the lock stayed held), with its last 20 lines indented below. The worktree
@@ -62,7 +62,7 @@ for command in "${local_checks[@]}"; do
   rm -rf "$scratch/tmp"
   mkdir "$scratch/tmp"
   rc=0
-  (cd "$scratch/head" && TMPDIR=$scratch/tmp "$(dirname "$TEAM_LIB")/team-heavy" run --label "$label: $command on ${head:0:7}" -- bash -c "$command") \
+  (cd "$scratch/head" && TMPDIR=$scratch/tmp "$(dirname "$TEAM_LIB")/team-heavy" run --label "$label: $command on ${head:0:7}" --kind "checks:$project" -- bash -c "$command") \
     </dev/null >"$scratch/check.log" 2>&1 || rc=$?
   if ((rc == 0)); then
     echo "local check '$command' passed on the head ${head:0:7}"

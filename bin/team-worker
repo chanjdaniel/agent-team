@@ -26,6 +26,9 @@
 # worktree; an ops prompt, the brief's text, is checked the same way. When the prompt names one
 # directly under the task's tasks/T<n>/, the launch logs it as brief, its file name without .md
 # (brief-rereview-3); a brief of another task's directory, or none, logs no brief.
+# Once the session runs, `team-capacity place <id>` adopts it into its task's slice (on Linux;
+# nothing on macOS), but T0's; a session it cannot place is a warning on stderr, and the launch
+# stands.
 # Before it launches, it stops each idle live session of the task's earlier launches whose work
 # is handed on (every planner and reviewer, and every builder of the same worktree when the new
 # worker is a builder: one builder holds a worktree's work at a time) once the ledger follows its
@@ -310,6 +313,13 @@ if [[ $task != T0 ]]; then
       + (if $model == "" then {} else {model: $model} end)
       + (if $request == "" then {} else {request: $request} end)
       + (if $brief == "" then {} else {brief: $brief} end)' "${toolkits[@]}")"
+fi
+
+# The new session is the claude daemon's child, never this script's, so it is adopted into its
+# task's slice once it runs; a placement that fails leaves it unheld and is only a warning. T0's
+# session is no task's work, and lives only as long as the load check.
+if [[ $task != T0 ]] && ! place_out=$(TEAM_HOME=$TEAM_HOME "$code/bin/team-capacity" place "$id" 2>&1 >/dev/null); then
+  echo "team-worker: warning: $(grep -m1 . <<<"$place_out" | sed 's/^team-capacity: //' || echo "team-capacity place failed for $name $id"); the launch stands" >&2
 fi
 
 echo "$id"

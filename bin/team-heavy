@@ -1,34 +1,76 @@
 #!/usr/bin/env bash
 # Run the machine's heavy commands one at a time: a full tests/run, a project's local checks in
-# team-checks, a gate's end-to-end run, so they queue instead of overlapping and timing out.
+# team-checks, a gate's end-to-end run, so they queue instead of overlapping and timing out; each
+# in a process group (and on Linux a systemd scope) of its own, so its cost is measured and the
+# whole of it can be stopped.
 #
-# Usage: team-heavy run [--wait <minutes>] [--label <text>] -- <command> [<argument>...]
+# Usage: team-heavy run [--wait <minutes>] [--label <text>] [--kind <kind>] -- <command> [<argument>...]
 #        team-heavy status
+#        team-heavy stop [--task T<n>]
 #
 # run     Takes an exclusive flock on ~/.local/state/agent-team/heavy.lock, writes the holder's
-#         line into that file, "<label> (pid <pid>) since <YYYY-MM-DD HH:MM:SS +zzzz>" (the form
-#         of Conventioner's scripts/e2e-lock.sh, "<who> since <time>", so its end-to-end runs can
-#         take the same file), and runs the command with TEAM_HEAVY_HELD set and the lock's
+#         line into that file, "<label> (pid <pid>, T<n>) since <YYYY-MM-DD HH:MM:SS +zzzz>", the
+#         task being AGENT_TEAM_TASK's (which every worker's settings set; without it the line
+#         has only the pid), and runs the command with TEAM_HEAVY_HELD set and the lock's
 #         descriptor closed, so nothing the command leaves running keeps the lock: it goes when
 #         team-heavy ends, and team-heavy exits with the command's status. The label defaults to
 #         the command's words and the directory it runs in (~ for the home directory).
+#         Conventioner's scripts/e2e-lock.sh takes the same file with its own form, "<who> since
+#         <time>", which status reads as a holder too.
 #         While another run holds the lock, it says once on stderr that it waits and for whom,
 #         waits up to --wait minutes (default 180, or TEAM_HEAVY_WAIT_MINUTES; 0 does not wait),
 #         then exits 75 naming the holder.
-#         Under a run already (TEAM_HEAVY_HELD set), the command runs at once: a nested heavy
-#         command, tests/run as a local check in team-checks say, would otherwise wait for itself.
+#         The command runs in a process group of its own, its stdin /dev/null when team-heavy's is
+#         a terminal (a background group reading one would stop). On Linux it also runs in a
+#         transient scope, agent-team-heavy-<team-heavy's pid>.scope, in the task's slice
+#         (agent-team-T<n>.slice, or agent-team.slice with no task), through `systemd-run --user
+#         --scope --collect`; when systemd's user manager does not answer or systemd-run cannot
+#         start the scope, it says so once on stderr and runs in the process group alone.
+#         At its end it appends one cost line {at, kind: "heavy:<kind>", peak_bytes, cpu_seconds,
+#         seconds} to ~/.local/state/agent-team/capacity/costs.jsonl, which team-capacity costs
+#         learns from: the kind is --kind (tests/run gives tests-run, team-checks
+#         checks:<project>), else the label's first word, its file name when it is a path (a
+#         script's kind is the same from every checkout, and no path goes in costs.jsonl); in a
+#         scope, the peak and CPU are its MemoryPeak and CPUUsageNSec, read inside it as the
+#         command ends; elsewhere the peak is the highest resident memory of its process group,
+#         sampled every 10 seconds, and the CPU the time its processes took. A run that was
+#         stopped, one that ended before its first sample, or a scope whose MemoryPeak is not set
+#         leaves no sample, said on stderr, and a sample that cannot be written is a line on
+#         stderr: neither changes the exit status.
+#         An INT, TERM or HUP to team-heavy (a Ctrl-C in its terminal, or stop) ends the
+#         command's whole tree, as stop says, and team-heavy then exits with the command's status.
+#         Under a run already (TEAM_HEAVY_HELD set), the command runs at once, inside its parent's
+#         group and scope, with no sample of its own: a nested heavy command, tests/run as a local
+#         check in team-checks say, would otherwise wait for itself.
 # status  "held by <the holder's line>" ("held by another run" before it wrote one) or "free",
 #         exit 0 either way; it waits for nothing and takes no lock a run would wait for.
+# stop    Ends the running command's whole tree (never a Docker container it started, which rootful
+#         Docker keeps outside its scope and group: a team stack goes with its task's stack, by
+#         team-stack, and any other container stays, listed in team-janitor's report as not the
+#         team's), only while a team-heavy run holds the lock and, with --task, its holder line
+#         names that task: it sends team-heavy TERM, which stops the run's scope on Linux (systemd
+#         stops it, KILLing what is left after 10 seconds) and sends its process group TERM, then
+#         KILL after 10 seconds (TEAM_HEAVY_KILL_SECONDS), and waits for that team-heavy to end
+#         (never for the lock, which a run queued on it takes next). Says "stopped <the holder's
+#         line>", or "nothing to stop" and why when the lock is free, held in another form, or held
+#         for another task. Exit 0 either way, 1 when the run could not be stopped.
 #
-# Exit 0 done (run: the command's status), 2 usage error, 75 try again later (the wait ran out).
+# Exit 0 done (run: the command's status), 1 the stop failed, 2 usage error, 75 try again later
+# (the wait ran out).
 set -euo pipefail
 # The lock is the machine's, not the team home's, and tests/run takes it on CI or a fresh clone.
 # shellcheck disable=SC2034 # read by bin/lib/team.sh
 team_home_report=1
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
-USAGE="usage: team-heavy run [--wait <minutes>] [--label <text>] -- <command> [<argument>...] | team-heavy status"
+USAGE="usage: team-heavy run [--wait <minutes>] [--label <text>] [--kind <kind>] -- <command> [<argument>...] | team-heavy status | team-heavy stop [--task T<n>]"
 LOCK=$HOME/.local/state/agent-team/heavy.lock
+COSTS=$HOME/.local/state/agent-team/capacity/costs.jsonl
+KILL_SECONDS=${TEAM_HEAVY_KILL_SECONDS:-10}
+SAMPLE_SECONDS=10
+# A holder line of team-heavy's own form: its label, pid and task (team-capacity's
+# HEAVY_HOLDER_FORM is the same, which tests/team-capacity.bats holds).
+HOLDER_FORM='^(.*) \(pid ([0-9]+)(, (T[0-9]+))?\) since '
 
 # The holder's line, or "another run" while the file is empty.
 holder() {
@@ -37,24 +79,131 @@ holder() {
   echo "${line:-another run}"
 }
 
+# Succeed while some run holds the lock; it takes a shared lock, let go at once, which is granted
+# only while none does.
+held() {
+  local fd rc=0
+  [[ -e $LOCK ]] || return 1
+  exec {fd}<"$LOCK"
+  flock -n -s "$fd" || rc=1
+  exec {fd}<&-
+  ((rc))
+}
+
 cmd_status() {
-  local fd
-  if [[ ! -e $LOCK ]]; then
-    echo free
+  if held; then echo "held by $(holder)"; else echo free; fi
+}
+
+# Succeed while process <pid> runs and is not a zombie.
+alive() {
+  local stat
+  stat=$(ps -o stat= -p "$1" 2>/dev/null) || return 1
+  [[ -n $stat && $stat != Z* ]]
+}
+
+cmd_stop() {
+  local task='' line pid i
+  while (($#)); do
+    case $1 in
+      --task)
+        [[ ${2:-} =~ ^T[0-9]+$ ]] || usage_error "--task takes a task, T<n>; $USAGE"
+        task=$2
+        shift 2
+        ;;
+      *) usage_error "$USAGE" ;;
+    esac
+  done
+  if ! held; then
+    echo "nothing to stop"
     return
   fi
-  exec {fd}<"$LOCK"
-  # A shared lock is granted only while no run holds the exclusive one; it is let go at once.
-  if flock -n -s "$fd"; then
-    echo free
-  else
-    echo "held by $(holder)"
+  line=$(holder)
+  if ! [[ $line =~ $HOLDER_FORM ]]; then
+    echo "nothing to stop: the heavy-run lock is held by $line, not a team-heavy run"
+    return
   fi
-  exec {fd}<&-
+  pid=${BASH_REMATCH[2]}
+  if [[ -n $task && ${BASH_REMATCH[4]} != "$task" ]]; then
+    echo "nothing to stop for $task: the heavy run is $line"
+    return
+  fi
+  if [[ $(ps -o args= -p "$pid" 2>/dev/null) != *team-heavy* ]]; then
+    echo "nothing to stop: the heavy-run lock is held by $line, whose pid runs no team-heavy"
+    return
+  fi
+  kill -TERM "$pid" 2>/dev/null || die "cannot signal the heavy run $line"
+  # Wait for the holder to end, never for the lock, which a queued run may take first.
+  for ((i = 0; i < (KILL_SECONDS + 30) * 10; i++)); do
+    alive "$pid" || break
+    sleep 0.1
+  done
+  ! alive "$pid" || die "the heavy run $line still runs $((KILL_SECONDS + 30)) seconds after its stop"
+  echo "stopped $line"
+}
+
+# The CPU seconds, user and system, that the shell's waited-for children and their descendants
+# took, from the file <file> its `times` wrote (its second line).
+cpu_of() {
+  awk 'function secs(t) { split(t, p, "m"); sub(/s$/, "", p[2]); return p[1] * 60 + p[2] }
+    NR == 2 { printf "%.2f\n", secs($1) + secs($2) }' "$1"
+}
+
+# Succeed while process group <pgid> has a process that is not a zombie.
+group_alive() {
+  ps -A -o pgid= -o stat= | awk -v g="$1" '$1 == g && $2 !~ /^Z/ { found = 1 } END { exit !found }'
+}
+
+# Sample the resident memory of process group <pgid> into <file> (the highest, in bytes) every
+# SAMPLE_SECONDS while it lives; TERM ends it with its sleep.
+sample_group() {
+  local pgid=$1 file=$2 peak=0 now nap=''
+  trap '[[ -z $nap ]] || kill "$nap" 2>/dev/null; exit 0' TERM
+  while kill -0 -- "-$pgid" 2>/dev/null; do
+    now=$(ps -A -o pgid= -o rss= | awk -v g="$pgid" '$1 == g { s += $2 } END { printf "%d\n", s * 1024 }')
+    if ((now > peak)); then peak=$now && echo "$peak" >"$file"; fi
+    sleep "$SAMPLE_SECONDS" &
+    nap=$!
+    wait "$nap" || true
+    nap=''
+  done
+}
+
+# Append the cost line {at, kind, peak_bytes, cpu_seconds, seconds}; a failure is a line on stderr.
+write_cost() {
+  local kind=$1 peak=$2 cpu=$3 seconds=$4 err
+  if ! err=$({ mkdir -p "${COSTS%/*}" &&
+    jq -cn --arg at "$(date -u +%FT%TZ)" --arg kind "heavy:$kind" --argjson peak "$peak" --argjson cpu "$cpu" \
+      --argjson seconds "$seconds" '{at: $at, kind: $kind, peak_bytes: $peak, cpu_seconds: ($cpu * 100 | round / 100),
+        seconds: $seconds}' >>"$COSTS"; } 2>&1); then
+    echo "${0##*/}: could not write the cost sample to ${COSTS/#"$HOME"\//\~/}: ${err:-unknown error}" >&2
+  fi
+}
+
+# The run's state, for the signal handler: the command's pid (its process group's id), its scope
+# and whether a stop was asked.
+child='' unit='' stopping=0
+
+# Stop the command's whole tree: its scope, then TERM to its process group.
+stop_tree() {
+  stopping=1
+  [[ -n $child ]] || exit 143
+  [[ -z $unit ]] || systemctl --user stop "$unit" >/dev/null 2>&1 || true
+  kill -TERM -- "-$child" 2>/dev/null || true
+}
+
+# The stopped run's process group: KILLed once KILL_SECONDS have passed with any of it left.
+end_group() {
+  local i
+  for ((i = 0; i < KILL_SECONDS * 10; i++)); do
+    group_alive "$child" || return 0
+    sleep 0.1
+  done
+  kill -KILL -- "-$child" 2>/dev/null || true
 }
 
 cmd_run() {
-  local wait=${TEAM_HEAVY_WAIT_MINUTES:-180} label='' fd rc=0
+  local wait=${TEAM_HEAVY_WAIT_MINUTES:-180} label='' kind='' fd rc=0 task='' slice=agent-team.slice why=''
+  local tmp started start peak cpu status sampler=''
   while (($#)); do
     case $1 in
       --wait)
@@ -67,17 +216,26 @@ cmd_run() {
         label=$2
         shift 2
         ;;
+      --kind)
+        [[ ${2:-} =~ ^[^[:space:]]+$ ]] || usage_error "--kind takes one word; $USAGE"
+        kind=$2
+        shift 2
+        ;;
       --) shift && break ;;
       *) usage_error "$USAGE" ;;
     esac
   done
   (($#)) || usage_error "$USAGE"
   [[ $wait =~ ^[0-9]+$ ]] || usage_error "TEAM_HEAVY_WAIT_MINUTES must be a whole number of minutes, not '$wait'"
+  [[ $KILL_SECONDS =~ ^[0-9]+$ ]] || usage_error "TEAM_HEAVY_KILL_SECONDS must be a whole number of seconds, not '$KILL_SECONDS'"
   if [[ -n ${TEAM_HEAVY_HELD:-} ]]; then
     "$@" || rc=$?
     exit "$rc"
   fi
   [[ -n $label ]] || label="$* in ${PWD/#"$HOME"/\~}"
+  # The label's first word, its file name when it is a path, so no path goes in a kind.
+  if [[ -z $kind ]]; then kind=${label%%[[:space:]]*} && kind=${kind##*/}; fi
+  if [[ ${AGENT_TEAM_TASK:-} =~ ^T[0-9]+$ ]]; then task=$AGENT_TEAM_TASK slice=agent-team-$AGENT_TEAM_TASK.slice; fi
   mkdir -p "${LOCK%/*}"
   # Read-write, so opening it never empties the holder's line a waiting run reads.
   exec {fd}<>"$LOCK"
@@ -89,8 +247,84 @@ cmd_run() {
       exit 75
     }
   fi
-  printf '%s (pid %d) since %(%F %T %z)T\n' "$label" $$ -1 >"$LOCK"
-  TEAM_HEAVY_HELD=1 "$@" {fd}>&- || rc=$?
+  printf '%s (pid %d%s) since %(%F %T %z)T\n' "$label" $$ "${task:+, $task}" -1 >"$LOCK"
+
+  tmp=$(mktemp -d)
+  # shellcheck disable=SC2064 # the path is fixed now
+  trap "rm -rf '$tmp'" EXIT
+  trap stop_tree INT TERM HUP
+  started=$tmp/started
+  if [[ $(uname -s) == Linux ]]; then
+    if ! command -v systemd-run >/dev/null; then
+      why="systemd-run is not installed, so this run has no scope: it runs in a process group of its own"
+    elif [[ -z $(systemctl --user show -P Version 2>/dev/null) ]]; then
+      why="systemd's user manager does not answer, so this run has no scope: it runs in a process group of its own"
+    else
+      unit=agent-team-heavy-$$.scope
+    fi
+  fi
+  # A background group reading a terminal would stop.
+  if [[ -t 0 ]]; then exec </dev/null; fi
+  start=$EPOCHSECONDS
+  times >"$tmp/cpu0"
+  # Job control gives the command a process group of its own, its pid.
+  set -m
+  if [[ -n $unit ]]; then
+    # In the scope, a bash marks that it started, runs the command, then reads the scope's peak
+    # and CPU before it ends.
+    # shellcheck disable=SC2016 # expanded by the scope's bash
+    TEAM_HEAVY_HELD=1 systemd-run --user --scope --collect --quiet "--unit=$unit" --slice "$slice" -p TimeoutStopSec=10 \
+      "--description=team-heavy: $label" -- bash -c ': >"$0"; "${@:3}"; rc=$?
+        systemctl --user show -p MemoryPeak,CPUUsageNSec "$1" >"$2" 2>/dev/null; exit "$rc"' \
+      "$started" "$unit" "$tmp/scope" "$@" {fd}>&- &
+    child=$!
+    set +m
+    wait "$child" || rc=$?
+    if [[ ! -e $started ]] && ((!stopping)); then
+      why="systemd-run could not start this run's scope (exit $rc), so it runs in a process group of its own"
+      unit='' rc=0 start=$EPOCHSECONDS
+      times >"$tmp/cpu0"
+      set -m
+    fi
+  fi
+  if [[ -z $unit ]]; then
+    [[ -z $why ]] || echo "${0##*/}: $why" >&2
+    TEAM_HEAVY_HELD=1 "$@" {fd}>&- &
+    child=$!
+    set +m
+    sample_group "$child" "$tmp/peak" {fd}>&- &
+    sampler=$!
+    wait "$child" || rc=$?
+  fi
+  # A signal cuts the wait short: what is left goes, and the command's status is the next wait's.
+  if ((stopping)); then
+    end_group
+    status=0
+    wait "$child" 2>/dev/null || status=$?
+    ((status == 127)) || rc=$status
+  fi
+  if [[ -n $sampler ]]; then
+    kill "$sampler" 2>/dev/null || true
+    wait "$sampler" 2>/dev/null || true
+  fi
+
+  if ((stopping)); then
+    echo "${0##*/}: the run was stopped, so it leaves no cost sample" >&2
+  elif [[ -n $unit ]]; then
+    peak=$(sed -n 's/^MemoryPeak=\([0-9][0-9]*\)$/\1/p' "$tmp/scope" 2>/dev/null || true)
+    cpu=$(sed -n 's/^CPUUsageNSec=\([0-9][0-9]*\)$/\1/p' "$tmp/scope" 2>/dev/null || true)
+    if [[ -n $peak ]]; then
+      write_cost "$kind" "$peak" "$(awk -v n="${cpu:-0}" 'BEGIN { printf "%.2f\n", n / 1e9 }')" $((EPOCHSECONDS - start))
+    else
+      echo "${0##*/}: the scope's MemoryPeak is not set, so the run leaves no cost sample" >&2
+    fi
+  elif [[ -s $tmp/peak ]]; then
+    times >"$tmp/cpu1"
+    write_cost "$kind" "$(cat "$tmp/peak")" \
+      "$(awk -v a="$(cpu_of "$tmp/cpu0")" -v b="$(cpu_of "$tmp/cpu1")" 'BEGIN { printf "%.2f\n", b - a }')" $((EPOCHSECONDS - start))
+  else
+    echo "${0##*/}: the run ended before its memory was sampled, so it leaves no cost sample" >&2
+  fi
   exit "$rc"
 }
 
@@ -101,5 +335,6 @@ case $1 in
     (($# == 1)) || usage_error "$USAGE"
     cmd_status
     ;;
+  stop) cmd_stop "${@:2}" ;;
   *) usage_error "unknown subcommand '$1'; $USAGE" ;;
 esac

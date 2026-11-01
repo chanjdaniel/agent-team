@@ -562,7 +562,7 @@ added=
 if [[ -n $resume ]]; then
   # Never refused by the cap: the task holds its slot in the ledger already.
   if slot_status=$(TEAM_HOME=$TEAM_HOME "$bin/team-slots" --json); then
-    over=$(jq -r -L "$TEAM_LIB" 'include "slots"; include "stack"; over_cap_text' <<<"$slot_status")
+    over=$(jq -r -L "$TEAM_LIB" 'include "slots"; include "capacity"; include "stack"; over_cap_text' <<<"$slot_status")
     [[ -z $over ]] || echo "team-open: $over" >&2
   else
     echo "team-open: cannot read this machine's task slots; the resume carries on, since the cap never refuses it" >&2

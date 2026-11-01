@@ -47,7 +47,12 @@
 #                     never fails the run.
 #              slots  On the holder, after the inbox step, every run: team-slots sample, which
 #                     takes one reading of the machine's load for the effective task cap.
-#              stacks On the holder, after the slots step, when heartbeat_sweep is true in
+#              capacity  On the holder, after the slots step, every run: team-capacity sample,
+#                     which takes one reading of the machine's load with the team's use per task
+#                     and writes the cost samples of what ended, then team-capacity place
+#                     --quiet, which puts each live team session in its task's slice again (one
+#                     the claude daemon restarted, say) and logs only those it placed.
+#              stacks On the holder, after the capacity step, when heartbeat_sweep is true in
 #                     ~/.config/agent-team/stack.json (team-stack's settings, off by default):
 #                     team-stack sweep, which stops the team's idle stacks.
 #              checkpoint  On the holder, after the lease or back step: team-checkpoint, which
@@ -62,17 +67,19 @@
 #                     (~/.local/state/agent-team/janitor/<date>.md; a dry run's is none):
 #                     team-janitor, the daily Docker reap, report and alerts. A run of it that
 #                     failed still wrote the day's report, so it runs again the next day.
-#            The slots, stacks, checkpoint and janitor steps log one line per line their command
-#            prints (a good slots step prints none); a step that is off logs nothing. A slots,
-#            stacks, pack or janitor step that fails, or whose stack.json (slots.json for the slots
-#            step) is malformed, is logged as "<step>: failed: <reason>", the steps after it still
-#            run, and the run exits 1 at its end. A hung Docker never holds the run's lock past
-#            the lease's renewals: the reading is stopped after 60 s, the sweep and the pack after
+#            The slots, capacity, stacks, checkpoint and janitor steps log one line per line their
+#            command prints (a good slots step prints none, and a capacity step only the sessions
+#            it placed); a step that is off logs nothing. A slots, capacity, stacks, pack or janitor
+#            step that fails, or whose stack.json (slots.json for the slots step, capacity.json for
+#            the capacity step) is malformed, is logged as "<step>: failed: <reason>", the steps
+#            after it still run (the capacity step's place after its sample too), and the run
+#            exits 1 at its end. A hung Docker never holds the run's lock past the lease's
+#            renewals: each reading and the place are stopped after 60 s, the sweep and the pack after
 #            300 s and the janitor after 1200 s, each logged as "<step>: failed: timed out after <n> s" (a
 #            janitor stopped so wrote no report, so the next run starts it again). The sweep and
-#            the janitor need docker on the PATH enable captured (the sweep claude too), and the
-#            reading counts the team's stacks as other programs without it: run enable again
-#            once it is there. A run that finds another still going skips. Posts go through
+#            the janitor need docker on the PATH enable captured (the sweep and the capacity step
+#            claude too), and the reading counts the team's stacks as other programs without it:
+#            run enable again once it is there. A run that finds another still going skips. Posts go through
 #            discord_api; times in them are this machine's local time.
 #   watch    A stream for anyone watching the hold: checks the offline flag every 60 s until
 #            killed, and prints one line when it appears (at once if it is there) and one when it
@@ -88,8 +95,9 @@
 # posted}: GitHub unreachable since the UTC time, and whether #coordinator was told; read by
 # team-lease status, the fence hook and the doctor), login-refused ({since, reason}: the refusal
 # was posted), and on macOS heartbeat.err, the job's stderr (systemd keeps it in the journal).
-# TEAM_TIMERS_SLOTS_SECONDS, TEAM_TIMERS_SWEEP_SECONDS and TEAM_TIMERS_JANITOR_SECONDS replace the
-# reading's 60 s, the sweep's 300 s and the janitor's 1200 s (the tests' seams).
+# TEAM_TIMERS_SLOTS_SECONDS, TEAM_TIMERS_CAPACITY_SECONDS, TEAM_TIMERS_SWEEP_SECONDS and
+# TEAM_TIMERS_JANITOR_SECONDS replace the slots reading's 60 s, the capacity step's 60 s for each
+# of its commands, the sweep's 300 s and the janitor's 1200 s (the tests' seams).
 # Exit 0 done, 1 refused or a step failed, 2 usage error, 75 GitHub unreachable.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
@@ -109,6 +117,7 @@ INBOX_TIMEOUT=120
 # Seconds: the most the reading, the sweep and the janitor may take, together well inside the
 # lease's hour.
 SLOTS_TIMEOUT=${TEAM_TIMERS_SLOTS_SECONDS:-60}
+CAPACITY_TIMEOUT=${TEAM_TIMERS_CAPACITY_SECONDS:-60}
 SWEEP_TIMEOUT=${TEAM_TIMERS_SWEEP_SECONDS:-300}
 JANITOR_TIMEOUT=${TEAM_TIMERS_JANITOR_SECONDS:-1200}
 PACK_TIMEOUT=300
@@ -624,6 +633,13 @@ slots_step() {
   run_step slots "$SLOTS_TIMEOUT" team-slots sample
 }
 
+# The capacity step, on the holder after the slots step: team-capacity sample, then
+# team-capacity place --quiet, every run, each with its own time limit.
+capacity_step() {
+  run_step capacity "$CAPACITY_TIMEOUT" team-capacity sample
+  run_step capacity "$CAPACITY_TIMEOUT" team-capacity place --quiet
+}
+
 # The stacks step, on the holder before the checkpoint: team-stack sweep, when heartbeat_sweep
 # is on.
 stacks_step() {
@@ -741,6 +757,7 @@ run_heartbeat() {
   if ((holding)); then
     inbox_step
     slots_step
+    capacity_step
     stacks_step
     checkpoint_step
     pack_step
