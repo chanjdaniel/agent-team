@@ -105,7 +105,7 @@ running: claude plugin disable discord@claude-plugins-official --scope user"
   assert_equal "$(stage_lines check | grep '^Daniel')" "Daniel 1: docker: Daniel opens Docker Desktop once and accepts its license (\`docker info\` cannot reach the daemon: Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?)
 Daniel 2: 1password: brew install --cask 1password, then turn on its Settings > Developer > Integrate with 1Password CLI (the 1Password app is not at $TEAM_1PASSWORD_APP, so team-secrets restore can only ask for each secret to be pasted)
 Daniel 3: secrets: with the 1Password app signed in and its CLI integration on, in your own terminal, not through an agent: $CODE_CHECKOUT/bin/team-secrets restore (discord-bot-env: missing; discord-access-json: missing; conventioner-env: missing; conventioner-front-end-env: missing; conventioner-back-end-env: missing)
-Daniel 4: opencode-gate: Daniel runs team-secrets restore in their own terminal (the secret no-mistakes-config), then $CODE_CHECKOUT/bin/team-bootstrap --stage tools sets agent_path_override: {opencode: $HOME/.no-mistakes/bin/opencode-gate} in it (~/.no-mistakes/config.yaml is not there)
+Daniel 4: gate-agent: Daniel runs team-secrets restore in their own terminal (the secret no-mistakes-config), then $CODE_CHECKOUT/bin/team-bootstrap --stage tools sets agent_path_override: {opencode: $HOME/.no-mistakes/bin/opencode-gate} in it (~/.no-mistakes/config.yaml is not there)
 Daniel 5: trust: in your own terminal run $CODE_CHECKOUT/bin/team-bootstrap --stage trust, which starts claude in each untrusted root in turn for you to accept its trust dialog (trust team home, trust conventioner, trust site)
 Daniel 6: chrome: brew install --cask google-chrome (Google Chrome is not installed, so chrome-devtools-axi has no browser)
 Daniel 7: own settings: write this machine's own in ~/.claude/settings.json (\`claude auto-mode defaults\` shows the form); team-config keeps it (autoMode.environment not set here, so auto mode's classifier knows nothing of this machine)
@@ -115,7 +115,7 @@ Daniel 8: restart: exit this Claude Code session and run claude again in $CODE_C
 secret
 discord access
 interview channel
-opencode-gate
+gate-agent
 trust team home
 trust conventioner
 trust site"
