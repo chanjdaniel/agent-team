@@ -96,20 +96,22 @@ lock_has_its_shape() {
 }
 
 @test "a fork's version is git describe of its commit from upstream's release tag, so a half-bumped pin fails the lock's shape" {
-  local lock=$BATS_TEST_TMPDIR/tools.lock commit version tag
+  local lock=$BATS_TEST_TMPDIR/tools.lock commit version tag other
   commit=$(lock_of no-mistakes .fork.commit)
   version=$(lock_of no-mistakes .fork.version)
   tag=$(lock_of no-mistakes .release.tag)
   [[ $version == "${tag#v}-"+([0-9])"-g${commit:0:7}" ]]
-  # A new commit and its version, consistently: the shape holds.
-  jq '(.tools[] | select(.name == "no-mistakes")).fork |= (.commit = "0123456789abcdef0123456789abcdef01234567"
-    | .version = "\(.version | sub("-[0-9]+-g[0-9a-f]+$"; ""))-40-g0123456")' "$LOCK" >"$lock"
+  # Another commit, every digit of the lock's moved on by one, so it differs from it at each place.
+  other=$(tr 0-9a-f 1-9a-f0 <<<"$commit")
+  # The new commit and its version, consistently: the shape holds.
+  jq --arg other "$other" '(.tools[] | select(.name == "no-mistakes")).fork |= (.commit = $other
+    | .version = "\(.version | sub("-[0-9]+-g[0-9a-f]+$"; ""))-40-g\($other[:7])")' "$LOCK" >"$lock"
   lock_has_its_shape "$lock"
   # The commit changed without its version.
-  jq '(.tools[] | select(.name == "no-mistakes")).fork.commit = "0123456789abcdef0123456789abcdef01234567"' "$LOCK" >"$lock"
+  jq --arg other "$other" '(.tools[] | select(.name == "no-mistakes")).fork.commit = $other' "$LOCK" >"$lock"
   run -1 lock_has_its_shape "$lock"
   # The version changed without its commit, or names another release than the lock's.
-  jq '(.tools[] | select(.name == "no-mistakes")).fork.version |= sub("-g[0-9a-f]+$"; "-g0123456")' "$LOCK" >"$lock"
+  jq --arg other "$other" '(.tools[] | select(.name == "no-mistakes")).fork.version |= sub("-g[0-9a-f]+$"; "-g\($other[:7])")' "$LOCK" >"$lock"
   run -1 lock_has_its_shape "$lock"
   jq '(.tools[] | select(.name == "no-mistakes")).release.tag = "v0.1.0"' "$LOCK" >"$lock"
   run -1 lock_has_its_shape "$lock"
