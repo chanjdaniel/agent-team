@@ -266,6 +266,35 @@ t90_hours() {
     "$reviewer_done" "$review" '02:40 done {role: "builder", session: "s1"}')" "$want"
 }
 
+@test "a stow inside a fix round, up to the fresh builder's launch, is building" {
+  assert_equal "$(t90_hours 04:00 '01:00 done {role: "builder", session: "s1"}' \
+    '01:00 launch {role: "reviewer", session: "s2", worktree: "/w", toolkits: []}' \
+    '02:00 review {verdict: "findings", head: "aaaaaaa", sent_back: ["1"]}' \
+    '02:10 paused {reason: "stowed"}' \
+    '02:15 launch {role: "builder", session: "s3", worktree: "/w", toolkits: []}' \
+    '02:45 done {role: "builder", session: "s3"}' \
+    '02:45 launch {role: "reviewer", session: "s4", worktree: "/w", toolkits: []}' \
+    '03:15 review {verdict: "pass", head: "bbbbbbb"}')" '{"building":1.75,"review":1.5,"unattributed":0.75}'
+}
+
+@test "a stow outside a fix round, or a pause in one for another reason, keeps its own class" {
+  assert_equal "$(t90_hours 02:00 '01:00 paused {reason: "stowed"}' \
+    '01:30 launch {role: "builder", session: "s2", worktree: "/w", toolkits: []}' \
+    '02:00 done {role: "builder", session: "s2"}')" '{"building":1.5,"wait:off":0.5}'
+  assert_equal "$(t90_hours 03:00 '01:00 done {role: "builder", session: "s1"}' \
+    '01:00 launch {role: "reviewer", session: "s2", worktree: "/w", toolkits: []}' \
+    '02:00 review {verdict: "findings", head: "aaaaaaa", sent_back: ["1"]}' \
+    '02:10 done {role: "builder", session: "s1"}' \
+    '02:20 paused {reason: "stowed"}' \
+    '02:30 resumed {}')" '{"building":1.167,"review":1,"unattributed":0.667,"wait:off":0.167}'
+  assert_equal "$(t90_hours 03:00 '01:00 done {role: "builder", session: "s1"}' \
+    '01:00 launch {role: "reviewer", session: "s2", worktree: "/w", toolkits: []}' \
+    '02:00 review {verdict: "findings", head: "aaaaaaa", sent_back: ["1"]}' \
+    '02:10 paused {reason: "usage limit reached"}' \
+    '02:30 resumed {}' \
+    '02:40 done {role: "builder", session: "s1"}')" '{"building":1.333,"review":1,"unattributed":0.333,"wait:limit":0.333}'
+}
+
 @test "a gate run in the fix round after a review that sends notes back is gate time taken from building" {
   assert_equal "$(t90_hours 03:00 '01:00 done {role: "builder", session: "s1"}' \
     '01:00 launch {role: "reviewer", session: "s2", worktree: "/w", toolkits: []}' \
