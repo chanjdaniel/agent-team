@@ -31,14 +31,14 @@ every_tool_fails() {
   done < <(lock_tools "$os")
   # Nothing else fails: the doctor's own git, jq and date still work. Without op, the 1password
   # line warns too, without docker the docker line points at its tool line, and without opencode
-  # the opencode-gate line does.
+  # the gate-agent line does.
   if [[ $version == - ]]; then
     assert_contains "$(line_of 1password)" "WARN 1password: op is not installed,"
     assert_equal "$(line_of docker)" "FAIL docker: docker is not installed; fix: the tool docker line's fix"
-    assert_equal "$(line_of opencode-gate)" "FAIL opencode-gate: opencode is not installed, so the wrapper has nothing to run; fix: the tool opencode line's fix"
+    assert_equal "$(line_of gate-agent)" "FAIL gate-agent: opencode is not installed, so the wrapper has nothing to run; fix: the tool opencode line's fix"
   fi
   assert_equal "$(grep -v '^.... tool ' <<<"$output" | grep -v '^PASS ' | grep -v '^WARN 1password: op ' |
-    grep -v '^FAIL docker: docker is not installed;' | grep -v '^FAIL opencode-gate: opencode is not installed,' || true)" ""
+    grep -v '^FAIL docker: docker is not installed;' | grep -v '^FAIL gate-agent: opencode is not installed,' || true)" ""
 }
 
 @test "tools.lock lists every tool of the spec once per OS, each with a version_cmd, a pattern, a pin or a min, and its sources" {
@@ -97,7 +97,7 @@ every_tool_fails() {
     secret_ids | sed 's/^/secret /'
     echo 'discord access'
     echo 'interview channel'
-    echo opencode-gate
+    echo gate-agent
     echo records
     echo 'trust team home'
     echo captures
@@ -127,7 +127,7 @@ every_tool_fails() {
     secret_ids | sed 's/^/secret /'
     echo 'discord access'
     echo 'interview channel'
-    echo opencode-gate
+    echo gate-agent
     echo records
     echo 'trust team home'
     echo captures

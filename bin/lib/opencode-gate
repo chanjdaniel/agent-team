@@ -3,7 +3,7 @@
 # Daniel's ~/.no-mistakes/config.yaml names it as agent_path_override's opencode, so every opencode
 # the no-mistakes daemon starts reads the gate-only config and none of Claude Code's, under systemd
 # and launchd alike (no-mistakes rewrites its service definition on each start, keeping only HOME,
-# PATH and proxy variables). team-doctor's opencode-gate line checks both.
+# PATH and proxy variables). team-doctor's gate-agent line checks both on an opencode gate.
 OPENCODE_CONFIG=$HOME/.no-mistakes/opencode-gate.json
 OPENCODE_DISABLE_CLAUDE_CODE=1
 export OPENCODE_CONFIG OPENCODE_DISABLE_CLAUDE_CODE
