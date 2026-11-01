@@ -212,16 +212,6 @@ EOF
   capacity_reading 0
 }
 
-# level_applied <mode> <level> <percent>: the limits team-level apply last set, as it keeps them,
-# and the CPU quota of <percent> on the team's slice as systemd reports it.
-level_applied() {
-  mkdir -p "$HOME/.local/state/agent-team/level" "$HOME/.fake-systemd"
-  jq -cn --arg mode "$1" --arg level "$2" --argjson percent "$3" '{at: (now | floor | todate), mode: $mode, level: $level,
-    cpu_quota_percent: $percent, cpus: ($percent / 100), memory_high: 2147483648, memory_max: 3221225472}' \
-    >"$HOME/.local/state/agent-team/level/applied.json"
-  printf '%d.%06ds\n' $(($3 / 100)) $(($3 % 100 * 10000)) >"$HOME/.fake-systemd/agent-team.slice.CPUQuotaPerSecUSec"
-}
-
 # capacity_reading <minutes>: append a reading of the machine's load with the team's use per task,
 # as team-capacity sample writes it, taken <minutes> ago on a machine shaped like home-pc, other
 # programs using 8 GiB and no team work.

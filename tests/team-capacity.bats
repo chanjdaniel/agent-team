@@ -254,7 +254,7 @@ team-capacity: could not place T11-builder d1b2c3d4: its process 500 is gone"
   assert_equal "$output" ""
   assert_equal "$stderr" "team-capacity: no cgroups on macOS: no session is placed"
   run_bin -0 team-capacity check --json
-  assert_equal "$(jq -c . <<<"$output")" '{"os":"macos","verdict":"PASS","reason":"no hard limits on macOS: admission and stow only","fix":"","problems":[]}'
+  assert_equal "$(jq -c . <<<"$output")" '{"os":"macos","verdict":"PASS","reason":"manual, full (90%): no reading of the machine'"'"'s load yet, so no budget; no hard limits on macOS: admission and stow only","fix":"","problems":[]}'
   assert_equal "$(stub_calls systemctl)$(stub_calls busctl)$(stub_calls claude)" ""
   [[ ! -e $UNITS/agent-team.slice ]]
 }
@@ -616,9 +616,10 @@ cost() {
 @test "check --holding warns when the newest reading is over 15 minutes old, naming the heartbeat's log or its enable" {
   cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
   run_bin -0 team-capacity install
+  level_applied manual full 1080
   run_bin -0 team-capacity check
   run_bin -1 team-capacity check --holding
-  assert_equal "$output" "WARN no reading of the machine's load in the last 15 minutes, though this machine holds the lease, whose heartbeat takes one every 5; fix: the capacity step's lines in ~/.local/state/agent-team/heartbeat.log say why it takes none"
+  assert_equal "$output" "WARN manual, full (90%): no reading of the machine's load yet, so no budget; no reading of the machine's load in the last 15 minutes, though this machine holds the lease, whose heartbeat takes one every 5; fix: the capacity step's lines in ~/.local/state/agent-team/heartbeat.log say why it takes none"
   run_bin -1 team-capacity check --holding --heartbeat disabled
   assert_contains "$output" "; fix: team-timers enable"
   run_bin -0 team-capacity sample
