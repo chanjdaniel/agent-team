@@ -743,13 +743,13 @@ LINES
   assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -c .scope)" '["src/","docs/README.md"]'
 }
 
-@test "merge-preapproval-withdrawn needs a standing merge-preapproved of its project, and a new one may follow it" {
+@test "merge-preapproval-withdrawn needs a merge-preapproved of its project not withdrawn, and a new one may follow it" {
   plan_registry "$(plan_project web true)"
   opened T14 proj
   opened T14 web worktree-added
   run_bin -0 team-log T14 asked id=plan 'text=Approve?'
   run_bin -1 team-log T14 merge-preapproval-withdrawn project=proj discord_message="$(soon)"
-  assert_equal "$output" "team-log: T14 has no standing merge-preapproved of proj to withdraw"
+  assert_equal "$output" "team-log: T14 has no merge-preapproved of proj left to withdraw"
   # Another task's approval is its own.
   opened T15 proj
   run_bin -0 team-log T15 asked id=plan 'text=Approve?'
@@ -757,12 +757,12 @@ LINES
   run_bin -1 team-log T14 merge-preapproval-withdrawn project=proj discord_message="$(soon)"
   run_bin -0 team-log T14 merge-preapproved project=proj ask=plan discord_message="$(soon)" 'scope=["src/"]'
   run_bin -1 team-log T14 merge-preapproval-withdrawn project=web discord_message="$(soon)"
-  assert_equal "$output" "team-log: T14 has no standing merge-preapproved of web to withdraw"
+  assert_equal "$output" "team-log: T14 has no merge-preapproved of web left to withdraw"
   run_bin -1 team-log T14 merge-preapproval-withdrawn project=proj
   assert_contains "$output" "merge-preapproval-withdrawn needs discord_message"
   run_bin -0 team-log T14 merge-preapproval-withdrawn project=proj discord_message="$(soon)"
   run_bin -1 team-log T14 merge-preapproval-withdrawn project=proj discord_message="$(soon)"
-  assert_equal "$output" "team-log: T14 has no standing merge-preapproved of proj to withdraw"
+  assert_equal "$output" "team-log: T14 has no merge-preapproved of proj left to withdraw"
   # A later approval, on a new ask, grants it again, and may be withdrawn in turn.
   run_bin -0 team-log T14 asked id=plan-2 'text=Approve again?'
   run_bin -0 team-log T14 merge-preapproved project=proj ask=plan-2 discord_message="$(soon)" 'scope=["src/", "docs/"]'

@@ -815,7 +815,7 @@ preapproved_pr() {
   event "$1" review '{verdict: "pass", head: "a1b2c3d4e5", findings: {blocking: 0, correctness: 0, security: 0, "real-data": 0, "note-change": 0, "note-before": 0}, guarded: []}'
 }
 
-@test "merge-due: an awaiting-merge task with Daniel's standing plan-time word and nothing else parking it" {
+@test "merge-due: an awaiting-merge task with Daniel's plan-time word not withdrawn and nothing else parking it" {
   opened T3
   launch T3 reviewer 11111111
   preapproved_pr T3

@@ -269,7 +269,7 @@ fi
 if [[ $event == merge-preapproval-withdrawn && -n ${seen[project]:-} ]]; then
   task_events "$task" | ledger_jq '[inputs] | merge_preapproval($project) | . != null and .withdrawn == null' \
     -ne --arg project "${seen[project]}" >/dev/null ||
-    die "$task has no standing merge-preapproved of ${seen[project]} to withdraw"
+    die "$task has no merge-preapproved of ${seen[project]} left to withdraw"
 fi
 
 # Daniel's standing word, and its withdrawal, name a project the registry names, or all for every

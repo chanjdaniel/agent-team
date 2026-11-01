@@ -962,9 +962,10 @@ def interview_under_way:
 # The task's PRs that wait on Daniel's word to merge, from task_prs: none unless its phase is
 # awaiting-merge, then each not merged that no merge-approved names (a trailing slash aside) at its
 # head, or at no head, as a legacy line, and whose repo (lowercased) is neither a key of
-# $plan_repos naming a project with a standing merge-preapproved of the task (the projects that opt
-# in to plan-time merges now and are not the team's own) nor a key of $standing_repos (the projects
-# a standing word of Daniel's stands for), each of which team-inbox reads from the registry.
+# $plan_repos naming a project with a merge-preapproved of the task not withdrawn (the projects
+# that opt in to plan-time merges now and are not the team's own) nor a key of $standing_repos (the
+# projects a standing word of Daniel's stands for), each of which team-inbox reads from the
+# registry.
 def merge_ready_prs($plan_repos; $standing_repos):
   . as $events
   | task_prs as $prs

@@ -36,7 +36,7 @@
 #                  turn) or else the oldest, "Bash in a subagent" for a subagent's, a tool other
 #                  than Bash by its name, and ", and <n> more running" when others run; or " with no
 #                  tool call running". None for a session whose transcript cannot be found
-#   merge-due      an open task in awaiting-merge with a standing plan-time merge approval (its
+#   merge-due      an open task in awaiting-merge with a plan-time merge approval not withdrawn (its
 #                  latest merge-preapproved of a project with no later merge-preapproval-withdrawn
 #                  of it) or a standing word of Daniel's on one of its projects (those of its
 #                  opened and worktree-added events: the latest merge-standing or

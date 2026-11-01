@@ -174,7 +174,7 @@ preapproved_pr() {
     "{\"task\":\"$1\",\"event\":\"review\",\"head\":\"abc1234def\",\"verdict\":\"pass\"}"
 }
 
-@test "a PR with Daniel's standing plan-time word, in a project that opts in and is not the team's own, waits on no word of theirs" {
+@test "a PR with Daniel's plan-time word not withdrawn, in a project that opts in and is not the team's own, waits on no word of theirs" {
   plan_registry
   preapproved_pr T4 proj 4
   preapproved_pr T5 conv 5
