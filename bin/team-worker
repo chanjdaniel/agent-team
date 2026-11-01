@@ -200,17 +200,18 @@ if [[ $role == ops ]]; then
 fi
 
 # The task's finished workers: each live session of its earlier launches whose work is handed on
-# is stopped while it is idle, so it stops holding the machine's memory. Handed on is every planner
-# and reviewer, and every builder of this worktree when this is a builder (one builder holds a
-# worktree's work at a time), whose launch the ledger follows with a done of its session, or for a
-# builder a pr or ticket-done, or with a paused whose reason is stowed and then a launch of its role
-# and worktree, logged or this one (a stow carries no session, so it hands on only to the fresh
-# worker that resumes the work, and a resumed does not undo it). Any other paused is a wait the
-# worker comes back from, and a review carries no session, so a reviewer is handed on by the done
-# logged beside its review. A
-# session that is busy, waiting for input, not idle by its status, or idle with no such event is
-# left and named, and so is an ops session. The session list is read only when such a launch
-# exists, and a list that cannot be read or a stop that fails never stops the launch.
+# is stopped while it is idle, so it stops holding the machine's memory.
+# Handed on is every planner and reviewer, and every builder of this worktree when this is a
+# builder (one builder holds a worktree's work at a time), whose launch the ledger follows with a
+# done of its session, or for a builder a pr or ticket-done, or with a paused whose reason is
+# stowed and then a launch of its role and worktree, logged or this one (a stow carries no session,
+# so it hands on only to the fresh worker that resumes the work, and a resumed does not undo it).
+# Any other paused is a wait the worker comes back from, and a review carries no session, so a
+# reviewer is handed on by the done logged beside its review.
+# A session that is busy, waiting for input, not idle by its status, or idle with no such event is
+# left and named, and so is an ops session.
+# The session list is read only when such a launch exists, and a list that cannot be read or a
+# stop that fails never stops the launch.
 if [[ $task != T0 ]]; then
   finished=$(ledger_jq '. as $events
     | [to_entries[] | .key as $i | .value | select(.event == "launch" and (.session | type) == "string" and .session != ""
