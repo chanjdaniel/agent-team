@@ -252,6 +252,11 @@ echo b > y" "$wt/y"
   blocked 'x="$(cmd "a)b" > out)"' "$wt/out"
   # Its target is judged against the outer command's working directory.
   blocked 'x="$(cmd > out)"' "$wt/src/out" "$wt/src"
+  # A refused target holding a substitution is named with it as written.
+  blocked 'cmd | tee "out-$(date).log"' "$wt/out-\$(date).log"
+  blocked 'cmd > "out-$(( 1 + 2 )).log"' "$wt/out-\$(( 1 + 2 )).log"
+  blocked 'cmd > out-`date`' "$wt/out-\`date\`"
+  blocked 'cmd > "out-`date`.log"' "$wt/out-\`date\`.log"
   # What is fine outside a substitution is fine inside it.
   shell -0 'x="$(cmd 2>/dev/null)"'
   shell -0 'x="$(cmd > .scratch/task/out)" && echo "$x"'
