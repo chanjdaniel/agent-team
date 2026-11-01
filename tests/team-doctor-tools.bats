@@ -41,25 +41,34 @@ every_tool_fails() {
     grep -v '^FAIL docker: docker is not installed;' | grep -v '^FAIL opencode-gate: opencode is not installed,' || true)" ""
 }
 
-@test "tools.lock lists every tool of the spec once per OS, each with a version_cmd, a pattern, a pin or a min, and its sources" {
+# <lock> (default bin/lib/tools.lock) has the shape bin/lib/tools.jq reads: each tool a name, a
+# version_cmd, a pattern, and a pin or a min with its sources, or a GitHub release or fork.
+lock_has_its_shape() {
   jq -e '.tools | length > 0 and all(.[];
       (.name | type == "string") and (.version_cmd | type == "string") and (.version_pattern | type == "string")
       and (.pin_mismatch // "FAIL" | IN("WARN", "FAIL"))
       and if has("from") then
         ([has("pin"), has("min"), has("source")] | any | not)
         and (.dir | type == "object" and length > 0 and (keys - ["arch", "macos"] == []))
-        and if .from == "release" then
-          (.release.repo | test("^[^/]+/[^/]+$")) and (.release.tag | test("^v[0-9]+(\\.[0-9]+)+$"))
+        and (.from | IN("release", "fork")) and has(.from)
+        and ((has("release") | not) or ((.release.repo | test("^[^/]+/[^/]+$")) and (.release.tag | test("^v[0-9]+(\\.[0-9]+)+$"))
           and (.release.sha256 | keys == ["darwin-amd64", "darwin-arm64", "linux-amd64"])
-          and (.release.sha256 | all(.[]; test("^[0-9a-f]{64}$")))
-        else .from == "fork" end
-        and ((has("fork") | not) or ((.fork.repo | test("^[^/]+/[^/]+$")) and (.fork.commit | test("^[0-9a-f]{40}$"))
-          and (.fork.version | test("^[0-9]+(\\.[0-9]+)+"))))
+          and (.release.sha256 | all(.[]; test("^[0-9a-f]{64}$")))))
+        # A fork is built at a commit past upstream'\''s release, so its version is git describe of
+        # that commit: <tag without v>-<commits since>-g<the commit'\''s first 7>.
+        and ((has("fork") | not) or (has("release") and (.fork.repo | test("^[^/]+/[^/]+$"))
+          and (.fork.commit | test("^[0-9a-f]{40}$"))
+          and ("^\(.release.tag | ltrimstr("v") | gsub("\\."; "\\."))-[0-9]+-g\(.fork.commit[:7])$" as $describe
+            | .fork.version | test($describe))))
       else
         ([has("pin"), has("min")] | map(select(.)) | length == 1)
         and ((.pin // .min) | test("^[0-9]+(\\.[0-9]+)+"))
         and (.source | type == "object" and length > 0 and (keys - ["arch", "macos"] == []))
-      end)' "$LOCK"
+      end)' "${1:-$LOCK}"
+}
+
+@test "tools.lock lists every tool of the spec once per OS, each with a version_cmd, a pattern, a pin or a min, and its sources" {
+  lock_has_its_shape
   local os both=(claude node codegraph gh-axi chrome-devtools-axi chrome-devtools-mcp lavish-axi opencode bun
     treehouse no-mistakes op git jq tmux gh rsync docker docker-compose python bash go)
   local mac_only=(coreutils findutils gnu-sed grep flock) arch_only=(make unzip)
@@ -72,19 +81,41 @@ every_tool_fails() {
   assert_equal "$(jq -r '[.tools[] | select(.pin or .from) | .name] | join(" ")' "$LOCK")" \
     "claude node codegraph gh-axi chrome-devtools-axi chrome-devtools-mcp lavish-axi opencode bun treehouse no-mistakes op"
   # treehouse is a GitHub release, each archive's checksum recorded; no-mistakes is Daniel's fork,
-  # built at a commit on its main past upstream v1.84.0, and keeps upstream's release,
-  # which from = "release" would pin instead.
+  # built at a commit on its main past upstream's release (the next test holds its version to
+  # both), and keeps upstream's release, which from = "release" would pin instead.
   assert_equal "$(jq -r '[.tools[] | select(.from) | "\(.name)=\(.from)"] | join(" ")' "$LOCK")" \
     "treehouse=release no-mistakes=fork"
-  assert_equal "$(jq -r '[.tools[] | select(.release) | "\(.name)=\(.release.repo)@\(.release.tag)"] | join(" ")' "$LOCK")" \
-    "treehouse=kunchenguid/treehouse@v3.1.5 no-mistakes=kunchenguid/no-mistakes@v1.84.0"
-  assert_equal "$(jq -r '.tools[] | select(.fork) | "\(.name)=\(.fork.repo)@\(.fork.commit[:7]) \(.fork.version)"' "$LOCK")" \
-    "no-mistakes=chanjdaniel/no-mistakes@a544ba6 1.84.0-36-ga544ba6"
+  assert_equal "$(jq -r '[.tools[] | select(.release) | "\(.name)=\(.release.repo)"] | join(" ")' "$LOCK")" \
+    "treehouse=kunchenguid/treehouse no-mistakes=kunchenguid/no-mistakes"
+  assert_equal "$(jq -r '.tools[] | select(.fork) | "\(.name)=\(.fork.repo)"' "$LOCK")" "no-mistakes=chanjdaniel/no-mistakes"
   # The fork builds with Go (its go.mod's version) and make, from the OS packages.
   assert_equal "$(jq -r '[.tools[] | select(.name | IN("go", "make")) | "\(.name)>=\(.min):\(.source | keys | join(","))"] | join(" ")' "$LOCK")" \
     "go>=1.25.0:arch,macos make>=4.0:arch"
   assert_equal "$(jq -r '[.tools[] | select(.pin_mismatch) | "\(.name)=\(.pin_mismatch)"] | join(" ")' "$LOCK")" "claude=WARN"
   assert_equal "$(jq -r '.tools[] | select(.name == "docker-compose") | .min' "$LOCK")" 2.24.0
+}
+
+@test "a fork's version is git describe of its commit from upstream's release tag, so a half-bumped pin fails the lock's shape" {
+  local lock=$BATS_TEST_TMPDIR/tools.lock commit version tag
+  commit=$(lock_of no-mistakes .fork.commit)
+  version=$(lock_of no-mistakes .fork.version)
+  tag=$(lock_of no-mistakes .release.tag)
+  [[ $version == "${tag#v}-"+([0-9])"-g${commit:0:7}" ]]
+  # A new commit and its version, consistently: the shape holds.
+  jq '(.tools[] | select(.name == "no-mistakes")).fork |= (.commit = "0123456789abcdef0123456789abcdef01234567"
+    | .version = "\(.version | sub("-[0-9]+-g[0-9a-f]+$"; ""))-40-g0123456")' "$LOCK" >"$lock"
+  lock_has_its_shape "$lock"
+  # The commit changed without its version.
+  jq '(.tools[] | select(.name == "no-mistakes")).fork.commit = "0123456789abcdef0123456789abcdef01234567"' "$LOCK" >"$lock"
+  run -1 lock_has_its_shape "$lock"
+  # The version changed without its commit, or names another release than the lock's.
+  jq '(.tools[] | select(.name == "no-mistakes")).fork.version |= sub("-g[0-9a-f]+$"; "-g0123456")' "$LOCK" >"$lock"
+  run -1 lock_has_its_shape "$lock"
+  jq '(.tools[] | select(.name == "no-mistakes")).release.tag = "v0.1.0"' "$LOCK" >"$lock"
+  run -1 lock_has_its_shape "$lock"
+  # A fork with no release to describe from.
+  jq '(.tools[] | select(.name == "no-mistakes")) |= del(.release)' "$LOCK" >"$lock"
+  run -1 lock_has_its_shape "$lock"
 }
 
 @test "on Arch with every tool at its version and everything set up, every line passes" {
@@ -106,7 +137,7 @@ every_tool_fails() {
     printf '%s\n' 'stack memory' clock lease heartbeat slots offline)
   assert_equal "$(checks)" "$expected"
   assert_equal "$(line_of os)" "PASS os: Arch Linux"
-  assert_equal "$(line_of 'tool claude')" "PASS tool claude: 2.1.316"
+  assert_equal "$(line_of 'tool claude')" "PASS tool claude: $(lock_pin claude)"
   assert_equal "$(line_of 'tool jq')" "PASS tool jq: 1.7.1 (minimum 1.7.1)"
   assert_equal "$(line_of machine)" "PASS machine: home-pc"
   assert_equal "$(line_of 'team home')" "PASS team home: $TEAM_HOME, named by TEAM_HOME: a checkout of its own on dev, with an origin"
@@ -144,37 +175,44 @@ every_tool_fails() {
 }
 
 @test "on Arch each tool below its minimum or off its pin fails its line; Claude Code's only warns" {
+  local bun claude
+  bun=$(lock_pin bun)
+  claude=$(lock_pin claude)
   every_tool_fails arch 0.1.0
   assert_equal "$(line_of 'tool git')" "FAIL tool git: 0.1.0, below the minimum 2.40.0; fix: sudo pacman -S --needed git"
-  assert_equal "$(line_of 'tool bun')" "FAIL tool bun: 0.1.0, not the pinned 1.3.14; fix: curl -fsSL https://bun.sh/install | bash -s bun-v1.3.14"
-  assert_equal "$(line_of 'tool claude')" "WARN tool claude: 0.1.0, not the pinned 2.1.316; fix: curl -fsSL https://claude.ai/install.sh | bash -s 2.1.316"
+  assert_equal "$(line_of 'tool bun')" "FAIL tool bun: 0.1.0, not the pinned $bun; fix: curl -fsSL https://bun.sh/install | bash -s bun-v$bun"
+  assert_equal "$(line_of 'tool claude')" "WARN tool claude: 0.1.0, not the pinned $claude; fix: curl -fsSL https://claude.ai/install.sh | bash -s $claude"
 }
 
 @test "a GitHub release's fix downloads this machine's archive and checks its recorded SHA-256 before unpacking it" {
-  local sha
+  local sha tag
+  tag=$(lock_of treehouse .release.tag)
   every_tool_fails arch -
-  sha=$(jq -r '.tools[] | select(.name == "treehouse") | .release.sha256["linux-amd64"]' "$LOCK")
-  assert_equal "$(line_of 'tool treehouse')" "FAIL tool treehouse: not installed; fix: f=\$(mktemp) && curl -fsSLo \"\$f\" https://github.com/kunchenguid/treehouse/releases/download/v3.1.5/treehouse-v3.1.5-linux-amd64.tar.gz && echo \"$sha  \$f\" | sha256sum -c - && sudo mkdir -p /usr/local/bin && sudo tar -xzf \"\$f\" -C /usr/local/bin treehouse && rm -f \"\$f\""
+  sha=$(lock_of treehouse '.release.sha256["linux-amd64"]')
+  assert_equal "$(line_of 'tool treehouse')" "FAIL tool treehouse: not installed; fix: f=\$(mktemp) && curl -fsSLo \"\$f\" https://github.com/kunchenguid/treehouse/releases/download/$tag/treehouse-$tag-linux-amd64.tar.gz && echo \"$sha  \$f\" | sha256sum -c - && sudo mkdir -p /usr/local/bin && sudo tar -xzf \"\$f\" -C /usr/local/bin treehouse && rm -f \"\$f\""
 
   # An Intel Mac gets its own archive, checked with macOS's shasum.
   on_macos
   echo x86_64 >"$STUB_FIXTURES/uname-m.out"
   tools_at macos 0.1.0
   run_bin -1 team-doctor
-  sha=$(jq -r '.tools[] | select(.name == "treehouse") | .release.sha256["darwin-amd64"]' "$LOCK")
-  assert_equal "$(line_of 'tool treehouse')" "FAIL tool treehouse: 0.1.0, not the pinned 3.1.5; fix: f=\$(mktemp) && curl -fsSLo \"\$f\" https://github.com/kunchenguid/treehouse/releases/download/v3.1.5/treehouse-v3.1.5-darwin-amd64.tar.gz && echo \"$sha  \$f\" | shasum -a 256 -c && mkdir -p ~/.local/bin && tar -xzf \"\$f\" -C ~/.local/bin treehouse && rm -f \"\$f\""
+  sha=$(lock_of treehouse '.release.sha256["darwin-amd64"]')
+  assert_equal "$(line_of 'tool treehouse')" "FAIL tool treehouse: 0.1.0, not the pinned ${tag#v}; fix: f=\$(mktemp) && curl -fsSLo \"\$f\" https://github.com/kunchenguid/treehouse/releases/download/$tag/treehouse-$tag-darwin-amd64.tar.gz && echo \"$sha  \$f\" | shasum -a 256 -c && mkdir -p ~/.local/bin && tar -xzf \"\$f\" -C ~/.local/bin treehouse && rm -f \"\$f\""
 }
 
 @test "a machine type the lock records no archive for gets a fix that says so" {
+  local tag
+  tag=$(lock_of treehouse .release.tag)
   echo aarch64 >"$STUB_FIXTURES/uname-m.out"
   tools_at arch
   answer "treehouse --version"
   run_bin -1 team-doctor
-  assert_equal "$(line_of 'tool treehouse')" "FAIL tool treehouse: not installed; fix: bin/lib/tools.lock records no linux-arm64 archive of treehouse v3.1.5; see https://github.com/kunchenguid/treehouse/releases/tag/v3.1.5"
+  assert_equal "$(line_of 'tool treehouse')" "FAIL tool treehouse: not installed; fix: bin/lib/tools.lock records no linux-arm64 archive of treehouse $tag; see https://github.com/kunchenguid/treehouse/releases/tag/$tag"
 }
 
 @test "no-mistakes is built from Daniel's fork at its pinned commit, on Arch and macOS alike" {
-  local fix='d=$(mktemp -d) && git clone -q https://github.com/chanjdaniel/no-mistakes "$d" && git -C "$d" checkout -q a544ba66594682fb8a0594de77f45ed519a41381 && make -C "$d" build && mkdir -p ~/.no-mistakes/bin && install -m 755 "$d/bin/no-mistakes" ~/.no-mistakes/bin/no-mistakes && rm -rf "$d"'
+  local fix
+  fix='d=$(mktemp -d) && git clone -q https://github.com/chanjdaniel/no-mistakes "$d" && git -C "$d" checkout -q '$(lock_of no-mistakes .fork.commit)' && make -C "$d" build && mkdir -p ~/.no-mistakes/bin && install -m 755 "$d/bin/no-mistakes" ~/.no-mistakes/bin/no-mistakes && rm -rf "$d"'
   every_tool_fails arch -
   assert_equal "$(line_of 'tool no-mistakes')" "FAIL tool no-mistakes: not installed; fix: $fix"
   assert_equal "$(line_of 'tool go')" "FAIL tool go: not installed; fix: sudo pacman -S --needed go"
@@ -183,7 +221,7 @@ every_tool_fails() {
   tools_at arch
   answer "no-mistakes --version" "no-mistakes version v1.37.0-4-g389716a (389716a) 2026-07-14T22:29:23Z"
   run_bin -1 team-doctor
-  assert_equal "$(line_of 'tool no-mistakes')" "FAIL tool no-mistakes: 1.37.0-4-g389716a, not the pinned 1.84.0-36-ga544ba6; fix: $fix"
+  assert_equal "$(line_of 'tool no-mistakes')" "FAIL tool no-mistakes: 1.37.0-4-g389716a, not the pinned $(lock_pin no-mistakes); fix: $fix"
 
   on_macos
   tools_at macos
@@ -195,13 +233,14 @@ every_tool_fails() {
 }
 
 @test "from = release pins upstream's release instead of the fork, a one-line change in tools.lock" {
-  local lock=$BATS_TEST_TMPDIR/tools.lock line sha
+  local lock=$BATS_TEST_TMPDIR/tools.lock line sha tag
   jq '(.tools[] | select(.name == "no-mistakes")).from = "release"' "$LOCK" >"$lock"
   assert_equal "$(diff "$LOCK" "$lock" | grep -c '^[<>]')" 2
-  sha=$(jq -r '.tools[] | select(.name == "no-mistakes") | .release.sha256["linux-amd64"]' "$LOCK")
+  sha=$(lock_of no-mistakes '.release.sha256["linux-amd64"]')
+  tag=$(lock_of no-mistakes .release.tag)
   line=$(jq -L "$REPO_ROOT/bin/lib" -r --arg os arch --arg machine x86_64 \
     'include "tools"; tools_for($os; $machine) | select(.name == "no-mistakes") | "\(.pin)\t\(.source)"' "$lock")
-  assert_equal "$line" "1.84.0	f=\$(mktemp) && curl -fsSLo \"\$f\" https://github.com/kunchenguid/no-mistakes/releases/download/v1.84.0/no-mistakes-v1.84.0-linux-amd64.tar.gz && echo \"$sha  \$f\" | sha256sum -c - && mkdir -p ~/.no-mistakes/bin && tar -xzf \"\$f\" -C ~/.no-mistakes/bin no-mistakes && rm -f \"\$f\""
+  assert_equal "$line" "${tag#v}	f=\$(mktemp) && curl -fsSLo \"\$f\" https://github.com/kunchenguid/no-mistakes/releases/download/$tag/no-mistakes-$tag-linux-amd64.tar.gz && echo \"$sha  \$f\" | sha256sum -c - && mkdir -p ~/.no-mistakes/bin && tar -xzf \"\$f\" -C ~/.no-mistakes/bin no-mistakes && rm -f \"\$f\""
   # The other tools resolve exactly as before.
   assert_equal "$(jq -L "$REPO_ROOT/bin/lib" -c --arg os arch --arg machine x86_64 'include "tools"; tools_for($os; $machine) | select(.name != "no-mistakes")' "$lock")" \
     "$(jq -L "$REPO_ROOT/bin/lib" -c --arg os arch --arg machine x86_64 'include "tools"; tools_for($os; $machine) | select(.name != "no-mistakes")' "$LOCK")"
@@ -275,11 +314,12 @@ SH
   tools_at arch
   rm "$TOOL_STUBS/node"
   # The shell's PATH starts with another Node; the pinned one is only in nvm's directory.
-  local other=$BATS_TEST_TMPDIR/other-node
-  version_command "$other" node v24.19.0
-  version_command "$HOME/.nvm/versions/node/v24.22.1/bin" node v24.22.1
+  local other=$BATS_TEST_TMPDIR/other-node node
+  node=$(lock_pin node)
+  version_command "$other" node v0.1.0
+  version_command "$HOME/.nvm/versions/node/v$node/bin" node "v$node"
   PATH=$other:$PATH run_bin -0 team-doctor
-  assert_equal "$(line_of 'tool node')" "PASS tool node: 24.22.1"
+  assert_equal "$(line_of 'tool node')" "PASS tool node: $node"
   PATH=$other:$PATH run_bin -0 team-bootstrap --stage check
   [[ $output != *"tool node"* ]]
 }
@@ -308,15 +348,18 @@ Error: ENOENT: no such file or directory, uv_cwd
     at Object.<anonymous> (/Users/danielchan/.nvm/versions/node/v22.19.0/lib/node_modules/lavish-axi/node_modules/depd/index.js:23:24)"
 
 @test "a version command that prints only another tool's version printed no version" {
+  local lavish
+  lavish=$(lock_pin lavish-axi)
   tools_at arch
   answer "lavish-axi --version" "$lavish_crash"
   run_bin -1 team-doctor
   assert_equal "$(line_of 'tool lavish-axi')" \
-    'FAIL tool lavish-axi: `lavish-axi --version` printed no version; fix: npm install -g lavish-axi@0.1.36'
+    "FAIL tool lavish-axi: \`lavish-axi --version\` printed no version; fix: npm install -g lavish-axi@$lavish"
   # A line before the version, a warning say, does not hide it.
-  answer "lavish-axi --version" $'(node:4242) Warning: something is deprecated\n0.1.36'
+  answer "lavish-axi --version" "(node:4242) Warning: something is deprecated
+$lavish"
   run_bin -0 team-doctor
-  assert_equal "$(line_of 'tool lavish-axi')" "PASS tool lavish-axi: 0.1.36"
+  assert_equal "$(line_of 'tool lavish-axi')" "PASS tool lavish-axi: $lavish"
 }
 
 @test "every version pattern starts at a line's start or names its tool, so another tool's version is never read as its own" {
@@ -326,19 +369,20 @@ Error: ENOENT: no such file or directory, uv_cwd
 @test "a doctor started in a directory that no longer exists says so, runs from HOME and passes" {
   tools_at arch
   # Claude Code and the Node tools fail without a working directory, as on the laptop.
-  local gone=$BATS_TEST_TMPDIR/load-check-wt
-  cat >"$TOOL_ANSWERS/claude/--version.sh" <<'SH'
-if [[ $PWD -ef . ]]; then echo '2.1.316 (Claude Code)'; else
-  echo "error: The current working directory was deleted, so that command didn't work." >&2; exit 1; fi
-SH
-  printf '%s\n' "if [[ \$PWD -ef . ]]; then echo 0.1.36; else cat >&2 <<'CRASH'" "$lavish_crash" CRASH \
+  local gone=$BATS_TEST_TMPDIR/load-check-wt claude lavish
+  claude=$(lock_pin claude)
+  lavish=$(lock_pin lavish-axi)
+  printf '%s\n' "if [[ \$PWD -ef . ]]; then echo '$claude (Claude Code)'; else" \
+    "  echo \"error: The current working directory was deleted, so that command didn't work.\" >&2; exit 1; fi" \
+    >"$TOOL_ANSWERS/claude/--version.sh"
+  printf '%s\n' "if [[ \$PWD -ef . ]]; then echo $lavish; else cat >&2 <<'CRASH'" "$lavish_crash" CRASH \
     'exit 1; fi' >"$TOOL_ANSWERS/lavish-axi/--version.sh"
   rm "$TOOL_ANSWERS/claude/--version" "$TOOL_ANSWERS/lavish-axi/--version"
   mkdir "$gone"
   guard_sandbox
   run -0 --separate-stderr bash -c 'cd "$1" && rmdir "$1" && exec "$2"' gone "$gone" "$CODE_CHECKOUT/bin/team-doctor"
   assert_contains "$stderr" "team-doctor: the current directory no longer exists; running from ~"
-  assert_equal "$(line_of 'tool claude')" "PASS tool claude: 2.1.316"
-  assert_equal "$(line_of 'tool lavish-axi')" "PASS tool lavish-axi: 0.1.36"
+  assert_equal "$(line_of 'tool claude')" "PASS tool claude: $claude"
+  assert_equal "$(line_of 'tool lavish-axi')" "PASS tool lavish-axi: $lavish"
   assert_equal "$(grep -v '^PASS ' <<<"$output" || true)" ""
 }
