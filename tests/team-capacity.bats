@@ -391,18 +391,23 @@ MIB=1048576
       .tasks[0].cpu_nsec]')" '[true,true,true,240000000000]'
 }
 
-@test "sample on macOS: each task's use is its processes' by directory and descent, each session its tree's, and systemd is not asked" {
+@test "sample on macOS: each task's use is its processes' by directory and descent, each session its tree's but its heavy run, and systemd is not asked" {
   sample_machine
   as_macos
   proc 100 99 512 60 "$T7_WT" "/agent.slice/agent-team.slice/agent-team-T7.slice/x.scope"
   proc 101 100 256 30 /tmp
+  # The builder's heavy run, team-heavy (pid 102) and its command: the task's, never the session's.
+  proc 102 100 50 1 "$T7_WT"
+  proc 103 102 1000 100 "$T7_WT"
+  mkdir -p "$HOME/.local/state/agent-team"
+  echo "tests/run all in ~/t7 (pid 102, T7) since 2026-11-01 10:00:00 +0000" >"$HOME/.local/state/agent-team/heavy.lock"
   proc 200 1 300 40 "$T9_WT"
   proc 201 200 20 2 /tmp
   sessions "a1b2c3d4 T7-builder 100"
   run_bin -0 --separate-stderr team-capacity sample
   assert_equal "$output$stderr" ""
   assert_equal "$(jq -c --argjson mib "$MIB" '[.os, .systemd, (.tasks | map([.task, ((.memory - ([.stacks[].memory] | add // 0)) / $mib), .cpu_nsec]))]' \
-    "$STATE_DIR/readings.jsonl")" '["macos",null,[["T7",768,null],["T9",320,null]]]'
+    "$STATE_DIR/readings.jsonl")" '["macos",null,[["T7",1818,null],["T9",320,null]]]'
   assert_equal "$(jq -c --argjson mib "$MIB" '.tasks[0].sessions | map(.memory /= $mib | .peak /= $mib)' "$STATE_DIR/readings.jsonl")" \
     '[{"id":"a1b2c3d4","role":"builder","memory":768,"peak":768,"cpu_seconds":90}]'
   assert_equal "$(stub_calls systemctl)" ""

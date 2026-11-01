@@ -138,11 +138,13 @@ def capacity_units($in):
 # and held (the slots held, [{task, project, worktree}], each path resolved), sessions (as
 # team_sessions reads them), units ({"<unit>": {MemoryCurrent, MemoryPeak, CPUUsageNSec}, each a
 # number or null}, or null when the user manager did not answer or off Linux), gate_units (the
-# gate's daemon units), gate_root (~/.no-mistakes) and prior (the newest stored reading, or null).
+# gate's daemon units), gate_root (~/.no-mistakes), heavy (the pid of the team-heavy that holds the
+# heavy-run lock, or null) and prior (the newest stored reading, or null).
 # Each process is a task's when its directory is that task's held worktree or below it, or it
 # descends from one that is, the nearest one deciding; on Linux one in a task's slice is counted
 # by the slice's MemoryCurrent and CPUUsageNSec instead. A session's use is its scope's on Linux,
-# else its process tree's (the session and its descendants). The gate runs a pipeline while a
+# else its process tree's (the session and its descendants, but a heavy run's team-heavy and what
+# it runs, whose cost is heavy:<kind>'s). The gate runs a pipeline while a
 # process works in one of its worktrees (gate_root/worktrees/...); its use is its daemon unit's on
 # Linux, else the tree of the processes in gate_root.
 def capacity_reading($in):
@@ -168,7 +170,7 @@ def capacity_reading($in):
   | ($in.prior.tasks // [] | map({key: .task, value: .cpu_nsec}) | from_entries) as $prior_nsec
   | ($in.prior.systemd == true) as $prior_read
   | [team_sessions($in)[]
-     | [limit(4096; .pid | tostring | recurse($kids[.] // [] | .[]))] as $tree
+     | [limit(4096; .pid | tostring | recurse($kids[.] // [] | .[] | select(. != ($in.heavy // "" | tostring))))] as $tree
      | ([$tree[] | $by_pid[.].rss // 0] | add | gib_bytes) as $rss
      | ([$tree[] | $by_pid[.].seconds // 0] | add) as $tree_seconds
      | unit("agent-team-\(.task)-\(.id).scope") as $scope

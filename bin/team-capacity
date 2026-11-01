@@ -70,7 +70,9 @@
 #                      working directory is that task's held worktree or below it, or it descends
 #                      from one that is. A session's use is its scope's
 #                      (agent-team-T<n>-<id>.scope's MemoryCurrent, MemoryPeak and CPUUsageNSec) on
-#                      Linux, else its process tree's resident memory and CPU seconds.
+#                      Linux, else its process tree's resident memory and CPU seconds, but the
+#                      team-heavy that holds the heavy-run lock (its holder line's pid) and what it
+#                      runs, whose cost is heavy:<kind>'s.
 #            stacks    each running team or gate stack: {name, class, task, project (the
 #                      registered project of the held worktree it runs for, null for a gate's),
 #                      memory, cpu (cores), limits (team-stack ls --json's memory_limit_bytes)}
@@ -174,6 +176,7 @@ UNITS=$HOME/.config/systemd/user
 SETTINGS=$HOME/.config/agent-team/capacity.json
 STATE=$HOME/.local/state/agent-team/capacity
 READINGS=$STATE/readings.jsonl
+HEAVY_LOCK=$HOME/.local/state/agent-team/heavy.lock
 SLICE=agent-team.slice
 DROP_IN=agent-team.conf
 uid=$(id -u)
@@ -463,15 +466,20 @@ unit_values() {
 # The capacity reading's line from take_reading's input (bin/lib/reading.sh), then the cost
 # samples of what it ended, as the header's sample says.
 capacity_line() {
-  local sessions=null units=null prior=null out line track
+  local sessions=null units=null prior=null heavy=null out line track
   local -a names=() gates=()
   if out=$(claude agents --json 2>/dev/null | jq -ce 'select(type == "array")
       | [.[] | {id: (.id // (.sessionId // "" | .[:8])), name: (.name // ""), pid}]' 2>/dev/null); then
     sessions=$out
   fi
   mapfile -t gates < <(gate_units)
+  # The heavy run's team-heavy, from its holder line, whose tree is its own cost, not a session's.
+  if [[ -s $HEAVY_LOCK ]] && IFS= read -r out <"$HEAVY_LOCK" && [[ $out =~ \(pid\ ([0-9]+)(,\ T[0-9]+)?\)\ since\  ]]; then
+    heavy=${BASH_REMATCH[1]}
+  fi
   jq -c --argjson sessions "$sessions" --slurpfile held "$work/held.json" --arg gate_root "$HOME/.no-mistakes" \
-    '. + {sessions: $sessions, held: $held[0], gate_root: $gate_root, gate_units: $ARGS.positional}' \
+    --argjson heavy "$heavy" \
+    '. + {sessions: $sessions, held: $held[0], gate_root: $gate_root, gate_units: $ARGS.positional, heavy: $heavy}' \
     "$work/in.json" --args ${gates[@]+"${gates[@]}"} >"$work/capacity-in.json" || die "could not read the reading's input"
   if [[ $os == linux ]]; then
     out=$(jq -r -L "$TEAM_LIB" 'include "capacity"; include "stack"; capacity_units(.)[]' "$work/capacity-in.json") ||
