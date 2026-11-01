@@ -117,8 +117,8 @@ A browser-driving agent gets its own the same way: `~/agent-team/bin/team-stack 
 
 - It holds an exclusive lock, `~/.local/state/agent-team/stacks.lock`, from its first check until the wrapper's `up -d --wait` returns, so two racing `up` calls at the cap start exactly one stack.
 - A stack already running is admitted without a check; a stopped one is counted as new.
-- When `team-capacity` is on `PATH` or at `~/.local/bin/team-capacity`, `team-capacity admit --kind stack:<registered project>` decides: 0 admits, 75 refuses with its stderr as the reason, anything else fails `up`.
-  Until that controller exists (T19's design), `team-stack`'s own three checks decide, and all three must hold:
+- When `team-capacity` is on `PATH` or at `~/.local/bin/team-capacity`, `team-capacity admit --kind stack:<registered project>` decides: 0 admits, 75 refuses with its stderr as the reason, anything else fails `up`, but 2, a command line it does not know.
+  With no `team-capacity`, or one with no `admit` yet (until T175's ticket 06), `team-stack`'s own three checks decide, and all three must hold:
   - **cap**: fewer Compose projects running on the machine (`docker compose ls`, every owner's: gates, Daniel's primary stack and hand-made stacks count too) than `stack_cap`;
   - **memory**: the memory available, less the sum of the stack's `mem_limit`s (a Conventioner stack is about 2.75 GiB), at least the floor: `memory_floor_gib` GiB when it is set, else the default for what is measured (6 GiB of `MemAvailable` from `/proc/meminfo` on Linux, half of Docker's VM on macOS, below);
   - **disk**: the free space of the file system holding Docker's root (`docker info`'s `DockerRootDir`, measured with `df`) at least `disk_floor_gb` GB.
@@ -232,8 +232,8 @@ The heartbeat (`team-timers run`, every 5 minutes on the lease holder) can run t
   A checkpoint that fails ends the run before the janitor, which then runs on the next one.
 - A hung Docker never holds the heartbeat's lock past the lease's renewals: the sweep is stopped after 5 minutes and the janitor after 20, each with every command it started, and logged as `<step>: failed: timed out after <seconds> s`.
   A janitor stopped so wrote no report, so the next run starts it again, and its reaper goes on where the last one stopped.
-  The `slots` step, which runs every run before them and is no setting's, gives `team-stack ls --json` 30 seconds for its reading of the machine's load (`team-slots sample`), then takes the reading without Docker.
-  While Docker stays hung a run takes up to 26 minutes, so the lease is still renewed well inside its hour, and a checkpoint comes about every 26 minutes instead of every 15.
+  The `slots` and `capacity` steps, which run every run before them and are no setting's, each give `team-stack ls --json` 30 seconds for their reading of the machine's load (`team-slots sample`, `team-capacity sample`), then take the reading without Docker; each of their commands is stopped after 60 seconds.
+  While Docker stays hung a run takes up to 28 minutes, so the lease is still renewed well inside its hour, and a checkpoint comes about every 28 minutes instead of every 15.
 - A janitor run that fails (Docker not answering, a removal that failed) still writes the day's report, so the heartbeat runs it again only the next day; `~/agent-team/bin/team-janitor` by hand runs it again at once.
 - The job runs with the `PATH` that `team-timers enable` captured, and both steps need `docker` on it (the sweep `claude` too): on macOS Docker Desktop's `docker` is in `/usr/local/bin`.
   When Docker was installed after the heartbeat was enabled, or `docker` was not on the `PATH` of the shell that enabled it, run `team-timers enable` again, with Daniel's yes as every enable needs, from a shell where `command -v docker` answers; it rewrites the job with that `PATH`.
