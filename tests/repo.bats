@@ -904,7 +904,7 @@ YAML
 @test "tests/run, the team-heavy lock it runs under, and servers/install, which its toolkit tests run, need no team home" {
   unset TEAM_HOME
   run -2 --separate-stderr "$REPO_ROOT/tests/run" nothing
-  assert_equal "$stderr" "run: usage: tests/run [shellcheck|bats|toolkits]"
+  assert_equal "$stderr" "run: usage: tests/run [shellcheck|bats [--shard <k>/<n> [--list]]|toolkits]"
   run -0 --separate-stderr "$REPO_ROOT/bin/team-heavy" run -- echo ran
   assert_equal "$output" ran
   run -2 --separate-stderr "$REPO_ROOT/servers/install" nothing
@@ -917,7 +917,53 @@ YAML
   cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
   run_bin -0 team-project agent-team
   assert_equal "$(jq -c '[.required_checks, .local_checks]' <<<"$output")" \
-    "[$(sed -n '/^jobs:$/,$s/^  \([a-z_-]*\):$/\1/p' "$REPO_ROOT/.github/workflows/ci.yml" | jq -R . | jq -cs .),[]]"
+    "[$(sed -n '/^jobs:$/,$s/^  \([a-z_-]*\):$/\1/p' "$REPO_ROOT/.github/workflows/ci.yml" | grep -v -- '-shards$' | jq -R . | jq -cs .),[]]"
+}
+
+# A shard job is never a required check itself: the job of the required id waits for every shard,
+# runs even when one failed, and passes only when all did.
+@test "each shard job is needed by the job its name begins with, which always runs and passes only on the shards' success" {
+  local ci=$REPO_ROOT/.github/workflows/ci.yml id shards
+  # Each job's block, from its "  <id>:" line to the next job's.
+  job_block() { sed -n "/^jobs:\$/,\$p" "$ci" | sed -n "/^  $1:\$/,/^  [a-z_-]*:\$/p" | sed '$d'; }
+  shards=$(sed -n '/^jobs:$/,$s/^  \([a-z_-]*\)-shards:$/\1/p' "$ci")
+  assert_equal "$shards" $'test\nmacos'
+  for id in $shards; do
+    job_block "$id-shards" | grep -qx '      matrix: {shard: \[1, 2, 3\]}' || { echo "$id-shards has no three-shard matrix" >&2; return 1; }
+    job_block "$id-shards" | grep -qxF '      - run: tests/run bats --shard "$SHARD/3"' || { echo "$id-shards runs no shard" >&2; return 1; }
+    job_block "$id" | grep -qx "    needs: $id-shards" || { echo "$id does not need $id-shards" >&2; return 1; }
+    job_block "$id" | grep -qx '    if: always()' || { echo "$id does not always run" >&2; return 1; }
+    job_block "$id" | grep -qxF "          RESULT: \${{ needs.$id-shards.result }}" || { echo "$id reads no result of $id-shards" >&2; return 1; }
+    job_block "$id" | grep -qxF "        run: '[[ \$RESULT == success ]]'" || { echo "$id does not pass only on success" >&2; return 1; }
+  done
+}
+
+# Every tests/*.bats file lands in exactly one shard, and the shards stay within one file's size.
+@test "tests/run's bats shards split every file once" {
+  local all bytes file k lists='' max=0 min=-1 largest
+  unset TEAM_HOME
+  for k in 1 2 3; do
+    run -0 --separate-stderr "$REPO_ROOT/tests/run" bats --shard "$k/3" --list
+    [[ -n $output ]]
+    lists+=$output$'\n'
+    bytes=0
+    while IFS= read -r file; do
+      [[ $file =~ ^tests/[^/]+\.bats$ ]]
+      bytes=$((bytes + $(stat -c %s "$REPO_ROOT/$file")))
+    done <<<"$output"
+    ((bytes > max)) && max=$bytes
+    ((min < 0 || bytes < min)) && min=$bytes
+  done
+  all=$(cd "$REPO_ROOT" && printf '%s\n' tests/*.bats | sort)
+  assert_equal "$(sort <<<"${lists%$'\n'}")" "$all"
+  largest=$(cd "$REPO_ROOT" && stat -c %s tests/*.bats | sort -n | tail -n 1)
+  ((max - min <= largest)) || { echo "the shards differ by $((max - min)) bytes, more than the largest file's $largest" >&2; return 1; }
+  for k in '--shard 0/3' '--shard 4/3' '--shard 1/0' '--shard 1/3x' '--list' '--shard' '--shard 1/3 --list x'; do
+    # shellcheck disable=SC2086 # each form splits into its words
+    run -2 --separate-stderr "$REPO_ROOT/tests/run" bats $k
+    assert_equal "$stderr" "run: usage: tests/run [shellcheck|bats [--shard <k>/<n> [--list]]|toolkits]"
+  done
+  run -2 --separate-stderr "$REPO_ROOT/tests/run" toolkits --shard 1/3
 }
 
 # The README's inventory is pasted from the ops load check; the eval mocks' _tools.json, which the

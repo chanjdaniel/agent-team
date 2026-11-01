@@ -2,8 +2,9 @@
 # and by hand. They are the gate of a PR to dev: its protection and projects.toml's required_checks
 # for agent-team require each job by its id (shellcheck, test, macos, toolkits, data, zizmor), so
 # renaming a job changes a required check, and team-merge merges only with every one passed on the
-# PR's head.
-# The macos job runs one run per PR at a time: a re-push cancels the run it replaces. The toolkits
+# PR's head; test and macos pass only when every shard of test-shards and macos-shards did, so a
+# shard job is never a required check itself.
+# Each macos shard runs one run per PR at a time: a re-push cancels the run it replaces. The toolkits
 # job runs the toolkits' servers over stdio against a throwaway MongoDB in Docker. The data job
 # refuses what the PR adds that the public repository never takes: a secret (gitleaks, over its
 # commits) and a real email address or an image (bin/lib/data-check code, over what it adds),
@@ -38,21 +39,42 @@ jobs:
           echo "$PWD/shellcheck-$SHELLCHECK_VERSION" >>"$GITHUB_PATH"
       - run: tests/run shellcheck
 
-  test:
+  # The bats suite in three shards (tests/run bats --shard), each on a runner of its own.
+  test-shards:
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix: {shard: [1, 2, 3]}
+    env:
+      SHARD: ${{ matrix.shard }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: tests/run bats
+      - run: tests/run bats --shard "$SHARD/3"
 
-  # The bats suite on macOS, under Homebrew's Bash 5 and GNU tools (bin/lib/platform.sh).
-  macos:
+  test:
+    runs-on: ubuntu-24.04
+    needs: test-shards
+    if: always()
+    steps:
+      - name: Every shard passed
+        env:
+          RESULT: ${{ needs.test-shards.result }}
+        run: '[[ $RESULT == success ]]'
+
+  # The bats suite on macOS in three shards, under Homebrew's Bash 5 and GNU tools
+  # (bin/lib/platform.sh).
+  macos-shards:
     runs-on: macos-26
+    strategy:
+      fail-fast: false
+      matrix: {shard: [1, 2, 3]}
     concurrency:
-      group: macos-${{ github.event.pull_request.number || github.ref }}
+      group: macos-${{ github.event.pull_request.number || github.ref }}-${{ matrix.shard }}
       cancel-in-progress: true
     env:
+      SHARD: ${{ matrix.shard }}
       HOMEBREW_PACKAGES: bash coreutils findutils gnu-sed grep flock jq git python
       HOMEBREW_NO_AUTO_UPDATE: "1"
       HOMEBREW_NO_INSTALL_CLEANUP: "1"
@@ -72,7 +94,17 @@ jobs:
           python3 --version
           jq --version
           git --version
-      - run: tests/run bats
+      - run: tests/run bats --shard "$SHARD/3"
+
+  macos:
+    runs-on: ubuntu-24.04
+    needs: macos-shards
+    if: always()
+    steps:
+      - name: Every shard passed
+        env:
+          RESULT: ${{ needs.macos-shards.result }}
+        run: '[[ $RESULT == success ]]'
 
   # The toolkits' servers over stdio, against a throwaway MongoDB in Docker.
   toolkits:

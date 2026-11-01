@@ -10,7 +10,9 @@
 # suite waits for another suite or a gate's end-to-end run instead of overlapping it; under a
 # heavy run already (TEAM_HEAVY_HELD set, as a local check team-checks runs), it runs at once.
 #
-# Usage: tests/run [shellcheck|bats|toolkits]   (default: all three)
+# Usage: tests/run [shellcheck|bats [--shard <k>/<n> [--list]]|toolkits]   (default: all three)
+# With --shard, bats runs shard k of n of the files, each file going to the shard with the fewest
+# bytes so far, largest first, as CI's shard jobs do; --list prints that shard's files and runs none.
 # Exit 0 when every check passes; CI runs each part as its own job. The last line is the wall
 # time, so a slower suite shows.
 set -euo pipefail
@@ -22,12 +24,23 @@ team_home_report=1
 # shellcheck source=bin/lib/team.sh
 source "$root/bin/lib/team.sh" "$@"
 
-what=${1:-all}
-[[ $# -le 1 && $what =~ ^(all|shellcheck|bats|toolkits)$ ]] || usage_error "usage: tests/run [shellcheck|bats|toolkits]"
+usage="usage: tests/run [shellcheck|bats [--shard <k>/<n> [--list]]|toolkits]"
+what=${1:-all} shard='' list=''
+if [[ $what == bats && $# -gt 1 ]]; then
+  if ! [[ $# -le 4 && $2 == --shard && ${3:-} =~ ^([1-9][0-9]*)/([1-9][0-9]*)$ ]] ||
+    ((BASH_REMATCH[1] > BASH_REMATCH[2])); then
+    usage_error "$usage"
+  fi
+  shard=$3
+  if [[ $# -eq 4 ]]; then [[ $4 == --list ]] || usage_error "$usage"; list=1; fi
+else
+  [[ $# -le 1 && $what =~ ^(all|shellcheck|bats|toolkits)$ ]] || usage_error "$usage"
+fi
 
-# Every part but shellcheck alone runs under the machine's heavy-run lock (bin/team-heavy).
-if [[ $what != shellcheck && -z ${TEAM_HEAVY_HELD:-} ]]; then
-  exec "$root/bin/team-heavy" run --label "tests/run $what in ${root/#"$HOME"/\~}" -- "$0" "$what"
+# Every part but shellcheck alone and a shard's list runs under the machine's heavy-run lock
+# (bin/team-heavy).
+if [[ $what != shellcheck && -z $list && -z ${TEAM_HEAVY_HELD:-} ]]; then
+  exec "$root/bin/team-heavy" run --label "tests/run $* in ${root/#"$HOME"/\~}" -- "$0" "$@"
 fi
 
 # Every file under bin/, tests/, servers/ and toolkits/ that is a shell script by its shebang or
@@ -42,15 +55,36 @@ shell_scripts() {
   done < <(cd "$root" && find bin tests servers toolkits \( -path tests/vendor -o -path servers/node_modules -o -path 'servers/.*' \) -prune -o -type f -print | sort)
 }
 
-# Every tests/*.bats file, in parallel (see the header); fails if any file fails.
+# The tests/*.bats files to run, the largest first (so none of them starts last), one path per
+# line: every one, or with --shard k/n only shard k's, each file going to the shard with the fewest
+# bytes so far (ties to the lowest number), so one tree splits the same on every machine.
+bats_files() {
+  local size file k n i least
+  if [[ -z $shard ]]; then
+    find "$root/tests" -maxdepth 1 -name '*.bats' -printf '%s\t%p\n' | sort -rn | cut -f2-
+    return
+  fi
+  k=${shard%/*} n=${shard#*/}
+  local -a bytes=()
+  for ((i = 1; i <= n; i++)); do bytes[i]=0; done
+  # By size, then by name, so files of one size split the same everywhere.
+  while IFS=$'\t' read -r size file; do
+    least=1
+    for ((i = 2; i <= n; i++)); do ((bytes[i] < bytes[least])) && least=$i; done
+    bytes[least]=$((bytes[least] + size))
+    ((least == k)) && echo "$file"
+  done < <(find "$root/tests" -maxdepth 1 -name '*.bats' -printf '%s\t%p\n' | LC_ALL=C sort -t $'\t' -k1,1rn -k2,2)
+  return 0
+}
+
+# The bats files (bats_files), in parallel (see the header); fails if any file fails.
 run_bats() {
   local file failed=0
   out=$(mktemp -d)
   trap 'rm -rf "$out"' EXIT
   # Each file's output goes to $out/<file>, with $out/<file>.failed beside it when it fails.
   # shellcheck disable=SC2016 # expanded by each file's bash
-  # The longest files first, so none of them starts last.
-  find "$root/tests" -maxdepth 1 -name '*.bats' -printf '%s\t%p\n' | sort -rn | cut -f2- | tr '\n' '\0' |
+  bats_files | tr '\n' '\0' |
     xargs -0 -n 1 -P "$(nproc)" bash -c '
       name=${2##*/} verdict=ok
       "$0/tests/vendor/bats-core/bin/bats" "$2" >"$1/$name" 2>&1 || { verdict="not ok"; touch "$1/$name.failed"; }
@@ -65,6 +99,10 @@ run_bats() {
   ((failed == 0))
 }
 
+if [[ -n $list ]]; then
+  bats_files | sed "s|^$root/||"
+  exit
+fi
 fail=0
 SECONDS=0
 if [[ $what == all || $what == shellcheck ]]; then
