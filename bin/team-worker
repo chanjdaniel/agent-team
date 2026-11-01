@@ -21,10 +21,13 @@
 # recorded under another machine's home is the same path under this HOME.
 # Before it launches, it stops each idle live session of the task's earlier launches whose work
 # is handed on (every planner and reviewer, and every builder of the same worktree when the new
-# worker is a builder: one builder holds a worktree's work at a time), and leaves a busy one, one
-# waiting for input and an ops session; team-close still removes every session at the close. Each
-# stop and each session left is said on stderr; a stop that fails, or a session list that cannot
-# be read, is a warning, and the launch goes on. An ops launch and T0 stop nothing.
+# worker is a builder: one builder holds a worktree's work at a time) once the ledger follows its
+# launch with an event of its own (a done of its session, a paused, a reviewer's review, a builder's
+# pr or ticket-done). It leaves a busy one, one waiting for input, one whose status is not idle,
+# one with no such event (the sweep's silent one) and an ops session; team-close still removes
+# every session at the close. Each stop and each session left is said on stderr; a stop that
+# fails, or a session list that cannot be read, is a warning, and the launch goes on. T0 stops
+# nothing.
 # When the worktree's project names a model for the role in the registry (team-project's models),
 # or --model names one, the session launches on it (claude --model) and the launch logs it as
 # model; otherwise it runs on the user settings' model, and logs none. Ops never takes one, and
@@ -194,33 +197,43 @@ if [[ $role == ops ]]; then
 fi
 
 # The task's finished workers: each live session of its earlier launches whose work is handed on
-# (every planner and reviewer, and every builder of this worktree when this is a builder, since one
-# builder holds a worktree's work at a time) is stopped while it is idle, so it stops holding the
-# machine's memory; a busy one or one waiting for input is left, and so is an ops session. An ops
-# launch takes over no one's work, so it stops none. The session list is read only when such a
-# launch exists, and a list that cannot be read or a stop that fails never stops the launch.
-if [[ $task != T0 && $role != ops ]]; then
-  finished=$(jq -c --arg role "$role" '[.[] | select(.event == "launch"
-    and (.role == "planner" or .role == "reviewer" or (.role == "builder" and $role == "builder")))]' <<<"$events")
+# is stopped while it is idle, so it stops holding the machine's memory. Handed on is every planner
+# and reviewer, and every builder of this worktree when this is a builder (one builder holds a
+# worktree's work at a time), whose launch the ledger follows with an event of its own: a done of
+# its session, a paused (a stow), and a reviewer's review or a builder's pr or ticket-done. A
+# session that is busy, waiting for input, not idle by its status, or idle with no such event (the
+# sweep's silent one) is left and named, and so is an ops session. The session list is read only
+# when such a launch exists, and a list that cannot be read or a stop that fails never stops the
+# launch.
+if [[ $task != T0 ]]; then
+  finished=$(jq -c --arg role "$role" '. as $events
+    | [to_entries[] | .key as $i | .value | select(.event == "launch" and (.session | type) == "string" and .session != ""
+        and (.role == "planner" or .role == "reviewer" or (.role == "builder" and $role == "builder")))
+      | . as $l
+      | . + {handed_on: any($events[$i + 1:][]; (.event == "done" and .session == $l.session) or .event == "paused"
+          or (.event == "review" and $l.role == "reviewer") or ((.event == "pr" or .event == "ticket-done") and $l.role == "builder"))}]' <<<"$events")
   if [[ $finished != '[]' ]]; then
     if listed=$(live_sessions 2>/dev/null && printf '%s' "$LIVE_SESSIONS"); then
       LIVE_SESSIONS=$listed
       while IFS=$'\t' read -r session worker state wt; do
         # A builder of another worktree (a second project's PR) still holds its own work.
         if [[ $worker == builder ]] && ! same_path "$wt" "$worktree"; then continue; fi
-        case $state in
-          busy | 'waiting for input') echo "team-worker: left $task-$worker $session: $state" >&2 ;;
-          idle)
-            if stop_out=$(bounded 30 claude stop "$session" 2>&1 </dev/null); then
-              echo "team-worker: stopped $task-$worker $session: its work is handed on" >&2
-            else
-              echo "team-worker: warning: could not stop $task-$worker $session ($(grep -m1 . <<<"$stop_out" || echo "claude stop failed")); the launch goes on" >&2
-            fi
-            ;;
-        esac
-      done < <(ledger_jq 'workers($sessions)[] | select(.live)
-          | [.session, .role, if .status == "busy" then "busy" elif .state == "blocked" then "waiting for input" else "idle" end,
-            (.worktree | local_path($home))] | @tsv' -r --argjson sessions "$LIVE_SESSIONS" <<<"$finished")
+        if [[ $state != handed-on ]]; then
+          echo "team-worker: left $task-$worker $session: $state" >&2
+        elif stop_out=$(bounded 30 claude stop "$session" 2>&1 </dev/null); then
+          echo "team-worker: stopped $task-$worker $session: its work is handed on" >&2
+        else
+          echo "team-worker: warning: could not stop $task-$worker $session ($(grep -m1 . <<<"$stop_out" || echo "claude stop failed")); the launch goes on" >&2
+        fi
+      done < <(ledger_jq '.[] | live_session(.session; $sessions) as $live | select($live != null)
+          | [.session, .role,
+              if $live.status == "busy" then "busy"
+              elif $live.state == "blocked" then "waiting for input"
+              elif $live.status == null then "no status"
+              elif $live.status != "idle" then "status \($live.status)"
+              elif .handed_on | not then "idle with no event of its own since its launch"
+              else "handed-on" end,
+              (.worktree | local_path($home))] | @tsv' -r --argjson sessions "$LIVE_SESSIONS" <<<"$finished")
     else
       echo "team-worker: warning: cannot read the live session list (claude agents --json), so no finished session was stopped" >&2
     fi
