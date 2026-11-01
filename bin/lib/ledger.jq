@@ -103,6 +103,14 @@ def typed_value($name; $want):
       | if $bad == [] then . else {problems: $bad} end
     else . end;
 
+# A typed review line whose sent_back names any finding as verdict findings, whatever the
+# reviewer's word: a pass whose notes go back before the merge is not ready to merge, so every
+# reader of a review's verdict (phase, team-sweep, team-inbox, team-merge) holds it back. team-log
+# applies it to every review it logs, by hand or from a worker's message; any other line is left.
+def review_sent_back:
+  if .event == "review" and .verdict == "pass" and (.sent_back | type) == "array" and .sent_back != []
+  then .verdict = "findings" else . end;
+
 # The fields of a ledger line, read raw, that the contract types as whole numbers and that hold
 # strings, as {field: [those strings]}: {} for a line that has none, is not a JSON object or is of
 # no kind the contract knows. team-log --fix-sent-back converts them, every line's, legacy too.
@@ -447,11 +455,21 @@ def live_session($session; $sessions):
   else null end;
 
 # Every launch of the task, live when the session list has its session, with that session's context
-# when task_state_json added it.
+# when task_state_json added it, and the brief the launch logged (or null).
 def workers($sessions):
   [.[] | select(.event == "launch") | live_session(.session; $sessions) as $live
     | {role, session, launched: .ts, worktree, live: ($live != null), status: $live.status, state: $live.state,
-       context: $live.context}];
+       context: $live.context, brief: (.brief // null)}];
+
+# Where the task is, over its events and its workers: tickets (done, the tickets with a
+# ticket-done, each once, and total, null here, which task_state_json reads from team-tickets),
+# on (each live worker's role, session and brief) and reviews (the count of the task's reviews,
+# and the latest one's verdict, head and sent_back, each null when there is none).
+def progress($workers):
+  {tickets: {done: [.[] | select(.event == "ticket-done") | .ticket] | unique, total: null},
+   on: [$workers[] | select(.live) | {role, session, brief}],
+   reviews: (map(select(.event == "review"))
+     | {count: length} + (last // {} | {verdict, head, sent_back}))};
 
 # The full session ids of the task's launches the session list has.
 def live_session_ids($sessions):
@@ -519,22 +537,34 @@ def pending_asks: [unsettled_asks[] | .ask | {id, text, ts}];
 def task_state($sessions; $home):
   map(local_worktree($home))
   | (map(select(.event == "opened")) | first) as $opened
+  | workers($sessions) as $workers
   | {schema: "team-state/1", task: .[0].task, title: $opened.title, project: $opened.project,
      path: $opened.path, phase: phase, worktrees: worktree_list,
      thread: (map(select(.event == "thread") | .discord_thread) | last),
-     workers: workers($sessions), last_event: last, pending_asks: pending_asks, waiting: waiting,
-     rehome_failures: rehome_failures, merge_preapproval: latest_merge_preapproval, pr: null};
+     workers: $workers, last_event: last, pending_asks: pending_asks, waiting: waiting,
+     rehome_failures: rehome_failures, merge_preapproval: latest_merge_preapproval, pr: null,
+     progress: progress($workers)};
 
-# A task's state (team-state's JSON) as one line of text, each live worker's context in thousands:
-# T14 agent-team feature building | T14-builder idle 302k | PR #5 a1b2c3d checks 2/2 agent-review missing
+# A task's state (team-state's JSON) as one line of text, each live worker's context in thousands
+# and the brief it is on, then the tickets done and the latest review:
+# T14 agent-team feature building | T14-builder idle 302k on build-04 | tickets 3/7 | review 4 findings, sent back 5, 6 | PR #5 a1b2c3d 16 behind dev checks 2/2 agent-review missing
 def state_line:
   .task as $task
   | ([.task, .project, .path, .phase] | map(select(. != null)) | join(" "))
   + " | "
   + ([.workers[] | select(.live)
       | "\($task)-\(.role) \(.status)" + (if .state == null or .state == "working" then "" else " \(.state)" end)
-        + if (.context | type) == "number" then " \(.context / 1000 | round)k" else "" end]
+        + (if (.context | type) == "number" then " \(.context / 1000 | round)k" else "" end)
+        + if (.brief | type) == "string" then " on \(.brief | ltrimstr("brief-"))" else "" end]
      | if . == [] then "no live worker" else join(", ") end)
+  + (.progress.tickets // {} | (.done // [] | length) as $done
+     | if (.total | type) == "number" and .total > 0 then " | tickets \($done)/\(.total)"
+       elif $done > 0 then " | tickets \($done) done"
+       else "" end)
+  + (.progress.reviews // {} | if (.count // 0) == 0 then ""
+     else " | review \(.count) \(.verdict)"
+       + (if (.sent_back | type) == "array" and .sent_back != [] then ", sent back \(.sent_back | map(tostring) | join(", "))" else "" end)
+     end)
   + (if .pr == null then "" else
      .pr | if .number == null then " | PR \(.url) unreadable"
        else " | PR #\(.number)" end
@@ -544,6 +574,7 @@ def state_line:
            (if .state == "open" then "" else " \(.state)" end)
            + " \(.head[:7])"
            + (if .head_moved then " (head moved)" else "" end)
+           + (if (.behind_by | type) == "number" and .behind_by > 0 then " \(.behind_by) behind \(.base)" else "" end)
            + " checks \(.checks.passed | length)/\(.checks | map(length) | add)"
            + " agent-review \(.agent_review)"
          end
@@ -830,11 +861,13 @@ def session_text:
   "\(.name) \(.session) \(.status)" + if .state == null or .state == "working" then "" else " \(.state)" end;
 
 # team-snapshot's text form, one line per string, from its JSON. Lines are cut at 120 columns, so
-# ten open tasks fit one screen, but current items at 200, each being a whole thought.
+# ten open tasks fit one screen, but an open task's state and a current item at 200, each being a
+# whole thought (a task's progress and its PR part come last on its line).
 def snapshot_text:
-  def section($title; $lines):
-    if $lines == [] then "\($title): none" else "\($title) (\($lines | length)):", ($lines[] | "  " + . | clip(120)) end;
-  section("Open tasks"; [.tasks[] | if .error then "\(.task) state unreadable: \(.error)" else state_line end]),
+  def section($title; $lines; $columns):
+    if $lines == [] then "\($title): none" else "\($title) (\($lines | length)):", ($lines[] | "  " + . | clip($columns)) end;
+  def section($title; $lines): section($title; $lines; 120);
+  section("Open tasks"; [.tasks[] | if .error then "\(.task) state unreadable: \(.error)" else state_line end]; 200),
   (if .slots.error then "Task slots unreadable: \(.slots.error)" else .slots.summary end | clip(120)),
   section("Live team sessions";
     [.sessions[] | session_text + if .logged then "" else " (no launch of it in the ledger)" end]),

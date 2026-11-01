@@ -57,8 +57,8 @@
 # Then, when the task's opened event names a story (team-open --story) and the PR is of the project
 # it opened in, that story's backlog file in the team home (story_file in bin/lib/team.sh) is
 # marked: its front matter's status becomes done and the PR's number joins its pr: list (in the
-# list's style, #5 beside #-numbers, else 5), and a line on stderr names the file for the
-# coordinator to commit with the records; a story that reads so already is said and left. A story
+# list's style, #5 beside #-numbers, else 5), and a line on stderr names the file, which the next
+# checkpoint commits with the records; a story that reads so already is said and left. A story
 # that cannot be marked (no such file, no front matter, a pr: line that is no [...] list) is said
 # on stderr with why; the merge stands and the exit stays 0.
 # Then, on the plan-time word only, team-post posts one message to the task's thread and one to
@@ -482,7 +482,7 @@ if [[ -n $story ]]; then
   if story_path=$(story_file "$project" "$story" 2>"$scratch/story") &&
     marked=$(mark_story "$story_path" "$number" 2>"$scratch/story"); then
     if [[ $marked == changed ]]; then
-      echo "team-merge: marked $story done with PR $number in ${story_path#"$TEAM_HOME/"}; commit it with the records" >&2
+      echo "team-merge: marked $story done with PR $number in ${story_path#"$TEAM_HOME/"}; the next checkpoint commits it" >&2
     else
       echo "team-merge: $story reads done with PR $number already in ${story_path#"$TEAM_HOME/"}" >&2
     fi

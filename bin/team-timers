@@ -56,8 +56,8 @@
 #                     ~/.config/agent-team/stack.json (team-stack's settings, off by default):
 #                     team-stack sweep, which stops the team's idle stacks.
 #              checkpoint  On the holder, after the lease or back step: team-checkpoint, which
-#                     makes one once the last is 15 minutes old (less the same minute). A failed
-#                     checkpoint ends the run.
+#                     makes one once the last is 5 minutes old (less the same minute), so each
+#                     run makes one. A failed checkpoint ends the run.
 #              pack   On the holder, after the checkpoint, once the team home has PACK_LOOSE (200,
 #                     bin/lib/team.sh) loose objects: git gc in it, then one line, "packed 213
 #                     loose objects; 0 left loose, 38.40 MiB in packs". So the team home stays

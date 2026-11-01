@@ -840,6 +840,23 @@ preapproved_pr() {
   assert_contains "$output" "T3 no-worker: merged and not closed"
 }
 
+@test "merge-due: none while the latest review, a pass logged through team-log, sent findings back" {
+  opened T3
+  launch T3 builder 11111111
+  preapproved_pr T3
+  local counts='findings=blocking:0,correctness:1,security:0,real-data:0,note-change:0,note-before:0'
+  run_bin -0 team-log T3 review verdict=pass head=a1b2c3d4e5 "$counts" sent_back=1 guarded=none
+  # The builder's live session holds the fix round.
+  sessions "$(session 11111111 T3-builder busy)"
+  run_bin -0 team-sweep
+  assert_equal "$output" ""
+  # The verify pass that sends nothing back makes it due again.
+  run_bin -0 team-log T3 review verdict=pass head=a1b2c3d4e5 "$counts" sent_back=none guarded=none
+  run_bin -1 team-sweep
+  assert_contains "$output" "T3 merge-due"
+  no_github
+}
+
 @test "merge-due: none once the word is withdrawn, while another park stands, or before the review passed" {
   opened T3
   launch T3 builder 11111111

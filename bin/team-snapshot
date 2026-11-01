@@ -5,15 +5,18 @@
 #
 # Usage: team-snapshot [--json]
 # Open tasks are those with events and no closed, in task number order, each as its team-state
-# line. The machine's task slots are team-slots' summary line, from the stored readings only (it
-# takes none). Live team sessions are the sessions claude agents --json lists named like a team worker
-# (T<n>-<role>) whose task is open, marked when no launch in the ledger names them; strays are
-# those whose task is closed or not in the ledger, and the load check's T0 sessions. Open PRs
-# come from gh pr list for each project in projects.toml (the first 100). Pending asks are the
-# open tasks' asks with no answer, with their text. Current items are the lines of the team
-# home's tasks/current.md that start with "- " (what the coordinator holds that the ledger has no
-# event for), none when the file is missing. Text lines are cut at 120 columns, an item's at 200,
-# and the text form shows the first 40 items, then how many more.
+# line, which carries its progress (the brief each live worker is on, the tickets done of its
+# total, the latest review and how far its PR is behind its base), so the coordinator's
+# session-start digest shows where each task is. The machine's task slots are team-slots' summary
+# line, from the stored readings only (it takes none). Live team sessions are the sessions claude
+# agents --json lists named like a team worker (T<n>-<role>) whose task is open, marked when no
+# launch in the ledger names them; strays are those whose task is closed or not in the ledger,
+# and the load check's T0 sessions. Open PRs come from gh pr list for each project in
+# projects.toml (the first 100). Pending asks are the open tasks' asks with no answer, with their
+# text. Current items are the lines of the team home's tasks/current.md that start with "- "
+# (what the coordinator holds that the ledger has no event for), none when the file is missing.
+# Text lines are cut at 120 columns, an open task's and an item's at 200, and the text form shows
+# the first 40 items, then how many more.
 # With --json, the versioned snapshot (schema team-snapshot/1): tasks (each team-state's JSON, or
 # {task, error} when its state could not be told, as for a PR naming an unregistered project),
 # slots (team-slots status --stored --json's object, or {error} with the last line team-slots
