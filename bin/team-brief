@@ -6,11 +6,10 @@
 #   template    one of templates/briefs/: planner-feature, planner-interview (a planner that
 #               interviews Daniel in the task's interview thread, which team-thread T<n>
 #               --interview opens first), planner-research, builder-ticket, builder-fix,
-#               builder-deliver, builder-merge-base (--set pr=, a PR behind its base),
-#               builder-round (--set pr= the URL, or none before a gated project's gate, findings=
-#               the numbers, goal= as builder-deliver's; a fresh builder for a fix round after the
-#               holder stowed), reviewer, rereview (pr, head, reviewed and since derived, below),
-#               verify (the same but since, and --set findings= the numbers sent back; the
+#               builder-deliver (goal derived, below), builder-merge-base (--set pr=, a PR behind
+#               its base), builder-round (pr, findings, findings_file and goal derived; a fresh
+#               builder for a fix round after the holder stowed), reviewer, rereview (pr, head,
+#               reviewed and since derived), verify (the same but since, and findings derived; the
 #               re-review of a round whose findings sent back were all plain notes on lines the PR
 #               changes, or that edited only the PR body, which reads only the fix), ops, retro,
 #               resume (a worker relaunched on
@@ -45,8 +44,14 @@
 # Derived: a template's reviewed, pr and head the caller does not --set are filled from the ledger
 # and GitHub. reviewed is the head of the task's latest review; pr the URL of the task's latest pr
 # event in the project's repo; head that event's head (moved by any history-rewritten), or the
-# PR's head on GitHub (gh pr view) when it differs, which stderr says. A derived fact with no source
-# is refused as unfilled, naming its --set; GitHub unreadable for head is refused naming --set head=.
+# PR's head on GitHub (gh pr view) when it differs, which stderr says; builder-round's pr is none
+# when a gated (no-mistakes) project has no pr event yet, before its gate. So are findings,
+# findings_file and goal: findings the latest review's sent_back, as "3, 5 and 6"; findings_file
+# the newest (by mtime) of review.md and rereview*.md in the worktree's <task_dir>/, written
+# <task_dir>/<file>; goal the first sentence of the plan's ## Goal section, its first line of text
+# past any HTML comment, a list marker dropped. A derived fact with no source is refused as
+# unfilled, naming its --set, only when the template uses it; GitHub unreadable for head is
+# refused naming --set head=.
 # since is always derived, the caller's --set or --set-file since= added after it as "The
 # coordinator adds: <text>": after fetching origin/<base> into the worktree (and reviewed and head,
 # when it lacks them; a failed fetch of the base is exit 75, nothing written), it gives the latest
@@ -214,7 +219,7 @@ file=$TEAM_HOME/tasks/$task/brief${name:+-$name}.md record=${file%.md}.json
 # Every placeholder needs a value, and every --set value a placeholder. A derivable placeholder
 # the caller does not set is derived below; since is always derived, the caller's added after it.
 mapfile -t used < <(grep -oE '\{\{[a-z][a-z0-9_]*\}\}' <<<"$text" | sed 's/^{{//; s/}}$//' | sort -u)
-derivable=(reviewed pr head since)
+derivable=(reviewed pr head since findings findings_file goal)
 uses() { [[ " ${used[*]} " == *" $1 "* ]]; }
 missing=() unused=() derive=()
 declare -A why=()
@@ -260,7 +265,65 @@ if deriving pr; then
   pr=$(ledger_jq '[task_prs[]
       | select(.url | strings | ascii_downcase | startswith("https://github.com/\($repo | ascii_downcase)/pull/"))]
     | last | .url // empty' -r --arg repo "$repo" <<<"$events")
-  if [[ -n $pr ]]; then values[pr]=$pr; else underivable pr "$task has no pr event in $repo; --set pr="; fi
+  if [[ -n $pr ]]; then
+    values[pr]=$pr
+  elif [[ $template == builder-round && $(jq -r .delivery <<<"$facts") == no-mistakes ]]; then
+    # A gated project's first round comes before its gate opens the PR.
+    values[pr]=none
+  else
+    underivable pr "$task has no pr event in $repo; --set pr="
+  fi
+fi
+if deriving findings; then
+  sent=$(jq -c '.sent_back // [] | select(length > 0)' <<<"$review")
+  if [[ $review == null ]]; then
+    underivable findings "$task has no review; --set findings="
+  elif [[ -z $sent ]]; then
+    underivable findings "$task's latest review sent nothing back; --set findings="
+  else
+    values[findings]=$(and_list "$sent")
+  fi
+fi
+if deriving findings_file; then
+  # The newest of the reviews' findings files in the worktree's task directory.
+  dir=$(jq -r .worktree <<<"$chosen")/${values[task_dir]}
+  newest=''
+  if [[ -d $dir ]]; then
+    newest=$(find "$dir" -maxdepth 1 -type f \( -name review.md -o -name 'rereview*.md' \) -printf '%T@ %f\n' |
+      sort -k1,1nr -k2,2 | sed -n '1s/^[^ ]* //p')
+  fi
+  if [[ -n $newest ]]; then
+    values[findings_file]=${values[task_dir]}/$newest
+  else
+    underivable findings_file "no review.md or rereview*.md in $(tilde "$dir"); --set findings_file="
+  fi
+fi
+if deriving goal; then
+  # The first sentence of the plan's ## Goal: its first line of text, one sentence per line as the
+  # team writes Markdown, past any HTML comment and without a list marker.
+  plan_file=$TEAM_HOME/tasks/$task/plan.md goal=''
+  if [[ -f $plan_file && -r $plan_file ]]; then
+    goal=$(awk '
+      /^## Goal[[:space:]]*$/ { in_goal = 1; next }
+      !in_goal { next }
+      !in_comment && /^#{1,2} / { exit }
+      {
+        # The line without its HTML comments, which may span lines.
+        line = $0; out = ""
+        while (1) {
+          if (in_comment) {
+            if (!(at = index(line, "-->"))) break
+            line = substr(line, at + 3); in_comment = 0
+          }
+          if (!(at = index(line, "<!--"))) { out = out line; break }
+          out = out substr(line, 1, at - 1); line = substr(line, at + 4); in_comment = 1
+        }
+        sub(/^[[:space:]]*([-*+]|[0-9]+[.)])[[:space:]]+/, "", out)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", out)
+        if (out != "") { print out; exit }
+      }' "$plan_file")
+  fi
+  if [[ -n $goal ]]; then values[goal]=$goal; else underivable goal "$(tilde "$plan_file") has no ## Goal sentence; --set goal="; fi
 fi
 if deriving head; then
   if [[ ! -v values[pr] ]]; then
@@ -289,10 +352,13 @@ if deriving since; then
   fi
 fi
 if ((${#missing[@]})); then
-  message="unfilled placeholders: $(printf '%s\n' "${missing[@]}" | sort | paste -sd ',' | sed 's/,/, /g')"
+  mapfile -t missing < <(printf '%s\n' "${missing[@]}" | sort)
+  message="unfilled placeholders: $(printf '%s\n' "${missing[@]}" | paste -sd ',' | sed 's/,/, /g')"
   if ((${#why[@]})); then
-    message+="; nothing to derive them from: $(for key in "${!why[@]}"; do echo "$key (${why[$key]})"; done | sort |
-      paste -sd ',' | sed 's/,/, /g')"
+    # In the keys' order, which sorting the whole entries would break (findings_file, findings).
+    message+="; nothing to derive them from: $(for key in "${missing[@]}"; do
+      [[ ! -v why[$key] ]] || echo "$key (${why[$key]})"
+    done | paste -sd ',' | sed 's/,/, /g')"
   fi
   die "$message"
 fi

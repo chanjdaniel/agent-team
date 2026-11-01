@@ -726,6 +726,9 @@ SINCE
   assert_contains "$output" "Derived: a template's reviewed, pr and head the caller does not --set are filled from the ledger"
   assert_contains "$output" "since is always derived, the caller's --set or --set-file since= added after it as \"The"
   assert_contains "$output" "a failed fetch of the base is exit 75, nothing written"
+  assert_contains "$output" "builder-round's pr is none"
+  assert_contains "$output" "findings the latest review's sent_back, as \"3, 5 and 6\"; findings_file"
+  assert_contains "$output" "goal the first sentence of the plan's ## Goal section"
   assert_contains "$output" "tasks/T<n>/brief[-<suffix>].json, replaced with it: {template, project, values}"
 }
 
@@ -1145,7 +1148,7 @@ after"
 @test "every unfilled placeholder is named, and nothing is written" {
   open_t12
   run_bin -1 team-brief T12 builder-fix --set commits=c
-  assert_equal "$output" "team-brief: unfilled placeholders: goal, read"
+  assert_equal "$output" "team-brief: unfilled placeholders: goal, read; nothing to derive them from: goal (~/agent-team-records/tasks/T12/plan.md has no ## Goal sentence; --set goal=)"
   assert_equal "$(task_files)" ""
 }
 
@@ -1325,8 +1328,27 @@ EOF
   assert_equal "${#got[@]}" "${#want[@]}"
 }
 
+# plan_goal <task> <text of the Goal section>: the task's plan.md with a title, that Goal section
+# and a Why after it.
+plan_goal() {
+  printf '# %s plan\n\n## Goal\n\n%s\n\n## Why\n\nBecause.\n' "$1" "$2" >"$TEAM_HOME/tasks/$1/plan.md"
+}
+
+# findings_files <worktree under $HOME> <task_dir> <file>...: each file in the worktree's task
+# directory, a minute apart, the last named the newest.
+findings_files() {
+  local dir=$HOME/$1/$2 minutes=$(($# - 2)) file
+  mkdir -p "$dir"
+  for file in "${@:3}"; do
+    echo "# $file" >"$dir/$file"
+    touch -d "-$minutes minutes" "$dir/$file"
+    minutes=$((minutes - 1))
+  done
+}
+
 @test "the round brief hands a fresh builder the findings, the stowed builder's handoff and the delivery" {
   open_t12
+  findings_files .treehouse/Conventioner-d4c77a/4/Conventioner .scratch/task review.md
   run_bin -0 --separate-stderr team-brief T12 builder-round --name round-2 \
     --set pr=https://github.com/chanjdaniel/shop/pull/5 --set findings="1 and 3" --set goal="the shop's checkout"
   assert_equal "$output" "$TEAM_HOME/tasks/T12/brief-round-2.md"
@@ -1346,9 +1368,98 @@ EOF
   assert_contains "$brief" "\`git merge-base --is-ancestor origin/fix/T12-applicant-sign-in-rate-limit HEAD\`"
   assert_contains "$brief" "when it is none, the delivery opens it as it says."
   assert_contains "$brief" 'Run `/no-mistakes` with this intent: "T12: g"'
-  # The round needs its PR and findings; the delivery needs the goal.
-  run_bin -1 team-brief T12 builder-round --name round-3
-  assert_contains "$output" "unfilled placeholders: findings, goal, pr"
+}
+
+@test "a round brief takes the findings sent back, the newest findings file, the PR and the plan's goal" {
+  open_t12
+  local wt=.treehouse/Conventioner-d4c77a/4/Conventioner brief
+  event T12 review '{verdict: "findings", head: "abc1234", sent_back: [3, 5]}'
+  findings_files "$wt" .scratch/task review.md rereview.md
+  plan_goal T12 'Applicants cannot flood addresses with sign-in codes.
+Nor guess them.'
+  # A gated project before its gate: no pr event, so the PR is none.
+  run_bin -0 --separate-stderr team-brief T12 builder-round --name round-1
+  assert_equal "$stderr" ""
+  brief=$(<"$output")
+  assert_contains "$brief" "PR: none, against \`dev\` (none on a gated project's first review, before its gate opens the PR)."
+  assert_contains "$brief" "and findings 3 and 5 in \`.scratch/task/rereview.md\`."
+  assert_contains "$brief" "When every one of findings 3 and 5 is a plain \`note\`"
+  assert_contains "$brief" 'Run `/no-mistakes` with this intent: "T12: Applicants cannot flood addresses with sign-in codes."'
+  refute_grep -F 'Nor guess them' "$output"
+  assert_equal "$(jq -c .values "$TEAM_HOME/tasks/T12/brief-round-1.json")" \
+    '{"findings":"3 and 5","findings_file":".scratch/task/rereview.md","goal":"Applicants cannot flood addresses with sign-in codes.","pr":"none"}'
+  # The gate opened the PR, a later review sent back one more, and review.md is now the newest.
+  event T12 pr '{url: "https://github.com/chanjdaniel/Conventioner/pull/9", head: "def5678"}'
+  event T12 review '{verdict: "findings", head: "def5678", sent_back: [6, 7, 9]}'
+  findings_files "$wt" .scratch/task rereview.md review.md
+  run_bin -0 team-brief T12 builder-round --name round-2
+  brief=$(<"$output")
+  assert_contains "$brief" "PR: https://github.com/chanjdaniel/Conventioner/pull/9, against \`dev\`"
+  assert_contains "$brief" "and findings 6, 7 and 9 in \`.scratch/task/review.md\`."
+  # The verify brief takes the same findings.
+  run_bin -0 team-brief T12 verify --name verify-2 --set head=def5678 --set reviewed=abc1234
+  assert_contains "$(<"$output")" "Sent back: the notes numbered 6, 7 and 9 in"
+}
+
+@test "a direct-PR project's round needs its pr event, and a review that sent nothing back gives no findings" {
+  open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
+  run_bin -1 team-brief T14 builder-round
+  assert_equal "$output" "team-brief: unfilled placeholders: findings, findings_file, goal, pr; nothing to derive them from: findings (T14 has no review; --set findings=), findings_file (no review.md or rereview*.md in ~/agent-team/.claude/worktrees/2/.work/task; --set findings_file=), goal (~/agent-team-records/tasks/T14/plan.md has no ## Goal sentence; --set goal=), pr (T14 has no pr event in chanjdaniel/agent-team; --set pr=)"
+  event T14 review '{verdict: "pass", head: "abc1234"}'
+  run_bin -1 team-brief T14 builder-round
+  assert_contains "$output" "findings (T14's latest review sent nothing back; --set findings=)"
+  event T14 review '{verdict: "findings", head: "abc1234", sent_back: []}'
+  run_bin -1 team-brief T14 builder-round
+  assert_contains "$output" "findings (T14's latest review sent nothing back; --set findings=)"
+  assert_equal "$(task_files)" ""
+}
+
+@test "a --set of the PR, the findings, their file or the goal wins over the derived one" {
+  open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
+  event T14 review '{verdict: "findings", head: "abc1234", sent_back: [3, 5]}'
+  event T14 pr '{url: "https://github.com/chanjdaniel/agent-team/pull/9", head: "abc1234"}'
+  findings_files agent-team/.claude/worktrees/2 .work/task review.md
+  plan_goal T14 'The team has its tooling.'
+  run_bin -0 --separate-stderr team-brief T14 builder-round --set pr=https://github.com/chanjdaniel/agent-team/pull/10 \
+    --set findings=4 --set findings_file=.work/task/review-2.md --set goal='the given goal.'
+  assert_equal "$stderr" ""
+  assert_equal "$(stub_calls gh)" ""
+  assert_equal "$(jq -c .values "$TEAM_HOME/tasks/T14/brief.json")" \
+    '{"findings":"4","findings_file":".work/task/review-2.md","goal":"the given goal.","pr":"https://github.com/chanjdaniel/agent-team/pull/10"}'
+  assert_contains "$(<"$output")" "and findings 4 in \`.work/task/review-2.md\`."
+  assert_contains "$(<"$output")" '"T14: the given goal."'
+}
+
+@test "a deliver brief takes the goal from the plan's Goal section, its first sentence; a plan with none is refused naming --set goal=" {
+  open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
+  local plan=$TEAM_HOME/tasks/T14/plan.md
+  # No plan at all.
+  run_bin -1 team-brief T14 builder-deliver
+  assert_equal "$output" "team-brief: unfilled placeholders: goal; nothing to derive them from: goal (~/agent-team-records/tasks/T14/plan.md has no ## Goal sentence; --set goal=)"
+  # The plan template's comment alone is no goal, and neither is a Goal section left empty.
+  sed 's/{{task}}/T14/g' "$REPO_ROOT/templates/plan.md" >"$plan"
+  run_bin -1 team-brief T14 builder-deliver
+  assert_contains "$output" "goal (~/agent-team-records/tasks/T14/plan.md has no ## Goal sentence; --set goal=)"
+  printf '# T14\n\n## Goal\n\n## Why\n\nBecause.\n' >"$plan"
+  run_bin -1 team-brief T14 builder-deliver
+  assert_contains "$output" "has no ## Goal sentence"
+  # A goal under the template's comment: its first sentence, the next line left out.
+  plan_goal T14 '<!-- What is true for Daniel.
+     In one or two sentences. -->
+
+The team'"'"'s tooling runs on both machines.
+Daniel moves it with one command.'
+  run_bin -0 team-brief T14 builder-deliver
+  assert_contains "$(<"$output")" "its body opening with the task's goal: \"T14: The team's tooling runs on both machines.\", then"
+  assert_equal "$(jq -c .values "$TEAM_HOME/tasks/T14/brief.json")" '{"goal":"The team'"'"'s tooling runs on both machines."}'
+  # A goal written as a list: its first item, without the marker.
+  plan_goal T14 '- The team home stays packed.
+- Stack logs stay out of it.'
+  run_bin -0 team-brief T14 builder-deliver --force
+  assert_contains "$(<"$output")" '"T14: The team home stays packed."'
+  # A --set wins.
+  run_bin -0 team-brief T14 builder-deliver --force --set goal='the given goal.'
+  assert_contains "$(<"$output")" '"T14: the given goal."'
 }
 
 # A UI fix's capture (team-ui) in tasks/T<n>/ui/: every brief of a worker who reads or changes
@@ -1365,7 +1476,7 @@ EOF
   for template in builder-fix builder-round builder-ticket planner-feature planner-research reviewer; do
     local args=()
     [[ $template == builder-fix ]] && args=(--set 'read=- `AGENTS.md`.' --set commits=fix --set goal=g)
-    [[ $template == builder-round ]] && args=(--set pr=none --set findings=1 --set goal=g)
+    [[ $template == builder-round ]] && args=(--set pr=none --set findings=1 --set findings_file=.scratch/task/review.md --set goal=g)
     [[ $template == builder-ticket ]] && args=(--set ticket=01)
     [[ $template == planner-* ]] && args=(--set 'read=- `AGENTS.md`.')
     [[ $template == reviewer ]] && args=(--set head=abc --set checks=c)
