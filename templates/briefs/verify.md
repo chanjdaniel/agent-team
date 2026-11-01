@@ -17,6 +17,7 @@ Sent back: the notes numbered {{findings}} in `{{task_dir}}/review.md`, each a p
 3. Every note sent back ({{findings}}) is fixed at `{{head}}`, and the diff holds nothing but those fixes, their tests and, on a gated project, the gate's own commits.
    When it changes more than the notes asked, this brief does not fit: send `{{task}} BLOCKED not a notes-only fix: <what else changed>` to `coordinator`, and write nothing to GitHub.
    Raise a new finding only on a line this diff adds or changes, so each new one's scope is `change`.
+{{> review-rules}}
 
 ## Deliver
 

@@ -729,6 +729,12 @@ SINCE
   assert_contains "$output" "tasks/T<n>/brief[-<suffix>].json, replaced with it: {template, project, values}"
 }
 
+@test "--help names the review rules file and says it is the coordinator's records" {
+  run_bin -0 team-brief --help
+  assert_contains "$output" "projects/<project>/review-rules.md"
+  assert_contains "$output" "the coordinator's records"
+}
+
 @test "every brief leaves its record: template, project and the values of every placeholder but the task's facts" {
   open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
   run_bin -0 team-brief T14 builder-ticket --name build-01 --set ticket=01
@@ -753,6 +759,92 @@ SINCE
   assert_equal "$(jq -r .values.head "$record") $(jq -r .values.reviewed "$record") $(jq -r .values.pr "$record")" \
     "$head $reviewed $pr"
   assert_contains "$(<"$TEAM_HOME/tasks/T14/brief.md")" "$(jq -r .values.since "$record")"
+}
+
+# A project's standing review rules, the coordinator's records in the team home, which every
+# review brief includes where its checks are listed.
+@test "each review brief holds the project's review rules from the team home, their placeholders filled; with none, the line is left out" {
+  open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
+  local pr=https://github.com/chanjdaniel/agent-team/pull/9 template plain ruled rules section
+  reviewed_branch T14 main
+  event T14 pr "$(jq -cn --arg h "$head" --arg url "$pr" '{url: $url, head: $h}')"
+  on_github "$pr" "$head"
+  # The args each review template needs beyond what it derives.
+  review_args() {
+    case $1 in
+      reviewer) args=(--set checks=c) ;;
+      rereview) args=() ;;
+      verify) args=(--set findings=5) ;;
+    esac
+  }
+  for template in reviewer rereview verify; do
+    review_args "$template"
+    run_bin -0 team-brief T14 "$template" --name "plain-$template" "${args[@]}"
+  done
+  mkdir -p "$TEAM_HOME/projects/home"
+  printf '%s\n' '- Run `real_data_check.py` on the tree at `{{head}}` and on the commits of `origin/{{base}}..{{head}}`.' \
+    '- Read the PR body as Daniel will.' '' >"$TEAM_HOME/projects/home/review-rules.md"
+  rules="- Run \`real_data_check.py\` on the tree at \`$head\` and on the commits of \`origin/main..$head\`."$'\n'"- Read the PR body as Daniel will."
+  for template in reviewer rereview verify; do
+    review_args "$template"
+    run_bin -0 team-brief T14 "$template" --name "rules-$template" "${args[@]}"
+    plain=$(<"$TEAM_HOME/tasks/T14/brief-plain-$template.md")
+    ruled=$(<"$TEAM_HOME/tasks/T14/brief-rules-$template.md")
+    # The rules, as a paragraph of their own, are all that is added.
+    assert_contains "$ruled" $'\n\n'"$rules"$'\n\n'
+    assert_equal "${ruled/$'\n\n'"$rules"/}" "$plain"
+    # They come where the checks are listed, after them and before the delivery.
+    section=$(sed -n '/^## Check/,/^## Deliver$/p' "$TEAM_HOME/tasks/T14/brief-rules-$template.md")
+    assert_contains "$section" $'\n\n'"$rules"$'\n\n## Deliver'
+    # The template's line is never left in the brief, with rules or without.
+    refute_grep -F 'review-rules' "$TEAM_HOME/tasks/T14/brief-plain-$template.md"
+    refute_grep -F 'review-rules' "$TEAM_HOME/tasks/T14/brief-rules-$template.md"
+  done
+  # An empty rules file is none.
+  : >"$TEAM_HOME/projects/home/review-rules.md"
+  run_bin -0 team-brief T14 reviewer --name empty-reviewer --set checks=c
+  assert_equal "$(<"$TEAM_HOME/tasks/T14/brief-empty-reviewer.md")" "$(<"$TEAM_HOME/tasks/T14/brief-plain-reviewer.md")"
+  # Another project's rules never reach this one's briefs.
+  mkdir -p "$TEAM_HOME/projects/conv"
+  echo '- the conv rule' >"$TEAM_HOME/projects/conv/review-rules.md"
+  run_bin -0 team-brief T14 reviewer --name other-reviewer --set checks=c
+  refute_grep -F 'the conv rule' "$TEAM_HOME/tasks/T14/brief-other-reviewer.md"
+}
+
+@test "a review rule with an unknown placeholder is refused naming it, and a rules file that cannot be read is refused" {
+  open_t12
+  mkdir -p "$TEAM_HOME/projects/conv"
+  echo '- Check {{bogus}} at `{{head}}`.' >"$TEAM_HOME/projects/conv/review-rules.md"
+  run_bin -1 team-brief T12 reviewer --set head=abc1234 --set checks=c
+  assert_equal "$output" "team-brief: unfilled placeholders: bogus"
+  [[ -z $(task_files) ]]
+  # As in a template, a --set fills it.
+  run_bin -0 team-brief T12 reviewer --set head=abc1234 --set checks=c --set bogus=the-thing
+  grep -qxF -- '- Check the-thing at `abc1234`.' "$TEAM_HOME/tasks/T12/brief.md"
+  # A directory where the file belongs is refused, naming the path.
+  rm "$TEAM_HOME/projects/conv/review-rules.md"
+  mkdir "$TEAM_HOME/projects/conv/review-rules.md"
+  run_bin -1 team-brief T12 reviewer --name again --set head=abc1234 --set checks=c
+  assert_equal "$output" "team-brief: cannot read the review rules $TEAM_HOME/projects/conv/review-rules.md"
+  [[ ! -e $TEAM_HOME/tasks/T12/brief-again.md ]]
+}
+
+@test "the review rules come from the team home, never as a delivery partial, which still comes from the template's directory" {
+  fake_checkout
+  mkdir -p "$code/templates/briefs/review" "$code/templates/briefs/review-rules"
+  printf '%s\n' 'one' '{{> review}}' '{{> review-rules}}' '' 'two' >"$code/templates/briefs/x.md"
+  echo 'gated {{task}}' >"$code/templates/briefs/review/no-mistakes.md"
+  # A directory named like the rules is not read: its name's dash keeps the two forms apart.
+  echo 'not the rules' >"$code/templates/briefs/review-rules/no-mistakes.md"
+  open_t12
+  run_fake T12 x
+  assert_equal "$status" 0
+  assert_equal "$(<"$TEAM_HOME/tasks/T12/brief.md")" $'one\ngated T12\n\ntwo'
+  mkdir -p "$TEAM_HOME/projects/conv"
+  echo 'the rules of {{task}}' >"$TEAM_HOME/projects/conv/review-rules.md"
+  run_fake T12 x --force
+  assert_equal "$status" 0
+  assert_equal "$(<"$TEAM_HOME/tasks/T12/brief.md")" $'one\ngated T12\n\nthe rules of T12\n\ntwo'
 }
 
 @test "the retro brief renders from the task's facts alone, its digest first and read from team_bin" {

@@ -37,7 +37,11 @@
 # {{> <name>}} stands for the partial of the project's delivery, templates/briefs/<name>/<delivery>.md:
 # delivery (how a builder delivers), review and rereview (what a reviewer reads and posts, verify
 # reading rereview's too; a gated project's first review reads the branch's local head before the
-# gate, with no pr).
+# gate, with no pr). A {{> review-rules}} line, in the reviewer, rereview and verify templates
+# where their checks are listed, is the project's standing review rules, the team home's
+# projects/<project>/review-rules.md: the coordinator's records, never code, read as written
+# before the placeholders, so they may use any, and put in as a paragraph of their own; with no
+# file, or an empty one, the line is left out. One that cannot be read is refused.
 # Derived: a template's reviewed, pr and head the caller does not --set are filled from the ledger
 # and GitHub. reviewed is the head of the task's latest review; pr the URL of the task's latest pr
 # event in the project's repo; head that event's head (moved by any history-rewritten), or the
@@ -181,6 +185,27 @@ if ((${#partials[@]})); then
     [[ -f $briefs/$partial/$delivery.md ]] || die "no $partial partial for $project's delivery '$delivery'"
     text=${text//"{{> $partial}}"/"$(<"$briefs/$partial/$delivery.md")"}
   done
+fi
+
+# The project's standing review rules in place of a {{> review-rules}} line: records, the
+# coordinator's to write, read from the team home before the placeholders, so they may use any.
+rules_line='{{> review-rules}}'
+if grep -qxF -- "$rules_line" <<<"$text"; then
+  rules_file=$TEAM_HOME/projects/$project/review-rules.md rules=''
+  if [[ -e $rules_file ]]; then
+    [[ -f $rules_file && -r $rules_file ]] || die "cannot read the review rules $rules_file"
+    rules=$(<"$rules_file")
+  fi
+  kept=()
+  while IFS= read -r row; do
+    if [[ $row != "$rules_line" ]]; then
+      kept+=("$row")
+    elif [[ -n $rules ]]; then
+      # A paragraph of their own; with none, the line is left out.
+      kept+=('' "$rules")
+    fi
+  done <<<"$text"
+  text=$(printf '%s\n' "${kept[@]}")
 fi
 
 file=$TEAM_HOME/tasks/$task/brief${name:+-$name}.md record=${file%.md}.json

@@ -17,6 +17,7 @@ Task directory: `{{task_dir}}/` in the worktree: `spec.md`, `tickets/`, and `rev
 {{> rereview}}
 3. Run the project's local checks ({{local_checks}}) on `{{head}}` with `{{team_bin}}/team-checks {{project}} {{head}}`, which runs them as `team-merge` does, in a fresh detached worktree of that head, and wait for the PR's GitHub checks with `{{team_bin}}/team-ci-wait {{pr}} {{head}}`, run with Bash `run_in_background`; every one must pass, and `{{task_dir}}/review.md` says which local checks passed (they set no GitHub status).
    Act on how the wait ended: exit 0, every check passed or the head has none; exit 1, each failed check it names is a `blocking` finding, while a stuck check or a head other than `{{head}}` goes to `coordinator` as `{{task}} BLOCKED <its message>`; exit 75, run it again, or report as its message says.
+{{> review-rules}}
 
 ## Deliver
 
