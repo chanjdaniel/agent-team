@@ -125,7 +125,7 @@ def cycle($g; $start):
     // . + {name: $name, number: null}] as $all
 | [$all[] | select(.number) | . + {ticket: .number.n, slug: .number.s}] as $named
 | [$named[].ticket] as $numbers
-| [$named[] | {(.ticket): (.blocked[0] | select(. and .good and .value != "None") | .value | split(", ")) // []}]
+| [$named[] | {(.ticket): ((.blocked[0] | select(. and .good and .value != "None") | .value | split(", ")) // [])}]
   | add // {} | map_values(map(select(. as $n | $numbers | index($n))) | unique) as $graph
 | [ ($all[] | select(.number == null) | "\(.file): not named NN-<slug>.md, NN the ticket's two-digit number"),
     ($named | to_entries[] | .value as $t
