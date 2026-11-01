@@ -2,13 +2,17 @@
   "permissions": {
     "allow": [
       "Bash(@TEAM_CODE@/bin/team-checks *)",
-      "Bash(@TEAM_CODE@/bin/team-ci-wait *)"
+      "Bash(@TEAM_CODE@/bin/team-ci-wait *)",
+      "Bash(gh pr ready *)",
+      "Bash(gh-axi pr ready *)"
     ],
     "deny": [
       "Bash(team-post *)",
       "Bash(*/bin/team-post *)",
       "Bash(team-thread wait*)",
-      "Bash(*/bin/team-thread wait*)"
+      "Bash(*/bin/team-thread wait*)",
+      "Bash(gh pr ready *--undo*)",
+      "Bash(gh-axi pr ready *--undo*)"
     ]
   },
   "skillOverrides": {
