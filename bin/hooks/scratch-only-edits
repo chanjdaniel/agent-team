@@ -24,6 +24,8 @@
 # unquoted, in double quotes, in a ${ }'s operand, in an arithmetic expansion or command, and in the
 # body of a heredoc whose delimiter is unquoted; so is a process substitution. Single-quoted and
 # ANSI-C text, comments and the body of a heredoc whose delimiter is quoted hold none.
+# As in bash, a (( or $(( is arithmetic only when it closes with )), else subshells or a command
+# substitution.
 # Text that a command runs as shell code itself (eval, sh -c, bash -c, ssh) is not judged.
 # It is a speed bump for the plain shell write, never a guarantee: sed -i, cp, mv, an interpreter
 # and every other command that writes a file itself still get through.
@@ -167,13 +169,22 @@ delimiter_at() {
 # The scanners set end to the index just past what they scan, in s from the index j, or to n when
 # it never closes.
 # sub_end <j>: the ) that closes a command substitution whose body starts at j, past quoted text,
-# nested substitutions and heredoc bodies.
+# nested substitutions, comments and heredoc bodies.
 sub_end() {
   local j=$1 depth=1 c rest entries=() dash delimiter delimiter_quoted
   while ((j < n)); do
     c=${s:j:1}
     case $c in
       \\) j=$((j + 2)) && continue ;;
+      '#')
+        # A comment, to its line's end, when the # starts a word.
+        if ((j == $1)) || [[ ${s:j-1:1} == [' '$'\t'$'\n'\;\&\|\(\)] ]]; then
+          rest=${s:j}
+          rest=${rest%%$'\n'*}
+          j=$((j + ${#rest}))
+          continue
+        fi
+        ;;
       '<')
         if [[ ${s:j+1:2} == '<<' ]]; then
           j=$((j + 3))
@@ -202,7 +213,11 @@ sub_end() {
         ;;
       \") dq_end $((j + 1)) && j=$end && continue ;;
       \`) bq_end $((j + 1)) && j=$end && continue ;;
-      '$') [[ ${s:j+1:1} == \' ]] && ansi_end $((j + 2)) && j=$end && continue ;;
+      '$')
+        [[ ${s:j+1:1} == \' ]] && ansi_end $((j + 2)) && j=$end && continue
+        # Past a $# or a ${, so the # of $# or ${#x} starts no comment.
+        [[ ${s:j+1:1} == [\#\{] ]] && j=$((j + 2)) && continue
+        ;;
       '(') depth=$((depth + 1)) ;;
       ')')
         depth=$((depth - 1))
@@ -214,20 +229,20 @@ sub_end() {
   end=$n
 }
 
-# dq_end <j> [queue]: the " that closes a double-quoted string whose text starts at j; with queue,
-# queueing the command substitutions in it, at any depth, since it is not lexed again.
+# dq_end <j> [queue]: the " that closes a double-quoted string whose text starts at j, queueing the
+# command substitutions in it, at any depth; without queue, which a caller gives that lexes the text
+# again, it drops what it queued.
 dq_end() {
-  local j=$1 c
+  local j=$1 c queued=${#pending[@]} expanded=${#expansions[@]}
+  end=$n
   while ((j < n)); do
     c=${s:j:1}
     case $c in
       \\) j=$((j + 2)) && continue ;;
-      \") end=$((j + 1)) && return ;;
+      \") end=$((j + 1)) && break ;;
       '$')
-        if [[ -z ${2:-} && ${s:j+1:1} == '(' ]]; then
-          sub_end $((j + 2)) && j=$end && continue
-        elif [[ ${s:j+1:2} == '((' ]]; then
-          arith_end $((j + 1)) '(' ')' d && j=$end && continue
+        if [[ ${s:j+1:2} == '((' ]]; then
+          arithmetic_or_substitution "$j" d && j=$end && continue
         elif [[ ${s:j+1:1} == '[' ]]; then
           arith_end $((j + 1)) '[' ']' d && j=$end && continue
         elif [[ ${s:j+1:1} == '(' ]]; then
@@ -236,24 +251,23 @@ dq_end() {
           parameter "$j" d && j=$end && continue
         fi
         ;;
-      \`)
-        if [[ -z ${2:-} ]]; then
-          bq_end $((j + 1)) && j=$end && continue
-        else
-          queue_backticks "$j" d && j=$end && continue
-        fi
-        ;;
+      \`) queue_backticks "$j" d && j=$end && continue ;;
     esac
     j=$((j + 1))
   done
-  end=$n
+  ((j < n)) || end=$n
+  if [[ -z ${2:-} ]]; then
+    pending=("${pending[@]:0:queued}") expansions=("${expansions[@]:0:expanded}")
+  fi
 }
 
 # arith_end <j> <open> <close> <in double quotes>: the <close> that closes an arithmetic expansion
 # or command whose first <open> is at j, queueing the command substitutions in it, at any depth,
-# since it is not lexed again.
+# since it is not lexed again. A (( is arithmetic only when the ) closing its second ( is followed
+# by ), as bash reads it; else it fails, its queue dropped, for the caller to read it as subshells
+# or a command substitution.
 arith_end() {
-  local j=$1 depth=0 c
+  local j=$1 depth=0 c queued=${#pending[@]} expanded=${#expansions[@]}
   while ((j < n)); do
     c=${s:j:1}
     case $c in
@@ -261,12 +275,21 @@ arith_end() {
       "$2") depth=$((depth + 1)) ;;
       "$3")
         depth=$((depth - 1))
-        ((depth > 0)) || { end=$((j + 1)) && return; }
+        if [[ $2 == '(' ]] && ((depth == 1)); then
+          [[ ${s:j+1:1} == ')' ]] && end=$((j + 2)) && return 0
+          pending=("${pending[@]:0:queued}") expansions=("${expansions[@]:0:expanded}")
+          return 1
+        fi
+        ((depth > 0)) || { end=$((j + 1)) && return 0; }
         ;;
       \") dq_end $((j + 1)) queue && j=$end && continue ;;
       \`) queue_backticks "$j" "$4" && j=$end && continue ;;
       '$')
-        if [[ ${s:j+1:1} == '(' && ${s:j+2:1} != '(' ]]; then
+        if [[ ${s:j+1:2} == '((' ]]; then
+          arithmetic_or_substitution "$j" "$4" && j=$end && continue
+        elif [[ ${s:j+1:1} == '[' ]]; then
+          arith_end $((j + 1)) '[' ']' "$4" && j=$end && continue
+        elif [[ ${s:j+1:1} == '(' ]]; then
           queue_substitution "$j" && j=$end && continue
         elif [[ ${s:j+1:1} == '{' ]]; then
           parameter "$j" "$4" && j=$end && continue
@@ -276,6 +299,16 @@ arith_end() {
     j=$((j + 1))
   done
   end=$n
+}
+
+# arithmetic_or_substitution <at> <in double quotes>: read the $(( at the index at as an arithmetic
+# expansion, or else a command substitution, set taken to its stand-in, and end past it.
+arithmetic_or_substitution() {
+  if arith_end $(($1 + 1)) '(' ')' "$2"; then
+    stand_in "$1" "$end"
+  else
+    queue_substitution "$1"
+  fi
 }
 
 # ansi_end <j>: the ' that closes an ANSI-C string whose text starts at j, in which \' does not.
@@ -370,7 +403,15 @@ parameter() {
           ansi_end $((j + 2))
           j=$end
           continue
-        elif [[ ${s:j+1:1} == '(' && ${s:j+2:1} != '(' ]]; then
+        elif [[ ${s:j+1:2} == '((' ]]; then
+          arithmetic_or_substitution "$j" "$2"
+          j=$end
+          continue
+        elif [[ ${s:j+1:1} == '[' ]]; then
+          arith_end $((j + 1)) '[' ']' "$2"
+          j=$end
+          continue
+        elif [[ ${s:j+1:1} == '(' ]]; then
           queue_substitution "$j"
           j=$end
           continue
@@ -434,9 +475,7 @@ lex() {
           fi
           [[ -n $quoting ]] || quoting=d
           if [[ $c == '$' && ${s:i+1:2} == '((' ]]; then
-            # An arithmetic expansion.
-            arith_end $((i + 1)) '(' ')' d
-            stand_in "$i" "$end"
+            arithmetic_or_substitution "$i" d
             word+=$taken i=$end
             continue
           elif [[ $c == '$' && ${s:i+1:1} == '[' ]]; then
@@ -506,9 +545,14 @@ lex() {
         if ((!inword)) && [[ $next == '(' ]]; then
           # An arithmetic command, whose > compares.
           flush
-          arith_end "$i" '(' ')' n
-          i=$end
-          add '((' n
+          if arith_end "$i" '(' ')' n; then
+            i=$end
+            add '((' n
+          else
+            # Two subshells.
+            emit o '('
+            i=$((i + 1))
+          fi
         else
           emit o '('
           i=$((i + 1))
@@ -520,9 +564,7 @@ lex() {
         ;;
       '$')
         if [[ $next == '(' && ${s:i+2:1} == '(' ]]; then
-          # An arithmetic expansion.
-          arith_end $((i + 1)) '(' ')' n
-          stand_in "$i" "$end"
+          arithmetic_or_substitution "$i" n
           add "$taken" n
           i=$end
         elif [[ $next == '(' ]]; then
@@ -770,7 +812,7 @@ scan_body() {
         if [[ ${s:j:1} == \` ]]; then
           queue_backticks "$j" n
         elif [[ ${s:j+1:2} == '((' ]]; then
-          arith_end $((j + 1)) '(' ')' n
+          arithmetic_or_substitution "$j" n
         elif [[ ${s:j+1:1} == '[' ]]; then
           arith_end $((j + 1)) '[' ']' n
         elif [[ ${s:j+1:1} == '(' ]]; then

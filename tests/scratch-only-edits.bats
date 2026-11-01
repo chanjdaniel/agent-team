@@ -286,6 +286,22 @@ echo b > y" "$wt/y"
   blocked 'echo ${x:-"$(( $(cmd > out) ))"}' "$wt/out"
   blocked 'echo $(( 1 + $(( $(cmd > out) )) ))' "$wt/out"
   blocked 'for (( i = $(cmd > out); i < 2; i++ )); do :; done' "$wt/out"
+  # A (( or $(( whose second ( does not close with )) is a subshell or a command substitution.
+  blocked '((cmd) > out)' "$wt/out"
+  blocked 'echo $((cmd) > out)' "$wt/out"
+  blocked 'echo "$((cmd) > out)"' "$wt/out"
+  blocked 'echo ${x:-$((cmd) > out)}' "$wt/out"
+  blocked 'cat <<EOF
+$((cmd) > out)
+EOF' "$wt/out"
+  # In a ${ }'s operand, arithmetic reads a ' as text, as at the top level.
+  blocked "echo \${x:-\$(( '\$(cmd > out)' ))}" "$wt/out"
+  blocked "echo \${x:-\$[ '\$(cmd > out)' ]}" "$wt/out"
+  # A comment inside a substitution is skipped, a ) or ' in it included.
+  blocked $'x=$(\n# 1) it\'s built\ncmd > out\n# that\'s all\n)' "$wt/out"
+  # A substitution found while skipping one is judged once, in its body.
+  blocked 'x=$(echo "$[ $(cmd > out) ]")' "$wt/out"
+  blocked 'x=$(echo "${y:-$(cmd > out)}")' "$wt/out"
   # In the body of a heredoc whose delimiter is unquoted, at the top or in a substitution.
   blocked 'cat <<EOF
 a $(cmd > out) b
@@ -330,6 +346,12 @@ EOF
   shell -0 'echo "$(( a > b ))"'
   shell -0 'echo "it is \$(cmd > out)"'
   shell -0 'echo $(( $(cmd 2>/dev/null) > 1 ))'
+  shell -0 '(( (a) > (b) ))'
+  shell -0 'echo $(( (a) > (b) ))'
+  shell -0 'echo "$(( (a) > (b) ))" ${x:-$(( (a) > (b) ))}'
+  shell -0 'echo $(echo a#b) > .scratch/x'
+  shell -0 'echo ${#x} > .scratch/x'
+  shell -0 $'x=$(echo a # b > out\n)'
   # A quoted heredoc's body, and an escaped substitution in an unquoted one's, is text.
   shell -0 "cat <<'EOF'
 \$(cmd > out) \`cmd > out\`
