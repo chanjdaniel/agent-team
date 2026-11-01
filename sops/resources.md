@@ -66,6 +66,7 @@ Its kind is `heavy:tests-run` for `tests/run`, `heavy:checks:<project>` for `tea
 When systemd's user manager does not answer, the run says so once and goes in its process group alone, measured as on macOS.
 A run that was stopped, or that ended before its first sample, writes nothing, since its peak would understate the kind's.
 `team-heavy stop [--task T<n>]` ends a run's whole tree (its scope on Linux, its process group's TERM then KILL after 10 seconds), so a worker blocked in a test returns to read its STOW.
+It never reaches a Docker container the run started, which rootful Docker keeps outside the scope and the process group, and the stopped test's own cleanup never runs: a team stack goes with its task's stack, by `team-stack`, and any other container stays: a stopped `tests/run toolkits` leaves its throwaway MongoDB (`toolkit-test-<hex>`, labelled `agent-team-test=toolkits`) running, which `team-janitor`'s report lists as not the team's and only a hand removal (`docker rm --force --volumes <name>`) takes.
 
 `team-capacity costs` gives each kind's estimate: from 5 samples, the 90th percentile of the last 20 peaks plus 10%; before that, the seed.
 The seeds are `capacity.json`'s `session_gib` (0.5), `heavy_gib` (5) and `gate_gib` (2.2), and for a stack the sum of its services' `mem_limit`s as the readings last saw it running (`team-stack ls --json`'s `memory_limit_bytes`).

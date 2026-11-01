@@ -43,7 +43,10 @@
 #         check in team-checks say, would otherwise wait for itself.
 # status  "held by <the holder's line>" ("held by another run" before it wrote one) or "free",
 #         exit 0 either way; it waits for nothing and takes no lock a run would wait for.
-# stop    Ends the running command's whole tree, only while a team-heavy run holds the lock and,
+# stop    Ends the running command's whole tree (never a Docker container it started, which
+#         rootful Docker keeps outside its scope and group: a team stack goes with its task's
+#         stack, by team-stack, and any other container stays, listed in team-janitor's report as
+#         not the team's), only while a team-heavy run holds the lock and,
 #         with --task, its holder line names that task: it sends team-heavy TERM, which stops
 #         the run's scope on Linux (systemd stops it, KILLing what is left after 10 seconds) and
 #         sends its process group TERM, then KILL after 10 seconds (TEAM_HEAVY_KILL_SECONDS),
