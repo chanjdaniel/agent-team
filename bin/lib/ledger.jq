@@ -649,19 +649,28 @@ def finding($task; $kind; $session; $name; $detail; $next):
    text: "\($task) \($kind): \($detail); next: \($next)"};
 
 # team-sweep's merge-due finding, over a task's events, or nothing: the task awaits merge, a
-# plan-time approval of it stands, and nothing else parks it (no ask nothing settled, pause or
-# wait). The ledger names no PR's project, so any standing approval of the task's counts, and
-# team-merge holds each PR to its own project's.
-def merge_due_finding:
+# plan-time approval of it stands or a standing word of Daniel's stands for one of its projects
+# (its opened and worktree-added events'), and nothing else parks it (no ask nothing settled,
+# pause or wait). $standing is the ledger's merge-standing and merge-standing-withdrawn events,
+# every task's, as standing_words reads them. The ledger names no PR's project, so any word on one
+# of the task's projects counts, and team-merge holds each PR to its own project's.
+def merge_due_finding($standing):
   .[0].task as $task
   | . as $events
-  | preapproved_projects as $projects
-  | if phase == "awaiting-merge" and $projects != [] and pending_asks == []
-      and (standing_until_launch("paused") | not) and waiting == null then
-      task_prs as $prs
+  | if phase == "awaiting-merge" and pending_asks == [] and (standing_until_launch("paused") | not)
+      and waiting == null then
+      preapproved_projects as $plan
+      | [($events | map(select(.event == "opened" or .event == "worktree-added") | .project)
+          | reduce .[] as $p ([]; if IN(.[]; $p) then . else . + [$p] end)) as $projects
+         | $standing | standing_words($projects)[] | .project] as $words
+      | select($plan != [] or $words != [])
+      | task_prs as $prs
       | finding($task; "merge-due"; null; null;
           "awaiting the merge of \([$prs[] | select(pr_merged($events; $prs) | not) | .url] | join(", "))"
-          + " on Daniel's plan-time word on \($projects | join(", ")), with no ask open";
+          + " on Daniel's "
+          + ([if $plan != [] then "plan-time word on \($plan | join(", "))" else empty end,
+              if $words != [] then "standing word on \($words | join(", "))" else empty end] | join(" and "))
+          + ", with no ask open";
           "run team-merge \($task); on a refusal, ask Daniel for the per-head word with team-ask")
     else empty end;
 
@@ -861,14 +870,16 @@ def activity_finding:
 
 # team-sweep's findings, over every ledger event as one array, the session list, the machine's
 # task slots ($slots, as slots_finding takes them) and session-activity's object ($activity, as
-# task_findings takes it): each open task's merge-due, else its findings unless it is parked,
+# task_findings takes it): each open task's merge-due (under a plan-time word or a standing word
+# of any task's), else its findings unless it is parked,
 # then the stray sessions (named like a team worker whose task is closed or not in the ledger,
 # never the load check's T0, whose session the coordinator waits on for up to 30 minutes), in task
 # number order; then the activity, slots and retro-due findings.
 def sweep($sessions; $slots; $activity):
   . as $events
   | by_task as $tasks
-  | ([($tasks[] | select(is_open) | [merge_due_finding] as $due
+  | [.[] | select(.event == "merge-standing" or .event == "merge-standing-withdrawn")] as $standing
+  | ([($tasks[] | select(is_open) | [merge_due_finding($standing)] as $due
         | if $due != [] then $due[] elif parked then empty
           else task_findings($sessions; $activity) end),
       (team_sessions($tasks; $sessions)[] | select(.task_state | IN("closed", "unknown"))

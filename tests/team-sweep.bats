@@ -878,6 +878,99 @@ preapproved_pr() {
   assert_equal "$output" "T3 no-worker: no live session among its 1 launch (latest T3-builder 11111111); next: read claude logs 11111111 for how it ended, then launch the next worker with team-worker or log what is known with team-log"
 }
 
+# Task <task>'s PR 5 of proj reviewed and passed at its head, with no word of Daniel's on it.
+passed_pr() {
+  event "$1" pr '{url: "https://github.com/owner/proj/pull/5", head: "a1b2c3d"}'
+  event "$1" review '{verdict: "pass", head: "a1b2c3d4e5", findings: {blocking: 0, correctness: 0, security: 0, "real-data": 0, "note-change": 0, "note-before": 0}, guarded: []}'
+}
+
+# standing <task> <kind> <project> <message>: Daniel's standing merge word (merge-standing) or its
+# withdrawal (merge-standing-withdrawn) on <project>, logged under <task>, in #coordinator.
+standing() {
+  event "$1" "$2" "{project: \"$3\", discord_message: \"$4\", discord_channel: \"1562000000000000000\"}"
+}
+
+standing_due() {
+  echo "T3 merge-due: awaiting the merge of https://github.com/owner/proj/pull/5 on Daniel's $1, with no ask open; next: run team-merge T3; on a refusal, ask Daniel for the per-head word with team-ask"
+}
+
+@test "merge-due: an awaiting-merge task with Daniel's standing word on its project, or on every project" {
+  opened T3
+  launch T3 reviewer 11111111
+  passed_pr T3
+  sessions "$(session 11111111 T3-reviewer idle)"
+  run_bin -0 team-sweep
+
+  # The word is team-wide: one logged under another task stands for this one.
+  standing T2 merge-standing proj 1563000000000000001
+  event T2 closed
+  run_bin -1 team-sweep
+  assert_equal "$output" "$(standing_due "standing word on proj")"
+  run_bin -1 team-sweep --json
+  assert_equal "$(jq -c 'map([.task, .kind, .session, .name, .next])' <<<"$output")" \
+    '[["T3","merge-due",null,null,"run team-merge T3; on a refusal, ask Daniel for the per-head word with team-ask"]]'
+
+  # Withdrawn, the task is parked awaiting Daniel's per-head word; a word on every project stands
+  # for it again, named by the task's projects (its opened and worktree-added events').
+  standing T3 merge-standing-withdrawn proj 1563000000000000002
+  run_bin -0 team-sweep
+  event T3 worktree-added '{project: "conv", branch: "feat/T3-work", worktree: "/w/2"}'
+  standing T3 merge-standing all 1563000000000000003
+  run_bin -1 team-sweep
+  assert_equal "$output" "$(standing_due "standing word on proj, conv")"
+
+  # An every-project word withdrawn for one project still stands for the other.
+  standing T3 merge-standing-withdrawn proj 1563000000000000004
+  run_bin -1 team-sweep
+  assert_equal "$output" "$(standing_due "standing word on conv")"
+  no_github
+}
+
+@test "merge-due: the plan-time and standing words both named, the plan-time word alone as before" {
+  opened T3
+  launch T3 reviewer 11111111
+  preapproved_pr T3
+  sessions "$(session 11111111 T3-reviewer idle)"
+  run_bin -1 team-sweep
+  assert_equal "$output" "$(standing_due "plan-time word on proj")"
+  standing T3 merge-standing all 1563000000000000002
+  run_bin -1 team-sweep
+  assert_equal "$output" "$(standing_due "plan-time word on proj and standing word on proj")"
+  event T3 merge-preapproval-withdrawn '{project: "proj", discord_message: "1563000000000000003"}'
+  run_bin -1 team-sweep
+  assert_equal "$output" "$(standing_due "standing word on proj")"
+}
+
+@test "merge-due: none under a standing word withdrawn, on another project, or with another park" {
+  opened T3
+  launch T3 builder 11111111
+  passed_pr T3
+
+  # A word on a project that is none of the task's leaves it parked.
+  standing T3 merge-standing conv 1563000000000000001
+  run_bin -0 team-sweep
+  standing T3 merge-standing proj 1563000000000000002
+  run_bin -1 team-sweep
+  assert_equal "$output" "$(standing_due "standing word on proj")"
+
+  # An ask nothing settled, a pause or a wait parks it.
+  event T3 asked '{id: "q1", text: "Which name?"}'
+  run_bin -0 team-sweep
+  event T3 answered '{id: "q1", answer: "Kim"}'
+  event T3 paused '{reason: "rate limit"}'
+  run_bin -0 team-sweep
+  event T3 resumed
+  event T3 waiting '{on: "Daniel", reason: "a word on the release"}'
+  run_bin -0 team-sweep
+  event T3 resumed
+  run_bin -1 team-sweep
+  assert_contains "$output" "T3 merge-due"
+
+  # A withdrawal of every word parks it.
+  standing T3 merge-standing-withdrawn all 1563000000000000003
+  run_bin -0 team-sweep
+}
+
 @test "a resumed or a later launch ends a pause or a block, and resumed ends a hold" {
   opened T3
   launch T3 builder 11111111
