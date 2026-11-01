@@ -16,7 +16,7 @@
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin,
 # only_records, records_list, records_pathspecs, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
 # own_project, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_slots, discord_token, discord_api,
-# daniel_message, refresh_inbox, github, pr_part, task_state_json, loose_objects, pack_size and story_file, and sets IMAGE_TYPE,
+# daniel_message, refresh_inbox, github, pr_part, task_state_json, loose_objects, pack_size, story_file and findings_file, and sets IMAGE_TYPE,
 # PACK_LOOSE, COORDINATOR_CHANNEL and INTERVIEW_CHANNEL.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
 # shellcheck shell=bash
@@ -1272,4 +1272,14 @@ story_file() {
       return 1
       ;;
   esac
+}
+
+# The name of the newest reviewer's findings file, review.md or a rereview*.md, in the task
+# directory <dir>: by mtime, a tie broken by name, or nothing when it holds none or is no
+# directory. team-brief derives a round's findings_file from it and team-next a pass's fix
+# message, so the two always name the same file: findings_file <dir>
+findings_file() {
+  [[ -d $1 ]] || return 0
+  find "$1" -maxdepth 1 -type f \( -name review.md -o -name 'rereview*.md' \) -printf '%T@ %f\n' |
+    sort -k1,1nr -k2,2 | sed -n '1s/^[^ ]* //p'
 }

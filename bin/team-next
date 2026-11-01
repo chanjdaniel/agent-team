@@ -74,10 +74,10 @@
 # its base, "merge base: ..." instead, the builder-merge-base brief for the holder under 250k,
 # else a fresh builder, after the holder's STOW when it is live. For a pass with no PR (a gated project's review-ready), the
 # message telling the holder to go on with its delivery. For findings, or a pass that sent some
-# back (which team-log logs as findings): the message for the holder under 250k (its name, the findings sent back and the findings
-# file the message names, for a pass the newest of review.md and rereview*.md in the holder's task
-# directory), else the T<n> STOW to send it (after recovering it when gone), or no hand-off when
-# nothing was sent back.
+# back (which team-log logs as findings): the message for the holder under 250k (its name, the
+# findings sent back and the findings file the message names, for a pass the newest of review.md
+# and rereview*.md in the holder's task directory, as team-brief derives a round's), else the
+# T<n> STOW to send it (after recovering it when gone), or no hand-off when nothing was sent back.
 # A PAUSED stowed (its reason the word stowed, alone or with more after it) while the latest
 # review sent findings back, with no launch since
 # it but an ops session's, launches the fix round: team-brief T<n> builder-round --name
@@ -294,17 +294,16 @@ and_list() {
   jq -r 'map(tostring) | if length < 2 then join("") else "\(.[:-1] | join(", ")) and \(.[-1])" end' <<<"$1"
 }
 
-# findings_file: the newest (by mtime) of review.md and rereview*.md in the task directory of the
-# task's latest builder launch's worktree, as <task_dir>/<file>, or nothing.
-findings_file() {
-  local launch dir newest='' f
+# holder_findings_file: the library's findings_file in the task directory of the task's latest
+# builder launch's worktree, as <task_dir>/<file>, or nothing; team-brief derives a round's from
+# the same function.
+holder_findings_file() {
+  local launch dir newest
   launch=$(ledger_jq 'map(select(.event == "launch" and .role == "builder")) | last
     | {worktree: (.worktree | local_path($home)), project}' -c <<<"$events")
   dir=$(team_project "$(jq -r .project <<<"$launch")" task_dir) || return 0
-  for f in "$(jq -r .worktree <<<"$launch")/$dir"/review.md "$(jq -r .worktree <<<"$launch")/$dir"/rereview*.md; do
-    if [[ -f $f && (-z $newest || $f -nt $newest) ]]; then newest=$f; fi
-  done
-  if [[ -n $newest ]]; then echo "$dir/${newest##*/}"; fi
+  newest=$(findings_file "$(jq -r .worktree <<<"$launch")/$dir")
+  if [[ -n $newest ]]; then echo "$dir/$newest"; fi
 }
 
 if [[ $handoff == verdict ]]; then
@@ -340,7 +339,7 @@ if [[ $handoff == verdict ]]; then
       if [[ $kind == "DONE findings" ]]; then
         file=$(jq -rn --arg m "$message" '$m | gsub("^\\s+"; "") | [splits("\\s+")] | .[3]')
       else
-        file=$(findings_file)
+        file=$(holder_findings_file)
       fi
       where=${file:+in $file}
       stow="$task STOW; its PAUSED stowed goes to team-next, which launches the round"

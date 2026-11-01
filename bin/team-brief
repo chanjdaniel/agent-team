@@ -48,8 +48,8 @@
 # PR's head on GitHub (gh pr view) when it differs, which stderr says; builder-round's pr is none
 # when a gated (no-mistakes) project has no pr event yet, before its gate. So are findings,
 # findings_file and goal: findings the latest review's sent_back, as "3, 5 and 6"; findings_file
-# the newest (by mtime) of review.md and rereview*.md in the worktree's <task_dir>/, written
-# <task_dir>/<file>; goal the first sentence of the plan's ## Goal section, its first line of text
+# the newest (by mtime, a tie by name) of review.md and rereview*.md in the worktree's
+# <task_dir>/, written <task_dir>/<file>; goal the first sentence of the plan's ## Goal section, its first line of text
 # past any HTML comment, a list marker dropped. A derived fact with no source is refused as
 # unfilled, naming its --set, only when the template uses it; GitHub unreadable for head is
 # refused naming --set head=.
@@ -289,11 +289,7 @@ fi
 if deriving findings_file; then
   # The newest of the reviews' findings files in the worktree's task directory.
   dir=$(jq -r .worktree <<<"$chosen")/${values[task_dir]}
-  newest=''
-  if [[ -d $dir ]]; then
-    newest=$(find "$dir" -maxdepth 1 -type f \( -name review.md -o -name 'rereview*.md' \) -printf '%T@ %f\n' |
-      sort -k1,1nr -k2,2 | sed -n '1s/^[^ ]* //p')
-  fi
+  newest=$(findings_file "$dir")
   if [[ -n $newest ]]; then
     values[findings_file]=${values[task_dir]}/$newest
   else

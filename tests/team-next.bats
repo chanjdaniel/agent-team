@@ -747,6 +747,20 @@ merge ask: $url at $sha, agent-review success, checks green; the review found gu
   assert_equal "$(outside_calls)" ""
 }
 
+@test "a pass's fix message and its round's brief name the same findings file, a tie in mtime broken by name" {
+  reviewing "$sha"
+  pr_on_github "$sha"
+  live b0000001 120000
+  echo "# review" >"$wt/.scratch/task/review.md"
+  echo "# rereview" >"$wt/.scratch/task/rereview-2.md"
+  touch -d 2026-11-01T10:00:00Z "$wt/.scratch/task/review.md" "$wt/.scratch/task/rereview-2.md"
+  run_bin -0 --separate-stderr team-next T7 --sent-back 1 -- "T7 DONE pass $url ${counts/correctness:0/correctness:1} before=none guarded=none"
+  assert_equal "$(tail -n 1 <<<"$output")" \
+    "send to T7-builder (b0000001, 120k): T7 fix findings 1 in .scratch/task/rereview-2.md on the same branch, then deliver again as your brief says"
+  run_bin -0 --separate-stderr team-next T7 -- "T7 PAUSED stowed"
+  assert_equal "$(record round-1 | jq -r .values.findings_file)" .scratch/task/rereview-2.md
+}
+
 @test "a security or real-data count on any review of the task, or a review with no counts, keeps the merge Daniel's" {
   sed -i 's/^merge_method = "merge"/&\nmerge_with_plan = true/' "$TEAM_HOME/projects.toml"
   event merge-preapproved '{project: "proj", ask: "plan", discord_message: "1563000000000000045", scope: ["one.txt"]}'
