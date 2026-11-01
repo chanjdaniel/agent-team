@@ -257,6 +257,33 @@ echo b > y" "$wt/y"
   blocked 'cmd > "out-$(( 1 + 2 )).log"' "$wt/out-\$(( 1 + 2 )).log"
   blocked 'cmd > out-`date`' "$wt/out-\`date\`"
   blocked 'cmd > "out-`date`.log"' "$wt/out-\`date\`.log"
+  blocked 'cmd > out-$(date).log' "$wt/out-\$(date).log"
+  blocked 'cmd > "out-$(cat x/../name)"' "$wt/out-\$(cat x/../name)"
+  blocked 'cmd > .scratch/../out-$(date)' "$wt/out-\$(date)"
+  # An expansion stands for a name the hook cannot know, so a / or .. inside it moves nothing.
+  blocked 'cmd > "src$(: /../.scratch/ )/x"' "$wt/src\$(: /../.scratch/ )/x"
+  blocked 'cmd > src$(: /../.scratch/ )/x' "$wt/src\$(: /../.scratch/ )/x"
+  blocked 'cmd > src`: /../.scratch/ `/x' "$wt/src\`: /../.scratch/ \`/x"
+  blocked 'cmd > "src${x//../.scratch/}/x"' "$wt/src\${x//../.scratch/}/x"
+  blocked 'cmd > src${x//../.scratch/}/x' "$wt/src\${x//../.scratch/}/x"
+  blocked 'cmd > "src$(( 1 /../.scratch/ 1 ))/x"' "$wt/src\$(( 1 /../.scratch/ 1 ))/x"
+  blocked 'cmd > src$[ 1 /../.scratch/ 1 ]/x' "$wt/src\$[ 1 /../.scratch/ 1 ]/x"
+  # A substitution inside a parameter expansion is judged too.
+  blocked 'echo ${x:-$(cmd > out)}' "$wt/out"
+  blocked 'echo "${x:-`cmd > out`}"' "$wt/out"
+  # A heredoc inside a substitution keeps its body, a ) or > in it included.
+  shell -0 "x=\$(cat <<'EOF'
+a) > b
+EOF
+)"
+  shell -0 "git commit -m \"\$(cat <<'EOF'
+fix: don't > x
+EOF
+)\""
+  blocked "x=\$(cat <<EOF
+it's
+EOF
+); echo y > out" "$wt/out"
   # What is fine outside a substitution is fine inside it.
   shell -0 'x="$(cmd 2>/dev/null)"'
   shell -0 'x="$(cmd > .scratch/task/out)" && echo "$x"'
@@ -300,6 +327,13 @@ echo x > out' "$wt/out"
   shell -0 "cat > .scratch/task/big.txt <<'EOF'
 $body
 EOF"
+  ((SECONDS < 5))
+  # Inside a substitution too, as a commit message is written.
+  SECONDS=0
+  shell -0 "git commit -m \"\$(cat <<'EOF'
+$body
+EOF
+)\""
   ((SECONDS < 5))
 }
 
