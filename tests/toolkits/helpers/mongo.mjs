@@ -1,5 +1,6 @@
 // A throwaway local MongoDB for the toolkit tests: one container per test file, at the exact
-// version production runs, on a random loopback port, removed with its volumes when the file is done.
+// version production runs, on a random loopback port, with its data on tmpfs, removed when the
+// file is done.
 //
 //   const db = await startMongo();           before()
 //   db.uri(user, password, options)          a connection string for a test user
@@ -27,14 +28,20 @@ export const mongoImage = "mongo:8.0.34@sha256:4a4ab5d4834207389e0d7270fac988e21
 // or later, where 8.0.30 and newer start with per-CPU caches.
 const perThreadCaches = ["--env", "GLIBC_TUNABLES=glibc.pthread.rseq=1"];
 
+// The image declares /data/db and /data/configdb as volumes, so a container with nothing mounted
+// there gets two anonymous volumes, about 0.3 GB a pair, which a run killed before its after() and
+// a later docker rm without --volumes leave on disk. On tmpfs Docker makes none, so whatever ends
+// the run leaves at most a container. Every container of the image takes these.
+export const dataOnTmpfs = ["--tmpfs", "/data/db", "--tmpfs", "/data/configdb"];
+
 // The driver from the pinned server's own install (servers/install), so the tests add no
 // dependency of their own.
 const { MongoClient } = createRequire(join(repoRoot, "servers", "package.json"))("mongodb");
 
 const docker = (...args) => execFileSync("docker", args, { encoding: "utf8" }).trim();
 
-// Removes container <name> with its anonymous volumes (the image's /data/db and /data/configdb),
-// which only --volumes removes.
+// Removes container <name>, and with --volumes any anonymous volume it has, which dataOnTmpfs
+// leaves none of unless the image declares a new one.
 export function removeContainer(name) {
   docker("rm", "--force", "--volumes", name);
 }
@@ -46,7 +53,7 @@ export async function startMongo() {
     "run", "--detach", "--name", name, "--label", "agent-team-test=toolkits",
     "--publish", "127.0.0.1::27017",
     "--env", "MONGO_INITDB_ROOT_USERNAME=root", "--env", `MONGO_INITDB_ROOT_PASSWORD=${rootPassword}`,
-    ...perThreadCaches,
+    ...perThreadCaches, ...dataOnTmpfs,
     mongoImage,
   );
   try {
