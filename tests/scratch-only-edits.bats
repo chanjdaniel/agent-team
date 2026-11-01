@@ -38,6 +38,13 @@ blocked() {
   assert_equal "$stderr" "Blocked: this role may write files only under $wt/.scratch; write there with the Write tool, not a shell redirection or tee (tried $2)."
 }
 
+# unread <command> <form>: the hook refuses the command unread, naming the form it does not read.
+unread() {
+  shell -2 "$1"
+  assert_equal "$output" ""
+  assert_equal "$stderr" "Blocked: this command holds $2, which this hook does not read, so it cannot tell where the command writes; rewrite it without that, or write files under $wt/.scratch with the Write tool."
+}
+
 @test "an edit inside .scratch/ passes" {
   edit -0 "$wt/.scratch/task/notes.md"
   assert_equal "$output$stderr" ""
@@ -286,19 +293,6 @@ echo b > y" "$wt/y"
   blocked 'echo ${x:-"$(( $(cmd > out) ))"}' "$wt/out"
   blocked 'echo $(( 1 + $(( $(cmd > out) )) ))' "$wt/out"
   blocked 'for (( i = $(cmd > out); i < 2; i++ )); do :; done' "$wt/out"
-  # A (( or $(( whose second ( does not close with )) is a subshell or a command substitution.
-  blocked '((cmd) > out)' "$wt/out"
-  blocked 'echo $((cmd) > out)' "$wt/out"
-  blocked 'echo "$((cmd) > out)"' "$wt/out"
-  blocked 'echo ${x:-$((cmd) > out)}' "$wt/out"
-  blocked 'cat <<EOF
-$((cmd) > out)
-EOF' "$wt/out"
-  # In a ${ }'s operand, arithmetic reads a ' as text, as at the top level.
-  blocked "echo \${x:-\$(( '\$(cmd > out)' ))}" "$wt/out"
-  blocked "echo \${x:-\$[ '\$(cmd > out)' ]}" "$wt/out"
-  # A comment inside a substitution is skipped, a ) or ' in it included.
-  blocked $'x=$(\n# 1) it\'s built\ncmd > out\n# that\'s all\n)' "$wt/out"
   # A substitution found while skipping one is judged once, in its body.
   blocked 'x=$(echo "$[ $(cmd > out) ]")' "$wt/out"
   blocked 'x=$(echo "${y:-$(cmd > out)}")' "$wt/out"
@@ -349,9 +343,8 @@ EOF
   shell -0 '(( (a) > (b) ))'
   shell -0 'echo $(( (a) > (b) ))'
   shell -0 'echo "$(( (a) > (b) ))" ${x:-$(( (a) > (b) ))}'
-  shell -0 'echo $(echo a#b) > .scratch/x'
-  shell -0 'echo ${#x} > .scratch/x'
-  shell -0 $'x=$(echo a # b > out\n)'
+  shell -0 'echo ${#x} ${x##*/} ${x#\#} > .scratch/x'
+  shell -0 "echo \$(printf '%s #' a) \$(echo \"#\" \#) > .scratch/x"
   # A quoted heredoc's body, and an escaped substitution in an unquoted one's, is text.
   shell -0 "cat <<'EOF'
 \$(cmd > out) \`cmd > out\`
@@ -365,6 +358,37 @@ EOF'
   shell -0 'cat <<EOF
 \$(cmd > out) \`cmd > out\` a > b
 EOF'
+}
+
+@test "a form whose reading turns on a parser subtlety is refused unread, naming it" {
+  local quote='a quote inside (( )), $(( )) or $[ ]'
+  unread "((echo '))' ) > out)" "$quote"
+  unread "echo \$((echo '))' ) > out)" "$quote"
+  unread "echo \$(( '\$(cmd > out)' ))" "$quote"
+  unread "echo \${x:-\$(( '\$(cmd > out)' ))}" "$quote"
+  unread "echo \${x:-\$[ '\$(cmd > out)' ]}" "$quote"
+  unread 'echo $(( "1" + 2 )) > .scratch/x' "$quote"
+  unread 'x=$(echo "$[ "1" ]") > .scratch/x' "$quote"
+  local close='a (( or $(( that does not close with ))'
+  unread '((cmd) > out)' "$close"
+  unread 'echo $((cmd) > out)' "$close"
+  unread 'echo "$((cmd) > out)"' "$close"
+  unread 'echo ${x:-$((cmd) > out)}' "$close"
+  unread 'cat <<EOF
+$((cmd) > out)
+EOF' "$close"
+  local comment='an unquoted # inside $( )'
+  unread $'x=$(\n# 1) it\'s built\ncmd > out\n# that\'s all\n)' "$comment"
+  unread $'x=$(echo a\\ #) ; echo "\n)" ; cmd > out' "$comment"
+  unread $'x=$(echo ${y:-a #}) ; echo "\n)" ; cmd > out' "$comment"
+  unread 'echo $(echo a#b) > .scratch/x' "$comment"
+  unread 'echo $(echo ${#x}) > .scratch/x' "$comment"
+  unread $'x=$(echo a # b > out\n)' "$comment"
+  unread 'echo "$(echo $#)" > .scratch/x' "$comment"
+  # A command with no > and no tee writes nothing the hook judges, so it is never read.
+  shell -0 'echo "$(echo $#)" $(( "1" ))'
+  # The refusal comes first, whatever else the command writes.
+  unread 'cmd > out; echo $(( "1" ))' "$quote"
 }
 
 @test "an ANSI-C string and an old arithmetic expansion are read whole, so what follows them is judged" {
