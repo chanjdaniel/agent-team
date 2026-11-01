@@ -1028,23 +1028,49 @@ EXPECTED
   assert_contains "$output" "no ledger at $TEAM_HOME/ledger.jsonl"
 }
 
-@test "--check names each line from strict_from on whose sent_back holds strings, and the conversion" {
+@test "--check passes a sent_back or before holding whole numbers as strings, naming each such line from strict_from on and the conversion" {
   cat >"$TEAM_HOME/ledger.jsonl" <<LEDGER
 {"ts":"2026-10-01T00:00:00Z","task":"T4","event":"review","verdict":"pass","head":"e1e8cdb6","sent_back":["1"]}
 {"ts":"$STRICT_FROM","task":"T14","event":"review","verdict":"findings","head":"a1b2c3d","sent_back":[5,6]}
 {"ts":"$STRICT_FROM","task":"T14","event":"review","verdict":"findings","head":"a1b2c3d","sent_back":["5","6"]}
-{"ts":"$STRICT_FROM","task":"T14","event":"review","verdict":"findings","head":"a1b2c3d","sent_back":["7",8]}
+{"ts":"$STRICT_FROM","task":"T14","event":"review","verdict":"findings","head":"a1b2c3d","sent_back":["7",8],"before":["3"]}
+LEDGER
+  run_bin -0 --separate-stderr team-log --check
+  assert_equal "$output" "$TEAM_HOME/ledger.jsonl: 4 lines meet the ledger contract; 2 hold whole numbers as strings, which team-log --fix-sent-back stores as numbers"
+  assert_equal "$stderr" "$TEAM_HOME/ledger.jsonl:3: sent_back holds whole numbers as strings (\"5\", \"6\"): team-log --fix-sent-back stores them as numbers
+$TEAM_HOME/ledger.jsonl:4: sent_back holds whole numbers as strings (\"7\"): team-log --fix-sent-back stores them as numbers; before holds whole numbers as strings (\"3\"): team-log --fix-sent-back stores them as numbers"
+  sed -i '4d' "$TEAM_HOME/ledger.jsonl"
+  run_bin -0 --separate-stderr team-log --check
+  assert_equal "$output" "$TEAM_HOME/ledger.jsonl: 3 lines meet the ledger contract; 1 holds whole numbers as strings, which team-log --fix-sent-back stores as numbers"
+  sed -i '3d' "$TEAM_HOME/ledger.jsonl"
+  run_bin -0 --separate-stderr team-log --check
+  assert_equal "$output" "$TEAM_HOME/ledger.jsonl: 2 lines meet the ledger contract"
+  assert_equal "$stderr" ""
+}
+
+@test "--check refuses a sent_back holding anything but whole numbers, the bad lines first and the old strings after" {
+  cat >"$TEAM_HOME/ledger.jsonl" <<LEDGER
+{"ts":"$STRICT_FROM","task":"T14","event":"review","verdict":"findings","head":"a1b2c3d","sent_back":["5"]}
 {"ts":"$STRICT_FROM","task":"T14","event":"review","verdict":"findings","head":"a1b2c3d","sent_back":["x",1.5]}
+{"ts":"$STRICT_FROM","task":"T14","event":"review","verdict":"findings","head":"a1b2c3d","sent_back":["6","y"]}
+{"ts":"$STRICT_FROM","task":"T14","event":"review","verdict":"findings","head":"a1b2c3d","sent_back":"5"}
 LEDGER
   run_bin -1 team-log --check
-  assert_equal "$output" "$TEAM_HOME/ledger.jsonl:3: sent_back holds whole numbers as strings (\"5\", \"6\"): team-log --fix-sent-back stores them as numbers
-$TEAM_HOME/ledger.jsonl:4: sent_back holds whole numbers as strings (\"7\"): team-log --fix-sent-back stores them as numbers
-$TEAM_HOME/ledger.jsonl:5: sent_back must be a list of whole numbers, got \"x\", 1.5
-$TEAM_HOME/ledger.jsonl: 3 of 5 lines break the ledger contract"
-  sed -i '3,5d' "$TEAM_HOME/ledger.jsonl"
-  run_bin -0 team-log --check
-  assert_equal "$output" "$TEAM_HOME/ledger.jsonl: 2 lines meet the ledger contract"
+  assert_equal "$output" "$TEAM_HOME/ledger.jsonl:2: sent_back must be a list of whole numbers, got \"x\", 1.5
+$TEAM_HOME/ledger.jsonl:3: sent_back must be a list of whole numbers, got \"6\", \"y\"
+$TEAM_HOME/ledger.jsonl:4: sent_back must be a list of whole numbers, got a string
+$TEAM_HOME/ledger.jsonl:1: sent_back holds whole numbers as strings (\"5\"): team-log --fix-sent-back stores them as numbers
+$TEAM_HOME/ledger.jsonl: 3 of 4 lines break the ledger contract; 1 holds whole numbers as strings, which team-log --fix-sent-back stores as numbers"
 }
+
+@test "a new review's sent_back of strings that are no whole numbers is still refused, logging nothing" {
+  run_bin -1 team-log T1 review verdict=findings head=a1b2c3d findings=blocking:1,correctness:0,security:0,real-data:0,note-change:0,note-before:0 guarded=none 'sent_back=["x"]'
+  assert_contains "$output" 'sent_back: x is not a whole number'
+  run_bin -1 team-log T1 review verdict=findings head=a1b2c3d findings=blocking:1,correctness:0,security:0,real-data:0,note-change:0,note-before:0 guarded=none sent_back=5,x
+  assert_contains "$output" 'sent_back: x is not a whole number'
+  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" 0
+}
+
 
 # A ledger with sent_back held as strings on some lines, legacy and strict, beside lines of other
 # shapes the conversion leaves byte for byte: fix_ledger <file>

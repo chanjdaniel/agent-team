@@ -65,7 +65,9 @@
 # --check checks a ledger (default: the team home's): every line is JSON with ts, task and
 # event, and lines from strict_from on meet their kind's fields, a Discord id written as a whole
 # number (as team-log wrote one before the contract typed it) passing too; exit 1 lists each bad
-# line, and names --fix-sent-back for a sent_back or before that holds whole numbers as strings.
+# line. A sent_back or before from strict_from on that holds whole numbers as strings, as
+# team-log stored them before, passes too, but each such line is named on stderr with
+# --fix-sent-back, and the last line counts them.
 # --fix-sent-back is the one-time conversion of those strings (default: the team home's ledger), run under the ledger's lock:
 # on every line, legacy too, it stores the whole numbers that sent_back and before hold as
 # strings as numbers, leaves every other line byte for byte, and prints how many lines it changed;
@@ -88,13 +90,21 @@ if [[ ${1:-} == --check ]]; then
   file=${2:-$TEAM_HOME/ledger.jsonl}
   [[ -f $file ]] || die "no ledger at $file"
   report=$(ledger_jq 'check_ledger($contract)' -nRc <"$file")
-  read -r total bad < <(jq -r '"\(.total) \(.bad | length)"' <<<"$report")
+  read -r total bad noted < <(jq -r '"\(.total) \(.bad | length) \(.noted | length)"' <<<"$report")
+  # The bad lines first, so a caller reading the first line (team-doctor) names a problem.
+  jq -r --arg file "$file" '(.bad[] | "\($file):\(.line): \(.problems | join("; "))"),
+    (.noted[] | "\($file):\(.line): \(.notes | join("; "))")' <<<"$report" >&2
+  notes=''
+  if ((noted == 1)); then
+    notes="; 1 holds whole numbers as strings, which team-log --fix-sent-back stores as numbers"
+  elif ((noted > 1)); then
+    notes="; $noted hold whole numbers as strings, which team-log --fix-sent-back stores as numbers"
+  fi
   if ((bad > 0)); then
-    jq -r --arg file "$file" '.bad[] | "\($file):\(.line): \(.problems | join("; "))"' <<<"$report" >&2
-    echo "$file: $bad of $total lines break the ledger contract" >&2
+    echo "$file: $bad of $total lines break the ledger contract$notes" >&2
     exit 1
   fi
-  if ((total == 1)); then echo "$file: 1 line meets the ledger contract"; else echo "$file: $total lines meet the ledger contract"; fi
+  if ((total == 1)); then echo "$file: 1 line meets the ledger contract$notes"; else echo "$file: $total lines meet the ledger contract$notes"; fi
   exit 0
 fi
 

@@ -27,18 +27,18 @@ def line_problems:
 # How the value breaks field <name>'s contract type (a type name, or a list of allowed strings).
 # An id is a Discord id, a string of digits; with $legacy (--check), a whole number too, as
 # team-log wrote one before the contract typed every Discord id (its digits are the id, since jq
-# keeps a number's literal through tostring). A list of whole numbers that holds some as strings,
-# as team-log stored them before the contract typed sent_back, names the conversion.
+# keeps a number's literal through tostring). A list of whole numbers whose other items are whole
+# numbers written as strings, as team-log stored sent_back before the contract typed it, passes
+# with $legacy too, and check_notes names it.
 # (A parameter named $type would shadow the builtin type inside the def.)
 def type_problems($name; $want; $legacy):
   if ($want | type) == "array" then
     select(IN($want[]) | not) | "\($name) must be one of \($want | join(", "))"
   elif $want == "numbers" then
     if type != "array" then "\($name) must be a list of whole numbers, got \(type | noun)"
-    else [.[] | select(whole_number | not)] | select(. != []) | map(tojson) as $bad
-      | if all(.[]; whole_number_string) then
-          "\($name) holds whole numbers as strings (\($bad | join(", "))): team-log --fix-sent-back stores them as numbers"
-        else "\($name) must be a list of whole numbers, got \($bad | join(", "))" end
+    else [.[] | select(whole_number | not)] | select(. != [])
+      | select($legacy and all(.[]; whole_number_string) | not)
+      | "\($name) must be a list of whole numbers, got \(map(tojson) | join(", "))"
     end
   elif $want == "id" then
     if type == "string" then select(test("^[0-9]+$") | not) | "\($name) must be a Discord id, a string of digits, got a string that is not one"
@@ -165,6 +165,19 @@ def check_problems($contract):
     elif .ts >= $contract.strict_from then kind_problems($contract; true)
     else empty end;
 
+# What a line in an existing ledger holds in a legacy form its contract still takes, one string
+# each: a list of whole numbers from strict_from on that holds some as strings, whose conversion
+# team-log --fix-sent-back is.
+def check_notes($contract):
+  if type == "object" and ([line_problems] == []) and .ts >= $contract.strict_from
+    and $contract.kinds[.event] != null then
+    . as $line
+    | field_types($contract.kinds[.event]) | to_entries[] | select(.value == "numbers") | .key as $name
+    | $line[$name] | arrays | [.[] | select(whole_number | not)]
+    | select(. != [] and all(.[]; whole_number_string))
+    | "\($name) holds whole numbers as strings (\(map(tojson) | join(", "))): team-log --fix-sent-back stores them as numbers"
+  else empty end;
+
 # The scripts that write a kind ($kind.writer, one name or a list), as a list.
 def writers($kind): [$kind.writer // empty] | flatten;
 
@@ -180,12 +193,17 @@ def append_problems($contract; $writer):
     // [kind_problems($contract; false)]
   | .[];
 
-# The report of checking a ledger read as raw lines (jq -nR): {total, bad: [{line, problems}]}.
+# The report of checking a ledger read as raw lines (jq -nR):
+# {total, bad: [{line, problems}], noted: [{line, notes}]}, noted holding the check_notes of
+# lines with no problem.
 def check_ledger($contract):
   [inputs
     | (if test("^\\s*$") then null else (try {value: fromjson} catch null) end) as $parsed
-    | if $parsed == null then ["not JSON"] else [$parsed.value | check_problems($contract)] end]
-  | {total: length, bad: [to_entries[] | select(.value != []) | {line: (.key + 1), problems: .value}]};
+    | if $parsed == null then {problems: ["not JSON"], notes: []}
+      else {problems: [$parsed.value | check_problems($contract)], notes: [$parsed.value | check_notes($contract)]} end]
+  | {total: length,
+     bad: [to_entries[] | select(.value.problems != []) | {line: (.key + 1), problems: .value.problems}],
+     noted: [to_entries[] | select(.value.problems == [] and .value.notes != []) | {line: (.key + 1), notes: .value.notes}]};
 
 # Pad a string with spaces to $width.
 def pad($width): . + ([range($width - length)] | map(" ") | add // "");
