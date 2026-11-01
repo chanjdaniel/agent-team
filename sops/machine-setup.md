@@ -70,7 +70,7 @@ Each stage after the first is one `~/agent-team/bin/team-bootstrap` run; read it
 ### Stage 4: tools
 
 `~/agent-team/bin/team-bootstrap --stage tools`: everything else `bin/lib/tools.lock` pins for this OS: Claude Code, nvm with Node and the global npm tools (opencode, the gate's agent on an opencode gate, among them), Bun, the treehouse release archive (checked against its SHA-256), no-mistakes built from Daniel's fork at its pinned commit (with stage 3's Go and make), and on Arch the 1Password CLI.
-Then it installs the gate's opencode wrapper, `~/.no-mistakes/bin/opencode-gate`, from `bin/lib/opencode-gate`: it gives every opencode the gate starts the gate-only config, on Arch and macOS alike.
+Then, while the doctor's `gate-agent` line asks for it (on any gate but a Claude one), it installs the gate's opencode wrapper, `~/.no-mistakes/bin/opencode-gate`, from `bin/lib/opencode-gate`: it gives every opencode the gate starts the gate-only config, on Arch and macOS alike.
 Last, `servers/install` puts the pinned MCP servers in `~/agent-team/servers/node_modules/` while the doctor's `servers` line fails: the toolkits' servers, and the `chrome-devtools-mcp` every session's `chrome-devtools-axi` runs.
 
 - On Arch, treehouse and `op` install with `sudo`: the same stop and the same request as stage 3, with `--stage tools`.
@@ -81,10 +81,10 @@ Last, `servers/install` puts the pinned MCP servers in `~/agent-team/servers/nod
 - `~/.no-mistakes/config.yaml` comes back with `team-secrets restore`, one of stage 7's steps, and the doctor's `gate-agent` line fails until it runs the gate one of the two ways the team sets it up.
   On opencode: `agent: opencode`, and `agent_path_override` naming the wrapper for `opencode` by this machine's full path (no-mistakes does not expand `~`), where a copy saved on another machine names that machine's.
   On Claude Code: `agent: claude`, and `agent_args_override`'s `claude` list carrying `--setting-sources` with sources that leave out `user` (`project,local`, say) and `--strict-mcp-config`, so the gate's claude loads none of Daniel's user settings (their hooks, the Discord plugin, Remote Control) and none of their MCP servers; it needs no wrapper.
-  In a one-line flow list, quote `"project,local"`, since YAML splits a flow list on every comma outside quotes.
+  In a one-line flow list, quote `"project,local"`, since YAML splits a flow list on every comma outside quotes; unquoted, the line warns.
   With `agent: auto` the gate would run on whichever agent no-mistakes finds first, Claude on a machine without opencode.
-  This stage sets the `agent_path_override` key, which holds no credential, keeping the rest of the file byte for byte and its mode, and printing none of it; a missing file it leaves to the restore, and the agent and its flags to Daniel, as one of stage 7's steps.
-  So once Daniel has run the restore, run `~/agent-team/bin/team-bootstrap --stage tools` again before the next `--stage check`: `check` shows the `agent_path_override` failure among the doctor's FAILs with this fix, never as Daniel's step.
+  On an opencode gate, this stage sets the `agent_path_override` key, which holds no credential, keeping the rest of the file byte for byte and its mode, and printing none of it; a missing file it leaves to the restore, and the agent and its flags to Daniel, as one of stage 7's steps.
+  So once Daniel has run the restore of an opencode gate's config, run `~/agent-team/bin/team-bootstrap --stage tools` again before the next `--stage check`: `check` shows the `agent_path_override` failure among the doctor's FAILs with this fix, never as Daniel's step.
   Only a form the edit does not change (a flow mapping over several lines, or a scalar) stops it as Daniel's hand edit.
 
 ### Stage 5: projects

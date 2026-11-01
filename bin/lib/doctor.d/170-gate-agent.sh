@@ -7,9 +7,11 @@
 #               tool claude line), and agent_args_override.claude carrying --setting-sources with
 #               sources that leave out user, and --strict-mcp-config, so the gate's claude loads
 #               none of Daniel's user settings (their hooks, the Discord plugin, Remote Control) and
-#               none of their MCP servers. Any other agent, or none (auto would pick whichever agent
-#               no-mistakes finds first), fails. Only those keys of the file are read (none holds a
-#               credential), and none of the rest printed.
+#               none of their MCP servers; it warns when an item right after the sources is no
+#               flag, which claude takes as an argument of its own (the second half of an unquoted
+#               project,local in a flow list). Any other agent, or none (auto would pick whichever
+#               agent no-mistakes finds first), fails. Only those keys of the file are read (none
+#               holds a credential), and none of the rest printed.
 # shellcheck shell=bash
 # shellcheck disable=SC2154 # bin, the doctor's
 
@@ -31,14 +33,22 @@ fi
 
 if [[ $agent == claude ]]; then
   # The flags as no-mistakes passes them: --setting-sources takes the next item, or its own after
-  # an =, and claude splits it on commas; every one given must leave out user.
-  gate_rc=0 gate_strict=0 gate_sources=() gate_user=0
+  # an =, and claude splits it on commas; every one given must leave out user. An item right after
+  # that value which is no flag is an argument of claude's own: the second half of an unquoted
+  # project,local in a flow list, say.
+  gate_rc=0 gate_strict=0 gate_sources=() gate_user=0 gate_stray=
   gate_args=$(awk -v args=claude -f "$bin/lib/gate-config.awk" "$gate_config") || gate_rc=$?
   mapfile -t gate_items <<<"$gate_args"
   for ((i = 0; i < ${#gate_items[@]}; i++)); do
     case ${gate_items[i]} in
       --strict-mcp-config) gate_strict=1 ;;
-      --setting-sources) gate_sources+=("${gate_items[i + 1]:-}"); i=$((i + 1)) ;;
+      --setting-sources)
+        gate_sources+=("${gate_items[i + 1]:-}")
+        i=$((i + 1))
+        if [[ -z $gate_stray && $((i + 1)) -lt ${#gate_items[@]} && ${gate_items[i + 1]} != -* ]]; then
+          gate_stray="${gate_items[i + 1]} right after --setting-sources ${gate_items[i]}"
+        fi
+        ;;
       --setting-sources=*) gate_sources+=("${gate_items[i]#--setting-sources=}") ;;
     esac
   done
@@ -59,7 +69,13 @@ if [[ $agent == claude ]]; then
     report gate-agent FAIL "$(tilde "$gate_config") runs the gate on claude, but its agent_args_override.claude lacks ${gate_reason%; }" \
       "Daniel sets $claude_args in ~/.no-mistakes/config.yaml"
   else
-    report gate-agent PASS "config.yaml runs the gate on claude with --setting-sources $(printf '%s\n' "${gate_sources[@]}" | paste -sd ' ' -) and --strict-mcp-config, and claude is installed"
+    gate_shown="config.yaml runs the gate on claude with --setting-sources $(printf '%s\n' "${gate_sources[@]}" | paste -sd ' ' -) and --strict-mcp-config"
+    if [[ -n $gate_stray ]]; then
+      report gate-agent WARN "$gate_shown, but agent_args_override.claude has $gate_stray, which claude takes as an argument of its own (an unquoted project,local in a flow list is two items)" \
+        "Daniel quotes the sources as one item in ~/.no-mistakes/config.yaml: $claude_args"
+    else
+      report gate-agent PASS "$gate_shown, and claude is installed"
+    fi
   fi
 elif [[ ! -e $wrapper ]]; then
   report gate-agent FAIL "$(tilde "$wrapper") is not installed" "$wrapper_fix"

@@ -174,3 +174,30 @@ x"
   printf '%s\n' 'agent_args_override: {claude: --x}' >"$config"
   run -3 read_args
 }
+
+@test "a top-level key of the agent's name after agent_args_override is not its child" {
+  printf '%s\n' 'agent: claude' 'agent_args_override:' 'claude: [--setting-sources, project, --strict-mcp-config]' >"$config"
+  run -0 read_args
+  assert_equal "$output" ""
+  printf '%s\n' 'agent: claude' 'agent_args_override:' '  codex: [-c, x]' 'claude: [--setting-sources, project]' >"$config"
+  run -0 read_args
+  assert_equal "$output" ""
+  printf '%s\n' 'agent: claude' 'agent_args_override:' 'claude:' '  - --strict-mcp-config' >"$config"
+  run -0 read_args
+  assert_equal "$output" ""
+}
+
+@test "in a flow mapping only the agent's own key at its top level is read, never one in a comment or a nested list" {
+  printf '%s\n' 'agent_args_override: {codex: [-c]} # , claude: [--setting-sources, project, --strict-mcp-config]' >"$config"
+  run -0 read_args
+  assert_equal "$output" ""
+  printf '%s\n' 'agent_args_override: {codex: [-c, claude: [--setting-sources, project, --strict-mcp-config]]}' >"$config"
+  run -0 read_args
+  assert_equal "$output" ""
+  printf '%s\n' "agent_args_override: {codex: ['x, claude: [--y]'], claude: [--strict-mcp-config]}" >"$config"
+  run -0 read_args
+  assert_equal "$output" --strict-mcp-config
+  printf '%s\n' 'agent_args_override: {"claude": [--strict-mcp-config]}' >"$config"
+  run -0 read_args
+  assert_equal "$output" --strict-mcp-config
+}

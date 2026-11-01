@@ -20,8 +20,9 @@
 # in block form; one missing from a block goes right under its header, at its first child's indent.
 # The list is read from the first top-level agent_args_override, under its child <agent>: at the
 # first child's indent ("- <item>" lines at that indent or deeper, or a flow sequence on its line)
-# or in a flow mapping on its own line ({<agent>: [<item>, ...], ...}); a flow sequence splits on
-# every comma outside quotes, as YAML does, so [a, b,c] is three items.
+# or in a flow mapping on its own line ({<agent>: [<item>, ...], ...}), by a key at the mapping's
+# own level outside quotes, never one nested in a value or after its closing brace; a flow sequence
+# splits on every comma outside quotes, as YAML does, so [a, b,c] is three items.
 
 # A value as written, without its comment, trailing blanks or the quotes around it.
 function unquote(v) {
@@ -97,15 +98,16 @@ function last(i) { if (i == n && eol == "0") printf "%s", line[i]; else print li
 
 # agent_args_override.<args>'s items, one per line; nothing when the key or the agent is unset;
 # exit 3, printing nothing, on a form this read leaves to Daniel.
-function read_args(   h, rest, j, k, indent, keyre, v, at) {
+function read_args(   h, rest, j, k, indent, keyre, v, at, pos) {
   for (h = 1; h <= n; h++) if (line[h] ~ /^agent_args_override:/) break
   if (h > n) return
   rest = line[h]; sub(/^agent_args_override:[ \t]*/, "", rest)
-  keyre = "^[ \t]*" args ":[ \t]*"
+  keyre = "^[ \t]+" args ":[ \t]*"
   if (rest ~ /^\{/) {
-    if (rest !~ /\}/) exit 3
-    if (!match(rest, "[{,][ \t]*" args ":[ \t]*")) return
-    v = substr(rest, RSTART + RLENGTH)
+    pos = flow_key(rest)
+    if (pos < 0) exit 3
+    if (!pos) return
+    v = substr(rest, pos); sub(/^[ \t]+/, "", v)
     if (v !~ /^\[/ || !flow(v)) exit 3
     print_items()
     return
@@ -159,6 +161,30 @@ function flow(s,   i, c, q, item) {
     item = item c
   }
   return 0
+}
+
+# Where the value of <args>'s key starts in the one-line flow mapping <s> starts with, a key of
+# its own level outside quotes; 0 when it has none, -1 when the mapping does not close on this line.
+function flow_key(s,   i, c, q, depth, key, value, found) {
+  q = ""; depth = 0; key = ""; value = 0; found = 0
+  for (i = 2; i <= length(s); i++) {
+    c = substr(s, i, 1)
+    if (q != "") { if (c == q) q = ""; if (!depth && !value) key = key c; continue }
+    if (c == "\"" || c == "\047") { q = c; if (!depth && !value) key = key c; continue }
+    if (c == "[" || c == "{") { depth++; continue }
+    if (c == "]" || c == "}") { if (!depth) return c == "}" ? found : -1; depth--; continue }
+    if (depth) continue
+    if (c == ",") { key = ""; value = 0; continue }
+    if (value) continue
+    if (c == ":") {
+      sub(/^[ \t]+/, "", key)
+      if (!found && unquote(key) == args) found = i + 1
+      value = 1
+      continue
+    }
+    key = key c
+  }
+  return -1
 }
 
 function print_items(   i) { for (i = 1; i <= count; i++) print items[i] }

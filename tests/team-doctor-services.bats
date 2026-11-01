@@ -322,10 +322,27 @@ EOF
   printf '%s\n' 'agent: claude' 'agent_args_override:' '  claude: [--strict-mcp-config, "--setting-sources=project"]' >"$config"
   run_bin -0 team-doctor
   assert_equal "$(line_of gate-agent)" "PASS gate-agent: config.yaml runs the gate on claude with --setting-sources project and --strict-mcp-config, and claude is installed"
-  # Unquoted in a flow sequence, project,local is two items, and claude gets project alone.
+  # Unquoted in a flow sequence, project,local is two items: claude gets project alone, and local
+  # as an argument of its own, which warns.
   printf '%s\n' 'agent: claude' 'agent_args_override: {claude: [--setting-sources, project,local, --strict-mcp-config]}' >"$config"
   run_bin -0 team-doctor
-  assert_contains "$(line_of gate-agent)" "PASS gate-agent: config.yaml runs the gate on claude with --setting-sources project and"
+  assert_equal "$(line_of gate-agent)" "WARN gate-agent: config.yaml runs the gate on claude with --setting-sources project and --strict-mcp-config, but agent_args_override.claude has local right after --setting-sources project, which claude takes as an argument of its own (an unquoted project,local in a flow list is two items); fix: Daniel quotes the sources as one item in ~/.no-mistakes/config.yaml: $args"
+  # A flag after the sources is no stray argument.
+  printf '%s\n' 'agent: claude' 'agent_args_override:' '  claude: [--setting-sources, project, --model, sonnet, --strict-mcp-config]' >"$config"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of gate-agent)" "PASS gate-agent: config.yaml runs the gate on claude with --setting-sources project and --strict-mcp-config, and claude is installed"
+  # A claude key at the top level, not agent_args_override's child, gives claude no flags; nor
+  # does one in a comment or nested in another agent's list.
+  local both="$lacks --setting-sources with sources that leave out user, so the gate's claude loads Daniel's user settings (their hooks, the Discord plugin, Remote Control); --strict-mcp-config, so the gate's claude loads Daniel's MCP servers; $fix"
+  printf '%s\n' 'agent: claude' 'agent_args_override:' 'claude: [--setting-sources, project, --strict-mcp-config]' >"$config"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of gate-agent)" "$both"
+  printf '%s\n' 'agent: claude' 'agent_args_override: {codex: [-c]} # , claude: [--setting-sources, project, --strict-mcp-config]' >"$config"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of gate-agent)" "$both"
+  printf '%s\n' 'agent: claude' 'agent_args_override: {codex: [-c, claude: [--setting-sources, project, --strict-mcp-config]]}' >"$config"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of gate-agent)" "$both"
 
   # Either flag missing fails, naming what it lets in.
   printf '%s\n' 'agent: claude' 'agent_args_override:' '  claude:' '    - --setting-sources' '    - project,local' >"$config"
