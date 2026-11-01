@@ -207,6 +207,7 @@ sub_end() {
         ;;
       \") dq_end $((j + 1)) && j=$end && continue ;;
       \`) bq_end $((j + 1)) && j=$end && continue ;;
+      '$') [[ ${s:j+1:1} == \' ]] && ansi_end $((j + 2)) && j=$end && continue ;;
       '(') depth=$((depth + 1)) ;;
       ')')
         depth=$((depth - 1))
@@ -218,7 +219,8 @@ sub_end() {
   end=$n
 }
 
-# dq_end <j>: the " that closes a double-quoted string whose text starts at j.
+# dq_end <j> [queue]: the " that closes a double-quoted string whose text starts at j; with queue,
+# queueing the command substitutions in it, at any depth, since it is not lexed again.
 dq_end() {
   local j=$1 c
   while ((j < n)); do
@@ -226,12 +228,38 @@ dq_end() {
     case $c in
       \\) j=$((j + 2)) && continue ;;
       \") end=$((j + 1)) && return ;;
-      '$') [[ ${s:j+1:1} == '(' ]] && sub_end $((j + 2)) && j=$end && continue ;;
-      \`) bq_end $((j + 1)) && j=$end && continue ;;
+      '$')
+        if [[ -z ${2:-} && ${s:j+1:1} == '(' ]]; then
+          sub_end $((j + 2)) && j=$end && continue
+        elif [[ ${s:j+1:2} == '((' ]]; then
+          sub_end $((j + 2)) && j=$end && continue
+        elif [[ ${s:j+1:1} == '(' ]]; then
+          queue_substitution "$j" && j=$end && continue
+        elif [[ ${s:j+1:1} == '{' ]]; then
+          parameter "$j" d && j=$end && continue
+        fi
+        ;;
+      \`)
+        if [[ -z ${2:-} ]]; then
+          bq_end $((j + 1)) && j=$end && continue
+        else
+          queue_backticks "$j" d && j=$end && continue
+        fi
+        ;;
     esac
     j=$((j + 1))
   done
   end=$n
+}
+
+# ansi_end <j>: the ' that closes an ANSI-C string whose text starts at j, in which \' does not.
+ansi_end() {
+  local j=$1
+  while ((j < n)) && [[ ${s:j:1} != \' ]]; do
+    [[ ${s:j:1} == \\ ]] && j=$((j + 1))
+    j=$((j + 1))
+  done
+  end=$((j + 1))
 }
 
 # bq_end <j>: the ` that closes a backtick substitution whose body starts at j.
@@ -309,10 +337,14 @@ parameter() {
           continue
         fi
         ;;
-      \") dq_end $((j + 1)) && j=$end && continue ;;
+      \") dq_end $((j + 1)) queue && j=$end && continue ;;
       \`) queue_backticks "$j" "$2" && j=$end && continue ;;
       '$')
-        if [[ ${s:j+1:1} == '(' && ${s:j+2:1} != '(' ]]; then
+        if [[ $2 != d && ${s:j+1:1} == \' ]]; then
+          ansi_end $((j + 2))
+          j=$end
+          continue
+        elif [[ ${s:j+1:1} == '(' && ${s:j+2:1} != '(' ]]; then
           queue_substitution "$j"
           j=$end
           continue
@@ -474,13 +506,9 @@ lex() {
           i=$end
         elif [[ $next == \' ]]; then
           # An ANSI-C string, in which \' does not end it.
-          j=$((i + 2))
-          while ((j < n)) && [[ ${s:j:1} != \' ]]; do
-            [[ ${s:j:1} == \\ ]] && j=$((j + 1))
-            j=$((j + 1))
-          done
-          add "${s:i+2:j-i-2}" s
-          i=$((j + 1))
+          ansi_end $((i + 2))
+          add "${s:i+2:end-i-3}" s
+          i=$end
         elif [[ $next == '[' ]]; then
           # The old form of an arithmetic expansion, $[...], whose < and > compare or shift.
           j=$((i + 2)) depth=1

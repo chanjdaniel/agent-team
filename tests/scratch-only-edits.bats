@@ -271,6 +271,12 @@ echo b > y" "$wt/y"
   # A substitution inside a parameter expansion is judged too.
   blocked 'echo ${x:-$(cmd > out)}' "$wt/out"
   blocked 'echo "${x:-`cmd > out`}"' "$wt/out"
+  blocked 'echo ${x:-"$(cmd > out)"}' "$wt/out"
+  blocked 'echo "${x:-"`cmd > out`"}"' "$wt/out"
+  blocked 'echo ${x:-"${y:-"$(cmd > out)"}"}' "$wt/out"
+  # An ANSI-C string in an operand or a substitution ends at its unescaped quote.
+  blocked "echo \${x:-\$'a\\'b'} > out" "$wt/out"
+  blocked "cmd > x-\$(echo \$'a\\'b').log; echo ok" "$wt/x-\$(echo \$'a\\'b').log"
   # A heredoc inside a substitution keeps its body, a ) or > in it included.
   shell -0 "x=\$(cat <<'EOF'
 a) > b
