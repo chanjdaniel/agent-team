@@ -54,8 +54,9 @@
 # the shas of 7 to 40 hex digits, note the line) and the builder's done; DONE review-ready <sha> and
 # DONE merged <base> <sha> conflicts: <files or none> the builder's done, report the rest;
 # DONE pass <PR url or head> and DONE findings <path>, each followed by findings=, before= and
-# guarded= as team-log takes them, a review and the reviewer's done, findings taking
-# --sent-back's list as sent_back (no other message takes it); DONE gate <key=value>... a gate-run;
+# guarded= as team-log takes them, a review and the reviewer's done, either taking --sent-back's
+# list as sent_back (a pass's being the notes that go back before the merge; no other message
+# takes it); DONE gate <key=value>... a gate-run;
 # any other DONE the sender's done, report the rest. A review's head is the head of the brief record
 # (tasks/T<n>/<brief>.json) that the reviewer's latest launch read, else a pass's own head, else
 # it is refused naming head=. The role is the kind's (builder, reviewer), else that of --from's

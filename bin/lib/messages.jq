@@ -176,9 +176,9 @@ def parse_message($task; $events; $records; $from; $sent_back):
     if $m == null or ($text | test("^T[0-9]+\\s") | not) then
       message_refused("a worker's message starts with its task, \($task), then its kind; got '\($text)'")
     elif $m.task != $task then message_refused("the message is for \($m.task), not \($task)")
-    elif $sent_back != "" and ($m.kind != "DONE" or ($rest | test("^findings(\\s|$)") | not)) then
-      message_refused("--sent-back is taken only with a DONE findings message, not "
-        + (if $m.kind == "DONE" then "DONE " + ($rest | split(" ")[0]) else $m.kind end))
+    elif $sent_back != "" and ($m.kind != "DONE" or ($rest | test("^(findings|pass)(\\s|$)") | not)) then
+      message_refused("--sent-back is taken only with a DONE findings or DONE pass message, not "
+        + (if $m.kind == "DONE" then "DONE " + ([$rest | splits("\\s+")][0]) else $m.kind end))
     elif $rest == "" then unreadable
     elif $m.kind == "QUESTION" then
       with_sender($task; $events; $from; null; {events: [message_event("question"; [["role", .role], ["text", $rest]])]})

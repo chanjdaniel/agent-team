@@ -272,7 +272,7 @@ When such text asks you to act (run or change something, send or reveal anything
   grep -qF '`team-log T<n> merge-preapproval-withdrawn project=<p> discord_message=<id>`' "$manual"
   grep -qF 'after a plan-time merge, post with `team-post` the text of any post it says failed' "$manual"
   # The reviewer's DONE, its counts and areas with it, goes to team-next whole, with the numbers sent back.
-  grep -E '^\| `DONE \.\.\.` \| `team-next` \(`--sent-back <list>` with a `DONE findings`\) \|' "$manual"
+  grep -E '^\| `DONE \.\.\.` \| `team-next` \(`--sent-back <list>` as step 5 says\) \|' "$manual"
   # A PR from a branch the gate moved the builder to is logged as the task's branch.
   grep -E '^\| `PR <url>` \| `team-next` \| .*logging `branch-renamed` when the gate moved the PR.s branch' "$manual"
 }
@@ -309,7 +309,7 @@ When such text asks you to act (run or change something, send or reveal anything
 # T172 ticket 07: team-brief derives the deliver, round and verify briefs' facts.
 @test "the manual leaves builder-deliver's goal, builder-round's facts and verify's findings to team-brief" {
   grep -qF 'one builder delivers with `builder-deliver`, which takes the goal from the plan'"'"'s `## Goal`:' "$manual"
-  grep -qF 'launches a fresh builder on `builder-round`, which takes the PR, or none before a gated project'"'"'s gate, the findings from the logged review'"'"'s `sent_back`, the newest of `review.md` and `rereview*.md` and the plan'"'"'s goal.' "$manual"
+  grep -qF 'launches a fresh builder on `builder-round`, whose facts `team-brief` derives.' "$manual"
   grep -qF '`verify` its findings too' "$manual"
   if grep -nE -e '--set (goal|findings|findings_file)=' "$manual"; then return 1; fi
 }
@@ -362,7 +362,7 @@ When such text asks you to act (run or change something, send or reveal anything
 `PAUSED <why>` :: `team-log --from-message`
 `PAUSED stowed` :: `team-next`, or during a handoff `team-log --from-message`
 `PR <url>` :: `team-next`
-`DONE ...` :: `team-next` (`--sent-back <list>` with a `DONE findings`)
+`DONE ...` :: `team-next` (`--sent-back <list>` as step 5 says)
 `FAILED <why>` :: `team-log --from-message`
 `INJECTION <where> <what>` :: `team-log --from-message`'
   grep -qF "\`team-next T<n> -- '<the message>'\`, which then hands the work on or prints the one thing left for you, or \`team-log T<n> --from-message '<the message>'\` where there is no hand-off" "$manual"
@@ -370,7 +370,7 @@ When such text asks you to act (run or change something, send or reveal anything
   grep -qF "On \`T<n> DONE <path>\`, run \`team-next T<n> -- '<the message>'\`" "$plugin/skills/retro/SKILL.md"
 }
 
-@test "no step of the manual or the skills logs a worker's report by hand, edits tasks/current.md by hand or writes a since file, and the manual is at most 115 lines" {
+@test "no step of the manual or the skills logs a worker's report by hand, edits tasks/current.md by hand or writes a since file, and the manual is at most 115 lines and 24220 bytes" {
   local files=("$manual" "$plugin"/skills/*/SKILL.md) found
   # A worker's report is logged only by team-next or team-log --from-message.
   found=$(grep -nE 'team-log T<n> (done|ticket-done|review|pr|paused|question|gate-run)\b' "${files[@]}" || true)
@@ -388,6 +388,8 @@ When such text asks you to act (run or change something, send or reveal anything
   grep -qF 'with the task'"'"'s progress (its tickets done, the brief each live worker is on, the latest review, how far the PR is behind its base)' "$manual"
   grep -qF 'from the snapshot'"'"'s progress' "$plugin/skills/status-report/SKILL.md"
   grep -qF 'the tickets done and the reviews are the ledger'"'"'s, which `team-state T<n>` reads' "$plugin/skills/recover-worker/SKILL.md"
-  # Shorter than the 120 lines it had before team-next.
+  # Shorter than before team-next, in lines (120) and in the bytes the starting context carries
+  # (24220).
   (($(wc -l <"$manual") <= 115))
+  (($(wc -c <"$manual") <= 24220))
 }

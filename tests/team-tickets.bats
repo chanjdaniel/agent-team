@@ -1,8 +1,9 @@
 #!/usr/bin/env bats
 # team-tickets: a task's tickets read from each open worktree's task directory, with their strict
 # Blocked by: and Waits for: lines, each said done, running, ready, waiting or blocked from the
-# ledger; --check refuses a malformed set. The fixture tickets are T172's own
-# (tests/fixtures/tickets-T172/), whose tickets 01 to 09 were done when they were copied in.
+# ledger; --check refuses a malformed set. The fixture tickets are T172's as planned
+# (tests/fixtures/tickets-T172/), with no builder's ticks or notes; each test's ledger says which
+# are done.
 
 load helpers/common
 
@@ -117,7 +118,7 @@ fresh_tickets() {
   run_bin -0 --separate-stderr team-tickets T172 --json
   assert_equal "$(jq length <<<"$output")" 19
   assert_equal "$(jq -c '.[9]' <<<"$output")" "$(jq -cn --arg f "$tickets/10-team-tickets.md" \
-    '{ticket: "10", slug: "team-tickets", state: "running", project: "proj", file: $f, blocked_by: ["04"],
+    '{ticket: "10", slug: "team-tickets", state: "running", project: "proj", file: $f, phase: 1, blocked_by: ["04"],
       waits_for: null, on: [], session: "a1b2c3d4"}')"
   assert_equal "$(jq -c '.[11] | [.state, .blocked_by, .on, .waits_for, .session]' <<<"$output")" \
     '["blocked",["03","05","07","10"],["10"],"T171 merged (both edit `roles/coordinator.md`).",null]'
@@ -152,7 +153,7 @@ fresh_tickets() {
 
 @test "--check passes the fixture set and says how many tickets it read" {
   run_bin -0 --separate-stderr team-tickets T172 --check
-  assert_equal "$output" "T172: 19 tickets, every Blocked by: and Waits for: line well-formed"
+  assert_equal "$output" "T172: 19 tickets, every Blocked by:, Waits for: and Phase: line well-formed"
 }
 
 @test "the bold and the plain labels both parse" {
@@ -178,6 +179,31 @@ fresh_tickets() {
   run_bin -1 --separate-stderr team-tickets T172
   assert_equal "$output" ""
   assert_contains "$stderr" "$tickets/02-second.md: no Blocked by: line"
+}
+
+@test "a Phase: line, plain or bold, sets the ticket's phase, 1 without one; Phase in prose is none" {
+  fresh_tickets
+  ticket 01-one "Blocked by: None"
+  ticket 02-two "**Blocked by:** 01" "**Phase:** 2"
+  ticket 03-three "Blocked by: 02" "Phase: 2  " "Phase 2 is the merge ask." "- [ ] phase: three works"
+  run_bin -0 --separate-stderr team-tickets T172 --json
+  assert_equal "$(jq -c 'map([.ticket, .phase])' <<<"$output")" '[["01",1],["02",2],["03",2]]'
+  run_bin -0 --separate-stderr team-tickets T172 --check
+  assert_equal "$output" "T172: 3 tickets, every Blocked by:, Waits for: and Phase: line well-formed"
+}
+
+@test "--check refuses a malformed or second Phase: line, and a blocker in a later phase than its ticket" {
+  fresh_tickets
+  ticket 01-one "Blocked by: 02"
+  ticket 02-two "Blocked by: None" "Phase: 2"
+  ticket 03-three "Blocked by: None" "Phase: two"
+  ticket 04-four "Blocked by: None" "Phase: 1" "**Phase:** 2"
+  ticket 05-five "Blocked by: None" "Phase: 0"
+  run_bin -1 --separate-stderr team-tickets T172 --check
+  assert_equal "$stderr" "team-tickets: $tickets/01-one.md:3: blocker 02 is in phase 2, after this ticket's phase 1
+team-tickets: $tickets/03-three.md:4: a malformed Phase: line; write 'Phase: 2', a whole number from 1, the label optionally bold, nothing else on the line
+team-tickets: $tickets/04-four.md:5: a second Phase: line (the first is line 4)
+team-tickets: $tickets/05-five.md:4: a malformed Phase: line; write 'Phase: 2', a whole number from 1, the label optionally bold, nothing else on the line"
 }
 
 @test "--check refuses two Blocked by: lines and two Waits for: lines, naming each second line" {
@@ -310,13 +336,14 @@ team-tickets: $tickets/05-fifth.md:3: a cycle of blockers: 05 -> 05"
   assert_contains "$output" "Waits for:"
 }
 
-@test "the planner's role and briefs give both line formats and the check, and the manual names team-tickets" {
+@test "the planner's role and briefs give the line formats, the Phase: line and the check, and the manual names team-tickets" {
   local file
   for file in roles/planner.md templates/briefs/planner-feature.md templates/briefs/planner-interview.md; do
     assert_contains "$(cat "$REPO_ROOT/$file")" '`Blocked by: None` or `Blocked by: 01, 03`'
     assert_contains "$(cat "$REPO_ROOT/$file")" '`Waits for: <an outside condition>`'
     assert_contains "$(cat "$REPO_ROOT/$file")" 'optionally bold'
     assert_contains "$(cat "$REPO_ROOT/$file")" 'team-tickets'
+    assert_contains "$(cat "$REPO_ROOT/$file")" '`Phase: <n>` line'
   done
   assert_contains "$(cat "$REPO_ROOT/templates/briefs/planner-feature.md")" '`{{team_bin}}/team-tickets {{task}} --check`'
   assert_contains "$(cat "$REPO_ROOT/templates/briefs/planner-interview.md")" '`{{team_bin}}/team-tickets {{task}} --check`'

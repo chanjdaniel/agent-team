@@ -171,9 +171,52 @@ launched T7-builder c0000001"
   assert_contains "$output" "brief-deliver.md"
   assert_contains "$output" "launched T7-builder c0000001"
   assert_equal "$(jq -c '{template, values}' "$TEAM_HOME/tasks/T7/brief-deliver.json")" \
-    '{"template":"builder-deliver","values":{"goal":"Coordinator toil goes to the scripts."}}'
+    '{"template":"builder-deliver","values":{"goal":"Coordinator toil goes to the scripts.","tickets":"every ticket"}}'
   grep -qF 'Coordinator toil goes to the scripts.' "$TEAM_HOME/tasks/T7/brief-deliver.md"
   assert_equal "$(jq -r 'select(.event == "launch") | .brief' "$TEAM_HOME/ledger.jsonl" | tail -n 1)" brief-deliver
+}
+
+@test "a phase's last ticket done launches that phase's deliverer, deliver-p<n>, before any ticket of the next phase" {
+  local brief=$TEAM_HOME/tasks/T7/brief-deliver-p1.md
+  ticket 02-second "Blocked by: 01" "Phase: 2"
+  ticket 03-third "Blocked by: None" "**Phase:** 2"
+  ticket 04-fourth "Blocked by: 02" "Phase: 2"
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE 01 $sha the last of phase 1"
+  assert_equal "$(tail -n 2 <<<"$output")" "brief $brief
+launched T7-builder c0000001"
+  assert_equal "$(record deliver-p1 | jq -cS .)" \
+    '{"template":"builder-deliver","values":{"goal":"Coordinator toil goes to the scripts.","tickets":"every ticket of phase 1 (01)"}}'
+  grep -qF 'you are the builder who delivers: every ticket of phase 1 (01) is done and pushed on `feat/T7-toil`.' "$brief"
+  grep -qF 'the boxes of every ticket of phase 1 (01) are ticked' "$brief"
+  [[ ! -e $TEAM_HOME/tasks/T7/brief-build-03.md ]]
+  assert_equal "$(bg_calls | wc -l)" 1
+}
+
+@test "while a phase has tickets not done, the next ticket is that phase's, and --next refuses a later phase's" {
+  ticket 02-second "Blocked by: 01"
+  ticket 03-third "Blocked by: None" "Phase: 2"
+  ticket 04-fourth "Blocked by: 03" "Phase: 2"
+  refused "--next 03 is in phase 2, but phase 1 has tickets not done: 02 ready" T7 --next 03 -- "T7 DONE 01 $sha done"
+  run_bin -0 team-next T7 -- "T7 DONE 01 $sha done"
+  assert_contains "$output" "brief $TEAM_HOME/tasks/T7/brief-build-02.md"
+  # None of phase 1's left ready: refused naming phase 1's alone.
+  ticket 05-fifth "Blocked by: None"
+  launched b0000005 brief-build-05
+  refused "tickets of phase 1 remain once 01 is done, but none is ready: 02 running in session c0000001; 05 running in session b0000005" \
+    T7 --from b0000001 -- "T7 DONE 01 ${sha:0:9} again"
+}
+
+@test "a later phase's deliverer is deliver-p<n>, and --next is refused while a phase's deliverer is due" {
+  ticket 02-second "Blocked by: 01" "Phase: 2"
+  ticket 03-third "Blocked by: None" "Phase: 3"
+  ticket 04-fourth "Blocked by: 03" "Phase: 3"
+  refused "phase 1's tickets are all done once 01 is, so its deliverer comes next, not --next 03" \
+    T7 --next 03 -- "T7 DONE 01 $sha done"
+  event ticket-done '{ticket: "01", commits: ["0123456"]}'
+  launched b0000002 brief-build-02 '["browser"]'
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE 02 $sha phase 2 done"
+  assert_contains "$output" "brief $TEAM_HOME/tasks/T7/brief-deliver-p2.md"
+  assert_equal "$(record deliver-p2 | jq -r .values.tickets)" "every ticket of phase 2 (02)"
 }
 
 @test "a launch that failed finishes on the rerun without logging again; a rerun after the launch is refused" {
@@ -196,15 +239,18 @@ launched T7-builder c0000001"
   refused "ticket 01 is already handed off: T7-builder c0000001 was launched at" T7 -- "T7 DONE 01 $sha done"
 }
 
-@test "a brief a launch already read is refused, not rendered again" {
+@test "a deliverer's brief a launch already read is kept, and the next deliverer takes the next free name" {
   # Every other ticket done and the deliverer launched once; then 01 is built again.
   for n in 02 03 04; do event ticket-done "$(jq -cn --arg n "$n" '{ticket: $n, commits: ["0123456"]}')"; done
   echo "# delivered" >"$TEAM_HOME/tasks/T7/brief-deliver.md"
   launched d0000001 brief-deliver
   launched b0000009 brief-build-01
-  refused "brief-deliver was launched already (T7-builder d0000001 at 2026-11-01T10:00:00Z), so it is not launched again" \
-    T7 -- "T7 DONE 01 $sha again"
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE 01 $sha again"
+  assert_contains "$output" "brief $TEAM_HOME/tasks/T7/brief-deliver-2.md"
+  assert_equal "$(jq -r 'select(.event == "launch") | .brief' "$TEAM_HOME/ledger.jsonl" | tail -n 1)" brief-deliver-2
   assert_equal "$(cat "$TEAM_HOME/tasks/T7/brief-deliver.md")" "# delivered"
+  # A one-phase task's deliverer says every ticket.
+  grep -qF 'you are the builder who delivers: every ticket is done and pushed' "$TEAM_HOME/tasks/T7/brief-deliver-2.md"
 }
 
 @test "a running ticket is not ready for --next" {
@@ -219,7 +265,7 @@ launched T7-builder c0000001"
   event resumed '{}'
   event asked '{id: "scope", text: "Which scope?"}'
   refused "T7 has an unanswered ask, scope, since 2026-11-01T10:00:00Z" T7 -- "T7 DONE 01 $sha done"
-  event answered '{id: "scope", text: "This one.", discord_message: "1566347677472661545"}'
+  event answered '{id: "scope", text: "This one.", discord_message: "1563000000000000045"}'
   grep -v plan-approved "$TEAM_HOME/ledger.jsonl" >"$BATS_TEST_TMPDIR/l" && cp "$BATS_TEST_TMPDIR/l" "$TEAM_HOME/ledger.jsonl"
   refused "T7 has no plan-approved, so no ticket hand-off" T7 -- "T7 DONE 01 $sha done"
   event plan-approved '{by: "coordinator"}'
@@ -233,7 +279,7 @@ launched T7-builder c0000001"
   event asked '{id: "scope", text: "Which scope?"}'
   refused "T7 has an unanswered ask, scope" T7 -- "T7 DONE 01 $sha done"
   run_bin -0 team-log T7 --from-message "T7 DONE 01 $sha done"
-  event answered '{id: "scope", text: "This one.", discord_message: "1566347677472661545"}'
+  event answered '{id: "scope", text: "This one.", discord_message: "1563000000000000045"}'
   run_bin -0 --separate-stderr team-next T7 -- "T7 DONE 01 $sha done"
   assert_equal "$output" "already logged ticket-done ticket=01 commits=[\"$sha\"] note=done
 already logged done role=builder session=b0000001
@@ -477,6 +523,15 @@ launched T7-reviewer c0000001"
   grep -qF "review \`origin/main...$head\`" "$TEAM_HOME/tasks/T7/brief-review.md"
 }
 
+@test "a DONE review-ready with a run of whitespace before its sha reads the sha as team-log does" {
+  local head
+  sed -i 's/^delivery = "direct-pr"/delivery = "no-mistakes"/' "$TEAM_HOME/projects.toml"
+  head=$(commit two.txt "feat: ticket 02")
+  run_bin -0 --separate-stderr team-next T7 --checks "$(checks)" -- "T7 DONE review-ready  "$'\t'"${head:0:10}"
+  assert_contains "$output" "launched T7-reviewer c0000001"
+  assert_equal "$(record review | jq -r .values.head)" "$head"
+}
+
 @test "a PR whose head branch is not the task's logs branch-renamed too" {
   on_github 9 "$sha" feat/T7-toil-r2
   run_bin -0 --separate-stderr team-next T7 --checks "$(checks)" -- "T7 PR $url"
@@ -646,7 +701,7 @@ merge ask: $url at $sha, agent-review success, checks green; the review found gu
 
 @test "a pass with a standing plan-time approval says merge pre-approved, unless the review found guarded areas" {
   sed -i 's/^merge_method = "merge"/&\nmerge_with_plan = true/' "$TEAM_HOME/projects.toml"
-  event merge-preapproved '{project: "proj", ask: "plan", discord_message: "1566347677472661545", scope: ["one.txt"]}'
+  event merge-preapproved '{project: "proj", ask: "plan", discord_message: "1563000000000000045", scope: ["one.txt"]}'
   reviewing "$sha"
   pr_on_github "$sha"
   run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
@@ -659,9 +714,56 @@ merge ask: $url at $sha, agent-review success, checks green; the review found gu
   assert_equal "$(tail -n 1 <<<"$output")" \
     "merge ask: $url at $sha, agent-review success, checks green; the review found guarded areas: ci, settings, so the plan-time word does not hold"
   # A withdrawn approval no longer holds.
-  event merge-preapproval-withdrawn '{project: "proj", discord_message: "1566347677472661546"}'
+  event merge-preapproval-withdrawn '{project: "proj", discord_message: "1563000000000000046"}'
   run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
   assert_equal "$(tail -n 1 <<<"$output")" "merge ask: $url at $sha, agent-review success, checks green"
+  assert_equal "$(outside_calls)" ""
+}
+
+@test "a pass counting findings that go back prints no merge line: refused until --sent-back sends them, then routed as findings are" {
+  local back count
+  sed -i 's/^merge_method = "merge"/&\nmerge_with_plan = true/' "$TEAM_HOME/projects.toml"
+  event merge-preapproved '{project: "proj", ask: "plan", discord_message: "1563000000000000045", scope: ["one.txt"]}'
+  reviewing "$sha"
+  pr_on_github "$sha"
+  live b0000001 120000
+  echo "# review" >"$wt/.scratch/task/review.md"
+  back=${counts/correctness:0/correctness:1}
+  back=${back/note-change:0/note-change:2}
+  local why="the pass counts 1 correctness and 2 note-change findings, which go back to the builder before the merge (step 5), so there is no merge yet: run it again with --sent-back <their numbers>, and the round goes as a DONE findings' does, through the holder or builder-round"
+  refused "$why" T7 -- "T7 DONE pass $url $back before=none guarded=none"
+  refused "$why" T7 --sent-back none -- "T7 DONE pass $url $back before=none guarded=none"
+  refused "the pass counts 1 security finding, which goes back" T7 -- "T7 DONE pass $url ${counts/security:0/security:1} before=none guarded=none"
+  count=$(wc -l <"$TEAM_HOME/ledger.jsonl")
+  run_bin -0 --separate-stderr team-next T7 --sent-back 1,2,3 -- "T7 DONE pass $url $back before=none guarded=none"
+  assert_equal "$(logged_from $((count + 1)) | jq -c 'select(.event == "review") | {verdict, sent_back}')" '{"verdict":"pass","sent_back":[1,2,3]}'
+  assert_equal "$(tail -n 1 <<<"$output")" \
+    "send to T7-builder (b0000001, 120k): T7 fix findings 1, 2 and 3 in .scratch/task/review.md on the same branch, then deliver again as your brief says"
+  [[ $output != *merge* ]]
+  # The holder's stow launches the round, as after findings.
+  run_bin -0 --separate-stderr team-next T7 -- "T7 PAUSED stowed"
+  assert_contains "$output" "brief $TEAM_HOME/tasks/T7/brief-round-1.md"
+  assert_equal "$(record round-1 | jq -r .values.findings)" "1, 2 and 3"
+  assert_equal "$(outside_calls)" ""
+}
+
+@test "a security or real-data count on any review of the task, or a review with no counts, keeps the merge Daniel's" {
+  sed -i 's/^merge_method = "merge"/&\nmerge_with_plan = true/' "$TEAM_HOME/projects.toml"
+  event merge-preapproved '{project: "proj", ask: "plan", discord_message: "1563000000000000045", scope: ["one.txt"]}'
+  review_logged findings 0123456 '[1]' '{"security": 1}'
+  launched b0000002 brief-round-1 '["browser"]'
+  reviewing "$sha"
+  pr_on_github "$sha"
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
+  assert_equal "$(tail -n 1 <<<"$output")" \
+    "merge ask: $url at $sha, agent-review success, checks green; the review of 0123456 at 2026-11-01T10:00:00Z counted 1 security finding, so the plan-time word does not hold"
+  # A review that logged no counts, and a real-data one, are named too.
+  event review '{verdict: "findings", head: "89abcde", sent_back: [2], guarded: []}'
+  review_logged findings fedcba9 '[1]' '{"real-data": 2}'
+  launched r0000003 brief-review '["browser"]' reviewer
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=ci"
+  assert_equal "$(tail -n 1 <<<"$output")" \
+    "merge ask: $url at $sha, agent-review success, checks green; the review found guarded areas: ci, so the plan-time word does not hold; the review of 0123456 at 2026-11-01T10:00:00Z counted 1 security finding, the review of 89abcde at 2026-11-01T10:00:00Z logged no counts and the review of fedcba9 at 2026-11-01T10:00:00Z counted 2 real-data findings, so the plan-time word does not hold"
   assert_equal "$(outside_calls)" ""
 }
 
@@ -758,6 +860,18 @@ launched T7-builder c0000001"
   assert_contains "$output" "no hand-off for PAUSED stowed"
   # The failed launch, round-1's and round-2's.
   assert_equal "$(bg_calls | wc -l)" 3
+}
+
+@test "a PAUSED stowed whose reason goes on after the word stowed is a stow; one that only starts with its letters is not" {
+  reviewing "$sha"
+  review_logged findings "$sha" '[3]' '{"blocking": 1}'
+  echo "# review" >"$wt/.scratch/task/review.md"
+  run_bin -0 --separate-stderr team-next T7 -- "T7 PAUSED stowedaway"
+  assert_equal "$(tail -n 1 <<<"$output")" "no hand-off for PAUSED"
+  run_bin -0 --separate-stderr team-next T7 -- "T7 PAUSED stowed, handoff.md written"
+  assert_equal "$output" "logged paused reason=stowed, handoff.md written
+brief $TEAM_HOME/tasks/T7/brief-round-1.md
+launched T7-builder c0000001"
 }
 
 @test "team-next never runs team-post, team-merge or Discord, and the manual's steps 5 and 6 name the verdicts and the stow" {

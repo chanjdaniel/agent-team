@@ -28,7 +28,8 @@
 # worktree, task_dir, plan, thread, interview_thread (the task's latest interview-thread, unset
 # without one), team_home, team_code (this code checkout, where a brief points for code such as
 # sops/), team_bin, local_checks (the project's, each in backticks and joined with ", ", or
-# "none") and ui, from the ledger and projects.toml;
+# "none") and ui, from the ledger and projects.toml; tickets, what builder-deliver delivers, is
+# "every ticket" unless set (team-next sets a phase's tickets for that phase's deliverer);
 # paths under $HOME are written ~/..., except team_bin, this checkout's bin/, always absolute
 # because the workers' allow rules name the scripts in it by their full path. ui is empty unless
 # tasks/T<n>/ui/ holds files (team-ui's capture of what Daniel pointed at): then a newline and a
@@ -167,6 +168,7 @@ declare -A values=(
   [team_code]=$(tilde "$code")
   [team_bin]=$(dirname "$TEAM_LIB")
   [local_checks]=$(jq -r '.local_checks | if . == [] then "none" else map("`\(.)`") | join(", ") end' <<<"$facts")
+  [tickets]="every ticket"
 )
 # What Daniel pointed at, when team-ui captured it.
 ui=$TEAM_HOME/tasks/$task/ui values[ui]=''
@@ -386,10 +388,16 @@ if deriving since; then
   lines=()
   if [[ $review != null ]]; then
     of=$(jq -r .head <<<"$review")
+    sent=$(jq -c '.sent_back // []' <<<"$review")
     case $(jq -r .verdict <<<"$review") in
-      pass) lines+=("The last review, of \`${of:0:8}\`, passed.") ;;
+      pass)
+        if [[ $sent == '[]' ]]; then
+          lines+=("The last review, of \`${of:0:8}\`, passed.")
+        else
+          lines+=("The last review, of \`${of:0:8}\`, passed, and sent back $(and_list "$sent").")
+        fi
+        ;;
       *)
-        sent=$(jq -c '.sent_back // []' <<<"$review")
         if [[ $sent == '[]' ]]; then
           lines+=("The last review, of \`${of:0:8}\`, had findings, none sent back.")
         else

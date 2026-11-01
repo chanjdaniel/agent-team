@@ -5,7 +5,8 @@
 #                  [--since <file>] [--template rereview|verify] -- '<the worker's message>'
 #   --from       the sender, as team-log --from-message takes it, when the message cannot tell it
 #   --sent-back  with a DONE findings message, required, the numbers sent back (none for none), logged
-#                as the review's sent_back
+#                as the review's sent_back; with a DONE pass, the findings it counts that go back
+#                before the merge, required while it counts any
 #   --next       with a builder's DONE <NN>, the ticket to launch next instead of the lowest-numbered
 #                ready one; a ticket with a Waits for: line is launched only so
 #   --checks     with a review launch, the first review's checks file (the reviewer's checks);
@@ -27,13 +28,18 @@
 # the task has no plan-approved; when the same ticket-done (its ticket and shas) is logged already
 # and a launch other than an ops session's follows it ("already handed off"); when NN is none of
 # team-tickets T<n>'s tickets; when a sha is not a commit the sending builder's worktree's HEAD
-# holds; when --next names a ticket that is not ready or waiting once NN is done; or when tickets
-# remain of which none is ready, each named with
-# what it waits on. Otherwise the next ticket, --next's or the lowest-numbered ready one once NN
-# is done, gets team-brief T<n> builder-ticket --set ticket=<NN> --name build-<NN> in its
-# project, or, when every ticket is done, builder-deliver --name deliver (its goal from the plan)
-# in the sending builder's project, launched as a builder with the toolkits of the task's latest
-# builder launch.
+# holds; when --next names a ticket that is not ready or waiting once NN is done, or one of
+# another phase than the one being built; or when tickets of that phase remain of which none is
+# ready, each named with what it waits on. A ticket's phase is its Phase: line's, else 1
+# (team-tickets), and the phase being built is the earliest, up to NN's, with a ticket not done.
+# Otherwise the next ticket, --next's or that phase's lowest-numbered ready one once NN is done,
+# gets team-brief T<n> builder-ticket --set ticket=<NN> --name build-<NN> in its project; when
+# none of NN's phase or an earlier one is left, NN's phase's deliverer gets builder-deliver (its
+# goal from the plan) --name deliver, or for a task of more than one phase --name deliver-p<n>
+# with tickets set to "every ticket of phase <n> (<its tickets>)", a name a launch already read
+# taking -2, -3 and so on, in the sending builder's project; the next phase's first ticket is
+# launched by hand, as the first one is. Each is launched as a builder with the toolkits of the
+# task's latest builder launch.
 # The hand-off of a builder's PR <url> (with or without its merged <base> conflicts: line), DONE
 # review-ready <sha> or DONE merged <base> <sha> conflicts: <files or none> is a fresh reviewer's
 # launch: refused, before anything is logged, when the task has no plan-approved; when the same
@@ -43,7 +49,7 @@
 # worktree in the project whose repo holds the PR. With no review logged yet, the brief is
 # team-brief T<n> reviewer --name review with --checks as its checks (refused without one), the
 # PR's url and head (a PR) or the reported head (review-ready; no pr); after one, it is
-# rereview, or verify when the latest review had findings, sent some back, and either counted
+# rereview, or verify when the latest review sent findings back and either counted
 # none but plain notes or reviewed the head this message reports (a round that only edited the PR
 # body), --template choosing instead, and a DONE merged always a rereview; it is named
 # rereview-<k>, the lowest k from 2 whose brief no launch read, and takes the PR's url and head (a
@@ -52,28 +58,35 @@
 # derived since. It launches as a reviewer with the toolkits of the task's latest reviewer
 # launch, else of its latest builder launch.
 # A reviewer's DONE pass or DONE findings launches nothing: refused, before anything is logged,
-# when the task has no plan-approved, a DONE findings without --sent-back, and a pass whose PR
-# head on GitHub (team-state T<n> --json) is not the reviewed head, naming both (exit 75 when
-# GitHub cannot be read). Once the review and its done are logged, the last line is what is
+# when the task has no plan-approved, a DONE findings without --sent-back, a pass that counts a
+# blocking, correctness, security, real-data or note-change finding with no --sent-back list of
+# them (they go back before the merge, so it prints no merge line), and a pass whose PR head on
+# GitHub (team-state T<n> --json) is not the reviewed head, naming both (exit 75 when GitHub
+# cannot be read). Once the review and its done are logged, the last line is what is
 # left for the coordinator, the holder being the task's latest builder launch, under 250k while
 # team-state reads its context under 250,000 tokens or none, and gone when its session is not
 # live. For a pass on a PR: "merge ask: <full PR URL> at <head>, agent-review <state>, checks
 # green" (or the failing, pending and missing checks), "merge pre-approved: run team-merge T<n>
-# for ..." instead while team-state's plan-time approval stands and the review found no guarded
-# area, each guarded area named, and the before notes to queue as follow-ups; for a PR behind
+# for ..." instead while team-state's plan-time approval stands, the review found no guarded area
+# and no review of the task counted a security or real-data finding or logged no counts (which
+# team-merge refuses the plan-time word for), each guarded area and such review named, and the
+# before notes to queue as follow-ups; for a PR behind
 # its base, "merge base: ..." instead, the builder-merge-base brief for the holder under 250k,
 # else a fresh builder, after the holder's STOW when it is live. For a pass with no PR (a gated project's review-ready), the
-# message telling the holder to go on with its delivery. For findings: the message for the
-# holder under 250k (its name, the findings sent back and the findings file the message names),
-# else the T<n> STOW to send it (after recovering it when gone), or no hand-off when nothing was
-# sent back.
-# A PAUSED stowed while the latest review had findings and sent some back, with no launch since
+# message telling the holder to go on with its delivery. For findings, or a pass that sent some
+# back: the message for the holder under 250k (its name, the findings sent back and the findings
+# file the message names, for a pass the newest of review.md and rereview*.md in the holder's task
+# directory), else the T<n> STOW to send it (after recovering it when gone), or no hand-off when
+# nothing was sent back.
+# A PAUSED stowed (its reason the word stowed, alone or with more after it) while the latest
+# review sent findings back, with no launch since
 # it but an ops session's, launches the fix round: team-brief T<n> builder-round --name
 # round-<k>, the lowest k from 1 whose brief no launch read, every fact derived (the findings,
 # the newest findings file, the PR and the plan's goal), in the project of the task's latest
 # builder launch, as a builder with its toolkits; any other PAUSED stowed has no hand-off.
-# Each hand-off's brief is refused when a launch already read it, and rendered again with
-# --force when none did (a rerun after a failed launch). The brief is rendered before the events
+# A ticket's brief is refused when a launch already read it (the deliverer, round and rereview
+# names take the next free one instead), and each brief is rendered again with --force when none
+# did (a rerun after a failed launch). The brief is rendered before the events
 # are logged, then team-worker launches it, and the last line is "launched T<n>-<role> <session
 # id>". A launch that fails is finished by running the same command again, which logs nothing
 # twice.
@@ -146,8 +159,9 @@ kind=$(jq -rn --arg m "$message" '$m | gsub("^\\s+"; "") | [splits("\\s+")] | .[
   | if .[0] == "DONE" and ($sub | test("^[0-9]{2}$")) then "DONE <NN>"
     elif .[0] == "DONE" and ($sub | IN("review-ready", "merged", "pass", "findings", "gate")) then join(" ")
     else .[0] end')
-# A PAUSED stowed is the answer to a STOW, whatever words follow: its paused event says so.
-if [[ $kind == PAUSED ]] && jq -e 'any(.[]; .event == "paused" and .reason == "stowed")' <<<"$parsed" >/dev/null; then
+# A PAUSED stowed is the answer to a STOW: its paused event's reason is the word stowed, alone or
+# followed by more ("stowed, handoff.md written"), never a word that only starts with it.
+if [[ $kind == PAUSED ]] && jq -e 'any(.[]; .event == "paused" and (.reason | test("^stowed(\\W|$)")))' <<<"$parsed" >/dev/null; then
   kind="PAUSED stowed"
 fi
 case $kind in
@@ -164,6 +178,18 @@ for opt in --checks --since --template; do
 done
 [[ $kind != "DONE findings" || -n ${given[--sent-back]:-} ]] ||
   die "a DONE findings needs --sent-back <list>, the numbers that go back to the builder (none for no fix round)"
+# A pass that counts a finding which goes back before the merge (a blocking, correctness, security
+# or real-data one, or a plain note on a changed line) takes --sent-back with them, never a merge.
+if [[ $kind == "DONE pass" ]]; then
+  back=$(jq -r 'map(select(.event == "review")) | first | select((.sent_back // []) == [])
+    | [(.findings // {}) as $f | "blocking", "correctness", "security", "real-data", "note-change"
+        | select(($f[.] // 0) > 0) | {kind: ., n: $f[.]}]
+    | select(. != []) | (map(.n) | add) as $total
+    | map("\(.n) \(.kind)") | (if length < 2 then join("") else "\(.[:-1] | join(", ")) and \(.[-1])" end)
+    | "\(.) finding\(if $total == 1 then ", which goes" else "s, which go" end) back"' <<<"$parsed")
+  [[ -z $back ]] ||
+    die "the pass counts $back to the builder before the merge (step 5), so there is no merge yet: run it again with --sent-back <their numbers>, and the round goes as a DONE findings' does, through the holder or builder-round"
+fi
 
 # same($p): whether the event is the parsed event $p, as a rerun finds it logged.
 same_def='def same($p): .event == $p.event and
@@ -244,10 +270,10 @@ sender_launch() {
     | . + {worktree: (.worktree | local_path($home))}' -c --arg session "$session" <<<"$events"
 }
 
-# A stow hands a round on only while the latest review sent findings back and no launch (an ops
-# session's aside) has taken them since.
+# A stow hands a round on only while the latest review (findings, or a pass with notes to fix)
+# sent findings back and no launch (an ops session's aside) has taken them since.
 if [[ $handoff == round ]] && ! jq -e '(to_entries | map(select(.value.event == "review")) | last) as $r
-    | $r != null and $r.value.verdict == "findings" and ($r.value.sent_back // []) != []
+    | $r != null and ($r.value.sent_back // []) != []
       and (any(.[$r.key + 1:][]; .event == "launch" and .role != "ops") | not)' <<<"$events" >/dev/null; then
   log_events
   echo "no hand-off for $kind: no review's sent-back findings wait for a round"
@@ -266,6 +292,19 @@ jq -e 'any(.[]; .event == "plan-approved")' <<<"$events" >/dev/null ||
 # "3, 5 and 6" from a JSON list.
 and_list() {
   jq -r 'map(tostring) | if length < 2 then join("") else "\(.[:-1] | join(", ")) and \(.[-1])" end' <<<"$1"
+}
+
+# findings_file: the newest (by mtime) of review.md and rereview*.md in the task directory of the
+# task's latest builder launch's worktree, as <task_dir>/<file>, or nothing.
+findings_file() {
+  local launch dir newest='' f
+  launch=$(ledger_jq 'map(select(.event == "launch" and .role == "builder")) | last
+    | {worktree: (.worktree | local_path($home)), project}' -c <<<"$events")
+  dir=$(team_project "$(jq -r .project <<<"$launch")" task_dir) || return 0
+  for f in "$(jq -r .worktree <<<"$launch")/$dir"/review.md "$(jq -r .worktree <<<"$launch")/$dir"/rereview*.md; do
+    if [[ -f $f && (-z $newest || $f -nt $newest) ]]; then newest=$f; fi
+  done
+  if [[ -n $newest ]]; then echo "$dir/${newest##*/}"; fi
 }
 
 if [[ $handoff == verdict ]]; then
@@ -293,15 +332,20 @@ if [[ $handoff == verdict ]]; then
   fi
   log_events
 
-  if [[ $kind == "DONE findings" ]]; then
-    sent=$(jq -c '.sent_back // []' <<<"$review")
+  sent=$(jq -c '.sent_back // []' <<<"$review")
+  if [[ $kind == "DONE findings" || $sent != '[]' ]]; then
     if [[ $sent == '[]' ]]; then
       echo "no hand-off: the review sent nothing back, so there is no fix round"
     else
-      file=$(jq -rn --arg m "$message" '$m | gsub("^\\s+"; "") | [splits("\\s+")] | .[3]')
+      if [[ $kind == "DONE findings" ]]; then
+        file=$(jq -rn --arg m "$message" '$m | gsub("^\\s+"; "") | [splits("\\s+")] | .[3]')
+      else
+        file=$(findings_file)
+      fi
+      where=${file:+in $file}
       stow="$task STOW; its PAUSED stowed goes to team-next, which launches the round"
       case $holds in
-        holds) echo "send to $who: $task fix findings $(and_list "$sent") in $file on the same branch, then deliver again as your brief says" ;;
+        holds) echo "send to $who: $task fix findings $(and_list "$sent") ${where:-of the review of $(jq -r '.head[:8]' <<<"$review")} on the same branch, then deliver again as your brief says" ;;
         full) echo "send to $who: $stow" ;;
         gone) echo "$gone $stow" ;;
       esac
@@ -327,8 +371,19 @@ if [[ $handoff == verdict ]]; then
     esac
     exit 0
   fi
+  # The task's reviews, this one too once (a rerun finds it logged), each one that counted a
+  # security or real-data finding or logged no counts named: team-merge refuses the plan-time
+  # word for such a task.
+  risky=$(jq -c --argjson review "$review" --argjson held "$held" '
+    map(select(.event == "review"))
+    + (if any($held.events[]; .event.event == "review" and .at == null) then [$review] else [] end)
+    | [.[] | "the review of \(.head[:7]) at \(.ts) " as $r
+      | if has("findings") | not then "\($r)logged no counts"
+        else [.findings | ("security", "real-data") as $k | .[$k] // 0 | select(. > 0) | "\(.) \($k)"]
+          | select(. != []) | (map(split(" ")[0] | tonumber) | add) as $n
+          | "\($r)counted \(join(" and ")) finding\(if $n == 1 then "" else "s" end)" end]' <<<"$events")
   # The merge ask's facts, or the plan-time word's merge.
-  jq -r --arg task "$task" --argjson review "$review" --arg before "$(and_list "$(jq -c '.before // []' <<<"$review")")" '
+  jq -r --arg task "$task" --argjson review "$review" --argjson risky "$risky" --arg before "$(and_list "$(jq -c '.before // []' <<<"$review")")" '
     (.pr | "\(.url) at \(.head), agent-review \(.agent_review), "
       + ([(.checks.failing | select(. != []) | "failing: \(join(", "))"),
           (.checks.pending | select(. != []) | "pending: \(join(", "))"),
@@ -336,10 +391,13 @@ if [[ $handoff == verdict ]]; then
         | if . == [] then "checks green" else "checks \(join("; "))" end)) as $facts
     | (.merge_preapproval | . != null and .withdrawn == null and .opted_in == true and .own != true) as $planned
     | ($review.guarded // []) as $guarded
-    | if $planned and $guarded == [] then "merge pre-approved: run team-merge \($task) for \($facts)"
+    | if $planned and $guarded == [] and $risky == [] then "merge pre-approved: run team-merge \($task) for \($facts)"
       else "merge ask: \($facts)" end
     + (if $guarded == [] then ""
        else "; the review found guarded areas: \($guarded | join(", "))\(if $planned then ", so the plan-time word does not hold" else "" end)" end)
+    + (if $planned and $risky != [] then
+         "; \($risky | if length < 2 then join("") else "\(.[:-1] | join(", ")) and \(.[-1])" end), so the plan-time word does not hold"
+       else "" end)
     + (if $before == "" then "" else "; queue before notes \($before) as follow-ups and say where each went" end)' <<<"$state"
   exit 0
 fi
@@ -400,7 +458,7 @@ if [[ $handoff == review ]]; then
     project=$(jq -r '.project // empty' <<<"$launch")
     [[ -n $project ]] || die "the sending builder's launch names no project, so its review has none"
     [[ -d $worktree ]] || die "the sending builder's worktree $worktree is not on this machine"
-    reported=$(jq -r 'map(select(.event == "done")) | first | .report | split(" ")
+    reported=$(jq -r 'map(select(.event == "done")) | first | .report | [splits("\\s+")]
       | if .[0] == "merged" then .[2] else .[1] end' <<<"$parsed")
     if ! head=$(git -C "$worktree" rev-parse -q --verify "$reported^{commit}" 2>/dev/null) ||
       [[ $head != "$(git -C "$worktree" rev-parse HEAD)" ]]; then
@@ -423,7 +481,7 @@ if [[ $handoff == review ]]; then
     elif [[ $kind == "DONE merged" ]]; then
       template=rereview
     else
-      template=$(ledger_jq 'if $latest.verdict == "findings" and ($latest.sent_back // []) != []
+      template=$(ledger_jq 'if ($latest.sent_back // []) != []
           and ((($latest.findings // {}) as $f | ["blocking", "correctness", "security", "real-data"] | all(.[]; $f[.] == 0))
             or same_head($latest.head; $head))
         then "verify" else "rereview" end' -nr --argjson latest "$latest" --arg head "$head")
@@ -474,29 +532,52 @@ while IFS= read -r sha; do
   fi
 done < <(jq -r '.commits[]' <<<"$ticket_done")
 
-# The tickets once NN is done, and the next one.
+# The tickets once NN is done, and the next one: a ticket of the earliest phase, up to NN's, that
+# has one not done, or NN's phase's deliverer once none has.
 tickets=$(jq -c --arg t "$ticket" 'map(if .ticket == $t then .state = "done" | .session = null else . end)
   | [.[] | select(.state == "done") | .ticket] as $done
   | map(if .state == "blocked" then (.on - $done) as $on
       | if $on == [] then .on = [] | .state = (if .waits_for == null then "ready" else "waiting" end) else .on = $on end
     else . end)
   | sort_by(.ticket)' <<<"$tickets")
+phase=$(jq -r --arg t "$ticket" 'map(select(.ticket == $t)) | first | .phase // 1' <<<"$tickets")
+phased=$(jq -r 'map(.phase // 1) | unique | length > 1' <<<"$tickets")
+building=$(jq -r --argjson p "$phase" '[.[] | select(.state != "done" and (.phase // 1) <= $p) | .phase // 1] | min // empty' <<<"$tickets")
 waits='def waits: .ticket + " " + .state + ({blocked: " on \(.on | join(", "))", running: " in session \(.session)", waiting: ": \(.waits_for)"}[.state] // "");'
+# The not-done tickets of the phase being built, each with what it waits on.
+open_list() {
+  jq -r --argjson b "$building" "$waits"' map(select(.state != "done" and (.phase // 1) == $b) | waits) | join("; ")' <<<"$tickets"
+}
 if [[ -n $next ]]; then
   chosen=$(jq -c --arg n "$next" 'map(select(.ticket == $n)) | first' <<<"$tickets")
   [[ $chosen != null ]] || die "--next $next is none of $task's tickets: they are $(jq -r 'map(.ticket) | join(", ")' <<<"$tickets")"
   jq -e '.state == "ready" or .state == "waiting"' <<<"$chosen" >/dev/null ||
     die "--next $next is not ready once $ticket is done: $(jq -r "$waits waits" <<<"$chosen")"
-elif jq -e 'all(.[]; .state == "done")' <<<"$tickets" >/dev/null; then
+  [[ -n $building ]] ||
+    die "phase $phase's tickets are all done once $ticket is, so its deliverer comes next, not --next $next"
+  [[ $(jq -r '.phase // 1' <<<"$chosen") == "$building" ]] ||
+    die "--next $next is in phase $(jq -r '.phase // 1' <<<"$chosen"), but phase $building has tickets not done: $(open_list)"
+elif [[ -z $building ]]; then
   chosen=deliver
 else
-  chosen=$(jq -c 'map(select(.state == "ready")) | first' <<<"$tickets")
+  chosen=$(jq -c --argjson b "$building" 'map(select(.state == "ready" and (.phase // 1) == $b)) | first' <<<"$tickets")
   [[ $chosen != null ]] ||
-    die "tickets remain once $ticket is done, but none is ready: $(jq -r "$waits"' map(select(.state != "done") | waits) | join("; ")' <<<"$tickets"); --next <NN> launches a waiting one"
+    die "tickets $([[ $phased == false ]] || echo "of phase $building ")remain once $ticket is done, but none is ready: $(open_list); --next <NN> launches a waiting one"
 fi
 
 if [[ $chosen == deliver ]]; then
-  template=builder-deliver name=deliver sets=()
+  # deliver, or deliver-p<n> for a phase of a phased task; a name a launch read takes -2, -3...
+  base=deliver sets=()
+  if [[ $phased == true ]]; then
+    base=deliver-p$phase
+    sets=(--set "tickets=every ticket of phase $phase ($(and_list "$(jq -c --argjson p "$phase" '[.[] | select((.phase // 1) == $p) | .ticket]' <<<"$tickets")"))")
+  fi
+  template=builder-deliver name=$base k=1
+  while [[ -e $TEAM_HOME/tasks/$task/brief-$name.md ]] &&
+    jq -e --arg b "brief-$name" 'any(.[]; .event == "launch" and .brief == $b)' <<<"$events" >/dev/null; do
+    k=$((k + 1))
+    name=$base-$k
+  done
   project=$(jq -r '.project // empty' <<<"$launch")
 else
   ticket_next=$(jq -r .ticket <<<"$chosen")

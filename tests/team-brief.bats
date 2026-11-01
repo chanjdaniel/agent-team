@@ -639,6 +639,11 @@ SINCE
   short=$(git -C "$wt" rev-parse --short=8 "$head")
   assert_equal "$(since_section "$output")" "$(printf '%s\n' '## Since the last review' '' \
     "The last review, of \`${head:0:8}\`, passed." '' "No commit since \`$short\`." '' '## Check')"
+  # A pass that sent its notes back says so.
+  event T14 review "$(jq -cn --arg h "$head" '{verdict: "pass", head: $h, sent_back: [2, 4]}')"
+  run_bin -0 team-brief T14 rereview --name rereview-3 --set pr=https://github.com/chanjdaniel/agent-team/pull/9 \
+    --set head="$head"
+  assert_contains "$(since_section "$output")" "The last review, of \`${head:0:8}\`, passed, and sent back 2 and 4."
   # A gated project's first PR, reviewed before the gate at its local head: no review is logged.
   open_t12
   reviewed_branch T12 dev
@@ -1453,7 +1458,7 @@ The team'"'"'s tooling runs on both machines.
 Daniel moves it with one command.'
   run_bin -0 team-brief T14 builder-deliver
   assert_contains "$(<"$output")" "its body opening with the task's goal: \"T14: The team's tooling runs on both machines.\", then"
-  assert_equal "$(jq -c .values "$TEAM_HOME/tasks/T14/brief.json")" '{"goal":"The team'"'"'s tooling runs on both machines."}'
+  assert_equal "$(jq -c .values "$TEAM_HOME/tasks/T14/brief.json")" '{"goal":"The team'"'"'s tooling runs on both machines.","tickets":"every ticket"}'
   # A goal written as a list: its first item, without the marker.
   plan_goal T14 '- The team home stays packed.
 - Stack logs stay out of it.'

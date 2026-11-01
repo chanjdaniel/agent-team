@@ -1425,14 +1425,18 @@ team-log: $TEAM_HOME/ledger.jsonl: 2 lines hold strings that are no whole number
   refuses_message "team-log: the message is for T8, not T7" --from-message 'T8 FAILED x' --print
 }
 
-@test "--from-message takes --sent-back only with a DONE findings, and its options once each" {
+@test "--from-message takes --sent-back only with a DONE findings or a DONE pass, and its options once each" {
   open_t7
   launched T7 builder b0000001
   launched T7 reviewer c0000001
-  refuses_message "team-log: --sent-back is taken only with a DONE findings message, not DONE pass" \
-    --from-message "T7 DONE pass $HEAD_A findings=blocking:0,correctness:0,security:0,real-data:0,note-change:0,note-before:0 guarded=none" --sent-back 1
-  refuses_message "team-log: --sent-back is taken only with a DONE findings message, not QUESTION" \
+  refuses_message "team-log: --sent-back is taken only with a DONE findings or DONE pass message, not DONE review-ready" \
+    --from-message "T7 DONE review-ready $HEAD_A" --from T7-builder --sent-back 1
+  refuses_message "team-log: --sent-back is taken only with a DONE findings or DONE pass message, not QUESTION" \
     --from-message 'T7 QUESTION x' --from T7-builder --sent-back 1
+  # A pass whose correctness note goes back before the merge.
+  run_bin -0 team-log T7 --print --sent-back 2 \
+    --from-message "T7 DONE  pass $HEAD_A findings=blocking:0,correctness:1,security:0,real-data:0,note-change:0,note-before:0 guarded=none"
+  assert_equal "$(jq -c 'select(.event == "review") | {verdict, sent_back}' <<<"$output")" '{"verdict":"pass","sent_back":[2]}'
   run_bin -2 team-log T7 --from-message 'T7 FAILED x' --from-message 'T7 FAILED y'
   assert_contains "$output" "--from-message is given twice"
   run_bin -2 team-log T7 --from-message
