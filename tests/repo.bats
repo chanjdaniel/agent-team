@@ -1004,6 +1004,51 @@ YAML
   assert_equal "$output" $'1\t2000\ttests/c.bats\n2\t1000\ttests/a.bats\n2\t500\ttests/b.bats'
 }
 
+# tests/shards update in a checkout of its own, on a gh stub whose CI run 4242 has two
+# test-shards jobs, a macos-shards job and two jobs of other names, the test job's log holding a
+# bats line too.
+@test "tests/shards update writes one row per file from the shard jobs' logs, each platform's seconds, an empty one where a platform has none" {
+  local copy=$BATS_TEST_TMPDIR/copy
+  unset TEAM_HOME
+  mkdir -p "$copy/tests"
+  copy_bin "$copy/bin"
+  link_shared tests-shards "$REPO_ROOT/tests/shards" "$copy/tests/shards"
+  stub_script gh <<'SH'
+case "$*" in
+  "run list --workflow ci.yml --status success --limit 1 --json databaseId --jq .[0].databaseId // empty") echo 4242 ;;
+  "run view 4242 --json jobs,headSha,createdAt")
+    echo '{"headSha": "abcdef1234567890", "createdAt": "2026-10-31T12:00:00Z", "jobs": [
+      {"databaseId": 11, "name": "test-shards (1)"}, {"databaseId": 12, "name": "test-shards (2)"},
+      {"databaseId": 21, "name": "macos-shards (1)"}, {"databaseId": 30, "name": "test"},
+      {"databaseId": 40, "name": "shellcheck"}]}' ;;
+  "run view 4242 --job 11 --log")
+    printf 'test-shards (1)\tRun tests\t2026-10-31T12:01:00.1Z ok tests/a.bats (12s)\n'
+    printf 'test-shards (1)\tRun tests\t2026-10-31T12:01:00.2Z ok 3 a test inside it\n'
+    printf 'test-shards (1)\tRun tests\t2026-10-31T12:01:00.3Z not ok tests/c.bats (3s)\n' ;;
+  "run view 4242 --job 12 --log") printf 'test-shards (2)\tRun tests\t2026-10-31T12:01:00.4Z ok tests/b.bats (7s)\n' ;;
+  "run view 4242 --job 21 --log")
+    printf 'macos-shards (1)\tRun tests\t2026-10-31T12:01:00.5Z ok tests/b.bats (15s)\n'
+    printf 'macos-shards (1)\tRun tests\t2026-10-31T12:01:00.6Z ok tests/a.bats (30s)\n' ;;
+  "run view 4242 --job 30 --log") printf 'test\tRun tests\t2026-10-31T12:01:00.7Z ok tests/z.bats (99s)\n' ;;
+  *) echo "unexpected gh $*" >&2; exit 1 ;;
+esac
+SH
+  run -0 --separate-stderr "$copy/tests/shards" update
+  assert_equal "$output" "tests/shards: wrote tests/timings.tsv from CI run 4242"
+  assert_equal "$(cat "$copy/tests/timings.tsv")" "# The seconds each bats file took in CI run 4242 (head abcdef1, 2026-10-31T12:00:00Z),
+# on Linux and macOS, as tests/shards weighs them; tests/shards update rewrites it.
+$(printf 'file\tlinux\tmacos\ntests/a.bats\t12\t30\ntests/b.bats\t7\t15\ntests/c.bats\t3\t')"
+  # Only the shard jobs' logs are read.
+  assert_equal "$(stub_calls gh | jq -r 'select(.[3] == "--job") | .[4]' | tr '\n' ' ')" "11 12 21 "
+
+  # A run named on the command line is read without listing the runs.
+  rm "$copy/tests/timings.tsv"
+  : >"$STUB_CALLS/gh.log"
+  run -0 --separate-stderr "$copy/tests/shards" update 4242
+  assert_equal "$(stub_calls gh | jq -r '.[0:2] | join(" ")' | sort -u)" "run view"
+  [[ -f $copy/tests/timings.tsv ]]
+}
+
 # The timings are data tests/shards reads: each row names a bats file that exists, with whole
 # seconds for both platforms, so a removed file takes its row with it.
 @test "tests/timings.tsv names only bats files that exist, each with its seconds on both platforms" {
