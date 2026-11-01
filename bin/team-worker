@@ -19,6 +19,13 @@
 # (~/.config/agent-team/machine), and the request for ops. T0, the load check, needs no thread and
 # no lease, and is not logged. Recorded worktrees are compared as paths on this machine: one
 # recorded under another machine's home is the same path under this HOME.
+# Before anything starts, it refuses a prompt naming a brief that is missing or unreadable, and a
+# prompt that says "your brief" but names no brief*.md file (the empty path of a failed pipe). A
+# brief is each word of the prompt naming a file called brief*.md, its quotes, brackets and
+# trailing punctuation dropped, ~/, $HOME/ and ${HOME}/ expanded, and a relative one taken from the
+# worktree; an ops prompt, the brief's text, is checked the same way. When the prompt names one
+# directly under the task's tasks/T<n>/, the launch logs it as brief, its file name without .md
+# (brief-rereview-3); a brief of another task's directory, or none, logs no brief.
 # Once the session runs, `team-capacity place <id>` adopts it into its task's slice (on Linux;
 # nothing on macOS), but T0's; a session it cannot place is a warning on stderr, and the launch
 # stands.
@@ -112,6 +119,30 @@ worktree=$real
 git_dir=$(git -C "$worktree" rev-parse --absolute-git-dir 2>/dev/null) || die "$worktree is not a git checkout"
 common_dir=$(realpath -- "$(git -C "$worktree" rev-parse --path-format=absolute --git-common-dir)")
 ! same_path "$git_dir" "$common_dir" || die "$worktree is a primary checkout, not a linked worktree"
+
+# The briefs the prompt names, read as the session reads them: each word naming a file called
+# brief*.md, its quotes, brackets and trailing punctuation dropped, ~/, $HOME/ and ${HOME}/
+# expanded, a relative path taken from the worktree, must be a readable file; a prompt saying
+# "your brief" must name one. The first directly under the task's directory is the launch's brief.
+brief='' named=''
+while IFS= read -r word; do
+  [[ $word =~ ^[^[:alnum:]~/\$.]*(.*[[:alnum:]])[^[:alnum:]]*$ ]] || continue
+  word=${BASH_REMATCH[1]}
+  case $word in
+    \~/*) word=$HOME/${word#\~/} ;;
+    '$HOME/'*) word=$HOME/${word#'$HOME/'} ;;
+    '${HOME}/'*) word=$HOME/${word#'${HOME}/'} ;;
+  esac
+  [[ ${word##*/} == brief*.md ]] || continue
+  [[ $word == /* ]] || word=$worktree/$word
+  [[ -f $word && -r $word ]] || die "the prompt's brief $word does not exist or cannot be read"
+  named=1
+  if [[ -z $brief ]] && same_path "$(dirname "$word")" "$TEAM_HOME/tasks/$task"; then
+    brief=$(basename "$word" .md)
+  fi
+done < <(tr -s '[:space:]' '\n' <<<"$prompt")
+[[ -n $named || ${prompt,,} != *"your brief"* ]] ||
+  die "the prompt says 'your brief' but names no brief*.md file"
 
 # T0 is the load check, not a task: it has no ledger entry and stays out of the ledger.
 worktree_event=
@@ -275,12 +306,13 @@ id=$(grep -oE '\b[0-9a-f]{8}\b' <<<"$out" | head -n 1) || die "could not read th
 
 if [[ $task != T0 ]]; then
   ledger_append "$(jq -cn --arg task "$task" --arg role "$role" --arg session "$id" --arg worktree "$worktree" \
-    --arg machine "$machine" --arg model "$model" --arg request "$request" --argjson at "${worktree_event:-null}" --args '{ts: (now | todate), task: $task,
+    --arg machine "$machine" --arg model "$model" --arg request "$request" --arg brief "$brief" --argjson at "${worktree_event:-null}" --args '{ts: (now | todate), task: $task,
       event: "launch", role: $role, session: $session, worktree: $worktree, toolkits: $ARGS.positional}
       + ($at // {} | {project, branch} | with_entries(select(.value != null)))
       + {machine: $machine}
       + (if $model == "" then {} else {model: $model} end)
-      + (if $request == "" then {} else {request: $request} end)' "${toolkits[@]}")"
+      + (if $request == "" then {} else {request: $request} end)
+      + (if $brief == "" then {} else {brief: $brief} end)' "${toolkits[@]}")"
 fi
 
 # The new session is the claude daemon's child, never this script's, so it is adopted into its

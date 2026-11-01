@@ -2,11 +2,20 @@
 # Record an event the coordinator writes by hand in the ledger, against the ledger contract.
 #
 # Usage: team-log T<n> <event> [key=value]...
+#        team-log T<n> --from-message '<message>' [--from <session>] [--sent-back <list>] [--print]
 #        team-log --check [<file>]
-# Appends {ts (now, UTC), task, event, key: value...}. A value is stored as JSON when it parses
-# as JSON (a list, a number, true) and as a string otherwise; a field the contract types as a
-# string or an id, any discord_* field, and a whole number of 16 digits or more (which a JSON
-# number cannot hold exactly) are always strings. note is allowed on every kind. Kinds team-log is not a writer of
+#        team-log --fix-sent-back [<file>]
+# Appends {ts (now, UTC), task, event, key: value...}, each value typed as the contract types its field.
+# A list field (array, or numbers (a list of whole numbers), as sent_back and before are) takes
+# a JSON list, or a comma list as a worker's message writes it (commits=a0017cce,9e0e3990, sent_back=5,6, guarded=ci,settings),
+# each item trimmed, an empty item refused, and none is the empty list (guarded=none).
+# A list of whole numbers stores each item of a comma list, and each numeric string of a JSON list, as a number, and refuses one that is no whole number, naming it.
+# An object field takes a JSON object, or key:value pairs separated by commas (findings=blocking:0,correctness:1,security:0,real-data:0,note-change:2,note-before:0),
+# each trimmed, a value a number when it reads as one; a list or object value that starts with [ or { is read only as JSON.
+# Any other value is stored as JSON when it parses as JSON (a number, true) and as a string
+# otherwise; a field the contract types as a string, a choice or an id, any discord_* field, and a
+# whole number of 16 digits or more (which a JSON number cannot hold exactly) are always strings.
+# note is allowed on every kind. Kinds team-log is not a writer of
 # (opened, launch, merged, closed...) are refused, and so is a merge-approved whose url is not
 # one of the task's pr events (a trailing slash aside), or with no head, or a head neither a pr
 # event of that url nor a review of the task since its first pr event logged (heads compare by
@@ -34,10 +43,36 @@
 # (waiting, blocked, paused, held) logged after the fact takes since=<UTC time>, when it began:
 # no later than now and no earlier than the task's latest event, or it is refused naming both
 # times; no other kind takes since.
+# --from-message reads a worker's message whole (bin/lib/messages.jq) into the events the
+# coordinator's message table gives it, checks each as above, and logs them all, or with --print
+# prints them as JSON lines and logs nothing; any refusal logs none. The message starts with the
+# task. QUESTION <text> is a question; BLOCKED <text> and NEED toolkit <name> a blocked; PAUSED
+# <why> a paused; FAILED <why> a failed; INJECTION <where> <what> an injection (source its first
+# word). PR <url>, optionally followed by merged <base> conflicts: <files or none>, is a pr whose
+# head is the PR's on GitHub (gh pr view), and a branch-renamed when the PR's head branch is not
+# the task's in the project of the PR's repo. DONE <NN> <sha>... <line> is a ticket-done (commits
+# the shas of 7 to 40 hex digits, note the line) and the builder's done; DONE review-ready <sha> and
+# DONE merged <base> <sha> conflicts: <files or none> the builder's done, report the rest;
+# DONE pass <PR url or head> and DONE findings <path>, each followed by findings=, before= and
+# guarded= as team-log takes them, a review and the reviewer's done, findings taking
+# --sent-back's list as sent_back (no other message takes it); DONE gate <key=value>... a gate-run;
+# any other DONE the sender's done, report the rest. A review's head is the head of the brief record
+# (tasks/T<n>/<brief>.json) that the reviewer's latest launch read, else a pass's own head, else
+# it is refused naming head=. The role is the kind's (builder, reviewer), else that of --from's
+# launch (its session name T<n>-<role>, or its session id), else that of the only latest launch of a
+# role with no report since (a done, review, ticket-done or pr that ends it); two are refused,
+# naming both. The session is that role's latest launch.
 # --check checks a ledger (default: the team home's): every line is JSON with ts, task and
 # event, and lines from strict_from on meet their kind's fields, a Discord id written as a whole
 # number (as team-log wrote one before the contract typed it) passing too; exit 1 lists each bad
-# line.
+# line. A sent_back or before from strict_from on that holds whole numbers as strings, as
+# team-log stored them before, passes too, but each such line is named on stderr with
+# --fix-sent-back, and the last line counts them.
+# --fix-sent-back is the one-time conversion of those strings (default: the team home's ledger), run under the ledger's lock:
+# on every line, legacy too, it stores the whole numbers that sent_back and before hold as
+# strings as numbers, leaves every other line byte for byte, and prints how many lines it changed;
+# a string there that is no whole number refuses the whole conversion, naming each line, and
+# changes nothing.
 set -euo pipefail
 
 # Printed by --help after the header.
@@ -48,32 +83,84 @@ help_more() {
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
-usage="usage: team-log T<n> <event> [key=value]... | team-log --check [<file>]"
+usage="usage: team-log T<n> <event> [key=value]... | team-log T<n> --from-message '<message>' [--from <session>] [--sent-back <list>] [--print] | team-log --check [<file>] | team-log --fix-sent-back [<file>]"
 
 if [[ ${1:-} == --check ]]; then
   [[ $# -le 2 ]] || usage_error "$usage"
   file=${2:-$TEAM_HOME/ledger.jsonl}
   [[ -f $file ]] || die "no ledger at $file"
   report=$(ledger_jq 'check_ledger($contract)' -nRc <"$file")
-  read -r total bad < <(jq -r '"\(.total) \(.bad | length)"' <<<"$report")
+  read -r total bad noted < <(jq -r '"\(.total) \(.bad | length) \(.noted | length)"' <<<"$report")
+  # The bad lines first, so a caller reading the first line (team-doctor) names a problem.
+  jq -r --arg file "$file" '(.bad[] | "\($file):\(.line): \(.problems | join("; "))"),
+    (.noted[] | "\($file):\(.line): \(.notes | join("; "))")' <<<"$report" >&2
+  notes=''
+  if ((noted == 1)); then
+    notes="; 1 holds whole numbers as strings, which team-log --fix-sent-back stores as numbers"
+  elif ((noted > 1)); then
+    notes="; $noted hold whole numbers as strings, which team-log --fix-sent-back stores as numbers"
+  fi
   if ((bad > 0)); then
-    jq -r --arg file "$file" '.bad[] | "\($file):\(.line): \(.problems | join("; "))"' <<<"$report" >&2
-    echo "$file: $bad of $total lines break the ledger contract" >&2
+    echo "$file: $bad of $total lines break the ledger contract$notes" >&2
     exit 1
   fi
-  if ((total == 1)); then echo "$file: 1 line meets the ledger contract"; else echo "$file: $total lines meet the ledger contract"; fi
+  if ((total == 1)); then echo "$file: 1 line meets the ledger contract$notes"; else echo "$file: $total lines meet the ledger contract$notes"; fi
+  exit 0
+fi
+
+# The one-time conversion, read and written under the lock ledger_append takes, the ledger
+# replaced whole by a copy beside it with its mode, so no reader sees half of it.
+if [[ ${1:-} == --fix-sent-back ]]; then
+  [[ $# -le 2 ]] || usage_error "$usage"
+  file=${2:-$TEAM_HOME/ledger.jsonl}
+  [[ -f $file ]] || die "no ledger at $file"
+  {
+    flock -x 9
+    report=$(ledger_jq '[inputs | number_strings($contract)] | {
+        changed: map(select(. != {})) | length,
+        bad: [to_entries[] | (.key + 1) as $line | .value | to_entries[]
+          | {line: $line, field: .key, strings: [.value[] | select(whole_number_string | not)]} | select(.strings != [])]}' \
+      -nRc <"$file")
+    read -r changed bad < <(jq -r '"\(.changed) \([.bad[].line] | unique | length)"' <<<"$report")
+    if ((bad > 0)); then
+      jq -r --arg file "$file" '.bad[] | "\($file):\(.line): \(.field) holds \(.strings | map(tojson) | join(", ")), "
+        + if (.strings | length) == 1 then "which is no whole number" else "which are no whole numbers" end' <<<"$report" >&2
+      if ((bad == 1)); then lines="1 line holds"; else lines="$bad lines hold"; fi
+      die "$file: $lines strings that are no whole numbers in a list of whole numbers, so nothing changed"
+    fi
+    if ((changed == 0)); then
+      echo "$file: no line's sent_back or before holds a whole number as a string; nothing changed"
+      exit 0
+    fi
+    fixed=$(mktemp "$file.XXXXXX")
+    trap 'rm -f "$fixed"' EXIT
+    ledger_jq 'inputs | numbers_fixed($contract)' -nRr <"$file" >"$fixed"
+    chmod --reference="$file" "$fixed"
+    mv "$fixed" "$file"
+  } 9>>"$file.lock"
+  if ((changed == 1)); then
+    echo "$file: 1 line changed, the whole numbers its sent_back or before held as strings now numbers"
+  else
+    echo "$file: $changed lines changed, the whole numbers their sent_back or before held as strings now numbers"
+  fi
   exit 0
 fi
 
 [[ $# -ge 2 ]] || usage_error "$usage"
-task=$1 event=$2
-shift 2
+task=$1
+shift
 [[ $task =~ ^T[1-9][0-9]*$ ]] || usage_error "task must look like T<n>, got '$task'"
+
+# One event, checked as every event team-log appends is, its typed line left in typed (ts the
+# time of the check): check_event <event> [key=value]...
+check_event() {
+event=$1
+shift
 ledger_jq '$contract.kinds | has($event)' -ne --arg event "$event" >/dev/null ||
   die "unknown event kind '$event'; team-log --help lists the kinds"
 
-declare -A seen=()
-pairs=()
+local -A seen=()
+local pairs=()
 for pair in "$@"; do
   key=${pair%%=*}
   [[ $pair == *=?* && $key =~ ^[a-z][a-z0-9_]*$ ]] || usage_error "not a key=value: '$pair'"
@@ -82,6 +169,18 @@ for pair in "$@"; do
   seen[$key]=${pair#*=}
   pairs+=("$key" "${pair#*=}")
 done
+
+# Each value is typed by the contract when it names the field, and by whether it parses as JSON
+# otherwise (typed_value in bin/lib/ledger.jq), so the checks below read the values the line
+# will hold; ledger_append then checks the event against the contract.
+typed=$(ledger_jq '
+  field_types($contract.kinds[$event]) as $types
+  | $ARGS.positional as $pairs
+  | reduce range(0; $pairs | length; 2) as $i ({line: {ts: (now | todate), task: $task, event: $event}, problems: []};
+      $pairs[$i] as $key | ($pairs[$i + 1] | typed_value($key; $types[$key])) as $typed
+      | .line[$key] = $typed.value | .problems += ($typed.problems // []))
+  | if .problems == [] then .line else .problems | join("; ") | halt_error(1) end' \
+  -nc --arg task "$task" --arg event "$event" --args "${pairs[@]}" 2>&1) || die "${typed%$'\n'}"
 
 # Daniel's word is on one PR at one head: the approval names the PR as one of the task's pr events
 # does, and a head that PR's pr events, or the task's reviews since its first one, logged (pr_heads
@@ -149,11 +248,11 @@ if [[ $event == merge-preapproved ]]; then
     fi
   fi
   if [[ -n ${seen[scope]:-} ]]; then
-    problem=$(ledger_jq '$raw | try fromjson catch null
+    problem=$(ledger_jq '$line.scope
       | if type != "array" then empty
         elif . == [] then "scope is empty: it lists every path the plan may change, each a file or a directory ending in /"
         else [scope_problems] | select(. != []) | "scope holds entries that are not clean repository paths:" + (map("\n  " + .) | add) end' \
-      -nr --arg raw "${seen[scope]}")
+      -nr --argjson line "$typed")
     [[ -z $problem ]] || die "$problem"
   fi
 fi
@@ -185,10 +284,10 @@ if [[ $event == review ]]; then
     def lines: map("\n  " + .) | add;
     def numbered: map(tostring) | if length == 1 then first else listed end;
     def notes($n): "\($n) plain note\(if $n == 1 then "" else "s" end) on code the PR did not change";
-    ($findings | try fromjson catch null) as $f
-    | ($before | try fromjson catch null) as $b
-    | ($sent_back | try fromjson catch null) as $s
-    | ($guarded | try fromjson catch null) as $g
+    $line.findings as $f
+    | $line.before as $b
+    | $line.sent_back as $s
+    | $line.guarded as $g
     | (if ($f | type) == "object" then [$f | findings_problems] == [] else false end) as $f_ok
     | (if ($b | type) == "array" then [$b | before_problems] == [] else false end) as $b_ok
     | ($f | objects | [findings_problems] | select(. != [])
@@ -205,8 +304,7 @@ if [[ $event == review ]]; then
           + " on code the PR did not change: such a note is queued as a follow-up, never sent back"),
       ($g | arrays | [guarded_problems] | select(. != [])
         | "guarded lists the guarded areas the change touches, each one of \(guarded_areas | listed):" + lines)' \
-    -nr --arg findings "${seen[findings]:-}" --arg before "${seen[before]:-}" --arg sent_back "${seen[sent_back]:-}" \
-    --arg guarded "${seen[guarded]:-}")
+    -nr --argjson line "$typed")
   [[ -z $problem ]] || die "$problem"
 fi
 
@@ -230,16 +328,108 @@ if [[ -n ${seen[since]:-} ]]; then
   [[ -z $latest || ! $since < $latest ]] || die "since $since is earlier than $task's latest event, at $latest"
 fi
 
-# Each value is typed by the contract when it names the field, and by whether it parses as JSON
-# otherwise, but for a Discord id (a discord_* field) and a whole number too long for a JSON
-# number to hold exactly, kept as written; ledger_append then checks the event against the
-# contract.
-ledger_append "$(ledger_jq '
-  field_types($contract.kinds[$event]) as $types
-  | $ARGS.positional as $pairs
-  | reduce range(0; $pairs | length; 2) as $i ({ts: (now | todate), task: $task, event: $event};
-      $pairs[$i] as $key | $pairs[$i + 1] as $raw
-      | .[$key] = if ($types[$key] | type) == "array" or ($types[$key] | IN("string", "id"))
-          or ($key | startswith("discord_")) or ($raw | test("^-?[0-9]{16,}$")) then $raw
-        else ((try ($raw | fromjson) catch null) | if . == null or (type == "number" and isnan) then $raw else . end)
-        end)' -nc --arg task "$task" --arg event "$event" --args "${pairs[@]}")"
+}
+
+if [[ $1 != --* ]]; then
+  check_event "$@"
+  # Stamped now, after the checks, so a park's since is never later than its ts.
+  ledger_append "$(jq -c '.ts = (now | todate)' <<<"$typed")"
+  exit 0
+fi
+
+# A worker's message, read whole (bin/lib/messages.jq) into its events, each checked by
+# check_event before any is logged.
+message='' from='' sent_back='' print=''
+declare -A given=()
+while (($#)); do
+  case $1 in
+    --from-message | --from | --sent-back)
+      [[ -z ${given[$1]:-} ]] || usage_error "$1 is given twice"
+      case $1 in --from-message) what="a message" ;; --from) what="a session name or id" ;; *) what="a list" ;; esac
+      [[ $# -ge 2 && -n $2 ]] || usage_error "$1 needs $what"
+      given[$1]=1
+      case $1 in --from-message) message=$2 ;; --from) from=$2 ;; *) sent_back=$2 ;; esac
+      shift 2
+      ;;
+    --print) print=1 && shift ;;
+    *) usage_error "$usage" ;;
+  esac
+done
+if [[ -z ${given[--from-message]:-} ]]; then
+  for option in --from --sent-back; do
+    [[ -z ${given[$option]:-} ]] || usage_error "$option is taken only with --from-message"
+  done
+  usage_error "--print is taken only with --from-message"
+fi
+
+# The task's brief records, by brief name, for a review's head.
+brief_records='{}'
+shopt -s nullglob
+files=("$TEAM_HOME/tasks/$task"/brief*.json)
+shopt -u nullglob
+if ((${#files[@]})); then
+  brief_records=$(jq -n 'reduce inputs as $r ({}; .[input_filename | split("/") | last | rtrimstr(".json")] = $r)' "${files[@]}") ||
+    die "cannot read $task's brief records: ${files[*]}"
+fi
+
+parsed=$(task_events "$task" | jq -L "$TEAM_LIB" -nc --arg task "$task" --arg message "$message" --arg from "$from" \
+  --arg sent_back "$sent_back" --argjson records "$brief_records" \
+  'include "messages"; include "ledger"; [inputs] as $events | $message | parse_message($task; $events; $records; $from; $sent_back)')
+problem=$(jq -r '.problems // empty | join("; ")' <<<"$parsed")
+[[ -z $problem ]] || die "$problem"
+
+# A PR's head, and its head branch against the task's in the PR's project: the pr event's head, and
+# a branch-renamed when they differ (the gate moved the branch).
+# github_pr <url>: sets pr_head, and renamed to "project=<p> branch=<b>" or ''.
+github_pr() {
+  local url=$1 repo number project='' p r view branch current names=()
+  [[ $url =~ ^https://github\.com/([^/]+/[^/]+)/pull/([0-9]+)/?$ ]]
+  repo=${BASH_REMATCH[1]} number=${BASH_REMATCH[2]}
+  while IFS= read -r p; do
+    r=$(team_project "$p" repo) || exit 1
+    names+=("$p ($r)")
+    [[ ${r,,} != "${repo,,}" ]] || project=$p
+  done < <(task_events "$task" | jq -r 'select(.event == "opened" or .event == "worktree-added") | .project | strings' | awk '!seen[$0]++')
+  if [[ -z $project ]]; then
+    ((${#names[@]})) || die "$url is in no repo of $task's projects: it has none"
+    p=$(printf ', %s' "${names[@]}")
+    die "$url is in no repo of $task's projects: ${p:2}"
+  fi
+  if ! view=$(gh pr view "$number" --repo "$repo" --json headRefOid,headRefName 2>&1) ||
+    ! pr_head=$(jq -er '.headRefOid | strings | select(test("^[0-9a-f]{7,40}$"))' <<<"$view" 2>/dev/null) ||
+    ! branch=$(jq -er '.headRefName | strings | select(. != "")' <<<"$view" 2>/dev/null); then
+    die "cannot read $url on GitHub ($(head -n 1 <<<"$view")); log it by hand: team-log $task pr url=$url head=<full sha>"
+  fi
+  current=$(task_events "$task" | ledger_jq '[inputs] | task_branch($project) // ""' -nr --arg project "$project")
+  renamed=''
+  [[ $branch == "$current" ]] || renamed="$project $branch"
+}
+
+lines=()
+count=$(jq '.events | length' <<<"$parsed")
+for ((i = 0; i < count; i++)); do
+  one=$(jq -c ".events[$i]" <<<"$parsed")
+  mapfile -d '' -t fields < <(jq -j '.fields[] | "\(.[0])=\(.[1])\u0000"' <<<"$one")
+  url=$(jq -r '.github // empty' <<<"$one")
+  renamed=''
+  if [[ -n $url ]]; then
+    github_pr "$url"
+    fields+=("head=$pr_head")
+  fi
+  check_event "$(jq -r .event <<<"$one")" "${fields[@]}"
+  lines+=("$typed")
+  if [[ -n $renamed ]]; then
+    check_event branch-renamed "project=${renamed%% *}" "branch=${renamed#* }"
+    lines+=("$typed")
+  fi
+done
+
+# Every event meets the contract before the first is logged, so a refusal logs nothing.
+for line in "${lines[@]}"; do
+  problem=$(ledger_jq '[append_problems($contract; "team-log")] | join("; ")' -r <<<"$line")
+  [[ -z $problem ]] || die "refusing a ledger event: $problem"
+done
+for line in "${lines[@]}"; do
+  line=$(jq -c '.ts = (now | todate)' <<<"$line")
+  if [[ -n $print ]]; then printf '%s\n' "$line"; else ledger_append "$line"; fi
+done

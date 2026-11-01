@@ -18,7 +18,8 @@
 # retro's opening to now. A task that is not a retro task is a usage error. Sections:
 #   window      since, until, the retro task, the previous retro, the events and each kind's count
 #   blocks      every blocked and failed, a denial when its reason says denied, denies, refused,
-#               refuses or auto mode, in any case
+#               refuses or auto mode, in any case, and every denied (a denial the worker went
+#               past), always a denial, its reason "<role> <what>: <why>"
 #   questions   each task's question and asked events, repeated with two or more
 #   reviews     each task's review verdicts, reopened when a findings is followed by another review
 #   waits       each span that parks a task: waiting (on its on), paused and blocked until the next
