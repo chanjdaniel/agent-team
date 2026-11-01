@@ -14,7 +14,7 @@
 # archive_left_out, rsync_rule, archive_task_dir, machine_name, os_release, team_os, tool_dirs,
 # team_tool_path, fence_reason, offline_hold, lease_refusal, worker_refusal, lease_gate, worktree_changes, same_path, bounded, trust_probe,
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin,
-# only_records, records_list, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
+# only_records, records_list, records_pathspecs, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
 # own_project, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_slots, discord_token, discord_api,
 # daniel_message, refresh_inbox, github, pr_part, task_state_json, loose_objects, pack_size and story_file, and sets IMAGE_TYPE,
 # PACK_LOOSE, COORDINATOR_CHANNEL and INTERVIEW_CHANNEL.
@@ -695,6 +695,13 @@ only_records() {
   done
 }
 
+# The records (bin/lib/records) as git pathspecs, one per line: a line ending in ** as a glob
+# pathspec of everything under its directory, any other as itself (whose * git matches across
+# directories, as bin/lib/records says): records_pathspecs
+records_pathspecs() {
+  grep -v -e '^#' -e '^$' "$TEAM_LIB/records" | sed -E 's#^(.*/\*\*)$#:(glob)\1#'
+}
+
 # Run git against an origin: no credential prompt, at most NET_TIMEOUT seconds (the caller's
 # constant, 60 when unset), stdin closed, stderr into the file NET_ERR (the caller's), and the
 # caller's lock, the file descriptor in lock_fd when it is set, closed for it, so a credential
@@ -721,19 +728,20 @@ origin_reason() {
   fi
 }
 
-# Commit the records among <pathspec>... in the team home as <message>, on the branch checked out,
-# then push the branch when it is ahead of origin's (or origin's is unknown). The commit is made
-# under the ledger's lock and holds those paths alone, so whatever else is staged stays staged; the
-# team home's hooks run. A push origin rejects fetches its branch and replays the commits it lacks
-# onto it, when they apply cleanly and no local change is in the way (a branch switch's two-tree
-# merge, so what is staged stays staged), then pushes again once. Prints one line on stdout, like
+# Commit every records path (records_pathspecs) in the team home as <message>, on the branch checked
+# out, then push the branch when it is ahead of origin's (or origin's is unknown). The commit is made
+# under the ledger's lock and holds the changed records alone, what git ignores left out, so
+# whatever else is staged stays staged; the team home's hooks run, and a path they refuse fails the
+# commit. A push origin rejects fetches its branch and replays the commits it lacks onto it, when
+# they apply cleanly and no local change is in the way (a branch switch's two-tree merge, so what
+# is staged stays staged), then pushes again once. Prints one line on stdout, like
 # "team home: committed <sha> <message> and pushed dev" or "team home: nothing to commit"; a
 # failure adds its reason on stderr and returns 1. Network calls go through origin_git, so
-# NET_ERR must name a file: commit_records <message> <pathspec>...
+# NET_ERR must name a file: commit_records <message>
 commit_records() {
   local message=$1 branch committed upstream out rc=0
-  local -a record_paths
-  shift
+  local -a record_paths records
+  mapfile -t records < <(records_pathspecs)
   if ! branch=$(git -C "$TEAM_HOME" symbolic-ref -q --short HEAD); then
     echo "${0##*/}: team home: not on a branch, so the records are not committed" >&2
     return 1
@@ -741,9 +749,9 @@ commit_records() {
   committed="nothing to commit"
   {
     flock -x 9
-    mapfile -d '' -t record_paths < <(git -C "$TEAM_HOME" ls-files -z -m -d -o --exclude-standard -- "$@")
+    mapfile -d '' -t record_paths < <(git -C "$TEAM_HOME" ls-files -z -m -d -o --exclude-standard -- "${records[@]}")
     ((${#record_paths[@]} == 0)) || GIT_LITERAL_PATHSPECS=1 git -C "$TEAM_HOME" add -A -- "${record_paths[@]}"
-    mapfile -d '' -t record_paths < <(git -C "$TEAM_HOME" diff --cached -z --name-only --no-renames HEAD -- "$@")
+    mapfile -d '' -t record_paths < <(git -C "$TEAM_HOME" diff --cached -z --name-only --no-renames HEAD -- "${records[@]}")
     if ((${#record_paths[@]})); then
       if GIT_LITERAL_PATHSPECS=1 git -C "$TEAM_HOME" commit -q -m "$message" --only -- "${record_paths[@]}" >"$NET_ERR" 2>&1; then
         committed="committed $(git -C "$TEAM_HOME" rev-parse --short HEAD) $message"

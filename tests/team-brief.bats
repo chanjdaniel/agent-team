@@ -907,7 +907,7 @@ SINCE
   assert_equal "$(head -n 1 <<<"$brief")" "# T12 brief (builder): resume rate-limit the applicant sign-in endpoints after a crash"
   assert_contains "$brief" "you are the builder, resuming the task from the checkpoint of 2026-10-23T13:45:00Z: home-pc stopped without a handoff."
   assert_contains "$brief" "Worktree: \`~/.treehouse/Conventioner-d4c77a/4/Conventioner\`, branch \`fix/T12-applicant-sign-in-rate-limit\`"
-  assert_contains "$brief" "Up to 15 minutes of work before home-pc stopped may be missing, and so may any no-mistakes run that was in flight"
+  assert_contains "$brief" "Up to 5 minutes of work before home-pc stopped may be missing, and so may any no-mistakes run that was in flight"
   assert_contains "$brief" "The uncommitted changes of that checkpoint: applied as uncommitted changes in your worktree."
   assert_contains "$brief" "Check before you build on any of it."
   assert_contains "$brief" "1. Read your brief \`~/agent-team-records/tasks/T12/brief.md\`"

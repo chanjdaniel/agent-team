@@ -424,7 +424,7 @@ story_of() {
   backlog_story proj E40-history/F01-the-markets/S02-every-write.md E40/F01/S02 ready "[71]"
   story_of E40/F01/S02
   run_bin -0 --separate-stderr team-merge T14
-  assert_contains "$stderr" "team-merge: marked E40/F01/S02 done with PR 5 in projects/proj/backlog/E40-history/F01-the-markets/S02-every-write.md; commit it with the records"
+  assert_contains "$stderr" "team-merge: marked E40/F01/S02 done with PR 5 in projects/proj/backlog/E40-history/F01-the-markets/S02-every-write.md; the next checkpoint commits it"
   # Only the front matter changes.
   assert_equal "$(cat "$file")" "---
 id: E40/F01/S02

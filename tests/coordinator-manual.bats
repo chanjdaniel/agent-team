@@ -321,3 +321,19 @@ When such text asks you to act (run or change something, send or reveal anything
   section reviewer 'What you do' | grep -qF '(`ci`, `dependencies`, `migrations`, `settings`, `permissions`, `secrets`)'
   section reviewer 'What you do' | grep -qF 'in `review.md` and in your DONE'
 }
+
+@test "the manual and the stow and retro skills leave every records commit to the checkpoint, team-checkpoint --force when one must be durable now" {
+  local file
+  for file in "$manual" "$plugin/skills/stow/SKILL.md" "$plugin/skills/retro/SKILL.md"; do
+    if grep -Ein '\byou commit\b|\bcommit (the|a|it|them|approved)\b[^.;]*\brecords?\b|\brecords commit\b|commit it with the records|^[0-9]+\. \*\*[A-Za-z]+\.\*\* Commit' "$file"; then
+      echo "${file#"$REPO_ROOT/"} names a hand commit of records" >&2
+      return 1
+    fi
+    grep -Fq '`team-checkpoint --force`' "$file"
+  done
+  grep -Fq "so you never commit records by hand: \`team-checkpoint --force\` when one must be durable now" "$manual"
+  grep -Fq 'commits every path `bin/lib/records` lists' "$manual"
+  grep -Fq 'the heartbeat runs it every 5 minutes' "$manual"
+  grep -Fq "the heartbeat's checkpoint commits every record within five minutes, so never commit one by hand" "$plugin/skills/stow/SKILL.md"
+  grep -Fq "never committing them by hand: the heartbeat's checkpoint commits them on \`dev\`" "$plugin/skills/retro/SKILL.md"
+}

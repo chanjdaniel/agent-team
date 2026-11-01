@@ -278,22 +278,28 @@ EOF
   assert_equal "$(grep -c ' lease: ' "$log")" 4
 }
 
-@test "run on the holder checkpoints only once the last checkpoint is 15 minutes old" {
+@test "run on the holder checkpoints each time the last checkpoint is 5 minutes old" {
   local state=$HOME/.local/state/agent-team tip
   mkdir -p "$TEAM_HOME/memory/home" "$state"
   echo "- a note" >"$TEAM_HOME/memory/home/MEMORY.md"
-  touch -d '-10 minutes' "$state/last-checkpoint"
+  touch -d '-3 minutes' "$state/last-checkpoint"
   tip=$(git -C "$origin" rev-parse dev)
   run_bin -0 team-timers run
   assert_contains "$output" "lease: home-pc holds the lease"
-  [[ $(tail -n 1 <<<"$output") =~ ^[0-9T:Z-]+" checkpoint: not due: the last checkpoint was 10 minutes ago (--force makes one now)"$ ]]
+  [[ $(tail -n 1 <<<"$output") =~ ^[0-9T:Z-]+" checkpoint: not due: the last checkpoint was 3 minutes ago (--force makes one now)"$ ]]
   assert_equal "$(git -C "$origin" rev-parse dev)" "$tip"
 
-  touch -d '-15 minutes' "$state/last-checkpoint"
+  # The heartbeat's next run, 5 minutes on, makes one, and so does the one after.
+  touch -d '-5 minutes' "$state/last-checkpoint"
   run_bin -0 team-timers run
   [[ $(tail -n 1 <<<"$output") =~ ^[0-9T:Z-]+" checkpoint: team home: committed "[0-9a-f]+" chore: checkpoint and pushed dev"$ ]]
   assert_equal "$(git -C "$origin" diff-tree -r --no-commit-id --name-only dev)" "memory/home/MEMORY.md"
   assert_equal "$(tail -n 1 "$log")" "$(tail -n 1 <<<"$output")"
+  echo "steps" >"$TEAM_HOME/manual-steps.md"
+  touch -d '-5 minutes' "$state/last-checkpoint"
+  run_bin -0 team-timers run
+  [[ $(tail -n 1 <<<"$output") =~ ^[0-9T:Z-]+" checkpoint: team home: committed "[0-9a-f]+" chore: checkpoint and pushed dev"$ ]]
+  assert_equal "$(git -C "$origin" diff-tree -r --no-commit-id --name-only dev)" "manual-steps.md"
 
   # A machine that does not hold the lease never checkpoints, however old the last one.
   run -0 "$REPO_ROOT/bin/team-lease" release
