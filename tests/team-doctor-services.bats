@@ -395,6 +395,24 @@ RECORDS_FIX="fix what it names in the team home (team-log --check and team-proje
   assert_equal "$(line_of records)" "FAIL records: no ledger at $TEAM_HOME/ledger.jsonl; fix: $RECORDS_FIX"
 }
 
+@test "the records line warns on a ledger whose sent_back holds whole numbers as strings, naming the conversion, and fails nothing" {
+  tools_at arch
+  local strict
+  strict=$(jq -r .strict_from "$REPO_ROOT/bin/lib/ledger-contract.json")
+  printf '%s\n' "{\"ts\": \"$strict\", \"task\": \"T1\", \"event\": \"review\", \"verdict\": \"findings\", \"head\": \"a1b2c3d\", \"sent_back\": [\"5\"]}" \
+    >>"$TEAM_HOME/ledger.jsonl"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of records)" "WARN records: the ledger meets its contract (1 line), but 1 of its lines holds whole numbers as strings in a sent_back or before, the registry passes (2 projects) and machine/secrets.md describes every enabled secret; fix: run team-log --fix-sent-back, which stores them as numbers"
+  assert_equal "$(grep -v '^PASS ' <<<"$output" | grep -v '^WARN records: ' || true)" ""
+  printf '%s\n' "{\"ts\": \"$strict\", \"task\": \"T1\", \"event\": \"review\", \"verdict\": \"findings\", \"head\": \"a1b2c3d\", \"sent_back\": [\"6\", 7]}" \
+    >>"$TEAM_HOME/ledger.jsonl"
+  run_bin -0 team-doctor
+  assert_contains "$(line_of records)" "WARN records: the ledger meets its contract (2 lines), but 2 of its lines hold whole numbers as strings in a sent_back or before,"
+  run_bin -0 team-log --fix-sent-back
+  run_bin -0 team-doctor
+  assert_equal "$(line_of records)" "PASS records: the ledger meets its contract (2 lines), the registry passes (2 projects) and machine/secrets.md describes every enabled secret"
+}
+
 @test "the records line fails on a registry team-project --check refuses, naming its first problem and the count" {
   tools_at arch
   sed -i 's/^base = "main"$/base = 5/' "$TEAM_HOME/projects.toml"

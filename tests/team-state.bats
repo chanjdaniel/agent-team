@@ -263,6 +263,29 @@ reply_line() {
   assert_equal "$(phase_of T14)" building
 }
 
+@test "a denied keeps the phase the task had before it: it parks nothing and clears nothing" {
+  local denied='{role: "builder", session: "59709d99", what: "Bash", why: "[deny rule] git reset * --hard*"}'
+  open_task
+  event T14 plan-approved '{by: "Daniel"}'
+  event T14 denied "$denied"
+  assert_equal "$(phase_of T14)" building
+  event T14 blocked '{reason: "the push was refused"}'
+  event T14 denied "$denied"
+  assert_equal "$(phase_of T14)" blocked
+  event T14 resumed
+  event T14 held '{reason: "OS update"}'
+  event T14 denied "$denied"
+  assert_equal "$(phase_of T14)" held
+  event T14 resumed
+  event T14 pr '{url: "https://github.com/owner/proj/pull/5", head: "a1b2c3d"}'
+  event T14 review '{verdict: "pass", head: "a1b2c3d"}'
+  event T14 denied "$denied"
+  assert_equal "$(phase_of T14)" awaiting-merge
+  event T14 merged '{pr: 5, merge: "fedcba9", head: "a1b2c3d", by: "1563"}'
+  event T14 denied "$denied"
+  assert_equal "$(phase_of T14)" merged
+}
+
 @test "merged wins over a held from before it, and closed over merged" {
   open_task
   event T14 held '{reason: "OS update"}'

@@ -37,9 +37,9 @@
 # event after it, else the latest before it), by cause ("none" for a first run) and by outcome,
 # with each step's median minutes; reviews and findings per PR (a review's PR is the latest pr
 # event before it, else the first after it); builder launches and tickets done per task; denials
-# (blocked events classed wait:denial); Daniel's answers, each asked matched to the task's next
-# event that settles it, with the median and 90th percentile minutes by nearest rank; and each
-# done's seconds to the task's next event.
+# (denied events, which park nothing, and blocked events classed wait:denial); Daniel's answers,
+# each asked matched to the task's next event that settles it, with the median and 90th
+# percentile minutes by nearest rank; and each done's seconds to the task's next event.
 # Then each worker's lifetime, from the ledger's events up to --until, legacy tasks included: one
 # per launch with a session. Its rounds are its reports: its session's dones and, for a builder,
 # the task's prs, after its launch and before the task's next builder launch (a pr names no
