@@ -801,6 +801,25 @@ team-stack: no room for $PROJECT: the team is at level none: nothing starts"
   assert_equal "$(ups)" 0
 }
 
+@test "the wait runs from the first refusal, so a first check slower than the whole wait still says it waits, and waits" {
+  open_task T22
+  stack_settings '{"wait_minutes": 0.03}'
+  capacity_room $((16 * 1024 * MIB)) none
+  # The first check's df takes 3 seconds, longer than the wait's 2 (a slow macOS runner's first
+  # admission).
+  { printf 'if [[ ! -e %q ]]; then touch %q; sleep 3; fi\n' "$BATS_TEST_TMPDIR/df-slow" "$BATS_TEST_TMPDIR/df-slow"
+    cat "$STUB_FIXTURES/df.sh"; } >"$STUB_FIXTURES/df.sh.new"
+  mv "$STUB_FIXTURES/df.sh.new" "$STUB_FIXTURES/df.sh"
+  TEAM_STACK_RECHECK_SECONDS=1 run_bin -75 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
+  assert_equal "$stderr" "team-stack: no room for $PROJECT yet, waiting up to 0.03 minutes: the team is at level none: nothing starts
+team-stack: no room for $PROJECT: the team is at level none: nothing starts"
+  ((${#lines[@]} == 0))
+  # Checked again after the first refusal, within the wait's 2 s from it.
+  local checks
+  checks=$(stub_calls df | wc -l)
+  ((checks >= 2 && checks <= 3))
+}
+
 @test "the admission lock is held through up -d --wait and released before the seed" {
   open_task T22
   local lock=$HOME/.local/state/agent-team/stacks.lock

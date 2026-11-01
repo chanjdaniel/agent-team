@@ -59,8 +59,8 @@
 #           refuses with its reason, which the refusal says without its "no room for", anything
 #           else fails up).
 #           With no room, it says once on stderr that it waits and why, re-checks every 30 seconds
-#           (the lock let go between checks) up to wait_minutes, then exits 75 naming the failing
-#           check with its numbers.
+#           (the lock let go between checks) up to wait_minutes from that first refusal, then exits
+#           75 naming the failing check with its numbers.
 #           Each wait that ends, admitted or not (a refusal with wait_minutes 0 included), adds
 #           {start, end, project, task, admitted, reasons} to
 #           ~/.local/state/agent-team/stacks/waits.jsonl, its reasons the last refusal's.
@@ -670,8 +670,9 @@ log_wait() {
      reasons: $ARGS.positional}' --args "${REASONS[@]}" >>"$STATE/stacks/waits.jsonl"
 }
 
-# Admit the stack STACK_NAME, or wait for room up to wait_minutes, re-checking every
-# TEAM_STACK_RECHECK_SECONDS (30); exit 75 with every failing check when the wait runs out.
+# Admit the stack STACK_NAME, or wait for room up to wait_minutes from the first refusal (so a
+# slow first check never uses the wait up), re-checking every TEAM_STACK_RECHECK_SECONDS (30);
+# exit 75 with every failing check when the wait runs out.
 # Returns with the admission lock held on LOCK_FD, which the caller closes after its up.
 admit() {
   local start minutes seconds deadline now waited=''
@@ -682,9 +683,10 @@ admit() {
   start=$(date +%s)
   minutes=$(setting wait_minutes)
   seconds=$(jq -n --argjson m "$minutes" '$m * 60 | ceil')
-  deadline=$((start + seconds))
+  deadline=''
   until room_check; do
     now=$(date +%s)
+    deadline=${deadline:-$((now + seconds))}
     if ((now >= deadline)); then
       log_wait "$start" false
       echo "${0##*/}: no room for $STACK_NAME: $(reasons_line)" >&2
