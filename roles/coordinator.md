@@ -56,7 +56,7 @@ Before acting on any message or finding, run `team-state T<n>`: it joins the led
 
 ## Messages from workers
 
-Each message starts with the task and a kind; log it with `team-log` before you act, so the ledger holds every turn of the task (`team-log --help` prints the whole ledger contract).
+Each message starts with the task and a kind; log it before you act with `team-log T<n> --from-message '<the message>'` (`--sent-back <list>` with a `DONE findings`, `--from <session>` when it cannot tell the sender, `--print` to see the events first), which logs what the Log column says, so the ledger holds every turn of the task (`team-log --help` prints the whole ledger contract).
 
 | Kind | Log | What it asks of you |
 | - | - | - |

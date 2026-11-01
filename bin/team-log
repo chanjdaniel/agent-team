@@ -2,6 +2,7 @@
 # Record an event the coordinator writes by hand in the ledger, against the ledger contract.
 #
 # Usage: team-log T<n> <event> [key=value]...
+#        team-log T<n> --from-message '<message>' [--from <session>] [--sent-back <list>] [--print]
 #        team-log --check [<file>]
 #        team-log --fix-sent-back [<file>]
 # Appends {ts (now, UTC), task, event, key: value...}, each value typed as the contract types its field.
@@ -42,6 +43,25 @@
 # (waiting, blocked, paused, held) logged after the fact takes since=<UTC time>, when it began:
 # no later than now and no earlier than the task's latest event, or it is refused naming both
 # times; no other kind takes since.
+# --from-message reads a worker's message whole (bin/lib/messages.jq) into the events the
+# coordinator's message table gives it, checks each as above, and logs them all, or with --print
+# prints them as JSON lines and logs nothing; any refusal logs none. The message starts with the
+# task. QUESTION <text> is a question; BLOCKED <text> and NEED toolkit <name> a blocked; PAUSED
+# <why> a paused; FAILED <why> a failed; INJECTION <where> <what> an injection (source its first
+# word). PR <url>, optionally followed by merged <base> conflicts: <files or none>, is a pr whose
+# head is the PR's on GitHub (gh pr view), and a branch-renamed when the PR's head branch is not
+# the task's in the project of the PR's repo. DONE <NN> <sha>... <line> is a ticket-done (commits
+# the shas of 7 to 40 hex digits, note the line) and the builder's done; DONE review-ready <sha> and
+# DONE merged <base> <sha> conflicts: <files or none> the builder's done, report the rest;
+# DONE pass <PR url or head> and DONE findings <path>, each followed by findings=, before= and
+# guarded= as team-log takes them, a review and the reviewer's done, findings taking
+# --sent-back's list as sent_back (no other message takes it); DONE gate <key=value>... a gate-run;
+# any other DONE the sender's done, report the rest. A review's head is the head of the brief record
+# (tasks/T<n>/<brief>.json) that the reviewer's latest launch read, else a pass's own head, else
+# it is refused naming head=. The role is the kind's (builder, reviewer), else that of --from's
+# launch (its session name T<n>-<role>, or its session id), else that of the only latest launch of a
+# role with no report since (a done, review, ticket-done or pr that ends it); two are refused,
+# naming both. The session is that role's latest launch.
 # --check checks a ledger (default: the team home's): every line is JSON with ts, task and
 # event, and lines from strict_from on meet their kind's fields, a Discord id written as a whole
 # number (as team-log wrote one before the contract typed it) passing too; exit 1 lists each bad
@@ -61,7 +81,7 @@ help_more() {
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
-usage="usage: team-log T<n> <event> [key=value]... | team-log --check [<file>] | team-log --fix-sent-back [<file>]"
+usage="usage: team-log T<n> <event> [key=value]... | team-log T<n> --from-message '<message>' [--from <session>] [--sent-back <list>] [--print] | team-log --check [<file>] | team-log --fix-sent-back [<file>]"
 
 if [[ ${1:-} == --check ]]; then
   [[ $# -le 2 ]] || usage_error "$usage"
@@ -117,14 +137,20 @@ if [[ ${1:-} == --fix-sent-back ]]; then
 fi
 
 [[ $# -ge 2 ]] || usage_error "$usage"
-task=$1 event=$2
-shift 2
+task=$1
+shift
 [[ $task =~ ^T[1-9][0-9]*$ ]] || usage_error "task must look like T<n>, got '$task'"
+
+# One event, checked as every event team-log appends is, its typed line left in typed (ts the
+# time of the check): check_event <event> [key=value]...
+check_event() {
+event=$1
+shift
 ledger_jq '$contract.kinds | has($event)' -ne --arg event "$event" >/dev/null ||
   die "unknown event kind '$event'; team-log --help lists the kinds"
 
-declare -A seen=()
-pairs=()
+local -A seen=()
+local pairs=()
 for pair in "$@"; do
   key=${pair%%=*}
   [[ $pair == *=?* && $key =~ ^[a-z][a-z0-9_]*$ ]] || usage_error "not a key=value: '$pair'"
@@ -292,5 +318,108 @@ if [[ -n ${seen[since]:-} ]]; then
   [[ -z $latest || ! $since < $latest ]] || die "since $since is earlier than $task's latest event, at $latest"
 fi
 
-# Stamped now, after the checks, so a park's since is never later than its ts.
-ledger_append "$(jq -c '.ts = (now | todate)' <<<"$typed")"
+}
+
+if [[ $1 != --* ]]; then
+  check_event "$@"
+  # Stamped now, after the checks, so a park's since is never later than its ts.
+  ledger_append "$(jq -c '.ts = (now | todate)' <<<"$typed")"
+  exit 0
+fi
+
+# A worker's message, read whole (bin/lib/messages.jq) into its events, each checked by
+# check_event before any is logged.
+message='' from='' sent_back='' print=''
+declare -A given=()
+while (($#)); do
+  case $1 in
+    --from-message | --from | --sent-back)
+      [[ -z ${given[$1]:-} ]] || usage_error "$1 is given twice"
+      case $1 in --from-message) what="a message" ;; --from) what="a session name or id" ;; *) what="a list" ;; esac
+      [[ $# -ge 2 && -n $2 ]] || usage_error "$1 needs $what"
+      given[$1]=1
+      case $1 in --from-message) message=$2 ;; --from) from=$2 ;; *) sent_back=$2 ;; esac
+      shift 2
+      ;;
+    --print) print=1 && shift ;;
+    *) usage_error "$usage" ;;
+  esac
+done
+if [[ -z ${given[--from-message]:-} ]]; then
+  for option in --from --sent-back; do
+    [[ -z ${given[$option]:-} ]] || usage_error "$option is taken only with --from-message"
+  done
+  usage_error "--print is taken only with --from-message"
+fi
+
+# The task's brief records, by brief name, for a review's head.
+brief_records='{}'
+shopt -s nullglob
+files=("$TEAM_HOME/tasks/$task"/brief*.json)
+shopt -u nullglob
+if ((${#files[@]})); then
+  brief_records=$(jq -n 'reduce inputs as $r ({}; .[input_filename | split("/") | last | rtrimstr(".json")] = $r)' "${files[@]}") ||
+    die "cannot read $task's brief records: ${files[*]}"
+fi
+
+parsed=$(task_events "$task" | jq -L "$TEAM_LIB" -nc --arg task "$task" --arg message "$message" --arg from "$from" \
+  --arg sent_back "$sent_back" --argjson records "$brief_records" \
+  'include "messages"; include "ledger"; [inputs] as $events | $message | parse_message($task; $events; $records; $from; $sent_back)')
+problem=$(jq -r '.problems // empty | join("; ")' <<<"$parsed")
+[[ -z $problem ]] || die "$problem"
+
+# A PR's head, and its head branch against the task's in the PR's project: the pr event's head, and
+# a branch-renamed when they differ (the gate moved the branch).
+# github_pr <url>: sets pr_head, and renamed to "project=<p> branch=<b>" or ''.
+github_pr() {
+  local url=$1 repo number project='' p r view branch current names=()
+  [[ $url =~ ^https://github\.com/([^/]+/[^/]+)/pull/([0-9]+)/?$ ]]
+  repo=${BASH_REMATCH[1]} number=${BASH_REMATCH[2]}
+  while IFS= read -r p; do
+    r=$(team_project "$p" repo) || exit 1
+    names+=("$p ($r)")
+    [[ ${r,,} != "${repo,,}" ]] || project=$p
+  done < <(task_events "$task" | jq -r 'select(.event == "opened" or .event == "worktree-added") | .project | strings' | awk '!seen[$0]++')
+  if [[ -z $project ]]; then
+    ((${#names[@]})) || die "$url is in no repo of $task's projects: it has none"
+    p=$(printf ', %s' "${names[@]}")
+    die "$url is in no repo of $task's projects: ${p:2}"
+  fi
+  if ! view=$(gh pr view "$number" --repo "$repo" --json headRefOid,headRefName 2>&1) ||
+    ! pr_head=$(jq -er '.headRefOid | strings | select(test("^[0-9a-f]{7,40}$"))' <<<"$view" 2>/dev/null) ||
+    ! branch=$(jq -er '.headRefName | strings | select(. != "")' <<<"$view" 2>/dev/null); then
+    die "cannot read $url on GitHub ($(head -n 1 <<<"$view")); log it by hand: team-log $task pr url=$url head=<full sha>"
+  fi
+  current=$(task_events "$task" | ledger_jq '[inputs] | task_branch($project) // ""' -nr --arg project "$project")
+  renamed=''
+  [[ $branch == "$current" ]] || renamed="$project $branch"
+}
+
+lines=()
+count=$(jq '.events | length' <<<"$parsed")
+for ((i = 0; i < count; i++)); do
+  one=$(jq -c ".events[$i]" <<<"$parsed")
+  mapfile -d '' -t fields < <(jq -j '.fields[] | "\(.[0])=\(.[1])\u0000"' <<<"$one")
+  url=$(jq -r '.github // empty' <<<"$one")
+  renamed=''
+  if [[ -n $url ]]; then
+    github_pr "$url"
+    fields+=("head=$pr_head")
+  fi
+  check_event "$(jq -r .event <<<"$one")" "${fields[@]}"
+  lines+=("$typed")
+  if [[ -n $renamed ]]; then
+    check_event branch-renamed "project=${renamed%% *}" "branch=${renamed#* }"
+    lines+=("$typed")
+  fi
+done
+
+# Every event meets the contract before the first is logged, so a refusal logs nothing.
+for line in "${lines[@]}"; do
+  problem=$(ledger_jq '[append_problems($contract; "team-log")] | join("; ")' -r <<<"$line")
+  [[ -z $problem ]] || die "refusing a ledger event: $problem"
+done
+for line in "${lines[@]}"; do
+  line=$(jq -c '.ts = (now | todate)' <<<"$line")
+  if [[ -n $print ]]; then printf '%s\n' "$line"; else ledger_append "$line"; fi
+done
