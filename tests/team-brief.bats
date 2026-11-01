@@ -877,7 +877,7 @@ SINCE
 @test "the resume brief sends a worker relaunched after a handoff, a shutdown or a level stow to its last brief, the handoff note and the branch" {
   open_t12
   run_bin -0 team-brief --help
-  assert_contains "$output" "resume (a worker relaunched on"
+  assert_contains "$output" "resume (a worker relaunched after a stow, for a handoff, a shutdown or the level:"
   run_bin -1 team-brief T12 resume --name resume-builder --set role=builder \
     --set "brief=~/agent-team-records/tasks/T12/brief.md" --set "from=the handoff from home-pc at 2026-10-23T14:05:00Z"
   assert_contains "$output" "snapshot"
