@@ -20,7 +20,8 @@
 #   to 100 characters, and null for other tools; limit names the call's stall limit (stall_limits
 #   in bin/lib/ledger.jq), read from the whole command: "interview" when it runs team-thread wait
 #   after its start, a space or a /, else "gate" with no-mistakes as a word (-, _ and alphanumerics
-#   its word characters), else "ci_wait" when it runs team-ci-wait as team-thread wait, else null;
+#   its word characters), else "ci_wait" when it runs team-ci-wait, matched as team-thread wait is,
+#   else null;
 #   since is the tool_use line's timestamp and seconds the whole seconds since; subagent is true
 #   for a call in a subagent's transcript.
 # From each line it reads only its type, timestamp, tool call names, ids and command inputs, a
