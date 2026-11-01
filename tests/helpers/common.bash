@@ -215,9 +215,12 @@ stub_calls() {
 
 # Make the systemctl and launchctl stubs behave as the user's systemd and launchd would, each
 # machine's units kept under its own HOME: systemctl --user daemon-reload, enable, disable (with
-# --now), restart, is-enabled and is-active on unit files under ~/.config/systemd/user, and show -P
+# --now), restart, is-enabled and is-active on unit files under ~/.config/systemd/user, show -P
 # <property> [<unit>], which answers the manager's Version as 262 and a unit's property from
-# ~/.fake-systemd/<unit>.<property> (empty without one), a test's to write; every call fails as a
+# ~/.fake-systemd/<unit>.<property> (empty without one), a test's to write, and show -p
+# <property>,... <unit>..., one block of <property>=<value> lines per unit as systemd prints
+# them, a blank line between, Id the unit's name and a property with no file "[not set]" for a
+# Memory or CPU one (a unit that is not running), else empty; every call fails as a
 # user manager that does not answer once ~/.fake-systemd/down exists; launchctl
 # bootstrap gui/<uid> <plist>, bootout gui/<uid>/<label> and print gui/<uid>/<label>, refusing as
 # launchctl does a bootstrap of a loaded job or a bootout of one not loaded.
@@ -234,6 +237,21 @@ if [[ ${2:-} == show && ${3:-} == -P ]]; then
   else
     cat "$state/$5.$4" 2>/dev/null || echo
   fi
+  exit 0
+fi
+if [[ ${2:-} == show && ${3:-} == -p ]]; then
+  IFS=, read -ra props <<<"$4"
+  first=1
+  for name in "${@:5}"; do
+    ((first)) || echo
+    first=0
+    for prop in "${props[@]}"; do
+      if [[ $prop == Id ]]; then echo "Id=$name"
+      elif [[ -e $state/$name.$prop ]]; then echo "$prop=$(cat "$state/$name.$prop")"
+      elif [[ $prop == Memory* || $prop == CPU* ]]; then echo "$prop=[not set]"
+      else echo "$prop="; fi
+    done
+  done
   exit 0
 fi
 verb=${2:-} now=0 quiet=0 names=()

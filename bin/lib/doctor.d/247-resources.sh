@@ -5,14 +5,17 @@
 #               gate daemon is outside the slice, or a live team session runs outside its task's
 #               slice, each naming its fix (team-capacity install, Daniel's yes, or team-capacity
 #               place); else passes, naming the live team sessions in it. On macOS passes with
-#               "no hard limits on macOS: admission and stow only".
+#               "no hard limits on macOS: admission and stow only". On any OS, warns while this
+#               machine holds the lease (on the lease line's answer) and has no reading of the
+#               machine's load of the last 15 minutes, which its heartbeat's capacity step takes.
 # shellcheck shell=bash
-# shellcheck disable=SC2154 # bin and err, the doctor's; os, from the os check
+# shellcheck disable=SC2154 # bin and err, the doctor's; os, holding and heartbeat, from the os, lease and heartbeat checks
 
 # On a supported OS.
 if [[ -n $os ]]; then
-  rc=0
-  resources=$(TEAM_HOME=$TEAM_HOME "$bin/team-capacity" check --json 2>"$err" </dev/null) || rc=$?
+  rc=0 resources_args=(--json --heartbeat "${heartbeat:-enabled}")
+  [[ ${holding:-} != yes ]] || resources_args+=(--holding)
+  resources=$(TEAM_HOME=$TEAM_HOME "$bin/team-capacity" check "${resources_args[@]}" 2>"$err" </dev/null) || rc=$?
   if ((rc)); then
     report resources FAIL "team-capacity failed: $(first_error)" "fix what team-capacity names, then run team-doctor again"
   else

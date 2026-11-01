@@ -206,6 +206,21 @@ EOF
   # takes them.
   echo '{"cap": 10}' >"$HOME/.config/agent-team/slots.json"
   slots_reading 0 8 1
+  capacity_reading 0
+}
+
+# capacity_reading <minutes>: append a reading of the machine's load with the team's use per task,
+# as team-capacity sample writes it, taken <minutes> ago on a machine shaped like home-pc, other
+# programs using 8 GiB and no team work.
+capacity_reading() {
+  local file=$HOME/.local/state/agent-team/capacity/readings.jsonl
+  mkdir -p "${file%/*}"
+  jq -cn --arg at "$(date -u -d "@$(($(date +%s) - $1 * 60))" +%FT%TZ)" '
+    (30.6 * 1073741824 | floor) as $total | (8 * 1073741824) as $others
+    | {at: $at, os: "linux", docker: true,
+       memory: {total: $total, available: ($total - $others - 1073741824), team: 1073741824, others: $others},
+       cpu: {cpus: 12, seconds: 300, team: 0.5, others: 1}, systemd: true, sessions: true, tasks: [], stacks: [],
+       gate: {running: false, memory: 0, cpu_seconds: 0}}' >>"$file"
 }
 
 # slots_reading <minutes> <others GiB> [<others cores>]: append a reading of the machine's load

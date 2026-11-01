@@ -13,6 +13,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
     - `git/`: git's hooks for the code checkout.
     - `records-git/`: git's hooks for the team home.
   - `bin/lib/`: the shared library.
+    - `capacity.jq`: `team-capacity`'s settings of `capacity.json`, the slots held, a reading of the machine's load and the team's use per task, the cost samples and estimates, and their texts.
     - `code`: the paths every tracked path matches.
     - `data-check`: the one scan the CI's `data` job and the records' hook refuse with.
     - `doctor.d/`: `team-doctor`'s checks, one file each, which it sources in the order of their names (a new check is a new file, its number between its neighbours').
@@ -21,10 +22,11 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
     - `ledger-contract.json` and `ledger.jq`: the ledger contract and its jq.
     - `opencode-gate`: the gate's opencode wrapper, which `team-bootstrap` installs in `~/.no-mistakes/bin` and Daniel's no-mistakes config names.
     - `prices.json`: each model's list prices per million tokens with the date read and the source, the weights `team-tokens` gives each reply.
+    - `reading.sh`: one reading of the machine's load (its memory, its processes by directory and descent, the team's stacks), which `team-capacity sample` and `team-slots sample` take.
     - `records`: the team home's paths, which no tracked path matches.
     - `records-rewrite/`: `team-records-rewrite`'s drop list, message expression, S02 callback and `verify.py`.
     - `session-activity`: how long each live session's transcripts have gone unwritten, and the tool calls still running in a quiet one, for `team-sweep`'s stalled finding.
-    - `slots.jq`: `team-slots`'s settings of `slots.json`, the slots held, a reading of the machine's load and its fit, the effective cap, the room left for the reserved project and the others, and the texts `team-slots`, `team-open` and `team-doctor` say.
+    - `slots.jq`: `team-slots`'s settings of `slots.json`, a reading's fit, the effective cap, the room left for the reserved project and the others, and the texts `team-slots`, `team-open` and `team-doctor` say.
     - `stack.jq`: `team-stack`'s owner classes, Docker's sizes, the reaper's rules and the `stack.json` settings with their memory floor.
     - `time.jq`: `team-time`'s split of each task's time into phases, and its counts.
     - `tools.jq`: turns `tools.lock` into each tool's pin and install command for a machine.

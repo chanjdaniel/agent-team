@@ -10,8 +10,10 @@ load helpers/inbox
 
 setup() {
   sandbox
-  # A registry, committed with the team home, for the slots step's reading.
+  # A registry, committed with the team home, for the slots and capacity steps' readings, and a
+  # claude daemon with no live session, which the capacity step reads.
   cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  stub_reply claude '[]'
   origin=$(hold_lease home-pc)
   fake_service_managers
   stub_command uname
@@ -795,13 +797,18 @@ exit 1
 EOF
   run_bin -1 team-timers run
   assert_equal "$output" "$(cat "$log")"
-  assert_equal "$(steps "$output")" "lease stacks checkpoint janitor"
+  assert_equal "$(steps "$output")" "lease capacity stacks checkpoint janitor"
+  # The capacity step's reading still went in, without the sessions; its place failed.
+  assert_equal "$(grep ' capacity: ' <<<"$output" | cut -d ' ' -f 2-)" \
+    "capacity: failed: claude: the session list is down"
+  assert_equal "$(jq -c .sessions "$HOME/.local/state/agent-team/capacity/readings.jsonl")" false
   [[ $(grep ' stacks: ' <<<"$output") =~ ^[0-9T:Z-]+" stacks: failed: ".*"the session list is down" ]]
   assert_contains "$(grep ' janitor: ' <<<"$output")" "No alerts."
   [[ -s $(day_report) ]]
 
   # Docker not answering: the sweep has nothing to sweep, which it logs nothing for, and the
   # janitor fails, its report then the day's, so it is not run again that day.
+  rm "$STUB_FIXTURES/claude.sh"
   stub_reply claude '[]'
   rm "$(day_report)"
   docker_down
@@ -862,18 +869,21 @@ EOF
   docker_machine
   stack_json '{"heartbeat_sweep": true, "heartbeat_janitor": true}'
   docker_hang
-  # The slots step gets 5 s, which team-slots needs on a slow machine (CI's macOS runner) to
-  # reach its docker call before the step stops it, still well inside its own 30 s for Docker.
-  TEAM_TIMERS_SLOTS_SECONDS=5 TEAM_TIMERS_SWEEP_SECONDS=1 TEAM_TIMERS_JANITOR_SECONDS=2 run_bin -1 team-timers run
+  # The slots and capacity steps get 5 s each, which team-slots and team-capacity need on a slow
+  # machine (CI's macOS runner) to reach their docker call before the step stops it, still well
+  # inside their own 30 s for Docker.
+  TEAM_TIMERS_SLOTS_SECONDS=5 TEAM_TIMERS_CAPACITY_SECONDS=5 TEAM_TIMERS_SWEEP_SECONDS=1 TEAM_TIMERS_JANITOR_SECONDS=2 \
+    run_bin -1 team-timers run
   assert_equal "$output" "$(cat "$log")"
-  assert_equal "$(steps "$output")" "lease slots stacks checkpoint janitor"
+  assert_equal "$(steps "$output")" "lease slots capacity stacks checkpoint janitor"
   [[ $(grep ' slots: ' <<<"$output") =~ ^[0-9T:Z-]+" slots: failed: timed out after 5 s"$ ]]
+  [[ $(grep ' capacity: ' <<<"$output") =~ ^[0-9T:Z-]+" capacity: failed: timed out after 5 s"$ ]]
   [[ $(grep ' stacks: ' <<<"$output") =~ ^[0-9T:Z-]+" stacks: failed: timed out after 1 s"$ ]]
   [[ $(tail -n 1 <<<"$output") =~ ^[0-9T:Z-]+" janitor: failed: timed out after 2 s"$ ]]
   # Nothing they started is left waiting, and the janitor stopped wrote no report, so the next
   # run starts it again.
   local pid
-  [[ $(grep -c . "$DOCKER_STATE/hung") == 3 ]]
+  [[ $(grep -c . "$DOCKER_STATE/hung") == 4 ]]
   while read -r pid; do
     if [[ -n $pid ]] && kill -0 "$pid" 2>/dev/null; then
       echo "docker call $pid still waits"
@@ -922,6 +932,36 @@ EOF
   assert_equal "$(steps "$output")" "lease slots checkpoint"
   [[ $(grep ' slots: ' <<<"$output") =~ ^[0-9T:Z-]+" slots: failed: $file: cap must be a whole number of 1 or more, not \"ten\""$ ]]
   assert_equal "$(readings)" ""
+}
+
+@test "the capacity step takes a reading with the team's use per task on the holder every run, logging only the sessions it placed" {
+  run_bin -0 team-timers run
+  assert_equal "$(steps "$output")" "lease checkpoint"
+  local file=$HOME/.local/state/agent-team/capacity/readings.jsonl
+  assert_equal "$(jq -c '[.os, .systemd, .sessions, .tasks]' "$file")" '["linux",true,true,[]]'
+  # A live team session outside its slice is placed, and that is logged.
+  fake_placement
+  fake_process 100 99 - claude
+  stub_reply claude '[{"pid": 100, "id": "a1b2c3d4", "name": "T7-builder", "status": "idle"}]'
+  run_bin -0 team-timers run
+  assert_equal "$(steps "$output")" "lease capacity checkpoint"
+  assert_equal "$(grep ' capacity: ' <<<"$output" | cut -d ' ' -f 2-)" "capacity: placed T7-builder a1b2c3d4 in agent-team-T7-a1b2c3d4.scope (1 process)"
+  # Off the lease, none.
+  make_machine laptop
+  on_machine laptop run_bin -0 team-timers run
+  [[ ! -e $BATS_TEST_TMPDIR/machines/laptop/home/.local/state/agent-team/capacity/readings.jsonl ]]
+}
+
+@test "a capacity step whose capacity.json is malformed is logged with the reason, its place still runs, and the run exits 1" {
+  local file=$HOME/.config/agent-team/capacity.json
+  mkdir -p "${file%/*}"
+  echo '{"minor_share": "a third"}' >"$file"
+  run_bin -1 team-timers run
+  assert_equal "$output" "$(cat "$log")"
+  assert_equal "$(steps "$output")" "lease capacity checkpoint"
+  [[ $(grep ' capacity: ' <<<"$output") =~ ^[0-9T:Z-]+" capacity: failed: $file: minor_share must be a number above 0 and at most 1, not \"a third\""$ ]]
+  [[ ! -e $HOME/.local/state/agent-team/capacity/readings.jsonl ]]
+  assert_equal "$(stub_calls claude)" '["agents","--json"]'
 }
 
 @test "neither step runs off the lease, while another run holds the lock, offline or on a fenced machine; both run after the back step" {

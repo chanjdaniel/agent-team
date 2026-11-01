@@ -17,7 +17,8 @@
 #           and networks by class. With --json, one object, {projects} and with --all also
 #           {volumes, images, networks}, each item with its class, each project with its
 #           running containers' memory_bytes and cpu_percent (docker stats' CPUPerc summed),
-#           each null when none runs. It changes nothing: it runs
+#           each null when none runs, and memory_limit_bytes, the sum of its containers' memory
+#           limits (Compose's mem_limits), null when none has one. It changes nothing: it runs
 #           only docker compose ls, ps, inspect, stats --no-stream and, with --all, system df,
 #           volume ls and network ls.
 #
@@ -297,6 +298,7 @@ cmd_ls() {
            created: ([$mine[].Created | utc_time] | min),
            containers: ($mine | length), running: ([$mine[] | select(.State.Running)] | length),
            memory_bytes: (if $memory == [] then null else $memory | add end),
+           memory_limit_bytes: ([$mine[].HostConfig.Memory // 0] | add // 0 | if . == 0 then null else . end),
            cpu_percent: (if $cpu == [] then null else $cpu | add * 100 | round / 100 end)}]
       | sort_by(.name)}
     + if $all then

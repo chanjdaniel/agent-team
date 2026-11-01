@@ -95,3 +95,18 @@ sessions() {
   run_bin -0 team-doctor
   assert_equal "$(line_of resources)" "PASS resources: no hard limits on macOS: admission and stow only"
 }
+
+@test "the resources line warns on the lease holder with no reading of the last 15 minutes, naming the heartbeat's log, or its enable when it is off" {
+  rm "$HOME/.local/state/agent-team/capacity/readings.jsonl"
+  capacity_reading 20
+  run_bin -0 team-doctor
+  assert_equal "$(line_of resources)" "WARN resources: no reading of the machine's load in the last 15 minutes, though this machine holds the lease, whose heartbeat takes one every 5; fix: the capacity step's lines in ~/.local/state/agent-team/heartbeat.log say why it takes none"
+  "$REPO_ROOT/bin/team-timers" disable >/dev/null
+  run_bin -1 team-doctor
+  assert_contains "$(line_of resources)" "; fix: team-timers enable"
+  # A reading of the last 15 minutes passes.
+  capacity_reading 5
+  "$REPO_ROOT/bin/team-timers" enable >/dev/null
+  run_bin -0 team-doctor
+  assert_equal "$(line_of resources)" "PASS resources: agent-team.slice installed, no limits set yet; 0 live team sessions in it"
+}

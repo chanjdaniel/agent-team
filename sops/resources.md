@@ -1,7 +1,7 @@
 # SOP: the team's resources
 
 Built by T175 (2026-11-01), toward Daniel's resource levels: full, minor and none, each a share of the machine.
-`team-capacity --help` is the exact reference for its commands; this SOP says why the team's work is held as it is and what to do when it is not.
+`team-capacity --help` is the exact reference for its commands and its settings, `~/.config/agent-team/capacity.json`; this SOP says why the team's work is held and measured as it is and what to do when it is not.
 No limit is set on the team's slice yet: it holds and measures the team's work, and the levels' limits come later.
 
 ## The team's slice
@@ -29,9 +29,44 @@ Once all of a scope's processes end, systemd removes the scope.
 The assumptions, checked on home-pc on 2026-11-01 (T175 build note `01-cgroups.md`): the user manager's cgroup delegates `cpu`, `memory` and `pids`; systemd is 262, so `MemoryPeak` is there; Docker's cgroup driver is `systemd` on cgroup v2; the claude daemon was started from a Konsole tab, and every session it starts sits in that tab's scope under `user@1000.service`; and Daniel's own run of the probe moved such a process into `agent-team-probe.scope`.
 Workers' permissions do not allow the `busctl` call by hand: the tests use a stub, and a live check of placement is Daniel's or the coordinator's.
 
+## Readings
+
+The heartbeat's `capacity` step runs `team-capacity sample` on the lease holder every run, every 5 minutes, then `team-capacity place --quiet`, which places again any live team session outside its slice (one the claude daemon restarted, say).
+Each reading goes to `~/.local/state/agent-team/capacity/readings.jsonl`, kept for 24 hours.
+Its machine's part is the reading `team-slots sample` takes, by the same code (`bin/lib/reading.sh`), against a CPU snapshot of its own, so the two never differ: the memory, what the other programs use, and the team's processes, found by their working directory and their descent.
+On top of it, each reading says each task's use:
+
+- On Linux, a task's memory is its slice's `MemoryCurrent`, plus its team processes outside the team's slice, plus its running team stacks (their `task` label), since Docker's containers are outside every user slice.
+- Its CPU is its slice's `CPUUsageNSec` since the newest stored reading, plus its processes outside the slice since the snapshot, plus its stacks' share of a core.
+- Elsewhere, or for a task with no slice, it is every process that is the task's: one whose working directory is the task's held worktree or below it, or that descends from one.
+- Each live team session's use is its scope's on Linux (`MemoryCurrent`, `MemoryPeak`, `CPUUsageNSec`), else its process tree's.
+- The gate runs a pipeline while a process works in one of its worktrees, `~/.no-mistakes/worktrees/...`; its use is its daemon unit's on Linux, else the processes in `~/.no-mistakes` and their descendants.
+
+`team-capacity status` says the newest reading, taking one first when the newest is over 10 minutes old.
+A user manager or a session list that does not answer is said in the reading (`"systemd": false`, `"sessions": false`), and the reading still goes in.
+`team-doctor`'s `resources` line warns on the lease holder when the newest reading is over 15 minutes old.
+
+## Learned costs
+
+So that admission can rest on what work costs on this machine, each reading also keeps what it saw running in `capacity/live.json`, and each item that ended adds one line to `capacity/costs.jsonl`: `{at, kind, peak_bytes, cpu_seconds, seconds}`.
+
+| Kind | Ends when | Its peak |
+| - | - | - |
+| `session:<role>` | the session list no longer has the session | the highest `MemoryPeak` its scope had (its tree's memory elsewhere) |
+| `stack:<project>` | Docker no longer runs the stack | the highest memory the readings saw it use |
+| `gate` | no gate pipeline runs | the highest memory its daemon used while one ran |
+
+A session list or a Docker that did not answer ends nothing, so a hiccup never writes a false sample.
+The readings are 5 minutes apart, so a peak is what they saw, and a session or a run shorter than that may never be seen; a session's `MemoryPeak` is the kernel's own, so it is exact.
+A stack's kind needs its registered project, read from the held worktree its `worktree` label names, so a gate's stack has none and writes no sample.
+
+`team-capacity costs` gives each kind's estimate: from 5 samples, the 90th percentile of the last 20 peaks plus 10%; before that, the seed.
+The seeds are `capacity.json`'s `session_gib` (0.5), `heavy_gib` (5) and `gate_gib` (2.2), and for a stack the sum of its services' `mem_limit`s as the readings last saw it running (`team-stack ls --json`'s `memory_limit_bytes`).
+The seeds' evidence: 13 sessions at 0.3 to 0.55 GiB each, one heavy run 4 to 6 GiB and a gate about 2.2 GiB (T19's measure), from the plan's deep dive of 2026-11-01.
+
 ## What the doctor says
 
 `team-doctor`'s `resources` line reads `team-capacity check --json`.
 It fails when the user's systemd does not answer or its cgroup does not delegate `cpu` and `memory`, which only Daniel can change (a `user@.service` drop-in, with sudo).
-It warns when the slice or a gate daemon's drop-in is not installed (`team-capacity install`, Daniel's yes), when the gate's daemon still runs outside the slice (its restart waits on a pipeline), and when a live team session runs outside its task's slice (`team-capacity place`).
+It warns when the slice or a gate daemon's drop-in is not installed (`team-capacity install`, Daniel's yes), when the gate's daemon still runs outside the slice (its restart waits on a pipeline), when a live team session runs outside its task's slice (`team-capacity place`, or the heartbeat's next run), and on the lease holder when no reading is under 15 minutes old (the `capacity` step's lines in the heartbeat log say why).
 macOS has no cgroups: `install` and `place` change nothing there, and the line passes with "no hard limits on macOS: admission and stow only".

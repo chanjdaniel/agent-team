@@ -95,6 +95,12 @@ kept() {
   assert_read_only
 }
 
+@test "ls --json carries each project's memory limits, the sum of its containers' mem_limits, null with none set" {
+  run_bin -0 team-stack ls --json
+  assert_equal "$(jq -c '[.projects[] | [.name, .memory_limit_bytes]]' <<<"$output")" \
+    '[["conventioner",null],["conventioner-2",1879048192],["conventioner-3",805306368],["conventioner-4",805306368],["nmtest-12822",null],["nmtest-1895520",536870912]]'
+}
+
 @test "ls --json carries each project's CPU, the sum of its running containers' docker stats, null with none running" {
   docker_state stats 'map(if .Name == "conventioner-2-mongodb-1" then .CPUPerc = "150.25%" else . end)'
   run_bin -0 team-stack ls --json
