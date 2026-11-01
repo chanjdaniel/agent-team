@@ -316,11 +316,12 @@ SETTINGS=(coordinator.settings.json settings/worker.json)
   done
   assert_equal "$(jq -r '.tools[] | select(.name == "chrome-devtools-mcp") | [.pin, .source.arch, .source.macos] | join(" | ")' "$REPO_ROOT/bin/lib/tools.lock")" \
     "$pin | npm install -g chrome-devtools-mcp@$pin | npm install -g chrome-devtools-mcp@$pin"
-  # The client that speaks the server's current protocol (page ids), with the path variable; the
+  # The client that speaks the server's current protocol (page ids, 0.1.44 on), with the path variable; the
   # browser toolkit's test runs the copy servers/ pins, which CI's runner has no global install of,
   # so it is the client the sessions run.
   pin=$(jq -r '.tools[] | select(.name == "chrome-devtools-axi") | .pin' "$REPO_ROOT/bin/lib/tools.lock")
-  assert_equal "$pin" 0.1.44
+  [[ $pin =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+  printf '%s\n' 0.1.44 "$pin" | sort -V -C
   assert_equal "$(jq -r '.dependencies["chrome-devtools-axi"]' "$REPO_ROOT/servers/package.json")" "$pin"
   assert_equal "$(jq -r '.packages["node_modules/chrome-devtools-axi"].version' "$REPO_ROOT/servers/package-lock.json")" "$pin"
 }
@@ -455,16 +456,21 @@ assert_denies() {
 # The hooks rules start at git config (from any directory) and name the key right after a scope or
 # subcommand, so a commit message quoting the command and a read of the key stay allowed. A rule
 # whose one * ends it after a space also matches the key alone, a read (rule_text_matches), so the
-# rules with no -C end in ** and need a value after the key.
+# rules with no -C end in ** and need a value after the key. The --local and --worktree scopes are
+# denied by the rules for a name ending local or worktree, which take in --file's names too.
 @test "the git hooks' deny rule: git config of core.hooksPath, set or unset" {
   assert_denies 'Bash(git config core.hooksPath **)' 'git config core.hooksPath /dev/null'
   assert_denies 'Bash(git -C * config core.hooksPath *)' 'git -C /home/me/agent-team config core.hooksPath x'
   assert_denies 'Bash(git config --global core.hooksPath **)' 'git config --global core.hooksPath x'
-  assert_denies 'Bash(git config --local core.hooksPath **)' 'git config --local core.hooksPath x'
+  assert_denies 'Bash(git config *local core.hooksPath **)' 'git config --local core.hooksPath x'
   assert_denies 'Bash(git config --system core.hooksPath **)' 'git config --system core.hooksPath x'
-  assert_denies 'Bash(git config --worktree core.hooksPath **)' 'git config --worktree core.hooksPath x'
+  assert_denies 'Bash(git config *worktree core.hooksPath **)' 'git config --worktree core.hooksPath x'
+  assert_denies 'Bash(git -C * config *local core.hooksPath *)' 'git -C ~/repo config --local core.hooksPath x'
+  assert_denies 'Bash(git -C * config *worktree core.hooksPath *)' 'git -C ~/repo config --worktree core.hooksPath x'
   assert_denies 'Bash(git config set *core.hooksPath*)' 'git config set --global core.hooksPath x'
-  assert_denies 'Bash(git config --add *core.hooksPath*)' 'git config --add core.hooksPath x'
+  assert_denies 'Bash(git config *--add*core.hooksPath*)' 'git config --add core.hooksPath x' \
+    'git config --file ~/.gitconfig --add core.hooksPath x'
+  assert_denies 'Bash(git -C * config *--add*core.hooksPath*)' 'git -C ~/repo config -f .git/config --add core.hooksPath x'
   assert_denies 'Bash(git config *--unset*core.hooksPath*)' 'git config --unset core.hooksPath' \
     'git config --unset-all core.hooksPath' 'git config --global --unset "core.hooksPath"'
   assert_denies 'Bash(git config unset *core.hooksPath*)' 'git config unset --local core.hooksPath'
@@ -481,12 +487,52 @@ assert_denies() {
   assert_denies 'Bash(git config set *core.hookspath*)' 'git config set core.hookspath x'
   assert_denies 'Bash(git config "core.hookspath" **)' 'git config "core.hookspath" x'
   assert_denies "Bash(git config 'core.hookspath' **)" "git config 'core.hookspath' x"
+  assert_denies 'Bash(git config *--add*core.hookspath*)' 'git config --file ~/.gitconfig --add core.hookspath x'
+  assert_denies 'Bash(git -C * config *--add*core.hookspath*)' 'git -C ~/repo config --add core.hookspath x'
 }
 
-# --replace-all writes the key it names; --file and -f write it in the file they name. Their rules
-# name the key right after a file whose name ends in config, as every file git reads its config
-# from does but a config.worktree, and need a value after the key, as the others do: a * between
-# the file and the key would take in a --get, and refuse a read.
+# --remove-section drops the core section, the key with it, and --rename-section moves another
+# section's hooksPath into core; both name the section, never the key.
+# The rules match core anywhere after -section, so they also refuse removing or renaming any
+# section whose name holds it (branch.hardcore-fix, remote.score); that cost, a rare command a
+# session can leave to Daniel, is accepted.
+@test "the git hooks' deny rule: git config removing or renaming the core section" {
+  assert_denies 'Bash(git config *-section*core*)' 'git config --remove-section core' \
+    'git config --global --remove-section core' 'git config --rename-section core x' \
+    'git config --rename-section evil core' 'git config remove-section --local core' \
+    'git config --remove-section "core"' 'git config --remove-section branch.hardcore-fix' \
+    'git config --rename-section remote.score x'
+  assert_denies 'Bash(git -C * config *-section*core*)' 'git -C ~/repo config --remove-section core' \
+    'git -C ~/repo config --rename-section core x'
+}
+
+# A type option before the key still writes it (--int writes 5, --bool true, both a directory with
+# no hooks in it). Each rule names the end of the word right before the key: a type's name ends
+# --path, --type=path, --type path and -t path alike, and --no-type's own word. A * between that
+# word and the key would take in a --get, and refuse a read.
+@test "the git hooks' deny rule: git config of core.hooksPath after a type option" {
+  local key end option
+  for key in hooksPath hookspath; do
+    for end in path:--path bool:--bool int:--int str:--bool-or-str date:--expiry-date color:--type=color type:--no-type; do
+      option=${end#*:} end=${end%%:*}
+      echo "end: $end, key: $key" >&2
+      assert_denies "Bash(git config *$end core.$key **)" "git config $option core.$key x" \
+        "git config --global $option core.$key x"
+      assert_denies "Bash(git -C * config *$end core.$key *)" "git -C ~/repo config $option core.$key x"
+    done
+    assert_denies "Bash(git config *path core.$key **)" "git config --type=path core.$key x" \
+      "git config --type path core.$key x" "git config -t path core.$key x"
+    assert_denies "Bash(git config *bool core.$key **)" "git config --type=bool core.$key true"
+    assert_denies "Bash(git config *int core.$key **)" "git config --bool-or-int core.$key 5" "git config --type=int core.$key 5"
+  done
+}
+
+# --replace-all writes the key it names; --file and -f write it in the file they name, which may be
+# any file, since an include.path or includeIf in any config git reads may name it. Their rules name
+# the key right after the end of the file's name, and need a value after the key, as the others do:
+# a * between the file and the key would take in a --get, and refuse a read. So they cover a name
+# ending in config, config.worktree or .local (as ~/.gitconfig.local, a common include), and any
+# quoted name, and miss an unquoted name ending otherwise, as /tmp/x; the hooks remain the guard.
 @test "the git hooks' deny rule: git config of core.hooksPath with --replace-all, --file or -f" {
   assert_denies 'Bash(git config *--replace-all*core.hooksPath*)' 'git config --replace-all core.hooksPath x' \
     'git config --global --replace-all core.hooksPath x'
@@ -503,11 +549,29 @@ assert_denies() {
   assert_denies 'Bash(git -C * config *--file*config core.hookspath *)' 'git -C ~/repo config --file=.git/config core.hookspath x'
   assert_denies 'Bash(git config *-f *config core.hookspath **)' 'git config -f .git/config core.hookspath x'
   assert_denies 'Bash(git -C * config *-f *config core.hookspath *)' 'git -C ~/repo config -f .git/config core.hookspath x'
+  local key
+  for key in hooksPath hookspath; do
+    echo "key: $key" >&2
+    assert_denies "Bash(git config *worktree core.$key **)" "git config --file .git/config.worktree core.$key x" \
+      "git config --file=.git/config.worktree core.$key x"
+    assert_denies "Bash(git -C * config *worktree core.$key *)" "git -C ~/repo config -f .git/config.worktree core.$key x"
+    assert_denies "Bash(git config *local core.$key **)" "git config --file ~/.gitconfig.local core.$key x" \
+      "git config -f ~/.config/git/config.local core.$key x"
+    assert_denies "Bash(git -C * config *local core.$key *)" "git -C ~/repo config --file ~/.gitconfig.local core.$key x"
+    assert_denies "Bash(git config *\" core.$key **)" "git config -f \".git/config\" core.$key x" \
+      "git config --file \"/tmp/x\" core.$key x"
+    assert_denies "Bash(git -C * config *\" core.$key *)" "git -C ~/repo config -f \".git/config\" core.$key x"
+    assert_denies "Bash(git config *' core.$key **)" "git config -f '.git/config' core.$key x"
+    assert_denies "Bash(git -C * config *' core.$key *)" "git -C ~/repo config --file='/home/me/.gitconfig' core.$key x"
+  done
 }
 
 # Git reads config from these variables on every command: a key and value pair counted by
 # GIT_CONFIG_COUNT, -c's own list in GIT_CONFIG_PARAMETERS, and another global or system file.
-# Each rule denies an assignment of one, before a command, exported or through env.
+# Each rule denies an assignment of one, before a command, exported or through env. Its * on both
+# sides also takes in any text naming an assignment, so a search such as
+# git grep -n 'GIT_CONFIG_GLOBAL=' is refused too; that cost is accepted (a search for the bare
+# name, as the allowed-list test's, stays allowed).
 @test "the git hooks' deny rule: git's config set through its GIT_CONFIG_ variables" {
   local pair='GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null'
   assert_denies 'Bash(*GIT_CONFIG_COUNT=*)' "GIT_CONFIG_COUNT=1 $pair git commit -m x" \
@@ -585,6 +649,42 @@ git -C ~/repo config --file .git/config core.hooksPath x
 git config -f .git/config core.hooksPath x
 git config -f ~/.gitconfig core.hookspath ""
 git -C ~/repo config -f .git/config core.hooksPath x
+git config --remove-section core
+git -C ~/repo config --remove-section core
+git config --rename-section core x
+git -C ~/repo config --rename-section core x
+git config --path core.hooksPath x
+git config --path core.hookspath x
+git -C ~/repo config --path core.hooksPath x
+git -C ~/repo config --path core.hookspath x
+git config --bool core.hooksPath true
+git config --bool core.hookspath true
+git -C ~/repo config --bool core.hooksPath true
+git -C ~/repo config --bool core.hookspath true
+git config --type=path core.hooksPath x
+git config --type=path core.hookspath x
+git -C ~/repo config --type=path core.hooksPath x
+git -C ~/repo config --type=path core.hookspath x
+git config --type path core.hooksPath x
+git config --type path core.hookspath x
+git -C ~/repo config --type path core.hooksPath x
+git -C ~/repo config --type path core.hookspath x
+git config --file ~/.gitconfig --add core.hooksPath x
+git config --file ~/.gitconfig --add core.hookspath x
+git -C ~/repo config --file ~/.gitconfig --add core.hooksPath x
+git -C ~/repo config --file ~/.gitconfig --add core.hookspath x
+git config --file .git/config.worktree core.hooksPath x
+git config --file .git/config.worktree core.hookspath x
+git -C ~/repo config --file .git/config.worktree core.hooksPath x
+git -C ~/repo config --file .git/config.worktree core.hookspath x
+git config -f ".git/config" core.hooksPath x
+git config -f ".git/config" core.hookspath x
+git -C ~/repo config -f ".git/config" core.hooksPath x
+git -C ~/repo config -f ".git/config" core.hookspath x
+git config --file ~/.gitconfig.local core.hooksPath x
+git config --file ~/.gitconfig.local core.hookspath x
+git -C ~/repo config --file ~/.gitconfig.local core.hooksPath x
+git -C ~/repo config --file ~/.gitconfig.local core.hookspath x
 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null git commit -m x
 export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=; git push
 env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hookspath GIT_CONFIG_VALUE_0= git push
@@ -775,6 +875,121 @@ COMMANDS
     command=$'cat > tickets/11-x.md <<\'EOF\'\nNarrow the deny rule on migrate_user_emails.py to its execution forms.\nEOF'
     if denied "$file" "$command"; then echo "$file denies: $command" >&2; return 1; fi
   done
+}
+
+# Claude Code strips a command's wrappers before it matches a deny rule, so a rule naming a bare
+# command refuses it behind any of them; deny_forms models that, so a "stays allowed" test cannot
+# pass on a command Claude Code refuses.
+@test "the deny model strips the wrappers Claude Code strips before it matches a rule" {
+  local settings=$BATS_TEST_TMPDIR/settings.json command
+  echo '{"permissions": {"deny": ["Bash(tool *)"]}}' >"$settings"
+  while IFS= read -r command; do
+    denied_in "$settings" "$command" || { echo "not denied: $command" >&2; return 1; }
+  done <<'COMMANDS'
+tool x
+/usr/local/bin/tool x
+nohup tool x
+nohup -- tool x
+timeout 5 tool x
+timeout -k 3 -s KILL 10s tool x
+timeout --signal=TERM -- 1.5m tool x
+command tool x
+command -p tool x
+sudo tool x
+sudo -u me -n tool x
+sudo --user=me /usr/bin/tool x
+env A=1 tool x
+env -u HOME A=1 B= /usr/bin/tool x
+/usr/bin/env A=1 tool
+exec tool x
+time tool x
+nice -n 5 tool x
+X=1 nohup env A=1 timeout 5 sudo command /opt/bin/tool x
+cd /tmp && nohup timeout 5 tool x 2>&1
+COMMANDS
+  while IFS= read -r command; do
+    if denied_in "$settings" "$command"; then echo "denied: $command" >&2; return 1; fi
+  done <<'COMMANDS'
+echo tool x
+command -v tool
+command -V tool
+env | grep tool
+timeout tool x
+nohup
+grep -n 'nohup tool' bin/x
+sudo -l
+COMMANDS
+}
+
+# worker_refusal (bin/lib/team.sh) reads AGENT_TEAM_ROLE and AGENT_TEAM_TASK, which team-worker sets
+# in a worker's settings: a worker is denied setting either on a command line, and unsetting it
+# with unset or env's -u, so the refusal cannot be talked past (env -i, which clears every
+# variable, is left: it is a speed bump). Like the GIT_CONFIG_ rules, a rule's * on both sides also
+# takes in a search naming an assignment, so grep -n 'AGENT_TEAM_ROLE=' tests/ is refused too;
+# that cost is accepted (a search for the bare name stays allowed).
+@test "a worker cannot set or unset its role or task on a command line" {
+  local SETTINGS=(settings/worker.json) command
+  # shellcheck disable=SC2088 # ~ is part of the command as an agent types it
+  assert_denies 'Bash(*AGENT_TEAM_ROLE=*)' 'AGENT_TEAM_ROLE=coordinator ~/agent-team/bin/team-post T7 --file f' \
+    'export AGENT_TEAM_ROLE=x' 'AGENT_TEAM_ROLE= team-post T7 --file f' 'env AGENT_TEAM_ROLE=coordinator team-post T7 --file f'
+  assert_denies 'Bash(*AGENT_TEAM_TASK=*)' 'env AGENT_TEAM_TASK=T1 cmd' 'export AGENT_TEAM_TASK=T8; team-post T8 --file f' \
+    'AGENT_TEAM_ROLE=planner AGENT_TEAM_TASK=T8 team-post T8 --thread interview --file f'
+  assert_denies 'Bash(*unset AGENT_TEAM_*)' 'unset AGENT_TEAM_ROLE; team-post T7 --file f' \
+    'env --unset AGENT_TEAM_ROLE team-post T7 --file f'
+  assert_denies 'Bash(*unset=AGENT_TEAM_*)' 'env --unset=AGENT_TEAM_ROLE team-post T7 --file f'
+  assert_denies 'Bash(*-u AGENT_TEAM_*)' 'env -u AGENT_TEAM_ROLE team-post T7 --file f'
+  assert_denies 'Bash(*-uAGENT_TEAM_*)' 'env -uAGENT_TEAM_TASK team-post T7 --file f'
+  while IFS= read -r command; do
+    if denied settings/worker.json "$command"; then echo "settings/worker.json denies: $command" >&2; return 1; fi
+  done <<'COMMANDS'
+grep -rn AGENT_TEAM_ROLE bin/
+git grep -n 'AGENT_TEAM_TASK:-'
+echo "$AGENT_TEAM_ROLE $AGENT_TEAM_TASK"
+env | grep AGENT_TEAM_
+tests/vendor/bats-core/bin/bats tests/team-post.bats -f 'a planner session'
+COMMANDS
+}
+
+# A channel's bot token and access list are its .env and access.json under ~/.claude/channels/:
+# a worker's Read and Edit rules deny the whole directory, and its Bash rules deny naming either
+# file, or entering the directory to read one by its bare name, so reading or searching the team's
+# code about the channel stays allowed. A glob for the file's name (.e*) is left: a speed bump.
+@test "a worker is denied the channel's secret files by shell, and may read code that names the channel" {
+  local command
+  for command in 'Read(~/.claude/channels/**)' 'Edit(~/.claude/channels/**)'; do
+    jq -e --arg r "$command" '.permissions.deny | index($r)' "$REPO_ROOT/settings/worker.json" >/dev/null ||
+      { echo "settings/worker.json lacks the deny rule $command" >&2; return 1; }
+  done
+  while IFS= read -r command; do
+    denied settings/worker.json "$command" || { echo "settings/worker.json allows: $command" >&2; return 1; }
+  done <<'COMMANDS'
+cat ~/.claude/channels/discord/.env
+cat $HOME/.claude/channels/discord/.env
+cat "$HOME/.claude/channels/discord/.env"
+cat /home/me/.claude/channels/discord/.env
+grep TOKEN ~/.claude/channels/discord/.env
+grep -h TOKEN $HOME/.claude/channels/*/.env
+source ~/.claude/channels/discord/.env
+source /home/me/.claude/channels/discord/.env
+. "$HOME/.claude/channels/discord/.env"
+head -n 1 ~/.claude/channels/discord/.env
+cat ~/.claude/channels/discord/access.json
+grep allowFrom $HOME/.claude/channels/discord/access.json
+head -c 200 /home/me/.claude/channels/discord/access.json
+jq .allowFrom "$HOME/.claude/channels/discord/access.json"
+cd ~/.claude/channels/discord && cat .env
+cd $HOME/.claude/channels/discord; source .env
+pushd /home/me/.claude/channels/discord && head access.json
+COMMANDS
+  while IFS= read -r command; do
+    if denied settings/worker.json "$command"; then echo "settings/worker.json denies: $command" >&2; return 1; fi
+  done <<'COMMANDS'
+grep -rn '~/.claude/channels' bin/
+git grep -n 'claude/channels'
+grep -n '.claude/channels/discord' bin/lib/team.sh
+sed -n 1,40p bin/team-post
+ls ~/.claude/channels
+COMMANDS
 }
 
 # Whether one of the Bash allow rules in settings/<role>.json, with @TEAM_CODE@ as team-worker

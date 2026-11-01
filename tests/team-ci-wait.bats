@@ -172,12 +172,60 @@ team-ci-wait: the checks on a1b2c3d did not pass:
   assert_contains "$output" "team-ci-wait: the head of owner/proj#217 moved from a1b2c3d to 9f8e7d6: the new head's checks need a wait of their own"
 }
 
-@test "a head other than the one the worker means ends the wait at the first look with exit 1, naming both" {
+@test "a head other than the one the worker means for 2 minutes of looks ends the wait with exit 1, naming both and the report" {
   checks 0 "$(check test SUCCESS)"
   run_bin team-ci-wait "$url" 9f8e7d6c5b4a39281706f5e4d3c2b1a098765432
   assert_equal "$status" 1
+  assert_equal "$(ended_at)" 4
+  assert_equal "$output" "team-ci-wait: the head of owner/proj#217 is a1b2c3d, not 9f8e7d6, after 2 minutes of looks: it is another commit, and its checks are not the ones to wait on; if a1b2c3d is not your own, report it to the coordinator"
+}
+
+@test "the grace's seam shortens it, and names it in seconds when they are not whole minutes" {
+  checks 0 "$(check test SUCCESS)"
+  TEAM_CI_WAIT_GRACE_SECONDS=30 run_bin team-ci-wait "$url" 9f8e7d6c5b4a39281706f5e4d3c2b1a098765432
+  assert_equal "$status" 1
+  assert_equal "$(ended_at)" 1
+  assert_contains "$output" "is a1b2c3d, not 9f8e7d6, after 30 seconds of looks: it is another commit"
+  echo 0 >"$GH_DIR/look"
+  TEAM_CI_WAIT_GRACE_SECONDS=0 run_bin team-ci-wait "$url" 9f8e7d6c5b4a39281706f5e4d3c2b1a098765432
+  assert_equal "$status" 1
   assert_equal "$(ended_at)" 0
-  assert_equal "$output" "team-ci-wait: the head of owner/proj#217 is a1b2c3d, not 9f8e7d6: its checks are not the ones to wait on; if you pushed 9f8e7d6 a moment ago, GitHub may not show it yet, so run team-ci-wait again"
+  TEAM_CI_WAIT_GRACE_SECONDS=2m run_bin team-ci-wait "$url"
+  assert_equal "$status" 2
+  assert_contains "$output" "TEAM_CI_WAIT_GRACE_SECONDS must be a number of seconds"
+}
+
+@test "a push GitHub shows within the grace is waited on, and its checks end the wait" {
+  other=9f8e7d6c5b4a39281706f5e4d3c2b1a098765432
+  checks 0 "$(check test FAILURE)"
+  pr OPEN "$other" 2
+  checks 2 "$(check test PENDING)"
+  checks 5 "$(check test SUCCESS)"
+  run_bin team-ci-wait "$url" "$other"
+  assert_equal "$status" 0
+  assert_equal "$(ended_at)" 5
+  assert_equal "$output" "team-ci-wait: waiting on the checks of owner/proj#217 at 9f8e7d6
+team-ci-wait: every check passed on 9f8e7d6: test passed"
+}
+
+@test "a head that moves after the grace's first matching look still ends the wait, naming both heads" {
+  other=9f8e7d6c5b4a39281706f5e4d3c2b1a098765432
+  checks 0 "$(check test PENDING)"
+  pr OPEN "$other" 1
+  pr OPEN 0123456789abcdef0123456789abcdef01234567 3
+  run_bin team-ci-wait "$url" "$other"
+  assert_equal "$status" 1
+  assert_equal "$(ended_at)" 3
+  assert_contains "$output" "team-ci-wait: the head of owner/proj#217 moved from 9f8e7d6 to 0123456: the new head's checks need a wait of their own"
+}
+
+@test "a PR merged or closed while the grace waits for its head ends the wait at once, naming its state" {
+  checks 0 "$(check test PENDING)"
+  pr MERGED "$head" 1
+  run_bin team-ci-wait "$url" 9f8e7d6c5b4a39281706f5e4d3c2b1a098765432
+  assert_equal "$status" 1
+  assert_equal "$(ended_at)" 1
+  assert_equal "$output" "team-ci-wait: owner/proj#217 is merged: its checks no longer matter"
 }
 
 @test "the head the worker means, in full or short, is waited on" {

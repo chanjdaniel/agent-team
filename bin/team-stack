@@ -142,7 +142,9 @@
 # The owner classes, from each object's own labels and its Compose project, and the registry's
 # stack blocks (team-project --help):
 #   gate       kind=gate, whatever its owner (a gate run from a task's shell is owner=agent-team
-#              too), or no team label set and a project name matching a legacy_gate
+#              too), or no team label set and a Compose project any of whose containers Compose
+#              started inside the gate's worktrees root (its working_dir label there or below),
+#              ~/.no-mistakes/worktrees, or whose name matches a legacy_gate
 #   team       owner=agent-team, and not kind=gate
 #   unowned    everything else, Daniel's primary stack and hand-made stacks included
 # An anonymous volume a container mounts takes that container's class, and one no container
@@ -156,7 +158,8 @@
 # accepted and no longer read, since the level's budget admits a stack (team-doctor warns of them).
 # up, sweep and the heartbeat refuse a file that is not one JSON object, a key of the wrong type
 # and an unknown key, naming each.
-# Test seam: TEAM_STACK_RECHECK_SECONDS replaces the 30 seconds between admission checks.
+# Test seams: TEAM_STACK_RECHECK_SECONDS replaces the 30 seconds between admission checks, and
+# TEAM_STACK_GATE_WORKTREES names the gate's worktrees root in place of ~/.no-mistakes/worktrees.
 #
 # Exit 0 done, 1 refused or failed (Docker not answering, with its reason, but for sweep),
 # 2 usage error, 75 try again later (no room for the stack when its wait ran out).
@@ -176,6 +179,9 @@ shift
 # The machine's stack state: the admission lock, and in stacks/ the waits log, the sweep's log
 # and each team stack's <project>.json.
 STATE=$HOME/.local/state/agent-team
+
+# The gate's worktrees root: an unlabelled Compose project started inside it is the gate's.
+GATE_WORKTREES=${TEAM_STACK_GATE_WORKTREES:-$HOME/.no-mistakes/worktrees}
 
 # Docker's answers go through files: a machine's hundreds of volumes are too long for an argument.
 WORK=$(mktemp -d)
@@ -283,6 +289,7 @@ cmd_ls() {
     $projects[0] as $projects | $stats[0] as $stats | $stacks[0] as $stacks | $gone[0] as $gone
     | $df[0] as $df | $volumes[0] as $volumes | $images[0] as $images | $networks[0] as $networks
     | ($containers[0] | map(. + {project: compose_project(.Config.Labels)})) as $containers
+    | gate_worktree_projects($containers; $gate_root) as $gated
     | {projects: [$projects[] | .Name as $name
         | [$containers[] | select(.project == $name)] as $mine
         # The team labels any of its containers set, as the project'"'"'s.
@@ -293,7 +300,7 @@ cmd_ls() {
         | [$running[] | .MemUsage | split(" / ")[0] | bytes] as $memory
         | [$running[] | .CPUPerc | rtrimstr("%") | tonumber? // empty] as $cpu
         | team_label($labels; "worktree") as $worktree
-        | {name: $name, status: .Status, class: owner_class($labels; $name; $stacks),
+        | {name: $name, status: .Status, class: owner_class($labels; $name; $stacks; $gated),
            owner: team_label($labels; "owner"), task: team_label($labels; "task"),
            kind: team_label($labels; "kind"), worktree: $worktree,
            worktree_gone: (if $worktree == null then null else $gone | index($worktree) != null end),
@@ -314,7 +321,7 @@ cmd_ls() {
                 or ((.Name | test("^[0-9a-f]{64}$")) and compose_project($labels) == null)) as $anonymous
             | (if $anonymous and $by != [] then $by[0].Config.Labels else $labels end) as $owner
             | (if $anonymous and $by != [] then $by[0].project else compose_project($labels) end) as $project
-            | {name: .Name, class: (if $anonymous and $by == [] then "anonymous" else owner_class($owner; $project; $stacks) end),
+            | {name: .Name, class: (if $anonymous and $by == [] then "anonymous" else owner_class($owner; $project; $stacks; $gated) end),
                project: $project, anonymous: $anonymous, attached: ($by != []),
                owner: team_label($owner; "owner"), task: team_label($owner; "task"), kind: team_label($owner; "kind"),
                worktree: team_label($owner; "worktree"), size_bytes: $sizes[.Name], created: .CreatedAt}]
@@ -324,12 +331,12 @@ cmd_ls() {
                dangling: (.Repository == "<none>"), size_bytes: (.Size | bytes), created: .CreatedAt}]
             | sort_by((.class | class_rank), .repository, .tag),
            networks: [$networks[] | (.Labels // {}) as $labels
-            | {name: .Name, id: .Id, class: owner_class($labels; compose_project($labels); $stacks),
+            | {name: .Name, id: .Id, class: owner_class($labels; compose_project($labels); $stacks; $gated),
                project: compose_project($labels), owner: team_label($labels; "owner"), task: team_label($labels; "task"),
                kind: team_label($labels; "kind"), worktree: team_label($labels; "worktree"), created: .Created}]
             | sort_by((.class | class_rank), .name)}
       else {} end' \
-    --argjson all "$([[ -n $all ]] && echo true || echo false)" \
+    --argjson all "$([[ -n $all ]] && echo true || echo false)" --arg gate_root "$GATE_WORKTREES" \
     --slurpfile projects "$WORK/projects.json" --slurpfile containers "$WORK/containers.json" \
     --slurpfile stats "$WORK/stats.json" --slurpfile stacks "$WORK/stacks.json" --slurpfile gone "$WORK/gone.json" \
     --slurpfile df "$WORK/df.json" --slurpfile volumes "$WORK/volumes.json" --slurpfile images "$WORK/images.json" \
@@ -498,10 +505,11 @@ stack_state() {
   docker_inspect network "$WORK/stack-networks.json" "${ids[@]}"
   jq -n -L "$TEAM_LIB" 'include "stack";
     $containers[0] as $containers | $volumes[0] as $volumes | $stacks[0] as $stacks
+    | gate_worktree_projects($containers; $gate_root) as $gated
     | ([$containers[] | {type: "container", name: (.Name | ltrimstr("/")), labels: .Config.Labels}]
        + [$volumes[] | {type: "volume", name: .Name, labels: .Labels}]
        + [$networks[0][] | {type: "network", name: .Name, labels: .Labels}]
-      | map(. + {class: owner_class(.labels; $project; $stacks)})) as $objects
+      | map(. + {class: owner_class(.labels; $project; $stacks; $gated)})) as $objects
     | {exists: ($objects != []), running: any($containers[]; .State.Running),
        class: (first($objects[] | select(.class != "team") | .class) // "team"),
        classes: ([$objects[].class] | unique),
@@ -512,7 +520,7 @@ stack_state() {
        anonymous: ([$containers[].Mounts[]? | select(.Type == "volume" and (.Name // "" | test("^[0-9a-f]{64}$"))) | .Name]
          - [$volumes[].Name] | unique),
        objects: [$objects[] | {type, name}]}' \
-    --arg project "$STACK_NAME" --argjson keys "$(printf '%s\n' "${LABEL_KEYS[@]}" | jq -Rcs 'split("\n")[:-1]')" \
+    --arg project "$STACK_NAME" --arg gate_root "$GATE_WORKTREES" --argjson keys "$(printf '%s\n' "${LABEL_KEYS[@]}" | jq -Rcs 'split("\n")[:-1]')" \
     --slurpfile containers "$WORK/stack-containers.json" --slurpfile volumes "$WORK/stack-volumes.json" \
     --slurpfile networks "$WORK/stack-networks.json" --slurpfile stacks "$WORK/stacks.json" >"$WORK/stack.json"
 }
@@ -789,14 +797,14 @@ cmd_sweep() {
   # The running team stacks, one compact {project, task, worktrees, started} per line: every
   # container of the project of class team, one running, started its running containers' latest start.
   jq -c -L "$TEAM_LIB" 'include "stack";
-    $stacks[0] as $stacks
+    $stacks[0] as $stacks | gate_worktree_projects(.; $gate_root) as $gated
     | map(. + {project: compose_project(.Config.Labels)} | select(.project != null))
     | group_by(.project)[]
-    | select(all(.[]; owner_class(.Config.Labels; .project; $stacks) == "team") and any(.[]; .State.Running))
+    | select(all(.[]; owner_class(.Config.Labels; .project; $stacks; $gated) == "team") and any(.[]; .State.Running))
     | {project: .[0].project, task: ([.[] | team_label(.Config.Labels; "task") // empty] | unique | join(",")),
        worktrees: ([.[] | team_label(.Config.Labels; "worktree") // empty] | unique),
        started: ([.[] | select(.State.Running) | .State.StartedAt | utc_time | fromdate] | max)}' \
-    --slurpfile stacks "$WORK/stacks.json" "$WORK/containers.json" >"$WORK/running.jsonl"
+    --slurpfile stacks "$WORK/stacks.json" --arg gate_root "$GATE_WORKTREES" "$WORK/containers.json" >"$WORK/running.jsonl"
   [[ -s $WORK/running.jsonl ]] || return 0
 
   # The working directories of the busy sessions, interactive ones included, each made absolute
@@ -911,12 +919,12 @@ cmd_reap() {
   jq -n -L "$TEAM_LIB" 'include "stack";
     reap_plan({containers: $containers[0], volumes: $volumes[0], networks: $networks[0], images: ($df[0].Images // []),
       sizes: ($df[0].Volumes // [] | map({key: .Name, value: (.Size | bytes)}) | from_entries),
-      stacks: $stacks[0], closed: $closed[0], gone: $gone[0], now: now, legacy: $legacy,
+      stacks: $stacks[0], closed: $closed[0], gone: $gone[0], gate_root: $gate_root, now: now, legacy: $legacy,
       scope: (if $scope == "" then null else $scope end)})' \
     --slurpfile containers "$WORK/containers.json" --slurpfile volumes "$WORK/volumes.json" \
     --slurpfile networks "$WORK/networks.json" --slurpfile df "$WORK/df.json" --slurpfile stacks "$WORK/stacks.json" \
     --slurpfile closed "$WORK/closed.json" --slurpfile gone "$WORK/gone.json" --argjson legacy "$legacy" \
-    --arg scope "${TEAM_STACK_REAP_PROJECTS:-}" >"$WORK/plan.json"
+    --arg scope "${TEAM_STACK_REAP_PROJECTS:-}" --arg gate_root "$GATE_WORKTREES" >"$WORK/plan.json"
 
   # Each action: printed as it would be taken, or taken and printed, or named on stderr when it
   # fails; each outcome logged for the summary.

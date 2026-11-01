@@ -23,7 +23,9 @@ declare -gA FORMAT=(
   [opencode]='%s'
   [bun]='%s'
   [treehouse]='v%s'
-  [no-mistakes]='no-mistakes version v%s (a544ba6) 2026-10-31T01:47:41Z'
+  # The real build also names its commit in parentheses after the version, which the pattern
+  # skips; a stub at any version leaves it out.
+  [no-mistakes]='no-mistakes version v%s 2026-10-31T01:47:41Z'
   [op]='%s'
   [git]='git version %s'
   [jq]='jq-%s'
@@ -340,6 +342,18 @@ lock_tools() {
   machine=$(cat "$STUB_FIXTURES/uname-m.out" 2>/dev/null || echo x86_64)
   jq -L "$REPO_ROOT/bin/lib" -r --arg os "$1" --arg machine "$machine" \
     'include "tools"; tools_for($os; $machine) | [.name, .version_cmd, .pin + .min, .source] | @tsv' "$LOCK"
+}
+
+# <filter> of <name>'s first entry in bin/lib/tools.lock, raw: what a test builds its expected
+# pins and fix commands from, so a pin bump touches only the lock.
+lock_of() {
+  jq -r --arg name "$1" "first(.tools[] | select(.name == \$name)) | $2" "$LOCK"
+}
+
+# The version <name> is pinned to in bin/lib/tools.lock: its pin, its fork's version, or its
+# release's tag without the v.
+lock_pin() {
+  lock_of "$1" 'if .from == "fork" then .fork.version elif .from == "release" then .release.tag | ltrimstr("v") else .pin end'
 }
 
 # Every tool of <os> answers at <version> (default its pin or min), or is missing (version "-").

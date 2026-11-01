@@ -1,0 +1,59 @@
+[
+  {
+    "Id": "5e1d0c7a4b3f2e19d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a39281706f5e4d3c2b",
+    "Name": "/nmtest-t74eval-mongodb-1",
+    "Created": "2026-10-27T03:10:00.000000000Z",
+    "State": {
+      "Status": "exited",
+      "Running": false,
+      "OOMKilled": false,
+      "ExitCode": 0,
+      "StartedAt": "2026-10-27T03:10:02.000000000Z",
+      "FinishedAt": "2026-10-27T03:40:00.000000000Z"
+    },
+    "Image": "sha256:72404c1083af5306608b7487184154a199b7d183f4ef250339f3c1a0b72e2523",
+    "Mounts": [
+      {
+        "Type": "volume",
+        "Name": "7d1e5a90c3b2f4e6d8a0c1b3e5f7a9c2d4e6f8a0b2c4d6e8f0a1b3c5d7e9f1a2",
+        "Source": "/var/lib/docker/volumes/7d1e5a90c3b2f4e6d8a0c1b3e5f7a9c2d4e6f8a0b2c4d6e8f0a1b3c5d7e9f1a2/_data",
+        "Destination": "/data/configdb",
+        "Driver": "local"
+      },
+      {
+        "Type": "volume",
+        "Name": "nmtest-t74eval_mongodb_data",
+        "Source": "/var/lib/docker/volumes/nmtest-t74eval_mongodb_data/_data",
+        "Destination": "/data/db",
+        "Driver": "local"
+      }
+    ],
+    "Config": {
+      "Image": "mongo:7",
+      "Labels": {
+        "com.docker.compose.config-hash": "6b0f7c2e9d4a1b3c5e7f9a2b4c6d8e0f1a3b5c7d9e2f4a6b8c0d1e3f5a7b9c2d",
+        "com.docker.compose.container-number": "1",
+        "com.docker.compose.image": "sha256:72404c1083af5306608b7487184154a199b7d183f4ef250339f3c1a0b72e2523",
+        "com.docker.compose.oneoff": "False",
+        "com.docker.compose.project": "nmtest-t74eval",
+        "com.docker.compose.project.config_files": "@WORKDIR@/docker-compose.yml",
+        "com.docker.compose.project.working_dir": "@WORKDIR@",
+        "com.docker.compose.service": "mongodb",
+        "com.docker.compose.version": "5.6.1",
+        "io.github.chanjdaniel.team.owner": "",
+        "io.github.chanjdaniel.team.task": "",
+        "io.github.chanjdaniel.team.kind": "",
+        "io.github.chanjdaniel.team.worktree": "",
+        "io.github.chanjdaniel.team.expires": ""
+      }
+    },
+    "HostConfig": {
+      "Memory": 0
+    },
+    "NetworkSettings": {
+      "Networks": {
+        "nmtest-t74eval_conventioner_network": {}
+      }
+    }
+  }
+]

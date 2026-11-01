@@ -66,8 +66,10 @@ refs/remotes/origin/lease"
 @test "a fresh Mac: every stage installs what its doctor lines lack, then Daniel's steps in order; a second run installs nothing" {
   fresh macos
   run_bin -1 team-bootstrap --name laptop --home "$TEAM_HOME"
-  local sha
-  sha=$(jq -r '.tools[] | select(.name == "treehouse") | .release.sha256["darwin-arm64"]' "$LOCK")
+  local sha tag node
+  sha=$(lock_of treehouse '.release.sha256["darwin-arm64"]')
+  tag=$(lock_of treehouse .release.tag)
+  node=$(lock_pin node)
   assert_equal "$(stage_lines machine)" "named this machine laptop (~/.config/agent-team/machine)
 named the team home $TEAM_HOME (~/.config/agent-team/home)
 done: the team home fetches only dev and lease"
@@ -75,20 +77,20 @@ done: the team home fetches only dev and lease"
   assert_equal "$(cat "$HOME/.config/agent-team/home")" "$TEAM_HOME"
   assert_equal "$(stage_lines packages)" "running: brew install 1password-cli git jq tmux gh rsync python@3.12 bash go coreutils findutils gnu-sed grep flock
 running: brew install --cask docker-desktop"
-  assert_equal "$(stage_lines tools | sed -n '1,4p;11,13p')" "running: curl -fsSL https://claude.ai/install.sh | bash -s 2.1.316
+  assert_equal "$(stage_lines tools | sed -n '1,4p;11,13p')" "running: curl -fsSL https://claude.ai/install.sh | bash -s $(lock_pin claude)
 running: curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
-running: nvm install 24.22.1 && nvm alias default 24.22.1
-running: npm install -g @colbymchenry/codegraph@1.6.0
-running: f=\$(mktemp) && curl -fsSLo \"\$f\" https://github.com/kunchenguid/treehouse/releases/download/v3.1.5/treehouse-v3.1.5-darwin-arm64.tar.gz && echo \"$sha  \$f\" | shasum -a 256 -c && mkdir -p ~/.local/bin && tar -xzf \"\$f\" -C ~/.local/bin treehouse && rm -f \"\$f\"
+running: nvm install $node && nvm alias default $node
+running: npm install -g @colbymchenry/codegraph@$(lock_pin codegraph)
+running: f=\$(mktemp) && curl -fsSLo \"\$f\" https://github.com/kunchenguid/treehouse/releases/download/$tag/treehouse-$tag-darwin-arm64.tar.gz && echo \"$sha  \$f\" | shasum -a 256 -c && mkdir -p ~/.local/bin && tar -xzf \"\$f\" -C ~/.local/bin treehouse && rm -f \"\$f\"
 running: $FORK_BUILD
 running: mkdir -p ~/.no-mistakes/bin && install -m 755 $CODE_CHECKOUT/bin/lib/opencode-gate ~/.no-mistakes/bin/opencode-gate"
   assert_equal "$(grep -m1 config.yaml <<<"$output")" "tools: ~/.no-mistakes/config.yaml is not there: Daniel's team-secrets restore brings it (the secret no-mistakes-config), then team-bootstrap --stage tools names the wrapper in it"
-  # The build: the fork cloned into a new temporary directory (<d> here), built there and installed.
-  # HOME is named first, since a TMPDIR that mktemp made is shaped like that directory too.
-  assert_equal "$(sed -e "s#$HOME/#~/#g" -E -e 's#[^ ]*/tmp\.[[:alnum:]]+#<d>#g' "$STUB_CALLS/fork-build.log")" "clone -q https://github.com/chanjdaniel/no-mistakes <d>
-git checkout -q a544ba66594682fb8a0594de77f45ed519a41381
+  # The build: the fork cloned into a new temporary directory (<d> here), built there and installed;
+  # <d> is a whole directory, so a HOME under a TMPDIR that mktemp named tmp.* keeps its path.
+  assert_equal "$(sed -E 's#[^ ]*/tmp\.[[:alnum:]]+( |/bin/no-mistakes |$)#<d>\1#g' "$STUB_CALLS/fork-build.log")" "clone -q https://github.com/chanjdaniel/no-mistakes <d>
+git checkout -q $(lock_of no-mistakes .fork.commit)
 make build
-install -m 755 <d>/bin/no-mistakes ~/.no-mistakes/bin/no-mistakes"
+install -m 755 <d>/bin/no-mistakes $HOME/.no-mistakes/bin/no-mistakes"
   assert_equal "$(stage_lines tools | tail -n 2)" "running: add ~/.local/bin to PATH in ~/.zshrc
 running: add ~/.no-mistakes/bin to PATH in ~/.zshrc"
   assert_equal "$(cat "$HOME/.zshrc")" "export PATH=\"\$HOME/.local/bin:\$PATH\" # team-bootstrap
@@ -148,7 +150,7 @@ done: the team home fetches only dev and lease"
   assert_equal "$(stage_lines packages)" "would run: brew install 1password-cli git jq tmux gh rsync python@3.12 bash go coreutils findutils gnu-sed grep flock
 would run: brew install --cask docker-desktop"
   assert_equal "$(stage_lines tools | sed -n '2,3p')" "would run: curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
-would run: nvm install 24.22.1 && nvm alias default 24.22.1"
+would run: nvm install $(lock_pin node) && nvm alias default $(lock_pin node)"
   assert_equal "$(stage_lines projects | head -n2)" "would run: git clone -q https://github.com/chanjdaniel/Conventioner.git ~/projects/Conventioner
 would then set up conventioner's task directory exclude and its no-mistakes gate"
   assert_contains "$output" "check: Daniel 1: 1password: "
