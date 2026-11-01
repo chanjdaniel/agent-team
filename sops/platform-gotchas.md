@@ -29,7 +29,7 @@ Why: the gate's CI step may push "apply CI fixes" commits on its own, after the 
 
 Seen: T4 and T18, whose reviews found such commits (`tasks/T4/scratch/review.md`, `tasks/T18/scratch/review.md`); T5, where one set a `verified` date that had not come yet (`tasks/T5/brief-revert.md`); T24, whose brief stops the gate run (`tasks/T24/brief-build-01.md`).
 
-## Wait for work with a command that blocks until it ends, never a sleep loop or a self-set timer
+## Wait for work with a command that ends when the work does, never a self-set timer or a loop that may never end
 
 Why: auto mode refuses a timer as persistence, three refusals in a row leave a background session on a prompt nobody sees, and commands such as `team-ci-wait` and `docker compose up --wait` wait without one.
 The wait must end on its own too: `gh pr checks --watch` reads each check's status, so a job whose status GitHub lost keeps it waiting forever, and Claude Code moves a foreground call to the background after 10 minutes, so the session ends its turn and waits unseen; `team-ci-wait`, run with Bash `run_in_background`, names such a stuck check and always ends.
@@ -46,7 +46,7 @@ Seen: T12 and T22 (twice), whose gate rebased and force-pushed their branches (l
 
 Why: `*` matches any text, spaces and other arguments included, a rule whose one `*` ends it after a space also matches the command with nothing there (two, as `**`, keep the space required), and a deny rule or auto mode judges the whole call, so a rule matches more commands than it looks, and one matching part (a word in a commit message, a grep pattern or a heredoc, or one guarded step of a chain) refuses the whole call; write messages and file contents with the Write or Edit tool and pass the file (`git commit -F <file>`, `gh pr edit --body-file <file>`), and run each commit, push and edit as its own call.
 
-Seen: T20's review of the reviewer's allow rules (`tasks/T20/scratch/review.md`); T25, T34 and T24, whose deny rules refused a quoted jq filter, a heredoc and reads (ledger 2026-10-23T12:58:54Z, 2026-10-24T00:04:36Z, 01:28:18Z); T37's push chained with a PR body edit (2026-10-24T07:19:08Z); T41's commit, refused three times for its message's words (16:30:37Z to 16:39:42Z); T40's heredoc and a lookup chained to a test run (2026-10-25T13:11:44Z, 14:29:23Z); T94's heredoc with a connection-string line (2026-10-29T09:24:23Z), and T94's and T113's read of `git config core.hooksPath`, which the write rule `git config core.hooksPath *` matched with nothing after the key (09:24:23Z, 23:45:43Z), until T134 ended the write rules in `**`.
+Seen: T41's commit, refused three times for its message's words (ledger 2026-10-24T16:30:37Z to 16:39:42Z); T94's and T113's read of `git config core.hooksPath`, which the write rule `git config core.hooksPath *` matched with nothing after the key (2026-10-29T09:24:23Z, 23:45:43Z), until T134 ended the write rules in `**`; T135's replay of base merges, chained with an install into a shared git config and a `git clean -fdx` it did not mean, refused whole (2026-10-30T16:20:03Z).
 
 ## To know what a CI or deploy run built, read the commit its checkout fetched, never the run's branch and commit label
 

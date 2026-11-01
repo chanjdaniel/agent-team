@@ -904,7 +904,7 @@ YAML
 @test "tests/run, the team-heavy lock it runs under, and servers/install, which its toolkit tests run, need no team home" {
   unset TEAM_HOME
   run -2 --separate-stderr "$REPO_ROOT/tests/run" nothing
-  assert_equal "$stderr" "run: usage: tests/run [shellcheck|bats|toolkits]"
+  assert_equal "$stderr" "run: usage: tests/run [shellcheck|bats [--shard <k>/<n> [--list]]|toolkits]"
   run -0 --separate-stderr "$REPO_ROOT/bin/team-heavy" run -- echo ran
   assert_equal "$output" ran
   run -2 --separate-stderr "$REPO_ROOT/servers/install" nothing
@@ -917,7 +917,149 @@ YAML
   cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
   run_bin -0 team-project agent-team
   assert_equal "$(jq -c '[.required_checks, .local_checks]' <<<"$output")" \
-    "[$(sed -n '/^jobs:$/,$s/^  \([a-z_-]*\):$/\1/p' "$REPO_ROOT/.github/workflows/ci.yml" | jq -R . | jq -cs .),[]]"
+    "[$(sed -n '/^jobs:$/,$s/^  \([a-z_-]*\):$/\1/p' "$REPO_ROOT/.github/workflows/ci.yml" | grep -v -- '-shards$' | jq -R . | jq -cs .),[]]"
+}
+
+# A shard job is never a required check itself: the job of the required id waits for every shard,
+# runs even when one failed, and passes only when all did.
+@test "each shard job is needed by the job its name begins with, which always runs and passes only on the shards' success" {
+  local ci=$REPO_ROOT/.github/workflows/ci.yml id shards
+  # Each job's block, from its "  <id>:" line to the next job's.
+  job_block() { sed -n "/^jobs:\$/,\$p" "$ci" | sed -n "/^  $1:\$/,/^  [a-z_-]*:\$/p" | sed '$d'; }
+  shards=$(sed -n '/^jobs:$/,$s/^  \([a-z_-]*\)-shards:$/\1/p' "$ci")
+  assert_equal "$shards" $'test\nmacos'
+  for id in $shards; do
+    job_block "$id-shards" | grep -qx '      matrix: {shard: \[1, 2, 3\]}' || { echo "$id-shards has no three-shard matrix" >&2; return 1; }
+    job_block "$id-shards" | grep -qxF '      - run: tests/run bats --shard "$SHARD/3"' || { echo "$id-shards runs no shard" >&2; return 1; }
+    job_block "$id" | grep -qx "    needs: $id-shards" || { echo "$id does not need $id-shards" >&2; return 1; }
+    job_block "$id" | grep -qx '    if: always()' || { echo "$id does not always run" >&2; return 1; }
+    job_block "$id" | grep -qxF "          RESULT: \${{ needs.$id-shards.result }}" || { echo "$id reads no result of $id-shards" >&2; return 1; }
+    job_block "$id" | grep -qxF "        run: '[[ \$RESULT == success ]]'" || { echo "$id does not pass only on success" >&2; return 1; }
+  done
+}
+
+# Every tests/*.bats file lands in exactly one shard, tests/run's shard is tests/shards' own, and
+# the shards' weights stay within the heaviest file's of each other.
+@test "tests/run's bats shards split every file once, evenly by tests/shards' weights" {
+  local all k lists='' loads
+  unset TEAM_HOME
+  run -0 --separate-stderr "$REPO_ROOT/tests/shards" 3
+  local split=$output
+  for k in 1 2 3; do
+    run -0 --separate-stderr "$REPO_ROOT/tests/run" bats --shard "$k/3" --list
+    [[ -n $output ]]
+    assert_equal "$output" "$(awk -F'\t' -v k="$k" '$1 == k { print $3 }' <<<"$split")"
+    lists+=$output$'\n'
+  done
+  all=$(cd "$REPO_ROOT" && printf '%s\n' tests/*.bats | sort)
+  assert_equal "$(sort <<<"${lists%$'\n'}")" "$all"
+  loads=$(awk -F'\t' '{ load[$1] += $2; if ($2 > top) top = $2 }
+    END { min = -1; for (k in load) { if (load[k] > max) max = load[k]; if (min < 0 || load[k] < min) min = load[k] }
+      print max - min, top }' <<<"$split")
+  read -r spread heaviest <<<"$loads"
+  ((spread <= heaviest)) || { echo "the shards differ by $spread, more than the heaviest file's $heaviest" >&2; return 1; }
+  for k in '--shard 0/3' '--shard 4/3' '--shard 1/0' '--shard 1/3x' '--list' '--shard' '--shard 1/3 --list x'; do
+    # shellcheck disable=SC2086 # each form splits into its words
+    run -2 --separate-stderr "$REPO_ROOT/tests/run" bats $k
+    assert_equal "$stderr" "run: usage: tests/run [shellcheck|bats [--shard <k>/<n> [--list]]|toolkits]"
+  done
+  run -2 --separate-stderr "$REPO_ROOT/tests/run" toolkits --shard 1/3
+  for k in '' 0 3x '3 4' 'update x' 'update 1 2'; do
+    # shellcheck disable=SC2086 # each form splits into its words
+    run -2 --separate-stderr "$REPO_ROOT/tests/shards" $k
+    assert_equal "$stderr" "shards: usage: tests/shards <n> | tests/shards update [<run id>]"
+  done
+}
+
+@test "a shard with no file, n above the file count, lists none and passes, running nothing" {
+  unset TEAM_HOME
+  run -0 --separate-stderr "$REPO_ROOT/tests/run" bats --shard 900/900 --list
+  assert_equal "$output" ""
+  run -0 --separate-stderr "$REPO_ROOT/tests/run" bats --shard 900/900
+  assert_contains "$output" "bats: shard 900/900 has no file"
+  [[ $output != *"not ok"* ]]
+}
+
+# tests/shards in a checkout of three bats files, a.bats and b.bats timed and c.bats not.
+@test "tests/shards weighs a file by its seconds on this platform, an untimed one by its bytes at the timed rate, and every bytes without timings" {
+  local copy=$BATS_TEST_TMPDIR/copy column=2
+  [[ $(uname -s) != Darwin ]] || column=3
+  unset TEAM_HOME
+  mkdir -p "$copy/tests"
+  copy_bin "$copy/bin"
+  link_shared tests-shards "$REPO_ROOT/tests/shards" "$copy/tests/shards"
+  head -c 1000 /dev/zero >"$copy/tests/a.bats"
+  head -c 500 /dev/zero >"$copy/tests/b.bats"
+  head -c 2000 /dev/zero >"$copy/tests/c.bats"
+  printf '# timings\nfile\tlinux\tmacos\ntests/a.bats\t10\t20\ntests/b.bats\t5\t10\n' >"$copy/tests/timings.tsv"
+  run -0 --separate-stderr "$copy/tests/shards" 2
+  # c.bats weighs 2000 bytes at a.bats' and b.bats' 15 seconds (30 on macOS) per 1500 bytes.
+  if ((column == 2)); then
+    assert_equal "$output" $'1\t20\ttests/c.bats\n2\t10\ttests/a.bats\n2\t5\ttests/b.bats'
+  else
+    assert_equal "$output" $'1\t40\ttests/c.bats\n2\t20\ttests/a.bats\n2\t10\ttests/b.bats'
+  fi
+  rm "$copy/tests/timings.tsv"
+  run -0 --separate-stderr "$copy/tests/shards" 2
+  assert_equal "$output" $'1\t2000\ttests/c.bats\n2\t1000\ttests/a.bats\n2\t500\ttests/b.bats'
+}
+
+# tests/shards update in a checkout of its own, on a gh stub whose CI run 4242 has two
+# test-shards jobs, a macos-shards job and two jobs of other names, the test job's log holding a
+# bats line too.
+@test "tests/shards update writes one row per file from the shard jobs' logs, each platform's seconds, an empty one where a platform has none" {
+  local copy=$BATS_TEST_TMPDIR/copy
+  unset TEAM_HOME
+  mkdir -p "$copy/tests"
+  copy_bin "$copy/bin"
+  link_shared tests-shards "$REPO_ROOT/tests/shards" "$copy/tests/shards"
+  stub_script gh <<'SH'
+case "$*" in
+  "run list --workflow ci.yml --status success --limit 1 --json databaseId --jq .[0].databaseId // empty") echo 4242 ;;
+  "run view 4242 --json jobs,headSha,createdAt")
+    echo '{"headSha": "abcdef1234567890", "createdAt": "2026-10-31T12:00:00Z", "jobs": [
+      {"databaseId": 11, "name": "test-shards (1)"}, {"databaseId": 12, "name": "test-shards (2)"},
+      {"databaseId": 21, "name": "macos-shards (1)"}, {"databaseId": 30, "name": "test"},
+      {"databaseId": 40, "name": "shellcheck"}]}' ;;
+  "run view 4242 --job 11 --log")
+    printf 'test-shards (1)\tRun tests\t2026-10-31T12:01:00.1Z ok tests/a.bats (12s)\n'
+    printf 'test-shards (1)\tRun tests\t2026-10-31T12:01:00.2Z ok 3 a test inside it\n'
+    printf 'test-shards (1)\tRun tests\t2026-10-31T12:01:00.3Z not ok tests/c.bats (3s)\n' ;;
+  "run view 4242 --job 12 --log") printf 'test-shards (2)\tRun tests\t2026-10-31T12:01:00.4Z ok tests/b.bats (7s)\n' ;;
+  "run view 4242 --job 21 --log")
+    printf 'macos-shards (1)\tRun tests\t2026-10-31T12:01:00.5Z ok tests/b.bats (15s)\n'
+    printf 'macos-shards (1)\tRun tests\t2026-10-31T12:01:00.6Z ok tests/a.bats (30s)\n' ;;
+  "run view 4242 --job 30 --log") printf 'test\tRun tests\t2026-10-31T12:01:00.7Z ok tests/z.bats (99s)\n' ;;
+  *) echo "unexpected gh $*" >&2; exit 1 ;;
+esac
+SH
+  run -0 --separate-stderr "$copy/tests/shards" update
+  assert_equal "$output" "tests/shards: wrote tests/timings.tsv from CI run 4242"
+  assert_equal "$(cat "$copy/tests/timings.tsv")" "# The seconds each bats file took in CI run 4242 (head abcdef1, 2026-10-31T12:00:00Z),
+# on Linux and macOS, as tests/shards weighs them; tests/shards update rewrites it.
+$(printf 'file\tlinux\tmacos\ntests/a.bats\t12\t30\ntests/b.bats\t7\t15\ntests/c.bats\t3\t')"
+  # Only the shard jobs' logs are read.
+  assert_equal "$(stub_calls gh | jq -r 'select(.[3] == "--job") | .[4]' | tr '\n' ' ')" "11 12 21 "
+
+  # A run named on the command line is read without listing the runs.
+  rm "$copy/tests/timings.tsv"
+  : >"$STUB_CALLS/gh.log"
+  run -0 --separate-stderr "$copy/tests/shards" update 4242
+  assert_equal "$(stub_calls gh | jq -r '.[0:2] | join(" ")' | sort -u)" "run view"
+  [[ -f $copy/tests/timings.tsv ]]
+}
+
+# The timings are data tests/shards reads: each row names a bats file that exists, with whole
+# seconds for both platforms, so a removed file takes its row with it.
+@test "tests/timings.tsv names only bats files that exist, each with its seconds on both platforms" {
+  local file linux macos rows=0
+  while IFS=$'\t' read -r file linux macos; do
+    [[ $file == \#* || $file == file ]] && continue
+    rows=$((rows + 1))
+    [[ -f $REPO_ROOT/$file && $file =~ ^tests/[^/]+\.bats$ ]] || { echo "timings name $file, no bats file" >&2; return 1; }
+    [[ $linux =~ ^[0-9]+$ && $macos =~ ^[0-9]+$ ]] || { echo "$file has no whole seconds for both platforms" >&2; return 1; }
+  done <"$REPO_ROOT/tests/timings.tsv"
+  ((rows > 0))
 }
 
 # The README's inventory is pasted from the ops load check; the eval mocks' _tools.json, which the

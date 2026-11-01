@@ -58,7 +58,9 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
   - `tests/compaction-drill.bats`: dry-runs `tests/compaction-drill` on a stub `claude`.
   - `tests/drill.bats`: the two-machine drill (handoff, steal, crash, outage, and the records rewrite's cutover on one machine).
   - `tests/helpers/`: the helpers, with `docker.bash`, the opt-in stub `docker`.
+  - `tests/shards`: splits the bats files into `tests/run bats --shard`'s shards by their seconds in `tests/timings.tsv`, and `tests/shards update` rewrites those from a CI run's shard jobs.
   - `tests/task-life.bats`: a whole task's life across the scripts.
+  - `tests/timings.tsv`: each bats file's seconds in one CI run, on Linux and macOS, which `tests/shards` weighs it by.
   - `tests/toolkits/`: the toolkits' Node tests.
   - `tests/vendor/`: bats-core, vendored.
 - `toolkits/`: plugin directories a worker loads with `team-worker --toolkit <name>`: MCP config (`.mcp.json`), skills, hooks (`hooks/hooks.json`), docs, scripts, and the skills' evals (`claude plugin eval`, on MCP mocks).
@@ -103,12 +105,13 @@ It holds:
 
 ## Tests and shellcheck
 
-- `tests/run` runs shellcheck (0.11.0) on every shell script in `bin/`, `tests/`, `servers/` and `toolkits/`, then the whole bats suite, then the toolkit tests; `tests/run shellcheck`, `tests/run bats` and `tests/run toolkits` run one part each, as the CI jobs do.
+- `tests/run` runs shellcheck (0.11.0) on every shell script in `bin/`, `tests/`, `servers/` and `toolkits/`, then the whole bats suite, then the toolkit tests; `tests/run shellcheck`, `tests/run bats` and `tests/run toolkits` run one part each, as the CI jobs do; `tests/run bats --shard <k>/<n>` runs one shard of the bats files, as CI's `test-shards` and `macos-shards` jobs do, whose `test` and `macos` jobs keep the required ids.
   Its bats files run in parallel, one bats per file and as many at once as there are CPUs, so every file must stay independent of the others; its last line is the wall time.
-  Every part but `shellcheck` alone runs under the machine's heavy-run lock (`bin/team-heavy`, which `team-checks` takes for the local checks too), so two suites on one machine queue instead of overlapping, and the sandbox clears `TEAM_HEAVY_HELD` so the tests take their own.
-- A PR to `dev` is checked on GitHub: `.github/workflows/ci.yml` runs its jobs (`shellcheck`, `test`, `macos`, `toolkits`, `data` and `zizmor`) on every PR to `dev` and to `main` and by hand (`workflow_dispatch`).
+  `tests/shards` splits them by each file's seconds in CI (`tests/timings.tsv`, a file it lacks weighed by its bytes), so refresh the timings with `tests/shards update` when the shards' times drift apart, and a removed bats file takes its row with it, as `tests/repo.bats` holds.
+  Every part but `shellcheck` alone and a shard's `--list` runs under the machine's heavy-run lock (`bin/team-heavy`, which `team-checks` takes for the local checks too), so two suites on one machine queue instead of overlapping, and the sandbox clears `TEAM_HEAVY_HELD` so the tests take their own.
+- A PR to `dev` is checked on GitHub: `.github/workflows/ci.yml` runs its jobs (`shellcheck`, `test`, `macos`, `toolkits`, `data` and `zizmor`, with the shard jobs `test-shards` and `macos-shards` that `test` and `macos` wait for) on every PR to `dev` and to `main` and by hand (`workflow_dispatch`).
   `dev`'s protection and `projects.toml`'s `required_checks` for `agent-team` require each job by its id, so renaming a job changes a required check, and `team-merge` merges only with every one passed on the PR's exact head.
-  `tests/repo.bats` holds the jobs to the registry fixture's `required_checks`, and no workflow runs on a push, a schedule or `pull_request_target`.
+  `tests/repo.bats` holds the jobs but the shard jobs to the registry fixture's `required_checks`, and each shard job to the job that waits for it, and no workflow runs on a push, a schedule or `pull_request_target`.
   The `zizmor` job audits the workflows offline with zizmor, pinned by version and sha256 as gitleaks is, and fails on any finding; an accepted one is ignored on its own line as `# zizmor: ignore[<audit>] <reason>`, which `tests/repo.bats` holds, with no zizmor config to ignore more.
   `.github/workflows/zizmor-online.yml` runs the same zizmor on the same triggers with the run's read-only token, for its online audits (an impostor commit, a known-vulnerable action, ref confusion); it is never a required check, since it depends on GitHub's API, and `tests/repo.bats` holds its triggers and its zizmor pin to `ci.yml`'s.
   A project that still lists `local_checks` in `projects.toml` has them run through `bin/team-checks`, in a fresh detached worktree of the head: by `team-merge` before it merges, and by builders and reviewers on the head they deliver or review; `agent-team` lists none, so for it `team-checks` says so and passes.
@@ -129,9 +132,9 @@ It holds:
 - No test reads the records of the checkout it runs in, so the suite passes on the code alone: a test that needs a real-shaped registry or secrets manifest copies it from `tests/fixtures/`, and `team-doctor`'s `records` line checks the team home's real ledger, registry and secrets description.
 - CI's runner has jq 1.7.1, so keep to jq 1.7 features.
 - A jq program that includes a module of `bin/lib` also includes, after it, every module that one includes, directly or not (`include "workers"; include "time"; include "ledger";`), which `tests/repo.bats` holds.
-  jq 1.8.2, Homebrew's on the `macos` job, loads a module before the ones it includes unless the program loaded them first, and frees the definitions that only another module calls, so a call into one reads freed memory and may fail an assertion ("Unknown function type"); jq fixed it after 1.8.2 (jqlang/jq#3620), and a program's includes load last first.
+  jq 1.8.2, Homebrew's on the `macos-shards` jobs, loads a module before the ones it includes unless the program loaded them first, and frees the definitions that only another module calls, so a call into one reads freed memory and may fail an assertion ("Unknown function type"); jq fixed it after 1.8.2 (jqlang/jq#3620), and a program's includes load last first.
 - Scripts and tests run on Linux and macOS: on macOS `bin/lib/platform.sh` (sourced by the library and the test helpers) puts Homebrew's GNU coreutils, findutils, sed, grep and `flock` first on `PATH`, so GNU forms are fine and BSD-only ones are not.
-  CI's `macos` job runs `tests/run bats` on a macOS runner, with the rest of CI: on every PR to `dev` and to `main`, and by hand.
+  CI's `macos-shards` jobs run `tests/run bats` in three shards on macOS runners, and its `macos` job passes only when every shard did, with the rest of CI: on every PR to `dev` and to `main`, and by hand.
 - Repo invariants are tests too: every executable in `bin/` answers `--help` with its header, every `bin/team-*` script is named in `roles/coordinator.md`, which stays at most 120 lines, no tracked Markdown or template outside the records (`bin/lib/records`, kept as written) has an em dash, and the Layout above stays a list, one thing per line of at most 300 characters, alphabetical within each list.
 
 ## Script conventions

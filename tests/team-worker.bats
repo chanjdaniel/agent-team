@@ -311,7 +311,7 @@ run_fake() {
   : >"$STUB_CALLS/claude.log"
   run_bin -0 team-worker T7 builder "$wt1" -- go
   run_bin -0 team-worker T7 planner "$wt1" -- go
-  assert_equal "$(stub_calls claude | jq -c '[(index("--model") // empty) as $i | .[$i + 1]]')" $'["claude-sonnet-5-5"]\n[]'
+  assert_equal "$(stub_calls claude | jq -c 'select(.[0] == "--bg") | [(index("--model") // empty) as $i | .[$i + 1]]')" $'["claude-sonnet-5-5"]\n[]'
   assert_equal "$(launches | jq -c '[.role, .model]')" $'["reviewer","sonnet"]\n["builder","claude-sonnet-5-5"]\n["planner",null]'
   run_bin -0 team-log --check
 }
@@ -915,7 +915,7 @@ Edit|Write|MultiEdit|NotebookEdit $REPO_ROOT/bin/hooks/scratch-only-edits"
   for role in planner builder reviewer; do
     : >"$STUB_CALLS/claude.log"
     run_bin -0 team-worker T7 "$role" "$wt1" -- go
-    assert_equal "$(stub_calls claude | jq -c 'map(select(. == "--restricted" or . == "--tools"))')" '[]'
+    assert_equal "$(stub_calls claude | jq -c 'select(.[0] == "--bg") | map(select(. == "--restricted" or . == "--tools"))')" '[]'
   done
 }
 
@@ -1000,4 +1000,246 @@ Edit|Write|MultiEdit|NotebookEdit $REPO_ROOT/bin/hooks/scratch-only-edits"
   assert_equal "$(jq -r .env.WHO "$TEAM_HOME/tasks/T7/settings.planner.json")" planner
   assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.planner.json")" \
     "$(jq -cn --arg code "$code" --arg t "$TEAM_HOME/tasks/T7" '{mcpServers: {alpha: {command: "\($code)/a", args: ["--task", "T7", $t, "planner"]}}}')"
+}
+
+# The ledger lines given on stdin, one per line, each "launch <task> <role> <session> <worktree>"
+# or "<task> <jq object of the event's other fields>", logged in order.
+log_lines() {
+  local kind task role session wt more
+  while read -r kind more; do
+    if [[ $kind == launch ]]; then
+      read -r task role session wt <<<"$more"
+      ledger_line --arg t "$task" --arg r "$role" --arg s "$session" --arg wt "$wt" '{ts: (now | todate), task: $t,
+        event: "launch", role: $r, session: $s, worktree: $wt, toolkits: [], machine: "home-pc"}'
+    else
+      ledger_line --arg t "$kind" "{ts: (now | todate), task: \$t} + ($more)"
+    fi
+  done
+}
+
+# The claude stub for launches beside a task's earlier workers: claude agents --json lists
+# $STUB_FIXTURES/agents.json; claude stop succeeds unless the id is in $STUB_FIXTURES/stop-fails;
+# claude --bg starts a session.
+stop_stub() {
+  : >"$STUB_FIXTURES/stop-fails"
+  stub_script claude <<'SH'
+if [[ $1 == agents ]]; then cat "$STUB_FIXTURES/agents.json"; exit 0; fi
+if [[ $1 == stop ]]; then
+  if grep -qx "$2" "$STUB_FIXTURES/stop-fails"; then echo "no such session $2" >&2; exit 1; fi
+  echo "Stopped $2"; exit 0
+fi
+echo "Started background session 9a8b7c6d (${*: -2:1}). Attach with: claude attach 9a8b7c6d"
+SH
+}
+
+# T9's earlier workers, each listed live by claude agents --json: an idle planner, builder and
+# reviewer, a busy second builder, an idle reviewer waiting for input, an idle ops session, an
+# idle builder of the second worktree (its launch recorded under another machine's home, as the
+# first worktree's builders are), a reviewer with no status and one starting, all handed on by
+# the planner's done, a ticket-done and each reviewer's done beside the review; then a reviewer
+# and a planner launched after them, idle with no event of their own since (the planner's done
+# names another session); and T8's idle reviewer, handed on by its done beside T8's review, with
+# a session T9 never launched.
+finished_workers() {
+  thread T8
+  thread T9
+  log_lines <<LINES
+launch T9 planner 11111111 $wt1
+launch T9 builder 22222222 /Users/someone/slots/proj/1
+launch T9 reviewer 33333333 $wt1
+launch T9 builder 44444444 $wt1
+launch T9 reviewer 55555555 $wt1
+launch T9 ops 66666666 $wt1
+launch T9 builder 99999999 /Users/someone/slots/proj/2
+launch T8 reviewer 77777777 $wt1
+launch T9 reviewer 3a3a3a3a $wt1
+launch T9 reviewer 3b3b3b3b $wt1
+T9 {event: "done", role: "planner", session: "11111111"}
+T9 {event: "ticket-done", ticket: "01", commits: ["abc1234"]}
+T9 {event: "review", verdict: "findings", head: "abc1234"}
+T9 {event: "done", role: "reviewer", session: "33333333"}
+T9 {event: "done", role: "reviewer", session: "55555555"}
+T9 {event: "done", role: "reviewer", session: "3a3a3a3a"}
+T9 {event: "done", role: "reviewer", session: "3b3b3b3b"}
+T8 {event: "review", verdict: "pass", head: "abc1234"}
+T8 {event: "done", role: "reviewer", session: "77777777"}
+launch T9 reviewer 5c5c5c5c $wt1
+launch T9 planner 1e1e1e1e $wt1
+T9 {event: "done", role: "planner", session: "0e0e0e0e"}
+LINES
+  cat >"$STUB_FIXTURES/agents.json" <<'JSON'
+[{"id": "11111111", "name": "T9-planner", "status": "idle"},
+ {"id": "22222222", "name": "T9-builder", "status": "idle"},
+ {"id": "33333333", "name": "T9-reviewer", "status": "idle"},
+ {"id": "44444444", "name": "T9-builder", "status": "busy"},
+ {"id": "55555555", "name": "T9-reviewer", "status": "idle", "state": "blocked"},
+ {"id": "66666666", "name": "T9-ops", "status": "idle"},
+ {"id": "77777777", "name": "T8-reviewer", "status": "idle"},
+ {"id": "88888888", "name": "T9-builder", "status": "idle"},
+ {"id": "99999999", "name": "T9-builder", "status": "idle"},
+ {"id": "3a3a3a3a", "name": "T9-reviewer"},
+ {"id": "3b3b3b3b", "name": "T9-reviewer", "status": "starting"},
+ {"id": "5c5c5c5c", "name": "T9-reviewer", "status": "idle"},
+ {"id": "1e1e1e1e", "name": "T9-planner", "status": "idle"}]
+JSON
+  stop_stub
+}
+
+# The ids claude stop was called with, one per line.
+stops() {
+  stub_calls claude | jq -r 'select(.[0] == "stop") | .[1]'
+}
+
+@test "a builder's launch stops the task's idle, handed-on planners, reviewers and builders of its worktree, and leaves the rest" {
+  finished_workers
+  run_bin -0 --separate-stderr team-worker T9 builder "$wt1" -- go
+  assert_equal "$output" "9a8b7c6d"
+  assert_equal "$(stops)" $'11111111\n22222222\n33333333'
+  assert_contains "$stderr" "team-worker: stopped T9-planner 11111111: its work is handed on"
+  assert_contains "$stderr" "team-worker: stopped T9-builder 22222222: its work is handed on"
+  assert_contains "$stderr" "team-worker: stopped T9-reviewer 33333333: its work is handed on"
+  assert_contains "$stderr" "team-worker: left T9-builder 44444444: busy"
+  assert_contains "$stderr" "team-worker: left T9-reviewer 55555555: waiting for input"
+  assert_contains "$stderr" "team-worker: left T9-reviewer 3a3a3a3a: no status"
+  assert_contains "$stderr" "team-worker: left T9-reviewer 3b3b3b3b: status starting"
+  assert_contains "$stderr" "team-worker: left T9-reviewer 5c5c5c5c: idle with no event of its own since its launch"
+  assert_contains "$stderr" "team-worker: left T9-planner 1e1e1e1e: idle with no event of its own since its launch"
+  # An ops session, another task's, one T9 never launched and another worktree's builder go unnamed.
+  [[ $stderr != *66666666* && $stderr != *77777777* && $stderr != *88888888* && $stderr != *99999999* ]]
+  # The stops come before the launch, which is logged.
+  assert_equal "$(stub_calls claude | jq -r '.[0]' | tr '\n' ' ')" "agents stop stop stop --bg "
+  assert_equal "$(launches | jq -r 'select(.task == "T9" and .session == "9a8b7c6d") | .role')" builder
+}
+
+@test "a builder is handed on by a stow, and left while nothing of its own follows its launch" {
+  thread T9
+  log_lines <<LINES
+launch T9 builder 2f2f2f2f $wt1
+LINES
+  echo '[{"id": "2f2f2f2f", "name": "T9-builder", "status": "idle"}]' >"$STUB_FIXTURES/agents.json"
+  stop_stub
+  run_bin -0 --separate-stderr team-worker T9 reviewer "$wt1" -- go
+  run_bin -0 --separate-stderr team-worker T9 builder "$wt1" -- go
+  assert_equal "$(stops)" ""
+  assert_contains "$stderr" "team-worker: left T9-builder 2f2f2f2f: idle with no event of its own since its launch"
+  log_lines <<<'T9 {event: "paused", reason: "stowed"}'
+  run_bin -0 --separate-stderr team-worker T9 builder "$wt1" -- go
+  assert_equal "$(stops)" 2f2f2f2f
+}
+
+@test "a paused for any reason but stowed leaves an idle reviewer, a resumed after it too" {
+  thread T9
+  log_lines <<LINES
+launch T9 reviewer 6a6a6a6a $wt1
+T9 {event: "paused", reason: "offline"}
+LINES
+  echo '[{"id": "6a6a6a6a", "name": "T9-reviewer", "status": "idle"}]' >"$STUB_FIXTURES/agents.json"
+  stop_stub
+  run_bin -0 --separate-stderr team-worker T9 ops "$wt1" --toolkit prod-read --request https://discord.com/channels/1/2/3 -- go
+  assert_equal "$(stops)" ""
+  assert_contains "$stderr" "team-worker: left T9-reviewer 6a6a6a6a: idle with no event of its own since its launch"
+  log_lines <<<'T9 {event: "resumed"}'
+  run_bin -0 --separate-stderr team-worker T9 ops "$wt1" --toolkit prod-read --request https://discord.com/channels/1/2/3 -- go
+  assert_equal "$(stops)" ""
+  assert_contains "$stderr" "team-worker: left T9-reviewer 6a6a6a6a: idle with no event of its own since its launch"
+}
+
+@test "a reviewer is handed on only by a done of its own session, never by another reviewer's review" {
+  thread T9
+  log_lines <<LINES
+launch T9 reviewer 6b6b6b6b $wt1
+launch T9 reviewer 6c6c6c6c $wt2
+T9 {event: "review", verdict: "findings", head: "abc1234"}
+T9 {event: "done", role: "reviewer", session: "6c6c6c6c"}
+LINES
+  echo '[{"id": "6b6b6b6b", "name": "T9-reviewer", "status": "idle"}, {"id": "6c6c6c6c", "name": "T9-reviewer", "status": "idle"}]' \
+    >"$STUB_FIXTURES/agents.json"
+  stop_stub
+  run_bin -0 --separate-stderr team-worker T9 builder "$wt2" -- go
+  assert_equal "$(stops)" 6c6c6c6c
+  assert_contains "$stderr" "team-worker: left T9-reviewer 6b6b6b6b: idle with no event of its own since its launch"
+}
+
+@test "a stow hands a planner on once a later planner launch of its worktree follows it, a resumed between them or not" {
+  thread T9
+  log_lines <<LINES
+launch T9 planner 6d6d6d6d $wt1
+T9 {event: "paused", reason: "stowed"}
+T9 {event: "resumed"}
+launch T9 planner 6e6e6e6e $wt1
+LINES
+  echo '[{"id": "6d6d6d6d", "name": "T9-planner", "status": "idle"}, {"id": "6e6e6e6e", "name": "T9-planner", "status": "idle"}]' \
+    >"$STUB_FIXTURES/agents.json"
+  stop_stub
+  run_bin -0 --separate-stderr team-worker T9 reviewer "$wt1" -- go
+  assert_equal "$(stops)" 6d6d6d6d
+  assert_contains "$stderr" "team-worker: left T9-planner 6e6e6e6e: idle with no event of its own since its launch"
+}
+
+@test "a stow hands on only the launches of the fresh worker's role and worktree, never another worktree's reviewer" {
+  thread T9
+  log_lines <<LINES
+launch T9 reviewer 7a7a7a7a $wt1
+launch T9 builder 7b7b7b7b $wt2
+T9 {event: "paused", reason: "stowed"}
+LINES
+  echo '[{"id": "7a7a7a7a", "name": "T9-reviewer", "status": "idle"}, {"id": "7b7b7b7b", "name": "T9-builder", "status": "idle"}]' \
+    >"$STUB_FIXTURES/agents.json"
+  stop_stub
+  run_bin -0 --separate-stderr team-worker T9 builder "$wt2" -- go
+  assert_equal "$(stops)" 7b7b7b7b
+  assert_contains "$stderr" "team-worker: left T9-reviewer 7a7a7a7a: idle with no event of its own since its launch"
+  # A later reviewer launch in another worktree does not resume 7a7a7a7a's work; one in its own does.
+  echo '[{"id": "7a7a7a7a", "name": "T9-reviewer", "status": "idle"}]' >"$STUB_FIXTURES/agents.json"
+  log_lines <<<"launch T9 reviewer 7c7c7c7c $wt2"
+  run_bin -0 --separate-stderr team-worker T9 builder "$wt2" -- go
+  assert_equal "$(stops)" 7b7b7b7b
+  log_lines <<<"launch T9 reviewer 7d7d7d7d $wt1"
+  run_bin -0 --separate-stderr team-worker T9 builder "$wt2" -- go
+  assert_equal "$(stops)" $'7b7b7b7b\n7a7a7a7a'
+}
+
+@test "a reviewer's launch stops the idle reviewers and planner and leaves the idle builder, which holds the task" {
+  finished_workers
+  run_bin -0 --separate-stderr team-worker T9 reviewer "$wt1" -- go
+  assert_equal "$(stops)" $'11111111\n33333333'
+  [[ $stderr != *22222222* ]]
+}
+
+@test "a stop that fails warns, naming the session, and the launch goes on and is logged" {
+  finished_workers
+  echo 22222222 >"$STUB_FIXTURES/stop-fails"
+  run_bin -0 --separate-stderr team-worker T9 builder "$wt1" -- go
+  assert_equal "$output" "9a8b7c6d"
+  assert_equal "$(stops)" $'11111111\n22222222\n33333333'
+  assert_contains "$stderr" "team-worker: warning: could not stop T9-builder 22222222 (no such session 22222222); the launch goes on"
+  assert_equal "$(launches | jq -r 'select(.session == "9a8b7c6d") | .task')" T9
+}
+
+@test "an unreadable session list warns and the launch goes on, stopping nothing" {
+  finished_workers
+  echo "not json" >"$STUB_FIXTURES/agents.json"
+  run_bin -0 --separate-stderr team-worker T9 builder "$wt1" -- go
+  assert_equal "$(stops)" ""
+  assert_contains "$stderr" "team-worker: warning: cannot read the live session list (claude agents --json), so no finished session was stopped"
+  assert_equal "$(launches | jq -r 'select(.session == "9a8b7c6d") | .task')" T9
+}
+
+@test "an ops launch stops the idle, handed-on planners and reviewers, and no builder" {
+  finished_workers
+  # The ops session of the fixture has ended.
+  jq 'map(select(.id != "66666666"))' "$STUB_FIXTURES/agents.json" >"$STUB_FIXTURES/agents.next"
+  mv "$STUB_FIXTURES/agents.next" "$STUB_FIXTURES/agents.json"
+  run_bin -0 --separate-stderr team-worker T9 ops "$wt1" --toolkit prod-read --request https://discord.com/channels/1/2/3 -- go
+  assert_equal "$output" "9a8b7c6d"
+  assert_equal "$(stops)" $'11111111\n33333333'
+  [[ $stderr != *22222222* && $stderr != *44444444* ]]
+}
+
+@test "a launch with no earlier worker to stop, and a T0 launch, do not read the session list" {
+  finished_workers
+  thread T7
+  run_bin -0 team-worker T0 builder "$wt1" -- go
+  run_bin -0 team-worker T7 builder "$wt1" -- go
+  assert_equal "$(stub_calls claude | jq -r '.[0]' | tr '\n' ' ')" "--bg --bg "
 }

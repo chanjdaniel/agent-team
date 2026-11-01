@@ -240,6 +240,78 @@ t90_hours() {
     '03:00 review {verdict: "pass", head: "aaaaaaa"}')" '{"building":1,"review":2,"unattributed":3}'
 }
 
+@test "a review that sends notes back starts building: the builder's fix round is building time" {
+  assert_equal "$(t90_hours 03:00 '01:00 done {role: "builder", session: "s1"}' \
+    '01:00 launch {role: "reviewer", session: "s2", worktree: "/w", toolkits: []}' \
+    '02:00 review {verdict: "findings", head: "aaaaaaa", sent_back: ["1"]}' \
+    '02:40 done {role: "builder", session: "s1"}')" '{"building":1.667,"review":1,"unattributed":0.333}'
+}
+
+@test "a review with findings and none sent back leaves the stretch after it unattributed" {
+  assert_equal "$(t90_hours 03:00 '01:00 done {role: "builder", session: "s1"}' \
+    '01:00 launch {role: "reviewer", session: "s2", worktree: "/w", toolkits: []}' \
+    '02:00 review {verdict: "findings", head: "aaaaaaa"}' \
+    '02:40 done {role: "builder", session: "s1"}')" '{"building":1,"review":1,"unattributed":1}'
+}
+
+@test "the reviewer's done beside a review that sends notes back leaves the fix round building" {
+  local review='02:00 review {verdict: "findings", head: "aaaaaaa", sent_back: ["1"]}'
+  local reviewer_done='02:00 done {role: "reviewer", session: "s2"}'
+  local want='{"building":1.667,"review":1,"unattributed":0.333}'
+  assert_equal "$(t90_hours 03:00 '01:00 done {role: "builder", session: "s1"}' \
+    '01:00 launch {role: "reviewer", session: "s2", worktree: "/w", toolkits: []}' \
+    "$review" "$reviewer_done" '02:40 done {role: "builder", session: "s1"}')" "$want"
+  assert_equal "$(t90_hours 03:00 '01:00 done {role: "builder", session: "s1"}' \
+    '01:00 launch {role: "reviewer", session: "s2", worktree: "/w", toolkits: []}' \
+    "$reviewer_done" "$review" '02:40 done {role: "builder", session: "s1"}')" "$want"
+}
+
+@test "a stow inside a fix round, up to the fresh builder's launch, is building" {
+  assert_equal "$(t90_hours 04:00 '01:00 done {role: "builder", session: "s1"}' \
+    '01:00 launch {role: "reviewer", session: "s2", worktree: "/w", toolkits: []}' \
+    '02:00 review {verdict: "findings", head: "aaaaaaa", sent_back: ["1"]}' \
+    '02:10 paused {reason: "stowed"}' \
+    '02:15 launch {role: "builder", session: "s3", worktree: "/w", toolkits: []}' \
+    '02:45 done {role: "builder", session: "s3"}' \
+    '02:45 launch {role: "reviewer", session: "s4", worktree: "/w", toolkits: []}' \
+    '03:15 review {verdict: "pass", head: "bbbbbbb"}')" '{"building":1.75,"review":1.5,"unattributed":0.75}'
+}
+
+@test "a stow outside a fix round, or a pause in one for another reason, keeps its own class" {
+  assert_equal "$(t90_hours 02:00 '01:00 paused {reason: "stowed"}' \
+    '01:30 launch {role: "builder", session: "s2", worktree: "/w", toolkits: []}' \
+    '02:00 done {role: "builder", session: "s2"}')" '{"building":1.5,"wait:off":0.5}'
+  assert_equal "$(t90_hours 03:00 '01:00 done {role: "builder", session: "s1"}' \
+    '01:00 launch {role: "reviewer", session: "s2", worktree: "/w", toolkits: []}' \
+    '02:00 review {verdict: "findings", head: "aaaaaaa", sent_back: ["1"]}' \
+    '02:10 done {role: "builder", session: "s1"}' \
+    '02:20 paused {reason: "stowed"}' \
+    '02:30 resumed {}')" '{"building":1.167,"review":1,"unattributed":0.667,"wait:off":0.167}'
+  assert_equal "$(t90_hours 03:00 '01:00 done {role: "builder", session: "s1"}' \
+    '01:00 launch {role: "reviewer", session: "s2", worktree: "/w", toolkits: []}' \
+    '02:00 review {verdict: "findings", head: "aaaaaaa", sent_back: ["1"]}' \
+    '02:10 paused {reason: "usage limit reached"}' \
+    '02:30 resumed {}' \
+    '02:40 done {role: "builder", session: "s1"}')" '{"building":1.333,"review":1,"unattributed":0.333,"wait:limit":0.333}'
+}
+
+@test "a gate run in the fix round after a review that sends notes back is gate time taken from building" {
+  assert_equal "$(t90_hours 03:00 '01:00 done {role: "builder", session: "s1"}' \
+    '01:00 launch {role: "reviewer", session: "s2", worktree: "/w", toolkits: []}' \
+    '02:00 review {verdict: "findings", head: "aaaaaaa", sent_back: ["1"]}' \
+    '02:30 gate-run {run: "R1", head: "bbbbbbb", outcome: "pushed", minutes: {review: 5, test: 15}}' \
+    '02:30 done {role: "builder", session: "s1"}')" '{"building":1.167,"gate":0.333,"review":1,"unattributed":0.5}'
+}
+
+@test "a passing review that sends notes back while a plan-time approval stands still starts merging" {
+  assert_equal "$(t90_hours 04:00 '00:00 merge-preapproved {project: "p", ask: "plan", discord_message: "1563000000000000001", scope: ["src/"]}' \
+    '01:00 done {role: "builder", session: "s1"}' \
+    '01:00 launch {role: "reviewer", session: "s2", worktree: "/w", toolkits: []}' \
+    '02:00 review {verdict: "pass", head: "aaaaaaa", sent_back: ["1"]}' \
+    '03:00 merged {pr: 1, merge: "m", head: "aaaaaaa", by: "1563000000000000001", approval: "plan"}')" \
+    '{"building":1,"review":1,"merging":1,"unattributed":1}'
+}
+
 @test "a gate run after a review's verdict is gate time" {
   assert_equal "$(t90_hours 05:00 '01:00 done {role: "builder", session: "s1"}' \
     '01:00 launch {role: "reviewer", session: "s2", worktree: "/w", toolkits: []}' \

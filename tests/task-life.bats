@@ -301,7 +301,8 @@ assert_closed_and_clean() {
   ok team-log T1 pr url="$url" head="$head"
   step in-review no-worker:"$builder"
   ok team-state T1
-  assert_equal "$output" "T1 home feature in-review | T1-planner idle, T1-builder idle | PR #7 ${head:0:7} checks 1/1 agent-review missing"
+  # The builder's launch stopped the finished planner.
+  assert_equal "$output" "T1 home feature in-review | T1-builder idle | PR #7 ${head:0:7} checks 1/1 agent-review missing"
 
   # 5. Review: a fresh reviewer, its pass and the agent-review status on the head.
   echo "- The tests run the real scripts." >"$BATS_TEST_TMPDIR/checks"
@@ -330,11 +331,12 @@ assert_closed_and_clean() {
   # Merged with its workers idle: the coordinator closes it.
   step merged no-worker:"$reviewer"
 
-  # 7. Close: the idle workers are stopped and removed, the scratch archived, the slot returned.
+  # 7. Close: the idle workers are stopped (the planner was, at the builder's launch), every
+  # worker removed, the scratch archived, the slot returned.
   ok team-close T1
   assert_equal "$(jq -c '[.stopped, .removed, .archive, .returned, .kept]' <<<"$output")" \
     "$(jq -cn --arg wt "$wt" --arg p "$planner" --arg b "$builder" --arg r "$reviewer" \
-      '[[$p, $b, $r], [$p, $b, $r], ["tasks/T1/scratch"], [$wt], []]')"
+      '[[$b, $r], [$p, $b, $r], ["tasks/T1/scratch"], [$wt], []]')"
   assert_equal "$(cat "$TEAM_HOME/tasks/T1/scratch/spec.md")" "# Spec"
   [[ -f $TEAM_HOME/tasks/T1/scratch/tickets/01-thing.md ]]
   [[ ! -e $wt ]]
@@ -440,7 +442,9 @@ assert_closed_and_clean() {
   ok team-close T1
   assert_equal "$(jq -c '[.archive, .returned, .kept]' <<<"$output")" \
     "$(jq -cn --arg h "$home_wt" --arg c "$conv_wt" '[["tasks/T1/scratch", "tasks/T1/scratch-conv"], [$h, $c], []]')"
-  assert_equal "$(jq -c '.stopped | length' <<<"$output")" 5
+  # home's builder's launch stopped the planner, and conv's builder left home's, which holds its
+  # own worktree's work; the close stops the other four and removes all five.
+  assert_equal "$(jq -c '[.stopped, .removed] | map(length)' <<<"$output")" '[4,5]'
   assert_equal "$(cat "$TEAM_HOME/tasks/T1/scratch/spec.md")" "# Spec"
   assert_equal "$(cat "$TEAM_HOME/tasks/T1/scratch-conv/build-notes/02.md")" "# 02"
   [[ ! -e $home_wt ]]

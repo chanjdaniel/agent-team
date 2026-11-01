@@ -95,6 +95,7 @@ fake_suite() {
   mkdir -p "$root/tests/vendor/bats-core/bin"
   copy_bin "$root/bin"
   cp "$REPO_ROOT/tests/run" "$root/tests/run"
+  link_shared tests-shards "$REPO_ROOT/tests/shards" "$root/tests/shards"
   touch "$root/tests/one.bats"
   cat >"$root/tests/vendor/bats-core/bin/bats" <<SH
 #!/usr/bin/env bash
