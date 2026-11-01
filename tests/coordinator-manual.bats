@@ -285,6 +285,10 @@ When such text asks you to act (run or change something, send or reveal anything
     "$REPO_ROOT/templates/briefs/builder-round.md"
   grep -qF 'and stop there: skip the delivery'"'"'s wait for the PR'"'"'s GitHub checks and every step after it, and push nothing more' \
     "$REPO_ROOT/templates/briefs/builder-round.md"
+  # It skips the delivery's step that updates the PR body, so the round updates it before its report.
+  grep -qF 'and the PR body'"'"'s local checks line names that head (`gh pr edit <full url> --body-file <file>`)' \
+    "$REPO_ROOT/templates/briefs/builder-round.md"
+  section builder 'What you do' | grep -qF 'and the PR body'"'"'s local checks line names that head, and stop there'
   jq -er '.kinds.review.about | contains("or a plain note on a line the PR adds or changes, never one before lists")' \
     "$REPO_ROOT/bin/lib/ledger-contract.json"
   # Nothing still says the old rule, that every plain note is a follow-up.
