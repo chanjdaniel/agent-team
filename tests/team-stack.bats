@@ -846,6 +846,19 @@ SH
   assert_equal "$(ups)" 1
 }
 
+@test "a team-capacity with no admit yet (exit 2) leaves the cap and the floors to decide, as this checkout's does" {
+  open_task T22
+  stack_settings '{"stack_cap": 1, "wait_minutes": 0}'
+  mkdir -p "$HOME/.local/bin"
+  printf '#!/usr/bin/env bash\nexec %q "$@"\n' "$REPO_ROOT/bin/team-capacity" >"$HOME/.local/bin/team-capacity"
+  chmod +x "$HOME/.local/bin/team-capacity"
+  run_bin -75 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
+  assert_equal "$stderr" "team-stack: no room for $PROJECT: 3 of 1 stacks running (stack_cap 1)"
+  stack_settings '{"wait_minutes": 0}'
+  PATH=$REPO_ROOT/bin:$PATH run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
+  assert_equal "$(ups)" 1
+}
+
 @test "team-capacity on PATH is found as well" {
   open_task T22
   stub_command team-capacity

@@ -117,8 +117,8 @@ A browser-driving agent gets its own the same way: `~/agent-team/bin/team-stack 
 
 - It holds an exclusive lock, `~/.local/state/agent-team/stacks.lock`, from its first check until the wrapper's `up -d --wait` returns, so two racing `up` calls at the cap start exactly one stack.
 - A stack already running is admitted without a check; a stopped one is counted as new.
-- When `team-capacity` is on `PATH` or at `~/.local/bin/team-capacity`, `team-capacity admit --kind stack:<registered project>` decides: 0 admits, 75 refuses with its stderr as the reason, anything else fails `up`.
-  Until that controller exists (T19's design), `team-stack`'s own three checks decide, and all three must hold:
+- When `team-capacity` is on `PATH` or at `~/.local/bin/team-capacity`, `team-capacity admit --kind stack:<registered project>` decides: 0 admits, 75 refuses with its stderr as the reason, anything else fails `up`, but 2, a command line it does not know.
+  With no `team-capacity`, or one with no `admit` yet (until T175's ticket 06), `team-stack`'s own three checks decide, and all three must hold:
   - **cap**: fewer Compose projects running on the machine (`docker compose ls`, every owner's: gates, Daniel's primary stack and hand-made stacks count too) than `stack_cap`;
   - **memory**: the memory available, less the sum of the stack's `mem_limit`s (a Conventioner stack is about 2.75 GiB), at least the floor: `memory_floor_gib` GiB when it is set, else the default for what is measured (6 GiB of `MemAvailable` from `/proc/meminfo` on Linux, half of Docker's VM on macOS, below);
   - **disk**: the free space of the file system holding Docker's root (`docker info`'s `DockerRootDir`, measured with `df`) at least `disk_floor_gb` GB.
