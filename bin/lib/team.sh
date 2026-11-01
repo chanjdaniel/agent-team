@@ -16,7 +16,7 @@
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin,
 # only_records, records_list, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
 # own_project, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_slots, discord_token, discord_api,
-# daniel_message, refresh_inbox, github, pr_part, task_state_json, loose_objects, pack_size and story_file, and sets IMAGE_TYPE,
+# daniel_message, refresh_inbox, github, pr_part, pr_file_reasons, task_state_json, loose_objects, pack_size and story_file, and sets IMAGE_TYPE,
 # PACK_LOOSE, COORDINATOR_CHANNEL and INTERVIEW_CHANNEL.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
 # shellcheck shell=bash
@@ -1135,6 +1135,57 @@ pr_part() {
   else
     jq -c --rawfile error "$dir/error" '. + {error: ($error | rtrimstr("\n"))}' <<<"$facts"
   fi
+}
+
+# Why the PR's changed files do not let a word given on no head (the plan-time one) merge it
+# unasked, read from GitHub's paged list of the files of PR <number> in <repo>, using <dir> for
+# gh's answers. The reasons, one per element of PR_FILE_REASONS, none when the files allow it: the
+# list cannot be read; it holds other than <changed files> (the PR's changedFiles) files; a
+# guarded pattern of bin/lib/guarded cannot be read by grep -E; a path holds a line break; a path
+# a guarded pattern matches, named with its areas. PR_CHANGED is the changed paths as a JSON list
+# of {path} and, for each rename's old path, {path, renamed}, [] when the list cannot be read,
+# which returns 1, and 2 when jq fails: pr_file_reasons <dir> <repo> <number> <changed files>
+# shellcheck disable=SC2034 # PR_CHANGED is the caller's to read
+pr_file_reasons() {
+  local dir=$1 repo=$2 number=$3 count=$4 listed paths humps area pattern lines form rc found matched out guarded=''
+  PR_FILE_REASONS=() PR_CHANGED='[]'
+  if ! github "$dir" files api "repos/$repo/pulls/$number/files" --paginate; then
+    PR_FILE_REASONS+=("GitHub cannot be read: $(<"$dir/error")")
+    return 1
+  fi
+  PR_CHANGED=$(jq -cs 'add // [] | [.[] | {path: .filename}, (select(.previous_filename) | {path: .previous_filename, renamed: .filename})]' \
+    "$dir/files") && listed=$(jq -s 'add // [] | length' "$dir/files") || return 2
+  [[ $listed == "$count" ]] ||
+    PR_FILE_REASONS+=("GitHub's list of PR #$number's files holds $listed files, not its $count changed files, so not every file could be checked")
+  # Each guarded pattern's matches among the changed paths, as {path, area} lines: a path matches
+  # as it is, or with each camelCase hump split off by an underscore (applicantSessionExpiry.ts
+  # as applicant_Session_Expiry.ts, CSRFToken.ts as CSRF_Token.ts), so a pattern's words match
+  # inside such a name. A path with a line break, which grep would read as two, is refused below.
+  paths=$(jq -r '.[].path' <<<"$PR_CHANGED")
+  humps=$(sed -E 's/([[:lower:][:digit:]])([[:upper:]])/\1_\2/g; s/([[:upper:]])([[:upper:]][[:lower:]])/\1_\2/g' <<<"$paths")
+  while read -r area pattern; do
+    [[ -n $area && $area != '#'* ]] || continue
+    lines=''
+    for form in "$paths" "$humps"; do
+      rc=0
+      found=$(grep -Eixn -e "$pattern" <<<"$form") || rc=$?
+      if ((rc > 1)); then
+        PR_FILE_REASONS+=("the guarded pattern '$pattern' ($area) in bin/lib/guarded cannot be read by grep -E")
+        break
+      fi
+      lines+=$(cut -d: -f1 <<<"$found")$'\n'
+    done
+    matched=$(awk 'NR == FNR { if ($0 != "") hit[$0]; next } FNR in hit' <(printf '%s' "$lines") <(printf '%s\n' "$paths"))
+    guarded+=$(jq -cR --arg area "$area" 'select(. != "") | {path: ., area: $area}' <<<"$matched")$'\n'
+  done <"$TEAM_LIB/guarded"
+  guarded=$(jq -cs . <<<"$guarded") || return 2
+  out=$(jq -r --argjson guarded "$guarded" '
+    def name: if .renamed then "\(.path), renamed to \(.renamed)," else .path end;
+    (.[] | select(.path | test("\n")) | "\(.path | @json) holds a line break, so no guarded pattern can be matched against it"),
+    (.[] | . as $file | [$guarded[] | select(.path == $file.path) | .area]
+      | reduce .[] as $a ([]; if IN(.[]; $a) then . else . + [$a] end) | select(. != [])
+      | "\($file | name) is a guarded path (\(join(", "))): a change there comes back to Daniel")' <<<"$PR_CHANGED") || return 2
+  if [[ -n $out ]]; then mapfile -t -O "${#PR_FILE_REASONS[@]}" PR_FILE_REASONS <<<"$out"; fi
 }
 
 # The tokens a session's latest main-conversation reply read (input, cache writes and cache read),

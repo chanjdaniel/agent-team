@@ -125,31 +125,40 @@ number=$(jq -r .number <<<"$facts") repo=$(jq -r .repo <<<"$facts") project=$(jq
 base=$(team_project "$project" base)
 method=$(team_project "$project" merge_method)
 
-problems=()
-# Each line jq prints is one reason more; a jq that fails ends the run, nothing merged:
-# add_problems <jq arguments>...
-add_problems() {
+# The reasons a merge is refused, each word's apart from the checks every merge gets, so a word can
+# be tried, judged and set aside: head_reasons, why Daniel's per-head word does not hold (or that
+# none is recorded); plan_reasons, why the plan-time word does not; merge_reasons, the checks
+# every merge gets, whatever the word.
+head_reasons=() plan_reasons=() merge_reasons=()
+# A jq that fails ends the run, nothing merged: jq_failed [<its exit>]
+jq_failed() {
+  die "PR #$number cannot be checked: jq failed${1:+ (exit $1)}, so nothing changed"
+}
+# Each line jq prints is one reason more of the list <name>: add_reasons <name> <jq arguments>...
+add_reasons() {
+  local -n add_to=$1
   local out line
-  out=$(jq -r "$@") || die "PR #$number cannot be checked: jq failed (exit $?), so nothing changed"
-  while IFS= read -r line; do if [[ -n $line ]]; then problems+=("$line"); fi; done <<<"$out"
+  out=$(jq -r "${@:2}") || jq_failed $?
+  while IFS= read -r line; do if [[ -n $line ]]; then add_to+=("$line"); fi; done <<<"$out"
 }
 
 # Daniel's word on the PR, per head or at plan time. A <kind> event names Daniel's Discord message,
 # which holds when it is an id sent no earlier than <since> (the time of <what>) and Discord shows
 # it in the task's thread or #coordinator from an allowFrom author; then by and channel name it,
-# else its reason is one among the rest: word_from <kind> <message> <since> <what>
+# else its reason joins the list <name>: word_from <name> <kind> <message> <since> <what>
 thread=$(jq -r 'map(select(.event == "thread")) | last | .discord_thread // empty' <<<"$events")
 by='' channel=''
 word_from() {
-  local kind=$1 message=$2 since=$3 what=$4 sent places=() reply
+  local -n word_to=$1
+  local kind=$2 message=$3 since=$4 what=$5 sent places=() reply
   if [[ ! $message =~ ^[1-9][0-9]{0,18}$ ]]; then
-    problems+=("$kind names discord_message '$message', which is not a Discord message id")
+    word_to+=("$kind names discord_message '$message', which is not a Discord message id")
     return
   fi
   # A Discord id holds the milliseconds since 2015-01-01 above its low 22 bits.
   sent=$(((10#$message >> 22) / 1000 + 1420070400))
   if ((sent < $(date -ud "$since" +%s))); then
-    problems+=("Discord message $message was sent at $(date -ud "@$sent" +%FT%TZ), before $what at $since, so it is not Daniel's word on this PR")
+    word_to+=("Discord message $message was sent at $(date -ud "@$sent" +%FT%TZ), before $what at $since, so it is not Daniel's word on this PR")
     return
   fi
   if [[ -n $thread ]]; then places+=("the task's thread $thread"); fi
@@ -158,7 +167,7 @@ word_from() {
     by="Discord message $message in $(jq -r .place <<<"$reply"), from $(jq -r .who <<<"$reply")"
     channel=$(jq -r .channel <<<"$reply")
   else
-    problems+=("$(<"$scratch/word")")
+    word_to+=("$(<"$scratch/word")")
   fi
 }
 
@@ -188,30 +197,30 @@ if [[ $approval == null ]]; then
 fi
 if [[ $approval != null ]]; then
   if [[ -z $pr_ts ]]; then
-    problems+=("merge-approved names the head ${approved:0:7}, which no pr event of $url, nor a review since, logged: ask again on the PR's head")
+    head_reasons+=("merge-approved names the head ${approved:0:7}, which no pr event of $url, nor a review since, logged: ask again on the PR's head")
   else
     message=$(jq -r '.discord_message | tostring' <<<"$approval")
-    word_from merge-approved "$message" "$pr_ts" "the ${logged#* } event of $url${approved:+ at ${approved:0:7}}"
+    word_from head_reasons merge-approved "$message" "$pr_ts" "the ${logged#* } event of $url${approved:+ at ${approved:0:7}}"
   fi
 elif [[ $preapproval == null ]] || jq -e '.withdrawn != null' <<<"$preapproval" >/dev/null; then
-  problems+=("no merge-approved event for $url: Daniel's word is not recorded")
+  head_reasons+=("no merge-approved event for $url: Daniel's word is not recorded")
   if [[ $preapproval != null ]]; then
-    problems+=("$(jq -r '"Daniel'"'"'s plan-time word on \(.project), Discord message \(.discord_message), was withdrawn at \(.withdrawn.ts) in Discord message \(.withdrawn.discord_message)"' <<<"$preapproval")")
+    plan_reasons+=("$(jq -r '"Daniel'"'"'s plan-time word on \(.project), Discord message \(.discord_message), was withdrawn at \(.withdrawn.ts) in Discord message \(.withdrawn.discord_message)"' <<<"$preapproval")")
   fi
 else
   word=plan
   message=$(jq -r '.discord_message | tostring' <<<"$preapproval")
   ask=$(jq -r .ask <<<"$preapproval")
   if [[ $(jq -r .asked <<<"$preapproval") == null ]]; then
-    problems+=("merge-preapproved answers the ask $ask, which $task did not log before it")
+    plan_reasons+=("merge-preapproved answers the ask $ask, which $task did not log before it")
   else
-    word_from merge-preapproved "$message" "$(jq -r .asked.ts <<<"$preapproval")" "the asked $ask"
+    word_from plan_reasons merge-preapproved "$message" "$(jq -r .asked.ts <<<"$preapproval")" "the asked $ask"
   fi
   # Read now, so a project that stops opting in stops merging at once.
   if own_project "$project"; then
-    problems+=("$project is the team's own project, whose PRs merge only on Daniel's word per head")
+    plan_reasons+=("$project is the team's own project, whose PRs merge only on Daniel's word per head")
   elif [[ $(team_project "$project" merge_with_plan) != true ]]; then
-    problems+=("$project does not opt in to plan-time merges now: its merge_with_plan in projects.toml is false")
+    plan_reasons+=("$project does not opt in to plan-time merges now: its merge_with_plan in projects.toml is false")
   fi
   task_branch=$(ledger_jq 'task_branch($project) // ""' -r --arg project "$project" <<<"$events")
 fi
@@ -220,24 +229,24 @@ fi
 # protection and the commit list.
 head='' branch=''
 if jq -e 'has("error")' <<<"$facts" >/dev/null; then
-  problems+=("GitHub cannot be read: $(jq -r .error <<<"$facts")")
+  merge_reasons+=("GitHub cannot be read: $(jq -r .error <<<"$facts")")
 elif ! github "$scratch" pr pr view "$number" --repo "$repo" --json isDraft,mergeable,headRefName,headRefOid,changedFiles ||
   ! github "$scratch" branch api "repos/$repo/branches/$base" ||
   ! github "$scratch" commits api "repos/$repo/pulls/$number/commits" --paginate; then
-  problems+=("GitHub cannot be read: $(<"$scratch/error")")
+  merge_reasons+=("GitHub cannot be read: $(<"$scratch/error")")
 else
   head=$(jq -r .head <<<"$facts") branch=$(jq -r .headRefName "$scratch/pr")
   state=$(jq -r .state <<<"$facts")
-  [[ $state == open ]] || problems+=("PR #$number is $state, not open")
-  [[ $(jq -r .isDraft "$scratch/pr") != true ]] || problems+=("PR #$number is a draft")
+  [[ $state == open ]] || merge_reasons+=("PR #$number is $state, not open")
+  [[ $(jq -r .isDraft "$scratch/pr") != true ]] || merge_reasons+=("PR #$number is a draft")
   case $(jq -r .mergeable "$scratch/pr") in
     MERGEABLE) ;;
-    CONFLICTING) problems+=("PR #$number conflicts with its base") ;;
-    *) problems+=("GitHub has not worked out yet whether PR #$number conflicts with its base; try again in a minute") ;;
+    CONFLICTING) merge_reasons+=("PR #$number conflicts with its base") ;;
+    *) merge_reasons+=("GitHub has not worked out yet whether PR #$number conflicts with its base; try again in a minute") ;;
   esac
-  [[ $(jq -r .base <<<"$facts") == "$base" ]] || problems+=("PR #$number targets $(jq -r .base <<<"$facts"), not $project's base $base")
-  [[ $(jq -r .headRefOid "$scratch/pr") == "$head" ]] || problems+=("the head moved while it was read (${head:0:7}, then $(jq -r '.headRefOid[:7]' "$scratch/pr")); run team-merge again")
-  while IFS= read -r line; do problems+=("$line"); done < <(jq -r --slurpfile branch "$scratch/branch" '
+  [[ $(jq -r .base <<<"$facts") == "$base" ]] || merge_reasons+=("PR #$number targets $(jq -r .base <<<"$facts"), not $project's base $base")
+  [[ $(jq -r .headRefOid "$scratch/pr") == "$head" ]] || merge_reasons+=("the head moved while it was read (${head:0:7}, then $(jq -r '.headRefOid[:7]' "$scratch/pr")); run team-merge again")
+  while IFS= read -r line; do merge_reasons+=("$line"); done < <(jq -r --slurpfile branch "$scratch/branch" '
     ((.required + ($branch[0].protection.required_status_checks.contexts // [])) | unique) as $required
     | (.checks.passed + .checks.failing + .checks.pending) as $present
     | ($required[] | select(IN($present[]) | not) | "required check \(.) is missing on the head"),
@@ -247,89 +256,39 @@ else
       (.agent_review | select(. != "success") | "agent-review is \(.) on the head, not success")' <<<"$facts")
   commits=$(jq -cs 'add // []' "$scratch/commits")
   last=$(jq -r 'last.sha // ""' <<<"$commits")
-  [[ $last == "$head" ]] || problems+=("the PR's commit list ends at ${last:0:7}, not at the head ${head:0:7}, so not every commit could be checked")
+  [[ $last == "$head" ]] || merge_reasons+=("the PR's commit list ends at ${last:0:7}, not at the head ${head:0:7}, so not every commit could be checked")
   attributed=''
   while IFS= read -r sha; do
     msg=$(jq -r --arg s "$sha" '.[] | select(.sha == $s) | .commit.message' <<<"$commits")
     while IFS= read -r line; do
-      problems+=("commit ${sha:0:7} ($(head -n 1 <<<"$msg")) carries an attribution line: $line")
+      merge_reasons+=("commit ${sha:0:7} ($(head -n 1 <<<"$msg")) carries an attribution line: $line")
       attributed=1
     done < <(attribution_lines <<<"$msg")
   done < <(jq -r '.[].sha' <<<"$commits")
 fi
 
 # The plan-time word holds only for the task's own branch for the project, only on a head whose
-# latest review (by the shorter prefix) is a pass that found no guarded area, only for a PR whose
-# every changed path is within the scope Daniel approved and matches no guarded pattern
-# (bin/lib/guarded), and only for a task no review of which counted a security or real-data
-# finding, or left its counts out.
+# latest review (by the shorter prefix) is a pass that found no guarded area, only for a task no
+# review of which counted a security or real-data finding, or left its counts out
+# (unattended_review_reasons), and only for a PR whose every changed path matches no guarded
+# pattern (pr_file_reasons) and is within the scope Daniel approved.
 if [[ $word == plan && -n $head ]]; then
   if [[ -z $task_branch ]]; then
-    problems+=("$task logged no branch for $project: no opened, worktree-added or branch-renamed event of it")
+    plan_reasons+=("$task logged no branch for $project: no opened, worktree-added or branch-renamed event of it")
   elif [[ $branch != "$task_branch" ]]; then
-    problems+=("PR #$number comes from $branch, not $task_branch, $task's branch for $project")
+    plan_reasons+=("PR #$number comes from $branch, not $task_branch, $task's branch for $project")
   fi
-  reviewed=$(ledger_jq '[.[] | select(.event == "review" and same_head(.head; $head))] | last' -c --arg head "$head" <<<"$events")
-  if [[ $reviewed == null ]]; then
-    problems+=("no review of the head ${head:0:7} is logged, so no reviewer has passed it")
-  elif [[ $(jq -r .verdict <<<"$reviewed") != pass ]]; then
-    problems+=("$(jq -r --arg h "${head:0:7}" '"the latest review of the head \($h), at \(.ts), is \(.verdict), not pass"' <<<"$reviewed")")
-  fi
-  add_problems --arg h "${head:0:7}" '
-    select(. != null) | "the latest review of the head \($h), at \(.ts), " as $review
-    | if has("guarded") | not then "\($review)logged no guarded areas, so no reviewer has said the change touches none"
-      elif .guarded != [] then "\($review)found the change touching guarded areas: \(.guarded | join(", "))"
-      else empty end' <<<"$reviewed"
-  add_problems '
-    .[] | select(.event == "review") | "the review of the head \(.head[:7]), at \(.ts), " as $review
-    | if has("findings") | not then
-        "\($review)logged no finding counts, so whether it found a security or real-data issue is not known"
-      else
-        [.findings | ("security", "real-data") as $kind | .[$kind] | select(. > 0)
-          | "\(.) \($kind) finding\(if . == 1 then "" else "s" end)"]
-        | select(length > 0)
-        | "\($review)counted \(join(" and ")): such a finding on the task, even fixed, comes back to Daniel"
-      end' <<<"$events"
-
-  # The PR's changed paths, each rename's old path too, from GitHub's paged list, which must hold
-  # every file the PR changes.
-  if ! github "$scratch" files api "repos/$repo/pulls/$number/files" --paginate; then
-    problems+=("GitHub cannot be read: $(<"$scratch/error")")
-  else
-    changed=$(jq -cs 'add // [] | [.[] | {path: .filename}, (select(.previous_filename) | {path: .previous_filename, renamed: .filename})]' \
-      "$scratch/files")
-    listed=$(jq -s 'add // [] | length' "$scratch/files") count=$(jq -r '.changedFiles // "unknown number of"' "$scratch/pr")
-    [[ $listed == "$count" ]] ||
-      problems+=("GitHub's list of PR #$number's files holds $listed files, not its $count changed files, so not every file could be checked")
-    # Each guarded pattern's matches among the changed paths, as {path, area} lines: a path matches
-    # as it is, or with each camelCase hump split off by an underscore (applicantSessionExpiry.ts
-    # as applicant_Session_Expiry.ts, CSRFToken.ts as CSRF_Token.ts), so a pattern's words match
-    # inside such a name. A path with a line break, which grep would read as two, is refused below.
-    paths=$(jq -r '.[].path' <<<"$changed") guarded=''
-    humps=$(sed -E 's/([[:lower:][:digit:]])([[:upper:]])/\1_\2/g; s/([[:upper:]])([[:upper:]][[:lower:]])/\1_\2/g' <<<"$paths")
-    while read -r area pattern; do
-      [[ -n $area && $area != '#'* ]] || continue
-      lines=''
-      for form in "$paths" "$humps"; do
-        rc=0
-        found=$(grep -Eixn -e "$pattern" <<<"$form") || rc=$?
-        if ((rc > 1)); then
-          problems+=("the guarded pattern '$pattern' ($area) in bin/lib/guarded cannot be read by grep -E")
-          break
-        fi
-        lines+=$(cut -d: -f1 <<<"$found")$'\n'
-      done
-      matched=$(awk 'NR == FNR { if ($0 != "") hit[$0]; next } FNR in hit' <(printf '%s' "$lines") <(printf '%s\n' "$paths"))
-      guarded+=$(jq -cR --arg area "$area" 'select(. != "") | {path: ., area: $area}' <<<"$matched")$'\n'
-    done <"$TEAM_LIB/guarded"
-    add_problems --argjson scope "$(jq -c .scope <<<"$preapproval")" --argjson guarded "$(jq -cs . <<<"$guarded")" '
+  out=$(ledger_jq 'unattended_review_reasons($head)' -r --arg head "$head" <<<"$events") || jq_failed $?
+  if [[ -n $out ]]; then mapfile -t -O "${#plan_reasons[@]}" plan_reasons <<<"$out"; fi
+  rc=0
+  pr_file_reasons "$scratch" "$repo" "$number" "$(jq -r '.changedFiles // "unknown number of"' "$scratch/pr")" || rc=$?
+  ((rc != 2)) || jq_failed
+  plan_reasons+=("${PR_FILE_REASONS[@]}")
+  if ((rc == 0)); then
+    add_reasons plan_reasons --argjson scope "$(jq -c .scope <<<"$preapproval")" '
       def name: if .renamed then "\(.path), renamed to \(.renamed)," else .path end;
-      (.[] | select(.path | test("\n")) | "\(.path | @json) holds a line break, so no guarded pattern can be matched against it"),
-      (.[] | .path as $p | select(any($scope[]; . as $entry | if endswith("/") then $p | startswith($entry) else $p == $entry end) | not)
-        | "\(name) is outside the scope of Daniel'"'"'s plan-time word: \($scope | join(", "))"),
-      (.[] | . as $file | [$guarded[] | select(.path == $file.path) | .area]
-        | reduce .[] as $a ([]; if IN(.[]; $a) then . else . + [$a] end) | select(. != [])
-        | "\($file | name) is a guarded path (\(join(", "))): a change there comes back to Daniel")' <<<"$changed"
+      .[] | .path as $p | select(any($scope[]; . as $entry | if endswith("/") then $p | startswith($entry) else $p == $entry end) | not)
+      | "\(name) is outside the scope of Daniel'"'"'s plan-time word: \($scope | join(", "))"' <<<"$PR_CHANGED"
   fi
 fi
 
@@ -341,26 +300,27 @@ if [[ -n $approved && -n $pr_ts && -n $head ]] &&
   primary=$(team_project "$project" path)
   if ! git -C "$primary" fetch -q origin "+refs/heads/$branch:refs/remotes/origin/$branch" \
     "+refs/heads/$base:refs/remotes/origin/$base" 2>"$scratch/fetch-error"; then
-    problems+=("the head ${head:0:7} cannot be fetched into $primary to check it against Daniel's word on ${approved:0:7}: $(grep -m1 . "$scratch/fetch-error" || echo "git fetch failed")")
+    head_reasons+=("the head ${head:0:7} cannot be fetched into $primary to check it against Daniel's word on ${approved:0:7}: $(grep -m1 . "$scratch/fetch-error" || echo "git fetch failed")")
   elif ! git -C "$primary" merge-base --is-ancestor "$approved" "$head" 2>/dev/null; then
-    problems+=("the head ${head:0:7} does not hold ${approved:0:7}, the head Daniel's word named: ask again")
+    head_reasons+=("the head ${head:0:7} does not hold ${approved:0:7}, the head Daniel's word named: ask again")
   else
     own=$(git -C "$primary" rev-list --reverse --no-merges "$head" "^$approved" "^origin/$base")
     if [[ -n $own ]]; then
-      problems+=("the head moved past Daniel's word with ${own:0:7}: ask again")
+      head_reasons+=("the head moved past Daniel's word with ${own:0:7}: ask again")
     elif ! ledger_jq 'any(.[$approval.i + 1:][]; .event == "review" and .verdict == "pass" and same_head(.head; $head))' \
       -e --argjson approval "$approval" --arg head "$head" <<<"$events" >/dev/null; then
-      problems+=("the head ${head:0:7} is ${approved:0:7}, Daniel's word, with merges of the base, but no passing review of ${head:0:7} is logged after the word: review it, or ask again")
+      head_reasons+=("the head ${head:0:7} is ${approved:0:7}, Daniel's word, with merges of the base, but no passing review of ${head:0:7} is logged after the word: review it, or ask again")
     fi
   fi
 fi
 
-# Refuse, with every reason, when there is any.
+# Refuse, with every reason, when there is any: the word's, then the checks every merge gets.
 refuse_on_problems() {
-  ((${#problems[@]})) || return 0
+  local reasons=("${head_reasons[@]}" "${plan_reasons[@]}" "${merge_reasons[@]}")
+  ((${#reasons[@]})) || return 0
   {
     echo "team-merge: $task cannot merge PR #$number, so nothing changed:"
-    printf '  %s\n' "${problems[@]}"
+    printf '  %s\n' "${reasons[@]}"
     if [[ -n ${attributed:-} ]]; then echo "  (team-clean-messages <worktree> strips them; push its rewrite and wait for the checks again)"; fi
     if [[ $word == plan ]]; then
       local on="the PR's head"
@@ -379,20 +339,20 @@ if ((${#local_checks[@]})); then
   primary=$(team_project "$project" path)
   if ! git -C "$primary" fetch -q origin "+refs/heads/$branch:refs/remotes/origin/$branch" 2>"$scratch/fetch-error" ||
     ! git -C "$primary" cat-file -e "$head^{commit}" 2>/dev/null; then
-    problems+=("the head ${head:0:7} cannot be fetched into $primary for the local checks: $(grep -m1 . "$scratch/fetch-error" || echo "origin's $branch is elsewhere")")
+    merge_reasons+=("the head ${head:0:7} cannot be fetched into $primary for the local checks: $(grep -m1 . "$scratch/fetch-error" || echo "origin's $branch is elsewhere")")
     refuse_on_problems
   fi
   rc=0
   "$(dirname "$TEAM_LIB")/team-checks" "$project" "$head" --from "$primary" --label "team-merge $task" >"$scratch/checks" || rc=$?
   if ((rc)); then
-    problems+=("the local checks did not pass on the head ${head:0:7} (team-checks exit $rc):"$'\n'"$({ grep -v "' passed on the head " "$scratch/checks" || true; } | sed 's/^/    /')")
+    merge_reasons+=("the local checks did not pass on the head ${head:0:7} (team-checks exit $rc):"$'\n'"$({ grep -v "' passed on the head " "$scratch/checks" || true; } | sed 's/^/    /')")
   fi
   if github "$scratch" again pr view "$number" --repo "$repo" --json headRefOid; then
     moved=$(jq -r .headRefOid "$scratch/again")
     [[ $moved == "$head" ]] ||
-      problems+=("the head moved while the local checks ran (${head:0:7}, then ${moved:0:7}); run team-merge again")
+      merge_reasons+=("the head moved while the local checks ran (${head:0:7}, then ${moved:0:7}); run team-merge again")
   else
-    problems+=("GitHub cannot be read after the local checks: $(<"$scratch/error")")
+    merge_reasons+=("GitHub cannot be read after the local checks: $(<"$scratch/error")")
   fi
   refuse_on_problems
 fi

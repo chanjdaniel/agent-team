@@ -500,6 +500,31 @@ def preapproved_projects:
       if IN(.[]; $project) then . else . + [$project] end)
   | map(select(. as $project | $events | merge_preapproval($project) | .withdrawn == null));
 
+# Why the task's reviews do not let a word given on no head (the plan-time one) merge the PR's
+# head $head unasked, one string per reason, none when they do: no review of the head (by the
+# shorter prefix) is logged; the latest one is not a pass; it logged no guarded list, or named
+# areas in it; and each review of the task, of any head, that left out its finding counts or
+# counted a security or real-data finding, fixed or not, named by its head and time.
+def unattended_review_reasons($head):
+  ([.[] | select(.event == "review" and same_head(.head; $head))] | last) as $reviewed
+  | "the latest review of the head \($head[:7]), at \($reviewed.ts), " as $latest
+  | (if $reviewed == null then "no review of the head \($head[:7]) is logged, so no reviewer has passed it"
+     elif $reviewed.verdict != "pass" then "\($latest)is \($reviewed.verdict), not pass"
+     else empty end),
+    ($reviewed | select(. != null)
+     | if has("guarded") | not then "\($latest)logged no guarded areas, so no reviewer has said the change touches none"
+       elif .guarded != [] then "\($latest)found the change touching guarded areas: \(.guarded | join(", "))"
+       else empty end),
+    (.[] | select(.event == "review") | "the review of the head \(.head[:7]), at \(.ts), " as $review
+     | if has("findings") | not then
+         "\($review)logged no finding counts, so whether it found a security or real-data issue is not known"
+       else
+         [.findings | ("security", "real-data") as $kind | .[$kind] | select(. > 0)
+           | "\(.) \($kind) finding\(if . == 1 then "" else "s" end)"]
+         | select(length > 0)
+         | "\($review)counted \(join(" and ")): such a finding on the task, even fixed, comes back to Daniel"
+       end);
+
 # Whether the task's events hold an answered of ask $id read from Discord message $message.
 def answered_from($id; $message):
   any(.[]; .event == "answered" and .id == $id and (.discord_message | tostring) == $message);
