@@ -442,27 +442,93 @@ subcommands() {
   printf '%s\n' "$part"
 }
 
-# The texts Claude Code matches a Bash deny or ask rule against for <command>, one per line: the
-# command and each of its subcommands, each also past its leading variable assignments, and that
-# with its first word's directory dropped, so a rule naming a bare command also matches it run by
-# path (rQ, eyt and V$ in Claude Code 2.1.312; allow rules get none but the first): deny_forms <command>
+# The command <text> runs behind its first word when that word is a wrapper Claude Code strips
+# before it matches a deny or ask rule (env, sudo, nohup, timeout, command, exec, time, nice and
+# builtin, by any path), past the wrapper's options, the value of each option that takes one,
+# env's variable assignments and timeout's duration; fail when it is no wrapper, when nothing
+# follows it, and for `command -v` or `-V`, a lookup, which Claude Code leaves: unwrapped <text>
+unwrapped() {
+  local rest=$1 name word takes='' timed=''
+  name=${rest%%[[:space:]]*}
+  name=${name##*/}
+  case $name in
+    env) takes=' -u -C --unset --chdir ' ;;
+    sudo) takes=' -u -g -U -C -D -h -p -r -R -t -T -a --user --group --other-user --close-from --chdir --host --prompt --role --chroot --type --command-timeout --auth-type ' ;;
+    timeout) takes=' -k -s --kill-after --signal ' timed=yes ;;
+    nice) takes=' -n ' ;;
+    nohup | command | exec | time | builtin) ;;
+    *) return 1 ;;
+  esac
+  [[ $rest =~ ^[^[:space:]]+[[:space:]]+(.*)$ ]] || return 1
+  rest=${BASH_REMATCH[1]}
+  while [[ -n $rest ]]; do
+    word=${rest%%[[:space:]]*}
+    if [[ $word == -- ]]; then
+      rest=${rest#--}
+      rest=${rest#"${rest%%[![:space:]]*}"}
+      continue
+    elif [[ $name == command && ($word == -v || $word == -V) ]]; then
+      return 1
+    elif [[ $word == -?* ]]; then
+      rest=${rest#"$word"}
+      if [[ $takes == *" $word "* ]]; then
+        rest=${rest#"${rest%%[![:space:]]*}"}
+        rest=${rest#"${rest%%[[:space:]]*}"}
+      fi
+      rest=${rest#"${rest%%[![:space:]]*}"}
+      continue
+    elif [[ $name == env && $word =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+      rest=${rest#"$word"}
+      rest=${rest#"${rest%%[![:space:]]*}"}
+      continue
+    elif [[ -n $timed && $word =~ ^[0-9]+(\.[0-9]+)?[smhd]?$ ]]; then
+      rest=${rest#"$word"} timed=''
+    elif [[ -n $timed ]]; then
+      return 1
+    fi
+    break
+  done
+  rest=${rest#"${rest%%[![:space:]]*}"}
+  [[ -z $timed && -n $rest ]] || return 1
+  printf '%s' "$rest"
+}
+
+# The texts Claude Code 2.1.316 matches a Bash deny or ask rule against for <command>, one per
+# line, so a test can tell what it refuses: the command, and each of its subcommands (split as
+# subcommands says), each also with its leading variable assignments and wrappers (as unwrapped
+# says) stripped one at a time, each step a text of its own, and the last with its first word's
+# directory dropped, so a rule naming a bare command also matches it run by path or behind
+# `nohup`, `timeout 5`, `command`, `sudo` or `env A=1`. Allow rules strip less; this models deny rules.
+# Not modelled: an assignment's quoted value holding a space (`A="x y" cmd`), the quotes Claude
+# Code drops when it rejoins a stripped command's words, the redirections it drops before
+# matching, and the rarer wrappers it also strips (doas, pkexec, watch, ionice, setsid, taskset,
+# chrt, strace, ltrace, flock, script, unshare, nsenter, stdbuf, noglob, and the command string
+# of `env -S` or `flock -c`); a "stays allowed" test of such a form proves nothing: deny_forms <command>
 deny_forms() {
-  local whole=$1 part command
+  local whole=$1 part command next
   printf '%s\n' "$whole"
   while IFS= read -r part; do
     part=${part#"${part%%[![:space:]]*}"} part=${part%"${part##*[![:space:]]}"}
     [[ -n $part ]] || continue
     command=$part
     printf '%s\n' "$part"
-    while [[ $command =~ ^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+(.*)$ ]]; do command=${BASH_REMATCH[1]}; done
-    [[ $command == "$part" ]] || printf '%s\n' "$command"
+    while true; do
+      if [[ $command =~ ^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+(.*)$ ]]; then
+        command=${BASH_REMATCH[1]}
+      elif next=$(unwrapped "$command"); then
+        command=$next
+      else
+        break
+      fi
+      printf '%s\n' "$command"
+    done
     if [[ $command =~ ^[^[:space:]]*/([^[:space:]/]+)(.*)$ ]]; then
       printf '%s\n' "${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
     fi
   done < <(subcommands "$whole")
 }
 
-# Whether the Bash rule's content <pattern> matches <text> as Claude Code's i8 does (2.1.314): each
+# Whether the Bash rule's content <pattern> matches <text> as Claude Code 2.1.314 did: each
 # * matches any text, and a rule whose one * ends it after a space also matches the text before
 # that space alone, so `git config core.hooksPath *` matches `git config core.hooksPath`, a read,
 # while a rule of two stars never drops its last: rule_text_matches <pattern> <text>

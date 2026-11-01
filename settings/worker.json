@@ -278,7 +278,16 @@
       "Bash(*/bin/team-thread T*)",
       "Read(~/.claude/channels/**)",
       "Edit(~/.claude/channels/**)",
-      "Bash(*.claude/channels*)"
+      "Bash(*.claude/channels/*.env*)",
+      "Bash(*.claude/channels/*access.json*)",
+      "Bash(cd *.claude/channels*)",
+      "Bash(pushd *.claude/channels*)",
+      "Bash(*AGENT_TEAM_ROLE=*)",
+      "Bash(*AGENT_TEAM_TASK=*)",
+      "Bash(*unset AGENT_TEAM_*)",
+      "Bash(*unset=AGENT_TEAM_*)",
+      "Bash(*-u AGENT_TEAM_*)",
+      "Bash(*-uAGENT_TEAM_*)"
     ]
   },
   "skillOverrides": {

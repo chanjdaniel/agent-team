@@ -852,6 +852,121 @@ COMMANDS
   done
 }
 
+# Claude Code strips a command's wrappers before it matches a deny rule, so a rule naming a bare
+# command refuses it behind any of them; deny_forms models that, so a "stays allowed" test cannot
+# pass on a command Claude Code refuses.
+@test "the deny model strips the wrappers Claude Code strips before it matches a rule" {
+  local settings=$BATS_TEST_TMPDIR/settings.json command
+  echo '{"permissions": {"deny": ["Bash(tool *)"]}}' >"$settings"
+  while IFS= read -r command; do
+    denied_in "$settings" "$command" || { echo "not denied: $command" >&2; return 1; }
+  done <<'COMMANDS'
+tool x
+/usr/local/bin/tool x
+nohup tool x
+nohup -- tool x
+timeout 5 tool x
+timeout -k 3 -s KILL 10s tool x
+timeout --signal=TERM -- 1.5m tool x
+command tool x
+command -p tool x
+sudo tool x
+sudo -u me -n tool x
+sudo --user=me /usr/bin/tool x
+env A=1 tool x
+env -u HOME A=1 B= /usr/bin/tool x
+/usr/bin/env A=1 tool
+exec tool x
+time tool x
+nice -n 5 tool x
+X=1 nohup env A=1 timeout 5 sudo command /opt/bin/tool x
+cd /tmp && nohup timeout 5 tool x 2>&1
+COMMANDS
+  while IFS= read -r command; do
+    if denied_in "$settings" "$command"; then echo "denied: $command" >&2; return 1; fi
+  done <<'COMMANDS'
+echo tool x
+command -v tool
+command -V tool
+env | grep tool
+timeout tool x
+nohup
+grep -n 'nohup tool' bin/x
+sudo -l
+COMMANDS
+}
+
+# worker_refusal (bin/lib/team.sh) reads AGENT_TEAM_ROLE and AGENT_TEAM_TASK, which team-worker sets
+# in a worker's settings: a worker is denied setting either on a command line, and unsetting it
+# with unset or env's -u, so the refusal cannot be talked past (env -i, which clears every
+# variable, is left: it is a speed bump). Like the GIT_CONFIG_ rules, a rule's * on both sides also
+# takes in a search naming an assignment, so grep -n 'AGENT_TEAM_ROLE=' tests/ is refused too;
+# that cost is accepted (a search for the bare name stays allowed).
+@test "a worker cannot set or unset its role or task on a command line" {
+  local SETTINGS=(settings/worker.json) command
+  # shellcheck disable=SC2088 # ~ is part of the command as an agent types it
+  assert_denies 'Bash(*AGENT_TEAM_ROLE=*)' 'AGENT_TEAM_ROLE=coordinator ~/agent-team/bin/team-post T7 --file f' \
+    'export AGENT_TEAM_ROLE=x' 'AGENT_TEAM_ROLE= team-post T7 --file f' 'env AGENT_TEAM_ROLE=coordinator team-post T7 --file f'
+  assert_denies 'Bash(*AGENT_TEAM_TASK=*)' 'env AGENT_TEAM_TASK=T1 cmd' 'export AGENT_TEAM_TASK=T8; team-post T8 --file f' \
+    'AGENT_TEAM_ROLE=planner AGENT_TEAM_TASK=T8 team-post T8 --thread interview --file f'
+  assert_denies 'Bash(*unset AGENT_TEAM_*)' 'unset AGENT_TEAM_ROLE; team-post T7 --file f' \
+    'env --unset AGENT_TEAM_ROLE team-post T7 --file f'
+  assert_denies 'Bash(*unset=AGENT_TEAM_*)' 'env --unset=AGENT_TEAM_ROLE team-post T7 --file f'
+  assert_denies 'Bash(*-u AGENT_TEAM_*)' 'env -u AGENT_TEAM_ROLE team-post T7 --file f'
+  assert_denies 'Bash(*-uAGENT_TEAM_*)' 'env -uAGENT_TEAM_TASK team-post T7 --file f'
+  while IFS= read -r command; do
+    if denied settings/worker.json "$command"; then echo "settings/worker.json denies: $command" >&2; return 1; fi
+  done <<'COMMANDS'
+grep -rn AGENT_TEAM_ROLE bin/
+git grep -n 'AGENT_TEAM_TASK:-'
+echo "$AGENT_TEAM_ROLE $AGENT_TEAM_TASK"
+env | grep AGENT_TEAM_
+tests/vendor/bats-core/bin/bats tests/team-post.bats -f 'a planner session'
+COMMANDS
+}
+
+# A channel's bot token and access list are its .env and access.json under ~/.claude/channels/:
+# a worker's Read and Edit rules deny the whole directory, and its Bash rules deny naming either
+# file, or entering the directory to read one by its bare name, so reading or searching the team's
+# code about the channel stays allowed. A glob for the file's name (.e*) is left: a speed bump.
+@test "a worker is denied the channel's secret files by shell, and may read code that names the channel" {
+  local command
+  for command in 'Read(~/.claude/channels/**)' 'Edit(~/.claude/channels/**)'; do
+    jq -e --arg r "$command" '.permissions.deny | index($r)' "$REPO_ROOT/settings/worker.json" >/dev/null ||
+      { echo "settings/worker.json lacks the deny rule $command" >&2; return 1; }
+  done
+  while IFS= read -r command; do
+    denied settings/worker.json "$command" || { echo "settings/worker.json allows: $command" >&2; return 1; }
+  done <<'COMMANDS'
+cat ~/.claude/channels/discord/.env
+cat $HOME/.claude/channels/discord/.env
+cat "$HOME/.claude/channels/discord/.env"
+cat /home/me/.claude/channels/discord/.env
+grep TOKEN ~/.claude/channels/discord/.env
+grep -h TOKEN $HOME/.claude/channels/*/.env
+source ~/.claude/channels/discord/.env
+source /home/me/.claude/channels/discord/.env
+. "$HOME/.claude/channels/discord/.env"
+head -n 1 ~/.claude/channels/discord/.env
+cat ~/.claude/channels/discord/access.json
+grep allowFrom $HOME/.claude/channels/discord/access.json
+head -c 200 /home/me/.claude/channels/discord/access.json
+jq .allowFrom "$HOME/.claude/channels/discord/access.json"
+cd ~/.claude/channels/discord && cat .env
+cd $HOME/.claude/channels/discord; source .env
+pushd /home/me/.claude/channels/discord && head access.json
+COMMANDS
+  while IFS= read -r command; do
+    if denied settings/worker.json "$command"; then echo "settings/worker.json denies: $command" >&2; return 1; fi
+  done <<'COMMANDS'
+grep -rn '~/.claude/channels' bin/
+git grep -n 'claude/channels'
+grep -n '.claude/channels/discord' bin/lib/team.sh
+sed -n 1,40p bin/team-post
+ls ~/.claude/channels
+COMMANDS
+}
+
 # Whether one of the Bash allow rules in settings/<role>.json, with @TEAM_CODE@ as team-worker
 # renders it (this checkout), matches <command>: allows <role> <command>
 # Claude Code checks each part of a compound command (;, &&, |) on its own, so a rule's * never
