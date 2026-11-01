@@ -37,6 +37,18 @@
 #   one named with its areas; a per-head merge checks none of these; every check below holds for
 #   it too, and a refusal ends with a line saying to ask Daniel for the per-head word on the
 #   head;
+#   or, only when the ledger holds a merge-standing and neither word above is in play (no
+#   merge-approved names the PR's url, and no merge-preapproved of its project stands),
+#   Daniel's standing word: the latest merge-standing or merge-standing-withdrawn, over every
+#   task's events, whose project is the PR's or all is a merge-standing (a withdrawn word is
+#   refused naming when and in which message; none at all is refused as no word); its
+#   discord_channel is #coordinator's channel or the thread of the task it was logged under
+#   (that task's latest thread event), and Discord shows its discord_message there, whenever it
+#   was sent, from an author in allowFrom; then the plan-time word's checks of the branch, the
+#   reviews and the changed paths, with no scope; it holds for every project, the team's own
+#   included, with no merge_with_plan; every check below holds for it too, and a refusal ends
+#   with a line saying to ask Daniel for the per-head word on the head; with no merge-standing
+#   in the ledger, it is never read;
 #   the PR is open, not a draft, does not conflict, and targets the project's base;
 #   every required check (the base branch's protection, gh pr checks --required and the
 #   project's required_checks) is present on the head and passed (a skipped one passes);
@@ -52,7 +64,7 @@
 # on, auto-merge is turned off and it is exit 1); then merged is appended with pr, merge, head,
 # by (naming the Discord message and its author), project, branch, discord_message,
 # discord_channel, url (the PR's), approval (head for the per-head word, plan for the plan-time
-# one), and local_checks (the commands that passed on head) when there were any. Prints {task,
+# one, standing for the standing one), and local_checks (the commands that passed on head) when there were any. Prints {task,
 # pr, merge, head, by}.
 # Then, when the task's opened event names a story (team-open --story) and the PR is of the project
 # it opened in, that story's backlog file in the team home (story_file in bin/lib/team.sh) is
@@ -61,10 +73,11 @@
 # coordinator to commit with the records; a story that reads so already is said and left. A story
 # that cannot be marked (no such file, no front matter, a pr: line that is no [...] list) is said
 # on stderr with why; the merge stands and the exit stays 0.
-# Then, on the plan-time word only, team-post posts one message to the task's thread and one to
-# #coordinator: the task, the PR's URL, the merge commit, Daniel's message as a link (its guild
-# the one team-inbox keeps, else #coordinator's channel's; with none, the message is named and a
-# line on stderr says why), and how to revert: the PR page's Revert button, or on the base
+# Then, on the plan-time or standing word only, team-post posts one message to the task's thread
+# and one to #coordinator: the task, the PR's URL, which word it merged on, the merge commit,
+# Daniel's message as a link (its guild the one team-inbox keeps, else #coordinator's channel's;
+# its channel the one the message was read in; with none, the message is named and a line on
+# stderr says why), and how to revert: the PR page's Revert button, or on the base
 # git revert -m 1 <merge> for a merge, git revert <merge> for a squash, and for a rebase
 # git revert <merge>~<n>..<merge>, the PR's n commits less its merges; with no thread, it posts to
 # #coordinator alone, saying so on stderr. A post that fails (Discord refuses it, or team-post
@@ -142,27 +155,30 @@ add_reasons() {
   while IFS= read -r line; do if [[ -n $line ]]; then add_to+=("$line"); fi; done <<<"$out"
 }
 
-# Daniel's word on the PR, per head or at plan time. A <kind> event names Daniel's Discord message,
-# which holds when it is an id sent no earlier than <since> (the time of <what>) and Discord shows
-# it in the task's thread or #coordinator from an allowFrom author; then by and channel name it,
-# else its reason joins the list <name>: word_from <name> <kind> <message> <since> <what>
+# Daniel's word on the PR, per head, at plan time or standing. A <kind> event names Daniel's Discord
+# message, which holds when it is an id sent no earlier than <since> (the time of <what>; no
+# <since>, no such check) and Discord shows it in one of <places> (by default the task's thread or
+# #coordinator, each "<name> <channel id>") from an allowFrom author; then by and channel name it,
+# else its reason joins the list <name>: word_from <name> <kind> <message> <since> <what> [<place>...]
 thread=$(jq -r 'map(select(.event == "thread")) | last | .discord_thread // empty' <<<"$events")
 by='' channel=''
 word_from() {
   local -n word_to=$1
-  local kind=$2 message=$3 since=$4 what=$5 sent places=() reply
+  local kind=$2 message=$3 since=$4 what=$5 sent places=("${@:6}") reply
   if [[ ! $message =~ ^[1-9][0-9]{0,18}$ ]]; then
     word_to+=("$kind names discord_message '$message', which is not a Discord message id")
     return
   fi
   # A Discord id holds the milliseconds since 2015-01-01 above its low 22 bits.
   sent=$(((10#$message >> 22) / 1000 + 1420070400))
-  if ((sent < $(date -ud "$since" +%s))); then
+  if [[ -n $since ]] && ((sent < $(date -ud "$since" +%s))); then
     word_to+=("Discord message $message was sent at $(date -ud "@$sent" +%FT%TZ), before $what at $since, so it is not Daniel's word on this PR")
     return
   fi
-  if [[ -n $thread ]]; then places+=("the task's thread $thread"); fi
-  places+=("#coordinator $COORDINATOR_CHANNEL")
+  if ((${#places[@]} == 0)); then
+    if [[ -n $thread ]]; then places+=("the task's thread $thread"); fi
+    places+=("#coordinator $COORDINATOR_CHANNEL")
+  fi
   if reply=$(daniel_message "$message" "the approval" "${places[@]}" 2>"$scratch/word"); then
     by="Discord message $message in $(jq -r .place <<<"$reply"), from $(jq -r .who <<<"$reply")"
     channel=$(jq -r .channel <<<"$reply")
@@ -174,7 +190,7 @@ word_from() {
 # The per-head word: the latest merge-approved naming this PR's URL, its message sent since the
 # first pr or review event that logged the head it names (a legacy one names none: the PR's latest
 # pr event). A number alone names a PR in any repo, so it never counts.
-word=head message='' task_branch=''
+word=head message=''
 approval=$(jq -c --arg url "${url%/}" '
   [to_entries[] | .value + {i: .key}
     | select(.event == "merge-approved" and (.url | strings | rtrimstr("/")) == $url)] | last' <<<"$events")
@@ -195,6 +211,19 @@ if [[ $approval == null ]]; then
     | merge_preapproval($p) | if . == null then null else . as $a | . + {asked: ($events[:$k] | latest_asked($a.ask))} end' \
     -c --arg p "$project" <<<"$events")
 fi
+# The standing word, read only when the ledger holds a merge-standing: the word applying to the PR's
+# project (standing_word, over every task's events), with thread, the latest thread of the task it
+# was logged under. Null when the ledger holds none, so team-merge runs as it did before the word.
+ledger=$TEAM_HOME/ledger.jsonl
+[[ -e $ledger ]] || ledger=/dev/null
+standing=$(ledger_jq '[inputs | fromjson? | objects] as $all
+  | if any($all[]; .event == "merge-standing") | not then null
+    else ($all | standing_word($project) // {stands: false, word: null, withdrawn: null}) as $s
+    | $s + {thread: (if $s.word == null then null
+        else [$all[] | select(.task == $s.word.task and .event == "thread") | .discord_thread | tostring] | last end)} end' \
+  -nRc --arg project "$project" <"$ledger") || jq_failed $?
+standing_reasons=()
+
 if [[ $approval != null ]]; then
   if [[ -z $pr_ts ]]; then
     head_reasons+=("merge-approved names the head ${approved:0:7}, which no pr event of $url, nor a review since, logged: ask again on the PR's head")
@@ -203,10 +232,12 @@ if [[ $approval != null ]]; then
     word_from head_reasons merge-approved "$message" "$pr_ts" "the ${logged#* } event of $url${approved:+ at ${approved:0:7}}"
   fi
 elif [[ $preapproval == null ]] || jq -e '.withdrawn != null' <<<"$preapproval" >/dev/null; then
-  head_reasons+=("no merge-approved event for $url: Daniel's word is not recorded")
+  # With the standing word to try, its reasons and its ask line stand for the missing per-head word.
+  if [[ $standing == null ]]; then head_reasons+=("no merge-approved event for $url: Daniel's word is not recorded"); fi
   if [[ $preapproval != null ]]; then
     plan_reasons+=("$(jq -r '"Daniel'"'"'s plan-time word on \(.project), Discord message \(.discord_message), was withdrawn at \(.withdrawn.ts) in Discord message \(.withdrawn.discord_message)"' <<<"$preapproval")")
   fi
+  if [[ $standing != null ]]; then word=standing; fi
 else
   word=plan
   message=$(jq -r '.discord_message | tostring' <<<"$preapproval")
@@ -222,7 +253,29 @@ else
   elif [[ $(team_project "$project" merge_with_plan) != true ]]; then
     plan_reasons+=("$project does not opt in to plan-time merges now: its merge_with_plan in projects.toml is false")
   fi
-  task_branch=$(ledger_jq 'task_branch($project) // ""' -r --arg project "$project" <<<"$events")
+fi
+
+# The standing word holds only while the word applying to the project stands, in #coordinator or
+# the thread of the task it was logged under, where Discord shows its message from an allowFrom
+# author; it is read whenever it was sent, since it is on no head and answers no ask.
+if [[ $word == standing ]]; then
+  if jq -e '.word == null' <<<"$standing" >/dev/null; then
+    standing_reasons+=("no standing word of Daniel's names $project or every project")
+  elif jq -e '.stands | not' <<<"$standing" >/dev/null; then
+    standing_reasons+=("$(jq -r '"Daniel'"'"'s standing word on \(if .word.project == "all" then "every project" else .word.project end), Discord message \(.word.discord_message), was withdrawn at \(.withdrawn.ts) in Discord message \(.withdrawn.discord_message)"' <<<"$standing")")
+  else
+    message=$(jq -r '.word.discord_message | tostring' <<<"$standing")
+    said_in=$(jq -r '.word.discord_channel | tostring' <<<"$standing")
+    said_by=$(jq -r .word.task <<<"$standing")
+    if [[ $said_in == "$COORDINATOR_CHANNEL" ]]; then
+      word_from standing_reasons merge-standing "$message" '' '' "#coordinator $said_in"
+    elif [[ $said_in == "$(jq -r '.thread // ""' <<<"$standing")" ]]; then
+      if [[ $said_by == "$task" ]]; then place="the task's thread $said_in"; else place="$said_by's thread $said_in"; fi
+      word_from standing_reasons merge-standing "$message" '' '' "$place"
+    else
+      standing_reasons+=("merge-standing names discord_channel $said_in, which is neither #coordinator nor $said_by's thread")
+    fi
+  fi
 fi
 
 # GitHub's facts: the checks from pr_part, the rest from one more view, the base branch's
@@ -267,29 +320,49 @@ else
   done < <(jq -r '.[].sha' <<<"$commits")
 fi
 
-# The plan-time word holds only for the task's own branch for the project, only on a head whose
-# latest review (by the shorter prefix) is a pass that found no guarded area, only for a task no
-# review of which counted a security or real-data finding, or left its counts out
-# (unattended_review_reasons), and only for a PR whose every changed path matches no guarded
-# pattern (pr_file_reasons) and is within the scope Daniel approved.
-if [[ $word == plan && -n $head ]]; then
-  if [[ -z $task_branch ]]; then
-    plan_reasons+=("$task logged no branch for $project: no opened, worktree-added or branch-renamed event of it")
-  elif [[ $branch != "$task_branch" ]]; then
-    plan_reasons+=("PR #$number comes from $branch, not $task_branch, $task's branch for $project")
+# A word given on no head (the plan-time and standing ones) holds only for the task's own branch
+# for the project, only on a head whose latest review (by the shorter prefix) is a pass that found
+# no guarded area, only for a task no review of which counted a security or real-data finding, or
+# left its counts out (unattended_review_reasons), and only for a PR whose every changed path
+# matches no guarded pattern (pr_file_reasons). Read once, each word's list gets them all:
+# unattended_reasons <name>; files_read is set once GitHub's list of the PR's files is read in
+# full, PR_CHANGED then holding its paths.
+unattended=() unattended_read='' files_read=''
+unattended_reasons() {
+  local -n unattended_to=$1
+  local task_branch out rc=0
+  if [[ -z $unattended_read ]]; then
+    unattended_read=1
+    task_branch=$(ledger_jq 'task_branch($project) // ""' -r --arg project "$project" <<<"$events") || jq_failed $?
+    if [[ -z $task_branch ]]; then
+      unattended+=("$task logged no branch for $project: no opened, worktree-added or branch-renamed event of it")
+    elif [[ $branch != "$task_branch" ]]; then
+      unattended+=("PR #$number comes from $branch, not $task_branch, $task's branch for $project")
+    fi
+    out=$(ledger_jq 'unattended_review_reasons($head)' -r --arg head "$head" <<<"$events") || jq_failed $?
+    if [[ -n $out ]]; then mapfile -t -O "${#unattended[@]}" unattended <<<"$out"; fi
+    pr_file_reasons "$scratch" "$repo" "$number" "$(jq -r '.changedFiles // "unknown number of"' "$scratch/pr")" || rc=$?
+    ((rc != 2)) || jq_failed
+    unattended+=("${PR_FILE_REASONS[@]}")
+    if ((rc == 0)); then files_read=1; fi
   fi
-  out=$(ledger_jq 'unattended_review_reasons($head)' -r --arg head "$head" <<<"$events") || jq_failed $?
-  if [[ -n $out ]]; then mapfile -t -O "${#plan_reasons[@]}" plan_reasons <<<"$out"; fi
-  rc=0
-  pr_file_reasons "$scratch" "$repo" "$number" "$(jq -r '.changedFiles // "unknown number of"' "$scratch/pr")" || rc=$?
-  ((rc != 2)) || jq_failed
-  plan_reasons+=("${PR_FILE_REASONS[@]}")
-  if ((rc == 0)); then
+  unattended_to+=("${unattended[@]}")
+}
+
+# The plan-time word holds too only for a PR whose every changed path is within the scope Daniel
+# approved.
+if [[ $word == plan && -n $head ]]; then
+  unattended_reasons plan_reasons
+  if [[ -n $files_read ]]; then
     add_reasons plan_reasons --argjson scope "$(jq -c .scope <<<"$preapproval")" '
       def name: if .renamed then "\(.path), renamed to \(.renamed)," else .path end;
       .[] | .path as $p | select(any($scope[]; . as $entry | if endswith("/") then $p | startswith($entry) else $p == $entry end) | not)
       | "\(name) is outside the scope of Daniel'"'"'s plan-time word: \($scope | join(", "))"' <<<"$PR_CHANGED"
   fi
+fi
+# The standing word holds on the same checks, with no scope, once a word applies and stands.
+if [[ $word == standing && -n $head ]] && jq -e .stands <<<"$standing" >/dev/null; then
+  unattended_reasons standing_reasons
 fi
 
 # Daniel's word on a head the PR has since moved past holds only through merges of the base whose
@@ -314,18 +387,22 @@ if [[ -n $approved && -n $pr_ts && -n $head ]] &&
   fi
 fi
 
-# Refuse, with every reason, when there is any: the word's, then the checks every merge gets.
+# Refuse, with every reason, when there is any: when the word last tried ($word) does not hold, every
+# word's reasons, then the checks every merge gets.
 refuse_on_problems() {
-  local reasons=("${head_reasons[@]}" "${plan_reasons[@]}" "${merge_reasons[@]}")
+  local -n own=${word}_reasons
+  local reasons=()
+  if ((${#own[@]})); then reasons=("${head_reasons[@]}" "${plan_reasons[@]}" "${standing_reasons[@]}"); fi
+  reasons+=("${merge_reasons[@]}")
   ((${#reasons[@]})) || return 0
   {
     echo "team-merge: $task cannot merge PR #$number, so nothing changed:"
     printf '  %s\n' "${reasons[@]}"
     if [[ -n ${attributed:-} ]]; then echo "  (team-clean-messages <worktree> strips them; push its rewrite and wait for the checks again)"; fi
-    if [[ $word == plan ]]; then
+    if [[ $word != head ]]; then
       local on="the PR's head"
       if [[ -n $head ]]; then on="the head ${head:0:7}"; fi
-      echo "  (Daniel's plan-time word does not hold: ask them for the per-head word on $on with team-ask, naming $url)"
+      echo "  (Daniel's ${word/plan/plan-time} word does not hold: ask them for the per-head word on $on with team-ask, naming $url)"
     fi
   } >&2
   exit 1
@@ -452,10 +529,10 @@ if [[ -n $story ]]; then
   fi
 fi
 
-# On the plan-time word, Daniel hears of the merge at once, with how to revert it: one post in the
-# task's thread and one in #coordinator, through team-post. A post that fails is said on stderr
-# with its text, for the coordinator to post; the merge stands and the exit stays 0.
-if [[ $word == plan ]]; then
+# On the plan-time or standing word, Daniel hears of the merge at once, with how to revert it: one
+# post in the task's thread and one in #coordinator, through team-post. A post that fails is said
+# on stderr with its text, for the coordinator to post; the merge stands and the exit stays 0.
+if [[ $word != head ]]; then
   # Daniel's message as a link, which needs the guild: the one team-inbox keeps, else Discord's.
   guild=$(jq -r --arg c "$COORDINATOR_CHANNEL" 'select((.channel | tostring) == $c) | .guild | tostring | select(test("^[0-9]+$"))' \
     "$HOME/.local/state/agent-team/inbox.json" 2>/dev/null) || guild=''
@@ -479,7 +556,7 @@ if [[ $word == plan ]]; then
       ;;
   esac
   title=$(jq -r 'map(select(.event == "opened")) | first | .title // empty' <<<"$events")
-  printf '%s\n' "$task${title:+ $title}: merged $url on your plan-time word, $word_link" \
+  printf '%s\n' "$task${title:+ $title}: merged $url on your ${word/plan/plan-time} word, $word_link" \
     "Merge commit: $merge on $base." \
     "To revert: the Revert button on the PR's page opens a revert PR; or, on $base, $revert." >"$scratch/post"
   # post <where> <team-post's arguments before --file>...

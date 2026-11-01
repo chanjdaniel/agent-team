@@ -47,9 +47,9 @@
     },
     "merged": {
       "writer": "team-merge",
-      "about": "approval: the word it merged on, head (a merge-approved of the PR at its head) or plan (a standing merge-preapproved of its project); by names Daniel's Discord message either way",
+      "about": "approval: the word it merged on, head (a merge-approved of the PR at its head), plan (a standing merge-preapproved of its project) or standing (Daniel's merge-standing on its project or on all); by, discord_message and discord_channel name Daniel's Discord message whichever it is",
       "required": {"pr": "number", "merge": "string", "head": "string", "by": "string"},
-      "optional": {"project": "string", "branch": "string", "discord_message": "id", "discord_channel": "id", "url": "string", "local_checks": "array", "approval": ["head", "plan"]}
+      "optional": {"project": "string", "branch": "string", "discord_message": "id", "discord_channel": "id", "url": "string", "local_checks": "array", "approval": ["head", "plan", "standing"]}
     },
     "history-rewritten": {
       "writer": "team-clean-messages",
