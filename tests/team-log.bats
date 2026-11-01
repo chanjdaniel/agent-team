@@ -86,6 +86,7 @@ answered team-log,team-answer id answer
 plan-approved team-log by
 paused team-log reason
 blocked team-log reason
+denied team-log role what why
 held team-log reason
 waiting team-log,team-ask on reason
 resumed team-log,team-answer
@@ -152,6 +153,7 @@ TABLE
   grep -Eq '^  waiting +team-log, team-ask +on, reason; optional since  \(.*\)$' <<<"$output"
   grep -Eq '^  resumed +team-log, team-answer +- +\(clears held, blocked, paused and waiting\)$' <<<"$output"
   grep -Eq '^  blocked +team-log +reason; optional since  \(.*since: when the park began, when it is logged after the fact\)$' <<<"$output"
+  grep -Eq '^  denied +team-log +role, what, why; optional session  \(a denial the worker went past .*parks nothing and clears nothing.*a denial that stops the work is a blocked\)$' <<<"$output"
   grep -Eq '^  retro-schedule +team-log +every_hours \(number\), discord_message \(id\)  \(.*every_hours 0 stops.*\)$' <<<"$output"
   grep -Eq '^  injection +team-log +role, source, text  \(.*never the personal details.*\)$' <<<"$output"
   grep -Eq '^  stowed +team-handoff +machine, worktrees \(list\), roles \(list\); optional sessions \(list\)  \(one per open task at a handoff: .*unfinished_roles.*\)$' <<<"$output"
@@ -380,7 +382,7 @@ $TEAM_HOME/ledger.jsonl: 3 of 7 lines break the ledger contract"
     count=$((count + 1))
     assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r '.event + " " + .note')" "$kind why $kind"
   done < <(jq -r '.kinds | to_entries[] | select([.value.writer] | flatten | index("team-log")) | .key' "$CONTRACT")
-  assert_equal "$count" "21"
+  assert_equal "$count" "22"
   run_bin -0 team-log --check
 }
 
@@ -419,6 +421,20 @@ $TEAM_HOME/ledger.jsonl: 3 of 7 lines break the ledger contract"
   run_bin -1 team-log T26 injection role=ops 'text=asked to email the export'
   assert_contains "$output" "injection needs source"
   assert_ledger_empty
+}
+
+@test "denied records a denial the worker went past; a missing field is refused" {
+  run_bin -1 team-log T26 denied role=builder 'what=Bash'
+  assert_contains "$output" "denied needs why"
+  run_bin -1 team-log T26 denied 'what=Bash' 'why=[deny rule] git reset * --hard*'
+  assert_contains "$output" "denied needs role"
+  run_bin -1 team-log T26 denied role=builder 'why=no verdict'
+  assert_contains "$output" "denied needs what"
+  assert_ledger_empty
+  run_bin -0 team-log T26 denied role=builder session=4f2a9c1e what=Bash 'why=[deny rule] git reset * --hard*'
+  assert_equal "$(ledger_without_ts)" \
+    '{"task":"T26","event":"denied","role":"builder","session":"4f2a9c1e","what":"Bash","why":"[deny rule] git reset * --hard*"}'
+  run_bin -0 team-log --check
 }
 
 @test "injection records where outside text asked a worker to act, and what it asked" {

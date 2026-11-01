@@ -333,6 +333,41 @@ T5 no-worker: no live session among its 1 launch (latest T5-builder 33333333); n
   assert_contains "$output" "T8 no-worker: every live worker is idle with a ledger event since its launch"
 }
 
+@test "a denied finds nothing new: it is no report, parks nothing and clears no park" {
+  local denied='{role: "builder", session: "4f2a9c1e", what: "Bash", why: "[deny rule] git reset * --hard*"}'
+  opened T8
+  launch T8 builder 4f2a9c1e
+  sessions "$(session 4f2a9c1e T8-builder idle)"
+  run_bin -1 team-sweep
+  local silent=$output
+  # A denial the worker went past is not a report: an idle session after it is still silent.
+  event T8 denied "$denied"
+  run_bin -1 team-sweep
+  assert_equal "$output" "$silent"
+  # Busy, it is at work, as with no denial.
+  sessions "$(session 4f2a9c1e T8-builder busy working)"
+  run_bin -0 team-sweep
+  # After a report, a denial leaves the next step with the coordinator, as before it.
+  event T8 ticket-done '{ticket: "1", commits: ["abc1234"]}'
+  sessions "$(session 4f2a9c1e T8-builder idle)"
+  run_bin -1 team-sweep
+  local handed_back=$output
+  assert_contains "$handed_back" "T8 no-worker: every live worker is idle with a ledger event since its launch"
+  event T8 denied "$denied"
+  run_bin -1 team-sweep
+  assert_equal "$output" "$handed_back"
+  # It clears no park: a blocked task stays parked, and a task with no worker is not parked by it.
+  event T8 blocked '{reason: "the push was refused"}'
+  event T8 denied "$denied"
+  run_bin -0 team-sweep
+  opened T9
+  launch T9 builder 99999999
+  event T9 denied '{role: "builder", what: "Bash", why: "no verdict"}'
+  run_bin -1 team-sweep
+  assert_equal "$output" "T9 no-worker: no live session among its 1 launch (latest T9-builder 99999999); next: read claude logs 99999999 for how it ended, then launch the next worker with team-worker or log what is known with team-log"
+  no_github
+}
+
 @test "silent judges each live session by its own latest launch" {
   opened T8
   launch T8 planner 11111111

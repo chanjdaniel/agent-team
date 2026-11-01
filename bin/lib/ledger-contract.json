@@ -98,6 +98,12 @@
       "required": {"reason": "string"},
       "optional": {"since": "string"}
     },
+    "denied": {
+      "writer": "team-log",
+      "about": "a denial the worker went past (a permission rule, a hook, auto mode): what was denied and why; it parks nothing and clears nothing, and team-time and team-retro count it as a denial; a denial that stops the work is a blocked",
+      "required": {"role": "string", "what": "string", "why": "string"},
+      "optional": {"session": "string"}
+    },
     "held": {
       "writer": "team-log",
       "about": "since: when the park began, when it is logged after the fact",

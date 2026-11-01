@@ -618,9 +618,11 @@ def waiting_on:
 # its limit (stall_limits).
 # A live session is at work while it is busy, waiting for input, or idle with no ledger event
 # since its launch (silent); idle with an event since, it has handed the next step back to the
-# coordinator, so a task with no session at work is no-worker however many are live.
+# coordinator, so a task with no session at work is no-worker however many are live. A denied is
+# no report (the worker went past the denial), so these findings read the events without it.
 def task_findings($sessions; $activity):
   .[0].task as $task
+  | map(select(.event != "denied"))
   | length as $count
   | [to_entries[] | select(.value.event == "launch") | {i: .key, launch: .value}] as $launches
   | ([$launches | reverse | .[] | . + {live: live_session(.launch.session; $sessions)} | select(.live != null)
@@ -980,7 +982,9 @@ def retro_digest($task; $team_home):
   | {schema: "team-retro-digest/1",
      window: ($w | {task, previous, since, until}
        + {events: ($in | length), kinds: ($in | group_by(.event) | map({key: (.[0].event | tostring), value: length}) | from_entries)}),
-     blocks: [$in[] | select(.event == "blocked" or .event == "failed") | {ts, task, kind: .event, reason, denial: (.reason | denial)}],
+     blocks: [$in[] | select(.event == "blocked" or .event == "failed" or .event == "denied")
+       | if .event == "denied" then {ts, task, kind: .event, reason: "\(.role) \(.what): \(.why)", denial: true}
+         else {ts, task, kind: .event, reason, denial: (.reason | denial)} end],
      questions: [$in | map(select(.event == "question" or .event == "asked")) | task_groups[]
        | {task: .[0].task, repeated: (length >= 2),
           events: map({ts, kind: .event, text} + if .event == "asked" then {id} else {role} end)}],

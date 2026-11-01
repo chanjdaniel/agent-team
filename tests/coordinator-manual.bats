@@ -31,6 +31,14 @@ section() {
   ((n > 0 && n <= 120))
 }
 
+@test "hard rule 2 logs a denial the worker went past as denied, with the contract's fields, and one that stops the work as blocked" {
+  local rule
+  rule=$(section coordinator "The two hard rules" | grep '^2\. ')
+  grep -Fq '`team-log T<n> denied role= what= why=`, which parks nothing, when the worker went on' <<<"$rule"
+  grep -Fq '`blocked reason=` when it stops the work' <<<"$rule"
+  assert_equal "$(jq -r '.kinds.denied.required | keys_unsorted | join(" ")' "$REPO_ROOT/bin/lib/ledger-contract.json")" "role what why"
+}
+
 @test "every bin/ path the manual names exists" {
   local path found=0 missing=()
   while IFS= read -r path; do
