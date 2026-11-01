@@ -9,7 +9,10 @@
 #               builder-deliver, builder-merge-base (--set pr=, a PR behind its base),
 #               builder-round (--set pr= the URL, or none before a gated project's gate, findings=
 #               the numbers, goal= as builder-deliver's; a fresh builder for a fix round after the
-#               holder stowed), reviewer, rereview, ops, retro, resume (a worker relaunched on
+#               holder stowed), reviewer, rereview, verify (--set pr=, head=, reviewed=, findings=
+#               the numbers sent back; the re-review of a round whose findings sent back were all
+#               plain notes on lines the PR changes, or that edited only the PR body, which reads
+#               only the fix), ops, retro, resume (a worker relaunched on
 #               another machine: --set role=, brief= its last brief, from= what it resumes after,
 #               snapshot= what became of the uncommitted changes the handoff found),
 #               resume-crash (one relaunched after its machine crashed: --set role=, brief=,
@@ -31,8 +34,9 @@
 # tasks/T<n>/ui/ holds files (team-ui's capture of what Daniel pointed at): then a newline and a
 # reading-list item naming them, with the rule that a worker checks a fix on its own stack. In a template,
 # {{> <name>}} stands for the partial of the project's delivery, templates/briefs/<name>/<delivery>.md:
-# delivery (how a builder delivers), review and rereview (what a reviewer reads and posts; a gated
-# project's first review reads the branch's local head before the gate, with no pr).
+# delivery (how a builder delivers), review and rereview (what a reviewer reads and posts, verify
+# reading rereview's too; a gated project's first review reads the branch's local head before the
+# gate, with no pr).
 # Refused, exit 1 with nothing written: an unknown template, a task that is not open (no opened
 # event, or closed) or has no open worktree, a placeholder left unfilled (each named), a --set key
 # no placeholder uses, a --set of a task fact, and an existing brief without --force.

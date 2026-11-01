@@ -17,7 +17,7 @@ Decide from the diff (`git diff --name-only origin/<base>...HEAD`), never from t
 - **Walk and judge**: anything else, and whenever unsure: the touched states and their direct siblings.
 
 A ticket builder takes at most a spot check, of the states its own commits touch; walk and judge is for the builder who delivers and the reviewer.
-A fix round or rereview judges only the states the fixes touched and their siblings.
+A fix round, a rereview or a verify judges only the states the fixes touched and their siblings.
 
 Name each state before capturing anything.
 A touched state is a screen in one state that renders a changed file: a route, an open dialog, menu or drawer, a disabled, empty, loading or error state.

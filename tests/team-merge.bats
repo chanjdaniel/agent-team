@@ -351,7 +351,7 @@ withdrawn() {
 # A passing review of <head> (the PR's by default), its findings counted, logged now: passed [<head>]
 passed() {
   event T14 review "{verdict: \"pass\", head: \"${1:-$head}\",
-    findings: {blocking: 0, correctness: 0, security: 0, \"real-data\": 0, note: 0}, guarded: []}"
+    findings: {blocking: 0, correctness: 0, security: 0, \"real-data\": 0, \"note-change\": 0, \"note-before\": 0}, guarded: []}"
 }
 
 # The line a refusal on the plan-time word ends with.
@@ -1141,7 +1141,7 @@ EOF
 @test "a PR whose latest review of its head found something is refused on the plan-time word, and a later pass merges it" {
   plan_word
   event T14 review "{verdict: \"findings\", head: \"${head:0:8}\",
-    findings: {blocking: 0, correctness: 1, security: 0, \"real-data\": 0, note: 0}, guarded: []}"
+    findings: {blocking: 0, correctness: 1, security: 0, \"real-data\": 0, \"note-change\": 0, \"note-before\": 0}, guarded: []}"
   refused "the latest review of the head ${head:0:7}, at 2026-10-22T02:00:00Z, is findings, not pass" "$(ask_per_head)"
   passed "${head:0:7}"
   run_bin -0 team-merge T14
@@ -1287,11 +1287,11 @@ EOF
 @test "a latest review of the head that logged no guarded areas, or named some, is refused, naming them" {
   plan_word
   event T14 review "{verdict: \"pass\", head: \"$head\",
-    findings: {blocking: 0, correctness: 0, security: 0, \"real-data\": 0, note: 0}}"
+    findings: {blocking: 0, correctness: 0, security: 0, \"real-data\": 0, \"note-change\": 0, \"note-before\": 0}}"
   refused "the latest review of the head ${head:0:7}, at 2026-10-22T02:00:00Z, logged no guarded areas, so no reviewer has said the change touches none" \
     "$(ask_per_head)"
   event T14 review "{verdict: \"pass\", head: \"${head:0:7}\",
-    findings: {blocking: 0, correctness: 0, security: 0, \"real-data\": 0, note: 0}, guarded: [\"settings\", \"secrets\"]}"
+    findings: {blocking: 0, correctness: 0, security: 0, \"real-data\": 0, \"note-change\": 0, \"note-before\": 0}, guarded: [\"settings\", \"secrets\"]}"
   refused "the latest review of the head ${head:0:7}, at 2026-10-22T02:00:00Z, found the change touching guarded areas: settings, secrets" \
     "$(ask_per_head)"
   passed
@@ -1301,9 +1301,9 @@ EOF
 @test "a review of the task with a security or real-data finding, even fixed later, or with no finding counts, is refused, naming its head and time" {
   plan_word
   ledger_line '{ts: "2026-10-21T10:00:00Z", task: "T14", event: "review", verdict: "findings", head: "0fedcba98",
-    findings: {blocking: 1, correctness: 0, security: 1, "real-data": 0, note: 0}, guarded: []}'
+    findings: {blocking: 1, correctness: 0, security: 1, "real-data": 0, "note-change": 0, "note-before": 0}, guarded: []}'
   ledger_line '{ts: "2026-10-21T11:00:00Z", task: "T14", event: "review", verdict: "findings", head: "1234567ab",
-    findings: {blocking: 0, correctness: 0, security: 2, "real-data": 3, note: 1}, guarded: []}'
+    findings: {blocking: 0, correctness: 0, security: 2, "real-data": 3, "note-change": 1, "note-before": 0}, guarded: []}'
   ledger_line '{ts: "2026-10-21T12:00:00Z", task: "T14", event: "review", verdict: "findings", head: "7654321cd"}'
   ledger_line '{ts: "2026-10-21T13:00:00Z", task: "T15", event: "review", verdict: "findings", head: "abcdef012"}'
   passed

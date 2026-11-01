@@ -25,9 +25,12 @@
 # refused when its project is not one of the task's opened or worktree-added events, its branch is
 # the task's there now (the latest opened, worktree-added or branch-renamed of the project), does
 # not name the task, or is no branch name git takes (git check-ref-format --branch). A
-# review's findings, when given, must count exactly blocking, correctness, security, real-data and
-# note, each a whole number, and its guarded list only ci, dependencies, migrations, settings,
-# permissions and secrets. A park
+# review's findings, when given, must count exactly blocking, correctness, security, real-data,
+# note-change and note-before, each a whole number, and its guarded list only ci, dependencies,
+# migrations, settings, permissions and secrets; its before, the numbers of its plain notes on code
+# the PR did not change, distinct whole numbers above 0, is required when findings counts a
+# note-before, as many as it counts, and a sent_back naming one of them is refused, since such a
+# note is queued, never sent back. A park
 # (waiting, blocked, paused, held) logged after the fact takes since=<UTC time>, when it began:
 # no later than now and no earlier than the task's latest event, or it is refused naming both
 # times; no other kind takes since.
@@ -180,13 +183,30 @@ if [[ $event == review ]]; then
   problem=$(ledger_jq '
     def listed: (.[:-1] | join(", ")) + " and " + last;
     def lines: map("\n  " + .) | add;
+    def numbered: map(tostring) | if length == 1 then first else listed end;
+    def notes($n): "\($n) plain note\(if $n == 1 then "" else "s" end) on code the PR did not change";
     ($findings | try fromjson catch null) as $f
+    | ($before | try fromjson catch null) as $b
+    | ($sent_back | try fromjson catch null) as $s
     | ($guarded | try fromjson catch null) as $g
+    | (if ($f | type) == "object" then [$f | findings_problems] == [] else false end) as $f_ok
+    | (if ($b | type) == "array" then [$b | before_problems] == [] else false end) as $b_ok
     | ($f | objects | [findings_problems] | select(. != [])
         | "findings holds the count of each finding kind, exactly \(finding_kinds | listed), each a whole number:" + lines),
+      ($b | arrays | [before_problems] | select(. != [])
+        | "before lists the numbers of the plain notes on code the PR did not change, each a whole number above 0, once:" + lines),
+      (select($f_ok and $b == null and $f["note-before"] > 0)
+        | "findings counts \(notes($f["note-before"])): before lists their numbers"),
+      (select($f_ok and $b_ok and ($b | length) != $f["note-before"])
+        | "before lists \($b | length) note\(if ($b | length) == 1 then "" else "s" end), but findings counts \(notes($f["note-before"]))"),
+      (select($b_ok and ($s | type) == "array") | [$s[] | select(IN($b[]))] | unique | select(. != [])
+        | "sent_back names note\(if length == 1 then "" else "s" end) \(numbered), which before lists as "
+          + (if length == 1 then "a plain note" else "plain notes" end)
+          + " on code the PR did not change: such a note is queued as a follow-up, never sent back"),
       ($g | arrays | [guarded_problems] | select(. != [])
         | "guarded lists the guarded areas the change touches, each one of \(guarded_areas | listed):" + lines)' \
-    -nr --arg findings "${seen[findings]:-}" --arg guarded "${seen[guarded]:-}")
+    -nr --arg findings "${seen[findings]:-}" --arg before "${seen[before]:-}" --arg sent_back "${seen[sent_back]:-}" \
+    --arg guarded "${seen[guarded]:-}")
   [[ -z $problem ]] || die "$problem"
 fi
 
