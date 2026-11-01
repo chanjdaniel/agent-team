@@ -37,8 +37,9 @@
 #   one named with its areas; a per-head merge checks none of these; every check below holds for
 #   it too, and a refusal ends with a line saying to ask Daniel for the per-head word on the
 #   head;
-#   or, only when the ledger holds a merge-standing and neither word above is in play (no
-#   merge-approved names the PR's url, and no merge-preapproved of its project stands),
+#   or, only when the ledger holds a merge-standing, and either neither word above is in play (no
+#   merge-approved names the PR's url, and no merge-preapproved of its project stands) or the one
+#   tried does not hold for a reason of its own (never one of the checks every merge gets, below),
 #   Daniel's standing word: the latest merge-standing or merge-standing-withdrawn, over every
 #   task's events, whose project is the PR's or all is a merge-standing (a withdrawn word is
 #   refused naming when and in which message; none at all is refused as no word); its
@@ -47,8 +48,10 @@
 #   was sent, from an author in allowFrom; then the plan-time word's checks of the branch, the
 #   reviews and the changed paths, with no scope; it holds for every project, the team's own
 #   included, with no merge_with_plan; every check below holds for it too, and a refusal ends
-#   with a line saying to ask Daniel for the per-head word on the head; with no merge-standing
-#   in the ledger, it is never read;
+#   with a line saying to ask Daniel for the per-head word on the head, in place of the plan-time
+#   word's; a word tried before it that does not hold has its reasons listed too, each reason
+#   once; a per-head or plan-time word that holds never reads it; with no merge-standing in the
+#   ledger, it is never read;
 #   the PR is open, not a draft, does not conflict, and targets the project's base;
 #   every required check (the base branch's protection, gh pr checks --required and the
 #   project's required_checks) is present on the head and passed (a skipped one passes);
@@ -140,9 +143,9 @@ method=$(team_project "$project" merge_method)
 
 # The reasons a merge is refused, each word's apart from the checks every merge gets, so a word can
 # be tried, judged and set aside: head_reasons, why Daniel's per-head word does not hold (or that
-# none is recorded); plan_reasons, why the plan-time word does not; merge_reasons, the checks
-# every merge gets, whatever the word.
-head_reasons=() plan_reasons=() merge_reasons=()
+# none is recorded); plan_reasons, why the plan-time word does not; standing_reasons, why the
+# standing word does not; merge_reasons, the checks every merge gets, whatever the word.
+head_reasons=() plan_reasons=() standing_reasons=() merge_reasons=()
 # A jq that fails ends the run, nothing merged: jq_failed [<its exit>]
 jq_failed() {
   die "PR #$number cannot be checked: jq failed${1:+ (exit $1)}, so nothing changed"
@@ -222,7 +225,6 @@ standing=$(ledger_jq '[inputs | fromjson? | objects] as $all
     | $s + {thread: (if $s.word == null then null
         else [$all[] | select(.task == $s.word.task and .event == "thread") | .discord_thread | tostring] | last end)} end' \
   -nRc --arg project "$project" <"$ledger") || jq_failed $?
-standing_reasons=()
 
 if [[ $approval != null ]]; then
   if [[ -z $pr_ts ]]; then
@@ -252,29 +254,6 @@ else
     plan_reasons+=("$project is the team's own project, whose PRs merge only on Daniel's word per head")
   elif [[ $(team_project "$project" merge_with_plan) != true ]]; then
     plan_reasons+=("$project does not opt in to plan-time merges now: its merge_with_plan in projects.toml is false")
-  fi
-fi
-
-# The standing word holds only while the word applying to the project stands, in #coordinator or
-# the thread of the task it was logged under, where Discord shows its message from an allowFrom
-# author; it is read whenever it was sent, since it is on no head and answers no ask.
-if [[ $word == standing ]]; then
-  if jq -e '.word == null' <<<"$standing" >/dev/null; then
-    standing_reasons+=("no standing word of Daniel's names $project or every project")
-  elif jq -e '.stands | not' <<<"$standing" >/dev/null; then
-    standing_reasons+=("$(jq -r '"Daniel'"'"'s standing word on \(if .word.project == "all" then "every project" else .word.project end), Discord message \(.word.discord_message), was withdrawn at \(.withdrawn.ts) in Discord message \(.withdrawn.discord_message)"' <<<"$standing")")
-  else
-    message=$(jq -r '.word.discord_message | tostring' <<<"$standing")
-    said_in=$(jq -r '.word.discord_channel | tostring' <<<"$standing")
-    said_by=$(jq -r .word.task <<<"$standing")
-    if [[ $said_in == "$COORDINATOR_CHANNEL" ]]; then
-      word_from standing_reasons merge-standing "$message" '' '' "#coordinator $said_in"
-    elif [[ $said_in == "$(jq -r '.thread // ""' <<<"$standing")" ]]; then
-      if [[ $said_by == "$task" ]]; then place="the task's thread $said_in"; else place="$said_by's thread $said_in"; fi
-      word_from standing_reasons merge-standing "$message" '' '' "$place"
-    else
-      standing_reasons+=("merge-standing names discord_channel $said_in, which is neither #coordinator nor $said_by's thread")
-    fi
   fi
 fi
 
@@ -360,11 +339,6 @@ if [[ $word == plan && -n $head ]]; then
       | "\(name) is outside the scope of Daniel'"'"'s plan-time word: \($scope | join(", "))"' <<<"$PR_CHANGED"
   fi
 fi
-# The standing word holds on the same checks, with no scope, once a word applies and stands.
-if [[ $word == standing && -n $head ]] && jq -e .stands <<<"$standing" >/dev/null; then
-  unattended_reasons standing_reasons
-fi
-
 # Daniel's word on a head the PR has since moved past holds only through merges of the base whose
 # passing review was logged after the word, read in the primary checkout once the PR's branch and
 # the base are fetched from origin.
@@ -387,13 +361,57 @@ if [[ -n $approved && -n $pr_ts && -n $head ]] &&
   fi
 fi
 
+# A per-head or plan-time word that does not hold, for its own reasons (never the checks every
+# merge gets), falls back to the standing word, when the ledger holds one.
+if [[ $standing != null && $word != standing ]]; then
+  declare -n tried=${word}_reasons
+  if ((${#tried[@]})); then word=standing; fi
+  unset -n tried
+fi
+
+# The standing word holds only while the word applying to the project stands, in #coordinator or
+# the thread of the task it was logged under, where Discord shows its message from an allowFrom
+# author; it is read whenever it was sent, since it is on no head and answers no ask.
+if [[ $word == standing ]]; then
+  if jq -e '.word == null' <<<"$standing" >/dev/null; then
+    standing_reasons+=("no standing word of Daniel's names $project or every project")
+  elif jq -e '.stands | not' <<<"$standing" >/dev/null; then
+    standing_reasons+=("$(jq -r '"Daniel'"'"'s standing word on \(if .word.project == "all" then "every project" else .word.project end), Discord message \(.word.discord_message), was withdrawn at \(.withdrawn.ts) in Discord message \(.withdrawn.discord_message)"' <<<"$standing")")
+  else
+    message=$(jq -r '.word.discord_message | tostring' <<<"$standing")
+    said_in=$(jq -r '.word.discord_channel | tostring' <<<"$standing")
+    said_by=$(jq -r .word.task <<<"$standing")
+    if [[ $said_in == "$COORDINATOR_CHANNEL" ]]; then
+      word_from standing_reasons merge-standing "$message" '' '' "#coordinator $said_in"
+    elif [[ $said_in == "$(jq -r '.thread // ""' <<<"$standing")" ]]; then
+      if [[ $said_by == "$task" ]]; then place="the task's thread $said_in"; else place="$said_by's thread $said_in"; fi
+      word_from standing_reasons merge-standing "$message" '' '' "$place"
+    else
+      standing_reasons+=("merge-standing names discord_channel $said_in, which is neither #coordinator nor $said_by's thread")
+    fi
+  fi
+fi
+
+# The standing word holds on the same checks, with no scope, once a word applies and stands.
+if [[ $word == standing && -n $head ]] && jq -e .stands <<<"$standing" >/dev/null; then
+  unattended_reasons standing_reasons
+fi
+
 # Refuse, with every reason, when there is any: when the word last tried ($word) does not hold, every
-# word's reasons, then the checks every merge gets.
+# word's reasons, then the checks every merge gets, each reason once (the plan-time and standing
+# words share the unattended ones).
 refuse_on_problems() {
   local -n own=${word}_reasons
-  local reasons=()
-  if ((${#own[@]})); then reasons=("${head_reasons[@]}" "${plan_reasons[@]}" "${standing_reasons[@]}"); fi
-  reasons+=("${merge_reasons[@]}")
+  local all=() reasons=() reason
+  local -A seen=()
+  if ((${#own[@]})); then all=("${head_reasons[@]}" "${plan_reasons[@]}" "${standing_reasons[@]}"); fi
+  all+=("${merge_reasons[@]}")
+  for reason in "${all[@]}"; do
+    if [[ -z ${seen[$reason]:-} ]]; then
+      seen[$reason]=1
+      reasons+=("$reason")
+    fi
+  done
   ((${#reasons[@]})) || return 0
   {
     echo "team-merge: $task cannot merge PR #$number, so nothing changed:"

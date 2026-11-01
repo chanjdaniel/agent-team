@@ -208,7 +208,8 @@ $(standing_post)"
   standing merge-standing all 1562691973939200000 "$COORDINATOR"
   run_bin -0 team-merge T14
   assert_equal "$(merged_events | jq -r '[.approval, .discord_message] | join(" ")')" "head 1562661774950400000"
-  assert_equal "$(reads | jq -r '.[-1]')" "https://discord.com/api/v10/channels/1563/messages/1562661774950400000"
+  # Only the per-head word's message is read, never the standing word's.
+  assert_equal "$(reads | jq -r '.[-1]' | sort -u)" "https://discord.com/api/v10/channels/1563/messages/1562661774950400000"
   assert_equal "$(posts)" ""
 
   merge_again
@@ -216,4 +217,95 @@ $(standing_post)"
   run_bin -0 team-merge T14
   assert_equal "$(merged_events | jq -r '[.approval, .discord_message] | join(" ")')" "plan 1562661774950400000"
   assert_equal "$(merge_post 1563 x | head -n 1)" "$(jq -r .content "$discord/posts" | head -n 1)"
+  assert_equal "$(reads | jq -r '.[-1]' | sort -u)" "https://discord.com/api/v10/channels/1563/messages/1562661774950400000"
+}
+
+# Daniel's message <message> in <channel>, by user 757 (or <author>): said <message> <channel> [<author>]
+said() {
+  jq -n --arg m "$1" --arg c "$2" --arg author "${3:-757}" '{id: $m, channel_id: $c,
+    content: "standing order: merge when ready", author: {id: $author, username: "daniel"}}' >"$discord/$2-$1.json"
+}
+
+# Daniel's standing word on proj beside the earlier word: a passing review of the head, and their
+# merge-standing in message 1562691973939200000 (05:00) in #coordinator, which Discord shows there.
+standing_too() {
+  passed
+  standing merge-standing proj 1562691973939200000 "$COORDINATOR"
+  said 1562691973939200000 "$COORDINATOR"
+}
+
+# The merged event's approval, message and head.
+merged_on() {
+  merged_events | jq -r '[.approval, .discord_message, .head, .by] | join(" ")'
+}
+
+# Each reason given is on exactly one line of the refusal <text>: once <text> <reason>...
+once() {
+  local reason
+  for reason in "${@:2}"; do assert_equal "$(grep -cFx "  $reason" <<<"$1")" 1; done
+}
+
+@test "a PR whose head holds a commit of its own since Daniel's per-head word merges on the standing word" {
+  moved_head own
+  standing_too
+  run_bin -0 --separate-stderr team-merge T14
+  assert_equal "$(merged_on)" "standing 1562691973939200000 $head Discord message 1562691973939200000 in #coordinator $COORDINATOR, from daniel (757)"
+  assert_equal "$(merged_events | jq -r .discord_channel)" "$COORDINATOR"
+  assert_equal "$(jq -r .content "$discord/posts" | head -n 1 | grep -o 'standing word, .*')" \
+    "standing word, https://discord.com/channels/$INBOX_GUILD/$COORDINATOR/1562691973939200000"
+}
+
+@test "a per-head word whose message is not Daniel's merges on a standing word that holds" {
+  approved_by 999
+  standing_too
+  run_bin -0 team-merge T14
+  assert_equal "$(merged_on)" "standing 1562691973939200000 $head Discord message 1562691973939200000 in #coordinator $COORDINATOR, from daniel (757)"
+}
+
+@test "a plan-time word refused for a path outside its scope merges on a standing word that holds" {
+  plan_word
+  files src/tooling.py docs/tooling.md
+  standing merge-standing proj 1562691973939200000 "$COORDINATOR"
+  said 1562691973939200000 "$COORDINATOR"
+  run_bin -0 team-merge T14
+  assert_equal "$(merged_on)" "standing 1562691973939200000 $head Discord message 1562691973939200000 in #coordinator $COORDINATOR, from daniel (757)"
+  assert_equal "$(jq -r .content "$discord/posts" | grep -c 'on your standing word')" 2
+}
+
+@test "a per-head word that holds is refused for a red check alone, with no standing reason and no ask line" {
+  standing_too
+  checks '[{"name": "test", "bucket": "fail", "state": "FAILURE"},
+    {"name": "lint", "bucket": "pass", "state": "SUCCESS"}, {"name": "agent-review", "bucket": "pass", "state": "SUCCESS"}]'
+  refused "required check test has not passed on the head" "checks failing on the head: test"
+  assert_equal "$(grep -c '^  ' <<<"$stderr")" 2
+  [[ $stderr != *standing* && $stderr != *"(Daniel's"* ]]
+  [[ $(reads) != *1562691973939200000* ]]
+}
+
+@test "when neither the per-head and standing words, nor the plan-time and standing words, hold, both words' reasons are named once" {
+  moved_head own
+  standing_too
+  files src/tooling.py package.json
+  checks '[{"name": "test", "bucket": "fail", "state": "FAILURE"},
+    {"name": "lint", "bucket": "pass", "state": "SUCCESS"}, {"name": "agent-review", "bucket": "pass", "state": "SUCCESS"}]'
+  refused "the head moved past Daniel's word with ${own:0:7}: ask again" \
+    "package.json is a guarded path (dependencies): a change there comes back to Daniel" \
+    "checks failing on the head: test" "$(ask_standing)"
+  once "$stderr" "the head moved past Daniel's word with ${own:0:7}: ask again" \
+    "package.json is a guarded path (dependencies): a change there comes back to Daniel" \
+    "checks failing on the head: test" "$(ask_standing)"
+  assert_equal "$(tail -n 1 <<<"$stderr")" "  $(ask_standing)"
+
+  # The plan-time word and the standing word share the guarded path: it is named once, and the
+  # standing word's ask line alone ends the refusal.
+  plan_word
+  files src/tooling.py package.json
+  refused "package.json is outside the scope of Daniel's plan-time word: src/" \
+    "package.json is a guarded path (dependencies): a change there comes back to Daniel" \
+    "checks failing on the head: test" "$(ask_standing)"
+  once "$stderr" "package.json is outside the scope of Daniel's plan-time word: src/" \
+    "package.json is a guarded path (dependencies): a change there comes back to Daniel" \
+    "checks failing on the head: test" "$(ask_standing)"
+  assert_equal "$(tail -n 1 <<<"$stderr")" "  $(ask_standing)"
+  [[ $stderr != *"$(ask_per_head)"* ]]
 }
