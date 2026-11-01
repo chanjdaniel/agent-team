@@ -1,6 +1,7 @@
 // The throwaway MongoDB (helpers/mongo.mjs): its own wait, where a start that never comes ready
 // fails with how long it waited and what the container last logged, so a slow Docker reads apart
-// from a broken one, and a container that exits or is gone fails it at once; its stop, which leaves none of the image's anonymous volumes behind;
+// from a broken one, and a container that exits or is gone fails it at once; its data on tmpfs,
+// so no container of the image makes a volume;
 // and its tcmalloc, on per-thread caches so MongoDB 8.0 starts on Linux 6.19 to 7.0.13.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -9,7 +10,7 @@ import { symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { stubDir, tempDir } from "./helpers/mcp.mjs";
-import { connectWhenReady, mongoImage, removeContainer, startMongo } from "./helpers/mongo.mjs";
+import { connectWhenReady, dataOnTmpfs, mongoImage, removeContainer, startMongo } from "./helpers/mongo.mjs";
 
 const docker = (...args) => execFileSync("docker", args, { encoding: "utf8" }).trim();
 const name = `toolkit-test-${randomBytes(4).toString("hex")}`;
@@ -17,7 +18,7 @@ const name = `toolkit-test-${randomBytes(4).toString("hex")}`;
 // The image's entrypoint runs any command that is not mongod as given: this one only logs.
 before(() => {
   docker(
-    "run", "--detach", "--rm", "--name", name, "--label", "agent-team-test=toolkits",
+    "run", "--detach", "--rm", "--name", name, "--label", "agent-team-test=toolkits", ...dataOnTmpfs,
     mongoImage, "sh", "-c", "echo still starting up; sleep 120",
   );
 });
@@ -41,7 +42,7 @@ test("past its deadline, the wait names the time it waited and the container's l
 test("a container that exits during the wait fails it at once, with its exit code and last log lines", async () => {
   const dying = `toolkit-test-${randomBytes(4).toString("hex")}`;
   docker(
-    "run", "--detach", "--name", dying, "--label", "agent-team-test=toolkits",
+    "run", "--detach", "--name", dying, "--label", "agent-team-test=toolkits", ...dataOnTmpfs,
     mongoImage, "sh", "-c", "echo giving up; exit 3",
   );
   try {
@@ -91,16 +92,20 @@ test("a Docker too busy to answer keeps the wait going until its deadline", asyn
   }
 });
 
-test("stopping the throwaway MongoDB removes its anonymous volumes with it", async () => {
+// Container <container>'s mounts as type:destination, which lists a volume or a bind mount and
+// never a --tmpfs one.
+const mounts = (container) =>
+  docker("inspect", "--format", "{{range .Mounts}}{{.Type}}:{{.Destination}} {{end}}", container)
+    .split(" ").filter(Boolean);
+
+test("the throwaway MongoDB and the container that only logs make no volume", async () => {
   const db = await startMongo();
-  const mounts = '{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}} {{end}}{{end}}';
-  const volumes = docker("inspect", "--format", mounts, db.name).split(" ").filter(Boolean);
-  assert.equal(volumes.length, 2, "the image declares two volumes, /data/db and /data/configdb");
-  await db.stop();
-  const left = volumes.filter(
-    (volume) => docker("volume", "ls", "--quiet", "--filter", `name=^${volume}$`) !== "",
-  );
-  assert.deepEqual(left, []);
+  try {
+    assert.deepEqual(mounts(db.name), [], "the throwaway MongoDB");
+  } finally {
+    await db.stop();
+  }
+  assert.deepEqual(mounts(name), [], "the container that only logs");
 });
 
 test("the throwaway MongoDB runs tcmalloc on per-thread caches, so it starts on Linux 6.19 to 7.0.13", async () => {
