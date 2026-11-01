@@ -1,12 +1,11 @@
-# The stow steps team-handoff and team-stow share, sourced after team.sh by both:
+# team-stow's steps, which team-handoff takes through team-stow, sourced after team.sh:
 #
 #   source "$TEAM_LIB/stow.sh"
 #
 # The caller sets machine (machine_name), err (a file each sibling's stderr goes to), NET_ERR and
-# NET_TIMEOUT (origin_git's), STOW_UNDONE (what a refusal of the run adds: "; nothing was
-# released"), and STOW_ELSEWHERE and STOW_BY_TASK as stow_end_ops and stow_session_prefix say,
-# and defines team <script> <arguments...> (a sibling of this checkout run with TEAM_HOME) and
-# first_error (the first line of $err without its "<script>: " prefix). It provides:
+# NET_TIMEOUT (origin_git's), and defines team <script> <arguments...> (a sibling of this
+# checkout run with TEAM_HOME) and first_error (the first line of $err without its "<script>: "
+# prefix). It provides:
 #   stow_open [T<n>...]          STOW_OPEN, one {task, worktrees: [{project, branch, worktree}]}
 #                                per open task in task number order: the named ones, or all.
 #   stow_branches [quiet]        checks each STOW_OPEN task's branches against origin's.
@@ -16,8 +15,7 @@
 #   stow_stop                    stops and removes STOW_LIVE's other sessions.
 #   stow_record <task> <workers> [<cause>]
 #                                logs the task's stowed, unless it is stowed already.
-# A failure of one task is kept as STOW_REFUSED[<task>]=<reason>, which the caller turns into a
-# refusal of the whole handoff (team-handoff) or of that task alone (team-stow).
+# A failure of one task is kept as STOW_REFUSED[<task>]=<reason>, a refusal of that task alone.
 # shellcheck shell=bash disable=SC2154 # machine and err are the caller's
 
 # A team worker's session name.
@@ -61,11 +59,11 @@ stow_branches() {
       mine=$(git -C "$repo" rev-parse -q --verify "refs/heads/$branch^{commit}") || mine=''
       rc=0
       remote=$(origin_git -C "$repo" ls-remote origin "refs/heads/$branch") || rc=$?
-      ((rc == 0)) || die "$label: cannot read $branch on origin: $(origin_reason "$rc")$STOW_UNDONE"
+      ((rc == 0)) || die "$label: cannot read $branch on origin: $(origin_reason "$rc"); nothing was stowed"
       origin_head=${remote%%[[:space:]]*}
       if [[ -n $origin_head ]] && ! git -C "$repo" cat-file -e "$origin_head^{commit}" 2>/dev/null; then
         origin_git -C "$repo" fetch -q --no-write-fetch-head origin "+refs/heads/$branch:refs/remotes/origin/$branch" || rc=$?
-        ((rc == 0)) || die "$label: cannot fetch $branch from origin: $(origin_reason "$rc")$STOW_UNDONE"
+        ((rc == 0)) || die "$label: cannot fetch $branch from origin: $(origin_reason "$rc"); nothing was stowed"
       fi
       head=$origin_head problem=''
       if [[ -z $mine && -z $origin_head ]]; then
@@ -151,24 +149,21 @@ stow_live() {
       | select($named == [] or IN($named[]; .name | sub("-.*"; "")))]' <<<"$sessions")
 }
 
-# The prefix of a session step's line about <name>: "sessions: " for team-handoff, "sessions:
-# T<n>: " when STOW_BY_TASK is 1, for team-stow.
-STOW_BY_TASK=0
+# The prefix of a session step's line about the session <name>: "sessions: T<n>: ".
 stow_session_prefix() {
-  if ((STOW_BY_TASK)); then printf 'sessions: %s: ' "${1%%-*}"; else printf 'sessions: '; fi
+  printf 'sessions: %s: ' "${1%%-*}"
 }
 
 # End each ops session of STOW_LIVE with team-ops-end (an ops session holds production query
 # results: ended, never stowed), then take them off STOW_LIVE; STOW_ENDED says whether any was
-# ended, and one that cannot be ended refuses its task. The line ends with STOW_ELSEWHERE (" on
-# the other machine" for a handoff).
+# ended, and one that cannot be ended refuses its task.
 stow_end_ops() {
   local name
   # shellcheck disable=SC2034 # STOW_ENDED is the caller's to read
   STOW_ENDED=0
   while read -r name; do
     if team team-ops-end "${name%-ops}" </dev/null >/dev/null 2>"$err"; then
-      echo "$(stow_session_prefix "$name")ended $name with team-ops-end, its transcript and answer deleted; if its answer had not reached Daniel, Daniel asks again${STOW_ELSEWHERE:-}"
+      echo "$(stow_session_prefix "$name")ended $name with team-ops-end, its transcript and answer deleted; if its answer had not reached Daniel, Daniel asks again"
       # shellcheck disable=SC2034 # STOW_ENDED is the caller's to read
       STOW_ENDED=1
     else

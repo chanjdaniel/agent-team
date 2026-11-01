@@ -200,7 +200,8 @@ The coordinator logs a worker's 75 as `paused` with its line and launches it onc
 
 ## Stowing
 
-`team-stow` sets chosen tasks aside on this machine as a handoff does, without releasing anything, so their memory comes back to the level's budget and Daniel's programs.
+`team-stow` sets chosen tasks aside on this machine without releasing anything, so their memory comes back to the level's budget and Daniel's programs.
+Level none, a handoff and a shutdown take the same path: none stows every task through it, and `team-handoff` runs `team-stow --all --cause handoff` as its stow step, with `--down` for a handoff to another machine and without it for a shutdown (`team-handoff --here`, `sops/portability.md`), so the stacks a restart comes back to keep their data.
 It runs on the lease holder, once each task's live workers have answered the coordinator's `T<n> STOW`, or have not in time; it refuses elsewhere, and exits 75 while GitHub is unreachable.
 
 `team-stow T<n>... [--down] [--cause level|handoff] [--json]`, or `--all` for every open task, takes these steps, one line per step and task, each safe to run again:
@@ -210,7 +211,8 @@ It runs on the lease holder, once each task's live workers have answered the coo
 3. stacks: `team-stack stop --worktree <path>` for each worktree whose project has a stack block, its data kept (`team-stack down`, saving the logs, with `--down`); one that fails is said, and the task still stows;
 4. checkpoint: `team-checkpoint --force`, once per run, none when every task left was stowed already and no session was stopped;
 5. branches: each task branch pushed to its origin when strictly ahead, checked again first;
-6. stowed: one `stowed` per task, as `team-handoff` writes it, with `cause` `level` (the default) or `handoff`; none when the task's latest machine event is already a stowed from this machine with the same worktrees.
+6. stowed: one `stowed` per task, with `cause` `level` (the default) or `handoff`; none when the task's latest machine event is already a stowed from this machine with the same worktrees.
+   Its `sessions` names the sessions this run stopped and those an earlier run of the same lease stopped without stowing the task (one interrupted, or whose push failed), which `~/.local/state/agent-team/stow.json` keeps until the task is stowed.
 
 A refused task is said on stderr with its reason, the others still stow, and the exit is 1; `--json` prints `{tasks: [{task, worktrees, roles, sessions, cause}], refused: [{task, reason}]}`.
 
@@ -219,7 +221,7 @@ A task is stowed for the level while its latest `stowed` has `cause: level` and 
 `team-stow T<n>... --stop-runs` does only this, on any machine: `team-heavy stop --task T<n>` ends the task's heavy run when it holds the machine's lock, and in each of the task's worktrees whose project delivers through no-mistakes, `no-mistakes axi abort` cancels the run `no-mistakes axi` shows active on its branch.
 A worker blocked in a foreground test or gate then returns and reads the STOW already sent; a manual drop runs it right after the STOWs, and an automatic one does not, so a running test or gate finishes.
 
-`team-handoff` stows through the same steps, kept in `bin/lib/stow.sh`.
+The steps live in `bin/lib/stow.sh`, which `team-stow` alone sources.
 
 ## Shrinking and growing back
 

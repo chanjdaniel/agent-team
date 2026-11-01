@@ -252,6 +252,24 @@ rm a2a2a2a2"
   assert_equal "$(running_stacks | paste -sd ' ')" "stackfix-1 stackfix-2 stackfix-3"
 }
 
+@test "the sessions a run stopped for a task a failed push refused are kept, and the run that stows it names them" {
+  # Origin refuses every push, so T1's branch cannot go up once its builder has stopped.
+  printf '#!/bin/sh\necho "the test refuses pushes" >&2\nexit 1\n' >"$home_origin/hooks/pre-receive"
+  chmod +x "$home_origin/hooks/pre-receive"
+  run_bin -1 --separate-stderr team-stow T1
+  assert_contains "$stderr" "team-stow: T1 is not stowed: cannot push feat/T1-work1: "
+  assert_equal "$(stowed_events)" ""
+  assert_equal "$(stops_and_removes)" "stop a1a1a1a1
+rm a1a1a1a1"
+  assert_equal "$(jq -c .stopped "$HOME/.local/state/agent-team/stow.json")" '{"T1":["T1-builder"]}'
+
+  rm "$home_origin/hooks/pre-receive"
+  run_bin -0 team-stow T1
+  assert_contains "$output" "sessions: T1: no live session"
+  assert_equal "$(stowed_events)" "$(stowed_of T1 1 "$head1")"
+  [[ ! -e $HOME/.local/state/agent-team/stow.json ]]
+}
+
 @test "a stack that will not stop is said, and its task still stows (exit 1)" {
   docker_down
   run_bin -1 --separate-stderr team-stow T1

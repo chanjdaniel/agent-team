@@ -28,7 +28,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
     - `session-activity`: how long each live session's transcripts have gone unwritten, and the tool calls still running in a quiet one, for `team-sweep`'s stalled finding.
     - `slots.jq`: `team-slots`'s settings of `slots.json`, a reading's fit, the effective cap, the room left for the reserved project and the others, and the texts `team-slots`, `team-open` and `team-doctor` say.
     - `stack.jq`: `team-stack`'s owner classes, Docker's sizes, the reaper's rules and the `stack.json` settings with their memory floor.
-    - `stow.sh`: the stow steps `team-handoff` and `team-stow` share: each task's branches checked and pushed, its sessions stopped, its ops session ended, its `stowed` logged.
+    - `stow.sh`: `team-stow`'s steps, which `team-handoff` takes through `team-stow`: each task's branches checked and pushed, its sessions stopped, its ops session ended, its `stowed` logged.
     - `time.jq`: `team-time`'s split of each task's time into phases, and its counts.
     - `tools.jq`: turns `tools.lock` into each tool's pin and install command for a machine.
     - `tools.lock`: the tools `team-doctor` checks, pinned or with a minimum, and their source per OS (for treehouse and no-mistakes, a GitHub release with each archive's checksum, or a fork's commit).

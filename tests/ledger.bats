@@ -164,20 +164,22 @@ EVENTS
 )" '["builder"]'
 }
 
-@test "a stowed may give its cause, level or handoff, and team-stow writes it beside team-handoff" {
+@test "a stowed may give its cause, level or handoff, and team-stow alone writes it" {
   local stowed='{"ts":"2026-11-01T14:05:00Z","task":"T7","event":"stowed","machine":"home-pc","worktrees":[],"roles":[],"sessions":[]'
   append_as team-stow "$stowed,\"cause\":\"level\"}"
   assert_equal "$status" "0"
-  append_as team-handoff "$stowed,\"cause\":\"handoff\"}"
+  append_as team-stow "$stowed,\"cause\":\"handoff\"}"
   assert_equal "$status" "0"
-  append_as team-handoff "$stowed}"
+  append_as team-stow "$stowed}"
   assert_equal "$status" "0"
   assert_equal "$(jq -r '.cause // "none"' "$TEAM_HOME/ledger.jsonl" | paste -sd ' ')" "level handoff none"
   append_as team-stow "$stowed,\"cause\":\"shutdown\"}"
   assert_equal "$status" "1"
   assert_contains "$output" "cause must be one of level, handoff"
   append_as team-log "$stowed,\"cause\":\"level\"}"
-  assert_contains "$output" "stowed events are written by team-handoff or team-stow, not team-log"
+  assert_contains "$output" "stowed events are written by team-stow, not team-log"
+  append_as team-handoff "$stowed}"
+  assert_contains "$output" "stowed events are written by team-stow, not team-handoff"
 }
 
 # Whether the task of the events read from stdin, one JSON object per line, is stowed for the level.

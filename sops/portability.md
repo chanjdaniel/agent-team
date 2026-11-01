@@ -100,9 +100,9 @@ A worktree whose head a salvage branch holds, with nothing uncommitted, is salva
    It runs the doctor first, then checks that the team home and the code checkout can fast-forward to origin's (and that the team home holds no commit origin's lacks), so either refuses with nothing changed while the old machine still runs the team; once both pass it prints "this machine is ready: say 'hand off' to the coordinator there now" and waits for the release.
 2. Then Daniel says "hand off" to the coordinator on Discord.
    Its `handoff` skill asks whether that `team-resume --wait` is running and has said so, and starts only on Daniel's yes; it checks (`team-handoff --check`), posts what is in flight, sends `T<n> STOW` to each live worker and waits up to 10 minutes for `T<n> PAUSED stowed` (a builder pushes a `wip:` commit and writes `handoff.md`).
-3. It runs `team-handoff`: workers stopped and removed, a forced checkpoint, task branches pushed, one `stowed` per open task, `team-config capture`, `team-tokens export --through-now`, the records committed as `chore: handoff from <machine>` (all of `tasks/`, `machine/`, `memory/`, `usage/`, the ledger) and pushed, the heartbeat disabled, the lease released.
+3. It runs `team-handoff`, whose stow step is `team-stow --all --cause handoff --down` (`sops/resources.md`, "Stowing"): workers stopped and removed, every task stack taken down with its logs saved, a forced checkpoint, task branches pushed, one `stowed` per open task; then `team-config capture`, `team-tokens export --through-now`, the records committed as `chore: handoff from <machine>` (all of `tasks/`, `machine/`, `memory/`, `usage/`, the ledger) and pushed, the heartbeat disabled, the lease released.
    The workers stop before the checkpoint, so it holds their worktrees' last state: a worker that never answered STOW leaves its uncommitted changes in `wip/<project>/T<n>`, and its `stowed` marks that worktree `uncommitted`.
-   A diverged task branch refuses the handoff before any worker stops.
+   A diverged task branch refuses its task before that task's workers stop, and the handoff stops before the release, naming it; the other tasks are stowed already when it is run again.
    An ops session is never carried over: `team-ops-end` ends it, deleting its transcript and answer file (the fence does the same), `ops` is never a role to relaunch, and a production question left unanswered is Daniel's to ask again on the new machine.
    Each step is idempotent: a run interrupted anywhere finishes when run again, and the lease is released last.
 4. It posts "Released at 14:05 from home-pc. The `team-resume --wait` started on the other machine takes the team now; with none running there, run `team-resume` there." with what config it captured (and any it left to Daniel: a `settings.json` with an `env` key, or a skill folder holding a dotenv-like file), and `team-handoff --retire` removes the coordinator.
@@ -111,6 +111,20 @@ A worktree whose head a salvage branch holds, with nothing uncommitted, is salva
    The machine's cap on task slots never refuses a re-homing (`sops/slots.md`): on a machine with a lower cap than the one left, every open task is re-homed anyway, each `team-open --resume` saying the machine is over its effective cap, and no new task opens there until enough close to bring it under.
 6. The coordinator's `resume` skill reads the report, catches up on Discord messages sent while no coordinator listened, relaunches each stowed role with a `resume` brief (which says what became of the uncommitted changes), logs `resumed`, and posts what resumed and what did not.
 7. Daniel pins the coordinator in `claude agents`.
+
+## A shutdown: a handoff to the same machine
+
+Taking the PC down for a while (an update, a restart, a night off) is a handoff whose next holder is the same machine.
+
+1. The coordinator stows each live worker as for a handoff (`T<n> STOW`, up to 10 minutes for each `T<n> PAUSED stowed`), with no `team-resume --wait` to check, since no other machine takes the team.
+2. It runs `team-handoff --here`: the steps of a move's step 3 above, but `team-stow --all --cause handoff` without `--down`, so each task stack is stopped, its containers and volumes kept for the restart.
+   A run interrupted after the stow step finishes only with `--here` again, and a handoff started without it only without it.
+3. It posts "Released at 14:05 from home-pc for a restart here. After the restart, run `team-resume` here." with the config lines, and `team-handoff --retire` removes the coordinator.
+   The lease is released, the heartbeat disabled, and the team's sessions stopped and removed.
+4. After the restart, Daniel runs `team-resume` on the same machine.
+   It takes the lease again (its epoch kept, since no other machine held it), enables the heartbeat, and finds each worktree where it was; each task stowed here gets the line "T1: stowed here on home-pc: a same-machine resume", and `here: true` in the report.
+   The level holds: neither `team-handoff` nor `team-resume` writes `level.jsonl`, so the team comes back in the mode and at the level it had.
+5. The coordinator's `resume` skill relaunches the stowed roles as after a move; a relaunched builder's `team-stack up` starts its stopped stack again, with its data.
 
 ## A crash
 
