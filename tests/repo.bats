@@ -474,10 +474,15 @@ assert_denies() {
 
 # --remove-section drops the core section, the key with it, and --rename-section moves another
 # section's hooksPath into core; both name the section, never the key.
+# The rules match core anywhere after -section, so they also refuse removing or renaming any
+# section whose name holds it (branch.hardcore-fix, remote.score); that cost, a rare command a
+# session can leave to Daniel, is accepted.
 @test "the git hooks' deny rule: git config removing or renaming the core section" {
   assert_denies 'Bash(git config *-section*core*)' 'git config --remove-section core' \
     'git config --global --remove-section core' 'git config --rename-section core x' \
-    'git config --rename-section evil core' 'git config remove-section --local core'
+    'git config --rename-section evil core' 'git config remove-section --local core' \
+    'git config --remove-section "core"' 'git config --remove-section branch.hardcore-fix' \
+    'git config --rename-section remote.score x'
   assert_denies 'Bash(git -C * config *-section*core*)' 'git -C ~/repo config --remove-section core' \
     'git -C ~/repo config --rename-section core x'
 }
