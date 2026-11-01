@@ -531,6 +531,14 @@ def standing_words($projects):
   | [$projects[] | . as $project | $events | standing_word($project)
      | select(. != null and .stands) | {project: $project, word}];
 
+# Daniel's standing words from standing_words' list ({project, word}), one {projects, word} per
+# word event, the projects in the list's order, the words in the order they were logged.
+def standing_word_events:
+  group_by(.word) | map({projects: map(.project), word: .[0].word}) | sort_by(.word.ts, .word.discord_message);
+
+# A standing word's projects as text: "all", which only a word as logged names, is every project.
+def projects_text: map(if . == "all" then "every project" else . end) | join(", ");
+
 # Why Daniel's standing word on $project does not stand, over standing_word's answer ({stands,
 # word, withdrawn}, or null for no event), one string, or none while it stands: no word names
 # $project or all, or the latest event that applies withdrew it.
@@ -877,13 +885,15 @@ def open_tasks: [to_entries[] | select(.value | is_open) | .key] | sort_by(.[1:]
 
 # team-snapshot's JSON from every task's events by id ($tasks), the open tasks' team-state JSON
 # in task number order ($states; {task, error} for a task whose state could not be told), the
-# machine's task slots ($slots, team-slots --json's object or {error}), the session list, and each
-# registered project's open PRs ($prs).
-def snapshot($tasks; $states; $slots; $sessions; $prs; $items):
+# machine's task slots ($slots, team-slots --json's object or {error}), the registered projects a
+# standing word of Daniel's stands for ($standing, standing_words' list), the session list, and
+# each registered project's open PRs ($prs).
+def snapshot($tasks; $states; $slots; $standing; $sessions; $prs; $items):
   team_sessions($tasks; $sessions) as $team
   | {schema: "team-snapshot/1",
      tasks: $states,
      slots: $slots,
+     standing_words: $standing,
      sessions: [$team[] | select(.task_state == "open") | del(.task_state)],
      strays: [$team[] | select(.task_state != "open") | del(.logged)],
      prs: $prs,
@@ -907,6 +917,9 @@ def snapshot_text:
     if $lines == [] then "\($title): none" else "\($title) (\($lines | length)):", ($lines[] | "  " + . | clip(120)) end;
   section("Open tasks"; [.tasks[] | if .error then "\(.task) state unreadable: \(.error)" else state_line end]),
   (if .slots.error then "Task slots unreadable: \(.slots.error)" else .slots.summary end | clip(120)),
+  ((.standing_words // []) | standing_word_events
+   | if . == [] then "Standing merge word: none"
+     else .[] | "Standing merge word: \(.projects | projects_text) (Discord message \(.word.discord_message), \(.word.ts), \(.word.task))" | clip(120) end),
   section("Live team sessions";
     [.sessions[] | session_text + if .logged then "" else " (no launch of it in the ledger)" end]),
   section("Stray sessions";
@@ -937,39 +950,48 @@ def interview_under_way:
 
 # The task's PRs that wait on Daniel's word to merge, from task_prs: none unless its phase is
 # awaiting-merge, then each not merged that no merge-approved names (a trailing slash aside) at its
-# head, or at no head, as a legacy line, and whose repo (lowercased) is not a key of $plan_repos
-# naming a project with a standing merge-preapproved of the task: the projects that opt in to
-# plan-time merges now and are not the team's own, which team-inbox reads from the registry.
-def merge_ready_prs($plan_repos):
+# head, or at no head, as a legacy line, and whose repo (lowercased) is neither a key of
+# $plan_repos naming a project with a standing merge-preapproved of the task (the projects that opt
+# in to plan-time merges now and are not the team's own) nor a key of $standing_repos (the projects
+# a standing word of Daniel's stands for), each of which team-inbox reads from the registry.
+def merge_ready_prs($plan_repos; $standing_repos):
   . as $events
   | task_prs as $prs
   | if phase != "awaiting-merge" then []
     else [$prs[] | select(pr_merged($events; $prs) | not) | . as $pr
       | select(any($events[]; .event == "merge-approved" and (.url | strings | rtrimstr("/")) == ($pr.url | rtrimstr("/"))
           and (.head == null or same_head(.head; $pr.head))) | not)
-      | $plan_repos[first($pr.url | strings | capture("^https://github\\.com/(?<r>[^/]+/[^/]+)/") | .r | ascii_downcase) // ""] as $project
-      | select($project != null and ($events | merge_preapproval($project) | . != null and .withdrawn == null) | not)] end;
+      | (first($pr.url | strings | capture("^https://github\\.com/(?<r>[^/]+/[^/]+)/") | .r | ascii_downcase) // "") as $repo
+      | $plan_repos[$repo] as $project
+      | select(($project != null and ($events | merge_preapproval($project) | . != null and .withdrawn == null))
+          or $standing_repos[$repo] != null | not)] end;
 
 # What waits on Daniel, over every ledger event, each open task's in task number order:
 # {asks: [{task, id, text (its first line), thread (the task's thread when it was asked), message
-# (the question's discord_message)}], prs: [{task, title, url}], interviews: [{task, title, thread}]},
-# the PRs as merge_ready_prs($plan_repos) has them.
-def inbox_items($plan_repos):
-  [by_task | to_entries[] | select(.value | is_open)
+# (the question's discord_message)}], prs: [{task, title, url}], interviews: [{task, title, thread}],
+# standing: standing_word_events of the projects $projects a standing word stands for}, the PRs as
+# merge_ready_prs has them, its standing repos being those of $repos (each repo, lowercased, to its
+# project) whose project a standing word stands for.
+def inbox_items($plan_repos; $repos; $projects):
+  standing_words($projects) as $standing
+  | ($repos | with_entries(select(.value as $project | any($standing[]; .project == $project)))) as $standing_repos
+  | [by_task | to_entries[] | select(.value | is_open)
     | {task: .key, events: .value, title: (.value | map(select(.event == "opened")) | first | .title)}]
   | by_task_number
   | {asks: [.[] | .task as $task | .events as $events | $events | unsettled_asks[]
         | {task: $task, id: .ask.id, text: (.ask.text | tostring | split("\n")[0]),
            thread: ([$events[:.k][] | select(.event == "thread") | .discord_thread | strings] | last),
            message: (.ask.discord_message | if . == null then null else tostring end)}],
-     prs: [.[] | {task, title} + (.events | merge_ready_prs($plan_repos)[] | {url})],
+     prs: [.[] | {task, title} + (.events | merge_ready_prs($plan_repos; $standing_repos)[] | {url})],
      interviews: [.[] | select(.events | interview_under_way)
-        | {task, title, thread: (.events | map(select(.event == "interview-thread") | .discord_thread) | last | tostring)}]};
+        | {task, title, thread: (.events | map(select(.event == "interview-thread") | .discord_thread) | last | tostring)}],
+     standing: ($standing | standing_word_events)};
 
 # The Waiting on you message from inbox_items, at most $limit characters, its asks linked to the
 # question's message in guild $guild (to the thread when either is unknown), and its last line the
-# time $now (seconds since the epoch) as Discord shows it to each reader. Items past the limit are
-# left out from the end, counted in one line.
+# time $now (seconds since the epoch) as Discord shows it to each reader. Above that line, one line
+# per standing word, linked to Daniel's message in its channel. Items past the limit are left out
+# from the end, counted in one line; the standing word lines and the last line are never cut.
 def inbox_text($guild; $limit; $now):
   def link:
     if .thread == null then ""
@@ -980,15 +1002,17 @@ def inbox_text($guild; $limit; $now):
    ["**PRs ready to merge**", [.prs[] | "- \(named): \(.url)"]],
    ["**Interviews under way**", [.interviews[] | "- \(named): <#\(.thread)>"]]] as $sections
   | ([$sections[][1][]] | length) as $total
-  | "-# team-inbox keeps this current; updated <t:\($now):R>" as $foot
+  | [(.standing // [])[] | "-# Standing merge word on \(.projects | projects_text) since"
+      + " https://discord.com/channels/\($guild)/\(.word.discord_channel)/\(.word.discord_message)"] as $words
+  | ["-# team-inbox keeps this current; updated <t:\($now):R>"] as $foot
   | def render($n):
       (reduce $sections[] as $s ({left: $n, lines: []};
         $s[1][:.left] as $take
         | if $take == [] then . else .lines += [$s[0]] + $take | .left -= ($take | length) end)
        | .lines)
       + (if $n < $total then ["- and \($total - $n) more, which team-snapshot lists"] else [] end)
-      | ["**Waiting on you**"] + . + [$foot] | join("\n");
-    if $total == 0 then ["**Waiting on you**", "Nothing waits on you.", $foot] | join("\n")
+      | ["**Waiting on you**"] + . + $words + $foot | join("\n");
+    if $total == 0 then ["**Waiting on you**", "Nothing waits on you."] + $words + $foot | join("\n")
     else first(range($total; -1; -1) as $n | render($n) | select(length <= $limit)) end;
 
 # The following defs serve team-retro, over every ledger event as one array.
