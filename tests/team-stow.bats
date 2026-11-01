@@ -83,6 +83,15 @@ SH
   head1=$(git -C "$wt1" rev-parse HEAD) head2=$(git -C "$wt2" rev-parse HEAD) head3=$(git -C "$wt3" rev-parse HEAD)
 }
 
+# A heavy run a failed test left (heavy_run) is stopped, so no stand-in outlives its test.
+teardown() {
+  [[ -e $BATS_TEST_TMPDIR/cmd && ! -e $BATS_TEST_TMPDIR/run.done ]] || return 0
+  TEAM_HEAVY_KILL_SECONDS=1 "$REPO_ROOT/bin/team-heavy" stop >/dev/null 2>&1 || true
+  local i
+  for ((i = 0; i < 100; i++)); do [[ ! -e $BATS_TEST_TMPDIR/run.done ]] || return 0; sleep 0.1; done
+  kill -KILL "$(cat "$BATS_TEST_TMPDIR/cmd")" 2>/dev/null || true
+}
+
 # Log <task>'s launch of <role> in session <id> in the worktree <wt> on home-pc, as team-worker does.
 launch() {
   jq -cn --arg task "$1" --arg role "$2" --arg session "$3" --arg wt "$4" '{ts: (now | todate), task: $task,
