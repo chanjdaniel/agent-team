@@ -10,6 +10,8 @@
 # expanded, and a relative one is taken from the session's working directory (a cd earlier in the
 # same call is not followed). A target that starts with any other variable, or with a command or
 # process substitution, is allowed, since the hook cannot know where it points.
+# A target is judged with its symlinks resolved, and a refusal names it as written, its . and ..
+# resolved but its symlinks kept.
 # Quoted text, heredoc bodies, comments, file descriptor duplications (2>&1, >&2) and the
 # comparisons of [[ ]] and (( )) are not redirections; one inside a command or process
 # substitution is.
@@ -298,7 +300,7 @@ refused=()
 
 # judge <target> <quoting>: add the target to refused when it lies where this role may not write.
 judge() {
-  local target=$1 value dir
+  local target=$1 value dir written
   if [[ $2 != s ]]; then
     if [[ $2 == n && ($target == \~ || $target == \~/*) ]]; then
       target=$HOME${target:1}
@@ -310,7 +312,10 @@ judge() {
     fi
   fi
   [[ $target == /* ]] || target=$cwd/$target
-  case $(realpath -m -s -- "$target") in
+  # The written target, its . and .. resolved but its symlinks kept, is the name the refusal
+  # says (on macOS /home itself resolves to /System/Volumes/Data/home); the resolved one is judged.
+  written=$(realpath -m -s -- "$target")
+  case $written in
     /dev/null | /dev/stdout | /dev/stderr | /dev/fd/*) return 0 ;;
   esac
   target=$(realpath -m -- "$target")
@@ -318,7 +323,7 @@ judge() {
     [[ -n $dir ]] || continue
     under "$target" "$(realpath -m -- "$dir")" && return 0
   done
-  refused+=("$target")
+  refused+=("$written")
 }
 
 # The judge: walk the tokens as commands, judging each redirection's target and each file a tee

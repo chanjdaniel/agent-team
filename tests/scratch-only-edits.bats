@@ -125,6 +125,16 @@ EOF" "$HOME/file"
   blocked 'cmd > "~/x"' "$wt/~/x"
 }
 
+@test "a blocked shell target is named as written, its symlinks kept, and a symlink out of .scratch/ is still blocked" {
+  # On macOS /home resolves to /System/Volumes/Data/home, so a resolved name would not be the
+  # one the agent wrote.
+  ln -s "$HOME/elsewhere" "$HOME/linked"
+  blocked 'cmd > ~/linked/x' "$HOME/linked/x"
+  blocked 'cmd > ~/linked/../src/x' "$HOME/src/x"
+  ln -s "$HOME/elsewhere" "$wt/.scratch/out"
+  blocked 'cmd > .scratch/out/x' "$wt/.scratch/out/x"
+}
+
 @test "every blocked target of one command is named" {
   shell -2 'cmd > a 2> .scratch/ok | tee b c'
   assert_contains "$stderr" "(tried $wt/a, $wt/b, $wt/c)."
