@@ -206,7 +206,7 @@ TABLE
     }
   done
   grep -Eq '^  opened +team-open +project, path, type, title, branch, base, base_sha, worktree; optional story  \(story is the backlog story .*team-merge marks done\)$' <<<"$output"
-  grep -Eq '^  review +team-log +verdict \(pass\|findings\), head; optional agent_review, sent_back \(list of whole numbers\), findings \(object\), before \(list of whole numbers\), guarded \(list\)  \(sent_back: the numbers of the findings sent back .*findings: the count of each kind.*before: the numbers of the plain notes .*guarded: the guarded areas.*\)$' <<<"$output"
+  grep -Eq '^  review +team-log +verdict \(pass\|findings\), head; optional agent_review, sent_back \(list of whole numbers\), findings \(object\), before \(list of whole numbers\), guarded \(list\)  \(verdict: findings whenever sent_back names a finding, whatever the reviewer.s word, .*sent_back: the numbers of the findings sent back .*findings: the count of each kind.*before: the numbers of the plain notes .*guarded: the guarded areas.*\)$' <<<"$output"
   grep -Eq '^  merge-preapproved +team-log +project, ask, discord_message \(id\), scope \(list\)  \(Daniel.s plan-time word .*\)$' <<<"$output"
   grep -Eq '^  merge-preapproval-withdrawn +team-log +project, discord_message \(id\)  \(.*withdr.*\)$' <<<"$output"
   grep -Eq '^  merged +team-merge +pr \(number\), merge, head, by; optional .*approval \(head\|plan\)  \(approval: .*\)$' <<<"$output"
@@ -253,11 +253,11 @@ TABLE
 }
 
 @test "a review names the notes sent back before the merge as a list, which a non-list cannot be" {
-  run_bin -0 team-log T14 review verdict=pass head=a1b2c3d 'sent_back=[2, 4]'
+  run_bin -0 team-log T14 review verdict=findings head=a1b2c3d 'sent_back=[2, 4]'
   run_bin -0 team-log T14 review verdict=pass head=e4f5a6b
   assert_equal "$(ledger_without_ts)" "$(
     cat <<'LINES'
-{"task":"T14","event":"review","verdict":"pass","head":"a1b2c3d","sent_back":[2,4]}
+{"task":"T14","event":"review","verdict":"findings","head":"a1b2c3d","sent_back":[2,4]}
 {"task":"T14","event":"review","verdict":"pass","head":"e4f5a6b"}
 LINES
   )"
@@ -1277,6 +1277,30 @@ team-log: $TEAM_HOME/ledger.jsonl: 2 lines hold strings that are no whole number
     --sent-back 1,2
 }
 
+@test "a pass that sends findings back is logged as findings, by hand and from a message, and one that sends none stays a pass" {
+  open_t7
+  launched T7 builder b0000001
+  launched T7 reviewer c0000001 brief-review
+  brief_record T7 brief-review "{\"pr\": \"$URL\", \"head\": \"$HEAD_A\"}"
+  local counts='blocking:0,correctness:1,security:0,real-data:0,note-change:1,note-before:0'
+  # From a message, with --sent-back: not ready to merge, so findings, whatever the verdict word.
+  logs_events "{\"task\":\"T7\",\"event\":\"review\",\"verdict\":\"findings\",\"head\":\"$HEAD_A\",\"findings\":{\"blocking\":0,\"correctness\":1,\"security\":0,\"real-data\":0,\"note-change\":1,\"note-before\":0},\"guarded\":[],\"sent_back\":[1,2]}
+{\"task\":\"T7\",\"event\":\"done\",\"role\":\"reviewer\",\"session\":\"c0000001\"}" \
+    --from-message "T7 DONE pass $URL findings=$counts guarded=none" --sent-back 1,2
+  # By hand, in either list form.
+  run_bin -0 team-log T7 review verdict=pass head=a1b2c3d sent_back=3
+  run_bin -0 team-log T7 review verdict=pass head=a1b2c3d 'sent_back=[4]'
+  # A pass that sends nothing back stays a pass.
+  run_bin -0 team-log T7 review verdict=pass head=a1b2c3d sent_back=none
+  run_bin -0 team-log T7 review verdict=pass head=a1b2c3d
+  assert_equal "$(jq -c 'select(.event == "review") | [.verdict, .sent_back]' "$TEAM_HOME/ledger.jsonl")" \
+    '["findings",[1,2]]
+["findings",[3]]
+["findings",[4]]
+["pass",[]]
+["pass",null]'
+}
+
 @test "--from-message logs a DONE gate as the gate-run its pairs give" {
   open_t7
   launched T7 builder b0000002 brief-deliver
@@ -1436,7 +1460,7 @@ team-log: $TEAM_HOME/ledger.jsonl: 2 lines hold strings that are no whole number
   # A pass whose correctness note goes back before the merge.
   run_bin -0 team-log T7 --print --sent-back 2 \
     --from-message "T7 DONE  pass $HEAD_A findings=blocking:0,correctness:1,security:0,real-data:0,note-change:0,note-before:0 guarded=none"
-  assert_equal "$(jq -c 'select(.event == "review") | {verdict, sent_back}' <<<"$output")" '{"verdict":"pass","sent_back":[2]}'
+  assert_equal "$(jq -c 'select(.event == "review") | {verdict, sent_back}' <<<"$output")" '{"verdict":"findings","sent_back":[2]}'
   run_bin -2 team-log T7 --from-message 'T7 FAILED x' --from-message 'T7 FAILED y'
   assert_contains "$output" "--from-message is given twice"
   run_bin -2 team-log T7 --from-message

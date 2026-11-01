@@ -74,7 +74,7 @@
 # its base, "merge base: ..." instead, the builder-merge-base brief for the holder under 250k,
 # else a fresh builder, after the holder's STOW when it is live. For a pass with no PR (a gated project's review-ready), the
 # message telling the holder to go on with its delivery. For findings, or a pass that sent some
-# back: the message for the holder under 250k (its name, the findings sent back and the findings
+# back (which team-log logs as findings): the message for the holder under 250k (its name, the findings sent back and the findings
 # file the message names, for a pass the newest of review.md and rereview*.md in the holder's task
 # directory), else the T<n> STOW to send it (after recovering it when gone), or no hand-off when
 # nothing was sent back.
@@ -270,7 +270,7 @@ sender_launch() {
     | . + {worktree: (.worktree | local_path($home))}' -c --arg session "$session" <<<"$events"
 }
 
-# A stow hands a round on only while the latest review (findings, or a pass with notes to fix)
+# A stow hands a round on only while the latest review (findings, or a pass logged before team-log made it so)
 # sent findings back and no launch (an ops session's aside) has taken them since.
 if [[ $handoff == round ]] && ! jq -e '(to_entries | map(select(.value.event == "review")) | last) as $r
     | $r != null and ($r.value.sent_back // []) != []

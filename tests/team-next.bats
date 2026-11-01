@@ -736,7 +736,7 @@ merge ask: $url at $sha, agent-review success, checks green; the review found gu
   refused "the pass counts 1 security finding, which goes back" T7 -- "T7 DONE pass $url ${counts/security:0/security:1} before=none guarded=none"
   count=$(wc -l <"$TEAM_HOME/ledger.jsonl")
   run_bin -0 --separate-stderr team-next T7 --sent-back 1,2,3 -- "T7 DONE pass $url $back before=none guarded=none"
-  assert_equal "$(logged_from $((count + 1)) | jq -c 'select(.event == "review") | {verdict, sent_back}')" '{"verdict":"pass","sent_back":[1,2,3]}'
+  assert_equal "$(logged_from $((count + 1)) | jq -c 'select(.event == "review") | {verdict, sent_back}')" '{"verdict":"findings","sent_back":[1,2,3]}'
   assert_equal "$(tail -n 1 <<<"$output")" \
     "send to T7-builder (b0000001, 120k): T7 fix findings 1, 2 and 3 in .scratch/task/review.md on the same branch, then deliver again as your brief says"
   [[ $output != *merge* ]]

@@ -95,7 +95,9 @@ def message_event($event; $fields): {event: $event, fields: $fields};
 
 # A reviewer's DONE pass or findings: the review and the reviewer's done. Its head is the head of
 # the brief record its latest launch read ($records, by brief name), else the message's own head
-# for a pass on a head, else it is refused naming head=.
+# for a pass on a head, else it is refused naming head=. Its verdict is the message's word, raw:
+# team-log types the event and logs a pass whose sent_back names any finding as findings
+# (review_sent_back in ledger.jq), as it does a review logged by hand.
 def message_review($task; $events; $records; $from; $sent_back; $verdict; $rest):
   ($rest | capture("^(?<target>\\S+)(?:\\s+(?<pairs>.*))?$"; "s") // null) as $m
   | if $m == null or ($m.pairs // "") == "" then message_refused("DONE \($verdict) needs findings= and guarded=")

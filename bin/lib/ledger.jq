@@ -103,6 +103,14 @@ def typed_value($name; $want):
       | if $bad == [] then . else {problems: $bad} end
     else . end;
 
+# A typed review line whose sent_back names any finding as verdict findings, whatever the
+# reviewer's word: a pass whose notes go back before the merge is not ready to merge, so every
+# reader of a review's verdict (phase, team-sweep, team-inbox, team-merge) holds it back. team-log
+# applies it to every review it logs, by hand or from a worker's message; any other line is left.
+def review_sent_back:
+  if .event == "review" and .verdict == "pass" and (.sent_back | type) == "array" and .sent_back != []
+  then .verdict = "findings" else . end;
+
 # The fields of a ledger line, read raw, that the contract types as whole numbers and that hold
 # strings, as {field: [those strings]}: {} for a line that has none, is not a JSON object or is of
 # no kind the contract knows. team-log --fix-sent-back converts them, every line's, legacy too.

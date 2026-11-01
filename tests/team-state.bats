@@ -335,6 +335,17 @@ reply_line() {
   assert_equal "$(phase_of T14)" in-review
 }
 
+@test "a pass that sent findings back, logged through team-log, leaves the task in review until a pass sends none" {
+  open_task
+  github_down
+  event T14 pr '{url: "https://github.com/owner/proj/pull/5", head: "a1b2c3d"}'
+  local counts='findings=blocking:0,correctness:1,security:0,real-data:0,note-change:0,note-before:0'
+  run_bin -0 team-log T14 review verdict=pass head=a1b2c3d "$counts" sent_back=1 guarded=none
+  assert_equal "$(phase_of T14)" in-review
+  run_bin -0 team-log T14 review verdict=pass head=a1b2c3d "$counts" sent_back=none guarded=none
+  assert_equal "$(phase_of T14)" awaiting-merge
+}
+
 @test "a review of an older head does not count once the PR's latest head moved on" {
   open_task
   github_down
