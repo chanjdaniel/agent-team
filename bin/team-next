@@ -1,21 +1,27 @@
 #!/usr/bin/env bash
 # Take a worker's message to the task's next step: log its events, then hand the work on.
 #
-# Usage: team-next T<n> [--from <session>] [--sent-back <list>] [--next <NN>] -- '<the worker's message>'
+# Usage: team-next T<n> [--from <session>] [--sent-back <list>] [--next <NN>] [--checks <file>]
+#                  [--since <file>] [--template rereview|verify] -- '<the worker's message>'
 #   --from       the sender, as team-log --from-message takes it, when the message cannot tell it
 #   --sent-back  with a DONE findings message, the numbers sent back, logged as the review's sent_back
 #   --next       with a builder's DONE <NN>, the ticket to launch next instead of the lowest-numbered
 #                ready one; a ticket with a Waits for: line is launched only so
+#   --checks     with a review launch, the first review's checks file (the reviewer's checks);
+#                required when the task has no review yet, refused once it has one
+#   --since      with a rereview launch, a file of the coordinator's words, added after the derived
+#                since; refused for the first review and for verify
+#   --template   with a review launch after the first, rereview or verify instead of the rule's
 # First every check, each refusal changing nothing (no ledger line, no brief, no launch): the task
 # is open (team-open's opened, not closed) and not held (a held with no resumed since), has no ask
 # to Daniel that nothing settled yet, and the message reads as team-log --from-message --print
 # reads it (its refusal is team-log's, with its exit code).
 # Then it logs, through team-log, each of the message's events that the ledger does not already
 # hold since the sending worker's launch (the session its events name, else the task's latest
-# launch): a ticket-done of the same ticket, a done of the same session, a pr of the same url and
-# head, a review of the same head and verdict, any other event with the same fields; so a rerun
-# never logs one twice. Each line it prints is one step: "logged <event> <key=value>..." or
-# "already logged <event> ...", then the hand-off's.
+# launch): a ticket-done of the same ticket, a done of the same session and report, a pr of the
+# same url and head, a review of the same head and verdict, any other event with the same fields;
+# so a rerun never logs one twice. Each line it prints is one step: "logged <event> <key=value>..."
+# or "already logged <event> ...", then the hand-off's.
 # The hand-off of a builder's DONE <NN> <sha>... <line>: refused, before anything is logged, when
 # the task has no plan-approved; when the same ticket-done (its ticket and shas) is logged already
 # and a launch other than an ops session's follows it ("already handed off"); when NN is none of
@@ -25,12 +31,30 @@
 # what it waits on. Otherwise the next ticket, --next's or the lowest-numbered ready one once NN
 # is done, gets team-brief T<n> builder-ticket --set ticket=<NN> --name build-<NN> in its
 # project, or, when every ticket is done, builder-deliver --name deliver (its goal from the plan)
-# in the sending builder's project; a brief a launch already read is refused, and one no launch
-# read (a rerun after a failed launch) is rendered again with --force. The brief is rendered
-# before the events are logged, then team-worker T<n> builder launches it in the task's worktree
-# of that project with the toolkits of the task's latest builder launch, and the last line is
-# "launched T<n>-builder <session id>". A launch that fails is finished by running the same
-# command again, which logs nothing twice.
+# in the sending builder's project, launched as a builder with the toolkits of the task's latest
+# builder launch.
+# The hand-off of a builder's PR <url> (with or without its merged <base> conflicts: line), DONE
+# review-ready <sha> or DONE merged <base> <sha> conflicts: <files or none> is a fresh reviewer's
+# launch: refused, before anything is logged, when the task has no plan-approved; when the same
+# pr (url and head) or done (session and report) is logged already and a reviewer's launch follows
+# it with no review since ("already handed off"); and for a DONE, when its sha is not the HEAD of
+# the sending builder's worktree. The worktree is the sending builder's, or for a PR the task's
+# worktree in the project whose repo holds the PR. With no review logged yet, the brief is
+# team-brief T<n> reviewer --name review with --checks as its checks (refused without one), the
+# PR's url and head (a PR) or the reported head (review-ready; no pr); after one, it is
+# rereview, or verify when the latest review had findings, sent some back, and either counted
+# none but plain notes or reviewed the head this message reports (a round that only edited the PR
+# body), --template choosing instead, and a DONE merged always a rereview; it is named
+# rereview-<k>, the lowest k from 2 whose brief no launch read, and takes the PR's url and head (a
+# PR) or the reported head (review-ready), the rest derived by team-brief (a DONE merged's head
+# from GitHub, and its since naming the merge's conflicted files), --since added after the
+# derived since. It launches as a reviewer with the toolkits of the task's latest reviewer
+# launch, else of its latest builder launch.
+# Either hand-off's brief is refused when a launch already read it, and rendered again with
+# --force when none did (a rerun after a failed launch). The brief is rendered before the events
+# are logged, then team-worker launches it, and the last line is "launched T<n>-<role> <session
+# id>". A launch that fails is finished by running the same command again, which logs nothing
+# twice.
 # Any other message is logged, and the last line says it has no hand-off.
 # It never posts to Discord, sends a message, merges, approves a plan or answers a question.
 # Exit codes: 0 done, 1 refused, 2 a malformed command line; when a script it runs fails, that
@@ -39,25 +63,32 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
 bin=$(dirname "$TEAM_LIB")
-usage="usage: team-next T<n> [--from <session>] [--sent-back <list>] [--next <NN>] -- '<the worker's message>'"
+usage="usage: team-next T<n> [--from <session>] [--sent-back <list>] [--next <NN>] [--checks <file>] [--since <file>] [--template rereview|verify] -- '<the worker's message>'"
 
 [[ $# -ge 1 && $1 =~ ^T[0-9]+$ ]] || usage_error "$usage"
 task=$1
 shift
-log_opts=() next=''
+log_opts=() next='' checks='' since='' template_opt=''
 declare -A given=()
 while (($#)) && [[ $1 != -- ]]; do
   case $1 in
-    --from | --sent-back | --next)
+    --from | --sent-back | --next | --checks | --since | --template)
       [[ -z ${given[$1]:-} ]] || usage_error "$1 is given twice"
       [[ $# -ge 2 && -n $2 ]] || usage_error "$1 needs a value"
       given[$1]=1
-      if [[ $1 == --next ]]; then
-        [[ $2 =~ ^[0-9]{2}$ ]] || usage_error "--next takes a two-digit ticket number, got '$2'"
-        next=$2
-      else
-        log_opts+=("$1" "$2")
-      fi
+      case $1 in
+        --next)
+          [[ $2 =~ ^[0-9]{2}$ ]] || usage_error "--next takes a two-digit ticket number, got '$2'"
+          next=$2
+          ;;
+        --checks) checks=$2 ;;
+        --since) since=$2 ;;
+        --template)
+          [[ $2 == rereview || $2 == verify ]] || usage_error "--template takes rereview or verify, got '$2'"
+          template_opt=$2
+          ;;
+        *) log_opts+=("$1" "$2") ;;
+      esac
       shift 2
       ;;
     -*) usage_error "unknown option '$1'; $usage" ;;
@@ -93,19 +124,29 @@ kind=$(jq -rn --arg m "$message" '$m | gsub("^\\s+"; "") | [splits("\\s+")] | .[
   | if .[0] == "DONE" and ($sub | test("^[0-9]{2}$")) then "DONE <NN>"
     elif .[0] == "DONE" and ($sub | IN("review-ready", "merged", "pass", "findings", "gate")) then join(" ")
     else .[0] end')
-ticket_done=$(jq -c 'map(select(.event == "ticket-done")) | first' <<<"$parsed")
-[[ -z $next || $ticket_done != null ]] || usage_error "--next is taken only with a builder's DONE <NN> message, not $kind"
+case $kind in
+  "DONE <NN>") handoff=ticket ;;
+  PR | "DONE review-ready" | "DONE merged") handoff=review ;;
+  *) handoff=none ;;
+esac
+[[ -z $next || $handoff == ticket ]] || usage_error "--next is taken only with a builder's DONE <NN> message, not $kind"
+for opt in --checks --since --template; do
+  [[ -z ${given[$opt]:-} || $handoff == review ]] ||
+    usage_error "$opt is taken only with a builder's PR, DONE review-ready or DONE merged message, not $kind"
+done
+
+# same($p): whether the event is the parsed event $p, as a rerun finds it logged.
+same_def='def same($p): .event == $p.event and
+  if $p.event == "ticket-done" then .ticket == $p.ticket
+  elif $p.event == "done" then .session == $p.session and .role == $p.role and .report == $p.report
+  elif $p.event == "pr" then .url == $p.url and same_head(.head; $p.head)
+  elif $p.event == "review" then .verdict == $p.verdict and same_head(.head; $p.head)
+  else del(.ts) == ($p | del(.ts)) end;'
 
 # Which of the message's events the ledger holds since the sender's launch: each as {event, at},
 # at the index of the event that holds it, or null; anchor is the sender's launch's index.
-held=$(ledger_jq '. as $events
-  | def same($p): .event == $p.event and
-      if $p.event == "ticket-done" then .ticket == $p.ticket
-      elif $p.event == "done" then .session == $p.session and .role == $p.role
-      elif $p.event == "pr" then .url == $p.url and same_head(.head; $p.head)
-      elif $p.event == "review" then .verdict == $p.verdict and same_head(.head; $p.head)
-      else del(.ts) == ($p | del(.ts)) end;
-    ([$parsed[] | .session | strings] | first) as $session
+held=$(ledger_jq "$same_def"' . as $events
+  | ([$parsed[] | .session | strings] | first) as $session
   | ([to_entries[] | select(.value.event == "launch" and ($session == null or .value.session == $session)) | .key] | last // -1) as $anchor
   | {anchor: $anchor,
      events: [$parsed[] | . as $p
@@ -130,15 +171,145 @@ log_events() {
   done
 }
 
-if [[ $ticket_done == null ]]; then
+# hand_off <role> <template> <name> <project> <worktree> [<team-brief option>...]: renders the
+# brief (refused when a launch read it, with --force when one exists that none did), logs the
+# events, and launches <role> in <worktree> with the toolkits of the task's latest launch of
+# <role>, else of its latest builder launch.
+hand_off() {
+  local role=$1 template=$2 name=$3 project=$4 worktree=$5 used force=() toolkits=() kit brief id status
+  if [[ -e $TEAM_HOME/tasks/$task/brief-$name.md ]]; then
+    used=$(jq -c --arg b "brief-$name" 'map(select(.event == "launch" and .brief == $b)) | last' <<<"$events")
+    [[ $used == null ]] ||
+      die "brief-$name was launched already ($(jq -r --arg task "$task" '"\($task)-\(.role) \(.session) at \(.ts)"' <<<"$used")), so it is not launched again"
+    force=(--force)
+  fi
+  while IFS= read -r kit; do toolkits+=(--toolkit "$kit"); done < <(jq -r --arg role "$role" '
+    (map(select(.event == "launch" and .role == $role)) | last)
+      // (map(select(.event == "launch" and .role == "builder")) | last) | .toolkits[]?' <<<"$events")
+
+  brief=$(sibling team-brief "$task" "$template" --project "$project" --name "$name" "${@:6}" "${force[@]}") || exit
+  log_events
+  echo "brief $brief"
+  id=$(sibling team-worker "$task" "$role" "$worktree" "${toolkits[@]}" -- "Read your brief at $brief") || {
+    status=$?
+    echo "${0##*/}: the launch failed; run the same command again to finish it, which logs nothing twice" >&2
+    exit "$status"
+  }
+  echo "launched $task-$role $id"
+}
+
+# project_worktree <project>: the task's open worktree in <project>, or a refusal.
+project_worktree() {
+  local worktree
+  worktree=$(task_worktrees "$task" | jq -r --arg p "$1" 'select(.project == $p) | .worktree' | tail -n 1)
+  [[ -n $worktree ]] || die "$task has no open worktree in $1"
+  echo "$worktree"
+}
+
+# sender_launch: the launch of the session the parsed done names, its worktree a local path.
+sender_launch() {
+  local session
+  session=$(jq -r 'map(select(.event == "done")) | first | .session' <<<"$parsed")
+  ledger_jq 'map(select(.event == "launch" and .session == $session)) | last
+    | . + {worktree: (.worktree | local_path($home))}' -c --arg session "$session" <<<"$events"
+}
+
+if [[ $handoff == none ]]; then
   log_events
   echo "no hand-off for $kind"
   exit 0
 fi
 
-# A builder's DONE <NN>: the next ticket's builder, or the deliverer.
 jq -e 'any(.[]; .event == "plan-approved")' <<<"$events" >/dev/null ||
-  die "$task has no plan-approved, so no ticket hand-off; approve the plan first (step 3 of the manual)"
+  die "$task has no plan-approved, so no $handoff hand-off; approve the plan first (step 3 of the manual)"
+
+if [[ $handoff == review ]]; then
+  # The event the hand-off follows: the pr of a PR, else the builder's done.
+  if [[ $kind == PR ]]; then
+    key=$(jq -c 'map(select(.event == "pr")) | first' <<<"$parsed")
+  else
+    key=$(jq -c 'map(select(.event == "done")) | first' <<<"$parsed")
+  fi
+  # Already handed off: that event is logged, and a reviewer's launch follows it with no review
+  # since (a review since means the message is a later round's, the same PR head after a round
+  # that only edited its body).
+  after=$(ledger_jq "$same_def"' . as $events
+    | ([to_entries[] | select(.value | same($key)) | .key] | last) as $at
+    | if $at == null then null
+      else $events[$at + 1:] as $rest
+      | if any($rest[]; .event == "review") then null
+        else first($rest[] | select(.event == "launch" and .role == "reviewer")) // null end end' \
+    -c --argjson key "$key" <<<"$events")
+  [[ $after == null ]] ||
+    die "$kind is already handed off: $(jq -r --arg task "$task" '"\($task)-\(.role) \(.session) was launched at \(.ts)"' <<<"$after") after its $(jq -r .event <<<"$key")"
+
+  sets=()
+  if [[ $kind == PR ]]; then
+    url=$(jq -r .url <<<"$key")
+    head=$(jq -r .head <<<"$key")
+    [[ $url =~ ^https://github\.com/([^/]+/[^/]+)/pull/[0-9]+/?$ ]]
+    repo=${BASH_REMATCH[1]}
+    project=''
+    while IFS= read -r p; do
+      r=$(team_project "$p" repo) || exit 1
+      [[ ${r,,} != "${repo,,}" ]] || project=$p
+    done < <(task_worktrees "$task" | jq -r .project | awk '!seen[$0]++')
+    [[ -n $project ]] || die "$url is in no repo of $task's open worktrees"
+    worktree=$(project_worktree "$project") || exit
+    sets=(--set "pr=$url" --set "head=$head")
+  else
+    # The reported head must be the HEAD of the sending builder's worktree.
+    launch=$(sender_launch)
+    worktree=$(jq -r .worktree <<<"$launch")
+    project=$(jq -r '.project // empty' <<<"$launch")
+    [[ -n $project ]] || die "the sending builder's launch names no project, so its review has none"
+    [[ -d $worktree ]] || die "the sending builder's worktree $worktree is not on this machine"
+    reported=$(jq -r 'map(select(.event == "done")) | first | .report | split(" ")
+      | if .[0] == "merged" then .[2] else .[1] end' <<<"$parsed")
+    if ! head=$(git -C "$worktree" rev-parse -q --verify "$reported^{commit}" 2>/dev/null) ||
+      [[ $head != "$(git -C "$worktree" rev-parse HEAD)" ]]; then
+      die "$reported is not the HEAD of $worktree ($(git -C "$worktree" rev-parse --short=8 HEAD)), so it is not reviewed"
+    fi
+    [[ $kind == "DONE merged" ]] || sets=(--set "head=$head")
+  fi
+
+  latest=$(jq -c 'map(select(.event == "review")) | last' <<<"$events")
+  if [[ $latest == null ]]; then
+    [[ -n $checks ]] || die "$task has no review yet, so its first reviewer needs --checks <file>, the review's checks"
+    [[ -z $template_opt ]] || die "$task has no review yet, so its first reviewer takes the reviewer brief, not --template $template_opt"
+    [[ -z $since ]] || die "$task has no review yet, so there is no since for --since"
+    template=reviewer name=review
+    sets+=(--set-file "checks=$checks")
+  else
+    [[ -z $checks ]] || die "$task has a review already, so --checks is for its first reviewer only; a rereview takes --since"
+    if [[ -n $template_opt ]]; then
+      template=$template_opt
+    elif [[ $kind == "DONE merged" ]]; then
+      template=rereview
+    else
+      template=$(ledger_jq 'if $latest.verdict == "findings" and ($latest.sent_back // []) != []
+          and ((($latest.findings // {}) as $f | ["blocking", "correctness", "security", "real-data"] | all(.[]; $f[.] == 0))
+            or same_head($latest.head; $head))
+        then "verify" else "rereview" end' -nr --argjson latest "$latest" --arg head "$head")
+    fi
+    [[ $template == rereview || $kind != "DONE merged" ]] ||
+      die "a DONE merged is re-reviewed with rereview, whose since names the merge; verify reads only a round's fix"
+    [[ -z $since || $template == rereview ]] || die "--since is for a rereview; verify derives no since"
+    [[ -z $since ]] || sets+=(--set-file "since=$since")
+    # rereview-<k>: the lowest k from 2 whose brief no launch read.
+    k=2
+    while [[ -e $TEAM_HOME/tasks/$task/brief-rereview-$k.md ]] &&
+      jq -e --arg b "brief-rereview-$k" 'any(.[]; .event == "launch" and .brief == $b)' <<<"$events" >/dev/null; do
+      k=$((k + 1))
+    done
+    name=rereview-$k
+  fi
+  hand_off reviewer "$template" "$name" "$project" "$worktree" "${sets[@]}"
+  exit 0
+fi
+
+# A builder's DONE <NN>: the next ticket's builder, or the deliverer.
+ticket_done=$(jq -c 'map(select(.event == "ticket-done")) | first' <<<"$parsed")
 ticket=$(jq -r .ticket <<<"$ticket_done")
 
 # Already handed off: the same ticket-done (its ticket and shas) is logged, and a launch follows
@@ -151,9 +322,7 @@ after=$(ledger_jq '. as $events
   -c --argjson reported "$ticket_done" <<<"$events")
 [[ $after == null ]] ||
   die "ticket $ticket is already handed off: $(jq -r --arg task "$task" '"\($task)-\(.role) \(.session) was launched at \(.ts)"' <<<"$after") after its ticket-done"
-session=$(jq -r 'map(select(.event == "done")) | first | .session' <<<"$parsed")
-launch=$(ledger_jq 'map(select(.event == "launch" and .session == $session)) | last
-  | . + {worktree: (.worktree | local_path($home))}' -c --arg session "$session" <<<"$events")
+launch=$(sender_launch)
 
 tickets=$(sibling team-tickets "$task" --json) || exit
 jq -e --arg t "$ticket" 'any(.[]; .ticket == $t)' <<<"$tickets" >/dev/null ||
@@ -199,26 +368,5 @@ else
   project=$(jq -r .project <<<"$chosen")
 fi
 [[ -n $project ]] || die "the sending builder's launch names no project, so the deliverer has none"
-worktree=$(task_worktrees "$task" | jq -r --arg p "$project" 'select(.project == $p) | .worktree' | tail -n 1)
-[[ -n $worktree ]] || die "$task has no open worktree in $project"
-
-# The brief: refused when a launch read it, rendered again when none did.
-force=()
-if [[ -e $TEAM_HOME/tasks/$task/brief-$name.md ]]; then
-  used=$(jq -c --arg b "brief-$name" 'map(select(.event == "launch" and .brief == $b)) | last' <<<"$events")
-  [[ $used == null ]] ||
-    die "brief-$name was launched already ($(jq -r --arg task "$task" '"\($task)-\(.role) \(.session) at \(.ts)"' <<<"$used")), so it is not launched again"
-  force=(--force)
-fi
-toolkits=()
-while IFS= read -r kit; do toolkits+=(--toolkit "$kit"); done < <(jq -r 'map(select(.event == "launch" and .role == "builder")) | last | .toolkits[]?' <<<"$events")
-
-brief=$(sibling team-brief "$task" "$template" --project "$project" --name "$name" "${sets[@]}" "${force[@]}") || exit
-log_events
-echo "brief $brief"
-id=$(sibling team-worker "$task" builder "$worktree" "${toolkits[@]}" -- "Read your brief at $brief") || {
-  status=$?
-  echo "${0##*/}: the launch failed; run the same command again to finish it, which logs nothing twice" >&2
-  exit "$status"
-}
-echo "launched $task-builder $id"
+worktree=$(project_worktree "$project") || exit
+hand_off builder "$template" "$name" "$project" "$worktree" "${sets[@]}"
