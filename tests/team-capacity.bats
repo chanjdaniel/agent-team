@@ -1145,3 +1145,63 @@ Stowed, waiting to resume, oldest stow first:
   run_bin -2 team-capacity plan --sessions
   assert_contains "$output" "--sessions takes the file of a session list"
 }
+
+# A stored reading, taken now, of a 32 GiB, 12-core machine whose other programs use 8 GiB and
+# <others cores> (no CPU read with none given).
+cpu_reading() {
+  busy_reading ".cpu = $([[ -n ${1:-} ]] && echo "{cpus: 12, seconds: 300, team: 1.5, others: $1}" || echo null)"
+}
+
+@test "jobs: the floor of the CPU budget at the recorded level, at least 1, and nproc with no team home, reading or record to size it by" {
+  local nproc
+  nproc=$(nproc)
+  # No reading: nproc's, said only with --verbose.
+  run_bin -0 --separate-stderr team-capacity jobs
+  assert_equal "$output" "$nproc"
+  assert_equal "$stderr" ""
+  run_bin -0 --separate-stderr team-capacity jobs --verbose
+  assert_equal "$output" "$nproc"
+  assert_equal "$stderr" "team-capacity: $nproc at once, nproc's: no reading of the machine's load"
+  # Manual full with no record: 10.8 cores of 12, but the others' 2 and reserve_cores leave 9.
+  cpu_reading 2
+  run_bin -0 --separate-stderr team-capacity jobs --verbose
+  assert_equal "$output" 9
+  assert_equal "$stderr" "team-capacity: 9 at once, the floor of manual, full (90%)'s 9 cores"
+  # Minor: 3.6 cores, so 3; none: 0 cores, so 1.
+  level minor
+  run_bin -0 --separate-stderr team-capacity jobs --verbose
+  assert_equal "$output" 3
+  assert_equal "$stderr" "team-capacity: 3 at once, the floor of manual, minor (30%)'s 3.6 cores"
+  level none
+  run_bin -0 team-capacity jobs
+  assert_equal "$output" 1
+  # A newer reading with no CPU leaves the newest with CPU to size it by; with none at all, the
+  # share of the machine's cores.
+  level minor
+  cpu_reading 10
+  cpu_reading
+  run_bin -0 team-capacity jobs
+  assert_equal "$output" 1
+  rm "$STATE_DIR/readings.jsonl"
+  cpu_reading
+  TEAM_SLOTS_CPUS=12 run_bin -0 team-capacity jobs
+  assert_equal "$output" 3
+  # A malformed record or settings: nproc's, saying why.
+  echo 'not a record' >>"$TEAM_HOME/level.jsonl"
+  run_bin -0 --separate-stderr team-capacity jobs --verbose
+  assert_equal "$output" "$nproc"
+  assert_contains "$stderr" "team-capacity: $nproc at once, nproc's: $TEAM_HOME/level.jsonl"
+  rm "$TEAM_HOME/level.jsonl"
+  mkdir -p "$HOME/.config/agent-team"
+  echo '{"minor_share": 2}' >"$HOME/.config/agent-team/capacity.json"
+  run_bin -0 --separate-stderr team-capacity jobs --verbose
+  assert_equal "$output" "$nproc"
+  assert_contains "$stderr" "team-capacity: $nproc at once, nproc's: $HOME/.config/agent-team/capacity.json"
+  rm "$HOME/.config/agent-team/capacity.json"
+  # No team home: nproc's, never the team home's refusal.
+  run -0 --separate-stderr env -u TEAM_HOME "$REPO_ROOT/bin/team-capacity" jobs --verbose
+  assert_equal "$output" "$nproc"
+  assert_equal "$stderr" "team-capacity: $nproc at once, nproc's: no team home"
+  run_bin -2 team-capacity jobs --json
+  assert_contains "$output" "unexpected argument '--json'"
+}

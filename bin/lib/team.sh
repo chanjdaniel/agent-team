@@ -36,9 +36,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/platform.sh"
 # checkout. TEAM_HOME_FROM says which (variable, setting, or none, where TEAM_HOME is empty).
 # TEAM_HOME_PROBLEM is the refusal when neither names a directory, given after --help has had its
 # chance; a script that sets team_home_report before sourcing (team-doctor, and the git hooks,
-# the records hook, data-check, tests/run, team-heavy and servers/install, which need none) is
-# not refused, and reports it itself, and one that sets team_home_unnamed (team-bootstrap, which
-# names it) is not refused while nothing names one.
+# the records hook, data-check, tests/run, team-heavy, team-capacity jobs and servers/install,
+# which need none) is not refused, and reports it itself, and one that sets team_home_unnamed
+# (team-bootstrap, which names it) is not refused while nothing names one.
 TEAM_HOME_PROBLEM='' TEAM_HOME_FIX='name its checkout there, relative to your home directory: echo agent-team-records > ~/.config/agent-team/home'
 TEAM_HOME_FROM=variable
 # shellcheck disable=SC2034 # TEAM_HOME_FROM is read by team-doctor and team-bootstrap

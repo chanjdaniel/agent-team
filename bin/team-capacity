@@ -12,6 +12,7 @@
 #        team-capacity costs [--json]
 #        team-capacity admit --kind <kind> [--task T<n>] [--seed-bytes <n>]
 #        team-capacity plan [--json] [--sessions <file>]
+#        team-capacity jobs [--verbose]
 #
 # install  Daniel's yes, as team-timers enable is. On Linux writes the team's slice,
 #          ~/.config/systemd/user/agent-team.slice (a description, no limits), and for each gate
@@ -186,6 +187,14 @@
 #          resume: [{task, stowed, roles, needs, fits}]}, bytes throughout; each step list is []
 #          unless confirmed. team-level tick takes the two stop steps; the stows are the
 #          coordinator's, on team-sweep's level-stow finding.
+# jobs     How many processes a test suite runs at once (tests/run, and team-checks' commands
+#          through TEAM_JOBS): the floor of the level's CPU budget, at least 1, as team-level
+#          status --stored reads it, from the stored readings only (it takes none) and the
+#          recorded level; nproc (or TEAM_SLOTS_CPUS) with no team home, no reading, or a
+#          capacity.json or level.jsonl line that is malformed. Prints the number alone and exits
+#          0; with --verbose it says on stderr where the number came from: "team-capacity: 3 at
+#          once, the floor of manual, minor (30%)'s 3.6 cores", or "12 at once, nproc's: no team
+#          home". It needs no team home.
 #
 # The machine's settings, ~/.config/agent-team/capacity.json, beside stack.json: one JSON object
 # whose keys are all optional:
@@ -212,18 +221,28 @@
 # through team-slots's seams (TEAM_MEMINFO, TEAM_SLOTS_PROCS, whose lines may carry a sixth
 # column, the process's cgroup v2 path, TEAM_SLOTS_CPUS and TEAM_SLOTS_DOCKER_SECONDS).
 set -euo pipefail
+# jobs needs no team home, as tests/run on CI or a fresh clone.
+# shellcheck disable=SC2034 # read by bin/lib/team.sh
+[[ ${1:-} != jobs ]] || team_home_report=1
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
 # shellcheck source=bin/lib/reading.sh
 source "$TEAM_LIB/reading.sh"
 
-USAGE="usage: team-capacity install | place [--quiet] [<session id>...] | check [--json] [--holding] [--heartbeat enabled|disabled] | sample | status [--json] [--stored] | costs [--json] | admit --kind <kind> [--task T<n>] [--seed-bytes <n>] | plan [--json] [--sessions <file>]"
+USAGE="usage: team-capacity install | place [--quiet] [<session id>...] | check [--json] [--holding] [--heartbeat enabled|disabled] | sample | status [--json] [--stored] | costs [--json] | admit --kind <kind> [--task T<n>] [--seed-bytes <n>] | plan [--json] [--sessions <file>] | jobs [--verbose]"
 [[ $# -ge 1 ]] || usage_error "$USAGE"
 command=$1
 shift
-json=0 ids=() quiet=0 holding=0 heartbeat=enabled stored=0 kind='' task='' seed=null sessions_file=''
+json=0 verbose=0 ids=() quiet=0 holding=0 heartbeat=enabled stored=0 kind='' task='' seed=null sessions_file=''
 case $command in
   install | sample) [[ $# -eq 0 ]] || usage_error "unexpected argument '$1'" ;;
+  jobs)
+    if [[ ${1:-} == --verbose ]]; then
+      verbose=1
+      shift
+    fi
+    [[ $# -eq 0 ]] || usage_error "unexpected argument '$1'"
+    ;;
   place)
     if [[ ${1:-} == --quiet ]]; then
       quiet=1
@@ -853,13 +872,41 @@ plan() {
   fi
 }
 
+# How many processes run at once, as the header's jobs says. Named so as not to hide bash's jobs.
+jobs_count() {
+  local cpus=${TEAM_SLOTS_CPUS:-$(nproc)} out='' why=''
+  if [[ -n $TEAM_HOME_PROBLEM || -z $TEAM_HOME || ! -d $TEAM_HOME ]]; then
+    why="no team home"
+  elif ! GIVEN=$( (read_settings && printf '%s' "$GIVEN") 2>"$work/err") || ! (read_level) 2>>"$work/err"; then
+    why=$(sed 's/^team-capacity: //' "$work/err" | grep -m1 . || echo "the settings or the level record cannot be read")
+  elif ! out=$({ cat "$READINGS" 2>/dev/null || true; } | jq -Rnr -L "$TEAM_LIB" --argjson given "$GIVEN" \
+    --slurpfile level "$work/level.json" --argjson cpus "$cpus" '
+    include "capacity"; include "stack";
+    [inputs] | stored_readings | .readings
+    | select(. != [])
+    | (map(select(.cpu != null)) | .[-1] // null) as $c
+    | capacity_budget($given | capacity_settings; $level[0].level; .[-1]; $c; $cpus)
+    | "\([(.cores | floor), 1] | max)\t\($level[0].mode), \($level[0].level) (\(.share | percent))\u0027s \(.cores) cores"'); then
+    why="could not read $(tilde "$READINGS")"
+  elif [[ -z $out ]]; then
+    why="no reading of the machine's load"
+  fi
+  if [[ -n $why ]]; then
+    ((verbose == 0)) || echo "${0##*/}: $cpus at once, nproc's: $why" >&2
+    echo "$cpus"
+  else
+    ((verbose == 0)) || echo "${0##*/}: ${out%%$'\t'*} at once, the floor of ${out#*$'\t'}" >&2
+    echo "${out%%$'\t'*}"
+  fi
+}
+
 case $command in
   install) install ;;
   place) place ;;
   sample) sample ;;
-  status | costs | admit | check | plan)
+  status | costs | admit | check | plan | jobs)
     work=$(mktemp -d)
     trap 'rm -rf "$work"' EXIT
-    "$command"
+    if [[ $command == jobs ]]; then jobs_count; else "$command"; fi
     ;;
 esac

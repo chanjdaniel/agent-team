@@ -130,6 +130,60 @@ SH
   assert_contains "$(cat "$BATS_TEST_TMPDIR/bats")" "held=1 held by first"
 }
 
+# fake_suite with a second file, two.bats, whose bats stub logs to $BATS_TEST_TMPDIR/at-once how
+# many of the two files ran at once: each waits up to 2 seconds for the other to start.
+two_file_suite() {
+  local root
+  root=$(fake_suite)
+  touch "$root/tests/two.bats"
+  cat >"$root/tests/vendor/bats-core/bin/bats" <<SH
+#!/usr/bin/env bash
+running=$BATS_TEST_TMPDIR/running
+mkdir -p "\$running"
+touch "\$running/\$\$"
+for _ in {1..40}; do
+  [[ \$(find "\$running" -type f | wc -l) -lt 2 ]] || break
+  sleep 0.05
+done
+find "\$running" -type f | wc -l >>"$BATS_TEST_TMPDIR/at-once"
+sleep 0.3
+rm "\$running/\$\$"
+echo "ok 1 one"
+SH
+  echo "$root"
+}
+
+# The most files the last two_file_suite run ran at once, which it then forgets.
+most_at_once() {
+  sort -n "$BATS_TEST_TMPDIR/at-once" | tail -n 1
+  rm "$BATS_TEST_TMPDIR/at-once"
+}
+
+@test "tests/run runs TEAM_JOBS bats files at once, else team-capacity jobs' with a team home, else nproc's, and says it on its last line" {
+  root=$(two_file_suite)
+  TEAM_JOBS=2 run -0 "$root/tests/run" bats
+  [[ ${lines[-1]} =~ ^tests/run\ bats:\ 0m\ 0[0-9]s,\ up\ to\ 2\ bats\ files\ at\ once$ ]]
+  assert_equal "$(most_at_once)" 2
+  TEAM_JOBS=1 run -0 "$root/tests/run" bats
+  [[ ${lines[-1]} == *", up to 1 bats file at once" ]]
+  assert_equal "$(most_at_once)" 1
+  # With a team home, the floor of the level's CPU budget: minor's 30% of 12 cores.
+  level=$TEAM_HOME/level.jsonl
+  jq -cn '{ts: (now | floor | todate), mode: "manual", level: "minor", by: "Daniel", machine: "home-pc"}' >"$level"
+  TEAM_SLOTS_CPUS=12 run -0 "$root/tests/run" bats
+  [[ ${lines[-1]} == *", up to 3 bats files at once" ]]
+  # With none, as on CI or a fresh clone, nproc's.
+  run -0 env -u TEAM_HOME TEAM_SLOTS_CPUS=12 "$root/tests/run" bats
+  [[ ${lines[-1]} == *", up to $(nproc) bats file$( (($(nproc) == 1)) || echo s) at once" ]]
+  # A TEAM_JOBS that is no count is refused before anything runs.
+  rm -f "$BATS_TEST_TMPDIR/at-once"
+  for jobs in 0 three -1; do
+    TEAM_JOBS=$jobs run -1 --separate-stderr "$root/tests/run" bats
+    assert_equal "$stderr" "run: TEAM_JOBS is the count of bats files to run at once, a whole number above 0, not '$jobs'"
+  done
+  [[ ! -e $BATS_TEST_TMPDIR/at-once ]]
+}
+
 # The user manager on Linux, as the systemctl stub: it answers, every scope's MemoryPeak is <peak>
 # bytes and its CPUUsageNSec <nsec>, and a stop of a unit is logged and stops nothing (the run's
 # process group is what a stop ends here).

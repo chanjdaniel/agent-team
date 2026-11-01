@@ -79,6 +79,7 @@ With `T` the memory total, `C` the cores, `s` the level's share (0 for none), an
 
 So none's budget is 0, and no level's is more than what Daniel's programs leave.
 A command that needs the budget takes a reading first when the newest is more than 10 minutes old.
+`team-capacity jobs` is the floor of the CPU budget, at least 1, read from the stored readings without taking one: `tests/run` runs that many bats files at once, and `team-checks` gives it to its commands as `TEAM_JOBS` (`nproc` with no team home, no reading, or a malformed record or settings).
 What the team's live work reserves is said in "Admission" below: a live session its use and one shared spike allowance, a new one, a stack, a heavy run and a gate the larger of their kind's estimate and their use.
 
 Memory is read as RAM alone, as the kernel's `MemAvailable` and each cgroup's `memory.current` count it: swap is left out of the budget, the use and the limits (home-pc has a 33.6 GiB swap partition, much of it in use).
