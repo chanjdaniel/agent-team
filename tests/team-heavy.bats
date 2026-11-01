@@ -413,7 +413,7 @@ gone() {
   TEAM_HEAVY_RECHECK_SECONDS=1 run_bin -0 --separate-stderr team-heavy run --wait 1 --kind tests-run -- echo ran
   assert_equal "$output" ran
   assert_equal "$(grep -c 'room' <<<"$stderr")" 1
-  assert_equal "${stderr%%$'\n'*}" "team-heavy: waiting up to 1 minutes for room in the team's budget: the team is at level none: nothing starts"
+  assert_equal "${stderr%%$'\n'*}" "team-heavy: waiting up to 1 minutes for room in the team's budget: no room for heavy:tests-run: the team is at level none: nothing starts; room comes when Daniel raises the level"
   assert_equal "$(cat "$BATS_TEST_TMPDIR/meanwhile")" free
   assert_equal "$(jq -c 'map(.kind)' "$ADMITTED")" '["heavy:tests-run"]'
 }
@@ -422,10 +422,10 @@ gone() {
   mkdir -p "$HOME/.config/agent-team"
   echo '{"heavy_gib": 20}' >"$HOME/.config/agent-team/capacity.json"
   run_bin -75 --separate-stderr team-heavy run --wait 0 --kind tests-run -- touch "$BATS_TEST_TMPDIR/ran"
-  assert_equal "$stderr" "team-heavy: no room for heavy:tests-run at full (90%): 0.0 GiB of 16.0 GiB reserved, a heavy run of tests-run needs 20.0 GiB"
+  assert_equal "$stderr" "team-heavy: no room for heavy:tests-run at full (90%): 0.0 GiB of 16.0 GiB reserved, a heavy run of tests-run needs 20.0 GiB; room comes when the team's work shrinks or the level rises"
   TEAM_HEAVY_RECHECK_SECONDS=1 run_bin -75 --separate-stderr team-heavy run --wait 0.04 --kind tests-run -- touch "$BATS_TEST_TMPDIR/ran"
-  assert_equal "$stderr" "team-heavy: waiting up to 0.04 minutes for room in the team's budget: no room for heavy:tests-run at full (90%): 0.0 GiB of 16.0 GiB reserved, a heavy run of tests-run needs 20.0 GiB
-team-heavy: still no room after 0.04 minutes: no room for heavy:tests-run at full (90%): 0.0 GiB of 16.0 GiB reserved, a heavy run of tests-run needs 20.0 GiB"
+  assert_equal "$stderr" "team-heavy: waiting up to 0.04 minutes for room in the team's budget: no room for heavy:tests-run at full (90%): 0.0 GiB of 16.0 GiB reserved, a heavy run of tests-run needs 20.0 GiB; room comes when the team's work shrinks or the level rises
+team-heavy: still no room after 0.04 minutes: no room for heavy:tests-run at full (90%): 0.0 GiB of 16.0 GiB reserved, a heavy run of tests-run needs 20.0 GiB; room comes when the team's work shrinks or the level rises"
   [[ ! -e $BATS_TEST_TMPDIR/ran ]]
   run_bin -0 team-heavy status
   assert_equal "$output" free

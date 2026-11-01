@@ -11,6 +11,7 @@
 #        team-capacity status [--json] [--stored]
 #        team-capacity costs [--json]
 #        team-capacity admit --kind <kind> [--task T<n>] [--seed-bytes <n>]
+#                            [--freed <session id>]...
 #        team-capacity plan [--json] [--sessions <file>]
 #        team-capacity jobs [--verbose]
 #
@@ -127,7 +128,9 @@
 #                             the reading holds is in that window (the one using least, when
 #                             several), reserved once, at the larger of the estimate and its use;
 #            stacks, gates    each running team or gate stack, and the gate while it runs a
-#                             pipeline, at the larger of its estimate and its use;
+#                             pipeline, at the larger of its estimate and its use; a stack of an
+#                             admission's kind and task (by name, the newest admissions first) is
+#                             that admission, reserved once, here, and at its bytes at least;
 #            heavy_runs       the running heavy run while a team-heavy holds the lock, at the
 #                             larger of its estimate and its use (kind and estimate its
 #                             admission's, use the reading's when the reading saw it, named by
@@ -148,16 +151,21 @@
 #          ~/.local/state/agent-team/capacity.lock, it takes a reading first when the newest is
 #          over 10 minutes old, as status does, then reads what is reserved as status --json says
 #          it (for a heavy run, without the running heavy run, which is the asker itself, holding
-#          the lock), and the kind's estimate: costs' when it has one, else --seed-bytes (team-stack
-#          gives the sum of the stack's mem_limits), else heavy_gib or session_gib, else 0. When the
+#          the lock), leaving out each session --freed names (the task's finished sessions
+#          team-worker stopped just before it asks, which the reading still holds), and the kind's
+#          estimate: costs' when it has one, else --seed-bytes (team-stack gives the sum of the
+#          stack's mem_limits), else heavy_gib or session_gib, else 0. When the
 #          reserved memory plus the estimate is at most the budget it exits 0, saying so on
 #          stdout, and keeps the admission in ~/.local/state/agent-team/capacity/admitted.json
 #          ({at, kind, task, bytes, pid (a heavy run's team-heavy, the lock's holder)}), which
 #          reserves it for 10 minutes as status --json's admissions say (a heavy run's while its
 #          team-heavy holds the lock); else it
-#          exits 75 with the reason on stderr, "no room for session:reviewer at minor (30%): 8.9
-#          GiB of 9.2 GiB reserved, a reviewer needs 0.5 GiB", and at level none "the team is at
-#          level none: nothing starts". CPU is never admitted: the slice's quota holds it. Above
+#          exits 75 with the reason on stderr and what makes room, "no room for session:reviewer
+#          at minor (30%): 8.9 GiB of 9.2 GiB reserved, a reviewer needs 0.5 GiB; room comes when
+#          the team's work shrinks or the level rises", and at level none "no room for
+#          session:reviewer: the team is at level none: nothing starts; room comes when Daniel
+#          raises the level" ("when the level rises" in auto mode). CPU is never admitted: the
+#          slice's quota holds it. Above
 #          none, with no reading to size the budget by, exit 1 with the reason.
 # plan     What brings the team back under the level's memory budget, and what may come back,
 #          from the stored readings only (it takes none, so the sweep and the heartbeat read it
@@ -165,9 +173,11 @@
 #          list a caller already read, such as team-sweep's, kept in <file>; an unreadable one
 #          fails it, exit 1). Over
 #          budget is what the newest reading reserves (as status --json says it) above the
-#          budget, or at none any open task with a live worker or a running stack; it is
-#          confirmed when the reading before it was over too, or the last level change is newer
-#          than that reading, so one spike in other programs' use never stows a task. While
+#          budget, or at none any open task with a live worker or a running stack, leaving out a
+#          task stowed at or after a reading with no session live now (the reading still holds
+#          its sessions, stacks and admissions until the next one, so it is never named again);
+#          it is confirmed when the reading before it was over too, or the last level change is
+#          newer than that reading, so one spike in other programs' use never stows a task. While
 #          confirmed, the steps in order, each with what it frees: stop each finished session
 #          (idle, its work handed on: handed_on_launches in bin/lib/ledger.jq, the rule
 #          team-worker stops a task's own by, over every open task), stop each running team dev
@@ -176,17 +186,22 @@
 #          until the rest fits; at none every one. Then the tasks stowed, waiting to resume
 #          (their latest stowed, for the level or a handoff, names roles to relaunch and no
 #          launch follows it), oldest stow first, each with the estimate of its roles to
-#          relaunch and whether that fits now (never at none). Text:
+#          relaunch and whether that fits now (never at none); then the tasks whose launches were
+#          refused for room and not launched since (refused_launches in bin/lib/ledger.jq), oldest
+#          refusal first, each with its roles' estimate and whether it fits. Text:
 #          "Over budget at minor (30%): 14.5 GiB reserved of 9.6 GiB.", then "  stop T1-reviewer
 #          aaaa0012, its work handed on: frees 1.0 GiB", "  stop conventioner-3 of T3, no busy
 #          session in its worktree: frees 3.0 GiB", "  stow T3: frees 4.0 GiB", then "Stowed,
-#          waiting to resume, oldest stow first:" and "  T6 (planner): needs 0.5 GiB, fits".
+#          waiting to resume, oldest stow first:" and "  T6 (planner): needs 0.5 GiB, fits",
+#          then "Refused for room, waiting to launch, oldest refusal first:" and its lines alike.
 #          With --json {schema: "team-capacity-plan/1", mode, level, share, budget (bytes, null with no
 #          reading above none), reserved, over, confirmed, stop_sessions: [{task, role, session,
 #          frees}], stop_stacks: [{task, name, worktree, frees}], stow: [{task, opened, frees}],
-#          resume: [{task, stowed, roles, needs, fits}]}, bytes throughout; each step list is []
+#          resume: [{task, stowed, roles, needs, fits}], launch: [{task, refused, roles, needs,
+#          fits}]}, bytes throughout; each step list is []
 #          unless confirmed. team-level tick takes the two stop steps; the stows are the
-#          coordinator's, on team-sweep's level-stow finding.
+#          coordinator's, on team-sweep's level-stow finding, and so are the launches, on its
+#          level-resume and level-launch findings.
 # jobs     How many processes a test suite runs at once (tests/run, and team-checks' commands
 #          through TEAM_JOBS): the floor of the level's CPU budget, at least 1, as team-level
 #          status --stored reads it, from the stored readings only (it takes none) and the
@@ -229,11 +244,11 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 # shellcheck source=bin/lib/reading.sh
 source "$TEAM_LIB/reading.sh"
 
-USAGE="usage: team-capacity install | place [--quiet] [<session id>...] | check [--json] [--holding] [--heartbeat enabled|disabled] | sample | status [--json] [--stored] | costs [--json] | admit --kind <kind> [--task T<n>] [--seed-bytes <n>] | plan [--json] [--sessions <file>] | jobs [--verbose]"
+USAGE="usage: team-capacity install | place [--quiet] [<session id>...] | check [--json] [--holding] [--heartbeat enabled|disabled] | sample | status [--json] [--stored] | costs [--json] | admit --kind <kind> [--task T<n>] [--seed-bytes <n>] [--freed <session id>]... | plan [--json] [--sessions <file>] | jobs [--verbose]"
 [[ $# -ge 1 ]] || usage_error "$USAGE"
 command=$1
 shift
-json=0 verbose=0 ids=() quiet=0 holding=0 heartbeat=enabled stored=0 kind='' task='' seed=null sessions_file=''
+json=0 verbose=0 ids=() quiet=0 holding=0 heartbeat=enabled stored=0 kind='' task='' seed=null sessions_file='' freed=()
 case $command in
   install | sample) [[ $# -eq 0 ]] || usage_error "unexpected argument '$1'" ;;
   jobs)
@@ -287,6 +302,10 @@ case $command in
         --seed-bytes)
           [[ ${2:-} =~ ^[0-9]+$ ]] || usage_error "--seed-bytes takes a whole number of bytes"
           seed=$2
+          ;;
+        --freed)
+          [[ ${2:-} =~ ^[0-9a-f]{8}$ ]] || usage_error "--freed takes a session id, 8 hex digits"
+          freed+=("$2")
           ;;
         *) usage_error "unexpected argument '$1'" ;;
       esac
@@ -763,12 +782,13 @@ status_json() {
   read_admitted
   { cat "$READINGS" 2>/dev/null || true; } | jq -Rn -L "$TEAM_LIB" --argjson given "$GIVEN" --arg machine "$machine" \
     --slurpfile level "$work/level.json" --slurpfile costs "$work/costs.json" --slurpfile heavy "$work/heavy.json" \
-    --slurpfile admitted "$work/admitted.json" --arg asking "$1" '
+    --slurpfile admitted "$work/admitted.json" --arg asking "$1" --argjson freed "$(jq -cn '$ARGS.positional' --args ${freed[@]+"${freed[@]}"})" '
     include "capacity"; include "stack";
     ([inputs] | stored_readings | .readings[-1] // null) as $r
     | ($given | capacity_settings) as $s
     | capacity_reservations({reading: $r, costs: $costs[0].costs, settings: $s, heavy: $heavy[0],
-                             admitted: $admitted[0], now: now, asking: ($asking | select(. != "") // null)}) as $items
+                             admitted: $admitted[0], now: now, asking: ($asking | select(. != "") // null),
+                             freed: $freed}) as $items
     | reserved_split($items) as $split
     | {schema: "team-capacity/1", machine: ($machine | select(. != "") // null), settings: $s,
        stale: ($r == null or ($r.at | fromdateiso8601) < now - 900), reading: $r,

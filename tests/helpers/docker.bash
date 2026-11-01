@@ -56,7 +56,8 @@
 # says Linux, so admission reads them the Linux way on any host; as_macos makes it say Darwin.
 # Any other call fails (exit 127), so a test never passes on an unplanned call.
 # docker_down makes every call fail as Docker does when its daemon does not answer, docker_hang
-# makes every call wait forever, as a CLI whose Docker Desktop VM is wedged does,
+# makes every call wait forever, as a CLI whose Docker Desktop VM is wedged does (docker_hang_call
+# <call> only that one call),
 # docker_fail <call> <message> makes one call (its key: "compose ls", "ps", "inspect",
 # "system df"...) fail with <message>, and docker_vanish <id> makes ps list a container that is
 # gone when it is inspected, and docker_leak <anonymous|network|container> makes compose down
@@ -130,6 +131,12 @@ docker_down() {
 # $DOCKER_STATE/hung.
 docker_hang() {
   touch "$DOCKER_STATE/hung"
+}
+
+# One call waits as docker_hang's do, each one's process ID added to $DOCKER_STATE/hang-<key>:
+# docker_hang_call <call key> ("ps", "update"...)
+docker_hang_call() {
+  touch "$DOCKER_STATE/hang-${1// /-}"
 }
 
 # One call fails with <message>: docker_fail <call key> <message>

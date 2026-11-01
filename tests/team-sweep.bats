@@ -1408,6 +1408,34 @@ level_record() {
   assert_equal "$output" ""
 }
 
+@test "level-launch: a launch refused for room, not stowed, is named once its role fits again, until it launches" {
+  # T5's builder opened its PR; the coordinator's reviewer launch was refused for room at minor.
+  level_task T5 03:00 builder:5b5b5b5b
+  ledger_line '{ts: "2026-10-22T04:30:00Z", task: "T5", event: "pr", url: "https://github.com/owner/proj/pull/5", head: "a1b2c3d"}'
+  ledger_line '{ts: "2026-10-22T04:40:00Z", task: "T5", event: "paused",
+    reason: "team-worker: no room for session:reviewer at minor (30%): 9.3 GiB of 9.6 GiB reserved, a reviewer needs 0.5 GiB; room comes when the team'"'"'s work shrinks or the level rises"}'
+  level_record minor
+  # A closed task's session leaves 0.3 GiB: no room yet, and T5, paused, finds nothing else.
+  capacity_reading 0 8 T9:builder:9c9c9c9c:9.3
+  run_bin -0 --separate-stderr team-sweep
+  assert_equal "$output$stderr" ""
+  # Room for a reviewer: the finding names T5's launch.
+  capacity_reading 0 8 T9:builder:9c9c9c9c:8.9
+  run_bin -1 team-sweep --json
+  assert_equal "$(jq -c . <<<"$output")" '[{"task":null,"kind":"level-launch","session":null,"name":null,"next":"launch its reviewer","text":"level: T5 has room again: launch its reviewer, refused for room at 2026-10-22T04:40:00Z"}]'
+  # At none nothing fits.
+  level_record none
+  run_bin -0 team-sweep
+  assert_equal "$output" ""
+  # Once the reviewer launches it waits for nothing.
+  level_record minor
+  ledger_line '{ts: "2026-10-22T05:00:00Z", task: "T5", event: "launch", role: "reviewer", session: "5e5e5e5e",
+    worktree: "/w/5", toolkits: []}'
+  sessions "$(session 5e5e5e5e T5-reviewer busy working)"
+  run_bin -0 team-sweep
+  assert_equal "$output" ""
+}
+
 @test "level: a team-capacity plan that fails is one finding naming its reason, and the task findings still come" {
   opened T3
   mkdir -p "$HOME/.config/agent-team"

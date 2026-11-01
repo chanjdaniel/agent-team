@@ -1410,7 +1410,7 @@ LINES
   capacity_room $((256 * 1048576))
   run_bin -75 --separate-stderr team-worker T7 reviewer "$wt1" -- go
   assert_equal "$output" ""
-  assert_equal "$stderr" "team-worker: no room for session:reviewer at full (90%): 0.0 GiB of 0.3 GiB reserved, a reviewer needs 0.5 GiB"
+  assert_equal "$stderr" "team-worker: no room for session:reviewer at full (90%): 0.0 GiB of 0.3 GiB reserved, a reviewer needs 0.5 GiB; room comes when the team's work shrinks or the level rises"
   assert_equal "$(bg_calls)" ""
   assert_equal "$(launches)" ""
   [[ ! -e $TEAM_HOME/tasks/T7/settings.reviewer.json ]]
@@ -1418,7 +1418,7 @@ LINES
   # At none, nothing starts but the load check and an ops session.
   capacity_room $((16 * 1073741824)) none
   run_bin -75 --separate-stderr team-worker T7 builder "$wt1" -- go
-  assert_equal "$stderr" "team-worker: the team is at level none: nothing starts"
+  assert_equal "$stderr" "team-worker: no room for session:builder: the team is at level none: nothing starts; room comes when Daniel raises the level"
   assert_equal "$(bg_calls)" ""
   run_bin -0 team-worker T0 planner "$wt1" -- go
   ops_stub
@@ -1430,6 +1430,34 @@ LINES
   capacity_room $((16 * 1073741824)) full
   run_bin -0 team-worker T7 builder "$wt1" -- go
   assert_equal "$(jq -c 'map([.kind, .task])' "$HOME/.local/state/agent-team/capacity/admitted.json")" '[["session:builder","T7"]]'
+}
+
+@test "the task's finished sessions are stopped before the launch asks for room, and their use leaves the reservations" {
+  thread T9
+  log_lines <<LINES
+launch T9 reviewer 6c6c6c6c $wt1
+T9 {event: "review", verdict: "findings", head: "abc1234"}
+T9 {event: "done", role: "reviewer", session: "6c6c6c6c"}
+LINES
+  echo '[{"id": "6c6c6c6c", "name": "T9-reviewer", "status": "idle"}]' >"$STUB_FIXTURES/agents.json"
+  stop_stub
+  # The finished reviewer uses 0.4 GiB, reserved with a 0.1 GiB spike allowance; the budget, 0.8
+  # GiB, leaves 0.3 GiB beside them, and a reviewer needs 0.5 GiB.
+  : >"$HOME/.local/state/agent-team/capacity/readings.jsonl"
+  capacity_room $((819 * 1048576))
+  jq -c '.tasks = [{task: "T9", memory: 429496730, cpu: null, cpu_nsec: null, stacks: [],
+                    sessions: [{id: "6c6c6c6c", role: "reviewer", memory: 429496730, peak: 429496730, cpu_seconds: 1}]}]' \
+    "$HOME/.local/state/agent-team/capacity/readings.jsonl" >"$BATS_TEST_TMPDIR/reading"
+  mv "$BATS_TEST_TMPDIR/reading" "$HOME/.local/state/agent-team/capacity/readings.jsonl"
+  run_bin -0 --separate-stderr team-worker T9 reviewer "$wt1" -- go
+  assert_equal "$(stops)" 6c6c6c6c
+  assert_contains "$stderr" "team-worker: stopped T9-reviewer 6c6c6c6c: its work is handed on"
+  assert_equal "$(jq -c 'map([.kind, .task])' "$HOME/.local/state/agent-team/capacity/admitted.json")" '[["session:reviewer","T9"]]'
+  # A stop that fails leaves the session's use reserved, so the launch has no room.
+  rm "$HOME/.local/state/agent-team/capacity/admitted.json"
+  echo 6c6c6c6c >"$STUB_FIXTURES/stop-fails"
+  run_bin -75 --separate-stderr team-worker T9 reviewer "$wt1" -- go
+  assert_contains "$stderr" "team-worker: no room for session:reviewer at full (90%)"
 }
 
 @test "an admission that fails for another reason stops the launch with it" {

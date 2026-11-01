@@ -66,8 +66,9 @@
 #           ~/.local/state/agent-team/stacks/waits.jsonl, its reasons the last refusal's.
 #           Once up, its running containers get docker update --cpus with the cpus of team-level's
 #           last apply (~/.local/state/agent-team/level/applied.json), when there is one, so a
-#           stack started between two applies is held to the level like the others; a failure is
-#           said on stderr and the stack stays up.
+#           stack started between two applies is held to the level like the others; a failure,
+#           or Docker not answering within TEAM_DOCKER_SECONDS (30) for each docker call, is said
+#           on stderr and the stack stays up.
 # env       Prints export lines that reach the running stack: the wrapper's ports
 #           (COMPOSE_PROJECT_NAME and a TH_<SERVICE>_PORT per service), then TEAM_OWNER,
 #           TEAM_TASK, TEAM_KIND, TEAM_WORKTREE and TEAM_EXPIRES as the stack carries them, and
@@ -711,20 +712,23 @@ admit() {
 # containers (~/.local/state/agent-team/level/applied.json's cpus), when it applied one; a
 # failure is said on stderr, and the stack stays up.
 level_cpus() {
-  local cpus
+  local cpus rc
   local -a ids
   cpus=$(jq -er '.cpus | numbers' "$STATE/level/applied.json" 2>/dev/null) || return 0
-  if ! DOCKER_OUT=$(docker ps --quiet --filter "label=com.docker.compose.project=$STACK_NAME" \
-    --filter "label=io.github.chanjdaniel.team.owner=agent-team" 2>"$DOCKER_ERR"); then
-    echo "${0##*/}: could not hold $STACK_NAME to the level's --cpus $cpus: $(last_reason "$DOCKER_ERR" "docker ps failed")" >&2
+  rc=0
+  DOCKER_OUT=$(docker_bounded ps --quiet --filter "label=com.docker.compose.project=$STACK_NAME" \
+    --filter "label=io.github.chanjdaniel.team.owner=agent-team" 2>"$DOCKER_ERR") || rc=$?
+  if ((rc)); then
+    echo "${0##*/}: could not hold $STACK_NAME to the level's --cpus $cpus: $(docker_silence "$rc" || last_reason "$DOCKER_ERR" "docker ps failed")" >&2
     return 0
   fi
   mapfile -t ids < <(grep . <<<"$DOCKER_OUT" || true)
   ((${#ids[@]})) || return 0
-  if docker update --cpus "$cpus" "${ids[@]}" >/dev/null 2>"$DOCKER_ERR"; then
+  docker_bounded update --cpus "$cpus" "${ids[@]}" >/dev/null 2>"$DOCKER_ERR" || rc=$?
+  if ((rc == 0)); then
     echo "${0##*/}: held $STACK_NAME to --cpus $cpus, the level's (team-level)" >&2
   else
-    echo "${0##*/}: could not hold $STACK_NAME to the level's --cpus $cpus: $(last_reason "$DOCKER_ERR" "docker update failed")" >&2
+    echo "${0##*/}: could not hold $STACK_NAME to the level's --cpus $cpus: $(docker_silence "$rc" || last_reason "$DOCKER_ERR" "docker update failed")" >&2
   fi
 }
 

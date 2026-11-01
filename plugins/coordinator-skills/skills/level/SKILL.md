@@ -1,6 +1,6 @@
 ---
 name: level
-description: Set the team's resource level on Daniel's word, and stow or relaunch tasks to fit it. Use when Daniel says "level full", "level minor", "level none", "auto", "manual" or "shut down" in #coordinator, or team-sweep reports a level-stow or level-resume finding.
+description: Set the team's resource level on Daniel's word, and stow or relaunch tasks to fit it. Use when Daniel says "level full", "level minor", "level none", "auto", "manual" or "shut down" in #coordinator, or team-sweep reports a level-stow, level-resume or level-launch finding.
 ---
 
 # Level
@@ -23,6 +23,7 @@ You stay up at every level, outside the share.
 
 - `level-stow` ("level: over budget at minor (30%): stow T174, then T171", newest task first) comes once `team-capacity plan` confirms the team is over budget, in two readings in a row or in one since the level changed, a drop automatic mode made included: stow the tasks it names as "Stowing tasks" says, without `--stop-runs`, so a running test or gate finishes first.
 - `level-resume` ("level: T171 fits again: relaunch its builder") names one task at a time, the earliest stowed of those that fit, whether the level or a handoff stowed it (one the `resume` skill could not relaunch): relaunch it as "Relaunching a task" says, and once it is launched the next finding names the next.
+- `level-launch` ("level: T5 has room again: launch its reviewer, refused for room at <time>") names a task whose launch `team-worker` refused with 75 (the `paused` you logged with its line), one task at a time: run the same `team-worker` command again, with the brief you wrote for it; a 75 again is logged as `paused` with its line, and the next `level-launch` names it again.
 - `level` (an error) is `team-capacity`'s: fix what it names, or take it to Daniel.
 
 ## Stowing tasks
@@ -40,5 +41,5 @@ You stay up at every level, outside the share.
 
 1. **Brief.** For each role the `level-resume` finding names: its last brief, the newest `tasks/T<n>/brief*.md` whose first line is `# T<n> brief (<role>)`, other than a `brief-resume-*.md`; then `team-brief T<n> resume --name resume-<role> --force --set role=<role> --set brief=<that brief> --set from="the stow for the level at <the stowed time>" --set snapshot="none: your worktree stayed in place, as you left it"`, or for a task a handoff stowed the `from` and `snapshot` the `resume` skill gives it.
 2. **Launch.** `team-worker T<n> <role> <worktree> -- "Read your brief at <path>"`, with each `--toolkit` of the role's last launch.
-   Exit 75 means the level's budget has no room for it after all (`team-capacity admit`): log `team-log T<n> paused reason=<its line>` and leave it for the next `level-resume`.
+   Exit 75 means the level's budget has no room for it after all (`team-capacity admit`): log `team-log T<n> paused reason=<its line>` and leave it for the next `level-resume` (or, once a launch followed the stow, `level-launch`).
 3. **Log.** `team-log T<n> resumed` once the task's roles run again, and say so in its thread.

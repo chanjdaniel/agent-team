@@ -58,7 +58,9 @@
 #          team-capacity install (Daniel's yes), and the rest still applies. On Linux and macOS:
 #          docker update --cpus <max(cores, min_cores)> on every running container labelled
 #          io.github.chanjdaniel.team.owner=agent-team (team-stack up gives a stack it starts the
-#          same); Docker not answering is said on stderr. What it applied is kept in
+#          same); Docker not answering, or not within TEAM_DOCKER_SECONDS (30) for each docker
+#          call, is said on stderr, and a docker update that does not answer fails apply as one
+#          refused does. What it applied is kept in
 #          ~/.local/state/agent-team/level/applied.json: {at, mode, level, cpu_quota_percent,
 #          cpus, memory_high, memory_max}.
 # tick     The heartbeat's level step, after its capacity step, from the stored readings (it
@@ -84,7 +86,9 @@
 #          (30%): frees 1.0 GiB" or "stopped conventioner-9 of T9, no busy session in its
 #          worktree, ...". The stows it leaves to the coordinator (team-sweep's level-stow). It
 #          exits 1 when a limit could not be set, the plan failed or a stop failed (each said on
-#          stderr; the other stops still run).
+#          stderr; the other stops still run), the stops' lines before the limits', so the
+#          heartbeat logs a failed stop's own reason; it never says the machine's standing state
+#          (macOS, or a slice not installed), which apply, a change and the doctor say.
 # The budget, with T the memory total, C the cores, s the level's share, O_m and O_c what the
 # other programs use, from the newest reading (team-capacity sample) and capacity.json's settings:
 #   memory  max(0, min(s * T, T - O_m - reserve_gib))
@@ -93,7 +97,8 @@
 # so none's budget is 0, and a level's never more than what Daniel's programs leave.
 # Every subcommand but status refuses on a machine that does not hold the lease. A level.jsonl
 # line that is not a level record is refused, naming its number.
-# Test seam: TEAM_SLOTS_CPUS stands for the machine's cores, as for team-slots.
+# Test seams: TEAM_SLOTS_CPUS stands for the machine's cores, as for team-slots, and
+# TEAM_DOCKER_SECONDS for the 30 seconds each docker call is given.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
@@ -198,9 +203,11 @@ slice_bytes() {
 }
 
 # Apply the level's limits, as the header's apply says; each limit set is a line on stdout,
-# unless <quiet> is 1, and each one not set a line on stderr; returns 1 when one could not be set.
+# unless <quiet> is 1, and each one not set a line on stderr, but with <standing> 0 (tick's, every
+# 5 minutes) not the machine's standing state, macOS or a slice not installed; returns 1 when one
+# could not be set: apply_limits <quiet> [<standing>, default 1]
 apply_limits() {
-  local quiet=$1 failed=0 current=null previous=null out quota high max cpus
+  local quiet=$1 standing=${2:-1} failed=0 current=null previous=null out quota high max cpus rc silence
   local -a ids=()
   say() { ((quiet)) || printf '%s\n' "$*"; }
   if [[ $(state '.budget.memory_bytes') == null ]]; then
@@ -220,25 +227,31 @@ apply_limits() {
   max=$(jq -r .memory_max "$work/limits.json")
   cpus=$(jq -r .cpus "$work/limits.json")
   if [[ $os == macos ]]; then
-    echo "${0##*/}: no cgroups on macOS: only the team's containers' CPU is held" >&2
+    ((standing == 0)) || echo "${0##*/}: no cgroups on macOS: only the team's containers' CPU is held" >&2
   elif [[ ! -f $SLICE_FILE ]]; then
-    echo "${0##*/}: $SLICE is not installed, so the team's sessions, heavy runs and gate runs are not held; fix: team-capacity install (Daniel's yes)" >&2
+    ((standing == 0)) ||
+      echo "${0##*/}: $SLICE is not installed, so the team's sessions, heavy runs and gate runs are not held; fix: team-capacity install (Daniel's yes)" >&2
   elif out=$(systemctl --user set-property --runtime "$SLICE" "CPUQuota=$quota%" "MemoryHigh=$high" "MemoryMax=$max" 2>&1); then
     say "held $SLICE to CPUQuota=$quota% MemoryHigh=$(gib "$high") MemoryMax=$(gib "$max")"
   else
     echo "${0##*/}: could not set $SLICE's limits (systemctl --user set-property: $(grep -m1 . <<<"$out" || echo "no reason given"))" >&2
     failed=1
   fi
-  if ! out=$(docker ps --quiet --filter "label=$OWNER_LABEL" 2>&1); then
+  rc=0
+  out=$(docker_bounded ps --quiet --filter "label=$OWNER_LABEL" 2>&1) || rc=$?
+  if silence=$(docker_silence "$rc"); then
+    echo "${0##*/}: $silence, so no team container's CPU is held" >&2
+  elif ((rc)); then
     echo "${0##*/}: Docker does not answer, so no team container's CPU is held ($(grep -m1 . <<<"$out" || echo "no reason given"))" >&2
   else
     mapfile -t ids < <(grep . <<<"$out" || true)
+    rc=0
     if ((${#ids[@]} == 0)); then
       say "no team container runs"
-    elif out=$(docker update --cpus "$cpus" "${ids[@]}" 2>&1 >/dev/null); then
+    elif out=$(docker_bounded update --cpus "$cpus" "${ids[@]}" 2>&1 >/dev/null) || { rc=$? && false; }; then
       say "held ${#ids[@]} team container$( ((${#ids[@]} == 1)) || echo s) to --cpus $cpus"
     else
-      echo "${0##*/}: could not hold the team's containers to --cpus $cpus (docker update: $(grep -m1 . <<<"$out" || echo "no reason given"))" >&2
+      echo "${0##*/}: could not hold the team's containers to --cpus $cpus (docker update: $(docker_silence "$rc" || grep -m1 . <<<"$out" || echo "no reason given"))" >&2
       failed=1
     fi
   fi
@@ -413,8 +426,11 @@ tick() {
     keep_post "$ts" "$content"
   fi
   post_pending || failed=1
-  apply_limits 1 || failed=1
+  # The stops' lines on stderr come before the limits', so a failed stop's own reason is the first
+  # line the heartbeat logs.
+  apply_limits 1 0 2>"$work/apply.err" || failed=1
   if ((planned)); then stop_finished || failed=1; fi
+  cat "$work/apply.err" >&2
   return "$failed"
 }
 

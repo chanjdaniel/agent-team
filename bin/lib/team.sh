@@ -12,7 +12,7 @@
 # the script's help_more, if it defined one before sourcing), and provides die, usage_error, team_project, ledger_jq, ledger_append,
 # task_events, known_task_events, open_task_events, task_status, task_worktrees, local_path,
 # archive_left_out, rsync_rule, archive_task_dir, machine_name, os_release, team_os, tool_dirs,
-# team_tool_path, fence_reason, offline_hold, lease_refusal, worker_refusal, lease_gate, worktree_changes, same_path, bounded, trust_probe,
+# team_tool_path, fence_reason, offline_hold, lease_refusal, worker_refusal, lease_gate, worktree_changes, same_path, bounded, docker_bounded, docker_silence, trust_probe,
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin,
 # only_records, records_list, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
 # own_project, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_slots, machine_level, discord_token, discord_api,
@@ -525,6 +525,29 @@ same_path() {
 # without coreutils): bounded <seconds> <command...>
 bounded() {
   if command -v timeout >/dev/null; then timeout "$@"; else "${@:2}"; fi
+}
+
+# docker <args...>, given TEAM_DOCKER_SECONDS (default 30) to answer and 5 more to die once told
+# to, as bin/lib/reading.sh's call to team-stack ls is; exit 124 (or 137) when it did not answer,
+# which docker_silence says. timeout runs it in a process group of its own, so a signal that stops
+# the caller (the heartbeat's time limit for its step) is passed on to it, and the caller's own
+# traps for those signals are put back after: docker_bounded <args...>
+docker_bounded() {
+  local pid rc=0 traps
+  traps=$(trap -p TERM INT HUP)
+  timeout --kill-after=5 "${TEAM_DOCKER_SECONDS:-30}" docker "$@" &
+  pid=$!
+  trap 'kill -TERM "$pid" 2>/dev/null; exit 143' TERM INT HUP
+  wait "$pid" || rc=$?
+  trap - TERM INT HUP
+  eval "$traps"
+  return "$rc"
+}
+
+# Whether docker_bounded's exit code <rc> is its timeout's, and if so the words for it on stdout:
+# docker_silence <rc>
+docker_silence() {
+  (($1 == 124 || $1 == 137)) && echo "Docker does not answer within ${TEAM_DOCKER_SECONDS:-30} s"
 }
 
 # Whether Claude Code trusts the root <path>, from a promptless background session named <name>

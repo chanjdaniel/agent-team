@@ -26,7 +26,8 @@
 #         heavy:<kind> (--task the task, when there is one). With no room it lets the lock go, says
 #         once on stderr that it waits and why, and asks again every 30 seconds
 #         (TEAM_HEAVY_RECHECK_SECONDS), taking the lock again first, within the same --wait, then
-#         exits 75 with the reason ("the team is at level none: nothing starts" at none). An
+#         exits 75 with the reason and what makes room ("no room for heavy:<kind>: the team is at
+#         level none: nothing starts; room comes when Daniel raises the level" at none). An
 #         admission that fails otherwise fails the run with its reason (exit 1).
 #         The command runs in a process group of its own, its stdin /dev/null when team-heavy's is
 #         a terminal (a background group reading one would stop). On Linux it also runs in a

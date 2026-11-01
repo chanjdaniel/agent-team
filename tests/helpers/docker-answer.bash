@@ -53,6 +53,10 @@ docker_stub_answer() {
     echo "$$" >>"$DOCKER_STATE/hung"
     exec sleep 3600
   fi
+  if [[ -e $DOCKER_STATE/hang-${key// /-} ]]; then
+    echo "$$" >>"$DOCKER_STATE/hang-${key// /-}"
+    exec sleep 3600
+  fi
   if [[ -e $DOCKER_STATE/down ]]; then
     echo "$DOCKER_DOWN" >&2
     exit 1

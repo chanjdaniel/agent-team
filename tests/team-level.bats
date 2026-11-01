@@ -21,6 +21,8 @@ setup() {
   mkdir -p "$UNITS" "$HOME/.fake-systemd"
   printf '%s\n' '[Unit]' 'Description=the team' '' '[Slice]' >"$UNITS/agent-team.slice"
   stub_reply claude '[]'
+  # A fixture id for #coordinator, which every post goes to.
+  export TEAM_COORDINATOR_CHANNEL=1563000000000000777
 }
 
 # reading <minutes ago> <others GiB> [<others cores>]: a stored reading of a 32 GiB, 12-core
@@ -55,7 +57,7 @@ no_readings() {
 
 # The content of each post to #coordinator, one JSON string per line.
 posts() {
-  stub_calls curl | jq -c 'select(.[-1] == "https://discord.com/api/v10/channels/1562486564871995482/messages")
+  stub_calls curl | jq -c --arg channel "$TEAM_COORDINATOR_CHANNEL" 'select(.[-1] == "https://discord.com/api/v10/channels/\($channel)/messages")
     | index("-d") as $i | select($i) | .[$i + 1] | fromjson | .content'
 }
 
@@ -271,6 +273,19 @@ CPUQuota=360% MemoryHigh=$((21 * GIB / 2)) MemoryMax=$((12 * GIB))"
   touch "$HOME/.fake-systemd/down"
   run_bin -1 --separate-stderr team-level apply
   assert_contains "$stderr" "team-level: could not set agent-team.slice's limits (systemctl --user set-property: Failed to connect to user scope bus"
+}
+
+@test "a Docker that does not answer within TEAM_DOCKER_SECONDS is said and waited for no longer" {
+  reading 1 8 2
+  export TEAM_DOCKER_SECONDS=1
+  docker_hang_call ps
+  run_bin -0 --separate-stderr team-level minor
+  assert_equal "$stderr" "team-level: Docker does not answer within 1 s, so no team container's CPU is held"
+  assert_equal "$(jq -r .level "$RECORD")" minor
+  rm "$DOCKER_STATE/hang-ps"
+  docker_hang_call update
+  run_bin -1 --separate-stderr team-level apply
+  assert_equal "$stderr" "team-level: could not hold the team's containers to --cpus 3.6 (docker update: Docker does not answer within 1 s)"
 }
 
 @test "on macOS only the containers' CPU is held" {
@@ -605,4 +620,20 @@ p9p9p9p9"
   assert_equal "$output" "stopped T9-planner p9p9p9p9, its work handed on, to bring the team under its budget at minor (30%): frees 1.0 GiB"
   assert_equal "$stderr" "team-level: could not stop T7-reviewer r7r7r7r7 (cannot stop r7r7r7r7)
 team-level: could not stop conventioner-9 of T9 (team-stack: docker compose stop failed)"
+
+  # Without the slice, tick never says so (apply and a change do), and a failed stop's reason
+  # comes first, before the limits' own lines, so the heartbeat logs it.
+  rm "$UNITS/agent-team.slice"
+  docker_down
+  run --separate-stderr "$code/bin/team-level" tick
+  assert_equal "$status" 1
+  assert_equal "${stderr%%$'\n'*}" "team-level: could not stop T7-reviewer r7r7r7r7 (cannot stop r7r7r7r7)"
+  [[ $stderr != *"not installed"* ]]
+  assert_contains "$stderr" "team-level: Docker does not answer, so no team container's CPU is held"
+  # Nor on macOS.
+  as_macos
+  run --separate-stderr "$code/bin/team-level" tick
+  assert_equal "$status" 1
+  assert_equal "${stderr%%$'\n'*}" "team-level: could not stop T7-reviewer r7r7r7r7 (cannot stop r7r7r7r7)"
+  [[ $stderr != *"macOS"* ]]
 }

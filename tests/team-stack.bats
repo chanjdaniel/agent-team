@@ -502,6 +502,17 @@ compose port web 80"
   assert_contains "$stderr" "team-stack: held $PROJECT to --cpus 3.6, the level's (team-level)"
 }
 
+@test "up says a Docker that does not answer the level's --cpus within TEAM_DOCKER_SECONDS, and the stack stays up" {
+  open_task T22
+  mkdir -p "$HOME/.local/state/agent-team/level"
+  echo '{"at": "2026-11-01T14:05:00Z", "mode": "manual", "level": "minor", "cpu_quota_percent": 360, "cpus": 3.6, "memory_high": 1, "memory_max": 2}' \
+    >"$HOME/.local/state/agent-team/level/applied.json"
+  docker_hang_call update
+  TEAM_DOCKER_SECONDS=1 run_bin -0 --separate-stderr team-stack up --worktree "$STACK_WORKTREE" --no-seed
+  assert_contains "$stderr" "team-stack: could not hold $PROJECT to the level's --cpus 3.6: Docker does not answer within 1 s"
+  assert_contains "$output" "team-stack: $PROJECT is up for T22"
+}
+
 @test "up --no-seed starts a new stack without seeding it" {
   open_task T22
   run_bin -0 --separate-stderr team-stack up --worktree "$STACK_WORKTREE" --no-seed
@@ -722,14 +733,14 @@ admissions_aged() {
   stack_settings '{"wait_minutes": 0}'
   capacity_room $((32 * MIB))
   run_bin -75 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
-  assert_equal "$stderr" "team-stack: no room for $PROJECT: stack:shop at full (90%): 0.0 GiB of 0.0 GiB reserved, a stack of shop needs 0.1 GiB"
+  assert_equal "$stderr" "team-stack: no room for $PROJECT: stack:shop at full (90%): 0.0 GiB of 0.0 GiB reserved, a stack of shop needs 0.1 GiB; room comes when the team's work shrinks or the level rises"
   assert_equal "$output" ""
   assert_equal "$(ups)" 0
   assert_equal "$(waits_log | jq -c '[.project, .task, .admitted, .reasons]')" \
-    "[\"$PROJECT\",\"T22\",false,[\"stack:shop at full (90%): 0.0 GiB of 0.0 GiB reserved, a stack of shop needs 0.1 GiB\"]]"
+    "[\"$PROJECT\",\"T22\",false,[\"stack:shop at full (90%): 0.0 GiB of 0.0 GiB reserved, a stack of shop needs 0.1 GiB; room comes when the team's work shrinks or the level rises\"]]"
   capacity_room $((16 * 1024 * MIB)) none
   run_bin -75 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
-  assert_equal "$stderr" "team-stack: no room for $PROJECT: the team is at level none: nothing starts"
+  assert_equal "$stderr" "team-stack: no room for $PROJECT: stack:shop: the team is at level none: nothing starts; room comes when Daniel raises the level"
   assert_equal "$(admissions)" ""
   capacity_room $((16 * 1024 * MIB)) full
   run_bin -0 team-stack up --worktree "$STACK_WORKTREE"
@@ -780,9 +791,9 @@ admissions_aged() {
   capacity_room $((16 * 1024 * MIB)) none
   (sleep 2 && capacity_room $((16 * 1024 * MIB)) full) &
   TEAM_STACK_RECHECK_SECONDS=1 run_bin -0 --separate-stderr team-stack up --worktree "$STACK_WORKTREE" --no-seed
-  assert_equal "$stderr" "team-stack: no room for $PROJECT yet, waiting up to 1 minutes: the team is at level none: nothing starts"
+  assert_equal "$stderr" "team-stack: no room for $PROJECT yet, waiting up to 1 minutes: stack:shop: the team is at level none: nothing starts; room comes when Daniel raises the level"
   assert_equal "$(ups)" 1
-  assert_equal "$(waits_log | jq -c '[.admitted, .reasons]')" '[true,["the team is at level none: nothing starts"]]'
+  assert_equal "$(waits_log | jq -c '[.admitted, .reasons]')" '[true,["stack:shop: the team is at level none: nothing starts; room comes when Daniel raises the level"]]'
 }
 
 @test "a wait that runs out exits 75 with the failing check, and logs the wait" {
@@ -790,14 +801,14 @@ admissions_aged() {
   stack_settings '{"wait_minutes": 0.03}'
   capacity_room $((16 * 1024 * MIB)) none
   TEAM_STACK_RECHECK_SECONDS=1 run_bin -75 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
-  assert_equal "$stderr" "team-stack: no room for $PROJECT yet, waiting up to 0.03 minutes: the team is at level none: nothing starts
-team-stack: no room for $PROJECT: the team is at level none: nothing starts"
+  assert_equal "$stderr" "team-stack: no room for $PROJECT yet, waiting up to 0.03 minutes: stack:shop: the team is at level none: nothing starts; room comes when Daniel raises the level
+team-stack: no room for $PROJECT: stack:shop: the team is at level none: nothing starts; room comes when Daniel raises the level"
   ((${#lines[@]} == 0))
   # Checked at the start and again after a second at least, within the wait's 2 s.
   local checks
   checks=$(stub_calls df | wc -l)
   ((checks >= 2 && checks <= 3))
-  assert_equal "$(waits_log | jq -c '[.admitted, .reasons]')" '[false,["the team is at level none: nothing starts"]]'
+  assert_equal "$(waits_log | jq -c '[.admitted, .reasons]')" '[false,["stack:shop: the team is at level none: nothing starts; room comes when Daniel raises the level"]]'
   assert_equal "$(ups)" 0
 }
 
@@ -811,8 +822,8 @@ team-stack: no room for $PROJECT: the team is at level none: nothing starts"
     cat "$STUB_FIXTURES/df.sh"; } >"$STUB_FIXTURES/df.sh.new"
   mv "$STUB_FIXTURES/df.sh.new" "$STUB_FIXTURES/df.sh"
   TEAM_STACK_RECHECK_SECONDS=1 run_bin -75 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
-  assert_equal "$stderr" "team-stack: no room for $PROJECT yet, waiting up to 0.03 minutes: the team is at level none: nothing starts
-team-stack: no room for $PROJECT: the team is at level none: nothing starts"
+  assert_equal "$stderr" "team-stack: no room for $PROJECT yet, waiting up to 0.03 minutes: stack:shop: the team is at level none: nothing starts; room comes when Daniel raises the level
+team-stack: no room for $PROJECT: stack:shop: the team is at level none: nothing starts; room comes when Daniel raises the level"
   ((${#lines[@]} == 0))
   # Checked again after the first refusal, within the wait's 2 s from it.
   local checks
@@ -871,7 +882,7 @@ free"
   assert_equal "$(admissions | wc -l)" 1
   run_bin -0 team-stack stop --worktree "$STACK_WORKTREE"
   run_bin -75 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
-  assert_equal "$stderr" "team-stack: no room for $PROJECT: stack:shop at full (90%): 0.1 GiB of 0.0 GiB reserved, a stack of shop needs 0.1 GiB"
+  assert_equal "$stderr" "team-stack: no room for $PROJECT: stack:shop at full (90%): 0.1 GiB of 0.0 GiB reserved, a stack of shop needs 0.1 GiB; room comes when the team's work shrinks or the level rises"
 }
 
 @test "an admission that fails for another reason fails up" {
@@ -1647,7 +1658,7 @@ compose port web 80 $PROJECT-a auto"
   run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
   run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --instance a --no-seed
   run_bin -75 --separate-stderr team-stack up --worktree "$STACK_WORKTREE" --instance b --no-seed
-  assert_equal "$stderr" "team-stack: no room for $PROJECT-b: stack:shop at full (90%): 0.1 GiB of 0.1 GiB reserved, a stack of shop needs 0.1 GiB"
+  assert_equal "$stderr" "team-stack: no room for $PROJECT-b: stack:shop at full (90%): 0.1 GiB of 0.1 GiB reserved, a stack of shop needs 0.1 GiB; room comes when the team's work shrinks or the level rises"
   assert_equal "$(state_of "$PROJECT-b")" ""
   assert_equal "$(waits_log | jq -r '"\(.project) \(.task) \(.admitted)"')" "$PROJECT-b T22 false"
   run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --instance a --no-seed

@@ -179,7 +179,7 @@ What is reserved, in the parts `team-capacity status --json` splits it into:
 - `spike_allowance`: one for the team, the largest of those sessions' estimates less their use, at 0 at least, and 0 with no session past its window, which keeps room reserved for one worker's spike at a time;
 - `admissions`: each admission of the last 10 minutes, but a heavy run's, at its estimate then, since a new session or stack has not grown yet and the next reading may not hold it; they are kept in `capacity/admitted.json`.
   A session the reading holds of an admission's kind and task is in its window, reserved once, at the larger of that estimate and its use; of several such sessions, the ones using least are, since a new session uses little yet.
-- `stacks` and `gates`: each running team or gate stack, and the gate while it runs a pipeline, at the larger of its kind's estimate and its use;
+- `stacks` and `gates`: each running team or gate stack, and the gate while it runs a pipeline, at the larger of its kind's estimate and its use; a stack the reading holds of an admission's kind and task is reserved once, among the stacks, at the larger of that and the admission's estimate;
 - `heavy_runs`: the running heavy run, while a `team-heavy` holds its lock, at the larger of its estimate and its use, at its admission's kind, its use the reading's (its scope's on Linux) when the reading saw it; a run holding the lock in another form, Conventioner's, at `heavy_gib`.
 
 A session's estimate is its scope's peak, tests it runs in the foreground included, while it idles at a fraction of it: on home-pc on 2026-11-01 seven builders used 0.1 to 0.3 GiB each against the learned 2.4 GiB, so reserving each at its estimate left full's 16.4 GiB budget no room for an eighth or a heavy run.
@@ -187,19 +187,19 @@ Daniel chose the use and one shared allowance (2026-11-01), so the team keeps it
 
 A heavy run asking is never counted beside itself: it asks while it holds the heavy-run lock, so the running heavy run is the asker.
 The kind's estimate is `team-capacity costs`'s; a stack it has none of yet is weighed at the `mem_limit`s `team-stack up` gives (`--seed-bytes`), a heavy run or session kind it does not list at `heavy_gib` or `session_gib`, and anything else with no estimate at 0, so the next reading weighs it by its use.
-When the reserved memory plus the estimate is at most the budget it exits 0 and keeps the admission; else it exits 75 with the reason on stderr, such as `no room for session:reviewer at minor (30%): 8.9 GiB of 9.2 GiB reserved, a reviewer needs 0.5 GiB`; at none, `the team is at level none: nothing starts`.
+When the reserved memory plus the estimate is at most the budget it exits 0 and keeps the admission; else it exits 75 with the reason on stderr and what makes room, such as `no room for session:reviewer at minor (30%): 8.9 GiB of 9.2 GiB reserved, a reviewer needs 0.5 GiB; room comes when the team's work shrinks or the level rises`; at none, `no room for session:reviewer: the team is at level none: nothing starts; room comes when Daniel raises the level` (in automatic mode, "when the level rises").
 `team-capacity status --json` says what is reserved (`reserved`: the total, each part and each item) and what room is left (`room`), and `team-level status` reports the same split.
 
 Who asks:
 
 | Caller | Kind | With no room |
 | - | - | - |
-| `team-worker` | `session:<role>`, before anything of the launch | exits 75 with the reason, launching nothing; T0 and ops are never asked |
+| `team-worker` | `session:<role>`, once it has stopped the task's finished sessions, which `--freed` leaves out, since the reading still holds them | exits 75 with the reason, launching nothing; T0 and ops are never asked |
 | `team-stack up` | `stack:<project>`, once the disk floor holds | waits within `wait_minutes`, re-checking every 30 seconds, then exits 75 (`sops/docker.md`, "Admission") |
 | `team-heavy run` | `heavy:<kind>`, once it holds the heavy-run lock | lets the lock go, says once why it waits, asks again every 30 seconds within its `--wait`, then exits 75; under a run already (`TEAM_HEAVY_HELD`), and with no team home (CI, a fresh clone), it asks nothing |
 
 An admission that fails for another reason (a malformed `capacity.json`, no reading to size the budget by) fails the caller with its reason.
-The coordinator logs a worker's 75 as `paused` with its line and launches it once room shows (`roles/coordinator.md`); a worker that gets a stack's 75 reports `PAUSED` with it.
+The coordinator logs a worker's 75 as `paused` with its line, and launches it again on `team-sweep`'s `level-launch` finding ("Shrinking and growing back"); a worker that gets a stack's 75 reports `PAUSED` with it.
 
 ## Stowing
 
@@ -248,6 +248,7 @@ Step 3 is the coordinator's: `team-sweep`'s `level-stow` finding names the tasks
 A task is stowed, waiting to resume, while its latest `stowed` names roles to relaunch and no launch follows it, whatever its `cause`: a task a handoff or a shutdown stowed that the resume could not relaunch (at none, or a launch refused with 75) waits for room as one stowed for the level does.
 The plan's resume list is those tasks, oldest stow first, each with the estimate of its roles to relaunch (its `stowed`'s `roles`, each at its `session:<role>` estimate) and whether that fits beside what is reserved now; at none nothing fits.
 `team-sweep`'s `level-resume` finding names the first that fits ("level: T171 fits again: relaunch its builder"), one task at a time, and each launch is still admitted on its own, so one refused with 75 waits for the next `level-resume`.
+A launch refused with 75 for a task that is not stowed waits the same way: while the task's latest launch is followed by a `paused` whose reason is `team-worker`'s "no room for session:<role>" line, the plan's launch list holds it, oldest refusal first, and `level-launch` names the first whose roles fit ("level: T5 has room again: launch its reviewer, refused for room at <time>"), until the task's next launch.
 A `team-capacity plan` that fails is one `level` finding naming its reason, in their place.
 
 ## What the doctor says

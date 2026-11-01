@@ -730,7 +730,7 @@ cost() {
 
   run_bin -75 --separate-stderr team-capacity admit --kind stack:other --task T9 --seed-bytes $((room + 1))
   assert_equal "$output" ""
-  assert_equal "$stderr" "no room for stack:other at minor (30%): 6.2 GiB of 9.6 GiB reserved, a stack of other needs 3.4 GiB"
+  assert_equal "$stderr" "no room for stack:other at minor (30%): 6.2 GiB of 9.6 GiB reserved, a stack of other needs 3.4 GiB; room comes when the team's work shrinks or the level rises"
   [[ ! -e $STATE_DIR/admitted.json ]]
   run_bin -0 --separate-stderr team-capacity admit --kind stack:other --task T9 --seed-bytes "$room"
   assert_equal "$output" "admitted stack:other at minor (30%): a stack of other needs 3.4 GiB, 6.2 GiB of 9.6 GiB reserved before it"
@@ -741,14 +741,14 @@ cost() {
     "[\"stack:other\",\"T9\",null,true,$room,null,$room]"
   assert_equal "$(jq .room.bytes <<<"$output")" 0
   run_bin -75 --separate-stderr team-capacity admit --kind session:reviewer --task T9
-  assert_equal "$stderr" "no room for session:reviewer at minor (30%): 9.6 GiB of 9.6 GiB reserved, a reviewer needs 0.5 GiB"
+  assert_equal "$stderr" "no room for session:reviewer at minor (30%): 9.6 GiB of 9.6 GiB reserved, a reviewer needs 0.5 GiB; room comes when the team's work shrinks or the level rises"
   # Ten minutes on, the readings hold what it started, and the next admission drops it.
   age_admissions 601
   run_bin -0 team-capacity admit --kind session:reviewer --task T9
   assert_equal "$(jq -c 'map([.kind, .task, .bytes])' "$STATE_DIR/admitted.json")" '[["session:reviewer","T9",536870912]]'
   # A heavy run's kind costs has no sample of yet is at heavy_gib.
   run_bin -75 --separate-stderr team-capacity admit --kind heavy:tests-run
-  assert_equal "$stderr" "no room for heavy:tests-run at minor (30%): 6.7 GiB of 9.6 GiB reserved, a heavy run of tests-run needs 5.0 GiB"
+  assert_equal "$stderr" "no room for heavy:tests-run at minor (30%): 6.7 GiB of 9.6 GiB reserved, a heavy run of tests-run needs 5.0 GiB; room comes when the team's work shrinks or the level rises"
 }
 
 @test "status: a session past its admission window reserves its use, the team one spike allowance for the largest gap, and one in its window the larger of its estimate and its use" {
@@ -826,8 +826,12 @@ cost() {
   local kind
   for kind in session:planner stack:conventioner heavy:tests-run gate; do
     run_bin -75 --separate-stderr team-capacity admit --kind "$kind" --task T7
-    assert_equal "$stderr" "the team is at level none: nothing starts"
+    assert_equal "$stderr" "no room for $kind: the team is at level none: nothing starts; room comes when Daniel raises the level"
   done
+  # In automatic mode the level rises on its own once Daniel's programs leave room.
+  jq -cn '{ts: (now | floor | todate), mode: "auto", level: "none", by: "auto", machine: "home-pc"}' >>"$TEAM_HOME/level.jsonl"
+  run_bin -75 --separate-stderr team-capacity admit --kind session:planner --task T7
+  assert_equal "$stderr" "no room for session:planner: the team is at level none: nothing starts; room comes when the level rises"
   [[ ! -e $STATE_DIR/admitted.json ]]
   # A newest reading over 10 minutes old is taken anew first; one it cannot take leaves no budget.
   level full
@@ -839,6 +843,17 @@ cost() {
   run_bin -1 --separate-stderr team-capacity admit --kind session:planner --task T7
   assert_equal "$stderr" "team-capacity: took no reading of the machine's load: no MemTotal and MemAvailable in $TEAM_MEMINFO
 team-capacity: no reading of the machine's load, so no budget to admit session:planner by: team-capacity sample says why it takes none"
+}
+
+@test "status: a stack admitted in the last 10 minutes that the reading shows running is reserved once, at the larger of the two" {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  # T7's conventioner-2 runs at 2 GiB of its 3 GiB of limits.
+  busy_reading
+  jq -cn --argjson gib "$GIB" '[{at: (now - 120 | floor | todate), kind: "stack:conventioner", task: "T7", bytes: (3.5 * $gib), pid: null},
+    {at: (now - 60 | floor | todate), kind: "stack:conventioner", task: "T9", bytes: (3 * $gib), pid: null}]' >"$STATE_DIR/admitted.json"
+  # T7's admission is the stack the reading holds; T9's, not running yet, is reserved as an admission.
+  assert_equal "$(reserved_items | grep stack:)" '["stacks","stack:conventioner","T7",3.5]
+["admissions","stack:conventioner","T9",3]'
 }
 
 @test "admit counts the running heavy run while its team-heavy holds the lock, at its admission's kind, but not for a heavy run asking" {
@@ -1026,6 +1041,24 @@ plan_level() {
 [\"stow\",\"T3\",4]
 [\"stow\",\"T2\",5]
 [\"stow\",\"T1\",1]"
+}
+
+@test "plan: a task stowed since the newest reading, with no live session, is neither named to stow again nor counted" {
+  plan_machine
+  plan_level 60 minor
+  assert_equal "$(plan_steps | grep '"stow"')" '["stow","T3",4]'
+  # T3 stows: its sessions are gone from the list and its stack stopped, but the stored readings
+  # still hold them until the next capacity step.
+  jq -cn '{ts: (now | floor | todate), task: "T3", event: "stowed", machine: "home-pc", worktrees: [],
+    roles: ["builder", "planner"], cause: "level"}' >>"$TEAM_HOME/ledger.jsonl"
+  jq -c 'map(select(.name | startswith("T3-") | not))' "$STUB_FIXTURES/agents.json" >"$STUB_FIXTURES/agents.json.new"
+  mv "$STUB_FIXTURES/agents.json.new" "$STUB_FIXTURES/agents.json"
+  # Without T3's 7 GiB, 7.5 GiB is reserved of 9.6 GiB: within budget, nothing to stop or stow.
+  assert_equal "$(plan_verdict)" '[false,false,9.6,7.5]'
+  assert_equal "$(plan_steps | grep -c '"stow"')" 0
+  # A session of T3 still live counts it again: a stow that did not stop it.
+  live aaaa0031 T3-builder idle
+  assert_equal "$(plan_verdict)" '[true,true,9.6,14.5]'
 }
 
 @test "plan: one over-budget reading is not confirmed, two in a row are, and a level change confirms at once" {

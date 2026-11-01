@@ -474,7 +474,8 @@ def admission_kept($heavy; $now):
 # What the team's live work reserves, from $in: {reading (the newest, or null), costs
 # (capacity_costs' array), settings, heavy (the heavy-run lock now: {held, pid, label, task}),
 # admitted (capacity/admitted.json's entries), now (seconds), asking (the kind being admitted, or
-# null)}, as [{part, kind, task, name, estimate_bytes, use_bytes, bytes}], part one of
+# null), freed (the ids of sessions the asker stopped since the reading, left out; [] or null for
+# none)}, as [{part, kind, task, name, estimate_bytes, use_bytes, bytes}], part one of
 # reserved_parts:
 #   sessions_use: each live team session of the reading past its admission window, at its use;
 #   spike_allowance: one for the team while any session is past its window, the largest of those
@@ -485,7 +486,9 @@ def admission_kept($heavy; $now):
 #   session's use (of several sessions of the kind and task, the newest admissions take the ones
 #   using least, since a new session uses little yet);
 #   stacks: each running team or gate stack, at the larger of its kind's estimate (one with none:
-#   its mem_limits) and its use;
+#   its mem_limits) and its use; one of an admission's kind and task (paired as sessions are, by
+#   name) is that admission too, reserved once, at the admission's estimate at least (admitted:
+#   its time);
 #   gates: the gate while it runs a pipeline, at the larger of its estimate and its use;
 #   heavy_runs: the running heavy run, while one holds the lock, but when the asker is a heavy run,
 #   which holds it itself, at the larger of its estimate and its use: its kind its admission's (the
@@ -506,10 +509,15 @@ def capacity_reservations($in):
   | ([$kept[] | select(.kind | startswith("session:"))] | ranked(.at | fromdateiso8601 | -.)
      | map({key, value: .}) | from_entries) as $windows
   | ([$r.tasks // [] | .[] | .task as $task | .sessions[]
+      | select(.id as $id | ($in.freed // []) | index($id) | not)
       | {kind: "session:\(.role)", task: $task, name: .id, use: .memory,
          estimate: kind_estimate($in.costs; $in.settings; "session:\(.role)"; null).bytes}]
      | ranked([.use, .name]) | map(. + {admission: $windows[.key]})) as $sessions
-  | ([$sessions[] | select(.admission != null) | "\(.kind) \(.task)"] | group_by(.) | map({key: .[0], value: length}) | from_entries) as $taken
+  | ([$kept[] | select(.kind | startswith("stack:"))] | ranked(.at | fromdateiso8601 | -.)
+     | map({key, value: .}) | from_entries) as $stack_windows
+  | ([$r.stacks // [] | .[] | {kind: "stack:\(.project // .class)", task, name, memory, limits}]
+     | ranked(.name) | map(. + {admission: $stack_windows[.key]})) as $stacks
+  | ([$sessions[], $stacks[] | select(.admission != null) | "\(.kind) \(.task)"] | group_by(.) | map({key: .[0], value: length}) | from_entries) as $taken
   | [$sessions[] | select(.admission == null)] as $past
   | [($sessions[]
       | if .admission == null then
@@ -521,7 +529,8 @@ def capacity_reservations($in):
      (if $past == [] then empty
       else $past | map(. + {gap: ([.estimate - (.use // 0), 0] | max)}) | max_by(.gap)
         | {part: "spike_allowance", kind, task, name, estimate_bytes: .estimate, use_bytes: .use, bytes: .gap} end),
-     ($r.stacks // [] | .[] | item("stacks"; "stack:\(.project // .class)"; .task; .name; .memory; .limits)),
+     ($stacks[] | .admission as $a | item("stacks"; .kind; .task; .name; .memory; .limits)
+      | if $a == null then . else . + {admitted: $a.at, bytes: ([.bytes, $a.bytes] | max)} end),
      (if $r.gate.running // false then item("gates"; "gate"; null; "gate"; $r.gate.memory; null) else empty end),
      (if $heavy.held and (($in.asking // "") | startswith("heavy:") | not) then
         (first($in.admitted[] | select(.pid != null and .pid == $heavy.pid)) // null) as $a
@@ -530,7 +539,7 @@ def capacity_reservations($in):
                ($a.bytes // ($in.settings.heavy_gib * 1073741824 | round)))
       else empty end),
      ($kept | ranked(.at | fromdateiso8601 | -.) | .[]
-      | select((.kind | startswith("session:") | not) or .rank >= ($taken["\(.kind) \(.task)"] // 0))
+      | select(.rank >= ($taken["\(.kind) \(.task)"] // 0))
       | {part: "admissions", kind, task, name: null, admitted: .at, estimate_bytes: .bytes, use_bytes: null, bytes})];
 
 # The parts of what is reserved, in the order status --json and team-level say them.
@@ -609,14 +618,17 @@ def kind_noun:
 
 # The admission of <kind> at its estimate <bytes> against team-capacity status's object <status>
 # (its reserved and room): {admitted, says}. Nothing is admitted at none; else it is when what is
-# reserved plus the estimate is at most the budget.
+# reserved plus the estimate is at most the budget. A refusal names the kind, why, and what makes
+# room: the team's work shrinking (a finished session or idle stack stopped, a task stowed) or the
+# level rising, which at none is Daniel's to raise, or automatic mode's.
 def capacity_admit($status; $kind; $bytes):
   $status.room as $room | $status.reserved.bytes as $reserved
   | "\($room.level) (\($room.share | percent))" as $at
-  | if $room.level == "none" then {admitted: false, says: "the team is at level none: nothing starts"}
+  | if $room.level == "none" then
+      {admitted: false, says: "no room for \($kind): the team is at level none: nothing starts; room comes when \(if $room.mode == "auto" then "the level rises" else "Daniel raises the level" end)"}
     elif $reserved + $bytes <= $room.budget_bytes then
       {admitted: true, says: "admitted \($kind) at \($at): \($kind | kind_noun) needs \($bytes | gib), \($reserved | gib) of \($room.budget_bytes | gib) reserved before it"}
-    else {admitted: false, says: "no room for \($kind) at \($at): \($reserved | gib) of \($room.budget_bytes | gib) reserved, \($kind | kind_noun) needs \($bytes | gib)"} end;
+    else {admitted: false, says: "no room for \($kind) at \($at): \($reserved | gib) of \($room.budget_bytes | gib) reserved, \($kind | kind_noun) needs \($bytes | gib); room comes when the team's work shrinks or the level rises"} end;
 
 # The refusal of a level.jsonl whose lines <broken> (level_records' numbers) are no level records,
 # at <path>.
@@ -663,10 +675,7 @@ def capacity_plan($in):
   $in.settings as $s | $in.current as $current
   | ($in.readings | .[-1]) as $r
   | ($in.readings | if length > 1 then .[-2] else null end) as $prev
-  | def items($reading):
-      capacity_reservations({reading: $reading, costs: $in.costs, settings: $s, heavy: $in.heavy,
-                             admitted: $in.admitted, now: $in.now, asking: null});
-    def budget($reading):
+  | def budget($reading):
       if $current.level == "none" then 0
       else capacity_budget($s; $current.level; $reading; null; 0).memory_bytes end;
     def drop(f): map(select(f | not));
@@ -675,12 +684,29 @@ def capacity_plan($in):
      | {id: (.id // (.sessionId // "" | .[:8])), task: (.name | split("-")[0])}
      | select($open[.task] != null)] as $live
   | [$in.sessions // [] | .[] | select(.status == "busy") | .cwd // empty | strings] as $busy
-  | items($r) as $items
+  # The tasks stowed at or after <reading> with no live session, whose sessions, stacks and
+  # admissions the reading and admitted.json still hold until the next reading: left out, so a
+  # stowed task is never named again, nor its stale use stowed for in another's place.
+  | def gone($reading):
+      [$in.tasks[] | select(.stowed_since != null and $reading != null
+          and (.stowed_since | fromdateiso8601) >= ($reading.at | fromdateiso8601)) | .task]
+      - [$live[].task];
+    def items($reading):
+      gone($reading) as $g
+      | capacity_reservations({
+          reading: (if $reading == null then null
+                    else $reading | .tasks = [.tasks // [] | .[] | select(.task | IN($g[]) | not)]
+                      | .stacks = [.stacks // [] | .[] | select((.task // "") | IN($g[]) | not)] end),
+          costs: $in.costs, settings: $s, heavy: $in.heavy,
+          admitted: [$in.admitted[] | select((.task // "") | IN($g[]) | not)], now: $in.now, asking: null});
+  items($r) as $items
   | budget($r) as $budget
   | ($items | reserved_total) as $reserved
   | [$in.tasks[] | .task as $task | .finished[] | {task: $task, role, session}] as $finished
+  | gone($r) as $gone
   | [$r.stacks // [] | .[]
-     | select(.class == "team" and .kind == "dev" and $open[.task // ""] != null and .worktree != null)
+     | select(.class == "team" and .kind == "dev" and $open[.task // ""] != null and .worktree != null
+              and (.task | IN($gone[]) | not))
      | . as $stack | select(all($busy[]; within($stack.worktree) | not))] as $idle
   | def stowable($rest):
       [$open[] | .task as $task
@@ -694,7 +720,15 @@ def capacity_plan($in):
   | ($prev != null and over(items($prev); budget($prev))) as $prev_over
   | ($over and ($prev_over or ($current.last_change != null
        and ($prev == null or ($current.last_change.ts | fromdateiso8601) > ($prev.at | fromdateiso8601))))) as $confirmed
-  | (if $confirmed | not then {sessions: [], stacks: [], stow: []}
+  # Whether roles fit is weighed by what admission counts, every task's items included, so the plan
+  # never names a launch team-capacity admit would refuse (a task just stowed comes back once the
+  # next reading no longer holds its sessions and its admissions' 10 minutes are past).
+  | (capacity_reservations({reading: $r, costs: $in.costs, settings: $s, heavy: $in.heavy,
+                            admitted: $in.admitted, now: $in.now, asking: null}) | reserved_total) as $admitting
+  | def needs_fits:
+      . + {needs: ([.roles[] | kind_estimate($in.costs; $s; "session:\(.)"; null).bytes] | add // 0)}
+      | . + {fits: ($current.level != "none" and $budget != null and $admitting + .needs <= $budget)};
+  (if $confirmed | not then {sessions: [], stacks: [], stow: []}
      else
        reduce $finished[] as $f ({rest: $items, sessions: []};
          (.rest | drop(.name == $f.session and (.kind | startswith("session:")))) as $after
@@ -713,10 +747,10 @@ def capacity_plan($in):
      share: ($current.level | level_share($s)), budget: $budget,
      reserved: $reserved, over: $over, confirmed: $confirmed,
      stop_sessions: $steps.sessions, stop_stacks: $steps.stacks, stow: $steps.stow,
-     resume: [$in.tasks[] | select(.stowed != null) | {task, stowed: .stowed.at, roles: .stowed.roles}
-              | . + {needs: ([.roles[] | kind_estimate($in.costs; $s; "session:\(.)"; null).bytes] | add // 0)}
-              | . + {fits: ($current.level != "none" and $budget != null and $reserved + .needs <= $budget)}]
-             | sort_by(.stowed, (.task[1:] | tonumber))};
+     resume: [$in.tasks[] | select(.stowed != null) | {task, stowed: .stowed.at, roles: .stowed.roles} | needs_fits]
+             | sort_by(.stowed, (.task[1:] | tonumber)),
+     launch: [$in.tasks[] | select(.refused != null) | {task, refused: .refused.at, roles: .refused.roles} | needs_fits]
+             | sort_by(.refused, (.task[1:] | tonumber))};
 
 # The level as the plan's texts say it: "minor (30%)".
 def plan_at: "\(.level) (\(.share | percent))";
@@ -735,7 +769,9 @@ def plan_text:
     (.stow[] | "  stow \(.task): frees \(.frees | gib)")
   end,
   (select(.resume != []) | "Stowed, waiting to resume, oldest stow first:",
-    (.resume[] | "  \(.task) (\(.roles | join(", "))): needs \(.needs | gib), \(if .fits then "fits" else "does not fit yet" end)"));
+    (.resume[] | "  \(.task) (\(.roles | join(", "))): needs \(.needs | gib), \(if .fits then "fits" else "does not fit yet" end)")),
+  (select((.launch // []) != []) | "Refused for room, waiting to launch, oldest refusal first:",
+    (.launch[] | "  \(.task) (\(.roles | join(", "))): needs \(.needs | gib), \(if .fits then "fits" else "does not fit yet" end)"));
 
 # What the stow plan <plan> (capacity_plan's) says must stow, for team-level's acknowledgement and
 # its automatic post: "T171 and T174 stow", in task number order, or "nothing needs to stow".

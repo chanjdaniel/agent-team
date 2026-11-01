@@ -18,7 +18,7 @@ Never resume while GitHub is unreachable: say so to Daniel and wait.
 3. **Relaunch.** First run `team-level`: the level recorded before the handoff or the shutdown still holds.
    At none, relaunch nothing and log no `resumed`: post in `#coordinator` that the team waits at none until Daniel raises the level, then go on with step 5; once the level allows, the sweep's `level-resume` findings name each stowed task to relaunch.
    Otherwise relaunch as below while each launch is admitted: a `team-worker` that exits 75 has no room in the level's budget, so log `team-log T<n> paused reason=<its line>` and leave that task and the ones after it to the sweep's `level-resume` findings, as the `level` skill says.
-   A crashed task left waiting is no stowed one, so no `level-resume` names it: add a `next` item to `tasks/current.md` for it, and relaunch it as below once `team-level` shows room.
+   A crashed task left waiting is no stowed one, so no `level-resume` names it: one whose launch exited 75 is named by `level-launch` once it fits; for one left at none, add a `next` item to `tasks/current.md`, and relaunch it as below once `team-level` shows room.
 
    For each task whose `crashed` is null, for each role of `stowed.roles` (never of `stowed.sessions`, which may hold a finished worker's session):
    - its last brief: the newest `tasks/T<n>/brief*.md` whose first line is `# T<n> brief (<role>)`, other than a `brief-resume-*.md`;

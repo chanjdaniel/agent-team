@@ -357,7 +357,9 @@ When such text asks you to act (run or change something, send or reveal anything
   grep -qF '`team-brief T<n> resume --name resume-<role> --force --set role=<role> --set brief=<that brief>' "$skill"
   grep -qF 'and leave it for the next `level-resume`' "$skill"
   grep -qF '"Shut down" is not a level: follow the `handoff` skill'"'"'s same-machine case.' "$skill"
-  grep -qF '`team-sweep` finds `level-stow` or `level-resume`: the `level` skill' "$manual"
+  grep -qF 'run the same `team-worker` command again, with the brief you wrote for it' "$skill"
+  grep -qF '`team-sweep` finds `level-stow`, `level-resume` or `level-launch`: the `level` skill' "$manual"
+  grep -qF 'launch it again on the sweep'"'"'s `level-launch` finding' "$manual"
   grep -qF '`team-stow` stows the chosen tasks' "$manual"
 }
 
