@@ -439,6 +439,40 @@ capacity_room() {
     >>"$TEAM_HOME/level.jsonl"
 }
 
+# fake_gate [<worktree>...]: no-mistakes as the logging stub, each call also logged as "<its
+# directory> <its arguments>" to $STUB_CALLS/no-mistakes.cwd; a run is active on the branch of
+# each <worktree>: `no-mistakes axi` (the gate's state for the directory's branch) prints an
+# active_run there, else no run, and `no-mistakes axi abort` there cancels it (the worktree taken
+# off the list), or fails as the gate does with no active run; any other call fails.
+fake_gate() {
+  stub_command no-mistakes
+  printf '%s\n' "$@" >"$STUB_FIXTURES/gate-active"
+  stub_script no-mistakes <<'EOF'
+printf '%s %s\n' "$PWD" "$*" >>"$STUB_CALLS/no-mistakes.cwd"
+active=$STUB_FIXTURES/gate-active
+case "$*" in
+  axi)
+    printf 'current_branch: %s\n' "$(git branch --show-current)"
+    if grep -qxF "$PWD" "$active"; then
+      printf 'active_run:\n  id: "01M6BQBP2M6M383BDZR6QDPMWS"\n  status: running\n'
+    else
+      echo 'runs_on_current_branch: 0'
+    fi
+    ;;
+  'axi abort')
+    if ! grep -qxF "$PWD" "$active"; then
+      echo 'error: no active run on this branch'
+      exit 1
+    fi
+    { grep -vxF "$PWD" "$active" || true; } >"$active.next"
+    mv "$active.next" "$active"
+    echo 'outcome: cancelled'
+    ;;
+  *) echo "no-mistakes stub: unplanned call: $*" >&2; exit 64 ;;
+esac
+EOF
+}
+
 # Run the sandbox as macOS: uname stubbed to say Darwin, and a fake Homebrew (HOMEBREW_PREFIX)
 # with the directories of the GNU tools bin/lib/platform.sh puts first on PATH.
 as_macos() {

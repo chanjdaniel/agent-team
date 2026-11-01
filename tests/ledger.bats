@@ -164,6 +164,41 @@ EVENTS
 )" '["builder"]'
 }
 
+@test "a stowed may give its cause, level or handoff, and team-stow writes it beside team-handoff" {
+  local stowed='{"ts":"2026-11-01T14:05:00Z","task":"T7","event":"stowed","machine":"home-pc","worktrees":[],"roles":[],"sessions":[]'
+  append_as team-stow "$stowed,\"cause\":\"level\"}"
+  assert_equal "$status" "0"
+  append_as team-handoff "$stowed,\"cause\":\"handoff\"}"
+  assert_equal "$status" "0"
+  append_as team-handoff "$stowed}"
+  assert_equal "$status" "0"
+  assert_equal "$(jq -r '.cause // "none"' "$TEAM_HOME/ledger.jsonl" | paste -sd ' ')" "level handoff none"
+  append_as team-stow "$stowed,\"cause\":\"shutdown\"}"
+  assert_equal "$status" "1"
+  assert_contains "$output" "cause must be one of level, handoff"
+  append_as team-log "$stowed,\"cause\":\"level\"}"
+  assert_contains "$output" "stowed events are written by team-handoff or team-stow, not team-log"
+}
+
+# Whether the task of the events read from stdin, one JSON object per line, is stowed for the level.
+stowed_for_level() {
+  jq -L "$REPO_ROOT/bin/lib" -sc 'include "ledger"; map({ts: "2026-11-01T12:00:00Z", task: "T1"} + .) | stowed_for_level'
+}
+
+@test "a task is stowed for the level while its latest stowed has cause level and no launch follows it" {
+  local launch='{"event": "launch", "role": "builder"}'
+  local level='{"event": "stowed", "machine": "home-pc", "worktrees": [], "roles": ["builder"], "cause": "level"}'
+  local handoff='{"event": "stowed", "machine": "home-pc", "worktrees": [], "roles": ["builder"]}'
+  assert_equal "$(stowed_for_level <<<"$launch")" false
+  assert_equal "$(printf '%s\n' "$launch" "$level" | stowed_for_level)" true
+  assert_equal "$(printf '%s\n' "$launch" "$level" '{"event": "done", "role": "builder"}' | stowed_for_level)" true
+  assert_equal "$(printf '%s\n' "$launch" "$level" "$launch" | stowed_for_level)" false
+  # A stowed with no cause is a handoff's, as every line before team-stow is.
+  assert_equal "$(printf '%s\n' "$launch" "$handoff" | stowed_for_level)" false
+  assert_equal "$(printf '%s\n' "$launch" "$level" "$handoff" | stowed_for_level)" false
+  assert_equal "$(printf '%s\n' "$launch" "$handoff" "$level" | stowed_for_level)" true
+}
+
 @test "a branch-renamed gives the task's worktree in its project its new branch, in task_branch, open_worktrees and worktree_list" {
   local events='{"event": "opened", "project": "proj", "branch": "feat/T1-x", "worktree": "/w/1", "path": "feature"}
 {"event": "worktree-added", "project": "lib", "branch": "feat/T1-lib", "worktree": "/w/2"}

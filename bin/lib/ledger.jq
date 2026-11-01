@@ -303,6 +303,12 @@ def latest_stowed: latest_index("stowed");
 # no stowed at all, so the machine it last ran on stopped without handing it off.
 def crashed: latest_stowed as $stowed | any(.[$stowed + 1:][]; .event == "launch");
 
+# Whether the task is stowed for the team's resource level: its latest stowed has cause level
+# (team-stow's default) and no launch follows it, so it waits for room to be relaunched here.
+def stowed_for_level:
+  latest_stowed as $stowed
+  | $stowed >= 0 and .[$stowed].cause == "level" and (any(.[$stowed + 1:][]; .event == "launch") | not);
+
 # Whether the task's worktree in <project> resumes from the last checkpoint's snapshot: the task
 # crashed, or its latest stowed recorded that worktree with uncommitted changes, which the
 # handoff's checkpoint kept as wip/<project>/T<n> on the team home's origin.

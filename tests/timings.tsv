@@ -72,6 +72,7 @@ tests/team-snapshot.bats	36	33
 tests/team-stack-live.bats	1	1
 tests/team-stack.bats	272	405
 tests/team-state.bats	38	38
+tests/team-stow.bats	45	110
 tests/team-sweep.bats	278	309
 tests/team-thread-interview.bats	6	11
 tests/team-thread.bats	1	3
