@@ -26,7 +26,7 @@ When the worker stays stuck, the ladder goes on from rung 2.
 
 2. **Send one line.** SendMessage to the worker's name with the one thing it needs: the answer, the next step, or "report where you stand with the protocol's kind".
    Check the sweep watch (`team-sweep --wait`) is running, arming it if not, and give the worker the time to act: its finding was there when you re-armed the watch, so the watch wakes you if it still stands 30 minutes later.
-3. **Stop and respawn.** `claude stop <session id>`, then add a "Progress so far" section at the top of its brief in `tasks/T<n>/`: what is done (commits, ticked boxes), what is left, and what went wrong.
+3. **Stop and respawn.** `claude stop <session id>`, then add a "Progress so far" section at the top of its brief in `tasks/T<n>/`: what it did that the ledger does not hold (ticked boxes, uncommitted work, the step it was on), what is left, and what went wrong; the tickets done and the reviews are the ledger's, which `team-state T<n>` reads.
    Launch a fresh worker with the same `team-worker` command and brief.
    Log why: `team-log T<n> blocked reason="<what stuck it>"` before the stop; the launch clears it.
 4. **Escalate.** When a second respawn fails the same way, run `team-log T<n> failed reason="<evidence>"` and send Daniel FAILED in the task's thread: what the task needed, what each attempt did, and the log lines that show it.

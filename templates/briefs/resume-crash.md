@@ -8,7 +8,7 @@ Task directory: `{{task_dir}}/` in the worktree, restored from the task's archiv
 ## What may be missing
 
 The checkpoint is the last of the task that {{machine}} saved.
-Up to 15 minutes of work before {{machine}} stopped may be missing, and so may any no-mistakes run that was in flight, with whatever it would have pushed or reported.
+Up to 5 minutes of work before {{machine}} stopped may be missing, and so may any no-mistakes run that was in flight, with whatever it would have pushed or reported.
 The uncommitted changes of that checkpoint: {{snapshot}}.
 Check before you build on any of it.
 

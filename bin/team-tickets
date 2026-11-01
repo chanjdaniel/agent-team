@@ -1,0 +1,203 @@
+#!/usr/bin/env bash
+# List a task's tickets with each one's state, or check their Blocked by:, Waits for: and Phase: lines.
+#
+# Usage: team-tickets T<n> [--check] [--json]
+# The tickets are the files tickets/NN-<slug>.md in the task directory (the project's task_dir) of
+# each open worktree of the task, one set whose numbers are the task's: NN is the ticket's
+# two-digit number, which no two files share.
+# Each ticket has exactly one Blocked by: line, the ticket numbers it waits on, and at most one
+# Waits for: line, an outside condition (a PR, another task), each label optionally bold:
+#   Blocked by: None
+#   **Blocked by:** 01, 03
+#   Waits for: T171 merged
+# and at most one Phase: line, the phase of a task split into phases whose PR it goes in, a whole
+# number from 1, phase 1 without one (a blocker is in the ticket's phase or an earlier one):
+#   Phase: 2
+# A line counts as one of them when its text, after any indent, list marker and bold or italic
+# marks, starts with "Blocked by" or "Waits for" in any case, or with "Phase" and a colon,
+# outside a fenced code block; so a mention inside a sentence or a "- [ ]" item is none.
+# Its state, from the ledger: running (a builder's launch with the brief brief-build-NN, and no
+# ticket-done of NN since), done (a ticket-done of NN), blocked (a blocker not done, named),
+# waiting (every blocker done, and a Waits for: line, quoted) or ready (every blocker done).
+# It prints one line per ticket, "NN <state> <slug>", then ": session <id>" for running, ": on
+# <blockers not done>" for blocked and ": <its Waits for: text>" for waiting; --json prints a list
+# of {ticket, slug, state, project, file, phase, blocked_by, waits_for, on, session}, waits_for and
+# session null when there is none. A task with no ticket files prints none (--json, []), saying so
+# on stderr.
+# --check prints, as "<file>:<line>: <reason>" (the file alone when there is no line), and exits 1
+# on: a file in tickets/ not named NN-<slug>.md; a number two files share; a missing, second or
+# malformed Blocked by: line; a second or malformed Waits for: or Phase: line; a blocker that is
+# no ticket of the task, that the line names twice or that is in a later phase than its ticket;
+# and a cycle of blockers, named once at the Blocked by:
+# line of its lowest ticket. The listing refuses such a set the same way. A clean set prints how
+# many tickets it read; one with none says so on stderr. It never writes.
+# Exit codes: 0 done, 1 refused or a check failed, 2 a malformed command line.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+usage="usage: team-tickets T<n> [--check] [--json]"
+task='' check='' json=''
+for arg in "$@"; do
+  case $arg in
+    --check) check=1 ;;
+    --json) json=1 ;;
+    T[0-9]*) [[ -z $task && $arg =~ ^T[0-9]+$ ]] || usage_error "$usage"; task=$arg ;;
+    *) usage_error "$usage" ;;
+  esac
+done
+[[ -n $task ]] || usage_error "$usage"
+[[ -z $check || -z $json ]] || usage_error "--check and --json do not go together; $usage"
+
+events=$(known_task_events "$task")
+
+# The ticket files (files) and each one's project (projects), in the order of the worktrees, then
+# of the file names; a task directory reached twice (two worktrees at one path) is read once.
+files=()
+projects=()
+declare -A seen=()
+while IFS=$'\t' read -r project worktree; do
+  [[ -d $worktree ]] || { echo "${0##*/}: skipping $worktree: not on this machine" >&2; continue; }
+  dir=$worktree/$(team_project "$project" task_dir)/tickets
+  [[ -d $dir ]] || continue
+  key=$(realpath -- "$dir")
+  [[ -z ${seen[$key]:-} ]] || continue
+  seen[$key]=1
+  while IFS= read -r -d '' file; do
+    files+=("$file")
+    projects+=("$project")
+  done < <(find "$dir" -mindepth 1 -maxdepth 1 -name '*.md' -print0 | sort -z)
+done < <(task_worktrees "$task" | jq -r '[.project, .worktree] | @tsv')
+
+# Each line of the files that counts as a Blocked by:, Waits for: or Phase: line, as
+# "<file>\t<line>\t<blocked, waits or phase>\t<1 when well-formed, else 0>\t<value>", the value
+# the blockers, the condition or the phase when well-formed, else the whole line: read_lines <file>...
+read_lines() {
+  awk '
+    FNR == 1 { fence = 0 }
+    { text = $0; sub(/\r$/, "", text) }
+    text ~ /^[[:space:]]*(```|~~~)/ { fence = !fence; next }
+    fence { next }
+    {
+      probe = text
+      sub(/^[[:space:]]*([-*+][[:space:]]+)?/, "", probe)
+      sub(/^(\*\*|__|\*|_)/, "", probe)
+      probe = tolower(probe)
+      if (probe ~ /^blocked[[:space:]]+by/) {
+        label = "blocked"
+        good = text ~ /^(\*\*Blocked by:\*\*|Blocked by:) +(None|[0-9][0-9](, [0-9][0-9])*) *$/
+      } else if (probe ~ /^waits[[:space:]]+for/) {
+        label = "waits"
+        good = text ~ /^(\*\*Waits for:\*\*|Waits for:) +[^ ]/
+      } else if (probe ~ /^phase[[:space:]]*(\*\*|__|\*|_)?[[:space:]]*:/) {
+        label = "phase"
+        good = text ~ /^(\*\*Phase:\*\*|Phase:) +[1-9][0-9]* *$/
+      } else next
+      value = text
+      if (good) { sub(/^(\*\*[^*]*\*\*|[^:]*:) +/, "", value); sub(/ +$/, "", value) }
+      printf "%s\t%d\t%s\t%d\t%s\n", FILENAME, FNR, label, good, value
+    }' "$@"
+}
+
+
+files_json=$(for i in "${!files[@]}"; do printf '%s\t%s\n' "${projects[$i]}" "${files[$i]}"; done |
+  jq -cR 'split("\t") | {project: .[0], file: .[1]}' | jq -cs .)
+marks_json='[]'
+((${#files[@]} == 0)) || marks_json=$(read_lines "${files[@]}" |
+  jq -cR 'split("\t") | {file: .[0], line: (.[1] | tonumber), label: .[2], good: (.[3] == "1"), value: .[4]}' | jq -cs .)
+
+# The analysis, over the task's events as its input: {problems, tickets}, each problem
+# "<file>[:<line>]: <reason>", each ticket with its state.
+read -r -d '' program <<'JQ' || true
+def where($m): "\($m.file):\($m.line)";
+def blocked_form: "write 'Blocked by: None' or 'Blocked by: 01, 03'";
+# The cycle of blockers through $start in $g (each ticket to its blockers), from $start back to
+# it, or null: a breadth-first search from $start that keeps the ticket each was reached from.
+def cycle($g; $start):
+  def search($queue; $from):
+    if ($queue | length) == 0 then null
+    elif $queue[0] == $start then $from
+    else reduce ($g[$queue[0]][] | select($from[.] == null)) as $v
+        ([$queue[1:], $from]; [.[0] + [$v], (.[1] + {($v): $queue[0]})])
+      | search(.[0]; .[1])
+    end;
+  search($g[$start]; reduce $g[$start][] as $v ({}; . + {($v): $start}))
+  | if . == null then null
+    else . as $from | [$start | recurse($from[.]; . != $start)] | [$start] + (.[1:] | reverse) + [$start]
+    end;
+. as $events
+| [$files[] | .file as $f | (.file | sub(".*/"; "")) as $name
+    | . + {name: $name, number: ($name | capture("^(?<n>[0-9]{2})-(?<s>.+)\\.md$")),
+           blocked: [$marks[] | select(.file == $f and .label == "blocked")],
+           waits: [$marks[] | select(.file == $f and .label == "waits")],
+           phases: [$marks[] | select(.file == $f and .label == "phase")]}
+    // . + {name: $name, number: null}] as $all
+| [$all[] | select(.number) | . + {ticket: .number.n, slug: .number.s}] as $named
+| [$named[].ticket] as $numbers
+| (reduce $named[] as $t ({}; . + {($t.ticket): (($t.phases[0] | select(. and .good) | .value | tonumber) // 1)})) as $phase
+| [$named[] | {(.ticket): ((.blocked[0] | select(. and .good and .value != "None") | .value | split(", ")) // [])}]
+  | add // {} | map_values(map(select(. as $n | $numbers | index($n))) | unique) as $graph
+| [ ($all[] | select(.number == null) | "\(.file): not named NN-<slug>.md, NN the ticket's two-digit number"),
+    ($named | to_entries[] | .value as $t
+      | ($named[:.key] | map(select(.ticket == $t.ticket)) | first) as $earlier
+      | select($earlier) | "\($t.file): ticket \($t.ticket) is also \($earlier.file)"),
+    ($named[] | .blocked as $b | .waits as $w | .phases as $p | .ticket as $self
+      | (select($b == []) | "\(.file): no Blocked by: line; \(blocked_form)"),
+        ($b[1:][] | "\(where(.)): a second Blocked by: line (the first is line \($b[0].line))"),
+        ($w[1:][] | "\(where(.)): a second Waits for: line (the first is line \($w[0].line))"),
+        ($p[1:][] | "\(where(.)): a second Phase: line (the first is line \($p[0].line))"),
+        ($b[] | select(.good | not)
+          | "\(where(.)): a malformed Blocked by: line; \(blocked_form), the label optionally bold, nothing else on the line"),
+        ($w[] | select(.good | not)
+          | "\(where(.)): a malformed Waits for: line; write 'Waits for: <an outside condition>', the label optionally bold"),
+        ($p[] | select(.good | not)
+          | "\(where(.)): a malformed Phase: line; write 'Phase: 2', a whole number from 1, the label optionally bold, nothing else on the line"),
+        ($b[0] | select(. and .good and .value != "None") | . as $m | (.value | split(", ")) as $list
+          | $list | unique[] | . as $n
+          | (select($numbers | index($n) | not) | "\(where($m)): blocker \($n) is no ticket of \($task)"),
+            (select([$list[] | select(. == $n)] | length > 1) | "\(where($m)): blocker \($n) is named twice"),
+            (select($phase[$n] != null and $phase[$n] > $phase[$self])
+              | "\(where($m)): blocker \($n) is in phase \($phase[$n]), after this ticket's phase \($phase[$self])"))),
+    ($named[] | . as $t | cycle($graph; .ticket) | select(. != null and min == $t.ticket)
+      | "\(where($t.blocked[0])): a cycle of blockers: \(join(" -> "))")
+  ] as $problems
+| ($events | to_entries) as $indexed
+| (reduce ($named[] | .ticket) as $n ({};
+    . + {($n): {
+      done: ([$indexed[] | select(.value.event == "ticket-done" and .value.ticket == $n) | .key] | last),
+      launch: ([$indexed[] | select(.value.event == "launch" and .value.role == "builder"
+        and .value.brief == "brief-build-\($n)")] | last)}})) as $runs
+| ($runs | map_values(
+    if .launch and (.done == null or .launch.key > .done) then "running"
+    elif .done != null then "done" else null end)) as $ran
+| {problems: $problems,
+   tickets: [$named[]
+     | (.blocked[0].value // "None" | if . == "None" then [] else split(", ") end) as $blockers
+     | [$blockers[] | select($ran[.] != "done")] as $on
+     | (.waits[0].value // null) as $waits
+     | {ticket, slug,
+        state: ($ran[.ticket] // (if $on != [] then "blocked" elif $waits then "waiting" else "ready" end)),
+        project, file, phase: $phase[.ticket], blocked_by: $blockers, waits_for: $waits, on: [], session: null} as $t
+     | $t + (if $t.state == "blocked" then {on: $on}
+             elif $t.state == "running" then {session: $runs[.ticket].launch.value.session} else {} end)]}
+JQ
+
+analysed=$(jq -c --arg task "$task" --argjson files "$files_json" --argjson marks "$marks_json" "$program" <<<"$events")
+
+if [[ $(jq '.problems | length' <<<"$analysed") -gt 0 ]]; then
+  jq -r --arg me "${0##*/}" '.problems[] | "\($me): \(.)"' <<<"$analysed" >&2
+  exit 1
+fi
+count=$(jq '.tickets | length' <<<"$analysed")
+((count)) || echo "${0##*/}: $task has no tickets in its open worktrees" >&2
+if [[ -n $check ]]; then
+  ((count == 0)) || echo "$task: $count tickets, every Blocked by:, Waits for: and Phase: line well-formed"
+  exit 0
+fi
+if [[ -n $json ]]; then
+  jq '.tickets' <<<"$analysed"
+else
+  jq -r '.tickets[] | "\(.ticket) \(.state + "       " | .[:7]) \(.slug)" + (
+    if .state == "running" then ": session \(.session)"
+    elif .state == "blocked" then ": on \(.on | join(", "))"
+    elif .state == "waiting" then ": \(.waits_for)" else "" end)' <<<"$analysed"
+fi

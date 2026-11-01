@@ -3,7 +3,8 @@
     "allow": [
       "Bash(@TEAM_CODE@/bin/team-post @TASK@ --thread interview --file *)",
       "Bash(@TEAM_CODE@/bin/team-thread wait @TASK@)",
-      "Bash(@TEAM_CODE@/bin/team-thread wait @TASK@ --after *)"
+      "Bash(@TEAM_CODE@/bin/team-thread wait @TASK@ --after *)",
+      "Bash(@TEAM_CODE@/bin/team-tickets @TASK@ --check)"
     ],
     "deny": [
       "Bash(team-post --coordinator*)",

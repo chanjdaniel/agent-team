@@ -98,6 +98,22 @@ $(watch_lines)"
   assert_equal "$(stub_calls claude)" '["agents","--json"]'
 }
 
+@test "each open task's line carries its progress: the brief each live worker is on, the tickets done and the latest review" {
+  local wt=$BATS_TEST_TMPDIR/wt n
+  mkdir -p "$wt/.scratch/task/tickets"
+  for n in 1 2 3 4 5 6 7; do printf 'Blocked by: None\n' >"$wt/.scratch/task/tickets/0$n-ticket.md"; done
+  event T172 opened "$(jq -cn --arg wt "$wt" '{project: "proj", path: "feature", type: "feat", title: "Toil",
+    branch: "feat/T172-toil", base: "main", base_sha: "0123456", worktree: $wt}')"
+  for n in 01 02 03; do event T172 ticket-done "{ticket: \"$n\", commits: [\"a0017cce\"]}"; done
+  event T172 review '{verdict: "findings", head: "1111111", sent_back: [5, 6]}'
+  event T172 launch '{role: "builder", session: "59709d99", worktree: "/w/1", toolkits: [], brief: "brief-build-04"}'
+  stub_reply claude '[{"id": "59709d99", "sessionId": "59709d99-7687", "name": "T172-builder", "status": "idle"}]'
+  start -0
+  assert_contains "$output" "Open tasks (1):
+  T172 proj feature planning | T172-builder idle on build-04 | tickets 3/7 | review 1 findings, sent back 5, 6
+"
+}
+
 @test "a resumed or compacted session gets the same digest" {
   team_at_work
   start -0 resume
