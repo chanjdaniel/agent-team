@@ -53,7 +53,7 @@ def kind_problems($contract; $legacy):
 # "<value>: <problem>" lines.
 
 # The finding kinds a review's findings counts, and the guarded areas its guarded may name.
-def finding_kinds: ["blocking", "correctness", "security", "real-data", "note"];
+def finding_kinds: ["blocking", "correctness", "security", "real-data", "note-change", "note-before"];
 def guarded_areas: ["ci", "dependencies", "migrations", "settings", "permissions", "secrets"];
 
 # How a review's findings, an object, is not the count of each finding kind, exactly.
@@ -63,6 +63,11 @@ def findings_problems:
       | select(type != "number" or . < 0 or . != floor) | "\($kind): \(tojson) is not a whole number"),
     (finding_kinds[] | select(in($findings) | not) | "\(.): missing"),
     (keys_unsorted[] | select(IN(finding_kinds[]) | not) | "\(.): not a finding kind");
+
+# How a review's before, a list, is not the numbers of its plain before notes, each once.
+def before_problems:
+  (.[] | select(type != "number" or . < 1 or . != floor) | "\(tojson): not a finding number"),
+  (map(numbers) | group_by(.) | .[] | select(length > 1) | "\(first): listed twice");
 
 # How a review's guarded, a list, holds something other than guarded areas.
 def guarded_problems: .[] | select(IN(guarded_areas[]) | not) | "\(tojson): not a guarded area";

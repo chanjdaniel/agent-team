@@ -114,7 +114,7 @@ TABLE
   assert_equal "$(jq -c '[.kinds.waiting, .kinds.blocked, .kinds.paused, .kinds.held | .optional.since]' "$CONTRACT")" '["string","string","string","string"]'
   assert_equal "$(jq -c '[.kinds.closed.required[]]' "$CONTRACT")" '["array","array","array"]'
   assert_equal "$(jq -c '.kinds["merge-preapproved"].required' "$CONTRACT")" '{"project":"string","ask":"string","discord_message":"id","scope":"array"}'
-  assert_equal "$(jq -c '.kinds.review.optional' "$CONTRACT")" '{"agent_review":"string","sent_back":"array","findings":"object","guarded":"array"}'
+  assert_equal "$(jq -c '.kinds.review.optional' "$CONTRACT")" '{"agent_review":"string","sent_back":"array","findings":"object","before":"array","guarded":"array"}'
   assert_equal "$(jq -c '.kinds.merged.optional.approval' "$CONTRACT")" '["head","plan"]'
   [[ $STRICT_FROM =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
 }
@@ -131,7 +131,7 @@ TABLE
     }
   done
   grep -Eq '^  opened +team-open +project, path, type, title, branch, base, base_sha, worktree; optional story  \(story is the backlog story .*team-merge marks done\)$' <<<"$output"
-  grep -Eq '^  review +team-log +verdict \(pass\|findings\), head; optional agent_review, sent_back \(list\), findings \(object\), guarded \(list\)  \(sent_back: the numbers of the notes .*findings: the count of each kind.*guarded: the guarded areas.*\)$' <<<"$output"
+  grep -Eq '^  review +team-log +verdict \(pass\|findings\), head; optional agent_review, sent_back \(list\), findings \(object\), before \(list\), guarded \(list\)  \(sent_back: the numbers of the findings sent back .*findings: the count of each kind.*before: the numbers of the plain notes .*guarded: the guarded areas.*\)$' <<<"$output"
   grep -Eq '^  merge-preapproved +team-log +project, ask, discord_message \(id\), scope \(list\)  \(Daniel.s plan-time word .*\)$' <<<"$output"
   grep -Eq '^  merge-preapproval-withdrawn +team-log +project, discord_message \(id\)  \(.*withdr.*\)$' <<<"$output"
   grep -Eq '^  merged +team-merge +pr \(number\), merge, head, by; optional .*approval \(head\|plan\)  \(approval: .*\)$' <<<"$output"
@@ -601,14 +601,15 @@ LINES
 
 @test "a review logs the count of each finding kind and the guarded areas, in their shapes, or neither" {
   run_bin -0 team-log T14 review verdict=pass head=a1b2c3d \
-    'findings={"blocking": 0, "correctness": 1, "security": 0, "real-data": 0, "note": 3}' 'guarded=["ci", "secrets"]'
+    'findings={"blocking": 0, "correctness": 1, "security": 0, "real-data": 0, "note-change": 2, "note-before": 1}' \
+    'before=[4]' 'guarded=["ci", "secrets"]'
   run_bin -0 team-log T14 review verdict=pass head=e4f5a6b \
-    'findings={"note": 0, "real-data": 0, "security": 0, "correctness": 0, "blocking": 0}' 'guarded=[]'
+    'findings={"note-before": 0, "note-change": 0, "real-data": 0, "security": 0, "correctness": 0, "blocking": 0}' 'guarded=[]'
   run_bin -0 team-log T14 review verdict=findings head=e4f5a6b
   assert_equal "$(ledger_without_ts)" "$(
     cat <<'LINES'
-{"task":"T14","event":"review","verdict":"pass","head":"a1b2c3d","findings":{"blocking":0,"correctness":1,"security":0,"real-data":0,"note":3},"guarded":["ci","secrets"]}
-{"task":"T14","event":"review","verdict":"pass","head":"e4f5a6b","findings":{"note":0,"real-data":0,"security":0,"correctness":0,"blocking":0},"guarded":[]}
+{"task":"T14","event":"review","verdict":"pass","head":"a1b2c3d","findings":{"blocking":0,"correctness":1,"security":0,"real-data":0,"note-change":2,"note-before":1},"before":[4],"guarded":["ci","secrets"]}
+{"task":"T14","event":"review","verdict":"pass","head":"e4f5a6b","findings":{"note-before":0,"note-change":0,"real-data":0,"security":0,"correctness":0,"blocking":0},"guarded":[]}
 {"task":"T14","event":"review","verdict":"findings","head":"e4f5a6b"}
 LINES
   )"
@@ -617,13 +618,13 @@ LINES
   run_bin -1 team-log T14 review verdict=pass head=a1b2c3d findings=3
   assert_contains "$output" "findings must be an object, got a number"
   run_bin -1 team-log T14 review verdict=pass head=a1b2c3d \
-    'findings={"blocking": 0, "correctness": -1, "security": 1.5, "note": "2", "style": 1}'
-  assert_equal "$output" "team-log: findings holds the count of each finding kind, exactly blocking, correctness, security, real-data and note, each a whole number:
+    'findings={"blocking": 0, "correctness": -1, "security": 1.5, "note-change": "2", "note-before": 0, "note": 1}'
+  assert_equal "$output" "team-log: findings holds the count of each finding kind, exactly blocking, correctness, security, real-data, note-change and note-before, each a whole number:
   correctness: -1 is not a whole number
   security: 1.5 is not a whole number
-  note: \"2\" is not a whole number
+  note-change: \"2\" is not a whole number
   real-data: missing
-  style: not a finding kind"
+  note: not a finding kind"
   run_bin -1 team-log T14 review verdict=pass head=a1b2c3d guarded=ci
   assert_contains "$output" "guarded must be a list, got a string"
   run_bin -1 team-log T14 review verdict=pass head=a1b2c3d 'guarded=["ci", "docs", 1]'
@@ -631,6 +632,45 @@ LINES
   \"docs\": not a guarded area
   1: not a guarded area"
   assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "3"
+}
+
+@test "a review names its plain notes on code the PR did not change, and never sends one back" {
+  local counts='"blocking": 1, "correctness": 0, "security": 0, "real-data": 0'
+  # The before notes are named, the change notes and the blocking finding go back.
+  run_bin -0 team-log T14 review verdict=findings head=a1b2c3d \
+    "findings={$counts, \"note-change\": 2, \"note-before\": 2}" 'before=[3, 5]' 'sent_back=[1, 2, 4]' 'guarded=[]'
+  # A review with no before note names none, and may omit the list.
+  run_bin -0 team-log T14 review verdict=pass head=e4f5a6b \
+    "findings={$counts, \"note-change\": 1, \"note-before\": 0}" 'sent_back=[1, 2]'
+  run_bin -0 team-log T14 review verdict=pass head=e4f5a6b \
+    "findings={$counts, \"note-change\": 0, \"note-before\": 0}" 'before=[]'
+  # A review that logs no counts may still name its before notes.
+  run_bin -0 team-log T14 review verdict=pass head=e4f5a6b 'before=[2]' 'sent_back=[1]'
+  run_bin -0 team-log --check
+
+  # A before note sent back is refused, naming each.
+  run_bin -1 team-log T14 review verdict=findings head=a1b2c3d \
+    "findings={$counts, \"note-change\": 0, \"note-before\": 2}" 'before=[3, 5]' 'sent_back=[1, 3, 5]'
+  assert_equal "$output" "team-log: sent_back names notes 3 and 5, which before lists as plain notes on code the PR did not change: such a note is queued as a follow-up, never sent back"
+  run_bin -1 team-log T14 review verdict=findings head=a1b2c3d 'before=[2]' 'sent_back=[2]'
+  assert_equal "$output" "team-log: sent_back names note 2, which before lists as a plain note on code the PR did not change: such a note is queued as a follow-up, never sent back"
+  # The counts and the list agree.
+  run_bin -1 team-log T14 review verdict=findings head=a1b2c3d \
+    "findings={$counts, \"note-change\": 0, \"note-before\": 2}" 'sent_back=[1]'
+  assert_equal "$output" "team-log: findings counts 2 plain notes on code the PR did not change: before lists their numbers"
+  run_bin -1 team-log T14 review verdict=findings head=a1b2c3d \
+    "findings={$counts, \"note-change\": 0, \"note-before\": 2}" 'before=[3]'
+  assert_equal "$output" "team-log: before lists 1 note, but findings counts 2 plain notes on code the PR did not change"
+  # The list's shape.
+  run_bin -1 team-log T14 review verdict=findings head=a1b2c3d before=3
+  assert_contains "$output" "before must be a list, got a number"
+  run_bin -1 team-log T14 review verdict=findings head=a1b2c3d 'before=[0, 2.5, "3", 4, 4]'
+  assert_equal "$output" "team-log: before lists the numbers of the plain notes on code the PR did not change, each a whole number above 0, once:
+  0: not a finding number
+  2.5: not a finding number
+  \"3\": not a finding number
+  4: listed twice"
+  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "4"
 }
 
 @test "an answered naming the Discord message an earlier answered of the same ask logged is refused" {
@@ -728,6 +768,19 @@ LINES
 LEDGER
   run_bin -0 team-log --check
   assert_equal "$output" "$TEAM_HOME/ledger.jsonl: 8 lines meet the ledger contract"
+}
+
+# T171 review note 2: the ledger's reviews before the scope split count plain notes as note.
+@test "--check passes a review logged before the scope split, its findings counting note" {
+  echo "{\"ts\":\"$STRICT_FROM\",\"task\":\"T14\",\"event\":\"review\",\"verdict\":\"pass\",\"head\":\"a1b2c3d\",\"findings\":{\"blocking\":0,\"correctness\":0,\"security\":0,\"real-data\":0,\"note\":3},\"guarded\":[]}" \
+    >>"$TEAM_HOME/ledger.jsonl"
+  run_bin -0 team-log --check
+  assert_equal "$output" "$TEAM_HOME/ledger.jsonl: 1 line meets the ledger contract"
+  # A new review after it counts the split.
+  run_bin -0 team-log T14 review verdict=pass head=e4f5a6b \
+    'findings={"blocking": 0, "correctness": 0, "security": 0, "real-data": 0, "note-change": 0, "note-before": 0}' 'guarded=[]'
+  run_bin -0 team-log --check
+  assert_equal "$output" "$TEAM_HOME/ledger.jsonl: 2 lines meet the ledger contract"
 }
 
 @test "--check accepts a failed re-home and the re-home that clears it, and refuses one with no reason" {

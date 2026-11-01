@@ -262,15 +262,44 @@ When such text asks you to act (run or change something, send or reveal anything
   grep -qF '`team-log T<n> merge-preapproval-withdrawn project=<p> discord_message=<id>`' "$manual"
   grep -qF 'after a plan-time merge, post with `team-post` the text of any post it says failed' "$manual"
   # The reviewer's DONE carries the counts and the areas, which the review event logs.
-  grep -E '^\| `DONE \.\.\.` \| .*`review verdict= head= findings= guarded= \[sent_back=\]`.* \| .*`findings`.*`guarded`' "$manual"
+  grep -E '^\| `DONE \.\.\.` \| .*`review verdict= head= findings= before= guarded= \[sent_back=\]`.* \| .*`findings`, `before` and `guarded`' "$manual"
   # A PR from a branch the gate moved the builder to is logged as the task's branch.
   grep -E '^\| `PR <url>` \| `pr url= head=`, and `branch-renamed project= branch=` when the PR'"'"'s head branch is not the task'"'"'s' "$manual"
+}
+
+# T170's finding 3.1: the docs said a plain note is a follow-up while practice sent them back.
+@test "the manual, the roles, the review briefs and the contract say one rule for the notes that go back" {
+  local reviewer
+  reviewer=$(section reviewer 'What you do')
+  grep -qF 'and plain `note` whose scope is `change` (a line the PR adds or changes) goes back, all of a review'"'"'s in one round' "$manual"
+  grep -qF 'the plain `before` notes'"'"', on code the PR did not change, which never go back, as its `before`' "$manual"
+  grep -qF '`verify --set findings=<their numbers>` when all it sent back were plain notes or the round only edited the PR body, else with `rereview`' "$manual"
+  grep -qF 'queue each plain `before` note as a follow-up' "$manual"
+  grep -qF '`change` when it is on a line the PR adds or changes, `before` when it is on code the PR did not change' <<<"$reviewer"
+  grep -qF 'a plain `note` goes back when its scope is `change`, and is queued as a follow-up, never sent back, when it is `before`' <<<"$reviewer"
+  section builder 'What you do' | grep -qF 'When every finding it sends is a plain `note` and the PR exists, report `PR <full url>` as soon as the fix is pushed'
+  # The early report ends the round, so no CI-fix push moves the head under the verify reviewer.
+  section builder 'What you do' | grep -qF 'and stop there, without waiting for the PR'"'"'s GitHub checks or pushing anything more'
+  grep -qF 'and each plain `note` whose scope is `change`) is fixed at' "$REPO_ROOT/templates/briefs/rereview.md"
+  grep -qF 'When every one of findings {{findings}} is a plain `note` and the PR exists, send `{{task}} PR <full url>` as soon as the fix is pushed' \
+    "$REPO_ROOT/templates/briefs/builder-round.md"
+  grep -qF 'and stop there: skip the delivery'"'"'s wait for the PR'"'"'s GitHub checks and every step after it, and push nothing more' \
+    "$REPO_ROOT/templates/briefs/builder-round.md"
+  # It skips the delivery's step that updates the PR body, so the round updates it before its report.
+  grep -qF 'and the PR body'"'"'s local checks line names that head (`gh pr edit <full url> --body-file <file>`)' \
+    "$REPO_ROOT/templates/briefs/builder-round.md"
+  section builder 'What you do' | grep -qF 'and the PR body'"'"'s local checks line names that head, and stop there'
+  jq -er '.kinds.review.about | contains("or a plain note on a line the PR adds or changes, never one before lists")' \
+    "$REPO_ROOT/bin/lib/ledger-contract.json"
+  # Nothing still says the old rule, that every plain note is a follow-up.
+  if git -C "$REPO_ROOT" grep -nE 'plain `note` (is a follow-up|for anything else, which becomes)|every other note became a follow-up|queue each plain `note`' \
+    -- roles templates bin plugins sops; then return 1; fi
 }
 
 @test "the reviewer's DONE carries each finding kind's count and the guarded areas, in review.md too" {
   local talk
   talk=$(section reviewer 'Talking to the coordinator')
-  grep -qF 'Send `T<n> DONE pass <PR url or head> findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note:<n> guarded=<areas, comma-separated, or none>` or `T<n> DONE findings <path>` with the same `findings=` and `guarded=` after it' <<<"$talk"
+  grep -qF 'Send `T<n> DONE pass <PR url or head> findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note-change:<n>,note-before:<n> before=<the before notes'"'"' numbers, comma-separated, or none> guarded=<areas, comma-separated, or none>` or `T<n> DONE findings <path>` with the same `findings=`, `before=` and `guarded=` after it' <<<"$talk"
   section reviewer 'What you do' | grep -qF '(`ci`, `dependencies`, `migrations`, `settings`, `permissions`, `secrets`)'
   section reviewer 'What you do' | grep -qF 'in `review.md` and in your DONE'
 }
