@@ -391,6 +391,36 @@ EOF' "$close"
   unread 'cmd > out; echo $(( "1" ))' "$quote"
 }
 
+@test "a case or a ( or ) inside a \${ } inside \$( ) is refused unread, naming it, as bash closes the \$( ) elsewhere" {
+  local case='a case inside $( )'
+  unread 'echo "$(case a in a) cmd > out ;; esac)"' "$case"
+  unread 'x=$(case a in (a) cmd ;; esac) > .scratch/x' "$case"
+  local parenthesis='a ( or ) inside a ${ } inside $( )'
+  unread 'echo "$(echo ${x:-)} > out)"' "$parenthesis"
+  unread 'echo "$(echo ${x:-(} > out)"' "$parenthesis"
+  unread 'echo "$(echo ${x:-${y:-)}} > out)"' "$parenthesis"
+  # A case outside $( ), a word that only holds case, and a ${ } with no parenthesis are read.
+  blocked 'case a in a) cmd > out ;; esac' "$wt/out"
+  blocked 'echo "$(echo showcase ${x:-a} > out)"' "$wt/out"
+  shell -0 'echo "$(echo ${x}) ${y:-(}" > .scratch/x'
+}
+
+@test "a heredoc inside \$( ) whose delimiter line is not found is refused unread, naming it, as bash ends it at EOF)" {
+  local heredoc='a heredoc inside $( ) whose delimiter line is not found'
+  unread $'x=$(cat <<EOF\nhi\nEOF) ; cmd > out' "$heredoc"
+  unread $'x=$(cat <<\'EOF\'\nhi\nEOF) ; cmd > out' "$heredoc"
+  # A heredoc in $( ) whose delimiter line is found is read.
+  blocked $'x=$(cat <<EOF\nhi\nEOF\n) ; cmd > out' "$wt/out"
+}
+
+@test "a single quote inside a double-quoted \${ } is refused unread, naming it, as bash skips it to find the }" {
+  local quote='a single quote inside a double-quoted ${ }'
+  unread "echo \"\${x:-'\"'}\" ; cmd > out ; echo \"}\"" "$quote"
+  unread "echo \"\${x:-'a'}\" > .scratch/x" "$quote"
+  # Unquoted, the single quote is read as bash reads it.
+  blocked "echo \${x:-'}'} > out" "$wt/out"
+}
+
 @test "an ANSI-C string and an old arithmetic expansion are read whole, so what follows them is judged" {
   blocked "echo \$'a\\'b' > out" "$wt/out"
   blocked "echo \$'a > b' > out" "$wt/out"

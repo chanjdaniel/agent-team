@@ -26,7 +26,9 @@
 # ANSI-C text, comments and the body of a heredoc whose delimiter is quoted hold none.
 # A command that holds a form whose reading turns on a parser subtlety is refused unread, with a
 # message naming the form: a quote inside (( )), $(( )) or $[ ]; a (( or $(( that does not close
-# with )); an unquoted # inside $( ), a comment or not ($#, ${#x} and a # in a ${ } there included).
+# with )); an unquoted # inside $( ), a comment or not ($#, ${#x} and a # in a ${ } there included);
+# a case inside $( ); a ( or ) inside a ${ } inside $( ); a heredoc inside $( ) whose delimiter line
+# is not found; a single quote inside a double-quoted ${ }.
 # A command with no > and no tee is allowed unread, whatever it holds.
 # Text that a command runs as shell code itself (eval, sh -c, bash -c, ssh) is not judged.
 # It is a speed bump for the plain shell write, never a guarantee: sed -i, cp, mv, an interpreter
@@ -130,10 +132,12 @@ drop_descriptor() {
 # skip_bodies <j> <queue> <entry>...: set end past the bodies of the heredocs read on the line that
 # ended just before j, in their order, each entry its - or + (whether leading tabs are stripped), 1
 # or 0 (whether its delimiter was quoted) and its delimiter; with queue, add the body of each one
-# whose delimiter was not quoted to bodies, whose substitutions the shell runs.
+# whose delimiter was not quoted to bodies, whose substitutions the shell runs. It sets unfound to 1
+# when a body runs to the end with no line equal to its delimiter, else to 0.
 skip_bodies() {
   local j=$1 queue=$2 entry delimiter dash quoted_delimiter line rest start finish
   shift 2
+  unfound=0
   for entry in "$@"; do
     dash=${entry:0:1} quoted_delimiter=${entry:1:1} delimiter=${entry:2}
     start=$j finish=$n
@@ -146,6 +150,7 @@ skip_bodies() {
       j=$((j + ${#rest} + 1))
       ((finish == n)) || break
     done
+    ((finish < n)) || unfound=1
     [[ -n $queue && $quoted_delimiter == 0 ]] && bodies+=("${s:start:finish-start}")
   done
   end=$j
@@ -178,9 +183,12 @@ delimiter_at() {
 # The scanners set end to the index just past what they scan, in s from the index j, or to n when
 # it never closes.
 # sub_end <j>: the ) that closes a command substitution whose body starts at j, past quoted text,
-# nested substitutions and heredoc bodies; an unquoted # in it, a comment or not, is refused unread.
+# nested substitutions and heredoc bodies. Refused unread, as bash's parser reads the body as a
+# command where this count of parentheses does not: an unquoted # in it, a comment or not; a case,
+# whose patterns end in ); a ( or ) inside a ${ } in it; and a heredoc in it whose delimiter line is
+# not found, which bash ends at a line that starts with the delimiter and a ).
 sub_end() {
-  local j=$1 depth=1 c rest entries=() dash delimiter delimiter_quoted
+  local j=$1 depth=1 brace=0 c rest entries=() dash delimiter delimiter_quoted unfound
   while ((j < n)); do
     c=${s:j:1}
     case $c in
@@ -202,6 +210,7 @@ sub_end() {
       $'\n')
         if ((${#entries[@]})); then
           skip_bodies $((j + 1)) '' "${entries[@]}"
+          ((unfound == 0)) || unread 'a heredoc inside $( ) whose delimiter line is not found'
           j=$end entries=()
           continue
         fi
@@ -216,7 +225,16 @@ sub_end() {
       \`) bq_end $((j + 1)) && j=$end && continue ;;
       '$')
         [[ ${s:j+1:1} == \' ]] && ansi_end $((j + 2)) && j=$end && continue
+        [[ ${s:j+1:1} == '{' ]] && brace=$((brace + 1)) && j=$((j + 2)) && continue
         ;;
+      '{') ((brace == 0)) || brace=$((brace + 1)) ;;
+      '}') ((brace == 0)) || brace=$((brace - 1)) ;;
+      c)
+        if [[ ${s:j:4} == case && ${s:j+4:1} == @([[:space:]]|) && ${s:j-1:1} == [[:space:]\;\&\|\(\)] ]]; then
+          unread 'a case inside $( )'
+        fi
+        ;;
+      '(' | ')') ((brace == 0)) || unread 'a ( or ) inside a ${ } inside $( )' ;;&
       '(') depth=$((depth + 1)) ;;
       ')')
         depth=$((depth - 1))
@@ -377,7 +395,8 @@ queue_substitution() {
 
 # parameter <at> <in double quotes>: set taken to the parameter expansion whose ${ is at the index
 # at, as written when it is a plain ${name}, else its stand-in, queue the command substitutions in
-# its operand, and end past its }.
+# its operand, and end past its }. In double quotes, a single quote in it is refused unread: bash's
+# parser skips it to find the }, though the expansion keeps it as text.
 parameter() {
   local at=$1 j=$(($1 + 2)) depth=1 c rest
   while ((j < n)); do
@@ -385,12 +404,11 @@ parameter() {
     case $c in
       \\) j=$((j + 2)) && continue ;;
       \')
-        if [[ $2 != d ]]; then
-          rest=${s:j+1}
-          rest=${rest%%\'*}
-          j=$((j + ${#rest} + 2))
-          continue
-        fi
+        [[ $2 != d ]] || unread 'a single quote inside a double-quoted ${ }'
+        rest=${s:j+1}
+        rest=${rest%%\'*}
+        j=$((j + ${#rest} + 2))
+        continue
         ;;
       \") dq_end $((j + 1)) queue && j=$end && continue ;;
       \`) queue_backticks "$j" "$2" && j=$end && continue ;;
