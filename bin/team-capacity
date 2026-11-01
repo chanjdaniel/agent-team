@@ -108,16 +108,27 @@
 #          without a name), settings (every key below, and from: each key's source,
 #          "capacity.json" or "default"), stale (true with no reading, or the newest more than 15
 #          minutes old), reading (the newest, as sample writes it, or null), reserved: {bytes (the
-#          total), items: [{kind, task, name, estimate_bytes, use_bytes, bytes}]}, room: {mode,
-#          level (the team home's level.jsonl's, manual full with none), share, budget_bytes (the
-#          memory budget, as team-level says it), bytes (the budget less what is reserved, below 0
-#          when over it); both null with no reading}}. What is reserved, each item at the larger
-#          of its kind's estimate (costs) and its use: each live team session and each running team
-#          or gate stack of the newest reading, the gate while it runs a pipeline, the running
-#          heavy run while a team-heavy holds the lock (kind and estimate its admission's, use the
-#          reading's when the reading saw it, named by its holder line's label), and each admission
-#          of the last 10 minutes but a heavy run's, at its estimate then (no use yet, and its
-#          time as admitted), since a new session or stack has not grown yet.
+#          total), sessions_use, spike_allowance, admissions, stacks, heavy_runs, gates (the bytes
+#          of each part, 0 with none), items: [{part, kind, task, name, estimate_bytes, use_bytes,
+#          bytes}]}, room: {mode, level (the team home's level.jsonl's, manual full with none),
+#          share, budget_bytes (the memory budget, as team-level says it), bytes (the budget less
+#          what is reserved, below 0 when over it); both null with no reading}}. What is reserved,
+#          by part (the estimates are costs'):
+#            sessions_use     each live team session of the newest reading past its admission
+#                             window, at its use (its scope's memory.current, RAM only);
+#            spike_allowance  one for the team, the largest of those sessions' estimates less
+#                             their use, at 0 at least, and 0 with none past its window;
+#            admissions       each admission of the last 10 minutes but a heavy run's, at its
+#                             estimate then (no use yet, and its time as admitted), since a new
+#                             session or stack has not grown yet; a session of its kind and task
+#                             the reading holds is in that window (the one using least, when
+#                             several), reserved once, at the larger of the estimate and its use;
+#            stacks, gates    each running team or gate stack, and the gate while it runs a
+#                             pipeline, at the larger of its estimate and its use;
+#            heavy_runs       the running heavy run while a team-heavy holds the lock, at the
+#                             larger of its estimate and its use (kind and estimate its
+#                             admission's, use the reading's when the reading saw it, named by
+#                             its holder line's label).
 # costs    Each kind of work's estimate, one line each ("session:builder: 0.6 GiB, learned from 7
 #          samples, 0.4 GiB to 0.6 GiB"): a session by role (each role in roles/ but the
 #          coordinator's), a stack by registered project with a stack block, the gate, then every
@@ -139,7 +150,8 @@
 #          reserved memory plus the estimate is at most the budget it exits 0, saying so on
 #          stdout, and keeps the admission in ~/.local/state/agent-team/capacity/admitted.json
 #          ({at, kind, task, bytes, pid (a heavy run's team-heavy, the lock's holder)}), which
-#          reserves it for 10 minutes (a heavy run's while its team-heavy holds the lock); else it
+#          reserves it for 10 minutes as status --json's admissions say (a heavy run's while its
+#          team-heavy holds the lock); else it
 #          exits 75 with the reason on stderr, "no room for session:reviewer at minor (30%): 8.9
 #          GiB of 9.2 GiB reserved, a reviewer needs 0.5 GiB", and at level none "the team is at
 #          level none: nothing starts". CPU is never admitted: the slice's quota holds it. Above
@@ -703,10 +715,10 @@ status_json() {
     | ($given | capacity_settings) as $s
     | capacity_reservations({reading: $r, costs: $costs[0].costs, settings: $s, heavy: $heavy[0],
                              admitted: $admitted[0], now: now, asking: ($asking | select(. != "") // null)}) as $items
-    | ([$items[].bytes] | add // 0) as $reserved
+    | reserved_split($items) as $split
     | {schema: "team-capacity/1", machine: ($machine | select(. != "") // null), settings: $s,
        stale: ($r == null or ($r.at | fromdateiso8601) < now - 900), reading: $r,
-       reserved: {bytes: $reserved, items: $items}, room: capacity_room($s; $level[0]; $r; $reserved)}' >"$work/status.json"
+       reserved: ($split + {items: $items}), room: capacity_room($s; $level[0]; $r; $split.bytes)}' >"$work/status.json"
 }
 
 status() {

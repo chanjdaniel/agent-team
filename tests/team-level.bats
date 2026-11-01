@@ -196,6 +196,16 @@ update_calls() {
   assert_equal "$output" "Resources: manual, minor (30%): 9.6 GiB and 3.6 cores for the team; 2.5 GiB reserved."
   assert_equal "$stderr" ""
 
+  # status splits what is reserved: the builder's use, its allowance (its 0.5 GiB seed less that
+  # use) and the stack's 2 GiB of mem_limits.
+  run_bin -0 --separate-stderr team-level status --json
+  assert_equal "$(jq -c '.reserved_split' <<<"$output")" \
+    "{\"sessions_use\":536870912,\"spike_allowance\":0,\"admissions\":0,\"stacks\":$((2 * GIB)),\"heavy_runs\":0,\"gates\":0}"
+  run_bin -0 team-level status
+  assert_contains "$output" "
+  reserved 2.5 GiB: sessions' use 0.5 GiB, spike allowance 0.0 GiB, admissions 0.0 GiB, stacks 2.0 GiB, heavy runs 0.0 GiB, gates 0.0 GiB
+"
+
   # apply says each limit it set.
   run_bin -0 team-level apply
   assert_equal "$output" "held agent-team.slice to CPUQuota=360% MemoryHigh=7.6 GiB MemoryMax=8.6 GiB

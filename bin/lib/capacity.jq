@@ -474,33 +474,73 @@ def admission_kept($heavy; $now):
 # What the team's live work reserves, from $in: {reading (the newest, or null), costs
 # (capacity_costs' array), settings, heavy (the heavy-run lock now: {held, pid, label, task}),
 # admitted (capacity/admitted.json's entries), now (seconds), asking (the kind being admitted, or
-# null)}, as [{kind, task, name, estimate_bytes, use_bytes, bytes}], each at the larger of its
-# kind's estimate and its use:
-#   each live team session of the reading, each running team or gate stack (one with no estimate:
-#   its mem_limits), and the gate while it runs a pipeline;
-#   the running heavy run, while one holds the lock, but when the asker is a heavy run, which
-#   holds it itself: its kind its admission's (the entry whose pid is its team-heavy's), else
-#   "heavy", its estimate heavy_gib's when its kind has none, its use the reading's when the
-#   reading saw that run, its name the holder's label;
-#   each admission of the last 10 minutes but a heavy run's (the lock holds those), at its
-#   estimate then, with no use yet and admitted: its time.
+# null)}, as [{part, kind, task, name, estimate_bytes, use_bytes, bytes}], part one of
+# reserved_parts:
+#   sessions_use: each live team session of the reading past its admission window, at its use;
+#   spike_allowance: one for the team while any session is past its window, the largest of those
+#   sessions' kind estimates less their use, at 0 at least, named by that session;
+#   admissions: each admission of the last 10 minutes but a heavy run's, at its estimate then
+#   (admitted: its time); one of a session kind together with a session of that kind and task the
+#   reading holds, which is then within its window, at the larger of that estimate and the
+#   session's use (of several sessions of the kind and task, the newest admissions take the ones
+#   using least, since a new session uses little yet);
+#   stacks: each running team or gate stack, at the larger of its kind's estimate (one with none:
+#   its mem_limits) and its use;
+#   gates: the gate while it runs a pipeline, at the larger of its estimate and its use;
+#   heavy_runs: the running heavy run, while one holds the lock, but when the asker is a heavy run,
+#   which holds it itself, at the larger of its estimate and its use: its kind its admission's (the
+#   entry whose pid is its team-heavy's), else "heavy", its estimate heavy_gib's when its kind has
+#   none, its use the reading's when the reading saw that run, its name the holder's label.
+# A session's kind estimate is kind_estimate's, so a role costs does not list is at session_gib.
 def capacity_reservations($in):
   ($in.costs | map({key: .kind, value: .estimate_bytes}) | from_entries) as $estimate
   | $in.reading as $r | $in.heavy as $heavy
-  | def item($kind; $task; $name; $use; $fallback):
+  | def item($part; $kind; $task; $name; $use; $fallback):
       ($estimate[$kind] // $fallback // 0) as $e
-      | {kind: $kind, task: $task, name: $name, estimate_bytes: $e, use_bytes: $use, bytes: ([$e, $use // 0] | max)};
-  [($r.tasks // [] | .[] | .task as $task | .sessions[] | item("session:\(.role)"; $task; .id; .memory; null)),
-   ($r.stacks // [] | .[] | item("stack:\(.project // .class)"; .task; .name; .memory; .limits)),
-   (if $r.gate.running // false then item("gate"; null; "gate"; $r.gate.memory; null) else empty end),
-   (if $heavy.held and (($in.asking // "") | startswith("heavy:") | not) then
-      (first($in.admitted[] | select(.pid != null and .pid == $heavy.pid)) // null) as $a
-      | item($a.kind // "heavy"; $heavy.task; $heavy.label;
-             (if $heavy.pid != null and $r.heavy.pid == $heavy.pid then $r.heavy.memory else null end);
-             ($a.bytes // ($in.settings.heavy_gib * 1073741824 | round)))
-    else empty end),
-   ($in.admitted[] | select(admission_kept($heavy; $in.now) and (.kind | startswith("heavy:") | not))
-    | {kind, task, name: null, admitted: .at, estimate_bytes: .bytes, use_bytes: null, bytes})];
+      | {part: $part, kind: $kind, task: $task, name: $name, estimate_bytes: $e, use_bytes: $use, bytes: ([$e, $use // 0] | max)};
+    def ranked(order):
+      to_entries | map(.value + {i: .key}) | group_by([.kind, .task])
+      | map(sort_by(order) | to_entries | map(.value + {rank: .key, key: "\(.value.kind) \(.value.task) \(.key)"}))
+      | add // [] | sort_by(.i);
+  [$in.admitted[] | select(admission_kept($heavy; $in.now) and (.kind | startswith("heavy:") | not))] as $kept
+  | ([$kept[] | select(.kind | startswith("session:"))] | ranked(.at | fromdateiso8601 | -.)
+     | map({key, value: .}) | from_entries) as $windows
+  | ([$r.tasks // [] | .[] | .task as $task | .sessions[]
+      | {kind: "session:\(.role)", task: $task, name: .id, use: .memory,
+         estimate: kind_estimate($in.costs; $in.settings; "session:\(.role)"; null).bytes}]
+     | ranked([.use, .name]) | map(. + {admission: $windows[.key]})) as $sessions
+  | ([$sessions[] | select(.admission != null) | "\(.kind) \(.task)"] | group_by(.) | map({key: .[0], value: length}) | from_entries) as $taken
+  | [$sessions[] | select(.admission == null)] as $past
+  | [($sessions[]
+      | if .admission == null then
+          {part: "sessions_use", kind, task, name, estimate_bytes: .estimate, use_bytes: .use, bytes: (.use // 0)}
+        else
+          {part: "admissions", kind, task, name, admitted: .admission.at, estimate_bytes: .admission.bytes, use_bytes: .use,
+           bytes: ([.admission.bytes, .use // 0] | max)}
+        end),
+     (if $past == [] then empty
+      else $past | map(. + {gap: ([.estimate - (.use // 0), 0] | max)}) | max_by(.gap)
+        | {part: "spike_allowance", kind, task, name, estimate_bytes: .estimate, use_bytes: .use, bytes: .gap} end),
+     ($r.stacks // [] | .[] | item("stacks"; "stack:\(.project // .class)"; .task; .name; .memory; .limits)),
+     (if $r.gate.running // false then item("gates"; "gate"; null; "gate"; $r.gate.memory; null) else empty end),
+     (if $heavy.held and (($in.asking // "") | startswith("heavy:") | not) then
+        (first($in.admitted[] | select(.pid != null and .pid == $heavy.pid)) // null) as $a
+        | item("heavy_runs"; $a.kind // "heavy"; $heavy.task; $heavy.label;
+               (if $heavy.pid != null and $r.heavy.pid == $heavy.pid then $r.heavy.memory else null end);
+               ($a.bytes // ($in.settings.heavy_gib * 1073741824 | round)))
+      else empty end),
+     ($kept | ranked(.at | fromdateiso8601 | -.) | .[]
+      | select((.kind | startswith("session:") | not) or .rank >= ($taken["\(.kind) \(.task)"] // 0))
+      | {part: "admissions", kind, task, name: null, admitted: .at, estimate_bytes: .bytes, use_bytes: null, bytes})];
+
+# The parts of what is reserved, in the order status --json and team-level say them.
+def reserved_parts: ["sessions_use", "spike_allowance", "admissions", "stacks", "heavy_runs", "gates"];
+
+# The reservations <items> (capacity_reservations') as {bytes (the total), and each of
+# reserved_parts: the bytes of its items, 0 with none}.
+def reserved_split($items):
+  {bytes: ([$items[].bytes] | add // 0)}
+  + (reserved_parts | map({key: ., value: (. as $part | [$items[] | select(.part == $part) | .bytes] | add // 0)}) | from_entries);
 
 # The room left at the level <current> (level_current's {mode, level}), from the settings <s>,
 # the newest reading <r> (or null) and the reservations' total <reserved>: {mode, level, share,
@@ -555,6 +595,9 @@ def level_status_text:
           else ": \(.share | percent) of \($r.cpus), other programs use \($r.others_cores) and \(.settings.reserve_cores) stays free for them" end),
      "  the team uses \(.use.memory_bytes | gib)" + (if .use.cores == null then "" else " and \(.use.cores | cores_short)" end)
        + " (the reading at \($r.at | fromdateiso8601 | strflocaltime("%H:%M")))"),
+  "  reserved \(.reserved_bytes | gib): " + (.reserved_split as $split | reserved_parts
+    | map({sessions_use: "sessions' use", spike_allowance: "spike allowance", admissions: "admissions", stacks: "stacks",
+           heavy_runs: "heavy runs", gates: "gates"}[.] + " \($split[.] | gib)") | join(", ")),
   (if .last_change == null then "  last change: none recorded, so manual full"
    else .last_change | "  last change: \(.mode) \(.level) by \(.by) at \(.ts | fromdateiso8601 | strflocaltime("%Y-%m-%d %H:%M")) on \(.machine)" end);
 

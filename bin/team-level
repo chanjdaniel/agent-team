@@ -12,12 +12,15 @@
 #
 # status   The default. The mode, the level and its share, the team's budget (its memory and
 #          cores, and what bounds each: the share, or what the other programs leave), what the
-#          team's live work reserves and uses, and the last change, who made it and when. With
-#          no reading of the last 10 minutes it first takes one (team-capacity status), unless
-#          --stored. With --json one object: {schema: "team-level/1", machine, mode, level,
-#          share, says (the acknowledgement's words), budget: {memory_bytes (null with no
-#          reading), cores, bound_by: {memory, cores}, each "share" or "others"}, reserved_bytes,
-#          reserved (each item team-capacity status --json reserves: {kind, task, name,
+#          team's live work uses and reserves, split as team-capacity status --json splits it,
+#          and the last change, who made it and when. With no reading of the last 10 minutes it
+#          first takes one (team-capacity status), unless --stored. With --json one object:
+#          {schema: "team-level/1", machine, mode, level, share, says (the acknowledgement's
+#          words), budget: {memory_bytes (null with no reading), cores, bound_by: {memory,
+#          cores}, each "share" or "others"}, reserved_bytes,
+#          reserved_split ({sessions_use, spike_allowance, admissions, stacks, heavy_runs, gates},
+#          the bytes of each part team-capacity status --json splits what is reserved into),
+#          reserved (each item team-capacity status --json reserves: {part, kind, task, name,
 #          estimate_bytes, use_bytes, bytes}), use: {memory_bytes, cores}, reading ({at, total,
 #          others_memory, cpus, others_cores} of the newest reading, null with none), settings
 #          (capacity.json's, with its defaults), cpus (the machine's cores), last_change (the
@@ -161,7 +164,8 @@ gather() {
     ($record[0] | level_current) as $now | $capacity[0] as $c | $c.settings as $s | $c.reading as $r
     | capacity_budget($s; $now.level; $r; $cpu[0]; $cpus) as $budget
     | {schema: "team-level/1", machine: $c.machine, mode: $now.mode, level: $now.level, share: $budget.share,
-       budget: ($budget | del(.share)), reserved_bytes: $c.reserved.bytes, reserved: $c.reserved.items,
+       budget: ($budget | del(.share)), reserved_bytes: $c.reserved.bytes,
+       reserved_split: ($c.reserved | with_entries(select(.key as $k | reserved_parts | index($k)))), reserved: $c.reserved.items,
        use: {memory_bytes: ($r.memory.team // null), cores: ($r.cpu.team // null)},
        reading: (if $r == null then null
                  else {at: $r.at, total: $r.memory.total, others_memory: $r.memory.others,

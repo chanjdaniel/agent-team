@@ -77,7 +77,7 @@ With `T` the memory total, `C` the cores, `s` the level's share (0 for none), an
 
 So none's budget is 0, and no level's is more than what Daniel's programs leave.
 A command that needs the budget takes a reading first when the newest is more than 10 minutes old.
-What the team's live work reserves is, for each live team session, running team or gate stack and running gate, the larger of its kind's estimate (below) and its use.
+What the team's live work reserves is said in "Admission" below: a live session its use and one shared spike allowance, a new one, a stack, a heavy run and a gate the larger of their kind's estimate and their use.
 
 Memory is read as RAM alone, as the kernel's `MemAvailable` and each cgroup's `memory.current` count it: swap is left out of the budget, the use and the limits (home-pc has a 33.6 GiB swap partition, much of it in use).
 A page the slice's limits push to swap frees RAM for Daniel's programs, which is the budget's point, so the slice's swap is not limited.
@@ -170,16 +170,22 @@ CPU is never admitted: the slice's quota holds it.
 
 `team-capacity admit --kind <kind> [--task T<n>]` decides, under an exclusive lock, `~/.local/state/agent-team/capacity.lock`, around its read and its decision, so two launches never both take the last room.
 It takes a reading first when the newest is over 10 minutes old, as `status` does.
-What is reserved, each item at the larger of its kind's estimate and its use:
+What is reserved, in the parts `team-capacity status --json` splits it into:
 
-- each live team session and each running team or gate stack of the newest reading, and the gate while it runs a pipeline;
-- the running heavy run, while a `team-heavy` holds its lock, at its admission's kind, its use the reading's (its scope's on Linux) when the reading saw it; a run holding the lock in another form, Conventioner's, at `heavy_gib`;
-- each admission of the last 10 minutes, but a heavy run's, at its estimate then, since a new session or stack has not grown yet and the next reading may not hold it; they are kept in `capacity/admitted.json`.
+- `sessions_use`: each live team session of the newest reading past its admission window, at its use, its scope's `memory.current` (RAM only);
+- `spike_allowance`: one for the team, the largest of those sessions' estimates less their use, at 0 at least, and 0 with no session past its window, which keeps room reserved for one worker's spike at a time;
+- `admissions`: each admission of the last 10 minutes, but a heavy run's, at its estimate then, since a new session or stack has not grown yet and the next reading may not hold it; they are kept in `capacity/admitted.json`.
+  A session the reading holds of an admission's kind and task is in its window, reserved once, at the larger of that estimate and its use; of several such sessions, the ones using least are, since a new session uses little yet.
+- `stacks` and `gates`: each running team or gate stack, and the gate while it runs a pipeline, at the larger of its kind's estimate and its use;
+- `heavy_runs`: the running heavy run, while a `team-heavy` holds its lock, at the larger of its estimate and its use, at its admission's kind, its use the reading's (its scope's on Linux) when the reading saw it; a run holding the lock in another form, Conventioner's, at `heavy_gib`.
+
+A session's estimate is its scope's peak, tests it runs in the foreground included, while it idles at a fraction of it: on home-pc on 2026-11-01 seven builders used 0.1 to 0.3 GiB each against the learned 2.4 GiB, so reserving each at its estimate left full's 16.4 GiB budget no room for an eighth or a heavy run.
+Daniel chose the use and one shared allowance (2026-11-01), so the team keeps its parallelism, and the slice's `MemoryHigh` holds a rare pile-up of spikes.
 
 A heavy run asking is never counted beside itself: it asks while it holds the heavy-run lock, so the running heavy run is the asker.
 The kind's estimate is `team-capacity costs`'s; a stack it has none of yet is weighed at the `mem_limit`s `team-stack up` gives (`--seed-bytes`), a heavy run or session kind it does not list at `heavy_gib` or `session_gib`, and anything else with no estimate at 0, so the next reading weighs it by its use.
 When the reserved memory plus the estimate is at most the budget it exits 0 and keeps the admission; else it exits 75 with the reason on stderr, such as `no room for session:reviewer at minor (30%): 8.9 GiB of 9.2 GiB reserved, a reviewer needs 0.5 GiB`; at none, `the team is at level none: nothing starts`.
-`team-capacity status --json` says what is reserved (`reserved`, the total and each item) and what room is left (`room`), and `team-level` reports the same reservations.
+`team-capacity status --json` says what is reserved (`reserved`: the total, each part and each item) and what room is left (`room`), and `team-level status` reports the same split.
 
 Who asks:
 

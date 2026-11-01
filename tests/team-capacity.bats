@@ -363,11 +363,35 @@ age_admissions() {
   mv "$STATE_DIR/admitted.json.new" "$STATE_DIR/admitted.json"
 }
 
-# The reservations of status --json, one compact [kind, task, GiB] per item.
+# The reservations of status --json, one compact [part, kind, task, GiB] per item.
 reserved_items() {
   guard_sandbox
   "$REPO_ROOT/bin/team-capacity" status --json |
-    jq -c --argjson gib "$GIB" '.reserved.items[] | [.kind, .task, (.bytes / $gib | . * 100 | round / 100)]'
+    jq -c --argjson gib "$GIB" '.reserved.items[] | [.part, .kind, .task, (.bytes / $gib | . * 100 | round / 100)]'
+}
+
+# The split of status --json's reservations, each part in GiB, the total first.
+reserved_split() {
+  guard_sandbox
+  "$REPO_ROOT/bin/team-capacity" status --json |
+    jq -c --argjson gib "$GIB" '.reserved | del(.items) | map_values(. / $gib | . * 100 | round / 100)'
+}
+
+# team_reading <others GiB> [<session>...]: a stored reading, taken now, of a 32 GiB machine whose
+# other programs use <others GiB>, with no stack, gate or heavy run, and each <session>, "<task>
+# <role> <id> <GiB>", live. At full the team's budget is the 28 GiB the others and reserve_gib
+# leave less <others GiB>, below 28.8 GiB.
+team_reading() {
+  mkdir -p "$STATE_DIR"
+  printf '%s\n' "${@:2}" | jq -Rnc --argjson gib "$GIB" --argjson others "$1" '
+    [inputs | select(. != "") | split(" ") | {task: .[0], role: .[1], id: .[2], memory: (.[3] | tonumber * $gib | round)}] as $s
+    | {at: (now | floor | todate), os: "linux", docker: true,
+       memory: {total: (32 * $gib), available: ((32 - $others) * $gib | round), team: ([$s[].memory] | add // 0),
+                others: ($others * $gib | round)}, cpu: null,
+       systemd: true, sessions: true,
+       tasks: [$s | group_by(.task)[] | {task: .[0].task, memory: ([.[].memory] | add), cpu: null, cpu_nsec: null,
+                sessions: map({id, role, memory, peak: .memory, cpu_seconds: 1}), stacks: []}],
+       stacks: [], heavy: null, gate: {running: false, memory: 0, cpu_seconds: 0}}' >>"$STATE_DIR/readings.jsonl"
 }
 
 @test "sample on Linux: each task's use is its slice's, its processes outside the slice and its stacks, each session its scope's" {
@@ -693,9 +717,10 @@ cost() {
   # the stack its 3 GiB of mem_limits, above its 2 GiB of use; the gate its 2.2 GiB seed.
   busy_reading
   level minor
-  assert_equal "$(reserved_items)" '["session:builder","T7",1]
-["stack:conventioner","T7",3]
-["gate",null,2.2]'
+  assert_equal "$(reserved_items)" '["sessions_use","session:builder","T7",1]
+["spike_allowance","session:builder","T7",0]
+["stacks","stack:conventioner","T7",3]
+["gates","gate",null,2.2]'
   run_bin -0 team-capacity status --json
   assert_equal "$(jq -c '.room | del(.bytes)' <<<"$output")" '{"mode":"manual","level":"minor","share":0.3,"budget_bytes":10307921510}'
   local room
@@ -724,6 +749,74 @@ cost() {
   # A heavy run's kind costs has no sample of yet is at heavy_gib.
   run_bin -75 --separate-stderr team-capacity admit --kind heavy:tests-run
   assert_equal "$stderr" "no room for heavy:tests-run at minor (30%): 6.7 GiB of 9.6 GiB reserved, a heavy run of tests-run needs 5.0 GiB"
+}
+
+@test "status: a session past its admission window reserves its use, the team one spike allowance for the largest gap, and one in its window the larger of its estimate and its use" {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  mkdir -p "$HOME/.config/agent-team"
+  echo '{"session_gib": 2}' >"$HOME/.config/agent-team/capacity.json"
+  # With no session past its window there is no allowance.
+  team_reading 8
+  assert_equal "$(reserved_split)" '{"bytes":0,"sessions_use":0,"spike_allowance":0,"admissions":0,"stacks":0,"heavy_runs":0,"gates":0}'
+  # Three sessions never admitted (or long ago): each reserves its use, and the team one allowance,
+  # the largest of their estimates less their use, the reviewer's 2 - 0.5.
+  team_reading 8 "T7 builder a1 1" "T7 reviewer b2 0.5" "T9 builder c3 1.5"
+  assert_equal "$(reserved_items)" '["sessions_use","session:builder","T7",1]
+["sessions_use","session:reviewer","T7",0.5]
+["sessions_use","session:builder","T9",1.5]
+["spike_allowance","session:reviewer","T7",1.5]'
+  assert_equal "$(reserved_split)" '{"bytes":4.5,"sessions_use":3,"spike_allowance":1.5,"admissions":0,"stacks":0,"heavy_runs":0,"gates":0}'
+  run_bin -0 team-capacity status --json
+  assert_equal "$(jq -c --argjson gib "$GIB" '.reserved.items[-1] | [.name, .estimate_bytes / $gib, .use_bytes / $gib]' <<<"$output")" '["b2",2,0.5]'
+
+  # T9's builder admitted again: the session of its kind and task the reading holds is in its
+  # window, reserved once at the larger of the admission's estimate and its use, never with its
+  # use too; T11's planner, not up yet, at its estimate.
+  run_bin -0 team-capacity admit --kind session:builder --task T9
+  run_bin -0 team-capacity admit --kind session:planner --task T11
+  assert_equal "$output" "admitted session:planner at full (90%): a planner needs 2.0 GiB, 5.0 GiB of 20.0 GiB reserved before it"
+  assert_equal "$(reserved_items)" '["sessions_use","session:builder","T7",1]
+["sessions_use","session:reviewer","T7",0.5]
+["admissions","session:builder","T9",2]
+["spike_allowance","session:reviewer","T7",1.5]
+["admissions","session:planner","T11",2]'
+  assert_equal "$(reserved_split)" '{"bytes":7,"sessions_use":1.5,"spike_allowance":1.5,"admissions":4,"stacks":0,"heavy_runs":0,"gates":0}'
+  run_bin -0 team-capacity status --json
+  assert_equal "$(jq -c --argjson gib "$GIB" '.reserved.items[2] | [.name, (.admitted | test("Z$")), .estimate_bytes / $gib, .use_bytes / $gib]' <<<"$output")" '["c3",true,2,1.5]'
+  assert_equal "$(jq -c '.reserved.items[-1] | [.name, .use_bytes]' <<<"$output")" '[null,null]'
+
+  # One in its window using more than its estimate reserves its use; of two sessions of the
+  # admitted kind and task, the one using less, the newer, is in the window.
+  team_reading 8 "T7 builder a1 1" "T7 reviewer b2 0.5" "T9 builder c3 3" "T11 planner d4 0.25" "T11 planner e5 1.25"
+  assert_equal "$(reserved_items)" '["admissions","session:planner","T11",2]
+["sessions_use","session:planner","T11",1.25]
+["sessions_use","session:builder","T7",1]
+["sessions_use","session:reviewer","T7",0.5]
+["admissions","session:builder","T9",3]
+["spike_allowance","session:reviewer","T7",1.5]'
+  run_bin -0 team-capacity status --json
+  assert_equal "$(jq -c '[.reserved.items[] | select(.part == "admissions") | .name]' <<<"$output")" '["d4","c3"]'
+
+  # Ten minutes on, every session reserves its use, and the allowance is the largest gap again.
+  age_admissions 601
+  assert_equal "$(reserved_split)" '{"bytes":7.75,"sessions_use":6,"spike_allowance":1.75,"admissions":0,"stacks":0,"heavy_runs":0,"gates":0}'
+}
+
+@test "admit on home-pc's numbers: seven idle builders at their use and one allowance leave room for an eighth builder and a heavy run" {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  mkdir -p "$HOME/.config/agent-team"
+  # The learned session:builder estimate, 2.4 GiB, and full's 16.4 GiB budget on 2026-11-01, when
+  # seven builders at their estimates reserved 16.8 GiB and nothing more was admitted.
+  echo '{"session_gib": 2.4}' >"$HOME/.config/agent-team/capacity.json"
+  team_reading 11.6 "T1 builder s1 0.1" "T2 builder s2 0.15" "T3 builder s3 0.2" "T4 builder s4 0.2" \
+    "T5 builder s5 0.25" "T6 builder s6 0.3" "T7 builder s7 0.3"
+  assert_equal "$(reserved_split)" '{"bytes":3.8,"sessions_use":1.5,"spike_allowance":2.3,"admissions":0,"stacks":0,"heavy_runs":0,"gates":0}'
+  run_bin -0 team-capacity status --json
+  assert_equal "$(jq -r '.room.budget_bytes' <<<"$output")" 17609365914
+  run_bin -0 team-capacity admit --kind session:builder --task T8
+  assert_equal "$output" "admitted session:builder at full (90%): a builder needs 2.4 GiB, 3.8 GiB of 16.4 GiB reserved before it"
+  run_bin -0 team-capacity admit --kind heavy:tests-run --task T8
+  assert_equal "$output" "admitted heavy:tests-run at full (90%): a heavy run of tests-run needs 5.0 GiB, 6.2 GiB of 16.4 GiB reserved before it"
 }
 
 @test "admit refuses everything at level none, and with no reading to size the budget by fails" {
@@ -764,10 +857,11 @@ team-capacity: no reading of the machine's load, so no budget to admit session:p
   assert_equal "$output" "admitted heavy:tests-run at full (90%): a heavy run of tests-run needs 5.0 GiB, 6.2 GiB of 20.0 GiB reserved before it"
   assert_equal "$(jq -c 'map([.kind, .task, .pid])' "$STATE_DIR/admitted.json")" '[["heavy:tests-run","T7",4242]]'
   # Every other asker sees it once, at its kind, its use the reading's, never as an admission too.
-  assert_equal "$(reserved_items)" '["session:builder","T7",1]
-["stack:conventioner","T7",3]
-["gate",null,2.2]
-["heavy:tests-run","T7",6]'
+  assert_equal "$(reserved_items)" '["sessions_use","session:builder","T7",1]
+["spike_allowance","session:builder","T7",0]
+["stacks","stack:conventioner","T7",3]
+["gates","gate",null,2.2]
+["heavy_runs","heavy:tests-run","T7",6]'
   run_bin -0 team-capacity status --json
   assert_equal "$(jq -c '.reserved.items[-1] | [.name, .estimate_bytes, .use_bytes]' <<<"$output")" "[\"tests/run in ~/t7\",5368709120,$((6 * GIB))]"
   # It stays reserved past 10 minutes while its team-heavy holds the lock, and goes with the lock.
