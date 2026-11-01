@@ -48,6 +48,28 @@ kept() {
   sed -n -E 's/^kept (.*), [0-9]+[smhd] old\)$/\1)/p' <<<"$output"
 }
 
+# The gate worktree a stack ran from on 2026-10-27 (tests/fixtures/docker/gate-worktree/).
+GATE_WORKTREE=.no-mistakes/worktrees/af267dfa548d/01M5YYDNSSW2EE5NYEM87M9S3R
+
+# Add the Compose project nmtest-t74eval to the machine, as a gate's test agent started it by
+# hand on 2026-10-27 (tests/fixtures/docker/gate-worktree/: every team label empty, a name no
+# legacy_gate matches), its container's Compose working directory <dir>: gate_worktree_stack <dir>
+gate_worktree_stack() {
+  local file
+  for file in containers volumes networks; do
+    docker_state "$file" '. + $add[0]' \
+      --slurpfile add <(sed "s#@WORKDIR@#$1#g" "$BATS_TEST_DIRNAME/fixtures/docker/gate-worktree/$file.json")
+  done
+}
+
+# The classes in team-stack ls --all --json's output of nmtest-t74eval's project, its volumes
+# (each as the first 7 characters of its name and its class, in ls's order) and its network.
+t74eval_classes() {
+  jq -c '[(.projects[] | select(.name == "nmtest-t74eval") | .class),
+    (.volumes[] | select(.project == "nmtest-t74eval") | [.name[0:7], .class] | join(" ")),
+    (.networks[] | select(.project == "nmtest-t74eval") | .class)]' <<<"$output"
+}
+
 @test "ls lists every Compose project with its status, class, task, kind, worktree, age and memory" {
   run_bin -0 --separate-stderr team-stack ls
   assert_equal "$stderr" ""
@@ -192,10 +214,56 @@ unowned 4"
   sed -i '/^\[conventioner.stack\]$/,/^$/d' "$TEAM_HOME/projects.toml"
   sed -i '/^\[shop.stack\]$/,$d' "$TEAM_HOME/projects.toml"
   run_bin -0 team-project --check
+  # nmtest-12822 ran inside the gate's worktrees, which makes it the gate's by itself: moved
+  # elsewhere, only its name matched a legacy_gate.
+  docker_state containers 'map(if .Name == "/nmtest-12822-backend-1"
+    then .Config.Labels["com.docker.compose.project.working_dir"] = $dir else . end)' --arg dir "$HOME/scratch/Conventioner"
   run_bin -0 team-stack ls --all --json
   assert_equal "$(jq -r '.projects[] | select(.name == "nmtest-12822") | .class' <<<"$output")" unowned
   assert_equal "$(jq -r '.projects[] | select(.name == "nmtest-1895520") | .class' <<<"$output")" gate
   assert_equal "$(jq -c '[.images[].class] | unique' <<<"$output")" '["unowned"]'
+}
+
+@test "an unlabelled stack started inside the gate's worktrees is the gate's, its volumes and networks too" {
+  gate_worktree_stack "$HOME/$GATE_WORKTREE"
+  run_bin -0 team-stack ls
+  [[ $output =~ (^|$'\n')nmtest-t74eval\ +exited\(1\)\ +gate\ +-\ +-\ +-\ +[0-9]+[smhd]\ +-($'\n'|$) ]]
+  run_bin -0 team-stack ls --all --json
+  assert_equal "$(t74eval_classes)" '["gate","7d1e5a9 gate","nmtest- gate","gate"]'
+  assert_read_only
+}
+
+@test "an unlabelled stack started outside the gate's worktrees stays unowned, a sibling with the root's name as a prefix included" {
+  local dir
+  for dir in "$HOME/scratch/eval" "$HOME/.no-mistakes/worktrees-old/af267dfa548d" "$HOME/.no-mistakes"; do
+    docker_stub "$STACK_WORKTREE"
+    gate_worktree_stack "$dir"
+    run_bin -0 team-stack ls --all --json
+    assert_equal "$(t74eval_classes)" '["unowned","7d1e5a9 unowned","nmtest- unowned","unowned"]'
+  done
+}
+
+@test "a labelled stack inside the gate's worktrees is classed by its labels" {
+  gate_worktree_stack "$HOME/$GATE_WORKTREE"
+  relabel nmtest-t74eval owner agent-team
+  relabel nmtest-t74eval kind dev
+  run_bin -0 team-stack ls --all --json
+  assert_equal "$(t74eval_classes)" '["team","7d1e5a9 team","nmtest- team","team"]'
+  relabel nmtest-t74eval kind gate
+  run_bin -0 team-stack ls --all --json
+  assert_equal "$(t74eval_classes)" '["gate","7d1e5a9 gate","nmtest- gate","gate"]'
+}
+
+@test "TEAM_STACK_GATE_WORKTREES names the gate's worktrees root in place of ~/.no-mistakes/worktrees" {
+  gate_worktree_stack "$HOME/$GATE_WORKTREE"
+  TEAM_STACK_GATE_WORKTREES=$HOME/gate-root/ run_bin -0 team-stack ls --all --json
+  assert_equal "$(t74eval_classes)" '["unowned","7d1e5a9 unowned","nmtest- unowned","unowned"]'
+  docker_stub "$STACK_WORKTREE"
+  gate_worktree_stack "$HOME/gate-root/af267dfa548d"
+  TEAM_STACK_GATE_WORKTREES=$HOME/gate-root/ run_bin -0 team-stack ls --all --json
+  assert_equal "$(t74eval_classes)" '["gate","7d1e5a9 gate","nmtest- gate","gate"]'
+  TEAM_STACK_GATE_WORKTREES=$HOME/gate-root run_bin -0 team-stack ls --all --json
+  assert_equal "$(t74eval_classes)" '["gate","7d1e5a9 gate","nmtest- gate","gate"]'
 }
 
 @test "a registry that fails its check is refused with its problems" {
@@ -1318,6 +1386,36 @@ network conventioner_conventioner_network (unowned)"
   assert_contains "$(removals)" "stack nmtest-12822 (gate, 0 B): it has no expires and its newest object was created at "
   assert_contains "$(docker_calls)" "compose -p nmtest-12822 down -v --remove-orphans"
   assert_equal "$(jq -r '.[] | select(.Name | startswith("nmtest-12822")) | .Name' "$DOCKER_STATE/volumes.json" "$DOCKER_STATE/networks.json")" ""
+}
+
+@test "reap removes an unlabelled stack of the gate's worktrees once its newest object is 2 hours old, by the gate rule, and keeps it just before" {
+  reap_machine
+  gate_worktree_stack "$HOME/$GATE_WORKTREE"
+  docker_created container nmtest-t74eval-mongodb-1 $((2 * 3600 - 60))
+  run_bin -0 team-stack reap --apply
+  [[ $(removals) != *nmtest-t74eval* ]]
+  assert_contains "$(kept)" "stack nmtest-t74eval (gate, 301.5 MB)"
+  [[ $(docker_calls) != *"compose -p nmtest-t74eval"* ]]
+  docker_created container nmtest-t74eval-mongodb-1 $((2 * 3600 + 60))
+  run_bin -0 team-stack reap
+  assert_contains "$(removals)" "stack nmtest-t74eval (gate, 301.5 MB): it has no expires and its newest object was created at "
+  run_bin -0 --separate-stderr team-stack reap --apply
+  assert_equal "$stderr" ""
+  assert_contains "$(removals)" "stack nmtest-t74eval (gate, 301.5 MB): it has no expires and its newest object was created at "
+  assert_contains "$(docker_calls)" "compose -p nmtest-t74eval down -v --remove-orphans"
+  assert_equal "$(jq -r '.[] | select(.Name | test("^nmtest-t74eval|^7d1e5a9")) | .Name' \
+    "$DOCKER_STATE/containers.json" "$DOCKER_STATE/volumes.json" "$DOCKER_STATE/networks.json")" ""
+  [[ ! -e $HOME/.local/state/agent-team/stacks/logs/nmtest-t74eval-$(date +%F) ]]
+}
+
+@test "reap never touches an unlabelled stack started outside the gate's worktrees, however old" {
+  reap_machine
+  gate_worktree_stack "$HOME/scratch/eval"
+  run_bin -0 team-stack reap --apply
+  [[ $(removals) != *nmtest-t74eval* ]]
+  assert_contains "$(kept)" "stack nmtest-t74eval (unowned, 301.5 MB)"
+  # It only read them: no call but a read names any of its objects.
+  assert_equal "$(docker_calls | grep -Ev "$READ_ONLY" | grep -E 'nmtest-t74eval|7d1e5a9|9a3c5e7' || true)" ""
 }
 
 @test "reap removes a shared image no container uses, over 7 days old and not among its repository's 2 newest, and keeps the rest" {

@@ -15,15 +15,28 @@ def has_team_labels($labels):
 # The Compose project of the labels object <labels>, or null.
 def compose_project($labels): ($labels // {})["com.docker.compose.project"] // null;
 
+# The Compose projects any of whose containers, of <containers> (docker inspect's), Compose
+# started inside the directory <root> (its working_dir label is <root> or below it), the gate's
+# worktrees root (team-stack's GATE_WORKTREES): an array of names, sorted.
+def gate_worktree_projects($containers; $root):
+  ($root | sub("/+$"; "")) as $root
+  | if $root == "" then [] else
+      [$containers[] | .Config.Labels // {}
+       | select(.["com.docker.compose.project.working_dir"] // "" | . == $root or startswith($root + "/"))
+       | compose_project(.) // empty] | unique
+    end;
+
 # The owner class of an object with the labels <labels> in the Compose project <project> (or
-# null), given $stacks, the registry's stack blocks: gate (kind=gate, whatever its owner, since a
-# gate run from a task's shell is labelled owner=agent-team too, or no team label set and a
-# project name matching a legacy_gate), team (owner=agent-team), else unowned.
-def owner_class($labels; $project; $stacks):
+# null), given $stacks, the registry's stack blocks, and $gated, the projects started inside the
+# gate's worktrees (gate_worktree_projects): gate (kind=gate, whatever its owner, since a gate
+# run from a task's shell is labelled owner=agent-team too, or no team label set and a project
+# in $gated or whose name matches a legacy_gate), team (owner=agent-team), else unowned.
+def owner_class($labels; $project; $stacks; $gated):
   if team_label($labels; "kind") == "gate" then "gate"
   elif team_label($labels; "owner") == "agent-team" then "team"
   elif (has_team_labels($labels) | not) and $project != null
-    and any($stacks[] | .legacy_gate // empty; . as $gate | $project | test("^(?:" + $gate + ")$"))
+    and (($gated | index([$project])) != null
+      or any($stacks[] | .legacy_gate // empty; . as $gate | $project | test("^(?:" + $gate + ")$")))
   then "gate"
   else "unowned" end;
 
@@ -146,21 +159,22 @@ def table:
 # kept} from $in: {containers, volumes, networks (docker inspect's arrays), images (docker system
 # df -v's Images), sizes (each volume's bytes by name), stacks (the registry's stack blocks),
 # closed (the tasks the ledger has closed), gone (the worktree labels whose directory is gone),
-# now (seconds since the epoch), legacy (--legacy), scope (a Compose project pattern, or null)}.
+# gate_root (the gate's worktrees root), now (seconds since the epoch), legacy (--legacy), scope
+# (a Compose project pattern, or null)}.
 # Each action is {rule, type, name, ref (what docker <type> rm or compose -p takes), class,
 # size_bytes, why, tasks, worktrees}, in the rules' order; each kept object {type, name, class,
 # size_bytes, created}, every object no rule matched that is not the team's but Docker's own
 # networks, a stack's containers listed as their stack. With a scope, only the Compose projects
 # it matches and their objects are looked at.
 def reap_plan($in):
-  $in.stacks as $stacks | $in.now as $now
+  $in.stacks as $stacks | $in.now as $now | gate_worktree_projects($in.containers; $in.gate_root) as $gated
   | def in_scope: $in.scope == null or (. != null and test("^(?:" + $in.scope + ")$"));
     # "its task T5 is closed", "its tasks T5, T6 are closed": its(<noun>; <names>; <state>)
     def its($noun; $names; $state):
       "its \($noun)\(if ($names | length) == 1 then " " else "s " end)\($names | join(", ")) \(if ($names | length) == 1 then "is" else "are" end) \($state)";
   ([$in.containers[] | compose_project(.Config.Labels) as $p
     | {type: "container", name: (.Name | ltrimstr("/")), project: $p, image: .Image, labels: (.Config.Labels // {}),
-       class: owner_class(.Config.Labels; $p; $stacks), size_bytes: null, created: (.Created | epoch),
+       class: owner_class(.Config.Labels; $p; $stacks; $gated), size_bytes: null, created: (.Created | epoch),
        mounts: [.Mounts[]? | select(.Type == "volume" and .Name) | .Name],
        # A stopped container is on no network's Containers, but its own settings still name them.
        networks: [(.NetworkSettings.Networks // {} | keys[]), (.HostConfig.NetworkMode // empty)]}]) as $all
@@ -172,11 +186,11 @@ def reap_plan($in):
     | (if $anonymous and $by != null then $by.project else compose_project($l) end) as $p
     | {type: "volume", name: $n, ref: $n, anonymous: $anonymous, attached: ($by != null), project: $p,
        labels: (if $anonymous and $by != null then $by.labels else $l end),
-       class: (if $anonymous then (if $by != null then $by.class else "anonymous" end) else owner_class($l; $p; $stacks) end),
+       class: (if $anonymous then (if $by != null then $by.class else "anonymous" end) else owner_class($l; $p; $stacks; $gated) end),
        size_bytes: $in.sizes[$n], created: (.CreatedAt | epoch)}
     | select(.project | in_scope)] as $volumes
   | [$in.networks[] | (.Labels // {}) as $l | compose_project($l) as $p | .Name as $n
-    | {type: "network", name: $n, ref: .Id, project: $p, labels: $l, class: owner_class($l; $p; $stacks),
+    | {type: "network", name: $n, ref: .Id, project: $p, labels: $l, class: owner_class($l; $p; $stacks; $gated),
        used: (($networked | index([$n])) != null or (.Containers // {} | length) > 0),
        predefined: (($n | IN("bridge", "host", "none")) and $l == {}), size_bytes: null, created: (.Created | epoch)}
     | select(.project | in_scope)] as $networks
