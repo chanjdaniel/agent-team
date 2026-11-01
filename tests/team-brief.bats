@@ -491,7 +491,7 @@ BRIEF
   assert_contains "$(<"$brief")" 'Send `T31 DONE .work/task/report.md` to `coordinator`.'
 }
 
-@test "the resume brief sends a relaunched worker to its last brief, the handoff note and the branch" {
+@test "the resume brief sends a worker relaunched after a handoff, a shutdown or a level stow to its last brief, the handoff note and the branch" {
   open_t12
   run_bin -0 team-brief --help
   assert_contains "$output" "rereview, verify (--set pr=, head=, reviewed=, findings="
@@ -508,8 +508,19 @@ BRIEF
   assert_contains "$brief" "Worktree: \`~/.treehouse/Conventioner-d4c77a/4/Conventioner\`, branch \`fix/T12-applicant-sign-in-rate-limit\`"
   assert_contains "$brief" "1. Read your brief \`~/agent-team-records/tasks/T12/brief.md\`"
   assert_contains "$brief" "2. Then \`.scratch/task/handoff.md\` if it exists"
-  assert_contains "$brief" "The uncommitted changes the handoff found in the worktree: applied as uncommitted changes in your worktree."
+  assert_contains "$brief" "branch \`fix/T12-applicant-sign-in-rate-limit\`: the one you left, when it stayed on this machine, else made here from what was pushed and archived."
+  assert_contains "$brief" "Task directory: \`.scratch/task/\` in the worktree, as you left it, or restored from the task's archive with the worktree."
+  assert_contains "$brief" "The uncommitted changes the stow found in the worktree: applied as uncommitted changes in your worktree."
+  assert_contains "$brief" "Changes from a session the stow stopped may be half done"
   assert_contains "$brief" "3. Check the branch: \`git status\`, \`git diff\`, and \`git log origin/dev..HEAD\`"
+  # A level resume on the same machine, as the level skill briefs it.
+  run_bin -0 team-brief T12 resume --name resume-builder --force --set role=builder \
+    --set "brief=~/agent-team-records/tasks/T12/brief.md" --set "from=the stow for the level at 2026-11-02T09:00:00Z" \
+    --set "snapshot=none: your worktree stayed in place, as you left it"
+  brief=$(<"$output")
+  assert_contains "$brief" "you are the builder, resuming the task after the stow for the level at 2026-11-02T09:00:00Z."
+  assert_contains "$brief" "The uncommitted changes the stow found in the worktree: none: your worktree stayed in place, as you left it."
+  [[ $brief != *"the handoff found"* && $brief != *"the handoff stopped"* ]]
 }
 
 @test "the crash resume brief names the checkpoint, what may be missing, and sends the worker to check first" {

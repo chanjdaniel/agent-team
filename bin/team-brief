@@ -12,9 +12,9 @@
 #               holder stowed), reviewer, rereview, verify (--set pr=, head=, reviewed=, findings=
 #               the numbers sent back; the re-review of a round whose findings sent back were all
 #               plain notes on lines the PR changes, or that edited only the PR body, which reads
-#               only the fix), ops, retro, resume (a worker relaunched on
-#               another machine: --set role=, brief= its last brief, from= what it resumes after,
-#               snapshot= what became of the uncommitted changes the handoff found),
+#               only the fix), ops, retro, resume (a worker relaunched after a stow, for a
+#               handoff, a shutdown or the level: --set role=, brief= its last brief, from= what it
+#               resumes after, snapshot= what became of the uncommitted changes the stow found),
 #               resume-crash (one relaunched after its machine crashed: --set role=, brief=,
 #               machine= the machine that crashed, checkpoint= the checkpoint's time, snapshot=
 #               what became of that checkpoint's uncommitted changes)
