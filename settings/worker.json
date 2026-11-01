@@ -89,6 +89,7 @@
       "Bash(*/claude agents*)",
       "Bash(*/claude respawn*)",
       "Bash(git reset --hard*)",
+      "Bash(git reset * --hard*)",
       "Bash(git clean*)",
       "Bash(git branch -D*)",
       "Bash(git * --no-verify)",

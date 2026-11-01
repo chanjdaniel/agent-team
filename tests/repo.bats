@@ -676,6 +676,31 @@ uv run back-end/migrations/migrate_user_emails.py
 COMMANDS
 }
 
+# A worker is denied git reset --hard however it is spelled, an option before --hard included,
+# while a soft reset and a reset of one file stay allowed.
+@test "git reset --hard is denied to every worker, with or without an option before it" {
+  local command rule
+  for rule in 'Bash(git reset --hard*)' 'Bash(git reset * --hard*)'; do
+    jq -e --arg r "$rule" '.permissions.deny | index($r)' "$REPO_ROOT/settings/worker.json" >/dev/null ||
+      { echo "settings/worker.json lacks the deny rule $rule" >&2; return 1; }
+  done
+  while IFS= read -r command; do
+    denied settings/worker.json "$command" || { echo "not denied: $command" >&2; return 1; }
+  done <<'COMMANDS'
+git reset --hard
+git reset --hard origin/dev
+git reset -q --hard
+git reset --quiet --hard HEAD~1
+COMMANDS
+  while IFS= read -r command; do
+    if denied settings/worker.json "$command"; then echo "denied: $command" >&2; return 1; fi
+  done <<'COMMANDS'
+git reset --soft HEAD~1
+git reset -- file
+git status
+COMMANDS
+}
+
 # Only the coordinator launches an ops session, on Daniel's request: a worker is denied team-worker's
 # ops role and the ops load check, while its own test runs of those scripts stay allowed.
 @test "an ops launch and the ops load check are denied to workers, and stay the coordinator's" {
