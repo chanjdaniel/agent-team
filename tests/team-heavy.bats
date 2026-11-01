@@ -407,8 +407,14 @@ gone() {
 
 @test "with no room a run lets the lock go, says once why it waits, and runs when room comes" {
   capacity_room $((16 * 1073741824)) none
-  # Two seconds in, with the lock free while it waits, the level goes back to full.
-  (sleep 2 && "$REPO_ROOT/bin/team-heavy" status >"$BATS_TEST_TMPDIR/meanwhile" &&
+  # Two seconds in, once the lock reads free between its re-checks (each holds it a moment, which a
+  # loaded machine stretches), the level goes back to full.
+  (sleep 2
+    for _ in $(seq 100); do
+      "$REPO_ROOT/bin/team-heavy" status >"$BATS_TEST_TMPDIR/meanwhile" || true
+      [[ $(cat "$BATS_TEST_TMPDIR/meanwhile") == free ]] && break
+      sleep 0.1
+    done
     capacity_room $((16 * 1073741824)) full) &
   TEAM_HEAVY_RECHECK_SECONDS=1 run_bin -0 --separate-stderr team-heavy run --wait 1 --kind tests-run -- echo ran
   assert_equal "$output" ran
