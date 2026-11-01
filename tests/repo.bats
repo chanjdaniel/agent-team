@@ -436,16 +436,21 @@ assert_denies() {
 # The hooks rules start at git config (from any directory) and name the key right after a scope or
 # subcommand, so a commit message quoting the command and a read of the key stay allowed. A rule
 # whose one * ends it after a space also matches the key alone, a read (rule_text_matches), so the
-# rules with no -C end in ** and need a value after the key.
+# rules with no -C end in ** and need a value after the key. The --local and --worktree scopes are
+# denied by the rules for a name ending local or worktree, which take in --file's names too.
 @test "the git hooks' deny rule: git config of core.hooksPath, set or unset" {
   assert_denies 'Bash(git config core.hooksPath **)' 'git config core.hooksPath /dev/null'
   assert_denies 'Bash(git -C * config core.hooksPath *)' 'git -C /home/me/agent-team config core.hooksPath x'
   assert_denies 'Bash(git config --global core.hooksPath **)' 'git config --global core.hooksPath x'
-  assert_denies 'Bash(git config --local core.hooksPath **)' 'git config --local core.hooksPath x'
+  assert_denies 'Bash(git config *local core.hooksPath **)' 'git config --local core.hooksPath x'
   assert_denies 'Bash(git config --system core.hooksPath **)' 'git config --system core.hooksPath x'
-  assert_denies 'Bash(git config --worktree core.hooksPath **)' 'git config --worktree core.hooksPath x'
+  assert_denies 'Bash(git config *worktree core.hooksPath **)' 'git config --worktree core.hooksPath x'
+  assert_denies 'Bash(git -C * config *local core.hooksPath *)' 'git -C ~/repo config --local core.hooksPath x'
+  assert_denies 'Bash(git -C * config *worktree core.hooksPath *)' 'git -C ~/repo config --worktree core.hooksPath x'
   assert_denies 'Bash(git config set *core.hooksPath*)' 'git config set --global core.hooksPath x'
-  assert_denies 'Bash(git config --add *core.hooksPath*)' 'git config --add core.hooksPath x'
+  assert_denies 'Bash(git config *--add*core.hooksPath*)' 'git config --add core.hooksPath x' \
+    'git config --file ~/.gitconfig --add core.hooksPath x'
+  assert_denies 'Bash(git -C * config *--add*core.hooksPath*)' 'git -C ~/repo config -f .git/config --add core.hooksPath x'
   assert_denies 'Bash(git config *--unset*core.hooksPath*)' 'git config --unset core.hooksPath' \
     'git config --unset-all core.hooksPath' 'git config --global --unset "core.hooksPath"'
   assert_denies 'Bash(git config unset *core.hooksPath*)' 'git config unset --local core.hooksPath'
@@ -462,12 +467,47 @@ assert_denies() {
   assert_denies 'Bash(git config set *core.hookspath*)' 'git config set core.hookspath x'
   assert_denies 'Bash(git config "core.hookspath" **)' 'git config "core.hookspath" x'
   assert_denies "Bash(git config 'core.hookspath' **)" "git config 'core.hookspath' x"
+  assert_denies 'Bash(git config *--add*core.hookspath*)' 'git config --file ~/.gitconfig --add core.hookspath x'
+  assert_denies 'Bash(git -C * config *--add*core.hookspath*)' 'git -C ~/repo config --add core.hookspath x'
 }
 
-# --replace-all writes the key it names; --file and -f write it in the file they name. Their rules
-# name the key right after a file whose name ends in config, as every file git reads its config
-# from does but a config.worktree, and need a value after the key, as the others do: a * between
-# the file and the key would take in a --get, and refuse a read.
+# --remove-section drops the core section, the key with it, and --rename-section moves another
+# section's hooksPath into core; both name the section, never the key.
+@test "the git hooks' deny rule: git config removing or renaming the core section" {
+  assert_denies 'Bash(git config *-section*core*)' 'git config --remove-section core' \
+    'git config --global --remove-section core' 'git config --rename-section core x' \
+    'git config --rename-section evil core' 'git config remove-section --local core'
+  assert_denies 'Bash(git -C * config *-section*core*)' 'git -C ~/repo config --remove-section core' \
+    'git -C ~/repo config --rename-section core x'
+}
+
+# A type option before the key still writes it (--int writes 5, --bool true, both a directory with
+# no hooks in it). Each rule names the end of the word right before the key: a type's name ends
+# --path, --type=path, --type path and -t path alike, and --no-type's own word. A * between that
+# word and the key would take in a --get, and refuse a read.
+@test "the git hooks' deny rule: git config of core.hooksPath after a type option" {
+  local key end option
+  for key in hooksPath hookspath; do
+    for end in path:--path bool:--bool int:--int str:--bool-or-str date:--expiry-date color:--type=color type:--no-type; do
+      option=${end#*:} end=${end%%:*}
+      echo "end: $end, key: $key" >&2
+      assert_denies "Bash(git config *$end core.$key **)" "git config $option core.$key x" \
+        "git config --global $option core.$key x"
+      assert_denies "Bash(git -C * config *$end core.$key *)" "git -C ~/repo config $option core.$key x"
+    done
+    assert_denies "Bash(git config *path core.$key **)" "git config --type=path core.$key x" \
+      "git config --type path core.$key x" "git config -t path core.$key x"
+    assert_denies "Bash(git config *bool core.$key **)" "git config --type=bool core.$key true"
+    assert_denies "Bash(git config *int core.$key **)" "git config --bool-or-int core.$key 5" "git config --type=int core.$key 5"
+  done
+}
+
+# --replace-all writes the key it names; --file and -f write it in the file they name, which may be
+# any file, since an include.path or includeIf in any config git reads may name it. Their rules name
+# the key right after the end of the file's name, and need a value after the key, as the others do:
+# a * between the file and the key would take in a --get, and refuse a read. So they cover a name
+# ending in config, config.worktree or .local (as ~/.gitconfig.local, a common include), and any
+# quoted name, and miss an unquoted name ending otherwise, as /tmp/x; the hooks remain the guard.
 @test "the git hooks' deny rule: git config of core.hooksPath with --replace-all, --file or -f" {
   assert_denies 'Bash(git config *--replace-all*core.hooksPath*)' 'git config --replace-all core.hooksPath x' \
     'git config --global --replace-all core.hooksPath x'
@@ -484,11 +524,29 @@ assert_denies() {
   assert_denies 'Bash(git -C * config *--file*config core.hookspath *)' 'git -C ~/repo config --file=.git/config core.hookspath x'
   assert_denies 'Bash(git config *-f *config core.hookspath **)' 'git config -f .git/config core.hookspath x'
   assert_denies 'Bash(git -C * config *-f *config core.hookspath *)' 'git -C ~/repo config -f .git/config core.hookspath x'
+  local key
+  for key in hooksPath hookspath; do
+    echo "key: $key" >&2
+    assert_denies "Bash(git config *worktree core.$key **)" "git config --file .git/config.worktree core.$key x" \
+      "git config --file=.git/config.worktree core.$key x"
+    assert_denies "Bash(git -C * config *worktree core.$key *)" "git -C ~/repo config -f .git/config.worktree core.$key x"
+    assert_denies "Bash(git config *local core.$key **)" "git config --file ~/.gitconfig.local core.$key x" \
+      "git config -f ~/.config/git/config.local core.$key x"
+    assert_denies "Bash(git -C * config *local core.$key *)" "git -C ~/repo config --file ~/.gitconfig.local core.$key x"
+    assert_denies "Bash(git config *\" core.$key **)" "git config -f \".git/config\" core.$key x" \
+      "git config --file \"/tmp/x\" core.$key x"
+    assert_denies "Bash(git -C * config *\" core.$key *)" "git -C ~/repo config -f \".git/config\" core.$key x"
+    assert_denies "Bash(git config *' core.$key **)" "git config -f '.git/config' core.$key x"
+    assert_denies "Bash(git -C * config *' core.$key *)" "git -C ~/repo config --file='/home/me/.gitconfig' core.$key x"
+  done
 }
 
 # Git reads config from these variables on every command: a key and value pair counted by
 # GIT_CONFIG_COUNT, -c's own list in GIT_CONFIG_PARAMETERS, and another global or system file.
-# Each rule denies an assignment of one, before a command, exported or through env.
+# Each rule denies an assignment of one, before a command, exported or through env. Its * on both
+# sides also takes in any text naming an assignment, so a search such as
+# git grep -n 'GIT_CONFIG_GLOBAL=' is refused too; that cost is accepted (a search for the bare
+# name, as the allowed-list test's, stays allowed).
 @test "the git hooks' deny rule: git's config set through its GIT_CONFIG_ variables" {
   local pair='GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null'
   assert_denies 'Bash(*GIT_CONFIG_COUNT=*)' "GIT_CONFIG_COUNT=1 $pair git commit -m x" \
@@ -566,6 +624,42 @@ git -C ~/repo config --file .git/config core.hooksPath x
 git config -f .git/config core.hooksPath x
 git config -f ~/.gitconfig core.hookspath ""
 git -C ~/repo config -f .git/config core.hooksPath x
+git config --remove-section core
+git -C ~/repo config --remove-section core
+git config --rename-section core x
+git -C ~/repo config --rename-section core x
+git config --path core.hooksPath x
+git config --path core.hookspath x
+git -C ~/repo config --path core.hooksPath x
+git -C ~/repo config --path core.hookspath x
+git config --bool core.hooksPath true
+git config --bool core.hookspath true
+git -C ~/repo config --bool core.hooksPath true
+git -C ~/repo config --bool core.hookspath true
+git config --type=path core.hooksPath x
+git config --type=path core.hookspath x
+git -C ~/repo config --type=path core.hooksPath x
+git -C ~/repo config --type=path core.hookspath x
+git config --type path core.hooksPath x
+git config --type path core.hookspath x
+git -C ~/repo config --type path core.hooksPath x
+git -C ~/repo config --type path core.hookspath x
+git config --file ~/.gitconfig --add core.hooksPath x
+git config --file ~/.gitconfig --add core.hookspath x
+git -C ~/repo config --file ~/.gitconfig --add core.hooksPath x
+git -C ~/repo config --file ~/.gitconfig --add core.hookspath x
+git config --file .git/config.worktree core.hooksPath x
+git config --file .git/config.worktree core.hookspath x
+git -C ~/repo config --file .git/config.worktree core.hooksPath x
+git -C ~/repo config --file .git/config.worktree core.hookspath x
+git config -f ".git/config" core.hooksPath x
+git config -f ".git/config" core.hookspath x
+git -C ~/repo config -f ".git/config" core.hooksPath x
+git -C ~/repo config -f ".git/config" core.hookspath x
+git config --file ~/.gitconfig.local core.hooksPath x
+git config --file ~/.gitconfig.local core.hookspath x
+git -C ~/repo config --file ~/.gitconfig.local core.hooksPath x
+git -C ~/repo config --file ~/.gitconfig.local core.hookspath x
 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null git commit -m x
 export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=; git push
 env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hookspath GIT_CONFIG_VALUE_0= git push
