@@ -21,6 +21,8 @@ setup() {
   # Arch, when uname says Linux: the tool directories are the lock's for arch or macos only.
   export TEAM_OS_RELEASE=$BATS_TEST_TMPDIR/os-release
   printf '%s\n' 'NAME="Arch Linux"' 'ID=arch' >"$TEAM_OS_RELEASE"
+  # nvm's directory of the lock's Node.
+  node_dir=versions/node/v$(jq -r 'first(.tools[] | select(.name == "node")) | .pin' "$REPO_ROOT/bin/lib/tools.lock")/bin
 }
 
 # Print the library's tool directories, one per line.
@@ -71,14 +73,14 @@ library_path() {
   stub_reply uname Linux
   run -0 library_tool_dirs
   assert_equal "$output" "$HOME/.local/bin
-$HOME/.nvm/versions/node/v24.22.1/bin
+$HOME/.nvm/$node_dir
 $HOME/.bun/bin
 $TEAM_SYSTEM_ROOT/usr/local/bin
 $HOME/.no-mistakes/bin"
   stub_reply uname Darwin
   NVM_DIR=$BATS_TEST_TMPDIR/nvm run -0 library_tool_dirs
   assert_equal "$output" "$HOME/.local/bin
-$BATS_TEST_TMPDIR/nvm/versions/node/v24.22.1/bin
+$BATS_TEST_TMPDIR/nvm/$node_dir
 $HOME/.bun/bin
 $HOME/.no-mistakes/bin
 $brew/opt/python@3.12/libexec/bin"
@@ -99,7 +101,7 @@ $brew/opt/python@3.12/libexec/bin"
 
 @test "a script run with a bare PATH finds the pinned Node, Bun, treehouse and Python first" {
   stub_reply uname Darwin
-  installed "$HOME/.nvm/versions/node/v24.22.1/bin" node
+  installed "$HOME/.nvm/$node_dir" node
   installed "$HOME/.bun/bin" bun
   installed "$HOME/.local/bin" treehouse
   installed "$brew/opt/python@3.12/libexec/bin" python3
@@ -110,7 +112,7 @@ $brew/opt/python@3.12/libexec/bin"
   chmod +x "$bare/uname"
   run -0 env PATH="$bare:/usr/bin:/bin" bash -c \
     'source "$1/bin/lib/team.sh"; for tool in node bun treehouse python3; do "$tool"; done' bare "$REPO_ROOT"
-  assert_equal "$output" "$HOME/.nvm/versions/node/v24.22.1/bin/node
+  assert_equal "$output" "$HOME/.nvm/$node_dir/node
 $HOME/.bun/bin/bun
 $HOME/.local/bin/treehouse
 $brew/opt/python@3.12/libexec/bin/python3"

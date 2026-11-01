@@ -6,18 +6,23 @@
 #   pr url  https://github.com/<owner>/<name>/pull/<n>, in a registered project's repo
 #   sha     the head the worker means (the commit it pushed, the head it reviews), in full or
 #           short (7 to 40 hex characters); without it, the head of the first readable look
+# While the PR's head is not <sha>, it keeps looking for a grace of 2 minutes from the first look
+# (GRACE_SECONDS), since GitHub may not show a push of a moment ago yet, and reads nothing else of
+# those looks but a merged or closed PR; the first look whose head is <sha> is "the first look"
+# below. TEAM_CI_WAIT_GRACE_SECONDS replaces the grace's seconds (the tests' seam).
 # It looks every 30 s (WAIT_SECONDS), counting time in looks, so a test steps it with a stub
 # sleep. Each look reads the PR's state and head (gh pr view), its checks (gh pr checks), and,
 # once per run, the workflow run of each pending check whose link is an Actions job link
 # (.../actions/runs/<run id>/job/<job id>, through gh api repos/<repo>/actions/runs/<run id>):
 # only reads, never a log or a check's output. Before each look, while the team holds offline
 # (offline_hold), it ends at once with exit 75 and the hold's text.
-# It prints one line when it starts, naming the PR and the short head of its first readable
-# look, and its result when it ends, nothing in between; it ends at the first look where one of
+# It prints one line when it starts, naming the PR and the short head of the first look, and
+# its result when it ends, nothing in between; it ends at the earliest look where one of
 # these holds:
 #   the PR is merged or closed                         exit 1, naming its state
-#   the first look's head is not <sha>                 exit 1, naming both short heads: GitHub
-#                                                      may not show a push of a moment ago yet
+#   the head is still not <sha> after the grace        exit 1, naming both short heads: it is
+#                                                      another commit; report it to the
+#                                                      coordinator when it is not the worker's own
 #   the head is not the first look's                   exit 1, naming both short heads: the new
 #                                                      head's checks need a wait of their own
 #   no check reported for 2 minutes of looks           exit 0: the head has no GitHub checks
@@ -48,7 +53,9 @@ STUCK_SECONDS=300
 NO_CHECKS_SECONDS=120
 FAILING_SECONDS=300
 DEADLINE_SECONDS=5400
+GRACE_SECONDS=${TEAM_CI_WAIT_GRACE_SECONDS:-120}
 
+[[ $GRACE_SECONDS =~ ^[0-9]+$ ]] || usage_error "TEAM_CI_WAIT_GRACE_SECONDS must be a number of seconds"
 [[ $# -eq 1 || ($# -eq 2 && $2 =~ ^[0-9a-f]{7,40}$) ]] || usage_error "usage: team-ci-wait <pr url> [<sha>]"
 expected=${2:-}
 pr=$(registered_pr "$1")
@@ -86,6 +93,11 @@ pending_text() {
     | join("; ")' "$dir/look"
 }
 
+# The span of <seconds>, in whole minutes when it is some.
+span() {
+  if (($1 > 0 && $1 % 60 == 0)); then echo "$(($1 / 60)) minutes"; else echo "$1 seconds"; fi
+}
+
 look_n=0 seen_n=0 first_head='' failing_since='' no_checks_since=''
 declare -A stuck_since=()
 while :; do
@@ -98,8 +110,18 @@ while :; do
     { read -r state && read -r head; } < <(jq -r '.state, .head' "$dir/look")
     if [[ -z $first_head ]]; then
       if [[ $head != "$expected"* ]]; then
-        echo "team-ci-wait: the head of $repo#$number is ${head:0:7}, not ${expected:0:7}: its checks are not the ones to wait on; if you pushed ${expected:0:7} a moment ago, GitHub may not show it yet, so run team-ci-wait again"
-        exit 1
+        if [[ $state != OPEN ]]; then
+          echo "team-ci-wait: $repo#$number is ${state,,}: its checks no longer matter"
+          exit 1
+        fi
+        if ((look_n * WAIT_SECONDS >= GRACE_SECONDS)); then
+          echo "team-ci-wait: the head of $repo#$number is ${head:0:7}, not ${expected:0:7}, after $(span "$GRACE_SECONDS") of looks: it is another commit, and its checks are not the ones to wait on; if ${head:0:7} is not your own, report it to the coordinator"
+          exit 1
+        fi
+        # GitHub may not show the push yet: look again.
+        sleep "$WAIT_SECONDS"
+        look_n=$((look_n + 1))
+        continue
       fi
       first_head=$head
       echo "team-ci-wait: waiting on the checks of $repo#$number at ${head:0:7}"
