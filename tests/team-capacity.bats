@@ -1153,8 +1153,10 @@ cpu_reading() {
 }
 
 @test "jobs: the floor of the CPU budget at the recorded level, at least 1, and nproc with no team home, reading or record to size it by" {
-  local nproc
-  nproc=$(nproc)
+  # The sandbox's TEAM_SLOTS_CPUS (12) stands for nproc, which counts without it.
+  local nproc=$TEAM_SLOTS_CPUS
+  run -0 env -u TEAM_SLOTS_CPUS "$REPO_ROOT/bin/team-capacity" jobs
+  assert_equal "$output" "$(nproc)"
   # No reading: nproc's, said only with --verbose.
   run_bin -0 --separate-stderr team-capacity jobs
   assert_equal "$output" "$nproc"
