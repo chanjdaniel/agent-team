@@ -16,8 +16,8 @@
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin,
 # only_records, records_list, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
 # own_project, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_slots, discord_token, discord_api,
-# daniel_message, refresh_inbox, github, pr_part and task_state_json, and sets IMAGE_TYPE, COORDINATOR_CHANNEL and
-# INTERVIEW_CHANNEL.
+# daniel_message, refresh_inbox, github, pr_part, task_state_json, loose_objects and pack_size, and sets IMAGE_TYPE,
+# PACK_LOOSE, COORDINATOR_CHANNEL and INTERVIEW_CHANNEL.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
 # shellcheck shell=bash
 
@@ -62,6 +62,12 @@ TEAM_LIB=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # the records hook refuses them (data-check) and a task's archive leaves them out
 # (archive_left_out), so a screenshot never reaches the team home's history.
 IMAGE_TYPE='png|jpe?g|gif|webp|bmp|tiff?|ico|svg|heic|heif|avif'
+
+# The team home's loose objects at which team-timers run's pack step packs it on the lease holder
+# (git gc, which since git 2.40, tools.lock's floor, packs the unreachable ones too, in a cruft
+# pack, so none stays loose); team-doctor's team home pack line warns at twice as many.
+# shellcheck disable=SC2034 # read by team-timers and team-doctor
+PACK_LOOSE=200
 
 # Refuse with a reason on stderr.
 die() {
@@ -1199,3 +1205,13 @@ if [[ -z ${team_home_report:-} && ! ($TEAM_HOME_FROM == none && -n ${team_home_u
   [[ -z $TEAM_HOME_PROBLEM ]] || die "$TEAM_HOME_PROBLEM"
   [[ -d $TEAM_HOME ]] || die "team home $TEAM_HOME is not a directory"
 fi
+
+# The team home's loose objects, as git counts them: loose_objects
+loose_objects() {
+  git -C "$TEAM_HOME" count-objects -v | sed -n 's/^count: //p'
+}
+
+# The size of the team home's packs, as git prints it (38.40 MiB): pack_size
+pack_size() {
+  git -C "$TEAM_HOME" count-objects -vH | sed -n 's/^size-pack: //p'
+}

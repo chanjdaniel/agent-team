@@ -101,8 +101,9 @@ setup() {
   # With no ~/agent-team-records the fix clones it first, since the setting would name a missing directory.
   assert_equal "$(line_of 'team home')" \
     "FAIL team home: neither TEAM_HOME nor ~/.config/agent-team/home names one; fix: clone the team home, then name it: git clone --single-branch --branch dev https://github.com/chanjdaniel/agent-team-records.git ~/agent-team-records && git -C ~/agent-team-records remote set-branches --add origin lease && echo agent-team-records > ~/.config/agent-team/home"
-  # With no team home there is no fetch to check.
+  # With no team home there is no fetch or pack to check.
   assert_equal "$(line_of 'team home fetch')" ""
+  assert_equal "$(line_of 'team home pack')" ""
   mkdir "$HOME/agent-team-records"
   run -1 "$CODE_CHECKOUT/bin/team-doctor"
   assert_equal "$(line_of 'team home')" \
@@ -159,6 +160,19 @@ setup() {
   run_bin -1 team-doctor
   assert_equal "$(line_of 'team home')" \
     "FAIL team home: $home, $named, is on a detached HEAD, so its records would be committed on no branch; fix: git -C $home switch dev"
+}
+
+@test "the team home pack line counts the loose objects, and warns at twice the heartbeat's 200 with the fix" {
+  tools_at arch
+  local home=$TEAM_HOME
+  run_bin -0 team-doctor
+  [[ $(line_of 'team home pack') =~ ^"PASS team home pack: "[0-9]+" loose objects (the heartbeat packs it at 200), "[0-9.]+" "(bytes|KiB)" in packs"$ ]]
+  add_loose 400
+  run_bin -0 team-doctor
+  [[ $(line_of 'team home pack') =~ ^"WARN team home pack: "[0-9]+" loose objects, ".*" in packs; the lease holder's heartbeat packs it at 200 (team-timers run's pack step); fix: git -C $home gc --quiet"$ ]]
+  eval "$(line_of 'team home pack' | sed 's/.*; fix: //')"
+  run_bin -0 team-doctor
+  [[ $(line_of 'team home pack') =~ ^"PASS team home pack: 0 loose objects (the heartbeat packs it at 200), "[0-9.]+" KiB in packs"$ ]]
 }
 
 @test "the team home fetch line passes on a team home cloned to fetch only dev and lease, as SETUP.md clones it" {

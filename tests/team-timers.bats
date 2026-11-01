@@ -825,6 +825,39 @@ EOF
   [[ ! -e $(day_report) ]]
 }
 
+@test "the pack step packs the team home on the holder once it has 200 loose objects, unreachable ones too" {
+  run_bin -0 team-timers run
+  assert_equal "$(steps "$output")" "lease checkpoint"
+  add_loose 150
+  add_loose 60 --unreachable
+  (($(loose_count) >= 200))
+  run_bin -0 team-timers run
+  assert_equal "$(steps "$output")" "lease checkpoint pack"
+  [[ $(tail -n 1 <<<"$output") =~ ^[0-9T:Z-]+" pack: packed "[0-9]+" loose objects; 0 left loose, "[0-9.]+" "[KMG]iB" in packs"$ ]]
+  assert_equal "$(tail -n 1 "$log")" "$(tail -n 1 <<<"$output")"
+  assert_equal "$(loose_count)" 0
+  add_loose 190
+  run_bin -0 team-timers run
+  assert_equal "$(steps "$output")" "lease checkpoint"
+
+  # A machine that does not hold the lease never packs.
+  run -0 "$REPO_ROOT/bin/team-lease" release
+  add_loose 300
+  run_bin -0 team-timers run
+  assert_equal "$(grep -c ' pack: ' <<<"$output")" 0
+}
+
+@test "a pack that fails is logged with git's reason, the steps after it still run, and the run exits 1" {
+  docker_machine
+  stack_json '{"heartbeat_janitor": true}'
+  add_loose 200
+  # Another gc running, as git records it: a live process on this host.
+  echo "$$ $(hostname)" >"$TEAM_HOME/.git/gc.pid"
+  run_bin -1 team-timers run
+  assert_equal "$(steps "$output")" "lease checkpoint pack janitor"
+  [[ $(grep ' pack: ' <<<"$output") =~ " pack: failed: fatal: gc is already running on machine " ]]
+}
+
 @test "a hung Docker stops each step at its time limit, logged, and the run still checkpoints and frees its lock" {
   docker_machine
   stack_json '{"heartbeat_sweep": true, "heartbeat_janitor": true}'
