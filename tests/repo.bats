@@ -823,6 +823,19 @@ Bash(gh-axi pr ready *)'
     "gh pr ready -R me/shop --undo 5" "gh-axi pr ready 5 --undo"; do
     denied settings/builder.json "$command" || { echo "settings/builder.json allows: $command" >&2; return 1; }
   done
+  # The rules are for marking a PR ready and nothing else: no other gh write rides on them.
+  while IFS= read -r command; do
+    if allows builder "$command"; then echo "the builder may run: $command" >&2; return 1; fi
+  done <<'COMMANDS'
+gh pr merge https://github.com/me/shop/pull/5
+gh-axi pr merge 5
+gh pr comment https://github.com/me/shop/pull/5 --body-file x.md
+gh pr edit 5 --body-file x.md
+gh pr review 5 --approve
+gh pr close 5
+gh-axi pr edit 5 --body-file x.md
+gh api repos/me/shop/pulls/5 -X PATCH -f draft=false
+COMMANDS
 }
 
 @test "the reviewer's allow rules let no raw gh write through, statuses in the command or not" {
