@@ -116,7 +116,7 @@ def slice_task:
 # task, role, pid}.
 def team_sessions($in):
   ($in.procs | map({key: (.pid | tostring), value: true}) | from_entries) as $running
-  | [$in.sessions // [] | .[] | select((.name // "") | test("^T[0-9]+-[a-z]+$")) | select($running[.pid | tostring] // false)
+  | [$in.sessions // [] | .[] | select((.name // "") | test("^T[1-9][0-9]*-[a-z]+$")) | select($running[.pid | tostring] // false)
      | {id, task: (.name | split("-")[0]), role: (.name | sub("^T[0-9]+-"; "")), pid}];
 
 # The tasks a reading's input <in> (capacity_reading's) shows work of: those holding a worktree,

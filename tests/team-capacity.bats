@@ -155,14 +155,15 @@ reloaded the user manager"
   assert_contains "$output" "the user's systemd does not answer (systemctl --user daemon-reload: Failed to connect to user scope bus"
 }
 
-@test "place adopts each live team session, its pty host and its descendants into its task's scope, and leaves the coordinator, an unnamed session and a placed one" {
+@test "place adopts each live team session, its pty host and its descendants into its task's scope, and leaves the coordinator, an unnamed session, a load check's T0 session and a placed one" {
   session_tree 100
+  session_tree 500
   session_tree 200
   session_tree 300
   session_tree 400
   fake_process 399 10 "$(user_cgroup agent-team-T8-4f2a9c1e.scope agent-team-T8.slice)" claude bg-pty-host --bg-pty-host x
   fake_process 400 399 "$(user_cgroup agent-team-T8-4f2a9c1e.scope agent-team-T8.slice)" claude bg-spare
-  sessions "a1b2c3d4 T7-builder 100" "c0ffee00 coordinator 200" "deadbeef - 300" "4f2a9c1e T8-reviewer 400"
+  sessions "a1b2c3d4 T7-builder 100" "c0ffee00 coordinator 200" "deadbeef - 300" "4f2a9c1e T8-reviewer 400" "e0e0e0e0 T0-planner 500"
   run_bin -0 team-capacity place
   assert_equal "$output" "placed T7-builder a1b2c3d4 in agent-team-T7-a1b2c3d4.scope (4 processes)
 left T8-reviewer 4f2a9c1e: already in agent-team-T8-4f2a9c1e.scope"
@@ -174,6 +175,7 @@ left T8-reviewer 4f2a9c1e: already in agent-team-T8-4f2a9c1e.scope"
   assert_equal "$(cgroup_of 10)" "$(cgroup_of 200)"
   assert_contains "$(cgroup_of 200)" "konsole"
   assert_contains "$(cgroup_of 300)" "konsole"
+  assert_contains "$(cgroup_of 500)" "konsole"
   assert_equal "$(stub_calls busctl | jq -c '.[:11]')" \
     '["--user","call","org.freedesktop.systemd1","/org/freedesktop/systemd1","org.freedesktop.systemd1.Manager","StartTransientUnit","ssa(sv)a(sa(sv))","agent-team-T7-a1b2c3d4.scope","fail","3","PIDs"]'
 
@@ -333,7 +335,9 @@ MIB=1048576
   # The coordinator in the team home, the team's but no task's; another program.
   proc 300 1 400 9 "$TEAM_HOME"
   proc 400 1 2048 99 /
-  sessions "a1b2c3d4 T7-builder 100" "b1b2c3d4 T9-reviewer 200" "c0ffee00 coordinator 300" "deadbeef T11-builder 999"
+  # A load check's T0 session, no task's work.
+  proc 500 1 300 4 /tmp
+  sessions "a1b2c3d4 T7-builder 100" "b1b2c3d4 T9-reviewer 200" "c0ffee00 coordinator 300" "deadbeef T11-builder 999" "e0e0e0e0 T0-planner 500"
   unit agent-team-T7.slice MemoryCurrent=$((1024 * MIB)) CPUUsageNSec=90000000000
   unit agent-team-T7-a1b2c3d4.scope MemoryCurrent=$((800 * MIB)) MemoryPeak=$((900 * MIB)) CPUUsageNSec=85000000000
   unit agent-team-T9.slice MemoryCurrent=$((70 * MIB)) CPUUsageNSec=3000000000

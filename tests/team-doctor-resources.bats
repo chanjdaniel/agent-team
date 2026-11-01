@@ -75,18 +75,21 @@ sessions() {
   assert_equal "$(line_of resources)" "WARN resources: cannot read the live session list (claude agents --json), so no session's placement was checked; fix: run team-doctor again"
 }
 
-@test "the resources line fails when the user manager does not answer or does not delegate cpu and memory" {
+@test "the resources line warns, never fails, when the user manager does not answer or does not delegate cpu and memory" {
+  # No limit needs them yet, so the doctor, team-resume and team-load-check go on.
   user_controllers memory pids
-  run_bin -1 team-doctor
-  assert_equal "$(line_of resources)" "FAIL resources: the user manager's cgroup does not delegate the cpu and memory controllers (cgroup.controllers: memory pids); fix: Daniel delegates them (Delegate=cpu memory pids in a drop-in for user@.service, which needs sudo), then logs in again"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of resources)" "WARN resources: the user manager's cgroup does not delegate the cpu and memory controllers (cgroup.controllers: memory pids), so the team's slice cannot measure its work; fix: Daniel delegates them (Delegate=cpu memory pids in a drop-in for user@.service, which needs sudo), then logs in again"
   rm "$TEAM_CGROUP_ROOT/sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/cgroup.controllers"
-  run_bin -1 team-doctor
-  assert_contains "$(line_of resources)" "FAIL resources: the user manager's cgroup does not delegate the cpu and memory controllers (cgroup.controllers: none)"
+  run_bin -0 team-doctor
+  assert_contains "$(line_of resources)" "WARN resources: the user manager's cgroup does not delegate the cpu and memory controllers (cgroup.controllers: none)"
 
   user_controllers cpu memory pids
   touch "$HOME/.fake-systemd/down"
+  # The heartbeat line fails on the same silent user manager; this line only warns.
   run_bin -1 team-doctor
-  assert_equal "$(line_of resources)" "FAIL resources: the user's systemd does not answer (systemctl --user: Failed to connect to user scope bus via local transport: No such file or directory); fix: log in so the user's systemd runs, then run team-doctor again"
+  assert_equal "$(grep '^FAIL' <<<"$output")" "FAIL heartbeat: disabled, but this machine holds the lease; fix: team-timers enable"
+  assert_equal "$(line_of resources)" "WARN resources: the user's systemd does not answer (systemctl --user: Failed to connect to user scope bus via local transport: No such file or directory), so no work goes in the team's slice; fix: log in so the user's systemd runs, then run team-doctor again"
 }
 
 @test "on macOS the resources line passes with admission and stow only" {

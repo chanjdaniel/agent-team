@@ -21,9 +21,9 @@
 #          it. Each file written, the reload and each restart is one line; with nothing to do it
 #          says so. Idempotent. Exit 1 when the user manager does not answer the reload.
 # place    On Linux, adopts each live team session (claude agents --json: every session named
-#          T<n>-<role> whose process runs, never the coordinator or an unnamed one; with ids, only
-#          those, each an 8-hex session id, and an id that is no live team session, or whose
-#          process is gone, is a failure) into the
+#          T<n>-<role> whose process runs, never the coordinator, an unnamed one or a load
+#          check's T0; with ids, only those, each an 8-hex session id, and an id that is no live
+#          team session, or whose process is gone, is a failure) into the
 #          transient scope agent-team-T<n>-<id>.scope in the slice agent-team-T<n>.slice, which
 #          systemd nests under agent-team.slice by its name: the session's process, its parent
 #          when that is the claude daemon's bg-pty-host, and every descendant, but those already
@@ -34,11 +34,12 @@
 #          one line on stdout (with --quiet, the heartbeat's, only each placed one), each one it
 #          cannot place one line on stderr, and the others are still placed; exit 1 when any
 #          failed.
-# check    What the doctor's resources line says, as {os, verdict (PASS, WARN or FAIL), reason,
+# check    What the doctor's resources line says, as {os, verdict (PASS or WARN), reason,
 #          fix, problems: [{verdict, reason, fix}]} with --json, else the line "<verdict>
-#          <reason>" and "; fix: <fix>" when there is one, exiting 1 unless it passes. On Linux:
-#          FAIL when systemctl --user does not answer or the user manager's cgroup.controllers
-#          lacks cpu or memory; WARN when agent-team.slice is not installed as install writes it,
+#          <reason>" and "; fix: <fix>" when there is one, exiting 1 unless it passes. On Linux it
+#          WARNs, never FAILs, since no limit needs the slice yet: when systemctl --user does not
+#          answer or the user manager's cgroup.controllers lacks cpu or memory; when
+#          agent-team.slice is not installed as install writes it,
 #          a gate daemon unit lacks its drop-in (both fixed by team-capacity install, Daniel's
 #          yes), a running gate daemon is outside the slice (its restart waits on its pipeline),
 #          the session list cannot be read, or a live team session runs outside its task's slice
@@ -339,7 +340,7 @@ place_one() {
 # for each id that is no live team session.
 team_sessions() {
   jq -r --args '[.[] | {id: (.id // (.sessionId // "" | .[:8])), name: (.name // ""), pid: (.pid // "" | tostring)}] as $live
-    | def team: .name | test("^T[0-9]+-[a-z]+$");
+    | def team: .name | test("^T[1-9][0-9]*-[a-z]+$");
     if $ARGS.positional == [] then $live[] | select(team) | [.id, .name, .pid] | @tsv
     else $ARGS.positional[] as $id | ($live | map(select(.id == $id)) | first) as $s
       | if $s == null then ["-", "\($id): no live session has that id"]
@@ -372,13 +373,13 @@ check() {
   if [[ $os == linux ]]; then
     if ! out=$(systemctl --user show -P Version 2>&1); then
       manager=0
-      problem FAIL "the user's systemd does not answer (systemctl --user: $(grep -m1 . <<<"$out" || echo "no reason given"))" \
+      problem WARN "the user's systemd does not answer (systemctl --user: $(grep -m1 . <<<"$out" || echo "no reason given")), so no work goes in the team's slice" \
         "log in so the user's systemd runs, then run team-doctor again"
     fi
     file=$ROOT/sys/fs/cgroup/user.slice/user-$uid.slice/user@$uid.service/cgroup.controllers
     controllers=$(cat "$file" 2>/dev/null) || controllers=''
     if [[ " $controllers " != *" cpu "* || " $controllers " != *" memory "* ]]; then
-      problem FAIL "the user manager's cgroup does not delegate the cpu and memory controllers (cgroup.controllers: ${controllers:-none})" \
+      problem WARN "the user manager's cgroup does not delegate the cpu and memory controllers (cgroup.controllers: ${controllers:-none}), so the team's slice cannot measure its work" \
         "Daniel delegates them (Delegate=cpu memory pids in a drop-in for user@.service, which needs sudo), then logs in again"
     fi
     if [[ ! -f $UNITS/$SLICE || $(cat "$UNITS/$SLICE") != "$(slice_unit)" ]]; then
@@ -418,7 +419,7 @@ check() {
   printf '%s\n' "${problems[@]}" | jq -sc --arg os "$os" --argjson placed "$placed" '
     map(select(. != null)) as $p
     | {os: $os,
-       verdict: (if any($p[]; .verdict == "FAIL") then "FAIL" elif $p != [] then "WARN" else "PASS" end),
+       verdict: (if $p != [] then "WARN" else "PASS" end),
        reason: (if $p != [] then $p | map(.reason) | join("; ")
          elif $os == "macos" then "no hard limits on macOS: admission and stow only"
          else "agent-team.slice installed, no limits set yet; \($placed) live team session\(if $placed == 1 then "" else "s" end) in it" end),

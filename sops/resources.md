@@ -21,7 +21,7 @@ The coordinator and Daniel's own sessions are never in the slice.
 ## Placement
 
 A worker session is the claude daemon's child (the daemon, then the session's `bg-pty-host`, then the session), never `team-worker`'s, so it cannot be started inside the slice.
-Instead `team-capacity place` adopts each live session named `T<n>-<role>` after it starts: the session's process, its `bg-pty-host` parent and every descendant move into the transient scope `agent-team-T<n>-<id>.scope` in its task's slice, through the user manager's `StartTransientUnit` (`busctl --user call org.freedesktop.systemd1 ...`).
+Instead `team-capacity place` adopts each live session named `T<n>-<role>` after it starts, but a load check's `T0-<role>`, which is no task's work: the session's process, its `bg-pty-host` parent and every descendant move into the transient scope `agent-team-T<n>-<id>.scope` in its task's slice, through the user manager's `StartTransientUnit` (`busctl --user call org.freedesktop.systemd1 ...`).
 A descendant the team's slice already holds stays where it is, a session already in its scope is left, and a call that fails is tried once more with a fresh tree, since a process may end between the read and the call.
 `team-worker` runs `place` for its new session right after the launch; a session it cannot place is a warning, and the launch stands.
 Once all of a scope's processes end, systemd removes the scope.
@@ -74,6 +74,7 @@ The seeds' evidence: 13 sessions at 0.3 to 0.55 GiB each, one heavy run 4 to 6 G
 ## What the doctor says
 
 `team-doctor`'s `resources` line reads `team-capacity check --json`.
-It fails when the user's systemd does not answer or its cgroup does not delegate `cpu` and `memory`, which only Daniel can change (a `user@.service` drop-in, with sudo).
-It warns when the slice or a gate daemon's drop-in is not installed (`team-capacity install`, Daniel's yes), when the gate's daemon still runs outside the slice (its restart waits on a pipeline), when a live team session runs outside its task's slice (`team-capacity place`, or the heartbeat's next run), and on the lease holder when no reading is under 15 minutes old (the `capacity` step's lines in the heartbeat log say why).
+It fails only when `team-capacity check` itself cannot run, since no limit needs the slice yet: so a machine without it runs the team as before, and `team-resume` and `team-load-check`, which stop on any FAIL, go on.
+It warns when the user's systemd does not answer or its cgroup does not delegate `cpu` and `memory`, which only Daniel can change (a `user@.service` drop-in, with sudo); these become a FAIL once the levels set limits that need the slice.
+It also warns when the slice or a gate daemon's drop-in is not installed (`team-capacity install`, Daniel's yes), when the gate's daemon still runs outside the slice (its restart waits on a pipeline), when a live team session runs outside its task's slice (`team-capacity place`, or the heartbeat's next run), and on the lease holder when no reading is under 15 minutes old (the `capacity` step's lines in the heartbeat log say why).
 macOS has no cgroups: `install` and `place` change nothing there, and the line passes with "no hard limits on macOS: admission and stow only".
