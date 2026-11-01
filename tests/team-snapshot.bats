@@ -79,8 +79,9 @@ sessions() {
 }
 
 # github: gh answers from files in $STUB_FIXTURES: prs-<owner>_<repo> for gh pr list (a repo
-# with no file fails like GitHub down), view-<n> for gh pr view, and checks-<n> for both
-# gh pr checks calls (an empty list when absent).
+# with no file fails like GitHub down), view-<n> for gh pr view, checks-<n> for both
+# gh pr checks calls (an empty list when absent), and compare for gh api's compare of a base and
+# head (failing when absent).
 github() {
   stub_script gh <<'EOF'
 repo='' number=''
@@ -97,6 +98,8 @@ case "$1 $2" in
     file=$STUB_FIXTURES/view-$number
     if [[ -f $file ]]; then cat "$file"; else echo "error connecting to api.github.com" >&2; exit 1; fi ;;
   "pr checks") cat "$STUB_FIXTURES/checks-$number" 2>/dev/null || echo '[]' ;;
+  "api repos/"*/compare/*)
+    if [[ -f $STUB_FIXTURES/compare ]]; then cat "$STUB_FIXTURES/compare"; else echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi ;;
   *) echo "unplanned gh call: $*" >&2; exit 1 ;;
 esac
 EOF
@@ -447,11 +450,41 @@ EOF
   run_bin -0 team-snapshot
   echo "$output"
   [[ ${#lines[@]} -le 50 ]]
+  # An open task's line is cut at 200 columns, any other at 120.
   local line
-  for line in "${lines[@]}"; do [[ ${#line} -le 120 ]]; done
+  for line in $(section "Open tasks" | sed 1d | awk '{ print length($0) }'); do [[ $line -le 200 ]]; done
+  for line in "${lines[@]}"; do [[ $line == "  T"[0-9]*" | "* || ${#line} -le 120 ]]; done
   # Long free text is cut, with the cut shown.
   assert_contains "$(section "Pending asks")" "  T1 q1: A long question for Daniel A long question for Daniel"
   assert_contains "$(section "Pending asks")" "..."
+}
+
+@test "an open task's line carries its progress whole: the brief its builder is on, its tickets, its review and how far its PR is behind" {
+  local wt=$BATS_TEST_TMPDIR/wt n
+  mkdir -p "$wt/.scratch/task/tickets"
+  for n in 1 2 3 4 5 6 7; do printf 'Blocked by: None\n' >"$wt/.scratch/task/tickets/0$n-ticket.md"; done
+  event T172 opened "$(jq -cn --arg wt "$wt" '{project: "proj", path: "feature", type: "feat", title: "Toil",
+    branch: "feat/T172-coordinator-toil-tools", base: "main", base_sha: "0123456", worktree: $wt}')"
+  event T172 plan-approved '{by: "Daniel"}'
+  for n in 01 02 03; do event T172 ticket-done "{ticket: \"$n\", commits: [\"a0017cce\"]}"; done
+  event T172 launch '{role: "builder", session: "59709d99", worktree: "/w/1", toolkits: [], brief: "brief-build-04"}'
+  pr_event T172 45
+  event T172 review "{verdict: \"findings\", head: \"$head\", sent_back: [5, 6]}"
+  echo 16 >"$STUB_FIXTURES/compare"
+  sessions "$(session 59709d99 T172-builder idle)"
+  open_prs owner/proj '[]'
+  open_prs owner/conv '[]'
+  run_bin -0 team-snapshot
+  local line="  T172 proj feature in-review | T172-builder idle on build-04 | tickets 3/7 | review 1 findings, sent back 5, 6 | PR #45 a1b2c3d 16 behind main checks 0/0 agent-review missing"
+  assert_equal "$(section "Open tasks")" "Open tasks (1):
+$line"
+  # More than 120 columns, kept whole, as team-state says it.
+  [[ ${#line} -gt 120 ]]
+  run_bin -0 team-state T172
+  assert_equal "  $output" "$line"
+  run_bin -0 team-snapshot --json
+  assert_equal "$(jq -c '.tasks[0] | [.progress.tickets, .progress.reviews.sent_back, .pr.behind_by]' <<<"$output")" \
+    '[{"done":["01","02","03"],"total":7},[5,6],16]'
 }
 
 @test "a waiting task says what it waits on" {

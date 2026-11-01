@@ -301,8 +301,9 @@ assert_closed_and_clean() {
   ok team-log T1 pr url="$url" head="$head"
   step in-review no-worker:"$builder"
   ok team-state T1
-  # The builder's launch stopped the finished planner.
-  assert_equal "$output" "T1 home feature in-review | T1-builder idle | PR #7 ${head:0:7} checks 1/1 agent-review missing"
+  # The builder's launch stopped the finished planner. The line names the builder's brief, and its
+  # one ticket-done with no total, since the worktree holds no ticket files.
+  assert_equal "$output" "T1 home feature in-review | T1-builder idle on build-01 | tickets 1 done | PR #7 ${head:0:7} checks 1/1 agent-review missing"
 
   # 5. Review: a fresh reviewer, its pass and the agent-review status on the head.
   echo "- The tests run the real scripts." >"$BATS_TEST_TMPDIR/checks"

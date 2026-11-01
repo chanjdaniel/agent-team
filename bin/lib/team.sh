@@ -1099,9 +1099,10 @@ github() {
 }
 
 # The pr part of a task's state: its latest pr event joined with GitHub, using <dir> for gh's
-# answers: pr_part '<events>' '<pr event>' <dir>
+# answers, with behind_by, the commits of its base its head lacks, from GitHub's compare of the
+# two; null for a PR not open or when the compare cannot be read: pr_part '<events>' '<pr event>' <dir>
 pr_part() {
-  local events=$1 pr=$2 dir=$3 url project repo='' number required_checks='[]' facts
+  local events=$1 pr=$2 dir=$3 url project repo='' number required_checks='[]' facts behind_by=null base head
   url=$(jq -r .url <<<"$pr") || return 1
   project=$(jq -r '.project // empty' <<<"$pr") || return 1
   if [[ $url =~ ^https://github\.com/([^/]+/[^/]+)/pull/([0-9]+)/?$ ]]; then
@@ -1127,6 +1128,13 @@ pr_part() {
   if github "$dir" view pr view "$number" --repo "$repo" --json number,state,baseRefName,headRefOid &&
     github "$dir" checks pr checks "$number" --repo "$repo" --json name,bucket,state &&
     github "$dir" required pr checks "$number" --repo "$repo" --required --json name,bucket,state; then
+    if jq -e '.state == "OPEN"' "$dir/view" >/dev/null; then
+      base=$(jq -r .baseRefName "$dir/view") head=$(jq -r .headRefOid "$dir/view")
+      if github "$dir" compare api "repos/$repo/compare/$base...$head" --jq .behind_by &&
+        jq -e 'type == "number"' "$dir/compare" >/dev/null; then
+        behind_by=$(<"$dir/compare")
+      fi
+    fi
     ledger_jq '
       $view[0] as $view | $checks[0] as $checks
       | ($checks | map(.name)) as $present
@@ -1139,11 +1147,13 @@ pr_part() {
             pending: [$checks[] | select(.bucket == "pending") | .name] | unique},
           required: $required,
           required_missing: [$required[] | select(IN($present[]) | not)],
-          agent_review: ([$checks[] | select(.name == "agent-review") | .state | ascii_downcase] | first // "missing")}
+          agent_review: ([$checks[] | select(.name == "agent-review") | .state | ascii_downcase] | first // "missing"),
+          behind_by: $behind_by}
       | {url, number, repo, project, state, base, head, ledger_head, head_moved, checks, required,
-         required_missing, agent_review, merge_approved}' \
+         required_missing, agent_review, merge_approved, behind_by}' \
       -c --slurpfile view "$dir/view" --slurpfile checks "$dir/checks" \
-      --slurpfile required "$dir/required" --argjson project_required "$required_checks" <<<"$facts"
+      --slurpfile required "$dir/required" --argjson project_required "$required_checks" \
+      --argjson behind_by "$behind_by" <<<"$facts"
   else
     jq -c --rawfile error "$dir/error" '. + {error: ($error | rtrimstr("\n"))}' <<<"$facts"
   fi
@@ -1172,6 +1182,7 @@ session_context() {
 # list fails with the reason on stderr: task_state_json '<events>'
 task_state_json() (
   local events=$1 state pr dir session_id context contexts='{}' sessions plan_project plan_projects opted_in own
+  local task tickets total
   live_sessions
   while IFS= read -r session_id; do
     context=$(session_context "$session_id")
@@ -1194,6 +1205,12 @@ task_state_json() (
     fi
     state=$(jq -c --argjson opted_in "$opted_in" --argjson own "$own" \
       '.merge_preapproval += {opted_in: $opted_in, own: $own}' <<<"$state") || exit 1
+  fi
+  # The ticket total: the ticket files team-tickets reads, null when it refuses them.
+  task=$(jq -r '.[0].task' <<<"$events") || exit 1
+  if tickets=$(TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-tickets" "$task" --json 2>/dev/null </dev/null) &&
+    total=$(jq -e 'length' <<<"$tickets" 2>/dev/null); then
+    state=$(jq -c --argjson total "$total" '.progress.tickets.total = $total' <<<"$state") || exit 1
   fi
   pr=$(jq -c 'map(select(.event == "pr")) | last' <<<"$events") || exit 1
   if [[ $pr != null ]]; then
