@@ -43,10 +43,10 @@
 # not name the task, or is no branch name git takes (git check-ref-format --branch). A
 # review's findings, when given, must count exactly blocking, correctness, security, real-data,
 # note-change and note-before, each a whole number, and its guarded list only ci, dependencies,
-# migrations, settings, permissions and secrets; its before, the numbers of its plain notes on code
-# the PR did not change, distinct whole numbers above 0, is required when findings counts a
-# note-before, as many as it counts, and a sent_back naming one of them is refused, since such a
-# note is queued, never sent back. A park
+# migrations, settings, permissions, secrets and guardrails; its before, the numbers of its plain
+# notes on code the PR did not change, distinct whole numbers above 0, is required when findings
+# counts a note-before, as many as it counts, and a sent_back naming one of them is refused, since
+# such a note is queued, never sent back. A park
 # (waiting, blocked, paused, held) logged after the fact takes since=<UTC time>, when it began:
 # no later than now and no earlier than the task's latest event, or it is refused naming both
 # times; no other kind takes since.

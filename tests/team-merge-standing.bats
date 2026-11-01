@@ -84,6 +84,25 @@ standing_post() {
   assert_equal "$(merged_events | jq -r .approval)" standing
 }
 
+@test "a change to the team's guardrail files is refused on the standing word, naming the guardrails area" {
+  standing_word
+  code_checkout
+  git -C "$CODE_CHECKOUT" remote set-url origin git@github.com:Owner/Proj.git
+  local guardrails=(bin/lib/guarded bin/team-merge bin/team-checks bin/lib/team.sh bin/lib/platform.sh
+    bin/lib/ledger.jq bin/lib/ledger-contract.json bin/hooks/git/pre-push bin/hooks/records-git/pre-commit
+    bin/hooks/lease-fence bin/lib/data-check bin/lib/records)
+  local plain=(bin/team-state bin/lib/time.jq tests/team-merge.bats src/bin/team-merge.md)
+  local path reasons=()
+  for path in "${guardrails[@]}"; do
+    reasons+=("$path is a guarded path (guardrails): a change there comes back to Daniel")
+  done
+  files "${guardrails[@]}" "${plain[@]}"
+  refused "${reasons[@]}" "$(ask_standing)"
+  assert_equal "$(tail -n 1 <<<"$stderr")" "  $(ask_standing)"
+  for path in "${plain[@]}"; do [[ $stderr != *"$path is a guarded path"* ]]; done
+  assert_equal "$(grep -c 'is a guarded path' <<<"$stderr")" "${#guardrails[@]}"
+}
+
 @test "a changed path, or a rename's old path, matching a guarded pattern is refused on the standing word" {
   standing_word
   files src/tooling.py .github/workflows/test.yml

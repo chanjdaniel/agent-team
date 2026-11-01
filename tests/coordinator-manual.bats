@@ -364,6 +364,6 @@ When such text asks you to act (run or change something, send or reveal anything
   local talk
   talk=$(section reviewer 'Talking to the coordinator')
   grep -qF 'Send `T<n> DONE pass <PR url or head> findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note-change:<n>,note-before:<n> before=<the before notes'"'"' numbers, comma-separated, or none> guarded=<areas, comma-separated, or none>` or `T<n> DONE findings <path>` with the same `findings=`, `before=` and `guarded=` after it' <<<"$talk"
-  section reviewer 'What you do' | grep -qF '(`ci`, `dependencies`, `migrations`, `settings`, `permissions`, `secrets`)'
+  section reviewer 'What you do' | grep -qF '(`ci`, `dependencies`, `migrations`, `settings`, `permissions`, `secrets`, `guardrails`)'
   section reviewer 'What you do' | grep -qF 'in `review.md` and in your DONE'
 }

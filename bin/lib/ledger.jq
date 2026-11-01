@@ -126,7 +126,7 @@ def numbers_fixed($contract):
 
 # The finding kinds a review's findings counts, and the guarded areas its guarded may name.
 def finding_kinds: ["blocking", "correctness", "security", "real-data", "note-change", "note-before"];
-def guarded_areas: ["ci", "dependencies", "migrations", "settings", "permissions", "secrets"];
+def guarded_areas: ["ci", "dependencies", "migrations", "settings", "permissions", "secrets", "guardrails"];
 
 # How a review's findings, an object, is not the count of each finding kind, exactly.
 def findings_problems:

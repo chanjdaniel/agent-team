@@ -936,7 +936,7 @@ LINES
   run_bin -1 team-log T14 review verdict=pass head=a1b2c3d 'guarded={"ci":1}'
   assert_contains "$output" "guarded must be a list, got an object"
   run_bin -1 team-log T14 review verdict=pass head=a1b2c3d 'guarded=["ci", "docs", 1]'
-  assert_equal "$output" "team-log: guarded lists the guarded areas the change touches, each one of ci, dependencies, migrations, settings, permissions and secrets:
+  assert_equal "$output" "team-log: guarded lists the guarded areas the change touches, each one of ci, dependencies, migrations, settings, permissions, secrets and guardrails:
   \"docs\": not a guarded area
   1: not a guarded area"
   assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "3"

@@ -50,7 +50,7 @@ The standing word also needs its `discord_channel` to be `#coordinator`'s channe
 
 - A release to `main`: it stays Daniel's own, outside `team-merge`.
 - A PR with a required check missing or not passed, any check failing or pending, or any other check every merge gets unmet.
-- On the unattended words, a PR that touches a guarded area (CI, dependencies, migrations, settings, permissions, secrets), by its paths or by its reviewer's `guarded` list, or whose task ever counted a security or real-data finding; these come back to Daniel for the per-head word.
+- On the unattended words, a PR that touches a guarded area (CI, dependencies, migrations, settings, permissions, secrets, or the team's own guardrails), by its paths or by its reviewer's `guarded` list, or whose task ever counted a security or real-data finding; these come back to Daniel for the per-head word.
 
 ## What the coordinator does
 

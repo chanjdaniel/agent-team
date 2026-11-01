@@ -33,7 +33,7 @@
 #   read in full; each changed path is within the approval's scope (an entry ending in / covers
 #   every path under it, any other that path only), each one outside named; and no changed path
 #   matches a guarded pattern of bin/lib/guarded (CI, dependencies, migrations, settings,
-#   permissions, secrets), as it is or with its camelCase humps split off by underscores, each
+#   permissions, secrets, the team's guardrails), as it is or with its camelCase humps split off by underscores, each
 #   one named with its areas; a per-head merge checks none of these; every check below holds for
 #   it too, and a refusal ends with a line saying to ask Daniel for the per-head word on the
 #   head;
