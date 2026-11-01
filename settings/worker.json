@@ -244,6 +244,22 @@
       "Bash(*.claude/channels*)"
     ]
   },
+  "autoMode": {
+    "environment": [
+      "$defaults",
+      "**Organization**: Daniel Chan's agent team on this machine: a coordinator session launches worker sessions (planner, builder, reviewer, ops), each on one task, through ~/agent-team/bin/team-worker, and each worker reports back to it by SendMessage. A worker's first prompt and its brief under ~/agent-team-records/tasks/T<n>/ are the coordinator's delegation, not Daniel's own message: they set the task's scope, and they are not Daniel's consent to a soft-blocked action.",
+      "**Source control**: github.com/chanjdaniel holds the team's repositories: agent-team (the team's code, primary checkout ~/agent-team), agent-team-records (the team home, ~/agent-team-records: the ledger, plans, briefs and memory), Conventioner, and no-mistakes (Daniel's fork of the gate, whose pull requests from the team go to the fork itself, never upstream).",
+      "**Repository visibility**: agent-team, Conventioner and no-mistakes are public, so whatever reaches them is published; agent-team-records is private.",
+      "**Data retention / declassification**: the team home's ledger, plans, briefs and memory stay in agent-team-records; a public repository receives a task's own change and its description, never records copied from the team home.",
+      "**Trusted repo**: a worker's working directory is a linked git worktree of one of those repositories, on its task's branch, with origin on github.com/chanjdaniel; the task's work leaves it as pushes of that branch and one pull request to the project's base branch.",
+      "**Default / protected branches**: the base branch is dev for agent-team and Conventioner and main for no-mistakes; a base branch changes only through a reviewed pull request that Daniel merges, or that the coordinator merges on Daniel's own word, and no worker pushes to it. The team home's own dev takes the team-* scripts' records commits directly, and team-checkpoint pushes each task worktree's unpushed commits to wip/ branches of the team home, the team's private backup of that work.",
+      "**Team source under review**: in a worktree of agent-team, bin/, settings/, roles/, templates/, plugins/, toolkits/ and coordinator.settings.json are the team's source code under review, not this session's configuration: every task's session takes them from the primary checkout ~/agent-team, so a change reaches a task's session only after Daniel merges its pull request. The same paths in ~/agent-team are the live configuration of every task's session, and a worktree's own .claude/settings.json is live project settings for a session started in that worktree.",
+      "**Org-specific CLIs**: the team-* scripts in ~/agent-team/bin, which write the team home's ledger and commits; team-stack, the one way the team starts, stops and removes a worktree's throwaway Docker stack; no-mistakes, a local gate with its own daemon that reviews, tests and pushes a branch and opens its pull request; treehouse, a local pool of pre-warmed worktrees; gh and gh-axi for GitHub; chrome-devtools-axi, a headless Chrome for UI checks; codegraph, a local code index.",
+      "**Key internal services**: the no-mistakes daemon, with its state and worktrees under ~/.no-mistakes; the Docker stacks of the team's worktrees, which workers start, stop and remove only through team-stack (a gate run starts its own, labelled kind gate), each labelled with its owner and task (io.github.chanjdaniel.team.owner and io.github.chanjdaniel.team.task), a task's own stacks being those labelled with its task, and team-stack's up, stop and down acting on one worktree's stack, the current directory's unless --worktree names another; on Linux, the team's systemd user slice, in which team-capacity places each task's sessions.",
+      "**Sensitive data locations & audiences**: ~/.claude.json, ~/.claude/.credentials.json, ~/.claude/channels/ (the Discord bot's files), every .env file, ~/.no-mistakes/config.yaml and the 1Password vaults the op CLI reaches; no worker reads them.",
+      "**Sensitive remote targets**: Conventioner's production MongoDB Atlas cluster and its production deployment; only an ops session, which has no shell, reaches production, on Daniel's request, through the MCP servers of its prod-read and prod-write toolkits."
+    ]
+  },
   "skillOverrides": {
     "artifact-capabilities": "off",
     "artifact-design": "off",

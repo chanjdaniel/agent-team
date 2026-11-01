@@ -307,6 +307,43 @@ run_fake() {
       Stop: [{hooks: [{type: "command", command: "s"}]}]}}')"
 }
 
+@test "role autoMode lists are concatenated on the worker settings' own, \"\$defaults\" kept once where it first stands" {
+  fake_checkout
+  jq '.autoMode = {environment: ["$defaults", "shared fact"], soft_deny: ["$defaults"]}' "$code/settings/worker.json" >"$code/w.json"
+  mv "$code/w.json" "$code/settings/worker.json"
+  jq '.autoMode = {environment: ["$defaults", "planner fact at @TEAM_CODE@"], allow: ["$defaults", "planner allow"]}' \
+    "$code/settings/planner.json" >"$code/p.json"
+  mv "$code/p.json" "$code/settings/planner.json"
+  thread T7
+  run_fake T7 planner "$wt1" -- go
+  assert_equal "$status" 0
+  assert_equal "$(jq -cS .autoMode "$TEAM_HOME/tasks/T7/settings.planner.json")" "$(jq -cnS --arg code "$code" '{
+    environment: ["$defaults", "shared fact", "planner fact at \($code)"],
+    soft_deny: ["$defaults"], allow: ["$defaults", "planner allow"]}')"
+
+  # With no autoMode in either file, the settings have none.
+  fake_checkout
+  run_fake T7 planner "$wt1" -- go
+  assert_equal "$(jq -c 'has("autoMode")' "$TEAM_HOME/tasks/T7/settings.planner.json")" false
+}
+
+@test "every role's generated settings hold the worker settings' autoMode lines, \"\$defaults\" once per list" {
+  thread T7
+  ops_stub
+  local role settings
+  for role in planner builder reviewer ops; do
+    if [[ $role == ops ]]; then
+      run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$request" -- go
+    else
+      run_bin -0 team-worker T7 "$role" "$wt1" -- go
+    fi
+    settings=$TEAM_HOME/tasks/T7/settings.$role.json
+    assert_equal "$(jq -c --slurpfile w "$REPO_ROOT/settings/worker.json" \
+      '.autoMode.environment[:($w[0].autoMode.environment | length)] == $w[0].autoMode.environment' "$settings")" true
+    assert_equal "$(jq -c '[.autoMode[] | map(select(. == "$defaults")) | length] | unique' "$settings")" '[1]'
+  done
+}
+
 @test "every role's settings run the fence hook on Bash; the planner's and reviewer's add the edit hook" {
   thread T7
   local role settings

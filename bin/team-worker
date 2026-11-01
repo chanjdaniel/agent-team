@@ -195,8 +195,10 @@ fi
 substitute='walk(if type == "string" then gsub("@TEAM_CODE@"; $code) | gsub("@TASK@"; $task)
   | gsub("@TASK_DIR@"; $taskdir) | gsub("@ROLE@"; $role) else . end)'
 
-# Role settings layered on the shared worker settings; permission lists and each event's hook
-# list are concatenated, the shared ones first, so a role's hooks add to the shared hooks.
+# Role settings layered on the shared worker settings; permission lists, each event's hook list
+# and each autoMode list are concatenated, the shared ones first, so a role's hooks add to the
+# shared hooks and its autoMode lines to the team's; an autoMode list keeps "$defaults" (the
+# built-in rules) once, where it first stands.
 settings=$taskdir/settings.$role.json
 jq -s --arg code "$code" --arg task "$task" --arg taskdir "$taskdir" --arg role "$role" '.[0] as $base | .[1] as $own
   | ($base * $own)
@@ -207,6 +209,11 @@ jq -s --arg code "$code" --arg task "$task" --arg taskdir "$taskdir" --arg role 
   | if $base.hooks or $own.hooks then
       .hooks = reduce ((($base.hooks // {}) + ($own.hooks // {})) | keys[]) as $event ({};
         .[$event] = (($base.hooks[$event] // []) + ($own.hooks[$event] // [])))
+    else . end
+  | if $base.autoMode or $own.autoMode then
+      .autoMode = reduce ((($base.autoMode // {}) + ($own.autoMode // {})) | keys[]) as $list ({};
+        .[$list] = reduce (($base.autoMode[$list] // []) + ($own.autoMode[$list] // []))[] as $line ([];
+          if $line == "$defaults" and any(.[]; . == "$defaults") then . else . + [$line] end))
     else . end
   | '"$substitute" \
   "$code/settings/worker.json" "$code/settings/$role.json" >"$settings"
