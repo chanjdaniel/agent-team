@@ -84,12 +84,16 @@ standing_post() {
   assert_equal "$(merged_events | jq -r .approval)" standing
 }
 
-@test "a changed path matching a guarded pattern is refused on the standing word" {
+@test "a changed path, or a rename's old path, matching a guarded pattern is refused on the standing word" {
   standing_word
   files src/tooling.py .github/workflows/test.yml
   refused ".github/workflows/test.yml is a guarded path (ci): a change there comes back to Daniel" "$(ask_standing)"
   assert_equal "$(tail -n 1 <<<"$stderr")" "  $(ask_standing)"
   [[ $stderr != *"merge-approved"* && $stderr != *"plan-time"* ]]
+  files src/tooling.py '.github/workflows/old.yml=>src/new.yml'
+  refused ".github/workflows/old.yml, renamed to src/new.yml, is a guarded path (ci): a change there comes back to Daniel" \
+    "$(ask_standing)"
+  assert_equal "$(tail -n 1 <<<"$stderr")" "  $(ask_standing)"
 }
 
 @test "a latest review that logged no guarded areas, or named some, is refused on the standing word" {
@@ -223,7 +227,7 @@ $(standing_post)"
 # Daniel's message <message> in <channel>, by user 757 (or <author>): said <message> <channel> [<author>]
 said() {
   jq -n --arg m "$1" --arg c "$2" --arg author "${3:-757}" '{id: $m, channel_id: $c,
-    content: "standing order: merge when ready", author: {id: $author, username: "daniel"}}' >"$discord/$2-$1.json"
+    content: "merge when ready", author: {id: $author, username: "daniel"}}' >"$discord/$2-$1.json"
 }
 
 # Daniel's standing word on proj beside the earlier word: a passing review of the head, and their
