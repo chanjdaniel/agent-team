@@ -16,8 +16,9 @@
 # never another task's), then, when any was stopped, the landed check again for each worktree to
 # return (one that no longer has landed is kept with --keep-worktree, else exit 1 with the task
 # half closed); team-stack down --worktree <path> for each worktree to return whose project has a
-# stack block, so its logs are archived with its task directory (a kept worktree keeps its stack;
-# a failed teardown stops the close with the reason, the task half closed); tasks/T<n>/ui/, the
+# stack block, so nothing of it is left running (its logs, saved in the task directory, stay out
+# of the archive; a kept worktree keeps its stack; a failed teardown stops the close with the
+# reason, the task half closed); tasks/T<n>/ui/, the
 # task's UI captures (team-ui), removed, since they stay on this machine and are never archived;
 # each worktree's task directory mirrored to tasks/T<n>/scratch/ (the opened project) or
 # tasks/T<n>/scratch-<project>/ (an added one), less what archive_left_out (bin/lib/team.sh)
@@ -210,8 +211,8 @@ if ((${#stopped[@]})); then
 fi
 
 # Take down the stack of each worktree to be returned whose project has a stack block, before the
-# archive, so that its logs land in the worktree's task directory and are archived with it; a
-# kept worktree keeps its stack.
+# archive, so nothing of it is left running; its logs land in the worktree's task directory, which
+# the archive leaves them out of (archive_left_out); a kept worktree keeps its stack.
 teardown_stacks() {
   local wt project path
   for wt in "${returning[@]}"; do

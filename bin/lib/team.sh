@@ -16,8 +16,8 @@
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin,
 # only_records, records_list, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
 # own_project, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_slots, discord_token, discord_api,
-# daniel_message, refresh_inbox, github, pr_part and task_state_json, and sets IMAGE_TYPE, COORDINATOR_CHANNEL and
-# INTERVIEW_CHANNEL.
+# daniel_message, refresh_inbox, github, pr_part, task_state_json, loose_objects, pack_size and story_file, and sets IMAGE_TYPE,
+# PACK_LOOSE, COORDINATOR_CHANNEL and INTERVIEW_CHANNEL.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
 # shellcheck shell=bash
 
@@ -62,6 +62,12 @@ TEAM_LIB=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # the records hook refuses them (data-check) and a task's archive leaves them out
 # (archive_left_out), so a screenshot never reaches the team home's history.
 IMAGE_TYPE='png|jpe?g|gif|webp|bmp|tiff?|ico|svg|heic|heif|avif'
+
+# The team home's loose objects at which team-timers run's pack step packs it on the lease holder
+# (git gc, which since git 2.40, tools.lock's floor, packs the unreachable ones too, in a cruft
+# pack, so none stays loose); team-doctor's team home pack line warns at twice as many.
+# shellcheck disable=SC2034 # read by team-timers and team-doctor
+PACK_LOOSE=200
 
 # Refuse with a reason on stderr.
 die() {
@@ -179,6 +185,8 @@ local_path() {
 # archive leaves them out, each as "<why>\t<path>" (relative to <dir>), NUL-terminated, in this
 # order, sorted within each:
 #   UI capture         a top-level ui/ (a frontend capture stays on the machine that took it)
+#   stack logs         a top-level stack-logs/, where team-stack down saves each service's log
+#                      tail: for the builder at the time, never the records
 #   Lighthouse reports a ui-check run's lighthouse/, ui-check/<run>/lighthouse (its failing
 #                      audits are in the run's findings.md, which is kept)
 #   nested repository  a directory holding .git, or a bare repository's HEAD, objects/ and refs/
@@ -205,6 +213,10 @@ archive_left_out() {
       skip+=(-o -path "./$pattern")
     }
     [[ ! -d ui ]] || printf 'UI capture\tui\0'
+    if [[ -d stack-logs && ! -L stack-logs ]]; then
+      printf 'stack logs\tstack-logs\0'
+      skip_path stack-logs
+    fi
     if [[ -d ui-check && ! -L ui-check ]]; then
       while IFS= read -r -d '' dir; do
         printf 'Lighthouse reports\t%s\0' "$dir"
@@ -1193,3 +1205,42 @@ if [[ -z ${team_home_report:-} && ! ($TEAM_HOME_FROM == none && -n ${team_home_u
   [[ -z $TEAM_HOME_PROBLEM ]] || die "$TEAM_HOME_PROBLEM"
   [[ -d $TEAM_HOME ]] || die "team home $TEAM_HOME is not a directory"
 fi
+
+# The team home's loose objects, as git counts them: loose_objects
+loose_objects() {
+  git -C "$TEAM_HOME" count-objects -v | sed -n 's/^count: //p'
+}
+
+# The size of the team home's packs, as git prints it (38.40 MiB): pack_size
+pack_size() {
+  git -C "$TEAM_HOME" count-objects -vH | sed -n 's/^size-pack: //p'
+}
+
+# The team home's backlog file of the story <id> (E<nn>/F<nn>/S<nn>) of <project>,
+# projects/<project>/backlog/E<nn>-<slug>/F<nn>-<slug>/S<nn>-<slug>.md whose front matter's id is
+# <id>; fails, saying so on stderr, unless exactly one is: story_file <project> <id>
+story_file() {
+  local backlog=$TEAM_HOME/projects/$1/backlog e f s file story_matches=()
+  if [[ ! $2 =~ ^(E[0-9]+)/(F[0-9]+)/(S[0-9]+)$ ]]; then
+    echo "${0##*/}: '$2' is no story id like E40/F01/S02" >&2
+    return 1
+  fi
+  e=${BASH_REMATCH[1]} f=${BASH_REMATCH[2]} s=${BASH_REMATCH[3]}
+  if [[ -d $backlog ]]; then
+    while IFS= read -r -d '' file; do
+      [[ $(awk 'NR == 1 && $0 != "---" { exit } NR > 1 && $0 == "---" { exit } NR > 1 && sub(/^id: */, "") { print; exit }' "$file") != "$2" ]] ||
+        story_matches+=("$file")
+    done < <(find "$backlog" -mindepth 3 -maxdepth 3 -type f -path "$backlog/$e-*/$f-*/$s-*.md" -print0)
+  fi
+  case ${#story_matches[@]} in
+    1) printf '%s\n' "${story_matches[0]}" ;;
+    0)
+      echo "${0##*/}: $1's backlog has no story $2 (a file projects/$1/backlog/$e-*/$f-*/$s-*.md whose id is $2)" >&2
+      return 1
+      ;;
+    *)
+      echo "${0##*/}: $1's backlog has ${#story_matches[@]} files of the story $2: ${story_matches[*]#"$TEAM_HOME/"}" >&2
+      return 1
+      ;;
+  esac
+}

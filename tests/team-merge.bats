@@ -413,6 +413,74 @@ registry_refused() {
   assert_equal "$status" 0
 }
 
+# The task's opened event names the story <id>, as team-open --story logs it: story_of <id>
+story_of() {
+  jq -c --arg s "$1" 'if .event == "opened" then .story = $s else . end' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
+  mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
+}
+
+@test "a merge marks the task's story done with the PR in the project's backlog, naming the file to commit" {
+  local file=$TEAM_HOME/projects/proj/backlog/E40-history/F01-the-markets/S02-every-write.md
+  backlog_story proj E40-history/F01-the-markets/S02-every-write.md E40/F01/S02 ready "[71]"
+  story_of E40/F01/S02
+  run_bin -0 --separate-stderr team-merge T14
+  assert_contains "$stderr" "team-merge: marked E40/F01/S02 done with PR 5 in projects/proj/backlog/E40-history/F01-the-markets/S02-every-write.md; commit it with the records"
+  # Only the front matter changes.
+  assert_equal "$(cat "$file")" "---
+id: E40/F01/S02
+title: A story
+type: story
+status: done
+blocked_by: []
+pr: [71, 5]
+---
+
+## What to build
+
+status: ready
+pr: []"
+  TEAM_HOME=$TEAM_HOME run -0 "$REPO_ROOT/bin/team-log" --check
+}
+
+@test "the story's pr list keeps its own style, an empty one takes the bare number, and a story that reads so already is left as it is" {
+  local dir=$TEAM_HOME/projects/proj/backlog/E9-x/F1-y
+  story_of E9/F1/S1
+  backlog_story proj E9-x/F1-y/S1-z.md E9/F1/S1 in-progress "[#66, #67]"
+  run_bin -0 team-merge T14
+  assert_equal "$(sed -n 's/^\(status\|pr\): //p' "$dir/S1-z.md" | head -n 2 | paste -sd ' ')" "done [#66, #67, #5]"
+
+  backlog_story proj E9-x/F1-y/S1-z.md E9/F1/S1 ready "[]"
+  green_pr
+  run_bin -0 team-merge T14
+  assert_equal "$(sed -n 's/^\(status\|pr\): //p' "$dir/S1-z.md" | head -n 2 | paste -sd ' ')" "done [5]"
+
+  green_pr
+  run_bin -0 --separate-stderr team-merge T14
+  assert_contains "$stderr" "team-merge: E9/F1/S1 reads done with PR 5 already in projects/proj/backlog/E9-x/F1-y/S1-z.md"
+  assert_equal "$(sed -n 's/^\(status\|pr\): //p' "$dir/S1-z.md" | head -n 2 | paste -sd ' ')" "done [5]"
+}
+
+@test "a story that cannot be marked is said on stderr, and the merge stands" {
+  story_of E40/F01/S02
+  run_bin -0 --separate-stderr team-merge T14
+  assert_contains "$stderr" "team-merge: PR #5 is merged, but its story E40/F01/S02 is not marked done: proj's backlog has no story E40/F01/S02 (a file projects/proj/backlog/E40-*/F01-*/S02-*.md whose id is E40/F01/S02)"
+  assert_equal "$(merged_events | wc -l)" 1
+
+  local file=$TEAM_HOME/projects/proj/backlog/E40-h/F01-m/S02-w.md
+  backlog_story proj E40-h/F01-m/S02-w.md E40/F01/S02 ready "#71"
+  green_pr
+  run_bin -0 --separate-stderr team-merge T14
+  assert_contains "$stderr" "team-merge: PR #5 is merged, but its story E40/F01/S02 is not marked done: its pr: line is no [...] list: pr: #71"
+  assert_equal "$(sed -n 's/^status: //p' "$file" | head -n 1)" ready
+}
+
+@test "a task with no story changes no backlog file" {
+  backlog_story proj E40-h/F01-m/S02-w.md E40/F01/S02
+  run_bin -0 --separate-stderr team-merge T14
+  [[ $stderr != *story* ]]
+  assert_equal "$(sed -n 's/^status: //p' "$TEAM_HOME/projects/proj/backlog/E40-h/F01-m/S02-w.md" | head -n 1)" ready
+}
+
 @test "a merge brings the Waiting on you message up to date" {
   # Reviewed at the head and not yet approved, the PR waits on Daniel.
   jq -c 'select(.event != "merge-approved")' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l" && mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
