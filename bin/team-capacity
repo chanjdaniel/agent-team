@@ -10,7 +10,7 @@
 #        team-capacity sample
 #        team-capacity status [--json] [--stored]
 #        team-capacity costs [--json]
-#        team-capacity admit --kind <kind> [--task T<n>] [--seed-bytes <n>]
+#        team-capacity admit --kind <kind> [--task T<n>] [--name <stack name>] [--seed-bytes <n>]
 #                            [--freed <session id>]...
 #        team-capacity plan [--json] [--sessions <file>]
 #        team-capacity jobs [--verbose]
@@ -128,9 +128,11 @@
 #                             the reading holds is in that window (the one using least, when
 #                             several), reserved once, at the larger of the estimate and its use;
 #            stacks, gates    each running team or gate stack, and the gate while it runs a
-#                             pipeline, at the larger of its estimate and its use; a stack of an
-#                             admission's kind and task (by name, the newest admissions first) is
-#                             that admission, reserved once, here, and at its bytes at least;
+#                             pipeline, at the larger of its estimate and its use; a stack an
+#                             admission names (its kind, task and --name) is that admission,
+#                             reserved once, here, and at its bytes at least, so an instance
+#                             admitted while the task's own stack runs stays an admission until
+#                             the reading holds it;
 #            heavy_runs       the running heavy run while a team-heavy holds the lock, at the
 #                             larger of its estimate and its use (kind and estimate its
 #                             admission's, use the reading's when the reading saw it, named by
@@ -146,7 +148,8 @@
 #          source ("learned", "seed" or "none"), samples, range ({min, max} of the last 20 peaks,
 #          or null), says}]}.
 # admit    Admits one item of work of <kind>, session:<role> (team-worker), stack:<project>
-#          (team-stack up), heavy:<kind> (team-heavy run) or gate, for the task --task names, when
+#          (team-stack up, which names the stack with --name), heavy:<kind> (team-heavy run) or
+#          gate, for the task --task names, when
 #          it fits the level's memory budget beside what is reserved: under an exclusive flock on
 #          ~/.local/state/agent-team/capacity.lock, it takes a reading first when the newest is
 #          over 10 minutes old, as status does, then reads what is reserved as status --json says
@@ -157,7 +160,8 @@
 #          stack's mem_limits), else heavy_gib or session_gib, else 0. When the
 #          reserved memory plus the estimate is at most the budget it exits 0, saying so on
 #          stdout, and keeps the admission in ~/.local/state/agent-team/capacity/admitted.json
-#          ({at, kind, task, bytes, pid (a heavy run's team-heavy, the lock's holder)}), which
+#          ({at, kind, task, name (a stack's, else null), bytes, pid (a heavy run's team-heavy, the
+#          lock's holder)}), which
 #          reserves it for 10 minutes as status --json's admissions say (a heavy run's while its
 #          team-heavy holds the lock); else it
 #          exits 75 with the reason on stderr and what makes room, "no room for session:reviewer
@@ -244,11 +248,11 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 # shellcheck source=bin/lib/reading.sh
 source "$TEAM_LIB/reading.sh"
 
-USAGE="usage: team-capacity install | place [--quiet] [<session id>...] | check [--json] [--holding] [--heartbeat enabled|disabled] | sample | status [--json] [--stored] | costs [--json] | admit --kind <kind> [--task T<n>] [--seed-bytes <n>] [--freed <session id>]... | plan [--json] [--sessions <file>] | jobs [--verbose]"
+USAGE="usage: team-capacity install | place [--quiet] [<session id>...] | check [--json] [--holding] [--heartbeat enabled|disabled] | sample | status [--json] [--stored] | costs [--json] | admit --kind <kind> [--task T<n>] [--name <stack name>] [--seed-bytes <n>] [--freed <session id>]... | plan [--json] [--sessions <file>] | jobs [--verbose]"
 [[ $# -ge 1 ]] || usage_error "$USAGE"
 command=$1
 shift
-json=0 verbose=0 ids=() quiet=0 holding=0 heartbeat=enabled stored=0 kind='' task='' seed=null sessions_file='' freed=()
+json=0 verbose=0 ids=() quiet=0 holding=0 heartbeat=enabled stored=0 kind='' task='' name='' seed=null sessions_file='' freed=()
 case $command in
   install | sample) [[ $# -eq 0 ]] || usage_error "unexpected argument '$1'" ;;
   jobs)
@@ -299,6 +303,10 @@ case $command in
           [[ ${2:-} =~ ^T[0-9]+$ ]] || usage_error "--task takes a task, T<n>"
           task=$2
           ;;
+        --name)
+          [[ ${2:-} =~ ^[A-Za-z0-9._-]+$ ]] || usage_error "--name takes a stack's name"
+          name=$2
+          ;;
         --seed-bytes)
           [[ ${2:-} =~ ^[0-9]+$ ]] || usage_error "--seed-bytes takes a whole number of bytes"
           seed=$2
@@ -312,6 +320,7 @@ case $command in
       shift 2
     done
     [[ -n $kind ]] || usage_error "admit needs --kind <kind>"
+    [[ -z $name || $kind == stack:* ]] || usage_error "--name names a stack, for --kind stack:<project>"
     ;;
   *) usage_error "unknown subcommand '$command'; $USAGE" ;;
 esac
@@ -855,8 +864,9 @@ admit() {
     jq -r .says "$work/admit.json" >&2
     return 75
   fi
-  jq -c --arg kind "$kind" --arg task "$task" --argjson bytes "$(jq .bytes <<<"$estimate")" --slurpfile heavy "$work/heavy.json" '
-    . + [{at: (now | floor | todate), kind: $kind, task: ($task | select(. != "") // null), bytes: $bytes,
+  jq -c --arg kind "$kind" --arg task "$task" --arg name "$name" --argjson bytes "$(jq .bytes <<<"$estimate")" --slurpfile heavy "$work/heavy.json" '
+    . + [{at: (now | floor | todate), kind: $kind, task: ($task | select(. != "") // null),
+          name: ($name | select(. != "") // null), bytes: $bytes,
           pid: (if $kind | startswith("heavy:") then $heavy[0].pid else null end)}]' "$work/admitted.json" >"$ADMITTED.$$"
   mv -f "$ADMITTED.$$" "$ADMITTED"
   jq -r .says "$work/admit.json"

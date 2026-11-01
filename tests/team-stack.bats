@@ -1657,6 +1657,9 @@ compose port web 80 $PROJECT-a auto"
   stack_settings '{"wait_minutes": 0}'
   run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
   run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --instance a --no-seed
+  # Each admission names its stack, so a reading pairs it with that stack and no other.
+  assert_equal "$(jq -r '.[].name' "$HOME/.local/state/agent-team/capacity/admitted.json")" "$PROJECT
+$PROJECT-a"
   run_bin -75 --separate-stderr team-stack up --worktree "$STACK_WORKTREE" --instance b --no-seed
   assert_equal "$stderr" "team-stack: no room for $PROJECT-b: stack:shop at full (90%): 0.1 GiB of 0.1 GiB reserved, a stack of shop needs 0.1 GiB; room comes when the team's work shrinks or the level rises"
   assert_equal "$(state_of "$PROJECT-b")" ""

@@ -465,7 +465,7 @@ def kind_estimate($costs; $s; $kind; $seed):
     elif $kind | startswith("session:") then {bytes: ($s.session_gib * 1073741824 | round), source: "seed"}
     else {bytes: 0, source: "none"} end;
 
-# Whether an admission (an entry of capacity/admitted.json, {at, kind, task, bytes, pid}) still
+# Whether an admission (an entry of capacity/admitted.json, {at, kind, task, name, bytes, pid}) still
 # reserves at the time <now> (seconds), with the heavy-run lock <heavy> (heavy_holder's {held, pid,
 # label, task}): one of the last 10 minutes, or a heavy run's while its team-heavy holds the lock.
 def admission_kept($heavy; $now):
@@ -486,9 +486,11 @@ def admission_kept($heavy; $now):
 #   session's use (of several sessions of the kind and task, the newest admissions take the ones
 #   using least, since a new session uses little yet);
 #   stacks: each running team or gate stack, at the larger of its kind's estimate (one with none:
-#   its mem_limits) and its use; one of an admission's kind and task (paired as sessions are, by
-#   name) is that admission too, reserved once, at the admission's estimate at least (admitted:
-#   its time);
+#   its mem_limits) and its use; one an admission names (its kind, task and name, the newest such
+#   admission) is that admission too, reserved once, at the admission's estimate at least
+#   (admitted: its time), so a stack admitted while another of its kind and task runs (an
+#   instance) stays an admission until the reading holds it; an admission with no name pairs with
+#   no stack;
 #   gates: the gate while it runs a pipeline, at the larger of its estimate and its use;
 #   heavy_runs: the running heavy run, while one holds the lock, but when the asker is a heavy run,
 #   which holds it itself, at the larger of its estimate and its use: its kind its admission's (the
@@ -513,11 +515,11 @@ def capacity_reservations($in):
       | {kind: "session:\(.role)", task: $task, name: .id, use: .memory,
          estimate: kind_estimate($in.costs; $in.settings; "session:\(.role)"; null).bytes}]
      | ranked([.use, .name]) | map(. + {admission: $windows[.key]})) as $sessions
-  | ([$kept[] | select(.kind | startswith("stack:"))] | ranked(.at | fromdateiso8601 | -.)
-     | map({key, value: .}) | from_entries) as $stack_windows
-  | ([$r.stacks // [] | .[] | {kind: "stack:\(.project // .class)", task, name, memory, limits}]
-     | ranked(.name) | map(. + {admission: $stack_windows[.key]})) as $stacks
-  | ([$sessions[], $stacks[] | select(.admission != null) | "\(.kind) \(.task)"] | group_by(.) | map({key: .[0], value: length}) | from_entries) as $taken
+  | def same_stack($a): .kind == $a.kind and .task == $a.task and .name == $a.name;
+    [$kept[] | select((.kind | startswith("stack:")) and .name != null)] as $stack_admissions
+  | [$r.stacks // [] | .[] | {kind: "stack:\(.project // .class)", task, name, memory, limits}
+     | . + {admission: (. as $s | [$stack_admissions[] | select(. as $a | $s | same_stack($a))] | max_by(.at))}] as $stacks
+  | ([$sessions[] | select(.admission != null) | "\(.kind) \(.task)"] | group_by(.) | map({key: .[0], value: length}) | from_entries) as $taken
   | [$sessions[] | select(.admission == null)] as $past
   | [($sessions[]
       | if .admission == null then
@@ -539,7 +541,8 @@ def capacity_reservations($in):
                ($a.bytes // ($in.settings.heavy_gib * 1073741824 | round)))
       else empty end),
      ($kept | ranked(.at | fromdateiso8601 | -.) | .[]
-      | select(.rank >= ($taken["\(.kind) \(.task)"] // 0))
+      | if .kind | startswith("stack:") then select(. as $a | any($stacks[]; same_stack($a)) | not)
+        else select(.rank >= ($taken["\(.kind) \(.task)"] // 0)) end
       | {part: "admissions", kind, task, name: null, admitted: .at, estimate_bytes: .bytes, use_bytes: null, bytes})];
 
 # The parts of what is reserved, in the order status --json and team-level say them.

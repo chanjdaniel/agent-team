@@ -95,6 +95,10 @@ placements() {
   assert_contains "$output" "--task takes a task, T<n>"
   run_bin -2 team-capacity admit --kind stack:shop --seed-bytes 1.5
   assert_contains "$output" "--seed-bytes takes a whole number of bytes"
+  run_bin -2 team-capacity admit --kind stack:shop --name 'shop 2'
+  assert_contains "$output" "--name takes a stack's name"
+  run_bin -2 team-capacity admit --kind session:builder --name shop-2
+  assert_contains "$output" "--name names a stack, for --kind stack:<project>"
 }
 
 @test "install writes the team's slice and a drop-in for each gate daemon, reloads, and restarts an idle running daemon into the slice" {
@@ -732,9 +736,9 @@ cost() {
   assert_equal "$output" ""
   assert_equal "$stderr" "no room for stack:other at minor (30%): 6.2 GiB of 9.6 GiB reserved, a stack of other needs 3.4 GiB; room comes when the team's work shrinks or the level rises"
   [[ ! -e $STATE_DIR/admitted.json ]]
-  run_bin -0 --separate-stderr team-capacity admit --kind stack:other --task T9 --seed-bytes "$room"
+  run_bin -0 --separate-stderr team-capacity admit --kind stack:other --task T9 --name other-9 --seed-bytes "$room"
   assert_equal "$output" "admitted stack:other at minor (30%): a stack of other needs 3.4 GiB, 6.2 GiB of 9.6 GiB reserved before it"
-  assert_equal "$(jq -c 'map(del(.at))' "$STATE_DIR/admitted.json")" "[{\"kind\":\"stack:other\",\"task\":\"T9\",\"bytes\":$room,\"pid\":null}]"
+  assert_equal "$(jq -c 'map(del(.at))' "$STATE_DIR/admitted.json")" "[{\"kind\":\"stack:other\",\"task\":\"T9\",\"name\":\"other-9\",\"bytes\":$room,\"pid\":null}]"
   # The admission is reserved at its estimate, with no use yet, so nothing more fits.
   run_bin -0 team-capacity status --json
   assert_equal "$(jq -c '.reserved.items[-1] | [.kind, .task, .name, (.admitted | test("Z$")), .estimate_bytes, .use_bytes, .bytes]' <<<"$output")" \
@@ -849,11 +853,29 @@ team-capacity: no reading of the machine's load, so no budget to admit session:p
   cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
   # T7's conventioner-2 runs at 2 GiB of its 3 GiB of limits.
   busy_reading
-  jq -cn --argjson gib "$GIB" '[{at: (now - 120 | floor | todate), kind: "stack:conventioner", task: "T7", bytes: (3.5 * $gib), pid: null},
-    {at: (now - 60 | floor | todate), kind: "stack:conventioner", task: "T9", bytes: (3 * $gib), pid: null}]' >"$STATE_DIR/admitted.json"
-  # T7's admission is the stack the reading holds; T9's, not running yet, is reserved as an admission.
+  jq -cn --argjson gib "$GIB" '[{at: (now - 120 | floor | todate), kind: "stack:conventioner", task: "T7", name: "conventioner-2", bytes: (3.5 * $gib), pid: null},
+    {at: (now - 60 | floor | todate), kind: "stack:conventioner", task: "T9", name: "conventioner-9", bytes: (3 * $gib), pid: null}]' >"$STATE_DIR/admitted.json"
+  # T7's admission names the stack the reading holds; T9's, not running yet, is reserved as an admission.
   assert_equal "$(reserved_items | grep stack:)" '["stacks","stack:conventioner","T7",3.5]
 ["admissions","stack:conventioner","T9",3]'
+}
+
+@test "status: a stack admitted while another stack of its kind and task runs is reserved beside it, not as it" {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  # T7's conventioner-2 runs at 2 GiB of its 3 GiB of limits, started long ago; an instance of the
+  # same project and task, admitted a minute ago, is not running yet.
+  busy_reading
+  jq -cn --argjson gib "$GIB" '[{at: (now - 60 | floor | todate), kind: "stack:conventioner", task: "T7", bytes: (3 * $gib), pid: null}]' \
+    >"$STATE_DIR/admitted.json"
+  assert_equal "$(reserved_items | grep stack:)" '["stacks","stack:conventioner","T7",3]
+["admissions","stack:conventioner","T7",3]'
+  run_bin -0 team-capacity status --json
+  assert_equal "$(jq '[.reserved.items[] | select(.kind | startswith("stack:")) | .bytes] | add' <<<"$output")" $((6 * GIB))
+  # The same, named for the instance team-stack admitted.
+  jq -cn --argjson gib "$GIB" '[{at: (now - 60 | floor | todate), kind: "stack:conventioner", task: "T7", name: "conventioner-2-e2e", bytes: (3 * $gib), pid: null}]' \
+    >"$STATE_DIR/admitted.json"
+  assert_equal "$(reserved_items | grep stack:)" '["stacks","stack:conventioner","T7",3]
+["admissions","stack:conventioner","T7",3]'
 }
 
 @test "admit counts the running heavy run while its team-heavy holds the lock, at its admission's kind, but not for a heavy run asking" {

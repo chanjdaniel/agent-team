@@ -53,8 +53,10 @@
 #           one is not checked). There is room when both hold, in this order: free space (df -Pk)
 #           at least disk_floor_gb GB on the file system of docker info's DockerRootDir (macOS: of
 #           the home directory, which holds Docker Desktop's disk image); and this checkout's
-#           team-capacity admit --kind stack:<registered project> --task <task> admits it to the
-#           level's memory budget beside what the team's work reserves, given the sum of the
+#           team-capacity admit --kind stack:<registered project> --task <task> --name <its
+#           Compose project name> admits it to the level's memory budget beside what the team's
+#           work reserves (the name pairs the admission with the stack once a reading holds it,
+#           so an instance is reserved beside the task's own stack), given the sum of the
 #           stack's mem_limits (--seed-bytes) for a stack it has no estimate of (0 admits, 75
 #           refuses with its reason, which the refusal says without its "no room for", anything
 #           else fails up).
@@ -625,7 +627,7 @@ setting() {
 room_check() {
   REASONS=()
   local rc=0 dir free limits
-  local -a args=(admit --kind "stack:$PROJECT" --task "$TASK")
+  local -a args=(admit --kind "stack:$PROJECT" --task "$TASK" --name "$STACK_NAME")
   if [[ $(uname -s) == Darwin ]]; then
     dir=$HOME
   else
