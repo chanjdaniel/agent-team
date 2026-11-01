@@ -938,32 +938,83 @@ YAML
   done
 }
 
-# Every tests/*.bats file lands in exactly one shard, and the shards stay within one file's size.
-@test "tests/run's bats shards split every file once" {
-  local all bytes file k lists='' max=0 min=-1 largest
+# Every tests/*.bats file lands in exactly one shard, tests/run's shard is tests/shards' own, and
+# the shards' weights stay within the heaviest file's of each other.
+@test "tests/run's bats shards split every file once, evenly by tests/shards' weights" {
+  local all k lists='' loads
   unset TEAM_HOME
+  run -0 --separate-stderr "$REPO_ROOT/tests/shards" 3
+  local split=$output
   for k in 1 2 3; do
     run -0 --separate-stderr "$REPO_ROOT/tests/run" bats --shard "$k/3" --list
     [[ -n $output ]]
+    assert_equal "$output" "$(awk -F'\t' -v k="$k" '$1 == k { print $3 }' <<<"$split")"
     lists+=$output$'\n'
-    bytes=0
-    while IFS= read -r file; do
-      [[ $file =~ ^tests/[^/]+\.bats$ ]]
-      bytes=$((bytes + $(stat -c %s "$REPO_ROOT/$file")))
-    done <<<"$output"
-    ((bytes > max)) && max=$bytes
-    ((min < 0 || bytes < min)) && min=$bytes
   done
   all=$(cd "$REPO_ROOT" && printf '%s\n' tests/*.bats | sort)
   assert_equal "$(sort <<<"${lists%$'\n'}")" "$all"
-  largest=$(cd "$REPO_ROOT" && stat -c %s tests/*.bats | sort -n | tail -n 1)
-  ((max - min <= largest)) || { echo "the shards differ by $((max - min)) bytes, more than the largest file's $largest" >&2; return 1; }
+  loads=$(awk -F'\t' '{ load[$1] += $2; if ($2 > top) top = $2 }
+    END { min = -1; for (k in load) { if (load[k] > max) max = load[k]; if (min < 0 || load[k] < min) min = load[k] }
+      print max - min, top }' <<<"$split")
+  read -r spread heaviest <<<"$loads"
+  ((spread <= heaviest)) || { echo "the shards differ by $spread, more than the heaviest file's $heaviest" >&2; return 1; }
   for k in '--shard 0/3' '--shard 4/3' '--shard 1/0' '--shard 1/3x' '--list' '--shard' '--shard 1/3 --list x'; do
     # shellcheck disable=SC2086 # each form splits into its words
     run -2 --separate-stderr "$REPO_ROOT/tests/run" bats $k
     assert_equal "$stderr" "run: usage: tests/run [shellcheck|bats [--shard <k>/<n> [--list]]|toolkits]"
   done
   run -2 --separate-stderr "$REPO_ROOT/tests/run" toolkits --shard 1/3
+  for k in '' 0 3x '3 4' 'update x' 'update 1 2'; do
+    # shellcheck disable=SC2086 # each form splits into its words
+    run -2 --separate-stderr "$REPO_ROOT/tests/shards" $k
+    assert_equal "$stderr" "shards: usage: tests/shards <n> | tests/shards update [<run id>]"
+  done
+}
+
+@test "a shard with no file, n above the file count, lists none and passes, running nothing" {
+  unset TEAM_HOME
+  run -0 --separate-stderr "$REPO_ROOT/tests/run" bats --shard 900/900 --list
+  assert_equal "$output" ""
+  run -0 --separate-stderr "$REPO_ROOT/tests/run" bats --shard 900/900
+  assert_contains "$output" "bats: shard 900/900 has no file"
+  [[ $output != *"not ok"* ]]
+}
+
+# tests/shards in a checkout of three bats files, a.bats and b.bats timed and c.bats not.
+@test "tests/shards weighs a file by its seconds on this platform, an untimed one by its bytes at the timed rate, and every bytes without timings" {
+  local copy=$BATS_TEST_TMPDIR/copy column=2
+  [[ $(uname -s) != Darwin ]] || column=3
+  unset TEAM_HOME
+  mkdir -p "$copy/tests"
+  copy_bin "$copy/bin"
+  link_shared tests-shards "$REPO_ROOT/tests/shards" "$copy/tests/shards"
+  head -c 1000 /dev/zero >"$copy/tests/a.bats"
+  head -c 500 /dev/zero >"$copy/tests/b.bats"
+  head -c 2000 /dev/zero >"$copy/tests/c.bats"
+  printf '# timings\nfile\tlinux\tmacos\ntests/a.bats\t10\t20\ntests/b.bats\t5\t10\n' >"$copy/tests/timings.tsv"
+  run -0 --separate-stderr "$copy/tests/shards" 2
+  # c.bats weighs 2000 bytes at a.bats' and b.bats' 15 seconds (30 on macOS) per 1500 bytes.
+  if ((column == 2)); then
+    assert_equal "$output" $'1\t20\ttests/c.bats\n2\t10\ttests/a.bats\n2\t5\ttests/b.bats'
+  else
+    assert_equal "$output" $'1\t40\ttests/c.bats\n2\t20\ttests/a.bats\n2\t10\ttests/b.bats'
+  fi
+  rm "$copy/tests/timings.tsv"
+  run -0 --separate-stderr "$copy/tests/shards" 2
+  assert_equal "$output" $'1\t2000\ttests/c.bats\n2\t1000\ttests/a.bats\n2\t500\ttests/b.bats'
+}
+
+# The timings are data tests/shards reads: each row names a bats file that exists, with whole
+# seconds for both platforms, so a removed file takes its row with it.
+@test "tests/timings.tsv names only bats files that exist, each with its seconds on both platforms" {
+  local file linux macos rows=0
+  while IFS=$'\t' read -r file linux macos; do
+    [[ $file == \#* || $file == file ]] && continue
+    rows=$((rows + 1))
+    [[ -f $REPO_ROOT/$file && $file =~ ^tests/[^/]+\.bats$ ]] || { echo "timings name $file, no bats file" >&2; return 1; }
+    [[ $linux =~ ^[0-9]+$ && $macos =~ ^[0-9]+$ ]] || { echo "$file has no whole seconds for both platforms" >&2; return 1; }
+  done <"$REPO_ROOT/tests/timings.tsv"
+  ((rows > 0))
 }
 
 # The README's inventory is pasted from the ops load check; the eval mocks' _tools.json, which the

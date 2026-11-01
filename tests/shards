@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# The bats suite's shards, which tests/run bats --shard runs and CI's test-shards and
+# macos-shards jobs each run one of.
+# Each tests/*.bats file weighs its seconds in tests/timings.tsv on this platform (macos on
+# macOS, linux elsewhere); a file the timings lack weighs its bytes at the timed files' seconds
+# per byte, so a new file needs no timing yet. The files, the heaviest first (ties by name), each
+# go to the shard with the least weight so far (ties to the lowest number), so one tree splits the
+# same on every machine of a platform.
+#
+# Usage: tests/shards <n>                 print every file, the heaviest first, as
+#                                         "<shard>\t<weight>\ttests/<name>.bats", its shard 1 to n
+#        tests/shards update [<run id>]   rewrite tests/timings.tsv from the per-file seconds
+#                                         that a CI run's shard jobs printed (default: the latest
+#                                         successful CI run), through gh
+# Refresh the timings when files are added or the suite's times move, so the shards stay even.
+set -euo pipefail
+
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# The shards need no team home, as on CI or a fresh clone.
+# shellcheck disable=SC2034 # read by bin/lib/team.sh
+team_home_report=1
+# shellcheck source=bin/lib/team.sh
+source "$root/bin/lib/team.sh" "$@"
+
+usage="usage: tests/shards <n> | tests/shards update [<run id>]"
+timings=$root/tests/timings.tsv
+
+# tests/timings.tsv from the CI run <run id>: each shard job's "ok|not ok tests/<name>.bats (<n>s)"
+# lines, the test-shards jobs' as linux and the macos-shards jobs' as macos.
+update() {
+  local run=$1 jobs id name platform scratch sha created
+  if [[ -z $run ]]; then
+    run=$(cd "$root" && gh run list --workflow ci.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+    [[ -n $run ]] || die "no successful CI run to read"
+  fi
+  jobs=$(cd "$root" && gh run view "$run" --json jobs,headSha,createdAt) || die "cannot read CI run $run"
+  sha=$(jq -r .headSha <<<"$jobs") created=$(jq -r .createdAt <<<"$jobs")
+  scratch=$(mktemp -d)
+  trap 'rm -rf "$scratch"' RETURN
+  while IFS=$'\t' read -r id name; do
+    case $name in
+      test-shards*) platform=linux ;;
+      macos-shards*) platform=macos ;;
+      *) continue ;;
+    esac
+    (cd "$root" && gh run view "$run" --job "$id" --log) |
+      grep -oE '(not )?ok tests/[^ /]+\.bats \([0-9]+s\)' |
+      sed -E "s/^(not )?ok (tests\/[^ ]+) \(([0-9]+)s\)$/\2\t$platform\t\3/" >>"$scratch/seconds" ||
+      die "cannot read the log of $name in CI run $run"
+  done < <(jq -r '.jobs[] | [.databaseId, .name] | @tsv' <<<"$jobs")
+  [[ -s $scratch/seconds ]] || die "CI run $run printed no per-file seconds in a shard job"
+  {
+    echo "# The seconds each bats file took in CI run $run (head ${sha:0:7}, $created),"
+    echo "# on Linux and macOS, as tests/shards weighs them; tests/shards update rewrites it."
+    printf 'file\tlinux\tmacos\n'
+    awk -F'\t' '{ s[$1, $2] = $3; f[$1] = 1 }
+      END { for (x in f) printf "%s\t%s\t%s\n", x, ((x, "linux") in s ? s[x, "linux"] : ""), ((x, "macos") in s ? s[x, "macos"] : "") }' \
+      "$scratch/seconds" | LC_ALL=C sort
+  } >"$timings"
+  echo "tests/shards: wrote tests/timings.tsv from CI run $run"
+}
+
+# Every file's shard of <n>, as the header says.
+shards() {
+  local n=$1 column=linux given=$timings
+  [[ $(uname -s) != Darwin ]] || column=macos
+  [[ -f $given ]] || given=/dev/null
+  # Weights: the timed seconds, else the bytes at the timed files' seconds per byte (at least 1).
+  (cd "$root" && find tests -maxdepth 1 -name '*.bats' -printf '%s\t%p\n') |
+    awk -F'\t' -v column="$column" '
+      FILENAME != "-" {
+        if (/^#/) next
+        if ($1 == "file") { for (i = 2; i <= NF; i++) if ($i == column) c = i; next }
+        if (c && $c != "") seconds[$1] = $c
+        next
+      }
+      { size[$2] = $1; if ($2 in seconds) { timed_s += seconds[$2]; timed_b += $1 } }
+      END {
+        ratio = timed_b ? timed_s / timed_b : 1
+        for (f in size) {
+          w = (f in seconds) ? seconds[f] : int(size[f] * ratio + 0.5)
+          printf "%d\t%s\n", (w < 1 ? 1 : w), f
+        }
+      }' "$given" - |
+    LC_ALL=C sort -t $'\t' -k1,1rn -k2,2 |
+    awk -F'\t' -v n="$n" '
+      BEGIN { for (i = 1; i <= n; i++) load[i] = 0 }
+      { least = 1; for (i = 2; i <= n; i++) if (load[i] < load[least]) least = i
+        load[least] += $1; printf "%d\t%s\t%s\n", least, $1, $2 }'
+}
+
+case ${1:-} in
+  update)
+    [[ $# -le 2 && ${2:-} =~ ^[0-9]*$ ]] || usage_error "$usage"
+    update "${2:-}"
+    ;;
+  *)
+    [[ $# -eq 1 && $1 =~ ^[1-9][0-9]*$ ]] || usage_error "$usage"
+    shards "$1"
+    ;;
+esac

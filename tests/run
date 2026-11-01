@@ -4,15 +4,18 @@
 # then the toolkit tests (node --test on tests/toolkits/, after servers/install), which need
 # Docker for their throwaway MongoDB.
 # The bats files run as many at once as the machine has CPUs, each in a bats of its own (every
-# test is sandboxed, so files share nothing), the largest first: one line per file as it ends,
-# then the whole output of each file that failed, and the count of tests passed.
+# test is sandboxed, so files share nothing), the slowest first by tests/shards' weights: one line
+# per file as it ends, then the whole output of each file that failed, and the count of tests
+# passed.
 # Every part but shellcheck alone and a shard's --list runs under the machine's heavy-run lock
-# (team-heavy run), so a suite waits for another suite or a gate's end-to-end run instead of overlapping it; under a
-# heavy run already (TEAM_HEAVY_HELD set, as a local check team-checks runs), it runs at once.
+# (team-heavy run), so a suite waits for another suite or a gate's end-to-end run instead of
+# overlapping it; under a heavy run already (TEAM_HEAVY_HELD set, as a local check team-checks
+# runs), it runs at once.
 #
 # Usage: tests/run [shellcheck|bats [--shard <k>/<n> [--list]]|toolkits]   (default: all three)
-# With --shard, bats runs shard k of n of the files, each file going to the shard with the fewest
-# bytes so far, largest first, as CI's shard jobs do; --list prints that shard's files and runs none.
+# With --shard, bats runs shard k of n of the files as tests/shards splits them, by each file's
+# seconds in CI (tests/timings.tsv), as CI's shard jobs do; --list prints that shard's files and
+# runs none. A shard with no file (n above the file count) passes, running nothing.
 # Exit 0 when every check passes; CI runs each part as its own job. The last line is the wall
 # time, so a slower suite shows.
 set -euo pipefail
@@ -55,26 +58,12 @@ shell_scripts() {
   done < <(cd "$root" && find bin tests servers toolkits \( -path tests/vendor -o -path servers/node_modules -o -path 'servers/.*' \) -prune -o -type f -print | sort)
 }
 
-# The tests/*.bats files to run, the largest first (so none of them starts last), one path per
-# line: every one, or with --shard k/n only shard k's, each file going to the shard with the fewest
-# bytes so far (ties to the lowest number), so one tree splits the same on every machine.
+# The tests/*.bats files to run, the slowest first (so none of them starts last), one path per
+# line: every one, or with --shard k/n only shard k's (tests/shards).
 bats_files() {
-  local size file k n i least
-  if [[ -z $shard ]]; then
-    find "$root/tests" -maxdepth 1 -name '*.bats' -printf '%s\t%p\n' | sort -rn | cut -f2-
-    return
-  fi
-  k=${shard%/*} n=${shard#*/}
-  local -a bytes=()
-  for ((i = 1; i <= n; i++)); do bytes[i]=0; done
-  # By size, then by name, so files of one size split the same everywhere.
-  while IFS=$'\t' read -r size file; do
-    least=1
-    for ((i = 2; i <= n; i++)); do ((bytes[i] < bytes[least])) && least=$i; done
-    bytes[least]=$((bytes[least] + size))
-    ((least == k)) && echo "$file"
-  done < <(find "$root/tests" -maxdepth 1 -name '*.bats' -printf '%s\t%p\n' | LC_ALL=C sort -t $'\t' -k1,1rn -k2,2)
-  return 0
+  local k=1 n=1
+  if [[ -n $shard ]]; then k=${shard%/*} n=${shard#*/}; fi
+  "$root/tests/shards" "$n" | awk -F'\t' -v k="$k" -v root="$root" '$1 == k { print root "/" $3 }'
 }
 
 # The bats files (bats_files), in parallel (see the header); fails if any file fails.
@@ -83,9 +72,14 @@ run_bats() {
   out=$(mktemp -d)
   trap 'rm -rf "$out"' EXIT
   # Each file's output goes to $out/<file>, with $out/<file>.failed beside it when it fails.
+  bats_files >"$out/files" || { echo "bats: tests/shards could not split the files"; return 1; }
+  if [[ ! -s $out/files ]]; then
+    echo "bats: shard $shard has no file"
+    return 0
+  fi
   # shellcheck disable=SC2016 # expanded by each file's bash
-  bats_files | tr '\n' '\0' |
-    xargs -0 -n 1 -P "$(nproc)" bash -c '
+  tr '\n' '\0' <"$out/files" |
+    xargs -0 -r -n 1 -P "$(nproc)" bash -c '
       name=${2##*/} verdict=ok
       "$0/tests/vendor/bats-core/bin/bats" "$2" >"$1/$name" 2>&1 || { verdict="not ok"; touch "$1/$name.failed"; }
       printf "%s tests/%s (%ds)\n" "$verdict" "$name" "$SECONDS"' "$root" "$out"
@@ -100,7 +94,8 @@ run_bats() {
 }
 
 if [[ -n $list ]]; then
-  while IFS= read -r file; do echo "${file#"$root/"}"; done < <(bats_files)
+  files=$(bats_files) || die "tests/shards could not split the files"
+  while IFS= read -r file; do [[ -z $file ]] || echo "${file#"$root/"}"; done <<<"$files"
   exit
 fi
 fail=0
