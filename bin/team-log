@@ -3,10 +3,18 @@
 #
 # Usage: team-log T<n> <event> [key=value]...
 #        team-log --check [<file>]
-# Appends {ts (now, UTC), task, event, key: value...}. A value is stored as JSON when it parses
-# as JSON (a list, a number, true) and as a string otherwise; a field the contract types as a
-# string or an id, any discord_* field, and a whole number of 16 digits or more (which a JSON
-# number cannot hold exactly) are always strings. note is allowed on every kind. Kinds team-log is not a writer of
+#        team-log --fix-sent-back [<file>]
+# Appends {ts (now, UTC), task, event, key: value...}, each value typed as the contract types its field.
+# A list field (array, or numbers (a list of whole numbers), as sent_back and before are) takes
+# a JSON list, or a comma list as a worker's message writes it (commits=a0017cce,9e0e3990, sent_back=5,6, guarded=ci,settings),
+# each item trimmed, an empty item refused, and none is the empty list (guarded=none).
+# A list of whole numbers stores each item of a comma list, and each numeric string of a JSON list, as a number, and refuses one that is no whole number, naming it.
+# An object field takes a JSON object, or key:value pairs separated by commas (findings=blocking:0,correctness:1,security:0,real-data:0,note-change:2,note-before:0),
+# each trimmed, a value a number when it reads as one; a list or object value that starts with [ or { is read only as JSON.
+# Any other value is stored as JSON when it parses as JSON (a number, true) and as a string
+# otherwise; a field the contract types as a string, a choice or an id, any discord_* field, and a
+# whole number of 16 digits or more (which a JSON number cannot hold exactly) are always strings.
+# note is allowed on every kind. Kinds team-log is not a writer of
 # (opened, launch, merged, closed...) are refused, and so is a merge-approved whose url is not
 # one of the task's pr events (a trailing slash aside), or with no head, or a head neither a pr
 # event of that url nor a review of the task since its first pr event logged (heads compare by
@@ -37,7 +45,12 @@
 # --check checks a ledger (default: the team home's): every line is JSON with ts, task and
 # event, and lines from strict_from on meet their kind's fields, a Discord id written as a whole
 # number (as team-log wrote one before the contract typed it) passing too; exit 1 lists each bad
-# line.
+# line, and names --fix-sent-back for a sent_back or before that holds whole numbers as strings.
+# --fix-sent-back is the one-time conversion of those strings (default: the team home's ledger), run under the ledger's lock:
+# on every line, legacy too, it stores the whole numbers that sent_back and before hold as
+# strings as numbers, leaves every other line byte for byte, and prints how many lines it changed;
+# a string there that is no whole number refuses the whole conversion, naming each line, and
+# changes nothing.
 set -euo pipefail
 
 # Printed by --help after the header.
@@ -48,7 +61,7 @@ help_more() {
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
-usage="usage: team-log T<n> <event> [key=value]... | team-log --check [<file>]"
+usage="usage: team-log T<n> <event> [key=value]... | team-log --check [<file>] | team-log --fix-sent-back [<file>]"
 
 if [[ ${1:-} == --check ]]; then
   [[ $# -le 2 ]] || usage_error "$usage"
@@ -62,6 +75,44 @@ if [[ ${1:-} == --check ]]; then
     exit 1
   fi
   if ((total == 1)); then echo "$file: 1 line meets the ledger contract"; else echo "$file: $total lines meet the ledger contract"; fi
+  exit 0
+fi
+
+# The one-time conversion, read and written under the lock ledger_append takes, the ledger
+# replaced whole by a copy beside it with its mode, so no reader sees half of it.
+if [[ ${1:-} == --fix-sent-back ]]; then
+  [[ $# -le 2 ]] || usage_error "$usage"
+  file=${2:-$TEAM_HOME/ledger.jsonl}
+  [[ -f $file ]] || die "no ledger at $file"
+  {
+    flock -x 9
+    report=$(ledger_jq '[inputs | number_strings($contract)] | {
+        changed: map(select(. != {})) | length,
+        bad: [to_entries[] | (.key + 1) as $line | .value | to_entries[]
+          | {line: $line, field: .key, strings: [.value[] | select(whole_number_string | not)]} | select(.strings != [])]}' \
+      -nRc <"$file")
+    read -r changed bad < <(jq -r '"\(.changed) \([.bad[].line] | unique | length)"' <<<"$report")
+    if ((bad > 0)); then
+      jq -r --arg file "$file" '.bad[] | "\($file):\(.line): \(.field) holds \(.strings | map(tojson) | join(", ")), "
+        + if (.strings | length) == 1 then "which is no whole number" else "which are no whole numbers" end' <<<"$report" >&2
+      if ((bad == 1)); then lines="1 line holds"; else lines="$bad lines hold"; fi
+      die "$file: $lines strings that are no whole numbers in a list of whole numbers, so nothing changed"
+    fi
+    if ((changed == 0)); then
+      echo "$file: no line's sent_back or before holds a whole number as a string; nothing changed"
+      exit 0
+    fi
+    fixed=$(mktemp "$file.XXXXXX")
+    trap 'rm -f "$fixed"' EXIT
+    ledger_jq 'inputs | numbers_fixed($contract)' -nRr <"$file" >"$fixed"
+    chmod --reference="$file" "$fixed"
+    mv "$fixed" "$file"
+  } 9>>"$file.lock"
+  if ((changed == 1)); then
+    echo "$file: 1 line changed, the whole numbers its sent_back or before held as strings now numbers"
+  else
+    echo "$file: $changed lines changed, the whole numbers their sent_back or before held as strings now numbers"
+  fi
   exit 0
 fi
 
@@ -82,6 +133,18 @@ for pair in "$@"; do
   seen[$key]=${pair#*=}
   pairs+=("$key" "${pair#*=}")
 done
+
+# Each value is typed by the contract when it names the field, and by whether it parses as JSON
+# otherwise (typed_value in bin/lib/ledger.jq), so the checks below read the values the line
+# will hold; ledger_append then checks the event against the contract.
+typed=$(ledger_jq '
+  field_types($contract.kinds[$event]) as $types
+  | $ARGS.positional as $pairs
+  | reduce range(0; $pairs | length; 2) as $i ({line: {ts: (now | todate), task: $task, event: $event}, problems: []};
+      $pairs[$i] as $key | ($pairs[$i + 1] | typed_value($key; $types[$key])) as $typed
+      | .line[$key] = $typed.value | .problems += ($typed.problems // []))
+  | if .problems == [] then .line else .problems | join("; ") | halt_error(1) end' \
+  -nc --arg task "$task" --arg event "$event" --args "${pairs[@]}" 2>&1) || die "${typed%$'\n'}"
 
 # Daniel's word is on one PR at one head: the approval names the PR as one of the task's pr events
 # does, and a head that PR's pr events, or the task's reviews since its first one, logged (pr_heads
@@ -149,11 +212,11 @@ if [[ $event == merge-preapproved ]]; then
     fi
   fi
   if [[ -n ${seen[scope]:-} ]]; then
-    problem=$(ledger_jq '$raw | try fromjson catch null
+    problem=$(ledger_jq '$line.scope
       | if type != "array" then empty
         elif . == [] then "scope is empty: it lists every path the plan may change, each a file or a directory ending in /"
         else [scope_problems] | select(. != []) | "scope holds entries that are not clean repository paths:" + (map("\n  " + .) | add) end' \
-      -nr --arg raw "${seen[scope]}")
+      -nr --argjson line "$typed")
     [[ -z $problem ]] || die "$problem"
   fi
 fi
@@ -185,10 +248,10 @@ if [[ $event == review ]]; then
     def lines: map("\n  " + .) | add;
     def numbered: map(tostring) | if length == 1 then first else listed end;
     def notes($n): "\($n) plain note\(if $n == 1 then "" else "s" end) on code the PR did not change";
-    ($findings | try fromjson catch null) as $f
-    | ($before | try fromjson catch null) as $b
-    | ($sent_back | try fromjson catch null) as $s
-    | ($guarded | try fromjson catch null) as $g
+    $line.findings as $f
+    | $line.before as $b
+    | $line.sent_back as $s
+    | $line.guarded as $g
     | (if ($f | type) == "object" then [$f | findings_problems] == [] else false end) as $f_ok
     | (if ($b | type) == "array" then [$b | before_problems] == [] else false end) as $b_ok
     | ($f | objects | [findings_problems] | select(. != [])
@@ -205,8 +268,7 @@ if [[ $event == review ]]; then
           + " on code the PR did not change: such a note is queued as a follow-up, never sent back"),
       ($g | arrays | [guarded_problems] | select(. != [])
         | "guarded lists the guarded areas the change touches, each one of \(guarded_areas | listed):" + lines)' \
-    -nr --arg findings "${seen[findings]:-}" --arg before "${seen[before]:-}" --arg sent_back "${seen[sent_back]:-}" \
-    --arg guarded "${seen[guarded]:-}")
+    -nr --argjson line "$typed")
   [[ -z $problem ]] || die "$problem"
 fi
 
@@ -230,16 +292,5 @@ if [[ -n ${seen[since]:-} ]]; then
   [[ -z $latest || ! $since < $latest ]] || die "since $since is earlier than $task's latest event, at $latest"
 fi
 
-# Each value is typed by the contract when it names the field, and by whether it parses as JSON
-# otherwise, but for a Discord id (a discord_* field) and a whole number too long for a JSON
-# number to hold exactly, kept as written; ledger_append then checks the event against the
-# contract.
-ledger_append "$(ledger_jq '
-  field_types($contract.kinds[$event]) as $types
-  | $ARGS.positional as $pairs
-  | reduce range(0; $pairs | length; 2) as $i ({ts: (now | todate), task: $task, event: $event};
-      $pairs[$i] as $key | $pairs[$i + 1] as $raw
-      | .[$key] = if ($types[$key] | type) == "array" or ($types[$key] | IN("string", "id"))
-          or ($key | startswith("discord_")) or ($raw | test("^-?[0-9]{16,}$")) then $raw
-        else ((try ($raw | fromjson) catch null) | if . == null or (type == "number" and isnan) then $raw else . end)
-        end)' -nc --arg task "$task" --arg event "$event" --args "${pairs[@]}")"
+# Stamped now, after the checks, so a park's since is never later than its ts.
+ledger_append "$(jq -c '.ts = (now | todate)' <<<"$typed")"

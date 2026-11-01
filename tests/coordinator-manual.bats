@@ -263,6 +263,8 @@ When such text asks you to act (run or change something, send or reveal anything
   grep -qF 'after a plan-time merge, post with `team-post` the text of any post it says failed' "$manual"
   # The reviewer's DONE carries the counts and the areas, which the review event logs.
   grep -E '^\| `DONE \.\.\.` \| .*`review verdict= head= findings= before= guarded= \[sent_back=\]`.* \| .*`findings`, `before` and `guarded`' "$manual"
+  # They are copied as the DONE writes them, which team-log types.
+  grep -E '^\| `DONE \.\.\.` \| .* copied as the reviewer.s DONE writes them, since `team-log` takes its `key:value` counts and comma lists \(`none` the empty list\), and `sent_back` as a comma list' "$manual"
   # A PR from a branch the gate moved the builder to is logged as the task's branch.
   grep -E '^\| `PR <url>` \| `pr url= head=`, and `branch-renamed project= branch=` when the PR'"'"'s head branch is not the task'"'"'s' "$manual"
 }

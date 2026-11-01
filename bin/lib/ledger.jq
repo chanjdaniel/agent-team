@@ -4,7 +4,14 @@
 
 # A jq type, or a field type of the contract, as a noun: "a list", "a number", "null".
 def noun:
-  {array: "a list", object: "an object", boolean: "a boolean", number: "a number", string: "a string", null: "null"}[.];
+  {array: "a list", numbers: "a list of whole numbers", object: "an object", boolean: "a boolean", number: "a number",
+    string: "a string", null: "null"}[.];
+
+# Whether a value is a whole number: a number, 0 or more, with no fraction.
+def whole_number: type == "number" and . >= 0 and . == floor;
+
+# Whether a value is a whole number written as a string, as a comma list or an old team-log left one.
+def whole_number_string: type == "string" and test("^[0-9]{1,15}$");
 
 # What every line must meet, legacy lines included: an object with ts, task and event.
 def line_problems:
@@ -20,11 +27,19 @@ def line_problems:
 # How the value breaks field <name>'s contract type (a type name, or a list of allowed strings).
 # An id is a Discord id, a string of digits; with $legacy (--check), a whole number too, as
 # team-log wrote one before the contract typed every Discord id (its digits are the id, since jq
-# keeps a number's literal through tostring).
+# keeps a number's literal through tostring). A list of whole numbers that holds some as strings,
+# as team-log stored them before the contract typed sent_back, names the conversion.
 # (A parameter named $type would shadow the builtin type inside the def.)
 def type_problems($name; $want; $legacy):
   if ($want | type) == "array" then
     select(IN($want[]) | not) | "\($name) must be one of \($want | join(", "))"
+  elif $want == "numbers" then
+    if type != "array" then "\($name) must be a list of whole numbers, got \(type | noun)"
+    else [.[] | select(whole_number | not)] | select(. != []) | map(tojson) as $bad
+      | if all(.[]; whole_number_string) then
+          "\($name) holds whole numbers as strings (\($bad | join(", "))): team-log --fix-sent-back stores them as numbers"
+        else "\($name) must be a list of whole numbers, got \($bad | join(", "))" end
+    end
   elif $want == "id" then
     if type == "string" then select(test("^[0-9]+$") | not) | "\($name) must be a Discord id, a string of digits, got a string that is not one"
     elif type == "number" and $legacy then select(. < 0 or . != floor) | "\($name) must be a Discord id, a string of digits, got a number that is not one"
@@ -48,6 +63,63 @@ def kind_problems($contract; $legacy):
       (field_types($kind) | to_entries[] | .key as $name | .value as $type
         | $line[$name] | select(. != null and . != "") | type_problems($name; $type; $legacy))
     end;
+
+# A value team-log was given for field $name, whose contract type is $want (null for a field the
+# contract does not type), as {value} or {problems}. A list (array, numbers) or an object that
+# starts with [ or { is JSON; any other list is a comma list, each item trimmed, none the empty
+# list, and any other object key:value pairs separated by commas, each trimmed, a value a number
+# when it reads as one. A list of whole numbers holds each item that is a whole number written as
+# a string as the number. A choice, a string or an id, any discord_* field, and a whole number of
+# 16 digits or more (which a JSON number cannot hold exactly) are kept as written; anything else is
+# JSON when it parses as JSON, else a string.
+def typed_value($name; $want):
+  def trimmed: sub("^\\s+"; "") | sub("\\s+$"; "");
+  def items:
+    . as $raw | split(",") | map(trimmed)
+    | if any(.[]; . == "") then {problems: ["\($name) has an empty item in '\($raw)'"]} else {value: .} end;
+  . as $raw
+  | if ($want | IN("array", "numbers", "object")) and test("^\\s*[\\[{]") then
+      try {value: fromjson} catch {problems: ["\($name) starts as JSON, but is not JSON: \($raw)"]}
+    elif ($want | IN("array", "numbers")) then
+      if trimmed == "none" then {value: []} else items end
+    elif $want == "object" then
+      items
+      | if .problems then .
+        else .value as $pairs
+          | [$pairs[] | [capture("^(?<key>[^:]*[^:\\s])\\s*:\\s*(?<value>.+)$")] | first // null] as $parsed
+          | [range($parsed | length) | select($parsed[.] == null) | "\($name): \($pairs[.]) is not a key:value pair"]
+            + [$parsed | map(.key? // empty) | group_by(.)[] | select(length > 1) | "\($name): \(first) is given twice"]
+          | if . != [] then {problems: .}
+            else {value: ($parsed | map({key, value: (.value | if test("^-?[0-9]+(\\.[0-9]+)?$") then tonumber else . end)}) | from_entries)}
+            end
+        end
+    elif ($want | type) == "array" or ($want | IN("string", "id")) or ($name | startswith("discord_"))
+      or test("^-?[0-9]{16,}$") then {value: .}
+    else {value: ((try fromjson catch null) | if . == null or (type == "number" and isnan) then $raw else . end)}
+    end
+  | if $want == "numbers" and (.value | type) == "array" then
+      .value |= map(if whole_number_string then tonumber else . end)
+      | [.value[] | select(whole_number | not) | "\($name): \(strings // tojson) is not a whole number"] as $bad
+      | if $bad == [] then . else {problems: $bad} end
+    else . end;
+
+# The fields of a ledger line, read raw, that the contract types as whole numbers and that hold
+# strings, as {field: [those strings]}: {} for a line that has none, is not a JSON object or is of
+# no kind the contract knows. team-log --fix-sent-back converts them, every line's, legacy too.
+def number_strings($contract):
+  (try fromjson catch null) as $line
+  | if ($line | type) != "object" or ($line.event | type) != "string" or $contract.kinds[$line.event] == null then {}
+    else [field_types($contract.kinds[$line.event]) | to_entries[] | select(.value == "numbers") | .key as $field
+        | $line[$field] | arrays | [.[] | strings] | select(. != []) | {key: $field, value: .}]
+      | from_entries end;
+
+# A ledger line, read raw, with the whole numbers number_strings finds stored as numbers, or
+# unchanged, byte for byte, when it finds none.
+def numbers_fixed($contract):
+  number_strings($contract) as $fields
+  | if $fields == {} then .
+    else fromjson | reduce ($fields | keys_unsorted[]) as $field (.; .[$field] |= map(if whole_number_string then tonumber else . end))
+      | tojson end;
 
 # The shapes team-log holds beyond the contract's types, each *_problems def yielding
 # "<value>: <problem>" lines.

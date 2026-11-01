@@ -114,7 +114,7 @@ TABLE
   assert_equal "$(jq -c '[.kinds.waiting, .kinds.blocked, .kinds.paused, .kinds.held | .optional.since]' "$CONTRACT")" '["string","string","string","string"]'
   assert_equal "$(jq -c '[.kinds.closed.required[]]' "$CONTRACT")" '["array","array","array"]'
   assert_equal "$(jq -c '.kinds["merge-preapproved"].required' "$CONTRACT")" '{"project":"string","ask":"string","discord_message":"id","scope":"array"}'
-  assert_equal "$(jq -c '.kinds.review.optional' "$CONTRACT")" '{"agent_review":"string","sent_back":"array","findings":"object","before":"array","guarded":"array"}'
+  assert_equal "$(jq -c '.kinds.review.optional' "$CONTRACT")" '{"agent_review":"string","sent_back":"numbers","findings":"object","before":"numbers","guarded":"array"}'
   assert_equal "$(jq -c '.kinds.merged.optional.approval' "$CONTRACT")" '["head","plan"]'
   [[ $STRICT_FROM =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
 }
@@ -123,6 +123,15 @@ TABLE
   run_bin -0 team-log --help
   assert_equal "${lines[0]}" "$(sed -n '2s/^# //p' "$REPO_ROOT/bin/team-log")"
   assert_contains "$output" "Ledger contract, strict from $STRICT_FROM"
+  # The forms a list and an object take, the whole numbers' type and the one-time conversion.
+  assert_contains "$output" "Usage: team-log T<n> <event> [key=value]...
+       team-log --check [<file>]
+       team-log --fix-sent-back [<file>]"
+  grep -Eq 'a comma list as a worker.s message writes it \(commits=a0017cce,9e0e3990' <<<"$output"
+  grep -Eq 'none is the empty list' <<<"$output"
+  grep -Eq 'key:value pairs .*findings=blocking:0,correctness:1' <<<"$output"
+  grep -Eq 'numbers \(a list of whole numbers\)' <<<"$output"
+  grep -Eq '^--fix-sent-back .*under the ledger.s lock' <<<"$output"
   local kind
   for kind in $(jq -r '.kinds | keys_unsorted[]' "$CONTRACT"); do
     grep -Eq "^  $kind +[a-z-]+(, [a-z-]+)* " <<<"$output" || {
@@ -131,7 +140,7 @@ TABLE
     }
   done
   grep -Eq '^  opened +team-open +project, path, type, title, branch, base, base_sha, worktree; optional story  \(story is the backlog story .*team-merge marks done\)$' <<<"$output"
-  grep -Eq '^  review +team-log +verdict \(pass\|findings\), head; optional agent_review, sent_back \(list\), findings \(object\), before \(list\), guarded \(list\)  \(sent_back: the numbers of the findings sent back .*findings: the count of each kind.*before: the numbers of the plain notes .*guarded: the guarded areas.*\)$' <<<"$output"
+  grep -Eq '^  review +team-log +verdict \(pass\|findings\), head; optional agent_review, sent_back \(list of whole numbers\), findings \(object\), before \(list of whole numbers\), guarded \(list\)  \(sent_back: the numbers of the findings sent back .*findings: the count of each kind.*before: the numbers of the plain notes .*guarded: the guarded areas.*\)$' <<<"$output"
   grep -Eq '^  merge-preapproved +team-log +project, ask, discord_message \(id\), scope \(list\)  \(Daniel.s plan-time word .*\)$' <<<"$output"
   grep -Eq '^  merge-preapproval-withdrawn +team-log +project, discord_message \(id\)  \(.*withdr.*\)$' <<<"$output"
   grep -Eq '^  merged +team-merge +pr \(number\), merge, head, by; optional .*approval \(head\|plan\)  \(approval: .*\)$' <<<"$output"
@@ -185,12 +194,98 @@ TABLE
 {"task":"T14","event":"review","verdict":"pass","head":"e4f5a6b"}
 LINES
   )"
-  local value
-  for value in 2 'note 2' '{"2":1}'; do
-    run_bin -1 team-log T14 review verdict=pass head=a1b2c3d "sent_back=$value"
-    assert_contains "$output" "sent_back must be a list, got"
-  done
+  run_bin -1 team-log T14 review verdict=pass head=a1b2c3d 'sent_back={"2":1}'
+  assert_contains "$output" "sent_back must be a list of whole numbers, got an object"
+  run_bin -1 team-log T14 review verdict=pass head=a1b2c3d 'sent_back=note 2'
+  assert_equal "$output" "team-log: sent_back: note 2 is not a whole number"
   assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "2"
+}
+
+@test "a list field takes a comma list, each item trimmed, none for the empty list, and refuses an empty item" {
+  run_bin -0 team-log T14 ticket-done ticket=03 commits=a0017cce,9e0e3990
+  run_bin -0 team-log T14 ticket-done ticket=04 'commits= a0017cce , 9e0e3990 '
+  run_bin -0 team-log T14 ticket-done ticket=05 commits=1234567
+  run_bin -0 team-log T14 review verdict=findings head=a1b2c3d sent_back=5,6 guarded=ci,settings before=none
+  run_bin -0 team-log T14 review verdict=pass head=e4f5a6b sent_back=none guarded=none
+  assert_equal "$(ledger_without_ts)" "$(
+    cat <<'LINES'
+{"task":"T14","event":"ticket-done","ticket":"03","commits":["a0017cce","9e0e3990"]}
+{"task":"T14","event":"ticket-done","ticket":"04","commits":["a0017cce","9e0e3990"]}
+{"task":"T14","event":"ticket-done","ticket":"05","commits":["1234567"]}
+{"task":"T14","event":"review","verdict":"findings","head":"a1b2c3d","sent_back":[5,6],"guarded":["ci","settings"],"before":[]}
+{"task":"T14","event":"review","verdict":"pass","head":"e4f5a6b","sent_back":[],"guarded":[]}
+LINES
+  )"
+  run_bin -0 team-log --check
+
+  local value
+  for value in 5,,6 ,5 '5,' '5, ,6'; do
+    run_bin -1 team-log T14 review verdict=findings head=a1b2c3d "sent_back=$value"
+    assert_equal "$output" "team-log: sent_back has an empty item in '$value'"
+  done
+  run_bin -1 team-log T14 ticket-done ticket=06 commits=a0017cce,,9e0e3990
+  assert_equal "$output" "team-log: commits has an empty item in 'a0017cce,,9e0e3990'"
+  run_bin -1 team-log T14 ticket-done ticket=06 'commits=[a0017cce]'
+  assert_equal "$output" "team-log: commits starts as JSON, but is not JSON: [a0017cce]"
+  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "5"
+}
+
+@test "an object field takes key:value pairs, logged as the same object as its JSON form, and the finding kinds hold for both" {
+  local kinds='blocking:0,correctness:1,security:0,real-data:0,note-change:2,note-before:1'
+  run_bin -0 team-log T14 review verdict=pass head=a1b2c3d "findings=$kinds" before=4 guarded=none
+  run_bin -0 team-log T14 review verdict=pass head=a1b2c3d \
+    'findings={"blocking": 0, "correctness": 1, "security": 0, "real-data": 0, "note-change": 2, "note-before": 1}' 'before=[4]' 'guarded=[]'
+  assert_equal "$(sed -n 1p "$TEAM_HOME/ledger.jsonl" | jq -c 'del(.ts)')" \
+    '{"task":"T14","event":"review","verdict":"pass","head":"a1b2c3d","findings":{"blocking":0,"correctness":1,"security":0,"real-data":0,"note-change":2,"note-before":1},"before":[4],"guarded":[]}'
+  assert_equal "$(sed -n 2p "$TEAM_HOME/ledger.jsonl" | jq -c 'del(.ts)')" "$(sed -n 1p "$TEAM_HOME/ledger.jsonl" | jq -c 'del(.ts)')"
+  # Each pair trimmed, a value a number when it reads as one.
+  run_bin -0 team-log T14 gate-run run=01M5Q9GR head=a1b2c3d outcome=pushed 'minutes=review:3.0, test : 49.9,ci:9'
+  assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -c .minutes)" '{"review":3.0,"test":49.9,"ci":9}'
+  run_bin -0 team-log --check
+
+  # The finding kinds refuse the pairs as they refuse the JSON.
+  local pairs json
+  run_bin -1 team-log T14 review verdict=pass head=a1b2c3d 'findings=blocking:0,correctness:-1,security:x,note-before:0,note:2'
+  pairs=$output
+  run_bin -1 team-log T14 review verdict=pass head=a1b2c3d 'findings={"blocking":0,"correctness":-1,"security":"x","note-before":0,"note":2}'
+  json=$output
+  assert_equal "$pairs" "$json"
+  assert_equal "$pairs" "team-log: findings holds the count of each finding kind, exactly blocking, correctness, security, real-data, note-change and note-before, each a whole number:
+  correctness: -1 is not a whole number
+  security: \"x\" is not a whole number
+  real-data: missing
+  note-change: missing
+  note: not a finding kind"
+  # A malformed pair is refused, naming it.
+  run_bin -1 team-log T14 review verdict=pass head=a1b2c3d findings=3
+  assert_equal "$output" "team-log: findings: 3 is not a key:value pair"
+  run_bin -1 team-log T14 review verdict=pass head=a1b2c3d 'findings=blocking:0,:1,correctness:'
+  assert_equal "$output" "team-log: findings: :1 is not a key:value pair; findings: correctness: is not a key:value pair"
+  run_bin -1 team-log T14 review verdict=pass head=a1b2c3d findings=blocking:0,,correctness:1
+  assert_equal "$output" "team-log: findings has an empty item in 'blocking:0,,correctness:1'"
+  run_bin -1 team-log T14 review verdict=pass head=a1b2c3d findings=blocking:0,blocking:1
+  assert_equal "$output" "team-log: findings: blocking is given twice"
+  run_bin -1 team-log T14 gate-run run=01M5Q9GR head=a1b2c3d outcome=pushed 'minutes={review: 3}'
+  assert_equal "$output" "team-log: minutes starts as JSON, but is not JSON: {review: 3}"
+  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "3"
+}
+
+@test "sent_back is stored as whole numbers from a comma list or a JSON list, and anything else is refused naming it" {
+  run_bin -0 team-log T14 review verdict=findings head=a1b2c3d 'sent_back=["5",6]'
+  run_bin -0 team-log T14 review verdict=findings head=a1b2c3d sent_back=5,6
+  run_bin -0 team-log T14 review verdict=findings head=a1b2c3d sent_back=07
+  assert_equal "$(jq -c .sent_back "$TEAM_HOME/ledger.jsonl")" '[5,6]
+[5,6]
+[7]'
+  run_bin -0 team-log --check
+
+  run_bin -1 team-log T14 review verdict=findings head=a1b2c3d sent_back=5a
+  assert_equal "$output" "team-log: sent_back: 5a is not a whole number"
+  run_bin -1 team-log T14 review verdict=findings head=a1b2c3d sent_back=5,5a,-1
+  assert_equal "$output" "team-log: sent_back: 5a is not a whole number; sent_back: -1 is not a whole number"
+  run_bin -1 team-log T14 review verdict=findings head=a1b2c3d 'sent_back=["5a", 1.5, true, null]'
+  assert_equal "$output" "team-log: sent_back: 5a is not a whole number; sent_back: 1.5 is not a whole number; sent_back: true is not a whole number; sent_back: null is not a whole number"
+  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "3"
 }
 
 @test "a gate run is logged with its run, head and outcome, the cause of a re-run and its minutes per step" {
@@ -213,8 +308,8 @@ LINES
   assert_contains "$output" "outcome must be one of pushed, red, aborted, stopped-green"
   run_bin -1 team-log T14 gate-run run=01M5Q9GR head=a1b2c3d outcome=red cause=flaky
   assert_contains "$output" "cause must be one of review, notes, gate-finding, load, tooling, base-merge, other"
-  run_bin -1 team-log T14 gate-run run=01M5Q9GR head=a1b2c3d outcome=red minutes=44
-  assert_contains "$output" "minutes must be an object, got a number"
+  run_bin -1 team-log T14 gate-run run=01M5Q9GR head=a1b2c3d outcome=red 'minutes=[44]'
+  assert_contains "$output" "minutes must be an object, got a list"
   run_bin -1 team-log T14 gate-run head=a1b2c3d outcome=red
   assert_contains "$output" "gate-run needs run"
   assert_ledger_empty
@@ -347,8 +442,6 @@ LINES
 }
 
 @test "a value of the wrong type or outside its choices is refused with nothing appended" {
-  run_bin -1 team-log T14 ticket-done ticket=03 commits=a1b2c3d
-  assert_contains "$output" "commits must be a list, got a string"
   run_bin -1 team-log T14 review verdict=ok head=a1b2c3d
   assert_contains "$output" "verdict must be one of pass, findings"
   run_bin -1 team-log T14 ticket-done ticket=03 'commits={"a":1}'
@@ -517,8 +610,14 @@ LINES
   run_bin -0 team-log T14 asked id=plan 'text=Approve?'
   run_bin -1 team-log T14 merge-preapproved project=proj ask=plan discord_message="$(soon)" 'scope=[]'
   assert_equal "$output" "team-log: scope is empty: it lists every path the plan may change, each a file or a directory ending in /"
-  run_bin -1 team-log T14 merge-preapproved project=proj ask=plan discord_message="$(soon)" scope=src/
-  assert_contains "$output" "scope must be a list, got a string"
+  run_bin -1 team-log T14 merge-preapproved project=proj ask=plan discord_message="$(soon)" scope=none
+  assert_equal "$output" "team-log: scope is empty: it lists every path the plan may change, each a file or a directory ending in /"
+  run_bin -1 team-log T14 merge-preapproved project=proj ask=plan discord_message="$(soon)" 'scope={"src/":1}'
+  assert_contains "$output" "scope must be a list, got an object"
+  # A comma list is checked as its JSON form is.
+  run_bin -1 team-log T14 merge-preapproved project=proj ask=plan discord_message="$(soon)" scope=src/,/etc/x
+  assert_equal "$output" "team-log: scope holds entries that are not clean repository paths:
+  \"/etc/x\": a leading /"
   run_bin -1 team-log T14 merge-preapproved project=proj ask=plan discord_message="$(soon)" \
     'scope=["src/", "/etc/x", "/", "./a", "a/./b", "a/..", "..", "a//b", "src/*.py", "a?", "b[1]", "a b", "a\tb", "", 7]'
   assert_equal "$output" "team-log: scope holds entries that are not clean repository paths:
@@ -537,6 +636,8 @@ LINES
   \"\": an empty segment
   7: not a string"
   assert_equal "$(ledger_events | grep -c merge-preapproved)" 0
+  run_bin -0 team-log T14 merge-preapproved project=proj ask=plan discord_message="$(soon)" scope=src/,docs/README.md
+  assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -c .scope)" '["src/","docs/README.md"]'
 }
 
 @test "merge-preapproval-withdrawn needs a standing merge-preapproved of its project, and a new one may follow it" {
@@ -615,8 +716,8 @@ LINES
   )"
   run_bin -0 team-log --check
 
-  run_bin -1 team-log T14 review verdict=pass head=a1b2c3d findings=3
-  assert_contains "$output" "findings must be an object, got a number"
+  run_bin -1 team-log T14 review verdict=pass head=a1b2c3d 'findings=[3]'
+  assert_contains "$output" "findings must be an object, got a list"
   run_bin -1 team-log T14 review verdict=pass head=a1b2c3d \
     'findings={"blocking": 0, "correctness": -1, "security": 1.5, "note-change": "2", "note-before": 0, "note": 1}'
   assert_equal "$output" "team-log: findings holds the count of each finding kind, exactly blocking, correctness, security, real-data, note-change and note-before, each a whole number:
@@ -625,8 +726,8 @@ LINES
   note-change: \"2\" is not a whole number
   real-data: missing
   note: not a finding kind"
-  run_bin -1 team-log T14 review verdict=pass head=a1b2c3d guarded=ci
-  assert_contains "$output" "guarded must be a list, got a string"
+  run_bin -1 team-log T14 review verdict=pass head=a1b2c3d 'guarded={"ci":1}'
+  assert_contains "$output" "guarded must be a list, got an object"
   run_bin -1 team-log T14 review verdict=pass head=a1b2c3d 'guarded=["ci", "docs", 1]'
   assert_equal "$output" "team-log: guarded lists the guarded areas the change touches, each one of ci, dependencies, migrations, settings, permissions and secrets:
   \"docs\": not a guarded area
@@ -662,14 +763,15 @@ LINES
     "findings={$counts, \"note-change\": 0, \"note-before\": 2}" 'before=[3]'
   assert_equal "$output" "team-log: before lists 1 note, but findings counts 2 plain notes on code the PR did not change"
   # The list's shape.
-  run_bin -1 team-log T14 review verdict=findings head=a1b2c3d before=3
-  assert_contains "$output" "before must be a list, got a number"
-  run_bin -1 team-log T14 review verdict=findings head=a1b2c3d 'before=[0, 2.5, "3", 4, 4]'
+  run_bin -1 team-log T14 review verdict=findings head=a1b2c3d 'before={"3":1}'
+  assert_contains "$output" "before must be a list of whole numbers, got an object"
+  run_bin -1 team-log T14 review verdict=findings head=a1b2c3d 'before=[0, "3", 4, 4, 3]'
   assert_equal "$output" "team-log: before lists the numbers of the plain notes on code the PR did not change, each a whole number above 0, once:
   0: not a finding number
-  2.5: not a finding number
-  \"3\": not a finding number
+  3: listed twice
   4: listed twice"
+  run_bin -1 team-log T14 review verdict=findings head=a1b2c3d 'before=2.5,3'
+  assert_equal "$output" "team-log: before: 2.5 is not a whole number"
   assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "4"
 }
 
@@ -843,4 +945,98 @@ EXPECTED
   rm "$TEAM_HOME/ledger.jsonl"
   run_bin -1 team-log --check
   assert_contains "$output" "no ledger at $TEAM_HOME/ledger.jsonl"
+}
+
+@test "--check names each line from strict_from on whose sent_back holds strings, and the conversion" {
+  cat >"$TEAM_HOME/ledger.jsonl" <<LEDGER
+{"ts":"2026-10-01T00:00:00Z","task":"T4","event":"review","verdict":"pass","head":"e1e8cdb6","sent_back":["1"]}
+{"ts":"$STRICT_FROM","task":"T14","event":"review","verdict":"findings","head":"a1b2c3d","sent_back":[5,6]}
+{"ts":"$STRICT_FROM","task":"T14","event":"review","verdict":"findings","head":"a1b2c3d","sent_back":["5","6"]}
+{"ts":"$STRICT_FROM","task":"T14","event":"review","verdict":"findings","head":"a1b2c3d","sent_back":["7",8]}
+{"ts":"$STRICT_FROM","task":"T14","event":"review","verdict":"findings","head":"a1b2c3d","sent_back":["x",1.5]}
+LEDGER
+  run_bin -1 team-log --check
+  assert_equal "$output" "$TEAM_HOME/ledger.jsonl:3: sent_back holds whole numbers as strings (\"5\", \"6\"): team-log --fix-sent-back stores them as numbers
+$TEAM_HOME/ledger.jsonl:4: sent_back holds whole numbers as strings (\"7\"): team-log --fix-sent-back stores them as numbers
+$TEAM_HOME/ledger.jsonl:5: sent_back must be a list of whole numbers, got \"x\", 1.5
+$TEAM_HOME/ledger.jsonl: 3 of 5 lines break the ledger contract"
+  sed -i '3,5d' "$TEAM_HOME/ledger.jsonl"
+  run_bin -0 team-log --check
+  assert_equal "$output" "$TEAM_HOME/ledger.jsonl: 2 lines meet the ledger contract"
+}
+
+# A ledger with sent_back held as strings on some lines, legacy and strict, beside lines of other
+# shapes the conversion leaves byte for byte: fix_ledger <file>
+fix_ledger() {
+  cat >"$1" <<LEDGER
+{"ts":"2026-10-01T00:00:00Z","task":"T4","event":"review","verdict":"pass","head":"e1e8cdb6","sent_back":["1"]}
+{"ts": "$STRICT_FROM", "task": "T14", "event": "review", "verdict": "pass", "head": "a1", "sent_back": [1, 2]}
+{"ts":"$STRICT_FROM","task":"T14","event":"review","verdict":"findings","head":"a2","sent_back":["5","6"],"findings":{"blocking":1.0}}
+not json
+{"ts":"$STRICT_FROM","task":"T14","event":"resumed","sent_back":["9"],"note":"caf\u00e9 \u2192 ok"}
+{"ts":"$STRICT_FROM","task":"T14","event":"review","verdict":"findings","head":"a3","sent_back":["7",8],"before":["3"],"note":"é"}
+
+{"ts":"$STRICT_FROM","task":"T14","event":"done","role":"builder","session":"s1"}
+LEDGER
+}
+
+@test "--fix-sent-back stores the whole numbers sent_back holds as strings as numbers, leaving every other line byte for byte" {
+  fix_ledger "$TEAM_HOME/ledger.jsonl"
+  cp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before.jsonl"
+  chmod 0644 "$TEAM_HOME/ledger.jsonl"
+  run_bin -0 team-log --fix-sent-back
+  assert_equal "$output" "$TEAM_HOME/ledger.jsonl: 3 lines changed, the whole numbers their sent_back or before held as strings now numbers"
+  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "8"
+  assert_equal "$(sed -n 1p "$TEAM_HOME/ledger.jsonl")" '{"ts":"2026-10-01T00:00:00Z","task":"T4","event":"review","verdict":"pass","head":"e1e8cdb6","sent_back":[1]}'
+  assert_equal "$(sed -n 3p "$TEAM_HOME/ledger.jsonl")" "{\"ts\":\"$STRICT_FROM\",\"task\":\"T14\",\"event\":\"review\",\"verdict\":\"findings\",\"head\":\"a2\",\"sent_back\":[5,6],\"findings\":{\"blocking\":1.0}}"
+  assert_equal "$(sed -n 6p "$TEAM_HOME/ledger.jsonl")" "{\"ts\":\"$STRICT_FROM\",\"task\":\"T14\",\"event\":\"review\",\"verdict\":\"findings\",\"head\":\"a3\",\"sent_back\":[7,8],\"before\":[3],\"note\":\"é\"}"
+  local n
+  for n in 2 4 5 7 8; do
+    cmp <(sed -n "${n}p" "$TEAM_HOME/ledger.jsonl") <(sed -n "${n}p" "$BATS_TEST_TMPDIR/before.jsonl")
+  done
+  assert_equal "$(stat -c %a "$TEAM_HOME/ledger.jsonl")" "644"
+  assert_equal "$(find "$TEAM_HOME" -maxdepth 1 -name 'ledger.jsonl.*' ! -name ledger.jsonl.lock)" ""
+
+  # Once is enough: a second run changes nothing.
+  cp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/fixed.jsonl"
+  run_bin -0 team-log --fix-sent-back
+  assert_equal "$output" "$TEAM_HOME/ledger.jsonl: no line's sent_back or before holds a whole number as a string; nothing changed"
+  cmp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/fixed.jsonl"
+
+  # It reads the file it is given.
+  fix_ledger "$BATS_TEST_TMPDIR/other.jsonl"
+  run_bin -0 team-log --fix-sent-back "$BATS_TEST_TMPDIR/other.jsonl"
+  assert_equal "$output" "$BATS_TEST_TMPDIR/other.jsonl: 3 lines changed, the whole numbers their sent_back or before held as strings now numbers"
+  run_bin -1 team-log --fix-sent-back "$BATS_TEST_TMPDIR/missing.jsonl"
+  assert_contains "$output" "no ledger at $BATS_TEST_TMPDIR/missing.jsonl"
+  run_bin -2 team-log --fix-sent-back a b
+}
+
+@test "--fix-sent-back refuses a string that is no whole number, naming each, and changes nothing" {
+  fix_ledger "$TEAM_HOME/ledger.jsonl"
+  cat >>"$TEAM_HOME/ledger.jsonl" <<LEDGER
+{"ts":"$STRICT_FROM","task":"T14","event":"review","verdict":"findings","head":"a4","sent_back":["5","5a"]}
+{"ts":"$STRICT_FROM","task":"T14","event":"review","verdict":"findings","head":"a5","sent_back":["-1",""]}
+LEDGER
+  cp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before.jsonl"
+  run_bin -1 team-log --fix-sent-back
+  assert_equal "$output" "$TEAM_HOME/ledger.jsonl:9: sent_back holds \"5a\", which is no whole number
+$TEAM_HOME/ledger.jsonl:10: sent_back holds \"-1\", \"\", which are no whole numbers
+team-log: $TEAM_HOME/ledger.jsonl: 2 lines hold strings that are no whole numbers in a list of whole numbers, so nothing changed"
+  cmp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before.jsonl"
+}
+
+@test "--fix-sent-back waits for the ledger's lock, as an append does" {
+  fix_ledger "$TEAM_HOME/ledger.jsonl"
+  cp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before.jsonl"
+  local held
+  exec {held}>>"$TEAM_HOME/ledger.jsonl.lock"
+  flock -x "$held"
+  guard_sandbox
+  run timeout 1 "$REPO_ROOT/bin/team-log" --fix-sent-back
+  exec {held}>&-
+  assert_equal "$status" "124"
+  cmp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/before.jsonl"
+  run_bin -0 team-log --fix-sent-back
+  assert_contains "$output" "3 lines changed"
 }
