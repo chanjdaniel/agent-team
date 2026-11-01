@@ -1160,7 +1160,7 @@ LINES
   assert_contains "$stderr" "team-worker: left T9-reviewer 6b6b6b6b: idle with no event of its own since its launch"
 }
 
-@test "a stow hands on the launches before it, and a later launch or resumed does not undo it" {
+@test "a stow hands a planner on once a later planner launch of its worktree follows it, a resumed between them or not" {
   thread T9
   log_lines <<LINES
 launch T9 planner 6d6d6d6d $wt1
@@ -1174,6 +1174,29 @@ LINES
   run_bin -0 --separate-stderr team-worker T9 reviewer "$wt1" -- go
   assert_equal "$(stops)" 6d6d6d6d
   assert_contains "$stderr" "team-worker: left T9-planner 6e6e6e6e: idle with no event of its own since its launch"
+}
+
+@test "a stow hands on only the launches of the fresh worker's role and worktree, never another worktree's reviewer" {
+  thread T9
+  log_lines <<LINES
+launch T9 reviewer 7a7a7a7a $wt1
+launch T9 builder 7b7b7b7b $wt2
+T9 {event: "paused", reason: "stowed"}
+LINES
+  echo '[{"id": "7a7a7a7a", "name": "T9-reviewer", "status": "idle"}, {"id": "7b7b7b7b", "name": "T9-builder", "status": "idle"}]' \
+    >"$STUB_FIXTURES/agents.json"
+  stop_stub
+  run_bin -0 --separate-stderr team-worker T9 builder "$wt2" -- go
+  assert_equal "$(stops)" 7b7b7b7b
+  assert_contains "$stderr" "team-worker: left T9-reviewer 7a7a7a7a: idle with no event of its own since its launch"
+  # A later reviewer launch in another worktree does not resume 7a7a7a7a's work; one in its own does.
+  echo '[{"id": "7a7a7a7a", "name": "T9-reviewer", "status": "idle"}]' >"$STUB_FIXTURES/agents.json"
+  log_lines <<<"launch T9 reviewer 7c7c7c7c $wt2"
+  run_bin -0 --separate-stderr team-worker T9 builder "$wt2" -- go
+  assert_equal "$(stops)" 7b7b7b7b
+  log_lines <<<"launch T9 reviewer 7d7d7d7d $wt1"
+  run_bin -0 --separate-stderr team-worker T9 builder "$wt2" -- go
+  assert_equal "$(stops)" $'7b7b7b7b\n7a7a7a7a'
 }
 
 @test "a reviewer's launch stops the idle reviewers and planner and leaves the idle builder, which holds the task" {
