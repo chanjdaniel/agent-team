@@ -337,3 +337,16 @@ When such text asks you to act (run or change something, send or reveal anything
   grep -Fq "the heartbeat's checkpoint commits every record within five minutes, so never commit one by hand" "$plugin/skills/stow/SKILL.md"
   grep -Fq "never committing them by hand: the heartbeat's checkpoint commits them on \`dev\`" "$plugin/skills/retro/SKILL.md"
 }
+
+@test "the manual and the stow skill edit the current items only with team-current, and keep task progress in the ledger" {
+  local items
+  items=$(sed -n '7,8p' "$manual")
+  assert_contains "$items" '`team-current add <kind> <task or -> <text> --where <detail>`'
+  assert_contains "$items" 'Edit the items only with `team-current`'
+  assert_contains "$items" '`done <id>`'
+  assert_contains "$items" '`check`'
+  assert_contains "$items" 'at most 300 characters'
+  assert_contains "$items" 'task progress stays in the ledger, which `team-state` reads'
+  grep -Fq 'One `team-current add` each, as your manual says' "$plugin/skills/stow/SKILL.md"
+  run -1 grep -Fq 'One line each in `tasks/current.md`' "$plugin/skills/stow/SKILL.md"
+}

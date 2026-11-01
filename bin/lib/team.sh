@@ -736,12 +736,15 @@ origin_reason() {
 # they apply cleanly and no local change is in the way (a branch switch's two-tree merge, so what
 # is staged stays staged), then pushes again once. Prints one line on stdout, like
 # "team home: committed <sha> <message> and pushed dev" or "team home: nothing to commit"; a
-# failure adds its reason on stderr and returns 1. Network calls go through origin_git, so
-# NET_ERR must name a file: commit_records <message>
+# failure adds its reason on stderr and returns 1. Given <path>s (records, relative to the team
+# home), it commits those alone. When the caller sets records_edit to a command, it runs first,
+# under the same lock, so the change it makes and its commit are one step; when it fails, nothing
+# is committed and its status is returned. Network calls go through origin_git, so NET_ERR must
+# name a file: commit_records <message> [<path>...]
 commit_records() {
   local message=$1 branch committed upstream out rc=0
   local -a record_paths records
-  mapfile -t records < <(records_pathspecs)
+  if (($# > 1)); then records=("${@:2}"); else mapfile -t records < <(records_pathspecs); fi
   if ! branch=$(git -C "$TEAM_HOME" symbolic-ref -q --short HEAD); then
     echo "${0##*/}: team home: not on a branch, so the records are not committed" >&2
     return 1
@@ -749,6 +752,7 @@ commit_records() {
   committed="nothing to commit"
   {
     flock -x 9
+    if [[ -n ${records_edit:-} ]]; then $records_edit || return; fi
     mapfile -d '' -t record_paths < <(git -C "$TEAM_HOME" ls-files -z -m -d -o --exclude-standard -- "${records[@]}")
     ((${#record_paths[@]} == 0)) || GIT_LITERAL_PATHSPECS=1 git -C "$TEAM_HOME" add -A -- "${record_paths[@]}"
     mapfile -d '' -t record_paths < <(git -C "$TEAM_HOME" diff --cached -z --name-only --no-renames HEAD -- "${records[@]}")
