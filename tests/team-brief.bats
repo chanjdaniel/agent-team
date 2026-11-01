@@ -293,7 +293,7 @@ EOF
   grep -qF "\`$REPO_ROOT/bin/team-thread wait T12\`, run with Bash \`run_in_background\`" "$brief"
   grep -qxF 'Send the coordinator only `DONE`, `BLOCKED`, `PAUSED`, `FAILED` or `INJECTION`: your questions go to Daniel in the thread, never to the coordinator.' "$brief"
   grep -qF "\"Please ask in #coordinator: this thread is for T12's interview only.\"" "$brief"
-  grep -qxF '5. Send `T12 DONE .scratch/task/spec.md` to `coordinator`.' "$brief"
+  grep -qxF '6. Send `T12 DONE .scratch/task/spec.md` to `coordinator`.' "$brief"
 }
 
 @test "a partial is picked by the project's delivery, from the directory of its name" {
@@ -426,7 +426,7 @@ EOF
   done
 }
 
-@test "each planner brief delivers scope.txt beside the spec, one repository path per line" {
+@test "each planner brief delivers scope.txt beside the spec, one repository path per line, and checks its tickets" {
   open_t12
   event T12 interview-thread '{discord_thread: "1565400000000000012"}'
   local template
@@ -435,8 +435,10 @@ EOF
     grep -qxF '3. `scope.txt`, every path the tickets change, one repository path per line: a file, or a directory ending in `/` that covers everything under it, with no leading `/`, no `.` or `..` and no glob; the coordinator puts it to Daniel with the plan, whose approval may let the PR merge with no second ask when it changes nothing outside it.' "$output" ||
       { echo "$template lacks the scope line" >&2; cat "$output" >&2; return 1; }
   done
-  grep -qxF '4. Send `T12 DONE .scratch/task/spec.md` to `coordinator`.' "$TEAM_HOME/tasks/T12/brief-planner-feature.md"
-  grep -qxF '5. Send `T12 DONE .scratch/task/spec.md` to `coordinator`.' "$TEAM_HOME/tasks/T12/brief-planner-interview.md"
+  grep -qxF "4. Run \`$REPO_ROOT/bin/team-tickets T12 --check\` and fix each line it names." "$TEAM_HOME/tasks/T12/brief-planner-feature.md"
+  grep -qxF '5. Send `T12 DONE .scratch/task/spec.md` to `coordinator`.' "$TEAM_HOME/tasks/T12/brief-planner-feature.md"
+  grep -qxF "5. Run \`$REPO_ROOT/bin/team-tickets T12 --check\` and fix each line it names." "$TEAM_HOME/tasks/T12/brief-planner-interview.md"
+  grep -qxF '6. Send `T12 DONE .scratch/task/spec.md` to `coordinator`.' "$TEAM_HOME/tasks/T12/brief-planner-interview.md"
 }
 
 @test "a gated project's builder stops before the gate for the review, then runs the gate once" {
@@ -637,6 +639,11 @@ SINCE
   short=$(git -C "$wt" rev-parse --short=8 "$head")
   assert_equal "$(since_section "$output")" "$(printf '%s\n' '## Since the last review' '' \
     "The last review, of \`${head:0:8}\`, passed." '' "No commit since \`$short\`." '' '## Check')"
+  # A pass that sent its notes back, as the ledger held one before team-log logged it as findings, says so.
+  event T14 review "$(jq -cn --arg h "$head" '{verdict: "pass", head: $h, sent_back: [2, 4]}')"
+  run_bin -0 team-brief T14 rereview --name rereview-3 --set pr=https://github.com/chanjdaniel/agent-team/pull/9 \
+    --set head="$head"
+  assert_contains "$(since_section "$output")" "The last review, of \`${head:0:8}\`, passed, and sent back 2 and 4."
   # A gated project's first PR, reviewed before the gate at its local head: no review is logged.
   open_t12
   reviewed_branch T12 dev
@@ -918,7 +925,7 @@ SINCE
   assert_equal "$(head -n 1 <<<"$brief")" "# T12 brief (builder): resume rate-limit the applicant sign-in endpoints after a crash"
   assert_contains "$brief" "you are the builder, resuming the task from the checkpoint of 2026-10-23T13:45:00Z: home-pc stopped without a handoff."
   assert_contains "$brief" "Worktree: \`~/.treehouse/Conventioner-d4c77a/4/Conventioner\`, branch \`fix/T12-applicant-sign-in-rate-limit\`"
-  assert_contains "$brief" "Up to 15 minutes of work before home-pc stopped may be missing, and so may any no-mistakes run that was in flight"
+  assert_contains "$brief" "Up to 5 minutes of work before home-pc stopped may be missing, and so may any no-mistakes run that was in flight"
   assert_contains "$brief" "The uncommitted changes of that checkpoint: applied as uncommitted changes in your worktree."
   assert_contains "$brief" "Check before you build on any of it."
   assert_contains "$brief" "1. Read your brief \`~/agent-team-records/tasks/T12/brief.md\`"
@@ -1462,7 +1469,7 @@ The team'"'"'s tooling runs on both machines.
 Daniel moves it with one command.'
   run_bin -0 team-brief T14 builder-deliver
   assert_contains "$(<"$output")" "its body opening with the task's goal: \"T14: The team's tooling runs on both machines.\", then"
-  assert_equal "$(jq -c .values "$TEAM_HOME/tasks/T14/brief.json")" '{"goal":"The team'"'"'s tooling runs on both machines."}'
+  assert_equal "$(jq -c .values "$TEAM_HOME/tasks/T14/brief.json")" '{"goal":"The team'"'"'s tooling runs on both machines.","tickets":"every ticket"}'
   # A goal written as a list: its first item, without the marker.
   plan_goal T14 '- The team home stays packed.
 - Stack logs stay out of it.'

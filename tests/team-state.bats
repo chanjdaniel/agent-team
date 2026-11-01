@@ -51,12 +51,15 @@ fixture_ledger() {
 }
 
 # gh answers PR #5 of owner/proj: its view, all its checks and its server-required checks, each
-# from the JSON given (or from $view, $checks and $required).
+# from the JSON given (or from $view, $checks and $required), and gh api's compare of its base and
+# head from the fourth (or $compare), failing as an unreadable compare when that is empty or unset.
 stub_github() {
-  export GH_VIEW=${1:-$view} GH_CHECKS=${2:-$checks} GH_REQUIRED=${3:-$required}
+  export GH_VIEW=${1:-$view} GH_CHECKS=${2:-$checks} GH_REQUIRED=${3:-$required} GH_COMPARE=${4:-${compare:-}}
   stub_script gh <<'EOF'
 case "$1 $2 $*" in
   "pr view"*) echo "$GH_VIEW" ;;
+  "api repos/"*/compare/*)
+    if [[ -n $GH_COMPARE ]]; then echo "$GH_COMPARE"; else echo "gh: Not Found (HTTP 404)" >&2; exit 1; fi ;;
   "pr checks"*--required*) echo "$GH_REQUIRED" ;;
   "pr checks"*) echo "$GH_CHECKS" ;;
   *) echo "unplanned gh call: $*" >&2; exit 1 ;;
@@ -104,7 +107,9 @@ phase_of() {
     thread: "1563",
     last_event: {ts: "2026-10-22T02:00:00Z", task: "T14", event: "answered", id: "q1", answer: "team-state"},
     pending_asks: [{id: "q2", text: "Ship it?", ts: "2026-10-22T02:00:00Z"}],
-    waiting: null, rehome_failures: [], merge_preapproval: null, pr: null}')"
+    waiting: null, rehome_failures: [], merge_preapproval: null, pr: null,
+    progress: {tickets: {done: [], total: 0}, on: [],
+      reviews: {count: 0, verdict: null, head: null, sent_back: null}}}')"
   assert_equal "$(stub_calls gh)" ""
 }
 
@@ -178,9 +183,9 @@ phase_of() {
   run_bin -0 team-state T14 --json
   assert_equal "$(jq -c .workers <<<"$output")" "$(jq -cn '[
     {role: "builder", session: "59709d99", launched: "2026-10-22T02:00:00Z", worktree: "/w/1",
-     live: true, status: "idle", state: "blocked", context: null},
+     live: true, status: "idle", state: "blocked", context: null, brief: null},
     {role: "reviewer", session: "3ed2d1f2", launched: "2026-10-22T02:00:00Z", worktree: "/w/1",
-     live: false, status: null, state: null, context: null}]')"
+     live: false, status: null, state: null, context: null, brief: null}]')"
   assert_equal "$(stub_calls claude)" '["agents","--json"]'
 }
 
@@ -330,6 +335,17 @@ reply_line() {
   assert_equal "$(phase_of T14)" in-review
 }
 
+@test "a pass that sent findings back, logged through team-log, leaves the task in review until a pass sends none" {
+  open_task
+  github_down
+  event T14 pr '{url: "https://github.com/owner/proj/pull/5", head: "a1b2c3d"}'
+  local counts='findings=blocking:0,correctness:1,security:0,real-data:0,note-change:0,note-before:0'
+  run_bin -0 team-log T14 review verdict=pass head=a1b2c3d "$counts" sent_back=1 guarded=none
+  assert_equal "$(phase_of T14)" in-review
+  run_bin -0 team-log T14 review verdict=pass head=a1b2c3d "$counts" sent_back=none guarded=none
+  assert_equal "$(phase_of T14)" awaiting-merge
+}
+
 @test "a review of an older head does not count once the PR's latest head moved on" {
   open_task
   github_down
@@ -423,6 +439,7 @@ reply_line() {
     {"name": "agent-review", "bucket": "pass", "state": "SUCCESS"}]'
   required='[{"name": "shellcheck", "bucket": "pass", "state": "SUCCESS"},
     {"name": "build", "bucket": "pending", "state": "IN_PROGRESS"}]'
+  compare=0
   stub_github
   run_bin -0 team-state T14 --json
   assert_equal "$(jq -c .pr <<<"$output")" "$(jq -cn --arg head "$head" '{
@@ -430,11 +447,12 @@ reply_line() {
     state: "open", base: "main", head: $head, ledger_head: $head[:8], head_moved: false,
     checks: {passed: ["agent-review", "docs", "shellcheck"], failing: ["deploy", "lint"], pending: ["build"]},
     required: ["build", "shellcheck", "test"], required_missing: ["test"],
-    agent_review: "success", merge_approved: true}')"
-  assert_equal "$(stub_calls gh)" "$(jq -cn '
+    agent_review: "success", merge_approved: true, behind_by: 0}')"
+  assert_equal "$(stub_calls gh)" "$(jq -cn --arg head "$head" '
     ["pr", "view", "5", "--repo", "owner/proj", "--json", "number,state,baseRefName,headRefOid"],
     ["pr", "checks", "5", "--repo", "owner/proj", "--json", "name,bucket,state"],
-    ["pr", "checks", "5", "--repo", "owner/proj", "--required", "--json", "name,bucket,state"]')"
+    ["pr", "checks", "5", "--repo", "owner/proj", "--required", "--json", "name,bucket,state"],
+    ["api", "repos/owner/proj/compare/main...\($head)", "--jq", ".behind_by"]')"
 }
 
 @test "the head moved when GitHub's head is not the ledger's, and approval is per PR, by its URL" {
@@ -499,7 +517,8 @@ EOF
   stub_github '{"number": 5, "state": "OPEN", "baseRefName": "main", "headRefOid": "'"$head"'"}' '[]' '[]'
   run_bin -0 team-state T14 --json
   assert_equal "$(jq -c '.pr | [.repo, .project]' <<<"$output")" '["owner/proj","proj"]'
-  assert_equal "$(stub_calls gh | jq -r '.[4]' | sort -u)" "owner/proj"
+  assert_equal "$(stub_calls gh | jq -r 'if .[0] == "api" then .[1] | split("/")[1:3] | join("/") else .[4] end' | sort -u)" \
+    "owner/proj"
 }
 
 @test "a PR in a repo the registry does not know has no project required checks" {
@@ -552,7 +571,7 @@ EOF
     '[{"name": "test", "bucket": "fail", "state": "FAILURE"}, {"name": "agent-review", "bucket": "pass", "state": "SUCCESS"}]' '[]'
   run_bin -0 team-state T14
   assert_equal "$output" \
-    "T14 proj feature awaiting-merge | no live worker | PR #5 merged a1b2c3d (head moved) checks 1/2 agent-review success"
+    "T14 proj feature awaiting-merge | no live worker | review 1 pass | PR #5 merged a1b2c3d (head moved) checks 1/2 agent-review success"
 }
 
 @test "a legacy task's text form has only its id and phase before the workers" {
@@ -710,4 +729,129 @@ TOML
   assert_equal "$stderr" ""
   run_bin -0 team-state T14
   assert_equal "$output" "T14 proj feature planning | no live worker | merge pre-approved, but gone does not opt in"
+}
+
+# The task T14 of project proj opened in a worktree that is a real directory, with <n> tickets in
+# its task directory, each blocked by none: progress_task <n>
+progress_task() {
+  local wt=$BATS_TEST_TMPDIR/wt n
+  mkdir -p "$wt/.scratch/task/tickets"
+  for ((n = 1; n <= $1; n++)); do
+    printf '# %02d: ticket %d\n\nBlocked by: None\n' "$n" "$n" >"$wt/.scratch/task/tickets/$(printf %02d "$n")-ticket-$n.md"
+  done
+  event T14 opened "$(jq -cn --arg wt "$wt" '{project: "proj", path: "feature", type: "feat", title: "The tooling",
+    branch: "feat/T14-tooling", base: "main", base_sha: "0123456", worktree: $wt}')"
+  event T14 plan-approved '{by: "Daniel"}'
+}
+
+@test "progress says how many tickets are done of the task's ticket files, and the brief each live worker is on" {
+  progress_task 7
+  local n
+  for n in 01 02 03; do
+    event T14 launch "{role: \"builder\", session: \"1111111$n\", worktree: \"/w/1\", toolkits: [], brief: \"brief-build-$n\"}"
+    event T14 ticket-done "{ticket: \"$n\", commits: [\"a0017cce\"]}"
+  done
+  event T14 launch '{role: "builder", session: "59709d99", worktree: "/w/1", toolkits: [], brief: "brief-build-04"}'
+  event T14 launch '{role: "ops", session: "3ed2d1f2", worktree: "/w/1", toolkits: []}'
+  stub_reply claude '[
+    {"id": "59709d99", "sessionId": "59709d99-7687", "name": "T14-builder", "status": "idle", "state": "working"},
+    {"id": "3ed2d1f2", "sessionId": "3ed2d1f2-1111", "name": "T14-ops", "status": "busy", "state": "working"}]'
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .progress <<<"$output")" "$(jq -cn '{
+    tickets: {done: ["01", "02", "03"], total: 7},
+    on: [{role: "builder", session: "59709d99", brief: "brief-build-04"}, {role: "ops", session: "3ed2d1f2", brief: null}],
+    reviews: {count: 0, verdict: null, head: null, sent_back: null}}')"
+  assert_equal "$(jq -c '[.workers[] | .brief]' <<<"$output")" \
+    '["brief-build-01","brief-build-02","brief-build-03","brief-build-04",null]'
+  assert_equal "$(jq -r .schema <<<"$output")" team-state/1
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature building | T14-builder idle on build-04, T14-ops busy | tickets 3/7"
+}
+
+@test "a ticket done twice counts once, and a ticket set team-tickets refuses has no total" {
+  progress_task 2
+  event T14 ticket-done '{ticket: "01", commits: ["a0017cce"]}'
+  event T14 ticket-done '{ticket: "01", commits: ["9e0e3990"]}'
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .progress.tickets <<<"$output")" '{"done":["01"],"total":2}'
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature building | no live worker | tickets 1/2"
+
+  # A second Blocked by: line: team-tickets refuses the set, so the total is unknown.
+  echo "Blocked by: 01" >>"$BATS_TEST_TMPDIR/wt/.scratch/task/tickets/02-ticket-2.md"
+  run_bin -0 --separate-stderr team-state T14 --json
+  assert_equal "$(jq -c .progress.tickets <<<"$output")" '{"done":["01"],"total":null}'
+  assert_equal "$stderr" ""
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature building | no live worker | tickets 1 done"
+}
+
+@test "progress carries the review count and the latest review's verdict, head and sent-back findings" {
+  progress_task 0
+  event T14 review '{verdict: "findings", head: "1111111", sent_back: [1, 2]}'
+  event T14 review '{verdict: "pass", head: "2222222"}'
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .progress.reviews <<<"$output")" '{"count":2,"verdict":"pass","head":"2222222","sent_back":null}'
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature building | no live worker | review 2 pass"
+
+  event T14 review '{verdict: "findings", head: "3333333", sent_back: [], findings: {blocking: 0}}'
+  event T14 review '{verdict: "findings", head: "4444444", sent_back: [5, 6]}'
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .progress.reviews <<<"$output")" '{"count":4,"verdict":"findings","head":"4444444","sent_back":[5,6]}'
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature building | no live worker | review 4 findings, sent back 5, 6"
+}
+
+@test "an open PR's behind_by is GitHub's compare of its base and head, null and unsaid when unreadable" {
+  open_task
+  event T14 pr "{url: \"https://github.com/owner/proj/pull/5\", head: \"$head\"}"
+  view='{"number": 5, "state": "OPEN", "baseRefName": "dev", "headRefOid": "'"$head"'"}'
+  checks='[{"name": "test", "bucket": "pass", "state": "SUCCESS"}]'
+  required='[]' compare=16
+  stub_github
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c '.pr.behind_by' <<<"$output")" 16
+  assert_equal "$(stub_calls gh | tail -n 1)" "$(jq -cn --arg head "$head" '["api", "repos/owner/proj/compare/dev...\($head)", "--jq", ".behind_by"]')"
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature in-review | no live worker | PR #5 a1b2c3d 16 behind dev checks 1/1 agent-review missing"
+
+  # Up to date: 0, and nothing said.
+  compare=0
+  stub_github
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature in-review | no live worker | PR #5 a1b2c3d checks 1/1 agent-review missing"
+
+  # An unreadable compare: null, nothing said, and the rest of the PR part as before.
+  compare=''
+  stub_github
+  run_bin -0 --separate-stderr team-state T14 --json
+  assert_equal "$(jq -c '.pr | [.behind_by, .error, .checks.passed]' <<<"$output")" '[null,null,["test"]]'
+  assert_equal "$stderr" ""
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature in-review | no live worker | PR #5 a1b2c3d checks 1/1 agent-review missing"
+
+  # A PR no longer open is not compared.
+  stub_github '{"number": 5, "state": "MERGED", "baseRefName": "dev", "headRefOid": "'"$head"'"}' "$checks" "$required" 16
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c '.pr.behind_by' <<<"$output")" null
+  assert_equal "$(stub_calls gh | tail -n 3 | jq -r '.[0]' | sort -u)" pr
+}
+
+@test "a task with no tickets, no review and no PR prints as before" {
+  progress_task 0
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature building | no live worker"
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .progress <<<"$output")" \
+    '{"tickets":{"done":[],"total":0},"on":[],"reviews":{"count":0,"verdict":null,"head":null,"sent_back":null}}'
+}
+
+@test "--help documents progress, each worker's brief and the PR's behind_by" {
+  run_bin -0 team-state --help
+  assert_contains "$output" "progress"
+  assert_contains "$output" "behind_by"
+  assert_contains "$output" "on build-04"
+  assert_contains "$output" "tickets 3/7"
+  assert_contains "$output" "16 behind dev"
 }

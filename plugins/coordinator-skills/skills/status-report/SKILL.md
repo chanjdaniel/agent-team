@@ -12,7 +12,7 @@ description: Answer Daniel's request for status from team-snapshot. Use when Dan
 ## What the answer says
 
 - Lead with what waits on Daniel by linking the Waiting on you message, which lists each pending ask, PR ready to merge and interview: run `team-inbox`, which brings it up to date and prints its link, and never repeat its list; when it fails, list them yourself from the snapshot.
-- Then each open task in one line: its title, what it has achieved and what comes next, in Daniel's terms.
+- Then each open task in one line: its title, what it has achieved and what comes next, in Daniel's terms, from the snapshot's progress (its tickets done, its latest review, its PR's checks and how far it is behind its base), never from `tasks/current.md`.
 - Outcomes, not machinery: what was built, found, merged or decided, never sessions, sweeps, ledger events or phases by their internal names.
 - Every PR as its full `https://github.com/...` URL, never `#118` alone.
 - Anything wrong you found while reading the snapshot (a stray session, a task with no worker), with what you are doing about it.

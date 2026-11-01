@@ -7,6 +7,7 @@ description: Set the team's resource level on Daniel's word, and stow or relaunc
 
 The team runs at one of three levels, each a share of this machine: full (90%), minor (30%) and none (0%); `sops/resources.md` says how each is held.
 In manual mode the level holds until Daniel changes it; in automatic mode the heartbeat picks it from what Daniel's own programs use.
+`team-level` records each change in the team home's `level.jsonl`, so the level holds across restarts and handoffs.
 You stay up at every level, outside the share.
 
 ## Daniel's word
@@ -30,7 +31,7 @@ You stay up at every level, outside the share.
 
 1. **STOW.** Send `T<n> STOW` to each live worker of the named tasks (`team-state T<n>` lists them), but never to an ops session (`T<n>-ops`), which `team-stow` ends.
 2. **Stop runs.** For Daniel's manual change only, run `team-stow <tasks> --stop-runs` right after: it stops each task's heavy run and aborts its active gate run, so a worker blocked in one returns and reads the STOW.
-3. **Wait.** Wait up to 10 minutes for each `T<n> PAUSED stowed`, logging each as `team-log T<n> paused reason=stowed`.
+3. **Wait.** Wait up to 10 minutes for each `T<n> PAUSED stowed`, logging each with `team-log T<n> --from-message '<the message>'`, never `team-next`, which would launch a fix round's builder.
 4. **Run.** `team-stow <tasks>`: it stops the tasks' sessions and stacks, checkpoints, pushes their branches and logs one `stowed` per task, with cause level.
    A worker that had not answered is stopped as it stands; the checkpoint keeps its uncommitted work.
    Exit 1 names each task it refused (a diverged branch, a session that would not stop): fix what it names, then run it again, which stows only what is left.
@@ -41,5 +42,5 @@ You stay up at every level, outside the share.
 
 1. **Brief.** For each role the `level-resume` finding names: its last brief, the newest `tasks/T<n>/brief*.md` whose first line is `# T<n> brief (<role>)`, other than a `brief-resume-*.md`; then `team-brief T<n> resume --name resume-<role> --force --set role=<role> --set brief=<that brief> --set from="the stow for the level at <the stowed time>" --set snapshot="none: your worktree stayed in place, as you left it"`, or for a task a handoff stowed the `from` and `snapshot` the `resume` skill gives it.
 2. **Launch.** `team-worker T<n> <role> <worktree> -- "Read your brief at <path>"`, with each `--toolkit` of the role's last launch.
-   Exit 75 means the level's budget has no room for it after all (`team-capacity admit`): log `team-log T<n> paused reason=<its line>` and leave it for the next `level-resume` (or, once a launch followed the stow, `level-launch`).
+   Exit 75 means the level's budget has no room for it after all (`team-capacity admit`): log it as `paused reason=<its line>` with `team-log` and leave it for the next `level-resume` (or, once a launch followed the stow, `level-launch`).
 3. **Log.** `team-log T<n> resumed` once the task's roles run again, and say so in its thread.

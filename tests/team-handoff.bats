@@ -164,6 +164,9 @@ rm 81f08540"
 
 @test "a handoff pushes the task branch, stows the task, stops only its worker, commits the records and releases the lease" {
   make_machine laptop
+  echo "steps" >"$TEAM_HOME/manual-steps.md"
+  mkdir -p "$TEAM_HOME/projects/home/backlog"
+  echo "a story" >"$TEAM_HOME/projects/home/backlog/s.md"
 
   run_bin -0 --separate-stderr team-handoff
   assert_equal "$stderr" ""
@@ -193,13 +196,15 @@ rm 81f08540"
   assert_equal "$(stops_and_removes)" "stop 81f08540
 rm 81f08540"
 
-  # The team home's origin: the handoff's commit holds the stowed ledger, the scratch, the plan
-  # and the captured config, and the checkout is clean.
+  # The team home's origin: the handoff's commit holds the stowed ledger, the scratch, the plan,
+  # the captured config, the steps and the backlog, and the checkout is clean.
   assert_equal "$(team_subjects | head -n 1)" "chore: handoff from home-pc"
   assert_contains "$(git -C "$team_origin" show dev:ledger.jsonl)" '"event":"stowed"'
   assert_equal "$(git -C "$team_origin" show dev:tasks/T1/scratch/spec.md)" "spec"
   assert_equal "$(git -C "$team_origin" show dev:machine/claude/CLAUDE.md)" "Shared instructions."
   git -C "$team_origin" cat-file -e dev:tasks/T1/plan.md
+  assert_equal "$(git -C "$team_origin" show dev:manual-steps.md)" "steps"
+  assert_equal "$(git -C "$team_origin" show dev:projects/home/backlog/s.md)" "a story"
   assert_equal "$(git -C "$TEAM_HOME" status --porcelain)" ""
 
   # The heartbeat is disabled and the lease released.

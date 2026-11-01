@@ -27,7 +27,7 @@ The level recorded in `level.jsonl` holds across the restart; `team-resume` then
    Exit 1 means this machine does not hold the lease, 75 that GitHub is unreachable: tell Daniel the reason it printed and stop.
 2. **Stow yourself.** Follow the `stow` skill's walk through the conversation, so nothing you know lives only here.
 3. **Post.** In `#coordinator`: the handoff has started, and what is in flight (each open task, its phase and live workers, from `team-snapshot`).
-4. **STOW the workers.** Send `T<n> STOW` to each live worker and log each `T<n> PAUSED stowed` as `paused reason=stowed`.
+4. **STOW the workers.** Send `T<n> STOW` to each live worker and log each `T<n> PAUSED stowed` with `team-log T<n> --from-message '<the message>'`, never `team-next`, which would launch a fix round's builder here.
    Wait up to 10 minutes for every answer; a worker that has not answered by then is stopped by the handoff as it stands, before its checkpoint, which keeps its uncommitted work as `wip/<project>/T<n>` on the team home's origin for `team-resume` to apply on the other machine (untracked files that may hold a secret stay here, and the handoff names them).
    Name each one that did not answer in the final post.
    Never send `STOW` to an ops session (`T<n>-ops`): it is never carried over, and `team-handoff` ends it with `team-ops-end`, deleting its transcript and answer file.

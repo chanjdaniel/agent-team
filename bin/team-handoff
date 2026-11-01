@@ -25,9 +25,9 @@
 #                  is said, and the handoff goes on.
 #   4. commit      team-tokens export --through-now first, so today's usage is in too (its lines
 #                  prefixed "usage: "; a failed export is said, and the handoff goes on); then
-#                  machine/, memory/, tasks/, usage/, ledger.jsonl and level.jsonl committed on
-#                  the team home's branch as "chore: handoff from <machine>" and pushed (as
-#                  team-checkpoint commits), the stowed events with them.
+#                  every records path committed on the team home's branch as "chore: handoff
+#                  from <machine>" and pushed, the same set team-checkpoint commits, the stowed
+#                  events with them.
 #   5. heartbeat   team-timers disable.
 #   6. release     team-lease release.
 #   7. The message: "Released at 14:05 from home-pc. The `team-resume --wait` started on the other
@@ -56,8 +56,6 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 # Seconds: the most one call to an origin may take, and the coordinator's retirement delay.
 NET_TIMEOUT=60
 RETIRE_SECONDS=3
-# What the handoff's team-home commit holds.
-RECORDS=(ledger.jsonl level.jsonl tasks memory machine usage)
 
 usage="usage: team-handoff [--here] [--json] | --check | --retire"
 mode=run here=false
@@ -264,7 +262,7 @@ if [[ -z $finished ]]; then
   out=$(team team-tokens export --through-now 2>"$err") || rc=$?
   [[ -z $out ]] || prefixed usage <<<"$out"
   ((rc == 0)) || echo "team-handoff: usage: $(first_error); the handoff goes on" >&2
-  commit_records "chore: handoff from $machine" "${RECORDS[@]}" || die "commit: the records are not on origin; nothing was released"
+  commit_records "chore: handoff from $machine" || die "commit: the records are not on origin; nothing was released"
   step_done 4
 
   # 5. The heartbeat.

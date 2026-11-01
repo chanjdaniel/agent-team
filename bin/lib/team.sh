@@ -14,9 +14,9 @@
 # archive_left_out, rsync_rule, archive_task_dir, machine_name, os_release, team_os, tool_dirs,
 # team_tool_path, fence_reason, offline_hold, lease_refusal, worker_refusal, lease_gate, worktree_changes, same_path, bounded, docker_bounded, docker_silence, trust_probe,
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin,
-# only_records, records_list, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
+# only_records, records_list, records_pathspecs, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
 # own_project, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_slots, machine_level, discord_token, discord_api,
-# daniel_message, refresh_inbox, github, pr_part, task_state_json, loose_objects, pack_size and story_file, and sets IMAGE_TYPE,
+# daniel_message, refresh_inbox, github, pr_part, task_state_json, loose_objects, pack_size, story_file and findings_file, and sets IMAGE_TYPE,
 # PACK_LOOSE, COORDINATOR_CHANNEL and INTERVIEW_CHANNEL.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
 # shellcheck shell=bash
@@ -735,6 +735,13 @@ only_records() {
   done
 }
 
+# The records (bin/lib/records) as git pathspecs, one per line: a line ending in ** as a glob
+# pathspec of everything under its directory, any other as itself (whose * git matches across
+# directories, as bin/lib/records says): records_pathspecs
+records_pathspecs() {
+  grep -v -e '^#' -e '^$' "$TEAM_LIB/records" | sed -E 's#^(.*/\*\*)$#:(glob)\1#'
+}
+
 # Run git against an origin: no credential prompt, at most NET_TIMEOUT seconds (the caller's
 # constant, 60 when unset), stdin closed, stderr into the file NET_ERR (the caller's), and the
 # caller's lock, the file descriptor in lock_fd when it is set, closed for it, so a credential
@@ -761,19 +768,23 @@ origin_reason() {
   fi
 }
 
-# Commit the records among <pathspec>... in the team home as <message>, on the branch checked out,
-# then push the branch when it is ahead of origin's (or origin's is unknown). The commit is made
-# under the ledger's lock and holds those paths alone, so whatever else is staged stays staged; the
-# team home's hooks run. A push origin rejects fetches its branch and replays the commits it lacks
-# onto it, when they apply cleanly and no local change is in the way (a branch switch's two-tree
-# merge, so what is staged stays staged), then pushes again once. Prints one line on stdout, like
+# Commit every records path (records_pathspecs) in the team home as <message>, on the branch checked
+# out, then push the branch when it is ahead of origin's (or origin's is unknown). The commit is made
+# under the ledger's lock and holds the changed records alone, what git ignores left out, so
+# whatever else is staged stays staged; the team home's hooks run, and a path they refuse fails the
+# commit. A push origin rejects fetches its branch and replays the commits it lacks onto it, when
+# they apply cleanly and no local change is in the way (a branch switch's two-tree merge, so what
+# is staged stays staged), then pushes again once. Prints one line on stdout, like
 # "team home: committed <sha> <message> and pushed dev" or "team home: nothing to commit"; a
-# failure adds its reason on stderr and returns 1. Network calls go through origin_git, so
-# NET_ERR must name a file: commit_records <message> <pathspec>...
+# failure adds its reason on stderr and returns 1. Given <path>s (records, relative to the team
+# home), it commits those alone. When the caller sets records_edit to a command, it runs first,
+# under the same lock, so the change it makes and its commit are one step; when it fails, nothing
+# is committed and its status is returned. Network calls go through origin_git, so NET_ERR must
+# name a file: commit_records <message> [<path>...]
 commit_records() {
   local message=$1 branch committed upstream out rc=0
-  local -a record_paths
-  shift
+  local -a record_paths records
+  if (($# > 1)); then records=("${@:2}"); else mapfile -t records < <(records_pathspecs); fi
   if ! branch=$(git -C "$TEAM_HOME" symbolic-ref -q --short HEAD); then
     echo "${0##*/}: team home: not on a branch, so the records are not committed" >&2
     return 1
@@ -781,9 +792,10 @@ commit_records() {
   committed="nothing to commit"
   {
     flock -x 9
-    mapfile -d '' -t record_paths < <(git -C "$TEAM_HOME" ls-files -z -m -d -o --exclude-standard -- "$@")
+    if [[ -n ${records_edit:-} ]]; then $records_edit || return; fi
+    mapfile -d '' -t record_paths < <(git -C "$TEAM_HOME" ls-files -z -m -d -o --exclude-standard -- "${records[@]}")
     ((${#record_paths[@]} == 0)) || GIT_LITERAL_PATHSPECS=1 git -C "$TEAM_HOME" add -A -- "${record_paths[@]}"
-    mapfile -d '' -t record_paths < <(git -C "$TEAM_HOME" diff --cached -z --name-only --no-renames HEAD -- "$@")
+    mapfile -d '' -t record_paths < <(git -C "$TEAM_HOME" diff --cached -z --name-only --no-renames HEAD -- "${records[@]}")
     if ((${#record_paths[@]})); then
       if GIT_LITERAL_PATHSPECS=1 git -C "$TEAM_HOME" commit -q -m "$message" --only -- "${record_paths[@]}" >"$NET_ERR" 2>&1; then
         committed="committed $(git -C "$TEAM_HOME" rev-parse --short HEAD) $message"
@@ -1127,9 +1139,10 @@ github() {
 }
 
 # The pr part of a task's state: its latest pr event joined with GitHub, using <dir> for gh's
-# answers: pr_part '<events>' '<pr event>' <dir>
+# answers, with behind_by, the commits of its base its head lacks, from GitHub's compare of the
+# two; null for a PR not open or when the compare cannot be read: pr_part '<events>' '<pr event>' <dir>
 pr_part() {
-  local events=$1 pr=$2 dir=$3 url project repo='' number required_checks='[]' facts
+  local events=$1 pr=$2 dir=$3 url project repo='' number required_checks='[]' facts behind_by=null base head
   url=$(jq -r .url <<<"$pr") || return 1
   project=$(jq -r '.project // empty' <<<"$pr") || return 1
   if [[ $url =~ ^https://github\.com/([^/]+/[^/]+)/pull/([0-9]+)/?$ ]]; then
@@ -1155,6 +1168,13 @@ pr_part() {
   if github "$dir" view pr view "$number" --repo "$repo" --json number,state,baseRefName,headRefOid &&
     github "$dir" checks pr checks "$number" --repo "$repo" --json name,bucket,state &&
     github "$dir" required pr checks "$number" --repo "$repo" --required --json name,bucket,state; then
+    if jq -e '.state == "OPEN"' "$dir/view" >/dev/null; then
+      base=$(jq -r .baseRefName "$dir/view") head=$(jq -r .headRefOid "$dir/view")
+      if github "$dir" compare api "repos/$repo/compare/$base...$head" --jq .behind_by &&
+        jq -e 'type == "number"' "$dir/compare" >/dev/null; then
+        behind_by=$(<"$dir/compare")
+      fi
+    fi
     ledger_jq '
       $view[0] as $view | $checks[0] as $checks
       | ($checks | map(.name)) as $present
@@ -1167,11 +1187,13 @@ pr_part() {
             pending: [$checks[] | select(.bucket == "pending") | .name] | unique},
           required: $required,
           required_missing: [$required[] | select(IN($present[]) | not)],
-          agent_review: ([$checks[] | select(.name == "agent-review") | .state | ascii_downcase] | first // "missing")}
+          agent_review: ([$checks[] | select(.name == "agent-review") | .state | ascii_downcase] | first // "missing"),
+          behind_by: $behind_by}
       | {url, number, repo, project, state, base, head, ledger_head, head_moved, checks, required,
-         required_missing, agent_review, merge_approved}' \
+         required_missing, agent_review, merge_approved, behind_by}' \
       -c --slurpfile view "$dir/view" --slurpfile checks "$dir/checks" \
-      --slurpfile required "$dir/required" --argjson project_required "$required_checks" <<<"$facts"
+      --slurpfile required "$dir/required" --argjson project_required "$required_checks" \
+      --argjson behind_by "$behind_by" <<<"$facts"
   else
     jq -c --rawfile error "$dir/error" '. + {error: ($error | rtrimstr("\n"))}' <<<"$facts"
   fi
@@ -1200,6 +1222,7 @@ session_context() {
 # list fails with the reason on stderr: task_state_json '<events>'
 task_state_json() (
   local events=$1 state pr dir session_id context contexts='{}' sessions plan_project plan_projects opted_in own
+  local task tickets total
   live_sessions
   while IFS= read -r session_id; do
     context=$(session_context "$session_id")
@@ -1222,6 +1245,12 @@ task_state_json() (
     fi
     state=$(jq -c --argjson opted_in "$opted_in" --argjson own "$own" \
       '.merge_preapproval += {opted_in: $opted_in, own: $own}' <<<"$state") || exit 1
+  fi
+  # The ticket total: the ticket files team-tickets reads, null when it refuses them.
+  task=$(jq -r '.[0].task' <<<"$events") || exit 1
+  if tickets=$(TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-tickets" "$task" --json 2>/dev/null </dev/null) &&
+    total=$(jq -e 'length' <<<"$tickets" 2>/dev/null); then
+    state=$(jq -c --argjson total "$total" '.progress.tickets.total = $total' <<<"$state") || exit 1
   fi
   pr=$(jq -c 'map(select(.event == "pr")) | last' <<<"$events") || exit 1
   if [[ $pr != null ]]; then
@@ -1283,4 +1312,14 @@ story_file() {
       return 1
       ;;
   esac
+}
+
+# The name of the newest reviewer's findings file, review.md or a rereview*.md, in the task
+# directory <dir>: by mtime, a tie broken by name, or nothing when it holds none or is no
+# directory. team-brief derives a round's findings_file from it and team-next a pass's fix
+# message, so the two always name the same file: findings_file <dir>
+findings_file() {
+  [[ -d $1 ]] || return 0
+  find "$1" -maxdepth 1 -type f \( -name review.md -o -name 'rereview*.md' \) -printf '%T@ %f\n' |
+    sort -k1,1nr -k2,2 | sed -n '1s/^[^ ]* //p'
 }

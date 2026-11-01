@@ -156,16 +156,20 @@ usage/home-pc/time/2026-10-26.jsonl"
 }
 
 # A record file at the team home's root that must hold across machines is in every list that
-# keeps it: the records, both commits that carry it there (team-checkpoint's and team-handoff's
-# RECORDS) and CLAUDE.md's table of the team home.
+# keeps it: the records, which both commits that carry it there (team-checkpoint's and
+# team-handoff's) take whole, naming no paths of their own, and CLAUDE.md's table of the team home.
 @test "the ledger and the level record are records, committed by team-checkpoint and team-handoff, and in CLAUDE.md's table" {
-  local file list
+  local file script calls
+  for script in team-checkpoint team-handoff; do
+    calls=$(grep -E '^[[:space:]]*commit_records ' "$REPO_ROOT/bin/$script")
+    [[ -n $calls ]] || { echo "$script commits no records" >&2; return 1; }
+    if grep -vE '^[[:space:]]*commit_records "[^"]*" \|\|' <<<"$calls"; then
+      echo "$script names its own records paths" >&2
+      return 1
+    fi
+  done
   for file in ledger.jsonl level.jsonl; do
     grep -qxF "$file" "$REPO_ROOT/bin/lib/records" || { echo "$file is not in bin/lib/records" >&2; return 1; }
-    for list in team-checkpoint team-handoff; do
-      list=$(sed -n 's/^RECORDS=(\(.*\))$/\1/p' "$REPO_ROOT/bin/$list")
-      [[ " $list " == *" $file "* ]] || { echo "$file is not in a RECORDS list: ($list)" >&2; return 1; }
-    done
     grep -qF "| \`$file\` |" "$REPO_ROOT/CLAUDE.md" || { echo "$file is not in CLAUDE.md's team-home table" >&2; return 1; }
   done
 }

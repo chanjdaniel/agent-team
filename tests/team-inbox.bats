@@ -109,6 +109,19 @@ Resources: manual, full (90%): no reading of the machine's load yet, so no budge
   assert_equal "$(inbox_items_shown)" "Nothing waits on you."
 }
 
+@test "a PR whose latest review, a pass logged through team-log, sent findings back is not ready to merge until a pass sends none" {
+  opened T4 "Four" >>"$TEAM_HOME/ledger.jsonl"
+  log_events '{"task":"T4","event":"pr","url":"https://github.com/owner/proj/pull/4","head":"abc1234def"}'
+  local counts='findings=blocking:0,correctness:1,security:0,real-data:0,note-change:0,note-before:0'
+  run_bin -0 team-log T4 review verdict=pass head=abc1234def "$counts" sent_back=1 guarded=none
+  run_bin -0 team-inbox
+  assert_equal "$(inbox_items_shown)" "Nothing waits on you."
+  run_bin -0 team-log T4 review verdict=pass head=abc1234def "$counts" sent_back=none guarded=none
+  run_bin -0 team-inbox
+  assert_equal "$(inbox_items_shown)" "**PRs ready to merge**
+- T4 Four: https://github.com/owner/proj/pull/4"
+}
+
 @test "a merged PR, a later commit under review, and a closed task leave the list" {
   opened T4 "Four" >>"$TEAM_HOME/ledger.jsonl"
   log_events '{"task":"T4","event":"pr","url":"https://github.com/owner/proj/pull/4","head":"abc1234def"}' \

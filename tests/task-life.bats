@@ -5,6 +5,8 @@
 # GitHub (gh, merging for real into the bare origin) and Discord (curl).
 # After each step, team-state says the phase and team-sweep finds exactly what the coordinator
 # would have to act on.
+# The last life takes each worker's message through team-next alone, from the first ticket's
+# DONE to the merge ask, as the manual's steps 4 to 6 do.
 
 load helpers/common
 load helpers/treehouse
@@ -142,6 +144,9 @@ case "$1 $2" in
   "api repos/"*)
     if [[ $2 =~ ^repos/([^/]+/[^/]+)/branches/(.+)$ ]]; then
       jq -n --arg b "${BASH_REMATCH[2]}" '{name: $b, protected: false}'
+    elif [[ $2 =~ ^repos/[^/]+/([^/]+)/compare/([^.]+)\.\.\.(.+)$ && $3 == --jq && $4 == .behind_by ]]; then
+      # How many commits the base has that the head lacks.
+      git --git-dir "$ORIGINS/${BASH_REMATCH[1]}.git" rev-list --count "${BASH_REMATCH[3]}..${BASH_REMATCH[2]}"
     elif [[ $2 =~ ^repos/([^/]+/([^/]+))/pulls/([0-9]+)/commits$ ]]; then
       file=$(pr_file "${BASH_REMATCH[1]}" "${BASH_REMATCH[3]}")
       git=(git --git-dir "$ORIGINS/${BASH_REMATCH[2]}.git")
@@ -203,6 +208,13 @@ open_pr() {
     >"$file.json"
   echo '[{"name": "test", "bucket": "pass", "state": "SUCCESS"}]' >"$GH_DIR/checks/${repo//\//_}-$number.json"
   jq -r .url "$file.json"
+}
+
+# The builder pushed <head> to PR <n> of <repo>: GitHub's head moves there.
+pr_moves() {
+  local file=$GH_DIR/${1//\//_}-$2.json
+  jq --arg head "$3" '.headRefOid = $head' "$file" >"$file.next"
+  mv "$file.next" "$file"
 }
 
 # The reviewer sets agent-review to success on PR <n> of <repo>'s head.
@@ -301,8 +313,9 @@ assert_closed_and_clean() {
   ok team-log T1 pr url="$url" head="$head"
   step in-review no-worker:"$builder"
   ok team-state T1
-  # The builder's launch stopped the finished planner.
-  assert_equal "$output" "T1 home feature in-review | T1-builder idle | PR #7 ${head:0:7} checks 1/1 agent-review missing"
+  # The builder's launch stopped the finished planner. The line names the builder's brief, and its
+  # one ticket-done with no total, since the worktree holds no ticket files.
+  assert_equal "$output" "T1 home feature in-review | T1-builder idle on build-01 | tickets 1 done | PR #7 ${head:0:7} checks 1/1 agent-review missing"
 
   # 5. Review: a fresh reviewer, its pass and the agent-review status on the head.
   echo "- The tests run the real scripts." >"$BATS_TEST_TMPDIR/checks"
@@ -531,4 +544,126 @@ level_reading() {
   assert_closed_and_clean
   assert_equal "$(jq -r .event "$TEAM_HOME/ledger.jsonl" | paste -sd ' ')" \
     "thread opened worktree-added launch done plan-approved launch ticket-done launch ticket-done pr pr launch launch review review merge-approved merge-approved merged merged worktree-returned worktree-returned closed"
+}
+
+# The ledger's T1 events from the n-th line on, each as its kind and the fields a hand-off reads.
+events_from() {
+  tail -n +"$1" "$TEAM_HOME/ledger.jsonl" |
+    jq -c '[.event, (.role // .ticket // .verdict // .by // empty), (.brief // .session // empty)] | map(tostring) | join(" ")' | jq -r .
+}
+
+@test "a task driven through team-next alone, from its first ticket's DONE to the merge ask, leaves every turn in the ledger" {
+  ok team-open home feature feat tooling "The tooling"
+  local wt plan
+  wt=$(jq -r .worktree <<<"$output") plan=$(jq -r .plan <<<"$output")
+  printf '%s\n' "# T1 plan" "" "## Goal" "" "The tooling runs on its own." "" "## Why" "" "Turns." >"$plan"
+
+  # The planner's DONE goes through team-next too, which logs it and has no hand-off.
+  echo "- The idea." >"$BATS_TEST_TMPDIR/read"
+  ok team-brief T1 planner-feature --set-file read="$BATS_TEST_TMPDIR/read"
+  ok team-worker T1 planner "$wt" -- "Read your brief at $output"
+  local planner=$output
+  mkdir -p "$wt/.scratch/task/tickets"
+  echo "# Spec" >"$wt/.scratch/task/spec.md"
+  printf '%s\n' "# 01: one" "" "Blocked by: None" >"$wt/.scratch/task/tickets/01-one.md"
+  printf '%s\n' "# 02: two" "" "Blocked by: 01" >"$wt/.scratch/task/tickets/02-two.md"
+  session_is "$planner" idle working
+  ok team-next T1 -- "T1 DONE .scratch/task/spec.md"
+  assert_equal "$output" "logged done role=planner session=$planner report=.scratch/task/spec.md
+no hand-off for DONE"
+  ok team-log T1 plan-approved by=Daniel
+  step building no-worker:"$planner"
+
+  # The first ticket's builder, launched by hand as the manual's step 4 says.
+  ok team-brief T1 builder-ticket --set ticket=01 --name build-01
+  ok team-worker T1 builder "$wt" -- "Read your brief at $output"
+  local first=$output one
+  one=$(commit_and_push "$wt" one.txt)
+  session_is "$first" idle working
+
+  # Its DONE launches the second ticket's builder.
+  ok team-next T1 -- "T1 DONE 01 ${one:0:8} the first thing"
+  assert_equal "$(tail -n 1 <<<"$output")" "launched T1-builder 9c8b7a6d"
+  assert_contains "$(cat "$TEAM_HOME/tasks/T1/brief-build-02.md")" 'Your ticket: number 02 in `.scratch/task/tickets/`.'
+  step building
+  ok team-state T1
+  assert_contains "$output" "T1-builder busy on build-02 | tickets 1/2"
+  local second=9c8b7a6d two
+  two=$(commit_and_push "$wt" two.txt)
+  session_is "$second" idle working
+
+  # Every ticket done: the deliverer, its goal the plan's.
+  ok team-next T1 -- "T1 DONE 02 ${two:0:8} the second thing"
+  assert_equal "$(tail -n 1 <<<"$output")" "launched T1-builder 5e6f7a8b"
+  assert_contains "$(cat "$TEAM_HOME/tasks/T1/brief-deliver.md")" "The tooling runs on its own."
+  local deliverer=5e6f7a8b url
+  url=$(open_pr owner/home 7 "$wt")
+  session_is "$deliverer" idle working
+
+  # The PR launches the first reviewer on the coordinator's checks.
+  echo "- The tests run the real scripts." >"$BATS_TEST_TMPDIR/checks"
+  ok team-next T1 --checks "$BATS_TEST_TMPDIR/checks" -- "T1 PR $url"
+  assert_equal "$output" "logged pr url=$url head=$two
+brief $TEAM_HOME/tasks/T1/brief-review.md
+launched T1-reviewer 2b3c4d5e"
+  step in-review
+  local reviewer=2b3c4d5e zero="blocking:0,correctness:0,security:0,real-data:0,note-change:0,note-before:0"
+  session_is "$reviewer" idle working
+
+  # Its findings go back to the deliverer, which still holds the context.
+  ok team-next T1 --sent-back 1 -- "T1 DONE findings .scratch/task/review.md findings=${zero/blocking:0/blocking:1} before=none guarded=none"
+  assert_equal "$(tail -n 1 <<<"$output")" \
+    "send to T1-builder ($deliverer, context unknown): T1 fix findings 1 in .scratch/task/review.md on the same branch, then deliver again as your brief says"
+
+  # The holder fixes and reports the PR again: the rereview, from the reviewed head.
+  session_is "$deliverer" busy working
+  local fix
+  fix=$(commit_and_push "$wt" fix.txt)
+  pr_moves owner/home 7 "$fix"
+  session_is "$deliverer" idle working
+  ok team-next T1 -- "T1 PR $url"
+  assert_equal "$output" "logged pr url=$url head=$fix
+brief $TEAM_HOME/tasks/T1/brief-rereview-2.md
+launched T1-reviewer 6c7d8e9f"
+  assert_contains "$(cat "$TEAM_HOME/tasks/T1/brief-rereview-2.md")" "- \`${fix:0:8}\` feat: add fix.txt"
+  local rereviewer=6c7d8e9f
+  agent_review_passes owner/home 7
+  session_is "$rereviewer" idle working
+
+  # The pass: the merge ask's facts, and nothing posted or merged.
+  ok team-next T1 -- "T1 DONE pass $url findings=$zero before=none guarded=none"
+  assert_equal "$(tail -n 1 <<<"$output")" "merge ask: $url at $fix, agent-review success, checks green"
+  step awaiting-merge
+  [[ $(git --git-dir "$BATS_TEST_TMPDIR/origin/home.git" rev-parse dev) != "$fix" ]]
+
+  # The ledger holds every turn, each written by a script, and meets its contract.
+  run_bin -0 team-log --check
+  assert_equal "$(events_from 1)" "thread
+opened
+launch planner brief
+done planner $planner
+plan-approved Daniel
+launch builder brief-build-01
+ticket-done 01
+done builder $first
+launch builder brief-build-02
+ticket-done 02
+done builder $second
+launch builder brief-deliver
+pr
+launch reviewer brief-review
+review findings
+done reviewer $reviewer
+pr
+launch reviewer brief-rereview-2
+review pass
+done reviewer $rereviewer"
+  assert_equal "$(jq -c 'select(.event == "ticket-done") | [.ticket, .commits, .note]' "$TEAM_HOME/ledger.jsonl")" \
+    "$(jq -cn --arg one "${one:0:8}" --arg two "${two:0:8}" '["01", [$one], "the first thing"], ["02", [$two], "the second thing"]' | jq -c .)"
+  assert_equal "$(jq -c 'select(.event == "review") | [.verdict, .head, .sent_back, .findings.blocking]' "$TEAM_HOME/ledger.jsonl")" \
+    "$(jq -cn --arg two "$two" --arg fix "$fix" '["findings", $two, [1], 1], ["pass", $fix, null, 0]' | jq -c .)"
+  assert_equal "$(jq -c 'select(.event == "pr") | .head' "$TEAM_HOME/ledger.jsonl" | jq -rs 'join(" ")')" "$two $fix"
+  # Nothing reached Discord but the thread team-open made, and nothing merged on GitHub.
+  assert_equal "$(stub_calls curl | jq -r 'last' | sed -E 's/[0-9]{17,20}/<id>/')" "https://discord.com/api/v10/channels/<id>/threads"
+  assert_equal "$(stub_calls gh | jq -c 'select(.[1] == "merge")')" ""
 }

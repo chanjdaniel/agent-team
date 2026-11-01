@@ -146,13 +146,14 @@ refs/heads/lease
 refs/heads/wip/home/T1"
   assert_equal "$(git -C "$home_origin" for-each-ref --format='%(refname)')" "refs/heads/main"
 
-  # The team home: one commit of the records alone, pushed; the plan team-open wrote stays out.
+  # The team home: one commit of the records, the plan team-open wrote among them, pushed.
   assert_equal "$(team_tip)" "$(git -C "$TEAM_HOME" rev-parse HEAD)"
   assert_equal "$(git -C "$team_origin" log -1 --format=%s dev)" "chore: checkpoint"
   assert_equal "$(changed_in dev)" "ledger.jsonl
 level.jsonl
+tasks/T1/plan.md
 tasks/T1/scratch/spec.md"
-  assert_equal "$(git -C "$TEAM_HOME" status --porcelain)" "?? tasks/T1/plan.md"
+  assert_equal "$(git -C "$TEAM_HOME" status --porcelain)" ""
   [[ -f $state/last-checkpoint ]]
 }
 
@@ -260,6 +261,7 @@ more"
   assert_equal "$(git -C "$home_origin" for-each-ref --format='%(refname)' refs/heads/wip/)" ""
   assert_equal "$(git -C "$site_origin" for-each-ref --format='%(refname)' refs/heads/wip/)" ""
   assert_equal "$(changed_in dev)" "ledger.jsonl
+tasks/T1/plan.md
 tasks/T1/scratch-site/notes.md
 tasks/T1/scratch/spec.md"
 }
@@ -422,26 +424,56 @@ team-checkpoint: left out of tasks/T1/scratch: ui-check/reviewer-abc1234/menu-39
   assert_equal "$(git -C "$team_origin" ls-tree -r --name-only dev tasks/T1/scratch)" "tasks/T1/scratch/notes.md"
 }
 
-@test "the team-home commit holds only the scratch archives, memory, the current items and the ledger, whatever else is staged" {
+@test "the team-home commit holds every records path and the ledger, never another path staged or ignored" {
   run_bin -0 team-open home feature feat work "Do the work"
   echo "spec" >"$HOME/slots/home/1/.scratch/task/spec.md"
-  mkdir -p "$TEAM_HOME/memory/home"
+  printf 'ledger.jsonl.lock\ntasks/*/settings.*.json\ntasks/*/mcp.*.json\ntasks/*/ui/\n' >"$TEAM_HOME/.gitignore"
+  mkdir -p "$TEAM_HOME/memory/home" "$TEAM_HOME/projects/p/backlog"
   echo "- a note" >"$TEAM_HOME/memory/home/MEMORY.md"
   printf '# Current items\n- owe - the T1 summary | tasks/T1/plan.md\n' >"$TEAM_HOME/tasks/current.md"
-  echo "a queued task" >"$TEAM_HOME/tasks/queued.md"
-  echo "# changed" >>"$TEAM_HOME/projects.toml"
+  echo "a story" >"$TEAM_HOME/projects/p/backlog/s.md"
   echo "steps" >"$TEAM_HOME/manual-steps.md"
-  git -C "$TEAM_HOME" add projects.toml manual-steps.md tasks/T1/plan.md
+  # A path outside the records, staged, and ignored files beside the records.
+  echo "readme" >"$TEAM_HOME/README.md"
+  git -C "$TEAM_HOME" add README.md
+  echo '{}' >"$TEAM_HOME/tasks/T1/settings.builder.json"
+  echo '{}' >"$TEAM_HOME/tasks/T1/mcp.builder.json"
+  mkdir -p "$TEAM_HOME/tasks/T1/ui"
+  echo "capture" >"$TEAM_HOME/tasks/T1/ui/state.txt"
   local staged
   staged=$(git -C "$TEAM_HOME" diff --cached)
 
   run_bin -0 team-checkpoint
+  assert_equal "$(git -C "$team_origin" log -1 --format=%s dev)" "chore: checkpoint"
   assert_equal "$(changed_in dev)" "ledger.jsonl
+manual-steps.md
 memory/home/MEMORY.md
+projects/p/backlog/s.md
+tasks/T1/plan.md
 tasks/T1/scratch/spec.md
 tasks/current.md"
-  assert_equal "$(git -C "$team_origin" show dev:tasks/current.md)" "# Current items
-- owe - the T1 summary | tasks/T1/plan.md"
+
+  # A changed plan, a new brief and its record, a queue item, a changed story, steps and registry.
+  echo "- a plan change" >>"$TEAM_HOME/tasks/T1/plan.md"
+  echo "the brief" >"$TEAM_HOME/tasks/T1/brief-build-01.md"
+  echo '{"template": "builder"}' >"$TEAM_HOME/tasks/T1/brief-build-01.json"
+  mkdir -p "$TEAM_HOME/tasks/queued"
+  echo "a queued task" >"$TEAM_HOME/tasks/queued/x.md"
+  echo "a changed story" >"$TEAM_HOME/projects/p/backlog/s.md"
+  echo "more steps" >>"$TEAM_HOME/manual-steps.md"
+  echo "# changed" >>"$TEAM_HOME/projects.toml"
+  jq -cn '{ts: (now | todate), task: "T1", event: "waiting", on: "Daniel", reason: "a test"}' >>"$TEAM_HOME/ledger.jsonl"
+  run_bin -0 team-checkpoint --force
+  assert_equal "$(git -C "$team_origin" log -1 --format=%s dev)" "chore: checkpoint"
+  assert_equal "$(changed_in dev)" "ledger.jsonl
+manual-steps.md
+projects.toml
+projects/p/backlog/s.md
+tasks/T1/brief-build-01.json
+tasks/T1/brief-build-01.md
+tasks/T1/plan.md
+tasks/queued/x.md"
+
   # The next checkpoint carries an emptied list, and its removal.
   echo "# Current items" >"$TEAM_HOME/tasks/current.md"
   run_bin -0 team-checkpoint --force
@@ -450,11 +482,12 @@ tasks/current.md"
   run_bin -0 team-checkpoint --force
   assert_equal "$(changed_in dev)" "tasks/current.md"
   run -128 git -C "$team_origin" cat-file -e dev:tasks/current.md
-  # What was staged is still staged, exactly.
+  # What was staged is still staged, exactly, and the ignored files were never committed.
   assert_equal "$(git -C "$TEAM_HOME" diff --cached)" "$staged"
-  assert_equal "$(git -C "$TEAM_HOME" diff --cached --name-only)" "manual-steps.md
-projects.toml
-tasks/T1/plan.md"
+  assert_equal "$(git -C "$TEAM_HOME" diff --cached --name-only)" "README.md"
+  assert_equal "$(git -C "$team_origin" ls-tree -r --name-only dev | grep -c -e settings -e mcp -e /ui/)" 0
+  assert_equal "$(git -C "$TEAM_HOME" status --porcelain --untracked-files=all)" " M .gitignore
+A  README.md"
 }
 
 @test "it exports this machine's usage of each complete day into usage/<machine>/ and commits it" {
@@ -485,6 +518,7 @@ team home: nothing to commit"
   assert_equal "$stderr" "team-checkpoint: usage: cannot export: $TEAM_HOME/usage/home-pc/2026-10-21.jsonl holds a line that is no usage line; fix or remove it; the next checkpoint exports it"
   assert_contains "$output" "team home: committed"
   assert_equal "$(changed_in dev)" "ledger.jsonl
+tasks/T1/plan.md
 tasks/T1/scratch/spec.md
 usage/home-pc/2026-10-20.jsonl
 usage/home-pc/2026-10-21.jsonl"
@@ -494,8 +528,8 @@ usage/home-pc/2026-10-21.jsonl"
 @test "a rejected push is replayed onto origin's dev and pushed, keeping what is staged" {
   run_bin -0 team-open home feature feat work "Do the work"
   echo "spec" >"$HOME/slots/home/1/.scratch/task/spec.md"
-  echo "# changed" >>"$TEAM_HOME/projects.toml"
-  git -C "$TEAM_HOME" add projects.toml
+  echo "readme" >"$TEAM_HOME/README.md"
+  git -C "$TEAM_HOME" add README.md
   echo "untracked" >"$TEAM_HOME/notes.txt"
   make_machine laptop
   on_machine laptop bash -c 'echo "from laptop" >"$TEAM_HOME/manual-steps.md" &&
@@ -510,22 +544,22 @@ usage/home-pc/2026-10-21.jsonl"
   assert_equal "$(git -C "$team_origin" rev-parse dev^)" "$theirs"
   assert_equal "$(team_tip)" "$(git -C "$TEAM_HOME" rev-parse HEAD)"
   assert_equal "$(changed_in dev)" "ledger.jsonl
+tasks/T1/plan.md
 tasks/T1/scratch/spec.md"
   assert_equal "$(cat "$TEAM_HOME/manual-steps.md")" "from laptop"
   assert_equal "$(git -C "$TEAM_HOME" diff --cached)" "$staged"
-  assert_equal "$(git -C "$TEAM_HOME" status --porcelain)" "M  projects.toml
-?? notes.txt
-?? tasks/T1/plan.md"
+  assert_equal "$(git -C "$TEAM_HOME" status --porcelain)" "A  README.md
+?? notes.txt"
 }
 
 @test "a rejected push that cannot be replayed cleanly is left unpushed with a message, and goes out once it can" {
   run_bin -0 team-open home feature feat work "Do the work"
   echo "spec" >"$HOME/slots/home/1/.scratch/task/spec.md"
-  # A local change in the way of origin's new commit.
-  echo "local steps" >"$TEAM_HOME/manual-steps.md"
+  # A local change outside the records, in the way of origin's new commit.
+  echo "local readme" >"$TEAM_HOME/README.md"
   make_machine laptop
-  on_machine laptop bash -c 'echo "from laptop" >"$TEAM_HOME/manual-steps.md" &&
-    git -C "$TEAM_HOME" add manual-steps.md && git -C "$TEAM_HOME" commit -q -m "docs: a manual step" &&
+  on_machine laptop bash -c 'echo "from laptop" >"$TEAM_HOME/README.md" &&
+    git -C "$TEAM_HOME" add README.md && git -C "$TEAM_HOME" commit -q -m "docs: a readme" &&
     git -C "$TEAM_HOME" push -q origin dev'
   local theirs mine
   theirs=$(team_tip)
@@ -533,20 +567,20 @@ tasks/T1/scratch/spec.md"
   run_bin -1 --separate-stderr team-checkpoint
   mine=$(git -C "$TEAM_HOME" rev-parse HEAD)
   assert_contains "$output" "team home: committed ${mine:0:7} chore: checkpoint"
-  assert_contains "$stderr" "team-checkpoint: team home: origin's dev has moved and the commits not on it cannot be replayed onto it (local changes to manual-steps.md are in the way); they stay unpushed"
+  assert_contains "$stderr" "team-checkpoint: team home: origin's dev has moved and the commits not on it cannot be replayed onto it (local changes to README.md are in the way); they stay unpushed"
   assert_equal "$(team_tip)" "$theirs"
   assert_equal "$(git -C "$TEAM_HOME" log -1 --format=%s)" "chore: checkpoint"
-  assert_equal "$(cat "$TEAM_HOME/manual-steps.md")" "local steps"
+  assert_equal "$(cat "$TEAM_HOME/README.md")" "local readme"
   [[ ! -e $state/last-checkpoint ]]
 
   # Out of the way: nothing new to commit, and the commit left behind goes out.
-  rm "$TEAM_HOME/manual-steps.md"
+  rm "$TEAM_HOME/README.md"
   run_bin -0 team-checkpoint
   assert_contains "$output" "team home: nothing to commit"
   assert_contains "$output" "origin's dev had moved; replayed onto it and pushed dev"
   assert_equal "$(git -C "$team_origin" rev-parse dev^)" "$theirs"
   assert_equal "$(git -C "$team_origin" log -1 --format=%s dev)" "chore: checkpoint"
-  assert_equal "$(cat "$TEAM_HOME/manual-steps.md")" "from laptop"
+  assert_equal "$(cat "$TEAM_HOME/README.md")" "from laptop"
 }
 
 @test "a commit that conflicts with origin's is left unpushed with a message" {
@@ -590,17 +624,17 @@ tasks/T1/scratch/spec.md"
   [[ ! -e $state/last-checkpoint ]]
 }
 
-@test "without --force it checkpoints only once the last checkpoint is 15 minutes old" {
+@test "without --force it checkpoints only once the last checkpoint is 5 minutes old" {
   run_bin -0 team-open home feature feat work "Do the work"
   local wt=$HOME/slots/home/1
   echo "new" >"$wt/new.txt"
   mkdir -p "$state"
-  touch -d '-10 minutes' "$state/last-checkpoint"
+  touch -d '-3 minutes' "$state/last-checkpoint"
   run_bin -0 team-checkpoint
-  assert_equal "$output" "not due: the last checkpoint was 10 minutes ago (--force makes one now)"
+  assert_equal "$output" "not due: the last checkpoint was 3 minutes ago (--force makes one now)"
   run -1 git -C "$team_origin" rev-parse -q --verify refs/heads/wip/home/T1
 
-  touch -d '-15 minutes' "$state/last-checkpoint"
+  touch -d '-5 minutes' "$state/last-checkpoint"
   run_bin -0 team-checkpoint
   assert_contains "$output" "T1 home: pushed wip/home/T1"
   (($(date +%s) - $(date -r "$state/last-checkpoint" +%s) < 60))

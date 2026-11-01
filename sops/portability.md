@@ -54,14 +54,14 @@ Two repositories hold the team, each checked out on every machine:
 
 ## The heartbeat
 
-`team-timers enable` installs one job every 5 minutes on the holder (systemd on Arch, launchd on macOS, plus `caffeinate -i` on a Mac) running `team-timers run`: probe GitHub, renew the lease once the last renewal is 15 minutes old, bring the Waiting on you message in `#coordinator` up to date (`team-inbox`), take a reading of the machine's load for its task cap (`team-slots sample`, `sops/slots.md`), take the team's own reading and place its sessions in their slices (`team-capacity sample` and `place`), hold the team to its resource level (`team-level tick`, `sops/resources.md`), and checkpoint once the last checkpoint is 15 minutes old.
+`team-timers enable` installs one job every 5 minutes on the holder (systemd on Arch, launchd on macOS, plus `caffeinate -i` on a Mac) running `team-timers run`: probe GitHub, renew the lease once the last renewal is 15 minutes old, bring the Waiting on you message in `#coordinator` up to date (`team-inbox`), take a reading of the machine's load for its task cap (`team-slots sample`, `sops/slots.md`), take the team's own reading and place its sessions in their slices (`team-capacity sample` and `place`), hold the team to its resource level (`team-level tick`, `sops/resources.md`), and checkpoint on each run (once the last checkpoint is 5 minutes old, less a minute for the timer's slack).
 After the checkpoint it packs the team home (`git gc`) once it has 200 loose objects, so the records' git stays packed on whichever machine holds the lease; `team-doctor`'s `team home pack` line warns at 400.
 Once Daniel turns each on, it also stops idle stacks and runs `team-janitor` daily (`sops/docker.md`, "The heartbeat's steps"); both ship off.
 It is enabled only on the holder: `team-resume` enables it, `team-handoff` disables it, and a run on a machine that does not hold the lease changes nothing.
 
 ## Checkpoints
 
-`team-checkpoint` makes a dead machine lose at most 15 minutes:
+`team-checkpoint` makes a dead machine lose at most 5 minutes:
 
 - each open task's task directory is mirrored into its archive in the team home, less what `archive_left_out` (`bin/lib/team.sh`) leaves out, each named on stderr.
   `team-close` archives the same way, and `team-open --resume` leaves those paths in the worktree as they are;
@@ -69,7 +69,7 @@ It is enabled only on the holder: `team-resume` enables it, `team-handoff` disab
 - untracked files that may hold a secret are left out of the snapshot, each named in the checkpoint's output: a name starting with `.env` or ending with `.pem` or `.key`, or a path that a target in `machine/secrets.json` ends with.
   A secret has no place in git even in a private repository, and a project's `.gitignore` need not cover every `.env` variant a worker makes; such a file stays only on the machine it was made on;
 - `team-tokens export` writes this machine's usage of each complete UTC day into `usage/<machine>/`, and its launched workers' time rows into `usage/<machine>/time/` (a failed export is reported and fails nothing).
-- `tasks/*/scratch*/`, `memory/`, `usage/`, `tasks/current.md` (the coordinator's current items) and `ledger.jsonl` are committed as `chore: checkpoint` and pushed.
+- every records path `bin/lib/records` lists (the ledger, `tasks/` with the archives, plans, briefs and `tasks/current.md`, the coordinator's current items, `projects/`, `projects.toml`, `memory/`, `machine/`, `usage/` and `manual-steps.md`), less what git ignores, is committed as `chore: checkpoint` and pushed, so the coordinator never commits records by hand; `team-handoff` commits the same set.
 
 Nothing new means no commit and no push; `team-close` deletes the task's `wip/<project>/T<n>`, and the copy of it that `team-open --resume` fetched into the primary checkout.
 
@@ -130,7 +130,7 @@ Taking the PC down for a while (an update, a restart, a night off) is a handoff 
 
 - The surviving machine: Daniel runs `team-resume --steal` in their own terminal and types the dead holder's name.
 - A task with a launch after its latest `stowed` crashed: `team-open --resume` resumes it from the later of origin's branch and the head `wip/<project>/T<n>` holds, and applies the snapshot as uncommitted changes only when its parent is that head.
-- The resume brief tells each worker the checkpoint it starts from and that up to 15 minutes of work, and any no-mistakes run in flight, may be missing, so it checks before building on it.
+- The resume brief tells each worker the checkpoint it starts from and that up to 5 minutes of work, and any no-mistakes run in flight, may be missing, so it checks before building on it.
 - When the dead machine boots, its still-enabled heartbeat finds the new holder and fences it before anyone could start a coordinator there (sessions do not restart on their own after a shutdown); its doctor then lists the salvage commands.
 
 ## A real server later

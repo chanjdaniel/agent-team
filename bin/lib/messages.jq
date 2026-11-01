@@ -95,7 +95,9 @@ def message_event($event; $fields): {event: $event, fields: $fields};
 
 # A reviewer's DONE pass or findings: the review and the reviewer's done. Its head is the head of
 # the brief record its latest launch read ($records, by brief name), else the message's own head
-# for a pass on a head, else it is refused naming head=.
+# for a pass on a head, else it is refused naming head=. Its verdict is the message's word, raw:
+# team-log types the event and logs a pass whose sent_back names any finding as findings
+# (review_sent_back in ledger.jq), as it does a review logged by hand.
 def message_review($task; $events; $records; $from; $sent_back; $verdict; $rest):
   ($rest | capture("^(?<target>\\S+)(?:\\s+(?<pairs>.*))?$"; "s") // null) as $m
   | if $m == null or ($m.pairs // "") == "" then message_refused("DONE \($verdict) needs findings= and guarded=")
@@ -176,9 +178,9 @@ def parse_message($task; $events; $records; $from; $sent_back):
     if $m == null or ($text | test("^T[0-9]+\\s") | not) then
       message_refused("a worker's message starts with its task, \($task), then its kind; got '\($text)'")
     elif $m.task != $task then message_refused("the message is for \($m.task), not \($task)")
-    elif $sent_back != "" and ($m.kind != "DONE" or ($rest | test("^findings(\\s|$)") | not)) then
-      message_refused("--sent-back is taken only with a DONE findings message, not "
-        + (if $m.kind == "DONE" then "DONE " + ($rest | split(" ")[0]) else $m.kind end))
+    elif $sent_back != "" and ($m.kind != "DONE" or ($rest | test("^(findings|pass)(\\s|$)") | not)) then
+      message_refused("--sent-back is taken only with a DONE findings or DONE pass message, not "
+        + (if $m.kind == "DONE" then "DONE " + ([$rest | splits("\\s+")][0]) else $m.kind end))
     elif $rest == "" then unreadable
     elif $m.kind == "QUESTION" then
       with_sender($task; $events; $from; null; {events: [message_event("question"; [["role", .role], ["text", $rest]])]})
