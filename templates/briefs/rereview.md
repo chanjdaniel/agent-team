@@ -5,7 +5,10 @@ Project: {{project}} (`{{repo}}`), base `{{base}}`.
 Worktree: `{{worktree}}`, branch `{{branch}}`.
 PR: {{pr}} against `{{base}}`, reviewed at `{{reviewed}}`, now at head `{{head}}`.
 Task directory: `{{task_dir}}/` in the worktree: `spec.md`, `tickets/`, and `review.md` with the last review's findings.
-Since the last review: {{since}}
+
+## Since the last review
+
+{{since}}
 
 ## Check
 

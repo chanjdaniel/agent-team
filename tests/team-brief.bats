@@ -103,6 +103,60 @@ task_files() {
   (cd "$TEAM_HOME/tasks" && find . -type f -printf '%P %s\n' | sort)
 }
 
+# commit <worktree> <file> <subject> [<text>]: commit <file> holding <text> (default its name),
+# printing the commit's full sha.
+commit() {
+  echo "${4:-$2}" >"$1/$2"
+  git -C "$1" add "$2"
+  git -C "$1" commit -q -m "$3"
+  git -C "$1" rev-parse HEAD
+}
+
+# on_base <worktree> <base> <file> <subject> [<text>]: a commit on <base>, pushed to origin, the
+# branch checked out again; prints nothing.
+on_base() {
+  local branch
+  branch=$(git -C "$1" branch --show-current)
+  git -C "$1" checkout -q "$2"
+  commit "$1" "$3" "$4" "${5:-}" >/dev/null
+  git -C "$1" push -q origin "$2"
+  git -C "$1" checkout -q "$branch"
+}
+
+# reviewed_branch <task> <base> [<sent back, a JSON list>]: the task's worktree (its opened
+# event's) as a clone of a bare origin, <base> with one commit, and the task's branch from it with
+# two more: reviewed, which a review at the event's time had findings on and sent back the list
+# (default [5]), and head. Sets wt to the worktree, and reviewed and head to their full shas.
+reviewed_branch() {
+  local branch origin
+  wt=$(jq -r --arg t "$1" 'select(.task == $t and .event == "opened") | .worktree' "$TEAM_HOME/ledger.jsonl")
+  branch=$(jq -r --arg t "$1" 'select(.task == $t and .event == "opened") | .branch' "$TEAM_HOME/ledger.jsonl")
+  origin=$BATS_TEST_TMPDIR/origin/$1.git
+  mkdir -p "${origin%/*}"
+  git init -q --bare -b "$2" "$origin"
+  git clone -q "$origin" "$wt" 2>/dev/null
+  git -C "$wt" checkout -q -B "$2"
+  commit "$wt" base.txt "chore: start" >/dev/null
+  git -C "$wt" push -q -u origin "$2"
+  git -C "$wt" checkout -q -b "$branch"
+  reviewed=$(commit "$wt" work.txt "feat: the first cut")
+  event "$1" review "$(jq -cn --arg h "$reviewed" --argjson sent "${3:-[5]}" '{verdict: "findings", head: $h, sent_back: $sent}')"
+  head=$(commit "$wt" fix.txt "fix: finding 5")
+}
+
+# on_github <url> <head>: gh pr view answers the PR at <url> with <head>; any other PR, with an
+# error, as gh does.
+on_github() {
+  [[ $1 =~ ^https://github\.com/([^/]+)/([^/]+)/pull/([0-9]+)$ ]]
+  echo "$2" >"$STUB_FIXTURES/github-${BASH_REMATCH[1]}-${BASH_REMATCH[2]}-${BASH_REMATCH[3]}"
+  stub_script gh <<'SH'
+[[ $1 == pr && $2 == view && $4 == --repo ]] || { echo "unexpected gh $*" >&2; exit 1; }
+answer=$STUB_FIXTURES/github-${5/\//-}-$3
+[[ -f $answer ]] || { echo "GraphQL: Could not resolve to a PullRequest with the number of $3." >&2; exit 1; }
+jq -cn --arg head "$(<"$answer")" '{headRefOid: $head}'
+SH
+}
+
 @test "the T12 brief is reproduced from builder-fix with three values" {
   open_t12
   run_bin -0 --separate-stderr team-brief T12 builder-fix \
@@ -174,6 +228,14 @@ EOF
   # The interview brief's thread is a task fact, logged as team-thread --interview logs it.
   event T12 interview-thread '{discord_thread: "1565400000000000012"}'
   event T14 interview-thread '{discord_thread: "1565400000000000014"}'
+  # The re-review briefs derive the reviewed head, the PR and its head, and since, from the
+  # ledger, GitHub and the worktree's git.
+  reviewed_branch T12 dev
+  event T12 pr "$(jq -cn --arg h "$head" '{url: "https://github.com/chanjdaniel/Conventioner/pull/9", head: $h}')"
+  on_github https://github.com/chanjdaniel/Conventioner/pull/9 "$head"
+  reviewed_branch T14 main
+  event T14 pr "$(jq -cn --arg h "$head" '{url: "https://github.com/chanjdaniel/agent-team/pull/9", head: $h}')"
+  on_github https://github.com/chanjdaniel/agent-team/pull/9 "$head"
   local task template keys sets key brief
   for task in T12 T14; do
     while IFS= read -r template; do
@@ -181,7 +243,7 @@ EOF
       # facts fill alone (retro) renders at once.
       run_bin team-brief "$task" "$template" --name "$template"
       if ((status == 1)); then
-        keys=$(sed -n 's/^team-brief: unfilled placeholders: //p' <<<"$output")
+        keys=$(sed -n 's/^team-brief: unfilled placeholders: \([^;]*\).*/\1/p' <<<"$output")
         [[ -n $keys ]]
         sets=()
         for key in ${keys//,/ }; do sets+=(--set "$key=value of $key"); done
@@ -210,8 +272,8 @@ EOF
   refute_grep no-mistakes "$TEAM_HOME/tasks/T14/brief-builder-fix.md"
   refute_grep 'gh pr create' "$TEAM_HOME/tasks/T12/brief-builder-deliver.md"
   # So do the review partials: a gated project's first review comes before its PR.
-  assert_contains "$(<"$TEAM_HOME/tasks/T14/brief-reviewer.md")" 'team-review-comment value of pr'
-  refute_grep -e team-review -e 'value of pr' "$TEAM_HOME/tasks/T12/brief-reviewer.md"
+  assert_contains "$(<"$TEAM_HOME/tasks/T14/brief-reviewer.md")" 'team-review-comment https://github.com/chanjdaniel/agent-team/pull/9'
+  refute_grep -e team-review -e '/pull/9' "$TEAM_HOME/tasks/T12/brief-reviewer.md"
   assert_contains "$(<"$TEAM_HOME/tasks/T12/brief-rereview.md")" "the gate's own commits"
   refute_grep 'gate' "$TEAM_HOME/tasks/T14/brief-rereview.md"
 }
@@ -304,7 +366,7 @@ EOF
   open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
   local pr=https://github.com/chanjdaniel/agent-team/pull/9 brief
   run_bin -1 team-brief T14 reviewer --name review --set head=abc1234 --set "checks=the checks"
-  assert_equal "$output" "team-brief: unfilled placeholders: pr"
+  assert_equal "$output" "team-brief: unfilled placeholders: pr; nothing to derive them from: pr (T14 has no pr event in chanjdaniel/agent-team; --set pr=)"
   run_bin -0 team-brief T14 reviewer --name review --set pr=$pr --set head=abc1234 --set "checks=the checks"
   brief=$(<"$output")
   assert_contains "$brief" 'branch `feat/T14-team-tooling`; review `origin/main...abc1234`.'
@@ -323,13 +385,15 @@ EOF
   run_bin -0 team-brief T14 reviewer --name review --set pr=https://github.com/chanjdaniel/agent-team/pull/9 \
     --set head=abc1234 --set "checks=the checks"
   assert_contains "$(<"$output")" "$kinds"
-  local task dir
-  for task in T12:.scratch/task T14:.work/task; do
+  local task dir base
+  for task in T12:.scratch/task:dev T14:.work/task:main; do
+    base=${task##*:} task=${task%:*}
     dir=${task#*:} task=${task%:*}
+    reviewed_branch "$task" "$base"
     run_bin -0 team-brief "$task" rereview --name rereview --set pr=https://github.com/chanjdaniel/agent-team/pull/9 \
-      --set head=def5678 --set reviewed=abc1234 --set "since=the fix"
+      --set head="$head" --set "since=the fix"
     assert_contains "$(<"$output")" "its new findings numbered on from the last, $each; then write the same result alone to \`$dir/rereview.md\`."
-    assert_contains "$(<"$output")" "(each \`blocking\`, \`note: correctness\`, \`note: security\` and \`note: real-data\`, and each plain \`note\` whose scope is \`change\`) is fixed at \`def5678\`"
+    assert_contains "$(<"$output")" "(each \`blocking\`, \`note: correctness\`, \`note: security\` and \`note: real-data\`, and each plain \`note\` whose scope is \`change\`) is fixed at \`$head\`"
     assert_contains "$(<"$output")" "a plain \`note\` whose scope is \`before\`, on code the PR did not change, is queued as a follow-up, not for this PR."
     refute_grep -F '**note**' "$output"
   done
@@ -349,14 +413,15 @@ EOF
   brief=$(<"$output")
   assert_contains "$brief" "$areas"
   assert_contains "$brief" "- Send \`T14 DONE pass $pr $counts\` or \`T14 DONE findings .work/task/review.md $counts\` to \`coordinator\`, the counts, numbers and areas as \`.work/task/review.md\` gives them."
-  local task dir
-  for task in T12:.scratch/task T14:.work/task; do
+  local task dir base
+  for task in T12:.scratch/task:dev T14:.work/task:main; do
+    base=${task##*:} task=${task%:*}
     dir=${task#*:} task=${task%:*}
-    run_bin -0 team-brief "$task" rereview --name rereview --set pr=$pr --set head=def5678 --set reviewed=abc1234 \
-      --set "since=the fix"
+    reviewed_branch "$task" "$base"
+    run_bin -0 team-brief "$task" rereview --name rereview --set pr=$pr --set head="$head" --set "since=the fix"
     brief=$(<"$output")
     assert_contains "$brief" "$areas"
-    assert_contains "$brief" "the findings that stand at \`def5678\`, its new ones and any earlier one sent back and not fixed, the plain notes as \`note-change\` and \`note-before\` (0 for none), the numbers of its new \`before\` notes"
+    assert_contains "$brief" "the findings that stand at \`$head\`, its new ones and any earlier one sent back and not fixed, the plain notes as \`note-change\` and \`note-before\` (0 for none), the numbers of its new \`before\` notes"
     assert_contains "$brief" "- Send \`$task DONE pass $pr $counts\` or \`$task DONE findings $dir/review.md $counts\` to \`coordinator\`, the counts, numbers and areas as \`$dir/rereview.md\` gives them."
   done
 }
@@ -391,14 +456,15 @@ EOF
 
 @test "a gated project's re-review reads the gate's own commits from the reviewed local head" {
   open_t12
+  reviewed_branch T12 dev
   run_bin -0 team-brief T12 rereview --name rereview --set pr=https://github.com/chanjdaniel/Conventioner/pull/9 \
-    --set head=def5678 --set reviewed=abc1234 --set "since=the builder fixed the findings and the gate opened the PR"
-  local brief
+    --set head="$head" --set "since=the builder fixed the findings and the gate opened the PR"
+  local brief r=$reviewed h=$head
   brief=$(<"$output")
-  assert_contains "$brief" 'PR: https://github.com/chanjdaniel/Conventioner/pull/9 against `dev`, reviewed at `abc1234`, now at head `def5678`.'
-  assert_contains "$brief" '2. Review what changed since the last review, `git diff abc1234 def5678`, and the commit messages of `origin/dev..def5678`.'
-  assert_contains "$brief" "   That diff holds the gate's own commits, which no reviewer has read: read them as closely as the builder's, and the PR body the gate wrote; after the gate's first run, \`abc1234\` is the branch's local head, reviewed before the gate."
-  assert_contains "$brief" '   If the gate rebased the branch, so `abc1234` is not an ancestor of `def5678`, compare with `git range-diff abc1234...def5678` instead.'
+  assert_contains "$brief" "PR: https://github.com/chanjdaniel/Conventioner/pull/9 against \`dev\`, reviewed at \`$r\`, now at head \`$h\`."
+  assert_contains "$brief" "2. Review what changed since the last review, \`git diff $r $h\`, and the commit messages of \`origin/dev..$h\`."
+  assert_contains "$brief" "   That diff holds the gate's own commits, which no reviewer has read: read them as closely as the builder's, and the PR body the gate wrote; after the gate's first run, \`$r\` is the branch's local head, reviewed before the gate."
+  assert_contains "$brief" "   If the gate rebased the branch, so \`$r\` is not an ancestor of \`$h\`, compare with \`git range-diff $r...$h\` instead."
 }
 
 @test "the verify brief re-reviews a notes-only fix from its diff alone, waiting on the checks while it reads" {
@@ -467,6 +533,228 @@ BRIEF
   assert_contains "$(<"$output")" "Every note sent back (4) is fixed at \`def5678\`"
 }
 
+# The section of <brief> from its "## Since the last review" heading to the next heading.
+since_section() {
+  sed -n '/^## Since the last review$/,/^## Check$/p' "$1"
+}
+
+# A commit's short sha and subject, as the derived since lists it.
+listed() {
+  printf '%s\n' "- \`$(git -C "$wt" rev-parse --short=8 "$1")\` $(git -C "$wt" log -1 --format=%s "$1")"
+}
+
+@test "a rereview derives the reviewed head, the PR, its head and since, from the ledger, GitHub and the branch's commits and merges" {
+  open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
+  local pr=https://github.com/chanjdaniel/agent-team/pull/9 fix5 merge1 fix6 merge2 short
+  reviewed_branch T14 main '[5, 6]'
+  fix5=$head
+  event T14 pr "$(jq -cn --arg h "$reviewed" --arg url "$pr" '{url: $url, head: $h}')"
+  # A clean merge of the base, an own commit, then a merge of the base that conflicted on
+  # shared.txt and was resolved.
+  on_base "$wt" main base-1.txt "feat: the base's first"
+  git -C "$wt" fetch -q origin
+  git -C "$wt" merge -q --no-edit origin/main
+  merge1=$(git -C "$wt" rev-parse HEAD)
+  fix6=$(commit "$wt" shared.txt "fix: finding 6" "the branch's line")
+  on_base "$wt" main shared.txt "feat: the base's second" "the base's line"
+  git -C "$wt" fetch -q origin
+  run git -C "$wt" merge -q --no-edit origin/main
+  assert_equal "$status" 1
+  echo "both lines" >"$wt/shared.txt"
+  git -C "$wt" add shared.txt
+  git -C "$wt" commit -q --no-edit
+  merge2=$(git -C "$wt" rev-parse HEAD)
+  on_github "$pr" "$merge2"
+  # A build note older than the review, and one written after it.
+  mkdir -p "$wt/.work/task/build-notes"
+  echo "# 04" >"$wt/.work/task/build-notes/04.md"
+  touch -d 2026-10-22T09:00:00Z "$wt/.work/task/build-notes/04.md"
+  echo "# 05" >"$wt/.work/task/build-notes/05.md"
+
+  run_bin -0 --separate-stderr team-brief T14 rereview --name rereview-2
+  assert_equal "$output" "$TEAM_HOME/tasks/T14/brief-rereview-2.md"
+  # GitHub's head wins over the ledger's, said on stderr.
+  assert_equal "$stderr" "team-brief: $pr is at $merge2 on GitHub, not at the ledger's $reviewed; the brief names GitHub's"
+  grep -qxF "PR: $pr against \`main\`, reviewed at \`$reviewed\`, now at head \`$merge2\`." "$output"
+  short=$(git -C "$wt" rev-parse --short=8 "$reviewed")
+  local expected
+  expected=$(
+    cat <<SINCE
+## Since the last review
+
+The last review, of \`${reviewed:0:8}\`, had findings, and sent back 5 and 6.
+
+The branch's own commits since \`$short\`, the ones to review:
+
+$(listed "$fix5")
+$(listed "$merge1"): a merge of \`origin/main\`, no conflicts
+$(listed "$fix6")
+$(listed "$merge2"): a merge of \`origin/main\`, conflicts in \`shared.txt\`
+
+The other 2 commits in \`$short..$(git -C "$wt" rev-parse --short=8 "$merge2")\` came from \`origin/main\` and are not to be reviewed.
+
+Build notes changed since the last review: \`.work/task/build-notes/05.md\`.
+
+## Check
+SINCE
+  )
+  assert_equal "$(since_section "$output")" "$expected"
+  # The base's commits are named nowhere.
+  refute_grep -F "the base's" "$output"
+}
+
+@test "a rereview of a branch rewritten past the reviewed head says to compare with git range-diff, and lists no commit" {
+  open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
+  reviewed_branch T14 main
+  # The reviewed commit rewritten: the new head is built on its parent.
+  git -C "$wt" checkout -q --detach "$reviewed^"
+  local rewritten
+  rewritten=$(commit "$wt" work.txt "feat: the first cut, rewritten" "rewritten")
+  run_bin -0 team-brief T14 rereview --name rereview-2 --set pr=https://github.com/chanjdaniel/agent-team/pull/9 \
+    --set head="$rewritten"
+  local expected
+  expected=$(
+    cat <<SINCE
+## Since the last review
+
+The last review, of \`${reviewed:0:8}\`, had findings, and sent back 5.
+
+The branch was rewritten: \`$(git -C "$wt" rev-parse --short=8 "$reviewed")\` is not an ancestor of \`$(git -C "$wt" rev-parse --short=8 "$rewritten")\`, so compare with \`git range-diff $reviewed...$rewritten\`.
+
+## Check
+SINCE
+  )
+  assert_equal "$(since_section "$output")" "$expected"
+}
+
+@test "a rereview with no commit since the reviewed head says so, and one with no review describes none" {
+  open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
+  reviewed_branch T14 main
+  event T14 review "$(jq -cn --arg h "$head" '{verdict: "pass", head: $h}')"
+  run_bin -0 team-brief T14 rereview --name rereview-2 --set pr=https://github.com/chanjdaniel/agent-team/pull/9 \
+    --set head="$head"
+  local short
+  short=$(git -C "$wt" rev-parse --short=8 "$head")
+  assert_equal "$(since_section "$output")" "$(printf '%s\n' '## Since the last review' '' \
+    "The last review, of \`${head:0:8}\`, passed." '' "No commit since \`$short\`." '' '## Check')"
+  # A gated project's first PR, reviewed before the gate at its local head: no review is logged.
+  open_t12
+  reviewed_branch T12 dev
+  sed -i '/"task":"T12","event":"review"/d' "$TEAM_HOME/ledger.jsonl"
+  run_bin -0 team-brief T12 rereview --name rereview --set pr=https://github.com/chanjdaniel/Conventioner/pull/9 \
+    --set head="$head" --set reviewed="$head"
+  assert_equal "$(since_section "$output")" "$(printf '%s\n' '## Since the last review' '' \
+    "No commit since \`$(git -C "$wt" rev-parse --short=8 "$head")\`." '' '## Check')"
+}
+
+@test "GitHub unreadable is refused naming --set head=, an unreachable fetch is exit 75, and neither writes anything" {
+  open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
+  local pr=https://github.com/chanjdaniel/agent-team/pull/9 before
+  reviewed_branch T14 main
+  event T14 pr "$(jq -cn --arg h "$reviewed" --arg url "$pr" '{url: $url, head: $h}')"
+  # gh answers no PR 9.
+  on_github https://github.com/chanjdaniel/agent-team/pull/8 "$head"
+  before=$(task_files)
+  run_bin -1 team-brief T14 rereview --name rereview-2
+  assert_equal "$output" "team-brief: cannot read the head of $pr on GitHub (GraphQL: Could not resolve to a PullRequest with the number of 9.); pass --set head=<full sha>"
+  assert_equal "$(task_files)" "$before"
+  # The fetch of the base cannot reach origin.
+  git -C "$wt" remote set-url origin "$BATS_TEST_TMPDIR/nowhere.git"
+  run_bin -75 team-brief T14 rereview --name rereview-2 --set head="$head"
+  assert_contains "$output" "team-brief: cannot fetch origin/main into ~/agent-team/.claude/worktrees/2 ("
+  assert_contains "$output" "); try again later"
+  assert_equal "$(task_files)" "$before"
+  # A worktree with no git is refused.
+  rm -rf "$wt/.git"
+  run_bin -1 team-brief T14 rereview --name rereview-2 --set head="$head"
+  assert_equal "$output" "team-brief: cannot read the worktree ~/agent-team/.claude/worktrees/2 to derive since: not a git checkout"
+  assert_equal "$(task_files)" "$before"
+}
+
+@test "with no review and no pr, each derived fact is refused naming its --set, and a head the worktree lacks is refused" {
+  open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
+  run_bin -1 team-brief T14 rereview
+  assert_equal "$output" "team-brief: unfilled placeholders: head, pr, reviewed, since; nothing to derive them from: head (no pr to read it from; --set head=), pr (T14 has no pr event in chanjdaniel/agent-team; --set pr=), reviewed (T14 has no review; --set reviewed=), since (derived from reviewed and head)"
+  run_bin -1 team-brief T14 rereview --set pr=not-a-url --set reviewed=abc1234
+  assert_equal "$output" "team-brief: unfilled placeholders: head, since; nothing to derive them from: head (not-a-url is not a GitHub pull request URL; --set head=), since (derived from reviewed and head)"
+  reviewed_branch T14 main
+  run_bin -1 team-brief T14 rereview --set pr=https://github.com/chanjdaniel/agent-team/pull/9 \
+    --set head=0123456789abcdef0123456789abcdef01234567
+  assert_equal "$output" "team-brief: head 0123456789abcdef0123456789abcdef01234567 is in neither ~/agent-team/.claude/worktrees/2 nor its origin; --set head= to a commit it holds"
+  assert_equal "$(task_files)" ""
+}
+
+@test "a --set of a derived fact wins, and the coordinator's since is added after the derived one" {
+  open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
+  local first
+  reviewed_branch T14 main
+  first=$reviewed
+  event T14 pr "$(jq -cn --arg h "$reviewed" '{url: "https://github.com/chanjdaniel/agent-team/pull/9", head: $h}')"
+  printf '%s\n' 'Read the new test first.' 'It covers finding 5.' >"$BATS_TEST_TMPDIR/since.md"
+  # The pr, reviewed and head set by hand: no GitHub call, and since counts from the set head.
+  run_bin -0 --separate-stderr team-brief T14 rereview --set pr=https://github.com/chanjdaniel/agent-team/pull/10 \
+    --set reviewed="$(git -C "$wt" rev-parse "$first^")" --set head="$head" --set-file since="$BATS_TEST_TMPDIR/since.md"
+  assert_equal "$stderr" ""
+  assert_equal "$(stub_calls gh)" ""
+  grep -qxF "PR: https://github.com/chanjdaniel/agent-team/pull/10 against \`main\`, reviewed at \`$(git -C "$wt" rev-parse "$first^")\`, now at head \`$head\`." "$output"
+  local expected
+  expected=$(
+    cat <<SINCE
+## Since the last review
+
+The last review, of \`${first:0:8}\`, had findings, and sent back 5.
+
+The branch's own commits since \`$(git -C "$wt" rev-parse --short=8 "$first^")\`, the ones to review:
+
+$(listed "$first")
+$(listed "$head")
+
+The coordinator adds: Read the new test first.
+It covers finding 5.
+
+## Check
+SINCE
+  )
+  assert_equal "$(since_section "$output")" "$expected"
+  # --set since= is added the same way.
+  run_bin -0 team-brief T14 rereview --force --set head="$head" --set "since=the gate's run"
+  assert_equal "$(since_section "$output" | tail -n 3 | head -n 1)" "The coordinator adds: the gate's run"
+}
+
+@test "--help documents the derived facts and the brief's record" {
+  run_bin -0 team-brief --help
+  assert_contains "$output" "Derived: a template's reviewed, pr and head the caller does not --set are filled from the ledger"
+  assert_contains "$output" "since is always derived, the caller's --set or --set-file since= added after it as \"The"
+  assert_contains "$output" "a failed fetch of the base is exit 75, nothing written"
+  assert_contains "$output" "tasks/T<n>/brief[-<suffix>].json, replaced with it: {template, project, values}"
+}
+
+@test "every brief leaves its record: template, project and the values of every placeholder but the task's facts" {
+  open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
+  run_bin -0 team-brief T14 builder-ticket --name build-01 --set ticket=01
+  assert_equal "$(jq -c . "$TEAM_HOME/tasks/T14/brief-build-01.json")" \
+    '{"template":"builder-ticket","project":"home","values":{"ticket":"01"}}'
+  # --force replaces it with the brief.
+  run_bin -0 team-brief T14 builder-ticket --name build-01 --set ticket=02 --force
+  assert_equal "$(jq -c .values "$TEAM_HOME/tasks/T14/brief-build-01.json")" '{"ticket":"02"}'
+  # A refusal leaves both as they were.
+  run_bin -1 team-brief T14 builder-ticket --name build-01 --set ticket=03
+  assert_equal "$(jq -c .values "$TEAM_HOME/tasks/T14/brief-build-01.json")" '{"ticket":"02"}'
+  grep -qF 'ticket 02' "$TEAM_HOME/tasks/T14/brief-build-01.md"
+  # A derived value is recorded as filled: the rereview's pr, heads and since.
+  local pr=https://github.com/chanjdaniel/agent-team/pull/9 record
+  reviewed_branch T14 main
+  event T14 pr "$(jq -cn --arg h "$head" --arg url "$pr" '{url: $url, head: $h}')"
+  on_github "$pr" "$head"
+  run_bin -0 team-brief T14 rereview
+  record=$TEAM_HOME/tasks/T14/brief.json
+  assert_equal "$(jq -c '{template, project, keys: (.values | keys)}' "$record")" \
+    '{"template":"rereview","project":"home","keys":["head","pr","reviewed","since"]}'
+  assert_equal "$(jq -r .values.head "$record") $(jq -r .values.reviewed "$record") $(jq -r .values.pr "$record")" \
+    "$head $reviewed $pr"
+  assert_contains "$(<"$TEAM_HOME/tasks/T14/brief.md")" "$(jq -r .values.since "$record")"
+}
+
 @test "the retro brief renders from the task's facts alone, its digest first and read from team_bin" {
   open_task T31 home retro research/T31-retro-2026-10-25 agent-team/.claude/worktrees/3 "Retro 2026-10-25"
   run_bin -0 team-brief T31 retro
@@ -494,7 +782,7 @@ BRIEF
 @test "the resume brief sends a relaunched worker to its last brief, the handoff note and the branch" {
   open_t12
   run_bin -0 team-brief --help
-  assert_contains "$output" "rereview, verify (--set pr=, head=, reviewed=, findings="
+  assert_contains "$output" "resume (a worker relaunched on"
   run_bin -1 team-brief T12 resume --name resume-builder --set role=builder \
     --set "brief=~/agent-team-records/tasks/T12/brief.md" --set "from=the handoff from home-pc at 2026-10-23T14:05:00Z"
   assert_contains "$output" "snapshot"
@@ -869,9 +1157,10 @@ after"
   brief=$(<"$output")
   assert_contains "$brief" "- Local checks: \`tests/run\`, \`make lint\`."
   assert_contains "$brief" "Run them on \`abc1234\` with \`$REPO_ROOT/bin/team-checks home abc1234\`, which runs them as \`team-merge\` does, in a fresh detached worktree of that head, and say in \`.work/task/review.md\` whether it passed"
+  reviewed_branch T14 main
   run_bin -0 team-brief T14 rereview --name rereview --set pr=https://github.com/chanjdaniel/agent-team/pull/9 \
-    --set head=def5678 --set reviewed=abc1234 --set "since=the last review"
-  assert_contains "$(<"$output")" "3. Run the project's local checks (\`tests/run\`, \`make lint\`) on \`def5678\` with \`$REPO_ROOT/bin/team-checks home def5678\`, which runs them as \`team-merge\` does"
+    --set head="$head"
+  assert_contains "$(<"$output")" "3. Run the project's local checks (\`tests/run\`, \`make lint\`) on \`$head\` with \`$REPO_ROOT/bin/team-checks home $head\`, which runs them as \`team-merge\` does"
   # A project without local checks says so.
   run_bin -0 team-brief T12 reviewer --name review --set head=abc1234 --set "checks=the checks"
   assert_contains "$(<"$output")" "- Local checks: none."
@@ -884,12 +1173,13 @@ after"
   files+=("$output")
   brief=$(<"$output")
   assert_contains "$brief" "5. Wait for the PR's GitHub checks with \`$REPO_ROOT/bin/team-ci-wait <full url> <the full sha you pushed>\`, run with Bash \`run_in_background\`, and act on how it ended: exit 0, every check passed or the head has none; exit 1, fix each failed check it names on the branch and push again, follow a stuck check's message, or, on a head other than the one you pushed, do as its message says, until every check passes; exit 75, run it again, or report as its message says."
+  reviewed_branch T14 main
   run_bin -0 team-brief T14 rereview --name rereview --set pr=https://github.com/chanjdaniel/agent-team/pull/9 \
-    --set head=def5678 --set reviewed=abc1234 --set "since=the last review"
+    --set head="$head"
   files+=("$output")
   brief=$(<"$output")
-  assert_contains "$brief" "in a fresh detached worktree of that head, and wait for the PR's GitHub checks with \`$REPO_ROOT/bin/team-ci-wait https://github.com/chanjdaniel/agent-team/pull/9 def5678\`, run with Bash \`run_in_background\`; every one must pass"
-  assert_contains "$brief" "   Act on how the wait ended: exit 0, every check passed or the head has none; exit 1, each failed check it names is a \`blocking\` finding, while a stuck check or a head other than \`def5678\` goes to \`coordinator\` as \`T14 BLOCKED <its message>\`; exit 75, run it again, or report as its message says."
+  assert_contains "$brief" "in a fresh detached worktree of that head, and wait for the PR's GitHub checks with \`$REPO_ROOT/bin/team-ci-wait https://github.com/chanjdaniel/agent-team/pull/9 $head\`, run with Bash \`run_in_background\`; every one must pass"
+  assert_contains "$brief" "   Act on how the wait ended: exit 0, every check passed or the head has none; exit 1, each failed check it names is a \`blocking\` finding, while a stuck check or a head other than \`$head\` goes to \`coordinator\` as \`T14 BLOCKED <its message>\`; exit 75, run it again, or report as its message says."
   refute_grep -- '--watch' "${files[@]}"
 }
 
