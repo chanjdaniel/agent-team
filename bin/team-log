@@ -36,15 +36,14 @@
 # not name the task, or is no branch name git takes (git check-ref-format --branch). A review
 # whose sent_back names any finding is logged with verdict findings, a pass's too, since a pass
 # whose notes go back before the merge is not ready to merge. A review's findings, when given,
-# must count exactly blocking, correctness, security, real-data,
-# note-change and note-before, each a whole number, and its guarded list only ci, dependencies,
-# migrations, settings, permissions and secrets; its before, the numbers of its plain notes on code
-# the PR did not change, distinct whole numbers above 0, is required when findings counts a
-# note-before, as many as it counts, and a sent_back naming one of them is refused, since such a
-# note is queued, never sent back. A park
-# (waiting, blocked, paused, held) logged after the fact takes since=<UTC time>, when it began:
-# no later than now and no earlier than the task's latest event, or it is refused naming both
-# times; no other kind takes since.
+# must count exactly blocking, correctness, security, real-data, note-change and note-before, each
+# a whole number, and its guarded list only ci, dependencies, migrations, settings, permissions
+# and secrets; its before, the numbers of its plain notes on code the PR did not change, distinct
+# whole numbers above 0, is required when findings counts a note-before, as many as it counts, and
+# a sent_back naming one of them is refused, since such a note is queued, never sent back. A park
+# (waiting, blocked, paused, held) logged after the fact takes since=<UTC time>, when it began: no
+# later than now and no earlier than the task's latest event, or it is refused naming both times;
+# no other kind takes since.
 # --from-message reads a worker's message whole (bin/lib/messages.jq) into the events the
 # coordinator's message table gives it, checks each as above, and logs them all, or with --print
 # prints them as JSON lines and logs nothing; any refusal logs none. The message starts with the
