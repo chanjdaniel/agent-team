@@ -423,6 +423,22 @@ level_applied() {
   printf '%d.%06ds\n' $(($3 / 100)) $(($3 % 100 * 10000)) >"$HOME/.fake-systemd/agent-team.slice.CPUQuotaPerSecUSec"
 }
 
+# capacity_room <bytes> [<level>]: a stored reading, taken now, of a 32 GiB machine whose other
+# programs leave the team exactly <bytes> at full (no share bound under 28.8 GiB) and with none of
+# the team's work in it, so team-capacity admit reads it instead of taking one; with <level>, a
+# level record of manual mode at that level too.
+capacity_room() {
+  local dir=$HOME/.local/state/agent-team/capacity
+  mkdir -p "$dir"
+  jq -cn --argjson room "$1" '(32 * 1073741824) as $total | ($total - 4 * 1073741824 - $room) as $others
+    | {at: (now | floor | todate), os: "linux", docker: true,
+       memory: {total: $total, available: ($total - $others), team: 0, others: $others}, cpu: null,
+       systemd: true, sessions: true, tasks: [], stacks: [], heavy: null, gate: {running: false, memory: 0, cpu_seconds: 0}}' \
+    >>"$dir/readings.jsonl"
+  [[ -z ${2:-} ]] || jq -cn --arg level "$2" '{ts: (now | floor | todate), mode: "manual", level: $level, by: "Daniel", machine: "home-pc"}' \
+    >>"$TEAM_HOME/level.jsonl"
+}
+
 # Run the sandbox as macOS: uname stubbed to say Darwin, and a fake Homebrew (HOMEBREW_PREFIX)
 # with the directories of the GNU tools bin/lib/platform.sh puts first on PATH.
 as_macos() {

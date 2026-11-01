@@ -17,10 +17,11 @@
 #          --stored. With --json one object: {schema: "team-level/1", machine, mode, level,
 #          share, says (the acknowledgement's words), budget: {memory_bytes (null with no
 #          reading), cores, bound_by: {memory, cores}, each "share" or "others"}, reserved_bytes,
-#          reserved (each live item: {kind, task, name, estimate_bytes, use_bytes, bytes}), use:
-#          {memory_bytes, cores}, reading ({at, total, others_memory, cpus, others_cores} of the
-#          newest reading, null with none), settings (capacity.json's, with its defaults), cpus
-#          (the machine's cores), last_change (the last record, or null)}.
+#          reserved (each item team-capacity status --json reserves: {kind, task, name,
+#          estimate_bytes, use_bytes, bytes}), use: {memory_bytes, cores}, reading ({at, total,
+#          others_memory, cpus, others_cores} of the newest reading, null with none), settings
+#          (capacity.json's, with its defaults), cpus (the machine's cores), last_change (the
+#          last record, or null)}.
 # full, minor, none
 #          Records manual mode at that level: one line {ts, mode: "manual", level, by: "Daniel",
 #          machine} (with discord_message, the id --message gives) appended to the team home's
@@ -136,33 +137,31 @@ read_record() {
   { cat "$RECORD" 2>/dev/null || true; } | jq -Rn -L "$TEAM_LIB" 'include "capacity"; include "stack"; [inputs] | level_records' \
     >"$work/record.json" || die "could not read $RECORD"
   local broken
-  broken=$(jq -r '.broken | map(tostring) | join(", ")' "$work/record.json")
-  [[ -z $broken ]] ||
-    die "$RECORD has lines that are not level records ({ts, mode, level, by, machine}): line $broken; fix or remove them, then run it again"
+  broken=$(jq -r -L "$TEAM_LIB" --arg path "$RECORD" 'include "capacity"; include "stack";
+    select(.broken != []) | level_broken_text($path; .broken)' "$work/record.json")
+  [[ -z $broken ]] || die "$broken"
 }
 
 # The team's state, the team-level/1 object, into $work/state.json: the record, the newest reading
-# (one taken first, unless --stored, when the newest is over 10 minutes old), the settings and the
-# estimates, from team-capacity.
+# (one taken first, unless --stored, when the newest is over 10 minutes old), the settings and what
+# the team's work reserves, from team-capacity status.
 gather() {
   local -a status_args=(status --json)
   ((stored)) && status_args+=(--stored)
   read_record
   TEAM_HOME=$TEAM_HOME "$BIN/team-capacity" "${status_args[@]}" >"$work/capacity.json" || exit 1
-  TEAM_HOME=$TEAM_HOME "$BIN/team-capacity" costs --json >"$work/costs.json" || exit 1
   { cat "$READINGS" 2>/dev/null || true; } |
     jq -Rn -L "$TEAM_LIB" 'include "capacity"; include "stack"; [inputs] | stored_readings | .readings' \
       >"$work/readings.json" || die "could not read $READINGS"
   jq 'map(select(.cpu != null)) | .[-1] // null' "$work/readings.json" >"$work/cpu-reading.json"
   jq -n -L "$TEAM_LIB" --slurpfile record "$work/record.json" --slurpfile capacity "$work/capacity.json" \
-    --slurpfile costs "$work/costs.json" --slurpfile cpu "$work/cpu-reading.json" \
+    --slurpfile cpu "$work/cpu-reading.json" \
     --argjson cpus "${TEAM_SLOTS_CPUS:-$(nproc)}" '
     include "capacity"; include "stack";
     ($record[0] | level_current) as $now | $capacity[0] as $c | $c.settings as $s | $c.reading as $r
     | capacity_budget($s; $now.level; $r; $cpu[0]; $cpus) as $budget
-    | (if $r == null then [] else capacity_reservations($r; $costs[0].costs) end) as $reserved
     | {schema: "team-level/1", machine: $c.machine, mode: $now.mode, level: $now.level, share: $budget.share,
-       budget: ($budget | del(.share)), reserved_bytes: ([$reserved[].bytes] | add // 0), reserved: $reserved,
+       budget: ($budget | del(.share)), reserved_bytes: $c.reserved.bytes, reserved: $c.reserved.items,
        use: {memory_bytes: ($r.memory.team // null), cores: ($r.cpu.team // null)},
        reading: (if $r == null then null
                  else {at: $r.at, total: $r.memory.total, others_memory: $r.memory.others,

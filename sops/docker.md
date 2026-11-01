@@ -86,7 +86,7 @@ Exit codes: 0 done, 1 refused or failed (with the reason), 2 a malformed command
 
 An instance is an extra stack of the worktree, with its own database and ports, for end-to-end runs in parallel (Playwright shards) or a browser-driving agent that must not share the worktree's stack.
 
-- `~/agent-team/bin/team-stack up --instance <name>` starts the Compose project `<stack>-<name>` (`conventioner-3-shard1` in slot 3), with `TEAM_KIND=e2e`, the worktree's task, and ports Docker assigns on `127.0.0.1` (`TH_PORTS=auto` with that `COMPOSE_PROJECT_NAME`); it is admitted against the cap like any stack, each instance counting as one, and seeded as any new stack is.
+- `~/agent-team/bin/team-stack up --instance <name>` starts the Compose project `<stack>-<name>` (`conventioner-3-shard1` in slot 3), with `TEAM_KIND=e2e`, the worktree's task, and ports Docker assigns on `127.0.0.1` (`TH_PORTS=auto` with that `COMPOSE_PROJECT_NAME`); it is admitted to the budget like any stack, each instance reserving its own `mem_limit`s, and seeded as any new stack is.
 - `env`, `seed`, `stop` and `down` take `--instance <name>` too, and every wrapper call for an instance passes its project and `TH_PORTS=auto`.
   `env --instance` also exports `TH_PORTS=auto`, so a hand-run wrapper call after its `eval` reaches the instance with the ports it started with, never the slot's fixed ones (which would recreate its containers).
 - `down` without `--instance` takes down the worktree's instances first (team stacks whose project is `<stack>-<anything>` and whose `worktree` label is the worktree), then its own stack, so `team-close` removes them with it.
@@ -113,27 +113,23 @@ A browser-driving agent gets its own the same way: `~/agent-team/bin/team-stack 
 
 ## Admission
 
-`team-stack up` starts a stack that is not running only when the machine has room for it, so the stacks of every task, gate and person never together outgrow the PC.
+`team-stack up` starts a stack that is not running only when the machine has room for it, so the team's stacks never outgrow the level's share of the PC (`sops/resources.md`, "Admission").
 
-- It holds an exclusive lock, `~/.local/state/agent-team/stacks.lock`, from its first check until the wrapper's `up -d --wait` returns, so two racing `up` calls at the cap start exactly one stack.
+- It holds an exclusive lock, `~/.local/state/agent-team/stacks.lock`, from its first check until the wrapper's `up -d --wait` returns, so two racing `up` calls for the last room start exactly one stack.
 - A stack already running is admitted without a check; a stopped one is counted as new.
-- When `team-capacity` is on `PATH` or at `~/.local/bin/team-capacity`, `team-capacity admit --kind stack:<registered project>` decides: 0 admits, 75 refuses with its stderr as the reason, anything else fails `up`, but 2, a command line it does not know.
-  With no `team-capacity`, or one with no `admit` yet (until T175's ticket 06), `team-stack`'s own three checks decide, and all three must hold:
-  - **cap**: fewer Compose projects running on the machine (`docker compose ls`, every owner's: gates, Daniel's primary stack and hand-made stacks count too) than `stack_cap`;
-  - **memory**: the memory available, less the sum of the stack's `mem_limit`s (a Conventioner stack is about 2.75 GiB), at least the floor: `memory_floor_gib` GiB when it is set, else the default for what is measured (6 GiB of `MemAvailable` from `/proc/meminfo` on Linux, half of Docker's VM on macOS, below);
-  - **disk**: the free space of the file system holding Docker's root (`docker info`'s `DockerRootDir`, measured with `df`) at least `disk_floor_gb` GB.
-- With no room, `up` says once on stderr that it waits and why, re-checks every 30 seconds (letting go of the lock between checks) up to `wait_minutes`, and then exits 75 naming every failing check with its numbers, for example `team-stack: no room for conventioner-1: 6 of 6 stacks running (stack_cap 6); 4.1 GiB available after this stack's 2.8 GiB (floor 6 GiB, the Linux default)`.
-  The memory check names the floor it used and where it came from: `memory_floor_gib in stack.json`, `the Linux default`, or `the macOS default: half of Docker's VM's 7.7 GiB`.
+- Both checks must hold, in this order:
+  - **disk**: the free space of the file system holding Docker's root (`docker info`'s `DockerRootDir`, measured with `df`; on macOS the home directory's, below) at least `disk_floor_gb` GB, `team-stack`'s own;
+  - **budget**: this checkout's `team-capacity admit --kind stack:<registered project> --task T<n>` admits it to the level's memory budget beside what the team's work reserves, given the sum of the stack's `mem_limit`s (`--seed-bytes`; a Conventioner stack is about 2.75 GiB) for a stack it has no estimate of yet: 0 admits, 75 refuses with its reason, anything else fails `up`.
+  A disk short of room never asks `team-capacity`, so no admission is kept for a stack that does not start.
+- With no room, `up` says once on stderr that it waits and why, re-checks every 30 seconds (letting go of the lock between checks) up to `wait_minutes`, and then exits 75 naming the failing check with its numbers, for example `team-stack: no room for conventioner-1: stack:conventioner at minor (30%): 8.9 GiB of 9.2 GiB reserved, a stack of conventioner needs 2.8 GiB`, or `team-stack: no room for conventioner-1: the team is at level none: nothing starts`.
   An agent that gets 75 reports `PAUSED` with that line rather than fighting for room.
-- Gate runs never call `team-stack`, so they are counted and never held back; their own turn-taking is Conventioner's end-to-end lock.
+- Gate runs never call `team-stack`, so they are never held back; a running gate stack is reserved in the budget all the same, and their own turn-taking is Conventioner's end-to-end lock.
 - Each wait that ends, admitted or not, a refusal with `wait_minutes` 0 included, adds one line to `~/.local/state/agent-team/stacks/waits.jsonl`: `{start, end, project, task, admitted, reasons}`, the reasons being the last refusal's; the janitor reads it.
 
 The machine's settings live in `~/.config/agent-team/stack.json`, a JSON object whose keys are all optional:
 
 | Key | Default | What it sets |
 | - | - | - |
-| `stack_cap` | 6 | the most Compose projects running at once, a whole number of 1 or more |
-| `memory_floor_gib` | unset: 6 on Linux, half of Docker's VM on macOS | the GiB of memory left free after a new stack's limits |
 | `disk_floor_gb` | 30 | the GB left free on Docker's file system |
 | `wait_minutes` | 15 | how long `up` waits for room; 0 does not wait |
 | `idle_minutes` | 30 | how long a team stack may go without a busy session before the sweep stops it |
@@ -141,11 +137,10 @@ The machine's settings live in `~/.config/agent-team/stack.json`, a JSON object 
 | `heartbeat_janitor` | false | whether the heartbeat runs the janitor |
 
 A file that is not one JSON object, a key of the wrong type or an unknown key is refused with the reason (exit 1), so a typo never silently keeps a default.
+`stack_cap` and `memory_floor_gib`, the cap on running Compose projects and the memory floor that admitted a stack before the level's budget did, are still accepted, and nothing reads them; `team-doctor`'s `stack memory` line warns while `stack.json` sets either.
 
-On macOS, Docker runs in Docker Desktop's VM, so the readings differ: the memory is `docker info`'s `MemTotal` (the VM's) less what the running containers use (`docker stats`), and the disk is the file system holding the home directory, where Docker Desktop keeps its disk image (`~/Library/Containers/com.docker.docker/Data/vms/0/data/Docker.raw`, on the same file system on Daniel's laptop, 2026-10-25).
-The default floor there is half of the VM's `MemTotal`, not 6 GiB: the VM holds nothing but Docker, so there is no host load to keep room for, and what is measured is the running containers' use, not their limits, so the floor is the room they may still grow into.
-Half admits a Conventioner stack's 2.75 GiB on a 7.7 GiB VM (Daniel's laptop's) with nothing running (5.0 GiB left over a 3.9 GiB floor), and further stacks while the running ones use little (about 330 MiB each when idle), where 6 GiB admitted none (T45, 2026-10-25).
-`team-doctor`'s `stack memory` line warns when, with nothing else running, the floor leaves room for no stack of a registered project, from the VM's `MemTotal` on macOS and the host's on Linux.
+On macOS, Docker runs in Docker Desktop's VM, whose disk image lives on the file system holding the home directory (`~/Library/Containers/com.docker.docker/Data/vms/0/data/Docker.raw`, on the same file system on Daniel's laptop, 2026-10-25), so that is the disk measured.
+`team-doctor`'s `stack memory` line warns when, with nothing else running, full's memory budget is less than a registered project's stack's `mem_limit`s, so `team-capacity` would never admit it.
 
 ## Stopping idle stacks
 
@@ -275,4 +270,4 @@ These are a speed bump, as every deny rule is; the guarantee is that no script t
 - The sweep's tests stub `claude agents --json` (the sandbox's `claude` stub) with sessions in and around the worktree.
 - The reaper's tests age the stub's objects with `docker_created` and refuse one removal with `docker_refuse`, and every test of `tests/team-stack.bats` and `tests/team-janitor.bats` fails when a Docker call it made pruned.
 - The janitor's tests add `oom` events with `docker_event`, set the free disk through the stub `df`, and stub Discord's answers to its posts (the sandbox's `curl` stub).
-- `tests/team-stack-live.bats` runs against the real Docker only with `TEAM_LIVE_DOCKER=1`, since a test that creates a network can break a gate run's end to end; it starts and removes the fixture's one-service stack under a project name of its own, races two `up` calls for the last place under `stack_cap`, has the sweep stop an idle stack that `up` then brings back with its data, runs the worktree's stack and two instances at once on ports of their own, and has `reap --apply` remove a closed task's stack and an expired gate stack and keep an unowned one, limited by the test seam `TEAM_STACK_REAP_PROJECTS` to its own projects, so it never reaps the machine.
+- `tests/team-stack-live.bats` runs against the real Docker only with `TEAM_LIVE_DOCKER=1`, since a test that creates a network can break a gate run's end to end; it starts and removes the fixture's one-service stack under a project name of its own, races two `up` calls for the last room in the budget (a stored reading leaving room for one), has the sweep stop an idle stack that `up` then brings back with its data, runs the worktree's stack and two instances at once on ports of their own, and has `reap --apply` remove a closed task's stack and an expired gate stack and keep an unowned one, limited by the test seam `TEAM_STACK_REAP_PROJECTS` to its own projects, so it never reaps the machine.

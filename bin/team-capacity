@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Hold the team's work in one systemd user slice, each task's in a slice of its own inside it, so
 # the kernel can measure and limit it, and read what the team's work uses and costs on this
-# machine (sops/resources.md). team-level sets the level's limits on the slice.
+# machine (sops/resources.md), and admit each launch, stack and heavy run that fits the level's
+# budget. team-level sets the level's limits on the slice.
 #
 # Usage: team-capacity install
 #        team-capacity place [--quiet] [<session id>...]
@@ -9,6 +10,7 @@
 #        team-capacity sample
 #        team-capacity status [--json] [--stored]
 #        team-capacity costs [--json]
+#        team-capacity admit --kind <kind> [--task T<n>] [--seed-bytes <n>]
 #
 # install  Daniel's yes, as team-timers enable is. On Linux writes the team's slice,
 #          ~/.config/systemd/user/agent-team.slice (a description, no limits), and for each gate
@@ -82,6 +84,9 @@
 #            stacks    each running team or gate stack: {name, class, task, project (the
 #                      registered project of the held worktree it runs for, null for a gate's),
 #                      memory, cpu (cores), limits (team-stack ls --json's memory_limit_bytes)}
+#            heavy     the running heavy run, while a team-heavy holds the heavy-run lock: {pid (its
+#                      team-heavy's), memory (on Linux its scope's, agent-team-heavy-<pid>.scope's,
+#                      MemoryCurrent, else its tree's resident memory)}, else null
 #            gate      {running (a process works in a gate worktree, ~/.no-mistakes/worktrees/...),
 #                      memory, cpu_seconds}: on Linux the gate daemon unit's MemoryCurrent and
 #                      CPUUsageNSec, else the processes in ~/.no-mistakes and their descendants
@@ -102,7 +107,17 @@
 #          writes nothing. With --json one object: {schema: "team-capacity/1", machine (null
 #          without a name), settings (every key below, and from: each key's source,
 #          "capacity.json" or "default"), stale (true with no reading, or the newest more than 15
-#          minutes old), reading (the newest, as sample writes it, or null)}.
+#          minutes old), reading (the newest, as sample writes it, or null), reserved: {bytes (the
+#          total), items: [{kind, task, name, estimate_bytes, use_bytes, bytes}]}, room: {mode,
+#          level (the team home's level.jsonl's, manual full with none), share, budget_bytes (the
+#          memory budget, as team-level says it), bytes (the budget less what is reserved, below 0
+#          when over it); both null with no reading}}. What is reserved, each item at the larger
+#          of its kind's estimate (costs) and its use: each live team session and each running team
+#          or gate stack of the newest reading, the gate while it runs a pipeline, the running
+#          heavy run while a team-heavy holds the lock (kind and estimate its admission's, use the
+#          reading's when the reading saw it, named by its holder line's label), and each admission
+#          of the last 10 minutes but a heavy run's, at its estimate then (no use yet, and its
+#          time as admitted), since a new session or stack has not grown yet.
 # costs    Each kind of work's estimate, one line each ("session:builder: 0.6 GiB, learned from 7
 #          samples, 0.4 GiB to 0.6 GiB"): a session by role (each role in roles/ but the
 #          coordinator's), a stack by registered project with a stack block, the gate, then every
@@ -113,6 +128,22 @@
 #          {schema: "team-capacity-costs/1", costs: [{kind, estimate_bytes (null with no seed),
 #          source ("learned", "seed" or "none"), samples, range ({min, max} of the last 20 peaks,
 #          or null), says}]}.
+# admit    Admits one item of work of <kind>, session:<role> (team-worker), stack:<project>
+#          (team-stack up), heavy:<kind> (team-heavy run) or gate, for the task --task names, when
+#          it fits the level's memory budget beside what is reserved: under an exclusive flock on
+#          ~/.local/state/agent-team/capacity.lock, it takes a reading first when the newest is
+#          over 10 minutes old, as status does, then reads what is reserved as status --json says
+#          it (for a heavy run, without the running heavy run, which is the asker itself, holding
+#          the lock), and the kind's estimate: costs' when it has one, else --seed-bytes (team-stack
+#          gives the sum of the stack's mem_limits), else heavy_gib or session_gib, else 0. When the
+#          reserved memory plus the estimate is at most the budget it exits 0, saying so on
+#          stdout, and keeps the admission in ~/.local/state/agent-team/capacity/admitted.json
+#          ({at, kind, task, bytes, pid (a heavy run's team-heavy, the lock's holder)}), which
+#          reserves it for 10 minutes (a heavy run's while its team-heavy holds the lock); else it
+#          exits 75 with the reason on stderr, "no room for session:reviewer at minor (30%): 8.9
+#          GiB of 9.2 GiB reserved, a reviewer needs 0.5 GiB", and at level none "the team is at
+#          level none: nothing starts". CPU is never admitted: the slice's quota holds it. With no
+#          reading to size the budget by, exit 1 with the reason.
 #
 # The machine's settings, ~/.config/agent-team/capacity.json, beside stack.json: one JSON object
 # whose keys are all optional:
@@ -144,11 +175,11 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 # shellcheck source=bin/lib/reading.sh
 source "$TEAM_LIB/reading.sh"
 
-USAGE="usage: team-capacity install | place [--quiet] [<session id>...] | check [--json] [--holding] [--heartbeat enabled|disabled] | sample | status [--json] [--stored] | costs [--json]"
+USAGE="usage: team-capacity install | place [--quiet] [<session id>...] | check [--json] [--holding] [--heartbeat enabled|disabled] | sample | status [--json] [--stored] | costs [--json] | admit --kind <kind> [--task T<n>] [--seed-bytes <n>]"
 [[ $# -ge 1 ]] || usage_error "$USAGE"
 command=$1
 shift
-json=0 ids=() quiet=0 holding=0 heartbeat=enabled stored=0
+json=0 ids=() quiet=0 holding=0 heartbeat=enabled stored=0 kind='' task='' seed=null
 case $command in
   install | sample) [[ $# -eq 0 ]] || usage_error "unexpected argument '$1'" ;;
   place)
@@ -175,6 +206,28 @@ case $command in
       shift
     done
     ;;
+  admit)
+    while [[ $# -gt 0 ]]; do
+      case $1 in
+        --kind)
+          [[ ${2:-} =~ ^(session:[a-z]+|stack:[A-Za-z0-9._-]+|heavy:[^[:space:]]+|gate)$ ]] ||
+            usage_error "--kind takes session:<role>, stack:<project>, heavy:<kind> or gate"
+          kind=$2
+          ;;
+        --task)
+          [[ ${2:-} =~ ^T[0-9]+$ ]] || usage_error "--task takes a task, T<n>"
+          task=$2
+          ;;
+        --seed-bytes)
+          [[ ${2:-} =~ ^[0-9]+$ ]] || usage_error "--seed-bytes takes a whole number of bytes"
+          seed=$2
+          ;;
+        *) usage_error "unexpected argument '$1'" ;;
+      esac
+      shift 2
+    done
+    [[ -n $kind ]] || usage_error "admit needs --kind <kind>"
+    ;;
   *) usage_error "unknown subcommand '$command'; $USAGE" ;;
 esac
 
@@ -183,6 +236,9 @@ UNITS=$HOME/.config/systemd/user
 SETTINGS=$HOME/.config/agent-team/capacity.json
 STATE=$HOME/.local/state/agent-team/capacity
 READINGS=$STATE/readings.jsonl
+ADMITTED=$STATE/admitted.json
+ADMIT_LOCK=$HOME/.local/state/agent-team/capacity.lock
+RECORD=$TEAM_HOME/level.jsonl
 HEAVY_LOCK=$HOME/.local/state/agent-team/heavy.lock
 # team-heavy's HOLDER_FORM: a holder line of its own form, its label, pid and task.
 HEAVY_HOLDER_FORM='^(.*) \(pid ([0-9]+)(, (T[0-9]+))?\) since '
@@ -439,12 +495,12 @@ check() {
            else ["agent-team.slice holds the team, \($placed) live team session\(if $placed == 1 then "" else "s" end) in it"] end
          | join("; ")),
        fix: ($p | map(.fix | select(. != "")) | unique | join("; ")),
-       problems: $p}' >"$work"
+       problems: $p}' >"$work/check.json"
   if ((json)); then
-    cat "$work"
+    cat "$work/check.json"
   else
-    jq -r '"\(.verdict) \(.reason)" + (if .fix == "" then "" else "; fix: \(.fix)" end)' "$work"
-    [[ $(jq -r .verdict "$work") == PASS ]] || return 1
+    jq -r '"\(.verdict) \(.reason)" + (if .fix == "" then "" else "; fix: \(.fix)" end)' "$work/check.json"
+    [[ $(jq -r .verdict "$work/check.json") == PASS ]] || return 1
   fi
 }
 
@@ -473,8 +529,8 @@ level_problems() {
     problem FAIL "${out#"${0##*/}: "}" "fix or remove $(tilde "$SETTINGS"), then run team-doctor again"
     return 0
   fi
-  if ! state=$(TEAM_HOME=$TEAM_HOME "$(dirname "${BASH_SOURCE[0]}")/team-level" status --json --stored 2>"$work"); then
-    out=$(grep -m1 . "$work" || echo "team-level status failed")
+  if ! state=$(TEAM_HOME=$TEAM_HOME "$(dirname "${BASH_SOURCE[0]}")/team-level" status --json --stored 2>"$work/err"); then
+    out=$(grep -m1 . "$work/err" || echo "team-level status failed")
     out=${out#team-level: }
     # team-level names its fix with its reason, as for a malformed record.
     if [[ $out == *"; fix or remove"* ]]; then
@@ -526,21 +582,32 @@ unit_values() {
     | from_entries'
 }
 
-# The pid of the team-heavy that holds the heavy-run lock, from its holder line, or null while the
-# lock is free (the line stays after a run ends) or held in another form. Its tree is its own cost,
-# never a session's. The lock test and the form are team-heavy's own.
-heavy_pid() {
-  local fd line='' held=0
-  if [[ -s $HEAVY_LOCK ]]; then
+# The heavy-run lock now, as {held, pid, label, task}: whether a run holds it, and from its holder
+# line the pid of its team-heavy (null while the lock is free, since the line stays after a run
+# ends, or held in another form, such as Conventioner's), its label (the whole line in another
+# form) and its task (or null). The lock test and the form are team-heavy's own.
+heavy_holder() {
+  local fd line='' held=false pid=null label='' task=''
+  if [[ -e $HEAVY_LOCK ]]; then
     exec {fd}<"$HEAVY_LOCK"
-    flock -n -s "$fd" || held=1
+    flock -n -s "$fd" || held=true
     exec {fd}<&-
   fi
-  if ((held)) && IFS= read -r line <"$HEAVY_LOCK" && [[ $line =~ $HEAVY_HOLDER_FORM ]]; then
-    echo "${BASH_REMATCH[2]}"
-  else
-    echo null
+  if [[ $held == true ]]; then
+    IFS= read -r line <"$HEAVY_LOCK" || true
+    label=$line
+    if [[ $line =~ $HEAVY_HOLDER_FORM ]]; then
+      label=${BASH_REMATCH[1]} pid=${BASH_REMATCH[2]} task=${BASH_REMATCH[4]}
+    fi
   fi
+  jq -cn --argjson held "$held" --argjson pid "$pid" --arg label "$label" --arg task "$task" \
+    '{held: $held, pid: $pid, label: ($label | select(. != "") // null), task: ($task | select(. != "") // null)}'
+}
+
+# The pid of the team-heavy that holds the heavy-run lock, or null (heavy_holder's). Its tree is its
+# own cost, never a session's.
+heavy_pid() {
+  heavy_holder | jq -r '.pid'
 }
 
 # The capacity reading's line from take_reading's input (bin/lib/reading.sh), then the cost
@@ -590,29 +657,72 @@ sample() {
   take_reading "$STATE" capacity_line
 }
 
-status() {
-  local err machine
-  read_settings
-  if ((!stored)) && ! newest_reading_within 600; then
-    err=$(TEAM_HOME=$TEAM_HOME "${BASH_SOURCE[0]}" sample 2>&1 >/dev/null) ||
-      echo "${0##*/}: took no reading of the machine's load: $(grep -m1 . <<<"$err" | sed 's/^team-capacity: //')" >&2
-  fi
+# Take a reading first when the newest is over 10 minutes old, as status and admit do; a reading it
+# cannot take is said on stderr, and the stored ones serve.
+fresh_reading() {
+  local err
+  newest_reading_within 600 && return 0
+  err=$(TEAM_HOME=$TEAM_HOME "${BASH_SOURCE[0]}" sample 2>&1 >/dev/null) ||
+    echo "${0##*/}: took no reading of the machine's load: $(grep -m1 . <<<"$err" | sed 's/^team-capacity: //')" >&2
+}
+
+# The current mode and level ({mode, level}, level_current's) into $work/level.json, refusing a
+# level.jsonl with a line that is no level record, as team-level does.
+read_level() {
+  { cat "$RECORD" 2>/dev/null || true; } | jq -Rn -L "$TEAM_LIB" --arg path "$RECORD" '
+    include "capacity"; include "stack";
+    [inputs] | level_records | if .broken != [] then level_broken_text($path; .broken) | halt_error(1) else level_current end' \
+    >"$work/level.json" 2>"$work/level.err" || die "$(grep -m1 . "$work/level.err" || echo "could not read $RECORD")"
+}
+
+# Every admission still kept (admission_kept) into $work/admitted.json, [] with none; an
+# admitted.json that is not a JSON array is read as none.
+read_admitted() {
+  { jq -c 'select(type == "array")' "$ADMITTED" 2>/dev/null || true; } | jq -s -L "$TEAM_LIB" --slurpfile heavy "$work/heavy.json" '
+    include "capacity"; include "stack";
+    (.[0] // []) | map(select(type == "object" and (try (.at | fromdateiso8601) catch null) != null
+                              and (.kind | type == "string") and (.bytes | type == "number")
+                              and admission_kept($heavy[0]; now)))' >"$work/admitted.json" ||
+    die "could not read $ADMITTED"
+}
+
+# status --json's object into $work/status.json, for the asker of <kind> ("" for none): the
+# settings, the newest reading, and what is reserved and the room at the level.
+status_json() {
+  local machine
   machine=$(machine_name 2>/dev/null) || machine=''
-  { cat "$READINGS" 2>/dev/null || true; } | jq -Rn -L "$TEAM_LIB" --argjson given "$GIVEN" --arg machine "$machine" '
+  read_level
+  costs_json
+  heavy_holder >"$work/heavy.json"
+  read_admitted
+  { cat "$READINGS" 2>/dev/null || true; } | jq -Rn -L "$TEAM_LIB" --argjson given "$GIVEN" --arg machine "$machine" \
+    --slurpfile level "$work/level.json" --slurpfile costs "$work/costs.json" --slurpfile heavy "$work/heavy.json" \
+    --slurpfile admitted "$work/admitted.json" --arg asking "$1" '
     include "capacity"; include "stack";
     ([inputs] | stored_readings | .readings[-1] // null) as $r
-    | {schema: "team-capacity/1", machine: ($machine | select(. != "") // null), settings: ($given | capacity_settings),
-       stale: ($r == null or ($r.at | fromdateiso8601) < now - 900), reading: $r}' >"$work"
+    | ($given | capacity_settings) as $s
+    | capacity_reservations({reading: $r, costs: $costs[0].costs, settings: $s, heavy: $heavy[0],
+                             admitted: $admitted[0], now: now, asking: ($asking | select(. != "") // null)}) as $items
+    | ([$items[].bytes] | add // 0) as $reserved
+    | {schema: "team-capacity/1", machine: ($machine | select(. != "") // null), settings: $s,
+       stale: ($r == null or ($r.at | fromdateiso8601) < now - 900), reading: $r,
+       reserved: {bytes: $reserved, items: $items}, room: capacity_room($s; $level[0]; $r; $reserved)}' >"$work/status.json"
+}
+
+status() {
+  read_settings
+  ((stored)) || fresh_reading
+  status_json ''
   if ((json)); then
-    cat "$work"
+    cat "$work/status.json"
   else
-    jq -r -L "$TEAM_LIB" 'include "capacity"; include "stack"; capacity_status_text' "$work"
+    jq -r -L "$TEAM_LIB" 'include "capacity"; include "stack"; capacity_status_text' "$work/status.json"
   fi
 }
 
-costs() {
+# The estimates, team-capacity-costs/1, into $work/costs.json.
+costs_json() {
   local project roles stack_projects=() file
-  read_settings
   roles=$(for file in "$(dirname "$TEAM_LIB")"/../roles/*.md; do
     if [[ -f $file ]]; then basename "$file" .md; fi
   done | { grep -vx coordinator || true; } | jq -Rn '[inputs]')
@@ -627,26 +737,52 @@ costs() {
      costs: capacity_costs({settings: ($given | capacity_settings), roles: $roles, stack_projects: $ARGS.positional,
        limits: ($live[0].limits // {}),
        costs: [inputs | select(test("\\S")) | try fromjson catch null | select(well_formed_cost)]})}' \
-    ${stack_projects[@]+"${stack_projects[@]}"} >"$work"
+    ${stack_projects[@]+"${stack_projects[@]}"} >"$work/costs.json"
+}
+
+costs() {
+  read_settings
+  costs_json
   if ((json)); then
-    cat "$work"
+    cat "$work/costs.json"
   else
-    jq -r -L "$TEAM_LIB" 'include "capacity"; include "stack"; .costs | costs_text' "$work"
+    jq -r -L "$TEAM_LIB" 'include "capacity"; include "stack"; .costs | costs_text' "$work/costs.json"
   fi
+}
+
+# Admit one item of <kind>, as the header's admit says.
+admit() {
+  local fd estimate
+  read_settings
+  mkdir -p "$STATE"
+  exec {fd}>>"$ADMIT_LOCK"
+  flock -w 120 -x "$fd" || die "another admission still holds $(tilde "$ADMIT_LOCK") after 2 minutes"
+  fresh_reading {fd}>&-
+  status_json "$kind"
+  estimate=$(jq -c -L "$TEAM_LIB" --arg kind "$kind" --argjson seed "$seed" --slurpfile costs "$work/costs.json" '
+    include "capacity"; include "stack"; kind_estimate($costs[0].costs; .settings; $kind; $seed)' "$work/status.json")
+  [[ $(jq -r '.room.budget_bytes' "$work/status.json") != null || $(jq -r '.room.level' "$work/status.json") == none ]] ||
+    die "no reading of the machine's load, so no budget to admit $kind by: team-capacity sample says why it takes none"
+  jq -c -L "$TEAM_LIB" --arg kind "$kind" --argjson estimate "$estimate" \
+    'include "capacity"; include "stack"; capacity_admit(.; $kind; $estimate.bytes)' "$work/status.json" >"$work/admit.json"
+  if [[ $(jq -r .admitted "$work/admit.json") != true ]]; then
+    jq -r .says "$work/admit.json" >&2
+    return 75
+  fi
+  jq -c --arg kind "$kind" --arg task "$task" --argjson bytes "$(jq .bytes <<<"$estimate")" --slurpfile heavy "$work/heavy.json" '
+    . + [{at: (now | floor | todate), kind: $kind, task: ($task | select(. != "") // null), bytes: $bytes,
+          pid: (if $kind | startswith("heavy:") then $heavy[0].pid else null end)}]' "$work/admitted.json" >"$ADMITTED.$$"
+  mv -f "$ADMITTED.$$" "$ADMITTED"
+  jq -r .says "$work/admit.json"
 }
 
 case $command in
   install) install ;;
   place) place ;;
   sample) sample ;;
-  status | costs)
-    work=$(mktemp)
-    trap 'rm -f "$work"' EXIT
+  status | costs | admit | check)
+    work=$(mktemp -d)
+    trap 'rm -rf "$work"' EXIT
     "$command"
-    ;;
-  check)
-    work=$(mktemp)
-    trap 'rm -f "$work"' EXIT
-    check
     ;;
 esac

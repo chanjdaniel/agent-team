@@ -19,6 +19,11 @@
 # (~/.config/agent-team/machine), and the request for ops. T0, the load check, needs no thread and
 # no lease, and is not logged. Recorded worktrees are compared as paths on this machine: one
 # recorded under another machine's home is the same path under this HOME.
+# Before anything of the launch, but after those refusals, the session must fit the level's memory
+# budget beside what the team's work reserves: `team-capacity admit --kind session:<role> --task
+# <task>` (sops/resources.md). With no room, at level none above all, it exits 75 with the reason,
+# launching nothing; a failure of the admission itself stops the launch with its reason (exit 1).
+# T0 and ops are never asked.
 # Once the session runs, `team-capacity place <id>` adopts it into its task's slice (on Linux;
 # nothing on macOS), but T0's; a session it cannot place is a warning on stderr, and the launch
 # stands.
@@ -157,6 +162,18 @@ if [[ $role == ops ]]; then
   live_sessions
   busy=$(jq -r '[.[] | select((.name // "") | test("^T[0-9]+-ops$")) | "\(.name) (\(.id))"] | join(", ")' <<<"$LIVE_SESSIONS")
   [[ -z $busy ]] || die "an ops session is already listed: $busy; end it with team-ops-end first"
+fi
+
+# The session is admitted to the level's budget before anything of the launch; T0, the load check,
+# and ops, Daniel's request, are never refused for room.
+if [[ $task != T0 && $role != ops ]]; then
+  rc=0
+  admit_err=$(TEAM_HOME=$TEAM_HOME "$code/bin/team-capacity" admit --kind "session:$role" --task "$task" 2>&1 >/dev/null) || rc=$?
+  if ((rc == 75)); then
+    echo "team-worker: $(grep . <<<"$admit_err" | tail -n 1)" >&2
+    exit 75
+  fi
+  ((rc == 0)) || die "team-capacity admit failed for $task-$role (exit $rc): $(grep . <<<"$admit_err" | tail -n 1 || echo "no reason given")"
 fi
 
 # @TEAM_CODE@ names this checkout, where the hooks and toolkits live; @TASK@ names the task, and

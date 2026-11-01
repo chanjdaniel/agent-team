@@ -130,6 +130,7 @@ On top of it, each reading says each task's use:
 - Its CPU is its slice's `CPUUsageNSec` since the newest stored reading, plus its processes outside the slice since the snapshot, plus its stacks' share of a core.
 - Elsewhere, or for a task with no slice, it is every process that is the task's: one whose working directory is the task's held worktree or below it, or that descends from one.
 - Each live team session's use is its scope's on Linux (`MemoryCurrent`, `MemoryPeak`, `CPUUsageNSec`), else its process tree's, but the heavy run that holds the lock (the `team-heavy` its holder line names, and what it runs), whose cost is its own `heavy:<kind>`, so a builder's samples never carry its test runs.
+- The running heavy run's use, while a `team-heavy` holds the lock, is its scope's `MemoryCurrent` (`agent-team-heavy-<pid>.scope`) on Linux, else its `team-heavy`'s tree, which admission reserves it at.
 - The gate runs a pipeline while a process works in one of its worktrees, `~/.no-mistakes/worktrees/...`; its use is its daemon unit's on Linux, else the processes in `~/.no-mistakes` and their descendants.
 
 `team-capacity status` says the newest reading, taking one first when the newest is over 10 minutes old.
@@ -161,6 +162,35 @@ It never reaches a Docker container the run started, which rootful Docker keeps 
 `team-capacity costs` gives each kind's estimate: from 5 samples, the 90th percentile of the last 20 peaks plus 10%; before that, the seed.
 The seeds are `capacity.json`'s `session_gib` (0.5), `heavy_gib` (5) and `gate_gib` (2.2), and for a stack the sum of its services' `mem_limit`s as the readings last saw it running (`team-stack ls --json`'s `memory_limit_bytes`).
 The seeds' evidence: 13 sessions at 0.3 to 0.55 GiB each, one heavy run 4 to 6 GiB and a gate about 2.2 GiB (T19's measure), from the plan's deep dive of 2026-11-01.
+
+## Admission
+
+A worker launch, a stack and a heavy run each start only when their learned cost fits the level's memory budget beside what is already reserved, so the team never takes room it has not been given.
+CPU is never admitted: the slice's quota holds it.
+
+`team-capacity admit --kind <kind> [--task T<n>]` decides, under an exclusive lock, `~/.local/state/agent-team/capacity.lock`, around its read and its decision, so two launches never both take the last room.
+It takes a reading first when the newest is over 10 minutes old, as `status` does.
+What is reserved, each item at the larger of its kind's estimate and its use:
+
+- each live team session and each running team or gate stack of the newest reading, and the gate while it runs a pipeline;
+- the running heavy run, while a `team-heavy` holds its lock, at its admission's kind, its use the reading's (its scope's on Linux) when the reading saw it; a run holding the lock in another form, Conventioner's, at `heavy_gib`;
+- each admission of the last 10 minutes, but a heavy run's, at its estimate then, since a new session or stack has not grown yet and the next reading may not hold it; they are kept in `capacity/admitted.json`.
+
+A heavy run asking is never counted beside itself: it asks while it holds the heavy-run lock, so the running heavy run is the asker.
+The kind's estimate is `team-capacity costs`'s; a stack it has none of yet is weighed at the `mem_limit`s `team-stack up` gives (`--seed-bytes`), a heavy run or session kind it does not list at `heavy_gib` or `session_gib`, and anything else with no estimate at 0, so the next reading weighs it by its use.
+When the reserved memory plus the estimate is at most the budget it exits 0 and keeps the admission; else it exits 75 with the reason on stderr, such as `no room for session:reviewer at minor (30%): 8.9 GiB of 9.2 GiB reserved, a reviewer needs 0.5 GiB`; at none, `the team is at level none: nothing starts`.
+`team-capacity status --json` says what is reserved (`reserved`, the total and each item) and what room is left (`room`), and `team-level` reports the same reservations.
+
+Who asks:
+
+| Caller | Kind | With no room |
+| - | - | - |
+| `team-worker` | `session:<role>`, before anything of the launch | exits 75 with the reason, launching nothing; T0 and ops are never asked |
+| `team-stack up` | `stack:<project>`, once the disk floor holds | waits within `wait_minutes`, re-checking every 30 seconds, then exits 75 (`sops/docker.md`, "Admission") |
+| `team-heavy run` | `heavy:<kind>`, once it holds the heavy-run lock | lets the lock go, says once why it waits, asks again every 30 seconds within its `--wait`, then exits 75; under a run already (`TEAM_HEAVY_HELD`), and with no team home (CI, a fresh clone), it asks nothing |
+
+An admission that fails for another reason (a malformed `capacity.json`, no reading to size the budget by) fails the caller with its reason.
+The coordinator logs a worker's 75 as `paused` with its line and launches it once room shows (`roles/coordinator.md`); a worker that gets a stack's 75 reports `PAUSED` with it.
 
 ## What the doctor says
 

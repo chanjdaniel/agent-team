@@ -13,7 +13,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
     - `git/`: git's hooks for the code checkout.
     - `records-git/`: git's hooks for the team home.
   - `bin/lib/`: the shared library.
-    - `capacity.jq`: `team-capacity`'s settings of `capacity.json`, the slots held, a reading of the machine's load and the team's use per task, the cost samples and estimates, and their texts.
+    - `capacity.jq`: `team-capacity`'s settings of `capacity.json`, the slots held, a reading of the machine's load and the team's use per task, the cost samples and estimates, the reservations and the admission rule, and their texts.
     - `code`: the paths every tracked path matches.
     - `data-check`: the one scan the CI's `data` job and the records' hook refuse with.
     - `doctor.d/`: `team-doctor`'s checks, one file each, which it sources in the order of their names (a new check is a new file, its number between its neighbours').

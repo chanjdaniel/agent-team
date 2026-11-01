@@ -8,6 +8,9 @@ load helpers/common
 setup() {
   sandbox
   COSTS=$HOME/.local/state/agent-team/capacity/costs.jsonl
+  ADMITTED=$HOME/.local/state/agent-team/capacity/admitted.json
+  # A reading of the machine with room for a heavy run, so team-capacity admit takes none.
+  capacity_room $((16 * 1073741824))
 }
 
 teardown() {
@@ -27,7 +30,7 @@ wait_for() {
   return 1
 }
 
-COSTS=''
+COSTS='' ADMITTED=''
 
 # Start a run labelled <label> in the background that holds the lock until $BATS_TEST_TMPDIR/release
 # exists, and return once it holds it.
@@ -90,6 +93,7 @@ hold() {
   run_bin -2 team-heavy run --
   run_bin -2 team-heavy run --wait soon -- echo hi
   TEAM_HEAVY_WAIT_MINUTES=soon run_bin -2 team-heavy run -- echo hi
+  TEAM_HEAVY_RECHECK_SECONDS=0 run_bin -2 team-heavy run -- echo hi
 }
 
 # A root holding this checkout's bin/ and tests/run, whose bats is a stub that logs
@@ -221,9 +225,10 @@ costs() {
 
 @test "a cost sample that cannot be written is a line on stderr and the run's status stands" {
   as_macos
-  mkdir -p "$HOME/.local/state/agent-team"
+  # No team home, so no admission needs the state directory either.
+  rm -r "$HOME/.local/state/agent-team/capacity"
   touch "$HOME/.local/state/agent-team/capacity"
-  run_bin -5 --separate-stderr team-heavy run -- bash -c 'sleep 1; exit 5'
+  run -5 --separate-stderr env -u TEAM_HOME "$REPO_ROOT/bin/team-heavy" run -- bash -c 'sleep 1; exit 5'
   assert_contains "$stderr" "team-heavy: could not write the cost sample to ~/.local/state/agent-team/capacity/costs.jsonl"
 }
 
@@ -331,4 +336,48 @@ gone() {
   for _ in 1 2 3 4; do run -0 "$root/tests/run" bats; done
   run_bin -0 team-capacity costs
   [[ $(grep '^heavy:tests-run' <<<"$output") =~ ^heavy:tests-run:\ [0-9.]+\ GiB,\ learned\ from\ 5\ samples, ]]
+}
+
+@test "a run is admitted to the level's budget once it holds the lock, its admission kept with its pid and task" {
+  AGENT_TEAM_TASK=T7 run_bin -0 --separate-stderr team-heavy run --kind tests-run -- echo ran
+  assert_equal "$output" ran
+  assert_equal "$(jq -c 'map([.kind, .task, (.pid | type)])' "$ADMITTED")" '[["heavy:tests-run","T7","number"]]'
+  # Under a run already, and with no team home, it asks nothing.
+  rm "$ADMITTED"
+  TEAM_HEAVY_HELD=1 run_bin -0 team-heavy run -- echo nested
+  capacity_room $((16 * 1073741824)) none
+  env -u TEAM_HOME "$REPO_ROOT/bin/team-heavy" run --wait 0 -- echo homeless >"$BATS_TEST_TMPDIR/out"
+  assert_equal "$(cat "$BATS_TEST_TMPDIR/out")" homeless
+  [[ ! -e $ADMITTED ]]
+}
+
+@test "with no room a run lets the lock go, says once why it waits, and runs when room comes" {
+  capacity_room $((16 * 1073741824)) none
+  # Two seconds in, with the lock free while it waits, the level goes back to full.
+  (sleep 2 && "$REPO_ROOT/bin/team-heavy" status >"$BATS_TEST_TMPDIR/meanwhile" &&
+    capacity_room $((16 * 1073741824)) full) &
+  TEAM_HEAVY_RECHECK_SECONDS=1 run_bin -0 --separate-stderr team-heavy run --wait 1 --kind tests-run -- echo ran
+  assert_equal "$output" ran
+  assert_equal "$(grep -c 'room' <<<"$stderr")" 1
+  assert_equal "${stderr%%$'\n'*}" "team-heavy: waiting up to 1 minutes for room in the team's budget: the team is at level none: nothing starts"
+  assert_equal "$(cat "$BATS_TEST_TMPDIR/meanwhile")" free
+  assert_equal "$(jq -c 'map(.kind)' "$ADMITTED")" '["heavy:tests-run"]'
+}
+
+@test "a run whose wait for room runs out exits 75 with the reason and runs nothing" {
+  mkdir -p "$HOME/.config/agent-team"
+  echo '{"heavy_gib": 20}' >"$HOME/.config/agent-team/capacity.json"
+  run_bin -75 --separate-stderr team-heavy run --wait 0 --kind tests-run -- touch "$BATS_TEST_TMPDIR/ran"
+  assert_equal "$stderr" "team-heavy: no room for heavy:tests-run at full (90%): 0.0 GiB of 16.0 GiB reserved, a heavy run of tests-run needs 20.0 GiB"
+  TEAM_HEAVY_RECHECK_SECONDS=1 run_bin -75 --separate-stderr team-heavy run --wait 0.04 --kind tests-run -- touch "$BATS_TEST_TMPDIR/ran"
+  assert_equal "$stderr" "team-heavy: waiting up to 0.04 minutes for room in the team's budget: no room for heavy:tests-run at full (90%): 0.0 GiB of 16.0 GiB reserved, a heavy run of tests-run needs 20.0 GiB
+team-heavy: still no room after 0.04 minutes: no room for heavy:tests-run at full (90%): 0.0 GiB of 16.0 GiB reserved, a heavy run of tests-run needs 20.0 GiB"
+  [[ ! -e $BATS_TEST_TMPDIR/ran ]]
+  run_bin -0 team-heavy status
+  assert_equal "$output" free
+  # An admission that fails otherwise fails the run.
+  echo '{"heavy_gib": 0}' >"$HOME/.config/agent-team/capacity.json"
+  run_bin -1 --separate-stderr team-heavy run --kind tests-run -- touch "$BATS_TEST_TMPDIR/ran"
+  assert_equal "$stderr" "team-heavy: team-capacity admit failed for heavy:tests-run (exit 1): team-capacity: $HOME/.config/agent-team/capacity.json: heavy_gib must be a number above 0, not 0"
+  [[ ! -e $BATS_TEST_TMPDIR/ran ]]
 }
