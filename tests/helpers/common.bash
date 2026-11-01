@@ -337,6 +337,33 @@ hold_lease() {
   echo "$origin"
 }
 
+# A backlog story of <project> in the team home, its front matter as the backlog writes it:
+# backlog_story <project> <path under backlog/> <id> [<status> [<pr list>]]
+backlog_story() {
+  local file=$TEAM_HOME/projects/$1/backlog/$2
+  mkdir -p "${file%/*}"
+  printf -- '---\nid: %s\ntitle: A story\ntype: story\nstatus: %s\nblocked_by: []\npr: %s\n---\n\n## What to build\n\nstatus: ready\npr: []\n' \
+    "$3" "${4:-ready}" "${5:-[]}" >"$file"
+}
+
+# add_loose <n> [--unreachable]: <n> new loose blobs in the team home, kept reachable by a commit
+# of them (one more tree and commit) at a refs/keep/ ref of their own, or with --unreachable, none.
+add_loose() {
+  local dir i shas tree commit
+  dir=$(mktemp -d "$BATS_TEST_TMPDIR/loose.XXXXXX")
+  for ((i = 1; i <= $1; i++)); do echo "$dir $i" >"$dir/$i"; done
+  shas=$(find "$dir" -type f | git -C "$TEAM_HOME" hash-object -w --stdin-paths)
+  [[ ${2:-} != --unreachable ]] || return 0
+  tree=$(awk '{printf "100644 blob %s\tf%d\n", $1, NR}' <<<"$shas" | git -C "$TEAM_HOME" mktree)
+  commit=$(git -C "$TEAM_HOME" commit-tree "$tree" -m "test: loose objects")
+  git -C "$TEAM_HOME" update-ref "refs/keep/${dir##*.}" "$commit"
+}
+
+# The team home's loose objects, as git counts them.
+loose_count() {
+  git -C "$TEAM_HOME" count-objects -v | sed -n 's/^count: //p'
+}
+
 # lease_json [<git dir>]: the lease on the lease branch of the team home's origin (make_team_home),
 # or of <git dir>.
 lease_json() {

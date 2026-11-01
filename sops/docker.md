@@ -75,7 +75,8 @@ Every stack starts fresh for its task:
 - A new stack gets `TEAM_OWNER=agent-team`, its task, `TEAM_KIND=dev`, the worktree's path and an empty `TEAM_EXPIRES`; an existing one of the same task is always called with the labels read back from its containers.
 - The seed runs only when the stack is new and none of its named volumes was there before, and not with `up --no-seed`.
 
-`down` saves the last 1 MiB of each `log_services` service's log to `<worktree>/<task_dir>/stack-logs/<project>-<service>.log`, so `team-close`'s archive keeps it.
+`down` saves the last 1 MiB of each `log_services` service's log to `<worktree>/<task_dir>/stack-logs/<project>-<service>.log`, for the builder while the task is open.
+`team-close`'s archive leaves `stack-logs/` out (`archive_left_out` in `bin/lib/team.sh`), so the logs never reach the records and go when the worktree is returned.
 It then runs `docker compose -p <project> down -v --remove-orphans`, removes any anonymous volume the stack's containers mounted that is still there, and fails naming each object of the stack left.
 With no stack, `stop` and `down` say so and exit 0; `env` and `seed` refuse.
 
@@ -240,9 +241,9 @@ The heartbeat (`team-timers run`, every 5 minutes on the lease holder) can run t
 
 ## Closing a task
 
-`team-close` takes the stacks of a task down before it archives the task's directories, so a closed task leaves nothing running and its stack logs are archived with it.
+`team-close` takes the stacks of a task down before it archives the task's directories, so a closed task leaves nothing running.
 
-- For each worktree it is about to return whose project has a `stack` block, it runs `team-stack down --worktree <path>`, which saves the logs into the worktree's task directory; the archive then copies them to `tasks/T<n>/`.
+- For each worktree it is about to return whose project has a `stack` block, it runs `team-stack down --worktree <path>`, which saves the logs into the worktree's task directory; the archive leaves them out.
 - A worktree kept with `--keep-worktree` keeps its stack, and a project without a `stack` block is never asked of Docker.
 - A teardown that fails stops the close with `team-stack`'s reason, the task half closed: fix the cause and run `team-close T<n>` again.
 - A project's own return command may tear its stack down as a second line (Conventioner's `th-return.sh` does).

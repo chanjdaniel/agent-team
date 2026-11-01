@@ -53,18 +53,22 @@
 #              checkpoint  On the holder, after the lease or back step: team-checkpoint, which
 #                     makes one once the last is 15 minutes old (less the same minute). A failed
 #                     checkpoint ends the run.
-#              janitor  On the holder, after the checkpoint, when heartbeat_janitor is true there
+#              pack   On the holder, after the checkpoint, once the team home has PACK_LOOSE (200,
+#                     bin/lib/team.sh) loose objects: git gc in it, then one line, "packed 213
+#                     loose objects; 0 left loose, 38.40 MiB in packs". So the team home stays
+#                     packed wherever the lease goes, with no scheduler entry of git's own.
+#              janitor  On the holder, after the pack step, when heartbeat_janitor is true there
 #                     and no janitor report of today's local date is there yet
 #                     (~/.local/state/agent-team/janitor/<date>.md; a dry run's is none):
 #                     team-janitor, the daily Docker reap, report and alerts. A run of it that
 #                     failed still wrote the day's report, so it runs again the next day.
 #            The slots, stacks, checkpoint and janitor steps log one line per line their command
 #            prints (a good slots step prints none); a step that is off logs nothing. A slots,
-#            stacks or janitor step that fails, or whose stack.json (slots.json for the slots
+#            stacks, pack or janitor step that fails, or whose stack.json (slots.json for the slots
 #            step) is malformed, is logged as "<step>: failed: <reason>", the steps after it still
 #            run, and the run exits 1 at its end. A hung Docker never holds the run's lock past
-#            the lease's renewals: the reading is stopped after 60 s, the sweep after 300 s and
-#            the janitor after 1200 s, each logged as "<step>: failed: timed out after <n> s" (a
+#            the lease's renewals: the reading is stopped after 60 s, the sweep and the pack after
+#            300 s and the janitor after 1200 s, each logged as "<step>: failed: timed out after <n> s" (a
 #            janitor stopped so wrote no report, so the next run starts it again). The sweep and
 #            the janitor need docker on the PATH enable captured (the sweep claude too), and the
 #            reading counts the team's stacks as other programs without it: run enable again
@@ -107,6 +111,7 @@ INBOX_TIMEOUT=120
 SLOTS_TIMEOUT=${TEAM_TIMERS_SLOTS_SECONDS:-60}
 SWEEP_TIMEOUT=${TEAM_TIMERS_SWEEP_SECONDS:-300}
 JANITOR_TIMEOUT=${TEAM_TIMERS_JANITOR_SECONDS:-1200}
+PACK_TIMEOUT=300
 # Seconds between the watch's looks at the offline flag.
 WATCH_SECONDS=60
 LOG_KEEP=1000
@@ -626,7 +631,25 @@ stacks_step() {
   run_step stacks "$SWEEP_TIMEOUT" team-stack sweep
 }
 
-# The janitor step, on the holder after the checkpoint: team-janitor, when heartbeat_janitor is
+# The pack step, on the holder after the checkpoint: once the team home has PACK_LOOSE loose
+# objects, git gc, which refuses while another gc runs.
+pack_step() {
+  local loose rc=0
+  if ! loose=$(loose_objects 2>"$err"); then
+    step_failed pack "cannot count the team home's loose objects: $(first_error)"
+    return 0
+  fi
+  ((loose >= PACK_LOOSE)) || return 0
+  timeout --kill-after=10 "$PACK_TIMEOUT" git -C "$TEAM_HOME" gc --quiet 2>"$err" {run_fd}>&- || rc=$?
+  case $rc in
+    0) ;;
+    124 | 137) step_failed pack "timed out after $PACK_TIMEOUT s" && return 0 ;;
+    *) step_failed pack "$(grep -q . "$err" && first_error || echo "git gc exited $rc")" && return 0 ;;
+  esac
+  log pack "packed $loose loose objects; $(loose_objects) left loose, $(pack_size) in packs"
+}
+
+# The janitor step, on the holder after the pack step: team-janitor, when heartbeat_janitor is
 # on and no report of today's local date is there yet (a dry run's is none).
 janitor_step() {
   step_on janitor heartbeat_janitor || return 0
@@ -720,6 +743,7 @@ run_heartbeat() {
     slots_step
     stacks_step
     checkpoint_step
+    pack_step
     janitor_step
   fi
   ((!failed)) || exit 1

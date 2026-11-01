@@ -126,6 +126,30 @@ advance_origin() {
   assert_equal "$(events opened | jq -r .task)" "T13"
 }
 
+@test "--story logs the backlog story on opened; one with no backlog file is refused before anything is taken" {
+  backlog_story proj E40-history/F01-the-markets/S02-every-write.md E40/F01/S02
+  run_bin -0 --separate-stderr team-open --story E40/F01/S02 proj feature feat history "Every write records"
+  assert_equal "$(jq -r .story <<<"$output")" E40/F01/S02
+  assert_equal "$(events opened | jq -r .story)" E40/F01/S02
+  TEAM_HOME=$TEAM_HOME run -0 "$REPO_ROOT/bin/team-log" --check
+
+  # A story file whose front matter names another id is no match either.
+  backlog_story proj E40-history/F01-the-markets/S03-the-page.md E40/F01/S04
+  run_bin -1 --separate-stderr team-open --task T7 --story E40/F01/S03 proj feature feat page "The page"
+  assert_equal "$stderr" "team-open: proj's backlog has no story E40/F01/S03 (a file projects/proj/backlog/E40-*/F01-*/S03-*.md whose id is E40/F01/S03)"
+  assert_equal "$(events opened | wc -l)" 1
+  [[ ! -e $TEAM_HOME/tasks/T7 ]]
+  assert_equal "$(git -C "$primary" worktree list | wc -l)" 2
+
+  run_bin -2 team-open --story E40-F01 proj feature feat page "The page"
+  assert_contains "$output" "story must look like E<nn>/F<nn>/S<nn>, got 'E40-F01'"
+  run_bin -2 team-open --task T1 --story E40/F01/S02 --add proj feat more
+  assert_contains "$output" "--story goes only with a new task"
+  # Without --story, opened names no story.
+  run_bin -0 team-open proj feature feat other "Other"
+  assert_equal "$(events opened | jq -c 'has("story")' | paste -sd ' ')" "true false"
+}
+
 @test "--task refuses a task that is already open" {
   run_bin -0 team-open --task T5 proj feature feat one "One"
   run_bin -1 team-open --task T5 proj feature feat one "One"
@@ -137,7 +161,7 @@ advance_origin() {
 
 @test "malformed arguments are usage errors that change nothing" {
   run_bin -2 team-open proj feature feat slug
-  assert_contains "$output" "usage: team-open [--task T<n>] <project> <path> <type> <slug> <title...>"
+  assert_contains "$output" "usage: team-open [--task T<n>] [--story E<nn>/F<nn>/S<nn>] <project> <path> <type> <slug> <title...>"
   run_bin -2 team-open proj feature feat slug "  "
   run_bin -2 team-open --task
   run_bin -2 team-open --task 13 proj feature feat slug "Title"

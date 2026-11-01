@@ -582,7 +582,7 @@ stack_gone() {
   ! stack_exists "$1"
 }
 
-@test "a returned worktree's stack and its instances are taken down before the archive, their logs archived with the task directory" {
+@test "a returned worktree's stack and its instances are taken down before the archive, which leaves their logs out" {
   home_stack
   open_home_task
   run_bin -0 team-stack up --worktree "$wt" --no-seed
@@ -598,10 +598,8 @@ team-stack: stackfix-1 is removed, its logs in $wt/.scratch/task/stack-logs"
   assert_contains "$(docker_calls)" "compose -p stackfix-1-a down -v --remove-orphans"
   stack_gone stackfix-1
   stack_gone stackfix-1-a
-  assert_equal "$(cat "$TEAM_HOME/tasks/T1/scratch/stack-logs/stackfix-1-web.log")" \
-    "web-1  | 2026-10-24T09:00:00.000000000Z stackfix-1's web started"
-  assert_equal "$(cat "$TEAM_HOME/tasks/T1/scratch/stack-logs/stackfix-1-a-web.log")" \
-    "web-1  | 2026-10-24T09:00:00.000000000Z stackfix-1-a's web started"
+  assert_contains "$stderr" "team-close: left out of tasks/T1/scratch: stack-logs (stack logs)"
+  [[ ! -e $TEAM_HOME/tasks/T1/scratch/stack-logs ]]
   assert_equal "$(jq -c .returned <<<"$output")" "$(jq -cn --arg wt "$wt" '[$wt]')"
 }
 
@@ -648,7 +646,7 @@ team-stack: stackfix-1 is removed, its logs in $wt/.scratch/task/stack-logs"
   rm "$DOCKER_STATE/fail-compose-down"
   run_bin -0 team-close T1
   stack_gone stackfix-1
-  [[ -f $TEAM_HOME/tasks/T1/scratch/stack-logs/stackfix-1-web.log ]]
+  [[ ! -e $TEAM_HOME/tasks/T1/scratch/stack-logs ]]
   [[ ! -e $wt ]]
   assert_equal "$(events closed | jq -c .returned)" "$(jq -cn --arg wt "$wt" '[$wt]')"
 }

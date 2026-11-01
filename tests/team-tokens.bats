@@ -275,7 +275,7 @@ read 3 of 3 transcripts; wrote 1 day file"
   assert_equal "$(jq -r '.source' "$prices")" "https://platform.claude.com/docs/en/about-claude/pricing"
   [[ $(jq -r '.read' "$prices") =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]
   assert_equal "$(jq -r '.models | keys[]' "$prices" | paste -sd ' ')" \
-    "<synthetic> claude-fable-5-1 claude-haiku-5-5 claude-opus-5 claude-opus-5-5 claude-sonnet-5-5"
+    "<synthetic> claude-fable-5-1 claude-haiku-5-5 claude-opus-4-8 claude-opus-5 claude-opus-5-5 claude-sonnet-5-5"
   assert_equal "$(jq '[.models[] | ., (.above // empty) | del(.tokens, .above) | keys == ["cache_read", "cache_write_1h", "cache_write_5m", "input", "output"] and all(.[]; type == "number")] | all' "$prices")" true
   assert_equal "$(jq -c '.models["<synthetic>"] | [.[]] | unique' "$prices")" "[0]"
 }
@@ -408,6 +408,13 @@ read 3 of 3 transcripts; wrote 1 day file"
   rm -r "$TEAM_HOME/usage"
   run_bin -0 team-tokens --until 2026-10-21T16:00Z --json
   assert_equal "$(jq -c '[.sources, .live, .totals.replies]' <<<"$output")" '[{"home-pc":null},5,5]'
+}
+
+@test "an Opus 4.8 reply is weighed at its own price, with no warning" {
+  report_fixture
+  sed -i 's/claude-sonnet-5-5/claude-opus-4-8/' "$TEAM_HOME/usage/home-pc/2026-10-20.jsonl"
+  report_json
+  assert_equal "$(q '.models[] | select(.model == "claude-opus-4-8") | [.replies, .w]')" '[1,0.625]'
 }
 
 @test "a model with no price is weighed as Opus 5.5, with a warning" {

@@ -405,6 +405,20 @@ team-checkpoint: left out of tasks/T1/scratch: ui-check/reviewer-abc1234/menu-39
   assert_equal "$(git -C "$team_origin" ls-tree -r --name-only dev tasks/T1/scratch)" "tasks/T1/scratch/ui-check/reviewer-abc1234/findings.md"
 }
 
+@test "the archive leaves out the task's stack logs, and an older archive loses them" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  local dir=$HOME/slots/home/1/.scratch/task
+  mkdir -p "$dir/stack-logs"
+  echo "notes" >"$dir/notes.md"
+  echo "backend started" >"$dir/stack-logs/T1-home-1-backend.log"
+  mkdir -p "$TEAM_HOME/tasks/T1/scratch/stack-logs"
+  echo "backend started" >"$TEAM_HOME/tasks/T1/scratch/stack-logs/home-1-backend.log"
+
+  run_bin -0 --separate-stderr team-checkpoint
+  assert_equal "$stderr" "team-checkpoint: left out of tasks/T1/scratch: stack-logs (stack logs)"
+  assert_equal "$(git -C "$team_origin" ls-tree -r --name-only dev tasks/T1/scratch)" "tasks/T1/scratch/notes.md"
+}
+
 @test "the team-home commit holds only the scratch archives, memory, the current items and the ledger, whatever else is staged" {
   run_bin -0 team-open home feature feat work "Do the work"
   echo "spec" >"$HOME/slots/home/1/.scratch/task/spec.md"

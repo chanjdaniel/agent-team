@@ -1,10 +1,11 @@
 {
   "about": "List prices in US dollars per million tokens, per model id as Claude Code's transcripts name it: input, one-hour cache write, five-minute cache write, cache read, output. A model with above prices is priced by them for a reply whose prompt (input plus cache write plus cache read) is over its tokens. team-tokens weighs replies by them ($w): a weight, not a bill.",
   "source": "https://platform.claude.com/docs/en/about-claude/pricing",
-  "read": "2026-10-27",
+  "read": "2026-11-01",
   "models": {
     "claude-opus-5-5": {"input": 4, "cache_write_1h": 8, "cache_write_5m": 5, "cache_read": 0.2, "output": 20},
     "claude-opus-5": {"input": 5, "cache_write_1h": 10, "cache_write_5m": 6.25, "cache_read": 0.5, "output": 25},
+    "claude-opus-4-8": {"input": 5, "cache_write_1h": 10, "cache_write_5m": 6.25, "cache_read": 0.5, "output": 25},
     "claude-sonnet-5-5": {"input": 2, "cache_write_1h": 4, "cache_write_5m": 2.5, "cache_read": 0.1, "output": 10},
     "claude-haiku-5-5": {
       "input": 0.1, "cache_write_1h": 0.2, "cache_write_5m": 0.125, "cache_read": 0.01, "output": 0.5,
