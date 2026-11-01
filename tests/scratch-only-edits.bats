@@ -268,12 +268,45 @@ echo b > y" "$wt/y"
   blocked 'cmd > src${x//../.scratch/}/x' "$wt/src\${x//../.scratch/}/x"
   blocked 'cmd > "src$(( 1 /../.scratch/ 1 ))/x"' "$wt/src\$(( 1 /../.scratch/ 1 ))/x"
   blocked 'cmd > src$[ 1 /../.scratch/ 1 ]/x' "$wt/src\$[ 1 /../.scratch/ 1 ]/x"
+  blocked 'cmd > "src$[ 1 /../.scratch/ 1 ]/x"' "$wt/src\$[ 1 /../.scratch/ 1 ]/x"
   # A substitution inside a parameter expansion is judged too.
   blocked 'echo ${x:-$(cmd > out)}' "$wt/out"
   blocked 'echo "${x:-`cmd > out`}"' "$wt/out"
   blocked 'echo ${x:-"$(cmd > out)"}' "$wt/out"
   blocked 'echo "${x:-"`cmd > out`"}"' "$wt/out"
   blocked 'echo ${x:-"${y:-"$(cmd > out)"}"}' "$wt/out"
+  # In an arithmetic expansion or command, quoted or not, and in a for's (( )).
+  blocked 'echo $(( $(cmd > out) + 1 ))' "$wt/out"
+  blocked '(( $(cmd > out) ))' "$wt/out"
+  blocked 'echo "$(( $(cmd > out) ))"' "$wt/out"
+  blocked 'echo $[ $(cmd > out) ]' "$wt/out"
+  blocked 'echo $(( `cmd > out` ))' "$wt/out"
+  blocked 'echo "$[ `cmd > out` ]"' "$wt/out"
+  blocked 'echo $(( ${x:-$(cmd > out)} ))' "$wt/out"
+  blocked 'echo ${x:-"$(( $(cmd > out) ))"}' "$wt/out"
+  blocked 'echo $(( 1 + $(( $(cmd > out) )) ))' "$wt/out"
+  blocked 'for (( i = $(cmd > out); i < 2; i++ )); do :; done' "$wt/out"
+  # In the body of a heredoc whose delimiter is unquoted, at the top or in a substitution.
+  blocked 'cat <<EOF
+a $(cmd > out) b
+EOF' "$wt/out"
+  blocked 'cat <<-EOF
+	`cmd > out`
+	EOF' "$wt/out"
+  blocked 'x=$(cat <<EOF
+${y:-$(cmd > out)}
+EOF
+)' "$wt/out"
+  # A substitution there may run over lines, and each heredoc keeps its own quoting.
+  blocked 'cat <<EOF
+$(printf "%s
+" a > out)
+EOF' "$wt/out"
+  blocked "cat <<A <<'B'
+\$(cmd > a)
+A
+\$(cmd > b)
+B" "$wt/a"
   # An ANSI-C string in an operand or a substitution ends at its unescaped quote.
   blocked "echo \${x:-\$'a\\'b'} > out" "$wt/out"
   blocked "cmd > x-\$(echo \$'a\\'b').log; echo ok" "$wt/x-\$(echo \$'a\\'b').log"
@@ -296,6 +329,20 @@ EOF
   shell -0 'x=`cmd 2>&1`'
   shell -0 'echo "$(( a > b ))"'
   shell -0 'echo "it is \$(cmd > out)"'
+  shell -0 'echo $(( $(cmd 2>/dev/null) > 1 ))'
+  # A quoted heredoc's body, and an escaped substitution in an unquoted one's, is text.
+  shell -0 "cat <<'EOF'
+\$(cmd > out) \`cmd > out\`
+EOF"
+  shell -0 'cat <<\EOF
+$(cmd > out)
+EOF'
+  shell -0 'cat <<"EOF"
+$(cmd > out)
+EOF'
+  shell -0 'cat <<EOF
+\$(cmd > out) \`cmd > out\` a > b
+EOF'
 }
 
 @test "an ANSI-C string and an old arithmetic expansion are read whole, so what follows them is judged" {
@@ -340,6 +387,13 @@ EOF"
 $body
 EOF
 )\""
+  ((SECONDS < 5))
+  # And with its delimiter unquoted, whose body's expansions are read.
+  body=$(for i in $(seq 1 1000); do echo "line $i with \${HOME} and a > and a | tee x"; done)
+  SECONDS=0
+  shell -0 "cat > .scratch/task/big.txt <<EOF
+$body
+EOF"
   ((SECONDS < 5))
 }
 

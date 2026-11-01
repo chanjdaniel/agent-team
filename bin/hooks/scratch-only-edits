@@ -19,8 +19,12 @@
 # and builtin, past their options and those options' values; behind any other command (xargs, say)
 # it is not.
 # Quoted text, heredoc bodies, comments, file descriptor duplications (2>&1, >&2) and the
-# comparisons of [[ ]], (( )), $(( )) and $[ ] are not redirections; one inside a command or
-# process substitution is, a backtick one too, in double quotes or not, and in a ${ }'s operand.
+# comparisons of [[ ]], (( )), $(( )) and $[ ] are not redirections.
+# A command substitution, $( ) or backticks, is judged as a command wherever the shell runs one:
+# unquoted, in double quotes, in a ${ }'s operand, in an arithmetic expansion or command, and in the
+# body of a heredoc whose delimiter is unquoted; so is a process substitution. Single-quoted and
+# ANSI-C text, comments and the body of a heredoc whose delimiter is quoted hold none.
+# Text that a command runs as shell code itself (eval, sh -c, bash -c, ssh) is not judged.
 # It is a speed bump for the plain shell write, never a guarantee: sed -i, cp, mv, an interpreter
 # and every other command that writes a file itself still get through.
 # Test seam: TEAM_SYSTEM_ROOT stands for / in /tmp, as in the library's tool_dirs.
@@ -66,9 +70,10 @@ shopt -s extglob
 #   rd >&, whose next word is a target unless it is a file descriptor (a duplication)
 #   i  an input redirection or a here-string, whose next word is no target
 # A heredoc's delimiter is read by the lexer, which skips its body at the next newline.
-# The body of a command substitution, $( ) or backticks, quoted or not, is a command of its own:
-# the lexer queues it in pending, to be lexed and judged after this one, a substitution inside a
-# parameter expansion's operand too.
+# The body of a command substitution, $( ) or backticks, is a command of its own: the lexer queues
+# it in pending, to be lexed and judged after this one, wherever the header says the shell runs it;
+# the body of a heredoc whose delimiter is unquoted goes to bodies, whose substitutions scan_body
+# queues.
 # Each expansion in a word but a plain $name or ${name} (a command substitution, an arithmetic
 # one, any other parameter expansion) is a stand-in in the word, an index into expansions between
 # the bytes 1 and 2: judged, it is a name with no / in it, so a / or .. inside it moves no target,
@@ -81,7 +86,7 @@ open_mark=$'\x01' close_mark=$'\x02'
 flush() {
   if ((inword)); then
     if [[ -n $delimiter_mode ]]; then
-      heredocs+=("$delimiter_mode$word")
+      heredocs+=("$delimiter_mode$quoted$word")
       delimiter_mode=''
     else
       kinds+=(w) values+=("$word") quotings+=("$quoting")
@@ -111,52 +116,42 @@ drop_descriptor() {
   flush
 }
 
-# The index just past the parentheses that open at i, counted as balanced.
-past_parentheses() {
-  local j=$i depth=0 c
-  while ((j < n)); do
-    c=${s:j:1}
-    if [[ $c == '(' ]]; then
-      depth=$((depth + 1))
-    elif [[ $c == ')' ]]; then
-      depth=$((depth - 1))
-      ((depth > 0)) || break
-    fi
-    j=$((j + 1))
-  done
-  echo $((j + 1))
-}
-
-# skip_bodies <j> <entry>...: set end past the bodies of the heredocs read on the line that ended
-# just before j, in their order, each entry its - or + (whether leading tabs are stripped) and its
-# delimiter.
+# skip_bodies <j> <queue> <entry>...: set end past the bodies of the heredocs read on the line that
+# ended just before j, in their order, each entry its - or + (whether leading tabs are stripped), 1
+# or 0 (whether its delimiter was quoted) and its delimiter; with queue, add the body of each one
+# whose delimiter was not quoted to bodies, whose substitutions the shell runs.
 skip_bodies() {
-  local j=$1 entry delimiter dash line rest
-  shift
+  local j=$1 queue=$2 entry delimiter dash quoted_delimiter line rest start finish
+  shift 2
   for entry in "$@"; do
-    dash=${entry:0:1} delimiter=${entry:1}
+    dash=${entry:0:1} quoted_delimiter=${entry:1:1} delimiter=${entry:2}
+    start=$j finish=$n
     while ((j < n)); do
       rest=${s:j}
-      line=${rest%%$'\n'*}
-      j=$((j + ${#line} + 1))
+      rest=${rest%%$'\n'*}
+      line=$rest
       [[ $dash == - ]] && line=${line##+($'\t')}
-      [[ $line == "$delimiter" ]] && break
+      [[ $line == "$delimiter" ]] && finish=$j
+      j=$((j + ${#rest} + 1))
+      ((finish == n)) || break
     done
+    [[ -n $queue && $quoted_delimiter == 0 ]] && bodies+=("${s:start:finish-start}")
   done
   end=$j
 }
 
 # delimiter_at <j>: set delimiter to the heredoc delimiter that starts at j (past << and its -),
-# its quotes and backslashes removed, and end past it.
+# its quotes and backslashes removed, delimiter_quoted to 1 when it had any, and end past it.
 delimiter_at() {
   local j=$1 c rest
-  delimiter=''
+  delimiter='' delimiter_quoted=0
   while [[ ${s:j:1} == [' '$'\t'] ]]; do j=$((j + 1)); done
   while ((j < n)); do
     c=${s:j:1}
     case $c in
-      \\) delimiter+=${s:j+1:1} && j=$((j + 2)) ;;
+      \\) delimiter+=${s:j+1:1} delimiter_quoted=1 && j=$((j + 2)) ;;
       \' | \")
+        delimiter_quoted=1
         rest=${s:j+1}
         rest=${rest%%"$c"*}
         delimiter+=$rest
@@ -174,7 +169,7 @@ delimiter_at() {
 # sub_end <j>: the ) that closes a command substitution whose body starts at j, past quoted text,
 # nested substitutions and heredoc bodies.
 sub_end() {
-  local j=$1 depth=1 c rest bodies=() dash delimiter
+  local j=$1 depth=1 c rest entries=() dash delimiter delimiter_quoted
   while ((j < n)); do
     c=${s:j:1}
     case $c in
@@ -187,15 +182,15 @@ sub_end() {
           j=$((j + 2)) dash=+
           [[ ${s:j:1} == - ]] && j=$((j + 1)) dash=-
           delimiter_at "$j"
-          bodies+=("$dash$delimiter")
+          entries+=("$dash$delimiter_quoted$delimiter")
           j=$end
           continue
         fi
         ;;
       $'\n')
-        if ((${#bodies[@]})); then
-          skip_bodies $((j + 1)) "${bodies[@]}"
-          j=$end bodies=()
+        if ((${#entries[@]})); then
+          skip_bodies $((j + 1)) '' "${entries[@]}"
+          j=$end entries=()
           continue
         fi
         ;;
@@ -232,7 +227,9 @@ dq_end() {
         if [[ -z ${2:-} && ${s:j+1:1} == '(' ]]; then
           sub_end $((j + 2)) && j=$end && continue
         elif [[ ${s:j+1:2} == '((' ]]; then
-          sub_end $((j + 2)) && j=$end && continue
+          arith_end $((j + 1)) '(' ')' d && j=$end && continue
+        elif [[ ${s:j+1:1} == '[' ]]; then
+          arith_end $((j + 1)) '[' ']' d && j=$end && continue
         elif [[ ${s:j+1:1} == '(' ]]; then
           queue_substitution "$j" && j=$end && continue
         elif [[ ${s:j+1:1} == '{' ]]; then
@@ -244,6 +241,35 @@ dq_end() {
           bq_end $((j + 1)) && j=$end && continue
         else
           queue_backticks "$j" d && j=$end && continue
+        fi
+        ;;
+    esac
+    j=$((j + 1))
+  done
+  end=$n
+}
+
+# arith_end <j> <open> <close> <in double quotes>: the <close> that closes an arithmetic expansion
+# or command whose first <open> is at j, queueing the command substitutions in it, at any depth,
+# since it is not lexed again.
+arith_end() {
+  local j=$1 depth=0 c
+  while ((j < n)); do
+    c=${s:j:1}
+    case $c in
+      \\) j=$((j + 2)) && continue ;;
+      "$2") depth=$((depth + 1)) ;;
+      "$3")
+        depth=$((depth - 1))
+        ((depth > 0)) || { end=$((j + 1)) && return; }
+        ;;
+      \") dq_end $((j + 1)) queue && j=$end && continue ;;
+      \`) queue_backticks "$j" "$4" && j=$end && continue ;;
+      '$')
+        if [[ ${s:j+1:1} == '(' && ${s:j+2:1} != '(' ]]; then
+          queue_substitution "$j" && j=$end && continue
+        elif [[ ${s:j+1:1} == '{' ]]; then
+          parameter "$j" "$4" && j=$end && continue
         fi
         ;;
     esac
@@ -407,13 +433,16 @@ lex() {
             continue
           fi
           [[ -n $quoting ]] || quoting=d
-          if [[ $c == '$' && ${s:i+1:1} == '(' && ${s:i+2:1} == '(' ]]; then
+          if [[ $c == '$' && ${s:i+1:2} == '((' ]]; then
             # An arithmetic expansion.
-            start=$i
-            i=$((i + 1))
-            i=$(past_parentheses)
-            stand_in "$start" "$i"
-            word+=$taken
+            arith_end $((i + 1)) '(' ')' d
+            stand_in "$i" "$end"
+            word+=$taken i=$end
+            continue
+          elif [[ $c == '$' && ${s:i+1:1} == '[' ]]; then
+            arith_end $((i + 1)) '[' ']' d
+            stand_in "$i" "$end"
+            word+=$taken i=$end
             continue
           elif [[ $c == '$' && ${s:i+1:1} == '(' ]]; then
             queue_substitution "$i"
@@ -442,7 +471,7 @@ lex() {
         emit o ';'
         i=$((i + 1))
         if ((${#heredocs[@]})); then
-          skip_bodies "$i" "${heredocs[@]}"
+          skip_bodies "$i" queue "${heredocs[@]}"
           i=$end heredocs=()
         fi
         ;;
@@ -477,7 +506,8 @@ lex() {
         if ((!inword)) && [[ $next == '(' ]]; then
           # An arithmetic command, whose > compares.
           flush
-          i=$(past_parentheses)
+          arith_end "$i" '(' ')' n
+          i=$end
           add '((' n
         else
           emit o '('
@@ -491,11 +521,10 @@ lex() {
       '$')
         if [[ $next == '(' && ${s:i+2:1} == '(' ]]; then
           # An arithmetic expansion.
-          start=$i
-          i=$((i + 1))
-          i=$(past_parentheses)
-          stand_in "$start" "$i"
+          arith_end $((i + 1)) '(' ')' n
+          stand_in "$i" "$end"
           add "$taken" n
+          i=$end
         elif [[ $next == '(' ]]; then
           queue_substitution "$i"
           add "$taken" n
@@ -511,17 +540,10 @@ lex() {
           i=$end
         elif [[ $next == '[' ]]; then
           # The old form of an arithmetic expansion, $[...], whose < and > compare or shift.
-          j=$((i + 2)) depth=1
-          while ((j < n && depth > 0)); do
-            case ${s:j:1} in
-              '[') depth=$((depth + 1)) ;;
-              ']') depth=$((depth - 1)) ;;
-            esac
-            j=$((j + 1))
-          done
-          stand_in "$i" "$j"
+          arith_end $((i + 1)) '[' ']' n
+          stand_in "$i" "$end"
           add "$taken" n
-          i=$j
+          i=$end
         else
           add '$' n
           i=$((i + 1))
@@ -719,13 +741,69 @@ walk() {
   done
 }
 
-# Judge the command, then each substitution body the lexer queued, in turn.
-pending=("$command")
-while ((${#pending[@]})); do
-  text=${pending[0]}
-  pending=("${pending[@]:1}")
-  lex "$text"
-  walk
+# scan_body <text>: queue the command substitutions in the body of a heredoc whose delimiter was
+# not quoted, where quotes are text and a backslash keeps a $ or ` from starting one.
+# It reads the body a line at a time, and a substitution still open at a line's end with the lines
+# after it, since each index into a long text costs that text's length.
+scan_body() {
+  local lines=() count k=0 j skip queued expanded
+  mapfile -t lines <<<"$1"
+  count=${#lines[@]}
+  while ((k < count)); do
+    s=${lines[k]} n=${#lines[k]} j=0
+    k=$((k + 1))
+    [[ $s == *[\`]* || $s == *'$'[\(\{\[]* ]] || continue
+    while ((j < n)); do
+      skip=${s:j}
+      skip=${skip%%[\\\$\`]*}
+      j=$((j + ${#skip}))
+      ((j < n)) || break
+      if [[ ${s:j:1} == \\ ]]; then
+        j=$((j + 2))
+        continue
+      elif [[ ${s:j:1} == '$' && ${s:j+1:1} != [\(\{\[] ]]; then
+        j=$((j + 1))
+        continue
+      fi
+      queued=${#pending[@]} expanded=${#expansions[@]}
+      while :; do
+        if [[ ${s:j:1} == \` ]]; then
+          queue_backticks "$j" n
+        elif [[ ${s:j+1:2} == '((' ]]; then
+          arith_end $((j + 1)) '(' ')' n
+        elif [[ ${s:j+1:1} == '[' ]]; then
+          arith_end $((j + 1)) '[' ']' n
+        elif [[ ${s:j+1:1} == '(' ]]; then
+          queue_substitution "$j"
+        else
+          parameter "$j" d
+        fi
+        # Ended before the line's end, or no line is left to add: done; else read on, and again.
+        ((end < n || k >= count)) && break
+        pending=("${pending[@]:0:queued}") expansions=("${expansions[@]:0:expanded}")
+        s+=$'\n'${lines[k]}
+        n=${#s}
+        k=$((k + 1))
+      done
+      j=$end
+    done
+  done
+}
+
+# Judge the command, then each substitution body the lexer queued, in turn, after the
+# substitutions found in the bodies of the heredocs read so far.
+pending=("$command") bodies=()
+while ((${#pending[@]} + ${#bodies[@]})); do
+  if ((${#bodies[@]})); then
+    text=${bodies[0]}
+    bodies=("${bodies[@]:1}")
+    scan_body "$text"
+  else
+    text=${pending[0]}
+    pending=("${pending[@]:1}")
+    lex "$text"
+    walk
+  fi
 done
 
 ((${#refused[@]})) || exit 0
