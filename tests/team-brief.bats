@@ -168,7 +168,7 @@ EOF
 
 @test "every real template renders for each delivery with no placeholder left and no em dash" {
   assert_equal "$(templates | paste -sd ' ')" \
-    "builder-deliver builder-fix builder-merge-base builder-round builder-ticket ops planner-feature planner-interview planner-research rereview resume resume-crash retro reviewer"
+    "builder-deliver builder-fix builder-merge-base builder-round builder-ticket ops planner-feature planner-interview planner-research rereview resume resume-crash retro reviewer verify"
   open_t12
   open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
   # The interview brief's thread is a task fact, logged as team-thread --interview logs it.
@@ -275,10 +275,10 @@ the checks
 - Local checks: none.
   Run them on `abc1234` with `@CODE@/bin/team-checks conv abc1234`, which runs them as `team-merge` does, in a fresh detached worktree of that head, and say in `.scratch/task/review.md` whether it passed; a failure is **blocking**, and they set no GitHub status.
 - There is no PR yet: the builder stopped before the no-mistakes gate, which runs once this review passes or its findings are fixed, and reviews the code line by line after you.
-- Write your findings to `.scratch/task/review.md`, numbered, each with its file and line and one kind: `blocking`, `note: correctness`, `note: security`, `note: real-data` or `note`.
-  End it with the count of each kind (0 for none) and the guarded areas the change touches, of `ci`, `dependencies`, `migrations`, `settings`, `permissions` and `secrets`, by the paths `@CODE@/bin/lib/guarded` lists or by what the code does (settings, permission or secrets handling in a file of any name), or none.
+- Write your findings to `.scratch/task/review.md`, numbered, each with its file and line, one kind, `blocking`, `note: correctness`, `note: security`, `note: real-data` or `note`, and one scope, `change` (a line the PR adds or changes) or `before` (code it did not change).
+  End it with the count of each kind, the plain notes as `note-change` and `note-before` (0 for none), the numbers of the `before` notes, and the guarded areas the change touches, of `ci`, `dependencies`, `migrations`, `settings`, `permissions` and `secrets`, by the paths `@CODE@/bin/lib/guarded` lists or by what the code does (settings, permission or secrets handling in a file of any name), or none.
   Post nothing to GitHub: the re-review of the gate's PR posts the comment and sets the status.
-- Send `T12 DONE pass abc1234 findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note:<n> guarded=<areas, comma-separated, or none>` or `T12 DONE findings .scratch/task/review.md findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note:<n> guarded=<areas, comma-separated, or none>` to `coordinator`, the counts and areas as `.scratch/task/review.md` gives them.
+- Send `T12 DONE pass abc1234 findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note-change:<n>,note-before:<n> before=<the before notes' numbers, comma-separated, or none> guarded=<areas, comma-separated, or none>` or `T12 DONE findings .scratch/task/review.md findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note-change:<n>,note-before:<n> before=<the before notes' numbers, comma-separated, or none> guarded=<areas, comma-separated, or none>` to `coordinator`, the counts, numbers and areas as `.scratch/task/review.md` gives them.
 
 ## Rules
 
@@ -310,14 +310,14 @@ EOF
   assert_contains "$brief" 'branch `feat/T14-team-tooling`; review `origin/main...abc1234`.'
   assert_contains "$brief" "The comment on PR $pr is that file, posted with this exact command, the only comment your settings allow: \`$REPO_ROOT/bin/team-review-comment $pr .work/task/review.md\`."
   assert_contains "$brief" "\`$REPO_ROOT/bin/team-review-status $pr abc1234 <success|failure> \"<one line, at most 140 characters>\"\`."
-  assert_contains "$brief" "- Send \`T14 DONE pass $pr findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note:<n> guarded=<areas, comma-separated, or none>\` or \`T14 DONE findings .work/task/review.md findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note:<n> guarded=<areas, comma-separated, or none>\` to \`coordinator\`, the counts and areas as \`.work/task/review.md\` gives them."
+  assert_contains "$brief" "- Send \`T14 DONE pass $pr findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note-change:<n>,note-before:<n> before=<the before notes' numbers, comma-separated, or none> guarded=<areas, comma-separated, or none>\` or \`T14 DONE findings .work/task/review.md findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note-change:<n>,note-before:<n> before=<the before notes' numbers, comma-separated, or none> guarded=<areas, comma-separated, or none>\` to \`coordinator\`, the counts, numbers and areas as \`.work/task/review.md\` gives them."
 }
 
-@test "each review brief gives every finding a number and a kind, so a passed review's notes follow it" {
+@test "each review brief gives every finding a number, a kind and a scope, so the notes sent back and queued follow it" {
   open_t12
   open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
-  local each='each with its file and line and one kind: `blocking`, `note: correctness`, `note: security`, `note: real-data` or `note`'
-  local kinds="numbered, $each"
+  local each='each with its file and line, one kind, `blocking`, `note: correctness`, `note: security`, `note: real-data` or `note`, and one scope, `change` (a line the PR adds or changes) or `before` (code it did not change)'
+  local kinds="numbered, $each."
   run_bin -0 team-brief T12 reviewer --name review --set head=abc1234 --set "checks=the checks"
   assert_contains "$(<"$output")" "$kinds"
   run_bin -0 team-brief T14 reviewer --name review --set pr=https://github.com/chanjdaniel/agent-team/pull/9 \
@@ -329,7 +329,8 @@ EOF
     run_bin -0 team-brief "$task" rereview --name rereview --set pr=https://github.com/chanjdaniel/agent-team/pull/9 \
       --set head=def5678 --set reviewed=abc1234 --set "since=the fix"
     assert_contains "$(<"$output")" "its new findings numbered on from the last, $each; then write the same result alone to \`$dir/rereview.md\`."
-    assert_contains "$(<"$output")" "(each \`blocking\`, \`note: correctness\`, \`note: security\` and \`note: real-data\`) is fixed at \`def5678\`"
+    assert_contains "$(<"$output")" "(each \`blocking\`, \`note: correctness\`, \`note: security\` and \`note: real-data\`, and each plain \`note\` whose scope is \`change\`) is fixed at \`def5678\`"
+    assert_contains "$(<"$output")" "a plain \`note\` whose scope is \`before\`, on code the PR did not change, is queued as a follow-up, not for this PR."
     refute_grep -F '**note**' "$output"
   done
 }
@@ -338,16 +339,16 @@ EOF
   open_t12
   open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
   local pr=https://github.com/chanjdaniel/agent-team/pull/9 brief
-  local counts='findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note:<n> guarded=<areas, comma-separated, or none>'
+  local counts="findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note-change:<n>,note-before:<n> before=<the before notes' numbers, comma-separated, or none> guarded=<areas, comma-separated, or none>"
   local areas="the guarded areas the change touches, of \`ci\`, \`dependencies\`, \`migrations\`, \`settings\`, \`permissions\` and \`secrets\`, by the paths \`$REPO_ROOT/bin/lib/guarded\` lists or by what the code does (settings, permission or secrets handling in a file of any name), or none"
   run_bin -0 team-brief T12 reviewer --name review --set head=abc1234 --set "checks=the checks"
   brief=$(<"$output")
   assert_contains "$brief" "$areas"
-  assert_contains "$brief" "- Send \`T12 DONE pass abc1234 $counts\` or \`T12 DONE findings .scratch/task/review.md $counts\` to \`coordinator\`, the counts and areas as \`.scratch/task/review.md\` gives them."
+  assert_contains "$brief" "- Send \`T12 DONE pass abc1234 $counts\` or \`T12 DONE findings .scratch/task/review.md $counts\` to \`coordinator\`, the counts, numbers and areas as \`.scratch/task/review.md\` gives them."
   run_bin -0 team-brief T14 reviewer --name review --set pr=$pr --set head=abc1234 --set "checks=the checks"
   brief=$(<"$output")
   assert_contains "$brief" "$areas"
-  assert_contains "$brief" "- Send \`T14 DONE pass $pr $counts\` or \`T14 DONE findings .work/task/review.md $counts\` to \`coordinator\`, the counts and areas as \`.work/task/review.md\` gives them."
+  assert_contains "$brief" "- Send \`T14 DONE pass $pr $counts\` or \`T14 DONE findings .work/task/review.md $counts\` to \`coordinator\`, the counts, numbers and areas as \`.work/task/review.md\` gives them."
   local task dir
   for task in T12:.scratch/task T14:.work/task; do
     dir=${task#*:} task=${task%:*}
@@ -355,8 +356,8 @@ EOF
       --set "since=the fix"
     brief=$(<"$output")
     assert_contains "$brief" "$areas"
-    assert_contains "$brief" "the findings that stand at \`def5678\`, its new ones and any earlier one not fixed"
-    assert_contains "$brief" "- Send \`$task DONE pass $pr $counts\` or \`$task DONE findings $dir/review.md $counts\` to \`coordinator\`, the counts and areas as \`$dir/rereview.md\` gives them."
+    assert_contains "$brief" "the findings that stand at \`def5678\`, its new ones and any earlier one sent back and not fixed, the plain notes as \`note-change\` and \`note-before\` (0 for none), the numbers of its new \`before\` notes"
+    assert_contains "$brief" "- Send \`$task DONE pass $pr $counts\` or \`$task DONE findings $dir/review.md $counts\` to \`coordinator\`, the counts, numbers and areas as \`$dir/rereview.md\` gives them."
   done
 }
 
@@ -400,6 +401,72 @@ EOF
   assert_contains "$brief" '   If the gate rebased the branch, so `abc1234` is not an ancestor of `def5678`, compare with `git range-diff abc1234...def5678` instead.'
 }
 
+@test "the verify brief re-reviews a notes-only fix from its diff alone, waiting on the checks while it reads" {
+  open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
+  local pr=https://github.com/chanjdaniel/agent-team/pull/9
+  # It needs the PR, both heads and the notes sent back.
+  run_bin -1 team-brief T14 verify --name verify-2
+  assert_contains "$output" "team-brief: unfilled placeholders: "
+  local key
+  for key in pr reviewed head findings; do assert_contains "$output" "$key"; done
+  run_bin -0 --separate-stderr team-brief T14 verify --name verify-2 --set pr=$pr --set head=def5678 \
+    --set reviewed=abc1234 --set findings="3 and 5"
+  assert_equal "$output" "$TEAM_HOME/tasks/T14/brief-verify-2.md"
+  assert_equal "$stderr" ""
+  local expected line=0
+  expected=$(
+    cat <<'BRIEF'
+# T14 brief (reviewer): verify the notes fixed on the team's tooling
+
+Path: feature; you are the reviewer of a fix round whose findings were all plain notes on lines the PR adds or changes.
+Project: home (`chanjdaniel/agent-team`), base `main`.
+Worktree: `~/agent-team/.claude/worktrees/2`, branch `feat/T14-team-tooling`.
+PR: https://github.com/chanjdaniel/agent-team/pull/9 against `main`, reviewed at `abc1234`, now at head `def5678`.
+Task directory: `.work/task/` in the worktree: `review.md` with the last review's findings.
+Sent back: the notes numbered 3 and 5 in `.work/task/review.md`, each a plain `note` whose scope is `change`.
+
+## Check
+
+1. First start the wait for the PR's GitHub checks with `@CODE@/bin/team-ci-wait https://github.com/chanjdaniel/agent-team/pull/9 def5678`, run with Bash `run_in_background`, so the run and your reading overlap, and run the project's local checks (none) on `def5678` with `@CODE@/bin/team-checks home def5678`, which runs them as `team-merge` does, in a fresh detached worktree of that head; every one must pass, and `.work/task/rereview.md` says which local checks passed (they set no GitHub status).
+   Act on how the wait ended: exit 0, every check passed or the head has none; exit 1, each failed check it names is a `blocking` finding, while a stuck check or a head other than `def5678` goes to `coordinator` as `T14 BLOCKED <its message>`; exit 75, run it again, or report as its message says.
+2. Review what changed since the last review, `git diff abc1234 def5678`, and the commit messages of `origin/main..def5678`.
+   Read nothing else: not the rest of the PR, the spec's or the story's acceptance list, or the knowledge graph; run the UI check only when that diff touches a UI file and your session lists `ui-check`, on the states it touched and their siblings.
+   A round with no new commit (`abc1234` is `def5678`) edited only the PR body: read the body against the notes.
+3. Every note sent back (3 and 5) is fixed at `def5678`, and the diff holds nothing but those fixes, their tests and, on a gated project, the gate's own commits.
+   When it changes more than the notes asked, this brief does not fit: send `T14 BLOCKED not a notes-only fix: <what else changed>` to `coordinator`, and write nothing to GitHub.
+   Raise a new finding only on a line this diff adds or changes, so each new one's scope is `change`.
+
+## Deliver
+
+- Add the result to `.work/task/review.md` under a heading naming `def5678`, its new findings numbered on from the last, each with its file and line, one kind, `blocking`, `note: correctness`, `note: security`, `note: real-data` or `note`, and its scope, `change`; then write the same result alone to `.work/task/rereview.md`.
+  Give in it the count of each kind among the findings that stand at `def5678`, its new ones and any note sent back and not fixed, the plain notes as `note-change` and `note-before` (0 for none), and the guarded areas the change touches, of `ci`, `dependencies`, `migrations`, `settings`, `permissions` and `secrets`, by the paths `@CODE@/bin/lib/guarded` lists or by what the code does (settings, permission or secrets handling in a file of any name), or none.
+  Post that as one PR comment with this exact command, the only comment your settings allow: `@CODE@/bin/team-review-comment https://github.com/chanjdaniel/agent-team/pull/9 .work/task/rereview.md`.
+- The status on the head you reviewed, with this exact command, the only status your settings allow: `@CODE@/bin/team-review-status https://github.com/chanjdaniel/agent-team/pull/9 def5678 <success|failure> "<one line, at most 140 characters>"`.
+  It sets the status on `def5678`, the head you reviewed, and refuses when the PR has moved past it: then set nothing and tell the coordinator.
+- Send `T14 DONE pass https://github.com/chanjdaniel/agent-team/pull/9 findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note-change:<n>,note-before:0 before=none guarded=<areas, comma-separated, or none>` or `T14 DONE findings .work/task/review.md findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note-change:<n>,note-before:0 before=none guarded=<areas, comma-separated, or none>` to `coordinator`, the counts and areas as `.work/task/rereview.md` gives them.
+
+## Rules
+
+Read `@CODE@/sops/platform-gotchas.md` before your first command.
+Never the em dash; refer to Daniel with they/them.
+BRIEF
+  )
+  expected=${expected//@CODE@/$REPO_ROOT}
+  local -a want got
+  mapfile -t want <<<"$expected"
+  mapfile -t got <"$TEAM_HOME/tasks/T14/brief-verify-2.md"
+  for line in "${!want[@]}"; do
+    assert_equal "${got[line]-<missing line $((line + 1))>}" "${want[line]}"
+  done
+  assert_equal "${#got[@]}" "${#want[@]}"
+  # A gated project's verify reads the gate's own commits in the fix's diff, as its rereview does.
+  open_t12
+  run_bin -0 team-brief T12 verify --name verify-2 --set pr=https://github.com/chanjdaniel/Conventioner/pull/9 \
+    --set head=def5678 --set reviewed=abc1234 --set findings=4
+  assert_contains "$(<"$output")" "   That diff holds the gate's own commits, which no reviewer has read: read them as closely as the builder's"
+  assert_contains "$(<"$output")" "Every note sent back (4) is fixed at \`def5678\`"
+}
+
 @test "the retro brief renders from the task's facts alone, its digest first and read from team_bin" {
   open_task T31 home retro research/T31-retro-2026-10-25 agent-team/.claude/worktrees/3 "Retro 2026-10-25"
   run_bin -0 team-brief T31 retro
@@ -427,7 +494,7 @@ EOF
 @test "the resume brief sends a relaunched worker to its last brief, the handoff note and the branch" {
   open_t12
   run_bin -0 team-brief --help
-  assert_contains "$output" "rereview, ops, retro, resume (a worker"
+  assert_contains "$output" "rereview, verify (--set pr=, head=, reviewed=, findings="
   run_bin -1 team-brief T12 resume --name resume-builder --set role=builder \
     --set "brief=~/agent-team-records/tasks/T12/brief.md" --set "from=the handoff from home-pc at 2026-10-23T14:05:00Z"
   assert_contains "$output" "snapshot"

@@ -776,10 +776,10 @@ allows() {
 Bash(@TEAM_CODE@/bin/team-review-comment *)
 Bash(@TEAM_CODE@/bin/team-checks *)
 Bash(@TEAM_CODE@/bin/team-ci-wait *)'
-  # The commands as templates/briefs/rereview.md and the direct-PR review partial give them,
-  # team_bin being this checkout's bin/ in full; a gated project's first review posts nothing.
+  # The commands as templates/briefs/rereview.md, verify.md and the direct-PR review partial give
+  # them, team_bin being this checkout's bin/ in full; a gated project's first review posts nothing.
   local brief
-  for brief in review/direct-pr rereview; do
+  for brief in review/direct-pr rereview verify; do
     grep -qF '`{{team_bin}}/team-review-status {{pr}} {{head}} <success|failure> "<one line, at most 140 characters>"`' \
       "$REPO_ROOT/templates/briefs/$brief.md"
     grep -qF '`{{team_bin}}/team-review-comment {{pr}} {{task_dir}}/' "$REPO_ROOT/templates/briefs/$brief.md"
@@ -799,10 +799,10 @@ Bash(@TEAM_CODE@/bin/team-ci-wait *)'
   for brief in delivery/direct-pr builder-merge-base; do
     grep -qF '`{{team_bin}}/team-checks {{project}} <full sha>`' "$REPO_ROOT/templates/briefs/$brief.md"
   done
-  for brief in reviewer rereview; do
+  for brief in reviewer rereview verify; do
     grep -qF '`{{team_bin}}/team-checks {{project}} {{head}}`' "$REPO_ROOT/templates/briefs/$brief.md"
   done
-  for brief in delivery/direct-pr delivery/no-mistakes builder-merge-base rereview; do
+  for brief in delivery/direct-pr delivery/no-mistakes builder-merge-base rereview verify; do
     grep -qF '`{{team_bin}}/team-ci-wait ' "$REPO_ROOT/templates/briefs/$brief.md"
   done
   allows builder "$REPO_ROOT/bin/team-checks agent-team a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
