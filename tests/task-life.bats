@@ -349,6 +349,81 @@ assert_closed_and_clean() {
     "thread opened launch done plan-approved launch ticket-done pr launch review merge-approved merged worktree-returned closed"
 }
 
+# A stored reading, taken now, of a 32 GiB machine whose other programs use 8 GiB, with each
+# <session> ("<task> <role> <id> <GiB>") live: level_reading <session>...
+level_reading() {
+  local file=$HOME/.local/state/agent-team/capacity/readings.jsonl
+  mkdir -p "${file%/*}"
+  printf '%s\n' "$@" | jq -Rnc '1073741824 as $gib
+    | [inputs | select(. != "") | split(" ") | {task: .[0], role: .[1], id: .[2], memory: (.[3] | tonumber * $gib | round)}] as $s
+    | {at: (now | floor | todate), os: "linux", docker: true, cpu: null, systemd: true, sessions: true,
+       memory: {total: (32 * $gib), available: (24 * $gib - ([$s[].memory] | add // 0)), team: ([$s[].memory] | add // 0),
+                others: (8 * $gib)},
+       tasks: [$s | group_by(.task)[] | {task: .[0].task, memory: ([.[].memory] | add), cpu: null, cpu_nsec: null,
+                sessions: map({id, role, memory, peak: .memory, cpu_seconds: 1}), stacks: []}],
+       stacks: [], heavy: null, gate: {running: false, memory: 0, cpu_seconds: 0}}' >>"$file"
+}
+
+@test "a task stowed for the level and resumed: Daniel lowers the level, the task stows, and comes back once the level rises" {
+  load helpers/docker
+  docker_stub
+  ok team-open home feature feat tooling "The tooling"
+  local wt
+  wt=$(jq -r .worktree <<<"$output")
+  ok team-log T1 plan-approved by=Daniel
+  ok team-brief T1 builder-ticket --set ticket=01 --name build-01
+  local builder_brief=$output
+  # A builder here has peaked at 10 GiB five times, so its learned estimate is 11 GiB; full's 20
+  # GiB has room for its launch.
+  local _
+  mkdir -p "$HOME/.local/state/agent-team/capacity"
+  for _ in 1 2 3 4 5; do
+    jq -cn '{at: (now | floor | todate), kind: "session:builder", peak_bytes: (10 * 1073741824), cpu_seconds: 60, seconds: 600}' \
+      >>"$HOME/.local/state/agent-team/capacity/costs.jsonl"
+  done
+  level_reading
+  ok team-worker T1 builder "$wt" -- "Read your brief at $builder_brief"
+  local builder=$output
+  commit_and_push "$wt" thing.txt >/dev/null
+  step building
+
+  # The builder now uses 10 GiB; Daniel says "level minor", whose 9.6 GiB it does not fit.
+  : >"$HOME/.local/state/agent-team/capacity/readings.jsonl"
+  level_reading "T1 builder $builder 10"
+  ok team-level minor
+  assert_contains "$output" "Resources: manual, minor (30%): "
+  assert_contains "$output" "; T1 stow"
+  step building level-stow:-
+
+  # The coordinator's STOW: the builder answers PAUSED stowed, then team-stow stows the task.
+  ok team-log T1 paused reason=stowed
+  ok team-stow T1
+  assert_equal "$(jq -c 'select(.event == "stowed") | [.task, .roles, .cause]' "$TEAM_HOME/ledger.jsonl")" '["T1",["builder"],"level"]'
+  assert_equal "$(jq -c 'map(.id)' "$BATS_TEST_TMPDIR/sessions.json")" '[]'
+  # The stored reading still holds the builder, but the plan names nothing more to stow.
+  step building
+
+  # The level rises, but T1 does not fit until the readings no longer hold its builder and the
+  # builder's admission is past its 10 minutes.
+  ok team-level full
+  step building
+  level_reading
+  local admitted=$HOME/.local/state/agent-team/capacity/admitted.json
+  jq -c 'map(.at |= (fromdateiso8601 - 660 | todate))' "$admitted" >"$admitted.next"
+  mv "$admitted.next" "$admitted"
+  # Then the sweep names T1 to relaunch, and the coordinator briefs and relaunches it.
+  step building level-resume:-
+  ok team-brief T1 resume --name resume-builder --force --set role=builder --set brief="$builder_brief" \
+    --set from="the stow for the level at $(jq -r 'select(.event == "stowed") | .ts' "$TEAM_HOME/ledger.jsonl")" \
+    --set snapshot="none: your worktree stayed in place, as you left it"
+  local resume_brief=$output
+  assert_contains "$(cat "$resume_brief")" "resuming the task after the stow for the level at "
+  ok team-worker T1 builder "$wt" -- "Read your brief at $resume_brief"
+  ok team-log T1 resumed
+  step building
+  run_bin -0 team-log --check
+}
+
 @test "a two-project task's life: opened in a git pool, a treehouse worktree added, two PRs merged, both worktrees closed" {
   # 1. Open in home, then add conv's worktree from its treehouse pool.
   ok team-open home feature feat tooling "The tooling"
