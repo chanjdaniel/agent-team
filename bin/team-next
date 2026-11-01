@@ -67,9 +67,11 @@
 # team-state reads its context under 250,000 tokens or none, and gone when its session is not
 # live. For a pass on a PR: "merge ask: <full PR URL> at <head>, agent-review <state>, checks
 # green" (or the failing, pending and missing checks), "merge pre-approved: run team-merge T<n>
-# for ..." instead while team-state's plan-time approval stands, the review found no guarded area
-# and no review of the task counted a security or real-data finding or logged no counts (which
-# team-merge refuses the plan-time word for), each guarded area and such review named, and the
+# for ..." instead while team-state's plan-time approval stands, or "merge on the standing word:
+# run team-merge T<n> for ..." while it does not and a standing word of Daniel's stands for the
+# PR's project (team-state's pr.standing_word), the review found no guarded area and no review of
+# the task counted a security or real-data finding or logged no counts (which team-merge refuses
+# both words for), each guarded area and such review named with the word it holds back, and the
 # before notes to queue as follow-ups; for a PR behind
 # its base, "merge base: ..." instead, the builder-merge-base brief for the holder under 250k,
 # else a fresh builder, after the holder's STOW when it is live. For a pass with no PR (a gated project's review-ready), the
@@ -372,7 +374,7 @@ if [[ $handoff == verdict ]]; then
   fi
   # The task's reviews, this one too once (a rerun finds it logged), each one that counted a
   # security or real-data finding or logged no counts named: team-merge refuses the plan-time
-  # word for such a task.
+  # and standing words for such a task.
   risky=$(jq -c --argjson review "$review" --argjson held "$held" '
     map(select(.event == "review"))
     + (if any($held.events[]; .event.event == "review" and .at == null) then [$review] else [] end)
@@ -381,7 +383,7 @@ if [[ $handoff == verdict ]]; then
         else [.findings | ("security", "real-data") as $k | .[$k] // 0 | select(. > 0) | "\(.) \($k)"]
           | select(. != []) | (map(split(" ")[0] | tonumber) | add) as $n
           | "\($r)counted \(join(" and ")) finding\(if $n == 1 then "" else "s" end)" end]' <<<"$events")
-  # The merge ask's facts, or the plan-time word's merge.
+  # The merge ask's facts, or the plan-time or standing word's merge.
   jq -r --arg task "$task" --argjson review "$review" --argjson risky "$risky" --arg before "$(and_list "$(jq -c '.before // []' <<<"$review")")" '
     (.pr | "\(.url) at \(.head), agent-review \(.agent_review), "
       + ([(.checks.failing | select(. != []) | "failing: \(join(", "))"),
@@ -389,13 +391,20 @@ if [[ $handoff == verdict ]]; then
           (.required_missing | select(. != []) | "missing: \(join(", "))")]
         | if . == [] then "checks green" else "checks \(join("; "))" end)) as $facts
     | (.merge_preapproval | . != null and .withdrawn == null and .opted_in == true and .own != true) as $planned
+    | (.pr.standing_word | . != null and .word != null and .withdrawn == null) as $standing
+    | ([if $planned then "plan-time" else empty end, if $standing then "standing" else empty end]
+       | if . == [] then ""
+         elif length == 1 then ", so the \(.[0]) word does not hold"
+         else ", so the \(join(" and ")) words do not hold" end) as $held
     | ($review.guarded // []) as $guarded
-    | if $planned and $guarded == [] and $risky == [] then "merge pre-approved: run team-merge \($task) for \($facts)"
+    | if $guarded != [] or $risky != [] then "merge ask: \($facts)"
+      elif $planned then "merge pre-approved: run team-merge \($task) for \($facts)"
+      elif $standing then "merge on the standing word: run team-merge \($task) for \($facts)"
       else "merge ask: \($facts)" end
     + (if $guarded == [] then ""
-       else "; the review found guarded areas: \($guarded | join(", "))\(if $planned then ", so the plan-time word does not hold" else "" end)" end)
-    + (if $planned and $risky != [] then
-         "; \($risky | if length < 2 then join("") else "\(.[:-1] | join(", ")) and \(.[-1])" end), so the plan-time word does not hold"
+       else "; the review found guarded areas: \($guarded | join(", "))\($held)" end)
+    + (if $held != "" and $risky != [] then
+         "; \($risky | if length < 2 then join("") else "\(.[:-1] | join(", ")) and \(.[-1])" end)\($held)"
        else "" end)
     + (if $before == "" then "" else "; queue before notes \($before) as follow-ups and say where each went" end)' <<<"$state"
   exit 0
