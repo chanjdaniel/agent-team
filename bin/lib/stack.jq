@@ -113,7 +113,8 @@ def settings_kinds:
 # its keys' kinds <kinds> (settings_kinds for stack.json): "" when nothing, " is not one JSON
 # object", or ": <problem>; <problem>..." naming each key of the wrong kind and each unknown key.
 # The kinds: count (a whole number of 1 or more), count0 (a whole number of 0 or more), amount (a
-# number of 0 or more), positive (a number above 0) and boolean.
+# number of 0 or more), positive (a number above 0), share (a number above 0 and at most 1),
+# fraction (a number from 0 to 1) and boolean.
 def settings_problems($kinds):
   if length != 1 or (.[0] | type) != "object" then " is not one JSON object"
   else [.[0] | to_entries[] | $kinds[.key] as $kind | (.value | tojson) as $value
@@ -125,6 +126,10 @@ def settings_problems($kinds):
         "\(.key) must be a number of 0 or more, not \($value)"
       elif $kind == "positive" and ((.value | type) != "number" or .value <= 0) then
         "\(.key) must be a number above 0, not \($value)"
+      elif $kind == "share" and ((.value | type) != "number" or .value <= 0 or .value > 1) then
+        "\(.key) must be a number above 0 and at most 1, not \($value)"
+      elif $kind == "fraction" and ((.value | type) != "number" or .value < 0 or .value > 1) then
+        "\(.key) must be a number from 0 to 1, not \($value)"
       elif $kind == "boolean" and (.value | type) != "boolean" then "\(.key) must be true or false, not \($value)"
       else empty end]
     | if . == [] then "" else ": " + join("; ") end

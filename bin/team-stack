@@ -17,7 +17,8 @@
 #           and networks by class. With --json, one object, {projects} and with --all also
 #           {volumes, images, networks}, each item with its class, each project with its
 #           running containers' memory_bytes and cpu_percent (docker stats' CPUPerc summed),
-#           each null when none runs. It changes nothing: it runs
+#           each null when none runs, and memory_limit_bytes, the sum of its containers' memory
+#           limits (Compose's mem_limits), null when none has one. It changes nothing: it runs
 #           only docker compose ls, ps, inspect, stats --no-stream and, with --all, system df,
 #           volume ls and network ls.
 #
@@ -51,7 +52,8 @@
 #           ~/.local/state/agent-team/stacks.lock held until its up -d --wait returns (a running
 #           one is not checked): with team-capacity on PATH or at ~/.local/bin/team-capacity,
 #           team-capacity admit --kind stack:<registered project> decides (0 admits, 75 refuses
-#           with its stderr as the reason, anything else fails up); else there is room when all
+#           with its stderr as the reason, 2, a team-capacity with no admit yet, leaves it to the
+#           checks below, anything else fails up); else there is room when all
 #           three hold: fewer Compose projects running (docker compose ls, every owner's) than
 #           stack_cap; memory available less the sum of the stack's mem_limits at least the
 #           floor (Linux: MemAvailable from /proc/meminfo, floor 6 GiB; macOS: docker info's
@@ -304,6 +306,7 @@ cmd_ls() {
            created: ([$mine[].Created | utc_time] | min),
            containers: ($mine | length), running: ([$mine[] | select(.State.Running)] | length),
            memory_bytes: (if $memory == [] then null else $memory | add end),
+           memory_limit_bytes: ([$mine[].HostConfig.Memory // 0] | add // 0 | if . == 0 then null else . end),
            cpu_percent: (if $cpu == [] then null else $cpu | add * 100 | round / 100 end)}]
       | sort_by(.name)}
     + if $all then
@@ -625,7 +628,8 @@ setting() {
 }
 
 # Whether the machine has room for the stack STACK_NAME now, the reasons it has not in REASONS:
-# team-capacity's admit when there is one, else the cap and both floors.
+# team-capacity's admit when there is one, else the cap and both floors. A team-capacity that
+# answers 2, a command line it does not know, has no admit yet (before T175's ticket 06).
 room_check() {
   REASONS=()
   local capacity rc=0 os total dir free
@@ -641,6 +645,7 @@ room_check() {
         REASONS=("$(reasons_line)")
         return 1
         ;;
+      2) ;;
       *) die "team-capacity admit --kind stack:$PROJECT failed (exit $rc): $(last_reason "$WORK/capacity.err" "no reason given")" ;;
     esac
   fi

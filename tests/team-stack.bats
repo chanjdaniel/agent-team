@@ -117,6 +117,12 @@ t74eval_classes() {
   assert_read_only
 }
 
+@test "ls --json carries each project's memory limits, the sum of its containers' mem_limits, null with none set" {
+  run_bin -0 team-stack ls --json
+  assert_equal "$(jq -c '[.projects[] | [.name, .memory_limit_bytes]]' <<<"$output")" \
+    '[["conventioner",null],["conventioner-2",1879048192],["conventioner-3",805306368],["conventioner-4",805306368],["nmtest-12822",null],["nmtest-1895520",536870912]]'
+}
+
 @test "ls --json carries each project's CPU, the sum of its running containers' docker stats, null with none running" {
   docker_state stats 'map(if .Name == "conventioner-2-mongodb-1" then .CPUPerc = "150.25%" else . end)'
   run_bin -0 team-stack ls --json
@@ -905,6 +911,19 @@ SH
   run_bin -1 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
   assert_equal "$stderr" "team-stack: team-capacity admit --kind stack:shop failed (exit 3): team-capacity: no such kind"
   # Only the first, admitted up started it.
+  assert_equal "$(ups)" 1
+}
+
+@test "a team-capacity with no admit yet (exit 2) leaves the cap and the floors to decide, as this checkout's does" {
+  open_task T22
+  stack_settings '{"stack_cap": 1, "wait_minutes": 0}'
+  mkdir -p "$HOME/.local/bin"
+  printf '#!/usr/bin/env bash\nexec %q "$@"\n' "$REPO_ROOT/bin/team-capacity" >"$HOME/.local/bin/team-capacity"
+  chmod +x "$HOME/.local/bin/team-capacity"
+  run_bin -75 --separate-stderr team-stack up --worktree "$STACK_WORKTREE"
+  assert_equal "$stderr" "team-stack: no room for $PROJECT: 3 of 1 stacks running (stack_cap 1)"
+  stack_settings '{"wait_minutes": 0}'
+  PATH=$REPO_ROOT/bin:$PATH run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
   assert_equal "$(ups)" 1
 }
 

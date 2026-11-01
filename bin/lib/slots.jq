@@ -1,8 +1,9 @@
 # The definitions team-slots reads the machine's task slots with: the settings of slots.json,
 # the slots held, the room each side has, and the texts. jq 1.7.
-# Included as: jq -L bin/lib 'include "slots"; include "stack"; ...', stack after it, as
-# CLAUDE.md's script conventions say for jq 1.8.2. The program, not this module, reads the ledger
-# (held_slots).
+# Included as: jq -L bin/lib 'include "slots"; include "capacity"; include "stack"; ...', the
+# modules it includes after it, as CLAUDE.md's script conventions say for jq 1.8.2. The slots held
+# and the readings of the machine's load are capacity.jq's (held_slots, stored_readings).
+include "capacity";
 include "stack";
 
 # The machine's slot settings (~/.config/agent-team/slots.json), every key optional, each with its
@@ -29,44 +30,6 @@ def slots_settings:
   (.[0] // {}) as $given
   | slots_defaults + $given
     + {from: (slots_defaults | with_entries(.key as $key | .value = (if $given | has($key) then "slots.json" else "default" end)))};
-
-# The task T<n> a task's branch, <type>/T<n>-<slug> with one of team-open's types, names; nothing
-# for any other branch.
-def task_branch_task:
-  capture("^(feat|fix|docs|chore|build|ci|test|refactor|perf|research)/(?<task>T[1-9][0-9]*)-[a-z0-9]+(-[a-z0-9]+)*$")
-  | .task;
-
-# The slots held, from each task's ledger events <tasks> (by_task), the open worktrees <open> of
-# the open tasks (open_worktrees over the events of the tasks is_open keeps, each path on this
-# machine), and the registered worktrees <worktrees> of every registered project's primary
-# checkout but the checkout itself, each {project, branch, worktree}: one {task, project,
-# worktree, half_open} per open worktree, and per registered worktree on a task's branch whose
-# task has no closed event and no open worktree of that project (half open), by task number, then
-# project. The program reads the ledger as team-slots does:
-#   include "ledger"; include "slots"; ledger_events as $events | ($events | by_task) as $tasks
-#   | held_slots($tasks; [open_worktrees($events[] | select($tasks[.task] | is_open); $home)]; $worktrees)
-def held_slots($tasks; $open; $worktrees):
-  [$open[] | {task, project, worktree, half_open: false}] as $open
-  | $open
-    + [$worktrees[] | (.branch | task_branch_task) as $task | .project as $project
-      | select(($tasks[$task] // [] | any(.[]; .event == "closed")) | not)
-      | select(any($open[]; .task == $task and .project == $project) | not)
-      | {task: $task, project, worktree, half_open: true}]
-  | sort_by((.task[1:] | tonumber), .project, .worktree);
-
-# Whether a reading has the parts the effective cap reads: its time, its memory's total and
-# others, and its CPU's count and others or null.
-def well_formed_reading:
-  try (type == "object" and (.at | type == "string" and (fromdateiso8601 | type == "number"))
-       and (.memory.total | type == "number") and (.memory.others | type == "number")
-       and (.cpu == null or ((.cpu.cpus | type == "number") and (.cpu.others | type == "number"))))
-  catch false;
-
-# The readings file's lines (an array of strings), as {readings: the well-formed ones, oldest
-# first, broken: how many lines are not}; a blank line is neither.
-def slots_readings:
-  map(select(test("\\S")) | try fromjson catch null | if well_formed_reading then . else null end)
-  | {readings: (map(select(. != null)) | sort_by(.at | fromdateiso8601)), broken: (map(select(. == null)) | length)};
 
 # <n> written with one decimal place, 18.0 for 18.
 def one_decimal:
@@ -100,7 +63,7 @@ def others_text:
   "other programs use \(memory_use)" + (if .cpu == null then "" else " and \(cpu_use)" end);
 
 # The effective cap from the settings <s>, the slots kept <kept> for the reserved project
-# <project>, and the readings <readings> (slots_readings), as {cap, lowered_by, reason, readings
+# <project>, and the readings <readings> (stored_readings), as {cap, lowered_by, reason, readings
 # (the window's)}. A reading's confirmed fit is the higher of its fit and the previous reading's
 # (the one before the window for the window's first), so a lower number holds only once two
 # readings in a row show it; the cap is the lowest confirmed fit in the window, at most the cap and
@@ -159,7 +122,7 @@ def summary_text($home; $code):
 
 # The team-slots/1 object, from $in: {given (slots.json's values read with jq -s, [] with none),
 # machine (null without a name), reserved_project (null with none), held (held_slots), readings
-# (slots_readings's readings), home (the home directory) and code (the code checkout)}.
+# (stored_readings's readings), home (the home directory) and code (the code checkout)}.
 def slots_status($in):
   ($in.given | slots_settings) as $s
   | $in.reserved_project as $project
@@ -273,37 +236,3 @@ def doctor_line($pools; $file; $holding; $heartbeat):
                else "team-timers enable" end)})] as $problems
   | if $problems == [] then {verdict: "PASS", reason: $facts, fix: ""}
     else {verdict: "WARN", reason: ($problems | map(.reason) + [$facts] | join("; ")), fix: ($problems | map(.fix) | join("; "))} end;
-
-# A reading of the machine's load, from $in: {at (UTC, YYYY-MM-DDTHH:MM:SSZ), os, total and
-# available (memory, in bytes), cpus, procs ([{pid, ppid, rss (KiB), seconds (cumulative CPU),
-# cwd ("" when unreadable)}]), paths (the team paths), stacks (team-stack ls --json's object, or
-# null when Docker did not answer), previous (null, or {seconds: the time since the previous
-# snapshot, procs: {"<pid>": its CPU seconds then}})}. The team's processes are those whose
-# directory is a team path or below one, and every descendant of one; the team's part adds the
-# team and gate stacks' memory and CPU, which the others' part, holding the containers'
-# processes, is less of. A process whose count is new or lower than the snapshot's (a pid used
-# again) counts whole.
-def slots_reading($in):
-  def team_path: . as $cwd | $cwd != "" and any($in.paths[]; . as $path | $cwd == $path or ($cwd | startswith($path + "/")));
-  def hundredths: . * 100 | round / 100;
-  ($in.procs | map({key: (.pid | tostring), value: (.ppid | tostring)}) | from_entries) as $parent
-  | ($in.procs | map(select(.cwd | team_path) | {key: (.pid | tostring), value: true}) | from_entries) as $direct
-  | [$in.procs[] | . + {team: any(limit(64; .pid | tostring | recurse($parent[.] // empty)); $direct[.] // false)}]
-    as $procs
-  | [$in.stacks.projects // [] | .[] | select(.class == "team" or .class == "gate")] as $stacks
-  | ([$stacks[].memory_bytes // 0] | add // 0) as $stacks_memory
-  | (([$stacks[].cpu_percent // 0] | add // 0) / 100) as $stacks_cpu
-  | (([$procs[] | select(.team) | .rss * 1024] | add // 0) + $stacks_memory) as $team
-  | {at: $in.at, os: $in.os, docker: ($in.stacks != null),
-     memory: {total: $in.total, available: $in.available, team: $team,
-              others: ([$in.total - $in.available - $team, 0] | max)},
-     cpu: (if $in.previous == null then null
-           else $in.previous as $previous
-             | [$procs[] | ($previous.procs[.pid | tostring]) as $then
-                 | {team, busy: (if $then != null and .seconds >= $then then .seconds - $then else .seconds end)}]
-               as $busy
-             | {cpus: $in.cpus, seconds: $previous.seconds,
-                team: (([$busy[] | select(.team) | .busy] | add // 0) / $previous.seconds + $stacks_cpu | hundredths),
-                others: ([([$busy[] | select(.team | not) | .busy] | add // 0) / $previous.seconds - $stacks_cpu, 0] | max
-                         | hundredths)}
-           end)};

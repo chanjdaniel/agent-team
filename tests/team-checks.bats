@@ -103,13 +103,15 @@ local check 'echo fine && exit 4' failed on the head ${head:0:7} (exit 4); its l
   assert_contains "$output" "      fine"
 }
 
-@test "the checks run under the heavy-run lock with the label given, and one that cannot take it exits 75" {
-  printf '#!/usr/bin/env bash\n"$HEAVY" status >>"$CHECKS_DIR/heavy"\n' >"$primary/heavy.sh"
+@test "the checks run under the heavy-run lock with the label given, as heavy:checks:<project>, and one that cannot take it exits 75" {
+  printf '#!/usr/bin/env bash\n"$HEAVY" status >>"$CHECKS_DIR/heavy"\nsleep 1\n' >"$primary/heavy.sh"
   chmod +x "$primary/heavy.sh"
   commit_file heavy.sh "test: a check that reads the lock"
   registry '["./heavy.sh"]'
   HEAVY=$REPO_ROOT/bin/team-heavy run_bin -0 team-checks proj "$head" --from "$primary" --label "team-merge T14"
   [[ $(cat "$CHECKS_DIR/heavy") =~ ^held\ by\ team-merge\ T14:\ ./heavy.sh\ on\ ${head:0:7}\ \(pid\ [0-9]+\)\ since\  ]]
+  # Its cost sample is the project's checks'.
+  assert_equal "$(jq -r .kind "$HOME/.local/state/agent-team/capacity/costs.jsonl")" heavy:checks:proj
 
   mkdir -p "$HOME/.local/state/agent-team"
   exec {held}<>"$HOME/.local/state/agent-team/heavy.lock"
