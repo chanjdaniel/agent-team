@@ -142,8 +142,8 @@
 #          reserves it for 10 minutes (a heavy run's while its team-heavy holds the lock); else it
 #          exits 75 with the reason on stderr, "no room for session:reviewer at minor (30%): 8.9
 #          GiB of 9.2 GiB reserved, a reviewer needs 0.5 GiB", and at level none "the team is at
-#          level none: nothing starts". CPU is never admitted: the slice's quota holds it. With no
-#          reading to size the budget by, exit 1 with the reason.
+#          level none: nothing starts". CPU is never admitted: the slice's quota holds it. Above
+#          none, with no reading to size the budget by, exit 1 with the reason.
 #
 # The machine's settings, ~/.config/agent-team/capacity.json, beside stack.json: one JSON object
 # whose keys are all optional:
