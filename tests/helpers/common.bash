@@ -1,7 +1,7 @@
 # Shared setup for the team home's bats tests: load it with `load helpers/common` and call
 # `sandbox` from `setup`. Every test then runs real scripts from this checkout's bin/ against a
-# temporary team home and HOME, with claude, gh, curl, op, systemctl and launchctl replaced by
-# logging stubs, so no test reaches this machine's own service managers or 1Password. A test of
+# temporary team home and HOME, with claude, gh, curl, op, systemctl, launchctl and busctl replaced
+# by logging stubs, so no test reaches this machine's own service managers, cgroups or 1Password. A test of
 # a script that runs Docker adds a stub docker with `load helpers/docker` (tests/helpers/docker.bash
 # documents it), and never reaches this machine's Docker, which DOCKER_HOST points away from.
 # shellcheck shell=bash
@@ -80,8 +80,14 @@ sandbox() {
   : >"$TEAM_HOME/ledger.jsonl"
   echo "DISCORD_BOT_TOKEN=$FAKE_DISCORD_TOKEN" >"$HOME/.claude/channels/discord/.env"
 
-  stub_command claude gh curl op systemctl launchctl
+  stub_command claude gh curl op systemctl launchctl busctl
   export PATH=$root/stubs:$PATH
+  # The user manager's D-Bus answers every call with a job (fake_placement makes it move the
+  # processes), and the cgroup tree and /proc team-capacity reads are under TEAM_CGROUP_ROOT, empty
+  # until a test writes them (user_controllers, fake_process), never the machine's own.
+  stub_reply busctl 'o "/org/freedesktop/systemd1/job/1"'
+  export TEAM_CGROUP_ROOT=$root/cgroup-root
+  mkdir -p "$TEAM_CGROUP_ROOT/proc"
 
   # The machine team-slots reads its load from (its seams): no process, 12 cores and 24 GiB of 32
   # available, and a Docker socket nothing listens on, so no reading depends on the machine the
@@ -209,7 +215,10 @@ stub_calls() {
 
 # Make the systemctl and launchctl stubs behave as the user's systemd and launchd would, each
 # machine's units kept under its own HOME: systemctl --user daemon-reload, enable, disable (with
-# --now), restart, is-enabled and is-active on unit files under ~/.config/systemd/user; launchctl
+# --now), restart, is-enabled and is-active on unit files under ~/.config/systemd/user, and show -P
+# <property> [<unit>], which answers the manager's Version as 262 and a unit's property from
+# ~/.fake-systemd/<unit>.<property> (empty without one), a test's to write; every call fails as a
+# user manager that does not answer once ~/.fake-systemd/down exists; launchctl
 # bootstrap gui/<uid> <plist>, bootout gui/<uid>/<label> and print gui/<uid>/<label>, refusing as
 # launchctl does a bootstrap of a loaded job or a bootout of one not loaded.
 fake_service_managers() {
@@ -217,6 +226,16 @@ fake_service_managers() {
 units=$HOME/.config/systemd/user state=$HOME/.fake-systemd
 mkdir -p "$state"
 [[ ${1:-} == --user ]] || { echo "systemctl stub: only --user calls are planned: $*" >&2; exit 1; }
+if [[ -e $state/down ]]; then echo "Failed to connect to user scope bus via local transport: No such file or directory" >&2; exit 1; fi
+if [[ ${2:-} == show && ${3:-} == -P ]]; then
+  if [[ -z ${5:-} ]]; then
+    [[ $4 == Version ]] || { echo "systemctl stub: unplanned manager property: $4" >&2; exit 127; }
+    echo 262
+  else
+    cat "$state/$5.$4" 2>/dev/null || echo
+  fi
+  exit 0
+fi
 verb=${2:-} now=0 quiet=0 names=()
 for arg in "${@:3}"; do
   case $arg in
@@ -265,6 +284,83 @@ case ${1:-} in
     if [[ $1 == bootout ]]; then rm "$state/$label"; else echo "$domain/$label = {"; echo "	state = running"; echo "}"; fi ;;
   *) echo "launchctl stub: unplanned call: $*" >&2; exit 127 ;;
 esac
+EOF
+}
+
+# The user manager's cgroup delegates the controllers <controller>... (cpu memory pids on home-pc),
+# as its cgroup.controllers under TEAM_CGROUP_ROOT says; none given writes an empty list.
+user_controllers() {
+  local dir
+  dir=$TEAM_CGROUP_ROOT/sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service
+  mkdir -p "$dir"
+  echo "$*" >"$dir/cgroup.controllers"
+}
+
+# user_cgroup <unit> [<slice>]: the cgroup path of the user manager's <unit>, in <slice> when it is
+# a scope or service (app.slice without one), as systemd nests a slice under each dash prefix of
+# its name: agent-team-T7.slice is agent.slice/agent-team.slice/agent-team-T7.slice.
+user_cgroup() {
+  local unit=$1 name path='' prefix='' part
+  if [[ $unit == *.slice ]]; then name=${unit%.slice}; else name=${2:-app.slice} && name=${name%.slice}; fi
+  for part in ${name//-/ }; do
+    prefix+=${prefix:+-}$part
+    path+=/$prefix.slice
+  done
+  [[ $unit == *.slice ]] || path+=/$unit
+  echo "/user.slice/user-$(id -u).slice/user@$(id -u).service$path"
+}
+
+# fake_process <pid> <ppid> <cgroup> [<arg>...]: a process under TEAM_CGROUP_ROOT's /proc, its
+# parent <ppid>, in the cgroup <cgroup> (a path, or - for the Konsole tab's scope the claude
+# daemon's sessions are in on home-pc), running <arg>... (default sleep).
+fake_process() {
+  local dir=$TEAM_CGROUP_ROOT/proc/$1 cgroup=$3
+  [[ $cgroup != - ]] || cgroup="/user.slice/user-$(id -u).slice/user@$(id -u).service/app.slice/app-org.kde.konsole-2626.scope/tab(305042).scope"
+  mkdir -p "$dir"
+  printf 'Name:\t%s\nPid:\t%s\nPPid:\t%s\n' "$(basename "${4:-sleep}")" "$1" "$2" >"$dir/status"
+  echo "0::$cgroup" >"$dir/cgroup"
+  if (($# > 3)); then printf '%s\0' "${@:4}" >"$dir/cmdline"; else printf 'sleep\0' >"$dir/cmdline"; fi
+}
+
+# The cgroup the fake process <pid> is in.
+cgroup_of() {
+  sed -n 's/^0:://p' "$TEAM_CGROUP_ROOT/proc/$1/cgroup"
+}
+
+# Make the busctl stub do what the user manager does for StartTransientUnit: move each of its PIDs
+# into the scope, under its Slice, and answer with a job; a call naming a pid listed in
+# $STUB_FIXTURES/busctl-refuse is refused and moves nothing, and so is one naming a pid listed in
+# $STUB_FIXTURES/busctl-gone, whose process then exits (its /proc entry goes), as one that ends
+# between the read of the tree and the call.
+fake_placement() {
+  stub_script busctl <<'EOF'
+[[ ${2:-} == call && ${6:-} == StartTransientUnit ]] || { echo "busctl stub: unplanned call: $*" >&2; exit 127; }
+scope=$8 args=("${@:11}") pids=() slice=''
+while ((${#args[@]})); do
+  case ${args[0]} in
+    PIDs) n=${args[2]} && pids=("${args[@]:3:n}") && args=("${args[@]:3+n}") ;;
+    Slice) slice=${args[2]} && args=("${args[@]:3}") ;;
+    0) args=("${args[@]:1}") ;;
+    *) args=("${args[@]:3}") ;;
+  esac
+done
+for pid in "${pids[@]}"; do
+  if grep -qxF "$pid" "$STUB_FIXTURES/busctl-gone" 2>/dev/null; then
+    rm -rf "${TEAM_CGROUP_ROOT:?}/proc/$pid"
+    echo "Call failed: Failed to add PID $pid to scope unit: No such process" >&2
+    exit 1
+  fi
+  if grep -qxF "$pid" "$STUB_FIXTURES/busctl-refuse" 2>/dev/null; then
+    echo "Call failed: Access denied" >&2
+    exit 1
+  fi
+done
+path='' prefix='' name=${slice%.slice}
+for part in ${name//-/ }; do prefix+=${prefix:+-}$part && path+=/$prefix.slice; done
+for pid in "${pids[@]}"; do
+  echo "0::/user.slice/user-$(id -u).slice/user@$(id -u).service$path/$scope" >"$TEAM_CGROUP_ROOT/proc/$pid/cgroup"
+done
+echo 'o "/org/freedesktop/systemd1/job/7"'
 EOF
 }
 

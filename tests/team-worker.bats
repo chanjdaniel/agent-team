@@ -13,11 +13,30 @@ setup() {
   git -C "$primary" worktree add -q -b feat/T7-one "$wt1"
   git -C "$primary" worktree add -q -b feat/T8-two "$wt2"
   registry proj other
+  # The session list holds the session just launched, its process alive, so team-capacity place
+  # (on Linux) places it and says nothing.
   stub_script claude <<'EOF'
+if [[ $* == "agents --json" ]]; then
+  jq -cn --arg name "$(cat "$STUB_FIXTURES/launched" 2>/dev/null)" '[{id: "4f2a9c1e", name: $name, pid: 4242}]'
+  exit 0
+fi
 printf '%s\n' "$PWD" >>"$STUB_CALLS/claude.cwd"
 printf '%s\n' "$PATH" >>"$STUB_CALLS/claude.path"
+echo "${*: -2:1}" >"$STUB_FIXTURES/launched"
 echo "Started background session 4f2a9c1e (${*: -2:1}). Attach with: claude attach 4f2a9c1e"
 EOF
+  fake_process 4242 1 - claude --bg
+}
+
+# The claude calls that started a session, one JSON array each.
+bg_calls() {
+  stub_calls claude | jq -c 'select(.[0] == "--bg")'
+}
+
+# The first word of each claude call, space-separated, but the session list team-capacity place
+# reads right after a launch, which it reads on Linux only.
+claude_verbs() {
+  stub_calls claude | jq -r '.[0]' | awk 'last == "--bg" && $0 == "agents" { last = ""; next } { print; last = $0 }' | tr '\n' ' '
 }
 
 # ledger_line [jq options...] <filter>: append the line jq builds, standing in for the script
@@ -174,7 +193,7 @@ run_fake() {
   assert_equal "$(cat "$STUB_CALLS/claude.cwd")" "$wt1"
 
   local t=$TEAM_HOME/tasks/T7
-  assert_equal "$(stub_calls claude)" "$(jq -cn --arg t "$t" --arg roles "$REPO_ROOT/roles" '["--bg",
+  assert_equal "$(bg_calls)" "$(jq -cn --arg t "$t" --arg roles "$REPO_ROOT/roles" '["--bg",
     "--strict-mcp-config", "--mcp-config", "\($t)/mcp.builder.json",
     "--settings", "\($t)/settings.builder.json",
     "--append-system-prompt-file", "\($roles)/builder.md",
@@ -222,7 +241,7 @@ run_fake() {
   assert_equal "$status" "0"
   assert_equal "$(jq -cS . "$TEAM_HOME/tasks/T7/mcp.planner.json")" \
     '{"mcpServers":{"alpha":{"command":"a"},"beta":{"command":"b"},"gamma":{"command":"c"}}}'
-  assert_equal "$(stub_calls claude | jq -c '[index("--plugin-dir") as $i | .[$i:$i + 6]]')" \
+  assert_equal "$(bg_calls | jq -c '[index("--plugin-dir") as $i | .[$i:$i + 6]]')" \
     "$(jq -cn --arg k "$code/toolkits" '[["--plugin-dir", "\($k)/kit-a", "--plugin-dir", "\($k)/kit-b", "--plugin-dir", "\($k)/kit-c"]]')"
   assert_equal "$(launches | jq -c .toolkits)" '["kit-a","kit-b","kit-c"]'
 }
@@ -237,6 +256,28 @@ run_fake() {
   run_bin -1 team-worker T7 builder "$wt1" -- go
   assert_contains "$output" "could not read the session id from: Something went wrong"
   assert_equal "$(launches)" ""
+}
+
+@test "on Linux a launch places its new session in its task's slice, and one it cannot place is a warning while the launch stands" {
+  stub_command uname
+  stub_reply uname Linux
+  fake_placement
+  thread T7
+  run_bin -0 --separate-stderr team-worker T7 builder "$wt1" -- go
+  assert_equal "$output" "4f2a9c1e"
+  assert_equal "$stderr" ""
+  assert_equal "$(stub_calls busctl | jq -r '.[7]')" "agent-team-T7-4f2a9c1e.scope"
+  assert_equal "$(cgroup_of 4242)" "$(user_cgroup agent-team-T7-4f2a9c1e.scope agent-team-T7.slice)"
+
+  # The user manager refuses: the session runs on, unheld, and its launch is logged all the same.
+  fake_process 4242 1 - claude --bg
+  echo 4242 >"$STUB_FIXTURES/busctl-refuse"
+  : >"$TEAM_HOME/ledger.jsonl"
+  thread T7
+  run_bin -0 --separate-stderr team-worker T7 reviewer "$wt1" -- go
+  assert_equal "$output" "4f2a9c1e"
+  assert_equal "$stderr" "team-worker: warning: could not place T7-reviewer 4f2a9c1e (pid 4242) in agent-team-T7.slice: Call failed: Access denied; the launch stands"
+  assert_equal "$(launches | jq -r .role)" reviewer
 }
 
 @test "T0, the load check, needs no thread and no lease, and is not logged" {
@@ -297,7 +338,7 @@ run_fake() {
   opened T7 proj feat/T7-one "$wt1"
   run_bin -0 team-worker T7 reviewer "$wt1" -- Review it
   local t=$TEAM_HOME/tasks/T7
-  assert_equal "$(stub_calls claude)" "$(jq -cn --arg t "$t" --arg roles "$REPO_ROOT/roles" '["--bg",
+  assert_equal "$(bg_calls)" "$(jq -cn --arg t "$t" --arg roles "$REPO_ROOT/roles" '["--bg",
     "--strict-mcp-config", "--mcp-config", "\($t)/mcp.reviewer.json",
     "--settings", "\($t)/settings.reviewer.json",
     "--append-system-prompt-file", "\($roles)/reviewer.md",
@@ -338,7 +379,7 @@ run_fake() {
   thread T8
   run_bin -0 team-worker T8 builder "$wt2" --model 'sonnet[1m]' -- go
   run_bin -0 team-worker T0 planner "$wt1" --model haiku -- go
-  assert_equal "$(stub_calls claude | jq -c '[(index("--model") // empty) as $i | .[$i + 1], .[-2], .[-1]]')" \
+  assert_equal "$(bg_calls | jq -c '[(index("--model") // empty) as $i | .[$i + 1], .[-2], .[-1]]')" \
     $'["opus","T7-reviewer","Review it"]\n["sonnet[1m]","T8-builder","go"]\n["haiku","T0-planner","go"]'
   assert_equal "$(launches | jq -c '[.task, .model]')" $'["T7","opus"]\n["T8","sonnet[1m]"]'
   run_bin -0 team-log --check
@@ -353,7 +394,7 @@ run_fake() {
   thread T8
   run_bin -0 team-worker T8 reviewer "$wt2" -- go
   run_bin -0 team-worker T0 reviewer "$wt1" -- go
-  assert_equal "$(stub_calls claude | jq -c 'index("--model")')" $'null\nnull\nnull'
+  assert_equal "$(bg_calls | jq -c 'index("--model")')" $'null\nnull\nnull'
   assert_equal "$(launches | jq -c '[.task, has("model")]')" $'["T7",false]\n["T8",false]'
   run_bin -0 team-log --check
 }
@@ -546,7 +587,7 @@ role_texts() {
 @test "the browser toolkit adds its plugin directory and no MCP server" {
   thread T7
   run_bin -0 team-worker T7 builder "$wt1" --toolkit browser -- go
-  assert_equal "$(stub_calls claude | tail -n 1 | jq -c '[index("--plugin-dir") as $i | .[$i + 1]]')" \
+  assert_equal "$(bg_calls | tail -n 1 | jq -c '[index("--plugin-dir") as $i | .[$i + 1]]')" \
     "$(jq -cn --arg code "$REPO_ROOT" '["\($code)/toolkits/browser"]')"
   assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.builder.json")" '{"mcpServers":{}}'
   assert_equal "$(launches | jq -c .toolkits)" '["browser"]'
@@ -1107,7 +1148,7 @@ stops() {
   # An ops session, another task's, one T9 never launched and another worktree's builder go unnamed.
   [[ $stderr != *66666666* && $stderr != *77777777* && $stderr != *88888888* && $stderr != *99999999* ]]
   # The stops come before the launch, which is logged.
-  assert_equal "$(stub_calls claude | jq -r '.[0]' | tr '\n' ' ')" "agents stop stop stop --bg "
+  assert_equal "$(claude_verbs)" "agents stop stop stop --bg "
   assert_equal "$(launches | jq -r 'select(.task == "T9" and .session == "9a8b7c6d") | .role')" builder
 }
 
@@ -1236,10 +1277,10 @@ LINES
   [[ $stderr != *22222222* && $stderr != *44444444* ]]
 }
 
-@test "a launch with no earlier worker to stop, and a T0 launch, do not read the session list" {
+@test "a launch with no earlier worker to stop, and a T0 launch, do not read the session list before the launch" {
   finished_workers
   thread T7
   run_bin -0 team-worker T0 builder "$wt1" -- go
   run_bin -0 team-worker T7 builder "$wt1" -- go
-  assert_equal "$(stub_calls claude | jq -r '.[0]' | tr '\n' ' ')" "--bg --bg "
+  assert_equal "$(claude_verbs)" "--bg --bg "
 }

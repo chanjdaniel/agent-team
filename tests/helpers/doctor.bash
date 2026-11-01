@@ -51,6 +51,7 @@ declare -gA FORMAT=(
 # wrapper is installed and config.yaml runs the gate on it, two projects are registered and
 # cloned as the bootstrap clones them,
 # ~/.config/agent-team/home names the team home, and its core.hooksPath the code's records-git;
+# the user manager delegates cpu and memory and the team's slice is installed (team-capacity);
 # slots.json sets a cap of 10, and a reading of the machine's load was just taken.
 doctor_machine() {
   hold_lease home-pc >/dev/null
@@ -173,6 +174,9 @@ EOF
   touch "$TEAM_CHROME"
   # The heartbeat runs, as it should on the holder.
   "$REPO_ROOT/bin/team-timers" enable >/dev/null
+  # The user manager delegates cpu and memory, as home-pc's does, and the team's slice is installed.
+  user_controllers cpu memory pids
+  "$REPO_ROOT/bin/team-capacity" install >/dev/null
 
   # Two projects, cloned as the bootstrap clones them: Conventioner gated by no-mistakes with a
   # treehouse pool, site with a git pool; no-mistakes has a gate for each checkout listed in

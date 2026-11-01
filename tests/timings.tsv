@@ -30,6 +30,7 @@ tests/team-bootstrap-daniel.bats	148	327
 tests/team-bootstrap-stages.bats	105	286
 tests/team-bootstrap.bats	103	194
 tests/team-brief.bats	48	79
+tests/team-capacity.bats	5	12
 tests/team-checkpoint.bats	71	112
 tests/team-checks.bats	5	7
 tests/team-ci-wait.bats	37	82
@@ -39,6 +40,7 @@ tests/team-config-memory.bats	20	26
 tests/team-config.bats	13	19
 tests/team-doctor-lease.bats	107	207
 tests/team-doctor-projects.bats	234	554
+tests/team-doctor-resources.bats	33	85
 tests/team-doctor-services.bats	312	548
 tests/team-doctor-slots.bats	63	161
 tests/team-doctor-tools.bats	140	317

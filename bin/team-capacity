@@ -1,0 +1,330 @@
+#!/usr/bin/env bash
+# Hold the team's work in one systemd user slice, each task's in a slice of its own inside it, so
+# the kernel can measure and limit it (sops/resources.md). No limit is set on the slice yet.
+#
+# Usage: team-capacity install
+#        team-capacity place [<session id>...]
+#        team-capacity check [--json]
+#
+# install  Daniel's yes, as team-timers enable is. On Linux writes the team's slice,
+#          ~/.config/systemd/user/agent-team.slice (a description, no limits), and for each gate
+#          daemon unit no-mistakes wrote there, no-mistakes-daemon-<hash>.service, a drop-in
+#          no-mistakes-daemon-<hash>.service.d/agent-team.conf holding Slice=agent-team.slice, so
+#          every gate run is the team's; then systemctl --user daemon-reload when it wrote
+#          anything. A gate daemon that runs (ActiveState active) outside the slice is restarted
+#          with `no-mistakes daemon restart`, never --force, which refuses while a pipeline runs:
+#          then the daemon is left as it is, and it says why and that a later install restarts
+#          it. Each file written, the reload and each restart is one line; with nothing to do it
+#          says so. Idempotent. Exit 1 when the user manager does not answer the reload.
+# place    On Linux, adopts each live team session (claude agents --json: every session named
+#          T<n>-<role>, never the coordinator or an unnamed one; with ids, only those, each an
+#          8-hex session id, and an id that is no live team session is a failure) into the
+#          transient scope agent-team-T<n>-<id>.scope in the slice agent-team-T<n>.slice, which
+#          systemd nests under agent-team.slice by its name: the session's process, its parent
+#          when that is the claude daemon's bg-pty-host, and every descendant, but those already
+#          in a cgroup under agent-team.slice (a heavy run's scope). It asks the user manager
+#          through busctl --user call org.freedesktop.systemd1 ... StartTransientUnit with the
+#          PIDs, and once more with a fresh tree when that call fails (a process that ended
+#          meanwhile). A session already in its scope is left. Each placed and left session is
+#          one line on stdout, each one it cannot place one line on stderr, and the others are
+#          still placed; exit 1 when any failed.
+# check    What the doctor's resources line says, as {os, verdict (PASS, WARN or FAIL), reason,
+#          fix, problems: [{verdict, reason, fix}]} with --json, else the line "<verdict>
+#          <reason>" and "; fix: <fix>" when there is one, exiting 1 unless it passes. On Linux:
+#          FAIL when systemctl --user does not answer or the user manager's cgroup.controllers
+#          lacks cpu or memory; WARN when agent-team.slice is not installed as install writes it,
+#          a gate daemon unit lacks its drop-in (both fixed by team-capacity install, Daniel's
+#          yes), a running gate daemon is outside the slice (its restart waits on its pipeline),
+#          the session list cannot be read, or a live team session runs outside its task's slice
+#          (fixed by team-capacity place). The passing reason names the slice and how many live
+#          team sessions are in it.
+#
+# On macOS, which has no cgroups, install and place change nothing and say so once on stderr, and
+# check passes with "no hard limits on macOS: admission and stow only".
+# Test seam: TEAM_CGROUP_ROOT stands for / where the user manager's cgroup.controllers and /proc
+# are read, so the tests run on a tree of their own.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+USAGE="usage: team-capacity install | place [<session id>...] | check [--json]"
+[[ $# -ge 1 ]] || usage_error "$USAGE"
+command=$1
+shift
+json=0 ids=()
+case $command in
+  install) [[ $# -eq 0 ]] || usage_error "unexpected argument '$1'" ;;
+  place)
+    for id; do [[ $id =~ ^[0-9a-f]{8}$ ]] || usage_error "a session id is 8 hex digits, got '$id'"; done
+    ids=("$@")
+    ;;
+  check)
+    while [[ $# -gt 0 ]]; do
+      case $1 in
+        --json) json=1 ;;
+        *) usage_error "unexpected argument '$1'" ;;
+      esac
+      shift
+    done
+    ;;
+  *) usage_error "unknown subcommand '$command'; $USAGE" ;;
+esac
+
+ROOT=${TEAM_CGROUP_ROOT:-}
+UNITS=$HOME/.config/systemd/user
+SLICE=agent-team.slice
+DROP_IN=agent-team.conf
+uid=$(id -u)
+
+case $(uname -s) in
+  Linux) os=linux ;;
+  Darwin) os=macos ;;
+  *) die "no resource levels on $(uname -s)" ;;
+esac
+
+# A path under HOME as ~/ says it.
+tilde() {
+  printf '%s\n' "${1/#"$HOME"\//\~/}"
+}
+
+# The team's slice unit, as install writes it.
+slice_unit() {
+  printf '%s\n' '[Unit]' "Description=Daniel's agent team: every worker session, heavy run and gate run (team-capacity)" \
+    '' '[Slice]'
+}
+
+# A gate daemon's drop-in, as install writes it.
+drop_in() {
+  printf '%s\n' '# team-capacity install: every gate run in the team'\''s slice.' '[Service]' "Slice=$SLICE"
+}
+
+# The gate daemon units no-mistakes wrote, one name per line, sorted.
+gate_units() {
+  local file
+  for file in "$UNITS"/no-mistakes-daemon-*.service; do
+    [[ -f $file ]] && basename "$file"
+  done | sort
+}
+
+# A unit's property, as the user manager says it: unit_property <unit> <property>
+unit_property() {
+  systemctl --user show -P "$2" "$1" 2>/dev/null
+}
+
+# Whether the cgroup path <path> is inside the team's slice.
+in_team_slice() {
+  [[ $1 == */agent.slice/$SLICE/* ]]
+}
+
+# Whether the gate daemon <unit> runs outside the team's slice.
+daemon_outside() {
+  [[ $(unit_property "$1" ActiveState) == active ]] && ! in_team_slice "$(unit_property "$1" ControlGroup)/"
+}
+
+# Write <file> with stdin's content when it differs, saying so; returns 1 when nothing changed.
+write_if_changed() {
+  local file=$1 content
+  content=$(cat)
+  if [[ -f $file && $(cat "$file") == "$content" ]]; then return 1; fi
+  mkdir -p "$(dirname "$file")"
+  printf '%s\n' "$content" >"$file.new"
+  mv "$file.new" "$file"
+  echo "wrote $(tilde "$file")"
+}
+
+install() {
+  local changed=0 unit out rc cgroup did=0
+  if [[ $os == macos ]]; then
+    echo "team-capacity: no cgroups on macOS: nothing to install" >&2
+    return 0
+  fi
+  if slice_unit | write_if_changed "$UNITS/$SLICE"; then changed=1; fi
+  while IFS= read -r unit; do
+    [[ -n $unit ]] || continue
+    if drop_in | write_if_changed "$UNITS/$unit.d/$DROP_IN"; then changed=1; fi
+  done < <(gate_units)
+  if ((changed)); then
+    out=$(systemctl --user daemon-reload 2>&1) ||
+      die "the user's systemd does not answer (systemctl --user daemon-reload: $(grep -m1 . <<<"$out" || echo "no reason given"))"
+    echo "reloaded the user manager"
+    did=1
+  fi
+  while IFS= read -r unit; do
+    if [[ -z $unit ]] || ! daemon_outside "$unit"; then continue; fi
+    did=1 rc=0
+    out=$(no-mistakes daemon restart 2>&1 </dev/null) || rc=$?
+    if ((rc)); then
+      echo "the gate's daemon $unit runs a pipeline (no-mistakes daemon restart: $(grep -m1 . <<<"$out" || echo "exit $rc")), so it stays outside $SLICE until it restarts: once no gate runs, run team-capacity install again"
+    elif cgroup=$(unit_property "$unit" ControlGroup) && in_team_slice "$cgroup/"; then
+      echo "restarted the gate's daemon $unit into $SLICE (no pipeline was running)"
+    else
+      echo "the gate's daemon $unit still runs outside $SLICE after no-mistakes daemon restart ($cgroup); run team-capacity install again once no gate runs"
+    fi
+  done < <(gate_units)
+  ((did)) || echo "$SLICE and the gate's drop-ins are installed, and the gate's daemon runs in the slice: nothing to do"
+}
+
+# The processes under ROOT's /proc, one "<pid> <ppid>" per line.
+process_table() {
+  local file
+  for file in "$ROOT"/proc/[0-9]*/status; do
+    [[ -f $file ]] && printf '%s\n' "$file"
+  done | xargs -r awk '$1 == "PPid:" { pid = FILENAME; sub(/\/status$/, "", pid); sub(/.*\//, "", pid); print pid, $2; nextfile }' 2>/dev/null || true
+}
+
+# The cgroup the process <pid> is in, its cgroup v2 line's path; empty when it is gone.
+cgroup_of() {
+  sed -n 's/^0:://p' "$ROOT/proc/$1/cgroup" 2>/dev/null || true
+}
+
+# Whether the process <pid> is the claude daemon's pty host for a session.
+pty_host() {
+  { tr '\0' '\n' <"$ROOT/proc/$1/cmdline"; } 2>/dev/null | grep -qxE -- '(--)?bg-pty-host'
+}
+
+# The PIDs to adopt for the session process <pid>: itself, its pty host parent, and every
+# descendant not already in the team's slice, one per line.
+session_pids() {
+  local pid=$1 table parent
+  table=$(process_table)
+  echo "$pid"
+  parent=$(awk -v pid="$pid" '$1 == pid { print $2 }' <<<"$table")
+  if [[ -n $parent ]] && pty_host "$parent" && ! in_team_slice "$(cgroup_of "$parent")"; then echo "$parent"; fi
+  awk -v root="$pid" '{ kids[$2] = kids[$2] " " $1 }
+    END { queue[1] = root; n = 1
+      for (i = 1; i <= n; i++) { m = split(kids[queue[i]], k, " "); for (j = 1; j <= m; j++) { queue[++n] = k[j]; print k[j] } } }' <<<"$table" |
+    sort -n | while IFS= read -r child; do
+      in_team_slice "$(cgroup_of "$child")" || echo "$child"
+    done
+}
+
+# Ask the user manager to adopt <pid>... into <scope> in <slice>: start_scope <scope> <slice> <pid>...
+start_scope() {
+  local scope=$1 slice=$2
+  shift 2
+  busctl --user call org.freedesktop.systemd1 /org/freedesktop/systemd1 org.freedesktop.systemd1.Manager \
+    StartTransientUnit 'ssa(sv)a(sa(sv))' "$scope" fail 3 \
+    PIDs au $# "$@" Slice s "$slice" Description s "agent-team session ${scope#agent-team-}" 0
+}
+
+# Place one live team session <id> <name> <pid>; returns 1 when it could not.
+place_one() {
+  local id=$1 name=$2 pid=$3 task scope slice pids out
+  task=${name%%-*}
+  scope=agent-team-$task-$id.scope slice=agent-team-$task.slice
+  if [[ ! $pid =~ ^[0-9]+$ || ! -d $ROOT/proc/$pid ]]; then
+    echo "team-capacity: could not place $name $id: its process ${pid:-(none listed)} is gone" >&2
+    return 1
+  fi
+  if [[ $(cgroup_of "$pid") == */$slice/$scope ]]; then
+    echo "left $name $id: already in $scope"
+    return 0
+  fi
+  for _ in once again; do
+    mapfile -t pids < <(session_pids "$pid")
+    if out=$(start_scope "$scope" "$slice" "${pids[@]}" 2>&1); then
+      echo "placed $name $id in $scope (${#pids[@]} processes)"
+      return 0
+    fi
+    [[ -d $ROOT/proc/$pid ]] || break
+  done
+  echo "team-capacity: could not place $name $id (pid $pid) in $slice: $(grep -m1 . <<<"$out" || echo "busctl failed")" >&2
+  return 1
+}
+
+# The live team sessions, one "<id><TAB><name><TAB><pid>" per line, or with ids "-<TAB><reason>"
+# for each id that is no live team session.
+team_sessions() {
+  jq -r --args '[.[] | {id: (.id // (.sessionId // "" | .[:8])), name: (.name // ""), pid: (.pid // "" | tostring)}] as $live
+    | def team: .name | test("^T[0-9]+-[a-z]+$");
+    if $ARGS.positional == [] then $live[] | select(team) | [.id, .name, .pid] | @tsv
+    else $ARGS.positional[] as $id | ($live | map(select(.id == $id)) | first) as $s
+      | if $s == null then ["-", "\($id): no live session has that id"]
+        elif ($s | team | not) then ["-", "\($id): it is no team session (named \(if $s.name == "" then "nothing" else $s.name end), not T<n>-<role>)"]
+        else [$s.id, $s.name, $s.pid] end | @tsv end' "${ids[@]}" <<<"$LIVE_SESSIONS"
+}
+
+place() {
+  local failed=0 id name pid
+  if [[ $os == macos ]]; then
+    echo "team-capacity: no cgroups on macOS: no session is placed" >&2
+    return 0
+  fi
+  live_sessions
+  while IFS=$'\t' read -r id name pid; do
+    if [[ $id == - ]]; then
+      echo "team-capacity: could not place $name" >&2
+      failed=1
+    elif ! place_one "$id" "$name" "$pid"; then
+      failed=1
+    fi
+  done < <(team_sessions)
+  return "$failed"
+}
+
+# The doctor's resources line, as the header's check says.
+check() {
+  local problems=() out controllers file unit placed=0 id name pid cgroup manager=1
+  problem() { problems+=("$(jq -cn --arg v "$1" --arg r "$2" --arg f "${3:-}" '{verdict: $v, reason: $r, fix: $f}')"); }
+  if [[ $os == linux ]]; then
+    if ! out=$(systemctl --user show -P Version 2>&1); then
+      manager=0
+      problem FAIL "the user's systemd does not answer (systemctl --user: $(grep -m1 . <<<"$out" || echo "no reason given"))" \
+        "log in so the user's systemd runs, then run team-doctor again"
+    fi
+    file=$ROOT/sys/fs/cgroup/user.slice/user-$uid.slice/user@$uid.service/cgroup.controllers
+    controllers=$(cat "$file" 2>/dev/null) || controllers=''
+    if [[ " $controllers " != *" cpu "* || " $controllers " != *" memory "* ]]; then
+      problem FAIL "the user manager's cgroup does not delegate the cpu and memory controllers (cgroup.controllers: ${controllers:-none})" \
+        "Daniel delegates them (Delegate=cpu memory pids in a drop-in for user@.service, which needs sudo), then logs in again"
+    fi
+    if [[ ! -f $UNITS/$SLICE || $(cat "$UNITS/$SLICE") != "$(slice_unit)" ]]; then
+      problem WARN "$SLICE is not installed" "team-capacity install (Daniel's yes)"
+    fi
+    while IFS= read -r unit; do
+      [[ -n $unit ]] || continue
+      if [[ ! -f $UNITS/$unit.d/$DROP_IN || $(cat "$UNITS/$unit.d/$DROP_IN") != "$(drop_in)" ]]; then
+        problem WARN "the gate's daemon $unit has no drop-in putting it in $SLICE" "team-capacity install (Daniel's yes)"
+      elif ((manager)) && daemon_outside "$unit"; then
+        problem WARN "the gate's daemon $unit still runs outside $SLICE, its restart waiting" "team-capacity install once no gate runs"
+      fi
+    done < <(gate_units)
+    if ! LIVE_SESSIONS=$(claude agents --json 2>/dev/null | jq -ce 'select(type == "array")' 2>/dev/null); then
+      problem WARN "cannot read the live session list (claude agents --json), so no session's placement was checked" "run team-doctor again"
+    else
+      while IFS=$'\t' read -r id name pid; do
+        cgroup=$(cgroup_of "$pid")
+        [[ -n $cgroup ]] || continue
+        if [[ $cgroup == */agent-team-${name%%-*}.slice/* ]]; then
+          placed=$((placed + 1))
+        else
+          problem WARN "$name $id runs outside agent-team-${name%%-*}.slice" "team-capacity place"
+        fi
+      done < <(team_sessions)
+    fi
+  fi
+  printf '%s\n' "${problems[@]}" | jq -sc --arg os "$os" --argjson placed "$placed" '
+    map(select(. != null)) as $p
+    | {os: $os,
+       verdict: (if any($p[]; .verdict == "FAIL") then "FAIL" elif $p != [] then "WARN" else "PASS" end),
+       reason: (if $p != [] then $p | map(.reason) | join("; ")
+         elif $os == "macos" then "no hard limits on macOS: admission and stow only"
+         else "agent-team.slice installed, no limits set yet; \($placed) live team session\(if $placed == 1 then "" else "s" end) in it" end),
+       fix: ($p | map(.fix | select(. != "")) | unique | join("; ")),
+       problems: $p}' >"$work"
+  if ((json)); then
+    cat "$work"
+  else
+    jq -r '"\(.verdict) \(.reason)" + (if .fix == "" then "" else "; fix: \(.fix)" end)' "$work"
+    [[ $(jq -r .verdict "$work") == PASS ]] || return 1
+  fi
+}
+
+case $command in
+  install) install ;;
+  place) place ;;
+  check)
+    work=$(mktemp)
+    trap 'rm -f "$work"' EXIT
+    check
+    ;;
+esac
