@@ -763,6 +763,29 @@ allowed_in() {
   done
 }
 
+# T177's builder was refused gh pr ready on its own draft PR, which no rule allowed.
+@test "a builder may mark a PR ready for review, never back to a draft, and no other role may" {
+  thread T7
+  local role settings command
+  run_bin -0 team-worker T7 builder "$wt1" -- go
+  settings=$TEAM_HOME/tasks/T7/settings.builder.json
+  for command in "gh pr ready https://github.com/me/shop/pull/5" "gh pr ready 5 --repo me/shop" \
+    "gh-axi pr ready 5"; do
+    allowed_in "$settings" "$command" || { echo "builder may not: $command" >&2; return 1; }
+  done
+  for command in "gh pr ready https://github.com/me/shop/pull/5 --undo" "gh pr ready --undo 5" \
+    "gh-axi pr ready 5 --undo"; do
+    denied_in "$settings" "$command" || { echo "builder may: $command" >&2; return 1; }
+  done
+  for role in planner reviewer; do
+    run_bin -0 team-worker T7 "$role" "$wt1" -- go
+    settings=$TEAM_HOME/tasks/T7/settings.$role.json
+    for command in "gh pr ready https://github.com/me/shop/pull/5" "gh-axi pr ready 5"; do
+      if allowed_in "$settings" "$command"; then echo "$role may: $command" >&2; return 1; fi
+    done
+  done
+}
+
 @test "a closed task is refused, opened or legacy" {
   thread T7
   opened T7 proj feat/T7-one "$wt1"
