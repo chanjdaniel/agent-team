@@ -6,7 +6,7 @@
 #   template    one of templates/briefs/: planner-feature, planner-interview (a planner that
 #               interviews Daniel in the task's interview thread, which team-thread T<n>
 #               --interview opens first), planner-research, builder-ticket, builder-fix,
-#               builder-deliver (goal derived, below), builder-merge-base (--set pr=, a PR behind
+#               builder-deliver (goal derived, below), builder-merge-base (pr derived, a PR behind
 #               its base), builder-round (pr, findings, findings_file and goal derived; a fresh
 #               builder for a fix round after the holder stowed), reviewer, rereview (pr, head,
 #               reviewed and since derived), verify (the same but since, and findings derived; the
