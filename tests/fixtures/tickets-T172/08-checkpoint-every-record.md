@@ -11,15 +11,10 @@ The manual and the stow skill drop hand commits of records: `team-checkpoint --f
 
 **Files:** `bin/lib/team.sh`, `bin/team-checkpoint`, `bin/team-handoff`, `bin/team-timers` (its header's 15 minutes), `roles/coordinator.md` (lines 15 and 97), `plugins/coordinator-skills/skills/stow/SKILL.md`, `plugins/coordinator-skills/skills/retro/SKILL.md`, `tests/team-checkpoint.bats`, `tests/team-handoff.bats`, `tests/team-timers.bats`.
 
-- [x] A checkpoint with a changed `tasks/T1/plan.md`, a new brief and its record, a new `tasks/queued/x.md`, a changed `projects/p/backlog/s.md` and a changed `manual-steps.md` commits them all with the ledger as `chore: checkpoint`.
-- [x] A staged path outside the records is never committed and stays staged; ignored files (`tasks/T1/settings.builder.json`, `tasks/T1/ui/`) stay out.
-- [x] A handoff commits the same set (its test adds `manual-steps.md` and `projects/`).
-- [x] A checkpoint 5 minutes after the last runs; one 3 minutes after says it is not due; the heartbeat's run makes one each time it is due.
-- [x] One real checkpoint's time with the open tasks of the moment is in the build note.
-- [x] The manual names no hand commit of records and stays at most 120 lines; the stow and retro skills say the same.
-- [x] `tests/run` passes.
-
-## Found along the way
-
-- `team-merge`'s story line told the coordinator to "commit it with the records"; it now says the next checkpoint commits it (`tests/team-merge.bats` follows).
-- `sops/portability.md`, `sops/docker.md` and `templates/briefs/resume-crash.md` said 15 minutes and the old commit list; they say 5 minutes and every records path now (`tests/team-brief.bats` follows).
+- [ ] A checkpoint with a changed `tasks/T1/plan.md`, a new brief and its record, a new `tasks/queued/x.md`, a changed `projects/p/backlog/s.md` and a changed `manual-steps.md` commits them all with the ledger as `chore: checkpoint`.
+- [ ] A staged path outside the records is never committed and stays staged; ignored files (`tasks/T1/settings.builder.json`, `tasks/T1/ui/`) stay out.
+- [ ] A handoff commits the same set (its test adds `manual-steps.md` and `projects/`).
+- [ ] A checkpoint 5 minutes after the last runs; one 3 minutes after says it is not due; the heartbeat's run makes one each time it is due.
+- [ ] One real checkpoint's time with the open tasks of the moment is in the build note.
+- [ ] The manual names no hand commit of records and stays at most 120 lines; the stow and retro skills say the same.
+- [ ] `tests/run` passes.

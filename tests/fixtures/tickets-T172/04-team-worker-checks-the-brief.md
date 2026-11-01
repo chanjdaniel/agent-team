@@ -8,14 +8,8 @@ Phase 1.
 
 **Files:** `bin/team-worker`, `bin/lib/ledger-contract.json`, `tests/team-worker.bats`.
 
-- [x] `-- "Read your brief at "` (the empty path the failed pipe gave) and `-- "Read your brief at ~/x/tasks/T1/brief-nope.md."` are refused, exit 1, naming the path or its absence, with no `claude` call and no ledger line.
-- [x] A prompt naming an existing brief launches as before and logs `brief: "brief-rereview-3"`; one naming none (an ops prompt with the brief's text) logs no `brief`.
-- [x] `~/` and `$HOME` forms and trailing punctuation are handled; a brief of another task's directory launches but logs no `brief`.
-- [x] `team-log --check` accepts the new field; `team-worker --help` says both.
-- [x] `tests/run` passes.
-
-## Found along the way
-
-- `tests/task-life.bats`'s two-project life launched its home builder with `step`'s output in place of the brief path (`step` overwrites `$output`); the new check refused it, and the test now keeps the brief's path in `home_brief`.
-- `bin/team-load-check`'s ops prompt said "It replaces your brief" with no path, which the check would refuse; it now says "It stands in for a brief".
-- `tests/drill.bats` launched with a bare "Read your brief"; it now writes and names `tasks/T1/brief.md`.
+- [ ] `-- "Read your brief at "` (the empty path the failed pipe gave) and `-- "Read your brief at ~/x/tasks/T1/brief-nope.md."` are refused, exit 1, naming the path or its absence, with no `claude` call and no ledger line.
+- [ ] A prompt naming an existing brief launches as before and logs `brief: "brief-rereview-3"`; one naming none (an ops prompt with the brief's text) logs no `brief`.
+- [ ] `~/` and `$HOME` forms and trailing punctuation are handled; a brief of another task's directory launches but logs no `brief`.
+- [ ] `team-log --check` accepts the new field; `team-worker --help` says both.
+- [ ] `tests/run` passes.

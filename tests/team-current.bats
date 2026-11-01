@@ -46,7 +46,7 @@ $(id_of "$second") ${second#- }"
 }
 
 @test "done with the id or a unique 4-digit prefix removes exactly that line" {
-  local a="- ask - which domain for the docs site, Daniel's move | 1566347677472661545"
+  local a="- ask - which domain for the docs site, Daniel's move | 1563000000000000045"
   local b="- watch T4 the CI wait on PR 7, re-arm with team-ci-wait | ledger 2026-11-01T07:08:11Z"
   local c="- queued - the Node pin | ~/team/tasks/queued/node-pin.md"
   printf '%s\n' "# Current items" "" "$a" "$b" "$c" >"$current"
@@ -88,7 +88,7 @@ b" --where tasks/queued/node-pin.md
   check_refusal "the where '/var/tmp/x' is a temp path" next - a thing --where /var/tmp/x
   check_refusal "the where '/var/folders/ab/T/x' is a temp path" next - a thing --where /var/folders/ab/T/x
   check_refusal "the where '/private/var/folders/ab/T/x' is a temp path" next - a thing --where /private/var/folders/ab/T/x
-  check_refusal "the where '$tilde/.claude/jobs/94aac03a/tmp/x.md' is a temp path" next - a thing --where "$tilde/.claude/jobs/94aac03a/tmp/x.md"
+  check_refusal "the where '$tilde/.claude/jobs/0a0b0c0d/tmp/x.md' is a temp path" next - a thing --where "$tilde/.claude/jobs/0a0b0c0d/tmp/x.md"
   check_refusal "the where '$BATS_TEST_TMPDIR/job/out.md' is a temp path" next - a thing --where "$BATS_TEST_TMPDIR/job/out.md"
   # /etc/hosts is a file outside the team home and every temp directory, unless TMPDIR names /etc.
   check_refusal "the where '/etc/hosts' is not a file in the team home" next - a thing --where /etc/hosts
@@ -104,8 +104,8 @@ b" --where tasks/queued/node-pin.md
 
 @test "add takes each where the manual allows: a URL, a Discord id, a ledger time and a team-home path in each form" {
   local where
-  for where in https://github.com/owner/proj/pull/7 "https://discord.com/channels/1/2/3" 1566347677472661545 \
-    "Discord 1566347677472661545" "ledger 2026-11-01T07:08:11Z" tasks/queued/node-pin.md \
+  for where in https://github.com/owner/proj/pull/7 "https://discord.com/channels/1/2/3" 1563000000000000045 \
+    "Discord 1563000000000000045" "ledger 2026-11-01T07:08:11Z" tasks/queued/node-pin.md \
     "$TEAM_HOME/tasks/queued/node-pin.md" "$tilde/team/tasks/queued/node-pin.md"; do
     run_bin -0 team-current add next - "pin Node for $where" --where "$where"
   done
@@ -120,7 +120,7 @@ b" --where tasks/queued/node-pin.md
 
 @test "done refuses an id that matches no item or two, file unchanged" {
   local item="- next T4 open the Node pin task | tasks/queued/node-pin.md"
-  printf '%s\n' "# Current items" "$item" "$item" "- owe - a reply | 1566347677472661545" >"$current"
+  printf '%s\n' "# Current items" "$item" "$item" "- owe - a reply | 1563000000000000045" >"$current"
   git -C "$TEAM_HOME" commit -q -am "chore: items"
   local before
   before=$(cat "$current")
@@ -216,9 +216,9 @@ tasks/current.md"
 
 @test "add creates the file with its title when there is none" {
   rm "$current"
-  run_bin -0 team-current add owe - the T4 summary --where 1566347677472661545
+  run_bin -0 team-current add owe - the T4 summary --where 1563000000000000045
   assert_equal "$(cat "$current")" "# Current items
-- owe - the T4 summary | 1566347677472661545"
+- owe - the T4 summary | 1563000000000000045"
 }
 
 @test "team-snapshot reads the items team-current writes, as before" {
@@ -240,14 +240,14 @@ slots = ["slots/proj/1"]
 TOML
   stub_reply claude '[]'
   stub_reply gh '[]'
-  run_bin -0 team-current add owe - the T4 summary --where 1566347677472661545
+  run_bin -0 team-current add owe - the T4 summary --where 1563000000000000045
   run_bin -0 team-current add next T4 open the Node pin task --where tasks/queued/node-pin.md
   run_bin -0 team-snapshot
   assert_contains "$output" "Current items (2):
-  - owe - the T4 summary | 1566347677472661545
+  - owe - the T4 summary | 1563000000000000045
   - next T4 open the Node pin task | tasks/queued/node-pin.md"
   run_bin -0 team-snapshot --json
-  assert_equal "$(jq -c .items <<<"$output")" '["owe - the T4 summary | 1566347677472661545","next T4 open the Node pin task | tasks/queued/node-pin.md"]'
+  assert_equal "$(jq -c .items <<<"$output")" '["owe - the T4 summary | 1563000000000000045","next T4 open the Node pin task | tasks/queued/node-pin.md"]'
 }
 
 @test "it refuses a malformed command line" {
