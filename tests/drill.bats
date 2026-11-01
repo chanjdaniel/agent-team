@@ -86,7 +86,8 @@ SH
   run_bin -0 team-open home feature feat work "Do the work"
   wt=$HOME/slots/home/1
   run_bin -0 team-thread T1 home "Do the work"
-  run_bin -0 team-worker T1 builder "$wt" -- "Read your brief"
+  echo "the brief" >"$TEAM_HOME/tasks/T1/brief.md"
+  run_bin -0 team-worker T1 builder "$wt" -- "Read your brief at $TEAM_HOME/tasks/T1/brief.md"
   builder=$output
   # The builder's first commit, and the task directory it works from.
   echo "spec" >"$wt/.scratch/task/spec.md"

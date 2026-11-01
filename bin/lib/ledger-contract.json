@@ -31,9 +31,9 @@
     },
     "launch": {
       "writer": "team-worker",
-      "about": "request is the link to Daniel's Discord message, on an ops launch; model is the --model the session launched on, from the project's models in the registry, absent on the default",
+      "about": "request is the link to Daniel's Discord message, on an ops launch; model is the --model the session launched on, from the project's models in the registry, absent on the default; brief is the file name without .md of the first brief*.md the prompt names directly under the task's tasks/T<n>/, absent when it names none there",
       "required": {"role": "string", "session": "string", "worktree": "string", "toolkits": "array"},
-      "optional": {"project": "string", "branch": "string", "machine": "string", "model": "string", "request": "string"}
+      "optional": {"project": "string", "branch": "string", "machine": "string", "model": "string", "request": "string", "brief": "string"}
     },
     "worktree-returned": {
       "writer": "team-close",
