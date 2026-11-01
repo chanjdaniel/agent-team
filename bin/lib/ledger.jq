@@ -439,6 +439,15 @@ def task_branch($project):
   [.[] | select((.event | IN("opened", "worktree-added", "branch-renamed")) and .project == $project)]
   | last | .branch // null;
 
+# Why PR #$number, from the branch $branch, is not task $task's own PR for $project, over the
+# task's events as an array (task_branch), one string, or none when it is: a word given on no head
+# (the plan-time and standing ones) holds only for the task's own branch.
+def task_branch_reasons($task; $project; $branch; $number):
+  task_branch($project) as $own
+  | if $own == null then "\($task) logged no branch for \($project): no opened, worktree-added or branch-renamed event of it"
+    elif $branch != $own then "PR #\($number) comes from \($branch), not \($own), \($task)'s branch for \($project)"
+    else empty end;
+
 # A launch's session in the session list ($sessions, from claude agents --json), or null: by the
 # short id, or by the start of the full session id (interactive sessions have no short id).
 def live_session($session; $sessions):
@@ -522,6 +531,15 @@ def standing_words($projects):
   | [$projects[] | . as $project | $events | standing_word($project)
      | select(. != null and .stands) | {project: $project, word}];
 
+# Why Daniel's standing word on $project does not stand, over standing_word's answer ({stands,
+# word, withdrawn}, or null for no event), one string, or none while it stands: no word names
+# $project or all, or the latest event that applies withdrew it.
+def standing_word_reasons($project):
+  if .word == null then "no standing word of Daniel's names \($project) or every project"
+  elif .stands | not then
+    "Daniel's standing word on \(if .word.project == "all" then "every project" else .word.project end), Discord message \(.word.discord_message), was withdrawn at \(.withdrawn.ts) in Discord message \(.withdrawn.discord_message)"
+  else empty end;
+
 # Why the task's reviews do not let a word given on no head (the plan-time one) merge the PR's
 # head $head unasked, one string per reason, none when they do: no review of the head (by the
 # shorter prefix) is logged; the latest one is not a pass; it logged no guarded list, or named
@@ -603,6 +621,12 @@ def state_line:
        elif .own == true then " | merge pre-approved, but \(.project) is the team's own project"
        elif .opted_in == false then " | merge pre-approved, but \(.project) does not opt in"
        else " | merge pre-approved" end)
+  + (.pr.standing_word // null
+     | if . == null or .covers == null then ""
+       elif .withdrawn != null then " | standing word withdrawn"
+       elif .covers then " | standing word covers it"
+       else " | standing word does not cover it: \(.reasons[0])"
+         + (.reasons | length | if . > 1 then " (and \(. - 1) more)" else "" end) end)
   + (if .waiting == null then "" else " | waiting on \(.waiting.on): \(.waiting.reason)" end);
 
 # Whether a task is parked, waiting on something other than a worker: held, blocked or awaiting

@@ -309,16 +309,12 @@ fi
 unattended=() unattended_read='' files_read=''
 unattended_reasons() {
   local -n unattended_to=$1
-  local task_branch out rc=0
+  local out rc=0
   if [[ -z $unattended_read ]]; then
     unattended_read=1
-    task_branch=$(ledger_jq 'task_branch($project) // ""' -r --arg project "$project" <<<"$events") || jq_failed $?
-    if [[ -z $task_branch ]]; then
-      unattended+=("$task logged no branch for $project: no opened, worktree-added or branch-renamed event of it")
-    elif [[ $branch != "$task_branch" ]]; then
-      unattended+=("PR #$number comes from $branch, not $task_branch, $task's branch for $project")
-    fi
-    out=$(ledger_jq 'unattended_review_reasons($head)' -r --arg head "$head" <<<"$events") || jq_failed $?
+    out=$(ledger_jq 'task_branch_reasons($task; $project; $branch; $number), unattended_review_reasons($head)' -r \
+      --arg task "$task" --arg project "$project" --arg branch "$branch" --arg number "$number" --arg head "$head" <<<"$events") ||
+      jq_failed $?
     if [[ -n $out ]]; then mapfile -t -O "${#unattended[@]}" unattended <<<"$out"; fi
     pr_file_reasons "$scratch" "$repo" "$number" "$(jq -r '.changedFiles // "unknown number of"' "$scratch/pr")" || rc=$?
     ((rc != 2)) || jq_failed
@@ -373,10 +369,9 @@ fi
 # the thread of the task it was logged under, where Discord shows its message from an allowFrom
 # author; it is read whenever it was sent, since it is on no head and answers no ask.
 if [[ $word == standing ]]; then
-  if jq -e '.word == null' <<<"$standing" >/dev/null; then
-    standing_reasons+=("no standing word of Daniel's names $project or every project")
-  elif jq -e '.stands | not' <<<"$standing" >/dev/null; then
-    standing_reasons+=("$(jq -r '"Daniel'"'"'s standing word on \(if .word.project == "all" then "every project" else .word.project end), Discord message \(.word.discord_message), was withdrawn at \(.withdrawn.ts) in Discord message \(.withdrawn.discord_message)"' <<<"$standing")")
+  out=$(ledger_jq 'standing_word_reasons($project)' -r --arg project "$project" <<<"$standing") || jq_failed $?
+  if [[ -n $out ]]; then
+    standing_reasons+=("$out")
   else
     message=$(jq -r '.word.discord_message | tostring' <<<"$standing")
     said_in=$(jq -r '.word.discord_channel | tostring' <<<"$standing")
