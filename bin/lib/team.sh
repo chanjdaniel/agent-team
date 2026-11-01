@@ -179,6 +179,8 @@ local_path() {
 # archive leaves them out, each as "<why>\t<path>" (relative to <dir>), NUL-terminated, in this
 # order, sorted within each:
 #   UI capture         a top-level ui/ (a frontend capture stays on the machine that took it)
+#   stack logs         a top-level stack-logs/, where team-stack down saves each service's log
+#                      tail: for the builder at the time, never the records
 #   Lighthouse reports a ui-check run's lighthouse/, ui-check/<run>/lighthouse (its failing
 #                      audits are in the run's findings.md, which is kept)
 #   nested repository  a directory holding .git, or a bare repository's HEAD, objects/ and refs/
@@ -205,6 +207,10 @@ archive_left_out() {
       skip+=(-o -path "./$pattern")
     }
     [[ ! -d ui ]] || printf 'UI capture\tui\0'
+    if [[ -d stack-logs && ! -L stack-logs ]]; then
+      printf 'stack logs\tstack-logs\0'
+      skip_path stack-logs
+    fi
     if [[ -d ui-check && ! -L ui-check ]]; then
       while IFS= read -r -d '' dir; do
         printf 'Lighthouse reports\t%s\0' "$dir"
