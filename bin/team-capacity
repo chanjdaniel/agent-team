@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Hold the team's work in one systemd user slice, each task's in a slice of its own inside it, so
 # the kernel can measure and limit it, and read what the team's work uses and costs on this
-# machine (sops/resources.md). No limit is set on the slice yet.
+# machine (sops/resources.md). team-level sets the level's limits on the slice.
 #
 # Usage: team-capacity install
 #        team-capacity place [--quiet] [<session id>...]
@@ -34,19 +34,26 @@
 #          one line on stdout (with --quiet, the heartbeat's, only each placed one), each one it
 #          cannot place one line on stderr, and the others are still placed; exit 1 when any
 #          failed.
-# check    What the doctor's resources line says, as {os, verdict (PASS or WARN), reason, fix,
-#          problems: [{verdict, reason, fix}]} with --json, else the line "<verdict> <reason>" and
-#          "; fix: <fix>" when there is one, exiting 1 unless it passes. On Linux it WARNs, never
-#          FAILs, since no limit needs the slice yet: when systemctl --user does not answer or the
-#          user manager's cgroup.controllers lacks cpu or memory; when agent-team.slice is not
-#          installed as install writes it, a gate daemon unit lacks its drop-in (both fixed by
-#          team-capacity install, Daniel's yes), a running gate daemon is outside the slice (its
-#          restart waits on its pipeline), the session list cannot be read, or a live team session
-#          runs outside its task's slice (fixed by team-capacity place). On any OS, with --holding
-#          (this machine holds the lease, whose heartbeat takes a reading every 5 minutes): WARN
-#          when the newest reading is more than 15 minutes old, or there is none, its fix the
-#          heartbeat log's capacity lines, or team-timers enable with --heartbeat disabled. The
-#          passing reason names the slice and how many live team sessions are in it.
+# check    What the doctor's resources line says, as {os, verdict (PASS, WARN or FAIL), reason,
+#          fix, problems: [{verdict, reason, fix}]} with --json, else the line "<verdict>
+#          <reason>" and "; fix: <fix>" when there is one, exiting 1 unless it passes. Its reason
+#          starts with the level's words (team-level status --json --stored's says: "manual,
+#          minor (30%): 9.2 GiB and 3.6 cores for the team; 6.1 GiB reserved"). On any OS it
+#          FAILs on a capacity.json or a level.jsonl line that is malformed, naming it. On Linux
+#          it FAILs, since the level's limits need the slice, when systemctl --user does not
+#          answer or the user manager's cgroup.controllers lacks cpu or memory; it WARNs when
+#          agent-team.slice is not installed as install writes it, a gate daemon unit lacks its
+#          drop-in (both fixed by team-capacity install, Daniel's yes), a running gate daemon is
+#          outside the slice (its restart waits on its pipeline), the session list cannot be
+#          read, a live team session runs outside its task's slice (fixed by team-capacity
+#          place), or, with the slice installed, the limits team-level last applied
+#          (~/.local/state/agent-team/level/applied.json) are missing or another mode and level's
+#          than the record's, or the slice's CPUQuota is not theirs (each fixed by team-level
+#          apply). On any OS, with --holding (this machine holds the lease, whose heartbeat takes
+#          a reading every 5 minutes): WARN when the newest reading is more than 15 minutes old,
+#          or there is none, its fix the heartbeat log's capacity lines, or team-timers enable
+#          with --heartbeat disabled. The passing reason names the slice and how many live team
+#          sessions are in it.
 # sample   Takes one reading of the machine's load with the team's use per task and appends it to
 #          ~/.local/state/agent-team/capacity/readings.jsonl, kept to the last 24 hours (the
 #          heartbeat's capacity step runs it every 5 minutes), printing nothing; within 60
@@ -378,13 +385,13 @@ check() {
   if [[ $os == linux ]]; then
     if ! out=$(systemctl --user show -P Version 2>&1); then
       manager=0
-      problem WARN "the user's systemd does not answer (systemctl --user: $(grep -m1 . <<<"$out" || echo "no reason given")), so no work goes in the team's slice" \
+      problem FAIL "the user's systemd does not answer (systemctl --user: $(grep -m1 . <<<"$out" || echo "no reason given")), so no work goes in the team's slice and the level's limits hold nothing" \
         "log in so the user's systemd runs, then run team-doctor again"
     fi
     file=$ROOT/sys/fs/cgroup/user.slice/user-$uid.slice/user@$uid.service/cgroup.controllers
     controllers=$(cat "$file" 2>/dev/null) || controllers=''
     if [[ " $controllers " != *" cpu "* || " $controllers " != *" memory "* ]]; then
-      problem WARN "the user manager's cgroup does not delegate the cpu and memory controllers (cgroup.controllers: ${controllers:-none}), so the team's slice cannot measure its work" \
+      problem FAIL "the user manager's cgroup does not delegate the cpu and memory controllers (cgroup.controllers: ${controllers:-none}), so the team's slice cannot measure or limit its work" \
         "Daniel delegates them (Delegate=cpu memory pids in a drop-in for user@.service, which needs sudo), then logs in again"
     fi
     if [[ ! -f $UNITS/$SLICE || $(cat "$UNITS/$SLICE") != "$(slice_unit)" ]]; then
@@ -412,6 +419,7 @@ check() {
       done < <(team_sessions)
     fi
   fi
+  level_problems "$manager"
   if ((holding)) && ! newest_reading_within 900; then
     if [[ $heartbeat == enabled ]]; then
       problem WARN "no reading of the machine's load in the last 15 minutes, though this machine holds the lease, whose heartbeat takes one every 5" \
@@ -421,13 +429,15 @@ check() {
         "team-timers enable"
     fi
   fi
-  printf '%s\n' "${problems[@]}" | jq -sc --arg os "$os" --argjson placed "$placed" '
+  printf '%s\n' "${problems[@]}" | jq -sc --arg os "$os" --argjson placed "$placed" --arg level "$LEVEL_SAYS" '
     map(select(. != null)) as $p
     | {os: $os,
-       verdict: (if $p != [] then "WARN" else "PASS" end),
-       reason: (if $p != [] then $p | map(.reason) | join("; ")
-         elif $os == "macos" then "no hard limits on macOS: admission and stow only"
-         else "agent-team.slice installed, no limits set yet; \($placed) live team session\(if $placed == 1 then "" else "s" end) in it" end),
+       verdict: (if any($p[]; .verdict == "FAIL") then "FAIL" elif $p != [] then "WARN" else "PASS" end),
+       reason: ((if $level == "" then [] else [$level] end)
+         + if $p != [] then $p | map(.reason)
+           elif $os == "macos" then ["no hard limits on macOS: admission and stow only"]
+           else ["agent-team.slice holds the team, \($placed) live team session\(if $placed == 1 then "" else "s" end) in it"] end
+         | join("; ")),
        fix: ($p | map(.fix | select(. != "")) | unique | join("; ")),
        problems: $p}' >"$work"
   if ((json)); then
@@ -435,6 +445,57 @@ check() {
   else
     jq -r '"\(.verdict) \(.reason)" + (if .fix == "" then "" else "; fix: \(.fix)" end)' "$work"
     [[ $(jq -r .verdict "$work") == PASS ]] || return 1
+  fi
+}
+
+# The slice's CPU quota as a whole percentage, from systemd's CPUQuotaPerSecUSec ("3.600000s",
+# "500ms"), or "none" for infinity or no answer.
+slice_quota() {
+  local value
+  value=$(unit_property "$SLICE" CPUQuotaPerSecUSec) || value=''
+  if [[ -z $value || $value == infinity ]]; then
+    echo none
+    return 0
+  fi
+  jq -rn --arg v "$value" '[$v | scan("([0-9.]+)(min|ms|us|s)") | (.[0] | tonumber) * {min: 60e6, s: 1e6, ms: 1e3, us: 1}[.[1]]]
+    | if . == [] then "none" else add / 1e4 | round end'
+}
+
+# The level's problems for the doctor, and its words into LEVEL_SAYS: capacity.json and
+# level.jsonl must be well formed (each a FAIL naming its problem), and on Linux, with the user
+# manager answering (<manager> 1) and the slice installed, the limits team-level last applied
+# (~/.local/state/agent-team/level/applied.json) must be the recorded level's and the slice's CPU
+# quota theirs (each a WARN, fixed by team-level apply).
+level_problems() {
+  local manager=$1 out state applied quota want
+  LEVEL_SAYS=''
+  if ! out=$(read_settings 2>&1); then
+    problem FAIL "${out#"${0##*/}: "}" "fix or remove $(tilde "$SETTINGS"), then run team-doctor again"
+    return 0
+  fi
+  if ! state=$(TEAM_HOME=$TEAM_HOME "$(dirname "${BASH_SOURCE[0]}")/team-level" status --json --stored 2>"$work"); then
+    out=$(grep -m1 . "$work" || echo "team-level status failed")
+    out=${out#team-level: }
+    # team-level names its fix with its reason, as for a malformed record.
+    if [[ $out == *"; fix or remove"* ]]; then
+      problem FAIL "${out%%; fix or remove*}" "fix or remove${out#*; fix or remove}"
+    else
+      problem FAIL "team-level status: $out" "fix what it names, then run team-doctor again"
+    fi
+    return 0
+  fi
+  LEVEL_SAYS=$(jq -r .says <<<"$state")
+  [[ $os == linux && $manager == 1 && -f $UNITS/$SLICE ]] || return 0
+  applied=$(jq -c 'select(type == "object")' "$HOME/.local/state/agent-team/level/applied.json" 2>/dev/null) || applied=''
+  if [[ -z $applied ]]; then
+    problem WARN "the level's limits were never applied on this machine" "team-level apply"
+  elif [[ $(jq -r '"\(.mode) \(.level)"' <<<"$applied") != "$(jq -r '"\(.mode) \(.level)"' <<<"$state")" ]]; then
+    problem WARN "the limits applied are $(jq -r '"\(.mode) \(.level)"' <<<"$applied")'s, not the recorded $(jq -r '"\(.mode) \(.level)"' <<<"$state")'s" "team-level apply"
+  else
+    quota=$(slice_quota)
+    want=$(jq -r .cpu_quota_percent <<<"$applied")
+    [[ $quota == "$want" ]] ||
+      problem WARN "$SLICE's CPU quota is $([[ $quota == none ]] && echo none || echo "$quota%"), not the level's $want%" "team-level apply"
   fi
 }
 
@@ -553,8 +614,8 @@ costs() {
   local project roles stack_projects=() file
   read_settings
   roles=$(for file in "$(dirname "$TEAM_LIB")"/../roles/*.md; do
-    [[ -f $file ]] && basename "$file" .md
-  done | grep -vx coordinator | jq -Rn '[inputs]')
+    if [[ -f $file ]]; then basename "$file" .md; fi
+  done | { grep -vx coordinator || true; } | jq -Rn '[inputs]')
   while IFS= read -r project; do
     [[ -n $project ]] || continue
     if team_project "$project" | jq -e '.stack != null' >/dev/null; then stack_projects+=("$project"); fi

@@ -33,6 +33,9 @@
 #   network rm <names or ids>...        a network missing or a running container is on is
 #                                       refused (Docker removes one only stopped ones are on)
 #   info --format json
+#   update --cpus <n> <names or ids>...
+#                                       each container's HostConfig.NanoCpus set; one not
+#                                       found is refused as Docker does, the others updated
 # and, modelling the fixture project's stack (stack_project) as Compose 5.6.1 makes it, from the
 # TEAM_* variables, COMPOSE_PROJECT_NAME and TH_WEB_PORT the call sees:
 #   compose [-f <file>] config --format json

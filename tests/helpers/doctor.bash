@@ -174,9 +174,12 @@ EOF
   touch "$TEAM_CHROME"
   # The heartbeat runs, as it should on the holder.
   "$REPO_ROOT/bin/team-timers" enable >/dev/null
-  # The user manager delegates cpu and memory, as home-pc's does, and the team's slice is installed.
+  # The user manager delegates cpu and memory, as home-pc's does, the team's slice is installed,
+  # and the level's limits applied, as team-level apply leaves them: manual full, its CPU quota
+  # on the slice.
   user_controllers cpu memory pids
   "$REPO_ROOT/bin/team-capacity" install >/dev/null
+  level_applied manual full 1000
 
   # Two projects, cloned as the bootstrap clones them: Conventioner gated by no-mistakes with a
   # treehouse pool, site with a git pool; no-mistakes has a gate for each checkout listed in
@@ -207,6 +210,16 @@ EOF
   echo '{"cap": 10}' >"$HOME/.config/agent-team/slots.json"
   slots_reading 0 8 1
   capacity_reading 0
+}
+
+# level_applied <mode> <level> <percent>: the limits team-level apply last set, as it keeps them,
+# and the CPU quota of <percent> on the team's slice as systemd reports it.
+level_applied() {
+  mkdir -p "$HOME/.local/state/agent-team/level" "$HOME/.fake-systemd"
+  jq -cn --arg mode "$1" --arg level "$2" --argjson percent "$3" '{at: (now | floor | todate), mode: $mode, level: $level,
+    cpu_quota_percent: $percent, cpus: ($percent / 100), memory_high: 2147483648, memory_max: 3221225472}' \
+    >"$HOME/.local/state/agent-team/level/applied.json"
+  printf '%d.%06ds\n' $(($3 / 100)) $(($3 % 100 * 10000)) >"$HOME/.fake-systemd/agent-team.slice.CPUQuotaPerSecUSec"
 }
 
 # capacity_reading <minutes>: append a reading of the machine's load with the team's use per task,

@@ -1,12 +1,74 @@
 # SOP: the team's resources
 
 Built by T175 (2026-11-01), toward Daniel's resource levels: full, minor and none, each a share of the machine.
-`team-capacity --help` is the exact reference for its commands and its settings, `~/.config/agent-team/capacity.json`; this SOP says why the team's work is held and measured as it is and what to do when it is not.
-No limit is set on the team's slice yet: it holds and measures the team's work, and the levels' limits come later.
+`team-capacity --help` and `team-level --help` are the exact reference for their commands and the settings, `~/.config/agent-team/capacity.json`; this SOP says why the team's work is held and measured as it is and what to do when it is not.
+
+## Levels and modes
+
+The team runs at one of three levels, each a share of the machine: full (`full_share`, 90%), minor (`minor_share`, 30%) and none (0%).
+The coordinator runs outside the share, at every level.
+The mode is manual, which holds the level until Daniel changes it; automatic mode is not built yet.
+
+The record is the team home's `level.jsonl`, one line per change: `{ts, mode, level, by, machine}`, with `discord_message` when the change came from Daniel's message in `#coordinator`.
+The current mode and level are the last line's; with no line the team is manual full, as it was before levels.
+It is a record, committed by `team-checkpoint` and by the handoff's records commit, so Daniel's level holds across restarts and handoffs; the ledger is not used, since every ledger line needs a task.
+
+`team-level full|minor|none [--message <id>]` records manual mode at that level, and `team-level manual` manual mode at the current one; a change to the mode and level the team is already at records nothing and says so.
+Each applies the limits at once and prints the acknowledgement the coordinator posts: "Resources: manual, minor (30%): 9.2 GiB and 3.6 cores for the team; 6.1 GiB reserved."
+`team-level` alone says the mode, the level, the budget and what bounds it, the team's use and the last change; `team-level apply` applies the recorded level's limits again, after a reboot or a reset slice.
+A change and `apply` refuse on a machine that does not hold the lease; `status` only reads.
+
+## The settings
+
+`~/.config/agent-team/capacity.json` is the machine's own, beside `stack.json`, never moved between machines; every key is optional, and a file that is not one JSON object, a key of the wrong kind or an unknown key is refused, naming each problem.
+
+| Key | Default | What it sets |
+| - | - | - |
+| `full_share` | 0.9 | full's share of memory and CPU |
+| `minor_share` | 0.3 | minor's share |
+| `reserve_gib` | 4 | memory kept free beyond the other programs' current use, for their growth |
+| `reserve_cores` | 1 | cores kept free beyond their current use |
+| `auto_full_free` | 0.5 | automatic mode picks full while the other programs leave at least this fraction of memory and of CPU free |
+| `auto_none_below` | 0.15 | automatic mode picks none while they leave less than this fraction of either |
+| `rise_minutes` | 15 | how long every reading must allow a higher level before automatic mode rises |
+| `session_gib` | 0.5 | a session's seed cost, until learned |
+| `heavy_gib` | 5 | a heavy run's seed cost, until learned |
+| `gate_gib` | 2.2 | a gate run's seed cost, until learned |
+| `min_cores` | 1 | the slice's CPU quota floor, and the containers', so workers can still stow at none |
+| `min_gib` | 2 | the slice's `MemoryHigh` floor, for the same reason |
+
+The evidence for the defaults is the plan's deep dive of 2026-11-01: 13 sessions at 0.3 to 0.55 GiB each; a Conventioner stack 0.6 GiB in use against 2.8 GiB of limits; one heavy run 4 to 6 GiB; a gate about 2.2 GiB (T19's measure); and Daniel's programs about 9.8 GiB of 30.6 GiB, which leaves `(30.6 - 9.8 - 4) / 30.6`, 0.55, so full is what a normal day allows.
+`min_gib` is the coordinator's call of 2026-11-01, the memory twin of `min_cores`.
+
+## The budget
+
+With `T` the memory total, `C` the cores, `s` the level's share (0 for none), and `O_m` and `O_c` what the other programs use (Daniel's own, the coordinator and the claude daemon's spare sessions among them):
+
+- the memory budget is `max(0, min(s * T, T - O_m - reserve_gib))`, from the newest reading;
+- the CPU budget is `max(0, min(s * C, C - O_c - reserve_cores))`, from the newest reading with CPU, or `s * C` when none has.
+
+So none's budget is 0, and no level's is more than what Daniel's programs leave.
+A command that needs the budget takes a reading first when the newest is more than 10 minutes old.
+What the team's live work reserves is, for each live team session, running team or gate stack and running gate, the larger of its kind's estimate (below) and its use.
+
+Memory is read as RAM alone, as the kernel's `MemAvailable` and each cgroup's `memory.current` count it: swap is left out of the budget, the use and the limits (home-pc has a 33.6 GiB swap partition, much of it in use).
+A page the slice's limits push to swap frees RAM for Daniel's programs, which is the budget's point, so the slice's swap is not limited.
+
+## The limits
+
+On Linux `team-level` sets the slice's limits with `systemctl --user set-property --runtime agent-team.slice`, so they need no root and are gone after a reboot, until `team-level apply` sets them again:
+
+- `CPUQuota` is `max(B_c, min_cores) * 100%`, so the kernel holds the team's CPU at once, whatever a worker runs.
+- `MemoryHigh` is the largest of `min_gib`, the memory budget less the reservations of the team's stacks (which run outside the slice), and, while the slice uses more than that, the lower of its use and its `MemoryHigh` before. So a drop never throttles live sessions into reclaim: the slice is held where it is, and comes down as finished sessions stop and tasks stow.
+- `MemoryMax` is the larger of `MemoryHigh` and the slice's use, plus 1 GiB, so a drop never kills a worker.
+
+Rootful Docker keeps its containers outside every user slice, so their CPU is held by `docker update --cpus <max(B_c, min_cores)>` on every running container labelled `io.github.chanjdaniel.team.owner=agent-team`, with each apply; `team-stack up` gives a stack it starts the `--cpus` of the last apply (`~/.local/state/agent-team/level/applied.json`), so one started between two applies is held too.
+A slice that is not installed is said with its fix, `team-capacity install` (Daniel's yes), and the containers are still held.
+On macOS only the containers' CPU is held.
 
 ## The team's slice
 
-On Linux every worker session, heavy run and gate run sits in one systemd user slice, `agent-team.slice`, so the kernel can measure and later limit the team's work as one, apart from Daniel's own programs.
+On Linux every worker session, heavy run and gate run sits in one systemd user slice, `agent-team.slice`, so the kernel can measure and limit the team's work as one, apart from Daniel's own programs.
 Each task's work is in a slice of its own inside it, `agent-team-T<n>.slice`, so each task's memory and CPU are measured apart.
 systemd nests a slice under every dash prefix of its name, so `agent-team-T175.slice` sits in `agent.slice/agent-team.slice/`, and a new slice name must keep that rule in mind.
 
@@ -75,7 +137,9 @@ The seeds' evidence: 13 sessions at 0.3 to 0.55 GiB each, one heavy run 4 to 6 G
 ## What the doctor says
 
 `team-doctor`'s `resources` line reads `team-capacity check --json`.
-It fails only when `team-capacity check` itself cannot run, since no limit needs the slice yet: so a machine without it runs the team as before, and `team-resume` and `team-load-check`, which stop on any FAIL, go on.
-It warns when the user's systemd does not answer or its cgroup does not delegate `cpu` and `memory`, which only Daniel can change (a `user@.service` drop-in, with sudo); these become a FAIL once the levels set limits that need the slice.
-It also warns when the slice or a gate daemon's drop-in is not installed (`team-capacity install`, Daniel's yes), when the gate's daemon still runs outside the slice (its restart waits on a pipeline), when a live team session runs outside its task's slice (`team-capacity place`, or the heartbeat's next run), and on the lease holder when no reading is under 15 minutes old (the `capacity` step's lines in the heartbeat log say why).
+Its reason starts with the level's words, as `team-level` acknowledges a change.
+It fails when the user's systemd does not answer or its cgroup does not delegate `cpu` and `memory`, which only Daniel can change (a `user@.service` drop-in, with sudo), since the level's limits need the slice; `team-resume` and `team-load-check`, which stop on any FAIL, stop there too.
+It fails on a `capacity.json` or a `level.jsonl` line that is malformed, naming it.
+It warns when the slice or a gate daemon's drop-in is not installed (`team-capacity install`, Daniel's yes), when the gate's daemon still runs outside the slice (its restart waits on a pipeline), when a live team session runs outside its task's slice (`team-capacity place`, or the heartbeat's next run), and on the lease holder when no reading is under 15 minutes old (the `capacity` step's lines in the heartbeat log say why).
+On Linux with the slice installed it warns, naming `team-level apply`, when the limits last applied are missing or another mode and level's than the record's, or the slice's CPU quota is not theirs, as after a reboot.
 macOS has no cgroups: `install` and `place` change nothing there, and the line passes with "no hard limits on macOS: admission and stow only".
