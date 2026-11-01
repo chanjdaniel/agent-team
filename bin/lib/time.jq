@@ -58,9 +58,10 @@ def park_class:
 # builder's building, a reviewer's review, merge-approved merging (word head), a passing review
 # while a plan-time approval of the task stands merging too (word plan; preapproved, the projects
 # whose merge-preapproved no later merge-preapproval-withdrawn of theirs ended), until the merged or
-# a withdrawal that leaves none standing while the word is still plan, and a done (save one while
-# the word plan merges), merged or review unattributed (the coordinator's turn, or a gate run the
-# ledger did not see); with no park, an ask still open (open, kept across launches) while the
+# a withdrawal that leaves none standing while the word is still plan, a review that sends notes
+# back (sent_back) building (the builder's fix round, which a reviewer's done leaves building),
+# and a done (save one while the word plan merges), merged or other review unattributed (the
+# coordinator's turn, or a gate run the ledger did not see); with no park, an ask still open (open, kept across launches) while the
 # phase is unattributed is a wait on Daniel (idle_class). A park logged after the fact with since
 # takes effect at since, held to the span from the event before it to its own ts. The task starts
 # unattributed, and the walk stops at the first event after $end.
@@ -94,6 +95,8 @@ def task_segments($end):
           else . end)
           | if $e.event == "review" and $e.verdict == "pass" and .preapproved != [] then .phase = "merging" | .word = "plan"
             elif $e.event == "done" and .phase == "merging" and .word == "plan" then .
+            elif $e.event == "review" and ($e.sent_back // [] | length) > 0 then .phase = "building"
+            elif $e.event == "done" and $e.role == "reviewer" and .phase == "building" then .
             elif $e.event == "done" or $e.event == "merged" or $e.event == "review" then .phase = "unattributed"
             elif $e.event == "merge-approved" then
               .phase = "merging" | .word = "head" | if .park == "wait:daniel" then .park = null | .asks = null else . end
