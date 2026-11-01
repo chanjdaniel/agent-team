@@ -1,6 +1,6 @@
 # SOP: merging on Daniel's word
 
-Built by T186 (2026-11-02), to Daniel's standing order of 2026-11-01 in `#coordinator` (Discord 1566466373742235711): "merge when ready for all ongoing and queued work".
+Built by T186 (2026-11-02), to Daniel's standing order of 2026-11-01.
 `team-merge --help` is the exact reference for what each word holds the PR to, and `team-log --help` for each event's fields; this SOP says what the words are, how they are given and withdrawn, and what the coordinator does under each.
 
 ## The three words
