@@ -1318,7 +1318,7 @@ level_record() {
   assert_equal "$(cat "$HOME/.local/state/agent-team/capacity/readings.jsonl")" "$before"
 }
 
-@test "level-resume: the first task stowed for the level that fits again, with task null, before retro-due" {
+@test "level-resume: the first task stowed, waiting to resume, that fits again, with task null, before retro-due" {
   # T4 was stowed for the level with a builder and a reviewer, T3 later with a planner; each
   # paused stowed, so neither is missing a worker.
   local t
@@ -1349,6 +1349,28 @@ level_record() {
   level_record none
   run_bin -1 team-sweep --json
   assert_equal "$(jq -c 'map(.kind)' <<<"$output")" '["no-worker","retro-due"]'
+}
+
+@test "level-resume: a task a handoff stowed and the resume could not relaunch is named once it fits" {
+  # T6 was stowed by the shutdown with its builder, and the resume at none relaunched nothing.
+  level_task T6 03:00 builder:6f6f6f6f
+  ledger_line '{ts: "2026-10-22T04:00:00Z", task: "T6", event: "stowed", machine: "home-pc", worktrees: [],
+    roles: ["builder"], sessions: ["builder"], cause: "handoff"}'
+  event T6 paused '{reason: "stowed"}'
+  level_record none
+  capacity_reading 0 8
+  run_bin -0 --separate-stderr team-sweep
+  assert_equal "$output$stderr" ""
+  # Daniel raises the level: the finding names it.
+  level_record minor
+  run_bin -1 team-sweep
+  assert_equal "$output" "level: T6 fits again: relaunch its builder"
+  # Once its builder is launched again it waits for nothing.
+  ledger_line '{ts: "2026-10-22T05:00:00Z", task: "T6", event: "launch", role: "builder", session: "6e6e6e6e",
+    worktree: "/w/6", toolkits: []}'
+  sessions "$(session 6e6e6e6e T6-builder busy working)"
+  run_bin -0 team-sweep
+  assert_equal "$output" ""
 }
 
 @test "level: a team-capacity plan that fails is one finding naming its reason, and the task findings still come" {

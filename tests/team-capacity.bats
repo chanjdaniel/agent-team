@@ -1056,16 +1056,19 @@ plan_level() {
   assert_equal "$(plan_steps | head -n 1)" '["stop","T1","reviewer","aaaa0012",1]'
 }
 
-@test "plan: the resume list is the tasks stowed for the level, oldest stow first, each fitting only when its roles' estimates fit" {
+@test "plan: the resume list is the tasks stowed, waiting to resume, for the level or a handoff, oldest stow first, each fitting only when its roles' estimates fit" {
   cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
   local stowed='{machine: "home-pc", worktrees: [], cause: "level"}'
   plan_task T5 08:00 builder:aaaa0051 reviewer:aaaa0052
   plan_event T5 13:00 stowed "$stowed + {roles: [\"builder\", \"reviewer\"]}"
   plan_task T6 08:00 planner:aaaa0061
   plan_event T6 12:00 stowed "$stowed + {roles: [\"planner\"]}"
-  # A handoff's stow, one relaunched since, and a closed task wait for nothing.
+  # A handoff's stow the resume could not relaunch waits too; one relaunched since, a closed task
+  # and a stow with no role to relaunch wait for nothing.
   plan_task T7 08:00 builder:aaaa0071
   plan_event T7 11:00 stowed '{machine: "home-pc", worktrees: [], roles: ["builder"], cause: "handoff"}'
+  plan_task T10 08:00 builder:aaaa0101
+  plan_event T10 10:00 stowed "$stowed + {roles: []}"
   plan_task T8 08:00 builder:aaaa0081
   plan_event T8 11:00 stowed "$stowed + {roles: [\"builder\"]}"
   plan_event T8 11:30 launch "{role: \"builder\", session: \"aaaa0082\", worktree: \"$HOME/wt/T8\", toolkits: []}"
@@ -1074,26 +1077,31 @@ plan_level() {
   plan_event T9 11:30 closed '{archive: [], returned: [], kept: []}'
   live aaaa0082 T8-builder busy
 
-  # Full leaves 20 GiB and T8's builder uses 19.3: T6's planner (0.5 GiB) fits, T5's builder and
-  # reviewer (1 GiB) do not.
+  # Full leaves 20 GiB and T8's builder uses 19.3: T7's builder and T6's planner (0.5 GiB each)
+  # fit, T5's builder and reviewer (1 GiB) do not.
   team_reading 8 "T8 builder aaaa0082 19.3"
   assert_equal "$(plan_verdict)" '[false,false,20,19.3]'
-  assert_equal "$(plan_steps)" '["resume","T6",["planner"],0.5,true]
+  assert_equal "$(plan_steps)" '["resume","T7",["builder"],0.5,true]
+["resume","T6",["planner"],0.5,true]
 ["resume","T5",["builder","reviewer"],1,false]'
   run_bin -0 team-capacity plan
   assert_equal "$output" "Within budget at full (90%): 19.3 GiB reserved of 20.0 GiB: nothing to stop or stow.
-Stowed for the level, oldest stow first:
+Stowed, waiting to resume, oldest stow first:
+  T7 (builder): needs 0.5 GiB, fits
   T6 (planner): needs 0.5 GiB, fits
   T5 (builder, reviewer): needs 1.0 GiB, does not fit yet"
   run_bin -0 team-capacity plan --json
-  assert_equal "$(jq -c '.resume | map([.task, .stowed])' <<<"$output")" '[["T6","2026-11-01T12:00:00Z"],["T5","2026-11-01T13:00:00Z"]]'
+  assert_equal "$(jq -c '.resume | map([.task, .stowed])' <<<"$output")" \
+    '[["T7","2026-11-01T11:00:00Z"],["T6","2026-11-01T12:00:00Z"],["T5","2026-11-01T13:00:00Z"]]'
 
-  # With room for both, both fit; at none, none does.
+  # With room for all, all fit; at none, none does.
   team_reading 8 "T8 builder aaaa0082 2"
-  assert_equal "$(plan_steps)" '["resume","T6",["planner"],0.5,true]
+  assert_equal "$(plan_steps)" '["resume","T7",["builder"],0.5,true]
+["resume","T6",["planner"],0.5,true]
 ["resume","T5",["builder","reviewer"],1,true]'
   plan_level 1 none
-  assert_equal "$(plan_steps | jq -c '.[0:2] + [.[4]]' | grep resume)" '["resume","T6",false]
+  assert_equal "$(plan_steps | jq -c '.[0:2] + [.[4]]' | grep resume)" '["resume","T7",false]
+["resume","T6",false]
 ["resume","T5",false]'
 }
 

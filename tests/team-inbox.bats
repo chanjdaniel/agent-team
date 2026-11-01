@@ -64,8 +64,10 @@ waiting_ledger() {
   assert_equal "$stderr" ""
   assert_equal "$(inbox_calls)" "GET channels/1562486564871995482
 POST channels/1562486564871995482/messages"
-  assert_equal "$(inbox_shown | head -n 2)" "**Waiting on you**
-Nothing waits on you."
+  # With no record and no reading, the team is at manual full with no budget yet.
+  assert_equal "$(inbox_shown | head -n 3)" "**Waiting on you**
+Nothing waits on you.
+Resources: manual, full (90%): no reading of the machine's load yet, so no budget"
   [[ $(inbox_shown | tail -n 1) =~ ^"-# team-inbox keeps this current; updated <t:"[0-9]+":R>"$ ]]
   # Nothing in it ever pings, and a link shows no preview card.
   jq -e '.allowed_mentions == {parse: []} and .flags == 4' "$STUB_FIXTURES/inbox/1569000000000000001.json"
@@ -234,6 +236,35 @@ POST channels/1562486564871995482/messages"
 POST channels/1777/messages"
 }
 
+@test "the resources line follows the items, naming the open tasks stowed, waiting to resume" {
+  waiting_ledger
+  # Manual minor on a 32 GiB machine with 12 GiB left to the team: 9.6 GiB and 3.6 cores.
+  capacity_room $((12 * 1073741824)) minor
+  export TEAM_SLOTS_CPUS=12
+  # T5 and T12 were stowed for the level and T6 for a handoff, all three waiting to resume; T9 was
+  # relaunched since, and closed T11 is gone.
+  local task
+  opened T12 "Twelve" >>"$TEAM_HOME/ledger.jsonl"
+  for task in T5 T6 T9 T11 T12; do
+    log_events "$(jq -nc --arg task "$task" --arg cause "$([[ $task == T6 ]] && echo handoff || echo level)" \
+      '{task: $task, event: "stowed", machine: "home-pc", worktrees: [], roles: ["builder"], cause: $cause}')"
+  done
+  log_events '{"task":"T9","event":"launch","role":"builder","session":"99999999","worktree":"/w/T9","toolkits":[]}'
+  run_bin -0 --separate-stderr team-inbox
+  assert_equal "$stderr" ""
+  assert_equal "$(inbox_shown | sed '1d;$d' | tail -n 2)" "- T9 Nine: <#9999>
+Resources: manual, minor (30%): 9.6 GiB and 3.6 cores for the team; 0.0 GiB reserved; T5, T6 and T12 stowed, waiting to resume"
+}
+
+@test "when team-level fails the resources line is left out, and stderr says why" {
+  echo 'not json' >"$TEAM_HOME/level.jsonl"
+  run_bin -0 --separate-stderr team-inbox
+  assert_contains "$stderr" "team-inbox: leaves out the resources line, since team-level status failed: team-level: "
+  assert_contains "$stderr" "level.jsonl has lines that are not level records"
+  assert_equal "$(inbox_shown | sed '$d')" "**Waiting on you**
+Nothing waits on you."
+}
+
 @test "past 2000 characters the last items are left out and counted" {
   local n
   opened T3 "Three" >>"$TEAM_HOME/ledger.jsonl"
@@ -254,6 +285,8 @@ POST channels/1777/messages"
   more=$(sed -nE 's/^- and ([0-9]+) more, which team-snapshot lists$/\1/p' <<<"$shown")
   assert_equal "$((listed + more))" 30
   ((listed > 5))
+  # The resources line stays, after the count.
+  assert_equal "$(tail -n 2 <<<"$shown" | head -n 1)" "Resources: manual, full (90%): no reading of the machine's load yet, so no budget"
 }
 
 @test "Discord refusing the edit leaves the kept message as it was: 429 is exit 75 with the wait, anything else exit 1" {

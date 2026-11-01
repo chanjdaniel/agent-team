@@ -15,7 +15,7 @@
 # team_tool_path, fence_reason, offline_hold, lease_refusal, worker_refusal, lease_gate, worktree_changes, same_path, bounded, trust_probe,
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin,
 # only_records, records_list, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
-# own_project, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_slots, discord_token, discord_api,
+# own_project, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_slots, machine_level, discord_token, discord_api,
 # daniel_message, refresh_inbox, github, pr_part, task_state_json, loose_objects, pack_size and story_file, and sets IMAGE_TYPE,
 # PACK_LOOSE, COORDINATOR_CHANNEL and INTERVIEW_CHANNEL.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
@@ -161,6 +161,23 @@ machine_slots() {
     jq -c . "$out"
   else
     line=$(grep . "$err" | tail -n 1) || line="team-slots failed with no reason given"
+    jq -cn --arg error "${line//"$HOME/"/"~/"}" '{error: $error}'
+  fi
+  rm -f "$out" "$err"
+}
+
+# The team's resource level as one compact line: team-level status --stored --json's object, read
+# from the stored readings only (it takes none), or {error} with the last line team-level said on
+# stderr (~ for the home directory) when it fails; what it says on stderr when it succeeds (a
+# registry it cannot read, so no cost estimates) is dropped: machine_level
+machine_level() {
+  local out err line
+  out=$(mktemp) err=$(mktemp)
+  if TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-level" status --stored --json >"$out" 2>"$err" </dev/null &&
+    jq -ce 'select(.schema == "team-level/1")' "$out" 2>/dev/null; then
+    :
+  else
+    line=$(grep . "$err" | tail -n 1) || line="team-level failed with no reason given"
     jq -cn --arg error "${line//"$HOME/"/"~/"}" '{error: $error}'
   fi
   rm -f "$out" "$err"

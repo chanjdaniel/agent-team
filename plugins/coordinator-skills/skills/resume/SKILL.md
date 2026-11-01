@@ -15,7 +15,12 @@ Never resume while GitHub is unreachable: say so to Daniel and wait.
 2. **Catch up on Discord.** Messages sent while no coordinator listened are never delivered to you, only readable.
    For `#coordinator` and each open task's thread (`thread` in `team-state T<n> --json`), read the history with the Discord plugin's `fetch_messages` back to your own last message there; it reads at most 100 messages, so tell Daniel when your last message is further back.
    Log and answer anything Daniel asked that has no answer, before anything else.
-3. **Relaunch.** For each task whose `crashed` is null, for each role of `stowed.roles` (never of `stowed.sessions`, which may hold a finished worker's session):
+3. **Relaunch.** First run `team-level`: the level recorded before the handoff or the shutdown still holds.
+   At none, relaunch nothing and log no `resumed`: post in `#coordinator` that the team waits at none until Daniel raises the level, then go on with step 5; once the level allows, the sweep's `level-resume` findings name each stowed task to relaunch.
+   Otherwise relaunch as below while each launch is admitted: a `team-worker` that exits 75 has no room in the level's budget, so log `team-log T<n> paused reason=<its line>` and leave that task and the ones after it to the sweep's `level-resume` findings, as the `level` skill says.
+   A crashed task left waiting is no stowed one, so no `level-resume` names it: add a `next` item to `tasks/current.md` for it, and relaunch it as below once `team-level` shows room.
+
+   For each task whose `crashed` is null, for each role of `stowed.roles` (never of `stowed.sessions`, which may hold a finished worker's session):
    - its last brief: the newest `tasks/T<n>/brief*.md` whose first line is `# T<n> brief (<role>)`, other than a `brief-resume-*.md`;
    - the brief: `team-brief T<n> resume --name resume-<role> --force --set role=<role> --set brief=<that brief> --set from="the handoff from <machine> at <stowed time>" --set snapshot=<what became of them>` (`--project <name>` for a task in two projects), the snapshot as for a crash below, "there were none" when the worktree's `snapshot` is null;
    - the launch: `team-worker T<n> <role> <worktree> -- "Read your brief at <path>"`, with each `--toolkit` of the role's last launch, the worktree being the report's.

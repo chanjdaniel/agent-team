@@ -62,8 +62,8 @@
 #                  the stored readings) confirms the team over its budget at its level and names
 #                  tasks to stow, newest first: "level: over budget at minor (30%): stow T174, then
 #                  T171" (the coordinator sends their workers STOW, then runs team-stow)
-#   level-resume   after it, with task and session null: the first task stowed for the level,
-#                  oldest stow first, whose roles' estimates fit the budget again: "level: T171
+#   level-resume   after it, with task and session null: the first task stowed, waiting to
+#                  resume (for the level or a handoff), oldest stow first, whose roles' estimates fit the budget again: "level: T171
 #                  fits again: relaunch its builder"
 #   level          in their place, with task and session null: team-capacity plan failed:
 #                  "level: <its last line on stderr>: fix what team-capacity names"

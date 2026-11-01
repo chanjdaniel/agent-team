@@ -657,7 +657,7 @@ def task_words: if length < 2 then join("") else "\(.[:-1] | join(", ")) and \(.
 #                  the most recently opened first, until what is left fits the budget; at none
 #                  every one
 # and the resume plan, whatever the budget: resume [{task, stowed, roles, needs, fits}], each task
-# stowed for the level, oldest stow first, needs its roles' session estimates and fits whether
+# stowed, waiting to resume (for the level or a handoff), oldest stow first, needs its roles' session estimates and fits whether
 # needs fits beside what is reserved now (never at none). Each step list is [] when not confirmed.
 def capacity_plan($in):
   $in.settings as $s | $in.current as $current
@@ -722,7 +722,7 @@ def capacity_plan($in):
 def plan_at: "\(.level) (\(.share | percent))";
 
 # team-capacity plan's lines from its team-capacity-plan/1 object: the verdict, each step, then
-# the tasks stowed for the level.
+# the tasks stowed, waiting to resume.
 def plan_text:
   if .budget == null then "No reading of the machine's load, so no budget: nothing to plan."
   elif .over | not then "Within budget at \(plan_at): \(.reserved | gib) reserved of \(.budget | gib): nothing to stop or stow."
@@ -734,7 +734,7 @@ def plan_text:
     (.stop_stacks[] | "  stop \(.name) of \(.task), no busy session in its worktree: frees \(.frees | gib)"),
     (.stow[] | "  stow \(.task): frees \(.frees | gib)")
   end,
-  (select(.resume != []) | "Stowed for the level, oldest stow first:",
+  (select(.resume != []) | "Stowed, waiting to resume, oldest stow first:",
     (.resume[] | "  \(.task) (\(.roles | join(", "))): needs \(.needs | gib), \(if .fits then "fits" else "does not fit yet" end)"));
 
 # What the stow plan <plan> (capacity_plan's) says must stow, for team-level's acknowledgement and

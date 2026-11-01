@@ -182,23 +182,29 @@ EVENTS
   assert_contains "$output" "stowed events are written by team-stow, not team-handoff"
 }
 
-# Whether the task of the events read from stdin, one JSON object per line, is stowed for the level.
-stowed_for_level() {
-  jq -L "$REPO_ROOT/bin/lib" -sc 'include "ledger"; map({ts: "2026-11-01T12:00:00Z", task: "T1"} + .) | stowed_for_level'
+# Whether the task of the events read from stdin, one JSON object per line, is stowed, waiting to
+# resume.
+awaiting() {
+  jq -L "$REPO_ROOT/bin/lib" -sc 'include "ledger"; map({ts: "2026-11-01T12:00:00Z", task: "T1"} + .) | stowed_awaiting_resume'
 }
 
-@test "a task is stowed for the level while its latest stowed has cause level and no launch follows it" {
+@test "a task is stowed, waiting to resume, while its latest stowed, for the level or a handoff, names roles and no launch follows it" {
   local launch='{"event": "launch", "role": "builder"}'
   local level='{"event": "stowed", "machine": "home-pc", "worktrees": [], "roles": ["builder"], "cause": "level"}'
-  local handoff='{"event": "stowed", "machine": "home-pc", "worktrees": [], "roles": ["builder"]}'
-  assert_equal "$(stowed_for_level <<<"$launch")" false
-  assert_equal "$(printf '%s\n' "$launch" "$level" | stowed_for_level)" true
-  assert_equal "$(printf '%s\n' "$launch" "$level" '{"event": "done", "role": "builder"}' | stowed_for_level)" true
-  assert_equal "$(printf '%s\n' "$launch" "$level" "$launch" | stowed_for_level)" false
-  # A stowed with no cause is a handoff's, as every line before team-stow is.
-  assert_equal "$(printf '%s\n' "$launch" "$handoff" | stowed_for_level)" false
-  assert_equal "$(printf '%s\n' "$launch" "$level" "$handoff" | stowed_for_level)" false
-  assert_equal "$(printf '%s\n' "$launch" "$handoff" "$level" | stowed_for_level)" true
+  local handoff='{"event": "stowed", "machine": "home-pc", "worktrees": [], "roles": ["builder"], "cause": "handoff"}'
+  local legacy='{"event": "stowed", "machine": "home-pc", "worktrees": [], "roles": ["builder"]}'
+  local idle='{"event": "stowed", "machine": "home-pc", "worktrees": [], "roles": [], "cause": "handoff"}'
+  assert_equal "$(awaiting <<<"$launch")" false
+  assert_equal "$(printf '%s\n' "$launch" "$level" | awaiting)" true
+  assert_equal "$(printf '%s\n' "$launch" "$level" '{"event": "done", "role": "builder"}' | awaiting)" true
+  assert_equal "$(printf '%s\n' "$launch" "$level" "$launch" | awaiting)" false
+  # A handoff's stow waits too, a stowed with no cause (every line before team-stow) included, so
+  # a task the resume could not relaunch comes back when room does.
+  assert_equal "$(printf '%s\n' "$launch" "$handoff" | awaiting)" true
+  assert_equal "$(printf '%s\n' "$launch" "$legacy" | awaiting)" true
+  assert_equal "$(printf '%s\n' "$launch" "$handoff" "$launch" | awaiting)" false
+  # A stow with no role to relaunch waits for nothing.
+  assert_equal "$(printf '%s\n' "$launch" "$level" "$idle" | awaiting)" false
 }
 
 @test "a branch-renamed gives the task's worktree in its project its new branch, in task_branch, open_worktrees and worktree_list" {

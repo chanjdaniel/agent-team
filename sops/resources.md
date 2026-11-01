@@ -17,6 +17,8 @@ It is a record, committed by `team-checkpoint` and by the handoff's records comm
 Each applies the limits at once and prints the acknowledgement the coordinator posts: "Resources: manual, minor (30%): 9.2 GiB and 3.6 cores for the team; 6.1 GiB reserved; T171 and T174 stow.", ending with the tasks the stow plan says must stow ("Shrinking and growing back" below), or "nothing needs to stow".
 `team-level` alone says the mode, the level, the budget and what bounds it, the team's use and the last change; `team-level apply` applies the recorded level's limits again, after a reboot or a reset slice.
 A change, `apply` and `tick` refuse on a machine that does not hold the lease; `status` only reads.
+The coordinator runs each change on Daniel's word and posts the acknowledgement, and stows and relaunches tasks to fit, as its `level` skill says.
+Daniel sees the level where they look: `team-inbox`'s Waiting on you message after its items, and `team-snapshot` after its open tasks, say one line, "Resources: manual, minor (30%): 9.2 GiB and 3.6 cores for the team; 6.1 GiB reserved; T171 stowed, waiting to resume", from `team-level status --stored --json`, naming the open tasks stowed and not yet relaunched.
 
 ## Automatic mode
 
@@ -216,7 +218,7 @@ It runs on the lease holder, once each task's live workers have answered the coo
 
 A refused task is said on stderr with its reason, the others still stow, and the exit is 1; `--json` prints `{tasks: [{task, worktrees, roles, sessions, cause}], refused: [{task, reason}]}`.
 
-A task is stowed for the level while its latest `stowed` has `cause: level` and no launch follows it (`stowed_for_level` in `bin/lib/ledger.jq`); a stowed with no `cause`, as every line before `team-stow` has, is a handoff's.
+A task is stowed, waiting to resume, while its latest `stowed`, for the level or a handoff, names roles to relaunch and no launch follows it (`stowed_awaiting_resume` in `bin/lib/ledger.jq`); a stowed with no `cause`, as every line before `team-stow` has, is a handoff's.
 
 `team-stow T<n>... --stop-runs` does only this, on any machine: `team-heavy stop --task T<n>` ends the task's heavy run when it holds the machine's lock, and in each of the task's worktrees whose project delivers through no-mistakes, `no-mistakes axi abort` cancels the run `no-mistakes axi` shows active on its branch.
 A worker blocked in a foreground test or gate then returns and reads the STOW already sent; a manual drop runs it right after the STOWs, and an automatic one does not, so a running test or gate finishes.
@@ -225,7 +227,7 @@ The steps live in `bin/lib/stow.sh`, which `team-stow` alone sources.
 
 ## Shrinking and growing back
 
-When the budget shrinks below what the team's work reserves, the team first stops what nobody needs, then stows tasks, newest first, until the rest fits; when room comes back, the tasks stowed for the level come back, oldest first.
+When the budget shrinks below what the team's work reserves, the team first stops what nobody needs, then stows tasks, newest first, until the rest fits; when room comes back, the stowed tasks come back, oldest first.
 `team-capacity plan [--json]` says both, from the stored readings only, the ledger and the session list (an unreadable one fails it).
 
 Over budget is what the newest reading reserves (as `team-capacity status --json` counts it) above the level's memory budget, or at none any open task with a live worker or a running stack.
@@ -242,7 +244,7 @@ The heartbeat's `level` step (`team-level tick`) takes steps 1 and 2 itself, sin
 Step 3 is the coordinator's: `team-sweep`'s `level-stow` finding names the tasks, newest first ("level: over budget at minor (30%): stow T174, then T171"), and the coordinator sends each live worker its STOW, then runs `team-stow` with `cause` `level`.
 `team-level`'s acknowledgement of a change and its automatic post name the same tasks, in task number order.
 
-A task is stowed for the level while its latest `stowed` has `cause: level` and no launch follows it.
+A task is stowed, waiting to resume, while its latest `stowed` names roles to relaunch and no launch follows it, whatever its `cause`: a task a handoff or a shutdown stowed that the resume could not relaunch (at none, or a launch refused with 75) waits for room as one stowed for the level does.
 The plan's resume list is those tasks, oldest stow first, each with the estimate of its roles to relaunch (its `stowed`'s `roles`, each at its `session:<role>` estimate) and whether that fits beside what is reserved now; at none nothing fits.
 `team-sweep`'s `level-resume` finding names the first that fits ("level: T171 fits again: relaunch its builder"), one task at a time, and each launch is still admitted on its own, so one refused with 75 waits for the next `level-resume`.
 A `team-capacity plan` that fails is one `level` finding naming its reason, in their place.

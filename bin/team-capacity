@@ -172,14 +172,15 @@
 #          team-worker stops a task's own by, over every open task), stop each running team dev
 #          stack of an open task that no busy session (interactive ones too) works in, then stow
 #          open tasks with a live worker or a reservation left, the most recently opened first,
-#          until the rest fits; at none every one. Then the tasks stowed for the level (their
-#          latest stowed has cause level and no launch follows it), oldest stow first, each with
-#          the estimate of its roles to relaunch and whether that fits now (never at none). Text:
+#          until the rest fits; at none every one. Then the tasks stowed, waiting to resume
+#          (their latest stowed, for the level or a handoff, names roles to relaunch and no
+#          launch follows it), oldest stow first, each with the estimate of its roles to
+#          relaunch and whether that fits now (never at none). Text:
 #          "Over budget at minor (30%): 14.5 GiB reserved of 9.6 GiB.", then "  stop T1-reviewer
 #          aaaa0012, its work handed on: frees 1.0 GiB", "  stop conventioner-3 of T3, no busy
-#          session in its worktree: frees 3.0 GiB", "  stow T3: frees 4.0 GiB", then "Stowed for
-#          the level, oldest stow first:" and "  T6 (planner): needs 0.5 GiB, fits". With --json
-#          {schema: "team-capacity-plan/1", mode, level, share, budget (bytes, null with no
+#          session in its worktree: frees 3.0 GiB", "  stow T3: frees 4.0 GiB", then "Stowed,
+#          waiting to resume, oldest stow first:" and "  T6 (planner): needs 0.5 GiB, fits".
+#          With --json {schema: "team-capacity-plan/1", mode, level, share, budget (bytes, null with no
 #          reading above none), reserved, over, confirmed, stop_sessions: [{task, role, session,
 #          frees}], stop_stacks: [{task, name, worktree, frees}], stow: [{task, opened, frees}],
 #          resume: [{task, stowed, roles, needs, fits}]}, bytes throughout; each step list is []
