@@ -1036,9 +1036,10 @@ SH
 # reviewer, a busy second builder, an idle reviewer waiting for input, an idle ops session, an
 # idle builder of the second worktree (its launch recorded under another machine's home, as the
 # first worktree's builders are), a reviewer with no status and one starting, all handed on by
-# the planner's done, a ticket-done and a review; then a reviewer and a planner launched after
-# them, idle with no event of their own since (the planner's done names another session); and
-# T8's idle reviewer, handed on by T8's review, with a session T9 never launched.
+# the planner's done, a ticket-done and each reviewer's done beside the review; then a reviewer
+# and a planner launched after them, idle with no event of their own since (the planner's done
+# names another session); and T8's idle reviewer, handed on by its done beside T8's review, with
+# a session T9 never launched.
 finished_workers() {
   thread T8
   thread T9
@@ -1056,7 +1057,12 @@ launch T9 reviewer 3b3b3b3b $wt1
 T9 {event: "done", role: "planner", session: "11111111"}
 T9 {event: "ticket-done", ticket: "01", commits: ["abc1234"]}
 T9 {event: "review", verdict: "findings", head: "abc1234"}
+T9 {event: "done", role: "reviewer", session: "33333333"}
+T9 {event: "done", role: "reviewer", session: "55555555"}
+T9 {event: "done", role: "reviewer", session: "3a3a3a3a"}
+T9 {event: "done", role: "reviewer", session: "3b3b3b3b"}
 T8 {event: "review", verdict: "pass", head: "abc1234"}
+T8 {event: "done", role: "reviewer", session: "77777777"}
 launch T9 reviewer 5c5c5c5c $wt1
 launch T9 planner 1e1e1e1e $wt1
 T9 {event: "done", role: "planner", session: "0e0e0e0e"}
@@ -1119,6 +1125,55 @@ LINES
   log_lines <<<'T9 {event: "paused", reason: "stowed"}'
   run_bin -0 --separate-stderr team-worker T9 builder "$wt1" -- go
   assert_equal "$(stops)" 2f2f2f2f
+}
+
+@test "a paused for any reason but stowed leaves an idle reviewer, a resumed after it too" {
+  thread T9
+  log_lines <<LINES
+launch T9 reviewer 6a6a6a6a $wt1
+T9 {event: "paused", reason: "offline"}
+LINES
+  echo '[{"id": "6a6a6a6a", "name": "T9-reviewer", "status": "idle"}]' >"$STUB_FIXTURES/agents.json"
+  stop_stub
+  run_bin -0 --separate-stderr team-worker T9 ops "$wt1" --toolkit prod-read --request https://discord.com/channels/1/2/3 -- go
+  assert_equal "$(stops)" ""
+  assert_contains "$stderr" "team-worker: left T9-reviewer 6a6a6a6a: idle with no event of its own since its launch"
+  log_lines <<<'T9 {event: "resumed"}'
+  run_bin -0 --separate-stderr team-worker T9 ops "$wt1" --toolkit prod-read --request https://discord.com/channels/1/2/3 -- go
+  assert_equal "$(stops)" ""
+  assert_contains "$stderr" "team-worker: left T9-reviewer 6a6a6a6a: idle with no event of its own since its launch"
+}
+
+@test "a reviewer is handed on only by a done of its own session, never by another reviewer's review" {
+  thread T9
+  log_lines <<LINES
+launch T9 reviewer 6b6b6b6b $wt1
+launch T9 reviewer 6c6c6c6c $wt2
+T9 {event: "review", verdict: "findings", head: "abc1234"}
+T9 {event: "done", role: "reviewer", session: "6c6c6c6c"}
+LINES
+  echo '[{"id": "6b6b6b6b", "name": "T9-reviewer", "status": "idle"}, {"id": "6c6c6c6c", "name": "T9-reviewer", "status": "idle"}]' \
+    >"$STUB_FIXTURES/agents.json"
+  stop_stub
+  run_bin -0 --separate-stderr team-worker T9 builder "$wt2" -- go
+  assert_equal "$(stops)" 6c6c6c6c
+  assert_contains "$stderr" "team-worker: left T9-reviewer 6b6b6b6b: idle with no event of its own since its launch"
+}
+
+@test "a stow hands on the launches before it, and a later launch or resumed does not undo it" {
+  thread T9
+  log_lines <<LINES
+launch T9 planner 6d6d6d6d $wt1
+T9 {event: "paused", reason: "stowed"}
+T9 {event: "resumed"}
+launch T9 planner 6e6e6e6e $wt1
+LINES
+  echo '[{"id": "6d6d6d6d", "name": "T9-planner", "status": "idle"}, {"id": "6e6e6e6e", "name": "T9-planner", "status": "idle"}]' \
+    >"$STUB_FIXTURES/agents.json"
+  stop_stub
+  run_bin -0 --separate-stderr team-worker T9 reviewer "$wt1" -- go
+  assert_equal "$(stops)" 6d6d6d6d
+  assert_contains "$stderr" "team-worker: left T9-planner 6e6e6e6e: idle with no event of its own since its launch"
 }
 
 @test "a reviewer's launch stops the idle reviewers and planner and leaves the idle builder, which holds the task" {
