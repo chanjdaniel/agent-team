@@ -242,6 +242,7 @@ While it is confirmed, the plan's steps, in order, each with what it frees (the 
 3. stow the open tasks with a live worker or a reservation left, the most recently opened first (its work the least invested), until what is left fits; at none, every one.
 
 The heartbeat's `level` step (`team-level tick`) takes steps 1 and 2 itself, since they lose nothing: `claude stop`, bounded 30 seconds, for each session, and `team-stack stop --worktree <path>`, its data kept, for each stack, one heartbeat log line each, such as "stopped T7-reviewer r7r7r7r7, its work handed on, to bring the team under its budget at minor (30%): frees 1.0 GiB".
+Step 1 seldom finds a session: the heartbeat's `finished` step, before the `capacity` step's reading, stops the same finished sessions on every run, whatever the level and budget (`team-timers --help`), so step 1 is left only those that step could not stop.
 Step 3 is the coordinator's: `team-sweep`'s `level-stow` finding names the tasks, newest first ("level: over budget at minor (30%): stow T174, then T171"), and the coordinator sends each live worker its STOW, then runs `team-stow` with `cause` `level`.
 `team-level`'s acknowledgement of a change and its automatic post name the same tasks, in task number order.
 
