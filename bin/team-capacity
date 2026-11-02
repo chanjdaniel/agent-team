@@ -54,12 +54,13 @@
 #          place), or, with the slice installed, the limits team-level last applied
 #          (~/.local/state/agent-team/level/applied.json) are missing or another mode and level's
 #          than the record's, or the slice's CPUQuota is not theirs (each fixed by team-level
-#          apply). On any OS it WARNs on a ~/.config/agent-team/slots.json left from the task
-#          slots, which nothing reads since levels replaced the task cap, its fix removing it; and
+#          apply). On any OS it WARNs on what the task slots left, which nothing reads since levels
+#          replaced them (~/.config/agent-team/slots.json, ~/.local/state/agent-team/slots/ and
+#          ~/.local/state/agent-team/slots.lock, whichever are present), its fix removing them; and
 #          with --holding (this machine holds the lease, whose heartbeat takes a reading every 5
 #          minutes) when the newest reading is more than 15 minutes old, or there is none, its fix
-#          the heartbeat log's capacity lines, or team-timers enable with --heartbeat disabled.
-#          The passing reason names the slice and how many live team sessions are in it.
+#          the heartbeat log's capacity lines, or team-timers enable with --heartbeat disabled. The
+#          passing reason names the slice and how many live team sessions are in it.
 # sample   Takes one reading of the machine's load with the team's use per task and appends it to
 #          ~/.local/state/agent-team/capacity/readings.jsonl, kept to the last 24 hours (the
 #          heartbeat's capacity step runs it every 5 minutes), printing nothing; within 60
@@ -551,7 +552,7 @@ place() {
 
 # The doctor's resources line, as the header's check says.
 check() {
-  local problems=() out controllers file unit placed=0 id name pid cgroup manager=1
+  local problems=() out controllers file unit placed=0 id name pid cgroup manager=1 shown=() list
   problem() { problems+=("$(jq -cn --arg v "$1" --arg r "$2" --arg f "${3:-}" '{verdict: $v, reason: $r, fix: $f}')"); }
   if [[ $os == linux ]]; then
     if ! out=$(systemctl --user show -P Version 2>&1); then
@@ -591,10 +592,17 @@ check() {
     fi
   fi
   level_problems "$manager"
-  # The task slots' settings, which levels replaced.
-  file=$HOME/.config/agent-team/slots.json
-  [[ ! -e $file ]] ||
-    problem WARN "$(tilde "$file") is no longer read: levels replaced the task cap" "remove $(tilde "$file")"
+  # What the task slots left, which levels replaced: their settings, readings and lock.
+  for file in "$HOME/.config/agent-team/slots.json" "$HOME/.local/state/agent-team/slots" \
+    "$HOME/.local/state/agent-team/slots.lock"; do
+    [[ ! -e $file ]] || shown+=("$(tilde "$file")")
+  done
+  if ((${#shown[@]} == 1)); then
+    problem WARN "${shown[0]} is no longer read: levels replaced the task slots" "rm -r ${shown[0]}"
+  elif ((${#shown[@]} > 1)); then
+    list=$(printf '%s, ' "${shown[@]:0:${#shown[@]}-1}")
+    problem WARN "${list%, } and ${shown[-1]} are no longer read: levels replaced the task slots" "rm -r ${shown[*]}"
+  fi
   if ((holding)) && ! newest_reading_within 900; then
     if [[ $heartbeat == enabled ]]; then
       problem WARN "no reading of the machine's load in the last 15 minutes, though this machine holds the lease, whose heartbeat takes one every 5" \
