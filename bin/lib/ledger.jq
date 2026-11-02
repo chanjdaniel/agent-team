@@ -636,15 +636,29 @@ def standing_word_reasons($project):
     "Daniel's standing word on \(if .word.project == "all" then "every project" else .word.project end), Discord message \(.word.discord_message), was withdrawn at \(.withdrawn.ts) in Discord message \(.withdrawn.discord_message)"
   else empty end;
 
+# The head whose review stands for $head: $head itself, or, when a caught-up event of the task
+# names $head (by the shorter prefix) as the merge team-catch-up made, the head it was made from,
+# followed back the same way, the latest such event first, until none names it.
+def reviewed_head($head):
+  [.[] | select(.event == "caught-up")] as $ups
+  | def back($h; $n):
+      (first($ups | reverse[] | select(same_head(.head; $h))) // null) as $up
+      | if $up == null or $n <= 0 then $h else back($up.from; $n - 1) end;
+    back($head; $ups | length);
+
 # Why the task's reviews do not let a word given on no head (plan-time or standing) merge the PR's
-# head $head unasked, one string per reason, none when they do: no review of the head (by the
-# shorter prefix) is logged; the latest one is not a pass; it logged no guarded list, or named
-# areas in it; and each review of the task, of any head, that left out its finding counts or
-# counted a security or real-data finding, fixed or not, named by its head and time.
+# head $head unasked, one string per reason, none when they do, judged on the latest review of
+# reviewed_head($head), so a head team-catch-up made stands on the review of the one it was made
+# from (both named): no review of that head (by the shorter prefix) is logged; the latest one is
+# not a pass; it logged no guarded list, or named areas in it; and each review of the task, of any
+# head, that left out its finding counts or counted a security or real-data finding, fixed or
+# not, named by its head and time.
 def unattended_review_reasons($head):
-  ([.[] | select(.event == "review" and same_head(.head; $head))] | last) as $reviewed
-  | "the latest review of the head \($head[:7]), at \($reviewed.ts), " as $latest
-  | (if $reviewed == null then "no review of the head \($head[:7]) is logged, so no reviewer has passed it"
+  reviewed_head($head) as $reviewed_head
+  | "\($reviewed_head[:7])\(if same_head($reviewed_head; $head) then "" else " (caught up to \($head[:7]))" end)" as $named
+  | ([.[] | select(.event == "review" and same_head(.head; $reviewed_head))] | last) as $reviewed
+  | "the latest review of the head \($named), at \($reviewed.ts), " as $latest
+  | (if $reviewed == null then "no review of the head \($named) is logged, so no reviewer has passed it"
      elif $reviewed.verdict != "pass" then "\($latest)is \($reviewed.verdict), not pass"
      else empty end),
     ($reviewed | select(. != null)

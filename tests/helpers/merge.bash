@@ -248,27 +248,53 @@ SH
   green_pr
 }
 
-# PR #5's branch is real on proj's origin: commit A, its head when Daniel was asked, then what
-# the arguments add, in order: "base" (a commit on origin's dev merged into the branch) or "own"
-# (a commit of the branch's own). The ledger's pr event and Daniel's word name A, the PR's head is
-# the branch's tip, and $approved is A, $own the first commit of its own after A.
+# PR #5's branch is real on proj's origin: commit A, writing a.txt, its head when Daniel was asked,
+# then what the arguments add, in order: "base" (a commit on origin's dev merged into the branch
+# cleanly), "conflict" (a commit on origin's dev writing a.txt otherwise, merged into the branch
+# with the conflict resolved), "evil" (a commit on origin's dev merged into the branch with a
+# change of the merge's own, evil.txt) or "own" (a commit of the branch's own). The ledger's pr
+# event and Daniel's word name A, the PR's head is the branch's tip, and $approved is A, $own the
+# first commit of its own after A.
 moved_head() {
-  local primary step
+  local primary step n=0
   primary=$(make_repo proj dev)
   git -C "$primary" checkout -q -b feat/T14-tooling
-  git -C "$primary" commit -q --allow-empty -m "feat: A"
+  echo A >"$primary/a.txt"
+  git -C "$primary" add a.txt
+  git -C "$primary" commit -q -m "feat: A"
   approved=$(git -C "$primary" rev-parse HEAD) own=''
   for step in "$@"; do
-    if [[ $step == base ]]; then
-      git -C "$primary" checkout -q dev
-      git -C "$primary" commit -q --allow-empty -m "feat: another task on dev"
-      git -C "$primary" push -q origin dev
-      git -C "$primary" checkout -q feat/T14-tooling
-      git -C "$primary" merge -q --no-ff -m "Merge origin/dev" dev
-    else
+    n=$((n + 1))
+    if [[ $step == own ]]; then
       git -C "$primary" commit -q --allow-empty -m "fix: after the ask"
       own=${own:-$(git -C "$primary" rev-parse HEAD)}
+      continue
     fi
+    git -C "$primary" checkout -q dev
+    if [[ $step == conflict ]]; then
+      echo "dev $n" >"$primary/a.txt"
+      git -C "$primary" add a.txt
+      git -C "$primary" commit -q -m "feat: another task on dev, on a.txt"
+    else
+      git -C "$primary" commit -q --allow-empty -m "feat: another task on dev"
+    fi
+    git -C "$primary" push -q origin dev
+    git -C "$primary" checkout -q feat/T14-tooling
+    case $step in
+      base) git -C "$primary" merge -q --no-ff -m "Merge origin/dev" dev ;;
+      conflict)
+        git -C "$primary" merge -q --no-ff -m "Merge origin/dev" dev >/dev/null 2>&1 || true
+        echo "resolved $n" >"$primary/a.txt"
+        git -C "$primary" add a.txt
+        git -C "$primary" commit -q --no-edit
+        ;;
+      evil)
+        git -C "$primary" merge -q --no-ff --no-commit dev >/dev/null 2>&1
+        echo evil >"$primary/evil.txt"
+        git -C "$primary" add evil.txt
+        git -C "$primary" commit -q -m "Merge origin/dev"
+        ;;
+    esac
   done
   git -C "$primary" push -q origin feat/T14-tooling
   git -C "$primary" checkout -q dev
@@ -278,6 +304,13 @@ moved_head() {
   mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
   event T14 pr "{url: \"https://github.com/owner/proj/pull/5\", head: \"$approved\", project: \"proj\"}"
   event T14 merge-approved "{url: \"https://github.com/owner/proj/pull/5\", discord_message: \"1562661774950400000\", head: \"$approved\"}"
+}
+
+# team-catch-up's caught-up event of PR #5, from <from> (A) to <head> (the PR's), the base dev's tip
+# on origin: caught_up [<from>] [<head>]
+caught_up() {
+  event T14 caught-up "{url: \"https://github.com/owner/proj/pull/5\", from: \"${1:-$approved}\", head: \"${2:-$head}\",
+    base: \"$(git -C "$HOME/projects/proj" rev-parse origin/dev)\"}"
 }
 
 # A review of PR #5 at <head> with <verdict>, logged now: review <head> <verdict>

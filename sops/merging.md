@@ -9,7 +9,7 @@ A PR merges only through `team-merge T<n>` (`--pr <url>` for each PR of a task i
 
 | Word | Its event | Its fields | What it covers |
 | - | - | - | - |
-| Per head | `merge-approved` | `url`, `discord_message`, `head` | One PR at the head the coordinator asked on, and through a merge of the base whose `rereview` passed |
+| Per head | `merge-approved` | `url`, `discord_message`, `head` | One PR at the head the coordinator asked on, and through a merge of the base whose `rereview` passed, or a clean one (`team-catch-up`) |
 | Plan time | `merge-preapproved`, withdrawn by `merge-preapproval-withdrawn` | `project`, `ask`, `discord_message`, `scope`; the withdrawal `project`, `discord_message` | The task's PR in that project, any head, within the plan's scope list, for a project that opts in (`merge_with_plan`) and is not agent-team |
 | Standing | `merge-standing`, withdrawn by `merge-standing-withdrawn` | `project` (a registered project, or `all`), `discord_message`, `discord_channel`, the same for both | Any task's ready PR in that project, or in every project for `all`, agent-team included, any head, with no scope list and no opt-in |
 
@@ -33,13 +33,13 @@ A word that does not hold falls back to the standing word only for its own reaso
 
 Every merge, on any word, needs the checks every merge gets: the PR open, not a draft, not conflicting and on the project's base; every required check present and passed on the head, none failing or pending; `agent-review` success on the head; no agent attribution line in its commits; and the project's local checks passing on the head through `team-checks`.
 
-The per-head word needs Daniel's message read back from Discord, in the task's thread or `#coordinator`, from an author in `allowFrom`, sent no earlier than the head was first logged, and the PR's head the approval's head, or one that adds only merges of the base since it with a passing review logged after the word.
+The per-head word needs Daniel's message read back from Discord, in the task's thread or `#coordinator`, from an author in `allowFrom`, sent no earlier than the head was first logged, and the PR's head the approval's head, or one that adds only merges of the base since it, either with a passing review logged after the word, or each clean (a merge of the base whose tree is `git merge-tree`'s of its parents, as `team-catch-up` makes it) with no review logged after the word that found something.
 
 The plan-time and standing words are the unattended words, and share one bar, so the two cannot drift:
 
 - Daniel's message read back from Discord, from an author in `allowFrom`;
 - the PR from the task's own branch for the project;
-- the latest review of the head passed and logged `guarded` as an empty list;
+- the latest review of the head passed and logged `guarded` as an empty list, where a head `team-catch-up` made (its `caught-up` event) stands on the review of the head it was made from, once git shows it adds only clean merges of the base to it;
 - no review of the task counted a security or real-data finding, fixed or not, or left out its finding counts;
 - GitHub's paged list of the PR's files read in full, no path holding a line break, and no changed path (or a rename's old path) matching a guarded pattern of `bin/lib/guarded`.
 

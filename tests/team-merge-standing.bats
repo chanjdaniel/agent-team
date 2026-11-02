@@ -333,3 +333,48 @@ once() {
   assert_equal "$(tail -n 1 <<<"$stderr")" "  $(ask_standing)"
   [[ $stderr != *"$(ask_per_head)"* ]]
 }
+
+# Daniel's standing word on a head team-catch-up made: PR #5 is A with what moved_head adds
+# (<step>...), the merge-approved gone, the review of A passed with no guarded area, the standing
+# word on proj in #coordinator, and caught-up naming the PR's head as made from A:
+# caught_up_standing <step>...
+caught_up_standing() {
+  moved_head "$@"
+  jq -c 'select(.event != "merge-approved")' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
+  mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
+  passed "$approved"
+  standing merge-standing proj 1562661774950400000 "$COORDINATOR"
+  approved_by 757 "$COORDINATOR"
+  caught_up
+}
+
+@test "a head team-catch-up made cleanly from a passing, unguarded review merges on the standing word with no rereview" {
+  caught_up_standing base
+  run_bin -0 team-merge T14
+  assert_equal "$(merged_events | jq -r '[.approval, .head] | join(" ")')" "standing $head"
+}
+
+@test "a caught-up head is still refused on the standing word for a guarded path, or a later review of the head it was made from that found something" {
+  caught_up_standing base
+  files src/tooling.py package.json
+  refused "package.json is a guarded path (dependencies): a change there comes back to Daniel" "$(ask_standing)"
+
+  # The review that stands for the caught-up head is named with both heads.
+  files src/tooling.py
+  ledger_line --arg h "$approved" '{ts: "2026-10-22T05:00:00Z", task: "T14", event: "review", verdict: "findings", head: $h,
+    findings: {blocking: 1, correctness: 0, security: 0, "real-data": 0, "note-change": 0, "note-before": 0}, guarded: []}'
+  refused "the latest review of the head ${approved:0:7} (caught up to ${head:0:7}), at 2026-10-22T05:00:00Z, is findings, not pass" \
+    "$(ask_standing)"
+}
+
+@test "a head a caught-up event names is refused on the standing word when git shows its merge is not clean" {
+  caught_up_standing base evil
+  refused "the head ${head:0:7} does not stand on the review of ${approved:0:7}, which team-catch-up made it from: ${head:0:7} changes more than the merge of its parents" \
+    "$(ask_standing)"
+
+  # With no caught-up event, the review of A does not stand for the head at all.
+  jq -c 'select(.event != "caught-up")' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
+  mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
+  refused "no review of the head ${head:0:7} is logged, so no reviewer has passed it" "$(ask_standing)"
+  [[ $stderr != *"does not stand on the review"* ]]
+}
