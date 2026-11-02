@@ -36,11 +36,12 @@
 #   tasks       each task with an event in the window: title, project, path, phase, its record
 #               directory under the team home, and the sessions it launched in the window
 #   changes     each retro-change (team-log) logged before the window's end for a retro other than
-#               the window's own, unless it landed or closed unmerged before the window's start:
-#               logged on its retro, records changed in place, landed when logged; else landed at
-#               the task's last merged before the window's end, through those PRs, or closed
-#               (closed unmerged by then, listed only in the window it closed in), or open (at the
-#               window's end, listed in every window until it ends)
+#               the window's own, unless it ended before the window's start: logged on its retro,
+#               records changed in place, landed when logged; else it ends when its task closes,
+#               landed at the task's last merged before the window's end, through those PRs, or
+#               closed (closed unmerged), each listed only in the window it ended in; or open (its
+#               task not closed by the window's end, with the PRs merged so far, listed in every
+#               window until it ends), so a task of several PRs is judged once, when it closes
 # With --json, the digest (schema team-retro-digest/1): window, blocks, questions, reviews,
 # waits ({spans, totals}, each total {on, hours, wall_hours, spans}), rewrites, injections,
 # tasks and changes (each {retro, proposals, task, title, logged, state (landed, open or closed),

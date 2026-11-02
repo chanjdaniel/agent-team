@@ -437,6 +437,7 @@ changes_ledger() {
   opened "$(at 00:20)" T3 small "Landed early"
   change "$(at 00:25)" T3 T1 1
   merged "$(at 00:50)" T3 3
+  closed "$(at 00:55)" T3
   opened "$(at 01:00)" T2 retro "Retro two"
   event "$(at 01:10)" T2 answered '{id: "retro", answer: "all yes"}'
   opened "$(at 01:20)" T4 small "Merged follow-up"
@@ -448,6 +449,7 @@ changes_ledger() {
   change "$(at 01:50)" T2 T2 "the SOP review"
   merged "$(at 02:00)" T4 41
   merged "$(at 02:30)" T4 42
+  closed "$(at 02:40)" T4
   closed "$(at 03:00)" T6
   opened "$(at 03:10)" T7 small "Late merge"
   change "$(at 03:15)" T7 T2 5
@@ -457,6 +459,7 @@ changes_ledger() {
   change "$(at 03:30)" T10 T10 1
   opened "$(at 04:00)" T10 retro "Retro three"
   merged "$(at 05:00)" T7 70
+  closed "$(at 05:05)" T7
   closed "$(at 05:10)" T5
 }
 
@@ -515,6 +518,30 @@ LINES
   opened "$(at 08:00)" T14 retro "Retro six"
   run_bin -0 team-retro digest T14 --json
   assert_equal "$(jq -c '[.changes[] | [.task, .state]]' <<<"$output")" '[["T13","open"]]'
+}
+
+@test "digest: a follow-up lands only once its task is closed, at its last merge, open with its PRs so far until then" {
+  opened "$(at 00:00)" T2 retro "Retro two"
+  event "$(at 00:10)" T2 answered '{id: "retro", answer: "all yes"}'
+  opened "$(at 00:20)" T4 small "Two phases"
+  change "$(at 00:25)" T4 T2 1
+  merged "$(at 01:00)" T4 41
+  opened "$(at 02:00)" T10 retro "Retro three"
+  merged "$(at 03:00)" T4 42
+  closed "$(at 03:30)" T4
+  opened "$(at 04:00)" T11 retro "Retro four"
+  # T10's window holds only PR 41, with T4 still open: no landing to judge yet.
+  run_bin -0 team-retro digest T10 --json
+  assert_equal "$(jq -c '.changes[] | [.task, .state, .landed, [.prs[].pr]]' <<<"$output")" '["T4","open",null,[41]]'
+  run_bin -0 team-retro digest T10
+  assert_contains "$output" $'Changes (1):\n  T4 (Two phases) for retro T2\'s proposals "1": open at the window\'s end, merged so far PR 41 https://github.com/o/p/pull/41'
+  # T11's window holds its close: landed at its last merge, with both PRs, judged once.
+  run_bin -0 team-retro digest T11 --json
+  assert_equal "$(jq -c '.changes[] | [.task, .state, .landed, [.prs[].pr]]' <<<"$output")" \
+    '["T4","landed","2026-10-20T03:00:00Z",[41,42]]'
+  opened "$(at 05:00)" T12 retro "Retro five"
+  run_bin -0 team-retro digest T12 --json
+  assert_equal "$(jq -c '.changes' <<<"$output")" '[]'
 }
 
 @test "digest: the text form's Changes section is a line per change, and none with none" {
