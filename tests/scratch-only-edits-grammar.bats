@@ -15,11 +15,17 @@ setup() {
   passes 'touch src/x' 'echo "$(echo $#)" $(( "1" ))' 'x=`y`' 'select x in a; do :; done' 'grep -rn foo src'
 }
 
-@test "a tee spelled with quotes, backslashes or a line continuation is read" {
+@test "a tee spelled with quotes, backslashes, a line continuation, a brace expansion or an ANSI-C string is read" {
   blocked "cmd | t''ee out" "$wt/out"
   blocked 'cmd | t\ee out' "$wt/out"
   blocked 'cmd | "tee" out' "$wt/out"
   blocked $'cmd | t\\\nee out' "$wt/out"
+  # A brace expansion may spell it too.
+  unread 'cmd | t{e,}e out' 'the command word t{e,}e'
+  unread 'cmd | {s..u}ee out' 'the command word {s..u}ee'
+  # And so may an ANSI-C escape.
+  unread "cmd | \$'t\\x65e' out" "the command word \$'t\\x65e'"
+  passes 'echo {a,b}' 'echo ${x}' "echo \$'a\\tb'"
 }
 
 @test "quoted text is not a redirection, and what follows it is judged" {
@@ -664,6 +670,76 @@ EOF" 'a here-document delimiter other than a plain word, quoted whole or not'
     unread "$word; cmd > .scratch/x" 'a quoted $ or backtick in an array value'
   done
   passes "declare -a l; local -a m; cmd > .scratch/x" "declare x='a b \$c' y='(x)'; cmd > .scratch/x" "declare -A n; cmd > .scratch/x"
+}
+
+@test "a printf word the hook cannot work out where an option may stand, or as -v's name, is refused unread" {
+  unread "printf \"\$f\" 'a[\$(cmd > out)]' 1; cmd > .scratch/x" 'the printf word "$f"'
+  unread 'printf $f x; cmd > .scratch/x' 'the printf word $f'
+  unread "printf \$'\\x2dv' TMPDIR /etc; cmd > .scratch/x" "the printf word \$'\\x2dv'"
+  unread 'printf {-v,TMPDIR} /etc; cmd > .scratch/x' 'the printf word {-v,TMPDIR}'
+  unread 'printf -v "$n" x; cmd > .scratch/x' 'the printf word "$n"'
+  unread "printf -v \$'TMP\\x44IR' /etc; cmd > .scratch/x" "the printf word \$'TMP\\x44IR'"
+  unread 'printf -v TMP{DIR,} /etc; cmd > .scratch/x' 'the printf word TMP{DIR,}'
+  # A format whose text starts with anything but a - is no option, and after -- none is.
+  passes 'printf "Hello $x\n" > .scratch/o' "printf '%s\\n' \"\$x\" * > .scratch/o" 'printf -- "$f" > .scratch/o' \
+    'printf -v line "%s" "$x"; cmd > .scratch/o' 'printf "%s" $x > .scratch/o'
+}
+
+@test "an option of declare, typeset, local, readonly or export the hook cannot work out is refused unread" {
+  unread "declare \"\$o\" x='a[\$(cmd > out)]'; cmd > .scratch/x" 'the declare word "$o"'
+  unread "declare \"\$o\" a='([\$(cmd)]=1)'; cmd > .scratch/x" 'the declare word "$o"'
+  unread 'typeset $o n; cmd > .scratch/x' 'the typeset word $o'
+  unread "local \$'\\x2di' n; cmd > .scratch/x" "the local word \$'\\x2di'"
+  unread 'declare {-i,n}; cmd > .scratch/x' 'the declare word {-i,n}'
+  unread 'readonly "$o" x; cmd > .scratch/x' 'the readonly word "$o"'
+  unread 'export $o X=1; cmd > .scratch/x' 'the export word $o'
+  passes 'declare -a arr; arr=("$@"); local x="$1" y=$2; cmd > .scratch/x' 'declare -A m; readonly -a r; export -n X; cmd > .scratch/x'
+}
+
+@test "a name an assigning builtin gives that the hook cannot work out, or a word that may expand into several before it, is refused unread" {
+  unread 'declare "TMP$x=/etc"; cmd > .scratch/x' 'the declare word "TMP$x=/etc"'
+  unread 'declare TMP{DIR,}=/etc; cmd > .scratch/x' 'the declare word TMP{DIR,}=/etc'
+  unread "declare \$'CD\\x50ATH=/'; cd .scratch && cmd > x" "the declare word \$'CD\\x50ATH=/'"
+  unread "export \$'TMP\\x44IR'=/etc; cmd > \"\$TMPDIR/x\"" "the export word \$'TMP\\x44IR'=/etc"
+  unread 'export "$n"; cmd > .scratch/x' 'the export word "$n"'
+  unread 'local TMPD?R; cmd > .scratch/x' 'the local word TMPD?R'
+  unread 'read "$n" <<< /etc; cmd > .scratch/x' 'the read word "$n"'
+  unread "read -r \$'TMP\\x44IR' <<< /etc; cmd > \"\$TMPDIR/x\"" "the read word \$'TMP\\x44IR'"
+  unread 'read -r TMP{DIR,X} <<< /etc; cmd > .scratch/x' 'the read word TMP{DIR,X}'
+  unread 'read -a "$n" <<< /etc; cmd > .scratch/x' 'the read word "$n"'
+  unread 'read -ra"$n" <<< /etc; cmd > .scratch/x' 'the read word -ra"$n"'
+  unread 'read -p {x,-a} TMPDIR <<< /etc; cmd > .scratch/x' 'the read word {x,-a}'
+  unread 'read -p $p x; cmd > .scratch/x' 'the read word $p'
+  unread 'unset "$n"; cmd > .scratch/x' 'the unset word "$n"'
+  unread 'unset TMP{DIR,}; cmd > .scratch/x' 'the unset word TMP{DIR,}'
+  unread 'export TMP{DIR,Y}=/etc; cmd > .scratch/x' 'the export word TMP{DIR,Y}=/etc'
+  unread 'readonly TMP{DIR,}=/etc; cmd > .scratch/x' 'the readonly word TMP{DIR,}=/etc'
+  unread 'getopts ab "$n"; cmd > .scratch/x' 'the getopts word "$n"'
+  unread 'getopts {ab,TMPDIR}; cmd > .scratch/x' 'the getopts word {ab,TMPDIR}'
+  unread 'getopts $s n; cmd > .scratch/x' 'the getopts word $s'
+  unread 'mapfile -t "$n" < f; cmd > .scratch/x' 'the mapfile word "$n"'
+  unread 'readarray $o a < f; cmd > .scratch/x' 'the readarray word $o'
+  unread 'wait -p "$n"; cmd > .scratch/x' 'the wait word "$n"'
+  unread 'wait "$p"; cmd > .scratch/x' 'the wait word "$p"'
+  passes 'read -r -p "$prompt" ans; read -rd "" x; read -t "$t" y; cmd > .scratch/x' 'wait $!; wait; wait 12 13; cmd > .scratch/x' \
+    'export PATH="$HOME/bin:$PATH" X=a{b,c}; cmd > .scratch/x' 'mapfile -t lines < f; getopts "ab:" opt "$@" $x; cmd > .scratch/x' \
+    'unset x y; unset -f g; cmd > .scratch/x'
+}
+
+@test "a command word or a wrapper's word the hook cannot work out is refused unread" {
+  unread '{tee,"x"} < f' 'the command word {tee,"x"}'
+  unread 't{e,}e x < f' 'the command word t{e,}e'
+  unread '{s..u}ee x' 'the command word {s..u}ee'
+  unread "\$'t\\x65e' x < f" "the command word \$'t\\x65e'"
+  unread '"$tool" a > .scratch/x' 'the command word "$tool"'
+  unread '$(command -v tee) x > .scratch/x' 'the command word $(command -v tee)'
+  unread '/usr/bin/t?e x > .scratch/x' 'the command word /usr/bin/t?e'
+  unread 'env {X=1,tee} x < f' 'the env word {X=1,tee}'
+  unread 'env "$o" tee x' 'the env word "$o"'
+  unread 'timeout "$d" KILL tee x' 'the timeout word "$d"'
+  unread 'command $o tee x' 'the command word $o'
+  unread 'sudo -u "$u" "$c" x > .scratch/x' 'the sudo word "$c"'
+  passes 'env X="$y" cmd > .scratch/x' 'timeout 5 cmd > .scratch/x' 'sudo -u "$u" cmd > .scratch/x' '~/bin/x > .scratch/x'
 }
 
 @test "a form no rule reads is refused unread, so a command holding one passes nothing it holds" {

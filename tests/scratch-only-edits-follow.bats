@@ -135,7 +135,7 @@ Blocked: this role may write files only under $wt/.scratch; write there with the
 
 @test "after a place that may assign any variable, a cd to a name CDPATH may search is unknown" {
   local before
-  for before in 'declare "$a$b=/"' 'read "$n" <<< /' 'printf -v "$n" /' 'declare -n r="$n"; r=/' '(( v ))'; do
+  for before in 'a[v]=1' 'let v' 'declare -n r="$n"; r=/' '(( v ))'; do
     unknown "$before; cd .scratch/task && cmd > out" "out ($moved)"
     passes "$before; cd ./.scratch/task && cmd > out" "$before; cd $wt/.scratch && cmd > out"
   done
@@ -151,15 +151,25 @@ Blocked: this role may write files only under $wt/.scratch; write there with the
   unknown 'for PWD in /tmp; do cmd > $PWD/x; done' "\$PWD/x ($(not_followed PWD))"
 }
 
+@test "after a stop, \$PWD is unknown until a cd the walk follows sets it again" {
+  local before
+  for before in '(( v ))' 'a[v]=1' ': $(( v ))' 'let v'; do
+    unknown "$before; cmd > \"\$PWD/x\"" "\"\$PWD/x\" ($(not_followed PWD))" "$wt/.scratch/task"
+    unknown "$before; cmd > \"\${PWD}/x\"" "\"\${PWD}/x\" ($(not_followed PWD))" "$wt/.scratch/task"
+    passes "$before; cd ./.scratch && cmd > \"\$PWD/x\"" "cd ./.scratch && cmd > \"\$PWD/x\"; $before"
+  done
+  unknown '(( v )); cd "$x"; cmd > "$PWD/x"' "\"\$PWD/x\" ($moved)"
+}
+
 @test "a command's redirections are judged in the directory it starts in, before its own cd" {
   blocked 'cd .scratch/task > out' "$wt/out"
   blocked '{ cd .scratch; } > x' "$wt/x"
   passes 'cd .scratch && cmd > a 2> b' 'cd /etc && cmd > $TMPDIR/x' "cd /etc && cmd > $wt/.scratch/x"
 }
 
-@test "eval, source, ., trap or a command word the hook cannot name may move the shell at any later point" {
+@test "eval, source, . or trap may move the shell at any later point" {
   local before
-  for before in 'eval "$x"' 'source f' '. f' 'trap x EXIT' '"$tool" a' '$x' '/usr/bin/t?e'; do
+  for before in 'eval "$x"' 'source f' '. f' 'trap x EXIT'; do
     unknown "$before; cmd > .scratch/x" ".scratch/x ($moved)"
     # A trap it sets, or a function it defines, may run at any command after it, so a cd after it is
     # no longer followed.
@@ -180,20 +190,18 @@ Blocked: this role may write files only under $wt/.scratch; write there with the
     'T=$CLAUDE_JOB_DIR/tmp; for i in 1 2; do "$T/v$i/bin/pip" freeze > $T/f$i; done' \
     'T=$CLAUDE_JOB_DIR/tmp; for c in /opt/a /opt/b; do cmd > $T/x; $c; done' \
     'T=$CLAUDE_JOB_DIR/tmp; I=/opt/bin/x; while c; do cmd > $T/x; $I; done'
-  # A value without a /, an unknown one, or one the loop may change at another turn may name a
-  # builtin such as eval, as may a word holding another expansion.
+  # A value without a /, which may name a builtin such as eval, an unknown one, one naming a tee
+  # or a wrapper, and a word holding another expansion are refused unread, as is one the walk
+  # cannot work out at every turn of a loop or every call of a function.
   local before
-  for before in 'I=chrome-devtools-axi; $I a' 'I=/opt/x; I=eval; $I a' '"$tool" a' 'I="/opt/x a"; $I' \
-    'I=$(command -v x); $I'; do
-    unknown "X=.scratch; $before; cmd > \$X/y" "\$X/y ($(not_followed X))"
-    unknown "$before; cd $wt/.scratch && cmd > y" "y ($moved)"
+  for before in 'I=chrome-devtools-axi; $I a' 'I=/opt/x; I=eval; $I a' 'I="/opt/x a"; $I' 'I=/usr/bin/tee; $I src/x' \
+    'I=/usr/bin/env; $I tee src/x' 'I=/opt/x; f() { $I; }' 'eval x; I=/opt/x; $I'; do
+    unread "$before; cmd > .scratch/y" 'the command word $I'
   done
-  unknown 'X=.scratch; for c in /opt/a b; do cmd > $X/y; $c; done' "\$X/y ($(not_followed X))"
-  unknown 'X=.scratch; while c; do cmd > $X/y; I=/opt/x; $I; done' "\$X/y ($(not_followed X))"
-  # A function's body may run anywhere after it, with other values.
-  unknown 'X=.scratch; I=/opt/x; f() { $I; }; cmd > $X/y' "\$X/y ($(not_followed X))"
-  # It is never a tee, whatever its value.
-  passes 'T=/usr/bin/tee; $T src/x'
+  unread 'for c in /opt/a b; do cmd > .scratch/y; $c; done' 'the command word $c'
+  unread 'I=$(command -v x); "$I" > .scratch/y' 'the command word "$I"'
+  # Assigned in the loop before it runs, it holds that value at every turn.
+  passes 'X=.scratch; while c; do cmd > $X/y; I=/opt/x; $I; done'
 }
 
 @test "a variable the command assigns once holds its value after the assignment, and its earlier one before" {
@@ -256,8 +264,8 @@ Blocked: this role may write files only under $wt/.scratch; write there with the
 
 @test "arithmetic and the other places that may assign any variable stop following there, and an assignment after them is followed" {
   local before
-  for before in '(( v ))' ': $(( v ))' 'let v' '[[ v -eq 1 ]]' 'echo ${a[v]}' 'echo ${x:$o}' 'read "$n"' 'a[v]=1' \
-    'a=([v]=1)' 'printf -v "$n" x' 'export "$n"' 'for (( ; v; )); do :; done'; do
+  for before in '(( v ))' ': $(( v ))' 'let v' '[[ v -eq 1 ]]' 'echo ${a[v]}' 'echo ${x:$o}' 'a[v]=1' \
+    'a=([v]=1)' 'for (( ; v; )); do :; done'; do
     unknown "T=\$CLAUDE_JOB_DIR/tmp; $before; cmd > \$T/x" "\$T/x ($(not_followed T))"
   done
   unknown "T=\$CLAUDE_JOB_DIR/tmp; cat <<EOF"$'\n$(( v ))\nEOF\n'"cmd > \$T/x" "\$T/x ($(not_followed T))"
@@ -276,8 +284,7 @@ Blocked: this role may write files only under $wt/.scratch; write there with the
 
 @test "a stop makes HOME, TMPDIR and CLAUDE_JOB_DIR unknown too, as it may assign them, and an assignment after it is followed" {
   local before
-  for before in '(( v ))' 'n=TMPDIR; read "$n" <<< /etc' 'declare "TMP$x=/etc"' 'declare TMP{DIR,}=/etc' 'read -r TMP{DIR,X}' \
-    'printf -v TMP{DIR,} /etc' 'export TMP{DIR,Y}=/etc' 'readonly TMP{DIR,}=/etc' 'unset TMP{DIR,}'; do
+  for before in '(( v ))' 'let v' 'a[v]=1' ': $(( v ))'; do
     unknown "$before; cmd > \"\$TMPDIR/x\"" "\"\$TMPDIR/x\" ($(not_followed TMPDIR))"
   done
   unknown '(( v )); cmd > ~/x' "~/x ($(not_followed HOME))"
@@ -288,7 +295,7 @@ Blocked: this role may write files only under $wt/.scratch; write there with the
 @test "eval, source, ., trap, mapfile -C, and declare, typeset or local with i or n end following for the rest of the command" {
   local before
   for before in 'eval x' 'source f' '. f' 'trap x EXIT' 'declare -i n' 'declare -n r=y' 'typeset -n r' 'local -i n' \
-    'mapfile -C f a' 'readarray -tC f a' '"$tool" a'; do
+    'mapfile -C f a' 'readarray -tC f a'; do
     unknown "T=\$CLAUDE_JOB_DIR/tmp; $before; cmd > \$T/x" "\$T/x ($(not_followed T))"
     unknown "$before; T=\$CLAUDE_JOB_DIR/tmp; cmd > \"\$T/x\"" "\"\$T/x\" ($(not_followed T))"
   done
