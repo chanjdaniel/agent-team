@@ -879,7 +879,7 @@ SINCE
   assert_contains "$(<"$brief")" '   - **What the last changes did**: one row per change in the digest'"'"'s Changes: the change (its retro, its proposals and its task), where it landed (its PRs, or the records), the events it was meant to reduce counted in two equal spans before and after it landed, each span named by its start and end, and a verdict of `helped`, `hurt`, `no observed effect` or `confounded`.'
   assert_contains "$(<"$brief")" "     Count the events the earlier report's Judge by line names for that proposal, when it gave one; else name the events you count and why."
   assert_contains "$(<"$brief")" '     The verdict is `confounded` when another change landed in the same spans and touches the same events, or when the counts are too few to tell from chance, as a rule fewer than three on either side.'
-  assert_contains "$(<"$brief")" "     A follow-up lands only once its task is closed, at its last merge, so a change is judged once, in the window it landed in."
+  assert_contains "$(<"$brief")" "     A follow-up lands only once its task is closed, its landing time being its last merge, so a change is judged once, in the window its task closed in, even when it merged in an earlier one."
   assert_contains "$(<"$brief")" "     A change open at the window's end, its PRs merged so far listed, gets a row with no verdict, at each retro until it lands or closes; one closed unmerged gets a row with no verdict once, in the window it closed in, the only one whose digest lists it."
   assert_contains "$(<"$brief")" '     A `hurt` row becomes a proposal to revert or revise the change, ranked with the others.'
   # Proposals open with the standing text's size, against the previous retro's base.

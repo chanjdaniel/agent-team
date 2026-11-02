@@ -544,6 +544,23 @@ LINES
   assert_equal "$(jq -c '.changes' <<<"$output")" '[]'
 }
 
+@test "digest: a follow-up merged in one window and closed in the next is judged in the window its task closed in" {
+  opened "$(at 00:00)" T2 retro "Retro two"
+  event "$(at 00:10)" T2 answered '{id: "retro", answer: "all yes"}'
+  opened "$(at 00:20)" T4 small "Closed late"
+  change "$(at 00:25)" T4 T2 1
+  merged "$(at 01:00)" T4 41
+  opened "$(at 02:00)" T10 retro "Retro three"
+  closed "$(at 03:00)" T4
+  opened "$(at 04:00)" T11 retro "Retro four"
+  run_bin -0 team-retro digest T10 --json
+  assert_equal "$(jq -c '.changes[] | [.task, .state, .landed, [.prs[].pr]]' <<<"$output")" '["T4","open",null,[41]]'
+  # Landed at its merge, before T11's window, but listed in T11's, where its task closed.
+  run_bin -0 team-retro digest T11 --json
+  assert_equal "$(jq -c '.changes[] | [.task, .state, .landed, [.prs[].pr]]' <<<"$output")" \
+    '["T4","landed","2026-10-20T01:00:00Z",[41]]'
+}
+
 @test "digest: the text form's Changes section is a line per change, and none with none" {
   changes_ledger
   run_bin -0 team-retro digest T10
