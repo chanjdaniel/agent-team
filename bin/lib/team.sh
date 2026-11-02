@@ -16,7 +16,7 @@
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin,
 # only_records, records_list, records_pathspecs, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
 # own_project, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_slots, machine_level, discord_token, discord_api,
-# daniel_message, refresh_inbox, github, pr_part, task_state_json, loose_objects, pack_size, story_file and findings_file, and sets IMAGE_TYPE,
+# daniel_message, refresh_inbox, github, pr_part, pr_file_reasons, task_state_json, pr_standing_word, loose_objects, pack_size, story_file and findings_file, and sets IMAGE_TYPE,
 # PACK_LOOSE, COORDINATOR_CHANNEL and INTERVIEW_CHANNEL.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
 # shellcheck shell=bash
@@ -1139,8 +1139,10 @@ github() {
 }
 
 # The pr part of a task's state: its latest pr event joined with GitHub, using <dir> for gh's
-# answers, with behind_by, the commits of its base its head lacks, from GitHub's compare of the
-# two; null for a PR not open or when the compare cannot be read: pr_part '<events>' '<pr event>' <dir>
+# answers (GitHub's view of the PR, its branch and changed-file count among them, in <dir>/view),
+# with behind_by, the commits of its base its head lacks, from GitHub's compare of the two (null
+# for a PR not open or when the compare cannot be read), and its standing_word null for
+# task_state_json to fill in: pr_part '<events>' '<pr event>' <dir>
 pr_part() {
   local events=$1 pr=$2 dir=$3 url project repo='' number required_checks='[]' facts behind_by=null base head
   url=$(jq -r .url <<<"$pr") || return 1
@@ -1148,7 +1150,7 @@ pr_part() {
   if [[ $url =~ ^https://github\.com/([^/]+/[^/]+)/pull/([0-9]+)/?$ ]]; then
     repo=${BASH_REMATCH[1]} number=${BASH_REMATCH[2]}
   else
-    jq -cn --arg url "$url" '{url: $url, error: "not a GitHub pull request URL: \($url)"}'
+    jq -cn --arg url "$url" '{url: $url, standing_word: null, error: "not a GitHub pull request URL: \($url)"}'
     return
   fi
   if [[ -z $project ]]; then
@@ -1162,10 +1164,11 @@ pr_part() {
   fi
   facts=$(ledger_jq '{url: $url, number: $number, repo: $repo, project: $project,
       ledger_head: pr_head($url),
-      merge_approved: any(.[]; .event == "merge-approved" and (.url | strings | rtrimstr("/")) == ($url | rtrimstr("/")))}' \
+      merge_approved: any(.[]; .event == "merge-approved" and (.url | strings | rtrimstr("/")) == ($url | rtrimstr("/"))),
+      standing_word: null}' \
     -c --arg url "$url" --argjson number "$number" --arg repo "$repo" \
     --argjson project "$(jq -n --arg p "$project" 'if $p == "" then null else $p end')" <<<"$events") || return 1
-  if github "$dir" view pr view "$number" --repo "$repo" --json number,state,baseRefName,headRefOid &&
+  if github "$dir" view pr view "$number" --repo "$repo" --json number,state,baseRefName,headRefOid,headRefName,changedFiles &&
     github "$dir" checks pr checks "$number" --repo "$repo" --json name,bucket,state &&
     github "$dir" required pr checks "$number" --repo "$repo" --required --json name,bucket,state; then
     if jq -e '.state == "OPEN"' "$dir/view" >/dev/null; then
@@ -1190,13 +1193,64 @@ pr_part() {
           agent_review: ([$checks[] | select(.name == "agent-review") | .state | ascii_downcase] | first // "missing"),
           behind_by: $behind_by}
       | {url, number, repo, project, state, base, head, ledger_head, head_moved, checks, required,
-         required_missing, agent_review, merge_approved, behind_by}' \
+         required_missing, agent_review, merge_approved, behind_by, standing_word}' \
       -c --slurpfile view "$dir/view" --slurpfile checks "$dir/checks" \
       --slurpfile required "$dir/required" --argjson project_required "$required_checks" \
       --argjson behind_by "$behind_by" <<<"$facts"
   else
     jq -c --rawfile error "$dir/error" '. + {error: ($error | rtrimstr("\n"))}' <<<"$facts"
   fi
+}
+
+# Why the PR's changed files do not let a word given on no head (plan-time or standing) merge it
+# unasked, read from GitHub's paged list of the files of PR <number> in <repo>, using <dir> for
+# gh's answers. The reasons, one per element of PR_FILE_REASONS, none when the files allow it: the
+# list cannot be read; it holds other than <changed files> (the PR's changedFiles) files; a
+# guarded pattern of bin/lib/guarded cannot be read by grep -E; a path holds a line break; a path
+# a guarded pattern matches, named with its areas. PR_CHANGED is the changed paths as a JSON list
+# of {path} and, for each rename's old path, {path, renamed}, [] when the list cannot be read,
+# which returns 1, and 2 when jq fails: pr_file_reasons <dir> <repo> <number> <changed files>
+# shellcheck disable=SC2034 # PR_CHANGED is the caller's to read
+pr_file_reasons() {
+  local dir=$1 repo=$2 number=$3 count=$4 listed paths humps area pattern lines form rc found matched out guarded=''
+  PR_FILE_REASONS=() PR_CHANGED='[]'
+  if ! github "$dir" files api "repos/$repo/pulls/$number/files" --paginate; then
+    PR_FILE_REASONS+=("GitHub cannot be read: $(<"$dir/error")")
+    return 1
+  fi
+  PR_CHANGED=$(jq -cs 'add // [] | [.[] | {path: .filename}, (select(.previous_filename) | {path: .previous_filename, renamed: .filename})]' \
+    "$dir/files") && listed=$(jq -s 'add // [] | length' "$dir/files") || return 2
+  [[ $listed == "$count" ]] ||
+    PR_FILE_REASONS+=("GitHub's list of PR #$number's files holds $listed files, not its $count changed files, so not every file could be checked")
+  # Each guarded pattern's matches among the changed paths, as {path, area} lines: a path matches
+  # as it is, or with each camelCase hump split off by an underscore (applicantSessionExpiry.ts
+  # as applicant_Session_Expiry.ts, CSRFToken.ts as CSRF_Token.ts), so a pattern's words match
+  # inside such a name. A path with a line break, which grep would read as two, is refused below.
+  paths=$(jq -r '.[].path' <<<"$PR_CHANGED")
+  humps=$(sed -E 's/([[:lower:][:digit:]])([[:upper:]])/\1_\2/g; s/([[:upper:]])([[:upper:]][[:lower:]])/\1_\2/g' <<<"$paths")
+  while read -r area pattern; do
+    [[ -n $area && $area != '#'* ]] || continue
+    lines=''
+    for form in "$paths" "$humps"; do
+      rc=0
+      found=$(grep -Eixn -e "$pattern" <<<"$form") || rc=$?
+      if ((rc > 1)); then
+        PR_FILE_REASONS+=("the guarded pattern '$pattern' ($area) in bin/lib/guarded cannot be read by grep -E")
+        break
+      fi
+      lines+=$(cut -d: -f1 <<<"$found")$'\n'
+    done
+    matched=$(awk 'NR == FNR { if ($0 != "") hit[$0]; next } FNR in hit' <(printf '%s' "$lines") <(printf '%s\n' "$paths"))
+    guarded+=$(jq -cR --arg area "$area" 'select(. != "") | {path: ., area: $area}' <<<"$matched")$'\n'
+  done <"$TEAM_LIB/guarded"
+  guarded=$(jq -cs . <<<"$guarded") || return 2
+  out=$(jq -r --argjson guarded "$guarded" '
+    def name: if .renamed then "\(.path), renamed to \(.renamed)," else .path end;
+    (.[] | select(.path | test("\n")) | "\(.path | @json) holds a line break, so no guarded pattern can be matched against it"),
+    (.[] | . as $file | [$guarded[] | select(.path == $file.path) | .area]
+      | reduce .[] as $a ([]; if IN(.[]; $a) then . else . + [$a] end) | select(. != [])
+      | "\($file | name) is a guarded path (\(join(", "))): a change there comes back to Daniel")' <<<"$PR_CHANGED") || return 2
+  if [[ -n $out ]]; then mapfile -t -O "${#PR_FILE_REASONS[@]}" PR_FILE_REASONS <<<"$out"; fi
 }
 
 # The tokens a session's latest main-conversation reply read (input, cache writes and cache read),
@@ -1221,7 +1275,7 @@ session_context() {
 # GitHub. GitHub failures are carried in the pr part; a broken registry or an unreadable session
 # list fails with the reason on stderr: task_state_json '<events>'
 task_state_json() (
-  local events=$1 state pr dir session_id context contexts='{}' sessions plan_project plan_projects opted_in own
+  local events=$1 state pr dir session_id context contexts='{}' sessions plan_project plan_projects opted_in own standing
   local task tickets total
   live_sessions
   while IFS= read -r session_id; do
@@ -1257,10 +1311,50 @@ task_state_json() (
     dir=$(mktemp -d) || exit 1
     trap 'rm -rf "$dir"' EXIT
     pr=$(pr_part "$events" "$pr" "$dir") || exit 1
-    state=$(jq -c --argjson pr "$pr" '.pr = $pr' <<<"$state") || exit 1
+    standing=$(pr_standing_word "$events" "$state" "$pr" "$dir") || exit 1
+    state=$(jq -c --argjson pr "$pr" --argjson standing "$standing" '.pr = $pr | .pr.standing_word = $standing' <<<"$state") || exit 1
   fi
   printf '%s\n' "$state"
 )
+
+# The pr part's standing_word: Daniel's standing word on the PR's project, read from every task's
+# events in the ledger, or null when no merge-standing or merge-standing-withdrawn names the
+# project or all; else {word, withdrawn} as standing_word gives them, with covers and reasons.
+# While the task awaits merge, reasons are why the word would not let team-merge merge the PR
+# unasked, from the pieces team-merge holds it to (the word standing, the task's branch, its
+# reviews and the PR's changed files), and covers is whether there are none; Daniel's message is
+# not read back and the checks are not judged. Otherwise covers is null and reasons empty, and the
+# PR's files are not read: pr_standing_word '<events>' '<state>' '<pr part>' <dir>
+pr_standing_word() {
+  local events=$1 state=$2 pr=$3 dir=$4 project ledger=$TEAM_HOME/ledger.jsonl standing out rc=0 reasons=()
+  project=$(jq -r '.project // empty' <<<"$pr") || return 1
+  if [[ -z $project ]]; then echo null; return; fi
+  [[ -e $ledger ]] || ledger=/dev/null
+  # Only a line naming the kinds can be one of them, so jq reads those alone.
+  standing=$({ grep -F merge-standing "$ledger" || true; } |
+    ledger_jq '[inputs | fromjson? | objects] | standing_word($project)' -nRc --arg project "$project") || return 1
+  if [[ $standing == null ]]; then echo null; return; fi
+  if [[ $(jq -r .phase <<<"$state") != awaiting-merge ]]; then
+    jq -c '{word, withdrawn, covers: null, reasons: []}' <<<"$standing"
+    return
+  fi
+  out=$(ledger_jq 'standing_word_reasons($project)' -r --arg project "$project" <<<"$standing") || return 1
+  if [[ -n $out ]]; then
+    reasons+=("$out")
+  elif jq -e 'has("error")' <<<"$pr" >/dev/null; then
+    reasons+=("GitHub cannot be read: $(jq -r .error <<<"$pr")")
+  else
+    out=$(ledger_jq 'task_branch_reasons($task; $project; $branch; $number), unattended_review_reasons($head)' -r \
+      --arg task "$(jq -r .task <<<"$state")" --arg project "$project" --arg branch "$(jq -r .headRefName "$dir/view")" \
+      --arg number "$(jq -r .number <<<"$pr")" --arg head "$(jq -r .head <<<"$pr")" <<<"$events") || return 1
+    if [[ -n $out ]]; then mapfile -t -O "${#reasons[@]}" reasons <<<"$out"; fi
+    pr_file_reasons "$dir" "$(jq -r .repo <<<"$pr")" "$(jq -r .number <<<"$pr")" \
+      "$(jq -r '.changedFiles // "unknown number of"' "$dir/view")" || rc=$?
+    ((rc != 2)) || return 1
+    reasons+=("${PR_FILE_REASONS[@]}")
+  fi
+  jq -c '{word, withdrawn} + {covers: ($ARGS.positional == []), reasons: $ARGS.positional}' --args "${reasons[@]}" <<<"$standing"
+}
 
 if [[ ${1:-} == --help || ${1:-} == -h ]]; then
   team_help
