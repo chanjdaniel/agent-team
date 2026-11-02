@@ -126,14 +126,14 @@ local check 'echo fine && exit 4' failed on the head ${head:0:7} (exit 4); its l
 
 @test "the checks get TEAM_JOBS, team-capacity jobs' floor of the level's CPU budget, unless it is set" {
   registry "['echo \"\$TEAM_JOBS\" >>\"\$CHECKS_DIR/jobs\"']"
-  # No reading to size the budget by: nproc's, for which the sandbox's TEAM_SLOTS_CPUS stands.
+  # No reading to size the budget by: nproc's, for which the sandbox's TEAM_READING_CPUS stands.
   run_bin -0 team-checks proj "$head" --from "$primary"
   # Minor's 30% of 12 cores.
   capacity_room $((16 * 1073741824)) minor
-  TEAM_SLOTS_CPUS=12 run_bin -0 team-checks proj "$head" --from "$primary"
+  TEAM_READING_CPUS=12 run_bin -0 team-checks proj "$head" --from "$primary"
   # One set already is passed on as it is.
   TEAM_JOBS=5 run_bin -0 team-checks proj "$head" --from "$primary"
-  assert_equal "$(cat "$CHECKS_DIR/jobs")" "$TEAM_SLOTS_CPUS
+  assert_equal "$(cat "$CHECKS_DIR/jobs")" "$TEAM_READING_CPUS
 3
 5"
 }
