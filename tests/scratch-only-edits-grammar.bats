@@ -250,17 +250,179 @@ setup() {
   passes 'echo fi then done > .scratch/x' 'x=1 fi > .scratch/x'
 }
 
-@test "until the grammar grows, substitutions, here-documents, compound commands and the rest are refused unread" {
-  unread 'x=$(cmd > out)' 'a command substitution $( )'
+@test "a write inside a \$( ) or a process substitution is judged, from the outer command's directory" {
+  blocked 'x="$(cmd > out)"' "$wt/out"
+  blocked 'x=$(cmd > out)' "$wt/out"
+  blocked 'echo "$(printf x | tee out)"' "$wt/out"
+  blocked 'echo "a $(echo "$(cmd >> out)") b"' "$wt/out"
+  blocked 'x="$(cmd "a)b" > out)"' "$wt/out"
+  blocked 'cmd | tee >(gzip > out.gz)' "$wt/out.gz"
+  blocked 'diff <(cmd > out) b' "$wt/out"
+  blocked 'cmd < <(cmd > out)' "$wt/out"
+  blocked $'echo $(echo a\n  cmd > out) > .scratch/x' "$wt/out"
+  blocked 'x=$(cmd > out)' "$wt/src/out" "$wt/src"
+  blocked 'echo $(cmd > a) > b' "$wt/b, $wt/a"
+}
+
+@test "comments inside a \$( ) are read as bash reads them" {
+  blocked $'x=$(\n# 1) it\'s built\ncmd > out\n# that\'s all\n)' "$wt/out"
+  blocked $'x=$(echo a\\ #) ; echo "\n)" ; cmd > out' "$wt/out"
+  passes 'echo $(echo a#b) > .scratch/x' $'x=$(echo a # b > out\n)'
+}
+
+@test "a target holding a substitution is unknown, named as written" {
+  unknown 'cmd | tee "out-$(date).log"' "\"out-\$(date).log\" ($expansion)"
+  unknown 'cmd > out-$(date).log' "out-\$(date).log ($expansion)"
+  unknown 'cmd > "out-$(cat x/../name)"' "\"out-\$(cat x/../name)\" ($expansion)"
+  unknown 'cmd > "src$(: /../.scratch/ )/x"' "\"src\$(: /../.scratch/ )/x\" ($expansion)"
+  unknown 'cmd > src$(: /../.scratch/ )/x' "src\$(: /../.scratch/ )/x ($expansion)"
+  unknown 'cmd > .scratch/../out-$(date)' ".scratch/../out-\$(date) ($expansion)"
+  unknown "cmd > x-\$(echo \$'a\\'b').log; echo ok" "x-\$(echo \$'a\\'b').log ($expansion)"
+}
+
+@test "what passes outside a substitution passes inside it" {
+  passes 'x="$(cmd 2>/dev/null)"' 'x="$(cmd > .scratch/task/out)" && echo "$x"' 'echo "it is \$(cmd > out)"' \
+    'diff <(sort a) <(sort b)' 'x=$()' 'x=$(cmd;)' 'x=$(cmd &)' 'x=$( )' 'echo $(echo) > .scratch/x'
+}
+
+@test "a process substitution as a tee file or an output target writes to its pipe" {
+  passes 'cmd | tee >(gzip > .scratch/out.gz) >/dev/null' 'cmd > >(cat)' 'cmd 2> >(cat >&2)' 'cmd | tee >(cat) <(true)'
+  blocked 'cmd > >(cat) | tee x' "$wt/x"
+}
+
+@test "a quoted here-document delimiter's body is text" {
+  local open
+  for open in "<<'EOF'" '<<"EOF"' '<<\EOF' "<< 'EOF'"; do
+    passes "cat > .scratch/x $open
+a \$(cmd > out) b \`cmd > out\` \\
+EOF"
+  done
+  passes "git commit -F - <<'EOF'
+fix: a > b, and | tee c
+cmd > out
+EOF"
+}
+
+@test "an unquoted here-document delimiter's body has its substitutions judged" {
+  blocked 'cat <<EOF
+a $(cmd > out) b
+EOF' "$wt/out"
+  blocked 'cat > .scratch/x <<EOF
+a $(echo b
+cmd > out) c
+EOF' "$wt/out"
+  blocked 'cat <<EOF
+${HOME} $x "$(cmd > out)"
+EOF' "$wt/out"
+  passes 'cat > .scratch/x <<EOF
+\$(cmd > out) a \\$x > b
+it'"'"'s "fine" | tee c
+EOF'
+}
+
+@test "<<- strips a body's leading tabs before it is matched to the delimiter" {
+  blocked $'cat <<-EOF\n\ta $(cmd > out)\n\t\tEOF\ncmd > y' "$wt/out, $wt/y"
+  passes $'cat <<-\'EOF\' > .scratch/x\n\t$(cmd > out)\n\tEOF'
+  unread $'cat <<EOF > .scratch/x\n\tEOF\ncmd > out' 'a here-document whose delimiter line is not found'
+}
+
+@test "two here-documents on a line keep their order and quoting" {
+  blocked $'cat <<A <<\'B\'\n$(cmd > a)\nA\n$(cmd > b)\nB' "$wt/a"
+  blocked $'cat <<\'A\' <<B\n$(cmd > a)\nA\n$(cmd > b)\nB' "$wt/b"
+}
+
+@test "what follows a here-document's body is judged" {
+  blocked "cat > .scratch/x <<'EOF'
+a > b
+EOF
+cmd > out" "$wt/out"
+  blocked "cat <<'EOF' |
+a > b
+EOF
+tee out" "$wt/out"
+  blocked "cat <<'EOF' && cmd > out
+a > b
+EOF" "$wt/out"
+  blocked "cat <<'EOF'; cmd > out
+a
+EOF" "$wt/out"
+}
+
+@test "a here-document read outside a \$( ) waits for a newline outside it" {
+  blocked $'cat <<EOF; echo $(echo\n:)\n$(cmd > out)\nEOF' "$wt/out"
+}
+
+@test "a here-document inside a \$( ) is read when its delimiter line comes before the )" {
+  passes "x=\$(cat <<'EOF'
+a) > b
+EOF
+)" "git commit -m \"\$(cat <<'EOF'
+fix: a > b | tee c
+
+it's done)
+EOF
+)\"" "x=\$(cat <<EOF
+\$HOME
+EOF
+) && cmd > .scratch/x"
+  blocked 'x=$(cat <<EOF
+it'"'"'s
+EOF
+); echo y > out' "$wt/out"
+}
+
+@test "a here-document this hook does not read is refused unread, naming its form" {
+  unread $'cat <<EOF > .scratch/x\na' 'a here-document whose delimiter line is not found'
+  unread 'cat <<EOF > .scratch/x' 'a here-document whose delimiter line is not found'
+  unread $'cat <<EOF > .scratch/x\na\nEOF \ncmd > out' 'a here-document whose delimiter line is not found'
+  unread $'x=$(cat <<EOF\nhi\nEOF) ; cmd > out' 'a here-document line inside $( ) that starts with its delimiter and a )'
+  unread $'x=$(cat <<\'EOF\'\nhi\nEOF) ; cmd > out' 'a here-document line inside $( ) that starts with its delimiter and a )'
+  unread $'x=$(cat <<\'EOF\'\nhi\nEOF ) ; cmd > out' 'a here-document line inside $( ) that starts with its delimiter and a )'
+  unread $'x=$(cat <<EOF)\nhi\nEOF\ncmd > out' 'a here-document inside $( ) that closes before its body is read'
+  local delimiter
+  for delimiter in 'E"O"F' '$x' "'E'OF" '"E"OF' "''" 'EOF"x"' '$(cmd > out)'; do
+    unread "cat <<$delimiter > .scratch/x
+a
+EOF" 'a here-document delimiter other than a plain word, quoted whole or not'
+  done
+  unread $'cat <<EOF > .scratch/x\na \\\nEOF\ncmd > out\nEOF' 'a line ending in a backslash in a here-document whose delimiter is not quoted'
+  unread $'cat <<EOF > .scratch/x\na `cmd > out`\nEOF' 'a backtick substitution'
+  # An escaped backslash ends the line, and so does any backslash in a quoted delimiter's body.
+  passes $'cat <<EOF > .scratch/x\na \\\\\nEOF' $'cat <<\'EOF\' > .scratch/x\na \\\nEOF'
+}
+
+@test "a process substitution inside a longer word is refused unread" {
+  unread 'echo a<(cmd) > .scratch/x' 'a process substitution inside a word'
+  unread 'echo <(cmd)b > .scratch/x' 'a process substitution inside a word'
+  unread 'echo <(cmd)<(cmd) > .scratch/x' 'a process substitution inside a word'
+  unread 'echo 2>(cmd) > .scratch/x' 'a process substitution inside a word'
+  unread 'x=<(cmd); cmd > .scratch/x' 'a process substitution inside a word'
+}
+
+@test "a substitution that does not close is refused unread" {
+  unread 'echo $(cmd > .scratch/x' 'a $( ) that does not close'
+  unread 'cmd | tee >(cat > .scratch/x' 'a process substitution that does not close'
+  unread $'cat <<EOF > .scratch/x\n$(cmd\nEOF\n)' 'a $( ) that does not close'
+}
+
+@test "a here-string's word is read and its substitutions judged" {
+  blocked 'cmd <<< "$(cmd > out)"' "$wt/out"
+  passes 'cmd <<< "a > b"' 'cmd <<<a > .scratch/x' "cmd <<< 'a | tee b'"
+  unread 'cmd > .scratch/x <<<' 'a redirection with no target'
+}
+
+@test "on a bash older than 5.2, a comment or a here-document inside a substitution is refused unread" {
+  TEAM_BASH_VERSION=5.1 unread $'x=$(echo a # b\n) ; cmd > .scratch/x' 'a comment inside a substitution, on a bash older than 5.2'
+  TEAM_BASH_VERSION=5.1 unread $'x=$(cat <<\'EOF\'\na\nEOF\n) ; cmd > .scratch/x' 'a here-document inside a substitution, on a bash older than 5.2'
+  # Outside a substitution, and on 5.2 and later, they are read.
+  TEAM_BASH_VERSION=5.1 passes $'cmd > .scratch/x # a\ncat > .scratch/y <<\'EOF\'\na\nEOF'
+  TEAM_BASH_VERSION=5.2 passes $'x=$(echo a # b\n) ; cmd > .scratch/x'
+  TEAM_BASH_VERSION=6.0 passes $'x=$(cat <<\'EOF\'\na\nEOF\n) ; cmd > .scratch/x'
+}
+
+@test "until the grammar grows, arithmetic, compound commands and the rest are refused unread" {
   unread 'echo $(( 1 > 2 ))' 'an arithmetic expansion $(( ))'
   unread '(( a > b ))' 'an arithmetic command (( ))'
-  unread 'diff <(sort a) <(sort b) > .scratch/x' 'a process substitution'
-  unread 'cmd | tee >(gzip > out.gz)' 'a process substitution'
-  unread 'cmd > >(cat)' 'a process substitution'
-  unread "cat > .scratch/x <<'EOF'
-a
-EOF" 'a here-document'
-  unread 'cmd <<< "a > b"' 'a here-string'
   unread '( cmd ) > out' 'a ( ) subshell'
   unread '{ cmd; } > out' 'a { } group'
   unread 'if true; then cmd | tee x; fi' 'an if command'
@@ -268,9 +430,11 @@ EOF" 'a here-document'
   unread 'until false; do :; done > out' 'an until loop'
   unread 'for f in a b; do cmd > out; done' 'a for loop'
   unread 'case a in a) cmd > out ;; esac' 'a case command'
+  unread 'echo "$(case a in a) cmd > out ;; esac)"' 'a case command'
   unread '[[ $a > b ]] && echo yes' 'a [[ ]] test'
   unread 'cmd > ${out:-x}' 'a ${ } with an operator'
   unread 'echo ${#x} > .scratch/x' 'a ${ } with an operator'
+  unread $'cat > .scratch/x <<EOF\n${x:-a}\nEOF' 'a ${ } with an operator'
   unread 'a=(x y); cmd > .scratch/x' 'an array assignment'
   unread 'f() { cmd > out; }' 'a function definition'
 }

@@ -13,11 +13,23 @@
 # - Words: unquoted text, '...', "..." (with the escapes \$ \` \" \\ and its expansions),
 #   backslash escapes, line continuations (a \ ending a line, outside single quotes), comments (# at
 #   a word's start, to the line's end), ANSI-C strings $'...' (to their unescaped '), and the
-#   expansions $name, ${name} and the special parameters ($?, $#, $@, $1 and the rest).
+#   expansions $name, ${name}, the special parameters ($?, $#, $@, $1 and the rest) and $( ).
+# - Substitutions: a $( ), unquoted, in "..." or in an unquoted delimiter's here-document body, is
+#   read as a command list by this same grammar, to the ) that closes it at its own level, so a
+#   comment, a quoted ) and a here-document in it are read as bash 5.2 and later read them; so is
+#   a process substitution <( ) or >( ), a whole word. Every command in one is judged, a relative
+#   target from the directory the command holding it starts in; as a tee file or an output target,
+#   a process substitution is its pipe, /dev/fd/N.
 # - Simple commands: assignments, words and redirections in any order.
 # - Redirections: [n]>, [n]>>, [n]>|, &>, &>>, [n]<> and [n]>&word are output redirections, whose
 #   target is judged, but a >& whose word's value is digits, - or digits and -, a duplication;
-#   [n]< and [n]<& are read and not judged.
+#   [n]<, [n]<&, a here-string <<< word and here-documents are read and not judged.
+# - Here-documents: << or <<-, then a delimiter that is a plain word of letters, digits and _ . -,
+#   unquoted, wholly in ' or ", or after one \. Its body runs from the next newline read in the same
+#   substitution to the first line equal to the delimiter (its leading tabs stripped for <<-), the
+#   bodies of a line's here-documents in the order they were read. A quoted delimiter's body is
+#   text; an unquoted one's is read as the shell expands it, a \ escaping the next character, and
+#   each $( ) in it read as above.
 # - Lists and pipelines: ;, &, newlines, &&, ||, | and |&, and ! and time [-p [--]] before a
 #   pipeline.
 # - Wrappers: env, sudo, nohup, timeout and its duration (whatever its word), nice, stdbuf, command
@@ -34,11 +46,16 @@
 # verbose, pipefail, errtrace or functrace (the words after --, - or the first word that is no
 # option are its positional parameters), and any shopt option but -p and -q; the names IFS, CDPATH
 # and POSIXLY_CORRECT anywhere in the command, but IFS= as the prefix assignment of a command that
-# holds a word; a {name} file descriptor; and what bash refuses as a syntax error (an unclosed
-# quote, a ( or ) or a reserved word out of place, a ;; or ;&, an operator with nothing after it, a
-# redirection with no target). This hook does not yet read, and so refuses unread: $( ), $(( )),
-# (( )), <( ), >( ), here-documents, here-strings, ${ } with an operator, array assignments,
-# function definitions and the compound commands ( ), { }, if, while, until, for, case and [[ ]].
+# holds a word; a {name} file descriptor; a here-document delimiter other than those above, a
+# here-document whose delimiter line is not found, a line ending in an odd number of backslashes in
+# an unquoted delimiter's body, and, inside a $( ), a here-document whose $( ) closes before its
+# body is read and a body line that starts with its delimiter and a ); a process substitution
+# inside a longer word; on a bash older than 5.2, which finds a $( )'s close another way, a comment
+# or a here-document inside a substitution; and what bash refuses as a syntax error (an unclosed
+# quote or substitution, a ( or ) or a reserved word out of place, a ;; or ;&, an operator with
+# nothing after it, a redirection with no target). This hook does not yet read, and so refuses
+# unread: $(( )), (( )), ${ } with an operator, array assignments, function definitions and the
+# compound commands ( ), { }, if, while, until, for, case and [[ ]].
 #
 # The judge: each output redirection target and each file a tee names (its words after the command
 # word, but those starting with - before a --) is worked out from its words: quoted and unquoted
@@ -53,9 +70,9 @@
 # unknown too behind a wrapper option that holds a C or a D (env's -C, sudo's -D) or is --chdir.
 # The target, its symlinks resolved, must then lie under .scratch/ or under /tmp, $TMPDIR or
 # $CLAUDE_JOB_DIR, or be, as written, /dev/null, /dev/stdout, /dev/stderr or /dev/fd/*; an empty
-# one writes nothing. A target holding any other expansion, an unquoted brace, *, ?, [, a ~ after
-# = or :, a ~user, an ANSI-C escape, or an unquoted variable whose value holds a blank or a glob
-# character, is one the hook cannot work out, and is refused, never allowed.
+# one writes nothing. A target holding any other expansion (a $( ) among them), an unquoted brace,
+# *, ?, [, a ~ after = or :, a ~user, an ANSI-C escape, or an unquoted variable whose value holds a
+# blank or a glob character, is one the hook cannot work out, and is refused, never allowed.
 # A refusal names each target outside as written, its . and .. resolved by text and its symlinks
 # kept, and each target it cannot work out as the command spells it, with why; that one comes first.
 #
@@ -65,7 +82,8 @@
 # (the functions, aliases and options its snapshot sets, which the hook takes to leave cd, tee and
 # the wrappers as the commands they name, and CDPATH and IFS at their defaults). It is a speed bump
 # for the plain shell write, never a guarantee.
-# Test seam: TEAM_SYSTEM_ROOT stands for / in /tmp, as in the library's tool_dirs.
+# Test seams: TEAM_SYSTEM_ROOT stands for / in /tmp, as in the library's tool_dirs, and
+# TEAM_BASH_VERSION (major.minor) for the running bash's version.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/team.sh" "$@"
 input=$(cat)
@@ -114,18 +132,35 @@ LC_ALL=C
 #   P, p    a pipeline's start and end;  !  and T  a ! or a time before it;  |  a pipe
 #   S, E    a simple command's start and end
 #   A, W    an assignment before the command word, and any other word
-#   R, I    an output redirection (EX[k] its operator) and an input one, with their target word
+#   R, I    an output redirection (EX[k] its operator) and an input one (EX[k] <, <&, <<, <<- or
+#           <<<), with their target word (a here-document's delimiter, as written)
+#   D, d    a substitution's start and end, EX[k] its kind: $( and <( or >( hold the events of the
+#           command list in its body; << holds those of the $( )s in a here-document's body, read
+#           where the body is, EA[k] the I event of its here-document
 #   &&, ||  an and-or operator;  ;  and  &  a list separator (a newline is a ;)
 # A word event's parts are pk[EA[k]] to pk[EA[k]+EB[k]-1], with their texts in pt; ER[k] is the
 # word as written. A part's kind is l (unquoted text), q (quoted text), a (an ANSI-C string's text
-# as written), v or V (a variable, unquoted or in double quotes, pt its name) or x (any other
-# expansion, pt as written).
+# as written), v or V (a variable, unquoted or in double quotes, pt its name), p (a process
+# substitution, the whole word, pt as written) or x (any other expansion, pt as written).
+# A substitution's events come before the word event that holds it, and its parts before that
+# word's.
 mapfile -t lines <<<"$command"
 nl=${#lines[@]} L=0 C=0 ln=${lines[0]} ll=${#lines[0]}
 pk=() pt=() EK=() EA=() EB=() ER=() EX=()
 c='' c2='' wfirst=0 wcount=0 wraw='' raw=''
 meta=$' \t;&|()<>\\\'"`$'
 dq_stop='\"$`'
+# depth: how many substitutions the cursor is in. The here-documents read and not yet gathered:
+# hq_d their delimiters, hq_q 1 when quoted, hq_s 1 for <<-, hq_e their I events, hq_l the depth
+# they were read at, whose next newline gathers their bodies.
+depth=0 hq_d=() hq_q=() hq_s=() hq_e=() hq_l=()
+# Bash before 5.2 finds a $( )'s close by scanning its text, not by reading it as a command list,
+# so a comment or a here-document in one may end it elsewhere. TEAM_BASH_VERSION (major.minor)
+# stands for the running bash's version, as a test seam.
+old_bash=1
+if [[ ${TEAM_BASH_VERSION:-${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}} =~ ^([0-9]+)\.([0-9]+) ]]; then
+  if ((BASH_REMATCH[1] > 5 || (BASH_REMATCH[1] == 5 && BASH_REMATCH[2] >= 2))); then old_bash=0; fi
+fi
 
 next_line() {
   L=$((L + 1)) C=0
@@ -177,7 +212,10 @@ skip_blanks() {
     peek
     case $c in
       ' ' | $'\t') C=$((C + 1)) ;;
-      '#') C=$ll ;;
+      '#')
+        ((depth && old_bash)) && unread 'a comment inside a substitution, on a bash older than 5.2'
+        C=$ll
+        ;;
       *) return 0 ;;
     esac
   done
@@ -188,8 +226,93 @@ skip_newlines() {
   while :; do
     skip_blanks
     [[ $c == $'\n' ]] || return 0
-    adv
+    newline
   done
+}
+
+# newline: move past the newline at the cursor, a token of the list, and gather the bodies of the
+# here-documents read at this depth, in the order they were read. One read inside a substitution
+# waits for a newline inside it, and one read outside it for a newline after it, as bash 5.2 reads
+# them.
+newline() {
+  local i todo=()
+  adv
+  for i in "${!hq_d[@]}"; do
+    if ((hq_l[i] == depth)); then todo+=("$i"); fi
+  done
+  for i in "${todo[@]}"; do
+    gather "${hq_d[i]}" "${hq_q[i]}" "${hq_s[i]}" "${hq_e[i]}"
+    unset 'hq_d[i]' 'hq_q[i]' 'hq_s[i]' 'hq_e[i]' 'hq_l[i]'
+  done
+}
+
+# gather <delimiter> <quoted> <strip> <event>: read the here-document body at the cursor, a line's
+# start, to the line equal to its delimiter, and move past that line. An unquoted delimiter's body
+# is scanned for its expansions, as the shell expands them, and each $( ) in it read as a command
+# list.
+gather() {
+  local start=$L k line cmp rest end=-1 keep=$nl run
+  for ((k = L; k < nl; k++)); do
+    line=${lines[k]}
+    cmp=$line
+    if (($3)); then
+      while [[ $cmp == $'\t'* ]]; do cmp=${cmp:1}; done
+    fi
+    if [[ $cmp == "$1" ]]; then
+      end=$k
+      break
+    fi
+    if ((depth)) && [[ $cmp == "$1"* ]]; then
+      rest=${cmp#"$1"}
+      rest=${rest#"${rest%%[! $'\t']*}"}
+      [[ $rest == ')'* ]] && unread 'a here-document line inside $( ) that starts with its delimiter and a )'
+    fi
+    if ((!$2)) && [[ $line == *\\ ]]; then
+      rest=${line%"${line##*[!\\]}"}
+      (((${#line} - ${#rest}) % 2)) && unread 'a line ending in a backslash in a here-document whose delimiter is not quoted'
+    fi
+  done
+  ((end >= 0)) || unread 'a here-document whose delimiter line is not found'
+  emit D "$4" 0 '' '<<'
+  if ((!$2 && end > start)); then
+    # The body alone is the text a $( ) in it may read.
+    nl=$end
+    depth=$((depth + 1))
+    C=0
+    while :; do
+      rest=${ln:C}
+      run=${rest%%[\$\`\\]*}
+      if [[ $run == "$rest" ]]; then
+        ((L < nl - 1)) || break
+        next_line
+        continue
+      fi
+      C=$((C + ${#run}))
+      case ${ln:C:1} in
+        \\) C=$((C + 2)) ;;
+        \`) unread 'a backtick substitution' ;;
+        *)
+          case ${ln:C+1:1} in
+            '(' | '{' | '[')
+              wfirst=${#pk[@]}
+              dollar d
+              ;;
+            *) C=$((C + 1)) ;;
+          esac
+          ;;
+      esac
+    done
+    depth=$((depth - 1))
+    nl=$keep
+  fi
+  emit d
+  # Past the delimiter line: to the next line's start, or the command's end.
+  if ((end < nl - 1)); then
+    L=$((end + 1)) C=0
+  else
+    L=$end C=${#lines[end]}
+  fi
+  ln=${lines[L]} ll=${#ln}
 }
 
 emit() {
@@ -318,16 +441,16 @@ name_chars() {
 
 # dollar <n|d>: read what a $ at the cursor starts, unquoted (n) or in double quotes (d).
 dollar() {
-  local name quoted=v literal=l
+  local name quoted=v literal=l L0=$L C0=$C
   [[ $1 == d ]] && quoted=V literal=q
   adv
   peek
   case $c in
     '(')
-      adv
-      peek
-      [[ $c == '(' ]] && unread 'an arithmetic expansion $(( ))'
-      unread 'a command substitution $( )'
+      peek2
+      [[ $c2 == '(' ]] && unread 'an arithmetic expansion $(( ))'
+      substitution '$(' "$L0" "$C0"
+      add x "$raw"
       ;;
     '{')
       adv
@@ -355,6 +478,31 @@ dollar() {
       ;;
     *) add "$literal" '$' ;;
   esac
+}
+
+# substitution <kind> <L0> <C0>: read a $( ), <( ) or >( ) whose text starts at L0, C0, the cursor
+# on its (, as a command list to the ) that closes it at its own level, and set raw to its text.
+# The parts of the word being read move past the body's, so they stay together.
+substitution() {
+  local held_k=("${pk[@]:wfirst}") held_t=("${pt[@]:wfirst}") k i
+  for ((k = ${#pk[@]} - 1; k >= wfirst; k--)); do unset 'pk[k]' 'pt[k]'; done
+  adv
+  emit D 0 0 '' "$1"
+  depth=$((depth + 1))
+  parse_list ')'
+  if [[ $c != ')' ]]; then
+    [[ $1 == '$(' ]] && unread 'a $( ) that does not close'
+    unread 'a process substitution that does not close'
+  fi
+  for i in "${!hq_d[@]}"; do
+    ((hq_l[i] == depth)) && unread "a here-document inside $1 ) that closes before its body is read"
+  done
+  depth=$((depth - 1))
+  C=$((C + 1))
+  emit d
+  wfirst=${#pk[@]}
+  pk+=("${held_k[@]}") pt+=("${held_t[@]}")
+  raw_text "$2" "$3" "$L" "$C"
 }
 
 # parameter <v|V>: read a ${ }, the cursor past its {: ${name}, or a ${ } of a special parameter.
@@ -435,6 +583,48 @@ read_word() {
   wraw=$raw
 }
 
+# procsub_word: read the process substitution at the cursor as a whole word, setting wfirst, wcount
+# and wraw as read_word does.
+procsub_word() {
+  local L0=$L C0=$C kind
+  peek
+  kind=$c'('
+  adv
+  wfirst=${#pk[@]}
+  substitution "$kind" "$L0" "$C0"
+  peek2
+  case $c in
+    '' | ' ' | $'\t' | $'\n' | ';' | '&' | '|' | ')') ;;
+    '<' | '>') [[ $c2 == '(' ]] && unread 'a process substitution inside a word' ;;
+    *) unread 'a process substitution inside a word' ;;
+  esac
+  add p "$raw"
+  wcount=1 wraw=$raw
+}
+
+# heredoc: read a here-document's operator past its <<, and its delimiter, a plain word quoted whole
+# or not; its body is gathered at the next newline read at this depth.
+heredoc() {
+  local op='<<' strip=0 quoted=1 delim
+  peek
+  if [[ $c == - ]]; then
+    adv
+    op='<<-' strip=1
+  fi
+  ((depth && old_bash)) && unread 'a here-document inside a substitution, on a bash older than 5.2'
+  skip_blanks
+  read_word
+  if [[ $wraw =~ ^[A-Za-z0-9_.-]+$ ]]; then
+    quoted=0 delim=$wraw
+  elif [[ $wraw =~ ^\'([A-Za-z0-9_.-]+)\'$ || $wraw =~ ^\"([A-Za-z0-9_.-]+)\"$ || $wraw =~ ^\\([A-Za-z0-9_.-]+)$ ]]; then
+    delim=${BASH_REMATCH[1]}
+  else
+    unread 'a here-document delimiter other than a plain word, quoted whole or not'
+  fi
+  emit I "$wfirst" "$wcount" "$wraw" "$op"
+  hq_d+=("$delim") hq_q+=("$quoted") hq_s+=("$strip") hq_e+=("$((${#EK[@]} - 1))") hq_l+=("$depth")
+}
+
 # parse_redir: read the redirection at the cursor and its target.
 parse_redir() {
   local op
@@ -447,12 +637,15 @@ parse_redir() {
         '<')
           adv
           peek
-          [[ $c == '<' ]] && unread 'a here-string'
-          unread 'a here-document'
+          if [[ $c != '<' ]]; then
+            heredoc
+            return 0
+          fi
+          adv
+          op='<<<'
           ;;
         '&') adv && op='<&' ;;
         '>') adv && op='<>' ;;
-        '(') unread 'a process substitution' ;;
         *) op='<' ;;
       esac
       ;;
@@ -463,7 +656,6 @@ parse_redir() {
         '>') adv && op='>>' ;;
         '|') adv && op='>|' ;;
         '&') adv && op='>&' ;;
-        '(') unread 'a process substitution' ;;
         *) op='>' ;;
       esac
       ;;
@@ -477,10 +669,13 @@ parse_redir() {
   esac
   skip_blanks
   peek2
-  [[ $c == [\<\>] && $c2 == '(' ]] && unread 'a process substitution'
-  read_word
+  if [[ $c == [\<\>] && $c2 == '(' ]]; then
+    procsub_word
+  else
+    read_word
+  fi
   ((wcount)) || unread 'a redirection with no target'
-  if [[ $op == '<' || $op == '<&' ]]; then
+  if [[ $op == '<' || $op == '<&' || $op == '<<<' ]]; then
     emit I "$wfirst" "$wcount" "$wraw" "$op"
   else
     emit R "$wfirst" "$wcount" "$wraw" "$op"
@@ -521,7 +716,12 @@ parse_simple() {
         continue
         ;;
       '<' | '>')
-        [[ $c2 == '(' ]] && unread 'a process substitution'
+        if [[ $c2 == '(' ]]; then
+          procsub_word
+          first=0 words=$((words + 1)) assigning=0
+          emit W "$wfirst" "$wcount" "$wraw"
+          continue
+        fi
         parse_redir
         others=$((others + 1)) first=0
         continue
@@ -532,7 +732,8 @@ parse_simple() {
         ;;
     esac
     read_word
-    peek
+    peek2
+    [[ $c == [\<\>] && $c2 == '(' ]] && unread 'a process substitution inside a word'
     if [[ $c == [\<\>] ]] && ((wcount == 1)) && [[ ${pk[wfirst]} == l ]]; then
       if [[ ${pt[wfirst]} =~ ^[0-9]+$ ]]; then
         # A file descriptor number, right before its redirection.
@@ -572,23 +773,21 @@ parse_command() {
   parse_simple
 }
 
-# mark and reset: remember the cursor and the parts, and go back to them.
-mark() {
-  mL=$L mC=$C mp=${#pk[@]}
-}
-reset() {
-  L=$mL C=$mC ln=${lines[mL]} ll=${#lines[mL]}
-  drop_parts
-}
-# drop_parts: drop the parts read since the mark, from the end, so the arrays stay dense.
-drop_parts() {
-  local k
-  for ((k = ${#pk[@]} - 1; k >= mp; k--)); do unset 'pk[k]' 'pt[k]'; done
-}
-
-# is_word <text>: whether the word just read is the unquoted text.
-is_word() {
-  ((wcount == 1)) && [[ ${pk[wfirst]} == l && ${pt[wfirst]} == "$1" ]]
+# plain <text>: move past the word at the cursor when it is the unquoted text, ending where a word
+# ends; a lookahead that reads no parts and emits nothing.
+plain() {
+  local sL=$L sC=$C w=''
+  while peek && [[ -n $c && $c != $'\n' && $meta != *"$c"* ]] && ((${#w} <= ${#1})); do
+    w+=$c
+    C=$((C + 1))
+  done
+  if [[ $w == "$1" ]]; then
+    case $c in
+      '' | ' ' | $'\t' | $'\n' | ';' | '&' | '|' | ')' | '<' | '>') return 0 ;;
+    esac
+  fi
+  L=$sL C=$sC ln=${lines[sL]} ll=${#lines[sL]}
+  return 1
 }
 
 parse_pipeline() {
@@ -596,35 +795,23 @@ parse_pipeline() {
   emit P
   while :; do
     skip_blanks
-    mark
-    read_word
-    if is_word '!'; then
-      drop_parts
+    if plain '!'; then
       emit '!'
-    elif is_word time; then
-      drop_parts
+    elif plain time; then
       emit T
       skip_blanks
-      mark
-      read_word
-      if is_word -p; then
+      if plain -p; then
         skip_blanks
-        mark
-        read_word
-        is_word -- || reset
-      else
-        reset
+        plain -- || :
       fi
-      drop_parts
     else
-      reset
       break
     fi
     prefixed=1
   done
   skip_blanks
   peek2
-  if ((prefixed)) && [[ -z $c || $c == [$'\n'\;] || ($c == '&' && $c2 != [\&\>]) ]]; then
+  if ((prefixed)) && [[ -z $c || $c == [$'\n'\;\)] || ($c == '&' && $c2 != [\&\>]) ]]; then
     emit p
     return 0
   fi
@@ -658,9 +845,12 @@ parse_andor() {
   done
 }
 
+# parse_list [close]: read a command list to the command's end, or to the close at its own level
+# (the ) of a substitution), leaving the cursor on it.
 parse_list() {
+  local close=${1:-}
   skip_newlines
-  while [[ -n $c ]]; do
+  while [[ -n $c && ($c != "$close" || -z $close) ]]; do
     parse_andor
     skip_blanks
     peek2
@@ -676,16 +866,20 @@ parse_list() {
         emit '&'
         ;;
       $'\n')
-        adv
         emit ';'
+        newline
         ;;
-      *) unread "a $c out of place" ;;
+      *)
+        [[ -n $close && $c == "$close" ]] && return 0
+        unread "a $c out of place"
+        ;;
     esac
     skip_newlines
   done
 }
 
 parse_list
+((${#hq_d[@]} == 0)) || unread 'a here-document whose delimiter line is not found'
 
 # ---- The commands --------------------------------------------------------------------------------
 tmp_root=${TEAM_SYSTEM_ROOT:-}/tmp
@@ -735,12 +929,9 @@ takes_of() {
 resolve() {
   local e wrapper='' options=0 valued=0 timed=0 takes=''
   cw=-1 cn='' cu=0 chd=0 words=0
-  for ((e = $1 + 1; ; e++)); do
-    case ${EK[e]} in
-      E) return 0 ;;
-      W) words=1 ;;
-      *) continue ;;
-    esac
+  for e in ${OWN[$1]}; do
+    [[ ${EK[e]} == W ]] || continue
+    words=1
     name_of "${EA[e]}" "${EB[e]}"
     if ((valued)); then
       valued=0
@@ -783,12 +974,18 @@ resolve() {
   done
 }
 
-# The command's simple commands, by the index of their S events, END[s] the index of their E.
-starts=() END=()
+# The command's simple commands, by the index of their S events, in the order read, and OWN[s] the
+# events of each one's own words and redirections, not those of the substitutions in them.
+starts=() OWN=() open=()
 for ((e = 0; e < ${#EK[@]}; e++)); do
   case ${EK[e]} in
-    S) starts+=("$e") open=$e ;;
-    E) END[open]=$e ;;
+    S)
+      starts+=("$e") open+=("$e")
+      OWN[e]=''
+      ;;
+    D) open+=(D) ;;
+    E | d) unset 'open[-1]' ;;
+    A | W | R | I) OWN[open[-1]]+=" $e" ;;
   esac
 done
 
@@ -802,8 +999,8 @@ three='(^|[^A-Za-z0-9_])(HOME|TMPDIR|CLAUDE_JOB_DIR)([^A-Za-z0-9_]|$)'
 args_of() {
   local e
   args=()
-  for ((e = CW[$1] + 1; e < END[$1]; e++)); do
-    if [[ ${EK[e]} == W ]]; then args+=("$e"); fi
+  for e in ${OWN[$1]}; do
+    if ((e > CW[$1])) && [[ ${EK[e]} == W ]]; then args+=("$e"); fi
   done
 }
 
@@ -871,7 +1068,7 @@ check_assigning() {
 for s in "${starts[@]}"; do
   resolve "$s"
   CW[s]=$cw CN[s]=$cn CU[s]=$cu CH[s]=$chd
-  for ((e = s + 1; e < END[s]; e++)); do
+  for e in ${OWN[s]}; do
     [[ ${EK[e]} == A ]] || continue
     text=${pt[EA[e]]}
     if [[ $text =~ ^(HOME|TMPDIR|CLAUDE_JOB_DIR)(\[|\+?=) || $text =~ ^[A-Za-z_][A-Za-z0-9_]*\[ ]]; then stop=1; fi
@@ -959,6 +1156,8 @@ word_values() {
         fi
         text=${known[$text]}
         ;;
+      # A process substitution, a whole word, is the pipe to it.
+      p) text=/dev/fd/63 ;;
       *)
         why=expansion
         return 0
@@ -1005,7 +1204,7 @@ judge() {
 # Each simple command in the order bash runs it: its redirections first, in the directory it starts
 # in, then a tee's files.
 for s in "${starts[@]}"; do
-  for ((e = s + 1; e < END[s]; e++)); do
+  for e in ${OWN[s]}; do
     if [[ ${EK[e]} == R ]]; then
       if [[ ${EX[e]} == '>&' ]]; then judge "$e" 1 0; else judge "$e" 0 0; fi
     fi

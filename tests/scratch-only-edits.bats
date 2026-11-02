@@ -185,6 +185,30 @@ Blocked: this role may write files only under $wt/.scratch; write there with the
   ((SECONDS < 5))
 }
 
+@test "a long here-document is judged quickly" {
+  local body
+  body=$(for i in $(seq 1 3000); do echo "line $i with a > and a | tee x"; done)
+  SECONDS=0
+  passes "cat > .scratch/task/big.txt <<'EOF'
+$body
+EOF"
+  ((SECONDS < 5))
+  # Inside a substitution too, as a commit message is written.
+  SECONDS=0
+  passes "git commit -m \"\$(cat <<'EOF'
+$body
+EOF
+)\" > .scratch/task/out"
+  ((SECONDS < 5))
+  # And with its delimiter unquoted, whose body's expansions are read.
+  body=$(for i in $(seq 1 1000); do echo "line $i with \${HOME}, \$(echo $i) and a > and a | tee x"; done)
+  SECONDS=0
+  passes "cat > .scratch/task/big.txt <<EOF
+$body
+EOF"
+  ((SECONDS < 5))
+}
+
 @test "the planner's and reviewer's settings run the hook on Bash and the edit tools; the ops role's on the edit tools only" {
   local role
   for role in planner reviewer; do
