@@ -41,6 +41,9 @@
 #                    (default none: every role on the user settings' model); team-worker passes
 #                    it as --model and logs it on the launch; ops always runs on the default
 #                    (sops/model-trials.md)
+#   visibility       optional: "public" or "private", the GitHub repository's visibility, which
+#                    team-worker states in each worker's autoMode lines (default "public", the
+#                    reading that treats whatever reaches the repository as published)
 # Per project pool ([<name>.pool]), where task worktrees come from:
 #   provider         "treehouse" (leased pre-warmed slots) or "git" (plain git worktrees)
 #   lease, return    treehouse only: the lease and return commands, run from the primary
@@ -100,7 +103,9 @@ PROJECT_KEYS = PROJECT_STRINGS + PROJECT_LISTS + ("pool",)
 # memory/coordinator/ (team-config).
 RESERVED = {"coordinator": "the team home's auto memory, memory/coordinator/"}
 # Optional keys, with the value a project without one has.
-PROJECT_OPTIONAL = {"local_checks": [], "merge_with_plan": False, "models": {}}
+PROJECT_OPTIONAL = {"local_checks": [], "merge_with_plan": False, "models": {}, "visibility": "public"}
+# The values a project's visibility takes.
+VISIBILITIES = ("public", "private")
 # The code checkout this script runs from, the directory above its bin/: the team's own project's
 # primary checkout.
 CODE = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
@@ -350,6 +355,8 @@ def check(registry):
             problems.append(f"{name}.local_checks: each command must be one line, not empty")
         check_merge_with_plan(name, project, problems)
         check_models(name, project.get("models", {}), problems)
+        if project.get("visibility", "public") not in VISIBILITIES:
+            problems.append(f"{name}.visibility: must be one of {', '.join(VISIBILITIES)}")
         if is_string_list(project.get("docs")):
             problems.extend(
                 f"{name}.docs: '{doc}' must be a relative path"

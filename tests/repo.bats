@@ -795,6 +795,47 @@ uv run back-end/migrations/migrate_user_emails.py
 COMMANDS
 }
 
+# The team's autoMode lines tell auto mode's classifier facts about the team, never grant an
+# action, and every list keeps the built-in rules by naming "$defaults" (a list without it
+# replaces them).
+@test "the worker settings' autoMode lines state facts, grant nothing and keep the built-in rules" {
+  local file grants
+  jq -e '.autoMode.environment | length > 1' "$REPO_ROOT/settings/worker.json" >/dev/null ||
+    { echo "settings/worker.json has no team autoMode lines" >&2; return 1; }
+  for file in "$REPO_ROOT"/settings/*.json; do
+    jq -e '(.autoMode // {}) | all(.[]; type == "array" and any(.[]; . == "$defaults"))' "$file" >/dev/null ||
+      { echo "${file#"$REPO_ROOT"/}: an autoMode list without \"\$defaults\"" >&2; return 1; }
+    grants=$(jq -r '(.autoMode // {})[][] | select(. != "$defaults")' "$file" |
+      grep -Eiw 'allowed|permitted|may|can|cannot' || true)
+    [[ -z $grants ]] || { echo "${file#"$REPO_ROOT"/} grants an action: $grants" >&2; return 1; }
+  done
+}
+
+# A worker is denied git reset --hard however it is spelled, an option before --hard included,
+# while a soft reset and a reset of one file stay allowed.
+@test "git reset --hard is denied to every worker, with or without an option before it" {
+  local command rule
+  for rule in 'Bash(git reset --hard*)' 'Bash(git reset * --hard*)'; do
+    jq -e --arg r "$rule" '.permissions.deny | index($r)' "$REPO_ROOT/settings/worker.json" >/dev/null ||
+      { echo "settings/worker.json lacks the deny rule $rule" >&2; return 1; }
+  done
+  while IFS= read -r command; do
+    denied settings/worker.json "$command" || { echo "not denied: $command" >&2; return 1; }
+  done <<'COMMANDS'
+git reset --hard
+git reset --hard origin/dev
+git reset -q --hard
+git reset --quiet --hard HEAD~1
+COMMANDS
+  while IFS= read -r command; do
+    if denied settings/worker.json "$command"; then echo "denied: $command" >&2; return 1; fi
+  done <<'COMMANDS'
+git reset --soft HEAD~1
+git reset -- file
+git status
+COMMANDS
+}
+
 # Only the coordinator launches an ops session, on Daniel's request: a worker is denied team-worker's
 # ops role and the ops load check, while its own test runs of those scripts stay allowed.
 @test "an ops launch and the ops load check are denied to workers, and stay the coordinator's" {

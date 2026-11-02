@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# PermissionDenied hook of every worker: logs each denial auto mode makes as one denied event in
+# the ledger, so the retro reads the denials from the ledger instead of the transcripts.
+#
+# Usage: denial-log   (Claude Code sends the event on stdin)
+#
+# The event is {task, role, what, why, session}: the task and role are the session's settings'
+# AGENT_TEAM_TASK and AGENT_TEAM_ROLE, what the tool's name, why the rule label at the start of the
+# denial's reason without its brackets ("[Data Exfiltration]" is Data Exfiltration) or "no verdict"
+# for any other reason (no classifier verdict, the classifier unavailable), and session the
+# input's session id cut to the 8 characters a launch logs. The tool's input, and any text of the
+# reason after its label, never reaches the ledger: a denied command can carry a secret.
+# A session it cannot place on a task appends nothing: no task or role in its settings, the load
+# check's T0 (never in the ledger), or a task the ledger has not opened or has closed.
+# It always exits 0, since Claude Code ignores this event's exit code, and appends nothing on any
+# failure: input that is not a denial, no team home, or a ledger lock held for more than a second
+# (ledger_append's wait), so a denial never stalls the session.
+# Claude Code's hooks reference says PermissionDenied fires only for auto mode's denials, never
+# for a deny rule's.
+trap 'exit 0' EXIT
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/team.sh" "$@"
+
+[[ $# -eq 0 ]] || usage_error "usage: denial-log   (the event on stdin)"
+task=${AGENT_TEAM_TASK:-} role=${AGENT_TEAM_ROLE:-}
+[[ $task =~ ^T[1-9][0-9]*$ && $role =~ ^[a-z]+$ ]] || exit 0
+[[ $(task_status "$(task_events "$task" | jq -cs .)") == open ]] || exit 0
+
+event=$(jq -ce --arg task "$task" --arg role "$role" '
+  select(type == "object" and .hook_event_name == "PermissionDenied"
+    and (.tool_name | type) == "string" and .tool_name != "")
+  | {ts: (now | todate), task: $task, event: "denied", role: $role, what: .tool_name,
+     why: ((.reason // "" | strings | capture("^\\[(?<label>[^]\\[\n]{1,80})\\]").label) // "no verdict")}
+  + (if (.session_id | type) == "string" and .session_id != "" then {session: .session_id[:8]} else {} end)' \
+  2>/dev/null) || exit 0
+ledger_append "$event" 1
