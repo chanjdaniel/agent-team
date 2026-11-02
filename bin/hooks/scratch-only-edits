@@ -707,12 +707,22 @@ dollar() {
   esac
 }
 
+# hold_parts: copy the parts of the word being read, pk[wfirst] onward, into the caller's held_k and
+# held_t. It reads them by index, since bash keeps an array as a list and a slice walks it from its
+# first element, which would make each substitution cost every part read before it.
+hold_parts() {
+  local k
+  held_k=() held_t=()
+  for ((k = wfirst; k < ${#pk[@]}; k++)); do held_k+=("${pk[k]}") held_t+=("${pt[k]}"); done
+}
+
 # substitution <kind> <L0> <C0>: read a $( ), <( ) or >( ) whose text starts at L0, C0, the cursor
 # on its (, as a command list to the ) that closes it at its own level, and set raw to its text.
 # The parts of the word being read move past the body's, so they stay together.
 substitution() {
-  local held_k=("${pk[@]:wfirst}") held_t=("${pt[@]:wfirst}") k i held_rx=$rx held_rxd=$rxd held_clr=$wclr
+  local held_k held_t k i held_rx=$rx held_rxd=$rxd held_clr=$wclr
   local d=${#EK[@]}
+  hold_parts
   # Its body is a command list, whatever word holds it.
   rx=0 rxd=0 assign_pos=0 wclr=0
   for ((k = ${#pk[@]} - 1; k >= wfirst; k--)); do unset 'pk[k]' 'pt[k]'; done
@@ -1018,7 +1028,8 @@ subscript_parts() {
 # array: read an array assignment's ( ), the cursor on its (, its words read as words; the parts
 # of the word being read (its name=) move past theirs, with the ( ) as one x part.
 array() {
-  local held_k=("${pk[@]:wfirst}") held_t=("${pt[@]:wfirst}") L0=$L C0=$C
+  local held_k held_t L0=$L C0=$C
+  hold_parts
   assign_pos=0
   adv
   while :; do
