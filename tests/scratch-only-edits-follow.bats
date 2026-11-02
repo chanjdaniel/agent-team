@@ -257,11 +257,11 @@ Blocked: this role may write files only under $wt/.scratch; write there with the
 @test "arithmetic and the other places that may assign any variable stop following there, and an assignment after them is followed" {
   local before
   for before in '(( v ))' ': $(( v ))' 'let v' '[[ v -eq 1 ]]' 'echo ${a[v]}' 'echo ${x:$o}' 'read "$n"' 'a[v]=1' \
-    'a=([v]=1)' 'printf -v "$n" x' 'export "$n"' 'for (( ; v; )); do :; done' 'echo ${!x:=a}'; do
+    'a=([v]=1)' 'printf -v "$n" x' 'export "$n"' 'for (( ; v; )); do :; done'; do
     unknown "T=\$CLAUDE_JOB_DIR/tmp; $before; cmd > \$T/x" "\$T/x ($(not_followed T))"
   done
   unknown "T=\$CLAUDE_JOB_DIR/tmp; cat <<EOF"$'\n$(( v ))\nEOF\n'"cmd > \$T/x" "\$T/x ($(not_followed T))"
-  passes '(( v )); T=$CLAUDE_JOB_DIR/tmp; cmd > "$T/x"'
+  passes '(( v )); T=.scratch; cmd > "$T/x"'
   # Naming no variable, it stops nothing; in a subshell, a substitution or a pipeline, it reaches no further.
   passes 'T=$CLAUDE_JOB_DIR/tmp; echo $(( 1 + 2 )) ${x:0:8} ${a[0]}; cmd > $T/x' \
     'T=$CLAUDE_JOB_DIR/tmp; (let v); y=$(let v); let v | cat; cmd > $T/x'
@@ -271,8 +271,18 @@ Blocked: this role may write files only under $wt/.scratch; write there with the
   unknown 'x=.scratch/a; (( v )); y=.scratch/b; cmd | tee $y' "\$y ($expansion)"
   passes 'x=.scratch/a; (( v )); y=.scratch/b; cmd | tee "$y"'
   unknown '(( v )); cd ./.scratch && cmd > $PWD/x' "\$PWD/x ($expansion)"
-  # HOME, TMPDIR and CLAUDE_JOB_DIR keep the hook's values when the command assigns none of them.
-  passes '(( v )); cmd > "$TMPDIR/x"' '(( v )); cd ./.scratch && cmd > "$PWD/x"'
+  passes '(( v )); cd ./.scratch && cmd > "$PWD/x"'
+}
+
+@test "a stop makes HOME, TMPDIR and CLAUDE_JOB_DIR unknown too, as it may assign them, and an assignment after it is followed" {
+  local before
+  for before in '(( v ))' 'n=TMPDIR; read "$n" <<< /etc' 'declare "TMP$x=/etc"' 'declare TMP{DIR,}=/etc' 'read -r TMP{DIR,X}' \
+    'printf -v TMP{DIR,} /etc' 'export TMP{DIR,Y}=/etc' 'readonly TMP{DIR,}=/etc' 'unset TMP{DIR,}'; do
+    unknown "$before; cmd > \"\$TMPDIR/x\"" "\"\$TMPDIR/x\" ($(not_followed TMPDIR))"
+  done
+  unknown '(( v )); cmd > ~/x' "~/x ($(not_followed HOME))"
+  unknown 'f() { cmd > "$CLAUDE_JOB_DIR/x"; }; (( v ))' "\"\$CLAUDE_JOB_DIR/x\" ($(not_followed CLAUDE_JOB_DIR))"
+  passes '(( v )); TMPDIR=.scratch/t; cmd > "$TMPDIR/x"' 'cmd > "$TMPDIR/x"; (( v ))'
 }
 
 @test "eval, source, ., trap, mapfile -C, and declare, typeset or local with i or n end following for the rest of the command" {
@@ -299,13 +309,13 @@ Blocked: this role may write files only under $wt/.scratch; write there with the
   unknown 'f() { eval x; }; T=$CLAUDE_JOB_DIR/tmp; cmd > $T/x' "\$T/x ($(not_followed T))"
 }
 
-@test "a function's body follows only those of HOME, TMPDIR and CLAUDE_JOB_DIR the command does not assign, and none when it ends following" {
+@test "a function's body follows only those of HOME, TMPDIR and CLAUDE_JOB_DIR the command does not assign, and none when it stops or ends following" {
   mkdir -p "$job/tmp"
   passes 'f() { cmd > $TMPDIR/x; }; f' 'f() { cmd > "$CLAUDE_JOB_DIR/x"; }; T=$CLAUDE_JOB_DIR; cmd > $T/y'
   unknown 'f() { cmd > "$T/x"; }; T=$CLAUDE_JOB_DIR/tmp' "\"\$T/x\" ($(not_followed T))"
   unknown 'TMPDIR=/etc; f() { cmd > $TMPDIR/x; }' "\$TMPDIR/x ($(not_followed TMPDIR))"
-  unknown 'f() { cmd > $TMPDIR/x; }; (( v ))' "\$TMPDIR/x ($expansion)"
-  passes 'f() { cmd > "$TMPDIR/x"; }; (( v ))'
+  unknown 'f() { cmd > $TMPDIR/x; }; (( v ))' "\$TMPDIR/x ($(not_followed TMPDIR))"
+  unknown 'f() { cmd > "$TMPDIR/x"; }; (( v ))' "\"\$TMPDIR/x\" ($(not_followed TMPDIR))"
   unknown 'f() { cmd > "$TMPDIR/x"; }; eval x' "\"\$TMPDIR/x\" ($(not_followed TMPDIR))"
 }
 

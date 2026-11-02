@@ -565,7 +565,7 @@ EOF" 'a here-document delimiter other than a plain word, quoted whole or not'
 
 @test "\${ } with an operator is read to its first unescaped }" {
   passes 'echo ${#x} ${x##*/} ${x#\#} > .scratch/x' 'echo ${x:->}' 'echo "$(echo ${x}) ${y:-(}" > .scratch/x' \
-    'echo ${x@Q} ${!x} ${a[@]} ${a[$i]:1:2} ${x/a/b} ${x^^} ${x,} ${x:-$y${z}$1} ${##} ${x:-a\}b} > .scratch/x'
+    'echo ${x@Q} ${!a[@]} ${!a[*]} ${a[@]} ${a[$i]:1:2} ${x/a/b} ${x^^} ${x,} ${x:-$y${z}$1} ${##} ${x:-a\}b} > .scratch/x'
   # A ) or a # in an operand is text, as bash reads it.
   blocked 'echo "$(echo ${x:-)} > out)"' "$wt/out"
   blocked $'x=$(echo ${y:-a #}) ; echo "\n)" ; cmd > out' "$wt/out"
@@ -585,6 +585,11 @@ EOF" 'a here-document delimiter other than a plain word, quoted whole or not'
   unread 'echo ${x:-`cmd`} > .scratch/x' 'a backtick substitution'
   unread 'echo ${x:-$(cmd)} > .scratch/x' 'an expansion inside a ${ } operand other than a variable'
   unread 'echo ${x:-${y:-z}} > .scratch/x' 'an expansion inside a ${ } operand other than a variable'
+  # Indirection expands the variable a value names, a subscript bash evaluates among them.
+  local word
+  for word in "x='a[\$(cmd > out)]'; : \"\${!x}\"" 'echo ${!x:=a}' 'echo ${!a[0]}' 'echo ${!1}' 'echo ${!#}' 'echo "${!x@Q}"'; do
+    unread "$word > .scratch/x" 'an indirect ${!name} expansion'
+  done
   unread $'echo ${x:-a\nb} > .scratch/x' 'a newline inside a ${ } operand'
   unread $'echo ${x:-a\\\nb} > .scratch/x' 'a newline inside a ${ } operand'
   unread 'echo ${x:-a > .scratch/x' 'a ${ } that does not close'
@@ -639,14 +644,26 @@ EOF" 'a here-document delimiter other than a plain word, quoted whole or not'
     "export 'a[\$(cmd)]=1'" "unset 'a[\$(cmd > out)]'" "unset -v 'a[\$(cmd)]'" "read -r 'a[\$(cmd)]'" \
     "printf -v 'a[\$(cmd)]' x" "printf -v'a[\$(cmd)]' x" "getopts ab 'a[\$(cmd)]'" "mapfile 'a[\$(cmd)]'" \
     "readarray 'a[\$(cmd)]'" "wait -p 'a[\$(cmd)]'" "declare -i n='a[\$(cmd)]'" "declare -n r='a[\$(cmd)]'" \
-    "test -v 'a[\$(cmd)]'" "[ -v 'a[\$(cmd)]' ]" "[[ -v 'a[\$(cmd)]' ]]" "[[ 'a[\$(cmd)]' -eq 0 ]]" "[[ 0 -lt 'a[\$(cmd)]' ]]"; do
+    "test -v 'a[\$(cmd)]'" "[ -v 'a[\$(cmd)]' ]" "[[ -v 'a[\$(cmd)]' ]]" "[[ 'a[\$(cmd)]' -eq 0 ]]" "[[ 0 -lt 'a[\$(cmd)]' ]]" \
+    "test \"-v\" 'a[\$(cmd)]'" "test -\\v 'a[\$(cmd)]'" "[ '-v' 'a[\$(cmd)]' ]" "test \$o 'a[\$(cmd)]'" "[ \"\$o\" 'a[\$(cmd)]' ]" \
+    "a=(['\$(cmd > out)']=1)" "q+=(['\$(cmd)']=1)" "a=(x [\$'\\x24(cmd)']=1)" "a['\$(cmd)']=1" "a[\"\\\$(cmd)\"]=1 cmd"; do
     unread "$word; cmd > .scratch/x" "$form"
   done
   # Text bash does not evaluate as a subscript is read as before.
   passes "let 'n = n + 1'; cmd > .scratch/x" "declare x='a[\$(cmd)]'; cmd > .scratch/x" "export y='[\$z]'; cmd > .scratch/x" \
     "printf '[%s] \$%s\\n' a b > .scratch/x" "printf -v line '[%s] \$%s' a b; cmd > .scratch/x" \
     "read -r -p '[y/\$n] ' ans; cmd > .scratch/x" "test 'a[\$x]' = b && cmd > .scratch/x" \
-    "[[ 'a[\$x]' == b ]] && cmd > .scratch/x" "let 'a[1]=2'; cmd > .scratch/x" "unset 'a[1]'; cmd > .scratch/x"
+    "[[ 'a[\$x]' == b ]] && cmd > .scratch/x" "let 'a[1]=2'; cmd > .scratch/x" "unset 'a[1]'; cmd > .scratch/x" \
+    "a=([0]='\$x' [1]=\"y\"); a[2]='\$y'; cmd > .scratch/x" "test -n 'a[\$x]' && cmd > .scratch/x"
+}
+
+@test "a quoted \$ or backtick in an array value declare, typeset, local or readonly expands is refused unread" {
+  local word
+  for word in "declare -a c='([\$(cmd)]=1)'" "declare -a d='(\$(cmd))'" "declare -A e='([k]=\$(cmd))'" "declare 'f=([\$(cmd)]=1)'" \
+    "declare g='(\`cmd\`)'" "typeset -a h='(\$(cmd))'" "local -a i='(\$(cmd))'" "readonly -a j='(\$(cmd))'" "declare -ga k=\$'(\\x24(cmd))'"; do
+    unread "$word; cmd > .scratch/x" 'a quoted $ or backtick in an array value'
+  done
+  passes "declare -a l; local -a m; cmd > .scratch/x" "declare x='a b \$c' y='(x)'; cmd > .scratch/x" "declare -A n; cmd > .scratch/x"
 }
 
 @test "a form no rule reads is refused unread, so a command holding one passes nothing it holds" {
