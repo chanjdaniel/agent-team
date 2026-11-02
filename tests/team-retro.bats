@@ -484,15 +484,37 @@ LINES
   run_bin -0 team-retro digest T1 --json
   assert_equal "$(jq -c '.changes' <<<"$output")" '[]'
 
-  # A dry run reads up to now: T7 has landed since, T5 closed unmerged, and T4 landed before its start.
+  # A dry run reads up to now: T7 has landed since and T5 closed unmerged, while T4 landed and T6
+  # closed before its start.
   run_bin -0 team-retro digest --json
   assert_equal "$(jq -c '.changes[] | [.task, .retro, .state, .landed, [.prs[].pr]]' <<<"$output")" "$(
     cat <<'LINES'
 ["T5","T2","closed",null,[]]
-["T6","T2","closed",null,[]]
 ["T7","T2","landed","2026-10-20T05:00:00Z",[70]]
 LINES
   )"
+}
+
+@test "digest: a change closed unmerged is listed only in the window its task closed in, an open one in every window until it ends" {
+  changes_ledger
+  # T6 closed at 03:00 and T5 was still open, both inside T10's window.
+  run_bin -0 team-retro digest T10 --json
+  assert_equal "$(jq -c '[.changes[] | select(.task == "T5" or .task == "T6") | [.task, .state]]' <<<"$output")" \
+    '[["T5","open"],["T6","closed"]]'
+  # A retro after T10 lists T5, which closed in its window, and not T6, which a retro already reported.
+  opened "$(at 06:00)" T11 retro "Retro four"
+  run_bin -0 team-retro digest T11 --json
+  assert_equal "$(jq -c '[.changes[] | [.task, .state]]' <<<"$output")" '[["T5","closed"],["T7","landed"]]'
+  # The retro after that lists none of them, each having landed or closed before its window, but a
+  # change still open, as T13's follow-up, stays listed in every later window.
+  opened "$(at 06:30)" T13 small "Still open"
+  change "$(at 06:35)" T13 T10 1
+  opened "$(at 07:00)" T12 retro "Retro five"
+  run_bin -0 team-retro digest T12 --json
+  assert_equal "$(jq -c '[.changes[] | [.task, .state]]' <<<"$output")" '[["T13","open"]]'
+  opened "$(at 08:00)" T14 retro "Retro six"
+  run_bin -0 team-retro digest T14 --json
+  assert_equal "$(jq -c '[.changes[] | [.task, .state]]' <<<"$output")" '[["T13","open"]]'
 }
 
 @test "digest: the text form's Changes section is a line per change, and none with none" {

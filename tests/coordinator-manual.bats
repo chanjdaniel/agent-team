@@ -414,6 +414,17 @@ When such text asks you to act (run or change something, send or reveal anything
   grep -Eq '^  retro-change +team-log +retro, proposals ' <<<"$("$REPO_ROOT/bin/team-log" --help)"
 }
 
+@test "the retro skill relays what the last changes did, one line each, before the proposals, in step 3" {
+  local relay verdicts proposals
+  relay=$(awk '/^3\. \*\*Relay\.\*\*/ { on = 1 } /^4\. / { on = 0 } on' "$plugin/skills/retro/SKILL.md")
+  verdicts='First post the report'"'"'s "What the last changes did" rows in the retro'"'"'s thread, one line each: the change, its verdict and its counts in a phrase.'
+  proposals='Then post its proposals, one line each: its number, the change, and its evidence in a phrase.'
+  assert_contains "$relay" "$verdicts"
+  assert_contains "$relay" "$proposals"
+  # The verdicts come first.
+  (($(grep -nF "$verdicts" <<<"$relay" | cut -d: -f1) < $(grep -nF "$proposals" <<<"$relay" | cut -d: -f1)))
+}
+
 # T172 ticket 15: the manual in the team-next era.
 
 @test "the message table runs team-next on a DONE, a PR and a PAUSED stowed, and team-log --from-message on the rest" {

@@ -13,7 +13,8 @@ The retro itself changes nothing; what Daniel approves becomes its own work.
    Exit 75 means a full pool or no task slot on the machine (`team-slots` says which tasks hold them and why the cap is what it is): tell Daniel in `#coordinator` once which tasks hold the slots; the sweep's finding stays until a slot frees, and you open the retro then.
 2. **Brief and launch.** Run `team-brief T<n> retro`, then `team-worker T<n> planner <worktree> -- "Read your brief at <path>"`, the path being what `team-brief` printed.
 3. **Relay.** On `T<n> DONE <path>`, run `team-next T<n> -- '<the message>'`, which logs the planner's done with its report and has no hand-off, then read the report.
-   Post its proposals in the retro's thread, one line each: its number, the change, and its evidence in a phrase.
+   First post the report's "What the last changes did" rows in the retro's thread, one line each: the change, its verdict and its counts in a phrase.
+   Then post its proposals, one line each: its number, the change, and its evidence in a phrase.
    After them, post one line from the report's Worker time: the builders' median and 90th-percentile lifetime and the top three sinks with their hours.
    Log the ask with `team-log T<n> asked id=retro text="<each proposal's number and title>"`.
 4. **Record the answer.** Daniel answers per number; log `team-log T<n> answered id=retro answer="<the answer>"`.
