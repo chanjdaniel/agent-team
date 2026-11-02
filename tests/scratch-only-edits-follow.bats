@@ -29,6 +29,18 @@ setup() {
   blocked 'cd .scratch > x' "$wt/x"
 }
 
+@test "a loop that holds a cd, and a function in a command that holds one, lose the directory from their start" {
+  unknown 'for f in a b; do cmd > .scratch/x; cd /tmp/..; done' ".scratch/x ($moved)"
+  unknown 'while :; do cmd | tee .scratch/x; pushd /; done' ".scratch/x ($moved)"
+  unknown 'for f in a; do cmd > .scratch/x; if :; then echo "$(cd /)"; fi; done' ".scratch/x ($moved)"
+  unknown 'f() { cmd > .scratch/x; }; for f in a; do { cd /; }; done' ".scratch/x ($moved)"
+  unknown 'f() { cmd > .scratch/x; }; cd /etc; f' ".scratch/x ($moved)"
+  unknown 'if cd /etc; then :; fi; cmd > .scratch/x' ".scratch/x ($moved)"
+  # A loop's redirections are made once, before it runs, and a function with no cd in its command
+  # is judged where it is defined.
+  passes 'while cd x; do :; done > .scratch/x' 'cmd > .scratch/x; while :; do cd x; done' 'f() { cmd > .scratch/x; }; f; f'
+}
+
 @test "eval, source, ., trap or a command word the hook cannot name may move the shell too" {
   local before
   for before in 'eval "$x"' 'source f' '. f' 'trap x EXIT' '"$tool" a' '$x' '/usr/bin/t?e'; do
@@ -60,6 +72,15 @@ setup() {
     'mapfile -C f a' 'readarray -tC f a' 'read "$n"' 'printf -v "$n" x' 'printf "$f" x' 'export "$n"' 'a[v]=1' '"$tool" a'; do
     unknown "$before; cmd > \$TMPDIR/x" "\$TMPDIR/x ($expansion)"
   done
+}
+
+@test "HOME, TMPDIR and CLAUDE_JOB_DIR are unknown after arithmetic or a \${ } that may assign a variable" {
+  local before
+  for before in 'echo $(( x ))' '(( i++ ))' 'for (( i = 0; i < 1; i++ )); do :; done' '[[ $a -eq 1 ]]' 'echo ${x:$o}' \
+    'echo ${a[i]}' 'a=([i]=1)' 'echo ${TMPDIR:=/etc}' 'echo ${x=a}'; do
+    unknown "$before; cmd > \$TMPDIR/x" "\$TMPDIR/x ($expansion)"
+  done
+  passes 'echo $(( 1 + 2 )); cmd > $TMPDIR/x' 'echo ${x:1} ${a[0]} ${x:-a}; cmd > $TMPDIR/x' 'a=(i 1); [[ $a == 1 ]]; cmd > $TMPDIR/x'
 }
 
 @test "any other variable in a target is unknown" {

@@ -420,23 +420,184 @@ EOF" 'a here-document delimiter other than a plain word, quoted whole or not'
   TEAM_BASH_VERSION=6.0 passes $'x=$(cat <<\'EOF\'\na\nEOF\n) ; cmd > .scratch/x'
 }
 
-@test "until the grammar grows, arithmetic, compound commands and the rest are refused unread" {
-  unread 'echo $(( 1 > 2 ))' 'an arithmetic expansion $(( ))'
-  unread '(( a > b ))' 'an arithmetic command (( ))'
-  unread '( cmd ) > out' 'a ( ) subshell'
-  unread '{ cmd; } > out' 'a { } group'
-  unread 'if true; then cmd | tee x; fi' 'an if command'
-  unread 'while read l; do cmd > out; done' 'a while loop'
-  unread 'until false; do :; done > out' 'an until loop'
-  unread 'for f in a b; do cmd > out; done' 'a for loop'
-  unread 'case a in a) cmd > out ;; esac' 'a case command'
-  unread 'echo "$(case a in a) cmd > out ;; esac)"' 'a case command'
-  unread '[[ $a > b ]] && echo yes' 'a [[ ]] test'
-  unread 'cmd > ${out:-x}' 'a ${ } with an operator'
-  unread 'echo ${#x} > .scratch/x' 'a ${ } with an operator'
-  unread $'cat > .scratch/x <<EOF\n${x:-a}\nEOF' 'a ${ } with an operator'
-  unread 'a=(x y); cmd > .scratch/x' 'an array assignment'
-  unread 'f() { cmd > out; }' 'a function definition'
+@test "each compound command is read, a write in its body and one after it judged" {
+  blocked '( cmd > a ) > out' "$wt/out, $wt/a"
+  blocked '{ cmd > a; } > out' "$wt/out, $wt/a"
+  blocked 'if true; then cmd | tee x; fi' "$wt/x"
+  blocked 'if a; then b; elif c; then d > a; else e > b; fi > out' "$wt/out, $wt/a, $wt/b"
+  blocked 'while read l; do cmd > out; done < in' "$wt/out"
+  blocked 'until false; do :; done > out' "$wt/out"
+  blocked 'for f in a b; do cmd > out; done' "$wt/out"
+  blocked 'for f; do cmd > out; done' "$wt/out"
+  blocked $'for f in a b\ndo\n  cmd > out\ndone' "$wt/out"
+  blocked 'for f in $(cmd > out); do :; done' "$wt/out"
+  blocked 'for (( i = $(cmd > out); i < 2; i++ )); do :; done' "$wt/out"
+  blocked 'for ((;;)) do :; done > out' "$wt/out"
+  blocked 'case a in a) cmd > out ;; esac' "$wt/out"
+  blocked 'case a in (a|b) cmd ;; esac > out' "$wt/out"
+  blocked 'case a in a) ;& b) ;;& c) cmd > out;; esac' "$wt/out"
+  blocked 'case $(cmd > a) in $(cmd > b)) ;; esac' "$wt/a, $wt/b"
+  blocked '[[ -n a ]] > out' "$wt/out"
+  blocked '(( 1 )) > out' "$wt/out"
+  # Prefixed, in a pipeline, with a file descriptor or a here-document, and nested.
+  blocked 'time { cmd; } > out' "$wt/out"
+  blocked '! { cmd; } 2> out' "$wt/out"
+  blocked '{ cmd; } | tee out' "$wt/out"
+  blocked $'while read l; do :; done <<EOF\n$(cmd > out)\nEOF' "$wt/out"
+  blocked $'if true; then\n  cat <<EOF\n$(cmd > out)\nEOF\nfi' "$wt/out"
+  passes 'if true; then { cmd; } fi > .scratch/x' '{ { cmd; } } 2>&1 > .scratch/x' 'for f do :; done > .scratch/x' \
+    $'case a\nin\na)\n  cmd\n  ;;\nesac > .scratch/x' 'case a in a) :; esac > .scratch/x'
+}
+
+@test "a compound command bash refuses as a syntax error is refused unread" {
+  unread '{ cmd } > .scratch/x' 'a { } group that does not close'
+  unread '( cmd > .scratch/x' 'a ( ) subshell that does not close'
+  unread 'if a; then cmd > .scratch/x' 'an if command that does not close'
+  unread 'while a; do cmd > .scratch/x' 'a while loop that does not close'
+  unread 'until a; do cmd > .scratch/x' 'an until loop that does not close'
+  unread 'for f in a; do cmd > .scratch/x' 'a for loop that does not close'
+  unread 'case a in a) cmd > .scratch/x' 'a case command that does not close'
+  unread '[[ a > .scratch/x' 'a [[ ]] test that does not close'
+  unread '( ) > .scratch/x' 'a ) out of place'
+  unread 'if then cmd; fi > .scratch/x' 'a then out of place'
+  unread 'if a; then b; else c; elif d; then :; fi > .scratch/x' 'a elif out of place'
+  unread 'while false; do :; done done > .scratch/x' 'a done out of place'
+  unread '{ cmd; } x > .scratch/x' 'a word after a compound command'
+  unread '{ cmd; } >(cat) > .scratch/x' 'a word after a compound command'
+  unread 'x=1 { cmd; } > .scratch/x' 'a } out of place'
+  unread 'for f in a b; { cmd; } > .scratch/x' 'a { out of place'
+  unread 'for 1 in a; do :; done > .scratch/x' 'a for loop whose variable is not a name'
+  unread 'case a in a) cmd ;; > .scratch/x' 'a > out of place'
+  unread '{ cmd; } {fd}> .scratch/x' 'a {name} file descriptor'
+}
+
+@test "case is read inside a \$( ) as bash 5.2 and later read it" {
+  blocked 'echo "$(case a in a) cmd > out ;; esac)"' "$wt/out"
+  passes 'x=$(case a in (a) cmd ;; esac) > .scratch/x'
+  blocked 'echo "$(echo showcase ${x:-a} > out)"' "$wt/out"
+  TEAM_BASH_VERSION=5.1 unread 'x=$(case a in a) cmd ;; esac) > .scratch/x' 'a case command inside a substitution, on a bash older than 5.2'
+  TEAM_BASH_VERSION=5.1 passes 'case a in a) cmd ;; esac > .scratch/x'
+}
+
+@test "[[ ]] reads < and > as comparisons and the word after =~ as a regular expression" {
+  passes '[[ $a > b ]] && echo yes' '[[ $x =~ ^(a|b)$ ]] && cmd > .scratch/x' '[[ a =~ (a b) && c < d || ! e ]] > .scratch/x' \
+    '[[ a =~ (a;b|c&d<e) ]] > .scratch/x'
+  blocked '[[ $(cmd > out) ]]' "$wt/out"
+  blocked '[[ a =~ $(cmd > out) ]]' "$wt/out"
+  # A substitution's body is a command list, inside a regular expression too.
+  blocked '[[ a =~ $(cmd|tee x) ]]' "$wt/x"
+  blocked '[[ a =~ (b$(cmd|tee x)|c) ]]' "$wt/x"
+}
+
+@test "a (, ), |, &, ; or newline in a [[ ]] outside its regular expression is refused unread" {
+  unread '[[ (a) ]] > .scratch/x' 'a ( inside [[ ]]'
+  unread '[[ a =~ a) ]] > .scratch/x' 'a ) inside [[ ]]'
+  unread '[[ a | b ]] > .scratch/x' 'a | inside [[ ]]'
+  unread '[[ a & b ]] > .scratch/x' 'a & inside [[ ]]'
+  unread '[[ a ; b ]] > .scratch/x' 'a ; inside [[ ]]'
+  unread $'[[ a &&\n b ]] > .scratch/x' 'a newline inside [[ ]]'
+  unread $'[[ a =~ (a\nb) ]] > .scratch/x' 'a newline inside [[ ]]'
+  # Inside a regular expression's ( ), bash runs a process substitution.
+  unread '[[ a =~ (>(cmd > out)) ]]' 'a process substitution inside a [[ ]] regular expression'
+  unread '[[ a =~ (x <(cmd > out)) ]]' 'a process substitution inside a [[ ]] regular expression'
+}
+
+@test "a function definition's body is judged where it is defined" {
+  blocked 'f() { cmd > out; }' "$wt/out"
+  blocked 'f () ( cmd > out )' "$wt/out"
+  blocked $'f()\n{ cmd > out; }' "$wt/out"
+  blocked 'f() { :; } > out' "$wt/out"
+  blocked 'my-f() if true; then cmd > out; fi' "$wt/out"
+  passes 'f() { cmd > .scratch/x; }; f'
+  unread 'f() cmd > .scratch/x' 'a function body that is not a compound command'
+  unread '"f"() { :; }; cmd > .scratch/x' 'a function name other than a plain name'
+}
+
+@test "a function named cd, pushd, popd, tee, mktemp, basename or a wrapper is refused unread" {
+  local name
+  for name in cd pushd popd tee mktemp basename env sudo nohup timeout nice stdbuf command exec time builtin; do
+    unread "$name() { :; }; cmd > .scratch/x" "a function named $name"
+  done
+}
+
+@test "an array assignment's words are read as words" {
+  blocked 'a=(x "$(cmd > out)")' "$wt/out"
+  blocked $'a+=( # one\n  x\n  $(cmd > out)\n)' "$wt/out"
+  passes 'H=(-H "a b") ; cmd > .scratch/x' 'a=() b=(y) cmd > .scratch/x'
+  # Text after its ) makes it one word of literal text in bash, and a ( anywhere else is no array.
+  unread 'a=(x)y; cmd > .scratch/x' 'an array assignment with text after its )'
+  unread 'a=(x; cmd > .scratch/x' 'a ; out of place'
+  unread 'a=(x > .scratch/x' 'a > out of place'
+  unread 'declare a=(x); cmd > .scratch/x' 'a ( inside a command'
+  unread 'cmd > .scratch/x; a=(x y' 'an array assignment that does not close'
+}
+
+@test "\${ } with an operator is read to its first unescaped }" {
+  passes 'echo ${#x} ${x##*/} ${x#\#} > .scratch/x' 'echo ${x:->}' 'echo "$(echo ${x}) ${y:-(}" > .scratch/x' \
+    'echo ${x@Q} ${!x} ${a[@]} ${a[$i]:1:2} ${x/a/b} ${x^^} ${x,} ${x:-$y${z}$1} ${##} ${x:-a\}b} > .scratch/x'
+  # A ) or a # in an operand is text, as bash reads it.
+  blocked 'echo "$(echo ${x:-)} > out)"' "$wt/out"
+  blocked $'x=$(echo ${y:-a #}) ; echo "\n)" ; cmd > out' "$wt/out"
+}
+
+@test "a target holding a \${ } with an operator is unknown, named as written" {
+  unknown 'cmd > ${out:-x}' "\${out:-x} ($expansion)"
+  unknown 'cmd > "src${x//../.scratch/}/x"' "\"src\${x//../.scratch/}/x\" ($expansion)"
+}
+
+@test "a \${ } outside the grammar's forms is refused unread, naming its form" {
+  unread 'echo ${x:-"$(cmd > out)"}' 'a quote inside a ${ } operand'
+  unread 'echo "${x:-"`cmd > out`"}"' 'a quote inside a ${ } operand'
+  unread "echo \${x:-\$'a\\'b'} > out" 'a quote inside a ${ } operand'
+  unread "echo \"\${x:-'\"'}\" ; cmd > out ; echo \"}\"" 'a quote inside a ${ } operand'
+  unread "echo \"\${x:-'a'}\" > .scratch/x" 'a quote inside a ${ } operand'
+  unread 'echo ${x:-`cmd`} > .scratch/x' 'a backtick substitution'
+  unread 'echo ${x:-$(cmd)} > .scratch/x' 'an expansion inside a ${ } operand other than a variable'
+  unread 'echo ${x:-${y:-z}} > .scratch/x' 'an expansion inside a ${ } operand other than a variable'
+  unread $'echo ${x:-a\nb} > .scratch/x' 'a newline inside a ${ } operand'
+  unread $'echo ${x:-a\\\nb} > .scratch/x' 'a newline inside a ${ } operand'
+  unread 'echo ${x:-a > .scratch/x' 'a ${ } that does not close'
+  local form
+  for form in '${x;y}' '${}' '${ x}' '${x@Qa}' '${x*}'; do
+    unread "echo $form > .scratch/x" 'a ${ } this hook does not read'
+  done
+  # A prompt expansion runs the substitutions in the value.
+  unread 'echo ${x@P} > .scratch/x' 'the ${ } operator @P'
+}
+
+@test "arithmetic is read, and the substitutions in it judged" {
+  blocked 'echo $(( $(cmd > out) + 1 ))' "$wt/out"
+  blocked '(( $(cmd > out) ))' "$wt/out"
+  blocked 'echo "$(( $(cmd > out) ))"' "$wt/out"
+  blocked $'echo $(( 1 +\n  $(cmd > out) ))' "$wt/out"
+  passes '(( a > b )) && echo yes' 'echo $(( a > b ? 1 : 2 ))' '(( (a) > (b) ))' 'echo $(( (a) > (b) ))' \
+    'echo "$(( (a) > (b) ))"' 'echo $(( 2#101 << $1 | ${#x} & a[i] ^ ~b, c >= $x )) > .scratch/x'
+  unread 'echo $(( ${x:-$(cmd > out)} ))' 'an expansion inside a ${ } operand other than a variable'
+}
+
+@test "arithmetic that does not close with )), or holds a quote or a backtick, is refused unread" {
+  unread '((cmd) > out)' 'an arithmetic command that does not close with ))'
+  unread 'echo $((cmd) > out)' 'an arithmetic expansion that does not close with ))'
+  unread 'echo "$((cmd) > out)"' 'an arithmetic expansion that does not close with ))'
+  unread $'cat <<EOF\n$((cmd) > out)\nEOF' 'an arithmetic expansion that does not close with ))'
+  unread 'for ((i=0; i<2; i++); do :; done > out' 'a for (( )) loop that does not close with ))'
+  unread "((echo '))' ) > out)" 'a quote inside arithmetic'
+  unread "echo \$((echo '))' ) > out)" 'a quote inside arithmetic'
+  unread "echo \$(( '\$(cmd > out)' ))" 'a quote inside arithmetic'
+  unread 'echo $(( "1" + 2 )) > .scratch/x' 'a quote inside arithmetic'
+  unread "echo \${x:-\$(( '\$(cmd > out)' ))}" 'an expansion inside a ${ } operand other than a variable'
+  unread 'echo $(( `cmd > out` ))' 'a backtick substitution'
+  unread 'echo $(( a; b )) > .scratch/x' 'a ; inside arithmetic'
+  unread 'echo $(( a \ b )) > .scratch/x' 'a \ inside arithmetic'
+  unread 'echo $(( $((1)) )) > .scratch/x' 'an arithmetic expansion inside arithmetic'
+  unread 'echo $(( $ )) > .scratch/x' 'a $ inside arithmetic'
+  unread 'echo $(( a @ b )) > .scratch/x' 'a @ inside arithmetic'
+}
+
+@test "a substitution inside an unquoted here-document body's \${ } or \$(( )) is judged" {
+  unread $'x=$(cat <<EOF\n${y:-$(cmd > out)}\nEOF\n)' 'an expansion inside a ${ } operand other than a variable'
+  blocked $'cat <<EOF\n$(( $(cmd > out) ))\nEOF' "$wt/out"
+  passes $'cat > .scratch/x <<EOF\n${x:-a} ${#y} $(( 1 + 2 ))\nEOF'
 }
 
 @test "a form no rule reads is refused unread, so a command holding one passes nothing it holds" {
