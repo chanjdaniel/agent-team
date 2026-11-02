@@ -57,6 +57,11 @@
       "required": {"branch": "string", "old_head": "string", "head": "string"},
       "optional": {"project": "string"}
     },
+    "caught-up": {
+      "writer": "team-catch-up",
+      "about": "url is the PR's; from, the reviewed head the clean merge of the base was made onto; head, that merge, pushed as the PR's head; base, the base's commit it merged; all full shas",
+      "required": {"url": "string", "from": "string", "head": "string", "base": "string"}
+    },
     "done": {
       "writer": "team-log",
       "required": {"role": "string", "session": "string"},

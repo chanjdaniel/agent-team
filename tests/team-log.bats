@@ -156,6 +156,7 @@ worktree-returned team-close project worktree
 closed team-close archive returned kept
 merged team-merge pr merge head by
 history-rewritten team-clean-messages branch old_head head
+caught-up team-catch-up url from head base
 done team-log role session
 ticket-done team-log ticket commits
 question team-log,team-ask role text
