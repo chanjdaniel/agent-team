@@ -3,6 +3,7 @@
     "The ledger contract: every event kind in ledger.jsonl, the script that writes it (or the list of scripts that do), and its fields.",
     "Each field's type is string, number, array (a list), numbers (a list of whole numbers, 0 or more), object or id (a Discord id: a string of digits, which --check also takes as a whole number, the form team-log wrote before), or a list of the strings it may be.",
     "Every line has ts (UTC, like 2026-10-22T01:00:00Z), task (T<n>) and event; note (a string) is allowed on every kind, and other fields are allowed.",
+    "A kind's field_writers names the one script that may append a line holding each field it lists, among the kind's writers; the others append the kind without it.",
     "Lines from strict_from on must meet their kind's fields; earlier lines are legacy and only need ts, task and event.",
     "Legacy lines keep shapes no kind has now: closes by hand with no lists, and plan-ready, which is not a kind, since a planner's report is done and a plan put to Daniel is asked.",
     "Read by ledger_append in bin/lib/team.sh (through bin/lib/ledger.jq) and printed by team-log --help."
@@ -72,15 +73,21 @@
     },
     "asked": {
       "writer": ["team-log", "team-ask"],
-      "about": "a decision put to Daniel; discord_message: the question's first message in the task's thread, which team-inbox links",
+      "about": "a decision put to Daniel; discord_message: the question's first message in the task's thread, which team-inbox links; script and sha256: a script Daniel is asked to OK and its sha256sum, which the question names, logged together by team-ask --script, their one writer, which team-run-approved runs once the ask is answered and only while the file hashes the same",
       "required": {"id": "string", "text": "string"},
-      "optional": {"discord_message": "id"}
+      "optional": {"discord_message": "id", "script": "string", "sha256": "string"},
+      "field_writers": {"script": "team-ask", "sha256": "team-ask"}
     },
     "answered": {
       "writer": ["team-log", "team-answer"],
       "about": "Daniel's answer to the asked of its id; discord_message: the message it was read from, never logged twice for one ask",
       "required": {"id": "string", "answer": "string"},
       "optional": {"discord_message": "id"}
+    },
+    "ran": {
+      "writer": "team-run-approved",
+      "about": "an approved script run once its ask was answered: id the asked naming it, exit its exit code; its output is in the machine's ${XDG_STATE_HOME:-~/.local/state}/agent-team/runs/T<n>/<id>.log, never in the records",
+      "required": {"id": "string", "exit": "number"}
     },
     "plan-approved": {
       "writer": "team-log",
@@ -99,8 +106,8 @@
       "optional": {"since": "string"}
     },
     "denied": {
-      "writer": "team-log",
-      "about": "a denial the worker went past (a permission rule, a hook, auto mode): what was denied and why; it parks nothing and clears nothing, and team-time and team-retro count it as a denial; a denial that stops the work is a blocked",
+      "writer": ["team-log", "denial-log"],
+      "about": "a denial the worker went past (a permission rule, a hook, auto mode): what was denied and why; it parks nothing and clears nothing, and team-time and team-retro count it as a denial; a denial that stops the work is a blocked; denial-log, every worker's PermissionDenied hook, logs each denial auto mode makes, what the tool's name and why the rule's bracketed label or no verdict, never the tool's input",
       "required": {"role": "string", "what": "string", "why": "string"},
       "optional": {"session": "string"}
     },

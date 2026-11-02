@@ -20,8 +20,10 @@
 # one of the task's pr events (a trailing slash aside), or with no head, or a head neither a pr
 # event of that url nor a review of the task since its first pr event logged (heads compare by
 # the shorter one's prefix, at least 7 characters), or whose discord_message, a Discord id, was
-# sent before the first of those events that logged the head; so is an answered whose id and
-# discord_message an earlier answered of the task logged (team-answer reads it from Discord). A
+# sent before the first of those events that logged the head; so is an asked with a script or a
+# sha256, which only team-ask --script logs, with the question that names both; so is an
+# answered whose id and discord_message an earlier answered of the task logged (team-answer
+# reads it from Discord). A
 # merge-preapproved is refused when its project is not one of the task's opened or worktree-added
 # events, is the team's own (own_project, whatever the registry says), or does not opt in now
 # (team-project's merge_with_plan); when its ask names no asked of the task; when its
@@ -316,6 +318,12 @@ if [[ $event == answered && -n ${seen[id]:-} && -n ${seen[discord_message]:-} ]]
   task_events "$task" | ledger_jq '[inputs] | answered_from($id; $message)' -ne \
     --arg id "${seen[id]}" --arg message "${seen[discord_message]}" >/dev/null; then
   die "$task already logged answered id=${seen[id]} from Discord message ${seen[discord_message]}"
+fi
+
+# An ask that names a script binds Daniel's OK to its bytes (team-run-approved), which only a
+# question that names its path and hash does: team-ask --script is the one writer of both.
+if [[ $event == asked && ( -v seen[script] || -v seen[sha256] ) ]]; then
+  die "an asked logs no script or sha256: team-ask $task ${seen[id]:-<id>} --file <question> --script <path> asks Daniel about a script, naming its path and hash in the question"
 fi
 
 # A park logged after the fact says when it began: a UTC time between the task's latest event and now.

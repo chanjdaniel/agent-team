@@ -19,7 +19,7 @@ The team itself (coordinator and workers) runs here only after stage 9, because 
   Leave alone every secret file, credentials file, `~/.claude.json` and `~/.claude/channels/`: never read, print, copy or hash them, and never run `op`.
 - The lease is Daniel's: run `team-resume` only when Daniel says the team should run here (stage 9); a steal is Daniel's alone, typed in their own terminal.
 - Anything needing `sudo` or an admin password is Daniel's, in their own terminal; the bootstrap stops with the exact command.
-- Three settings are Daniel's call even where you could write them: the code checkout's and the team home's `core.hooksPath` (every team session is denied setting it), `autoMode.environment` (what auto mode's classifier believes about this machine), and a `team-config apply` that replaces a file or skill changed on this machine.
+- Three settings are Daniel's call even where you could write them: the code checkout's and the team home's `core.hooksPath` (every team session is denied setting it), `autoMode.environment` (what auto mode's classifier believes about this machine, which every worker reads before the team's own lines, `settings/worker.json`'s `autoMode`), and a `team-config apply` that replaces a file or skill changed on this machine.
 - Every stage is idempotent and skips what the doctor already passes, so re-running is the answer to any interruption.
 - GitHub unreachable: stop and say so; carry on from the same stage once it answers.
 - The same step failing twice: stop and give Daniel the failing doctor lines (they never hold a secret) and the last lines of `~/.local/state/agent-team/bootstrap.log`.

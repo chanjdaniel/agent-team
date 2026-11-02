@@ -309,6 +309,87 @@ run_fake() {
       Stop: [{hooks: [{type: "command", command: "s"}]}]}}')"
 }
 
+@test "role autoMode lists are concatenated on the worker settings' own, \"\$defaults\" kept once where it first stands" {
+  fake_checkout
+  jq '.autoMode = {environment: ["$defaults", "shared fact"], soft_deny: ["$defaults"]}' "$code/settings/worker.json" >"$code/w.json"
+  mv "$code/w.json" "$code/settings/worker.json"
+  jq '.autoMode = {environment: ["$defaults", "planner fact at @TEAM_CODE@"], allow: ["$defaults", "planner allow"]}' \
+    "$code/settings/planner.json" >"$code/p.json"
+  mv "$code/p.json" "$code/settings/planner.json"
+  thread T7
+  run_fake T7 planner "$wt1" -- go
+  assert_equal "$status" 0
+  assert_equal "$(jq -cS .autoMode "$TEAM_HOME/tasks/T7/settings.planner.json")" "$(jq -cnS --arg code "$code" '{
+    environment: ["$defaults", "shared fact", "planner fact at \($code)"],
+    soft_deny: ["$defaults"], allow: ["$defaults", "planner allow"]}')"
+
+  # With no autoMode in either file, the settings have none.
+  fake_checkout
+  run_fake T7 planner "$wt1" -- go
+  assert_equal "$(jq -c 'has("autoMode")' "$TEAM_HOME/tasks/T7/settings.planner.json")" false
+}
+
+@test "every role's generated settings hold the worker settings' autoMode lines, \"\$defaults\" once per list" {
+  thread T7
+  ops_stub
+  local role settings
+  for role in planner builder reviewer ops; do
+    if [[ $role == ops ]]; then
+      run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$request" -- go
+    else
+      run_bin -0 team-worker T7 "$role" "$wt1" -- go
+    fi
+    settings=$TEAM_HOME/tasks/T7/settings.$role.json
+    # Each line as the worker settings have it, a line with a registry fact rendered.
+    assert_equal "$(jq -c --slurpfile w "$REPO_ROOT/settings/worker.json" '
+      [.autoMode.environment, $w[0].autoMode.environment] | transpose
+      | all(.[]; (.[1] | test("@PROJECT_[A-Z]+@")) or .[0] == .[1])' "$settings")" true
+    assert_equal "$(jq -c '[.autoMode[] | map(select(. == "$defaults")) | length] | unique' "$settings")" '[1]'
+    assert_equal "$(jq -c '[.autoMode.environment[] | select(test("@[A-Z_]+@"))]' "$settings")" '[]'
+    assert_equal "$(jq '.autoMode.environment | length' "$settings")" \
+      "$(jq '.autoMode.environment | length' "$REPO_ROOT/settings/worker.json")"
+  done
+}
+
+@test "the autoMode lines state the registry's projects: repositories, visibility and base branches" {
+  registry --first 'visibility = "private"' proj other
+  cat >>"$TEAM_HOME/projects.toml" <<'TOML'
+[third]
+repo = "someone/Third"
+path = "elsewhere/third"
+base = "dev"
+delivery = "direct-pr"
+merge_method = "merge"
+required_checks = []
+task_dir = ".scratch/task"
+docs = []
+toolkits = []
+pool = { provider = "git", slots = ["slots/third/1"] }
+TOML
+  thread T7
+  run_bin -0 team-worker T7 builder "$wt1" -- go
+  local settings=$TEAM_HOME/tasks/T7/settings.builder.json
+  assert_equal "$(jq -r '.autoMode.environment[] | select(startswith("**Source control**"))' "$settings")" \
+    "**Source control**: the team's repositories are on GitHub: its team home, chanjdaniel/agent-team-records (~/agent-team-records: the ledger, plans, briefs and memory), and the projects it works on, owner/proj (primary checkout ~/projects/proj), owner/other (primary checkout ~/projects/other) and someone/Third (primary checkout ~/elsewhere/third). agent-team is the team's own code, and no-mistakes is Daniel's fork of the gate, whose pull requests from the team go to the fork itself, never upstream."
+  assert_equal "$(jq -r '.autoMode.environment[] | select(startswith("**Repository visibility**"))' "$settings")" \
+    "**Repository visibility**: other and Third are public, so whatever reaches them is published; proj is private; agent-team-records, the team home, is private."
+  assert_equal "$(jq -r '.autoMode.environment[] | select(startswith("**Default / protected branches**")) | split(";")[0]' "$settings")" \
+    "**Default / protected branches**: the base branch is main for proj and other, and dev for Third"
+  # Each repository's own origin, its owner from the registry, another owner's too.
+  assert_equal "$(jq -r '.autoMode.environment[] | select(startswith("**Trusted repo**"))' "$settings")" \
+    "**Trusted repo**: a worker's working directory is a linked git worktree of one of those repositories, on its task's branch, with origin at that repository on GitHub: github.com/owner/proj, github.com/owner/other or github.com/someone/Third; the task's work leaves it as pushes of that branch and one pull request to the project's base branch."
+
+  # One project: one public repository, one base branch.
+  registry proj
+  run_bin -0 team-worker T7 builder "$wt1" -- go
+  assert_equal "$(jq -r '.autoMode.environment[] | select(startswith("**Repository visibility**"))' "$settings")" \
+    "**Repository visibility**: proj is public, so whatever reaches it is published; agent-team-records, the team home, is private."
+  assert_equal "$(jq -r '.autoMode.environment[] | select(startswith("**Default / protected branches**")) | split(";")[0]' "$settings")" \
+    "**Default / protected branches**: the base branch is main for proj"
+  assert_equal "$(jq -r '.autoMode.environment[] | select(startswith("**Trusted repo**")) | split(";")[0]' "$settings")" \
+    "**Trusted repo**: a worker's working directory is a linked git worktree of one of those repositories, on its task's branch, with origin at that repository on GitHub: github.com/owner/proj"
+}
+
 @test "every role's settings run the fence hook on Bash; the planner's and reviewer's add the edit hook" {
   thread T7
   local role settings
@@ -652,7 +733,7 @@ role_texts() {
   done
 }
 
-@test "every role's settings name its role in AGENT_TEAM_ROLE and print the gh-axi banner at session start" {
+@test "every role's settings name its role in AGENT_TEAM_ROLE, print the gh-axi banner at session start and log each denial" {
   thread T7
   ops_stub
   local role settings
@@ -666,8 +747,10 @@ role_texts() {
     assert_equal "$(jq -r .env.AGENT_TEAM_ROLE "$settings")" "$role"
     assert_equal "$(jq -c '[.hooks.SessionStart[].hooks[] | [.command, .timeout]]' "$settings")" \
       "$(jq -cn --arg code "$REPO_ROOT" '[["\"\($code)/bin/hooks/axi-banner\" gh-axi", 10]]')"
+    assert_equal "$(jq -c '[.hooks.PermissionDenied[] | [.matcher, (.hooks[] | .command, .timeout)]]' "$settings")" \
+      "$(jq -cn --arg code "$REPO_ROOT" '[[null, "\($code)/bin/hooks/denial-log", 10]]')"
   done
-  [[ -x $REPO_ROOT/bin/hooks/axi-banner ]]
+  [[ -x $REPO_ROOT/bin/hooks/axi-banner && -x $REPO_ROOT/bin/hooks/denial-log ]]
 }
 
 @test "a launched worker's chrome-devtools-axi session is named for its task and role" {
@@ -814,6 +897,26 @@ allowed_in() {
     [[ $2 == $rule ]] && return 0
   done < <(jq -r '.permissions.allow[]? | select(startswith("Bash(")) | .[5:-1]' "$1")
   return 1
+}
+
+@test "no worker runs an approved script: team-run-approved is the coordinator's, by name or by path" {
+  thread T7
+  local role settings command bin=$REPO_ROOT/bin
+  for role in planner builder reviewer; do
+    run_bin -0 team-worker T7 "$role" "$wt1" -- go
+    settings=$TEAM_HOME/tasks/T7/settings.$role.json
+    # shellcheck disable=SC2088 # ~ is part of the command as an agent types it
+    for command in "$bin/team-run-approved T7 fix" "team-run-approved T7 fix" \
+      "~/agent-team/bin/team-run-approved T7 fix" "cd /tmp && TZ=UTC $bin/team-run-approved T7 fix"; do
+      denied_in "$settings" "$command" || { echo "$role allows: $command" >&2; return 1; }
+    done
+    for command in "git add bin/team-run-approved tests/team-run-approved.bats" "grep -n die bin/team-run-approved" \
+      "tests/vendor/bats-core/bin/bats tests/team-run-approved.bats" "shellcheck bin/team-run-approved"; do
+      if denied_in "$settings" "$command"; then echo "$role denies: $command" >&2; return 1; fi
+    done
+  done
+  # The coordinator's own settings deny it nothing.
+  assert_equal "$(jq -c '[.permissions.deny[]? | select(contains("team-run-approved"))]' "$REPO_ROOT/coordinator.settings.json")" '[]'
 }
 
 @test "no worker gains Discord: a planner runs only its own task's interview post and wait, and no role reads the bot's files" {

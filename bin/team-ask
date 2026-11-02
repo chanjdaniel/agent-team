@@ -3,7 +3,7 @@
 # in #coordinator that links there, both through team-post (so a fenced machine posts nothing),
 # then log the ask in the ledger. team-answer takes their answer back.
 #
-# Usage: team-ask T<n> <id> --file <question> [--from <role>]
+# Usage: team-ask T<n> <id> --file <question> [--from <role>] [--script <path>]
 # <id> names the ask (letters, digits, dot, dash and underscore), as team-answer names it again.
 # The question is the file's text, its leading and trailing blank lines and spaces dropped. The
 # ping mentions each of Daniel's ids, the top-level allowFrom of the Discord plugin's
@@ -13,6 +13,14 @@
 # it; asked id=<id> text=<the question's first line> discord_message=<the question's first
 # message>; waiting on=Daniel reason="ask <id>". Then team-inbox lists the ask in the Waiting on
 # you message; when that fails, a line on stderr says so, and the ask stands.
+# --script asks Daniel to OK running a script, which team-run-approved T<n> <id> then runs only
+# while the file hashes the same: before anything is posted it hashes the file (a regular file,
+# its path made absolute, its links resolved), ends the question with the lines "Script: <path>"
+# and "sha256: <its sha256sum>", so Daniel's OK names those bytes, and the asked carries script=
+# and sha256= too, which no other script logs. A script team-run-approved would never run, one
+# outside the task's open worktrees and its tasks/T<n>/ once its links are resolved, is refused
+# before anything is posted, as team-run-approved refuses it (script_place_refusal in
+# bin/lib/team.sh).
 # A post that fails logs nothing: when the ping fails, the question stays posted, its id said.
 # A worker session may not run it (worker_refusal in bin/lib/team.sh): its questions go to the
 # coordinator.
@@ -24,13 +32,14 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
 # The most characters of the question's first line the ping carries.
 PING_LINE=200
-USAGE="usage: team-ask T<n> <id> --file <question> [--from <role>]"
+USAGE="usage: team-ask T<n> <id> --file <question> [--from <role>] [--script <path>]"
 
-task='' id='' file='' role=''
+task='' id='' file='' role='' script=''
 while (($#)); do
   case $1 in
     --file) (($# > 1)) || usage_error "$USAGE"; file=$2; shift ;;
     --from) (($# > 1)) || usage_error "$USAGE"; role=$2; [[ $role =~ ^[a-z]+$ ]] || usage_error "$USAGE"; shift ;;
+    --script) (($# > 1)) && [[ -n $2 ]] || usage_error "$USAGE"; script=$2; shift ;;
     -*) usage_error "$USAGE" ;;
     *)
       if [[ -z $task ]]; then task=$1
@@ -49,6 +58,15 @@ thread=$(jq -r 'map(select(.event == "thread") | .discord_thread | strings) | la
 [[ -f $file && -r $file ]] || die "no file to ask: $file"
 question=$(jq -nr --rawfile text "$file" '$text | sub("^\\s+"; "") | sub("\\s+\\z"; "")')
 [[ -n $question ]] || die "nothing to ask: $file is blank"
+# The script, hashed before anything is posted, its path and hash the question's last lines.
+sha256=''
+if [[ -n $script ]]; then
+  [[ -f $script && -r $script ]] || die "no script to ask about: $script"
+  why=$(script_place_refusal "$task" "$script" "team-run-approved would never run it") && die "$why"
+  script=$(realpath -e -- "$script")
+  sha256=$(sha256sum -- "$script" | cut -d' ' -f1)
+  question=$(printf '%s\n\nScript: %s\nsha256: %s' "$question" "$script" "$sha256")
+fi
 line=$(jq -nr --arg q "$question" '$q | split("\n")[0] | sub("\\s+\\z"; "")')
 # Daniel's ids, each a Discord snowflake, so the ping holds nothing but mentions of them.
 mentions=$(jq -r '.allowFrom | arrays | map(tostring | select(test("^[0-9]+$")) | "<@\(.)>") | join(" ")' \
@@ -60,10 +78,11 @@ mentions=$(jq -r '.allowFrom | arrays | map(tostring | select(test("^[0-9]+$")) 
 # never left unlogged by a refused event.
 now=$(date -u +%FT%TZ)
 mapfile -t lines < <(jq -nc --arg ts "$now" --arg task "$task" --arg id "$id" --arg role "$role" \
-  --arg question "$question" --arg line "$line" '
+  --arg question "$question" --arg line "$line" --arg script "$script" --arg sha256 "$sha256" '
   {ts: $ts, task: $task} as $e
   | (if $role != "" then $e + {event: "question", role: $role, text: $question} else empty end),
-    $e + {event: "asked", id: $id, text: $line},
+    $e + {event: "asked", id: $id, text: $line}
+      + (if $script != "" then {script: $script, sha256: $sha256} else {} end),
     $e + {event: "waiting", on: "Daniel", reason: "ask \($id)"}')
 for event in "${lines[@]}"; do
   problems=$(ledger_jq '[append_problems($contract; "team-ask")] | join("; ")' -r <<<"$event")

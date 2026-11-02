@@ -10,7 +10,7 @@
 # TEAM_HOME (unless already set, the first line of ~/.config/agent-team/home under
 # HOME) and TEAM_HOME_FROM, answers --help with the calling script's header (then runs
 # the script's help_more, if it defined one before sourcing), and provides die, usage_error, team_project, ledger_jq, ledger_append,
-# task_events, known_task_events, open_task_events, task_status, task_worktrees, local_path,
+# task_events, known_task_events, open_task_events, task_status, task_worktrees, script_place_refusal, local_path,
 # archive_left_out, rsync_rule, archive_task_dir, machine_name, os_release, team_os, tool_dirs,
 # team_tool_path, fence_reason, offline_hold, lease_refusal, worker_refusal, lease_gate, worktree_changes, same_path, bounded, docker_bounded, docker_silence, trust_probe,
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin,
@@ -95,15 +95,17 @@ ledger_jq() {
 
 # Append one JSON object as one line to the ledger, under an exclusive lock beside it, so two
 # scripts never interleave a line. The event must meet the ledger contract, and the calling
-# script must be its kind's writer.
+# script must be its kind's writer. With <seconds>, the lock is waited on at most that long, and
+# a lock still held then is a refusal: ledger_append <event> [<seconds>]
 ledger_append() {
-  local line problems
+  local line problems lock_wait=()
   line=$(jq -ce 'select(type == "object")' <<<"$1") || die "not a JSON object for the ledger: $1"
   [[ $line != *$'\n'* ]] || die "not one JSON object for the ledger: $1"
   problems=$(ledger_jq '[append_problems($contract; $writer)] | join("; ")' -r --arg writer "${0##*/}" <<<"$line")
   [[ -z $problems ]] || die "refusing a ledger event: $problems"
+  [[ -z ${2:-} ]] || lock_wait=(-w "$2")
   {
-    flock -x 9
+    flock -x "${lock_wait[@]}" 9 || die "could not take the ledger's lock${2:+ within ${2}s}"
     printf '%s\n' "$line" >>"$TEAM_HOME/ledger.jsonl"
   } 9>>"$TEAM_HOME/ledger.jsonl.lock"
 }
@@ -189,6 +191,25 @@ machine_level() {
 task_worktrees() {
   [[ ! -e $TEAM_HOME/ledger.jsonl ]] ||
     ledger_jq 'open_worktrees(inputs | select(.task == $task); $home)' -nc --arg task "$1" "$TEAM_HOME/ledger.jsonl"
+}
+
+# Why team-run-approved would never run the script at <path>, a file, for <task>, or fail when it
+# would: its symbolic links resolved, it lies under none of the task's open worktrees or the team
+# home's tasks/<task>/ (each resolved too), so the reason names <path> as given, ends "so <so>"
+# and lists those places. team-ask --script refuses with it before asking, and team-run-approved
+# before running: script_place_refusal <task> <path> <so>
+script_place_refusal() {
+  local task=$1 path=$2 so=$3 real worktree place
+  local -a places=()
+  real=$(realpath -e -- "$path")
+  while IFS= read -r worktree; do
+    [[ -z $worktree || ! -d $worktree ]] || places+=("$(realpath -e -- "$worktree")")
+  done < <(task_worktrees "$task" | jq -r '.worktree')
+  places+=("$(realpath -m -- "$TEAM_HOME/tasks/$task")")
+  for place in "${places[@]}"; do
+    [[ $real != "$place"/* ]] || return 1
+  done
+  echo "$path is not under $task's worktrees or its task directory, so $so: $(printf '%s, ' "${places[@]}" | sed 's/, $//')"
 }
 
 # A recorded path as the same path on this machine: one under /home/<name> or /Users/<name> is
