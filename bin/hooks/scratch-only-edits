@@ -139,16 +139,19 @@
 # following of variables (below), which may have set it. eval (but the team-stack form below),
 # source, ., trap, and mapfile or readarray with -C make it unknown from there to the command's end,
 # outside a ( ) or a substitution they are in, since a trap they set, a function they define or the
-# code they run may move it at any later point. A command word of text and variables alone must,
-# where it runs, have every value hold a / and name neither tee nor a wrapper, or the command is
-# refused unread; bash then runs the file it names, never a builtin or a function, so it neither
-# moves the shell nor ends the following (below). A loop that holds a command that may move the
-# shell, outside a ( ) or a substitution in it, makes the directory unknown from its start, as its
-# body may run again. A function's body is judged where it is defined, with the directory unknown
-# when the command holds a command that may move the shell anywhere; one whose body holds such a
-# command, outside a ( ) or a substitution, makes the directory unknown from the definition on,
-# since a call may come anywhere after it. $PWD stands for each directory the shell may be in, and
-# $OLDPWD is unknown. When the shell may be in more than 16 directories, the directory is unknown.
+# code they run may move it at any later point. A command word of text and variables alone is named
+# by its values where it runs: each must be a single word with no blank, glob, brace, quote or
+# backslash, whose last part is no tee, wrapper or shell (bash, sh, dash, zsh, ksh, mksh, busybox),
+# and either hold a /, which bash runs as that file, or be a bare name that is no builtin or
+# reserved word of bash's and no function the command defines; any other value, or one the walk
+# cannot work out, refuses the command unread. Such a program neither moves the shell nor ends the
+# following (below). A loop that holds a command that may move the shell, outside a ( ) or a
+# substitution in it, makes the directory unknown from its start, as its body may run again. A
+# function's body is judged where it is defined, with the directory unknown when the command holds a
+# command that may move the shell anywhere; one whose body holds such a command, outside a ( ) or a
+# substitution, makes the directory unknown from the definition on, since a call may come anywhere
+# after it. $PWD stands for each directory the shell may be in, and $OLDPWD is unknown. When the
+# shell may be in more than 16 directories, the directory is unknown.
 #
 # Following variables: the walk starts with HOME, TMPDIR and CLAUDE_JOB_DIR as the hook's own
 # environment sets them (one it does not set is unknown), and follows each variable the command
