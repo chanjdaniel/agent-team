@@ -157,6 +157,8 @@ run_fake() {
   done
   run_bin -2 team-worker T0 planner "$wt1" --toolkit browser --toolkit frontend -- go
   assert_contains "$output" "toolkit 'frontend' is Daniel's own"
+  run_bin -2 team-load-check --toolkit frontend
+  assert_contains "$output" "toolkit 'frontend' is Daniel's own"
   assert_equal "$(stub_calls claude)" ""
   assert_equal "$(launches)" ""
 }

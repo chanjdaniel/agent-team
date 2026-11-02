@@ -57,12 +57,13 @@
 # with AGENT_TEAM_TASK, the task, what worker_refusal in bin/lib/team.sh reads).
 #
 # The coordinator toolkit is claude-coordinator's alone, never a worker's, and the frontend toolkit
-# Daniel's own sessions', since it attaches to their one Agent Chrome window.
-# Production toolkits (prod-*) are for the ops role only, which needs prod-read (prod-write comes
-# only beside it) and --request, and is refused while any T<n>-ops session is listed by claude
-# agents (one at a time; end it with team-ops-end). An ops session runs with --restricted and only
-# the built-in tools Read, Glob, Grep, Edit, Write, ToolSearch, SendMessage, ListAgents and Skill
-# (for its toolkits' skills): no shell, no web.
+# Daniel's own sessions', since it attaches to their one Agent Chrome window, so either is a
+# malformed command line (exit 2). Production toolkits (prod-*) are for the ops role only (exit 1).
+# toolkit_refusal in bin/lib/team.sh holds that list, which team-load-check reads too. The ops role
+# needs prod-read (prod-write comes only beside it) and --request, and is refused while any T<n>-ops
+# session is listed by claude agents (one at a time; end it with team-ops-end). An ops session runs
+# with --restricted and only the built-in tools Read, Glob, Grep, Edit, Write, ToolSearch,
+# SendMessage, ListAgents and Skill (for its toolkits' skills): no shell, no web.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
@@ -81,8 +82,7 @@ while [[ $# -gt 0 && $1 != -- ]]; do
     --toolkit)
       [[ $# -ge 2 ]] || usage_error "--toolkit needs a name"
       [[ -d $code/toolkits/$2 ]] || usage_error "unknown toolkit '$2'"
-      [[ $2 != coordinator ]] || usage_error "toolkit 'coordinator' is the coordinator's own (claude-coordinator loads it)"
-      [[ $2 != frontend ]] || usage_error "toolkit 'frontend' is Daniel's own (claude --plugin-dir in their session): it attaches to their one Agent Chrome window, never a worker's"
+      ! why=$(toolkit_refusal "$2" '') || usage_error "$why"
       toolkits+=("$2")
       shift 2
       ;;
@@ -109,7 +109,7 @@ prompt="$*"
 
 # Production reaches only the ops role, and only on Daniel's recorded request.
 for kit in "${toolkits[@]}"; do
-  [[ $kit != prod-* || $role == ops ]] || die "toolkit '$kit' is for the ops role only"
+  ! why=$(toolkit_refusal "$kit" "$role") || die "$why"
 done
 if [[ $role == ops ]]; then
   # A write session reads through the read user, never the write user.

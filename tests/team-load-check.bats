@@ -529,6 +529,47 @@ write_line() {
   assert_equal "$(stub_calls claude)" ""
 }
 
+@test "a toolkit team-worker refuses the form's roles is refused with its message while the arguments are read, before the doctor or a lease" {
+  lease_setup
+  printf '%s\n' '#!/usr/bin/env bash' 'touch "$BATS_TEST_TMPDIR/doctor-ran"; exit 1' >"$TEAM_DOCTOR"
+  stub_script treehouse <<'SH'
+touch "$BATS_TEST_TMPDIR/treehouse-ran"
+exit 1
+SH
+  # want <status> <role> <toolkit>: team-worker's refusal of the toolkit for the role, read from
+  # team-worker itself, which refuses it before it looks at the worktree.
+  want() {
+    run_bin "-$1" team-worker T0 "$2" "$HOME" --toolkit "$3" -- go
+    want=team-load-check:${output#team-worker:}
+  }
+  want 2 planner frontend
+  run_bin -2 team-load-check --toolkit frontend
+  assert_equal "$output" "$want"
+  assert_contains "$output" "toolkit 'frontend' is Daniel's own"
+  want 2 planner coordinator
+  run_bin -2 team-load-check --toolkit browser --toolkit coordinator
+  assert_equal "$output" "$want"
+  assert_contains "$output" "toolkit 'coordinator' is the coordinator's own"
+  want 1 builder prod-read
+  run_bin -2 team-load-check --context --toolkit prod-read
+  assert_equal "$output" "$want"
+  assert_contains "$output" "toolkit 'prod-read' is for the ops role only"
+  want 1 reviewer prod-write
+  run_bin -2 team-load-check --context --role reviewer --toolkit prod-write
+  assert_equal "$output" "$want"
+  want 1 planner prod-read
+  run_bin -2 team-load-check --toolkit prod-read
+  assert_equal "$output" "$want"
+  # The ops form refuses what no worker loads before it judges its toolkit set.
+  want 2 ops frontend
+  run_bin -2 team-load-check --role ops --worktree "$HOME" --toolkit prod-read --toolkit frontend
+  assert_equal "$output" "$want"
+
+  [[ ! -e $BATS_TEST_TMPDIR/doctor-ran && ! -e $BATS_TEST_TMPDIR/treehouse-ran ]]
+  assert_equal "$(stub_calls th-lease.sh)" ""
+  assert_equal "$(stub_calls claude)" ""
+}
+
 # The context form. The claude stub plays one session per role, its id from the role
 # (1a1a1a1a planner, 2b2b2b2b builder, 3c3c3c3c reviewer): claude --bg notes in
 # $BATS_TEST_TMPDIR/launch-<role> where it started and with what prompt, and writes its transcript

@@ -78,7 +78,7 @@
     },
     "answered": {
       "writer": ["team-log", "team-answer"],
-      "about": "Daniel's answer to the asked of its id; discord_message: the message it was read from, never logged twice for one ask",
+      "about": "Daniel's answer to the asked of its id; discord_message: the message team-answer read it from, never logged twice for one ask",
       "required": {"id": "string", "answer": "string"},
       "optional": {"discord_message": "id"}
     },

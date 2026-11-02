@@ -8,6 +8,9 @@
 # Usage: team-load-check [--toolkit <name>]...
 #        team-load-check --context [--role planner|builder|reviewer] [--toolkit <name>]...
 #        team-load-check --role ops --worktree <path> --toolkit prod-read [--toolkit prod-write]
+# A toolkit team-worker refuses one of the form's roles (toolkit_refusal in bin/lib/team.sh: the
+# coordinator and frontend toolkits, and prod-* outside the ops form) is refused at once, with
+# team-worker's message, as a malformed command line (exit 2), before the doctor runs.
 #
 # The planner form first rehearses a lease of each project whose pool is treehouse: the project's
 # lease command leases a slot from the primary checkout to a holder of this run's own,
@@ -48,13 +51,13 @@
 #   builder     51004       5               4            2
 # context is the first reply's input plus cache write plus cache read tokens, from the session's
 # transcript; the counts are of what the session listed before that reply (its skill listing, its
-# deferred tools, and the MCP servers those tools come from). Only numbers leave the transcript.
-# A role with no reply is a FAIL line instead of a row, and a role that listed no tool of an MCP
-# server a given toolkit declares, before that reply, a FAIL line naming the toolkit and server
-# as well as its row. Every session is stopped and removed, and
-# the worktree with them, on every path. Run from a checkout, it measures that checkout's roles,
-# settings and toolkits, so a run on dev and one on a PR's head give a change's before and after.
-# The coordinator runs it: workers may not start sessions.
+# deferred tools, and the MCP servers those tools come from). Only numbers leave the transcript. A
+# role with no reply is a FAIL line instead of a row, and a role that listed no tool of an MCP
+# server a given toolkit declares, before that reply, a FAIL line naming the toolkit and server as
+# well as its row. Every session is stopped and removed, and the worktree with them, on every path.
+# Run from a checkout, it measures that checkout's roles, settings and toolkits, so a run on dev and
+# one on a PR's head give a change's before and after. The coordinator runs it: workers may not
+# start sessions.
 #
 # The ops form reads production, so Daniel must be at the PC to approve its 1Password prompts (one
 # per toolkit) and, with prod-write, to decline its five write prompts on the phone.
@@ -107,19 +110,26 @@ if [[ -n $context ]]; then
     ops) usage_error "--context measures the roles the load check may start: planner, builder, reviewer; ops needs Daniel" ;;
     *) usage_error "unknown role '$role'; --context knows planner, builder, reviewer" ;;
   esac
+  roles=("${context_roles[@]}")
 else
   role=${role:-planner}
   case $role in
     planner) [[ -z $worktree ]] || usage_error "--worktree is for --role ops only" ;;
-    ops)
-      [[ -n $worktree ]] || usage_error "--role ops needs --worktree <a trusted linked worktree>"
-      case $(printf '%s\n' "${expected[@]}" | sort | paste -sd ' ') in
-        prod-read) ;;
-        'prod-read prod-write') writes=1 ;;
-        *) usage_error "--role ops checks --toolkit prod-read, alone or with --toolkit prod-write" ;;
-      esac
-      ;;
+    ops) [[ -n $worktree ]] || usage_error "--role ops needs --worktree <a trusted linked worktree>" ;;
     *) usage_error "unknown role '$role'; known: planner, ops (and builder, reviewer with --context)" ;;
+  esac
+  roles=("$role")
+fi
+# A toolkit team-worker would refuse a launched role is refused now, with its message, before the
+# doctor and the lease rehearsal take minutes to reach that launch.
+for kit in "${expected[@]}"; do
+  for r in "${roles[@]}"; do ! why=$(toolkit_refusal "$kit" "$r") || usage_error "$why"; done
+done
+if [[ $role == ops && -z $context ]]; then
+  case $(printf '%s\n' "${expected[@]}" | sort | paste -sd ' ') in
+    prod-read) ;;
+    'prod-read prod-write') writes=1 ;;
+    *) usage_error "--role ops checks --toolkit prod-read, alone or with --toolkit prod-write" ;;
   esac
 fi
 
