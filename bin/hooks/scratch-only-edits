@@ -1642,13 +1642,13 @@ parse_list
 tmp_root=${TEAM_SYSTEM_ROOT:-}/tmp
 
 # name_of <first> <count>: set nm to the word's text with its quotes and backslashes removed, and nu
-# to 1 when the hook cannot work it out: it holds an expansion, an ANSI-C escape, or an unquoted glob
-# or brace expansion, its characters in one part or across quoted text (as {a,"b"}), so it names no
-# command the hook knows. nl is its text before the first part the hook cannot work out ($!, $$, $#
-# and $?, which expand to digits, counting as one digit), cut at an unquoted glob or brace
-# expansion's first character, so a word whose nl is not empty and starts with no - or + is no
-# option; nw is 1 when bash may make it several words or none (an unquoted expansion but $$, $#
-# and $?, a quoted $@ or [@], a glob or a brace expansion).
+# to 1 when the hook cannot work it out: it holds an expansion, an ANSI-C escape, or an unquoted
+# glob or brace expansion, its characters in one part or across quoted text (as {a,"b"}), so it
+# names no command the hook knows. nl is its text before the first part the hook cannot work out
+# ($!, $$, $# and $?, which expand to digits, counting as one digit), cut at an unquoted glob or
+# brace expansion's first character, so a word whose nl is not empty and starts with no - or + is no
+# option; nw is 1 when bash may make it several words or none (an unquoted expansion but $$, $# and
+# $?, a quoted $@ or [@], a glob or a brace expansion).
 name_of() {
   local k end=$(($1 + $2)) text shape='' open=1 cut
   nm='' nu=0 nl='' nw=0
@@ -1975,8 +1975,8 @@ check_test_subscripts() {
   return 0
 }
 
-# builtin_words <S> <builtin>: sort the words after an assigning builtin's or printf's command word as
-# its options parse them: args the words, kinds[i] o for an option word, v for an option's value,
+# builtin_words <S> <builtin>: sort the words after an assigning builtin's or printf's command word
+# as its options parse them: args the words, kinds[i] o for an option word, v for an option's value,
 # n for a word that gives a name (declare's, typeset's, local's, readonly's and export's name=word
 # among them, and read's -a, wait's -p and printf's -v value) and f for any other. Refuse unread a
 # word the hook cannot work out where an option may stand (but one whose text starts with what
@@ -2119,7 +2119,7 @@ for s in "${starts[@]}"; do
     if ((${#args[@]} == 1)) && [[ ${ER[args[0]]} =~ $re_stack ]]; then stack=1 STK[s]=1; fi
   fi
   # A command that may move the shell. A command word of text and variables alone (PV) runs the
-  # program its values name, each holding a /, or the walk refuses it unread.
+  # program its values name, or the walk refuses it unread.
   if ((cw >= 0 && !stack && !cu)) && [[ ${cn##*/} == @(cd|pushd|popd) || $cn == @(eval|source|.|trap) ]]; then
     TRIG[s]=1 trig=1
     if ((!wrapped)) && [[ $cn == cd ]]; then CD[s]=1; fi
@@ -2611,8 +2611,8 @@ bnraw=()
 word_values() {
   local k=$1 end=$(($1 + $2)) mode=$3 text kind i j d x nv nd no pv pd po stopped=0 pwd=1
   vals=('') vdir=(-1) vorg=('') why='' wvar=''
-  # After a stop, bash may split an unquoted value by another IFS, and PWD may hold any value until a
-  # cd the walk follows sets it again (S).
+  # After a stop, bash may split an unquoted value by another IFS, and PWD may hold any value until
+  # a cd the walk follows sets it again (S).
   env_split "$cur"
   if [[ $ev == [sS] || $ev == [sS]$'\n'* ]]; then stopped=1; fi
   if [[ $ev == S || $ev == S$'\n'* ]]; then pwd=0; fi
@@ -3201,11 +3201,11 @@ walk_simple() {
       fi
     done
   fi
-  # A command word whose every value holds a / runs the file it names, never a builtin or a
+  # A command word whose every value names a program runs that program, never a builtin or a
   # function, so it neither moves the shell nor assigns a variable; one the walk cannot work out
-  # there, or whose value may name another, a tee or a wrapper, is refused unread.
+  # there, or whose value may name another command, is refused unread.
   if ((PV[s])); then
-    path_named "$s" || unread "the command word ${ER[CW[s]]}"
+    named_by_values "$s" || unread "the command word ${ER[CW[s]]}"
     if ((dead)); then ok='?' ko='?'; fi
     return 0
   fi
@@ -3231,18 +3231,31 @@ walk_simple() {
   fi
 }
 
-# path_named <S>: whether every value of the command's command word, in cur, holds a / and names
-# neither a tee nor a wrapper.
-path_named() {
+# named_by_values <S>: whether every value of the command's command word, in cur, names a program
+# the walk knows: a single word with no blank, glob, brace, quote or backslash in it, whose last
+# part is neither a tee, a wrapper nor a shell or interpreter the hook reads specially (bash, sh,
+# dash, zsh, ksh, mksh, busybox), and that holds a /, which bash runs as that file, or is a bare
+# name that is no builtin or reserved word of bash's and no function the command defines.
+named_by_values() {
   local e=${CW[$1]} v
   env_dirs "$cur"
   word_values "${EA[e]}" "${EB[e]}" t
   [[ -z $why ]] || return 1
   for v in "${vals[@]}"; do
-    [[ $v == */* ]] || return 1
-    [[ ${v##*/} != @(tee|env|sudo|nohup|timeout|nice|stdbuf|command|exec|time|builtin) ]] || return 1
+    [[ -n $v && $v != *[[:space:]\*\?\[\]\{\}\'\"\\]* ]] || return 1
+    [[ ${v##*/} != @(tee|env|sudo|nohup|timeout|nice|stdbuf|command|exec|time|builtin|bash|sh|dash|zsh|ksh|mksh|busybox) ]] || return 1
+    [[ $v != */* ]] || continue
+    [[ -z ${shell_names[$v]:-} && -z ${defined[$v]:-} ]] || return 1
   done
 }
+
+# The names bash runs as no program: its builtins and reserved words, and the functions the
+# command defines.
+declare -A shell_names=() defined=()
+for v in $(compgen -b) $(compgen -k); do shell_names[$v]=1; done
+for s in "${starts[@]}"; do
+  if [[ ${EK[s]} == C && ${EX[s]} == '()' ]]; then defined[${ER[s]}]=1; fi
+done
 
 # loop_start <C>: change start, the environment the loop starts in, to the one its body may start
 # each turn in: the directory unknown when the loop may move the shell, each followed variable it

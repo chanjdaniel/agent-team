@@ -182,23 +182,30 @@ Blocked: this role may write files only under $wt/.scratch; write there with the
 }
 
 
-@test "a command word whose every value holds a / runs that file, and neither moves the shell nor stops the following" {
+@test "a command word whose every value the walk knows names that program, and neither moves the shell nor stops the following" {
   mkdir -p "$job/tmp"
   passes 'T=.scratch/task/try; I=$T/tools/bin/probe; $I detect --json src/ > $T/out.json 2>$T/out.err' \
     'T=$CLAUDE_JOB_DIR/tmp/probe; C=$T/code/bin/x; $C a; cd .scratch/task && cmd > b; echo s > $T/c' \
     "\$PWD/bin/x; cd $wt/.scratch && cmd > y" \
     'T=$CLAUDE_JOB_DIR/tmp; for i in 1 2; do "$T/v$i/bin/pip" freeze > $T/f$i; done' \
     'T=$CLAUDE_JOB_DIR/tmp; for c in /opt/a /opt/b; do cmd > $T/x; $c; done' \
-    'T=$CLAUDE_JOB_DIR/tmp; I=/opt/bin/x; while c; do cmd > $T/x; $I; done'
-  # A value without a /, which may name a builtin such as eval, an unknown one, one naming a tee
-  # or a wrapper, and a word holding another expansion are refused unread, as is one the walk
-  # cannot work out at every turn of a loop or every call of a function.
-  local before
-  for before in 'I=chrome-devtools-axi; $I a' 'I=/opt/x; I=eval; $I a' 'I="/opt/x a"; $I' 'I=/usr/bin/tee; $I src/x' \
-    'I=/usr/bin/env; $I tee src/x' 'I=/opt/x; f() { $I; }' 'eval x; I=/opt/x; $I'; do
-    unread "$before; cmd > .scratch/y" 'the command word $I'
+    'T=$CLAUDE_JOB_DIR/tmp; I=/opt/bin/x; while c; do cmd > $T/x; $I; done' \
+    'A=chrome-devtools-axi; $A eval "() => 1" > .scratch/y; cd .scratch && $A snapshot > z' \
+    'X=.scratch; for a in jq yq; do $a . f > $X/y; done'
+  # A value that is a builtin, a reserved word, a function the command defines, a tee, a wrapper or
+  # a shell, one holding a blank, a glob, a brace, a quote or a backslash, an unknown one, and a word
+  # holding another expansion are refused unread, as is one the walk cannot work out at every turn
+  # of a loop or every call of a function.
+  local before word
+  for before in 'I=eval; $I a' 'I=cd; $I /etc' 'I=if; $I' 'I=f; f() { :; }; $I' 'I=tee; $I x' 'I=/usr/bin/tee; $I src/x' \
+    'I=env; $I tee x' 'I=/usr/bin/env; $I tee src/x' 'I=/bin/bash; $I' 'I="/opt/x a"; "$I"' "I='x*'; \"\$I\"" \
+    "I='x{a,b}'; \"\$I\"" "I='x\\y'; \"\$I\"" 'I=/opt/x; I=eval; $I a' 'I="/opt/x a"; $I' \
+    'eval x; I=/opt/x; $I' '$J/bin/x'; do
+    word=${before##*; }
+    unread "$before; cmd > .scratch/y" "the command word ${word%% *}"
   done
-  unread 'for c in /opt/a b; do cmd > .scratch/y; $c; done' 'the command word $c'
+  unread 'for c in /opt/a eval; do cmd > .scratch/y; $c; done' 'the command word $c'
+  unread 'I=/opt/x; f() { $I; }; cmd > .scratch/y' 'the command word $I'
   unread 'I=$(command -v x); "$I" > .scratch/y' 'the command word "$I"'
   # Assigned in the loop before it runs, it holds that value at every turn.
   passes 'X=.scratch; while c; do cmd > $X/y; I=/opt/x; $I; done'
