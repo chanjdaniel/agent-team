@@ -9,9 +9,11 @@
 # ledger's guarded areas (guarded_areas in bin/lib/ledger.jq), kept in its order. The list errs
 # wide: a change it guards needlessly only costs Daniel's per-head word, one it misses merges
 # unseen. The guardrails area is the team's own guards, at the root of its code repository: this
-# file, team-merge and team-checks with the library code they run, the ledger contract, data-check,
-# the records list and the hooks, so a change to one never merges unattended; team-merge reads
-# this file from its own checkout, so a PR cannot loosen its own check, only the ones after it.
+# file, team-merge and team-checks with the library code they run, team-heavy (which runs the local
+# checks), the ledger contract, data-check, the records list, the hooks, and the sessions'
+# permission settings (settings/*.json and coordinator.settings.json), so a change to one never
+# merges unattended; team-merge reads this file from its own checkout, so a PR cannot loosen its
+# own check, only the ones after it.
 ci (.*/)?\.github/.*
 ci (.*/)?\.circleci/.*
 ci (.*/)?\.gitlab-ci\.ya?ml
@@ -52,6 +54,8 @@ secrets .*(secret|credential).*
 secrets .*\.(pem|key|p12|pfx)
 secrets (.*[^a-z0-9])?(tokens?|sessions?|passwords?|passwd|jwt|api[_-]?keys?)([^a-z0-9].*)?
 guardrails bin/lib/guarded
-guardrails bin/team-(merge|checks)
+guardrails bin/team-(merge|checks|heavy)
 guardrails bin/lib/(team\.sh|platform\.sh|ledger\.jq|ledger-contract\.json|data-check|records)
 guardrails bin/hooks/.*
+guardrails settings/[^/]*\.json
+guardrails coordinator\.settings\.json
