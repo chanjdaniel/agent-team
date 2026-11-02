@@ -97,7 +97,7 @@
 # so none's budget is 0, and a level's never more than what Daniel's programs leave.
 # Every subcommand but status refuses on a machine that does not hold the lease. A level.jsonl
 # line that is not a level record is refused, naming its number.
-# Test seams: TEAM_SLOTS_CPUS stands for the machine's cores, as for team-slots, and
+# Test seams: TEAM_READING_CPUS stands for the machine's cores, as for team-capacity, and
 # TEAM_DOCKER_SECONDS for the 30 seconds each docker call is given.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
@@ -175,7 +175,7 @@ gather() {
   jq 'map(select(.cpu != null)) | .[-1] // null' "$work/readings.json" >"$work/cpu-reading.json"
   jq -n -L "$TEAM_LIB" --slurpfile record "$work/record.json" --slurpfile capacity "$work/capacity.json" \
     --slurpfile cpu "$work/cpu-reading.json" \
-    --argjson cpus "${TEAM_SLOTS_CPUS:-$(nproc)}" '
+    --argjson cpus "${TEAM_READING_CPUS:-$(nproc)}" '
     include "capacity"; include "stack";
     ($record[0] | level_current) as $now | $capacity[0] as $c | $c.settings as $s | $c.reading as $r
     | capacity_budget($s; $now.level; $r; $cpu[0]; $cpus) as $budget

@@ -9,10 +9,12 @@
 #               not theirs, each naming its fix (team-capacity install, Daniel's yes,
 #               team-capacity place, or team-level apply); else passes, naming the live team
 #               sessions in it. On macOS passes with "no hard limits on macOS: admission and stow
-#               only". On any OS, fails on a malformed capacity.json or level.jsonl line, naming
-#               it, and warns while this machine holds the lease (on the lease line's answer) and
-#               has no reading of the machine's load of the last 15 minutes, which its
-#               heartbeat's capacity step takes.
+#               only". On any OS, fails on a malformed capacity.json or level.jsonl line, naming it,
+#               warns on what the task slots left (~/.config/agent-team/slots.json,
+#               ~/.local/state/agent-team/slots/ and ~/.local/state/agent-team/slots.lock), no
+#               longer read since levels replaced them, and warns while this machine holds the lease
+#               (on the lease line's answer) and has no reading of the machine's load of the last 15
+#               minutes, which its heartbeat's capacity step takes.
 # shellcheck shell=bash
 # shellcheck disable=SC2154 # bin and err, the doctor's; os, holding and heartbeat, from the os, lease and heartbeat checks
 

@@ -47,9 +47,9 @@
     },
     "merged": {
       "writer": "team-merge",
-      "about": "approval: the word it merged on, head (a merge-approved of the PR at its head) or plan (a standing merge-preapproved of its project); by names Daniel's Discord message either way",
+      "about": "approval: the word it merged on, head (a merge-approved of the PR at its head), plan (a merge-preapproved of its project not withdrawn) or standing (Daniel's merge-standing on its project or on all); by, discord_message and discord_channel name Daniel's Discord message whichever it is",
       "required": {"pr": "number", "merge": "string", "head": "string", "by": "string"},
-      "optional": {"project": "string", "branch": "string", "discord_message": "id", "discord_channel": "id", "url": "string", "local_checks": "array", "approval": ["head", "plan"]}
+      "optional": {"project": "string", "branch": "string", "discord_message": "id", "discord_channel": "id", "url": "string", "local_checks": "array", "approval": ["head", "plan", "standing"]}
     },
     "history-rewritten": {
       "writer": "team-clean-messages",
@@ -127,7 +127,7 @@
     },
     "review": {
       "writer": "team-log",
-      "about": "verdict: findings whenever sent_back names a finding, whatever the reviewer's word, since a pass whose notes go back is not ready to merge (team-log logs it so); sent_back: the numbers of the findings sent back to the builder before the merge, each a blocking finding, a correctness, security or real-data note, or a plain note on a line the PR adds or changes, never one before lists; findings: the count of each kind, exactly blocking, correctness, security, real-data, note-change (plain notes on lines the PR adds or changes) and note-before (plain notes on code it did not change), each a whole number; before: the numbers of the plain notes on code the PR did not change, each queued as a follow-up; guarded: the guarded areas the reviewer found the change touching, each one of ci, dependencies, migrations, settings, permissions and secrets, empty for none",
+      "about": "verdict: findings whenever sent_back names a finding, whatever the reviewer's word, since a pass whose notes go back is not ready to merge (team-log logs it so); sent_back: the numbers of the findings sent back to the builder before the merge, each a blocking finding, a correctness, security or real-data note, or a plain note on a line the PR adds or changes, never one before lists; findings: the count of each kind, exactly blocking, correctness, security, real-data, note-change (plain notes on lines the PR adds or changes) and note-before (plain notes on code it did not change), each a whole number; before: the numbers of the plain notes on code the PR did not change, each queued as a follow-up; guarded: the guarded areas the reviewer found the change touching, each one of ci, dependencies, migrations, settings, permissions, secrets and guardrails (the team's own guards: bin/lib/guarded, team-merge, team-checks, the library code they run, team-heavy, the ledger contract, data-check, records, the hooks and the sessions' settings files), empty for none",
       "required": {"verdict": ["pass", "findings"], "head": "string"},
       "optional": {"agent_review": "string", "sent_back": "numbers", "findings": "object", "before": "numbers", "guarded": "array"}
     },
@@ -150,8 +150,18 @@
     },
     "merge-preapproval-withdrawn": {
       "writer": "team-log",
-      "about": "Daniel withdrew the standing merge-preapproved of project, in discord_message",
+      "about": "Daniel withdrew the task's latest merge-preapproved of project, in discord_message",
       "required": {"project": "string", "discord_message": "id"}
+    },
+    "merge-standing": {
+      "writer": "team-log",
+      "about": "Daniel's standing word that the team may merge a ready PR of project, or of every project when project is all, with no ask, said in discord_message in discord_channel, #coordinator's channel or the task's thread; read across the whole ledger, the task only naming the thread: for a project, the latest merge-standing or merge-standing-withdrawn whose project is that project or all decides, and the word stands when that is a merge-standing",
+      "required": {"project": "string", "discord_message": "id", "discord_channel": "id"}
+    },
+    "merge-standing-withdrawn": {
+      "writer": "team-log",
+      "about": "Daniel withdrew the standing word on project, or on every project when project is all, in discord_message in discord_channel; read with merge-standing across the whole ledger, so a withdrawal of one project leaves a word on all standing for the others, and a later merge-standing stands again",
+      "required": {"project": "string", "discord_message": "id", "discord_channel": "id"}
     },
     "branch-renamed": {
       "writer": "team-log",
