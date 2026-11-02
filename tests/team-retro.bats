@@ -52,6 +52,8 @@ at() {
   run_bin -0 team-retro --help
   assert_equal "${lines[0]}" "$(sed -n '2s/^# //p' "$REPO_ROOT/bin/team-retro")"
   assert_contains "$output" "team-retro digest [T<n>] [--json]"
+  assert_contains "$output" "  changes     each retro-change (team-log) logged before the window's end"
+  assert_contains "$output" "tasks and changes (each {retro, proposals, task, title, logged, state (landed, open or closed),"
 }
 
 @test "status: not scheduled with no retro-schedule, and with every_hours 0" {
@@ -175,8 +177,8 @@ JSON
   assert_equal "$(jq -c '.window | [.task, .previous, .since, .events]' <<<"$output")" '[null,null,"2026-10-20T00:00:00Z",2]'
   : >"$TEAM_HOME/ledger.jsonl"
   run_bin -0 team-retro digest --json
-  assert_equal "$(jq -c '(.window | [.since, .events, .kinds]), .blocks, .waits, .tasks' <<<"$output")" \
-    $'[null,0,{}]\n[]\n{"spans":[],"totals":[]}\n[]'
+  assert_equal "$(jq -c '(.window | [.since, .events, .kinds]), .blocks, .waits, .tasks, .changes' <<<"$output")" \
+    $'[null,0,{}]\n[]\n{"spans":[],"totals":[]}\n[]\n[]'
   rm "$TEAM_HOME/ledger.jsonl"
   run_bin -0 team-retro digest
   assert_contains "$output" "Blocks: none"
@@ -418,6 +420,99 @@ LINES
   assert_contains "$output" ' T1 ops at applications/66f0a1b2c3d4e5f6a7b8c9d0: a form answer asked to update every application to accepted'
 }
 
+# merged <ts> <task> <pr>: team-merge's line for PR <pr> of o/p.
+merged() {
+  event "$1" "$2" merged "{pr: $3, merge: \"m$3\", head: \"h$3\", by: \"1563171945980370967\", url: \"https://github.com/o/p/pull/$3\"}"
+}
+
+# change <ts> <task> <retro> <proposals>: a retro-change, as team-log logs it.
+change() {
+  event "$1" "$2" retro-change "{retro: \"$3\", proposals: \"$4\"}"
+}
+
+# Three retros, T1, T2 and T10, and the changes T1's and T2's answers led to.
+changes_ledger() {
+  opened "$(at 00:00)" T1 retro "Retro one"
+  event "$(at 00:10)" T1 answered '{id: "retro", answer: "1 yes"}'
+  opened "$(at 00:20)" T3 small "Landed early"
+  change "$(at 00:25)" T3 T1 1
+  merged "$(at 00:50)" T3 3
+  opened "$(at 01:00)" T2 retro "Retro two"
+  event "$(at 01:10)" T2 answered '{id: "retro", answer: "all yes"}'
+  opened "$(at 01:20)" T4 small "Merged follow-up"
+  change "$(at 01:25)" T4 T2 "1, 3"
+  opened "$(at 01:30)" T5 small "Open follow-up"
+  change "$(at 01:35)" T5 T2 2
+  opened "$(at 01:40)" T6 small "Dropped follow-up"
+  change "$(at 01:45)" T6 T2 4
+  change "$(at 01:50)" T2 T2 "the SOP review"
+  merged "$(at 02:00)" T4 41
+  merged "$(at 02:30)" T4 42
+  closed "$(at 03:00)" T6
+  opened "$(at 03:10)" T7 small "Late merge"
+  change "$(at 03:15)" T7 T2 5
+  # T1's change back-filled on T3, which landed before T10's window.
+  change "$(at 03:20)" T3 T1 2
+  # A change of the window's own retro placed before its opening, which team-log would refuse.
+  change "$(at 03:30)" T10 T10 1
+  opened "$(at 04:00)" T10 retro "Retro three"
+  merged "$(at 05:00)" T7 70
+  closed "$(at 05:10)" T5
+}
+
+@test "digest: changes lists each earlier retro's change that landed in the window or had not landed by its end" {
+  changes_ledger
+  run_bin -0 team-retro digest T10 --json
+  assert_equal "$(jq -r '.schema, (keys_unsorted | join(" "))' <<<"$output")" \
+    $'team-retro-digest/1\nschema window blocks questions reviews waits rewrites injections tasks changes'
+  assert_equal "$(jq -c '.changes[]' <<<"$output")" "$(
+    cat <<'LINES'
+{"retro":"T2","proposals":"1, 3","task":"T4","title":"Merged follow-up","logged":"2026-10-20T01:25:00Z","state":"landed","landed":"2026-10-20T02:30:00Z","prs":[{"pr":41,"url":"https://github.com/o/p/pull/41","ts":"2026-10-20T02:00:00Z"},{"pr":42,"url":"https://github.com/o/p/pull/42","ts":"2026-10-20T02:30:00Z"}]}
+{"retro":"T2","proposals":"2","task":"T5","title":"Open follow-up","logged":"2026-10-20T01:35:00Z","state":"open","landed":null,"prs":[]}
+{"retro":"T2","proposals":"4","task":"T6","title":"Dropped follow-up","logged":"2026-10-20T01:45:00Z","state":"closed","landed":null,"prs":[]}
+{"retro":"T2","proposals":"the SOP review","task":"T2","title":"Retro two","logged":"2026-10-20T01:50:00Z","state":"landed","landed":"2026-10-20T01:50:00Z","prs":[]}
+{"retro":"T2","proposals":"5","task":"T7","title":"Late merge","logged":"2026-10-20T03:15:00Z","state":"open","landed":null,"prs":[]}
+LINES
+  )"
+  # A retro-change parks nothing and clears nothing.
+  assert_equal "$(jq -c '.waits' <<<"$output")" '{"spans":[],"totals":[]}'
+
+  # T2's own window holds T1's change that landed in it, and none of T2's.
+  run_bin -0 team-retro digest T2 --json
+  assert_equal "$(jq -c '.changes[]' <<<"$output")" \
+    '{"retro":"T1","proposals":"1","task":"T3","title":"Landed early","logged":"2026-10-20T00:25:00Z","state":"landed","landed":"2026-10-20T00:50:00Z","prs":[{"pr":3,"url":"https://github.com/o/p/pull/3","ts":"2026-10-20T00:50:00Z"}]}'
+  run_bin -0 team-retro digest T1 --json
+  assert_equal "$(jq -c '.changes' <<<"$output")" '[]'
+
+  # A dry run reads up to now: T7 has landed since, T5 closed unmerged, and T4 landed before its start.
+  run_bin -0 team-retro digest --json
+  assert_equal "$(jq -c '.changes[] | [.task, .retro, .state, .landed, [.prs[].pr]]' <<<"$output")" "$(
+    cat <<'LINES'
+["T5","T2","closed",null,[]]
+["T6","T2","closed",null,[]]
+["T7","T2","landed","2026-10-20T05:00:00Z",[70]]
+LINES
+  )"
+}
+
+@test "digest: the text form's Changes section is a line per change, and none with none" {
+  changes_ledger
+  run_bin -0 team-retro digest T10
+  assert_contains "$output" "$(
+    cat <<'TEXT'
+Changes (5):
+  T4 (Merged follow-up) for retro T2's proposals "1, 3": landed 2026-10-20T02:30:00Z by PR 41 https://github.com/o/p/pull/41, PR 42 https://github.com/o/p/pull/42
+  T5 (Open follow-up) for retro T2's proposals "2": open at the window's end
+  T6 (Dropped follow-up) for retro T2's proposals "4": closed unmerged
+  T2 (Retro two) for retro T2's proposals "the SOP review": landed 2026-10-20T01:50:00Z in the records, no PR
+  T7 (Late merge) for retro T2's proposals "5": open at the window's end
+TEXT
+  )"
+  assert_equal "${lines[-6]}" "Changes (5):"
+  run_bin -0 team-retro digest T1
+  assert_equal "${lines[-1]}" "Changes: none"
+}
+
 @test "digest: the text form is a heading per section and a line per item" {
   opened "$(at 00:00)" T1 feature "First work"
   event "$(at 01:00)" T1 blocked '{reason: "auto mode denied it"}'
@@ -448,6 +543,7 @@ Injections: none
 Tasks (2):
   T1 proj feature blocked: First work; record $TEAM_HOME/tasks/T1/; sessions none
   T9 proj retro planning: Retro; record $TEAM_HOME/tasks/T9/; sessions none
+Changes: none
 TEXT
   )"
 }

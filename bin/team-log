@@ -43,7 +43,8 @@
 # a sent_back naming one of them is refused, since such a note is queued, never sent back. A park
 # (waiting, blocked, paused, held) logged after the fact takes since=<UTC time>, when it began: no
 # later than now and no earlier than the task's latest event, or it is refused naming both times;
-# no other kind takes since.
+# no other kind takes since. A retro-change is refused when its retro names a task with no opened
+# event of path retro, or a retro with no answered of id retro.
 # --from-message reads a worker's message whole (bin/lib/messages.jq) into the events the
 # coordinator's message table gives it, checks each as above, and logs them all, or with --print
 # prints them as JSON lines and logs nothing; any refusal logs none. The message starts with the
@@ -316,6 +317,17 @@ if [[ $event == answered && -n ${seen[id]:-} && -n ${seen[discord_message]:-} ]]
   task_events "$task" | ledger_jq '[inputs] | answered_from($id; $message)' -ne \
     --arg id "${seen[id]}" --arg message "${seen[discord_message]}" >/dev/null; then
   die "$task already logged answered id=${seen[id]} from Discord message ${seen[discord_message]}"
+fi
+
+# A retro-change links approved proposals: its retro is a retro task (an opened of path retro)
+# whose proposals Daniel answered (an answered of id retro).
+if [[ $event == retro-change && -n ${seen[retro]:-} ]]; then
+  retro=${seen[retro]}
+  retro_events=$(task_events "$retro" | jq -cs .)
+  jq -e 'any(.[]; .event == "opened" and .path == "retro")' <<<"$retro_events" >/dev/null ||
+    die "$retro is not a retro task: it has no opened event with the path retro, so retro-change links no retro's proposals"
+  jq -e 'any(.[]; .event == "answered" and .id == "retro")' <<<"$retro_events" >/dev/null ||
+    die "$retro has no answered with id retro: Daniel has not answered its proposals, so none is approved to build"
 fi
 
 # A park logged after the fact says when it began: a UTC time between the task's latest event and now.

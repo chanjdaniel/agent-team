@@ -19,7 +19,10 @@ The retro itself changes nothing; what Daniel approves becomes its own work.
 4. **Record the answer.** Daniel answers per number; log `team-log T<n> answered id=retro answer="<the answer>"`.
    A change to the schedule in it (a new cadence, or stop) is logged on the same task: `team-log T<n> retro-schedule every_hours=<hours, 0 to stop> discord_message=<id>`.
 5. **Act.** Make approved changes to records (the paths `~/agent-team/bin/lib/records` lists) in place, never committing them by hand: the heartbeat's checkpoint commits them on `dev`, or `team-checkpoint --force` at once.
+   Once they are made, log them on the retro itself: `team-log T<n> retro-change retro=T<n> proposals="<their numbers>"`.
    Every other approved change becomes one follow-up task, `team-open agent-team small <type> <slug> <title>` (or the project's own task, for a project's file), whose plan lists the approved proposals by number and points at the retro's report.
+   Right after opening it, log what it builds, a project's own task too: `team-log T<new> retro-change retro=T<n> proposals="<their numbers>"`.
+   `team-retro digest` reads these to tell the next retro when each change landed, so it can judge what each did.
    A rejected proposal needs nothing more: the `answered` event and the archived report keep the next retro from proposing it again.
 6. **Close.** Run `team-close T<n>`: it archives the report to `tasks/T<n>/scratch/report.md`, where the next retro reads it.
    Post the outcome in the thread: what Daniel approved, and the follow-up task.
