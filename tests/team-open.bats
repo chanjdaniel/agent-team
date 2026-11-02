@@ -442,6 +442,75 @@ holding() {
     "  $slots/1: T3 (feat/T3-busy)" "  $slots/2: T4 (feat/T4-busy)")"
 }
 
+# Run team-open proj twice at once, the first run's `git worktree add` held until the second run
+# reaches its own (or 3 seconds pass, as when the second waits on the pool's lock), so the second
+# picks its slot while the first has not added one yet. Each run's exit code, stdout and stderr
+# land in $BATS_TEST_TMPDIR/race/<n>.{rc,out,err}.
+open_two_at_once() {
+  local race=$BATS_TEST_TMPDIR/race real_git wrapper n pids=()
+  mkdir -p "$race"
+  real_git=$(command -v git)
+  wrapper=$(shared race-git <<'EOF'
+#!/usr/bin/env bash
+if [[ ${1:-} == -C && ${3:-} == worktree && ${4:-} == add ]]; then
+  if mkdir "$RACE_DIR/first" 2>/dev/null; then
+    for ((i = 0; i < 30; i++)); do
+      [[ ! -e $RACE_DIR/second ]] || break
+      sleep 0.1
+    done
+  else
+    : >"$RACE_DIR/second"
+  fi
+fi
+exec "$RACE_REAL_GIT" "$@"
+EOF
+)
+  ln -f "$wrapper" "$BATS_TEST_TMPDIR/stubs/git"
+  guard_sandbox
+  for n in 1 2; do
+    RACE_DIR=$race RACE_REAL_GIT=$real_git "$REPO_ROOT/bin/team-open" proj feature feat "race-$n" "Race $n" \
+      >"$race/$n.out" 2>"$race/$n.err" &
+    pids+=($!)
+  done
+  for n in 1 2; do
+    rc=0
+    wait "${pids[n - 1]}" || rc=$?
+    echo "$rc" >"$race/$n.rc"
+  done
+  rm "$BATS_TEST_TMPDIR/stubs/git"
+}
+
+@test "two runs at once for one git pool take its two slots, never the same one" {
+  open_two_at_once
+  local race=$BATS_TEST_TMPDIR/race
+  assert_equal "$(cat "$race/1.rc") $(cat "$race/2.rc")" "0 0"
+  assert_equal "$(jq -r .worktree "$race/1.out" "$race/2.out" | sort)" "$(printf '%s\n' "$slots/1" "$slots/2")"
+  local n
+  for n in 1 2; do
+    assert_equal "$(git -C "$(jq -r .worktree "$race/$n.out")" rev-parse --abbrev-ref HEAD)" "$(jq -r .branch "$race/$n.out")"
+  done
+}
+
+@test "two runs at once for a git pool with one free slot: one takes it, the other exits 75 on a full pool" {
+  git -C "$primary" worktree add -q "$slots/2" -b feat/T9-busy origin/main
+  open_two_at_once
+  local race=$BATS_TEST_TMPDIR/race
+  assert_equal "$(cat "$race/1.rc" "$race/2.rc" | sort | paste -sd ' ')" "0 75"
+  assert_equal "$(cat "$race/1.out" "$race/2.out" | jq -r .worktree)" "$slots/1"
+  assert_contains "$(cat "$race/1.err" "$race/2.err")" "team-open: every slot of proj is taken:"
+}
+
+@test "a run that waits out the pool's lock exits 75 naming it, and gives the number back" {
+  local lock=$primary/.git/team-open-pool.lock fd
+  exec {fd}<>"$lock"
+  flock -x "$fd"
+  TEAM_OPEN_POOL_WAIT_SECONDS=1 run_bin -75 --separate-stderr team-open proj feature feat late "Late"
+  exec {fd}>&-
+  assert_equal "$stderr" "team-open: another team-open held proj's pool lock $lock for 1 seconds; run this again"
+  [[ ! -e $TEAM_HOME/tasks/T1 && ! -e $slots/1 ]]
+  assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" ""
+}
+
 @test "--help says each project's pool is its only bound" {
   run_bin -0 team-open --help
   assert_contains "$output" "Each project's pool is its only bound: the machine's load never refuses an open"

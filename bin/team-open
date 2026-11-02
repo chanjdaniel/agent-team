@@ -18,28 +18,32 @@
 # files and no commits origin's lacks, it is fast-forwarded to origin's (untracked files aside,
 # unless in the way), said on one line (nothing is said when it is level already); else it is left
 # as it is, with the reason on one line. A primary checkout that is the team home is left to the
-# next records push, said on one line. A git pool adds its first slot that is not yet a worktree. A
-# treehouse pool is read first (`treehouse status --json` in the primary checkout, refused when it
-# does not answer): a slot an earlier run left leased to the task is taken again; else the project's
-# lease command runs from the primary checkout with the task as the holder, and the path it prints
-# is taken. A treehouse pool's trusted slots are the registry's and each other numbered one in their
-# pool's folder (<pool>/<n>/<folder>, which treehouse may make past an empty folder). A path that is
-# not a trusted slot, or no worktree of the primary checkout, or a slot with changes to tracked
-# files, untracked files or a non-empty task directory, is refused, naming them, and handed back
-# through the return command: with --force --if-lease-holder T<n> when this run leased it and the
-# pool did not report it dirty before, so what the lease's own pre-warm changed is discarded and the
-# lease always ends; else without, so a slot with changes stays leased, for Daniel to look at (a
-# slot dirty before its lease, or leased by an earlier run, may hold someone's work). Then makes the
-# task directory (refused, and the slot removed or returned again, unless git ignores it), writes
-# tasks/T<n>/plan.md from templates/plan.md, opens the thread (team-thread) and appends opened.
+# next records push, said on one line. A git pool adds its first slot that is not yet a worktree,
+# picked and added under the pool's lock (team-open-pool.lock in the primary checkout's git
+# directory), so two runs at once take two slots, and a run that waits on it 10 minutes
+# (TEAM_OPEN_POOL_WAIT_SECONDS, default 600) exits 75. A treehouse pool is read first (`treehouse
+# status --json` in the primary checkout, refused when it does not answer): a slot an earlier run
+# left leased to the task is taken again; else the project's lease command runs from the primary
+# checkout with the task as the holder, and the path it prints is taken. A treehouse pool's trusted
+# slots are the registry's and each other numbered one in their pool's folder (<pool>/<n>/<folder>,
+# which treehouse may make past an empty folder). A path that is not a trusted slot, or no worktree
+# of the primary checkout, or a slot with changes to tracked files, untracked files or a non-empty
+# task directory, is refused, naming them, and handed back through the return command: with --force
+# --if-lease-holder T<n> when this run leased it and the pool did not report it dirty before, so
+# what the lease's own pre-warm changed is discarded and the lease always ends; else without, so a
+# slot with changes stays leased, for Daniel to look at (a slot dirty before its lease, or leased by
+# an earlier run, may hold someone's work). Then makes the task directory (refused, and the slot
+# removed or returned again, unless git ignores it), writes tasks/T<n>/plan.md from
+# templates/plan.md, opens the thread (team-thread) and appends opened.
 # --story names the backlog story the task builds, whose file must be in the team home's
 # projects/<project>/backlog/ (story_file in bin/lib/team.sh; refused before anything is taken
 # otherwise): opened and the printed facts carry it as story, and team-merge marks it done.
 # Prints the task's facts as JSON; the project's other open tasks go to stderr, each with the files
 # its branch changes against the base (git diff --name-only origin/<base>...<branch>, origin's
-# branch when pushed, else the local one), or "no branch yet". Exit 75 when every slot is taken (a
-# git pool) or the lease command fails (a treehouse pool), listing the slots and who holds them (a
-# treehouse slot's lease holder, else the task its branch names).
+# branch when pushed, else the local one), or "no branch yet". Exit 75 when every slot is taken or
+# the pool's lock stays held (a git pool), or the lease command fails (a treehouse pool), listing
+# the slots and who holds them (a treehouse slot's lease holder, else the task its branch names)
+# but for the lock.
 # Each project's pool is its only bound: the machine's load never refuses an open, since what the
 # level admits is each launch (team-capacity admit, which team-worker asks).
 # With --add, gives the open task T<n> a worktree in another project, on <type>/T<n>-<slug>: the
@@ -270,14 +274,19 @@ else
 fi
 
 # The primary checkout's registered worktrees: real path -> checked-out branch ("" when detached),
-# looked up by held and branch_at.
+# looked up by held and branch_at, read again by take_git_slot under the pool's lock.
 declare -A holds=()
-while IFS=$'\t' read -r wt wt_branch; do
-  holds[$(realpath -m -- "$wt")]=$wt_branch
-done < <(git -C "$primary" worktree list --porcelain | awk '
-  /^worktree / { if (path != "") print path "\t" branch; path = substr($0, 10); branch = "" }
-  /^branch refs\/heads\// { branch = substr($0, 19) }
-  END { if (path != "") print path "\t" branch }')
+read_holds() {
+  local wt wt_branch
+  holds=()
+  while IFS=$'\t' read -r wt wt_branch; do
+    holds[$(realpath -m -- "$wt")]=$wt_branch
+  done < <(git -C "$primary" worktree list --porcelain | awk '
+    /^worktree / { if (path != "") print path "\t" branch; path = substr($0, 10); branch = "" }
+    /^branch refs\/heads\// { branch = substr($0, 19) }
+    END { if (path != "") print path "\t" branch }')
+}
+read_holds
 
 # The registered worktree that is the path <path>, however either is spelled (same_path), as
 # holds names it; fails, printing nothing, when none is: held <path>
@@ -318,10 +327,23 @@ list_slots() {
   done
 }
 
-# A git pool: add the slot given, else the first slot that is not a registered worktree, on the
-# branch: a new one from $start (no upstream), or the existing one when $start is empty.
+# A git pool: add the slot given while it is still free, else the first slot that is not a
+# registered worktree, on the branch: a new one from $start (no upstream), or the existing one when
+# $start is empty. The pick and the add are made under the pool's lock, team-open-pool.lock in the
+# primary checkout's git directory, after reading the worktrees again, so two runs at once never
+# pick the same slot: the second waits up to TEAM_OPEN_POOL_WAIT_SECONDS (600), then takes the next
+# free slot or exits 75 on a full pool.
 take_git_slot() {
-  local slot free=${1:-}
+  local slot free='' given=${1:-} lock fd wait=${TEAM_OPEN_POOL_WAIT_SECONDS:-600}
+  [[ $wait =~ ^[0-9]+$ ]] || die "TEAM_OPEN_POOL_WAIT_SECONDS must be a whole number of seconds, not '$wait'"
+  lock=$(git -C "$primary" rev-parse --path-format=absolute --git-common-dir)/team-open-pool.lock
+  exec {fd}<>"$lock"
+  flock -w "$wait" -x "$fd" || {
+    echo "team-open: another team-open held $project's pool lock $lock for $wait seconds; run this again" >&2
+    exit 75
+  }
+  read_holds
+  if [[ -n $given ]] && ! held "$given" >/dev/null; then free=$given; fi
   for slot in "${slots[@]}"; do
     if [[ -z $free ]] && ! held "$slot" >/dev/null; then free=$slot; fi
   done
@@ -331,12 +353,14 @@ take_git_slot() {
     exit 75
   fi
   if [[ -n $start ]]; then
-    git -C "$primary" worktree add -q --no-track -b "$branch" "$free" "$start" ||
+    git -C "$primary" worktree add -q --no-track -b "$branch" "$free" "$start" {fd}>&- ||
       die "cannot add $free as a worktree of $primary"
   else
-    git -C "$primary" worktree add -q "$free" "$branch" || die "cannot add $free as a worktree of $primary"
+    git -C "$primary" worktree add -q "$free" "$branch" {fd}>&- || die "cannot add $free as a worktree of $primary"
   fi
   worktree=$free added=1
+  # The slot is a registered worktree now, so the next run's read sees it: the lock goes.
+  exec {fd}>&-
 }
 
 # A treehouse pool: take the slot an earlier run left leased to the task, else lease one for it;
