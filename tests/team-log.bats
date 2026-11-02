@@ -405,7 +405,7 @@ LINES
 LINES
   )"
   # A declared id is a string of digits: anything else is refused.
-  run_bin -1 team-log T14 answered id=q1 answer=Five discord_message=m1563
+  run_bin -1 team-log T14 asked id=q2 text=Which? discord_message=m1563
   assert_contains "$output" "discord_message must be a Discord id, a string of digits, got a string that is not one"
   assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "2"
 }
@@ -425,9 +425,6 @@ LEDGER
 $TEAM_HOME/ledger.jsonl:6: discord_message must be a Discord id, a string of digits, got a number that is not one
 $TEAM_HOME/ledger.jsonl:7: discord_message must be a Discord id, a string of digits, got a string that is not one
 $TEAM_HOME/ledger.jsonl: 3 of 7 lines break the ledger contract"
-  # The number's digits are the id: an answer read from that message again is a repeat.
-  run_bin -1 team-log T14 answered id=q1 answer=Five discord_message=1565336870932582522
-  assert_contains "$output" "already logged answered id=q1 from Discord message 1565336870932582522"
 }
 
 @test "every kind team-log writes is appended with its required fields and a note" {
@@ -856,27 +853,24 @@ LINES
   assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "4"
 }
 
-@test "an answered naming the Discord message an earlier answered of the same ask logged is refused" {
-  run_bin -0 team-log T14 answered id=sign-in answer=five discord_message=1564000000000000001
-  run_bin -1 team-log T14 answered id=sign-in answer=five discord_message=1564000000000000001
-  assert_equal "$output" "team-log: T14 already logged answered id=sign-in from Discord message 1564000000000000001"
-  # Another message for the same ask is an addition, the same message may answer another ask,
-  # another task is its own, and an answer with no message is never a repeat.
-  run_bin -0 team-log T14 answered id=sign-in answer=and-six discord_message=1564000000000000002
-  run_bin -0 team-log T14 answered id=reset answer=five discord_message=1564000000000000001
-  run_bin -0 team-log T15 answered id=sign-in answer=five discord_message=1564000000000000001
-  run_bin -0 team-log T14 answered id=sign-in answer=five
-  run_bin -0 team-log T14 answered id=sign-in answer=five
-  assert_equal "$(jq -r '[.task, .id, .discord_message // "-"] | join(" ")' "$TEAM_HOME/ledger.jsonl")" "$(
-    cat <<'LINES'
-T14 sign-in 1564000000000000001
-T14 sign-in 1564000000000000002
-T14 reset 1564000000000000001
-T15 sign-in 1564000000000000001
-T14 sign-in -
-T14 sign-in -
-LINES
-  )"
+@test "an answered naming a Discord message is refused, naming team-answer, in both forms; one with no message is logged" {
+  open_t7
+  # team-answer reads the message from Discord and checks it is Daniel's, so a logged message id
+  # is always a checked one: team-log never writes one, whatever its value.
+  local message
+  for message in 1564000000000000001 m1563; do
+    run_bin -1 team-log T7 answered id=sign-in answer=five discord_message=$message
+    assert_equal "$output" "team-log: an answered that names a Discord message is logged only by team-answer, which reads it and checks it is Daniel's: team-answer T7 sign-in <the message's id>"
+  done
+  # No worker's message is an answered, so --from-message logs none either.
+  run_bin -1 team-log T7 --from-message 'T7 answered id=sign-in answer=five discord_message=1564000000000000001'
+  assert_contains "$output" "cannot read 'T7 answered id=sign-in answer=five discord_message=1564000000000000001'"
+  assert_equal "$(ledger_events)" "opened"
+  # A decision Daniel gave at the terminal has no message, and is logged as often as it is given.
+  run_bin -0 team-log T7 answered id=sign-in answer=five
+  run_bin -0 team-log T7 answered id=sign-in answer=five
+  assert_equal "$(jq -c 'select(.event == "answered") | del(.ts)' "$TEAM_HOME/ledger.jsonl")" '{"task":"T7","event":"answered","id":"sign-in","answer":"five"}
+{"task":"T7","event":"answered","id":"sign-in","answer":"five"}'
 }
 
 @test "a kind another script writes is refused with nothing appended" {

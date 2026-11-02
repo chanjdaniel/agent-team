@@ -1011,14 +1011,14 @@ Bash(@TEAM_CODE@/bin/team-review-comment *)
 Bash(@TEAM_CODE@/bin/team-checks *)
 Bash(@TEAM_CODE@/bin/team-ci-wait *)'
   # The commands as templates/briefs/rereview.md, verify.md and the direct-PR review partial give
-  # them, team_bin being this checkout's bin/ in full; a gated project's first review posts nothing.
+  # them, team_bin being this checkout's bin/ in full; a review before the PR posts nothing.
   local brief
   for brief in review/direct-pr rereview verify; do
     grep -qF '`{{team_bin}}/team-review-status {{pr}} {{head}} <success|failure> "<one line, at most 140 characters>"`' \
       "$REPO_ROOT/templates/briefs/$brief.md"
     grep -qF '`{{team_bin}}/team-review-comment {{pr}} {{task_dir}}/' "$REPO_ROOT/templates/briefs/$brief.md"
   done
-  if grep -n team-review "$REPO_ROOT/templates/briefs/review/no-mistakes.md"; then return 1; fi
+  if grep -n team-review "$REPO_ROOT/templates/briefs/review/no-mistakes.md" "$REPO_ROOT/templates/briefs/review/direct-pr-before-pr.md"; then return 1; fi
   allows reviewer "$REPO_ROOT/bin/team-review-status https://github.com/me/shop/pull/5 a1b2c3d4e5f60718293a4b5c6d7e8f9012345678 success \"no blocking findings\""
   allows reviewer "$REPO_ROOT/bin/team-review-comment https://github.com/me/shop/pull/5 .scratch/task/review.md"
   allows reviewer "$REPO_ROOT/bin/team-checks agent-team a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"

@@ -45,7 +45,20 @@
 #                     within five minutes whatever changed it. It logs only a new message
 #                     ("posted <link>", when the old one is gone) and a failure, and a failure
 #                     never fails the run.
-#              slots  On the holder, after the inbox step, every run: team-slots sample, which
+#              finished  On the holder, after the inbox step, every run, whatever the level and
+#                     budget: claude stop (bounded 30 s, as team-worker bounds it) of each finished
+#                     session of every open task, the idle live session of a launch whose work is
+#                     handed on (plan_tasks' finished in bin/lib/ledger.jq, the predicate
+#                     team-worker and the level step's stow plan share), so a finished session
+#                     stops holding memory within a run of its done. It leaves a busy session, one
+#                     waiting for input, one whose status is not idle, an ops session, a builder
+#                     with no later builder launch on its worktree (one whose pr is out included,
+#                     since a review round may go back to it), and every session of a task with no
+#                     handing-on event. It logs each stop ("stopped T9-reviewer 33333333: its
+#                     work is handed on"); a stop that fails, a session list that cannot be read
+#                     (claude agents --json, bounded 30 s) and the sessions left once no stop may
+#                     start (90 s into the step) are each a warning line, and none fails the run.
+#              slots  On the holder, after the finished step, every run: team-slots sample, which
 #                     takes one reading of the machine's load for the effective task cap.
 #              capacity  On the holder, after the slots step, every run: team-capacity sample,
 #                     which takes one reading of the machine's load with the team's use per task
@@ -103,10 +116,11 @@
 # posted}: GitHub unreachable since the UTC time, and whether #coordinator was told; read by
 # team-lease status, the fence hook and the doctor), login-refused ({since, reason}: the refusal
 # was posted), and on macOS heartbeat.err, the job's stderr (systemd keeps it in the journal).
-# TEAM_TIMERS_SLOTS_SECONDS, TEAM_TIMERS_CAPACITY_SECONDS, TEAM_TIMERS_LEVEL_SECONDS,
-# TEAM_TIMERS_SWEEP_SECONDS and TEAM_TIMERS_JANITOR_SECONDS replace the slots reading's 60 s, the
-# capacity step's 60 s for each of its commands, the level step's 300 s, the sweep's 300 s and the
-# janitor's 1200 s (the tests' seams).
+# TEAM_TIMERS_FINISHED_SECONDS, TEAM_TIMERS_SLOTS_SECONDS, TEAM_TIMERS_CAPACITY_SECONDS,
+# TEAM_TIMERS_LEVEL_SECONDS, TEAM_TIMERS_SWEEP_SECONDS and TEAM_TIMERS_JANITOR_SECONDS replace the
+# finished step's 90 s after which no stop starts, the slots reading's 60 s, the capacity step's
+# 60 s for each of its commands, the level step's 300 s, the sweep's 300 s and the janitor's 1200 s
+# (the tests' seams).
 # Exit 0 done, 1 refused or a step failed, 2 usage error, 75 GitHub unreachable.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
@@ -123,8 +137,17 @@ RETRY_SECONDS=60
 POST_TIMEOUT=20
 # Seconds: the most team-inbox may take (its lock's wait and two calls).
 INBOX_TIMEOUT=120
-# Seconds: the most the reading, the level step, the sweep and the janitor may take, together
-# well inside the lease's hour.
+# Seconds: the most each step after the lease step may take on the holder, each stopped then and
+# killed 10 s later but the finished step's: the inbox step 120 (INBOX_TIMEOUT above), the finished
+# step 120 (its session list and each stop bounded 30 s, FINISHED_CALL_TIMEOUT, and no stop started
+# once FINISHED_TIMEOUT has passed, so at most 90 s and one last stop's 30), the slots reading 60,
+# the capacity step's sample and place 60 each, the level step 300, the sweep 300, the pack 300 and
+# the janitor 1200. That is 2520 s in all, 2600 s with the kills, about 43 minutes, inside the
+# lease's hour (team-lease's TTL_MINUTES); the checkpoint has no limit of its own. The lease step
+# leaves a lease unrenewed only under 14 minutes old, so a run that hits every limit ends with it
+# about 57 minutes old, the checkpoint's time aside.
+FINISHED_TIMEOUT=${TEAM_TIMERS_FINISHED_SECONDS:-90}
+FINISHED_CALL_TIMEOUT=30
 SLOTS_TIMEOUT=${TEAM_TIMERS_SLOTS_SECONDS:-60}
 CAPACITY_TIMEOUT=${TEAM_TIMERS_CAPACITY_SECONDS:-60}
 LEVEL_TIMEOUT=${TEAM_TIMERS_LEVEL_SECONDS:-300}
@@ -638,7 +661,37 @@ inbox_step() {
   esac
 }
 
-# The slots step, on the holder after the inbox step: team-slots sample, every run.
+# The finished step, on the holder after the inbox step, every run, whatever the level and budget:
+# claude stop of each finished session of every open task, as the header's finished says. Never
+# fails the run: a stop that fails, a session list or ledger that cannot be read, and the sessions
+# left once FINISHED_TIMEOUT has passed are each a warning line.
+finished_step() {
+  local ledger=$TEAM_HOME/ledger.jsonl sessions finished task role session out start=$SECONDS left=0
+  [[ -e $ledger ]] || ledger=/dev/null
+  if ! sessions=$(bounded "$FINISHED_CALL_TIMEOUT" claude agents --json 2>/dev/null </dev/null {run_fd}>&- |
+    jq -ce 'select(type == "array")' 2>/dev/null); then
+    log finished "warning: cannot read the live session list (claude agents --json), so no finished session was stopped"
+    return 0
+  fi
+  if ! finished=$(ledger_jq 'ledger_events | plan_tasks($sessions)[] | .task as $task | .finished[] | [$task, .role, .session] | @tsv' \
+    -nRr --argjson sessions "$sessions" "$ledger" 2>"$err"); then
+    log finished "warning: cannot read $ledger ($(first_error)), so no finished session was stopped"
+    return 0
+  fi
+  while IFS=$'\t' read -r task role session; do
+    [[ -n $session ]] || continue
+    if ((SECONDS - start >= FINISHED_TIMEOUT)); then
+      left=$((left + 1))
+    elif out=$(bounded "$FINISHED_CALL_TIMEOUT" claude stop "$session" 2>&1 </dev/null {run_fd}>&-); then
+      log finished "stopped $task-$role $session: its work is handed on"
+    else
+      log finished "warning: could not stop $task-$role $session ($(grep -m1 . <<<"$out" || echo "claude stop failed with no reason given"))"
+    fi
+  done <<<"$finished"
+  ((left == 0)) || log finished "warning: $left finished $( ((left == 1)) && echo session || echo sessions) left for the next run: no stop starts $FINISHED_TIMEOUT s into the step"
+}
+
+# The slots step, on the holder after the finished step: team-slots sample, every run.
 slots_step() {
   run_step slots "$SLOTS_TIMEOUT" team-slots sample
 }
@@ -771,6 +824,7 @@ run_heartbeat() {
   if [[ -e $offline ]]; then back_step; else lease_step; fi
   if ((holding)); then
     inbox_step
+    finished_step
     slots_step
     capacity_step
     level_step

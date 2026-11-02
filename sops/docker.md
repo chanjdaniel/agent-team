@@ -50,6 +50,9 @@ The wrapper:
 - turns the environment variables `TEAM_OWNER`, `TEAM_TASK`, `TEAM_KIND`, `TEAM_WORKTREE` and `TEAM_EXPIRES` into the labels of every service, named volume and network, each empty when its variable is unset;
 - creates each bind mount's host directory before `up` and runs every service that writes into a bind mount as the calling user, since Docker creates a missing source directory as root and a service running as root writes root-owned files into the worktree, which no session can remove without `sudo` (T3's `node_modules`, T21's and T24's gate worktrees).
 
+The `stack` block's `seed` command, which `team-stack` runs from the worktree with `env`'s exports, finds the stack running and never starts one: when the stack is not up, it refuses and exits non-zero, so only `team-stack up` starts a stack, labelled and admitted.
+Conventioner's seed command, `scripts/seed_fixture.sh`, does not meet this yet: run by hand after an `up` refused for room on 2026-11-01, it started slot 8's stack itself, with no team labels, which `team-stack` then refused to start or remove.
+
 A caller clears its own stack identity (`COMPOSE_PROJECT_NAME`, `TH_PORTS` and every `TH_*_PORT`) before calling the wrapper and sets only what it means, so a shell that once exported another stack's never redirects a call.
 
 ## Running a worktree's stack
@@ -229,8 +232,8 @@ The heartbeat (`team-timers run`, every 5 minutes on the lease holder) can run t
 - A hung Docker never holds the heartbeat's lock past the lease's renewals: the sweep is stopped after 5 minutes and the janitor after 20, each with every command it started, and logged as `<step>: failed: timed out after <seconds> s`.
   A janitor stopped so wrote no report, so the next run starts it again, and its reaper goes on where the last one stopped.
   The `slots` and `capacity` steps, which run every run before them and are no setting's, each give `team-stack ls --json` 30 seconds for their reading of the machine's load (`team-slots sample`, `team-capacity sample`), then take the reading without Docker; each of their commands is stopped after 60 seconds.
-  The `level` step after them, no setting's either, runs `team-level tick`, which holds every running team container to the level's CPU with `docker update --cpus` (`sops/resources.md`), and is stopped after 60 seconds.
-  While Docker stays hung a run takes up to 28 minutes, so the lease is still renewed well inside its hour, and a checkpoint comes about every 28 minutes instead of every 5.
+  The `level` step after them, no setting's either, runs `team-level tick`, which holds every running team container to the level's CPU with `docker update --cpus` (`sops/resources.md`), and is stopped after 5 minutes.
+  While Docker stays hung a run takes up to about 34 minutes (these steps' limits, each command killed 10 seconds after its stop), so the lease is still renewed well inside its hour, and a checkpoint comes about every 34 minutes instead of every 5.
 - A janitor run that fails (Docker not answering, a removal that failed) still writes the day's report, so the heartbeat runs it again only the next day; `~/agent-team/bin/team-janitor` by hand runs it again at once.
 - The job runs with the `PATH` that `team-timers enable` captured, and both steps need `docker` on it (the sweep `claude` too): on macOS Docker Desktop's `docker` is in `/usr/local/bin`.
   When Docker was installed after the heartbeat was enabled, or `docker` was not on the `PATH` of the shell that enabled it, run `team-timers enable` again, with Daniel's yes as every enable needs, from a shell where `command -v docker` answers; it rewrites the job with that `PATH`.
@@ -251,6 +254,7 @@ Builders, planners and reviewers carry these rules in a short `## Docker stacks`
 
 - Start the worktree's stack only with `~/agent-team/bin/team-stack up`, never `docker compose up`, the wrapper's `up` or `docker run`, and reach it with `eval "$(~/agent-team/bin/team-stack env)"`.
 - On `up`'s exit 75, send `T<n> PAUSED <its reason line>` and wait, rather than fighting for room.
+- Seed only with `~/agent-team/bin/team-stack seed` (or let `up` seed a new stack), never the project's seed script, and run nothing after an `up` that may exit 75 in the same call.
 - `~/agent-team/bin/team-stack stop` a stack no longer needed, and `~/agent-team/bin/team-stack down` it when done.
 - Never prune, and never remove another task's or project's containers, volumes or networks; never test against Daniel's primary stack.
 

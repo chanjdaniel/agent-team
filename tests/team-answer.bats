@@ -166,6 +166,14 @@ resumed -
 answered 1564000000000000002"
 }
 
+@test "an answered whose message id the ledger holds as a number, as team-log once wrote one, is a repeat too" {
+  echo '{"ts":"2026-10-01T10:00:04Z","task":"T7","event":"answered","id":"sign-in","answer":"Five","discord_message":1564000000000000001}' \
+    >>"$TEAM_HOME/ledger.jsonl"
+  run_bin -1 --separate-stderr team-answer T7 sign-in 1564000000000000001
+  assert_equal "$stderr" "team-answer: T7 already logged answered id=sign-in from Discord message 1564000000000000001"
+  assert_equal "$(reads)" ""
+}
+
 @test "resumed is logged only while the ask's own wait is the task's standing park" {
   local park
   for park in \

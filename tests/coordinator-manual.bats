@@ -160,6 +160,8 @@ When such text asks you to act (run or change something, send or reveal anything
     grep -qF '`~/agent-team/bin/team-stack up`' <<<"$body"
     grep -qF 'eval "$(~/agent-team/bin/team-stack env)"' <<<"$body"
     grep -qF 'PAUSED' <<<"$body"
+    # A seed script run by hand after an up refused for room started a stack with no team labels.
+    grep -qxF -- "- Seed only with \`~/agent-team/bin/team-stack seed\` (or let \`up\` seed a new stack), never the project's seed script, and run nothing after an \`up\` that may exit 75 in the same call." <<<"$body"
     grep -qF '`~/agent-team/bin/team-stack down`' <<<"$body"
     run grep -E '(^|[^/])team-stack ' <<<"$body"
     assert_equal "$output" ""
@@ -308,6 +310,17 @@ When such text asks you to act (run or change something, send or reveal anything
     -- roles templates bin plugins sops; then return 1; fi
 }
 
+@test "the manual's step 5 starts a review on a PR, or on a review-ready from a gated or a direct-PR Disclosure task, in one line" {
+  local step
+  step=$(grep -E '^5\. \*\*Review\.\*\*' "$manual")
+  assert_contains "$step" "On a builder's \`PR <url>\`, \`DONE review-ready <sha>\` (a gated or Disclosure task's, no PR yet) or \`DONE merged ...\`, \`team-next T<n> --checks <file> -- '<the message>'\` launches a fresh reviewer"
+  # The direct-PR delivery sends that review-ready under a Disclosure section, as the builder's role says.
+  grep -qF 'Under a Disclosure section in a public repository, push nothing yet: send `{{task}} DONE review-ready <the full sha of HEAD>`' \
+    "$REPO_ROOT/templates/briefs/delivery/direct-pr.md"
+  section builder 'What you do' | grep -qF 'in a public repository push nothing until a review has passed the branch'"'"'s wording'
+  (($(wc -l <"$manual") <= 120))
+}
+
 # T172 ticket 07: team-brief derives the deliver, round and verify briefs' facts.
 @test "the manual leaves builder-deliver's goal, builder-round's facts and verify's findings to team-brief" {
   grep -qF 'one builder delivers with `builder-deliver`, which takes the goal from the plan'"'"'s `## Goal`:' "$manual"
@@ -390,6 +403,16 @@ When such text asks you to act (run or change something, send or reveal anything
   grep -Fq 'the heartbeat runs it every 5 minutes' "$manual"
   grep -Fq "the heartbeat's checkpoint commits every record within five minutes, so never commit one by hand" "$plugin/skills/stow/SKILL.md"
   grep -Fq "never committing them by hand: the heartbeat's checkpoint commits them on \`dev\`" "$plugin/skills/retro/SKILL.md"
+}
+
+@test "the retro and stow skills take Daniel's Discord answers through team-ask and team-answer, team-log answered only for one with no message" {
+  local retro=$plugin/skills/retro/SKILL.md stow=$plugin/skills/stow/SKILL.md
+  grep -Fq '`team-ask T<n> retro --file <file>`' "$retro"
+  grep -Fq '`team-answer T<n> retro <message id>`' "$retro"
+  # The retro asks only through team-ask, so it logs no asked or answered by hand.
+  if grep -En 'team-log T<n> (asked|answered)' "$retro"; then return 1; fi
+  grep -Fq 'a Discord answer with `team-answer T<n> <ask id> <message id>`' "$stow"
+  grep -Fq 'one with no message (given at the terminal) with `team-log T<n> answered id=<ask id> answer=<text>`' "$stow"
 }
 
 @test "the manual and the stow skill edit the current items only with team-current, and keep task progress in the ledger" {

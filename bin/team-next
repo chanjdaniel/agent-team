@@ -70,9 +70,9 @@
 # for ..." instead while team-state's plan-time approval stands, the review found no guarded area
 # and no review of the task counted a security or real-data finding or logged no counts (which
 # team-merge refuses the plan-time word for), each guarded area and such review named, and the
-# before notes to queue as follow-ups; for a PR behind
-# its base, "merge base: ..." instead, the builder-merge-base brief for the holder under 250k,
-# else a fresh builder, after the holder's STOW when it is live. For a pass with no PR (a gated project's review-ready), the
+# before notes to queue as follow-ups; for a PR behind its base, "merge base: ..." instead, the
+# builder-merge-base brief for the holder under 250k, else a fresh builder, after the holder's
+# STOW when it is live. For a pass with no PR (a review-ready, a gated or Disclosure task's), the
 # message telling the holder to go on with its delivery. For findings, or a pass that sent some
 # back (which team-log logs as findings): the message for the holder under 250k (its name, the
 # findings sent back and the findings file the message names, for a pass the newest of review.md
@@ -353,7 +353,8 @@ if [[ $handoff == verdict ]]; then
   fi
 
   if [[ $pr == null ]]; then
-    # No PR yet: a gated project's builder waits for the pass to run its gate.
+    # No PR yet: a gated project's builder waits for the pass to run its gate, a Disclosure task's
+    # to push and open its PR.
     go_on="$task the review of $(jq -r '.head[:8]' <<<"$review") passed: go on with your delivery"
     if [[ $holds == gone ]]; then echo "$gone $go_on"; else echo "send to $who: $go_on"; fi
     exit 0

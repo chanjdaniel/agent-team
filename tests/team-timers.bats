@@ -366,6 +366,155 @@ POST channels/1562486564871995482/messages"
   assert_equal "$(inbox_calls | wc -l)" 1
 }
 
+# One ledger line per line on stdin, in order: "launch <task> <role> <session> <worktree>" or
+# "<task> <jq object of the event's other fields>".
+log_events() {
+  local kind more task role session wt
+  while read -r kind more; do
+    if [[ $kind == launch ]]; then
+      read -r task role session wt <<<"$more"
+      jq -cn --arg t "$task" --arg r "$role" --arg s "$session" --arg wt "$wt" '{ts: (now | todate), task: $t,
+        event: "launch", role: $r, session: $s, worktree: $wt, toolkits: [], machine: "home-pc"}'
+    else
+      jq -cn --arg t "$kind" "{ts: (now | todate), task: \$t} + ($more)"
+    fi
+  done >>"$TEAM_HOME/ledger.jsonl"
+}
+
+# The claude stub for the finished step: claude agents --json lists $STUB_FIXTURES/agents.json, or
+# fails while $STUB_FIXTURES/agents-fail is there; claude stop succeeds unless the id is in
+# $STUB_FIXTURES/stop-fails.
+finished_stub() {
+  : >"$STUB_FIXTURES/stop-fails"
+  stub_script claude <<'SH'
+if [[ $1 == agents ]]; then
+  if [[ -e $STUB_FIXTURES/agents-fail ]]; then echo "cannot reach the daemon" >&2; exit 1; fi
+  cat "$STUB_FIXTURES/agents.json"; exit 0
+fi
+if [[ $1 == stop ]]; then
+  if grep -qx "$2" "$STUB_FIXTURES/stop-fails"; then echo "no such session $2" >&2; exit 1; fi
+  echo "Stopped $2"; exit 0
+fi
+echo "claude stub: unplanned call: $*" >&2; exit 127
+SH
+}
+
+# Open tasks' workers, each listed live: T9's idle planner and reviewer, each handed on by a done
+# of its session; its idle builder of the first worktree, whose pr is out with no later builder
+# launch there; its idle builder of the second worktree, handed on by a ticket-done and the later
+# builder launch there, which is idle with nothing of its own since; reviewers handed on by their
+# done but busy, waiting for input, starting and with no status; an idle ops session with a done.
+# T8's idle planner, with no event of its own since its launch, and closed T7's idle reviewer,
+# handed on by its done.
+finished_workers() {
+  local wt1=$HOME/slots/proj/1 wt2=$HOME/slots/proj/2
+  log_events <<LINES
+launch T9 planner 11111111 $wt1
+launch T9 builder 22222222 $wt1
+launch T9 reviewer 33333333 $wt1
+launch T9 builder 44444444 $wt2
+launch T9 reviewer 55555555 $wt1
+launch T9 reviewer 5a5a5a5a $wt1
+launch T9 reviewer 5b5b5b5b $wt1
+launch T9 reviewer 5c5c5c5c $wt1
+launch T9 ops 66666666 $wt1
+T9 {event: "done", role: "planner", session: "11111111"}
+T9 {event: "pr", url: "https://github.com/o/r/pull/1", head: "abc1234"}
+T9 {event: "done", role: "reviewer", session: "33333333"}
+T9 {event: "ticket-done", ticket: "01", commits: ["abc1234"]}
+launch T9 builder 45454545 $wt2
+T9 {event: "done", role: "reviewer", session: "55555555"}
+T9 {event: "done", role: "reviewer", session: "5a5a5a5a"}
+T9 {event: "done", role: "reviewer", session: "5b5b5b5b"}
+T9 {event: "done", role: "reviewer", session: "5c5c5c5c"}
+T9 {event: "done", role: "ops", session: "66666666"}
+launch T8 planner 77777777 $wt1
+launch T7 reviewer 88888888 $wt1
+T7 {event: "done", role: "reviewer", session: "88888888"}
+T7 {event: "closed"}
+LINES
+  cat >"$STUB_FIXTURES/agents.json" <<'JSON'
+[{"id": "11111111", "name": "T9-planner", "status": "idle"},
+ {"id": "22222222", "name": "T9-builder", "status": "idle"},
+ {"id": "33333333", "name": "T9-reviewer", "status": "idle"},
+ {"id": "44444444", "name": "T9-builder", "status": "idle"},
+ {"id": "45454545", "name": "T9-builder", "status": "idle"},
+ {"id": "55555555", "name": "T9-reviewer", "status": "busy"},
+ {"id": "5a5a5a5a", "name": "T9-reviewer", "status": "idle", "state": "blocked"},
+ {"id": "5b5b5b5b", "name": "T9-reviewer", "status": "starting"},
+ {"id": "5c5c5c5c", "name": "T9-reviewer"},
+ {"id": "66666666", "name": "T9-ops", "status": "idle"},
+ {"id": "77777777", "name": "T8-planner", "status": "idle"},
+ {"id": "88888888", "name": "T7-reviewer", "status": "idle"}]
+JSON
+  finished_stub
+}
+
+# The ids claude stop was called with, one per line.
+stops() {
+  stub_calls claude | jq -r 'select(.[0] == "stop") | .[1]'
+}
+
+@test "the finished step stops each open task's idle session whose work is handed on, every run on the holder, one line each" {
+  finished_workers
+  run_bin -0 team-timers run
+  assert_equal "$output" "$(cat "$log")"
+  assert_equal "$(steps "$output")" "lease finished checkpoint"
+  assert_equal "$(grep ' finished: ' <<<"$output" | cut -d ' ' -f 2-)" "finished: stopped T9-planner 11111111: its work is handed on
+finished: stopped T9-reviewer 33333333: its work is handed on
+finished: stopped T9-builder 44444444: its work is handed on"
+  # Left, unnamed: the builder whose pr is out, the later builder, the busy, waiting, starting and
+  # statusless reviewers, the ops session, T8's planner with no handing-on event, closed T7's.
+  assert_equal "$(stops)" $'11111111\n33333333\n44444444'
+  # With no reading the team is over no budget, so the level step, which logs each stop of its
+  # own, logged none: the stops are the finished step's, whatever the level.
+}
+
+@test "the finished step stops nothing off the lease or offline" {
+  make_machine laptop
+  on_machine laptop finished_workers
+  finished_workers
+  on_machine laptop run_bin -0 team-timers run
+  assert_equal "$(steps "$output")" "lease"
+  stub_sleep </dev/null
+  cut_origin
+  run_bin -75 team-timers run
+  run_bin -75 team-timers run
+  assert_equal "$(stops)" ""
+}
+
+@test "a stop that fails is a warning line and the run goes on; an unreadable session list is one warning line; neither fails the run" {
+  finished_workers
+  echo 33333333 >"$STUB_FIXTURES/stop-fails"
+  run_bin -0 team-timers run
+  assert_equal "$(grep ' finished: ' <<<"$output" | cut -d ' ' -f 2-)" "finished: stopped T9-planner 11111111: its work is handed on
+finished: warning: could not stop T9-reviewer 33333333 (no such session 33333333)
+finished: stopped T9-builder 44444444: its work is handed on"
+  assert_equal "$(steps "$output")" "lease finished checkpoint"
+
+  # The capacity and level steps read the same list, and their failures are what fail this run.
+  touch "$STUB_FIXTURES/agents-fail"
+  : >"$STUB_CALLS/claude.log"
+  run_bin -1 team-timers run
+  assert_equal "$(steps "$output")" "lease finished capacity level checkpoint"
+  assert_equal "$(grep ' finished: ' <<<"$output" | cut -d ' ' -f 2-)" \
+    "finished: warning: cannot read the live session list (claude agents --json), so no finished session was stopped"
+  assert_equal "$(grep -c ': failed: ' <<<"$output")" 2
+  [[ $(grep ' capacity: \| level: ' <<<"$output") == *"failed: "*"failed: "* ]]
+  assert_equal "$(stops)" ""
+}
+
+@test "once the finished step has run its time, no stop starts, and the sessions left are one warning line" {
+  finished_workers
+  TEAM_TIMERS_FINISHED_SECONDS=0 run_bin -0 team-timers run
+  assert_equal "$(grep ' finished: ' <<<"$output" | cut -d ' ' -f 2-)" \
+    "finished: warning: 3 finished sessions left for the next run: no stop starts 0 s into the step"
+  assert_equal "$(stops)" ""
+  # The next run stops them.
+  run_bin -0 team-timers run
+  assert_equal "$(stops)" $'11111111\n33333333\n44444444'
+}
+
 @test "run on a machine that does not hold the lease logs and makes no commit" {
   make_machine laptop
   local tip
@@ -745,6 +894,40 @@ day_report() {
   echo "$HOME/.local/state/agent-team/janitor/$(date +%F).md"
 }
 
+@test "every step that logs on the holder logs in one run, in the heartbeat's order" {
+  docker_machine
+  discord_answers
+  stack_json '{"heartbeat_sweep": true, "heartbeat_janitor": true}'
+  # inbox: the Waiting on you message deleted by hand, so a new one is posted.
+  rm -f "$STUB_FIXTURES/inbox/1569000000000000000.json"
+  # slots: a malformed slots.json, the one way a slots step logs.
+  echo '{"cap": "ten"}' >"$HOME/.config/agent-team/slots.json"
+  # finished: T7's idle reviewer, handed on by its done, stopped; capacity: the same session,
+  # still listed by the stub and outside its slice, placed.
+  log_events <<LINES
+launch T7 reviewer a1b2c3d4 $HOME/slots/proj/1
+T7 {event: "done", role: "reviewer", session: "a1b2c3d4"}
+LINES
+  fake_placement
+  fake_process 100 99 - claude
+  stub_reply claude '[{"pid": 100, "id": "a1b2c3d4", "name": "T7-reviewer", "status": "idle"}]'
+  # level: automatic mode at none for an hour over readings that span rise_minutes, so it rises.
+  local file=$HOME/.local/state/agent-team/capacity/readings.jsonl minutes
+  mkdir -p "${file%/*}"
+  for minutes in 25 20 15 10 5; do
+    jq -cn --arg at "$(date -u -d "$minutes minutes ago" +%FT%TZ)" \
+      '{at: $at, os: "linux", memory: {total: 34359738368, available: 25769803776, team: 0, others: 8589934592}, cpu: null}' >>"$file"
+  done
+  jq -cn --arg ts "$(date -u -d '1 hour ago' +%FT%TZ)" '{ts: $ts, mode: "auto", level: "none", by: "auto", machine: "home-pc"}' \
+    >"$TEAM_HOME/level.jsonl"
+  # stacks: the sweep stops the idle conventioner-2; checkpoint: always a line; pack: 200 loose
+  # objects; janitor: no report of today yet.
+  add_loose 200
+  run_bin -1 team-timers run
+  assert_equal "$output" "$(cat "$log")"
+  assert_equal "$(steps "$output")" "lease inbox finished slots capacity level stacks checkpoint pack janitor"
+}
+
 @test "the stacks and janitor steps are off without stack.json, without their keys and while they are false: no line, no call" {
   docker_machine
   run_bin -0 team-timers run
@@ -805,7 +988,10 @@ exit 1
 EOF
   run_bin -1 team-timers run
   assert_equal "$output" "$(cat "$log")"
-  assert_equal "$(steps "$output")" "lease capacity level stacks checkpoint janitor"
+  assert_equal "$(steps "$output")" "lease finished capacity level stacks checkpoint janitor"
+  # The finished step warns and stops nothing, never failing the run.
+  assert_equal "$(grep ' finished: ' <<<"$output" | cut -d ' ' -f 2-)" \
+    "finished: warning: cannot read the live session list (claude agents --json), so no finished session was stopped"
   # The capacity step's reading still went in, without the sessions; its place failed.
   assert_equal "$(grep ' capacity: ' <<<"$output" | cut -d ' ' -f 2-)" \
     "capacity: failed: claude: the session list is down"
@@ -980,7 +1166,8 @@ EOF
   [[ $(grep ' capacity: ' <<<"$output") =~ ^[0-9T:Z-]+" capacity: failed: $file: minor_share must be a number above 0 and at most 1, not \"a third\""$ ]]
   [[ $(grep ' level: ' <<<"$output") =~ ^[0-9T:Z-]+" level: failed: $file: minor_share must be a number above 0 and at most 1, not \"a third\""$ ]]
   [[ ! -e $HOME/.local/state/agent-team/capacity/readings.jsonl ]]
-  assert_equal "$(stub_calls claude)" '["agents","--json"]'
+  # The finished step's session list and the place's.
+  assert_equal "$(stub_calls claude)" $'["agents","--json"]\n["agents","--json"]'
 }
 
 @test "neither step runs off the lease, while another run holds the lock, offline or on a fenced machine; both run after the back step" {

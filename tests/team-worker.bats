@@ -157,8 +157,35 @@ run_fake() {
   done
   run_bin -2 team-worker T0 planner "$wt1" --toolkit browser --toolkit frontend -- go
   assert_contains "$output" "toolkit 'frontend' is Daniel's own"
+  run_bin -2 team-load-check --toolkit frontend
+  assert_contains "$output" "toolkit 'frontend' is Daniel's own"
   assert_equal "$(stub_calls claude)" ""
   assert_equal "$(launches)" ""
+}
+
+@test "the toolkits no worker loads, and the ops role's, are one list with their reasons in the library, which team-worker and team-load-check read" {
+  local lib=$REPO_ROOT/bin/lib/team.sh reason
+  for reason in "is the coordinator's own (claude-coordinator" "is Daniel's own (claude --plugin-dir" "' is for the ops role only"; do
+    assert_equal "$(grep -rlF -- "$reason" "$REPO_ROOT/bin")" "$lib"
+  done
+  grep -q 'toolkit_refusal "\$2"' "$REPO_ROOT/bin/team-worker"
+  grep -q 'toolkit_refusal "\$kit"' "$REPO_ROOT/bin/team-worker"
+  grep -q 'toolkit_refusal "\$kit"' "$REPO_ROOT/bin/team-load-check"
+
+  # A role-free call judges only what no worker loads; a role's call adds the ops role's toolkits.
+  run bash -c 'source "$1/bin/lib/team.sh"; toolkit_refusal "$2" "$3"' _ "$REPO_ROOT" prod-read ''
+  assert_equal "$status" 1
+  assert_equal "$output" ""
+  run bash -c 'source "$1/bin/lib/team.sh"; toolkit_refusal "$2" "$3"' _ "$REPO_ROOT" prod-read ops
+  assert_equal "$status" 1
+  run bash -c 'source "$1/bin/lib/team.sh"; toolkit_refusal "$2" "$3"' _ "$REPO_ROOT" prod-read builder
+  assert_equal "$status" 0
+  assert_equal "$output" "toolkit 'prod-read' is for the ops role only"
+  run bash -c 'source "$1/bin/lib/team.sh"; toolkit_refusal "$2" "$3"' _ "$REPO_ROOT" frontend ops
+  assert_equal "$status" 0
+  assert_contains "$output" "toolkit 'frontend' is Daniel's own"
+  run bash -c 'source "$1/bin/lib/team.sh"; toolkit_refusal "$2" "$3"' _ "$REPO_ROOT" browser builder
+  assert_equal "$status" 1
 }
 
 @test "a task with no Discord thread is refused" {
