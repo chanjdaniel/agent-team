@@ -15,7 +15,8 @@
 # It always exits 0, since Claude Code ignores this event's exit code, and appends nothing on any
 # failure: input that is not a denial, no team home, or a ledger lock held for more than a second
 # (ledger_append's wait), so a denial never stalls the session.
-# Claude Code fires PermissionDenied only for auto mode's denials, never for a deny rule's.
+# Claude Code's hooks reference says PermissionDenied fires only for auto mode's denials, never
+# for a deny rule's.
 trap 'exit 0' EXIT
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/team.sh" "$@"
