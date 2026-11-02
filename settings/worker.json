@@ -277,6 +277,8 @@
       "Bash(*/bin/team-inbox *)",
       "Bash(team-thread T*)",
       "Bash(*/bin/team-thread T*)",
+      "Bash(team-run-approved *)",
+      "Bash(*/bin/team-run-approved *)",
       "Read(~/.claude/channels/**)",
       "Edit(~/.claude/channels/**)",
       "Bash(*.claude/channels/*.env*)",

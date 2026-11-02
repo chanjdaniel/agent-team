@@ -853,6 +853,26 @@ allowed_in() {
   return 1
 }
 
+@test "no worker runs an approved script: team-run-approved is the coordinator's, by name or by path" {
+  thread T7
+  local role settings command bin=$REPO_ROOT/bin
+  for role in planner builder reviewer; do
+    run_bin -0 team-worker T7 "$role" "$wt1" -- go
+    settings=$TEAM_HOME/tasks/T7/settings.$role.json
+    # shellcheck disable=SC2088 # ~ is part of the command as an agent types it
+    for command in "$bin/team-run-approved T7 fix" "team-run-approved T7 fix" \
+      "~/agent-team/bin/team-run-approved T7 fix" "cd /tmp && TZ=UTC $bin/team-run-approved T7 fix"; do
+      denied_in "$settings" "$command" || { echo "$role allows: $command" >&2; return 1; }
+    done
+    for command in "git add bin/team-run-approved tests/team-run-approved.bats" "grep -n die bin/team-run-approved" \
+      "tests/vendor/bats-core/bin/bats tests/team-run-approved.bats" "shellcheck bin/team-run-approved"; do
+      if denied_in "$settings" "$command"; then echo "$role denies: $command" >&2; return 1; fi
+    done
+  done
+  # The coordinator's own settings deny it nothing.
+  assert_equal "$(jq -c '[.permissions.deny[]? | select(contains("team-run-approved"))]' "$REPO_ROOT/coordinator.settings.json")" '[]'
+}
+
 @test "no worker gains Discord: a planner runs only its own task's interview post and wait, and no role reads the bot's files" {
   thread T7
   local role settings command bin=$REPO_ROOT/bin
