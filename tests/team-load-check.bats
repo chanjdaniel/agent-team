@@ -82,8 +82,9 @@ inventory() {
       '["agents","--json"]' '["stop","4f2a9c1e"]' '["rm","4f2a9c1e"]')"
 }
 
-# The team's autoMode lines, from this checkout's worker settings.
-team_lines() { jq -r '.autoMode.environment[] | select(. != "$defaults")' "$REPO_ROOT/settings/worker.json"; }
+# The team's autoMode lines in the settings team-worker generated for <role> (default planner),
+# the registry's projects filled in.
+team_lines() { jq -r '.autoMode.environment[] | select(. != "$defaults")' "$TEAM_HOME/tasks/T0/settings.${1:-planner}.json"; }
 
 @test "the planner's effective autoMode, read under its settings in its worktree, holds the team's lines and is kept" {
   inventory --- tdd
@@ -96,7 +97,8 @@ team_lines() { jq -r '.autoMode.environment[] | select(. != "$defaults")' "$REPO
 
 @test "an effective autoMode that lacks a team line, or no config at all, fails the check" {
   inventory --- tdd
-  jq -n --arg first "$(team_lines | head -1)" '{environment: ["a built-in line", $first], soft_deny: ["a built-in rule"]}' \
+  # The worker settings' first team line, which names no registry fact, is the one the config holds.
+  jq -n --arg first "$(jq -r '.autoMode.environment[1]' "$REPO_ROOT/settings/worker.json")" '{environment: ["a built-in line", $first], soft_deny: ["a built-in rule"]}' \
     >"$STUB_FIXTURES/automode.json"
   run_bin -1 team-load-check
   assert_contains "$output" "FAIL planner: its effective autoMode lacks its settings' environment line: $(team_lines | sed -n 2p)"
@@ -393,7 +395,7 @@ oplog_lines() {
   printf '%s\n' '# Ops log of T0' '' '- 2026-10-22T00:00:00Z requested `prod-read` `find` `{}`' >"$TEAM_HOME/tasks/T0/ops-log.md"
   run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit prod-read
   assert_contains "$output" "load check: Daniel, a 1Password prompt is coming on the PC: approve it"
-  assert_contains "$output" "load check: ops's effective autoMode holds the $(team_lines | wc -l) lines of its settings' autoMode"
+  assert_contains "$output" "load check: ops's effective autoMode holds the $(team_lines ops | wc -l) lines of its settings' autoMode"
   assert_equal "$(cat "$BATS_TEST_TMPDIR/automode-cwd")" "$(realpath "$wt")"
   assert_contains "$output" "load check: 11 MCP tools, 10 built-in tools"
   assert_equal "${lines[-1]}" "PASS"
@@ -635,8 +637,8 @@ reviewer    45003       2               2            0"
   for role in planner builder reviewer; do
     assert_equal "$(cat "$BATS_TEST_TMPDIR/launch-$role")" "$(printf '%s\n' "$wt" 'Reply with OK and nothing else.')"
     # Each role's effective autoMode, read under its own settings, holds the team's lines.
-    assert_contains "$output" "load check: $role's effective autoMode holds the $(team_lines | wc -l) lines of its settings' autoMode"
-    assert_equal "$(jq -r '.environment[]' "$TEAM_HOME/tasks/T0/automode-$role.json")" "$(echo 'a built-in line'; team_lines)"
+    assert_contains "$output" "load check: $role's effective autoMode holds the $(team_lines "$role" | wc -l) lines of its settings' autoMode"
+    assert_equal "$(jq -r '.environment[]' "$TEAM_HOME/tasks/T0/automode-$role.json")" "$(echo 'a built-in line'; team_lines "$role")"
   done
   assert_equal "$(cat "$BATS_TEST_TMPDIR/automode-cwd")" "$(printf '%s\n' "$wt" "$wt" "$wt")"
   # Only figures leave the transcripts.
