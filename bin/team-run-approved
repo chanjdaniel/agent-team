@@ -12,14 +12,17 @@
 #   - the task is open, and the ask names a script;
 #   - the ask has an answered of <id> logged after it (the coordinator runs it on Daniel's yes:
 #     an answered is the ledger's record that they answered, whatever they said);
-#   - no ran of <id> was logged since the ask, so one OK runs the script once, and a second run
-#     needs a new ask;
+#   - no ran of <id> was logged since the ask, so a second run needs a new ask;
 #   - the script, its symbolic links resolved, is a file under one of the task's open worktrees
 #     or the team home's tasks/T<n>/;
 #   - its sha256 now is the ask's, or the refusal names both hashes;
 #   - this machine holds the lease, confirmed against origin (team-lease check), as for a launch;
 #   - no other run of the ask holds its lock, and no run of it started on this machine: a run
 #     that was killed, or could not log its ran, still used the OK.
+# So one OK runs the script once on one machine, never twice there: the mark of a started run is
+# this machine's state, never the records, so a run killed with its machine, followed by a steal
+# or a handoff, leaves the new holder an answered ask with no ran and no mark, and the script can
+# run again there.
 # The run's files are this machine's, never records: the directory
 # ${XDG_STATE_HOME:-~/.local/state}/agent-team/runs/T<n>/ holds <id>.lock, the lock a run holds
 # from its last check to its end, <id>.started, the mark of the ask it ran, written before the
@@ -55,20 +58,11 @@ jq -e --arg id "$id" 'any(.[]; .event == "answered" and .id == $id)' <<<"$since"
 ran=$(jq -r --arg id "$id" 'map(select(.event == "ran" and .id == $id)) | first // empty | "\(.ts), exit \(.exit)"' <<<"$since")
 [[ -z $ran ]] || die "$task already ran $id since its ask, at $ran: a new run needs a new ask"
 
-# The script and the places it may lie, each with its symbolic links resolved.
+# The script, where it may lie (script_place_refusal in bin/lib/team.sh).
 script=$(local_path "$script")
 [[ -f $script ]] || die "no file at $script, the script $task's ask $id names"
+why=$(script_place_refusal "$task" "$script" "it runs nothing") && die "$why"
 real=$(realpath -e -- "$script")
-places=()
-while IFS= read -r worktree; do
-  [[ -z $worktree || ! -d $worktree ]] || places+=("$(realpath -e -- "$worktree")")
-done < <(task_worktrees "$task" | jq -r '.worktree')
-places+=("$(realpath -m -- "$TEAM_HOME/tasks/$task")")
-under=''
-for place in "${places[@]}"; do
-  [[ $real != "$place"/* ]] || under=$place
-done
-[[ -n $under ]] || die "$script is not under $task's worktrees or its task directory, so it runs nothing: $(printf '%s, ' "${places[@]}" | sed 's/, $//')"
 
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT

@@ -72,10 +72,10 @@ logged() {
 }
 
 @test "--script hashes the script first, ends the question with its path and sha256, and logs one asked with both" {
-  mkdir -p "$BATS_TEST_TMPDIR/w/7/scripts"
-  printf 'echo fixing\n' >"$BATS_TEST_TMPDIR/w/7/scripts/fix.sh"
-  ln -s "$BATS_TEST_TMPDIR/w/7/scripts/fix.sh" "$BATS_TEST_TMPDIR/link.sh"
-  local hash path=$BATS_TEST_TMPDIR/w/7/scripts/fix.sh
+  mkdir -p "$TEAM_HOME/tasks/T7/scripts"
+  printf 'echo fixing\n' >"$TEAM_HOME/tasks/T7/scripts/fix.sh"
+  ln -s "$TEAM_HOME/tasks/T7/scripts/fix.sh" "$BATS_TEST_TMPDIR/link.sh"
+  local hash path=$TEAM_HOME/tasks/T7/scripts/fix.sh
   hash=$(sha256sum "$path" | cut -d' ' -f1)
   (cd "$BATS_TEST_TMPDIR" && run_bin -0 team-ask T7 fix --file q.md --script link.sh --from builder)
   assert_equal "$(posted | head -n 1 | jq -r .)" "Which of the two sign-in limits stays?  
@@ -99,8 +99,20 @@ waiting"
   before=$(stub_calls curl)
   run_bin -1 team-ask T7 gone --file "$BATS_TEST_TMPDIR/q.md" --script "$BATS_TEST_TMPDIR/none.sh"
   assert_equal "$output" "team-ask: no script to ask about: $BATS_TEST_TMPDIR/none.sh"
-  run_bin -1 team-ask T7 gone --file "$BATS_TEST_TMPDIR/q.md" --script "$BATS_TEST_TMPDIR/w"
-  assert_equal "$output" "team-ask: no script to ask about: $BATS_TEST_TMPDIR/w"
+  run_bin -1 team-ask T7 gone --file "$BATS_TEST_TMPDIR/q.md" --script "$TEAM_HOME/tasks/T7/scripts"
+  assert_equal "$output" "team-ask: no script to ask about: $TEAM_HOME/tasks/T7/scripts"
+  # So is a script team-run-approved would never run: one outside the task's worktrees and its
+  # task directory, there through a link, or in another task's directory.
+  local places="$TEAM_HOME/tasks/T7"
+  mkdir -p "$BATS_TEST_TMPDIR/elsewhere" "$TEAM_HOME/tasks/T8"
+  printf 'echo fixing\n' | tee "$BATS_TEST_TMPDIR/elsewhere/fix.sh" >"$TEAM_HOME/tasks/T8/fix.sh"
+  ln -s "$BATS_TEST_TMPDIR/elsewhere/fix.sh" "$TEAM_HOME/tasks/T7/scripts/out.sh"
+  run_bin -1 team-ask T7 out --file "$BATS_TEST_TMPDIR/q.md" --script "$BATS_TEST_TMPDIR/elsewhere/fix.sh"
+  assert_equal "$output" "team-ask: $BATS_TEST_TMPDIR/elsewhere/fix.sh is not under T7's worktrees or its task directory, so team-run-approved would never run it: $places"
+  run_bin -1 team-ask T7 out --file "$BATS_TEST_TMPDIR/q.md" --script "$TEAM_HOME/tasks/T7/scripts/out.sh"
+  assert_equal "$output" "team-ask: $TEAM_HOME/tasks/T7/scripts/out.sh is not under T7's worktrees or its task directory, so team-run-approved would never run it: $places"
+  run_bin -1 team-ask T7 out --file "$BATS_TEST_TMPDIR/q.md" --script "$TEAM_HOME/tasks/T8/fix.sh"
+  assert_equal "$output" "team-ask: $TEAM_HOME/tasks/T8/fix.sh is not under T7's worktrees or its task directory, so team-run-approved would never run it: $places"
   assert_equal "$(stub_calls curl)" "$before"
   assert_equal "$(logged | jq -r .event)" "question
 asked

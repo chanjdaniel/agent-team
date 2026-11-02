@@ -17,7 +17,10 @@
 # while the file hashes the same: before anything is posted it hashes the file (a regular file,
 # its path made absolute, its links resolved), ends the question with the lines "Script: <path>"
 # and "sha256: <its sha256sum>", so Daniel's OK names those bytes, and the asked carries script=
-# and sha256= too.
+# and sha256= too, which no other script logs. A script team-run-approved would never run, one
+# outside the task's open worktrees and its tasks/T<n>/ once its links are resolved, is refused
+# before anything is posted, as team-run-approved refuses it (script_place_refusal in
+# bin/lib/team.sh).
 # A post that fails logs nothing: when the ping fails, the question stays posted, its id said.
 # A worker session may not run it (worker_refusal in bin/lib/team.sh): its questions go to the
 # coordinator.
@@ -59,6 +62,7 @@ question=$(jq -nr --rawfile text "$file" '$text | sub("^\\s+"; "") | sub("\\s+\\
 sha256=''
 if [[ -n $script ]]; then
   [[ -f $script && -r $script ]] || die "no script to ask about: $script"
+  why=$(script_place_refusal "$task" "$script" "team-run-approved would never run it") && die "$why"
   script=$(realpath -e -- "$script")
   sha256=$(sha256sum -- "$script" | cut -d' ' -f1)
   question=$(printf '%s\n\nScript: %s\nsha256: %s' "$question" "$script" "$sha256")
