@@ -355,7 +355,7 @@ run_fake() {
   registry --first 'visibility = "private"' proj other
   cat >>"$TEAM_HOME/projects.toml" <<'TOML'
 [third]
-repo = "owner/Third"
+repo = "someone/Third"
 path = "elsewhere/third"
 base = "dev"
 delivery = "direct-pr"
@@ -370,11 +370,14 @@ TOML
   run_bin -0 team-worker T7 builder "$wt1" -- go
   local settings=$TEAM_HOME/tasks/T7/settings.builder.json
   assert_equal "$(jq -r '.autoMode.environment[] | select(startswith("**Source control**"))' "$settings")" \
-    "**Source control**: the team's repositories are on GitHub: its team home, chanjdaniel/agent-team-records (~/agent-team-records: the ledger, plans, briefs and memory), and the projects it works on, owner/proj (primary checkout ~/projects/proj), owner/other (primary checkout ~/projects/other) and owner/Third (primary checkout ~/elsewhere/third). agent-team is the team's own code, and no-mistakes is Daniel's fork of the gate, whose pull requests from the team go to the fork itself, never upstream."
+    "**Source control**: the team's repositories are on GitHub: its team home, chanjdaniel/agent-team-records (~/agent-team-records: the ledger, plans, briefs and memory), and the projects it works on, owner/proj (primary checkout ~/projects/proj), owner/other (primary checkout ~/projects/other) and someone/Third (primary checkout ~/elsewhere/third). agent-team is the team's own code, and no-mistakes is Daniel's fork of the gate, whose pull requests from the team go to the fork itself, never upstream."
   assert_equal "$(jq -r '.autoMode.environment[] | select(startswith("**Repository visibility**"))' "$settings")" \
     "**Repository visibility**: other and Third are public, so whatever reaches them is published; proj is private; agent-team-records, the team home, is private."
   assert_equal "$(jq -r '.autoMode.environment[] | select(startswith("**Default / protected branches**")) | split(";")[0]' "$settings")" \
     "**Default / protected branches**: the base branch is main for proj and other, and dev for Third"
+  # Each repository's own origin, its owner from the registry, another owner's too.
+  assert_equal "$(jq -r '.autoMode.environment[] | select(startswith("**Trusted repo**"))' "$settings")" \
+    "**Trusted repo**: a worker's working directory is a linked git worktree of one of those repositories, on its task's branch, with origin at that repository on GitHub: github.com/owner/proj, github.com/owner/other or github.com/someone/Third; the task's work leaves it as pushes of that branch and one pull request to the project's base branch."
 
   # One project: one public repository, one base branch.
   registry proj
@@ -383,6 +386,8 @@ TOML
     "**Repository visibility**: proj is public, so whatever reaches it is published; agent-team-records, the team home, is private."
   assert_equal "$(jq -r '.autoMode.environment[] | select(startswith("**Default / protected branches**")) | split(";")[0]' "$settings")" \
     "**Default / protected branches**: the base branch is main for proj"
+  assert_equal "$(jq -r '.autoMode.environment[] | select(startswith("**Trusted repo**")) | split(";")[0]' "$settings")" \
+    "**Trusted repo**: a worker's working directory is a linked git worktree of one of those repositories, on its task's branch, with origin at that repository on GitHub: github.com/owner/proj"
 }
 
 @test "every role's settings run the fence hook on Bash; the planner's and reviewer's add the edit hook" {
