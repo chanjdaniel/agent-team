@@ -48,7 +48,13 @@
 # The merged settings and MCP config are generated into tasks/<task>/ (gitignored); @TEAM_CODE@
 # in either names this checkout, @TASK@ the task, @TASK_DIR@ the team home's tasks/<task>/, and
 # @ROLE@ the role (the settings' AGENT_TEAM_ROLE, the signal a hook sees in a team session, and
-# with AGENT_TEAM_TASK, the task, what worker_refusal in bin/lib/team.sh reads).
+# with AGENT_TEAM_TASK, the task, what worker_refusal in bin/lib/team.sh reads). The registry's
+# projects, in its order, fill three more, for the autoMode lines: @PROJECT_REPOS@ each one's
+# repo and primary checkout ("owner/a (primary checkout ~/a) and owner/b (...)"),
+# @PROJECT_VISIBILITY@ which repositories are public and which private ("a and b are public, so
+# whatever reaches them is published; c is private"), and @PROJECT_BASES@ each base branch and
+# its projects ("dev for a and b, and main for c"), a project named by its repository's name; a
+# registry that cannot be read refuses the launch.
 #
 # The coordinator toolkit is claude-coordinator's alone, never a worker's, and the frontend toolkit
 # Daniel's own sessions', since it attaches to their one Agent Chrome window.
@@ -190,17 +196,39 @@ if [[ $role == ops ]]; then
   [[ -z $busy ]] || die "an ops session is already listed: $busy; end it with team-ops-end first"
 fi
 
+# The registry's projects as the autoMode lines state them (the header says how).
+registered=$(team_project --list) || exit 1
+facts=$(while IFS= read -r name; do team_project "$name" || exit 1; done <<<"$registered" \
+  | jq -sc --arg home "$HOME" '
+    def andlist: if length <= 1 then .[0] // "" else (.[:-1] | join(", ")) + " and " + .[-1] end;
+    def tilde: if startswith($home + "/") then "~/" + .[($home | length) + 1:] else . end;
+    map(. + {name: (.repo | split("/") | last)})
+    | (map(select(.visibility == "public") | .name)) as $public
+    | (map(select(.visibility == "private") | .name)) as $private
+    | {repos: (map("\(.repo) (primary checkout \(.path | tilde))") | andlist),
+       visibility: ([if $public != [] then ($public | andlist)
+           + (if ($public | length) == 1 then " is public, so whatever reaches it is published"
+              else " are public, so whatever reaches them is published" end) else empty end,
+         if $private != [] then ($private | andlist)
+           + (if ($private | length) == 1 then " is private" else " are private" end) else empty end]
+         | join("; ")),
+       bases: (. as $all | [.[].base] | reduce .[] as $b ([]; if index([$b]) then . else . + [$b] end)
+         | map(. as $b | "\($b) for \([$all[] | select(.base == $b) | .name] | andlist)")
+         | if length <= 1 then .[0] // "" else (.[:-1] | join(", ")) + ", and " + .[-1] end)}') || exit 1
+
 # @TEAM_CODE@ names this checkout, where the hooks and toolkits live; @TASK@ names the task, and
-# @TASK_DIR@ its directory in the team home, where its records live (the ops log); @ROLE@ the role.
+# @TASK_DIR@ its directory in the team home, where its records live (the ops log); @ROLE@ the role;
+# the @PROJECT_*@ three the registry's projects.
 substitute='walk(if type == "string" then gsub("@TEAM_CODE@"; $code) | gsub("@TASK@"; $task)
-  | gsub("@TASK_DIR@"; $taskdir) | gsub("@ROLE@"; $role) else . end)'
+  | gsub("@TASK_DIR@"; $taskdir) | gsub("@ROLE@"; $role) | gsub("@PROJECT_REPOS@"; $facts.repos)
+  | gsub("@PROJECT_VISIBILITY@"; $facts.visibility) | gsub("@PROJECT_BASES@"; $facts.bases) else . end)'
 
 # Role settings layered on the shared worker settings; permission lists, each event's hook list
 # and each autoMode list are concatenated, the shared ones first, so a role's hooks add to the
 # shared hooks and its autoMode lines to the team's; an autoMode list keeps "$defaults" (the
 # built-in rules) once, where it first stands.
 settings=$taskdir/settings.$role.json
-jq -s --arg code "$code" --arg task "$task" --arg taskdir "$taskdir" --arg role "$role" '.[0] as $base | .[1] as $own
+jq -s --arg code "$code" --arg task "$task" --arg taskdir "$taskdir" --arg role "$role" --argjson facts "$facts" '.[0] as $base | .[1] as $own
   | ($base * $own)
   | .permissions.deny = (($base.permissions.deny // []) + ($own.permissions.deny // []))
   | .permissions.allow = (($base.permissions.allow // []) + ($own.permissions.allow // []))
@@ -228,7 +256,7 @@ for kit in "${toolkits[@]}"; do
   if [[ -f $dir/.mcp.json ]]; then mcp_files+=("$dir/.mcp.json"); fi
 done
 if [[ ${#mcp_files[@]} -gt 0 ]]; then
-  jq -s --arg code "$code" --arg task "$task" --arg taskdir "$taskdir" --arg role "$role" '{mcpServers: (map(.mcpServers // {}) | add)} | '"$substitute" \
+  jq -s --arg code "$code" --arg task "$task" --arg taskdir "$taskdir" --arg role "$role" --argjson facts "$facts" '{mcpServers: (map(.mcpServers // {}) | add)} | '"$substitute" \
     "${mcp_files[@]}" >"$mcp"
 else
   echo '{"mcpServers": {}}' >"$mcp"

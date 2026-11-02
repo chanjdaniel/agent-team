@@ -338,10 +338,49 @@ run_fake() {
       run_bin -0 team-worker T7 "$role" "$wt1" -- go
     fi
     settings=$TEAM_HOME/tasks/T7/settings.$role.json
-    assert_equal "$(jq -c --slurpfile w "$REPO_ROOT/settings/worker.json" \
-      '.autoMode.environment[:($w[0].autoMode.environment | length)] == $w[0].autoMode.environment' "$settings")" true
+    # Each line as the worker settings have it, a line with a registry fact rendered.
+    assert_equal "$(jq -c --slurpfile w "$REPO_ROOT/settings/worker.json" '
+      [.autoMode.environment, $w[0].autoMode.environment] | transpose
+      | all(.[]; (.[1] | test("@PROJECT_[A-Z]+@")) or .[0] == .[1])' "$settings")" true
     assert_equal "$(jq -c '[.autoMode[] | map(select(. == "$defaults")) | length] | unique' "$settings")" '[1]'
+    assert_equal "$(jq -c '[.autoMode.environment[] | select(test("@[A-Z_]+@"))]' "$settings")" '[]'
+    assert_equal "$(jq '.autoMode.environment | length' "$settings")" \
+      "$(jq '.autoMode.environment | length' "$REPO_ROOT/settings/worker.json")"
   done
+}
+
+@test "the autoMode lines state the registry's projects: repositories, visibility and base branches" {
+  registry --first 'visibility = "private"' proj other
+  cat >>"$TEAM_HOME/projects.toml" <<'TOML'
+[third]
+repo = "owner/Third"
+path = "elsewhere/third"
+base = "dev"
+delivery = "direct-pr"
+merge_method = "merge"
+required_checks = []
+task_dir = ".scratch/task"
+docs = []
+toolkits = []
+pool = { provider = "git", slots = ["slots/third/1"] }
+TOML
+  thread T7
+  run_bin -0 team-worker T7 builder "$wt1" -- go
+  local settings=$TEAM_HOME/tasks/T7/settings.builder.json
+  assert_equal "$(jq -r '.autoMode.environment[] | select(startswith("**Source control**"))' "$settings")" \
+    "**Source control**: the team's repositories are on GitHub: its team home, chanjdaniel/agent-team-records (~/agent-team-records: the ledger, plans, briefs and memory), and the projects it works on, owner/proj (primary checkout ~/projects/proj), owner/other (primary checkout ~/projects/other) and owner/Third (primary checkout ~/elsewhere/third). agent-team is the team's own code, and no-mistakes is Daniel's fork of the gate, whose pull requests from the team go to the fork itself, never upstream."
+  assert_equal "$(jq -r '.autoMode.environment[] | select(startswith("**Repository visibility**"))' "$settings")" \
+    "**Repository visibility**: other and Third are public, so whatever reaches them is published; proj is private; agent-team-records, the team home, is private."
+  assert_equal "$(jq -r '.autoMode.environment[] | select(startswith("**Default / protected branches**")) | split(";")[0]' "$settings")" \
+    "**Default / protected branches**: the base branch is main for proj and other, and dev for Third"
+
+  # One project: one public repository, one base branch.
+  registry proj
+  run_bin -0 team-worker T7 builder "$wt1" -- go
+  assert_equal "$(jq -r '.autoMode.environment[] | select(startswith("**Repository visibility**"))' "$settings")" \
+    "**Repository visibility**: proj is public, so whatever reaches it is published; agent-team-records, the team home, is private."
+  assert_equal "$(jq -r '.autoMode.environment[] | select(startswith("**Default / protected branches**")) | split(";")[0]' "$settings")" \
+    "**Default / protected branches**: the base branch is main for proj"
 }
 
 @test "every role's settings run the fence hook on Bash; the planner's and reviewer's add the edit hook" {
