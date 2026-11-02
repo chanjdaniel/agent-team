@@ -235,11 +235,27 @@ Blocked: this role may write files only under $wt/.scratch; write there with the
   SECONDS=0
   shell -2 "$body"
   ((SECONDS < 5))
-  # Each variable assigned once adds a line the walk carries to the command's end.
+  # Each variable assigned once is followed to the command's end.
   body=$(for i in $(seq 1 100); do echo "T$i=\$CLAUDE_JOB_DIR/tmp; d$i=\$(mktemp -d) && cmd > \$d$i/x; for f$i in a b; do cmd | tee \"\$T$i/\$f$i\"; done"; done)
   SECONDS=0
   passes "$body"
   ((SECONDS < 5))
+}
+
+@test "the time the hook takes to read a long command grows linearly with its length" {
+  local n i body start took=()
+  # Each line assigns variables the walk follows to the command's end, and reads them back.
+  for n in 100 200; do
+    body=$(for ((i = 1; i <= n; i++)); do echo "T$i=\$CLAUDE_JOB_DIR/tmp; d$i=\$(mktemp -d) && cmd > \$d$i/x; for f$i in a b; do cmd | tee \"\$T$i/\$f$i\"; done"; done)
+    start=${EPOCHREALTIME//[!0-9]/}
+    passes "$body"
+    took+=($(((${EPOCHREALTIME//[!0-9]/} - start) / 1000)))
+  done
+  echo "100 lines: ${took[0]} ms, 200 lines: ${took[1]} ms"
+  # Twice the lines take at most about twice the time, measured against at least a second so a
+  # fast machine's noise cannot fail it.
+  ((took[0] >= 1000)) || took[0]=1000
+  ((took[1] * 2 <= took[0] * 5))
 }
 
 @test "a long here-document is judged quickly" {

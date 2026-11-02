@@ -346,6 +346,11 @@ next_line() {
 # peek: set c to the character at the cursor, past line continuations: a newline at a line's end,
 # '' at the command's end.
 peek() {
+  # Most often the cursor is inside its line, before its last character.
+  if ((C < ll - 1)); then
+    c=${ln:C:1}
+    return 0
+  fi
   while ((C == ll - 1 && L < nl - 1)) && [[ ${ln:C:1} == \\ ]]; do next_line; done
   if ((C < ll)); then
     c=${ln:C:1}
@@ -358,6 +363,10 @@ peek() {
 
 # adv: move past the character at the cursor, past the line continuations before it.
 adv() {
+  if ((C < ll - 1)); then
+    C=$((C + 1))
+    return 0
+  fi
   peek
   if ((C < ll)); then
     C=$((C + 1))
@@ -368,6 +377,10 @@ adv() {
 
 # peek2: set c to the character at the cursor and c2 to the one after it, leaving the cursor on c.
 peek2() {
+  if ((C + 2 < ll)); then
+    c=${ln:C:1} c2=${ln:C+1:1}
+    return 0
+  fi
   local first sL sC
   peek
   first=$c sL=$L sC=$C
@@ -384,7 +397,22 @@ peek2() {
 # skip_blanks: move past blanks and a comment.
 skip_blanks() {
   while :; do
-    peek
+    if ((C < ll - 1)); then
+      c=${ln:C:1}
+      case $c in
+        ' ' | $'\t')
+          # A run of blanks before the line's last character at once.
+          sb_rest=${ln:C:ll-C-1}
+          sb_run=${sb_rest%%[! $'\t']*}
+          C=$((C + ${#sb_run}))
+          continue
+          ;;
+        '#') ;;
+        *) return 0 ;;
+      esac
+    else
+      peek
+    fi
     case $c in
       ' ' | $'\t') C=$((C + 1)) ;;
       '#')
@@ -614,7 +642,14 @@ ansi_c() {
 
 # name_chars: set name to the name characters at the cursor, moving past them.
 name_chars() {
+  local rest
+  # A run of them before the line's last character at once.
   name=''
+  if ((C < ll - 1)); then
+    rest=${ln:C:ll-C-1}
+    name=${rest%%[!A-Za-z0-9_]*}
+    C=$((C + ${#name}))
+  fi
   while :; do
     peek
     [[ $c == [A-Za-z0-9_] ]] || return 0
@@ -1197,6 +1232,11 @@ word_at() {
   pe=${rest:${#pw}:1}
   case $pe in
     ' ' | $'\t' | ';' | '&' | '|' | ')' | '(' | '<' | '>') return 0 ;;
+    # No word ends there.
+    '$' | \' | \" | \`)
+      pw=''
+      return 0
+      ;;
     '')
       if ((${#pw} < 10)); then
         pe=$'\n'
@@ -1559,6 +1599,8 @@ parse_pipeline() {
   emit P
   while :; do
     skip_blanks
+    # Neither starts but with its first letter.
+    [[ $c == [\!t] ]] || break
     if plain '!'; then
       emit '!'
     elif plain time; then
@@ -2406,21 +2448,53 @@ done
 
 # The walk's environment: the set of directories the shell may be in, ? when it may be in any, one
 # line per directory, a flag and its absolute path, the flag 1 when the shell is there only because
-# a cd may have failed, else 0; then, after a \x04, the variables it follows: s first once something
-# has stopped the following on the way there, after which bash may split a value another way (S
-# while $PWD is unknown too, until a cd the walk follows sets it again), then
-# one line per variable, <name>=<values>, its values joined by \x02, each v<value>, or
-# e<origin>/<value> for a value left empty by a failed mktemp, which assigned the variable origin. A
-# variable with no line is unknown. The empty environment is a point the shell never reaches. A set
-# of more than max_dirs directories is ?, and a variable or word of more than max_vals values
-# unknown, so a command of many cds that may fail costs no more.
+# a cd may have failed, else 0; then, after a \x04, the id of the node that holds the variables it
+# follows, none for node 0, which knows none. The empty environment is a point the shell never
+# reaches. A set of more than max_dirs directories is ?, and a variable or word of more than
+# max_vals values unknown, so a command of many cds that may fail costs no more.
 max_dirs=16 max_vals=64
+
+# The nodes of variables, each made once and never changed, so that a command costs what it reads
+# and changes, not what the walk follows: NP[id] the node it changes, ND[id] its depth from node 0,
+# NM[id] s once something has stopped the following on the way there, after which bash may split
+# a value another way (S while $PWD is unknown too, until a cd the walk follows sets it again),
+# NC[id] the names it changes, a space before each, and NV[id name] each one's line, <name>=<values>,
+# its values joined by \x02, each v<value>, or e<origin>/<value> for a value left empty by a failed
+# mktemp, which assigned the variable origin, or '' when it makes the name unknown; NE[id] is 1
+# when it knows no variable, so a lookup ends there. A variable no node on the way to 0 changes is
+# unknown. A node's id is greater than every id on its way to 0, and VF[name] is the least id of a
+# node that changes the name, below which a lookup of it ends. LK[id name] keeps each name's line
+# once looked up from a node; vroot_s and vroot_S know none, with s and S.
+NP=(-1) ND=(0) NM=('') NC=('') NE=(1)
+declare -A NV=() VF=() LK=()
+nn=1
+
+# var_child <id>: set nid to a new node that changes nothing in the one given.
+var_child() {
+  nid=$nn
+  nn=$((nn + 1))
+  NP[nid]=$1 ND[nid]=$((ND[$1] + 1)) NM[nid]=${NM[$1]} NC[nid]='' NE[nid]=${NE[$1]}
+}
+
+# var_put <id> <name> <line>: the new node id changes the name to the line ('' for unknown).
+var_put() {
+  NV["$1 $2"]=$3
+  NC[$1]+=" $2"
+  [[ -z $3 ]] || NE[$1]=0
+  if (($1 < ${VF[$2]:-nn})); then VF[$2]=$1; fi
+}
+
+var_child 0
+NM[nid]=s vroot_s=$nid
+var_child 0
+NM[nid]=S vroot_S=$nid
 
 # The variables the walk starts with: HOME, TMPDIR and CLAUDE_JOB_DIR as the hook's environment
 # sets them, but one the command assigns in a way the walk does not follow; startvar[name] is 1 for
 # each the hook's environment sets, and for PWD, whose unknown value the walk no longer follows.
 # A function's body starts with those of the three the command does not assign, and none, with S,
-# when it holds anything that ends or stops the following.
+# when it holds anything that ends or stops the following; start_vars and body_vars are their
+# nodes, '' for none.
 declare -A startvar=([PWD]=1)
 start_vars='' body_vars=''
 for name in HOME TMPDIR CLAUDE_JOB_DIR; do
@@ -2429,16 +2503,20 @@ for name in HOME TMPDIR CLAUDE_JOB_DIR; do
   startvar[$name]=1
   [[ $value != *[$'\n\x02\x04']* ]] || continue
   if [[ -z ${acount[$name]:-}${nofollow[$name]:-} ]]; then
-    start_vars+=$'\n'$name=v$value
-    ((anydead)) || body_vars+=$'\n'$name=v$value
+    [[ -n $start_vars ]] || { var_child 0 && start_vars=$nid; }
+    var_put "$start_vars" "$name" "$name=v$value"
+    if ((!anydead)); then
+      [[ -n $body_vars ]] || { var_child 0 && body_vars=$nid; }
+      var_put "$body_vars" "$name" "$name=v$value"
+    fi
   elif [[ -n ${FOL[$name]:-} ]]; then
-    start_vars+=$'\n'$name=v$value
+    [[ -n $start_vars ]] || { var_child 0 && start_vars=$nid; }
+    var_put "$start_vars" "$name" "$name=v$value"
   fi
 done
-start_vars=${start_vars#$'\n'} body_vars=${body_vars#$'\n'}
-if ((anyclr)); then body_vars=S; fi
+if ((anyclr)); then body_vars=$vroot_S; fi
 
-# env_split <env>: set ed to its directories and ev to its variables.
+# env_split <env>: set ed to its directories and ev to its variables' node ('' for 0).
 env_split() {
   ed=${1%%$'\x04'*}
   ev=${1:${#ed}+1}
@@ -2481,69 +2559,84 @@ dirs_union() {
   du=${du%$'\n'}
 }
 
-# vars_union <a> <b>: set vu to the variables both know, each with every value either gives, and S
-# when either has it, else s when either has it. The lines both start with alike are kept as they
-# are, found by halving, since an assignment adds its line at the end; vars_merge merges the rest.
-vars_union() {
-  local a=$1 b=$2 lo=0 hi=${#1} mid x j=-1
-  ((${#b} >= hi)) || hi=${#b}
-  while ((lo < hi)); do
-    mid=$(((lo + hi + 1) / 2))
-    if [[ ${a:0:mid} == "${b:0:mid}" ]]; then lo=$mid; else hi=$((mid - 1)); fi
-  done
-  if [[ $lo == "${#a}" && ${b:lo:1} == $'\n' ]] || [[ $lo == "${#b}" && ${a:lo:1} == $'\n' ]]; then
-    j=$lo
-  else
-    x=${a:0:lo}
-    if [[ $x == *$'\n'* ]]; then
-      x=${x%$'\n'*}
-      j=${#x}
+# var_find <id> <name>: set vl to the variable's line in the node, or '' when it is unknown.
+var_find() {
+  local id=${1:-0} k walked=() first=${VF[$2]:-$nn}
+  vl=''
+  while ((id >= first)); do
+    k="$id $2"
+    if [[ -n ${LK[$k]+set} ]]; then
+      vl=${LK[$k]}
+      break
     fi
-  fi
-  if ((j < 0)); then
-    vars_merge "$a" "$b"
-    return 0
-  fi
-  vars_merge "${a:j+1}" "${b:j+1}"
-  vu=${a:0:j}${vu:+$'\n'$vu}
+    if [[ -n ${NV[$k]+set} ]]; then
+      vl=${NV[$k]}
+      break
+    fi
+    ((!NE[id])) || break
+    walked+=("$id")
+    id=${NP[id]}
+  done
+  for id in "${walked[@]}"; do LK["$id $2"]=$vl; done
 }
 
-# vars_merge <a> <b>: set vu as vars_union does, line by line.
-vars_merge() {
-  local la=() lb=() x n s='' out='' entry merged
-  local -A inb=() seen=()
-  mapfile -t la <<<"$1"
-  mapfile -t lb <<<"$2"
-  for x in "${lb[@]}"; do
-    if [[ $x == [sS] ]]; then s+=$x; elif [[ -n $x ]]; then inb[${x%%=*}]=$x; fi
-  done
-  for x in "${la[@]}"; do
-    if [[ $x == [sS] ]]; then
-      s+=$x
-      continue
-    fi
-    [[ -n $x ]] || continue
-    n=${x%%=*}
-    [[ -n ${inb[$n]:-} ]] || continue
-    if [[ ${inb[$n]} == "$x" ]]; then
-      out+=$'\n'$x
-      continue
-    fi
-    seen=() merged=''
-    while IFS= read -rd $'\x02' entry; do
-      [[ -z ${seen[$entry]:-} ]] || continue
-      seen[$entry]=1
-      merged+=$'\x02'$entry
-    done <<<"${x#*=}"$'\x02'"${inb[$n]#*=}"$'\x02'
-    if ((${#seen[@]} <= max_vals)); then out+=$'\n'$n=${merged:1}; fi
-  done
-  out=${out#$'\n'}
-  if [[ $s == *S* ]]; then
-    out=S${out:+$'\n'$out}
-  elif [[ -n $s ]]; then
-    out=s${out:+$'\n'$out}
+# vars_union <a> <b>: set vu to the node of the variables both nodes know, each with every value
+# either gives, a's first, and S when either has it, else s when either has it ('' for 0). Only
+# the names changed on the way from either to the node both come from can differ, so only those
+# are merged, in a new node on that one.
+vars_union() {
+  local a=${1:-0} b=${2:-0} m='' n la lb entry merged rest names=() line
+  local -A seen=() got=()
+  if [[ ${NM[a]}${NM[b]} == *S* ]]; then m=S; elif [[ -n ${NM[a]}${NM[b]} ]]; then m=s; fi
+  if ((NE[a] || NE[b])); then
+    case $m in
+      S) vu=$vroot_S ;;
+      s) vu=$vroot_s ;;
+      *) vu='' ;;
+    esac
+    return 0
   fi
-  vu=$out
+  while ((a != b)); do
+    if ((ND[a] >= ND[b])); then
+      for n in ${NC[a]}; do [[ -n ${seen[$n]:-} ]] || seen[$n]=1 names+=("$n"); done
+      a=${NP[a]}
+    else
+      for n in ${NC[b]}; do [[ -n ${seen[$n]:-} ]] || seen[$n]=1 names+=("$n"); done
+      b=${NP[b]}
+    fi
+  done
+  if ((${#names[@]} == 0)) && [[ ${NM[a]} == "$m" ]]; then
+    vu=$a
+    ((vu)) || vu=''
+    return 0
+  fi
+  var_child "$a"
+  NM[nid]=$m
+  for n in "${names[@]}"; do
+    var_find "$1" "$n"
+    la=$vl
+    var_find "$2" "$n"
+    lb=$vl
+    if [[ -z $la || -z $lb ]]; then
+      line=''
+    elif [[ $la == "$lb" ]]; then
+      line=$la
+    else
+      got=() merged='' rest=${la#*=}$'\x02'${lb#*=}$'\x02'
+      while [[ -n $rest ]]; do
+        entry=${rest%%$'\x02'*}
+        rest=${rest#*$'\x02'}
+        [[ -z ${got[$entry]:-} ]] || continue
+        got[$entry]=1
+        merged+=$'\x02'$entry
+      done
+      line=''
+      if ((${#got[@]} <= max_vals)); then line=$n=${merged:1}; fi
+    fi
+    var_find "$a" "$n"
+    [[ $vl == "$line" ]] || var_put "$nid" "$n" "$line"
+  done
+  vu=$nid
 }
 
 # env_union <a> <b>: set un to the union of the two environments.
@@ -2584,11 +2677,14 @@ env_lose() {
   lo='?'${ev:+$'\x04'$ev}
 }
 
-# env_dirs <env>: set dl to its directories and df to their flags, or dunk to 1 when it is ?.
+# env_dirs <env>: set dl to its directories and df to their flags, or dunk to 1 when it is ?; ds
+# keeps the directories they were set from.
+ds=$'\x04'
 env_dirs() {
   local rest x
-  dl=() df=() dunk=0
   env_split "$1"
+  [[ $ed != "$ds" ]] || return 0
+  ds=$ed dl=() df=() dunk=0
   if [[ $ed == '?' ]]; then
     dunk=1
     return 0
@@ -2601,65 +2697,75 @@ env_dirs() {
   done
 }
 
-# var_line <env> <name>: set vl to the variable's line, or '' when it is unknown, and ev to the
-# environment's variables.
-var_line() {
-  local re=$'(^|\n)'$2$'=([^\n]*)'
-  vl=''
+# env_stop <env>: set st to s or S when the environment has it, else ''.
+env_stop() {
   env_split "$1"
-  if [[ $ev =~ $re ]]; then vl=$2=${BASH_REMATCH[2]}; fi
+  st=${NM[${ev:-0}]}
 }
 
 # var_get <env> <name>: set gv to the values the variable may hold and go to the variable each
 # one's emptiness comes from ('' for none), gk to 1 when it is known, and gs to 1 when the
-# environment has s.
+# environment has s or S.
 var_get() {
-  local entry
+  local entry rest
   gv=() go=() gk=0 gs=0
-  var_line "$1" "$2"
-  [[ $ev != [sS] && $ev != [sS]$'\n'* ]] || gs=1
+  env_split "$1"
+  [[ -z ${NM[${ev:-0}]} ]] || gs=1
+  var_find "$ev" "$2"
   [[ -n $vl ]] || return 0
   gk=1
-  while IFS= read -rd $'\x02' entry; do
+  rest=${vl#*=}$'\x02'
+  while [[ -n $rest ]]; do
+    entry=${rest%%$'\x02'*}
+    rest=${rest#*$'\x02'}
     if [[ $entry == v* ]]; then
       gv+=("${entry:1}") go+=('')
     else
       entry=${entry:1}
       go+=("${entry%%/*}") gv+=("${entry#*/}")
     fi
-  done <<<"${vl#*=}"$'\x02'
+  done
 }
 
 # var_drop <env> <pattern>...: set vd to the environment with the variables whose names match a
 # pattern unknown.
 var_drop() {
-  local env=$1 lines=() x p out=''
+  local env=$1 id x p names=() gone=()
+  local -A seen=()
   shift
   vd=$env
   [[ -n $env ]] || return 0
   env_split "$env"
-  [[ -n $ev ]] || return 0
-  if (($# == 1)) && [[ $1 != *[\*\?\[]* ]]; then
-    # One name: its line alone.
-    var_line "$env" "$1"
-    [[ -n $vl ]] || return 0
-    out=$'\n'$ev$'\n'
-    out=${out/$'\n'"$vl"$'\n'/$'\n'}
-    out=${out#$'\n'}
-    out=${out%$'\n'}
-    vd=$ed${out:+$'\x04'$out}
-    return 0
-  fi
-  mapfile -t lines <<<"$ev"
-  for x in "${lines[@]}"; do
-    if [[ $x != [sS] ]]; then
+  id=${ev:-0}
+  ((!NE[id])) || return 0
+  if [[ $* == *[\*\?\[]* ]]; then
+    # Every name the node knows, to match against the patterns.
+    while ((!NE[id])); do
+      for x in ${NC[id]}; do [[ -n ${seen[$x]:-} ]] || seen[$x]=1 names+=("$x"); done
+      id=${NP[id]}
+    done
+    id=${ev:-0}
+    for x in "${names[@]}"; do
       # shellcheck disable=SC2053 # a pattern
-      for p in "$@"; do [[ ${x%%=*} != $p ]] || continue 2; done
-    fi
-    out+=$'\n'$x
+      for p in "$@"; do
+        if [[ $x == $p ]]; then
+          gone+=("$x")
+          break
+        fi
+      done
+    done
+  else
+    gone=("$@")
+  fi
+  names=()
+  for x in "${gone[@]}"; do
+    var_find "$id" "$x"
+    [[ -z $vl ]] || names+=("$x")
   done
-  out=${out#$'\n'}
-  vd=$ed${out:+$'\x04'$out}
+  ((${#names[@]})) || return 0
+  var_child "$id"
+  for x in "${names[@]}"; do var_put "$nid" "$x" ''; done
+  vd=$ed$'\x04'$nid
 }
 
 # var_set <env> <name>: set vd to the environment with the variable holding the values in sv, the
@@ -2668,18 +2774,26 @@ var_drop() {
 var_set() {
   local i x add=''
   local -A seen=()
-  var_drop "$1" "$2"
-  [[ -n $vd ]] || return 0
-  ((${#sv[@]} <= max_vals)) || return 0
+  vd=$1
+  [[ -n $1 ]] || return 0
+  if ((${#sv[@]} > max_vals)); then
+    var_drop "$1" "$2"
+    return 0
+  fi
   for i in "${!sv[@]}"; do
-    [[ ${sv[i]} != *[$'\n\x02\x04']* ]] || return 0
+    if [[ ${sv[i]} == *[$'\n\x02\x04']* ]]; then
+      var_drop "$1" "$2"
+      return 0
+    fi
     if [[ -n ${so[i]:-} ]]; then x=e${so[i]}/${sv[i]}; else x=v${sv[i]}; fi
     [[ -z ${seen[$x]:-} ]] || continue
     seen[$x]=1
     add+=$'\x02'$x
   done
-  env_split "$vd"
-  vd=$ed$'\x04'${ev:+$ev$'\n'}$2=${add:1}
+  env_split "$1"
+  var_child "${ev:-0}"
+  var_put "$nid" "$2" "$2=${add:1}"
+  vd=$ed$'\x04'$nid
 }
 
 # var_clear <env>: set vd to the environment with every variable unknown, HOME, TMPDIR and
@@ -2688,7 +2802,7 @@ var_clear() {
   vd=$1
   [[ -n $1 ]] || return 0
   env_split "$1"
-  vd=$ed$'\x04'S
+  vd=$ed$'\x04'$vroot_S
 }
 
 # canon <absolute path>: set cp to the path with its . and .. resolved by text and its slashes
@@ -2725,9 +2839,9 @@ word_values() {
   vals=('') vdir=(-1) vorg=('') why='' wvar=''
   # After a stop, bash may split an unquoted value by another IFS, and PWD may hold any value until
   # a cd the walk follows sets it again (S).
-  env_split "$cur"
-  if [[ $ev == [sS] || $ev == [sS]$'\n'* ]]; then stopped=1; fi
-  if [[ $ev == S || $ev == S$'\n'* ]]; then pwd=0; fi
+  env_stop "$cur"
+  [[ -z $st ]] || stopped=1
+  [[ $st != S ]] || pwd=0
   for ((; k < end; k++)); do
     text=${pt[k]} kind=${pk[k]} pv=() pd=() po=()
     if ((k == $1 && ${4:-0})); then text=${text:$4}; fi
@@ -2840,6 +2954,11 @@ word_values() {
         return 0
         ;;
     esac
+    if ((${#vals[@]} == 1 && ${#pv[@]} == 1 && ${#pd[@]} == 0)); then
+      # One value and one part: the part joins it.
+      vals[0]+=${pv[0]} vorg[0]=${vorg[0]:-${po[0]:-}}
+      continue
+    fi
     nv=() nd=() no=()
     for i in "${!vals[@]}"; do
       for j in "${!pv[@]}"; do
@@ -2992,8 +3111,8 @@ cd_env() {
   fi
   # CDPATH is the hook's own, unless the command may have assigned any variable before the cd.
   searched=${CDPATH:-}
-  env_split "$cur"
-  if ((vdead)) || [[ $ev == [sS] || $ev == [sS]$'\n'* ]]; then searched=1; fi
+  env_stop "$cur"
+  if ((vdead)) || [[ -n $st ]]; then searched=1; fi
   for i in "${!vals[@]}"; do
     v=${vals[i]} d=${vdir[i]}
     [[ $v != - && $v != *[$'\n\x04']* ]] || return 0
@@ -3018,7 +3137,10 @@ cd_env() {
   done
   env_split "$cur"
   # It sets PWD again.
-  [[ $ev != S && $ev != S$'\n'* ]] || ev=s${ev:1}
+  if [[ ${NM[${ev:-0}]} == S ]]; then
+    var_child "$ev"
+    NM[nid]=s ev=$nid
+  fi
   [[ -z $ev ]] || vars=$'\x04'$ev
   ok=''
   ((${#cands[@]})) || return 0
@@ -3167,10 +3289,7 @@ assign() {
     [[ $text =~ $re_name ]]
     name=${BASH_REMATCH[0]}
     if [[ -z ${FOL[$name]:-} ]]; then
-      var_drop "$a" "$name"
-      a=$vd
-      var_drop "$f" "$name"
-      f=$vd
+      assign_drop "$name"
       continue
     fi
     cur=$a
@@ -3178,38 +3297,62 @@ assign() {
     mk_part "$e" $((${#name} + 1))
     if ((mkd >= 0)); then
       if ! mk_values "$mkd"; then
-        var_drop "$a" "$name"
-        a=$vd
-        var_drop "$f" "$name"
-        f=$vd
+        assign_drop "$name"
         continue
       fi
       sv=("${mkv[@]}") so=()
       for i in "${mkv[@]}"; do so+=(''); done
-      if ((${#events[@]} > 1)); then sv+=('') so+=("$name"); fi
-      var_set "$a" "$name"
-      a=$vd
-      if ((${#events[@]} == 1)); then sv=('') so=("$name"); fi
-      var_set "$f" "$name"
-      f=$vd
+      if ((${#events[@]} > 1)); then
+        sv+=('') so+=("$name")
+        assign_set "$name"
+      else
+        var_set "$a" "$name"
+        a=$vd
+        sv=('') so=("$name")
+        var_set "$f" "$name"
+        f=$vd
+      fi
       continue
     fi
     word_values "${EA[e]}" "${EB[e]}" a $((${#name} + 1))
     if [[ -n $why ]]; then
-      var_drop "$a" "$name"
-      a=$vd
-      var_drop "$f" "$name"
-      f=$vd
+      assign_drop "$name"
       continue
     fi
     sv=("${vals[@]}") so=("${vorg[@]}")
-    var_set "$a" "$name"
-    a=$vd
-    var_set "$f" "$name"
-    f=$vd
+    assign_set "$name"
   done
   ok=$a ko=$f
 }
+
+# assign_drop <name> and assign_set <name>: make the variable unknown, or set it to the values in sv
+# and so, in assign's environments a and f, alike in both when they are alike.
+assign_drop() {
+  local same=0
+  [[ $a != "$f" ]] || same=1
+  var_drop "$a" "$1"
+  a=$vd
+  if ((same)); then
+    f=$a
+  else
+    var_drop "$f" "$1"
+    f=$vd
+  fi
+}
+
+assign_set() {
+  local same=0
+  [[ $a != "$f" ]] || same=1
+  var_set "$a" "$1"
+  a=$vd
+  if ((same)); then
+    f=$a
+  else
+    var_set "$f" "$1"
+    f=$vd
+  fi
+}
+
 
 # Which compound commands a command is in, in the shell they run in (not through a ( ) or a
 # substitution), for what it may do at another turn or call: LOOPMOVE[k] 1 for such a loop, and
