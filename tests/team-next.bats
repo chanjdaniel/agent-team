@@ -543,6 +543,74 @@ launched T7-reviewer c0000001"
   [[ $(<"$TEAM_HOME/tasks/T7/brief-review.md") != *team-review* ]]
 }
 
+# The command of the round brief's step 2 that checks the branch holds what was pushed.
+round_check() {
+  grep -E '^2\. ' "$TEAM_HOME/tasks/T7/brief-$1.md" | grep -oE '`[^`]*merge-base[^`]*`' | tr -d '`'
+}
+
+@test "a direct-PR Disclosure task's fix round before any push passes its branch check, and its review-ready goes to a re-review of the local head that posts nothing" {
+  local head fixed again check
+  head=$(commit two.txt "feat: ticket 02")
+  printf '%s\n' "" "## Disclosure" "" "Describe it as hardening the input checks." >>"$TEAM_HOME/tasks/T7/plan.md"
+  run_bin -0 --separate-stderr team-next T7 --checks "$(checks)" -- "T7 DONE review-ready $head"
+  echo "# review" >"$wt/.scratch/task/review.md"
+  run_bin -0 --separate-stderr team-next T7 --sent-back 2 -- \
+    "T7 DONE findings .scratch/task/review.md ${counts/correctness:0/correctness:1} before=none guarded=none"
+  # The holder stowed, its wip commit kept on the branch here and pushed nowhere.
+  run_bin -0 --separate-stderr team-next T7 -- "T7 PAUSED stowed"
+  assert_contains "$output" "brief $TEAM_HOME/tasks/T7/brief-round-1.md"
+  grep -qF "PR: none, against \`main\`" "$TEAM_HOME/tasks/T7/brief-round-1.md"
+
+  # Nothing is pushed, so there is no origin/feat/T7-toil, and the round's branch check passes.
+  check=$(round_check round-1)
+  [[ -n $check ]]
+  git -C "$wt" fetch -q origin
+  run -1 git -C "$wt" rev-parse -q --verify origin/feat/T7-toil
+  run -0 bash -c "cd \"\$1\" && $check" _ "$wt"
+  # Once something is pushed, it holds only while the branch holds it.
+  git -C "$wt" push -q origin HEAD:refs/heads/feat/T7-toil
+  git -C "$wt" fetch -q origin
+  run -0 bash -c "cd \"\$1\" && $check" _ "$wt"
+  git -C "$wt" push -q origin "$(git -C "$wt" commit-tree -p HEAD -m "chore: pushed elsewhere" "HEAD^{tree}"):refs/heads/feat/T7-toil"
+  git -C "$wt" fetch -q origin
+  run -1 bash -c "cd \"\$1\" && $check" _ "$wt"
+  git -C "$wt" push -q origin --delete feat/T7-toil
+  git -C "$wt" fetch -q --prune origin
+
+  # The round's builder fixed the finding and asks for the review again, with nothing pushed.
+  fixed=$(commit three.txt "fix: the finding")
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE review-ready $fixed"
+  assert_contains "$output" "brief $TEAM_HOME/tasks/T7/brief-rereview-2.md
+launched T7-reviewer c0000003"
+  assert_equal "$(record rereview-2 | jq -c '{template, head: .values.head, pr: .values.pr, reviewed: .values.reviewed}')" \
+    "$(jq -cn --arg h "$fixed" --arg r "$head" '{template: "rereview", head: $h, pr: null, reviewed: $r}')"
+  local brief
+  brief=$(<"$TEAM_HOME/tasks/T7/brief-rereview-2.md")
+  assert_contains "$brief" "No PR yet: reviewed at \`$head\`, now at the local head \`$fixed\`."
+  assert_contains "$brief" "git diff $head $fixed"
+  assert_contains "$brief" "against that section of \`"
+  assert_contains "$brief" "- Send \`T7 DONE pass $fixed findings="
+  [[ $brief != *team-review* && $brief != *team-ci-wait* && $brief != */pull/* && $brief != *'{{'* ]]
+
+  # Its reviewer sends a plain note back; the fix's review-ready goes to verify, before the PR too.
+  run_bin -0 --separate-stderr team-next T7 --sent-back 1 -- \
+    "T7 DONE findings .scratch/task/review.md ${counts/note-change:0/note-change:1} before=none guarded=none"
+  again=$(commit four.txt "fix: the note")
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE review-ready $again"
+  assert_contains "$output" "brief $TEAM_HOME/tasks/T7/brief-rereview-3.md"
+  assert_equal "$(record rereview-3 | jq -c '{template, head: .values.head, pr: .values.pr}')" \
+    "$(jq -cn --arg h "$again" '{template: "verify", head: $h, pr: null}')"
+  brief=$(<"$TEAM_HOME/tasks/T7/brief-rereview-3.md")
+  assert_contains "$brief" "No PR yet: reviewed at \`$fixed\`, now at the local head \`$again\`."
+  assert_contains "$brief" "- Send \`T7 DONE pass $again findings="
+  [[ $brief != *team-review* && $brief != *team-ci-wait* && $brief != */pull/* && $brief != *'{{'* ]]
+
+  # Its pass sends the builder on with the push and the PR.
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $again $counts before=none guarded=none"
+  assert_contains "$(tail -n 1 <<<"$output")" "T7 the review of ${again:0:8} passed: go on with your delivery"
+  assert_equal "$(jq -r 'select(.event == "pr")' "$TEAM_HOME/ledger.jsonl")" ""
+}
+
 @test "a DONE review-ready with a run of whitespace before its sha reads the sha as team-log does" {
   local head
   sed -i 's/^delivery = "direct-pr"/delivery = "no-mistakes"/' "$TEAM_HOME/projects.toml"

@@ -1018,7 +1018,8 @@ Bash(@TEAM_CODE@/bin/team-ci-wait *)'
       "$REPO_ROOT/templates/briefs/$brief.md"
     grep -qF '`{{team_bin}}/team-review-comment {{pr}} {{task_dir}}/' "$REPO_ROOT/templates/briefs/$brief.md"
   done
-  if grep -n team-review "$REPO_ROOT/templates/briefs/review/no-mistakes.md" "$REPO_ROOT/templates/briefs/review/direct-pr-before-pr.md"; then return 1; fi
+  if grep -n team-review "$REPO_ROOT/templates/briefs/review/no-mistakes.md" "$REPO_ROOT/templates/briefs/review/direct-pr-before-pr.md" \
+    "$REPO_ROOT"/templates/briefs/before-pr/*.md "$REPO_ROOT"/templates/briefs/rereview/*-before-pr.md; then return 1; fi
   allows reviewer "$REPO_ROOT/bin/team-review-status https://github.com/me/shop/pull/5 a1b2c3d4e5f60718293a4b5c6d7e8f9012345678 success \"no blocking findings\""
   allows reviewer "$REPO_ROOT/bin/team-review-comment https://github.com/me/shop/pull/5 .scratch/task/review.md"
   allows reviewer "$REPO_ROOT/bin/team-checks agent-team a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
@@ -1035,7 +1036,7 @@ Bash(gh-axi pr ready *)'
   for brief in delivery/direct-pr builder-merge-base; do
     grep -qF '`{{team_bin}}/team-checks {{project}} <full sha>`' "$REPO_ROOT/templates/briefs/$brief.md"
   done
-  for brief in reviewer rereview verify; do
+  for brief in reviewer rereview verify before-pr/rereview before-pr/verify; do
     grep -qF '`{{team_bin}}/team-checks {{project}} {{head}}`' "$REPO_ROOT/templates/briefs/$brief.md"
   done
   for brief in delivery/direct-pr delivery/no-mistakes builder-merge-base rereview verify; do
@@ -1387,6 +1388,11 @@ briefs_without_gotchas() {
   run -0 find "$REPO_ROOT/templates/briefs" -maxdepth 1 -name '*.md'
   ((${#lines[@]} >= 11))
   run -0 briefs_without_gotchas "$REPO_ROOT/templates/briefs"
+  assert_equal "$output" ""
+  # So does a template's variant before the PR, which team-brief renders in its place.
+  run -0 find "$REPO_ROOT/templates/briefs/before-pr" -maxdepth 1 -name '*.md'
+  ((${#lines[@]} >= 2))
+  run -0 briefs_without_gotchas "$REPO_ROOT/templates/briefs/before-pr"
   assert_equal "$output" ""
 }
 

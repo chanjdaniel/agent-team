@@ -41,12 +41,14 @@
 # project, or on a direct-PR one whose plan's ## Disclosure section holds text past its HTML
 # comments (its builder pushes nothing before the review passes), <name>/<delivery>-before-pr.md
 # takes the place of <name>/<delivery>.md where it exists: review/direct-pr-before-pr.md reads the
-# local head with no pr, as the gated review does. A {{> review-rules}} line, in the reviewer,
-# rereview and verify templates where their checks are listed, is the project's standing review
-# rules, the team home's projects/<project>/review-rules.md: the coordinator's records, never
-# code, read as written before the placeholders, so they may use any, and put in as a paragraph of
-# their own; with no file, or an empty one, the line is left out. One that cannot be read is
-# refused.
+# local head with no pr, as the gated review does; and before-pr/<template>.md takes the place of
+# the template where it exists: before-pr/rereview.md and before-pr/verify.md re-review a fix
+# round's local head with no pr, the rereview partial's -before-pr files saying what to read, and
+# post nothing. A {{> review-rules}} line, in the reviewer, rereview and verify templates where
+# their checks are listed, is the project's standing review rules, the team home's
+# projects/<project>/review-rules.md: the coordinator's records, never code, read as written
+# before the placeholders, so they may use any, and put in as a paragraph of their own; with no
+# file, or an empty one, the line is left out. One that cannot be read is refused.
 # Derived: a template's reviewed, pr and head the caller does not --set are filled from the ledger
 # and GitHub. reviewed is the head of the task's latest review; pr the URL of the task's latest pr
 # event in the project's repo; head that event's head (moved by any history-rewritten), or the
@@ -227,8 +229,11 @@ if [[ -z $pr && ! -v sets[pr] ]] && [[ $delivery == no-mistakes || -n $(plan_tex
   before_pr=1
 fi
 
-# The template, with each partial of the project's delivery in place of its {{> <name>}}.
-text=$(<"$briefs/$template.md")
+# The template, before the PR its before-pr/ variant where one exists, with each partial of the
+# project's delivery in place of its {{> <name>}}.
+template_file=$briefs/$template.md
+[[ -z $before_pr || ! -f $briefs/before-pr/$template.md ]] || template_file=$briefs/before-pr/$template.md
+text=$(<"$template_file")
 mapfile -t partials < <(grep -oE '\{\{> [a-z]+\}\}' <<<"$text" | sed 's/^{{> //; s/}}$//' | sort -u)
 if ((${#partials[@]})); then
   for partial in "${partials[@]}"; do

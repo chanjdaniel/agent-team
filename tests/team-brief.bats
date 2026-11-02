@@ -507,6 +507,30 @@ EOF
   assert_contains "$(<"$output")" "PR: https://github.com/chanjdaniel/agent-team/pull/9, against"
 }
 
+@test "before the PR, a gated project's re-review and verify read the local head before the gate and post nothing; with a PR, they are the PR's" {
+  open_t12
+  reviewed_branch T12 dev
+  local brief r h
+  run_bin -0 --separate-stderr team-brief T12 rereview --name rereview --set head="$head"
+  r=$reviewed h=$head brief=$(<"$output")
+  assert_contains "$brief" "# T12 brief (reviewer): re-review rate-limit the applicant sign-in endpoints at its new local head"
+  assert_contains "$brief" "No PR yet: reviewed at \`$r\`, now at the local head \`$h\`."
+  assert_contains "$brief" "2. Review what changed since the last review, \`git diff $r $h\`, and the commit messages of \`origin/dev..$h\`; the gate has not run yet, so the diff holds the builder's commits only."
+  assert_contains "$brief" "  Post nothing to GitHub: there is no PR yet, and the re-review of the PR, once the builder opens it, posts the comment and sets the status."
+  assert_contains "$brief" "- Send \`T12 DONE pass $h findings="
+  refute_grep -e team-review -e team-ci-wait -e '/pull/' -e '{{' "$output"
+  assert_equal "$(jq -c '.values | {head, pr}' "$TEAM_HOME/tasks/T12/brief-rereview.json")" "$(jq -cn --arg h "$h" '{head: $h, pr: null}')"
+  run_bin -0 --separate-stderr team-brief T12 verify --name verify --set head="$head"
+  brief=$(<"$output")
+  assert_contains "$brief" "No PR yet: reviewed at \`$r\`, now at the local head \`$h\`."
+  assert_contains "$brief" "Sent back: the notes numbered 5 in \`.scratch/task/review.md\`"
+  assert_contains "$brief" "3. Every note sent back (5) is fixed at \`$h\`, and the diff holds nothing but those fixes and their tests."
+  refute_grep -e team-review -e team-ci-wait -e '/pull/' -e '{{' "$output"
+  # Once the PR exists, the re-review is the PR's.
+  run_bin -0 --separate-stderr team-brief T12 verify --name verify-pr --set pr=https://github.com/chanjdaniel/Conventioner/pull/9 --set head="$head"
+  assert_contains "$(<"$output")" "PR: https://github.com/chanjdaniel/Conventioner/pull/9 against \`dev\`, reviewed at \`$r\`, now at head \`$h\`."
+}
+
 @test "a gated project's re-review reads the gate's own commits from the reviewed local head" {
   open_t12
   reviewed_branch T12 dev
@@ -1434,7 +1458,7 @@ findings_files() {
   run_bin -0 team-brief T12 builder-round --name round-1 --set pr=none --set findings=2 --set goal=g
   brief=$(<"$output")
   assert_contains "$brief" "PR: none, against \`dev\` (none on a first review before the PR: a gated project's, before its gate opens it, or a Disclosure task's, before its first push)."
-  assert_contains "$brief" "\`git merge-base --is-ancestor origin/fix/T12-applicant-sign-in-rate-limit HEAD\`"
+  assert_contains "$brief" "\`! git rev-parse -q --verify origin/fix/T12-applicant-sign-in-rate-limit || git merge-base --is-ancestor origin/fix/T12-applicant-sign-in-rate-limit HEAD\`"
   assert_contains "$brief" "when it is none, the delivery opens it as it says."
   assert_contains "$brief" 'Run `/no-mistakes` with this intent: "T12: g"'
 }
