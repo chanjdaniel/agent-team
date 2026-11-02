@@ -10,12 +10,13 @@
 # to merge (the task's phase awaiting-merge, the PR not merged and no merge-approved logged at its
 # head), with its full URL; and each interview under way (an interview-thread with no planner's
 # done or plan-approved after it), with its thread. With none, it says "Nothing waits on you". The
-# line after the items is the team's resource level, from team-level status --stored --json (it
-# takes no reading): "Resources: manual, minor (30%): 9.2 GiB and 3.6 cores for the team; 6.1
-# GiB reserved; T171 stowed, waiting to resume", naming each open task whose latest stowed (for the
-# level or a handoff) names roles to relaunch and that no launch has followed; when team-level fails the line is left out, with a line
-# on stderr saying why. Its last line is the time of this run. Items past Discord's 2000
-# characters are left out from the end, counted in a line.
+# line after the items and the standing word lines (below), or after the items alone when no word
+# stands, is the team's resource level, from team-level status --stored --json (it takes no
+# reading): "Resources: manual, minor (30%): 9.2 GiB and 3.6 cores for the team; 6.1 GiB reserved;
+# T171 stowed, waiting to resume", naming each open task whose latest stowed (for the level or a
+# handoff) names roles to relaunch and that no launch has followed; when team-level fails the line
+# is left out, with a line on stderr saying why. Its last line is the time of this run. Items past
+# Discord's 2000 characters are left out from the end, counted in a line.
 # A PR ready to merge is left out while it waits on no word of Daniel's: the task's latest
 # merge-preapproved of the PR's project (the registered one whose repo is the URL's) stands, and
 # that project opts in now (team-project --find merge_with_plan true) and is not the team's own
@@ -24,9 +25,9 @@
 # A PR ready to merge is left out too while a standing word of Daniel's stands for its project (the
 # latest merge-standing or merge-standing-withdrawn naming the project or all is a merge-standing),
 # so team-merge merges it on that word; one it refuses comes back as the coordinator's ask too.
-# While a standing word stands, one line per word above the last line names the registered
-# projects it stands for and links Daniel's message: "-# Standing merge word on <projects> since
-# <link>"; the length limit never cuts those lines.
+# While a standing word stands, one line per word after the items, before the resources line,
+# names the registered projects it stands for and links Daniel's message: "-# Standing merge word
+# on <projects> since <link>"; the length limit never cuts those lines.
 # The registry is read only once the ledger holds a merge-preapproved or a merge-standing; when it
 # cannot be read, every PR ready to merge is listed, the standing word lines name the projects as
 # the words were logged (all as "every project"), and a line on stderr says why.
