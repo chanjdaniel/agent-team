@@ -170,10 +170,10 @@ most_at_once() {
   # With a team home, the floor of the level's CPU budget: minor's 30% of 12 cores.
   level=$TEAM_HOME/level.jsonl
   jq -cn '{ts: (now | floor | todate), mode: "manual", level: "minor", by: "Daniel", machine: "home-pc"}' >"$level"
-  TEAM_SLOTS_CPUS=12 run -0 "$root/tests/run" bats
+  TEAM_READING_CPUS=12 run -0 "$root/tests/run" bats
   [[ ${lines[-1]} == *", up to 3 bats files at once" ]]
   # With none, as on CI or a fresh clone, nproc's.
-  run -0 env -u TEAM_HOME TEAM_SLOTS_CPUS=12 "$root/tests/run" bats
+  run -0 env -u TEAM_HOME TEAM_READING_CPUS=12 "$root/tests/run" bats
   [[ ${lines[-1]} == *", up to $(nproc) bats file$( (($(nproc) == 1)) || echo s) at once" ]]
   # A TEAM_JOBS that is no count is refused before anything runs.
   rm -f "$BATS_TEST_TMPDIR/at-once"

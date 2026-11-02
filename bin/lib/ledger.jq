@@ -853,22 +853,6 @@ def retro_due_finding:
   | {task: null, kind: "retro-due", session: null, name: null, next: "run the retro skill",
      text: "retro due since \(.next) (every \(.schedule.every_hours)h, last retro \(.last.task // "none")): run the retro skill"};
 
-# team-sweep's slots finding, from team-slots --json's object (or {error} when it failed): one
-# while the effective cap is below the cap or more slots are held than it, saying the summary
-# line and why, else none; one naming the error when team-slots failed.
-def slots_finding:
-  if .error then
-    {task: null, kind: "slots", session: null, name: null, next: "fix what team-slots names",
-     text: "slots: \(.error): fix what team-slots names"}
-  else
-    .summary as $summary
-    | [if .effective.cap < .settings.cap then .effective.reason else empty end,
-       if .counts.held > .effective.cap then "\(.counts.held) held, over the effective cap of \(.effective.cap)" else empty end]
-    | select(. != [])
-    | {task: null, kind: "slots", session: null, name: null, next: "tell Daniel which wait",
-       text: "slots: \($summary); \(join("; ")): new tasks wait; tell Daniel which wait"}
-  end;
-
 # team-sweep's level findings, from team-capacity plan --json's object (or {error} when it failed),
 # each with task and session null: level-stow while its stow list is not empty, naming the tasks
 # newest first ("level: over budget at minor (30%): stow T174, then T171"); level-resume for the
@@ -900,14 +884,13 @@ def activity_finding:
   | {task: null, kind: "activity", session: null, name: null, next: "fix what session-activity names",
      text: "activity: \(.error), so no busy worker is found stalled: fix what session-activity names"};
 
-# team-sweep's findings, over every ledger event as one array, the session list, the machine's
-# task slots ($slots, as slots_finding takes them), the stow plan ($plan, as level_findings takes
-# it) and session-activity's object ($activity, as task_findings takes it): each open task's
-# merge-due, else its findings unless it is parked, then the stray sessions (named like a team
-# worker whose task is closed or not in the ledger, never the load check's T0, whose session the
-# coordinator waits on for up to 30 minutes), in task number order; then the activity, slots,
-# level and retro-due findings.
-def sweep($sessions; $slots; $plan; $activity):
+# team-sweep's findings, over every ledger event as one array, the session list, the stow plan
+# ($plan, as level_findings takes it) and session-activity's object ($activity, as task_findings
+# takes it): each open task's merge-due, else its findings unless it is parked, then the stray
+# sessions (named like a team worker whose task is closed or not in the ledger, never the load
+# check's T0, whose session the coordinator waits on for up to 30 minutes), in task number order;
+# then the activity, level and retro-due findings.
+def sweep($sessions; $plan; $activity):
   . as $events
   | by_task as $tasks
   | ([($tasks[] | select(is_open) | [merge_due_finding] as $due
@@ -919,7 +902,6 @@ def sweep($sessions; $slots; $plan; $activity):
             "read claude logs \(.session) for anything left to log, then stop it with claude stop \(.session)"))]
      | by_task_number)
     + [$activity | activity_finding]
-    + [$slots | slots_finding]
     + [$plan | level_findings]
     + [$events | retro_status | retro_due_finding];
 
@@ -963,12 +945,11 @@ def open_tasks: [to_entries[] | select(.value | is_open) | .key] | sort_by(.[1:]
 
 # team-snapshot's JSON from every task's events by id ($tasks), the open tasks' team-state JSON
 # in task number order ($states; {task, error} for a task whose state could not be told), the
-# machine's task slots ($slots, team-slots --json's object or {error}), the team's resource level
-# ($level, team-level status --json's object or {error}), the session list, each registered
-# project's open PRs ($prs) and the current items ($items). It carries $level as level, the open
-# tasks stowed, waiting to resume, as awaiting_resume, and the resources_line as resources (null when
-# $level is {error}).
-def snapshot($tasks; $states; $slots; $level; $sessions; $prs; $items):
+# team's resource level ($level, team-level status --json's object or {error}), the session list,
+# each registered project's open PRs ($prs) and the current items ($items). It carries $level as
+# level, the open tasks stowed, waiting to resume, as awaiting_resume, and the resources_line as
+# resources (null when $level is {error}).
+def snapshot($tasks; $states; $level; $sessions; $prs; $items):
   team_sessions($tasks; $sessions) as $team
   | ($tasks | awaiting_resume) as $stowed
   | {schema: "team-snapshot/1",
@@ -976,7 +957,6 @@ def snapshot($tasks; $states; $slots; $level; $sessions; $prs; $items):
      level: $level,
      awaiting_resume: $stowed,
      resources: resources_line($level; $stowed),
-     slots: $slots,
      sessions: [$team[] | select(.task_state == "open") | del(.task_state)],
      strays: [$team[] | select(.task_state != "open") | del(.logged)],
      prs: $prs,
@@ -1002,7 +982,6 @@ def snapshot_text:
   def section($title; $lines): section($title; $lines; 120);
   section("Open tasks"; [.tasks[] | if .error then "\(.task) state unreadable: \(.error)" else state_line end]; 200),
   (.resources // "Resources unreadable: \(.level.error // "team-level said nothing")" | clip(200)),
-  (if .slots.error then "Task slots unreadable: \(.slots.error)" else .slots.summary end | clip(120)),
   section("Live team sessions";
     [.sessions[] | session_text + if .logged then "" else " (no launch of it in the ledger)" end]),
   section("Stray sessions";

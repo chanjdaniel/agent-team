@@ -126,7 +126,7 @@ Workers' permissions do not allow the `busctl` call by hand: the tests use a stu
 
 The heartbeat's `capacity` step runs `team-capacity sample` on the lease holder every run, every 5 minutes, then `team-capacity place --quiet`, which places again any live team session outside its slice (one the claude daemon restarted, say).
 Each reading goes to `~/.local/state/agent-team/capacity/readings.jsonl`, kept for 24 hours.
-Its machine's part is the reading `team-slots sample` takes, by the same code (`bin/lib/reading.sh`), against a CPU snapshot of its own, so the two never differ: the memory, what the other programs use, and the team's processes, found by their working directory and their descent.
+Its machine's part (`bin/lib/reading.sh`) is the memory, what the other programs use, and the team's processes, found by their working directory and their descent, their CPU read against a snapshot of the last reading's, `procs.tsv` beside the readings.
 On top of it, each reading says each task's use:
 
 - On Linux, a task's memory is its slice's `MemoryCurrent`, plus its team processes outside the team's slice, plus its running team stacks (their `task` label), since Docker's containers are outside every user slice.
@@ -258,5 +258,6 @@ Its reason starts with the level's words, as `team-level` acknowledges a change.
 It fails when the user's systemd does not answer or its cgroup does not delegate `cpu` and `memory`, which only Daniel can change (a `user@.service` drop-in, with sudo), since the level's limits need the slice; `team-resume` and `team-load-check`, which stop on any FAIL, stop there too.
 It fails on a `capacity.json` or a `level.jsonl` line that is malformed, naming it.
 It warns when the slice or a gate daemon's drop-in is not installed (`team-capacity install`, Daniel's yes), when the gate's daemon still runs outside the slice (its restart waits on a pipeline), when a live team session runs outside its task's slice (`team-capacity place`, or the heartbeat's next run), and on the lease holder when no reading is under 15 minutes old (the `capacity` step's lines in the heartbeat log say why).
+It warns on a `~/.config/agent-team/slots.json` left from the task slots, which nothing reads since levels replaced the task cap: remove it.
 On Linux with the slice installed it warns, naming `team-level apply`, when the limits last applied are missing or another mode and level's than the record's, or the slice's CPU quota is not theirs, as after a reboot.
 macOS has no cgroups: `install` and `place` change nothing there, and the line passes with "no hard limits on macOS: admission and stow only".

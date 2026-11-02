@@ -10,7 +10,7 @@ load helpers/inbox
 
 setup() {
   sandbox
-  # A registry, committed with the team home, for the slots and capacity steps' readings, and a
+  # A registry, committed with the team home, for the capacity step's readings, and a
   # claude daemon with no live session, which the capacity step reads.
   cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
   stub_reply claude '[]'
@@ -727,7 +727,7 @@ steps() {
   sed -E 's/^[^ ]+ ([a-z]+): .*$/\1/' <<<"$1" | uniq | paste -sd ' '
 }
 
-# The docker calls made but the read-only ones of team-stack ls --json, which the slots step's
+# The docker calls made but the read-only ones of team-stack ls --json, which the capacity step's
 # reading makes on the holder, and the level step's, which holds the team's containers to the
 # level's CPU every run.
 docker_acts() {
@@ -735,9 +735,9 @@ docker_acts() {
     grep -vE '^(ps --quiet --filter label=io\.github\.chanjdaniel\.team\.owner=agent-team|update --cpus [0-9.]+ [0-9a-f ]+)$' || true
 }
 
-# The readings the slots step took under <home> (default HOME), one per line.
+# The readings the capacity step took under <home> (default HOME), one per line.
 readings() {
-  cat "${1:-$HOME}/.local/state/agent-team/slots/readings.jsonl" 2>/dev/null || true
+  cat "${1:-$HOME}/.local/state/agent-team/capacity/readings.jsonl" 2>/dev/null || true
 }
 
 # The day's janitor report, by local date.
@@ -885,15 +885,13 @@ EOF
   jq -cn --arg at "$(date -u -d '1 minute ago' +%FT%TZ)" \
     '{at: $at, os: "linux", memory: {total: 34359738368, available: 25769803776, team: 0, others: 8589934592}, cpu: null}' \
     >"$HOME/.local/state/agent-team/capacity/readings.jsonl"
-  # The slots and capacity steps get 5 s each, which team-slots and team-capacity need on a slow
-  # machine (CI's macOS runner) to reach their docker call before the step stops it, still well
-  # inside their own 30 s for Docker; the level step, which first checks the lease and reads the
-  # budget, 10 s.
-  TEAM_TIMERS_SLOTS_SECONDS=5 TEAM_TIMERS_CAPACITY_SECONDS=5 TEAM_TIMERS_LEVEL_SECONDS=10 TEAM_TIMERS_SWEEP_SECONDS=1 \
+  # The capacity step gets 5 s, which team-capacity needs on a slow machine (CI's macOS runner) to
+  # reach its docker call before the step stops it, still well inside its own 30 s for Docker; the
+  # level step, which first checks the lease and reads the budget, 10 s.
+  TEAM_TIMERS_CAPACITY_SECONDS=5 TEAM_TIMERS_LEVEL_SECONDS=10 TEAM_TIMERS_SWEEP_SECONDS=1 \
     TEAM_TIMERS_JANITOR_SECONDS=2 run_bin -1 team-timers run
   assert_equal "$output" "$(cat "$log")"
-  assert_equal "$(steps "$output")" "lease slots capacity level stacks checkpoint janitor"
-  [[ $(grep ' slots: ' <<<"$output") =~ ^[0-9T:Z-]+" slots: failed: timed out after 5 s"$ ]]
+  assert_equal "$(steps "$output")" "lease capacity level stacks checkpoint janitor"
   [[ $(grep ' capacity: ' <<<"$output") =~ ^[0-9T:Z-]+" capacity: failed: timed out after 5 s"$ ]]
   [[ $(grep ' level: ' <<<"$output") =~ ^[0-9T:Z-]+" level: failed: timed out after 10 s"$ ]]
   [[ $(grep ' stacks: ' <<<"$output") =~ ^[0-9T:Z-]+" stacks: failed: timed out after 1 s"$ ]]
@@ -901,7 +899,7 @@ EOF
   # Nothing they started is left waiting, and the janitor stopped wrote no report, so the next
   # run starts it again.
   local pid
-  [[ $(grep -c . "$DOCKER_STATE/hung") == 5 ]]
+  [[ $(grep -c . "$DOCKER_STATE/hung") == 4 ]]
   while read -r pid; do
     if [[ -n $pid ]] && kill -0 "$pid" 2>/dev/null; then
       echo "docker call $pid still waits"
@@ -930,26 +928,20 @@ EOF
   assert_equal "$(docker_acts)" ""
 }
 
-@test "the slots step takes a reading on the holder every run, logging nothing, at most one a minute" {
+@test "the heartbeat has no slots step: the capacity step takes the one reading, at most one a minute, before the level step" {
   run_bin -0 team-timers run
   assert_equal "$(steps "$output")" "lease checkpoint"
   assert_equal "$(readings | jq -c '[.os, .docker, .memory.total]')" '["linux",false,34359738368]'
+  [[ ! -e $HOME/.local/state/agent-team/slots ]]
   run_bin -0 team-timers run
   assert_equal "$(readings | wc -l)" 1
-  # Off the lease, none.
-  make_machine laptop
-  on_machine laptop run_bin -0 team-timers run
-  assert_equal "$(readings "$BATS_TEST_TMPDIR/machines/laptop/home")" ""
-}
-
-@test "a slots step that fails is logged with its reason, the steps after it still run, and the run exits 1" {
-  local file=$HOME/.config/agent-team/slots.json
-  echo '{"cap": "ten"}' >"$file"
+  # Each step that logs says so in the run's order: capacity, then level.
+  local file=$HOME/.config/agent-team/capacity.json
+  echo '{"minor_share": 2}' >"$file"
   run_bin -1 team-timers run
-  assert_equal "$output" "$(cat "$log")"
-  assert_equal "$(steps "$output")" "lease slots checkpoint"
-  [[ $(grep ' slots: ' <<<"$output") =~ ^[0-9T:Z-]+" slots: failed: $file: cap must be a whole number of 1 or more, not \"ten\""$ ]]
-  assert_equal "$(readings)" ""
+  assert_equal "$(steps "$output")" "lease capacity level checkpoint"
+  run_bin -0 team-timers --help
+  [[ $output != *slots* ]]
 }
 
 @test "the capacity step takes a reading with the team's use per task on the holder every run, logging only the sessions it placed" {

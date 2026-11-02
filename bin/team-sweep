@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
-# Find what the coordinator must not leave unattended, from the ledger, the live session list, the
-# machine's task slots and the team's stow plan.
+# Find what the coordinator must not leave unattended, from the ledger, the live session list and
+# the team's stow plan.
 #
 # Usage: team-sweep [--json | --wait]
-# Reads only ledger.jsonl, claude agents --json, team-slots status --stored --json, team-capacity
-# plan --json (from the stored readings) and, through bin/lib/session-activity, the live
-# sessions' transcripts: their modification times, and from a session's quiet past the default
-# limit only its times, tool names, tool call ids, commands and background task marks (never
-# GitHub, never a tool's output or a message's text, and never a new reading of the machine's
-# load), so it runs in about a second.
+# Reads only ledger.jsonl, claude agents --json, team-capacity plan --json (from the stored
+# readings) and, through bin/lib/session-activity, the live sessions' transcripts: their
+# modification times, and from a session's quiet past the default limit only its times, tool
+# names, tool call ids, commands and background task marks (never GitHub, never a tool's output or
+# a message's text, and never a new reading of the machine's load), so it runs in about a second.
 # A task is open when it has events and no closed; it is parked when its phase is held, blocked
 # or awaiting-merge, when it has an ask nothing settled (no answered or merge-preapproved with its
 # id, no merge-approved whose url its text names), or when its latest paused or waiting has no
@@ -52,13 +51,7 @@
 #                  startedAt is not epoch milliseconds) or printed no JSON object, so no busy
 #                  worker can be found stalled: "activity: <its last line on stderr>, so no busy
 #                  worker is found stalled: fix what session-activity names"
-#   slots          after the activity finding, with task and session null: the machine's effective
-#                  cap is below its cap, or more task slots are held than the effective cap, as
-#                  team-slots says from the stored readings: "slots: <team-slots' summary line>;
-#                  <the effective cap's reason>; <n> held, over the effective cap of <e>: new
-#                  tasks wait; tell Daniel which wait", each reason only when it holds; or
-#                  team-slots failed: "slots: <its last line on stderr>: fix what team-slots names"
-#   level-stow     after the slots finding, with task and session null: team-capacity plan (from
+#   level-stow     after the activity finding, with task and session null: team-capacity plan (from
 #                  the stored readings) confirms the team over its budget at its level and names
 #                  tasks to stow, newest first: "level: over budget at minor (30%): stow T174, then
 #                  T171" (the coordinator sends their workers STOW, then runs team-stow)
@@ -161,22 +154,21 @@ level_plan() {
 }
 
 # The findings now, as JSON in FINDINGS, from the ledger, a fresh read of the session list, the
-# machine's task slots, the stow plan and the live sessions' transcripts; fails with the reason on
-# stderr when the session list cannot be read.
+# stow plan and the live sessions' transcripts; fails with the reason on stderr when the session
+# list cannot be read.
 look() {
-  local sessions slots plan activity plan_file
+  local sessions plan activity plan_file
   sessions=$(LIVE_SESSIONS='' && live_sessions && printf '%s' "$LIVE_SESSIONS") || return 1
   plan_file=$(mktemp)
   printf '%s\n' "$sessions" >"$plan_file.sessions"
   level_plan "$plan_file.sessions" >"$plan_file" &
-  slots=$(machine_slots)
   activity=$(session_activity "$sessions")
   wait "$!" || true
   plan=$(cat "$plan_file")
   rm -f "$plan_file" "$plan_file.sessions"
   [[ -n $plan ]] || plan='{"error": "team-capacity plan printed nothing"}'
-  FINDINGS=$(ledger_jq 'ledger_events | sweep($sessions; $slots; $plan; $activity)' -nRc --argjson sessions "$sessions" \
-    --argjson slots "$slots" --argjson plan "$plan" --argjson activity "$activity" "$ledger")
+  FINDINGS=$(ledger_jq 'ledger_events | sweep($sessions; $plan; $activity)' -nRc --argjson sessions "$sessions" \
+    --argjson plan "$plan" --argjson activity "$activity" "$ledger")
 }
 
 # The sweep watch: see --wait in the header.

@@ -1,12 +1,11 @@
 # The definitions team-capacity reads the machine with and team-level sizes the team with: the
-# settings of capacity.json, the slots held, a reading of the machine's load with the team's use
-# per task, the cost samples it learns from, the estimates, the level record (level.jsonl), the
-# budget, the reservations and the room, the admission rule, the slice's limits, the stow and
+# settings of capacity.json, the worktrees held, a reading of the machine's load with the team's
+# use per task, the cost samples it learns from, the estimates, the level record (level.jsonl),
+# the budget, the reservations and the room, the admission rule, the slice's limits, the stow and
 # resume plans, and the texts. jq 1.7.
 # Included as: jq -L bin/lib 'include "capacity"; include "stack"; ...', stack after it, as
 # CLAUDE.md's script conventions say for jq 1.8.2. The program, not this module, reads the ledger
-# (held_slots; plan_tasks in ledger.jq for the plans). team-slots shares the reading
-# (machine_reading) and the slots held until its retirement.
+# (held_worktrees; plan_tasks in ledger.jq for the plans).
 include "stack";
 
 # The machine's capacity settings (~/.config/agent-team/capacity.json), every key optional, each
@@ -36,16 +35,16 @@ def task_branch_task:
   capture("^(feat|fix|docs|chore|build|ci|test|refactor|perf|research)/(?<task>T[1-9][0-9]*)-[a-z0-9]+(-[a-z0-9]+)*$")
   | .task;
 
-# The slots held, from each task's ledger events <tasks> (by_task), the open worktrees <open> of
-# the open tasks (open_worktrees over the events of the tasks is_open keeps, each path on this
+# The worktrees held, from each task's ledger events <tasks> (by_task), the open worktrees <open>
+# of the open tasks (open_worktrees over the events of the tasks is_open keeps, each path on this
 # machine), and the registered worktrees <worktrees> of every registered project's primary
 # checkout but the checkout itself, each {project, branch, worktree}: one {task, project,
 # worktree, half_open} per open worktree, and per registered worktree on a task's branch whose
 # task has no closed event and no open worktree of that project (half open), by task number, then
 # project. The program reads the ledger as bin/lib/reading.sh does (READING_HELD):
 #   include "ledger"; include "capacity"; include "stack"; ledger_events as $events | ($events | by_task) as $tasks
-#   | held_slots($tasks; [open_worktrees($events[] | select($tasks[.task] | is_open); $home)]; $worktrees)
-def held_slots($tasks; $open; $worktrees):
+#   | held_worktrees($tasks; [open_worktrees($events[] | select($tasks[.task] | is_open); $home)]; $worktrees)
+def held_worktrees($tasks; $open; $worktrees):
   [$open[] | {task, project, worktree, half_open: false}] as $open
   | $open
     + [$worktrees[] | (.branch | task_branch_task) as $task | .project as $project
@@ -138,7 +137,7 @@ def capacity_units($in):
    $in.gate_units[]];
 
 # A reading of the machine's load with the team's use per task, from $in: machine_reading's input
-# and held (the slots held, [{task, project, worktree}], each path resolved), sessions (as
+# and held (the worktrees held, [{task, project, worktree}], each path resolved), sessions (as
 # team_sessions reads them), units ({"<unit>": {MemoryCurrent, MemoryPeak, CPUUsageNSec}, each a
 # number or null}, or null when the user manager did not answer or off Linux), gate_units (the
 # gate's daemon units), gate_root (~/.no-mistakes), heavy (the pid of the team-heavy that holds the

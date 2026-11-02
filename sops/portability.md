@@ -37,7 +37,7 @@ Two repositories hold the team, each checked out on every machine:
 | Tool versions | `bin/lib/tools.lock` | read by `team-doctor` and `team-bootstrap` |
 | Which secrets a machine needs (never a value) | `machine/secrets.json`, described in `machine/secrets.md` | read by `team-secrets` |
 | Secret values | 1Password, the `agent-team` vault | `team-secrets restore` and `save`, in Daniel's own terminal only |
-| This machine's name, its team home's path, its cap on task slots and its state (lease record, fence, offline flag, logs) | `~/.config/agent-team/machine`, `~/.config/agent-team/home`, `~/.config/agent-team/slots.json`, `~/.local/state/agent-team/` | never moved |
+| This machine's name, its team home's path, its capacity settings and its state (lease record, fence, offline flag, logs) | `~/.config/agent-team/machine`, `~/.config/agent-team/home`, `~/.config/agent-team/capacity.json`, `~/.local/state/agent-team/` | never moved |
 
 `machine/`, `memory/`, `tasks/`, `usage/` and the ledger are records, committed straight to `dev` by the scripts.
 
@@ -54,7 +54,7 @@ Two repositories hold the team, each checked out on every machine:
 
 ## The heartbeat
 
-`team-timers enable` installs one job every 5 minutes on the holder (systemd on Arch, launchd on macOS, plus `caffeinate -i` on a Mac) running `team-timers run`: probe GitHub, renew the lease once the last renewal is 15 minutes old, bring the Waiting on you message in `#coordinator` up to date (`team-inbox`), take a reading of the machine's load for its task cap (`team-slots sample`, `sops/slots.md`), take the team's own reading and place its sessions in their slices (`team-capacity sample` and `place`), hold the team to its resource level (`team-level tick`, `sops/resources.md`), and checkpoint on each run (once the last checkpoint is 5 minutes old, less a minute for the timer's slack).
+`team-timers enable` installs one job every 5 minutes on the holder (systemd on Arch, launchd on macOS, plus `caffeinate -i` on a Mac) running `team-timers run`: probe GitHub, renew the lease once the last renewal is 15 minutes old, bring the Waiting on you message in `#coordinator` up to date (`team-inbox`), take a reading of the machine's load with the team's use per task and place its sessions in their slices (`team-capacity sample` and `place`), hold the team to its resource level (`team-level tick`, `sops/resources.md`), and checkpoint on each run (once the last checkpoint is 5 minutes old, less a minute for the timer's slack).
 After the checkpoint it packs the team home (`git gc`) once it has 200 loose objects, so the records' git stays packed on whichever machine holds the lease; `team-doctor`'s `team home pack` line warns at 400.
 Once Daniel turns each on, it also stops idle stacks and runs `team-janitor` daily (`sops/docker.md`, "The heartbeat's steps"); both ship off.
 It is enabled only on the holder: `team-resume` enables it, `team-handoff` disables it, and a run on a machine that does not hold the lease changes nothing.
@@ -108,7 +108,7 @@ A worktree whose head a salvage branch holds, with nothing uncommitted, is salva
 4. It posts "Released at 14:05 from home-pc. The `team-resume --wait` started on the other machine takes the team now; with none running there, run `team-resume` there." with what config it captured (and any it left to Daniel: a `settings.json` with an `env` key, or a skill folder holding a dotenv-like file), and `team-handoff --retire` removes the coordinator.
 5. The release ends the wait of step 1 (with no `--wait` running, Daniel runs `team-resume` at the other machine, which refuses a fresh lease held elsewhere with nothing changed).
    After the release it pulls the team home and then the code checkout, applies the config, takes the lease, enables the heartbeat, re-homes each open worktree with `team-open --task T<n> --resume <project>` (from origin's branch and the task's archive, with `wip/<project>/T<n>` applied as uncommitted changes to a worktree its `stowed` marks `uncommitted`), writes `tasks/resume-<date>-<time>.json` (one report per run, never overwritten; each worktree it could not re-home is also a `rehome-failed` in the ledger, which `team-state` shows until the worktree is made) and starts the coordinator.
-   The machine's cap on task slots never refuses a re-homing (`sops/slots.md`): on a machine with a lower cap than the one left, every open task is re-homed anyway, each `team-open --resume` saying the machine is over its effective cap, and no new task opens there until enough close to bring it under.
+   The machine's load never refuses a re-homing: every open task is re-homed whatever the level, and what the level admits is each relaunch (`team-worker`, `sops/resources.md`), so a role with no room waits for the sweep's `level-resume` finding.
 6. The coordinator's `resume` skill reads the report, catches up on Discord messages sent while no coordinator listened, relaunches each stowed role with a `resume` brief (which says what became of the uncommitted changes), logs `resumed`, and posts what resumed and what did not.
 7. Daniel pins the coordinator in `claude agents`.
 
@@ -139,4 +139,4 @@ Taking the PC down for a while (an update, a restart, a night off) is a handoff 
 - Headless logins: `claude setup-token`, `gh auth login --with-token`, and secrets from the host's secret store instead of Daniel's terminal.
 - Supervision: the coordinator under a systemd service that checks the lease before it starts, since agent view does not restart sessions after a reboot.
 - Trust accepted once per root over SSH; the doctor's check is the same.
-- Sizing: each worker's treehouse slot has its own `node_modules` and Docker stack, so RAM and disk set the pool caps and the server's own cap on task slots (`sops/slots.md`).
+- Sizing: each worker's treehouse slot has its own `node_modules` and Docker stack, so RAM and disk set the pool caps and the server's resource levels (`sops/resources.md`).
