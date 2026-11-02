@@ -1,21 +1,23 @@
-# The definitions team-capacity reads the machine with: the settings of capacity.json, the slots
-# held, a reading of the machine's load with the team's use per task, the cost samples it learns
-# from, the estimates, and the texts. jq 1.7.
+# The definitions team-capacity reads the machine with and team-level sizes the team with: the
+# settings of capacity.json, the slots held, a reading of the machine's load with the team's use
+# per task, the cost samples it learns from, the estimates, the level record (level.jsonl), the
+# budget, the reservations and the room, the admission rule, the slice's limits, the stow and
+# resume plans, and the texts. jq 1.7.
 # Included as: jq -L bin/lib 'include "capacity"; include "stack"; ...', stack after it, as
 # CLAUDE.md's script conventions say for jq 1.8.2. The program, not this module, reads the ledger
-# (held_slots). team-slots shares the reading (machine_reading) and the slots held until its
-# retirement.
+# (held_slots; plan_tasks in ledger.jq for the plans). team-slots shares the reading
+# (machine_reading) and the slots held until its retirement.
 include "stack";
 
 # The machine's capacity settings (~/.config/agent-team/capacity.json), every key optional, each
 # with its default and its kind (settings_problems in stack.jq).
 def capacity_defaults:
   {full_share: 0.9, minor_share: 0.3, reserve_gib: 4, reserve_cores: 1, auto_full_free: 0.5, auto_none_below: 0.15,
-   rise_minutes: 15, session_gib: 0.5, heavy_gib: 5, gate_gib: 2.2, min_cores: 1};
+   rise_minutes: 15, session_gib: 0.5, heavy_gib: 5, gate_gib: 2.2, min_cores: 1, min_gib: 2};
 def capacity_kinds:
   {full_share: "share", minor_share: "share", reserve_gib: "amount", reserve_cores: "amount", auto_full_free: "fraction",
    auto_none_below: "fraction", rise_minutes: "amount", session_gib: "positive", heavy_gib: "positive",
-   gate_gib: "positive", min_cores: "positive"};
+   gate_gib: "positive", min_cores: "positive", min_gib: "positive"};
 
 # What is wrong with capacity.json's JSON values (read with jq -s), to follow its name, as
 # settings_problems says it.
@@ -128,10 +130,11 @@ def reading_tasks($in):
   | unique | sort_by(.[1:] | tonumber);
 
 # The user manager's units a reading reads on Linux: each task's slice, each live team session's
-# scope, and the gate's daemon units <gate_units>.
+# scope, the running heavy run's scope, and the gate's daemon units <gate_units>.
 def capacity_units($in):
   [(reading_tasks($in)[] | "agent-team-\(.).slice"),
    (team_sessions($in)[] | "agent-team-\(.task)-\(.id).scope"),
+   ($in.heavy // empty | "agent-team-heavy-\(.).scope"),
    $in.gate_units[]];
 
 # A reading of the machine's load with the team's use per task, from $in: machine_reading's input
@@ -144,9 +147,10 @@ def capacity_units($in):
 # descends from one that is, the nearest one deciding; on Linux one in a task's slice is counted
 # by the slice's MemoryCurrent and CPUUsageNSec instead. A session's use is its scope's on Linux,
 # else its process tree's (the session and its descendants, but a heavy run's team-heavy and what
-# it runs, whose cost is heavy:<kind>'s). The gate runs a pipeline while a
-# process works in one of its worktrees (gate_root/worktrees/...); its use is its daemon unit's on
-# Linux, else the tree of the processes in gate_root.
+# it runs, whose cost is heavy:<kind>'s). The running heavy run's use is its scope's
+# (agent-team-heavy-<pid>.scope) on Linux, else the tree of its team-heavy. The gate runs a
+# pipeline while a process works in one of its worktrees (gate_root/worktrees/...); its use is its
+# daemon unit's on Linux, else the tree of the processes in gate_root.
 def capacity_reading($in):
   def gib_bytes: . * 1024;
   def under($path): . as $cwd | $cwd != "" and ($cwd == $path or ($cwd | startswith($path + "/")));
@@ -180,7 +184,7 @@ def capacity_reading($in):
   | [$in.stacks.projects // [] | .[] | select((.class == "team" or .class == "gate") and .memory_bytes != null)
      | .worktree as $wt
      | {name, class, task, project: (if .class == "team" then first($in.held[] | select(.worktree == $wt) | .project) // null else null end),
-        memory: .memory_bytes, cpu: ((.cpu_percent // 0) / 100), limits: .memory_limit_bytes}]
+        worktree: $wt, kind, memory: .memory_bytes, cpu: ((.cpu_percent // 0) / 100), limits: .memory_limit_bytes}]
     as $stacks
   | [reading_tasks($in)[] as $task
      | unit("agent-team-\($task).slice") as $slice
@@ -204,6 +208,10 @@ def capacity_reading($in):
         sessions: [$sessions[] | select(.task == $task) | del(.task)],
         stacks: [$mine[] | {name, memory, cpu: (.cpu | hundredths)}]}]
     as $tasks
+  | (if $in.heavy == null then null
+     else unit("agent-team-heavy-\($in.heavy).scope") as $scope
+       | [limit(4096; $in.heavy | tostring | recurse($kids[.] // [] | .[]))] as $tree
+       | {pid: $in.heavy, memory: ($scope.MemoryCurrent // ([$tree[] | $by_pid[.].rss // 0] | add | gib_bytes))} end) as $heavy
   | (first($in.gate_units[] | unit(.) | select(.MemoryCurrent != null)) // {}) as $daemon
   | [$procs[] | select(.gate)] as $gate_procs
   | $base
@@ -211,6 +219,7 @@ def capacity_reading($in):
        sessions: ($in.sessions != null),
        tasks: $tasks,
        stacks: [$stacks[] | .cpu |= hundredths],
+       heavy: $heavy,
        gate: {running: any($procs[]; .cwd | under($in.gate_root + "/worktrees")),
               memory: ($daemon.MemoryCurrent // ([$gate_procs[].rss] | add // 0 | gib_bytes)),
               cpu_seconds: (if $daemon.CPUUsageNSec != null then $daemon.CPUUsageNSec / 1e9
@@ -337,3 +346,437 @@ def capacity_status_text:
             | if . == [] then "" else "; " + join(", ") end)),
       (select($r.gate.running // false) | "  gate: running a pipeline, \($r.gate.memory | gib)")
     end;
+
+# The levels, lowest first, and each one's share of the machine under the settings <s>
+# (capacity_settings): full_share, minor_share, or 0 for none.
+def capacity_levels: ["none", "minor", "full"];
+def level_share($s): if . == "full" then $s.full_share elif . == "minor" then $s.minor_share else 0 end;
+
+# Whether a line of level.jsonl is a level record: {ts (UTC, YYYY-MM-DDTHH:MM:SSZ), mode (manual
+# or auto), level, by and machine (each a non-empty string)}, with discord_message and reason
+# strings and a reading object (level_reading's) when present.
+def well_formed_level:
+  try (type == "object" and (.ts | type == "string" and (fromdateiso8601 | type == "number"))
+       and (.mode == "manual" or .mode == "auto") and (.level as $l | capacity_levels | index($l) != null)
+       and (.by | type == "string" and . != "") and (.machine | type == "string" and . != "")
+       and ((.discord_message // "") | type == "string") and ((.reason // "") | type == "string")
+       and ((.reading // {}) | type == "object"))
+  catch false;
+
+# level.jsonl's lines (an array of strings) as {records: the level records in their order,
+# broken: the numbers of the lines that are not one}; a blank line is neither.
+def level_records:
+  [to_entries[] | select(.value | test("\\S")) | {line: (.key + 1), record: (.value | try fromjson catch null)}]
+  | {records: map(select(.record | well_formed_level) | .record),
+     broken: map(select(.record | well_formed_level | not) | .line)};
+
+# The current mode and level from level_records' object: the last record's, else manual full
+# (the team before any record), as {mode, level, last_change (the last record, or null)}.
+def level_current: {mode: (.records[-1].mode // "manual"), level: (.records[-1].level // "full"), last_change: .records[-1]};
+
+# A level's place among capacity_levels: none 0, minor 1, full 2.
+def level_rank: . as $level | capacity_levels | index($level);
+
+# The fraction of the machine a stored reading leaves the team under the settings <s>: the lower
+# of (T - O_m - reserve_gib) / T and (C - O_c - reserve_cores) / C, memory's alone when the
+# reading has no CPU.
+def level_free($s):
+  ((.memory.total - .memory.others - $s.reserve_gib * 1073741824) / .memory.total) as $memory
+  | if .cpu == null then $memory else [$memory, ((.cpu.cpus - .cpu.others - $s.reserve_cores) / .cpu.cpus)] | min end;
+
+# Automatic mode's pick of a stored reading under the settings <s>: full when level_free is at
+# least auto_full_free, none when it is below auto_none_below, minor between.
+def level_pick($s):
+  level_free($s) as $free
+  | if $free >= $s.auto_full_free then "full" elif $free < $s.auto_none_below then "none" else "minor" end;
+
+# What an automatic change keeps of the stored reading it rests on: {at, total, others_memory,
+# cpus, others_cores (null without CPU), free (level_free), pick}.
+def level_reading($s):
+  {at, total: .memory.total, others_memory: .memory.others, cpus: (.cpu.cpus // null),
+   others_cores: (.cpu.others // null), free: (level_free($s) | hundredths), pick: level_pick($s)};
+
+# The reason of an automatic change, from its reading (level_reading's): "other programs use 18.2
+# GiB of 30.6 GiB and 7.9 of 12 cores", the cores left out without CPU.
+def level_reason:
+  "other programs use \(.others_memory | gib) of \(.total | gib)"
+  + if .cpus == null then "" else " and \(.others_cores | one_decimal) of \(.cpus) cores" end;
+
+# Automatic mode's step at the time <now> (seconds), from the settings <s>, the stored readings
+# <readings> (stored_readings' readings, oldest first), the current level <level> and the last
+# change <last> (the last level record, or null), as {stale, change, level, reading}:
+#   stale    true when no reading is from the last 15 minutes, and then no change
+#   change   "lowered" when the newest reading's pick is below <level>, to that pick, at once;
+#            "raised" when the last change is at least rise_minutes old, a reading at least
+#            rise_minutes old exists, and it and every reading after it pick above <level>, to
+#            the lowest of their picks; else null
+#   level    the level after the step
+#   reading  the reading the change rests on (level_reading's): the newest for a drop, the newest
+#            of the lowest pick for a rise; null with no change
+# So one reading drops the level, and only readings spanning rise_minutes raise it.
+def level_auto($s; $readings; $level; $last; $now):
+  ($level | level_rank) as $rank
+  | ($now - $s.rise_minutes * 60) as $from
+  | [$readings[] | {r: ., t: (.at | fromdateiso8601), pick: level_pick($s)} | . + {rank: (.pick | level_rank)}] as $rs
+  | $rs[-1] as $newest
+  | if $newest == null or $newest.t < $now - 900 then {stale: true, change: null, level: $level, reading: null}
+    elif $newest.rank < $rank then {stale: false, change: "lowered", level: $newest.pick, reading: ($newest.r | level_reading($s))}
+    else
+      ([$rs[] | select(.t <= $from)] | .[-1]) as $anchor
+      | [$rs[] | select($anchor != null and .t >= $anchor.t)] as $span
+      | if $anchor == null or ($last != null and ($last.ts | fromdateiso8601) > $from) or any($span[]; .rank <= $rank)
+        then {stale: false, change: null, level: $level, reading: null}
+        else ($span | min_by(.rank) | .rank) as $lowest
+          | ([$span[] | select(.rank == $lowest)] | .[-1]) as $by
+          | {stale: false, change: "raised", level: $by.pick, reading: ($by.r | level_reading($s))}
+        end
+    end;
+
+# The team's budget at <level>, from the settings <s>, the newest reading <r> (null with none), the
+# newest reading with CPU <c> (null with none) and the machine's cores <cpus>, with T the memory
+# total, C the cores, s the level's share, O_m and O_c the other programs' memory and cores:
+#   memory_bytes  max(0, min(s * T, T - O_m - reserve_gib)), null with no reading
+#   cores         max(0, min(s * C, C - O_c - reserve_cores)), s * <cpus> with no reading with CPU
+# and bound_by {memory, cores}: "share" when the share is the smaller bound, else "others" (the
+# other programs leave less), null with no reading.
+def capacity_budget($s; $level; $r; $c; $cpus):
+  ($level | level_share($s)) as $share
+  | (if $r == null then {bytes: null, bound: null}
+     else ($share * $r.memory.total) as $by_share
+       | ($r.memory.total - $r.memory.others - $s.reserve_gib * 1073741824) as $left
+       | {bytes: ([0, ([$by_share, $left] | min)] | max | floor), bound: (if $by_share <= $left then "share" else "others" end)}
+     end) as $memory
+  | (if $c == null then {cores: ($share * $cpus | hundredths), bound: "share"}
+     else ($share * $c.cpu.cpus) as $by_share
+       | ($c.cpu.cpus - $c.cpu.others - $s.reserve_cores) as $left
+       | {cores: ([0, ([$by_share, $left] | min)] | max | hundredths), bound: (if $by_share <= $left then "share" else "others" end)}
+     end) as $cpu
+  | {share: $share, memory_bytes: $memory.bytes, cores: $cpu.cores, bound_by: {memory: $memory.bound, cores: $cpu.bound}};
+
+# A kind's estimate for an admission, from the estimates <costs> (capacity_costs' array), the
+# settings <s> and the caller's seed <seed> (bytes, or null): the costs' estimate of the kind when
+# it has one (learned, or a seed it saw); else <seed>; else for a heavy run heavy_gib and for a
+# session session_gib (a kind costs does not list); else 0. As {bytes, source}.
+def kind_estimate($costs; $s; $kind; $seed):
+  (first($costs[] | select(.kind == $kind and .estimate_bytes != null)) // null) as $c
+  | if $c != null then {bytes: $c.estimate_bytes, source: $c.source}
+    elif $seed != null then {bytes: $seed, source: "seed-bytes"}
+    elif $kind | startswith("heavy:") then {bytes: ($s.heavy_gib * 1073741824 | round), source: "seed"}
+    elif $kind | startswith("session:") then {bytes: ($s.session_gib * 1073741824 | round), source: "seed"}
+    else {bytes: 0, source: "none"} end;
+
+# Whether an admission (an entry of capacity/admitted.json, {at, kind, task, name, bytes, pid}) still
+# reserves at the time <now> (seconds), with the heavy-run lock <heavy> (heavy_holder's {held, pid,
+# label, task}): one of the last 10 minutes, or a heavy run's while its team-heavy holds the lock.
+def admission_kept($heavy; $now):
+  (.at | fromdateiso8601) >= $now - 600 or (.pid != null and $heavy.held and .pid == $heavy.pid);
+
+# What the team's live work reserves, from $in: {reading (the newest, or null), costs
+# (capacity_costs' array), settings, heavy (the heavy-run lock now: {held, pid, label, task}),
+# admitted (capacity/admitted.json's entries), now (seconds), asking (the kind being admitted, or
+# null), freed (the ids of sessions the asker stopped since the reading, left out; [] or null for
+# none)}, as [{part, kind, task, name, estimate_bytes, use_bytes, bytes}], part one of
+# reserved_parts:
+#   sessions_use: each live team session of the reading past its admission window, at its use;
+#   spike_allowance: one for the team while any session is past its window, the largest of those
+#   sessions' kind estimates less their use, at 0 at least, named by that session;
+#   admissions: each admission of the last 10 minutes but a heavy run's, at its estimate then
+#   (admitted: its time); one of a session kind together with a session of that kind and task the
+#   reading holds, which is then within its window, at the larger of that estimate and the
+#   session's use (of several sessions of the kind and task, the newest admissions take the ones
+#   using least, since a new session uses little yet);
+#   stacks: each running team or gate stack, at the larger of its kind's estimate (one with none:
+#   its mem_limits) and its use; one an admission names (its kind, task and name, the newest such
+#   admission) is that admission too, reserved once, at the admission's estimate at least
+#   (admitted: its time), so a stack admitted while another of its kind and task runs (an
+#   instance) stays an admission until the reading holds it; an admission with no name pairs with
+#   no stack;
+#   gates: the gate while it runs a pipeline, at the larger of its estimate and its use;
+#   heavy_runs: the running heavy run, while one holds the lock, but when the asker is a heavy run,
+#   which holds it itself, at the larger of its estimate and its use: its kind its admission's (the
+#   entry whose pid is its team-heavy's), else "heavy", its estimate heavy_gib's when its kind has
+#   none, its use the reading's when the reading saw that run, its name the holder's label.
+# A session's kind estimate is kind_estimate's, so a role costs does not list is at session_gib.
+def capacity_reservations($in):
+  ($in.costs | map({key: .kind, value: .estimate_bytes}) | from_entries) as $estimate
+  | $in.reading as $r | $in.heavy as $heavy
+  | def item($part; $kind; $task; $name; $use; $fallback):
+      ($estimate[$kind] // $fallback // 0) as $e
+      | {part: $part, kind: $kind, task: $task, name: $name, estimate_bytes: $e, use_bytes: $use, bytes: ([$e, $use // 0] | max)};
+    def ranked(order):
+      to_entries | map(.value + {i: .key}) | group_by([.kind, .task])
+      | map(sort_by(order) | to_entries | map(.value + {rank: .key, key: "\(.value.kind) \(.value.task) \(.key)"}))
+      | add // [] | sort_by(.i);
+  [$in.admitted[] | select(admission_kept($heavy; $in.now) and (.kind | startswith("heavy:") | not))] as $kept
+  | ([$kept[] | select(.kind | startswith("session:"))] | ranked(.at | fromdateiso8601 | -.)
+     | map({key, value: .}) | from_entries) as $windows
+  | ([$r.tasks // [] | .[] | .task as $task | .sessions[]
+      | select(.id as $id | ($in.freed // []) | index($id) | not)
+      | {kind: "session:\(.role)", task: $task, name: .id, use: .memory,
+         estimate: kind_estimate($in.costs; $in.settings; "session:\(.role)"; null).bytes}]
+     | ranked([.use, .name]) | map(. + {admission: $windows[.key]})) as $sessions
+  | def same_stack($a): .kind == $a.kind and .task == $a.task and .name == $a.name;
+    [$kept[] | select((.kind | startswith("stack:")) and .name != null)] as $stack_admissions
+  | [$r.stacks // [] | .[] | {kind: "stack:\(.project // .class)", task, name, memory, limits}
+     | . + {admission: (. as $s | [$stack_admissions[] | select(. as $a | $s | same_stack($a))] | max_by(.at))}] as $stacks
+  | ([$sessions[] | select(.admission != null) | "\(.kind) \(.task)"] | group_by(.) | map({key: .[0], value: length}) | from_entries) as $taken
+  | [$sessions[] | select(.admission == null)] as $past
+  | [($sessions[]
+      | if .admission == null then
+          {part: "sessions_use", kind, task, name, estimate_bytes: .estimate, use_bytes: .use, bytes: (.use // 0)}
+        else
+          {part: "admissions", kind, task, name, admitted: .admission.at, estimate_bytes: .admission.bytes, use_bytes: .use,
+           bytes: ([.admission.bytes, .use // 0] | max)}
+        end),
+     (if $past == [] then empty
+      else $past | map(. + {gap: ([.estimate - (.use // 0), 0] | max)}) | max_by(.gap)
+        | {part: "spike_allowance", kind, task, name, estimate_bytes: .estimate, use_bytes: .use, bytes: .gap} end),
+     ($stacks[] | .admission as $a | item("stacks"; .kind; .task; .name; .memory; .limits)
+      | if $a == null then . else . + {admitted: $a.at, bytes: ([.bytes, $a.bytes] | max)} end),
+     (if $r.gate.running // false then item("gates"; "gate"; null; "gate"; $r.gate.memory; null) else empty end),
+     (if $heavy.held and (($in.asking // "") | startswith("heavy:") | not) then
+        (first($in.admitted[] | select(.pid != null and .pid == $heavy.pid)) // null) as $a
+        | item("heavy_runs"; $a.kind // "heavy"; $heavy.task; $heavy.label;
+               (if $heavy.pid != null and $r.heavy.pid == $heavy.pid then $r.heavy.memory else null end);
+               ($a.bytes // ($in.settings.heavy_gib * 1073741824 | round)))
+      else empty end),
+     ($kept | ranked(.at | fromdateiso8601 | -.) | .[]
+      | if .kind | startswith("stack:") then select(. as $a | any($stacks[]; same_stack($a)) | not)
+        else select(.rank >= ($taken["\(.kind) \(.task)"] // 0)) end
+      | {part: "admissions", kind, task, name: null, admitted: .at, estimate_bytes: .bytes, use_bytes: null, bytes})];
+
+# The parts of what is reserved, in the order status --json and team-level say them.
+def reserved_parts: ["sessions_use", "spike_allowance", "admissions", "stacks", "heavy_runs", "gates"];
+
+# The reservations <items> (capacity_reservations') as {bytes (the total), and each of
+# reserved_parts: the bytes of its items, 0 with none}.
+def reserved_split($items):
+  {bytes: ([$items[].bytes] | add // 0)}
+  + (reserved_parts | map({key: ., value: (. as $part | [$items[] | select(.part == $part) | .bytes] | add // 0)}) | from_entries);
+
+# The room left at the level <current> (level_current's {mode, level}), from the settings <s>,
+# the newest reading <r> (or null) and the reservations' total <reserved>: {mode, level, share,
+# budget_bytes (the memory budget, capacity_budget's), bytes (the budget less what is reserved,
+# below 0 when over it)}, both null with no reading.
+def capacity_room($s; $current; $r; $reserved):
+  capacity_budget($s; $current.level; $r; null; 0) as $b
+  | {mode: $current.mode, level: $current.level, share: $b.share, budget_bytes: $b.memory_bytes,
+     bytes: (if $b.memory_bytes == null then null else $b.memory_bytes - $reserved end)};
+
+# The team slice's limits and the containers' CPU for the budget <budget> (capacity_budget's),
+# from the reservations <reserved> (capacity_reservations'), the slice's current use <current> and
+# MemoryHigh <previous> (bytes, null when unknown or infinity) and the settings <s>:
+#   cpu_quota_percent  max(cores, min_cores) * 100, rounded
+#   cpus               max(cores, min_cores), for docker update --cpus
+#   memory_high        max(min_gib, the budget less the stacks' reservations (they run outside the
+#                      slice), min(current, previous)): while the slice uses more than its part,
+#                      never below that use, so a drop reclaims through stops and stows, never by
+#                      throttling live sessions, and lowered as the use falls
+#   memory_max         max(memory_high, current) + 1 GiB, so a drop never kills a worker
+def level_limits($budget; $reserved; $current; $previous; $s):
+  ([$reserved[] | select(.kind | startswith("stack:")) | .bytes] | add // 0) as $stacks
+  | ([$budget.memory_bytes - $stacks, 0] | max) as $part
+  | ([$current // 0, $previous // ($current // 0)] | min) as $held
+  | ([$s.min_gib * 1073741824, $part, $held] | max | floor) as $high
+  | ([$budget.cores, $s.min_cores] | max) as $cores
+  | {cpu_quota_percent: ($cores * 100 | round), cpus: ($cores | hundredths), memory_high: $high,
+     memory_max: (([$high, $current // 0] | max) + 1073741824 | floor)};
+
+# <share> as a percentage: 0.3 is "30%".
+def percent: "\(. * 100 | round)%";
+
+# <cores> with one decimal place, and its noun.
+def cores_short: "\(one_decimal) core\(if . == 1 then "" else "s" end)";
+
+# The level's one line from team-level's team-level/1 object, which the coordinator posts:
+# "manual, minor (30%): 9.2 GiB and 3.6 cores for the team; 6.1 GiB reserved", and in automatic
+# mode "auto, now minor (30%): ...", since the level may change.
+def level_says:
+  "\(.mode), \(if .mode == "auto" then "now " else "" end)\(.level) (\(.share | percent)): "
+  + if .budget.memory_bytes == null then "no reading of the machine's load yet, so no budget"
+    else "\(.budget.memory_bytes | gib) and \(.budget.cores | cores_short) for the team; \(.reserved_bytes | gib) reserved" end;
+
+# team-level status's lines from its team-level/1 object.
+def level_status_text:
+  def bound: if . == "share" then "bound by the share" else "bound by what other programs leave" end;
+  "Resources: \(level_says)",
+  (select(.reading != null) | .reading as $r
+   | "  memory: \(.budget.memory_bytes | gib), \(.budget.bound_by.memory | bound): \(.share | percent) of \($r.total | gib), other programs use \($r.others_memory | gib) and \(.settings.reserve_gib) GiB stays free for them",
+     "  cores: \(.budget.cores | one_decimal), \(.budget.bound_by.cores | bound)"
+       + (if $r.cpus == null then " (no reading of the CPU yet: \(.share | percent) of \(.cpus))"
+          else ": \(.share | percent) of \($r.cpus), other programs use \($r.others_cores) and \(.settings.reserve_cores) stays free for them" end),
+     "  the team uses \(.use.memory_bytes | gib)" + (if .use.cores == null then "" else " and \(.use.cores | cores_short)" end)
+       + " (the reading at \($r.at | fromdateiso8601 | strflocaltime("%H:%M")))"),
+  "  reserved \(.reserved_bytes | gib): " + (.reserved_split as $split | reserved_parts
+    | map({sessions_use: "sessions' use", spike_allowance: "spike allowance", admissions: "admissions", stacks: "stacks",
+           heavy_runs: "heavy runs", gates: "gates"}[.] + " \($split[.] | gib)") | join(", ")),
+  (if .last_change == null then "  last change: none recorded, so manual full"
+   else .last_change | "  last change: \(.mode) \(.level) by \(.by) at \(.ts | fromdateiso8601 | strflocaltime("%Y-%m-%d %H:%M")) on \(.machine)" end);
+
+# What a kind of work is called in a refusal: "a reviewer", "a stack of conventioner", "a heavy
+# run of tests-run", "a gate run".
+def kind_noun:
+  if startswith("session:") then "a \(.[8:])" elif startswith("stack:") then "a stack of \(.[6:])"
+  elif startswith("heavy:") then "a heavy run of \(.[6:])" elif . == "gate" then "a gate run" else . end;
+
+# The admission of <kind> at its estimate <bytes> against team-capacity status's object <status>
+# (its reserved and room): {admitted, says}. Nothing is admitted at none; else it is when what is
+# reserved plus the estimate is at most the budget. A refusal names the kind, why, and what makes
+# room: the team's work shrinking (a finished session or idle stack stopped, a task stowed) or the
+# level rising, which at none is Daniel's to raise, or automatic mode's.
+def capacity_admit($status; $kind; $bytes):
+  $status.room as $room | $status.reserved.bytes as $reserved
+  | "\($room.level) (\($room.share | percent))" as $at
+  | if $room.level == "none" then
+      {admitted: false, says: "no room for \($kind): the team is at level none: nothing starts; room comes when \(if $room.mode == "auto" then "the level rises" else "Daniel raises the level" end)"}
+    elif $reserved + $bytes <= $room.budget_bytes then
+      {admitted: true, says: "admitted \($kind) at \($at): \($kind | kind_noun) needs \($bytes | gib), \($reserved | gib) of \($room.budget_bytes | gib) reserved before it"}
+    else {admitted: false, says: "no room for \($kind) at \($at): \($reserved | gib) of \($room.budget_bytes | gib) reserved, \($kind | kind_noun) needs \($bytes | gib); room comes when the team's work shrinks or the level rises"} end;
+
+# The refusal of a level.jsonl whose lines <broken> (level_records' numbers) are no level records,
+# at <path>.
+def level_broken_text($path; $broken):
+  "\($path) has lines that are not level records ({ts, mode, level, by, machine}): line \($broken | map(tostring) | join(", ")); fix or remove them, then run it again";
+
+# The total of the reservations <items> (capacity_reservations') as reserved_split counts it, the
+# spike allowance taken again over the sessions_use items left, so what is left once some items go
+# is counted as the readings would count it.
+def reserved_total:
+  ([.[] | select(.part != "spike_allowance") | .bytes] | add // 0)
+  + ([.[] | select(.part == "sessions_use") | [.estimate_bytes - (.use_bytes // 0), 0] | max] | max // 0);
+
+# Whether the directory <cwd> is the worktree <wt> or below it.
+def within($wt): . as $cwd | $wt != null and ($cwd == $wt or ($cwd | startswith($wt + "/")));
+
+# Tasks as words: "T171", "T171 and T174", "T1, T2 and T3".
+def task_words: if length < 2 then join("") else "\(.[:-1] | join(", ")) and \(.[-1])" end;
+
+# The stow plan and the resume plan, team-capacity plan's object, from $in: {settings, current
+# (level_current's {mode, level, last_change}), readings (the stored readings, oldest first), costs
+# (capacity_costs' array), heavy, admitted, now (as capacity_reservations takes them), tasks
+# (ledger.jq's plan_tasks: each open task's opened, finished sessions and stowed), sessions (the
+# session list, claude agents --json's)}:
+#   budget     the memory budget at the level, from the newest reading (0 at none, null with no
+#              reading above none)
+#   reserved   what the newest reading reserves (capacity_reservations' total)
+#   over       reserved above the budget, or at none any task with a live worker or a running
+#              stack; false with no budget
+#   confirmed  over, and so was the reading before it, or the last level change is newer than that
+#              reading (or there is none before it): one spike never stows a task
+# While confirmed, the steps that bring it under, each with what it frees (bytes, the reservations
+# it ends, the spike allowance taken again over the sessions left):
+#   stop_sessions  [{task, role, session, frees}]: each finished session, by task number
+#   stop_stacks    [{task, name, worktree, frees}]: each running team dev stack of an open task
+#                  that no busy session (interactive ones too) works in, its worktree or below
+#   stow           [{task, opened, frees}]: the open tasks with a live worker or reservations left,
+#                  the most recently opened first, until what is left fits the budget; at none
+#                  every one
+# and the resume plan, whatever the budget: resume [{task, stowed, roles, needs, fits}], each task
+# stowed, waiting to resume (for the level or a handoff), oldest stow first, needs its roles' session estimates and fits whether
+# needs fits beside what is reserved now (never at none). Each step list is [] when not confirmed.
+def capacity_plan($in):
+  $in.settings as $s | $in.current as $current
+  | ($in.readings | .[-1]) as $r
+  | ($in.readings | if length > 1 then .[-2] else null end) as $prev
+  | def budget($reading):
+      if $current.level == "none" then 0
+      else capacity_budget($s; $current.level; $reading; null; 0).memory_bytes end;
+    def drop(f): map(select(f | not));
+  ([$in.tasks[] | {key: .task, value: .}] | from_entries) as $open
+  | [$in.sessions // [] | .[] | select((.name // "") | test("^T[1-9][0-9]*-[a-z]+$"))
+     | {id: (.id // (.sessionId // "" | .[:8])), task: (.name | split("-")[0])}
+     | select($open[.task] != null)] as $live
+  | [$in.sessions // [] | .[] | select(.status == "busy") | .cwd // empty | strings] as $busy
+  # The tasks stowed at or after <reading> with no live session, whose sessions, stacks and
+  # admissions the reading and admitted.json still hold until the next reading: left out, so a
+  # stowed task is never named again, nor its stale use stowed for in another's place.
+  | def gone($reading):
+      [$in.tasks[] | select(.stowed_since != null and $reading != null
+          and (.stowed_since | fromdateiso8601) >= ($reading.at | fromdateiso8601)) | .task]
+      - [$live[].task];
+    def items($reading):
+      gone($reading) as $g
+      | capacity_reservations({
+          reading: (if $reading == null then null
+                    else $reading | .tasks = [.tasks // [] | .[] | select(.task | IN($g[]) | not)]
+                      | .stacks = [.stacks // [] | .[] | select((.task // "") | IN($g[]) | not)] end),
+          costs: $in.costs, settings: $s, heavy: $in.heavy,
+          admitted: [$in.admitted[] | select((.task // "") | IN($g[]) | not)], now: $in.now, asking: null});
+  items($r) as $items
+  | budget($r) as $budget
+  | ($items | reserved_total) as $reserved
+  | [$in.tasks[] | .task as $task | .finished[] | {task: $task, role, session}] as $finished
+  | gone($r) as $gone
+  | [$r.stacks // [] | .[]
+     | select(.class == "team" and .kind == "dev" and $open[.task // ""] != null and .worktree != null
+              and (.task | IN($gone[]) | not))
+     | . as $stack | select(all($busy[]; within($stack.worktree) | not))] as $idle
+  | def stowable($rest):
+      [$open[] | .task as $task
+       | select(any($live[]; .task == $task and (.id as $id | any($finished[]; .session == $id) | not))
+                or any($rest[]; .task == $task and .part != "spike_allowance"))]
+      | sort_by(.opened, (.task[1:] | tonumber)) | reverse;
+    def over($items; $budget):
+      $budget != null and (($items | reserved_total) > $budget
+        or ($current.level == "none" and stowable($items | drop(.part == "stacks" and (.name as $n | any($idle[]; .name == $n)))) != []));
+  over($items; $budget) as $over
+  | ($prev != null and over(items($prev); budget($prev))) as $prev_over
+  | ($over and ($prev_over or ($current.last_change != null
+       and ($prev == null or ($current.last_change.ts | fromdateiso8601) > ($prev.at | fromdateiso8601))))) as $confirmed
+  # Whether roles fit is weighed by what admission counts, every task's items included, so the plan
+  # never names a launch team-capacity admit would refuse (a task just stowed comes back once the
+  # next reading no longer holds its sessions and its admissions' 10 minutes are past).
+  | (capacity_reservations({reading: $r, costs: $in.costs, settings: $s, heavy: $in.heavy,
+                            admitted: $in.admitted, now: $in.now, asking: null}) | reserved_total) as $admitting
+  | def needs_fits:
+      . + {needs: ([.roles[] | kind_estimate($in.costs; $s; "session:\(.)"; null).bytes] | add // 0)}
+      | . + {fits: ($current.level != "none" and $budget != null and $admitting + .needs <= $budget)};
+  (if $confirmed | not then {sessions: [], stacks: [], stow: []}
+     else
+       reduce $finished[] as $f ({rest: $items, sessions: []};
+         (.rest | drop(.name == $f.session and (.kind | startswith("session:")))) as $after
+         | .sessions += [$f + {frees: ((.rest | reserved_total) - ($after | reserved_total))}] | .rest = $after)
+       | reduce $idle[] as $st (. + {stacks: []};
+           (.rest | drop(.part == "stacks" and .name == $st.name)) as $after
+           | .stacks += [{task: $st.task, name: $st.name, worktree: $st.worktree,
+                          frees: ((.rest | reserved_total) - ($after | reserved_total))}] | .rest = $after)
+       | reduce stowable(.rest)[] as $t (. + {stow: []};
+           if $current.level != "none" and (.rest | reserved_total) <= $budget then .
+           else (.rest | drop(.task == $t.task)) as $after
+             | .stow += [{task: $t.task, opened: $t.opened, frees: ((.rest | reserved_total) - ($after | reserved_total))}]
+             | .rest = $after end)
+     end) as $steps
+  | {schema: "team-capacity-plan/1", mode: $current.mode, level: $current.level,
+     share: ($current.level | level_share($s)), budget: $budget,
+     reserved: $reserved, over: $over, confirmed: $confirmed,
+     stop_sessions: $steps.sessions, stop_stacks: $steps.stacks, stow: $steps.stow,
+     resume: [$in.tasks[] | select(.stowed != null) | {task, stowed: .stowed.at, roles: .stowed.roles} | needs_fits]
+             | sort_by(.stowed, (.task[1:] | tonumber)),
+     launch: [$in.tasks[] | select(.refused != null) | {task, refused: .refused.at, roles: .refused.roles} | needs_fits]
+             | sort_by(.refused, (.task[1:] | tonumber))};
+
+# The level as the plan's texts say it: "minor (30%)".
+def plan_at: "\(.level) (\(.share | percent))";
+
+# team-capacity plan's lines from its team-capacity-plan/1 object: the verdict, each step, then
+# the tasks stowed, waiting to resume.
+def plan_text:
+  if .budget == null then "No reading of the machine's load, so no budget: nothing to plan."
+  elif .over | not then "Within budget at \(plan_at): \(.reserved | gib) reserved of \(.budget | gib): nothing to stop or stow."
+  elif .confirmed | not then
+    "Over budget at \(plan_at) in the newest reading only: \(.reserved | gib) reserved of \(.budget | gib); nothing stops or stows unless the next reading shows it too."
+  else
+    "Over budget at \(plan_at): \(.reserved | gib) reserved of \(.budget | gib).",
+    (.stop_sessions[] | "  stop \(.task)-\(.role) \(.session), its work handed on: frees \(.frees | gib)"),
+    (.stop_stacks[] | "  stop \(.name) of \(.task), no busy session in its worktree: frees \(.frees | gib)"),
+    (.stow[] | "  stow \(.task): frees \(.frees | gib)")
+  end,
+  (select(.resume != []) | "Stowed, waiting to resume, oldest stow first:",
+    (.resume[] | "  \(.task) (\(.roles | join(", "))): needs \(.needs | gib), \(if .fits then "fits" else "does not fit yet" end)")),
+  (select((.launch // []) != []) | "Refused for room, waiting to launch, oldest refusal first:",
+    (.launch[] | "  \(.task) (\(.roles | join(", "))): needs \(.needs | gib), \(if .fits then "fits" else "does not fit yet" end)"));
+
+# What the stow plan <plan> (capacity_plan's) says must stow, for team-level's acknowledgement and
+# its automatic post: "T171 and T174 stow", in task number order, or "nothing needs to stow".
+def stow_words:
+  if .stow == [] then "nothing needs to stow" else "\([.stow[].task] | sort_by(.[1:] | tonumber) | task_words) stow" end;

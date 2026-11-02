@@ -33,6 +33,9 @@
 #   network rm <names or ids>...        a network missing or a running container is on is
 #                                       refused (Docker removes one only stopped ones are on)
 #   info --format json
+#   update --cpus <n> <names or ids>...
+#                                       each container's HostConfig.NanoCpus set; one not
+#                                       found is refused as Docker does, the others updated
 # and, modelling the fixture project's stack (stack_project) as Compose 5.6.1 makes it, from the
 # TEAM_* variables, COMPOSE_PROJECT_NAME and TH_WEB_PORT the call sees:
 #   compose [-f <file>] config --format json
@@ -53,7 +56,8 @@
 # says Linux, so admission reads them the Linux way on any host; as_macos makes it say Darwin.
 # Any other call fails (exit 127), so a test never passes on an unplanned call.
 # docker_down makes every call fail as Docker does when its daemon does not answer, docker_hang
-# makes every call wait forever, as a CLI whose Docker Desktop VM is wedged does,
+# makes every call wait forever, as a CLI whose Docker Desktop VM is wedged does (docker_hang_call
+# <call> only that one call),
 # docker_fail <call> <message> makes one call (its key: "compose ls", "ps", "inspect",
 # "system df"...) fail with <message>, and docker_vanish <id> makes ps list a container that is
 # gone when it is inspected, and docker_leak <anonymous|network|container> makes compose down
@@ -127,6 +131,12 @@ docker_down() {
 # $DOCKER_STATE/hung.
 docker_hang() {
   touch "$DOCKER_STATE/hung"
+}
+
+# One call waits as docker_hang's do, each one's process ID added to $DOCKER_STATE/hang-<key>:
+# docker_hang_call <call key> ("ps", "update"...)
+docker_hang_call() {
+  touch "$DOCKER_STATE/hang-${1// /-}"
 }
 
 # One call fails with <message>: docker_fail <call key> <message>

@@ -163,7 +163,7 @@ merge-preapproval-withdrawn team-log project discord_message
 branch-renamed team-log project branch
 failed team-log reason
 retro-schedule team-log every_hours discord_message
-stowed team-handoff machine worktrees roles
+stowed team-stow machine worktrees roles
 worktree-moved team-open project branch from worktree machine
 injection team-log role source text
 rehome-failed team-resume project branch machine reason
@@ -221,7 +221,7 @@ TABLE
   grep -Eq '^  denied +team-log +role, what, why; optional session  \(a denial the worker went past .*parks nothing and clears nothing.*a denial that stops the work is a blocked\)$' <<<"$output"
   grep -Eq '^  retro-schedule +team-log +every_hours \(number\), discord_message \(id\)  \(.*every_hours 0 stops.*\)$' <<<"$output"
   grep -Eq '^  injection +team-log +role, source, text  \(.*never the personal details.*\)$' <<<"$output"
-  grep -Eq '^  stowed +team-handoff +machine, worktrees \(list\), roles \(list\); optional sessions \(list\)  \(one per open task at a handoff: .*unfinished_roles.*\)$' <<<"$output"
+  grep -Eq '^  stowed +team-stow +machine, worktrees \(list\), roles \(list\); optional sessions \(list\), cause \(level\|handoff\)  \(one per task team-stow stows, every open task at a handoff .*unfinished_roles.*\)$' <<<"$output"
   grep -Eq '^  rehome-failed +team-resume +project, branch, machine, reason  \(.*stands until a later opened, worktree-added, worktree-moved, rehomed or worktree-returned.*\)$' <<<"$output"
   assert_equal "$(stub_calls curl)$(stub_calls gh)" ""
 }

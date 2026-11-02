@@ -1,6 +1,6 @@
 {
   "name": "coordinator-skills",
   "version": "1.0.0",
-  "description": "The agent team coordinator's situational procedures: recovering a stuck worker, stowing decisions to disk, and reporting status to Daniel. Loaded only by bin/claude-coordinator.",
+  "description": "The agent team coordinator's situational procedures: recovering a stuck worker, stowing decisions to disk, handing off, setting the resource level, and reporting status to Daniel. Loaded only by bin/claude-coordinator.",
   "skills": "./skills/"
 }
