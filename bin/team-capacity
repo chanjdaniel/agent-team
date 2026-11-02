@@ -149,28 +149,26 @@
 #          or null), says}]}.
 # admit    Admits one item of work of <kind>, session:<role> (team-worker), stack:<project>
 #          (team-stack up, which names the stack with --name), heavy:<kind> (team-heavy run) or
-#          gate, for the task --task names, when
-#          it fits the level's memory budget beside what is reserved: under an exclusive flock on
-#          ~/.local/state/agent-team/capacity.lock, it takes a reading first when the newest is
-#          over 10 minutes old, as status does, then reads what is reserved as status --json says
-#          it (for a heavy run, without the running heavy run, which is the asker itself, holding
-#          the lock), leaving out each session --freed names (the task's finished sessions
-#          team-worker stopped just before it asks, which the reading still holds), and the kind's
-#          estimate: costs' when it has one, else --seed-bytes (team-stack gives the sum of the
-#          stack's mem_limits), else heavy_gib or session_gib, else 0. When the
-#          reserved memory plus the estimate is at most the budget it exits 0, saying so on
-#          stdout, and keeps the admission in ~/.local/state/agent-team/capacity/admitted.json
-#          ({at, kind, task, name (a stack's, else null), bytes, pid (a heavy run's team-heavy, the
-#          lock's holder)}), which
-#          reserves it for 10 minutes as status --json's admissions say (a heavy run's while its
-#          team-heavy holds the lock); else it
-#          exits 75 with the reason on stderr and what makes room, "no room for session:reviewer
-#          at minor (30%): 8.9 GiB of 9.2 GiB reserved, a reviewer needs 0.5 GiB; room comes when
-#          the team's work shrinks or the level rises", and at level none "no room for
-#          session:reviewer: the team is at level none: nothing starts; room comes when Daniel
+#          gate, for the task --task names, when it fits the level's memory budget beside what is
+#          reserved: under an exclusive flock on ~/.local/state/agent-team/capacity.lock, it takes
+#          a reading first when the newest is over 10 minutes old, as status does, then reads what
+#          is reserved as status --json says it (for a heavy run, without the running heavy run,
+#          which is the asker itself, holding the lock), leaving out each session --freed names
+#          (the task's finished sessions team-worker stopped just before it asks, which the reading
+#          still holds), and the kind's estimate: costs' when it has one, else --seed-bytes
+#          (team-stack gives the sum of the stack's mem_limits), else heavy_gib or session_gib,
+#          else 0. When the reserved memory plus the estimate is at most the budget it exits 0,
+#          saying so on stdout, and keeps the admission in
+#          ~/.local/state/agent-team/capacity/admitted.json ({at, kind, task, name (a stack's, else
+#          null), bytes, pid (a heavy run's team-heavy, the lock's holder)}), which reserves it for
+#          10 minutes as status --json's admissions say (a heavy run's while its team-heavy holds
+#          the lock); else it exits 75 with the reason on stderr and what makes room, "no room for
+#          session:reviewer at minor (30%): 8.9 GiB of 9.2 GiB reserved, a reviewer needs 0.5 GiB;
+#          room comes when the team's work shrinks or the level rises", and at level none "no room
+#          for session:reviewer: the team is at level none: nothing starts; room comes when Daniel
 #          raises the level" ("when the level rises" in auto mode). CPU is never admitted: the
-#          slice's quota holds it. Above
-#          none, with no reading to size the budget by, exit 1 with the reason.
+#          slice's quota holds it. Above none, with no reading to size the budget by, exit 1 with
+#          the reason.
 # plan     What brings the team back under the level's memory budget, and what may come back,
 #          from the stored readings only (it takes none, so the sweep and the heartbeat read it
 #          fast), the ledger and the session list (claude agents --json, or with --sessions the
