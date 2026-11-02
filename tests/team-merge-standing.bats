@@ -91,7 +91,7 @@ standing_post() {
   local guardrails=(bin/lib/guarded bin/team-merge bin/team-checks bin/lib/team.sh bin/lib/platform.sh
     bin/lib/ledger.jq bin/lib/ledger-contract.json bin/hooks/git/pre-push bin/hooks/records-git/pre-commit
     bin/hooks/lease-fence bin/lib/data-check bin/lib/records bin/team-heavy settings/worker.json settings/reviewer.json
-    settings/builder.json coordinator.settings.json)
+    settings/builder.json coordinator.settings.json bin/team-run-approved bin/team-ask)
   local plain=(bin/team-state bin/lib/time.jq tests/team-merge.bats src/bin/team-merge.md)
   local path reasons=()
   for path in "${guardrails[@]}"; do
