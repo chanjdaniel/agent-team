@@ -42,6 +42,16 @@ setup() {
   passes 'cd "" && cmd > .scratch/x'
 }
 
+@test "a relative target after a cd that may not have run, its and-or list cut short, says the cd may have failed" {
+  unknown "mkdir -p .scratch/task/tickets && cd .scratch/task/tickets && cat > 01-x.md <<'EOF'"$'\n# 01\nEOF\ncat > 02-y.md <<\'EOF\'\n# 02\nEOF' \
+    "02-y.md ($failed)"
+  unknown $'test -d .scratch || cd .scratch\ncmd > x' "x ($failed)"
+  # Joined by &&, it passes.
+  passes "mkdir -p .scratch/task/tickets && cd .scratch/task/tickets && cat > 01-x.md <<'EOF' && cat > 02-y.md <<'EOF'"$'\n# 01\nEOF\n# 02\nEOF'
+  # Outside from every directory, the target is named.
+  blocked $'mkdir -p src && cd src\ncmd > x' "$wt/src/x, $wt/x"
+}
+
 @test "a cd the hook cannot follow loses the directory, and an absolute target or cd after it is judged" {
   local cd
   for cd in 'cd "$x"' 'cd -' 'pushd .scratch' 'popd' 'command cd .scratch' '/usr/bin/cd .scratch' 'cd a b' \
@@ -153,6 +163,30 @@ Blocked: this role may write files only under $wt/.scratch; write there with the
   passes "(eval \"\$y\"); cd $wt/.scratch && cmd > x" "v=\$(source f); cd $wt/.scratch && cmd > x"
 }
 
+
+@test "a command word whose every value holds a / runs that file, and neither moves the shell nor stops the following" {
+  mkdir -p "$job/tmp"
+  passes 'T=.scratch/task/try; I=$T/tools/bin/probe; $I detect --json src/ > $T/out.json 2>$T/out.err' \
+    'T=$CLAUDE_JOB_DIR/tmp/probe; C=$T/code/bin/x; $C a; cd .scratch/task && cmd > b; echo s > $T/c' \
+    "\$PWD/bin/x; cd $wt/.scratch && cmd > y" \
+    'T=$CLAUDE_JOB_DIR/tmp; for i in 1 2; do "$T/v$i/bin/pip" freeze > $T/f$i; done' \
+    'T=$CLAUDE_JOB_DIR/tmp; for c in /opt/a /opt/b; do cmd > $T/x; $c; done' \
+    'T=$CLAUDE_JOB_DIR/tmp; I=/opt/bin/x; while c; do cmd > $T/x; $I; done'
+  # A value without a /, an unknown one, or one the loop may change at another turn may name a
+  # builtin such as eval, as may a word holding another expansion.
+  local before
+  for before in 'I=chrome-devtools-axi; $I a' 'I=/opt/x; I=eval; $I a' '"$tool" a' 'I="/opt/x a"; $I' \
+    'I=$(command -v x); $I'; do
+    unknown "X=.scratch; $before; cmd > \$X/y" "\$X/y ($(not_followed X))"
+    unknown "$before; cd $wt/.scratch && cmd > y" "y ($moved)"
+  done
+  unknown 'X=.scratch; for c in /opt/a b; do cmd > $X/y; $c; done' "\$X/y ($(not_followed X))"
+  unknown 'X=.scratch; while c; do cmd > $X/y; I=/opt/x; $I; done' "\$X/y ($(not_followed X))"
+  # A function's body may run anywhere after it, with other values.
+  unknown 'X=.scratch; I=/opt/x; f() { $I; }; cmd > $X/y' "\$X/y ($(not_followed X))"
+  # It is never a tee, whatever its value.
+  passes 'T=/usr/bin/tee; $T src/x'
+}
 
 @test "a variable the command assigns once holds its value after the assignment, and its earlier one before" {
   mkdir -p "$job/tmp"

@@ -205,7 +205,7 @@ setup() {
     'shopt -q extglob; shopt -pq; shopt; cmd > .scratch/x'
 }
 
-@test "IFS, CDPATH and POSIXLY_CORRECT named anywhere are refused unread, but IFS= before a command" {
+@test "IFS, CDPATH and POSIXLY_CORRECT named anywhere else are refused unread, but IFS= before a command" {
   unread 'echo "$IFS" > .scratch/x' 'the name IFS'
   unread 'IFS=/; cmd > .scratch/x' 'the name IFS'
   unread 'IFS=$IFS read -r a; cmd > .scratch/x' 'the name IFS'
@@ -215,6 +215,27 @@ setup() {
   unread 'echo ${CDPATH} > .scratch/x' 'the name CDPATH'
   unread "POSIXLY_CORRECT=1 cmd > .scratch/x" 'the name POSIXLY_CORRECT'
   passes 'IFS= read -r line; cmd > .scratch/x' 'IFS=: read -r a b < f; cmd | tee .scratch/x' 'echo MYIFS IFS_X > .scratch/x'
+}
+
+@test "IFS, CDPATH and POSIXLY_CORRECT in a quoted delimiter's here-document body are text, unless a shell may read it" {
+  passes "cat > .scratch/task/review.md <<'EOF'"$'\n1. **nit** - the `while IFS= read -r dir` loop leaks `dir`; CDPATH stays unset.\nEOF' \
+    "cat > \$CLAUDE_JOB_DIR/tmp/probe.sh <<'EOF'"$'\nwhile IFS= read -r c; do echo "$c"; done\nEOF' \
+    "python3 - .scratch/x > .scratch/out <<'EOF'"$'\nIFS = "POSIXLY_CORRECT"\nEOF' \
+    "x=\$(cat <<'EOF'"$'\nIFS=/\nEOF\n); cmd > .scratch/x' \
+    "git commit -m \"\$(cat <<'EOF'"$'\nfix: name IFS\nEOF\n)" > .scratch/out'
+  # A shell, source, eval or a function may run the body as code; an unquoted delimiter's body is
+  # expanded.
+  local reader
+  for reader in bash sh 'sudo -u me zsh' 'source /dev/stdin' '"$sh"' 'f() { cat; }; f'; do
+    unread "$reader > .scratch/x <<'EOF'"$'\nIFS=/\nEOF' 'the name IFS'
+  done
+  unread "cat <<'EOF' | bash > .scratch/x"$'\nIFS=/\nEOF' 'the name IFS'
+  unread "eval \"\$(cat <<'EOF'"$'\nIFS=/\nEOF\n)"; cmd > .scratch/x' 'the name IFS'
+  unread "bash -c \"\$(cat <<'EOF'"$'\nCDPATH=/\nEOF\n)" > .scratch/x' 'the name CDPATH'
+  unread $'cat > .scratch/x <<EOF\n$IFS\nEOF' 'the name IFS'
+  unread "while read -r l; do :; done > .scratch/x <<'EOF'"$'\nIFS=/\nEOF' 'the name IFS'
+  # Outside the body, the name is still found.
+  unread "cat > .scratch/x <<'EOF'"$'\ntext\nEOF\nIFS=/; cmd > .scratch/y' 'the name IFS'
 }
 
 @test "a {name} file descriptor is refused unread" {

@@ -61,25 +61,29 @@
 # Refused unread, each naming its form: a backtick substitution, $[ ], $" ", an extended glob;
 # select, coproc, the function keyword, and the alias, enable and hash builtins; a function named
 # cd, pushd, popd, tee, mktemp, basename or a wrapper, and one whose name is not plain; a ${ }
-# outside the forms above, a quote, a newline or an expansion but a variable in its operand, and
-# the @P operator, which runs the substitutions in its value; arithmetic that does not close with
-# )) or holds a quote, a backtick, a $(( )) or another character; a (, ), |, &, ; or newline in a
-# [[ ]] outside its regular expression, or a newline or a process substitution inside that; a ( in
-# a command but a function definition's or an array assignment's, an array assignment with text
-# after its ), and a word after a compound command but its redirections; a set option other than
-# the flags e, u, x, v, E and T after - or +, and -o or +o with errexit, nounset, xtrace,
-# verbose, pipefail, errtrace or functrace (the words after --, - or the first word that is no
-# option are its positional parameters), and any shopt option but -p and -q; the names IFS, CDPATH
-# and POSIXLY_CORRECT anywhere in the command, but IFS= as the prefix assignment of a command that
-# holds a word; a {name} file descriptor; a here-document delimiter other than those above, a
-# here-document whose delimiter line is not found, a line ending in an odd number of backslashes in
-# an unquoted delimiter's body, and, inside a $( ), a here-document whose $( ) closes before its
-# body is read and a body line that starts with its delimiter and a ); a process substitution
-# inside a longer word; on a bash older than 5.2, which finds a $( )'s close another way, a
-# comment, a here-document or a case inside a substitution; and what bash refuses as a syntax error
-# (an unclosed quote, substitution or compound command, a ( or ) or a reserved word out of place,
-# an empty list in a compound command but a case arm's, a ;; or ;& outside a case, an operator
-# with nothing after it, a redirection with no target).
+# outside the forms above, a quote, a newline or an expansion but a variable in its operand, and the
+# @P operator, which runs the substitutions in its value; arithmetic that does not close with )) or
+# holds a quote, a backtick, a $(( )) or another character; a (, ), |, &, ; or newline in a [[ ]]
+# outside its regular expression, or a newline or a process substitution inside that; a ( in a
+# command but a function definition's or an array assignment's, an array assignment with text after
+# its ), and a word after a compound command but its redirections; a set option other than the flags
+# e, u, x, v, E and T after - or +, and -o or +o with errexit, nounset, xtrace, verbose, pipefail,
+# errtrace or functrace (the words after --, - or the first word that is no option are its
+# positional parameters), and any shopt option but -p and -q; the names IFS, CDPATH and
+# POSIXLY_CORRECT anywhere in the command, but IFS= as the prefix assignment of a command that holds
+# a word, and a quoted delimiter's here-document body that no shell may read as code: one a simple
+# command reads, where that command, the others in its pipeline and, for a pipeline in a
+# substitution, the command whose word holds the substitution (and so on outward) are none of bash,
+# sh, dash, zsh, ksh, mksh, busybox, source, ., eval, a function the command defines and a command
+# word the hook cannot name; a {name} file descriptor; a here-document delimiter other than those
+# above, a here-document whose delimiter line is not found, a line ending in an odd number of
+# backslashes in an unquoted delimiter's body, and, inside a $( ), a here-document whose $( ) closes
+# before its body is read and a body line that starts with its delimiter and a ); a process
+# substitution inside a longer word; on a bash older than 5.2, which finds a $( )'s close another
+# way, a comment, a here-document or a case inside a substitution; and what bash refuses as a syntax
+# error (an unclosed quote, substitution or compound command, a ( or ) or a reserved word out of
+# place, an empty list in a compound command but a case arm's, a ;; or ;& outside a case, an
+# operator with nothing after it, a redirection with no target).
 #
 # The judge: each output redirection target and each file a tee names (its words after the command
 # word, but those starting with - before a --) is worked out from its words: quoted and unquoted
@@ -92,30 +96,34 @@
 # directories the shell may be in, which starts as the session's and may become unknown. Each
 # command leaves one set for when it succeeds and one for when it fails: in a && b, b starts from
 # a's success, in a || b from its failure, a ! swaps the two, and after a list the shell may be in
-# any directory either leaves. A pipeline of more than one command, a ( ), a substitution and a
-# list run with & each run in a copy, so nothing they do reaches the commands after them; after a
-# { }, an if, a case or a loop, the shell may be in any directory a path through it leaves, the
-# path that runs no branch included, and a case arm after ;& or ;;& may also start where the one
-# before it ends. A command's redirections are made in the directory it starts in, before what it
-# does, a compound command's before its body. A cd, the command word with no wrapper, with -L or
-# -P (the last one counts), -- and at most one word whose values are all known, moves the shell on
-# success to that word's directories, each relative one taken from every directory the shell may
-# be in: -L and the default resolve .. by text, as bash's logical cd does, and also by the
-# symlinks when the directory by text does not exist, as bash then does; -P resolves symlinks; cd
-# alone goes to $HOME, and an empty word stays put. On failure it stays put. A cd -, a cd with an
-# unknown word, more than one or another option, a cd behind a wrapper or by a path, pushd and
-# popd make the directory unknown on success, and so does a relative cd whose word is neither . nor
-# .. and starts with neither ./ nor ../ when the hook's environment sets CDPATH. eval (but the
-# team-stack form below), source, ., trap, mapfile or readarray with -C, and a command word the
-# hook cannot name make it unknown from there to the command's end, outside a ( ) or a
-# substitution they are in, since a trap they set, a function they define or the code they run may
-# move it at any later point. A loop that holds a command that may move the shell, outside a ( )
-# or a substitution in it, makes the directory unknown from its start, as its body may run again.
-# A function's body is judged where it is defined, with the directory unknown when the command
-# holds a command that may move the shell anywhere; one whose body holds such a command, outside a
-# ( ) or a substitution, makes the directory unknown from the definition on, since a call may come
-# anywhere after it. $PWD stands for each directory the shell may be in, and $OLDPWD is unknown.
-# When the shell may be in more than 16 directories, the directory is unknown.
+# any directory either leaves. A pipeline of more than one command, a ( ), a substitution and a list
+# run with & each run in a copy, so nothing they do reaches the commands after them; after a { }, an
+# if, a case or a loop, the shell may be in any directory a path through it leaves, the path that
+# runs no branch included, and a case arm after ;& or ;;& may also start where the one before it
+# ends. A command's redirections are made in the directory it starts in, before what it does, a
+# compound command's before its body. A cd, the command word with no wrapper, with -L or -P (the
+# last one counts), -- and at most one word whose values are all known, moves the shell on success
+# to that word's directories, each relative one taken from every directory the shell may be in: -L
+# and the default resolve .. by text, as bash's logical cd does, and also by the symlinks when the
+# directory by text does not exist, as bash then does; -P resolves symlinks; cd alone goes to $HOME,
+# and an empty word stays put. On failure it stays put. A cd -, a cd with an unknown word, more than
+# one or another option, a cd behind a wrapper or by a path, pushd and popd make the directory
+# unknown on success, and so does a relative cd whose word is neither . nor .. and starts with
+# neither ./ nor ../ when the hook's environment sets CDPATH. eval (but the team-stack form below),
+# source, ., trap, mapfile or readarray with -C, and a command word the hook cannot name make it
+# unknown from there to the command's end, outside a ( ) or a substitution they are in, since a trap
+# they set, a function they define or the code they run may move it at any later point. But a
+# command word whose every value holds a / where it runs neither moves it nor ends the following
+# (below), since bash runs the file it names, never a builtin or a function (it is still never a
+# tee); in a loop, its values where the body starts each turn (with a for loop's variable set)
+# decide for the whole loop, and in a function's body it counts as one the hook cannot name. A loop
+# that holds a command that may move the shell, outside a ( ) or a substitution in it, makes the
+# directory unknown from its start, as its body may run again. A function's body is judged where it
+# is defined, with the directory unknown when the command holds a command that may move the shell
+# anywhere; one whose body holds such a command, outside a ( ) or a substitution, makes the
+# directory unknown from the definition on, since a call may come anywhere after it. $PWD stands for
+# each directory the shell may be in, and $OLDPWD is unknown. When the shell may be in more than 16
+# directories, the directory is unknown.
 #
 # Following variables: the walk starts with HOME, TMPDIR and CLAUDE_JOB_DIR as the hook's own
 # environment sets them (one it does not set is unknown), and follows each variable the command
@@ -140,17 +148,17 @@
 # below), and the followed variables it assigns are unknown from its definition on.
 #
 # What stops the following: arithmetic ($(( )), (( )), for (( )) and let) and a ${ } offset or
-# subscript that names a variable (a letter or a $ in it), a [[ ]] arithmetic comparison (-eq,
-# -ne, -lt, -le, -gt, -ge), a ${!name=word}, an array element's assignment, and an assigning
-# builtin given a name from an expansion may assign any variable: each makes every variable the
-# command assigns unknown where it runs, and an assignment after it is followed again. eval (but
-# the team-stack form), source, ., trap, mapfile or readarray with -C, a command word the hook
-# cannot name, and declare, typeset or local with an option holding i or n may make any later
-# command assign any variable, so no variable is followed from there to the command's end, outside
-# a ( ) or a substitution they are in. A loop whose body holds either does the same from its
-# start, and a function's body that holds either ends the following from its definition on. After
-# anything that stops the following, an unquoted variable in a target is unknown, since bash may
-# split it by another IFS.
+# subscript that names a variable (a letter or a $ in it), a [[ ]] arithmetic comparison (-eq, -ne,
+# -lt, -le, -gt, -ge), a ${!name=word}, an array element's assignment, and an assigning builtin
+# given a name from an expansion may assign any variable: each makes every variable the command
+# assigns unknown where it runs, and an assignment after it is followed again. eval (but the
+# team-stack form), source, ., trap, mapfile or readarray with -C, a command word the hook cannot
+# name (but one whose every value holds a /, as above), and declare, typeset or local with an option
+# holding i or n may make any later command assign any variable, so no variable is followed from
+# there to the command's end, outside a ( ) or a substitution they are in. A loop whose body holds
+# either does the same from its start, and a function's body that holds either ends the following
+# from its definition on. After anything that stops the following, an unquoted variable in a target
+# is unknown, since bash may split it by another IFS.
 #
 # The verdict: a relative target is unknown when the directory is, and behind a wrapper option that
 # holds a C or a D (env's -C, sudo's -D) or is --chdir, for a tee file; otherwise it is taken from
@@ -162,10 +170,10 @@
 # blank or a glob character, is one the hook cannot work out, and is refused, never allowed.
 # A refusal names each target outside as written, its . and .. resolved by text and its symlinks
 # kept and a basename's name as the command spells it, and each target it cannot work out as the
-# command spells it, with why; that one comes first. A relative target outside only from the
-# directory a failed cd leaves, and inside from another, is one a cd before it may have failed; a
-# target outside only for a failed mktemp's empty value, and inside otherwise, is one the mktemp
-# may leave empty.
+# command spells it, with why; that one comes first. A relative target outside only from a directory
+# the shell is in because a cd before it failed, or did not run when its and-or list was cut short
+# before it, and inside from another, is one a cd before it may have failed; a target outside only
+# for a failed mktemp's empty value, and inside otherwise, is one the mktemp may leave empty.
 #
 # The hook never claims: a program that writes files itself (cp, mv, sed -i, git, an interpreter,
 # sh -c, bash -c, ssh, xargs, find -exec, a tee named through an expansion, a glob or an escape);
@@ -249,7 +257,7 @@ LC_ALL=C
 # redirections are between its c and Z.
 mapfile -t lines <<<"$command"
 nl=${#lines[@]} L=0 C=0 ln=${lines[0]} ll=${#lines[0]}
-pk=() pt=() EK=() EA=() EB=() ER=() EX=() EC=()
+pk=() pt=() EK=() EA=() EB=() ER=() EX=() EC=() QB=()
 c='' c2='' wfirst=0 wcount=0 wraw='' raw='' pw='' listed=0
 # assign_pos: 1 while the word read is in a simple command's assignment position, where name=( )
 # is an array; rx: 1 while the word read is a [[ ]]'s regular expression, rxd its ( ) depth;
@@ -257,7 +265,8 @@ c='' c2='' wfirst=0 wcount=0 wraw='' raw='' pw='' listed=0
 # an array element's [subscript]=, a ${ } offset or subscript that names one, a ${!name=word}, or
 # is a [[ ]] arithmetic comparison, any of which may assign any variable; the next word event takes
 # it as its EC. sub_d: the D event of the substitution read last. nofollow[name]: 1 for a name a
-# ${name=word} or ${name:=word} assigns.
+# ${name=word} or ${name:=word} assigns. QB[I]: the first line of a quoted delimiter's
+# here-document body and its delimiter line, for the here-document's I event.
 assign_pos=0 rx=0 rxd=0 wclr=0 sub_d=0
 declare -A nofollow=()
 # The reserved words that end a compound command's list.
@@ -387,6 +396,7 @@ gather() {
     fi
   done
   ((end >= 0)) || unread 'a here-document whose delimiter line is not found'
+  if (($2)); then QB[$4]="$start $end"; fi
   local dk=${#EK[@]} held=$wclr
   emit D "$4" 0 '' '<<'
   wclr=0
@@ -1849,6 +1859,13 @@ for s in "${starts[@]}"; do
     TRIG[s]=1 trig=1
     if ((!cu && !wrapped)) && [[ $cn == cd ]]; then CD[s]=1; fi
     if ((cu)) || [[ $cn == @(eval|source|.|trap) ]]; then DEAD[s]=1; fi
+    # A command word of text and variables alone, which may name a program by its path.
+    if ((cu)); then
+      PV[s]=1
+      for ((k = EA[cw]; k < EA[cw] + EB[cw]; k++)); do
+        [[ ${pk[k]} == [lqvV] ]] || PV[s]=0
+      done
+    fi
   fi
   if clears "$s"; then CLR[s]=1; fi
   # A command of assignments alone assigns each name=word whole; name+=, an array, an element and
@@ -1928,13 +1945,72 @@ for ((e = 0; e < ${#EK[@]}; e++)); do
   esac
 done
 
-# The names that change how bash splits words or finds a cd's directory, anywhere in the text, but
-# IFS as the prefix assignment of a command that runs one.
+# shell_fed <I>: whether a here-document's body may be read as shell code: its command, or another
+# in its pipeline, is a shell, source, ., eval, a function the command defines or a command word the
+# hook cannot name, or the pipeline is in a substitution whose word is such a command's, or the
+# here-document is not a simple command's.
+shell_fed() {
+  local e=$1 s k p d
+  while :; do
+    s=${OWNER[$e]:-}
+    [[ -n $s ]] || return 0
+    p=-1
+    for ((k = s - 1; k >= 0; k--)); do
+      if [[ ${EK[k]} == P ]] && ((MATCH[k] > s)); then
+        p=$k
+        break
+      fi
+    done
+    ((p >= 0)) || return 0
+    for ((k = p; k < MATCH[p]; k++)); do
+      [[ ${EK[k]} == S ]] || continue
+      ((CW[k] >= 0)) || continue
+      ((!CU[k])) || return 0
+      [[ ${CN[k]##*/} != @(bash|sh|dash|zsh|ksh|mksh|busybox|source|.|eval) && -z ${fname[${CN[k]}]:-} ]] || return 0
+    done
+    d=-1
+    for ((k = p - 1; k >= 0; k--)); do
+      if [[ ${EK[k]} == D ]] && ((MATCH[k] > p)); then
+        d=$k
+        break
+      fi
+    done
+    ((d >= 0)) || return 1
+    [[ ${EX[d]} != '<<' ]] || return 0
+    # The word that holds the substitution comes after it and the others in that word.
+    k=$((MATCH[d] + 1))
+    while [[ ${EK[k]:-} == D ]]; do k=$((MATCH[k] + 1)); done
+    [[ ${EK[k]:-} == [WARI] ]] || return 0
+    e=$k
+  done
+}
+
+# The names that change how bash splits words or finds a cd's directory, anywhere in the text but a
+# quoted delimiter's here-document body that no shell reads, and IFS as the prefix assignment of a
+# command that runs one.
+scan=$command
+if ((${#QB[@]})); then
+  declare -A OWNER=() fname=()
+  for s in "${starts[@]}"; do
+    if [[ ${EK[s]} == C ]]; then
+      if [[ ${EX[s]} == '()' ]]; then fname[${ER[s]}]=1; fi
+      continue
+    fi
+    for e in ${OWN[s]}; do OWNER[$e]=$s; done
+  done
+  shown=("${lines[@]}")
+  for e in "${!QB[@]}"; do
+    shell_fed "$e" && continue
+    read -r k end <<<"${QB[e]}"
+    for ((; k < end; k++)); do shown[k]=''; done
+  done
+  scan=$(printf '%s\n' "${shown[@]}")
+fi
 for name in CDPATH POSIXLY_CORRECT; do
-  [[ $command =~ (^|[^A-Za-z0-9_])$name([^A-Za-z0-9_]|$) ]] && unread "the name $name"
+  [[ $scan =~ (^|[^A-Za-z0-9_])$name([^A-Za-z0-9_]|$) ]] && unread "the name $name"
 done
-if [[ $command == *IFS* ]]; then
-  text=$command count=0
+if [[ $scan == *IFS* ]]; then
+  text=$scan count=0
   while [[ $text =~ (^|[^A-Za-z0-9_])IFS([^A-Za-z0-9_]|$) ]]; do
     count=$((count + 1))
     text=${text#*"${BASH_REMATCH[0]}"}
@@ -2711,8 +2787,11 @@ assign() {
 # FMOVE[k] for such a function definition, around a command that may move the shell; LOOPDEAD and
 # FDEAD around one that may move it or assign any variable at any later point; LOOPCLR and FCLR
 # around one that may assign any variable; LOOPVD and FVD around one after which an assignment may;
-# LOOPVARS[k] and FVARS[k] the names whole assignments and for loops in it assign.
-LOOPMOVE=() FMOVE=() LOOPDEAD=() FDEAD=() LOOPCLR=() FCLR=() LOOPVD=() FVD=() LOOPVARS=() FVARS=() open=()
+# LOOPVARS[k] and FVARS[k] the names whole assignments and for loops in it assign; LOOPPATH[k] the
+# commands in such a loop whose command word may name a program by its path (PV), which a function
+# counts as any command word the hook cannot name.
+LOOPMOVE=() FMOVE=() LOOPDEAD=() FDEAD=() LOOPCLR=() FCLR=() LOOPVD=() FVD=() LOOPVARS=() FVARS=()
+LOOPPATH=() open=()
 
 # mark <what> [names]: mark the loops and function definitions around the event on top of open.
 mark() {
@@ -2724,8 +2803,9 @@ mark() {
     case ${EX[t]}:$1 in
       while:* | until:* | for:* | 'for((':*)
         case $1 in
-          MOVE) LOOPMOVE[t]=1 ;;
-          DEAD) LOOPDEAD[t]=1 ;;
+          MOVE) [[ ${2:-} == f ]] || LOOPMOVE[t]=1 ;;
+          DEAD) [[ ${2:-} == f ]] || LOOPDEAD[t]=1 ;;
+          PATH) LOOPPATH[t]+=$2 ;;
           CLR) LOOPCLR[t]=1 ;;
           VD) LOOPVD[t]=1 ;;
           VARS) LOOPVARS[t]+=$2 ;;
@@ -2738,6 +2818,7 @@ mark() {
           CLR) FCLR[t]=1 ;;
           VD) FVD[t]=1 ;;
           VARS) FVARS[t]+=$2 ;;
+          PATH) ;;
         esac
         ;;
     esac
@@ -2754,8 +2835,11 @@ for ((e = 0; e < ${#EK[@]}; e++)); do
       ;;
     S)
       open+=("$e")
-      if ((TRIG[e])); then mark MOVE; fi
-      if ((DEAD[e])); then mark DEAD; fi
+      # One whose command word may name a program by its path counts in a function; a loop judges
+      # it at its start.
+      if ((TRIG[e])); then mark MOVE "${PV[e]:+f}"; fi
+      if ((DEAD[e])); then mark DEAD "${PV[e]:+f}"; fi
+      if ((${PV[e]:-0})); then mark PATH " $e "; fi
       if ((${CLR[e]:-0})); then mark CLR; fi
       if ((${VDEAD[e]:-0})); then mark VD; fi
       if [[ ${WN[e]} != ' ' ]]; then mark VARS "${WN[e]}"; fi
@@ -2846,6 +2930,9 @@ walk_simple() {
       fi
     done
   fi
+  # A command word whose every value holds a / runs the file it names, never a builtin or a
+  # function, so it neither moves the shell nor assigns a variable.
+  if ((${PV[s]:-0})) && path_named "$s"; then return 0; fi
   if ((DEAD[s])); then dead=1; fi
   if ((${VDEAD[s]:-0})); then vdead=1; fi
   if ((dead)); then
@@ -2866,6 +2953,28 @@ walk_simple() {
       ko=$fl
     fi
   fi
+}
+
+# path_named <S>: whether every value of the command's command word, in cur, holds a /.
+path_named() {
+  local e=${CW[$1]} v
+  env_dirs "$cur"
+  word_values "${EA[e]}" "${EB[e]}" t
+  [[ -z $why ]] || return 1
+  for v in "${vals[@]}"; do [[ $v == */* ]] || return 1; done
+}
+
+# loop_paths <C> <env>: whether a command word in the loop that may name a program by its path
+# names none in the environment its body starts each turn in, its variables then holding the values
+# they hold at every turn; such a loop moves the shell and ends the following from its start.
+loop_paths() {
+  local s held=$cur status=1
+  cur=$2
+  for s in ${LOOPPATH[$1]:-}; do
+    path_named "$s" || status=0
+  done
+  cur=$held
+  return $status
 }
 
 # loop_start <C>: change start, the environment the loop starts in, to the one its body may start
@@ -2942,6 +3051,11 @@ walk_compound() {
       ;;
     while | until)
       loop_start "$s"
+      if loop_paths "$s" "$start"; then
+        dead=1
+        env_lose "$start"
+        start=$lo
+      fi
       w=$((s + 1)) cur=$start
       walk_list
       cok=$ok cko=$ko
@@ -2984,6 +3098,13 @@ walk_compound() {
           var_drop "$body" "$name"
         fi
         body=$vd
+      fi
+      if loop_paths "$s" "$body"; then
+        dead=1
+        env_lose "$start"
+        start=$lo
+        env_lose "$body"
+        body=$lo
       fi
       w=$((k + 1)) cur=$body
       walk_list
@@ -3103,9 +3224,10 @@ walk_pipeline() {
   if ((neg)); then t=$ok ok=$ko ko=$t; fi
 }
 
-# walk_andor: in a && b, b starts from a's success; in a || b, from its failure.
+# walk_andor: in a && b, b starts from a's success; in a || b, from its failure. When b moves the
+# shell, the directories a leaves it in when b does not run are flagged as a failed cd's.
 walk_andor() {
-  local op held
+  local op held from
   walk_pipeline
   while [[ ${EK[w]:-} == '&&' || ${EK[w]:-} == '||' ]]; do
     op=${EK[w]}
@@ -3113,12 +3235,21 @@ walk_andor() {
     skip_bodies
     if [[ $op == '&&' ]]; then
       held=$ko cur=$ok
-      walk_pipeline
+    else
+      held=$ok cur=$ko
+    fi
+    env_split "$cur"
+    from=$ed
+    walk_pipeline
+    env_split "$ok"
+    if [[ $ed != "$from" ]]; then
+      env_fail "$held"
+      held=$fl
+    fi
+    if [[ $op == '&&' ]]; then
       env_union "$held" "$ko"
       ko=$un
     else
-      held=$ok cur=$ko
-      walk_pipeline
       env_union "$held" "$ok"
       ok=$un
     fi

@@ -2,9 +2,10 @@
 # shellcheck disable=SC2154,SC2034,SC2088 # wt, tmp, job and the reasons are helpers/scratch-hook.bash's, hook_tmpdir and hook_job its shell's; a ~ is part of a command as an agent types it
 # hooks/scratch-only-edits: the planner's and reviewer's PreToolUse hook lets file edits, and
 # shell redirections and tee, write only inside the worktree's .scratch/ directory.
-# This file holds the edit tools, the judge of a shell target, the messages and the settings; the
-# grammar the hook reads is in scratch-only-edits-grammar.bats, and what it follows (cd and
-# variables) in scratch-only-edits-follow.bats.
+# This file holds the edit tools, the judge of a shell target, the commands planners and reviewers
+# write most often, the messages and the settings; the grammar the hook reads is in
+# scratch-only-edits-grammar.bats, and what it follows (cd and variables) in
+# scratch-only-edits-follow.bats.
 
 load helpers/common
 load helpers/scratch-hook
@@ -144,6 +145,39 @@ EOF
   passes "cmd > $TEAM_SYSTEM_ROOT/tmp/x" "cmd > $tmp/x" "cmd > $job/x"
   # From inside .scratch/, a relative target stays in it.
   shell -0 'cmd > notes.txt' "$wt/.scratch/task"
+}
+
+@test "the commands planners and reviewers write most often pass" {
+  mkdir -p "$job/tmp"
+  local commands=()
+  # The shapes a replay of their sessions found most often, with fixture paths and names.
+  mapfile -t -d '' commands < <(printf '%s\0' \
+    'git fetch origin 2>&1 | tail -2; git log --oneline origin/dev..HEAD 2>/dev/null | head' \
+    'cmd >/dev/null 2>&1; echo "exit $?"' \
+    'tests/run > .scratch/task/run.log 2>&1; echo "exit $?"; tail -25 .scratch/task/run.log' \
+    "cd $wt && tests/run > .scratch/task/run.log 2>&1" \
+    'cmd 2>&1 | tee .scratch/task/out.txt | tail -5' \
+    "cat > .scratch/task/review.md <<'EOF'"$'\n# Review\n\n1. **blocking** - `cmd > out` writes outside.\nEOF' \
+    "cat >> .scratch/task/review.md <<'EOF'"$'\n## Re-review\n\nThe `while IFS= read -r f` loop leaks `f`.\nEOF' \
+    "cd .scratch/task && cat > review.md <<'EOF'"$'\n# Review\nEOF' \
+    "cd $wt/.scratch/task && cat > review.md <<'EOF'"$'\n# Review\nEOF' \
+    "mkdir -p .scratch/task/tickets && cd .scratch/task/tickets && cat > 01-x.md <<'EOF'"$'\n# 01\nEOF' \
+    '{ printf "\n"; sed "1s/^# /## /" .scratch/task/rereview.md; } >> .scratch/task/review.md' \
+    'git show origin/dev:src/a.sh > $CLAUDE_JOB_DIR/tmp/a.sh; diff $CLAUDE_JOB_DIR/tmp/a.sh src/a.sh' \
+    'T=$CLAUDE_JOB_DIR/tmp/probe; mkdir -p $T; cmd > $T/out.log 2>&1; tail $T/out.log' \
+    'T="$CLAUDE_JOB_DIR/tmp"; for f in a b; do cmd "$f" > "$T/$f.log"; done' \
+    'd=$(mktemp -d) && cmd > "$d/out" && cat "$d/out"' \
+    'd=$(mktemp -d -p "$CLAUDE_JOB_DIR/tmp") && git archive HEAD | tar -x -C "$d" && cmd > $d/run.log 2>&1' \
+    'cmd > "$TMPDIR/x"; cmd 2>/dev/null >> $TMPDIR/y' \
+    'for f in src/a src/b; do echo "== $f"; cmd "$f" 2>&1 | tail -3; done > .scratch/task/all.log' \
+    'diff <(git show origin/dev:src/a) <(cat src/a) > .scratch/task/a.diff' \
+    'git commit -m "$(cat <<'"'EOF'"$'\nfix: read a > in a message\n\nThe body.\nEOF\n)"' \
+    'gh pr create --title "x" --body "$(cat <<'"'EOF'"$'\n## Summary\n\n- a > b\nEOF\n)" 2>&1 | tail -1' \
+    'eval "$(~/agent-team/bin/team-stack env)"; ./scripts/seed.sh 2>&1 | tail -5' \
+    'eval "$(~/agent-team/bin/team-stack env)" && npx playwright test > .scratch/task/e2e.log 2>&1; echo EXIT=$?' \
+    'while IFS= read -r line; do echo "$line"; done < src/list > .scratch/task/list' \
+    'n=$(grep -c x src/a); [[ $n -gt 0 ]] && echo "$n" > .scratch/task/count')
+  passes "${commands[@]}"
 }
 
 @test "a target with an empty value writes nothing" {
