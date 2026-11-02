@@ -147,6 +147,7 @@ ticket-done team-log ticket commits
 question team-log,team-ask role text
 asked team-log,team-ask id text
 answered team-log,team-answer id answer
+ran team-run-approved id exit
 plan-approved team-log by
 paused team-log reason
 blocked team-log reason
@@ -175,6 +176,8 @@ TABLE
   assert_equal "$(jq -c '.kinds.launch.optional' "$CONTRACT")" '{"project":"string","branch":"string","machine":"string","model":"string","request":"string","brief":"string"}'
   assert_equal "$(jq -c '.kinds.review.required.verdict' "$CONTRACT")" '["pass","findings"]'
   assert_equal "$(jq -c '.kinds.answered.optional' "$CONTRACT")" '{"discord_message":"id"}'
+  assert_equal "$(jq -c '.kinds.asked.optional' "$CONTRACT")" '{"discord_message":"id","script":"string","sha256":"string"}'
+  assert_equal "$(jq -c '.kinds.ran.required' "$CONTRACT")" '{"id":"string","exit":"number"}'
   assert_equal "$(jq -c '[.kinds[] | (.required, .optional // {}) | to_entries[] | select(.key | startswith("discord_")) | .value] | unique' "$CONTRACT")" '["id"]'
   assert_equal "$(jq -c '[.kinds.waiting, .kinds.blocked, .kinds.paused, .kinds.held | .optional.since]' "$CONTRACT")" '["string","string","string","string"]'
   assert_equal "$(jq -c '[.kinds.closed.required[]]' "$CONTRACT")" '["array","array","array"]'
@@ -215,6 +218,8 @@ TABLE
   grep -Eq '^  merge-approved +team-log +url, discord_message \(id\); optional head  \(.*team-log requires head of every new line.*\)$' <<<"$output"
   grep -Eq '^  launch +team-worker +role, session, worktree, toolkits \(list\); optional project, branch, machine, model, request, brief  \(request is the link to Daniel.s Discord message, on an ops launch; model is the --model the session launched on, .*\)$' <<<"$output"
   grep -Eq '^  answered +team-log, team-answer +id, answer; optional discord_message \(id\)  \(Daniel.s answer to the asked of its id; .*never logged twice for one ask\)$' <<<"$output"
+  grep -Eq '^  asked +team-log, team-ask +id, text; optional discord_message \(id\), script, sha256  \(a decision put to Daniel; .*script and sha256: .*together.*team-run-approved.*\)$' <<<"$output"
+  grep -Eq '^  ran +team-run-approved +id, exit \(number\)  \(.*\)$' <<<"$output"
   grep -Eq '^  waiting +team-log, team-ask +on, reason; optional since  \(.*\)$' <<<"$output"
   grep -Eq '^  resumed +team-log, team-answer +- +\(clears held, blocked, paused and waiting\)$' <<<"$output"
   grep -Eq '^  blocked +team-log +reason; optional since  \(.*since: when the park began, when it is logged after the fact\)$' <<<"$output"
@@ -875,6 +880,30 @@ T14 reset 1564000000000000001
 T15 sign-in 1564000000000000001
 T14 sign-in -
 T14 sign-in -
+LINES
+  )"
+}
+
+@test "an asked takes script and sha256 only together, the hash 64 hex digits and the script an absolute path" {
+  local hash
+  hash=$(printf '%064d' 0 | tr 0 a)
+  run_bin -1 team-log T14 asked id=fix text=run-it script=/w/14/fix.sh
+  assert_equal "$output" "team-log: an asked names a script and its sha256 together, never one alone: script without sha256"
+  run_bin -1 team-log T14 asked id=fix text=run-it sha256="$hash"
+  assert_equal "$output" "team-log: an asked names a script and its sha256 together, never one alone: sha256 without script"
+  run_bin -1 team-log T14 asked id=fix text=run-it script=/w/14/fix.sh sha256="${hash:1}"
+  assert_equal "$output" "team-log: sha256 must be the script's 64 hex digits, as sha256sum prints them, got '${hash:1}'"
+  run_bin -1 team-log T14 asked id=fix text=run-it script=/w/14/fix.sh sha256="${hash:1}g"
+  assert_equal "$output" "team-log: sha256 must be the script's 64 hex digits, as sha256sum prints them, got '${hash:1}g'"
+  run_bin -1 team-log T14 asked id=fix text=run-it script=fix.sh sha256="$hash"
+  assert_equal "$output" "team-log: script must be an absolute path, got 'fix.sh'"
+  assert_ledger_empty
+  run_bin -0 team-log T14 asked id=fix text=run-it script=/w/14/fix.sh sha256="$hash"
+  run_bin -0 team-log T14 asked id=plain text=no-script
+  assert_equal "$(ledger_without_ts)" "$(
+    cat <<LINES
+{"task":"T14","event":"asked","id":"fix","text":"run-it","script":"/w/14/fix.sh","sha256":"$hash"}
+{"task":"T14","event":"asked","id":"plain","text":"no-script"}
 LINES
   )"
 }

@@ -20,7 +20,9 @@
 # one of the task's pr events (a trailing slash aside), or with no head, or a head neither a pr
 # event of that url nor a review of the task since its first pr event logged (heads compare by
 # the shorter one's prefix, at least 7 characters), or whose discord_message, a Discord id, was
-# sent before the first of those events that logged the head; so is an answered whose id and
+# sent before the first of those events that logged the head; so is an asked with a script and
+# no sha256 or the other way round, a sha256 that is not 64 hex digits or a script that is not an
+# absolute path (team-run-approved runs it); so is an answered whose id and
 # discord_message an earlier answered of the task logged (team-answer reads it from Discord). A
 # merge-preapproved is refused when its project is not one of the task's opened or worktree-added
 # events, is the team's own (own_project, whatever the registry says), or does not opt in now
@@ -316,6 +318,16 @@ if [[ $event == answered && -n ${seen[id]:-} && -n ${seen[discord_message]:-} ]]
   task_events "$task" | ledger_jq '[inputs] | answered_from($id; $message)' -ne \
     --arg id "${seen[id]}" --arg message "${seen[discord_message]}" >/dev/null; then
   die "$task already logged answered id=${seen[id]} from Discord message ${seen[discord_message]}"
+fi
+
+# An ask that names a script binds Daniel's OK to its bytes (team-run-approved): the script, an
+# absolute path, and its sha256, 64 hex digits, come together.
+if [[ $event == asked && ( -n ${seen[script]:-} || -n ${seen[sha256]:-} ) ]]; then
+  [[ -n ${seen[sha256]:-} ]] || die "an asked names a script and its sha256 together, never one alone: script without sha256"
+  [[ -n ${seen[script]:-} ]] || die "an asked names a script and its sha256 together, never one alone: sha256 without script"
+  [[ ${seen[sha256]} =~ ^[0-9a-fA-F]{64}$ ]] ||
+    die "sha256 must be the script's 64 hex digits, as sha256sum prints them, got '${seen[sha256]}'"
+  [[ ${seen[script]} == /* ]] || die "script must be an absolute path, got '${seen[script]}'"
 fi
 
 # A park logged after the fact says when it began: a UTC time between the task's latest event and now.

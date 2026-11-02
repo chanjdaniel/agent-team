@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# Run a script Daniel approved, bound to the exact bytes they were asked on.
+#
+# Usage: team-run-approved T<n> <id>
+# To ask: put the question to Daniel with
+# team-ask T<n> <id> --file <question>, then log the ask again with the script and its hash,
+#   team-log T<n> asked id=<id> text=<the question's first line> script=<absolute path> sha256=<its sha256sum>
+# since team-ask logs no script. The ask is the task's latest asked id=<id>.
+# It runs the script only when every one of these holds, and otherwise refuses with nothing run:
+#   - it is not a worker session (worker_refusal in bin/lib/team.sh): the coordinator runs it;
+#   - the task is open, and the ask names a script;
+#   - the ask has an answered of <id> logged after it (the coordinator runs it on Daniel's yes:
+#     an answered is the ledger's record that they answered, whatever they said);
+#   - no ran of <id> was logged since the ask, so one OK runs the script once, and a second run
+#     needs a new ask;
+#   - the script, its symbolic links resolved, is a file under one of the task's open worktrees
+#     or the team home's tasks/T<n>/;
+#   - its sha256 now is the ask's, or the refusal names both hashes;
+#   - this machine holds the lease, confirmed against origin (team-lease check), as for a launch.
+# It runs a copy of the bytes it hashed, so the file changing after the check changes nothing:
+# bash <the copy>, in the script's own directory, with no input; the script's $0 names the
+# copy, so it reaches the files beside it by paths relative to that directory, never through
+# $0. Its output and errors, together,
+# go to tasks/T<n>/runs/<id>.log in the team home (replacing a log an earlier ask of <id> left)
+# and to stdout; then it logs ran id=<id> exit=<the script's exit code>, whatever that is, and
+# prints "T<n> ran <id> (<script>), exit <code>; its output is in <log>".
+# Exit codes: the script's own once it ran; before that, 1 refused and 2 a malformed command line.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+USAGE="usage: team-run-approved T<n> <id>"
+
+(($# == 2)) || usage_error "$USAGE"
+task=$1 id=$2
+[[ $task =~ ^T[1-9][0-9]*$ && $id =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || usage_error "$USAGE"
+why=$(worker_refusal "$task" "runs no approved script") && die "$why"
+
+events=$(open_task_events "$task")
+ask=$(ledger_jq 'to_entries | map(select(.value.event == "asked" and .value.id == $id)) | last
+  | if . == null then empty else .value + {k: .key} end' -c --arg id "$id" <<<"$events")
+[[ -n $ask ]] || die "$task never asked $id"
+script=$(jq -r '.script // empty' <<<"$ask") expected=$(jq -r '.sha256 // empty' <<<"$ask")
+asked_at=$(jq -r .ts <<<"$ask")
+[[ -n $script && -n $expected ]] ||
+  die "$task's ask $id, at $asked_at, names no script: an approved script is asked with team-log $task asked id=$id text=<the question> script=<absolute path> sha256=<its sha256sum>"
+since=$(jq -c --argjson k "$(jq .k <<<"$ask")" '.[$k + 1:]' <<<"$events")
+jq -e --arg id "$id" 'any(.[]; .event == "answered" and .id == $id)' <<<"$since" >/dev/null ||
+  die "$task's ask $id, at $asked_at, has no answered since: Daniel has not answered it"
+ran=$(jq -r --arg id "$id" 'map(select(.event == "ran" and .id == $id)) | first // empty | "\(.ts), exit \(.exit)"' <<<"$since")
+[[ -z $ran ]] || die "$task already ran $id since its ask, at $ran: a new run needs a new ask"
+
+# The script and the places it may lie, each with its symbolic links resolved.
+script=$(local_path "$script")
+[[ -f $script ]] || die "no file at $script, the script $task's ask $id names"
+real=$(realpath -e -- "$script")
+places=()
+while IFS= read -r worktree; do
+  [[ -z $worktree || ! -d $worktree ]] || places+=("$(realpath -e -- "$worktree")")
+done < <(task_worktrees "$task" | jq -r '.worktree')
+places+=("$(realpath -m -- "$TEAM_HOME/tasks/$task")")
+under=''
+for place in "${places[@]}"; do
+  [[ $real != "$place"/* ]] || under=$place
+done
+[[ -n $under ]] || die "$script is not under $task's worktrees or its task directory, so it runs nothing: $(printf '%s, ' "${places[@]}" | sed 's/, $//')"
+
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+copy=$scratch/${real##*/}
+cp -- "$real" "$copy"
+actual=$(sha256sum "$copy" | cut -d' ' -f1)
+[[ $actual == "${expected,,}" ]] ||
+  die "$script has changed since $task's ask $id: its sha256 is $actual now, and the ask named ${expected,,}"
+
+lease_gate "an approved script"
+
+log=$TEAM_HOME/tasks/$task/runs/$id.log
+mkdir -p "${log%/*}"
+rc=0
+(cd "${real%/*}" && bash "$copy" </dev/null 2>&1) | tee "$log" || rc=${PIPESTATUS[0]}
+ledger_append "$(jq -nc --arg ts "$(date -u +%FT%TZ)" --arg task "$task" --arg id "$id" --argjson rc "$rc" \
+  '{ts: $ts, task: $task, event: "ran", id: $id, exit: $rc}')"
+echo "$task ran $id ($script), exit $rc; its output is in $log"
+exit "$rc"

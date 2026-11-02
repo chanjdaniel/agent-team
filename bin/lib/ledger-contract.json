@@ -72,15 +72,20 @@
     },
     "asked": {
       "writer": ["team-log", "team-ask"],
-      "about": "a decision put to Daniel; discord_message: the question's first message in the task's thread, which team-inbox links",
+      "about": "a decision put to Daniel; discord_message: the question's first message in the task's thread, which team-inbox links; script and sha256: a script Daniel is asked to OK and its sha256sum, logged together by team-log, which team-run-approved runs once the ask is answered and only while the file hashes the same",
       "required": {"id": "string", "text": "string"},
-      "optional": {"discord_message": "id"}
+      "optional": {"discord_message": "id", "script": "string", "sha256": "string"}
     },
     "answered": {
       "writer": ["team-log", "team-answer"],
       "about": "Daniel's answer to the asked of its id; discord_message: the message it was read from, never logged twice for one ask",
       "required": {"id": "string", "answer": "string"},
       "optional": {"discord_message": "id"}
+    },
+    "ran": {
+      "writer": "team-run-approved",
+      "about": "an approved script run once its ask was answered: id the asked naming it, exit its exit code; its output is in tasks/T<n>/runs/<id>.log",
+      "required": {"id": "string", "exit": "number"}
     },
     "plan-approved": {
       "writer": "team-log",
