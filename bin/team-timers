@@ -123,8 +123,13 @@ RETRY_SECONDS=60
 POST_TIMEOUT=20
 # Seconds: the most team-inbox may take (its lock's wait and two calls).
 INBOX_TIMEOUT=120
-# Seconds: the most the reading, the level step, the sweep and the janitor may take, together
-# well inside the lease's hour.
+# Seconds: the most each step after the lease step may take on the holder, each stopped then and
+# killed 10 s later: the inbox step 120 (INBOX_TIMEOUT above), the slots reading 60, the capacity
+# step's sample and place 60 each, the level step 300, the sweep 300, the pack 300 and the janitor
+# 1200. That is 2400 s in all, 2480 s with the kills, about 41 minutes, inside the lease's hour
+# (team-lease's TTL_MINUTES); the checkpoint has no limit of its own. The lease step leaves a
+# lease unrenewed only under 14 minutes old, so a run that hits every limit ends with it about 55
+# minutes old, the checkpoint's time aside.
 SLOTS_TIMEOUT=${TEAM_TIMERS_SLOTS_SECONDS:-60}
 CAPACITY_TIMEOUT=${TEAM_TIMERS_CAPACITY_SECONDS:-60}
 LEVEL_TIMEOUT=${TEAM_TIMERS_LEVEL_SECONDS:-300}

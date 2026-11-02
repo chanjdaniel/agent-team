@@ -745,6 +745,35 @@ day_report() {
   echo "$HOME/.local/state/agent-team/janitor/$(date +%F).md"
 }
 
+@test "every step that logs on the holder logs in one run, in the heartbeat's order" {
+  docker_machine
+  discord_answers
+  stack_json '{"heartbeat_sweep": true, "heartbeat_janitor": true}'
+  # inbox: the Waiting on you message deleted by hand, so a new one is posted.
+  rm -f "$STUB_FIXTURES/inbox/1569000000000000000.json"
+  # slots: a malformed slots.json, the one way a slots step logs.
+  echo '{"cap": "ten"}' >"$HOME/.config/agent-team/slots.json"
+  # capacity: a live team session outside its slice, placed.
+  fake_placement
+  fake_process 100 99 - claude
+  stub_reply claude '[{"pid": 100, "id": "a1b2c3d4", "name": "T7-builder", "status": "idle"}]'
+  # level: automatic mode at none for an hour over readings that span rise_minutes, so it rises.
+  local file=$HOME/.local/state/agent-team/capacity/readings.jsonl minutes
+  mkdir -p "${file%/*}"
+  for minutes in 25 20 15 10 5; do
+    jq -cn --arg at "$(date -u -d "$minutes minutes ago" +%FT%TZ)" \
+      '{at: $at, os: "linux", memory: {total: 34359738368, available: 25769803776, team: 0, others: 8589934592}, cpu: null}' >>"$file"
+  done
+  jq -cn --arg ts "$(date -u -d '1 hour ago' +%FT%TZ)" '{ts: $ts, mode: "auto", level: "none", by: "auto", machine: "home-pc"}' \
+    >"$TEAM_HOME/level.jsonl"
+  # stacks: the sweep stops the idle conventioner-2; checkpoint: always a line; pack: 200 loose
+  # objects; janitor: no report of today yet.
+  add_loose 200
+  run_bin -1 team-timers run
+  assert_equal "$output" "$(cat "$log")"
+  assert_equal "$(steps "$output")" "lease inbox slots capacity level stacks checkpoint pack janitor"
+}
+
 @test "the stacks and janitor steps are off without stack.json, without their keys and while they are false: no line, no call" {
   docker_machine
   run_bin -0 team-timers run
