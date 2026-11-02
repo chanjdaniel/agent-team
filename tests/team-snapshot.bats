@@ -176,7 +176,7 @@ section() {
   run_bin -0 team-snapshot --json
   local snapshot=$output
   assert_equal "$(jq -r .schema <<<"$snapshot")" "team-snapshot/1"
-  assert_equal "$(jq -c 'keys_unsorted' <<<"$snapshot")" '["schema","tasks","slots","standing_words","sessions","strays","prs","pending_asks","items"]'
+  assert_equal "$(jq -c 'keys_unsorted' <<<"$snapshot")" '["schema","tasks","level","awaiting_resume","resources","slots","standing_words","sessions","strays","prs","pending_asks","items"]'
   assert_equal "$(jq -r '.tasks | map(.task) | join(" ")' <<<"$snapshot")" "T3 T4"
   run_bin -0 team-state T3 --json
   assert_equal "$(jq -c '.tasks[0]' <<<"$snapshot")" "$(jq -c . <<<"$output")"
@@ -185,7 +185,7 @@ section() {
   assert_equal "$(jq -c '.tasks[1]' <<<"$snapshot")" "$(jq -c . <<<"$output")"
 }
 
-@test "the slots line follows the open tasks, and --json carries team-slots' object as slots, with no reading taken" {
+@test "the slots line follows the resources line, and --json carries team-slots' object as slots, with no reading taken" {
   reserve_agent_team
   mkdir -p "$HOME/.config/agent-team"
   echo home-pc >"$HOME/.config/agent-team/machine"
@@ -195,9 +195,10 @@ section() {
   opened T3
   opened T4 conv
   run_bin -0 team-snapshot
-  assert_equal "$(head -n 6 <<<"$output")" "Open tasks (2):
+  assert_equal "$(head -n 7 <<<"$output")" "Open tasks (2):
   T3 proj feature planning | no live worker
   T4 conv feature planning | no live worker
+Resources: manual, full (90%): no reading of the machine's load yet, so no budget
 home-pc: 2 of 10 task slots held, 1 kept for agent-team (agent-team holds 0); effective 10
 Standing merge word: none
 Live team sessions: none"
@@ -207,6 +208,53 @@ Live team sessions: none"
   assert_equal "$(jq -c .slots <<<"$snapshot")" "$(jq -c . <<<"$output")"
   assert_equal "$(jq -r '.slots | [.schema, .counts.held, .effective.cap] | join(" ")' <<<"$snapshot")" "team-slots/1 2 10"
   [[ ! -e $HOME/.local/state/agent-team/slots ]]
+}
+
+@test "the resources line follows the open tasks, naming the tasks stowed, waiting to resume, and --json carries it" {
+  open_prs owner/proj '[]'
+  open_prs owner/conv '[]'
+  # Manual minor on a 32 GiB machine with 12 GiB left to the team: 9.6 GiB and 3.6 cores.
+  capacity_room $((12 * 1073741824)) minor
+  export TEAM_SLOTS_CPUS=12
+  opened T3
+  # T4 and T6 were stowed for the level and T5 for a handoff, all three waiting to resume; T7 was
+  # relaunched since, and T8's stow left no role to relaunch.
+  local task
+  for task in T4 T5 T6 T7 T8; do opened "$task"; done
+  event T4 stowed '{machine: "home-pc", worktrees: [], roles: ["builder"], cause: "level"}'
+  event T5 stowed '{machine: "home-pc", worktrees: [], roles: ["builder"], cause: "handoff"}'
+  event T6 stowed '{machine: "home-pc", worktrees: [], roles: ["reviewer"], cause: "level"}'
+  event T7 stowed '{machine: "home-pc", worktrees: [], roles: ["builder"], cause: "level"}'
+  launch T7 builder 77777777
+  event T8 stowed '{machine: "home-pc", worktrees: [], roles: [], cause: "level"}'
+  run_bin -0 team-snapshot
+  # Whole up to 200 columns, as a current item is, so no task it names is cut.
+  assert_equal "$(sed -n 8p <<<"$output")" \
+    "Resources: manual, minor (30%): 9.6 GiB and 3.6 cores for the team; 0.0 GiB reserved; T4, T5 and T6 stowed, waiting to resume"
+  run_bin -0 team-snapshot --json
+  local snapshot=$output
+  run_bin -0 team-level status --stored --json
+  assert_equal "$(jq -c '.level | del(.reading.at, .last_change.ts)' <<<"$snapshot")" "$(jq -c 'del(.reading.at, .last_change.ts)' <<<"$output")"
+  assert_equal "$(jq -c '[.awaiting_resume, .resources]' <<<"$snapshot")" \
+    '[["T4","T5","T6"],"Resources: manual, minor (30%): 9.6 GiB and 3.6 cores for the team; 0.0 GiB reserved; T4, T5 and T6 stowed, waiting to resume"]'
+}
+
+@test "a team-level that fails gives level its error, the text says the resources are unreadable, and the rest is as before" {
+  open_prs owner/proj '[]'
+  open_prs owner/conv '[]'
+  opened T3
+  echo 'not json' >"$TEAM_HOME/level.jsonl"
+  run_bin -1 --separate-stderr team-level status --stored
+  local error=$stderr
+  assert_contains "$error" "level.jsonl"
+  run_bin -0 --separate-stderr team-snapshot --json
+  assert_equal "$stderr" ""
+  assert_equal "$(jq -c '[.level, .resources, .awaiting_resume]' <<<"$output")" "$(jq -cn --arg error "$(tail -n 1 <<<"$error")" '[{error: $error}, null, []]')"
+  assert_equal "$(jq -c '.tasks | length' <<<"$output")" 1
+  # Cut at 200 columns, as on macOS, whose longer temporary paths make it longer.
+  run_bin -0 team-snapshot
+  assert_equal "$(sed -n 3p <<<"$output")" \
+    "$(jq -rn --arg line "Resources unreadable: $(tail -n 1 <<<"$error")" '$line | if length > 200 then .[:197] + "..." else . end')"
 }
 
 @test "a team-slots that fails gives slots its error, and the rest of the snapshot as before" {
@@ -226,7 +274,7 @@ Live team sessions: none"
   assert_equal "$(jq -c .slots <<<"$output")" "$(jq -cn --arg error "$error" '{error: $error}')"
   assert_equal "$(jq -c '[(.tasks | length), (.sessions | length), (.pending_asks | length), (.prs | length)]' <<<"$output")" '[1,1,1,2]'
   run_bin -0 team-snapshot
-  assert_equal "$(sed -n 3,5p <<<"$output")" "Task slots unreadable: $error
+  assert_equal "$(sed -n 4,6p <<<"$output")" "Task slots unreadable: $error
 Standing merge word: none
 Live team sessions (1):"
 }
@@ -345,6 +393,7 @@ Live team sessions (1):"
   open_prs owner/conv '[]'
   run_bin -0 team-snapshot
   assert_equal "$output" "Open tasks: none
+Resources: manual, full (90%): no reading of the machine's load yet, so no budget
 this machine: 0 of 6 task slots held, 1 kept for agent-team (agent-team holds 0); effective 6
 Standing merge word: none
 Live team sessions: none
@@ -376,7 +425,7 @@ standing() {
   standing T3 merge-standing-withdrawn conv 1564100000000000002 2026-10-22T04:00:00Z
   standing T4 merge-standing proj 1564100000000000003 2026-10-22T05:00:00Z
   run_bin -0 team-snapshot
-  assert_equal "$(sed -n 4,6p <<<"$output")" "this machine: 2 of 6 task slots held, 1 kept for agent-team (agent-team holds 0); effective 6
+  assert_equal "$(sed -n 5,7p <<<"$output")" "this machine: 2 of 6 task slots held, 1 kept for agent-team (agent-team holds 0); effective 6
 Standing merge word: agent-team (Discord message 1564100000000000001, 2026-10-22T03:00:00Z, T3)
 Standing merge word: proj (Discord message 1564100000000000003, 2026-10-22T05:00:00Z, T4)"
   run_bin -0 team-snapshot --json
@@ -385,10 +434,10 @@ Standing merge word: proj (Discord message 1564100000000000003, 2026-10-22T05:00
   # One word standing for many projects is one line naming them, and a withdrawal of all ends them.
   standing T4 merge-standing all 1564100000000000004 2026-10-22T06:00:00Z
   run_bin -0 team-snapshot
-  assert_equal "$(sed -n 5p <<<"$output")" "Standing merge word: proj, conv, agent-team (Discord message 1564100000000000004, 2026-10-22T06:00:00Z, T4)"
+  assert_equal "$(sed -n 6p <<<"$output")" "Standing merge word: proj, conv, agent-team (Discord message 1564100000000000004, 2026-10-22T06:00:00Z, T4)"
   standing T4 merge-standing-withdrawn all 1564100000000000005 2026-10-22T07:00:00Z
   run_bin -0 team-snapshot
-  assert_equal "$(sed -n 5,6p <<<"$output")" "Standing merge word: none
+  assert_equal "$(sed -n 6,7p <<<"$output")" "Standing merge word: none
 Live team sessions: none"
   run_bin -0 team-snapshot --json
   assert_equal "$(jq -c .standing_words <<<"$output")" '[]'
@@ -486,7 +535,8 @@ EOF
   sessions "${all[@]}"
   run_bin -0 team-snapshot
   echo "$output"
-  [[ ${#lines[@]} -le 50 ]]
+  # 50 lines, and the standing merge word's one line.
+  [[ ${#lines[@]} -le 51 ]]
   # An open task's line is cut at 200 columns, any other at 120.
   local line
   for line in $(section "Open tasks" | sed 1d | awk '{ print length($0) }'); do [[ $line -le 200 ]]; done

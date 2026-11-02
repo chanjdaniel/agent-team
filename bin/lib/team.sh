@@ -12,10 +12,10 @@
 # the script's help_more, if it defined one before sourcing), and provides die, usage_error, team_project, ledger_jq, ledger_append,
 # task_events, known_task_events, open_task_events, task_status, task_worktrees, local_path,
 # archive_left_out, rsync_rule, archive_task_dir, machine_name, os_release, team_os, tool_dirs,
-# team_tool_path, fence_reason, offline_hold, lease_refusal, worker_refusal, lease_gate, worktree_changes, same_path, bounded, trust_probe,
+# team_tool_path, fence_reason, offline_hold, lease_refusal, worker_refusal, lease_gate, worktree_changes, same_path, bounded, docker_bounded, docker_silence, trust_probe,
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin,
 # only_records, records_list, records_pathspecs, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
-# own_project, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_slots, discord_token, discord_api,
+# own_project, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_slots, machine_level, discord_token, discord_api,
 # daniel_message, refresh_inbox, github, pr_part, pr_file_reasons, task_state_json, pr_standing_word, loose_objects, pack_size, story_file and findings_file, and sets IMAGE_TYPE,
 # PACK_LOOSE, COORDINATOR_CHANNEL and INTERVIEW_CHANNEL.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
@@ -36,9 +36,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/platform.sh"
 # checkout. TEAM_HOME_FROM says which (variable, setting, or none, where TEAM_HOME is empty).
 # TEAM_HOME_PROBLEM is the refusal when neither names a directory, given after --help has had its
 # chance; a script that sets team_home_report before sourcing (team-doctor, and the git hooks,
-# the records hook, data-check, tests/run, team-heavy and servers/install, which need none) is
-# not refused, and reports it itself, and one that sets team_home_unnamed (team-bootstrap, which
-# names it) is not refused while nothing names one.
+# the records hook, data-check, tests/run, team-heavy, team-capacity jobs and servers/install,
+# which need none) is not refused, and reports it itself, and one that sets team_home_unnamed
+# (team-bootstrap, which names it) is not refused while nothing names one.
 TEAM_HOME_PROBLEM='' TEAM_HOME_FIX='name its checkout there, relative to your home directory: echo agent-team-records > ~/.config/agent-team/home'
 TEAM_HOME_FROM=variable
 # shellcheck disable=SC2034 # TEAM_HOME_FROM is read by team-doctor and team-bootstrap
@@ -161,6 +161,23 @@ machine_slots() {
     jq -c . "$out"
   else
     line=$(grep . "$err" | tail -n 1) || line="team-slots failed with no reason given"
+    jq -cn --arg error "${line//"$HOME/"/"~/"}" '{error: $error}'
+  fi
+  rm -f "$out" "$err"
+}
+
+# The team's resource level as one compact line: team-level status --stored --json's object, read
+# from the stored readings only (it takes none), or {error} with the last line team-level said on
+# stderr (~ for the home directory) when it fails; what it says on stderr when it succeeds (a
+# registry it cannot read, so no cost estimates) is dropped: machine_level
+machine_level() {
+  local out err line
+  out=$(mktemp) err=$(mktemp)
+  if TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-level" status --stored --json >"$out" 2>"$err" </dev/null &&
+    jq -ce 'select(.schema == "team-level/1")' "$out" 2>/dev/null; then
+    :
+  else
+    line=$(grep . "$err" | tail -n 1) || line="team-level failed with no reason given"
     jq -cn --arg error "${line//"$HOME/"/"~/"}" '{error: $error}'
   fi
   rm -f "$out" "$err"
@@ -508,6 +525,29 @@ same_path() {
 # without coreutils): bounded <seconds> <command...>
 bounded() {
   if command -v timeout >/dev/null; then timeout "$@"; else "${@:2}"; fi
+}
+
+# docker <args...>, given TEAM_DOCKER_SECONDS (default 30) to answer and 5 more to die once told
+# to, as bin/lib/reading.sh's call to team-stack ls is; exit 124 (or 137) when it did not answer,
+# which docker_silence says. timeout runs it in a process group of its own, so a signal that stops
+# the caller (the heartbeat's time limit for its step) is passed on to it, and the caller's own
+# traps for those signals are put back after: docker_bounded <args...>
+docker_bounded() {
+  local pid rc=0 traps
+  traps=$(trap -p TERM INT HUP)
+  timeout --kill-after=5 "${TEAM_DOCKER_SECONDS:-30}" docker "$@" &
+  pid=$!
+  trap 'kill -TERM "$pid" 2>/dev/null; exit 143' TERM INT HUP
+  wait "$pid" || rc=$?
+  trap - TERM INT HUP
+  eval "$traps"
+  return "$rc"
+}
+
+# Whether docker_bounded's exit code <rc> is its timeout's, and if so the words for it on stdout:
+# docker_silence <rc>
+docker_silence() {
+  (($1 == 124 || $1 == 137)) && echo "Docker does not answer within ${TEAM_DOCKER_SECONDS:-30} s"
 }
 
 # Whether Claude Code trusts the root <path>, from a promptless background session named <name>

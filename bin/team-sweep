@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# Find what the coordinator must not leave unattended, from the ledger, the live session list and
-# the machine's task slots.
+# Find what the coordinator must not leave unattended, from the ledger, the live session list, the
+# machine's task slots and the team's stow plan.
 #
 # Usage: team-sweep [--json | --wait]
-# Reads only ledger.jsonl, claude agents --json, team-slots status --stored --json and, through
-# bin/lib/session-activity, the live sessions' transcripts: their modification times, and from a
-# session's quiet past the default limit only its times, tool names, tool call ids, commands and
-# background task marks (never GitHub, never a tool's output or a message's text, and never a new
-# reading of the machine's load), so it runs in about a second.
+# Reads only ledger.jsonl, claude agents --json, team-slots status --stored --json, team-capacity
+# plan --json (from the stored readings) and, through bin/lib/session-activity, the live
+# sessions' transcripts: their modification times, and from a session's quiet past the default
+# limit only its times, tool names, tool call ids, commands and background task marks (never
+# GitHub, never a tool's output or a message's text, and never a new reading of the machine's
+# load), so it runs in about a second.
 # A task is open when it has events and no closed; it is parked when its phase is held, blocked
 # or awaiting-merge, when it has an ask nothing settled (no answered or merge-preapproved with its
 # id, no merge-approved whose url its text names), or when its latest paused or waiting has no
@@ -63,7 +64,21 @@
 #                  <the effective cap's reason>; <n> held, over the effective cap of <e>: new
 #                  tasks wait; tell Daniel which wait", each reason only when it holds; or
 #                  team-slots failed: "slots: <its last line on stderr>: fix what team-slots names"
-#   retro-due      after the slots finding, with task and session null: a retro is due, as
+#   level-stow     after the slots finding, with task and session null: team-capacity plan (from
+#                  the stored readings) confirms the team over its budget at its level and names
+#                  tasks to stow, newest first: "level: over budget at minor (30%): stow T174, then
+#                  T171" (the coordinator sends their workers STOW, then runs team-stow)
+#   level-resume   after it, with task and session null: the first task stowed, waiting to
+#                  resume (for the level or a handoff), oldest stow first, whose roles' estimates
+#                  fit the budget again: "level: T171 fits again: relaunch its builder"
+#   level-launch   after it, with task and session null: the first task whose launches were
+#                  refused for room (a paused, after its latest launch, whose reason is
+#                  team-worker's "no room for session:<role>" line), oldest refusal first, whose
+#                  roles fit again: "level: T5 has room again: launch its reviewer, refused for
+#                  room at <time>"
+#   level          in their place, with task and session null: team-capacity plan failed:
+#                  "level: <its last line on stderr>: fix what team-capacity names"
+#   retro-due      after the level findings, with task and session null: a retro is due, as
 #                  team-retro status computes it (retros scheduled, no retro task open, the due
 #                  time past): "retro due since <time> (every <n>h, last retro <T<n> or none>):
 #                  run the retro skill"
@@ -135,16 +150,39 @@ session_activity() {
   fi
 }
 
+# The stow plan as one compact line: team-capacity plan --json's object, from the stored readings
+# only (it takes none, so it writes nothing) and the session list in <file>, the look's own, or
+# {error} with the last line team-capacity said on stderr (~ for the home directory) when it
+# fails: level_plan <file>
+level_plan() {
+  local out err line
+  out=$(mktemp) err=$(mktemp)
+  if TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-capacity" plan --json --sessions "$1" >"$out" 2>"$err" </dev/null; then
+    jq -c . "$out"
+  else
+    line=$(grep . "$err" | tail -n 1) || line="team-capacity plan failed with no reason given"
+    jq -cn --arg error "${line//"$HOME/"/"~/"}" '{error: $error}'
+  fi
+  rm -f "$out" "$err"
+}
+
 # The findings now, as JSON in FINDINGS, from the ledger, a fresh read of the session list, the
-# machine's task slots and the live sessions' transcripts; fails with the reason on stderr when
-# the session list cannot be read.
+# machine's task slots, the stow plan and the live sessions' transcripts; fails with the reason on
+# stderr when the session list cannot be read.
 look() {
-  local sessions slots activity
+  local sessions slots plan activity plan_file
   sessions=$(LIVE_SESSIONS='' && live_sessions && printf '%s' "$LIVE_SESSIONS") || return 1
+  plan_file=$(mktemp)
+  printf '%s\n' "$sessions" >"$plan_file.sessions"
+  level_plan "$plan_file.sessions" >"$plan_file" &
   slots=$(machine_slots)
   activity=$(session_activity "$sessions")
-  FINDINGS=$(ledger_jq 'ledger_events | sweep($sessions; $slots; $activity)' -nRc --argjson sessions "$sessions" \
-    --argjson slots "$slots" --argjson activity "$activity" "$ledger")
+  wait "$!" || true
+  plan=$(cat "$plan_file")
+  rm -f "$plan_file" "$plan_file.sessions"
+  [[ -n $plan ]] || plan='{"error": "team-capacity plan printed nothing"}'
+  FINDINGS=$(ledger_jq 'ledger_events | sweep($sessions; $slots; $plan; $activity)' -nRc --argjson sessions "$sessions" \
+    --argjson slots "$slots" --argjson plan "$plan" --argjson activity "$activity" "$ledger")
 }
 
 # The sweep watch: see --wait in the header.

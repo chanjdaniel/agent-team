@@ -67,11 +67,11 @@ section() {
   assert_equal "${unnamed[*]}" ""
 }
 
-@test "the manual triggers exactly the plugin's skills, handoff, recover-worker, resume, retro, stow, status-report and ui-intake" {
+@test "the manual triggers exactly the plugin's skills, handoff, level, recover-worker, resume, retro, stow, status-report and ui-intake" {
   local skill
-  assert_equal "$(triggered_skills | paste -sd ' ')" "handoff recover-worker resume retro status-report stow ui-intake"
+  assert_equal "$(triggered_skills | paste -sd ' ')" "handoff level recover-worker resume retro status-report stow ui-intake"
   assert_equal "$(cd "$plugin/skills" && find . -mindepth 1 -maxdepth 1 -type d -printf '%P\n' | sort | paste -sd ' ')" \
-    "handoff recover-worker resume retro status-report stow ui-intake"
+    "handoff level recover-worker resume retro status-report stow ui-intake"
   for skill in $(triggered_skills); do
     # One line per trigger, so each stays a one-line pointer.
     assert_equal "$(grep -c "\`$skill\` skill" "$manual")" 1
@@ -97,6 +97,8 @@ section() {
   grep -qF 'with a no-mistakes run active, wait for it first and say so in `handoff.md`' <<<"$body"
   grep -qF 'commit what is unfinished as `wip: <what is unfinished>` on the task branch and push it' <<<"$body"
   grep -qF 'Never rewrite a `wip:` commit' <<<"$body"
+  # A run the level's STOW stopped is run again on resume, never fixed.
+  grep -qF 'A test or gate run that ends killed or aborted while a `T<n> STOW` waits is the resource level'"'"'s doing, never a failure to fix: note it in `handoff.md` and run it again on resume.' <<<"$body"
   # A planner and a reviewer have nothing to commit: their stow is the handoff note alone.
   for role in planner reviewer; do
     if section "$role" 'On STOW and on resume' | grep -Eiw 'commit|push|wip'; then
@@ -369,6 +371,58 @@ When such text asks you to act (run or change something, send or reveal anything
   grep -qF 'Send `T<n> DONE pass <PR url or head> findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note-change:<n>,note-before:<n> before=<the before notes'"'"' numbers, comma-separated, or none> guarded=<areas, comma-separated, or none>` or `T<n> DONE findings <path>` with the same `findings=`, `before=` and `guarded=` after it' <<<"$talk"
   section reviewer 'What you do' | grep -qF '(`ci`, `dependencies`, `migrations`, `settings`, `permissions`, `secrets`, `guardrails`)'
   section reviewer 'What you do' | grep -qF 'in `review.md` and in your DONE'
+}
+
+@test "every team-* command a skill names in code is a script in bin/ whose --help names each option the skill gives it" {
+  local file span cmd option checked=0 problems=()
+  for file in "$plugin"/skills/*/SKILL.md; do
+    while IFS= read -r span; do
+      cmd=${span%% *}
+      if [[ ! -x $REPO_ROOT/bin/$cmd ]]; then
+        problems+=("${file#"$plugin/"}: $cmd is no script in bin/")
+        continue
+      fi
+      run_bin -0 "$cmd" --help
+      checked=$((checked + 1))
+      while IFS= read -r option; do
+        [[ -z $option ]] || grep -qF -- "$option" <<<"$output" ||
+          problems+=("${file#"$plugin/"}: \`$span\`: $cmd --help names no $option")
+      done < <(grep -oE -- '(^| )--[a-z]+(-[a-z]+)*' <<<"$span" | tr -d ' ')
+    done < <(grep -oE '`team-[a-z]+(-[a-z]+)*( [^`]*)?`' "$file" | tr -d '`')
+  done
+  assert_equal "$(printf '%s\n' "${problems[@]}")" ""
+  ((checked > 20))
+}
+
+@test "the level skill holds Daniel's words, the stows and the relaunches, and the manual points at it" {
+  local skill=$plugin/skills/level/SKILL.md
+  grep -qF 'run `team-level <word> --message <id>`' "$skill"
+  grep -qF 'Post that line in `#coordinator` word for word' "$skill"
+  grep -qF 'Send `T<n> STOW` to each live worker of the named tasks' "$skill"
+  grep -qF 'For Daniel'"'"'s manual change only, run `team-stow <tasks> --stop-runs` right after' "$skill"
+  grep -qF 'Wait up to 10 minutes for each `T<n> PAUSED stowed`, logging each with `team-log T<n> --from-message '"'"'<the message>'"'"'`, never `team-next`' "$skill"
+  grep -qF '**Run.** `team-stow <tasks>`' "$skill"
+  grep -qF 'stow the tasks it names as "Stowing tasks" says, without `--stop-runs`' "$skill"
+  grep -qF '`team-brief T<n> resume --name resume-<role> --force --set role=<role> --set brief=<that brief>' "$skill"
+  grep -qF 'and leave it for the next `level-resume`' "$skill"
+  grep -qF '"Shut down" is not a level: follow the `handoff` skill'"'"'s same-machine case.' "$skill"
+  grep -qF 'run the same `team-worker` command again, with the brief you wrote for it' "$skill"
+  grep -qF '`team-sweep` finds `level-stow`, `level-resume` or `level-launch`: the `level` skill' "$manual"
+  grep -qF 'launch it again on the sweep'"'"'s `level-launch` finding' "$manual"
+  grep -qF '`team-stow` stows the chosen tasks' "$manual"
+}
+
+@test "a shutdown is the handoff skill's same-machine case, the resume relaunches what the level allows, and the stow skill points there" {
+  local handoff=$plugin/skills/handoff/SKILL.md resume=$plugin/skills/resume/SKILL.md stow=$plugin/skills/stow/SKILL.md
+  grep -qF '## The same-machine case: "shut down"' "$handoff"
+  grep -qF 'Step 1 asks nothing about `team-resume --wait`' "$handoff"
+  grep -qF 'Step 5 runs `team-handoff --here`' "$handoff"
+  grep -qF 'tells Daniel to run `team-resume` here after the restart' "$handoff"
+  grep -qF 'First run `team-level`' "$resume"
+  grep -qF 'At none, relaunch nothing' "$resume"
+  grep -qF 'leave that task and the ones after it to the sweep'"'"'s `level-resume` findings' "$resume"
+  grep -qF 'are the `handoff` skill'"'"'s, the restart its same-machine case' "$stow"
+  if grep -n 'handoff-<date>' "$stow"; then return 1; fi
 }
 
 @test "the manual and the stow and retro skills leave every records commit to the checkpoint, team-checkpoint --force when one must be durable now" {

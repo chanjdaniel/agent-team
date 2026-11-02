@@ -401,6 +401,26 @@ def latest_stowed: latest_index("stowed");
 # no stowed at all, so the machine it last ran on stopped without handing it off.
 def crashed: latest_stowed as $stowed | any(.[$stowed + 1:][]; .event == "launch");
 
+# Whether the task is stowed, waiting to resume: its latest stowed, for the level or a handoff (cause
+# level or handoff, or none, as before team-stow), names roles to relaunch and no launch follows
+# it, so it waits for the resume or for room at the team's level to be relaunched here.
+def stowed_awaiting_resume:
+  latest_stowed as $stowed
+  | $stowed >= 0 and (.[$stowed].roles // []) != [] and (any(.[$stowed + 1:][]; .event == "launch") | not);
+
+# The launches of the task refused for room and not launched since: the paused events after its
+# latest launch whose reason holds team-capacity admit's refusal of a session ("no room for
+# session:<role>", as team-worker's exit 75 says it and the coordinator logs it), as {at (the
+# latest refusal's time), roles (each role once, in the order refused)}; null with none, or while
+# the task is stowed_awaiting_resume, whose resume relaunches its roles.
+def refused_launches:
+  if stowed_awaiting_resume then null
+  else latest_index("launch") as $launch
+    | [.[$launch + 1:][] | select(.event == "paused") | .ts as $at
+       | (.reason // "" | strings | capture("no room for session:(?<role>[a-z]+)")) | {at: $at, role}]
+    | if . == [] then null else {at: .[-1].at, roles: (reduce .[].role as $r ([]; if index([$r]) then . else . + [$r] end))} end
+  end;
+
 # Whether the task's worktree in <project> resumes from the last checkpoint's snapshot: the task
 # crashed, or its latest stowed recorded that worktree with uncommitted changes, which the
 # handoff's checkpoint kept as wip/<project>/T<n> on the team home's origin.
@@ -462,6 +482,51 @@ def live_session($session; $sessions):
   if ($session | type) == "string" and $session != "" then
     $sessions | map(select(.id == $session or ((.sessionId // "") | startswith($session)))) | first
   else null end;
+
+# The task's launches whose sessions a new launch of <role> may stop, over its events as an array,
+# each {session, role, worktree (local_path's), stowed, handed_on}; <role> "" stands for no new
+# launch (the heartbeat's stow plan, over every open task). They are every planner and reviewer,
+# and every builder when the new worker is a builder (team-worker keeps those of its own worktree,
+# one builder holding a worktree's work at a time), or with no new launch every builder that a
+# later logged builder launch of its worktree follows. Handed on is a launch the ledger follows
+# with a done of its session, or for a builder a pr or ticket-done, or with a paused whose reason
+# is stowed and then a logged launch of its role and worktree (a stow carries no session, so it
+# hands on only to the fresh worker that resumes the work, and a resumed does not undo it);
+# stowed is whether such a paused follows it, so team-worker can count itself as that fresh
+# worker. Any other paused is a wait the worker comes back from, and a review carries no session,
+# so a reviewer is handed on by the done logged beside its review.
+def handed_on_launches($role; $home):
+  . as $events
+  | [to_entries[] | .key as $i | .value
+     | select(.event == "launch" and (.session | type) == "string" and .session != "")
+     | . as $l | ($l.worktree | local_path($home)) as $wt
+     | select(.role == "planner" or .role == "reviewer"
+         or (.role == "builder"
+             and if $role == "" then any($events[$i + 1:][]; .event == "launch" and .role == "builder"
+                   and (.worktree | local_path($home)) == $wt)
+                 else $role == "builder" end))
+     | [range($i + 1; $events | length) | select($events[.] | .event == "paused" and .reason == "stowed")] as $stows
+     | {session, role, worktree: $wt, stowed: ($stows != []),
+        handed_on: (any($events[$i + 1:][]; (.event == "done" and .session == $l.session)
+            or ((.event == "pr" or .event == "ticket-done") and $l.role == "builder"))
+          or any($stows[] as $k | $events[$k + 1:][]; .event == "launch" and .role == $l.role
+            and (.worktree | local_path($home)) == $wt))}];
+
+# The live sessions of handed_on_launches' launches, given the session list <sessions>, each
+# {session, role, worktree, state}: state "busy", "waiting for input", "no status", "status <its
+# status>" for one that is not idle, "handed-on" for an idle one whose work is handed on (the one
+# to stop), "stowed" for an idle one a stow followed, else "idle with no event of its own since
+# its launch".
+def launch_states($sessions):
+  [.[] | live_session(.session; $sessions) as $live | select($live != null)
+   | {session, role, worktree,
+      state: (if $live.status == "busy" then "busy"
+              elif $live.state == "blocked" then "waiting for input"
+              elif $live.status == null then "no status"
+              elif $live.status != "idle" then "status \($live.status)"
+              elif .handed_on then "handed-on"
+              elif .stowed then "stowed"
+              else "idle with no event of its own since its launch" end)}];
 
 # Every launch of the task, live when the session list has its session, with that session's context
 # when task_state_json added it, and the brief the launch logged (or null).
@@ -892,6 +957,30 @@ def slots_finding:
        text: "slots: \($summary); \(join("; ")): new tasks wait; tell Daniel which wait"}
   end;
 
+# team-sweep's level findings, from team-capacity plan --json's object (or {error} when it failed),
+# each with task and session null: level-stow while its stow list is not empty, naming the tasks
+# newest first ("level: over budget at minor (30%): stow T174, then T171"); level-resume for the
+# first task stowed, waiting to resume, whose roles fit again ("level: T171 fits again: relaunch its
+# builder"); level-launch for the first task whose launches refused for room fit again ("level: T5
+# has room again: launch its reviewer, refused for room at <time>"); one level finding naming the
+# error when team-capacity failed.
+def level_findings:
+  def roles: if length < 2 then join("") else "\(.[:-1] | join(", ")) and \(.[-1])" end;
+  if .error then
+    {task: null, kind: "level", session: null, name: null, next: "fix what team-capacity names",
+     text: "level: \(.error): fix what team-capacity names"}
+  else
+    (select(.stow != []) | "stow \([.stow[].task] | join(", then "))" as $next
+     | {task: null, kind: "level-stow", session: null, name: null, next: $next,
+        text: "level: over budget at \(.level) (\(.share * 100 | round)%): \($next)"}),
+    (first(.resume[] | select(.fits)) | "relaunch its \(.roles | roles)" as $next
+     | {task: null, kind: "level-resume", session: null, name: null, next: $next,
+        text: "level: \(.task) fits again: \($next)"}),
+    (first(.launch // [] | .[] | select(.fits)) | "launch its \(.roles | roles)" as $next
+     | {task: null, kind: "level-launch", session: null, name: null, next: $next,
+        text: "level: \(.task) has room again: \($next), refused for room at \(.refused)"})
+  end;
+
 # team-sweep's activity finding, from session-activity's object as task_findings takes it: one
 # naming the error when it failed, since then no busy worker can be found stalled, else none.
 def activity_finding:
@@ -900,13 +989,13 @@ def activity_finding:
      text: "activity: \(.error), so no busy worker is found stalled: fix what session-activity names"};
 
 # team-sweep's findings, over every ledger event as one array, the session list, the machine's
-# task slots ($slots, as slots_finding takes them) and session-activity's object ($activity, as
-# task_findings takes it): each open task's merge-due (under a plan-time word or a standing word
-# of any task's), else its findings unless it is parked,
-# then the stray sessions (named like a team worker whose task is closed or not in the ledger,
-# never the load check's T0, whose session the coordinator waits on for up to 30 minutes), in task
-# number order; then the activity, slots and retro-due findings.
-def sweep($sessions; $slots; $activity):
+# task slots ($slots, as slots_finding takes them), the stow plan ($plan, as level_findings takes
+# it) and session-activity's object ($activity, as task_findings takes it): each open task's
+# merge-due (under a plan-time word or a standing word of any task's), else its findings unless
+# it is parked, then the stray sessions (named like a team worker whose task is closed or not in
+# the ledger, never the load check's T0, whose session the coordinator waits on for up to 30
+# minutes), in task number order; then the activity, slots, level and retro-due findings.
+def sweep($sessions; $slots; $plan; $activity):
   . as $events
   | by_task as $tasks
   | [.[] | select(.event == "merge-standing" or .event == "merge-standing-withdrawn")] as $standing
@@ -920,20 +1009,63 @@ def sweep($sessions; $slots; $activity):
      | by_task_number)
     + [$activity | activity_finding]
     + [$slots | slots_finding]
+    + [$plan | level_findings]
     + [$events | retro_status | retro_due_finding];
+
+# What team-capacity plan reads of the ledger, over every ledger event as one array, with the
+# session list <sessions>: one {task, opened (its opened's time, else its first event's),
+# finished ([{session, role}]: the idle live sessions whose work is handed on, handed_on_launches
+# with no new launch), stowed (while it is stowed_awaiting_resume, {at, roles} of its latest stowed,
+# else null), stowed_since (its latest stowed's time when no launch follows it, else null),
+# refused (refused_launches')} per open task, in task number order.
+def plan_tasks($sessions):
+  [by_task | to_entries[] | select(.value | is_open) | .key as $task | .value as $events
+   | {task: $task,
+      opened: (first($events[] | select(.event == "opened") | .ts) // $events[0].ts),
+      finished: [$events | handed_on_launches(""; $home) | launch_states($sessions)[]
+        | select(.state == "handed-on") | {session, role}],
+      stowed: (if $events | stowed_awaiting_resume then $events[$events | latest_stowed] | {at: .ts, roles: (.roles // [])}
+               else null end),
+      stowed_since: ($events | latest_stowed as $i
+        | if $i >= 0 and (any(.[$i + 1:][]; .event == "launch") | not) then .[$i].ts else null end),
+      refused: ($events | refused_launches)}]
+  | by_task_number;
+
+# The ids of the open tasks stowed, waiting to resume (stowed_awaiting_resume), among every task's
+# events by id, in task number order.
+def awaiting_resume: [to_entries[] | select((.value | is_open) and (.value | stowed_awaiting_resume)) | .key] | sort_by(.[1:] | tonumber);
+
+# The resources line the Waiting on you message and the snapshot end their items with, from
+# team-level status --json's object $level (its says) and the tasks stowed, waiting to resume
+# ($stowed, awaiting_resume's): "Resources: manual, minor (30%): 9.2 GiB and 3.6 cores for the
+# team; 6.1 GiB reserved; T171 and T174 stowed, waiting to resume"; null when $level is {error}.
+def resources_line($level; $stowed):
+  if $level.error != null or $level.says == null then null
+  else "Resources: \($level.says)"
+    + if $stowed == [] then ""
+      else "; \(if ($stowed | length) < 2 then $stowed[0] else "\($stowed[:-1] | join(", ")) and \($stowed[-1])" end) stowed, waiting to resume"
+      end
+  end;
 
 # The ids of the open tasks among every task's events by id, in task number order.
 def open_tasks: [to_entries[] | select(.value | is_open) | .key] | sort_by(.[1:] | tonumber);
 
 # team-snapshot's JSON from every task's events by id ($tasks), the open tasks' team-state JSON
 # in task number order ($states; {task, error} for a task whose state could not be told), the
-# machine's task slots ($slots, team-slots --json's object or {error}), the registered projects a
-# standing word of Daniel's stands for ($standing, standing_words' list), the session list, and
-# each registered project's open PRs ($prs).
-def snapshot($tasks; $states; $slots; $standing; $sessions; $prs; $items):
+# machine's task slots ($slots, team-slots --json's object or {error}), the team's resource level
+# ($level, team-level status --json's object or {error}), the registered projects a standing word
+# of Daniel's stands for ($standing, standing_words' list), the session list, each registered
+# project's open PRs ($prs) and the current items ($items). It carries $level as level, the open
+# tasks stowed, waiting to resume, as awaiting_resume, and the resources_line as resources (null when
+# $level is {error}).
+def snapshot($tasks; $states; $slots; $level; $standing; $sessions; $prs; $items):
   team_sessions($tasks; $sessions) as $team
+  | ($tasks | awaiting_resume) as $stowed
   | {schema: "team-snapshot/1",
      tasks: $states,
+     level: $level,
+     awaiting_resume: $stowed,
+     resources: resources_line($level; $stowed),
      slots: $slots,
      standing_words: $standing,
      sessions: [$team[] | select(.task_state == "open") | del(.task_state)],
@@ -953,13 +1085,14 @@ def session_text:
   "\(.name) \(.session) \(.status)" + if .state == null or .state == "working" then "" else " \(.state)" end;
 
 # team-snapshot's text form, one line per string, from its JSON. Lines are cut at 120 columns, so
-# ten open tasks fit one screen, but an open task's state and a current item at 200, each being a
-# whole thought (a task's progress and its PR part come last on its line).
+# ten open tasks fit one screen, but an open task's state, the resources line and a current item
+# at 200, each being a whole thought (a task's progress and its PR part come last on its line).
 def snapshot_text:
   def section($title; $lines; $columns):
     if $lines == [] then "\($title): none" else "\($title) (\($lines | length)):", ($lines[] | "  " + . | clip($columns)) end;
   def section($title; $lines): section($title; $lines; 120);
   section("Open tasks"; [.tasks[] | if .error then "\(.task) state unreadable: \(.error)" else state_line end]; 200),
+  (.resources // "Resources unreadable: \(.level.error // "team-level said nothing")" | clip(200)),
   (if .slots.error then "Task slots unreadable: \(.slots.error)" else .slots.summary end | clip(120)),
   ((.standing_words // []) | standing_word_events
    | if . == [] then "Standing merge word: none"
@@ -1033,11 +1166,12 @@ def inbox_items($plan_repos; $repos; $projects):
      standing: ($standing | standing_word_events)};
 
 # The Waiting on you message from inbox_items, at most $limit characters, its asks linked to the
-# question's message in guild $guild (to the thread when either is unknown), and its last line the
-# time $now (seconds since the epoch) as Discord shows it to each reader. Above that line, one line
-# per standing word, linked to Daniel's message in its channel. Items past the limit are left out
-# from the end, counted in one line; the standing word lines and the last line are never cut.
-def inbox_text($guild; $limit; $now):
+# question's message in guild $guild (to the thread when either is unknown), then one line per
+# standing word, linked to Daniel's message in its channel, then the line $resources
+# (resources_line's; none when null), and its last line the time $now (seconds since the epoch) as
+# Discord shows it to each reader. Items past the limit are left out from the end, counted in one
+# line; the standing word lines, the resources line and the last line are never cut.
+def inbox_text($guild; $limit; $now; $resources):
   def link:
     if .thread == null then ""
     elif .message != null and $guild != null then " https://discord.com/channels/\($guild)/\(.thread)/\(.message)"
@@ -1050,14 +1184,15 @@ def inbox_text($guild; $limit; $now):
   | [(.standing // [])[] | "-# Standing merge word on \(.projects | projects_text) since"
       + " https://discord.com/channels/\($guild)/\(.word.discord_channel)/\(.word.discord_message)"] as $words
   | ["-# team-inbox keeps this current; updated <t:\($now):R>"] as $foot
+  | (if $resources == null then [] else [$resources] end) as $level
   | def render($n):
       (reduce $sections[] as $s ({left: $n, lines: []};
         $s[1][:.left] as $take
         | if $take == [] then . else .lines += [$s[0]] + $take | .left -= ($take | length) end)
        | .lines)
       + (if $n < $total then ["- and \($total - $n) more, which team-snapshot lists"] else [] end)
-      | ["**Waiting on you**"] + . + $words + $foot | join("\n");
-    if $total == 0 then ["**Waiting on you**", "Nothing waits on you."] + $words + $foot | join("\n")
+      | ["**Waiting on you**"] + . + $words + $level + $foot | join("\n");
+    if $total == 0 then ["**Waiting on you**", "Nothing waits on you."] + $words + $level + $foot | join("\n")
     else first(range($total; -1; -1) as $n | render($n) | select(length <= $limit)) end;
 
 # The following defs serve team-retro, over every ledger event as one array.

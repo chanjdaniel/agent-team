@@ -9,9 +9,13 @@
 # (its discord_message, which team-ask logs, in the task's thread; else the thread); each PR ready
 # to merge (the task's phase awaiting-merge, the PR not merged and no merge-approved logged at its
 # head), with its full URL; and each interview under way (an interview-thread with no planner's
-# done or plan-approved after it), with its thread. With none, it says "Nothing waits on you". Its
-# last line is the time of this run. Items past Discord's 2000 characters are left out from the
-# end, counted in a line.
+# done or plan-approved after it), with its thread. With none, it says "Nothing waits on you". The
+# line after the items is the team's resource level, from team-level status --stored --json (it
+# takes no reading): "Resources: manual, minor (30%): 9.2 GiB and 3.6 cores for the team; 6.1
+# GiB reserved; T171 stowed, waiting to resume", naming each open task whose latest stowed (for the
+# level or a handoff) names roles to relaunch and that no launch has followed; when team-level fails the line is left out, with a line
+# on stderr saying why. Its last line is the time of this run. Items past Discord's 2000
+# characters are left out from the end, counted in a line.
 # A PR ready to merge is left out while it waits on no word of Daniel's: the task's latest
 # merge-preapproved of the PR's project (the registered one whose repo is the URL's) stands, and
 # that project opts in now (team-project --find merge_with_plan true) and is not the team's own
@@ -149,9 +153,17 @@ if [[ -n $unreadable ]]; then
   echo "team-inbox: lists every PR ready to merge, Daniel's $aside aside, since the registry cannot be read: $(grep -m 1 . "$scratch/registry" || echo "team-project failed")" >&2
 fi
 
-ledger_jq 'ledger_events | inbox_items($plan_repos; $repos; $projects) | inbox_text($guild; $limit; now | floor)
+# The team's resource level, for the line after the items; left out, saying why, when team-level
+# cannot tell it.
+level=$(machine_level)
+if why=$(jq -er '.error // empty' <<<"$level"); then
+  echo "team-inbox: leaves out the resources line, since team-level status failed: $why" >&2
+fi
+
+ledger_jq 'ledger_events | (by_task | awaiting_resume) as $stowed | inbox_items($plan_repos; $repos; $projects)
+  | inbox_text($guild; $limit; now | floor; resources_line($level; $stowed))
   | {content: ., allowed_mentions: {parse: []}, flags: $flags}' -nRc --argjson plan_repos "$plan_repos" \
-  --argjson repos "$repos" --argjson projects "$projects" \
+  --argjson repos "$repos" --argjson projects "$projects" --argjson level "$level" \
   --arg guild "$guild" --argjson limit "$LIMIT" --argjson flags "$SUPPRESS_EMBEDS" "$ledger" >"$scratch/body"
 
 # Keep the message's place: keep <message>

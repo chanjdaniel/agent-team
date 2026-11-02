@@ -18,8 +18,17 @@
 #         Conventioner's scripts/e2e-lock.sh takes the same file with its own form, "<who> since
 #         <time>", which status reads as a holder too.
 #         While another run holds the lock, it says once on stderr that it waits and for whom,
-#         waits up to --wait minutes (default 180, or TEAM_HEAVY_WAIT_MINUTES; 0 does not wait),
+#         waits up to --wait minutes (default 180, or TEAM_HEAVY_WAIT_MINUTES, a number of 0 or
+#         more; 0 does not wait),
 #         then exits 75 naming the holder.
+#         Once it holds the lock, with a team home (none on CI or a fresh clone, where it asks
+#         nothing), the run must fit the level's memory budget: team-capacity admit --kind
+#         heavy:<kind> (--task the task, when there is one). With no room it lets the lock go, says
+#         once on stderr that it waits and why, and asks again every 30 seconds
+#         (TEAM_HEAVY_RECHECK_SECONDS), taking the lock again first, within the same --wait, then
+#         exits 75 with the reason and what makes room ("no room for heavy:<kind>: the team is at
+#         level none: nothing starts; room comes when Daniel raises the level" at none). An
+#         admission that fails otherwise fails the run with its reason (exit 1).
 #         The command runs in a process group of its own, its stdin /dev/null when team-heavy's is
 #         a terminal (a background group reading one would stop). On Linux it also runs in a
 #         transient scope, agent-team-heavy-<team-heavy's pid>.scope, in the task's slice
@@ -55,8 +64,8 @@
 #         line>", or "nothing to stop" and why when the lock is free, held in another form, or held
 #         for another task. Exit 0 either way, 1 when the run could not be stopped.
 #
-# Exit 0 done (run: the command's status), 1 the stop failed, 2 usage error, 75 try again later
-# (the wait ran out).
+# Exit 0 done (run: the command's status), 1 the stop failed or the admission did, 2 usage error,
+# 75 try again later (the wait for the lock or for room ran out).
 set -euo pipefail
 # The lock is the machine's, not the team home's, and tests/run takes it on CI or a fresh clone.
 # shellcheck disable=SC2034 # read by bin/lib/team.sh
@@ -67,6 +76,7 @@ USAGE="usage: team-heavy run [--wait <minutes>] [--label <text>] [--kind <kind>]
 LOCK=$HOME/.local/state/agent-team/heavy.lock
 COSTS=$HOME/.local/state/agent-team/capacity/costs.jsonl
 KILL_SECONDS=${TEAM_HEAVY_KILL_SECONDS:-10}
+RECHECK_SECONDS=${TEAM_HEAVY_RECHECK_SECONDS:-30}
 SAMPLE_SECONDS=10
 # A holder line of team-heavy's own form: its label, pid and task (team-capacity's
 # HEAVY_HOLDER_FORM is the same, which tests/team-capacity.bats holds).
@@ -168,6 +178,22 @@ sample_group() {
   done
 }
 
+# Whether the run of <kind> for <task> ("" for none) fits the level's budget, asking team-capacity
+# admit while this run holds the lock on <fd>, with no team home always; the reason it does not in
+# ROOM_WHY. An admission that fails otherwise fails the run.
+room_for() {
+  local kind=$1 task=$2 fd=$3 rc=0 err
+  local -a args=(admit --kind "heavy:$kind")
+  ROOM_WHY=''
+  [[ -z $TEAM_HOME_PROBLEM && -n $TEAM_HOME && -d $TEAM_HOME ]] || return 0
+  [[ -z $task ]] || args+=(--task "$task")
+  err=$(TEAM_HOME=$TEAM_HOME "$(dirname "${BASH_SOURCE[0]}")/team-capacity" "${args[@]}" 2>&1 >/dev/null {fd}>&-) || rc=$?
+  ((rc == 0)) && return 0
+  ((rc == 75)) || die "team-capacity admit failed for heavy:$kind (exit $rc): $(grep . <<<"$err" | tail -n 1 || echo "no reason given")"
+  ROOM_WHY=$(grep . <<<"$err" | tail -n 1)
+  return 1
+}
+
 # Append the cost line {at, kind, peak_bytes, cpu_seconds, seconds}; a failure is a line on stderr.
 write_cost() {
   local kind=$1 peak=$2 cpu=$3 seconds=$4 err
@@ -203,11 +229,11 @@ end_group() {
 
 cmd_run() {
   local wait=${TEAM_HEAVY_WAIT_MINUTES:-180} label='' kind='' fd rc=0 task='' slice=agent-team.slice why=''
-  local tmp started start peak cpu status sampler=''
+  local tmp started start peak cpu status sampler='' deadline left said_lock='' said_room='' wait_seconds
   while (($#)); do
     case $1 in
       --wait)
-        [[ ${2:-} =~ ^[0-9]+$ ]] || usage_error "--wait takes a whole number of minutes; $USAGE"
+        [[ ${2:-} =~ ^[0-9]+(\.[0-9]+)?$ ]] || usage_error "--wait takes a number of minutes; $USAGE"
         wait=$2
         shift 2
         ;;
@@ -226,8 +252,12 @@ cmd_run() {
     esac
   done
   (($#)) || usage_error "$USAGE"
-  [[ $wait =~ ^[0-9]+$ ]] || usage_error "TEAM_HEAVY_WAIT_MINUTES must be a whole number of minutes, not '$wait'"
+  [[ $wait =~ ^[0-9]+(\.[0-9]+)?$ ]] || usage_error "TEAM_HEAVY_WAIT_MINUTES must be a number of minutes, not '$wait'"
+  # The wait in whole seconds, rounded up.
+  wait_seconds=$(awk -v m="$wait" 'BEGIN { s = m * 60; printf "%d\n", (s == int(s)) ? s : int(s) + 1 }')
   [[ $KILL_SECONDS =~ ^[0-9]+$ ]] || usage_error "TEAM_HEAVY_KILL_SECONDS must be a whole number of seconds, not '$KILL_SECONDS'"
+  [[ $RECHECK_SECONDS =~ ^[1-9][0-9]*$ ]] ||
+    usage_error "TEAM_HEAVY_RECHECK_SECONDS must be a whole number of seconds of 1 or more, not '$RECHECK_SECONDS'"
   if [[ -n ${TEAM_HEAVY_HELD:-} ]]; then
     "$@" || rc=$?
     exit "$rc"
@@ -239,15 +269,40 @@ cmd_run() {
   mkdir -p "${LOCK%/*}"
   # Read-write, so opening it never empties the holder's line a waiting run reads.
   exec {fd}<>"$LOCK"
-  if ! flock -n -x "$fd"; then
-    ((wait > 0)) || { echo "${0##*/}: the heavy-run lock is held by $(holder)" >&2 && exit 75; }
-    echo "${0##*/}: waiting up to $wait minutes for the heavy-run lock, held by $(holder)" >&2
-    flock -w $((wait * 60)) -x "$fd" || {
-      echo "${0##*/}: the heavy-run lock is still held after $wait minutes, by $(holder)" >&2
+  deadline=$((EPOCHSECONDS + wait_seconds))
+  # Take the lock, then ask for room; with none, let the lock go and ask again within the wait.
+  while :; do
+    if ! flock -n -x "$fd"; then
+      ((wait_seconds > 0)) || { echo "${0##*/}: the heavy-run lock is held by $(holder)" >&2 && exit 75; }
+      if [[ -z $said_lock ]]; then
+        echo "${0##*/}: waiting up to $wait minutes for the heavy-run lock, held by $(holder)" >&2
+        said_lock=1
+      fi
+      left=$((deadline - EPOCHSECONDS))
+      ((left > 0)) || left=0
+      flock -w "$left" -x "$fd" || {
+        echo "${0##*/}: the heavy-run lock is still held after $wait minutes, by $(holder)" >&2
+        exit 75
+      }
+    fi
+    printf '%s (pid %d%s) since %(%F %T %z)T\n' "$label" $$ "${task:+, $task}" -1 >"$LOCK"
+    room_for "$kind" "$task" "$fd" && break
+    flock -u "$fd"
+    left=$((deadline - EPOCHSECONDS))
+    if ((left <= 0)); then
+      if [[ -z $said_room ]]; then
+        echo "${0##*/}: $ROOM_WHY" >&2
+      else
+        echo "${0##*/}: still no room after $wait minutes: $ROOM_WHY" >&2
+      fi
       exit 75
-    }
-  fi
-  printf '%s (pid %d%s) since %(%F %T %z)T\n' "$label" $$ "${task:+, $task}" -1 >"$LOCK"
+    fi
+    if [[ -z $said_room ]]; then
+      echo "${0##*/}: waiting up to $wait minutes for room in the team's budget: $ROOM_WHY" >&2
+      said_room=1
+    fi
+    sleep $((left < RECHECK_SECONDS ? left : RECHECK_SECONDS))
+  done
 
   tmp=$(mktemp -d)
   # shellcheck disable=SC2064 # the path is fixed now
