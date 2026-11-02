@@ -8,6 +8,7 @@ setup() {
   hold_lease >/dev/null
   WT=$BATS_TEST_TMPDIR/wt/7
   MARK=$BATS_TEST_TMPDIR/ran-marker
+  RUNS=$HOME/.local/state/agent-team/runs/T7
   mkdir -p "$WT/scripts" "$TEAM_HOME/tasks/T7"
   echo "{\"ts\":\"2026-11-01T10:00:00Z\",\"task\":\"T7\",\"event\":\"opened\",\"project\":\"agent-team\",\"path\":\"feature\",\"type\":\"feat\",\"title\":\"x\",\"branch\":\"feat/T7-x\",\"base\":\"dev\",\"base_sha\":\"0123456\",\"worktree\":\"$WT\"}" \
     >>"$TEAM_HOME/ledger.jsonl"
@@ -23,6 +24,17 @@ echo "fixing in \$PWD"
 echo "a warning" >&2
 exit $2
 SCRIPT
+}
+
+# Wait until <file> exists, up to 20 seconds.
+wait_for() {
+  local i
+  for ((i = 0; i < 200; i++)); do
+    [[ ! -e $1 ]] || return 0
+    sleep 0.1
+  done
+  echo "wait_for: $1 never appeared" >&2
+  return 1
 }
 
 hash_of() {
@@ -48,7 +60,7 @@ refuses() {
   run_bin -1 team-run-approved T7 "$2"
   assert_equal "$output" "${3:-}team-run-approved: $1"
   [[ ! -e $MARK ]]
-  [[ ! -e $TEAM_HOME/tasks/T7/runs/$2.log ]]
+  [[ ! -e $RUNS/$2.log && ! -e $RUNS/$2.started ]]
   assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$before"
 }
 
@@ -68,7 +80,7 @@ refuses() {
 @test "an answered ask runs the script in its directory, its output to the run log, and logs ran with its exit code, which is the command's" {
   approve fix "$WT/scripts/fix.sh"
   run_bin -3 --separate-stderr team-run-approved T7 fix
-  local log=$TEAM_HOME/tasks/T7/runs/fix.log
+  local log=$RUNS/fix.log
   assert_equal "$(cat "$log")" "fixing in $WT/scripts
 a warning"
   assert_equal "$output" "fixing in $WT/scripts
@@ -77,6 +89,9 @@ T7 ran fix ($WT/scripts/fix.sh), exit 3; its output is in $log"
   assert_equal "$(cat "$MARK")" "ran"
   assert_equal "$(events | tail -n 1)" '{"task":"T7","event":"ran","id":"fix","exit":3}'
   run_bin -0 team-log --check
+  # The log is the machine's, never a record: nothing of the run is in the team home.
+  [[ ! -e $TEAM_HOME/tasks/T7/runs ]]
+  [[ -f $RUNS/fix.started && -f $RUNS/fix.lock ]]
 }
 
 @test "a script that exits 0 is exit 0, and one in the task directory runs too" {
@@ -84,7 +99,7 @@ T7 ran fix ($WT/scripts/fix.sh), exit 3; its output is in $log"
   approve ok "$TEAM_HOME/tasks/T7/ok.sh"
   run_bin -0 team-run-approved T7 ok
   assert_equal "$(events | tail -n 1)" '{"task":"T7","event":"ran","id":"ok","exit":0}'
-  assert_equal "$(cat "$TEAM_HOME/tasks/T7/runs/ok.log")" "fixing in $TEAM_HOME/tasks/T7
+  assert_equal "$(cat "$RUNS/ok.log")" "fixing in $TEAM_HOME/tasks/T7
 a warning"
 }
 
@@ -102,7 +117,7 @@ SCRIPT
   refuses "T7 never asked fix" fix
   run_bin -0 team-log T7 asked id=plain text=no-script
   run_bin -0 team-log T7 answered id=plain answer=yes
-  refuses "T7's ask plain, at $(jq -r 'select(.event == "asked") | .ts' "$TEAM_HOME/ledger.jsonl"), names no script: an approved script is asked with team-log T7 asked id=plain text=<the question> script=<absolute path> sha256=<its sha256sum>" plain
+  refuses "T7's ask plain, at $(jq -r 'select(.event == "asked") | .ts' "$TEAM_HOME/ledger.jsonl"), names no script: an approved script is asked with team-ask T7 plain --file <question> --script <path>" plain
   # An answer to an earlier ask of the same id answers nothing asked since.
   approve fix "$WT/scripts/fix.sh"
   run_bin -0 team-log T7 asked id=fix text=again script="$WT/scripts/fix.sh" sha256="$(hash_of "$WT/scripts/fix.sh")"
@@ -167,7 +182,7 @@ SCRIPT
   approve fix "$WT/scripts/fix.sh"
   run_bin -3 team-run-approved T7 fix
   assert_equal "$(cat "$MARK")" "ran"
-  rm "$MARK" "$TEAM_HOME/tasks/T7/runs/fix.log"
+  rm "$MARK" "$RUNS/fix.log"
   approve again "$WT/scripts/fix.sh"
   echo '{"ts":"2026-11-02T10:00:00Z","task":"T7","event":"closed","archive":[],"returned":[],"kept":[]}' >>"$TEAM_HOME/ledger.jsonl"
   refuses "T7 is closed" again
@@ -180,4 +195,85 @@ SCRIPT
     AGENT_TEAM_ROLE=$role AGENT_TEAM_TASK=T7 refuses "a $role session runs no approved script: that is the coordinator's; send it your message" fix
   done
   AGENT_TEAM_ROLE=coordinator run_bin -3 team-run-approved T7 fix
+}
+
+@test "the runs directory follows XDG_STATE_HOME when it is set" {
+  approve fix "$WT/scripts/fix.sh"
+  XDG_STATE_HOME=$BATS_TEST_TMPDIR/state run_bin -3 team-run-approved T7 fix
+  assert_contains "$output" "its output is in $BATS_TEST_TMPDIR/state/agent-team/runs/T7/fix.log"
+  [[ -f $BATS_TEST_TMPDIR/state/agent-team/runs/T7/fix.log && ! -e $RUNS ]]
+}
+
+@test "a link at the log's path is replaced by the log, never written through" {
+  local victim=$BATS_TEST_TMPDIR/victim
+  echo "keep me" >"$victim"
+  mkdir -p "$RUNS"
+  ln -s "$victim" "$RUNS/fix.log"
+  approve fix "$WT/scripts/fix.sh"
+  run_bin -3 team-run-approved T7 fix
+  assert_equal "$(cat "$victim")" "keep me"
+  [[ -f $RUNS/fix.log && ! -L $RUNS/fix.log ]]
+  assert_equal "$(cat "$RUNS/fix.log")" "fixing in $WT/scripts
+a warning"
+}
+
+@test "refused with nothing run: a link at the runs directory, above it, or at the lock or the mark" {
+  local elsewhere=$BATS_TEST_TMPDIR/elsewhere
+  mkdir -p "$elsewhere" "${RUNS%/*}"
+  ln -s "$elsewhere" "$RUNS"
+  approve fix "$WT/scripts/fix.sh"
+  refuses "$RUNS is a symbolic link, so T7's ask fix runs nothing there" fix
+  rm "$RUNS"
+  mv "${RUNS%/*}" "$elsewhere/runs"
+  ln -s "$elsewhere/runs" "${RUNS%/*}"
+  refuses "${RUNS%/*} is a symbolic link, so T7's ask fix runs nothing there" fix
+  rm "${RUNS%/*}"
+  mkdir -p "$RUNS"
+  local file
+  for file in fix.lock fix.started; do
+    ln -s "$elsewhere/target" "$RUNS/$file"
+    refuses "$RUNS/$file is a symbolic link, so T7's ask fix runs nothing" fix
+    rm "$RUNS/$file"
+  done
+  [[ ! -e $elsewhere/target && -z $(ls "$elsewhere/runs") ]]
+}
+
+@test "one OK runs once even when the run is killed: a second call while it runs, or after it was killed, runs nothing" {
+  cat >"$WT/scripts/slow.sh" <<SCRIPT
+echo ran >>"$MARK"
+echo \$\$ >"$BATS_TEST_TMPDIR/pid.tmp" && mv "$BATS_TEST_TMPDIR/pid.tmp" "$BATS_TEST_TMPDIR/pid"
+exec sleep 30
+SCRIPT
+  approve slow "$WT/scripts/slow.sh"
+  "$REPO_ROOT/bin/team-run-approved" T7 slow >/dev/null 2>&1 3>&- &
+  local caller=$!
+  wait_for "$BATS_TEST_TMPDIR/pid"
+  local script
+  script=$(cat "$BATS_TEST_TMPDIR/pid")
+  local before
+  before=$(cat "$TEAM_HOME/ledger.jsonl")
+
+  # While it runs, another call is refused by its lock.
+  run_bin -1 team-run-approved T7 slow
+  assert_equal "$output" "team-run-approved: another run of T7's ask slow holds $RUNS/slow.lock: it is running now"
+
+  # Killed as a session's end kills it, it logs no ran, and the OK is still used.
+  kill -KILL "$caller" "$script"
+  wait "$caller" || true
+  local i
+  for ((i = 0; i < 100; i++)); do flock -n "$RUNS/slow.lock" true && break; sleep 0.1; done
+  assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$before"
+  local started
+  started=$(jq -r .started_at "$RUNS/slow.started")
+  run_bin -1 team-run-approved T7 slow
+  assert_equal "$output" "team-run-approved: T7's ask slow, at $(jq -r 'select(.event == "asked") | .ts' "$TEAM_HOME/ledger.jsonl"), already started a run on this machine, at $started, with no ran logged since: it was killed or could not log, and it used the OK; a new run needs a new ask"
+  assert_equal "$(cat "$MARK")" "ran"
+  assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$before"
+
+  # A new ask of the same id is a new OK.
+  approved_script "$WT/scripts/slow.sh" 0
+  approve slow "$WT/scripts/slow.sh"
+  run_bin -0 team-run-approved T7 slow
+  assert_equal "$(cat "$MARK")" "ran
+ran"
 }

@@ -125,6 +125,8 @@ EOF
   # (worker_refusal).
   unset TEAM_COORDINATOR_CHANNEL TEAM_INTERVIEW_CHANNEL CLAUDE_PROJECT_DIR NVM_DIR TEAM_HEAVY_HELD TEAM_HEAVY_WAIT_MINUTES
   unset AGENT_TEAM_ROLE AGENT_TEAM_TASK
+  # The state directory is HOME's, as the sandbox's HOME is.
+  unset XDG_STATE_HOME
   guard_sandbox
 }
 

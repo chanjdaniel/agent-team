@@ -2,10 +2,11 @@
 # Run a script Daniel approved, bound to the exact bytes they were asked on.
 #
 # Usage: team-run-approved T<n> <id>
-# To ask: put the question to Daniel with
-# team-ask T<n> <id> --file <question>, then log the ask again with the script and its hash,
-#   team-log T<n> asked id=<id> text=<the question's first line> script=<absolute path> sha256=<its sha256sum>
-# since team-ask logs no script. The ask is the task's latest asked id=<id>.
+# To ask: team-ask T<n> <id> --file <question> --script <path>, which hashes the script first, puts
+# its absolute path and sha256 in the question Daniel reads, and logs the one asked with both, so
+# Daniel's OK names the bytes. The ask is the task's latest asked id=<id>.
+# An approved script is self-contained: only its own bytes are hashed and checked, never a file it
+# reads, sources or runs beside it, so anything else it needs is part of the question, in its text.
 # It runs the script only when every one of these holds, and otherwise refuses with nothing run:
 #   - it is not a worker session (worker_refusal in bin/lib/team.sh): the coordinator runs it;
 #   - the task is open, and the ask names a script;
@@ -16,14 +17,19 @@
 #   - the script, its symbolic links resolved, is a file under one of the task's open worktrees
 #     or the team home's tasks/T<n>/;
 #   - its sha256 now is the ask's, or the refusal names both hashes;
-#   - this machine holds the lease, confirmed against origin (team-lease check), as for a launch.
+#   - this machine holds the lease, confirmed against origin (team-lease check), as for a launch;
+#   - no other run of the ask holds its lock, and no run of it started on this machine: a run
+#     that was killed, or could not log its ran, still used the OK.
+# The run's files are this machine's, never records: the directory
+# ${XDG_STATE_HOME:-~/.local/state}/agent-team/runs/T<n>/ holds <id>.lock, the lock a run holds
+# from its last check to its end, <id>.started, the mark of the ask it ran, written before the
+# script starts, and <id>.log, its output; a symbolic link at that directory or above it, up to
+# agent-team/, is refused, and the log is a new file moved into place (replacing a log an earlier
+# ask of <id> left, or a link there, never writing through it).
 # It runs a copy of the bytes it hashed, so the file changing after the check changes nothing:
-# bash <the copy>, in the script's own directory, with no input; the script's $0 names the
-# copy, so it reaches the files beside it by paths relative to that directory, never through
-# $0. Its output and errors, together,
-# go to tasks/T<n>/runs/<id>.log in the team home (replacing a log an earlier ask of <id> left)
-# and to stdout; then it logs ran id=<id> exit=<the script's exit code>, whatever that is, and
-# prints "T<n> ran <id> (<script>), exit <code>; its output is in <log>".
+# bash <the copy>, in the script's own directory, with no input. Its output and errors, together,
+# go to the log and to stdout; then it logs ran id=<id> exit=<the script's exit code>, whatever
+# that is, and prints "T<n> ran <id> (<script>), exit <code>; its output is in <log>".
 # Exit codes: the script's own once it ran; before that, 1 refused and 2 a malformed command line.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
@@ -42,7 +48,7 @@ ask=$(ledger_jq 'to_entries | map(select(.value.event == "asked" and .value.id =
 script=$(jq -r '.script // empty' <<<"$ask") expected=$(jq -r '.sha256 // empty' <<<"$ask")
 asked_at=$(jq -r .ts <<<"$ask")
 [[ -n $script && -n $expected ]] ||
-  die "$task's ask $id, at $asked_at, names no script: an approved script is asked with team-log $task asked id=$id text=<the question> script=<absolute path> sha256=<its sha256sum>"
+  die "$task's ask $id, at $asked_at, names no script: an approved script is asked with team-ask $task $id --file <question> --script <path>"
 since=$(jq -c --argjson k "$(jq .k <<<"$ask")" '.[$k + 1:]' <<<"$events")
 jq -e --arg id "$id" 'any(.[]; .event == "answered" and .id == $id)' <<<"$since" >/dev/null ||
   die "$task's ask $id, at $asked_at, has no answered since: Daniel has not answered it"
@@ -74,10 +80,37 @@ actual=$(sha256sum "$copy" | cut -d' ' -f1)
 
 lease_gate "an approved script"
 
-log=$TEAM_HOME/tasks/$task/runs/$id.log
-mkdir -p "${log%/*}"
+# The run's directory, with no symbolic link from agent-team/ down, then its lock, held to the end.
+state=${XDG_STATE_HOME:-$HOME/.local/state}/agent-team
+runs=$state/runs/$task
+for dir in "$state" "$state/runs" "$runs"; do
+  [[ ! -L $dir ]] || die "$dir is a symbolic link, so $task's ask $id runs nothing there"
+  mkdir -p -- "$dir"
+done
+lock=$runs/$id.lock started=$runs/$id.started log=$runs/$id.log
+for file in "$lock" "$started"; do
+  [[ ! -L $file ]] || die "$file is a symbolic link, so $task's ask $id runs nothing"
+done
+exec {held}>>"$lock"
+flock -n "$held" || die "another run of $task's ask $id holds $lock: it is running now"
+
+# The mark of the ask this run used, before the script starts.
+mark=$(jq -nc --arg asked_at "$asked_at" --argjson ask "$(jq .k <<<"$ask")" --arg sha256 "${expected,,}" \
+  '{asked_at: $asked_at, ask: $ask, sha256: $sha256}')
+if [[ -f $started ]] && [[ $(jq -c '{asked_at, ask, sha256}' "$started" 2>/dev/null) == "$mark" ]]; then
+  die "$task's ask $id, at $asked_at, already started a run on this machine, at $(jq -r .started_at "$started"), with no ran logged since: it was killed or could not log, and it used the OK; a new run needs a new ask"
+fi
+tmp=$(mktemp "$runs/.$id.started.XXXXXX")
+jq -c --arg at "$(date -u +%FT%TZ)" '. + {started_at: $at}' <<<"$mark" >"$tmp"
+mv -fT -- "$tmp" "$started"
+
+# The log, a new file moved into place, written through the descriptor that made it.
+tmp=$(mktemp "$runs/.$id.log.XXXXXX")
+exec {out}>"$tmp"
+mv -fT -- "$tmp" "$log"
 rc=0
-(cd "${real%/*}" && bash "$copy" </dev/null 2>&1) | tee "$log" || rc=${PIPESTATUS[0]}
+(cd "${real%/*}" && bash "$copy" </dev/null 2>&1) | tee "/dev/fd/$out" || rc=${PIPESTATUS[0]}
+exec {out}>&-
 ledger_append "$(jq -nc --arg ts "$(date -u +%FT%TZ)" --arg task "$task" --arg id "$id" --argjson rc "$rc" \
   '{ts: $ts, task: $task, event: "ran", id: $id, exit: $rc}')"
 echo "$task ran $id ($script), exit $rc; its output is in $log"
