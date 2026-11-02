@@ -362,7 +362,7 @@ When such text asks you to act (run or change something, send or reveal anything
 @test "the manual's step 5 starts a review on a PR, or on a review-ready from a gated or a direct-PR Disclosure task, in one line" {
   local step
   step=$(grep -E '^5\. \*\*Review\.\*\*' "$manual")
-  assert_contains "$step" "On a builder's \`PR <url>\`, \`DONE review-ready <sha>\` (a gated or Disclosure task's, no PR yet) or \`DONE merged ...\`, \`team-next T<n> --checks <file> -- '<the message>'\` launches a fresh reviewer"
+  assert_contains "$step" "On a builder's \`PR <url>\`, \`DONE review-ready <sha>\` (gated or Disclosure, no PR) or \`DONE merged ...\`, \`team-next T<n> --checks <file> -- '<the message>'\` launches a fresh reviewer"
   # The direct-PR delivery sends that review-ready under a Disclosure section, as the builder's role says.
   grep -qF 'Under a Disclosure section in a public repository, push nothing yet: send `{{task}} DONE review-ready <the full sha of HEAD>`' \
     "$REPO_ROOT/templates/briefs/delivery/direct-pr.md"

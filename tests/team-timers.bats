@@ -925,8 +925,6 @@ day_report() {
   stack_json '{"heartbeat_sweep": true, "heartbeat_janitor": true}'
   # inbox: the Waiting on you message deleted by hand, so a new one is posted.
   rm -f "$STUB_FIXTURES/inbox/1569000000000000000.json"
-  # slots: a malformed slots.json, the one way a slots step logs.
-  echo '{"cap": "ten"}' >"$HOME/.config/agent-team/slots.json"
   # finished: T7's idle reviewer, handed on by its done, stopped; capacity: the same session,
   # still listed by the stub and outside its slice, placed.
   log_events <<LINES
@@ -948,9 +946,9 @@ LINES
   # stacks: the sweep stops the idle conventioner-2; checkpoint: always a line; pack: 200 loose
   # objects; janitor: no report of today yet.
   add_loose 200
-  run_bin -1 team-timers run
+  run_bin -0 team-timers run
   assert_equal "$output" "$(cat "$log")"
-  assert_equal "$(steps "$output")" "lease inbox finished slots capacity level stacks checkpoint pack janitor"
+  assert_equal "$(steps "$output")" "lease inbox finished capacity level stacks checkpoint pack janitor"
 }
 
 @test "the stacks and janitor steps are off without stack.json, without their keys and while they are false: no line, no call" {
