@@ -1,20 +1,863 @@
 #!/usr/bin/env bash
-# PreToolUse hook for planners and reviewers: file edits are allowed only inside the
-# worktree's .scratch/ directory. Exit 2 blocks the tool call and shows stderr to the agent.
+# PreToolUse hook for planners and reviewers: they write files only inside the worktree's .scratch/
+# directory. Exit 2 blocks the tool call and shows stderr to the agent.
+#
+# An Edit, Write, MultiEdit or NotebookEdit call is judged by its path.
+# A Bash call is judged by the target of each output redirection (>, >>, >|, &>, &>>, >&, with or
+# without a file descriptor number) and each file a tee names, which must lie under .scratch/, be
+# /dev/null, /dev/stdout, /dev/stderr or /dev/fd/*, or lie under /tmp, $TMPDIR or $CLAUDE_JOB_DIR.
+# Before judging, a target's leading ~, $HOME, $TMPDIR or $CLAUDE_JOB_DIR (braced or not) is
+# expanded, and a relative one is taken from the session's working directory (a cd earlier in the
+# same call is not followed). A target that starts with any other variable, or with any other
+# expansion (a command, process or arithmetic substitution, a ${ } but ${name}), is allowed,
+# since the hook cannot know where it points.
+# Such an expansion further in a target is judged as one name with no / in it, so a / or .. inside
+# it moves nothing.
+# A target is judged with its symlinks resolved, and a refusal names it as written: its . and ..
+# outside its expansions resolved, its expansions and its symlinks kept.
+# A tee is found behind the wrappers env, sudo, nohup, timeout, nice, stdbuf, command, exec, time
+# and builtin, past their options and those options' values; behind any other command (xargs, say)
+# it is not.
+# Quoted text, heredoc bodies, comments, file descriptor duplications (2>&1, >&2) and the
+# comparisons of [[ ]], (( )), $(( )) and $[ ] are not redirections.
+# A command substitution, $( ) or backticks, is judged as a command wherever the shell runs one:
+# unquoted, in double quotes, in a ${ }'s operand, in an arithmetic expansion or command, and in the
+# body of a heredoc whose delimiter is unquoted; so is a process substitution. Single-quoted and
+# ANSI-C text, comments and the body of a heredoc whose delimiter is quoted hold none.
+# A command that holds a form whose reading turns on a parser subtlety is refused unread, with a
+# message naming the form: a quote inside (( )), $(( )) or $[ ]; a (( or $(( that does not close
+# with )); an unquoted # inside $( ), a comment or not ($#, ${#x} and a # in a ${ } there included);
+# a case inside $( ); a ( or ) inside a ${ } inside $( ); a heredoc inside $( ) whose delimiter line
+# is not found; a single quote inside a double-quoted ${ }.
+# A command with no > and no tee is allowed unread, whatever it holds.
+# Text that a command runs as shell code itself (eval, sh -c, bash -c, ssh) is not judged.
+# It is a speed bump for the plain shell write, never a guarantee: sed -i, cp, mv, an interpreter
+# and every other command that writes a file itself still get through.
+# Test seam: TEAM_SYSTEM_ROOT stands for / in /tmp, as in the library's tool_dirs.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/team.sh" "$@"
 input=$(cat)
-path=$(jq -r '.tool_input.file_path // .tool_input.notebook_path // empty' <<<"$input")
 cwd=$(jq -r '.cwd // empty' <<<"$input")
-root=${CLAUDE_PROJECT_DIR:-${cwd:-$PWD}}
-[[ -n $path ]] || exit 0
-[[ $path == /* ]] || path="${cwd:-$PWD}/$path"
-target=$(realpath -m -- "$path")
+cwd=${cwd:-$PWD}
+root=${CLAUDE_PROJECT_DIR:-$cwd}
 scratch=$(realpath -m -- "$root/.scratch")
-# By text, not by identity (same_path): the file may not exist yet, and a path that names the
-# scratch directory in another case is refused, the safe side for a guard.
-if [[ $target == "$scratch" || $target == "$scratch"/* ]]; then
-  exit 0
+
+# under <path> <dir>: whether the resolved path is the directory or inside it. By text, not by
+# identity (same_path): the file may not exist yet, and a path that names the directory in another
+# case is refused, the safe side for a guard.
+under() {
+  [[ $1 == "$2" || $1 == "$2"/* ]]
+}
+
+if [[ $(jq -r '.tool_name // empty' <<<"$input") != Bash ]]; then
+  path=$(jq -r '.tool_input.file_path // .tool_input.notebook_path // empty' <<<"$input")
+  [[ -n $path ]] || exit 0
+  [[ $path == /* ]] || path="$cwd/$path"
+  target=$(realpath -m -- "$path")
+  under "$target" "$scratch" && exit 0
+  echo "Blocked: this role may edit files only under $scratch (tried $target)." >&2
+  exit 2
 fi
-echo "Blocked: this role may edit files only under $scratch (tried $target)." >&2
+
+command=$(jq -r '.tool_input.command // empty' <<<"$input")
+# Most commands neither redirect output nor run tee.
+[[ $command == *'>'* || $command == *tee* ]] || exit 0
+
+# unread <form>: refuse the command unread, naming the form whose reading turns on a parser
+# subtlety, since a misreading could hide a write; such forms are rare in a session's commands.
+unread() {
+  echo "Blocked: this command holds $1, which this hook does not read, so it cannot tell where the command writes; rewrite it without that, or write files under $scratch with the Write tool." >&2
+  exit 2
+}
+
+# Byte by byte: faster than by character, and a multibyte character is copied whole either way.
+LC_ALL=C
+shopt -s extglob
+
+# The lexer: split the command into tokens, kinds[k] one of
+#   w  a word, its value without quotes in values[k], how its first character was quoted in
+#      quotings[k] (n none, d double quotes, s single quotes or a backslash)
+#   o  an operator: ( for a subshell or a process substitution, ) for their end, and ; for
+#      every other command separator (;, &, &&, |, ||, |&, a newline)
+#   r  an output redirection, whose target is the next word
+#   rd >&, whose next word is a target unless it is a file descriptor (a duplication)
+#   i  an input redirection or a here-string, whose next word is no target
+# A heredoc's delimiter is read by the lexer, which skips its body at the next newline.
+# The body of a command substitution, $( ) or backticks, is a command of its own: the lexer queues
+# it in pending, to be lexed and judged after this one, wherever the header says the shell runs it;
+# the body of a heredoc whose delimiter is unquoted goes to bodies, whose substitutions scan_body
+# queues.
+# Each expansion in a word but a plain $name or ${name} (a command substitution, an arithmetic
+# one, any other parameter expansion) is a stand-in in the word, an index into expansions between
+# the bytes 1 and 2: judged, it is a name with no / in it, so a / or .. inside it moves no target,
+# and a target starting with one is one the hook cannot know; named, it is put back as written.
+kinds=() values=() quotings=()
+word='' quoting='' inword=0 quoted=0
+delimiter_mode='' heredocs=() pending=() taken='' expansions=()
+open_mark=$'\x01' close_mark=$'\x02'
+
+flush() {
+  if ((inword)); then
+    if [[ -n $delimiter_mode ]]; then
+      heredocs+=("$delimiter_mode$quoted$word")
+      delimiter_mode=''
+    else
+      kinds+=(w) values+=("$word") quotings+=("$quoting")
+    fi
+  fi
+  word='' quoting='' inword=0 quoted=0
+}
+
+# add <text> <quoting>
+add() {
+  ((inword)) || quoting=$2
+  [[ $2 == n ]] || quoted=1
+  word+=$1
+  inword=1
+}
+
+emit() {
+  flush
+  kinds+=("$1") values+=("${2:-}") quotings+=('')
+}
+
+# A word of unquoted digits (or {name}) right before a redirection is its file descriptor.
+drop_descriptor() {
+  if ((inword && !quoted)) && [[ $word =~ ^([0-9]+|\{[A-Za-z_][A-Za-z0-9_]*\})$ ]]; then
+    word='' quoting='' inword=0
+  fi
+  flush
+}
+
+# skip_bodies <j> <queue> <entry>...: set end past the bodies of the heredocs read on the line that
+# ended just before j, in their order, each entry its - or + (whether leading tabs are stripped), 1
+# or 0 (whether its delimiter was quoted) and its delimiter; with queue, add the body of each one
+# whose delimiter was not quoted to bodies, whose substitutions the shell runs. It sets unfound to 1
+# when a body runs to the end with no line equal to its delimiter, else to 0.
+skip_bodies() {
+  local j=$1 queue=$2 entry delimiter dash quoted_delimiter line rest start finish
+  shift 2
+  unfound=0
+  for entry in "$@"; do
+    dash=${entry:0:1} quoted_delimiter=${entry:1:1} delimiter=${entry:2}
+    start=$j finish=$n
+    while ((j < n)); do
+      rest=${s:j}
+      rest=${rest%%$'\n'*}
+      line=$rest
+      [[ $dash == - ]] && line=${line##+($'\t')}
+      [[ $line == "$delimiter" ]] && finish=$j
+      j=$((j + ${#rest} + 1))
+      ((finish == n)) || break
+    done
+    ((finish < n)) || unfound=1
+    [[ -n $queue && $quoted_delimiter == 0 ]] && bodies+=("${s:start:finish-start}")
+  done
+  end=$j
+}
+
+# delimiter_at <j>: set delimiter to the heredoc delimiter that starts at j (past << and its -),
+# its quotes and backslashes removed, delimiter_quoted to 1 when it had any, and end past it.
+delimiter_at() {
+  local j=$1 c rest
+  delimiter='' delimiter_quoted=0
+  while [[ ${s:j:1} == [' '$'\t'] ]]; do j=$((j + 1)); done
+  while ((j < n)); do
+    c=${s:j:1}
+    case $c in
+      \\) delimiter+=${s:j+1:1} delimiter_quoted=1 && j=$((j + 2)) ;;
+      \' | \")
+        delimiter_quoted=1
+        rest=${s:j+1}
+        rest=${rest%%"$c"*}
+        delimiter+=$rest
+        j=$((j + ${#rest} + 2))
+        ;;
+      ' ' | $'\t' | $'\n' | ';' | '&' | '|' | '<' | '>' | '(' | ')') break ;;
+      *) delimiter+=$c && j=$((j + 1)) ;;
+    esac
+  done
+  end=$j
+}
+
+# The scanners set end to the index just past what they scan, in s from the index j, or to n when
+# it never closes.
+# sub_end <j>: the ) that closes a command substitution whose body starts at j, past quoted text,
+# nested substitutions and heredoc bodies. Refused unread, as bash's parser reads the body as a
+# command where this count of parentheses does not: an unquoted # in it, a comment or not; a case,
+# whose patterns end in ); a ( or ) inside a ${ } in it; and a heredoc in it whose delimiter line is
+# not found, which bash ends at a line that starts with the delimiter and a ).
+sub_end() {
+  local j=$1 depth=1 brace=0 c rest entries=() dash delimiter delimiter_quoted unfound
+  while ((j < n)); do
+    c=${s:j:1}
+    case $c in
+      \\) j=$((j + 2)) && continue ;;
+      '#') unread 'an unquoted # inside $( )' ;;
+      '<')
+        if [[ ${s:j+1:2} == '<<' ]]; then
+          j=$((j + 3))
+          continue
+        elif [[ ${s:j+1:1} == '<' ]]; then
+          j=$((j + 2)) dash=+
+          [[ ${s:j:1} == - ]] && j=$((j + 1)) dash=-
+          delimiter_at "$j"
+          entries+=("$dash$delimiter_quoted$delimiter")
+          j=$end
+          continue
+        fi
+        ;;
+      $'\n')
+        if ((${#entries[@]})); then
+          skip_bodies $((j + 1)) '' "${entries[@]}"
+          ((unfound == 0)) || unread 'a heredoc inside $( ) whose delimiter line is not found'
+          j=$end entries=()
+          continue
+        fi
+        ;;
+      \')
+        rest=${s:j+1}
+        rest=${rest%%\'*}
+        j=$((j + ${#rest} + 2))
+        continue
+        ;;
+      \") dq_end $((j + 1)) && j=$end && continue ;;
+      \`) bq_end $((j + 1)) && j=$end && continue ;;
+      '$')
+        [[ ${s:j+1:1} == \' ]] && ansi_end $((j + 2)) && j=$end && continue
+        [[ ${s:j+1:1} == '{' ]] && brace=$((brace + 1)) && j=$((j + 2)) && continue
+        ;;
+      '{') ((brace == 0)) || brace=$((brace + 1)) ;;
+      '}') ((brace == 0)) || brace=$((brace - 1)) ;;
+      c)
+        if [[ ${s:j:4} == case && ${s:j+4:1} == @([[:space:]]|) && ${s:j-1:1} == [[:space:]\;\&\|\(\)] ]]; then
+          unread 'a case inside $( )'
+        fi
+        ;;
+      '(' | ')') ((brace == 0)) || unread 'a ( or ) inside a ${ } inside $( )' ;;&
+      '(') depth=$((depth + 1)) ;;
+      ')')
+        depth=$((depth - 1))
+        ((depth > 0)) || { end=$((j + 1)) && return; }
+        ;;
+    esac
+    j=$((j + 1))
+  done
+  end=$n
+}
+
+# dq_end <j> [queue]: the " that closes a double-quoted string whose text starts at j, queueing the
+# command substitutions in it, at any depth; without queue, which a caller gives that lexes the text
+# again, it drops what it queued.
+dq_end() {
+  local j=$1 c queued=${#pending[@]} expanded=${#expansions[@]}
+  end=$n
+  while ((j < n)); do
+    c=${s:j:1}
+    case $c in
+      \\) j=$((j + 2)) && continue ;;
+      \") end=$((j + 1)) && break ;;
+      '$')
+        if [[ ${s:j+1:2} == '((' ]]; then
+          arithmetic "$j" d && j=$end && continue
+        elif [[ ${s:j+1:1} == '[' ]]; then
+          arith_end $((j + 1)) '[' ']' d && j=$end && continue
+        elif [[ ${s:j+1:1} == '(' ]]; then
+          queue_substitution "$j" && j=$end && continue
+        elif [[ ${s:j+1:1} == '{' ]]; then
+          parameter "$j" d && j=$end && continue
+        fi
+        ;;
+      \`) queue_backticks "$j" d && j=$end && continue ;;
+    esac
+    j=$((j + 1))
+  done
+  ((j < n)) || end=$n
+  if [[ -z ${2:-} ]]; then
+    pending=("${pending[@]:0:queued}") expansions=("${expansions[@]:0:expanded}")
+  fi
+}
+
+# arith_end <j> <open> <close> <in double quotes>: the <close> that closes an arithmetic expansion
+# or command whose first <open> is at j, queueing the command substitutions in it, at any depth,
+# since it is not lexed again. A quote in it, which bash skips to find the close but reads as text
+# at expansion, and a (( whose second ( is not closed by )), which bash reads as subshells or a
+# command substitution, are refused unread.
+arith_end() {
+  local j=$1 depth=0 c
+  while ((j < n)); do
+    c=${s:j:1}
+    case $c in
+      \\) j=$((j + 2)) && continue ;;
+      "$2") depth=$((depth + 1)) ;;
+      "$3")
+        depth=$((depth - 1))
+        if [[ $2 == '(' ]] && ((depth == 1)); then
+          [[ ${s:j+1:1} == ')' ]] || unread 'a (( or $(( that does not close with ))'
+          end=$((j + 2))
+          return
+        fi
+        ((depth > 0)) || { end=$((j + 1)) && return; }
+        ;;
+      \' | \") unread 'a quote inside (( )), $(( )) or $[ ]' ;;
+      \`) queue_backticks "$j" "$4" && j=$end && continue ;;
+      '$')
+        if [[ ${s:j+1:2} == '((' ]]; then
+          arithmetic "$j" "$4" && j=$end && continue
+        elif [[ ${s:j+1:1} == '[' ]]; then
+          arith_end $((j + 1)) '[' ']' "$4" && j=$end && continue
+        elif [[ ${s:j+1:1} == '(' ]]; then
+          queue_substitution "$j" && j=$end && continue
+        elif [[ ${s:j+1:1} == '{' ]]; then
+          parameter "$j" "$4" && j=$end && continue
+        fi
+        ;;
+    esac
+    j=$((j + 1))
+  done
+  end=$n
+}
+
+# arithmetic <at> <in double quotes>: read the arithmetic expansion whose $(( is at the index at,
+# set taken to its stand-in, and end past it.
+arithmetic() {
+  arith_end $(($1 + 1)) '(' ')' "$2"
+  stand_in "$1" "$end"
+}
+
+# ansi_end <j>: the ' that closes an ANSI-C string whose text starts at j, in which \' does not.
+ansi_end() {
+  local j=$1
+  while ((j < n)) && [[ ${s:j:1} != \' ]]; do
+    [[ ${s:j:1} == \\ ]] && j=$((j + 1))
+    j=$((j + 1))
+  done
+  end=$((j + 1))
+}
+
+# bq_end <j>: the ` that closes a backtick substitution whose body starts at j.
+bq_end() {
+  local j=$1 c
+  while ((j < n)); do
+    c=${s:j:1}
+    case $c in
+      \\) j=$((j + 2)) && continue ;;
+      \`) end=$((j + 1)) && return ;;
+    esac
+    j=$((j + 1))
+  done
+  end=$n
+}
+
+# stand_in <start> <end>: set taken to a stand-in for the expansion written from start to end.
+stand_in() {
+  expansions+=("${s:$1:$2-$1}")
+  taken=$open_mark$((${#expansions[@]} - 1))$close_mark
+}
+
+# queue_backticks <at> <in double quotes>: queue the body of the backtick substitution that opens at
+# the index at as the shell runs it (\\, \` and \$ stand for the character, and \" too in double
+# quotes), set taken to its stand-in, and end past it.
+queue_backticks() {
+  local at=$1 text out='' c k=0
+  bq_end $((at + 1))
+  if ((end > at + 1)) && [[ ${s:end-1:1} == \` ]]; then
+    text=${s:at+1:end-at-2}
+  else
+    text=${s:at+1}
+  fi
+  while ((k < ${#text})); do
+    c=${text:k:1}
+    if [[ $c == \\ && (${text:k+1:1} == [\\\`\$] || ($2 == d && ${text:k+1:1} == \")) ]]; then
+      out+=${text:k+1:1}
+      k=$((k + 2))
+      continue
+    fi
+    out+=$c
+    k=$((k + 1))
+  done
+  pending+=("$out")
+  stand_in "$at" "$end"
+}
+
+# queue_substitution <at>: queue the body of the command substitution whose $( is at the index at,
+# set taken to its stand-in, and end past its ).
+queue_substitution() {
+  local at=$1
+  sub_end $((at + 2))
+  if ((end > at + 2)) && [[ ${s:end-1:1} == ')' ]]; then
+    pending+=("${s:at+2:end-at-3}")
+  else
+    pending+=("${s:at+2}")
+  fi
+  stand_in "$at" "$end"
+}
+
+# parameter <at> <in double quotes>: set taken to the parameter expansion whose ${ is at the index
+# at, as written when it is a plain ${name}, else its stand-in, queue the command substitutions in
+# its operand, and end past its }. In double quotes, a single quote in it is refused unread: bash's
+# parser skips it to find the }, though the expansion keeps it as text.
+parameter() {
+  local at=$1 j=$(($1 + 2)) depth=1 c rest
+  while ((j < n)); do
+    c=${s:j:1}
+    case $c in
+      \\) j=$((j + 2)) && continue ;;
+      \')
+        [[ $2 != d ]] || unread 'a single quote inside a double-quoted ${ }'
+        rest=${s:j+1}
+        rest=${rest%%\'*}
+        j=$((j + ${#rest} + 2))
+        continue
+        ;;
+      \") dq_end $((j + 1)) queue && j=$end && continue ;;
+      \`) queue_backticks "$j" "$2" && j=$end && continue ;;
+      '$')
+        if [[ $2 != d && ${s:j+1:1} == \' ]]; then
+          ansi_end $((j + 2))
+          j=$end
+          continue
+        elif [[ ${s:j+1:2} == '((' ]]; then
+          arithmetic "$j" "$2"
+          j=$end
+          continue
+        elif [[ ${s:j+1:1} == '[' ]]; then
+          arith_end $((j + 1)) '[' ']' "$2"
+          j=$end
+          continue
+        elif [[ ${s:j+1:1} == '(' ]]; then
+          queue_substitution "$j"
+          j=$end
+          continue
+        elif [[ ${s:j+1:1} == '{' ]]; then
+          depth=$((depth + 1)) j=$((j + 2))
+          continue
+        fi
+        ;;
+      '}')
+        depth=$((depth - 1))
+        ((depth > 0)) || { j=$((j + 1)) && break; }
+        ;;
+    esac
+    j=$((j + 1))
+  done
+  end=$j
+  if [[ ${s:at:end-at} =~ ^\$\{[A-Za-z_][A-Za-z0-9_]*\}$ ]]; then
+    taken=${s:at:end-at}
+  else
+    stand_in "$at" "$end"
+  fi
+}
+
+# lex <command>: split the command into kinds, values and quotings.
+lex() {
+  s=$1 n=${#1} i=0
+  kinds=() values=() quotings=()
+  word='' quoting='' inword=0 quoted=0
+  delimiter_mode='' heredocs=()
+  while ((i < n)); do
+    c=${s:i:1}
+    next=${s:i+1:1}
+    case $c in
+      \\)
+        if [[ $next != $'\n' ]]; then add "$next" s; fi
+        i=$((i + 2))
+        ;;
+      \')
+        rest=${s:i+1}
+        text=${rest%%\'*}
+        add "$text" s
+        i=$((i + ${#text} + 2))
+        ;;
+      \")
+        i=$((i + 1))
+        ((inword)) || { word='' inword=1 quoting=''; }
+        quoted=1
+        while ((i < n)); do
+          c=${s:i:1}
+          if [[ $c == '"' ]]; then
+            break
+          elif [[ $c == \\ ]]; then
+            next=${s:i+1:1}
+            case $next in
+              '$' | '`' | '"' | \\) [[ -n $quoting ]] || quoting=s; word+=$next ;;
+              $'\n') ;;
+              *) [[ -n $quoting ]] || quoting=d; word+=\\$next ;;
+            esac
+            i=$((i + 2))
+            continue
+          fi
+          [[ -n $quoting ]] || quoting=d
+          if [[ $c == '$' && ${s:i+1:2} == '((' ]]; then
+            arithmetic "$i" d
+            word+=$taken i=$end
+            continue
+          elif [[ $c == '$' && ${s:i+1:1} == '[' ]]; then
+            arith_end $((i + 1)) '[' ']' d
+            stand_in "$i" "$end"
+            word+=$taken i=$end
+            continue
+          elif [[ $c == '$' && ${s:i+1:1} == '(' ]]; then
+            queue_substitution "$i"
+            word+=$taken i=$end
+            continue
+          elif [[ $c == '$' && ${s:i+1:1} == '{' ]]; then
+            parameter "$i" d
+            word+=$taken i=$end
+            continue
+          elif [[ $c == \` ]]; then
+            queue_backticks "$i" d
+            word+=$taken i=$end
+            continue
+          fi
+          word+=$c
+          i=$((i + 1))
+        done
+        [[ -n $quoting ]] || quoting=d
+        i=$((i + 1))
+        ;;
+      ' ' | $'\t')
+        flush
+        i=$((i + 1))
+        ;;
+      $'\n')
+        emit o ';'
+        i=$((i + 1))
+        if ((${#heredocs[@]})); then
+          skip_bodies "$i" queue "${heredocs[@]}"
+          i=$end heredocs=()
+        fi
+        ;;
+      '#')
+        if ((inword)); then
+          add '#' n
+          i=$((i + 1))
+        else
+          rest=${s:i}
+          rest=${rest%%$'\n'*}
+          i=$((i + ${#rest}))
+        fi
+        ;;
+      ';' | '|')
+        emit o ';'
+        [[ $next == [\;\|\&] ]] && i=$((i + 1))
+        i=$((i + 1))
+        ;;
+      '&')
+        if [[ $next == '>' ]]; then
+          flush
+          emit r
+          i=$((i + 2))
+          [[ ${s:i:1} == '>' ]] && i=$((i + 1))
+        else
+          emit o ';'
+          [[ $next == '&' ]] && i=$((i + 1))
+          i=$((i + 1))
+        fi
+        ;;
+      '(')
+        if ((!inword)) && [[ $next == '(' ]]; then
+          # An arithmetic command, whose > compares.
+          flush
+          arith_end "$i" '(' ')' n
+          i=$end
+          add '((' n
+        else
+          emit o '('
+          i=$((i + 1))
+        fi
+        ;;
+      ')')
+        emit o ')'
+        i=$((i + 1))
+        ;;
+      '$')
+        if [[ $next == '(' && ${s:i+2:1} == '(' ]]; then
+          arithmetic "$i" n
+          add "$taken" n
+          i=$end
+        elif [[ $next == '(' ]]; then
+          queue_substitution "$i"
+          add "$taken" n
+          i=$end
+        elif [[ $next == '{' ]]; then
+          parameter "$i" n
+          add "$taken" n
+          i=$end
+        elif [[ $next == \' ]]; then
+          # An ANSI-C string, in which \' does not end it.
+          ansi_end $((i + 2))
+          add "${s:i+2:end-i-3}" s
+          i=$end
+        elif [[ $next == '[' ]]; then
+          # The old form of an arithmetic expansion, $[...], whose < and > compare or shift.
+          arith_end $((i + 1)) '[' ']' n
+          stand_in "$i" "$end"
+          add "$taken" n
+          i=$end
+        else
+          add '$' n
+          i=$((i + 1))
+        fi
+        ;;
+      '`')
+        queue_backticks "$i" n
+        add "$taken" n
+        i=$end
+        ;;
+      '>')
+        drop_descriptor
+        case $next in
+          '(') emit o '(' ;;
+          '&') emit rd ;;
+          '>' | '|') emit r ;;
+          *) emit r; i=$((i - 1)) ;;
+        esac
+        i=$((i + 2))
+        ;;
+      '<')
+        drop_descriptor
+        if [[ $next == '(' ]]; then
+          emit o '('
+          i=$((i + 2))
+        elif [[ $next == '<' && ${s:i+2:1} == '<' ]]; then
+          emit i
+          i=$((i + 3))
+        elif [[ $next == '<' ]]; then
+          i=$((i + 2))
+          delimiter_mode=+
+          if [[ ${s:i:1} == - ]]; then
+            delimiter_mode=-
+            i=$((i + 1))
+          fi
+        else
+          emit i
+          [[ $next == [\&\>] ]] && i=$((i + 1))
+          i=$((i + 1))
+        fi
+        ;;
+      *)
+        add "$c" n
+        i=$((i + 1))
+        ;;
+    esac
+  done
+  flush
+}
+
+tmp_root=${TEAM_SYSTEM_ROOT:-}/tmp
+
+# known <name>: the value of a variable the hook expands, or fail.
+known() {
+  case $1 in
+    HOME) echo "$HOME" ;;
+    TMPDIR) echo "${TMPDIR:-$tmp_root}" ;;
+    CLAUDE_JOB_DIR) [[ -n ${CLAUDE_JOB_DIR:-} ]] && echo "$CLAUDE_JOB_DIR" ;;
+    *) return 1 ;;
+  esac
+}
+
+refused=()
+
+# judge <target> <quoting>: add the target to refused when it lies where this role may not write.
+judge() {
+  local target=$1 value dir written named
+  if [[ $2 != s ]]; then
+    if [[ $2 == n && ($target == \~ || $target == \~/*) ]]; then
+      target=$HOME${target:1}
+    elif [[ $target =~ ^\$\{([A-Za-z_][A-Za-z0-9_]*)\}(.*)$ || $target =~ ^\$([A-Za-z_][A-Za-z0-9_]*)(.*)$ ]]; then
+      value=$(known "${BASH_REMATCH[1]}") || return 0
+      target=$value${BASH_REMATCH[2]}
+    elif [[ $target == \$* ]]; then
+      return 0
+    fi
+  fi
+  [[ $target == "$open_mark"* ]] && return 0
+  [[ $target == /* ]] || target=$cwd/$target
+  # The written target, its . and .. resolved but its symlinks kept and its expansions put back, is
+  # the name the refusal says (on macOS /home itself resolves to /System/Volumes/Data/home); the
+  # resolved one is judged.
+  written=$(realpath -m -s -- "$target")
+  case $written in
+    /dev/null | /dev/stdout | /dev/stderr | /dev/fd/*) return 0 ;;
+  esac
+  target=$(realpath -m -- "$target")
+  for dir in "$scratch" "$tmp_root" "${TMPDIR:-}" "${CLAUDE_JOB_DIR:-}"; do
+    [[ -n $dir ]] || continue
+    under "$target" "$(realpath -m -- "$dir")" && return 0
+  done
+  named=''
+  while [[ $written =~ ^([^$open_mark]*)$open_mark([0-9]+)$close_mark(.*)$ ]]; do
+    named+=${BASH_REMATCH[1]}${expansions[BASH_REMATCH[2]]}
+    written=${BASH_REMATCH[3]}
+  done
+  refused+=("$named$written")
+}
+
+# takes_of <wrapper>: set takes to the wrapper's options that take the next word as their value,
+# as tests/helpers/common.bash's unwrapped models them for the deny rules, with stdbuf's.
+takes_of() {
+  case $1 in
+    env) takes=' -u -C --unset --chdir ' ;;
+    sudo) takes=' -u -g -U -C -D -h -p -r -R -t -T -a --user --group --other-user --close-from --chdir --host --prompt --role --chroot --type --command-timeout --auth-type ' ;;
+    timeout) takes=' -k -s --kill-after --signal ' ;;
+    nice) takes=' -n --adjustment ' ;;
+    stdbuf) takes=' -i -o -e ' ;;
+    exec) takes=' -a ' ;;
+    *) takes='' ;;
+  esac
+}
+
+# walk: judge the tokens lexed, as commands: each redirection's target and each file a tee names.
+# A wrapper (env, sudo, nohup, timeout and its duration, nice, stdbuf, command but for its -v and -V,
+# exec, time, builtin, by any path) is passed over with its options, their values and env's
+# assignments, so the command it runs is the command word. A ( saves the state of the command
+# around it, which its ) restores.
+walk() {
+  local command_word=1 tee=0 options=1 test=0 wrapper=- valued=0 timed=0 takes='' saved=()
+  local count=${#kinds[@]} k=0 kind value target name
+  while ((k < count)); do
+    kind=${kinds[k]} value=${values[k]}
+    if ((test)); then
+      [[ $kind == w && $value == ']]' ]] && test=0
+      k=$((k + 1))
+      continue
+    fi
+    case $kind in
+      o)
+        if [[ $value == '(' ]]; then
+          saved+=("$command_word $tee $options $wrapper $valued $timed")
+          command_word=1 tee=0 options=1 wrapper=- valued=0 timed=0
+        elif [[ $value == ')' && ${#saved[@]} -gt 0 ]]; then
+          read -r command_word tee options wrapper valued timed <<<"${saved[-1]}"
+          unset 'saved[-1]'
+        else
+          command_word=1 tee=0 options=1 wrapper=- valued=0 timed=0
+        fi
+        takes_of "$wrapper"
+        ;;
+      r | rd | i)
+        if [[ ${kinds[k + 1]:-} == w ]]; then
+          k=$((k + 1))
+          target=${values[k]}
+          if [[ $kind == r || ($kind == rd && ! ($target =~ ^([0-9]+-?|-)$ && ${quotings[k]} == n)) ]]; then
+            judge "$target" "${quotings[k]}"
+          fi
+        fi
+        ;;
+      w)
+        if ((command_word)); then
+          if ((valued)); then
+            valued=0
+          elif [[ ${quotings[k]} == n && $value =~ ^[A-Za-z_][A-Za-z0-9_]*\+?= ]]; then
+            :
+          elif [[ $value == '[[' ]]; then
+            test=1 command_word=0
+          elif [[ $wrapper == command && ($value == -v || $value == -V) ]]; then
+            # A lookup, which runs nothing.
+            command_word=0
+          elif [[ $value == -* ]]; then
+            [[ $takes == *" $value "* ]] && valued=1
+          elif ((timed)) && [[ $value =~ ^[0-9]+(\.[0-9]+)?[smhd]?$ ]]; then
+            timed=0
+          else
+            timed=0 name=${value##*/}
+            case $value in
+              '!' | '{' | '}' | if | then | elif | else | do | while | until) wrapper=- ;;
+              *)
+                case $name in
+                  env | sudo | nohup | timeout | nice | stdbuf | command | exec | time | builtin)
+                    wrapper=$name
+                    [[ $name == timeout ]] && timed=1
+                    ;;
+                  tee) command_word=0 tee=1 ;;
+                  *) command_word=0 ;;
+                esac
+                ;;
+            esac
+            takes_of "$wrapper"
+          fi
+        elif ((tee)); then
+          if ((options)) && [[ $value == -- ]]; then
+            options=0
+          elif ((options)) && [[ $value == -?* ]]; then
+            :
+          else
+            judge "$value" "${quotings[k]}"
+          fi
+        fi
+        ;;
+    esac
+    k=$((k + 1))
+  done
+}
+
+# scan_body <text>: queue the command substitutions in the body of a heredoc whose delimiter was
+# not quoted, where quotes are text and a backslash keeps a $ or ` from starting one.
+# It reads the body a line at a time, and a substitution still open at a line's end with the lines
+# after it, since each index into a long text costs that text's length.
+scan_body() {
+  local lines=() count k=0 j skip queued expanded
+  mapfile -t lines <<<"$1"
+  count=${#lines[@]}
+  while ((k < count)); do
+    s=${lines[k]} n=${#lines[k]} j=0
+    k=$((k + 1))
+    [[ $s == *[\`]* || $s == *'$'[\(\{\[]* ]] || continue
+    while ((j < n)); do
+      skip=${s:j}
+      skip=${skip%%[\\\$\`]*}
+      j=$((j + ${#skip}))
+      ((j < n)) || break
+      if [[ ${s:j:1} == \\ ]]; then
+        j=$((j + 2))
+        continue
+      elif [[ ${s:j:1} == '$' && ${s:j+1:1} != [\(\{\[] ]]; then
+        j=$((j + 1))
+        continue
+      fi
+      queued=${#pending[@]} expanded=${#expansions[@]}
+      while :; do
+        if [[ ${s:j:1} == \` ]]; then
+          queue_backticks "$j" n
+        elif [[ ${s:j+1:2} == '((' ]]; then
+          arithmetic "$j" n
+        elif [[ ${s:j+1:1} == '[' ]]; then
+          arith_end $((j + 1)) '[' ']' n
+        elif [[ ${s:j+1:1} == '(' ]]; then
+          queue_substitution "$j"
+        else
+          parameter "$j" d
+        fi
+        # Ended before the line's end, or no line is left to add: done; else read on, and again.
+        ((end < n || k >= count)) && break
+        pending=("${pending[@]:0:queued}") expansions=("${expansions[@]:0:expanded}")
+        s+=$'\n'${lines[k]}
+        n=${#s}
+        k=$((k + 1))
+      done
+      j=$end
+    done
+  done
+}
+
+# Judge the command, then each substitution body the lexer queued, in turn, after the
+# substitutions found in the bodies of the heredocs read so far.
+pending=("$command") bodies=()
+while ((${#pending[@]} + ${#bodies[@]})); do
+  if ((${#bodies[@]})); then
+    text=${bodies[0]}
+    bodies=("${bodies[@]:1}")
+    scan_body "$text"
+  else
+    text=${pending[0]}
+    pending=("${pending[@]:1}")
+    lex "$text"
+    walk
+  fi
+done
+
+((${#refused[@]})) || exit 0
+list=$(printf '%s, ' "${refused[@]}")
+echo "Blocked: this role may write files only under $scratch; write there with the Write tool, not a shell redirection or tee (tried ${list%, })." >&2
 exit 2

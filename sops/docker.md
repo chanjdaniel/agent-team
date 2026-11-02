@@ -28,7 +28,8 @@ Every Docker object the team makes says whose it is, in labels under `io.github.
 
 `team-stack ls` sorts every object into one class, from its own labels and its Compose project (Docker's `com.docker.compose.project` label):
 
-- **gate**: `kind=gate`, whatever its `owner` (a gate run from a shell with `team-stack env`'s exports is labelled `owner=agent-team` too); or, with no team label set to a value, a Compose project whose name matches a project's `legacy_gate` (gate runs from before the labels).
+- **gate**: `kind=gate`, whatever its `owner` (a gate run from a shell with `team-stack env`'s exports is labelled `owner=agent-team` too); or, with no team label set to a value, a Compose project that Compose started inside the gate's worktrees, `~/.no-mistakes/worktrees/` (any of its containers' `com.docker.compose.project.working_dir` there or below it), or whose name matches a project's `legacy_gate` (gate runs from before the labels).
+  So a stack started inside a gate worktree outside `nm-test.sh`, by hand or by the gate's test agent, with every team label empty, is the gate's, and the reaper removes it once its newest object is over 2 hours old; an unlabelled stack anywhere else stays unowned.
 - **team**: `owner=agent-team`, and not `kind=gate`.
 - **unowned**: everything else, Daniel's primary stack and stacks started by hand included.
   A slot stack started with `th-compose.sh up` and no `TEAM_*` variables has every team label empty, so it is unowned.

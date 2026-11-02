@@ -275,7 +275,7 @@ EOF
   answer "opencode --version"
   run_bin -1 team-doctor
   assert_equal "$(line_of gate-agent)" "FAIL gate-agent: opencode is not installed, so the wrapper has nothing to run; fix: the tool opencode line's fix"
-  assert_equal "$(line_of 'tool opencode')" "FAIL tool opencode: not installed; fix: npm install -g opencode-ai@1.18.30"
+  assert_equal "$(line_of 'tool opencode')" "FAIL tool opencode: not installed; fix: npm install -g opencode-ai@$(lock_pin opencode)"
   tools_at arch
   rm "$config"
   run_bin -1 team-doctor

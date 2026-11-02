@@ -355,7 +355,7 @@ run_fake() {
     if [[ $role == builder ]]; then
       assert_equal "$(jq '.hooks.PreToolUse | length' "$settings")" 1
     else
-      assert_equal "$(jq -r '.hooks.PreToolUse[] | select(.matcher == "Edit|Write|MultiEdit|NotebookEdit") | .hooks[].command' "$settings")" \
+      assert_equal "$(jq -r '.hooks.PreToolUse[] | select(.matcher == "Edit|Write|MultiEdit|NotebookEdit|Bash") | .hooks[].command' "$settings")" \
         "$REPO_ROOT/bin/hooks/scratch-only-edits"
       assert_equal "$(jq '.hooks.PreToolUse | length' "$settings")" 2
     fi
