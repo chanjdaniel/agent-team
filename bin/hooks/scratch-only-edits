@@ -396,6 +396,7 @@ peek2() {
 
 # skip_blanks: move past blanks and a comment.
 skip_blanks() {
+  local sb_rest sb_run
   while :; do
     if ((C < ll - 1)); then
       c=${ln:C:1}
@@ -3352,7 +3353,6 @@ assign_set() {
     f=$vd
   fi
 }
-
 
 # Which compound commands a command is in, in the shell they run in (not through a ( ) or a
 # substitution), for what it may do at another turn or call: LOOPMOVE[k] 1 for such a loop, and
