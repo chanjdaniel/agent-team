@@ -166,13 +166,12 @@ sessions() {
   assert_equal "$(line_of resources)" "WARN resources: $LEVEL; ~/.local/state/agent-team/slots.lock is $why; fix: rm -r ~/.local/state/agent-team/slots.lock"
   echo '{"cap": 10}' >"$config/slots.json"
   mkdir "$state/slots"
-  local all="~/.config/agent-team/slots.json ~/.local/state/agent-team/slots ~/.local/state/agent-team/slots.lock"
   run_bin -0 team-doctor
-  assert_equal "$(line_of resources)" "WARN resources: $LEVEL; ~/.config/agent-team/slots.json, ~/.local/state/agent-team/slots and ~/.local/state/agent-team/slots.lock are $why; fix: rm -r $all"
+  assert_equal "$(line_of resources)" "WARN resources: $LEVEL; ~/.config/agent-team/slots.json, ~/.local/state/agent-team/slots and ~/.local/state/agent-team/slots.lock are $why; fix: rm -r ~/.config/agent-team/slots.json ~/.local/state/agent-team/slots ~/.local/state/agent-team/slots.lock"
   on_macos
   tools_at macos
   run_bin -0 team-doctor
-  assert_equal "$(line_of resources)" "WARN resources: $LEVEL; ~/.config/agent-team/slots.json, ~/.local/state/agent-team/slots and ~/.local/state/agent-team/slots.lock are $why; fix: rm -r $all"
+  assert_equal "$(line_of resources)" "WARN resources: $LEVEL; ~/.config/agent-team/slots.json, ~/.local/state/agent-team/slots and ~/.local/state/agent-team/slots.lock are $why; fix: rm -r ~/.config/agent-team/slots.json ~/.local/state/agent-team/slots ~/.local/state/agent-team/slots.lock"
   rm -r "$config/slots.json" "$state/slots" "$state/slots.lock"
   run_bin -0 team-doctor
   assert_equal "$(line_of resources)" "PASS resources: $LEVEL; no hard limits on macOS: admission and stow only"
