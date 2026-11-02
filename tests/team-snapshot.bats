@@ -175,7 +175,7 @@ section() {
   run_bin -0 team-snapshot --json
   local snapshot=$output
   assert_equal "$(jq -r .schema <<<"$snapshot")" "team-snapshot/1"
-  assert_equal "$(jq -c 'keys_unsorted' <<<"$snapshot")" '["schema","tasks","level","awaiting_resume","resources","sessions","strays","prs","pending_asks","items"]'
+  assert_equal "$(jq -c 'keys_unsorted' <<<"$snapshot")" '["schema","tasks","level","awaiting_resume","resources","standing_words","sessions","strays","prs","pending_asks","items"]'
   assert_equal "$(jq -r '.tasks | map(.task) | join(" ")' <<<"$snapshot")" "T3 T4"
   run_bin -0 team-state T3 --json
   assert_equal "$(jq -c '.tasks[0]' <<<"$snapshot")" "$(jq -c . <<<"$output")"
@@ -184,7 +184,7 @@ section() {
   assert_equal "$(jq -c '.tasks[1]' <<<"$snapshot")" "$(jq -c . <<<"$output")"
 }
 
-@test "the live team sessions follow the resources line, with no slots line or key, and no reading taken" {
+@test "the standing merge word and then the live team sessions follow the resources line, with no slots line or key, and no reading taken" {
   reserve_agent_team
   mkdir -p "$HOME/.config/agent-team"
   echo home-pc >"$HOME/.config/agent-team/machine"
@@ -193,10 +193,11 @@ section() {
   opened T3
   opened T4 conv
   run_bin -0 team-snapshot
-  assert_equal "$(head -n 5 <<<"$output")" "Open tasks (2):
+  assert_equal "$(head -n 6 <<<"$output")" "Open tasks (2):
   T3 proj feature planning | no live worker
   T4 conv feature planning | no live worker
 Resources: manual, full (90%): no reading of the machine's load yet, so no budget
+Standing merge word: none
 Live team sessions: none"
   run_bin -0 team-snapshot --json
   assert_equal "$(jq -c 'has("slots")' <<<"$output")" false
@@ -365,6 +366,7 @@ Live team sessions: none"
   run_bin -0 team-snapshot
   assert_equal "$output" "Open tasks: none
 Resources: manual, full (90%): no reading of the machine's load yet, so no budget
+Standing merge word: none
 Live team sessions: none
 Stray sessions: none
 Open PRs:
@@ -375,7 +377,41 @@ Pending asks: none
 Current items: none"
   rm "$TEAM_HOME/ledger.jsonl"
   run_bin -0 team-snapshot --json
-  assert_equal "$(jq -c '[.tasks, .sessions, .strays, .pending_asks, .items]' <<<"$output")" '[[],[],[],[],[]]'
+  assert_equal "$(jq -c '[.tasks, .standing_words, .sessions, .strays, .pending_asks, .items]' <<<"$output")" '[[],[],[],[],[],[]]'
+}
+
+# standing <task> <kind> <project> <message> <ts>: Daniel's standing word on <project>
+# (merge-standing) or its withdrawal (merge-standing-withdrawn), in #coordinator, logged under <task>.
+standing() {
+  event "$1" "$2" "{ts: \"$5\", project: \"$3\", discord_message: \"$4\", discord_channel: \"1562486564871995482\"}"
+}
+
+@test "the standing merge words follow the resources line, one per word with the projects it stands for, and --json lists them by project" {
+  reserve_agent_team
+  open_prs owner/proj '[]'
+  open_prs owner/conv '[]'
+  opened T3
+  opened T4
+  standing T3 merge-standing all 1564100000000000001 2026-10-22T03:00:00Z
+  standing T3 merge-standing-withdrawn conv 1564100000000000002 2026-10-22T04:00:00Z
+  standing T4 merge-standing proj 1564100000000000003 2026-10-22T05:00:00Z
+  run_bin -0 team-snapshot
+  assert_equal "$(sed -n 4p <<<"$output")" "Resources: manual, full (90%): no reading of the machine's load yet, so no budget"
+  assert_equal "$(sed -n 5,6p <<<"$output")" "Standing merge word: agent-team (Discord message 1564100000000000001, 2026-10-22T03:00:00Z, T3)
+Standing merge word: proj (Discord message 1564100000000000003, 2026-10-22T05:00:00Z, T4)"
+  run_bin -0 team-snapshot --json
+  assert_equal "$(jq -c .standing_words <<<"$output")" '[{"project":"proj","word":{"project":"proj","task":"T4","ts":"2026-10-22T05:00:00Z","discord_message":"1564100000000000003","discord_channel":"1562486564871995482"}},{"project":"agent-team","word":{"project":"all","task":"T3","ts":"2026-10-22T03:00:00Z","discord_message":"1564100000000000001","discord_channel":"1562486564871995482"}}]'
+
+  # One word standing for many projects is one line naming them, and a withdrawal of all ends them.
+  standing T4 merge-standing all 1564100000000000004 2026-10-22T06:00:00Z
+  run_bin -0 team-snapshot
+  assert_equal "$(sed -n 5p <<<"$output")" "Standing merge word: proj, conv, agent-team (Discord message 1564100000000000004, 2026-10-22T06:00:00Z, T4)"
+  standing T4 merge-standing-withdrawn all 1564100000000000005 2026-10-22T07:00:00Z
+  run_bin -0 team-snapshot
+  assert_equal "$(sed -n 5,6p <<<"$output")" "Standing merge word: none
+Live team sessions: none"
+  run_bin -0 team-snapshot --json
+  assert_equal "$(jq -c .standing_words <<<"$output")" '[]'
 }
 
 @test "current items are the item lines of tasks/current.md, after the pending asks and in --json" {
@@ -470,7 +506,8 @@ EOF
   sessions "${all[@]}"
   run_bin -0 team-snapshot
   echo "$output"
-  [[ ${#lines[@]} -le 50 ]]
+  # 50 lines, and the standing merge word's one line.
+  [[ ${#lines[@]} -le 51 ]]
   # An open task's line is cut at 200 columns, any other at 120.
   local line
   for line in $(section "Open tasks" | sed 1d | awk '{ print length($0) }'); do [[ $line -le 200 ]]; done

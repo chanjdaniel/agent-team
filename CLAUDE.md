@@ -18,7 +18,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
     - `data-check`: the one scan the CI's `data` job and the records' hook refuse with.
     - `doctor.d/`: `team-doctor`'s checks, one file each, which it sources in the order of their names (a new check is a new file, its number between its neighbours').
     - `gate-config.awk`: reads and sets the one key the team writes in Daniel's no-mistakes config (`agent_path_override`'s opencode), and reads `agent_args_override`'s list for one agent.
-    - `guarded`: the guarded paths, one extended regular expression per line with its area, any changed path of which brings a plan-time merge back to Daniel, read by `team-merge`.
+    - `guarded`: the guarded paths, one extended regular expression per line with its area, any changed path of which brings a plan-time or standing merge back to Daniel, read by `team-merge`.
     - `ledger-contract.json` and `ledger.jq`: the ledger contract and its jq.
     - `messages.jq`: reads a worker's message into the events the coordinator's message table gives it, for `team-log --from-message`.
     - `opencode-gate`: the gate's opencode wrapper, which `team-bootstrap` installs in `~/.no-mistakes/bin` and Daniel's no-mistakes config names on an opencode gate.
@@ -49,6 +49,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
   - `docker.md`: the team's Docker stacks: labels, owner classes, the wrapper contract, `team-stack`'s subcommands, instances, admission, the idle sweep, the reaper, `team-janitor`'s daily report, the heartbeat's steps, the close teardown and the agents' rules.
   - `knowledge-graph.md`: a project's knowledge graph.
   - `machine-setup.md`: a new machine, driven by `SETUP.md`.
+  - `merging.md`: merging on Daniel's word: the per-head, plan-time and standing words, their events, the order `team-merge` tries them, what each holds a PR to, what never merges, and the coordinator's steps on a merge and a refusal.
   - `model-trials.md`: trialling a cheaper model on one role of one project: the registry's `models`, the effort check, the paired reviews, the measures and their sources, the baseline by PR size and the note to Daniel that ends it.
   - `platform-gotchas.md`: general rules about the tools the team runs on, which every brief but the ops one points at in the code checkout, never the team home; the retro proposes keeping it short, and each change Daniel approves lands through a PR on this repository.
   - `portability.md`: moving the team between machines.

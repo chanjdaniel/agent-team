@@ -174,6 +174,7 @@ total: 60 6000 120000 600 1.50
   T93 drill feature blocked | no live worker
   T94 drill feature planning | T94-builder busy
 Resources: manual, full (90%): no reading of the machine's load yet, so no budget
+Standing merge word: none
 Live team sessions (1):
   T94-builder c3d4e5f6 busy
 Stray sessions: none
@@ -205,6 +206,7 @@ Current items (3):
   digest=$(cat "$STUB_FIXTURES/turn-1.digest")
   assert_contains "$digest" "  T94 drill feature planning | T94-builder busy
 Resources: manual, full (90%): no reading of the machine's load yet, so no budget
+Standing merge word: none
 Live team sessions (1):
   T94-builder c3d4e5f6 busy
 Stray sessions: none
