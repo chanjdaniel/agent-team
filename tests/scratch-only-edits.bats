@@ -1,48 +1,17 @@
 #!/usr/bin/env bats
+# shellcheck disable=SC2154,SC2034,SC2088 # wt, tmp, job and the reasons are helpers/scratch-hook.bash's, hook_tmpdir and hook_job its shell's; a ~ is part of a command as an agent types it
 # hooks/scratch-only-edits: the planner's and reviewer's PreToolUse hook lets file edits, and
 # shell redirections and tee, write only inside the worktree's .scratch/ directory.
+# This file holds the edit tools, the judge of a shell target, the commands planners and reviewers
+# write most often, the messages and the settings; the grammar the hook reads is in
+# scratch-only-edits-grammar.bats, and what it follows (cd and variables) in
+# scratch-only-edits-follow.bats.
 
 load helpers/common
+load helpers/scratch-hook
 
 setup() {
-  sandbox
-  wt=$HOME/wt
-  mkdir -p "$wt/.scratch/task" "$wt/src" "$HOME/elsewhere"
-  tmp=$BATS_TEST_TMPDIR/tmpdir job=$BATS_TEST_TMPDIR/job
-  # Claude Code runs hooks with the session's project directory set.
-  export CLAUDE_PROJECT_DIR=$wt
-}
-
-# edit <file_path> [cwd]: run the hook on an Edit call, as Claude Code sends it.
-edit() {
-  local status=$1
-  run_bin "$status" --separate-stderr hooks/scratch-only-edits \
-    <<<"$(jq -cn --arg p "$2" --arg cwd "${3:-$wt}" '{hook_event_name: "PreToolUse", cwd: $cwd,
-      tool_name: "Edit", tool_input: {file_path: $p, old_string: "a", new_string: "b"}}')"
-}
-
-# shell <status> <command> [cwd]: run the hook on a Bash call, as Claude Code sends it, with a
-# temporary directory and a job directory of the test's own (the sandbox's /tmp is under
-# TEAM_SYSTEM_ROOT, since HOME itself lies under the machine's).
-shell() {
-  local status=$1
-  TMPDIR=$tmp CLAUDE_JOB_DIR=$job run_bin "$status" --separate-stderr hooks/scratch-only-edits \
-    <<<"$(jq -cn --arg c "$2" --arg cwd "${3:-$wt}" '{hook_event_name: "PreToolUse", cwd: $cwd,
-      tool_name: "Bash", tool_input: {command: $c}}')"
-}
-
-# blocked <command> <target> [cwd]: the hook refuses the command, naming the target.
-blocked() {
-  shell -2 "$1" "${3:-$wt}"
-  assert_equal "$output" ""
-  assert_equal "$stderr" "Blocked: this role may write files only under $wt/.scratch; write there with the Write tool, not a shell redirection or tee (tried $2)."
-}
-
-# unread <command> <form>: the hook refuses the command unread, naming the form it does not read.
-unread() {
-  shell -2 "$1"
-  assert_equal "$output" ""
-  assert_equal "$stderr" "Blocked: this command holds $2, which this hook does not read, so it cannot tell where the command writes; rewrite it without that, or write files under $wt/.scratch with the Write tool."
+  scratch_setup
 }
 
 @test "an edit inside .scratch/ passes" {
@@ -104,7 +73,7 @@ unread() {
   assert_equal "$output" ""
 }
 
-@test "a shell append to the team home's records is blocked, as T113's reviewer's got through" {
+@test "a shell append to the team home's records is blocked" {
   blocked 'echo x >> ~/agent-team-records/memory/p/MEMORY.md' "$HOME/agent-team-records/memory/p/MEMORY.md"
 }
 
@@ -112,9 +81,6 @@ unread() {
   blocked 'printf x > /home/me/repo/src/a.js' /home/me/repo/src/a.js
   blocked 'cmd 2> notes.txt' "$wt/notes.txt"
   blocked 'cmd | tee -a $HOME/x' "$HOME/x"
-  blocked "cat > ../file <<'EOF'
-a > b
-EOF" "$HOME/file"
   blocked 'cmd &> out.log' "$wt/out.log"
   blocked 'cmd &>> out.log' "$wt/out.log"
   blocked 'cmd >| out.log' "$wt/out.log"
@@ -126,6 +92,7 @@ EOF" "$HOME/file"
   blocked 'cmd > x; echo ok' "$wt/x"
   blocked 'true && cmd > x' "$wt/x"
   blocked 'echo a>x' "$wt/x"
+  blocked 'cmd > ../file' "$HOME/file"
   # A relative target is taken from the session's working directory.
   blocked 'cmd > x' "$wt/src/x" "$wt/src"
   # Quoted, a tilde is a file name.
@@ -143,32 +110,13 @@ EOF" "$HOME/file"
 }
 
 @test "every blocked target of one command is named" {
-  shell -2 'cmd > a 2> .scratch/ok | tee b c'
-  assert_contains "$stderr" "(tried $wt/a, $wt/b, $wt/c)."
-}
-
-@test "a tee's every file is a target, after its options and after --" {
-  blocked 'cmd | tee --append -p x' "$wt/x"
-  blocked 'cmd | /usr/bin/tee x' "$wt/x"
-  blocked 'cmd | tee -- -x' "$wt/-x"
-  blocked 'cmd | tee .scratch/a x' "$wt/x"
-  blocked 'cmd | (tee x)' "$wt/x"
-  blocked 'cmd | sudo tee x' "$wt/x"
-  blocked 'cmd | X=1 tee x' "$wt/x"
-  blocked 'if true; then cmd | tee x; fi' "$wt/x"
-  shell -0 'cmd | tee'
-  shell -0 'cmd | tee -a .scratch/task/log /dev/null'
-  shell -0 'echo tee x'
-  shell -0 'grep tee x'
+  blocked 'cmd > a 2> .scratch/ok | tee b c' "$wt/a, $wt/b, $wt/c"
 }
 
 @test "a shell write into .scratch/, a temporary directory or a device passes" {
   mkdir -p "$tmp" "$job/tmp"
-  local command
-  while IFS= read -r command; do
-    shell -0 "$command"
-    assert_equal "$output$stderr" ""
-  done <<'EOF'
+  local commands=()
+  mapfile -t commands <<'EOF'
 tests/run > .scratch/task/run.log 2>&1
 cmd > /dev/null
 cmd 2>/dev/null
@@ -177,276 +125,100 @@ cmd > /dev/stdout
 cmd > /dev/stderr
 cmd > /dev/fd/3
 cmd 2>&1 | tee .scratch/task/out.txt
-cmd | tee -a "$wt/.scratch/task/out.txt" >/dev/null
+cmd | tee -a "$HOME/wt/.scratch/task/out.txt" >/dev/null
 cmd > "$TMPDIR/x"
+cmd > $TMPDIR/x
 cmd > ${TMPDIR}/x
+cmd > "${TMPDIR}"/x
 cmd > "$CLAUDE_JOB_DIR/tmp/x"
+cmd > $CLAUDE_JOB_DIR/tmp/x
 cmd > ${CLAUDE_JOB_DIR}/tmp/x
-cmd >&2
-cmd 2>&1
-cmd 1>&2-
-cmd >&-
-cmd 3>&1 1>&2 2>&3
-cmd 2>& 1
-cmd > "$out"
-cmd > $(mktemp)
-cmd > `mktemp`
-cmd > ${out:-x}
-cmd > $HOMEDIR/x
+cmd > ~/wt/.scratch/x
+cmd > $HOME/wt/.scratch/x
+cmd > "${HOME}/wt/.scratch/x"
 cmd < src/input.txt
-cmd <<< "a > b"
 cmd > .scratch/task/a\ b.log
 cmd > ".scratch/task/a b.log"
 EOF
+  passes "${commands[@]}"
   # The sandbox's /tmp, which stands for the machine's.
-  shell -0 "cmd > $TEAM_SYSTEM_ROOT/tmp/x"
-  shell -0 "cmd > $tmp/x"
-  shell -0 "cmd > $job/x"
+  passes "cmd > $TEAM_SYSTEM_ROOT/tmp/x" "cmd > $tmp/x" "cmd > $job/x"
   # From inside .scratch/, a relative target stays in it.
   shell -0 'cmd > notes.txt' "$wt/.scratch/task"
 }
 
-@test "quoted text, heredoc bodies, comments and comparisons are not redirections" {
-  local command
-  while IFS= read -r -d '' command; do
-    shell -0 "$command"
-    assert_equal "$output$stderr" ""
-  done < <(printf '%s\0' \
-    'echo "a > b"' \
-    "grep -n '>>' file" \
-    'echo a\>b' \
-    'echo "a \" > b"' \
-    "git commit -F - <<'EOF'
-title > body
-x >> y | tee z
-EOF" \
-    "cat <<-EOF >/dev/null
-	a > b
-	EOF
-echo done" \
-    "cat <<A <<B
-a > x
-A
-b > y
-B" \
-    'echo ok # > x' \
-    '[[ $a > b ]] && echo yes' \
-    '(( a > b )) && echo yes' \
-    'echo $(( a > b ? 1 : 2 ))' \
-    'echo ${x:->}' \
-    'diff <(sort a) <(sort b)' \
-    "echo 'it''s > fine'")
-  # A heredoc body ends at its delimiter: what follows it is judged again.
-  blocked "cat <<EOF
-a > x
-EOF
-echo b > y" "$wt/y"
-  blocked 'echo "a > b" > c' "$wt/c"
+@test "the commands planners and reviewers write most often pass" {
+  mkdir -p "$job/tmp"
+  local commands=()
+  # The shapes a replay of their sessions found most often, with fixture paths and names.
+  mapfile -t -d '' commands < <(printf '%s\0' \
+    'git fetch origin 2>&1 | tail -2; git log --oneline origin/dev..HEAD 2>/dev/null | head' \
+    'cmd >/dev/null 2>&1; echo "exit $?"' \
+    'tests/run > .scratch/task/run.log 2>&1; echo "exit $?"; tail -25 .scratch/task/run.log' \
+    "cd $wt && tests/run > .scratch/task/run.log 2>&1" \
+    'cmd 2>&1 | tee .scratch/task/out.txt | tail -5' \
+    "cat > .scratch/task/review.md <<'EOF'"$'\n# Review\n\n1. **blocking** - `cmd > out` writes outside.\nEOF' \
+    "cat >> .scratch/task/review.md <<'EOF'"$'\n## Re-review\n\nThe `while IFS= read -r f` loop leaks `f`.\nEOF' \
+    "cd .scratch/task && cat > review.md <<'EOF'"$'\n# Review\nEOF' \
+    "cd $wt/.scratch/task && cat > review.md <<'EOF'"$'\n# Review\nEOF' \
+    "mkdir -p .scratch/task/tickets && cd .scratch/task/tickets && cat > 01-x.md <<'EOF'"$'\n# 01\nEOF' \
+    '{ printf "\n"; sed "1s/^# /## /" .scratch/task/rereview.md; } >> .scratch/task/review.md' \
+    'git show origin/dev:src/a.sh > $CLAUDE_JOB_DIR/tmp/a.sh; diff $CLAUDE_JOB_DIR/tmp/a.sh src/a.sh' \
+    'T=$CLAUDE_JOB_DIR/tmp/probe; mkdir -p $T; cmd > $T/out.log 2>&1; tail $T/out.log' \
+    'T="$CLAUDE_JOB_DIR/tmp"; for f in a b; do cmd "$f" > "$T/$f.log"; done' \
+    'd=$(mktemp -d) && cmd > "$d/out" && cat "$d/out"' \
+    'd=$(mktemp -d -p "$CLAUDE_JOB_DIR/tmp") && git archive HEAD | tar -x -C "$d" && cmd > $d/run.log 2>&1' \
+    'cmd > "$TMPDIR/x"; cmd 2>/dev/null >> $TMPDIR/y' \
+    'for f in src/a src/b; do echo "== $f"; cmd "$f" 2>&1 | tail -3; done > .scratch/task/all.log' \
+    'diff <(git show origin/dev:src/a) <(cat src/a) > .scratch/task/a.diff' \
+    'git commit -m "$(cat <<'"'EOF'"$'\nfix: read a > in a message\n\nThe body.\nEOF\n)"' \
+    'gh pr create --title "x" --body "$(cat <<'"'EOF'"$'\n## Summary\n\n- a > b\nEOF\n)" 2>&1 | tail -1' \
+    'eval "$(~/agent-team/bin/team-stack env)"; ./scripts/seed.sh 2>&1 | tail -5' \
+    'eval "$(~/agent-team/bin/team-stack env)" && npx playwright test > .scratch/task/e2e.log 2>&1; echo EXIT=$?' \
+    'while IFS= read -r line; do echo "$line"; done < src/list > .scratch/task/list' \
+    'n=$(grep -c x src/a); [[ $n -gt 0 ]] && echo "$n" > .scratch/task/count')
+  passes "${commands[@]}"
 }
 
-@test "a redirection inside a command or process substitution is still judged" {
-  blocked 'x=$(cmd > out)' "$wt/out"
-  blocked 'cmd | tee >(gzip > out.gz)' "$wt/out.gz"
-  blocked '( cmd ) > out' "$wt/out"
-  blocked '{ cmd; } > out' "$wt/out"
-  # Inside double quotes and backticks too, at any depth.
-  blocked 'x="$(cmd > out)"' "$wt/out"
-  blocked 'x=`cmd > out`' "$wt/out"
-  blocked 'echo "$(printf x | tee out)"' "$wt/out"
-  blocked 'echo "a $(echo "$(cmd >> out)") b"' "$wt/out"
-  blocked 'x=`echo \`cmd > out\``' "$wt/out"
-  blocked 'echo "`cmd > out`"' "$wt/out"
-  blocked 'x="$(cmd "a)b" > out)"' "$wt/out"
-  # Its target is judged against the outer command's working directory.
-  blocked 'x="$(cmd > out)"' "$wt/src/out" "$wt/src"
-  # A refused target holding a substitution is named with it as written.
-  blocked 'cmd | tee "out-$(date).log"' "$wt/out-\$(date).log"
-  blocked 'cmd > "out-$(( 1 + 2 )).log"' "$wt/out-\$(( 1 + 2 )).log"
-  blocked 'cmd > out-`date`' "$wt/out-\`date\`"
-  blocked 'cmd > "out-`date`.log"' "$wt/out-\`date\`.log"
-  blocked 'cmd > out-$(date).log' "$wt/out-\$(date).log"
-  blocked 'cmd > "out-$(cat x/../name)"' "$wt/out-\$(cat x/../name)"
-  blocked 'cmd > .scratch/../out-$(date)' "$wt/out-\$(date)"
-  # An expansion stands for a name the hook cannot know, so a / or .. inside it moves nothing.
-  blocked 'cmd > "src$(: /../.scratch/ )/x"' "$wt/src\$(: /../.scratch/ )/x"
-  blocked 'cmd > src$(: /../.scratch/ )/x' "$wt/src\$(: /../.scratch/ )/x"
-  blocked 'cmd > src`: /../.scratch/ `/x' "$wt/src\`: /../.scratch/ \`/x"
-  blocked 'cmd > "src${x//../.scratch/}/x"' "$wt/src\${x//../.scratch/}/x"
-  blocked 'cmd > src${x//../.scratch/}/x' "$wt/src\${x//../.scratch/}/x"
-  blocked 'cmd > "src$(( 1 /../.scratch/ 1 ))/x"' "$wt/src\$(( 1 /../.scratch/ 1 ))/x"
-  blocked 'cmd > src$[ 1 /../.scratch/ 1 ]/x' "$wt/src\$[ 1 /../.scratch/ 1 ]/x"
-  blocked 'cmd > "src$[ 1 /../.scratch/ 1 ]/x"' "$wt/src\$[ 1 /../.scratch/ 1 ]/x"
-  # A substitution inside a parameter expansion is judged too.
-  blocked 'echo ${x:-$(cmd > out)}' "$wt/out"
-  blocked 'echo "${x:-`cmd > out`}"' "$wt/out"
-  blocked 'echo ${x:-"$(cmd > out)"}' "$wt/out"
-  blocked 'echo "${x:-"`cmd > out`"}"' "$wt/out"
-  blocked 'echo ${x:-"${y:-"$(cmd > out)"}"}' "$wt/out"
-  # In an arithmetic expansion or command, quoted or not, and in a for's (( )).
-  blocked 'echo $(( $(cmd > out) + 1 ))' "$wt/out"
-  blocked '(( $(cmd > out) ))' "$wt/out"
-  blocked 'echo "$(( $(cmd > out) ))"' "$wt/out"
-  blocked 'echo $[ $(cmd > out) ]' "$wt/out"
-  blocked 'echo $(( `cmd > out` ))' "$wt/out"
-  blocked 'echo "$[ `cmd > out` ]"' "$wt/out"
-  blocked 'echo $(( ${x:-$(cmd > out)} ))' "$wt/out"
-  blocked 'echo ${x:-"$(( $(cmd > out) ))"}' "$wt/out"
-  blocked 'echo $(( 1 + $(( $(cmd > out) )) ))' "$wt/out"
-  blocked 'for (( i = $(cmd > out); i < 2; i++ )); do :; done' "$wt/out"
-  # A substitution found while skipping one is judged once, in its body.
-  blocked 'x=$(echo "$[ $(cmd > out) ]")' "$wt/out"
-  blocked 'x=$(echo "${y:-$(cmd > out)}")' "$wt/out"
-  # In the body of a heredoc whose delimiter is unquoted, at the top or in a substitution.
-  blocked 'cat <<EOF
-a $(cmd > out) b
-EOF' "$wt/out"
-  blocked 'cat <<-EOF
-	`cmd > out`
-	EOF' "$wt/out"
-  blocked 'x=$(cat <<EOF
-${y:-$(cmd > out)}
-EOF
-)' "$wt/out"
-  # A substitution there may run over lines, and each heredoc keeps its own quoting.
-  blocked 'cat <<EOF
-$(printf "%s
-" a > out)
-EOF' "$wt/out"
-  blocked "cat <<A <<'B'
-\$(cmd > a)
-A
-\$(cmd > b)
-B" "$wt/a"
-  # An ANSI-C string in an operand or a substitution ends at its unescaped quote.
-  blocked "echo \${x:-\$'a\\'b'} > out" "$wt/out"
-  blocked "cmd > x-\$(echo \$'a\\'b').log; echo ok" "$wt/x-\$(echo \$'a\\'b').log"
-  # A heredoc inside a substitution keeps its body, a ) or > in it included.
-  shell -0 "x=\$(cat <<'EOF'
-a) > b
-EOF
-)"
-  shell -0 "git commit -m \"\$(cat <<'EOF'
-fix: don't > x
-EOF
-)\""
-  blocked "x=\$(cat <<EOF
-it's
-EOF
-); echo y > out" "$wt/out"
-  # What is fine outside a substitution is fine inside it.
-  shell -0 'x="$(cmd 2>/dev/null)"'
-  shell -0 'x="$(cmd > .scratch/task/out)" && echo "$x"'
-  shell -0 'x=`cmd 2>&1`'
-  shell -0 'echo "$(( a > b ))"'
-  shell -0 'echo "it is \$(cmd > out)"'
-  shell -0 'echo $(( $(cmd 2>/dev/null) > 1 ))'
-  shell -0 '(( (a) > (b) ))'
-  shell -0 'echo $(( (a) > (b) ))'
-  shell -0 'echo "$(( (a) > (b) ))" ${x:-$(( (a) > (b) ))}'
-  shell -0 'echo ${#x} ${x##*/} ${x#\#} > .scratch/x'
-  shell -0 "echo \$(printf '%s #' a) \$(echo \"#\" \#) > .scratch/x"
-  # A quoted heredoc's body, and an escaped substitution in an unquoted one's, is text.
-  shell -0 "cat <<'EOF'
-\$(cmd > out) \`cmd > out\`
-EOF"
-  shell -0 'cat <<\EOF
-$(cmd > out)
-EOF'
-  shell -0 'cat <<"EOF"
-$(cmd > out)
-EOF'
-  shell -0 'cat <<EOF
-\$(cmd > out) \`cmd > out\` a > b
-EOF'
+@test "a target with an empty value writes nothing" {
+  passes "cmd > ''" 'cmd | tee "" .scratch/x'
 }
 
-@test "a form whose reading turns on a parser subtlety is refused unread, naming it" {
-  local quote='a quote inside (( )), $(( )) or $[ ]'
-  unread "((echo '))' ) > out)" "$quote"
-  unread "echo \$((echo '))' ) > out)" "$quote"
-  unread "echo \$(( '\$(cmd > out)' ))" "$quote"
-  unread "echo \${x:-\$(( '\$(cmd > out)' ))}" "$quote"
-  unread "echo \${x:-\$[ '\$(cmd > out)' ]}" "$quote"
-  unread 'echo $(( "1" + 2 )) > .scratch/x' "$quote"
-  unread 'x=$(echo "$[ "1" ]") > .scratch/x' "$quote"
-  local close='a (( or $(( that does not close with ))'
-  unread '((cmd) > out)' "$close"
-  unread 'echo $((cmd) > out)' "$close"
-  unread 'echo "$((cmd) > out)"' "$close"
-  unread 'echo ${x:-$((cmd) > out)}' "$close"
-  unread 'cat <<EOF
-$((cmd) > out)
-EOF' "$close"
-  local comment='an unquoted # inside $( )'
-  unread $'x=$(\n# 1) it\'s built\ncmd > out\n# that\'s all\n)' "$comment"
-  unread $'x=$(echo a\\ #) ; echo "\n)" ; cmd > out' "$comment"
-  unread $'x=$(echo ${y:-a #}) ; echo "\n)" ; cmd > out' "$comment"
-  unread 'echo $(echo a#b) > .scratch/x' "$comment"
-  unread 'echo $(echo ${#x}) > .scratch/x' "$comment"
-  unread $'x=$(echo a # b > out\n)' "$comment"
-  unread 'echo "$(echo $#)" > .scratch/x' "$comment"
-  # A command with no > and no tee writes nothing the hook judges, so it is never read.
-  shell -0 'echo "$(echo $#)" $(( "1" ))'
-  # The refusal comes first, whatever else the command writes.
-  unread 'cmd > out; echo $(( "1" ))' "$quote"
+@test "\$TMPDIR and \$CLAUDE_JOB_DIR are unknown when the hook's environment has none, and a mktemp there uses the machine's /tmp" {
+  hook_tmpdir='' hook_job=''
+  unknown 'cmd > $TMPDIR/x' "\$TMPDIR/x ($expansion)"
+  unknown 'cmd > $CLAUDE_JOB_DIR/x' "\$CLAUDE_JOB_DIR/x ($expansion)"
+  passes "cmd > $TEAM_SYSTEM_ROOT/tmp/x" 'd=$(mktemp -d) && cmd > $d/x'
 }
 
-@test "a case or a ( or ) inside a \${ } inside \$( ) is refused unread, naming it, as bash closes the \$( ) elsewhere" {
-  local case='a case inside $( )'
-  unread 'echo "$(case a in a) cmd > out ;; esac)"' "$case"
-  unread 'x=$(case a in (a) cmd ;; esac) > .scratch/x' "$case"
-  local parenthesis='a ( or ) inside a ${ } inside $( )'
-  unread 'echo "$(echo ${x:-)} > out)"' "$parenthesis"
-  unread 'echo "$(echo ${x:-(} > out)"' "$parenthesis"
-  unread 'echo "$(echo ${x:-${y:-)}} > out)"' "$parenthesis"
-  # A case outside $( ), a word that only holds case, and a ${ } with no parenthesis are read.
-  blocked 'case a in a) cmd > out ;; esac' "$wt/out"
-  blocked 'echo "$(echo showcase ${x:-a} > out)"' "$wt/out"
-  shell -0 'echo "$(echo ${x}) ${y:-(}" > .scratch/x'
+@test "a target the hook cannot work out is refused, named as written with why" {
+  unknown 'cmd > "$out"' "\"\$out\" ($expansion)"
+  unknown 'cmd > $HOMEDIR/x' "\$HOMEDIR/x ($expansion)"
+  unknown 'cmd | tee -- .scratch/$x/y "$z"' ".scratch/\$x/y ($expansion), \"\$z\" ($expansion)"
 }
 
-@test "a heredoc inside \$( ) whose delimiter line is not found is refused unread, naming it, as bash ends it at EOF)" {
-  local heredoc='a heredoc inside $( ) whose delimiter line is not found'
-  unread $'x=$(cat <<EOF\nhi\nEOF) ; cmd > out' "$heredoc"
-  unread $'x=$(cat <<\'EOF\'\nhi\nEOF) ; cmd > out' "$heredoc"
-  # A heredoc in $( ) whose delimiter line is found is read.
-  blocked $'x=$(cat <<EOF\nhi\nEOF\n) ; cmd > out' "$wt/out"
+@test "a command with targets of both kinds gives the unknown-target message first, then the outside one" {
+  shell -2 'cmd > "$out" 2> x'
+  assert_equal "$stderr" "Blocked: this hook cannot tell where these targets point: \"\$out\" ($expansion); spell each path out, or write files under $wt/.scratch with the Write tool.
+Blocked: this role may write files only under $wt/.scratch; write there with the Write tool, not a shell redirection or tee (tried $wt/x)."
 }
 
-@test "a single quote inside a double-quoted \${ } is refused unread, naming it, as bash skips it to find the }" {
-  local quote='a single quote inside a double-quoted ${ }'
-  unread "echo \"\${x:-'\"'}\" ; cmd > out ; echo \"}\"" "$quote"
-  unread "echo \"\${x:-'a'}\" > .scratch/x" "$quote"
-  # Unquoted, the single quote is read as bash reads it.
-  blocked "echo \${x:-'}'} > out" "$wt/out"
+@test "a target the hook cannot work out after a cd says whether the cd may have failed or left any directory" {
+  shell -2 'cd .scratch/task; cmd > a; cd "$x" && cmd > b; cd /etc && cmd > c'
+  assert_equal "$output" ""
+  assert_equal "$stderr" "Blocked: this hook cannot tell where these targets point: a (a cd before it may have failed; join them with &&), b (a cd before it may have left any directory); spell each path out, or write files under $wt/.scratch with the Write tool.
+Blocked: this role may write files only under $wt/.scratch; write there with the Write tool, not a shell redirection or tee (tried /etc/c)."
 }
 
-@test "an ANSI-C string and an old arithmetic expansion are read whole, so what follows them is judged" {
-  blocked "echo \$'a\\'b' > out" "$wt/out"
-  blocked "echo \$'a > b' > out" "$wt/out"
-  shell -0 "echo \$'a > b'"
-  blocked 'echo $[1<<2]
-echo x > out' "$wt/out"
-  shell -0 'echo $[1 > 2]'
+@test "a target through a variable says the variable is not followed there, or that a mktemp may leave it empty" {
+  shell -2 'x=a; x=src; d=$(mktemp -d); cmd > $x/y 2> "$d/z" | tee -- "$out"'
+  assert_equal "$output" ""
+  assert_equal "$stderr" "Blocked: this hook cannot tell where these targets point: \$x/y (\$x is not followed here), \"\$d/z\" (\$d may be empty when mktemp fails; join them with &&), \"\$out\" ($expansion); spell each path out, or write files under $wt/.scratch with the Write tool."
 }
 
-@test "a tee is found behind the wrappers, their options and their option values" {
-  blocked 'cmd | timeout 60 tee out' "$wt/out"
-  blocked 'cmd | timeout -s KILL -k 5 10s tee out' "$wt/out"
-  blocked 'cmd | nice tee out' "$wt/out"
-  blocked 'cmd | nice -n 5 tee out' "$wt/out"
-  blocked 'cmd | sudo -u me tee out' "$wt/out"
-  blocked 'cmd | sudo --user me -E tee out' "$wt/out"
-  blocked 'cmd | stdbuf -oL tee out' "$wt/out"
-  blocked 'cmd | stdbuf -o L tee out' "$wt/out"
-  blocked 'cmd | env -u X A=1 tee out' "$wt/out"
-  blocked 'cmd | exec -a name tee out' "$wt/out"
-  blocked 'cmd | builtin command nohup tee out' "$wt/out"
-  blocked 'cmd | time -p tee out' "$wt/out"
-  # A lookup runs nothing, and a wrapper's own arguments are no tee's files.
-  shell -0 'command -v tee out'
-  shell -0 'timeout 60 cmd out'
-  shell -0 'sudo -u tee cmd x'
+@test "a refusal unread comes first, whatever else the command writes" {
+  unread 'cmd > out; x=`y`' 'a backtick substitution'
+  unread 'cmd > "$out"; select x in a; do :; done' 'a select command'
 }
 
 # The CPU seconds the shell's waited-for children have used so far, in CPU: cpu_now. Read with the
@@ -465,28 +237,71 @@ cpu_under() {
     { echo "used $(awk -v before="$1" -v now="$CPU" 'BEGIN { print now - before }') CPU seconds, not under $2" >&2; return 1; }
 }
 
-@test "a long heredoc is judged quickly" {
+@test "a long command is judged quickly" {
   local body before
   body=$(for i in $(seq 1 3000); do echo "line $i with a > and a | tee x"; done)
   cpu_now
   before=$CPU
-  shell -0 "cat > .scratch/task/big.txt <<'EOF'
+  passes "git commit -m \"$body\" > .scratch/task/out"
+  cpu_under "$before" 5
+  cpu_now
+  before=$CPU
+  passes "printf '%s' '$body' | tee .scratch/task/out"
+  cpu_under "$before" 5
+  # Each cd that may fail adds directories the shell may be in, which the walk caps.
+  body=$(for i in $(seq 1 100); do echo "cd .scratch/task && cmd > out$i; cd $wt; if c; then cd src; fi; cmd > .scratch/y$i"; done)
+  cpu_now
+  before=$CPU
+  shell -2 "$body"
+  cpu_under "$before" 5
+  # Each variable assigned once is followed to the command's end.
+  body=$(for i in $(seq 1 100); do echo "T$i=\$CLAUDE_JOB_DIR/tmp; d$i=\$(mktemp -d) && cmd > \$d$i/x; for f$i in a b; do cmd | tee \"\$T$i/\$f$i\"; done"; done)
+  cpu_now
+  before=$CPU
+  passes "$body"
+  cpu_under "$before" 5
+}
+
+@test "the time the hook takes to read a long command grows linearly with its length" {
+  local n i body before took=()
+  # Each line assigns variables the walk follows to the command's end, and reads them back.
+  for n in 100 200; do
+    body=$(for ((i = 1; i <= n; i++)); do echo "T$i=\$CLAUDE_JOB_DIR/tmp; d$i=\$(mktemp -d) && cmd > \$d$i/x; for f$i in a b; do cmd | tee \"\$T$i/\$f$i\"; done"; done)
+    cpu_now
+    before=$CPU
+    passes "$body"
+    cpu_now
+    took+=("$(awk -v before="$before" -v now="$CPU" 'BEGIN { printf "%d", (now - before) * 1000 }')")
+  done
+  echo "100 lines: ${took[0]} ms, 200 lines: ${took[1]} ms of CPU"
+  # Twice the lines take at most about twice the CPU, measured against at least a second so a
+  # fast machine's noise cannot fail it.
+  ((took[0] >= 1000)) || took[0]=1000
+  ((took[1] * 2 <= took[0] * 5))
+}
+
+@test "a long here-document is judged quickly" {
+  local body before
+  body=$(for i in $(seq 1 3000); do echo "line $i with a > and a | tee x"; done)
+  cpu_now
+  before=$CPU
+  passes "cat > .scratch/task/big.txt <<'EOF'
 $body
 EOF"
   cpu_under "$before" 5
   # Inside a substitution too, as a commit message is written.
   cpu_now
   before=$CPU
-  shell -0 "git commit -m \"\$(cat <<'EOF'
+  passes "git commit -m \"\$(cat <<'EOF'
 $body
 EOF
-)\""
+)\" > .scratch/task/out"
   cpu_under "$before" 5
   # And with its delimiter unquoted, whose body's expansions are read.
-  body=$(for i in $(seq 1 1000); do echo "line $i with \${HOME} and a > and a | tee x"; done)
+  body=$(for i in $(seq 1 1000); do echo "line $i with \${HOME}, \$(echo $i) and a > and a | tee x"; done)
   cpu_now
   before=$CPU
-  shell -0 "cat > .scratch/task/big.txt <<EOF
+  passes "cat > .scratch/task/big.txt <<EOF
 $body
 EOF"
   cpu_under "$before" 5
