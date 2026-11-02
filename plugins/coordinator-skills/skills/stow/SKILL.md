@@ -28,8 +28,6 @@ Writing them is the whole step: the heartbeat's checkpoint commits every record 
 
 ## Before a restart
 
-A handoff to another machine is the `handoff` skill's: stow the conversation as above, then follow it.
-For a restart on this machine, run `team-snapshot` and check every open task in it reads as you know it; fix the ledger or `tasks/` where it does not.
-Write `tasks/handoff-<date>.md`: how to start the coordinator again, each task in flight with how to resume it, and what waits on Daniel.
+A handoff to another machine, and a restart of this machine on Daniel's "shut down", are the `handoff` skill's, the restart its same-machine case: stow the conversation as above, then follow it, and `team-resume` brings the team back with the report the `resume` skill reads.
+For a restart of your session alone, the workers running on, run `team-snapshot` and check every open task in it reads as you know it; fix the ledger or `tasks/` where it does not, since that snapshot and `tasks/current.md` are what the next session starts from.
 Then run `team-checkpoint --force`, so the disk you stowed to is on the team home's origin before the restart.
-The next coordinator deletes it once everything in it is running again.

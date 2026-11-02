@@ -8,6 +8,9 @@ load helpers/common
 setup() {
   sandbox
   COSTS=$HOME/.local/state/agent-team/capacity/costs.jsonl
+  ADMITTED=$HOME/.local/state/agent-team/capacity/admitted.json
+  # A reading of the machine with room for a heavy run, so team-capacity admit takes none.
+  capacity_room $((16 * 1073741824))
 }
 
 teardown() {
@@ -27,7 +30,7 @@ wait_for() {
   return 1
 }
 
-COSTS=''
+COSTS='' ADMITTED=''
 
 # Start a run labelled <label> in the background that holds the lock until $BATS_TEST_TMPDIR/release
 # exists, and return once it holds it.
@@ -90,6 +93,7 @@ hold() {
   run_bin -2 team-heavy run --
   run_bin -2 team-heavy run --wait soon -- echo hi
   TEAM_HEAVY_WAIT_MINUTES=soon run_bin -2 team-heavy run -- echo hi
+  TEAM_HEAVY_RECHECK_SECONDS=0 run_bin -2 team-heavy run -- echo hi
 }
 
 # A root holding this checkout's bin/ and tests/run, whose bats is a stub that logs
@@ -124,6 +128,60 @@ SH
   # Under a run already, it runs at once.
   TEAM_HEAVY_HELD=1 run -0 "$root/tests/run" bats
   assert_contains "$(cat "$BATS_TEST_TMPDIR/bats")" "held=1 held by first"
+}
+
+# fake_suite with a second file, two.bats, whose bats stub logs to $BATS_TEST_TMPDIR/at-once how
+# many of the two files ran at once: each waits up to 2 seconds for the other to start.
+two_file_suite() {
+  local root
+  root=$(fake_suite)
+  touch "$root/tests/two.bats"
+  cat >"$root/tests/vendor/bats-core/bin/bats" <<SH
+#!/usr/bin/env bash
+running=$BATS_TEST_TMPDIR/running
+mkdir -p "\$running"
+touch "\$running/\$\$"
+for _ in {1..40}; do
+  [[ \$(find "\$running" -type f | wc -l) -lt 2 ]] || break
+  sleep 0.05
+done
+find "\$running" -type f | wc -l >>"$BATS_TEST_TMPDIR/at-once"
+sleep 0.3
+rm "\$running/\$\$"
+echo "ok 1 one"
+SH
+  echo "$root"
+}
+
+# The most files the last two_file_suite run ran at once, which it then forgets.
+most_at_once() {
+  sort -n "$BATS_TEST_TMPDIR/at-once" | tail -n 1
+  rm "$BATS_TEST_TMPDIR/at-once"
+}
+
+@test "tests/run runs TEAM_JOBS bats files at once, else team-capacity jobs' with a team home, else nproc's, and says it on its last line" {
+  root=$(two_file_suite)
+  TEAM_JOBS=2 run -0 "$root/tests/run" bats
+  [[ ${lines[-1]} =~ ^tests/run\ bats:\ 0m\ 0[0-9]s,\ up\ to\ 2\ bats\ files\ at\ once$ ]]
+  assert_equal "$(most_at_once)" 2
+  TEAM_JOBS=1 run -0 "$root/tests/run" bats
+  [[ ${lines[-1]} == *", up to 1 bats file at once" ]]
+  assert_equal "$(most_at_once)" 1
+  # With a team home, the floor of the level's CPU budget: minor's 30% of 12 cores.
+  level=$TEAM_HOME/level.jsonl
+  jq -cn '{ts: (now | floor | todate), mode: "manual", level: "minor", by: "Daniel", machine: "home-pc"}' >"$level"
+  TEAM_SLOTS_CPUS=12 run -0 "$root/tests/run" bats
+  [[ ${lines[-1]} == *", up to 3 bats files at once" ]]
+  # With none, as on CI or a fresh clone, nproc's.
+  run -0 env -u TEAM_HOME TEAM_SLOTS_CPUS=12 "$root/tests/run" bats
+  [[ ${lines[-1]} == *", up to $(nproc) bats file$( (($(nproc) == 1)) || echo s) at once" ]]
+  # A TEAM_JOBS that is no count is refused before anything runs.
+  rm -f "$BATS_TEST_TMPDIR/at-once"
+  for jobs in 0 three -1; do
+    TEAM_JOBS=$jobs run -1 --separate-stderr "$root/tests/run" bats
+    assert_equal "$stderr" "run: TEAM_JOBS is the count of bats files to run at once, a whole number above 0, not '$jobs'"
+  done
+  [[ ! -e $BATS_TEST_TMPDIR/at-once ]]
 }
 
 # The user manager on Linux, as the systemctl stub: it answers, every scope's MemoryPeak is <peak>
@@ -221,9 +279,10 @@ costs() {
 
 @test "a cost sample that cannot be written is a line on stderr and the run's status stands" {
   as_macos
-  mkdir -p "$HOME/.local/state/agent-team"
+  # No team home, so no admission needs the state directory either.
+  rm -r "$HOME/.local/state/agent-team/capacity"
   touch "$HOME/.local/state/agent-team/capacity"
-  run_bin -5 --separate-stderr team-heavy run -- bash -c 'sleep 1; exit 5'
+  run -5 --separate-stderr env -u TEAM_HOME "$REPO_ROOT/bin/team-heavy" run -- bash -c 'sleep 1; exit 5'
   assert_contains "$stderr" "team-heavy: could not write the cost sample to ~/.local/state/agent-team/capacity/costs.jsonl"
 }
 
@@ -331,4 +390,55 @@ gone() {
   for _ in 1 2 3 4; do run -0 "$root/tests/run" bats; done
   run_bin -0 team-capacity costs
   [[ $(grep '^heavy:tests-run' <<<"$output") =~ ^heavy:tests-run:\ [0-9.]+\ GiB,\ learned\ from\ 5\ samples, ]]
+}
+
+@test "a run is admitted to the level's budget once it holds the lock, its admission kept with its pid and task" {
+  AGENT_TEAM_TASK=T7 run_bin -0 --separate-stderr team-heavy run --kind tests-run -- echo ran
+  assert_equal "$output" ran
+  assert_equal "$(jq -c 'map([.kind, .task, (.pid | type)])' "$ADMITTED")" '[["heavy:tests-run","T7","number"]]'
+  # Under a run already, and with no team home, it asks nothing.
+  rm "$ADMITTED"
+  TEAM_HEAVY_HELD=1 run_bin -0 team-heavy run -- echo nested
+  capacity_room $((16 * 1073741824)) none
+  env -u TEAM_HOME "$REPO_ROOT/bin/team-heavy" run --wait 0 -- echo homeless >"$BATS_TEST_TMPDIR/out"
+  assert_equal "$(cat "$BATS_TEST_TMPDIR/out")" homeless
+  [[ ! -e $ADMITTED ]]
+}
+
+@test "with no room a run lets the lock go, says once why it waits, and runs when room comes" {
+  capacity_room $((16 * 1073741824)) none
+  # Once a check has held the lock and let it go (the first refusal, however long it took), and the
+  # lock reads free while the run waits, the level goes back to full.
+  (for want in held free; do
+    for _ in $(seq 300); do
+      "$REPO_ROOT/bin/team-heavy" status >"$BATS_TEST_TMPDIR/meanwhile" || true
+      [[ $(cat "$BATS_TEST_TMPDIR/meanwhile") == "$want"* ]] && break
+      sleep 0.05
+    done
+  done
+    capacity_room $((16 * 1073741824)) full) &
+  TEAM_HEAVY_RECHECK_SECONDS=1 run_bin -0 --separate-stderr team-heavy run --wait 1 --kind tests-run -- echo ran
+  assert_equal "$output" ran
+  assert_equal "$(grep -c 'room' <<<"$stderr")" 1
+  assert_equal "${stderr%%$'\n'*}" "team-heavy: waiting up to 1 minutes for room in the team's budget: no room for heavy:tests-run: the team is at level none: nothing starts; room comes when Daniel raises the level"
+  assert_equal "$(cat "$BATS_TEST_TMPDIR/meanwhile")" free
+  assert_equal "$(jq -c 'map(.kind)' "$ADMITTED")" '["heavy:tests-run"]'
+}
+
+@test "a run whose wait for room runs out exits 75 with the reason and runs nothing" {
+  mkdir -p "$HOME/.config/agent-team"
+  echo '{"heavy_gib": 20}' >"$HOME/.config/agent-team/capacity.json"
+  run_bin -75 --separate-stderr team-heavy run --wait 0 --kind tests-run -- touch "$BATS_TEST_TMPDIR/ran"
+  assert_equal "$stderr" "team-heavy: no room for heavy:tests-run at full (90%): 0.0 GiB of 16.0 GiB reserved, a heavy run of tests-run needs 20.0 GiB; room comes when the team's work shrinks or the level rises"
+  TEAM_HEAVY_RECHECK_SECONDS=1 run_bin -75 --separate-stderr team-heavy run --wait 0.04 --kind tests-run -- touch "$BATS_TEST_TMPDIR/ran"
+  assert_equal "$stderr" "team-heavy: waiting up to 0.04 minutes for room in the team's budget: no room for heavy:tests-run at full (90%): 0.0 GiB of 16.0 GiB reserved, a heavy run of tests-run needs 20.0 GiB; room comes when the team's work shrinks or the level rises
+team-heavy: still no room after 0.04 minutes: no room for heavy:tests-run at full (90%): 0.0 GiB of 16.0 GiB reserved, a heavy run of tests-run needs 20.0 GiB; room comes when the team's work shrinks or the level rises"
+  [[ ! -e $BATS_TEST_TMPDIR/ran ]]
+  run_bin -0 team-heavy status
+  assert_equal "$output" free
+  # An admission that fails otherwise fails the run.
+  echo '{"heavy_gib": 0}' >"$HOME/.config/agent-team/capacity.json"
+  run_bin -1 --separate-stderr team-heavy run --kind tests-run -- touch "$BATS_TEST_TMPDIR/ran"
+  assert_equal "$stderr" "team-heavy: team-capacity admit failed for heavy:tests-run (exit 1): team-capacity: $HOME/.config/agent-team/capacity.json: heavy_gib must be a number above 0, not 0"
+  [[ ! -e $BATS_TEST_TMPDIR/ran ]]
 }

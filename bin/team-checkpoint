@@ -29,7 +29,7 @@
 # (its lines prefixed "usage: "); a failed export is reported on stderr and fails nothing, since
 # the transcripts stay and the next checkpoint exports what this one could not.
 # Then, in the team home, the ledger's lock held: commits every records path bin/lib/records lists
-# (the ledger, tasks/ with the scratch archives, plans, briefs and their records and
+# (the ledger, level.jsonl, tasks/ with the scratch archives, plans, briefs and their records and
 # tasks/current.md or its removal, projects/, projects.toml, memory/, machine/, usage/ and
 # manual-steps.md), less what git ignores, as "chore: checkpoint" on the branch checked out (dev),
 # leaving whatever else is staged as it was, and pushes the branch when it is ahead of origin's;

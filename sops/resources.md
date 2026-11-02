@@ -1,12 +1,105 @@
 # SOP: the team's resources
 
 Built by T175 (2026-11-01), toward Daniel's resource levels: full, minor and none, each a share of the machine.
-`team-capacity --help` is the exact reference for its commands and its settings, `~/.config/agent-team/capacity.json`; this SOP says why the team's work is held and measured as it is and what to do when it is not.
-No limit is set on the team's slice yet: it holds and measures the team's work, and the levels' limits come later.
+`team-capacity --help` and `team-level --help` are the exact reference for their commands and the settings, `~/.config/agent-team/capacity.json`; this SOP says why the team's work is held and measured as it is and what to do when it is not.
+
+## Levels and modes
+
+The team runs at one of three levels, each a share of the machine: full (`full_share`, 90%), minor (`minor_share`, 30%) and none (0%).
+The coordinator runs outside the share, at every level.
+The mode is manual, which holds the level until Daniel changes it, or automatic, where the heartbeat picks the level from what Daniel's programs use ("Automatic mode" below).
+
+The record is the team home's `level.jsonl`, one line per change: `{ts, mode, level, by, machine}`, with `discord_message` when the change came from Daniel's message in `#coordinator`, and an automatic pick's `reason` and `reading`.
+The current mode and level are the last line's; with no line the team is manual full, as it was before levels.
+It is a record, committed by `team-checkpoint` and by the handoff's records commit, so Daniel's level holds across restarts and handoffs; the ledger is not used, since every ledger line needs a task.
+
+`team-level full|minor|none [--message <id>]` records manual mode at that level, `team-level manual` manual mode at the current one, and `team-level auto [--message <id>]` automatic mode at the level it picks now; a change to the mode and level the team is already at records nothing and says so, and so does `auto` while the team is already automatic.
+Each applies the limits at once and prints the acknowledgement the coordinator posts: "Resources: manual, minor (30%): 9.2 GiB and 3.6 cores for the team; 6.1 GiB reserved; T171 and T174 stow.", ending with the tasks the stow plan says must stow ("Shrinking and growing back" below), or "nothing needs to stow".
+`team-level` alone says the mode, the level, the budget and what bounds it, the team's use and the last change; `team-level apply` applies the recorded level's limits again, after a reboot or a reset slice.
+A change, `apply` and `tick` refuse on a machine that does not hold the lease; `status` only reads.
+The coordinator runs each change on Daniel's word and posts the acknowledgement, and stows and relaunches tasks to fit, as its `level` skill says.
+Daniel sees the level where they look: `team-inbox`'s Waiting on you message after its items, and `team-snapshot` after its open tasks, say one line, "Resources: manual, minor (30%): 9.2 GiB and 3.6 cores for the team; 6.1 GiB reserved; T171 stowed, waiting to resume", from `team-level status --stored --json`, naming the open tasks stowed and not yet relaunched.
+
+## Automatic mode
+
+With `team-level auto`, the heartbeat's `level` step, `team-level tick`, runs after its `capacity` step and picks the level from the stored readings; it takes no reading itself.
+
+The pick of a reading, with `T` the memory total, `C` the cores, and `O_m` and `O_c` what the other programs use: `f` is the lower of `(T - O_m - reserve_gib) / T` and `(C - O_c - reserve_cores) / C`, memory's alone when the reading has no CPU.
+The pick is full when `f` is at least `auto_full_free`, none when it is below `auto_none_below`, and minor between.
+
+With the current level `L`:
+
+- A drop needs one reading: when the newest reading picks below `L`, the level drops to that pick at once.
+- A rise needs `rise_minutes` of headroom: the last change is at least `rise_minutes` old, a reading at least `rise_minutes` old exists, and it and every reading after it pick above `L`; the level then rises to the lowest of their picks.
+  So one spike never raises it, nor one reading after the heartbeat was off.
+- With no reading of the last 15 minutes nothing changes, and the step says so in the heartbeat log.
+
+Each change is a `level.jsonl` line `{ts, mode: "auto", level, by: "auto", machine, reason, reading}`, the reading being the one it rests on (the newest for a drop, the newest of the lowest pick for a rise, kept as `{at, total, others_memory, cpus, others_cores, free, pick}`), and one line in `#coordinator`, such as "Resources: auto lowered the team to minor (30%) at 14:05: other programs use 18.2 GiB of 30.6 GiB and 7.9 of 12 cores; T171 and T174 stow".
+A post Discord refuses fails the step, logged in the heartbeat log, and is kept in `~/.local/state/agent-team/level/posted.json` until a later run posts it, once.
+In both modes the step then applies the level's limits again, so the `MemoryHigh` held at the slice's use comes down as the use falls, and a reboot or a reset slice is held again within five minutes, and takes the stow plan's first two steps, which lose nothing ("Shrinking and growing back" below).
+
+An example day on home-pc (30.6 GiB, 12 cores, the default settings, a reading every five minutes):
+
+| Time | Other programs use | `f` | Pick | Level |
+| - | - | - | - | - |
+| 09:00 | 9.8 GiB, 2 cores | 0.55 | full | full |
+| 14:05 | 18.2 GiB, 7.9 cores | 0.26 | minor | minor, at once |
+| 14:30 | 24 GiB, 6 cores | 0.08 | none | none, at once |
+| 14:35 on | 18 GiB, 6 cores | 0.28 | minor | none until 14:50, then minor: the 14:35 reading is then 15 minutes old, and it and every one since pick minor |
+| 17:00 on | 9.8 GiB, 2 cores | 0.55 | full | minor until 17:15, then full |
+
+## The settings
+
+`~/.config/agent-team/capacity.json` is the machine's own, beside `stack.json`, never moved between machines; every key is optional, and a file that is not one JSON object, a key of the wrong kind or an unknown key is refused, naming each problem.
+
+| Key | Default | What it sets |
+| - | - | - |
+| `full_share` | 0.9 | full's share of memory and CPU |
+| `minor_share` | 0.3 | minor's share |
+| `reserve_gib` | 4 | memory kept free beyond the other programs' current use, for their growth |
+| `reserve_cores` | 1 | cores kept free beyond their current use |
+| `auto_full_free` | 0.5 | automatic mode picks full while the other programs leave at least this fraction of memory and of CPU free |
+| `auto_none_below` | 0.15 | automatic mode picks none while they leave less than this fraction of either |
+| `rise_minutes` | 15 | how long every reading must allow a higher level before automatic mode rises |
+| `session_gib` | 0.5 | a session's seed cost, until learned |
+| `heavy_gib` | 5 | a heavy run's seed cost, until learned |
+| `gate_gib` | 2.2 | a gate run's seed cost, until learned |
+| `min_cores` | 1 | the slice's CPU quota floor, and the containers', so workers can still stow at none |
+| `min_gib` | 2 | the slice's `MemoryHigh` floor, for the same reason |
+
+The evidence for the defaults is the plan's deep dive of 2026-11-01: 13 sessions at 0.3 to 0.55 GiB each; a Conventioner stack 0.6 GiB in use against 2.8 GiB of limits; one heavy run 4 to 6 GiB; a gate about 2.2 GiB (T19's measure); and Daniel's programs about 9.8 GiB of 30.6 GiB, which leaves `(30.6 - 9.8 - 4) / 30.6`, 0.55, so full is what a normal day allows.
+`min_gib` is the coordinator's call of 2026-11-01, the memory twin of `min_cores`.
+
+## The budget
+
+With `T` the memory total, `C` the cores, `s` the level's share (0 for none), and `O_m` and `O_c` what the other programs use (Daniel's own, the coordinator and the claude daemon's spare sessions among them):
+
+- the memory budget is `max(0, min(s * T, T - O_m - reserve_gib))`, from the newest reading;
+- the CPU budget is `max(0, min(s * C, C - O_c - reserve_cores))`, from the newest reading with CPU, or `s * C` when none has.
+
+So none's budget is 0, and no level's is more than what Daniel's programs leave.
+A command that needs the budget takes a reading first when the newest is more than 10 minutes old.
+`team-capacity jobs` is the floor of the CPU budget, at least 1, read from the stored readings without taking one: `tests/run` runs that many bats files at once, and `team-checks` gives it to its commands as `TEAM_JOBS` (`nproc` with no team home, no reading, or a malformed record or settings).
+What the team's live work reserves is said in "Admission" below: a live session its use and one shared spike allowance, a new one, a stack, a heavy run and a gate the larger of their kind's estimate and their use.
+
+Memory is read as RAM alone, as the kernel's `MemAvailable` and each cgroup's `memory.current` count it: swap is left out of the budget, the use and the limits (home-pc has a 33.6 GiB swap partition, much of it in use).
+A page the slice's limits push to swap frees RAM for Daniel's programs, which is the budget's point, so the slice's swap is not limited.
+
+## The limits
+
+On Linux `team-level` sets the slice's limits with `systemctl --user set-property --runtime agent-team.slice`, so they need no root and are gone after a reboot, until the heartbeat's `level` step (every 5 minutes) or `team-level apply` sets them again:
+
+- `CPUQuota` is `max(B_c, min_cores) * 100%`, so the kernel holds the team's CPU at once, whatever a worker runs.
+- `MemoryHigh` is the largest of `min_gib`, the memory budget less the reservations of the team's stacks (which run outside the slice), and, while the slice uses more than that, the lower of its use and its `MemoryHigh` before. So a drop never throttles live sessions into reclaim: the slice is held where it is, and comes down as finished sessions stop and tasks stow.
+- `MemoryMax` is the larger of `MemoryHigh` and the slice's use, plus 1 GiB, so a drop never kills a worker.
+
+Rootful Docker keeps its containers outside every user slice, so their CPU is held by `docker update --cpus <max(B_c, min_cores)>` on every running container labelled `io.github.chanjdaniel.team.owner=agent-team`, with each apply; `team-stack up` gives a stack it starts the `--cpus` of the last apply (`~/.local/state/agent-team/level/applied.json`), so one started between two applies is held too.
+A slice that is not installed is said with its fix, `team-capacity install` (Daniel's yes), and the containers are still held.
+On macOS only the containers' CPU is held.
 
 ## The team's slice
 
-On Linux every worker session, heavy run and gate run sits in one systemd user slice, `agent-team.slice`, so the kernel can measure and later limit the team's work as one, apart from Daniel's own programs.
+On Linux every worker session, heavy run and gate run sits in one systemd user slice, `agent-team.slice`, so the kernel can measure and limit the team's work as one, apart from Daniel's own programs.
 Each task's work is in a slice of its own inside it, `agent-team-T<n>.slice`, so each task's memory and CPU are measured apart.
 systemd nests a slice under every dash prefix of its name, so `agent-team-T175.slice` sits in `agent.slice/agent-team.slice/`, and a new slice name must keep that rule in mind.
 
@@ -40,6 +133,7 @@ On top of it, each reading says each task's use:
 - Its CPU is its slice's `CPUUsageNSec` since the newest stored reading, plus its processes outside the slice since the snapshot, plus its stacks' share of a core.
 - Elsewhere, or for a task with no slice, it is every process that is the task's: one whose working directory is the task's held worktree or below it, or that descends from one.
 - Each live team session's use is its scope's on Linux (`MemoryCurrent`, `MemoryPeak`, `CPUUsageNSec`), else its process tree's, but the heavy run that holds the lock (the `team-heavy` its holder line names, and what it runs), whose cost is its own `heavy:<kind>`, so a builder's samples never carry its test runs.
+- The running heavy run's use, while a `team-heavy` holds the lock, is its scope's `MemoryCurrent` (`agent-team-heavy-<pid>.scope`) on Linux, else its `team-heavy`'s tree, which admission reserves it at.
 - The gate runs a pipeline while a process works in one of its worktrees, `~/.no-mistakes/worktrees/...`; its use is its daemon unit's on Linux, else the processes in `~/.no-mistakes` and their descendants.
 
 `team-capacity status` says the newest reading, taking one first when the newest is over 10 minutes old.
@@ -72,10 +166,97 @@ It never reaches a Docker container the run started, which rootful Docker keeps 
 The seeds are `capacity.json`'s `session_gib` (0.5), `heavy_gib` (5) and `gate_gib` (2.2), and for a stack the sum of its services' `mem_limit`s as the readings last saw it running (`team-stack ls --json`'s `memory_limit_bytes`).
 The seeds' evidence: 13 sessions at 0.3 to 0.55 GiB each, one heavy run 4 to 6 GiB and a gate about 2.2 GiB (T19's measure), from the plan's deep dive of 2026-11-01.
 
+## Admission
+
+A worker launch, a stack and a heavy run each start only when their learned cost fits the level's memory budget beside what is already reserved, so the team never takes room it has not been given.
+CPU is never admitted: the slice's quota holds it.
+
+`team-capacity admit --kind <kind> [--task T<n>]` decides, under an exclusive lock, `~/.local/state/agent-team/capacity.lock`, around its read and its decision, so two launches never both take the last room.
+It takes a reading first when the newest is over 10 minutes old, as `status` does.
+What is reserved, in the parts `team-capacity status --json` splits it into:
+
+- `sessions_use`: each live team session of the newest reading past its admission window, at its use, its scope's `memory.current` (RAM only);
+- `spike_allowance`: one for the team, the largest of those sessions' estimates less their use, at 0 at least, and 0 with no session past its window, which keeps room reserved for one worker's spike at a time;
+- `admissions`: each admission of the last 10 minutes, but a heavy run's, at its estimate then, since a new session or stack has not grown yet and the next reading may not hold it; they are kept in `capacity/admitted.json`.
+  A session the reading holds of an admission's kind and task is in its window, reserved once, at the larger of that estimate and its use; of several such sessions, the ones using least are, since a new session uses little yet.
+- `stacks` and `gates`: each running team or gate stack, and the gate while it runs a pipeline, at the larger of its kind's estimate and its use; a stack the reading holds that an admission names (`team-stack up` gives its Compose project name, `--name`) is reserved once, among the stacks, at the larger of that and the admission's estimate, so an instance admitted while its task's own stack runs is reserved beside that stack until the reading holds it;
+- `heavy_runs`: the running heavy run, while a `team-heavy` holds its lock, at the larger of its estimate and its use, at its admission's kind, its use the reading's (its scope's on Linux) when the reading saw it; a run holding the lock in another form, Conventioner's, at `heavy_gib`.
+
+A session's estimate is its scope's peak, tests it runs in the foreground included, while it idles at a fraction of it: on home-pc on 2026-11-01 seven builders used 0.1 to 0.3 GiB each against the learned 2.4 GiB, so reserving each at its estimate left full's 16.4 GiB budget no room for an eighth or a heavy run.
+Daniel chose the use and one shared allowance (2026-11-01), so the team keeps its parallelism, and the slice's `MemoryHigh` holds a rare pile-up of spikes.
+
+A heavy run asking is never counted beside itself: it asks while it holds the heavy-run lock, so the running heavy run is the asker.
+The kind's estimate is `team-capacity costs`'s; a stack it has none of yet is weighed at the `mem_limit`s `team-stack up` gives (`--seed-bytes`), a heavy run or session kind it does not list at `heavy_gib` or `session_gib`, and anything else with no estimate at 0, so the next reading weighs it by its use.
+When the reserved memory plus the estimate is at most the budget it exits 0 and keeps the admission; else it exits 75 with the reason on stderr and what makes room, such as `no room for session:reviewer at minor (30%): 8.9 GiB of 9.2 GiB reserved, a reviewer needs 0.5 GiB; room comes when the team's work shrinks or the level rises`; at none, `no room for session:reviewer: the team is at level none: nothing starts; room comes when Daniel raises the level` (in automatic mode, "when the level rises").
+`team-capacity status --json` says what is reserved (`reserved`: the total, each part and each item) and what room is left (`room`), and `team-level status` reports the same split.
+
+Who asks:
+
+| Caller | Kind | With no room |
+| - | - | - |
+| `team-worker` | `session:<role>`, once it has stopped the task's finished sessions, which `--freed` leaves out, since the reading still holds them | exits 75 with the reason, launching nothing; T0 and ops are never asked |
+| `team-stack up` | `stack:<project>`, once the disk floor holds | waits within `wait_minutes`, re-checking every 30 seconds, then exits 75 (`sops/docker.md`, "Admission") |
+| `team-heavy run` | `heavy:<kind>`, once it holds the heavy-run lock | lets the lock go, says once why it waits, asks again every 30 seconds within its `--wait`, then exits 75; under a run already (`TEAM_HEAVY_HELD`), and with no team home (CI, a fresh clone), it asks nothing |
+
+An admission that fails for another reason (a malformed `capacity.json`, no reading to size the budget by) fails the caller with its reason.
+The coordinator logs a worker's 75 as `paused` with its line, and launches it again on `team-sweep`'s `level-launch` finding ("Shrinking and growing back"); a worker that gets a stack's 75 reports `PAUSED` with it.
+
+## Stowing
+
+`team-stow` sets chosen tasks aside on this machine without releasing anything, so their memory comes back to the level's budget and Daniel's programs.
+Level none, a handoff and a shutdown take the same path: none stows every task through it, and `team-handoff` runs `team-stow --all --cause handoff` as its stow step, with `--down` for a handoff to another machine and without it for a shutdown (`team-handoff --here`, `sops/portability.md`), so the stacks a restart comes back to keep their data.
+It runs on the lease holder, once each task's live workers have answered the coordinator's `T<n> STOW`, or have not in time; it refuses elsewhere, and exits 75 while GitHub is unreachable.
+
+`team-stow T<n>... [--down] [--cause level|handoff] [--json]`, or `--all` for every open task, takes these steps, one line per step and task, each safe to run again:
+
+1. branches: each task's branches checked against origin's before any of its sessions stops; a diverged branch refuses its task, naming it, and its workers keep running;
+2. sessions: `claude stop` then `claude rm` for each live `T<n>-<role>` session; an ops session is ended with `team-ops-end`, never carried; one that will not stop refuses its task;
+3. stacks: `team-stack stop --worktree <path>` for each worktree whose project has a stack block, its data kept (`team-stack down`, saving the logs, with `--down`); one that fails is said, and the task still stows;
+4. checkpoint: `team-checkpoint --force`, once per run, none when every task left was stowed already and no session was stopped;
+5. branches: each task branch pushed to its origin when strictly ahead, checked again first;
+6. stowed: one `stowed` per task, with `cause` `level` (the default) or `handoff`; none when the task's latest machine event is already a stowed from this machine with the same worktrees.
+   Its `sessions` names the sessions this run stopped and those an earlier run of the same lease stopped without stowing the task (one interrupted, or whose push failed), which `~/.local/state/agent-team/stow.json` keeps until the task is stowed.
+
+A refused task is said on stderr with its reason, the others still stow, and the exit is 1; `--json` prints `{tasks: [{task, worktrees, roles, sessions, cause}], refused: [{task, reason}]}`.
+
+A task is stowed, waiting to resume, while its latest `stowed`, for the level or a handoff, names roles to relaunch and no launch follows it (`stowed_awaiting_resume` in `bin/lib/ledger.jq`); a stowed with no `cause`, as every line before `team-stow` has, is a handoff's.
+
+`team-stow T<n>... --stop-runs` does only this, on any machine: `team-heavy stop --task T<n>` ends the task's heavy run when it holds the machine's lock, and in each of the task's worktrees whose project delivers through no-mistakes, `no-mistakes axi abort` cancels the run `no-mistakes axi` shows active on its branch.
+A worker blocked in a foreground test or gate then returns and reads the STOW already sent; a manual drop runs it right after the STOWs, and an automatic one does not, so a running test or gate finishes.
+
+The steps live in `bin/lib/stow.sh`, which `team-stow` alone sources.
+
+## Shrinking and growing back
+
+When the budget shrinks below what the team's work reserves, the team first stops what nobody needs, then stows tasks, newest first, until the rest fits; when room comes back, the stowed tasks come back, oldest first.
+`team-capacity plan [--json]` says both, from the stored readings only, the ledger and the session list (an unreadable one fails it).
+
+Over budget is what the newest reading reserves (as `team-capacity status --json` counts it) above the level's memory budget, or at none any open task with a live worker or a running stack.
+It counts only once it is confirmed: the reading before the newest was over too, or the last level change is newer than that reading.
+So one spike in Daniel's use never stows a task, and a change Daniel makes takes effect at once.
+
+While it is confirmed, the plan's steps, in order, each with what it frees (the reservations it ends, the spike allowance taken again over the sessions left):
+
+1. stop each finished session: idle, its work handed on, by the rule `team-worker` stops a task's own sessions by (`handed_on_launches` in `bin/lib/ledger.jq`), over every open task; with no new launch, a builder counts only once a later builder has launched in its worktree (its work handed on, as for `team-worker`, by a `ticket-done`, `pr` or `done` after its launch), since a builder whose PR is open still takes the review's findings;
+2. stop each running team stack of an open task (its worktree's own, kind `dev`) that no busy session, Daniel's own included, works in;
+3. stow the open tasks with a live worker or a reservation left, the most recently opened first (its work the least invested), until what is left fits; at none, every one.
+
+The heartbeat's `level` step (`team-level tick`) takes steps 1 and 2 itself, since they lose nothing: `claude stop`, bounded 30 seconds, for each session, and `team-stack stop --worktree <path>`, its data kept, for each stack, one heartbeat log line each, such as "stopped T7-reviewer r7r7r7r7, its work handed on, to bring the team under its budget at minor (30%): frees 1.0 GiB".
+Step 3 is the coordinator's: `team-sweep`'s `level-stow` finding names the tasks, newest first ("level: over budget at minor (30%): stow T174, then T171"), and the coordinator sends each live worker its STOW, then runs `team-stow` with `cause` `level`.
+`team-level`'s acknowledgement of a change and its automatic post name the same tasks, in task number order.
+
+A task is stowed, waiting to resume, while its latest `stowed` names roles to relaunch and no launch follows it, whatever its `cause`: a task a handoff or a shutdown stowed that the resume could not relaunch (at none, or a launch refused with 75) waits for room as one stowed for the level does.
+The plan's resume list is those tasks, oldest stow first, each with the estimate of its roles to relaunch (its `stowed`'s `roles`, each at its `session:<role>` estimate) and whether that fits beside what is reserved now; at none nothing fits.
+`team-sweep`'s `level-resume` finding names the first that fits ("level: T171 fits again: relaunch its builder"), one task at a time, and each launch is still admitted on its own, so one refused with 75 waits for the next `level-resume`.
+A launch refused with 75 for a task that is not stowed waits the same way: while the task's latest launch is followed by a `paused` whose reason is `team-worker`'s "no room for session:<role>" line, the plan's launch list holds it, oldest refusal first, and `level-launch` names the first whose roles fit ("level: T5 has room again: launch its reviewer, refused for room at <time>"), until the task's next launch.
+A `team-capacity plan` that fails is one `level` finding naming its reason, in their place.
+
 ## What the doctor says
 
 `team-doctor`'s `resources` line reads `team-capacity check --json`.
-It fails only when `team-capacity check` itself cannot run, since no limit needs the slice yet: so a machine without it runs the team as before, and `team-resume` and `team-load-check`, which stop on any FAIL, go on.
-It warns when the user's systemd does not answer or its cgroup does not delegate `cpu` and `memory`, which only Daniel can change (a `user@.service` drop-in, with sudo); these become a FAIL once the levels set limits that need the slice.
-It also warns when the slice or a gate daemon's drop-in is not installed (`team-capacity install`, Daniel's yes), when the gate's daemon still runs outside the slice (its restart waits on a pipeline), when a live team session runs outside its task's slice (`team-capacity place`, or the heartbeat's next run), and on the lease holder when no reading is under 15 minutes old (the `capacity` step's lines in the heartbeat log say why).
+Its reason starts with the level's words, as `team-level` acknowledges a change.
+It fails when the user's systemd does not answer or its cgroup does not delegate `cpu` and `memory`, which only Daniel can change (a `user@.service` drop-in, with sudo), since the level's limits need the slice; `team-resume` and `team-load-check`, which stop on any FAIL, stop there too.
+It fails on a `capacity.json` or a `level.jsonl` line that is malformed, naming it.
+It warns when the slice or a gate daemon's drop-in is not installed (`team-capacity install`, Daniel's yes), when the gate's daemon still runs outside the slice (its restart waits on a pipeline), when a live team session runs outside its task's slice (`team-capacity place`, or the heartbeat's next run), and on the lease holder when no reading is under 15 minutes old (the `capacity` step's lines in the heartbeat log say why).
+On Linux with the slice installed it warns, naming `team-level apply`, when the limits last applied are missing or another mode and level's than the record's, or the slice's CPU quota is not theirs, as after a reboot.
 macOS has no cgroups: `install` and `place` change nothing there, and the line passes with "no hard limits on macOS: admission and stow only".

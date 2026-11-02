@@ -50,6 +50,7 @@ tests/team-heavy.bats	23	26
 tests/team-inbox.bats	9	12
 tests/team-janitor.bats	25	53
 tests/team-lease.bats	35	97
+tests/team-level.bats	20	45
 tests/team-load-check.bats	33	68
 tests/team-log.bats	41	38
 tests/team-merge.bats	199	277
@@ -71,6 +72,7 @@ tests/team-snapshot.bats	36	33
 tests/team-stack-live.bats	1	1
 tests/team-stack.bats	272	405
 tests/team-state.bats	38	38
+tests/team-stow.bats	45	110
 tests/team-sweep.bats	278	309
 tests/team-thread-interview.bats	6	11
 tests/team-thread.bats	1	3

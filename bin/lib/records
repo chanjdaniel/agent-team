@@ -3,6 +3,7 @@
 # which keep them out of the code repository's commits and pushes; tests/repo.bats checks that no
 # tracked path matches.
 ledger.jsonl
+level.jsonl
 manual-steps.md
 projects.toml
 tasks/**

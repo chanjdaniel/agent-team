@@ -1,11 +1,14 @@
 #!/usr/bin/env bats
-# team-handoff: the machine being left stops its workers' sessions, checkpoints, pushes its task
-# branches, stows each open task in the ledger, captures its Claude config, commits and pushes the
-# team home, disables its heartbeat and releases the lease; then --retire removes the coordinator.
+# team-handoff: the machine being left stows every open task through team-stow (its workers'
+# sessions stopped, its stacks taken down, or only stopped with --here, a checkpoint, its task
+# branches pushed, one stowed each), captures its Claude config, commits and pushes the team
+# home, disables its heartbeat and releases the lease; then --retire removes the coordinator.
 # One git-pool project, home, on a bare origin; home-pc holds the lease on the team home's bare
-# origin with its heartbeat enabled, and T1 is open there with a live builder (stubbed claude).
+# origin with its heartbeat enabled, and T1 is open there with a live builder (stubbed claude);
+# with_stack gives home a stack block and T1 a running stack (stubbed docker).
 
 load helpers/common
+load helpers/docker
 
 setup() {
   sandbox
@@ -76,6 +79,27 @@ launch() {
     >>"$TEAM_HOME/ledger.jsonl"
 }
 
+# Give home a stack block and T1 a running stack, stackfix-1, its wrapper committed on T1's branch
+# (head moves to that commit).
+with_stack() {
+  mkdir -p "$wt/scripts"
+  cp "$REPO_ROOT/tests/fixtures/stack/compose.sh" "$wt/scripts/compose.sh"
+  cp "$REPO_ROOT/tests/fixtures/stack/docker-compose.yml" "$wt/docker-compose.yml"
+  git -C "$wt" add scripts docker-compose.yml
+  git -C "$wt" commit -q -m "feat: add the stack"
+  head=$(git -C "$wt" rev-parse HEAD)
+  printf '\n[home.stack]\ncompose = "scripts/compose.sh"\nseed = "scripts/seed.sh"\nlog_services = ["web"]\n' >>"$TEAM_HOME/projects.toml"
+  docker_stub "$wt"
+  capacity_room $((16 * 1024 * 1024 * 1024))
+  run_bin -0 team-stack up --worktree "$wt" --no-seed
+}
+
+# The state of each container of stackfix-1, one per line.
+stack_states() {
+  jq -r '.[] | select(.Config.Labels["com.docker.compose.project"] == "stackfix-1")
+    | if .State.Running then "running" else "stopped" end' "$DOCKER_STATE/containers.json"
+}
+
 # Log one more T1 event, given as JSON without ts and task.
 log_event() {
   jq -c '{ts: (now | todate), task: "T1"} + .' <<<"$1" >>"$TEAM_HOME/ledger.jsonl"
@@ -119,7 +143,7 @@ interrupt_after() {
   [[ ${lines[-2]} == "Released at "* ]]
   assert_equal "${lines[-1]}" "Config captured: CLAUDE.md (new)."
   assert_equal "$(stowed_events | jq -c 'del(.ts)')" \
-    "{\"task\":\"T1\",\"event\":\"stowed\",\"machine\":\"home-pc\",\"worktrees\":[{\"project\":\"home\",\"branch\":\"feat/T1-work\",\"head\":\"$head\"}],\"roles\":[\"builder\"],\"sessions\":[\"builder\"]}"
+    "{\"task\":\"T1\",\"event\":\"stowed\",\"machine\":\"home-pc\",\"worktrees\":[{\"project\":\"home\",\"branch\":\"feat/T1-work\",\"head\":\"$head\"}],\"roles\":[\"builder\"],\"sessions\":[\"builder\"],\"cause\":\"handoff\"}"
   assert_equal "$(team_subjects | grep -c '^chore: handoff from home-pc$')" 1
   # The stowed lands in the handoff's own commit, whatever step was interrupted.
   assert_contains "$(git -C "$team_origin" show "$(git -C "$team_origin" log --format=%H --grep '^chore: handoff' dev)" -- ledger.jsonl)" '"event":"stowed"'
@@ -149,23 +173,24 @@ rm 81f08540"
   assert_equal "${lines[0]}" "lease: home-pc holds the lease, epoch 1"
   assert_contains "$output" "checkpoint: T1 home: archived .scratch/task to tasks/T1/scratch"
   assert_contains "$output" "branches: T1 home: pushed feat/T1-work at ${head:0:7}"
-  assert_contains "$output" "stowed: T1 roles builder; home feat/T1-work at ${head:0:7}"
+  assert_contains "$output" "stowed: T1 roles builder; home feat/T1-work at ${head:0:7}; cause handoff"
   assert_contains "$output" "config: captured CLAUDE.md (new)"
-  assert_contains "$output" "sessions: stopped and removed T1-builder (81f08540)"
+  assert_contains "$output" "sessions: T1: stopped and removed T1-builder (81f08540)"
+  assert_contains "$output" "stacks: T1: no stack"
   assert_contains "$output" "team home: committed $(git -C "$TEAM_HOME" rev-parse --short HEAD) chore: handoff from home-pc and pushed dev"
   assert_contains "$output" "heartbeat: "
   assert_contains "$output" "lease: home-pc released the lease, epoch 1"
   [[ ${lines[-2]} =~ ^"Released at "[0-9]{2}:[0-9]{2}" from home-pc. The \`team-resume --wait\` started on the other machine takes the team now; with none running there, run \`team-resume\` there."$ ]]
   assert_equal "${lines[-1]}" "Config captured: CLAUDE.md (new)."
   # The workers stop before the checkpoint, so it holds their worktrees' last state.
-  [[ $output == *"sessions: stopped and removed T1-builder"*"checkpoint: T1 home: "* ]]
+  [[ $output == *"sessions: T1: stopped and removed T1-builder"*"checkpoint: T1 home: "* ]]
 
   # Origin has the task branch at the worktree's commit.
   assert_equal "$(git -C "$home_origin" rev-parse feat/T1-work)" "$head"
 
   # One stowed, with that head and the live builder's role.
   assert_equal "$(stowed_events | jq -c 'del(.ts)')" \
-    "{\"task\":\"T1\",\"event\":\"stowed\",\"machine\":\"home-pc\",\"worktrees\":[{\"project\":\"home\",\"branch\":\"feat/T1-work\",\"head\":\"$head\"}],\"roles\":[\"builder\"],\"sessions\":[\"builder\"]}"
+    "{\"task\":\"T1\",\"event\":\"stowed\",\"machine\":\"home-pc\",\"worktrees\":[{\"project\":\"home\",\"branch\":\"feat/T1-work\",\"head\":\"$head\"}],\"roles\":[\"builder\"],\"sessions\":[\"builder\"],\"cause\":\"handoff\"}"
 
   # The worker's session alone was stopped and removed; the coordinator stays for --retire.
   assert_equal "$(stops_and_removes)" "stop 81f08540
@@ -192,6 +217,17 @@ rm 81f08540"
   assert_equal "$(lease_json | jq -c '[.holder, .epoch, .state]')" '["laptop",2,"held"]'
   on_machine laptop git -C "$BATS_TEST_TMPDIR/machines/laptop/team" pull -q
   assert_equal "$(jq -r 'select(.event == "stowed") | .worktrees[0].head' "$BATS_TEST_TMPDIR/machines/laptop/team/ledger.jsonl")" "$head"
+}
+
+@test "the handoff's commit holds the level record, so Daniel's level holds on the next machine" {
+  make_machine laptop
+  # The stow's checkpoint (step 2) commits what was there; a level recorded after it is the
+  # handoff's.
+  TEAM_HANDOFF_STOP_AFTER=3 run_bin -1 team-handoff
+  echo '{"ts":"2026-11-01T14:05:00Z","mode":"manual","level":"minor","by":"Daniel","machine":"home-pc"}' >"$TEAM_HOME/level.jsonl"
+  run_bin -0 team-handoff
+  assert_contains "$(git -C "$team_origin" show --name-only --format= "$(git -C "$team_origin" log --format=%H --grep '^chore: handoff' dev)")" "level.jsonl"
+  assert_equal "$(git -C "$team_origin" show dev:level.jsonl | jq -r .level)" minor
 }
 
 @test "the handoff's commit holds this machine's usage to now, today's included" {
@@ -254,7 +290,8 @@ SH
   assert_equal "$(git -C "$team_origin" ls-tree --name-only "$wip" | paste -sd ' ')" ".gitignore README.md a.txt b.txt late.txt"
   assert_equal "$(stowed_events | jq -c 'del(.ts)')" "$(jq -cn --arg h "$head" --arg wt "$wt" '{task: "T1", event: "stowed",
     machine: "home-pc", worktrees: [{project: "home", branch: "feat/T1-work", head: $h, uncommitted: true}],
-    roles: ["builder"], sessions: ["builder"], note: "untracked files left out of wip/home/T1 stay on home-pc in \($wt): .env.local"}')"
+    roles: ["builder"], sessions: ["builder"], note: "untracked files left out of wip/home/T1 stay on home-pc in \($wt): .env.local",
+    cause: "handoff"}')"
 }
 
 @test "the final message lists the config captured and what was left to Daniel, again on a run after the release" {
@@ -293,8 +330,8 @@ esac
 SH
 
   run_bin -0 --separate-stderr team-handoff
-  assert_contains "$output" "sessions: ended T1-ops with team-ops-end, its transcript and answer deleted; if its answer had not reached Daniel, Daniel asks again on the other machine"
-  assert_contains "$output" "sessions: stopped and removed T1-builder (81f08540)"
+  assert_contains "$output" "sessions: T1: ended T1-ops with team-ops-end, its transcript and answer deleted; if its answer had not reached Daniel, Daniel asks again"
+  assert_contains "$output" "sessions: T1: stopped and removed T1-builder (81f08540)"
   [[ ! -e $transcript && ! -e ${transcript%.jsonl} && ! -e $wt/.scratch/answer.md ]]
   assert_equal "$(stowed_events | jq -c .roles)" '["builder"]'
   assert_equal "$(jq -r '.[].name' "$BATS_TEST_TMPDIR/sessions.json")" "coordinator
@@ -316,7 +353,8 @@ case "$*" in
 esac
 SH
   run_bin -1 --separate-stderr team-handoff
-  assert_equal "$stderr" "team-handoff: sessions: could not end T1-ops with team-ops-end (cannot resolve the full session uuid of T1-ops (6f93fe38); nothing deleted); end it, then run team-handoff again; nothing was released"
+  assert_equal "$stderr" "team-stow: T1 is not stowed: could not end T1-ops with team-ops-end (cannot resolve the full session uuid of T1-ops (6f93fe38); nothing deleted)
+team-handoff: stow: T1 is not stowed, as team-stow says; fix what it names, then run team-handoff again; nothing was released"
   assert_equal "$(lease_json | jq -r .state)" held
   assert_equal "$(stowed_events)" ""
 }
@@ -331,6 +369,65 @@ SH
   assert_equal "$(jq -c .captured <<<"$output")" '["Config captured: CLAUDE.md (new)."]'
 }
 
+@test "a handoff takes T1's stack down, its logs saved" {
+  with_stack
+  assert_equal "$(stack_states)" running
+  run_bin -0 --separate-stderr team-handoff
+  # The saved logs stay on this machine: the checkpoint leaves them out of the archive.
+  assert_equal "$stderr" "team-checkpoint: left out of tasks/T1/scratch: stack-logs (stack logs)"
+  assert_contains "$output" "stacks: T1 home: stackfix-1 is removed, its logs in $wt/.scratch/task/stack-logs"
+  assert_equal "$(stack_states)" ""
+  assert_equal "$(lease_json | jq -r .state)" released
+}
+
+@test "a stack that will not go down is said, and the handoff goes on" {
+  with_stack
+  docker_down
+  run_bin -0 --separate-stderr team-handoff
+  assert_contains "$stderr" "team-stow: stacks: T1 home: "
+  assert_contains "$stderr" "team-handoff: stow: every task is stowed, but team-stow failed a step, as it says; the handoff goes on"
+  assert_contains "$output" "stowed: T1 roles builder; home feat/T1-work at ${head:0:7}; cause handoff"
+  assert_equal "$(lease_json | jq -r .state)" released
+}
+
+@test "--here, the shutdown: T1's stack is stopped with its data kept, and the message says to run team-resume here after the restart" {
+  with_stack
+  run_bin -0 --separate-stderr team-handoff --here --json
+  assert_contains "$stderr" "sessions: T1: stopped and removed T1-builder (81f08540)"
+  assert_contains "$stderr" "stacks: T1 home: stackfix-1 is stopped, its data kept"
+  assert_contains "$stderr" "stowed: T1 roles builder; home feat/T1-work at ${head:0:7}; cause handoff"
+  assert_equal "$(stack_states)" stopped
+  assert_equal "$(jq -c '{machine, epoch, here, tasks: [.tasks[] | {task, roles}]}' <<<"$output")" \
+    '{"machine":"home-pc","epoch":1,"here":true,"tasks":[{"task":"T1","roles":["builder"]}]}'
+  [[ $(jq -r .message <<<"$output") =~ ^"Released at "[0-9]{2}:[0-9]{2}" from home-pc for a restart here. After the restart, run \`team-resume\` here."$ ]]
+  assert_equal "$(git -C "$home_origin" rev-parse feat/T1-work)" "$head"
+  assert_equal "$(lease_json | jq -c '[.holder, .state]')" '["home-pc","released"]'
+  run -0 "$REPO_ROOT/bin/team-timers" status --json
+  assert_equal "$(jq -c .enabled <<<"$output")" false
+
+  # Run again after the release, it says the same message.
+  run_bin -0 team-handoff --here
+  [[ ${lines[-2]} == "Released at "*" from home-pc for a restart here. After the restart, run \`team-resume\` here." ]]
+}
+
+@test "a handoff past its stow finishes only as it began, with or without --here" {
+  with_stack
+  TEAM_HANDOFF_STOP_AFTER=2 run_bin -1 team-handoff --here
+  assert_equal "$(stack_states)" stopped
+  run_bin -1 --separate-stderr team-handoff
+  assert_equal "$stderr" "team-handoff: this handoff began with --here, for a restart here, and stowed with the stacks kept; finish it with team-handoff --here"
+  assert_equal "$(lease_json | jq -r .state)" held
+  run_bin -0 team-handoff --here
+  assert_contains "$output" "stow: done earlier in this handoff"
+  assert_equal "$(stack_states)" stopped
+  assert_equal "$(lease_json | jq -r .state)" released
+}
+
+@test "--json of a handoff to another machine says here: false" {
+  run_bin -0 --separate-stderr team-handoff --json
+  assert_equal "$(jq -c .here <<<"$output")" false
+}
+
 @test "stowed.roles names the unfinished work, not the sessions: a finished reviewer's live session is a session only" {
   # A reviewer reviewed and reported DONE, its session still listed; the builder fixes findings.
   launch reviewer 6493aef7
@@ -342,7 +439,7 @@ SH
   mv "$BATS_TEST_TMPDIR/sessions.next" "$BATS_TEST_TMPDIR/sessions.json"
 
   run_bin -0 team-handoff
-  assert_contains "$output" "stowed: T1 roles builder; home feat/T1-work at ${head:0:7}"
+  assert_contains "$output" "stowed: T1 roles builder; home feat/T1-work at ${head:0:7}; cause handoff"
   assert_equal "$(stowed_events | jq -c '{roles, sessions}')" '{"roles":["builder"],"sessions":["builder","reviewer"]}'
 }
 
@@ -354,7 +451,7 @@ SH
   assert_equal "$(stowed_events | jq -c '{roles, sessions}')" '{"roles":[],"sessions":["builder"]}'
 }
 
-@test "a task branch that has diverged from origin refuses the handoff before anything is pushed or released" {
+@test "a task branch that has diverged from origin refuses the handoff before its worker stops, with nothing released" {
   git -C "$wt" push -q origin feat/T1-work
   git -C "$wt" reset -q --hard HEAD~1
   echo "b" >"$wt/b.txt"
@@ -364,8 +461,8 @@ SH
   ours=$(git -C "$wt" rev-parse HEAD)
 
   run_bin -1 --separate-stderr team-handoff
-  assert_contains "$stderr" "team-handoff: the handoff stops here, before anything is pushed or released:
-  T1: feat/T1-work (home) has diverged from origin: 1 commits here and 1 there"
+  assert_equal "$stderr" "team-stow: T1 is not stowed: feat/T1-work (home) has diverged from origin: 1 commits here and 1 there; bring it level with origin, then run team-stow again
+team-handoff: stow: T1 is not stowed, as team-stow says; fix what it names, then run team-handoff again; nothing was released"
   assert_equal "$(git -C "$home_origin" rev-parse feat/T1-work)" "$head"
   assert_equal "$(git -C "$wt" rev-parse HEAD)" "$ours"
   assert_equal "$(stowed_events)" ""
@@ -381,9 +478,6 @@ SH
 @test "interrupted after step 4, a run again finishes the handoff once" { interrupt_after 4; }
 @test "interrupted after step 5, a run again finishes the handoff once" { interrupt_after 5; }
 @test "interrupted after step 6, a run again finishes the handoff once" { interrupt_after 6; }
-@test "interrupted after step 7, a run again finishes the handoff once" { interrupt_after 7; }
-@test "interrupted after step 8, a run again finishes the handoff once" { interrupt_after 8; }
-@test "interrupted after step 9, a run again finishes the handoff once" { interrupt_after 9; }
 
 @test "a machine that does not hold the lease, or cannot reach GitHub, refuses and changes nothing" {
   local before
@@ -440,8 +534,11 @@ rm 3169fcbd"
 
 @test "it needs a machine name, and refuses a malformed command line" {
   run_bin -2 team-handoff --now
-  assert_equal "$output" "team-handoff: usage: team-handoff [--check | --json | --retire]"
+  assert_equal "$output" "team-handoff: usage: team-handoff [--here] [--json] | --check | --retire"
   run_bin -2 team-handoff --check --json
+  run_bin -2 team-handoff --here --check
+  run_bin -2 team-handoff --retire --here
+  run_bin -2 team-handoff --json --json
   rm "$HOME/.config/agent-team/machine"
   run_bin -1 team-handoff --check
   assert_contains "$output" "this machine has no team name"

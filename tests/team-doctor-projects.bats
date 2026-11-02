@@ -347,60 +347,50 @@ SCRIPT
   assert_equal "$(line_of 'stack memory')" "PASS stack memory: no registered project has a stack block"
 }
 
-@test "on macOS the stack memory line weighs Docker's VM's MemTotal less each stack's mem_limits against the floor, half the VM unless memory_floor_gib is set" {
-  on_macos
-  tools_at macos
-  # Daniel's laptop's VM, and a Conventioner stack's 2.75 GiB of mem_limits.
-  give_stack conventioner "$CONVENTIONER" 805306368 1073741824 1073741824
-  answer "docker info --format {{.MemTotal}}" 8319770624
-  COMPOSE_PROJECT_NAME=other TH_PORTS='' TH_WEB_PORT=5000 run_bin -0 team-doctor
-  assert_equal "$(grep -v '^PASS ' <<<"$output")" ""
-  assert_equal "$(line_of 'stack memory')" "PASS stack memory: with nothing else running, Docker's VM's 7.7 GiB leaves at least the floor after a stack of each project (floor 3.9 GiB, the macOS default: half of Docker's VM's 7.7 GiB): conventioner's 2.8 GiB of mem_limits leaves 5.0 GiB"
-  # The wrapper was asked for its config in the primary checkout, as a project of its own whose
-  # ports Docker assigns, the caller's stack identity cleared.
-  assert_equal "$(cat "$BATS_TEST_TMPDIR/compose-calls")" "$CONVENTIONER $CONVENTIONER team-doctor-conventioner auto unset config --format json"
-
-  # A set floor that leaves room for no stack warns, never fails.
-  echo '{"memory_floor_gib": 6}' >"$HOME/.config/agent-team/stack.json"
-  run_bin -0 team-doctor
-  assert_equal "$(grep -v '^PASS ' <<<"$output")" "WARN stack memory: with nothing else running, Docker's VM's 7.7 GiB leaves less than the floor after a stack of conventioner (floor 6 GiB, memory_floor_gib in stack.json), so team-stack up refuses it: conventioner's 2.8 GiB of mem_limits leaves 5.0 GiB; fix: Daniel gives Docker Desktop more memory (Settings, Resources) or sets a lower memory_floor_gib in ~/.config/agent-team/stack.json"
-  echo '{"memory_floor_gib": 1}' >"$HOME/.config/agent-team/stack.json"
-  run_bin -0 team-doctor
-  assert_equal "$(line_of 'stack memory')" "PASS stack memory: with nothing else running, Docker's VM's 7.7 GiB leaves at least the floor after a stack of each project (floor 1 GiB, memory_floor_gib in stack.json): conventioner's 2.8 GiB of mem_limits leaves 5.0 GiB"
-
-  # Docker not answering: the line says so and passes.
-  printf 'echo %q >&2\nexit 1\n' "Cannot connect to the Docker daemon at unix:///Users/daniel/.docker/run/docker.sock." \
-    >"$TOOL_ANSWERS/docker/info_--format_{{.MemTotal}}.sh"
-  run_bin team-doctor
-  assert_equal "$(line_of 'stack memory')" "PASS stack memory: unknown, since docker info does not answer (the docker line)"
-}
-
-@test "on Linux the stack memory line reads the host's MemTotal against 6 GiB, names each project a stack of which leaves less, and says which it cannot weigh" {
+@test "the stack memory line weighs each stack's mem_limits against full's budget with nothing else running, and names each it cannot weigh" {
   tools_at arch
-  export TEAM_MEMINFO=$BATS_TEST_TMPDIR/meminfo
-  printf 'MemTotal:        8388608 kB\nMemFree:          1048576 kB\nMemAvailable:    4194304 kB\n' >"$TEAM_MEMINFO"
+  # The doctor's reading: a 30.6 GiB machine, so full's budget with nothing else running is 26.6
+  # GiB (all but reserve_gib's 4 GiB), and a Conventioner stack's 2.75 GiB fits.
   give_stack conventioner "$CONVENTIONER" 805306368 1073741824 1073741824
   give_stack site "$SITE" 536870912
+  COMPOSE_PROJECT_NAME=other TH_PORTS='' TH_WEB_PORT=5000 run_bin -0 team-doctor
+  assert_equal "$(grep -v '^PASS ' <<<"$output")" ""
+  assert_equal "$(line_of 'stack memory')" "PASS stack memory: with nothing else running, full's budget is 26.6 GiB of 30.6 GiB, which holds a stack of each project: conventioner's 2.8 GiB of mem_limits, site's 0.5 GiB"
+  # The wrapper was asked for its config in the primary checkout, as a project of its own whose
+  # ports Docker assigns, the caller's stack identity cleared.
+  assert_equal "$(head -n 1 "$BATS_TEST_TMPDIR/compose-calls")" "$CONVENTIONER $CONVENTIONER team-doctor-conventioner auto unset config --format json"
+
+  # A budget too small for a stack warns, never fails, naming the projects.
+  echo '{"full_share": 0.05}' >"$HOME/.config/agent-team/capacity.json"
   run_bin -0 team-doctor
-  assert_equal "$(grep -v '^PASS ' <<<"$output")" "WARN stack memory: with nothing else running, this machine's 8.0 GiB (MemTotal) leaves less than the floor after a stack of conventioner (floor 6 GiB, the Linux default), so team-stack up refuses it: conventioner's 2.8 GiB of mem_limits leaves 5.3 GiB; fix: Daniel sets a lower memory_floor_gib in ~/.config/agent-team/stack.json, or gives this machine more memory"
-  echo '{"memory_floor_gib": 5}' >"$HOME/.config/agent-team/stack.json"
-  run_bin -0 team-doctor
-  assert_equal "$(line_of 'stack memory')" "PASS stack memory: with nothing else running, this machine's 8.0 GiB (MemTotal) leaves at least the floor after a stack of each project (floor 5 GiB, memory_floor_gib in stack.json): conventioner's 2.8 GiB of mem_limits leaves 5.3 GiB, site's 0.5 GiB leaves 7.5 GiB"
+  assert_equal "$(line_of 'stack memory')" "WARN stack memory: with nothing else running, full's budget is 1.5 GiB of 30.6 GiB, less than a stack of conventioner needs, so team-capacity never admits it: conventioner's 2.8 GiB of mem_limits; fix: Daniel raises full_share or lowers reserve_gib in ~/.config/agent-team/capacity.json, or gives this machine more memory"
+  rm "$HOME/.config/agent-team/capacity.json"
 
   # A wrapper whose config fails, or that is not there, leaves its project unweighed.
   touch "$BATS_TEST_TMPDIR/site-config.fail"
   run_bin -0 team-doctor
-  assert_equal "$(line_of 'stack memory')" "PASS stack memory: with nothing else running, this machine's 8.0 GiB (MemTotal) leaves at least the floor after a stack of each project (floor 5 GiB, memory_floor_gib in stack.json): conventioner's 2.8 GiB of mem_limits leaves 5.3 GiB; unknown for site, since scripts/compose.sh config --format json failed: compose.sh: no docker-compose.yml in '$SITE'"
+  assert_equal "$(line_of 'stack memory')" "PASS stack memory: with nothing else running, full's budget is 26.6 GiB of 30.6 GiB, which holds a stack of each project: conventioner's 2.8 GiB of mem_limits; unknown for site, since scripts/compose.sh config --format json failed: compose.sh: no docker-compose.yml in '$SITE'"
   git -C "$CONVENTIONER" rm -q scripts/compose.sh
   git -C "$CONVENTIONER" commit -q -m "chore: drop the wrapper"
   git -C "$CONVENTIONER" update-ref refs/remotes/origin/main HEAD
   run_bin -0 team-doctor
   assert_equal "$(line_of 'stack memory')" "PASS stack memory: unknown for conventioner, since its checkout has no scripts/compose.sh; unknown for site, since scripts/compose.sh config --format json failed: compose.sh: no docker-compose.yml in '$SITE'"
 
-  # A stack.json team-stack would refuse warns with its problems.
+  # With no reading of the machine's load, nothing is weighed.
+  rm "$HOME/.local/state/agent-team/capacity/readings.jsonl"
+  run_bin team-doctor
+  assert_equal "$(line_of 'stack memory')" "PASS stack memory: unknown, since there is no reading of the machine's load yet (the resources line)"
+}
+
+@test "the stack memory line warns on a stack.json team-stack refuses, and on stack_cap or memory_floor_gib left in it" {
+  tools_at arch
+  give_stack conventioner "$CONVENTIONER" 805306368
   echo '{"memory_floor_gib": "1", "stack_caps": 2}' >"$HOME/.config/agent-team/stack.json"
   run_bin -0 team-doctor
   assert_equal "$(line_of 'stack memory')" "WARN stack memory: ~/.config/agent-team/stack.json: memory_floor_gib must be a number of 0 or more, not \"1\"; stack_caps is not a setting (they are: stack_cap, memory_floor_gib, disk_floor_gb, wait_minutes, idle_minutes, heartbeat_sweep, heartbeat_janitor); fix: correct it as team-stack --help describes, since team-stack up refuses it too"
+  echo '{"stack_cap": 6, "memory_floor_gib": 6, "wait_minutes": 15}' >"$HOME/.config/agent-team/stack.json"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'stack memory')" "WARN stack memory: ~/.config/agent-team/stack.json sets stack_cap and memory_floor_gib, which nothing reads since the level's budget admits a stack (team-capacity admit); fix: remove stack_cap and memory_floor_gib from ~/.config/agent-team/stack.json"
 }
 
 @test "a checkout and the team home named by another spelling of their paths pass as the directory they are (report F6)" {

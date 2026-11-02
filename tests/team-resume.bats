@@ -197,6 +197,27 @@ laptop_state() {
   assert_equal "$(jq -r .machine "$second")" laptop
 }
 
+@test "after a shutdown, home-pc resumes itself: the lease again at its epoch, each worktree where it was, and here in the report" {
+  "$REPO_ROOT/bin/team-handoff" --here >/dev/null
+  # The restart ends every session, the coordinator's too.
+  echo '[]' >"$HOME/sessions.json"
+
+  run_bin -0 --separate-stderr team-resume
+  report=$(reported)
+  assert_equal "$stderr" ""
+  assert_contains "$output" "lease: home-pc holds the lease, epoch 1"
+  assert_contains "$output" "T1: stowed here on home-pc: a same-machine resume"
+  assert_contains "$output" "coordinator: started, with the resume skill and the report"
+  # The report says it is a same-machine resume, and the worktree did not move.
+  assert_equal "$(jq -c '.tasks | map({task, here, crashed, roles: .stowed.roles, from: .stowed.machine})' "$report")" \
+    '[{"task":"T1","here":true,"crashed":null,"roles":["builder"],"from":"home-pc"}]'
+  assert_equal "$(jq -c '.tasks[0].worktrees[0] | [.worktree, .moved, .head]' "$report")" "[\"$wt\",false,\"$head\"]"
+  assert_equal "$(jq -c 'select(.event == "worktree-moved")' "$TEAM_HOME/ledger.jsonl")" ""
+  # The worktree and its scratch are as they were left.
+  assert_equal "$(git -C "$wt" rev-parse HEAD)" "$head"
+  assert_equal "$(cat "$wt/.scratch/task/spec.md")" "spec"
+}
+
 @test "while home-pc holds a fresh lease, the resume refuses and changes nothing" {
   age_lease 4
   # home-pc has moved dev on since laptop cloned it: a pull would change laptop's team home.

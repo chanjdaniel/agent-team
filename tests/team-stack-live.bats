@@ -23,6 +23,8 @@ setup() {
   if [[ -n $docker_host ]]; then export DOCKER_HOST=$docker_host; else unset DOCKER_HOST; fi
   cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
   stack_project shop
+  # A reading leaving the team 16 GiB, so team-capacity admit takes none of this machine.
+  capacity_room $((16 * 1073741824))
 }
 
 @test "live: ls --all --json classifies everything Docker holds, and changes nothing" {
@@ -130,7 +132,7 @@ live_get() {
   assert_equal "$output" "team-stack: $LIVE_PROJECT has no stack, so there is nothing to remove"
 }
 
-@test "live: two ups racing for the last place under stack_cap start exactly one stack, and the other exits 75" {
+@test "live: two ups racing for the last room in the budget start exactly one stack, and the other exits 75" {
   local a=liva$RANDOM$$ b=livb$RANDOM$$ wt_a wt_b
   stack_project "$a"
   wt_a=$STACK_WORKTREE
@@ -142,12 +144,10 @@ live_get() {
      base: "main", base_sha: "0000000"} as $e
     | ($e + {task: "T22", project: $a, worktree: $wa}), ($e + {task: "T23", project: $b, worktree: $wb})' \
     >>"$TEAM_HOME/ledger.jsonl"
-  # Room for one more stack than runs now, whatever the memory and disk.
-  local running
-  running=$(docker compose ls --format json | jq length)
+  # Room in the budget for one of the two 64 MiB stacks, whatever the machine runs, and any disk.
+  capacity_room $((100 * 1048576))
   mkdir -p "$HOME/.config/agent-team"
-  jq -n --argjson cap $((running + 1)) '{stack_cap: $cap, memory_floor_gib: 0, disk_floor_gb: 0, wait_minutes: 0}' \
-    >"$HOME/.config/agent-team/stack.json"
+  echo '{"disk_floor_gb": 0, "wait_minutes": 0}' >"$HOME/.config/agent-team/stack.json"
 
   local dir=$BATS_TEST_TMPDIR pid_a pid_b status_a=0 status_b=0
   "$REPO_ROOT/bin/team-stack" up --worktree "$wt_a" --no-seed >"$dir/a.out" 2>"$dir/a.err" &
@@ -157,7 +157,7 @@ live_get() {
   wait "$pid_a" || status_a=$?
   wait "$pid_b" || status_b=$?
   assert_equal "$(printf '%s\n' "$status_a" "$status_b" | sort -n | paste -sd ' ')" "0 75"
-  assert_contains "$(cat "$dir/a.err" "$dir/b.err")" "$((running + 1)) of $((running + 1)) stacks running (stack_cap $((running + 1)))"
+  assert_contains "$(cat "$dir/a.err" "$dir/b.err")" "at full (90%): 0.1 GiB of 0.1 GiB reserved, a stack of "
   # Exactly one of the two runs.
   local started
   started=$(docker compose ls --format json | jq -c --arg a "stackfix-$a-1" --arg b "stackfix-$b-1" '[.[].Name | select(. == $a or . == $b)]')
@@ -196,7 +196,7 @@ live_busy() {
     path: "feature", type: "feature", title: "Live", branch: "work", base: "main", base_sha: "0000000", worktree: $wt}' \
     >>"$TEAM_HOME/ledger.jsonl"
   mkdir -p "$HOME/.config/agent-team"
-  echo '{"idle_minutes": 0.1, "memory_floor_gib": 0, "disk_floor_gb": 0, "wait_minutes": 0, "stack_cap": 1000}' \
+  echo '{"idle_minutes": 0.1, "disk_floor_gb": 0, "wait_minutes": 0}' \
     >"$HOME/.config/agent-team/stack.json"
   cd "$STACK_WORKTREE"
   run_bin -0 team-stack up --no-seed
@@ -244,7 +244,7 @@ live_busy() {
     path: "feature", type: "feature", title: "Live", branch: "work", base: "main", base_sha: "0000000", worktree: $wt}' \
     >>"$TEAM_HOME/ledger.jsonl"
   mkdir -p "$HOME/.config/agent-team"
-  echo '{"memory_floor_gib": 0, "disk_floor_gb": 0, "wait_minutes": 0, "stack_cap": 1000}' >"$HOME/.config/agent-team/stack.json"
+  echo '{"disk_floor_gb": 0, "wait_minutes": 0}' >"$HOME/.config/agent-team/stack.json"
   run_bin -0 team-stack up --worktree "$STACK_WORKTREE" --no-seed
   # One request, which httpd -v logs, so the saved log has a line.
   run_bin -0 team-stack env --worktree "$STACK_WORKTREE"
@@ -305,7 +305,7 @@ live_busy() {
     path: "feature", type: "feature", title: "Live", branch: "work", base: "main", base_sha: "0000000", worktree: $wt}' \
     >>"$TEAM_HOME/ledger.jsonl"
   mkdir -p "$HOME/.config/agent-team"
-  echo '{"memory_floor_gib": 0, "disk_floor_gb": 0, "wait_minutes": 0, "stack_cap": 1000}' >"$HOME/.config/agent-team/stack.json"
+  echo '{"disk_floor_gb": 0, "wait_minutes": 0}' >"$HOME/.config/agent-team/stack.json"
   cd "$STACK_WORKTREE"
   run_bin -0 team-stack up --no-seed
   run_bin -0 --separate-stderr team-stack up --instance a --no-seed

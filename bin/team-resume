@@ -2,6 +2,8 @@
 # Take the team over on this machine, the one Daniel is at: run in a terminal here. While another
 # machine holds the team, start it with --wait first: once it says this machine is ready, Daniel
 # says "hand off" to the coordinator there (its handoff skill), and the wait ends on the release.
+# After a shutdown (team-handoff --here), run it on the same machine once it has restarted: the
+# lease this machine released is taken again, and every worktree is still in place.
 #
 # Usage: team-resume [--wait | --steal]
 # One line per step, each prefixed by the step; each step is idempotent, so a run that stopped
@@ -49,12 +51,19 @@
 #                   So does a worktree its latest stowed recorded with uncommitted changes (a
 #                   worker the handoff stopped before it stowed), whose snapshot team-open's line
 #                   reports.
+#                   A task whose latest stowed is from this machine (the shutdown's, or a handoff
+#                   no other machine took) gets one more line, "T1: stowed here on home-pc: a
+#                   same-machine resume": team-open finds each of its worktrees where it was,
+#                   and the stacks its stow stopped wait there, their data kept, for a relaunched
+#                   worker's team-stack up.
 #  10. report       tasks/resume-<date>-<time>.json (this machine's date and time, HHMMSS, with
 #                   -2, -3 ... after it should a report of that second exist), one per run, so a
 #                   run never overwrites an earlier one: {machine, epoch, stolen_from,
-#                   written_at, tasks}, each task {task, stowed, crashed, worktrees, failures}:
-#                   stowed the task's latest stowed event ({ts, machine, roles, sessions, note},
-#                   roles its unfinished work, sessions the sessions the handoff stopped) or null,
+#                   written_at, tasks}, each task {task, here, stowed, crashed, worktrees,
+#                   failures}: here true for a same-machine resume (crashed null and stowed's
+#                   machine this one), stowed the task's latest stowed event ({ts, machine,
+#                   roles, sessions, note}, roles its unfinished work, sessions the sessions the
+#                   handoff stopped) or null,
 #                   crashed null or {machine, checkpoint, roles}: the machine it crashed on, the
 #                   latest time any of it was saved (its snapshots, its archive's last commit) or
 #                   null, and the roles whose latest launch since that stowed nothing ended (a
@@ -267,12 +276,15 @@ main() {
            | if . then {ts, machine, roles, sessions} + (if .note then {note} else {} end) else null end),
          crashed: ($tasks[$task] | if crashed then
            {machine: (map(select(.event == "launch")) | last | .machine), roles: unfinished_roles} else null end),
-         open: [$tasks[$task] | open_worktrees(.[]; $home) | {project, branch}]}' -nRc "$TEAM_HOME/ledger.jsonl")
+         open: [$tasks[$task] | open_worktrees(.[]; $home) | {project, branch}]}
+      | .here = (.crashed == null and .stowed.machine == $machine)' \
+      -nRc --arg machine "$machine" "$TEAM_HOME/ledger.jsonl")
   fi
   for entry in "${open[@]}"; do
     task=$(jq -r .task <<<"$entry")
-    task_json=$(jq -c '{task, stowed, crashed, worktrees: [], failures: []}' <<<"$entry")
+    task_json=$(jq -c '{task, here, stowed, crashed, worktrees: [], failures: []}' <<<"$entry")
     if [[ $(jq '.open | length' <<<"$entry") == 0 ]]; then echo "$task: no open worktree"; fi
+    if [[ $(jq -r .here <<<"$entry") == true ]]; then echo "$task: stowed here on $machine: a same-machine resume"; fi
     while IFS=$'\t' read -r project branch; do
       rc=0
       out=$(team team-open --task "$task" --resume "$project" 2>"$err") || rc=$?

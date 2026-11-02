@@ -15,6 +15,9 @@ setup() {
 }
 
 UNITS_STATE=
+# The level's words on doctor_machine's machine: manual full with no record, 30.6 GiB less the
+# others' 8 and 4 kept free for them, and 12 cores less their 1 and 1 kept free.
+LEVEL="manual, full (90%): 18.6 GiB and 10.0 cores for the team; 0.0 GiB reserved"
 
 # The gate's daemon unit, as no-mistakes writes it, active in <cgroup>: gate_daemon <hash> <cgroup>
 gate_daemon() {
@@ -42,7 +45,7 @@ sessions() {
   fake_process 300 1 - claude
   sessions "a1b2c3d4 T7-builder 100" "b1b2c3d4 T9-planner 200" "c0ffee00 coordinator 300" "d1b2c3d4 T11-builder 500"
   run_bin -0 team-doctor
-  assert_equal "$(line_of resources)" "PASS resources: agent-team.slice installed, no limits set yet; 2 live team sessions in it"
+  assert_equal "$(line_of resources)" "PASS resources: $LEVEL; agent-team.slice holds the team, 2 live team sessions in it"
   run_bin -0 --separate-stderr team-doctor --json
   assert_equal "$(jq -c '.[] | select(.check == "resources") | [.verdict, .fix]' <<<"$output")" '["PASS",""]'
 }
@@ -53,7 +56,7 @@ sessions() {
   fake_process 100 1 - claude
   sessions "a1b2c3d4 T7-builder 100"
   run_bin -0 team-doctor
-  assert_equal "$(line_of resources)" "WARN resources: agent-team.slice is not installed; the gate's daemon no-mistakes-daemon-60757c3c.service has no drop-in putting it in agent-team.slice; T7-builder a1b2c3d4 runs outside agent-team-T7.slice; fix: team-capacity install (Daniel's yes); team-capacity place"
+  assert_equal "$(line_of resources)" "WARN resources: $LEVEL; agent-team.slice is not installed; the gate's daemon no-mistakes-daemon-60757c3c.service has no drop-in putting it in agent-team.slice; T7-builder a1b2c3d4 runs outside agent-team-T7.slice; fix: team-capacity install (Daniel's yes); team-capacity place"
 
   # Installed, with the daemon running a pipeline so its restart waits, and the session placed.
   stub_command no-mistakes
@@ -61,49 +64,79 @@ sessions() {
   run_bin -0 team-capacity install
   run_bin -0 team-capacity place
   run_bin -0 team-doctor
-  assert_equal "$(line_of resources)" "WARN resources: the gate's daemon no-mistakes-daemon-60757c3c.service still runs outside agent-team.slice, its restart waiting; fix: team-capacity install once no gate runs"
+  assert_equal "$(line_of resources)" "WARN resources: $LEVEL; the gate's daemon no-mistakes-daemon-60757c3c.service still runs outside agent-team.slice, its restart waiting; fix: team-capacity install once no gate runs"
 
   # Restarted into the slice.
   user_cgroup no-mistakes-daemon-60757c3c.service agent-team.slice >"$UNITS_STATE/no-mistakes-daemon-60757c3c.service.ControlGroup"
   run_bin -0 team-doctor
-  assert_equal "$(line_of resources)" "PASS resources: agent-team.slice installed, no limits set yet; 1 live team session in it"
+  assert_equal "$(line_of resources)" "PASS resources: $LEVEL; agent-team.slice holds the team, 1 live team session in it"
 }
 
 @test "the resources line warns when the session list cannot be read" {
   echo "not json" >"$STUB_FIXTURES/agents.json"
   run_bin -0 team-doctor
-  assert_equal "$(line_of resources)" "WARN resources: cannot read the live session list (claude agents --json), so no session's placement was checked; fix: run team-doctor again"
+  assert_equal "$(line_of resources)" "WARN resources: $LEVEL; cannot read the live session list (claude agents --json), so no session's placement was checked; fix: run team-doctor again"
 }
 
-@test "the resources line warns, never fails, when the user manager does not answer or does not delegate cpu and memory" {
-  # No limit needs them yet, so the doctor, team-resume and team-load-check go on.
+@test "the resources line fails when the user manager does not answer or does not delegate cpu and memory, since the level's limits need them" {
   user_controllers memory pids
-  run_bin -0 team-doctor
-  assert_equal "$(line_of resources)" "WARN resources: the user manager's cgroup does not delegate the cpu and memory controllers (cgroup.controllers: memory pids), so the team's slice cannot measure its work; fix: Daniel delegates them (Delegate=cpu memory pids in a drop-in for user@.service, which needs sudo), then logs in again"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of resources)" "FAIL resources: $LEVEL; the user manager's cgroup does not delegate the cpu and memory controllers (cgroup.controllers: memory pids), so the team's slice cannot measure or limit its work; fix: Daniel delegates them (Delegate=cpu memory pids in a drop-in for user@.service, which needs sudo), then logs in again"
   rm "$TEAM_CGROUP_ROOT/sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/cgroup.controllers"
-  run_bin -0 team-doctor
-  assert_contains "$(line_of resources)" "WARN resources: the user manager's cgroup does not delegate the cpu and memory controllers (cgroup.controllers: none)"
+  run_bin -1 team-doctor
+  assert_contains "$(line_of resources)" "FAIL resources: $LEVEL; the user manager's cgroup does not delegate the cpu and memory controllers (cgroup.controllers: none)"
 
   user_controllers cpu memory pids
   touch "$HOME/.fake-systemd/down"
-  # The heartbeat line fails on the same silent user manager; this line only warns.
   run_bin -1 team-doctor
-  assert_equal "$(grep '^FAIL' <<<"$output")" "FAIL heartbeat: disabled, but this machine holds the lease; fix: team-timers enable"
-  assert_equal "$(line_of resources)" "WARN resources: the user's systemd does not answer (systemctl --user: Failed to connect to user scope bus via local transport: No such file or directory), so no work goes in the team's slice; fix: log in so the user's systemd runs, then run team-doctor again"
+  assert_equal "$(line_of resources)" "FAIL resources: $LEVEL; the user's systemd does not answer (systemctl --user: Failed to connect to user scope bus via local transport: No such file or directory), so no work goes in the team's slice and the level's limits hold nothing; fix: log in so the user's systemd runs, then run team-doctor again"
+}
+
+@test "the resources line shows the recorded level, and warns when the slice's CPU quota or the limits applied are not the level's" {
+  echo '{"ts":"2026-11-01T14:05:00Z","mode":"manual","level":"minor","by":"Daniel","machine":"home-pc"}' >"$TEAM_HOME/level.jsonl"
+  level_applied manual minor 360
+  run_bin -0 team-doctor
+  assert_equal "$(line_of resources)" "PASS resources: manual, minor (30%): 9.2 GiB and 3.6 cores for the team; 0.0 GiB reserved; agent-team.slice holds the team, 0 live team sessions in it"
+
+  # A reboot or a reset slice drops the runtime quota.
+  echo infinity >"$HOME/.fake-systemd/agent-team.slice.CPUQuotaPerSecUSec"
+  run_bin -0 team-doctor
+  assert_contains "$(line_of resources)" "; agent-team.slice's CPU quota is none, not the level's 360%; fix: team-level apply"
+  echo 500ms >"$HOME/.fake-systemd/agent-team.slice.CPUQuotaPerSecUSec"
+  run_bin -0 team-doctor
+  assert_contains "$(line_of resources)" "; agent-team.slice's CPU quota is 50%, not the level's 360%; fix: team-level apply"
+
+  # A level recorded elsewhere (a handoff's) and never applied here, or never applied at all.
+  level_applied manual full 1000
+  run_bin -0 team-doctor
+  assert_contains "$(line_of resources)" "; the limits applied are manual full's, not the recorded manual minor's; fix: team-level apply"
+  rm "$HOME/.local/state/agent-team/level/applied.json"
+  run_bin -0 team-doctor
+  assert_contains "$(line_of resources)" "; the level's limits were never applied on this machine; fix: team-level apply"
+}
+
+@test "the resources line fails on a level record or capacity.json that is malformed, naming it" {
+  echo '{"mode": "manual", "level": "half"}' >"$TEAM_HOME/level.jsonl"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of resources)" "FAIL resources: $TEAM_HOME/level.jsonl has lines that are not level records ({ts, mode, level, by, machine}): line 1; fix: fix or remove them, then run it again"
+  rm "$TEAM_HOME/level.jsonl"
+  echo '{"full_share": 2}' >"$HOME/.config/agent-team/capacity.json"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of resources)" "FAIL resources: $HOME/.config/agent-team/capacity.json: full_share must be a number above 0 and at most 1, not 2; fix: fix or remove ~/.config/agent-team/capacity.json, then run team-doctor again"
 }
 
 @test "on macOS the resources line passes with admission and stow only" {
   on_macos
   tools_at macos
   run_bin -0 team-doctor
-  assert_equal "$(line_of resources)" "PASS resources: no hard limits on macOS: admission and stow only"
+  assert_equal "$(line_of resources)" "PASS resources: $LEVEL; no hard limits on macOS: admission and stow only"
 }
 
 @test "the resources line warns on the lease holder with no reading of the last 15 minutes, naming the heartbeat's log, or its enable when it is off" {
   rm "$HOME/.local/state/agent-team/capacity/readings.jsonl"
   capacity_reading 20
   run_bin -0 team-doctor
-  assert_equal "$(line_of resources)" "WARN resources: no reading of the machine's load in the last 15 minutes, though this machine holds the lease, whose heartbeat takes one every 5; fix: the capacity step's lines in ~/.local/state/agent-team/heartbeat.log say why it takes none"
+  assert_equal "$(line_of resources)" "WARN resources: $LEVEL; no reading of the machine's load in the last 15 minutes, though this machine holds the lease, whose heartbeat takes one every 5; fix: the capacity step's lines in ~/.local/state/agent-team/heartbeat.log say why it takes none"
   "$REPO_ROOT/bin/team-timers" disable >/dev/null
   run_bin -1 team-doctor
   assert_contains "$(line_of resources)" "; fix: team-timers enable"
@@ -111,5 +144,5 @@ sessions() {
   capacity_reading 5
   "$REPO_ROOT/bin/team-timers" enable >/dev/null
   run_bin -0 team-doctor
-  assert_equal "$(line_of resources)" "PASS resources: agent-team.slice installed, no limits set yet; 0 live team sessions in it"
+  assert_equal "$(line_of resources)" "PASS resources: $LEVEL; agent-team.slice holds the team, 0 live team sessions in it"
 }

@@ -1,0 +1,298 @@
+#!/usr/bin/env bash
+# Stow chosen tasks on this machine, without releasing anything: for the team's resource level
+# (team-level) and level none, and for a handoff and a shutdown (team-handoff runs team-stow --all
+# --cause handoff). Run on the lease holder, once each task's live workers have answered the
+# coordinator's T<n> STOW, or have not in time.
+#
+# Usage: team-stow (T<n>... | --all) [--down] [--cause level|handoff] [--json]
+#        team-stow (T<n>... | --all) --stop-runs
+# --all is every open task; a named task that is not open is refused, and the others still stow.
+# One line per step and task; each step is idempotent, so a run interrupted anywhere, run again,
+# finishes the stow. In order:
+#   lease       This machine holds the lease, confirmed against origin (team-lease check), or
+#               exit 1 (75 when GitHub is unreachable) with nothing changed.
+#   branches    Each task's branches checked against origin's, as step 4 does, before any of its
+#               sessions stops: a branch that has diverged from origin's, or is neither here nor
+#               there, refuses its task, naming it.
+#   sessions    claude stop, then claude rm, for each live session named T<n>-<role> of a task
+#               (its worktrees stay on disk). An ops session (T<n>-ops) is never carried:
+#               team-ops-end T<n> ends it, deleting its transcript and answer file. One that will
+#               not stop, or an ops session team-ops-end cannot end, refuses its task.
+#   stacks      team-stack stop --worktree <path> (with --down, team-stack down, which saves the
+#               logs) for each of a task's worktrees whose project has a stack block; one that
+#               fails is said on stderr, and the task still stows.
+#   checkpoint  team-checkpoint --force, once per run: task directories archived, wip/<project>/T<n>
+#               snapshots pushed, the records committed and pushed. None when every task left
+#               was stowed already and no session was stopped, so a run again changes nothing.
+#   branches    Each task's branches pushed to their project's origin when strictly ahead of
+#               origin's (a plain push), checked again first; one that cannot be pushed refuses
+#               its task.
+#   stowed      One stowed per task (this machine, each worktree's {project, branch, head} with
+#               uncommitted: true for one whose changes the checkpoint kept, roles its unfinished
+#               work, sessions the roles of the sessions this run stopped, and those an earlier
+#               run of this lease stopped without stowing the task), with cause level (the
+#               default) or handoff. None when the task's latest machine event (stowed, launch,
+#               worktree-moved) is already a stowed from this machine with the same worktrees.
+# --json prints {tasks: [{task, worktrees, roles, sessions, cause}], refused: [{task, reason}]}
+# instead, tasks each stowed task's latest stowed from this machine (cause handoff when it has
+# none), and the step lines go to stderr.
+# --stop-runs does only this, for each task, with no lease needed, so a worker blocked in a
+# foreground test or gate returns and reads the STOW already sent: team-heavy stop --task T<n>
+# (the machine's heavy run, when it is the task's), then, in each of the task's worktrees whose
+# project delivers through no-mistakes, no-mistakes axi abort when no-mistakes axi shows an
+# active run on its branch; one line each says what it stopped.
+# In ~/.local/state/agent-team/: stow.lock, one team-stow at a time; stow.json, the sessions a run
+# stopped for each task it has not stowed yet, kept for its stowed while the lease's epoch holds.
+# Exit 0 done, 1 a task refused or a stack would not stop (the others still stowed), or a step
+# failed, 2 usage error, 75 GitHub unreachable or another team-stow running.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+# Seconds: the most one call to an origin may take.
+NET_TIMEOUT=60
+
+usage="usage: team-stow (T<n>... | --all) [--down] [--cause level|handoff] [--json] | team-stow (T<n>... | --all) --stop-runs"
+tasks=() all='' down='' cause=level cause_given='' json='' stop_runs=''
+while (($#)); do
+  case $1 in
+    T[1-9]*) [[ $1 =~ ^T[1-9][0-9]*$ ]] || usage_error "$usage"; tasks+=("$1") ;;
+    --all) all=1 ;;
+    --down) down=1 ;;
+    --cause)
+      [[ ${2:-} == level || ${2:-} == handoff ]] || usage_error "$usage"
+      cause=$2 cause_given=1
+      shift
+      ;;
+    --json) json=1 ;;
+    --stop-runs) stop_runs=1 ;;
+    *) usage_error "$usage" ;;
+  esac
+  shift
+done
+if { [[ -n $all ]] && ((${#tasks[@]})); } || { [[ -z $all ]] && ((${#tasks[@]} == 0)); }; then
+  usage_error "$usage"
+fi
+if [[ -n $stop_runs && -n $down$cause_given$json ]]; then usage_error "$usage"; fi
+mapfile -t tasks < <(printf '%s\n' "${tasks[@]}" | awk 'NF && !seen[$0]++')
+
+machine=$(machine_name) || exit 1
+bin=$(dirname "$TEAM_LIB")
+state=$HOME/.local/state/agent-team
+mkdir -p "$state"
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+NET_ERR=$scratch/net-err
+err=$scratch/err
+
+# The first line of a sibling's stderr, without its "<script>: " prefix.
+first_error() {
+  grep -m1 . "$err" | sed -E 's/^team-[a-z-]+: //' || true
+}
+
+# Each line of stdin as "<prefix>: <line>", without a leading "team-<script>: ": prefixed <prefix>
+prefixed() {
+  local line
+  while IFS= read -r line; do printf '%s: %s\n' "$1" "${line#team-[a-z]*: }"; done
+}
+
+# A sibling command of this checkout, with TEAM_HOME passed and the lock closed for it.
+team() {
+  TEAM_HOME=$TEAM_HOME "$bin/$1" "${@:2}" {lock_fd}>&-
+}
+
+# shellcheck source=bin/lib/stow.sh
+source "$TEAM_LIB/stow.sh"
+
+exec {lock_fd}>>"$state/stow.lock"
+
+# --stop-runs: each task's heavy run and active gate runs, nothing else, with no lock or lease.
+if [[ -n $stop_runs ]]; then
+  [[ -z $all ]] || { stow_open; mapfile -t tasks < <(printf '%s\n' "${STOW_OPEN[@]}" | jq -r '.task // empty'); }
+  failed=0
+  for task in "${tasks[@]}"; do
+    rc=0
+    out=$(team team-heavy stop --task "$task" 2>"$err") || rc=$?
+    [[ -z $out ]] || prefixed "stop-runs: $task" <<<"$out"
+    ((rc == 0)) || { echo "team-stow: stop-runs: $task: $(first_error)" >&2; failed=1; }
+    while IFS=$'\t' read -r project wt; do
+      [[ $(team_project "$project" delivery 2>/dev/null) == no-mistakes ]] || continue
+      if [[ ! -d $wt ]]; then
+        echo "stop-runs: $task $project: no worktree at $wt"
+      elif ! out=$(cd "$wt" && no-mistakes axi 2>"$err"); then
+        echo "team-stow: stop-runs: $task $project: cannot read the gate's state in $wt: $(first_error)" >&2
+        failed=1
+      elif ! grep -q '^active_run:' <<<"$out"; then
+        echo "stop-runs: $task $project: no gate run is active in $wt"
+      elif (cd "$wt" && no-mistakes axi abort >/dev/null 2>"$err"); then
+        echo "stop-runs: $task $project: aborted the gate's run in $wt"
+      else
+        echo "team-stow: stop-runs: $task $project: could not abort the gate's run in $wt: $(first_error)" >&2
+        failed=1
+      fi
+    done < <(task_worktrees "$task" | jq -r '[.project, .worktree] | @tsv')
+  done
+  exit "$failed"
+fi
+
+if ! flock -n "$lock_fd"; then
+  echo "team-stow: another team-stow is running" >&2
+  exit 75
+fi
+
+# With --json, the step lines go to stderr and the JSON to the real stdout.
+if [[ -n $json ]]; then exec {json_fd}>&1 1>&2; fi
+
+# The lease: held here, confirmed against origin.
+rc=0
+team team-lease check >/dev/null 2>"$err" || rc=$?
+if ((rc == 75)); then
+  echo "team-stow: GitHub unreachable; no stow while offline ($(first_error))" >&2
+  exit 75
+elif ((rc)); then
+  die "$(first_error); nothing was stowed"
+fi
+lease=$(team team-lease status --json 2>/dev/null | jq -c 'objects') || lease=''
+[[ -n $lease ]] || lease='{}'
+echo "lease: $machine holds the lease, $(jq -r '"epoch \(.epoch)"' <<<"$lease")"
+
+# The sessions a run of this lease stopped for a task it did not stow (one interrupted, or whose
+# task a later step refused), {"T<n>": [names]}, so the task's stowed still names them.
+progress=$state/stow.json
+key=$(jq -c '{epoch, taken_at}' <<<"$lease")
+stops=$(jq -c --argjson key "$key" 'select(.lease == $key) | .stopped | objects' "$progress" 2>/dev/null) || stops=''
+[[ -n $stops ]] || stops='{}'
+
+# Write stops to stow.json, or remove it when it holds no task.
+save_stops() {
+  if [[ $stops == '{}' ]]; then
+    rm -f "$progress"
+  else
+    jq -n --argjson key "$key" --argjson stopped "$stops" '{lease: $key, stopped: $stopped}' >"$progress.$$"
+    mv -f "$progress.$$" "$progress"
+  fi
+}
+
+# The tasks to stow, each open one named (or every open one), in task number order.
+stow_open "${tasks[@]}"
+for task in "${tasks[@]}"; do
+  printf '%s\n' "${STOW_OPEN[@]}" | jq -e --arg t "$task" 'select(.task == $t)' >/dev/null ||
+    STOW_REFUSED[$task]="it is not an open task"
+done
+
+# The tasks not refused yet, from STOW_OPEN, back into STOW_OPEN.
+keep_unrefused() {
+  local entry kept=()
+  for entry in "${STOW_OPEN[@]}"; do
+    [[ -n ${STOW_REFUSED[$(jq -r .task <<<"$entry")]:-} ]] || kept+=("$entry")
+  done
+  STOW_OPEN=("${kept[@]}")
+}
+
+# Whether <task> is stowed from this machine already: its latest machine event is a stowed of
+# this machine, which stow_record then leaves as it is unless its worktrees have moved since.
+stowed_here() {
+  task_events "$1" | jq -se --arg machine "$machine" 'map(select(.event | IN("stowed", "launch", "worktree-moved")))
+    | last | .event == "stowed" and .machine == $machine' >/dev/null
+}
+
+# 1. The branches, before any session stops: a task whose branch refuses it keeps its workers.
+stow_branches 1
+keep_unrefused
+mapfile -t names < <(printf '%s\n' "${STOW_OPEN[@]}" | jq -r '.task // empty')
+
+# 2. The sessions.
+workers='[]'
+if ((${#STOW_OPEN[@]})); then
+  stow_live "${names[@]}"
+  live=$STOW_LIVE
+  stow_end_ops
+  # Kept before they stop, so a run interrupted after the stop still names them.
+  stops=$(jq -c --argjson live "$STOW_LIVE" --argjson refused "$(jq -cn '$ARGS.positional' --args -- "${!STOW_REFUSED[@]}")" \
+    'reduce ($live[].name | select(sub("-.*"; "") | IN($refused[]) | not)) as $name (.;
+      .[$name | sub("-.*"; "")] |= ((. // []) + [$name] | unique))' <<<"$stops")
+  save_stops
+  stow_stop
+  workers=$(jq -c '[.[][]] + $ARGS.positional | unique' --args -- "${STOW_STOPPED[@]}" <<<"$stops")
+  for task in "${names[@]}"; do
+    jq -e --arg t "$task" 'any(.[]; .name | startswith("\($t)-"))' <<<"$live" >/dev/null ||
+      echo "sessions: $task: no live session"
+  done
+fi
+keep_unrefused
+
+# 3. The stacks, stopped or taken down.
+failed=0
+for entry in "${STOW_OPEN[@]}"; do
+  task=$(jq -r .task <<<"$entry")
+  stacked=''
+  while IFS=$'\t' read -r project wt; do
+    team_project "$project" >"$scratch/project.json" || exit 1
+    jq -e 'has("stack")' "$scratch/project.json" >/dev/null || continue
+    stacked=1
+    rc=0
+    out=$(team team-stack "$([[ -n $down ]] && echo down || echo stop)" --worktree "$wt" </dev/null 2>"$err") || rc=$?
+    [[ -z $out ]] || prefixed "stacks: $task $project" <<<"$out"
+    if ((rc)); then
+      echo "team-stow: stacks: $task $project: $(first_error); the task still stows" >&2
+      failed=1
+    fi
+  done < <(jq -r '.worktrees[] | [.project, .worktree] | @tsv' <<<"$entry")
+  [[ -n $stacked ]] || echo "stacks: $task: no stack"
+done
+
+# 4. The checkpoint, once, unless every task left was stowed already with nothing stopped since.
+fresh=${#STOW_STOPPED[@]}
+for entry in "${STOW_OPEN[@]}"; do
+  stowed_here "$(jq -r .task <<<"$entry")" || fresh=1
+done
+if ((${#STOW_OPEN[@]} == 0)); then
+  echo "checkpoint: no task is left to stow, so none was made"
+elif ((fresh == 0)); then
+  echo "checkpoint: every task was stowed already, so none was made"
+else
+  rc=0
+  out=$(team team-checkpoint --force 2>"$err") || rc=$?
+  [[ -z $out ]] || prefixed checkpoint <<<"$out"
+  ((rc)) || cat "$err" >&2
+  if ((rc == 75)); then
+    echo "team-stow: checkpoint: $(first_error); run team-stow again" >&2
+    exit 75
+  elif ((rc)); then
+    die "checkpoint: $(first_error); fix it and run team-stow again"
+  fi
+fi
+
+# 5. The branches, checked again, then pushed.
+stow_branches
+stow_push
+keep_unrefused
+
+# 6. One stowed per task, and the kept sessions of the tasks stowed let go.
+for entry in "${STOW_OPEN[@]}"; do
+  stow_record "$(jq -r .task <<<"$entry")" "$workers" "$cause"
+done
+stops=$(jq -c --argjson stowed "$(printf '%s\n' "${STOW_OPEN[@]}" | jq -sc 'map(.task)')" \
+  'with_entries(select(.key | IN($stowed[]) | not))' <<<"$stops")
+save_stops
+
+# The refusals, each with its reason, and the facts.
+for task in "${!STOW_REFUSED[@]}"; do
+  case ${STOW_REFUSED[$task]} in
+    *"has diverged from origin"* | *"is neither here nor on origin"*)
+      echo "team-stow: $task is not stowed: ${STOW_REFUSED[$task]}; bring it level with origin, then run team-stow again" ;;
+    *) echo "team-stow: $task is not stowed: ${STOW_REFUSED[$task]}" ;;
+  esac
+done | sort -V >&2
+if [[ -n $json ]]; then
+  refused=$(for task in "${!STOW_REFUSED[@]}"; do
+    jq -cn --arg task "$task" --arg reason "${STOW_REFUSED[$task]}" '{task: $task, reason: $reason}'
+  done | jq -sc 'sort_by(.task | ltrimstr("T") | tonumber)')
+  stowed=$(printf '%s\n' "${STOW_OPEN[@]}" | jq -sc 'map(.task)')
+  ledger_jq 'ledger_events | by_task | . as $tasks | [$stowed[] | . as $task
+      | $tasks[$task] | map(select(.event == "stowed" and .machine == $machine)) | last
+      | select(. != null) | {task: $task, worktrees, roles, sessions, cause: (.cause // "handoff")}]
+    | {tasks: ., refused: $refused}' \
+    -nR --arg machine "$machine" --argjson stowed "$stowed" --argjson refused "$refused" \
+    "$TEAM_HOME/ledger.jsonl" >&"$json_fd"
+fi
+((${#STOW_REFUSED[@]} == 0 && failed == 0)) || exit 1

@@ -87,6 +87,18 @@ placements() {
   assert_contains "$output" "unexpected argument 'now'"
   run_bin -2 team-capacity check --yaml
   assert_contains "$output" "unexpected argument '--yaml'"
+  run_bin -2 team-capacity admit
+  assert_contains "$output" "admit needs --kind <kind>"
+  run_bin -2 team-capacity admit --kind builder
+  assert_contains "$output" "--kind takes session:<role>, stack:<project>, heavy:<kind> or gate"
+  run_bin -2 team-capacity admit --kind session:builder --task 7
+  assert_contains "$output" "--task takes a task, T<n>"
+  run_bin -2 team-capacity admit --kind stack:shop --seed-bytes 1.5
+  assert_contains "$output" "--seed-bytes takes a whole number of bytes"
+  run_bin -2 team-capacity admit --kind stack:shop --name 'shop 2'
+  assert_contains "$output" "--name takes a stack's name"
+  run_bin -2 team-capacity admit --kind session:builder --name shop-2
+  assert_contains "$output" "--name names a stack, for --kind stack:<project>"
 }
 
 @test "install writes the team's slice and a drop-in for each gate daemon, reloads, and restarts an idle running daemon into the slice" {
@@ -254,7 +266,7 @@ team-capacity: could not place T11-builder d1b2c3d4: its process 500 is gone"
   assert_equal "$output" ""
   assert_equal "$stderr" "team-capacity: no cgroups on macOS: no session is placed"
   run_bin -0 team-capacity check --json
-  assert_equal "$(jq -c . <<<"$output")" '{"os":"macos","verdict":"PASS","reason":"no hard limits on macOS: admission and stow only","fix":"","problems":[]}'
+  assert_equal "$(jq -c . <<<"$output")" '{"os":"macos","verdict":"PASS","reason":"manual, full (90%): no reading of the machine'"'"'s load yet, so no budget; no hard limits on macOS: admission and stow only","fix":"","problems":[]}'
   assert_equal "$(stub_calls systemctl)$(stub_calls busctl)$(stub_calls claude)" ""
   [[ ! -e $UNITS/agent-team.slice ]]
 }
@@ -315,6 +327,76 @@ age_by() {
 }
 
 MIB=1048576
+GIB=1073741824
+
+# hold_heavy <holder line>: the heavy-run lock held, as a team-heavy run holds it, with <holder
+# line> in it, until the test ends or closes HEAVY_FD.
+hold_heavy() {
+  mkdir -p "$HOME/.local/state/agent-team"
+  echo "$1" >"$HOME/.local/state/agent-team/heavy.lock"
+  exec {HEAVY_FD}<"$HOME/.local/state/agent-team/heavy.lock"
+  flock -x "$HEAVY_FD"
+}
+
+# busy_reading [<jq filter>]: a stored reading, taken now, of a 32 GiB machine whose other programs
+# use 8 GiB, with T7's builder using 1 GiB, T7's conventioner-2 stack 2 GiB of its 3 GiB of
+# mem_limits and the gate running a pipeline at 1 GiB, the filter applied to it.
+busy_reading() {
+  mkdir -p "$STATE_DIR"
+  jq -cn --argjson gib "$GIB" '
+    {at: (now | floor | todate), os: "linux", docker: true,
+     memory: {total: (32 * $gib), available: (20 * $gib), team: (4 * $gib), others: (8 * $gib)}, cpu: null,
+     systemd: true, sessions: true,
+     tasks: [{task: "T7", memory: (3 * $gib), cpu: null, cpu_nsec: null,
+              sessions: [{id: "a1b2c3d4", role: "builder", memory: $gib, peak: $gib, cpu_seconds: 10}],
+              stacks: [{name: "conventioner-2", memory: (2 * $gib), cpu: 0}]}],
+     stacks: [{name: "conventioner-2", class: "team", task: "T7", project: "conventioner", memory: (2 * $gib), cpu: 0,
+               limits: (3 * $gib)}],
+     heavy: null, gate: {running: true, memory: $gib, cpu_seconds: 5}} | '"${1:-.}" >>"$STATE_DIR/readings.jsonl"
+}
+
+# level <level>: a level record of manual mode at <level>, made now.
+level() {
+  jq -cn --arg level "$1" '{ts: (now | floor | todate), mode: "manual", level: $level, by: "Daniel", machine: "home-pc"}' \
+    >>"$TEAM_HOME/level.jsonl"
+}
+
+# Move every kept admission <seconds> into the past.
+age_admissions() {
+  jq -c --argjson s "$1" 'map(.at |= (fromdateiso8601 - $s | todate))' "$STATE_DIR/admitted.json" >"$STATE_DIR/admitted.json.new"
+  mv "$STATE_DIR/admitted.json.new" "$STATE_DIR/admitted.json"
+}
+
+# The reservations of status --json, one compact [part, kind, task, GiB] per item.
+reserved_items() {
+  guard_sandbox
+  "$REPO_ROOT/bin/team-capacity" status --json |
+    jq -c --argjson gib "$GIB" '.reserved.items[] | [.part, .kind, .task, (.bytes / $gib | . * 100 | round / 100)]'
+}
+
+# The split of status --json's reservations, each part in GiB, the total first.
+reserved_split() {
+  guard_sandbox
+  "$REPO_ROOT/bin/team-capacity" status --json |
+    jq -c --argjson gib "$GIB" '.reserved | del(.items) | map_values(. / $gib | . * 100 | round / 100)'
+}
+
+# team_reading <others GiB> [<session>...]: a stored reading, taken now, of a 32 GiB machine whose
+# other programs use <others GiB>, with no stack, gate or heavy run, and each <session>, "<task>
+# <role> <id> <GiB>", live. At full the team's budget is the 28 GiB the others and reserve_gib
+# leave less <others GiB>, below 28.8 GiB.
+team_reading() {
+  mkdir -p "$STATE_DIR"
+  printf '%s\n' "${@:2}" | jq -Rnc --argjson gib "$GIB" --argjson others "$1" '
+    [inputs | select(. != "") | split(" ") | {task: .[0], role: .[1], id: .[2], memory: (.[3] | tonumber * $gib | round)}] as $s
+    | {at: (now | floor | todate), os: "linux", docker: true,
+       memory: {total: (32 * $gib), available: ((32 - $others) * $gib | round), team: ([$s[].memory] | add // 0),
+                others: ($others * $gib | round)}, cpu: null,
+       systemd: true, sessions: true,
+       tasks: [$s | group_by(.task)[] | {task: .[0].task, memory: ([.[].memory] | add), cpu: null, cpu_nsec: null,
+                sessions: map({id, role, memory, peak: .memory, cpu_seconds: 1}), stacks: []}],
+       stacks: [], heavy: null, gate: {running: false, memory: 0, cpu_seconds: 0}}' >>"$STATE_DIR/readings.jsonl"
+}
 
 @test "sample on Linux: each task's use is its slice's, its processes outside the slice and its stacks, each session its scope's" {
   sample_machine
@@ -341,10 +423,14 @@ MIB=1048576
   unit agent-team-T7.slice MemoryCurrent=$((1024 * MIB)) CPUUsageNSec=90000000000
   unit agent-team-T7-a1b2c3d4.scope MemoryCurrent=$((800 * MIB)) MemoryPeak=$((900 * MIB)) CPUUsageNSec=85000000000
   unit agent-team-T9.slice MemoryCurrent=$((70 * MIB)) CPUUsageNSec=3000000000
+  # The heavy run's team-heavy (pid 210) holds the lock, and its scope reports what it uses.
+  hold_heavy "tests/run in ~/t9 (pid 210, T9) since 2026-11-01 10:00:00 +0000"
+  unit agent-team-heavy-210.scope MemoryCurrent=$((60 * MIB))
   run_bin -0 --separate-stderr team-capacity sample
   assert_equal "$output$stderr" ""
   local reading
   reading=$(cat "$STATE_DIR/readings.jsonl")
+  assert_equal "$(jq -c --argjson mib "$MIB" '.heavy | .memory /= $mib' <<<"$reading")" '{"pid":210,"memory":60}'
   assert_equal "$(jq -c '[.os, .systemd, .sessions, .docker, (.tasks | map(.task))]' <<<"$reading")" \
     '["linux",true,true,true,["T7","T9"]]'
   assert_equal "$(jq -c --argjson mib "$MIB" '.tasks[0] | [.memory - 1024 * $mib - 150 * $mib, .cpu, .cpu_nsec, .stacks]' <<<"$reading")" \
@@ -354,14 +440,14 @@ MIB=1048576
   # T9's slice holds only the heavy run; its reviewer's tree is outside it.
   assert_equal "$(jq -c --argjson mib "$MIB" '.tasks[1] | [.memory / $mib, (.sessions | map(.memory /= $mib | .peak /= $mib)), .stacks]' <<<"$reading")" \
     '[390,[{"id":"b1b2c3d4","role":"reviewer","memory":320,"peak":320,"cpu_seconds":42}],[]]'
-  assert_equal "$(jq -c '.stacks' <<<"$reading")" \
-    '[{"name":"conventioner-2","class":"team","task":"T7","project":"conventioner","memory":628935884,"cpu":0,"limits":1879048192},{"name":"nmtest-1895520","class":"gate","task":null,"project":null,"memory":315621376,"cpu":0,"limits":536870912}]'
+  assert_equal "$(jq -c --arg home "$HOME" '.stacks | map(.worktree |= sub("^" + $home; "~"))' <<<"$reading")" \
+    '[{"name":"conventioner-2","class":"team","task":"T7","project":"conventioner","worktree":"~/.treehouse/Conventioner-d4c77a/1/Conventioner","kind":"dev","memory":628935884,"cpu":0,"limits":1879048192},{"name":"nmtest-1895520","class":"gate","task":null,"project":null,"worktree":"~/.no-mistakes/worktrees/01KQ3V2M8Z/Conventioner","kind":"gate","memory":315621376,"cpu":0,"limits":536870912}]'
   # The machine's part is team-slots's reading: the team's processes by directory and descent.
   assert_equal "$(jq -c --argjson mib "$MIB" '[.memory.total, .memory.team - 628935884 - 315621376, .cpu]' <<<"$reading" |
     jq -c --argjson mib "$MIB" '.[1] /= $mib')" '[34359738368,1638,null]'
-  # One systemctl call for every task's slice and every live team session's scope.
+  # One systemctl call for every task's slice, every live team session's scope and the heavy run's.
   assert_equal "$(stub_calls systemctl)" \
-    '["--user","show","-p","Id,MemoryCurrent,MemoryPeak,CPUUsageNSec","agent-team-T7.slice","agent-team-T9.slice","agent-team-T7-a1b2c3d4.scope","agent-team-T9-b1b2c3d4.scope"]'
+    '["--user","show","-p","Id,MemoryCurrent,MemoryPeak,CPUUsageNSec","agent-team-T7.slice","agent-team-T9.slice","agent-team-T7-a1b2c3d4.scope","agent-team-T9-b1b2c3d4.scope","agent-team-heavy-210.scope"]'
 }
 
 @test "sample: a task's CPU is its slice's since the newest reading and its processes' outside the slice since the snapshot" {
@@ -404,12 +490,8 @@ MIB=1048576
   # The builder's heavy run, team-heavy (pid 102) and its command: the task's, never the session's.
   proc 102 100 50 1 "$T7_WT"
   proc 103 102 1000 100 "$T7_WT"
-  mkdir -p "$HOME/.local/state/agent-team"
-  echo "tests/run all in ~/t7 (pid 102, T7) since 2026-11-01 10:00:00 +0000" >"$HOME/.local/state/agent-team/heavy.lock"
   # The run holds the lock, as team-heavy does.
-  local lock_fd
-  exec {lock_fd}<"$HOME/.local/state/agent-team/heavy.lock"
-  flock -x "$lock_fd"
+  hold_heavy "tests/run all in ~/t7 (pid 102, T7) since 2026-11-01 10:00:00 +0000"
   proc 200 1 300 40 "$T9_WT"
   proc 201 200 20 2 /tmp
   sessions "a1b2c3d4 T7-builder 100"
@@ -419,15 +501,18 @@ MIB=1048576
     "$STATE_DIR/readings.jsonl")" '["macos",null,[["T7",1818,null],["T9",320,null]]]'
   assert_equal "$(jq -c --argjson mib "$MIB" '.tasks[0].sessions | map(.memory /= $mib | .peak /= $mib)' "$STATE_DIR/readings.jsonl")" \
     '[{"id":"a1b2c3d4","role":"builder","memory":768,"peak":768,"cpu_seconds":90}]'
+  # The heavy run's use is its team-heavy's tree.
+  assert_equal "$(jq -c --argjson mib "$MIB" '.heavy | .memory /= $mib' "$STATE_DIR/readings.jsonl")" '{"pid":102,"memory":1050}'
   assert_equal "$(stub_calls systemctl)" ""
 
-  exec {lock_fd}<&-
+  exec {HEAVY_FD}<&-
   # With the lock free, the holder line is the last run's and its pid is no heavy run: pid 102,
   # the builder's child now, stays the builder's.
   age_by 120
   run_bin -0 --separate-stderr team-capacity sample
   assert_equal "$(tail -n 1 "$STATE_DIR/readings.jsonl" | jq -c --argjson mib "$MIB" '.tasks[0].sessions | map(.memory /= $mib | .peak /= $mib | del(.cpu_seconds))')" \
     '[{"id":"a1b2c3d4","role":"builder","memory":1818,"peak":1818}]'
+  assert_equal "$(tail -n 1 "$STATE_DIR/readings.jsonl" | jq -c .heavy)" null
 }
 
 @test "sample: a user manager or a session list that does not answer is said in the reading, and the processes count by directory" {
@@ -563,7 +648,7 @@ cost() {
   echo '{"full_share": 1.5, "session_gib": 0, "slots": 3}' >"$file"
   for sub in sample status costs; do
     run_bin -1 --separate-stderr team-capacity "$sub"
-    assert_equal "$stderr" "team-capacity: $file: full_share must be a number above 0 and at most 1, not 1.5; session_gib must be a number above 0, not 0; slots is not a setting (they are: full_share, minor_share, reserve_gib, reserve_cores, auto_full_free, auto_none_below, rise_minutes, session_gib, heavy_gib, gate_gib, min_cores)"
+    assert_equal "$stderr" "team-capacity: $file: full_share must be a number above 0 and at most 1, not 1.5; session_gib must be a number above 0, not 0; slots is not a setting (they are: full_share, minor_share, reserve_gib, reserve_cores, auto_full_free, auto_none_below, rise_minutes, session_gib, heavy_gib, gate_gib, min_cores, min_gib)"
   done
   echo '[1]' >"$file"
   run_bin -1 --separate-stderr team-capacity status
@@ -616,9 +701,10 @@ cost() {
 @test "check --holding warns when the newest reading is over 15 minutes old, naming the heartbeat's log or its enable" {
   cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
   run_bin -0 team-capacity install
+  level_applied manual full 1080
   run_bin -0 team-capacity check
   run_bin -1 team-capacity check --holding
-  assert_equal "$output" "WARN no reading of the machine's load in the last 15 minutes, though this machine holds the lease, whose heartbeat takes one every 5; fix: the capacity step's lines in ~/.local/state/agent-team/heartbeat.log say why it takes none"
+  assert_equal "$output" "WARN manual, full (90%): no reading of the machine's load yet, so no budget; no reading of the machine's load in the last 15 minutes, though this machine holds the lease, whose heartbeat takes one every 5; fix: the capacity step's lines in ~/.local/state/agent-team/heartbeat.log say why it takes none"
   run_bin -1 team-capacity check --holding --heartbeat disabled
   assert_contains "$output" "; fix: team-timers enable"
   run_bin -0 team-capacity sample
@@ -627,4 +713,552 @@ cost() {
   run_bin -0 team-capacity check --json --holding
   assert_equal "$(jq -r .verdict <<<"$output")" WARN
   run_bin -2 team-capacity check --heartbeat sometimes
+}
+
+@test "admit admits what fits the level's budget beside what is reserved, refuses a byte more with the numbers, and reserves each admission for 10 minutes" {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  # Minor: 30% of 32 GiB, 9.6 GiB. The builder reserves its 1 GiB of use, above its 0.5 GiB seed;
+  # the stack its 3 GiB of mem_limits, above its 2 GiB of use; the gate its 2.2 GiB seed.
+  busy_reading
+  level minor
+  assert_equal "$(reserved_items)" '["sessions_use","session:builder","T7",1]
+["spike_allowance","session:builder","T7",0]
+["stacks","stack:conventioner","T7",3]
+["gates","gate",null,2.2]'
+  run_bin -0 team-capacity status --json
+  assert_equal "$(jq -c '.room | del(.bytes)' <<<"$output")" '{"mode":"manual","level":"minor","share":0.3,"budget_bytes":10307921510}'
+  local room
+  room=$(jq .room.bytes <<<"$output")
+  assert_equal "$room" $((10307921510 - GIB - 3 * GIB - 2362232013))
+  assert_equal "$(jq .reserved.bytes <<<"$output")" $((GIB + 3 * GIB + 2362232013))
+
+  run_bin -75 --separate-stderr team-capacity admit --kind stack:other --task T9 --seed-bytes $((room + 1))
+  assert_equal "$output" ""
+  assert_equal "$stderr" "no room for stack:other at minor (30%): 6.2 GiB of 9.6 GiB reserved, a stack of other needs 3.4 GiB; room comes when the team's work shrinks or the level rises"
+  [[ ! -e $STATE_DIR/admitted.json ]]
+  run_bin -0 --separate-stderr team-capacity admit --kind stack:other --task T9 --name other-9 --seed-bytes "$room"
+  assert_equal "$output" "admitted stack:other at minor (30%): a stack of other needs 3.4 GiB, 6.2 GiB of 9.6 GiB reserved before it"
+  assert_equal "$(jq -c 'map(del(.at))' "$STATE_DIR/admitted.json")" "[{\"kind\":\"stack:other\",\"task\":\"T9\",\"name\":\"other-9\",\"bytes\":$room,\"pid\":null}]"
+  # The admission is reserved at its estimate, with no use yet, so nothing more fits.
+  run_bin -0 team-capacity status --json
+  assert_equal "$(jq -c '.reserved.items[-1] | [.kind, .task, .name, (.admitted | test("Z$")), .estimate_bytes, .use_bytes, .bytes]' <<<"$output")" \
+    "[\"stack:other\",\"T9\",null,true,$room,null,$room]"
+  assert_equal "$(jq .room.bytes <<<"$output")" 0
+  run_bin -75 --separate-stderr team-capacity admit --kind session:reviewer --task T9
+  assert_equal "$stderr" "no room for session:reviewer at minor (30%): 9.6 GiB of 9.6 GiB reserved, a reviewer needs 0.5 GiB; room comes when the team's work shrinks or the level rises"
+  # Ten minutes on, the readings hold what it started, and the next admission drops it.
+  age_admissions 601
+  run_bin -0 team-capacity admit --kind session:reviewer --task T9
+  assert_equal "$(jq -c 'map([.kind, .task, .bytes])' "$STATE_DIR/admitted.json")" '[["session:reviewer","T9",536870912]]'
+  # A heavy run's kind costs has no sample of yet is at heavy_gib.
+  run_bin -75 --separate-stderr team-capacity admit --kind heavy:tests-run
+  assert_equal "$stderr" "no room for heavy:tests-run at minor (30%): 6.7 GiB of 9.6 GiB reserved, a heavy run of tests-run needs 5.0 GiB; room comes when the team's work shrinks or the level rises"
+}
+
+@test "status: a session past its admission window reserves its use, the team one spike allowance for the largest gap, and one in its window the larger of its estimate and its use" {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  mkdir -p "$HOME/.config/agent-team"
+  echo '{"session_gib": 2}' >"$HOME/.config/agent-team/capacity.json"
+  # With no session past its window there is no allowance.
+  team_reading 8
+  assert_equal "$(reserved_split)" '{"bytes":0,"sessions_use":0,"spike_allowance":0,"admissions":0,"stacks":0,"heavy_runs":0,"gates":0}'
+  # Three sessions never admitted (or long ago): each reserves its use, and the team one allowance,
+  # the largest of their estimates less their use, the reviewer's 2 - 0.5.
+  team_reading 8 "T7 builder a1 1" "T7 reviewer b2 0.5" "T9 builder c3 1.5"
+  assert_equal "$(reserved_items)" '["sessions_use","session:builder","T7",1]
+["sessions_use","session:reviewer","T7",0.5]
+["sessions_use","session:builder","T9",1.5]
+["spike_allowance","session:reviewer","T7",1.5]'
+  assert_equal "$(reserved_split)" '{"bytes":4.5,"sessions_use":3,"spike_allowance":1.5,"admissions":0,"stacks":0,"heavy_runs":0,"gates":0}'
+  run_bin -0 team-capacity status --json
+  assert_equal "$(jq -c --argjson gib "$GIB" '.reserved.items[-1] | [.name, .estimate_bytes / $gib, .use_bytes / $gib]' <<<"$output")" '["b2",2,0.5]'
+
+  # T9's builder admitted again: the session of its kind and task the reading holds is in its
+  # window, reserved once at the larger of the admission's estimate and its use, never with its
+  # use too; T11's planner, not up yet, at its estimate.
+  run_bin -0 team-capacity admit --kind session:builder --task T9
+  run_bin -0 team-capacity admit --kind session:planner --task T11
+  assert_equal "$output" "admitted session:planner at full (90%): a planner needs 2.0 GiB, 5.0 GiB of 20.0 GiB reserved before it"
+  assert_equal "$(reserved_items)" '["sessions_use","session:builder","T7",1]
+["sessions_use","session:reviewer","T7",0.5]
+["admissions","session:builder","T9",2]
+["spike_allowance","session:reviewer","T7",1.5]
+["admissions","session:planner","T11",2]'
+  assert_equal "$(reserved_split)" '{"bytes":7,"sessions_use":1.5,"spike_allowance":1.5,"admissions":4,"stacks":0,"heavy_runs":0,"gates":0}'
+  run_bin -0 team-capacity status --json
+  assert_equal "$(jq -c --argjson gib "$GIB" '.reserved.items[2] | [.name, (.admitted | test("Z$")), .estimate_bytes / $gib, .use_bytes / $gib]' <<<"$output")" '["c3",true,2,1.5]'
+  assert_equal "$(jq -c '.reserved.items[-1] | [.name, .use_bytes]' <<<"$output")" '[null,null]'
+
+  # One in its window using more than its estimate reserves its use; of two sessions of the
+  # admitted kind and task, the one using less, the newer, is in the window.
+  team_reading 8 "T7 builder a1 1" "T7 reviewer b2 0.5" "T9 builder c3 3" "T11 planner d4 0.25" "T11 planner e5 1.25"
+  assert_equal "$(reserved_items)" '["admissions","session:planner","T11",2]
+["sessions_use","session:planner","T11",1.25]
+["sessions_use","session:builder","T7",1]
+["sessions_use","session:reviewer","T7",0.5]
+["admissions","session:builder","T9",3]
+["spike_allowance","session:reviewer","T7",1.5]'
+  run_bin -0 team-capacity status --json
+  assert_equal "$(jq -c '[.reserved.items[] | select(.part == "admissions") | .name]' <<<"$output")" '["d4","c3"]'
+
+  # Ten minutes on, every session reserves its use, and the allowance is the largest gap again.
+  age_admissions 601
+  assert_equal "$(reserved_split)" '{"bytes":7.75,"sessions_use":6,"spike_allowance":1.75,"admissions":0,"stacks":0,"heavy_runs":0,"gates":0}'
+}
+
+@test "admit on home-pc's numbers: seven idle builders at their use and one allowance leave room for an eighth builder and a heavy run" {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  mkdir -p "$HOME/.config/agent-team"
+  # The learned session:builder estimate, 2.4 GiB, and full's 16.4 GiB budget on 2026-11-01, when
+  # seven builders at their estimates reserved 16.8 GiB and nothing more was admitted.
+  echo '{"session_gib": 2.4}' >"$HOME/.config/agent-team/capacity.json"
+  team_reading 11.6 "T1 builder s1 0.1" "T2 builder s2 0.15" "T3 builder s3 0.2" "T4 builder s4 0.2" \
+    "T5 builder s5 0.25" "T6 builder s6 0.3" "T7 builder s7 0.3"
+  assert_equal "$(reserved_split)" '{"bytes":3.8,"sessions_use":1.5,"spike_allowance":2.3,"admissions":0,"stacks":0,"heavy_runs":0,"gates":0}'
+  run_bin -0 team-capacity status --json
+  assert_equal "$(jq -r '.room.budget_bytes' <<<"$output")" 17609365914
+  run_bin -0 team-capacity admit --kind session:builder --task T8
+  assert_equal "$output" "admitted session:builder at full (90%): a builder needs 2.4 GiB, 3.8 GiB of 16.4 GiB reserved before it"
+  run_bin -0 team-capacity admit --kind heavy:tests-run --task T8
+  assert_equal "$output" "admitted heavy:tests-run at full (90%): a heavy run of tests-run needs 5.0 GiB, 6.2 GiB of 16.4 GiB reserved before it"
+}
+
+@test "admit refuses everything at level none, and with no reading to size the budget by fails" {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  busy_reading
+  level none
+  local kind
+  for kind in session:planner stack:conventioner heavy:tests-run gate; do
+    run_bin -75 --separate-stderr team-capacity admit --kind "$kind" --task T7
+    assert_equal "$stderr" "no room for $kind: the team is at level none: nothing starts; room comes when Daniel raises the level"
+  done
+  # In automatic mode the level rises on its own once Daniel's programs leave room.
+  jq -cn '{ts: (now | floor | todate), mode: "auto", level: "none", by: "auto", machine: "home-pc"}' >>"$TEAM_HOME/level.jsonl"
+  run_bin -75 --separate-stderr team-capacity admit --kind session:planner --task T7
+  assert_equal "$stderr" "no room for session:planner: the team is at level none: nothing starts; room comes when the level rises"
+  [[ ! -e $STATE_DIR/admitted.json ]]
+  # A newest reading over 10 minutes old is taken anew first; one it cannot take leaves no budget.
+  level full
+  age_by 660
+  run_bin -0 team-capacity admit --kind session:planner --task T7
+  assert_equal "$(wc -l <"$STATE_DIR/readings.jsonl")" 2
+  rm "$STATE_DIR/readings.jsonl"
+  printf 'MemTotal:       33554432 kB\n' >"$TEAM_MEMINFO"
+  run_bin -1 --separate-stderr team-capacity admit --kind session:planner --task T7
+  assert_equal "$stderr" "team-capacity: took no reading of the machine's load: no MemTotal and MemAvailable in $TEAM_MEMINFO
+team-capacity: no reading of the machine's load, so no budget to admit session:planner by: team-capacity sample says why it takes none"
+}
+
+@test "status: a stack admitted in the last 10 minutes that the reading shows running is reserved once, at the larger of the two" {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  # T7's conventioner-2 runs at 2 GiB of its 3 GiB of limits.
+  busy_reading
+  jq -cn --argjson gib "$GIB" '[{at: (now - 120 | floor | todate), kind: "stack:conventioner", task: "T7", name: "conventioner-2", bytes: (3.5 * $gib), pid: null},
+    {at: (now - 60 | floor | todate), kind: "stack:conventioner", task: "T9", name: "conventioner-9", bytes: (3 * $gib), pid: null}]' >"$STATE_DIR/admitted.json"
+  # T7's admission names the stack the reading holds; T9's, not running yet, is reserved as an admission.
+  assert_equal "$(reserved_items | grep stack:)" '["stacks","stack:conventioner","T7",3.5]
+["admissions","stack:conventioner","T9",3]'
+}
+
+@test "status: a stack admitted while another stack of its kind and task runs is reserved beside it, not as it" {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  # T7's conventioner-2 runs at 2 GiB of its 3 GiB of limits, started long ago; an instance of the
+  # same project and task, admitted a minute ago, is not running yet.
+  busy_reading
+  jq -cn --argjson gib "$GIB" '[{at: (now - 60 | floor | todate), kind: "stack:conventioner", task: "T7", bytes: (3 * $gib), pid: null}]' \
+    >"$STATE_DIR/admitted.json"
+  assert_equal "$(reserved_items | grep stack:)" '["stacks","stack:conventioner","T7",3]
+["admissions","stack:conventioner","T7",3]'
+  run_bin -0 team-capacity status --json
+  assert_equal "$(jq '[.reserved.items[] | select(.kind | startswith("stack:")) | .bytes] | add' <<<"$output")" $((6 * GIB))
+  # The same, named for the instance team-stack admitted.
+  jq -cn --argjson gib "$GIB" '[{at: (now - 60 | floor | todate), kind: "stack:conventioner", task: "T7", name: "conventioner-2-e2e", bytes: (3 * $gib), pid: null}]' \
+    >"$STATE_DIR/admitted.json"
+  assert_equal "$(reserved_items | grep stack:)" '["stacks","stack:conventioner","T7",3]
+["admissions","stack:conventioner","T7",3]'
+}
+
+@test "admit counts the running heavy run while its team-heavy holds the lock, at its admission's kind, but not for a heavy run asking" {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  # The reading saw the heavy run use 6 GiB, above its 5 GiB seed.
+  busy_reading ".heavy = {pid: 4242, memory: (6 * $GIB)}"
+  # A run in another form (Conventioner's) is reserved at heavy_gib, named by its line.
+  hold_heavy "conventioner e2e since 2026-11-01 10:00:00 +0000"
+  run_bin -0 team-capacity status --json
+  assert_equal "$(jq -c '.reserved.items[-1] | [.kind, .task, .name, .estimate_bytes, .use_bytes]' <<<"$output")" \
+    '["heavy",null,"conventioner e2e since 2026-11-01 10:00:00 +0000",5368709120,null]'
+  exec {HEAVY_FD}<&-
+  hold_heavy "tests/run in ~/t7 (pid 4242, T7) since 2026-11-01 10:00:00 +0000"
+  # The holder asks for itself: the running heavy run is not reserved beside it.
+  run_bin -0 team-capacity admit --kind heavy:tests-run --task T7
+  assert_equal "$output" "admitted heavy:tests-run at full (90%): a heavy run of tests-run needs 5.0 GiB, 6.2 GiB of 20.0 GiB reserved before it"
+  assert_equal "$(jq -c 'map([.kind, .task, .pid])' "$STATE_DIR/admitted.json")" '[["heavy:tests-run","T7",4242]]'
+  # Every other asker sees it once, at its kind, its use the reading's, never as an admission too.
+  assert_equal "$(reserved_items)" '["sessions_use","session:builder","T7",1]
+["spike_allowance","session:builder","T7",0]
+["stacks","stack:conventioner","T7",3]
+["gates","gate",null,2.2]
+["heavy_runs","heavy:tests-run","T7",6]'
+  run_bin -0 team-capacity status --json
+  assert_equal "$(jq -c '.reserved.items[-1] | [.name, .estimate_bytes, .use_bytes]' <<<"$output")" "[\"tests/run in ~/t7\",5368709120,$((6 * GIB))]"
+  # It stays reserved past 10 minutes while its team-heavy holds the lock, and goes with the lock.
+  age_admissions 3600
+  run_bin -0 team-capacity admit --kind session:reviewer --task T9
+  assert_equal "$(jq -c 'map(.kind)' "$STATE_DIR/admitted.json")" '["heavy:tests-run","session:reviewer"]'
+  assert_equal "$(reserved_items | grep -c heavy)" 1
+  exec {HEAVY_FD}<&-
+  assert_equal "$(reserved_items | grep -c heavy || true)" 0
+}
+
+@test "two admits racing for the last room admit one, and the others exit 75" {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  capacity_room "$GIB"
+  mkdir -p "$HOME/.config/agent-team"
+  echo '{"session_gib": 0.6}' >"$HOME/.config/agent-team/capacity.json"
+  local dir=$BATS_TEST_TMPDIR i
+  local -a pids=()
+  for i in 1 2 3; do
+    "$REPO_ROOT/bin/team-capacity" admit --kind session:builder --task "T$i" >"$dir/$i.out" 2>"$dir/$i.err" &
+    pids+=($!)
+  done
+  local statuses=() status
+  for i in "${pids[@]}"; do
+    status=0
+    wait "$i" || status=$?
+    statuses+=("$status")
+  done
+  assert_equal "$(printf '%s\n' "${statuses[@]}" | sort -n | paste -sd ' ')" "0 75 75"
+  assert_equal "$(jq length "$STATE_DIR/admitted.json")" 1
+  assert_contains "$(cat "$dir"/*.err)" "no room for session:builder at full (90%): 0.6 GiB of 1.0 GiB reserved, a builder needs 0.6 GiB"
+}
+
+# plan_event <task> <time> <kind> [<jq object of more fields>]: a ledger line of <task> at <time>
+# (HH:MM on 2026-11-01), standing in for its writer.
+plan_event() {
+  jq -cn --arg t "$1" --arg ts "2026-11-01T$2:00Z" --arg e "$3" "{ts: \$ts, task: \$t, event: \$e} + (${4:-{\}})" \
+    >>"$TEAM_HOME/ledger.jsonl"
+}
+
+# plan_task <task> <opened at HH:MM> [<role>:<session>...]: <task> opened in Conventioner at that
+# time in the worktree ~/wt/<task>, and each worker launched in it a minute later.
+plan_task() {
+  local task=$1 at=$2 spec
+  plan_event "$task" "$at" opened "{project: \"conventioner\", path: \"feature\", type: \"feat\", title: \"Work\",
+    branch: \"feat/$task-work\", base: \"dev\", base_sha: \"abc1234\", worktree: \"$HOME/wt/$task\"}"
+  for spec in "${@:3}"; do
+    plan_event "$task" "${at%:*}:$(printf '%02d' $((10#${at#*:} + 1)))" launch "{role: \"${spec%%:*}\", session: \"${spec#*:}\",
+      worktree: \"$HOME/wt/$task\", toolkits: [], project: \"conventioner\", branch: \"feat/$task-work\"}"
+  done
+}
+
+# live <id> <name> <status> [<directory>]: one more session claude agents --json lists, working in
+# <directory> (default ~/wt/<its task>).
+live() {
+  local list=$STUB_FIXTURES/agents.json
+  [[ -e $list ]] || echo '[]' >"$list"
+  jq -c --arg id "$1" --arg name "$2" --arg status "$3" --arg cwd "${4:-$HOME/wt/${2%%-*}}" \
+    '. + [{pid: 4242, id: $id, name: $name, status: $status, cwd: $cwd, kind: "background",
+           sessionId: "\($id)-1111-4222-8333-444455556666"}]' "$list" >"$list.new"
+  mv "$list.new" "$list"
+}
+
+# with_stacks <task>:<name>:<GiB>...: the newest stored reading also holds each running team dev
+# stack of Conventioner, <name> for <task>'s worktree, using <GiB> of its 3 GiB of mem_limits.
+with_stacks() {
+  local file=$STATE_DIR/readings.jsonl
+  printf '%s\n' "$@" | jq -Rn --argjson gib "$GIB" --arg home "$HOME" --slurpfile last <(tail -n 1 "$file") '
+    [inputs | split(":") | {name: .[1], class: "team", task: .[0], project: "conventioner", worktree: "\($home)/wt/\(.[0])",
+      kind: "dev", memory: (.[2] | tonumber * $gib | round), cpu: 0, limits: (3 * $gib)}] as $stacks
+    | $last[0] | .stacks = $stacks' -c >"$file.last"
+  sed -i '$d' "$file"
+  cat "$file.last" >>"$file"
+  rm -f "$file.last"
+}
+
+# The plan's steps, each [what, GiB freed or needed], one compact line per step.
+plan_steps() {
+  guard_sandbox
+  "$REPO_ROOT/bin/team-capacity" plan --json | jq -c --argjson gib "$GIB" 'def g: . / $gib | . * 100 | round / 100;
+    (.stop_sessions[] | ["stop", .task, .role, .session, (.frees | g)]),
+    (.stop_stacks[] | ["stop", .task, .name, .worktree, (.frees | g)]),
+    (.stow[] | ["stow", .task, (.frees | g)]),
+    (.resume[] | ["resume", .task, .roles, (.needs | g), .fits])'
+}
+
+# The plan's verdict: [over, confirmed, budget GiB, reserved GiB].
+plan_verdict() {
+  guard_sandbox
+  "$REPO_ROOT/bin/team-capacity" plan --json |
+    jq -c --argjson gib "$GIB" 'def g: if . == null then null else . / $gib | . * 100 | round / 100 end;
+      [.over, .confirmed, (.budget | g), (.reserved | g)]'
+}
+
+# Four open tasks of Conventioner with live workers: T1 (opened 10:00) a builder and a reviewer
+# whose review is done; T2 (11:00) a builder busy in its worktree beside its stack; T3 (12:00) a
+# builder and a planner, both idle, and its idle stack; T4 (09:00) only a planner whose plan is
+# done. Two readings five minutes apart of a 32 GiB machine whose other programs use 8 GiB see
+# them reserve 14.5 GiB: 8.5 of sessions' use and two stacks at their 3 GiB of mem_limits.
+plan_machine() {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  plan_task T1 10:00 builder:aaaa0011 reviewer:aaaa0012
+  plan_event T1 10:30 "done" '{role: "reviewer", session: "aaaa0012"}'
+  plan_task T2 11:00 builder:aaaa0021
+  plan_task T3 12:00 builder:aaaa0031 planner:aaaa0032
+  plan_task T4 09:00 planner:aaaa0041
+  plan_event T4 09:30 "done" '{role: "planner", session: "aaaa0041"}'
+  live aaaa0011 T1-builder idle
+  live aaaa0012 T1-reviewer idle
+  live aaaa0021 T2-builder busy
+  live aaaa0031 T3-builder idle
+  live aaaa0032 T3-planner idle
+  live aaaa0041 T4-planner idle
+  over_reading
+  age_by 300
+  over_reading
+}
+
+# over_reading: a stored reading, taken now, of plan_machine's work, reserving 14.5 GiB.
+over_reading() {
+  team_reading 8 "T1 builder aaaa0011 1" "T1 reviewer aaaa0012 1" "T2 builder aaaa0021 2" "T3 builder aaaa0031 3" \
+    "T3 planner aaaa0032 1" "T4 planner aaaa0041 0.5"
+  with_stacks T2:conventioner-2:2 T3:conventioner-3:2
+}
+
+# A level record made <minutes> ago: plan_level <minutes> <level>
+plan_level() {
+  jq -cn --arg ts "$(date -u -d "@$(($(date +%s) - $1 * 60))" +%FT%TZ)" --arg level "$2" \
+    '{ts: $ts, mode: "manual", level: $level, by: "Daniel", machine: "home-pc"}' >>"$TEAM_HOME/level.jsonl"
+}
+
+@test "plan: nothing under budget; over it, the finished sessions and idle stacks first, then tasks newest-opened first until the rest fits" {
+  plan_machine
+  # Full leaves the team 20 GiB, above the 14.5 GiB reserved: nothing to stop or stow.
+  assert_equal "$(plan_verdict)" '[false,false,20,14.5]'
+  assert_equal "$(plan_steps)" ''
+  run_bin -0 team-capacity plan
+  assert_equal "$output" "Within budget at full (90%): 14.5 GiB reserved of 20.0 GiB: nothing to stop or stow."
+
+  # Minor's 9.6 GiB: T1's reviewer and T4's planner are handed on, T3's stack has no busy session
+  # (T2's builder is busy beside its own), and stowing T3, the newest, brings the rest to 6 GiB.
+  plan_level 60 minor
+  assert_equal "$(plan_verdict)" '[true,true,9.6,14.5]'
+  assert_equal "$(plan_steps)" "[\"stop\",\"T1\",\"reviewer\",\"aaaa0012\",1]
+[\"stop\",\"T4\",\"planner\",\"aaaa0041\",0.5]
+[\"stop\",\"T3\",\"conventioner-3\",\"$HOME/wt/T3\",3]
+[\"stow\",\"T3\",4]"
+  run_bin -0 team-capacity plan
+  assert_equal "$output" "Over budget at minor (30%): 14.5 GiB reserved of 9.6 GiB.
+  stop T1-reviewer aaaa0012, its work handed on: frees 1.0 GiB
+  stop T4-planner aaaa0041, its work handed on: frees 0.5 GiB
+  stop conventioner-3 of T3, no busy session in its worktree: frees 3.0 GiB
+  stow T3: frees 4.0 GiB"
+
+  # None: every task with a live worker or a running stack stows, newest first, but T4, whose one
+  # session is finished.
+  plan_level 30 none
+  assert_equal "$(plan_verdict)" '[true,true,0,14.5]'
+  assert_equal "$(plan_steps)" "[\"stop\",\"T1\",\"reviewer\",\"aaaa0012\",1]
+[\"stop\",\"T4\",\"planner\",\"aaaa0041\",0.5]
+[\"stop\",\"T3\",\"conventioner-3\",\"$HOME/wt/T3\",3]
+[\"stow\",\"T3\",4]
+[\"stow\",\"T2\",5]
+[\"stow\",\"T1\",1]"
+}
+
+@test "plan: a task stowed since the newest reading, with no live session, is neither named to stow again nor counted" {
+  plan_machine
+  plan_level 60 minor
+  assert_equal "$(plan_steps | grep '"stow"')" '["stow","T3",4]'
+  # T3 stows: its sessions are gone from the list and its stack stopped, but the stored readings
+  # still hold them until the next capacity step.
+  jq -cn '{ts: (now | floor | todate), task: "T3", event: "stowed", machine: "home-pc", worktrees: [],
+    roles: ["builder", "planner"], cause: "level"}' >>"$TEAM_HOME/ledger.jsonl"
+  jq -c 'map(select(.name | startswith("T3-") | not))' "$STUB_FIXTURES/agents.json" >"$STUB_FIXTURES/agents.json.new"
+  mv "$STUB_FIXTURES/agents.json.new" "$STUB_FIXTURES/agents.json"
+  # Without T3's 7 GiB, 7.5 GiB is reserved of 9.6 GiB: within budget, nothing to stop or stow.
+  assert_equal "$(plan_verdict)" '[false,false,9.6,7.5]'
+  assert_equal "$(plan_steps | grep -c '"stow"')" 0
+  # A session of T3 still live counts it again: a stow that did not stop it.
+  live aaaa0031 T3-builder idle
+  assert_equal "$(plan_verdict)" '[true,true,9.6,14.5]'
+}
+
+@test "plan: one over-budget reading is not confirmed, two in a row are, and a level change confirms at once" {
+  plan_machine
+  plan_level 60 minor
+  # The older reading is within minor's budget (T1's builder and the stacks, 7 GiB): the newer one
+  # alone does not count.
+  rm "$STATE_DIR/readings.jsonl"
+  team_reading 8 "T1 builder aaaa0011 1"
+  with_stacks T2:conventioner-2:2 T3:conventioner-3:2
+  age_by 300
+  over_reading
+  assert_equal "$(plan_verdict)" '[true,false,9.6,14.5]'
+  assert_equal "$(plan_steps)" ''
+  run_bin -0 team-capacity plan
+  assert_equal "$output" "Over budget at minor (30%) in the newest reading only: 14.5 GiB reserved of 9.6 GiB; nothing stops or stows unless the next reading shows it too."
+
+  # A level change after the older reading confirms it at once.
+  plan_level 1 minor
+  assert_equal "$(plan_verdict)" '[true,true,9.6,14.5]'
+  sed -i '$d' "$TEAM_HOME/level.jsonl"
+  assert_equal "$(plan_verdict)" '[true,false,9.6,14.5]'
+
+  # A second over-budget reading in a row confirms it.
+  age_by 300
+  over_reading
+  assert_equal "$(plan_verdict)" '[true,true,9.6,14.5]'
+  assert_equal "$(plan_steps | head -n 1)" '["stop","T1","reviewer","aaaa0012",1]'
+}
+
+@test "plan: the resume list is the tasks stowed, waiting to resume, for the level or a handoff, oldest stow first, each fitting only when its roles' estimates fit" {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  local stowed='{machine: "home-pc", worktrees: [], cause: "level"}'
+  plan_task T5 08:00 builder:aaaa0051 reviewer:aaaa0052
+  plan_event T5 13:00 stowed "$stowed + {roles: [\"builder\", \"reviewer\"]}"
+  plan_task T6 08:00 planner:aaaa0061
+  plan_event T6 12:00 stowed "$stowed + {roles: [\"planner\"]}"
+  # A handoff's stow the resume could not relaunch waits too; one relaunched since, a closed task
+  # and a stow with no role to relaunch wait for nothing.
+  plan_task T7 08:00 builder:aaaa0071
+  plan_event T7 11:00 stowed '{machine: "home-pc", worktrees: [], roles: ["builder"], cause: "handoff"}'
+  plan_task T10 08:00 builder:aaaa0101
+  plan_event T10 10:00 stowed "$stowed + {roles: []}"
+  plan_task T8 08:00 builder:aaaa0081
+  plan_event T8 11:00 stowed "$stowed + {roles: [\"builder\"]}"
+  plan_event T8 11:30 launch "{role: \"builder\", session: \"aaaa0082\", worktree: \"$HOME/wt/T8\", toolkits: []}"
+  plan_task T9 08:00 builder:aaaa0091
+  plan_event T9 11:00 stowed "$stowed + {roles: [\"builder\"]}"
+  plan_event T9 11:30 closed '{archive: [], returned: [], kept: []}'
+  live aaaa0082 T8-builder busy
+
+  # Full leaves 20 GiB and T8's builder uses 19.3: T7's builder and T6's planner (0.5 GiB each)
+  # fit, T5's builder and reviewer (1 GiB) do not.
+  team_reading 8 "T8 builder aaaa0082 19.3"
+  assert_equal "$(plan_verdict)" '[false,false,20,19.3]'
+  assert_equal "$(plan_steps)" '["resume","T7",["builder"],0.5,true]
+["resume","T6",["planner"],0.5,true]
+["resume","T5",["builder","reviewer"],1,false]'
+  run_bin -0 team-capacity plan
+  assert_equal "$output" "Within budget at full (90%): 19.3 GiB reserved of 20.0 GiB: nothing to stop or stow.
+Stowed, waiting to resume, oldest stow first:
+  T7 (builder): needs 0.5 GiB, fits
+  T6 (planner): needs 0.5 GiB, fits
+  T5 (builder, reviewer): needs 1.0 GiB, does not fit yet"
+  run_bin -0 team-capacity plan --json
+  assert_equal "$(jq -c '.resume | map([.task, .stowed])' <<<"$output")" \
+    '[["T7","2026-11-01T11:00:00Z"],["T6","2026-11-01T12:00:00Z"],["T5","2026-11-01T13:00:00Z"]]'
+
+  # With room for all, all fit; at none, none does.
+  team_reading 8 "T8 builder aaaa0082 2"
+  assert_equal "$(plan_steps)" '["resume","T7",["builder"],0.5,true]
+["resume","T6",["planner"],0.5,true]
+["resume","T5",["builder","reviewer"],1,true]'
+  plan_level 1 none
+  assert_equal "$(plan_steps | jq -c '.[0:2] + [.[4]]' | grep resume)" '["resume","T7",false]
+["resume","T6",false]
+["resume","T5",false]'
+}
+
+@test "plan: a builder is finished only once a later builder launched in its worktree and a ticket-done, pr or done followed it" {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  # T1's first builder delivered its ticket and the next ticket's builder launched in its worktree;
+  # T2's builder opened its PR and waits for review findings, with no builder after it.
+  plan_task T1 10:00 builder:aaaa0010
+  plan_event T1 10:30 ticket-done '{ticket: "01", commits: ["abc1234"]}'
+  plan_event T1 10:31 launch "{role: \"builder\", session: \"aaaa0011\", worktree: \"$HOME/wt/T1\", toolkits: []}"
+  plan_task T2 11:00 builder:aaaa0021
+  plan_event T2 11:30 pr '{url: "https://github.com/o/p/pull/1", head: "abc1234"}'
+  live aaaa0010 T1-builder idle
+  live aaaa0011 T1-builder busy
+  live aaaa0021 T2-builder idle
+  team_reading 8 "T1 builder aaaa0010 1" "T1 builder aaaa0011 1" "T2 builder aaaa0021 1"
+  plan_level 1 none
+  assert_equal "$(plan_steps)" '["stop","T1","builder","aaaa0010",1]
+["stow","T2",1]
+["stow","T1",1]'
+}
+
+@test "plan: with no reading there is no budget and nothing to plan, and an unreadable session list fails it" {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  run_bin -0 team-capacity plan --json
+  assert_equal "$(jq -c '[.over, .confirmed, .budget, .stop_sessions, .stop_stacks, .stow, .resume]' <<<"$output")" '[false,false,null,[],[],[],[]]'
+  run_bin -0 team-capacity plan
+  assert_equal "$output" "No reading of the machine's load, so no budget: nothing to plan."
+  # plan never takes a reading.
+  [[ ! -e $STATE_DIR/readings.jsonl ]]
+  echo 'not json' >"$STUB_FIXTURES/agents.json"
+  run_bin -1 --separate-stderr team-capacity plan
+  assert_equal "$stderr" "team-capacity: cannot read the live session list (claude agents --json)"
+  # With --sessions it reads the list its caller read, never claude's.
+  : >"$STUB_CALLS/claude.log"
+  echo '[]' >"$BATS_TEST_TMPDIR/sessions.json"
+  run_bin -0 team-capacity plan --sessions "$BATS_TEST_TMPDIR/sessions.json"
+  assert_equal "$(stub_calls claude)" ""
+  run_bin -1 --separate-stderr team-capacity plan --sessions "$STUB_FIXTURES/agents.json"
+  assert_equal "$stderr" "team-capacity: $STUB_FIXTURES/agents.json holds no session list (a JSON array, as claude agents --json prints)"
+  run_bin -2 team-capacity plan --sessions
+  assert_contains "$output" "--sessions takes the file of a session list"
+}
+
+# A stored reading, taken now, of a 32 GiB, 12-core machine whose other programs use 8 GiB and
+# <others cores> (no CPU read with none given).
+cpu_reading() {
+  busy_reading ".cpu = $([[ -n ${1:-} ]] && echo "{cpus: 12, seconds: 300, team: 1.5, others: $1}" || echo null)"
+}
+
+@test "jobs: the floor of the CPU budget at the recorded level, at least 1, and nproc with no team home, reading or record to size it by" {
+  # The sandbox's TEAM_SLOTS_CPUS (12) stands for nproc, which counts without it.
+  local nproc=$TEAM_SLOTS_CPUS
+  run -0 env -u TEAM_SLOTS_CPUS "$REPO_ROOT/bin/team-capacity" jobs
+  assert_equal "$output" "$(nproc)"
+  # No reading: nproc's, said only with --verbose.
+  run_bin -0 --separate-stderr team-capacity jobs
+  assert_equal "$output" "$nproc"
+  assert_equal "$stderr" ""
+  run_bin -0 --separate-stderr team-capacity jobs --verbose
+  assert_equal "$output" "$nproc"
+  assert_equal "$stderr" "team-capacity: $nproc at once, nproc's: no reading of the machine's load"
+  # Manual full with no record: 10.8 cores of 12, but the others' 2 and reserve_cores leave 9.
+  cpu_reading 2
+  run_bin -0 --separate-stderr team-capacity jobs --verbose
+  assert_equal "$output" 9
+  assert_equal "$stderr" "team-capacity: 9 at once, the floor of manual, full (90%)'s 9 cores"
+  # Minor: 3.6 cores, so 3; none: 0 cores, so 1.
+  level minor
+  run_bin -0 --separate-stderr team-capacity jobs --verbose
+  assert_equal "$output" 3
+  assert_equal "$stderr" "team-capacity: 3 at once, the floor of manual, minor (30%)'s 3.6 cores"
+  level none
+  run_bin -0 team-capacity jobs
+  assert_equal "$output" 1
+  # A newer reading with no CPU leaves the newest with CPU to size it by; with none at all, the
+  # share of the machine's cores.
+  level minor
+  cpu_reading 10
+  cpu_reading
+  run_bin -0 team-capacity jobs
+  assert_equal "$output" 1
+  rm "$STATE_DIR/readings.jsonl"
+  cpu_reading
+  TEAM_SLOTS_CPUS=12 run_bin -0 team-capacity jobs
+  assert_equal "$output" 3
+  # A malformed record or settings: nproc's, saying why.
+  echo 'not a record' >>"$TEAM_HOME/level.jsonl"
+  run_bin -0 --separate-stderr team-capacity jobs --verbose
+  assert_equal "$output" "$nproc"
+  assert_contains "$stderr" "team-capacity: $nproc at once, nproc's: $TEAM_HOME/level.jsonl"
+  rm "$TEAM_HOME/level.jsonl"
+  mkdir -p "$HOME/.config/agent-team"
+  echo '{"minor_share": 2}' >"$HOME/.config/agent-team/capacity.json"
+  run_bin -0 --separate-stderr team-capacity jobs --verbose
+  assert_equal "$output" "$nproc"
+  assert_contains "$stderr" "team-capacity: $nproc at once, nproc's: $HOME/.config/agent-team/capacity.json"
+  rm "$HOME/.config/agent-team/capacity.json"
+  # No team home: nproc's, never the team home's refusal.
+  run -0 --separate-stderr env -u TEAM_HOME "$REPO_ROOT/bin/team-capacity" jobs --verbose
+  assert_equal "$output" "$nproc"
+  assert_equal "$stderr" "team-capacity: $nproc at once, nproc's: no team home"
+  run_bin -2 team-capacity jobs --json
+  assert_contains "$output" "unexpected argument '--json'"
 }

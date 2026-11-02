@@ -10,6 +10,9 @@
 # beside it (the test sandbox refuses one under /home or /Users), under the machine's heavy-run
 # lock (team-heavy run --label "<text>: <command> on <head>", the text "team-checks <project>"
 # by default, its cost sample heavy:checks:<project>), which waits for another holder.
+# Each command gets TEAM_JOBS, how many processes it may run at once, which tests/run's bats take:
+# the caller's when set, else team-capacity jobs' (the floor of the level's CPU budget, at least
+# 1), read once before the first command.
 # Prints "team-checks: running <command> on <head>" on stderr before each, and its result on
 # stdout: "local check '<command>' passed on the head <head>", or failed (exit <n>), or could not
 # run yet (exit 75, the lock stayed held), with its last 20 lines indented below. The worktree
@@ -55,6 +58,9 @@ scratch=$(mktemp -d "$base/team-checks.XXXXXX")
 trap 'git -C "$checkout" worktree remove --force "$scratch/head" 2>/dev/null || true; rm -rf "$scratch"' EXIT
 git -C "$checkout" worktree add -q --detach "$scratch/head" "$head" 2>"$scratch/error" ||
   die "cannot check out ${head:0:7} for the local checks: $(grep -m1 . "$scratch/error")"
+
+TEAM_JOBS=${TEAM_JOBS:-$(TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-capacity" jobs)}
+export TEAM_JOBS
 
 failed=0 later=0
 for command in "${local_checks[@]}"; do

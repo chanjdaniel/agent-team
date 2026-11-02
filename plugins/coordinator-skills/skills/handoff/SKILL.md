@@ -1,12 +1,24 @@
 ---
 name: handoff
-description: Hand the team off to another machine on Daniel's word. Use when Daniel says "hand off", or asks to move the team to the laptop, the PC or any other machine.
+description: Hand the team off to another machine, or to this one for a restart, on Daniel's word. Use when Daniel says "hand off" or "shut down", or asks to move the team to the laptop, the PC or any other machine.
 ---
 
 # Hand off
 
 The machine being left stows everything, releases the lease, and retires you; the other machine's `team-resume` brings the team back.
 Never hand off while GitHub is unreachable: say so to Daniel and wait.
+
+## The same-machine case: "shut down"
+
+On Daniel's "shut down" (the PC goes down for a while and the team comes back on it), follow the steps below with three changes:
+
+- Step 1 asks nothing about `team-resume --wait`, since no other machine takes the team: run `team-handoff --check` alone.
+- Step 5 runs `team-handoff --here`: the stacks are stopped, their data kept for the restart, instead of taken down.
+- Step 6's final post is still what it printed from `Released at`, whose first line now tells Daniel to run `team-resume` here after the restart.
+
+The level recorded in `level.jsonl` holds across the restart; `team-resume` then brings back what it allows, as the `resume` skill says.
+
+## Steps
 
 1. **Check.** Before anything is stowed, ask Daniel whether `team-resume --wait` is running on the machine taking the team and has printed "this machine is ready", and wait for the yes.
    Its doctor and its check of the two checkouts run before its wait, so it is the other machine's preflight: what it refuses is fixed there while the team still runs here.

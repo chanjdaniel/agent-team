@@ -176,9 +176,12 @@ EOF
   touch "$TEAM_CHROME"
   # The heartbeat runs, as it should on the holder.
   "$REPO_ROOT/bin/team-timers" enable >/dev/null
-  # The user manager delegates cpu and memory, as home-pc's does, and the team's slice is installed.
+  # The user manager delegates cpu and memory, as home-pc's does, the team's slice is installed,
+  # and the level's limits applied, as team-level apply leaves them: manual full, its CPU quota
+  # on the slice.
   user_controllers cpu memory pids
   "$REPO_ROOT/bin/team-capacity" install >/dev/null
+  level_applied manual full 1000
 
   # Two projects, cloned as the bootstrap clones them: Conventioner gated by no-mistakes with a
   # treehouse pool, site with a git pool; no-mistakes has a gate for each checkout listed in

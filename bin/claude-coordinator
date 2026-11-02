@@ -8,9 +8,8 @@
 # GitHub rulesets are what block force-push, reset --hard and merging unapproved PRs.
 #
 # The manual, roles/coordinator.md, is appended to the system prompt, and the coordinator's own
-# skills (handoff, recover-worker, resume, status-report, stow) load from
-# plugins/coordinator-skills; no worker
-# loads either. Its settings are coordinator.settings.json with @TEAM_CODE@ (in its hook
+# skills (handoff, level, recover-worker, resume, retro, status-report, stow, ui-intake) load
+# from plugins/coordinator-skills; no worker loads either. Its settings are coordinator.settings.json with @TEAM_CODE@ (in its hook
 # commands) naming this checkout, written to ~/.local/state/agent-team/coordinator.settings.json;
 # the manual, the skills, the settings and the hooks all come from this script's checkout.
 #

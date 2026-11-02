@@ -75,9 +75,15 @@ inbox_shown() {
   jq -r .content "$STUB_FIXTURES/inbox/$message.json"
 }
 
-# The message's lines between its title and its time, the items and section headings.
+# The message's lines between its title and its time, the items and section headings, without the
+# resources line.
 inbox_items_shown() {
-  inbox_shown | sed '1d;$d'
+  inbox_shown | sed '1d;$d' | sed '/^Resources: /d'
+}
+
+# The message's resources line, none when it has none.
+inbox_resources_shown() {
+  inbox_shown | sed -n '/^Resources: /p'
 }
 
 # team-inbox's calls to the fake Discord, one "<method> <path>" per line.

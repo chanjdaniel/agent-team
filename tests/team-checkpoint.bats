@@ -112,6 +112,8 @@ changed_in() {
   echo "SECRET=1" >"$wt/.env"
   head=$(git -C "$wt" rev-parse HEAD)
   before=$(worktree_state "$wt")
+  # Daniel's level, which holds across restarts and handoffs.
+  echo '{"ts":"2026-11-01T14:05:00Z","mode":"manual","level":"minor","by":"Daniel","machine":"home-pc"}' >"$TEAM_HOME/level.jsonl"
 
   run_bin -0 --separate-stderr team-checkpoint
   local snap
@@ -148,6 +150,7 @@ refs/heads/wip/home/T1"
   assert_equal "$(team_tip)" "$(git -C "$TEAM_HOME" rev-parse HEAD)"
   assert_equal "$(git -C "$team_origin" log -1 --format=%s dev)" "chore: checkpoint"
   assert_equal "$(changed_in dev)" "ledger.jsonl
+level.jsonl
 tasks/T1/plan.md
 tasks/T1/scratch/spec.md"
   assert_equal "$(git -C "$TEAM_HOME" status --porcelain)" ""
