@@ -69,4 +69,5 @@ unknown() {
 # The reasons the unknown-target message gives, which the test files read.
 # shellcheck disable=SC2034
 expansion='it holds an expansion this hook does not follow' \
-  moved='a cd before it may have left any directory'
+  moved='a cd before it may have left any directory' \
+  failed='a cd before it may have failed; join them with &&'

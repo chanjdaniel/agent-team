@@ -261,7 +261,8 @@ setup() {
   blocked 'cmd < <(cmd > out)' "$wt/out"
   blocked $'echo $(echo a\n  cmd > out) > .scratch/x' "$wt/out"
   blocked 'x=$(cmd > out)' "$wt/src/out" "$wt/src"
-  blocked 'echo $(cmd > a) > b' "$wt/b, $wt/a"
+  # Its words, and their substitutions, are expanded before its redirections are made.
+  blocked 'echo $(cmd > a) > b' "$wt/a, $wt/b"
 }
 
 @test "comments inside a \$( ) are read as bash reads them" {

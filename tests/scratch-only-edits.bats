@@ -169,6 +169,13 @@ EOF
 Blocked: this role may write files only under $wt/.scratch; write there with the Write tool, not a shell redirection or tee (tried $wt/x)."
 }
 
+@test "a target the hook cannot work out after a cd says whether the cd may have failed or left any directory" {
+  shell -2 'cd .scratch/task; cmd > a; cd "$x" && cmd > b; cd /etc && cmd > c'
+  assert_equal "$output" ""
+  assert_equal "$stderr" "Blocked: this hook cannot tell where these targets point: a (a cd before it may have failed; join them with &&), b (a cd before it may have left any directory); spell each path out, or write files under $wt/.scratch with the Write tool.
+Blocked: this role may write files only under $wt/.scratch; write there with the Write tool, not a shell redirection or tee (tried /etc/c)."
+}
+
 @test "a refusal unread comes first, whatever else the command writes" {
   unread 'cmd > out; x=`y`' 'a backtick substitution'
   unread 'cmd > "$out"; select x in a; do :; done' 'a select command'
@@ -182,6 +189,11 @@ Blocked: this role may write files only under $wt/.scratch; write there with the
   ((SECONDS < 5))
   SECONDS=0
   passes "printf '%s' '$body' | tee .scratch/task/out"
+  ((SECONDS < 5))
+  # Each cd that may fail adds directories the shell may be in, which the walk caps.
+  body=$(for i in $(seq 1 100); do echo "cd .scratch/task && cmd > out$i; cd $wt; if c; then cd src; fi; cmd > .scratch/y$i"; done)
+  SECONDS=0
+  shell -2 "$body"
   ((SECONDS < 5))
 }
 
