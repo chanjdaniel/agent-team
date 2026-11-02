@@ -338,7 +338,7 @@ the checks
   Run them on `abc1234` with `@CODE@/bin/team-checks conv abc1234`, which runs them as `team-merge` does, in a fresh detached worktree of that head, and say in `.scratch/task/review.md` whether it passed; a failure is **blocking**, and they set no GitHub status.
 - There is no PR yet: the builder stopped before the no-mistakes gate, which runs once this review passes or its findings are fixed, and reviews the code line by line after you.
 - Write your findings to `.scratch/task/review.md`, numbered, each with its file and line, one kind, `blocking`, `note: correctness`, `note: security`, `note: real-data` or `note`, and one scope, `change` (a line the PR adds or changes) or `before` (code it did not change).
-  End it with the count of each kind, the plain notes as `note-change` and `note-before` (0 for none), the numbers of the `before` notes, and the guarded areas the change touches, of `ci`, `dependencies`, `migrations`, `settings`, `permissions` and `secrets`, by the paths `@CODE@/bin/lib/guarded` lists or by what the code does (settings, permission or secrets handling in a file of any name), or none.
+  End it with the count of each kind, the plain notes as `note-change` and `note-before` (0 for none), the numbers of the `before` notes, and the guarded areas the change touches, of `ci`, `dependencies`, `migrations`, `settings`, `permissions`, `secrets` and `guardrails`, by the paths `@CODE@/bin/lib/guarded` lists or by what the code does (settings, permission or secrets handling in a file of any name), or none.
   Post nothing to GitHub: the re-review of the gate's PR posts the comment and sets the status.
 - Send `T12 DONE pass abc1234 findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note-change:<n>,note-before:<n> before=<the before notes' numbers, comma-separated, or none> guarded=<areas, comma-separated, or none>` or `T12 DONE findings .scratch/task/review.md findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note-change:<n>,note-before:<n> before=<the before notes' numbers, comma-separated, or none> guarded=<areas, comma-separated, or none>` to `coordinator`, the counts, numbers and areas as `.scratch/task/review.md` gives them.
 
@@ -404,7 +404,7 @@ EOF
   open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
   local pr=https://github.com/chanjdaniel/agent-team/pull/9 brief
   local counts="findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note-change:<n>,note-before:<n> before=<the before notes' numbers, comma-separated, or none> guarded=<areas, comma-separated, or none>"
-  local areas="the guarded areas the change touches, of \`ci\`, \`dependencies\`, \`migrations\`, \`settings\`, \`permissions\` and \`secrets\`, by the paths \`$REPO_ROOT/bin/lib/guarded\` lists or by what the code does (settings, permission or secrets handling in a file of any name), or none"
+  local areas="the guarded areas the change touches, of \`ci\`, \`dependencies\`, \`migrations\`, \`settings\`, \`permissions\`, \`secrets\` and \`guardrails\`, by the paths \`$REPO_ROOT/bin/lib/guarded\` lists or by what the code does (settings, permission or secrets handling in a file of any name), or none"
   run_bin -0 team-brief T12 reviewer --name review --set head=abc1234 --set "checks=the checks"
   brief=$(<"$output")
   assert_contains "$brief" "$areas"
@@ -507,7 +507,7 @@ Sent back: the notes numbered 3 and 5 in `.work/task/review.md`, each a plain `n
 ## Deliver
 
 - Add the result to `.work/task/review.md` under a heading naming `def5678`, its new findings numbered on from the last, each with its file and line, one kind, `blocking`, `note: correctness`, `note: security`, `note: real-data` or `note`, and its scope, `change`; then write the same result alone to `.work/task/rereview.md`.
-  Give in it the count of each kind among the findings that stand at `def5678`, its new ones and any note sent back and not fixed, the plain notes as `note-change` and `note-before` (0 for none), and the guarded areas the change touches, of `ci`, `dependencies`, `migrations`, `settings`, `permissions` and `secrets`, by the paths `@CODE@/bin/lib/guarded` lists or by what the code does (settings, permission or secrets handling in a file of any name), or none.
+  Give in it the count of each kind among the findings that stand at `def5678`, its new ones and any note sent back and not fixed, the plain notes as `note-change` and `note-before` (0 for none), and the guarded areas the change touches, of `ci`, `dependencies`, `migrations`, `settings`, `permissions`, `secrets` and `guardrails`, by the paths `@CODE@/bin/lib/guarded` lists or by what the code does (settings, permission or secrets handling in a file of any name), or none.
   Post that as one PR comment with this exact command, the only comment your settings allow: `@CODE@/bin/team-review-comment https://github.com/chanjdaniel/agent-team/pull/9 .work/task/rereview.md`.
 - The status on the head you reviewed, with this exact command, the only status your settings allow: `@CODE@/bin/team-review-status https://github.com/chanjdaniel/agent-team/pull/9 def5678 <success|failure> "<one line, at most 140 characters>"`.
   It sets the status on `def5678`, the head you reviewed, and refuses when the PR has moved past it: then set nothing and tell the coordinator.

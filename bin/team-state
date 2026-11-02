@@ -36,11 +36,23 @@
 # checks passed, failing and pending by name (a skipped check counts as passed, a cancelled one
 # as failing), required (server-required plus the project's required_checks) and
 # required_missing, agent_review (the agent-review check's state on the head, or missing),
-# merge_approved (a merge-approved event naming this PR's URL), and behind_by (the commits of the
+# merge_approved (a merge-approved event naming this PR's URL), behind_by (the commits of the
 # base the head lacks, from gh api's compare of the two for an open PR; null for a PR not open or
-# when the compare cannot be read, which fails nothing else). When GitHub cannot be read, pr
-# carries error instead of GitHub's facts, the text says "GitHub unavailable", and the exit is
-# still 0.
+# when the compare cannot be read, which fails nothing else), and standing_word. When GitHub
+# cannot be read, pr carries error instead of GitHub's facts, the text says "GitHub unavailable",
+# and the exit is still 0.
+# standing_word is Daniel's standing merge word on the PR's project, read from every task's events
+# in the ledger: null when no merge-standing or merge-standing-withdrawn names that project or
+# all, else {word, withdrawn, covers, reasons}, word the latest merge-standing that applies and
+# withdrawn the latest event when it is a withdrawal, each as {project (as logged), task, ts,
+# discord_message, discord_channel}, else null. Only while the phase is awaiting-merge, reasons
+# are why team-merge would not merge the PR on the word (the word withdrawn, the PR from a branch
+# not the task's, the review-side reasons and the changed-file reasons it holds the word to, or
+# GitHub unreadable), read from GitHub's list of the PR's files, and covers is whether there are
+# none; Daniel's message is not read back and the checks are not judged. Otherwise covers is null,
+# reasons empty and no file list is read. While awaiting merge, the text form says the first that
+# holds of "standing word withdrawn", "standing word covers it" and "standing word does not cover
+# it: <the first reason>" (with " (and <n> more)" for more), before any waiting.
 # waiting is the task's latest waiting (on, reason, since) until a later launch or resumed, or
 # null; the text form ends with "waiting on <on>: <reason>".
 # rehome_failures are the worktrees team-resume could not re-home and nothing has made since: each

@@ -134,7 +134,7 @@ def numbers_fixed($contract):
 
 # The finding kinds a review's findings counts, and the guarded areas its guarded may name.
 def finding_kinds: ["blocking", "correctness", "security", "real-data", "note-change", "note-before"];
-def guarded_areas: ["ci", "dependencies", "migrations", "settings", "permissions", "secrets"];
+def guarded_areas: ["ci", "dependencies", "migrations", "settings", "permissions", "secrets", "guardrails"];
 
 # How a review's findings, an object, is not the count of each finding kind, exactly.
 def findings_problems:
@@ -467,6 +467,15 @@ def task_branch($project):
   [.[] | select((.event | IN("opened", "worktree-added", "branch-renamed")) and .project == $project)]
   | last | .branch // null;
 
+# Why PR #$number, from the branch $branch, is not task $task's own PR for $project, over the
+# task's events as an array (task_branch), one string, or none when it is: a word given on no head
+# (the plan-time and standing ones) holds only for the task's own branch.
+def task_branch_reasons($task; $project; $branch; $number):
+  task_branch($project) as $own
+  | if $own == null then "\($task) logged no branch for \($project): no opened, worktree-added or branch-renamed event of it"
+    elif $branch != $own then "PR #\($number) comes from \($branch), not \($own), \($task)'s branch for \($project)"
+    else empty end;
+
 # A launch's session in the session list ($sessions, from claude agents --json), or null: by the
 # short id, or by the start of the full session id (interactive sessions have no short id).
 def live_session($session; $sessions):
@@ -583,6 +592,70 @@ def preapproved_projects:
       if IN(.[]; $project) then . else . + [$project] end)
   | map(select(. as $project | $events | merge_preapproval($project) | .withdrawn == null));
 
+# Daniel's standing merge word on $project, over every ledger event as an array (never one task's),
+# or null when no merge-standing or merge-standing-withdrawn names $project or all: the latest of
+# those decides, so {stands: whether it is a merge-standing, word: the latest merge-standing that
+# applies, withdrawn: the latest event when it is a withdrawal, else null}, each as {project (as
+# logged), task, ts, discord_message, discord_channel}, word null when no merge-standing applies.
+def standing_word($project):
+  def said: {project, task, ts, discord_message, discord_channel};
+  [.[] | select((.event == "merge-standing" or .event == "merge-standing-withdrawn")
+    and (.project == $project or .project == "all"))] as $applying
+  | ($applying | last) as $latest
+  | if $latest == null then null
+    else {stands: ($latest.event == "merge-standing"),
+          word: ([$applying[] | select(.event == "merge-standing")] | last | if . == null then null else said end),
+          withdrawn: (if $latest.event == "merge-standing-withdrawn" then $latest | said else null end)} end;
+
+# The projects of the list $projects a standing word stands for, over every ledger event as an
+# array, in the list's order, each as {project, word} (standing_word's word).
+def standing_words($projects):
+  . as $events
+  | [$projects[] | . as $project | $events | standing_word($project)
+     | select(. != null and .stands) | {project: $project, word}];
+
+# Daniel's standing words from standing_words' list ({project, word}), one {projects, word} per
+# word event, the projects in the list's order, the words in the order they were logged.
+def standing_word_events:
+  group_by(.word) | map({projects: map(.project), word: .[0].word}) | sort_by(.word.ts, .word.discord_message);
+
+# A standing word's projects as text: "all", which only a word as logged names, is every project.
+def projects_text: map(if . == "all" then "every project" else . end) | join(", ");
+
+# Why Daniel's standing word on $project does not stand, over standing_word's answer ({stands,
+# word, withdrawn}, or null for no event), one string, or none while it stands: no word names
+# $project or all, or the latest event that applies withdrew it.
+def standing_word_reasons($project):
+  if .word == null then "no standing word of Daniel's names \($project) or every project"
+  elif .stands | not then
+    "Daniel's standing word on \(if .word.project == "all" then "every project" else .word.project end), Discord message \(.word.discord_message), was withdrawn at \(.withdrawn.ts) in Discord message \(.withdrawn.discord_message)"
+  else empty end;
+
+# Why the task's reviews do not let a word given on no head (plan-time or standing) merge the PR's
+# head $head unasked, one string per reason, none when they do: no review of the head (by the
+# shorter prefix) is logged; the latest one is not a pass; it logged no guarded list, or named
+# areas in it; and each review of the task, of any head, that left out its finding counts or
+# counted a security or real-data finding, fixed or not, named by its head and time.
+def unattended_review_reasons($head):
+  ([.[] | select(.event == "review" and same_head(.head; $head))] | last) as $reviewed
+  | "the latest review of the head \($head[:7]), at \($reviewed.ts), " as $latest
+  | (if $reviewed == null then "no review of the head \($head[:7]) is logged, so no reviewer has passed it"
+     elif $reviewed.verdict != "pass" then "\($latest)is \($reviewed.verdict), not pass"
+     else empty end),
+    ($reviewed | select(. != null)
+     | if has("guarded") | not then "\($latest)logged no guarded areas, so no reviewer has said the change touches none"
+       elif .guarded != [] then "\($latest)found the change touching guarded areas: \(.guarded | join(", "))"
+       else empty end),
+    (.[] | select(.event == "review") | "the review of the head \(.head[:7]), at \(.ts), " as $review
+     | if has("findings") | not then
+         "\($review)logged no finding counts, so whether it found a security or real-data issue is not known"
+       else
+         [.findings | ("security", "real-data") as $kind | .[$kind] | select(. > 0)
+           | "\(.) \($kind) finding\(if . == 1 then "" else "s" end)"]
+         | select(length > 0)
+         | "\($review)counted \(join(" and ")): such a finding on the task, even fixed, comes back to Daniel"
+       end);
+
 # Whether the task's events hold an answered of ask $id read from Discord message $message.
 def answered_from($id; $message):
   any(.[]; .event == "answered" and .id == $id and (.discord_message | tostring) == $message);
@@ -652,6 +725,12 @@ def state_line:
        elif .own == true then " | merge pre-approved, but \(.project) is the team's own project"
        elif .opted_in == false then " | merge pre-approved, but \(.project) does not opt in"
        else " | merge pre-approved" end)
+  + (.pr.standing_word // null
+     | if . == null or .covers == null then ""
+       elif .withdrawn != null then " | standing word withdrawn"
+       elif .covers then " | standing word covers it"
+       else " | standing word does not cover it: \(.reasons[0])"
+         + (.reasons | length | if . > 1 then " (and \(. - 1) more)" else "" end) end)
   + (if .waiting == null then "" else " | waiting on \(.waiting.on): \(.waiting.reason)" end);
 
 # Whether a task is parked, waiting on something other than a worker: held, blocked or awaiting
@@ -666,19 +745,28 @@ def finding($task; $kind; $session; $name; $detail; $next):
    text: "\($task) \($kind): \($detail); next: \($next)"};
 
 # team-sweep's merge-due finding, over a task's events, or nothing: the task awaits merge, a
-# plan-time approval of it stands, and nothing else parks it (no ask nothing settled, pause or
-# wait). The ledger names no PR's project, so any standing approval of the task's counts, and
-# team-merge holds each PR to its own project's.
-def merge_due_finding:
+# plan-time approval of it stands or a standing word of Daniel's stands for one of its projects
+# (its opened and worktree-added events'), and nothing else parks it (no ask nothing settled,
+# pause or wait). $standing is the ledger's merge-standing and merge-standing-withdrawn events,
+# every task's, as standing_words reads them. The ledger names no PR's project, so any word on one
+# of the task's projects counts, and team-merge holds each PR to its own project's.
+def merge_due_finding($standing):
   .[0].task as $task
   | . as $events
-  | preapproved_projects as $projects
-  | if phase == "awaiting-merge" and $projects != [] and pending_asks == []
-      and (standing_until_launch("paused") | not) and waiting == null then
-      task_prs as $prs
+  | if phase == "awaiting-merge" and pending_asks == [] and (standing_until_launch("paused") | not)
+      and waiting == null then
+      preapproved_projects as $plan
+      | [($events | map(select(.event == "opened" or .event == "worktree-added") | .project)
+          | reduce .[] as $p ([]; if IN(.[]; $p) then . else . + [$p] end)) as $projects
+         | $standing | standing_words($projects)[] | .project] as $words
+      | select($plan != [] or $words != [])
+      | task_prs as $prs
       | finding($task; "merge-due"; null; null;
           "awaiting the merge of \([$prs[] | select(pr_merged($events; $prs) | not) | .url] | join(", "))"
-          + " on Daniel's plan-time word on \($projects | join(", ")), with no ask open";
+          + " on Daniel's "
+          + ([if $plan != [] then "plan-time word on \($plan | join(", "))" else empty end,
+              if $words != [] then "standing word on \($words | join(", "))" else empty end] | join(" and "))
+          + ", with no ask open";
           "run team-merge \($task); on a refusal, ask Daniel for the per-head word with team-ask")
     else empty end;
 
@@ -903,14 +991,15 @@ def activity_finding:
 # team-sweep's findings, over every ledger event as one array, the session list, the machine's
 # task slots ($slots, as slots_finding takes them), the stow plan ($plan, as level_findings takes
 # it) and session-activity's object ($activity, as task_findings takes it): each open task's
-# merge-due, else its findings unless it is parked, then the stray sessions (named like a team
-# worker whose task is closed or not in the ledger, never the load check's T0, whose session the
-# coordinator waits on for up to 30 minutes), in task number order; then the activity, slots,
-# level and retro-due findings.
+# merge-due (under a plan-time word or a standing word of any task's), else its findings unless
+# it is parked, then the stray sessions (named like a team worker whose task is closed or not in
+# the ledger, never the load check's T0, whose session the coordinator waits on for up to 30
+# minutes), in task number order; then the activity, slots, level and retro-due findings.
 def sweep($sessions; $slots; $plan; $activity):
   . as $events
   | by_task as $tasks
-  | ([($tasks[] | select(is_open) | [merge_due_finding] as $due
+  | [.[] | select(.event == "merge-standing" or .event == "merge-standing-withdrawn")] as $standing
+  | ([($tasks[] | select(is_open) | [merge_due_finding($standing)] as $due
         | if $due != [] then $due[] elif parked then empty
           else task_findings($sessions; $activity) end),
       (team_sessions($tasks; $sessions)[] | select(.task_state | IN("closed", "unknown"))
@@ -964,11 +1053,12 @@ def open_tasks: [to_entries[] | select(.value | is_open) | .key] | sort_by(.[1:]
 # team-snapshot's JSON from every task's events by id ($tasks), the open tasks' team-state JSON
 # in task number order ($states; {task, error} for a task whose state could not be told), the
 # machine's task slots ($slots, team-slots --json's object or {error}), the team's resource level
-# ($level, team-level status --json's object or {error}), the session list, each registered
+# ($level, team-level status --json's object or {error}), the registered projects a standing word
+# of Daniel's stands for ($standing, standing_words' list), the session list, each registered
 # project's open PRs ($prs) and the current items ($items). It carries $level as level, the open
 # tasks stowed, waiting to resume, as awaiting_resume, and the resources_line as resources (null when
 # $level is {error}).
-def snapshot($tasks; $states; $slots; $level; $sessions; $prs; $items):
+def snapshot($tasks; $states; $slots; $level; $standing; $sessions; $prs; $items):
   team_sessions($tasks; $sessions) as $team
   | ($tasks | awaiting_resume) as $stowed
   | {schema: "team-snapshot/1",
@@ -977,6 +1067,7 @@ def snapshot($tasks; $states; $slots; $level; $sessions; $prs; $items):
      awaiting_resume: $stowed,
      resources: resources_line($level; $stowed),
      slots: $slots,
+     standing_words: $standing,
      sessions: [$team[] | select(.task_state == "open") | del(.task_state)],
      strays: [$team[] | select(.task_state != "open") | del(.logged)],
      prs: $prs,
@@ -1003,6 +1094,9 @@ def snapshot_text:
   section("Open tasks"; [.tasks[] | if .error then "\(.task) state unreadable: \(.error)" else state_line end]; 200),
   (.resources // "Resources unreadable: \(.level.error // "team-level said nothing")" | clip(200)),
   (if .slots.error then "Task slots unreadable: \(.slots.error)" else .slots.summary end | clip(120)),
+  ((.standing_words // []) | standing_word_events
+   | if . == [] then "Standing merge word: none"
+     else .[] | "Standing merge word: \(.projects | projects_text) (Discord message \(.word.discord_message), \(.word.ts), \(.word.task))" | clip(120) end),
   section("Live team sessions";
     [.sessions[] | session_text + if .logged then "" else " (no launch of it in the ledger)" end]),
   section("Stray sessions";
@@ -1033,40 +1127,50 @@ def interview_under_way:
 
 # The task's PRs that wait on Daniel's word to merge, from task_prs: none unless its phase is
 # awaiting-merge, then each not merged that no merge-approved names (a trailing slash aside) at its
-# head, or at no head, as a legacy line, and whose repo (lowercased) is not a key of $plan_repos
-# naming a project with a standing merge-preapproved of the task: the projects that opt in to
-# plan-time merges now and are not the team's own, which team-inbox reads from the registry.
-def merge_ready_prs($plan_repos):
+# head, or at no head, as a legacy line, and whose repo (lowercased) is neither a key of
+# $plan_repos naming a project with a merge-preapproved of the task not withdrawn (the projects
+# that opt in to plan-time merges now and are not the team's own) nor a key of $standing_repos (the
+# projects a standing word of Daniel's stands for), each of which team-inbox reads from the
+# registry.
+def merge_ready_prs($plan_repos; $standing_repos):
   . as $events
   | task_prs as $prs
   | if phase != "awaiting-merge" then []
     else [$prs[] | select(pr_merged($events; $prs) | not) | . as $pr
       | select(any($events[]; .event == "merge-approved" and (.url | strings | rtrimstr("/")) == ($pr.url | rtrimstr("/"))
           and (.head == null or same_head(.head; $pr.head))) | not)
-      | $plan_repos[first($pr.url | strings | capture("^https://github\\.com/(?<r>[^/]+/[^/]+)/") | .r | ascii_downcase) // ""] as $project
-      | select($project != null and ($events | merge_preapproval($project) | . != null and .withdrawn == null) | not)] end;
+      | (first($pr.url | strings | capture("^https://github\\.com/(?<r>[^/]+/[^/]+)/") | .r | ascii_downcase) // "") as $repo
+      | $plan_repos[$repo] as $project
+      | select(($project != null and ($events | merge_preapproval($project) | . != null and .withdrawn == null))
+          or $standing_repos[$repo] != null | not)] end;
 
 # What waits on Daniel, over every ledger event, each open task's in task number order:
 # {asks: [{task, id, text (its first line), thread (the task's thread when it was asked), message
-# (the question's discord_message)}], prs: [{task, title, url}], interviews: [{task, title, thread}]},
-# the PRs as merge_ready_prs($plan_repos) has them.
-def inbox_items($plan_repos):
-  [by_task | to_entries[] | select(.value | is_open)
+# (the question's discord_message)}], prs: [{task, title, url}], interviews: [{task, title, thread}],
+# standing: standing_word_events of the projects $projects a standing word stands for}, the PRs as
+# merge_ready_prs has them, its standing repos being those of $repos (each repo, lowercased, to its
+# project) whose project a standing word stands for.
+def inbox_items($plan_repos; $repos; $projects):
+  standing_words($projects) as $standing
+  | ($repos | with_entries(select(.value as $project | any($standing[]; .project == $project)))) as $standing_repos
+  | [by_task | to_entries[] | select(.value | is_open)
     | {task: .key, events: .value, title: (.value | map(select(.event == "opened")) | first | .title)}]
   | by_task_number
   | {asks: [.[] | .task as $task | .events as $events | $events | unsettled_asks[]
         | {task: $task, id: .ask.id, text: (.ask.text | tostring | split("\n")[0]),
            thread: ([$events[:.k][] | select(.event == "thread") | .discord_thread | strings] | last),
            message: (.ask.discord_message | if . == null then null else tostring end)}],
-     prs: [.[] | {task, title} + (.events | merge_ready_prs($plan_repos)[] | {url})],
+     prs: [.[] | {task, title} + (.events | merge_ready_prs($plan_repos; $standing_repos)[] | {url})],
      interviews: [.[] | select(.events | interview_under_way)
-        | {task, title, thread: (.events | map(select(.event == "interview-thread") | .discord_thread) | last | tostring)}]};
+        | {task, title, thread: (.events | map(select(.event == "interview-thread") | .discord_thread) | last | tostring)}],
+     standing: ($standing | standing_word_events)};
 
 # The Waiting on you message from inbox_items, at most $limit characters, its asks linked to the
-# question's message in guild $guild (to the thread when either is unknown), then the line
-# $resources (resources_line's; none when null), and its last line the time $now (seconds since
-# the epoch) as Discord shows it to each reader. Items past the limit are left out from the end,
-# counted in one line.
+# question's message in guild $guild (to the thread when either is unknown), then one line per
+# standing word, linked to Daniel's message in its channel, then the line $resources
+# (resources_line's; none when null), and its last line the time $now (seconds since the epoch) as
+# Discord shows it to each reader. Items past the limit are left out from the end, counted in one
+# line; the standing word lines, the resources line and the last line are never cut.
 def inbox_text($guild; $limit; $now; $resources):
   def link:
     if .thread == null then ""
@@ -1077,6 +1181,8 @@ def inbox_text($guild; $limit; $now; $resources):
    ["**PRs ready to merge**", [.prs[] | "- \(named): \(.url)"]],
    ["**Interviews under way**", [.interviews[] | "- \(named): <#\(.thread)>"]]] as $sections
   | ([$sections[][1][]] | length) as $total
+  | [(.standing // [])[] | "-# Standing merge word on \(.projects | projects_text) since"
+      + " https://discord.com/channels/\($guild)/\(.word.discord_channel)/\(.word.discord_message)"] as $words
   | ["-# team-inbox keeps this current; updated <t:\($now):R>"] as $foot
   | (if $resources == null then [] else [$resources] end) as $level
   | def render($n):
@@ -1085,8 +1191,8 @@ def inbox_text($guild; $limit; $now; $resources):
         | if $take == [] then . else .lines += [$s[0]] + $take | .left -= ($take | length) end)
        | .lines)
       + (if $n < $total then ["- and \($total - $n) more, which team-snapshot lists"] else [] end)
-      | ["**Waiting on you**"] + . + $level + $foot | join("\n");
-    if $total == 0 then ["**Waiting on you**", "Nothing waits on you."] + $level + $foot | join("\n")
+      | ["**Waiting on you**"] + . + $words + $level + $foot | join("\n");
+    if $total == 0 then ["**Waiting on you**", "Nothing waits on you."] + $words + $level + $foot | join("\n")
     else first(range($total; -1; -1) as $n | render($n) | select(length <= $limit)) end;
 
 # The following defs serve team-retro, over every ledger event as one array.

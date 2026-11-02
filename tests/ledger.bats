@@ -115,6 +115,33 @@ merged"
   assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "4"
 }
 
+@test "a standing merge word and its withdrawal meet the contract, each naming a project, a message and its channel" {
+  local at='"ts":"2026-11-01T02:00:00Z","task":"T7"' said='"discord_message":"1566","discord_channel":"1562"'
+  append_as team-log "{$at,\"event\":\"merge-standing\",\"project\":\"all\",$said}"
+  assert_equal "$status" "0"
+  append_as team-log "{$at,\"event\":\"merge-standing-withdrawn\",\"project\":\"proj\",$said}"
+  assert_equal "$status" "0"
+  assert_equal "$(jq -r .event "$TEAM_HOME/ledger.jsonl")" "merge-standing
+merge-standing-withdrawn"
+
+  local kind
+  for kind in merge-standing merge-standing-withdrawn; do
+    append_as team-log "{$at,\"event\":\"$kind\",$said}"
+    assert_contains "$output" "$kind needs project"
+    append_as team-log "{$at,\"event\":\"$kind\",\"project\":\"proj\",\"discord_message\":\"1566\"}"
+    assert_contains "$output" "$kind needs discord_channel"
+    append_as team-log "{$at,\"event\":\"$kind\",\"project\":\"proj\",\"discord_channel\":\"1562\"}"
+    assert_contains "$output" "$kind needs discord_message"
+    append_as team-log "{$at,\"event\":\"$kind\",\"project\":[\"proj\"],$said}"
+    assert_contains "$output" "project must be a string, got a list"
+    append_as team-log "{$at,\"event\":\"$kind\",\"project\":\"proj\",\"discord_message\":\"1566\",\"discord_channel\":\"#coordinator\"}"
+    assert_contains "$output" "discord_channel must be a Discord id"
+    append_as team-merge "{$at,\"event\":\"$kind\",\"project\":\"proj\",$said}"
+    assert_contains "$output" "$kind events are written by team-log, not team-merge"
+  done
+  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "2"
+}
+
 @test "a kind with several writers is appended by each of them, and refused from any other" {
   append_as team-ask '{"ts":"2026-10-22T02:00:00Z","task":"T7","event":"asked","id":"q1","text":"Which?"}'
   assert_equal "$status" "0"

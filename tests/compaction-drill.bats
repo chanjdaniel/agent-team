@@ -175,6 +175,7 @@ total: 60 6000 120000 600 1.50
   T94 drill feature planning | T94-builder busy
 Resources: manual, full (90%): no reading of the machine's load yet, so no budget
 this machine: 4 of 6 task slots held, none kept, since no registered project's primary checkout is the code checkout ...
+Standing merge word: none
 Live team sessions (1):
   T94-builder c3d4e5f6 busy
 Stray sessions: none
@@ -207,6 +208,7 @@ Current items (3):
   assert_contains "$digest" "  T94 drill feature planning | T94-builder busy
 Resources: manual, full (90%): no reading of the machine's load yet, so no budget
 this machine: 4 of 6 task slots held, none kept, since no registered project's primary checkout is the code checkout ...
+Standing merge word: none
 Live team sessions (1):
   T94-builder c3d4e5f6 busy
 Stray sessions: none
