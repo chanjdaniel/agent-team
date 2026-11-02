@@ -173,7 +173,8 @@
 #                    wake (a user line that is no tool result, or a queued message), while a
 #                    background call (one with run_in_background, or a Monitor) is outstanding: the
 #                    one whose final <task-notification> comes first (status completed, failed,
-#                    killed or stopped; a Monitor's interim events carry none)
+#                    killed or stopped; a Monitor's interim events carry none), or the result of a
+#                    TaskStop (or KillShell) naming it, which no notification follows
 #   wait message, wait other
 #                    idle with none outstanding, by what woke it: another session's
 #                    <cross-session-message (the coordinator's next round, answer or nudge), or
@@ -230,8 +231,9 @@ USAGE = (
 COUNTS = ("input", "cache_write_1h", "cache_write_5m", "cache_read", "output", "thinking")
 # A line's fields, in the order it is written.
 FIELDS = ["ts", "machine", "session", "agent", "project_dir", "model", "request", *COUNTS]
-# Raised to 2 with the time rows, so the first export after it reads every transcript again.
-SCAN_VERSION = 2
+# Raised to 2 with the time rows, and to 3 when a stopped background call came to end at its stop,
+# so the first export after each reads every transcript again and rewrites the rows that change.
+SCAN_VERSION = 3
 
 
 def fail(message, status=1):
@@ -400,6 +402,10 @@ DURATION = re.compile(r"[0-9.]+[smhd]?")
 TOOL = re.compile(r"[A-Za-z0-9_.:-]{1,80}")
 NOTIFICATION = re.compile(r"<task-notification>(.*?)(?:</task-notification>|$)", re.S)
 NOTIFIED = re.compile(r"<tool-use-id>([^<]+)</tool-use-id>")
+# The id a background call's result announces, which a TaskStop, KillShell or KillBash names.
+BACKGROUND_ID = re.compile(r"running in background with ID: ([A-Za-z0-9_-]+)")
+# The tools that stop a background call, each with the input naming its id.
+STOPPERS = {"TaskStop": "task_id", "KillShell": "shell_id", "KillBash": "bash_id"}
 STATUS = re.compile(r"<status>([^<]*)</status>")
 # The statuses that end a background task; a Monitor's interim events carry none.
 FINAL = {"completed", "failed", "killed", "stopped"}
@@ -565,14 +571,28 @@ def time_rows(path, machine, session):
                 entries.append((micros(moment), len(entries), entry))
     entries.sort(key=lambda e: e[:2])
 
-    # Each call's result and each background task's final notification, looked ahead to.
+    # Each call's result and each background task's final notification, looked ahead to; a stop's
+    # result ends the background call it names as its notification would, since none follows it.
     never = float("inf")
     results, notified, ends_turns = {}, {}, False
+    # Each background call by the id its result announced, and the id each stop names, by its call.
+    background_of, stop_of = {}, {}
     for at, _, entry in entries:
+        if entry.get("type") == "assistant":
+            for block in (entry.get("message") or {}).get("content") or []:
+                if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") in STOPPERS:
+                    args = block.get("input") if isinstance(block.get("input"), dict) else {}
+                    stop_of[block.get("id")] = args.get(STOPPERS[block["name"]])
         if entry.get("type") == "user" and is_result(entry):
             for block in entry["message"]["content"]:
                 if isinstance(block, dict) and block.get("type") == "tool_result":
                     results.setdefault(block.get("tool_use_id"), at)
+                    found = BACKGROUND_ID.search(text_of(block.get("content")))
+                    if found:
+                        background_of[found.group(1)] = block.get("tool_use_id")
+                    stopped = stop_of.get(block.get("tool_use_id"))
+                    if isinstance(stopped, str) and stopped in background_of:
+                        notified.setdefault(background_of[stopped], at)
         for note in NOTIFICATION.findall(carried(entry)):
             found, status = NOTIFIED.search(note), STATUS.search(note)
             if found and status and status.group(1) in FINAL:

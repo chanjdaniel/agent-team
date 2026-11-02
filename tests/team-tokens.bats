@@ -71,6 +71,43 @@ q() {
   jq -c "$1" <<<"$json"
 }
 
+# A launched builder's session, c2000000-..., that starts team-ci-wait in the background (its result
+# at 10:00:05.500 announcing the id bgwatch01, as a string or as text blocks), calls <stopper> with
+# {<argument>: <id>} at 10:01:05 (its result 0.5 s later), ends its turn at 10:01:10 and idles until
+# the coordinator's message at 11:01:10: stopped_session <stopper> <argument> <id> [blocks]. Its time
+# row's keys, one per line, are in $keys.
+stopped_session() {
+  local projects=$HOME/.claude/projects/-home-dan-agent-team--claude-worktrees-1
+  local session=c2000000-0000-4000-8000-000000000000
+  rm -r "$HOME/.claude/projects"
+  mkdir -p "$projects"
+  printf '{"ts":"2026-10-20T09:00:00Z","task":"T1","event":"launch","role":"builder","session":"c2000000","worktree":"/home/dan/agent-team/.claude/worktrees/1","toolkits":[]}\n' >"$TEAM_HOME/ledger.jsonl"
+  jq -nc --arg session "$session" --arg stopper "$1" --arg argument "$2" --arg id "$3" --arg form "${4:-string}" '
+    "Command running in background with ID: bgwatch01. Output is being written to: /tmp/CONTENT-out" as $started
+    | {type: "user", timestamp: "2026-10-20T10:00:00.000Z", sessionId: $session, message: {content: "CONTENT-brief"}},
+    {type: "assistant", timestamp: "2026-10-20T10:00:05.000Z", sessionId: $session, requestId: "req_1",
+     message: {stop_reason: "tool_use", content: [{type: "tool_use", id: "toolu_watch", name: "Bash",
+       input: {command: "team-ci-wait https://github.com/o/r/pull/1 CONTENT-sha", run_in_background: true}}]}},
+    {type: "user", timestamp: "2026-10-20T10:00:05.500Z", sessionId: $session,
+     message: {content: [{type: "tool_result", tool_use_id: "toolu_watch",
+       content: (if $form == "blocks" then [{type: "text", text: $started}] else $started end)}]}},
+    {type: "assistant", timestamp: "2026-10-20T10:01:05.000Z", sessionId: $session, requestId: "req_2",
+     message: {stop_reason: "tool_use", content: [{type: "tool_use", id: "toolu_stop", name: $stopper, input: {($argument): $id}}]}},
+    {type: "user", timestamp: "2026-10-20T10:01:05.500Z", sessionId: $session,
+     message: {content: [{type: "tool_result", tool_use_id: "toolu_stop", content: "CONTENT-stopped"}]}},
+    {type: "assistant", timestamp: "2026-10-20T10:01:10.000Z", sessionId: $session, requestId: "req_3",
+     message: {stop_reason: "end_turn", content: [{type: "text", text: "CONTENT-held"}]}},
+    {type: "system", subtype: "turn_duration", timestamp: "2026-10-20T10:01:10.000Z", sessionId: $session},
+    {type: "user", timestamp: "2026-10-20T11:01:10.000Z", sessionId: $session,
+     message: {content: "<cross-session-message from=\"coordinator\">CONTENT-resume</cross-session-message>"}},
+    {type: "assistant", timestamp: "2026-10-20T11:01:15.000Z", sessionId: $session, requestId: "req_4",
+     message: {stop_reason: "end_turn", content: [{type: "text", text: "CONTENT-done"}]}},
+    {type: "system", subtype: "turn_duration", timestamp: "2026-10-20T11:01:15.000Z", sessionId: $session}' >"$projects/$session.jsonl"
+  run_bin -0 --separate-stderr team-tokens time
+  assert_equal "$stderr" ""
+  keys=$(jq -r '.keys | to_entries[] | "\(.key): \(.value.seconds + 0) \(.value.calls) \(.value.longest + 0)"' <<<"$output")
+}
+
 @test "--help prints the header" {
   run_bin -0 team-tokens --help
   assert_equal "${lines[0]}" "$(sed -n '2s/^# //p' "$REPO_ROOT/bin/team-tokens")"
@@ -675,6 +712,74 @@ wait error: 10800 1 10800"
   assert_equal "$(jq -c .waits <<<"$output")" '[{"from":"2026-10-20T10:00:05.000Z","to":"2026-10-20T13:00:05.000Z","key":"wait error"}]'
 }
 
+@test "a background call a TaskStop ends stops at the stop's result, so the idle hour after it waits for a message" {
+  stopped_session TaskStop task_id bgwatch01
+  assert_equal "$keys" "bash team-ci-wait: 0.5 1 0.5
+model: 74 4 59.5
+tool TaskStop: 0.5 1 0.5
+wait message: 3600 1 3600"
+  assert_equal "$(jq -c .waits <<<"$output")" '[{"from":"2026-10-20T10:01:10.000Z","to":"2026-10-20T11:01:10.000Z","key":"wait message"}]'
+}
+
+@test "a KillShell or KillBash ends the background call it names, its id read from text blocks too" {
+  stopped_session KillShell shell_id bgwatch01 blocks
+  assert_equal "$keys" "bash team-ci-wait: 0.5 1 0.5
+model: 74 4 59.5
+tool KillShell: 0.5 1 0.5
+wait message: 3600 1 3600"
+  stopped_session KillBash bash_id bgwatch01
+  assert_equal "$keys" "bash team-ci-wait: 0.5 1 0.5
+model: 74 4 59.5
+tool KillBash: 0.5 1 0.5
+wait message: 3600 1 3600"
+}
+
+@test "a TaskStop naming an id no background call announced leaves the background call outstanding" {
+  stopped_session TaskStop task_id bgother99
+  assert_equal "$keys" "background bash team-ci-wait: 3600 1 3600
+bash team-ci-wait: 0.5 1 0.5
+model: 74 4 59.5
+tool TaskStop: 0.5 1 0.5"
+}
+
+@test "a background call that ends with its own completed notification counts to it, as before" {
+  local projects=$HOME/.claude/projects/-home-dan-agent-team--claude-worktrees-1
+  local session=c3000000-0000-4000-8000-000000000000
+  rm -r "$HOME/.claude/projects"
+  mkdir -p "$projects"
+  printf '{"ts":"2026-10-20T09:00:00Z","task":"T1","event":"launch","role":"builder","session":"c3000000","worktree":"/home/dan/agent-team/.claude/worktrees/1","toolkits":[]}\n' >"$TEAM_HOME/ledger.jsonl"
+  # The watch starts at 10:00:05, the turn ends at 10:00:10, the watch's completed notification
+  # wakes it at 10:30:10 for 5 s of the model, and it idles until the coordinator's message at
+  # 11:30:15: background 1800 s, then wait message 3600 s.
+  jq -nc --arg session "$session" '
+    "<task-notification><task-id>bgwatch01</task-id><tool-use-id>toolu_watch</tool-use-id><status>completed</status><summary>CONTENT-done</summary></task-notification>" as $note
+    | {type: "user", timestamp: "2026-10-20T10:00:00.000Z", sessionId: $session, message: {content: "CONTENT-brief"}},
+    {type: "assistant", timestamp: "2026-10-20T10:00:05.000Z", sessionId: $session, requestId: "req_1",
+     message: {stop_reason: "tool_use", content: [{type: "tool_use", id: "toolu_watch", name: "Bash",
+       input: {command: "team-ci-wait https://github.com/o/r/pull/1 CONTENT-sha", run_in_background: true}}]}},
+    {type: "user", timestamp: "2026-10-20T10:00:05.500Z", sessionId: $session,
+     message: {content: [{type: "tool_result", tool_use_id: "toolu_watch", content: "Command running in background with ID: bgwatch01."}]}},
+    {type: "assistant", timestamp: "2026-10-20T10:00:10.000Z", sessionId: $session, requestId: "req_2",
+     message: {stop_reason: "end_turn", content: [{type: "text", text: "CONTENT-waiting"}]}},
+    {type: "system", subtype: "turn_duration", timestamp: "2026-10-20T10:00:10.000Z", sessionId: $session},
+    {type: "queue-operation", operation: "enqueue", timestamp: "2026-10-20T10:30:10.000Z", sessionId: $session, content: $note},
+    {type: "user", timestamp: "2026-10-20T10:30:10.000Z", sessionId: $session, message: {content: $note}},
+    {type: "assistant", timestamp: "2026-10-20T10:30:15.000Z", sessionId: $session, requestId: "req_3",
+     message: {stop_reason: "end_turn", content: [{type: "text", text: "CONTENT-green"}]}},
+    {type: "system", subtype: "turn_duration", timestamp: "2026-10-20T10:30:15.000Z", sessionId: $session},
+    {type: "user", timestamp: "2026-10-20T11:30:15.000Z", sessionId: $session,
+     message: {content: "<cross-session-message from=\"coordinator\">CONTENT-next</cross-session-message>"}},
+    {type: "assistant", timestamp: "2026-10-20T11:30:20.000Z", sessionId: $session, requestId: "req_4",
+     message: {stop_reason: "end_turn", content: [{type: "text", text: "CONTENT-done"}]}},
+    {type: "system", subtype: "turn_duration", timestamp: "2026-10-20T11:30:20.000Z", sessionId: $session}' >"$projects/$session.jsonl"
+  run_bin -0 team-tokens time
+  assert_equal "$(jq -r '.keys | to_entries[] | "\(.key): \(.value.seconds + 0) \(.value.calls) \(.value.longest + 0)"' <<<"$output")" \
+    "background bash team-ci-wait: 1800 1 1800
+bash team-ci-wait: 0.5 1 0.5
+model: 19.5 4 5
+wait message: 3600 1 3600"
+}
+
 @test "a call is named by its command's first program that is not plumbing, with its subcommand words" {
   # Each command, then the name it gets.
   local cases=(
@@ -818,7 +923,7 @@ read 1 of 4 transcripts; wrote 1 time file"
   assert_equal "$output" "read 0 of 4 transcripts; no day file changed"
 }
 
-@test "a scan state of the old version leads to a full read, which fills in the time rows and leaves the usage alone" {
+@test "a scan state of an old version leads to a full read, which fills in the time rows and leaves the usage alone" {
   time_fixture
   # The export before the time rows: the usage only, as with no ledger.
   mv "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/ledger.jsonl"
@@ -826,7 +931,9 @@ read 1 of 4 transcripts; wrote 1 time file"
   mv "$BATS_TEST_TMPDIR/ledger.jsonl" "$TEAM_HOME/ledger.jsonl"
   local version usage_before
   version=$(jq .version "$scan")
-  jq ".version = $((version - 1))" "$scan" >"$BATS_TEST_TMPDIR/scan" && mv "$BATS_TEST_TMPDIR/scan" "$scan"
+  assert_equal "$version" 3
+  # Version 2's scan state, written before a stopped background call ended at its stop.
+  jq ".version = 2" "$scan" >"$BATS_TEST_TMPDIR/scan" && mv "$BATS_TEST_TMPDIR/scan" "$scan"
   usage_before=$(fingerprint "$usage"/*.jsonl)
   run_bin -0 team-tokens export
   assert_equal "$output" "usage/home-pc/time/2026-10-20.jsonl: 1 session, 1 new
