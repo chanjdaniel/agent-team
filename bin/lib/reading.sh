@@ -1,27 +1,27 @@
-# One reading of the machine's load, as team-capacity sample and team-slots sample take it, each
-# into a state directory of its own: the memory, the processes with their working directories,
-# the team's processes by directory and descent, and the team's stacks (team-slots --help and
-# team-capacity --help say what each reads and writes).
+# One reading of the machine's load, as team-capacity sample takes it: the memory, the processes
+# with their working directories, the team's processes by directory and descent, and the team's
+# stacks (team-capacity --help says what it reads and writes).
 # Sourced after the library: source "$TEAM_LIB/reading.sh". It provides:
 #   reading_context   sets CODE (the code checkout, or the primary checkout of the one it is a
 #                     linked worktree of), projects (the registered projects, one per line),
 #                     worktrees (every registered project's linked worktrees, a JSON array of
 #                     {project, branch, worktree}) and ledger (the ledger, or /dev/null)
-#   READING_HELD      the jq program of the slots held, from the ledger as raw lines, $worktrees
-#                     and $home (held_slots in capacity.jq)
+#   READING_HELD      the jq program of the worktrees held, from the ledger as raw lines,
+#                     $worktrees and $home (held_worktrees in capacity.jq)
 #   take_reading <dir> <build>
 #                     takes the reading into <dir>/readings.jsonl (kept to the last 24 hours, a
 #                     broken line dropped), its CPU snapshot <dir>/procs.tsv and its lock
 #                     <dir>/sample.lock, as the headers say; within 60 seconds of the newest
 #                     reading it appends nothing. <build> is a function that prints the line to
 #                     append, called with $work holding in.json (machine_reading's input) and
-#                     held.json (the slots held, each worktree resolved), and $now the time.
-# Test seams: TEAM_MEMINFO, TEAM_SLOTS_PROCS (its lines may carry a sixth column, the process's
-# cgroup v2 path), TEAM_SLOTS_CPUS and TEAM_SLOTS_DOCKER_SECONDS, as team-slots --help says.
+#                     held.json (the worktrees held, each resolved), and $now the time.
+# Test seams: TEAM_MEMINFO, TEAM_READING_PROCS (its lines may carry a sixth column, the process's
+# cgroup v2 path), TEAM_READING_CPUS and TEAM_READING_DOCKER_SECONDS, as team-capacity --help
+# says.
 # shellcheck shell=bash
 
 READING_HELD='include "ledger"; include "capacity"; include "stack"; ledger_events as $events | ($events | by_task) as $tasks
-  | held_slots($tasks; [open_worktrees($events[] | select($tasks[.task] | is_open); $home)]; $worktrees)'
+  | held_worktrees($tasks; [open_worktrees($events[] | select($tasks[.task] | is_open); $home)]; $worktrees)'
 
 reading_context() {
   local common project primary
@@ -54,7 +54,7 @@ said() {
   grep . "$work/err" 2>/dev/null | tail -n 1 | grep . || echo "no reason given"
 }
 
-# The processes as TEAM_SLOTS_PROCS gives them, one per line, tab-separated: pid, parent pid,
+# The processes as TEAM_READING_PROCS gives them, one per line, tab-separated: pid, parent pid,
 # resident KiB, cumulative CPU seconds, working directory (empty when it cannot be read) and
 # cgroup (empty when not read), from ps, the working directories in $work/cwds and the cgroups in
 # $work/cgroups, one "<pid><TAB><value>" per line each.
@@ -153,10 +153,10 @@ take_reading() {
     memory=$(macos_memory) || exit 1
     read -r total available <<<"$memory"
   fi
-  cpus=${TEAM_SLOTS_CPUS:-$(nproc)}
+  cpus=${TEAM_READING_CPUS:-$(nproc)}
 
-  if [[ -n ${TEAM_SLOTS_PROCS:-} ]]; then
-    cp "$TEAM_SLOTS_PROCS" "$work/procs"
+  if [[ -n ${TEAM_READING_PROCS:-} ]]; then
+    cp "$TEAM_READING_PROCS" "$work/procs"
   else
     "${os}_cwds"
     ps_procs >"$work/procs"
@@ -167,7 +167,7 @@ take_reading() {
     "$work/procs" >"$work/procs.json" 2>"$work/err" ||
     die "the processes are malformed: $(grep -m1 . "$work/err" || echo "jq could not read them")"
 
-  # The slots held, each worktree resolved.
+  # The worktrees held, each resolved.
   jq -nR -L "$TEAM_LIB" --arg home "$HOME" --argjson worktrees "$worktrees" "$READING_HELD" "$ledger" >"$work/held-given.json"
   jq -r '.[].worktree' "$work/held-given.json" | while IFS= read -r path; do realpath -m -- "$path"; done |
     jq -Rn '[inputs]' >"$work/held-paths.json"
@@ -196,7 +196,7 @@ take_reading() {
   # The team and gate stacks, from team-stack; Docker not answering in time leaves them out.
   # timeout runs it in a process group of its own, so a signal that stops this run (the
   # heartbeat's own time limit) is passed on to it, and through it to what it started.
-  TEAM_HOME=$TEAM_HOME timeout --kill-after=5 "${TEAM_SLOTS_DOCKER_SECONDS:-30}" \
+  TEAM_HOME=$TEAM_HOME timeout --kill-after=5 "${TEAM_READING_DOCKER_SECONDS:-30}" \
     "$(dirname "$TEAM_LIB")/team-stack" ls --json >"$work/stacks.json" 2>/dev/null &
   stack_pid=$!
   trap 'kill -TERM "$stack_pid" 2>/dev/null; exit 143' TERM INT HUP

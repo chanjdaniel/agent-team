@@ -221,65 +221,90 @@ Blocked: this role may write files only under $wt/.scratch; write there with the
   unread 'cmd > "$out"; select x in a; do :; done' 'a select command'
 }
 
+# The CPU seconds the shell's waited-for children have used so far, in CPU: cpu_now. Read with the
+# times builtin in this shell (a subshell would read its own), so a bound on a hook's CPU holds on a
+# loaded machine, where its wall time does not.
+cpu_now() {
+  times >"$BATS_TEST_TMPDIR/times"
+  CPU=$(awk 'NR == 2 { split($1, u, /[ms]/); split($2, s, /[ms]/); print u[1] * 60 + u[2] + s[1] * 60 + s[2] }' \
+    "$BATS_TEST_TMPDIR/times")
+}
+
+# Succeed when the children have used under <seconds> of CPU since <before>: cpu_under <before> <seconds>
+cpu_under() {
+  cpu_now
+  awk -v before="$1" -v now="$CPU" -v max="$2" 'BEGIN { exit !(now - before < max) }' ||
+    { echo "used $(awk -v before="$1" -v now="$CPU" 'BEGIN { print now - before }') CPU seconds, not under $2" >&2; return 1; }
+}
+
 @test "a long command is judged quickly" {
-  local body
+  local body before
   body=$(for i in $(seq 1 3000); do echo "line $i with a > and a | tee x"; done)
-  SECONDS=0
+  cpu_now
+  before=$CPU
   passes "git commit -m \"$body\" > .scratch/task/out"
-  ((SECONDS < 5))
-  SECONDS=0
+  cpu_under "$before" 5
+  cpu_now
+  before=$CPU
   passes "printf '%s' '$body' | tee .scratch/task/out"
-  ((SECONDS < 5))
+  cpu_under "$before" 5
   # Each cd that may fail adds directories the shell may be in, which the walk caps.
   body=$(for i in $(seq 1 100); do echo "cd .scratch/task && cmd > out$i; cd $wt; if c; then cd src; fi; cmd > .scratch/y$i"; done)
-  SECONDS=0
+  cpu_now
+  before=$CPU
   shell -2 "$body"
-  ((SECONDS < 5))
+  cpu_under "$before" 5
   # Each variable assigned once is followed to the command's end.
   body=$(for i in $(seq 1 100); do echo "T$i=\$CLAUDE_JOB_DIR/tmp; d$i=\$(mktemp -d) && cmd > \$d$i/x; for f$i in a b; do cmd | tee \"\$T$i/\$f$i\"; done"; done)
-  SECONDS=0
+  cpu_now
+  before=$CPU
   passes "$body"
-  ((SECONDS < 5))
+  cpu_under "$before" 5
 }
 
 @test "the time the hook takes to read a long command grows linearly with its length" {
-  local n i body start took=()
+  local n i body before took=()
   # Each line assigns variables the walk follows to the command's end, and reads them back.
   for n in 100 200; do
     body=$(for ((i = 1; i <= n; i++)); do echo "T$i=\$CLAUDE_JOB_DIR/tmp; d$i=\$(mktemp -d) && cmd > \$d$i/x; for f$i in a b; do cmd | tee \"\$T$i/\$f$i\"; done"; done)
-    start=${EPOCHREALTIME//[!0-9]/}
+    cpu_now
+    before=$CPU
     passes "$body"
-    took+=($(((${EPOCHREALTIME//[!0-9]/} - start) / 1000)))
+    cpu_now
+    took+=("$(awk -v before="$before" -v now="$CPU" 'BEGIN { printf "%d", (now - before) * 1000 }')")
   done
-  echo "100 lines: ${took[0]} ms, 200 lines: ${took[1]} ms"
-  # Twice the lines take at most about twice the time, measured against at least a second so a
+  echo "100 lines: ${took[0]} ms, 200 lines: ${took[1]} ms of CPU"
+  # Twice the lines take at most about twice the CPU, measured against at least a second so a
   # fast machine's noise cannot fail it.
   ((took[0] >= 1000)) || took[0]=1000
   ((took[1] * 2 <= took[0] * 5))
 }
 
 @test "a long here-document is judged quickly" {
-  local body
+  local body before
   body=$(for i in $(seq 1 3000); do echo "line $i with a > and a | tee x"; done)
-  SECONDS=0
+  cpu_now
+  before=$CPU
   passes "cat > .scratch/task/big.txt <<'EOF'
 $body
 EOF"
-  ((SECONDS < 5))
+  cpu_under "$before" 5
   # Inside a substitution too, as a commit message is written.
-  SECONDS=0
+  cpu_now
+  before=$CPU
   passes "git commit -m \"\$(cat <<'EOF'
 $body
 EOF
 )\" > .scratch/task/out"
-  ((SECONDS < 5))
+  cpu_under "$before" 5
   # And with its delimiter unquoted, whose body's expansions are read.
   body=$(for i in $(seq 1 1000); do echo "line $i with \${HOME}, \$(echo $i) and a > and a | tee x"; done)
-  SECONDS=0
+  cpu_now
+  before=$CPU
   passes "cat > .scratch/task/big.txt <<EOF
 $body
 EOF"
-  ((SECONDS < 5))
+  cpu_under "$before" 5
 }
 
 @test "the planner's and reviewer's settings run the hook on Bash and the edit tools; the ops role's on the edit tools only" {

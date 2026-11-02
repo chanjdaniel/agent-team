@@ -115,6 +115,33 @@ merged"
   assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "4"
 }
 
+@test "a standing merge word and its withdrawal meet the contract, each naming a project, a message and its channel" {
+  local at='"ts":"2026-11-01T02:00:00Z","task":"T7"' said='"discord_message":"1566","discord_channel":"1562"'
+  append_as team-log "{$at,\"event\":\"merge-standing\",\"project\":\"all\",$said}"
+  assert_equal "$status" "0"
+  append_as team-log "{$at,\"event\":\"merge-standing-withdrawn\",\"project\":\"proj\",$said}"
+  assert_equal "$status" "0"
+  assert_equal "$(jq -r .event "$TEAM_HOME/ledger.jsonl")" "merge-standing
+merge-standing-withdrawn"
+
+  local kind
+  for kind in merge-standing merge-standing-withdrawn; do
+    append_as team-log "{$at,\"event\":\"$kind\",$said}"
+    assert_contains "$output" "$kind needs project"
+    append_as team-log "{$at,\"event\":\"$kind\",\"project\":\"proj\",\"discord_message\":\"1566\"}"
+    assert_contains "$output" "$kind needs discord_channel"
+    append_as team-log "{$at,\"event\":\"$kind\",\"project\":\"proj\",\"discord_channel\":\"1562\"}"
+    assert_contains "$output" "$kind needs discord_message"
+    append_as team-log "{$at,\"event\":\"$kind\",\"project\":[\"proj\"],$said}"
+    assert_contains "$output" "project must be a string, got a list"
+    append_as team-log "{$at,\"event\":\"$kind\",\"project\":\"proj\",\"discord_message\":\"1566\",\"discord_channel\":\"#coordinator\"}"
+    assert_contains "$output" "discord_channel must be a Discord id"
+    append_as team-merge "{$at,\"event\":\"$kind\",\"project\":\"proj\",$said}"
+    assert_contains "$output" "$kind events are written by team-log, not team-merge"
+  done
+  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "2"
+}
+
 @test "a kind with several writers is appended by each of them, and refused from any other" {
   append_as team-ask '{"ts":"2026-10-22T02:00:00Z","task":"T7","event":"asked","id":"q1","text":"Which?"}'
   assert_equal "$status" "0"
@@ -239,4 +266,19 @@ awaiting() {
   append_as team-open "{$at,\"event\":\"branch-renamed\",\"project\":\"proj\",\"branch\":\"feat/T7-x-fresh\"}"
   assert_contains "$output" "branch-renamed events are written by team-log, not team-open"
   assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "1"
+}
+
+@test "a field its kind gives one writer is refused from the kind's other writers" {
+  assert_equal "$(jq -c '.kinds.asked.field_writers' "$REPO_ROOT/bin/lib/ledger-contract.json")" '{"script":"team-ask","sha256":"team-ask"}'
+  local hash at='"ts":"2026-10-22T02:00:00Z","task":"T7","event":"asked","id":"fix","text":"Run it?"'
+  hash=$(printf '%064d' 0 | tr 0 a)
+  append_as team-ask "{$at,\"script\":\"/w/7/fix.sh\",\"sha256\":\"$hash\"}"
+  assert_equal "$status" "0"
+  append_as team-log "{$at,\"script\":\"/w/7/fix.sh\",\"sha256\":\"$hash\"}"
+  assert_equal "$status" "1"
+  assert_contains "$output" "an asked's script is written by team-ask, not team-log; an asked's sha256 is written by team-ask, not team-log"
+  append_as team-log "{$at}"
+  assert_equal "$status" "0"
+  assert_equal "$(jq -c '[.id, .script != null]' "$TEAM_HOME/ledger.jsonl")" '["fix",true]
+["fix",false]'
 }

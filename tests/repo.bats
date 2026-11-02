@@ -795,6 +795,47 @@ uv run back-end/migrations/migrate_user_emails.py
 COMMANDS
 }
 
+# The team's autoMode lines tell auto mode's classifier facts about the team, never grant an
+# action, and every list keeps the built-in rules by naming "$defaults" (a list without it
+# replaces them).
+@test "the worker settings' autoMode lines state facts, grant nothing and keep the built-in rules" {
+  local file grants
+  jq -e '.autoMode.environment | length > 1' "$REPO_ROOT/settings/worker.json" >/dev/null ||
+    { echo "settings/worker.json has no team autoMode lines" >&2; return 1; }
+  for file in "$REPO_ROOT"/settings/*.json; do
+    jq -e '(.autoMode // {}) | all(.[]; type == "array" and any(.[]; . == "$defaults"))' "$file" >/dev/null ||
+      { echo "${file#"$REPO_ROOT"/}: an autoMode list without \"\$defaults\"" >&2; return 1; }
+    grants=$(jq -r '(.autoMode // {})[][] | select(. != "$defaults")' "$file" |
+      grep -Eiw 'allowed|permitted|may|can|cannot' || true)
+    [[ -z $grants ]] || { echo "${file#"$REPO_ROOT"/} grants an action: $grants" >&2; return 1; }
+  done
+}
+
+# A worker is denied git reset --hard however it is spelled, an option before --hard included,
+# while a soft reset and a reset of one file stay allowed.
+@test "git reset --hard is denied to every worker, with or without an option before it" {
+  local command rule
+  for rule in 'Bash(git reset --hard*)' 'Bash(git reset * --hard*)'; do
+    jq -e --arg r "$rule" '.permissions.deny | index($r)' "$REPO_ROOT/settings/worker.json" >/dev/null ||
+      { echo "settings/worker.json lacks the deny rule $rule" >&2; return 1; }
+  done
+  while IFS= read -r command; do
+    denied settings/worker.json "$command" || { echo "not denied: $command" >&2; return 1; }
+  done <<'COMMANDS'
+git reset --hard
+git reset --hard origin/dev
+git reset -q --hard
+git reset --quiet --hard HEAD~1
+COMMANDS
+  while IFS= read -r command; do
+    if denied settings/worker.json "$command"; then echo "denied: $command" >&2; return 1; fi
+  done <<'COMMANDS'
+git reset --soft HEAD~1
+git reset -- file
+git status
+COMMANDS
+}
+
 # Only the coordinator launches an ops session, on Daniel's request: a worker is denied team-worker's
 # ops role and the ops load check, while its own test runs of those scripts stay allowed.
 @test "an ops launch and the ops load check are denied to workers, and stay the coordinator's" {
@@ -1011,14 +1052,15 @@ Bash(@TEAM_CODE@/bin/team-review-comment *)
 Bash(@TEAM_CODE@/bin/team-checks *)
 Bash(@TEAM_CODE@/bin/team-ci-wait *)'
   # The commands as templates/briefs/rereview.md, verify.md and the direct-PR review partial give
-  # them, team_bin being this checkout's bin/ in full; a gated project's first review posts nothing.
+  # them, team_bin being this checkout's bin/ in full; a review before the PR posts nothing.
   local brief
   for brief in review/direct-pr rereview verify; do
     grep -qF '`{{team_bin}}/team-review-status {{pr}} {{head}} <success|failure> "<one line, at most 140 characters>"`' \
       "$REPO_ROOT/templates/briefs/$brief.md"
     grep -qF '`{{team_bin}}/team-review-comment {{pr}} {{task_dir}}/' "$REPO_ROOT/templates/briefs/$brief.md"
   done
-  if grep -n team-review "$REPO_ROOT/templates/briefs/review/no-mistakes.md"; then return 1; fi
+  if grep -n team-review "$REPO_ROOT/templates/briefs/review/no-mistakes.md" "$REPO_ROOT/templates/briefs/review/direct-pr-before-pr.md" \
+    "$REPO_ROOT"/templates/briefs/before-pr/*.md "$REPO_ROOT"/templates/briefs/rereview/*-before-pr.md; then return 1; fi
   allows reviewer "$REPO_ROOT/bin/team-review-status https://github.com/me/shop/pull/5 a1b2c3d4e5f60718293a4b5c6d7e8f9012345678 success \"no blocking findings\""
   allows reviewer "$REPO_ROOT/bin/team-review-comment https://github.com/me/shop/pull/5 .scratch/task/review.md"
   allows reviewer "$REPO_ROOT/bin/team-checks agent-team a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
@@ -1035,7 +1077,7 @@ Bash(gh-axi pr ready *)'
   for brief in delivery/direct-pr builder-merge-base; do
     grep -qF '`{{team_bin}}/team-checks {{project}} <full sha>`' "$REPO_ROOT/templates/briefs/$brief.md"
   done
-  for brief in reviewer rereview verify; do
+  for brief in reviewer rereview verify before-pr/rereview before-pr/verify; do
     grep -qF '`{{team_bin}}/team-checks {{project}} {{head}}`' "$REPO_ROOT/templates/briefs/$brief.md"
   done
   for brief in delivery/direct-pr delivery/no-mistakes builder-merge-base rereview verify; do
@@ -1387,6 +1429,11 @@ briefs_without_gotchas() {
   run -0 find "$REPO_ROOT/templates/briefs" -maxdepth 1 -name '*.md'
   ((${#lines[@]} >= 11))
   run -0 briefs_without_gotchas "$REPO_ROOT/templates/briefs"
+  assert_equal "$output" ""
+  # So does a template's variant before the PR, which team-brief renders in its place.
+  run -0 find "$REPO_ROOT/templates/briefs/before-pr" -maxdepth 1 -name '*.md'
+  ((${#lines[@]} >= 2))
+  run -0 briefs_without_gotchas "$REPO_ROOT/templates/briefs/before-pr"
   assert_equal "$output" ""
 }
 

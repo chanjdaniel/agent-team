@@ -20,8 +20,11 @@
 # one of the task's pr events (a trailing slash aside), or with no head, or a head neither a pr
 # event of that url nor a review of the task since its first pr event logged (heads compare by
 # the shorter one's prefix, at least 7 characters), or whose discord_message, a Discord id, was
-# sent before the first of those events that logged the head; so is an answered whose id and
-# discord_message an earlier answered of the task logged (team-answer reads it from Discord). A
+# sent before the first of those events that logged the head; so is an asked with a script or a
+# sha256, which only team-ask --script logs, with the question that names both; so is an
+# answered that names a discord_message, whatever its value, since only team-answer logs one,
+# having read the message and checked it is Daniel's (an answered with no message, given at the
+# terminal, is logged). A
 # merge-preapproved is refused when its project is not one of the task's opened or worktree-added
 # events, is the team's own (own_project, whatever the registry says), or does not opt in now
 # (team-project's merge_with_plan); when its ask names no asked of the task; when its
@@ -30,6 +33,13 @@
 # string with no leading /, no . or .. segment, no empty segment, no glob character *?[ and no
 # whitespace; a directory ends in /). A merge-preapproval-withdrawn is refused unless a
 # merge-preapproved of its project stands for the task (its latest, with no withdrawal since). A
+# merge-standing, Daniel's standing word, or a merge-standing-withdrawn, its withdrawal, both read
+# across the whole ledger, is refused when its project is neither all nor a project team-project
+# --list names (and all when a registered project is named all), when its discord_message is a
+# string of digits that is no Discord id, and when its discord_channel is neither #coordinator's
+# channel nor the task's thread (its latest thread event), naming both; a merge-standing-withdrawn
+# is refused too when no standing word stands for its project (for all: for any project the
+# registry or a merge-standing names). A
 # branch-renamed, the task's new branch in a project after the gate rewrote the remote one, is
 # refused when its project is not one of the task's opened or worktree-added events, its branch is
 # the task's there now (the latest opened, worktree-added or branch-renamed of the project), does
@@ -37,13 +47,13 @@
 # whose sent_back names any finding is logged with verdict findings, a pass's too, since a pass
 # whose notes go back before the merge is not ready to merge. A review's findings, when given,
 # must count exactly blocking, correctness, security, real-data, note-change and note-before, each
-# a whole number, and its guarded list only ci, dependencies, migrations, settings, permissions
-# and secrets; its before, the numbers of its plain notes on code the PR did not change, distinct
-# whole numbers above 0, is required when findings counts a note-before, as many as it counts, and
-# a sent_back naming one of them is refused, since such a note is queued, never sent back. A park
-# (waiting, blocked, paused, held) logged after the fact takes since=<UTC time>, when it began: no
-# later than now and no earlier than the task's latest event, or it is refused naming both times;
-# no other kind takes since.
+# a whole number, and its guarded list only ci, dependencies, migrations, settings, permissions,
+# secrets and guardrails; its before, the numbers of its plain notes on code the PR did not
+# change, distinct whole numbers above 0, is required when findings counts a note-before, as many
+# as it counts, and a sent_back naming one of them is refused, since such a note is queued, never
+# sent back. A park (waiting, blocked, paused, held) logged after the fact takes since=<UTC time>,
+# when it began: no later than now and no earlier than the task's latest event, or it is refused
+# naming both times; no other kind takes since.
 # --from-message reads a worker's message whole (bin/lib/messages.jq) into the events the
 # coordinator's message table gives it, checks each as above, and logs them all, or with --print
 # prints them as JSON lines and logs nothing; any refusal logs none. The message starts with the
@@ -172,6 +182,11 @@ for pair in "$@"; do
   pairs+=("$key" "${pair#*=}")
 done
 
+# A logged message id always means one team-answer read and checked, so team-log writes an
+# answered only with no message id (a decision Daniel gave at the terminal).
+[[ $event != answered || -z ${seen[discord_message]:-} ]] ||
+  die "an answered that names a Discord message is logged only by team-answer, which reads it and checks it is Daniel's: team-answer $task ${seen[id]:-<id>} <the message's id>"
+
 # Each value is typed by the contract when it names the field, and by whether it parses as JSON
 # otherwise (typed_value in bin/lib/ledger.jq), so the checks below read the values the line
 # will hold; ledger_append then checks the event against the contract.
@@ -264,7 +279,44 @@ fi
 if [[ $event == merge-preapproval-withdrawn && -n ${seen[project]:-} ]]; then
   task_events "$task" | ledger_jq '[inputs] | merge_preapproval($project) | . != null and .withdrawn == null' \
     -ne --arg project "${seen[project]}" >/dev/null ||
-    die "$task has no standing merge-preapproved of ${seen[project]} to withdraw"
+    die "$task has no merge-preapproved of ${seen[project]} left to withdraw"
+fi
+
+# Daniel's standing word, and its withdrawal, name a project the registry names, or all for every
+# project, and a message team-merge can read back: a Discord id, in #coordinator's channel or the
+# task's latest thread. A withdrawal withdraws a word that stands (standing_words in
+# bin/lib/ledger.jq, over the whole ledger): for all, one standing for any project the registry
+# or a merge-standing names.
+if [[ $event == merge-standing || $event == merge-standing-withdrawn ]]; then
+  project=${seen[project]:-}
+  if [[ -n $project ]]; then
+    registered=$(team_project --list) || exit 1
+    if [[ $project == all ]]; then
+      ! grep -qxF all <<<"$registered" || die "projects.toml names a project all, so project=all cannot say every project"
+    elif ! grep -qxF -- "$project" <<<"$registered"; then
+      if [[ -z $registered ]]; then names=': it names none'; else names=": $(sed ':a;N;$!ba;s/\n/, /g' <<<"$registered")"; fi
+      die "$project is neither all, for every project, nor a project projects.toml names$names"
+    fi
+  fi
+  message=${seen[discord_message]:-}
+  [[ ! $message =~ ^[0-9]+$ || $message =~ ^[1-9][0-9]{0,18}$ ]] || die "discord_message $message is not a Discord id"
+  channel=${seen[discord_channel]:-}
+  if [[ -n $channel && $channel != "$COORDINATOR_CHANNEL" ]]; then
+    thread=$(task_events "$task" | jq -nr '[inputs | select(.event == "thread") | .discord_thread | select(. != null) | tostring] | last // empty')
+    [[ $channel == "$thread" ]] ||
+      die "discord_channel $channel is neither #coordinator's channel, $COORDINATOR_CHANNEL, nor $task's thread$(if [[ -n $thread ]]; then echo ", $thread"; else echo ": it has none"; fi)"
+  fi
+  if [[ $event == merge-standing-withdrawn && -n $project ]]; then
+    ledger=$TEAM_HOME/ledger.jsonl
+    [[ -e $ledger ]] || ledger=/dev/null
+    ledger_jq '[inputs | fromjson? | objects] as $events
+      | (if $project == "all" then ($registered | split("\n") | map(select(. != "")))
+           + [$events[] | select(.event == "merge-standing") | .project | strings]
+         else [$project] end) as $projects
+      | $events | standing_words($projects | unique) != []' \
+      -nRe --arg project "$project" --arg registered "$registered" <"$ledger" >/dev/null ||
+      die "no standing word of Daniel's stands for $(if [[ $project == all ]]; then echo "any project"; else echo "$project"; fi), so merge-standing-withdrawn withdraws nothing"
+  fi
 fi
 
 # The task's new branch in one of its projects names the task, as team-close holds a worktree's
@@ -310,12 +362,10 @@ if [[ $event == review ]]; then
   [[ -z $problem ]] || die "$problem"
 fi
 
-# One Discord message answers an ask once: a second answered of the same id and message is a
-# repeat, as team-answer refuses it.
-if [[ $event == answered && -n ${seen[id]:-} && -n ${seen[discord_message]:-} ]] &&
-  task_events "$task" | ledger_jq '[inputs] | answered_from($id; $message)' -ne \
-    --arg id "${seen[id]}" --arg message "${seen[discord_message]}" >/dev/null; then
-  die "$task already logged answered id=${seen[id]} from Discord message ${seen[discord_message]}"
+# An ask that names a script binds Daniel's OK to its bytes (team-run-approved), which only a
+# question that names its path and hash does: team-ask --script is the one writer of both.
+if [[ $event == asked && ( -v seen[script] || -v seen[sha256] ) ]]; then
+  die "an asked logs no script or sha256: team-ask $task ${seen[id]:-<id>} --file <question> --script <path> asks Daniel about a script, naming its path and hash in the question"
 fi
 
 # A park logged after the fact says when it began: a UTC time between the task's latest event and now.

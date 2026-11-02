@@ -19,7 +19,7 @@ The team itself (coordinator and workers) runs here only after stage 9, because 
   Leave alone every secret file, credentials file, `~/.claude.json` and `~/.claude/channels/`: never read, print, copy or hash them, and never run `op`.
 - The lease is Daniel's: run `team-resume` only when Daniel says the team should run here (stage 9); a steal is Daniel's alone, typed in their own terminal.
 - Anything needing `sudo` or an admin password is Daniel's, in their own terminal; the bootstrap stops with the exact command.
-- Three settings are Daniel's call even where you could write them: the code checkout's and the team home's `core.hooksPath` (every team session is denied setting it), `autoMode.environment` (what auto mode's classifier believes about this machine), and a `team-config apply` that replaces a file or skill changed on this machine.
+- Three settings are Daniel's call even where you could write them: the code checkout's and the team home's `core.hooksPath` (every team session is denied setting it), `autoMode.environment` (what auto mode's classifier believes about this machine, which every worker reads before the team's own lines, `settings/worker.json`'s `autoMode`), and a `team-config apply` that replaces a file or skill changed on this machine.
 - Every stage is idempotent and skips what the doctor already passes, so re-running is the answer to any interruption.
 - GitHub unreachable: stop and say so; carry on from the same stage once it answers.
 - The same step failing twice: stop and give Daniel the failing doctor lines (they never hold a secret) and the last lines of `~/.local/state/agent-team/bootstrap.log`.
@@ -55,9 +55,8 @@ Each stage after the first is one `~/agent-team/bin/team-bootstrap` run; read it
    When it is missing, `~/agent-team/bin/team-bootstrap --home agent-team-records --stage machine` writes it (it can go with `--name` in one run).
    The bootstrap writes it once: a setting that names another checkout is left as it is, and a path with no checkout yet is refused until the clone is there.
    Until it is written, nothing names the team home: every script but the bootstrap refuses, naming the setting, the doctor's `team home` line fails, and the machine stage stops on Daniel's step to clone `~/agent-team-records` (when it is missing) and name it.
-4. Ask Daniel how many task slots this machine carries at once, across every project (home-pc's is 10), then write it: `echo '{"cap": <n>}' > ~/.config/agent-team/slots.json`.
-   Like the name, the file is this machine's own and never moved; the bootstrap does not write it.
-   Until it sets a cap, the cap is the default 6 and the doctor's `slots` line warns; `sops/slots.md` says what the cap is and what else the file may set.
+4. The machine's resource levels need no question: the defaults in `bin/team-capacity`'s header hold, and only a machine that differs gets a `~/.config/agent-team/capacity.json` (`sops/resources.md`, "The settings").
+   Like the name, that file is this machine's own and never moved; the bootstrap does not write it.
 
 ### Stage 3: OS packages
 
@@ -146,7 +145,6 @@ Done when `check` lists no `Daniel <n>:` line.
 | git and gh (Arch) | 1 | own terminal: `sudo pacman -S --needed git github-cli` | `sudo` |
 | GitHub login | 1 | browser, with the code the agent relays | account login |
 | The machine's name | 2 | the conversation | Daniel's naming |
-| The machine's cap on task slots | 2 | the conversation | how much of the machine the team may take is Daniel's call |
 | The team home's setting, when stage 7 lists it (stage 1 writes it, so only when that was skipped) | 7 | the conversation: Daniel says the team home is cloned at `~/agent-team-records`, then the agent runs `team-bootstrap --home agent-team-records` | where the records live is Daniel's layout |
 | `sudo` stages (Arch: preflight, packages, tools) | 2 to 4 | own terminal: the `team-bootstrap --stage <stage>` it names | password |
 | Choosing apply or capture when config differs | 6 | the conversation | whose config wins |

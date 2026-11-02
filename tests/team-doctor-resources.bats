@@ -146,3 +146,33 @@ sessions() {
   run_bin -0 team-doctor
   assert_equal "$(line_of resources)" "PASS resources: $LEVEL; agent-team.slice holds the team, 0 live team sessions in it"
 }
+
+@test "the resources line warns on each leftover of the task slots, which levels replaced, on Linux and macOS, and there is no slots line" {
+  local config=$HOME/.config/agent-team state=$HOME/.local/state/agent-team
+  local why="no longer read: levels replaced the task slots"
+  mkdir -p "$state"
+  echo '{"cap": 10}' >"$config/slots.json"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of resources)" "WARN resources: $LEVEL; ~/.config/agent-team/slots.json is $why; fix: rm -r ~/.config/agent-team/slots.json"
+  assert_equal "$(line_of slots)" ""
+  rm "$config/slots.json"
+  mkdir "$state/slots"
+  echo '{}' >"$state/slots/readings.jsonl"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of resources)" "WARN resources: $LEVEL; ~/.local/state/agent-team/slots is $why; fix: rm -r ~/.local/state/agent-team/slots"
+  rm -r "$state/slots"
+  : >"$state/slots.lock"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of resources)" "WARN resources: $LEVEL; ~/.local/state/agent-team/slots.lock is $why; fix: rm -r ~/.local/state/agent-team/slots.lock"
+  echo '{"cap": 10}' >"$config/slots.json"
+  mkdir "$state/slots"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of resources)" "WARN resources: $LEVEL; ~/.config/agent-team/slots.json, ~/.local/state/agent-team/slots and ~/.local/state/agent-team/slots.lock are $why; fix: rm -r ~/.config/agent-team/slots.json ~/.local/state/agent-team/slots ~/.local/state/agent-team/slots.lock"
+  on_macos
+  tools_at macos
+  run_bin -0 team-doctor
+  assert_equal "$(line_of resources)" "WARN resources: $LEVEL; ~/.config/agent-team/slots.json, ~/.local/state/agent-team/slots and ~/.local/state/agent-team/slots.lock are $why; fix: rm -r ~/.config/agent-team/slots.json ~/.local/state/agent-team/slots ~/.local/state/agent-team/slots.lock"
+  rm -r "$config/slots.json" "$state/slots" "$state/slots.lock"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of resources)" "PASS resources: $LEVEL; no hard limits on macOS: admission and stow only"
+}
