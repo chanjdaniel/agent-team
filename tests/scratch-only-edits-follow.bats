@@ -133,6 +133,14 @@ Blocked: this role may write files only under $wt/.scratch; write there with the
   CDPATH=$wt/.scratch passes 'cd ./.scratch && cmd > x' 'cd ../wt/.scratch/task && cmd > x' "cd $wt/.scratch && cmd > x" 'cd .. && cmd > wt/.scratch/x'
 }
 
+@test "after a place that may assign any variable, a cd to a name CDPATH may search is unknown" {
+  local before
+  for before in 'declare "$a$b=/"' 'read "$n" <<< /' 'printf -v "$n" /' 'declare -n r="$n"; r=/' '(( v ))'; do
+    unknown "$before; cd .scratch/task && cmd > out" "out ($moved)"
+    passes "$before; cd ./.scratch/task && cmd > out" "$before; cd $wt/.scratch && cmd > out"
+  done
+}
+
 @test "\$PWD stands for each directory the shell may be in, and \$OLDPWD for an unknown one" {
   passes 'cd .scratch && cmd > $PWD/x' 'cd .scratch && cmd > "${PWD}/x"' 'cd .scratch && cd $PWD/task && cmd > x'
   blocked 'cmd > $PWD/x' "$wt/x"
@@ -213,7 +221,8 @@ Blocked: this role may write files only under $wt/.scratch; write there with the
   for before in 'x=a; x=src' 'read x' 'printf -v x src' 'declare x=.scratch' ': ${x:=src}' ': ${x=src}' 'x=.scratch cmd' \
     'x+=.scratch' 'x=(.scratch)' 'local x=.scratch' 'readonly x=.scratch' 'export x; x=.scratch' 'getopts ab x' \
     'mapfile x' 'unset x; x=.scratch' 'wait -p x' 'export "x=.scratch"' 'cd .scratch && x=task' 'if c; then x=.scratch; fi' \
-    'x=.scratch; printf -vx src' 'x=.scratch; read -rax' 'x=.scratch; wait -px'; do
+    'x=.scratch; printf -vx src' 'x=.scratch; read -rax' 'x=.scratch; wait -px' 'export x=.scratch/{a,..}' \
+    'export x=.scratch/{a}'; do
     unknown "$before; cmd > \$x/y" "\$x/y ($(not_followed x))"
   done
   unknown 'for x in $(ls); do cmd > $x; done' "\$x ($(not_followed x))"
@@ -222,8 +231,9 @@ Blocked: this role may write files only under $wt/.scratch; write there with the
   for before in 'read TMPDIR' 'TMPDIR=/etc cmd' 'export "TMP""DIR=/etc"' 'builtin read -r a TMPDIR' 'TMPDIR[0]=/etc'; do
     unknown "$before; cmd > \$TMPDIR/x" "\$TMPDIR/x ($(not_followed TMPDIR))"
   done
-  # env's assignments are the command's it runs, not the shell's.
-  passes 'env TMPDIR=/etc cmd; cmd > $TMPDIR/x'
+  # env's assignments are the command's it runs, not the shell's; export brace-expands only an
+  # unquoted brace.
+  passes 'env TMPDIR=/etc cmd; cmd > $TMPDIR/x' "export x='.scratch/{a,..}'; cmd > \"\$x/y\""
 }
 
 @test "a variable whose value bash sets itself is never followed" {
@@ -260,9 +270,9 @@ Blocked: this role may write files only under $wt/.scratch; write there with the
 @test "after a stop, an unquoted variable is unknown, as IFS may have changed with it" {
   unknown 'x=.scratch/a; (( v )); y=.scratch/b; cmd | tee $y' "\$y ($expansion)"
   passes 'x=.scratch/a; (( v )); y=.scratch/b; cmd | tee "$y"'
-  unknown '(( v )); cd .scratch && cmd > $PWD/x' "\$PWD/x ($expansion)"
+  unknown '(( v )); cd ./.scratch && cmd > $PWD/x' "\$PWD/x ($expansion)"
   # HOME, TMPDIR and CLAUDE_JOB_DIR keep the hook's values when the command assigns none of them.
-  passes '(( v )); cmd > "$TMPDIR/x"' '(( v )); cd .scratch && cmd > "$PWD/x"'
+  passes '(( v )); cmd > "$TMPDIR/x"' '(( v )); cd ./.scratch && cmd > "$PWD/x"'
 }
 
 @test "eval, source, ., trap, mapfile -C, and declare, typeset or local with i or n end following for the rest of the command" {

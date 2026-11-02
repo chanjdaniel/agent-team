@@ -59,30 +59,36 @@
 #   the hook knows.
 #
 # Refused unread, each naming its form: a backtick substitution, $[ ], $" ", an extended glob;
-# select, coproc, the function keyword, and the alias, enable and hash builtins; a function named
-# cd, pushd, popd, tee, mktemp, basename or a wrapper, and one whose name is not plain; a ${ }
-# outside the forms above, a quote, a newline or an expansion but a variable in its operand, and the
-# @P operator, which runs the substitutions in its value; arithmetic that does not close with )) or
-# holds a quote, a backtick, a $(( )) or another character; a (, ), |, &, ; or newline in a [[ ]]
-# outside its regular expression, or a newline or a process substitution inside that; a ( in a
-# command but a function definition's or an array assignment's, an array assignment with text after
-# its ), and a word after a compound command but its redirections; a set option other than the flags
-# e, u, x, v, E and T after - or +, and -o or +o with errexit, nounset, xtrace, verbose, pipefail,
-# errtrace or functrace (the words after --, - or the first word that is no option are its
-# positional parameters), and any shopt option but -p and -q; the names IFS, CDPATH and
-# POSIXLY_CORRECT anywhere in the command, but IFS= as the prefix assignment of a command that holds
-# a word, and a quoted delimiter's here-document body that no shell may read as code: one a simple
-# command reads, where that command, the others in its pipeline and, for a pipeline in a
-# substitution, the command whose word holds the substitution (and so on outward) are none of bash,
-# sh, dash, zsh, ksh, mksh, busybox, source, ., eval, a function the command defines and a command
-# word the hook cannot name; a {name} file descriptor; a here-document delimiter other than those
-# above, a here-document whose delimiter line is not found, a line ending in an odd number of
-# backslashes in an unquoted delimiter's body, and, inside a $( ), a here-document whose $( ) closes
-# before its body is read and a body line that starts with its delimiter and a ); a process
-# substitution inside a longer word; on a bash older than 5.2, which finds a $( )'s close another
-# way, a comment, a here-document or a case inside a substitution; and what bash refuses as a syntax
-# error (an unclosed quote, substitution or compound command, a ( or ) or a reserved word out of
-# place, an empty list in a compound command but a case arm's, a ;; or ;& outside a case, an
+# select, coproc, the function keyword, and the alias, enable, hash and compgen builtins (compgen
+# runs its -C command and -F function and expands its -W list as code); a function named cd, pushd,
+# popd, tee, mktemp, basename, a wrapper or an assigning builtin (declare, typeset, local, readonly,
+# read, mapfile, readarray, getopts, unset, wait, export or printf), and one whose name is not
+# plain; a ${ } outside the forms above, a quote, a newline or an expansion but a variable in its
+# operand, and the @P operator, which runs the substitutions in its value; arithmetic that does not
+# close with )) or holds a quote, a backtick, a $(( )) or another character; a (, ), |, &, ; or
+# newline in a [[ ]] outside its regular expression, or a newline or a process substitution inside
+# that; a ( in a command but a function definition's or an array assignment's, an array assignment
+# with text after its ), and a word after a compound command but its redirections; a set option
+# other than the flags e, u, x, v, E and T after - or +, and -o or +o with errexit, nounset, xtrace,
+# verbose, pipefail, errtrace or functrace (the words after --, - or the first word that is no
+# option are its positional parameters), and any shopt option but -p and -q; the names IFS, CDPATH
+# and POSIXLY_CORRECT anywhere in the command, but IFS= with an empty value as the prefix assignment
+# of a command that holds a word, and a quoted delimiter's here-document body that no shell may read
+# as code: one a simple command reads, where that command, the others in its pipeline and, for a
+# pipeline in a substitution, the command whose word holds the substitution (and so on outward) are
+# none of bash, sh, dash, zsh, ksh, mksh, busybox, source, ., eval, a function the command defines
+# and a command word the hook cannot name; a $ or a backtick in quoted text, or an ANSI-C escape,
+# inside a [ ] where bash evaluates it as an array subscript: in let's words, the names an assigning
+# builtin or unset gives (their whole words after an option of declare, typeset or local holding i
+# or n), read's names, printf's -v name, the word after a -v of test, [ or [[ ]], and the words on
+# both sides of a [[ ]] arithmetic comparison; a {name} file descriptor; a here-document delimiter
+# other than those above, a here-document whose delimiter line is not found, a line ending in an odd
+# number of backslashes in an unquoted delimiter's body, and, inside a $( ), a here-document whose
+# $( ) closes before its body is read and a body line that starts with its delimiter and a ); a
+# process substitution inside a longer word; on a bash older than 5.2, which finds a $( )'s close
+# another way, a comment, a here-document or a case inside a substitution; and what bash refuses as
+# a syntax error (an unclosed quote, substitution or compound command, a ( or ) or a reserved word
+# out of place, an empty list in a compound command but a case arm's, a ;; or ;& outside a case, an
 # operator with nothing after it, a redirection with no target).
 #
 # The judge: each output redirection target and each file a tee names (its words after the command
@@ -109,7 +115,8 @@
 # and an empty word stays put. On failure it stays put. A cd -, a cd with an unknown word, more than
 # one or another option, a cd behind a wrapper or by a path, pushd and popd make the directory
 # unknown on success, and so does a relative cd whose word is neither . nor .. and starts with
-# neither ./ nor ../ when the hook's environment sets CDPATH. eval (but the team-stack form below),
+# neither ./ nor ../ when the hook's environment sets CDPATH, or after anything that stops the
+# following of variables (below), which may have set it. eval (but the team-stack form below),
 # source, ., trap, mapfile or readarray with -C, and a command word the hook cannot name make it
 # unknown from there to the command's end, outside a ( ) or a substitution they are in, since a trap
 # they set, a function they define or the code they run may move it at any later point. But a
@@ -127,25 +134,26 @@
 #
 # Following variables: the walk starts with HOME, TMPDIR and CLAUDE_JOB_DIR as the hook's own
 # environment sets them (one it does not set is unknown), and follows each variable the command
-# assigns exactly once, by a command of name=word assignments alone (export before them or not)
-# or by a for name in words, that no assigning builtin (declare, typeset, local, readonly, read,
-# mapfile, readarray, getopts, unset, wait, export, printf -v) names in its words, that no
-# ${name=word}, ${name:=word}, name+=, array, element or prefix assignment assigns, and that bash
-# does not set itself (REPLY, OPTARG, OPTIND, PATH, PWD, OLDPWD, every BASH name and the rest).
-# After the assignment, by the order rule above, it holds its word's values, with ~ expanded only
-# at its start and neither split nor globbed (a ~ after a : makes it unknown); before it, or where
-# it may not have run, its earlier value, the hook's for the three and unknown for any other. Every
-# other variable the command assigns is unknown throughout. A for loop's variable takes each value
-# of each of its words, read as a tee file's. NAME=$(mktemp ...), the bare mktemp with known words
-# (-d, -q, -u, -t, -p dir, --tmpdir[=dir] and one template), holds a new name in -p's or
-# --tmpdir's directory, $TMPDIR's (the machine's /tmp when the hook's environment has none) or the
-# template's, when it succeeds, and the empty string when it fails. eval "$(<path>/team-stack
-# env)" makes only COMPOSE_PROJECT_NAME and the TH_ and TEAM_ names unknown. A command of
-# assignments alone makes its redirections after them, as bash does. A loop whose body assigns a
-# followed variable makes it unknown from the loop's start; a function's body is judged with those
-# of HOME, TMPDIR and CLAUDE_JOB_DIR the command does not assign, none when the command holds
-# anything that ends the following, and as after a stop when it holds anything that stops it (both
-# below), and the followed variables it assigns are unknown from its definition on.
+# assigns exactly once, by a command of name=word assignments alone (export before them or not, with
+# no unquoted { in its words, which export brace-expands) or by a for name in words, that no
+# assigning builtin (declare, typeset, local, readonly, read, mapfile, readarray, getopts, unset,
+# wait, export, printf -v) names in its words, that no ${name=word}, ${name:=word}, name+=, array,
+# element or prefix assignment assigns, and that bash does not set itself (REPLY, OPTARG, OPTIND,
+# PATH, PWD, OLDPWD, every BASH name and the rest). After the assignment, by the order rule above,
+# it holds its word's values, with ~ expanded only at its start and neither split nor globbed (a ~
+# after a : makes it unknown); before it, or where it may not have run, its earlier value, the
+# hook's for the three and unknown for any other. Every other variable the command assigns is
+# unknown throughout. A for loop's variable takes each value of each of its words, read as a tee
+# file's. NAME=$(mktemp ...), the bare mktemp with known words (-d, -q, -u, -t, -p dir,
+# --tmpdir[=dir] and one template), holds a new name in -p's or --tmpdir's directory, $TMPDIR's (the
+# machine's /tmp when the hook's environment has none) or the template's, when it succeeds, and the
+# empty string when it fails. eval "$(<path>/team-stack env)" makes only COMPOSE_PROJECT_NAME and
+# the TH_ and TEAM_ names unknown. A command of assignments alone makes its redirections after them,
+# as bash does. A loop whose body assigns a followed variable makes it unknown from the loop's
+# start; a function's body is judged with those of HOME, TMPDIR and CLAUDE_JOB_DIR the command does
+# not assign, none when the command holds anything that ends the following, and as after a stop when
+# it holds anything that stops it (both below), and the followed variables it assigns are unknown
+# from its definition on.
 #
 # What stops the following: arithmetic ($(( )), (( )), for (( )) and let) and a ${ } offset or
 # subscript that names a variable (a letter or a $ in it), a [[ ]] arithmetic comparison (-eq, -ne,
@@ -177,12 +185,13 @@
 #
 # The hook never claims: a program that writes files itself (cp, mv, sed -i, git, an interpreter,
 # sh -c, bash -c, ssh, xargs, find -exec, a tee named through an expansion, a glob or an escape);
-# text run as shell code (eval, source, ., trap actions, and arithmetic over a variable whose value
-# holds an array subscript with a substitution in it, or assigns HOME, TMPDIR or CLAUDE_JOB_DIR);
-# or the session shell's own configuration (the functions, aliases and options its snapshot sets,
-# which the hook takes to leave cd, tee, mktemp, basename and the wrappers as the commands they
-# name, CDPATH as the hook's own environment holds it, and IFS at its default). It is a speed bump
-# for the plain shell write, never a guarantee.
+# text run as shell code (eval, source, ., trap actions, arithmetic over a variable whose value
+# holds an array subscript with a substitution in it, or assigns HOME, TMPDIR or CLAUDE_JOB_DIR, an
+# expansion's value inside an array subscript bash evaluates, and a value assigned to a variable
+# with the integer or nameref attribute); or the session shell's own configuration (the functions,
+# aliases and options its snapshot sets, which the hook takes to leave cd, tee, mktemp, basename and
+# the wrappers as the commands they name, CDPATH as the hook's own environment holds it, and IFS at
+# its default). It is a speed bump for the plain shell write, never a guarantee.
 # Test seams: TEAM_SYSTEM_ROOT stands for / in /tmp, as in the library's tool_dirs, and
 # TEAM_BASH_VERSION (major.minor) for the running bash's version.
 set -euo pipefail
@@ -1083,7 +1092,8 @@ parse_simple() {
 function_def() {
   [[ $1 =~ ^[A-Za-z_][A-Za-z0-9_.:-]*$ ]] || unread 'a function name other than a plain name'
   case $1 in
-    cd | pushd | popd | tee | mktemp | basename | env | sudo | nohup | timeout | nice | stdbuf | command | exec | time | builtin)
+    cd | pushd | popd | tee | mktemp | basename | env | sudo | nohup | timeout | nice | stdbuf | command | exec | time | builtin | \
+      export | declare | typeset | local | readonly | read | mapfile | readarray | getopts | unset | wait | printf)
       unread "a function named $1"
       ;;
   esac
@@ -1796,6 +1806,107 @@ names_in() {
   done
 }
 
+# empty_after <event> <n>: whether every part of the word after its first n is an empty quote.
+empty_after() {
+  local k
+  for ((k = EA[$1] + $2; k < EA[$1] + EB[$1]; k++)); do
+    [[ ${pk[k]} == q && -z ${pt[k]} ]] || return 1
+  done
+}
+
+# subscript_code <event> <whole>: refuse unread a word that holds a $ or a backtick inside a [ ]
+# in its quoted text, as written or by an ANSI-C escape, where bash evaluates it as an array
+# subscript and runs its substitutions: in the whole word when whole is 1, else in the name before
+# its first = outside a [ ]. An expansion's value is the shell's, never such text.
+subscript_code() {
+  local k t i depth=0 ch
+  for ((k = EA[$1]; k < EA[$1] + EB[$1]; k++)); do
+    t=${pt[k]}
+    case ${pk[k]} in
+      l | q) ;;
+      # An ANSI-C escape may spell a $ or a backtick.
+      a) t=${t//\\/\$} ;;
+      *) t=_ ;;
+    esac
+    for ((i = 0; i < ${#t}; i++)); do
+      ch=${t:i:1}
+      case $ch in
+        '[') depth=$((depth + 1)) ;;
+        ']') ((depth == 0)) || depth=$((depth - 1)) ;;
+        '=') (($2 || depth)) || return 0 ;;
+        '$' | '`') ((depth == 0)) || unread 'a quoted $ or backtick in an array subscript' ;;
+      esac
+    done
+  done
+  return 0
+}
+
+# check_subscripts <S> <command name>: the words of a builtin that evaluates them, or the names
+# they give, as array subscripts: let's every word; an assigning builtin's and unset's names, and
+# with an integer or nameref option of declare, typeset or local, their whole words; read's names
+# but its options' values; printf's -v name; and the word after a -v of test or [.
+check_subscripts() {
+  local e i whole=0 valued=0
+  args_of "$1"
+  case $2 in
+    let) for e in "${args[@]}"; do subscript_code "$e" 1; done ;;
+    declare | typeset | local)
+      for e in "${args[@]}"; do
+        name_of "${EA[e]}" "${EB[e]}"
+        if [[ $nm == [-+]*[in]* ]]; then whole=1; fi
+      done
+      for e in "${args[@]}"; do subscript_code "$e" "$whole"; done
+      ;;
+    export | readonly | unset | getopts | mapfile | readarray | wait)
+      for e in "${args[@]}"; do subscript_code "$e" 0; done
+      ;;
+    read)
+      for e in "${args[@]}"; do
+        if ((valued)); then
+          valued=0
+          continue
+        fi
+        name_of "${EA[e]}" "${EB[e]}"
+        if [[ $nm == -* ]]; then
+          if [[ $nm == -*[adinNptu] ]]; then valued=1; fi
+          continue
+        fi
+        subscript_code "$e" 0
+      done
+      ;;
+    printf)
+      ((${#args[@]})) || return 0
+      name_of "${EA[args[0]]}" "${EB[args[0]]}"
+      if [[ $nm == -v ]]; then
+        ((${#args[@]} > 1)) && subscript_code "${args[1]}" 0
+      elif [[ $nm == -v* ]]; then
+        subscript_code "${args[0]}" 0
+      fi
+      ;;
+    test | '[')
+      for ((i = 0; i + 1 < ${#args[@]}; i++)); do
+        [[ ${ER[args[i]]} == -v ]] && subscript_code "${args[i + 1]}" 1
+      done
+      ;;
+  esac
+  return 0
+}
+
+# check_test_subscripts <C>: a [[ ]]'s words that it evaluates as array subscripts, the word after a
+# -v and those on both sides of an arithmetic comparison.
+check_test_subscripts() {
+  local own=() i
+  read -ra own <<<"${OWN[$1]}"
+  for ((i = 0; i < ${#own[@]}; i++)); do
+    if [[ ${ER[own[i]]} == -v ]] && ((i + 1 < ${#own[@]})); then subscript_code "${own[i + 1]}" 1; fi
+    if [[ ${ER[own[i]]} =~ ^-(eq|ne|lt|le|gt|ge)$ ]]; then
+      ((i == 0)) || subscript_code "${own[i - 1]}" 1
+      ((i + 1 == ${#own[@]})) || subscript_code "${own[i + 1]}" 1
+    fi
+  done
+  return 0
+}
+
 # computed <event>: whether the word holds an expansion before its first =, in the name it gives.
 computed() {
   local k=${EA[$1]} end=$((EA[$1] + EB[$1]))
@@ -1835,6 +1946,7 @@ check_assigning() {
 for s in "${starts[@]}"; do
   if [[ ${EK[s]} == C ]]; then
     CW[s]=-1
+    if [[ ${EX[s]} == '[[' ]]; then check_test_subscripts "$s"; fi
     if clears "$s"; then CLR[s]=1; fi
     # A for loop assigns its variable, the word after its for: with in, each value of its words.
     if [[ ${EX[s]} == for ]]; then
@@ -1890,20 +2002,27 @@ for s in "${starts[@]}"; do
     fi
     # An element's subscript is arithmetic.
     if [[ ${text:${#name}:1} == '[' ]]; then CLR[s]=1; fi
-    if ((words)) && [[ $text =~ ^IFS\+?= ]]; then ifs_prefixes=$((ifs_prefixes + 1)); fi
+    # An empty IFS= turns splitting off for the command it runs; a value would split by it.
+    if ((words)) && [[ $text == IFS= ]] && empty_after "$e" 1; then ifs_prefixes=$((ifs_prefixes + 1)); fi
   done
   ((cw >= 0 && !cu)) || continue
+  check_subscripts "$s" "$cn"
   case $cn in
-    alias | enable | hash) unread "the $cn builtin" ;;
+    # compgen runs its -C command and -F function, and expands its -W word list as code.
+    alias | enable | hash | compgen) unread "the $cn builtin" ;;
     set) check_set "$s" ;;
     shopt) check_shopt "$s" ;;
     let) CLR[s]=1 ;;
     export)
-      # export with name=word words alone assigns each name whole.
+      # export with name=word words alone assigns each name whole; bash brace-expands its words,
+      # so one holding an unquoted { assigns another way.
       args_of "$s"
       asg=$((!wrapped && ${#args[@]} > 0))
       for e in "${args[@]}"; do
         [[ ${pk[EA[e]]} == l && ${pt[EA[e]]} =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || asg=0
+        for ((k = EA[e]; k < EA[e] + EB[e]; k++)); do
+          [[ ${pk[k]} != l || ${pt[k]} != *'{'* ]] || asg=0
+        done
       done
       if ((asg)); then
         ASG[s]=2
@@ -2539,7 +2658,7 @@ judge() {
 # from cur: -L (the default) resolves .. by text, -P by the symlinks; a cd it cannot follow leaves
 # the directory unknown on success. The variables stay as they were.
 cd_env() {
-  local e n=0 word=-1 phys=0 opts=1 i v d cands=() results=() vars=''
+  local e n=0 word=-1 phys=0 opts=1 i v d cands=() results=() vars='' searched ed ev
   env_fail "$cur"
   ko=$fl
   env_lose "$cur"
@@ -2576,6 +2695,10 @@ cd_env() {
     word_values "${EA[word]}" "${EB[word]}" t
     [[ -z $why ]] || return 0
   fi
+  # CDPATH is the hook's own, unless the command may have assigned any variable before the cd.
+  searched=${CDPATH:-}
+  env_split "$cur"
+  if ((vdead)) || [[ $ev == s || $ev == s$'\n'* ]]; then searched=1; fi
   for i in "${!vals[@]}"; do
     v=${vals[i]} d=${vdir[i]}
     [[ $v != - && $v != *[$'\n\x04']* ]] || return 0
@@ -2590,7 +2713,7 @@ cd_env() {
       continue
     fi
     # bash searches CDPATH for a name other than . and .. that starts with neither ./ nor ../.
-    if [[ -n ${CDPATH:-} && ! ($v == . || $v == .. || $v == ./* || $v == ../*) ]]; then return 0; fi
+    if [[ -n $searched && ! ($v == . || $v == .. || $v == ./* || $v == ../*) ]]; then return 0; fi
     if ((d >= 0)); then
       cands+=("${dl[d]}/$v")
     else

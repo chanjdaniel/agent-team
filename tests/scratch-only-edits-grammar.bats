@@ -180,7 +180,7 @@ setup() {
   done
 }
 
-@test "select, coproc, the function keyword, alias, enable and hash are refused unread" {
+@test "select, coproc, the function keyword, alias, enable, hash and compgen are refused unread" {
   unread 'select x in a; do cmd > out; done' 'a select command'
   unread 'coproc cmd > .scratch/x' 'a coproc command'
   unread 'function f { cmd > out; }' 'the function keyword'
@@ -188,6 +188,9 @@ setup() {
   unread 'builtin alias t=tee; cmd > .scratch/x' 'the alias builtin'
   unread 'enable -n echo; echo > .scratch/x' 'the enable builtin'
   unread 'hash -p /bin/sh tee; cmd | tee .scratch/x' 'the hash builtin'
+  unread "compgen -W '\$(cmd > out)' x; cmd > .scratch/x" 'the compgen builtin'
+  unread 'compgen -C cmd x > .scratch/x' 'the compgen builtin'
+  unread 'f() { :; }; compgen -F f x > .scratch/x' 'the compgen builtin'
   # As an argument, such a word is text.
   passes 'echo alias select > .scratch/x'
 }
@@ -205,7 +208,7 @@ setup() {
     'shopt -q extglob; shopt -pq; shopt; cmd > .scratch/x'
 }
 
-@test "IFS, CDPATH and POSIXLY_CORRECT named anywhere else are refused unread, but IFS= before a command" {
+@test "IFS, CDPATH and POSIXLY_CORRECT named anywhere else are refused unread, but an empty IFS= before a command" {
   unread 'echo "$IFS" > .scratch/x' 'the name IFS'
   unread 'IFS=/; cmd > .scratch/x' 'the name IFS'
   unread 'IFS=$IFS read -r a; cmd > .scratch/x' 'the name IFS'
@@ -214,7 +217,11 @@ setup() {
   unread 'CDPATH=/ cmd > .scratch/x' 'the name CDPATH'
   unread 'echo ${CDPATH} > .scratch/x' 'the name CDPATH'
   unread "POSIXLY_CORRECT=1 cmd > .scratch/x" 'the name POSIXLY_CORRECT'
-  passes 'IFS= read -r line; cmd > .scratch/x' 'IFS=: read -r a b < f; cmd | tee .scratch/x' 'echo MYIFS IFS_X > .scratch/x'
+  # A value in the prefix sets IFS while the command runs, a function the command defines included.
+  unread 'IFS=: read -r a b < f; cmd | tee .scratch/x' 'the name IFS'
+  unread 'f() { cmd | tee $TMPDIR/x; }; IFS=/ f' 'the name IFS'
+  unread 'IFS+= read -r line; cmd > .scratch/x' 'the name IFS'
+  passes 'IFS= read -r line; cmd > .scratch/x' "IFS='' read -r line; cmd > .scratch/x" 'echo MYIFS IFS_X > .scratch/x'
 }
 
 @test "IFS, CDPATH and POSIXLY_CORRECT in a quoted delimiter's here-document body are text, unless a shell may read it" {
@@ -535,11 +542,13 @@ EOF" 'a here-document delimiter other than a plain word, quoted whole or not'
   unread '"f"() { :; }; cmd > .scratch/x' 'a function name other than a plain name'
 }
 
-@test "a function named cd, pushd, popd, tee, mktemp, basename or a wrapper is refused unread" {
+@test "a function named cd, pushd, popd, tee, mktemp, basename, a wrapper or an assigning builtin is refused unread" {
   local name
-  for name in cd pushd popd tee mktemp basename env sudo nohup timeout nice stdbuf command exec time builtin; do
+  for name in cd pushd popd tee mktemp basename env sudo nohup timeout nice stdbuf command exec time builtin \
+    export declare typeset local readonly read mapfile readarray getopts unset wait printf; do
     unread "$name() { :; }; cmd > .scratch/x" "a function named $name"
   done
+  unread 'export() { :; }; export P=.scratch; cmd > "$P/x"' 'a function named export'
 }
 
 @test "an array assignment's words are read as words" {
@@ -620,6 +629,24 @@ EOF" 'a here-document delimiter other than a plain word, quoted whole or not'
   unread $'x=$(cat <<EOF\n${y:-$(cmd > out)}\nEOF\n)' 'an expansion inside a ${ } operand other than a variable'
   blocked $'cat <<EOF\n$(( $(cmd > out) ))\nEOF' "$wt/out"
   passes $'cat > .scratch/x <<EOF\n${x:-a} ${#y} $(( 1 + 2 ))\nEOF'
+}
+
+@test "a quoted \$ or backtick in an array subscript bash evaluates is refused unread" {
+  local form='a quoted $ or backtick in an array subscript'
+  local word
+  for word in "let 'a[\$(cmd > out)]=1'" "let a'[\$(cmd > out)]'=1" "let 'a[\`cmd\`]'" "let a[\\\$x]" "let \$'a[\\x24(cmd)]'" \
+    "declare 'a[\$(cmd > out)]=1'" "typeset 'a[\$(cmd)]=1'" "local 'a[\$(cmd)]'" "readonly 'a[\$(cmd)]=1'" \
+    "export 'a[\$(cmd)]=1'" "unset 'a[\$(cmd > out)]'" "unset -v 'a[\$(cmd)]'" "read -r 'a[\$(cmd)]'" \
+    "printf -v 'a[\$(cmd)]' x" "printf -v'a[\$(cmd)]' x" "getopts ab 'a[\$(cmd)]'" "mapfile 'a[\$(cmd)]'" \
+    "readarray 'a[\$(cmd)]'" "wait -p 'a[\$(cmd)]'" "declare -i n='a[\$(cmd)]'" "declare -n r='a[\$(cmd)]'" \
+    "test -v 'a[\$(cmd)]'" "[ -v 'a[\$(cmd)]' ]" "[[ -v 'a[\$(cmd)]' ]]" "[[ 'a[\$(cmd)]' -eq 0 ]]" "[[ 0 -lt 'a[\$(cmd)]' ]]"; do
+    unread "$word; cmd > .scratch/x" "$form"
+  done
+  # Text bash does not evaluate as a subscript is read as before.
+  passes "let 'n = n + 1'; cmd > .scratch/x" "declare x='a[\$(cmd)]'; cmd > .scratch/x" "export y='[\$z]'; cmd > .scratch/x" \
+    "printf '[%s] \$%s\\n' a b > .scratch/x" "printf -v line '[%s] \$%s' a b; cmd > .scratch/x" \
+    "read -r -p '[y/\$n] ' ans; cmd > .scratch/x" "test 'a[\$x]' = b && cmd > .scratch/x" \
+    "[[ 'a[\$x]' == b ]] && cmd > .scratch/x" "let 'a[1]=2'; cmd > .scratch/x" "unset 'a[1]'; cmd > .scratch/x"
 }
 
 @test "a form no rule reads is refused unread, so a command holding one passes nothing it holds" {
