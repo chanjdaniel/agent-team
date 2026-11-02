@@ -2299,7 +2299,8 @@ done
 # The walk's environment: the set of directories the shell may be in, ? when it may be in any, one
 # line per directory, a flag and its absolute path, the flag 1 when the shell is there only because
 # a cd may have failed, else 0; then, after a \x04, the variables it follows: s first once something
-# has stopped the following on the way there, after which bash may split a value another way, then
+# has stopped the following on the way there, after which bash may split a value another way (S
+# while $PWD is unknown too, until a cd the walk follows sets it again), then
 # one line per variable, <name>=<values>, its values joined by \x02, each v<value>, or
 # e<origin>/<value> for a value left empty by a failed mktemp, which assigned the variable origin. A
 # variable with no line is unknown. The empty environment is a point the shell never reaches. A set
@@ -2310,7 +2311,7 @@ max_dirs=16 max_vals=64
 # The variables the walk starts with: HOME, TMPDIR and CLAUDE_JOB_DIR as the hook's environment
 # sets them, but one the command assigns in a way the walk does not follow; startvar[name] is 1 for
 # each the hook's environment sets, and for PWD, whose unknown value the walk no longer follows.
-# A function's body starts with those of the three the command does not assign, and none, with s,
+# A function's body starts with those of the three the command does not assign, and none, with S,
 # when it holds anything that ends or stops the following.
 declare -A startvar=([PWD]=1)
 start_vars='' body_vars=''
@@ -2372,9 +2373,9 @@ dirs_union() {
   du=${du%$'\n'}
 }
 
-# vars_union <a> <b>: set vu to the variables both know, each with every value either gives, and s
-# when either has it. The lines both start with alike are kept as they are, found by halving, since
-# an assignment adds its line at the end; vars_merge merges the rest.
+# vars_union <a> <b>: set vu to the variables both know, each with every value either gives, and S
+# when either has it, else s when either has it. The lines both start with alike are kept as they
+# are, found by halving, since an assignment adds its line at the end; vars_merge merges the rest.
 vars_union() {
   local a=$1 b=$2 lo=0 hi=${#1} mid x j=-1
   ((${#b} >= hi)) || hi=${#b}
@@ -2574,7 +2575,7 @@ var_set() {
 }
 
 # var_clear <env>: set vd to the environment with every variable unknown, HOME, TMPDIR and
-# CLAUDE_JOB_DIR among them, which a command that may assign any variable may assign, and s.
+# CLAUDE_JOB_DIR among them, which a command that may assign any variable may assign, and S.
 var_clear() {
   vd=$1
   [[ -n $1 ]] || return 0
@@ -3262,7 +3263,7 @@ done
 
 # loop_start <C>: change start, the environment the loop starts in, to the one its body may start
 # each turn in: the directory unknown when the loop may move the shell, each followed variable it
-# assigns unknown, and every one unknown, with s, when it may assign any; following ends from here
+# assigns unknown, and every one unknown, with S, when it may assign any; following ends from here
 # when it holds a command that ends it.
 loop_start() {
   local names=()
@@ -3458,7 +3459,7 @@ walk_compound() {
 }
 
 # walk_command: a command that may assign any variable as it runs leaves every followed variable
-# unknown from its start, with s.
+# unknown from its start, with S.
 walk_command() {
   if ((${CLR[w]:-0})) && [[ -n $cur ]]; then
     var_clear "$cur"
