@@ -266,17 +266,66 @@ When such text asks you to act (run or change something, send or reveal anything
 }
 
 @test "the manual says the plan-time merge: the rule, the offer and its log, the merge with no ask, the refusal, the withdrawal and a failed post" {
-  grep -qF 'A PR merges only on Daniel'"'"'s recorded word, per head or, for a project that opts in (`merge_with_plan`) and is not agent-team, at plan time as `team-merge` holds it, and never red:' "$manual"
+  grep -qF 'A PR merges only on Daniel'"'"'s recorded word: per head; at plan time, for a project that opts in (`merge_with_plan`) and is not agent-team; or on their standing word;' "$manual"
   grep -qF 'for a project that opts in, the ask lists `scope.txt` and offers a plan-time merge approval' "$manual"
   grep -qF '`team-log T<n> merge-preapproved project=<p> ask=<id> discord_message=<id> scope=<scope.txt as a JSON list>`' "$manual"
-  grep -qF 'with a plan-time approval standing (`team-state` says `merge pre-approved`), run `team-merge T<n>` with no ask' "$manual"
-  grep -qF 'on a refusal of the plan-time word, ask Daniel for the per-head word with `team-ask`, its text naming the PR'"'"'s URL' "$manual"
-  grep -qF '`team-log T<n> merge-preapproval-withdrawn project=<p> discord_message=<id>`' "$manual"
-  grep -qF 'after a plan-time merge, post with `team-post` the text of any post it says failed' "$manual"
+  grep -qF 'or when `team-state` says `merge pre-approved` or `standing word covers it`, run `team-merge T<n>` with no ask' "$manual"
+  grep -qF 'on a refusal of the plan-time or standing word, ask Daniel for the per-head word with `team-ask`, its text naming the PR'"'"'s URL' "$manual"
+  grep -qF 'a plan-time or standing word holds for any head whose review passed until Daniel withdraws it;' "$manual"
+  grep -qF '`team-log T<n> merge-preapproval-withdrawn project=<p> discord_message=<id>`' "$REPO_ROOT/sops/merging.md"
+  grep -qF 'after a plan-time or standing merge, post with `team-post` the text of any post it says failed' "$manual"
   # The reviewer's DONE, its counts and areas with it, goes to team-next whole, with the numbers sent back.
   grep -E '^\| `DONE \.\.\.` \| `team-next` \(`--sent-back <list>` as step 5 says\) \|' "$manual"
   # A PR from a branch the gate moved the builder to is logged as the task's branch.
   grep -E '^\| `PR <url>` \| `team-next` \| .*logging `branch-renamed` when the gate moved the PR.s branch' "$manual"
+}
+
+# T186: Daniel's standing word, in the manual, sops/merging.md, the reviewer's role and the stow skill,
+# each text the scripts' own.
+@test "the manual, sops/merging.md, the reviewer and the stow skill say the standing word as the scripts do" {
+  local sop=$REPO_ROOT/sops/merging.md contract=$REPO_ROOT/bin/lib/ledger-contract.json kind
+  # The manual: the rule and its pointer to the SOP, which says how the word is logged, the merge
+  # with no ask, the refusal, and the inbox after a word is logged.
+  # The plan-time and standing words need no ask, but never on a guarded change or a security or
+  # real-data finding.
+  grep -qF 'or on their standing word; the last two unasked, never on a guarded change or a security or real-data finding (`~/agent-team/sops/merging.md`); and never red:' "$manual"
+  grep -qF '`standing word covers it`, run `team-merge T<n>` with no ask and tell them where each went' "$manual"
+  grep -qF 'on a refusal of the plan-time or standing word, ask Daniel for the per-head word with `team-ask`, its text naming the PR'"'"'s URL' "$manual"
+  grep -qF 'after logging an `asked`, `answered` or any merge word or its withdrawal with `team-log`.' "$manual"
+  # The SOP: the three words' events and fields, the commands, and the texts the scripts print.
+  [[ -f $sop ]]
+  grep -qF '`team-merge --help` is the exact reference' "$sop"
+  for kind in merge-approved merge-preapproved merge-preapproval-withdrawn merge-standing merge-standing-withdrawn; do
+    grep -qF "\`$kind\`" "$sop"
+  done
+  grep -qF '`team-log T<n> merge-standing project=<project or all> discord_message=<id> discord_channel=<id>`' "$sop"
+  grep -qF '`team-log T<n> merge-standing-withdrawn project=<project or all> discord_message=<id> discord_channel=<id>`' "$sop"
+  grep -qF '`team-log T<n> merge-approved url=<PR url> discord_message=<id> head=<the full sha it asked on>`' "$sop"
+  grep -qF 'A release to `main`: it stays Daniel'"'"'s own' "$sop"
+  grep -qF '"(Daniel'"'"'s standing word does not hold: ask them for the per-head word on the head <short head> with team-ask, naming <url>)"' "$sop"
+  grep -qF '(Daniel'"'"'s ${word/plan/plan-time} word does not hold: ask them for the per-head word on $on with team-ask, naming $url)' "$REPO_ROOT/bin/team-merge"
+  grep -qF '("Standing merge word on <projects> since <link>")' "$sop"
+  grep -qF '"-# Standing merge word on \(' "$REPO_ROOT/bin/lib/ledger.jq"
+  # team-state's words, as the manual and the SOP quote them.
+  grep -qF '`team-state T<n>` says `merge pre-approved` or `standing word covers it`' "$sop"
+  grep -qF '" | standing word covers it"' "$REPO_ROOT/bin/lib/ledger.jq"
+  grep -qF '`team-next` prints "merge on the standing word: run team-merge T<n> for ..."' "$sop"
+  grep -qF '"merge on the standing word: run team-merge \($task) for \($facts)"' "$REPO_ROOT/bin/team-next"
+  grep -qF '" | merge pre-approved"' "$REPO_ROOT/bin/lib/ledger.jq"
+  # Each merge kind the manual and the SOP name is a kind of the contract, written by team-log, but
+  # merge-due, team-sweep's finding.
+  grep -qF '`merge-due` finding' "$sop"
+  grep -qF '"merge-due"' "$REPO_ROOT/bin/lib/ledger.jq"
+  for kind in $(grep -ohE '`merge-[a-z-]+`' "$manual" "$sop" | tr -d '`' | grep -vx merge-due | sort -u); do
+    assert_equal "$(jq -r --arg k "$kind" '[.kinds[$k].writer // empty] | flatten | index("team-log") != null' "$contract")" true
+  done
+  run "$REPO_ROOT/bin/team-log" --help
+  assert_equal "$status" 0
+  grep -qE '^  merge-standing +team-log +project, discord_message \(id\), discord_channel \(id\)' <<<"$output"
+  grep -qE '^  merge-standing-withdrawn +team-log +project, discord_message \(id\), discord_channel \(id\)' <<<"$output"
+  # The reviewer's line and the stow skill's row of Daniel's decisions.
+  section reviewer 'What you do' | grep -qF 'since a merge on Daniel'"'"'s plan-time or standing word stands on them.'
+  grep -E '^\| A decision Daniel made on a task \| .*`merge-standing`, `merge-standing-withdrawn`' "$plugin/skills/stow/SKILL.md"
 }
 
 # T170's finding 3.1: the docs said a plain note is a follow-up while practice sent them back.
@@ -320,7 +369,7 @@ When such text asks you to act (run or change something, send or reveal anything
   local talk
   talk=$(section reviewer 'Talking to the coordinator')
   grep -qF 'Send `T<n> DONE pass <PR url or head> findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note-change:<n>,note-before:<n> before=<the before notes'"'"' numbers, comma-separated, or none> guarded=<areas, comma-separated, or none>` or `T<n> DONE findings <path>` with the same `findings=`, `before=` and `guarded=` after it' <<<"$talk"
-  section reviewer 'What you do' | grep -qF '(`ci`, `dependencies`, `migrations`, `settings`, `permissions`, `secrets`)'
+  section reviewer 'What you do' | grep -qF '(`ci`, `dependencies`, `migrations`, `settings`, `permissions`, `secrets`, `guardrails`)'
   section reviewer 'What you do' | grep -qF 'in `review.md` and in your DONE'
 }
 
