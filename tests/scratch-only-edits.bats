@@ -449,28 +449,47 @@ echo x > out' "$wt/out"
   shell -0 'sudo -u tee cmd x'
 }
 
+# The CPU seconds the shell's waited-for children have used so far, in CPU: cpu_now. Read with the
+# times builtin in this shell (a subshell would read its own), so a bound on a hook's CPU holds on a
+# loaded machine, where its wall time does not.
+cpu_now() {
+  times >"$BATS_TEST_TMPDIR/times"
+  CPU=$(awk 'NR == 2 { split($1, u, /[ms]/); split($2, s, /[ms]/); print u[1] * 60 + u[2] + s[1] * 60 + s[2] }' \
+    "$BATS_TEST_TMPDIR/times")
+}
+
+# Succeed when the children have used under <seconds> of CPU since <before>: cpu_under <before> <seconds>
+cpu_under() {
+  cpu_now
+  awk -v before="$1" -v now="$CPU" -v max="$2" 'BEGIN { exit !(now - before < max) }' ||
+    { echo "used $(awk -v before="$1" -v now="$CPU" 'BEGIN { print now - before }') CPU seconds, not under $2" >&2; return 1; }
+}
+
 @test "a long heredoc is judged quickly" {
-  local body
+  local body before
   body=$(for i in $(seq 1 3000); do echo "line $i with a > and a | tee x"; done)
-  SECONDS=0
+  cpu_now
+  before=$CPU
   shell -0 "cat > .scratch/task/big.txt <<'EOF'
 $body
 EOF"
-  ((SECONDS < 5))
+  cpu_under "$before" 5
   # Inside a substitution too, as a commit message is written.
-  SECONDS=0
+  cpu_now
+  before=$CPU
   shell -0 "git commit -m \"\$(cat <<'EOF'
 $body
 EOF
 )\""
-  ((SECONDS < 5))
+  cpu_under "$before" 5
   # And with its delimiter unquoted, whose body's expansions are read.
   body=$(for i in $(seq 1 1000); do echo "line $i with \${HOME} and a > and a | tee x"; done)
-  SECONDS=0
+  cpu_now
+  before=$CPU
   shell -0 "cat > .scratch/task/big.txt <<EOF
 $body
 EOF"
-  ((SECONDS < 5))
+  cpu_under "$before" 5
 }
 
 @test "the planner's and reviewer's settings run the hook on Bash and the edit tools; the ops role's on the edit tools only" {
