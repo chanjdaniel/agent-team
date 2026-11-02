@@ -200,7 +200,7 @@ TABLE
   assert_equal "$(jq -c '.kinds["merge-preapproved"].required' "$CONTRACT")" '{"project":"string","ask":"string","discord_message":"id","scope":"array"}'
   assert_equal "$(jq -c '[.kinds["merge-standing", "merge-standing-withdrawn"].required]' "$CONTRACT")" \
     '[{"project":"string","discord_message":"id","discord_channel":"id"},{"project":"string","discord_message":"id","discord_channel":"id"}]'
-  assert_equal "$(jq -c '.kinds.review.optional' "$CONTRACT")" '{"agent_review":"string","sent_back":"numbers","findings":"object","before":"numbers","guarded":"array"}'
+  assert_equal "$(jq -c '.kinds.review.optional' "$CONTRACT")" '{"agent_review":"string","sent_back":"numbers","findings":"object","before":"numbers","guarded":"array","memory":"string"}'
   assert_equal "$(jq -c '.kinds.merged.optional.approval' "$CONTRACT")" '["head","plan","standing"]'
   [[ $STRICT_FROM =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
 }
@@ -227,7 +227,7 @@ TABLE
     }
   done
   grep -Eq '^  opened +team-open +project, path, type, title, branch, base, base_sha, worktree; optional story  \(story is the backlog story .*team-merge marks done\)$' <<<"$output"
-  grep -Eq '^  review +team-log +verdict \(pass\|findings\), head; optional agent_review, sent_back \(list of whole numbers\), findings \(object\), before \(list of whole numbers\), guarded \(list\)  \(verdict: findings whenever sent_back names a finding, whatever the reviewer.s word, .*sent_back: the numbers of the findings sent back .*findings: the count of each kind.*before: the numbers of the plain notes .*guarded: the guarded areas.*\)$' <<<"$output"
+  grep -Eq '^  review +team-log +verdict \(pass\|findings\), head; optional agent_review, sent_back \(list of whole numbers\), findings \(object\), before \(list of whole numbers\), guarded \(list\), memory  \(verdict: findings whenever sent_back names a finding, whatever the reviewer.s word, .*sent_back: the numbers of the findings sent back .*findings: the count of each kind.*before: the numbers of the plain notes .*guarded: the guarded areas.*memory: the file in the task directory of the memories.*\)$' <<<"$output"
   grep -Eq '^  merge-preapproved +team-log +project, ask, discord_message \(id\), scope \(list\)  \(Daniel.s plan-time word .*\)$' <<<"$output"
   grep -Eq '^  merge-preapproval-withdrawn +team-log +project, discord_message \(id\)  \(.*withdr.*\)$' <<<"$output"
   grep -Eq '^  merge-standing +team-log +project, discord_message \(id\), discord_channel \(id\)  \(Daniel.s standing word .*every project when project is all.*across the whole ledger.*the latest merge-standing or merge-standing-withdrawn whose project is .* or all decides.*stands when that is a merge-standing.*\)$' <<<"$output"
@@ -1400,6 +1400,25 @@ team-log: $TEAM_HOME/ledger.jsonl: 2 lines hold strings that are no whole number
     --from-message "T7 DONE pass $URL findings=blocking:0,correctness:0,security:0,real-data:0,note-change:1,note-before:1 before=2 guarded=none"
 }
 
+@test "--from-message logs the memory file a reviewer's DONE names on its review, which --check passes" {
+  open_t7
+  launched T7 builder b0000001
+  launched T7 reviewer c0000001 brief-review
+  brief_record T7 brief-review "{\"pr\": \"$URL\", \"head\": \"$HEAD_A\"}"
+  # roles/reviewer.md: ` memory=.scratch/task/memory.md` after guarded= when it added a memory.
+  logs_events "{\"task\":\"T7\",\"event\":\"review\",\"verdict\":\"pass\",\"head\":\"$HEAD_A\",\"findings\":{\"blocking\":0,\"correctness\":0,\"security\":0,\"real-data\":0,\"note-change\":0,\"note-before\":0},\"guarded\":[],\"memory\":\".scratch/task/memory.md\"}
+{\"task\":\"T7\",\"event\":\"done\",\"role\":\"reviewer\",\"session\":\"c0000001\"}" \
+    --from-message "T7 DONE pass $URL findings=blocking:0,correctness:0,security:0,real-data:0,note-change:0,note-before:0 guarded=none memory=.scratch/task/memory.md"
+  run_bin -0 team-log --check
+  # A findings review takes it too.
+  launched T7 reviewer c0000002 brief-rereview
+  brief_record T7 brief-rereview "{\"pr\": \"$URL\", \"head\": \"$HEAD_B\", \"reviewed\": \"$HEAD_A\"}"
+  logs_events "{\"task\":\"T7\",\"event\":\"review\",\"verdict\":\"findings\",\"head\":\"$HEAD_B\",\"findings\":{\"blocking\":1,\"correctness\":0,\"security\":0,\"real-data\":0,\"note-change\":0,\"note-before\":0},\"before\":[],\"guarded\":[],\"memory\":\".scratch/task/memory.md\"}
+{\"task\":\"T7\",\"event\":\"done\",\"role\":\"reviewer\",\"session\":\"c0000002\"}" \
+    --from-message "T7 DONE findings .scratch/task/review.md findings=blocking:1,correctness:0,security:0,real-data:0,note-change:0,note-before:0 before=none guarded=none memory=.scratch/task/memory.md"
+  run_bin -0 team-log --check
+}
+
 @test "--from-message logs a DONE findings as a review with what --sent-back gives, and the reviewer's done" {
   open_t7
   launched T7 builder b0000001
@@ -1545,7 +1564,7 @@ team-log: $TEAM_HOME/ledger.jsonl: 2 lines hold strings that are no whole number
   refuses_message "team-log: the message is for T8, not T7" --from-message 'T8 DONE 01 a1b2c3d x'
   refuses_message "team-log: a worker's message starts with its task, T7, then its kind; got 'DONE 01 a1b2c3d x'" \
     --from-message 'DONE 01 a1b2c3d x'
-  local forms="QUESTION <text>, BLOCKED <what> <why>, NEED toolkit <name>, PAUSED <why>, PR <full url> [merged <base> conflicts: <files or none>], DONE <NN> <sha>... <line>, DONE review-ready <sha>, DONE merged <base> <sha> conflicts: <files or none>, DONE pass <PR url or head> findings=<kind:n,...> [before=<list>] guarded=<list>, DONE findings <path> findings=<kind:n,...> [before=<list>] guarded=<list>, DONE gate <key=value>..., DONE <report>, FAILED <why>, INJECTION <where> <what it asked>"
+  local forms="QUESTION <text>, BLOCKED <what> <why>, NEED toolkit <name>, PAUSED <why>, PR <full url> [merged <base> conflicts: <files or none>], DONE <NN> <sha>... <line>, DONE review-ready <sha>, DONE merged <base> <sha> conflicts: <files or none>, DONE pass <PR url or head> findings=<kind:n,...> [before=<list>] guarded=<list> [memory=<path>], DONE findings <path> findings=<kind:n,...> [before=<list>] guarded=<list> [memory=<path>], DONE gate <key=value>..., DONE <report>, FAILED <why>, INJECTION <where> <what it asked>"
   refuses_message "team-log: cannot read 'T7 HELLO there': expected one of $forms" --from-message 'T7 HELLO there'
   refuses_message "team-log: cannot read 'T7 QUESTION': expected one of $forms" --from-message 'T7 QUESTION'
   # Malformed parts of a review, each named.
@@ -1553,7 +1572,7 @@ team-log: $TEAM_HOME/ledger.jsonl: 2 lines hold strings that are no whole number
   assert_contains "$output" "findings holds the count of each finding kind"
   refuses_message "team-log: findings: blocking is not a key:value pair" \
     --from-message 'T7 DONE pass a1b2c3d findings=blocking,correctness:1 guarded=none'
-  refuses_message "team-log: DONE pass takes findings=<kind:n,...>, before=<list> and guarded=<list>, got bogus" \
+  refuses_message "team-log: DONE pass takes findings=<kind:n,...>, before=<list>, guarded=<list> and memory=<path>, got bogus" \
     --from-message 'T7 DONE pass a1b2c3d findings=blocking:0,correctness:0,security:0,real-data:0,note-change:0,note-before:0 guarded=none bogus=1'
   refuses_message "team-log: DONE pass needs findings= and guarded=" \
     --from-message 'T7 DONE pass a1b2c3d guarded=none'
