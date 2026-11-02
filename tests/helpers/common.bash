@@ -122,9 +122,10 @@ EOF
 
   # nvm lives under HOME unless NVM_DIR says otherwise: the real one must not leak in, nor the
   # heavy run tests/run holds (team-heavy), nor the role and task of the session running the suite
-  # (worker_refusal).
+  # (worker_refusal), nor the parallelism team-checks gives the suite (TEAM_JOBS), nor a bound on
+  # Docker's answers (TEAM_DOCKER_SECONDS).
   unset TEAM_COORDINATOR_CHANNEL TEAM_INTERVIEW_CHANNEL CLAUDE_PROJECT_DIR NVM_DIR TEAM_HEAVY_HELD TEAM_HEAVY_WAIT_MINUTES
-  unset AGENT_TEAM_ROLE AGENT_TEAM_TASK
+  unset AGENT_TEAM_ROLE AGENT_TEAM_TASK TEAM_JOBS TEAM_DOCKER_SECONDS
   # The state directory is HOME's, as the sandbox's HOME is.
   unset XDG_STATE_HOME
   guard_sandbox
@@ -235,7 +236,9 @@ stub_calls() {
 # ~/.fake-systemd/<unit>.<property> (empty without one), a test's to write, and show -p
 # <property>,... <unit>..., one block of <property>=<value> lines per unit as systemd prints
 # them, a blank line between, Id the unit's name and a property with no file "[not set]" for a
-# Memory or CPU one (a unit that is not running), else empty; every call fails as a
+# Memory or CPU one (a unit that is not running), else empty, and set-property --runtime <unit>
+# <property>=<value>... on a unit file there, which keeps each value for show (CPUQuota=<n>% as
+# CPUQuotaPerSecUSec, in systemd's form: 360% is 3.600000s); every call fails as a
 # user manager that does not answer once ~/.fake-systemd/down exists; launchctl
 # bootstrap gui/<uid> <plist>, bootout gui/<uid>/<label> and print gui/<uid>/<label>, refusing as
 # launchctl does a bootstrap of a loaded job or a bootout of one not loaded.
@@ -266,6 +269,22 @@ if [[ ${2:-} == show && ${3:-} == -p ]]; then
       elif [[ $prop == Memory* || $prop == CPU* ]]; then echo "$prop=[not set]"
       else echo "$prop="; fi
     done
+  done
+  exit 0
+fi
+if [[ ${2:-} == set-property && ${3:-} == --runtime ]]; then
+  # Each property kept as show reads it: CPUQuota=<n>% as CPUQuotaPerSecUSec in systemd's timespan.
+  [[ -f $units/$4 ]] || { echo "Failed to set unit properties on $4: Unit $4 not found." >&2; exit 1; }
+  for assignment in "${@:5}"; do
+    prop=${assignment%%=*} value=${assignment#*=}
+    if [[ $prop == CPUQuota ]]; then
+      percent=${value%\%}
+      if ((percent % 100 == 0)); then value="$((percent / 100))s"
+      elif ((percent < 100)); then value="$((percent * 10))ms"
+      else value=$(printf '%d.%06ds' $((percent / 100)) $((percent % 100 * 10000))); fi
+      prop=CPUQuotaPerSecUSec
+    fi
+    echo "$value" >"$state/$4.$prop"
   done
   exit 0
 fi
@@ -394,6 +413,66 @@ for pid in "${pids[@]}"; do
   echo "0::/user.slice/user-$(id -u).slice/user@$(id -u).service$path/$scope" >"$TEAM_CGROUP_ROOT/proc/$pid/cgroup"
 done
 echo 'o "/org/freedesktop/systemd1/job/7"'
+EOF
+}
+
+# level_applied <mode> <level> <percent>: the limits team-level apply last set, as it keeps them,
+# and the CPU quota of <percent> on the team's slice as systemd reports it.
+level_applied() {
+  mkdir -p "$HOME/.local/state/agent-team/level" "$HOME/.fake-systemd"
+  jq -cn --arg mode "$1" --arg level "$2" --argjson percent "$3" '{at: (now | floor | todate), mode: $mode, level: $level,
+    cpu_quota_percent: $percent, cpus: ($percent / 100), memory_high: 2147483648, memory_max: 3221225472}' \
+    >"$HOME/.local/state/agent-team/level/applied.json"
+  printf '%d.%06ds\n' $(($3 / 100)) $(($3 % 100 * 10000)) >"$HOME/.fake-systemd/agent-team.slice.CPUQuotaPerSecUSec"
+}
+
+# capacity_room <bytes> [<level>]: a stored reading, taken now, of a 32 GiB machine whose other
+# programs leave the team exactly <bytes> at full (no share bound under 28.8 GiB) and with none of
+# the team's work in it, so team-capacity admit reads it instead of taking one; with <level>, a
+# level record of manual mode at that level too.
+capacity_room() {
+  local dir=$HOME/.local/state/agent-team/capacity
+  mkdir -p "$dir"
+  jq -cn --argjson room "$1" '(32 * 1073741824) as $total | ($total - 4 * 1073741824 - $room) as $others
+    | {at: (now | floor | todate), os: "linux", docker: true,
+       memory: {total: $total, available: ($total - $others), team: 0, others: $others}, cpu: null,
+       systemd: true, sessions: true, tasks: [], stacks: [], heavy: null, gate: {running: false, memory: 0, cpu_seconds: 0}}' \
+    >>"$dir/readings.jsonl"
+  [[ -z ${2:-} ]] || jq -cn --arg level "$2" '{ts: (now | floor | todate), mode: "manual", level: $level, by: "Daniel", machine: "home-pc"}' \
+    >>"$TEAM_HOME/level.jsonl"
+}
+
+# fake_gate [<worktree>...]: no-mistakes as the logging stub, each call also logged as "<its
+# directory> <its arguments>" to $STUB_CALLS/no-mistakes.cwd; a run is active on the branch of
+# each <worktree>: `no-mistakes axi` (the gate's state for the directory's branch) prints an
+# active_run there, else no run, and `no-mistakes axi abort` there cancels it (the worktree taken
+# off the list), or fails as the gate does with no active run; any other call fails.
+fake_gate() {
+  stub_command no-mistakes
+  printf '%s\n' "$@" >"$STUB_FIXTURES/gate-active"
+  stub_script no-mistakes <<'EOF'
+printf '%s %s\n' "$PWD" "$*" >>"$STUB_CALLS/no-mistakes.cwd"
+active=$STUB_FIXTURES/gate-active
+case "$*" in
+  axi)
+    printf 'current_branch: %s\n' "$(git branch --show-current)"
+    if grep -qxF "$PWD" "$active"; then
+      printf 'active_run:\n  id: "01M6BQBP2M6M383BDZR6QDPMWS"\n  status: running\n'
+    else
+      echo 'runs_on_current_branch: 0'
+    fi
+    ;;
+  'axi abort')
+    if ! grep -qxF "$PWD" "$active"; then
+      echo 'error: no active run on this branch'
+      exit 1
+    fi
+    { grep -vxF "$PWD" "$active" || true; } >"$active.next"
+    mv "$active.next" "$active"
+    echo 'outcome: cancelled'
+    ;;
+  *) echo "no-mistakes stub: unplanned call: $*" >&2; exit 64 ;;
+esac
 EOF
 }
 

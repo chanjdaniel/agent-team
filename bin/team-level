@@ -1,0 +1,455 @@
+#!/usr/bin/env bash
+# The team's resource level, Daniel's choice of how much of this machine the team may use, and
+# the limits that hold it there (sops/resources.md): full (full_share, 90%), minor (minor_share,
+# 30%) or none (0%), in manual mode, which holds until Daniel changes it, or in automatic mode,
+# where the heartbeat picks it from what Daniel's programs use. The coordinator runs it on
+# Daniel's word in #coordinator and posts what it prints; Daniel may type it in a terminal.
+#
+# Usage: team-level [status [--json] [--stored]]
+#        team-level full|minor|none|manual|auto [--message <discord message id>]
+#        team-level apply
+#        team-level tick
+#
+# status   The default. The mode, the level and its share, the team's budget (its memory and
+#          cores, and what bounds each: the share, or what the other programs leave), what the
+#          team's live work uses and reserves, split as team-capacity status --json splits it,
+#          and the last change, who made it and when. With no reading of the last 10 minutes it
+#          first takes one (team-capacity status), unless --stored. With --json one object:
+#          {schema: "team-level/1", machine, mode, level, share, says (the acknowledgement's
+#          words), budget: {memory_bytes (null with no reading), cores, bound_by: {memory,
+#          cores}, each "share" or "others"}, reserved_bytes,
+#          reserved_split ({sessions_use, spike_allowance, admissions, stacks, heavy_runs, gates},
+#          the bytes of each part team-capacity status --json splits what is reserved into),
+#          reserved (each item team-capacity status --json reserves: {part, kind, task, name,
+#          estimate_bytes, use_bytes, bytes}), use: {memory_bytes, cores}, reading ({at, total,
+#          others_memory, cpus, others_cores} of the newest reading, null with none), settings
+#          (capacity.json's, with its defaults), cpus (the machine's cores), last_change (the
+#          last record, or null)}.
+# full, minor, none
+#          Records manual mode at that level: one line {ts, mode: "manual", level, by: "Daniel",
+#          machine} (with discord_message, the id --message gives) appended to the team home's
+#          level.jsonl; manual records manual mode at the current level. When the team is
+#          already at that mode and level it records nothing and says so. Then applies the
+#          limits, as apply does, and prints the acknowledgement the coordinator posts:
+#          "Resources: manual, minor (30%): 9.2 GiB and 3.6 cores for the team; 6.1 GiB
+#          reserved; T171 and T174 stow.", ending with the tasks team-capacity plan says must
+#          stow, in task number order, or "nothing needs to stow" ("what must stow is unknown"
+#          when the plan fails, its reason on stderr). A limit it could not set is said on
+#          stderr; the record stands (exit 0).
+# auto     Records automatic mode at the level auto picks from the newest reading (one taken
+#          first when the newest is over 10 minutes old): {ts, mode: "auto", level, by: "Daniel",
+#          machine, reason, reading} (with discord_message), then applies the limits and prints
+#          "Resources: auto, now full (90%): ...; nothing needs to stow." When the team is
+#          already in automatic mode it records nothing and says so, since the level is then
+#          auto's to change. With no reading to pick from, exit 1 and nothing recorded.
+#          The pick of a reading: with f the lower of (T - O_m - reserve_gib) / T and
+#          (C - O_c - reserve_cores) / C (memory's alone when the reading has no CPU), full when
+#          f >= auto_full_free, none when f < auto_none_below, minor between.
+# apply    Applies the recorded level's limits (with no record, manual full's), after a reboot or
+#          a reset slice, saying on stdout what it set on the slice and on the containers; exit 1
+#          when a limit could not be set, or there is no reading to size them by.
+#          On Linux: systemctl --user set-property --runtime agent-team.slice
+#          CPUQuota=<max(cores, min_cores) * 100>% MemoryHigh=<high> MemoryMax=<max>, high being
+#          the largest of min_gib, the memory budget less the reservations of the team's stacks
+#          (which run outside the slice) and, while the slice uses more, the lower of its use and
+#          its MemoryHigh before, so a drop reclaims through stops and stows instead of throttling
+#          live sessions, and max the larger of high and the slice's use, plus 1 GiB, so a drop
+#          never kills a worker. A slice that is not installed is said with its fix,
+#          team-capacity install (Daniel's yes), and the rest still applies. On Linux and macOS:
+#          docker update --cpus <max(cores, min_cores)> on every running container labelled
+#          io.github.chanjdaniel.team.owner=agent-team (team-stack up gives a stack it starts the
+#          same); Docker not answering, or not within TEAM_DOCKER_SECONDS (30) for each docker
+#          call, is said on stderr, and a docker update that does not answer fails apply as one
+#          refused does. What it applied is kept in
+#          ~/.local/state/agent-team/level/applied.json: {at, mode, level, cpu_quota_percent,
+#          cpus, memory_high, memory_max}.
+# tick     The heartbeat's level step, after its capacity step, from the stored readings (it
+#          takes none). In automatic mode at level L: when the newest reading picks below L, it
+#          records the drop to that pick at once; when the last change is at least rise_minutes
+#          old, and a reading at least rise_minutes old and every reading after it pick above L,
+#          it records the rise to the lowest of their picks. A change is {ts, mode: "auto",
+#          level, by: "auto", machine, reason: "other programs use 18.2 GiB of 30.6 GiB and 7.9
+#          of 12 cores", reading: {at, total, others_memory, cpus, others_cores, free, pick}}, the
+#          reading the newest for a drop and the newest of the lowest pick for a rise; it is
+#          printed and posted to #coordinator as one line, "Resources: auto lowered the team to
+#          minor (30%) at 14:05: other programs use ...; T171 and T174 stow" (raised, likewise;
+#          the time this machine's local time; the stow part as the acknowledgement's). A post
+#          that fails is said on stderr (exit 1) and kept in
+#          ~/.local/state/agent-team/level/posted.json ({pending: [{ts, content}], last: {ts,
+#          at}}), and each later tick posts what is kept, in order, each line once. With no
+#          reading of the last 15 minutes it records nothing and says so. In both modes it then
+#          applies the limits, as apply does, on stdout saying nothing of them, and takes the
+#          stow plan's first two steps (team-capacity plan, once over budget is confirmed),
+#          which lose nothing: claude stop (bounded 30 s) of each finished session and
+#          team-stack stop --worktree (bounded 120 s) of each idle stack, one line each, "stopped
+#          T7-reviewer r7r7r7r7, its work handed on, to bring the team under its budget at minor
+#          (30%): frees 1.0 GiB" or "stopped conventioner-9 of T9, no busy session in its
+#          worktree, ...". The stows it leaves to the coordinator (team-sweep's level-stow). It
+#          exits 1 when a limit could not be set, the plan failed or a stop failed (each said on
+#          stderr; the other stops still run), the stops' lines before the limits', so the
+#          heartbeat logs a failed stop's own reason; it never says the machine's standing state
+#          (macOS, or a slice not installed), which apply, a change and the doctor say.
+# The budget, with T the memory total, C the cores, s the level's share, O_m and O_c what the
+# other programs use, from the newest reading (team-capacity sample) and capacity.json's settings:
+#   memory  max(0, min(s * T, T - O_m - reserve_gib))
+#   cores   max(0, min(s * C, C - O_c - reserve_cores)), from the newest reading with CPU, s * C
+#           (the machine's cores) when none has
+# so none's budget is 0, and a level's never more than what Daniel's programs leave.
+# Every subcommand but status refuses on a machine that does not hold the lease. A level.jsonl
+# line that is not a level record is refused, naming its number.
+# Test seams: TEAM_SLOTS_CPUS stands for the machine's cores, as for team-slots, and
+# TEAM_DOCKER_SECONDS for the 30 seconds each docker call is given.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+
+USAGE="usage: team-level [status [--json] [--stored]] | full|minor|none|manual|auto [--message <id>] | apply | tick"
+command=${1:-status}
+(($# == 0)) || shift
+json=0 stored=0 message=''
+case $command in
+  status)
+    while (($#)); do
+      case $1 in
+        --json) json=1 ;;
+        --stored) stored=1 ;;
+        *) usage_error "unexpected argument '$1'; $USAGE" ;;
+      esac
+      shift
+    done
+    ;;
+  full | minor | none | manual | auto)
+    if [[ ${1:-} == --message ]]; then
+      [[ ${2:-} =~ ^[0-9]+$ ]] || usage_error "--message takes a Discord message id, digits only"
+      message=$2
+      shift 2
+    fi
+    (($# == 0)) || usage_error "unexpected argument '$1'; $USAGE"
+    ;;
+  apply) (($# == 0)) || usage_error "unexpected argument '$1'; $USAGE" ;;
+  tick)
+    (($# == 0)) || usage_error "unexpected argument '$1'; $USAGE"
+    stored=1
+    ;;
+  *) usage_error "unknown subcommand '$command'; $USAGE" ;;
+esac
+
+BIN=$(dirname "${BASH_SOURCE[0]}")
+RECORD=$TEAM_HOME/level.jsonl
+READINGS=$HOME/.local/state/agent-team/capacity/readings.jsonl
+APPLIED=$HOME/.local/state/agent-team/level/applied.json
+POSTED=$HOME/.local/state/agent-team/level/posted.json
+SLICE=agent-team.slice
+SLICE_FILE=$HOME/.config/systemd/user/$SLICE
+OWNER_LABEL=io.github.chanjdaniel.team.owner=agent-team
+
+case $(uname -s) in
+  Linux) os=linux ;;
+  Darwin) os=macos ;;
+  *) die "no resource levels on $(uname -s)" ;;
+esac
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+# The level record's {records, broken} (level_records), refusing a line that is not a record.
+read_record() {
+  { cat "$RECORD" 2>/dev/null || true; } | jq -Rn -L "$TEAM_LIB" 'include "capacity"; include "stack"; [inputs] | level_records' \
+    >"$work/record.json" || die "could not read $RECORD"
+  local broken
+  broken=$(jq -r -L "$TEAM_LIB" --arg path "$RECORD" 'include "capacity"; include "stack";
+    select(.broken != []) | level_broken_text($path; .broken)' "$work/record.json")
+  [[ -z $broken ]] || die "$broken"
+}
+
+# The team's state, the team-level/1 object, into $work/state.json: the record, the newest reading
+# (one taken first, unless --stored, when the newest is over 10 minutes old), the settings and what
+# the team's work reserves, from team-capacity status.
+gather() {
+  local -a status_args=(status --json)
+  ((stored)) && status_args+=(--stored)
+  read_record
+  TEAM_HOME=$TEAM_HOME "$BIN/team-capacity" "${status_args[@]}" >"$work/capacity.json" || exit 1
+  { cat "$READINGS" 2>/dev/null || true; } |
+    jq -Rn -L "$TEAM_LIB" 'include "capacity"; include "stack"; [inputs] | stored_readings | .readings' \
+      >"$work/readings.json" || die "could not read $READINGS"
+  jq 'map(select(.cpu != null)) | .[-1] // null' "$work/readings.json" >"$work/cpu-reading.json"
+  jq -n -L "$TEAM_LIB" --slurpfile record "$work/record.json" --slurpfile capacity "$work/capacity.json" \
+    --slurpfile cpu "$work/cpu-reading.json" \
+    --argjson cpus "${TEAM_SLOTS_CPUS:-$(nproc)}" '
+    include "capacity"; include "stack";
+    ($record[0] | level_current) as $now | $capacity[0] as $c | $c.settings as $s | $c.reading as $r
+    | capacity_budget($s; $now.level; $r; $cpu[0]; $cpus) as $budget
+    | {schema: "team-level/1", machine: $c.machine, mode: $now.mode, level: $now.level, share: $budget.share,
+       budget: ($budget | del(.share)), reserved_bytes: $c.reserved.bytes,
+       reserved_split: ($c.reserved | with_entries(select(.key as $k | reserved_parts | index($k)))), reserved: $c.reserved.items,
+       use: {memory_bytes: ($r.memory.team // null), cores: ($r.cpu.team // null)},
+       reading: (if $r == null then null
+                 else {at: $r.at, total: $r.memory.total, others_memory: $r.memory.others,
+                       cpus: ($cpu[0].cpu.cpus // null), others_cores: ($cpu[0].cpu.others // null)} end),
+       settings: ($s | del(.from)), cpus: $cpus, last_change: $now.last_change}
+    | . + {says: level_says}' >"$work/state.json" || die "could not size the budget"
+}
+
+# A value of the state: state <jq filter>
+state() {
+  jq -r "$1" "$work/state.json"
+}
+
+# Bytes of a systemd memory property of the slice, or null for infinity, unset or unknown.
+slice_bytes() {
+  local value
+  value=$(systemctl --user show -P "$1" "$SLICE" 2>/dev/null) || value=''
+  if [[ $value =~ ^[0-9]+$ ]]; then echo "$value"; else echo null; fi
+}
+
+# Apply the level's limits, as the header's apply says; each limit set is a line on stdout,
+# unless <quiet> is 1, and each one not set a line on stderr, but with <standing> 0 (tick's, every
+# 5 minutes) not the machine's standing state, macOS or a slice not installed; returns 1 when one
+# could not be set: apply_limits <quiet> [<standing>, default 1]
+apply_limits() {
+  local quiet=$1 standing=${2:-1} failed=0 current=null previous=null out quota high max cpus rc silence
+  local -a ids=()
+  say() { ((quiet)) || printf '%s\n' "$*"; }
+  if [[ $(state '.budget.memory_bytes') == null ]]; then
+    echo "${0##*/}: no reading of the machine's load, so no limit is set: team-capacity sample says why it takes none" >&2
+    return 1
+  fi
+  if [[ $os == linux && -f $SLICE_FILE ]]; then
+    current=$(slice_bytes MemoryCurrent)
+    previous=$(slice_bytes MemoryHigh)
+  fi
+  jq -L "$TEAM_LIB" --argjson current "$current" --argjson previous "$previous" '
+    include "capacity"; include "stack";
+    level_limits(.budget; .reserved; $current; $previous; .settings)
+    + {at: (now | floor | todate), mode, level}' "$work/state.json" >"$work/limits.json" || die "could not size the limits"
+  quota=$(jq -r .cpu_quota_percent "$work/limits.json")
+  high=$(jq -r .memory_high "$work/limits.json")
+  max=$(jq -r .memory_max "$work/limits.json")
+  cpus=$(jq -r .cpus "$work/limits.json")
+  if [[ $os == macos ]]; then
+    ((standing == 0)) || echo "${0##*/}: no cgroups on macOS: only the team's containers' CPU is held" >&2
+  elif [[ ! -f $SLICE_FILE ]]; then
+    ((standing == 0)) ||
+      echo "${0##*/}: $SLICE is not installed, so the team's sessions, heavy runs and gate runs are not held; fix: team-capacity install (Daniel's yes)" >&2
+  elif out=$(systemctl --user set-property --runtime "$SLICE" "CPUQuota=$quota%" "MemoryHigh=$high" "MemoryMax=$max" 2>&1); then
+    say "held $SLICE to CPUQuota=$quota% MemoryHigh=$(gib "$high") MemoryMax=$(gib "$max")"
+  else
+    echo "${0##*/}: could not set $SLICE's limits (systemctl --user set-property: $(grep -m1 . <<<"$out" || echo "no reason given"))" >&2
+    failed=1
+  fi
+  rc=0
+  out=$(docker_bounded ps --quiet --filter "label=$OWNER_LABEL" 2>&1) || rc=$?
+  if silence=$(docker_silence "$rc"); then
+    echo "${0##*/}: $silence, so no team container's CPU is held" >&2
+  elif ((rc)); then
+    echo "${0##*/}: Docker does not answer, so no team container's CPU is held ($(grep -m1 . <<<"$out" || echo "no reason given"))" >&2
+  else
+    mapfile -t ids < <(grep . <<<"$out" || true)
+    rc=0
+    if ((${#ids[@]} == 0)); then
+      say "no team container runs"
+    elif out=$(docker_bounded update --cpus "$cpus" "${ids[@]}" 2>&1 >/dev/null) || { rc=$? && false; }; then
+      say "held ${#ids[@]} team container$( ((${#ids[@]} == 1)) || echo s) to --cpus $cpus"
+    else
+      echo "${0##*/}: could not hold the team's containers to --cpus $cpus (docker update: $(docker_silence "$rc" || grep -m1 . <<<"$out" || echo "no reason given"))" >&2
+      failed=1
+    fi
+  fi
+  mkdir -p "$(dirname "$APPLIED")"
+  jq -c '{at, mode, level, cpu_quota_percent, cpus, memory_high, memory_max}' "$work/limits.json" >"$APPLIED.$$"
+  mv -f "$APPLIED.$$" "$APPLIED"
+  return "$failed"
+}
+
+# <bytes> as GiB with one decimal place.
+gib() {
+  jq -nr -L "$TEAM_LIB" --argjson b "$1" 'include "capacity"; include "stack"; $b | gib'
+}
+
+# Append one level record: append <mode> <level> <by> [<extra fields, a JSON object>]
+append() {
+  local machine
+  machine=$(machine_name) || exit 1
+  jq -cn --arg mode "$1" --arg level "$2" --arg by "$3" --arg machine "$machine" --argjson extra "${4:-"{}"}" \
+    '{ts: (now | floor | todate), mode: $mode, level: $level, by: $by, machine: $machine} + $extra' >>"$RECORD"
+}
+
+# The record's message field, from --message: {} or {discord_message}.
+message_field() {
+  jq -cn --arg message "$message" 'if $message == "" then {} else {discord_message: $message} end'
+}
+
+# Record Daniel's manual choice of <level> ("" for the current one), apply it and acknowledge it.
+record() {
+  local level=$1
+  lease_gate "a level change"
+  gather
+  [[ -n $level ]] || level=$(state .level)
+  if [[ $(state .mode) == manual && $(state .level) == "$level" ]]; then
+    echo "Nothing recorded: the team is already manual, $level."
+  else
+    append manual "$level" Daniel "$(message_field)"
+    gather
+  fi
+  apply_limits 1 || true
+  stow_plan || true
+  echo "Resources: $(state .says); $(stow_says)."
+}
+
+# Record Daniel's choice of automatic mode at the newest reading's pick, apply it and acknowledge it.
+record_auto() {
+  local pick
+  lease_gate "a level change"
+  gather
+  if [[ $(state .mode) == auto ]]; then
+    echo "Nothing recorded: the team is already auto, now $(state .level)."
+  else
+    jq -c -L "$TEAM_LIB" --slurpfile readings "$work/readings.json" '
+      include "capacity"; include "stack";
+      .settings as $s | $readings[0][-1] // empty | level_reading($s) | {reason: level_reason, reading: .}' \
+      "$work/state.json" >"$work/pick.json" || die "could not pick a level"
+    [[ -s $work/pick.json ]] ||
+      die "no reading of the machine's load to pick a level from, so nothing is recorded: team-capacity sample says why it takes none"
+    pick=$(jq -r .reading.pick "$work/pick.json")
+    append auto "$pick" Daniel "$(jq -c --argjson m "$(message_field)" '. + $m' "$work/pick.json")"
+    gather
+  fi
+  apply_limits 1 || true
+  stow_plan || true
+  echo "Resources: $(state .says); $(stow_says)."
+}
+
+# The stow plan, team-capacity plan --json's, into $work/plan.json; a plan that fails is said on
+# stderr, returning 1, with no plan.json.
+stow_plan() {
+  local out
+  rm -f "$work/plan.json"
+  if ! out=$(TEAM_HOME=$TEAM_HOME "$BIN/team-capacity" plan --json 2>&1 >"$work/plan.json.new"); then
+    echo "${0##*/}: the stow plan failed: $(grep . <<<"$out" | tail -n 1 || echo "team-capacity plan failed with no reason given")" >&2
+    return 1
+  fi
+  mv -f "$work/plan.json.new" "$work/plan.json"
+}
+
+# What the stow plan says must stow ("T171 and T174 stow", or "nothing needs to stow"), or that it
+# is unknown when the plan failed.
+stow_says() {
+  if [[ -f $work/plan.json ]]; then
+    jq -r -L "$TEAM_LIB" 'include "capacity"; include "stack"; stow_words' "$work/plan.json"
+  else
+    echo "what must stow is unknown"
+  fi
+}
+
+# Stop what the stow plan's first two steps name, the finished sessions (claude stop, bounded 30 s
+# each, as team-worker stops a task's own) and the idle stacks (team-stack stop --worktree, bounded
+# 120 s), one line each on stdout; each one not stopped is a line on stderr, returning 1.
+stop_finished() {
+  local failed=0 at task role session name worktree frees out
+  at=$(jq -r -L "$TEAM_LIB" 'include "capacity"; include "stack"; plan_at' "$work/plan.json")
+  while IFS=$'\t' read -r task role session frees; do
+    if out=$(bounded 30 claude stop "$session" 2>&1 </dev/null); then
+      echo "stopped $task-$role $session, its work handed on, to bring the team under its budget at $at: frees $frees"
+    else
+      echo "${0##*/}: could not stop $task-$role $session ($(grep -m1 . <<<"$out" || echo "claude stop failed with no reason given"))" >&2
+      failed=1
+    fi
+  done < <(jq -r -L "$TEAM_LIB" 'include "capacity"; include "stack";
+    .stop_sessions[] | [.task, .role, .session, (.frees | gib)] | @tsv' "$work/plan.json")
+  while IFS=$'\t' read -r task name worktree frees; do
+    if out=$(TEAM_HOME=$TEAM_HOME bounded 120 "$BIN/team-stack" stop --worktree "$worktree" 2>&1 </dev/null); then
+      echo "stopped $name of $task, no busy session in its worktree, to bring the team under its budget at $at: frees $frees"
+    else
+      echo "${0##*/}: could not stop $name of $task ($(grep . <<<"$out" | tail -n 1 || echo "team-stack stop failed with no reason given"))" >&2
+      failed=1
+    fi
+  done < <(jq -r -L "$TEAM_LIB" 'include "capacity"; include "stack";
+    .stop_stacks[] | [.task, .name, .worktree, (.frees | gib)] | @tsv' "$work/plan.json")
+  return "$failed"
+}
+
+# Post the kept lines of posted.json to #coordinator, in order, each once; fails at the first
+# that Discord refuses, keeping it and those after it, with the reason on stderr.
+post_pending() {
+  local count content body out
+  [[ -f $POSTED ]] || return 0
+  count=$(jq '.pending | length' "$POSTED") || die "$POSTED is not readable JSON"
+  while ((count > 0)); do
+    content=$(jq -r '.pending[0].content' "$POSTED")
+    body=$(jq -cn --arg content "$content" '{content: $content}')
+    if ! out=$(discord_api "channels/$COORDINATOR_CHANNEL/messages" -X POST -H "Content-Type: application/json" \
+      --max-time 20 -d "$body" 2>&1 >/dev/null); then
+      echo "${0##*/}: the post to #coordinator failed ($(grep -m1 . <<<"$out" || echo "no reason given")); it is tried again on the next tick" >&2
+      return 1
+    fi
+    jq -c '{pending: .pending[1:], last: {ts: .pending[0].ts, at: (now | floor | todate)}}' "$POSTED" >"$POSTED.$$"
+    mv -f "$POSTED.$$" "$POSTED"
+    count=$((count - 1))
+  done
+}
+
+# Keep <content> of the change at <ts> for post_pending.
+keep_post() {
+  mkdir -p "$(dirname "$POSTED")"
+  { cat "$POSTED" 2>/dev/null || echo '{"pending": []}'; } |
+    jq -c --arg ts "$1" --arg content "$2" '.pending += [{ts: $ts, content: $content}]' >"$POSTED.$$" ||
+    die "$POSTED is not readable JSON"
+  mv -f "$POSTED.$$" "$POSTED"
+}
+
+# The heartbeat's level step, as the header's tick says.
+tick() {
+  local failed=0 ts='' content planned=1
+  lease_gate "the heartbeat's level step"
+  gather
+  if [[ $(state .mode) == auto ]]; then
+    jq -c -L "$TEAM_LIB" --slurpfile readings "$work/readings.json" '
+      include "capacity"; include "stack";
+      level_auto(.settings; $readings[0]; .level; .last_change; now)' "$work/state.json" >"$work/auto.json" ||
+      die "could not pick a level"
+    if [[ $(jq -r .stale "$work/auto.json") == true ]]; then
+      echo "no reading of the machine's load in the last 15 minutes, so auto keeps the team at $(state .level)"
+    elif [[ $(jq -r .change "$work/auto.json") != null ]]; then
+      append auto "$(jq -r .level "$work/auto.json")" auto \
+        "$(jq -c -L "$TEAM_LIB" 'include "capacity"; include "stack"; {reason: (.reading | level_reason), reading}' "$work/auto.json")"
+      ts=$(tail -n 1 "$RECORD" | jq -r .ts)
+      gather
+    fi
+  fi
+  stow_plan || failed=1 planned=0
+  if [[ -n $ts ]]; then
+    content=$(jq -r -L "$TEAM_LIB" --arg ts "$ts" --arg stow "$(stow_says)" --slurpfile state "$work/state.json" '
+      include "capacity"; include "stack";
+      "Resources: auto \(.change) the team to \(.level) (\($state[0].share | percent)) at \({at: $ts} | capacity_time): \(.reading | level_reason); \($stow)"
+      ' "$work/auto.json")
+    echo "$content"
+    keep_post "$ts" "$content"
+  fi
+  post_pending || failed=1
+  # The stops' lines on stderr come before the limits', so a failed stop's own reason is the first
+  # line the heartbeat logs.
+  apply_limits 1 0 2>"$work/apply.err" || failed=1
+  if ((planned)); then stop_finished || failed=1; fi
+  cat "$work/apply.err" >&2
+  return "$failed"
+}
+
+case $command in
+  status)
+    gather
+    if ((json)); then
+      cat "$work/state.json"
+    else
+      jq -r -L "$TEAM_LIB" 'include "capacity"; include "stack"; level_status_text' "$work/state.json"
+    fi
+    ;;
+  full | minor | none) record "$command" ;;
+  manual) record '' ;;
+  auto) record_auto ;;
+  tick) tick ;;
+  apply)
+    lease_gate "applying the level's limits"
+    gather
+    apply_limits 0
+    ;;
+esac

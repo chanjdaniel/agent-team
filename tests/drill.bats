@@ -8,11 +8,13 @@
 # each machine's sessions under its own HOME), and team-resume's doctor is a stub that passes
 # (TEAM_DOCTOR): the doctor's own lines are tests/team-doctor*.bats', and the crash test runs the
 # real one on home-pc for its salvage lines.
-# Scenarios: a clean handoff and resume, the records rewrite's cutover (sops/records-rewrite.md)
+# Scenarios: a clean handoff and resume, the shutdown (team-handoff --here, then team-resume on
+# the same machine after the restart), the records rewrite's cutover (sops/records-rewrite.md)
 # with home-pc resuming after its own handoff, a handoff of a worker that never answered STOW, a
 # stale lease stolen, a crash between checkpoints, and a GitHub outage held in offline mode.
 
 load helpers/common
+load helpers/docker
 
 setup() {
   sandbox
@@ -180,7 +182,7 @@ posts() {
   # The ledger, as laptop has it: home-pc's stowed, then laptop's move of the worktree (the
   # sandbox's paths are not under /home/<name>, so the slot is laptop's own, not re-rooted).
   assert_equal "$(events_of stowed "$laptop/team")" \
-    "{\"task\":\"T1\",\"event\":\"stowed\",\"machine\":\"home-pc\",\"worktrees\":[{\"project\":\"home\",\"branch\":\"feat/T1-work\",\"head\":\"$head\"}],\"roles\":[\"builder\"],\"sessions\":[\"builder\"]}"
+    "{\"task\":\"T1\",\"event\":\"stowed\",\"machine\":\"home-pc\",\"worktrees\":[{\"project\":\"home\",\"branch\":\"feat/T1-work\",\"head\":\"$head\"}],\"roles\":[\"builder\"],\"sessions\":[\"builder\"],\"cause\":\"handoff\"}"
   assert_equal "$(events_of worktree-moved "$laptop/team")" \
     "{\"task\":\"T1\",\"event\":\"worktree-moved\",\"project\":\"home\",\"branch\":\"feat/T1-work\",\"from\":\"$wt\",\"worktree\":\"$lt\",\"machine\":\"laptop\"}"
 
@@ -191,8 +193,69 @@ posts() {
   assert_equal "$(laptop_launches | jq -r '.[1:3] | join(" ")')" "--name coordinator"
   assert_equal "$(laptop_launches | jq -r last)" \
     "You are the coordinator, resuming the team on laptop. Follow the \`resume\` skill with the report $report."
-  assert_equal "$(jq -c '.tasks | map({task, roles: .stowed.roles, crashed, failures})' "$report")" \
-    '[{"task":"T1","roles":["builder"],"crashed":null,"failures":[]}]'
+  assert_equal "$(jq -c '.tasks | map({task, here, roles: .stowed.roles, crashed, failures})' "$report")" \
+    '[{"task":"T1","here":false,"roles":["builder"],"crashed":null,"failures":[]}]'
+}
+
+@test "shutdown: home-pc hands off to itself with --here, its stack stopped and every session gone; after the restart team-resume there takes the lease back at the same level" {
+  # home gets a stack, committed on T1's branch, and T1's builder starts it; Daniel set level
+  # minor by hand, which the shutdown keeps.
+  mkdir -p "$wt/scripts"
+  cp "$REPO_ROOT/tests/fixtures/stack/compose.sh" "$wt/scripts/compose.sh"
+  cp "$REPO_ROOT/tests/fixtures/stack/docker-compose.yml" "$wt/docker-compose.yml"
+  git -C "$wt" add scripts docker-compose.yml
+  git -C "$wt" commit -q -m "feat: add the stack"
+  printf '\n[home.stack]\ncompose = "scripts/compose.sh"\nseed = "scripts/seed.sh"\nlog_services = ["web"]\n' >>"$TEAM_HOME/projects.toml"
+  docker_stub "$wt"
+  capacity_room $((16 * 1024 * 1024 * 1024)) minor
+  git -C "$TEAM_HOME" add projects.toml level.jsonl
+  git -C "$TEAM_HOME" commit -q -m "chore: home's stack, and level minor"
+  git -C "$TEAM_HOME" push -q origin dev
+  run_bin -0 team-stack up --worktree "$wt" --no-seed
+  echo "next: finish the stack" >"$wt/.scratch/task/handoff.md"
+  local head level
+  head=$(git -C "$wt" rev-parse HEAD)
+  level=$(cat "$TEAM_HOME/level.jsonl")
+
+  # The shutdown: the builder stopped, the stack stopped with its data kept, the lease released,
+  # and the coordinator retired once it has posted the message.
+  run_bin -0 --separate-stderr team-handoff --here
+  assert_contains "$output" "sessions: T1: stopped and removed T1-builder ($builder)"
+  assert_contains "$output" "stacks: T1 home: stackfix-1 is stopped, its data kept"
+  [[ ${lines[-2]} == "Released at "*" from home-pc for a restart here. After the restart, run \`team-resume\` here." ]]
+  run_bin -0 team-handoff --retire
+  local tries=0
+  until [[ -z $(session_id coordinator) ]] || ((tries++ > 100)); do sleep 0.1; done
+  assert_equal "$(home_pc_sessions)" ""
+  assert_equal "$(jq -r '[.[] | select(.Config.Labels["com.docker.compose.project"] == "stackfix-1") | .State.Running] | unique | .[]' \
+    "$DOCKER_STATE/containers.json")" false
+  assert_equal "$(lease_json | jq -c '[.holder, .epoch, .state]')" '["home-pc",1,"released"]'
+  run -0 "$REPO_ROOT/bin/team-timers" status --json
+  assert_equal "$(jq -c .enabled <<<"$output")" false
+  assert_equal "$(git -C "$home_origin" rev-parse feat/T1-work)" "$head"
+
+  # After the restart: team-resume on home-pc takes the lease again (its epoch kept, as no other
+  # machine held it), finds T1's worktree in place and starts the coordinator, the level still
+  # Daniel's minor.
+  run_bin -0 --separate-stderr team-resume
+  assert_equal "$stderr" ""
+  report=$(reported)
+  assert_contains "$output" "lease: home-pc holds the lease, epoch 1"
+  assert_contains "$output" "T1: stowed here on home-pc: a same-machine resume"
+  assert_equal "$(lease_json | jq -c '[.holder, .epoch, .state, .stolen_from]')" '["home-pc",1,"held",null]'
+  assert_equal "$(git -C "$wt" rev-parse HEAD)" "$head"
+  assert_equal "$(git -C "$wt" status --porcelain)" ""
+  assert_equal "$(cat "$wt/.scratch/task/handoff.md")" "next: finish the stack"
+  assert_equal "$(jq -c '.tasks | map({task, here, roles: .stowed.roles, crashed, failures,
+    worktrees: [.worktrees[] | {worktree, moved}]})' "$report")" \
+    "[{\"task\":\"T1\",\"here\":true,\"roles\":[\"builder\"],\"crashed\":null,\"failures\":[],\"worktrees\":[{\"worktree\":\"$wt\",\"moved\":false}]}]"
+  assert_equal "$(cat "$TEAM_HOME/level.jsonl")" "$level"
+  run -0 "$REPO_ROOT/bin/team-timers" status --json
+  assert_equal "$(jq -c '[.installed, .enabled]' <<<"$output")" "[true,true]"
+  assert_equal "$(session_id coordinator | wc -l)" 1
+  # The stack waits, stopped with its data, for the builder the resume skill relaunches.
+  assert_equal "$(jq -r '[.[] | select(.Config.Labels["com.docker.compose.project"] == "stackfix-1") | .State.Running] | unique | .[]' \
+    "$DOCKER_STATE/containers.json")" false
 }
 
 @test "records rewrite: home-pc hands off, dev is rewritten and force-pushed, home-pc re-clones its team home and resumes T1 on the same machine" {
@@ -267,7 +330,7 @@ Only in $TEAM_HOME.pre-rewrite/tasks/T1: old.git"
   echo "b" >"$wt/b.txt"
 
   run_bin -0 team-handoff
-  [[ $output == *"sessions: stopped and removed T1-builder ($builder)"*"checkpoint: T1 home: pushed wip/home/T1 "* ]]
+  [[ $output == *"sessions: T1: stopped and removed T1-builder ($builder)"*"checkpoint: T1 home: pushed wip/home/T1 "* ]]
   assert_contains "$output" "stowed: T1 roles builder; home feat/T1-work at ${head:0:7} with uncommitted changes"
   assert_equal "$(home_pc_sessions)" "coordinator busy"
 

@@ -13,7 +13,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
     - `git/`: git's hooks for the code checkout.
     - `records-git/`: git's hooks for the team home.
   - `bin/lib/`: the shared library.
-    - `capacity.jq`: `team-capacity`'s settings of `capacity.json`, the slots held, a reading of the machine's load and the team's use per task, the cost samples and estimates, and their texts.
+    - `capacity.jq`: `team-capacity`'s settings of `capacity.json`, the slots held, a reading of the machine's load and the team's use per task, the cost samples and estimates, the reservations and the admission rule, the stow and resume plans, and their texts.
     - `code`: the paths every tracked path matches.
     - `data-check`: the one scan the CI's `data` job and the records' hook refuse with.
     - `doctor.d/`: `team-doctor`'s checks, one file each, which it sources in the order of their names (a new check is a new file, its number between its neighbours').
@@ -28,7 +28,8 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
     - `records-rewrite/`: `team-records-rewrite`'s drop list, message expression, S02 callback and `verify.py`.
     - `session-activity`: how long each live session's transcripts have gone unwritten, and the tool calls still running in a quiet one, for `team-sweep`'s stalled finding.
     - `slots.jq`: `team-slots`'s settings of `slots.json`, a reading's fit, the effective cap, the room left for the reserved project and the others, and the texts `team-slots`, `team-open` and `team-doctor` say.
-    - `stack.jq`: `team-stack`'s owner classes, Docker's sizes, the reaper's rules and the `stack.json` settings with their memory floor.
+    - `stack.jq`: `team-stack`'s owner classes, Docker's sizes, the reaper's rules and the `stack.json` settings, with the keys no longer read since the level's budget admits a stack.
+    - `stow.sh`: `team-stow`'s steps, which `team-handoff` takes through `team-stow`: each task's branches checked and pushed, its sessions stopped, its ops session ended, its `stowed` logged.
     - `time.jq`: `team-time`'s split of each task's time into phases, and its counts.
     - `tools.jq`: turns `tools.lock` into each tool's pin and install command for a machine.
     - `tools.lock`: the tools `team-doctor` checks, pinned or with a minimum, and their source per OS (for treehouse and no-mistakes, a GitHub release with each archive's checksum, or a fork's commit).
@@ -81,6 +82,7 @@ It holds:
 | Path | What it holds |
 | - | - |
 | `ledger.jsonl` | The append-only record of every task's events |
+| `level.jsonl` | The team's resource level and mode, one line per change (`team-level`), committed with the ledger so a level holds across restarts and handoffs |
 | `projects.toml` | The project registry, read only through `bin/team-project`, whose `--help` documents every key |
 | `tasks/` | Each task's plan, briefs and archived scratch; history, kept as written |
 | `projects/` | Each project's planning (Conventioner's backlog) |
@@ -110,9 +112,10 @@ It holds:
 ## Tests and shellcheck
 
 - `tests/run` runs shellcheck (0.11.0) on every shell script in `bin/`, `tests/`, `servers/` and `toolkits/`, then the whole bats suite, then the toolkit tests; `tests/run shellcheck`, `tests/run bats` and `tests/run toolkits` run one part each, as the CI jobs do; `tests/run bats --shard <k>/<n>` runs one shard of the bats files, as CI's `test-shards` and `macos-shards` jobs do, whose `test` and `macos` jobs keep the required ids.
-  Its bats files run in parallel, one bats per file and as many at once as there are CPUs, so every file must stay independent of the others; its last line is the wall time.
+  Its bats files run in parallel, one bats per file and as many at once as `TEAM_JOBS` says when set, else as the team's CPU budget allows when a team home is found (`team-capacity jobs`, 3 at minor on 12 cores), else as there are CPUs (CI, a fresh clone), so every file must stay independent of the others; its last line is the wall time and the most files it ran at once.
+  `team-checks` gives the commands it runs `TEAM_JOBS` from `team-capacity jobs` unless it is set.
   `tests/shards` splits them by each file's seconds in CI (`tests/timings.tsv`, a file it lacks weighed by its bytes), so refresh the timings with `tests/shards update` when the shards' times drift apart, and a removed bats file takes its row with it, as `tests/repo.bats` holds.
-  Every part but `shellcheck` alone and a shard's `--list` runs under the machine's heavy-run lock (`bin/team-heavy`, which `team-checks` takes for the local checks too), so two suites on one machine queue instead of overlapping, each in a process group (and on Linux a scope) of its own that leaves a cost sample, and the sandbox clears `TEAM_HEAVY_HELD` and `AGENT_TEAM_TASK` so the tests take their own.
+  Every part but `shellcheck` alone and a shard's `--list` runs under the machine's heavy-run lock (`bin/team-heavy`, which `team-checks` takes for the local checks too), so two suites on one machine queue instead of overlapping, each in a process group (and on Linux a scope) of its own that leaves a cost sample, and the sandbox clears `TEAM_HEAVY_HELD`, `AGENT_TEAM_TASK` and `TEAM_JOBS` so the tests take their own.
 - A PR to `dev` is checked on GitHub: `.github/workflows/ci.yml` runs its jobs (`shellcheck`, `test`, `macos`, `toolkits`, `data` and `zizmor`, with the shard jobs `test-shards` and `macos-shards` that `test` and `macos` wait for) on every PR to `dev` and to `main` and by hand (`workflow_dispatch`).
   `dev`'s protection and `projects.toml`'s `required_checks` for `agent-team` require each job by its id, so renaming a job changes a required check, and `team-merge` merges only with every one passed on the PR's exact head.
   `tests/repo.bats` holds the jobs but the shard jobs to the registry fixture's `required_checks`, and each shard job to the job that waits for it, and no workflow runs on a push, a schedule or `pull_request_target`.

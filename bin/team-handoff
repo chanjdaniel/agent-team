@@ -1,83 +1,73 @@
 #!/usr/bin/env bash
-# Hand the team off to another machine: run on the machine being left, once its workers have
-# stowed (the coordinator's handoff skill sends each live worker T<n> STOW first).
+# Hand the team off to another machine, or to this one for a restart (--here, the shutdown): run
+# on the machine being left, once its workers have stowed (the coordinator's handoff skill sends
+# each live worker T<n> STOW first).
 #
-# Usage: team-handoff [--check | --json | --retire]
+# Usage: team-handoff [--here] [--json] | --check | --retire
 # One line per step; each step is idempotent, so a run interrupted anywhere, run again, finishes
 # the handoff. In order:
 #   1. lease       This machine holds the lease, confirmed against origin (team-lease check), or
 #                  exit 1 (75 when GitHub is unreachable) with nothing changed. --check is this
 #                  step alone.
-#   2. sessions    claude stop, then claude rm, for every live session named T<n>-<role> (their
-#                  worktrees stay on disk), their names kept in handoff.json first: a worker that
-#                  has not stowed stops here, so nothing changes its worktree after the checkpoint.
-#                  An ops session (T<n>-ops) is never carried over: team-ops-end T<n> ends it,
-#                  deleting its transcript and answer file, and one it cannot end refuses the
-#                  handoff, naming it. The coordinator's own session is --retire's.
-#   3. checkpoint  team-checkpoint --force: task directories archived, wip/<project>/T<n>
-#                  snapshots pushed to the team home's origin, the records committed and pushed. Once per handoff: a run again skips it, so
-#                  the stowed events land in the handoff's own commit.
-#   4. branches    Each open worktree's task branch pushed to its project's origin when it is
-#                  strictly ahead of origin's (a plain push). A branch that has diverged from
-#                  origin's refuses the handoff, naming the task, before anything is pushed; it is
-#                  checked once before step 2 too, so it refuses while its worker still runs.
-#   5. stowed      One stowed per open task: this machine, each open worktree's
-#                  {project, branch, head} with the head origin has, roles, the task's unfinished
-#                  work (each role launched since its last stowed whose latest launch no done,
-#                  review, ticket-done or, for a builder, pr ended), which the other machine
-#                  relaunches, and sessions, the roles of the task's T<n>-<role> sessions step 2
-#                  stopped, for the record; ops never in either. A worktree with uncommitted
-#                  changes is said and gets uncommitted: true, so team-open --resume applies the
-#                  checkpoint's wip/<project>/T<n> on the other machine (else the changes are
-#                  said and noted as staying here); untracked files the snapshot leaves out as
-#                  possible secrets are said and noted as staying here. None when the task's
-#                  latest machine event (stowed, launch, worktree-moved) is already a stowed from
-#                  this machine with the same worktrees.
-#   6. config      team-config capture, each captured item listed; a capture that fails or refuses
+#   2. stow        team-stow --all --cause handoff --down, its lines passed through: each open
+#                  task's branches checked against origin's before any of its sessions stops (a
+#                  diverged one refuses that task, its workers left running), its sessions
+#                  stopped and removed (an ops session ended with team-ops-end, never carried),
+#                  its stacks taken down, their logs saved, one forced checkpoint, its branches
+#                  pushed when strictly ahead, and one stowed with cause handoff (team-stow's
+#                  header has each step). With --here, team-stow --all --cause handoff: the
+#                  stacks stopped, their data kept for the restart. A task team-stow leaves
+#                  unstowed refuses the handoff, naming it, with nothing released (75 when
+#                  team-stow exits 75); a stack that would not stop or go down is said, and the
+#                  handoff goes on. Once per handoff: a run again skips it, so a run started with
+#                  --here finishes only with --here, and one without only without.
+#   3. config      team-config capture, each captured item listed; a capture that fails or refuses
 #                  is said, and the handoff goes on.
-#   7. commit      team-tokens export --through-now first, so today's usage is in too (its lines
+#   4. commit      team-tokens export --through-now first, so today's usage is in too (its lines
 #                  prefixed "usage: "; a failed export is said, and the handoff goes on); then
 #                  every records path committed on the team home's branch as "chore: handoff
-#                  from <machine>" and pushed, the same set team-checkpoint commits.
-#   8. heartbeat   team-timers disable.
-#   9. release     team-lease release.
-#  10. The message: "Released at 14:05 from home-pc. The `team-resume --wait` started on the other
-#      machine takes the team now; with none running there, run `team-resume` there.",
-#      then "Config captured: CLAUDE.md (new), skills/stow (changed)." naming what step 6 captured,
-#      or "Config captured: nothing.", then a line for each thing it did not capture ("Config:
-#      settings.json left to Daniel: it has an env key, which may hold a secret.").
-#      --json prints {machine, epoch, released_at, message, captured, tasks} instead, captured
-#      being the message's config lines, tasks each open task's latest stowed from this machine as
-#      {task, worktrees, roles, sessions}, and the step lines go to stderr. A machine whose lease its
-#      handoff already released prints the message again.
+#                  from <machine>" and pushed, the same set team-checkpoint commits, the stowed
+#                  events with them.
+#   5. heartbeat   team-timers disable.
+#   6. release     team-lease release.
+#   7. The message: "Released at 14:05 from home-pc. The `team-resume --wait` started on the other
+#      machine takes the team now; with none running there, run `team-resume` there.", or with
+#      --here "Released at 14:05 from home-pc for a restart here. After the restart, run
+#      `team-resume` here.", then "Config captured: CLAUDE.md (new), skills/stow (changed)."
+#      naming what step 3 captured, or "Config captured: nothing.", then a line for each thing it
+#      did not capture ("Config: settings.json left to Daniel: it has an env key, which may hold a
+#      secret.").
+#      --json prints {machine, epoch, released_at, here, message, captured, tasks} instead, here
+#      true for --here, captured being the message's config lines, tasks each open task's latest
+#      stowed from this machine as {task, worktrees, roles, sessions}, and the step lines go to
+#      stderr. A machine whose lease its handoff already released prints the message again.
 # --retire, once the message is posted: refuses while this machine holds the lease, then starts a
 # detached process (its own session) that, a few seconds after the call returns, runs claude stop
 # and claude rm for each live session named coordinator, logging to retire.log.
 # In ~/.local/state/agent-team/: handoff.json, this handoff's progress (the lease's epoch and
-# taken_at, the last step done, the worker sessions step 2 stopped and what step 6 captured);
-# handoff.lock, one handoff at a time; retire.log.
+# taken_at, the last step done, whether it is --here's and what step 3 captured); handoff.lock,
+# one handoff at a time; retire.log.
 # TEAM_HANDOFF_STOP_AFTER=<n> (the tests' seam) exits 1 right after step n, as an interruption.
 # Exit 0 done, 1 refused or a step failed, 2 usage error, 75 GitHub unreachable or another
-# handoff running.
+# handoff or team-stow running.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
 # Seconds: the most one call to an origin may take, and the coordinator's retirement delay.
 NET_TIMEOUT=60
 RETIRE_SECONDS=3
-# A team worker's session name.
-WORKER_NAME='^T[0-9]+-[a-z][a-z0-9-]*$'
 
-usage="usage: team-handoff [--check | --json | --retire]"
-mode=run
-if (($# > 1)); then usage_error "$usage"; fi
-case ${1:-} in
-  '') ;;
-  --check) mode=check ;;
-  --json) mode=json ;;
-  --retire) mode=retire ;;
-  *) usage_error "$usage" ;;
-esac
+usage="usage: team-handoff [--here] [--json] | --check | --retire"
+mode=run here=false
+while (($#)); do
+  case $1 in
+    --here) here=true ;;
+    --json) [[ $mode == run ]] || usage_error "$usage"; mode=json ;;
+    --check | --retire) (($# == 1)) && [[ $mode == run && $here == false ]] || usage_error "$usage"; mode=${1#--} ;;
+    *) usage_error "$usage" ;;
+  esac
+  shift
+done
 
 machine=$(machine_name) || exit 1
 bin=$(dirname "$TEAM_LIB")
@@ -107,94 +97,13 @@ read_sessions() {
     die "cannot read the live session list (claude agents --json)"
 }
 
-# The task branches, every one checked before any is pushed, and with nothing printed but a
-# refusal when <quiet> is 1: each worktree's stowed entry in stowed_worktrees, the notes of each
-# task in notes, the branches to push in pushes; a branch that is neither here nor on origin, or
-# has diverged from origin's, refuses the handoff. check_branches [quiet]
-check_branches() {
-  local quiet=${1:-0} entry task list note project branch wt label repo mine rc remote origin_head head
-  local uncommitted left
-  stowed_worktrees=() notes=() problems=() pushes=()
-  for entry in "${open[@]}"; do
-    task=$(jq -r .task <<<"$entry")
-    list='[]' note=''
-    while IFS=$'\t' read -r project branch wt; do
-      label="$task $project"
-      repo=$wt
-      git -C "$wt" rev-parse --git-dir >/dev/null 2>&1 || repo=$(team_project "$project" path)
-      mine=$(git -C "$repo" rev-parse -q --verify "refs/heads/$branch^{commit}") || mine=''
-      rc=0
-      remote=$(origin_git -C "$repo" ls-remote origin "refs/heads/$branch") || rc=$?
-      ((rc == 0)) || die "$label: cannot read $branch on origin: $(origin_reason "$rc"); nothing was pushed or released"
-      origin_head=${remote%%[[:space:]]*}
-      if [[ -n $origin_head ]] && ! git -C "$repo" cat-file -e "$origin_head^{commit}" 2>/dev/null; then
-        origin_git -C "$repo" fetch -q --no-write-fetch-head origin "+refs/heads/$branch:refs/remotes/origin/$branch" || rc=$?
-        ((rc == 0)) || die "$label: cannot fetch $branch from origin: $(origin_reason "$rc"); nothing was pushed or released"
-      fi
-      head=$origin_head
-      if [[ -z $mine && -z $origin_head ]]; then
-        problems+=("$task: $branch ($project) is neither here nor on origin")
-        continue
-      elif [[ -z $mine ]]; then
-        say "branches: $label: $branch is not here; origin has it at ${origin_head:0:7}"
-      elif [[ $mine == "$origin_head" ]]; then
-        say "branches: $label: $branch is on origin at ${mine:0:7}"
-      elif [[ -z $origin_head ]] || git -C "$repo" merge-base --is-ancestor "$origin_head" "$mine"; then
-        head=$mine
-        pushes+=("$label"$'\t'"$repo"$'\t'"$branch"$'\t'"$mine")
-      elif git -C "$repo" merge-base --is-ancestor "$mine" "$origin_head"; then
-        say "branches: $label: origin's $branch is ahead of this machine's, at ${origin_head:0:7}"
-      else
-        problems+=("$task: $branch ($project) has diverged from origin: $(git -C "$repo" rev-list --count "$origin_head..$mine") commits here and $(git -C "$repo" rev-list --count "$mine..$origin_head") there")
-        continue
-      fi
-      uncommitted=false
-      if ((!quiet)) && [[ -d $wt && -n $(worktree_changes "$wt") ]]; then
-        if kept_in_wip "$task" "$project" "$wt"; then
-          uncommitted=true
-          say "branches: $label: uncommitted changes in $wt go with the checkpoint's wip/$project/$task, which team-resume applies"
-        else
-          say "branches: $label: uncommitted changes in $wt stay on $machine: the checkpoint's wip/$project/$task does not hold them"
-          note+="uncommitted changes in $wt stay on $machine; "
-        fi
-        left=$(snapshot_left_out "$wt" | paste -sd ' ')
-        if [[ -n $left ]]; then
-          say "branches: $label: untracked files that may hold a secret, left out of wip/$project/$task, stay on $machine: $left"
-          note+="untracked files left out of wip/$project/$task stay on $machine in $wt: $left; "
-        fi
-      fi
-      list=$(jq -c --arg p "$project" --arg b "$branch" --arg h "$head" --argjson u "$uncommitted" \
-        '. + [{project: $p, branch: $b, head: $h} + if $u then {uncommitted: true} else {} end]' <<<"$list")
-    done < <(jq -r '.worktrees[] | [.project, .branch, .worktree] | @tsv' <<<"$entry")
-    stowed_worktrees[$task]=$list
-    notes[$task]=${note%; }
-  done
-  if ((${#problems[@]})); then
-    {
-      echo "team-handoff: the handoff stops here, before anything is pushed or released:"
-      printf '  %s\n' "${problems[@]}"
-      echo "  (bring each branch level with origin, then run team-handoff again)"
-    } >&2
-    exit 1
-  fi
-}
-
-# A line of check_branches, unless it is quiet.
-say() {
-  ((quiet)) || printf '%s\n' "$*"
-}
-
-# Whether wip/<project>/<task> on the team home's origin is the checkpoint's snapshot of the
-# worktree <wt> as it is now: a snapshot whose parent is its HEAD and whose tree is its tree:
-# kept_in_wip <task> <project> <wt>
-kept_in_wip() {
-  local task=$1 project=$2 wt=$3 url remote wip
-  url=$(wip_origin) || return 1
-  remote=$(origin_git -C "$wt" ls-remote "$url" "refs/heads/wip/$project/$task") || return 1
-  wip=${remote%%[[:space:]]*}
-  [[ -n $wip ]] && git -C "$wt" cat-file -e "$wip^{commit}" 2>/dev/null && is_snapshot "$wt" "$wip" "$task" &&
-    [[ $(git -C "$wt" rev-parse "$wip^1") == "$(git -C "$wt" rev-parse HEAD)" ]] &&
-    [[ $(git -C "$wt" rev-parse "$wip^{tree}") == "$(worktree_tree "$wt")" ]]
+# The open tasks whose latest machine event (stowed, launch, worktree-moved) is not a stowed from
+# this machine, one per line in task number order: what the stow step left unstowed.
+unstowed() {
+  [[ -e $TEAM_HOME/ledger.jsonl ]] || return 0
+  ledger_jq 'ledger_events | by_task | . as $tasks | open_tasks[] | . as $task
+    | select($tasks[$task] | map(select(.event | IN("stowed", "launch", "worktree-moved"))) | last
+      | (.event == "stowed" and .machine == $machine) | not)' -nrR --arg machine "$machine" "$TEAM_HOME/ledger.jsonl"
 }
 
 if [[ $mode == retire ]]; then
@@ -238,12 +147,12 @@ team() {
   TEAM_HOME=$TEAM_HOME "$bin/$1" "${@:2}" {lock_fd}>&-
 }
 
-# Write this handoff's progress: the last step done, the worker sessions step 2 stopped and what
-# step 6 captured.
+# Write this handoff's progress: the last step done, whether it is --here's and what step 3
+# captured.
 save_progress() {
   jq -n --argjson epoch "$epoch" --arg taken "$taken_at" --argjson n "$done_before" \
-    --argjson workers "$workers" --argjson config "$config" \
-    '{epoch: $epoch, taken_at: $taken, done: $n, workers: $workers, config: $config}' >"$progress.$$"
+    --argjson here "$here" --argjson config "$config" \
+    '{epoch: $epoch, taken_at: $taken, done: $n, here: $here, config: $config}' >"$progress.$$"
   mv -f "$progress.$$" "$progress"
 }
 
@@ -279,14 +188,12 @@ saved=$(jq -c --argjson epoch "$epoch" --arg taken "$taken_at" \
 [[ -n $saved ]] || saved='{}'
 done_before=$(jq -r '.done' <<<"$saved")
 [[ $done_before =~ ^[0-9]+$ ]] || done_before=0
-workers=$(jq -c '.workers | arrays' <<<"$saved")
-[[ -n $workers ]] || workers='[]'
 config=$(jq -c '.config | objects' <<<"$saved")
 [[ -n $config ]] || config=null
 finished=''
 if ((held_rc)); then
   if jq -e --arg machine "$machine" '.state == "released" and .holder == $machine' <<<"$lease" >/dev/null &&
-    ((done_before >= 8)); then
+    ((done_before >= 5)); then
     finished=1
     echo "lease: released by this handoff already, epoch $epoch"
   else
@@ -296,111 +203,44 @@ else
   echo "lease: $machine holds the lease, epoch $epoch"
 fi
 [[ $mode != check ]] || exit 0
+# The stow step stops the stacks or takes them down, so a handoff past it finishes as it began.
+if ((done_before >= 2)) && [[ $(jq -r '.here // false' <<<"$saved") != "$here" ]]; then
+  if [[ $(jq -r '.here // false' <<<"$saved") == true ]]; then
+    die "this handoff began with --here, for a restart here, and stowed with the stacks kept; finish it with team-handoff --here"
+  fi
+  die "this handoff began without --here, for another machine, and took the stacks down; finish it with team-handoff"
+fi
 
 if [[ -z $finished ]]; then
   step_done 1
 
-  # Each open task and its open worktrees, in task number order: {task, worktrees}.
-  open=()
-  if [[ -e $TEAM_HOME/ledger.jsonl ]]; then
-    mapfile -t open < <(ledger_jq 'ledger_events | by_task | . as $tasks | open_tasks[]
-      | {task: ., worktrees: [open_worktrees($tasks[.][]; $home) | {project, branch, worktree}]}' \
-      -nRc "$TEAM_HOME/ledger.jsonl")
-  fi
-  declare -A stowed_worktrees=() notes=()
-  problems=() pushes=()
-  # Before any worker stops: a branch that refuses the handoff is still its builder's to fix.
-  ((done_before >= 2)) || check_branches 1
-
-  # 2. The workers' sessions: their names kept, then stopped and removed, so nothing changes a
-  # worktree after the checkpoint.
+  # 2. Every open task stowed, its workers stopped before the checkpoint, so it holds their
+  # worktrees' last state.
   if ((done_before >= 2)); then
-    echo "sessions: stopped earlier in this handoff"
+    echo "stow: done earlier in this handoff"
   else
-    sessions=$(read_sessions)
-    live=$(jq -c --arg pattern "$WORKER_NAME" '[.[] | select(.name | strings | test($pattern))]' <<<"$sessions")
-    # An ops session holds production query results: ended, never stowed.
-    ended=''
-    while read -r name; do
-      if team team-ops-end "${name%-ops}" </dev/null >/dev/null 2>"$err"; then
-        echo "sessions: ended $name with team-ops-end, its transcript and answer deleted; if its answer had not reached Daniel, Daniel asks again on the other machine"
-        ended=1
-      else
-        die "sessions: could not end $name with team-ops-end ($(first_error)); end it, then run team-handoff again; nothing was released"
-      fi
-    done < <(jq -r '.[].name | select(test("^T[0-9]+-ops$"))' <<<"$live")
-    live=$(jq -c '[.[] | select(.name | test("^T[0-9]+-ops$") | not)]' <<<"$live")
-    workers=$(jq -c --argjson live "$live" '. + [$live[].name] | unique' <<<"$workers")
-    save_progress
-    problems=()
-    while read -r id name; do
-      stop_ok=1 rm_ok=1
-      claude stop "$id" </dev/null >/dev/null 2>"$err" || stop_ok=''
-      claude rm "$id" </dev/null >/dev/null 2>>"$err" || rm_ok=''
-      if [[ -n $rm_ok ]]; then
-        echo "sessions: stopped and removed $name ($id)"
-      elif [[ -n $stop_ok ]]; then
-        echo "team-handoff: sessions: stopped $name ($id), but claude rm failed ($(first_error)); remove it by hand" >&2
-      else
-        problems+=("$name ($id): $(first_error)")
-      fi
-    done < <(jq -r '.[] | "\(.id // ((.sessionId // "")[:8])) \(.name)"' <<<"$live")
-    [[ $live != '[]' || -n $ended ]] || echo "sessions: no worker session was live"
-    ((${#problems[@]} == 0)) || die "sessions: could not stop $(printf '%s; ' "${problems[@]}" | sed 's/; $//'); nothing was released"
+    rc=0
+    if [[ $here == true ]]; then
+      team team-stow --all --cause handoff || rc=$?
+    else
+      team team-stow --all --cause handoff --down || rc=$?
+    fi
+    if ((rc == 75)); then
+      echo "team-handoff: stow: team-stow could not finish, as it says; run team-handoff again; nothing was released" >&2
+      exit 75
+    fi
+    left=$(unstowed) || die "stow: cannot read which tasks are stowed from the ledger; run team-handoff again; nothing was released"
+    if [[ -n $left ]]; then
+      mapfile -t missing <<<"$left"
+      die "stow: $(jq -rn '$ARGS.positional | if length > 1 then "\(.[:-1] | join(", ")) and \(.[-1]) are" else "\(.[0]) is" end' --args -- "${missing[@]}") not stowed, as team-stow says; fix what it names, then run team-handoff again; nothing was released"
+    fi
+    ((rc == 0)) || echo "team-handoff: stow: every task is stowed, but team-stow failed a step, as it says; the handoff goes on" >&2
   fi
   step_done 2
 
-  # 3. The checkpoint, once per handoff.
-  if ((done_before >= 3)); then
-    echo "checkpoint: made earlier in this handoff"
-  else
-    rc=0
-    out=$(team team-checkpoint --force 2>"$err") || rc=$?
-    [[ -z $out ]] || prefixed checkpoint <<<"$out"
-    ((rc)) || cat "$err" >&2
-    if ((rc == 75)); then
-      echo "team-handoff: checkpoint: $(first_error)" >&2
-      exit 75
-    elif ((rc)); then
-      die "checkpoint: $(first_error); fix it and run team-handoff again"
-    fi
-  fi
-  step_done 3
-
-  # 4. The task branches: checked again, then pushed.
-  check_branches
-  for push in "${pushes[@]}"; do
-    IFS=$'\t' read -r label repo branch mine <<<"$push"
-    rc=0
-    origin_git -C "$repo" push -q origin "refs/heads/$branch:refs/heads/$branch" || rc=$?
-    ((rc == 0)) || die "$label: cannot push $branch: $(origin_reason "$rc"); nothing was released"
-    echo "branches: $label: pushed $branch at ${mine:0:7}"
-  done
-  step_done 4
-
-  # 5. One stowed per open task.
-  for entry in "${open[@]}"; do
-    task=$(jq -r .task <<<"$entry")
-    event=$(task_events "$task" | ledger_jq '{ts: (now | todate), task: $task, event: "stowed", machine: $machine,
-        worktrees: $worktrees, roles: unfinished_roles,
-        sessions: [$workers[] | select(startswith("\($task)-")) | ltrimstr("\($task)-") | select(. != "ops")] | unique}
-       + if $note == "" then {} else {note: $note} end' \
-      -sc --arg task "$task" --arg machine "$machine" --argjson worktrees "${stowed_worktrees[$task]}" \
-      --argjson workers "$workers" --arg note "${notes[$task]}")
-    if task_events "$task" | jq -se --argjson new "$event" \
-      'map(select(.event | IN("stowed", "launch", "worktree-moved"))) | last
-        | .event == "stowed" and .machine == $new.machine and .worktrees == $new.worktrees' >/dev/null; then
-      echo "stowed: $task already stowed from $machine"
-    else
-      ledger_append "$event"
-      echo "stowed: $task $(jq -r '"roles \(.roles | join(", ") | if . == "" then "none" else . end); " + ([.worktrees[] | "\(.project) \(.branch) at \(.head[:7])" + if .uncommitted then " with uncommitted changes" else "" end] | join(", ") | if . == "" then "no worktree" else . end)' <<<"$event")"
-    fi
-  done
-  step_done 5
-
-  # 6. This machine's Claude config, captured for the team, and what was captured kept for the
+  # 3. This machine's Claude config, captured for the team, and what was captured kept for the
   # message.
-  if ((done_before >= 6)); then
+  if ((done_before >= 3)); then
     echo "config: captured earlier in this handoff"
   else
     rc=0
@@ -415,22 +255,22 @@ if [[ -z $finished ]]; then
       '{captured: [$out | splits("\n") | select(startswith("captured ")) | ltrimstr("captured ")],
         refused: [$refused | splits("\n") | select(. != "")]}')
   fi
-  step_done 6
+  step_done 3
 
-  # 7. The records, in the handoff's own commit, with this machine's usage to now.
+  # 4. The records, in the handoff's own commit, with this machine's usage to now.
   rc=0
   out=$(team team-tokens export --through-now 2>"$err") || rc=$?
   [[ -z $out ]] || prefixed usage <<<"$out"
   ((rc == 0)) || echo "team-handoff: usage: $(first_error); the handoff goes on" >&2
   commit_records "chore: handoff from $machine" || die "commit: the records are not on origin; nothing was released"
-  step_done 7
+  step_done 4
 
-  # 8. The heartbeat.
+  # 5. The heartbeat.
   out=$(team team-timers disable 2>"$err") || die "heartbeat: $(first_error); nothing was released"
   echo "heartbeat: $out"
-  step_done 8
+  step_done 5
 
-  # 9. The lease.
+  # 6. The lease.
   rc=0
   out=$(team team-lease release 2>"$err") || rc=$?
   if ((rc == 75)); then
@@ -439,14 +279,18 @@ if [[ -z $finished ]]; then
   fi
   ((rc == 0)) || die "release: $(first_error)"
   echo "lease: $out"
-  step_done 9
+  step_done 6
 fi
 
-# 10. The message.
+# 7. The message.
 released_at=$(jq -r '.written_at // empty' "$record" 2>/dev/null) || released_at=''
 [[ -n $released_at ]] || released_at=$(date -u +%FT%TZ)
-message="Released at $(date -d "$released_at" +%H:%M) from $machine. The \`team-resume --wait\` started on the other machine takes the team now; with none running there, run \`team-resume\` there."
-# What step 6 captured and what it refused, as the message's config lines.
+if [[ $here == true ]]; then
+  message="Released at $(date -d "$released_at" +%H:%M) from $machine for a restart here. After the restart, run \`team-resume\` here."
+else
+  message="Released at $(date -d "$released_at" +%H:%M) from $machine. The \`team-resume --wait\` started on the other machine takes the team now; with none running there, run \`team-resume\` there."
+fi
+# What step 3 captured and what it refused, as the message's config lines.
 captured=$(jq -c '[if . == null then "Config captured: unknown (no record of this handoff'"'"'s capture)."
   else "Config captured: \(.captured | if . == [] then "nothing" else join(", ") end).",
     (.refused[] | "Config: \(.).") end]' <<<"$config")
@@ -454,9 +298,10 @@ if [[ $mode == json ]]; then
   ledger_jq 'ledger_events | by_task | . as $tasks | [open_tasks[] | . as $task
       | $tasks[$task] | map(select(.event == "stowed" and .machine == $machine)) | last
       | select(. != null) | {task: $task, worktrees, roles, sessions}]
-    | {machine: $machine, epoch: $epoch, released_at: $released, message: $message, captured: $captured,
-      tasks: .}' \
-    -nR --arg machine "$machine" --argjson epoch "$epoch" --arg released "$released_at" --arg message "$message" \
+    | {machine: $machine, epoch: $epoch, released_at: $released, here: $here, message: $message,
+      captured: $captured, tasks: .}' \
+    -nR --arg machine "$machine" --argjson epoch "$epoch" --arg released "$released_at" --argjson here "$here" \
+    --arg message "$message" \
     --argjson captured "$captured" "$TEAM_HOME/ledger.jsonl" >&"$json_fd"
 else
   echo "$message"

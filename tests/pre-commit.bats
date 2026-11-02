@@ -29,9 +29,9 @@ commit() {
 
 # Refused for the records named, one per line: assert_records <path>...
 assert_records() {
-  assert_equal "$stderr" "pre-commit: refused: records (ledger.jsonl, manual-steps.md, projects.toml, \
-tasks/, projects/, memory/, machine/, usage/) live in the team home, never in the code repository; unstage \
-them (git restore --staged -- <path>):$(printf '\n  %s' "$@")"
+  assert_equal "$stderr" "pre-commit: refused: records (ledger.jsonl, level.jsonl, manual-steps.md, \
+projects.toml, tasks/, projects/, memory/, machine/, usage/) live in the team home, never in the code \
+repository; unstage them (git restore --staged -- <path>):$(printf '\n  %s' "$@")"
 }
 
 @test "on dev, every commit is refused, code or records, naming the way dev changes" {
@@ -69,10 +69,10 @@ by fast-forward from dev"
   local head
   git -C "$repo" checkout -q -b feat/T1-thing
   head=$(git -C "$repo" rev-parse HEAD)
-  stage bin/team-open ledger.jsonl manual-steps.md projects.toml tasks/T1/plan.md \
+  stage bin/team-open ledger.jsonl level.jsonl manual-steps.md projects.toml tasks/T1/plan.md \
     projects/shop/backlog.md "memory/agent-team/a note.md" machine/claude/settings.json
   commit -1
-  assert_records ledger.jsonl machine/claude/settings.json manual-steps.md "memory/agent-team/a note.md" \
+  assert_records ledger.jsonl level.jsonl machine/claude/settings.json manual-steps.md "memory/agent-team/a note.md" \
     projects.toml projects/shop/backlog.md tasks/T1/plan.md
   assert_equal "$(git -C "$repo" rev-parse HEAD)" "$head"
   # A detached HEAD too.
@@ -112,7 +112,7 @@ by fast-forward from dev"
   commit -0
   git -C "$repo" checkout -q -b feat/T1-work dev
   run -1 --separate-stderr git -C "$repo" merge -q --no-ff -m "Merge feat/T1-records" feat/T1-records
-  assert_equal "${stderr%$'\n'Not committing merge*}" "pre-merge-commit: refused: records (ledger.jsonl, manual-steps.md, \
+  assert_equal "${stderr%$'\n'Not committing merge*}" "pre-merge-commit: refused: records (ledger.jsonl, level.jsonl, manual-steps.md, \
 projects.toml, tasks/, projects/, memory/, machine/, usage/) live in the team home, never in the code \
 repository; unstage them (git restore --staged -- <path>):
   tasks/T1/plan.md"
