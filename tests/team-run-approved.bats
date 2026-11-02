@@ -41,10 +41,17 @@ hash_of() {
   sha256sum "$1" | cut -d' ' -f1
 }
 
-# Ask about <script> as <id> and log Daniel's answer: approve <id> <script>
+# Log an ask about <script> as <id>, as team-ask --script logs it, and Daniel's answer:
+# approve <id> <script>
 approve() {
-  run_bin -0 team-log T7 asked id="$1" text=run-it script="$2" sha256="$(hash_of "$2")"
+  asked_about "$1" run-it "$2"
   run_bin -0 team-log T7 answered id="$1" answer=yes
+}
+
+# Log the asked team-ask --script logs, its script <script> as given: asked_about <id> <text> <script>
+asked_about() {
+  jq -nc --arg ts "$(date -u +%FT%TZ)" --arg id "$1" --arg text "$2" --arg script "$3" --arg sha256 "$(hash_of "$3")" \
+    '{ts: $ts, task: "T7", event: "asked", id: $id, text: $text, script: $script, sha256: $sha256}' >>"$TEAM_HOME/ledger.jsonl"
 }
 
 # The ledger's events of T7 after the opened, without ts, one per line.
@@ -120,7 +127,7 @@ SCRIPT
   refuses "T7's ask plain, at $(jq -r 'select(.event == "asked") | .ts' "$TEAM_HOME/ledger.jsonl"), names no script: an approved script is asked with team-ask T7 plain --file <question> --script <path>" plain
   # An answer to an earlier ask of the same id answers nothing asked since.
   approve fix "$WT/scripts/fix.sh"
-  run_bin -0 team-log T7 asked id=fix text=again script="$WT/scripts/fix.sh" sha256="$(hash_of "$WT/scripts/fix.sh")"
+  asked_about fix again "$WT/scripts/fix.sh"
   local at
   at=$(jq -r 'select(.event == "asked" and .id == "fix") | .ts' "$TEAM_HOME/ledger.jsonl" | tail -n 1)
   refuses "T7's ask fix, at $at, has no answered since: Daniel has not answered it" fix

@@ -240,3 +240,18 @@ awaiting() {
   assert_contains "$output" "branch-renamed events are written by team-log, not team-open"
   assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "1"
 }
+
+@test "a field its kind gives one writer is refused from the kind's other writers" {
+  assert_equal "$(jq -c '.kinds.asked.field_writers' "$REPO_ROOT/bin/lib/ledger-contract.json")" '{"script":"team-ask","sha256":"team-ask"}'
+  local hash at='"ts":"2026-10-22T02:00:00Z","task":"T7","event":"asked","id":"fix","text":"Run it?"'
+  hash=$(printf '%064d' 0 | tr 0 a)
+  append_as team-ask "{$at,\"script\":\"/w/7/fix.sh\",\"sha256\":\"$hash\"}"
+  assert_equal "$status" "0"
+  append_as team-log "{$at,\"script\":\"/w/7/fix.sh\",\"sha256\":\"$hash\"}"
+  assert_equal "$status" "1"
+  assert_contains "$output" "an asked's script is written by team-ask, not team-log; an asked's sha256 is written by team-ask, not team-log"
+  append_as team-log "{$at}"
+  assert_equal "$status" "0"
+  assert_equal "$(jq -c '[.id, .script != null]' "$TEAM_HOME/ledger.jsonl")" '["fix",true]
+["fix",false]'
+}

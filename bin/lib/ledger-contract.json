@@ -3,6 +3,7 @@
     "The ledger contract: every event kind in ledger.jsonl, the script that writes it (or the list of scripts that do), and its fields.",
     "Each field's type is string, number, array (a list), numbers (a list of whole numbers, 0 or more), object or id (a Discord id: a string of digits, which --check also takes as a whole number, the form team-log wrote before), or a list of the strings it may be.",
     "Every line has ts (UTC, like 2026-10-22T01:00:00Z), task (T<n>) and event; note (a string) is allowed on every kind, and other fields are allowed.",
+    "A kind's field_writers names the one script that may append a line holding each field it lists, among the kind's writers; the others append the kind without it.",
     "Lines from strict_from on must meet their kind's fields; earlier lines are legacy and only need ts, task and event.",
     "Legacy lines keep shapes no kind has now: closes by hand with no lists, and plan-ready, which is not a kind, since a planner's report is done and a plan put to Daniel is asked.",
     "Read by ledger_append in bin/lib/team.sh (through bin/lib/ledger.jq) and printed by team-log --help."
@@ -72,9 +73,10 @@
     },
     "asked": {
       "writer": ["team-log", "team-ask"],
-      "about": "a decision put to Daniel; discord_message: the question's first message in the task's thread, which team-inbox links; script and sha256: a script Daniel is asked to OK and its sha256sum, which the question names, logged together by team-ask --script (or team-log), which team-run-approved runs once the ask is answered and only while the file hashes the same",
+      "about": "a decision put to Daniel; discord_message: the question's first message in the task's thread, which team-inbox links; script and sha256: a script Daniel is asked to OK and its sha256sum, which the question names, logged together by team-ask --script, their one writer, which team-run-approved runs once the ask is answered and only while the file hashes the same",
       "required": {"id": "string", "text": "string"},
-      "optional": {"discord_message": "id", "script": "string", "sha256": "string"}
+      "optional": {"discord_message": "id", "script": "string", "sha256": "string"},
+      "field_writers": {"script": "team-ask", "sha256": "team-ask"}
     },
     "answered": {
       "writer": ["team-log", "team-answer"],

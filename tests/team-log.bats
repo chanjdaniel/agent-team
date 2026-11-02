@@ -884,28 +884,18 @@ LINES
   )"
 }
 
-@test "an asked takes script and sha256 only together, the hash 64 hex digits and the script an absolute path" {
+@test "an asked names no script or sha256: team-ask --script is their one writer" {
   local hash
   hash=$(printf '%064d' 0 | tr 0 a)
+  run_bin -1 team-log T14 asked id=fix text=run-it script=/w/14/fix.sh sha256="$hash"
+  assert_equal "$output" "team-log: an asked logs no script or sha256: team-ask T14 fix --file <question> --script <path> asks Daniel about a script, naming its path and hash in the question"
   run_bin -1 team-log T14 asked id=fix text=run-it script=/w/14/fix.sh
-  assert_equal "$output" "team-log: an asked names a script and its sha256 together, never one alone: script without sha256"
+  assert_equal "$output" "team-log: an asked logs no script or sha256: team-ask T14 fix --file <question> --script <path> asks Daniel about a script, naming its path and hash in the question"
   run_bin -1 team-log T14 asked id=fix text=run-it sha256="$hash"
-  assert_equal "$output" "team-log: an asked names a script and its sha256 together, never one alone: sha256 without script"
-  run_bin -1 team-log T14 asked id=fix text=run-it script=/w/14/fix.sh sha256="${hash:1}"
-  assert_equal "$output" "team-log: sha256 must be the script's 64 hex digits, as sha256sum prints them, got '${hash:1}'"
-  run_bin -1 team-log T14 asked id=fix text=run-it script=/w/14/fix.sh sha256="${hash:1}g"
-  assert_equal "$output" "team-log: sha256 must be the script's 64 hex digits, as sha256sum prints them, got '${hash:1}g'"
-  run_bin -1 team-log T14 asked id=fix text=run-it script=fix.sh sha256="$hash"
-  assert_equal "$output" "team-log: script must be an absolute path, got 'fix.sh'"
+  assert_equal "$output" "team-log: an asked logs no script or sha256: team-ask T14 fix --file <question> --script <path> asks Daniel about a script, naming its path and hash in the question"
   assert_ledger_empty
-  run_bin -0 team-log T14 asked id=fix text=run-it script=/w/14/fix.sh sha256="$hash"
   run_bin -0 team-log T14 asked id=plain text=no-script
-  assert_equal "$(ledger_without_ts)" "$(
-    cat <<LINES
-{"task":"T14","event":"asked","id":"fix","text":"run-it","script":"/w/14/fix.sh","sha256":"$hash"}
-{"task":"T14","event":"asked","id":"plain","text":"no-script"}
-LINES
-  )"
+  assert_equal "$(ledger_without_ts)" '{"task":"T14","event":"asked","id":"plain","text":"no-script"}'
 }
 
 @test "a kind another script writes is refused with nothing appended" {
