@@ -71,3 +71,11 @@ unknown() {
 expansion='it holds an expansion this hook does not follow' \
   moved='a cd before it may have left any directory' \
   failed='a cd before it may have failed; join them with &&'
+
+# not_followed <name> and may_be_empty <name>: the reasons a variable's value gives.
+not_followed() {
+  printf '%s is not followed here' "\$$1"
+}
+may_be_empty() {
+  printf '%s may be empty when mktemp fails; join them with &&' "\$$1"
+}

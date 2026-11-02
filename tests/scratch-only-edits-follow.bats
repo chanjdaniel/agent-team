@@ -1,10 +1,10 @@
 #!/usr/bin/env bats
 # shellcheck disable=SC2154,SC2034,SC2088 # wt, tmp, job and the reasons are helpers/scratch-hook.bash's, hook_tmpdir and hook_job its shell's; a ~ is part of a command as an agent types it
 # hooks/scratch-only-edits: what the hook follows through a command to work out where a target
-# lands: the directory the shell is in, and the values of HOME, TMPDIR and CLAUDE_JOB_DIR.
-# It follows a cd by the order rule: each command leaves the directories the shell may be in when
-# it succeeded and when it failed, and a relative target is judged from each one; it keeps the
-# three variables' values only in a command that cannot change them.
+# lands: the directory the shell is in, and the values of the variables the command assigns once.
+# It follows both by the order rule: each command leaves the directories the shell may be in and
+# the values each variable may hold when it succeeded and when it failed, and a target is judged
+# from each; arithmetic and the other places that may assign any variable stop the following.
 
 load helpers/common
 load helpers/scratch-hook
@@ -129,8 +129,8 @@ Blocked: this role may write files only under $wt/.scratch; write there with the
   unknown 'cd .scratch; cmd > $PWD/x' "\$PWD/x ($failed)"
   unknown 'cd "$x"; cmd > $PWD/x' "\$PWD/x ($moved)"
   unknown 'cd .scratch && cmd > $OLDPWD/x' "\$OLDPWD/x ($expansion)"
-  unknown 'PWD=/tmp; cmd > $PWD/x' "\$PWD/x ($expansion)"
-  unknown 'for PWD in /tmp; do cmd > $PWD/x; done' "\$PWD/x ($expansion)"
+  unknown 'PWD=/tmp; cmd > $PWD/x' "\$PWD/x ($(not_followed PWD))"
+  unknown 'for PWD in /tmp; do cmd > $PWD/x; done' "\$PWD/x ($(not_followed PWD))"
 }
 
 @test "a command's redirections are judged in the directory it starts in, before its own cd" {
@@ -153,50 +153,172 @@ Blocked: this role may write files only under $wt/.scratch; write there with the
   passes "(eval \"\$y\"); cd $wt/.scratch && cmd > x" "v=\$(source f); cd $wt/.scratch && cmd > x"
 }
 
-@test "HOME, TMPDIR and CLAUDE_JOB_DIR keep the hook's values in a command that cannot change them" {
+
+@test "a variable the command assigns once holds its value after the assignment, and its earlier one before" {
   mkdir -p "$job/tmp"
-  passes 'export X=1; cmd > $TMPDIR/x' 'printf x; cmd > "$TMPDIR/x"' 'read -r line; cmd > $CLAUDE_JOB_DIR/tmp/x' \
-    'unset X; cmd > ~/wt/.scratch/x' 'env TMPDIR=/etc cmd > $TMPDIR/x' 'X=1 cmd > ${HOME}/wt/.scratch/x' \
-    'declare -x X=1; cmd > $TMPDIR/x' 'echo eval source let > $TMPDIR/x' 'printf "%s" "$x"; cmd > $TMPDIR/x'
-}
-
-@test "HOME, TMPDIR and CLAUDE_JOB_DIR are unknown in a command that may assign one" {
-  local before
-  for before in 'TMPDIR=/etc' 'TMPDIR+=/x' 'export TMPDIR=/etc' 'TMPDIR=/etc cmd' 'TMPDIR[0]=/etc' 'read TMPDIR' \
-    'read -r a TMPDIR' 'unset TMPDIR' 'declare -x TMPDIR' 'local TMPDIR' 'printf -v TMPDIR x' 'getopts ab TMPDIR' \
-    'builtin read TMPDIR' 'export "TMP""DIR=/etc"'; do
-    unknown "$before; cmd > \$TMPDIR/x" "\$TMPDIR/x ($expansion)"
-  done
-  unknown 'HOME=/etc; cmd > ~/x' "~/x ($expansion)"
-  unknown 'for TMPDIR in /etc; do cmd > $TMPDIR/x; done' "\$TMPDIR/x ($expansion)"
-  unknown 'unset CLAUDE_JOB_DIR; cmd > "$CLAUDE_JOB_DIR/x"' "\"\$CLAUDE_JOB_DIR/x\" ($expansion)"
-}
-
-@test "HOME, TMPDIR and CLAUDE_JOB_DIR are unknown after anything that may assign a variable it does not name" {
-  local before
-  for before in 'eval "$x"' 'source f' '. f' 'trap x EXIT' 'let v' 'declare -i n' 'typeset -n r=x' 'local -i n' \
-    'mapfile -C f a' 'readarray -tC f a' 'read "$n"' 'printf -v "$n" x' 'printf "$f" x' 'export "$n"' 'a[v]=1' '"$tool" a'; do
-    unknown "$before; cmd > \$TMPDIR/x" "\$TMPDIR/x ($expansion)"
-  done
-}
-
-@test "HOME, TMPDIR and CLAUDE_JOB_DIR are unknown after arithmetic or a \${ } that may assign a variable" {
-  local before
-  for before in 'echo $(( x ))' '(( i++ ))' 'for (( i = 0; i < 1; i++ )); do :; done' '[[ $a -eq 1 ]]' 'echo ${x:$o}' \
-    'echo ${a[i]}' 'a=([i]=1)' 'echo ${TMPDIR:=/etc}' 'echo ${x=a}'; do
-    unknown "$before; cmd > \$TMPDIR/x" "\$TMPDIR/x ($expansion)"
-  done
-  passes 'echo $(( 1 + 2 )); cmd > $TMPDIR/x' 'echo ${x:1} ${a[0]} ${x:-a}; cmd > $TMPDIR/x' 'a=(i 1); [[ $a == 1 ]]; cmd > $TMPDIR/x'
-}
-
-@test "any other variable in a target is unknown" {
+  passes 'T=$CLAUDE_JOB_DIR/tmp; cmd > $T/out.log' 'export TMPDIR=$CLAUDE_JOB_DIR/tmp; cmd > $TMPDIR/x' \
+    'P=.scratch/task/probe; cmd > $P/x' 'T=$CLAUDE_JOB_DIR/tmp; for f in a b; do cmd > $T/$f.log; done' \
+    'x=src; x2=.scratch/x; cmd > $x2' 'a=.scratch b=$a/x; cmd | tee "$b"' 'export A=.scratch B=$TMPDIR; cmd > $A/x 2> $B/y' \
+    'T=$CLAUDE_JOB_DIR/tmp && cmd > "${T}/x"' 'cd .scratch && { P=$PWD; cmd > $P/x; }' 'cmd > $TMPDIR/x; TMPDIR=/etc'
+  blocked 'x=src; cmd > $x/y' "$wt/src/y"
+  blocked 'T=/etc; cmd | tee $T/x' /etc/x
+  blocked 'HOME=/etc; cmd > ~/x' /etc/x
+  unknown 'cmd > $x/y; x=.scratch' "\$x/y ($(not_followed x))"
+  # A variable the command never assigns is one it does not follow.
   unknown 'cmd > $HOMEDIR/x' "\$HOMEDIR/x ($expansion)"
   unknown 'cmd > .scratch/$x/y' ".scratch/\$x/y ($expansion)"
-  unknown 'x=.scratch; cmd > $x/y' "\$x/y ($expansion)"
 }
 
-@test "an unquoted value holding a blank is unknown, as bash splits it, and a quoted one is judged" {
+@test "a command of assignments alone makes its redirections after them, as bash does" {
+  blocked 'x=src > $x/y' "$wt/src/y"
+  passes 'x=.scratch > $x/y'
+}
+
+@test "a variable assigned twice, by a builtin or a \${ } operator, or where the assignment may not have run, is not followed" {
+  local before
+  for before in 'x=a; x=src' 'read x' 'printf -v x src' 'declare x=.scratch' ': ${x:=src}' ': ${x=src}' 'x=.scratch cmd' \
+    'x+=.scratch' 'x=(.scratch)' 'local x=.scratch' 'readonly x=.scratch' 'export x; x=.scratch' 'getopts ab x' \
+    'mapfile x' 'unset x; x=.scratch' 'wait -p x' 'export "x=.scratch"' 'cd .scratch && x=task' 'if c; then x=.scratch; fi' \
+    'x=.scratch; printf -vx src' 'x=.scratch; read -rax' 'x=.scratch; wait -px'; do
+    unknown "$before; cmd > \$x/y" "\$x/y ($(not_followed x))"
+  done
+  unknown 'for x in $(ls); do cmd > $x; done' "\$x ($(not_followed x))"
+  unknown 'for x; do cmd > $x; done' "\$x ($(not_followed x))"
+  unknown 'cd .scratch && P=task; cmd > $P/x' "\$P/x ($(not_followed P))"
+  for before in 'read TMPDIR' 'TMPDIR=/etc cmd' 'export "TMP""DIR=/etc"' 'builtin read -r a TMPDIR' 'TMPDIR[0]=/etc'; do
+    unknown "$before; cmd > \$TMPDIR/x" "\$TMPDIR/x ($(not_followed TMPDIR))"
+  done
+  # env's assignments are the command's it runs, not the shell's.
+  passes 'env TMPDIR=/etc cmd; cmd > $TMPDIR/x'
+}
+
+@test "a variable whose value bash sets itself is never followed" {
+  local name
+  for name in REPLY OPTARG OPTIND PATH OLDPWD RANDOM BASH_X; do
+    unknown "$name=.scratch; cmd > \$$name/x" "\$$name/x ($(not_followed "$name"))"
+  done
+}
+
+@test "a for loop's variable holds each value of its words, read as bash reads a for list" {
+  passes 'for f in .scratch/a "$TMPDIR/b c"; do cmd > "$f"; done' 'for d in .scratch $TMPDIR; do cmd > $d/x; done'
+  blocked 'for f in .scratch/a src/b; do cmd > $f; done' "$wt/src/b"
+  unknown 'for f in .scratch/*; do cmd > $f; done' "\$f ($(not_followed f))"
+  unknown 'for f in "$TMPDIR/b c"; do cmd | tee $f; done' "\$f ($expansion)"
+  # After the loop, it holds a value of its words, or the one before when no word gave any.
+  passes 'for TMPDIR in .scratch/a; do :; done; cmd > $TMPDIR/x'
+  blocked 'for TMPDIR in src; do :; done; cmd > $TMPDIR/x' "$wt/src/x"
+  unknown 'for x in .scratch/a; do :; done; cmd > $x' "\$x ($(not_followed x))"
+}
+
+@test "arithmetic and the other places that may assign any variable stop following there, and an assignment after them is followed" {
+  local before
+  for before in '(( v ))' ': $(( v ))' 'let v' '[[ v -eq 1 ]]' 'echo ${a[v]}' 'echo ${x:$o}' 'read "$n"' 'a[v]=1' \
+    'a=([v]=1)' 'printf -v "$n" x' 'export "$n"' 'for (( ; v; )); do :; done' 'echo ${!x:=a}'; do
+    unknown "T=\$CLAUDE_JOB_DIR/tmp; $before; cmd > \$T/x" "\$T/x ($(not_followed T))"
+  done
+  unknown "T=\$CLAUDE_JOB_DIR/tmp; cat <<EOF"$'\n$(( v ))\nEOF\n'"cmd > \$T/x" "\$T/x ($(not_followed T))"
+  passes '(( v )); T=$CLAUDE_JOB_DIR/tmp; cmd > "$T/x"'
+  # Naming no variable, it stops nothing; in a subshell, a substitution or a pipeline, it reaches no further.
+  passes 'T=$CLAUDE_JOB_DIR/tmp; echo $(( 1 + 2 )) ${x:0:8} ${a[0]}; cmd > $T/x' \
+    'T=$CLAUDE_JOB_DIR/tmp; (let v); y=$(let v); let v | cat; cmd > $T/x'
+}
+
+@test "after a stop, an unquoted variable is unknown, as IFS may have changed with it" {
+  unknown 'x=.scratch/a; (( v )); y=.scratch/b; cmd | tee $y' "\$y ($expansion)"
+  passes 'x=.scratch/a; (( v )); y=.scratch/b; cmd | tee "$y"'
+  unknown '(( v )); cd .scratch && cmd > $PWD/x' "\$PWD/x ($expansion)"
+  # HOME, TMPDIR and CLAUDE_JOB_DIR keep the hook's values when the command assigns none of them.
+  passes '(( v )); cmd > "$TMPDIR/x"' '(( v )); cd .scratch && cmd > "$PWD/x"'
+}
+
+@test "eval, source, ., trap, mapfile -C, and declare, typeset or local with i or n end following for the rest of the command" {
+  local before
+  for before in 'eval x' 'source f' '. f' 'trap x EXIT' 'declare -i n' 'declare -n r=y' 'typeset -n r' 'local -i n' \
+    'mapfile -C f a' 'readarray -tC f a' '"$tool" a'; do
+    unknown "T=\$CLAUDE_JOB_DIR/tmp; $before; cmd > \$T/x" "\$T/x ($(not_followed T))"
+    unknown "$before; T=\$CLAUDE_JOB_DIR/tmp; cmd > \"\$T/x\"" "\"\$T/x\" ($(not_followed T))"
+  done
+  unknown 'T=$CLAUDE_JOB_DIR/tmp; declare -n r=T; cmd > $T/x' "\$T/x ($(not_followed T))"
+  unknown 'eval x; cmd > $TMPDIR/x' "\$TMPDIR/x ($(not_followed TMPDIR))"
+  unknown 'mapfile -C f a; cd .scratch && cmd > x' "x ($moved)"
+  # In a subshell or a substitution, it reaches no further.
+  passes 'T=$CLAUDE_JOB_DIR/tmp; (eval x); y=$(source f); cmd > $T/x'
+}
+
+@test "a loop or a function whose body stops following, or assigns a followed variable, does so from its start or definition" {
+  unknown 'T=$CLAUDE_JOB_DIR/tmp; while c; do cmd > $T/x; (( n++ )); done' "\$T/x ($(not_followed T))"
+  unknown 'T=$CLAUDE_JOB_DIR/tmp; for f in a; do cmd > $T/x; eval x; done' "\$T/x ($(not_followed T))"
+  unknown 'while c; do cmd > $TMPDIR/x; TMPDIR=/etc; done' "\$TMPDIR/x ($(not_followed TMPDIR))"
+  passes 'while c; do T=.scratch; cmd > $T/x; done' 'T=.scratch; while c; do (( n++ )); done > $T/x'
+  unknown 'f() { (( v )); }; T=$CLAUDE_JOB_DIR/tmp; f; cmd > $T/x' "\$T/x ($(not_followed T))"
+  unknown 'f() { TMPDIR=/etc; }; f; cmd > $TMPDIR/x' "\$TMPDIR/x ($(not_followed TMPDIR))"
+  unknown 'f() { eval x; }; T=$CLAUDE_JOB_DIR/tmp; cmd > $T/x' "\$T/x ($(not_followed T))"
+}
+
+@test "a function's body follows only those of HOME, TMPDIR and CLAUDE_JOB_DIR the command does not assign, and none when it ends following" {
+  mkdir -p "$job/tmp"
+  passes 'f() { cmd > $TMPDIR/x; }; f' 'f() { cmd > "$CLAUDE_JOB_DIR/x"; }; T=$CLAUDE_JOB_DIR; cmd > $T/y'
+  unknown 'f() { cmd > "$T/x"; }; T=$CLAUDE_JOB_DIR/tmp' "\"\$T/x\" ($(not_followed T))"
+  unknown 'TMPDIR=/etc; f() { cmd > $TMPDIR/x; }' "\$TMPDIR/x ($(not_followed TMPDIR))"
+  unknown 'f() { cmd > $TMPDIR/x; }; (( v ))' "\$TMPDIR/x ($expansion)"
+  passes 'f() { cmd > "$TMPDIR/x"; }; (( v ))'
+  unknown 'f() { cmd > "$TMPDIR/x"; }; eval x' "\"\$TMPDIR/x\" ($(not_followed TMPDIR))"
+}
+
+@test "an unquoted value holding a blank or a glob is unknown, a quoted one is followed, and an assignment expands ~ only at its start" {
+  unknown "x='.scratch/a b'; cmd | tee \$x" "\$x ($expansion)"
+  unknown "x='.scratch/*'; cmd > \$x" "\$x ($expansion)"
+  passes "x='.scratch/a b'; cmd | tee \"\$x\"" "x='.scratch/*'; cmd > \"\$x\"" 'x=.scratch/*; cmd > "$x"' \
+    'x=~/wt/.scratch/y; cmd > $x'
+  blocked 'x=~/y; cmd > $x' "$HOME/y"
+  unknown 'x=a:~/y; cmd > $x' "\$x ($(not_followed x))"
   hook_tmpdir="$BATS_TEST_TMPDIR/t mp"
   unknown 'cmd | tee $TMPDIR/x' "\$TMPDIR/x ($expansion)"
   passes 'cmd | tee "$TMPDIR/x"' 'cmd > "${TMPDIR}"/x'
+}
+
+@test "a variable assigned a mktemp holds a new name in its directory when it succeeded, and the empty string when it failed" {
+  mkdir -p "$job/tmp"
+  passes 'd=$(mktemp -d) && cmd > $d/x' 'd=$(mktemp -d -p "$CLAUDE_JOB_DIR/tmp") && cmd > "$d/x"' 'f=$(mktemp) && cmd > $f' \
+    'f=$(mktemp -t out.XXXXXX) && cmd | tee "$f"' 'd=$(mktemp -d --tmpdir) && cmd > $d/x' 'd=$(mktemp -dp .scratch) && cmd > $d/x' \
+    'd=$(mktemp -d --tmpdir=.scratch/task) && cmd > $d/x' 'f=$(mktemp .scratch/out.XXXX) && cmd > $f' \
+    'f=$(mktemp -p .scratch out.XXXX) && cmd > $f' 'export TMPDIR=$CLAUDE_JOB_DIR/tmp; d=$(mktemp -d) && cmd > $d/x' \
+    'd="$(mktemp -d)" && cmd > "$d/x"' 'd=$(mktemp -q -u) && cmd > $d'
+  shell -0 'f=$(mktemp out.XXXX) && cmd > $f' "$wt/.scratch"
+  blocked 'd=$(mktemp -d -p src) && cmd > $d/x' "$wt/src/tmp.XXXXXXXXXX/x"
+  blocked 'f=$(mktemp src/out.XXXX) && cmd > $f' "$wt/src/out.XXXX"
+  blocked 'f=$(mktemp out.XXXX) && cmd > $f' "$wt/out.XXXX"
+  blocked 'd=$(mktemp -d --tmpdir=src) && cmd > $d/x' "$wt/src/tmp.XXXXXXXXXX/x"
+  blocked 'TMPDIR=/etc; d=$(mktemp -d) && cmd > $d/x' /etc/tmp.XXXXXXXXXX/x
+  unknown 'd=$(mktemp -d); cmd > $d/x' "\$d/x ($(may_be_empty d))"
+  local form
+  for form in '/usr/bin/mktemp -d' 'mktemp -d "$x"' 'mktemp --suffix=.x' 'mktemp a.XX b.XX' 'mktemp 2> /dev/null' 'TMPDIR=. mktemp' \
+    'command mktemp'; do
+    unknown "d=\$($form) && cmd > \$d/x" "\$d/x ($(not_followed d))"
+  done
+  unknown 'cmd > $(mktemp)' "\$(mktemp) ($expansion)"
+}
+
+@test "a basename substitution holds a name with no / in it, ., .. or a lone /, each judged" {
+  passes 'cmd > .scratch/task/capture/$(basename "$f")' 'cmd > ".scratch/task/capture/$(basename "$f" .md)"' \
+    'cmd > .scratch/task/out-$(basename "$f").json' 'b=$(basename "$f"); cmd | tee ".scratch/task/$b"'
+  blocked 'cmd > .scratch/$(basename "$f")' "$wt"
+  blocked 'cmd > src/$(basename x)' "$wt/src/\$(basename x), $wt/src, $wt"
+  # Unquoted, bash splits the name it prints into a tee's files, or a variable's value into words.
+  unknown 'cmd | tee .scratch/task/$(basename "$f")' ".scratch/task/\$(basename \"\$f\") ($expansion)"
+  unknown 'b=$(basename "$f"); cmd > .scratch/task/$b' ".scratch/task/\$b ($expansion)"
+  unknown 'cmd > .scratch/task/$(basename a b c)' ".scratch/task/\$(basename a b c) ($expansion)"
+  unknown 'cmd > .scratch/task/$(/usr/bin/basename a)' ".scratch/task/\$(/usr/bin/basename a) ($expansion)"
+}
+
+@test "the team-stack env form clears only COMPOSE_PROJECT_NAME and the TH_ and TEAM_ names, and any other eval ends following" {
+  mkdir -p "$job/tmp"
+  passes 'eval "$(~/agent-team/bin/team-stack env)"; export TMPDIR=$CLAUDE_JOB_DIR/tmp; cmd > $TMPDIR/e2e.log' \
+    'X=.scratch; eval "$(team-stack env)"; cmd > $X/y' 'eval "$(bin/team-stack env)"; cd .scratch && cmd > x'
+  local name
+  for name in TEAM_X TH_X COMPOSE_PROJECT_NAME; do
+    unknown "$name=.scratch; eval \"\$(~/agent-team/bin/team-stack env)\"; cmd > \$$name/y" "\$$name/y ($(not_followed "$name"))"
+  done
+  unknown 'X=.scratch; eval "$(team-stack ls)"; cmd > $X/y' "\$X/y ($(not_followed X))"
+  unknown 'X=.scratch; eval "$(team-stack env) x"; cmd > $X/y' "\$X/y ($(not_followed X))"
 }

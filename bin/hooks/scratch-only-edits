@@ -83,15 +83,10 @@
 #
 # The judge: each output redirection target and each file a tee names (its words after the command
 # word, but those starting with - before a --) is worked out from its words: quoted and unquoted
-# text, ~ or ~/ at its start, $HOME, $TMPDIR (or the machine's /tmp) and $CLAUDE_JOB_DIR as the
-# hook's own environment holds them, and $PWD (below). Those four are unknown in a command that
-# holds an assignment to one of them (by a for loop too) or to an array element, an array
-# assignment with a [subscript]= in it, an assigning builtin (declare, typeset, local, readonly,
-# read, mapfile, readarray, getopts, unset, wait, export, printf -v) naming one or given an
-# expansion, eval, source, ., trap, let, declare, typeset or local with an option holding i or n,
-# mapfile or readarray with one holding C, a command word the hook cannot name, arithmetic or a
-# ${ } offset or subscript that names a variable (a letter or a $ in it), a [[ ]] arithmetic
-# comparison (-eq, -ne, -lt, -le, -gt, -ge), or a ${ } with = or :=.
+# text, ~ or ~/ at its start (as $HOME), the values of the variables the walk follows (below), $PWD,
+# a process substitution's pipe, and $(basename word [word]), the bare command, which prints a name
+# with no / in it, ., .. or a lone /, each judged, and is unknown unquoted in a tee file, a cd's
+# word or a for loop's, which bash splits.
 #
 # Following cd: the walk goes through the command in the order bash runs it, keeping the set of
 # directories the shell may be in, which starts as the session's and may become unknown. Each
@@ -110,35 +105,76 @@
 # alone goes to $HOME, and an empty word stays put. On failure it stays put. A cd -, a cd with an
 # unknown word, more than one or another option, a cd behind a wrapper or by a path, pushd and
 # popd make the directory unknown on success, and so does a relative cd whose word is neither . nor
-# .. and starts with neither ./ nor ../ when the hook's environment sets CDPATH. eval, source, .,
-# trap and a command word the hook cannot name make it unknown from there to the command's end,
-# outside a ( ) or a substitution they are in, since a trap they set or a function they define may
+# .. and starts with neither ./ nor ../ when the hook's environment sets CDPATH. eval (but the
+# team-stack form below), source, ., trap, mapfile or readarray with -C, and a command word the
+# hook cannot name make it unknown from there to the command's end, outside a ( ) or a
+# substitution they are in, since a trap they set, a function they define or the code they run may
 # move it at any later point. A loop that holds a command that may move the shell, outside a ( )
-# or a substitution in it, makes the directory unknown from its start, as its body may run again. A function's body is judged where
-# it is defined, with the directory unknown when the command holds a command that may move the
-# shell anywhere; one whose body holds such a command, outside a ( ) or a substitution, makes the
-# directory unknown from the definition on, since a call may come anywhere after it. $PWD stands
-# for each directory the shell may be in, and $OLDPWD is unknown. When the shell may be in more
-# than 16 directories, the directory is unknown. A relative target is unknown
-# when the directory is, and behind a wrapper option that holds a C or a D (env's -C, sudo's -D)
-# or is --chdir, for a tee file; otherwise it is taken from each directory the shell may be in.
-# The target, its symlinks resolved, must then lie under .scratch/ or under /tmp, $TMPDIR or
-# $CLAUDE_JOB_DIR, or be, as written, /dev/null, /dev/stdout, /dev/stderr or /dev/fd/*; an empty
-# one writes nothing. A target holding any other expansion (a $( ) among them), an unquoted brace,
+# or a substitution in it, makes the directory unknown from its start, as its body may run again.
+# A function's body is judged where it is defined, with the directory unknown when the command
+# holds a command that may move the shell anywhere; one whose body holds such a command, outside a
+# ( ) or a substitution, makes the directory unknown from the definition on, since a call may come
+# anywhere after it. $PWD stands for each directory the shell may be in, and $OLDPWD is unknown.
+# When the shell may be in more than 16 directories, the directory is unknown.
+#
+# Following variables: the walk starts with HOME, TMPDIR and CLAUDE_JOB_DIR as the hook's own
+# environment sets them (one it does not set is unknown), and follows each variable the command
+# assigns exactly once, by a command of name=word assignments alone (export before them or not)
+# or by a for name in words, that no assigning builtin (declare, typeset, local, readonly, read,
+# mapfile, readarray, getopts, unset, wait, export, printf -v) names in its words, that no
+# ${name=word}, ${name:=word}, name+=, array, element or prefix assignment assigns, and that bash
+# does not set itself (REPLY, OPTARG, OPTIND, PATH, PWD, OLDPWD, every BASH name and the rest).
+# After the assignment, by the order rule above, it holds its word's values, with ~ expanded only
+# at its start and neither split nor globbed (a ~ after a : makes it unknown); before it, or where
+# it may not have run, its earlier value, the hook's for the three and unknown for any other. Every
+# other variable the command assigns is unknown throughout. A for loop's variable takes each value
+# of each of its words, read as a tee file's. NAME=$(mktemp ...), the bare mktemp with known words
+# (-d, -q, -u, -t, -p dir, --tmpdir[=dir] and one template), holds a new name in -p's or
+# --tmpdir's directory, $TMPDIR's (the machine's /tmp when the hook's environment has none) or the
+# template's, when it succeeds, and the empty string when it fails. eval "$(<path>/team-stack
+# env)" makes only COMPOSE_PROJECT_NAME and the TH_ and TEAM_ names unknown. A command of
+# assignments alone makes its redirections after them, as bash does. A loop whose body assigns a
+# followed variable makes it unknown from the loop's start; a function's body is judged with those
+# of HOME, TMPDIR and CLAUDE_JOB_DIR the command does not assign, none when the command holds
+# anything that ends the following, and as after a stop when it holds anything that stops it (both
+# below), and the followed variables it assigns are unknown from its definition on.
+#
+# What stops the following: arithmetic ($(( )), (( )), for (( )) and let) and a ${ } offset or
+# subscript that names a variable (a letter or a $ in it), a [[ ]] arithmetic comparison (-eq,
+# -ne, -lt, -le, -gt, -ge), a ${!name=word}, an array element's assignment, and an assigning
+# builtin given a name from an expansion may assign any variable: each makes every variable the
+# command assigns unknown where it runs, and an assignment after it is followed again. eval (but
+# the team-stack form), source, ., trap, mapfile or readarray with -C, a command word the hook
+# cannot name, and declare, typeset or local with an option holding i or n may make any later
+# command assign any variable, so no variable is followed from there to the command's end, outside
+# a ( ) or a substitution they are in. A loop whose body holds either does the same from its
+# start, and a function's body that holds either ends the following from its definition on. After
+# anything that stops the following, an unquoted variable in a target is unknown, since bash may
+# split it by another IFS.
+#
+# The verdict: a relative target is unknown when the directory is, and behind a wrapper option that
+# holds a C or a D (env's -C, sudo's -D) or is --chdir, for a tee file; otherwise it is taken from
+# each directory the shell may be in. The target, its symlinks resolved, must then lie under
+# .scratch/ or under /tmp, $TMPDIR or $CLAUDE_JOB_DIR, or be, as written, /dev/null, /dev/stdout,
+# /dev/stderr or /dev/fd/*; an empty one writes nothing. A target holding any other expansion (a
+# $( ) but basename's among them), a variable the walk does not follow there, an unquoted brace,
 # *, ?, [, a ~ after = or :, a ~user, an ANSI-C escape, or an unquoted variable whose value holds a
 # blank or a glob character, is one the hook cannot work out, and is refused, never allowed.
 # A refusal names each target outside as written, its . and .. resolved by text and its symlinks
-# kept, and each target it cannot work out as the command spells it, with why; that one comes first.
-# A relative target outside only from the directory a failed cd leaves, and inside from another,
-# is one a cd before it may have failed.
+# kept and a basename's name as the command spells it, and each target it cannot work out as the
+# command spells it, with why; that one comes first. A relative target outside only from the
+# directory a failed cd leaves, and inside from another, is one a cd before it may have failed; a
+# target outside only for a failed mktemp's empty value, and inside otherwise, is one the mktemp
+# may leave empty.
 #
 # The hook never claims: a program that writes files itself (cp, mv, sed -i, git, an interpreter,
 # sh -c, bash -c, ssh, xargs, find -exec, a tee named through an expansion, a glob or an escape);
 # text run as shell code (eval, source, ., trap actions, and arithmetic over a variable whose value
-# holds an array subscript with a substitution in it); or the session shell's own configuration
-# (the functions, aliases and options its snapshot sets, which the hook takes to leave cd, tee and
-# the wrappers as the commands they name, CDPATH as the hook's own environment holds it, and IFS
-# at its default). It is a speed bump for the plain shell write, never a guarantee.
+# holds an array subscript with a substitution in it, or assigns HOME, TMPDIR or CLAUDE_JOB_DIR);
+# or the session shell's own configuration (the functions, aliases and options its snapshot sets,
+# which the hook takes to leave cd, tee, mktemp, basename and the wrappers as the commands they
+# name, CDPATH as the hook's own environment holds it, and IFS at its default). It is a speed bump
+# for the plain shell write, never a guarantee.
 # Test seams: TEAM_SYSTEM_ROOT stands for / in /tmp, as in the library's tool_dirs, and
 # TEAM_BASH_VERSION (major.minor) for the running bash's version.
 set -euo pipefail
@@ -201,22 +237,29 @@ LC_ALL=C
 #   K       a reserved word or a case separator inside a compound command, EX[k] the word: then,
 #           elif, else, fi, do, done, in, esac, }, ) after a case's patterns, ;;, ;& or ;;&
 # A word event's parts are pk[EA[k]] to pk[EA[k]+EB[k]-1], with their texts in pt; ER[k] is the
-# word as written. A part's kind is l (unquoted text), q (quoted text), a (an ANSI-C string's text
-# as written), v or V (a variable, unquoted or in double quotes, pt its name), p (a process
-# substitution, the whole word, pt as written) or x (any other expansion, pt as written).
+# word as written, and EC[k] 1 when the word holds arithmetic or a ${ } that may assign any
+# variable (on a here-document body's D event, when its body does). A part's kind is l (unquoted
+# text), q (quoted text), a (an ANSI-C string's text as written), v or V (a variable, unquoted or in
+# double quotes, pt its name), s<D> or S<D> (a $( ), unquoted or in double quotes, whose D event is
+# D, pt as written), p (a process substitution, the whole word, pt as written) or x (any other
+# expansion, pt as written).
 # A substitution's events come before the word event that holds it, and its parts before that
 # word's. A compound command's own words (for's name and words, case's word and patterns, [[ ]]'s
 # words, an arithmetic command's text) are W events between its C and c, outside any S; its
 # redirections are between its c and Z.
 mapfile -t lines <<<"$command"
 nl=${#lines[@]} L=0 C=0 ln=${lines[0]} ll=${#lines[0]}
-pk=() pt=() EK=() EA=() EB=() ER=() EX=()
+pk=() pt=() EK=() EA=() EB=() ER=() EX=() EC=()
 c='' c2='' wfirst=0 wcount=0 wraw='' raw='' pw='' listed=0
 # assign_pos: 1 while the word read is in a simple command's assignment position, where name=( )
 # is an array; rx: 1 while the word read is a [[ ]]'s regular expression, rxd its ( ) depth;
-# vstop: 1 once the reader has read arithmetic that names a variable, an array's [subscript]=,
-# a ${ } that may assign, or a [[ ]] arithmetic comparison, any of which may assign a variable.
-assign_pos=0 rx=0 rxd=0 vstop=0
+# wclr: 1 once the word being read holds arithmetic that names a variable (a letter or a $ in it),
+# an array element's [subscript]=, a ${ } offset or subscript that names one, a ${!name=word}, or
+# is a [[ ]] arithmetic comparison, any of which may assign any variable; the next word event takes
+# it as its EC. sub_d: the D event of the substitution read last. nofollow[name]: 1 for a name a
+# ${name=word} or ${name:=word} assigns.
+assign_pos=0 rx=0 rxd=0 wclr=0 sub_d=0
+declare -A nofollow=()
 # The reserved words that end a compound command's list.
 stop_words=' then elif else fi do done esac } '
 meta=$' \t;&|()<>\\\'"`$'
@@ -344,7 +387,9 @@ gather() {
     fi
   done
   ((end >= 0)) || unread 'a here-document whose delimiter line is not found'
+  local dk=${#EK[@]} held=$wclr
   emit D "$4" 0 '' '<<'
+  wclr=0
   if ((!$2 && end > start)); then
     # The body alone is the text a $( ) in it may read.
     nl=$end
@@ -376,6 +421,8 @@ gather() {
     depth=$((depth - 1))
     nl=$keep
   fi
+  if ((wclr)); then EC[dk]=1; fi
+  wclr=$held
   emit d
   # Past the delimiter line: to the next line's start, or the command's end.
   if ((end < nl - 1)); then
@@ -388,6 +435,10 @@ gather() {
 
 emit() {
   EK+=("$1") EA+=("${2:-0}") EB+=("${3:-0}") ER+=("${4:-}") EX+=("${5:-}")
+  if ((wclr)) && [[ $1 == [WARI] ]]; then
+    EC[${#EK[@]} - 1]=1
+    wclr=0
+  fi
 }
 
 # add <kind> <text>: add a part to the word being read, merging text into a part of its kind.
@@ -523,11 +574,12 @@ dollar() {
         adv
         adv
         arith '' 'an arithmetic expansion that does not close with ))'
+        raw_text "$L0" "$C0" "$L" "$C"
+        add x "$raw"
       else
         substitution '$(' "$L0" "$C0"
+        if [[ $1 == d ]]; then add "S$sub_d" "$raw"; else add "s$sub_d" "$raw"; fi
       fi
-      raw_text "$L0" "$C0" "$L" "$C"
-      add x "$raw"
       ;;
     '{')
       adv
@@ -561,9 +613,10 @@ dollar() {
 # on its (, as a command list to the ) that closes it at its own level, and set raw to its text.
 # The parts of the word being read move past the body's, so they stay together.
 substitution() {
-  local held_k=("${pk[@]:wfirst}") held_t=("${pt[@]:wfirst}") k i held_rx=$rx held_rxd=$rxd
+  local held_k=("${pk[@]:wfirst}") held_t=("${pt[@]:wfirst}") k i held_rx=$rx held_rxd=$rxd held_clr=$wclr
+  local d=${#EK[@]}
   # Its body is a command list, whatever word holds it.
-  rx=0 rxd=0 assign_pos=0
+  rx=0 rxd=0 assign_pos=0 wclr=0
   for ((k = ${#pk[@]} - 1; k >= wfirst; k--)); do unset 'pk[k]' 'pt[k]'; done
   adv
   emit D 0 0 '' "$1"
@@ -578,7 +631,7 @@ substitution() {
   done
   depth=$((depth - 1))
   C=$((C + 1))
-  rx=$held_rx rxd=$held_rxd
+  rx=$held_rx rxd=$held_rxd wclr=$held_clr sub_d=$d
   emit d
   wfirst=${#pk[@]}
   pk+=("${held_k[@]}") pt+=("${held_t[@]}")
@@ -599,7 +652,7 @@ parameter() {
   [[ $rest =~ $re_head ]] || unread 'a ${ } this hook does not read'
   head=${BASH_REMATCH[0]} prefix=${BASH_REMATCH[1]} pname=${BASH_REMATCH[2]} sub=${BASH_REMATCH[3]}
   # An indexed array's subscript is arithmetic.
-  [[ $sub == *[A-Za-z_\$]* ]] && vstop=1
+  if [[ $sub == *[A-Za-z_\$]* ]]; then wclr=1; fi
   rest=${rest:${#head}}
   if [[ $rest == '}'* ]]; then
     C=$((C + ${#head} + 1))
@@ -616,7 +669,14 @@ parameter() {
     # A prompt expansion runs the substitutions in the value.
     @P) unread 'the ${ } operator @P' ;;
     @?) [[ ${rest:2:1} == '}' ]] || unread 'a ${ } this hook does not read' ;;
-    = | :=) vstop=1 ;;
+    = | :=)
+      # It assigns the name, or through ! the variable its value names.
+      if [[ $prefix == '!' ]]; then
+        wclr=1
+      elif [[ -z $prefix && $pname == [A-Za-z_]* ]]; then
+        nofollow[$pname]=1
+      fi
+      ;;
   esac
   k=$((C + ${#head} + ${#op}))
   while :; do
@@ -659,7 +719,7 @@ parameter() {
     esac
   done
   # An offset is arithmetic.
-  if [[ $op == : ]] && [[ ${ln:C+${#head}+1:k-C-${#head}-1} == *[A-Za-z_\$]* ]]; then vstop=1; fi
+  if [[ $op == : ]] && [[ ${ln:C+${#head}+1:k-C-${#head}-1} == *[A-Za-z_\$]* ]]; then wclr=1; fi
   add x "\${${ln:C:k-C+1}"
   C=$((k + 1))
 }
@@ -708,8 +768,7 @@ arith() {
     esac
   done
   raw_text "$L0" "$C0" "$L" "$C"
-  [[ ${raw%))} == *[A-Za-z_\$]* ]] && vstop=1
-  return 0
+  if [[ ${raw%))} == *[A-Za-z_\$]* ]]; then wclr=1; fi
 }
 
 # arith_dollar: read the expansion a $ in arithmetic starts. A ${ } adds no part: the arithmetic is
@@ -844,7 +903,7 @@ array() {
     read_word
     ((wcount)) || unread "a $c out of place"
     # An element's [subscript]= is arithmetic.
-    [[ ${pk[wfirst]} == l && ${pt[wfirst]} == '['* ]] && vstop=1
+    if [[ ${pk[wfirst]} == l && ${pt[wfirst]} == '['* ]]; then wclr=1; fi
   done
   wfirst=${#pk[@]}
   pk+=("${held_k[@]}") pt+=("${held_t[@]}")
@@ -1291,9 +1350,9 @@ test_command() {
       return 0
     fi
     read_word
-    emit W "$wfirst" "$wcount" "$wraw"
     # An arithmetic comparison evaluates its words as arithmetic.
-    [[ $wraw =~ ^-(eq|ne|lt|le|gt|ge)$ ]] && vstop=1
+    if [[ $wraw =~ ^-(eq|ne|lt|le|gt|ge)$ ]]; then wclr=1; fi
+    emit W "$wfirst" "$wcount" "$wraw"
     if [[ $wraw == '=~' ]]; then
       skip_blanks
       rx=1 rxd=0
@@ -1630,14 +1689,26 @@ for ((e = 0; e < ${#EK[@]}; e++)); do
 done
 
 # The first pass, before anything is judged: each command's command word, the forms refused by
-# what a command runs, whether HOME, TMPDIR and CLAUDE_JOB_DIR keep the hook's values and $PWD
-# stands for the directory, and which commands may move the shell: TRIG[s] 1 for each, CD[s] 1 for
-# a cd the walk follows, the command word cd itself, with no wrapper, and DEAD[s] 1 for one that
-# may move it at any later point too (eval, source, ., trap, a command word the hook cannot name),
-# by a trap it sets or a function it defines.
-CW=() CN=() CU=() CH=() TRIG=() CD=() DEAD=()
-stop=$vstop ifs_prefixes=0 trig=0
-three='(^|[^A-Za-z0-9_])(HOME|TMPDIR|CLAUDE_JOB_DIR|PWD)([^A-Za-z0-9_]|$)'
+# what a command runs, which commands may move the shell, and what each one does to the variables.
+# TRIG[s] 1 for a command that may move the shell; CD[s] 1 for a cd the walk follows, the command
+# word cd itself, with no wrapper; DEAD[s] 1 for one that may move it or assign any variable at any
+# later point too (eval, source, ., trap, mapfile or readarray with -C, a command word the hook
+# cannot name), by a trap it sets, a function it defines or the code it runs; VDEAD[s] 1 for one
+# after which an assignment may assign any variable (declare, typeset or local with an option
+# holding i or n). CLR[s] 1 for a simple or compound command that may assign any variable as it
+# runs: one whose words, redirections or here-document bodies hold what sets EC, let, an array
+# element's assignment, or an assigning builtin given a name from an expansion. ASG[s] 1 for a
+# command of assignments alone, 2 for export with name=word words alone, WN[s] the names a whole
+# assignment there assigns, and STK[s] 1 for eval "$(<path>/team-stack env)".
+# acount[name] counts the whole assignments and the for loops with in that assign each name,
+# nofollow[name] is 1 for a name assigned any other way, and FOL[name] 1 for one the walk follows:
+# assigned once, by one of those, and not one bash sets itself.
+CW=() CN=() CU=() CH=() TRIG=() CD=() DEAD=() VDEAD=() CLR=() ASG=() WN=() STK=()
+declare -A acount=() FOL=()
+ifs_prefixes=0 trig=0 anyclr=0 anydead=0
+re_name='^[A-Za-z_][A-Za-z0-9_]*'
+re_stack='^"\$\(((~|[A-Za-z0-9_.~/-]*)/)?team-stack env\)"$'
+re_shell='^(BASH.*|COMP_.*|READLINE_.*|REPLY|OPTARG|OPTIND|OPTERR|PWD|OLDPWD|PATH|IFS|CDPATH|RANDOM|SRANDOM|SECONDS|LINENO|PIPESTATUS|MAPFILE|DIRSTACK|FUNCNAME|GROUPS|HISTCMD|EPOCHREALTIME|EPOCHSECONDS|EUID|UID|PPID|SHLVL|HOSTNAME|HOSTTYPE|MACHTYPE|OSTYPE|SHELLOPTS|COLUMNS|LINES|GLOBIGNORE|COPROC|POSIXLY_CORRECT)$'
 
 # args_of <S>: set args to the events of the command's words after its command word.
 args_of() {
@@ -1688,7 +1759,47 @@ check_shopt() {
   done
 }
 
-# check_assigning <S> <builtin>: stop following the three variables when the builtin may assign one.
+# clears <command>: whether any of the command's own words, redirections or here-document bodies
+# holds what sets EC.
+clears() {
+  local e
+  for e in ${OWN[$1]}; do
+    if ((${EC[e]:-0})); then return 0; fi
+    if [[ ${EK[e]} == I && -n ${HD[e]:-} ]] && ((${EC[HD[e]]:-0})); then return 0; fi
+  done
+  return 1
+}
+
+# names_in <text>: mark every name in the text as assigned another way; in an option, every name
+# that starts at any of its letters, as an option's value may follow it (printf -vNAME).
+names_in() {
+  local rest=$1 i
+  if [[ $1 == [-+]* ]]; then
+    for ((i = 1; i < ${#1}; i++)); do
+      if [[ ${1:i} =~ $re_name ]]; then nofollow[${BASH_REMATCH[0]}]=1; fi
+    done
+    return 0
+  fi
+  while [[ $rest =~ [A-Za-z_][A-Za-z0-9_]* ]]; do
+    nofollow[${BASH_REMATCH[0]}]=1
+    rest=${rest#*"${BASH_REMATCH[0]}"}
+  done
+}
+
+# computed <event>: whether the word holds an expansion before its first =, in the name it gives.
+computed() {
+  local k=${EA[$1]} end=$((EA[$1] + EB[$1]))
+  for ((; k < end; k++)); do
+    case ${pk[k]} in
+      l | q | a) [[ ${pt[k]} != *=* ]] || return 1 ;;
+      *) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# check_assigning <S> <builtin>: every name in the builtin's words is assigned another way; a word
+# whose name holds an expansion may assign any variable, and some options end following.
 check_assigning() {
   local e
   args_of "$1"
@@ -1696,15 +1807,17 @@ check_assigning() {
     # printf assigns only through a -v, which only its first word can be.
     ((${#args[@]})) || return 0
     name_of "${EA[args[0]]}" "${EB[args[0]]}"
-    if ((nu)) || [[ $nm == -v* ]]; then stop=1; fi
-    return 0
+    if ((nu)); then CLR[$1]=1; fi
+    [[ $nm == -v* ]] || return 0
   fi
   for e in "${args[@]}"; do
     name_of "${EA[e]}" "${EB[e]}"
-    if ((nu)) || [[ $nm =~ $three ]]; then stop=1; fi
+    names_in "$nm"
+    if computed "$e"; then CLR[$1]=1; fi
     case $2 in
-      declare | typeset | local) if [[ $nm == [-+]*[in]* ]]; then stop=1; fi ;;
-      mapfile | readarray) if [[ $nm == -*C* ]]; then stop=1; fi ;;
+      declare | typeset | local) if [[ $nm == [-+]*[in]* ]]; then VDEAD[$1]=1; fi ;;
+      # Its callback is code it runs.
+      mapfile | readarray) if [[ $nm == -*C* ]]; then DEAD[$1]=1 TRIG[$1]=1 trig=1; fi ;;
     esac
   done
 }
@@ -1712,37 +1825,106 @@ check_assigning() {
 for s in "${starts[@]}"; do
   if [[ ${EK[s]} == C ]]; then
     CW[s]=-1
-    # A for loop assigns its variable, the word after its for.
-    if [[ ${EX[s]} == for && ${ER[s + 1]} =~ ^(HOME|TMPDIR|CLAUDE_JOB_DIR|PWD)$ ]]; then stop=1; fi
+    if clears "$s"; then CLR[s]=1; fi
+    # A for loop assigns its variable, the word after its for: with in, each value of its words.
+    if [[ ${EX[s]} == for ]]; then
+      name=${ER[s + 1]}
+      if [[ ${EK[s + 2]} == K && ${EX[s + 2]} == in ]]; then
+        acount[$name]=$((${acount[$name]:-0} + 1))
+      else
+        nofollow[$name]=1
+      fi
+    fi
     continue
   fi
   resolve "$s"
-  CW[s]=$cw CN[s]=$cn CU[s]=$cu CH[s]=$chd TRIG[s]=0 CD[s]=0 DEAD[s]=0
+  CW[s]=$cw CN[s]=$cn CU[s]=$cu CH[s]=$chd TRIG[s]=0 CD[s]=0 DEAD[s]=0 WN[s]=' '
+  stack=0
+  if ((cw >= 0 && !cu)) && [[ $cn == eval ]]; then
+    args_of "$s"
+    if ((${#args[@]} == 1)) && [[ ${ER[args[0]]} =~ $re_stack ]]; then stack=1 STK[s]=1; fi
+  fi
   # A command that may move the shell.
-  if ((cw >= 0)) && { ((cu)) || [[ ${cn##*/} == @(cd|pushd|popd) || $cn == @(eval|source|.|trap) ]]; }; then
+  if ((cw >= 0 && !stack)) && { ((cu)) || [[ ${cn##*/} == @(cd|pushd|popd) || $cn == @(eval|source|.|trap) ]]; }; then
     TRIG[s]=1 trig=1
     if ((!cu && !wrapped)) && [[ $cn == cd ]]; then CD[s]=1; fi
     if ((cu)) || [[ $cn == @(eval|source|.|trap) ]]; then DEAD[s]=1; fi
   fi
+  if clears "$s"; then CLR[s]=1; fi
+  # A command of assignments alone assigns each name=word whole; name+=, an array, an element and
+  # the prefix assignments of a command that runs one assign another way.
+  ((words)) || ASG[s]=1
   for e in ${OWN[s]}; do
     [[ ${EK[e]} == A ]] || continue
     text=${pt[EA[e]]}
-    if [[ $text =~ ^(HOME|TMPDIR|CLAUDE_JOB_DIR|PWD)(\[|\+?=) || $text =~ ^[A-Za-z_][A-Za-z0-9_]*\[ ]]; then stop=1; fi
+    [[ $text =~ $re_name ]]
+    name=${BASH_REMATCH[0]}
+    whole=0
+    if ((!words)) && [[ ${text:${#name}:1} == = ]]; then
+      whole=1
+      # An array, name=( ).
+      if ((EB[e] == 2)) && [[ $text == "$name=" && ${pk[EA[e] + 1]} == x && ${pt[EA[e] + 1]} == '('* ]]; then whole=0; fi
+    fi
+    if ((whole)); then
+      acount[$name]=$((${acount[$name]:-0} + 1))
+      WN[s]+="$name "
+    else
+      nofollow[$name]=1
+    fi
+    # An element's subscript is arithmetic.
+    if [[ ${text:${#name}:1} == '[' ]]; then CLR[s]=1; fi
     if ((words)) && [[ $text =~ ^IFS\+?= ]]; then ifs_prefixes=$((ifs_prefixes + 1)); fi
   done
-  ((cw >= 0)) || continue
-  if ((cu)); then
-    stop=1
-    continue
-  fi
+  ((cw >= 0 && !cu)) || continue
   case $cn in
     alias | enable | hash) unread "the $cn builtin" ;;
     set) check_set "$s" ;;
     shopt) check_shopt "$s" ;;
-    eval | source | . | trap | let) stop=1 ;;
-    declare | typeset | local | readonly | read | mapfile | readarray | getopts | unset | wait | export | printf)
+    let) CLR[s]=1 ;;
+    export)
+      # export with name=word words alone assigns each name whole.
+      args_of "$s"
+      asg=$((!wrapped && ${#args[@]} > 0))
+      for e in "${args[@]}"; do
+        [[ ${pk[EA[e]]} == l && ${pt[EA[e]]} =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || asg=0
+      done
+      if ((asg)); then
+        ASG[s]=2
+        for e in "${args[@]}"; do
+          name=${pt[EA[e]]%%=*}
+          acount[$name]=$((${acount[$name]:-0} + 1))
+          WN[s]+="$name "
+        done
+      else
+        check_assigning "$s" export
+      fi
+      ;;
+    declare | typeset | local | readonly | read | mapfile | readarray | getopts | unset | wait | printf)
       check_assigning "$s" "$cn"
       ;;
+  esac
+done
+for name in "${!acount[@]}"; do
+  if ((acount[$name] == 1)) && [[ -z ${nofollow[$name]:-} && ! $name =~ $re_shell ]]; then FOL[$name]=1; fi
+done
+for s in "${starts[@]}"; do
+  if ((${CLR[s]:-0})); then anyclr=1; fi
+  if ((${DEAD[s]:-0} || ${VDEAD[s]:-0})); then anydead=1; fi
+done
+
+# The substitutions whose output the walk knows: BN[D] 1 for $(basename word [word]) and MK[D] 1
+# for $(mktemp ...), each the bare command word and its words alone, the whole of the $( ).
+BN=() MK=()
+for ((e = 0; e < ${#EK[@]}; e++)); do
+  [[ ${EK[e]} == D && ${EX[e]} == '$(' && ${EK[e + 1]} == P && ${EK[e + 2]} == S ]] || continue
+  s=$((e + 2))
+  ((MATCH[s] + 1 == MATCH[e + 1] && MATCH[e + 1] + 1 == MATCH[e] && CW[s] >= 0 && !CU[s])) || continue
+  read -ra own <<<"${OWN[s]}"
+  ((own[0] == CW[s])) || continue
+  for k in "${own[@]}"; do [[ ${EK[k]} == W ]] || continue 2; done
+  case ${CN[s]} in
+    basename) if ((${#own[@]} == 2 || ${#own[@]} == 3)); then BN[e]=1; fi ;;
+    mktemp) MK[e]=1 ;;
   esac
 done
 
@@ -1761,36 +1943,63 @@ if [[ $command == *IFS* ]]; then
 fi
 
 # ---- The walk ------------------------------------------------------------------------------------
-declare -A known=()
-if ((!stop)); then
-  known[HOME]=$HOME
-  known[TMPDIR]=${TMPDIR:-$tmp_root}
-  [[ -z ${CLAUDE_JOB_DIR:-} ]] || known[CLAUDE_JOB_DIR]=$CLAUDE_JOB_DIR
-fi
 allowed=("$scratch")
 for dir in "$tmp_root" "${TMPDIR:-}" "${CLAUDE_JOB_DIR:-}"; do
   [[ -z $dir ]] || allowed+=("$(realpath -m -- "$dir")")
 done
 
-# The walk's environment is the set of directories the shell may be in, ? when it may be in any:
-# one line per directory, a flag and its absolute path, the flag 1 when the shell is there only
-# because a cd may have failed, else 0. The empty set is a point the shell never reaches. A set of
-# more than max_dirs directories is ?, so a command of many cds that may fail costs no more.
-max_dirs=16
+# The walk's environment: the set of directories the shell may be in, ? when it may be in any, one
+# line per directory, a flag and its absolute path, the flag 1 when the shell is there only because
+# a cd may have failed, else 0; then, after a \x04, the variables it follows: s first once something
+# has stopped the following on the way there, after which bash may split a value another way, then
+# one line per variable, <name>=<values>, its values joined by \x02, each v<value>, or
+# e<origin>/<value> for a value left empty by a failed mktemp, which assigned the variable origin. A
+# variable with no line is unknown. The empty environment is a point the shell never reaches. A set
+# of more than max_dirs directories is ?, and a variable or word of more than max_vals values
+# unknown, so a command of many cds that may fail costs no more.
+max_dirs=16 max_vals=64
 
-# env_union <a> <b>: set un to the union of the two; a directory in both keeps the flag 1 only when
-# both give it.
-env_union() {
+# The variables the walk starts with: HOME, TMPDIR and CLAUDE_JOB_DIR as the hook's environment
+# sets them, but one the command assigns in a way the walk does not follow; startvar[name] is 1 for
+# each the hook's environment sets, and for PWD, whose unknown value the walk no longer follows.
+# A function's body starts with those of the three the command does not assign, none when it holds
+# anything that ends the following, and with s when it holds anything that stops it.
+declare -A startvar=([PWD]=1)
+start_vars='' body_vars=''
+for name in HOME TMPDIR CLAUDE_JOB_DIR; do
+  value=${!name:-}
+  [[ -n $value ]] || continue
+  startvar[$name]=1
+  [[ $value != *[$'\n\x02\x04']* ]] || continue
+  if [[ -z ${acount[$name]:-}${nofollow[$name]:-} ]]; then
+    start_vars+=$'\n'$name=v$value
+    ((anydead)) || body_vars+=$'\n'$name=v$value
+  elif [[ -n ${FOL[$name]:-} ]]; then
+    start_vars+=$'\n'$name=v$value
+  fi
+done
+start_vars=${start_vars#$'\n'} body_vars=${body_vars#$'\n'}
+if ((anyclr)); then body_vars=s${body_vars:+$'\n'$body_vars}; fi
+
+# env_split <env>: set ed to its directories and ev to its variables.
+env_split() {
+  ed=${1%%$'\x04'*}
+  ev=${1:${#ed}+1}
+}
+
+# dirs_union <a> <b>: set du to the union of two sets of directories; a directory in both keeps the
+# flag 1 only when both give it.
+dirs_union() {
   if [[ $1 == '?' || $2 == '?' ]]; then
-    un='?'
+    du='?'
     return 0
   fi
   if [[ -z $1 || $1 == "$2" ]]; then
-    un=$2
+    du=$2
     return 0
   fi
   if [[ -z $2 ]]; then
-    un=$1
+    du=$1
     return 0
   fi
   local rest=$1$'\n'$2 x d order=()
@@ -1807,37 +2016,225 @@ env_union() {
     fi
   done
   if ((${#order[@]} > max_dirs)); then
-    un='?'
+    du='?'
     return 0
   fi
-  un=''
-  for d in "${order[@]}"; do un+=${flag[$d]}$d$'\n'; done
-  un=${un%$'\n'}
+  du=''
+  for d in "${order[@]}"; do du+=${flag[$d]}$d$'\n'; done
+  du=${du%$'\n'}
+}
+
+# vars_union <a> <b>: set vu to the variables both know, each with every value either gives, and s
+# when either has it. The lines both start with alike are kept as they are, found by halving, since
+# an assignment adds its line at the end; vars_merge merges the rest.
+vars_union() {
+  local a=$1 b=$2 lo=0 hi=${#1} mid x j=-1
+  ((${#b} >= hi)) || hi=${#b}
+  while ((lo < hi)); do
+    mid=$(((lo + hi + 1) / 2))
+    if [[ ${a:0:mid} == "${b:0:mid}" ]]; then lo=$mid; else hi=$((mid - 1)); fi
+  done
+  if [[ $lo == "${#a}" && ${b:lo:1} == $'\n' ]] || [[ $lo == "${#b}" && ${a:lo:1} == $'\n' ]]; then
+    j=$lo
+  else
+    x=${a:0:lo}
+    if [[ $x == *$'\n'* ]]; then
+      x=${x%$'\n'*}
+      j=${#x}
+    fi
+  fi
+  if ((j < 0)); then
+    vars_merge "$a" "$b"
+    return 0
+  fi
+  vars_merge "${a:j+1}" "${b:j+1}"
+  vu=${a:0:j}${vu:+$'\n'$vu}
+}
+
+# vars_merge <a> <b>: set vu as vars_union does, line by line.
+vars_merge() {
+  local la=() lb=() x n s=0 out='' entry merged
+  local -A inb=() seen=()
+  mapfile -t la <<<"$1"
+  mapfile -t lb <<<"$2"
+  for x in "${lb[@]}"; do
+    if [[ $x == s ]]; then s=1; elif [[ -n $x ]]; then inb[${x%%=*}]=$x; fi
+  done
+  for x in "${la[@]}"; do
+    if [[ $x == s ]]; then
+      s=1
+      continue
+    fi
+    [[ -n $x ]] || continue
+    n=${x%%=*}
+    [[ -n ${inb[$n]:-} ]] || continue
+    if [[ ${inb[$n]} == "$x" ]]; then
+      out+=$'\n'$x
+      continue
+    fi
+    seen=() merged=''
+    while IFS= read -rd $'\x02' entry; do
+      [[ -z ${seen[$entry]:-} ]] || continue
+      seen[$entry]=1
+      merged+=$'\x02'$entry
+    done <<<"${x#*=}"$'\x02'"${inb[$n]#*=}"$'\x02'
+    if ((${#seen[@]} <= max_vals)); then out+=$'\n'$n=${merged:1}; fi
+  done
+  out=${out#$'\n'}
+  if ((s)); then out=s${out:+$'\n'$out}; fi
+  vu=$out
+}
+
+# env_union <a> <b>: set un to the union of the two environments.
+env_union() {
+  if [[ -z $1 || $1 == "$2" ]]; then
+    un=$2
+    return 0
+  fi
+  if [[ -z $2 ]]; then
+    un=$1
+    return 0
+  fi
+  local ad av
+  env_split "$1"
+  ad=$ed av=$ev
+  env_split "$2"
+  dirs_union "$ad" "$ed"
+  if [[ $av == "$ev" ]]; then vu=$av; else vars_union "$av" "$ev"; fi
+  un=$du${vu:+$'\x04'$vu}
 }
 
 # env_fail <env>: set fl to the environment with every directory flagged, where a failed cd leaves
 # the shell.
 env_fail() {
   fl=$1
-  [[ $1 == '?' || -z $1 ]] && return 0
-  fl=$'\n'$1
+  [[ -z $1 || $1 == '?' || $1 == '?'$'\x04'* ]] && return 0
+  env_split "$1"
+  fl=$'\n'$ed
   fl=${fl//$'\n'0/$'\n'1}
-  fl=${fl:1}
+  fl=${fl:1}${ev:+$'\x04'$ev}
+}
+
+# env_lose <env>: set lo to the environment with the directory unknown and its variables kept.
+env_lose() {
+  lo=''
+  [[ -n $1 ]] || return 0
+  env_split "$1"
+  lo='?'${ev:+$'\x04'$ev}
 }
 
 # env_dirs <env>: set dl to its directories and df to their flags, or dunk to 1 when it is ?.
 env_dirs() {
-  local rest=$1 x
+  local rest x
   dl=() df=() dunk=0
-  if [[ $1 == '?' ]]; then
+  env_split "$1"
+  if [[ $ed == '?' ]]; then
     dunk=1
     return 0
   fi
+  rest=$ed
   while [[ -n $rest ]]; do
     x=${rest%%$'\n'*}
     rest=${rest:${#x}+1}
     df+=("${x:0:1}") dl+=("${x:1}")
   done
+}
+
+# var_line <env> <name>: set vl to the variable's line, or '' when it is unknown, and ev to the
+# environment's variables.
+var_line() {
+  local re=$'(^|\n)'$2$'=([^\n]*)'
+  vl=''
+  env_split "$1"
+  if [[ $ev =~ $re ]]; then vl=$2=${BASH_REMATCH[2]}; fi
+}
+
+# var_get <env> <name>: set gv to the values the variable may hold and go to the variable each
+# one's emptiness comes from ('' for none), gk to 1 when it is known, and gs to 1 when the
+# environment has s.
+var_get() {
+  local entry
+  gv=() go=() gk=0 gs=0
+  var_line "$1" "$2"
+  [[ $ev != s && $ev != s$'\n'* ]] || gs=1
+  [[ -n $vl ]] || return 0
+  gk=1
+  while IFS= read -rd $'\x02' entry; do
+    if [[ $entry == v* ]]; then
+      gv+=("${entry:1}") go+=('')
+    else
+      entry=${entry:1}
+      go+=("${entry%%/*}") gv+=("${entry#*/}")
+    fi
+  done <<<"${vl#*=}"$'\x02'
+}
+
+# var_drop <env> <pattern>...: set vd to the environment with the variables whose names match a
+# pattern unknown.
+var_drop() {
+  local env=$1 lines=() x p out=''
+  shift
+  vd=$env
+  [[ -n $env ]] || return 0
+  env_split "$env"
+  [[ -n $ev ]] || return 0
+  if (($# == 1)) && [[ $1 != *[\*\?\[]* ]]; then
+    # One name: its line alone.
+    var_line "$env" "$1"
+    [[ -n $vl ]] || return 0
+    out=$'\n'$ev$'\n'
+    out=${out/$'\n'"$vl"$'\n'/$'\n'}
+    out=${out#$'\n'}
+    out=${out%$'\n'}
+    vd=$ed${out:+$'\x04'$out}
+    return 0
+  fi
+  mapfile -t lines <<<"$ev"
+  for x in "${lines[@]}"; do
+    if [[ $x != s ]]; then
+      # shellcheck disable=SC2053 # a pattern
+      for p in "$@"; do [[ ${x%%=*} != $p ]] || continue 2; done
+    fi
+    out+=$'\n'$x
+  done
+  out=${out#$'\n'}
+  vd=$ed${out:+$'\x04'$out}
+}
+
+# var_set <env> <name>: set vd to the environment with the variable holding the values in sv, the
+# variable each one's emptiness comes from in so; unknown when a value holds a newline, a \x02 or
+# a \x04, or there are more than max_vals.
+var_set() {
+  local i x add=''
+  local -A seen=()
+  var_drop "$1" "$2"
+  [[ -n $vd ]] || return 0
+  ((${#sv[@]} <= max_vals)) || return 0
+  for i in "${!sv[@]}"; do
+    [[ ${sv[i]} != *[$'\n\x02\x04']* ]] || return 0
+    if [[ -n ${so[i]:-} ]]; then x=e${so[i]}/${sv[i]}; else x=v${sv[i]}; fi
+    [[ -z ${seen[$x]:-} ]] || continue
+    seen[$x]=1
+    add+=$'\x02'$x
+  done
+  env_split "$vd"
+  vd=$ed$'\x04'${ev:+$ev$'\n'}$2=${add:1}
+}
+
+# var_clear <env>: set vd to the environment with every variable the command assigns unknown, and
+# s; HOME, TMPDIR and CLAUDE_JOB_DIR keep the hook's values when it assigns none of them.
+var_clear() {
+  local lines=() x n out=''
+  vd=$1
+  [[ -n $1 ]] || return 0
+  env_split "$1"
+  mapfile -t lines <<<"$ev"
+  for x in "${lines[@]}"; do
+    [[ -n $x && $x != s ]] || continue
+    n=${x%%=*}
+    [[ -n ${acount[$n]:-}${nofollow[$n]:-} ]] || out+=$'\n'$x
+  done
+  vd=$ed$'\x04's$out
 }
 
 # canon <absolute path>: set cp to the path with its . and .. resolved by text and its slashes
@@ -1857,108 +2254,184 @@ canon() {
   cp=/${out[*]}
 }
 
-# word_values <first> <count>: set vals to every value the word may have, in the directories dl
-# that env_dirs set, and vdir to the index in dl of the directory each value's $PWD stands for (-1
-# for none); or why to the reason it cannot be worked out (expansion, or cd for a $PWD with the
-# directory unknown).
+# The substitution texts of the basename names a value holds, by their D events; such a name is
+# $'\x01'<D>$'\x01' in the value, put back as written when a refusal names it.
+bnraw=()
+
+# word_values <first> <count> <mode> [skip]: set vals to every value the word may have in the
+# environment cur, its first skip characters left out (an assignment's name=), in the directories
+# dl that env_dirs set; vdir to the index in dl of the directory each value's $PWD stands for (-1
+# for none) and vorg to the variable each value's emptiness after a failed mktemp comes from; or
+# why to the reason it cannot be worked out: expansion, cd (for a $PWD with the directory unknown)
+# or var (for the variable wvar). The mode is t for a word bash splits and globs (a tee file, a
+# cd's word, a for loop's), r for a redirection target, which bash refuses when it splits it, and a
+# for an assignment's value, which it neither splits nor globs.
 word_values() {
-  local k=$1 end=$(($1 + $2)) text i j nv nd
-  vals=('') vdir=(-1) why=''
+  local k=$1 end=$(($1 + $2)) mode=$3 text kind i j d x nv nd no pv pd po stopped=0
+  vals=('') vdir=(-1) vorg=('') why='' wvar=''
+  # After a stop, bash may split an unquoted value by another IFS.
+  env_split "$cur"
+  if [[ $ev == s || $ev == s$'\n'* ]]; then stopped=1; fi
   for ((; k < end; k++)); do
-    text=${pt[k]}
-    case ${pk[k]} in
+    text=${pt[k]} kind=${pk[k]} pv=() pd=() po=()
+    if ((k == $1 && ${4:-0})); then text=${text:$4}; fi
+    case $kind in
       l)
-        if [[ $text == *[\*\?\[\{\}]* || $text == *[=:]\~* ]]; then
+        if [[ $mode == a ]]; then
+          if [[ $text == *:\~* ]]; then
+            why=expansion
+            return 0
+          fi
+        elif [[ $text == *[\*\?\[\{\}]* || $text == *[=:]\~* ]]; then
           why=expansion
           return 0
         fi
         if ((k == $1)) && [[ $text == \~* ]]; then
           # ~ alone or before a /, the whole word or before an unquoted /; a ~user is unknown.
-          if [[ -z ${known[HOME]+set} ]] || ! [[ $text == \~/* || ($text == \~ && $((k + 1)) == "$end") ]]; then
+          if ! [[ $text == \~/* || ($text == \~ && $((k + 1)) == "$end") ]]; then
             why=expansion
             return 0
           fi
-          text=${known[HOME]}${text:1}
+          if ((dead || vdead)); then
+            why=var wvar=HOME
+            return 0
+          fi
+          var_get "$cur" HOME
+          if ((!gk)); then
+            why=var wvar=HOME
+            return 0
+          fi
+          for i in "${!gv[@]}"; do pv+=("${gv[i]}${text:1}") po+=("${go[i]}"); done
+        else
+          pv=("$text")
         fi
         ;;
-      q) ;;
+      q) pv=("$text") ;;
       a)
         if [[ $text == *\\* ]]; then
           why=expansion
           return 0
         fi
+        pv=("$text")
         ;;
       v | V)
-        if [[ $text == PWD ]] && ((!stop)); then
+        if [[ $text == PWD ]]; then
           # Each directory the shell may be in.
+          if [[ -n ${acount[PWD]:-}${nofollow[PWD]:-} ]] || ((vdead)); then
+            why=var wvar=PWD
+            return 0
+          fi
+          if ((stopped)) && [[ $kind == v && $mode != a ]]; then
+            why=expansion
+            return 0
+          fi
           if ((dunk)); then
             why='cd'
             return 0
           fi
-          nv=() nd=()
-          for i in "${!vals[@]}"; do
-            if ((vdir[i] >= 0)); then
-              nv+=("${vals[i]}${dl[vdir[i]]}") nd+=("${vdir[i]}")
-            else
-              for j in "${!dl[@]}"; do nv+=("${vals[i]}${dl[j]}") nd+=("$j"); done
+          for j in "${!dl[@]}"; do
+            if [[ $kind == v && $mode != a && ${dl[j]} == *[$' \t\n*?[\x01']* ]]; then
+              why=expansion
+              return 0
             fi
+            pv+=("${dl[j]}") pd+=("$j") po+=('')
           done
-          if [[ ${pk[k]} == v ]]; then
-            for j in "${dl[@]}"; do
-              if [[ $j == *[$' \t\n*?[']* ]]; then
+        else
+          if ((dead || vdead)); then
+            why=var wvar=$text
+            return 0
+          fi
+          var_get "$cur" "$text"
+          if ((!gk)); then
+            why=var wvar=$text
+            return 0
+          fi
+          if [[ $kind == v && $mode != a ]]; then
+            # Unquoted, bash splits and globs the value, by an IFS a stop may have changed.
+            if ((gs)); then
+              why=expansion
+              return 0
+            fi
+            for x in "${gv[@]}"; do
+              if [[ $x == *[$' \t\n*?[\x01']* ]]; then
                 why=expansion
                 return 0
               fi
             done
           fi
-          vals=("${nv[@]}") vdir=("${nd[@]}")
-          continue
+          pv=("${gv[@]}") po=("${go[@]}")
         fi
-        if [[ -z ${known[$text]+set} ]]; then
-          why=expansion
-          return 0
-        fi
-        if [[ ${pk[k]} == v && ${known[$text]} == *[$' \t\n*?[']* ]]; then
-          why=expansion
-          return 0
-        fi
-        text=${known[$text]}
         ;;
       # A process substitution, a whole word, is the pipe to it.
-      p) text=/dev/fd/63 ;;
+      p) pv=(/dev/fd/63) ;;
+      s* | S*)
+        # basename prints a name with no / in it, ., .. or a lone /, which bash splits unquoted.
+        d=${kind:1}
+        if [[ -z ${BN[d]:-} ]] || [[ $kind == s* && $mode == t ]]; then
+          why=expansion
+          return 0
+        fi
+        bnraw[d]=$text
+        pv=($'\x01'"$d"$'\x01' . .. /)
+        ;;
       *)
         why=expansion
         return 0
         ;;
     esac
-    for i in "${!vals[@]}"; do vals[i]+=$text; done
+    nv=() nd=() no=()
+    for i in "${!vals[@]}"; do
+      for j in "${!pv[@]}"; do
+        d=${pd[j]:--1}
+        # A $PWD stands for the directory the value's first $PWD stands for.
+        if ((d >= 0 && vdir[i] >= 0 && d != vdir[i])); then continue; fi
+        ((d >= 0)) || d=${vdir[i]}
+        nv+=("${vals[i]}${pv[j]}") nd+=("$d") no+=("${vorg[i]:-${po[j]:-}}")
+      done
+    done
+    if ((${#nv[@]} > max_vals)); then
+      why=expansion
+      return 0
+    fi
+    vals=("${nv[@]}") vdir=("${nd[@]}") vorg=("${no[@]}")
   done
 }
 
 # The targets judged, in the order the walk meets them: tw each one as written, tr why it cannot be
 # worked out ('' when it can); paths their absolute values, pf the flag of the directory each was
-# taken from (1 when only a failed cd leaves the shell there) and pi the target each belongs to.
-tw=() tr=() paths=() pf=() pi=()
+# taken from (1 when only a failed cd leaves the shell there), pm the variable a failed mktemp left
+# empty in it ('' for none) and pi the target each belongs to.
+tw=() tr=() paths=() pf=() pm=() pi=()
 
-# reason <why>: set rs to the reason's words.
+# reason <why> [name]: set rs to the reason's words.
 reason() {
   case $1 in
     expansion) rs='it holds an expansion this hook does not follow' ;;
     cd) rs='a cd before it may have left any directory' ;;
     failed) rs='a cd before it may have failed; join them with &&' ;;
+    empty) rs="\$$2 may be empty when mktemp fails; join them with &&" ;;
+    var)
+      # A variable the command assigns, or one the walk starts with, is one it no longer follows.
+      if [[ -n ${startvar[$2]:-}${acount[$2]:-}${nofollow[$2]:-} ]]; then
+        rs="\$$2 is not followed here"
+      else
+        rs='it holds an expansion this hook does not follow'
+      fi
+      ;;
   esac
 }
 
-# judge <event> <dup> <moved>: work out the target word of the event in the environment cur,
-# taking a relative value from each directory the shell may be in: with dup, a value that is
-# digits, - or digits and - is a duplication, no file; with moved, a relative value is unknown.
+# judge <event> <dup> <moved> <mode>: work out the target word of the event in the environment
+# cur, taking a relative value from each directory the shell may be in: with dup, a value that is
+# digits, - or digits and - is a duplication, no file; with moved, a relative value is unknown;
+# the mode is word_values'.
 judge() {
-  local e=$1 v i d id=${#tw[@]} fp=() ff=()
+  local e=$1 v i d id=${#tw[@]} fp=() ff=() fm=()
   tw+=("${ER[e]}") tr+=('')
   env_dirs "$cur"
-  word_values "${EA[e]}" "${EB[e]}"
+  word_values "${EA[e]}" "${EB[e]}" "$4"
   if [[ -n $why ]]; then
-    reason "$why"
+    reason "$why" "$wvar"
     tr[id]=$rs
     return 0
   fi
@@ -1967,7 +2440,7 @@ judge() {
     [[ -n $v ]] || continue
     if (($2)) && [[ $v =~ ^([0-9]+-?|-)$ ]]; then continue; fi
     if [[ $v == /* ]]; then
-      fp+=("$v")
+      fp+=("$v") fm+=("${vorg[i]}")
       if ((d >= 0)); then ff+=("${df[d]}"); else ff+=(0); fi
       continue
     fi
@@ -1977,22 +2450,24 @@ judge() {
       return 0
     fi
     if ((d >= 0)); then
-      fp+=("${dl[d]}/$v") ff+=("${df[d]}")
+      fp+=("${dl[d]}/$v") ff+=("${df[d]}") fm+=("${vorg[i]}")
       continue
     fi
-    for d in "${!dl[@]}"; do fp+=("${dl[d]}/$v") ff+=("${df[d]}"); done
+    for d in "${!dl[@]}"; do fp+=("${dl[d]}/$v") ff+=("${df[d]}") fm+=("${vorg[i]}"); done
   done
-  paths+=("${fp[@]}") pf+=("${ff[@]}")
+  paths+=("${fp[@]}") pf+=("${ff[@]}") pm+=("${fm[@]}")
   for v in "${fp[@]}"; do pi+=("$id"); done
 }
 
 # cd_env <S>: set ok and ko to the environments a cd leaves when it succeeds and when it fails,
 # from cur: -L (the default) resolves .. by text, -P by the symlinks; a cd it cannot follow leaves
-# ok unknown.
+# the directory unknown on success. The variables stay as they were.
 cd_env() {
-  local e n=0 word=-1 phys=0 opts=1 i v d cands=() results=()
+  local e n=0 word=-1 phys=0 opts=1 i v d cands=() results=() vars=''
   env_fail "$cur"
-  ko=$fl ok='?'
+  ko=$fl
+  env_lose "$cur"
+  ok=$lo
   args_of "$1"
   for e in "${args[@]}"; do
     name_of "${EA[e]}" "${EB[e]}"
@@ -2013,15 +2488,21 @@ cd_env() {
   ((n <= 1)) || return 0
   env_dirs "$cur"
   if ((n == 0)); then
-    [[ -n ${known[HOME]:-} ]] || return 0
-    vals=("${known[HOME]}") vdir=(-1)
+    ((!dead && !vdead)) || return 0
+    var_get "$cur" HOME
+    ((gk)) || return 0
+    vals=("${gv[@]}") vdir=()
+    for v in "${vals[@]}"; do
+      [[ -n $v ]] || return 0
+      vdir+=(-1)
+    done
   else
-    word_values "${EA[word]}" "${EB[word]}"
+    word_values "${EA[word]}" "${EB[word]}" t
     [[ -z $why ]] || return 0
   fi
   for i in "${!vals[@]}"; do
     v=${vals[i]} d=${vdir[i]}
-    [[ $v != - && $v != *$'\n'* ]] || return 0
+    [[ $v != - && $v != *[$'\n\x04']* ]] || return 0
     if [[ -z $v ]]; then
       # bash refuses a null directory, and other shells stay put.
       ((!dunk)) || return 0
@@ -2041,6 +2522,8 @@ cd_env() {
       for d in "${dl[@]}"; do cands+=("$d/$v"); done
     fi
   done
+  env_split "$cur"
+  [[ -z $ev ]] || vars=$'\x04'$ev
   ok=''
   ((${#cands[@]})) || return 0
   if ((phys)); then
@@ -2058,39 +2541,224 @@ cd_env() {
     [[ $ok == *$'\n'0$v$'\n'* ]] || ok+=0$v$'\n' n=$((n + 1))
   done
   if ((n > max_dirs)); then
-    ok='?'
+    ok='?'$vars
     return 0
   fi
   ok=${ok:1}
-  ok=${ok%$'\n'}
+  ok=${ok%$'\n'}$vars
 }
 
-# Which compound commands a command that may move the shell is in, in the shell they run in (not
-# through a ( ) or a substitution): LOOPMOVE[k] 1 for such a loop, FMOVE[k] for such a function;
-# LOOPDEAD[k] and FDEAD[k] the same for a command that may move it at any later point.
-LOOPMOVE=() FMOVE=() LOOPDEAD=() FDEAD=() open=()
+# mk_part <event> <skip>: set mkd to the D event of the mktemp substitution that is the whole value
+# of the assignment, its first skip characters its name=, or to -1.
+mk_part() {
+  local k=${EA[$1]} end=$((EA[$1] + EB[$1])) d=-1
+  mkd=-1
+  ((${#pt[k]} == $2)) || return 0
+  for ((k++; k < end; k++)); do
+    case ${pk[k]} in
+      q) [[ -z ${pt[k]} ]] || return 0 ;;
+      s* | S*)
+        ((d < 0)) || return 0
+        d=${pk[k]:1}
+        ;;
+      *) return 0 ;;
+    esac
+  done
+  if ((d >= 0)) && [[ -n ${MK[d]:-} ]]; then mkd=$d; fi
+}
+
+# mk_values <D>: set mkv to the names the mktemp in the substitution prints when it succeeds, in the
+# environment cur: with -p dir or --tmpdir=dir, in that directory; with -t or --tmpdir, or with no
+# template and no -p, in $TMPDIR or the machine's /tmp (an assignment that is not exported does
+# not reach mktemp); otherwise the template, relative to the directory the shell is in. Return 1
+# when the hook cannot work them out.
+mk_values() {
+  local s=$(($1 + 2)) e opts=1 want=0 tflag=0 tdflag=0 tset=0 pdirs=() tmpl=() tdirs=() t d ch rest
+  args_of "$s"
+  env_dirs "$cur"
+  for e in "${args[@]}"; do
+    name_of "${EA[e]}" "${EB[e]}"
+    if ((want)); then
+      word_values "${EA[e]}" "${EB[e]}" t
+      [[ -z $why ]] || return 1
+      pdirs+=("${vals[@]}") want=0
+      continue
+    fi
+    if ((opts && !nu)) && [[ $nm == -?* ]]; then
+      case $nm in
+        --) opts=0 ;;
+        --directory | --quiet | --dry-run) ;;
+        --tmpdir) tdflag=1 ;;
+        --tmpdir=?*) pdirs+=("${nm#--tmpdir=}") ;;
+        --*) return 1 ;;
+        *)
+          rest=${nm:1}
+          while [[ -n $rest ]]; do
+            ch=${rest:0:1} rest=${rest:1}
+            case $ch in
+              d | q | u) ;;
+              t) tflag=1 ;;
+              p)
+                if [[ -n $rest ]]; then pdirs+=("$rest"); else want=1; fi
+                break
+                ;;
+              *) return 1 ;;
+            esac
+          done
+          ;;
+      esac
+      continue
+    fi
+    ((!tset)) || return 1
+    word_values "${EA[e]}" "${EB[e]}" t
+    [[ -z $why ]] || return 1
+    tmpl=("${vals[@]}") tset=1
+  done
+  ((!want)) || return 1
+  for d in "${pdirs[@]}"; do [[ -n $d ]] || return 1; done
+  if ((tflag || tdflag)) || ((!tset && ${#pdirs[@]} == 0)); then
+    ((!dead && !vdead)) || return 1
+    var_get "$cur" TMPDIR
+    if ((gk)); then
+      for t in "${gv[@]}"; do tdirs+=("${t:-$tmp_root}"); done
+      [[ -n ${TMPDIR:-} ]] || tdirs+=("$tmp_root")
+    elif [[ -z ${TMPDIR:-} && -z ${acount[TMPDIR]:-}${nofollow[TMPDIR]:-} ]]; then
+      tdirs+=("$tmp_root")
+    else
+      return 1
+    fi
+  fi
+  tdirs+=("${pdirs[@]}")
+  mkv=()
+  if ((!tset)); then
+    for d in "${tdirs[@]}"; do mkv+=("$d/tmp.XXXXXXXXXX"); done
+  else
+    for t in "${tmpl[@]}"; do
+      [[ -n $t ]] || return 1
+      if ((tflag || tdflag || ${#pdirs[@]})); then
+        [[ $t != /* ]] || return 1
+        if ((tflag)) && [[ $t == */* ]]; then return 1; fi
+        for d in "${tdirs[@]}"; do mkv+=("$d/$t"); done
+      else
+        mkv+=("$t")
+      fi
+    done
+  fi
+  for t in "${mkv[@]}"; do [[ $t != *$'\n'* ]] || return 1; done
+}
+
+# assign <S>: set ok and ko to the environments the command's whole assignments leave from cur,
+# when it succeeds and when it fails, each assigned in turn: a name the walk follows holds its
+# word's values, any other is unknown; NAME=$(mktemp ...) holds a new name when it succeeds and the
+# empty string when it fails, alone in its command, and either otherwise.
+assign() {
+  local e cur=$cur a f text name events=() i
+  for e in ${OWN[$1]}; do
+    if [[ ${EK[e]} == A ]] || { ((ASG[$1] == 2 && e > CW[$1])) && [[ ${EK[e]} == W ]]; }; then events+=("$e"); fi
+  done
+  a=$cur f=$cur
+  for e in "${events[@]}"; do
+    text=${pt[EA[e]]}
+    [[ $text =~ $re_name ]]
+    name=${BASH_REMATCH[0]}
+    if [[ -z ${FOL[$name]:-} ]]; then
+      var_drop "$a" "$name"
+      a=$vd
+      var_drop "$f" "$name"
+      f=$vd
+      continue
+    fi
+    cur=$a
+    env_dirs "$cur"
+    mk_part "$e" $((${#name} + 1))
+    if ((mkd >= 0)); then
+      if ! mk_values "$mkd"; then
+        var_drop "$a" "$name"
+        a=$vd
+        var_drop "$f" "$name"
+        f=$vd
+        continue
+      fi
+      sv=("${mkv[@]}") so=()
+      for i in "${mkv[@]}"; do so+=(''); done
+      if ((${#events[@]} > 1)); then sv+=('') so+=("$name"); fi
+      var_set "$a" "$name"
+      a=$vd
+      if ((${#events[@]} == 1)); then sv=('') so=("$name"); fi
+      var_set "$f" "$name"
+      f=$vd
+      continue
+    fi
+    word_values "${EA[e]}" "${EB[e]}" a $((${#name} + 1))
+    if [[ -n $why ]]; then
+      var_drop "$a" "$name"
+      a=$vd
+      var_drop "$f" "$name"
+      f=$vd
+      continue
+    fi
+    sv=("${vals[@]}") so=("${vorg[@]}")
+    var_set "$a" "$name"
+    a=$vd
+    var_set "$f" "$name"
+    f=$vd
+  done
+  ok=$a ko=$f
+}
+
+# Which compound commands a command is in, in the shell they run in (not through a ( ) or a
+# substitution), for what it may do at another turn or call: LOOPMOVE[k] 1 for such a loop, and
+# FMOVE[k] for such a function definition, around a command that may move the shell; LOOPDEAD and
+# FDEAD around one that may move it or assign any variable at any later point; LOOPCLR and FCLR
+# around one that may assign any variable; LOOPVD and FVD around one after which an assignment may;
+# LOOPVARS[k] and FVARS[k] the names whole assignments and for loops in it assign.
+LOOPMOVE=() FMOVE=() LOOPDEAD=() FDEAD=() LOOPCLR=() FCLR=() LOOPVD=() FVD=() LOOPVARS=() FVARS=() open=()
+
+# mark <what> [names]: mark the loops and function definitions around the event on top of open.
+mark() {
+  local k t
+  for ((k = ${#open[@]} - 2; k >= 0; k--)); do
+    t=${open[k]}
+    [[ ${EK[t]} == D || (${EK[t]} == C && ${EX[t]} == '(') ]] && break
+    [[ ${EK[t]} == C ]] || continue
+    case ${EX[t]}:$1 in
+      while:* | until:* | for:* | 'for((':*)
+        case $1 in
+          MOVE) LOOPMOVE[t]=1 ;;
+          DEAD) LOOPDEAD[t]=1 ;;
+          CLR) LOOPCLR[t]=1 ;;
+          VD) LOOPVD[t]=1 ;;
+          VARS) LOOPVARS[t]+=$2 ;;
+        esac
+        ;;
+      '()':*)
+        case $1 in
+          MOVE) FMOVE[t]=1 ;;
+          DEAD) FDEAD[t]=1 ;;
+          CLR) FCLR[t]=1 ;;
+          VD) FVD[t]=1 ;;
+          VARS) FVARS[t]+=$2 ;;
+        esac
+        ;;
+    esac
+  done
+}
+
 for ((e = 0; e < ${#EK[@]}; e++)); do
   case ${EK[e]} in
-    P | C | D) open+=("$e") ;;
+    P | D) open+=("$e") ;;
+    C)
+      open+=("$e")
+      if ((${CLR[e]:-0})); then mark CLR; fi
+      if [[ ${EX[e]} == for ]]; then mark VARS " ${ER[e + 1]} "; fi
+      ;;
     S)
       open+=("$e")
-      ((TRIG[e])) || continue
-      for ((k = ${#open[@]} - 2; k >= 0; k--)); do
-        t=${open[k]}
-        [[ ${EK[t]} == D || (${EK[t]} == C && ${EX[t]} == '(') ]] && break
-        if [[ ${EK[t]} == C ]]; then
-          case ${EX[t]} in
-            while | until | for | 'for((')
-              LOOPMOVE[t]=1
-              ((!DEAD[e])) || LOOPDEAD[t]=1
-              ;;
-            '()')
-              FMOVE[t]=1
-              ((!DEAD[e])) || FDEAD[t]=1
-              ;;
-          esac
-        fi
-      done
+      if ((TRIG[e])); then mark MOVE; fi
+      if ((DEAD[e])); then mark DEAD; fi
+      if ((${CLR[e]:-0})); then mark CLR; fi
+      if ((${VDEAD[e]:-0})); then mark VD; fi
+      if [[ ${WN[e]} != ' ' ]]; then mark VARS "${WN[e]}"; fi
       ;;
     E | d | Z | p) unset 'open[-1]' ;;
   esac
@@ -2098,9 +2766,10 @@ done
 
 # The walker goes through the events in the order bash runs them, from the cursor w, with the
 # environment cur a command starts in; a command or list sets ok and ko, the environments it leaves
-# when it succeeds and when it fails. Once dead is 1, after a command that may move the shell at
-# any later point, every command leaves it in any directory.
-dead=0
+# when it succeeds and when it fails. Once dead is 1, after a command that may move the shell or
+# assign any variable at any later point, every command leaves it in any directory and no variable
+# is followed; once vdead is 1, no variable is followed.
+dead=0 vdead=0
 
 # skip_bodies: move past the here-document bodies at the cursor, each walked at its here-document.
 skip_bodies() {
@@ -2110,7 +2779,7 @@ skip_bodies() {
 # walk_region <D>: walk the substitution or here-document body starting at the D event, in a copy
 # of the environment: nothing it changes reaches the commands after it.
 walk_region() {
-  local w=$(($1 + 1)) cur=$cur ok ko dead=$dead
+  local w=$(($1 + 1)) cur=$cur ok ko dead=$dead vdead=$vdead
   if [[ ${EX[$1]} == '<<' ]]; then
     while ((w < MATCH[$1])); do walk_region "$w"; w=$((MATCH[w] + 1)); done
   else
@@ -2141,17 +2810,28 @@ judge_redirs() {
   local e
   for e in ${OWN[$1]}; do
     ((e > $2)) && [[ ${EK[e]} == R ]] || continue
-    if [[ ${EX[e]} == '>&' ]]; then judge "$e" 1 0; else judge "$e" 0 0; fi
+    if [[ ${EX[e]} == '>&' ]]; then judge "$e" 1 0 r; else judge "$e" 0 0 r; fi
   done
 }
 
 walk_simple() {
-  local s=$w e options=1
+  local s=$w e options=1 held
   walk_inner $((s + 1)) "${MATCH[s]}"
+  w=$((MATCH[s] + 1))
+  if ((${ASG[s]:-0} == 1)); then
+    # A command of assignments alone makes its redirections after them, as bash does.
+    assign "$s"
+    held=$cur
+    env_union "$ok" "$ko"
+    cur=$un
+    judge_redirs "$s" "$s"
+    cur=$held
+    if ((dead)); then ok='?' ko='?'; fi
+    return 0
+  fi
   # Its redirections are made before it runs, a tee's files opened as it starts.
   judge_redirs "$s" "$s"
   ok=$cur ko=$cur
-  w=$((MATCH[s] + 1))
   ((CW[s] >= 0)) || return 0
   if ((!CU[s])) && [[ ${CN[s]##*/} == tee ]]; then
     args_of "$s"
@@ -2162,19 +2842,25 @@ walk_simple() {
       elif ((options && !nu)) && [[ $nm == -?* ]]; then
         :
       else
-        judge "$e" 0 "${CH[s]}"
+        judge "$e" 0 "${CH[s]}" t
       fi
     done
   fi
   if ((DEAD[s])); then dead=1; fi
+  if ((${VDEAD[s]:-0})); then vdead=1; fi
   if ((dead)); then
     ok='?' ko='?'
+  elif ((${ASG[s]:-0} == 2)); then
+    assign "$s"
+  elif ((${STK[s]:-0})); then
+    var_drop "$cur" COMPOSE_PROJECT_NAME 'TH_*' 'TEAM_*'
+    ok=$vd ko=$vd
   elif ((CD[s])); then
     cd_env "$s"
   elif ((TRIG[s])); then
-    # A cd it cannot follow, pushd or popd stays put when it fails; eval and the rest may do
-    # anything.
-    ok='?' ko='?'
+    # A cd it cannot follow, pushd or popd stays put when it fails.
+    env_lose "$cur"
+    ok=$lo ko=$lo
     if ((!CU[s])) && [[ ${CN[s]##*/} == @(cd|pushd|popd) ]]; then
       env_fail "$cur"
       ko=$fl
@@ -2182,16 +2868,40 @@ walk_simple() {
   fi
 }
 
+# loop_start <C>: change start, the environment the loop starts in, to the one its body may start
+# each turn in: the directory unknown when the loop may move the shell, each followed variable it
+# assigns unknown, and every one unknown, with s, when it may assign any; following ends from here
+# when it holds a command that ends it.
+loop_start() {
+  local names=()
+  if ((${LOOPDEAD[$1]:-0})); then dead=1; fi
+  if ((${LOOPVD[$1]:-0})); then vdead=1; fi
+  if ((${LOOPMOVE[$1]:-0})); then
+    env_lose "$start"
+    start=$lo
+  fi
+  if [[ -n ${LOOPVARS[$1]:-} ]]; then
+    read -ra names <<<"${LOOPVARS[$1]}"
+    var_drop "$start" "${names[@]}"
+    start=$vd
+  fi
+  if ((${LOOPCLR[$1]:-0})); then
+    var_clear "$start"
+    start=$vd
+  fi
+}
+
 walk_compound() {
-  local s=$w z=${MATCH[w]} cend=${CEND[w]} start=$cur ends='' held cok cko sep k
+  local s=$w z=${MATCH[w]} cend=${CEND[w]} start=$cur ends='' held cok cko sep k name body known
+  local names=() lv=() lo_=()
   walk_inner $((cend + 1)) "$z"
   judge_redirs "$s" "$cend"
   case ${EX[s]} in
     '(')
-      held=$dead
+      held=$dead:$vdead
       w=$((s + 1))
       walk_list
-      ok=$start ko=$start dead=$held
+      ok=$start ko=$start dead=${held%:*} vdead=${held#*:}
       ;;
     '{')
       w=$((s + 1))
@@ -2231,8 +2941,7 @@ walk_compound() {
       done
       ;;
     while | until)
-      if ((${LOOPDEAD[s]:-0})); then dead=1; fi
-      if ((${LOOPMOVE[s]:-0})); then start='?'; fi
+      loop_start "$s"
       w=$((s + 1)) cur=$start
       walk_list
       cok=$ok cko=$ko
@@ -2246,19 +2955,37 @@ walk_compound() {
       ends=$un
       ;;
     for | 'for((')
-      # Its words are expanded once, before it runs.
-      k=$((s + 1))
+      # Its words are expanded once, before it runs, and its variable takes each of their values.
+      k=$((s + 1)) known=0
+      if [[ ${EX[s]} == for ]]; then
+        name=${ER[s + 1]}
+        if [[ -n ${FOL[$name]:-} && ${EK[s + 2]} == K && ${EX[s + 2]} == in ]]; then known=1; fi
+      fi
       while ! [[ ${EK[k]} == K && ${EX[k]} == 'do' ]]; do
         if [[ ${EK[k]} == D ]]; then
           [[ ${EX[k]} == '<<' ]] || walk_region "$k"
           k=$((MATCH[k] + 1))
-        else
-          k=$((k + 1))
+          continue
         fi
+        if ((known && k > s + 2)) && [[ ${EK[k]} == W ]]; then
+          env_dirs "$cur"
+          word_values "${EA[k]}" "${EB[k]}" t
+          if [[ -n $why ]]; then known=0; else lv+=("${vals[@]}") lo_+=("${vorg[@]}"); fi
+        fi
+        k=$((k + 1))
       done
-      if ((${LOOPDEAD[s]:-0})); then dead=1; fi
-      if ((${LOOPMOVE[s]:-0})); then start='?'; fi
-      w=$((k + 1)) cur=$start
+      loop_start "$s"
+      body=$start
+      if [[ ${EX[s]} == for ]]; then
+        if ((known)); then
+          sv=("${lv[@]}") so=("${lo_[@]}")
+          var_set "$body" "$name"
+        else
+          var_drop "$body" "$name"
+        fi
+        body=$vd
+      fi
+      w=$((k + 1)) cur=$body
       walk_list
       env_union "$start" "$ok"
       env_union "$un" "$ko"
@@ -2303,13 +3030,32 @@ walk_compound() {
       ;;
     '()')
       # The body is judged where the function is defined, in any directory once the command holds
-      # a command that may move the shell; one that moves it makes the directory unknown from here.
-      if ((trig)); then cur='?'; fi
+      # a command that may move the shell, and with only the variables body_vars gives. From here,
+      # a call may come at any point: a body that may move the shell makes the directory unknown,
+      # the followed variables it assigns are unknown, and one that may assign any variable ends
+      # following.
+      if [[ -n $cur ]]; then
+        if ((trig)); then
+          cur='?'${body_vars:+$'\x04'$body_vars}
+        else
+          env_split "$cur"
+          cur=$ed${body_vars:+$'\x04'$body_vars}
+        fi
+      fi
       w=$((s + 1))
       walk_compound
       ok=$start ko=$start
-      if ((${FMOVE[s]:-0})); then ok='?' ko='?'; fi
+      if ((${FMOVE[s]:-0})); then
+        env_lose "$ok"
+        ok=$lo ko=$lo
+      fi
+      if [[ -n ${FVARS[s]:-} ]]; then
+        read -ra names <<<"${FVARS[s]}"
+        var_drop "$ok" "${names[@]}"
+        ok=$vd ko=$vd
+      fi
       if ((${FDEAD[s]:-0})); then dead=1; fi
+      if ((${FCLR[s]:-0} || ${FVD[s]:-0})); then vdead=1; fi
       ;;
   esac
   case ${EX[s]} in
@@ -2319,7 +3065,13 @@ walk_compound() {
   w=$((z + 1))
 }
 
+# walk_command: a command that may assign any variable as it runs leaves every followed variable
+# unknown from its start, with s.
 walk_command() {
+  if ((${CLR[w]:-0})) && [[ -n $cur ]]; then
+    var_clear "$cur"
+    cur=$vd
+  fi
   if [[ ${EK[w]} == S ]]; then walk_simple; else walk_compound; fi
 }
 
@@ -2404,15 +3156,16 @@ walk_list() {
 
 ne=${#EK[@]} w=0
 canon "$cwd"
-cur=0$cp
+cur=0$cp${start_vars:+$'\x04'$start_vars}
 walk_list
 
 # Each value as written, its . and .. resolved but its symlinks kept, is the name the refusal says
-# (on macOS /home itself resolves to /System/Volumes/Data/home); the resolved one is judged. A
-# target is named when a value of it lies outside from a directory the shell reaches, or from one
-# only a failed cd leaves it in with no value inside; it may have failed when every value outside
-# comes from such a directory and another lies inside.
-declare -A out0=() out1=() inside=() named=()
+# (on macOS /home itself resolves to /System/Volumes/Data/home), a basename's name put back as
+# written; the resolved one is judged. A target is named when a value of it lies outside from a
+# directory the shell reaches, or from one only a failed cd leaves it in, or only for a failed
+# mktemp's empty value, with no value inside; when every value outside comes from such a directory
+# or value and another lies inside, the mktemp may leave it empty, or else the cd may have failed.
+declare -A out0=() out1=() outm=() inside=() named=()
 isout=()
 if ((${#paths[@]})); then
   mapfile -d '' -t written < <(realpath -m -s -z -- "${paths[@]}")
@@ -2428,15 +3181,21 @@ if ((${#paths[@]})); then
       fi
     done
     isout[k]=1
-    if ((pf[k])); then out1[${pi[k]}]=1; else out0[${pi[k]}]=1; fi
+    if [[ -n ${pm[k]} ]]; then
+      outm[${pi[k]}]=${pm[k]}
+    elif ((pf[k])); then
+      out1[${pi[k]}]=1
+    else
+      out0[${pi[k]}]=1
+    fi
   done
 fi
 unknown=() outside=()
-reason failed
 for id in "${!tw[@]}"; do
   if [[ -n ${tr[id]} ]]; then
     unknown+=("${tw[id]} (${tr[id]})")
-  elif [[ -n ${out1[$id]:-} && -z ${out0[$id]:-} && -n ${inside[$id]:-} ]]; then
+  elif [[ -z ${out0[$id]:-} && -n ${inside[$id]:-} && -n ${outm[$id]:-}${out1[$id]:-} ]]; then
+    if [[ -n ${outm[$id]:-} ]]; then reason empty "${outm[$id]}"; else reason failed; fi
     unknown+=("${tw[id]} ($rs)")
     tr[id]=$rs
   fi
@@ -2445,7 +3204,11 @@ for k in "${!isout[@]}"; do
   id=${pi[k]}
   [[ -z ${tr[id]} && -z ${named[$id:${written[k]}]:-} ]] || continue
   named[$id:${written[k]}]=1
-  outside+=("${written[k]}")
+  text=${written[k]}
+  if [[ $text == *$'\x01'* ]]; then
+    for d in "${!bnraw[@]}"; do text=${text//$'\x01'$d$'\x01'/${bnraw[d]}}; done
+  fi
+  outside+=("$text")
 done
 
 ((${#unknown[@]} + ${#outside[@]})) || exit 0

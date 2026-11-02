@@ -150,11 +150,11 @@ EOF
   passes "cmd > ''" 'cmd | tee "" .scratch/x'
 }
 
-@test "\$TMPDIR is the machine's /tmp when the hook's environment has none, and \$CLAUDE_JOB_DIR unknown" {
+@test "\$TMPDIR and \$CLAUDE_JOB_DIR are unknown when the hook's environment has none, and a mktemp there uses the machine's /tmp" {
   hook_tmpdir='' hook_job=''
-  passes 'cmd > $TMPDIR/x'
-  blocked 'cmd > $TMPDIR/../x' "$TEAM_SYSTEM_ROOT/x"
+  unknown 'cmd > $TMPDIR/x' "\$TMPDIR/x ($expansion)"
   unknown 'cmd > $CLAUDE_JOB_DIR/x' "\$CLAUDE_JOB_DIR/x ($expansion)"
+  passes "cmd > $TEAM_SYSTEM_ROOT/tmp/x" 'd=$(mktemp -d) && cmd > $d/x'
 }
 
 @test "a target the hook cannot work out is refused, named as written with why" {
@@ -176,6 +176,12 @@ Blocked: this role may write files only under $wt/.scratch; write there with the
 Blocked: this role may write files only under $wt/.scratch; write there with the Write tool, not a shell redirection or tee (tried /etc/c)."
 }
 
+@test "a target through a variable says the variable is not followed there, or that a mktemp may leave it empty" {
+  shell -2 'x=a; x=src; d=$(mktemp -d); cmd > $x/y 2> "$d/z" | tee "$out"'
+  assert_equal "$output" ""
+  assert_equal "$stderr" "Blocked: this hook cannot tell where these targets point: \$x/y (\$x is not followed here), \"\$d/z\" (\$d may be empty when mktemp fails; join them with &&), \"\$out\" ($expansion); spell each path out, or write files under $wt/.scratch with the Write tool."
+}
+
 @test "a refusal unread comes first, whatever else the command writes" {
   unread 'cmd > out; x=`y`' 'a backtick substitution'
   unread 'cmd > "$out"; select x in a; do :; done' 'a select command'
@@ -194,6 +200,11 @@ Blocked: this role may write files only under $wt/.scratch; write there with the
   body=$(for i in $(seq 1 100); do echo "cd .scratch/task && cmd > out$i; cd $wt; if c; then cd src; fi; cmd > .scratch/y$i"; done)
   SECONDS=0
   shell -2 "$body"
+  ((SECONDS < 5))
+  # Each variable assigned once adds a line the walk carries to the command's end.
+  body=$(for i in $(seq 1 100); do echo "T$i=\$CLAUDE_JOB_DIR/tmp; d$i=\$(mktemp -d) && cmd > \$d$i/x; for f$i in a b; do cmd | tee \"\$T$i/\$f$i\"; done"; done)
+  SECONDS=0
+  passes "$body"
   ((SECONDS < 5))
 }
 
