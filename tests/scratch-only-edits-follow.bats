@@ -79,6 +79,20 @@ Blocked: this role may write files only under $wt/.scratch; write there with the
     'cd "$CLAUDE_JOB_DIR" && cmd > x'
 }
 
+@test "an unquoted cd word whose value may be empty may be no word, so cd alone, to \$HOME" {
+  # bash removes an unquoted word whose expansion is empty.
+  local cd
+  for cd in 'cd $o' 'cd -- $o' 'cd -P ${o}' 'cd $o$p'; do
+    blocked "o=; p=; cd ./.scratch && $cd && cmd > x" "$HOME/x"
+  done
+  # One that may be empty or not leaves the directory unknown, and so does an empty one when the walk
+  # does not know HOME.
+  unknown 'cd ./.scratch && for o in task ""; do (cd $o && cmd > x); done' "x ($moved)"
+  unknown 'HOME=$(cmd); o=; cd ./.scratch && cd $o && cmd > x' "x ($moved)"
+  # A quoted empty word is a word, which stays put.
+  passes 'o=; cd ./.scratch && cd "$o" && cmd > x'
+}
+
 @test "past 16 directories the shell may be in, the directory is unknown" {
   passes 'cd a; cd a; cd a; cd a; cmd > $TMPDIR/x' 'cd a; cd a; cd a; cd a; cd a; cmd > $TMPDIR/x'
   unknown 'cd .scratch/a; cd b; cd c; cd d; cd e; cmd > x' "x ($moved)"
@@ -385,13 +399,20 @@ Blocked: this role may write files only under $wt/.scratch; write there with the
   unread 'o=--tmpdir=/etc; cd ./.scratch && d=$(mktemp -d "$o") && cmd > "$d/x"' 'the mktemp word "$o"'
   unread 'd=$(mktemp -d "$x") && cmd > $d/x' 'the mktemp word "$x"'
   passes 't=.scratch/out.XXXX; f=$(mktemp "$t") && cmd > $f' 'd=$(mktemp -d -p "$CLAUDE_JOB_DIR") && cmd > $d/x'
+  # GNU's mktemp reads a word written -... after its template as an option, BSD's as another
+  # template, and BSD's reads the word after -t as its prefix.
+  unread 'd=$(mktemp .scratch/x.XXXX -d) && cmd > $d/y' 'the mktemp word -d'
+  unread 'd=$(mktemp -t -d) && cmd > $d/y' 'the mktemp word -d'
+  passes 'd=$(mktemp -dt x.XXXX) && cmd > $d/y'
 }
 
-@test "a basename substitution holds a name with no / in it, ., .. or a lone /, each judged" {
+@test "a basename substitution holds a name with no / in it, ., .., a lone / or nothing, each judged" {
   passes 'cmd > .scratch/task/capture/$(basename "$f")' 'cmd > ".scratch/task/capture/$(basename "$f" .md)"' \
     'cmd > .scratch/task/out-$(basename "$f").json' 'b=$(basename "$f"); cmd | tee ".scratch/task/$b"'
   blocked 'cmd > .scratch/$(basename "$f")' "$wt"
   blocked 'cmd > src/$(basename x)' "$wt/src/\$(basename x), $wt/src, $wt"
+  # basename prints nothing for an empty word, or for none.
+  blocked 'cmd > ".scratch/x/.$(basename "$f")./../y"' "$wt/y"
   # Unquoted, bash splits the name it prints into a tee's files, or a variable's value into words.
   unknown 'cmd | tee .scratch/task/$(basename "$f")' ".scratch/task/\$(basename \"\$f\") ($expansion)"
   unknown 'b=$(basename "$f"); cmd > .scratch/task/$b' ".scratch/task/\$b ($expansion)"

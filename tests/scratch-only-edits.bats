@@ -194,7 +194,7 @@ EOF
 @test "a target the hook cannot work out is refused, named as written with why" {
   unknown 'cmd > "$out"' "\"\$out\" ($expansion)"
   unknown 'cmd > $HOMEDIR/x' "\$HOMEDIR/x ($expansion)"
-  unknown 'cmd | tee .scratch/$x/y -- "$z"' ".scratch/\$x/y ($expansion), \"\$z\" ($expansion)"
+  unknown 'cmd | tee -- .scratch/$x/y "$z"' ".scratch/\$x/y ($expansion), \"\$z\" ($expansion)"
 }
 
 @test "a command with targets of both kinds gives the unknown-target message first, then the outside one" {

@@ -142,8 +142,8 @@ setup() {
 
 @test "a wrapper's options are read from the list of the options it takes, attached, separate, bundled or abbreviated" {
   local form
-  for form in 'env -a name' 'env --argv0 name' 'env --argv0=name' 'env -' 'env -i -' 'env -- -' 'env -iu X' 'env -iuX' 'env -0v' \
-    'env --unse X' 'env --un=X' 'env --ignore-env' 'env --block-signal' 'env --default-signal=INT' 'env --env0-from f' \
+  for form in 'env -a name' 'env --argv0=name' 'env -' 'env -i -' 'env - X=1' 'env -iu X' 'env -iuX' 'env -0v' \
+    'env --un=X' 'env --ignore-env' 'env --block-signal' 'env --default-signal=INT' 'env --env0-from=f' \
     'env -P /bin' 'stdbuf --output L' 'stdbuf --output=L' 'stdbuf --err 0' 'stdbuf -i0 -e L' 'timeout --sig KILL 5' \
     'timeout -fp -k5 5' 'timeout --preserve 5' 'nice -5' 'nice --5' 'nice --adj 5' 'nice -n5' 'sudo -iu me' 'sudo -Eu me' \
     'sudo --preserve-env=X -H' 'command -p' 'exec -cla name' 'exec -l' 'time -ao log' 'time --output log' 'time -f %e' \
@@ -151,7 +151,7 @@ setup() {
     blocked "cmd | $form tee out" "$wt/out"
   done
   # The word an option takes is its value, never the command word, and a lookup runs nothing.
-  passes 'env -a tee cmd x' 'env -iu tee cmd x' 'env --unse tee cmd x' 'stdbuf --output tee cmd x' 'command -pv tee x' \
+  passes 'env -a tee cmd x' 'env -iu tee cmd x' 'env --unset=tee cmd x' 'stdbuf --output tee cmd x' 'command -pv tee x' \
     'command -Vp tee x' 'exec -a tee cmd x' 'timeout --sig tee 5 cmd x' 'time -o x cmd tee'
 }
 
@@ -172,6 +172,18 @@ setup() {
   unread 'nohup -x tee src/x < f' 'the nohup option -x'
   unread 'command -x tee src/x < f' 'the command option -x'
   unread 'stdbuf -x0 tee src/x < f' 'the stdbuf option -x0'
+  # Where GNU's and BSD's env read a word apart: BSD's reads a lone - as an option and goes on with
+  # its options, which GNU's ends (and drops, past a -- too), and BSD's reads a --name as - and
+  # bundled letters, so a long option's value is the next word to GNU's alone.
+  unread "env - -S 'tee src/x' < f" 'the env word -S'
+  unread 'env - -u X tee src/x < f' 'the env word -u'
+  unread 'env -i - -- tee src/x < f' 'the env word --'
+  unread 'env -- - tee src/x < f' 'the env word -'
+  unread 'env --unset tee src/x < f' 'the env option --unset'
+  unread 'env --unse X tee src/x < f' 'the env option --unse'
+  unread 'env --argv0 name tee src/x < f' 'the env option --argv0'
+  unread 'env --chdir /tmp tee src/x < f' 'the env option --chdir'
+  unread 'env --env0-from f tee src/x < f' 'the env option --env0-from'
 }
 
 @test "a wrapper's -C, --chdir or -D makes a relative tee file unknown" {
@@ -182,11 +194,17 @@ setup() {
   passes "env -C /tmp tee $wt/.scratch/x" 'env -C /tmp cmd > .scratch/x'
 }
 
-@test "a tee's every file is a target, after its options and after --" {
+@test "a tee's every file is a target, after its options and after --, and a word written -... after a file is refused unread" {
   blocked 'cmd | tee --append -p x' "$wt/x"
   blocked 'cmd | tee -- -x' "$wt/-x"
   blocked 'cmd | tee .scratch/a x' "$wt/x"
-  blocked 'cmd | tee x -a' "$wt/x"
+  # GNU's tee reads a word written -... after a file as an option, BSD's as a file, and BSD's a --
+  # there as a file too; a word bash may remove counts as a file.
+  unread 'cmd | tee x -a' 'the tee word -a'
+  unread 'cmd | tee .scratch/a -/../../x' 'the tee word -/../../x'
+  unread 'cmd | tee .scratch/a -- x' 'the tee word --'
+  unread 'o=; cmd | tee $o -a .scratch/x' 'the tee word -a'
+  passes 'cmd | tee -a -- .scratch/a .scratch/-b'
   unknown 'cmd | tee -- -$opt' "-\$opt ($expansion)"
   # A word known only through variables, where an option may stand, may be one, and may end them.
   unread 'cmd | tee -$opt' 'the tee word -$opt'
