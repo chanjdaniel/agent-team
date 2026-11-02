@@ -1743,8 +1743,9 @@ options_of() {
 # options_of's lists: set valued 1 when its value is the next word, chd 1 when it moves the command
 # the wrapper runs (env's -C, sudo's -D, --chdir) and lookup 1 for command's -v or -V, which runs
 # nothing. A long name may be cut short to any start that no other name shares. Refuse unread an
-# option the wrapper does not take, a long name more than one may start with, and an option whose
-# value is a command line or a root directory.
+# option the wrapper does not take, a long name cut short to a start several names share, a value
+# after = for a long name that takes none, and an option whose value is a command line or a root
+# directory.
 wrapper_option() {
   local name rest ch spec hits=() h known=()
   # nice's adjustment, as -N, --N or -+N.
