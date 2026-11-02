@@ -10,8 +10,12 @@
 # Bash command is read whole against the grammar below, and refused unread, with a message naming
 # the form, at the first thing outside it; nothing is judged until the whole command is read. A word
 # the hook cannot work out where it decides what bash runs or assigns (a command word, a wrapper's
-# word, an option of a builtin the hook reads, a name an assigning builtin or printf -v gives, and a
-# word that may become several before such a name) is refused unread, never read as what it may be.
+# word, an option of a command the hook reads, cd, tee, mktemp and the builtins among them, a name
+# an assigning builtin or printf -v gives, and a word that may become several before such a name) is
+# refused unread, never read as what it may be. Where an option of cd, tee or mktemp, or the -- that
+# ends them, may stand, a word the hook works out only through the values of variables is refused
+# unread when one of its values may start with a -, and for tee and mktemp when the walk cannot work
+# its values out; cd's leaves the directory unknown then.
 #
 # The grammar:
 # - Words: unquoted text, '...', "..." (with the escapes \$ \` \" \\ and its expansions),
@@ -56,9 +60,11 @@
 # - Lists and pipelines: ;, &, newlines, &&, ||, | and |&, and ! and time [-p [--]] before a
 #   pipeline.
 # - Wrappers: env, sudo, nohup, timeout and its duration (whatever its word), nice, stdbuf, command
-#   (but -v and -V, which run nothing), exec, time and builtin, by any path, past their options,
-#   those options' values and env's and sudo's assignments, so the command they run is the command
-#   word.
+#   (but -v and -V, which run nothing), exec, time and builtin, by any path, past their options and
+#   those options' values, read as each one's options parse them by GNU's, BSD's and bash's
+#   spellings (a value in its option's word or the next, letters bundled in one word, a long name
+#   cut short to a start no other name shares), past env's lone -, and past env's and sudo's
+#   assignments, so the command they run is the command word.
 # - A command word, a wrapper and tee are known by the word's text with its quotes and backslashes
 #   removed. A word holding an expansion, a glob, a brace expansion (its braces in one part or
 #   across quoted text, as {a,"b"}) or an ANSI-C escape is one the hook cannot work out: as a
@@ -71,45 +77,48 @@
 # runs its -C command and -F function and expands its -W list as code); a function named cd, pushd,
 # popd, tee, mktemp, basename, a wrapper or an assigning builtin (declare, typeset, local, readonly,
 # read, mapfile, readarray, getopts, unset, wait, export or printf), and one whose name is not
-# plain; a command word or a wrapper's word the hook cannot work out, as above; in an assigning
-# builtin's or printf's words, as its options parse them, a word the hook cannot work out where an
-# option may stand (but one whose text starts with what starts no option, as a format that starts
-# with text), a name it cannot work out (the names of declare, typeset, local, readonly and export
-# before their first =, read's, mapfile's and unset's, read's -a, wait's -p and printf's -v values,
-# and getopts' second word), and an option's value or getopts' first word that bash may make several
-# words or none; an indirect ${!name} expansion, which expands the variable a value names; a ${ }
-# outside the forms above, a quote, a newline or an expansion but a variable in its operand, and the
-# @P operator, which runs the substitutions in its value; arithmetic that does not close with )) or
-# holds a quote, a backtick, a $(( )) or another character; a (, ), |, &, ; or newline in a [[ ]]
-# outside its regular expression, or a newline or a process substitution inside that; a ( in a
-# command but a function definition's or an array assignment's, an array assignment with text after
-# its ), and a word after a compound command but its redirections; a set option other than the flags
-# e, u, x, v, E and T after - or +, and -o or +o with errexit, nounset, xtrace, verbose, pipefail,
-# errtrace or functrace (the words after --, - or the first word that is no option are its
-# positional parameters), and any shopt option but -p and -q; the names IFS, CDPATH and
-# POSIXLY_CORRECT anywhere in the command, but IFS= with an empty value as the prefix assignment of
-# a command that holds a word, and a quoted delimiter's here-document body that no shell may read as
-# code: one a simple command reads, where that command, the others in its pipeline and, for a
-# pipeline in a substitution, the command whose word holds the substitution (and so on outward) are
-# none of bash, sh, dash, zsh, ksh, mksh, busybox, source, ., eval, a function the command defines
-# and a command word named by its values alone; a $ or a backtick in quoted text, or an ANSI-C
-# escape, inside a [ ] where bash evaluates it as an array subscript: in an element's assignment
-# name[...]=, an array assignment's [...]= words, let's words, the names an assigning builtin or
-# unset gives (their whole words after an option of declare, typeset or local holding i or n),
-# read's names, printf's -v name, the word after a -v of test, [ or [[ ]], and the words on both
-# sides of a [[ ]] arithmetic comparison; a $ or a backtick in quoted text, or an ANSI-C escape, in
-# an array value given to declare, typeset, local or readonly, with -a or -A or as name=( ), which
-# bash reads as a compound assignment and expands; a word the hook cannot work out among test's or
-# ['s counts as a -v and as the word after one, which a brace expansion may make of it; a {name}
-# file descriptor; a here-document delimiter other than those above, a here-document whose delimiter
-# line is not found, a line ending in an odd number of backslashes in an unquoted delimiter's body,
-# and, inside a $( ), a here-document whose $( ) closes before its body is read and a body line that
-# starts with its delimiter and a ); a process substitution inside a longer word; on a bash older
-# than 5.2, which finds a $( )'s close another way, a comment, a here-document or a case inside a
-# substitution; and what bash refuses as a syntax error (an unclosed quote, substitution or compound
-# command, a ( or ) or a reserved word out of place, an empty list in a compound command but a case
-# arm's, a ;; or ;& outside a case, an operator with nothing after it, a redirection with no
-# target).
+# plain; a command word or a wrapper's word the hook cannot work out, as above; an option a wrapper
+# does not take, a long name cut short to a start several of its names share, and a wrapper option
+# whose value is a command line or a root directory every path is read from (env's -S and
+# --split-string, whose string env splits and runs as the command, and sudo's -R and --chroot); in
+# an assigning builtin's or printf's words, as its options parse them (getopts takes none but --), a
+# word the hook cannot work out where an option may stand (but one whose text starts with what
+# starts no option, as a format that starts with text), a name it cannot work out (the names of
+# declare, typeset, local, readonly and export before their first =, read's, mapfile's and unset's,
+# read's -a, wait's -p and printf's -v values, and getopts' second word after its options), and an
+# option's value or getopts' first word after its options that bash may make several words or none;
+# an indirect ${!name} expansion, which expands the variable a value names; a ${ } outside the forms
+# above, a quote, a newline or an expansion but a variable in its operand, and the @P operator,
+# which runs the substitutions in its value; arithmetic that does not close with )) or holds a
+# quote, a backtick, a $(( )) or another character; a (, ), |, &, ; or newline in a [[ ]] outside
+# its regular expression, or a newline or a process substitution inside that; a ( in a command but a
+# function definition's or an array assignment's, an array assignment with text after its ), and a
+# word after a compound command but its redirections; a set option other than the flags e, u, x, v,
+# E and T after - or +, and -o or +o with errexit, nounset, xtrace, verbose, pipefail, errtrace or
+# functrace (the words after --, - or the first word that is no option are its positional
+# parameters), and any shopt option but -p and -q; the names IFS, CDPATH and POSIXLY_CORRECT
+# anywhere in the command, but IFS= with an empty value as the prefix assignment of a command that
+# holds a word, and a quoted delimiter's here-document body that no shell may read as code: one a
+# simple command reads, where that command, the others in its pipeline and, for a pipeline in a
+# substitution, the command whose word holds the substitution (and so on outward) are none of bash,
+# sh, dash, zsh, ksh, mksh, busybox, source, ., eval, a function the command defines and a command
+# word named by its values alone; a $ or a backtick in quoted text, or an ANSI-C escape, inside a [
+# ] where bash evaluates it as an array subscript: in an element's assignment name[...]=, an array
+# assignment's [...]= words, let's words, the names an assigning builtin or unset gives (their whole
+# words after an option of declare, typeset or local holding i or n), read's names, printf's -v
+# name, the word after a -v of test, [ or [[ ]], and the words on both sides of a [[ ]] arithmetic
+# comparison; a $ or a backtick in quoted text, or an ANSI-C escape, in an array value given to
+# declare, typeset, local or readonly, with -a or -A or as name=( ), which bash reads as a compound
+# assignment and expands; a word the hook cannot work out among test's or ['s counts as a -v and as
+# the word after one, which a brace expansion may make of it; a {name} file descriptor; a
+# here-document delimiter other than those above, a here-document whose delimiter line is not found,
+# a line ending in an odd number of backslashes in an unquoted delimiter's body, and, inside a $( ),
+# a here-document whose $( ) closes before its body is read and a body line that starts with its
+# delimiter and a ); a process substitution inside a longer word; on a bash older than 5.2, which
+# finds a $( )'s close another way, a comment, a here-document or a case inside a substitution; and
+# what bash refuses as a syntax error (an unclosed quote, substitution or compound command, a ( or )
+# or a reserved word out of place, an empty list in a compound command but a case arm's, a ;; or ;&
+# outside a case, an operator with nothing after it, a redirection with no target).
 #
 # The judge: each output redirection target and each file a tee names (its words after the command
 # word, but those starting with - before a --) is worked out from its words: quoted and unquoted
@@ -128,30 +137,31 @@
 # runs no branch included, and a case arm after ;& or ;;& may also start where the one before it
 # ends. A command's redirections are made in the directory it starts in, before what it does, a
 # compound command's before its body. A cd, the command word with no wrapper, with -L or -P (the
-# last one counts), -- and at most one word whose values are all known, moves the shell on success
-# to that word's directories, each relative one taken from every directory the shell may be in: -L
-# and the default resolve .. by text, as bash's logical cd does, and also by the symlinks when the
-# directory by text does not exist, as bash then does; -P resolves symlinks; cd alone goes to $HOME,
-# and an empty word stays put. On failure it stays put. A cd -, a cd with an unknown word, more than
-# one or another option, a cd behind a wrapper or by a path, pushd and popd make the directory
-# unknown on success, and so does a relative cd whose word is neither . nor .. and starts with
-# neither ./ nor ../ when the hook's environment sets CDPATH, or after anything that stops the
-# following of variables (below), which may have set it. eval (but the team-stack form below),
-# source, ., trap, and mapfile or readarray with -C make it unknown from there to the command's end,
-# outside a ( ) or a substitution they are in, since a trap they set, a function they define or the
-# code they run may move it at any later point. A command word of text and variables alone is named
-# by its values where it runs: each must be a single word with no blank, glob, brace, quote or
-# backslash, whose last part is no tee, wrapper or shell (bash, sh, dash, zsh, ksh, mksh, busybox),
-# and either hold a /, which bash runs as that file, or be a bare name that is no builtin or
-# reserved word of bash's and no function the command defines; any other value, or one the walk
-# cannot work out, refuses the command unread. Such a program neither moves the shell nor ends the
-# following (below). A loop that holds a command that may move the shell, outside a ( ) or a
-# substitution in it, makes the directory unknown from its start, as its body may run again. A
-# function's body is judged where it is defined, with the directory unknown when the command holds a
-# command that may move the shell anywhere; one whose body holds such a command, outside a ( ) or a
-# substitution, makes the directory unknown from the definition on, since a call may come anywhere
-# after it. $PWD stands for each directory the shell may be in, and $OLDPWD is unknown. When the
-# shell may be in more than 16 directories, the directory is unknown.
+# last one counts), -- and at most one word whose values are all known (and, where an option may
+# stand, none starts with a -, as above), moves the shell on success to that word's directories,
+# each relative one taken from every directory the shell may be in: -L and the default resolve .. by
+# text, as bash's logical cd does, and also by the symlinks when the directory by text does not
+# exist, as bash then does; -P resolves symlinks; cd alone goes to $HOME, and an empty word stays
+# put. On failure it stays put. A cd -, a cd with an unknown word, more than one or another option,
+# a cd behind a wrapper or by a path, pushd and popd make the directory unknown on success, and so
+# does a relative cd whose word is neither . nor .. and starts with neither ./ nor ../ when the
+# hook's environment sets CDPATH, or after anything that stops the following of variables (below),
+# which may have set it. eval (but the team-stack form below), source, ., trap, and mapfile or
+# readarray with -C make it unknown from there to the command's end, outside a ( ) or a substitution
+# they are in, since a trap they set, a function they define or the code they run may move it at any
+# later point. A command word of text and variables alone is named by its values where it runs: each
+# must be a single word with no blank, glob, brace, quote or backslash, whose last part is no tee,
+# wrapper or shell (bash, sh, dash, zsh, ksh, mksh, busybox), and either hold a /, which bash runs
+# as that file, or be a bare name that is no builtin or reserved word of bash's and no function the
+# command defines; any other value, or one the walk cannot work out, refuses the command unread.
+# Such a program neither moves the shell nor ends the following (below). A loop that holds a command
+# that may move the shell, outside a ( ) or a substitution in it, makes the directory unknown from
+# its start, as its body may run again. A function's body is judged where it is defined, with the
+# directory unknown when the command holds a command that may move the shell anywhere; one whose
+# body holds such a command, outside a ( ) or a substitution, makes the directory unknown from the
+# definition on, since a call may come anywhere after it. $PWD stands for each directory the shell
+# may be in, and $OLDPWD is unknown. When the shell may be in more than 16 directories, the
+# directory is unknown.
 #
 # Following variables: the walk starts with HOME, TMPDIR and CLAUDE_JOB_DIR as the hook's own
 # environment sets them (one it does not set is unknown), and follows each variable the command
@@ -1698,33 +1708,98 @@ name_of() {
   fi
 }
 
-# takes_of <wrapper>: set takes to the wrapper's options that take the next word as their value,
-# as tests/helpers/common.bash's unwrapped models them for the deny rules, with stdbuf's, BSD env's
-# -P and GNU time's -f and -o.
-takes_of() {
+# options_of <wrapper>: set short and long to the options the wrapper takes, by any of GNU's,
+# BSD's and bash's spellings: short as getopt's option string, a letter followed by : when it takes
+# a value (the rest of its word, or the next word), and long the long names, each followed by = when
+# it takes a value (after = or the next word), by ? when it may take one after = alone, and by
+# nothing when it takes none. A letter or name followed by ! takes a command line, or a root
+# directory every path is read from, as its value.
+options_of() {
   case $1 in
-    env) takes=' -u -C -P --unset --chdir ' ;;
-    sudo) takes=' -u -g -U -C -D -h -p -r -R -t -T -a --user --group --other-user --close-from --chdir --host --prompt --role --chroot --type --command-timeout --auth-type ' ;;
-    timeout) takes=' -k -s --kill-after --signal ' ;;
-    nice) takes=' -n --adjustment ' ;;
-    stdbuf) takes=' -i -o -e ' ;;
-    exec) takes=' -a ' ;;
-    time) takes=' -f -o --format --output ' ;;
-    *) takes='' ;;
+    env)
+      short='a:C:iP:S!u:v0'
+      long=' argv0= block-signal? chdir= debug default-signal? env0-from= help ignore-environment '
+      long+='ignore-signal? list-signal-handling null split-string! unset= version '
+      ;;
+    sudo)
+      short='Aa:BbC:c:D:Eeg:Hh:iKklNnPp:R!r:SsT:t:U:u:Vv'
+      long=' askpass auth-type= background bell chdir= chroot! close-from= command-timeout= edit group= '
+      long+='help host= list login login-class= no-update non-interactive other-user= preserve-env? '
+      long+='preserve-groups prompt= remove-timestamp reset-timestamp role= set-home shell stdin type= '
+      long+='user= validate version '
+      ;;
+    timeout) short='k:s:fpv' long=' foreground help kill-after= preserve-status signal= verbose version ' ;;
+    nice) short='n:' long=' adjustment= help version ' ;;
+    stdbuf) short='i:o:e:' long=' error= help input= output= version ' ;;
+    nohup) short='' long=' help version ' ;;
+    command) short='pvV' long='' ;;
+    exec) short='a:cl' long='' ;;
+    time) short='af:hlo:pqvV' long=' append format= help output= portability quiet verbose version ' ;;
+    *) short='' long='' ;;
   esac
+}
+
+# wrapper_option <event>: read the option word nm of the wrapper as its options parse it, from
+# options_of's lists: set valued 1 when its value is the next word, chd 1 when it moves the command
+# the wrapper runs (env's -C, sudo's -D, --chdir) and lookup 1 for command's -v or -V, which runs
+# nothing. A long name may be cut short to any start that no other name shares. Refuse unread an
+# option the wrapper does not take, a long name more than one may start with, and an option whose
+# value is a command line or a root directory.
+wrapper_option() {
+  local name rest ch spec hits=() h known=()
+  # nice's adjustment, as -N, --N or -+N.
+  if [[ $wrapper == nice && $nm =~ ^-[-+]?[0-9]+$ ]]; then return 0; fi
+  if [[ $nm == --* ]]; then
+    name=${nm#--} name=${name%%=*}
+    read -ra known <<<"$long"
+    for h in "${known[@]}"; do
+      [[ ${h%[=?!]} != "$name" ]] || {
+        hits=("$h")
+        break
+      }
+      [[ ${h%[=?!]} != "$name"* ]] || hits+=("$h")
+    done
+    ((${#hits[@]} == 1)) || unread "the $wrapper option ${ER[$1]}"
+    h=${hits[0]}
+    case $h in
+      *!) unread "the $wrapper option ${ER[$1]}" ;;
+      *=) [[ $nm == *=* ]] || valued=1 ;;
+      *\?) ;;
+      *) [[ $nm != *=* ]] || unread "the $wrapper option ${ER[$1]}" ;;
+    esac
+    [[ ${h%[=?!]} != chdir ]] || chd=1
+    return 0
+  fi
+  rest=${nm:1}
+  while [[ -n $rest ]]; do
+    ch=${rest:0:1} rest=${rest:1}
+    [[ $ch == [A-Za-z0-9] && $short == *"$ch"* ]] || unread "the $wrapper option ${ER[$1]}"
+    spec=${short#*"$ch"} spec=${spec:0:1}
+    if [[ $wrapper == command && $ch == [vV] ]]; then lookup=1; fi
+    if [[ ($wrapper == env && $ch == C) || ($wrapper == sudo && $ch == D) ]]; then chd=1; fi
+    case $spec in
+      '!') unread "the $wrapper option ${ER[$1]}" ;;
+      :)
+        [[ -n $rest ]] || valued=1
+        return 0
+        ;;
+    esac
+  done
 }
 
 # resolve <S>: find the command word of the simple command whose S event is at the index given,
 # past its assignments and wrappers: cw its event (-1 for none), cn its name, cu 1 when it names
 # no command the hook knows, chd 1 when a wrapper's -C, --chdir or -D moves the command it runs,
 # words 1 when the command holds any word but its assignments, wrapped 1 when a wrapper runs it.
-# A wrapper's word the hook cannot work out where an option may stand, or that bash may make
-# several words or none, is refused unread, as it may change which word is the command word; so is
-# a command word the hook cannot work out but one of text and variables alone, whose values the
-# walk works out where it runs (cp 1).
+# A wrapper's options are read as wrapper_option says, and stop at --, at env's lone - (which
+# empties the environment) and at the first word that is no option. A wrapper's word the hook
+# cannot work out where an option may stand, or that bash may make several words or none, is
+# refused unread, as it may change which word is the command word; so is a command word the hook
+# cannot work out but one of text and variables alone, whose values the walk works out where it
+# runs (named 1).
 resolve() {
-  local e k wrapper='' options=0 valued=0 timed=0 takes=''
-  cw=-1 cn='' cu=0 chd=0 words=0 wrapped=0 cp=0
+  local e k wrapper='' options=0 valued=0 timed=0 short='' long='' lookup=0
+  cw=-1 cn='' cu=0 chd=0 words=0 wrapped=0 named=0
   for e in ${OWN[$1]}; do
     [[ ${EK[e]} == W ]] || continue
     words=1
@@ -1738,16 +1813,19 @@ resolve() {
       if ((options && !nu)) && [[ $nm == -?* ]]; then
         if [[ $nm == -- ]]; then
           options=0
-        elif [[ $wrapper == command && ($nm == -v || $nm == -V) ]]; then
-          # A lookup, which runs nothing.
-          return 0
         else
-          if [[ $nm == --chdir* || ($nm == -[!-]* && $nm == *[CD]*) ]]; then chd=1; fi
-          if [[ $takes == *" $nm "* ]]; then valued=1; fi
+          wrapper_option "$e"
+          # A lookup, which runs nothing.
+          ((!lookup)) || return 0
         fi
         continue
       fi
+      if ((options && !nu)) && [[ $wrapper == env && $nm == - ]]; then
+        options=0
+        continue
+      fi
       if [[ ($wrapper == env || $wrapper == sudo) && ${pk[EA[e]]} == l && ${pt[EA[e]]} =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+        options=0
         continue
       fi
       if ((options && nu)) && [[ -z $nl || $nl == -* ]]; then unread "the $wrapper word ${ER[e]}"; fi
@@ -1762,7 +1840,7 @@ resolve() {
         env | sudo | nohup | timeout | nice | stdbuf | command | exec | time | builtin)
           wrapper=${nm##*/} options=1 timed=0
           [[ $wrapper == timeout ]] && timed=1
-          takes_of "$wrapper"
+          options_of "$wrapper"
           continue
           ;;
       esac
@@ -1773,7 +1851,7 @@ resolve() {
       for ((k = EA[e]; k < EA[e] + EB[e]; k++)); do
         [[ ${pk[k]} == [lqvV] ]] || unread "the command word ${ER[e]}"
       done
-      cp=1
+      named=1
     fi
     return 0
   done
@@ -1811,14 +1889,14 @@ done
 # what a command runs, which commands may move the shell, and what each one does to the variables.
 # TRIG[s] 1 for a command that may move the shell; CD[s] 1 for a cd the walk follows, the command
 # word cd itself, with no wrapper; DEAD[s] 1 for one that may move it or assign any variable at any
-# later point too (eval, source, ., trap, mapfile or readarray with -C, a command word the hook
-# cannot name), by a trap it sets, a function it defines or the code it runs; VDEAD[s] 1 for one
-# after which an assignment may assign any variable (declare, typeset or local with an option
-# holding i or n). CLR[s] 1 for a simple or compound command that may assign any variable as it
-# runs: one whose words, redirections or here-document bodies hold what sets EC, let, an array
-# element's assignment, or an assigning builtin given a name from an expansion. ASG[s] 1 for a
-# command of assignments alone, 2 for export with name=word words alone, WN[s] the names a whole
-# assignment there assigns, and STK[s] 1 for eval "$(<path>/team-stack env)".
+# later point too (eval, source, ., trap, mapfile or readarray with -C), by a trap it sets, a
+# function it defines or the code it runs; VDEAD[s] 1 for one after which an assignment may assign
+# any variable (declare, typeset or local with an option holding i or n); PV[s] 1 for a command
+# word of text and variables alone, which the walk names by its values where it runs. CLR[s] 1 for
+# a simple or compound command that may assign any variable as it runs: one whose words,
+# redirections or here-document bodies hold what sets EC, let, and an array element's assignment.
+# ASG[s] 1 for a command of assignments alone, 2 for export with name=word words alone, WN[s] the
+# names a whole assignment there assigns, and STK[s] 1 for eval "$(<path>/team-stack env)".
 # acount[name] counts the whole assignments and the for loops with in that assign each name,
 # nofollow[name] is 1 for a name assigned any other way, and FOL[name] 1 for one the walk follows:
 # assigned once, by one of those, and not one bash sets itself.
@@ -1995,7 +2073,6 @@ builtin_words() {
     mapfile | readarray) takes=dnOsuCc ;;
     wait) takes=p names=p ;;
     printf) takes=v names=v ;;
-    getopts) opts=0 ;;
   esac
   for i in "${!args[@]}"; do
     e=${args[i]}
@@ -2018,6 +2095,8 @@ builtin_words() {
           opts=0
           continue
         fi
+        # getopts takes no option of its own: bash refuses one.
+        [[ $2 != getopts ]] || unread "the $2 word ${ER[e]}"
         rest=${nm:1}
         while [[ -n $rest ]]; do
           ch=${rest:0:1} rest=${rest:1}
@@ -2115,7 +2194,7 @@ for s in "${starts[@]}"; do
     continue
   fi
   resolve "$s"
-  CW[s]=$cw CN[s]=$cn CU[s]=$cu CH[s]=$chd TRIG[s]=0 CD[s]=0 DEAD[s]=0 WN[s]=' ' PV[s]=$cp
+  CW[s]=$cw CN[s]=$cn CU[s]=$cu CH[s]=$chd TRIG[s]=0 CD[s]=0 DEAD[s]=0 WN[s]=' ' PV[s]=$named
   stack=0
   if ((cw >= 0 && !cu)) && [[ $cn == eval ]]; then
     args_of "$s"
@@ -2218,9 +2297,9 @@ for ((e = 0; e < ${#EK[@]}; e++)); do
 done
 
 # shell_fed <I>: whether a here-document's body may be read as shell code: its command, or another
-# in its pipeline, is a shell, source, ., eval, a function the command defines or a command word the
-# hook cannot name, or the pipeline is in a substitution whose word is such a command's, or the
-# here-document is not a simple command's.
+# in its pipeline, is a shell, source, ., eval, a function the command defines or a command word
+# named by its values alone, or the pipeline is in a substitution whose word is such a command's, or
+# the here-document is not a simple command's.
 shell_fed() {
   local e=$1 s k p d
   while :; do
@@ -2811,6 +2890,20 @@ judge() {
   for v in "${fp[@]}"; do pi+=("$id"); done
 }
 
+# opt_values <event> <command>: for a word of cd, tee or mktemp that the hook works out only through
+# variables, where an option or the -- that ends them may stand, refuse the command unread when a
+# value the walk knows for it may start with a - (a basename's name among them), which the command
+# parses as an option; return 1 when the walk cannot work out its values in cur.
+opt_values() {
+  local v
+  env_dirs "$cur"
+  word_values "${EA[$1]}" "${EB[$1]}" t
+  [[ -z $why ]] || return 1
+  for v in "${vals[@]}"; do
+    [[ $v != -* && $v != $'\x01'* ]] || unread "the $2 word ${ER[$1]}"
+  done
+}
+
 # cd_env <S>: set ok and ko to the environments a cd leaves when it succeeds and when it fails,
 # from cur: -L (the default) resolves .. by text, -P by the symlinks; a cd it cannot follow leaves
 # the directory unknown on success. The variables stay as they were.
@@ -2835,6 +2928,9 @@ cd_env() {
       fi
       continue
     fi
+    # A word known only by its values may be an option; one the walk cannot work out leaves the
+    # directory unknown.
+    if ((opts && nu)) && [[ -z $nl || $nl == -* ]]; then opt_values "$e" cd || return 0; fi
     opts=0 n=$((n + 1)) word=$e
   done
   ((n <= 1)) || return 0
@@ -2967,6 +3063,8 @@ mk_values() {
       esac
       continue
     fi
+    # A word known only by its values may be an option, and one the walk cannot work out may be.
+    if ((opts && nu)) && [[ -z $nl || $nl == -* ]]; then opt_values "$e" mktemp || unread "the mktemp word ${ER[e]}"; fi
     ((!tset)) || return 1
     word_values "${EA[e]}" "${EB[e]}" t
     [[ -z $why ]] || return 1
@@ -3201,6 +3299,9 @@ walk_simple() {
       elif ((options && !nu)) && [[ $nm == -?* ]]; then
         :
       else
+        # A word known only by its values may be an option, and one the walk cannot work out may
+        # be too, which may end the options before a file written as -...
+        if ((options && nu)) && [[ -z $nl || $nl == -* ]]; then opt_values "$e" tee || unread "the tee word ${ER[e]}"; fi
         judge "$e" 0 "${CH[s]}" t
       fi
     done

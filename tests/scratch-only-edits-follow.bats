@@ -65,6 +65,20 @@ setup() {
 Blocked: this role may write files only under $wt/.scratch; write there with the Write tool, not a shell redirection or tee (tried $wt/x)."
 }
 
+@test "a cd word worked out only through variables is judged by its values, and refused unread when one may be an option" {
+  # bash's cd parses the value: -P, -L or -- is an option, and with no word after it cd goes to $HOME.
+  local o
+  for o in -P -- -L; do
+    unread "o=$o; cd ./.scratch && cd \$o && cmd > x" 'the cd word $o'
+    unread "o=$o; cd ./.scratch && cd \"\$o\" && cmd > x" 'the cd word "$o"'
+  done
+  # A basename's name may start with a -.
+  unread 'cd .scratch && cd "$(basename "$f")" && cmd > x' 'the cd word "$(basename "$f")"'
+  # A value that starts with no - is the directory, and after -- every value is.
+  passes 'd=.scratch/task; cd "$d" && cmd > x' 'd=$(mktemp -d) && cd "$d" && cmd > x' 'o=-P; cd .scratch && cd -- "$o" && cmd > x' \
+    'cd "$CLAUDE_JOB_DIR" && cmd > x'
+}
+
 @test "past 16 directories the shell may be in, the directory is unknown" {
   passes 'cd a; cd a; cd a; cd a; cmd > $TMPDIR/x' 'cd a; cd a; cd a; cd a; cd a; cmd > $TMPDIR/x'
   unknown 'cd .scratch/a; cd b; cd c; cd d; cd e; cmd > x' "x ($moved)"
@@ -262,7 +276,7 @@ Blocked: this role may write files only under $wt/.scratch; write there with the
   passes 'for f in .scratch/a "$TMPDIR/b c"; do cmd > "$f"; done' 'for d in .scratch $TMPDIR; do cmd > $d/x; done'
   blocked 'for f in .scratch/a src/b; do cmd > $f; done' "$wt/src/b"
   unknown 'for f in .scratch/*; do cmd > $f; done' "\$f ($(not_followed f))"
-  unknown 'for f in "$TMPDIR/b c"; do cmd | tee $f; done' "\$f ($expansion)"
+  unknown 'for f in "$TMPDIR/b c"; do cmd | tee -- $f; done' "\$f ($expansion)"
   # After the loop, it holds a value of its words, or the one before when no word gave any.
   passes 'for TMPDIR in .scratch/a; do :; done; cmd > $TMPDIR/x'
   blocked 'for TMPDIR in src; do :; done; cmd > $TMPDIR/x' "$wt/src/x"
@@ -283,7 +297,7 @@ Blocked: this role may write files only under $wt/.scratch; write there with the
 }
 
 @test "after a stop, an unquoted variable is unknown, as IFS may have changed with it" {
-  unknown 'x=.scratch/a; (( v )); y=.scratch/b; cmd | tee $y' "\$y ($expansion)"
+  unknown 'x=.scratch/a; (( v )); y=.scratch/b; cmd | tee -- $y' "\$y ($expansion)"
   passes 'x=.scratch/a; (( v )); y=.scratch/b; cmd | tee "$y"'
   unknown '(( v )); cd ./.scratch && cmd > $PWD/x' "\$PWD/x ($expansion)"
   passes '(( v )); cd ./.scratch && cmd > "$PWD/x"'
@@ -334,14 +348,14 @@ Blocked: this role may write files only under $wt/.scratch; write there with the
 }
 
 @test "an unquoted value holding a blank or a glob is unknown, a quoted one is followed, and an assignment expands ~ only at its start" {
-  unknown "x='.scratch/a b'; cmd | tee \$x" "\$x ($expansion)"
+  unknown "x='.scratch/a b'; cmd | tee -- \$x" "\$x ($expansion)"
   unknown "x='.scratch/*'; cmd > \$x" "\$x ($expansion)"
   passes "x='.scratch/a b'; cmd | tee \"\$x\"" "x='.scratch/*'; cmd > \"\$x\"" 'x=.scratch/*; cmd > "$x"' \
     'x=~/wt/.scratch/y; cmd > $x'
   blocked 'x=~/y; cmd > $x' "$HOME/y"
   unknown 'x=a:~/y; cmd > $x' "\$x ($(not_followed x))"
   hook_tmpdir="$BATS_TEST_TMPDIR/t mp"
-  unknown 'cmd | tee $TMPDIR/x' "\$TMPDIR/x ($expansion)"
+  unknown 'cmd | tee -- $TMPDIR/x' "\$TMPDIR/x ($expansion)"
   passes 'cmd | tee "$TMPDIR/x"' 'cmd > "${TMPDIR}"/x'
 }
 
@@ -360,11 +374,17 @@ Blocked: this role may write files only under $wt/.scratch; write there with the
   blocked 'TMPDIR=/etc; d=$(mktemp -d) && cmd > $d/x' /etc/tmp.XXXXXXXXXX/x
   unknown 'd=$(mktemp -d); cmd > $d/x' "\$d/x ($(may_be_empty d))"
   local form
-  for form in '/usr/bin/mktemp -d' 'mktemp -d "$x"' 'mktemp --suffix=.x' 'mktemp a.XX b.XX' 'mktemp 2> /dev/null' 'TMPDIR=. mktemp' \
+  for form in '/usr/bin/mktemp -d' 'mktemp -d -- "$x"' 'mktemp --suffix=.x' 'mktemp a.XX b.XX' 'mktemp 2> /dev/null' 'TMPDIR=. mktemp' \
     'command mktemp'; do
     unknown "d=\$($form) && cmd > \$d/x" "\$d/x ($(not_followed d))"
   done
   unknown 'cmd > $(mktemp)' "\$(mktemp) ($expansion)"
+  # mktemp parses its words' values: one the hook works out only through variables, where an option
+  # may stand, is refused unread when a value may be an option or is unknown.
+  unread 'o=-p/etc; cd ./.scratch && d=$(mktemp -d $o) && cmd > "$d/x"' 'the mktemp word $o'
+  unread 'o=--tmpdir=/etc; cd ./.scratch && d=$(mktemp -d "$o") && cmd > "$d/x"' 'the mktemp word "$o"'
+  unread 'd=$(mktemp -d "$x") && cmd > $d/x' 'the mktemp word "$x"'
+  passes 't=.scratch/out.XXXX; f=$(mktemp "$t") && cmd > $f' 'd=$(mktemp -d -p "$CLAUDE_JOB_DIR") && cmd > $d/x'
 }
 
 @test "a basename substitution holds a name with no / in it, ., .. or a lone /, each judged" {

@@ -194,7 +194,7 @@ EOF
 @test "a target the hook cannot work out is refused, named as written with why" {
   unknown 'cmd > "$out"' "\"\$out\" ($expansion)"
   unknown 'cmd > $HOMEDIR/x' "\$HOMEDIR/x ($expansion)"
-  unknown 'cmd | tee .scratch/$x/y "$z"' ".scratch/\$x/y ($expansion), \"\$z\" ($expansion)"
+  unknown 'cmd | tee .scratch/$x/y -- "$z"' ".scratch/\$x/y ($expansion), \"\$z\" ($expansion)"
 }
 
 @test "a command with targets of both kinds gives the unknown-target message first, then the outside one" {
@@ -211,7 +211,7 @@ Blocked: this role may write files only under $wt/.scratch; write there with the
 }
 
 @test "a target through a variable says the variable is not followed there, or that a mktemp may leave it empty" {
-  shell -2 'x=a; x=src; d=$(mktemp -d); cmd > $x/y 2> "$d/z" | tee "$out"'
+  shell -2 'x=a; x=src; d=$(mktemp -d); cmd > $x/y 2> "$d/z" | tee -- "$out"'
   assert_equal "$output" ""
   assert_equal "$stderr" "Blocked: this hook cannot tell where these targets point: \$x/y (\$x is not followed here), \"\$d/z\" (\$d may be empty when mktemp fails; join them with &&), \"\$out\" ($expansion); spell each path out, or write files under $wt/.scratch with the Write tool."
 }

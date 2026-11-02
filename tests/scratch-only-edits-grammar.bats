@@ -140,6 +140,40 @@ setup() {
   passes 'command -v tee out' 'command -V tee out' 'timeout 60 cmd out' 'sudo -u tee cmd x' 'echo tee x' 'grep tee x'
 }
 
+@test "a wrapper's options are read from the list of the options it takes, attached, separate, bundled or abbreviated" {
+  local form
+  for form in 'env -a name' 'env --argv0 name' 'env --argv0=name' 'env -' 'env -i -' 'env -iu X' 'env -iuX' 'env -0v' \
+    'env --unse X' 'env --un=X' 'env --ignore-env' 'env --block-signal' 'env --default-signal=INT' 'env --env0-from f' \
+    'env -P /bin' 'stdbuf --output L' 'stdbuf --output=L' 'stdbuf --err 0' 'stdbuf -i0 -e L' 'timeout --sig KILL 5' \
+    'timeout -fp -k5 5' 'timeout --preserve 5' 'nice -5' 'nice --5' 'nice --adj 5' 'nice -n5' 'sudo -iu me' 'sudo -Eu me' \
+    'sudo --preserve-env=X -H' 'command -p' 'exec -cla name' 'exec -l' 'time -ao log' 'time --output log' 'time -f %e' \
+    'nohup --' 'builtin --'; do
+    blocked "cmd | $form tee out" "$wt/out"
+  done
+  # The word an option takes is its value, never the command word, and a lookup runs nothing.
+  passes 'env -a tee cmd x' 'env -iu tee cmd x' 'env --unse tee cmd x' 'stdbuf --output tee cmd x' 'command -pv tee x' \
+    'command -Vp tee x' 'exec -a tee cmd x' 'timeout --sig tee 5 cmd x' 'time -o x cmd tee'
+}
+
+@test "a wrapper option whose value is a command line, or one the hook does not know, is refused unread" {
+  unread "env -S 'tee src/x' < f" 'the env option -S'
+  unread "env -S'tee src/x' < f" "the env option -S'tee src/x'"
+  unread "env -iS 'tee src/x' < f" 'the env option -iS'
+  unread "env --split-string='tee src/x' < f" "the env option --split-string='tee src/x'"
+  unread "env --split-string 'tee src/x' < f" 'the env option --split-string'
+  unread "env --sp 'tee src/x' < f" 'the env option --sp'
+  # sudo -R runs the command in another root, where every path means another file.
+  unread 'sudo -R /x tee out < f' 'the sudo option -R'
+  unread 'sudo --chroot=/x tee out < f' 'the sudo option --chroot=/x'
+  # An option the wrapper does not take, or a long one that may abbreviate several.
+  unread 'env --frob tee src/x < f' 'the env option --frob'
+  unread 'env --i tee src/x < f' 'the env option --i'
+  unread 'timeout -x 5 tee src/x < f' 'the timeout option -x'
+  unread 'nohup -x tee src/x < f' 'the nohup option -x'
+  unread 'command -x tee src/x < f' 'the command option -x'
+  unread 'stdbuf -x0 tee src/x < f' 'the stdbuf option -x0'
+}
+
 @test "a wrapper's -C, --chdir or -D makes a relative tee file unknown" {
   unknown 'env -C /tmp tee .scratch/x' ".scratch/x ($moved)"
   unknown 'env --chdir=/tmp tee .scratch/x' ".scratch/x ($moved)"
@@ -153,7 +187,13 @@ setup() {
   blocked 'cmd | tee -- -x' "$wt/-x"
   blocked 'cmd | tee .scratch/a x' "$wt/x"
   blocked 'cmd | tee x -a' "$wt/x"
-  unknown 'cmd | tee -$opt' "-\$opt ($expansion)"
+  unknown 'cmd | tee -- -$opt' "-\$opt ($expansion)"
+  # A word known only through variables, where an option may stand, may be one, and may end them.
+  unread 'cmd | tee -$opt' 'the tee word -$opt'
+  unread 'o=--; cd ./.scratch && cmd | tee "$o" -/../../x' 'the tee word "$o"'
+  unread 'o=-a; cmd | tee $o .scratch/x' 'the tee word $o'
+  unread 'cmd | tee "$z"' 'the tee word "$z"'
+  passes 'f=.scratch/x; cmd | tee "$f"' 'cmd | tee "$TMPDIR/x"'
   passes 'cmd | tee' 'cmd | tee -a .scratch/task/log /dev/null'
 }
 
@@ -652,7 +692,8 @@ EOF" 'a here-document delimiter other than a plain word, quoted whole or not'
     "readarray 'a[\$(cmd)]'" "wait -p 'a[\$(cmd)]'" "declare -i n='a[\$(cmd)]'" "declare -n r='a[\$(cmd)]'" \
     "test -v 'a[\$(cmd)]'" "[ -v 'a[\$(cmd)]' ]" "[[ -v 'a[\$(cmd)]' ]]" "[[ 'a[\$(cmd)]' -eq 0 ]]" "[[ 0 -lt 'a[\$(cmd)]' ]]" \
     "test \"-v\" 'a[\$(cmd)]'" "test -\\v 'a[\$(cmd)]'" "[ '-v' 'a[\$(cmd)]' ]" "test \$o 'a[\$(cmd)]'" "[ \"\$o\" 'a[\$(cmd)]' ]" \
-    "a=(['\$(cmd > out)']=1)" "q+=(['\$(cmd)']=1)" "a=(x [\$'\\x24(cmd)']=1)" "a['\$(cmd)']=1" "a[\"\\\$(cmd)\"]=1 cmd"; do
+    "a=(['\$(cmd > out)']=1)" "q+=(['\$(cmd)']=1)" "a=(x [\$'\\x24(cmd)']=1)" "a['\$(cmd)']=1" "a[\"\\\$(cmd)\"]=1 cmd" \
+    "test {'-v',} 'a[\$(cmd > out)]'" "test {-v,'a[\$(cmd)]'}"; do
     unread "$word; cmd > .scratch/x" "$form"
   done
   # Text bash does not evaluate as a subscript is read as before.
@@ -721,9 +762,13 @@ EOF" 'a here-document delimiter other than a plain word, quoted whole or not'
   unread 'readarray $o a < f; cmd > .scratch/x' 'the readarray word $o'
   unread 'wait -p "$n"; cmd > .scratch/x' 'the wait word "$n"'
   unread 'wait "$p"; cmd > .scratch/x' 'the wait word "$p"'
+  # getopts' words go through bash's option parser first, which takes a leading -- away.
+  unknown 'getopts -- ab TMPDIR; cmd > "$TMPDIR/x"' "\"\$TMPDIR/x\" ($(not_followed TMPDIR))"
+  unread 'x=--; getopts "$x" ab TMPDIR; cmd > "$TMPDIR/x"' 'the getopts word "$x"'
+  unread 'getopts -a ab n; cmd > .scratch/x' 'the getopts word -a'
   passes 'read -r -p "$prompt" ans; read -rd "" x; read -t "$t" y; cmd > .scratch/x' 'wait $!; wait; wait 12 13; cmd > .scratch/x' \
     'export PATH="$HOME/bin:$PATH" X=a{b,c}; cmd > .scratch/x' 'mapfile -t lines < f; getopts "ab:" opt "$@" $x; cmd > .scratch/x' \
-    'unset x y; unset -f g; cmd > .scratch/x'
+    'unset x y; unset -f g; cmd > .scratch/x' 'getopts -- "ab:" opt; cmd > .scratch/x'
 }
 
 @test "a command word or a wrapper's word the hook cannot work out is refused unread" {
@@ -734,6 +779,7 @@ EOF" 'a here-document delimiter other than a plain word, quoted whole or not'
   unread '"$tool" a > .scratch/x' 'the command word "$tool"'
   unread '$(command -v tee) x > .scratch/x' 'the command word $(command -v tee)'
   unread '/usr/bin/t?e x > .scratch/x' 'the command word /usr/bin/t?e'
+  unread "{c'd',} .. && cmd > .scratch/x" "the command word {c'd',}"
   unread 'env {X=1,tee} x < f' 'the env word {X=1,tee}'
   unread 'env "$o" tee x' 'the env word "$o"'
   unread 'timeout "$d" KILL tee x' 'the timeout word "$d"'
