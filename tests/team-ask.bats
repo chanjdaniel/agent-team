@@ -71,6 +71,42 @@ logged() {
 - T7 sign-in: Which of the two sign-in limits stays? https://discord.com/channels/$INBOX_GUILD/2222/1564000000000000001"
 }
 
+@test "--script hashes the script first, ends the question with its path and sha256, and logs one asked with both" {
+  mkdir -p "$BATS_TEST_TMPDIR/w/7/scripts"
+  printf 'echo fixing\n' >"$BATS_TEST_TMPDIR/w/7/scripts/fix.sh"
+  ln -s "$BATS_TEST_TMPDIR/w/7/scripts/fix.sh" "$BATS_TEST_TMPDIR/link.sh"
+  local hash path=$BATS_TEST_TMPDIR/w/7/scripts/fix.sh
+  hash=$(sha256sum "$path" | cut -d' ' -f1)
+  (cd "$BATS_TEST_TMPDIR" && run_bin -0 team-ask T7 fix --file q.md --script link.sh --from builder)
+  assert_equal "$(posted | head -n 1 | jq -r .)" "Which of the two sign-in limits stays?  
+
+Five tries a minute, or ten an hour.
+
+Script: $path
+sha256: $hash"
+  assert_equal "$(logged | jq -c 'select(.event == "asked")')" \
+    "$(jq -cn --arg path "$path" --arg hash "$hash" '{task: "T7", event: "asked", id: "fix",
+      text: "Which of the two sign-in limits stays?", script: $path, sha256: $hash,
+      discord_message: "1564000000000000001"}')"
+  assert_equal "$(logged | jq -r .event)" "question
+asked
+waiting"
+  TEAM_HOME=$TEAM_HOME run "$REPO_ROOT/bin/team-log" --check
+  assert_equal "$status" 0
+
+  # A script that is not a readable file is refused before any post.
+  local before
+  before=$(stub_calls curl)
+  run_bin -1 team-ask T7 gone --file "$BATS_TEST_TMPDIR/q.md" --script "$BATS_TEST_TMPDIR/none.sh"
+  assert_equal "$output" "team-ask: no script to ask about: $BATS_TEST_TMPDIR/none.sh"
+  run_bin -1 team-ask T7 gone --file "$BATS_TEST_TMPDIR/q.md" --script "$BATS_TEST_TMPDIR/w"
+  assert_equal "$output" "team-ask: no script to ask about: $BATS_TEST_TMPDIR/w"
+  assert_equal "$(stub_calls curl)" "$before"
+  assert_equal "$(logged | jq -r .event)" "question
+asked
+waiting"
+}
+
 @test "a Waiting on you message Discord refuses is a line on stderr, and the ask stands" {
   echo 500 >"$STUB_FIXTURES/inbox/fail"
   run_bin -0 --separate-stderr team-ask T7 sign-in --file "$BATS_TEST_TMPDIR/q.md"
@@ -168,9 +204,10 @@ EOF
   local args
   for args in "" "T7" "T7 sign-in" "T7 sign-in --file" "7 sign-in --file q.md" "T7 --file q.md" \
     "T7 'sign in' --file q.md" "T7 -x --file q.md" "T7 sign-in --file q.md --from" \
-    "T7 sign-in --file q.md --from Planner" "T7 sign-in more --file q.md" "T7 sign-in --file q.md --to 1111"; do
+    "T7 sign-in --file q.md --from Planner" "T7 sign-in more --file q.md" "T7 sign-in --file q.md --to 1111" \
+    "T7 sign-in --file q.md --script" "T7 sign-in --file q.md --script ''"; do
     eval "run_bin -2 team-ask $args"
-    assert_contains "$output" "usage: team-ask T<n> <id> --file <question> [--from <role>]"
+    assert_contains "$output" "usage: team-ask T<n> <id> --file <question> [--from <role>] [--script <path>]"
   done
   assert_equal "$(stub_calls curl)" ""
   assert_equal "$(logged)" ""
@@ -179,5 +216,5 @@ EOF
 @test "--help prints the header" {
   run_bin -0 team-ask --help
   assert_equal "${lines[0]}" "$(sed -n '2s/^# //p' "$REPO_ROOT/bin/team-ask")"
-  assert_contains "$output" "Usage: team-ask T<n> <id> --file <question> [--from <role>]"
+  assert_contains "$output" "Usage: team-ask T<n> <id> --file <question> [--from <role>] [--script <path>]"
 }
