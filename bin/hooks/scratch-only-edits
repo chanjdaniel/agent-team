@@ -63,14 +63,14 @@
 #   (but -v and -V, which run nothing), exec, time and builtin, by any path, past their options and
 #   those options' values, read as each one's options parse them by GNU's, BSD's and bash's
 #   spellings (a value in its option's word or the next, letters bundled in one word, a long name
-#   cut short to a start no other name shares), past env's lone -, and past env's and sudo's
-#   assignments, so the command they run is the command word.
+#   cut short to a start no other name shares), past env's lone - after its options (a -- among
+#   them), and past env's and sudo's assignments, so the command they run is the command word.
 # - A command word, a wrapper and tee are known by the word's text with its quotes and backslashes
 #   removed. A word holding an expansion, a glob, a brace expansion (its braces in one part or
 #   across quoted text, as {a,"b"}) or an ANSI-C escape is one the hook cannot work out: as a
 #   command word it is refused unread, but one of text and variables alone, whose values the walk
-#   works out where it runs (below); a wrapper's word is refused unread where an option may stand,
-#   or when bash may make it several words or none.
+#   works out where it runs (below); a wrapper's word is refused unread where an option or env's
+#   lone - may stand, or when bash may make it several words or none.
 #
 # Refused unread, each naming its form: a backtick substitution, $[ ], $" ", an extended glob;
 # select, coproc, the function keyword, and the alias, enable, hash and compgen builtins (compgen
@@ -1792,13 +1792,14 @@ wrapper_option() {
 # no command the hook knows, chd 1 when a wrapper's -C, --chdir or -D moves the command it runs,
 # words 1 when the command holds any word but its assignments, wrapped 1 when a wrapper runs it.
 # A wrapper's options are read as wrapper_option says, and stop at --, at env's lone - (which
-# empties the environment) and at the first word that is no option. A wrapper's word the hook
+# empties the environment, and which env drops after a -- too) and at the first word that is no
+# option. A wrapper's word the hook
 # cannot work out where an option may stand, or that bash may make several words or none, is
 # refused unread, as it may change which word is the command word; so is a command word the hook
 # cannot work out but one of text and variables alone, whose values the walk works out where it
 # runs (named 1).
 resolve() {
-  local e k wrapper='' options=0 valued=0 timed=0 short='' long='' lookup=0
+  local e k wrapper='' options=0 valued=0 timed=0 short='' long='' lookup=0 dash=0
   cw=-1 cn='' cu=0 chd=0 words=0 wrapped=0 named=0
   for e in ${OWN[$1]}; do
     [[ ${EK[e]} == W ]] || continue
@@ -1820,10 +1821,14 @@ resolve() {
         fi
         continue
       fi
-      if ((options && !nu)) && [[ $wrapper == env && $nm == - ]]; then
-        options=0
+      # env drops one lone - after its options, past a -- too, which a word the hook cannot work
+      # out may be.
+      if ((dash && !nu)) && [[ $nm == - ]]; then
+        options=0 dash=0
         continue
       fi
+      if ((dash && nu)) && [[ -z $nl || $nl == - ]]; then unread "the $wrapper word ${ER[e]}"; fi
+      dash=0
       if [[ ($wrapper == env || $wrapper == sudo) && ${pk[EA[e]]} == l && ${pt[EA[e]]} =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
         options=0
         continue
@@ -1838,7 +1843,8 @@ resolve() {
     if ((!nu)); then
       case ${nm##*/} in
         env | sudo | nohup | timeout | nice | stdbuf | command | exec | time | builtin)
-          wrapper=${nm##*/} options=1 timed=0
+          wrapper=${nm##*/} options=1 timed=0 dash=0
+          [[ $wrapper != env ]] || dash=1
           [[ $wrapper == timeout ]] && timed=1
           options_of "$wrapper"
           continue

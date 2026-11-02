@@ -142,7 +142,7 @@ setup() {
 
 @test "a wrapper's options are read from the list of the options it takes, attached, separate, bundled or abbreviated" {
   local form
-  for form in 'env -a name' 'env --argv0 name' 'env --argv0=name' 'env -' 'env -i -' 'env -iu X' 'env -iuX' 'env -0v' \
+  for form in 'env -a name' 'env --argv0 name' 'env --argv0=name' 'env -' 'env -i -' 'env -- -' 'env -iu X' 'env -iuX' 'env -0v' \
     'env --unse X' 'env --un=X' 'env --ignore-env' 'env --block-signal' 'env --default-signal=INT' 'env --env0-from f' \
     'env -P /bin' 'stdbuf --output L' 'stdbuf --output=L' 'stdbuf --err 0' 'stdbuf -i0 -e L' 'timeout --sig KILL 5' \
     'timeout -fp -k5 5' 'timeout --preserve 5' 'nice -5' 'nice --5' 'nice --adj 5' 'nice -n5' 'sudo -iu me' 'sudo -Eu me' \
@@ -782,6 +782,7 @@ EOF" 'a here-document delimiter other than a plain word, quoted whole or not'
   unread "{c'd',} .. && cmd > .scratch/x" "the command word {c'd',}"
   unread 'env {X=1,tee} x < f' 'the env word {X=1,tee}'
   unread 'env "$o" tee x' 'the env word "$o"'
+  unread 'o=-; env -- "$o" tee src/x < f' 'the env word "$o"'
   unread 'timeout "$d" KILL tee x' 'the timeout word "$d"'
   unread 'command $o tee x' 'the command word $o'
   unread 'sudo -u "$u" "$c" x > .scratch/x' 'the sudo word "$c"'
