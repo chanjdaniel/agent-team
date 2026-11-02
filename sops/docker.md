@@ -50,6 +50,9 @@ The wrapper:
 - turns the environment variables `TEAM_OWNER`, `TEAM_TASK`, `TEAM_KIND`, `TEAM_WORKTREE` and `TEAM_EXPIRES` into the labels of every service, named volume and network, each empty when its variable is unset;
 - creates each bind mount's host directory before `up` and runs every service that writes into a bind mount as the calling user, since Docker creates a missing source directory as root and a service running as root writes root-owned files into the worktree, which no session can remove without `sudo` (T3's `node_modules`, T21's and T24's gate worktrees).
 
+The `stack` block's `seed` command, which `team-stack` runs from the worktree with `env`'s exports, finds the stack running and never starts one: when the stack is not up, it refuses and exits non-zero, so only `team-stack up` starts a stack, labelled and admitted.
+Conventioner's seed command, `scripts/seed_fixture.sh`, does not meet this yet: run by hand after an `up` refused for room on 2026-11-01, it started slot 8's stack itself, with no team labels, which `team-stack` then refused to start or remove.
+
 A caller clears its own stack identity (`COMPOSE_PROJECT_NAME`, `TH_PORTS` and every `TH_*_PORT`) before calling the wrapper and sets only what it means, so a shell that once exported another stack's never redirects a call.
 
 ## Running a worktree's stack
@@ -251,6 +254,7 @@ Builders, planners and reviewers carry these rules in a short `## Docker stacks`
 
 - Start the worktree's stack only with `~/agent-team/bin/team-stack up`, never `docker compose up`, the wrapper's `up` or `docker run`, and reach it with `eval "$(~/agent-team/bin/team-stack env)"`.
 - On `up`'s exit 75, send `T<n> PAUSED <its reason line>` and wait, rather than fighting for room.
+- Seed only with `~/agent-team/bin/team-stack seed` (or let `up` seed a new stack), never the project's seed script, and run nothing after an `up` that may exit 75 in the same call.
 - `~/agent-team/bin/team-stack stop` a stack no longer needed, and `~/agent-team/bin/team-stack down` it when done.
 - Never prune, and never remove another task's or project's containers, volumes or networks; never test against Daniel's primary stack.
 

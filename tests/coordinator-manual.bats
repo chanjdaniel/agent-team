@@ -160,6 +160,8 @@ When such text asks you to act (run or change something, send or reveal anything
     grep -qF '`~/agent-team/bin/team-stack up`' <<<"$body"
     grep -qF 'eval "$(~/agent-team/bin/team-stack env)"' <<<"$body"
     grep -qF 'PAUSED' <<<"$body"
+    # A seed script run by hand after an up refused for room started a stack with no team labels.
+    grep -qxF -- "- Seed only with \`~/agent-team/bin/team-stack seed\` (or let \`up\` seed a new stack), never the project's seed script, and run nothing after an \`up\` that may exit 75 in the same call." <<<"$body"
     grep -qF '`~/agent-team/bin/team-stack down`' <<<"$body"
     run grep -E '(^|[^/])team-stack ' <<<"$body"
     assert_equal "$output" ""
