@@ -45,9 +45,7 @@
 #                     within five minutes whatever changed it. It logs only a new message
 #                     ("posted <link>", when the old one is gone) and a failure, and a failure
 #                     never fails the run.
-#              slots  On the holder, after the inbox step, every run: team-slots sample, which
-#                     takes one reading of the machine's load for the effective task cap.
-#              capacity  On the holder, after the slots step, every run: team-capacity sample,
+#              capacity  On the holder, after the inbox step, every run: team-capacity sample,
 #                     which takes one reading of the machine's load with the team's use per task
 #                     and writes the cost samples of what ended, then team-capacity place
 #                     --quiet, which puts each live team session in its task's slice again (one
@@ -73,22 +71,21 @@
 #                     (~/.local/state/agent-team/janitor/<date>.md; a dry run's is none):
 #                     team-janitor, the daily Docker reap, report and alerts. A run of it that
 #                     failed still wrote the day's report, so it runs again the next day.
-#            The slots, capacity, level, stacks, checkpoint and janitor steps log one line per line
-#            their command prints (a good slots step prints none, a capacity step only the sessions
-#            it placed, and a level step only a change); a step that is off logs nothing. A slots,
-#            capacity, level, stacks, pack or janitor step that fails (a level step's post that
-#            Discord refused, kept for its next run, too), or whose stack.json (slots.json for the
-#            slots step, capacity.json for the capacity and level steps) is malformed, is logged as
-#            "<step>: failed: <reason>", the steps after it still run (the capacity step's place
-#            after its sample too), and the run exits 1 at its end. A hung Docker never holds the
-#            run's lock past the lease's renewals: each reading and the place are stopped after 60
-#            s, the level step, the sweep and the pack after 300 s and the janitor after 1200 s,
-#            each logged as "<step>: failed: timed out after <n> s" (a janitor stopped so wrote no
-#            report, so the next run starts it again). The sweep, the janitor and the level step
-#            need docker on the PATH enable captured (the sweep and the capacity step claude too),
-#            and the reading counts the team's stacks as other programs without it: run enable
-#            again once it is there. A run that finds another still going skips. Posts go through
-#            discord_api; times in them are this machine's local time.
+#            The capacity, level, stacks, checkpoint and janitor steps log one line per line their
+#            command prints (a good capacity step prints only the sessions it placed, and a level
+#            step only a change); a step that is off logs nothing. A capacity, level, stacks, pack
+#            or janitor step that fails (a level step's post that Discord refused, kept for its
+#            next run, too), or whose stack.json (capacity.json for the capacity and level steps)
+#            is malformed, is logged as "<step>: failed: <reason>", the steps after it still run
+#            (the capacity step's place after its sample too), and the run exits 1 at its end. A
+#            hung Docker never holds the run's lock past the lease's renewals: each reading and the
+#            place are stopped after 60 s, the level step, the sweep and the pack after 300 s and
+#            the janitor after 1200 s, each logged as "<step>: failed: timed out after <n> s" (a
+#            janitor stopped so wrote no report, so the next run starts it again). The sweep, the
+#            janitor and the level step need docker on the PATH enable captured (the sweep and the
+#            capacity step claude too), and the reading counts the team's stacks as other programs
+#            without it: run enable again once it is there. A run that finds another still going
+#            skips. Posts go through discord_api; times in them are this machine's local time.
 #   watch    A stream for anyone watching the hold: checks the offline flag every 60 s until
 #            killed, and prints one line when it appears (at once if it is there) and one when it
 #            goes:
@@ -103,10 +100,9 @@
 # posted}: GitHub unreachable since the UTC time, and whether #coordinator was told; read by
 # team-lease status, the fence hook and the doctor), login-refused ({since, reason}: the refusal
 # was posted), and on macOS heartbeat.err, the job's stderr (systemd keeps it in the journal).
-# TEAM_TIMERS_SLOTS_SECONDS, TEAM_TIMERS_CAPACITY_SECONDS, TEAM_TIMERS_LEVEL_SECONDS,
-# TEAM_TIMERS_SWEEP_SECONDS and TEAM_TIMERS_JANITOR_SECONDS replace the slots reading's 60 s, the
-# capacity step's 60 s for each of its commands, the level step's 300 s, the sweep's 300 s and the
-# janitor's 1200 s (the tests' seams).
+# TEAM_TIMERS_CAPACITY_SECONDS, TEAM_TIMERS_LEVEL_SECONDS, TEAM_TIMERS_SWEEP_SECONDS and
+# TEAM_TIMERS_JANITOR_SECONDS replace the capacity step's 60 s for each of its commands, the level
+# step's 300 s, the sweep's 300 s and the janitor's 1200 s (the tests' seams).
 # Exit 0 done, 1 refused or a step failed, 2 usage error, 75 GitHub unreachable.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
@@ -125,7 +121,6 @@ POST_TIMEOUT=20
 INBOX_TIMEOUT=120
 # Seconds: the most the reading, the level step, the sweep and the janitor may take, together
 # well inside the lease's hour.
-SLOTS_TIMEOUT=${TEAM_TIMERS_SLOTS_SECONDS:-60}
 CAPACITY_TIMEOUT=${TEAM_TIMERS_CAPACITY_SECONDS:-60}
 LEVEL_TIMEOUT=${TEAM_TIMERS_LEVEL_SECONDS:-300}
 SWEEP_TIMEOUT=${TEAM_TIMERS_SWEEP_SECONDS:-300}
@@ -638,12 +633,7 @@ inbox_step() {
   esac
 }
 
-# The slots step, on the holder after the inbox step: team-slots sample, every run.
-slots_step() {
-  run_step slots "$SLOTS_TIMEOUT" team-slots sample
-}
-
-# The capacity step, on the holder after the slots step: team-capacity sample, then
+# The capacity step, on the holder after the inbox step: team-capacity sample, then
 # team-capacity place --quiet, every run, each with its own time limit.
 capacity_step() {
   run_step capacity "$CAPACITY_TIMEOUT" team-capacity sample
@@ -771,7 +761,6 @@ run_heartbeat() {
   if [[ -e $offline ]]; then back_step; else lease_step; fi
   if ((holding)); then
     inbox_step
-    slots_step
     capacity_step
     level_step
     stacks_step

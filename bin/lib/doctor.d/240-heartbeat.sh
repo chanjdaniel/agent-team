@@ -3,7 +3,7 @@
 #               warns while the lease line cannot say whether this machine holds it.
 # shellcheck shell=bash
 # shellcheck disable=SC2154 # bin and err, the doctor's, and holding, from the lease check
-# shellcheck disable=SC2034 # heartbeat, for the slots check
+# shellcheck disable=SC2034 # heartbeat, for the resources check
 
 # Enabled exactly when this machine holds the lease.
 rc=0
