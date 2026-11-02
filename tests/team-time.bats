@@ -443,8 +443,9 @@ preapproved_rounds() {
   after=$(date -u +%s)
   local opened
   opened=$(date -u -d 2026-10-22T10:00:00Z +%s)
-  jq -e --argjson lo "$(((before - opened) / 36))" --argjson hi "$(((after - opened) / 36 + 1))" \
-    '.tasks | length == 1 and (.[0].wall * 100 | floor) >= $lo and (.[0].wall * 100 | floor) <= $hi' <<<"$json"
+  # wall is in hours rounded to 0.001 (3.6 seconds), so it may lie up to 1.8 seconds either side.
+  jq -e --argjson lo "$((before - opened))" --argjson hi "$((after - opened))" \
+    '.tasks | length == 1 and .[0].wall * 3600 >= $lo - 2 and .[0].wall * 3600 <= $hi + 2' <<<"$json"
   jq -e '(.until | fromdate) >= ($before | tonumber)' --arg before "$before" <<<"$json"
 }
 

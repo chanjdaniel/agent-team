@@ -1,0 +1,814 @@
+#!/usr/bin/env bats
+# shellcheck disable=SC2154,SC2034,SC2088 # wt, tmp, job and the reasons are helpers/scratch-hook.bash's, hook_tmpdir and hook_job its shell's; a ~ is part of a command as an agent types it
+# hooks/scratch-only-edits: the grammar the hook reads a Bash command against. Each form of it is
+# read as bash reads it, so a write it holds is judged; each form outside it is refused unread,
+# naming the form, and so is every form the grammar names as refused.
+
+load helpers/common
+load helpers/scratch-hook
+
+setup() {
+  scratch_setup
+}
+
+@test "a command with no > and no tee once its quotes and backslashes are taken out passes unread" {
+  passes 'touch src/x' 'echo "$(echo $#)" $(( "1" ))' 'x=`y`' 'select x in a; do :; done' 'grep -rn foo src'
+}
+
+@test "a tee spelled with quotes, backslashes, a line continuation, a brace expansion or an ANSI-C string is read" {
+  blocked "cmd | t''ee out" "$wt/out"
+  blocked 'cmd | t\ee out' "$wt/out"
+  blocked 'cmd | "tee" out' "$wt/out"
+  blocked $'cmd | t\\\nee out' "$wt/out"
+  # A brace expansion may spell it too.
+  unread 'cmd | t{e,}e out' 'the command word t{e,}e'
+  unread 'cmd | {s..u}ee out' 'the command word {s..u}ee'
+  # And so may an ANSI-C escape.
+  unread "cmd | \$'t\\x65e' out" "the command word \$'t\\x65e'"
+  passes 'echo {a,b}' 'echo ${x}' "echo \$'a\\tb'"
+}
+
+@test "quoted text is not a redirection, and what follows it is judged" {
+  passes 'echo "a > b"' "grep -n '>>' file" 'echo a\>b' 'echo "a \" > b"' "echo 'it''s > fine'" \
+    "echo 'a
+> b'" 'echo "a
+> b"'
+  blocked 'echo "a > b" > c' "$wt/c"
+  blocked "echo 'a > b' > c" "$wt/c"
+  blocked 'echo a\>b > c' "$wt/c"
+  blocked "echo 'a
+> b' > c" "$wt/c"
+  # A double-quoted string keeps \$ \` \" \\ as the character and a line continuation out.
+  blocked 'cmd > ".scratch/\$\"\\x"/../../y' "$wt/y"
+  blocked $'cmd > ".scr\\\natch/x/../../y"' "$wt/y"
+}
+
+@test "a comment runs to its line's end, and a # inside a word is text" {
+  passes 'echo ok # > x' 'cmd;# > x' 'cmd > .scratch/x # | tee y'
+  blocked 'echo a#b > x' "$wt/x"
+  blocked 'echo a > x#y' "$wt/x#y"
+  # A comment ends at its line even when that line ends in a backslash.
+  blocked $'echo a # c \\\ncmd > x' "$wt/x"
+  blocked $'# a comment\ncmd > x' "$wt/x"
+}
+
+@test "a line continuation joins its lines, inside words and operators" {
+  blocked $'cmd \\\n> x' "$wt/x"
+  blocked $'cmd >\\\n> x' "$wt/x"
+  blocked $'true &\\\n& cmd > x' "$wt/x"
+  blocked $'cmd > .scr\\\natch/../x' "$wt/x"
+  # An escaped backslash before a newline is a backslash, and the newline separates commands.
+  blocked $'echo a\\\\\ncmd > x' "$wt/x"
+}
+
+@test "an ANSI-C string is read to its unescaped quote" {
+  blocked "echo \$'a\\'b' > out" "$wt/out"
+  blocked "echo \$'a > b' > out" "$wt/out"
+  passes "echo \$'a > b'" "cmd > \$'.scratch/x'"
+  unknown "cmd > \$'.scratch/\\x41'" "\$'.scratch/\\x41' ($expansion)"
+}
+
+@test "\$name, \${name} and the special parameters are read, and a target holding an unknown one is unknown" {
+  passes 'echo $x ${y} $? $# $@ $* $$ $! $- $0 $1 ${10} ${#} ${@} > .scratch/x' 'echo $ "$" a$ > .scratch/x'
+  unknown 'cmd > .scratch/$1' ".scratch/\$1 ($expansion)"
+  unknown 'cmd > "x$?"' "\"x\$?\" ($expansion)"
+}
+
+@test "each list and pipeline operator is read, and every command in it judged" {
+  blocked 'a; cmd > x' "$wt/x"
+  blocked 'a & cmd > x' "$wt/x"
+  blocked 'cmd > x &' "$wt/x"
+  blocked $'a\ncmd > x' "$wt/x"
+  blocked 'a && cmd > x' "$wt/x"
+  blocked 'a || cmd > x' "$wt/x"
+  blocked 'a | cmd > x' "$wt/x"
+  blocked 'a |& tee x' "$wt/x"
+  blocked $'a |\n  tee x' "$wt/x"
+  blocked $'a &&\n# then\ncmd > x' "$wt/x"
+  blocked '! cmd > x' "$wt/x"
+  blocked 'time -p cmd > x' "$wt/x"
+  blocked 'time -p -- cmd > x' "$wt/x"
+  blocked '! time cmd | tee x' "$wt/x"
+  blocked 'time ! cmd > x' "$wt/x"
+  passes 'time; cmd > .scratch/x' '! ; cmd > .scratch/x'
+}
+
+@test "each output redirection operator's target is judged" {
+  blocked 'cmd > x' "$wt/x"
+  blocked 'cmd >> x' "$wt/x"
+  blocked 'cmd >| x' "$wt/x"
+  blocked 'cmd &> x' "$wt/x"
+  blocked 'cmd &>> x' "$wt/x"
+  blocked 'cmd <> x' "$wt/x"
+  blocked 'cmd 3<> x' "$wt/x"
+  blocked 'cmd >& x' "$wt/x"
+  blocked 'cmd 2> x' "$wt/x"
+  blocked 'cmd 10>x' "$wt/x"
+  blocked '>x' "$wt/x"
+  blocked 'cmd >x>y' "$wt/x, $wt/y"
+  # A word of digits apart from the operator is an argument, and &> always names a file.
+  blocked 'cmd 2 > x' "$wt/x"
+  blocked 'cmd &>2' "$wt/2"
+}
+
+@test "a file descriptor duplication or an input redirection judges nothing" {
+  passes 'cmd 2>&1' 'cmd >&2' 'cmd 1>&2-' 'cmd >&-' 'cmd 3>&1 1>&2 2>&3' 'cmd 2>& 1' 'cmd >&"1"' \
+    'cmd < src/x > .scratch/y' 'cmd 0<&3 > .scratch/y' 'cmd <&- > .scratch/y'
+  unknown 'cmd >&$fd' "\$fd ($expansion)"
+}
+
+@test "a tee is found behind the wrappers, their options and their option values" {
+  blocked 'cmd | timeout 60 tee out' "$wt/out"
+  blocked 'cmd | timeout -s KILL -k 5 10s tee out' "$wt/out"
+  blocked 'cmd | timeout 1e3 tee out' "$wt/out"
+  blocked 'cmd | nice tee out' "$wt/out"
+  blocked 'cmd | nice -n 5 tee out' "$wt/out"
+  blocked 'cmd | sudo -u me tee out' "$wt/out"
+  blocked 'cmd | sudo --user me -E tee out' "$wt/out"
+  blocked 'cmd | sudo -- tee out' "$wt/out"
+  blocked 'cmd | stdbuf -oL tee out' "$wt/out"
+  blocked 'cmd | stdbuf -o L tee out' "$wt/out"
+  blocked 'cmd | env -u X A=1 tee out' "$wt/out"
+  blocked 'cmd | exec -a name tee out' "$wt/out"
+  blocked 'cmd | builtin command nohup tee out' "$wt/out"
+  blocked 'cmd | time -p tee out' "$wt/out"
+  blocked 'cmd | time -o log tee out' "$wt/out"
+  blocked 'cmd | /usr/bin/tee out' "$wt/out"
+  blocked 'cmd | "tee" out' "$wt/out"
+  blocked 'cmd | X=1 tee out' "$wt/out"
+  # A lookup runs nothing, and a wrapper's own arguments are no tee's files.
+  passes 'command -v tee out' 'command -V tee out' 'timeout 60 cmd out' 'sudo -u tee cmd x' 'echo tee x' 'grep tee x'
+}
+
+@test "a wrapper's options are read from the list of the options it takes, attached, separate, bundled or abbreviated" {
+  local form
+  for form in 'env -a name' 'env --argv0=name' 'env -' 'env -i -' 'env - X=1' 'env -iu X' 'env -iuX' 'env -0v' \
+    'env --un=X' 'env --ignore-env' 'env --block-signal' 'env --default-signal=INT' 'env --env0-from=f' \
+    'env -P /bin' 'stdbuf --output L' 'stdbuf --output=L' 'stdbuf --err 0' 'stdbuf -i0 -e L' 'timeout --sig KILL 5' \
+    'timeout -fp -k5 5' 'timeout --preserve 5' 'nice -5' 'nice --5' 'nice --adj 5' 'nice -n5' 'sudo -iu me' 'sudo -Eu me' \
+    'sudo --preserve-env=X -H' 'command -p' 'exec -cla name' 'exec -l' 'time -ao log' 'time --output log' 'time -f %e' \
+    'nohup --' 'builtin --'; do
+    blocked "cmd | $form tee out" "$wt/out"
+  done
+  # The word an option takes is its value, never the command word, and a lookup runs nothing.
+  passes 'env -a tee cmd x' 'env -iu tee cmd x' 'env --unset=tee cmd x' 'stdbuf --output tee cmd x' 'command -pv tee x' \
+    'command -Vp tee x' 'exec -a tee cmd x' 'timeout --sig tee 5 cmd x' 'time -o x cmd tee'
+}
+
+@test "a wrapper option whose value is a command line, or one the hook does not know, is refused unread" {
+  unread "env -S 'tee src/x' < f" 'the env option -S'
+  unread "env -S'tee src/x' < f" "the env option -S'tee src/x'"
+  unread "env -iS 'tee src/x' < f" 'the env option -iS'
+  unread "env --split-string='tee src/x' < f" "the env option --split-string='tee src/x'"
+  unread "env --split-string 'tee src/x' < f" 'the env option --split-string'
+  unread "env --sp 'tee src/x' < f" 'the env option --sp'
+  # sudo -R runs the command in another root, where every path means another file.
+  unread 'sudo -R /x tee out < f' 'the sudo option -R'
+  unread 'sudo --chroot=/x tee out < f' 'the sudo option --chroot=/x'
+  # An option the wrapper does not take, or a long one that may abbreviate several.
+  unread 'env --frob tee src/x < f' 'the env option --frob'
+  unread 'env --i tee src/x < f' 'the env option --i'
+  unread 'timeout -x 5 tee src/x < f' 'the timeout option -x'
+  unread 'nohup -x tee src/x < f' 'the nohup option -x'
+  unread 'command -x tee src/x < f' 'the command option -x'
+  unread 'stdbuf -x0 tee src/x < f' 'the stdbuf option -x0'
+  # Where GNU's and BSD's env read a word apart: BSD's reads a lone - as an option and goes on with
+  # its options, which GNU's ends (and drops, past a -- too), and BSD's reads a --name as - and
+  # bundled letters, so a long option's value is the next word to GNU's alone.
+  unread "env - -S 'tee src/x' < f" 'the env word -S'
+  unread 'env - -u X tee src/x < f' 'the env word -u'
+  unread 'env -i - -- tee src/x < f' 'the env word --'
+  unread 'env -- - tee src/x < f' 'the env word -'
+  unread 'env --unset tee src/x < f' 'the env option --unset'
+  unread 'env --unse X tee src/x < f' 'the env option --unse'
+  unread 'env --argv0 name tee src/x < f' 'the env option --argv0'
+  unread 'env --chdir /tmp tee src/x < f' 'the env option --chdir'
+  unread 'env --env0-from f tee src/x < f' 'the env option --env0-from'
+}
+
+@test "a wrapper's -C, --chdir or -D makes a relative tee file unknown" {
+  unknown 'env -C /tmp tee .scratch/x' ".scratch/x ($moved)"
+  unknown 'env --chdir=/tmp tee .scratch/x' ".scratch/x ($moved)"
+  unknown 'sudo -D /tmp tee .scratch/x' ".scratch/x ($moved)"
+  # An absolute file is judged, and a redirection is the shell's, made before the wrapper runs.
+  passes "env -C /tmp tee $wt/.scratch/x" 'env -C /tmp cmd > .scratch/x'
+}
+
+@test "a tee's every file is a target, after its options and after --, and a word written -... after a file is refused unread" {
+  blocked 'cmd | tee --append -p x' "$wt/x"
+  blocked 'cmd | tee -- -x' "$wt/-x"
+  blocked 'cmd | tee .scratch/a x' "$wt/x"
+  # GNU's tee reads a word written -... after a file as an option, BSD's as a file, and BSD's a --
+  # there as a file too; a word bash may remove counts as a file.
+  unread 'cmd | tee x -a' 'the tee word -a'
+  unread 'cmd | tee .scratch/a -/../../x' 'the tee word -/../../x'
+  unread 'cmd | tee .scratch/a -- x' 'the tee word --'
+  unread 'o=; cmd | tee $o -a .scratch/x' 'the tee word -a'
+  passes 'cmd | tee -a -- .scratch/a .scratch/-b'
+  unknown 'cmd | tee -- -$opt' "-\$opt ($expansion)"
+  # A word known only through variables, where an option may stand, may be one, and may end them.
+  unread 'cmd | tee -$opt' 'the tee word -$opt'
+  unread 'o=--; cd ./.scratch && cmd | tee "$o" -/../../x' 'the tee word "$o"'
+  unread 'o=-a; cmd | tee $o .scratch/x' 'the tee word $o'
+  unread 'cmd | tee "$z"' 'the tee word "$z"'
+  passes 'f=.scratch/x; cmd | tee "$f"' 'cmd | tee "$TMPDIR/x"'
+  passes 'cmd | tee' 'cmd | tee -a .scratch/task/log /dev/null'
+}
+
+@test "a target holding an unquoted brace or glob is unknown" {
+  unknown 'cmd | tee .scratch/{a,../../src/b}' ".scratch/{a,../../src/b} ($expansion)"
+  unknown 'cmd > .scratch/*.md' ".scratch/*.md ($expansion)"
+  unknown 'cmd > .scratch/a?' ".scratch/a? ($expansion)"
+  unknown 'cmd > .scratch/[ab]' ".scratch/[ab] ($expansion)"
+  passes 'cmd > ".scratch/*.md"' "cmd > .scratch/'{a,b}'"
+}
+
+@test "a ~ is HOME only alone or before a / at a target's start" {
+  passes 'cmd > ~/wt/.scratch/x' 'cmd | tee ~/wt/.scratch/x'
+  blocked 'cmd > ~' "$HOME"
+  unknown 'cmd > ~user/x' "~user/x ($expansion)"
+  unknown 'cmd > ~+/x' "~+/x ($expansion)"
+  unknown 'cmd | tee a=~/x' "a=~/x ($expansion)"
+  blocked 'cmd > .scratch/../~/x' "$wt/~/x"
+  blocked 'cmd > "~/x"' "$wt/~/x"
+}
+
+@test "a backtick substitution, \$[ ], \$\" \" and an extended glob are refused unread" {
+  unread 'x=`cmd > out`' 'a backtick substitution'
+  unread 'echo "`cmd`" > .scratch/x' 'a backtick substitution'
+  unread $'echo $[1<<2]\necho x > out' 'a $[ ] arithmetic expansion'
+  unread 'echo $"hi" > .scratch/x' 'a $" " string'
+  local glob
+  for glob in '@(a|b)' '!(a)' '+(a)' '*(a)' '?(a)'; do
+    unread "ls $glob > .scratch/x" 'an extended glob'
+  done
+}
+
+@test "select, coproc, the function keyword, alias, enable, hash and compgen are refused unread" {
+  unread 'select x in a; do cmd > out; done' 'a select command'
+  unread 'coproc cmd > .scratch/x' 'a coproc command'
+  unread 'function f { cmd > out; }' 'the function keyword'
+  unread $'alias t=tee\necho | t out' 'the alias builtin'
+  unread 'builtin alias t=tee; cmd > .scratch/x' 'the alias builtin'
+  unread 'enable -n echo; echo > .scratch/x' 'the enable builtin'
+  unread 'hash -p /bin/sh tee; cmd | tee .scratch/x' 'the hash builtin'
+  unread "compgen -W '\$(cmd > out)' x; cmd > .scratch/x" 'the compgen builtin'
+  unread 'compgen -C cmd x > .scratch/x' 'the compgen builtin'
+  unread 'f() { :; }; compgen -F f x > .scratch/x' 'the compgen builtin'
+  # As an argument, such a word is text.
+  passes 'echo alias select > .scratch/x'
+}
+
+@test "a set or shopt option outside the grammar's is refused unread" {
+  unread 'set -o posix; cmd > .scratch/x' 'the set option -o posix'
+  unread 'set -euo posix; cmd > .scratch/x' 'the set option -o posix'
+  unread 'set -k; cmd > .scratch/x' 'the set option -k'
+  unread 'set +H; cmd > .scratch/x' 'the set option +H'
+  unread 'set $opt; cmd > .scratch/x' 'the set option $opt'
+  unread 'shopt -s lastpipe; cmd > .scratch/x' 'the shopt option -s'
+  unread 'shopt -u expand_aliases; cmd > .scratch/x' 'the shopt option -u'
+  passes 'set -euo pipefail; cmd > .scratch/x' 'set -e +x -ET; set -o errexit -o nounset +o xtrace; cmd > .scratch/x' \
+    'set -o verbose -o errtrace -o functrace; set -- -o posix $x; cmd > .scratch/x' 'set a -k; set; set -o; cmd > .scratch/x' \
+    'shopt -q extglob; shopt -pq; shopt; cmd > .scratch/x'
+}
+
+@test "IFS, CDPATH and POSIXLY_CORRECT named anywhere else are refused unread, but an empty IFS= before a command" {
+  unread 'echo "$IFS" > .scratch/x' 'the name IFS'
+  unread 'IFS=/; cmd > .scratch/x' 'the name IFS'
+  unread 'IFS=$IFS read -r a; cmd > .scratch/x' 'the name IFS'
+  unread 'export IFS; cmd > .scratch/x' 'the name IFS'
+  unread 'cmd > .scratch/x # IFS' 'the name IFS'
+  unread 'CDPATH=/ cmd > .scratch/x' 'the name CDPATH'
+  unread 'echo ${CDPATH} > .scratch/x' 'the name CDPATH'
+  unread "POSIXLY_CORRECT=1 cmd > .scratch/x" 'the name POSIXLY_CORRECT'
+  # A value in the prefix sets IFS while the command runs, a function the command defines included.
+  unread 'IFS=: read -r a b < f; cmd | tee .scratch/x' 'the name IFS'
+  unread 'f() { cmd | tee $TMPDIR/x; }; IFS=/ f' 'the name IFS'
+  unread 'IFS+= read -r line; cmd > .scratch/x' 'the name IFS'
+  passes 'IFS= read -r line; cmd > .scratch/x' "IFS='' read -r line; cmd > .scratch/x" 'echo MYIFS IFS_X > .scratch/x'
+}
+
+@test "IFS, CDPATH and POSIXLY_CORRECT in a quoted delimiter's here-document body are text, unless a shell may read it" {
+  passes "cat > .scratch/task/review.md <<'EOF'"$'\n1. **nit** - the `while IFS= read -r dir` loop leaks `dir`; CDPATH stays unset.\nEOF' \
+    "cat > \$CLAUDE_JOB_DIR/tmp/probe.sh <<'EOF'"$'\nwhile IFS= read -r c; do echo "$c"; done\nEOF' \
+    "python3 - .scratch/x > .scratch/out <<'EOF'"$'\nIFS = "POSIXLY_CORRECT"\nEOF' \
+    "x=\$(cat <<'EOF'"$'\nIFS=/\nEOF\n); cmd > .scratch/x' \
+    "git commit -m \"\$(cat <<'EOF'"$'\nfix: name IFS\nEOF\n)" > .scratch/out'
+  # A shell, source, eval or a function may run the body as code; an unquoted delimiter's body is
+  # expanded.
+  local reader
+  for reader in bash sh 'sudo -u me zsh' 'source /dev/stdin' '"$sh"' 'f() { cat; }; f'; do
+    unread "$reader > .scratch/x <<'EOF'"$'\nIFS=/\nEOF' 'the name IFS'
+  done
+  unread "cat <<'EOF' | bash > .scratch/x"$'\nIFS=/\nEOF' 'the name IFS'
+  unread "eval \"\$(cat <<'EOF'"$'\nIFS=/\nEOF\n)"; cmd > .scratch/x' 'the name IFS'
+  unread "bash -c \"\$(cat <<'EOF'"$'\nCDPATH=/\nEOF\n)" > .scratch/x' 'the name CDPATH'
+  unread $'cat > .scratch/x <<EOF\n$IFS\nEOF' 'the name IFS'
+  unread "while read -r l; do :; done > .scratch/x <<'EOF'"$'\nIFS=/\nEOF' 'the name IFS'
+  # Outside the body, the name is still found.
+  unread "cat > .scratch/x <<'EOF'"$'\ntext\nEOF\nIFS=/; cmd > .scratch/y' 'the name IFS'
+}
+
+@test "a {name} file descriptor is refused unread" {
+  unread 'exec {fd}> .scratch/x' 'a {name} file descriptor'
+  unread 'cmd {fd}>&1 > .scratch/x' 'a {name} file descriptor'
+  # Apart from its operator, or quoted, it is a word.
+  passes 'echo {fd} > .scratch/x' 'echo "{fd}"> .scratch/x'
+}
+
+@test "a command bash refuses as a syntax error is refused unread" {
+  unread 'echo "a > x' 'an unclosed quote'
+  unread "echo 'a > x" 'an unclosed quote'
+  unread "echo \$'a > x" 'an unclosed quote'
+  unread 'cmd ) > x' 'a ) out of place'
+  unread 'cmd > x )' 'a ) out of place'
+  unread 'cmd > x; fi' 'a fi out of place'
+  unread 'done > x' 'a done out of place'
+  unread 'then cmd > x' 'a then out of place'
+  unread '} > x' 'a } out of place'
+  unread 'cmd | ! tee x' 'a ! out of place'
+  unread 'cmd > x &&' 'an operator with no command after it'
+  unread 'cmd | tee x |' 'an operator with no command after it'
+  unread '| tee x' 'a | out of place'
+  unread '; cmd > x' 'a ; out of place'
+  unread 'cmd > x; ; b' 'a ; out of place'
+  unread 'cmd > x;;' 'a ;; out of place'
+  unread 'cmd > x & & b' 'a & out of place'
+  unread 'cmd >' 'a redirection with no target'
+  unread 'cmd > ; b' 'a redirection with no target'
+  unread 'cmd >#x' 'a redirection with no target'
+  unread 'echo a (b) > x' 'a ( inside a command'
+  # A reserved word after the first word is text.
+  passes 'echo fi then done > .scratch/x' 'x=1 fi > .scratch/x'
+}
+
+@test "a write inside a \$( ) or a process substitution is judged, from the outer command's directory" {
+  blocked 'x="$(cmd > out)"' "$wt/out"
+  blocked 'x=$(cmd > out)' "$wt/out"
+  blocked 'echo "$(printf x | tee out)"' "$wt/out"
+  blocked 'echo "a $(echo "$(cmd >> out)") b"' "$wt/out"
+  blocked 'x="$(cmd "a)b" > out)"' "$wt/out"
+  blocked 'cmd | tee >(gzip > out.gz)' "$wt/out.gz"
+  blocked 'diff <(cmd > out) b' "$wt/out"
+  blocked 'cmd < <(cmd > out)' "$wt/out"
+  blocked $'echo $(echo a\n  cmd > out) > .scratch/x' "$wt/out"
+  blocked 'x=$(cmd > out)' "$wt/src/out" "$wt/src"
+  # Its words, and their substitutions, are expanded before its redirections are made.
+  blocked 'echo $(cmd > a) > b' "$wt/a, $wt/b"
+}
+
+@test "comments inside a \$( ) are read as bash reads them" {
+  blocked $'x=$(\n# 1) it\'s built\ncmd > out\n# that\'s all\n)' "$wt/out"
+  blocked $'x=$(echo a\\ #) ; echo "\n)" ; cmd > out' "$wt/out"
+  passes 'echo $(echo a#b) > .scratch/x' $'x=$(echo a # b > out\n)'
+}
+
+@test "a target holding a substitution is unknown, named as written" {
+  unknown 'cmd | tee "out-$(date).log"' "\"out-\$(date).log\" ($expansion)"
+  unknown 'cmd > out-$(date).log' "out-\$(date).log ($expansion)"
+  unknown 'cmd > "out-$(cat x/../name)"' "\"out-\$(cat x/../name)\" ($expansion)"
+  unknown 'cmd > "src$(: /../.scratch/ )/x"' "\"src\$(: /../.scratch/ )/x\" ($expansion)"
+  unknown 'cmd > src$(: /../.scratch/ )/x' "src\$(: /../.scratch/ )/x ($expansion)"
+  unknown 'cmd > .scratch/../out-$(date)' ".scratch/../out-\$(date) ($expansion)"
+  unknown "cmd > x-\$(echo \$'a\\'b').log; echo ok" "x-\$(echo \$'a\\'b').log ($expansion)"
+}
+
+@test "what passes outside a substitution passes inside it" {
+  passes 'x="$(cmd 2>/dev/null)"' 'x="$(cmd > .scratch/task/out)" && echo "$x"' 'echo "it is \$(cmd > out)"' \
+    'diff <(sort a) <(sort b)' 'x=$()' 'x=$(cmd;)' 'x=$(cmd &)' 'x=$( )' 'echo $(echo) > .scratch/x'
+}
+
+@test "a process substitution as a tee file or an output target writes to its pipe" {
+  passes 'cmd | tee >(gzip > .scratch/out.gz) >/dev/null' 'cmd > >(cat)' 'cmd 2> >(cat >&2)' 'cmd | tee >(cat) <(true)'
+  blocked 'cmd > >(cat) | tee x' "$wt/x"
+}
+
+@test "a quoted here-document delimiter's body is text" {
+  local open
+  for open in "<<'EOF'" '<<"EOF"' '<<\EOF' "<< 'EOF'"; do
+    passes "cat > .scratch/x $open
+a \$(cmd > out) b \`cmd > out\` \\
+EOF"
+  done
+  passes "git commit -F - <<'EOF'
+fix: a > b, and | tee c
+cmd > out
+EOF"
+}
+
+@test "an unquoted here-document delimiter's body has its substitutions judged" {
+  blocked 'cat <<EOF
+a $(cmd > out) b
+EOF' "$wt/out"
+  blocked 'cat > .scratch/x <<EOF
+a $(echo b
+cmd > out) c
+EOF' "$wt/out"
+  blocked 'cat <<EOF
+${HOME} $x "$(cmd > out)"
+EOF' "$wt/out"
+  passes 'cat > .scratch/x <<EOF
+\$(cmd > out) a \\$x > b
+it'"'"'s "fine" | tee c
+EOF'
+}
+
+@test "<<- strips a body's leading tabs before it is matched to the delimiter" {
+  blocked $'cat <<-EOF\n\ta $(cmd > out)\n\t\tEOF\ncmd > y' "$wt/out, $wt/y"
+  passes $'cat <<-\'EOF\' > .scratch/x\n\t$(cmd > out)\n\tEOF'
+  unread $'cat <<EOF > .scratch/x\n\tEOF\ncmd > out' 'a here-document whose delimiter line is not found'
+}
+
+@test "two here-documents on a line keep their order and quoting" {
+  blocked $'cat <<A <<\'B\'\n$(cmd > a)\nA\n$(cmd > b)\nB' "$wt/a"
+  blocked $'cat <<\'A\' <<B\n$(cmd > a)\nA\n$(cmd > b)\nB' "$wt/b"
+}
+
+@test "what follows a here-document's body is judged" {
+  blocked "cat > .scratch/x <<'EOF'
+a > b
+EOF
+cmd > out" "$wt/out"
+  blocked "cat <<'EOF' |
+a > b
+EOF
+tee out" "$wt/out"
+  blocked "cat <<'EOF' && cmd > out
+a > b
+EOF" "$wt/out"
+  blocked "cat <<'EOF'; cmd > out
+a
+EOF" "$wt/out"
+}
+
+@test "a here-document read outside a \$( ) waits for a newline outside it" {
+  blocked $'cat <<EOF; echo $(echo\n:)\n$(cmd > out)\nEOF' "$wt/out"
+}
+
+@test "a here-document inside a \$( ) is read when its delimiter line comes before the )" {
+  passes "x=\$(cat <<'EOF'
+a) > b
+EOF
+)" "git commit -m \"\$(cat <<'EOF'
+fix: a > b | tee c
+
+it's done)
+EOF
+)\"" "x=\$(cat <<EOF
+\$HOME
+EOF
+) && cmd > .scratch/x"
+  blocked 'x=$(cat <<EOF
+it'"'"'s
+EOF
+); echo y > out' "$wt/out"
+}
+
+@test "a here-document this hook does not read is refused unread, naming its form" {
+  unread $'cat <<EOF > .scratch/x\na' 'a here-document whose delimiter line is not found'
+  unread 'cat <<EOF > .scratch/x' 'a here-document whose delimiter line is not found'
+  unread $'cat <<EOF > .scratch/x\na\nEOF \ncmd > out' 'a here-document whose delimiter line is not found'
+  unread $'x=$(cat <<EOF\nhi\nEOF) ; cmd > out' 'a here-document line inside $( ) that starts with its delimiter and a )'
+  unread $'x=$(cat <<\'EOF\'\nhi\nEOF) ; cmd > out' 'a here-document line inside $( ) that starts with its delimiter and a )'
+  unread $'x=$(cat <<\'EOF\'\nhi\nEOF ) ; cmd > out' 'a here-document line inside $( ) that starts with its delimiter and a )'
+  unread $'x=$(cat <<EOF)\nhi\nEOF\ncmd > out' 'a here-document inside $( ) that closes before its body is read'
+  local delimiter
+  for delimiter in 'E"O"F' '$x' "'E'OF" '"E"OF' "''" 'EOF"x"' '$(cmd > out)'; do
+    unread "cat <<$delimiter > .scratch/x
+a
+EOF" 'a here-document delimiter other than a plain word, quoted whole or not'
+  done
+  unread $'cat <<EOF > .scratch/x\na \\\nEOF\ncmd > out\nEOF' 'a line ending in a backslash in a here-document whose delimiter is not quoted'
+  unread $'cat <<EOF > .scratch/x\na `cmd > out`\nEOF' 'a backtick substitution'
+  # An escaped backslash ends the line, and so does any backslash in a quoted delimiter's body.
+  passes $'cat <<EOF > .scratch/x\na \\\\\nEOF' $'cat <<\'EOF\' > .scratch/x\na \\\nEOF'
+}
+
+@test "a process substitution inside a longer word is refused unread" {
+  unread 'echo a<(cmd) > .scratch/x' 'a process substitution inside a word'
+  unread 'echo <(cmd)b > .scratch/x' 'a process substitution inside a word'
+  unread 'echo <(cmd)<(cmd) > .scratch/x' 'a process substitution inside a word'
+  unread 'echo 2>(cmd) > .scratch/x' 'a process substitution inside a word'
+  unread 'x=<(cmd); cmd > .scratch/x' 'a process substitution inside a word'
+}
+
+@test "a substitution that does not close is refused unread" {
+  unread 'echo $(cmd > .scratch/x' 'a $( ) that does not close'
+  unread 'cmd | tee >(cat > .scratch/x' 'a process substitution that does not close'
+  unread $'cat <<EOF > .scratch/x\n$(cmd\nEOF\n)' 'a $( ) that does not close'
+}
+
+@test "a here-string's word is read and its substitutions judged" {
+  blocked 'cmd <<< "$(cmd > out)"' "$wt/out"
+  passes 'cmd <<< "a > b"' 'cmd <<<a > .scratch/x' "cmd <<< 'a | tee b'"
+  unread 'cmd > .scratch/x <<<' 'a redirection with no target'
+}
+
+@test "on a bash older than 5.2, a comment or a here-document inside a substitution is refused unread" {
+  TEAM_BASH_VERSION=5.1 unread $'x=$(echo a # b\n) ; cmd > .scratch/x' 'a comment inside a substitution, on a bash older than 5.2'
+  TEAM_BASH_VERSION=5.1 unread $'x=$(cat <<\'EOF\'\na\nEOF\n) ; cmd > .scratch/x' 'a here-document inside a substitution, on a bash older than 5.2'
+  # Outside a substitution, and on 5.2 and later, they are read.
+  TEAM_BASH_VERSION=5.1 passes $'cmd > .scratch/x # a\ncat > .scratch/y <<\'EOF\'\na\nEOF'
+  TEAM_BASH_VERSION=5.2 passes $'x=$(echo a # b\n) ; cmd > .scratch/x'
+  TEAM_BASH_VERSION=6.0 passes $'x=$(cat <<\'EOF\'\na\nEOF\n) ; cmd > .scratch/x'
+}
+
+@test "each compound command is read, a write in its body and one after it judged" {
+  blocked '( cmd > a ) > out' "$wt/out, $wt/a"
+  blocked '{ cmd > a; } > out' "$wt/out, $wt/a"
+  blocked 'if true; then cmd | tee x; fi' "$wt/x"
+  blocked 'if a; then b; elif c; then d > a; else e > b; fi > out' "$wt/out, $wt/a, $wt/b"
+  blocked 'while read l; do cmd > out; done < in' "$wt/out"
+  blocked 'until false; do :; done > out' "$wt/out"
+  blocked 'for f in a b; do cmd > out; done' "$wt/out"
+  blocked 'for f; do cmd > out; done' "$wt/out"
+  blocked $'for f in a b\ndo\n  cmd > out\ndone' "$wt/out"
+  blocked 'for f in $(cmd > out); do :; done' "$wt/out"
+  blocked 'for (( i = $(cmd > out); i < 2; i++ )); do :; done' "$wt/out"
+  blocked 'for ((;;)) do :; done > out' "$wt/out"
+  blocked 'case a in a) cmd > out ;; esac' "$wt/out"
+  blocked 'case a in (a|b) cmd ;; esac > out' "$wt/out"
+  blocked 'case a in a) ;& b) ;;& c) cmd > out;; esac' "$wt/out"
+  blocked 'case $(cmd > a) in $(cmd > b)) ;; esac' "$wt/a, $wt/b"
+  blocked '[[ -n a ]] > out' "$wt/out"
+  blocked '(( 1 )) > out' "$wt/out"
+  # Prefixed, in a pipeline, with a file descriptor or a here-document, and nested.
+  blocked 'time { cmd; } > out' "$wt/out"
+  blocked '! { cmd; } 2> out' "$wt/out"
+  blocked '{ cmd; } | tee out' "$wt/out"
+  blocked $'while read l; do :; done <<EOF\n$(cmd > out)\nEOF' "$wt/out"
+  blocked $'if true; then\n  cat <<EOF\n$(cmd > out)\nEOF\nfi' "$wt/out"
+  passes 'if true; then { cmd; } fi > .scratch/x' '{ { cmd; } } 2>&1 > .scratch/x' 'for f do :; done > .scratch/x' \
+    $'case a\nin\na)\n  cmd\n  ;;\nesac > .scratch/x' 'case a in a) :; esac > .scratch/x'
+}
+
+@test "a compound command bash refuses as a syntax error is refused unread" {
+  unread '{ cmd } > .scratch/x' 'a { } group that does not close'
+  unread '( cmd > .scratch/x' 'a ( ) subshell that does not close'
+  unread 'if a; then cmd > .scratch/x' 'an if command that does not close'
+  unread 'while a; do cmd > .scratch/x' 'a while loop that does not close'
+  unread 'until a; do cmd > .scratch/x' 'an until loop that does not close'
+  unread 'for f in a; do cmd > .scratch/x' 'a for loop that does not close'
+  unread 'case a in a) cmd > .scratch/x' 'a case command that does not close'
+  unread '[[ a > .scratch/x' 'a [[ ]] test that does not close'
+  unread '( ) > .scratch/x' 'a ) out of place'
+  unread 'if then cmd; fi > .scratch/x' 'a then out of place'
+  unread 'if a; then b; else c; elif d; then :; fi > .scratch/x' 'a elif out of place'
+  unread 'while false; do :; done done > .scratch/x' 'a done out of place'
+  unread '{ cmd; } x > .scratch/x' 'a word after a compound command'
+  unread '{ cmd; } >(cat) > .scratch/x' 'a word after a compound command'
+  unread 'x=1 { cmd; } > .scratch/x' 'a } out of place'
+  unread 'for f in a b; { cmd; } > .scratch/x' 'a { out of place'
+  unread 'for 1 in a; do :; done > .scratch/x' 'a for loop whose variable is not a name'
+  unread 'case a in a) cmd ;; > .scratch/x' 'a > out of place'
+  unread '{ cmd; } {fd}> .scratch/x' 'a {name} file descriptor'
+}
+
+@test "case is read inside a \$( ) as bash 5.2 and later read it" {
+  blocked 'echo "$(case a in a) cmd > out ;; esac)"' "$wt/out"
+  passes 'x=$(case a in (a) cmd ;; esac) > .scratch/x'
+  blocked 'echo "$(echo showcase ${x:-a} > out)"' "$wt/out"
+  TEAM_BASH_VERSION=5.1 unread 'x=$(case a in a) cmd ;; esac) > .scratch/x' 'a case command inside a substitution, on a bash older than 5.2'
+  TEAM_BASH_VERSION=5.1 passes 'case a in a) cmd ;; esac > .scratch/x'
+}
+
+@test "[[ ]] reads < and > as comparisons and the word after =~ as a regular expression" {
+  passes '[[ $a > b ]] && echo yes' '[[ $x =~ ^(a|b)$ ]] && cmd > .scratch/x' '[[ a =~ (a b) && c < d || ! e ]] > .scratch/x' \
+    '[[ a =~ (a;b|c&d<e) ]] > .scratch/x'
+  blocked '[[ $(cmd > out) ]]' "$wt/out"
+  blocked '[[ a =~ $(cmd > out) ]]' "$wt/out"
+  # A substitution's body is a command list, inside a regular expression too.
+  blocked '[[ a =~ $(cmd|tee x) ]]' "$wt/x"
+  blocked '[[ a =~ (b$(cmd|tee x)|c) ]]' "$wt/x"
+}
+
+@test "a (, ), |, &, ; or newline in a [[ ]] outside its regular expression is refused unread" {
+  unread '[[ (a) ]] > .scratch/x' 'a ( inside [[ ]]'
+  unread '[[ a =~ a) ]] > .scratch/x' 'a ) inside [[ ]]'
+  unread '[[ a | b ]] > .scratch/x' 'a | inside [[ ]]'
+  unread '[[ a & b ]] > .scratch/x' 'a & inside [[ ]]'
+  unread '[[ a ; b ]] > .scratch/x' 'a ; inside [[ ]]'
+  unread $'[[ a &&\n b ]] > .scratch/x' 'a newline inside [[ ]]'
+  unread $'[[ a =~ (a\nb) ]] > .scratch/x' 'a newline inside [[ ]]'
+  # Inside a regular expression's ( ), bash runs a process substitution.
+  unread '[[ a =~ (>(cmd > out)) ]]' 'a process substitution inside a [[ ]] regular expression'
+  unread '[[ a =~ (x <(cmd > out)) ]]' 'a process substitution inside a [[ ]] regular expression'
+}
+
+@test "a function definition's body is judged where it is defined" {
+  blocked 'f() { cmd > out; }' "$wt/out"
+  blocked 'f () ( cmd > out )' "$wt/out"
+  blocked $'f()\n{ cmd > out; }' "$wt/out"
+  blocked 'f() { :; } > out' "$wt/out"
+  blocked 'my-f() if true; then cmd > out; fi' "$wt/out"
+  passes 'f() { cmd > .scratch/x; }; f'
+  unread 'f() cmd > .scratch/x' 'a function body that is not a compound command'
+  unread '"f"() { :; }; cmd > .scratch/x' 'a function name other than a plain name'
+}
+
+@test "a function named cd, pushd, popd, tee, mktemp, basename, a wrapper or an assigning builtin is refused unread" {
+  local name
+  for name in cd pushd popd tee mktemp basename env sudo nohup timeout nice stdbuf command exec time builtin \
+    export declare typeset local readonly read mapfile readarray getopts unset wait printf; do
+    unread "$name() { :; }; cmd > .scratch/x" "a function named $name"
+  done
+  unread 'export() { :; }; export P=.scratch; cmd > "$P/x"' 'a function named export'
+}
+
+@test "an array assignment's words are read as words" {
+  blocked 'a=(x "$(cmd > out)")' "$wt/out"
+  blocked $'a+=( # one\n  x\n  $(cmd > out)\n)' "$wt/out"
+  passes 'H=(-H "a b") ; cmd > .scratch/x' 'a=() b=(y) cmd > .scratch/x'
+  # Text after its ) makes it one word of literal text in bash, and a ( anywhere else is no array.
+  unread 'a=(x)y; cmd > .scratch/x' 'an array assignment with text after its )'
+  unread 'a=(x; cmd > .scratch/x' 'a ; out of place'
+  unread 'a=(x > .scratch/x' 'a > out of place'
+  unread 'declare a=(x); cmd > .scratch/x' 'a ( inside a command'
+  unread 'cmd > .scratch/x; a=(x y' 'an array assignment that does not close'
+}
+
+@test "\${ } with an operator is read to its first unescaped }" {
+  passes 'echo ${#x} ${x##*/} ${x#\#} > .scratch/x' 'echo ${x:->}' 'echo "$(echo ${x}) ${y:-(}" > .scratch/x' \
+    'echo ${x@Q} ${!a[@]} ${!a[*]} ${a[@]} ${a[$i]:1:2} ${x/a/b} ${x^^} ${x,} ${x:-$y${z}$1} ${##} ${x:-a\}b} > .scratch/x'
+  # A ) or a # in an operand is text, as bash reads it.
+  blocked 'echo "$(echo ${x:-)} > out)"' "$wt/out"
+  blocked $'x=$(echo ${y:-a #}) ; echo "\n)" ; cmd > out' "$wt/out"
+}
+
+@test "a target holding a \${ } with an operator is unknown, named as written" {
+  unknown 'cmd > ${out:-x}' "\${out:-x} ($expansion)"
+  unknown 'cmd > "src${x//../.scratch/}/x"' "\"src\${x//../.scratch/}/x\" ($expansion)"
+}
+
+@test "a \${ } outside the grammar's forms is refused unread, naming its form" {
+  unread 'echo ${x:-"$(cmd > out)"}' 'a quote inside a ${ } operand'
+  unread 'echo "${x:-"`cmd > out`"}"' 'a quote inside a ${ } operand'
+  unread "echo \${x:-\$'a\\'b'} > out" 'a quote inside a ${ } operand'
+  unread "echo \"\${x:-'\"'}\" ; cmd > out ; echo \"}\"" 'a quote inside a ${ } operand'
+  unread "echo \"\${x:-'a'}\" > .scratch/x" 'a quote inside a ${ } operand'
+  unread 'echo ${x:-`cmd`} > .scratch/x' 'a backtick substitution'
+  unread 'echo ${x:-$(cmd)} > .scratch/x' 'an expansion inside a ${ } operand other than a variable'
+  unread 'echo ${x:-${y:-z}} > .scratch/x' 'an expansion inside a ${ } operand other than a variable'
+  # Indirection expands the variable a value names, a subscript bash evaluates among them.
+  local word
+  for word in "x='a[\$(cmd > out)]'; : \"\${!x}\"" 'echo ${!x:=a}' 'echo ${!a[0]}' 'echo ${!1}' 'echo ${!#}' 'echo "${!x@Q}"'; do
+    unread "$word > .scratch/x" 'an indirect ${!name} expansion'
+  done
+  unread $'echo ${x:-a\nb} > .scratch/x' 'a newline inside a ${ } operand'
+  unread $'echo ${x:-a\\\nb} > .scratch/x' 'a newline inside a ${ } operand'
+  unread 'echo ${x:-a > .scratch/x' 'a ${ } that does not close'
+  local form
+  for form in '${x;y}' '${}' '${ x}' '${x@Qa}' '${x*}'; do
+    unread "echo $form > .scratch/x" 'a ${ } this hook does not read'
+  done
+  # A prompt expansion runs the substitutions in the value.
+  unread 'echo ${x@P} > .scratch/x' 'the ${ } operator @P'
+}
+
+@test "arithmetic is read, and the substitutions in it judged" {
+  blocked 'echo $(( $(cmd > out) + 1 ))' "$wt/out"
+  blocked '(( $(cmd > out) ))' "$wt/out"
+  blocked 'echo "$(( $(cmd > out) ))"' "$wt/out"
+  blocked $'echo $(( 1 +\n  $(cmd > out) ))' "$wt/out"
+  passes '(( a > b )) && echo yes' 'echo $(( a > b ? 1 : 2 ))' '(( (a) > (b) ))' 'echo $(( (a) > (b) ))' \
+    'echo "$(( (a) > (b) ))"' 'echo $(( 2#101 << $1 | ${#x} & a[i] ^ ~b, c >= $x )) > .scratch/x'
+  unread 'echo $(( ${x:-$(cmd > out)} ))' 'an expansion inside a ${ } operand other than a variable'
+}
+
+@test "arithmetic that does not close with )), or holds a quote or a backtick, is refused unread" {
+  unread '((cmd) > out)' 'an arithmetic command that does not close with ))'
+  unread 'echo $((cmd) > out)' 'an arithmetic expansion that does not close with ))'
+  unread 'echo "$((cmd) > out)"' 'an arithmetic expansion that does not close with ))'
+  unread $'cat <<EOF\n$((cmd) > out)\nEOF' 'an arithmetic expansion that does not close with ))'
+  unread 'for ((i=0; i<2; i++); do :; done > out' 'a for (( )) loop that does not close with ))'
+  unread "((echo '))' ) > out)" 'a quote inside arithmetic'
+  unread "echo \$((echo '))' ) > out)" 'a quote inside arithmetic'
+  unread "echo \$(( '\$(cmd > out)' ))" 'a quote inside arithmetic'
+  unread 'echo $(( "1" + 2 )) > .scratch/x' 'a quote inside arithmetic'
+  unread "echo \${x:-\$(( '\$(cmd > out)' ))}" 'an expansion inside a ${ } operand other than a variable'
+  unread 'echo $(( `cmd > out` ))' 'a backtick substitution'
+  unread 'echo $(( a; b )) > .scratch/x' 'a ; inside arithmetic'
+  unread 'echo $(( a \ b )) > .scratch/x' 'a \ inside arithmetic'
+  unread 'echo $(( $((1)) )) > .scratch/x' 'an arithmetic expansion inside arithmetic'
+  unread 'echo $(( $ )) > .scratch/x' 'a $ inside arithmetic'
+  unread 'echo $(( a @ b )) > .scratch/x' 'a @ inside arithmetic'
+}
+
+@test "a substitution inside an unquoted here-document body's \${ } or \$(( )) is judged" {
+  unread $'x=$(cat <<EOF\n${y:-$(cmd > out)}\nEOF\n)' 'an expansion inside a ${ } operand other than a variable'
+  blocked $'cat <<EOF\n$(( $(cmd > out) ))\nEOF' "$wt/out"
+  passes $'cat > .scratch/x <<EOF\n${x:-a} ${#y} $(( 1 + 2 ))\nEOF'
+}
+
+@test "a quoted \$ or backtick in an array subscript bash evaluates is refused unread" {
+  local form='a quoted $ or backtick in an array subscript'
+  local word
+  for word in "let 'a[\$(cmd > out)]=1'" "let a'[\$(cmd > out)]'=1" "let 'a[\`cmd\`]'" "let a[\\\$x]" "let \$'a[\\x24(cmd)]'" \
+    "declare 'a[\$(cmd > out)]=1'" "typeset 'a[\$(cmd)]=1'" "local 'a[\$(cmd)]'" "readonly 'a[\$(cmd)]=1'" \
+    "export 'a[\$(cmd)]=1'" "unset 'a[\$(cmd > out)]'" "unset -v 'a[\$(cmd)]'" "read -r 'a[\$(cmd)]'" \
+    "printf -v 'a[\$(cmd)]' x" "printf -v'a[\$(cmd)]' x" "getopts ab 'a[\$(cmd)]'" "mapfile 'a[\$(cmd)]'" \
+    "readarray 'a[\$(cmd)]'" "wait -p 'a[\$(cmd)]'" "declare -i n='a[\$(cmd)]'" "declare -n r='a[\$(cmd)]'" \
+    "test -v 'a[\$(cmd)]'" "[ -v 'a[\$(cmd)]' ]" "[[ -v 'a[\$(cmd)]' ]]" "[[ 'a[\$(cmd)]' -eq 0 ]]" "[[ 0 -lt 'a[\$(cmd)]' ]]" \
+    "test \"-v\" 'a[\$(cmd)]'" "test -\\v 'a[\$(cmd)]'" "[ '-v' 'a[\$(cmd)]' ]" "test \$o 'a[\$(cmd)]'" "[ \"\$o\" 'a[\$(cmd)]' ]" \
+    "a=(['\$(cmd > out)']=1)" "q+=(['\$(cmd)']=1)" "a=(x [\$'\\x24(cmd)']=1)" "a['\$(cmd)']=1" "a[\"\\\$(cmd)\"]=1 cmd" \
+    "test {'-v',} 'a[\$(cmd > out)]'" "test {-v,'a[\$(cmd)]'}"; do
+    unread "$word; cmd > .scratch/x" "$form"
+  done
+  # Text bash does not evaluate as a subscript is read as before.
+  passes "let 'n = n + 1'; cmd > .scratch/x" "declare x='a[\$(cmd)]'; cmd > .scratch/x" "export y='[\$z]'; cmd > .scratch/x" \
+    "printf '[%s] \$%s\\n' a b > .scratch/x" "printf -v line '[%s] \$%s' a b; cmd > .scratch/x" \
+    "read -r -p '[y/\$n] ' ans; cmd > .scratch/x" "test 'a[\$x]' = b && cmd > .scratch/x" \
+    "[[ 'a[\$x]' == b ]] && cmd > .scratch/x" "let 'a[1]=2'; cmd > .scratch/x" "unset 'a[1]'; cmd > .scratch/x" \
+    "a=([0]='\$x' [1]=\"y\"); a[2]='\$y'; cmd > .scratch/x" "test -n 'a[\$x]' && cmd > .scratch/x"
+}
+
+@test "a quoted \$ or backtick in an array value declare, typeset, local or readonly expands is refused unread" {
+  local word
+  for word in "declare -a c='([\$(cmd)]=1)'" "declare -a d='(\$(cmd))'" "declare -A e='([k]=\$(cmd))'" "declare 'f=([\$(cmd)]=1)'" \
+    "declare g='(\`cmd\`)'" "typeset -a h='(\$(cmd))'" "local -a i='(\$(cmd))'" "readonly -a j='(\$(cmd))'" "declare -ga k=\$'(\\x24(cmd))'"; do
+    unread "$word; cmd > .scratch/x" 'a quoted $ or backtick in an array value'
+  done
+  passes "declare -a l; local -a m; cmd > .scratch/x" "declare x='a b \$c' y='(x)'; cmd > .scratch/x" "declare -A n; cmd > .scratch/x"
+}
+
+@test "a printf word the hook cannot work out where an option may stand, or as -v's name, is refused unread" {
+  unread "printf \"\$f\" 'a[\$(cmd > out)]' 1; cmd > .scratch/x" 'the printf word "$f"'
+  unread 'printf $f x; cmd > .scratch/x' 'the printf word $f'
+  unread "printf \$'\\x2dv' TMPDIR /etc; cmd > .scratch/x" "the printf word \$'\\x2dv'"
+  unread 'printf {-v,TMPDIR} /etc; cmd > .scratch/x' 'the printf word {-v,TMPDIR}'
+  unread 'printf -v "$n" x; cmd > .scratch/x' 'the printf word "$n"'
+  unread "printf -v \$'TMP\\x44IR' /etc; cmd > .scratch/x" "the printf word \$'TMP\\x44IR'"
+  unread 'printf -v TMP{DIR,} /etc; cmd > .scratch/x' 'the printf word TMP{DIR,}'
+  # A format whose text starts with anything but a - is no option, and after -- none is.
+  passes 'printf "Hello $x\n" > .scratch/o' "printf '%s\\n' \"\$x\" * > .scratch/o" 'printf -- "$f" > .scratch/o' \
+    'printf -v line "%s" "$x"; cmd > .scratch/o' 'printf "%s" $x > .scratch/o'
+}
+
+@test "an option of declare, typeset, local, readonly or export the hook cannot work out is refused unread" {
+  unread "declare \"\$o\" x='a[\$(cmd > out)]'; cmd > .scratch/x" 'the declare word "$o"'
+  unread "declare \"\$o\" a='([\$(cmd)]=1)'; cmd > .scratch/x" 'the declare word "$o"'
+  unread 'typeset $o n; cmd > .scratch/x' 'the typeset word $o'
+  unread "local \$'\\x2di' n; cmd > .scratch/x" "the local word \$'\\x2di'"
+  unread 'declare {-i,n}; cmd > .scratch/x' 'the declare word {-i,n}'
+  unread 'readonly "$o" x; cmd > .scratch/x' 'the readonly word "$o"'
+  unread 'export $o X=1; cmd > .scratch/x' 'the export word $o'
+  passes 'declare -a arr; arr=("$@"); local x="$1" y=$2; cmd > .scratch/x' 'declare -A m; readonly -a r; export -n X; cmd > .scratch/x'
+}
+
+@test "a name an assigning builtin gives that the hook cannot work out, or a word that may expand into several before it, is refused unread" {
+  unread 'declare "TMP$x=/etc"; cmd > .scratch/x' 'the declare word "TMP$x=/etc"'
+  unread 'declare TMP{DIR,}=/etc; cmd > .scratch/x' 'the declare word TMP{DIR,}=/etc'
+  unread "declare \$'CD\\x50ATH=/'; cd .scratch && cmd > x" "the declare word \$'CD\\x50ATH=/'"
+  unread "export \$'TMP\\x44IR'=/etc; cmd > \"\$TMPDIR/x\"" "the export word \$'TMP\\x44IR'=/etc"
+  unread 'export "$n"; cmd > .scratch/x' 'the export word "$n"'
+  unread 'local TMPD?R; cmd > .scratch/x' 'the local word TMPD?R'
+  unread 'read "$n" <<< /etc; cmd > .scratch/x' 'the read word "$n"'
+  unread "read -r \$'TMP\\x44IR' <<< /etc; cmd > \"\$TMPDIR/x\"" "the read word \$'TMP\\x44IR'"
+  unread 'read -r TMP{DIR,X} <<< /etc; cmd > .scratch/x' 'the read word TMP{DIR,X}'
+  unread 'read -a "$n" <<< /etc; cmd > .scratch/x' 'the read word "$n"'
+  unread 'read -ra"$n" <<< /etc; cmd > .scratch/x' 'the read word -ra"$n"'
+  unread 'read -p {x,-a} TMPDIR <<< /etc; cmd > .scratch/x' 'the read word {x,-a}'
+  unread 'read -p $p x; cmd > .scratch/x' 'the read word $p'
+  unread 'unset "$n"; cmd > .scratch/x' 'the unset word "$n"'
+  unread 'unset TMP{DIR,}; cmd > .scratch/x' 'the unset word TMP{DIR,}'
+  unread 'export TMP{DIR,Y}=/etc; cmd > .scratch/x' 'the export word TMP{DIR,Y}=/etc'
+  unread 'readonly TMP{DIR,}=/etc; cmd > .scratch/x' 'the readonly word TMP{DIR,}=/etc'
+  unread 'getopts ab "$n"; cmd > .scratch/x' 'the getopts word "$n"'
+  unread 'getopts {ab,TMPDIR}; cmd > .scratch/x' 'the getopts word {ab,TMPDIR}'
+  unread 'getopts $s n; cmd > .scratch/x' 'the getopts word $s'
+  unread 'mapfile -t "$n" < f; cmd > .scratch/x' 'the mapfile word "$n"'
+  unread 'readarray $o a < f; cmd > .scratch/x' 'the readarray word $o'
+  unread 'wait -p "$n"; cmd > .scratch/x' 'the wait word "$n"'
+  unread 'wait "$p"; cmd > .scratch/x' 'the wait word "$p"'
+  # getopts' words go through bash's option parser first, which takes a leading -- away.
+  unknown 'getopts -- ab TMPDIR; cmd > "$TMPDIR/x"' "\"\$TMPDIR/x\" ($(not_followed TMPDIR))"
+  unread 'x=--; getopts "$x" ab TMPDIR; cmd > "$TMPDIR/x"' 'the getopts word "$x"'
+  unread 'getopts -a ab n; cmd > .scratch/x' 'the getopts word -a'
+  passes 'read -r -p "$prompt" ans; read -rd "" x; read -t "$t" y; cmd > .scratch/x' 'wait $!; wait; wait 12 13; cmd > .scratch/x' \
+    'export PATH="$HOME/bin:$PATH" X=a{b,c}; cmd > .scratch/x' 'mapfile -t lines < f; getopts "ab:" opt "$@" $x; cmd > .scratch/x' \
+    'unset x y; unset -f g; cmd > .scratch/x' 'getopts -- "ab:" opt; cmd > .scratch/x'
+}
+
+@test "a command word or a wrapper's word the hook cannot work out is refused unread" {
+  unread '{tee,"x"} < f' 'the command word {tee,"x"}'
+  unread 't{e,}e x < f' 'the command word t{e,}e'
+  unread '{s..u}ee x' 'the command word {s..u}ee'
+  unread "\$'t\\x65e' x < f" "the command word \$'t\\x65e'"
+  unread '"$tool" a > .scratch/x' 'the command word "$tool"'
+  unread '$(command -v tee) x > .scratch/x' 'the command word $(command -v tee)'
+  unread '/usr/bin/t?e x > .scratch/x' 'the command word /usr/bin/t?e'
+  unread "{c'd',} .. && cmd > .scratch/x" "the command word {c'd',}"
+  unread 'env {X=1,tee} x < f' 'the env word {X=1,tee}'
+  unread 'env "$o" tee x' 'the env word "$o"'
+  unread 'o=-; env -- "$o" tee src/x < f' 'the env word "$o"'
+  unread 'timeout "$d" KILL tee x' 'the timeout word "$d"'
+  unread 'command $o tee x' 'the command word $o'
+  unread 'sudo -u "$u" "$c" x > .scratch/x' 'the sudo word "$c"'
+  passes 'env X="$y" cmd > .scratch/x' 'timeout 5 cmd > .scratch/x' 'sudo -u "$u" cmd > .scratch/x' '~/bin/x > .scratch/x'
+}
+
+@test "a form no rule reads is refused unread, so a command holding one passes nothing it holds" {
+  unread 'select x in a; do :; done; cmd > .scratch/x' 'a select command'
+  unread 'cmd > .scratch/x; y=`date`' 'a backtick substitution'
+  unread 'coproc cat; cmd > .scratch/x' 'a coproc command'
+}

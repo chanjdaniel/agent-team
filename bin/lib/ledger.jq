@@ -190,13 +190,18 @@ def check_notes($contract):
 def writers($kind): [$kind.writer // empty] | flatten;
 
 # What an event must meet to be appended by script $writer: the basics, then that $writer is
-# one of the kind's writers, then the kind's fields, whatever its ts. Only the first failing step
-# is told.
+# one of the kind's writers and of each field_writers field it holds, then the kind's fields,
+# whatever its ts. Only the first failing step is told.
 def append_problems($contract; $writer):
   (if type == "object" then .event else null end) as $event
+  | . as $line
   | ([line_problems] | select(. != []))
     // ([writers($contract.kinds[$event]) | select(. != [] and (index($writer) | not))
         | "\($event) events are written by \(join(" or ")), not \($writer)"]
+      | select(. != []))
+    // ([$contract.kinds[$event].field_writers // {} | to_entries[]
+        | select((.key | in($line)) and .value != $writer)
+        | "\(if $event | test("^[aeiou]") then "an" else "a" end) \($event)'s \(.key) is written by \(.value), not \($writer)"]
       | select(. != []))
     // [kind_problems($contract; false)]
   | .[];

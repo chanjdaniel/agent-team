@@ -450,10 +450,85 @@ EOF
   assert_contains "$brief" "once they are fixed, or the coordinator says the review passed, go on."
   # The review comes before the gate.
   [[ $(grep -n 'review-ready' <<<"$brief" | cut -d: -f1) -lt $(grep -n '/no-mistakes' <<<"$brief" | cut -d: -f1) ]]
-  # A direct-PR project opens its PR first, and is reviewed on it.
+}
+
+@test "a direct-PR project's builder pushes nothing under a Disclosure section until the review passes, then pushes, checks and opens the PR" {
   open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
   run_bin -0 team-brief T14 builder-deliver --set "goal=the goal"
-  refute_grep review-ready "$output"
+  local brief
+  brief=$(<"$output")
+  # Its first push, the base's merge, waits for the hold too.
+  assert_contains "$brief" "re-run what the conflicts touched, and push (under a Disclosure section, not before step 3's review passes)."
+  grep -qxF "3. Under a Disclosure section in a public repository, push nothing yet: send \`T14 DONE review-ready <the full sha of HEAD>\` to \`coordinator\`, then wait, since the reviewer reads your local head and the team reviews its wording before anything goes public." "$output"
+  grep -qxF "   Fix each finding the coordinator sends you on the branch, pushing nothing; once they are fixed, or the coordinator says the review passed, go on with the push, the checks and the PR." "$output"
+  # The hold comes before the local checks' push, the PR and its checks.
+  local hold
+  hold=$(grep -n 'review-ready' "$output" | cut -d: -f1)
+  [[ $hold -lt $(grep -n 'team-checks' "$output" | cut -d: -f1) ]]
+  [[ $hold -lt $(grep -n 'gh pr create' "$output" | cut -d: -f1) ]]
+  [[ $hold -lt $(grep -n 'team-ci-wait' "$output" | cut -d: -f1) ]]
+  grep -qF "7. Repeat step 1; if it merged anything or you pushed again, go back to step 4 and" "$output"
+  grep -qxF "8. Then send \`T14 PR <full url>\` to \`coordinator\`." "$output"
+}
+
+@test "a direct-PR Disclosure task's review before its PR reads the local head and posts nothing; with a PR, or no Disclosure, it is the PR's review" {
+  open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
+  # A Disclosure section left as the plan template's comment is no Disclosure.
+  printf '%s\n' "# T14 plan" "" "## Goal" "" "The team has its tooling." "" "## Disclosure" "" \
+    "<!-- Only for a security change in a public repository; delete otherwise. -->" "" "## Notes" "" "None." \
+    >"$TEAM_HOME/tasks/T14/plan.md"
+  run_bin -1 team-brief T14 reviewer --name review --set head=abc1234 --set "checks=the checks"
+  assert_equal "$output" "team-brief: unfilled placeholders: pr; nothing to derive them from: pr (T14 has no pr event in chanjdaniel/agent-team; --set pr=)"
+  printf '%s\n' "# T14 plan" "" "## Goal" "" "The team has its tooling." "" "## Disclosure" "" \
+    "<!-- Only for a security change. -->" "- Describe it as hardening the hooks." >"$TEAM_HOME/tasks/T14/plan.md"
+  run_bin -0 team-brief T14 reviewer --name review --set head=abc1234 --set "checks=the checks"
+  local brief
+  brief=$(<"$output")
+  assert_contains "$brief" 'branch `feat/T14-team-tooling`; review `origin/main...abc1234`.'
+  assert_contains "$brief" "- There is no PR yet: under the plan's Disclosure section the builder pushes nothing until this review passes the branch's wording, so read every commit message, test name, comment and doc on it against that section of \`~/agent-team-records/tasks/T14/plan.md\`; once it passes or its findings are fixed, the builder pushes and opens the PR, which a re-review reads."
+  assert_contains "$brief" "  Post nothing to GitHub: the re-review of the PR posts the comment and sets the status."
+  assert_contains "$brief" "- Send \`T14 DONE pass abc1234 findings=blocking:<n>,"
+  refute_grep -e team-review -e '/pull/' "$output"
+  assert_equal "$(jq -c .values "$TEAM_HOME/tasks/T14/brief-review.json")" '{"checks":"the checks","head":"abc1234"}'
+  # A round on that review takes no PR either.
+  event T14 review '{verdict: "findings", head: "abc1234", sent_back: [2]}'
+  findings_files agent-team/.claude/worktrees/2 .work/task review.md
+  run_bin -0 team-brief T14 builder-round --name round-1
+  assert_contains "$(<"$output")" "PR: none, against \`main\` (none on a first review before the PR: a gated project's, before its gate opens it, or a Disclosure task's, before its first push)."
+  assert_contains "$(<"$output")" "3. Under a Disclosure section in a public repository, push nothing yet"
+  # Once the PR exists, or is given, the review is the PR's.
+  run_bin -0 team-brief T14 reviewer --name review-pr --set pr=https://github.com/chanjdaniel/agent-team/pull/9 \
+    --set head=abc1234 --set "checks=the checks"
+  assert_contains "$(<"$output")" "The comment on PR https://github.com/chanjdaniel/agent-team/pull/9 is that file"
+  event T14 pr '{url: "https://github.com/chanjdaniel/agent-team/pull/9", head: "abc1234"}'
+  run_bin -0 team-brief T14 reviewer --name review-2 --set head=abc1234 --set "checks=the checks"
+  assert_contains "$(<"$output")" "The comment on PR https://github.com/chanjdaniel/agent-team/pull/9 is that file"
+  run_bin -0 team-brief T14 builder-round --name round-2
+  assert_contains "$(<"$output")" "PR: https://github.com/chanjdaniel/agent-team/pull/9, against"
+}
+
+@test "before the PR, a gated project's re-review and verify read the local head before the gate and post nothing; with a PR, they are the PR's" {
+  open_t12
+  reviewed_branch T12 dev
+  local brief r h
+  run_bin -0 --separate-stderr team-brief T12 rereview --name rereview --set head="$head"
+  r=$reviewed h=$head brief=$(<"$output")
+  assert_contains "$brief" "# T12 brief (reviewer): re-review rate-limit the applicant sign-in endpoints at its new local head"
+  assert_contains "$brief" "No PR yet: reviewed at \`$r\`, now at the local head \`$h\`."
+  assert_contains "$brief" "2. Review what changed since the last review, \`git diff $r $h\`, and the commit messages of \`origin/dev..$h\`; the gate has not run yet, so the diff holds the builder's commits only."
+  assert_contains "$brief" "  Post nothing to GitHub: there is no PR yet, and the re-review of the PR, once the builder opens it, posts the comment and sets the status."
+  assert_contains "$brief" "- Send \`T12 DONE pass $h findings="
+  refute_grep -e team-review -e team-ci-wait -e '/pull/' -e '{{' "$output"
+  assert_equal "$(jq -c '.values | {head, pr}' "$TEAM_HOME/tasks/T12/brief-rereview.json")" "$(jq -cn --arg h "$h" '{head: $h, pr: null}')"
+  run_bin -0 --separate-stderr team-brief T12 verify --name verify --set head="$head"
+  brief=$(<"$output")
+  assert_contains "$brief" "No PR yet: reviewed at \`$r\`, now at the local head \`$h\`."
+  assert_contains "$brief" "Sent back: the notes numbered 5 in \`.scratch/task/review.md\`"
+  assert_contains "$brief" "3. Every note sent back (5) is fixed at \`$h\`, and the diff holds nothing but those fixes and their tests."
+  refute_grep -e team-review -e team-ci-wait -e '/pull/' -e '{{' "$output"
+  # Once the PR exists, the re-review is the PR's.
+  run_bin -0 --separate-stderr team-brief T12 verify --name verify-pr --set pr=https://github.com/chanjdaniel/Conventioner/pull/9 --set head="$head"
+  assert_contains "$(<"$output")" "PR: https://github.com/chanjdaniel/Conventioner/pull/9 against \`dev\`, reviewed at \`$r\`, now at head \`$h\`."
 }
 
 @test "a gated project's re-review reads the gate's own commits from the reviewed local head" {
@@ -1293,7 +1368,7 @@ after"
   local brief
   run_bin -0 team-brief T14 builder-deliver --set "goal=the goal"
   brief=$(<"$output")
-  assert_contains "$brief" "3. Run the project's local checks (\`tests/run\`, \`make lint\`) on the head you push with \`$REPO_ROOT/bin/team-checks home <full sha>\`, which runs them as \`team-merge\` does, in a fresh detached worktree of that head; fix"
+  assert_contains "$brief" "4. Run the project's local checks (\`tests/run\`, \`make lint\`) on the head you push with \`$REPO_ROOT/bin/team-checks home <full sha>\`, which runs them as \`team-merge\` does, in a fresh detached worktree of that head; fix"
   assert_contains "$brief" "then a line naming the local checks that passed and the head they passed on."
   run_bin -0 team-brief T14 reviewer --name review --set pr=https://github.com/chanjdaniel/agent-team/pull/9 \
     --set head=abc1234 --set "checks=the checks"
@@ -1315,7 +1390,7 @@ after"
   run_bin -0 team-brief T14 builder-deliver --set "goal=the goal"
   files+=("$output")
   brief=$(<"$output")
-  assert_contains "$brief" "5. Wait for the PR's GitHub checks with \`$REPO_ROOT/bin/team-ci-wait <full url> <the full sha you pushed>\`, run with Bash \`run_in_background\`, and act on how it ended: exit 0, every check passed or the head has none; exit 1, fix each failed check it names on the branch and push again, follow a stuck check's message, or, on a head other than the one you pushed, do as its message says, until every check passes; exit 75, run it again, or report as its message says."
+  assert_contains "$brief" "6. Wait for the PR's GitHub checks with \`$REPO_ROOT/bin/team-ci-wait <full url> <the full sha you pushed>\`, run with Bash \`run_in_background\`, and act on how it ended: exit 0, every check passed or the head has none; exit 1, fix each failed check it names on the branch and push again, follow a stuck check's message, or, on a head other than the one you pushed, do as its message says, until every check passes; exit 75, run it again, or report as its message says."
   reviewed_branch T14 main
   run_bin -0 team-brief T14 rereview --name rereview --set pr=https://github.com/chanjdaniel/agent-team/pull/9 \
     --set head="$head"
@@ -1412,8 +1487,8 @@ findings_files() {
   # the builder checks its branch against what the stowed builder pushed, not a PR's head.
   run_bin -0 team-brief T12 builder-round --name round-1 --set pr=none --set findings=2 --set goal=g
   brief=$(<"$output")
-  assert_contains "$brief" "PR: none, against \`dev\` (none on a gated project's first review, before its gate opens the PR)."
-  assert_contains "$brief" "\`git merge-base --is-ancestor origin/fix/T12-applicant-sign-in-rate-limit HEAD\`"
+  assert_contains "$brief" "PR: none, against \`dev\` (none on a first review before the PR: a gated project's, before its gate opens it, or a Disclosure task's, before its first push)."
+  assert_contains "$brief" "\`! git rev-parse -q --verify origin/fix/T12-applicant-sign-in-rate-limit || git merge-base --is-ancestor origin/fix/T12-applicant-sign-in-rate-limit HEAD\`"
   assert_contains "$brief" "when it is none, the delivery opens it as it says."
   assert_contains "$brief" 'Run `/no-mistakes` with this intent: "T12: g"'
 }
@@ -1429,7 +1504,7 @@ Nor guess them.'
   run_bin -0 --separate-stderr team-brief T12 builder-round --name round-1
   assert_equal "$stderr" ""
   brief=$(<"$output")
-  assert_contains "$brief" "PR: none, against \`dev\` (none on a gated project's first review, before its gate opens the PR)."
+  assert_contains "$brief" "PR: none, against \`dev\` (none on a first review before the PR: a gated project's, before its gate opens it, or a Disclosure task's, before its first push)."
   assert_contains "$brief" "and findings 3 and 5 in \`.scratch/task/rereview.md\`."
   assert_contains "$brief" "When every one of findings 3 and 5 is a plain \`note\`"
   assert_contains "$brief" 'Run `/no-mistakes` with this intent: "T12: Applicants cannot flood addresses with sign-in codes."'

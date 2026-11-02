@@ -450,6 +450,25 @@ TOML
   done
 }
 
+@test "visibility is optional, public by default, and public or private" {
+  run_bin -0 team-project alpha visibility
+  assert_equal "$output" public
+  run_bin -0 team-project alpha
+  assert_equal "$(jq -r .visibility <<<"$output")" public
+  sed -i '0,/^toolkits = \[\]$/s||toolkits = []\nvisibility = "private"|' "$TEAM_HOME/projects.toml"
+  run_bin -0 team-project --check
+  run_bin -0 team-project alpha visibility
+  assert_equal "$output" private
+  run_bin -0 team-project beta visibility
+  assert_equal "$output" public
+  run_bin -0 team-project --find visibility private
+  assert_equal "$output" alpha
+
+  sed -i 's|^visibility = "private"$|visibility = "internal"|' "$TEAM_HOME/projects.toml"
+  run_bin -1 --separate-stderr team-project --check
+  assert_contains "$stderr" "alpha.visibility: must be one of public, private"
+}
+
 @test "merge_with_plan is optional, false by default, a boolean, and found by --find" {
   run_bin -0 team-project alpha merge_with_plan
   assert_equal "$output" false

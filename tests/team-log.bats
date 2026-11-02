@@ -161,10 +161,11 @@ ticket-done team-log ticket commits
 question team-log,team-ask role text
 asked team-log,team-ask id text
 answered team-log,team-answer id answer
+ran team-run-approved id exit
 plan-approved team-log by
 paused team-log reason
 blocked team-log reason
-denied team-log role what why
+denied team-log,denial-log role what why
 held team-log reason
 waiting team-log,team-ask on reason
 resumed team-log,team-answer
@@ -192,6 +193,8 @@ TABLE
   assert_equal "$(jq -c '.kinds.launch.optional' "$CONTRACT")" '{"project":"string","branch":"string","machine":"string","model":"string","request":"string","brief":"string"}'
   assert_equal "$(jq -c '.kinds.review.required.verdict' "$CONTRACT")" '["pass","findings"]'
   assert_equal "$(jq -c '.kinds.answered.optional' "$CONTRACT")" '{"discord_message":"id"}'
+  assert_equal "$(jq -c '.kinds.asked.optional' "$CONTRACT")" '{"discord_message":"id","script":"string","sha256":"string"}'
+  assert_equal "$(jq -c '.kinds.ran.required' "$CONTRACT")" '{"id":"string","exit":"number"}'
   assert_equal "$(jq -c '[.kinds[] | (.required, .optional // {}) | to_entries[] | select(.key | startswith("discord_")) | .value] | unique' "$CONTRACT")" '["id"]'
   assert_equal "$(jq -c '[.kinds.waiting, .kinds.blocked, .kinds.paused, .kinds.held | .optional.since]' "$CONTRACT")" '["string","string","string","string"]'
   assert_equal "$(jq -c '[.kinds.closed.required[]]' "$CONTRACT")" '["array","array","array"]'
@@ -236,10 +239,12 @@ TABLE
   grep -Eq '^  merge-approved +team-log +url, discord_message \(id\); optional head  \(.*team-log requires head of every new line.*\)$' <<<"$output"
   grep -Eq '^  launch +team-worker +role, session, worktree, toolkits \(list\); optional project, branch, machine, model, request, brief  \(request is the link to Daniel.s Discord message, on an ops launch; model is the --model the session launched on, .*\)$' <<<"$output"
   grep -Eq '^  answered +team-log, team-answer +id, answer; optional discord_message \(id\)  \(Daniel.s answer to the asked of its id; .*never logged twice for one ask\)$' <<<"$output"
+  grep -Eq '^  asked +team-log, team-ask +id, text; optional discord_message \(id\), script, sha256  \(a decision put to Daniel; .*script and sha256: .*together.*team-run-approved.*\)$' <<<"$output"
+  grep -Eq '^  ran +team-run-approved +id, exit \(number\)  \(.*\)$' <<<"$output"
   grep -Eq '^  waiting +team-log, team-ask +on, reason; optional since  \(.*\)$' <<<"$output"
   grep -Eq '^  resumed +team-log, team-answer +- +\(clears held, blocked, paused and waiting\)$' <<<"$output"
   grep -Eq '^  blocked +team-log +reason; optional since  \(.*since: when the park began, when it is logged after the fact\)$' <<<"$output"
-  grep -Eq '^  denied +team-log +role, what, why; optional session  \(a denial the worker went past .*parks nothing and clears nothing.*a denial that stops the work is a blocked\)$' <<<"$output"
+  grep -Eq '^  denied +team-log, denial-log +role, what, why; optional session  \(a denial the worker went past .*parks nothing and clears nothing.*a denial that stops the work is a blocked; denial-log, every worker.s PermissionDenied hook, .*never the tool.s input\)$' <<<"$output"
   grep -Eq '^  retro-schedule +team-log +every_hours \(number\), discord_message \(id\)  \(.*every_hours 0 stops.*\)$' <<<"$output"
   grep -Eq '^  retro-change +team-log +retro, proposals  \(the task it is logged on builds those proposals of retro T<m>, or, logged on T<m> itself, records were changed in place for them; .*team-retro digest.*\)$' <<<"$output"
   grep -Eq '^  injection +team-log +role, source, text  \(.*never the personal details.*\)$' <<<"$output"
@@ -427,7 +432,7 @@ LINES
 LINES
   )"
   # A declared id is a string of digits: anything else is refused.
-  run_bin -1 team-log T14 answered id=q1 answer=Five discord_message=m1563
+  run_bin -1 team-log T14 asked id=q2 text=Which? discord_message=m1563
   assert_contains "$output" "discord_message must be a Discord id, a string of digits, got a string that is not one"
   assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "2"
 }
@@ -447,9 +452,6 @@ LEDGER
 $TEAM_HOME/ledger.jsonl:6: discord_message must be a Discord id, a string of digits, got a number that is not one
 $TEAM_HOME/ledger.jsonl:7: discord_message must be a Discord id, a string of digits, got a string that is not one
 $TEAM_HOME/ledger.jsonl: 3 of 7 lines break the ledger contract"
-  # The number's digits are the id: an answer read from that message again is a repeat.
-  run_bin -1 team-log T14 answered id=q1 answer=Five discord_message=1565336870932582522
-  assert_contains "$output" "already logged answered id=q1 from Discord message 1565336870932582522"
 }
 
 @test "every kind team-log writes is appended with its required fields and a note" {
@@ -1043,27 +1045,38 @@ LINES
   assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "4"
 }
 
-@test "an answered naming the Discord message an earlier answered of the same ask logged is refused" {
-  run_bin -0 team-log T14 answered id=sign-in answer=five discord_message=1564000000000000001
-  run_bin -1 team-log T14 answered id=sign-in answer=five discord_message=1564000000000000001
-  assert_equal "$output" "team-log: T14 already logged answered id=sign-in from Discord message 1564000000000000001"
-  # Another message for the same ask is an addition, the same message may answer another ask,
-  # another task is its own, and an answer with no message is never a repeat.
-  run_bin -0 team-log T14 answered id=sign-in answer=and-six discord_message=1564000000000000002
-  run_bin -0 team-log T14 answered id=reset answer=five discord_message=1564000000000000001
-  run_bin -0 team-log T15 answered id=sign-in answer=five discord_message=1564000000000000001
-  run_bin -0 team-log T14 answered id=sign-in answer=five
-  run_bin -0 team-log T14 answered id=sign-in answer=five
-  assert_equal "$(jq -r '[.task, .id, .discord_message // "-"] | join(" ")' "$TEAM_HOME/ledger.jsonl")" "$(
-    cat <<'LINES'
-T14 sign-in 1564000000000000001
-T14 sign-in 1564000000000000002
-T14 reset 1564000000000000001
-T15 sign-in 1564000000000000001
-T14 sign-in -
-T14 sign-in -
-LINES
-  )"
+@test "an answered naming a Discord message is refused, naming team-answer, in both forms; one with no message is logged" {
+  open_t7
+  # team-answer reads the message from Discord and checks it is Daniel's, so a logged message id
+  # is always a checked one: team-log never writes one, whatever its value.
+  local message
+  for message in 1564000000000000001 m1563; do
+    run_bin -1 team-log T7 answered id=sign-in answer=five discord_message=$message
+    assert_equal "$output" "team-log: an answered that names a Discord message is logged only by team-answer, which reads it and checks it is Daniel's: team-answer T7 sign-in <the message's id>"
+  done
+  # No worker's message is an answered, so --from-message logs none either.
+  run_bin -1 team-log T7 --from-message 'T7 answered id=sign-in answer=five discord_message=1564000000000000001'
+  assert_contains "$output" "cannot read 'T7 answered id=sign-in answer=five discord_message=1564000000000000001'"
+  assert_equal "$(ledger_events)" "opened"
+  # A decision Daniel gave at the terminal has no message, and is logged as often as it is given.
+  run_bin -0 team-log T7 answered id=sign-in answer=five
+  run_bin -0 team-log T7 answered id=sign-in answer=five
+  assert_equal "$(jq -c 'select(.event == "answered") | del(.ts)' "$TEAM_HOME/ledger.jsonl")" '{"task":"T7","event":"answered","id":"sign-in","answer":"five"}
+{"task":"T7","event":"answered","id":"sign-in","answer":"five"}'
+}
+
+@test "an asked names no script or sha256: team-ask --script is their one writer" {
+  local hash
+  hash=$(printf '%064d' 0 | tr 0 a)
+  run_bin -1 team-log T14 asked id=fix text=run-it script=/w/14/fix.sh sha256="$hash"
+  assert_equal "$output" "team-log: an asked logs no script or sha256: team-ask T14 fix --file <question> --script <path> asks Daniel about a script, naming its path and hash in the question"
+  run_bin -1 team-log T14 asked id=fix text=run-it script=/w/14/fix.sh
+  assert_equal "$output" "team-log: an asked logs no script or sha256: team-ask T14 fix --file <question> --script <path> asks Daniel about a script, naming its path and hash in the question"
+  run_bin -1 team-log T14 asked id=fix text=run-it sha256="$hash"
+  assert_equal "$output" "team-log: an asked logs no script or sha256: team-ask T14 fix --file <question> --script <path> asks Daniel about a script, naming its path and hash in the question"
+  assert_ledger_empty
+  run_bin -0 team-log T14 asked id=plain text=no-script
+  assert_equal "$(ledger_without_ts)" '{"task":"T14","event":"asked","id":"plain","text":"no-script"}'
 }
 
 @test "a kind another script writes is refused with nothing appended" {

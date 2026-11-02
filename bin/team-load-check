@@ -8,6 +8,9 @@
 # Usage: team-load-check [--toolkit <name>]...
 #        team-load-check --context [--role planner|builder|reviewer] [--toolkit <name>]...
 #        team-load-check --role ops --worktree <path> --toolkit prod-read [--toolkit prod-write]
+# A toolkit team-worker refuses one of the form's roles (toolkit_refusal in bin/lib/team.sh: the
+# coordinator and frontend toolkits, and prod-* outside the ops form) is refused at once, with
+# team-worker's message, as a malformed command line (exit 2), before the doctor runs.
 #
 # The planner form first rehearses a lease of each project whose pool is treehouse: the project's
 # lease command leases a slot from the primary checkout to a holder of this run's own,
@@ -36,7 +39,17 @@
 #     <name> brought no tools from its MCP server <server>);
 #   - no production or coordinator-only server, tool or plugin (mongodb-atlas, the prod-*
 #     toolkits, discord, coordinator-skills) reaches it;
-#   - the planner's edit hook blocks a write outside .scratch/.
+#   - the planner's edit hook blocks a write outside .scratch/;
+#   - its effective autoMode holds its settings' autoMode lines (see below).
+#
+# Every form checks each session it launches for its effective autoMode, as auto mode's classifier
+# reads it: claude auto-mode config with the settings team-worker generated for the session, run in
+# its worktree (the session's own shell gets no --settings, so it cannot print this itself). The
+# config is kept in the team home's tasks/T0/automode-<role>.json, and each line of those settings'
+# autoMode lists but "$defaults" must be in the config's same list:
+#   load check: planner's effective autoMode holds the <n> lines of its settings' autoMode (...)
+#   FAIL planner: its effective autoMode lacks its settings' environment line: <the line>
+#   FAIL planner: claude auto-mode config under its settings printed no config
 #
 # The context form measures each worker role's starting context: the tokens a session carries
 # before it has done anything, its role prompt, settings, skills, tools and the given toolkits. It
@@ -48,13 +61,13 @@
 #   builder     51004       5               4            2
 # context is the first reply's input plus cache write plus cache read tokens, from the session's
 # transcript; the counts are of what the session listed before that reply (its skill listing, its
-# deferred tools, and the MCP servers those tools come from). Only numbers leave the transcript.
-# A role with no reply is a FAIL line instead of a row, and a role that listed no tool of an MCP
-# server a given toolkit declares, before that reply, a FAIL line naming the toolkit and server
-# as well as its row. Every session is stopped and removed, and
-# the worktree with them, on every path. Run from a checkout, it measures that checkout's roles,
-# settings and toolkits, so a run on dev and one on a PR's head give a change's before and after.
-# The coordinator runs it: workers may not start sessions.
+# deferred tools, and the MCP servers those tools come from). Only numbers leave the transcript. A
+# role with no reply is a FAIL line instead of a row, and a role that listed no tool of an MCP
+# server a given toolkit declares, before that reply, a FAIL line naming the toolkit and server as
+# well as its row. Every session is stopped and removed, and the worktree with them, on every path.
+# Run from a checkout, it measures that checkout's roles, settings and toolkits, so a run on dev and
+# one on a PR's head give a change's before and after. The coordinator runs it: workers may not
+# start sessions.
 #
 # The ops form reads production, so Daniel must be at the PC to approve its 1Password prompts (one
 # per toolkit) and, with prod-write, to decline its five write prompts on the phone.
@@ -107,19 +120,26 @@ if [[ -n $context ]]; then
     ops) usage_error "--context measures the roles the load check may start: planner, builder, reviewer; ops needs Daniel" ;;
     *) usage_error "unknown role '$role'; --context knows planner, builder, reviewer" ;;
   esac
+  roles=("${context_roles[@]}")
 else
   role=${role:-planner}
   case $role in
     planner) [[ -z $worktree ]] || usage_error "--worktree is for --role ops only" ;;
-    ops)
-      [[ -n $worktree ]] || usage_error "--role ops needs --worktree <a trusted linked worktree>"
-      case $(printf '%s\n' "${expected[@]}" | sort | paste -sd ' ') in
-        prod-read) ;;
-        'prod-read prod-write') writes=1 ;;
-        *) usage_error "--role ops checks --toolkit prod-read, alone or with --toolkit prod-write" ;;
-      esac
-      ;;
+    ops) [[ -n $worktree ]] || usage_error "--role ops needs --worktree <a trusted linked worktree>" ;;
     *) usage_error "unknown role '$role'; known: planner, ops (and builder, reviewer with --context)" ;;
+  esac
+  roles=("$role")
+fi
+# A toolkit team-worker would refuse a launched role is refused now, with its message, before the
+# doctor and the lease rehearsal take minutes to reach that launch.
+for kit in "${expected[@]}"; do
+  for r in "${roles[@]}"; do ! why=$(toolkit_refusal "$kit" "$r") || usage_error "$why"; done
+done
+if [[ $role == ops && -z $context ]]; then
+  case $(printf '%s\n' "${expected[@]}" | sort | paste -sd ' ') in
+    prod-read) ;;
+    'prod-read prod-write') writes=1 ;;
+    *) usage_error "--role ops checks --toolkit prod-read, alone or with --toolkit prod-write" ;;
   esac
 fi
 
@@ -273,6 +293,31 @@ declared_servers() {
   jq -r '.mcpServers // {} | keys[]' "$home/toolkits/$1/.mcp.json" 2>/dev/null || true
 }
 
+# automode_check <role> <worktree>: the role's effective autoMode, as auto mode's classifier reads
+# it for the session just launched: claude auto-mode config with the settings team-worker generated
+# for it (tasks/T0/settings.<role>.json), run in its worktree, since a session's own shell gets no
+# --settings. The config is kept in tasks/T0/automode-<role>.json, and every line of those
+# settings' autoMode lists but "$defaults" must be in the same list of it.
+automode_check() {
+  local r=$1 settings=$TEAM_HOME/tasks/T0/settings.$1.json kept=$TEAM_HOME/tasks/T0/automode-$1.json missing count line
+  if ! (cd "$2" && claude --settings "$settings" auto-mode config) >"$kept" 2>/dev/null ||
+    ! jq -e 'type == "object"' "$kept" >/dev/null 2>&1; then
+    echo "FAIL $r: claude auto-mode config under its settings printed no config"
+    fail=1
+    return
+  fi
+  missing=$(jq -r --slurpfile config "$kept" '(.autoMode // {}) | to_entries[] | .key as $list
+    | .value[] | select(. != "$defaults") | select(. as $line | ($config[0][$list] // []) | any(.[]; . == $line) | not)
+    | "\($list) line: \(.)"' "$settings")
+  if [[ -n $missing ]]; then
+    while IFS= read -r line; do echo "FAIL $r: its effective autoMode lacks its settings' $line"; done <<<"$missing"
+    fail=1
+  else
+    count=$(jq '[(.autoMode // {})[][] | select(. != "$defaults")] | length' "$settings")
+    echo "load check: $r's effective autoMode holds the $count lines of its settings' autoMode (claude auto-mode config under its settings, kept in tasks/T0/automode-$r.json)"
+  fi
+}
+
 planner_check() {
   load_worktree
   inventory=$wt/.scratch/inventory.txt
@@ -283,6 +328,7 @@ planner_check() {
     "3. Then stop.")
   ids=("$id")
   echo "load check: worker $id started"
+  automode_check planner "$wt"
 
   for _ in $(seq 1 60); do
     if [[ -f $inventory ]] && grep -qx -- '---' "$inventory"; then
@@ -360,6 +406,7 @@ context_check() {
     id=$(TEAM_HOME=$TEAM_HOME "$home/bin/team-worker" T0 "$r" "$wt" "${toolkit_args[@]}" -- "Reply with OK and nothing else.")
     ids+=("$id") launched[$r]=$id
     echo "load check: $r $id started"
+    automode_check "$r" "$wt"
   done
 
   for r in "${context_roles[@]}"; do
@@ -549,6 +596,7 @@ ops_check() {
   id=$(TEAM_HOME=$TEAM_HOME "$home/bin/team-worker" T0 ops "$worktree" "${toolkit_args[@]}" --request load-check -- \
     "$(ops_prompt .scratch/load-check-ops)")
   echo "load check: ops session $id started"
+  automode_check ops "$worktree"
 
   # 8 minutes for the 1Password prompts, the servers' 120-second timeout and the agent's searches,
   # and 22 more with prod-write for Daniel's five declines. A session that ended its turn on a
