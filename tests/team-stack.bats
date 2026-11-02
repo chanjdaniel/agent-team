@@ -857,7 +857,13 @@ admissions_aged() {
   open_task T22
   stack_settings '{"wait_minutes": 1}'
   capacity_room $((16 * 1024 * MIB)) none
-  (sleep 2 && capacity_room $((16 * 1024 * MIB)) full) &
+  # The level gives room once a second check has begun (each starts with df), so the first was
+  # refused however long it took, as on a slow macOS runner.
+  (for _ in $(seq 600); do
+    (($(stub_calls df | wc -l) >= 2)) && break
+    sleep 0.1
+  done
+    capacity_room $((16 * 1024 * MIB)) full) &
   TEAM_STACK_RECHECK_SECONDS=1 run_bin -0 --separate-stderr team-stack up --worktree "$STACK_WORKTREE" --no-seed
   assert_equal "$stderr" "team-stack: no room for $PROJECT yet, waiting up to 1 minutes: stack:shop: the team is at level none: nothing starts; room comes when Daniel raises the level"
   assert_equal "$(ups)" 1
