@@ -126,7 +126,7 @@ Workers' permissions do not allow the `busctl` call by hand: the tests use a stu
 
 The heartbeat's `capacity` step runs `team-capacity sample` on the lease holder every run, every 5 minutes, then `team-capacity place --quiet`, which places again any live team session outside its slice (one the claude daemon restarted, say).
 Each reading goes to `~/.local/state/agent-team/capacity/readings.jsonl`, kept for 24 hours.
-Its machine's part is the reading `team-slots sample` takes, by the same code (`bin/lib/reading.sh`), against a CPU snapshot of its own, so the two never differ: the memory, what the other programs use, and the team's processes, found by their working directory and their descent.
+Its machine's part (`bin/lib/reading.sh`) is the memory, what the other programs use, and the team's processes, found by their working directory and their descent, their CPU read against a snapshot of the last reading's, `procs.tsv` beside the readings.
 On top of it, each reading says each task's use:
 
 - On Linux, a task's memory is its slice's `MemoryCurrent`, plus its team processes outside the team's slice, plus its running team stacks (their `task` label), since Docker's containers are outside every user slice.
@@ -242,6 +242,8 @@ While it is confirmed, the plan's steps, in order, each with what it frees (the 
 3. stow the open tasks with a live worker or a reservation left, the most recently opened first (its work the least invested), until what is left fits; at none, every one.
 
 The heartbeat's `level` step (`team-level tick`) takes steps 1 and 2 itself, since they lose nothing: `claude stop`, bounded 30 seconds, for each session, and `team-stack stop --worktree <path>`, its data kept, for each stack, one heartbeat log line each, such as "stopped T7-reviewer r7r7r7r7, its work handed on, to bring the team under its budget at minor (30%): frees 1.0 GiB".
+Step 1 seldom finds a session: the heartbeat's `finished` step, before the `capacity` step's reading, stops the same finished sessions on every run, whatever the level and budget (`team-timers --help`), but for a planner whose task has no `plan-approved`, which it keeps since a refusal of its tickets goes back to it.
+So step 1 is left only that planner and the sessions that step could not stop.
 Step 3 is the coordinator's: `team-sweep`'s `level-stow` finding names the tasks, newest first ("level: over budget at minor (30%): stow T174, then T171"), and the coordinator sends each live worker its STOW, then runs `team-stow` with `cause` `level`.
 `team-level`'s acknowledgement of a change and its automatic post name the same tasks, in task number order.
 
@@ -258,5 +260,6 @@ Its reason starts with the level's words, as `team-level` acknowledges a change.
 It fails when the user's systemd does not answer or its cgroup does not delegate `cpu` and `memory`, which only Daniel can change (a `user@.service` drop-in, with sudo), since the level's limits need the slice; `team-resume` and `team-load-check`, which stop on any FAIL, stop there too.
 It fails on a `capacity.json` or a `level.jsonl` line that is malformed, naming it.
 It warns when the slice or a gate daemon's drop-in is not installed (`team-capacity install`, Daniel's yes), when the gate's daemon still runs outside the slice (its restart waits on a pipeline), when a live team session runs outside its task's slice (`team-capacity place`, or the heartbeat's next run), and on the lease holder when no reading is under 15 minutes old (the `capacity` step's lines in the heartbeat log say why).
+It warns on what the task slots left, which nothing reads since levels replaced them: `~/.config/agent-team/slots.json`, `~/.local/state/agent-team/slots/` (their readings) and `~/.local/state/agent-team/slots.lock`, naming whichever are present, its fix `rm -r` of them.
 On Linux with the slice installed it warns, naming `team-level apply`, when the limits last applied are missing or another mode and level's than the record's, or the slice's CPU quota is not theirs, as after a reboot.
 macOS has no cgroups: `install` and `place` change nothing there, and the line passes with "no hard limits on macOS: admission and stow only".
