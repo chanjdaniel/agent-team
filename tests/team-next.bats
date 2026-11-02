@@ -523,6 +523,26 @@ launched T7-reviewer c0000001"
   grep -qF "review \`origin/main...$head\`" "$TEAM_HOME/tasks/T7/brief-review.md"
 }
 
+@test "a direct-PR Disclosure task's DONE review-ready launches the review of the local head before any push; with no Disclosure it is refused" {
+  local head
+  head=$(commit two.txt "feat: ticket 02")
+  # The plan's Disclosure section is a comment only, as the template leaves it: not a Disclosure task.
+  printf '%s\n' "" "## Disclosure" "" "<!-- Only for a security change; delete otherwise. -->" >>"$TEAM_HOME/tasks/T7/plan.md"
+  run_bin -1 --separate-stderr team-next T7 --checks "$(checks)" -- "T7 DONE review-ready $head"
+  assert_contains "$stderr" "pr (T7 has no pr event in owner/proj; --set pr=)"
+  assert_equal "$(bg_calls | wc -l)" 0
+  printf '%s\n' "" "Describe it as hardening the input checks." >>"$TEAM_HOME/tasks/T7/plan.md"
+  run_bin -0 --separate-stderr team-next T7 --checks "$(checks)" -- "T7 DONE review-ready $head"
+  assert_contains "$output" "brief $TEAM_HOME/tasks/T7/brief-review.md
+launched T7-reviewer c0000001"
+  assert_equal "$(jq -r 'select(.event == "pr")' "$TEAM_HOME/ledger.jsonl")" ""
+  assert_equal "$(record review | jq -c '{template, head: .values.head, pr: .values.pr}')" \
+    "$(jq -cn --arg h "$head" '{template: "reviewer", head: $h, pr: null}')"
+  grep -qF "There is no PR yet" "$TEAM_HOME/tasks/T7/brief-review.md"
+  grep -qF "review \`origin/main...$head\`" "$TEAM_HOME/tasks/T7/brief-review.md"
+  [[ $(<"$TEAM_HOME/tasks/T7/brief-review.md") != *team-review* ]]
+}
+
 @test "a DONE review-ready with a run of whitespace before its sha reads the sha as team-log does" {
   local head
   sed -i 's/^delivery = "direct-pr"/delivery = "no-mistakes"/' "$TEAM_HOME/projects.toml"

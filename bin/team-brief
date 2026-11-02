@@ -37,22 +37,28 @@
 # {{> <name>}} stands for the partial of the project's delivery, templates/briefs/<name>/<delivery>.md:
 # delivery (how a builder delivers), review and rereview (what a reviewer reads and posts, verify
 # reading rereview's too; a gated project's first review reads the branch's local head before the
-# gate, with no pr). A {{> review-rules}} line, in the reviewer, rereview and verify templates
-# where their checks are listed, is the project's standing review rules, the team home's
-# projects/<project>/review-rules.md: the coordinator's records, never code, read as written
-# before the placeholders, so they may use any, and put in as a paragraph of their own; with no
-# file, or an empty one, the line is left out. One that cannot be read is refused.
+# gate, with no pr). Before the PR (no --set pr, and no pr event in the project's repo) on a gated
+# project, or on a direct-PR one whose plan's ## Disclosure section holds text past its HTML
+# comments (its builder pushes nothing before the review passes), <name>/<delivery>-before-pr.md
+# takes the place of <name>/<delivery>.md where it exists: review/direct-pr-before-pr.md reads the
+# local head with no pr, as the gated review does. A {{> review-rules}} line, in the reviewer,
+# rereview and verify templates where their checks are listed, is the project's standing review
+# rules, the team home's projects/<project>/review-rules.md: the coordinator's records, never
+# code, read as written before the placeholders, so they may use any, and put in as a paragraph of
+# their own; with no file, or an empty one, the line is left out. One that cannot be read is
+# refused.
 # Derived: a template's reviewed, pr and head the caller does not --set are filled from the ledger
 # and GitHub. reviewed is the head of the task's latest review; pr the URL of the task's latest pr
 # event in the project's repo; head that event's head (moved by any history-rewritten), or the
 # PR's head on GitHub (gh pr view) when it differs, which stderr says; builder-round's pr is none
-# when a gated (no-mistakes) project has no pr event yet, before its gate. So are findings,
-# findings_file and goal: findings the latest review's sent_back, as "3, 5 and 6"; findings_file
-# the newest (by mtime, a tie by name) of review.md and rereview*.md in the worktree's
-# <task_dir>/, written <task_dir>/<file>; goal the first sentence of the plan's ## Goal section,
-# its first line of text past any HTML comment, a list marker dropped. A derived fact with no
-# source is refused as unfilled, naming its --set, only when the template uses it; GitHub
-# unreadable for head is refused naming --set head=.
+# before the PR, as above: a gated project's before its gate, a Disclosure task's before its first
+# push. So are findings, findings_file and goal:
+# findings the latest review's sent_back, as "3, 5 and 6"; findings_file the newest (by mtime, a
+# tie by name) of review.md and rereview*.md in the worktree's <task_dir>/, written
+# <task_dir>/<file>; goal the first sentence of the plan's ## Goal section, its first line of
+# text past any HTML comment, a list marker dropped. A derived fact with no source is refused as
+# unfilled, naming its --set, only when the template uses it; GitHub unreadable for head is
+# refused naming --set head=.
 # since is always derived, the caller's --set or --set-file since= added after it as "The
 # coordinator adds: <text>": after fetching origin/<base> into the worktree (and reviewed and head,
 # when it lacks them; a failed fetch of the base is exit 75, nothing written), it gives the latest
@@ -183,14 +189,53 @@ thread=$(jq -r 'map(select(.event == "thread")) | last | .discord_thread // empt
 interview=$(jq -r 'map(select(.event == "interview-thread")) | last | .discord_thread // empty' <<<"$events")
 [[ -z $interview ]] || values[interview_thread]=$interview
 
+# plan_text <section>: the first line of text of the plan's ## <section>, past any HTML comment
+# and without a list marker; nothing when the plan or the section has none.
+plan_file=$TEAM_HOME/tasks/$task/plan.md
+plan_text() {
+  [[ -f $plan_file && -r $plan_file ]] || return 0
+  awk -v section="$1" '
+    $0 ~ "^## " section "[[:space:]]*$" { in_section = 1; next }
+    !in_section { next }
+    !in_comment && /^#{1,2} / { exit }
+    {
+      # The line without its HTML comments, which may span lines.
+      line = $0; out = ""
+      while (1) {
+        if (in_comment) {
+          if (!(at = index(line, "-->"))) break
+          line = substr(line, at + 3); in_comment = 0
+        }
+        if (!(at = index(line, "<!--"))) { out = out line; break }
+        out = out substr(line, 1, at - 1); line = substr(line, at + 4); in_comment = 1
+      }
+      sub(/^[[:space:]]*([-*+]|[0-9]+[.)])[[:space:]]+/, "", out)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", out)
+      if (out != "") { print out; exit }
+    }' "$plan_file"
+}
+
+# The task's latest pr event in this project's repo, its head moved by any history-rewritten.
+repo=${values[repo]}
+pr=$(ledger_jq '[task_prs[]
+    | select(.url | strings | ascii_downcase | startswith("https://github.com/\($repo | ascii_downcase)/pull/"))]
+  | last | .url // empty' -r --arg repo "$repo" <<<"$events")
+# Before the PR: a gated project's builder stops before its gate, and a direct-PR task's under a
+# Disclosure section pushes nothing before the review passes.
+delivery=$(jq -r .delivery <<<"$facts") before_pr=''
+if [[ -z $pr && ! -v sets[pr] ]] && [[ $delivery == no-mistakes || -n $(plan_text Disclosure) ]]; then
+  before_pr=1
+fi
+
 # The template, with each partial of the project's delivery in place of its {{> <name>}}.
 text=$(<"$briefs/$template.md")
 mapfile -t partials < <(grep -oE '\{\{> [a-z]+\}\}' <<<"$text" | sed 's/^{{> //; s/}}$//' | sort -u)
 if ((${#partials[@]})); then
-  delivery=$(jq -r .delivery <<<"$facts")
   for partial in "${partials[@]}"; do
-    [[ -f $briefs/$partial/$delivery.md ]] || die "no $partial partial for $project's delivery '$delivery'"
-    text=${text//"{{> $partial}}"/"$(<"$briefs/$partial/$delivery.md")"}
+    partial_file=$briefs/$partial/$delivery-before-pr.md
+    [[ -n $before_pr && -f $partial_file ]] || partial_file=$briefs/$partial/$delivery.md
+    [[ -f $partial_file ]] || die "no $partial partial for $project's delivery '$delivery'"
+    text=${text//"{{> $partial}}"/"$(<"$partial_file")"}
   done
 fi
 
@@ -261,16 +306,11 @@ if deriving reviewed; then
   reviewed=$(jq -r '.head // empty' <<<"$review")
   if [[ -n $reviewed ]]; then values[reviewed]=$reviewed; else underivable reviewed "$task has no review; --set reviewed="; fi
 fi
-repo=${values[repo]}
 if deriving pr; then
-  # The task's latest pr event in this project's repo, its head moved by any history-rewritten.
-  pr=$(ledger_jq '[task_prs[]
-      | select(.url | strings | ascii_downcase | startswith("https://github.com/\($repo | ascii_downcase)/pull/"))]
-    | last | .url // empty' -r --arg repo "$repo" <<<"$events")
   if [[ -n $pr ]]; then
     values[pr]=$pr
-  elif [[ $template == builder-round && $(jq -r .delivery <<<"$facts") == no-mistakes ]]; then
-    # A gated project's first round comes before its gate opens the PR.
+  elif [[ $template == builder-round && -n $before_pr ]]; then
+    # A round on the first review, before the gate or the first push opens the PR.
     values[pr]=none
   else
     underivable pr "$task has no pr event in $repo; --set pr="
@@ -297,30 +337,8 @@ if deriving findings_file; then
   fi
 fi
 if deriving goal; then
-  # The first sentence of the plan's ## Goal: its first line of text, one sentence per line as the
-  # team writes Markdown, past any HTML comment and without a list marker.
-  plan_file=$TEAM_HOME/tasks/$task/plan.md goal=''
-  if [[ -f $plan_file && -r $plan_file ]]; then
-    goal=$(awk '
-      /^## Goal[[:space:]]*$/ { in_goal = 1; next }
-      !in_goal { next }
-      !in_comment && /^#{1,2} / { exit }
-      {
-        # The line without its HTML comments, which may span lines.
-        line = $0; out = ""
-        while (1) {
-          if (in_comment) {
-            if (!(at = index(line, "-->"))) break
-            line = substr(line, at + 3); in_comment = 0
-          }
-          if (!(at = index(line, "<!--"))) { out = out line; break }
-          out = out substr(line, 1, at - 1); line = substr(line, at + 4); in_comment = 1
-        }
-        sub(/^[[:space:]]*([-*+]|[0-9]+[.)])[[:space:]]+/, "", out)
-        gsub(/^[[:space:]]+|[[:space:]]+$/, "", out)
-        if (out != "") { print out; exit }
-      }' "$plan_file")
-  fi
+  # The first sentence of the plan's ## Goal, one sentence per line as the team writes Markdown.
+  goal=$(plan_text Goal)
   if [[ -n $goal ]]; then values[goal]=$goal; else underivable goal "$(tilde "$plan_file") has no ## Goal sentence; --set goal="; fi
 fi
 if deriving head; then

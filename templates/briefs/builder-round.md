@@ -3,7 +3,7 @@
 Path: {{path}}; you are a fresh builder taking over the task for one fix round, since the builder before you held a long context and stowed.
 Project: {{project}} (`{{repo}}`), base `{{base}}`.
 Worktree: `{{worktree}}`, branch `{{branch}}`.
-PR: {{pr}}, against `{{base}}` (none on a gated project's first review, before its gate opens the PR).
+PR: {{pr}}, against `{{base}}` (none on a first review before the PR: a gated project's, before its gate opens it, or a Disclosure task's, before its first push).
 Task directory: `{{task_dir}}/` in the worktree (excluded from git): `spec.md`, `tickets/`, `build-notes/`, the reviews' findings and the stowed builder's `handoff.md`.{{ui}}
 
 ## Do
