@@ -383,7 +383,7 @@ log_events() {
 
 # The claude stub for the finished step: claude agents --json lists $STUB_FIXTURES/agents.json, or
 # fails while $STUB_FIXTURES/agents-fail is there; claude stop succeeds unless the id is in
-# $STUB_FIXTURES/stop-fails.
+# $STUB_FIXTURES/stop-fails, and hangs, deaf to SIGTERM, when it is in $STUB_FIXTURES/stop-hangs.
 finished_stub() {
   : >"$STUB_FIXTURES/stop-fails"
   stub_script claude <<'SH'
@@ -393,6 +393,7 @@ if [[ $1 == agents ]]; then
 fi
 if [[ $1 == stop ]]; then
   if grep -qx "$2" "$STUB_FIXTURES/stop-fails"; then echo "no such session $2" >&2; exit 1; fi
+  if grep -qx "$2" "$STUB_FIXTURES/stop-hangs" 2>/dev/null; then trap '' TERM; sleep 60; exit 0; fi
   echo "Stopped $2"; exit 0
 fi
 echo "claude stub: unplanned call: $*" >&2; exit 127
@@ -404,8 +405,9 @@ SH
 # launch there; its idle builder of the second worktree, handed on by a ticket-done and the later
 # builder launch there, which is idle with nothing of its own since; reviewers handed on by their
 # done but busy, waiting for input, starting and with no status; an idle ops session with a done.
-# T8's idle planner, with no event of its own since its launch, and closed T7's idle reviewer,
-# handed on by its done.
+# T8's idle planner, with no event of its own since its launch, T6's idle planner, handed on by
+# its done but kept until its plan is approved, since a refusal of its tickets goes back to it,
+# and closed T7's idle reviewer, handed on by its done.
 finished_workers() {
   local wt1=$HOME/slots/proj/1 wt2=$HOME/slots/proj/2
   log_events <<LINES
@@ -419,6 +421,7 @@ launch T9 reviewer 5b5b5b5b $wt1
 launch T9 reviewer 5c5c5c5c $wt1
 launch T9 ops 66666666 $wt1
 T9 {event: "done", role: "planner", session: "11111111"}
+T9 {event: "plan-approved", by: "coordinator"}
 T9 {event: "pr", url: "https://github.com/o/r/pull/1", head: "abc1234"}
 T9 {event: "done", role: "reviewer", session: "33333333"}
 T9 {event: "ticket-done", ticket: "01", commits: ["abc1234"]}
@@ -429,6 +432,8 @@ T9 {event: "done", role: "reviewer", session: "5b5b5b5b"}
 T9 {event: "done", role: "reviewer", session: "5c5c5c5c"}
 T9 {event: "done", role: "ops", session: "66666666"}
 launch T8 planner 77777777 $wt1
+launch T6 planner 99999999 $wt1
+T6 {event: "done", role: "planner", session: "99999999"}
 launch T7 reviewer 88888888 $wt1
 T7 {event: "done", role: "reviewer", session: "88888888"}
 T7 {event: "closed"}
@@ -445,6 +450,7 @@ LINES
  {"id": "5c5c5c5c", "name": "T9-reviewer"},
  {"id": "66666666", "name": "T9-ops", "status": "idle"},
  {"id": "77777777", "name": "T8-planner", "status": "idle"},
+ {"id": "99999999", "name": "T6-planner", "status": "idle"},
  {"id": "88888888", "name": "T7-reviewer", "status": "idle"}]
 JSON
   finished_stub
@@ -464,8 +470,15 @@ stops() {
 finished: stopped T9-reviewer 33333333: its work is handed on
 finished: stopped T9-builder 44444444: its work is handed on"
   # Left, unnamed: the builder whose pr is out, the later builder, the busy, waiting, starting and
-  # statusless reviewers, the ops session, T8's planner with no handing-on event, closed T7's.
+  # statusless reviewers, the ops session, T8's planner with no handing-on event, T6's planner
+  # before its plan-approved, closed T7's.
   assert_equal "$(stops)" $'11111111\n33333333\n44444444'
+  # Once T6's plan is approved, the next run stops its planner (the sessions stopped are gone).
+  log_events <<<'T6 {event: "plan-approved", by: "Daniel"}'
+  jq '[.[] | select(.id != "11111111" and .id != "33333333" and .id != "44444444")]' "$STUB_FIXTURES/agents.json" >"$BATS_TEST_TMPDIR/agents.json"
+  mv "$BATS_TEST_TMPDIR/agents.json" "$STUB_FIXTURES/agents.json"
+  run_bin -0 team-timers run
+  assert_equal "$(grep ' finished: ' <<<"$output" | cut -d ' ' -f 2-)" "finished: stopped T6-planner 99999999: its work is handed on"
   # With no reading the team is over no budget, so the level step, which logs each stop of its
   # own, logged none: the stops are the finished step's, whatever the level.
 }
@@ -502,6 +515,18 @@ finished: stopped T9-builder 44444444: its work is handed on"
   assert_equal "$(grep -c ': failed: ' <<<"$output")" 2
   [[ $(grep ' capacity: \| level: ' <<<"$output") == *"failed: "*"failed: "* ]]
   assert_equal "$(stops)" ""
+}
+
+@test "a claude stop deaf to its time limit's SIGTERM is killed 10 s later, a warning line, and the step goes on" {
+  finished_workers
+  echo 11111111 >"$STUB_FIXTURES/stop-hangs"
+  local start=$SECONDS
+  TEAM_TIMERS_FINISHED_CALL_SECONDS=1 run_bin -0 team-timers run
+  assert_equal "$(grep ' finished: ' <<<"$output" | cut -d ' ' -f 2-)" "finished: warning: could not stop T9-planner 11111111 (claude stop failed with no reason given)
+finished: stopped T9-reviewer 33333333: its work is handed on
+finished: stopped T9-builder 44444444: its work is handed on"
+  # Killed at 11 s, well before the stub's 60.
+  ((SECONDS - start < 40))
 }
 
 @test "once the finished step has run its time, no stop starts, and the sessions left are one warning line" {
