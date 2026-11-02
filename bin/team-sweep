@@ -13,8 +13,8 @@
 # or awaiting-merge, when it has an ask nothing settled (no answered or merge-preapproved with its
 # id, no merge-approved whose url its text names), or when its latest paused or waiting has no
 # later resumed or launch; an awaiting-merge task that nothing else parks is merge-due instead
-# while Daniel's plan-time merge word stands. Findings, one line each with the task, the session
-# and the next step:
+# while Daniel's plan-time or standing merge word stands. Findings, one line each with the task,
+# the session and the next step:
 #   no-worker      an open task, not parked, with an opened or launch event and no live session
 #                  among its launches at work: busy, waiting for input or silent (one idle with a
 #                  ledger event since its launch, a denied aside, has handed the next step back);
@@ -37,14 +37,20 @@
 #                  turn) or else the oldest, "Bash in a subagent" for a subagent's, a tool other
 #                  than Bash by its name, and ", and <n> more running" when others run; or " with no
 #                  tool call running". None for a session whose transcript cannot be found
-#   merge-due      an open task in awaiting-merge with a standing plan-time merge approval (its
+#   merge-due      an open task in awaiting-merge with a plan-time merge approval not withdrawn (its
 #                  latest merge-preapproved of a project with no later merge-preapproval-withdrawn
-#                  of it), no ask nothing settled and no paused or waiting standing, with session
-#                  null: "awaiting the merge of <PR URLs> on Daniel's plan-time word on
+#                  of it) or a standing word of Daniel's on one of its projects (those of its
+#                  opened and worktree-added events: the latest merge-standing or
+#                  merge-standing-withdrawn of the project or all, logged under any task, is a
+#                  merge-standing), no ask nothing settled and no paused or waiting standing, with
+#                  session null: "awaiting the merge of <PR URLs> on Daniel's plan-time word on
 #                  <projects>, with no ask open; next: run team-merge T<n>; on a refusal, ask
-#                  Daniel for the per-head word with team-ask", and no other finding of the task's;
-#                  the ledger names no PR's project, so any standing approval of the task counts,
+#                  Daniel for the per-head word with team-ask", with "standing word on
+#                  <projects>" for the standing word, or "plan-time word on <projects> and
+#                  standing word on <projects>" for both, and no other finding of the task's; the
+#                  ledger names no PR's project, so any word on one of the task's projects counts,
 #                  and the registry is not read: team-merge says when a project no longer opts in
+#                  or a PR's own project has no word
 #   stray          a live session named like a team worker (T<n>-<role>) whose task is closed or
 #                  not in the ledger; never one of T0, the load check's task
 #   activity       after every task finding, with task and session null: session-activity

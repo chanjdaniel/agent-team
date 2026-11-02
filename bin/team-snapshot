@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Show everything open across the team: every open task's state, the team's resource level, the
-# machine's task slots, the live team sessions and strays, the open PRs of every registered
-# project, the asks waiting on Daniel, and the coordinator's current items.
+# machine's task slots, Daniel's standing merge words, the live team sessions and strays, the open
+# PRs of every registered project, the asks waiting on Daniel, and the coordinator's current items.
 #
 # Usage: team-snapshot [--json]
 # Open tasks are those with events and no closed, in task number order, each as its team-state
@@ -12,15 +12,19 @@
 # cores for the team; 6.1 GiB reserved; T171 stowed, waiting to resume", from team-level status
 # --stored --json (it takes no reading), naming each open task whose latest stowed (for the level
 # or a handoff) names roles to relaunch and that no launch has followed. The machine's task slots
-# are team-slots' summary line, from the stored readings only (it takes none). Live team sessions
-# are the sessions claude agents --json lists named like a team worker (T<n>-<role>) whose task
-# is open, marked when no launch in the ledger names them; strays are those whose task is closed
-# or not in the ledger, and the load check's T0 sessions. Open PRs come from gh pr list for each
-# project in projects.toml (the first 100). Pending asks are the open tasks' asks with no answer,
-# with their text. Current items are the lines of the team home's tasks/current.md that start
-# with "- " (what the coordinator holds that the ledger has no event for), none when the file is
-# missing. Text lines are cut at 120 columns, an open task's, the resources line and an item at
-# 200, and the text form shows the first 40 items, then how many more.
+# are team-slots' summary line, from the stored readings only (it takes none). The standing merge
+# words are, for the projects in projects.toml, Daniel's words that stand (the latest
+# merge-standing or merge-standing-withdrawn naming the project or all is a merge-standing), one
+# line per word after the slots line: "Standing merge word: <projects> (Discord message <id>,
+# <ts>, <task>)", or "Standing merge word: none". Live team sessions are the sessions claude
+# agents --json lists named like a team worker (T<n>-<role>) whose task is open, marked when no
+# launch in the ledger names them; strays are those whose task is closed or not in the ledger,
+# and the load check's T0 sessions. Open PRs come from gh pr list for each project in
+# projects.toml (the first 100). Pending asks are the open tasks' asks with no answer, with their
+# text. Current items are the lines of the team home's tasks/current.md that start with "- "
+# (what the coordinator holds that the ledger has no event for), none when the file is missing.
+# Text lines are cut at 120 columns, an open task's, the resources line and an item at 200, and
+# the text form shows the first 40 items, then how many more.
 # With --json, the versioned snapshot (schema team-snapshot/1): tasks (each team-state's JSON, or
 # {task, error} when its state could not be told, as for a PR naming an unregistered project),
 # level (team-level status --stored --json's object, or {error} with the last line team-level said
@@ -28,6 +32,8 @@
 # tasks stowed, waiting to resume, in task number order), resources (the resources line, null when
 # level is {error}), slots (team-slots status --stored --json's object, or {error} with the last
 # line team-slots said when it fails, which the text says as "Task slots unreadable: <error>"),
+# standing_words (one {project, word: {project as logged, task, ts, discord_message,
+# discord_channel}} per registered project a standing word stands for, in the registry's order),
 # sessions ({task, role, name, session, status, state, logged}), strays (the same with task_state
 # closed, unknown or load-check instead of logged), prs ({project, repo, prs: [{number, title, url,
 # branch, base, draft, task}]}, or {project, repo, error}), pending_asks ({task, id, text, ts}),
@@ -113,8 +119,11 @@ jq -cs . "${prs[@]}" </dev/null >"$tmp/prs"
 current=$TEAM_HOME/tasks/current.md
 [[ -f $current ]] || current=/dev/null
 ledger_jq 'current_items' -nRc "$current" >"$tmp/items"
-snapshot=$(ledger_jq 'snapshot($tasks[0]; $states[0]; $slots[0]; $level[0]; $sessions; $prs[0]; $items[0])' -nc --slurpfile tasks "$tmp/tasks" \
-  --slurpfile states "$tmp/states" --slurpfile slots "$tmp/slots" --slurpfile level "$tmp/level" --argjson sessions "$LIVE_SESSIONS" \
+ledger_jq 'ledger_events | standing_words($projects | split("\n") | map(select(. != "")))' -nRc \
+  --arg projects "$projects" "$ledger" >"$tmp/standing"
+snapshot=$(ledger_jq 'snapshot($tasks[0]; $states[0]; $slots[0]; $level[0]; $standing[0]; $sessions; $prs[0]; $items[0])' -nc \
+  --slurpfile tasks "$tmp/tasks" --slurpfile states "$tmp/states" --slurpfile slots "$tmp/slots" \
+  --slurpfile level "$tmp/level" --slurpfile standing "$tmp/standing" --argjson sessions "$LIVE_SESSIONS" \
   --slurpfile prs "$tmp/prs" --slurpfile items "$tmp/items")
 
 if [[ -n $json ]]; then
