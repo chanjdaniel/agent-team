@@ -95,15 +95,17 @@ ledger_jq() {
 
 # Append one JSON object as one line to the ledger, under an exclusive lock beside it, so two
 # scripts never interleave a line. The event must meet the ledger contract, and the calling
-# script must be its kind's writer.
+# script must be its kind's writer. With <seconds>, the lock is waited on at most that long, and
+# a lock still held then is a refusal: ledger_append <event> [<seconds>]
 ledger_append() {
-  local line problems
+  local line problems lock_wait=()
   line=$(jq -ce 'select(type == "object")' <<<"$1") || die "not a JSON object for the ledger: $1"
   [[ $line != *$'\n'* ]] || die "not one JSON object for the ledger: $1"
   problems=$(ledger_jq '[append_problems($contract; $writer)] | join("; ")' -r --arg writer "${0##*/}" <<<"$line")
   [[ -z $problems ]] || die "refusing a ledger event: $problems"
+  [[ -z ${2:-} ]] || lock_wait=(-w "$2")
   {
-    flock -x 9
+    flock -x "${lock_wait[@]}" 9 || die "could not take the ledger's lock${2:+ within ${2}s}"
     printf '%s\n' "$line" >>"$TEAM_HOME/ledger.jsonl"
   } 9>>"$TEAM_HOME/ledger.jsonl.lock"
 }

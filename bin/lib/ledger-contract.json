@@ -99,8 +99,8 @@
       "optional": {"since": "string"}
     },
     "denied": {
-      "writer": "team-log",
-      "about": "a denial the worker went past (a permission rule, a hook, auto mode): what was denied and why; it parks nothing and clears nothing, and team-time and team-retro count it as a denial; a denial that stops the work is a blocked",
+      "writer": ["team-log", "denial-log"],
+      "about": "a denial the worker went past (a permission rule, a hook, auto mode): what was denied and why; it parks nothing and clears nothing, and team-time and team-retro count it as a denial; a denial that stops the work is a blocked; denial-log, every worker's PermissionDenied hook, logs each denial auto mode makes, what the tool's name and why the rule's bracketed label or no verdict, never the tool's input",
       "required": {"role": "string", "what": "string", "why": "string"},
       "optional": {"session": "string"}
     },

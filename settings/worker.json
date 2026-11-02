@@ -303,6 +303,11 @@
         "matcher": "Bash",
         "hooks": [{ "type": "command", "command": "@TEAM_CODE@/bin/hooks/lease-fence" }]
       }
+    ],
+    "PermissionDenied": [
+      {
+        "hooks": [{ "type": "command", "command": "@TEAM_CODE@/bin/hooks/denial-log", "timeout": 10 }]
+      }
     ]
   }
 }

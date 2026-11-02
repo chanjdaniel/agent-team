@@ -687,7 +687,7 @@ role_texts() {
   done
 }
 
-@test "every role's settings name its role in AGENT_TEAM_ROLE and print the gh-axi banner at session start" {
+@test "every role's settings name its role in AGENT_TEAM_ROLE, print the gh-axi banner at session start and log each denial" {
   thread T7
   ops_stub
   local role settings
@@ -701,8 +701,10 @@ role_texts() {
     assert_equal "$(jq -r .env.AGENT_TEAM_ROLE "$settings")" "$role"
     assert_equal "$(jq -c '[.hooks.SessionStart[].hooks[] | [.command, .timeout]]' "$settings")" \
       "$(jq -cn --arg code "$REPO_ROOT" '[["\"\($code)/bin/hooks/axi-banner\" gh-axi", 10]]')"
+    assert_equal "$(jq -c '[.hooks.PermissionDenied[] | [.matcher, (.hooks[] | .command, .timeout)]]' "$settings")" \
+      "$(jq -cn --arg code "$REPO_ROOT" '[[null, "\($code)/bin/hooks/denial-log", 10]]')"
   done
-  [[ -x $REPO_ROOT/bin/hooks/axi-banner ]]
+  [[ -x $REPO_ROOT/bin/hooks/axi-banner && -x $REPO_ROOT/bin/hooks/denial-log ]]
 }
 
 @test "a launched worker's chrome-devtools-axi session is named for its task and role" {
