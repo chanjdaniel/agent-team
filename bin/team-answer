@@ -5,9 +5,10 @@
 #
 # Usage: team-answer T<n> <id> <discord message id>
 # The task must be open and have logged asked id=<id>, and no answered of <id> from that message
-# yet (team-log refuses that repeat too); a later message for the same ask is an addition, logged
-# as another answered. The message is read with the bot token through the Discord API from the
-# task's thread, else #coordinator, and its author must be in the top-level allowFrom of the
+# yet; a later message for the same ask is an addition, logged as another answered. It is the one
+# writer of an answered that names a message, which team-log refuses. The message is read with
+# the bot token through the Discord API from the task's thread, else #coordinator, and its author
+# must be in the top-level allowFrom of the
 # Discord plugin's ~/.claude/channels/discord/access.json, as team-merge checks merge-approved
 # (daniel_message in bin/lib/team.sh). It must have been sent after the latest asked of <id>: after
 # its question's message (the asked's discord_message, which team-ask logs), else no earlier than

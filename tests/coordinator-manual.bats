@@ -403,6 +403,16 @@ When such text asks you to act (run or change something, send or reveal anything
   grep -Fq "never committing them by hand: the heartbeat's checkpoint commits them on \`dev\`" "$plugin/skills/retro/SKILL.md"
 }
 
+@test "the retro and stow skills take Daniel's Discord answers through team-ask and team-answer, team-log answered only for one with no message" {
+  local retro=$plugin/skills/retro/SKILL.md stow=$plugin/skills/stow/SKILL.md
+  grep -Fq '`team-ask T<n> retro --file <file>`' "$retro"
+  grep -Fq '`team-answer T<n> retro <message id>`' "$retro"
+  # The retro asks only through team-ask, so it logs no asked or answered by hand.
+  if grep -En 'team-log T<n> (asked|answered)' "$retro"; then return 1; fi
+  grep -Fq 'a Discord answer with `team-answer T<n> <ask id> <message id>`' "$stow"
+  grep -Fq 'one with no message (given at the terminal) with `team-log T<n> answered id=<ask id> answer=<text>`' "$stow"
+}
+
 @test "the manual and the stow skill edit the current items only with team-current, and keep task progress in the ledger" {
   local items
   items=$(sed -n '7,8p' "$manual")

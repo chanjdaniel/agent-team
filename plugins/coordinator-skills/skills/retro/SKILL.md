@@ -13,10 +13,10 @@ The retro itself changes nothing; what Daniel approves becomes its own work.
    Exit 75 means a full pool or no task slot on the machine (`team-slots` says which tasks hold them and why the cap is what it is): tell Daniel in `#coordinator` once which tasks hold the slots; the sweep's finding stays until a slot frees, and you open the retro then.
 2. **Brief and launch.** Run `team-brief T<n> retro`, then `team-worker T<n> planner <worktree> -- "Read your brief at <path>"`, the path being what `team-brief` printed.
 3. **Relay.** On `T<n> DONE <path>`, run `team-next T<n> -- '<the message>'`, which logs the planner's done with its report and has no hand-off, then read the report.
-   Post its proposals in the retro's thread, one line each: its number, the change, and its evidence in a phrase.
-   After them, post one line from the report's Worker time: the builders' median and 90th-percentile lifetime and the top three sinks with their hours.
-   Log the ask with `team-log T<n> asked id=retro text="<each proposal's number and title>"`.
-4. **Record the answer.** Daniel answers per number; log `team-log T<n> answered id=retro answer="<the answer>"`.
+   Write the question to a file (`mktemp`): a first line asking Daniel to decide the retro's proposals by number, then its proposals, one line each: its number, the change, and its evidence in a phrase.
+   After them, one line from the report's Worker time: the builders' median and 90th-percentile lifetime and the top three sinks with their hours.
+   Put it with `team-ask T<n> retro --file <file>`, which posts it in the retro's thread, pings Daniel in `#coordinator` and logs the ask and its wait.
+4. **Record the answer.** Daniel answers per number; take each message of theirs on it with `team-answer T<n> retro <message id>`, which checks the message is theirs, logs it as the answer, clears the wait and prints its text.
    A change to the schedule in it (a new cadence, or stop) is logged on the same task: `team-log T<n> retro-schedule every_hours=<hours, 0 to stop> discord_message=<id>`.
 5. **Act.** Make approved changes to records (the paths `~/agent-team/bin/lib/records` lists) in place, never committing them by hand: the heartbeat's checkpoint commits them on `dev`, or `team-checkpoint --force` at once.
    Every other approved change becomes one follow-up task, `team-open agent-team small <type> <slug> <title>` (or the project's own task, for a project's file), whose plan lists the approved proposals by number and points at the retro's report.

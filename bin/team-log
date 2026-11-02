@@ -20,8 +20,9 @@
 # one of the task's pr events (a trailing slash aside), or with no head, or a head neither a pr
 # event of that url nor a review of the task since its first pr event logged (heads compare by
 # the shorter one's prefix, at least 7 characters), or whose discord_message, a Discord id, was
-# sent before the first of those events that logged the head; so is an answered whose id and
-# discord_message an earlier answered of the task logged (team-answer reads it from Discord). A
+# sent before the first of those events that logged the head; so is an answered that names a
+# discord_message, whatever its value, since only team-answer logs one, having read the message
+# and checked it is Daniel's (an answered with no message, given at the terminal, is logged). A
 # merge-preapproved is refused when its project is not one of the task's opened or worktree-added
 # events, is the team's own (own_project, whatever the registry says), or does not opt in now
 # (team-project's merge_with_plan); when its ask names no asked of the task; when its
@@ -172,6 +173,11 @@ for pair in "$@"; do
   pairs+=("$key" "${pair#*=}")
 done
 
+# A logged message id always means one team-answer read and checked, so team-log writes an
+# answered only with no message id (a decision Daniel gave at the terminal).
+[[ $event != answered || -z ${seen[discord_message]:-} ]] ||
+  die "an answered that names a Discord message is logged only by team-answer, which reads it and checks it is Daniel's: team-answer $task ${seen[id]:-<id>} <the message's id>"
+
 # Each value is typed by the contract when it names the field, and by whether it parses as JSON
 # otherwise (typed_value in bin/lib/ledger.jq), so the checks below read the values the line
 # will hold; ledger_append then checks the event against the contract.
@@ -308,14 +314,6 @@ if [[ $event == review ]]; then
         | "guarded lists the guarded areas the change touches, each one of \(guarded_areas | listed):" + lines)' \
     -nr --argjson line "$typed")
   [[ -z $problem ]] || die "$problem"
-fi
-
-# One Discord message answers an ask once: a second answered of the same id and message is a
-# repeat, as team-answer refuses it.
-if [[ $event == answered && -n ${seen[id]:-} && -n ${seen[discord_message]:-} ]] &&
-  task_events "$task" | ledger_jq '[inputs] | answered_from($id; $message)' -ne \
-    --arg id "${seen[id]}" --arg message "${seen[discord_message]}" >/dev/null; then
-  die "$task already logged answered id=${seen[id]} from Discord message ${seen[discord_message]}"
 fi
 
 # A park logged after the fact says when it began: a UTC time between the task's latest event and now.
