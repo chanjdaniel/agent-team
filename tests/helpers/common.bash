@@ -102,13 +102,13 @@ EOF
   export TEAM_CGROUP_ROOT=$root/cgroup-root
   mkdir -p "$TEAM_CGROUP_ROOT/proc"
 
-  # The machine team-slots reads its load from (its seams): no process, 12 cores and 24 GiB of 32
+  # The machine team-capacity reads its load from (its seams): no process, 12 cores and 24 GiB of 32
   # available, and a Docker socket nothing listens on, so no reading depends on the machine the
   # suite runs on, macOS (whose sysctl and vm_stat TEAM_MEMINFO stands for too) or Linux, and no
   # test reaches its Docker unless it stubs one (helpers/docker).
-  export TEAM_SLOTS_PROCS=$root/slots-procs TEAM_SLOTS_CPUS=12 TEAM_MEMINFO=$root/meminfo
+  export TEAM_READING_PROCS=$root/procs TEAM_READING_CPUS=12 TEAM_MEMINFO=$root/meminfo
   export DOCKER_HOST=unix://$root/no-docker.sock
-  : >"$TEAM_SLOTS_PROCS"
+  : >"$TEAM_READING_PROCS"
   printf 'MemTotal:       %s kB\nMemFree:         1048576 kB\nMemAvailable:   %s kB\n' $((32 * 1024 * 1024)) \
     $((24 * 1024 * 1024)) >"$TEAM_MEMINFO"
 
@@ -202,13 +202,6 @@ push_to_dev() {
   git -C "$clone" commit -q -m "feat: change $2"
   git -C "$clone" push -q origin dev
   git -C "$clone" rev-parse HEAD
-}
-
-# The effective cap's reason when team-slots took its own reading on the sandbox's idle machine,
-# the newest under <home> (default HOME): sampled_reason [<home>]
-sampled_reason() {
-  tail -n 1 "${1:-$HOME}/.local/state/agent-team/slots/readings.jsonl" |
-    jq -r '"other programs use 8.0 GiB of 32.0 GiB (the reading of \(.at | fromdateiso8601 | strflocaltime("%H:%M")))"'
 }
 
 # The stub <cmd> prints <stdout> and exits with <status> (default 0).

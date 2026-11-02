@@ -81,7 +81,6 @@ team_at_work() {
   T3 planning | T3-builder busy
   T12 planning | T12-builder idle blocked
 Resources: manual, full (90%): no reading of the machine's load yet, so no budget
-this machine: 0 of 6 task slots held, none kept, since no registered project's primary checkout is the code checkout ...
 Live team sessions (2):
   T3-builder 59709d99 busy
   T12-builder 3ed2d1f2 idle blocked

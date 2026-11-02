@@ -7,7 +7,7 @@ load helpers/common
 setup() {
   sandbox
   stub_reply claude '[]'
-  # A registry, which team-sweep's slots finding reads through team-slots.
+  # A registry, which team-sweep's stow plan reads through team-capacity.
   printf '%s\n' '[proj]' 'repo = "owner/proj"' 'path = "projects/proj"' 'base = "main"' 'delivery = "direct-pr"' \
     'merge_method = "merge"' 'required_checks = []' 'task_dir = ".scratch/task"' 'docs = []' 'toolkits = []' \
     '[proj.pool]' 'provider = "git"' 'slots = ["slots/proj/1"]' >"$TEAM_HOME/projects.toml"

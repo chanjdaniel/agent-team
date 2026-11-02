@@ -54,18 +54,37 @@
 #          place), or, with the slice installed, the limits team-level last applied
 #          (~/.local/state/agent-team/level/applied.json) are missing or another mode and level's
 #          than the record's, or the slice's CPUQuota is not theirs (each fixed by team-level
-#          apply). On any OS, with --holding (this machine holds the lease, whose heartbeat takes
-#          a reading every 5 minutes): WARN when the newest reading is more than 15 minutes old,
-#          or there is none, its fix the heartbeat log's capacity lines, or team-timers enable
-#          with --heartbeat disabled. The passing reason names the slice and how many live team
-#          sessions are in it.
+#          apply). On any OS it WARNs on a ~/.config/agent-team/slots.json left from the task
+#          slots, which nothing reads since levels replaced the task cap, its fix removing it; and
+#          with --holding (this machine holds the lease, whose heartbeat takes a reading every 5
+#          minutes) when the newest reading is more than 15 minutes old, or there is none, its fix
+#          the heartbeat log's capacity lines, or team-timers enable with --heartbeat disabled.
+#          The passing reason names the slice and how many live team sessions are in it.
 # sample   Takes one reading of the machine's load with the team's use per task and appends it to
 #          ~/.local/state/agent-team/capacity/readings.jsonl, kept to the last 24 hours (the
 #          heartbeat's capacity step runs it every 5 minutes), printing nothing; within 60
-#          seconds of the newest reading it appends nothing. The machine's part is team-slots
-#          sample's reading, by the same code (bin/lib/reading.sh), against a CPU snapshot of its
-#          own, ~/.local/state/agent-team/capacity/procs.tsv; a reading it cannot take is its
-#          reason on stderr, exit 1, with nothing written. It adds:
+#          seconds of the newest reading it appends nothing. A reading it cannot take is its
+#          reason on stderr, exit 1, with nothing written: a command below that fails or prints
+#          what it cannot read is named. The machine's part (bin/lib/reading.sh) is {at (UTC,
+#          YYYY-MM-DDTHH:MM:SSZ), os, docker (whether Docker answered), memory: {total, available,
+#          team, others} in bytes, cpu: {cpus, seconds (since the snapshot), team, others} in
+#          cores busy, or null when the CPU was not read}. The memory: on Linux /proc/meminfo's
+#          MemTotal and MemAvailable; on macOS sysctl -n hw.memsize, and vm_stat's free,
+#          inactive, speculative and purgeable pages times its page size. The processes are ps
+#          -A -o pid=,ppid=,rss=,time= with each one's working directory, from /proc/<pid>/cwd
+#          on Linux and one lsof -a -d cwd -Fpn on macOS (none when it cannot be read, another
+#          user's), and on Linux its cgroup v2 path; the team's are each process whose directory
+#          is a team path or below one, and every descendant of one by parent pid. The team
+#          paths: the team home, the code checkout, every registered project's slots (a treehouse
+#          pool's numbered ones beside them too), each held worktree, and ~/.no-mistakes (the
+#          gate's). The team's memory is their resident memory and the team and gate stacks'
+#          (team-stack ls --json's memory_bytes, given 30 seconds); the others' is the total less
+#          the available less the team's, never below 0. The CPU is read against the snapshot
+#          ~/.local/state/agent-team/capacity/procs.tsv (each process's pid and cumulative CPU
+#          seconds, replaced by each reading) when it is 60 seconds to 15 minutes old, else not,
+#          summed for the team's and the others' over the seconds between; the team's adds the
+#          stacks' cpu_percent, which the others' is less of. Docker not answering in time leaves
+#          the stacks out, so they count as the others'. It adds:
 #            systemd   on Linux whether the user manager answered (systemctl --user show of the
 #                      units below), else null
 #            sessions  whether the session list (claude agents --json) could be read
@@ -207,7 +226,7 @@
 # jobs     How many processes a test suite runs at once (tests/run, and team-checks' commands
 #          through TEAM_JOBS): the floor of the level's CPU budget, at least 1, as team-level
 #          status --stored reads it, from the stored readings only (it takes none) and the
-#          recorded level; nproc (or TEAM_SLOTS_CPUS) with no team home, no reading, or a
+#          recorded level; nproc (or TEAM_READING_CPUS) with no team home, no reading, or a
 #          capacity.json or level.jsonl line that is malformed. Prints the number alone and exits
 #          0; with --verbose it says on stderr where the number came from: "team-capacity: 3 at
 #          once, the floor of manual, minor (30%)'s 3.6 cores", or "12 at once, nproc's: no team
@@ -235,8 +254,12 @@
 # task's use by the working-directory rule alone.
 # Test seams: TEAM_CGROUP_ROOT stands for / where the user manager's cgroup.controllers and /proc
 # are read by place and check, so the tests run on a tree of their own; sample reads the machine
-# through team-slots's seams (TEAM_MEMINFO, TEAM_SLOTS_PROCS, whose lines may carry a sixth
-# column, the process's cgroup v2 path, TEAM_SLOTS_CPUS and TEAM_SLOTS_DOCKER_SECONDS).
+# through its own seams: TEAM_MEMINFO names a file read in place of /proc/meminfo, and on macOS
+# of sysctl and vm_stat; TEAM_READING_PROCS a file of the processes read in place of ps and /proc
+# or lsof, one per line, tab-separated: pid, parent pid, resident KiB, cumulative CPU seconds,
+# working directory (empty when unreadable) and, optionally, its cgroup v2 path;
+# TEAM_READING_CPUS the CPU count in place of nproc's; and TEAM_READING_DOCKER_SECONDS the 30
+# seconds team-stack ls is given.
 set -euo pipefail
 # jobs needs no team home, as tests/run on CI or a fresh clone.
 # shellcheck disable=SC2034 # read by bin/lib/team.sh
@@ -568,6 +591,10 @@ check() {
     fi
   fi
   level_problems "$manager"
+  # The task slots' settings, which levels replaced.
+  file=$HOME/.config/agent-team/slots.json
+  [[ ! -e $file ]] ||
+    problem WARN "$(tilde "$file") is no longer read: levels replaced the task cap" "remove $(tilde "$file")"
   if ((holding)) && ! newest_reading_within 900; then
     if [[ $heartbeat == enabled ]]; then
       problem WARN "no reading of the machine's load in the last 15 minutes, though this machine holds the lease, whose heartbeat takes one every 5" \
@@ -902,7 +929,7 @@ plan() {
 
 # How many processes run at once, as the header's jobs says. Named so as not to hide bash's jobs.
 jobs_count() {
-  local cpus=${TEAM_SLOTS_CPUS:-$(nproc)} out='' why=''
+  local cpus=${TEAM_READING_CPUS:-$(nproc)} out='' why=''
   if [[ -n $TEAM_HOME_PROBLEM || -z $TEAM_HOME || ! -d $TEAM_HOME ]]; then
     why="no team home"
   elif ! GIVEN=$( (read_settings && printf '%s' "$GIVEN") 2>"$work/err") || ! (read_level) 2>>"$work/err"; then

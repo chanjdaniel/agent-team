@@ -146,3 +146,17 @@ sessions() {
   run_bin -0 team-doctor
   assert_equal "$(line_of resources)" "PASS resources: $LEVEL; agent-team.slice holds the team, 0 live team sessions in it"
 }
+
+@test "the resources line warns on a leftover slots.json, which levels replaced, on Linux and macOS, and there is no slots line" {
+  echo '{"cap": 10}' >"$HOME/.config/agent-team/slots.json"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of resources)" "WARN resources: $LEVEL; ~/.config/agent-team/slots.json is no longer read: levels replaced the task cap; fix: remove ~/.config/agent-team/slots.json"
+  assert_equal "$(line_of slots)" ""
+  on_macos
+  tools_at macos
+  run_bin -0 team-doctor
+  assert_equal "$(line_of resources)" "WARN resources: $LEVEL; ~/.config/agent-team/slots.json is no longer read: levels replaced the task cap; fix: remove ~/.config/agent-team/slots.json"
+  rm "$HOME/.config/agent-team/slots.json"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of resources)" "PASS resources: $LEVEL; no hard limits on macOS: admission and stow only"
+}

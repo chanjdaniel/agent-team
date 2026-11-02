@@ -299,11 +299,11 @@ opened() {
 }
 
 # proc <pid> <parent pid> <resident MiB> <CPU seconds> <directory or -> [<cgroup>]: a process of
-# the simulated machine (TEAM_SLOTS_PROCS), its directory unreadable for -.
+# the simulated machine (TEAM_READING_PROCS), its directory unreadable for -.
 proc() {
   local dir=$5
   [[ $dir != - ]] || dir=''
-  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" $(($3 * 1024)) "$4" "$dir" "${6:-}" >>"$TEAM_SLOTS_PROCS"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" $(($3 * 1024)) "$4" "$dir" "${6:-}" >>"$TEAM_READING_PROCS"
 }
 
 # unit <unit> <property>=<value>...: what the user manager reports of <unit>.
@@ -442,7 +442,7 @@ team_reading() {
     '[390,[{"id":"b1b2c3d4","role":"reviewer","memory":320,"peak":320,"cpu_seconds":42}],[]]'
   assert_equal "$(jq -c --arg home "$HOME" '.stacks | map(.worktree |= sub("^" + $home; "~"))' <<<"$reading")" \
     '[{"name":"conventioner-2","class":"team","task":"T7","project":"conventioner","worktree":"~/.treehouse/Conventioner-d4c77a/1/Conventioner","kind":"dev","memory":628935884,"cpu":0,"limits":1879048192},{"name":"nmtest-1895520","class":"gate","task":null,"project":null,"worktree":"~/.no-mistakes/worktrees/01KQ3V2M8Z/Conventioner","kind":"gate","memory":315621376,"cpu":0,"limits":536870912}]'
-  # The machine's part is team-slots's reading: the team's processes by directory and descent.
+  # The machine's part: the team's processes by directory and descent.
   assert_equal "$(jq -c --argjson mib "$MIB" '[.memory.total, .memory.team - 628935884 - 315621376, .cpu]' <<<"$reading" |
     jq -c --argjson mib "$MIB" '.[1] /= $mib')" '[34359738368,1638,null]'
   # One systemctl call for every task's slice, every live team session's scope and the heavy run's.
@@ -466,7 +466,7 @@ team_reading() {
   # Five minutes later: T7's slice used 150 s, its shell outside it 25 s, its stack 50.12% of a core;
   # T9, with no slice, its processes' 60 s.
   age_by 300
-  : >"$TEAM_SLOTS_PROCS"
+  : >"$TEAM_READING_PROCS"
   proc 100 99 512 200 "$T7_WT" "$scope"
   proc 102 1 100 30 "$T7_WT/src"
   proc 200 1 300 100 "$T9_WT"
@@ -550,7 +550,7 @@ team_reading() {
 
   # The session list unreadable and Docker down end nothing; the gate's run is over.
   age_by 300
-  : >"$TEAM_SLOTS_PROCS"
+  : >"$TEAM_READING_PROCS"
   proc 100 99 512 60 "$T7_WT" "$scope"
   echo 'exit 1' | stub_script claude
   docker_down
@@ -578,7 +578,7 @@ team_reading() {
 
 @test "sample with no seam takes a real reading of this machine, a process in a held worktree counted to its task" {
   sample_machine
-  unset TEAM_MEMINFO TEAM_SLOTS_PROCS TEAM_SLOTS_CPUS
+  unset TEAM_MEMINFO TEAM_READING_PROCS TEAM_READING_CPUS
   # The stubbed uname says this machine's own OS, read past the stubs.
   if [[ $(command -p uname -s) == Darwin ]]; then as_macos; fi
   mkdir -p "$T7_WT"
@@ -1208,9 +1208,9 @@ cpu_reading() {
 }
 
 @test "jobs: the floor of the CPU budget at the recorded level, at least 1, and nproc with no team home, reading or record to size it by" {
-  # The sandbox's TEAM_SLOTS_CPUS (12) stands for nproc, which counts without it.
-  local nproc=$TEAM_SLOTS_CPUS
-  run -0 env -u TEAM_SLOTS_CPUS "$REPO_ROOT/bin/team-capacity" jobs
+  # The sandbox's TEAM_READING_CPUS (12) stands for nproc, which counts without it.
+  local nproc=$TEAM_READING_CPUS
+  run -0 env -u TEAM_READING_CPUS "$REPO_ROOT/bin/team-capacity" jobs
   assert_equal "$output" "$(nproc)"
   # No reading: nproc's, said only with --verbose.
   run_bin -0 --separate-stderr team-capacity jobs
@@ -1241,7 +1241,7 @@ cpu_reading() {
   assert_equal "$output" 1
   rm "$STATE_DIR/readings.jsonl"
   cpu_reading
-  TEAM_SLOTS_CPUS=12 run_bin -0 team-capacity jobs
+  TEAM_READING_CPUS=12 run_bin -0 team-capacity jobs
   assert_equal "$output" 3
   # A malformed record or settings: nproc's, saying why.
   echo 'not a record' >>"$TEAM_HOME/level.jsonl"

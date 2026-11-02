@@ -253,7 +253,7 @@ POST channels/1777/messages"
   waiting_ledger
   # Manual minor on a 32 GiB machine with 12 GiB left to the team: 9.6 GiB and 3.6 cores.
   capacity_room $((12 * 1073741824)) minor
-  export TEAM_SLOTS_CPUS=12
+  export TEAM_READING_CPUS=12
   # T5 and T12 were stowed for the level and T6 for a handoff, all three waiting to resume; T9 was
   # relaunched since, and closed T11 is gone.
   local task
