@@ -8,16 +8,16 @@
 # yet; a later message for the same ask is an addition, logged as another answered. It is the one
 # writer of an answered that names a message, which team-log refuses. The message is read with
 # the bot token through the Discord API from the task's thread, else #coordinator, and its author
-# must be in the top-level allowFrom of the
-# Discord plugin's ~/.claude/channels/discord/access.json, as team-merge checks merge-approved
-# (daniel_message in bin/lib/team.sh). It must have been sent after the latest asked of <id>: after
-# its question's message (the asked's discord_message, which team-ask logs), else no earlier than
-# the asked's ts, as team-merge holds an approval to its PR's time; and never edited, so the text
-# logged is the text Daniel sent. Then it logs answered id=<id> answer=<the message's text,
-# verbatim> discord_message=<its id>, and resumed when the task's standing park is the ask's own
-# wait (the latest waiting, blocked, paused, held, resumed or launch is waiting on=Daniel
-# reason="ask <id>", as team-ask logs it). Then team-inbox takes the ask out of the Waiting on you
-# message; when that fails, a line on stderr says so, and the answer stands.
+# must be in the top-level allowFrom of the Discord plugin's ~/.claude/channels/discord/access.json,
+# as team-merge checks merge-approved (daniel_message in bin/lib/team.sh). It must have been sent
+# after the latest asked of <id>: after its question's message (the asked's discord_message, which
+# team-ask logs), else no earlier than the asked's ts, as team-merge holds an approval to its PR's
+# time; and never edited, so the text logged is the text Daniel sent. Then it logs answered
+# id=<id> answer=<the message's text, verbatim> discord_message=<its id>, and resumed when the
+# task's standing park is the ask's own wait (the latest waiting, blocked, paused, held, resumed
+# or launch is waiting on=Daniel reason="ask <id>", as team-ask logs it). Then team-inbox takes
+# the ask out of the Waiting on you message; when that fails, a line on stderr says so, and the
+# answer stands.
 # It refuses on a machine that is fenced or that lost the lease (lease_refusal in bin/lib/team.sh),
 # before reading Discord, and in a worker session (worker_refusal).
 # Prints the message's text verbatim. Any refusal is exit 1 with nothing logged.
