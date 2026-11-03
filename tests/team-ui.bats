@@ -215,3 +215,93 @@ TOML
   [[ ! -e $STUB_CALLS/ui-capture.log ]]
   [[ ! -e $TEAM_HOME/tasks/T9/ui ]]
 }
+
+# walk_events <task>: the task's walk events in the ledger, as "<state>" lines.
+walk_events() {
+  jq -r --arg task "$1" 'select(.task == $task and .event == "walk") | .state' "$TEAM_HOME/ledger.jsonl"
+}
+
+@test "--walk start and stop log the walk's state once each, status reads it, and a repeat changes nothing" {
+  local ts='[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z'
+  run_bin -0 --separate-stderr team-ui T7 --walk status
+  assert_equal "$output" "walk off for T7"
+  assert_equal "$(walk_events T7)" ""
+  run_bin -0 --separate-stderr team-ui T7 --walk start
+  assert_equal "$output" "walk on for T7"
+  assert_equal "$stderr" ""
+  assert_equal "$(walk_events T7)" "on"
+  local since
+  since=$(jq -r 'select(.event == "walk") | .ts' "$TEAM_HOME/ledger.jsonl")
+  [[ $since =~ ^$ts$ ]]
+  run_bin -0 team-ui T7 --walk start
+  assert_equal "$output" "walk already on for T7 since $since"
+  assert_equal "$(walk_events T7)" "on"
+  run_bin -0 team-ui T7 --walk status
+  assert_equal "$output" "walk on for T7 since $since"
+  run_bin -0 team-ui T7 --walk stop
+  assert_equal "$output" "walk off for T7"
+  assert_equal "$(walk_events T7)" "on
+off"
+  run_bin -0 team-ui T7 --walk stop
+  assert_equal "$output" "walk already off for T7"
+  run_bin -0 team-ui T7 --walk status
+  assert_equal "$output" "walk off for T7"
+  assert_equal "$(walk_events T7)" "on
+off"
+  # Each line it logged meets the contract, written by team-ui.
+  run_bin -0 team-log --check
+  # A walk touches no capture.
+  [[ ! -e $STUB_CALLS/ui-capture.log ]]
+  [[ ! -e $ui ]]
+}
+
+@test "a walk is the task's own: another task's walk leaves it off" {
+  open_task T9
+  run_bin -0 team-ui T9 --walk start
+  run_bin -0 team-ui T7 --walk status
+  assert_equal "$output" "walk off for T7"
+  run_bin -0 team-ui T7 --walk start
+  assert_equal "$output" "walk on for T7"
+}
+
+@test "--walk refuses a task that is not open, and is a form of its own with one word" {
+  local word
+  for word in start stop status; do
+    run_bin -1 --separate-stderr team-ui T8 --walk "$word"
+    assert_equal "$stderr" "team-ui: T8 is not open: the ledger has no opened event for it"
+  done
+  open_task T9
+  jq -cn '{ts: "2026-10-25T11:00:00Z", task: "T9", event: "closed"}' >>"$TEAM_HOME/ledger.jsonl"
+  for word in start stop status; do
+    run_bin -1 --separate-stderr team-ui T9 --walk "$word"
+    assert_equal "$stderr" "team-ui: T9 is closed"
+  done
+  run_bin -2 --separate-stderr team-ui T7 --walk
+  assert_equal "$stderr" "team-ui: --walk needs start, stop or status"
+  run_bin -2 --separate-stderr team-ui T7 --walk begin
+  assert_equal "$stderr" "team-ui: --walk needs start, stop or status, got 'begin'"
+  run_bin -2 --separate-stderr team-ui T7 --walk --capture
+  assert_equal "$stderr" "team-ui: --walk needs start, stop or status, got '--capture'"
+  run_bin -2 --separate-stderr team-ui T7 --walk start --walk stop
+  assert_equal "$stderr" "team-ui: one --walk at a time"
+  run_bin -2 --separate-stderr team-ui T7 --walk start --capture
+  assert_equal "$stderr" "team-ui: --walk goes alone, without --capture, --note or --attach"
+  run_bin -2 --separate-stderr team-ui T7 --capture --walk start
+  assert_equal "$stderr" "team-ui: --walk goes alone, without --capture, --note or --attach"
+  run_bin -2 --separate-stderr team-ui T7 --walk start --note 'check the page'
+  assert_equal "$stderr" "team-ui: --walk goes alone, without --capture, --note or --attach"
+  run_bin -2 --separate-stderr team-ui T7 --walk stop --attach "$inbox/notes.txt"
+  assert_equal "$stderr" "team-ui: --walk goes alone, without --capture, --note or --attach"
+  run_bin -2 team-ui --walk start
+  [[ ! -e $TEAM_HOME/ledger.jsonl ]] || assert_equal "$(walk_events T7)" ""
+  [[ ! -e $STUB_CALLS/ui-capture.log ]]
+  [[ ! -e $ui ]]
+}
+
+@test "--help documents --walk, what a walk is for, and that the ledger records it" {
+  run_bin -0 team-ui --help
+  assert_contains "$output" "Usage: team-ui T<n> [--capture [--note <text>]] [--attach <file>]...
+       team-ui T<n> --walk start|stop|status"
+  assert_contains "$output" "manual QC walk"
+  assert_contains "$output" "walk event in the ledger"
+}

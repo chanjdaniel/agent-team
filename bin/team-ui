@@ -5,6 +5,7 @@
 # team-close removes it with the task.
 #
 # Usage: team-ui T<n> [--capture [--note <text>]] [--attach <file>]...
+#        team-ui T<n> --walk start|stop|status
 #   --capture  Run the frontend toolkit's ui-capture into a new directory, tasks/T<n>/ui/capture-<k>/,
 #              k one more than the highest capture-<k> there (from 1), so no capture overwrites
 #              another: the page Daniel is on in the Agent Chrome (its URL, route, title, Vue
@@ -23,15 +24,31 @@
 # Prints ui-capture's line, then "captured: element and page" when the capture holds ui-pick.md,
 # else "captured: page", then every file tasks/T<n>/ui/ holds: those at its top (the attachments,
 # and a flat capture an older team-ui left there), then each capture directory's, by number.
+# --walk turns the task's manual QC walk on (start) or off (stop), or says which it is (status),
+# a form of its own. While a walk is on, each message of Daniel's in the task's thread is a walk
+# note, which the coordinator takes a capture with; outside one, it captures only when Daniel asks.
+# Each change is a walk event in the ledger, which a restarted or compacted coordinator reads, and
+# team-state shows a walk that is on; a walk left on ends when its task closes. start prints
+# "walk on for T<n>" and stop "walk off for T<n>"; a start while on, or a stop while off, logs
+# nothing and says "walk already on for T<n> since <ts>" or "walk already off for T<n>"; status
+# logs nothing and prints "walk on for T<n> since <ts>" or "walk off for T<n>".
 # Refused, exit 1: a task that is not open, an attachment that is not a readable file (nothing
-# copied), and a capture that fails, with ui-capture's own line; exit 2 a malformed command line.
+# copied), and a capture that fails, with ui-capture's own line; exit 2 a malformed command line,
+# --walk with no word, another word, a second --walk, or with --capture, --note or --attach among them.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
-usage="usage: team-ui T<n> [--capture [--note <text>]] [--attach <file>]..."
-task='' capture=0 note='' noted=0 attachments=()
+usage="usage: team-ui T<n> [--capture [--note <text>]] [--attach <file>]... | team-ui T<n> --walk start|stop|status"
+task='' capture=0 note='' noted=0 attachments=() walk=''
 while (($#)); do
   case $1 in
+    --walk)
+      [[ -z $walk ]] || usage_error "one --walk at a time"
+      [[ $# -ge 2 ]] || usage_error "--walk needs start, stop or status"
+      [[ $2 =~ ^(start|stop|status)$ ]] || usage_error "--walk needs start, stop or status, got '$2'"
+      walk=$2
+      shift 2
+      ;;
     --capture) capture=1 && shift ;;
     --note)
       ((!noted)) || usage_error "one --note per capture"
@@ -53,6 +70,24 @@ while (($#)); do
   esac
 done
 [[ $task =~ ^T[1-9][0-9]*$ ]] || usage_error "$usage"
+if [[ -n $walk ]]; then
+  ((!capture && !noted && !${#attachments[@]})) || usage_error "--walk goes alone, without --capture, --note or --attach"
+  events=$(open_task_events "$task")
+  since=$(ledger_jq 'qc_walk | .since // empty' -r <<<"$events")
+  case $walk:${since:+on} in
+    status:on) echo "walk on for $task since $since" ;;
+    status:) echo "walk off for $task" ;;
+    start:on) echo "walk already on for $task since $since" ;;
+    stop:) echo "walk already off for $task" ;;
+    *)
+      state=on
+      [[ $walk == start ]] || state=off
+      ledger_append "$(jq -cn --arg task "$task" --arg state "$state" '{ts: (now | todate), task: $task, event: "walk", state: $state}')"
+      echo "walk $state for $task"
+      ;;
+  esac
+  exit 0
+fi
 ((capture || !noted)) || usage_error "--note goes with --capture"
 ((capture || ${#attachments[@]})) || usage_error "$usage"
 
