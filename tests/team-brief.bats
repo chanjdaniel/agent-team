@@ -1509,7 +1509,13 @@ findings_files() {
     run_bin -0 team-brief T12 "$template" --name "$template" "${args[@]}"
     brief=$TEAM_HOME/tasks/T12/brief-$template.md
     # The step opens the Do section: its first line after the heading and a blank line.
-    assert_equal "$(grep -A2 -xF '## Do' "$brief" | sed -n 3p)" "$step"
+    # The resume brief is rendered for every role, so its step says it is a builder's.
+    if [[ $template == resume ]]; then
+      assert_equal "$(grep -A2 -xF '## Do' "$brief" | sed -n 3p)" \
+        "${step/1. Bring the branch to its head on origin, which \`team-catch-up\` may have moved on a PR:/1. A builder brings the branch to its head on origin, which \`team-catch-up\` may have moved on a PR (any other role skips this step):}"
+    else
+      assert_equal "$(grep -A2 -xF '## Do' "$brief" | sed -n 3p)" "$step"
+    fi
   done
   # The round's stowed-work check comes right after it.
   grep -A4 -xF '## Do' "$TEAM_HOME/tasks/T12/brief-builder-round.md" | sed -n 4p | grep -q '^2\. Your branch must hold what the stowed builder pushed'
