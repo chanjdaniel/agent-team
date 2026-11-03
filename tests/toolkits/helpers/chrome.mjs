@@ -309,7 +309,17 @@ export async function inspect(browserUrl, pageUrl, selector) {
     const [app] = await listed((url) => url === pageUrl);
     await devtools.call("select_page", { pageId: app });
     await devtools.call("open_devtools");
-    if (selector === null) return;
+    if (selector === null) {
+      // Until the window has opened: Chrome lists a new DevTools window as an "other" target, then
+      // as a page once it shows, when it comes to the front with the page it inspects behind it, so
+      // a tab brought to the front before then loses its place in /json/list.
+      for (;;) {
+        inTime();
+        const windows = (await fetch(`${browserUrl}/json/list`).then((r) => r.json())).filter((t) => t.url.startsWith("devtools://"));
+        if (windows.length && windows.every((t) => t.type === "page")) return;
+        await sleep(50);
+      }
+    }
     // Each DevTools window, until the one inspecting that page. While every window listed
     // inspects another page or has not loaded its Elements panel yet, ask again, and every tenth
     // pass on a new connection, which attaches to a window the last one missed.

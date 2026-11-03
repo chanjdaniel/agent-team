@@ -539,14 +539,14 @@ describe("ui-capture with DevTools closed", () => {
     await chrome?.close();
     await site?.close();
   });
-  const capture = async (url, reason, others) => {
+  // `visible`: whether the taken tab is its window's front tab, false for one in step 4.
+  const capture = async (url, reason, others, visible = !reason.includes("none is visible")) => {
     const out = tempDir("out");
     const result = await script("ui-capture", ["--browser-url", chrome.browserUrl, out]);
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout, `ui-capture: page ${url} (${reason}), no element selected -> ${out}/ui-page.md\n`);
     const title = url === first ? "Fixture app" : "Second page";
-    // A tab in step 4 is hidden, and gets no screenshot.
-    const visible = !reason.includes("none is visible");
+    // A hidden tab gets no screenshot.
     assertPageCapture(out, url, { title, route: new URL(url).pathname, reason, others, visible });
     for (const file of readdirSync(out)) assert.ok(!readFileSync(join(out, file), "utf8").includes("marker-offsite"), file);
     assert.ok(!`${result.stdout}${result.stderr}`.includes("marker-offsite"));
@@ -576,7 +576,8 @@ describe("ui-capture with DevTools closed", () => {
   test("takes the localhost page DevTools is open on over the visible one", async () => {
     await inspect(chrome.browserUrl, first, null);
     await bringToFront(chrome.browserUrl, second);
-    await capture(first, "DevTools is open on it, nothing selected", second);
+    // Its tab is behind the second one, so hidden, with no screenshot.
+    await capture(first, "DevTools is open on it, nothing selected", second, false);
   });
 });
 
