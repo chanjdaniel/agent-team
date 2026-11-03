@@ -22,8 +22,16 @@
 // and focus are read before the server selects any page, over one short DevTools protocol
 // session per localhost tab that evaluates document.visibilityState and document.hasFocus() and
 // nothing else: the server turns on focus emulation for each page it selects, which makes every
-// page read visible and focused while it is connected. No tab off localhost is attached to, by
-// the server or by that read.
+// page read visible and focused while it is connected.
+// The chosen page's console problems and failed requests since it last loaded are read over one
+// more session of its own, on that page alone, which sends Runtime.enable and Log.enable, keeps
+// the stored console calls, exceptions and browser log entries they replay before answering,
+// sends Runtime.disable and Log.disable and closes: the server is started anew for each capture,
+// and its list_console_messages and list_network_requests report nothing from before it
+// attached. A request still pending and any request's method go unrecorded, and a reload
+// starts the history anew. This read and the visibility read above are the only ones that speak
+// the protocol to a page without the server, and neither changes the page. No tab off localhost
+// is attached to, by the server or by either read.
 // Writes, creating <out-dir> if needed, for an element capture:
 //   ui-pick.md    the time, the page's URL and route, the snapshot line of the selected element,
 //                 its source chain (vite-plugin-vue-inspector's file:line:column, innermost
@@ -35,7 +43,13 @@
 //   ui-page.md    the time, the page's URL, route and title, why it took that page, the other
 //                 localhost tabs, the Vue route (the current route's matched records of the Vue
 //                 app mounted on the page, outermost first, each its path, name, component and
-//                 file; "(no Vue router found)" on a page without one) and the files
+//                 file; "(no Vue router found)" on a page without one), its console problems
+//                 (console errors, warnings and failed asserts, uncaught exceptions, unhandled
+//                 rejections, and the browser's own errors and warnings) and its failed requests
+//                 (a status of 400 or more, or a network error), since the page last loaded, in
+//                 order, the last 50 of each, one line each trimmed to 500 characters in a
+//                 fence; or why that history could not be read (no session, or no answer in
+//                 10 s), which still writes the capture; and the files
 //   page.png      a screenshot of the viewport, unless the tab is not visible: Chrome paints no
 //                 hidden tab, so a screenshot of it never comes, and ui-page.md says so
 //   page-snapshot.txt  the page's accessibility snapshot (take_snapshot)
@@ -223,10 +237,12 @@ if (pages.length === 0) await done(1, missing.length ? unattached() : "the Agent
 // URL is a localhost one is attached to; the session evaluates this one fixed expression and
 // nothing else, enables no domain, and is closed at once. A tab that does not answer in 5 s is
 // unread: neither visible nor focused in the order, but still given a screenshot.
+// A target whose DevTools protocol address is on the loopback, as the Agent Chrome's are.
+const onLoopback = (target) => /^ws:\/\/(127\.0\.0\.1|localhost)(:\d+)?\//.test(target.webSocketDebuggerUrl ?? "");
 const stateExpression = "({ visible: document.visibilityState === 'visible', focus: document.hasFocus() })";
 async function tabState(target) {
   const unread = { visible: null, focus: false };
-  if (target.type !== "page" || !localhost.test(target.url) || !/^ws:\/\/(127\.0\.0\.1|localhost)(:\d+)?\//.test(target.webSocketDebuggerUrl ?? "")) return unread;
+  if (target.type !== "page" || !localhost.test(target.url) || !onLoopback(target)) return unread;
   const socket = new WebSocket(target.webSocketDebuggerUrl);
   try {
     const answer = await Promise.race([
@@ -258,6 +274,104 @@ for (const page of pages) {
 }
 const order = (a, b) => (b.visible === true) - (a.visible === true) || b.focus - a.focus || a.recency - b.recency;
 pages.sort(order);
+
+// The chosen page's console problems and failed requests since it last loaded, read over one
+// more DevTools protocol session of its own: the server is started anew for each capture and
+// reports nothing from before it attached (list_console_messages and list_network_requests come
+// back empty), while a new session's Runtime.enable and Log.enable are sent every stored console
+// call, exception and browser log entry since the page's last load before they answer. Only the
+// page target at that localhost URL is attached to (the most recently active, should two show
+// it); the session sends Runtime.enable, Log.enable, Runtime.disable and Log.disable and nothing
+// else, and is closed. With no answer in 10 s, or no session at all, the history is unread, and
+// why: { unread } instead of { problems, failed }.
+const historyLimit = 50;
+const textLimit = 500;
+const stackless = (text) => String(text).split("\n").filter((line) => !/^\s+at /.test(line)).join("\n");
+const frameAt = (frame) => (frame?.url ? `${frame.url}:${frame.lineNumber + 1}:${frame.columnNumber + 1}` : undefined);
+const argText = (arg) =>
+  arg.type === "string" ? arg.value : stackless(arg.description ?? arg.unserializableValue ?? (arg.value === undefined ? arg.type : JSON.stringify(arg.value)));
+function exceptionText(details) {
+  const thrown = details.exception;
+  const what = thrown ? (thrown.type === "string" ? thrown.value : stackless(thrown.description ?? JSON.stringify(thrown.value))) : "";
+  return what && !details.text.includes(what) ? `${details.text} ${what}` : details.text;
+}
+async function pageHistory(url) {
+  let target;
+  try {
+    const targets = await fetch(new URL("/json/list", browserUrl), { signal: AbortSignal.timeout(5000) }).then((response) => response.json());
+    target = targets.find((t) => t.type === "page" && t.url === url);
+  } catch {
+    return { unread: "the Agent Chrome did not list its tabs" };
+  }
+  if (!target) return { unread: "the page is no longer among the Agent Chrome's tabs" };
+  if (!onLoopback(target)) return { unread: "its DevTools protocol address is not on the loopback" };
+  const socket = new WebSocket(target.webSocketDebuggerUrl);
+  const events = [];
+  const answers = new Map();
+  let answered;
+  const send = (id, method) => socket.send(JSON.stringify({ id, method }));
+  const timedOut = Symbol("timed out");
+  try {
+    const result = await Promise.race([
+      new Promise((resolve, reject) => {
+        socket.onopen = () => {
+          send(1, "Runtime.enable");
+          send(2, "Log.enable");
+        };
+        socket.onmessage = ({ data }) => {
+          const message = JSON.parse(data);
+          // What the enables replay, and anything new before both answer.
+          if (message.method) {
+            if (!(answers.has(1) && answers.has(2))) events.push(message);
+            return;
+          }
+          answers.set(message.id, message);
+          if (message.error) reject(new Error(`the page refused ${message.id === 1 ? "Runtime.enable" : "Log.enable"}: ${message.error.message}`));
+          if (answers.has(1) && answers.has(2)) resolve();
+          if (answers.has(3) && answers.has(4)) answered?.();
+        };
+        socket.onerror = () => reject(new Error("no DevTools protocol session could be opened on it"));
+        socket.onclose = () => reject(new Error("its DevTools protocol session closed"));
+      }),
+      setTimeout(10_000, timedOut, { ref: false }),
+    ]);
+    if (result === timedOut) return { unread: "the page gave no answer in 10 s (a busy machine can cause it, or a hung page)" };
+    // The domains off again before the session closes; closing would end them anyway.
+    send(3, "Runtime.disable");
+    send(4, "Log.disable");
+    await Promise.race([new Promise((resolve) => (answered = resolve)), setTimeout(2000, undefined, { ref: false })]);
+  } catch (error) {
+    return { unread: error.message };
+  } finally {
+    socket.close();
+  }
+  // Console calls of type error, warning and assert, every exception not revoked since (a
+  // rejection handled later), and the browser's own errors and warnings: those about a request
+  // are the failed requests.
+  const problems = [];
+  const failed = [];
+  const revoked = new Set(events.filter((e) => e.method === "Runtime.exceptionRevoked").map((e) => e.params.exceptionId));
+  for (const { method, params } of events) {
+    if (method === "Runtime.consoleAPICalled" && ["error", "warning", "assert"].includes(params.type)) {
+      problems.push({ time: params.timestamp, level: params.type, text: params.args.map(argText).join(" "), at: frameAt(params.stackTrace?.callFrames?.[0]) });
+    } else if (method === "Runtime.exceptionThrown" && !revoked.has(params.exceptionDetails.exceptionId)) {
+      const details = params.exceptionDetails;
+      const at = details.url ? frameAt(details) : frameAt(details.stackTrace?.callFrames?.[0]);
+      problems.push({ time: params.timestamp, level: "exception", text: exceptionText(details), at });
+    } else if (method === "Log.entryAdded" && ["error", "warning"].includes(params.entry.level)) {
+      const entry = params.entry;
+      if (entry.source === "network") {
+        const reason = entry.text.replace(/^Failed to load resource: /, "").replace(/^the server responded with a status of /, "");
+        failed.push({ time: entry.timestamp, reason, url: entry.url ?? "(no URL)" });
+      } else {
+        const at = frameAt(entry.stackTrace?.callFrames?.[0]) ?? entry.url;
+        problems.push({ time: entry.timestamp, level: `${entry.level} (${entry.source})`, text: entry.text, at });
+      }
+    }
+  }
+  const byTime = (a, b) => a.time - b.time;
+  return { problems: problems.sort(byTime), failed: failed.sort(byTime) };
+}
 
 // A JSON value evaluate_script returned.
 const evaluated = (text) => JSON.parse(text.match(/```json\n([\s\S]*?)\n```/)?.[1] ?? "null");
@@ -320,6 +434,25 @@ const write = (files) => {
   for (const name of owned) if (!(name in files)) rmSync(join(out, name), { force: true });
 };
 
+// One entry of the page's history on one line: its text as the page wrote it, trimmed to 500
+// characters, each line break shown as \n.
+const oneLine = (text) =>
+  (text.length > textLimit ? `${text.slice(0, textLimit)} [trimmed: ${text.length} characters in all]` : text).replace(/\r?\n/g, "\\n");
+// A history section of ui-page.md: its count, then the last 50 entries, oldest first, one line
+// each, in a fence longer than any backtick run in them; or none, or why it could not be read.
+function historySection(title, history, entries, line) {
+  if (history.unread) return [`${title}: the history could not be read: ${history.unread}`];
+  if (entries.length === 0) return [`${title}: none`];
+  const left = entries.length - historyLimit;
+  return [
+    left > 0
+      ? `${title}: the last ${historyLimit} of ${entries.length}, oldest first; the ${left} before them are left out`
+      : `${title}: ${entries.length}, oldest first`,
+    "",
+    block("", entries.slice(-historyLimit).map(line).join("\n")),
+  ];
+}
+
 if (!pick) {
   // The page capture: nothing is selected, so the page is the one DevTools is open on (step 2),
   // else the first in step 3's order, visible (step 3) or not (step 4). Its facts are read in the
@@ -361,6 +494,7 @@ if (!pick) {
   const screenshot = chosen.visible === false ? null : (await call("take_screenshot")).images[0];
   if (chosen.visible !== false && !screenshot) await done(1, "take_screenshot returned no image");
   const others = pages.filter((p) => p.id !== chosen.id).map((p) => p.url);
+  const history = await pageHistory(chosen.url);
   const route = (r) => `- ${r.path}${r.name ? ` (${r.name})` : ""}: ${r.component ? r.component + (r.file ? ` ${r.file}` : "") : "(no component)"}`;
   write({
     ...(screenshot && { "page.png": Buffer.from(screenshot.data, "base64") }),
@@ -381,6 +515,13 @@ if (!pick) {
         : seen.vue.length === 0
           ? ["Vue route: (the router matched no route)"]
           : ["Vue route: the current route's matched records, outermost first (path, name, component and file)", "", ...seen.vue.map(route)]),
+      "",
+      ...historySection("Console problems since the page loaded", history, history.problems, (p) => `${p.level}${p.at ? ` at ${p.at}` : ""}: ${oneLine(p.text)}`),
+      "",
+      ...historySection("Failed requests since the page loaded", history, history.failed, (f) => `${oneLine(f.reason)} ${oneLine(f.url)}`),
+      "",
+      "Not recorded: requests still pending, and each request's method.",
+      "The history starts at the page's last load: a route change inside the app keeps it, a reload clears it.",
       "",
       "Files:",
       "",

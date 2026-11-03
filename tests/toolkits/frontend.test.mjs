@@ -6,7 +6,8 @@
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
 import { chmodSync, existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
+import { createServer as createHttpServer } from "node:http";
+import { connect, createServer } from "node:net";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { promisify } from "node:util";
@@ -29,9 +30,18 @@ async function script(name, args, options = {}) {
 }
 
 // A page like Conventioner's dev build: each element the inspector tags carries its source in
-// __vnode.props.__v_inspector, and a component's elements its instance chain.
+// __vnode.props.__v_inspector, and a component's elements its instance chain. At load, before any
+// capture, it logs an error and a warning, has an image blocked by its content security policy
+// (an error the browser logs once the script has run, which reaches a new session after every
+// console call and exception, though it came before the next two), throws and leaves a rejection
+// unhandled in timers after it, and fetches a path that answers 404, then a local port nothing
+// listens on (after the 404, so their order holds); its empty icon, which the policy allows,
+// keeps Chrome's favicon request from failing too.
+const refused = `http://127.0.0.1:${await freePort()}/api/refused`;
 const fixture = `<!doctype html>
 <title>Fixture app</title>
+<meta http-equiv="Content-Security-Policy" content="img-src data:">
+<link rel="icon" href="data:,">
 <style>
   .menu-button[data-v-8e30ecee] { height: 100%; aspect-ratio: 1; }
   .menu-button { color: rgb(1, 2, 3); }
@@ -66,8 +76,21 @@ const fixture = `<!doctype html>
     { path: "/events/:id/import", name: "event-import", components: { default: component("ImportView", "src/views/events/ImportView.vue") } },
   ];
   document.querySelector("#app").__vue_app__ = { config: { globalProperties: { $router: { currentRoute: { value: { matched } } } } } };
+</script>
+<script>
+  console.error("fixture-error: the import preview failed", { id: 7 });
+  console.warn("fixture-warning: the event has no dates");
+  document.body.append(Object.assign(new Image(), { src: "/blocked.png" }));
+  console.log("fixture-log: not a problem");
+  fetch("/api/missing").finally(() => fetch("${refused}").catch(() => {}));
+  setTimeout(() => {
+    throw new Error("fixture-exception: the preview crashed");
+  }, 200);
+  setTimeout(() => Promise.reject(new Error("fixture-rejection: the save never ran")), 300);
 </script>`;
-const elsewhere = "data:text/html,<title>Elsewhere</title><p>marker-elsewhere</p>";
+// The line of the fixture holding `text`, as the page's source locations count them.
+const fixtureLine = (text) => fixture.split("\n").findIndex((line) => line.includes(text)) + 1;
+const elsewhere = 'data:text/html,<title>Elsewhere</title><p>marker-elsewhere</p><script>console.error("marker-elsewhere")</script>';
 
 describe("ui-capture", () => {
   let site, chrome;
@@ -109,6 +132,9 @@ describe("ui-capture", () => {
     assert.equal(help.status, 0);
     assert.match(help.stdout, /^Capture the element selected in the Agent Chrome's DevTools Elements panel/);
     assert.match(help.stdout, /Usage: ui-capture \[--browser-url <url>\] <out-dir>/);
+    // The page's history read over a session of its own, and why the server cannot give it.
+    assert.match(help.stdout, /sends Runtime\.enable and Log\.enable[^]*sends Runtime\.disable and Log\.disable and closes: the server is started anew for each capture,\nand its list_console_messages and list_network_requests report nothing from before it\nattached\./);
+    assert.match(help.stdout, /This read and the visibility read above are the only ones that speak\nthe protocol to a page without the server, and neither changes the page\./);
     // The active-page rule, its four steps in order, each with the reason the capture gives.
     assert.match(
       help.stdout,
@@ -159,6 +185,23 @@ describe("ui-capture", () => {
     assertPageCapture(out, site.url);
     const page = readFileSync(join(out, "ui-page.md"), "utf8");
     assert.ok(page.includes("\nVue route: the current route's matched records, outermost first (path, name, component and file)\n\n- /events/:id: EventLayout src/layouts/EventLayout.vue\n- /events/:id/import (event-import): ImportView src/views/events/ImportView.vue\n"), page);
+    // The console problems and failed requests of the page's load, from before ui-capture started,
+    // in order, each with its source location (its column aside); the console.log is no problem.
+    const at = (text) => `${site.url}:${fixtureLine(text)}:<column>`;
+    const [, problems, failed, rest] = page
+      .replace(/(:\d+):\d+: /g, "$1:<column>: ")
+      .match(/\nConsole problems since the page loaded: 5, oldest first\n\n```\n([^`]*)\n```\n\nFailed requests since the page loaded: 2, oldest first\n\n```\n([^`]*)\n```\n\n([^]*)$/) ?? assert.fail(page);
+    const lines = problems.split("\n");
+    assert.equal(lines.length, 5, problems);
+    assert.equal(lines[0], `error at ${at("fixture-error")}: fixture-error: the import preview failed Object`);
+    assert.equal(lines[1], `warning at ${at("fixture-warning")}: fixture-warning: the event has no dates`);
+    // The browser's own wording, which a Chrome update may change.
+    assert.match(lines[2], new RegExp(`^error \\(security\\) at ${site.url}: .*${site.url}blocked\\.png.*Content Security Policy`));
+    assert.equal(lines[3], `exception at ${at("fixture-exception")}: Uncaught Error: fixture-exception: the preview crashed`);
+    assert.equal(lines[4], `exception at ${at("fixture-rejection")}: Uncaught (in promise) Error: fixture-rejection: the save never ran`);
+    assert.equal(failed, `404 (Not Found) ${site.url}api/missing\nnet::ERR_CONNECTION_REFUSED ${refused}`);
+    assert.ok(rest.startsWith("Not recorded: requests still pending, and each request's method.\nThe history starts at the page's last load: a route change inside the app keeps it, a reload clears it.\n"), rest);
+    assert.ok(!page.includes("fixture-log"), page);
     // The snapshot is the page's own, with DevTools' note that its selection is not in it.
     const snapshot = readFileSync(join(out, "page-snapshot.txt"), "utf8");
     assert.match(snapshot, /RootWebArea "Fixture app"/);
@@ -230,7 +273,7 @@ describe("ui-capture", () => {
 describe("ui-capture on a page without a Vue router", () => {
   let site, chrome;
   before(async () => {
-    site = await serveFixture({ "/": "<!doctype html><title>Plain page</title><p>No Vue here</p>" });
+    site = await serveFixture({ "/": '<!doctype html><title>Plain page</title><link rel="icon" href="data:,"><p>No Vue here</p>' });
     chrome = await startChrome([site.url]);
   });
   after(async () => {
@@ -244,7 +287,173 @@ describe("ui-capture on a page without a Vue router", () => {
     const result = await script("ui-capture", ["--browser-url", chrome.browserUrl, out]);
     assert.equal(result.status, 0, result.stderr);
     assertPageCapture(out, site.url, { title: "Plain page" });
-    assert.ok(readFileSync(join(out, "ui-page.md"), "utf8").includes("\nVue route: (no Vue router found)\n"));
+    const page = readFileSync(join(out, "ui-page.md"), "utf8");
+    assert.ok(page.includes("\nVue route: (no Vue router found)\n"), page);
+    assert.ok(page.includes("\nConsole problems since the page loaded: none\n\nFailed requests since the page loaded: none\n"), page);
+  });
+});
+
+// A localhost page that logs 60 errors at load, the last a long one holding a run of five
+// backticks and a line break, and fetches 60 paths that answer 404.
+describe("ui-capture on a page with more than 50 problems", () => {
+  let site, chrome;
+  before(async () => {
+    site = await serveFixture({
+      "/": `<!doctype html><title>Noisy page</title><link rel="icon" href="data:,">
+<script>
+  for (let i = 1; i < 60; i++) console.error("noisy-" + i);
+  console.error("noisy-60 " + String.fromCharCode(96).repeat(5) + " first line\\nsecond line " + "x".repeat(600));
+  for (let i = 1; i <= 60; i++) fetch("/gone-" + i);
+</script>`,
+    });
+    chrome = await startChrome([site.url]);
+  });
+  after(async () => {
+    await chrome?.close();
+    await site?.close();
+  });
+
+  test("keeps the last 50 of each, says how many were left out, and fences a backtick run", async () => {
+    const out = tempDir("out");
+    const result = await script("ui-capture", ["--browser-url", chrome.browserUrl, out]);
+    assert.equal(result.status, 0, result.stderr);
+    assertPageCapture(out, site.url, { title: "Noisy page", reason: "the visible localhost tab" });
+    const page = readFileSync(join(out, "ui-page.md"), "utf8");
+    // Each section: its head, then a fence of six backticks around exactly 50 lines.
+    const section = (title) => {
+      const [, head, fence, body] = page.match(new RegExp(`\\n${title}: ([^\\n]*)\\n\\n(\`+)\\n([^]*?)\\n\\2\\n`));
+      return { head, fence, lines: body.split("\n") };
+    };
+    const problems = section("Console problems since the page loaded");
+    assert.equal(problems.head, "the last 50 of 60, oldest first; the 10 before them are left out");
+    assert.equal(problems.fence, "``````");
+    assert.equal(problems.lines.length, 50);
+    assert.deepEqual(
+      problems.lines.slice(0, 49).map((line) => line.replace(/^error at \S+: /, "")),
+      Array.from({ length: 49 }, (_, i) => `noisy-${i + 11}`),
+    );
+    // The page's text trimmed to 500 characters, its line break shown as \n.
+    const text = `noisy-60 \`\`\`\`\` first line\nsecond line ${"x".repeat(600)}`;
+    assert.equal(problems.lines[49].replace(/^error at \S+: /, ""), `${text.slice(0, 500).replace("\n", "\\n")} [trimmed: ${text.length} characters in all]`);
+    const failed = section("Failed requests since the page loaded");
+    assert.equal(failed.head, "the last 50 of 60, oldest first; the 10 before them are left out");
+    assert.equal(failed.fence, "```");
+    assert.equal(failed.lines.length, 50);
+    for (const line of failed.lines) assert.match(line, new RegExp(`^404 \\(Not Found\\) ${site.url}gone-\\d+$`));
+  });
+});
+
+// The Agent Chrome seen through a proxy of its debugging address that lists each tab's DevTools
+// protocol address as a loopback port of the test's: a relay to Chrome that records what
+// ui-capture sends on its own sessions on the page, one nothing listens on, or one that takes the
+// connection and never answers. The server, which connects at the browser's own address, is not
+// moved, so the capture is taken in each.
+describe("ui-capture's own DevTools protocol sessions on the page", () => {
+  let site, chrome, proxy, silent, dead, relay;
+  let socketPort;
+  const held = new Set();
+  const sent = [];
+  before(async () => {
+    site = await serveFixture({ "/": '<!doctype html><title>Unread page</title><link rel="icon" href="data:,"><script>console.error("unread-marker")</script>' });
+    chrome = await startChrome([site.url]);
+    dead = await freePort();
+    silent = createServer((socket) => held.add(socket));
+    await new Promise((resolve) => silent.listen(0, "127.0.0.1", resolve));
+    // Each text frame the client sends after its upgrade request, unmasked (RFC 6455), as JSON.
+    relay = createServer((client) => {
+      const upstream = connect(Number(new URL(chrome.browserUrl).port), "127.0.0.1");
+      held.add(client).add(upstream);
+      client.on("error", () => {});
+      upstream.on("error", () => {});
+      client.pipe(upstream).pipe(client);
+      let buffer = Buffer.alloc(0);
+      let upgraded = false;
+      client.on("data", (chunk) => {
+        buffer = Buffer.concat([buffer, chunk]);
+        if (!upgraded) {
+          const end = buffer.indexOf("\r\n\r\n");
+          if (end === -1) return;
+          buffer = buffer.subarray(end + 4);
+          upgraded = true;
+        }
+        for (;;) {
+          if (buffer.length < 2) return;
+          let length = buffer[1] & 127;
+          let offset = 2;
+          if (length === 126) [length, offset] = buffer.length < 4 ? [Infinity, 4] : [buffer.readUInt16BE(2), 4];
+          else if (length === 127) [length, offset] = buffer.length < 10 ? [Infinity, 10] : [Number(buffer.readBigUInt64BE(2)), 10];
+          const mask = buffer[1] & 128 ? buffer.subarray(offset, offset + 4) : null;
+          if (mask) offset += 4;
+          if (buffer.length < offset + length) return;
+          const payload = Buffer.from(buffer.subarray(offset, offset + length));
+          if (mask) for (let i = 0; i < payload.length; i++) payload[i] ^= mask[i % 4];
+          if ((buffer[0] & 15) === 1) sent.push(JSON.parse(payload));
+          buffer = buffer.subarray(offset + length);
+        }
+      });
+    });
+    await new Promise((resolve) => relay.listen(0, "127.0.0.1", resolve));
+    proxy = createHttpServer(async (request, response) => {
+      const answer = await fetch(new URL(request.url, chrome.browserUrl));
+      let body = await answer.text();
+      if (request.url.startsWith("/json/list")) {
+        const moved = (t) => (t.webSocketDebuggerUrl ? { ...t, webSocketDebuggerUrl: t.webSocketDebuggerUrl.replace(/^ws:\/\/[^/]+/, `ws://127.0.0.1:${socketPort}`) } : t);
+        body = JSON.stringify(JSON.parse(body).map(moved));
+      }
+      response.writeHead(answer.status, { "content-type": "application/json; charset=UTF-8" });
+      response.end(body);
+    });
+    await new Promise((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+  });
+  after(async () => {
+    for (const socket of held) socket.destroy();
+    await new Promise((resolve) => silent?.close(resolve));
+    await new Promise((resolve) => relay?.close(resolve));
+    await new Promise((resolve) => proxy?.close(resolve));
+    await chrome?.close();
+    await site?.close();
+  });
+
+  const capture = async () => {
+    const out = tempDir("out");
+    const result = await script("ui-capture", ["--browser-url", `http://127.0.0.1:${proxy.address().port}`, out]);
+    assert.equal(result.status, 0, result.stderr);
+    return out;
+  };
+
+  // The two reads that change nothing: the tab's visibility and focus, then the page's history.
+  test("sends the page only its visibility read and the history read's enables and disables", async () => {
+    socketPort = relay.address().port;
+    const out = await capture();
+    assertPageCapture(out, site.url, { title: "Unread page", reason: "the visible localhost tab" });
+    const page = readFileSync(join(out, "ui-page.md"), "utf8");
+    assert.ok(page.includes(`\nConsole problems since the page loaded: 1, oldest first\n\n\`\`\`\nerror at ${site.url}:1:`), page);
+    assert.deepEqual(
+      sent.map(({ method }) => method),
+      ["Runtime.evaluate", "Runtime.enable", "Log.enable", "Runtime.disable", "Log.disable"],
+    );
+    assert.match(sent[0].params.expression, /^\(\{ visible: document\.visibilityState === 'visible', focus: document\.hasFocus\(\) \}\)$/);
+    for (const { params } of sent.slice(1)) assert.equal(params, undefined);
+  });
+
+  const unread = async (why) => {
+    const out = await capture();
+    // The tab's visibility is unread too, so it is no visible tab, yet gets its screenshot.
+    assertPageCapture(out, site.url, { title: "Unread page", reason: "the most recently active localhost tab; none is visible" });
+    const page = readFileSync(join(out, "ui-page.md"), "utf8");
+    const line = (title) => `\n${title}: the history could not be read: ${why}\n`;
+    assert.ok(page.includes(line("Console problems since the page loaded")) && page.includes(line("Failed requests since the page loaded")), page);
+    assert.ok(!page.includes("unread-marker"), page);
+  };
+
+  test("says so when no session on the page can be opened", async () => {
+    socketPort = dead;
+    await unread("no DevTools protocol session could be opened on it");
+  });
+
+  test("says so when the page gives no answer in 10 s", async () => {
+    socketPort = silent.address().port;
+    await unread("the page gave no answer in 10 s (a busy machine can cause it, or a hung page)");
   });
 });
 
@@ -266,7 +475,9 @@ function assertPageCapture(out, url, { title = "Fixture app", route = "/", reaso
   const shot = visible
     ? "- page.png: the viewport, as Daniel sees it"
     : "- no page.png: the tab is not visible, and Chrome paints no hidden tab, so it has no screenshot";
-  assert.ok(page.includes(`\nFiles:\n\n${shot}\n- page-snapshot.txt: the page's accessibility snapshot (take_snapshot)\n`), page);
+  assert.match(page, /\nConsole problems since the page loaded: [^]*\nFailed requests since the page loaded: /);
+  const note = "Not recorded: requests still pending, and each request's method.\nThe history starts at the page's last load: a route change inside the app keeps it, a reload clears it.\n";
+  assert.ok(page.includes(`\n${note}\nFiles:\n\n${shot}\n- page-snapshot.txt: the page's accessibility snapshot (take_snapshot)\n`), page);
   assert.ok(!page.includes("ui-pick.md") && !page.includes("element.png"), page);
   if (visible) assert.deepEqual([...readFileSync(join(out, "page.png")).subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], "page.png is a PNG");
   assert.match(readFileSync(join(out, "page-snapshot.txt"), "utf8"), new RegExp(`RootWebArea "${title}"`));
@@ -283,7 +494,7 @@ describe("ui-capture with DevTools closed", () => {
     site = await serveFixture({ "/": fixture, "/second": "<!doctype html><title>Second page</title><p>The second tab</p>" });
     first = site.url;
     second = `${site.url}second`;
-    offsite = "data:text/html,<title>Off localhost</title><p>marker-offsite</p>";
+    offsite = 'data:text/html,<title>Off localhost</title><p>marker-offsite</p><script>console.error("marker-offsite")</script>';
     chrome = await startChrome([first, second, offsite]);
     browser = await browserSession(chrome.browserUrl);
     browser.on("Target.targetInfoChanged", ({ targetInfo }) => targetInfo.attached && attached.push(targetInfo.url));
