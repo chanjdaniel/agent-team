@@ -1241,6 +1241,32 @@ def denial: (. // "") | tostring | test("denied|denies|refused|refuses|auto mode
 # Events grouped by task, the groups in the order of each task's first event.
 def task_groups: group_by(.task) | sort_by(.[0].i);
 
+# The changes earlier retros led to, for the window $w (retro_window's), over every event with its
+# place i ($placed), each task's events by id ($tasks) naming its title: each retro-change placed
+# before the window's end whose retro is not the window's own, as {retro, proposals, task, title,
+# logged, state, landed, prs}. It ends at its own time when logged on its retro (records changed
+# in place, landed, no PRs), else at its task's last closed placed before the window's end; prs are
+# the task's merged events placed before the window's end, oldest first. state is landed (ended,
+# landed at its own time or at the last of those merges), closed (its task closed with no merge)
+# or open (not ended, with its PRs merged so far). Kept while open, and when it ended at or after
+# the window's start, so a change that ended is listed, and judged, in the one window it ended in.
+def retro_changes($w; $placed; $tasks):
+  ($placed[:$w.end] | map(select(.event == "merged" or .event == "closed")) | group_by(.task)
+    | map({key: .[0].task, value: .}) | from_entries) as $ends
+  | [$placed[:$w.end][] | select(.event == "retro-change" and .retro != $w.task) | . as $c
+    | ($ends[$c.task] // []) as $mine
+    | (if $c.task == $c.retro then {end: $c, at: $c, prs: []}
+       else [$mine[] | select(.event == "merged")] as $merges
+         | ([$mine[] | select(.event == "closed")] | last) as $closed
+         | {end: $closed, at: (if $closed == null then null else $merges | last end),
+            prs: [$merges[] | {pr, url, ts}]} end) as $life
+    | select($life.end == null or $life.end.i >= $w.start)
+    | {retro: $c.retro, proposals: $c.proposals, task: $c.task,
+       title: ($tasks[$c.task] | map(select(.event == "opened")) | first | .title),
+       logged: $c.ts,
+       state: (if $life.at != null then "landed" elif $life.end != null then "closed" else "open" end),
+       landed: $life.at.ts, prs: $life.prs}];
+
 # team-retro digest's JSON for the retro task $task (null for a dry run), the team home $team_home
 # naming each task's record directory. Every section is in ledger order.
 def retro_digest($task; $team_home):
@@ -1280,7 +1306,8 @@ def retro_digest($task; $team_home):
        | ($all | map(select(.event == "opened")) | first) as $opened
        | {task: $id, title: $opened.title, project: $opened.project, path: $opened.path, phase: ($all | phase),
           record: "\($team_home)/tasks/\($id)/",
-          sessions: [.[] | select(.event == "launch") | {session, role, launched: .ts}]}]};
+          sessions: [.[] | select(.event == "launch") | {session, role, launched: .ts}]}],
+     changes: retro_changes($w; $placed; $tasks)};
 
 # team-retro digest's text form, one line per string, from its JSON: a heading per section and a
 # line per item, uncut, for the retro to read.
@@ -1309,4 +1336,10 @@ def retro_digest_text:
   section("Injections"; [.injections[] | "\(.ts) \(.task) \(.role) at \(.source): \(.text)"]),
   section("Tasks"; [.tasks[] | "\(.task) \([.project, .path, .phase] | map(select(. != null)) | join(" ")): \(.title // "untitled")"
     + "; record \(.record); sessions "
-    + (.sessions | map("\(.role) \(.session)") | if . == [] then "none" else join(", ") end)]);
+    + (.sessions | map("\(.role) \(.session)") | if . == [] then "none" else join(", ") end)]),
+  section("Changes"; [.changes[] | "\(.task) (\(.title // "untitled")) for retro \(.retro)'s proposals \(.proposals | tojson): "
+    + if .state == "open" then "open at the window's end"
+        + if .prs == [] then "" else ", merged so far " + (.prs | map("PR \(.pr)" + if .url == null then "" else " \(.url)" end) | join(", ")) end
+      elif .state == "closed" then "closed unmerged"
+      elif .prs == [] then "landed \(.landed) in the records, no PR"
+      else "landed \(.landed) by " + (.prs | map("PR \(.pr)" + if .url == null then "" else " \(.url)" end) | join(", ")) end]);
