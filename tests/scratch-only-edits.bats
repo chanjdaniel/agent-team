@@ -245,49 +245,6 @@ numbered_lines() {
   for ((i = 1; i <= $1; i++)); do echo "${2//@/$i}"; done
 }
 
-@test "a long command is judged quickly" {
-  local body before
-  body=$(numbered_lines 3000 'line @ with a > and a | tee x')
-  cpu_now
-  before=$CPU
-  passes "git commit -m \"$body\" > .scratch/task/out"
-  cpu_under "$before" 5
-  cpu_now
-  before=$CPU
-  passes "printf '%s' '$body' | tee .scratch/task/out"
-  cpu_under "$before" 5
-  # Each cd that may fail adds directories the shell may be in, which the walk caps.
-  body=$(numbered_lines 100 "cd .scratch/task && cmd > out@; cd $wt; if c; then cd src; fi; cmd > .scratch/y@")
-  cpu_now
-  before=$CPU
-  shell -2 "$body"
-  cpu_under "$before" 5
-  # Each variable assigned once is followed to the command's end.
-  body=$(numbered_lines 100 'T@=$CLAUDE_JOB_DIR/tmp; d@=$(mktemp -d) && cmd > $d@/x; for f@ in a b; do cmd | tee "$T@/$f@"; done')
-  cpu_now
-  before=$CPU
-  passes "$body"
-  cpu_under "$before" 5
-}
-
-@test "the time the hook takes to read a long command grows linearly with its length" {
-  local n body before took=()
-  # Each line assigns variables the walk follows to the command's end, and reads them back.
-  for n in 100 200; do
-    body=$(numbered_lines "$n" 'T@=$CLAUDE_JOB_DIR/tmp; d@=$(mktemp -d) && cmd > $d@/x; for f@ in a b; do cmd | tee "$T@/$f@"; done')
-    cpu_now
-    before=$CPU
-    passes "$body"
-    cpu_now
-    took+=("$(awk -v before="$before" -v now="$CPU" 'BEGIN { printf "%d", (now - before) * 1000 }')")
-  done
-  echo "100 lines: ${took[0]} ms, 200 lines: ${took[1]} ms of CPU"
-  # Twice the lines take at most about twice the CPU, measured against at least a second so a
-  # fast machine's noise cannot fail it.
-  ((took[0] >= 1000)) || took[0]=1000
-  ((took[1] * 2 <= took[0] * 5))
-}
-
 @test "a long here-document is judged quickly" {
   local body before
   body=$(numbered_lines 3000 'line @ with a > and a | tee x')

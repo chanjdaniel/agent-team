@@ -14,6 +14,7 @@
 #               holds a credential), and none of the rest printed.
 # shellcheck shell=bash
 # shellcheck disable=SC2154 # bin, the doctor's
+# reads state from: 030-tools.sh
 
 # Of config.yaml, the top-level agent, and agent_path_override's opencode or agent_args_override's
 # claude (bin/lib/gate-config.awk, in block or flow form); the wrapper by its bytes and mode, each

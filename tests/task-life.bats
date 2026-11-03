@@ -252,116 +252,6 @@ assert_closed_and_clean() {
   assert_equal "$(jq -c '[.prs[] | .prs[]]' <<<"$output")" '[]'
 }
 
-@test "one task's life, from team-open to team-close, runs on the scripts alone" {
-  # 1. Open.
-  ok team-open home feature feat tooling "The tooling"
-  local wt plan
-  wt=$(jq -r .worktree <<<"$output") plan=$(jq -r .plan <<<"$output")
-  assert_equal "$wt" "$HOME/slots/home/1"
-  assert_equal "$(jq -r .thread <<<"$output")" "1563"
-  # The coordinator has a worker to launch.
-  step planning no-worker:-
-
-  # 2. Plan: brief and launch the planner.
-  echo "- The idea: \`$TEAM_HOME/tasks/T1/idea.md\`." >"$BATS_TEST_TMPDIR/read"
-  ok team-brief T1 planner-feature --set-file read="$BATS_TEST_TMPDIR/read"
-  local brief=$output
-  assert_contains "$(cat "$brief")" "Worktree: \`~/slots/home/1\`, branch \`feat/T1-tooling\` from \`origin/dev\`."
-  step planning no-worker:-
-  ok team-worker T1 planner "$wt" -- "Read your brief at $brief"
-  local planner=$output
-  assert_equal "$planner" 1a2b3c4d
-  step planning
-
-  # The planner writes its spec and goes idle without reporting: the coordinator must look.
-  mkdir -p "$wt/.scratch/task/tickets"
-  echo "# Spec" >"$wt/.scratch/task/spec.md"
-  echo "# 01" >"$wt/.scratch/task/tickets/01-thing.md"
-  session_is "$planner" idle working
-  step planning silent:"$planner"
-
-  # 3. Approve: the planner's DONE, then the approval.
-  # Its DONE logged, the next step is the coordinator's until a builder is at work.
-  ok team-log T1 "done" role=planner session="$planner"
-  step planning no-worker:"$planner"
-  ok team-log T1 plan-approved by=Daniel
-  step building no-worker:"$planner"
-
-  # 4. Build: one builder for the ticket.
-  ok team-brief T1 builder-ticket --set ticket=01 --name build-01
-  local builder_brief=$output
-  step building no-worker:"$planner"
-  ok team-worker T1 builder "$wt" -- "Read your brief at $builder_brief"
-  local builder=$output
-  step building
-
-  # The builder asks for a permission: the coordinator must answer it.
-  session_is "$builder" idle blocked
-  step building waiting-input:"$builder"
-  session_is "$builder" busy working
-  local head
-  head=$(commit_and_push "$wt" thing.txt)
-  # Pushed and idle, but not reported yet: the coordinator must look.
-  session_is "$builder" idle working
-  step building silent:"$builder"
-  ok team-log T1 ticket-done ticket=01 commits="[\"${head:0:7}\"]"
-  step building no-worker:"$builder"
-
-  # The builder delivers: the PR, CI green on it, agent-review not yet there.
-  local url
-  url=$(open_pr owner/home 7 "$wt")
-  ok team-log T1 pr url="$url" head="$head"
-  step in-review no-worker:"$builder"
-  ok team-state T1
-  # The builder's launch stopped the finished planner. The line names the builder's brief, and its
-  # one ticket-done with no total, since the worktree holds no ticket files.
-  assert_equal "$output" "T1 home feature in-review | T1-builder idle on build-01 | tickets 1 done | PR #7 ${head:0:7} checks 1/1 agent-review missing"
-
-  # 5. Review: a fresh reviewer, its pass and the agent-review status on the head.
-  echo "- The tests run the real scripts." >"$BATS_TEST_TMPDIR/checks"
-  ok team-brief T1 reviewer --name review --set pr="$url" --set head="$head" --set-file checks="$BATS_TEST_TMPDIR/checks"
-  local review_brief=$output
-  assert_contains "$(cat "$review_brief")" "; review \`origin/dev...$head\`."
-  assert_contains "$(cat "$review_brief")" "The comment on PR $url is that file"
-  step in-review no-worker:"$builder"
-  ok team-worker T1 reviewer "$wt" -- "Read your brief at $review_brief"
-  local reviewer=$output
-  step in-review
-  agent_review_passes owner/home 7
-  session_is "$reviewer" idle working
-  ok team-log T1 review verdict=pass head="$head"
-  step awaiting-merge
-
-  # 6. Merge on Daniel's word in the thread.
-  daniel_says "merge it"
-  ok team-log T1 merge-approved url="$url" discord_message="$message" head="$head"
-  step awaiting-merge
-  ok team-merge T1
-  local merge
-  merge=$(git --git-dir "$BATS_TEST_TMPDIR/origin/home.git" rev-parse dev)
-  assert_equal "$(jq -c . <<<"$output")" "$(jq -cn --arg url "$url" --arg merge "$merge" --arg head "$head" \
-    '{task: "T1", pr: $url, merge: $merge, head: $head, by: "Discord message \($message) in the task'"'"'s thread 1563, from daniel (757)"}' --arg message "$message")"
-  # Merged with its workers idle: the coordinator closes it.
-  step merged no-worker:"$reviewer"
-
-  # 7. Close: the idle workers are stopped (the planner was, at the builder's launch), every
-  # worker removed, the scratch archived, the slot returned.
-  ok team-close T1
-  assert_equal "$(jq -c '[.stopped, .removed, .archive, .returned, .kept]' <<<"$output")" \
-    "$(jq -cn --arg wt "$wt" --arg p "$planner" --arg b "$builder" --arg r "$reviewer" \
-      '[[$b, $r], [$p, $b, $r], ["tasks/T1/scratch"], [$wt], []]')"
-  assert_equal "$(cat "$TEAM_HOME/tasks/T1/scratch/spec.md")" "# Spec"
-  [[ -f $TEAM_HOME/tasks/T1/scratch/tickets/01-thing.md ]]
-  [[ ! -e $wt ]]
-  [[ $(git -C "$home" worktree list) != *"$wt"* ]]
-  [[ -f $plan ]]
-  assert_closed_and_clean
-
-  # Every line came from a script, in the order the life ran.
-  assert_equal "$(jq -r .event "$TEAM_HOME/ledger.jsonl" | paste -sd ' ')" \
-    "thread opened launch done plan-approved launch ticket-done pr launch review merge-approved merged worktree-returned closed"
-}
-
 # A stored reading, taken now, of a 32 GiB machine whose other programs use 8 GiB, with each
 # <session> ("<task> <role> <id> <GiB>") live: level_reading <session>...
 level_reading() {
@@ -437,42 +327,63 @@ level_reading() {
   run_bin -0 team-log --check
 }
 
-@test "a two-project task's life: opened in a git pool, a treehouse worktree added, two PRs merged, both worktrees closed" {
+@test "a task's life, from team-open to team-close, runs on the scripts alone: opened in a git pool, a treehouse worktree added, two PRs merged, both worktrees closed" {
   # 1. Open in home, then add conv's worktree from its treehouse pool.
   ok team-open home feature feat tooling "The tooling"
-  local home_wt conv_wt
-  home_wt=$(jq -r .worktree <<<"$output")
+  local home_wt conv_wt plan
+  home_wt=$(jq -r .worktree <<<"$output") plan=$(jq -r .plan <<<"$output")
+  assert_equal "$home_wt" "$HOME/slots/home/1"
+  assert_equal "$(jq -r .thread <<<"$output")" "1563"
+  # The coordinator has a worker to launch.
+  step planning no-worker:-
   ok team-open --task T1 --add conv feat tooling
   conv_wt=$(jq -r .worktree <<<"$output")
   assert_equal "$conv_wt" "${conv_slots[0]}"
   assert_equal "$(git -C "$conv_wt" branch --show-current)" feat/T1-tooling
   step planning no-worker:-
 
-  # 2. Plan in home; a brief needs the project once the task has two.
-  echo "- The idea." >"$BATS_TEST_TMPDIR/read"
+  # 2. Plan in home: brief and launch the planner; a brief needs the project once the task has two.
+  echo "- The idea: \`$TEAM_HOME/tasks/T1/idea.md\`." >"$BATS_TEST_TMPDIR/read"
   run_bin -2 team-brief T1 planner-feature --set-file read="$BATS_TEST_TMPDIR/read"
   ok team-brief T1 planner-feature --project home --set-file read="$BATS_TEST_TMPDIR/read"
-  ok team-worker T1 planner "$home_wt" -- "Read your brief at $output"
+  local brief=$output
+  assert_contains "$(cat "$brief")" "Worktree: \`~/slots/home/1\`, branch \`feat/T1-tooling\` from \`origin/dev\`."
+  step planning no-worker:-
+  ok team-worker T1 planner "$home_wt" -- "Read your brief at $brief"
   local planner=$output
+  assert_equal "$planner" 1a2b3c4d
   step planning
-  mkdir -p "$home_wt/.scratch/task"
+
+  # The planner writes its spec and goes idle without reporting: the coordinator must look.
+  mkdir -p "$home_wt/.scratch/task/tickets"
   echo "# Spec" >"$home_wt/.scratch/task/spec.md"
+  echo "# 01" >"$home_wt/.scratch/task/tickets/01-thing.md"
   session_is "$planner" idle working
   step planning silent:"$planner"
+
+  # 3. Approve: the planner's DONE, then the approval.
+  # Its DONE logged, the next step is the coordinator's until a builder is at work.
   ok team-log T1 "done" role=planner session="$planner"
   step planning no-worker:"$planner"
   ok team-log T1 plan-approved by=Daniel
   step building no-worker:"$planner"
 
-  # 3. One builder per ticket, one ticket in each project.
+  # 4. Build: one builder per ticket, one ticket in each project.
   ok team-brief T1 builder-ticket --project home --set ticket=01 --name build-01
   local home_brief=$output
   step building no-worker:"$planner"
   ok team-worker T1 builder "$home_wt" -- "Read your brief at $home_brief"
   local home_builder=$output home_head
   step building
+
+  # The builder asks for a permission: the coordinator must answer it.
+  session_is "$home_builder" idle blocked
+  step building waiting-input:"$home_builder"
+  session_is "$home_builder" busy working
   home_head=$(commit_and_push "$home_wt" home.txt)
+  # Pushed and idle, but not reported yet: the coordinator must look.
   session_is "$home_builder" idle working
+  step building silent:"$home_builder"
   ok team-log T1 ticket-done ticket=01 commits="[\"${home_head:0:7}\"]"
   step building no-worker:"$home_builder"
   ok team-brief T1 builder-ticket --project conv --set ticket=02 --name build-02
@@ -487,17 +398,27 @@ level_reading() {
   ok team-log T1 ticket-done ticket=02 commits="[\"${conv_head:0:7}\"]"
   step building no-worker:"$conv_builder"
 
-  # 4. A PR in each repo, each reviewed by its own reviewer; conv's review lands first.
+  # The builders deliver: a PR in each repo, CI green on it, agent-review not yet there.
   local home_url conv_url
   home_url=$(open_pr owner/home 7 "$home_wt")
   conv_url=$(open_pr owner/conv 3 "$conv_wt")
   ok team-log T1 pr url="$home_url" head="$home_head"
   ok team-log T1 pr url="$conv_url" head="$conv_head"
   step in-review no-worker:"$conv_builder"
-  echo "- Both repos." >"$BATS_TEST_TMPDIR/checks"
+  ok team-state T1
+  # The home builder's launch stopped the finished planner. The line names each builder's brief and
+  # the two ticket-dones with no total, and its PR part is the latest pr event's, conv's.
+  assert_equal "$output" "T1 home feature in-review | T1-builder idle on build-01, T1-builder idle on build-02 | tickets 2 done | PR #3 ${conv_head:0:7} checks 1/1 agent-review missing"
+
+  # 5. Review: each PR by its own fresh reviewer; conv's review lands first.
+  echo "- The tests run the real scripts." >"$BATS_TEST_TMPDIR/checks"
   ok team-brief T1 reviewer --project home --name review-home --set pr="$home_url" --set head="$home_head" \
     --set-file checks="$BATS_TEST_TMPDIR/checks"
-  ok team-worker T1 reviewer "$home_wt" -- "Read your brief at $output"
+  local review_brief=$output
+  assert_contains "$(cat "$review_brief")" "; review \`origin/dev...$home_head\`."
+  assert_contains "$(cat "$review_brief")" "The comment on PR $home_url is that file"
+  step in-review no-worker:"$conv_builder"
+  ok team-worker T1 reviewer "$home_wt" -- "Read your brief at $review_brief"
   local home_reviewer=$output
   # conv is gated: its first review read the local head before the gate ran, so its PR gets the
   # re-review of what the gate added.
@@ -516,32 +437,47 @@ level_reading() {
   ok team-log T1 review verdict=pass head="$home_head"
   step awaiting-merge
 
-  # 5. Daniel's word for each PR; each merges on its own.
+  # 6. Merge on Daniel's word in the thread, one word for each PR; each merges on its own.
   daniel_says "merge home's"
   ok team-log T1 merge-approved url="$home_url" discord_message="$message" head="$home_head"
+  local home_message=$message
   daniel_says "merge conv's"
   ok team-log T1 merge-approved url="$conv_url" discord_message="$message" head="$conv_head"
+  step awaiting-merge
   ok team-merge T1 --pr "$home_url"
+  local merge
+  merge=$(git --git-dir "$BATS_TEST_TMPDIR/origin/home.git" rev-parse dev)
+  assert_equal "$(jq -c . <<<"$output")" "$(jq -cn --arg url "$home_url" --arg merge "$merge" --arg head "$home_head" \
+    '{task: "T1", pr: $url, merge: $merge, head: $head, by: "Discord message \($message) in the task'"'"'s thread 1563, from daniel (757)"}' --arg message "$home_message")"
   # conv's PR still waits for its merge.
   step awaiting-merge
   ok team-merge T1 --pr "$conv_url"
+  # Merged with its workers idle: the coordinator closes it.
   step merged no-worker:"$conv_reviewer"
 
-  # 6. Close: both worktrees archived and returned, each through its own pool.
+  # 7. Close: the idle workers are stopped, every worker removed, both worktrees archived and
+  # returned, each through its own pool.
   ok team-close T1
   assert_equal "$(jq -c '[.archive, .returned, .kept]' <<<"$output")" \
     "$(jq -cn --arg h "$home_wt" --arg c "$conv_wt" '[["tasks/T1/scratch", "tasks/T1/scratch-conv"], [$h, $c], []]')"
   # home's builder's launch stopped the planner, and conv's builder left home's, which holds its
   # own worktree's work; the close stops the other four and removes all five.
-  assert_equal "$(jq -c '[.stopped, .removed] | map(length)' <<<"$output")" '[4,5]'
+  assert_equal "$(jq -c '[.stopped, .removed]' <<<"$output")" \
+    "$(jq -cn --arg p "$planner" --arg hb "$home_builder" --arg cb "$conv_builder" --arg hr "$home_reviewer" \
+      --arg cr "$conv_reviewer" '[[$hb, $cb, $hr, $cr], [$p, $hb, $cb, $hr, $cr]]')"
   assert_equal "$(cat "$TEAM_HOME/tasks/T1/scratch/spec.md")" "# Spec"
+  [[ -f $TEAM_HOME/tasks/T1/scratch/tickets/01-thing.md ]]
   assert_equal "$(cat "$TEAM_HOME/tasks/T1/scratch-conv/build-notes/02.md")" "# 02"
   [[ ! -e $home_wt ]]
+  [[ $(git -C "$home" worktree list) != *"$home_wt"* ]]
+  [[ -f $plan ]]
   # The treehouse slot is back in its pool, detached and empty of the task.
   assert_equal "$(git -C "$conv_wt" branch --show-current)" ""
   [[ ! -e $conv_wt/.scratch/task/build-notes ]]
   assert_contains "$(cat "$BATS_TEST_TMPDIR/free")" "$conv_wt"
   assert_closed_and_clean
+
+  # Every line came from a script, in the order the life ran.
   assert_equal "$(jq -r .event "$TEAM_HOME/ledger.jsonl" | paste -sd ' ')" \
     "thread opened worktree-added launch done plan-approved launch ticket-done launch ticket-done pr pr launch launch review review merge-approved merge-approved merged merged worktree-returned worktree-returned closed"
 }

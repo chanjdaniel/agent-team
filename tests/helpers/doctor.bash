@@ -56,6 +56,8 @@ declare -gA FORMAT=(
 # the user manager delegates cpu and memory and the team's slice is installed (team-capacity);
 # and a reading of the machine's load was just taken.
 doctor_machine() {
+  # The whole doctor, until a test names its checks (only_checks).
+  unset TEAM_DOCTOR_CHECKS
   hold_lease home-pc >/dev/null
   fake_service_managers
   # shellcheck disable=SC2153 # sandbox sets TEAM_HOME
@@ -382,6 +384,15 @@ on_macos() {
 # The ids of the manifest's enabled secrets, in order.
 secret_ids() {
   jq -r '.secrets[] | select(.enabled != false) | .id' "$BATS_TEST_DIRNAME/fixtures/secrets.json"
+}
+
+# The doctor runs only the checks <file>... of bin/lib/doctor.d/ ("040-docker.sh") and those they
+# read state from, for the rest of the test (its TEAM_DOCTOR_CHECKS seam): for a test that asserts
+# only their lines, so it pays for those checks and not the whole doctor; a run whose assertion
+# reads every line (grep -v '^PASS ' of the output) is the whole doctor's again with
+# TEAM_DOCTOR_CHECKS='' before it. only_checks <file>...
+only_checks() {
+  export TEAM_DOCTOR_CHECKS="$*"
 }
 
 # The line of check <name> in the output.

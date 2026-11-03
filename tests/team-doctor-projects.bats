@@ -13,6 +13,7 @@ setup() {
 }
 
 @test "each registered project's lines pass for a correct clone; Conventioner's pool is Conventioner-d4c77a" {
+  only_checks 200-projects.sh
   tools_at arch
   run_bin -0 team-doctor
   assert_equal "$(grep -E '^.... [a-z ]+ (conventioner|site): ' <<<"$output")" "PASS checkout conventioner: ~/projects/Conventioner, a primary checkout
@@ -35,6 +36,7 @@ PASS changes site: the primary checkout is clean"
 }
 
 @test "a missing clone fails its checkout line with the clone command, and its other lines are skipped" {
+  only_checks 200-projects.sh
   tools_at arch
   local clone="git clone https://github.com/owner/site.git ~/projects/site"
   rm -rf "$SITE"
@@ -46,13 +48,15 @@ PASS changes site: the primary checkout is clean"
   assert_equal "$(grep -E ' site: ' <<<"$output")" "FAIL checkout site: ~/projects/site is not a git checkout; fix: move it aside, then $clone"
   rmdir "$SITE"
   git -C "$CONVENTIONER" worktree add -q --detach "$SITE"
-  run_bin -1 team-doctor
+  # The whole doctor, since the last assertion reads every line.
+  TEAM_DOCTOR_CHECKS='' run_bin -1 team-doctor
   assert_equal "$(grep -E ' site: ' <<<"$output")" "FAIL checkout site: ~/projects/site is a worktree of ~/projects/Conventioner, not a primary checkout; fix: move it aside, then $clone"
   # Nothing else fails; team-config sees the worktree as site's checkout, with no memory set up.
   assert_equal "$(grep -v '^PASS ' <<<"$output" | grep -v ' site: ' || true)" "WARN memory: memory site setting missing; fix: team-config apply"
 }
 
 @test "an origin other than https://github.com/<repo>.git fails, and so does a treehouse pool named from it" {
+  only_checks 200-projects.sh
   tools_at arch
   local url
   for url in git@github.com:owner/site.git https://github.com/owner/site; do
@@ -81,6 +85,7 @@ PASS changes site: the primary checkout is clean"
 }
 
 @test "slots: a slot that is a worktree of another clone of the same origin warns, naming it and how many slots are the team's (report F13)" {
+  only_checks 200-projects.sh
   tools_at arch
   local pool=$HOME/.treehouse/Conventioner-d4c77a other=$HOME/firstmate/projects/Conventioner shown remove
   # Slot 2 is this checkout's worktree and slot 1 does not exist: both pass, as treehouse makes 1.
@@ -107,6 +112,7 @@ PASS changes site: the primary checkout is clean"
 }
 
 @test "slots: a slot that is an empty folder, or holds no worktree, warns (T45)" {
+  only_checks 200-projects.sh
   tools_at arch
   # shellcheck disable=SC2088 # the doctor's lines name HOME as ~
   local pool=$HOME/.treehouse/Conventioner-d4c77a shown='~/.treehouse/Conventioner-d4c77a'
@@ -134,6 +140,7 @@ ledger_opened() {
 }
 
 @test "leases: each slot the pool leases is an open task's worktree there, or a WARN naming it with the return" {
+  only_checks 200-projects.sh
   tools_at arch
   local pool=.treehouse/Conventioner-d4c77a fix
   ledger_opened T1 "$pool/1/Conventioner"
@@ -171,6 +178,7 @@ ledger_opened() {
 }
 
 @test "leases: a treehouse that does not answer warns; a git pool has no leases line" {
+  only_checks 200-projects.sh
   tools_at arch
   echo 'echo "not in a git or jj repository" >&2; exit 1' >"$TOOL_ANSWERS/treehouse/status_--json.sh"
   run_bin -0 team-doctor
@@ -182,9 +190,11 @@ ledger_opened() {
 }
 
 @test "a task directory git does not ignore fails, with the exclude line that ignores it" {
+  only_checks 200-projects.sh
   tools_at arch
   sed -i '\#^/\.scratch/task/$#d' "$SITE/.git/info/exclude"
-  run_bin -1 team-doctor
+  # The whole doctor, since the assertion reads every line.
+  TEAM_DOCTOR_CHECKS='' run_bin -1 team-doctor
   assert_equal "$(grep -v '^PASS ' <<<"$output")" "FAIL task dir site: git does not ignore .scratch/task/; fix: echo /.scratch/task/ >> ~/projects/site/.git/info/exclude"
   # Ignored by the project's own .gitignore, it passes.
   echo .scratch/ >"$SITE/.gitignore"
@@ -196,9 +206,11 @@ ledger_opened() {
 }
 
 @test "a no-mistakes project without a gate fails the gate line with no-mistakes init; a direct-pr project has no gate line" {
+  only_checks 200-projects.sh
   tools_at arch
   : >"$STUB_FIXTURES/gates"
-  run_bin -1 team-doctor
+  # The whole doctor, since the assertion reads every line.
+  TEAM_DOCTOR_CHECKS='' run_bin -1 team-doctor
   assert_equal "$(grep -v '^PASS ' <<<"$output")" "FAIL gate conventioner: no-mistakes has no gate for ~/projects/Conventioner; fix: cd ~/projects/Conventioner && no-mistakes init"
   assert_equal "$(checks | grep -c '^gate ')" 1
   answer "no-mistakes status"
@@ -210,12 +222,14 @@ ledger_opened() {
 }
 
 @test "trust: a promptless claude --bg in each root, FAIL on Workspace not trusted, the probe session removed either way" {
+  only_checks 200-projects.sh
   tools_at arch
   echo "$SITE" >"$STUB_FIXTURES/untrusted"
   # A probe an earlier run left behind is found by its name, and goes too.
   echo '[{"id": "0badc0de", "name": "team-doctor-trust-site", "state": "idle"},
     {"id": "abcdef12", "name": "T9-builder", "state": "working"}]' >"$STUB_FIXTURES/agents.json"
-  run_bin -1 team-doctor
+  # The whole doctor, since the assertions read every line and every probe.
+  TEAM_DOCTOR_CHECKS='' run_bin -1 team-doctor
   assert_equal "$(grep -v '^PASS ' <<<"$output")" "FAIL trust site: claude --bg in ~/projects/site says Workspace not trusted; fix: Daniel runs claude once in ~/projects/site and accepts the trust dialog"
   assert_equal "$(cat "$STUB_CALLS/claude-bg.pwd")" "$TEAM_HOME
 $CONVENTIONER
@@ -254,10 +268,12 @@ EOF
 }
 
 @test "trust team home: probed in the team home, where the coordinator starts, unless a project's trust line covers it" {
+  only_checks 185-trust-team-home.sh 200-projects.sh
   tools_at arch
   local shown=${TEAM_HOME/#"$HOME"/\~}
   echo "$TEAM_HOME" >"$STUB_FIXTURES/untrusted"
-  run_bin -1 team-doctor
+  # The whole doctor, since the assertions read every line and its order.
+  TEAM_DOCTOR_CHECKS='' run_bin -1 team-doctor
   assert_equal "$(grep -v '^PASS ' <<<"$output")" "FAIL trust team home: claude --bg in $shown says Workspace not trusted; fix: Daniel runs claude once in $shown and accepts the trust dialog"
   # Before the projects' lines, after the records'.
   assert_equal "$(checks | grep -A1 -B1 '^trust team home$')" "records
@@ -308,9 +324,11 @@ WARN changes site: changes to tracked files: README.md; untracked files: notes.t
 }
 
 @test "without a registry, or with a broken one, the projects line fails with team-project's reason" {
+  only_checks 200-projects.sh
   tools_at arch
   rm "$TEAM_HOME/projects.toml"
-  run_bin -1 team-doctor
+  # The whole doctor, since the assertions read every line.
+  TEAM_DOCTOR_CHECKS='' run_bin -1 team-doctor
   assert_equal "$(grep -v '^PASS ' <<<"$output" | grep -v -e '^WARN memory' -e '^FAIL records' || true)" "FAIL projects: no registry at $TEAM_HOME/projects.toml; fix: fix what team-project names (team-project --check), then run team-doctor again"
   assert_contains "$(line_of records)" "FAIL records: no registry at $TEAM_HOME/projects.toml;"
   echo '[broken]' >"$TEAM_HOME/projects.toml"
@@ -342,18 +360,21 @@ SCRIPT
 }
 
 @test "with no registered project's stack block, the stack memory line says so and passes" {
+  only_checks 205-stack-memory.sh
   tools_at arch
   run_bin -0 team-doctor
   assert_equal "$(line_of 'stack memory')" "PASS stack memory: no registered project has a stack block"
 }
 
 @test "the stack memory line weighs each stack's mem_limits against full's budget with nothing else running, and names each it cannot weigh" {
+  only_checks 205-stack-memory.sh
   tools_at arch
   # The doctor's reading: a 30.6 GiB machine, so full's budget with nothing else running is 26.6
   # GiB (all but reserve_gib's 4 GiB), and a Conventioner stack's 2.75 GiB fits.
   give_stack conventioner "$CONVENTIONER" 805306368 1073741824 1073741824
   give_stack site "$SITE" 536870912
-  COMPOSE_PROJECT_NAME=other TH_PORTS='' TH_WEB_PORT=5000 run_bin -0 team-doctor
+  # The whole doctor, since the first assertion reads every line.
+  COMPOSE_PROJECT_NAME=other TH_PORTS='' TH_WEB_PORT=5000 TEAM_DOCTOR_CHECKS='' run_bin -0 team-doctor
   assert_equal "$(grep -v '^PASS ' <<<"$output")" ""
   assert_equal "$(line_of 'stack memory')" "PASS stack memory: with nothing else running, full's budget is 26.6 GiB of 30.6 GiB, which holds a stack of each project: conventioner's 2.8 GiB of mem_limits, site's 0.5 GiB"
   # The wrapper was asked for its config in the primary checkout, as a project of its own whose
@@ -383,6 +404,7 @@ SCRIPT
 }
 
 @test "the stack memory line warns on a stack.json team-stack refuses, and on stack_cap or memory_floor_gib left in it" {
+  only_checks 205-stack-memory.sh
   tools_at arch
   give_stack conventioner "$CONVENTIONER" 805306368
   echo '{"memory_floor_gib": "1", "stack_caps": 2}' >"$HOME/.config/agent-team/stack.json"
@@ -394,6 +416,7 @@ SCRIPT
 }
 
 @test "a checkout and the team home named by another spelling of their paths pass as the directory they are (report F6)" {
+  only_checks 080-team-home.sh 185-trust-team-home.sh 200-projects.sh
   tools_at arch
   local site home
   site=$(other_spelling "$SITE")
@@ -405,7 +428,8 @@ SCRIPT
 
   # A team home that is a project's primary checkout is so however either is spelled.
   cp "$TEAM_HOME/projects.toml" "$SITE/"
-  TEAM_HOME=$SITE run_bin -1 team-doctor
+  # With the secrets line, which fails there for want of machine/secrets.json.
+  TEAM_HOME=$SITE TEAM_DOCTOR_CHECKS="$TEAM_DOCTOR_CHECKS 160-secrets.sh" run_bin -1 team-doctor
   assert_equal "$(line_of 'trust team home')" "PASS trust team home: not probed apart, since ~/projects/site is site's primary checkout, which the trust site line probes"
 
   # Still by identity: a worktree of another checkout is no primary checkout, however spelled.

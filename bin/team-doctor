@@ -10,8 +10,10 @@
 # the interview channel line uses, through discord_api to Discord alone; no line carries a secret.
 # Read-only, but for the trust probes' sessions, which it removes.
 # TEAM_OS_RELEASE names the os-release file to read instead of /etc/os-release, TEAM_1PASSWORD_APP
-# the 1Password app to look for, TEAM_CHROME the browser, and TEAM_MEMINFO the file read in place
-# of /proc/meminfo (the tests' seams).
+# the 1Password app to look for, TEAM_CHROME the browser, TEAM_MEMINFO the file read in place
+# of /proc/meminfo, and TEAM_DOCTOR_CHECKS, when not empty, the checks to run (the tests' seams):
+# their file names in bin/lib/doctor.d/ ("040-docker.sh 220-lease.sh"), run in name order with
+# every check they read state from, directly or not; a name that is no check file is refused.
 # Exit 0 nothing failed, 1 a check failed, 2 usage error.
 # The checks, in order, one file each in bin/lib/doctor.d/, sourced in the order of their names
 # (three digits by tens, so a new check goes between two without renaming any), each calling the
@@ -29,7 +31,7 @@ team_home_report=1
 help_more() {
   local check
   for check in "$(dirname "${BASH_SOURCE[0]}")"/lib/doctor.d/*.sh; do
-    sed -n '/^# shellcheck /d; /^#/!q; s/^# \{0,1\}/  /p' "$check"
+    sed -n '/^# shellcheck /d; /^# reads state from: /d; /^#/!q; s/^# \{0,1\}/  /p' "$check"
   done
 }
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
@@ -132,8 +134,31 @@ bin=$(dirname "$TEAM_LIB") os='' machine='' secrets='' secrets_read=0 fenced='' 
 # shellcheck disable=SC2034
 declare -A installed=()
 
+# The checks to run: every file of doctor.d/, or the ones TEAM_DOCTOR_CHECKS names with those
+# they read state from. A check reads only what the doctor sets above and what an earlier check
+# leaves (the os check's os, which the docker check reads), and names each such earlier check on a
+# "# reads state from:" line of its header, which --help leaves out; with the seam those run too,
+# and the ones they name, all in name order.
+checks=("$TEAM_LIB"/doctor.d/*.sh)
+if [[ -n ${TEAM_DOCTOR_CHECKS:-} ]]; then
+  declare -A wanted=()
+  read -ra pending <<<"$TEAM_DOCTOR_CHECKS"
+  while ((${#pending[@]})); do
+    check=${pending[0]} pending=("${pending[@]:1}")
+    [[ -z ${wanted[$check]+set} ]] || continue
+    [[ $check == *.sh && $check != */* && -f $TEAM_LIB/doctor.d/$check ]] ||
+      usage_error "TEAM_DOCTOR_CHECKS names $check, no check file of bin/lib/doctor.d/"
+    wanted[$check]=1
+    read -ra reads <<<"$(sed -n '/^#/!q; s/^# reads state from: //p' "$TEAM_LIB/doctor.d/$check")"
+    pending+=("${reads[@]}")
+  done
+  for check in "${!checks[@]}"; do
+    [[ -n ${wanted[${checks[check]##*/}]+set} ]] || unset 'checks[check]'
+  done
+fi
+
 # shellcheck source=/dev/null # each check, by name
-for check in "$TEAM_LIB"/doctor.d/*.sh; do source "$check"; done
+for check in "${checks[@]}"; do source "$check"; done
 
 if ((json)); then
   printf '%s\0' "${results[@]}" | jq -Rs 'split("\u0000")[:-1] | [range(0; length; 4) as $i | .[$i:$i + 4]

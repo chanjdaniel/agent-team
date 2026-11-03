@@ -1,6 +1,7 @@
 # homebrew      macOS only: Homebrew's GNU tools first on PATH, as bin/lib/platform.sh puts them.
 # shellcheck shell=bash
 # shellcheck disable=SC2154 # os, from the os check
+# reads state from: 010-os.sh
 
 if [[ $os == macos ]]; then
   if [[ -n $PLATFORM_PROBLEM ]]; then

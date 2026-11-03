@@ -18,6 +18,7 @@
 #               minutes, which its heartbeat's capacity step takes.
 # shellcheck shell=bash
 # shellcheck disable=SC2154 # bin and err, the doctor's; os, holding and heartbeat, from the os, lease and heartbeat checks
+# reads state from: 010-os.sh 220-lease.sh 240-heartbeat.sh
 
 # On a supported OS.
 if [[ -n $os ]]; then

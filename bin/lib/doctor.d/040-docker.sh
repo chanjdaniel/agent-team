@@ -2,6 +2,7 @@
 #               is Daniel's: on Arch the daemon enabled and the docker group (sudo, then a new
 #               login), on macOS Docker Desktop opened once and its license accepted.
 # shellcheck shell=bash
+# reads state from: 010-os.sh 030-tools.sh
 
 # Asked only of an installed docker, on an OS the tools were checked for.
 if [[ -n $os && -z ${installed[docker]:-} ]]; then

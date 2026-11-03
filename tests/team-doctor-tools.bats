@@ -13,11 +13,12 @@ setup() {
 }
 
 # Every tool line of <os> fails, naming that OS's install command, when every tool is <version>
-# ("-" for missing); Claude Code's pin mismatch only warns.
+# ("-" for missing); Claude Code's pin mismatch only warns. The whole doctor, since "nothing else
+# fails" reads every line.
 every_tool_fails() {
   local os=$1 version=$2 name source line verdict
   tools_at "$os" "$version"
-  run_bin -1 team-doctor
+  TEAM_DOCTOR_CHECKS='' run_bin -1 team-doctor
   while IFS=$'\t' read -r name _ _ source; do
     line=$(line_of "tool $name")
     verdict=FAIL
@@ -187,6 +188,7 @@ lock_has_its_shape() {
 }
 
 @test "a GitHub release's fix downloads this machine's archive and checks its recorded SHA-256 before unpacking it" {
+  only_checks 030-tools.sh
   local sha tag
   tag=$(lock_of treehouse .release.tag)
   every_tool_fails arch -
@@ -203,6 +205,7 @@ lock_has_its_shape() {
 }
 
 @test "a machine type the lock records no archive for gets a fix that says so" {
+  only_checks 030-tools.sh
   local tag
   tag=$(lock_of treehouse .release.tag)
   echo aarch64 >"$STUB_FIXTURES/uname-m.out"
@@ -213,6 +216,7 @@ lock_has_its_shape() {
 }
 
 @test "no-mistakes is built from Daniel's fork at its pinned commit, on Arch and macOS alike" {
+  only_checks 030-tools.sh
   local fix
   fix='d=$(mktemp -d) && git clone -q https://github.com/chanjdaniel/no-mistakes "$d" && git -C "$d" checkout -q '$(lock_of no-mistakes .fork.commit)' && make -C "$d" build && mkdir -p ~/.no-mistakes/bin && install -m 755 "$d/bin/no-mistakes" ~/.no-mistakes/bin/no-mistakes && rm -rf "$d"'
   every_tool_fails arch -
@@ -261,9 +265,11 @@ lock_has_its_shape() {
 }
 
 @test "one old tool fails only its own line; a version it cannot read fails too" {
+  only_checks 030-tools.sh
   tools_at arch
   answer "jq --version" "jq-1.6"
-  run_bin -1 team-doctor
+  # The whole doctor, since the assertion reads every line.
+  TEAM_DOCTOR_CHECKS='' run_bin -1 team-doctor
   assert_equal "$(grep -v '^PASS ' <<<"$output")" "FAIL tool jq: 1.6, below the minimum 1.7.1; fix: sudo pacman -S --needed jq"
 
   answer "tmux -V" "tmux next-3.9"
@@ -304,6 +310,7 @@ EOF
 }
 
 @test "macOS without the GNU tools: the Homebrew line fails with the brew install line, and the doctor goes on" {
+  # The whole doctor, since the lease line shows every check before it ran to its end without them.
   on_macos
   tools_at macos
   rm -r "$HOMEBREW_PREFIX/opt/gnu-sed" "$HOMEBREW_PREFIX/opt/flock"
@@ -316,6 +323,7 @@ EOF
 }
 
 @test "an OS other than Arch or macOS fails, and its tools go unchecked; an Arch derivative passes" {
+  only_checks 010-os.sh 030-tools.sh 070-machine.sh
   tools_at arch
   printf '%s\n' 'PRETTY_NAME="Ubuntu 24.04.3 LTS"' 'ID=ubuntu' 'ID_LIKE=debian' >"$TEAM_OS_RELEASE"
   run_bin -1 team-doctor
@@ -359,6 +367,7 @@ SH
 }
 
 @test "on macOS python3 is Homebrew's pinned Python before an older one first on PATH, and its line says which it found" {
+  only_checks 030-tools.sh
   on_macos
   tools_at macos
   rm "$TOOL_STUBS/python3"
@@ -382,6 +391,7 @@ Error: ENOENT: no such file or directory, uv_cwd
     at Object.<anonymous> (/Users/danielchan/.nvm/versions/node/v22.19.0/lib/node_modules/lavish-axi/node_modules/depd/index.js:23:24)"
 
 @test "a version command that prints only another tool's version printed no version" {
+  only_checks 030-tools.sh
   local lavish
   lavish=$(lock_pin lavish-axi)
   tools_at arch

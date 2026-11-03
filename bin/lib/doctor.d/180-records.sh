@@ -6,6 +6,7 @@
 #               naming team-log --fix-sent-back.
 # shellcheck shell=bash
 # shellcheck disable=SC2154 # bin and err, the doctor's, and secrets and secrets_read, from the secrets check
+# reads state from: 160-secrets.sh
 
 # The team home's ledger, registry and secrets description, each problem named.
 records_problems=() ledger_strings=''

@@ -6,6 +6,7 @@
 #               which warns (the team home line fails).
 # shellcheck shell=bash
 # shellcheck disable=SC2154 # home_shown, from the team home check
+# reads state from: 080-team-home.sh
 
 # Its probe is team-doctor-home-trust, a name no project's probe can have. A broken registry is
 # the projects line's, and the team home is probed as if it were no project's.
