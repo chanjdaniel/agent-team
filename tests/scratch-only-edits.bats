@@ -238,16 +238,16 @@ cpu_under() {
 }
 
 # <text> once for each i from 1 to <n>, one per line, each @ in it replaced by i, untraced since
-# it loops: lines <n> <text>
-lines() {
-  [[ -n ${UNTRACED_DEBUG+set} ]] || { untraced lines "$@"; return; }
+# it loops: numbered_lines <n> <text>
+numbered_lines() {
+  [[ -n ${UNTRACED_DEBUG+set} ]] || { untraced numbered_lines "$@"; return; }
   local i
   for ((i = 1; i <= $1; i++)); do echo "${2//@/$i}"; done
 }
 
 @test "a long command is judged quickly" {
   local body before
-  body=$(lines 3000 'line @ with a > and a | tee x')
+  body=$(numbered_lines 3000 'line @ with a > and a | tee x')
   cpu_now
   before=$CPU
   passes "git commit -m \"$body\" > .scratch/task/out"
@@ -257,13 +257,13 @@ lines() {
   passes "printf '%s' '$body' | tee .scratch/task/out"
   cpu_under "$before" 5
   # Each cd that may fail adds directories the shell may be in, which the walk caps.
-  body=$(lines 100 "cd .scratch/task && cmd > out@; cd $wt; if c; then cd src; fi; cmd > .scratch/y@")
+  body=$(numbered_lines 100 "cd .scratch/task && cmd > out@; cd $wt; if c; then cd src; fi; cmd > .scratch/y@")
   cpu_now
   before=$CPU
   shell -2 "$body"
   cpu_under "$before" 5
   # Each variable assigned once is followed to the command's end.
-  body=$(lines 100 'T@=$CLAUDE_JOB_DIR/tmp; d@=$(mktemp -d) && cmd > $d@/x; for f@ in a b; do cmd | tee "$T@/$f@"; done')
+  body=$(numbered_lines 100 'T@=$CLAUDE_JOB_DIR/tmp; d@=$(mktemp -d) && cmd > $d@/x; for f@ in a b; do cmd | tee "$T@/$f@"; done')
   cpu_now
   before=$CPU
   passes "$body"
@@ -274,7 +274,7 @@ lines() {
   local n body before took=()
   # Each line assigns variables the walk follows to the command's end, and reads them back.
   for n in 100 200; do
-    body=$(lines "$n" 'T@=$CLAUDE_JOB_DIR/tmp; d@=$(mktemp -d) && cmd > $d@/x; for f@ in a b; do cmd | tee "$T@/$f@"; done')
+    body=$(numbered_lines "$n" 'T@=$CLAUDE_JOB_DIR/tmp; d@=$(mktemp -d) && cmd > $d@/x; for f@ in a b; do cmd | tee "$T@/$f@"; done')
     cpu_now
     before=$CPU
     passes "$body"
@@ -290,7 +290,7 @@ lines() {
 
 @test "a long here-document is judged quickly" {
   local body before
-  body=$(lines 3000 'line @ with a > and a | tee x')
+  body=$(numbered_lines 3000 'line @ with a > and a | tee x')
   cpu_now
   before=$CPU
   passes "cat > .scratch/task/big.txt <<'EOF'
@@ -306,7 +306,7 @@ EOF
 )\" > .scratch/task/out"
   cpu_under "$before" 5
   # And with its delimiter unquoted, whose body's expansions are read.
-  body=$(lines 1000 'line @ with ${HOME}, $(echo @) and a > and a | tee x')
+  body=$(numbered_lines 1000 'line @ with ${HOME}, $(echo @) and a > and a | tee x')
   cpu_now
   before=$CPU
   passes "cat > .scratch/task/big.txt <<EOF
