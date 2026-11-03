@@ -110,7 +110,9 @@ setup() {
   assert_equal "$(line_of 'team home fetch')" ""
   assert_equal "$(line_of 'team home pack')" ""
   mkdir "$HOME/agent-team-records"
-  run -1 "$CODE_CHECKOUT/bin/team-doctor"
+  # The whole doctor, since the heartbeat line shows every check before it ran to its end with no
+  # team home.
+  TEAM_DOCTOR_CHECKS='' run -1 "$CODE_CHECKOUT/bin/team-doctor"
   assert_equal "$(line_of 'team home')" \
     "FAIL team home: neither TEAM_HOME nor ~/.config/agent-team/home names one; fix: name the team home's checkout, relative to your home directory: echo agent-team-records > ~/.config/agent-team/home"
   # The doctor goes on, the lines that read the team home failing with the same refusal.

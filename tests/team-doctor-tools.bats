@@ -310,7 +310,7 @@ EOF
 }
 
 @test "macOS without the GNU tools: the Homebrew line fails with the brew install line, and the doctor goes on" {
-  only_checks 020-homebrew.sh 070-machine.sh 195-heavy-runs.sh 220-lease.sh
+  # The whole doctor, since the lease line shows every check before it ran to its end without them.
   on_macos
   tools_at macos
   rm -r "$HOMEBREW_PREFIX/opt/gnu-sed" "$HOMEBREW_PREFIX/opt/flock"
