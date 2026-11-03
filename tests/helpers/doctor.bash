@@ -292,7 +292,7 @@ EOF
 # one shared script (helpers/common's shared), named as its command.
 tool_stub() {
   [[ ! -e $TOOL_STUBS/$1 ]] || return 0
-  mkdir -p "$TOOL_ANSWERS/$1"
+  [[ -d $TOOL_ANSWERS/$1 ]] || mkdir -p "$TOOL_ANSWERS/$1"
   ln "$(shared tool-stub <<EOF
 #!$(PATH=$REAL_PATH command -v bash)
 name=\${0##*/}
@@ -301,7 +301,13 @@ answer=\$TOOL_ANSWERS/\$name/\${key// /_}
 if [[ -f \$answer.missing ]]; then echo "\$name: command not found" >&2; exit 127; fi
 if [[ -f \$answer.sh ]]; then source "\$answer.sh"; exit 0; fi
 if [[ -f \$answer ]]; then IFS= read -r -d '' body <"\$answer" || true; printf '%s' "\$body"; exit 0; fi
-real=\$(PATH=\$REAL_PATH command -v "\$name") || real=''
+# The real command: the first executable file of its name on REAL_PATH, as command -v finds it,
+# looked up with builtins, since every tool call of the doctor's tests comes through here.
+real=''
+IFS=: read -ra dirs <<<"\$REAL_PATH"
+for dir in "\${dirs[@]}"; do
+  if [[ -f \$dir/\$name && -x \$dir/\$name ]]; then real=\$dir/\$name && break; fi
+done
 if [[ -f \$TOOL_ANSWERS/\$name.wrap.sh ]]; then
   source "\$REPO_ROOT/tests/helpers/doctor.bash"
   source "\$TOOL_ANSWERS/\$name.wrap.sh"
@@ -320,7 +326,8 @@ answer() {
   tool_stub "${words[0]}"
   key=${1#* }
   file=$TOOL_ANSWERS/${words[0]}/${key// /_}
-  rm -f "$file" "$file.missing" "$file.sh"
+  # Only what is there is removed: tools_at answers every tool, often twice a test.
+  [[ ! -e $file && ! -e $file.missing && ! -e $file.sh ]] || rm -f "$file" "$file.missing" "$file.sh"
   if (($# > 1)); then printf '%s\n' "$2" >"$file"; else : >"$file.missing"; fi
 }
 
@@ -347,15 +354,22 @@ lock_pin() {
 
 # Every tool of <os> answers at <version> (default its pin or min), or is missing (version "-").
 tools_at() {
-  local os=$1 name cmd version
+  local os=$1 name cmd version rows dirs=()
+  rows=$(lock_tools "$os")
+  # Every tool's answers directory in one mkdir.
+  while IFS=$'\t' read -r name cmd _; do
+    [[ -z $name || -d $TOOL_ANSWERS/${cmd%% *} ]] || dirs+=("$TOOL_ANSWERS/${cmd%% *}")
+  done <<<"$rows"
+  ((${#dirs[@]} == 0)) || mkdir -p "${dirs[@]}"
   while IFS=$'\t' read -r name cmd version _; do
+    [[ -n $name ]] || continue
     version=${2:-$version}
     if [[ $version == - ]]; then
       answer "$cmd"
     else
       answer "$cmd" "${FORMAT[$name]//%s/$version}"
     fi
-  done < <(lock_tools "$os")
+  done <<<"$rows"
 }
 
 # The sandbox runs as macOS (as_macos), with the heartbeat's LaunchAgents enabled.
