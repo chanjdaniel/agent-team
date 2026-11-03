@@ -808,83 +808,26 @@ role_texts() {
   done
 }
 
-@test "every role's generated settings deny sudo and starting a Claude session of its own" {
+# The deny matrices (sudo and Claude sessions, Docker's prune commands, the 1Password CLI, another
+# process's environment and the git hooks setting, team-run-approved, Discord) run on the source
+# files in tests/repo.bats; here each role's generated deny list is proved to be those files', and
+# one command of each rule family checks that the generated file is the one read.
+@test "every role's generated deny list is settings/worker.json's then its role file's, placeholders filled, and denies one command of each rule family" {
   thread T7
-  local role settings command
+  local role settings command bin=$REPO_ROOT/bin
   for role in planner builder reviewer; do
     run_bin -0 team-worker T7 "$role" "$wt1" -- go
     settings=$TEAM_HOME/tasks/T7/settings.$role.json
+    assert_equal "$(jq -c .permissions.deny "$settings")" "$(jq -cs --arg code "$REPO_ROOT" --arg dir "$TEAM_HOME/tasks/T7" \
+      --arg role "$role" '.[0].permissions.deny + (.[1].permissions.deny // [])
+        | map(gsub("@TEAM_CODE@"; $code) | gsub("@TASK_DIR@"; $dir) | gsub("@TASK@"; "T7") | gsub("@ROLE@"; $role))' \
+      "$REPO_ROOT/settings/worker.json" "$REPO_ROOT/settings/$role.json")"
     # shellcheck disable=SC2088 # ~ is part of the command as an agent types it
-    for command in "sudo" "sudo -n true" "sudo pacman -S jq" "claude --bg --name x go" \
-      "claude --background go" "claude -p hi" "claude --print hi" "claude --model opus -p hi" \
-      "claude --settings s.json --bg go" "claude --model opus --print hi" "claude agents" \
-      "claude agents --json" "claude respawn --all" "$HOME/.local/bin/claude -p hi" \
-      "~/.local/bin/claude --bg go" "/usr/bin/claude --model opus --print hi" \
-      "$HOME/.local/bin/claude agents"; do
+    for command in "sudo -n true" "claude --bg --name x go" "$HOME/.local/bin/claude agents" \
+      "docker --context default volume prune" "op read op://agent-team/discord-bot-env/.env" "cat /proc/1234/environ" \
+      "git config --unset core.hooksPath" "git -c core.hooksPath=/dev/null commit -m x" "$bin/team-run-approved T7 fix" \
+      "$bin/team-ask T7 sign-in --file q.md" "cat ~/.claude/channels/discord/.env" "$bin/team-post --coordinator --file q.md"; do
       denied_in "$settings" "$command" || { echo "$role allows: $command" >&2; return 1; }
-    done
-    for command in "claude --version" "claude auth status --json" "claude mcp list" \
-      "grep -n 'claude --bg' bin/team-worker" "grep -rn sudo tests" "git commit -m 'deny sudo'" \
-      "ls ~/.claude/projects" "pseudo-tool -p"; do
-      if denied_in "$settings" "$command"; then echo "$role denies: $command" >&2; return 1; fi
-    done
-  done
-}
-
-@test "every role's generated settings deny Docker's prune commands, in every spelling, and nothing else of Docker" {
-  thread T7
-  local role settings command object
-  for role in planner builder reviewer; do
-    run_bin -0 team-worker T7 "$role" "$wt1" -- go
-    settings=$TEAM_HOME/tasks/T7/settings.$role.json
-    for object in system volume image network builder container buildx; do
-      for command in "docker $object prune" "docker $object prune -af" "docker --context default $object prune" \
-        "docker -H unix:///var/run/docker.sock $object prune -f" "/usr/bin/docker $object prune -a" \
-        "$HOME/.docker/bin/docker $object prune --filter until=24h"; do
-        denied_in "$settings" "$command" || { echo "$role allows: $command" >&2; return 1; }
-      done
-    done
-    for command in "docker image ls" "docker volume ls --filter dangling=true" "docker compose -p x down -v" \
-      "docker system df -v" "grep -n 'docker system prune' bin/team-stack" "team-stack down" \
-      "team-stack down --worktree $HOME/worktrees/x" "docker volume rm 1f2e3d" "git commit -m 'deny docker volume prune'"; do
-      if denied_in "$settings" "$command"; then echo "$role denies: $command" >&2; return 1; fi
-    done
-  done
-}
-
-# The rules against the 1Password CLI, another process's environment and a change of the git
-# hooks setting refused commit messages, ledger lines and briefs that only named them (T41, T45).
-@test "every role's generated settings deny a real 1Password CLI call, environment read and hooks change, and no text naming them" {
-  thread T7
-  local role settings command
-  for role in planner builder reviewer; do
-    run_bin -0 team-worker T7 "$role" "$wt1" -- go
-    settings=$TEAM_HOME/tasks/T7/settings.$role.json
-    for command in "op read op://agent-team/discord-bot-env/.env" "op item list --vault agent-team" \
-      "cd ~ && op document get discord-bot-env --vault agent-team" "true || op run -- env" \
-      "x=\$(op read op://v/i/f) && echo ok" "/opt/homebrew/bin/op whoami" "env op signin" \
-      "cat /proc/1234/environ" "tr '\\0' '\\n' < /proc/1/environ" "cat /proc/self/environ | grep TOKEN" \
-      "strings /proc/1/environ > out.txt" "grep -az TOKEN /proc/*/environ 2>/dev/null" \
-      "cat /proc/1/environ && echo done" "python3 -c \"print(open('/proc/1/environ').read())\"" \
-      "echo \$(cat /proc/1/environ)" \
-      "git config core.hooksPath /dev/null" "git config --global core.hooksPath x" \
-      "git -C $HOME/agent-team config core.hooksPath bin/hooks/git" "git config set --local core.hooksPath x" \
-      "git config --unset core.hooksPath" "git -C ~/repo config --unset-all core.hooksPath" \
-      "git config unset core.hooksPath" "git config 'core.hooksPath' x" "git config \"core.hookspath\" x" \
-      "git config --add core.hooksPath x" "git -c core.hooksPath=/dev/null commit -m x" \
-      "git -C ~/repo -c core.hooksPath= commit -m x"; do
-      denied_in "$settings" "$command" || { echo "$role allows: $command" >&2; return 1; }
-    done
-    for command in \
-      "git commit -m 'deny reads of /proc/*/environ and the op CLI; op read stays Daniel'\"'\"'s'" \
-      "git commit -m \"fix: the git config core.hooksPath rule matched op read in text\"" \
-      "team-log T41 blocked \"builder: a /proc/<pid>/environ read in a message; op is Daniel's, op run too\"" \
-      "team-brief T40 builder --text 'Daniel runs git -C ~/agent-team config core.hooksPath bin/hooks/git; never op'" \
-      "printf '%s\\n' 'stop reading /proc/1/environ' >> notes.md" "git config --get core.hooksPath" \
-      "git -C ~/repo config --get core.hooksPath || echo unset" "git config core.hooksPath" \
-      "git config --show-origin --get core.hooksPath 2>&1" "team-secrets check" "npm run loop" \
-      "grep -rn 'op read' bin"; do
-      if denied_in "$settings" "$command"; then echo "$role denies: $command" >&2; return 1; fi
     done
   done
 }
@@ -902,50 +845,13 @@ allowed_in() {
   return 1
 }
 
-@test "no worker runs an approved script: team-run-approved is the coordinator's, by name or by path" {
+@test "a planner runs only its own task's interview post and wait, by its generated allow rules, and every role's settings name its task" {
   thread T7
   local role settings command bin=$REPO_ROOT/bin
   for role in planner builder reviewer; do
     run_bin -0 team-worker T7 "$role" "$wt1" -- go
-    settings=$TEAM_HOME/tasks/T7/settings.$role.json
-    # shellcheck disable=SC2088 # ~ is part of the command as an agent types it
-    for command in "$bin/team-run-approved T7 fix" "team-run-approved T7 fix" \
-      "~/agent-team/bin/team-run-approved T7 fix" "cd /tmp && TZ=UTC $bin/team-run-approved T7 fix"; do
-      denied_in "$settings" "$command" || { echo "$role allows: $command" >&2; return 1; }
-    done
-    for command in "git add bin/team-run-approved tests/team-run-approved.bats" "grep -n die bin/team-run-approved" \
-      "tests/vendor/bats-core/bin/bats tests/team-run-approved.bats" "shellcheck bin/team-run-approved"; do
-      if denied_in "$settings" "$command"; then echo "$role denies: $command" >&2; return 1; fi
-    done
+    assert_equal "$(jq -r .env.AGENT_TEAM_TASK "$TEAM_HOME/tasks/T7/settings.$role.json")" T7
   done
-  # The coordinator's own settings deny it nothing.
-  assert_equal "$(jq -c '[.permissions.deny[]? | select(contains("team-run-approved"))]' "$REPO_ROOT/coordinator.settings.json")" '[]'
-}
-
-@test "no worker gains Discord: a planner runs only its own task's interview post and wait, and no role reads the bot's files" {
-  thread T7
-  local role settings command bin=$REPO_ROOT/bin
-  for role in planner builder reviewer; do
-    run_bin -0 team-worker T7 "$role" "$wt1" -- go
-    settings=$TEAM_HOME/tasks/T7/settings.$role.json
-    assert_equal "$(jq -r .env.AGENT_TEAM_TASK "$settings")" T7
-    # shellcheck disable=SC2088 # ~ is part of the command as an agent types it
-    for command in "$bin/team-ask T7 sign-in --file q.md" "team-ask T7 sign-in --file q.md --from planner" \
-      "$bin/team-answer T7 sign-in 1564000000000000001" "~/agent-team/bin/team-answer T7 sign-in 1" \
-      "$bin/team-inbox" "team-inbox" "$bin/team-thread T7 --interview" "team-thread T7 conventioner title" \
-      "$bin/team-post --coordinator --file q.md" "$bin/team-post T7 --thread task --file q.md" \
-      "cat ~/.claude/channels/discord/.env" "jq . $HOME/.claude/channels/discord/access.json" \
-      "grep TOKEN ~/.claude/channels/discord/.env"; do
-      denied_in "$settings" "$command" || { echo "$role allows: $command" >&2; return 1; }
-    done
-    for command in "git add bin/team-ask bin/team-post tests/team-ask.bats" "grep -n die bin/team-inbox" \
-      "tests/vendor/bats-core/bin/bats tests/team-post.bats" "shellcheck bin/team-answer bin/team-thread" \
-      "git commit -m 'feat(team-post): post T7 --thread interview'" "$bin/team-thread --help"; do
-      if denied_in "$settings" "$command"; then echo "$role denies: $command" >&2; return 1; fi
-    done
-    jq -e '.permissions.deny | index("Read(~/.claude/channels/**)") != null' "$settings" >/dev/null
-  done
-
   settings=$TEAM_HOME/tasks/T7/settings.planner.json
   for command in "$bin/team-post T7 --thread interview --file $HOME/w/.scratch/task/q1.md" \
     "$bin/team-thread wait T7" "$bin/team-thread wait T7 --after 1564000000000000001"; do
@@ -954,13 +860,6 @@ allowed_in() {
   for command in "$bin/team-post T17 --thread interview --file q.md" "$bin/team-post T7 --file q.md" \
     "$bin/team-thread wait T17" "$bin/team-thread wait T7; $bin/team-post --coordinator --file q.md"; do
     if allowed_in "$settings" "$command"; then echo "planner may: $command" >&2; return 1; fi
-  done
-  for role in builder reviewer; do
-    settings=$TEAM_HOME/tasks/T7/settings.$role.json
-    for command in "$bin/team-post T7 --thread interview --file q.md" "team-post T7 --file q.md" \
-      "$bin/team-thread wait T7" "team-thread wait T7 --after 1"; do
-      denied_in "$settings" "$command" || { echo "$role allows: $command" >&2; return 1; }
-    done
   done
 }
 

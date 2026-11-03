@@ -281,7 +281,7 @@ toolkits/x/scripts/run:1: a needs b"
 # production servers fetch a credential, each through Daniel's 1Password prompt: every other
 # session is denied the 1Password CLI and other processes' environments. The rules match the CLI
 # as a command and the environment path as a file read, never text naming them (a commit message,
-# a ledger line, a brief), which tests/team-worker.bats checks on each role's settings.
+# a ledger line, a brief), which the matrices below check on each role's deny list.
 @test "the worker and coordinator settings deny the 1Password CLI and /proc environment reads" {
   local file rule
   for file in settings/worker.json coordinator.settings.json; do
@@ -294,6 +294,126 @@ toolkits/x/scripts/run:1: a needs b"
     denied_in "$REPO_ROOT/$file" 'cat /proc/1/environ | tr "\0" "\n"'
     ! denied_in "$REPO_ROOT/$file" 'team-secrets check'
     ! denied_in "$REPO_ROOT/$file" "team-log T41 blocked 'a read of /proc/1/environ; op read is Daniel's'"
+  done
+}
+
+# Role <role>'s deny list from the source files, settings/worker.json's rules then the role file's,
+# as team-worker generates it (tests/team-worker.bats proves the generated list is exactly this);
+# prints the file it writes: role_deny <role>
+role_deny() {
+  jq -s '{permissions: {deny: (.[0].permissions.deny + (.[1].permissions.deny // []))}}' \
+    "$REPO_ROOT/settings/worker.json" "$REPO_ROOT/settings/$1.json" >"$BATS_TEST_TMPDIR/deny.$1.json"
+  echo "$BATS_TEST_TMPDIR/deny.$1.json"
+}
+
+# Fail, naming the role and command, unless every command after -- is denied in the source files'
+# deny list of every worker role, and none of those before it: role_matrix <allowed>... -- <denied>...
+# A rule of settings/worker.json is in every role's list, so a command it denies is checked once,
+# on it; the rest, and every allowed one, on each role's list.
+role_matrix() {
+  local -a allowed=() rest=()
+  local role settings command
+  while (($#)) && [[ $1 != -- ]]; do allowed+=("$1") && shift; done
+  shift
+  for command; do
+    denied "settings/worker.json" "$command" || rest+=("$command")
+  done
+  for role in planner builder reviewer; do
+    settings=$(role_deny "$role")
+    for command in "${rest[@]}"; do
+      denied_in "$settings" "$command" || { echo "$role allows: $command" >&2; return 1; }
+    done
+    for command in "${allowed[@]}"; do
+      if denied_in "$settings" "$command"; then echo "$role denies: $command" >&2; return 1; fi
+    done
+  done
+}
+
+@test "every worker role's settings deny sudo and starting a Claude session of its own" {
+  # shellcheck disable=SC2088 # ~ is part of the command as an agent types it
+  role_matrix "claude --version" "claude auth status --json" "claude mcp list" \
+    "grep -n 'claude --bg' bin/team-worker" "grep -rn sudo tests" "git commit -m 'deny sudo'" \
+    "ls ~/.claude/projects" "pseudo-tool -p" -- \
+    "sudo" "sudo -n true" "sudo pacman -S jq" "claude --bg --name x go" \
+    "claude --background go" "claude -p hi" "claude --print hi" "claude --model opus -p hi" \
+    "claude --settings s.json --bg go" "claude --model opus --print hi" "claude agents" \
+    "claude agents --json" "claude respawn --all" "$HOME/.local/bin/claude -p hi" \
+    "~/.local/bin/claude --bg go" "/usr/bin/claude --model opus --print hi" \
+    "$HOME/.local/bin/claude agents"
+}
+
+@test "every worker role's settings deny Docker's prune commands, in every spelling, and nothing else of Docker" {
+  local object denied=()
+  for object in system volume image network builder container buildx; do
+    denied+=("docker $object prune" "docker $object prune -af" "docker --context default $object prune"
+      "docker -H unix:///var/run/docker.sock $object prune -f" "/usr/bin/docker $object prune -a"
+      "$HOME/.docker/bin/docker $object prune --filter until=24h")
+  done
+  role_matrix "docker image ls" "docker volume ls --filter dangling=true" "docker compose -p x down -v" \
+    "docker system df -v" "grep -n 'docker system prune' bin/team-stack" "team-stack down" \
+    "team-stack down --worktree $HOME/worktrees/x" "docker volume rm 1f2e3d" "git commit -m 'deny docker volume prune'" -- \
+    "${denied[@]}"
+}
+
+# The rules against the 1Password CLI, another process's environment and a change of the git
+# hooks setting refused commit messages, ledger lines and briefs that only named them (T41, T45).
+@test "every worker role's settings deny a real 1Password CLI call, environment read and hooks change, and no text naming them" {
+  role_matrix \
+    "git commit -m 'deny reads of /proc/*/environ and the op CLI; op read stays Daniel'\"'\"'s'" \
+    "git commit -m \"fix: the git config core.hooksPath rule matched op read in text\"" \
+    "team-log T41 blocked \"builder: a /proc/<pid>/environ read in a message; op is Daniel's, op run too\"" \
+    "team-brief T40 builder --text 'Daniel runs git -C ~/agent-team config core.hooksPath bin/hooks/git; never op'" \
+    "printf '%s\\n' 'stop reading /proc/1/environ' >> notes.md" "git config --get core.hooksPath" \
+    "git -C ~/repo config --get core.hooksPath || echo unset" "git config core.hooksPath" \
+    "git config --show-origin --get core.hooksPath 2>&1" "team-secrets check" "npm run loop" \
+    "grep -rn 'op read' bin" -- \
+    "op read op://agent-team/discord-bot-env/.env" "op item list --vault agent-team" \
+    "cd ~ && op document get discord-bot-env --vault agent-team" "true || op run -- env" \
+    "x=\$(op read op://v/i/f) && echo ok" "/opt/homebrew/bin/op whoami" "env op signin" \
+    "cat /proc/1234/environ" "tr '\\0' '\\n' < /proc/1/environ" "cat /proc/self/environ | grep TOKEN" \
+    "strings /proc/1/environ > out.txt" "grep -az TOKEN /proc/*/environ 2>/dev/null" \
+    "cat /proc/1/environ && echo done" "python3 -c \"print(open('/proc/1/environ').read())\"" \
+    "echo \$(cat /proc/1/environ)" \
+    "git config core.hooksPath /dev/null" "git config --global core.hooksPath x" \
+    "git -C $HOME/agent-team config core.hooksPath bin/hooks/git" "git config set --local core.hooksPath x" \
+    "git config --unset core.hooksPath" "git -C ~/repo config --unset-all core.hooksPath" \
+    "git config unset core.hooksPath" "git config 'core.hooksPath' x" "git config \"core.hookspath\" x" \
+    "git config --add core.hooksPath x" "git -c core.hooksPath=/dev/null commit -m x" \
+    "git -C ~/repo -c core.hooksPath= commit -m x"
+}
+
+@test "no worker role runs an approved script: team-run-approved is the coordinator's, by name or by path" {
+  local bin=$REPO_ROOT/bin
+  # shellcheck disable=SC2088 # ~ is part of the command as an agent types it
+  role_matrix "git add bin/team-run-approved tests/team-run-approved.bats" "grep -n die bin/team-run-approved" \
+    "tests/vendor/bats-core/bin/bats tests/team-run-approved.bats" "shellcheck bin/team-run-approved" -- \
+    "$bin/team-run-approved T7 fix" "team-run-approved T7 fix" \
+    "~/agent-team/bin/team-run-approved T7 fix" "cd /tmp && TZ=UTC $bin/team-run-approved T7 fix"
+  # The coordinator's own settings deny it nothing.
+  assert_equal "$(jq -c '[.permissions.deny[]? | select(contains("team-run-approved"))]' "$REPO_ROOT/coordinator.settings.json")" '[]'
+}
+
+@test "no worker role gains Discord: none runs its scripts or reads the bot's files, and only a planner's file leaves it the interview post and wait" {
+  local bin=$REPO_ROOT/bin role settings command
+  # shellcheck disable=SC2088 # ~ is part of the command as an agent types it
+  role_matrix "git add bin/team-ask bin/team-post tests/team-ask.bats" "grep -n die bin/team-inbox" \
+    "tests/vendor/bats-core/bin/bats tests/team-post.bats" "shellcheck bin/team-answer bin/team-thread" \
+    "git commit -m 'feat(team-post): post T7 --thread interview'" "$bin/team-thread --help" -- \
+    "$bin/team-ask T7 sign-in --file q.md" "team-ask T7 sign-in --file q.md --from planner" \
+    "$bin/team-answer T7 sign-in 1564000000000000001" "~/agent-team/bin/team-answer T7 sign-in 1" \
+    "$bin/team-inbox" "team-inbox" "$bin/team-thread T7 --interview" "team-thread T7 conventioner title" \
+    "$bin/team-post --coordinator --file q.md" "$bin/team-post T7 --thread task --file q.md" \
+    "cat ~/.claude/channels/discord/.env" "jq . $HOME/.claude/channels/discord/access.json" \
+    "grep TOKEN ~/.claude/channels/discord/.env"
+  jq -e '.permissions.deny | index("Read(~/.claude/channels/**)") != null' "$REPO_ROOT/settings/worker.json" >/dev/null
+  # The planner's allow rules for its own task are checked on its generated settings in
+  # tests/team-worker.bats; a builder and a reviewer are denied both.
+  for role in builder reviewer; do
+    settings=$(role_deny "$role")
+    for command in "$bin/team-post T7 --thread interview --file q.md" "team-post T7 --file q.md" \
+      "$bin/team-thread wait T7" "team-thread wait T7 --after 1"; do
+      denied_in "$settings" "$command" || { echo "$role allows: $command" >&2; return 1; }
+    done
   done
 }
 
