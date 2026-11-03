@@ -652,10 +652,10 @@ def reviewed_head($head):
 # Why the task's reviews do not let a word given on no head (plan-time or standing) merge the PR's
 # head $head unasked, one string per reason, none when they do, judged on the latest review of
 # reviewed_head($head), so a head team-catch-up made with no review of its own stands on the
-# review of the one it was made from (both named): no review of that head (by the shorter prefix) is logged; the latest one is
-# not a pass; it logged no guarded list, or named areas in it; and each review of the task, of any
-# head, that left out its finding counts or counted a security or real-data finding, fixed or
-# not, named by its head and time.
+# review of the one it was made from (both named): no review of that head (by the shorter prefix)
+# is logged; the latest one is not a pass; it logged no guarded list, or named areas in it; and
+# each review of the task, of any head, that left out its finding counts or counted a security or
+# real-data finding, fixed or not, named by its head and time.
 def unattended_review_reasons($head):
   reviewed_head($head) as $reviewed_head
   | "\($reviewed_head[:7])\(if same_head($reviewed_head; $head) then "" else " (caught up to \($head[:7]))" end)" as $named

@@ -30,8 +30,8 @@
 # "clean merge of <base> <short base> onto <short head>, reviewed", once GitHub shows the merge as
 # the PR's head (waited on for up to TEAM_CATCH_UP_WAIT seconds, default 30), and caught-up is
 # logged with url (the PR's), from (the reviewed head, the same through each catch-up of it), head
-# (the merge) and base (the base's commit merged), all full shas. A status that cannot be set is said on stderr with the command to
-# set it; the merge is pushed and logged all the same, exit 1.
+# (the merge) and base (the base's commit merged), all full shas. A status that cannot be set is
+# said on stderr with the command to set it; the merge is pushed and logged all the same, exit 1.
 # Prints what it merged, the merge's full sha, and last the next step: wait for the checks on the
 # merge, then ask Daniel to merge at the reviewed head, or run team-merge when team-state says a
 # plan-time or standing word covers it.
@@ -76,7 +76,7 @@ fi
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 
-# The PR as team-state sees it: the repo, the project, the head, its branch and the checks by bucket.
+# The PR as team-state sees it: the repo, the project, the head, its branch, the checks by bucket.
 facts=$(pr_part "$events" "$pr" "$scratch") || exit 1
 url=$(jq -r .url <<<"$facts")
 url=${url%/}
