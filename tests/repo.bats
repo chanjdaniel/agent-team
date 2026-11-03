@@ -1354,9 +1354,17 @@ SH
   assert_equal "$(cat "$STUB_CALLS/bats-ran")" repo.bats
 }
 
-# A whole-suite path reaches every file; a change outside the code's scripts, tests and settings
-# (sops/, a new file there) reaches repo.bats alone.
-@test "tests/run bats --changed reaches every file from bin/lib/team.sh, and repo.bats alone from sops/" {
+# Commits the copy's working tree and moves its base tag there, so a test's fixture files are no
+# change.
+changed_rebase() {
+  git -C "$1" add -A
+  git -C "$1" commit -qm fixture
+  git -C "$1" tag -f base >/dev/null
+}
+
+# A change outside the code's scripts, tests and settings (sops/, a new file there) reaches
+# repo.bats, and the bats files that name its path.
+@test "tests/run bats --changed reaches repo.bats from sops/, and the files naming the changed path" {
   local copy=$BATS_TEST_TMPDIR/copy
   unset TEAM_HOME
   changed_checkout "$copy"
@@ -1364,10 +1372,114 @@ SH
   echo '# new' >"$copy/sops/new.md"
   run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
   assert_equal "$output" tests/repo.bats
-  cp --remove-destination "$REPO_ROOT/bin/lib/team.sh" "$copy/bin/lib/team.sh"
-  echo '# changed' >>"$copy/bin/lib/team.sh"
+  echo '@test "it reads the rules" { grep -q rules "$BATS_TEST_DIRNAME/../sops/rules.md"; }' >"$copy/tests/manual.bats"
+  git -C "$copy" checkout -q -- sops/rules.md
+  changed_rebase "$copy"
+  echo 'more' >>"$copy/sops/rules.md"
   run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
-  assert_equal "$output" "$(cd "$copy" && printf '%s\n' tests/*.bats | LC_ALL=C sort)"
+  assert_equal "$output" $'tests/manual.bats\ntests/repo.bats'
+}
+
+# A whole-suite path reaches every file: bin/lib/team.sh, and each file of bin/ it reads or runs
+# in its code, as every script that sources it does.
+@test "tests/run bats --changed reaches every file from bin/lib/team.sh and from each file it reads or runs" {
+  local copy=$BATS_TEST_TMPDIR/copy path
+  unset TEAM_HOME
+  changed_checkout "$copy"
+  ln "$(shared changed-records <<<$'#!/usr/bin/env bash\nsource "$(dirname "$0")/lib/team.sh"\ncommit_records x')" "$copy/bin/team-zzrecords"
+  echo '@test "team-zzrecords" { true; }' >"$copy/tests/team-zzrecords.bats"
+  changed_rebase "$copy"
+  for path in bin/lib/team.sh bin/lib/tools.jq bin/lib/tools.lock bin/lib/records bin/lib/guarded bin/team-project bin/team-lease; do
+    cp --remove-destination "$REPO_ROOT/$path" "$copy/$path"
+    echo '# changed' >>"$copy/$path"
+    run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
+    assert_equal "$output" "$(cd "$copy" && printf '%s\n' tests/*.bats | LC_ALL=C sort)"
+    git -C "$copy" checkout -q -- "$path"
+  done
+}
+
+# A doctor check reaches what bin/team-doctor reaches: the bats files naming team-doctor, beyond
+# the doctor's own.
+@test "tests/run bats --changed reaches the files naming team-doctor from a doctor check" {
+  local copy=$BATS_TEST_TMPDIR/copy
+  unset TEAM_HOME
+  changed_checkout "$copy"
+  echo 'report "x" PASS "fine"' >"$copy/bin/lib/doctor.d/010-zzx.sh"
+  echo '@test "the doctor after a crash" { team-doctor --json; }' >"$copy/tests/crash.bats"
+  changed_rebase "$copy"
+  echo 'report "x" FAIL "not fine"' >"$copy/bin/lib/doctor.d/010-zzx.sh"
+  run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
+  assert_equal "$output" $'tests/coordinator-manual.bats\ntests/crash.bats\ntests/repo.bats'
+}
+
+# A bin/lib file reaches the bats files of each script naming lib/<it>, with a boundary, and of
+# each script using a bin/lib file that uses it in turn, a .jq module through include.
+@test "tests/run bats --changed follows a bin/lib file to its users, a jq module through include, and keeps lib/<name> bounded" {
+  local copy=$BATS_TEST_TMPDIR/copy
+  unset TEAM_HOME
+  changed_checkout "$copy"
+  echo 'def zz: 1;' >"$copy/bin/lib/zzmod.jq"
+  echo 'include "zzmod"; def zzuse: zz;' >"$copy/bin/lib/zzuse.jq"
+  echo 'zz' >"$copy/bin/lib/zzkey"
+  echo 'zz' >"$copy/bin/lib/zzkey-more"
+  printf '#!/usr/bin/env bash\njq -L lib/zzuse.jq; cat lib/zzkey\n' >"$copy/bin/team-zzgamma"
+  printf '#!/usr/bin/env bash\ncat lib/zzkey-more\n' >"$copy/bin/team-zzdelta"
+  echo '@test "team-zzgamma" { true; }' >"$copy/tests/team-zzgamma.bats"
+  echo '@test "team-zzdelta" { true; }' >"$copy/tests/team-zzdelta.bats"
+  changed_rebase "$copy"
+  echo 'def zz: 2;' >"$copy/bin/lib/zzmod.jq"
+  run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
+  assert_equal "$output" $'tests/coordinator-manual.bats\ntests/repo.bats\ntests/team-zzgamma.bats'
+  git -C "$copy" checkout -q -- bin/lib/zzmod.jq
+  echo 'more' >>"$copy/bin/lib/zzkey"
+  run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
+  assert_equal "$output" $'tests/coordinator-manual.bats\ntests/repo.bats\ntests/team-zzgamma.bats'
+}
+
+# A helper reaches the bats files loading it, and those loading a helper that loads it, never one
+# naming it in a comment; a template reaches the files naming its directory.
+@test "tests/run bats --changed follows a helper to its loaders, past comments, and a template to the files naming its directory" {
+  local copy=$BATS_TEST_TMPDIR/copy
+  unset TEAM_HOME
+  changed_checkout "$copy"
+  mkdir -p "$copy/tests/helpers" "$copy/templates/briefs"
+  echo 'zzi() { true; }' >"$copy/tests/helpers/zzi.bash"
+  echo 'source "$BATS_TEST_DIRNAME/helpers/zzi.bash"' >"$copy/tests/helpers/zzh.bash"
+  printf 'load helpers/zzh\n@test "a" { true; }\n' >"$copy/tests/a-loads.bats"
+  printf '# helpers/zzi is named in a comment only\n@test "b" { true; }\n' >"$copy/tests/b-mentions.bats"
+  echo '# a brief' >"$copy/templates/briefs/x.md"
+  printf '@test "briefs" { ls "$BATS_TEST_DIRNAME/../templates/briefs/"; }\n' >"$copy/tests/briefs-reader.bats"
+  changed_rebase "$copy"
+  echo 'zzi() { false; }' >"$copy/tests/helpers/zzi.bash"
+  run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
+  assert_equal "$output" $'tests/a-loads.bats\ntests/repo.bats'
+  git -C "$copy" checkout -q -- tests/helpers/zzi.bash
+  echo '# a new brief' >"$copy/templates/briefs/y.md"
+  run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
+  assert_equal "$output" $'tests/briefs-reader.bats\ntests/coordinator-manual.bats\ntests/repo.bats'
+}
+
+# Both sides of a rename drive the selection, in the working tree and committed alike, and so does
+# a deleted path, by its name.
+@test "tests/run bats --changed reaches from both sides of a rename and from a deleted path" {
+  local copy=$BATS_TEST_TMPDIR/copy
+  unset TEAM_HOME
+  changed_checkout "$copy"
+  echo '# old' >"$copy/OLD.md"
+  echo '@test "old" { cat OLD.md; }' >"$copy/tests/old-reader.bats"
+  echo '@test "new" { cat NEW.md; }' >"$copy/tests/new-reader.bats"
+  changed_rebase "$copy"
+  git -C "$copy" mv OLD.md NEW.md
+  run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
+  assert_equal "$output" $'tests/new-reader.bats\ntests/old-reader.bats\ntests/repo.bats'
+  git -C "$copy" commit -qm rename
+  run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
+  assert_equal "$output" $'tests/new-reader.bats\ntests/old-reader.bats\ntests/repo.bats'
+  git -C "$copy" switch -qc dropped base
+  git -C "$copy" rm -q bin/team-zzalpha
+  git -C "$copy" commit -qm 'drop team-zzalpha'
+  run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
+  assert_equal "$output" $'tests/coordinator-manual.bats\ntests/names-alpha.bats\ntests/repo.bats\ntests/team-zzalpha.bats\ntests/team-zzbeta.bats'
 }
 
 @test "tests/run bats --changed refuses a base that is no commit, any word after --list, and a missing origin/dev" {

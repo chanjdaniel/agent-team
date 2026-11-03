@@ -20,26 +20,30 @@
 # seconds in CI (tests/timings.tsv), as CI's shard jobs do; --list prints that shard's files and
 # runs none. A shard with no file (n above the file count) passes, running nothing.
 # With --changed, bats runs the files a change reaches, by the repository's naming, from the paths
-# changed since <base> (default origin/dev: git diff --name-only <base>...HEAD) and in the working
-# tree (git status --porcelain, untracked files and both sides of a rename included), printing
-# them first; it runs nothing, and says so, when no path changed, and --list prints them, one
-# tests/<name>.bats per line, and runs none. Every changed path reaches tests/repo.bats; one under
-# bin/, roles/, templates/, settings/ or plugins/ also tests/coordinator-manual.bats; a script
-# (bin/team-<x>, bin/claude-coordinator, a hook under bin/hooks/) its own tests/<script>.bats and
-# tests/<script>-*.bats, every bats file that names it as a word, and those of each script under
-# bin/ that names it (a doctor check that names it, the doctor's); bin/lib/doctor.d/* the
-# tests/team-doctor*, team-bootstrap*, team-load-check and team-resume files; any other file of
-# bin/lib/ the bats files named after it or naming lib/<it>, and those of each file under bin/ that
-# names lib/<it> or, for a .jq module, includes or imports it (a bin/lib file through its own users
-# in turn); tests/helpers/<h> the bats files naming helpers/<h> outside a comment (a .bash helper
-# without .bash, as load names it), and those of each helper naming it so; tests/<f>.bats itself;
-# any other file under tests/ the bats files named after it or naming its path; a file under
-# roles/, templates/, settings/, plugins/, servers/ or toolkits/, or coordinator.settings.json, the
-# bats files naming its path or one of its directories as <dir>/; and every file, bin/lib/team.sh,
+# changed since <base> (default origin/dev: git diff --name-only --no-renames <base>...HEAD) and in
+# the working tree (git status --porcelain, untracked files included), both sides of a rename and
+# a deleted path among them, printing them first; it runs nothing, and says so, when no path
+# changed, and --list prints them, one tests/<name>.bats per line, and runs none. Every changed
+# path reaches tests/repo.bats; one under bin/, roles/, templates/, settings/ or plugins/ also
+# tests/coordinator-manual.bats; a script (bin/team-<x>, bin/claude-coordinator, a hook under
+# bin/hooks/) its own tests/<script>.bats and tests/<script>-*.bats, every bats file that names it
+# as a word, and those of each script under bin/ that names it (a doctor check that names it, what
+# a doctor check reaches); bin/lib/doctor.d/* the tests/team-doctor*, team-bootstrap*,
+# team-load-check and team-resume files and what bin/team-doctor reaches, which runs every check;
+# any other file of bin/lib/ the bats files named after it or naming lib/<it>, and those of each
+# file under bin/ that names lib/<it> or, for a .jq module, includes or imports it (a bin/lib file
+# through its own users in turn); tests/helpers/<h> the bats files naming helpers/<h> outside a
+# comment (a .bash helper without .bash, as load names it), and those of each helper naming it so;
+# tests/<f>.bats itself; any other file under tests/ the bats files named after it or naming its
+# path; any other path (roles/, templates/, sops/, a root file such as CLAUDE.md) the bats files
+# naming it or one of its directories as <dir>/; and every file, bin/lib/team.sh,
 # bin/lib/platform.sh, bin/lib/ledger.jq, bin/lib/ledger-contract.json, tests/helpers/common.bash,
-# tests/run, tests/shards, tests/fixtures/ or tests/vendor/, which every test runs through. A
-# whole-suite file's mention of a bin/ file is not followed, or most of bin/lib would reach the
-# whole suite. A named base that is no commit is a usage error; a missing origin/dev is refused.
+# tests/run, tests/shards, tests/fixtures/ or tests/vendor/, and each file under bin/ that team.sh
+# or platform.sh reads or runs in its code ($TEAM_LIB/<file>, a bin/ script, a jq include:
+# tools.jq, tools.lock, records, guarded, team-project, team-lease and others), which every test
+# runs through. Beyond those reads, a whole-suite file's mention of a bin/ file is not followed, or
+# most of bin/lib would reach the whole suite. A named base that is no commit is a usage error; a
+# missing origin/dev is refused.
 # Exit 0 when every check passes; CI runs each part as its own job. The last line is the wall
 # time, so a slower suite shows, and when the bats ran, how many files at once.
 set -euo pipefail
@@ -112,7 +116,7 @@ bats_files() {
 # The paths --changed starts from (see the header), one per line, relative to the checkout.
 changed_paths() {
   local entry
-  git -C "$root" diff --name-only "$base...HEAD"
+  git -C "$root" diff --name-only --no-renames "$base...HEAD"
   while IFS= read -r -d '' entry; do
     echo "${entry:3}"
     # A rename or copy's entry is followed by its source's path.
@@ -132,25 +136,45 @@ doctor_files() {
   glob 'tests/team-load-check.bats'
   glob 'tests/team-resume.bats'
 }
+# The files under bin/ that bin/lib/team.sh and platform.sh read or run in their code (not in a
+# comment), as $TEAM_LIB/<file>, $TEAM_LIB/../<script>, $(dirname "$TEAM_LIB")/<script> or a jq
+# include or import, one path per line: every script that sources the library runs them.
+library_reads() {
+  grep -hv '^[[:space:]]*#' bin/lib/team.sh bin/lib/platform.sh |
+    grep -oE '\$TEAM_LIB/(\.\./)?[A-Za-z0-9._-]+|\$\(dirname "\$TEAM_LIB"\)/[A-Za-z0-9._-]+|(include|import) "[A-Za-z0-9_-]+"' |
+    sed -E -e 's#^\$TEAM_LIB/\.\./#bin/#' -e 's#^\$TEAM_LIB/#bin/lib/#' -e 's#^\$\(dirname "\$TEAM_LIB"\)/#bin/#' \
+      -e 's#^(include|import) "(.*)"$#bin/lib/\2.jq#' || true
+}
+declare -A library_read=()
 whole_suite() {
   case $1 in
     bin/lib/team.sh | bin/lib/platform.sh | bin/lib/ledger.jq | bin/lib/ledger-contract.json) ;;
     tests/helpers/common.bash | tests/run | tests/shards | tests/fixtures/* | tests/vendor/*) ;;
-    *) return 1 ;;
+    *) [[ -n ${library_read[$1]:-} ]] ;;
   esac
+}
+
+# A doctor check's: the doctor's, bootstrap's, load check's and resume's bats files, and what
+# bin/team-doctor reaches, since every check runs inside it.
+doctor_reach() {
+  doctor_files
+  script_reach bin/team-doctor
 }
 
 # A script's bats files: its own and those naming it as a word.
 script_files() { own_files "$1" && naming -wF -- "$1"; }
 
 # A script's (bin/team-<x>, bin/claude-coordinator, a hook): its own, and its callers' under bin/.
+declare -A script_seen=()
 script_reach() {
   local name=${1##*/} caller
+  [[ -z ${script_seen[$1]:-} ]] || return 0
+  script_seen[$1]=1
   script_files "$name"
   while IFS= read -r caller; do
     if [[ $caller == "$1" ]] || whole_suite "$caller"; then continue; fi
     case $caller in
-      bin/lib/doctor.d/*) doctor_files ;;
+      bin/lib/doctor.d/*) doctor_reach ;;
       bin/team-* | bin/claude-coordinator | bin/hooks/*) script_files "${caller##*/}" ;;
     esac
   done < <(bin_files | xargs grep -lwF -- "$name" || true)
@@ -171,7 +195,7 @@ lib_reach() {
   while IFS= read -r user; do
     if [[ $user == bin/lib/"$key" || $user == bin/lib/"$key"/* ]] || whole_suite "$user"; then continue; fi
     case $user in
-      bin/lib/doctor.d/*) doctor_files ;;
+      bin/lib/doctor.d/*) doctor_reach ;;
       bin/lib/*) lib_reach "$user" ;;
       *) script_reach "$user" ;;
     esac
@@ -202,14 +226,14 @@ reach() {
     bin/* | roles/* | templates/* | settings/* | plugins/*) echo tests/coordinator-manual.bats ;;
   esac
   case $1 in
-    bin/lib/doctor.d/*) doctor_files ;;
+    bin/lib/doctor.d/*) doctor_reach ;;
     bin/lib/*) lib_reach "$1" ;;
     bin/team-* | bin/claude-coordinator | bin/hooks/*) script_reach "$1" ;;
     tests/helpers/*) helper_reach "$1" ;;
     tests/*/*) own_files "$(basename "${1%.*}")"; naming -F -- "$1" ;;
     tests/*.bats) echo "$1" ;;
     tests/*) own_files "$(basename "${1%.*}")"; naming -F -- "$1" ;;
-    roles/* | templates/* | settings/* | plugins/* | servers/* | toolkits/* | coordinator.settings.json)
+    *)
       naming -F -- "$1"
       dir=$1
       while [[ $dir == */* ]]; do
@@ -225,6 +249,7 @@ changed_selection() {
   local paths path
   paths=$(changed_paths | sort -u) || return 1
   cd "$root"
+  while IFS= read -r path; do [[ -z $path ]] || library_read[$path]=1; done < <(library_reads)
   while IFS= read -r path; do
     if [[ -n $path ]] && whole_suite "$path"; then
       glob 'tests/*.bats'
