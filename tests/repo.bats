@@ -1398,6 +1398,22 @@ changed_rebase() {
   done
 }
 
+# A script the library runs, whose own change reaches every file (above), is still followed as a
+# caller like any other script when what it runs changes.
+@test "tests/run bats --changed follows a script the library runs as a caller of what it runs" {
+  local copy=$BATS_TEST_TMPDIR/copy
+  unset TEAM_HOME
+  changed_checkout "$copy"
+  cp --remove-destination "$REPO_ROOT/bin/team-lease" "$copy/bin/team-lease"
+  echo '"$(dirname "$0")/team-zzalpha"' >>"$copy/bin/team-lease"
+  echo '@test "the lease" { true; }' >"$copy/tests/team-lease.bats"
+  changed_rebase "$copy"
+  rm "$copy/bin/team-zzalpha"
+  printf '#!/usr/bin/env bash\necho alpha again\n' >"$copy/bin/team-zzalpha"
+  run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
+  assert_equal "$output" $'tests/coordinator-manual.bats\ntests/names-alpha.bats\ntests/repo.bats\ntests/team-lease.bats\ntests/team-zzalpha.bats\ntests/team-zzbeta.bats'
+}
+
 # A doctor check reaches what bin/team-doctor reaches: the bats files naming team-doctor, beyond
 # the doctor's own.
 @test "tests/run bats --changed reaches the files naming team-doctor from a doctor check" {

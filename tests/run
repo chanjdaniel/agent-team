@@ -41,8 +41,9 @@
 # tests/run, tests/shards, tests/fixtures/ or tests/vendor/, and each file under bin/ that team.sh
 # or platform.sh reads or runs in its code ($TEAM_LIB/<file>, a bin/ script, a jq include:
 # tools.jq, tools.lock, records, guarded, team-project, team-lease and others), which every test
-# runs through. Beyond those reads, a whole-suite file's mention of a bin/ file is not followed, or
-# most of bin/lib would reach the whole suite. A named base that is no commit is a usage error; a
+# runs through. The library's and the harness's own files listed above are never followed as a
+# caller or user of a changed file, or most of bin/lib would reach the whole suite; a file the
+# library reads or runs is, like any other. A named base that is no commit is a usage error; a
 # missing origin/dev is refused.
 # Exit 0 when every check passes; CI runs each part as its own job. The last line is the wall
 # time, so a slower suite shows, and when the bats ran, how many files at once.
@@ -145,14 +146,19 @@ library_reads() {
     sed -E -e 's#^\$TEAM_LIB/\.\./#bin/#' -e 's#^\$TEAM_LIB/#bin/lib/#' -e 's#^\$\(dirname "\$TEAM_LIB"\)/#bin/#' \
       -e 's#^(include|import) "(.*)"$#bin/lib/\2.jq#' || true
 }
-declare -A library_read=()
-whole_suite() {
+# The library and the test harness, which every test runs through, and whose mentions of other
+# files are never followed (team.sh's would take most of bin/lib to the whole suite).
+fixed_whole_suite() {
   case $1 in
     bin/lib/team.sh | bin/lib/platform.sh | bin/lib/ledger.jq | bin/lib/ledger-contract.json) ;;
     tests/helpers/common.bash | tests/run | tests/shards | tests/fixtures/* | tests/vendor/*) ;;
-    *) [[ -n ${library_read[$1]:-} ]] ;;
+    *) return 1 ;;
   esac
 }
+# The paths whose change reaches every file: those, and what the library reads or runs. A file the
+# library reads or runs is still followed as a caller or user like any other.
+declare -A library_read=()
+whole_suite() { fixed_whole_suite "$1" || [[ -n ${library_read[$1]:-} ]]; }
 
 # A doctor check's: the doctor's, bootstrap's, load check's and resume's bats files, and what
 # bin/team-doctor reaches, since every check runs inside it.
@@ -172,7 +178,7 @@ script_reach() {
   script_seen[$1]=1
   script_files "$name"
   while IFS= read -r caller; do
-    if [[ $caller == "$1" ]] || whole_suite "$caller"; then continue; fi
+    if [[ $caller == "$1" ]] || fixed_whole_suite "$caller"; then continue; fi
     case $caller in
       bin/lib/doctor.d/*) doctor_reach ;;
       bin/team-* | bin/claude-coordinator | bin/hooks/*) script_files "${caller##*/}" ;;
@@ -193,7 +199,7 @@ lib_reach() {
   naming -E -- "$pattern"
   [[ $key != *.jq ]] || pattern+="|(include|import) \"${key%.jq}\""
   while IFS= read -r user; do
-    if [[ $user == bin/lib/"$key" || $user == bin/lib/"$key"/* ]] || whole_suite "$user"; then continue; fi
+    if [[ $user == bin/lib/"$key" || $user == bin/lib/"$key"/* ]] || fixed_whole_suite "$user"; then continue; fi
     case $user in
       bin/lib/doctor.d/*) doctor_reach ;;
       bin/lib/*) lib_reach "$user" ;;
@@ -214,7 +220,7 @@ helper_reach() {
   naming -E -- "$pattern"
   while IFS= read -r helper; do
     [[ $helper != "$1" ]] || continue
-    if whole_suite "$helper"; then glob 'tests/*.bats'; else helper_reach "$helper"; fi
+    if fixed_whole_suite "$helper"; then glob 'tests/*.bats'; else helper_reach "$helper"; fi
   done < <(grep -lE -- "$pattern" tests/helpers/*.bash || true)
 }
 
