@@ -38,7 +38,7 @@ So keep the pointer at once, before planning.
 - Daniel starts and stops a walk by saying so, in the task's thread or in `#coordinator` naming the task: run `team-ui T<n> --walk start` or `team-ui T<n> --walk stop` at once, then say in the thread that the walk is on and each message there is captured until Daniel ends it, or that it is off.
 - Never start a walk on your own judgement: when Daniel seems to be walking the app with no walk on, you may ask once whether to start one, and leave it at their answer.
 - Before treating a message in a task's thread as a walk note, check `team-ui T<n> --walk status` (or `team-state`, whose line shows `| walk on since <ts>`); a walk on one task makes nothing in another task's thread a walk note.
-- For each walk note, run `team-ui T<n> --capture --note '<the note>'` before answering it, with Daniel's words as they posted them, then read the capture and answer the note.
+- For each walk note, before answering it, write Daniel's words as they posted them with the Write tool to `tasks/T<n>/ui/.note-<its message id>` in the team home, never on the command line, then run `team-ui T<n> --capture --note-file <that file>`, read the capture and answer the note.
 - A failed capture is one line to Daniel in the thread with its fix, as step 3 says, and never holds the note up: answer it from its words.
 - When Daniel's last walk note has been dealt with and they say the walk is done, stop it.
 - After a restart or a compaction, `team-state` names any walk still on: ask Daniel in that thread whether it is still going, rather than stopping it unasked.
@@ -49,7 +49,7 @@ Read the files of the `tasks/T<n>/ui/capture-<k>/` that `ui-capture`'s line name
 
 1. `ui-page.md`: the page, its route and title, why that page was taken (when it is not the page Daniel meant, say so in one line), the Vue route's components and their files, and the page's console problems and failed requests since it last loaded.
 2. `page.png`, with Read: what Daniel saw; a tab that was not visible has none, and `ui-page.md` says so.
-3. `ui-pick.md` and `element.png`, when the capture took an element: its source file and line, components, HTML and matched CSS.
+3. `ui-pick.md` and `element.png`, when the capture took an element: its source file and line, components, HTML and matched CSS; an element on a tab that was not visible has no `element.png`, and `ui-pick.md` says so.
 
 `page-snapshot.txt` is the page's accessibility snapshot, for finding an element Daniel describes in words, and `note.md`, when there is one, holds the words Daniel posted with the capture, such as a walk note.
 

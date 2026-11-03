@@ -94,11 +94,16 @@ $ui/capture-11/page.png
 $ui/capture-11/ui-page.md"
 }
 
-@test "--note keeps Daniel's words and the time beside the capture they go with" {
+@test "--note-file keeps Daniel's words and the time beside the capture they go with" {
   echo page >"$STUB_FIXTURES/capture-kind"
-  run_bin -0 team-ui T7 --capture --note 'preview import is blocked. check the page state'
-  run_bin -0 team-ui T7 --note 'the `Import` button ```stays``` grey' --capture
+  # The coordinator writes each note with the Write tool, under a dot name team-ui lists nowhere.
+  mkdir -p "$ui"
+  printf "preview import is blocked. check the page state\n" >"$ui/.note-1"
+  printf 'the `Import` button ```stays``` grey, and Daniel'"'"'s "Save" too\n' >"$ui/.note-2"
+  run_bin -0 team-ui T7 --capture --note-file "$ui/.note-1"
+  run_bin -0 team-ui T7 --note-file "$ui/.note-2" --capture
   [[ ! -e $ui/note.md ]]
+  [[ $output != *.note-* ]] || { echo "$output" >&2; return 1; }
   assert_contains "$output" "$ui/capture-2/note.md"
   local note
   note=$(<"$ui/capture-1/note.md")
@@ -106,7 +111,7 @@ $ui/capture-11/ui-page.md"
     { echo "$note" >&2; return 1; }
   # The fence is longer than any run of backticks in the words, so they read as written.
   assert_equal "$(tail -n 3 "$ui/capture-2/note.md")" '````
-the `Import` button ```stays``` grey
+the `Import` button ```stays``` grey, and Daniel'"'"'s "Save" too
 ````'
 }
 
@@ -142,7 +147,8 @@ $ui/capture-1/ui-pick.md"
 @test "a capture that fails removes its directory, keeps the attachments and earlier captures, and says why in one line" {
   run_bin -0 team-ui T7 --capture
   echo "the Agent Chrome has no localhost page open" >"$STUB_FIXTURES/capture-fails"
-  run_bin -1 --separate-stderr team-ui T7 --attach "$inbox/1563-screenshot.png" --capture --note 'check the page'
+  printf 'check the page\n' >"$BATS_TEST_TMPDIR/note"
+  run_bin -1 --separate-stderr team-ui T7 --attach "$inbox/1563-screenshot.png" --capture --note-file "$BATS_TEST_TMPDIR/note"
   assert_equal "$(tail -n 1 "$STUB_CALLS/ui-capture.log")" "$ui/capture-2"
   assert_equal "$stderr" "team-ui: the capture failed: ui-capture: the Agent Chrome has no localhost page open"
   [[ ! -e $ui/capture-2 ]]
@@ -159,10 +165,21 @@ $ui/capture-1/ui-pick.md"
   assert_equal "$(tail -n 1 "$STUB_CALLS/ui-capture.log")" "$ui/capture-2"
 }
 
+@test "a ui/ it cannot make a capture directory in is refused at once, naming the directory" {
+  mkdir -p "$ui"
+  chmod 555 "$ui"
+  run -1 --separate-stderr timeout 10 "$CODE_CHECKOUT/bin/team-ui" T7 --capture
+  chmod 755 "$ui"
+  assert_equal "$stderr" "team-ui: cannot make a capture directory in $ui"
+  [[ ! -e $STUB_CALLS/ui-capture.log ]]
+  [[ -z $(ls -A "$ui") ]]
+}
+
 @test "the brief that follows names each capture with its kind and its note" {
   run_bin -0 team-ui T7 --capture
   echo page >"$STUB_FIXTURES/capture-kind"
-  run_bin -0 team-ui T7 --capture --note 'check the page state'
+  printf 'check the page state\n' >"$BATS_TEST_TMPDIR/note"
+  run_bin -0 team-ui T7 --capture --note-file "$BATS_TEST_TMPDIR/note"
   jq -cn '{ts: "2026-10-25T10:01:00Z", task: "T7", event: "thread", discord_thread: "1563000000000000007"}' >>"$TEAM_HOME/ledger.jsonl"
   cat >"$TEAM_HOME/projects.toml" <<'TOML'
 [conventioner]
@@ -202,16 +219,26 @@ TOML
   run_bin -2 team-ui T9 --attach
   run_bin -2 team-ui 9 --capture
   run_bin -2 team-ui T9 --capture --bogus
-  run_bin -2 --separate-stderr team-ui T9 --note 'check the page'
-  assert_equal "$stderr" "team-ui: --note goes with --capture"
-  run_bin -2 --separate-stderr team-ui T9 --attach "$inbox/notes.txt" --note 'check the page'
-  assert_equal "$stderr" "team-ui: --note goes with --capture"
-  run_bin -2 --separate-stderr team-ui T9 --capture --note
-  assert_equal "$stderr" "team-ui: --note needs the words Daniel posted"
-  run_bin -2 --separate-stderr team-ui T9 --capture --note ''
-  assert_equal "$stderr" "team-ui: --note needs the words Daniel posted"
-  run_bin -2 --separate-stderr team-ui T9 --capture --note a --note b
-  assert_equal "$stderr" "team-ui: one --note per capture"
+  local note=$BATS_TEST_TMPDIR/note
+  printf 'check the page\n' >"$note"
+  run_bin -2 --separate-stderr team-ui T9 --note-file "$note"
+  assert_equal "$stderr" "team-ui: --note-file goes with --capture"
+  run_bin -2 --separate-stderr team-ui T9 --attach "$inbox/notes.txt" --note-file "$note"
+  assert_equal "$stderr" "team-ui: --note-file goes with --capture"
+  run_bin -2 --separate-stderr team-ui T9 --capture --note-file
+  assert_equal "$stderr" "team-ui: --note-file needs the file Daniel's words were written to"
+  run_bin -2 --separate-stderr team-ui T9 --capture --note-file ''
+  assert_equal "$stderr" "team-ui: --note-file needs the file Daniel's words were written to"
+  run_bin -2 --separate-stderr team-ui T9 --capture --note-file "$note" --note-file "$note"
+  assert_equal "$stderr" "team-ui: one --note-file per capture"
+  run_bin -2 --separate-stderr team-ui T9 --capture --note 'check the page'
+  assert_equal "$stderr" "team-ui: unexpected argument '--note'"
+  # A note it cannot read, or one with no words, is refused before anything is copied or captured.
+  run_bin -1 --separate-stderr team-ui T9 --attach "$inbox/notes.txt" --capture --note-file "$BATS_TEST_TMPDIR/missing"
+  assert_equal "$stderr" "team-ui: cannot read $BATS_TEST_TMPDIR/missing"
+  printf '\n \n' >"$note"
+  run_bin -1 --separate-stderr team-ui T9 --attach "$inbox/notes.txt" --capture --note-file "$note"
+  assert_equal "$stderr" "team-ui: $note holds no words"
   [[ ! -e $STUB_CALLS/ui-capture.log ]]
   [[ ! -e $TEAM_HOME/tasks/T9/ui ]]
 }
@@ -285,13 +312,13 @@ off"
   run_bin -2 --separate-stderr team-ui T7 --walk start --walk stop
   assert_equal "$stderr" "team-ui: one --walk at a time"
   run_bin -2 --separate-stderr team-ui T7 --walk start --capture
-  assert_equal "$stderr" "team-ui: --walk goes alone, without --capture, --note or --attach"
+  assert_equal "$stderr" "team-ui: --walk goes alone, without --capture, --note-file or --attach"
   run_bin -2 --separate-stderr team-ui T7 --capture --walk start
-  assert_equal "$stderr" "team-ui: --walk goes alone, without --capture, --note or --attach"
-  run_bin -2 --separate-stderr team-ui T7 --walk start --note 'check the page'
-  assert_equal "$stderr" "team-ui: --walk goes alone, without --capture, --note or --attach"
+  assert_equal "$stderr" "team-ui: --walk goes alone, without --capture, --note-file or --attach"
+  run_bin -2 --separate-stderr team-ui T7 --walk start --note-file "$inbox/notes.txt"
+  assert_equal "$stderr" "team-ui: --walk goes alone, without --capture, --note-file or --attach"
   run_bin -2 --separate-stderr team-ui T7 --walk stop --attach "$inbox/notes.txt"
-  assert_equal "$stderr" "team-ui: --walk goes alone, without --capture, --note or --attach"
+  assert_equal "$stderr" "team-ui: --walk goes alone, without --capture, --note-file or --attach"
   run_bin -2 team-ui --walk start
   [[ ! -e $TEAM_HOME/ledger.jsonl ]] || assert_equal "$(walk_events T7)" ""
   [[ ! -e $STUB_CALLS/ui-capture.log ]]
@@ -300,7 +327,7 @@ off"
 
 @test "--help documents --walk, what a walk is for, and that the ledger records it" {
   run_bin -0 team-ui --help
-  assert_contains "$output" "Usage: team-ui T<n> [--capture [--note <text>]] [--attach <file>]...
+  assert_contains "$output" "Usage: team-ui T<n> [--capture [--note-file <file>]] [--attach <file>]...
        team-ui T<n> --walk start|stop|status"
   assert_contains "$output" "manual QC walk"
   assert_contains "$output" "walk event in the ledger"
