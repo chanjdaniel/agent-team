@@ -4,10 +4,45 @@
 # test's fixture in $STUB_FIXTURES: <name>.sh is sourced with the call's arguments when present,
 # otherwise <name>.out is printed and <name>.status is the exit code (default 0).
 # A call with no fixture at all fails, so a test never passes on an unplanned call.
+# It starts no process of its own: every stubbed call in the suite pays for what it does.
 set -euo pipefail
 name=${0##*/}
-# After --args --, each value is taken literally, even one that looks like an option.
-jq -cn '$ARGS.positional' --args -- "$@" >>"$STUB_CALLS/$name.log"
+
+# The arguments as one compact JSON array, as jq -c writes it: each taken literally, even one that
+# looks like an option, with backslash, quote and the control characters escaped.
+json_args() {
+  local out='' arg i hex char
+  for arg; do
+    arg=${arg//\\/\\\\}
+    arg=${arg//\"/\\\"}
+    arg=${arg//$'\n'/\\n}
+    arg=${arg//$'\t'/\\t}
+    arg=${arg//$'\r'/\\r}
+    arg=${arg//$'\b'/\\b}
+    arg=${arg//$'\f'/\\f}
+    arg=${arg//$'\x7f'/\\u007f}
+    if [[ $arg == *[$'\x01'-$'\x1f']* ]]; then
+      for ((i = 1; i < 32; i++)); do
+        printf -v hex '%02x' "$i"
+        printf -v char '%b' "\\x$hex"
+        arg=${arg//"$char"/\\u00$hex}
+      done
+    fi
+    out+=,\"$arg\"
+  done
+  printf '[%s]\n' "${out#,}"
+}
+json_args "$@" >>"$STUB_CALLS/$name.log"
+
+# Print <file> whole, trailing newlines and all, as cat does, with builtins; fail as cat does when
+# it cannot be read. A fixture's script may use it too: print_file <file>
+print_file() {
+  local body
+  [[ -f $1 && -r $1 ]] || { echo "cat: $1: No such file or directory" >&2; return 1; }
+  IFS= read -r -d '' body <"$1" || true
+  printf '%s' "$body"
+}
+
 fixture=$STUB_FIXTURES/$name
 if [[ -f $fixture.sh ]]; then
   # shellcheck disable=SC1090 # the per-test fixture
@@ -18,5 +53,7 @@ if [[ ! -f $fixture.out && ! -f $fixture.status ]]; then
   echo "stub $name: no fixture for this call: $*" >&2
   exit 127
 fi
-if [[ -f $fixture.out ]]; then cat "$fixture.out"; fi
-exit "$(cat "$fixture.status" 2>/dev/null || echo 0)"
+if [[ -f $fixture.out ]]; then print_file "$fixture.out"; fi
+status=0
+[[ ! -f $fixture.status ]] || status=$(<"$fixture.status")
+exit "$status"

@@ -158,24 +158,28 @@ done < <(tr -s '[:space:]' '\n' <<<"$prompt")
   die "the prompt says 'your brief' but names no brief*.md file"
 
 # T0 is the load check, not a task: it has no ledger entry and stays out of the ledger.
-worktree_event=
+worktree_event='' project=''
 if [[ $task != T0 ]]; then
-  events=$(task_events "$task" | jq -cs .)
-  status=$(task_status "$events")
+  events=$(task_event_array "$task")
+  # In one jq run: the task's status, whether it has a thread, and its open worktrees, one a line
+  # as "<worktree>\x1f<worktree> (<project>, <branch>)\x1f<project>\x1f<its compact JSON>".
+  status='' thread='' worktrees=''
+  json_vars --ledger status=task_status thread='any(.[]; .event == "thread")' \
+    worktrees='[open_worktrees(.[]; $home) | [.worktree, "\(.worktree) (\(.project), \(.branch))", (.project // ""), tojson]
+      | map(tostring) | join("\u001f")] | join("\n")' <<<"$events"
   [[ $status != closed ]] || die "$task is closed"
   # Every task has its Discord thread before any worker starts (bin/team-thread).
-  jq -e 'any(.[]; .event == "thread")' <<<"$events" >/dev/null ||
-    die "$task has no Discord thread; open one first with team-thread"
+  [[ $thread == true ]] || die "$task has no Discord thread; open one first with team-thread"
 
   # A task opened by team-open launches only in one of its open worktrees; tasks from before
   # team-open (no opened event) launch in any linked worktree.
   if [[ $status == open ]]; then
     open=
-    while IFS= read -r line; do
-      wt=$(jq -r .worktree <<<"$line")
-      if same_path "$wt" "$worktree"; then worktree_event=$line; fi
-      open+=$'\n'"  $(jq -r '"\(.worktree) (\(.project), \(.branch))"' <<<"$line")"
-    done < <(task_worktrees "$task")
+    while IFS=$'\x1f' read -r wt line wt_project wt_json; do
+      [[ -n $wt ]] || continue
+      if same_path "$wt" "$worktree"; then worktree_event=$wt_json project=$wt_project; fi
+      open+=$'\n'"  $line"
+    done <<<"$worktrees"
     [[ -n $worktree_event ]] || die "$worktree is not one of $task's open worktrees:${open:- it has none}"
   fi
 
@@ -185,7 +189,6 @@ fi
 
 # The project's model for the role, from the registry, unless --model named one; ops stays on the
 # default model.
-project=$(jq -r '.project // empty' <<<"${worktree_event:-null}")
 if [[ -z $model && -n $project && $role != ops ]]; then
   models=$(team_project "$project" models) || exit 1
   model=$(jq -r --arg role "$role" '.[$role] // empty' <<<"$models")

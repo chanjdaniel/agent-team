@@ -1,6 +1,7 @@
 #!/usr/bin/env bats
 # The library's machine identity and recorded paths: the team home it finds, machine_name, the
-# machine's team name, and local_path, a recorded path as the same path under this machine's HOME.
+# machine's team name, and local_path, a recorded path as the same path under this machine's HOME;
+# and json_vars, several values of one JSON document read in one jq run.
 
 load helpers/common
 
@@ -162,3 +163,61 @@ home_setting() {
   run -0 "$code/bin/team-x" --help
 }
 
+
+@test "json_vars reads each named value of one JSON document into a variable, in one jq run" {
+  # A jq that counts its runs in $JQ_RUNS, first on PATH, linked from the run's shared copy.
+  mkdir -p "$BATS_TEST_TMPDIR/counting"
+  ln "$(shared counting-jq <<EOF
+#!/usr/bin/env bash
+echo run >>"\$JQ_RUNS"
+exec $(command -v jq) "\$@"
+EOF
+)" "$BATS_TEST_TMPDIR/counting/jq"
+  export JQ_RUNS=$BATS_TEST_TMPDIR/jq-runs
+  lib_run -0 team-x "PATH=$BATS_TEST_TMPDIR/counting:\$PATH"'
+    json_vars holder=.holder epoch=.epoch state=.state none=.missing gone=empty mine=.mine \
+      list=.list obj=.obj text=.text first=".list[]" <<<"$1"
+    printf "[%s]\n" "$holder" "$epoch" "$state" "$none" "$gone" "$mine" "$list" "$obj" "$text" "$first"' \
+    '{"holder": "home-pc", "epoch": 7, "state": null, "mine": false, "list": [1, "a"], "obj": {"a": 1},
+      "text": "two\n\nlines\n\n"}'
+  assert_equal "$output" '[home-pc]
+[7]
+[]
+[]
+[]
+[false]
+[[1,"a"]]
+[{"a":1}]
+[two
+
+lines]
+[1]'
+  assert_equal "$(wc -l <"$BATS_TEST_TMPDIR/jq-runs")" 1
+}
+
+@test "json_vars takes jq options after --, reads a file on stdin, and sets the caller's locals" {
+  printf '%s\n' '{"a": 1}' '{"a": 2}' >"$BATS_TEST_TMPDIR/two.json"
+  lib_run -0 team-x '
+    f() { local n w; json_vars n="map(.a) | add" w="\$who + \" \" + (length | tostring)" -- -s --arg who "it'"'"'s" <"$1"; echo "$n|$w"; }
+    f "$@"; echo "${n:-unset}"' "$BATS_TEST_TMPDIR/two.json"
+  assert_equal "$output" "3|it's 2
+unset"
+}
+
+@test "json_vars --ledger runs as ledger_jq, with the ledger's definitions and contract" {
+  lib_run -0 team-x 'json_vars --ledger status=task_status kinds="\$contract.kinds | has(\"opened\")" \
+    path=".[0].worktree | local_path(\$home)" <<<"$1"; echo "$status $kinds $path"' \
+    '[{"task": "T1", "event": "opened", "worktree": "/home/alice/w"}]'
+  assert_equal "$output" "open true $HOME/w"
+}
+
+@test "json_vars fails on input that is not JSON or no document, and refuses a malformed name" {
+  lib_run -1 team-x 'a=kept; json_vars a=.a <<<"not json" 2>/dev/null || { echo "failed, a=$a"; exit 1; }'
+  assert_equal "$output" "failed, a=kept"
+  lib_run -1 team-x 'a=kept; json_vars a=.a <<<"" || { echo "no document, a=$a"; exit 1; }'
+  assert_equal "$output" "no document, a=kept"
+  lib_run -2 team-x 'json_vars "bad name=.a" <<<"{}"'
+  assert_equal "$output" "team-x: json_vars: 'bad name=.a' is not <name>=<jq filter>"
+  lib_run -2 team-x 'json_vars .a <<<"{}"'
+  assert_equal "$output" "team-x: json_vars: '.a' is not <name>=<jq filter>"
+}

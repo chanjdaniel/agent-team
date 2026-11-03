@@ -10,6 +10,7 @@
 #               team-capacity place, or team-level apply); else passes, naming the live team
 #               sessions in it. On macOS passes with "no hard limits on macOS: admission and stow
 #               only". On any OS, fails on a malformed capacity.json or level.jsonl line, naming it,
+#               or on a check that prints no JSON verdict,
 #               warns on what the task slots left (~/.config/agent-team/slots.json,
 #               ~/.local/state/agent-team/slots/ and ~/.local/state/agent-team/slots.lock), no
 #               longer read since levels replaced them, and warns while this machine holds the lease
@@ -27,6 +28,10 @@ if [[ -n $os ]]; then
   if ((rc)); then
     report resources FAIL "team-capacity failed: $(first_error)" "fix what team-capacity names, then run team-doctor again"
   else
-    report resources "$(jq -r .verdict <<<"$resources")" "$(jq -r .reason <<<"$resources")" "$(jq -r .fix <<<"$resources")"
+    verdict='' reason='' fix=''
+    json_vars verdict='.verdict | tostring' reason='.reason | tostring' fix='.fix | tostring' <<<"$resources" 2>/dev/null ||
+      verdict=FAIL reason='team-capacity check printed no JSON verdict' \
+        fix='run team-capacity check --json and fix what it names, then run team-doctor again'
+    report resources "$verdict" "$reason" "$fix"
   fi
 fi

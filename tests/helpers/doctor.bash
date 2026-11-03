@@ -92,9 +92,14 @@ EOF
   # The OS: Linux, from an Arch os-release file, until a test says Darwin.
   stub_command uname
   stub_reply uname Linux
-  # uname -m answers the machine type (x86_64 until a test says otherwise), anything else the OS.
+  # uname -m answers the machine type (x86_64 until a test says otherwise), anything else the OS;
+  # read with builtins, as every script's start runs uname.
   stub_script uname <<'EOF'
-if [[ ${1:-} == -m ]]; then cat "$STUB_FIXTURES/uname-m.out" 2>/dev/null || echo x86_64; else cat "$STUB_FIXTURES/uname.out"; fi
+if [[ ${1:-} == -m ]]; then
+  if [[ -f $STUB_FIXTURES/uname-m.out ]]; then echo "$(<"$STUB_FIXTURES/uname-m.out")"; else echo x86_64; fi
+else
+  echo "$(<"$STUB_FIXTURES/uname.out")"
+fi
 EOF
   export TEAM_OS_RELEASE=$BATS_TEST_TMPDIR/os-release
   printf '%s\n' 'NAME="Arch Linux"' 'PRETTY_NAME="Arch Linux"' 'ID=arch' >"$TEAM_OS_RELEASE"
@@ -129,8 +134,8 @@ EOF
 case $* in
   'auth status --json')
     echo '{"loggedIn": true, "authMethod": "claude.ai", "email": "daniel@example.invalid", "orgId": "org-secret-0000", "subscriptionType": "pro"}' ;;
-  'plugin list --json') cat "$STUB_FIXTURES/plugins.json" ;;
-  'plugin marketplace list --json') cat "$STUB_FIXTURES/marketplaces.json" ;;
+  'plugin list --json') print_file "$STUB_FIXTURES/plugins.json" ;;
+  'plugin marketplace list --json') print_file "$STUB_FIXTURES/marketplaces.json" ;;
   '--bg --name team-doctor-'*)
     # A promptless background session: refused in a root listed in $STUB_FIXTURES/untrusted, and
     # failing otherwise in one listed in $STUB_FIXTURES/no-session.
@@ -144,7 +149,7 @@ case $* in
       exit 1
     fi
     echo "Started background session $(printf '%s' "$PWD" | sha256sum | cut -c1-8). It is waiting: send a prompt to start." ;;
-  'agents --json') cat "$STUB_FIXTURES/agents.json" 2>/dev/null || echo '[]' ;;
+  'agents --json') print_file "$STUB_FIXTURES/agents.json" 2>/dev/null || echo '[]' ;;
   'stop '* | 'rm '*) ;;
   *) echo "claude stub: unplanned call: $*" >&2; exit 127 ;;
 esac
@@ -272,11 +277,11 @@ clock_offset() {
 url=${*: -1}
 if [[ $url == https://discord.com/api/v10/* ]]; then
   discord=$STUB_FIXTURES/discord/${url#https://discord.com/api/v10/}.json
-  if [[ -f $discord ]]; then cat "$discord"; exit 0; fi
+  if [[ -f $discord ]]; then print_file "$discord"; exit 0; fi
   echo "curl: (22) The requested URL returned error: 404" >&2
   exit 22
 fi
-offset=$(cat "$STUB_FIXTURES/clock-offset")
+offset=$(<"$STUB_FIXTURES/clock-offset")
 printf 'HTTP/2 200\r\ndate: %s\r\nserver: github.com\r\n\r\n' \
   "$(LC_ALL=C date -u -d "@$(($(date +%s) + offset))" '+%a, %d %b %Y %H:%M:%S GMT')"
 EOF
@@ -289,7 +294,7 @@ EOF
 # one shared script (helpers/common's shared), named as its command.
 tool_stub() {
   [[ ! -e $TOOL_STUBS/$1 ]] || return 0
-  mkdir -p "$TOOL_ANSWERS/$1"
+  [[ -d $TOOL_ANSWERS/$1 ]] || mkdir -p "$TOOL_ANSWERS/$1"
   ln "$(shared tool-stub <<EOF
 #!$(PATH=$REAL_PATH command -v bash)
 name=\${0##*/}
@@ -297,8 +302,14 @@ key=\$*
 answer=\$TOOL_ANSWERS/\$name/\${key// /_}
 if [[ -f \$answer.missing ]]; then echo "\$name: command not found" >&2; exit 127; fi
 if [[ -f \$answer.sh ]]; then source "\$answer.sh"; exit 0; fi
-if [[ -f \$answer ]]; then cat "\$answer"; exit 0; fi
-real=\$(PATH=\$REAL_PATH command -v "\$name") || real=''
+if [[ -f \$answer ]]; then IFS= read -r -d '' body <"\$answer" || true; printf '%s' "\$body"; exit 0; fi
+# The real command: the first executable file of its name on REAL_PATH, as command -v finds it,
+# looked up with builtins, since every tool call of the doctor's tests comes through here.
+real=''
+IFS=: read -ra dirs <<<"\$REAL_PATH"
+for dir in "\${dirs[@]}"; do
+  if [[ -f \$dir/\$name && -x \$dir/\$name ]]; then real=\$dir/\$name && break; fi
+done
 if [[ -f \$TOOL_ANSWERS/\$name.wrap.sh ]]; then
   source "\$REPO_ROOT/tests/helpers/doctor.bash"
   source "\$TOOL_ANSWERS/\$name.wrap.sh"
@@ -317,7 +328,8 @@ answer() {
   tool_stub "${words[0]}"
   key=${1#* }
   file=$TOOL_ANSWERS/${words[0]}/${key// /_}
-  rm -f "$file" "$file.missing" "$file.sh"
+  # Only what is there is removed: tools_at answers every tool, often twice a test.
+  [[ ! -e $file && ! -e $file.missing && ! -e $file.sh ]] || rm -f "$file" "$file.missing" "$file.sh"
   if (($# > 1)); then printf '%s\n' "$2" >"$file"; else : >"$file.missing"; fi
 }
 
@@ -344,15 +356,22 @@ lock_pin() {
 
 # Every tool of <os> answers at <version> (default its pin or min), or is missing (version "-").
 tools_at() {
-  local os=$1 name cmd version
+  local os=$1 name cmd version rows dirs=()
+  rows=$(lock_tools "$os")
+  # Every tool's answers directory in one mkdir.
+  while IFS=$'\t' read -r name cmd _; do
+    [[ -z $name || -d $TOOL_ANSWERS/${cmd%% *} ]] || dirs+=("$TOOL_ANSWERS/${cmd%% *}")
+  done <<<"$rows"
+  ((${#dirs[@]} == 0)) || mkdir -p "${dirs[@]}"
   while IFS=$'\t' read -r name cmd version _; do
+    [[ -n $name ]] || continue
     version=${2:-$version}
     if [[ $version == - ]]; then
       answer "$cmd"
     else
       answer "$cmd" "${FORMAT[$name]//%s/$version}"
     fi
-  done < <(lock_tools "$os")
+  done <<<"$rows"
 }
 
 # The sandbox runs as macOS (as_macos), with the heartbeat's LaunchAgents enabled.

@@ -9,8 +9,8 @@
 # exported, so every script and every session it starts runs with that one PATH. It sets
 # TEAM_HOME (unless already set, the first line of ~/.config/agent-team/home under
 # HOME) and TEAM_HOME_FROM, answers --help with the calling script's header (then runs
-# the script's help_more, if it defined one before sourcing), and provides die, usage_error, team_project, ledger_jq, ledger_append,
-# task_events, known_task_events, open_task_events, task_status, task_worktrees, script_place_refusal, local_path,
+# the script's help_more, if it defined one before sourcing), and provides die, usage_error, team_project, ledger_jq, json_vars, ledger_append,
+# task_events, task_event_array, known_task_events, open_task_events, task_status, task_worktrees, script_place_refusal, local_path,
 # archive_left_out, rsync_rule, archive_task_dir, machine_name, os_release, team_os, tool_dirs,
 # team_tool_path, fence_reason, offline_hold, lease_refusal, worker_refusal, toolkit_refusal, lease_gate, worktree_changes, same_path, bounded, docker_bounded, docker_silence, trust_probe,
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin,
@@ -93,15 +93,51 @@ ledger_jq() {
     "include \"ledger\"; \$contract[0] as \$contract | $1" "${@:2}"
 }
 
+# Read several values of one JSON document on stdin into shell variables, in one jq run: each
+# <name> is set to its <filter>'s first output as text (a string as it is, null or no output
+# empty, anything else compact JSON), with its trailing newlines stripped, as $(jq -r <filter>)
+# strips them; the options after -- go to jq (-s, --arg, -L), and with
+# --ledger it runs as ledger_jq, with the ledger's definitions and $contract. When jq fails (input
+# that is not JSON), it fails with jq's status and sets nothing; with no document on stdin, it
+# fails with 1 and sets nothing. The caller's local variables are
+# set, so long as none is named _jv_*:
+# json_vars [--ledger] <name>=<filter>... [-- <jq option>...] <<<"$json"
+json_vars() {
+  local _jv_filter='' _jv_out _jv_i _jv_run=jq
+  local -a _jv_names=() _jv_values=()
+  if [[ ${1:-} == --ledger ]]; then _jv_run=ledger_jq && shift; fi
+  while (($#)) && [[ $1 != -- ]]; do
+    [[ $1 =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.+)$ ]] || usage_error "json_vars: '$1' is not <name>=<jq filter>"
+    _jv_names+=("${BASH_REMATCH[1]}")
+    _jv_filter+="${_jv_filter:+, }([${BASH_REMATCH[2]}] | first | if . == null then \"\" elif type == \"string\" then . else tojson end)"
+    shift
+  done
+  (($# == 0)) || shift
+  _jv_out=$("$_jv_run" "[$_jv_filter] | @sh" -r "$@") || return
+  [[ -n $_jv_out ]] || return 1
+  eval "_jv_values=($_jv_out)"
+  for _jv_i in "${!_jv_names[@]}"; do
+    printf -v "${_jv_names[_jv_i]}" '%s' "${_jv_values[_jv_i]%"${_jv_values[_jv_i]##*[!$'\n']}"}"
+  done
+}
+
 # Append one JSON object as one line to the ledger, under an exclusive lock beside it, so two
 # scripts never interleave a line. The event must meet the ledger contract, and the calling
 # script must be its kind's writer. With <seconds>, the lock is waited on at most that long, and
 # a lock still held then is a refusal: ledger_append <event> [<seconds>]
 ledger_append() {
-  local line problems lock_wait=()
-  line=$(jq -ce 'select(type == "object")' <<<"$1") || die "not a JSON object for the ledger: $1"
-  [[ $line != *$'\n'* ]] || die "not one JSON object for the ledger: $1"
-  problems=$(ledger_jq '[append_problems($contract; $writer)] | join("; ")' -r --arg writer "${0##*/}" <<<"$line")
+  local out line problems lock_wait=()
+  # One jq run: the object's compact line, then its problems ("none" when the input holds no object
+  # or is not JSON, "many" when it holds more than one). Any other failure (an unreadable contract,
+  # an error in ledger.jq) is jq's own, and its message is shown.
+  out=$(ledger_jq '(try [inputs | select(type == "object")] catch []) as $objects
+      | if ($objects | length) == 0 then "none" elif ($objects | length) > 1 then "many"
+        else ($objects[0] | tojson), ([$objects[0] | append_problems($contract; $writer)] | join("; ")) end' \
+    -nr --arg writer "${0##*/}" <<<"$1") || die "cannot check the event against the ledger contract: $1"
+  line=${out%%$'\n'*} problems=''
+  [[ $out != *$'\n'* ]] || problems=${out#*$'\n'}
+  [[ $line != none ]] || die "not a JSON object for the ledger: $1"
+  [[ $line != many ]] || die "not one JSON object for the ledger: $1"
   [[ -z $problems ]] || die "refusing a ledger event: $problems"
   [[ -z ${2:-} ]] || lock_wait=(-w "$2")
   {
@@ -117,11 +153,21 @@ task_events() {
     jq -cR --arg task "$1" 'fromjson? | select(type == "object" and .task == $task)' "$TEAM_HOME/ledger.jsonl"
 }
 
+# A task's events as one compact JSON array in ledger order, [] when it has none, in one jq run:
+# task_event_array T<n>
+task_event_array() {
+  if [[ -e $TEAM_HOME/ledger.jsonl ]]; then
+    jq -cnR --arg task "$1" '[inputs | fromjson? | select(type == "object" and .task == $task)]' "$TEAM_HOME/ledger.jsonl"
+  else
+    echo '[]'
+  fi
+}
+
 # A task's events as one JSON array in ledger order, refusing a task the ledger has no events for:
 # known_task_events T<n>
 known_task_events() {
   local events
-  events=$(task_events "$1" | jq -cs .)
+  events=$(task_event_array "$1")
   [[ $events != '[]' ]] || die "unknown task $1: the ledger has no events for it"
   printf '%s\n' "$events"
 }
@@ -130,7 +176,7 @@ known_task_events() {
 # no opened event, or a closed one: open_task_events T<n>
 open_task_events() {
   local events
-  events=$(task_events "$1" | jq -cs .)
+  events=$(task_event_array "$1")
   case $(task_status "$events") in
     open) printf '%s\n' "$events" ;;
     closed) die "$1 is closed" ;;
@@ -326,15 +372,25 @@ machine_name() {
 
 # A value of the os-release file, unquoted: os_release <key>. TEAM_OS_RELEASE names the file to
 # read instead of /etc/os-release (the tests' seam).
+# Read with builtins, as it runs at every script's start (team_os); a file it cannot read fails
+# with 2, as sed did.
 os_release() {
-  sed -n "s/^$1=//p" "${TEAM_OS_RELEASE:-/etc/os-release}" 2>/dev/null | head -n1 |
-    sed -E "s/^\"(.*)\"\$/\\1/; s/^'(.*)'\$/\\1/"
+  local file=${TEAM_OS_RELEASE:-/etc/os-release} line value
+  [[ -f $file && -r $file ]] || return 2
+  while IFS= read -r line || [[ -n $line ]]; do
+    [[ $line == "$1="* ]] || continue
+    value=${line#"$1="}
+    if [[ $value =~ ^\"(.*)\"$ ]]; then value=${BASH_REMATCH[1]}; fi
+    if [[ $value =~ ^\'(.*)\'$ ]]; then value=${BASH_REMATCH[1]}; fi
+    printf '%s\n' "$value"
+    return 0
+  done <"$file"
 }
 
 # This machine's OS as the team names it: arch (Arch Linux, or a derivative whose ID_LIKE names
 # arch, like EndeavourOS) or macos; fails on any other.
 team_os() {
-  case $(uname -s) in
+  case ${TEAM_KERNEL:-$(uname -s)} in
     Darwin) echo macos ;;
     Linux) [[ $(os_release ID) == arch || " $(os_release ID_LIKE) " == *" arch "* ]] && echo arch ;;
     *) return 1 ;;
@@ -578,21 +634,31 @@ docker_silence() {
 # (the start's exit code and output): trust_probe <path> <name>
 # shellcheck disable=SC2034 # trust_verdict is read by the caller
 trust_probe() {
-  local name=$2 ids id
+  local name=$2 id line probe_ids=() probe_kept=()
+  local -A probe_seen=()
   trust_rc=0 trust_left=()
   trust_out=$(cd "$1" && bounded 60 claude --bg --name "$name" 2>&1 </dev/null) || trust_rc=$?
-  ids=$({
-    [[ $trust_out == *"Workspace not trusted"* ]] || grep -oE '\b[0-9a-f]{8}\b' <<<"$trust_out" | head -n 1
-    bounded 30 claude agents --json 2>/dev/null </dev/null | jq -r --arg name "$name" 'arrays | .[] | objects
-      | select(.name == $name) | .id // ((.sessionId // "")[:8]) | strings' 2>/dev/null || true
-  } | awk 'NF && !seen[$0]++')
-  for id in $ids; do
+  # The first 8 hex digits of the start's output that stand as a word, then each live session of
+  # the probe's name, read with builtins but for the session list's jq; each kept once, no blank.
+  if [[ $trust_out != *"Workspace not trusted"* &&
+    $trust_out =~ (^|[^A-Za-z0-9_])([0-9a-f]{8})([^A-Za-z0-9_]|$) ]]; then
+    probe_ids+=("${BASH_REMATCH[2]}")
+  fi
+  while IFS= read -r line; do probe_ids+=("$line"); done < <(bounded 30 claude agents --json 2>/dev/null </dev/null |
+    jq -r --arg name "$name" 'arrays | .[] | objects
+      | select(.name == $name) | .id // ((.sessionId // "")[:8]) | strings' 2>/dev/null || true)
+  for line in ${probe_ids[@]+"${probe_ids[@]}"}; do
+    [[ -n ${line//[[:space:]]/} && -z ${probe_seen[$line]:-} ]] || continue
+    probe_seen[$line]=1 probe_kept+=("$line")
+  done
+  # shellcheck disable=SC2048 # split as the lines were before: an id is one word
+  for id in ${probe_kept[*]}; do
     bounded 30 claude stop "$id" >/dev/null 2>&1 </dev/null || true
     bounded 30 claude rm "$id" >/dev/null 2>&1 </dev/null || trust_left+=("$id")
   done
   if [[ $trust_out == *"Workspace not trusted"* ]]; then
     trust_verdict=untrusted
-  elif ((trust_rc == 0)) && [[ -n $ids ]]; then
+  elif ((trust_rc == 0 && ${#probe_kept[@]} > 0)); then
     trust_verdict=trusted
   else
     trust_verdict=unknown
@@ -1028,8 +1094,15 @@ INTERVIEW_CHANNEL=${TEAM_INTERVIEW_CHANNEL-1565336720998928556}
 # Print the Discord bot token from ~/.claude/channels/discord/.env, or fail with nothing printed.
 # Callers keep it in a variable or test for it (discord_token >/dev/null); never print it.
 discord_token() {
-  local token
-  token=$(sed -n 's/^DISCORD_BOT_TOKEN=//p' "$HOME/.claude/channels/discord/.env" 2>/dev/null || true)
+  local token='' line file=$HOME/.claude/channels/discord/.env
+  # Every DISCORD_BOT_TOKEN= line's value, a line each, read with builtins: it runs on every
+  # Discord call.
+  if [[ -f $file && -r $file ]]; then
+    while IFS= read -r line || [[ -n $line ]]; do
+      [[ $line != DISCORD_BOT_TOKEN=* ]] || token+=${line#DISCORD_BOT_TOKEN=}$'\n'
+    done <"$file"
+  fi
+  while [[ $token == *$'\n' ]]; do token=${token%$'\n'}; done
   [[ -n $token ]] || return 1
   printf '%s\n' "$token"
 }
@@ -1360,19 +1433,26 @@ session_context() {
 # GitHub. GitHub failures are carried in the pr part; a broken registry or an unreadable session
 # list fails with the reason on stderr: task_state_json '<events>'
 task_state_json() (
-  local events=$1 state pr dir session_id context contexts='{}' sessions plan_project plan_projects opted_in own standing
-  local task tickets total
+  local events=$1 state pr dir session_id context contexts=() out plan_project plan_projects opted_in own standing
+  local task tickets
   live_sessions
   while IFS= read -r session_id; do
     context=$(session_context "$session_id")
-    [[ -z $context ]] || contexts=$(jq -c --arg id "$session_id" --argjson n "$context" '.[$id] = $n' <<<"$contexts")
+    [[ -z $context ]] || contexts+=("$session_id" "$context")
   done < <(ledger_jq 'live_session_ids($sessions)[]' -r --argjson sessions "$LIVE_SESSIONS" <<<"$events")
-  sessions=$(jq -c --argjson contexts "$contexts" 'map(if type == "object" then
-    .context = ($contexts[.sessionId // "" | tostring] // null) else . end)' <<<"$LIVE_SESSIONS") || exit 1
-  state=$(ledger_jq 'task_state($sessions; $home)' -c --argjson sessions "$sessions" <<<"$events") || exit 1
+  # In one jq run, a line each: the state, with each live session's context; its plan-time
+  # approval's project (empty when none); the task; and its latest pr event (null when none).
+  out=$(ledger_jq '. as $events
+    | ($ARGS.positional | [range(0; length; 2) as $i | {key: .[$i], value: (.[$i + 1] | tonumber)}] | from_entries) as $contexts
+    | ($sessions | map(if type == "object" then
+        .context = ($contexts[.sessionId // "" | tostring] // null) else . end)) as $sessions
+    | task_state($sessions; $home)
+    | tojson, (.merge_preapproval.project // "" | tostring), ($events[0].task | tostring),
+      ($events | map(select(.event == "pr")) | last | tojson)' \
+    -r --argjson sessions "$LIVE_SESSIONS" --args "${contexts[@]}" <<<"$events") || exit 1
+  { IFS= read -r state && IFS= read -r plan_project && IFS= read -r task && IFS= read -r pr; } <<<"$out"
   # The plan-time approval's project as the registry has it now; one it no longer has opts in to
   # nothing, and is the team's own only by name.
-  plan_project=$(jq -r '.merge_preapproval.project // empty' <<<"$state") || exit 1
   if [[ -n $plan_project ]]; then
     opted_in=false own=false
     plan_projects=$(team_project --list) || exit 1
@@ -1386,12 +1466,11 @@ task_state_json() (
       '.merge_preapproval += {opted_in: $opted_in, own: $own}' <<<"$state") || exit 1
   fi
   # The ticket total: the ticket files team-tickets reads, null when it refuses them.
-  task=$(jq -r '.[0].task' <<<"$events") || exit 1
   if tickets=$(TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-tickets" "$task" --json 2>/dev/null </dev/null) &&
-    total=$(jq -e 'length' <<<"$tickets" 2>/dev/null); then
-    state=$(jq -c --argjson total "$total" '.progress.tickets.total = $total' <<<"$state") || exit 1
+    out=$(jq -cn 'input as $tickets | input | .progress.tickets.total = ($tickets | length)' 2>/dev/null \
+      <<<"$tickets"$'\n'"$state"); then
+    state=$out
   fi
-  pr=$(jq -c 'map(select(.event == "pr")) | last' <<<"$events") || exit 1
   if [[ $pr != null ]]; then
     dir=$(mktemp -d) || exit 1
     trap 'rm -rf "$dir"' EXIT

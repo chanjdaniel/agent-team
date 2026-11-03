@@ -12,9 +12,13 @@ access=$HOME/.claude/channels/discord/access.json
 declare -A interview_bits=([View Channel]=10 [Read Message History]=16 [Create Public Threads]=35 [Send Messages in Threads]=38)
 interview_names=("View Channel" "Read Message History" "Create Public Threads" "Send Messages in Threads")
 interview_err=$(mktemp)
-# GET <path> through the Discord API into $interview_reply, or report the line and fail.
+# GET <path> through the Discord API into $interview_reply, or report the line and fail; in the
+# same jq run that checks it is a JSON object or array, each <name>=<filter> is read from it into
+# <name> (json_vars): interview_get <path> [<name>=<filter>...]
 interview_get() {
-  if interview_reply=$(discord_api "$1" --max-time 20 2>"$interview_err") && jq -e 'type == "object" or type == "array"' <<<"$interview_reply" >/dev/null 2>&1; then
+  local ok=''
+  if interview_reply=$(discord_api "$1" --max-time 20 2>"$interview_err") &&
+    json_vars ok='type == "object" or type == "array"' "${@:2}" <<<"$interview_reply" 2>/dev/null && [[ $ok == true ]]; then
     return 0
   fi
   local why
@@ -30,7 +34,7 @@ interview_get() {
 }
 
 interview_check() {
-  local channel guild bot member base=0 kind a d admin=$((1 << 3)) name missing=()
+  local channel guild='' bot='' text='' type='' member base=0 kind a d admin=$((1 << 3)) name missing=()
   if [[ -z $INTERVIEW_CHANNEL ]]; then
     report "interview channel" FAIL "no interview channel is set, so no planner can interview Daniel" \
       "Daniel makes a text channel for interviews, with no access.json group, and a PR sets its id as INTERVIEW_CHANNEL in bin/lib/team.sh"
@@ -46,16 +50,16 @@ interview_check() {
       "the secret discord-bot-env line's fix"
     return 0
   fi
-  interview_get "channels/$INTERVIEW_CHANNEL" || return 0
+  interview_get "channels/$INTERVIEW_CHANNEL" text='try (.type == 0) catch false' \
+    type='try (.type // "none" | tostring) catch empty' \
+    guild='try (.guild_id | strings | select(test("^[0-9]+$"))) catch empty' || return 0
   channel=$interview_reply
-  if ! jq -e '.type == 0' <<<"$channel" >/dev/null; then
-    report "interview channel" FAIL "$INTERVIEW_CHANNEL is not a text channel (type $(jq -r '.type // "none"' <<<"$channel")), so no thread opens under it" \
+  if [[ $text != true ]]; then
+    report "interview channel" FAIL "$INTERVIEW_CHANNEL is not a text channel (type $type), so no thread opens under it" \
       "Daniel makes a text channel for interviews, with no access.json group, and a PR sets its id as INTERVIEW_CHANNEL in bin/lib/team.sh"
     return 0
   fi
-  guild=$(jq -r '.guild_id | strings | select(test("^[0-9]+$"))' <<<"$channel")
-  interview_get "users/@me" || return 0
-  bot=$(jq -r '.id | strings | select(test("^[0-9]+$"))' <<<"$interview_reply")
+  interview_get "users/@me" bot='try (.id | strings | select(test("^[0-9]+$"))) catch empty' || return 0
   if [[ -z $guild || -z $bot ]]; then
     report "interview channel" WARN "Discord named no server for the channel or no id for the bot, so the bot's access to the interview channel is unchecked" \
       "run team-doctor again"

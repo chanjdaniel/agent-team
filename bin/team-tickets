@@ -66,7 +66,7 @@ while IFS=$'\t' read -r project worktree; do
     files+=("$file")
     projects+=("$project")
   done < <(find "$dir" -mindepth 1 -maxdepth 1 -name '*.md' -print0 | sort -z)
-done < <(task_worktrees "$task" | jq -r '[.project, .worktree] | @tsv')
+done < <(ledger_jq 'open_worktrees(.[]; $home) | [.project, .worktree] | @tsv' -r <<<"$events")
 
 # Each line of the files that counts as a Blocked by:, Waits for: or Phase: line, as
 # "<file>\t<line>\t<blocked, waits or phase>\t<1 when well-formed, else 0>\t<value>", the value
@@ -99,11 +99,11 @@ read_lines() {
 }
 
 
-files_json=$(for i in "${!files[@]}"; do printf '%s\t%s\n' "${projects[$i]}" "${files[$i]}"; done |
-  jq -cR 'split("\t") | {project: .[0], file: .[1]}' | jq -cs .)
-marks_json='[]'
-((${#files[@]} == 0)) || marks_json=$(read_lines "${files[@]}" |
-  jq -cR 'split("\t") | {file: .[0], line: (.[1] | tonumber), label: .[2], good: (.[3] == "1"), value: .[4]}' | jq -cs .)
+# The files and the marks as tab-separated rows, read into the analysis's $files and $marks.
+files_tsv=''
+for i in "${!files[@]}"; do files_tsv+="${projects[$i]}"$'\t'"${files[$i]}"$'\n'; done
+marks_tsv=''
+((${#files[@]} == 0)) || marks_tsv=$(read_lines "${files[@]}")
 
 # The analysis, over the task's events as its input: {problems, tickets}, each problem
 # "<file>[:<line>]: <reason>", each ticket with its state.
@@ -181,23 +181,34 @@ def cycle($g; $start):
              elif $t.state == "running" then {session: $runs[.ticket].launch.value.session} else {} end)]}
 JQ
 
-analysed=$(jq -c --arg task "$task" --argjson files "$files_json" --argjson marks "$marks_json" "$program" <<<"$events")
-
-if [[ $(jq '.problems | length' <<<"$analysed") -gt 0 ]]; then
-  jq -r --arg me "${0##*/}" '.problems[] | "\($me): \(.)"' <<<"$analysed" >&2
+# One jq run: the analysis, then a first line of its problem and ticket counts, then each problem,
+# then the tickets as --json prints them or as text lines.
+mode=text
+[[ -z $json ]] || mode=json
+out=$(jq -r --arg task "$task" --arg files_tsv "$files_tsv" --arg marks_tsv "$marks_tsv" --arg me "${0##*/}" \
+  --arg mode "$mode" '
+  def rows: split("\n") | map(select(. != "") | split("\t"));
+  ($files_tsv | rows | map({project: .[0], file: .[1]})) as $files
+  | ($marks_tsv | rows | map({file: .[0], line: (.[1] | tonumber), label: .[2], good: (.[3] == "1"), value: .[4]})) as $marks
+  | ('"$program"')
+  | "\(.problems | length) \(.tickets | length)",
+    (.problems[] | "\($me): \(.)"),
+    (if (.problems | length) > 0 then empty
+     elif $mode == "json" then .tickets
+     else .tickets[] | "\(.ticket) \(.state + "       " | .[:7]) \(.slug)" + (
+       if .state == "running" then ": session \(.session)"
+       elif .state == "blocked" then ": on \(.on | join(", "))"
+       elif .state == "waiting" then ": \(.waits_for)" else "" end) end)' <<<"$events")
+read -r problems count <<<"${out%%$'\n'*}"
+rest=''
+[[ $out != *$'\n'* ]] || rest=${out#*$'\n'}
+if ((problems > 0)); then
+  printf '%s\n' "$rest" >&2
   exit 1
 fi
-count=$(jq '.tickets | length' <<<"$analysed")
 ((count)) || echo "${0##*/}: $task has no tickets in its open worktrees" >&2
 if [[ -n $check ]]; then
   ((count == 0)) || echo "$task: $count tickets, every Blocked by:, Waits for: and Phase: line well-formed"
   exit 0
 fi
-if [[ -n $json ]]; then
-  jq '.tickets' <<<"$analysed"
-else
-  jq -r '.tickets[] | "\(.ticket) \(.state + "       " | .[:7]) \(.slug)" + (
-    if .state == "running" then ": session \(.session)"
-    elif .state == "blocked" then ": on \(.on | join(", "))"
-    elif .state == "waiting" then ": \(.waits_for)" else "" end)' <<<"$analysed"
-fi
+[[ -z $rest ]] || printf '%s\n' "$rest"

@@ -15,6 +15,50 @@ setup() {
   assert_contains "$output" "TEAM_HOME=$REPO_ROOT is outside"
 }
 
+@test "the sandbox guard follows a symlink or a .. out of the test's directory, and starts no process for the sandbox's own paths" {
+  ln -s /tmp "$BATS_TEST_TMPDIR/out"
+  HOME=$BATS_TEST_TMPDIR/out/home run -1 guard_sandbox
+  assert_contains "$output" "HOME=$BATS_TEST_TMPDIR/out/home is outside"
+  TEAM_HOME=$BATS_TEST_TMPDIR/team/../.. run -1 guard_sandbox
+  assert_contains "$output" "TEAM_HOME=$BATS_TEST_TMPDIR/team/../.. is outside"
+  HOME=$BATS_TEST_TMPDIR run -1 guard_sandbox
+  HOME=$BATS_TEST_TMPDIR/.. run -1 guard_sandbox
+  # The sandbox's own paths, and another one part below its directory, there or not yet, pass
+  # with no command on PATH to start.
+  PATH=/nonexistent guard_sandbox
+  HOME=$BATS_TEST_TMPDIR/state PATH=/nonexistent guard_sandbox
+  # Deeper paths, a trailing slash and a symlink that stays inside pass through realpath.
+  HOME=$BATS_TEST_TMPDIR/machines/a/home TEAM_HOME=$BATS_TEST_TMPDIR/team/ run -0 guard_sandbox
+  ln -s "$BATS_TEST_TMPDIR/home" "$BATS_TEST_TMPDIR/home-link"
+  HOME=$BATS_TEST_TMPDIR/home-link run -0 guard_sandbox
+}
+
+@test "the sandbox's stubs are hard links to the run's one shared stub, and stub_command adds one" {
+  local stub=$BATS_RUN_TMPDIR/shared/stub cmd stubs=("$BATS_TEST_TMPDIR"/stubs/*)
+  assert_equal "${stubs[*]##*/}" "busctl claude curl gh launchctl op systemctl systemd-run"
+  for cmd in "${stubs[@]}"; do
+    [[ $cmd -ef $stub && -x $cmd && ! -w $cmd ]] || { echo "$cmd is not the shared stub" >&2; return 1; }
+  done
+  stub_command docker tmux
+  [[ $BATS_TEST_TMPDIR/stubs/docker -ef $stub && $BATS_TEST_TMPDIR/stubs/tmux -ef $stub ]]
+  # A test may remove its own link, never the run's stub.
+  rm "$BATS_TEST_TMPDIR/stubs/gh"
+  [[ -x $stub && -x $BATS_TEST_TMPDIR/stubs/curl ]]
+}
+
+@test "the sandbox's git config is the file git config --global writes" {
+  assert_equal "$(cat "$HOME/.gitconfig")" "$(printf '[user]\n\tname = Team Test\n\temail = team-test@example.invalid\n[init]\n\tdefaultBranch = main\n[advice]\n\tdetachedHead = false')"
+  assert_equal "$(git config --global --list)" "$(printf '%s\n' user.name='Team Test' user.email=team-test@example.invalid init.defaultbranch=main advice.detachedhead=false)"
+}
+
+@test "the sandbox's systemd-run runs the command after --, or fails as a refused scope" {
+  run -0 systemd-run --user --scope --quiet -- printf '%s|' 'a b' c
+  assert_equal "$output" 'a b|c|'
+  touch "$STUB_FIXTURES/systemd-run-refuse"
+  run -1 systemd-run --user --scope -- true
+  assert_equal "$output" "Failed to start transient scope unit: Access denied"
+}
+
 @test "stubs log every call and answer from the test's fixtures" {
   run -127 gh pr view 4
   assert_contains "$output" "stub gh: no fixture for this call: pr view 4"

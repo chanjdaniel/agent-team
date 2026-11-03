@@ -24,7 +24,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/../lib/team.sh" "$@"
 [[ $# -eq 0 ]] || usage_error "usage: denial-log   (the event on stdin)"
 task=${AGENT_TEAM_TASK:-} role=${AGENT_TEAM_ROLE:-}
 [[ $task =~ ^T[1-9][0-9]*$ && $role =~ ^[a-z]+$ ]] || exit 0
-[[ $(task_status "$(task_events "$task" | jq -cs .)") == open ]] || exit 0
+[[ $(task_status "$(task_event_array "$task")") == open ]] || exit 0
 
 event=$(jq -ce --arg task "$task" --arg role "$role" '
   select(type == "object" and .hook_event_name == "PermissionDenied"
