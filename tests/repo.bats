@@ -416,8 +416,9 @@ rule_matches() {
   rule_text_matches "$glob" "$2"
 }
 
-# Every session's settings deny <rule>, and it matches each <command>: assert_denies <rule> <command>...
+# Every session's settings deny <rule>, and it matches each <command>, untraced: assert_denies <rule> <command>...
 assert_denies() {
+  [[ -n ${UNTRACED_DEBUG+set} ]] || { untraced assert_denies "$@"; return; }
   local file command
   for file in "${SETTINGS[@]}"; do
     jq -e --arg rule "$1" '.permissions.deny | index($rule)' "$REPO_ROOT/$file" >/dev/null ||

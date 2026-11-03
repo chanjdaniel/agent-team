@@ -237,9 +237,17 @@ cpu_under() {
     { echo "used $(awk -v before="$1" -v now="$CPU" 'BEGIN { print now - before }') CPU seconds, not under $2" >&2; return 1; }
 }
 
+# <text> once for each i from 1 to <n>, one per line, each @ in it replaced by i, untraced since
+# it loops: lines <n> <text>
+lines() {
+  [[ -n ${UNTRACED_DEBUG+set} ]] || { untraced lines "$@"; return; }
+  local i
+  for ((i = 1; i <= $1; i++)); do echo "${2//@/$i}"; done
+}
+
 @test "a long command is judged quickly" {
   local body before
-  body=$(for i in $(seq 1 3000); do echo "line $i with a > and a | tee x"; done)
+  body=$(lines 3000 'line @ with a > and a | tee x')
   cpu_now
   before=$CPU
   passes "git commit -m \"$body\" > .scratch/task/out"
@@ -249,13 +257,13 @@ cpu_under() {
   passes "printf '%s' '$body' | tee .scratch/task/out"
   cpu_under "$before" 5
   # Each cd that may fail adds directories the shell may be in, which the walk caps.
-  body=$(for i in $(seq 1 100); do echo "cd .scratch/task && cmd > out$i; cd $wt; if c; then cd src; fi; cmd > .scratch/y$i"; done)
+  body=$(lines 100 "cd .scratch/task && cmd > out@; cd $wt; if c; then cd src; fi; cmd > .scratch/y@")
   cpu_now
   before=$CPU
   shell -2 "$body"
   cpu_under "$before" 5
   # Each variable assigned once is followed to the command's end.
-  body=$(for i in $(seq 1 100); do echo "T$i=\$CLAUDE_JOB_DIR/tmp; d$i=\$(mktemp -d) && cmd > \$d$i/x; for f$i in a b; do cmd | tee \"\$T$i/\$f$i\"; done"; done)
+  body=$(lines 100 'T@=$CLAUDE_JOB_DIR/tmp; d@=$(mktemp -d) && cmd > $d@/x; for f@ in a b; do cmd | tee "$T@/$f@"; done')
   cpu_now
   before=$CPU
   passes "$body"
@@ -263,10 +271,10 @@ cpu_under() {
 }
 
 @test "the time the hook takes to read a long command grows linearly with its length" {
-  local n i body before took=()
+  local n body before took=()
   # Each line assigns variables the walk follows to the command's end, and reads them back.
   for n in 100 200; do
-    body=$(for ((i = 1; i <= n; i++)); do echo "T$i=\$CLAUDE_JOB_DIR/tmp; d$i=\$(mktemp -d) && cmd > \$d$i/x; for f$i in a b; do cmd | tee \"\$T$i/\$f$i\"; done"; done)
+    body=$(lines "$n" 'T@=$CLAUDE_JOB_DIR/tmp; d@=$(mktemp -d) && cmd > $d@/x; for f@ in a b; do cmd | tee "$T@/$f@"; done')
     cpu_now
     before=$CPU
     passes "$body"
@@ -282,7 +290,7 @@ cpu_under() {
 
 @test "a long here-document is judged quickly" {
   local body before
-  body=$(for i in $(seq 1 3000); do echo "line $i with a > and a | tee x"; done)
+  body=$(lines 3000 'line @ with a > and a | tee x')
   cpu_now
   before=$CPU
   passes "cat > .scratch/task/big.txt <<'EOF'
@@ -298,7 +306,7 @@ EOF
 )\" > .scratch/task/out"
   cpu_under "$before" 5
   # And with its delimiter unquoted, whose body's expansions are read.
-  body=$(for i in $(seq 1 1000); do echo "line $i with \${HOME}, \$(echo $i) and a > and a | tee x"; done)
+  body=$(lines 1000 'line @ with ${HOME}, $(echo @) and a > and a | tee x')
   cpu_now
   before=$CPU
   passes "cat > .scratch/task/big.txt <<EOF
