@@ -2,7 +2,11 @@
 # Wait on a pull request's GitHub checks, and always end: a worker runs it with Bash
 # run_in_background and acts on how it ended.
 #
-# Usage: team-ci-wait <pr url> [<sha>]
+# Usage: team-ci-wait [--no-agent-review] <pr url> [<sha>]
+#   --no-agent-review
+#           leave the agent-review check out of every look, as though GitHub had not reported it:
+#           a builder's wait, which runs while the reviewer reads and may see the reviewer's own
+#           status, ends on CI's checks alone and leaves the review to the coordinator's round
 #   pr url  https://github.com/<owner>/<name>/pull/<n>, in a registered project's repo
 #   sha     the head the worker means (the commit it pushed, the head it reviews), in full or
 #           short (7 to 40 hex characters); without it, the head of the first readable look
@@ -40,7 +44,7 @@
 # whose gh call fails reads no state: it neither starts nor advances the stuck or the no-checks
 # clock, while the deadline counts every look. A pending check from outside Actions (no run in
 # its link) is waited on until it concludes or the deadline; agent-review is a check like any
-# other.
+# other, unless --no-agent-review leaves it out.
 # Exit 0 the checks passed, 1 they did not or the wait no longer applies, 2 a malformed command
 # line, 75 try again later.
 set -euo pipefail
@@ -56,7 +60,13 @@ DEADLINE_SECONDS=5400
 GRACE_SECONDS=${TEAM_CI_WAIT_GRACE_SECONDS:-120}
 
 [[ $GRACE_SECONDS =~ ^[0-9]+$ ]] || usage_error "TEAM_CI_WAIT_GRACE_SECONDS must be a number of seconds"
-[[ $# -eq 1 || ($# -eq 2 && $2 =~ ^[0-9a-f]{7,40}$) ]] || usage_error "usage: team-ci-wait <pr url> [<sha>]"
+without_review=false
+if [[ ${1:-} == --no-agent-review ]]; then
+  without_review=true
+  shift
+fi
+[[ $# -eq 1 || ($# -eq 2 && $2 =~ ^[0-9a-f]{7,40}$) ]] ||
+  usage_error "usage: team-ci-wait [--no-agent-review] <pr url> [<sha>]"
 expected=${2:-}
 pr=$(registered_pr "$1")
 { read -r _ && read -r repo && read -r number; } <<<"$pr"
@@ -77,11 +87,11 @@ read_look() {
     files+=("$dir/run-$id")
   done < <(jq -r '[.[] | select(.bucket == "pending") | .link // "" | capture("/actions/runs/(?<id>[0-9]+)/job/[0-9]+").id]
     | unique[]' "$dir/checks")
-  jq -n --slurpfile view "$dir/view" --slurpfile checks "$dir/checks" \
+  jq -n --slurpfile view "$dir/view" --slurpfile checks "$dir/checks" --argjson without_review "$without_review" \
     --argjson runs "$(jq -s 'map({key: (.id | tostring), value: {id, status, conclusion, updated_at}}) | from_entries' \
       /dev/null "${files[@]}")" '
     {state: $view[0].state, head: $view[0].headRefOid,
-     checks: [$checks[0][] | {name, state: (.state | ascii_downcase), bucket, link: (.link // ""),
+     checks: [$checks[0][] | select($without_review and .name == "agent-review" | not) | {name, state: (.state | ascii_downcase), bucket, link: (.link // ""),
        run: (if .bucket == "pending" then $runs[(.link // "") | capture("/actions/runs/(?<id>[0-9]+)/job/[0-9]+").id // ""]
          else null end)}]}' >"$dir/look"
 }
