@@ -200,6 +200,13 @@ lines
 unset"
 }
 
+@test "json_vars --ledger runs as ledger_jq, with the ledger's definitions and contract" {
+  lib_run -0 team-x 'json_vars --ledger status=task_status kinds="\$contract.kinds | has(\"opened\")" \
+    path=".[0].worktree | local_path(\$home)" <<<"$1"; echo "$status $kinds $path"' \
+    '[{"task": "T1", "event": "opened", "worktree": "/home/alice/w"}]'
+  assert_equal "$output" "open true $HOME/w"
+}
+
 @test "json_vars fails on input that is not JSON, and refuses a malformed name" {
   lib_run -1 team-x 'a=kept; json_vars a=.a <<<"not json" 2>/dev/null || { echo "failed, a=$a"; exit 1; }'
   assert_equal "$output" "failed, a=kept"

@@ -95,13 +95,15 @@ ledger_jq() {
 
 # Read several values of one JSON document on stdin into shell variables, in one jq run: each
 # <name> is set to its <filter>'s first output as text (a string as it is, null or no output
-# empty, anything else compact JSON); the options after -- go to jq (-s, --arg, -L). When jq
-# fails (input that is not JSON), it fails with jq's status and sets nothing. The caller's local
-# variables are set, so long as none is named _jv_*:
-# json_vars <name>=<filter>... [-- <jq option>...] <<<"$json"
+# empty, anything else compact JSON); the options after -- go to jq (-s, --arg, -L), and with
+# --ledger it runs as ledger_jq, with the ledger's definitions and $contract. When jq fails (input
+# that is not JSON), it fails with jq's status and sets nothing. The caller's local variables are
+# set, so long as none is named _jv_*:
+# json_vars [--ledger] <name>=<filter>... [-- <jq option>...] <<<"$json"
 json_vars() {
-  local _jv_filter='' _jv_out _jv_i
+  local _jv_filter='' _jv_out _jv_i _jv_run=jq
   local -a _jv_names=() _jv_values=()
+  if [[ ${1:-} == --ledger ]]; then _jv_run=ledger_jq && shift; fi
   while (($#)) && [[ $1 != -- ]]; do
     [[ $1 =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.+)$ ]] || usage_error "json_vars: '$1' is not <name>=<jq filter>"
     _jv_names+=("${BASH_REMATCH[1]}")
@@ -109,7 +111,7 @@ json_vars() {
     shift
   done
   (($# == 0)) || shift
-  _jv_out=$(jq -r "[$_jv_filter] | @sh" "$@") || return
+  _jv_out=$("$_jv_run" "[$_jv_filter] | @sh" -r "$@") || return
   eval "_jv_values=($_jv_out)"
   for _jv_i in "${!_jv_names[@]}"; do
     printf -v "${_jv_names[_jv_i]}" '%s' "${_jv_values[_jv_i]}"

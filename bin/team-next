@@ -149,29 +149,88 @@ sibling() {
 }
 
 # The task: open, not held, no ask unsettled.
-events=$(open_task_events "$task")
-problems=$(ledger_jq '[
+events=$(task_event_array "$task")
+open_status='' problems=''
+json_vars --ledger open_status=task_status problems='[
     if standing("held") then
       (map(select(.event == "held")) | last) as $h | "\($task) is held since \($h.ts): \($h.reason)" else empty end,
     (pending_asks[] | "\($task) has an unanswered ask, \(.id), since \(.ts)")]
-  | join("; ")' -r --arg task "$task" <<<"$events")
+  | join("; ")' -- --arg task "$task" <<<"$events"
+case $open_status in
+  open) ;;
+  closed) die "$task is closed" ;;
+  *) die "$task is not open: the ledger has no opened event for it" ;;
+esac
 [[ -z $problems ]] || die "$problems"
 
-# The message's events, as team-log reads them, nothing logged yet.
+# The message's events, as team-log reads them, nothing logged yet: one compact object a line,
+# joined into one array.
 printed=$(sibling team-log "$task" --from-message "$message" "${log_opts[@]}" --print) || exit
-parsed=$(jq -cs . <<<"$printed")
+parsed_lines=()
+while IFS= read -r line; do [[ -z $line ]] || parsed_lines+=("$line"); done <<<"$printed"
+printf -v parsed '%s,' "${parsed_lines[@]}"
+parsed="[${parsed%,}]"
 
-# The message's kind as the hand-off reads it, for what is printed.
-kind=$(jq -rn --arg m "$message" '$m | gsub("^\\s+"; "") | [splits("\\s+")] | .[1:3]
+# same($p): whether the event is the parsed event $p, as a rerun finds it logged.
+same_def='def same($p): .event == $p.event and
+  if $p.event == "ticket-done" then .ticket == $p.ticket
+  elif $p.event == "done" then .session == $p.session and .role == $p.role and .report == $p.report
+  elif $p.event == "pr" then .url == $p.url and same_head(.head; $p.head)
+  elif $p.event == "review" then .verdict == $p.verdict and same_head(.head; $p.head)
+  else del(.ts) == ($p | del(.ts)) end;'
+
+# In one jq run over the task's events and the message's:
+# - kind: the message's kind as the hand-off reads it, for what is printed. A PAUSED stowed is the
+#   answer to a STOW: its paused event's reason is the word stowed, alone or followed by more
+#   ("stowed, handoff.md written"), never a word that only starts with it.
+# - back: the findings a pass counts that go back before the merge, as text, or nothing.
+# - held: which of the message's events the ledger holds since the sender's launch, each as
+#   {event, at}, at the index of the event that holds it, or null; anchor is the sender's launch's
+#   index.
+# - briefs: the briefs the task's launches read, one name a line (brief_launched).
+# - builder_kits, reviewer_kits: the toolkits of the task's latest launch of that role, else of its
+#   latest builder launch, one a line (hand_off).
+# - launch: the launch of the session the parsed done names, its worktree a local path (a launch
+#   of null's when it names none); sender_wt its worktree, launch_project its project.
+# - review: the message's review, or null.
+# - latest: the task's latest review, or null.
+launch_def='def sender_launch: ($parsed | map(select(.event == "done")) | first | .session | tostring) as $session
+  | map(select(.event == "launch" and .session == $session)) | last
+  | . + {worktree: (.worktree | local_path($home))};'
+kind='' back='' held='' briefs='' builder_kits='' reviewer_kits='' launch='' sender_wt='' launch_project=''
+review='' latest=''
+json_vars --ledger kind='$message | gsub("^\\s+"; "") | [splits("\\s+")] | .[1:3]
   | (.[1] // "") as $sub
   | if .[0] == "DONE" and ($sub | test("^[0-9]{2}$")) then "DONE <NN>"
     elif .[0] == "DONE" and ($sub | IN("review-ready", "merged", "pass", "findings", "gate")) then join(" ")
-    else .[0] end')
-# A PAUSED stowed is the answer to a STOW: its paused event's reason is the word stowed, alone or
-# followed by more ("stowed, handoff.md written"), never a word that only starts with it.
-if [[ $kind == PAUSED ]] && jq -e 'any(.[]; .event == "paused" and (.reason | test("^stowed(\\W|$)")))' <<<"$parsed" >/dev/null; then
-  kind="PAUSED stowed"
-fi
+    else .[0] end
+  | if . == "PAUSED" and (try any($parsed[]; .event == "paused" and (.reason | test("^stowed(\\W|$)"))) catch false)
+    then "PAUSED stowed" else tostring end' \
+  back='$parsed | map(select(.event == "review")) | first | select((.sent_back // []) == [])
+    | [(.findings // {}) as $f | "blocking", "correctness", "security", "real-data", "note-change"
+        | select(($f[.] // 0) > 0) | {kind: ., n: $f[.]}]
+    | select(. != []) | (map(.n) | add) as $total
+    | map("\(.n) \(.kind)") | (if length < 2 then join("") else "\(.[:-1] | join(", ")) and \(.[-1])" end)
+    | "\(.) finding\(if $total == 1 then ", which goes" else "s, which go" end) back"' \
+  held="$same_def"' . as $events
+  | ([$parsed[] | .session | strings] | first) as $session
+  | ([to_entries[] | select(.value.event == "launch" and ($session == null or .value.session == $session)) | .key] | last // -1) as $anchor
+  | {anchor: $anchor,
+     events: [$parsed[] | . as $p
+       | {event: $p, at: ([range($anchor + 1; $events | length) | select($events[.] | same($p))] | first)}]}' \
+  briefs='[.[] | select(.event == "launch") | .brief | strings] | join("\n")' \
+  builder_kits='map(select(.event == "launch" and .role == "builder")) | last | [.toolkits[]?] | join("\n")' \
+  reviewer_kits='(map(select(.event == "launch" and .role == "reviewer")) | last)
+    // (map(select(.event == "launch" and .role == "builder")) | last) | [.toolkits[]?] | join("\n")' \
+  launch="$launch_def sender_launch | tojson" sender_wt="$launch_def sender_launch | .worktree | tostring" \
+  launch_project="$launch_def sender_launch | .project // empty" \
+  review='$parsed | map(select(.event == "review")) | first | tojson' latest='map(select(.event == "review")) | last | tojson' \
+  -- --arg message "$message" --argjson parsed "$parsed" <<<"$events"
+
+# Whether a launch of the task read brief-<name>: brief_launched <name>
+brief_launched() {
+  [[ $'\n'$briefs$'\n' == *$'\n'"brief-$1"$'\n'* ]]
+}
 case $kind in
   "DONE <NN>") handoff=ticket ;;
   PR | "DONE review-ready" | "DONE merged") handoff=review ;;
@@ -189,44 +248,23 @@ done
 # A pass that counts a finding which goes back before the merge (a blocking, correctness, security
 # or real-data one, or a plain note on a changed line) takes --sent-back with them, never a merge.
 if [[ $kind == "DONE pass" ]]; then
-  back=$(jq -r 'map(select(.event == "review")) | first | select((.sent_back // []) == [])
-    | [(.findings // {}) as $f | "blocking", "correctness", "security", "real-data", "note-change"
-        | select(($f[.] // 0) > 0) | {kind: ., n: $f[.]}]
-    | select(. != []) | (map(.n) | add) as $total
-    | map("\(.n) \(.kind)") | (if length < 2 then join("") else "\(.[:-1] | join(", ")) and \(.[-1])" end)
-    | "\(.) finding\(if $total == 1 then ", which goes" else "s, which go" end) back"' <<<"$parsed")
   [[ -z $back ]] ||
     die "the pass counts $back to the builder before the merge (step 5), so there is no merge yet: run it again with --sent-back <their numbers>, and the round goes as a DONE findings' does, through the holder or builder-round"
 fi
 
-# same($p): whether the event is the parsed event $p, as a rerun finds it logged.
-same_def='def same($p): .event == $p.event and
-  if $p.event == "ticket-done" then .ticket == $p.ticket
-  elif $p.event == "done" then .session == $p.session and .role == $p.role and .report == $p.report
-  elif $p.event == "pr" then .url == $p.url and same_head(.head; $p.head)
-  elif $p.event == "review" then .verdict == $p.verdict and same_head(.head; $p.head)
-  else del(.ts) == ($p | del(.ts)) end;'
-
-# Which of the message's events the ledger holds since the sender's launch: each as {event, at},
-# at the index of the event that holds it, or null; anchor is the sender's launch's index.
-held=$(ledger_jq "$same_def"' . as $events
-  | ([$parsed[] | .session | strings] | first) as $session
-  | ([to_entries[] | select(.value.event == "launch" and ($session == null or .value.session == $session)) | .key] | last // -1) as $anchor
-  | {anchor: $anchor,
-     events: [$parsed[] | . as $p
-       | {event: $p, at: ([range($anchor + 1; $events | length) | select($events[.] | same($p))] | first)}]}' \
-  -c --argjson parsed "$parsed" <<<"$events")
-
 # log_events: logs each event the ledger does not hold yet through team-log, printing one line each.
+# Each event is read as its kind, whether it is held, its count of fields and its key=value
+# fields, NUL-separated, in one jq run.
 log_events() {
-  local count i one name fields
-  count=$(jq '.events | length' <<<"$held")
-  for ((i = 0; i < count; i++)); do
-    one=$(jq -c ".events[$i]" <<<"$held")
-    name=$(jq -r .event.event <<<"$one")
-    mapfile -d '' -t fields < <(jq -j '.event | del(.ts, .task, .event) | to_entries[]
-      | "\(.key)=\(.value | if type == "string" then . else tojson end)\u0000"' <<<"$one")
-    if jq -e '.at != null' <<<"$one" >/dev/null; then
+  local records i n name fields
+  mapfile -d '' -t records < <(jq -j '.events[] | [.event.event, (if .at != null then "held" else "" end),
+    (.event | del(.ts, .task, .event) | to_entries | length | tostring),
+    (.event | del(.ts, .task, .event) | to_entries[] | "\(.key)=\(.value | if type == "string" then . else tojson end)")][]
+    | . + "\u0000"' <<<"$held")
+  for ((i = 0; i < ${#records[@]}; i += 3 + n)); do
+    name=${records[i]} n=${records[i + 2]}
+    fields=("${records[@]:i+3:n}")
+    if [[ -n ${records[i + 1]} ]]; then
       echo "already logged $name ${fields[*]}"
     else
       sibling team-log "$task" "$name" "${fields[@]}" || exit
@@ -240,16 +278,17 @@ log_events() {
 # events, and launches <role> in <worktree> with the toolkits of the task's latest launch of
 # <role>, else of its latest builder launch.
 hand_off() {
-  local role=$1 template=$2 name=$3 project=$4 worktree=$5 used force=() toolkits=() kit brief id status
+  local role=$1 template=$2 name=$3 project=$4 worktree=$5 used force=() toolkits=() kit kits brief id status
   if [[ -e $TEAM_HOME/tasks/$task/brief-$name.md ]]; then
-    used=$(jq -c --arg b "brief-$name" 'map(select(.event == "launch" and .brief == $b)) | last' <<<"$events")
-    [[ $used == null ]] ||
-      die "brief-$name was launched already ($(jq -r --arg task "$task" '"\($task)-\(.role) \(.session) at \(.ts)"' <<<"$used")), so it is not launched again"
+    if brief_launched "$name"; then
+      used=$(jq -r --arg b "brief-$name" --arg task "$task" 'map(select(.event == "launch" and .brief == $b)) | last
+        | "\($task)-\(.role) \(.session) at \(.ts)"' <<<"$events")
+      die "brief-$name was launched already ($used), so it is not launched again"
+    fi
     force=(--force)
   fi
-  while IFS= read -r kit; do toolkits+=(--toolkit "$kit"); done < <(jq -r --arg role "$role" '
-    (map(select(.event == "launch" and .role == $role)) | last)
-      // (map(select(.event == "launch" and .role == "builder")) | last) | .toolkits[]?' <<<"$events")
+  case $role in builder) kits=$builder_kits ;; *) kits=$reviewer_kits ;; esac
+  while IFS= read -r kit; do [[ -z $kit ]] || toolkits+=(--toolkit "$kit"); done <<<"$kits"
 
   brief=$(sibling team-brief "$task" "$template" --project "$project" --name "$name" "${@:6}" "${force[@]}") || exit
   log_events
@@ -265,17 +304,10 @@ hand_off() {
 # project_worktree <project>: the task's open worktree in <project>, or a refusal.
 project_worktree() {
   local worktree
-  worktree=$(task_worktrees "$task" | jq -r --arg p "$1" 'select(.project == $p) | .worktree' | tail -n 1)
+  worktree=$(ledger_jq '[open_worktrees(.[]; $home) | select(.project == $p)] | last
+      | select(. != null) | .worktree | tostring' -r --arg p "$1" <<<"$events")
   [[ -n $worktree ]] || die "$task has no open worktree in $1"
   echo "$worktree"
-}
-
-# sender_launch: the launch of the session the parsed done names, its worktree a local path.
-sender_launch() {
-  local session
-  session=$(jq -r 'map(select(.event == "done")) | first | .session' <<<"$parsed")
-  ledger_jq 'map(select(.event == "launch" and .session == $session)) | last
-    | . + {worktree: (.worktree | local_path($home))}' -c --arg session "$session" <<<"$events"
 }
 
 # A stow hands a round on only while the latest review (findings, or a pass logged before team-log made it so)
@@ -316,30 +348,43 @@ holder_findings_file() {
 
 if [[ $handoff == verdict ]]; then
   state=$(sibling team-state "$task" --json) || exit
-  review=$(jq -c 'map(select(.event == "review")) | first' <<<"$parsed")
-  pr=$(jq -c .pr <<<"$state")
-  # The builder who holds the worktree's context: the task's latest builder launch, as
-  # "T<n>-builder (<session>, <context>k)", live and under 250k or not.
-  holder=$(jq -c '[.workers[] | select(.role == "builder")] | last' <<<"$state")
-  [[ $holder != null ]] || die "$task has no builder launch, so no builder holds the review's work"
-  session=$(jq -r .session <<<"$holder")
-  holds=$(jq -r 'if .live | not then "gone" elif (.context | type) == "number" and .context >= 250000 then "full" else "holds" end' <<<"$holder")
-  who="$task-builder ($session, $(jq -r 'if .live | not then "gone" elif (.context | type) == "number" then "\(.context / 1000 | round)k" else "context unknown" end' <<<"$holder"))"
+  # In one jq run over the task's state: its PR (null when none); the builder who holds the
+  # worktree's context, the task's latest builder launch (holder, false when none), its session,
+  # whether it holds it (live and under 250k: holds, else full or gone) and its context as
+  # "<context>k"; whether GitHub could not be read for the PR, its url, error and head; whether
+  # that head is the reviewed one; the fix round's findings (sent), the reviewed head's first 8
+  # characters, and the PR's facts for a merge base.
+  pr='' holder='' session='' holds='' context='' pr_error='' pr_url='' pr_reason='' live_head='' reviewed=''
+  same='' sent='' short='' behind='' base='' pr_project='' branch='' before=''
+  json_vars --ledger pr='.pr | tojson' holder='[.workers[] | select(.role == "builder")] | last | . != null' \
+    session='[.workers[] | select(.role == "builder")] | last | .session | tostring' \
+    holds='[.workers[] | select(.role == "builder")] | last
+      | if .live | not then "gone" elif (.context | type) == "number" and .context >= 250000 then "full" else "holds" end' \
+    context='[.workers[] | select(.role == "builder")] | last
+      | if .live | not then "gone" elif (.context | type) == "number" then "\(.context / 1000 | round)k" else "context unknown" end' \
+    pr_error='.pr | objects | has("error")' pr_url='.pr | objects | .url | tostring' pr_reason='.pr | objects | .error | tostring' \
+    live_head='.pr | objects | .head | tostring' reviewed='$review.head | tostring' \
+    same='same_head(.pr | objects | .head | tostring; $review.head | tostring)' \
+    sent='$review.sent_back // [] | tojson' short='$review.head[:8] | tostring' \
+    behind='.pr | objects | .behind_by // 0' base='.pr | objects | .base | tostring' \
+    pr_project='.pr | objects | .project // empty' branch='.pr | objects | .branch // empty' \
+    before='$review.before // [] | map(tostring)
+      | if length < 2 then join("") else "\(.[:-1] | join(", ")) and \(.[-1])" end' \
+    -- --argjson review "$review" <<<"$state"
+  [[ $holder == true ]] || die "$task has no builder launch, so no builder holds the review's work"
+  who="$task-builder ($session, $context)"
   gone="$task-builder $session is gone: recover it (the recover-worker skill), then send it"
   if [[ $kind == "DONE pass" && $pr != null ]]; then
     # A pass is taken only on the PR's head as GitHub has it now.
-    if jq -e 'has("error")' <<<"$pr" >/dev/null; then
-      echo "${0##*/}: GitHub cannot be read for $(jq -r .url <<<"$pr") ($(jq -r .error <<<"$pr")); run the same command again" >&2
+    if [[ $pr_error == true ]]; then
+      echo "${0##*/}: GitHub cannot be read for $pr_url ($pr_reason); run the same command again" >&2
       exit 75
     fi
-    live_head=$(jq -r .head <<<"$pr")
-    reviewed=$(jq -r .head <<<"$review")
-    ledger_jq 'same_head($a; $b)' -n -e --arg a "$live_head" --arg b "$reviewed" >/dev/null ||
+    [[ $same == true ]] ||
       die "the PR's head $live_head moved past the reviewed head $reviewed, so the pass is not taken; re-review the new head"
   fi
   log_events
 
-  sent=$(jq -c '.sent_back // []' <<<"$review")
   if [[ $kind == "DONE findings" || $sent != '[]' ]]; then
     if [[ $sent == '[]' ]]; then
       echo "no hand-off: the review sent nothing back, so there is no fix round"
@@ -352,7 +397,7 @@ if [[ $handoff == verdict ]]; then
       where=${file:+in $file}
       stow="$task STOW; its PAUSED stowed goes to team-next, which launches the round"
       case $holds in
-        holds) echo "send to $who: $task fix findings $(and_list "$sent") ${where:-of the review of $(jq -r '.head[:8]' <<<"$review")} on the same branch, then deliver again as your brief says" ;;
+        holds) echo "send to $who: $task fix findings $(and_list "$sent") ${where:-of the review of $short} on the same branch, then deliver again as your brief says" ;;
         full) echo "send to $who: $stow" ;;
         gone) echo "$gone $stow" ;;
       esac
@@ -363,30 +408,28 @@ if [[ $handoff == verdict ]]; then
   if [[ $pr == null ]]; then
     # No PR yet: a gated project's builder waits for the pass to run its gate, a Disclosure task's
     # to push and open its PR.
-    go_on="$task the review of $(jq -r '.head[:8]' <<<"$review") passed: go on with your delivery"
+    go_on="$task the review of $short passed: go on with your delivery"
     if [[ $holds == gone ]]; then echo "$gone $go_on"; else echo "send to $who: $go_on"; fi
     exit 0
   fi
-  url=$(jq -r .url <<<"$pr")
-  behind=$(jq -r '.behind_by // 0' <<<"$pr")
+  url=$pr_url
   caught=''
   if ((behind > 0)); then
-    base=$(jq -r .base <<<"$pr")
     # Whether the reviewed head merges the base cleanly, read in the project's primary checkout once
     # the PR's branch and the base are fetched: clean is team-catch-up's, else the holder's step.
     behind_by="$behind behind $base"
-    if ! project=$(jq -re '.project // empty' <<<"$pr"); then
+    if [[ -z $pr_project ]]; then
       behind_by+=" (whether the merge is clean is not known: the PR's repo is no registered project's)"
     else
+      project=$pr_project
       primary=$(team_project "$project" path)
-      branch=$(jq -r '.branch // empty' <<<"$pr")
       rc=0
       if [[ -z $branch ]]; then
         behind_by+=" (whether the merge is clean is not known: GitHub did not name the PR's branch)"
       elif ! fetched=$(git -C "$primary" fetch -q origin "+refs/heads/$branch:refs/remotes/origin/$branch" \
         "+refs/heads/$base:refs/remotes/origin/$base" 2>&1); then
         behind_by+=" (whether the merge is clean is not known: the PR's branch $branch and $base cannot be fetched into $primary: $(grep -m1 . <<<"$fetched" || echo "git fetch failed"))"
-      elif merged=$(base_merge "$primary" "$(jq -r .head <<<"$pr")" "origin/$base") || rc=$?; ((rc == 0)); then
+      elif merged=$(base_merge "$primary" "$live_head" "origin/$base") || rc=$?; ((rc == 0)); then
         echo "merge base: $url is $behind_by, and merges it cleanly: run team-catch-up $task, which needs no rereview (step 6)"
         caught=1
       elif ((rc == 1)); then
@@ -419,7 +462,7 @@ if [[ $handoff == verdict ]]; then
   # The merge ask's facts, or the plan-time or standing word's merge; after a clean catch-up's line,
   # the same for once the merge's checks pass, with no checks of the head it was made from.
   jq -r --arg task "$task" --argjson review "$review" --argjson risky "$risky" --arg caught "$caught" \
-    --arg before "$(and_list "$(jq -c '.before // []' <<<"$review")")" '
+    --arg before "$before" '
     (.pr | if $caught != "" then "\(.url) at \(.head)"
       else "\(.url) at \(.head), agent-review \(.agent_review), "
         + ([(.checks.failing | select(. != []) | "failing: \(join(", "))"),
@@ -455,7 +498,7 @@ if [[ $handoff == round ]]; then
   # round-<k>: the lowest k from 1 whose brief no launch read.
   k=1
   while [[ -e $TEAM_HOME/tasks/$task/brief-round-$k.md ]] &&
-    jq -e --arg b "brief-round-$k" 'any(.[]; .event == "launch" and .brief == $b)' <<<"$events" >/dev/null; do
+    brief_launched "round-$k"; do
     k=$((k + 1))
   done
   hand_off builder builder-round "round-$k" "$project" "$worktree"
@@ -463,48 +506,48 @@ if [[ $handoff == round ]]; then
 fi
 
 if [[ $handoff == review ]]; then
-  # The event the hand-off follows: the pr of a PR, else the builder's done.
-  if [[ $kind == PR ]]; then
-    key=$(jq -c 'map(select(.event == "pr")) | first' <<<"$parsed")
-  else
-    key=$(jq -c 'map(select(.event == "done")) | first' <<<"$parsed")
-  fi
-  # Already handed off: that event is logged, and a reviewer's launch follows it with no review
-  # since (a review since means the message is a later round's, the same PR head after a round
-  # that only edited its body).
-  after=$(ledger_jq "$same_def"' . as $events
+  # In one jq run: the event the hand-off follows (key: the pr of a PR, else the builder's done),
+  # its url and head; when that event is logged already and a reviewer's launch follows it with no
+  # review since (a review since means the message is a later round's, the same PR head after a
+  # round that only edited its body), that launch; the head the done reports; and the projects of
+  # the task's open worktrees, one a line.
+  key_event='done'
+  [[ $kind != PR ]] || key_event='pr'
+  after='' url='' head='' reported='' projects=''
+  json_vars --ledger after="$same_def"' . as $events | ($parsed | map(select(.event == $k)) | first) as $key
     | ([to_entries[] | select(.value | same($key)) | .key] | last) as $at
     | if $at == null then null
       else $events[$at + 1:] as $rest
       | if any($rest[]; .event == "review") then null
-        else first($rest[] | select(.event == "launch" and .role == "reviewer")) // null end end' \
-    -c --argjson key "$key" <<<"$events")
-  [[ $after == null ]] ||
-    die "$kind is already handed off: $(jq -r --arg task "$task" '"\($task)-\(.role) \(.session) was launched at \(.ts)"' <<<"$after") after its $(jq -r .event <<<"$key")"
+        else first($rest[] | select(.event == "launch" and .role == "reviewer")) // null end end
+    | select(. != null) | "\($task)-\(.role) \(.session) was launched at \(.ts) after its \($key.event)"' \
+    url='$parsed | map(select(.event == $k)) | first | .url | tostring' \
+    head='$parsed | map(select(.event == $k)) | first | .head | tostring' \
+    reported='$parsed | map(select(.event == "done")) | first | .report | select(. != null) | [splits("\\s+")]
+      | if .[0] == "merged" then .[2] else .[1] end | tostring' \
+    projects='reduce (open_worktrees(.[]; $home) | .project | tostring) as $p ([]; if IN(.[]; $p) then . else . + [$p] end)
+      | join("\n")' \
+    -- --argjson parsed "$parsed" --arg k "$key_event" --arg task "$task" <<<"$events"
+  [[ -z $after ]] || die "$kind is already handed off: $after"
 
   sets=()
   if [[ $kind == PR ]]; then
-    url=$(jq -r .url <<<"$key")
-    head=$(jq -r .head <<<"$key")
     [[ $url =~ ^https://github\.com/([^/]+/[^/]+)/pull/[0-9]+/?$ ]]
     repo=${BASH_REMATCH[1]}
     project=''
     while IFS= read -r p; do
+      [[ -n $p ]] || continue
       r=$(team_project "$p" repo) || exit 1
       [[ ${r,,} != "${repo,,}" ]] || project=$p
-    done < <(task_worktrees "$task" | jq -r .project | awk '!seen[$0]++')
+    done <<<"$projects"
     [[ -n $project ]] || die "$url is in no repo of $task's open worktrees"
     worktree=$(project_worktree "$project") || exit
     sets=(--set "pr=$url" --set "head=$head")
   else
     # The reported head must be the HEAD of the sending builder's worktree.
-    launch=$(sender_launch)
-    worktree=$(jq -r .worktree <<<"$launch")
-    project=$(jq -r '.project // empty' <<<"$launch")
+    worktree=$sender_wt project=$launch_project
     [[ -n $project ]] || die "the sending builder's launch names no project, so its review has none"
     [[ -d $worktree ]] || die "the sending builder's worktree $worktree is not on this machine"
-    reported=$(jq -r 'map(select(.event == "done")) | first | .report | [splits("\\s+")]
-      | if .[0] == "merged" then .[2] else .[1] end' <<<"$parsed")
     if ! head=$(git -C "$worktree" rev-parse -q --verify "$reported^{commit}" 2>/dev/null) ||
       [[ $head != "$(git -C "$worktree" rev-parse HEAD)" ]]; then
       die "$reported is not the HEAD of $worktree ($(git -C "$worktree" rev-parse --short=8 HEAD)), so it is not reviewed"
@@ -512,7 +555,6 @@ if [[ $handoff == review ]]; then
     [[ $kind == "DONE merged" ]] || sets=(--set "head=$head")
   fi
 
-  latest=$(jq -c 'map(select(.event == "review")) | last' <<<"$events")
   if [[ $latest == null ]]; then
     [[ -n $checks ]] || die "$task has no review yet, so its first reviewer needs --checks <file>, the review's checks"
     [[ -z $template_opt ]] || die "$task has no review yet, so its first reviewer takes the reviewer brief, not --template $template_opt"
@@ -538,7 +580,7 @@ if [[ $handoff == review ]]; then
     # rereview-<k>: the lowest k from 2 whose brief no launch read.
     k=2
     while [[ -e $TEAM_HOME/tasks/$task/brief-rereview-$k.md ]] &&
-      jq -e --arg b "brief-rereview-$k" 'any(.[]; .event == "launch" and .brief == $b)' <<<"$events" >/dev/null; do
+      brief_launched "rereview-$k"; do
       k=$((k + 1))
     done
     name=rereview-$k
@@ -548,64 +590,78 @@ if [[ $handoff == review ]]; then
 fi
 
 # A builder's DONE <NN>: the next ticket's builder, or the deliverer.
-ticket_done=$(jq -c 'map(select(.event == "ticket-done")) | first' <<<"$parsed")
-ticket=$(jq -r .ticket <<<"$ticket_done")
-
-# Already handed off: the same ticket-done (its ticket and shas) is logged, and a launch follows
-# it. Read before the sender, whom team-log takes to be the latest builder, the next one once the
-# hand-off launched it.
-after=$(ledger_jq '. as $events
+# In one jq run: the ticket, its shas one a line, and, when the same ticket-done (its ticket and
+# shas) is logged already and a launch follows it, that launch; the launch is read before the
+# sender, whom team-log takes to be the latest builder, the next one once the hand-off launched it.
+ticket='' commits='' after=''
+json_vars ticket='$reported.ticket | tostring' commits='[$reported.commits[]? | tostring] | join("\n")' \
+  after='. as $events
   | ([to_entries[] | select(.value.event == "ticket-done" and .value.ticket == $reported.ticket and .value.commits == $reported.commits) | .key] | last) as $at
   | if $at == null then null
-    else first($events[$at + 1:][] | select(.event == "launch" and .role != "ops")) // null end' \
-  -c --argjson reported "$ticket_done" <<<"$events")
-[[ $after == null ]] ||
-  die "ticket $ticket is already handed off: $(jq -r --arg task "$task" '"\($task)-\(.role) \(.session) was launched at \(.ts)"' <<<"$after") after its ticket-done"
-launch=$(sender_launch)
+    else first($events[$at + 1:][] | select(.event == "launch" and .role != "ops")) // null end
+  | select(. != null) | "\($task)-\(.role) \(.session) was launched at \(.ts)"' \
+  -- --argjson reported "$(jq -c 'map(select(.event == "ticket-done")) | first' <<<"$parsed")" \
+  --arg task "$task" <<<"$events"
+[[ -z $after ]] || die "ticket $ticket is already handed off: $after after its ticket-done"
 
 tickets=$(sibling team-tickets "$task" --json) || exit
-jq -e --arg t "$ticket" 'any(.[]; .ticket == $t)' <<<"$tickets" >/dev/null ||
-  die "$task has no ticket $ticket: its tickets are $(jq -r 'map(.ticket) | sort | if . == [] then "none" else join(", ") end' <<<"$tickets")"
 
-# Every sha is a commit the sending builder's worktree's HEAD holds.
-sender_wt=$(jq -r .worktree <<<"$launch")
-[[ -d $sender_wt ]] || die "the sending builder's worktree $sender_wt is not on this machine"
-while IFS= read -r sha; do
-  if ! commit=$(git -C "$sender_wt" rev-parse -q --verify "$sha^{commit}" 2>/dev/null) ||
-    ! git -C "$sender_wt" merge-base --is-ancestor "$commit" HEAD 2>/dev/null; then
-    die "$sha is not a commit the HEAD of $sender_wt holds, so ticket $ticket is not handed off"
-  fi
-done < <(jq -r '.commits[]' <<<"$ticket_done")
-
-# The tickets once NN is done, and the next one: a ticket of the earliest phase, up to NN's, that
-# has one not done, or NN's phase's deliverer once none has.
-tickets=$(jq -c --arg t "$ticket" 'map(if .ticket == $t then .state = "done" | .session = null else . end)
+# In one jq run over the tickets: whether NN is one, and once NN is done (updated): the tickets,
+# NN's phase, whether the task has more than one phase, the phase being built (the earliest, up to
+# NN's, with a ticket not done; empty when none), the ticket chosen (--next's, else that phase's
+# lowest-numbered ready one), whether it is ready or waiting, what it waits on, its phase, its
+# project, and NN's phase's tickets as a list.
+waits='def waits: .ticket + " " + .state + ({blocked: " on \(.on | join(", "))", running: " in session \(.session)", waiting: ": \(.waits_for)"}[.state] // "");'
+updated='def updated: map(if .ticket == $t then .state = "done" | .session = null else . end)
   | [.[] | select(.state == "done") | .ticket] as $done
   | map(if .state == "blocked" then (.on - $done) as $on
       | if $on == [] then .on = [] | .state = (if .waits_for == null then "ready" else "waiting" end) else .on = $on end
     else . end)
-  | sort_by(.ticket)' <<<"$tickets")
-phase=$(jq -r --arg t "$ticket" 'map(select(.ticket == $t)) | first | .phase // 1' <<<"$tickets")
-phased=$(jq -r 'map(.phase // 1) | unique | length > 1' <<<"$tickets")
-building=$(jq -r --argjson p "$phase" '[.[] | select(.state != "done" and (.phase // 1) <= $p) | .phase // 1] | min // empty' <<<"$tickets")
-waits='def waits: .ticket + " " + .state + ({blocked: " on \(.on | join(", "))", running: " in session \(.session)", waiting: ": \(.waits_for)"}[.state] // "");'
+  | sort_by(.ticket);
+  def phase: map(select(.ticket == $t)) | first | .phase // 1;
+  def building: phase as $p | [.[] | select(.state != "done" and (.phase // 1) <= $p) | .phase // 1] | min;
+  def chosen: if $n != "" then map(select(.ticket == $n)) | first
+    else building as $b | map(select(.state == "ready" and (.phase // 1) == $b)) | first end;'
+known='' listed='' phase='' phased='' building='' chosen='' chosen_ok='' chosen_waits='' chosen_phase=''
+chosen_ticket='' chosen_project='' phase_tickets=''
+json_vars known='any(.[]; .ticket == $t)' listed='map(.ticket) | sort | if . == [] then "none" else join(", ") end' \
+  phase="$updated updated | phase" phased="$updated updated | map(.phase // 1) | unique | length > 1" \
+  building="$updated updated | building // empty" \
+  chosen="$updated updated | chosen | tojson" \
+  chosen_ok="$updated updated | chosen | select(. != null) | .state == \"ready\" or .state == \"waiting\"" \
+  chosen_waits="$updated $waits updated | chosen | select(. != null) | waits" \
+  chosen_phase="$updated updated | chosen | select(. != null) | .phase // 1" \
+  chosen_ticket="$updated updated | chosen | select(. != null) | .ticket | tostring" \
+  chosen_project="$updated updated | chosen | select(. != null) | .project | tostring" \
+  phase_tickets="$updated updated | phase as \$p | [.[] | select((.phase // 1) == \$p) | .ticket] | map(tostring)
+    | if length < 2 then join(\"\") else \"\\(.[:-1] | join(\", \")) and \\(.[-1])\" end" \
+  -- --arg t "$ticket" --arg n "$next" <<<"$tickets"
+[[ $known == true ]] || die "$task has no ticket $ticket: its tickets are $listed"
+
+# Every sha is a commit the sending builder's worktree's HEAD holds.
+[[ -d $sender_wt ]] || die "the sending builder's worktree $sender_wt is not on this machine"
+while IFS= read -r sha; do
+  [[ -n $sha ]] || continue
+  if ! commit=$(git -C "$sender_wt" rev-parse -q --verify "$sha^{commit}" 2>/dev/null) ||
+    ! git -C "$sender_wt" merge-base --is-ancestor "$commit" HEAD 2>/dev/null; then
+    die "$sha is not a commit the HEAD of $sender_wt holds, so ticket $ticket is not handed off"
+  fi
+done <<<"$commits"
+
 # The not-done tickets of the phase being built, each with what it waits on.
 open_list() {
-  jq -r --argjson b "$building" "$waits"' map(select(.state != "done" and (.phase // 1) == $b) | waits) | join("; ")' <<<"$tickets"
+  jq -r --arg t "$ticket" --argjson b "$building" "$updated $waits"' updated | map(select(.state != "done" and (.phase // 1) == $b) | waits) | join("; ")' <<<"$tickets"
 }
 if [[ -n $next ]]; then
-  chosen=$(jq -c --arg n "$next" 'map(select(.ticket == $n)) | first' <<<"$tickets")
-  [[ $chosen != null ]] || die "--next $next is none of $task's tickets: they are $(jq -r 'map(.ticket) | join(", ")' <<<"$tickets")"
-  jq -e '.state == "ready" or .state == "waiting"' <<<"$chosen" >/dev/null ||
-    die "--next $next is not ready once $ticket is done: $(jq -r "$waits waits" <<<"$chosen")"
+  [[ $chosen != null ]] || die "--next $next is none of $task's tickets: they are $(jq -r --arg t "$ticket" "$updated"' updated | map(.ticket) | join(", ")' <<<"$tickets")"
+  [[ $chosen_ok == true ]] || die "--next $next is not ready once $ticket is done: $chosen_waits"
   [[ -n $building ]] ||
     die "phase $phase's tickets are all done once $ticket is, so its deliverer comes next, not --next $next"
-  [[ $(jq -r '.phase // 1' <<<"$chosen") == "$building" ]] ||
-    die "--next $next is in phase $(jq -r '.phase // 1' <<<"$chosen"), but phase $building has tickets not done: $(open_list)"
+  [[ $chosen_phase == "$building" ]] ||
+    die "--next $next is in phase $chosen_phase, but phase $building has tickets not done: $(open_list)"
 elif [[ -z $building ]]; then
   chosen=deliver
 else
-  chosen=$(jq -c --argjson b "$building" 'map(select(.state == "ready" and (.phase // 1) == $b)) | first' <<<"$tickets")
   [[ $chosen != null ]] ||
     die "tickets $([[ $phased == false ]] || echo "of phase $building ")remain once $ticket is done, but none is ready: $(open_list); --next <NN> launches a waiting one"
 fi
@@ -615,19 +671,18 @@ if [[ $chosen == deliver ]]; then
   base=deliver sets=()
   if [[ $phased == true ]]; then
     base=deliver-p$phase
-    sets=(--set "tickets=every ticket of phase $phase ($(and_list "$(jq -c --argjson p "$phase" '[.[] | select((.phase // 1) == $p) | .ticket]' <<<"$tickets")"))")
+    sets=(--set "tickets=every ticket of phase $phase ($phase_tickets)")
   fi
   template=builder-deliver name=$base k=1
   while [[ -e $TEAM_HOME/tasks/$task/brief-$name.md ]] &&
-    jq -e --arg b "brief-$name" 'any(.[]; .event == "launch" and .brief == $b)' <<<"$events" >/dev/null; do
+    brief_launched "$name"; do
     k=$((k + 1))
     name=$base-$k
   done
-  project=$(jq -r '.project // empty' <<<"$launch")
+  project=$launch_project
 else
-  ticket_next=$(jq -r .ticket <<<"$chosen")
-  template=builder-ticket name=build-$ticket_next sets=(--set "ticket=$ticket_next")
-  project=$(jq -r .project <<<"$chosen")
+  template=builder-ticket name=build-$chosen_ticket sets=(--set "ticket=$chosen_ticket")
+  project=$chosen_project
 fi
 [[ -n $project ]] || die "the sending builder's launch names no project, so the deliverer has none"
 worktree=$(project_worktree "$project") || exit
