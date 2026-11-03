@@ -9,13 +9,16 @@
 # every one given at once (exit 1):
 #   the PR is open and targets the project's base;
 #   the task's latest review event has verdict pass and names the PR's head now (by the shorter
-#   prefix);
+#   prefix), or the head an earlier team-catch-up made it from (reviewed_head in bin/lib/ledger.jq,
+#   when no review names the head itself);
 #   every required check (the base branch's protection, gh pr checks --required and the
 #   project's required_checks) is present on the head and passed (a skipped one passes), and no
 #   check on the head is failing or pending.
 # Then it fetches the PR's branch and the base into the project's primary checkout, as team-merge
 # does, and refuses a fetched tip that is not the head GitHub showed (the head moved: run it
-# again). A head that holds the base already prints "nothing to merge", exit 0, logging nothing.
+# again). A head an earlier team-catch-up made must add only clean merges of the base to the
+# reviewed head (clean_base_merges in bin/lib/team.sh), else it is refused naming the first that is
+# not. A head that holds the base already prints "nothing to merge", exit 0, logging nothing.
 # A merge that conflicts (git merge-tree, base_merge in bin/lib/team.sh) makes nothing and names
 # the conflicted files and the holder's builder-merge-base step, exit 1. A clean one is made with
 # git commit-tree in the primary checkout, under its git identity, with the head and origin's base
@@ -26,8 +29,8 @@
 # Then agent-review is set to success on the merge through team-review-status, its description
 # "clean merge of <base> <short base> onto <short head>, reviewed", once GitHub shows the merge as
 # the PR's head (waited on for up to TEAM_CATCH_UP_WAIT seconds, default 30), and caught-up is
-# logged with url (the PR's), from (the reviewed head), head (the merge) and base (the base's
-# commit merged), all full shas. A status that cannot be set is said on stderr with the command to
+# logged with url (the PR's), from (the reviewed head, the same through each catch-up of it), head
+# (the merge) and base (the base's commit merged), all full shas. A status that cannot be set is said on stderr with the command to
 # set it; the merge is pushed and logged all the same, exit 1.
 # Prints what it merged, the merge's full sha, and last the next step: wait for the checks on the
 # merge, then ask Daniel to merge at the reviewed head, or run team-merge when team-state says a
@@ -84,6 +87,8 @@ base=$(team_project "$project" base)
 jq -e 'has("error") | not' <<<"$facts" >/dev/null || die "GitHub cannot be read: $(jq -r .error <<<"$facts")"
 github "$scratch" branch api "repos/$repo/branches/$base" || die "GitHub cannot be read: $(<"$scratch/error")"
 head=$(jq -r .head <<<"$facts") branch=$(jq -r .headRefName "$scratch/view")
+# The head whose review stands for the PR's: the head, or the one an earlier catch-up made it from.
+reviewed=$(ledger_jq 'reviewed_head($head)' -r --arg head "$head" <<<"$events") || exit 1
 
 reasons=()
 state=$(jq -r .state <<<"$facts")
@@ -93,8 +98,10 @@ while IFS= read -r line; do if [[ -n $line ]]; then reasons+=("$line"); fi; done
   map(select(.event == "review")) | last
   | if . == null then "no review of \($task) is logged: review the head first"
     elif .verdict != "pass" then "the latest review of \($task) (of \(.head[:7])) found something, not a pass: fix and review it first"
-    elif same_head(.head; $head) | not then "the latest review of \($task) passed on \(.head[:7]), not on the head \($head[:7]): review the head first"
-    else empty end' -r --arg task "$task" --arg head "$head" <<<"$events")
+    elif same_head(.head; $reviewed) | not then
+      "the latest review of \($task) passed on \(.head[:7]), not on the head \($head[:7])\(
+        if same_head($reviewed; $head) then "" else " or \($reviewed[:7]), which team-catch-up made it from" end): review the head first"
+    else empty end' -r --arg task "$task" --arg head "$head" --arg reviewed "$reviewed" <<<"$events")
 while IFS= read -r line; do if [[ -n $line ]]; then reasons+=("$line"); fi; done < <(jq -r --slurpfile branch "$scratch/branch" '
   ((.required + ($branch[0].protection.required_status_checks.contexts // [])) | unique) as $required
   | (.checks.passed + .checks.failing + .checks.pending) as $present
@@ -119,6 +126,10 @@ fetched=$(git -C "$primary" rev-parse "refs/remotes/origin/$branch")
 [[ $fetched == "$head" ]] ||
   die "origin's $branch is at ${fetched:0:7}, not at the head ${head:0:7} GitHub showed: the head moved; run it again"
 onto=$(git -C "$primary" rev-parse "refs/remotes/origin/$base")
+if [[ $reviewed != "$head" ]]; then
+  unclean=$(clean_base_merges "$primary" "$reviewed" "$head" "origin/$base") ||
+    die "the head ${head:0:7} does not stand on the review of ${reviewed:0:7}, which team-catch-up made it from: $unclean"
+fi
 if git -C "$primary" merge-base --is-ancestor "$onto" "$head"; then
   echo "team-catch-up: $url holds $base already; nothing to merge"
   exit 0
@@ -162,7 +173,7 @@ elif ! TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-review-status" "$url" "
   unset_status=${unset_status:-team-review-status failed}
 fi
 
-ledger_append "$(jq -cn --arg task "$task" --arg url "$url" --arg from "$head" --arg merge "$merge" --arg base "$onto" \
+ledger_append "$(jq -cn --arg task "$task" --arg url "$url" --arg from "$reviewed" --arg merge "$merge" --arg base "$onto" \
   '{ts: (now | todate), task: $task, event: "caught-up", url: $url, from: $from, head: $merge, base: $base}')"
 trap 'rm -rf "$scratch"' EXIT
 
@@ -175,4 +186,4 @@ if [[ -n $unset_status ]]; then
 fi
 echo "team-catch-up: merged $base ${onto:0:7} cleanly onto ${head:0:7} as ${merge:0:7} and pushed it to $branch"
 echo "$merge"
-echo "next: wait for the checks on ${merge:0:7} (team-ci-wait $url $merge, in the background), then ask Daniel to merge $url at $head, whose word holds through this merge, or run team-merge $task when team-state says a plan-time or standing word covers it"
+echo "next: wait for the checks on ${merge:0:7} (team-ci-wait $url $merge, in the background), then ask Daniel to merge $url at $reviewed, whose word holds through this merge, or run team-merge $task when team-state says a plan-time or standing word covers it"

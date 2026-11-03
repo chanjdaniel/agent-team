@@ -59,7 +59,7 @@
     },
     "caught-up": {
       "writer": "team-catch-up",
-      "about": "url is the PR's; from, the reviewed head the clean merge of the base was made onto; head, that merge, pushed as the PR's head; base, the base's commit it merged; all full shas",
+      "about": "url is the PR's; from, the reviewed head whose review the merge stands on, the merge made onto it or onto an earlier catch-up of it; head, that merge, pushed as the PR's head; base, the base's commit it merged; all full shas",
       "required": {"url": "string", "from": "string", "head": "string", "base": "string"}
     },
     "done": {

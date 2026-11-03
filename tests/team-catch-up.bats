@@ -258,6 +258,52 @@ library() {
   refused "  no review of T14 is logged: review the head first"
 }
 
+@test "a head an earlier catch-up made is caught up again on the same review, which team-state shows" {
+  local first second base
+  base_moves >/dev/null
+  run_bin -0 --separate-stderr team-catch-up T14
+  first=$(git --git-dir="$PROJ_ORIGIN" rev-parse "refs/heads/$branch")
+
+  # The base moves again before anyone reviews the first merge: the second stands on the same review.
+  base=$(base_moves src/third.py)
+  run_bin -0 --separate-stderr team-catch-up T14
+  second=$(git --git-dir="$PROJ_ORIGIN" rev-parse "refs/heads/$branch")
+  assert_equal "$(git --git-dir="$PROJ_ORIGIN" rev-list --parents -n 1 "$second")" "$second $first $base"
+  assert_contains "$output" "merged dev ${base:0:7} cleanly onto ${first:0:7} as ${second:0:7} and pushed it to $branch"
+  assert_equal "${lines[-1]}" "next: wait for the checks on ${second:0:7} (team-ci-wait $url $second, in the background), then ask Daniel to merge $url at $head, whose word holds through this merge, or run team-merge T14 when team-state says a plan-time or standing word covers it"
+  assert_equal "$(jq -c 'select(.event == "caught-up") | [.from, .head]' "$TEAM_HOME/ledger.jsonl")" \
+    "$(jq -cn --arg h "$head" --arg f "$first" --arg s "$second" '[$h, $f], [$h, $s]')"
+  assert_equal "$(tail -n 1 "$GH_DIR/statuses" | jq -r '.[-1]')" "description=clean merge of dev ${base:0:7} onto ${first:0:7}, reviewed"
+  run_bin -0 team-log --check
+
+  stub_reply claude "[]"
+  run_bin -0 --separate-stderr team-state T14 --json
+  assert_equal "$(jq -c '.pr | [.head, .ledger_head, .head_moved, .caught_up]' <<<"$output")" \
+    "$(jq -cn --arg s "$second" --arg h "$head" '[$s, $h, true, true]')"
+
+  # A review of the caught-up head that found something stands for it, not the one before.
+  base_moves src/fourth.py >/dev/null
+  review "$second" findings
+  rm "$GH_DIR/statuses"
+  refused "  the latest review of T14 (of ${second:0:7}) found something, not a pass: fix and review it first"
+}
+
+@test "a head a caught-up event names is refused when git shows its merge is not clean" {
+  local clone=$BATS_TEST_TMPDIR/evil evil
+  base_moves >/dev/null
+  git clone -q "$PROJ_ORIGIN" "$clone"
+  git -C "$clone" checkout -q "$branch"
+  git -C "$clone" merge -q --no-ff --no-commit origin/dev >/dev/null 2>&1
+  echo evil >"$clone/evil.txt"
+  git -C "$clone" add evil.txt
+  git -C "$clone" commit -q -m "Merge remote-tracking branch 'origin/dev' into $branch"
+  git -C "$clone" push -q origin "$branch"
+  evil=$(git -C "$clone" rev-parse HEAD)
+  event T14 caught-up "{url: \"$url\", from: \"$head\", head: \"$evil\", base: \"$head\"}"
+  base_moves src/third.py >/dev/null
+  refused "team-catch-up: the head ${evil:0:7} does not stand on the review of ${head:0:7}, which team-catch-up made it from: ${evil:0:7} changes more than the merge of its parents"
+}
+
 @test "a red, pending or missing required check, a closed PR or another base is refused with every reason at once" {
   base_moves >/dev/null
   echo '[
