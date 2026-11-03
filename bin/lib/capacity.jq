@@ -465,8 +465,8 @@ def kind_estimate($costs; $s; $kind; $seed):
     else {bytes: 0, source: "none"} end;
 
 # Whether an admission (an entry of capacity/admitted.json, {at, kind, task, name, bytes, pid}) still
-# reserves at the time <now> (seconds), with the heavy-run lock <heavy> (heavy_holder's {held, pid,
-# label, task}): one of the last 10 minutes, or a heavy run's while its team-heavy holds the lock.
+# reserves at the time <now> (seconds), with the heavy-run lock <heavy> ({held, pid, label, task}):
+# one of the last 10 minutes, or a heavy run's while its team-heavy holds the lock.
 def admission_kept($heavy; $now):
   (.at | fromdateiso8601) >= $now - 600 or (.pid != null and $heavy.held and .pid == $heavy.pid);
 

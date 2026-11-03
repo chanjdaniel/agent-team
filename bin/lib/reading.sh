@@ -2,19 +2,26 @@
 # with their working directories, the team's processes by directory and descent, and the team's
 # stacks (team-capacity --help says what it reads and writes).
 # Sourced after the library: source "$TEAM_LIB/reading.sh". It provides:
+#   read_registry     sets projects (the registered projects, one per line, team-project --list's)
+#                     and registry (each one's facts, team-project <name>'s, as a JSON array of
+#                     {name, facts} in the same order), one team-project call per project; a
+#                     project it cannot read is left out, team-project's reason on stderr, and it
+#                     returns 1
 #   reading_context   sets CODE (the code checkout, or the primary checkout of the one it is a
-#                     linked worktree of), projects (the registered projects, one per line),
-#                     worktrees (every registered project's linked worktrees, a JSON array of
-#                     {project, branch, worktree}) and ledger (the ledger, or /dev/null)
+#                     linked worktree of), projects and registry (read_registry's, exit 1 when it
+#                     fails), worktrees (every registered project's linked worktrees, a JSON array
+#                     of {project, branch, worktree}) and ledger (the ledger, or /dev/null)
 #   READING_HELD      the jq program of the worktrees held, from the ledger as raw lines,
 #                     $worktrees and $home (held_worktrees in capacity.jq)
 #   take_reading <dir> <build>
-#                     takes the reading into <dir>/readings.jsonl (kept to the last 24 hours, a
+#                     sets the reading's context (reading_context) and takes the reading into
+#                     <dir>/readings.jsonl (kept to the last 24 hours, a
 #                     broken line dropped), its CPU snapshot <dir>/procs.tsv and its lock
 #                     <dir>/sample.lock, as the headers say; within 60 seconds of the newest
 #                     reading it appends nothing. <build> is a function that prints the line to
-#                     append, called with $work holding in.json (machine_reading's input) and
-#                     held.json (the worktrees held, each resolved), and $now the time.
+#                     append, called with $work holding in.json (machine_reading's input),
+#                     held.json (the worktrees held, each resolved) and prior.json (the newest
+#                     stored reading, or null), and $now the time.
 # Test seams: TEAM_MEMINFO, TEAM_READING_PROCS (its lines may carry a sixth column, the process's
 # cgroup v2 path), TEAM_READING_CPUS and TEAM_READING_DOCKER_SECONDS, as team-capacity --help
 # says.
@@ -23,6 +30,30 @@
 READING_HELD='include "ledger"; include "capacity"; include "stack"; ledger_events as $events | ($events | by_task) as $tasks
   | held_worktrees($tasks; [open_worktrees($events[] | select($tasks[.task] | is_open); $home)]; $worktrees)'
 
+# The registry, read once, as the header's read_registry says.
+read_registry() {
+  local project out failed=0 text=''
+  local -a names=()
+  registry='[]'
+  projects=$(team_project --list) || {
+    projects=''
+    return 1
+  }
+  while IFS= read -r project; do
+    [[ -n $project ]] || continue
+    if out=$(team_project "$project"); then
+      names+=("$project")
+      text+=$out$'\n'
+    else
+      failed=1
+    fi
+  done <<<"$projects"
+  registry=$(jq -cn '[$ARGS.positional, [inputs]] | transpose | map({name: .[0], facts: .[1]})' \
+    --args ${names[@]+"${names[@]}"} <<<"$text")
+  return "$failed"
+}
+
+# The reading's context, as the header's reading_context says.
 reading_context() {
   local common project primary
   CODE=$(dirname "$(dirname "$TEAM_LIB")")
@@ -30,20 +61,18 @@ reading_context() {
     [[ $(basename "$common") == .git ]]; then
     CODE=$(dirname "$common")
   fi
-  projects=$(team_project --list)
+  read_registry || exit 1
   # Every registered project's linked worktrees, but its primary checkout, each {project, branch,
   # worktree} (branch "" when detached), from its git worktree list; a primary checkout that is
   # not a git checkout has none.
   worktrees=$(
-    while IFS= read -r project; do
-      [[ -n $project ]] || continue
-      primary=$(team_project "$project" path)
+    jq -r '.[] | .name, .facts.path' <<<"$registry" | while IFS= read -r project && IFS= read -r primary; do
       git -C "$primary" worktree list --porcelain 2>/dev/null | awk -v project="$project" '
         function out() { if (n++ > 0) printf "%s\t%s\t%s\n", project, branch, path }
         /^worktree / { if (path != "") out(); path = substr($0, 10); branch = "" }
         /^branch refs\/heads\// { branch = substr($0, 19) }
         END { if (path != "") out() }' || true
-    done <<<"$projects" | jq -Rn '[inputs | split("\t") | {project: .[0], branch: .[1], worktree: .[2]}]'
+    done | jq -Rn '[inputs | split("\t") | {project: .[0], branch: .[1], worktree: .[2]}]'
   )
   ledger=$TEAM_HOME/ledger.jsonl
   [[ -e $ledger ]] || ledger=/dev/null
@@ -126,24 +155,45 @@ macos_memory() {
 # says: take_reading <dir> <build>
 take_reading() {
   local dir=$1 build=$2 readings=$1/readings.jsonl snapshot=$1/procs.tsv
-  local os meminfo memory total available cpus age previous=null stacks=null line facts project
-  local -a registered
+  local os meminfo memory total available cpus age=null snapshot_read=/dev/null stacks=null line fresh slots provider held_count
+  local -a paths=() resolved=() registered=()
   mkdir -p "$dir"
   exec {sample_fd}>>"$dir/sample.lock"
   flock -w 60 "$sample_fd" || die "another reading is still being taken after 60 seconds"
   now=$(date +%s)
-  if [[ -e $readings ]] && jq -Rne -L "$TEAM_LIB" --argjson now "$now" \
-    'include "capacity"; include "stack"; [inputs] | stored_readings | .readings[-1].at // empty | fromdateiso8601 > $now - 60' \
-    "$readings" >/dev/null; then
-    return 0
+  stack_pid=''
+  work=$(mktemp -d)
+  trap 'rm -rf "$work"' EXIT
+  # The stored readings, read once: whether the newest is within 60 seconds, the newest (the
+  # prior reading), then the lines kept, those of the last 24 hours that are readings.
+  if [[ -e $readings ]]; then
+    jq -Rnc -L "$TEAM_LIB" --argjson now "$now" 'include "capacity"; include "stack";
+      [inputs] as $lines | ($lines | stored_readings | .readings[-1] // null) as $newest
+      | ($newest != null and ($newest.at | fromdateiso8601) > $now - 60), $newest,
+        ($lines[] | try fromjson catch null | select(well_formed_reading and (.at | fromdateiso8601) >= $now - 86400))' \
+      "$readings" >"$work/stored" || die "could not read $readings"
+  else
+    printf '%s\n' false null >"$work/stored"
   fi
+  { IFS= read -r fresh && IFS= read -r line; } <"$work/stored"
+  [[ $fresh == false ]] || return 0
+  printf '%s\n' "$line" >"$work/prior.json"
+  # The team and gate stacks, from team-stack, while the rest is read; Docker not answering in
+  # time leaves them out. timeout runs it in a process group of its own, so a signal that stops
+  # this run (the heartbeat's own time limit), or this run's end before it is waited for, is
+  # passed on to it, and through it to what it started.
+  TEAM_HOME=$TEAM_HOME timeout --kill-after=5 "${TEAM_READING_DOCKER_SECONDS:-30}" \
+    "${TEAM_LIB%/*}/team-stack" ls --json >"$work/stacks.json" 2>/dev/null &
+  stack_pid=$!
+  trap 'kill -TERM "$stack_pid" 2>/dev/null; exit 143' TERM INT HUP
+  trap '[[ -z $stack_pid ]] || kill -TERM "$stack_pid" 2>/dev/null; rm -rf "$work"' EXIT
+
+  reading_context
   case $(uname -s) in
     Linux) os=linux ;;
     Darwin) os=macos ;;
     *) die "no reading of the machine's load on $(uname -s)" ;;
   esac
-  work=$(mktemp -d)
-  trap 'rm -rf "$work"' EXIT
   if [[ $os == linux || -n ${TEAM_MEMINFO:-} ]]; then
     meminfo=${TEAM_MEMINFO:-/proc/meminfo}
     read -r total available < <(awk '$1 == "MemTotal:" { total = $2 * 1024 } $1 == "MemAvailable:" { available = $2 * 1024 }
@@ -167,61 +217,53 @@ take_reading() {
     "$work/procs" >"$work/procs.json" 2>"$work/err" ||
     die "the processes are malformed: $(grep -m1 . "$work/err" || echo "jq could not read them")"
 
-  # The worktrees held, each resolved.
+  # The worktrees held, and the team paths: the team home, the code checkout, every registered
+  # project's slots, each held worktree, and the gate's ~/.no-mistakes; every path resolved by
+  # one realpath.
   jq -nR -L "$TEAM_LIB" --arg home "$HOME" --argjson worktrees "$worktrees" "$READING_HELD" "$ledger" >"$work/held-given.json"
-  jq -r '.[].worktree' "$work/held-given.json" | while IFS= read -r path; do realpath -m -- "$path"; done |
-    jq -Rn '[inputs]' >"$work/held-paths.json"
-  jq -c --slurpfile paths "$work/held-paths.json" '[to_entries[] | .value + {worktree: $paths[0][.key]}]' \
-    "$work/held-given.json" >"$work/held.json"
-
-  # The team paths: the team home, the code checkout, every registered project's slots, each
-  # held worktree, and the gate's ~/.no-mistakes.
-  {
-    printf '%s\n' "$TEAM_HOME" "$(dirname "$TEAM_LIB")/.." "$CODE" "$HOME/.no-mistakes"
-    while IFS= read -r project; do
-      [[ -n $project ]] || continue
-      facts=$(team_project "$project")
-      mapfile -t registered < <(jq -r '.pool.slots[]' <<<"$facts")
-      if [[ $(jq -r .pool.provider <<<"$facts") == treehouse ]]; then
-        treehouse_slots "${registered[@]}"
-      else
-        printf '%s\n' "${registered[@]}"
-      fi
-    done <<<"$projects"
-    jq -r '.[].worktree' "$work/held.json"
-  } | while IFS= read -r path; do
-    [[ -z $path ]] || realpath -m -- "$path"
-  done | jq -Rn '[inputs | select(. != "/")] | unique' >"$work/paths.json"
-
-  # The team and gate stacks, from team-stack; Docker not answering in time leaves them out.
-  # timeout runs it in a process group of its own, so a signal that stops this run (the
-  # heartbeat's own time limit) is passed on to it, and through it to what it started.
-  TEAM_HOME=$TEAM_HOME timeout --kill-after=5 "${TEAM_READING_DOCKER_SECONDS:-30}" \
-    "$(dirname "$TEAM_LIB")/team-stack" ls --json >"$work/stacks.json" 2>/dev/null &
-  stack_pid=$!
-  trap 'kill -TERM "$stack_pid" 2>/dev/null; exit 143' TERM INT HUP
-  if wait "$stack_pid"; then stacks=$(jq -c . "$work/stacks.json"); fi
-  trap - TERM INT HUP
+  mapfile -t paths < <(jq -r '.[].worktree' "$work/held-given.json")
+  held_count=${#paths[@]}
+  paths+=("$TEAM_HOME" "${TEAM_LIB%/*}/.." "$CODE" "$HOME/.no-mistakes")
+  while IFS= read -r provider && IFS= read -r slots; do
+    registered=()
+    ((slots == 0)) || mapfile -t -n "$slots" registered
+    if [[ $provider == treehouse ]]; then
+      mapfile -t -O "${#paths[@]}" paths < <(treehouse_slots ${registered[@]+"${registered[@]}"} </dev/null)
+    else
+      paths+=(${registered[@]+"${registered[@]}"})
+    fi
+  done < <(jq -r '.[].facts.pool | .provider, (.slots // [] | length), (.slots // [])[]' <<<"$registry")
+  for line in "${!paths[@]}"; do
+    ((line < held_count)) || [[ -n ${paths[line]} ]] || unset 'paths[line]'
+  done
+  line=$(realpath -m -- "${paths[@]}")
+  mapfile -t resolved <<<"$line"
+  jq -c '[to_entries[] | .value + {worktree: $ARGS.positional[.key]}]' "$work/held-given.json" \
+    --args "${resolved[@]:0:held_count}" >"$work/held.json"
 
   # The previous snapshot of the processes' CPU, when it is 60 seconds to 15 minutes old.
   if [[ -e $snapshot ]]; then
     age=$((now - $(date -r "$snapshot" +%s)))
-    if ((age >= 60 && age <= 900)); then
-      previous=$(jq -Rnc --argjson seconds "$age" \
-        '{seconds: $seconds, procs: ([inputs | split("\t") | select(length >= 2) | {key: .[0], value: (.[1] | tonumber)}] | from_entries)}' \
-        "$snapshot")
-    fi
+    if ((age >= 60 && age <= 900)); then snapshot_read=$snapshot; else age=null; fi
   fi
+
+  if wait "$stack_pid"; then stacks=$(jq -c . "$work/stacks.json"); fi
+  stack_pid=''
+  trap - TERM INT HUP
 
   jq -nc --arg at "$(date -u -d "@$now" +%FT%TZ)" --argjson total "$total" \
     --argjson available "$available" --argjson cpus "$cpus" --slurpfile procs "$work/procs.json" \
-    --slurpfile paths "$work/paths.json" --argjson stacks "$stacks" --argjson previous "$previous" --arg os "$os" \
-    '{at: $at, os: $os, total: $total, available: $available, cpus: $cpus, procs: $procs[0], paths: $paths[0],
-      stacks: $stacks, previous: $previous}' >"$work/in.json"
+    --argjson stacks "$stacks" --argjson age "$age" --rawfile snapshot "$snapshot_read" \
+    --arg os "$os" '
+    {at: $at, os: $os, total: $total, available: $available, cpus: $cpus, procs: $procs[0],
+     paths: ([$ARGS.positional[] | select(. != "/")] | unique), stacks: $stacks,
+     previous: (if $age == null then null
+                else {seconds: $age, procs: ([$snapshot | splits("\n") | split("\t") | select(length >= 2)
+                                              | {key: .[0], value: (.[1] | tonumber)}] | from_entries)} end)}' \
+    --args "${resolved[@]}" >"$work/in.json"
   line=$("$build") || exit 1
   {
-    [[ ! -e $readings ]] || jq -Rc -L "$TEAM_LIB" --argjson since $((now - 86400)) \
-      'include "capacity"; include "stack"; try fromjson catch null | select(well_formed_reading and (.at | fromdateiso8601) >= $since)' "$readings"
+    tail -n +3 "$work/stored"
     printf '%s\n' "$line"
   } >"$readings.$$"
   mv -f "$readings.$$" "$readings"

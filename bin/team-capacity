@@ -709,51 +709,48 @@ unit_values() {
     | from_entries'
 }
 
-# The heavy-run lock now, as {held, pid, label, task}: whether a run holds it, and from its holder
-# line the pid of its team-heavy (null while the lock is free, since the line stays after a run
-# ends, or held in another form, such as Conventioner's), its label (the whole line in another
-# form) and its task (or null). The lock test and the form are team-heavy's own.
-heavy_holder() {
-  local fd line='' held=false pid=null label='' task=''
+# The heavy-run lock now, into heavy_held, heavy_pid_now, heavy_label and heavy_task: whether a
+# run holds it (true or false), and from its holder line the pid of its team-heavy (null while the
+# lock is free, since the line stays after a run ends, or held in another form, such as
+# Conventioner's), its label (the whole line in another form) and its task ("" for none). The lock
+# test and the form are team-heavy's own.
+read_heavy_lock() {
+  local fd line=''
+  heavy_held=false heavy_pid_now=null heavy_label='' heavy_task=''
   if [[ -e $HEAVY_LOCK ]]; then
     exec {fd}<"$HEAVY_LOCK"
-    flock -n -s "$fd" || held=true
+    flock -n -s "$fd" || heavy_held=true
     exec {fd}<&-
   fi
-  if [[ $held == true ]]; then
+  if [[ $heavy_held == true ]]; then
     IFS= read -r line <"$HEAVY_LOCK" || true
-    label=$line
+    heavy_label=$line
     if [[ $line =~ $HEAVY_HOLDER_FORM ]]; then
-      label=${BASH_REMATCH[1]} pid=${BASH_REMATCH[2]} task=${BASH_REMATCH[4]}
+      heavy_label=${BASH_REMATCH[1]} heavy_pid_now=${BASH_REMATCH[2]} heavy_task=${BASH_REMATCH[4]}
     fi
   fi
-  jq -cn --argjson held "$held" --argjson pid "$pid" --arg label "$label" --arg task "$task" \
-    '{held: $held, pid: $pid, label: ($label | select(. != "") // null), task: ($task | select(. != "") // null)}'
-}
-
-# The pid of the team-heavy that holds the heavy-run lock, or null (heavy_holder's). Its tree is its
-# own cost, never a session's.
-heavy_pid() {
-  heavy_holder | jq -r '.pid'
 }
 
 # The capacity reading's line from take_reading's input (bin/lib/reading.sh), then the cost
-# samples of what it ended, as the header's sample says.
+# samples of what it ended, as the header's sample says. Two jq programs read the input: one lists
+# the units to read, the other makes the reading and tracks what ended.
 capacity_line() {
-  local sessions=null units=null prior=null heavy=null out line track
-  local -a names=() gates=()
+  local sessions=null units=null out line live input
+  local -a names=() gates=() given=()
   if out=$(claude agents --json 2>/dev/null | jq -ce 'select(type == "array")
       | [.[] | {id: (.id // (.sessionId // "" | .[:8])), name: (.name // ""), pid}]' 2>/dev/null); then
     sessions=$out
   fi
   mapfile -t gates < <(gate_units)
-  heavy=$(heavy_pid)
-  jq -c --argjson sessions "$sessions" --slurpfile held "$work/held.json" --arg gate_root "$HOME/.no-mistakes" \
-    --argjson heavy "$heavy" \
-    '. + {sessions: $sessions, held: $held[0], gate_root: $gate_root, gate_units: $ARGS.positional, heavy: $heavy}' \
-    "$work/in.json" --args ${gates[@]+"${gates[@]}"} >"$work/capacity-in.json" || die "could not read the reading's input"
+  # The pid of the team-heavy that holds the heavy-run lock, or null. Its tree is its own cost,
+  # never a session's.
+  read_heavy_lock
+  given=(-n -L "$TEAM_LIB" --slurpfile in "$work/in.json" --argjson sessions "$sessions" --slurpfile held "$work/held.json"
+    --arg gate_root "$HOME/.no-mistakes" --argjson heavy "$heavy_pid_now")
+  input='include "capacity"; include "stack";
+    ($in[0] + {sessions: $sessions, held: $held[0], gate_root: $gate_root, gate_units: $ARGS.positional, heavy: $heavy})'
   if [[ $os == linux ]]; then
-    out=$(jq -r -L "$TEAM_LIB" 'include "capacity"; include "stack"; capacity_units(.)[]' "$work/capacity-in.json") ||
+    out=$(jq -r "${given[@]}" "$input | capacity_units(.)[]" --args ${gates[@]+"${gates[@]}"}) ||
       die "could not list the units to read"
     mapfile -t names < <(grep . <<<"$out" || true)
     if ((${#names[@]} == 0)); then
@@ -762,25 +759,21 @@ capacity_line() {
       units=$(unit_values <<<"$out")
     fi
   fi
-  if [[ -e $READINGS ]]; then
-    prior=$(jq -Rnc -L "$TEAM_LIB" 'include "capacity"; include "stack"; [inputs] | stored_readings | .readings[-1] // null' "$READINGS") ||
-      die "could not read $READINGS"
-  fi
-  line=$(jq -c -L "$TEAM_LIB" --argjson units "$units" --argjson prior "$prior" \
-    'include "capacity"; include "stack"; capacity_reading(. + {units: $units, prior: $prior})' "$work/capacity-in.json") ||
-    die "could not make the reading"
-  track=$(jq -c -L "$TEAM_LIB" --argjson reading "$line" --slurpfile live <(cat "$STATE/live.json" 2>/dev/null || echo null) \
-    'include "capacity"; include "stack"; capacity_track($live[0]; $reading)' -n) ||
-    die "could not read $STATE/live.json against the reading"
-  jq -c '.live' <<<"$track" >"$STATE/live.json.$$"
+  jq -c "${given[@]}" --argjson units "$units" --slurpfile prior "$work/prior.json" \
+    --slurpfile live <(cat "$STATE/live.json" 2>/dev/null || echo null) "
+    $input + {units: \$units, prior: \$prior[0]} | capacity_reading(.) as \$reading
+    | capacity_track(\$live[0]; \$reading) as \$track | \$reading, \$track.live, \$track.costs[]" \
+    --args ${gates[@]+"${gates[@]}"} >"$work/built" ||
+    die "could not make the reading, or read $STATE/live.json against it"
+  { IFS= read -r line && IFS= read -r live; } <"$work/built"
+  printf '%s\n' "$live" >"$STATE/live.json.$$"
   mv -f "$STATE/live.json.$$" "$STATE/live.json"
-  jq -c '.costs[]' <<<"$track" >>"$STATE/costs.jsonl"
+  tail -n +3 "$work/built" >>"$STATE/costs.jsonl"
   printf '%s\n' "$line"
 }
 
 sample() {
   read_settings
-  reading_context
   take_reading "$STATE" capacity_line
 }
 
@@ -802,15 +795,30 @@ read_level() {
     >"$work/level.json" 2>"$work/level.err" || die "$(grep -m1 . "$work/level.err" || echo "could not read $RECORD")"
 }
 
-# Every admission still kept (admission_kept) into $work/admitted.json, [] with none; an
-# admitted.json that is not a JSON array is read as none.
-read_admitted() {
-  { jq -c 'select(type == "array")' "$ADMITTED" 2>/dev/null || true; } | jq -s -L "$TEAM_LIB" --slurpfile heavy "$work/heavy.json" '
+# One jq program reads the current mode and level as read_level reads them, refusing as it does,
+# into $work/level.json; the heavy-run lock now (read_heavy_lock's, as {held, pid, label, task},
+# label and task null when empty) into $work/heavy.json; every admission still kept
+# (admission_kept) into $work/admitted.json, [] with none, an admitted.json that is not a JSON
+# array read as none; and into stacks_seen whether any stored reading holds a running stack (true
+# or false).
+read_level_and_admitted() {
+  local line
+  read_heavy_lock
+  { jq -c 'select(type == "array")' "$ADMITTED" 2>/dev/null || true; } | jq -nc -L "$TEAM_LIB" --arg path "$RECORD" \
+    --rawfile record <(cat "$RECORD" 2>/dev/null || true) --argjson held "$heavy_held" --argjson pid "$heavy_pid_now" \
+    --arg label "$heavy_label" --arg task "$heavy_task" --rawfile readings <(cat "$READINGS" 2>/dev/null || true) '
     include "capacity"; include "stack";
-    (.[0] // []) | map(select(type == "object" and (try (.at | fromdateiso8601) catch null) != null
-                              and (.kind | type == "string") and (.bytes | type == "number")
-                              and admission_kept($heavy[0]; now)))' >"$work/admitted.json" ||
-    die "could not read $ADMITTED"
+    ($record | split("\n") | level_records) as $level
+    | if $level.broken != [] then level_broken_text($path; $level.broken) | halt_error(1) else . end
+    | {held: $held, pid: $pid, label: ($label | select(. != "") // null), task: ($task | select(. != "") // null)} as $heavy
+    | ($level | level_current), $heavy,
+      ([inputs] | (.[0] // []) | map(select(type == "object" and (try (.at | fromdateiso8601) catch null) != null
+                                           and (.kind | type == "string") and (.bytes | type == "number")
+                                           and admission_kept($heavy; now)))),
+      ($readings | split("\n") | stored_readings | any(.readings[]; .stacks // [] | length > 0))' \
+    >"$work/read" 2>"$work/level.err" || die "$(grep -m1 . "$work/level.err" || echo "could not read $RECORD")"
+  { IFS= read -r line && printf '%s\n' "$line" >"$work/level.json" && IFS= read -r line && printf '%s\n' "$line" >"$work/heavy.json" &&
+    IFS= read -r line && printf '%s\n' "$line" >"$work/admitted.json" && IFS= read -r stacks_seen; } <"$work/read"
 }
 
 # status --json's object into $work/status.json, for the asker of <kind> ("" for none): the
@@ -818,10 +826,8 @@ read_admitted() {
 status_json() {
   local machine
   machine=$(machine_name 2>/dev/null) || machine=''
-  read_level
-  costs_json
-  heavy_holder >"$work/heavy.json"
-  read_admitted
+  read_level_and_admitted
+  if [[ -n $1 ]]; then costs_json; else costs_json "$stacks_seen"; fi
   { cat "$READINGS" 2>/dev/null || true; } | jq -Rn -L "$TEAM_LIB" --argjson given "$GIVEN" --arg machine "$machine" \
     --slurpfile level "$work/level.json" --slurpfile costs "$work/costs.json" --slurpfile heavy "$work/heavy.json" \
     --slurpfile admitted "$work/admitted.json" --arg asking "$1" --argjson freed "$(jq -cn '$ARGS.positional' --args ${freed[@]+"${freed[@]}"})" '
@@ -848,24 +854,29 @@ status() {
   fi
 }
 
-# The estimates, team-capacity-costs/1, into $work/costs.json.
+# The estimates, team-capacity-costs/1, into $work/costs.json: the roles in roles/ but the
+# coordinator's, and the registered projects with a stack block, the registry read once
+# (read_registry, whose failure leaves out what it could not read). With false, for status and
+# plan when no stored reading holds a running stack, the registry is not read and no stack project
+# is listed: their reservations look up a stack's estimate only for a stack a reading holds, so
+# what they say is the same.
 costs_json() {
-  local project roles stack_projects=() file
-  roles=$(for file in "$(dirname "$TEAM_LIB")"/../roles/*.md; do
-    if [[ -f $file ]]; then basename "$file" .md; fi
-  done | { grep -vx coordinator || true; } | jq -Rn '[inputs]')
-  while IFS= read -r project; do
-    [[ -n $project ]] || continue
-    if team_project "$project" | jq -e '.stack != null' >/dev/null; then stack_projects+=("$project"); fi
-  done < <(team_project --list)
-  { cat "$STATE/costs.jsonl" 2>/dev/null || true; } | jq -Rn -L "$TEAM_LIB" --argjson given "$GIVEN" --argjson roles "$roles" \
-    --slurpfile live <(cat "$STATE/live.json" 2>/dev/null || echo null) --args '
+  local file roles=()
+  for file in "${TEAM_LIB%/*}"/../roles/*.md; do
+    [[ -f $file ]] || continue
+    file=${file##*/}
+    [[ $file == coordinator.md ]] || roles+=("${file%.md}")
+  done
+  registry='[]'
+  [[ ${1:-true} == false ]] || read_registry || true
+  { cat "$STATE/costs.jsonl" 2>/dev/null || true; } | jq -Rn -L "$TEAM_LIB" --argjson given "$GIVEN" --argjson registry "$registry" \
+    --slurpfile live <(cat "$STATE/live.json" 2>/dev/null || echo null) '
     include "capacity"; include "stack";
     {schema: "team-capacity-costs/1",
-     costs: capacity_costs({settings: ($given | capacity_settings), roles: $roles, stack_projects: $ARGS.positional,
-       limits: ($live[0].limits // {}),
+     costs: capacity_costs({settings: ($given | capacity_settings), roles: $ARGS.positional,
+       stack_projects: [$registry[] | select(.facts.stack != null) | .name], limits: ($live[0].limits // {}),
        costs: [inputs | select(test("\\S")) | try fromjson catch null | select(well_formed_cost)]})}' \
-    ${stack_projects[@]+"${stack_projects[@]}"} >"$work/costs.json"
+    --args ${roles[@]+"${roles[@]}"} >"$work/costs.json"
 }
 
 costs() {
@@ -910,24 +921,25 @@ plan() {
   local ledger=$TEAM_HOME/ledger.jsonl
   [[ -e $ledger ]] || ledger=/dev/null
   read_settings
-  read_level
-  costs_json
-  heavy_holder >"$work/heavy.json"
-  read_admitted
+  read_level_and_admitted
+  costs_json "$stacks_seen"
   if [[ -n $sessions_file ]]; then
     LIVE_SESSIONS=$(jq -ce 'select(type == "array")' "$sessions_file" 2>/dev/null) ||
       die "$sessions_file holds no session list (a JSON array, as claude agents --json prints)"
   fi
   live_sessions
-  ledger_jq 'ledger_events | plan_tasks($sessions)' -nRc --argjson sessions "$LIVE_SESSIONS" "$ledger" >"$work/tasks.json" ||
-    die "could not read $ledger"
-  { cat "$READINGS" 2>/dev/null || true; } | jq -Rn -L "$TEAM_LIB" --argjson given "$GIVEN" --argjson sessions "$LIVE_SESSIONS" \
+  [[ -r $ledger ]] || die "could not read $ledger"
+  # The ledger's open tasks (plan_tasks, read as ledger_jq reads them) and the plan in one program,
+  # the ledger its input.
+  jq -nR -L "$TEAM_LIB" --slurpfile contract "$TEAM_LIB/ledger-contract.json" --arg home "$HOME" '
+    include "ledger"; include "capacity"; include "stack"; $contract[0] as $contract
+    | capacity_plan({settings: ($given | capacity_settings), current: $level[0],
+                   readings: ($readings | split("\n") | stored_readings | .readings),
+                   costs: $costs[0].costs, heavy: $heavy[0], admitted: $admitted[0], now: now,
+                   tasks: (ledger_events | plan_tasks($sessions)), sessions: $sessions})' \
+    --argjson given "$GIVEN" --argjson sessions "$LIVE_SESSIONS" --rawfile readings <(cat "$READINGS" 2>/dev/null || true) \
     --slurpfile level "$work/level.json" --slurpfile costs "$work/costs.json" --slurpfile heavy "$work/heavy.json" \
-    --slurpfile admitted "$work/admitted.json" --slurpfile tasks "$work/tasks.json" '
-    include "capacity"; include "stack";
-    capacity_plan({settings: ($given | capacity_settings), current: $level[0], readings: ([inputs] | stored_readings | .readings),
-                   costs: $costs[0].costs, heavy: $heavy[0], admitted: $admitted[0], now: now, tasks: $tasks[0],
-                   sessions: $sessions})' >"$work/plan.json" || die "could not make the plan"
+    --slurpfile admitted "$work/admitted.json" "$ledger" >"$work/plan.json" || die "could not make the plan"
   if ((json)); then
     cat "$work/plan.json"
   else
