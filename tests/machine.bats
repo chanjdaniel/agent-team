@@ -165,11 +165,15 @@ home_setting() {
 
 
 @test "json_vars reads each named value of one JSON document into a variable, in one jq run" {
-  # A jq that counts its runs, first on PATH.
+  # A jq that counts its runs in $JQ_RUNS, first on PATH, linked from the run's shared copy.
   mkdir -p "$BATS_TEST_TMPDIR/counting"
-  printf '#!/usr/bin/env bash\necho run >>"%s"\nexec %q "$@"\n' "$BATS_TEST_TMPDIR/jq-runs" "$(command -v jq)" \
-    >"$BATS_TEST_TMPDIR/counting/jq"
-  chmod +x "$BATS_TEST_TMPDIR/counting/jq"
+  ln "$(shared counting-jq <<EOF
+#!/usr/bin/env bash
+echo run >>"\$JQ_RUNS"
+exec $(command -v jq) "\$@"
+EOF
+)" "$BATS_TEST_TMPDIR/counting/jq"
+  export JQ_RUNS=$BATS_TEST_TMPDIR/jq-runs
   lib_run -0 team-x "PATH=$BATS_TEST_TMPDIR/counting:\$PATH"'
     json_vars holder=.holder epoch=.epoch state=.state none=.missing gone=empty mine=.mine \
       list=.list obj=.obj text=.text first=".list[]" <<<"$1"

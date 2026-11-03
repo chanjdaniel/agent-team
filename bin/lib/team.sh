@@ -631,31 +631,31 @@ docker_silence() {
 # (the start's exit code and output): trust_probe <path> <name>
 # shellcheck disable=SC2034 # trust_verdict is read by the caller
 trust_probe() {
-  local name=$2 id line ids=() kept=()
-  local -A seen=()
+  local name=$2 id line probe_ids=() probe_kept=()
+  local -A probe_seen=()
   trust_rc=0 trust_left=()
   trust_out=$(cd "$1" && bounded 60 claude --bg --name "$name" 2>&1 </dev/null) || trust_rc=$?
   # The first 8 hex digits of the start's output that stand as a word, then each live session of
   # the probe's name, read with builtins but for the session list's jq; each kept once, no blank.
   if [[ $trust_out != *"Workspace not trusted"* &&
     $trust_out =~ (^|[^A-Za-z0-9_])([0-9a-f]{8})([^A-Za-z0-9_]|$) ]]; then
-    ids+=("${BASH_REMATCH[2]}")
+    probe_ids+=("${BASH_REMATCH[2]}")
   fi
-  while IFS= read -r line; do ids+=("$line"); done < <(bounded 30 claude agents --json 2>/dev/null </dev/null |
+  while IFS= read -r line; do probe_ids+=("$line"); done < <(bounded 30 claude agents --json 2>/dev/null </dev/null |
     jq -r --arg name "$name" 'arrays | .[] | objects
       | select(.name == $name) | .id // ((.sessionId // "")[:8]) | strings' 2>/dev/null || true)
-  for line in ${ids[@]+"${ids[@]}"}; do
-    [[ -n ${line//[[:space:]]/} && -z ${seen[$line]:-} ]] || continue
-    seen[$line]=1 kept+=("$line")
+  for line in ${probe_ids[@]+"${probe_ids[@]}"}; do
+    [[ -n ${line//[[:space:]]/} && -z ${probe_seen[$line]:-} ]] || continue
+    probe_seen[$line]=1 probe_kept+=("$line")
   done
   # shellcheck disable=SC2048 # split as the lines were before: an id is one word
-  for id in ${kept[*]}; do
+  for id in ${probe_kept[*]}; do
     bounded 30 claude stop "$id" >/dev/null 2>&1 </dev/null || true
     bounded 30 claude rm "$id" >/dev/null 2>&1 </dev/null || trust_left+=("$id")
   done
   if [[ $trust_out == *"Workspace not trusted"* ]]; then
     trust_verdict=untrusted
-  elif ((trust_rc == 0 && ${#kept[@]} > 0)); then
+  elif ((trust_rc == 0 && ${#probe_kept[@]} > 0)); then
     trust_verdict=trusted
   else
     trust_verdict=unknown
