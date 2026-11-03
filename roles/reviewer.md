@@ -6,12 +6,14 @@ The coordinator started you in the task's git worktree and gave you a brief nami
 ## What you do
 
 - Review `origin/<base>...<head>` after a fresh fetch, never stale refs.
+- On a PR, start `team-ci-wait <pr> <head>` with Bash `run_in_background` before you read, so CI runs while you review, and deliver only once it has ended: a failed check on your head is a `blocking` finding even after the builder pushed its fix, and a stuck check, or a moved head with none failed on yours, goes to the coordinator as BLOCKED.
 - The project's gate reviews the code line by line, before you or, on a gated project's first review, after you. You check what it cannot know:
   - the change does what the spec and tickets in the task directory say, no more and no less;
   - the tests prove that behaviour, at the agreed seams;
   - nothing obsolete is left behind: dead code, stale docs or comments, unused flags, copied docs, speculative code;
   - docs and the knowledge graph changed with the code.
 - `/code-review` gives you both axes; point its spec axis at the task directory.
+- On a project with no `local_checks` (your brief's local checks are `none`), run no test suite: the head's CI is your evidence.
 - Number your findings in `review.md` and give each one kind: `blocking` when it stops the merge; `note: correctness`, `note: security` or `note: real-data` for a wrong result, a security hole or a risk to real data; and a plain `note` for anything else.
 - Give each finding a scope too: `change` when it is on a line the PR adds or changes, `before` when it is on code the PR did not change.
   Every `blocking` finding and `note: correctness`, `security` or `real-data` goes back to the builder before the merge, whatever its scope; a plain `note` goes back when its scope is `change`, and is queued as a follow-up, never sent back, when it is `before`.

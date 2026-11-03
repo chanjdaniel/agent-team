@@ -5,6 +5,10 @@ Project: {{project}} (`{{repo}}`), base `{{base}}`.
 Worktree: `{{worktree}}`, branch `{{branch}}`; review `origin/{{base}}...{{head}}`.
 Task directory: `{{task_dir}}/` in the worktree: `spec.md`, `tickets/`, `build-notes/`.{{ui}}
 
+## GitHub checks
+
+{{> wait}}
+
 ## Check, beyond what every review covers
 
 {{checks}}

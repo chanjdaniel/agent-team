@@ -37,18 +37,21 @@
 # {{> <name>}} stands for the partial of the project's delivery, templates/briefs/<name>/<delivery>.md:
 # delivery (how a builder delivers), review and rereview (what a reviewer reads and posts, verify
 # reading rereview's too; a gated project's first review reads the branch's local head before the
-# gate, with no pr). Before the PR (no --set pr, and no pr event in the project's repo) on a gated
-# project, or on a direct-PR one whose plan's ## Disclosure section holds text past its HTML
-# comments (its builder pushes nothing before the review passes), <name>/<delivery>-before-pr.md
-# takes the place of <name>/<delivery>.md where it exists: review/direct-pr-before-pr.md reads the
-# local head with no pr, as the gated review does; and before-pr/<template>.md takes the place of
-# the template where it exists: before-pr/rereview.md and before-pr/verify.md re-review a fix
-# round's local head with no pr, the rereview partial's -before-pr files saying what to read, and
-# post nothing. A {{> review-rules}} line, in the reviewer, rereview and verify templates where
-# their checks are listed, is the project's standing review rules, the team home's
-# projects/<project>/review-rules.md: the coordinator's records, never code, read as written
-# before the placeholders, so they may use any, and put in as a paragraph of their own; with no
-# file, or an empty one, the line is left out. One that cannot be read is refused.
+# gate, with no pr), and wait (the first review's wait on the PR's GitHub checks, started before it
+# reads; with no PR, a line saying there are none). Before the PR (no --set pr, and no pr event
+# in the project's repo) on a gated project, or on a direct-PR one whose plan's ## Disclosure
+# section holds text past its HTML comments (its builder pushes nothing before the review
+# passes), <name>/<delivery>-before-pr.md takes the place of <name>/<delivery>.md where it
+# exists: review/direct-pr-before-pr.md reads the local head with no pr, as the gated review does,
+# and wait/direct-pr-before-pr.md says there are no checks to wait for; and
+# before-pr/<template>.md takes the place of the template where it exists: before-pr/rereview.md
+# and before-pr/verify.md re-review a fix round's local head with no pr, the rereview partial's
+# -before-pr files saying what to read, and post nothing. A {{> review-rules}} line, in the
+# reviewer, rereview and verify templates where their checks are listed, is the project's standing
+# review rules, the team home's projects/<project>/review-rules.md: the coordinator's records,
+# never code, read as written before the placeholders, so they may use any, and put in as a
+# paragraph of their own; with no file, or an empty one, the line is left out. One that cannot be
+# read is refused.
 # Derived: a template's reviewed, pr and head the caller does not --set are filled from the ledger
 # and GitHub. reviewed is the head of the task's latest review; pr the URL of the task's latest pr
 # event in the project's repo; head that event's head (moved by any history-rewritten), or the
