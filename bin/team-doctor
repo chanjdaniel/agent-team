@@ -38,8 +38,11 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 json=0
 [[ ${1:-} != --json ]] || json=1
 
-err=$(mktemp)
-trap 'rm -f "$err"' EXIT
+# The run's scratch: err, a command's stderr for first_error, and what a check keeps there.
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+err=$scratch/err
+: >"$err"
 # Each check's check, verdict, reason and fix, in order, for --json.
 results=() failed=0
 
@@ -75,6 +78,20 @@ first_problem() {
 # <path> with $HOME as ~.
 tilde() {
   printf '%s\n' "${1/#"$HOME"/\~}"
+}
+
+# team_project <argument>... in registry_reply, its answer kept for the same arguments later in the
+# run once it succeeded, since the doctor never changes the registry; a failure is asked again, its
+# stderr the caller's: project_registry <argument>...
+declare -A registry_kept=()
+project_registry() {
+  local key="$*"
+  if [[ -n ${registry_kept[$key]+set} ]]; then
+    registry_reply=${registry_kept[$key]}
+    return 0
+  fi
+  registry_reply=$(team_project "$@") || return
+  registry_kept[$key]=$registry_reply
 }
 
 # The trust line of <project> (or "team home"), from trust_probe in its root <path> with the probe

@@ -11,7 +11,7 @@
 #               SHA-256 the lock records; for a fork (no-mistakes), a build of its pinned
 #               commit, with Go and make from their own tool lines.
 # shellcheck shell=bash
-# shellcheck disable=SC2034,SC2004 # installed, an associative array of the doctor's, for the later checks
+# shellcheck disable=SC2034,SC2004,SC2154 # installed, an associative array of the doctor's, for the later checks; scratch, the doctor's
 
 lock=$TEAM_LIB/tools.lock
 
@@ -28,12 +28,24 @@ version_below() {
   return 1
 }
 
-# One tool of the lock: check_tool <name> <version_cmd> <pattern> <pin> <min> <pin_mismatch>
-# <show_path> <source>
+# Start one tool's version command <version_cmd> in the background, bounded by its 30 s, its output
+# and stderr going to <file> and its exit code to <file>.rc: probe_tool <file> <version_cmd>
+probe_tool() {
+  local words
+  read -ra words <<<"$2"
+  (
+    rc=0
+    bounded 30 "${words[@]}" >"$1" 2>&1 </dev/null || rc=$?
+    echo "$rc" >"$1.rc"
+  ) &
+}
+
+# One tool of the lock, from the output its probe_tool left in <file>: check_tool <file> <name>
+# <version_cmd> <pattern> <pin> <min> <pin_mismatch> <show_path> <source>
 check_tool() {
-  local name=$1 cmd=$2 pattern=$3 pin=$4 min=$5 mismatch=$6 show=$7 source=$8 words out rc=0 version='' shown line
+  local file=$1 name=$2 cmd=$3 pattern=$4 pin=$5 min=$6 mismatch=$7 show=$8 source=$9 words out rc version='' shown line
   read -ra words <<<"$cmd"
-  out=$(bounded 30 "${words[@]}" 2>&1 </dev/null) || rc=$?
+  out=$(<"$file") rc=$(<"$file.rc")
   # The first line that matches gives the version, so ^ and $ anchor to a line.
   while IFS= read -r line; do
     if [[ $line =~ $pattern ]]; then version=${BASH_REMATCH[1]} && break; fi
@@ -60,12 +72,18 @@ check_tool() {
   fi
 }
 
-# Each tool of the lock, on fd 3, since a tool's version command may read stdin.
+# Each tool of the lock, eight lines each: every version command is started before any is read,
+# so a slow one delays no other, then each is reported in the lock's order.
 if [[ -n $os ]]; then
-  while IFS= read -r -u 3 name && IFS= read -r -u 3 cmd && IFS= read -r -u 3 pattern &&
-    IFS= read -r -u 3 pin && IFS= read -r -u 3 min && IFS= read -r -u 3 mismatch &&
-    IFS= read -r -u 3 show && IFS= read -r -u 3 source; do
-    check_tool "$name" "$cmd" "$pattern" "$pin" "$min" "$mismatch" "$show" "$source"
-  done 3< <(jq -L "$TEAM_LIB" -r --arg os "$os" --arg machine "$(uname -m)" 'include "tools"; tools_for($os; $machine)
+  mapfile -t tool_fields < <(jq -L "$TEAM_LIB" -r --arg os "$os" --arg machine "$(uname -m)" 'include "tools"; tools_for($os; $machine)
     | .name, .version_cmd, .version_pattern, .pin, .min, .pin_mismatch, .show_path, .source' "$lock")
+  tool_probes=()
+  for ((i = 0; i < ${#tool_fields[@]}; i += 8)); do
+    probe_tool "$scratch/tool-$i" "${tool_fields[i + 1]}"
+    tool_probes+=($!)
+  done
+  ((${#tool_probes[@]} == 0)) || wait "${tool_probes[@]}"
+  for ((i = 0; i < ${#tool_fields[@]}; i += 8)); do
+    check_tool "$scratch/tool-$i" "${tool_fields[@]:i:8}"
+  done
 fi

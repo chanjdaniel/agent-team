@@ -17,28 +17,31 @@ if ((rc > 1)) || ! jq -e 'type == "array"' <<<"$config" >/dev/null 2>&1; then
   report plugins FAIL "unknown, since team-config diff did not answer: $reason" "the config line's fix"
   report memory WARN "unknown, since team-config diff did not answer: $reason" "the config line's fix"
 else
-  config_others=$(jq -r '[.[] | select(.state != "not installed" and .state != "not added" and .item != "plugins"
-    and (.item | startswith("memory ") | not))
-    | "\(.item) \(.state)"] | join(", ")' <<<"$config")
+  # Each difference but plugins and memory; whether claude plugin list answered; the plugins and
+  # marketplaces missing; the commands that add them; and the memory differences.
+  mapfile -d '' -t config_parts < <(jq --raw-output0 '
+    ([.[] | select(.state != "not installed" and .state != "not added" and .item != "plugins"
+      and (.item | startswith("memory ") | not)) | "\(.item) \(.state)"] | join(", ")),
+    (any(.[]; .item == "plugins") | tostring),
+    ([.[] | select(.state == "not installed" or .state == "not added") | .item] | join(", ")),
+    ([.[] | select(.state == "not added") | "claude plugin marketplace add \(.item | ltrimstr("marketplace "))"]
+      + [.[] | select(.state == "not installed") | "claude plugin install \(.item | ltrimstr("plugin ")) --scope user"]
+      | join("; ")),
+    ([.[] | select(.item | startswith("memory ")) | "\(.item) \(.state)"] | join(", "))' <<<"$config")
+  config_others=${config_parts[0]} plugins_missing=${config_parts[2]} memory=${config_parts[4]}
   if [[ -z $config_others ]]; then
     report config PASS "this machine's Claude config is the team home's"
   else
     report config WARN "$config_others" \
       "team-config diff --full, then team-config apply (take the team home's) or team-config capture (keep this machine's)"
   fi
-  if jq -e 'any(.[]; .item == "plugins")' <<<"$config" >/dev/null; then
+  if [[ ${config_parts[1]} == true ]]; then
     report plugins FAIL "\`claude plugin list\` did not answer" "install Claude Code and sign in (the tool claude and claude login lines)"
+  elif [[ -z $plugins_missing ]]; then
+    report plugins PASS "every marketplace and plugin of plugins.txt is installed"
   else
-    plugins_missing=$(jq -r '[.[] | select(.state == "not installed" or .state == "not added") | .item] | join(", ")' <<<"$config")
-    if [[ -z $plugins_missing ]]; then
-      report plugins PASS "every marketplace and plugin of plugins.txt is installed"
-    else
-      report plugins FAIL "missing $plugins_missing" "$(jq -r '[.[] | select(.state == "not added") | "claude plugin marketplace add \(.item | ltrimstr("marketplace "))"]
-        + [.[] | select(.state == "not installed") | "claude plugin install \(.item | ltrimstr("plugin ")) --scope user"]
-        | join("; ")' <<<"$config")"
-    fi
+    report plugins FAIL "missing $plugins_missing" "${config_parts[3]}"
   fi
-  memory=$(jq -r '[.[] | select(.item | startswith("memory ")) | "\(.item) \(.state)"] | join(", ")' <<<"$config")
   if [[ -z $memory ]]; then
     report memory PASS "every project here keeps its auto memory in the team home"
   else
