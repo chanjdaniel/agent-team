@@ -1390,10 +1390,11 @@ after"
   assert_contains "$(<"$output")" "- Local checks: none."
 }
 
-@test "a direct-PR builder reports at the push with its wait on the checks behind it, and each review of a PR starts its own wait before reading" {
+@test "a direct-PR builder reports at the push with its wait on CI's checks behind it, and each review of a PR starts its own wait before reading" {
   open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
-  local pr=https://github.com/chanjdaniel/agent-team/pull/9 brief files=() wait act
-  wait="Start the wait for the PR's GitHub checks with \`$REPO_ROOT/bin/team-ci-wait <full url> <the full sha you pushed>\`, run with Bash \`run_in_background\`, then send \`T14 PR <full url>\` to \`coordinator\` at once, so the review reads while CI runs, and keep the wait going."
+  local pr=https://github.com/chanjdaniel/agent-team/pull/9 brief files=() wait act moved
+  wait="Start the wait for the PR's GitHub checks with \`$REPO_ROOT/bin/team-ci-wait --no-agent-review <full url> <the full sha you pushed>\`, run with Bash \`run_in_background\`, then send \`T14 PR <full url>\` to \`coordinator\` at once, so the review reads while CI runs, and keep the wait going.
+   \`--no-agent-review\` leaves out the reviewer's \`agent-review\` status, which may land before your wait's last look: never fix or push for it, since its findings come back to you from the coordinator as a fix round."
   # The deliverer and a fix round's builder report the PR at the push, the wait started before it.
   run_bin -0 team-brief T14 builder-deliver --set "goal=the goal"
   files+=("$output")
@@ -1417,10 +1418,18 @@ after"
   run_bin -0 team-brief T14 builder-merge-base --name merge-base --set pr=$pr
   files+=("$output")
   brief=$(<"$output")
-  assert_contains "$brief" "7. Start the wait for the PR's GitHub checks with \`$REPO_ROOT/bin/team-ci-wait $pr <the full sha you pushed>\`, run with Bash \`run_in_background\`, then send \`T14 DONE merged main <the full sha of the head> conflicts: <each file that conflicted, or none>\` to \`coordinator\` at once, which has a fresh reviewer re-check the merge while CI runs, and keep the wait going."
+  assert_contains "$brief" "7. Start the wait for the PR's GitHub checks with \`$REPO_ROOT/bin/team-ci-wait --no-agent-review $pr <the full sha you pushed>\`, run with Bash \`run_in_background\`, then send \`T14 DONE merged main <the full sha of the head> conflicts: <each file that conflicted, or none>\` to \`coordinator\` at once, which has a fresh reviewer re-check the merge while CI runs, and keep the wait going.
+   \`--no-agent-review\` leaves out the rereview's \`agent-review\` status, which may land before your wait's last look: never fix or push for it, since its findings come back to you from the coordinator as a fix round."
+  # Every builder's wait leaves the review's own status out; no reviewer's does.
+  for brief in "${files[@]}"; do
+    refute_grep -e 'team-ci-wait [^-]' "$brief"
+  done
   # The first review and the rereview start their own wait first, before any reading, and act on
   # each exit as verify does.
   act="Act on how the wait ended: exit 0, every check passed or the head has none; exit 1, each failed check it names is a \`blocking\` finding; on a head other than \`abc1234\`, read the runs of \`abc1234\` itself with \`gh run list --repo chanjdaniel/agent-team --commit abc1234\`, since the builder pushes its fix of a failed check at once: each failed run is a \`blocking\` finding, and only when none failed does the moved head, as a stuck check does, go to \`coordinator\` as \`T14 BLOCKED <its message>\`; exit 75, run it again, or report as its message says."
+  # A builder's fix of a failed check moves the PR past the reviewed head: the review still
+  # delivers its findings, with no status and no BLOCKED.
+  moved="When a check failed, the PR has usually moved past \`abc1234\` by the time you deliver, and \`team-review-status\` refuses your head: post your comment as usual, set no status, and send your \`DONE findings\` with each failed check counted as \`blocking\`, which the coordinator takes on a moved head; that move is no \`BLOCKED\`."
   run_bin -0 team-brief T14 reviewer --name review --set pr=$pr --set head=abc1234 --set "checks=the checks"
   files+=("$output")
   brief=$(<"$output")
@@ -1428,9 +1437,11 @@ after"
 
 Start the wait for the PR's GitHub checks with \`$REPO_ROOT/bin/team-ci-wait $pr abc1234\`, run with Bash \`run_in_background\`, before you read anything, so the run and your reading overlap; every check must pass, and you deliver only once the wait has ended.
 $act
+$moved
 
 ## Check, beyond what every review covers"
   [[ $(grep -n 'team-ci-wait' "$output" | cut -d: -f1) -lt $(grep -n '^## Check' "$output" | cut -d: -f1) ]]
+  assert_contains "$brief" "and refuses when the PR has moved past it: then set nothing, and when a failed check of \`abc1234\` explains the move, as the GitHub checks step says, send your \`DONE findings\` below as usual; otherwise tell the coordinator."
   reviewed_branch T14 main
   run_bin -0 team-brief T14 rereview --name rereview --set pr=$pr --set head="$head"
   files+=("$output")
@@ -1439,7 +1450,9 @@ $act
 
 1. First start the wait for the PR's GitHub checks with \`$REPO_ROOT/bin/team-ci-wait $pr $head\`, run with Bash \`run_in_background\`, so the run and your reading overlap, and run the project's local checks (none) on \`$head\` with \`$REPO_ROOT/bin/team-checks home $head\`, which runs them as \`team-merge\` does, in a fresh detached worktree of that head; every one must pass, and \`.work/task/review.md\` says which local checks passed (they set no GitHub status).
    ${act//abc1234/$head}
+   ${moved//abc1234/$head}
 2. Review what changed since the last review"
+  assert_contains "$brief" "and refuses when the PR has moved past it: then set nothing, and when a failed check of \`$head\` explains the move, as step 1 says, send your \`DONE findings\` below as usual; otherwise tell the coordinator."
   assert_contains "$brief" "3. Every finding in \`.work/task/review.md\` that went back to the builder"
   refute_grep -- '--watch' "${files[@]}"
 }
@@ -1474,7 +1487,8 @@ Task directory: `.work/task/` in the worktree (excluded from git): `spec.md`, `t
 5. Run the project's local checks (`tests/run`) on the merged head with `@CODE@/bin/team-checks home <full sha>`, which runs them as `team-merge` does, in a fresh detached worktree of that head; fix the branch until all pass on one head.
 6. Push the branch; if the PR body names the head its local checks passed on, bring that line up to date (`gh pr edit https://github.com/chanjdaniel/agent-team/pull/9 --body-file <file>`).
    Run no gate: the merge and the fixes of step 4 are re-reviewed, not re-gated.
-7. Start the wait for the PR's GitHub checks with `@CODE@/bin/team-ci-wait https://github.com/chanjdaniel/agent-team/pull/9 <the full sha you pushed>`, run with Bash `run_in_background`, then send `T14 DONE merged main <the full sha of the head> conflicts: <each file that conflicted, or none>` to `coordinator` at once, which has a fresh reviewer re-check the merge while CI runs, and keep the wait going.
+7. Start the wait for the PR's GitHub checks with `@CODE@/bin/team-ci-wait --no-agent-review https://github.com/chanjdaniel/agent-team/pull/9 <the full sha you pushed>`, run with Bash `run_in_background`, then send `T14 DONE merged main <the full sha of the head> conflicts: <each file that conflicted, or none>` to `coordinator` at once, which has a fresh reviewer re-check the merge while CI runs, and keep the wait going.
+   `--no-agent-review` leaves out the rereview's `agent-review` status, which may land before your wait's last look: never fix or push for it, since its findings come back to you from the coordinator as a fix round.
    Act on how it ended: exit 0, every check passed or the head has none, and you are done; exit 1, fix each failed check it names, run step 5 on the new head, push as step 6 says and wait again on the new head, sending nothing new: the rereview in flight counts the failed check as a `blocking` finding, and its findings come back to you as a fix round; follow a stuck check's message, or, on a head other than the one you pushed, do as its message says; exit 75, run it again, or report as its message says.
 
 Never run a command that needs `sudo`; send `T14 BLOCKED <the command> needs sudo` to `coordinator` instead.

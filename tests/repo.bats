@@ -1085,6 +1085,7 @@ Bash(gh-axi pr ready *)'
   done
   allows builder "$REPO_ROOT/bin/team-checks agent-team a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
   allows builder "$REPO_ROOT/bin/team-ci-wait https://github.com/me/shop/pull/5"
+  allows builder "$REPO_ROOT/bin/team-ci-wait --no-agent-review https://github.com/me/shop/pull/5"
   if allows builder "team-ci-wait https://github.com/me/shop/pull/5"; then return 1; fi
   if allows builder "/elsewhere/bin/team-ci-wait https://github.com/me/shop/pull/5"; then return 1; fi
   if denied settings/builder.json "$REPO_ROOT/bin/team-ci-wait https://github.com/me/shop/pull/5"; then return 1; fi
