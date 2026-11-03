@@ -644,6 +644,47 @@ def reserved_total:
   ([.[] | select(.part != "spike_allowance") | .bytes] | add // 0)
   + ([.[] | select(.part == "sessions_use") | [.estimate_bytes - (.use_bytes // 0), 0] | max] | max // 0);
 
+# team-capacity costs --json's object (team-capacity-costs/1) from $in: {given (capacity.json's
+# values, as jq -s reads them), roles, registry ([{name, facts}], read_registry's), limits (each
+# stack project's mem_limits, live.json's), lines (costs.jsonl's lines, an array of strings)}.
+def capacity_costs_object($in):
+  {schema: "team-capacity-costs/1",
+   costs: capacity_costs({settings: ($in.given | capacity_settings), roles: $in.roles,
+     stack_projects: [$in.registry[] | select(.facts.stack != null) | .name], limits: $in.limits,
+     costs: [$in.lines[] | select(test("\\S")) | try fromjson catch null | select(well_formed_cost)]})};
+
+# team-capacity status --json's object (team-capacity/1) from $in: {given, machine ("" for none),
+# level (level_current's), costs (capacity_costs' array), heavy ({held, pid, label, task}),
+# admitted (the admissions kept), readings (readings.jsonl's lines, an array of strings), now,
+# asking (the kind being admitted, or ""), freed (session ids)}.
+def capacity_status_object($in):
+  ($in.readings | stored_readings | .readings[-1] // null) as $r
+  | ($in.given | capacity_settings) as $s
+  | capacity_reservations({reading: $r, costs: $in.costs, settings: $s, heavy: $in.heavy,
+                           admitted: $in.admitted, now: $in.now, asking: ($in.asking | select(. != "") // null),
+                           freed: $in.freed}) as $items
+  | reserved_split($items) as $split
+  | {schema: "team-capacity/1", machine: ($in.machine | select(. != "") // null), settings: $s,
+     stale: ($r == null or ($r.at | fromdateiso8601) < $in.now - 900), reading: $r,
+     reserved: ($split + {items: $items}), room: capacity_room($s; $in.level; $r; $split.bytes)};
+
+# team-level status --json's object (team-level/1) from the current mode and level <now>
+# (level_current's), team-capacity status --json's object <c>, the stored readings <readings>
+# (stored_readings' .readings) and the machine's cores <cpus>.
+def level_state($now; $c; $readings; $cpus):
+  $c.settings as $s | $c.reading as $r
+  | [$readings[] | select(.cpu != null)][-1] as $cpu
+  | capacity_budget($s; $now.level; $r; $cpu; $cpus) as $budget
+  | {schema: "team-level/1", machine: $c.machine, mode: $now.mode, level: $now.level, share: $budget.share,
+     budget: ($budget | del(.share)), reserved_bytes: $c.reserved.bytes,
+     reserved_split: ($c.reserved | with_entries(select(.key as $k | reserved_parts | index($k)))), reserved: $c.reserved.items,
+     use: {memory_bytes: ($r.memory.team // null), cores: ($r.cpu.team // null)},
+     reading: (if $r == null then null
+               else {at: $r.at, total: $r.memory.total, others_memory: $r.memory.others,
+                     cpus: ($cpu.cpu.cpus // null), others_cores: ($cpu.cpu.others // null)} end),
+     settings: ($s | del(.from)), cpus: $cpus, last_change: $now.last_change}
+  | . + {says: level_says};
+
 # Whether the directory <cwd> is the worktree <wt> or below it.
 def within($wt): . as $cwd | $wt != null and ($cwd == $wt or ($cwd | startswith($wt + "/")));
 

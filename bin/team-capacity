@@ -648,35 +648,47 @@ slice_quota() {
 # level.jsonl must be well formed (each a FAIL naming its problem), and on Linux, with the user
 # manager answering (<manager> 1) and the slice installed, the limits team-level last applied
 # (~/.local/state/agent-team/level/applied.json) must be the recorded level's and the slice's CPU
-# quota theirs (each a WARN, fixed by team-level apply).
+# quota theirs (each a WARN, fixed by team-level apply). The words are team-level status --json
+# --stored's says, made here as team-level makes them (level_state).
 level_problems() {
   local manager=$1 out state applied quota want
   LEVEL_SAYS=''
-  if ! out=$(read_settings 2>&1); then
+  if ! GIVEN=$(read_settings 2>"$work/err" && printf '%s' "$GIVEN"); then
+    out=$(cat "$work/err")
     problem FAIL "${out#"${0##*/}: "}" "fix or remove $(tilde "$SETTINGS"), then run team-doctor again"
     return 0
   fi
-  if ! state=$(TEAM_HOME=$TEAM_HOME "$(dirname "${BASH_SOURCE[0]}")/team-level" status --json --stored 2>"$work/err"); then
-    out=$(grep -m1 . "$work/err" || echo "team-level status failed")
-    out=${out#team-level: }
-    # team-level names its fix with its reason, as for a malformed record.
+  if ! read_level_and_admitted; then
+    out=$(level_error)
+    # The refusal names its fix with its reason.
     if [[ $out == *"; fix or remove"* ]]; then
       problem FAIL "${out%%; fix or remove*}" "fix or remove${out#*; fix or remove}"
     else
-      problem FAIL "team-level status: $out" "fix what it names, then run team-doctor again"
+      problem FAIL "the level: $out" "fix what it names, then run team-doctor again"
     fi
     return 0
   fi
-  LEVEL_SAYS=$(jq -r .says <<<"$state")
+  # Two lines: the level's words, and its mode and level.
+  if ! state=$(status_program '' "$stacks_seen" '
+    level_state($level[0]; $status; $readings | split("\n") | stored_readings | .readings; $cpus)
+    | .says, "\(.mode) \(.level)"' -r --argjson cpus "${TEAM_READING_CPUS:-$(nproc)}" 2>"$work/err"); then
+    problem FAIL "the level: $(grep -m1 . "$work/err" || echo "could not size the budget")" "fix what it names, then run team-doctor again"
+    return 0
+  fi
+  LEVEL_SAYS=${state%%$'\n'*} state=${state#*$'\n'}
   [[ $os == linux && $manager == 1 && -f $UNITS/$SLICE ]] || return 0
-  applied=$(jq -c 'select(type == "object")' "$HOME/.local/state/agent-team/level/applied.json" 2>/dev/null) || applied=''
+  # The applied limits' mode and level, then their CPU quota; none when they are not a JSON object.
+  applied=$(jq -r 'select(type == "object") | "\(.mode) \(.level)", .cpu_quota_percent' \
+    "$HOME/.local/state/agent-team/level/applied.json" 2>/dev/null) || applied=''
   if [[ -z $applied ]]; then
     problem WARN "the level's limits were never applied on this machine" "team-level apply"
-  elif [[ $(jq -r '"\(.mode) \(.level)"' <<<"$applied") != "$(jq -r '"\(.mode) \(.level)"' <<<"$state")" ]]; then
-    problem WARN "the limits applied are $(jq -r '"\(.mode) \(.level)"' <<<"$applied")'s, not the recorded $(jq -r '"\(.mode) \(.level)"' <<<"$state")'s" "team-level apply"
+    return 0
+  fi
+  want=${applied#*$'\n'} applied=${applied%%$'\n'*}
+  if [[ $applied != "$state" ]]; then
+    problem WARN "the limits applied are $applied's, not the recorded $state's" "team-level apply"
   else
     quota=$(slice_quota)
-    want=$(jq -r .cpu_quota_percent <<<"$applied")
     [[ $quota == "$want" ]] ||
       problem WARN "$SLICE's CPU quota is $([[ $quota == none ]] && echo none || echo "$quota%"), not the level's $want%" "team-level apply"
   fi
@@ -780,8 +792,12 @@ sample() {
 # Take a reading first when the newest is over 10 minutes old, as status and admit do; a reading it
 # cannot take is said on stderr, and the stored ones serve.
 fresh_reading() {
+  newest_reading_within 600 || sample_now
+}
+
+# Take a reading now, as fresh_reading does once the newest is too old.
+sample_now() {
   local err
-  newest_reading_within 600 && return 0
   err=$(TEAM_HOME=$TEAM_HOME "${BASH_SOURCE[0]}" sample 2>&1 >/dev/null) ||
     echo "${0##*/}: took no reading of the machine's load: $(grep -m1 . <<<"$err" | sed 's/^team-capacity: //')" >&2
 }
@@ -792,90 +808,107 @@ read_level() {
   { cat "$RECORD" 2>/dev/null || true; } | jq -Rn -L "$TEAM_LIB" --arg path "$RECORD" '
     include "capacity"; include "stack";
     [inputs] | level_records | if .broken != [] then level_broken_text($path; .broken) | halt_error(1) else level_current end' \
-    >"$work/level.json" 2>"$work/level.err" || die "$(grep -m1 . "$work/level.err" || echo "could not read $RECORD")"
+    >"$work/level.json" 2>"$work/level.err" || die "$(level_error)"
 }
 
-# One jq program reads the current mode and level as read_level reads them, refusing as it does,
-# into $work/level.json; the heavy-run lock now (read_heavy_lock's, as {held, pid, label, task},
-# label and task null when empty) into $work/heavy.json; every admission still kept
-# (admission_kept) into $work/admitted.json, [] with none, an admitted.json that is not a JSON
-# array read as none; and into stacks_seen whether any stored reading holds a running stack (true
-# or false).
+# Why the level could not be read: read_level's or read_level_and_admitted's reason.
+level_error() {
+  grep -m1 . "$work/level.err" || echo "could not read $RECORD"
+}
+
+# One jq program reads the current mode and level as read_level reads them into $work/level.json,
+# returning 1 on a level.jsonl read_level refuses (level_error says why); the heavy-run lock now
+# (read_heavy_lock's, as {held, pid, label, task}, label and task null when empty) into
+# $work/heavy.json; every admission still kept (admission_kept) into $work/admitted.json, [] with
+# none, an admitted.json that is not a JSON array read as none; into stacks_seen whether any stored
+# reading holds a running stack (true or false); and with <seconds>, into fresh whether the newest
+# stored reading is at most that old, as newest_reading_within says it (true or false).
 read_level_and_admitted() {
   local line
+  fresh=false
   read_heavy_lock
   { jq -c 'select(type == "array")' "$ADMITTED" 2>/dev/null || true; } | jq -nc -L "$TEAM_LIB" --arg path "$RECORD" \
     --rawfile record <(cat "$RECORD" 2>/dev/null || true) --argjson held "$heavy_held" --argjson pid "$heavy_pid_now" \
-    --arg label "$heavy_label" --arg task "$heavy_task" --rawfile readings <(cat "$READINGS" 2>/dev/null || true) '
+    --arg label "$heavy_label" --arg task "$heavy_task" --rawfile readings <(cat "$READINGS" 2>/dev/null || true) \
+    --argjson seconds "${1:-null}" '
     include "capacity"; include "stack";
     ($record | split("\n") | level_records) as $level
     | if $level.broken != [] then level_broken_text($path; $level.broken) | halt_error(1) else . end
     | {held: $held, pid: $pid, label: ($label | select(. != "") // null), task: ($task | select(. != "") // null)} as $heavy
+    | ($readings | split("\n") | stored_readings | .readings) as $stored
     | ($level | level_current), $heavy,
       ([inputs] | (.[0] // []) | map(select(type == "object" and (try (.at | fromdateiso8601) catch null) != null
                                            and (.kind | type == "string") and (.bytes | type == "number")
                                            and admission_kept($heavy; now)))),
-      ($readings | split("\n") | stored_readings | any(.readings[]; .stacks // [] | length > 0))' \
-    >"$work/read" 2>"$work/level.err" || die "$(grep -m1 . "$work/level.err" || echo "could not read $RECORD")"
+      any($stored[]; .stacks // [] | length > 0),
+      ($seconds != null and ($stored[-1].at // null) != null and ($stored[-1].at | fromdateiso8601) >= now - $seconds)' \
+    >"$work/read" 2>"$work/level.err" || return 1
   { IFS= read -r line && printf '%s\n' "$line" >"$work/level.json" && IFS= read -r line && printf '%s\n' "$line" >"$work/heavy.json" &&
-    IFS= read -r line && printf '%s\n' "$line" >"$work/admitted.json" && IFS= read -r stacks_seen; } <"$work/read"
+    IFS= read -r line && printf '%s\n' "$line" >"$work/admitted.json" && IFS= read -r stacks_seen && IFS= read -r fresh; } <"$work/read"
 }
 
-# status --json's object into $work/status.json, for the asker of <kind> ("" for none): the
-# settings, the newest reading, and what is reserved and the room at the level.
-status_json() {
-  local machine
-  machine=$(machine_name 2>/dev/null) || machine=''
-  read_level_and_admitted
-  if [[ -n $1 ]]; then costs_json; else costs_json "$stacks_seen"; fi
-  { cat "$READINGS" 2>/dev/null || true; } | jq -Rn -L "$TEAM_LIB" --argjson given "$GIVEN" --arg machine "$machine" \
-    --slurpfile level "$work/level.json" --slurpfile costs "$work/costs.json" --slurpfile heavy "$work/heavy.json" \
-    --slurpfile admitted "$work/admitted.json" --arg asking "$1" --argjson freed "$(jq -cn '$ARGS.positional' --args ${freed[@]+"${freed[@]}"})" '
-    include "capacity"; include "stack";
-    ([inputs] | stored_readings | .readings[-1] // null) as $r
-    | ($given | capacity_settings) as $s
-    | capacity_reservations({reading: $r, costs: $costs[0].costs, settings: $s, heavy: $heavy[0],
-                             admitted: $admitted[0], now: now, asking: ($asking | select(. != "") // null),
-                             freed: $freed}) as $items
-    | reserved_split($items) as $split
-    | {schema: "team-capacity/1", machine: ($machine | select(. != "") // null), settings: $s,
-       stale: ($r == null or ($r.at | fromdateiso8601) < now - 900), reading: $r,
-       reserved: ($split + {items: $items}), room: capacity_room($s; $level[0]; $r; $split.bytes)}' >"$work/status.json"
-}
-
-status() {
-  read_settings
-  ((stored)) || fresh_reading
-  status_json ''
-  if ((json)); then
-    cat "$work/status.json"
-  else
-    jq -r -L "$TEAM_LIB" 'include "capacity"; include "stack"; capacity_status_text' "$work/status.json"
-  fi
-}
-
-# The estimates, team-capacity-costs/1, into $work/costs.json: the roles in roles/ but the
-# coordinator's, and the registered projects with a stack block, the registry read once
-# (read_registry, whose failure leaves out what it could not read). With false, for status and
-# plan when no stored reading holds a running stack, the registry is not read and no stack project
-# is listed: their reservations look up a stack's estimate only for a stack a reading holds, so
-# what they say is the same.
-costs_json() {
-  local file roles=()
+# The roles in roles/ but the coordinator's into roles, and with <read> true the registry
+# (read_registry, whose failure leaves out what it could not read) into registry, else [].
+costs_inputs() {
+  local file
+  roles=()
   for file in "${TEAM_LIB%/*}"/../roles/*.md; do
     [[ -f $file ]] || continue
     file=${file##*/}
     [[ $file == coordinator.md ]] || roles+=("${file%.md}")
   done
   registry='[]'
-  [[ ${1:-true} == false ]] || read_registry || true
-  { cat "$STATE/costs.jsonl" 2>/dev/null || true; } | jq -Rn -L "$TEAM_LIB" --argjson given "$GIVEN" --argjson registry "$registry" \
+  [[ $1 == false ]] || read_registry || true
+}
+
+# One jq program over what status --json reads, after read_level_and_admitted:
+# status_program <asking> <read> <tail> [<jq option>...] runs <tail> with $costs (costs --json's
+# object, the registry read when <read> is true, as costs_inputs says) and $status (status
+# --json's, for the asker of <asking>, "" for none) bound, and $level, $heavy and $admitted
+# (read_level_and_admitted's files, slurped) and $readings (readings.jsonl's text) at hand, its
+# output on stdout. Without the registry no stack project is listed in $costs: status, check and
+# admit pass true only when a stored reading holds a running stack, and admit too for a stack,
+# since what is reserved looks up a stack's estimate only for a stack a reading holds and admit
+# only its own kind's, so what they say is the same.
+status_program() {
+  local asking=$1 read=$2 tail=$3 machine
+  shift 3
+  machine=$(machine_name 2>/dev/null) || machine=''
+  costs_inputs "$read"
+  jq -n -L "$TEAM_LIB" --argjson given "$GIVEN" --arg machine "$machine" --argjson registry "$registry" \
+    --rawfile costs_lines <(cat "$STATE/costs.jsonl" 2>/dev/null || true) \
+    --slurpfile live <(cat "$STATE/live.json" 2>/dev/null || echo null) \
+    --rawfile readings <(cat "$READINGS" 2>/dev/null || true) \
+    --slurpfile level "$work/level.json" --slurpfile heavy "$work/heavy.json" --slurpfile admitted "$work/admitted.json" \
+    --arg asking "$asking" --arg freed "${freed[*]}" "$@" "
+    include \"capacity\"; include \"stack\";
+    capacity_costs_object({given: \$given, roles: \$ARGS.positional, registry: \$registry, limits: (\$live[0].limits // {}),
+                           lines: (\$costs_lines | split(\"\\n\"))}) as \$costs
+    | capacity_status_object({given: \$given, machine: \$machine, level: \$level[0], costs: \$costs.costs, heavy: \$heavy[0],
+                              admitted: \$admitted[0], readings: (\$readings | split(\"\\n\")), now: now,
+                              asking: \$asking, freed: (\$freed | split(\" \") | map(select(. != \"\")))}) as \$status
+    | $tail" --args ${roles[@]+"${roles[@]}"}
+}
+
+status() {
+  read_settings
+  ((stored)) || fresh_reading
+  read_level_and_admitted || die "$(level_error)"
+  status_program '' "$stacks_seen" 'if $json == 1 then $status else $status | capacity_status_text end' -r --argjson json "$json"
+}
+
+# The estimates, team-capacity-costs/1, into $work/costs.json: the roles and, with no argument or
+# true, the registered projects with a stack block, the registry read once (costs_inputs). With
+# false, for plan when no stored reading holds a running stack, the registry is not read and no
+# stack project is listed, as status_program says.
+costs_json() {
+  costs_inputs "${1:-true}"
+  jq -n -L "$TEAM_LIB" --argjson given "$GIVEN" --argjson registry "$registry" \
+    --rawfile lines <(cat "$STATE/costs.jsonl" 2>/dev/null || true) \
     --slurpfile live <(cat "$STATE/live.json" 2>/dev/null || echo null) '
     include "capacity"; include "stack";
-    {schema: "team-capacity-costs/1",
-     costs: capacity_costs({settings: ($given | capacity_settings), roles: $ARGS.positional,
-       stack_projects: [$registry[] | select(.facts.stack != null) | .name], limits: ($live[0].limits // {}),
-       costs: [inputs | select(test("\\S")) | try fromjson catch null | select(well_formed_cost)]})}' \
+    capacity_costs_object({given: $given, roles: $ARGS.positional, registry: $registry, limits: ($live[0].limits // {}),
+                           lines: ($lines | split("\n"))})' \
     --args ${roles[@]+"${roles[@]}"} >"$work/costs.json"
 }
 
@@ -889,31 +922,48 @@ costs() {
   fi
 }
 
-# Admit one item of <kind>, as the header's admit says.
+# Admit one item of <kind>, as the header's admit says. One jq program reads the level, the lock
+# and the admissions and whether the newest reading is under 10 minutes old, a reading taken first
+# when it is not, as fresh_reading does; another makes the estimate, the status and the admission.
 admit() {
-  local fd estimate
+  local fd read=false budget admitted entry
   read_settings
   mkdir -p "$STATE"
   exec {fd}>>"$ADMIT_LOCK"
   flock -w 120 -x "$fd" || die "another admission still holds $(tilde "$ADMIT_LOCK") after 2 minutes"
-  fresh_reading {fd}>&-
-  status_json "$kind"
-  estimate=$(jq -c -L "$TEAM_LIB" --arg kind "$kind" --argjson seed "$seed" --slurpfile costs "$work/costs.json" '
-    include "capacity"; include "stack"; kind_estimate($costs[0].costs; .settings; $kind; $seed)' "$work/status.json")
-  [[ $(jq -r '.room.budget_bytes' "$work/status.json") != null || $(jq -r '.room.level' "$work/status.json") == none ]] ||
+  if ! read_level_and_admitted 600; then
+    fresh_reading {fd}>&-
+    die "$(level_error)"
+  fi
+  if [[ $fresh != true ]]; then
+    sample_now {fd}>&-
+    read_level_and_admitted || die "$(level_error)"
+  fi
+  [[ $kind != stack:* && $stacks_seen != true ]] || read=true
+  # Four lines: whether there is a budget to admit by, whether it admits, admitted.json's new
+  # content, then what it says.
+  status_program "$kind" "$read" '
+    kind_estimate($costs.costs; $status.settings; $kind; $seed) as $estimate
+    | if $status.room.budget_bytes == null and $status.room.level != "none" then false, false, "", ""
+      else capacity_admit($status; $kind; $estimate.bytes) as $admit
+      | true, $admit.admitted,
+        (if $admit.admitted then
+           $admitted[0] + [{at: (now | floor | todate), kind: $kind, task: ($task | select(. != "") // null),
+                            name: ($name | select(. != "") // null), bytes: $estimate.bytes,
+                            pid: (if $kind | startswith("heavy:") then $heavy[0].pid else null end)}] | tojson
+         else "" end),
+        $admit.says end' \
+    -r --arg kind "$kind" --arg task "$task" --arg name "$name" --argjson seed "$seed" >"$work/admit"
+  { IFS= read -r budget && IFS= read -r admitted && IFS= read -r entry; } <"$work/admit"
+  [[ $budget == true ]] ||
     die "no reading of the machine's load, so no budget to admit $kind by: team-capacity sample says why it takes none"
-  jq -c -L "$TEAM_LIB" --arg kind "$kind" --argjson estimate "$estimate" \
-    'include "capacity"; include "stack"; capacity_admit(.; $kind; $estimate.bytes)' "$work/status.json" >"$work/admit.json"
-  if [[ $(jq -r .admitted "$work/admit.json") != true ]]; then
-    jq -r .says "$work/admit.json" >&2
+  if [[ $admitted != true ]]; then
+    tail -n +4 "$work/admit" >&2
     return 75
   fi
-  jq -c --arg kind "$kind" --arg task "$task" --arg name "$name" --argjson bytes "$(jq .bytes <<<"$estimate")" --slurpfile heavy "$work/heavy.json" '
-    . + [{at: (now | floor | todate), kind: $kind, task: ($task | select(. != "") // null),
-          name: ($name | select(. != "") // null), bytes: $bytes,
-          pid: (if $kind | startswith("heavy:") then $heavy[0].pid else null end)}]' "$work/admitted.json" >"$ADMITTED.$$"
+  printf '%s\n' "$entry" >"$ADMITTED.$$"
   mv -f "$ADMITTED.$$" "$ADMITTED"
-  jq -r .says "$work/admit.json"
+  tail -n +4 "$work/admit"
 }
 
 # The stow and resume plans, as the header's plan says.
@@ -921,7 +971,7 @@ plan() {
   local ledger=$TEAM_HOME/ledger.jsonl
   [[ -e $ledger ]] || ledger=/dev/null
   read_settings
-  read_level_and_admitted
+  read_level_and_admitted || die "$(level_error)"
   costs_json "$stacks_seen"
   if [[ -n $sessions_file ]]; then
     LIVE_SESSIONS=$(jq -ce 'select(type == "array")' "$sessions_file" 2>/dev/null) ||

@@ -172,18 +172,8 @@ gather() {
   { cat "$READINGS" 2>/dev/null || true; } | jq -Rn -L "$TEAM_LIB" --slurpfile record "$work/record.json" \
     --slurpfile capacity "$work/capacity.json" --argjson cpus "${TEAM_READING_CPUS:-$(nproc)}" '
     include "capacity"; include "stack";
-    ($record[0] | level_current) as $now | $capacity[0] as $c | $c.settings as $s | $c.reading as $r
-    | [[inputs] | stored_readings | .readings[] | select(.cpu != null)][-1] as $cpu
-    | capacity_budget($s; $now.level; $r; $cpu; $cpus) as $budget
-    | {schema: "team-level/1", machine: $c.machine, mode: $now.mode, level: $now.level, share: $budget.share,
-       budget: ($budget | del(.share)), reserved_bytes: $c.reserved.bytes,
-       reserved_split: ($c.reserved | with_entries(select(.key as $k | reserved_parts | index($k)))), reserved: $c.reserved.items,
-       use: {memory_bytes: ($r.memory.team // null), cores: ($r.cpu.team // null)},
-       reading: (if $r == null then null
-                 else {at: $r.at, total: $r.memory.total, others_memory: $r.memory.others,
-                       cpus: ($cpu.cpu.cpus // null), others_cores: ($cpu.cpu.others // null)} end),
-       settings: ($s | del(.from)), cpus: $cpus, last_change: $now.last_change}
-    | . + {says: level_says}' >"$work/state.json" || die "could not size the budget"
+    level_state($record[0] | level_current; $capacity[0]; [inputs] | stored_readings | .readings; $cpus)' \
+    >"$work/state.json" || die "could not size the budget"
 }
 
 # A value of the state: state <jq filter>
