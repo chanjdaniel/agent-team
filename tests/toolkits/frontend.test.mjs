@@ -498,9 +498,9 @@ function staleCapture() {
 
 // A page capture of `url` in `out`, taken for `reason`, with `others` the other localhost tabs:
 // ui-page.md's lines, a PNG of the viewport, the snapshot, and an element capture's files only
-// when `element` says it is the page of one.
+// when `element` says it is the page of one; a tab that is not `visible` has no screenshots.
 function assertPageCapture(out, url, { title = "Fixture app", route = "/", reason = "DevTools is open on it, nothing selected", others = "none", visible = true, element = false } = {}) {
-  const files = [...(visible ? ["page.png"] : []), "page-snapshot.txt", "ui-page.md", ...(element ? ["element.png", "ui-pick.md"] : [])];
+  const files = [...(visible ? ["page.png"] : []), "page-snapshot.txt", "ui-page.md", ...(element ? ["ui-pick.md", ...(visible ? ["element.png"] : [])] : [])];
   assert.deepEqual(readdirSync(out).sort(), files.sort());
   const page = readFileSync(join(out, "ui-page.md"), "utf8");
   assert.match(page, /^# The page capture\n\nCaptured \d{4}-\d\d-\d\dT[\d:.]+Z by ui-capture from the Agent Chrome at http:\/\/127\.0\.0\.1:\d+\.\n/);
@@ -510,7 +510,8 @@ function assertPageCapture(out, url, { title = "Fixture app", route = "/", reaso
     : "- no page.png: the tab is not visible, and Chrome paints no hidden tab, so it has no screenshot";
   assert.match(page, /\nConsole problems since the page loaded: [^]*\nFailed requests since the page loaded: /);
   const note = "Not recorded: requests still pending, and each request's method.\nThe history starts at the page's last load: a route change inside the app keeps it, a reload clears it.\n";
-  const elementFiles = "- ui-pick.md: the selected element: its source and component chains, HTML and matched CSS\n- element.png: a screenshot of the selected element\n";
+  const elementShot = visible ? "- element.png: a screenshot of the selected element" : "- no element.png: the tab is not visible, as for page.png";
+  const elementFiles = `- ui-pick.md: the selected element: its source and component chains, HTML and matched CSS\n${elementShot}\n`;
   assert.ok(page.endsWith(`\n${note}\nFiles:\n\n${shot}\n- page-snapshot.txt: the page's accessibility snapshot (take_snapshot)\n${element ? elementFiles : ""}`), page);
   if (!element) assert.ok(!page.includes("ui-pick.md") && !page.includes("element.png"), page);
   if (visible) assert.deepEqual([...readFileSync(join(out, "page.png")).subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], "page.png is a PNG");
@@ -578,6 +579,25 @@ describe("ui-capture with DevTools closed", () => {
     await bringToFront(chrome.browserUrl, second);
     // Its tab is behind the second one, so hidden, with no screenshot.
     await capture(first, "DevTools is open on it, nothing selected", second, false);
+  });
+
+  // Daniel inspects an element, then clicks another tab: the element's tab is hidden, which Chrome
+  // paints nothing of, so neither screenshot can be taken.
+  test("captures an element selected on a tab that is no longer in front, without screenshots", async () => {
+    await inspect(chrome.browserUrl, first, ".menu-button");
+    await bringToFront(chrome.browserUrl, second);
+    const out = tempDir("out");
+    const started = Date.now();
+    const result = await script("ui-capture", ["--browser-url", chrome.browserUrl, out]);
+    // Not a screenshot's 30 s wait on a tab Chrome never paints.
+    assert.ok(Date.now() - started < 20_000, `took ${Date.now() - started} ms`);
+    assert.equal(result.status, 0, result.stderr);
+    const head = /^ui-capture: button "Open navigation" .* at button src\/components\/elements\/ElementBanner\.vue:30:5 on /;
+    assert.match(result.stdout, head);
+    assert.equal(result.stdout.replace(head, ""), `${first} -> ${out}/ui-pick.md, ${out}/ui-page.md\n`);
+    const pick = readFileSync(join(out, "ui-pick.md"), "utf8");
+    assert.ok(pick.endsWith("\n## Screenshots\n\n- no element.png or page.png: the tab is not visible, and Chrome paints no hidden tab, so it has no screenshot\n"), pick);
+    assertPageCapture(out, first, { reason: "the selected element's page", others: second, visible: false, element: true });
   });
 });
 

@@ -32,7 +32,7 @@ When it exits 1, its one line says why; tell Daniel that line and the step that 
 
 ## 2. Read it
 
-Read `ui-pick.md` whole, then `ui-page.md`, and look at both screenshots with Read (a tab that is not visible has no `page.png`, and `ui-page.md` says so).
+Read `ui-pick.md` whole, then `ui-page.md`, and look at both screenshots with Read (a tab that is not visible has neither, and `ui-pick.md` says so: ask Daniel to bring it to the front and capture again when the fix needs to see it).
 
 - **Source**: the first line of the source chain is the element itself, `<tag> src/...vue:<line>:<column>`, relative to the front end's root (Conventioner's `front-end/`); the lines after it are its parents, outward.
 - **Components**: the component chain, innermost first, says which component renders it, which matters when the element comes from a slot or a child component.

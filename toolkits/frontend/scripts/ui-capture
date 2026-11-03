@@ -52,7 +52,9 @@
 //                 (vite-plugin-vue-inspector's file:line:column, innermost first, relative to the
 //                 front end's root) and component chain, its outerHTML (trimmed to 4000
 //                 characters) and every matched CSS rule (get_css_styles)
-//   element.png   a screenshot of the element
+//   element.png   a screenshot of the element, unless its tab is not visible (Daniel inspected it,
+//                 then brought another tab to the front), for the same reason as page.png, which
+//                 ui-pick.md says
 // Of those five names, a capture removes the ones it did not write once it has written its own;
 // a failed capture writes and removes nothing.
 // It speaks MCP to the pinned chrome-devtools-mcp (servers/, installed by servers/install),
@@ -296,10 +298,12 @@ function exceptionText(details) {
   return what && !details.text.includes(what) ? `${details.text} ${what}` : details.text;
 }
 async function pageHistory(url) {
+  // The allowlist's own test, so this session keeps the rule whoever gives it the URL.
+  if (!localhost.test(url)) return { unread: "it is not a localhost page" };
   let target;
   try {
     const targets = await fetch(new URL("/json/list", browserUrl), { signal: AbortSignal.timeout(5000) }).then((response) => response.json());
-    target = targets.find((t) => t.type === "page" && t.url === url);
+    target = targets.find((t) => t.type === "page" && localhost.test(t.url) && t.url === url);
   } catch {
     return { unread: "the Agent Chrome did not list its tabs" };
   }
@@ -527,7 +531,10 @@ async function pageCapture(chosen, reason, element) {
         : "- no page.png: the tab is not visible, and Chrome paints no hidden tab, so it has no screenshot",
       "- page-snapshot.txt: the page's accessibility snapshot (take_snapshot)",
       ...(element
-        ? ["- ui-pick.md: the selected element: its source and component chains, HTML and matched CSS", "- element.png: a screenshot of the selected element"]
+        ? [
+            "- ui-pick.md: the selected element: its source and component chains, HTML and matched CSS",
+            screenshot ? "- element.png: a screenshot of the selected element" : "- no element.png: the tab is not visible, as for page.png",
+          ]
         : []),
       "",
     ].join("\n"),
@@ -555,8 +562,9 @@ if (facts.source.length === 0) {
 }
 
 const css = (await call("get_css_styles", { uid: pick.uid, pageSize: 1000 })).text;
-const element = (await call("take_screenshot", { uid: pick.uid })).images[0];
-if (!element) await done(1, "take_screenshot returned no image");
+// A hidden tab gets no element screenshot either: Chrome paints no hidden tab, so it never comes.
+const element = pick.visible === false ? null : (await call("take_screenshot", { uid: pick.uid })).images[0];
+if (pick.visible !== false && !element) await done(1, "take_screenshot returned no image");
 const page = await pageCapture(pick, "the selected element's page", true);
 
 const html = facts.html.length > htmlLimit
@@ -564,7 +572,7 @@ const html = facts.html.length > htmlLimit
   : facts.html;
 write({
   ...page.files,
-  "element.png": Buffer.from(element.data, "base64"),
+  ...(element ? { "element.png": Buffer.from(element.data, "base64") } : {}),
   "ui-pick.md": [
     "# The selected element",
     "",
@@ -598,8 +606,9 @@ write({
     "",
     "## Screenshots",
     "",
-    "- element.png: the element",
-    "page.png" in page.files ? "- page.png: the page" : "- no page.png: the tab is not visible (ui-page.md)",
+    ...(element
+      ? ["- element.png: the element", "- page.png: the page"]
+      : ["- no element.png or page.png: the tab is not visible, and Chrome paints no hidden tab, so it has no screenshot"]),
     "",
   ].join("\n"),
 });
