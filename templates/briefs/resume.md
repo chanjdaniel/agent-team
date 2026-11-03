@@ -12,10 +12,11 @@ Changes from a session the stow stopped may be half done, and its `handoff.md` o
 
 ## Do
 
-1. Read your brief `{{brief}}`: your work and how to deliver it are still what it says.
-2. Then `{{task_dir}}/handoff.md` if it exists, for where the last session stopped.
-3. Check the branch: `git status`, `git diff`, and `git log origin/{{base}}..HEAD` against what your brief and the handoff note say is done.
-4. Continue from there.
+1. A builder brings the branch to its head on origin, which `team-catch-up` may have moved on a PR (any other role skips this step): `git fetch origin && git merge --ff-only origin/{{branch}}`, leaving the merge out when there is no `origin/{{branch}}`; if the merge fails, send `{{task}} BLOCKED <git's reason>` to `coordinator`.
+2. Read your brief `{{brief}}`: your work and how to deliver it are still what it says.
+3. Then `{{task_dir}}/handoff.md` if it exists, for where the last session stopped.
+4. Check the branch: `git status`, `git diff`, and `git log origin/{{base}}..HEAD` against what your brief and the handoff note say is done.
+5. Continue from there.
 
 ## Rules
 

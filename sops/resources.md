@@ -257,7 +257,7 @@ A `team-capacity plan` that fails is one `level` finding naming its reason, in t
 
 `team-doctor`'s `resources` line reads `team-capacity check --json`.
 Its reason starts with the level's words, as `team-level` acknowledges a change.
-It fails when the user's systemd does not answer or its cgroup does not delegate `cpu` and `memory`, which only Daniel can change (a `user@.service` drop-in, with sudo), since the level's limits need the slice; `team-resume` and `team-load-check`, which stop on any FAIL, stop there too.
+It fails when the user's systemd does not answer or its cgroup does not delegate `cpu` and `memory`, which only Daniel can change (a `user@.service` drop-in, with sudo), since the level's limits need the slice; `team-resume`, which stops on any FAIL, and `team-load-check`, which stops on every FAIL but the gate's and other projects', stop there too.
 It fails on a `capacity.json` or a `level.jsonl` line that is malformed, naming it.
 It warns when the slice or a gate daemon's drop-in is not installed (`team-capacity install`, Daniel's yes), when the gate's daemon still runs outside the slice (its restart waits on a pipeline), when a live team session runs outside its task's slice (`team-capacity place`, or the heartbeat's next run), and on the lease holder when no reading is under 15 minutes old (the `capacity` step's lines in the heartbeat log say why).
 It warns on what the task slots left, which nothing reads since levels replaced them: `~/.config/agent-team/slots.json`, `~/.local/state/agent-team/slots/` (their readings) and `~/.local/state/agent-team/slots.lock`, naming whichever are present, its fix `rm -r` of them.

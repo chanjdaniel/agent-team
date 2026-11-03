@@ -773,19 +773,91 @@ merge ask: $url at $sha, agent-review success, checks green; the review found gu
   assert_equal "$(jq -c 'select(.event == "review")' "$TEAM_HOME/ledger.jsonl" | wc -l)" 1
 }
 
-@test "a pass on a PR behind its base prints the builder-merge-base step instead of the ask" {
+# on_origin [<file> <text>]: the PR's branch pushed to origin, and origin's main moved on by a
+# commit of another task's that writes <file> (default other.txt) with <text>.
+on_origin() {
+  local other=$BATS_TEST_TMPDIR/other
+  git -C "$wt" push -q origin feat/T7-toil
+  git clone -q "$BATS_TEST_TMPDIR/origin/proj.git" "$other"
+  echo "${2:-other}" >"$other/${1:-other.txt}"
+  git -C "$other" add -A
+  git -C "$other" commit -q -m "feat: another task"
+  git -C "$other" push -q origin main
+}
+
+@test "a pass on a PR behind its base that merges it cleanly prints team-catch-up, with no holder step" {
+  on_origin
+  reviewing "$sha"
+  pr_on_github "$sha" 3
+  live b0000001 120000
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
+  assert_contains "$output" "logged review verdict=pass head=$sha"
+  assert_equal "$(tail -n 2 <<<"$output")" \
+    "merge base: $url is 3 behind main, and merges it cleanly: run team-catch-up T7, which needs no rereview (step 6)
+then, once the checks pass on its merge: merge ask: $url at $sha"
+  # It changed no branch, worktree or index: the merge is team-catch-up's to make.
+  assert_equal "$(git -C "$wt" rev-parse HEAD)" "$sha"
+  assert_equal "$(git -C "$primary" status --porcelain)" ""
+  assert_equal "$(outside_calls)" ""
+}
+
+@test "a pass on a PR behind its base that merges it cleanly still says the review's before notes, guarded areas and words" {
+  on_origin
+  sed -i 's/^merge_method = "merge"/&\nmerge_with_plan = true/' "$TEAM_HOME/projects.toml"
+  event merge-preapproved '{project: "proj", ask: "plan", discord_message: "1563000000000000045", scope: ["one.txt"]}'
+  reviewing "$sha"
+  pr_on_github "$sha" 3
+  live b0000001 120000
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
+  assert_equal "$(tail -n 2 <<<"$output")" \
+    "merge base: $url is 3 behind main, and merges it cleanly: run team-catch-up T7, which needs no rereview (step 6)
+then, once the checks pass on its merge: merge pre-approved: run team-merge T7 for $url at $sha"
+  launched r0000003 brief-review '["browser"]' reviewer
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url ${counts/note-before:0/note-before:2} before=4,5 guarded=ci"
+  assert_equal "$(tail -n 2 <<<"$output")" \
+    "merge base: $url is 3 behind main, and merges it cleanly: run team-catch-up T7, which needs no rereview (step 6)
+then, once the checks pass on its merge: merge ask: $url at $sha; the review found guarded areas: ci, so the plan-time word does not hold; queue before notes 4 and 5 as follow-ups and say where each went"
+  assert_equal "$(outside_calls)" ""
+}
+
+@test "a pass on a PR behind its base that conflicts with it prints the builder-merge-base step naming the files" {
+  on_origin one.txt "dev's own text"
   reviewing "$sha"
   pr_on_github "$sha" 3
   live b0000001 120000
   run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
   assert_contains "$output" "logged review verdict=pass head=$sha"
   assert_equal "$(tail -n 1 <<<"$output")" \
-    "merge base: $url is 3 behind main, so it merges main first (step 6): render team-brief T7 builder-merge-base and send its path to T7-builder (b0000001, 120k)"
+    "merge base: $url is 3 behind main and conflicts on one.txt, so it merges main first (step 6): render team-brief T7 builder-merge-base and send its path to T7-builder (b0000001, 120k)"
   # Past 250k, the holder stows and a fresh builder takes the brief.
   live b0000001 260000
   run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
   assert_equal "$(tail -n 1 <<<"$output")" \
-    "merge base: $url is 3 behind main, so it merges main first (step 6): send T7 STOW to T7-builder (b0000001, 260k), then launch a fresh builder on team-brief T7 builder-merge-base"
+    "merge base: $url is 3 behind main and conflicts on one.txt, so it merges main first (step 6): send T7 STOW to T7-builder (b0000001, 260k), then launch a fresh builder on team-brief T7 builder-merge-base"
+  # Gone, a fresh builder takes it.
+  live
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
+  assert_equal "$(tail -n 1 <<<"$output")" \
+    "merge base: $url is 3 behind main and conflicts on one.txt, so it merges main first (step 6): T7-builder b0000001 is gone, so launch a fresh builder on team-brief T7 builder-merge-base"
+  assert_equal "$(outside_calls)" ""
+}
+
+@test "a pass on a PR behind its base whose merge cannot be read prints the builder-merge-base step with the reason" {
+  # The branch is not on origin, so the fetch fails.
+  reviewing "$sha"
+  pr_on_github "$sha" 3
+  live b0000001 120000
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
+  assert_contains "$output" "logged review verdict=pass head=$sha"
+  assert_equal "$(tail -n 1 <<<"$output")" \
+    "merge base: $url is 3 behind main (whether the merge is clean is not known: the PR's branch feat/T7-toil and main cannot be fetched into $primary: fatal: couldn't find remote ref refs/heads/feat/T7-toil), so it merges main first (step 6): render team-brief T7 builder-merge-base and send its path to T7-builder (b0000001, 120k)"
+  # A head git cannot read once fetched: base_merge's line is the reason.
+  on_origin
+  reviewing 0123456789abcdef0123456789abcdef01234567
+  pr_on_github 0123456789abcdef0123456789abcdef01234567 3
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
+  assert_equal "$(tail -n 1 <<<"$output")" \
+    "merge base: $url is 3 behind main (whether the merge is clean is not known: merge-tree: 0123456789abcdef0123456789abcdef01234567 - not something we can merge), so it merges main first (step 6): render team-brief T7 builder-merge-base and send its path to T7-builder (b0000001, 120k)"
   assert_equal "$(outside_calls)" ""
 }
 

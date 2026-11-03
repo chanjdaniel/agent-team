@@ -72,10 +72,16 @@
 # project (team-state's pr.standing_word), the review found no guarded area and no review of the
 # task counted a security or real-data finding or logged no counts (which team-merge refuses both
 # words for), each guarded area and such review named with the word it holds back, and the before
-# notes to queue as follow-ups; for a PR behind its base, "merge base: ..." instead, the
-# builder-merge-base brief for the holder under 250k, else a fresh builder, after the holder's STOW
-# when it is live. For a pass with no PR (a review-ready, a gated or Disclosure task's), the
-# message telling the holder to go on with its delivery. For findings, or a pass that sent some
+# notes to queue as follow-ups; for a PR behind its base, "merge base: ..." instead, read with
+# base_merge in the project's primary checkout once the PR's branch and the base are fetched there:
+# "run team-catch-up T<n>, which needs no rereview" when the reviewed head merges the base cleanly,
+# then "then, once the checks pass on its merge: " and the merge line above for the reviewed head
+# with no checks (its guarded areas, risky reviews and before notes as they are), else the
+# builder-merge-base brief for the holder under 250k, else a fresh builder, after the
+# holder's STOW when it is live, with "conflicts on <files>" after the behind count for a conflict,
+# or "(whether the merge is clean is not known: <why>)" when the fetch or git fails. For a pass
+# with no PR (a review-ready, a gated or Disclosure task's), the message telling the holder to go
+# on with its delivery. For findings, or a pass that sent some
 # back (which team-log logs as findings): the message for the holder under 250k (its name, the
 # findings sent back and the findings file the message names, for a pass the newest of review.md
 # and rereview*.md in the holder's task directory, as team-brief derives a round's), else the
@@ -363,15 +369,41 @@ if [[ $handoff == verdict ]]; then
   fi
   url=$(jq -r .url <<<"$pr")
   behind=$(jq -r '.behind_by // 0' <<<"$pr")
+  caught=''
   if ((behind > 0)); then
     base=$(jq -r .base <<<"$pr")
-    step="merge base: $url is $behind behind $base, so it merges $base first (step 6):"
-    case $holds in
-      holds) echo "$step render team-brief $task builder-merge-base and send its path to $who" ;;
-      full) echo "$step send $task STOW to $who, then launch a fresh builder on team-brief $task builder-merge-base" ;;
-      gone) echo "$step $task-builder $session is gone, so launch a fresh builder on team-brief $task builder-merge-base" ;;
-    esac
-    exit 0
+    # Whether the reviewed head merges the base cleanly, read in the project's primary checkout once
+    # the PR's branch and the base are fetched: clean is team-catch-up's, else the holder's step.
+    behind_by="$behind behind $base"
+    if ! project=$(jq -re '.project // empty' <<<"$pr"); then
+      behind_by+=" (whether the merge is clean is not known: the PR's repo is no registered project's)"
+    else
+      primary=$(team_project "$project" path)
+      branch=$(jq -r '.branch // empty' <<<"$pr")
+      rc=0
+      if [[ -z $branch ]]; then
+        behind_by+=" (whether the merge is clean is not known: GitHub did not name the PR's branch)"
+      elif ! fetched=$(git -C "$primary" fetch -q origin "+refs/heads/$branch:refs/remotes/origin/$branch" \
+        "+refs/heads/$base:refs/remotes/origin/$base" 2>&1); then
+        behind_by+=" (whether the merge is clean is not known: the PR's branch $branch and $base cannot be fetched into $primary: $(grep -m1 . <<<"$fetched" || echo "git fetch failed"))"
+      elif merged=$(base_merge "$primary" "$(jq -r .head <<<"$pr")" "origin/$base") || rc=$?; ((rc == 0)); then
+        echo "merge base: $url is $behind_by, and merges it cleanly: run team-catch-up $task, which needs no rereview (step 6)"
+        caught=1
+      elif ((rc == 1)); then
+        behind_by+=" and conflicts on $(and_list "$(jq -Rnc '[inputs | select(. != "")]' <<<"$merged")")"
+      else
+        behind_by+=" (whether the merge is clean is not known: $merged)"
+      fi
+    fi
+    if [[ -z $caught ]]; then
+      step="merge base: $url is $behind_by, so it merges $base first (step 6):"
+      case $holds in
+        holds) echo "$step render team-brief $task builder-merge-base and send its path to $who" ;;
+        full) echo "$step send $task STOW to $who, then launch a fresh builder on team-brief $task builder-merge-base" ;;
+        gone) echo "$step $task-builder $session is gone, so launch a fresh builder on team-brief $task builder-merge-base" ;;
+      esac
+      exit 0
+    fi
   fi
   # The task's reviews, this one too once (a rerun finds it logged), each one that counted a
   # security or real-data finding or logged no counts named: team-merge refuses the plan-time
@@ -384,13 +416,16 @@ if [[ $handoff == verdict ]]; then
         else [.findings | ("security", "real-data") as $k | .[$k] // 0 | select(. > 0) | "\(.) \($k)"]
           | select(. != []) | (map(split(" ")[0] | tonumber) | add) as $n
           | "\($r)counted \(join(" and ")) finding\(if $n == 1 then "" else "s" end)" end]' <<<"$events")
-  # The merge ask's facts, or the plan-time or standing word's merge.
-  jq -r --arg task "$task" --argjson review "$review" --argjson risky "$risky" --arg before "$(and_list "$(jq -c '.before // []' <<<"$review")")" '
-    (.pr | "\(.url) at \(.head), agent-review \(.agent_review), "
-      + ([(.checks.failing | select(. != []) | "failing: \(join(", "))"),
-          (.checks.pending | select(. != []) | "pending: \(join(", "))"),
-          (.required_missing | select(. != []) | "missing: \(join(", "))")]
-        | if . == [] then "checks green" else "checks \(join("; "))" end)) as $facts
+  # The merge ask's facts, or the plan-time or standing word's merge; after a clean catch-up's line,
+  # the same for once the merge's checks pass, with no checks of the head it was made from.
+  jq -r --arg task "$task" --argjson review "$review" --argjson risky "$risky" --arg caught "$caught" \
+    --arg before "$(and_list "$(jq -c '.before // []' <<<"$review")")" '
+    (.pr | if $caught != "" then "\(.url) at \(.head)"
+      else "\(.url) at \(.head), agent-review \(.agent_review), "
+        + ([(.checks.failing | select(. != []) | "failing: \(join(", "))"),
+            (.checks.pending | select(. != []) | "pending: \(join(", "))"),
+            (.required_missing | select(. != []) | "missing: \(join(", "))")]
+          | if . == [] then "checks green" else "checks \(join("; "))" end) end) as $facts
     | (.merge_preapproval | . != null and .withdrawn == null and .opted_in == true and .own != true) as $planned
     | (.pr.standing_word | . != null and .word != null and .withdrawn == null) as $standing
     | ([if $planned then "plan-time" else empty end, if $standing then "standing" else empty end]
@@ -398,7 +433,8 @@ if [[ $handoff == verdict ]]; then
          elif length == 1 then ", so the \(.[0]) word does not hold"
          else ", so the \(join(" and ")) words do not hold" end) as $held
     | ($review.guarded // []) as $guarded
-    | if $guarded != [] or $risky != [] then "merge ask: \($facts)"
+    | (if $caught != "" then "then, once the checks pass on its merge: " else "" end)
+    + if $guarded != [] or $risky != [] then "merge ask: \($facts)"
       elif $planned then "merge pre-approved: run team-merge \($task) for \($facts)"
       elif $standing then "merge on the standing word: run team-merge \($task) for \($facts)"
       else "merge ask: \($facts)" end

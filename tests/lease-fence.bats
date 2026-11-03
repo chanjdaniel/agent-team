@@ -1,9 +1,9 @@
 #!/usr/bin/env bats
 # hooks/lease-fence: the PreToolUse hook that keeps a machine that lost the lease quiet. It blocks
-# the coordinator's Discord posts, and its git push, team-merge, team-open and team-close, when
-# this machine is fenced or the lease on origin names another holder, a worker's git push when
-# fenced, and a worker's git push, gh and team-thread wait while the team holds offline. home-pc
-# holds the lease on a bare origin; laptop is the other machine.
+# the coordinator's Discord posts, and its git push, team-merge, team-catch-up, team-open and
+# team-close, when this machine is fenced or the lease on origin names another holder, a worker's
+# git push when fenced, and a worker's git push, gh and team-thread wait while the team holds
+# offline. home-pc holds the lease on a bare origin; laptop is the other machine.
 
 load helpers/common
 
@@ -205,12 +205,13 @@ age_probe() {
   assert_equal "$(probes)" 0
 }
 
-@test "the coordinator's push, team-merge, team-open and team-close are blocked when fenced or when origin names another holder" {
-  local command writes=("git push origin dev" "git -C ~/agent-team push" "team-merge T7"
+@test "the coordinator's push, team-merge, team-catch-up, team-open and team-close are blocked when fenced or when origin names another holder" {
+  local command writes=("git push origin dev" "git -C ~/agent-team push" "team-merge T7" "team-catch-up T7"
+    "/home/x/agent-team/bin/team-catch-up T7 --pr https://github.com/o/p/pull/6"
     "/home/x/agent-team/bin/team-merge T7 --method merge" "TEAM_HOME=x team-open conv feature feat x 'X'"
     "cd ~/agent-team && team-close T7" $'team-log T7 merged\nteam-close T7 --force')
   local others=("git status" "team-log T7 note" "team-snapshot" "gh pr view 6" "echo team-merge"
-    "grep -rn 'team-open' bin" "team-opener" "git log --grep push")
+    "grep -rn 'team-open' bin" "team-opener" "git log --grep push" "team-catch-upper T7" "echo team-catch-up")
   # Held here: everything passes, origin asked once in the minute.
   for command in "${writes[@]}" "${others[@]}"; do
     coordinator_call -0 "$command"
@@ -233,6 +234,8 @@ age_probe() {
   fence
   age_probe 61
   : >"$STUB_CALLS/git-net.log"
+  coordinator_call -2 "team-catch-up T7"
+  assert_equal "$stderr" "Blocked: home-pc is fenced since 2026-10-22T14:00:00Z (holder seen laptop, epoch 2): a fenced machine pushes, merges, opens and closes nothing; the coordinator on the holder does."
   coordinator_call -2 "team-merge T7"
   assert_equal "$stderr" "Blocked: home-pc is fenced since 2026-10-22T14:00:00Z (holder seen laptop, epoch 2): a fenced machine pushes, merges, opens and closes nothing; the coordinator on the holder does."
   assert_equal "$(probes)" 0
@@ -240,6 +243,7 @@ age_probe() {
   # A worker's Bash is not the coordinator's: its team commands are not its own to gate.
   rm "$state/fenced"
   bash_call -0 "team-merge T7"
+  bash_call -0 "team-catch-up T7"
 }
 
 @test "every other tool passes at once, fenced or not, and never asks origin" {

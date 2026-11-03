@@ -16,7 +16,7 @@
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin,
 # only_records, records_list, records_pathspecs, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
 # own_project, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_level, discord_token, discord_api,
-# daniel_message, refresh_inbox, github, pr_part, pr_file_reasons, task_state_json, pr_standing_word, loose_objects, pack_size, story_file and findings_file, and sets IMAGE_TYPE,
+# daniel_message, refresh_inbox, github, base_merge, clean_base_merges, pr_part, pr_file_reasons, task_state_json, pr_standing_word, loose_objects, pack_size, story_file and findings_file, and sets IMAGE_TYPE,
 # PACK_LOOSE, COORDINATOR_CHANNEL and INTERVIEW_CHANNEL.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
 # shellcheck shell=bash
@@ -1158,11 +1158,72 @@ github() {
   return 1
 }
 
+# The merge of <base ref> into <head>, judged in <checkout> by git merge-tree, which writes its
+# objects but changes no ref, worktree or index; the caller has fetched both. A clean merge prints
+# its tree's id; a conflict prints the conflicted paths, one per line, and returns 1; any other
+# git failure prints git's first error line and returns 2: base_merge <checkout> <head> <base ref>
+base_merge() {
+  local out err rc=0
+  err=$(mktemp)
+  out=$(git -C "$1" merge-tree --write-tree --name-only --no-messages "$2" "$3" 2>"$err") || rc=$?
+  # A conflict's output starts with the tree; a commit git cannot read exits 1 too, with none.
+  if ((rc == 1)) && [[ ! ${out%%$'\n'*} =~ ^[0-9a-f]{40,64}$ ]]; then rc=2; fi
+  case $rc in
+    0) printf '%s\n' "$out" ;;
+    1) sed '1d;/^$/d' <<<"$out" ;;
+    *) grep -m1 . "$err" || echo "git merge-tree failed (exit $rc)" ;;
+  esac
+  rm -f "$err"
+  ((rc <= 1)) || return 2
+  return "$rc"
+}
+
+# Whether <head> adds to <from> only clean merges of the base, judged in <checkout> (the caller has
+# fetched both and <base ref>), changing no ref: every commit reachable from <head> but neither
+# from <from> nor from <base ref> has exactly two parents, the second an ancestor of <base ref>,
+# and the tree git merge-tree gives its parents with no conflict. Fails printing one line naming
+# the first commit (oldest first) that is not, and why, or that <head> does not hold <from>:
+# clean_base_merges <checkout> <from> <head> <base ref>
+clean_base_merges() {
+  local dir=$1 from=$2 head=$3 base=$4 commit parents tree rc
+  if ! git -C "$dir" merge-base --is-ancestor "$from" "$head" 2>/dev/null; then
+    echo "${head:0:7} does not hold ${from:0:7}"
+    return 1
+  fi
+  while IFS= read -r commit; do
+    read -r -a parents <<<"$(git -C "$dir" rev-list --parents -n 1 "$commit")"
+    parents=("${parents[@]:1}")
+    if ((${#parents[@]} < 2)); then
+      echo "${commit:0:7} is a commit of its own"
+      return 1
+    elif ((${#parents[@]} > 2)); then
+      echo "${commit:0:7} merges ${#parents[@]} parents at once, not the base alone"
+      return 1
+    elif ! git -C "$dir" merge-base --is-ancestor "${parents[1]}" "$base" 2>/dev/null; then
+      echo "${commit:0:7} merges ${parents[1]:0:7}, which is not on $base"
+      return 1
+    fi
+    rc=0
+    tree=$(base_merge "$dir" "${parents[0]}" "${parents[1]}") || rc=$?
+    if ((rc == 1)); then
+      echo "${commit:0:7} conflicted when merged"
+      return 1
+    elif ((rc)); then
+      echo "${commit:0:7} cannot be merged again to check it: $tree"
+      return 1
+    elif [[ $tree != "$(git -C "$dir" rev-parse "$commit^{tree}")" ]]; then
+      echo "${commit:0:7} changes more than the merge of its parents"
+      return 1
+    fi
+  done < <(git -C "$dir" rev-list --reverse "$head" "^$from" "^$base")
+}
+
 # The pr part of a task's state: its latest pr event joined with GitHub, using <dir> for gh's
 # answers (GitHub's view of the PR, its branch and changed-file count among them, in <dir>/view),
 # with behind_by, the commits of its base its head lacks, from GitHub's compare of the two (null
-# for a PR not open or when the compare cannot be read), and its standing_word null for
-# task_state_json to fill in: pr_part '<events>' '<pr event>' <dir>
+# for a PR not open or when the compare cannot be read), caught_up, whether the task's latest
+# caught-up event of the PR made the live head from the ledger head, and its standing_word null
+# for task_state_json to fill in: pr_part '<events>' '<pr event>' <dir>
 pr_part() {
   local events=$1 pr=$2 dir=$3 url project repo='' number required_checks='[]' facts behind_by=null base head
   url=$(jq -r .url <<<"$pr") || return 1
@@ -1184,6 +1245,7 @@ pr_part() {
   fi
   facts=$(ledger_jq '{url: $url, number: $number, repo: $repo, project: $project,
       ledger_head: pr_head($url),
+      caught_up_by: (map(select(.event == "caught-up" and (.url | strings | rtrimstr("/")) == ($url | rtrimstr("/")))) | last),
       merge_approved: any(.[]; .event == "merge-approved" and (.url | strings | rtrimstr("/")) == ($url | rtrimstr("/"))),
       standing_word: null}' \
     -c --arg url "$url" --argjson number "$number" --arg repo "$repo" \
@@ -1202,8 +1264,11 @@ pr_part() {
       $view[0] as $view | $checks[0] as $checks
       | ($checks | map(.name)) as $present
       | (($required[0] | map(.name)) + $project_required | unique) as $required
-      | . + {state: ($view.state | ascii_downcase), base: $view.baseRefName, head: $view.headRefOid,
+      | . + {state: ($view.state | ascii_downcase), base: $view.baseRefName, branch: $view.headRefName,
+          head: $view.headRefOid,
           head_moved: (same_head($view.headRefOid; .ledger_head) | not),
+          caught_up: (.caught_up_by != null and same_head(.caught_up_by.head; $view.headRefOid)
+            and same_head(.caught_up_by.from; .ledger_head)),
           checks: {
             passed: [$checks[] | select(.bucket == "pass" or .bucket == "skipping") | .name] | unique,
             failing: [$checks[] | select(.bucket == "fail" or .bucket == "cancel") | .name] | unique,
@@ -1212,13 +1277,13 @@ pr_part() {
           required_missing: [$required[] | select(IN($present[]) | not)],
           agent_review: ([$checks[] | select(.name == "agent-review") | .state | ascii_downcase] | first // "missing"),
           behind_by: $behind_by}
-      | {url, number, repo, project, state, base, head, ledger_head, head_moved, checks, required,
+      | {url, number, repo, project, state, base, branch, head, ledger_head, head_moved, caught_up, checks, required,
          required_missing, agent_review, merge_approved, behind_by, standing_word}' \
       -c --slurpfile view "$dir/view" --slurpfile checks "$dir/checks" \
       --slurpfile required "$dir/required" --argjson project_required "$required_checks" \
       --argjson behind_by "$behind_by" <<<"$facts"
   else
-    jq -c --rawfile error "$dir/error" '. + {error: ($error | rtrimstr("\n"))}' <<<"$facts"
+    jq -c --rawfile error "$dir/error" 'del(.caught_up_by) + {error: ($error | rtrimstr("\n"))}' <<<"$facts"
   fi
 }
 

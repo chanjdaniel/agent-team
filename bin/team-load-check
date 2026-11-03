@@ -2,8 +2,14 @@
 # Prove what a worker can and cannot reach, with a throwaway session on task T0, and that each
 # treehouse pool hands out a clean slot.
 #
-# It runs team-doctor first, and stops there, leasing and launching nothing, on any FAIL. TEAM_DOCTOR names
-# the doctor to run instead (the tests' seam).
+# It runs team-doctor first (--json, printing each line as the doctor does), and stops there,
+# leasing and launching nothing, on a FAIL that bears on a session it starts: any FAIL but the
+# gate's (gate-agent) and the per-project lines (checkout, origin, task dir, gate, slots, leases,
+# trust, branches, changes) of a project other than the code checkout's own, past which it goes
+# on, naming each on stderr; the planner form also stops on a checkout, task dir, slots or leases
+# FAIL of a treehouse project, whose lease it rehearses, and the ops form on any per-project FAIL
+# of the project its worktree is in. TEAM_DOCTOR names the doctor to run instead (the tests'
+# seam), which answers --json.
 #
 # Usage: team-load-check [--toolkit <name>]...
 #        team-load-check --context [--role planner|builder|reviewer] [--toolkit <name>]...
@@ -143,11 +149,73 @@ if [[ $role == ops && -z $context ]]; then
   esac
 fi
 
-# TEAM_HOME reaches the doctor only from the environment, so its team home line says what named it.
-"${TEAM_DOCTOR:-$home/bin/team-doctor}" || {
-  echo "load check: team-doctor reports a FAIL above; fix it, then run the load check again" >&2
-  exit 1
+# main_checkout <dir>: the main checkout of the git checkout <dir> is in, or nothing when it is none
+main_checkout() {
+  git -C "$1" worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p' || true
 }
+
+# The doctor's results, printed as its lines are. TEAM_HOME reaches the doctor only from the
+# environment, so its team home line says what named it.
+doctor=$("${TEAM_DOCTOR:-$home/bin/team-doctor}" --json) || true
+if ! jq -se 'length == 1 and (.[0] | type == "array"
+    and all(.[]; type == "object" and all(.check, .verdict, .reason, .fix; type == "string")))' <<<"$doctor" >/dev/null 2>&1; then
+  echo "load check: team-doctor --json printed no results; run team-doctor to see why" >&2
+  exit 1
+fi
+jq -r '.[] | "\(.verdict) \(.check): \(.reason)" + (if .fix == "" then "" else "; fix: \(.fix)" end)' <<<"$doctor"
+
+# Each doctor FAIL is judged against the sessions this form starts. One may go on when it is the
+# gate's, which no session of the load check runs, or a per-project line of a registered project
+# no session needs: every form needs the code checkout's own project, whose main checkout its
+# worktree is made from; the planner form the lines of each treehouse project its lease rehearsal
+# leases from; the ops form every line of the project its worktree is in.
+project_lines=(checkout origin 'task dir' gate slots leases trust branches changes)
+lease_lines=(checkout 'task dir' slots leases)
+declare -A registered=() needs_all=() needs_lease=()
+mapfile -t fails < <(jq -r '.[] | select(.verdict == "FAIL") | .check' <<<"$doctor")
+if ((${#fails[@]})); then
+  # A registry team-project refuses leaves every project unknown, so each of their lines stops it.
+  while IFS= read -r name; do [[ -z $name ]] || registered[$name]=1; done < <(team_project --list 2>/dev/null || true)
+  # find_projects <key> <value>: the registered projects whose <key> is <value>, one per line
+  find_projects() {
+    [[ -n $2 ]] || return 0
+    team_project --find "$1" "$2" 2>/dev/null || true
+  }
+  while IFS= read -r name; do [[ -z $name ]] || needs_all[$name]=1; done < <(
+    find_projects path "$(main_checkout "${TEAM_LOAD_CHECK_CHECKOUT:-$home}")"
+    if [[ $role == ops && -z $context ]]; then find_projects path "$(main_checkout "$worktree")"; fi
+  )
+  if [[ $role == planner && -z $context ]]; then
+    while IFS= read -r name; do [[ -z $name ]] || needs_lease[$name]=1; done < <(find_projects pool.provider treehouse)
+  fi
+fi
+
+# goes_on <check>: whether a doctor FAIL of <check> bears on no session this form starts
+goes_on() {
+  local check=$1 line project lease
+  [[ $check != gate-agent ]] || return 0
+  for line in "${project_lines[@]}"; do
+    [[ $check == "$line "* ]] || continue
+    project=${check#"$line "}
+    [[ -n ${registered[$project]:-} && -z ${needs_all[$project]:-} ]] || return 1
+    [[ -n ${needs_lease[$project]:-} ]] || return 0
+    for lease in "${lease_lines[@]}"; do [[ $line != "$lease" ]] || return 1; done
+    return 0
+  done
+  return 1
+}
+
+going_on=()
+for check in "${fails[@]}"; do
+  if ! goes_on "$check"; then
+    echo "load check: team-doctor reports a FAIL above; fix it, then run the load check again" >&2
+    exit 1
+  fi
+  going_on+=("$check")
+done
+for check in "${going_on[@]}"; do
+  echo "load check: going on past FAIL $check: it bears on no session this check starts" >&2
+done
 
 fail=0
 check_failed() { echo "FAIL: $*"; fail=1; }
@@ -270,7 +338,7 @@ load_worktree() {
   # task's .claude/worktrees/ slot runs. The name is reserved, and what an earlier run left there is
   # replaced.
   checkout=${TEAM_LOAD_CHECK_CHECKOUT:-$home}
-  main=$(git -C "$checkout" worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p') || true
+  main=$(main_checkout "$checkout")
   [[ -n $main ]] || die "the code checkout $checkout is not a git checkout, so the load check has no worktree to run in"
   wt=$main/.claude/worktrees/load-check
   # shellcheck disable=SC2329 # invoked by the EXIT trap

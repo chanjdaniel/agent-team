@@ -1,6 +1,7 @@
 #!/usr/bin/env bats
-# team-load-check: team-doctor runs first, and a FAIL there stops the load check before it
-# touches its worktree or launches a worker; the other tests pass a stub doctor (TEAM_DOCTOR).
+# team-load-check: team-doctor --json runs first, and a FAIL there that bears on a session the
+# form starts stops the load check before it touches its worktree or launches a worker; the other
+# tests pass a stub doctor (TEAM_DOCTOR).
 # The planner form: the planner it launches through team-worker, in a detached worktree of the code
 # checkout (a sandbox repo, TEAM_LOAD_CHECK_CHECKOUT) at .claude/worktrees/load-check, reports its
 # MCP tools and skills, and the check fails on anything production or coordinator-only. The session
@@ -21,10 +22,14 @@ setup() {
   git -C "$code" commit -q -m "chore: ignore scratch and worktrees"
   code=$(realpath "$code") wt=$code/.claude/worktrees/load-check
   export TEAM_LOAD_CHECK_CHECKOUT=$code
-  # A doctor that passes; the doctor's own lines are tests/team-doctor*.bats'.
+  # A doctor that answers --json with $BATS_TEST_TMPDIR/doctor.json, and fails when it holds a
+  # FAIL, as team-doctor does; it passes until a test calls doctor_results. The doctor's own lines
+  # are tests/team-doctor*.bats'.
   export TEAM_DOCTOR=$BATS_TEST_TMPDIR/doctor
-  printf '%s\n' '#!/usr/bin/env bash' 'echo "PASS machine: named"' >"$TEAM_DOCTOR"
+  printf '%s\n' '#!/usr/bin/env bash' '[[ $* == --json ]] || exit 64' 'cat "$BATS_TEST_TMPDIR/doctor.json"' \
+    'jq -e "all(.[]; .verdict != \"FAIL\")" "$BATS_TEST_TMPDIR/doctor.json" >/dev/null 2>&1' >"$TEAM_DOCTOR"
   chmod +x "$TEAM_DOCTOR"
+  doctor_results
   registry
   stub_script claude <<'SH'
 case $1 in
@@ -65,6 +70,24 @@ project() {
   printf '%s\n' "[$1]" "repo = \"owner/$1\"" "path = \"projects/$1\"" 'base = "main"' 'delivery = "no-mistakes"' \
     'merge_method = "merge"' 'required_checks = []' 'task_dir = ".scratch/task"' 'docs = []' 'toolkits = []'
 }
+
+# doctor_results [<verdict> <check>]...: the stub doctor's results: a PASS of machine, then each
+# given one, its reason "broken" and its fix "repair it"
+doctor_results() {
+  local results='{"check": "machine", "verdict": "PASS", "reason": "named", "fix": ""}'
+  while [[ $# -gt 0 ]]; do
+    results+=$(jq -cn --arg verdict "$1" --arg check "$2" '{$check, $verdict, reason: "broken", fix: "repair it"}')
+    shift 2
+  done
+  jq -s . <<<"$results" >"$BATS_TEST_TMPDIR/doctor.json"
+}
+
+# going_on <check>: the line the load check names a FAIL it goes on past with
+going_on() {
+  echo "load check: going on past FAIL $1: it bears on no session this check starts"
+}
+
+stopped="load check: team-doctor reports a FAIL above; fix it, then run the load check again"
 
 # inventory <line>...: what the planner reports
 inventory() {
@@ -579,7 +602,8 @@ write_line() {
 
 @test "a toolkit team-worker refuses the form's roles is refused with its message while the arguments are read, before the doctor or a lease" {
   lease_setup
-  printf '%s\n' '#!/usr/bin/env bash' 'touch "$BATS_TEST_TMPDIR/doctor-ran"; exit 1' >"$TEAM_DOCTOR"
+  printf '%s\n' '#!/usr/bin/env bash' 'touch "$BATS_TEST_TMPDIR/doctor-ran"' \
+    'echo "[{\"check\": \"machine\", \"verdict\": \"FAIL\", \"reason\": \"ran\", \"fix\": \"\"}]"; exit 1' >"$TEAM_DOCTOR"
   stub_script treehouse <<'SH'
 touch "$BATS_TEST_TMPDIR/treehouse-ran"
 exit 1
@@ -777,4 +801,94 @@ reviewer    45003       2               2            0"
 agents --json
 auth status --json
 plugin list --json"
+}
+
+@test "the doctor's results print as its lines do, and another project's FAIL is named on stderr as one the planner goes on past" {
+  doctor_results WARN 'changes site' FAIL 'trust site'
+  inventory --- tdd
+  run_bin -0 --separate-stderr team-load-check
+  assert_equal "${lines[0]}" "PASS machine: named"
+  assert_equal "${lines[1]}" "WARN changes site: broken; fix: repair it"
+  assert_equal "${lines[2]}" "FAIL trust site: broken; fix: repair it"
+  assert_equal "$stderr" "$(going_on 'trust site')"
+  assert_equal "${lines[-1]}" "PASS"
+  left_nothing
+}
+
+@test "a gate-agent FAIL bears on no session the context form starts, which prints its rows" {
+  context_setup
+  doctor_results FAIL gate-agent
+  run_bin -0 --separate-stderr team-load-check --context
+  assert_equal "${lines[1]}" "FAIL gate-agent: broken; fix: repair it"
+  assert_contains "$output" "role      context  skills  deferred tools  MCP servers
+planner     42006       3               3            0"
+  assert_equal "$stderr" "$(going_on gate-agent)"
+  assert_equal "${lines[-1]}" PASS
+}
+
+@test "a FAIL of the code checkout's own project stops the load check before any worktree, as does every FAIL but another project's and the gate's" {
+  # The code checkout's own project is the one at its main checkout, run from a linked worktree.
+  { project code && printf '%s\n' '[code.pool]' 'provider = "git"' 'slots = []'; } >>"$TEAM_HOME/projects.toml"
+  git -C "$code" worktree add -q --detach "$HOME/code-wt"
+  export TEAM_LOAD_CHECK_CHECKOUT=$HOME/code-wt
+  local check
+  for check in 'trust code' 'checkout code' 'claude login' 'trust team home' projects 'trust nowhere' 'tool jq'; do
+    doctor_results FAIL 'trust site' FAIL "$check"
+    run_bin -1 --separate-stderr team-load-check
+    assert_equal "${lines[2]}" "FAIL $check: broken; fix: repair it"
+    assert_equal "$stderr" "$stopped"
+    [[ ! -e $wt ]]
+    assert_equal "$(git -C "$code" worktree list --porcelain | grep -c '^worktree ')" 2
+    assert_equal "$(stub_calls claude)" ""
+  done
+}
+
+@test "the planner form stops on a treehouse project's checkout, task dir, slots or leases FAIL, and goes on past its others" {
+  lease_setup
+  local check
+  for check in 'checkout proj' 'task dir proj' 'slots proj' 'leases proj'; do
+    doctor_results FAIL "$check"
+    run_bin -1 --separate-stderr team-load-check
+    assert_equal "$stderr" "$stopped"
+    assert_equal "$(stub_calls th-lease.sh)" ""
+    assert_equal "$(stub_calls claude)" ""
+  done
+
+  doctor_results FAIL 'trust proj' FAIL 'gate proj'
+  run_bin -0 --separate-stderr team-load-check
+  assert_contains "$output" "PASS lease proj: slot ${slots[0]} leased, pre-warmed and clean, returned"
+  assert_equal "$stderr" "$(going_on 'trust proj')
+$(going_on 'gate proj')"
+  assert_equal "${lines[-1]}" "PASS"
+
+  # The context form rehearses no lease, so a treehouse project's slots bear on none of its sessions.
+  context_setup
+  doctor_results FAIL 'slots proj'
+  run_bin -0 --separate-stderr team-load-check --context --role planner
+  assert_equal "$stderr" "$(going_on 'slots proj')"
+}
+
+@test "the ops form stops on any FAIL of the project its worktree is in, and goes on past another project's" {
+  ops_setup
+  registry "$(printf '%s\n' '[proj.pool]' 'provider = "git"' 'slots = []')"
+  doctor_results FAIL 'branches proj'
+  run_bin -1 --separate-stderr team-load-check --role ops --worktree "$wt" --toolkit prod-read
+  assert_equal "$stderr" "$stopped"
+  [[ ! -e $STUB_FIXTURES/launched ]]
+
+  doctor_results FAIL 'branches site'
+  run_bin -0 --separate-stderr team-load-check --role ops --worktree "$wt" --toolkit prod-read
+  assert_equal "$stderr" "$(going_on 'branches site')"
+  assert_equal "${lines[-1]}" "PASS"
+}
+
+@test "a doctor whose --json prints no results array stops the load check, launching nothing" {
+  local out
+  for out in 'PASS machine: named' '' '{"check": "machine"}' '[{"check": "machine", "verdict": "PASS"}]'; do
+    printf '%s\n' "$out" >"$BATS_TEST_TMPDIR/doctor.json"
+    run_bin -1 --separate-stderr team-load-check
+    assert_equal "$stderr" "load check: team-doctor --json printed no results; run team-doctor to see why"
+    [[ ! -e $wt ]]
+    assert_equal "$(stub_calls claude)" ""
+  done
 }
