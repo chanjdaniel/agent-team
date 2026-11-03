@@ -4,25 +4,41 @@
 # machine: the team home's git ignores tasks/*/ui/, so no checkpoint or handoff carries it, and
 # team-close removes it with the task.
 #
-# Usage: team-ui T<n> [--capture] [--attach <file>]...
-#   --capture  Run the frontend toolkit's ui-capture into tasks/T<n>/ui/: the element selected in
-#              the Agent Chrome's DevTools Elements panel, with its page, HTML, matched CSS, Vue
-#              source file and line, and screenshots (toolkits/frontend/README.md).
+# Usage: team-ui T<n> [--capture [--note <text>]] [--attach <file>]...
+#   --capture  Run the frontend toolkit's ui-capture into a new directory, tasks/T<n>/ui/capture-<k>/,
+#              k one more than the highest capture-<k> there (from 1), so no capture overwrites
+#              another: the page Daniel is on in the Agent Chrome (its URL, route, title, Vue
+#              route, screenshot, accessibility snapshot, console problems and failed requests),
+#              and the element selected in its DevTools Elements panel when there is one (its
+#              HTML, matched CSS, Vue source file and line, and screenshot); toolkits/frontend/
+#              README.md says which page it takes.
+#   --note     Write <text>, the words Daniel posted that the capture goes with, as the
+#              coordinator copied them, with the time, to note.md in the capture's directory.
+#              Only with --capture, once.
 #   --attach   Copy <file>, a screenshot Daniel attached in Discord as the Discord plugin's
 #              download_attachment saved it, into tasks/T<n>/ui/ under its own name, numbered
 #              (-2, -3, ... before the extension) when that name is taken.
-# At least one of the two. Attachments are copied first, so a capture that fails keeps them.
-# Prints ui-capture's line, then every file tasks/T<n>/ui/ holds.
+# At least one of --capture and --attach. Attachments are copied first, so a capture that fails
+# keeps them; it removes the directory it made.
+# Prints ui-capture's line, then "captured: element and page" when the capture holds ui-pick.md,
+# else "captured: page", then every file tasks/T<n>/ui/ holds: those at its top (the attachments,
+# and a flat capture an older team-ui left there), then each capture directory's, by number.
 # Refused, exit 1: a task that is not open, an attachment that is not a readable file (nothing
 # copied), and a capture that fails, with ui-capture's own line; exit 2 a malformed command line.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
-usage="usage: team-ui T<n> [--capture] [--attach <file>]..."
-task='' capture=0 attachments=()
+usage="usage: team-ui T<n> [--capture [--note <text>]] [--attach <file>]..."
+task='' capture=0 note='' noted=0 attachments=()
 while (($#)); do
   case $1 in
     --capture) capture=1 && shift ;;
+    --note)
+      ((!noted)) || usage_error "one --note per capture"
+      [[ $# -ge 2 && -n $2 ]] || usage_error "--note needs the words Daniel posted"
+      note=$2 noted=1
+      shift 2
+      ;;
     --attach)
       [[ $# -ge 2 ]] || usage_error "--attach needs a file"
       attachments+=("$2")
@@ -37,6 +53,7 @@ while (($#)); do
   esac
 done
 [[ $task =~ ^T[1-9][0-9]*$ ]] || usage_error "$usage"
+((capture || !noted)) || usage_error "--note goes with --capture"
 ((capture || ${#attachments[@]})) || usage_error "$usage"
 
 open_task_events "$task" >/dev/null
@@ -61,10 +78,42 @@ for file in "${attachments[@]}"; do
   cp -- "$file" "$ui/$(free_name "$(basename -- "$file")")"
 done
 
+# The next capture's directory, claimed by mkdir so two intakes at once never share one:
+# capture-<k>, k one more than the highest there.
+claim_capture_dir() {
+  local k=0 dir n
+  for dir in "$ui"/capture-*/; do
+    n=${dir%/} n=${n##*/capture-}
+    [[ $n =~ ^[1-9][0-9]*$ ]] && ((n > k)) && k=$n
+  done
+  until mkdir -- "$ui/capture-$((k + 1))" 2>/dev/null; do k=$((k + 1)); done
+  printf '%s\n' "$ui/capture-$((k + 1))"
+}
+
+# note.md: the words in a fence longer than any run of backticks in them, so they read as written.
+write_note() {
+  local fence='```' run
+  while IFS= read -r run; do
+    ((${#run} < ${#fence})) || fence=$run'`'
+  done < <(grep -o '`\+' <<<"$note" || true)
+  printf "# Daniel's note\n\nDaniel's words this capture goes with, as the coordinator copied them, at %s.\n\n%s\n%s\n%s\n" \
+    "$(date -u +%FT%TZ)" "$fence" "$note" "$fence" >"$1/note.md"
+}
+
 failed=''
 if ((capture)); then
-  if ! out=$("$code/toolkits/frontend/scripts/ui-capture" "$ui" 2>&1); then failed=$out; else printf '%s\n' "$out"; fi
+  dir=$(claim_capture_dir)
+  if ! out=$("$code/toolkits/frontend/scripts/ui-capture" "$dir" 2>&1); then
+    failed=$out
+    rm -rf -- "$dir"
+  else
+    printf '%s\n' "$out"
+    if [[ -f $dir/ui-pick.md ]]; then echo "captured: element and page"; else echo "captured: page"; fi
+    ((!noted)) || write_note "$dir"
+  fi
 fi
 echo "tasks/$task/ui/ holds:"
-find "$ui" -maxdepth 1 -type f ! -name '.*' | sort
+find "$ui" -maxdepth 1 -type f ! -name '.*' | LC_ALL=C sort
+find "$ui" -mindepth 1 -maxdepth 1 -type d -regex '.*/capture-[1-9][0-9]*' -printf '%f\n' | sort -V |
+  while IFS= read -r dir; do find "$ui/$dir" -maxdepth 1 -type f ! -name '.*' | LC_ALL=C sort; done
 [[ -z $failed ]] || die "the capture failed: $(grep -m1 . <<<"$failed")"

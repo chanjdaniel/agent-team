@@ -32,8 +32,12 @@
 # "every ticket" unless set (team-next sets a phase's tickets for that phase's deliverer);
 # paths under $HOME are written ~/..., except team_bin, this checkout's bin/, always absolute
 # because the workers' allow rules name the scripts in it by their full path. ui is empty unless
-# tasks/T<n>/ui/ holds files (team-ui's capture of what Daniel pointed at): then a newline and a
-# reading-list item naming them, with the rule that a worker checks a fix on its own stack. In a template,
+# tasks/T<n>/ui/ holds files (what Daniel pointed at, kept by team-ui): then a newline and a
+# reading-list item naming the files at its top and what ui-pick.md holds, with the rule that a
+# worker checks a fix on its own stack, never in the Agent Chrome; with capture-<k>/ directories,
+# it says what ui-page.md holds too, and names each by number with its kind (element and page when
+# it holds ui-pick.md, else page) and, when it holds note.md, that the note holds Daniel's words.
+# In a template,
 # {{> <name>}} stands for the partial of the project's delivery, templates/briefs/<name>/<delivery>.md:
 # delivery (how a builder delivers), review and rereview (what a reviewer reads and posts, verify
 # reading rereview's too; a gated project's first review reads the branch's local head before the
@@ -199,13 +203,27 @@ declare -A values=(
   [local_checks]=$local_checks
   [tickets]="every ticket"
 )
-# What Daniel pointed at, when team-ui captured it.
+# What Daniel pointed at, when team-ui captured it: the files at the top of ui/ (attachments, and a
+# flat capture an older team-ui left), and each capture-<k>/ by number, with its kind and note.
 ui=$TEAM_HOME/tasks/$task/ui values[ui]=''
-mapfile -t ui_files < <(find "$ui" -maxdepth 1 -type f ! -name '.*' -printf '%f\n' 2>/dev/null | sort)
-if ((${#ui_files[@]})); then
-  values[ui]=$'\n'"- What Daniel pointed at, captured at intake: \`$(tilde "$ui")/\` ($(printf '`%s`, ' "${ui_files[@]}" | sed 's/, $//'))"
+mapfile -t ui_files < <(find "$ui" -maxdepth 1 -type f ! -name '.*' -printf '%f\n' 2>/dev/null | LC_ALL=C sort)
+mapfile -t ui_captures < <(find "$ui" -mindepth 1 -maxdepth 1 -type d -regex '.*/capture-[1-9][0-9]*' -printf '%f\n' 2>/dev/null | sort -V)
+ui_rule="  Check your fix on your own stack with your own headless browser, never in the Agent Chrome, which is Daniel's own window."
+ui_named=''
+((${#ui_files[@]} == 0)) || ui_named=" ($(printf '`%s`, ' "${ui_files[@]}" | sed 's/, $//'))"
+if ((${#ui_captures[@]})); then
+  values[ui]=$'\n'"- What Daniel pointed at, captured at intake: \`$(tilde "$ui")/\`$ui_named, each capture in a directory of its own, listed below."
+  values[ui]+=$'\n'"  \`ui-page.md\` says what the page held when Daniel saw it: its URL, route, title and Vue route, and its console problems and failed requests since it loaded, beside \`page.png\`, its screenshot, and \`page-snapshot.txt\`, its accessibility snapshot; in an element capture, \`ui-pick.md\` names the element's \`.vue\` source file and line, its HTML and its matched CSS."
+  values[ui]+=$'\n'"$ui_rule"
+  for capture in "${ui_captures[@]}"; do
+    if [[ -f $ui/$capture/ui-pick.md ]]; then kind="an element and page capture"; else kind="a page capture, no element selected"; fi
+    [[ ! -f $ui/$capture/note.md ]] || kind+="; \`note.md\` holds the words Daniel posted with it"
+    values[ui]+=$'\n'"  - \`$capture/\`: $kind."
+  done
+elif ((${#ui_files[@]})); then
+  values[ui]=$'\n'"- What Daniel pointed at, captured at intake: \`$(tilde "$ui")/\`$ui_named"
   values[ui]+="; \`ui-pick.md\` names the element's page, its \`.vue\` source file and line, its HTML and its matched CSS."
-  values[ui]+=$'\n'"  Check your fix on your own stack with your own headless browser, never in the Agent Chrome, which is Daniel's own window."
+  values[ui]+=$'\n'"$ui_rule"
 fi
 [[ -z $thread ]] || values[thread]=$thread
 [[ -z $interview ]] || values[interview_thread]=$interview
