@@ -430,7 +430,7 @@ EOF
 @test "TEAM_DOCTOR_CHECKS runs the checks it names and those they read state from, each line as in a whole run, and refuses a name that is no check" {
   tools_at arch
   run_bin -0 team-doctor
-  local whole=$output check read reads own
+  local whole=$output check read reads own declared
   local -A alone=()
   # Each check alone prints lines of the whole run, in its order: its own (none for the Homebrew
   # check on Arch, nor the salvage check with nothing to salvage) and those of the checks it reads
@@ -442,7 +442,8 @@ EOF
     assert_equal "$(grep -xFf <(printf '%s\n' "$output") <<<"$whole")" "$output"
     alone[${check##*/}]=$output
     reads=''
-    for read in $(sed -n '/^#/!q; s/^# reads state from: //p' "$check"); do
+    read -ra declared <<<"$(sed -n '/^#/!q; s/^# reads state from: //p' "$check")"
+    for read in "${declared[@]}"; do
       reads+=${alone[$read]}$'\n'
     done
     own=$(printf '%s' "$output" | grep -cvxFf <(printf '%s' "$reads") || true)
