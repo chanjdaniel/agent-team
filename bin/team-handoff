@@ -42,12 +42,13 @@
 #      stowed from this machine as {task, worktrees, roles, sessions}, and the step lines go to
 #      stderr. A machine whose lease its handoff already released prints the message again.
 # --retire, once the message is posted: refuses while this machine holds the lease, then starts a
-# detached process (its own session) that, a few seconds after the call returns, runs claude stop
+# detached process (its own session) that, 3 s after the call returns, runs claude stop
 # and claude rm for each live session named coordinator, logging to retire.log.
 # In ~/.local/state/agent-team/: handoff.json, this handoff's progress (the lease's epoch and
 # taken_at, the last step done, whether it is --here's and what step 3 captured); handoff.lock,
 # one handoff at a time; retire.log.
-# TEAM_HANDOFF_STOP_AFTER=<n> (the tests' seam) exits 1 right after step n, as an interruption.
+# TEAM_HANDOFF_STOP_AFTER=<n> exits 1 right after step n, as an interruption, and
+# TEAM_HANDOFF_RETIRE_SECONDS replaces --retire's 3 s (the tests' seams).
 # Exit 0 done, 1 refused or a step failed, 2 usage error, 75 GitHub unreachable or another
 # handoff or team-stow running.
 set -euo pipefail
@@ -55,7 +56,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
 # Seconds: the most one call to an origin may take, and the coordinator's retirement delay.
 NET_TIMEOUT=60
-RETIRE_SECONDS=3
+RETIRE_SECONDS=${TEAM_HANDOFF_RETIRE_SECONDS:-3}
 
 usage="usage: team-handoff [--here] [--json] | --check | --retire"
 mode=run here=false

@@ -223,7 +223,7 @@ posts() {
   assert_contains "$output" "sessions: T1: stopped and removed T1-builder ($builder)"
   assert_contains "$output" "stacks: T1 home: stackfix-1 is stopped, its data kept"
   [[ ${lines[-2]} == "Released at "*" from home-pc for a restart here. After the restart, run \`team-resume\` here." ]]
-  run_bin -0 team-handoff --retire
+  TEAM_HANDOFF_RETIRE_SECONDS=0 run_bin -0 team-handoff --retire
   local tries=0
   until [[ -z $(session_id coordinator) ]] || ((tries++ > 100)); do sleep 0.1; done
   assert_equal "$(home_pc_sessions)" ""
@@ -274,7 +274,7 @@ posts() {
   head=$(git -C "$wt" rev-parse HEAD)
   run_bin -0 team-handoff
   # The coordinator retires, as its handoff skill ends, so the same machine can start one again.
-  run_bin -0 team-handoff --retire
+  TEAM_HANDOFF_RETIRE_SECONDS=0 run_bin -0 team-handoff --retire
   local tries=0
   until [[ -z $(session_id coordinator) ]] || ((tries++ > 100)); do sleep 0.1; done
   assert_equal "$(home_pc_sessions)" ""
