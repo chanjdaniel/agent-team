@@ -218,6 +218,18 @@ checkout_state() {
   jq -e '.offline_since == "2026-10-22T13:05:00Z"' <<<"$output"
   run_bin -0 team-lease status
   assert_contains "$output" "offline_since: 2026-10-22T13:05:00Z"
+  # A state file with no since readable dates from its modification time.
+  local file
+  for file in offline fenced; do
+    printf '%s\n' '{"since": 7}' >"$state/$file"
+    touch -d 2026-10-22T14:00:00Z "$state/$file"
+  done
+  run_bin -0 team-lease status --json
+  jq -e '.offline_since == "2026-10-22T14:00:00Z" and .fenced == "2026-10-22T14:00:00Z"' <<<"$output"
+  echo 'not json' >"$state/offline"
+  touch -d 2026-10-22T15:00:00Z "$state/offline"
+  run_bin -0 team-lease status --json
+  jq -e '.offline_since == "2026-10-22T15:00:00Z"' <<<"$output"
 }
 
 @test "a fenced machine fails check and renew until its take clears the fence" {

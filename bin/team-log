@@ -165,24 +165,48 @@ task=$1
 shift
 [[ $task =~ ^T[1-9][0-9]*$ ]] || usage_error "task must look like T<n>, got '$task'"
 
+# The task's events as one JSON array in TASK_EVENTS, read from the ledger once, before anything
+# is logged: task_events_once
+TASK_EVENTS=''
+task_events_once() {
+  [[ -n $TASK_EVENTS ]] || TASK_EVENTS=$(task_event_array "$task")
+}
+
+# <line> with its ts now, a UTC time to the second as jq's todate writes it; the line is one that
+# check_event typed, whose first key is ts: stamped <line>
+stamped() {
+  # Exported, or Bash's strftime keeps the zone it read at start.
+  local -x TZ=UTC0
+  local now
+  [[ $1 == '{"ts":"'*'",'* ]] || die "not a typed line, ts first: $1"
+  printf -v now '%(%Y-%m-%dT%H:%M:%SZ)T' -1
+  printf '%s\n' "{\"ts\":\"$now\",${1#\{\"ts\":\"*\",}"
+}
+
 # One event, checked as every event team-log appends is, its typed line left in typed (ts the
 # time of the check): check_event <event> [key=value]...
 check_event() {
 event=$1
 shift
-ledger_jq '$contract.kinds | has($event)' -ne --arg event "$event" >/dev/null ||
-  die "unknown event kind '$event'; team-log --help lists the kinds"
 
 local -A seen=()
-local pairs=()
+local pairs=() bad=''
 for pair in "$@"; do
   key=${pair%%=*}
-  [[ $pair == *=?* && $key =~ ^[a-z][a-z0-9_]*$ ]] || usage_error "not a key=value: '$pair'"
-  [[ $key != ts && $key != task && $key != event ]] || usage_error "$key is set by team-log"
-  [[ -z ${seen[$key]:-} ]] || usage_error "$key is given twice"
+  if [[ $pair != *=?* || ! $key =~ ^[a-z][a-z0-9_]*$ ]]; then bad="not a key=value: '$pair'"
+  elif [[ $key == ts || $key == task || $key == event ]]; then bad="$key is set by team-log"
+  elif [[ -n ${seen[$key]:-} ]]; then bad="$key is given twice"
+  fi
+  [[ -z $bad ]] || break
   seen[$key]=${pair#*=}
   pairs+=("$key" "${pair#*=}")
 done
+# An unknown kind is named before a malformed pair.
+if [[ -n $bad ]]; then
+  ledger_jq '$contract.kinds | has($event)' -ne --arg event "$event" >/dev/null ||
+    die "unknown event kind '$event'; team-log --help lists the kinds"
+  usage_error "$bad"
+fi
 
 # A logged message id always means one team-answer read and checked, so team-log writes an
 # answered only with no message id (a decision Daniel gave at the terminal).
@@ -193,20 +217,22 @@ done
 # otherwise (typed_value in bin/lib/ledger.jq), so the checks below read the values the line
 # will hold; ledger_append then checks the event against the contract.
 typed=$(ledger_jq '
+  if $contract.kinds | has($event) | not then "unknown event kind '"'"'\($event)'"'"'; team-log --help lists the kinds" | halt_error(1) else
   field_types($contract.kinds[$event]) as $types
   | $ARGS.positional as $pairs
   | reduce range(0; $pairs | length; 2) as $i ({line: {ts: (now | todate), task: $task, event: $event}, problems: []};
       $pairs[$i] as $key | ($pairs[$i + 1] | typed_value($key; $types[$key])) as $typed
       | .line[$key] = $typed.value | .problems += ($typed.problems // []))
-  | if .problems == [] then .line | review_sent_back else .problems | join("; ") | halt_error(1) end' \
+  | if .problems == [] then .line | review_sent_back else .problems | join("; ") | halt_error(1) end end' \
   -nc --arg task "$task" --arg event "$event" --args "${pairs[@]}" 2>&1) || die "${typed%$'\n'}"
 
 # Daniel's word is on one PR at one head: the approval names the PR as one of the task's pr events
 # does, and a head that PR's pr events, or the task's reviews since its first one, logged (pr_heads
 # in bin/lib/ledger.jq), its message sent no earlier than the first of them, as team-merge holds.
 if [[ $event == merge-approved && -n ${seen[url]:-} ]]; then
-  problem=$(task_events "$task" | ledger_jq '
-    [inputs] as $all
+  task_events_once
+  problem=$(ledger_jq '
+    . as $all
     | [$all[] | select(.event == "pr" and (.url | type) == "string")] as $prs
     | ($all | pr_heads($url)) as $mine
     | if $mine == [] and $prs == [] then "\($url) is not a PR of \($events); it has none"
@@ -215,13 +241,13 @@ if [[ $event == merge-approved && -n ${seen[url]:-} ]]; then
       elif ($all | head_logged($url; $head)) != null then empty
       else "head \($head) is not a head the pr events of \($url), or the reviews since, logged:"
         + (reduce ($mine[] | .head) as $h ([]; if IN(.[]; $h) then . else . + [$h] end) | map("\n  " + .) | add) end' \
-    -nr --arg url "${seen[url]}" --arg head "${seen[head]:-}" --arg events "$task's pr events")
+    -r --arg url "${seen[url]}" --arg head "${seen[head]:-}" --arg events "$task's pr events" <<<"$TASK_EVENTS")
   [[ -z $problem ]] || die "$problem"
   message=${seen[discord_message]:-}
   # A Discord id holds the milliseconds since 2015-01-01 above its low 22 bits.
   if [[ $message =~ ^[1-9][0-9]{0,18}$ ]]; then
-    logged=$(task_events "$task" | ledger_jq '[inputs] | head_logged($url; $head) | "\(.ts) \(.event)"' \
-      -nr --arg url "${seen[url]}" --arg head "${seen[head]}")
+    logged=$(ledger_jq 'head_logged($url; $head) | "\(.ts) \(.event)"' \
+      -r --arg url "${seen[url]}" --arg head "${seen[head]}" <<<"$TASK_EVENTS")
     sent=$(((10#$message >> 22) / 1000 + 1420070400))
     ((sent >= $(date -ud "${logged% *}" +%s))) ||
       die "Discord message $message was sent at $(date -ud "@$sent" +%FT%TZ), before the ${logged#* } event that first logged head ${seen[head]} at ${logged% *}, so it is not Daniel's word on that head"
@@ -234,13 +260,14 @@ fi
 # Refuses a project that is none of the task's opened or worktree-added events: task_project <project>
 task_project() {
   local problem
-  problem=$(task_events "$task" | ledger_jq '
-    reduce (inputs | select(.event == "opened" or .event == "worktree-added") | .project | strings) as $p
+  task_events_once
+  problem=$(ledger_jq '
+    reduce (.[] | select(.event == "opened" or .event == "worktree-added") | .project | strings) as $p
       ([]; if IN(.[]; $p) then . else . + [$p] end)
     | if IN(.[]; $project) then empty
       elif . == [] then "\($project) is not a project of \($task)'"'"'s opened or worktree-added events; it has none"
       else "\($project) is not a project of \($task)'"'"'s opened or worktree-added events: \(join(", "))" end' \
-    -nr --arg project "$1" --arg task "$task")
+    -r --arg project "$1" --arg task "$task" <<<"$TASK_EVENTS")
   [[ -z $problem ]] || die "$problem"
 }
 
@@ -255,7 +282,8 @@ if [[ $event == merge-preapproved ]]; then
       die "$project does not opt in to a plan-time merge approval: its merge_with_plan in projects.toml is $opted"
   fi
   if [[ -n ${seen[ask]:-} ]]; then
-    asked=$(task_events "$task" | ledger_jq '[inputs] | latest_asked($id) | .ts // empty' -nr --arg id "${seen[ask]}")
+    task_events_once
+    asked=$(ledger_jq 'latest_asked($id) | .ts // empty' -r --arg id "${seen[ask]}" <<<"$TASK_EVENTS")
     [[ -n $asked ]] || die "$task logged no asked with id ${seen[ask]}, so merge-preapproved answers no ask of it"
     message=${seen[discord_message]:-}
     # A string of digits that is no Discord id the contract would take; any other string it refuses.
@@ -279,8 +307,9 @@ fi
 # A withdrawal ends the plan-time word standing for the project: its latest merge-preapproved,
 # with no withdrawal since.
 if [[ $event == merge-preapproval-withdrawn && -n ${seen[project]:-} ]]; then
-  task_events "$task" | ledger_jq '[inputs] | merge_preapproval($project) | . != null and .withdrawn == null' \
-    -ne --arg project "${seen[project]}" >/dev/null ||
+  task_events_once
+  ledger_jq 'merge_preapproval($project) | . != null and .withdrawn == null' \
+    -e --arg project "${seen[project]}" <<<"$TASK_EVENTS" >/dev/null ||
     die "$task has no merge-preapproved of ${seen[project]} left to withdraw"
 fi
 
@@ -304,7 +333,8 @@ if [[ $event == merge-standing || $event == merge-standing-withdrawn ]]; then
   [[ ! $message =~ ^[0-9]+$ || $message =~ ^[1-9][0-9]{0,18}$ ]] || die "discord_message $message is not a Discord id"
   channel=${seen[discord_channel]:-}
   if [[ -n $channel && $channel != "$COORDINATOR_CHANNEL" ]]; then
-    thread=$(task_events "$task" | jq -nr '[inputs | select(.event == "thread") | .discord_thread | select(. != null) | tostring] | last // empty')
+    task_events_once
+    thread=$(jq -r '[.[] | select(.event == "thread") | .discord_thread | select(. != null) | tostring] | last // empty' <<<"$TASK_EVENTS")
     [[ $channel == "$thread" ]] ||
       die "discord_channel $channel is neither #coordinator's channel, $COORDINATOR_CHANNEL, nor $task's thread$(if [[ -n $thread ]]; then echo ", $thread"; else echo ": it has none"; fi)"
   fi
@@ -326,7 +356,8 @@ fi
 if [[ $event == branch-renamed && -n ${seen[project]:-} && -n ${seen[branch]:-} ]]; then
   task_project "${seen[project]}"
   branch=${seen[branch]}
-  [[ $branch != "$(task_events "$task" | ledger_jq '[inputs] | task_branch($project) // ""' -nr --arg project "${seen[project]}")" ]] ||
+  task_events_once
+  [[ $branch != "$(ledger_jq 'task_branch($project) // ""' -r --arg project "${seen[project]}" <<<"$TASK_EVENTS")" ]] ||
     die "$branch is already $task's branch for ${seen[project]}"
   [[ $branch =~ (^|[^[:alnum:]])$task($|[^[:digit:]]) ]] || die "$branch does not name $task, as a branch of its worktree must"
   git check-ref-format --branch "$branch" >/dev/null 2>&1 ||
@@ -374,10 +405,12 @@ fi
 # whose proposals Daniel answered (an answered of id retro).
 if [[ $event == retro-change && -n ${seen[retro]:-} ]]; then
   retro=${seen[retro]}
-  retro_events=$(task_events "$retro" | jq -cs .)
-  jq -e 'any(.[]; .event == "opened" and .path == "retro")' <<<"$retro_events" >/dev/null ||
+  opened='' answered=''
+  json_vars opened='any(.[]; .event == "opened" and .path == "retro")' \
+    answered='any(.[]; .event == "answered" and .id == "retro")' <<<"$(task_event_array "$retro")"
+  [[ $opened == true ]] ||
     die "$retro is not a retro task: it has no opened event with the path retro, so retro-change links no retro's proposals"
-  jq -e 'any(.[]; .event == "answered" and .id == "retro")' <<<"$retro_events" >/dev/null ||
+  [[ $answered == true ]] ||
     die "$retro has no answered with id retro: Daniel has not answered its proposals, so none is approved to build"
 fi
 
@@ -389,7 +422,8 @@ if [[ -n ${seen[since]:-} ]]; then
     die "since must be a UTC time like 2026-10-22T01:00:00Z, got '$since'"
   now=$(date -u +%FT%TZ)
   [[ ! $since > $now ]] || die "since $since is later than now ($now)"
-  latest=$(task_events "$task" | jq -nr '[inputs | .ts | strings] | last // empty')
+  task_events_once
+  latest=$(jq -r '[.[] | .ts | strings] | last // empty' <<<"$TASK_EVENTS")
   [[ -z $latest || ! $since < $latest ]] || die "since $since is earlier than $task's latest event, at $latest"
 fi
 
@@ -398,7 +432,7 @@ fi
 if [[ $1 != --* ]]; then
   check_event "$@"
   # Stamped now, after the checks, so a park's since is never later than its ts.
-  ledger_append "$(jq -c '.ts = (now | todate)' <<<"$typed")"
+  ledger_append "$(stamped "$typed")"
   exit 0
 fi
 
@@ -437,9 +471,10 @@ if ((${#files[@]})); then
     die "cannot read $task's brief records: ${files[*]}"
 fi
 
-parsed=$(task_events "$task" | jq -L "$TEAM_LIB" -nc --arg task "$task" --arg message "$message" --arg from "$from" \
+task_events_once
+parsed=$(jq -L "$TEAM_LIB" -c --arg task "$task" --arg message "$message" --arg from "$from" \
   --arg sent_back "$sent_back" --argjson records "$brief_records" \
-  'include "messages"; include "ledger"; [inputs] as $events | $message | parse_message($task; $events; $records; $from; $sent_back)')
+  'include "messages"; include "ledger"; . as $events | $message | parse_message($task; $events; $records; $from; $sent_back)' <<<"$TASK_EVENTS")
 problem=$(jq -r '.problems // empty | join("; ")' <<<"$parsed")
 [[ -z $problem ]] || die "$problem"
 
@@ -454,34 +489,38 @@ github_pr() {
     r=$(team_project "$p" repo) || exit 1
     names+=("$p ($r)")
     [[ ${r,,} != "${repo,,}" ]] || project=$p
-  done < <(task_events "$task" | jq -r 'select(.event == "opened" or .event == "worktree-added") | .project | strings' | awk '!seen[$0]++')
+  done < <(jq -r '.[] | select(.event == "opened" or .event == "worktree-added") | .project | strings' <<<"$TASK_EVENTS" | awk '!seen[$0]++')
   if [[ -z $project ]]; then
     ((${#names[@]})) || die "$url is in no repo of $task's projects: it has none"
     p=$(printf ', %s' "${names[@]}")
     die "$url is in no repo of $task's projects: ${p:2}"
   fi
+  pr_head='' branch=''
   if ! view=$(gh pr view "$number" --repo "$repo" --json headRefOid,headRefName 2>&1) ||
-    ! pr_head=$(jq -er '.headRefOid | strings | select(test("^[0-9a-f]{7,40}$"))' <<<"$view" 2>/dev/null) ||
-    ! branch=$(jq -er '.headRefName | strings | select(. != "")' <<<"$view" 2>/dev/null); then
+    ! json_vars pr_head='.headRefOid | strings | select(test("^[0-9a-f]{7,40}$"))' \
+      branch='.headRefName | strings | select(. != "")' <<<"$view" 2>/dev/null ||
+    [[ -z $pr_head || -z $branch ]]; then
     die "cannot read $url on GitHub ($(head -n 1 <<<"$view")); log it by hand: team-log $task pr url=$url head=<full sha>"
   fi
-  current=$(task_events "$task" | ledger_jq '[inputs] | task_branch($project) // ""' -nr --arg project "$project")
+  current=$(ledger_jq 'task_branch($project) // ""' -r --arg project "$project" <<<"$TASK_EVENTS")
   renamed=''
   [[ $branch == "$current" ]] || renamed="$project $branch"
 }
 
+# Each event as its kind, its GitHub url or nothing, its count of fields and its key=value fields,
+# NUL-separated, read in one jq run.
 lines=()
-count=$(jq '.events | length' <<<"$parsed")
-for ((i = 0; i < count; i++)); do
-  one=$(jq -c ".events[$i]" <<<"$parsed")
-  mapfile -d '' -t fields < <(jq -j '.fields[] | "\(.[0])=\(.[1])\u0000"' <<<"$one")
-  url=$(jq -r '.github // empty' <<<"$one")
+mapfile -d '' -t records < <(jq -j '.events[] | [.event, (.github // ""), (.fields | length | tostring),
+  (.fields[] | "\(.[0])=\(.[1])")][] | . + "\u0000"' <<<"$parsed")
+for ((i = 0; i < ${#records[@]}; i += 3 + n)); do
+  kind=${records[i]} url=${records[i + 1]} n=${records[i + 2]}
+  fields=("${records[@]:i+3:n}")
   renamed=''
   if [[ -n $url ]]; then
     github_pr "$url"
     fields+=("head=$pr_head")
   fi
-  check_event "$(jq -r .event <<<"$one")" "${fields[@]}"
+  check_event "$kind" "${fields[@]}"
   lines+=("$typed")
   if [[ -n $renamed ]]; then
     check_event branch-renamed "project=${renamed%% *}" "branch=${renamed#* }"
@@ -490,11 +529,12 @@ for ((i = 0; i < count; i++)); do
 done
 
 # Every event meets the contract before the first is logged, so a refusal logs nothing.
-for line in "${lines[@]}"; do
-  problem=$(ledger_jq '[append_problems($contract; "team-log")] | join("; ")' -r <<<"$line")
+if ((${#lines[@]})); then
+  problem=$(ledger_jq 'first(inputs | [append_problems($contract; "team-log")] | join("; ") | select(. != ""))' \
+    -nr <<<"$(printf '%s\n' "${lines[@]}")")
   [[ -z $problem ]] || die "refusing a ledger event: $problem"
-done
+fi
 for line in "${lines[@]}"; do
-  line=$(jq -c '.ts = (now | todate)' <<<"$line")
+  line=$(stamped "$line")
   if [[ -n $print ]]; then printf '%s\n' "$line"; else ledger_append "$line"; fi
 done

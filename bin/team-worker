@@ -160,7 +160,7 @@ done < <(tr -s '[:space:]' '\n' <<<"$prompt")
 # T0 is the load check, not a task: it has no ledger entry and stays out of the ledger.
 worktree_event=
 if [[ $task != T0 ]]; then
-  events=$(task_events "$task" | jq -cs .)
+  events=$(task_event_array "$task")
   status=$(task_status "$events")
   [[ $status != closed ]] || die "$task is closed"
   # Every task has its Discord thread before any worker starts (bin/team-thread).

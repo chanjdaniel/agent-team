@@ -9,8 +9,8 @@
 # exported, so every script and every session it starts runs with that one PATH. It sets
 # TEAM_HOME (unless already set, the first line of ~/.config/agent-team/home under
 # HOME) and TEAM_HOME_FROM, answers --help with the calling script's header (then runs
-# the script's help_more, if it defined one before sourcing), and provides die, usage_error, team_project, ledger_jq, ledger_append,
-# task_events, known_task_events, open_task_events, task_status, task_worktrees, script_place_refusal, local_path,
+# the script's help_more, if it defined one before sourcing), and provides die, usage_error, team_project, ledger_jq, json_vars, ledger_append,
+# task_events, task_event_array, known_task_events, open_task_events, task_status, task_worktrees, script_place_refusal, local_path,
 # archive_left_out, rsync_rule, archive_task_dir, machine_name, os_release, team_os, tool_dirs,
 # team_tool_path, fence_reason, offline_hold, lease_refusal, worker_refusal, toolkit_refusal, lease_gate, worktree_changes, same_path, bounded, docker_bounded, docker_silence, trust_probe,
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin,
@@ -93,15 +93,44 @@ ledger_jq() {
     "include \"ledger\"; \$contract[0] as \$contract | $1" "${@:2}"
 }
 
+# Read several values of one JSON document on stdin into shell variables, in one jq run: each
+# <name> is set to its <filter>'s first output as text (a string as it is, null or no output
+# empty, anything else compact JSON); the options after -- go to jq (-s, --arg, -L). When jq
+# fails (input that is not JSON), it fails with jq's status and sets nothing. The caller's local
+# variables are set, so long as none is named _jv_*:
+# json_vars <name>=<filter>... [-- <jq option>...] <<<"$json"
+json_vars() {
+  local _jv_filter='' _jv_out _jv_i
+  local -a _jv_names=() _jv_values=()
+  while (($#)) && [[ $1 != -- ]]; do
+    [[ $1 =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.+)$ ]] || usage_error "json_vars: '$1' is not <name>=<jq filter>"
+    _jv_names+=("${BASH_REMATCH[1]}")
+    _jv_filter+="${_jv_filter:+, }([${BASH_REMATCH[2]}] | first | if . == null then \"\" elif type == \"string\" then . else tojson end)"
+    shift
+  done
+  (($# == 0)) || shift
+  _jv_out=$(jq -r "[$_jv_filter] | @sh" "$@") || return
+  eval "_jv_values=($_jv_out)"
+  for _jv_i in "${!_jv_names[@]}"; do
+    printf -v "${_jv_names[_jv_i]}" '%s' "${_jv_values[_jv_i]}"
+  done
+}
+
 # Append one JSON object as one line to the ledger, under an exclusive lock beside it, so two
 # scripts never interleave a line. The event must meet the ledger contract, and the calling
 # script must be its kind's writer. With <seconds>, the lock is waited on at most that long, and
 # a lock still held then is a refusal: ledger_append <event> [<seconds>]
 ledger_append() {
-  local line problems lock_wait=()
-  line=$(jq -ce 'select(type == "object")' <<<"$1") || die "not a JSON object for the ledger: $1"
-  [[ $line != *$'\n'* ]] || die "not one JSON object for the ledger: $1"
-  problems=$(ledger_jq '[append_problems($contract; $writer)] | join("; ")' -r --arg writer "${0##*/}" <<<"$line")
+  local out line problems lock_wait=()
+  # One jq run: the object's compact line, then its problems (none when it is not one object).
+  out=$(ledger_jq '[inputs | select(type == "object")]
+      | if length == 0 then "none" elif length > 1 then "many"
+        else (first | tojson), ([first | append_problems($contract; $writer)] | join("; ")) end' \
+    -nr --arg writer "${0##*/}" <<<"$1" 2>/dev/null) || die "not a JSON object for the ledger: $1"
+  line=${out%%$'\n'*} problems=''
+  [[ $out != *$'\n'* ]] || problems=${out#*$'\n'}
+  [[ $line != none ]] || die "not a JSON object for the ledger: $1"
+  [[ $line != many ]] || die "not one JSON object for the ledger: $1"
   [[ -z $problems ]] || die "refusing a ledger event: $problems"
   [[ -z ${2:-} ]] || lock_wait=(-w "$2")
   {
@@ -117,11 +146,21 @@ task_events() {
     jq -cR --arg task "$1" 'fromjson? | select(type == "object" and .task == $task)' "$TEAM_HOME/ledger.jsonl"
 }
 
+# A task's events as one compact JSON array in ledger order, [] when it has none, in one jq run:
+# task_event_array T<n>
+task_event_array() {
+  if [[ -e $TEAM_HOME/ledger.jsonl ]]; then
+    jq -cnR --arg task "$1" '[inputs | fromjson? | select(type == "object" and .task == $task)]' "$TEAM_HOME/ledger.jsonl"
+  else
+    echo '[]'
+  fi
+}
+
 # A task's events as one JSON array in ledger order, refusing a task the ledger has no events for:
 # known_task_events T<n>
 known_task_events() {
   local events
-  events=$(task_events "$1" | jq -cs .)
+  events=$(task_event_array "$1")
   [[ $events != '[]' ]] || die "unknown task $1: the ledger has no events for it"
   printf '%s\n' "$events"
 }
@@ -130,7 +169,7 @@ known_task_events() {
 # no opened event, or a closed one: open_task_events T<n>
 open_task_events() {
   local events
-  events=$(task_events "$1" | jq -cs .)
+  events=$(task_event_array "$1")
   case $(task_status "$events") in
     open) printf '%s\n' "$events" ;;
     closed) die "$1 is closed" ;;
@@ -326,15 +365,25 @@ machine_name() {
 
 # A value of the os-release file, unquoted: os_release <key>. TEAM_OS_RELEASE names the file to
 # read instead of /etc/os-release (the tests' seam).
+# Read with builtins, as it runs at every script's start (team_os); a file it cannot read fails
+# with 2, as sed did.
 os_release() {
-  sed -n "s/^$1=//p" "${TEAM_OS_RELEASE:-/etc/os-release}" 2>/dev/null | head -n1 |
-    sed -E "s/^\"(.*)\"\$/\\1/; s/^'(.*)'\$/\\1/"
+  local file=${TEAM_OS_RELEASE:-/etc/os-release} line value
+  [[ -f $file && -r $file ]] || return 2
+  while IFS= read -r line || [[ -n $line ]]; do
+    [[ $line == "$1="* ]] || continue
+    value=${line#"$1="}
+    if [[ $value =~ ^\"(.*)\"$ ]]; then value=${BASH_REMATCH[1]}; fi
+    if [[ $value =~ ^\'(.*)\'$ ]]; then value=${BASH_REMATCH[1]}; fi
+    printf '%s\n' "$value"
+    return 0
+  done <"$file"
 }
 
 # This machine's OS as the team names it: arch (Arch Linux, or a derivative whose ID_LIKE names
 # arch, like EndeavourOS) or macos; fails on any other.
 team_os() {
-  case $(uname -s) in
+  case ${TEAM_KERNEL:-$(uname -s)} in
     Darwin) echo macos ;;
     Linux) [[ $(os_release ID) == arch || " $(os_release ID_LIKE) " == *" arch "* ]] && echo arch ;;
     *) return 1 ;;

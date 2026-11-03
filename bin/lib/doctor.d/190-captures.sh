@@ -17,7 +17,7 @@ for dir in "$TEAM_HOME"/tasks/T*/ui "$TEAM_HOME"/tasks/T*/scratch*/ui; do
   [[ -d $dir && -n $(find "$dir" -mindepth 1 -print -quit) ]] || continue
   task=${dir#"$TEAM_HOME"/tasks/} task=${task%%/*}
   # One in an archive (scratch*/ui) is left whatever its task; archives leave ui/ out.
-  [[ $dir == */scratch*/ui || $(task_status "$(task_events "$task" | jq -cs .)") != open ]] && left+=("$dir")
+  [[ $dir == */scratch*/ui || $(task_status "$(task_event_array "$task")") != open ]] && left+=("$dir")
 done
 if ((${#left[@]})); then
   verb=are

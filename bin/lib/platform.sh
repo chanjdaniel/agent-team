@@ -11,7 +11,8 @@
 #   PLATFORM_FIX, with whatever GNU tools there are put first on PATH. TEAM_BREW_PREFIX is the
 #   prefix found and TEAM_PLATFORM_FRONT the directories put first ("" for each on Linux), which
 #   the library's tool directories follow. TEAM_CALLER_PATH is PATH as the script was started
-#   with, before this file or the library changed it.
+#   with, before this file or the library changed it. TEAM_KERNEL is what `uname -s` printed,
+#   read once here for the library's team_os too.
 # - TEAM_PATH_FIRST, when set, is a directory taken off PATH here and put back first by the
 #   library's team_tool_path, ahead of the GNU tools and the tool directories: a test seam for a
 #   directory of stand-ins that must win over the machine's own tools (tests/compaction-drill's
@@ -48,7 +49,8 @@ team_path_without_first() {
 }
 team_platform_path() {
   team_path_without_first
-  [[ $(uname -s) == Darwin ]] || return 0
+  TEAM_KERNEL=$(uname -s)
+  [[ $TEAM_KERNEL == Darwin ]] || return 0
   local prefix=${HOMEBREW_PREFIX:-} dir
   if [[ -z $prefix ]]; then
     for dir in /opt/homebrew /usr/local; do

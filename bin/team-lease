@@ -155,54 +155,58 @@ read_remote() {
   LEASE=$(lease_at "$TIP") || exit 1
 }
 
-# The since of the state file <file> as JSON: null when there is none, else its since, or its
-# modification time when it has no readable since.
-since() {
-  if [[ ! -e $1 ]]; then
-    echo null
-  else
-    jq -ce '.since | strings' "$1" 2>/dev/null || date -u -r "$1" +%FT%TZ | jq -R .
-  fi
-}
-
-# The lease with what this machine knows of it, as status prints it: describe <lease> <confirmed>
+# The lease with what this machine knows of it, as status prints it, in DESC; each of its fields as
+# text, empty for null, in FIELD; and from the record this machine last wrote, the epoch it wrote
+# while it held the lease (empty when it did not, or there is none) in WRITTEN_EPOCH and whether it
+# names this machine (true or false) in WRITTEN_MINE. One jq run reads the lease, the record and
+# the fenced and offline state files, a file's since being its modification time when it has none
+# readable: describe <lease> <confirmed>
+DESC='' WRITTEN_EPOCH='' WRITTEN_MINE=''
+declare -A FIELD=()
 describe() {
-  local written
-  written=$(jq -c 'select(type == "object")' "$record" 2>/dev/null) || written=null
-  jq -c --arg machine "$machine" --argjson confirmed "$2" --argjson written "${written:-null}" \
-    --argjson fenced "$(since "$state/fenced")" --argjson offline "$(since "$state/offline")" '
-    (if .renewed_at then now - (.renewed_at | fromdateiso8601) else null end) as $age
+  local name file out
+  local -a files=()
+  for name in record fenced offline; do
+    case $name in record) file=$record ;; *) file=$state/$name ;; esac
+    if [[ -f $file ]]; then
+      files+=(--rawfile "$name" "$file")
+      # A since that cannot be read is the file's modification time.
+      [[ $name == record ]] || files+=(--arg "${name}_mtime" "$(date -u -r "$file" +%FT%TZ)")
+    else
+      files+=(--argjson "$name" null)
+      [[ $name == record ]] || files+=(--argjson "${name}_mtime" null)
+    fi
+  done
+  out=$(jq -r --arg machine "$machine" --argjson confirmed "$2" "${files[@]}" '
+    def since($raw; $mtime): if $raw == null then null else ($raw | try (fromjson | .since | strings) catch null) // $mtime end;
+    ($record | if . == null then null else try (fromjson | objects) catch null end) as $written
+    | (if .renewed_at then now - (.renewed_at | fromdateiso8601) else null end) as $age
     | {holder, epoch, state, taken_at, renewed_at, ttl_minutes, stolen_from,
        stale: (.state == "held" and $age != null and $age > .ttl_minutes * 60),
        age_minutes: (if $age then $age / 60 | floor else null end),
        mine: (.state == "held" and .holder == $machine),
        lost: ($written != null and $written.holder == $machine and $written.state == "held"
          and (.holder != $machine or .epoch > $written.epoch)),
-       fenced: $fenced, offline_since: $offline, confirmed: $confirmed}' <<<"$1"
-}
-
-# One field of DESC as text, empty for null: field <name>
-field() {
-  jq -r --arg name "$1" '.[$name] | if . == null then "" else tostring end' <<<"$DESC"
+       fenced: since($fenced; $fenced_mtime), offline_since: since($offline; $offline_mtime), confirmed: $confirmed}
+    | @sh "DESC=\(tojson)",
+      (to_entries[] | @sh "FIELD[\(.key)]=\(.value | if . == null then "" else tostring end)"),
+      @sh "WRITTEN_EPOCH=\($written | if . != null and .holder == $machine then .epoch | tostring else "" end)",
+      @sh "WRITTEN_MINE=\($written != null and $written.holder == $machine)"' <<<"$1") || exit 1
+  FIELD=()
+  eval "$out"
 }
 
 # Why this machine does not hold the lease in DESC, one line; nothing when it does.
 not_held() {
-  local holder epoch fenced written=''
-  holder=$(field holder) epoch=$(field epoch) fenced=$(field fenced)
-  if [[ -f $record ]]; then
-    written=$(jq -r --arg machine "$machine" 'select(.holder == $machine) | .epoch' "$record" 2>/dev/null) || written=''
-  fi
-  if [[ -n $fenced ]]; then
+  local holder=${FIELD[holder]} epoch=${FIELD[epoch]} written=$WRITTEN_EPOCH
+  if [[ -n ${FIELD[fenced]} ]]; then
     echo "$machine is $(fence_reason); team-lease take clears it"
-  elif [[ $(field state) == released ]]; then
+  elif [[ ${FIELD[state]} == released ]]; then
     echo "the lease is released (last held by ${holder:-nobody}, epoch $epoch); take it with team-lease take"
   elif [[ $holder != "$machine" ]]; then
     local verb="does not hold"
-    if [[ -f $record ]] && jq -e --arg machine "$machine" '.holder == $machine' "$record" >/dev/null 2>&1; then
-      verb="no longer holds"
-    fi
-    echo "$machine $verb the lease: $holder holds it (epoch $epoch, renewed $(field age_minutes) minutes ago)"
+    [[ $WRITTEN_MINE != true ]] || verb="no longer holds"
+    echo "$machine $verb the lease: $holder holds it (epoch $epoch, renewed ${FIELD[age_minutes]} minutes ago)"
   elif [[ -z $written ]]; then
     echo "the lease names $machine at epoch $epoch, but this machine has no record of taking it; run team-lease take to take it again"
   elif [[ $written != "$epoch" ]]; then
@@ -240,13 +244,13 @@ push_lease() {
 # Ask on the controlling terminal for the holder's name, refusing unless it is typed exactly.
 confirm_steal() {
   local tty=${TEAM_LEASE_TTY:-/dev/tty} tty_in typed='' holder
-  holder=$(field holder)
+  holder=${FIELD[holder]}
   if ! { exec {tty_in}<"$tty"; } 2>/dev/null; then
     die "no terminal to confirm the steal on ($tty); steal only from your own terminal"
   fi
   {
-    printf 'The lease: holder: %s, epoch %s, renewed %s (%s minutes ago, %s).\n' "$holder" "$(field epoch)" \
-      "$(field renewed_at)" "$(field age_minutes)" "$(freshness)"
+    printf 'The lease: holder: %s, epoch %s, renewed %s (%s minutes ago, %s).\n' "$holder" "${FIELD[epoch]}" \
+      "${FIELD[renewed_at]}" "${FIELD[age_minutes]}" "$(freshness)"
     printf "Type the holder's name to steal the lease: "
   } >>"$tty"
   IFS= read -r typed <&"$tty_in" || true
@@ -255,7 +259,7 @@ confirm_steal() {
 }
 
 freshness() {
-  if [[ $(field stale) == true ]]; then echo stale; else echo fresh; fi
+  if [[ ${FIELD[stale]} == true ]]; then echo stale; else echo fresh; fi
 }
 
 # The lease as a take writes it: new_lease <epoch> <stolen from, or empty>
@@ -270,9 +274,9 @@ new_lease() {
 stolen_confirmed=''
 decide_take() {
   local holder epoch next
-  holder=$(field holder) epoch=$(field epoch)
-  if [[ $(field state) == held && $holder != "$machine" ]]; then
-    ((steal)) || die "the lease is held by $holder (epoch $epoch), $(freshness): renewed $(field age_minutes) minutes ago;" \
+  holder=${FIELD[holder]} epoch=${FIELD[epoch]}
+  if [[ ${FIELD[state]} == held && $holder != "$machine" ]]; then
+    ((steal)) || die "the lease is held by $holder (epoch $epoch), $(freshness): renewed ${FIELD[age_minutes]} minutes ago;" \
       "release it there first (team-lease release, or a handoff), or steal it with team-lease take --steal in your own terminal"
     # Asked once per holder: a re-read after a lost push asks again only if the holder changed.
     [[ $stolen_confirmed == "$holder" ]] || confirm_steal
@@ -283,7 +287,7 @@ decide_take() {
     DONE="$machine holds the lease, epoch $next, stolen from $holder"
     return
   fi
-  if [[ $(field state) == held ]]; then
+  if [[ ${FIELD[state]} == held ]]; then
     NEW=$(jq -c --arg now "$NOW" --argjson ttl "$TTL_MINUTES" '.renewed_at = $now | .ttl_minutes = $ttl' <<<"$LEASE")
     next=$epoch
   else
@@ -299,9 +303,9 @@ decide_take() {
 # fence hook blocks at once, then the team's sessions, then the heartbeat.
 fence() {
   local holder epoch seen sessions id name stopped=() problems=() out outcome
-  holder=$(field holder) epoch=$(field epoch)
+  holder=${FIELD[holder]} epoch=${FIELD[epoch]}
   seen="$holder holds it (epoch $epoch)"
-  [[ $(field state) == held ]] || seen="$holder released it (epoch $epoch)"
+  [[ ${FIELD[state]} == held ]] || seen="$holder released it (epoch $epoch)"
   jq -n --arg holder "$holder" --argjson epoch "$epoch" '{since: (now | floor | todate), holder: $holder, epoch: $epoch}' \
     >"$state/fenced.$$" || exit 1
   mv -f "$state/fenced.$$" "$state/fenced"
@@ -340,29 +344,29 @@ fence() {
 
 decide_renew() {
   local why
-  [[ $(field lost) != true ]] || fence
+  [[ ${FIELD[lost]} != true ]] || fence
   why=$(not_held)
   [[ -z $why ]] || die "$why"
   NEW=$(jq -c --arg now "$NOW" --argjson ttl "$TTL_MINUTES" '.renewed_at = $now | .ttl_minutes = $ttl' <<<"$LEASE")
-  MESSAGE="lease: $machine renew, epoch $(field epoch)"
-  DONE="$machine renewed the lease, epoch $(field epoch)"
+  MESSAGE="lease: $machine renew, epoch ${FIELD[epoch]}"
+  DONE="$machine renewed the lease, epoch ${FIELD[epoch]}"
 }
 
 decide_release() {
   local why
-  if [[ $(field state) == released ]]; then
-    if [[ $(field epoch) == 0 ]]; then
+  if [[ ${FIELD[state]} == released ]]; then
+    if [[ ${FIELD[epoch]} == 0 ]]; then
       echo "the lease is already released (never taken)"
     else
-      echo "the lease is already released (last held by $(field holder), epoch $(field epoch))"
+      echo "the lease is already released (last held by ${FIELD[holder]}, epoch ${FIELD[epoch]})"
     fi
     exit 0
   fi
   why=$(not_held)
   [[ -z $why ]] || die "$why"
   NEW=$(jq -c '.state = "released"' <<<"$LEASE")
-  MESSAGE="lease: $machine release, epoch $(field epoch)"
-  DONE="$machine released the lease, epoch $(field epoch)"
+  MESSAGE="lease: $machine release, epoch ${FIELD[epoch]}"
+  DONE="$machine released the lease, epoch ${FIELD[epoch]}"
 }
 
 case $command in
@@ -374,7 +378,7 @@ case $command in
       TIP=$(home_git rev-parse -q --verify refs/remotes/origin/lease) || TIP=''
       LEASE=$(lease_at "$TIP") || exit 1
     fi
-    DESC=$(describe "$LEASE" "$confirmed")
+    describe "$LEASE" "$confirmed"
     if ((json)); then
       jq . <<<"$DESC"
     else
@@ -385,15 +389,15 @@ case $command in
     ;;
   check)
     read_remote || unreachable "$REASON" "nothing changed"
-    DESC=$(describe "$LEASE" true)
+    describe "$LEASE" true
     why=$(not_held)
     [[ -z $why ]] || die "$why"
-    echo "$machine holds the lease, epoch $(field epoch)"
+    echo "$machine holds the lease, epoch ${FIELD[epoch]}"
     ;;
   take | renew | release)
     for ((attempt = 1; attempt <= ATTEMPTS; attempt++)); do
       read_remote || unreachable "$REASON" "nothing changed"
-      DESC=$(describe "$LEASE" true)
+      describe "$LEASE" true
       NOW=$(date -u +%FT%TZ)
       "decide_$command"
       if push_lease "$NEW" "$MESSAGE"; then
