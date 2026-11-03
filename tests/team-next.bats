@@ -792,11 +792,31 @@ on_origin() {
   live b0000001 120000
   run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
   assert_contains "$output" "logged review verdict=pass head=$sha"
-  assert_equal "$(tail -n 1 <<<"$output")" \
-    "merge base: $url is 3 behind main, and merges it cleanly: run team-catch-up T7, which needs no rereview (step 6)"
+  assert_equal "$(tail -n 2 <<<"$output")" \
+    "merge base: $url is 3 behind main, and merges it cleanly: run team-catch-up T7, which needs no rereview (step 6)
+then, once the checks pass on its merge: merge ask: $url at $sha"
   # It changed no branch, worktree or index: the merge is team-catch-up's to make.
   assert_equal "$(git -C "$wt" rev-parse HEAD)" "$sha"
   assert_equal "$(git -C "$primary" status --porcelain)" ""
+  assert_equal "$(outside_calls)" ""
+}
+
+@test "a pass on a PR behind its base that merges it cleanly still says the review's before notes, guarded areas and words" {
+  on_origin
+  sed -i 's/^merge_method = "merge"/&\nmerge_with_plan = true/' "$TEAM_HOME/projects.toml"
+  event merge-preapproved '{project: "proj", ask: "plan", discord_message: "1563000000000000045", scope: ["one.txt"]}'
+  reviewing "$sha"
+  pr_on_github "$sha" 3
+  live b0000001 120000
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
+  assert_equal "$(tail -n 2 <<<"$output")" \
+    "merge base: $url is 3 behind main, and merges it cleanly: run team-catch-up T7, which needs no rereview (step 6)
+then, once the checks pass on its merge: merge pre-approved: run team-merge T7 for $url at $sha"
+  launched r0000003 brief-review '["browser"]' reviewer
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url ${counts/note-before:0/note-before:2} before=4,5 guarded=ci"
+  assert_equal "$(tail -n 2 <<<"$output")" \
+    "merge base: $url is 3 behind main, and merges it cleanly: run team-catch-up T7, which needs no rereview (step 6)
+then, once the checks pass on its merge: merge ask: $url at $sha; the review found guarded areas: ci, so the plan-time word does not hold; queue before notes 4 and 5 as follow-ups and say where each went"
   assert_equal "$(outside_calls)" ""
 }
 
