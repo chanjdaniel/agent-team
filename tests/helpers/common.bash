@@ -188,10 +188,11 @@ sandbox() {
 
 # Fail unless TEAM_HOME and HOME are inside this test's temporary directory, so no test can
 # reach the real team home or the real HOME, each path judged as `realpath -m` resolves it.
-# run_bin guards every script a test runs, and bats traces each command a test's functions run at
-# about a tenth of a millisecond, more than a realpath costs, so the sandbox's own case is one
-# test that starts no process: each path one part below the sandbox's resolved directory, neither
-# . nor .. nor a symlink, which realpath would leave as it is.
+# run_bin guards every script a test runs, so the sandbox's own case is one test that starts no
+# process: each path one part below the sandbox's resolved directory, neither . nor .. nor a
+# symlink, which realpath would leave as it is. One test, since bats traces each command a test's
+# functions run, at about a tenth of a millisecond: a builtin walk of a deeper path costs more
+# than the realpath it would spare.
 guard_sandbox() {
   local root=${SANDBOX_ROOT:-} var path
   [[ -n $root && $root == "$BATS_TEST_TMPDIR" ]] || root=$(realpath "$BATS_TEST_TMPDIR")
