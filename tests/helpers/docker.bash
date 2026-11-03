@@ -70,8 +70,9 @@
 # shellcheck shell=bash
 
 # docker_stub [<worktree>]: install the stub docker on the machine state of the fixtures, the
-# team stack's worktree label being <worktree> (default $HOME/worktree).
+# team stack's worktree label being <worktree> (default $HOME/worktree), untraced.
 docker_stub() {
+  [[ -n ${UNTRACED_DEBUG+set} ]] || { untraced docker_stub "$@"; return; }
   export DOCKER_STATE=$BATS_TEST_TMPDIR/docker
   stub_command docker
   mkdir -p "$DOCKER_STATE"

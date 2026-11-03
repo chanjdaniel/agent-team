@@ -44,3 +44,58 @@ FIXTURE
   assert_equal "$(git -C "$output" rev-parse HEAD)" "$(git -C "$BATS_TEST_TMPDIR/origin/shop.git" rev-parse dev)"
   assert_equal "$(git -C "$output" log -1 --format='%an <%ae>')" "Team Test <team-test@example.invalid>"
 }
+
+@test "untraced returns its command's status, for a function and a command, with the trap lifted only inside" {
+  local before status
+  before=$(trap -p DEBUG)
+  assert_contains "$before" bats_debug_trap
+  probe() { PROBE_TRAP=$(trap -p DEBUG) && return 3; }
+  status=0
+  untraced probe || status=$?
+  assert_equal "$status" 3
+  assert_equal "$PROBE_TRAP" ""
+  assert_equal "$(trap -p DEBUG)" "$before"
+  status=0
+  untraced bash -c 'exit 4' || status=$?
+  assert_equal "$status" 4
+  untraced true
+  assert_equal "$(untraced printf '%s|' 'a b' c)" 'a b|c|'
+  # Within untraced, untraced runs its command as it is, and the trap comes back only at the end.
+  status=0
+  untraced untraced probe || status=$?
+  assert_equal "$status" 3
+  assert_equal "$PROBE_TRAP" ""
+  assert_equal "$(trap -p DEBUG)" "$before"
+}
+
+@test "a failure inside untraced fails the test at the line that called it, and a later failure at its own line" {
+  local dir=$BATS_TEST_TMPDIR/fixture
+  mkdir -p "$dir/tests"
+  ln -s "$REPO_ROOT/bin" "$dir/bin"
+  ln -s "$REPO_ROOT/tests/helpers" "$dir/tests/helpers"
+  cat >"$dir/tests/fixture.bats" <<'FIXTURE'
+load helpers/common
+fails() { return 1; }
+@test "inside" {
+  true
+  untraced fails
+  true
+}
+@test "after" {
+  untraced true
+  untraced fails || true
+  false
+}
+FIXTURE
+  run -1 "$REPO_ROOT/tests/vendor/bats-core/bin/bats" "$dir/tests/fixture.bats"
+  assert_equal "$(grep -E '^(not )?ok|line [0-9]+|failed' <<<"$output" | sed -E 's#[^ ]*/(tests/[^ ]*)#\1#; s#(common\.bash), line [0-9]+#\1#')" "$(cat <<'TAP'
+not ok 1 inside
+# (from function `untraced' in file tests/helpers/common.bash,
+#  in test file tests/fixture.bats, line 5)
+#   `untraced fails' failed
+not ok 2 after
+# (in test file tests/fixture.bats, line 11)
+#   `false' failed
+TAP
+)"
+}

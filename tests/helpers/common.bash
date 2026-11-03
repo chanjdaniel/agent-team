@@ -5,6 +5,10 @@
 # cgroups or 1Password. A test of a script that runs Docker adds a stub docker with `load
 # helpers/docker` (tests/helpers/docker.bash documents it), and never reaches this machine's
 # Docker, which DOCKER_HOST points away from.
+# Bats runs a DEBUG trap before every command of the test's own shell, its functions included,
+# which makes code that loops there (a matrix of commands, a parse in bash) 20 or more times
+# slower than the same code in a script: wrap such code in `untraced` (below), as the deny-rule
+# model and the sandbox do, never around a `run`, whose own bookkeeping needs the trap.
 # shellcheck shell=bash
 
 bats_require_minimum_version 1.5.0
@@ -16,6 +20,24 @@ source "$BATS_TEST_DIRNAME/../bin/lib/platform.sh"
 # The checkout under test, whichever worktree it is.
 REPO_ROOT=$(cd "$BATS_TEST_DIRNAME/.." && pwd)
 FAKE_DISCORD_TOKEN=fake-discord-token-for-tests
+
+# untraced <command> [<argument>...]: run <command> in this shell with bats's DEBUG trap lifted,
+# put the trap back after, and return the command's status. A command that fails where `set -e`
+# holds still fails the test, reported at the line that called untraced; one called within
+# untraced runs as it is, so a helper may route itself through it on every call:
+# `[[ -n ${UNTRACED_DEBUG+set} ]] || { untraced <helper> "$@"; return; }`.
+untraced() {
+  if [[ -n ${UNTRACED_DEBUG+set} ]]; then
+    "$@"
+    return
+  fi
+  local UNTRACED_DEBUG
+  UNTRACED_DEBUG=$(trap -p DEBUG)
+  trap - DEBUG; "$@"
+  set -- "$?"
+  eval "$UNTRACED_DEBUG"
+  return "$1"
+}
 
 # macOS assesses every new executable file on its first run, a quarter of a second each, so a
 # test that wrote its stubs or copied bin/ afresh spent most of its time waiting on that. The
@@ -57,8 +79,9 @@ copy_bin() {
   link_shared bin "$REPO_ROOT/bin" "$1"
 }
 
-# Build the test's sandbox and point TEAM_HOME, HOME and PATH into it.
+# Build the test's sandbox and point TEAM_HOME, HOME and PATH into it, untraced.
 sandbox() {
+  [[ -n ${UNTRACED_DEBUG+set} ]] || { untraced sandbox "$@"; return; }
   # macOS keeps temporary directories under /var, a symlink to /private/var, and the scripts see
   # the resolved path (from pwd, git or realpath): resolve it once, so every path a test builds
   # from BATS_TEST_TMPDIR is the one the scripts print, on Linux and macOS alike.
@@ -548,8 +571,10 @@ backlog_story() {
 }
 
 # add_loose <n> [--unreachable]: <n> new loose blobs in the team home, kept reachable by a commit
-# of them (one more tree and commit) at a refs/keep/ ref of their own, or with --unreachable, none.
+# of them (one more tree and commit) at a refs/keep/ ref of their own, or with --unreachable, none;
+# untraced, since it loops <n> times.
 add_loose() {
+  [[ -n ${UNTRACED_DEBUG+set} ]] || { untraced add_loose "$@"; return; }
   local dir i shas tree commit
   dir=$(mktemp -d "$BATS_TEST_TMPDIR/loose.XXXXXX")
   for ((i = 1; i <= $1; i++)); do echo "$dir $i" >"$dir/$i"; done
@@ -740,8 +765,9 @@ rule_text_matches() {
 }
 
 # Whether one of the settings file <file>'s Bash deny rules matches <command> in one of its
-# deny_forms, as rule_text_matches says: denied_in <file> <command>
+# deny_forms, as rule_text_matches says, the whole model untraced: denied_in <file> <command>
 denied_in() {
+  [[ -n ${UNTRACED_DEBUG+set} ]] || { untraced denied_in "$@"; return; }
   local pattern form forms
   forms=$(deny_forms "$2")
   while IFS= read -r pattern; do

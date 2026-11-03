@@ -155,10 +155,12 @@ check_leases() {
 
 # The lines of the registered project <name> (see the header).
 check_project() {
-  local project=$1 facts path shown repo url top common origin task_dir exclude out rc pool slot
-  local wrong=() registered=() unpushed=() found=() branch count
-  facts=$(team_project "$project")
-  path=$(jq -r .path <<<"$facts") repo=$(jq -r .repo <<<"$facts") task_dir=$(jq -r .task_dir <<<"$facts")
+  local project=$1 facts path shown repo url top common origin task_dir delivery provider return_cmd exclude out rc pool slot
+  local wrong=() registered=() unpushed=() found=() fields=() branch count
+  project_registry "$project"
+  facts=$registry_reply
+  mapfile -d '' -t fields < <(jq --raw-output0 '.path, .repo, .task_dir, .delivery, .pool.provider, .pool.return' <<<"$facts")
+  path=${fields[0]} repo=${fields[1]} task_dir=${fields[2]} delivery=${fields[3]} provider=${fields[4]} return_cmd=${fields[5]}
   shown=$(tilde "$path") url=https://github.com/$repo.git
 
   # checkout
@@ -198,7 +200,7 @@ check_project() {
   fi
 
   # gate
-  if [[ $(jq -r .delivery <<<"$facts") == no-mistakes ]]; then
+  if [[ $delivery == no-mistakes ]]; then
     rc=0
     out=$(cd "$path" && bounded 30 no-mistakes status 2>&1 </dev/null) || rc=$?
     if ((rc == 127)); then
@@ -214,7 +216,7 @@ check_project() {
   fi
 
   # slots: a treehouse slot is <root>/<pool>/<n>/<folder>.
-  if [[ $(jq -r .pool.provider <<<"$facts") == treehouse ]]; then
+  if [[ $provider == treehouse ]]; then
     if [[ -z $origin ]]; then
       report "slots $project" FAIL "unknown, since treehouse names the pool from origin, which is missing" "the origin line's fix"
     else
@@ -236,8 +238,8 @@ check_project() {
   fi
 
   # leases: each slot the pool leases is an open task's worktree in this project.
-  if [[ $(jq -r .pool.provider <<<"$facts") == treehouse ]]; then
-    check_leases "$project" "$path" "$(jq -r .pool.return <<<"$facts")"
+  if [[ $provider == treehouse ]]; then
+    check_leases "$project" "$path" "$return_cmd"
   fi
 
   probe_trust "$project" "$path"
@@ -266,7 +268,8 @@ check_project() {
   fi
 }
 
-if projects=$(team_project --list 2>"$err"); then
+if project_registry --list 2>"$err"; then
+  projects=$registry_reply
   while IFS= read -r project; do check_project "$project"; done <<<"$projects"
 else
   report projects FAIL "$(first_error)" "fix what team-project names (team-project --check), then run team-doctor again"
