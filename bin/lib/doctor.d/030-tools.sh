@@ -12,6 +12,7 @@
 #               commit, with Go and make from their own tool lines.
 # shellcheck shell=bash
 # shellcheck disable=SC2034,SC2004,SC2154 # installed, an associative array of the doctor's, for the later checks; scratch, the doctor's
+# reads state from: 010-os.sh
 
 lock=$TEAM_LIB/tools.lock
 

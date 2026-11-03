@@ -8,6 +8,7 @@
 #               out while the team home line fails.
 # shellcheck shell=bash
 # shellcheck disable=SC2154 # home_ok and home_shown, from the team home check
+# reads state from: 080-team-home.sh
 
 if ((home_ok)); then
   mapfile -t fetch_specs < <(git -C "$TEAM_HOME" config --get-all remote.origin.fetch || true)

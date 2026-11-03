@@ -4,6 +4,7 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2154 # bin and err, the doctor's
 # shellcheck disable=SC2034 # holding, for the heartbeat check
+# reads state from: 070-machine.sh
 
 # team-lease needs the machine's name, whose own line says how to write it.
 rc=0

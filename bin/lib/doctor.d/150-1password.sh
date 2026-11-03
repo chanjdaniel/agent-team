@@ -3,6 +3,7 @@
 #               each secret to be pasted.
 # shellcheck shell=bash
 # shellcheck disable=SC2154 # os, from the os check
+# reads state from: 010-os.sh 030-tools.sh
 
 # op as its tool line found it, and the app by its path.
 app=/opt/1Password/1password

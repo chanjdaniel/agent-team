@@ -11,6 +11,7 @@
 #               stack_cap or memory_floor_gib left in it, which nothing reads any more.
 # shellcheck shell=bash
 # shellcheck disable=SC2154 # bin and err, the doctor's; os, from the os check
+# reads state from: 010-os.sh
 
 # The stack memory line, for the registered projects <projects> (one per line): whether full's
 # memory budget with nothing else running holds a stack of each, and what stack.json still sets

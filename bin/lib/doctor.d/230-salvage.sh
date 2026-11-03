@@ -7,6 +7,7 @@
 #               Passes when there is none.
 # shellcheck shell=bash
 # shellcheck disable=SC2154 # machine, from the machine check
+# reads state from: 070-machine.sh 220-lease.sh
 
 # On a fenced machine, each open task's worktree here holding what origin lacks. The salvage
 # goes to the team home's origin, as a snapshot does, since the project's may be public; a
