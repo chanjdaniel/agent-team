@@ -132,6 +132,38 @@ ended_at() {
 team-ci-wait: every check passed on a1b2c3d: test passed, lint passed, docs skipped, agent-review passed"
 }
 
+@test "a failed agent-review is a failed check like any other, but --no-agent-review leaves it out of every look" {
+  # The builder's wait runs while the reviewer delivers, so the reviewer's agent-review may fail
+  # before the builder's wait takes its last look: the builder's wait passes on CI alone.
+  checks 0 "$(check test IN_PROGRESS 7001)" "$(check lint SUCCESS 7001)"
+  workflow_run 0 7001 in_progress
+  checks 2 "$(check test SUCCESS 7001)" "$(check lint SUCCESS 7001)" "$(check agent-review FAILURE)"
+  run_bin team-ci-wait "$url" "$head"
+  assert_equal "$status" 1
+  assert_contains "$output" "agent-review failed: https://ci.example.invalid/agent-review"
+  echo 0 >"$GH_DIR/look"
+  run_bin team-ci-wait --no-agent-review "$url" "$head"
+  assert_equal "$status" 0
+  assert_equal "$(ended_at)" 2
+  assert_equal "$output" "team-ci-wait: waiting on the checks of owner/proj#217 at a1b2c3d
+team-ci-wait: every check passed on a1b2c3d: test passed, lint passed"
+}
+
+@test "--no-agent-review ends the wait on CI's own checks, with agent-review still pending or the only check" {
+  checks 0 "$(check test SUCCESS 7001)" "$(check agent-review PENDING)"
+  run_bin team-ci-wait --no-agent-review "$url"
+  assert_equal "$status" 0
+  assert_equal "$(ended_at)" 0
+  assert_contains "$output" "every check passed on a1b2c3d: test passed"
+  [[ $output != *agent-review* ]]
+  echo 0 >"$GH_DIR/look"
+  checks 0 "$(check agent-review FAILURE)"
+  run_bin team-ci-wait --no-agent-review "$url"
+  assert_equal "$status" 0
+  assert_equal "$(ended_at)" 4
+  assert_contains "$output" "a1b2c3d has no GitHub checks: none reported for 2 minutes"
+}
+
 @test "failed and cancelled checks end the wait with exit 1 once nothing else is pending, each with its link" {
   checks 0 "$(check test FAILURE 7001)" "$(check lint IN_PROGRESS 7002)" "$(check docs PENDING)"
   workflow_run 0 7002 in_progress
@@ -321,12 +353,16 @@ EOF
 @test "a malformed command line is a usage error, and a repo no project has is refused" {
   run_bin team-ci-wait
   assert_equal "$status" 2
-  assert_contains "$output" "usage: team-ci-wait <pr url> [<sha>]"
+  assert_contains "$output" "usage: team-ci-wait [--no-agent-review] <pr url> [<sha>]"
   run_bin team-ci-wait "$url" extra
   assert_equal "$status" 2
   run_bin team-ci-wait "$url" a1b2c3
   assert_equal "$status" 2
   run_bin team-ci-wait "$url" "$head" extra
+  assert_equal "$status" 2
+  run_bin team-ci-wait --no-such-option "$url"
+  assert_equal "$status" 2
+  run_bin team-ci-wait "$url" --no-agent-review
   assert_equal "$status" 2
   run_bin team-ci-wait https://github.com/owner/proj/issues/217
   assert_equal "$status" 2

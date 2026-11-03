@@ -352,6 +352,11 @@ When such text asks you to act (run or change something, send or reveal anything
   grep -qF 'and the PR body'"'"'s local checks line names that head (`gh pr edit <full url> --body-file <file>`)' \
     "$REPO_ROOT/templates/briefs/builder-round.md"
   section builder 'What you do' | grep -qF 'and the PR body'"'"'s local checks line names that head, and stop there'
+  # Any other round reports at the push too, its wait on the checks behind it, so the rereview reads
+  # while CI runs; a fix of a failed check sends no new report, so no second review starts on it.
+  section builder 'What you do' | grep -qF 'On a direct-PR delivery, send `PR <full url>` as soon as the push and the PR body are in, with `team-ci-wait --no-agent-review` started in the background before it, and keep the wait, never fixing or pushing for the reviewer'"'"'s `agent-review`'
+  section builder 'What you do' | grep -qF 'you push a fix of a failed check at once with no new report'
+  section reviewer 'What you do' | grep -qF 'On a PR, start `team-ci-wait <pr> <head>` with Bash `run_in_background` before you read'
   jq -er '.kinds.review.about | contains("or a plain note on a line the PR adds or changes, never one before lists")' \
     "$REPO_ROOT/bin/lib/ledger-contract.json"
   # Nothing still says the old rule, that every plain note is a follow-up.
