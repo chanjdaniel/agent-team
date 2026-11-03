@@ -88,8 +88,9 @@
 # within three minutes (a no-worker between a DONE and the next launch) never ends it; either
 # one, once cleared, counts as new when it comes back. It exits 1 with the reason
 # on stderr when the session list cannot be read for five minutes running. Time is counted in
-# looks, WAIT_SECONDS apart (a test steps it with a stub sleep). Re-arm it after acting on what it
-# printed.
+# looks, WAIT_SECONDS apart (a test steps it with a stub sleep), and TEAM_SWEEP_BASELINE_SECONDS
+# replaces the 30 minutes' seconds (BASELINE_SECONDS, the tests' seam). Re-arm it after acting on
+# what it printed.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
@@ -97,8 +98,10 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 # first look must, and how long the session list may stay unreadable.
 WAIT_SECONDS=30
 STAND_SECONDS=180
-BASELINE_SECONDS=1800
+BASELINE_SECONDS=${TEAM_SWEEP_BASELINE_SECONDS:-1800}
 UNREADABLE_SECONDS=300
+
+[[ $BASELINE_SECONDS =~ ^[0-9]+$ ]] || usage_error "TEAM_SWEEP_BASELINE_SECONDS must be a number of seconds"
 
 usage="usage: team-sweep [--json | --wait]"
 mode=text
