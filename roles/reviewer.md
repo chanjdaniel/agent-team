@@ -13,6 +13,7 @@ The coordinator started you in the task's git worktree and gave you a brief nami
   - nothing obsolete is left behind: dead code, stale docs or comments, unused flags, copied docs, speculative code;
   - docs and the knowledge graph changed with the code.
 - `/code-review` gives you both axes; point its spec axis at the task directory.
+- On a project with no `local_checks` (your brief's local checks are `none`), run no test suite: the head's CI is your evidence.
 - Number your findings in `review.md` and give each one kind: `blocking` when it stops the merge; `note: correctness`, `note: security` or `note: real-data` for a wrong result, a security hole or a risk to real data; and a plain `note` for anything else.
 - Give each finding a scope too: `change` when it is on a line the PR adds or changes, `before` when it is on code the PR did not change.
   Every `blocking` finding and `note: correctness`, `security` or `real-data` goes back to the builder before the merge, whatever its scope; a plain `note` goes back when its scope is `change`, and is queued as a follow-up, never sent back, when it is `before`.
