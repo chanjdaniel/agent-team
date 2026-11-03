@@ -9,7 +9,8 @@
 # While the PR's head is not <sha>, it keeps looking for a grace of 2 minutes from the first look
 # (GRACE_SECONDS), since GitHub may not show a push of a moment ago yet, and reads nothing else of
 # those looks but a merged or closed PR; the first look whose head is <sha> is "the first look"
-# below. TEAM_CI_WAIT_GRACE_SECONDS replaces the grace's seconds (the tests' seam).
+# below. TEAM_CI_WAIT_GRACE_SECONDS replaces the grace's seconds, and TEAM_CI_WAIT_DEADLINE_SECONDS
+# the deadline's 90 minutes (DEADLINE_SECONDS), in seconds (the tests' seams).
 # It looks every 30 s (WAIT_SECONDS), counting time in looks, so a test steps it with a stub
 # sleep. Each look reads the PR's state and head (gh pr view), its checks (gh pr checks), and,
 # once per run, the workflow run of each pending check whose link is an Actions job link
@@ -52,9 +53,10 @@ WAIT_SECONDS=30
 STUCK_SECONDS=300
 NO_CHECKS_SECONDS=120
 FAILING_SECONDS=300
-DEADLINE_SECONDS=5400
+DEADLINE_SECONDS=${TEAM_CI_WAIT_DEADLINE_SECONDS:-5400}
 GRACE_SECONDS=${TEAM_CI_WAIT_GRACE_SECONDS:-120}
 
+[[ $DEADLINE_SECONDS =~ ^[0-9]+$ ]] || usage_error "TEAM_CI_WAIT_DEADLINE_SECONDS must be a number of seconds"
 [[ $GRACE_SECONDS =~ ^[0-9]+$ ]] || usage_error "TEAM_CI_WAIT_GRACE_SECONDS must be a number of seconds"
 [[ $# -eq 1 || ($# -eq 2 && $2 =~ ^[0-9a-f]{7,40}$) ]] || usage_error "usage: team-ci-wait <pr url> [<sha>]"
 expected=${2:-}
@@ -187,9 +189,9 @@ while :; do
   fi
   if ((look_n * WAIT_SECONDS >= DEADLINE_SECONDS)); then
     if [[ -s $dir/look ]]; then
-      echo "team-ci-wait: $((DEADLINE_SECONDS / 60)) minutes, and checks still pending on ${first_head:0:7}: $(pending_text): run team-ci-wait again to wait on them, or report BLOCKED"
+      echo "team-ci-wait: $(span "$DEADLINE_SECONDS"), and checks still pending on ${first_head:0:7}: $(pending_text): run team-ci-wait again to wait on them, or report BLOCKED"
     else
-      echo "team-ci-wait: $((DEADLINE_SECONDS / 60)) minutes, and GitHub not read yet: $(cat "$dir/error"): run team-ci-wait again to wait, or report BLOCKED"
+      echo "team-ci-wait: $(span "$DEADLINE_SECONDS"), and GitHub not read yet: $(cat "$dir/error"): run team-ci-wait again to wait, or report BLOCKED"
     fi
     exit 75
   fi
