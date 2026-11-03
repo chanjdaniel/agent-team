@@ -74,15 +74,17 @@ q() {
 # A launched builder's session, c2000000-..., that starts team-ci-wait in the background (its result
 # at 10:00:05.500 announcing the id bgwatch01, as a string or as text blocks), calls <stopper> with
 # {<argument>: <id>} at 10:01:05 (its result 0.5 s later), ends its turn at 10:01:10 and idles until
-# the coordinator's message at 11:01:10: stopped_session <stopper> <argument> <id> [blocks]. Its time
-# row's keys, one per line, are in $keys.
+# the coordinator's message at 11:01:10: stopped_session <stopper> <argument> <id> [blocks [quoted]].
+# With quoted, a foreground cat at 10:00:30 (its result 1 s later) reads the watch's output, whose
+# text quotes the announcement again. Its time row's keys, one per line, are in $keys.
 stopped_session() {
   local projects=$HOME/.claude/projects/-home-dan-agent-team--claude-worktrees-1
   local session=c2000000-0000-4000-8000-000000000000
   rm -r "$HOME/.claude/projects"
   mkdir -p "$projects"
   printf '{"ts":"2026-10-20T09:00:00Z","task":"T1","event":"launch","role":"builder","session":"c2000000","worktree":"/home/dan/agent-team/.claude/worktrees/1","toolkits":[]}\n' >"$TEAM_HOME/ledger.jsonl"
-  jq -nc --arg session "$session" --arg stopper "$1" --arg argument "$2" --arg id "$3" --arg form "${4:-string}" '
+  jq -nc --arg session "$session" --arg stopper "$1" --arg argument "$2" --arg id "$3" --arg form "${4:-string}" \
+    --arg quoted "${5:-}" '
     "Command running in background with ID: bgwatch01. Output is being written to: /tmp/CONTENT-out" as $started
     | {type: "user", timestamp: "2026-10-20T10:00:00.000Z", sessionId: $session, message: {content: "CONTENT-brief"}},
     {type: "assistant", timestamp: "2026-10-20T10:00:05.000Z", sessionId: $session, requestId: "req_1",
@@ -91,6 +93,12 @@ stopped_session() {
     {type: "user", timestamp: "2026-10-20T10:00:05.500Z", sessionId: $session,
      message: {content: [{type: "tool_result", tool_use_id: "toolu_watch",
        content: (if $form == "blocks" then [{type: "text", text: $started}] else $started end)}]}},
+    (select($quoted == "quoted")
+     | {type: "assistant", timestamp: "2026-10-20T10:00:30.000Z", sessionId: $session, requestId: "req_q",
+        message: {stop_reason: "tool_use", content: [{type: "tool_use", id: "toolu_cat", name: "Bash",
+          input: {command: "cat /tmp/CONTENT-out"}}]}},
+       {type: "user", timestamp: "2026-10-20T10:00:31.000Z", sessionId: $session,
+        message: {content: [{type: "tool_result", tool_use_id: "toolu_cat", content: "CONTENT-log: \($started)"}]}}),
     {type: "assistant", timestamp: "2026-10-20T10:01:05.000Z", sessionId: $session, requestId: "req_2",
      message: {stop_reason: "tool_use", content: [{type: "tool_use", id: "toolu_stop", name: $stopper, input: {($argument): $id}}]}},
     {type: "user", timestamp: "2026-10-20T10:01:05.500Z", sessionId: $session,
@@ -731,6 +739,15 @@ wait message: 3600 1 3600"
   assert_equal "$keys" "bash team-ci-wait: 0.5 1 0.5
 model: 74 4 59.5
 tool KillBash: 0.5 1 0.5
+wait message: 3600 1 3600"
+}
+
+@test "a later foreground result quoting a background call's announcement leaves the stop ending the background call" {
+  stopped_session TaskStop task_id bgwatch01 string quoted
+  assert_equal "$keys" "bash cat: 1 1 1
+bash team-ci-wait: 0.5 1 0.5
+model: 73 5 34
+tool TaskStop: 0.5 1 0.5
 wait message: 3600 1 3600"
 }
 
