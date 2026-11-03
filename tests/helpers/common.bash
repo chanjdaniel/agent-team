@@ -48,29 +48,52 @@ untraced() {
 # shared <name> [<source>]: the path of the run's read-only <name>, made the first time from
 # <source> (a file or a directory, copied) or, without one, from stdin as an executable.
 shared() {
+  shared_make "$@"
+  echo "$BATS_RUN_TMPDIR/shared/$1"
+}
+
+# shared_make <name> [<source>]: make the run's read-only <name> as shared does, printing nothing,
+# for a caller that names its path itself and so needs no subshell to read it.
+shared_make() {
   local dir=$BATS_RUN_TMPDIR/shared new
-  if [[ ! -e $dir/$1 ]]; then
-    mkdir -p "$dir/$(dirname "$1")"
-    new=$(mktemp -d "$dir/.new.XXXXXX")
-    if (($# > 1)); then cp -R "$2" "$new/it"; else cat >"$new/it" && chmod +x "$new/it"; fi
-    find "$new/it" -type f -exec chmod a-w {} +
-    # A file or directory another test made meanwhile stays: either is the same.
-    mv -T "$new/it" "$dir/$1" 2>/dev/null || true
-    rm -rf "$new"
-  fi
-  echo "$dir/$1"
+  [[ ! -e $dir/$1 ]] || return 0
+  mkdir -p "$dir/$(dirname "$1")"
+  new=$(mktemp -d "$dir/.new.XXXXXX")
+  if (($# > 1)); then cp -R "$2" "$new/it"; else cat >"$new/it" && chmod +x "$new/it"; fi
+  find "$new/it" -type f -exec chmod a-w {} +
+  # A file or directory another test made meanwhile stays: either is the same.
+  mv -T "$new/it" "$dir/$1" 2>/dev/null || true
+  rm -rf "$new"
 }
 
 # link_shared <name> <source> <dest>: <dest> as `cp -R <source> <dest>` makes it, but each file
 # a hard link to the run's shared copy <name> of <source>.
 link_shared() {
-  cp -Rl "$(shared "$1" "$2")" "$3"
+  shared_make "$1" "$2"
+  cp -Rl "$BATS_RUN_TMPDIR/shared/$1" "$3"
 }
 
 # stub_command <cmd>...: each <cmd> on the sandbox's PATH is the logging stub, tests/helpers/stub.
 stub_command() {
   local cmd
-  for cmd; do ln -f "$(shared stub "$REPO_ROOT/tests/helpers/stub")" "$BATS_TEST_TMPDIR/stubs/$cmd"; done
+  shared_make stub "$REPO_ROOT/tests/helpers/stub"
+  for cmd; do ln -f "$BATS_RUN_TMPDIR/shared/stub" "$BATS_TEST_TMPDIR/stubs/$cmd"; done
+}
+
+# The commands every sandbox stubs, and the run's shared directory of them, made once: each file
+# a hard link to the shared stub, so a sandbox links them all in with one cp, as stub_command
+# would one by one.
+SANDBOX_STUBS=(busctl claude curl gh launchctl op systemctl systemd-run)
+shared_stubs() {
+  local dir=$BATS_RUN_TMPDIR/shared new cmd
+  [[ ! -e $dir/stubs ]] || return 0
+  shared_make stub "$REPO_ROOT/tests/helpers/stub"
+  new=$(mktemp -d "$dir/.new.XXXXXX")
+  mkdir "$new/it"
+  for cmd in "${SANDBOX_STUBS[@]}"; do ln "$dir/stub" "$new/it/$cmd"; done
+  # A directory another test made meanwhile stays: either is the same.
+  mv -T "$new/it" "$dir/stubs" 2>/dev/null || true
+  rm -rf "$new"
 }
 
 # copy_bin <dest>: a copy of this checkout's bin/ at <dest>, its files linked to the run's shared
@@ -79,13 +102,22 @@ copy_bin() {
   link_shared bin "$REPO_ROOT/bin" "$1"
 }
 
-# Build the test's sandbox and point TEAM_HOME, HOME and PATH into it, untraced.
+# Build the test's sandbox and point TEAM_HOME, HOME and PATH into it, untraced. A sandbox runs
+# in every test's setup, so it starts as few processes as it can: builtins write its files, one
+# mkdir makes its directories and one cp links its stubs in.
 sandbox() {
   [[ -n ${UNTRACED_DEBUG+set} ]] || { untraced sandbox "$@"; return; }
   # macOS keeps temporary directories under /var, a symlink to /private/var, and the scripts see
   # the resolved path (from pwd, git or realpath): resolve it once, so every path a test builds
-  # from BATS_TEST_TMPDIR is the one the scripts print, on Linux and macOS alike.
-  BATS_TEST_TMPDIR=$(realpath "$BATS_TEST_TMPDIR")
+  # from BATS_TEST_TMPDIR is the one the scripts print, on Linux and macOS alike. cd -P resolves
+  # it as realpath does, with no process, and the test's directory and OLDPWD are put back.
+  local here=$PWD back=${OLDPWD-}
+  cd -P -- "$BATS_TEST_TMPDIR" || return
+  BATS_TEST_TMPDIR=$PWD
+  cd -- "$here" || return
+  OLDPWD=$back
+  # The resolved directory, which spares guard_sandbox a realpath of it.
+  SANDBOX_ROOT=$BATS_TEST_TMPDIR
   local root=$BATS_TEST_TMPDIR
   # The ledger reads a path under /home/<user>/ or /Users/<user>/ as under some machine's HOME
   # (local_path in bin/lib/ledger.jq), so a sandbox there would see its own paths moved.
@@ -100,30 +132,30 @@ sandbox() {
   # directory, so a PATH a test trims never gets the machine's own tools back, its 1Password CLI
   # above all (tool_dirs in bin/lib/team.sh).
   export TEAM_SYSTEM_ROOT=$root/system
-  mkdir -p "$TEAM_HOME" "$HOME/.claude/channels/discord" "$STUB_CALLS" "$STUB_FIXTURES" "$root/stubs"
+  export TEAM_CGROUP_ROOT=$root/cgroup-root
+  mkdir -p "$TEAM_HOME" "$HOME/.claude/channels/discord" "$STUB_CALLS" "$STUB_FIXTURES" "$TEAM_CGROUP_ROOT/proc"
   : >"$TEAM_HOME/ledger.jsonl"
   echo "DISCORD_BOT_TOKEN=$FAKE_DISCORD_TOKEN" >"$HOME/.claude/channels/discord/.env"
 
-  stub_command claude gh curl op systemctl launchctl busctl
+  # claude, gh, curl, op, systemctl, launchctl, busctl and systemd-run are the logging stub, as
+  # stub_command makes it, all linked in at once from the run's shared directory of them.
+  shared_stubs
+  cp -Rl "$BATS_RUN_TMPDIR/shared/stubs" "$root/stubs"
   export PATH=$root/stubs:$PATH
   # The user manager's D-Bus answers every call with a job (fake_placement makes it move the
   # processes), and the cgroup tree and /proc team-capacity reads are under TEAM_CGROUP_ROOT, empty
   # until a test writes them (user_controllers, fake_process), never the machine's own.
   stub_reply busctl 'o "/org/freedesktop/systemd1/job/1"'
   # systemd-run starts no scope: it runs the command after --, in place, as `--scope` does, or, once
-  # $STUB_FIXTURES/systemd-run-refuse exists, fails as one the user manager refused.
-  stub_command systemd-run
-  stub_script systemd-run <<'EOF'
-if [[ -e $STUB_FIXTURES/systemd-run-refuse ]]; then
-  echo "Failed to start transient scope unit: Access denied" >&2
-  exit 1
-fi
-while (($#)) && [[ $1 != -- ]]; do shift; done
-shift
-exec "$@"
-EOF
-  export TEAM_CGROUP_ROOT=$root/cgroup-root
-  mkdir -p "$TEAM_CGROUP_ROOT/proc"
+  # $STUB_FIXTURES/systemd-run-refuse exists, fails as one the user manager refused. Its fixture is
+  # the file stub_script would write, written by printf, which starts no cat.
+  printf '%s\n' 'if [[ -e $STUB_FIXTURES/systemd-run-refuse ]]; then' \
+    '  echo "Failed to start transient scope unit: Access denied" >&2' \
+    '  exit 1' \
+    'fi' \
+    'while (($#)) && [[ $1 != -- ]]; do shift; done' \
+    'shift' \
+    'exec "$@"' >"$STUB_FIXTURES/systemd-run.sh"
 
   # The machine team-capacity reads its load from (its seams): no process, 12 cores and 24 GiB of 32
   # available, and a Docker socket nothing listens on, so no reading depends on the machine the
@@ -135,13 +167,13 @@ EOF
   printf 'MemTotal:       %s kB\nMemFree:         1048576 kB\nMemAvailable:   %s kB\n' $((32 * 1024 * 1024)) \
     $((24 * 1024 * 1024)) >"$TEAM_MEMINFO"
 
-  # git reads only the sandbox's config.
+  # git reads only the sandbox's config: user.name "Team Test", user.email
+  # team-test@example.invalid, init.defaultBranch main and advice.detachedHead false, written as
+  # the file four `git config --global` calls would write.
   export GIT_CONFIG_NOSYSTEM=1
   unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR
-  git config --global user.name "Team Test"
-  git config --global user.email team-test@example.invalid
-  git config --global init.defaultBranch main
-  git config --global advice.detachedHead false
+  printf '[user]\n\tname = Team Test\n\temail = team-test@example.invalid\n[init]\n\tdefaultBranch = main\n[advice]\n\tdetachedHead = false\n' \
+    >"$HOME/.gitconfig"
 
   # nvm lives under HOME unless NVM_DIR says otherwise: the real one must not leak in, nor the
   # heavy run tests/run holds (team-heavy), nor the role and task of the session running the suite
@@ -155,10 +187,16 @@ EOF
 }
 
 # Fail unless TEAM_HOME and HOME are inside this test's temporary directory, so no test can
-# reach the real team home or the real HOME.
+# reach the real team home or the real HOME, each path judged as `realpath -m` resolves it.
+# run_bin guards every script a test runs, and bats traces each command a test's functions run at
+# about a tenth of a millisecond, more than a realpath costs, so the sandbox's own case is one
+# test that starts no process: each path one part below the sandbox's resolved directory, neither
+# . nor .. nor a symlink, which realpath would leave as it is.
 guard_sandbox() {
-  local root var path
-  root=$(realpath "$BATS_TEST_TMPDIR")
+  local root=${SANDBOX_ROOT:-} var path
+  [[ -n $root && $root == "$BATS_TEST_TMPDIR" ]] || root=$(realpath "$BATS_TEST_TMPDIR")
+  [[ ${TEAM_HOME:-} == "$root"/+([!/]) && ${HOME:-} == "$root"/+([!/]) && ${TEAM_HOME##*/} != @(.|..) &&
+    ${HOME##*/} != @(.|..) && ! -L $TEAM_HOME && ! -L $HOME ]] && return 0
   for var in TEAM_HOME HOME; do
     path=$(realpath -m -- "${!var:-/}")
     if [[ $path != "$root"/* ]]; then
