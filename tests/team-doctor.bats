@@ -428,12 +428,26 @@ EOF
 @test "TEAM_DOCTOR_CHECKS runs the checks it names and those they read state from, each line as in a whole run, and refuses a name that is no check" {
   tools_at arch
   run_bin -0 team-doctor
-  local whole=$output check
+  local whole=$output check read reads own
+  local -A alone=()
   # Each check alone prints lines of the whole run, in its order: its own (none for the Homebrew
-  # check on Arch) and those of the checks it reads state from.
+  # check on Arch, nor the salvage check with nothing to salvage) and those of the checks it reads
+  # state from. A check that prints nothing without its state (the docker check with no os, say)
+  # shows a lost reads line by printing no line of its own, so each other check must print one
+  # beyond those its declared checks print alone.
   for check in "$CODE_CHECKOUT"/bin/lib/doctor.d/*.sh; do
     TEAM_DOCTOR_CHECKS=${check##*/} run_bin -0 team-doctor
     assert_equal "$(grep -xFf <(printf '%s\n' "$output") <<<"$whole")" "$output"
+    alone[${check##*/}]=$output
+    reads=''
+    for read in $(sed -n '/^#/!q; s/^# reads state from: //p' "$check"); do
+      reads+=${alone[$read]}$'\n'
+    done
+    own=$(printf '%s' "$output" | grep -cvxFf <(printf '%s' "$reads") || true)
+    [[ ${check##*/} == @(020-homebrew|230-salvage).sh ]] || ((own > 0)) || {
+      echo "${check##*/} alone prints no line of its own: $output" >&2
+      return 1
+    }
   done
   # The heartbeat line reads the lease line's holding, which reads the machine line's name: on the
   # holder it passes only with both, run once each in name order, however named.
