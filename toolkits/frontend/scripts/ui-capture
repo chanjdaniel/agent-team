@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 // Capture the element selected in the Agent Chrome's DevTools Elements panel into a directory, for
-// an agent to fix: its page, HTML, matched CSS, Vue source location and two screenshots; or, when
-// nothing is selected, a capture of the localhost page Daniel is on.
+// an agent to fix: its HTML, matched CSS, Vue source location and screenshot, with a capture of the
+// page it is on; or, when nothing is selected, a capture of the localhost page Daniel is on.
 //
 // Usage: ui-capture [--browser-url <url>] <out-dir>
 //   --browser-url  The Agent Chrome's remote debugging address (default http://127.0.0.1:9222,
 //                  where scripts/agent-chrome starts it).
 // The page it takes, the first that applies:
 //   1. the localhost page whose DevTools Elements panel has an element selected: an element
-//      capture of it;
+//      capture of it and its page capture, "the selected element's page";
 //   2. else a localhost page with DevTools open and nothing selected (DevTools' default <body>,
 //      or <html>), among several the first in step 3's order: a page capture of it, "DevTools is
 //      open on it, nothing selected";
@@ -32,14 +32,7 @@
 // starts the history anew. This read and the visibility read above are the only ones that speak
 // the protocol to a page without the server, and neither changes the page. No tab off localhost
 // is attached to, by the server or by either read.
-// Writes, creating <out-dir> if needed, for an element capture:
-//   ui-pick.md    the time, the page's URL and route, the snapshot line of the selected element,
-//                 its source chain (vite-plugin-vue-inspector's file:line:column, innermost
-//                 first, relative to the front end's root) and component chain, its outerHTML
-//                 (trimmed to 4000 characters) and every matched CSS rule (get_css_styles)
-//   element.png   a screenshot of the element
-//   page.png      a screenshot of the page
-// and for a page capture:
+// Writes, creating <out-dir> if needed, for every capture, the page capture:
 //   ui-page.md    the time, the page's URL, route and title, why it took that page, the other
 //                 localhost tabs, the Vue route (the current route's matched records of the Vue
 //                 app mounted on the page, outermost first, each its path, name, component and
@@ -53,6 +46,13 @@
 //   page.png      a screenshot of the viewport, unless the tab is not visible: Chrome paints no
 //                 hidden tab, so a screenshot of it never comes, and ui-page.md says so
 //   page-snapshot.txt  the page's accessibility snapshot (take_snapshot)
+// and, for an element capture, the element's own:
+//   ui-pick.md    the time, the page's URL and route, a pointer to ui-page.md for the page's
+//                 state, the snapshot line of the selected element, its source chain
+//                 (vite-plugin-vue-inspector's file:line:column, innermost first, relative to the
+//                 front end's root) and component chain, its outerHTML (trimmed to 4000
+//                 characters) and every matched CSS rule (get_css_styles)
+//   element.png   a screenshot of the element
 // Of those five names, a capture removes the ones it did not write once it has written its own;
 // a failed capture writes and removes nothing.
 // It speaks MCP to the pinned chrome-devtools-mcp (servers/, installed by servers/install),
@@ -62,11 +62,11 @@
 // statistics, CrUX and update checks off. It never navigates, clicks or types.
 // The element is the one DevTools marks in the page's snapshot ("selected in the DevTools
 // Elements panel"); one outside the accessibility tree is found in a verbose snapshot.
-// Exit 0 captured, its one line on stdout naming the element or the page; 1 with one line on
-// stderr when no Agent Chrome answers, the Agent Chrome has no localhost page open, the element
-// carries no Vue source data (a production build, or a Vue DevTools without the inspector), the
-// server never attached to an open tab, or a page does not answer in 30 s (a busy machine can
-// cause either); 2 a malformed command line.
+// Exit 0 captured, its one line on stdout naming the element and its page, or the page; 1 with
+// one line on stderr when no Agent Chrome answers, the Agent Chrome has no localhost page open,
+// the element carries no Vue source data (a production build, or a Vue DevTools without the
+// inspector), the server never attached to an open tab, or a page does not answer in 30 s (a busy
+// machine can cause either); 2 a malformed command line.
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout } from "node:timers/promises";
@@ -453,15 +453,12 @@ function historySection(title, history, entries, line) {
   ];
 }
 
-if (!pick) {
-  // The page capture: nothing is selected, so the page is the one DevTools is open on (step 2),
-  // else the first in step 3's order, visible (step 3) or not (step 4). Its facts are read in the
-  // page: its route and title, and the matched records of the current route of the Vue 3 app
-  // mounted on it (__vue_app__ on its container, which Vue marks data-v-app), when there is one.
-  const chosen = inspected ?? pages[0];
-  const reason = inspected
-    ? "DevTools is open on it, nothing selected"
-    : chosen.visible === true ? "the visible localhost tab" : "the most recently active localhost tab; none is visible";
+// The page capture of `chosen`, taken for `reason`: ui-page.md, page.png and page-snapshot.txt, to
+// write, and the page's URL. `element` is true when it is the page of an element capture, whose
+// two files ui-page.md then lists too. Its facts are read in the page: its route and title, and
+// the matched records of the current route of the Vue 3 app mounted on it (__vue_app__ on its
+// container, which Vue marks data-v-app), when there is one.
+async function pageCapture(chosen, reason, element) {
   await call("select_page", { pageId: chosen.id });
   const seen = evaluated(
     (
@@ -496,7 +493,7 @@ if (!pick) {
   const others = pages.filter((p) => p.id !== chosen.id).map((p) => p.url);
   const history = await pageHistory(chosen.url);
   const route = (r) => `- ${r.path}${r.name ? ` (${r.name})` : ""}: ${r.component ? r.component + (r.file ? ` ${r.file}` : "") : "(no component)"}`;
-  write({
+  const files = {
     ...(screenshot && { "page.png": Buffer.from(screenshot.data, "base64") }),
     "page-snapshot.txt": `${chosen.snapshot.replace(/\n*$/, "")}\n`,
     "ui-page.md": [
@@ -529,14 +526,29 @@ if (!pick) {
         ? "- page.png: the viewport, as Daniel sees it"
         : "- no page.png: the tab is not visible, and Chrome paints no hidden tab, so it has no screenshot",
       "- page-snapshot.txt: the page's accessibility snapshot (take_snapshot)",
+      ...(element
+        ? ["- ui-pick.md: the selected element: its source and component chains, HTML and matched CSS", "- element.png: a screenshot of the selected element"]
+        : []),
       "",
     ].join("\n"),
-  });
-  process.stdout.write(`ui-capture: page ${seen.url} (${reason}), no element selected -> ${join(out, "ui-page.md")}\n`);
+  };
+  return { url: seen.url, files };
+}
+
+if (!pick) {
+  // The page capture: nothing is selected, so the page is the one DevTools is open on (step 2),
+  // else the first in step 3's order, visible (step 3) or not (step 4).
+  const chosen = inspected ?? pages[0];
+  const reason = inspected
+    ? "DevTools is open on it, nothing selected"
+    : chosen.visible === true ? "the visible localhost tab" : "the most recently active localhost tab; none is visible";
+  const page = await pageCapture(chosen, reason, false);
+  write(page.files);
+  process.stdout.write(`ui-capture: page ${page.url} (${reason}), no element selected -> ${join(out, "ui-page.md")}\n`);
   await done(0);
 }
 
-// The element capture: the page holding the selection is the one the loop left selected.
+// The element capture (step 1), of the page the loop left selected, with that page's capture.
 const facts = pick.facts;
 if (facts.source.length === 0) {
   await done(1, `the page carries no Vue source data (no __v_inspector on ${pick.line.replace(/^uid=\S+ /, "")} or its parents): a production build, or a Vue DevTools without the inspector`);
@@ -544,21 +556,22 @@ if (facts.source.length === 0) {
 
 const css = (await call("get_css_styles", { uid: pick.uid, pageSize: 1000 })).text;
 const element = (await call("take_screenshot", { uid: pick.uid })).images[0];
-const page = (await call("take_screenshot")).images[0];
-if (!element || !page) await done(1, "take_screenshot returned no image");
+if (!element) await done(1, "take_screenshot returned no image");
+const page = await pageCapture(pick, "the selected element's page", true);
 
 const html = facts.html.length > htmlLimit
   ? `${facts.html.slice(0, htmlLimit)}\n<!-- trimmed: ${facts.html.length} characters in all -->`
   : facts.html;
 write({
+  ...page.files,
   "element.png": Buffer.from(element.data, "base64"),
-  "page.png": Buffer.from(page.data, "base64"),
   "ui-pick.md": [
     "# The selected element",
     "",
     captured,
     `Page: ${facts.url}`,
     `Route: ${facts.route}`,
+    "The page's state (its title, Vue route, console problems, failed requests and snapshot): ui-page.md",
     "",
     "## Where it is",
     "",
@@ -586,9 +599,9 @@ write({
     "## Screenshots",
     "",
     "- element.png: the element",
-    "- page.png: the page",
+    "page.png" in page.files ? "- page.png: the page" : "- no page.png: the tab is not visible (ui-page.md)",
     "",
   ].join("\n"),
 });
-process.stdout.write(`ui-capture: ${pick.line.replace(/^uid=\S+ /, "")} at ${facts.source[0]} -> ${join(out, "ui-pick.md")}\n`);
+process.stdout.write(`ui-capture: ${pick.line.replace(/^uid=\S+ /, "")} at ${facts.source[0]} on ${page.url} -> ${join(out, "ui-pick.md")}, ${join(out, "ui-page.md")}\n`);
 await done(0);

@@ -132,6 +132,10 @@ describe("ui-capture", () => {
     assert.equal(help.status, 0);
     assert.match(help.stdout, /^Capture the element selected in the Agent Chrome's DevTools Elements panel/);
     assert.match(help.stdout, /Usage: ui-capture \[--browser-url <url>\] <out-dir>/);
+    // An element capture is the element and its page's capture.
+    assert.match(help.stdout, /^Capture the element selected[^]*with a capture of the\s+page it is on; or, when nothing is selected, a\s+capture of the localhost page Daniel is on\.\n/);
+    assert.match(help.stdout, /\n  1\. the localhost page whose DevTools Elements panel has an element selected: an element\n     capture of it and its page capture, "the selected element's page";\n/);
+    assert.match(help.stdout, /\nWrites, creating <out-dir> if needed, for every capture, the page capture:\n  ui-page\.md [^]*\nand, for an element capture, the element's own:\n  ui-pick\.md /);
     // The page's history read over a session of its own, and why the server cannot give it.
     assert.match(help.stdout, /sends Runtime\.enable and Log\.enable[^]*sends Runtime\.disable and Log\.disable and closes: the server is started anew for each capture,\nand its list_console_messages and list_network_requests report nothing from before it\nattached\./);
     assert.match(help.stdout, /This read and the visibility read above are the only ones that speak\nthe protocol to a page without the server, and neither changes the page\./);
@@ -218,15 +222,18 @@ describe("ui-capture", () => {
     assertPageCapture(out, site.url);
   });
 
-  test("captures the selected element: its page, source and component chains, HTML, matched CSS and screenshots", async () => {
+  test("captures the selected element: its page, source and component chains, HTML, matched CSS and screenshots, and its page's capture", async () => {
     await inspect(chrome.browserUrl, site.url, ".menu-button");
     const out = join(tempDir("out"), "ui");
     const result = await script("ui-capture", ["--browser-url", chrome.browserUrl, out]);
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /^ui-capture: button "Open navigation" .* at button src\/components\/elements\/ElementBanner\.vue:30:5 -> /);
+    const head = /^ui-capture: button "Open navigation" .* at button src\/components\/elements\/ElementBanner\.vue:30:5 on /;
+    assert.match(result.stdout, head);
+    assert.equal(result.stdout.replace(head, ""), `${site.url} -> ${out}/ui-pick.md, ${out}/ui-page.md\n`);
     const pick = readFileSync(join(out, "ui-pick.md"), "utf8");
     assert.match(pick, /^# The selected element\n\nCaptured \d{4}-\d\d-\d\dT[\d:.]+Z by ui-capture from the Agent Chrome at http:\/\/127\.0\.0\.1:\d+\.\n/);
     assert.ok(pick.includes(`Page: ${site.url}\nRoute: /\n`));
+    assert.ok(pick.includes(`\nRoute: /\nThe page's state (its title, Vue route, console problems, failed requests and snapshot): ui-page.md\n\n## Where it is\n`), pick);
     assert.match(pick, /Snapshot line: `uid=\S+ button "Open navigation" .*\[selected in the DevTools Elements panel\]`/);
     assert.ok(pick.includes("- button src/components/elements/ElementBanner.vue:30:5\n- header src/App.vue:89:5\n- div src/App.vue:88:3\n"));
     assert.ok(pick.includes("- ElementBanner src/components/elements/ElementBanner.vue\n- App src/App.vue\n"));
@@ -237,6 +244,27 @@ describe("ui-capture", () => {
     for (const png of ["element.png", "page.png"]) {
       assert.deepEqual([...readFileSync(join(out, png)).subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], `${png} is a PNG`);
     }
+    // The page around it: its own capture, with the page's console problems from its load.
+    assertPageCapture(out, site.url, { reason: "the selected element's page", element: true });
+    const page = readFileSync(join(out, "ui-page.md"), "utf8");
+    assert.ok(page.includes("\n- /events/:id/import (event-import): ImportView src/views/events/ImportView.vue\n"), page);
+    assert.ok(page.includes("\nConsole problems since the page loaded: 5, oldest first\n"), page);
+    assert.ok(page.includes(`\nFailed requests since the page loaded: 2, oldest first\n`), page);
+    assert.match(readFileSync(join(out, "page-snapshot.txt"), "utf8"), /button "Open navigation" .*\[selected in the DevTools Elements panel\]/);
+    for (const file of ["ui-page.md", "page-snapshot.txt"]) assert.ok(!readFileSync(join(out, file), "utf8").includes("marker-elsewhere"), file);
+  });
+
+  // A page capture into the directory of an element capture leaves only its own files.
+  test("a page capture after an element capture into the same directory leaves only the page capture", async () => {
+    await inspect(chrome.browserUrl, site.url, ".menu-button");
+    const out = tempDir("out");
+    assert.equal((await script("ui-capture", ["--browser-url", chrome.browserUrl, out])).status, 0);
+    assert.ok(existsSync(join(out, "ui-pick.md")) && existsSync(join(out, "element.png")));
+    // <html> selected is nothing selected; a null selector would keep the button selected.
+    await inspect(chrome.browserUrl, site.url, "html");
+    const result = await script("ui-capture", ["--browser-url", chrome.browserUrl, out]);
+    assert.equal(result.status, 0, result.stderr);
+    assertPageCapture(out, site.url);
   });
 
   test("finds a selected element outside the accessibility tree in a verbose snapshot", async () => {
@@ -244,18 +272,21 @@ describe("ui-capture", () => {
     const out = tempDir("out");
     const result = await script("ui-capture", ["--browser-url", chrome.browserUrl, out]);
     assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, new RegExp(` at div src/App\\.vue:95:5 on ${site.url.replace(/[.]/g, "\\.")} -> ${out}/ui-pick\\.md, ${out}/ui-page\\.md\n$`));
     const pick = readFileSync(join(out, "ui-pick.md"), "utf8");
     assert.ok(pick.includes("- div src/App.vue:95:5\n- div src/App.vue:88:3\n"));
     assert.ok(pick.includes('<div class="plain">Plain text</div>'));
+    assertPageCapture(out, site.url, { reason: "the selected element's page", element: true });
   });
 
   test("fails in one line when the selected element carries no Vue source data", async () => {
     await inspect(chrome.browserUrl, site.url, ".untagged");
-    const out = tempDir("out");
+    const out = join(tempDir("out"), "ui");
     const result = await script("ui-capture", ["--browser-url", chrome.browserUrl, out]);
     assert.equal(result.status, 1);
     assert.match(result.stderr, /^ui-capture: the page carries no Vue source data \(no __v_inspector on .* or its parents\): a production build, or a Vue DevTools without the inspector\n$/);
-    assert.ok(!existsSync(join(out, "ui-pick.md")));
+    assert.equal(result.stdout, "");
+    assert.ok(!existsSync(out), "the out-dir is never made");
   });
 
   // A failed capture leaves the directory as it found it: an earlier capture stays whole.
@@ -466,9 +497,11 @@ function staleCapture() {
 }
 
 // A page capture of `url` in `out`, taken for `reason`, with `others` the other localhost tabs:
-// ui-page.md's lines, a PNG of the viewport, the snapshot, and none of an element capture's files.
-function assertPageCapture(out, url, { title = "Fixture app", route = "/", reason = "DevTools is open on it, nothing selected", others = "none", visible = true } = {}) {
-  assert.deepEqual(readdirSync(out).sort(), visible ? ["page-snapshot.txt", "page.png", "ui-page.md"] : ["page-snapshot.txt", "ui-page.md"]);
+// ui-page.md's lines, a PNG of the viewport, the snapshot, and an element capture's files only
+// when `element` says it is the page of one.
+function assertPageCapture(out, url, { title = "Fixture app", route = "/", reason = "DevTools is open on it, nothing selected", others = "none", visible = true, element = false } = {}) {
+  const files = [...(visible ? ["page.png"] : []), "page-snapshot.txt", "ui-page.md", ...(element ? ["element.png", "ui-pick.md"] : [])];
+  assert.deepEqual(readdirSync(out).sort(), files.sort());
   const page = readFileSync(join(out, "ui-page.md"), "utf8");
   assert.match(page, /^# The page capture\n\nCaptured \d{4}-\d\d-\d\dT[\d:.]+Z by ui-capture from the Agent Chrome at http:\/\/127\.0\.0\.1:\d+\.\n/);
   assert.ok(page.includes(`\nPage: ${url}\nRoute: ${route}\nTitle: ${title}\n\nTaken because: ${reason}\nOther localhost tabs: ${others}\n`), page);
@@ -477,8 +510,9 @@ function assertPageCapture(out, url, { title = "Fixture app", route = "/", reaso
     : "- no page.png: the tab is not visible, and Chrome paints no hidden tab, so it has no screenshot";
   assert.match(page, /\nConsole problems since the page loaded: [^]*\nFailed requests since the page loaded: /);
   const note = "Not recorded: requests still pending, and each request's method.\nThe history starts at the page's last load: a route change inside the app keeps it, a reload clears it.\n";
-  assert.ok(page.includes(`\n${note}\nFiles:\n\n${shot}\n- page-snapshot.txt: the page's accessibility snapshot (take_snapshot)\n`), page);
-  assert.ok(!page.includes("ui-pick.md") && !page.includes("element.png"), page);
+  const elementFiles = "- ui-pick.md: the selected element: its source and component chains, HTML and matched CSS\n- element.png: a screenshot of the selected element\n";
+  assert.ok(page.endsWith(`\n${note}\nFiles:\n\n${shot}\n- page-snapshot.txt: the page's accessibility snapshot (take_snapshot)\n${element ? elementFiles : ""}`), page);
+  if (!element) assert.ok(!page.includes("ui-pick.md") && !page.includes("element.png"), page);
   if (visible) assert.deepEqual([...readFileSync(join(out, "page.png")).subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], "page.png is a PNG");
   assert.match(readFileSync(join(out, "page-snapshot.txt"), "utf8"), new RegExp(`RootWebArea "${title}"`));
 }
