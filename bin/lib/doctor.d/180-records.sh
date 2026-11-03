@@ -30,8 +30,10 @@ elif ((!secrets_read)); then
   records_problems+=("machine/secrets.md unchecked, since team-secrets refused the manifest (the secrets line)")
 else
   undescribed=()
+  # Read once, each id's row looked for in it with no process of its own.
+  secrets_md=$(<"$TEAM_HOME/machine/secrets.md")
   while IFS= read -r id; do
-    grep -qF "| \`$id\` |" "$TEAM_HOME/machine/secrets.md" || undescribed+=("$id")
+    [[ $secrets_md == *"| \`$id\` |"* ]] || undescribed+=("$id")
   done < <(jq -r '.[].id' <<<"$secrets")
   ((${#undescribed[@]} == 0)) ||
     records_problems+=("machine/secrets.md has no row for $(printf '%s, ' "${undescribed[@]}" | sed 's/, $//')")

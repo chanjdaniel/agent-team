@@ -171,10 +171,19 @@ skills_in() {
   done
 }
 
-# The plugins.txt lines of one kind, one value per line: listed <marketplace|plugin>
+# The plugins.txt lines of one kind, one value per line, read with builtins as awk splits them
+# (blank lines and # comments skipped): listed <marketplace|plugin>
 listed() {
   [[ -f $shared/plugins.txt ]] || return 0
-  awk -v kind="$1" '!/^[[:space:]]*(#|$)/ && $1 == kind { print $2 }' "$shared/plugins.txt"
+  local kind value _
+  while read -r kind value _; do
+    if [[ -n $kind && $kind != \#* && $kind == "$1" ]]; then printf '%s\n' "$value"; fi
+  done <"$shared/plugins.txt"
+}
+
+# Whether <line> is one of the lines of <text>, as grep -qxF finds it: has_line <line> <text>
+has_line() {
+  [[ $'\n'$2$'\n' == *$'\n'"$1"$'\n'* ]]
 }
 
 # Ask claude for the user-scope plugins and the marketplaces, one per line in $installed and
@@ -211,18 +220,21 @@ differences() {
     printf 'plugins\tunreadable\n'
     return 0
   fi
+  local listed_marketplaces listed_plugins
+  listed_marketplaces=$(listed marketplace) listed_plugins=$(listed plugin)
   while IFS= read -r name; do
-    grep -qxF -- "$name" <<<"$marketplaces" || printf 'marketplace %s\tnot added\n' "$name"
-  done < <(listed marketplace)
+    has_line "$name" "$marketplaces" || printf 'marketplace %s\tnot added\n' "$name"
+  done < <([[ -z $listed_marketplaces ]] || printf '%s\n' "$listed_marketplaces")
   while IFS= read -r name; do
-    grep -qxF -- "$name" <<<"$installed" || printf 'plugin %s\tnot installed\n' "$name"
-  done < <(listed plugin)
+    has_line "$name" "$installed" || printf 'plugin %s\tnot installed\n' "$name"
+  done < <([[ -z $listed_plugins ]] || printf '%s\n' "$listed_plugins")
   while IFS= read -r name; do
-    [[ -z $name ]] || listed marketplace | grep -qxF -- "$name" ||
+    [[ -z $name ]] || { [[ -n $listed_marketplaces ]] && has_line "$name" "$listed_marketplaces"; } ||
       printf 'marketplace %s\tnot in plugins.txt\n' "$name"
   done <<<"$marketplaces"
   while IFS= read -r name; do
-    [[ -z $name ]] || listed plugin | grep -qxF -- "$name" || printf 'plugin %s\tnot in plugins.txt\n' "$name"
+    [[ -z $name ]] || { [[ -n $listed_plugins ]] && has_line "$name" "$listed_plugins"; } ||
+      printf 'plugin %s\tnot in plugins.txt\n' "$name"
   done <<<"$installed"
 }
 
@@ -278,7 +290,8 @@ local_settings_git() {
 # old_memory <checkout>
 old_memory() {
   local key dir
-  key=$(realpath -- "$1" | sed 's/[^A-Za-z0-9]/-/g')
+  key=$(realpath -- "$1")
+  key=${key//[^A-Za-z0-9]/-}
   if ((${#key} <= 200)); then
     [[ ! -d $claude_dir/projects/$key/memory ]] || printf '%s\n' "$claude_dir/projects/$key/memory"
     return 0

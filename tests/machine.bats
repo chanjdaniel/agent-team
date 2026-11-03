@@ -207,9 +207,11 @@ unset"
   assert_equal "$output" "open true $HOME/w"
 }
 
-@test "json_vars fails on input that is not JSON, and refuses a malformed name" {
+@test "json_vars fails on input that is not JSON or no document, and refuses a malformed name" {
   lib_run -1 team-x 'a=kept; json_vars a=.a <<<"not json" 2>/dev/null || { echo "failed, a=$a"; exit 1; }'
   assert_equal "$output" "failed, a=kept"
+  lib_run -1 team-x 'a=kept; json_vars a=.a <<<"" || { echo "no document, a=$a"; exit 1; }'
+  assert_equal "$output" "no document, a=kept"
   lib_run -2 team-x 'json_vars "bad name=.a" <<<"{}"'
   assert_equal "$output" "team-x: json_vars: 'bad name=.a' is not <name>=<jq filter>"
   lib_run -2 team-x 'json_vars .a <<<"{}"'

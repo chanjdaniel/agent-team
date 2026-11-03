@@ -61,8 +61,13 @@ shared_make() {
   new=$(mktemp -d "$dir/.new.XXXXXX")
   if (($# > 1)); then cp -R "$2" "$new/it"; else cat >"$new/it" && chmod +x "$new/it"; fi
   find "$new/it" -type f -exec chmod a-w {} +
-  # A file or directory another test made meanwhile stays: either is the same.
-  mv -T "$new/it" "$dir/$1" 2>/dev/null || true
+  # A file or directory another test made meanwhile stays: either is the same, and a file is
+  # linked in, never moved over one already there, which would part it from its hard links.
+  if [[ -d $new/it ]]; then
+    mv -T "$new/it" "$dir/$1" 2>/dev/null || true
+  else
+    ln "$new/it" "$dir/$1" 2>/dev/null || true
+  fi
   rm -rf "$new"
 }
 

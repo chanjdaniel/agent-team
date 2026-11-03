@@ -26,6 +26,8 @@ if [[ -n $os ]]; then
   if ((rc)); then
     report resources FAIL "team-capacity failed: $(first_error)" "fix what team-capacity names, then run team-doctor again"
   else
-    report resources "$(jq -r .verdict <<<"$resources")" "$(jq -r .reason <<<"$resources")" "$(jq -r .fix <<<"$resources")"
+    verdict='' reason='' fix=''
+    json_vars verdict='.verdict | tostring' reason='.reason | tostring' fix='.fix | tostring' <<<"$resources"
+    report resources "$verdict" "$reason" "$fix"
   fi
 fi

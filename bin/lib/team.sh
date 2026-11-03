@@ -97,7 +97,8 @@ ledger_jq() {
 # <name> is set to its <filter>'s first output as text (a string as it is, null or no output
 # empty, anything else compact JSON); the options after -- go to jq (-s, --arg, -L), and with
 # --ledger it runs as ledger_jq, with the ledger's definitions and $contract. When jq fails (input
-# that is not JSON), it fails with jq's status and sets nothing. The caller's local variables are
+# that is not JSON), it fails with jq's status and sets nothing; with no document on stdin, it
+# fails with 1 and sets nothing. The caller's local variables are
 # set, so long as none is named _jv_*:
 # json_vars [--ledger] <name>=<filter>... [-- <jq option>...] <<<"$json"
 json_vars() {
@@ -112,6 +113,7 @@ json_vars() {
   done
   (($# == 0)) || shift
   _jv_out=$("$_jv_run" "[$_jv_filter] | @sh" -r "$@") || return
+  [[ -n $_jv_out ]] || return 1
   eval "_jv_values=($_jv_out)"
   for _jv_i in "${!_jv_names[@]}"; do
     printf -v "${_jv_names[_jv_i]}" '%s' "${_jv_values[_jv_i]}"
@@ -629,21 +631,31 @@ docker_silence() {
 # (the start's exit code and output): trust_probe <path> <name>
 # shellcheck disable=SC2034 # trust_verdict is read by the caller
 trust_probe() {
-  local name=$2 ids id
+  local name=$2 id line ids=() kept=()
+  local -A seen=()
   trust_rc=0 trust_left=()
   trust_out=$(cd "$1" && bounded 60 claude --bg --name "$name" 2>&1 </dev/null) || trust_rc=$?
-  ids=$({
-    [[ $trust_out == *"Workspace not trusted"* ]] || grep -oE '\b[0-9a-f]{8}\b' <<<"$trust_out" | head -n 1
-    bounded 30 claude agents --json 2>/dev/null </dev/null | jq -r --arg name "$name" 'arrays | .[] | objects
-      | select(.name == $name) | .id // ((.sessionId // "")[:8]) | strings' 2>/dev/null || true
-  } | awk 'NF && !seen[$0]++')
-  for id in $ids; do
+  # The first 8 hex digits of the start's output that stand as a word, then each live session of
+  # the probe's name, read with builtins but for the session list's jq; each kept once, no blank.
+  if [[ $trust_out != *"Workspace not trusted"* &&
+    $trust_out =~ (^|[^A-Za-z0-9_])([0-9a-f]{8})([^A-Za-z0-9_]|$) ]]; then
+    ids+=("${BASH_REMATCH[2]}")
+  fi
+  while IFS= read -r line; do ids+=("$line"); done < <(bounded 30 claude agents --json 2>/dev/null </dev/null |
+    jq -r --arg name "$name" 'arrays | .[] | objects
+      | select(.name == $name) | .id // ((.sessionId // "")[:8]) | strings' 2>/dev/null || true)
+  for line in ${ids[@]+"${ids[@]}"}; do
+    [[ -n ${line//[[:space:]]/} && -z ${seen[$line]:-} ]] || continue
+    seen[$line]=1 kept+=("$line")
+  done
+  # shellcheck disable=SC2048 # split as the lines were before: an id is one word
+  for id in ${kept[*]}; do
     bounded 30 claude stop "$id" >/dev/null 2>&1 </dev/null || true
     bounded 30 claude rm "$id" >/dev/null 2>&1 </dev/null || trust_left+=("$id")
   done
   if [[ $trust_out == *"Workspace not trusted"* ]]; then
     trust_verdict=untrusted
-  elif ((trust_rc == 0)) && [[ -n $ids ]]; then
+  elif ((trust_rc == 0 && ${#kept[@]} > 0)); then
     trust_verdict=trusted
   else
     trust_verdict=unknown
@@ -1079,8 +1091,15 @@ INTERVIEW_CHANNEL=${TEAM_INTERVIEW_CHANNEL-1565336720998928556}
 # Print the Discord bot token from ~/.claude/channels/discord/.env, or fail with nothing printed.
 # Callers keep it in a variable or test for it (discord_token >/dev/null); never print it.
 discord_token() {
-  local token
-  token=$(sed -n 's/^DISCORD_BOT_TOKEN=//p' "$HOME/.claude/channels/discord/.env" 2>/dev/null || true)
+  local token='' line file=$HOME/.claude/channels/discord/.env
+  # Every DISCORD_BOT_TOKEN= line's value, a line each, read with builtins: it runs on every
+  # Discord call.
+  if [[ -f $file && -r $file ]]; then
+    while IFS= read -r line || [[ -n $line ]]; do
+      [[ $line != DISCORD_BOT_TOKEN=* ]] || token+=${line#DISCORD_BOT_TOKEN=}$'\n'
+    done <"$file"
+  fi
+  while [[ $token == *$'\n' ]]; do token=${token%$'\n'}; done
   [[ -n $token ]] || return 1
   printf '%s\n' "$token"
 }
