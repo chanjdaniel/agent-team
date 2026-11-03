@@ -730,7 +730,7 @@ def state_line:
          else
            (if .state == "open" then "" else " \(.state)" end)
            + " \(.head[:7])"
-           + (if .head_moved then " (head moved)" else "" end)
+           + (if .caught_up then " (caught up cleanly with \(.base))" elif .head_moved then " (head moved)" else "" end)
            + (if (.behind_by | type) == "number" and .behind_by > 0 then " \(.behind_by) behind \(.base)" else "" end)
            + " checks \(.checks.passed | length)/\(.checks | map(length) | add)"
            + " agent-review \(.agent_review)"

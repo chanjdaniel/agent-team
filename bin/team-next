@@ -72,9 +72,12 @@
 # project (team-state's pr.standing_word), the review found no guarded area and no review of the
 # task counted a security or real-data finding or logged no counts (which team-merge refuses both
 # words for), each guarded area and such review named with the word it holds back, and the before
-# notes to queue as follow-ups; for a PR behind its base, "merge base: ..." instead, the
-# builder-merge-base brief for the holder under 250k, else a fresh builder, after the holder's STOW
-# when it is live. For a pass with no PR (a review-ready, a gated or Disclosure task's), the
+# notes to queue as follow-ups; for a PR behind its base, "merge base: ..." instead, read with
+# base_merge in the project's primary checkout once the PR's branch and the base are fetched there:
+# "run team-catch-up T<n>, which needs no rereview" when the reviewed head merges the base cleanly,
+# else the builder-merge-base brief for the holder under 250k, else a fresh builder, after the
+# holder's STOW when it is live, with "conflicts on <files>" after the behind count for a conflict,
+# or "(whether the merge is clean is not known: <why>)" when the fetch or git fails. For a pass with no PR (a review-ready, a gated or Disclosure task's), the
 # message telling the holder to go on with its delivery. For findings, or a pass that sent some
 # back (which team-log logs as findings): the message for the holder under 250k (its name, the
 # findings sent back and the findings file the message names, for a pass the newest of review.md
@@ -365,7 +368,30 @@ if [[ $handoff == verdict ]]; then
   behind=$(jq -r '.behind_by // 0' <<<"$pr")
   if ((behind > 0)); then
     base=$(jq -r .base <<<"$pr")
-    step="merge base: $url is $behind behind $base, so it merges $base first (step 6):"
+    # Whether the reviewed head merges the base cleanly, read in the project's primary checkout once
+    # the PR's branch and the base are fetched: clean is team-catch-up's, else the holder's step.
+    behind_by="$behind behind $base"
+    if ! project=$(jq -re '.project // empty' <<<"$pr"); then
+      behind_by+=" (whether the merge is clean is not known: the PR's repo is no registered project's)"
+    else
+      primary=$(team_project "$project" path)
+      branch=$(jq -r '.branch // empty' <<<"$pr")
+      rc=0
+      if [[ -z $branch ]]; then
+        behind_by+=" (whether the merge is clean is not known: GitHub did not name the PR's branch)"
+      elif ! fetched=$(git -C "$primary" fetch -q origin "+refs/heads/$branch:refs/remotes/origin/$branch" \
+        "+refs/heads/$base:refs/remotes/origin/$base" 2>&1); then
+        behind_by+=" (whether the merge is clean is not known: the PR's branch $branch and $base cannot be fetched into $primary: $(grep -m1 . <<<"$fetched" || echo "git fetch failed"))"
+      elif merged=$(base_merge "$primary" "$(jq -r .head <<<"$pr")" "origin/$base") || rc=$?; ((rc == 0)); then
+        echo "merge base: $url is $behind_by, and merges it cleanly: run team-catch-up $task, which needs no rereview (step 6)"
+        exit 0
+      elif ((rc == 1)); then
+        behind_by+=" and conflicts on $(and_list "$(jq -Rnc '[inputs | select(. != "")]' <<<"$merged")")"
+      else
+        behind_by+=" (whether the merge is clean is not known: $merged)"
+      fi
+    fi
+    step="merge base: $url is $behind_by, so it merges $base first (step 6):"
     case $holds in
       holds) echo "$step render team-brief $task builder-merge-base and send its path to $who" ;;
       full) echo "$step send $task STOW to $who, then launch a fresh builder on team-brief $task builder-merge-base" ;;

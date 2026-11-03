@@ -32,8 +32,11 @@
 # Heads compare by the shorter one's prefix, at least 7 characters.
 # pr is null without a pr event; otherwise it joins the latest pr event with GitHub (gh pr view,
 # gh pr checks, gh pr checks --required): number, repo and project (from the event's project in
-# projects.toml, else from the URL), state, base, the live head, the ledger head, head_moved,
-# checks passed, failing and pending by name (a skipped check counts as passed, a cancelled one
+# projects.toml, else from the URL), state, base, branch (the PR's head branch), the live head,
+# the ledger head, head_moved, caught_up (true when the task's latest caught-up event of the PR's
+# URL made the live head from the ledger head, team-catch-up's clean merge of the base, else
+# false; the text says "(caught up cleanly with <base>)" for it where it says "(head moved)" for
+# any other moved head), checks passed, failing and pending by name (a skipped check counts as passed, a cancelled one
 # as failing), required (server-required plus the project's required_checks) and
 # required_missing, agent_review (the agent-review check's state on the head, or missing),
 # merge_approved (a merge-approved event naming this PR's URL), behind_by (the commits of the

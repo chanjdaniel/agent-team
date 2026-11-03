@@ -444,8 +444,8 @@ reply_line() {
   run_bin -0 team-state T14 --json
   assert_equal "$(jq -c .pr <<<"$output")" "$(jq -cn --arg head "$head" '{
     url: "https://github.com/owner/proj/pull/5", number: 5, repo: "owner/proj", project: "proj",
-    state: "open", base: "main", head: $head, ledger_head: $head[:8], head_moved: false,
-    checks: {passed: ["agent-review", "docs", "shellcheck"], failing: ["deploy", "lint"], pending: ["build"]},
+    state: "open", base: "main", branch: null, head: $head, ledger_head: $head[:8], head_moved: false,
+    caught_up: false, checks: {passed: ["agent-review", "docs", "shellcheck"], failing: ["deploy", "lint"], pending: ["build"]},
     required: ["build", "shellcheck", "test"], required_missing: ["test"],
     agent_review: "success", merge_approved: true, behind_by: 0, standing_word: null}')"
   assert_equal "$(stub_calls gh)" "$(jq -cn --arg head "$head" '
@@ -572,6 +572,48 @@ EOF
   run_bin -0 team-state T14
   assert_equal "$output" \
     "T14 proj feature awaiting-merge | no live worker | review 1 pass | PR #5 merged a1b2c3d (head moved) checks 1/2 agent-review success"
+}
+
+@test "a head team-catch-up made from the ledger head is caught up cleanly, not moved" {
+  open_task
+  event T14 pr '{url: "https://github.com/owner/proj/pull/5", head: "1111111"}'
+  event T14 review '{verdict: "pass", head: "1111111"}'
+  event T14 caught-up "{url: \"https://github.com/owner/proj/pull/5/\", from: \"11111110000000000000000000000000000000000\",
+    head: \"$head\", base: \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}"
+  stub_github '{"number": 5, "state": "OPEN", "baseRefName": "main", "headRefOid": "'"$head"'", "headRefName": "feat/T14-tooling"}' \
+    '[{"name": "agent-review", "bucket": "pass", "state": "SUCCESS"}]' '[]'
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c '.pr | [.branch, .ledger_head, .head_moved, .caught_up]' <<<"$output")" \
+    '["feat/T14-tooling","1111111",true,true]'
+  run_bin -0 team-state T14
+  assert_equal "$output" \
+    "T14 proj feature awaiting-merge | no live worker | review 1 pass | PR #5 a1b2c3d (caught up cleanly with main) checks 1/1 agent-review success"
+}
+
+@test "a moved head that no latest caught-up event of the PR made from the ledger head is moved, not caught up" {
+  local step
+  open_task
+  event T14 pr '{url: "https://github.com/owner/proj/pull/5", head: "1111111"}'
+  event T14 review '{verdict: "pass", head: "1111111"}'
+  stub_github '{"number": 5, "state": "OPEN", "baseRefName": "main", "headRefOid": "'"$head"'"}' \
+    '[{"name": "agent-review", "bucket": "pass", "state": "SUCCESS"}]' '[]'
+  # up <from> <head> [<url>]: a caught-up event of PR #5, or of the URL given.
+  up() {
+    event T14 caught-up "{url: \"${3:-https://github.com/owner/proj/pull/5}\", from: \"$1\", head: \"$2\", base: \"bbbbbbb\"}"
+  }
+  # No caught-up event, one of another PR, one from another head, and one to another head.
+  for step in : "up 1111111 $head https://github.com/owner/proj/pull/6" "up 2222222 $head" "up 1111111 3333333"; do
+    eval "$step"
+    run_bin -0 team-state T14 --json
+    assert_equal "$(jq -c '.pr | [.head_moved, .caught_up]' <<<"$output")" '[true,false]'
+    run_bin -0 team-state T14
+    assert_contains "$output" "PR #5 a1b2c3d (head moved) checks 1/1"
+  done
+  # The latest event of the PR is the one that counts: an earlier one that made the head does not.
+  up 1111111 "$head"
+  up 1111111 3333333
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c '.pr.caught_up' <<<"$output")" false
 }
 
 @test "a legacy task's text form has only its id and phase before the workers" {
@@ -989,11 +1031,13 @@ progress_task() {
     '{"tickets":{"done":[],"total":0},"on":[],"reviews":{"count":0,"verdict":null,"head":null,"sent_back":null}}'
 }
 
-@test "--help documents progress, each worker's brief and the PR's behind_by" {
+@test "--help documents progress, each worker's brief and the PR's behind_by and caught_up" {
   run_bin -0 team-state --help
   assert_contains "$output" "progress"
   assert_contains "$output" "behind_by"
   assert_contains "$output" "on build-04"
   assert_contains "$output" "tickets 3/7"
   assert_contains "$output" "16 behind dev"
+  assert_contains "$output" "caught_up"
+  assert_contains "$output" "(caught up cleanly with <base>)"
 }

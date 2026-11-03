@@ -1221,8 +1221,9 @@ clean_base_merges() {
 # The pr part of a task's state: its latest pr event joined with GitHub, using <dir> for gh's
 # answers (GitHub's view of the PR, its branch and changed-file count among them, in <dir>/view),
 # with behind_by, the commits of its base its head lacks, from GitHub's compare of the two (null
-# for a PR not open or when the compare cannot be read), and its standing_word null for
-# task_state_json to fill in: pr_part '<events>' '<pr event>' <dir>
+# for a PR not open or when the compare cannot be read), caught_up, whether the task's latest
+# caught-up event of the PR made the live head from the ledger head, and its standing_word null
+# for task_state_json to fill in: pr_part '<events>' '<pr event>' <dir>
 pr_part() {
   local events=$1 pr=$2 dir=$3 url project repo='' number required_checks='[]' facts behind_by=null base head
   url=$(jq -r .url <<<"$pr") || return 1
@@ -1244,6 +1245,7 @@ pr_part() {
   fi
   facts=$(ledger_jq '{url: $url, number: $number, repo: $repo, project: $project,
       ledger_head: pr_head($url),
+      caught_up_by: (map(select(.event == "caught-up" and (.url | strings | rtrimstr("/")) == ($url | rtrimstr("/")))) | last),
       merge_approved: any(.[]; .event == "merge-approved" and (.url | strings | rtrimstr("/")) == ($url | rtrimstr("/"))),
       standing_word: null}' \
     -c --arg url "$url" --argjson number "$number" --arg repo "$repo" \
@@ -1262,8 +1264,11 @@ pr_part() {
       $view[0] as $view | $checks[0] as $checks
       | ($checks | map(.name)) as $present
       | (($required[0] | map(.name)) + $project_required | unique) as $required
-      | . + {state: ($view.state | ascii_downcase), base: $view.baseRefName, head: $view.headRefOid,
+      | . + {state: ($view.state | ascii_downcase), base: $view.baseRefName, branch: $view.headRefName,
+          head: $view.headRefOid,
           head_moved: (same_head($view.headRefOid; .ledger_head) | not),
+          caught_up: (.caught_up_by != null and same_head(.caught_up_by.head; $view.headRefOid)
+            and same_head(.caught_up_by.from; .ledger_head)),
           checks: {
             passed: [$checks[] | select(.bucket == "pass" or .bucket == "skipping") | .name] | unique,
             failing: [$checks[] | select(.bucket == "fail" or .bucket == "cancel") | .name] | unique,
@@ -1272,13 +1277,13 @@ pr_part() {
           required_missing: [$required[] | select(IN($present[]) | not)],
           agent_review: ([$checks[] | select(.name == "agent-review") | .state | ascii_downcase] | first // "missing"),
           behind_by: $behind_by}
-      | {url, number, repo, project, state, base, head, ledger_head, head_moved, checks, required,
+      | {url, number, repo, project, state, base, branch, head, ledger_head, head_moved, caught_up, checks, required,
          required_missing, agent_review, merge_approved, behind_by, standing_word}' \
       -c --slurpfile view "$dir/view" --slurpfile checks "$dir/checks" \
       --slurpfile required "$dir/required" --argjson project_required "$required_checks" \
       --argjson behind_by "$behind_by" <<<"$facts"
   else
-    jq -c --rawfile error "$dir/error" '. + {error: ($error | rtrimstr("\n"))}' <<<"$facts"
+    jq -c --rawfile error "$dir/error" 'del(.caught_up_by) + {error: ($error | rtrimstr("\n"))}' <<<"$facts"
   fi
 }
 
