@@ -1,10 +1,11 @@
 // The frontend toolkit's scripts against a headless Chrome standing in for the Agent Chrome:
 // ui-capture reads the element selected in DevTools on a local fixture page shaped like
-// Conventioner's dev build (vite-plugin-vue-inspector's hidden __v_inspector props), and only
-// localhost pages; agent-chrome starts Chrome with its own profile and debugging port.
+// Conventioner's dev build (vite-plugin-vue-inspector's hidden __v_inspector props, a Vue app
+// with a router), or the page itself when nothing is selected, and only localhost pages;
+// agent-chrome starts Chrome with its own profile and debugging port.
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
-import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
@@ -36,7 +37,7 @@ const fixture = `<!doctype html>
   .menu-button { color: rgb(1, 2, 3); }
   .plain { padding: 4px; }
 </style>
-<div id="app">
+<div id="app" data-v-app="">
   <header>
     <button data-v-8e30ecee class="menu-button" aria-label="Open navigation">Menu</button>
   </header>
@@ -57,6 +58,14 @@ const fixture = `<!doctype html>
   document.querySelector("#app").__vueParentComponent = app;
   // The untagged element sits outside every tagged one, as in a production build.
   document.body.append(document.querySelector(".untagged"));
+  // The Vue 3 app on the element it is mounted on, its router at the current route's matched
+  // records, outermost first, as vue-router 4 keeps them once the lazy components resolved.
+  const component = (name, file) => ({ __name: name, __file: "/home/x/front-end/" + file });
+  const matched = [
+    { path: "/events/:id", name: undefined, components: { default: component("EventLayout", "src/layouts/EventLayout.vue") } },
+    { path: "/events/:id/import", name: "event-import", components: { default: component("ImportView", "src/views/events/ImportView.vue") } },
+  ];
+  document.querySelector("#app").__vue_app__ = { config: { globalProperties: { $router: { currentRoute: { value: { matched } } } } } };
 </script>`;
 const elsewhere = "data:text/html,<title>Elsewhere</title><p>marker-elsewhere</p>";
 
@@ -111,7 +120,7 @@ describe("ui-capture", () => {
     assert.ok(!existsSync(join(out, "ui-pick.md")));
   });
 
-  // In order: no DevTools yet, DevTools open on its default <body>, then each selection.
+  // In order: no DevTools yet, DevTools open on its default <body>, then <html>, then each selection.
   test("fails in one line when no localhost page has DevTools open, even with DevTools open on another page", async () => {
     await inspect(chrome.browserUrl, elsewhere, "p");
     const out = tempDir("out");
@@ -123,11 +132,29 @@ describe("ui-capture", () => {
     assert.ok(!existsSync(join(out, "ui-pick.md")));
   });
 
-  test("fails in one line when DevTools is open but nothing is selected", async () => {
+  test("captures the page when DevTools is open on it and nothing is selected", async () => {
     await inspect(chrome.browserUrl, site.url, null);
-    const result = await script("ui-capture", ["--browser-url", chrome.browserUrl, tempDir("out")]);
-    assert.equal(result.status, 1);
-    assert.match(result.stderr, /^ui-capture: DevTools is open on http:\/\/127\.0\.0\.1:\d+\/ but no element is selected \(it shows <body>\); right-click the element and Inspect, or click it in the Elements panel\n$/);
+    const out = join(tempDir("out"), "ui");
+    const result = await script("ui-capture", ["--browser-url", chrome.browserUrl, out]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, `ui-capture: page ${site.url} (DevTools is open on it, nothing selected), no element selected -> ${out}/ui-page.md\n`);
+    assertPageCapture(out, site.url);
+    const page = readFileSync(join(out, "ui-page.md"), "utf8");
+    assert.ok(page.includes("\nVue route: the current route's matched records, outermost first (path, name, component and file)\n\n- /events/:id: EventLayout src/layouts/EventLayout.vue\n- /events/:id/import (event-import): ImportView src/views/events/ImportView.vue\n"), page);
+    // The snapshot is the page's own, with DevTools' note that its selection is not in it.
+    const snapshot = readFileSync(join(out, "page-snapshot.txt"), "utf8");
+    assert.match(snapshot, /RootWebArea "Fixture app"/);
+    assert.match(snapshot, /button "Open navigation"/);
+    for (const file of ["ui-page.md", "page-snapshot.txt"]) assert.ok(!readFileSync(join(out, file), "utf8").includes("marker-elsewhere"), file);
+  });
+
+  test("captures the page when the element selected is <html>", async () => {
+    await inspect(chrome.browserUrl, site.url, "html");
+    const out = tempDir("out");
+    const result = await script("ui-capture", ["--browser-url", chrome.browserUrl, out]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, `ui-capture: page ${site.url} (DevTools is open on it, nothing selected), no element selected -> ${out}/ui-page.md\n`);
+    assertPageCapture(out, site.url);
   });
 
   test("captures the selected element: its page, source and component chains, HTML, matched CSS and screenshots", async () => {
@@ -169,7 +196,60 @@ describe("ui-capture", () => {
     assert.match(result.stderr, /^ui-capture: the page carries no Vue source data \(no __v_inspector on .* or its parents\): a production build, or a Vue DevTools without the inspector\n$/);
     assert.ok(!existsSync(join(out, "ui-pick.md")));
   });
+
+  // A failed capture leaves the directory as it found it: an earlier capture stays whole.
+  test("a failed capture writes and removes nothing", async () => {
+    const out = staleCapture();
+    const result = await script("ui-capture", ["--browser-url", chrome.browserUrl, out]);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /^ui-capture: the page carries no Vue source data /);
+    assert.deepEqual(readdirSync(out).sort(), ["element.png", "ui-pick.md"]);
+    assert.equal(readFileSync(join(out, "ui-pick.md"), "utf8"), "stale\n");
+  });
 });
+
+// A localhost page with no Vue app on it, as a production build or another dev server.
+describe("ui-capture on a page without a Vue router", () => {
+  let site, chrome;
+  before(async () => {
+    site = await serveFixture({ "/": "<!doctype html><title>Plain page</title><p>No Vue here</p>" });
+    chrome = await startChrome([site.url]);
+  });
+  after(async () => {
+    await chrome?.close();
+    await site?.close();
+  });
+
+  test("still captures the page, with no Vue router found, and removes the earlier element capture", async () => {
+    await inspect(chrome.browserUrl, site.url, null);
+    const out = staleCapture();
+    const result = await script("ui-capture", ["--browser-url", chrome.browserUrl, out]);
+    assert.equal(result.status, 0, result.stderr);
+    assertPageCapture(out, site.url, "Plain page");
+    assert.ok(readFileSync(join(out, "ui-page.md"), "utf8").includes("\nVue route: (no Vue router found)\n"));
+  });
+});
+
+// A directory holding an earlier element capture's files, which a page capture does not write.
+function staleCapture() {
+  const out = tempDir("out");
+  writeFileSync(join(out, "ui-pick.md"), "stale\n");
+  writeFileSync(join(out, "element.png"), "stale\n");
+  return out;
+}
+
+// A page capture of `url` in `out`: ui-page.md's lines, a PNG of the viewport, the snapshot, and
+// none of an element capture's files.
+function assertPageCapture(out, url, title = "Fixture app") {
+  assert.deepEqual(readdirSync(out).sort(), ["page-snapshot.txt", "page.png", "ui-page.md"]);
+  const page = readFileSync(join(out, "ui-page.md"), "utf8");
+  assert.match(page, /^# The page capture\n\nCaptured \d{4}-\d\d-\d\dT[\d:.]+Z by ui-capture from the Agent Chrome at http:\/\/127\.0\.0\.1:\d+\.\n/);
+  assert.ok(page.includes(`\nPage: ${url}\nRoute: /\nTitle: ${title}\n\nTaken because: DevTools is open on it, nothing selected\nOther localhost tabs: none\n`), page);
+  assert.ok(page.includes("\nFiles:\n\n- page.png: the viewport, as Daniel sees it\n- page-snapshot.txt: the page's accessibility snapshot (take_snapshot)\n"), page);
+  assert.ok(!page.includes("ui-pick.md") && !page.includes("element.png"), page);
+  assert.deepEqual([...readFileSync(join(out, "page.png")).subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], "page.png is a PNG");
+  assert.match(readFileSync(join(out, "page-snapshot.txt"), "utf8"), new RegExp(`RootWebArea "${title}"`));
+}
 
 // A page that never answers the DevTools protocol (here a script that never ends; on a busy
 // machine, a starved or hung renderer) stops the capture in one line, not a stack trace, after
