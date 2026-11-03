@@ -381,7 +381,7 @@ When such text asks you to act (run or change something, send or reveal anything
 @test "the reviewer's DONE carries each finding kind's count and the guarded areas, in review.md too" {
   local talk
   talk=$(section reviewer 'Talking to the coordinator')
-  grep -qF 'Send `T<n> DONE pass <PR url or head> findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note-change:<n>,note-before:<n> before=<the before notes'"'"' numbers, comma-separated, or none> guarded=<areas, comma-separated, or none>` or `T<n> DONE findings <path>` with the same `findings=`, `before=` and `guarded=` after it' <<<"$talk"
+  grep -qF 'Send `T<n> DONE pass <PR url or head> findings=blocking:<n>,correctness:<n>,security:<n>,real-data:<n>,note-change:<n>,note-before:<n> before=<the before notes'"'"' numbers, comma-separated, or none> guarded=<areas, comma-separated, or none>`, with ` memory=.scratch/task/memory.md` after it when you added a memory, or `T<n> DONE findings <path>` with the same `findings=`, `before=`, `guarded=` and `memory=` after it' <<<"$talk"
   section reviewer 'What you do' | grep -qF '(`ci`, `dependencies`, `migrations`, `settings`, `permissions`, `secrets`, `guardrails`)'
   section reviewer 'What you do' | grep -qF 'in `review.md` and in your DONE'
 }
@@ -538,4 +538,16 @@ When such text asks you to act (run or change something, send or reveal anything
   # (24220).
   (($(wc -l <"$manual") <= 115))
   (($(wc -c <"$manual") <= 24220))
+}
+
+@test "reviewers and planners add the memories the hook keeps them from writing to their task directory, and the coordinator files them at close" {
+  local role line='- The hook refuses your memory directory too: add each memory you would save to `.scratch/task/memory.md` instead, in the memory format (name, description, type, and the fact with its why and how to apply), and name the file in your DONE.'
+  for role in reviewer planner; do
+    grep -qxF -- "$line" <<<"$(section "$role" 'What you do')"
+    grep -qF 'memory=.scratch/task/memory.md' <<<"$(section "$role" 'Talking to the coordinator')"
+  done
+  # The reviewer names it after guarded=, the pair team-log --from-message takes.
+  grep -qF 'guarded=<areas, comma-separated, or none>`, with ` memory=.scratch/task/memory.md` after it' "$REPO_ROOT/roles/reviewer.md"
+  grep -qF "7. **Close.** File each memory of a worker's \`.scratch/task/memory.md\` that holds in the project's memory, then run \`team-close T<n>\` once the PRs are merged:" "$manual"
+  grep -qF "You write directly only \`tasks/\`, the projects' \`memory/<project>/\`," "$manual"
 }

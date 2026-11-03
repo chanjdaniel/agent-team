@@ -239,24 +239,54 @@ https://discord.com/api/v10/channels/1562486564871995482/messages/15626617749504
   assert_equal "$(stub_calls curl)" ""
 }
 
-@test "Daniel's word holds through a merge of the base whose passing review was logged after it" {
-  moved_head base
+@test "Daniel's word holds through a conflicted merge of the base whose passing review was logged after it" {
+  moved_head conflict
   review "$head" pass
   run_bin -0 team-merge T14
   assert_equal "$(merged_events | jq -r .head)" "$head"
 }
 
-@test "a merge of the base after Daniel's word with no passing review of it logged after the word is refused" {
-  moved_head base
+@test "Daniel's word holds through clean merges of the base with no review after it" {
+  moved_head base base
+  run_bin -0 team-merge T14
+  assert_equal "$(merged_events | jq -r '[.head, .approval] | join(" ")')" "$head head"
+}
+
+@test "a conflicted merge of the base after Daniel's word with no passing review of it logged after the word is refused, naming why" {
+  moved_head conflict
   review "$approved" pass
   review "$head" findings
-  refused "the head ${head:0:7} is ${approved:0:7}, Daniel's word, with merges of the base, but no passing review of ${head:0:7} is logged after the word: review it, or ask again"
+  refused "the merges of the base since Daniel's word on ${approved:0:7} are not clean: ${head:0:7} conflicted when merged" \
+    "the head ${head:0:7} is ${approved:0:7}, Daniel's word, with merges of the base, but no passing review of ${head:0:7} is logged after the word: review it, or ask again"
+  [[ $stderr == *"not clean: ${head:0:7} conflicted when merged"$'\n'"  the head ${head:0:7} is ${approved:0:7}"* ]]
   # A pass logged before the word does not count either.
   jq -c 'select(.event != "review" and .event != "merge-approved")' "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/l"
   mv "$TEAM_HOME/l" "$TEAM_HOME/ledger.jsonl"
   review "$head" pass
   event T14 merge-approved "{url: \"https://github.com/owner/proj/pull/5\", discord_message: \"1562661774950400000\", head: \"$approved\"}"
-  refused "the head ${head:0:7} is ${approved:0:7}, Daniel's word, with merges of the base, but no passing review of ${head:0:7} is logged after the word: review it, or ask again"
+  refused "the merges of the base since Daniel's word on ${approved:0:7} are not clean: ${head:0:7} conflicted when merged" \
+    "the head ${head:0:7} is ${approved:0:7}, Daniel's word, with merges of the base, but no passing review of ${head:0:7} is logged after the word: review it, or ask again"
+}
+
+@test "an evil merge of the base, one with a change of its own, after Daniel's word needs a passing review logged after the word" {
+  moved_head base evil
+  refused "the merges of the base since Daniel's word on ${approved:0:7} are not clean: ${head:0:7} changes more than the merge of its parents" \
+    "the head ${head:0:7} is ${approved:0:7}, Daniel's word, with merges of the base, but no passing review of ${head:0:7} is logged after the word: review it, or ask again"
+  review "$head" pass
+  run_bin -0 team-merge T14
+  assert_equal "$(merged_events | jq -r .head)" "$head"
+}
+
+@test "a clean merge of the base after Daniel's word is refused when a review logged after the word found something" {
+  moved_head base
+  ledger_line --arg h "$head" '{ts: "2026-10-22T05:00:00Z", task: "T14", event: "review", verdict: "findings", head: $h}'
+  refused "the review of the head ${head:0:7} at 2026-10-22T05:00:00Z, logged after Daniel's word, found something, so the merges of the base since it need a passing review" \
+    "the head ${head:0:7} is ${approved:0:7}, Daniel's word, with merges of the base, but no passing review of ${head:0:7} is logged after the word: review it, or ask again"
+  [[ $stderr != *"not clean"* ]]
+  # A pass after it holds, as before.
+  review "$head" pass
+  run_bin -0 team-merge T14
+  assert_equal "$(merged_events | jq -r .head)" "$head"
 }
 
 @test "a commit of the PR's own after Daniel's word is refused naming it, even with a passing review" {

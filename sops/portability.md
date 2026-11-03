@@ -76,7 +76,7 @@ Nothing new means no commit and no push; `team-close` deletes the task's `wip/<p
 ## Fencing
 
 A machine that finds another holder or a higher epoch (its renew, its heartbeat) fences itself: it writes `fenced`, stops its own coordinator and `T<n>-<role>` sessions, and disables its heartbeat.
-The `lease-fence` hook blocks the coordinator's Discord replies, and its `git push`, `team-merge`, `team-open` and `team-close`, from the moment a fenced machine wakes, before any heartbeat runs (it checks the remote lease at most once a minute), and blocks workers' pushes.
+The `lease-fence` hook blocks the coordinator's Discord replies, and its `git push`, `team-merge`, `team-catch-up`, `team-open` and `team-close`, from the moment a fenced machine wakes, before any heartbeat runs (it checks the remote lease at most once a minute), and blocks workers' pushes.
 It blocks `team-post`, `team-ask`, `team-answer`, `team-inbox` and `team-thread wait` for every role the same way, and `team-post`, which `team-ask` posts through, `team-answer`, `team-inbox`, and `team-thread`'s `--interview` and `wait` refuse there by themselves too, through the same check (`lease_refusal` in `bin/lib/team.sh`).
 While the team holds offline, posts go on, as the plugin's do: Discord is up, and only `team-thread wait` is held.
 So a coordinator left running on a machine that lost the lease (its fence's `claude stop` failed, or `team-handoff --retire` never ran) acts on nothing the holder's coordinator owns.
