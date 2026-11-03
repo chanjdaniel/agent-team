@@ -1735,3 +1735,26 @@ Daniel moves it with one command.'
   # In a reading list, the line follows the others with no blank line between.
   grep -A2 -F -- '- `AGENTS.md`.' "$TEAM_HOME/tasks/T12/brief-builder-fix.md" | sed -n 2p | grep -qxF -- "$ui_line"
 }
+
+# team-ui keeps each capture in a capture-<k>/ of its own: the item names each, by number, with
+# its kind (element and page when it holds ui-pick.md) and its note, after what the files hold.
+@test "a task with capture directories names each with its kind and note, after the top-level files" {
+  open_t12
+  local ui=$TEAM_HOME/tasks/T12/ui
+  mkdir -p "$ui/capture-1" "$ui/capture-2" "$ui/capture-10"
+  touch "$ui/screenshot-1.png" "$ui/capture-1/"{ui-page.md,page.png,page-snapshot.txt,ui-pick.md,element.png} \
+    "$ui/capture-2/"{ui-page.md,page.png,page-snapshot.txt,note.md} "$ui/capture-10/"{ui-page.md,page-snapshot.txt}
+  run_bin -0 team-brief T12 builder-fix --set read='- `AGENTS.md`.' --set commits=fix --set goal=g
+  assert_equal "$(sed -n '/^- `AGENTS.md`\.$/,/^$/p' "$TEAM_HOME/tasks/T12/brief.md")" '- `AGENTS.md`.
+- What Daniel pointed at, captured at intake: `~/agent-team-records/tasks/T12/ui/` (`screenshot-1.png`), each capture in a directory of its own, listed below.
+  `ui-page.md` says what the page held when Daniel saw it: its URL, route, title and Vue route, and its console problems and failed requests since it loaded, beside `page.png`, its screenshot, and `page-snapshot.txt`, its accessibility snapshot; in an element capture, `ui-pick.md` names the element'"'"'s `.vue` source file and line, its HTML and its matched CSS.
+  Check your fix on your own stack with your own headless browser, never in the Agent Chrome, which is Daniel'"'"'s own window.
+  - `capture-1/`: an element and page capture.
+  - `capture-2/`: a page capture, no element selected; `note.md` holds the words Daniel posted with it.
+  - `capture-10/`: a page capture, no element selected.'
+  # Captures alone: no top-level files to name.
+  rm "$ui/screenshot-1.png"
+  run_bin -0 team-brief T12 builder-fix --set read='- `AGENTS.md`.' --set commits=fix --set goal=g --force
+  grep -qxF -- '- What Daniel pointed at, captured at intake: `~/agent-team-records/tasks/T12/ui/`, each capture in a directory of its own, listed below.' \
+    "$TEAM_HOME/tasks/T12/brief.md"
+}

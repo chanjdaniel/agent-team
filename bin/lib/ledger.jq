@@ -365,6 +365,13 @@ def waiting:
     map(select(.event == "waiting")) | last | {on, reason, since: .ts}
   else null end;
 
+# The task's manual QC walk: {since} while it is on, since the ts of its latest walk event when
+# that says on, else null, as for a task with none or a closed one, whose walk ended with it. Read
+# by team-ui --walk and task_state.
+def qc_walk:
+  if task_status == "closed" then null
+  else map(select(.event == "walk")) | last | if .state == "on" then {since: .ts} else null end end;
+
 # The worktrees team-resume could not re-home that still are not made: each project's latest
 # rehome-failed with no later opened, worktree-added, worktree-moved, rehomed or worktree-returned
 # in that project, as {project, branch, machine, reason, since}, in the order they failed.
@@ -701,7 +708,7 @@ def task_state($sessions; $home):
   | {schema: "team-state/1", task: .[0].task, title: $opened.title, project: $opened.project,
      path: $opened.path, phase: phase, worktrees: worktree_list,
      thread: (map(select(.event == "thread") | .discord_thread) | last),
-     workers: $workers, last_event: last, pending_asks: pending_asks, waiting: waiting,
+     workers: $workers, last_event: last, pending_asks: pending_asks, waiting: waiting, walk: qc_walk,
      rehome_failures: rehome_failures, merge_preapproval: latest_merge_preapproval, pr: null,
      progress: progress($workers)};
 
@@ -753,6 +760,7 @@ def state_line:
        elif .covers then " | standing word covers it"
        else " | standing word does not cover it: \(.reasons[0])"
          + (.reasons | length | if . > 1 then " (and \(. - 1) more)" else "" end) end)
+  + (if .walk == null then "" else " | walk on since \(.walk.since)" end)
   + (if .waiting == null then "" else " | waiting on \(.waiting.on): \(.waiting.reason)" end);
 
 # Whether a task is parked, waiting on something other than a worker: held, blocked or awaiting

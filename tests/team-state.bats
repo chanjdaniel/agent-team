@@ -107,7 +107,7 @@ phase_of() {
     thread: "1563",
     last_event: {ts: "2026-10-22T02:00:00Z", task: "T14", event: "answered", id: "q1", answer: "team-state"},
     pending_asks: [{id: "q2", text: "Ship it?", ts: "2026-10-22T02:00:00Z"}],
-    waiting: null, rehome_failures: [], merge_preapproval: null, pr: null,
+    waiting: null, walk: null, rehome_failures: [], merge_preapproval: null, pr: null,
     progress: {tickets: {done: [], total: 0}, on: [],
       reviews: {count: 0, verdict: null, head: null, sent_back: null}}}')"
   assert_equal "$(stub_calls gh)" ""
@@ -672,6 +672,34 @@ EOF
   assert_equal "$(jq -c .waiting <<<"$output")" null
 }
 
+@test "a walk that is on shows with its start, before any waiting part, until it is off or the task closes" {
+  open_task
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .walk <<<"$output")" null
+  ledger_line '{ts: "2026-10-22T03:00:00Z", task: "T14", event: "walk", state: "on"}'
+  ledger_line '{ts: "2026-10-22T03:05:00Z", task: "T15", event: "walk", state: "off"}'
+  event T14 waiting '{on: "Daniel", reason: "walk the import page"}'
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .walk <<<"$output")" '{"since":"2026-10-22T03:00:00Z"}'
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature planning | no live worker | walk on since 2026-10-22T03:00:00Z | waiting on Daniel: walk the import page"
+  # An off ends it; the next on starts another, from its own time.
+  ledger_line '{ts: "2026-10-22T04:00:00Z", task: "T14", event: "walk", state: "off"}'
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .walk <<<"$output")" null
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature planning | no live worker | waiting on Daniel: walk the import page"
+  ledger_line '{ts: "2026-10-22T05:00:00Z", task: "T14", event: "walk", state: "on"}'
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature planning | no live worker | walk on since 2026-10-22T05:00:00Z | waiting on Daniel: walk the import page"
+  # A walk left on ends with its task.
+  ledger_line '{ts: "2026-10-22T06:00:00Z", task: "T14", event: "closed", archive: [], returned: [], kept: []}'
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .walk <<<"$output")" null
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature closed | no live worker | waiting on Daniel: walk the import page"
+}
+
 @test "merge_preapproval is null with none logged, else the latest one's facts, withdrawal, opt-in and own" {
   open_task
   run_bin -0 team-state T14 --json
@@ -1040,4 +1068,6 @@ progress_task() {
   assert_contains "$output" "16 behind dev"
   assert_contains "$output" "caught_up"
   assert_contains "$output" "(caught up cleanly with <base>)"
+  assert_contains "$output" "walk on since <ts>"
+  assert_contains "$output" '{"since": "<ts>"}'
 }

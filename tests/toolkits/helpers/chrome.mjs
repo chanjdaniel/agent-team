@@ -8,7 +8,10 @@
 //                                                     page, the element selected in Elements
 //   const { server, pages } = await serverListing(connect, url);   a server whose list names url
 //   const browser = await browserSession(chrome.browserUrl);   CDP to the browser itself:
-//   await browser.send("Target.getTargets"); browser.close();
+//   await browser.send("Target.getTargets"); browser.on("Target.targetInfoChanged", fn);
+//   browser.close();
+//   await bringToFront(chrome.browserUrl, url);       Daniel's click on the tab at that URL: it is
+//                                                     its window's front tab, the most recent
 //   await chrome.close(); await site.close();
 //
 // Chrome is the machine's (TEAM_CHROME, else Google Chrome's app on macOS, else google-chrome or
@@ -113,7 +116,8 @@ export async function startChrome(urls) {
 const loaded = (pages, url) => pages.some((t) => t.url === url && t.title && t.title !== url);
 
 // A CDP session on the browser itself at `browserUrl`: `send(method, params)` resolves to the
-// command's result, or rejects with its error or after 30 s.
+// command's result, or rejects with its error or after 30 s; `on(method, fn)` calls fn with the
+// params of each event of that method.
 export async function browserSession(browserUrl) {
   const { webSocketDebuggerUrl } = await fetch(`${browserUrl}/json/version`, { signal: AbortSignal.timeout(10_000) }).then((r) => r.json());
   const socket = new WebSocket(webSocketDebuggerUrl);
@@ -122,9 +126,11 @@ export async function browserSession(browserUrl) {
     socket.onerror = () => reject(new Error(`could not connect to ${webSocketDebuggerUrl}`));
   });
   const pending = new Map();
+  const listeners = [];
   let lastId = 0;
   socket.onmessage = ({ data }) => {
-    const { id, result, error } = JSON.parse(data);
+    const { id, result, error, method, params } = JSON.parse(data);
+    if (method) for (const listener of listeners.filter((l) => l.method === method)) listener.fn(params);
     const call = pending.get(id);
     if (!call) return;
     pending.delete(id);
@@ -146,7 +152,29 @@ export async function browserSession(browserUrl) {
       }),
     ]).finally(() => pending.delete(id));
   };
-  return { send, close: () => socket.close() };
+  return { send, on: (method, fn) => listeners.push({ method, fn }), close: () => socket.close() };
+}
+
+// Daniel's click on the tab at `url` (the first, should two show it): Target.activateTarget makes
+// it its window's front tab, visible, and the first tab in /json/list, the most recently active
+// (a DevTools window, which is no tab, may come before it).
+export async function bringToFront(browserUrl, url) {
+  const browser = await browserSession(browserUrl);
+  try {
+    const target = (await browser.send("Target.getTargets")).targetInfos.find((t) => t.type === "page" && t.url === url);
+    if (!target) throw new Error(`bringToFront: no tab at ${url}`);
+    await browser.send("Target.activateTarget", { targetId: target.targetId });
+    // Until the browser's own list puts it first.
+    for (let i = 0; i < 50; i++) {
+      const tabs = (await fetch(`${browserUrl}/json/list`).then((r) => r.json())).filter((t) => t.type === "page");
+      const [first] = tabs.filter((t) => !t.url.startsWith("devtools://"));
+      if (first?.id === target.targetId) return;
+      await sleep(100);
+    }
+    throw new Error(`bringToFront: ${url} is not the first tab in /json/list`);
+  } finally {
+    browser.close();
+  }
 }
 
 // One headless Chrome, at the tab it opens at its start.
@@ -281,7 +309,17 @@ export async function inspect(browserUrl, pageUrl, selector) {
     const [app] = await listed((url) => url === pageUrl);
     await devtools.call("select_page", { pageId: app });
     await devtools.call("open_devtools");
-    if (selector === null) return;
+    if (selector === null) {
+      // Until the window has opened: Chrome lists a new DevTools window as an "other" target, then
+      // as a page once it shows, when it comes to the front with the page it inspects behind it, so
+      // a tab brought to the front before then loses its place in /json/list.
+      for (;;) {
+        inTime();
+        const windows = (await fetch(`${browserUrl}/json/list`).then((r) => r.json())).filter((t) => t.url.startsWith("devtools://"));
+        if (windows.length && windows.every((t) => t.type === "page")) return;
+        await sleep(50);
+      }
+    }
     // Each DevTools window, until the one inspecting that page. While every window listed
     // inspects another page or has not loaded its Elements panel yet, ask again, and every tenth
     // pass on a new connection, which attaches to a window the last one missed.

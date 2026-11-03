@@ -219,6 +219,11 @@
       "writer": "team-open",
       "about": "team-open --resume, when it makes the worktree at its recorded path while a rehome-failed of the task in project stands; made anywhere else, the worktree-moved clears it",
       "required": {"project": "string", "branch": "string", "worktree": "string", "machine": "string"}
+    },
+    "walk": {
+      "writer": "team-ui",
+      "about": "a manual QC walk of the task turned on or off (team-ui --walk start or stop), only when that changes it: the walk is on while the task's latest walk is on and the task is not closed, since its ts, and while it is on each message of Daniel's in the task's thread is a walk note the coordinator captures the page with",
+      "required": {"state": ["on", "off"]}
     }
   }
 }
