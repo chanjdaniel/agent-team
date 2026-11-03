@@ -648,8 +648,8 @@ slice_quota() {
 # level.jsonl must be well formed (each a FAIL naming its problem), and on Linux, with the user
 # manager answering (<manager> 1) and the slice installed, the limits team-level last applied
 # (~/.local/state/agent-team/level/applied.json) must be the recorded level's and the slice's CPU
-# quota theirs (each a WARN, fixed by team-level apply). The words are team-level status --json
-# --stored's says, made here as team-level makes them (level_state).
+# quota theirs (each a WARN, fixed by team-level apply). The words are those team-level status
+# --json --stored says, made here as team-level makes them (level_state).
 level_problems() {
   local manager=$1 out state applied quota want
   LEVEL_SAYS=''
