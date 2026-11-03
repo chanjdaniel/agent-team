@@ -50,7 +50,8 @@
 # reviewer, rereview and verify templates where their checks are listed, is the project's standing
 # review rules, the team home's projects/<project>/review-rules.md: the coordinator's records,
 # never code, read as written before the placeholders, so they may use any, and put in as a
-# paragraph of their own; with no file, or an empty one, the line is left out. One that cannot be read is refused.
+# paragraph of their own; with no file, or an empty one, the line is left out. One that cannot be
+# read is refused.
 # Derived: a template's reviewed, pr and head the caller does not --set are filled from the ledger
 # and GitHub. reviewed is the head of the task's latest review; pr the URL of the task's latest pr
 # event in the project's repo; head that event's head (moved by any history-rewritten), or the
