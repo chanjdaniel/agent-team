@@ -4,6 +4,7 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2154 # bin and err, the doctor's, and holding, from the lease check
 # shellcheck disable=SC2034 # heartbeat, for the resources check
+# reads state from: 220-lease.sh
 
 # Enabled exactly when this machine holds the lease.
 rc=0

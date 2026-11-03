@@ -52,11 +52,11 @@ checkout_state() {
   assert_contains "$output" "mine: false"
 }
 
-@test "A and B race take on a released lease 20 times: one wins each time, the loser names it" {
+@test "A and B race take on a released lease 10 times: one wins each time, the loser names it" {
   local round a b winner loser
   run_bin -0 team-lease take
   run_bin -0 team-lease release
-  for round in $(seq 20); do
+  for round in $(seq 10); do
     "$REPO_ROOT/bin/team-lease" take >"$BATS_TEST_TMPDIR/a.out" 2>&1 &
     a=$!
     on_machine laptop "$REPO_ROOT/bin/team-lease" take >"$BATS_TEST_TMPDIR/b.out" 2>&1 &

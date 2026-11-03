@@ -19,11 +19,13 @@ daemon_refuses() {
 }
 
 @test "the docker line fails while the daemon does not answer this user, with Daniel's step for the OS" {
+  only_checks 040-docker.sh
   tools_at arch
   run_bin -0 team-doctor
   assert_equal "$(line_of docker)" "PASS docker: the Docker daemon answers (server 28.3.3)"
   daemon_refuses "permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock: Get \"http://%2Fvar%2Frun%2Fdocker.sock/v1.51/info\": dial unix /var/run/docker.sock: connect: permission denied"
-  run_bin -1 team-doctor
+  # The whole doctor, since the next assertion reads every line.
+  TEAM_DOCTOR_CHECKS='' run_bin -1 team-doctor
   assert_equal "$(grep -v '^PASS ' <<<"$output")" "FAIL docker: \`docker info\` cannot reach the daemon: permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock: Get \"http://%2Fvar%2Frun%2Fdocker.sock/v1.51/info\": dial unix /var/run/docker.sock: connect: permission denied; fix: Daniel runs sudo usermod -aG docker \$USER, then logs out and in"
   daemon_refuses "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?"
   run_bin -1 team-doctor
@@ -35,6 +37,7 @@ daemon_refuses() {
 }
 
 @test "the chrome line warns without Google Chrome or Chromium, with this OS's install" {
+  only_checks 050-chrome.sh
   tools_at arch
   run_bin -0 team-doctor
   assert_equal "$(line_of chrome)" "PASS chrome: $TEAM_CHROME"
@@ -55,6 +58,7 @@ daemon_refuses() {
 }
 
 @test "the 1password line warns without op or the app, never asking the vault" {
+  only_checks 150-1password.sh
   tools_at arch
   run_bin -0 team-doctor
   assert_equal "$(line_of 1password)" "PASS 1password: op and the 1Password app are installed (the vault is not asked)"
@@ -78,13 +82,15 @@ daemon_refuses() {
 }
 
 @test "the secret lines fail per missing, empty, open or misplaced secret with team-secrets restore; a broken manifest fails" {
+  only_checks 160-secrets.sh
   tools_at arch
   rm "$HOME/.claude/channels/discord/.env"
   : >"$HOME/.claude/channels/discord/access.json"
   chmod 644 "$HOME/Documents/projects/personal/Conventioner/.env"
   rm "$HOME/Documents/projects/personal/Conventioner/back-end/.env"
   mkdir "$HOME/Documents/projects/personal/Conventioner/back-end/.env"
-  run_bin -1 team-doctor
+  # The whole doctor, since the lines but the secret ones are asserted below.
+  TEAM_DOCTOR_CHECKS='' run_bin -1 team-doctor
   assert_equal "$(grep -E '^.... secret' <<<"$output")" "FAIL secret discord-bot-env: missing; fix: Daniel runs team-secrets restore in their own terminal
 FAIL secret discord-access-json: empty; fix: Daniel runs team-secrets restore in their own terminal
 FAIL secret conventioner-env: mode 644; fix: Daniel runs team-secrets restore in their own terminal
@@ -104,6 +110,7 @@ FAIL interview channel: no DISCORD_BOT_TOKEN in ~/.claude/channels/discord/.env,
 }
 
 @test "the discord access line fails unless #coordinator's group lets in only Daniel's id, naming no id but the channel's" {
+  only_checks 165-discord-access.sh 167-interview-channel.sh
   local file=$HOME/.claude/channels/discord/access.json
   local fix="fix: Daniel runs /discord:access group add 1562486564871995482 --no-mention --allow <their id> in their own Claude Code session"
   local open="so any server member's message there or in a task thread reaches the coordinator"
@@ -113,7 +120,8 @@ FAIL interview channel: no DISCORD_BOT_TOKEN in ~/.claude/channels/discord/.env,
   assert_equal "$(line_of 'discord access')" "PASS discord access: #coordinator's group allowFrom names only Daniel's id, so only their messages there and in task threads reach the coordinator"
   seen+=$output
   access_json "[\"$DANIEL_ID\"]" '[]'
-  run_bin -1 team-doctor
+  # The whole doctor, since the assertion reads every line.
+  TEAM_DOCTOR_CHECKS='' run_bin -1 team-doctor
   assert_equal "$(grep -v '^PASS ' <<<"$output")" "FAIL discord access: #coordinator's group allowFrom is empty, $open; $fix"
   seen+=$output
   # A group with no allowFrom at all is the plugin's empty one.
@@ -164,6 +172,7 @@ FAIL interview channel: no DISCORD_BOT_TOKEN in ~/.claude/channels/discord/.env,
 }
 
 @test "the interview channel line fails unless the channel is set, has no access.json group and lets the bot read, open threads and post in them" {
+  only_checks 167-interview-channel.sh
   local line="interview channel" give="fix: Daniel gives the bot's role"
   local make="fix: Daniel makes a text channel for interviews, with no access.json group, and a PR sets its id as INTERVIEW_CHANNEL in bin/lib/team.sh"
   tools_at arch
@@ -176,7 +185,8 @@ guilds/$GUILD_ID/members/$BOT_ID
 guilds/$GUILD_ID/roles"
   [[ $(stub_calls curl) != *"$FAKE_DISCORD_TOKEN"* ]]
 
-  TEAM_INTERVIEW_CHANNEL='' run_bin -1 team-doctor
+  # The whole doctor, since the assertion reads every line.
+  TEAM_INTERVIEW_CHANNEL='' TEAM_DOCTOR_CHECKS='' run_bin -1 team-doctor
   assert_equal "$(grep -v '^PASS ' <<<"$output")" "FAIL interview channel: no interview channel is set, so no planner can interview Daniel; $make"
 
   jq --arg c "$INTERVIEW_ID" '.groups[$c] = {requireMention: false, allowFrom: []}' "$HOME/.claude/channels/discord/access.json" >"$BATS_TEST_TMPDIR/access.json"
@@ -235,6 +245,7 @@ EOF
 }
 
 @test "on an opencode gate the gate-agent line fails while its wrapper is missing, stale or not executable, opencode is missing, or config.yaml does not run the gate on it" {
+  only_checks 170-gate-agent.sh
   local wrapper=$HOME/.no-mistakes/bin/opencode-gate config=$HOME/.no-mistakes/config.yaml
   local install="mkdir -p ~/.no-mistakes/bin && install -m 755 $CODE_CHECKOUT/bin/lib/opencode-gate ~/.no-mistakes/bin/opencode-gate"
   local setting="agent_path_override: {opencode: $wrapper}" tools="$CODE_CHECKOUT/bin/team-bootstrap --stage tools"
@@ -289,7 +300,8 @@ EOF
   run_bin -1 team-doctor
   assert_equal "$(line_of gate-agent)" "FAIL gate-agent: ~/.no-mistakes/bin/opencode-gate is not the code's bin/lib/opencode-gate; fix: $install"
   rm "$wrapper"
-  run_bin -1 team-doctor
+  # The whole doctor, since the assertion after the next reads every line.
+  TEAM_DOCTOR_CHECKS='' run_bin -1 team-doctor
   assert_equal "$(line_of gate-agent)" "FAIL gate-agent: ~/.no-mistakes/bin/opencode-gate is not installed; fix: $install"
   # Nothing else fails, on macOS alike.
   assert_equal "$(grep -v '^PASS ' <<<"$output" || true)" "$(line_of gate-agent)"
@@ -300,6 +312,7 @@ EOF
 }
 
 @test "on a Claude gate the gate-agent line passes only while claude is installed and its flags keep it off Daniel's user settings and MCP servers" {
+  only_checks 170-gate-agent.sh
   local config=$HOME/.no-mistakes/config.yaml
   local args='agent_args_override: {claude: [--setting-sources, "project,local", --strict-mcp-config]}'
   local pass="PASS gate-agent: config.yaml runs the gate on claude with --setting-sources project,local and --strict-mcp-config, and claude is installed"
@@ -312,7 +325,8 @@ EOF
   rm "$HOME/.no-mistakes/bin/opencode-gate"
   printf '%s\n' 'agent: claude' 'api_token: fake-token-123' 'agent_config:' '  claude:' '    model: claude-haiku-5-5' \
     'agent_args_override:' '  claude:' '    - --setting-sources' '    - project,local' '    - --strict-mcp-config' >"$config"
-  run_bin -0 team-doctor
+  # The whole doctor, since the token's absence is asserted of every line.
+  TEAM_DOCTOR_CHECKS='' run_bin -0 team-doctor
   assert_equal "$(line_of gate-agent)" "$pass"
   [[ $output != *fake-token-123* ]]
   # The flow form, and the = form, quoted.
@@ -390,6 +404,7 @@ EOF
 }
 
 @test "the servers line fails while servers/node_modules is missing or not the install of servers/package-lock.json" {
+  only_checks 060-servers.sh
   local fix="$CODE_CHECKOUT/servers/install"
   tools_at arch
   run_bin -0 team-doctor
@@ -398,7 +413,8 @@ EOF
   run_bin -1 team-doctor
   assert_equal "$(line_of servers)" "FAIL servers: servers/node_modules is not the install of servers/package-lock.json, so a toolkit or chrome-devtools-axi may run another server; fix: $fix"
   rm -r "$CODE_CHECKOUT/servers/node_modules"
-  run_bin -1 team-doctor
+  # The whole doctor, since the last assertion reads every line.
+  TEAM_DOCTOR_CHECKS='' run_bin -1 team-doctor
   assert_equal "$(line_of servers)" "FAIL servers: servers/node_modules is missing, so the toolkits' servers and the sessions' chrome-devtools-mcp cannot start; fix: $fix"
   assert_equal "$(grep -v '^PASS ' <<<"$output" || true)" "$(line_of servers)"
 }
@@ -407,10 +423,12 @@ EOF
 RECORDS_FIX="fix what it names in the team home (team-log --check and team-project --check list every problem), then run team-doctor again"
 
 @test "the records line fails on a ledger that breaks its contract, naming its first problem and the count" {
+  only_checks 180-records.sh
   tools_at arch
   printf '%s\n' '{"ts": "2026-10-24T01:00:00Z", "task": "T1", "event": "launch", "role": "builder", "session": "a1", "worktree": "/w"}' \
     'not json' >>"$TEAM_HOME/ledger.jsonl"
-  run_bin -1 team-doctor
+  # The whole doctor, since "nothing else fails" reads every line.
+  TEAM_DOCTOR_CHECKS='' run_bin -1 team-doctor
   assert_equal "$(line_of records)" "FAIL records: $TEAM_HOME/ledger.jsonl:1: launch needs toolkits (2 of 2 lines break the ledger contract); fix: $RECORDS_FIX"
   # Nothing else fails.
   assert_equal "$(grep -v '^PASS ' <<<"$output" | grep -v '^FAIL records: ' || true)" ""
@@ -420,12 +438,14 @@ RECORDS_FIX="fix what it names in the team home (team-log --check and team-proje
 }
 
 @test "the records line warns on a ledger whose sent_back holds whole numbers as strings, naming the conversion, and fails nothing" {
+  only_checks 180-records.sh
   tools_at arch
   local strict
   strict=$(jq -r .strict_from "$REPO_ROOT/bin/lib/ledger-contract.json")
   printf '%s\n' "{\"ts\": \"$strict\", \"task\": \"T1\", \"event\": \"review\", \"verdict\": \"findings\", \"head\": \"a1b2c3d\", \"sent_back\": [\"5\"]}" \
     >>"$TEAM_HOME/ledger.jsonl"
-  run_bin -0 team-doctor
+  # The whole doctor, since the second assertion reads every line.
+  TEAM_DOCTOR_CHECKS='' run_bin -0 team-doctor
   assert_equal "$(line_of records)" "WARN records: the ledger meets its contract (1 line), but 1 of its lines holds whole numbers as strings in a sent_back or before, the registry passes (2 projects) and machine/secrets.md describes every enabled secret; fix: run team-log --fix-sent-back, which stores them as numbers"
   assert_equal "$(grep -v '^PASS ' <<<"$output" | grep -v '^WARN records: ' || true)" ""
   printf '%s\n' "{\"ts\": \"$strict\", \"task\": \"T1\", \"event\": \"review\", \"verdict\": \"findings\", \"head\": \"a1b2c3d\", \"sent_back\": [\"6\", 7]}" \
@@ -448,9 +468,11 @@ RECORDS_FIX="fix what it names in the team home (team-log --check and team-proje
 }
 
 @test "the records line fails on each enabled secret machine/secrets.md has no row for; a disabled one needs none" {
+  only_checks 180-records.sh
   tools_at arch
   sed -i -e '/^| `conventioner-env` |/d' -e '/^| `discord-bot-env` |/d' -e '/^| `hub-env` |/d' "$TEAM_HOME/machine/secrets.md"
-  run_bin -1 team-doctor
+  # The whole doctor, since the second assertion reads every line.
+  TEAM_DOCTOR_CHECKS='' run_bin -1 team-doctor
   assert_equal "$(line_of records)" "FAIL records: machine/secrets.md has no row for discord-bot-env, conventioner-env; fix: $RECORDS_FIX"
   assert_equal "$(grep -v '^PASS ' <<<"$output" | grep -v '^FAIL records: ' || true)" ""
   # Every problem at once, one after another.
@@ -463,6 +485,7 @@ RECORDS_FIX="fix what it names in the team home (team-log --check and team-proje
 # A UI capture (team-ui) stays on the machine that took it: the team home's git ignores it, and
 # team-close removes it, so one left behind by a task that is not open is reported.
 @test "the heavy runs line names the heavy-run lock's holder, or says it is free" {
+  only_checks 195-heavy-runs.sh
   run_bin team-doctor
   assert_equal "$(line_of 'heavy runs')" "PASS heavy runs: free (team-heavy queues full test suites and local checks)"
   mkdir -p "$HOME/.local/state/agent-team"
@@ -475,6 +498,7 @@ RECORDS_FIX="fix what it names in the team home (team-log --check and team-proje
 }
 
 @test "the captures line warns while the team home's git does not ignore tasks/*/ui/, or a capture is left by a task that is not open or in an archive" {
+  only_checks 190-captures.sh
   tools_at arch
   mkdir -p "$TEAM_HOME/tasks/T4/ui" "$TEAM_HOME/tasks/T5/ui" "$TEAM_HOME/tasks/T6/ui"
   touch "$TEAM_HOME/tasks/T4/ui/ui-pick.md" "$TEAM_HOME/tasks/T5/ui/page.png"

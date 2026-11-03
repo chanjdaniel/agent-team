@@ -287,13 +287,16 @@ team-ci-wait: every check passed on 9f8e7d6: test passed"
   assert_contains "$output" "team-ci-wait: owner/proj#217 is closed: its checks no longer matter"
 }
 
-@test "90 minutes of looks with checks pending end the wait with exit 75, naming each with its run" {
+@test "the deadline's looks with checks pending end the wait with exit 75, naming each with its run; its seam shortens it" {
   checks 0 "$(check test IN_PROGRESS 7001)" "$(check lint SUCCESS 7001)" "$(check deploy PENDING)"
   workflow_run 0 7001 in_progress
-  run_bin team-ci-wait "$url"
+  TEAM_CI_WAIT_DEADLINE_SECONDS=600 run_bin team-ci-wait "$url"
   assert_equal "$status" 75
-  assert_equal "$(ended_at)" 180
-  assert_contains "$output" "team-ci-wait: 90 minutes, and checks still pending on a1b2c3d: test (in_progress, run 7001 in_progress); deploy (pending, not an Actions run): run team-ci-wait again to wait on them, or report BLOCKED"
+  assert_equal "$(ended_at)" 20
+  assert_contains "$output" "team-ci-wait: 10 minutes, and checks still pending on a1b2c3d: test (in_progress, run 7001 in_progress); deploy (pending, not an Actions run): run team-ci-wait again to wait on them, or report BLOCKED"
+  TEAM_CI_WAIT_DEADLINE_SECONDS=90m run_bin team-ci-wait "$url"
+  assert_equal "$status" 2
+  assert_contains "$output" "TEAM_CI_WAIT_DEADLINE_SECONDS must be a number of seconds"
 }
 
 @test "gh failing at every look for 5 minutes ends the wait with exit 75 and gh's last reason" {

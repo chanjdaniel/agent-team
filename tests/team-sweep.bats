@@ -1084,13 +1084,14 @@ T42 stray: T42-reviewer 88888888 is live but T42 is not in the ledger; next: rea
   no_github
 }
 
-@test "--wait never ends within 20 minutes on a finding there at its first look, and one that clears and comes back is new" {
+@test "--wait never ends before its baseline's time on a finding there at its first look, and one that clears and comes back is new" {
   opened T3
   launch T3 builder 4f2a9c1e
-  looks '[]'
-  run_bin -99 team-sweep --wait
+  # The baseline's seam makes it 10 minutes: the watch is stopped at 9:30, its 20th wait.
+  LOOK_LIMIT=19 looks '[]'
+  TEAM_SWEEP_BASELINE_SECONDS=600 run_bin -99 team-sweep --wait
   assert_equal "$output" ""
-  assert_equal "$(waits)" 41
+  assert_equal "$(waits)" 20
 
   # Gone at the third look, back at the fourth (1:30): it ends three minutes later.
   : >"$STUB_CALLS/sleep.log"
@@ -1100,30 +1101,34 @@ T42 stray: T42-reviewer 88888888 is live but T42 is not in the ledger; next: rea
   assert_equal "$(waits)" 9
 }
 
-@test "--wait ends on a finding there at its first look once it has stood for 30 minutes" {
+@test "--wait ends on a finding there at its first look once it has stood for its baseline's time" {
   opened T3
   launch T3 builder 4f2a9c1e
   opened T4
   launch T4 builder 5a5a5a5a
   # T3 has no worker from the first look on, as one the coordinator just acted on; T4's goes at
-  # 0:30, a new finding, which clears again before it has stood three minutes.
+  # 0:30, a new finding, which clears again before it has stood three minutes. The baseline's
+  # seam makes it 10 minutes.
   local t4
   t4=$(session 5a5a5a5a T4-builder busy working)
-  export LOOK_LIMIT=80
   looks "[$t4]" '[]' '[]' "[$t4]"
-  run_bin -0 team-sweep --wait
+  TEAM_SWEEP_BASELINE_SECONDS=600 run_bin -0 team-sweep --wait
   assert_equal "$output" "T3 no-worker: no live session among its 1 launch (latest T3-builder 4f2a9c1e); next: read claude logs 4f2a9c1e for how it ended, then launch the next worker with team-worker or log what is known with team-log"
-  assert_equal "$(waits)" 60
+  assert_equal "$(waits)" 20
 
-  # Cleared at 10:00 and back at 10:30, it is new from then: three minutes later, it ends.
+  # Cleared at 5:00 and back at 5:30, it is new from then: three minutes later, it ends.
   : >"$STUB_CALLS/sleep.log"
   local -a lists=()
-  for _ in $(seq 20); do lists+=("[$t4]"); done
+  for _ in $(seq 10); do lists+=("[$t4]"); done
   lists+=("[$t4,$(session 4f2a9c1e T3-builder busy working)]" "[$t4]")
   looks "${lists[@]}"
-  run_bin -0 team-sweep --wait
+  TEAM_SWEEP_BASELINE_SECONDS=600 run_bin -0 team-sweep --wait
   assert_contains "$output" "T3 no-worker:"
-  assert_equal "$(waits)" 27
+  assert_equal "$(waits)" 17
+
+  # The seam takes only a number of seconds.
+  TEAM_SWEEP_BASELINE_SECONDS=10m run_bin -2 team-sweep --wait
+  assert_contains "$output" "TEAM_SWEEP_BASELINE_SECONDS must be a number of seconds"
 }
 
 @test "--wait never ends on a finding that clears within three minutes" {
@@ -1131,11 +1136,12 @@ T42 stray: T42-reviewer 88888888 is live but T42 is not in the ledger; next: rea
   launch T3 builder 4f2a9c1e
   local busy
   busy=$(session 4f2a9c1e T3-builder busy working)
-  # No worker from 0:30 to 3:00, as between a DONE and the next launch, then one again.
-  looks "[$busy]" '[]' '[]' '[]' '[]' '[]' '[]' "[$busy]"
+  # No worker from 0:30 to 3:00, as between a DONE and the next launch, then one again; the watch
+  # is stopped at 7:00, its 15th wait.
+  LOOK_LIMIT=14 looks "[$busy]" '[]' '[]' '[]' '[]' '[]' '[]' "[$busy]"
   run_bin -99 team-sweep --wait
   assert_equal "$output" ""
-  assert_equal "$(waits)" 41
+  assert_equal "$(waits)" 15
 }
 
 @test "--wait counts a retro coming due like any other finding" {

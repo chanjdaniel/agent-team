@@ -40,6 +40,7 @@ sessions() {
 }
 
 @test "the resources line passes with the slice installed and every live team session in its task's slice" {
+  only_checks 247-resources.sh
   fake_process 100 99 "$(user_cgroup agent-team-T7-a1b2c3d4.scope agent-team-T7.slice)" claude
   fake_process 200 199 "$(user_cgroup agent-team-T9-b1b2c3d4.scope agent-team-T9.slice)" claude
   fake_process 300 1 - claude
@@ -51,6 +52,7 @@ sessions() {
 }
 
 @test "the resources line warns on a slice not installed, a gate daemon without its drop-in or outside the slice, and a team session outside its slice" {
+  only_checks 247-resources.sh
   rm "$HOME/.config/systemd/user/agent-team.slice"
   gate_daemon 60757c3c "$(user_cgroup no-mistakes-daemon-60757c3c.service)"
   fake_process 100 1 - claude
@@ -73,12 +75,14 @@ sessions() {
 }
 
 @test "the resources line warns when the session list cannot be read" {
+  only_checks 247-resources.sh
   echo "not json" >"$STUB_FIXTURES/agents.json"
   run_bin -0 team-doctor
   assert_equal "$(line_of resources)" "WARN resources: $LEVEL; cannot read the live session list (claude agents --json), so no session's placement was checked; fix: run team-doctor again"
 }
 
 @test "the resources line fails when the user manager does not answer or does not delegate cpu and memory, since the level's limits need them" {
+  only_checks 247-resources.sh
   user_controllers memory pids
   run_bin -1 team-doctor
   assert_equal "$(line_of resources)" "FAIL resources: $LEVEL; the user manager's cgroup does not delegate the cpu and memory controllers (cgroup.controllers: memory pids), so the team's slice cannot measure or limit its work; fix: Daniel delegates them (Delegate=cpu memory pids in a drop-in for user@.service, which needs sudo), then logs in again"
@@ -93,6 +97,7 @@ sessions() {
 }
 
 @test "the resources line shows the recorded level, and warns when the slice's CPU quota or the limits applied are not the level's" {
+  only_checks 247-resources.sh
   echo '{"ts":"2026-11-01T14:05:00Z","mode":"manual","level":"minor","by":"Daniel","machine":"home-pc"}' >"$TEAM_HOME/level.jsonl"
   level_applied manual minor 360
   run_bin -0 team-doctor
@@ -116,6 +121,7 @@ sessions() {
 }
 
 @test "the resources line fails on a level record or capacity.json that is malformed, naming it" {
+  only_checks 247-resources.sh
   echo '{"mode": "manual", "level": "half"}' >"$TEAM_HOME/level.jsonl"
   run_bin -1 team-doctor
   assert_equal "$(line_of resources)" "FAIL resources: $TEAM_HOME/level.jsonl has lines that are not level records ({ts, mode, level, by, machine}): line 1; fix: fix or remove them, then run it again"
@@ -126,6 +132,7 @@ sessions() {
 }
 
 @test "on macOS the resources line passes with admission and stow only" {
+  only_checks 247-resources.sh
   on_macos
   tools_at macos
   run_bin -0 team-doctor
@@ -133,6 +140,7 @@ sessions() {
 }
 
 @test "the resources line warns on the lease holder with no reading of the last 15 minutes, naming the heartbeat's log, or its enable when it is off" {
+  only_checks 247-resources.sh
   rm "$HOME/.local/state/agent-team/capacity/readings.jsonl"
   capacity_reading 20
   run_bin -0 team-doctor
@@ -148,11 +156,13 @@ sessions() {
 }
 
 @test "the resources line warns on each leftover of the task slots, which levels replaced, on Linux and macOS, and there is no slots line" {
+  only_checks 247-resources.sh
   local config=$HOME/.config/agent-team state=$HOME/.local/state/agent-team
   local why="no longer read: levels replaced the task slots"
   mkdir -p "$state"
   echo '{"cap": 10}' >"$config/slots.json"
-  run_bin -0 team-doctor
+  # The whole doctor, since "no slots line" reads every line.
+  TEAM_DOCTOR_CHECKS='' run_bin -0 team-doctor
   assert_equal "$(line_of resources)" "WARN resources: $LEVEL; ~/.config/agent-team/slots.json is $why; fix: rm -r ~/.config/agent-team/slots.json"
   assert_equal "$(line_of slots)" ""
   rm "$config/slots.json"

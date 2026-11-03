@@ -1,6 +1,7 @@
 # clock         Within 60 s of the Date header of https://api.github.com (curl -sI); warns.
 # shellcheck shell=bash
 # shellcheck disable=SC2154 # os, from the os check
+# reads state from: 010-os.sh
 
 # awk reads to the end, since a reader that stopped at the Date line would break curl's later
 # writes, and pipefail would then throw the Date away.

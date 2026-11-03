@@ -13,6 +13,7 @@ setup() {
 }
 
 @test "a clock more than a minute off GitHub's warns; GitHub's Date unreadable warns too" {
+  only_checks 210-clock.sh
   tools_at arch
   # The Date header is in whole seconds, so the skew read may be a second off the one set.
   clock_offset 300
@@ -36,6 +37,7 @@ EOF
 }
 
 @test "GitHub's Date is read even when curl writes the headers after it in a later write" {
+  only_checks 210-clock.sh
   tools_at arch
   # The later write fails with a broken pipe if the reader stopped at the Date line.
   stub_script curl <<'EOF'
@@ -48,6 +50,7 @@ EOF
 }
 
 @test "the lease line: PASS held here, WARN held elsewhere or released, FAIL unreachable" {
+  only_checks 220-lease.sh
   tools_at arch
   make_machine laptop
   # Not holding, the heartbeat belongs off.
@@ -70,6 +73,7 @@ EOF
 }
 
 @test "the lease line fails on a fenced machine, naming the holder it saw, reachable or not" {
+  only_checks 220-lease.sh 240-heartbeat.sh
   tools_at arch
   make_machine laptop
   steal_lease laptop home-pc
@@ -85,6 +89,7 @@ EOF
 }
 
 @test "on a fenced machine, each open task's worktree holding what origin lacks gets a salvage line" {
+  only_checks 230-salvage.sh
   tools_at arch
   # Five tasks in site, each in a worktree of its own: T1 with a commit pushed only inside a
   # checkpoint's wip/site/T1 (as team-open --resume fetches it from the team home's origin), T2 with uncommitted changes, T3 clean, T4's worktree gone, T5 closed.
@@ -111,15 +116,16 @@ EOF
   echo '{"ts":"2026-10-23T10:00:00Z","task":"T5","event":"closed","archive":[],"returned":[],"kept":[]}' \
     >>"$TEAM_HOME/ledger.jsonl"
 
-  # Not fenced: no salvage line at all.
-  run_bin -0 team-doctor
+  # Not fenced: no salvage line at all (the whole doctor, since the assertion reads every line).
+  TEAM_DOCTOR_CHECKS='' run_bin -0 team-doctor
   [[ $output != *salvage* ]]
 
   make_machine laptop
   steal_lease laptop home-pc
   "$REPO_ROOT/bin/team-timers" disable >/dev/null
   echo '{"since": "2026-10-22T14:00:00Z", "holder": "laptop", "epoch": 2}' >"$HOME/.local/state/agent-team/fenced"
-  run_bin -1 team-doctor
+  # The whole doctor, since the lines' order is asserted below.
+  TEAM_DOCTOR_CHECKS='' run_bin -1 team-doctor
   # The salvage goes to the team home's origin, never the project's, which may be public.
   local team_origin
   team_origin=$(git -C "$TEAM_HOME" remote get-url origin)
@@ -156,6 +162,7 @@ FAIL salvage T2 site"
 }
 
 @test "the offline line warns with the outage's start and age while the heartbeat holds the team" {
+  only_checks 250-offline.sh
   tools_at arch
   run_bin -0 team-doctor
   assert_equal "$(line_of offline)" "PASS offline: the team is not holding for an outage"
@@ -165,6 +172,7 @@ FAIL salvage T2 site"
 }
 
 @test "the heartbeat line: PASS enabled on the holder or disabled elsewhere, FAIL otherwise with the command" {
+  only_checks 240-heartbeat.sh
   tools_at arch
   make_machine laptop
   "$REPO_ROOT/bin/team-timers" disable >/dev/null

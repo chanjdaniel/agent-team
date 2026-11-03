@@ -15,6 +15,7 @@ setup() {
 }
 
 @test "without a machine name the machine line fails with the command that writes one" {
+  only_checks 070-machine.sh 220-lease.sh
   tools_at arch
   rm "$HOME/.config/agent-team/machine"
   run_bin -1 team-doctor
@@ -26,6 +27,7 @@ setup() {
 }
 
 @test "the git hooks line fails unless the code checkout's own core.hooksPath is bin/hooks/git, with Daniel's command" {
+  only_checks 090-git-hooks.sh
   tools_at arch
   run_bin -0 team-doctor
   assert_equal "$(line_of 'git hooks')" "PASS git hooks: core.hooksPath is bin/hooks/git"
@@ -51,6 +53,7 @@ setup() {
 }
 
 @test "the team home line names the team home and what named it: TEAM_HOME or ~/.config/agent-team/home" {
+  only_checks 080-team-home.sh
   tools_at arch
   run_bin -0 team-doctor
   assert_equal "$(line_of 'team home')" "PASS team home: $TEAM_HOME, named by TEAM_HOME: a checkout of its own on dev, with an origin"
@@ -69,6 +72,7 @@ setup() {
 }
 
 @test "the records hooks line fails unless the team home's own core.hooksPath is the code's records-git, by absolute path" {
+  only_checks 095-records-hooks.sh
   tools_at arch
   local want=$CODE_CHECKOUT/bin/hooks/records-git
   local fix="fix: Daniel runs git -C $TEAM_HOME config core.hooksPath $want"
@@ -94,6 +98,7 @@ setup() {
 }
 
 @test "with neither TEAM_HOME nor the setting, the team home line fails with the setting's fix" {
+  only_checks 080-team-home.sh 085-team-home-fetch.sh 087-team-home-pack.sh 095-records-hooks.sh 180-records.sh 185-trust-team-home.sh 240-heartbeat.sh
   tools_at arch
   rm "$HOME/.config/agent-team/home"
   unset TEAM_HOME
@@ -105,10 +110,12 @@ setup() {
   assert_equal "$(line_of 'team home fetch')" ""
   assert_equal "$(line_of 'team home pack')" ""
   mkdir "$HOME/agent-team-records"
-  run -1 "$CODE_CHECKOUT/bin/team-doctor"
+  # The whole doctor, since the heartbeat line shows every check before it ran to its end with no
+  # team home.
+  TEAM_DOCTOR_CHECKS='' run -1 "$CODE_CHECKOUT/bin/team-doctor"
   assert_equal "$(line_of 'team home')" \
     "FAIL team home: neither TEAM_HOME nor ~/.config/agent-team/home names one; fix: name the team home's checkout, relative to your home directory: echo agent-team-records > ~/.config/agent-team/home"
-  # Every other line is still there, the ones that read the team home failing with the same refusal.
+  # The doctor goes on, the lines that read the team home failing with the same refusal.
   assert_contains "$(line_of records)" "FAIL records: "
   assert_equal "$(line_of 'records hooks')" \
     "FAIL records hooks: no team home to read it from (the team home line); fix: the team home line's fix, then run team-doctor again"
@@ -118,6 +125,7 @@ setup() {
 }
 
 @test "a team home that is missing, no checkout of its own, without an origin or on a detached HEAD fails the team home line" {
+  only_checks 080-team-home.sh
   tools_at arch
   local home=$TEAM_HOME named="named by TEAM_HOME" tmp
   tmp=$BATS_TEST_TMPDIR
@@ -163,6 +171,7 @@ setup() {
 }
 
 @test "the team home pack line counts the loose objects, and warns at twice the heartbeat's 200 with the fix" {
+  only_checks 087-team-home-pack.sh
   tools_at arch
   local home=$TEAM_HOME
   run_bin -0 team-doctor
@@ -176,6 +185,7 @@ setup() {
 }
 
 @test "the team home fetch line passes on a team home cloned to fetch only dev and lease, as SETUP.md clones it" {
+  only_checks 085-team-home-fetch.sh
   tools_at arch
   local origin=$BATS_TEST_TMPDIR/origin/agent-team.git clone=$HOME/agent-team-records
   git -C "$origin" branch wip/home/T1 dev
@@ -189,6 +199,7 @@ refs/remotes/origin/lease"
 }
 
 @test "the team home fetch line warns on a team home that fetches every branch, or keeps another's remote-tracking branch, with the fix" {
+  only_checks 085-team-home-fetch.sh
   tools_at arch
   local origin=$BATS_TEST_TMPDIR/origin/agent-team.git home=$TEAM_HOME
   run_bin -0 team-doctor
@@ -226,6 +237,7 @@ refs/remotes/origin/lease"
 }
 
 @test "the team home fetch line is left out while the team home line fails" {
+  only_checks 085-team-home-fetch.sh
   tools_at arch
   git -C "$TEAM_HOME" remote rename origin elsewhere
   run_bin -1 team-doctor
@@ -233,6 +245,7 @@ refs/remotes/origin/lease"
 }
 
 @test "Claude Code signed out, or signed in without a claude.ai account, fails the claude login line" {
+  only_checks 100-claude-login.sh
   tools_at arch
   stub_script claude <<'EOF'
 echo '{"loggedIn": false, "authMethod": "none"}'
@@ -256,6 +269,7 @@ EOF
 }
 
 @test "gh signed out fails the github login line" {
+  only_checks 110-github-login.sh
   tools_at arch
   stub_script gh <<'EOF'
 echo "You are not logged into any GitHub hosts. To log in, run: gh auth login" >&2
@@ -266,6 +280,7 @@ EOF
 }
 
 @test "the config line warns on each difference but the plugins, with team-config's commands" {
+  only_checks 120-config.sh
   tools_at arch
   run_bin -0 team-doctor
   assert_equal "$(line_of config)" "PASS config: this machine's Claude config is the team home's"
@@ -282,6 +297,7 @@ EOF
 }
 
 @test "the plugins line fails on each marketplace or plugin of plugins.txt missing here, with the commands that add them" {
+  only_checks 120-config.sh
   tools_at arch
   run_bin -0 team-doctor
   assert_equal "$(line_of plugins)" "PASS plugins: every marketplace and plugin of plugins.txt is installed"
@@ -298,6 +314,7 @@ EOF
 }
 
 @test "the memory line warns on each project whose auto memory is not in the team home, with team-config apply" {
+  only_checks 120-config.sh
   tools_at arch
   run_bin -0 team-doctor
   assert_equal "$(line_of memory)" "PASS memory: every project here keeps its auto memory in the team home"
@@ -320,6 +337,8 @@ EOF
 }
 
 @test "the discord line fails while user settings turn the Discord plugin on, and asks claude from /" {
+  # With the plugins line, whose FAIL is the third run's exit 1.
+  only_checks 120-config.sh 130-discord.sh
   tools_at arch
   run_bin -0 team-doctor
   assert_equal "$(line_of discord)" "PASS discord: the Discord plugin is off in user settings"
@@ -338,6 +357,7 @@ EOF
 }
 
 @test "the own settings line warns while this machine has no autoMode.environment of its own" {
+  only_checks 140-own-settings.sh
   tools_at arch
   run_bin -0 team-doctor
   assert_equal "$(line_of 'own settings')" "PASS own settings: autoMode.environment set for this machine"
@@ -405,6 +425,57 @@ EOF
   run_bin -0 team-doctor --help
   assert_equal "$(grep -A 2 '^  os  ' <<<"$output" | tail -n 1)" "  early         A check dropped in between the first two."
   assert_equal "$(tail -n 2 <<<"$output")" $'  late          A check dropped in after the last,\n                on two lines.'
+}
+
+@test "TEAM_DOCTOR_CHECKS runs the checks it names and those they read state from, each line as in a whole run, and refuses a name that is no check" {
+  tools_at arch
+  run_bin -0 team-doctor
+  local whole=$output check read reads own declared
+  local -A alone=()
+  # Each check alone prints lines of the whole run, in its order: its own (none for the Homebrew
+  # check on Arch, nor the salvage check with nothing to salvage) and those of the checks it reads
+  # state from. A check that prints nothing without its state (the docker check with no os, say)
+  # shows a lost reads line by printing no line of its own, so each other check must print one
+  # beyond those its declared checks print alone.
+  for check in "$CODE_CHECKOUT"/bin/lib/doctor.d/*.sh; do
+    TEAM_DOCTOR_CHECKS=${check##*/} run_bin -0 team-doctor
+    assert_equal "$(grep -xFf <(printf '%s\n' "$output") <<<"$whole")" "$output"
+    alone[${check##*/}]=$output
+    reads=''
+    read -ra declared <<<"$(sed -n '/^#/!q; s/^# reads state from: //p' "$check")"
+    for read in "${declared[@]}"; do
+      reads+=${alone[$read]}$'\n'
+    done
+    own=$(printf '%s' "$output" | grep -cvxFf <(printf '%s' "$reads") || true)
+    [[ ${check##*/} == @(020-homebrew|230-salvage).sh ]] || ((own > 0)) || {
+      echo "${check##*/} alone prints no line of its own: $output" >&2
+      return 1
+    }
+  done
+  # The heartbeat line reads the lease line's holding, which reads the machine line's name: on the
+  # holder it passes only with both, run once each in name order, however named.
+  TEAM_DOCTOR_CHECKS='240-heartbeat.sh 070-machine.sh 240-heartbeat.sh' run_bin -0 team-doctor
+  assert_equal "$(checks)" $'machine\nlease\nheartbeat'
+  assert_equal "$(line_of heartbeat)" "$(grep '^PASS heartbeat: ' <<<"$whole")"
+  # So does a check dropped in, by the line that declares it; a declared check that is no file is
+  # refused as a named one is.
+  local checks_dir=$CODE_CHECKOUT/bin/lib/doctor.d
+  printf '%s\n' '# early         Leaves its state.' '# shellcheck shell=bash' '' 'early_state=left' \
+    'report early PASS "left"' >"$checks_dir/015-early.sh"
+  printf '%s\n' '# reader        Reads it.' '# shellcheck shell=bash' '# reads state from: 015-early.sh' '' \
+    'report reader PASS "${early_state:-none}"' >"$checks_dir/016-reader.sh"
+  printf '%s\n' '# typo          Reads a check that is not there.' '# reads state from: 011-none.sh' '' \
+    'report typo PASS "never"' >"$checks_dir/017-typo.sh"
+  TEAM_DOCTOR_CHECKS=016-reader.sh run_bin -0 team-doctor
+  assert_equal "$output" $'PASS early: left\nPASS reader: left'
+  run_bin -0 team-doctor --help
+  assert_equal "$(grep -A 1 '^  reader  ' <<<"$output" | tail -n 1)" "  typo          Reads a check that is not there."
+  local name
+  for name in 999-none.sh 070-machine ../team.sh 017-typo.sh; do
+    TEAM_DOCTOR_CHECKS="070-machine.sh $name" run_bin -2 --separate-stderr team-doctor
+    assert_equal "$output" ""
+    assert_equal "$stderr" "team-doctor: TEAM_DOCTOR_CHECKS names ${name/017-typo.sh/011-none.sh}, no check file of bin/lib/doctor.d/"
+  done
 }
 
 @test "team-doctor refuses arguments other than --json" {

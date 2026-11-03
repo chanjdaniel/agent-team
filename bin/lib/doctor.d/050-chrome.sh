@@ -1,5 +1,6 @@
 # chrome        Google Chrome or Chromium is installed, for chrome-devtools-axi; warns.
 # shellcheck shell=bash
+# reads state from: 010-os.sh
 
 # By its app on macOS, by its command on Arch.
 if [[ -n $os ]]; then
