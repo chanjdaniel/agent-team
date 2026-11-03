@@ -1081,11 +1081,12 @@ Bash(gh-axi pr ready *)'
   for brief in reviewer rereview verify before-pr/rereview before-pr/verify; do
     grep -qF '`{{team_bin}}/team-checks {{project}} {{head}}`' "$REPO_ROOT/templates/briefs/$brief.md"
   done
-  for brief in delivery/direct-pr delivery/no-mistakes builder-merge-base rereview verify; do
+  for brief in delivery/direct-pr delivery/no-mistakes builder-merge-base rereview verify wait/direct-pr; do
     grep -qF '`{{team_bin}}/team-ci-wait ' "$REPO_ROOT/templates/briefs/$brief.md"
   done
   allows builder "$REPO_ROOT/bin/team-checks agent-team a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
   allows builder "$REPO_ROOT/bin/team-ci-wait https://github.com/me/shop/pull/5"
+  allows builder "$REPO_ROOT/bin/team-ci-wait --no-agent-review https://github.com/me/shop/pull/5"
   if allows builder "team-ci-wait https://github.com/me/shop/pull/5"; then return 1; fi
   if allows builder "/elsewhere/bin/team-ci-wait https://github.com/me/shop/pull/5"; then return 1; fi
   if denied settings/builder.json "$REPO_ROOT/bin/team-ci-wait https://github.com/me/shop/pull/5"; then return 1; fi
