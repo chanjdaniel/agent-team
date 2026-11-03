@@ -971,13 +971,13 @@ SINCE
   assert_equal "$(head -n 1 <<<"$brief")" "# T12 brief (builder): resume rate-limit the applicant sign-in endpoints"
   assert_contains "$brief" "you are the builder, resuming the task after the handoff from home-pc at 2026-10-23T14:05:00Z."
   assert_contains "$brief" "Worktree: \`~/.treehouse/Conventioner-d4c77a/4/Conventioner\`, branch \`fix/T12-applicant-sign-in-rate-limit\`"
-  assert_contains "$brief" "1. Read your brief \`~/agent-team-records/tasks/T12/brief.md\`"
-  assert_contains "$brief" "2. Then \`.scratch/task/handoff.md\` if it exists"
+  assert_contains "$brief" "2. Read your brief \`~/agent-team-records/tasks/T12/brief.md\`"
+  assert_contains "$brief" "3. Then \`.scratch/task/handoff.md\` if it exists"
   assert_contains "$brief" "branch \`fix/T12-applicant-sign-in-rate-limit\`: the one you left, when it stayed on this machine, else made here from what was pushed and archived."
   assert_contains "$brief" "Task directory: \`.scratch/task/\` in the worktree, as you left it, or restored from the task's archive with the worktree."
   assert_contains "$brief" "The uncommitted changes the stow found in the worktree: applied as uncommitted changes in your worktree."
   assert_contains "$brief" "Changes from a session the stow stopped may be half done"
-  assert_contains "$brief" "3. Check the branch: \`git status\`, \`git diff\`, and \`git log origin/dev..HEAD\`"
+  assert_contains "$brief" "4. Check the branch: \`git status\`, \`git diff\`, and \`git log origin/dev..HEAD\`"
   # A level resume on the same machine, as the level skill briefs it.
   run_bin -0 team-brief T12 resume --name resume-builder --force --set role=builder \
     --set "brief=~/agent-team-records/tasks/T12/brief.md" --set "from=the stow for the level at 2026-11-02T09:00:00Z" \
@@ -1392,16 +1392,17 @@ Task directory: `.work/task/` in the worktree (excluded from git): `spec.md`, `t
 
 ## Do
 
-1. Read `.work/task/spec.md`, every note in `.work/task/build-notes/` and `.work/task/handoff.md` when it exists, so you resolve each conflict as the task means it; delete `handoff.md` once the merge is pushed.
-2. `git fetch origin`, then merge `origin/main` with a merge commit (`git merge origin/main`, never a rebase), and note each file that conflicted.
-   If `git merge-base --is-ancestor origin/main HEAD` already holds, there is nothing to merge: go to step 6 with no conflicts.
-3. Resolve each conflict so both sides keep what they meant; a resolution that is a judgment call on behaviour goes to `coordinator` as `T14 QUESTION <the conflict> | options: ...`; then commit the merge.
+1. Bring the branch to its head on origin, which `team-catch-up` may have moved on a PR: `git fetch origin && git merge --ff-only origin/feat/T14-team-tooling`, leaving the merge out when there is no `origin/feat/T14-team-tooling`; if the merge fails, send `T14 BLOCKED <git's reason>` to `coordinator`.
+2. Read `.work/task/spec.md`, every note in `.work/task/build-notes/` and `.work/task/handoff.md` when it exists, so you resolve each conflict as the task means it; delete `handoff.md` once the merge is pushed.
+3. Merge `origin/main` with a merge commit (`git merge origin/main`, never a rebase), and note each file that conflicted.
+   If `git merge-base --is-ancestor origin/main HEAD` already holds, there is nothing to merge: go to step 7 with no conflicts.
+4. Resolve each conflict so both sides keep what they meant; a resolution that is a judgment call on behaviour goes to `coordinator` as `T14 QUESTION <the conflict> | options: ...`; then commit the merge.
    Then find what the merge made false, a file, command, flag, setting or path that one side renames or removes and the other still names, and fix it in a commit of its own.
-4. Run the project's local checks (`tests/run`) on the merged head with `@CODE@/bin/team-checks home <full sha>`, which runs them as `team-merge` does, in a fresh detached worktree of that head; fix the branch until all pass on one head.
-5. Push the branch; if the PR body names the head its local checks passed on, bring that line up to date (`gh pr edit https://github.com/chanjdaniel/agent-team/pull/9 --body-file <file>`).
-   Wait for the PR's GitHub checks with `@CODE@/bin/team-ci-wait https://github.com/chanjdaniel/agent-team/pull/9 <the full sha you pushed>`, run with Bash `run_in_background`, and act on how it ended: exit 0, every check passed or the head has none; exit 1, fix each failed check it names and push again, back to step 4, follow a stuck check's message, or, on a head other than the one you pushed, do as its message says; exit 75, run it again, or report as its message says.
-   Run no gate: the merge and the fixes of step 3 are re-reviewed, not re-gated.
-6. Send `T14 DONE merged main <the full sha of the head> conflicts: <each file that conflicted, or none>` to `coordinator`, which has a fresh reviewer re-check the merge.
+5. Run the project's local checks (`tests/run`) on the merged head with `@CODE@/bin/team-checks home <full sha>`, which runs them as `team-merge` does, in a fresh detached worktree of that head; fix the branch until all pass on one head.
+6. Push the branch; if the PR body names the head its local checks passed on, bring that line up to date (`gh pr edit https://github.com/chanjdaniel/agent-team/pull/9 --body-file <file>`).
+   Wait for the PR's GitHub checks with `@CODE@/bin/team-ci-wait https://github.com/chanjdaniel/agent-team/pull/9 <the full sha you pushed>`, run with Bash `run_in_background`, and act on how it ended: exit 0, every check passed or the head has none; exit 1, fix each failed check it names and push again, back to step 5, follow a stuck check's message, or, on a head other than the one you pushed, do as its message says; exit 75, run it again, or report as its message says.
+   Run no gate: the merge and the fixes of step 4 are re-reviewed, not re-gated.
+7. Send `T14 DONE merged main <the full sha of the head> conflicts: <each file that conflicted, or none>` to `coordinator`, which has a fresh reviewer re-check the merge.
 
 Never run a command that needs `sudo`; send `T14 BLOCKED <the command> needs sudo` to `coordinator` instead.
 
@@ -1461,6 +1462,66 @@ findings_files() {
   assert_contains "$brief" "\`! git rev-parse -q --verify origin/fix/T12-applicant-sign-in-rate-limit || git merge-base --is-ancestor origin/fix/T12-applicant-sign-in-rate-limit HEAD\`"
   assert_contains "$brief" "when it is none, the delivery opens it as it says."
   assert_contains "$brief" 'Run `/no-mistakes` with this intent: "T12: g"'
+}
+
+# team-catch-up pushes a merge of the base to a PR's branch from the primary checkout, so a builder
+# that holds the task, or one launched on a round brief, is behind origin until it fast-forwards.
+@test "each brief that starts a round on an existing branch first brings it to its head on origin" {
+  open_t12
+  local branch=fix/T12-applicant-sign-in-rate-limit template brief step check
+  step="1. Bring the branch to its head on origin, which \`team-catch-up\` may have moved on a PR: \`git fetch origin && git merge --ff-only origin/$branch\`, leaving the merge out when there is no \`origin/$branch\`; if the merge fails, send \`T12 BLOCKED <git's reason>\` to \`coordinator\`."
+  for template in builder-round builder-merge-base resume; do
+    local args=()
+    [[ $template == builder-round ]] && args=(--set pr=none --set findings=1 --set findings_file=.scratch/task/review.md --set goal=g)
+    [[ $template == builder-merge-base ]] && args=(--set pr=https://github.com/chanjdaniel/shop/pull/5)
+    [[ $template == resume ]] && args=(--set role=builder --set "brief=~/agent-team-records/tasks/T12/brief.md"
+      --set "from=the stow for the level" --set "snapshot=none")
+    run_bin -0 team-brief T12 "$template" --name "$template" "${args[@]}"
+    brief=$TEAM_HOME/tasks/T12/brief-$template.md
+    # The step opens the Do section: its first line after the heading and a blank line.
+    assert_equal "$(grep -A2 -xF '## Do' "$brief" | sed -n 3p)" "$step"
+  done
+  # The round's stowed-work check comes right after it.
+  grep -A4 -xF '## Do' "$TEAM_HOME/tasks/T12/brief-builder-round.md" | sed -n 4p | grep -q '^2\. Your branch must hold what the stowed builder pushed'
+  # builder-fix starts a new branch from the base, and its later rounds come as messages the role
+  # line covers.
+  run_bin -0 team-brief T12 builder-fix --set read='- `AGENTS.md`.' --set commits=fix --set goal=g --name fix
+  refute_grep -F 'merge --ff-only' "$TEAM_HOME/tasks/T12/brief-fix.md"
+  grep -qF 'Before each round on a branch whose PR exists, bring the branch to the PR'"'"'s head with `git fetch origin && git merge --ff-only origin/<branch>`, since `team-catch-up` may have moved it' \
+    "$REPO_ROOT/roles/builder.md"
+
+  # The commands as the round brief gives them, run in a worktree whose PR team-catch-up moved.
+  brief=$TEAM_HOME/tasks/T12/brief-builder-round.md
+  step=$(grep -xF -A2 '## Do' "$brief" | sed -n 3p | grep -o '`git fetch origin && [^`]*`' | tr -d '`')
+  check=$(grep -o "\`! git rev-parse [^\`]*\`" "$brief" | tr -d '`')
+  assert_equal "$step" "git fetch origin && git merge --ff-only origin/$branch"
+  local origin=$BATS_TEST_TMPDIR/shop.git wt=$BATS_TEST_TMPDIR/wt primary=$BATS_TEST_TMPDIR/primary
+  git init -q --bare -b dev "$origin"
+  git clone -q "$origin" "$wt"
+  git -C "$wt" commit -q --allow-empty -m base
+  git -C "$wt" push -q origin HEAD:dev
+  git -C "$wt" switch -q -c "$branch"
+  # With no origin/<branch> (a Disclosure task's), the merge is left out and the check passes.
+  (cd "$wt" && git fetch -q origin && eval "$check")
+  git -C "$wt" commit -q --allow-empty -m fix
+  git -C "$wt" push -q origin "$branch"
+  # team-catch-up's clean merge of the base, pushed from the primary checkout.
+  git clone -q "$origin" "$primary"
+  git -C "$primary" commit -q --allow-empty -m 'another task'
+  git -C "$primary" push -q origin HEAD:dev
+  git -C "$primary" fetch -q origin "$branch"
+  git -C "$primary" push -q origin "$(git -C "$primary" commit-tree -p "origin/$branch" -p HEAD -m 'merge dev' 'HEAD^{tree}'):refs/heads/$branch"
+  (cd "$wt" && git fetch -q origin && ! eval "$check")
+  (cd "$wt" && eval "$step" && eval "$check")
+  assert_equal "$(git -C "$wt" rev-parse HEAD)" "$(git -C "$origin" rev-parse "$branch")"
+  git -C "$wt" commit -q --allow-empty -m 'fix round'
+  git -C "$wt" push -q origin "$branch"
+  # A local commit origin lacks makes the fast-forward fail, as the step's BLOCKED says.
+  git -C "$primary" fetch -q origin "$branch"
+  git -C "$primary" push -q origin "$(git -C "$primary" commit-tree -p "origin/$branch" -m 'elsewhere' 'HEAD^{tree}'):refs/heads/$branch"
+  git -C "$wt" commit -q --allow-empty -m 'local only'
+  run bash -c "cd '$wt' && $step"
+  assert_equal "$status" 128
 }
 
 @test "a round brief takes the findings sent back, the newest findings file, the PR and the plan's goal" {
