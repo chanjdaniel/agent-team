@@ -1206,7 +1206,7 @@ YAML
 @test "tests/run, the team-heavy lock it runs under, and servers/install, which its toolkit tests run, need no team home" {
   unset TEAM_HOME
   run -2 --separate-stderr "$REPO_ROOT/tests/run" nothing
-  assert_equal "$stderr" "run: usage: tests/run [shellcheck|bats [--shard <k>/<n> [--list]]|toolkits]"
+  assert_equal "$stderr" "run: usage: tests/run [shellcheck|bats [--shard <k>/<n> [--list]|--changed [<base>] [--list]]|toolkits]"
   run -0 --separate-stderr "$REPO_ROOT/bin/team-heavy" run -- echo ran
   assert_equal "$output" ran
   run -2 --separate-stderr "$REPO_ROOT/servers/install" nothing
@@ -1263,7 +1263,7 @@ YAML
   for k in '--shard 0/3' '--shard 4/3' '--shard 1/0' '--shard 1/3x' '--list' '--shard' '--shard 1/3 --list x'; do
     # shellcheck disable=SC2086 # each form splits into its words
     run -2 --separate-stderr "$REPO_ROOT/tests/run" bats $k
-    assert_equal "$stderr" "run: usage: tests/run [shellcheck|bats [--shard <k>/<n> [--list]]|toolkits]"
+    assert_equal "$stderr" "run: usage: tests/run [shellcheck|bats [--shard <k>/<n> [--list]|--changed [<base>] [--list]]|toolkits]"
   done
   run -2 --separate-stderr "$REPO_ROOT/tests/run" toolkits --shard 1/3
   for k in '' 0 3x '3 4' 'update x' 'update 1 2'; do
@@ -1280,6 +1280,109 @@ YAML
   run -0 --separate-stderr "$REPO_ROOT/tests/run" bats --shard 900/900
   assert_contains "$output" "bats: shard 900/900 has no file"
   [[ $output != *"not ok"* ]]
+}
+
+# A checkout of its own for tests/run bats --changed, committed as its base: this checkout's bin/
+# with team-zzalpha and team-zzbeta, which runs it, and tests/ with each one's bats file, one
+# naming team-zzalpha, repo.bats, coordinator-manual.bats and other.bats, which reaches neither,
+# and a vendored bats that runs no test but logs each file to $STUB_CALLS/bats-ran.
+changed_checkout() {
+  local copy=$1 name
+  mkdir -p "$copy/tests/vendor/bats-core/bin" "$copy/sops"
+  copy_bin "$copy/bin"
+  link_shared tests-run "$REPO_ROOT/tests/run" "$copy/tests/run"
+  link_shared tests-shards "$REPO_ROOT/tests/shards" "$copy/tests/shards"
+  ln "$(shared changed-bats <<'SH'
+#!/usr/bin/env bash
+echo "${1##*/}" >>"$STUB_CALLS/bats-ran"
+echo "ok 1 a test of ${1##*/}"
+SH
+)" "$copy/tests/vendor/bats-core/bin/bats"
+  ln "$(shared changed-alpha <<<$'#!/usr/bin/env bash\necho alpha')" "$copy/bin/team-zzalpha"
+  ln "$(shared changed-beta <<<$'#!/usr/bin/env bash\n"$(dirname "$0")/team-zzalpha"')" "$copy/bin/team-zzbeta"
+  for name in team-zzalpha team-zzbeta repo coordinator-manual other; do
+    echo "@test \"$name\" { true; }" >"$copy/tests/$name.bats"
+  done
+  echo '@test "it runs team-zzalpha" { true; }' >"$copy/tests/names-alpha.bats"
+  echo '# the rules' >"$copy/sops/rules.md"
+  git -C "$copy" init -q
+  git -C "$copy" add -A
+  git -C "$copy" commit -qm base
+  git -C "$copy" tag base
+}
+
+# A change to one script reaches its own file, every file naming it, its caller's file, and
+# repo.bats and coordinator-manual.bats for a change under bin/; committed since the base or in
+# the working tree alike.
+@test "tests/run bats --changed lists the files a change to a script reaches, its callers' among them, and runs none with --list" {
+  local copy=$BATS_TEST_TMPDIR/copy
+  unset TEAM_HOME
+  changed_checkout "$copy"
+  local reached=$'tests/coordinator-manual.bats\ntests/names-alpha.bats\ntests/repo.bats\ntests/team-zzalpha.bats\ntests/team-zzbeta.bats'
+  rm "$copy/bin/team-zzalpha"
+  printf '#!/usr/bin/env bash\necho alpha again\n' >"$copy/bin/team-zzalpha"
+  run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
+  assert_equal "$output" "$reached"
+  [[ ! -e $STUB_CALLS/bats-ran ]]
+  git -C "$copy" switch -qc work
+  git -C "$copy" commit -qam 'change team-zzalpha'
+  run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
+  assert_equal "$output" "$reached"
+  [[ ! -e $STUB_CALLS/bats-ran ]]
+  # The base defaults to origin/dev.
+  git -C "$copy" update-ref refs/remotes/origin/dev base
+  run -0 --separate-stderr "$copy/tests/run" bats --changed --list
+  assert_equal "$output" "$reached"
+}
+
+# Without --list, the selection is printed, then run as tests/run bats runs every file.
+@test "tests/run bats --changed runs the files it reaches, after their list, and none when no path changed" {
+  local copy=$BATS_TEST_TMPDIR/copy
+  unset TEAM_HOME
+  export TEAM_JOBS=2
+  changed_checkout "$copy"
+  run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
+  assert_equal "$output" ""
+  run -0 --separate-stderr "$copy/tests/run" bats --changed base
+  assert_contains "$output" "bats: no path changed since base, so no file runs"
+  [[ ! -e $STUB_CALLS/bats-ran ]]
+  echo 'more' >>"$copy/sops/rules.md"
+  run -0 --separate-stderr "$copy/tests/run" bats --changed base
+  assert_equal "$(head -n 2 <<<"$output")" $'bats --changed base: 1 of 6 files\n  tests/repo.bats'
+  assert_contains "$output" "ok tests/repo.bats ("
+  assert_contains "$output" "bats: 1 tests passed; 0 of 1 files failed"
+  assert_equal "$(cat "$STUB_CALLS/bats-ran")" repo.bats
+}
+
+# A whole-suite path reaches every file; a change outside the code's scripts, tests and settings
+# (sops/, a new file there) reaches repo.bats alone.
+@test "tests/run bats --changed reaches every file from bin/lib/team.sh, and repo.bats alone from sops/" {
+  local copy=$BATS_TEST_TMPDIR/copy
+  unset TEAM_HOME
+  changed_checkout "$copy"
+  echo 'more' >>"$copy/sops/rules.md"
+  echo '# new' >"$copy/sops/new.md"
+  run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
+  assert_equal "$output" tests/repo.bats
+  cp --remove-destination "$REPO_ROOT/bin/lib/team.sh" "$copy/bin/lib/team.sh"
+  echo '# changed' >>"$copy/bin/lib/team.sh"
+  run -0 --separate-stderr "$copy/tests/run" bats --changed base --list
+  assert_equal "$output" "$(cd "$copy" && printf '%s\n' tests/*.bats | LC_ALL=C sort)"
+}
+
+@test "tests/run bats --changed refuses a base that is no commit, any word after --list, and a missing origin/dev" {
+  local copy=$BATS_TEST_TMPDIR/copy k
+  unset TEAM_HOME
+  changed_checkout "$copy"
+  for k in 'x/y' '--list --list' 'base --list x' 'base x' '--shard 1/3' '-x'; do
+    # shellcheck disable=SC2086 # each form splits into its words
+    run -2 --separate-stderr "$copy/tests/run" bats --changed $k
+  done
+  run -2 --separate-stderr "$copy/tests/run" bats --changed x/y
+  assert_equal "$stderr" "run: --changed: no commit x/y; usage: tests/run [shellcheck|bats [--shard <k>/<n> [--list]|--changed [<base>] [--list]]|toolkits]"
+  run -2 --separate-stderr "$copy/tests/run" bats --shard 1/3 --changed
+  run -1 --separate-stderr "$copy/tests/run" bats --changed --list
+  assert_equal "$stderr" "run: no origin/dev to compare with in $copy: fetch it, or name a base (tests/run bats --changed <base>)"
 }
 
 # tests/shards in a checkout of three bats files, a.bats and b.bats timed and c.bats not.

@@ -14,10 +14,32 @@
 # gate's end-to-end run instead of overlapping it; under a heavy run already (TEAM_HEAVY_HELD set, as a local check team-checks
 # runs), it runs at once.
 #
-# Usage: tests/run [shellcheck|bats [--shard <k>/<n> [--list]]|toolkits]   (default: all three)
+# Usage: tests/run [shellcheck|bats [--shard <k>/<n> [--list]|--changed [<base>] [--list]]|toolkits]
+#        (default: all three)
 # With --shard, bats runs shard k of n of the files as tests/shards splits them, by each file's
 # seconds in CI (tests/timings.tsv), as CI's shard jobs do; --list prints that shard's files and
 # runs none. A shard with no file (n above the file count) passes, running nothing.
+# With --changed, bats runs the files a change reaches, by the repository's naming, from the paths
+# changed since <base> (default origin/dev: git diff --name-only <base>...HEAD) and in the working
+# tree (git status --porcelain, untracked files and both sides of a rename included), printing
+# them first; it runs nothing, and says so, when no path changed, and --list prints them, one
+# tests/<name>.bats per line, and runs none. Every changed path reaches tests/repo.bats; one under
+# bin/, roles/, templates/, settings/ or plugins/ also tests/coordinator-manual.bats; a script
+# (bin/team-<x>, bin/claude-coordinator, a hook under bin/hooks/) its own tests/<script>.bats and
+# tests/<script>-*.bats, every bats file that names it as a word, and those of each script under
+# bin/ that names it (a doctor check that names it, the doctor's); bin/lib/doctor.d/* the
+# tests/team-doctor*, team-bootstrap*, team-load-check and team-resume files; any other file of
+# bin/lib/ the bats files named after it or naming lib/<it>, and those of each file under bin/ that
+# names lib/<it> or, for a .jq module, includes or imports it (a bin/lib file through its own users
+# in turn); tests/helpers/<h> the bats files naming helpers/<h> outside a comment (a .bash helper
+# without .bash, as load names it), and those of each helper naming it so; tests/<f>.bats itself;
+# any other file under tests/ the bats files named after it or naming its path; a file under
+# roles/, templates/, settings/, plugins/, servers/ or toolkits/, or coordinator.settings.json, the
+# bats files naming its path or one of its directories as <dir>/; and every file, bin/lib/team.sh,
+# bin/lib/platform.sh, bin/lib/ledger.jq, bin/lib/ledger-contract.json, tests/helpers/common.bash,
+# tests/run, tests/shards, tests/fixtures/ or tests/vendor/, which every test runs through. A
+# whole-suite file's mention of a bin/ file is not followed, or most of bin/lib would reach the
+# whole suite. A named base that is no commit is a usage error; a missing origin/dev is refused.
 # Exit 0 when every check passes; CI runs each part as its own job. The last line is the wall
 # time, so a slower suite shows, and when the bats ran, how many files at once.
 set -euo pipefail
@@ -29,9 +51,21 @@ team_home_report=1
 # shellcheck source=bin/lib/team.sh
 source "$root/bin/lib/team.sh" "$@"
 
-usage="usage: tests/run [shellcheck|bats [--shard <k>/<n> [--list]]|toolkits]"
-what=${1:-all} shard='' list=''
-if [[ $what == bats && $# -gt 1 ]]; then
+usage="usage: tests/run [shellcheck|bats [--shard <k>/<n> [--list]|--changed [<base>] [--list]]|toolkits]"
+what=${1:-all} shard='' changed='' base='' list=''
+if [[ $what == bats && $# -gt 1 && $2 == --changed ]]; then
+  changed=1 base=origin/dev
+  rest=("${@:3}")
+  if [[ ${#rest[@]} -gt 0 && ${rest[0]} != -* ]]; then base=${rest[0]} rest=("${rest[@]:1}"); fi
+  if [[ ${#rest[@]} -gt 0 ]]; then
+    [[ ${#rest[@]} -eq 1 && ${rest[0]} == --list ]] || usage_error "$usage"
+    list=1
+  fi
+  if ! git -C "$root" rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
+    [[ $# -gt 2 && $3 == "$base" ]] || die "no $base to compare with in $root: fetch it, or name a base (tests/run bats --changed <base>)"
+    usage_error "--changed: no commit $base; $usage"
+  fi
+elif [[ $what == bats && $# -gt 1 ]]; then
   if ! [[ $# -le 4 && $2 == --shard && ${3:-} =~ ^([1-9][0-9]*)/([1-9][0-9]*)$ ]] ||
     ((BASH_REMATCH[1] > BASH_REMATCH[2])); then
     usage_error "$usage"
@@ -65,11 +99,143 @@ shell_scripts() {
 }
 
 # The tests/*.bats files to run, the slowest first (so none of them starts last), one path per
-# line: every one, or with --shard k/n only shard k's (tests/shards).
+# line: every one, with --shard k/n only shard k's (tests/shards), with --changed only the
+# selection's ($selected).
 bats_files() {
   local k=1 n=1
   if [[ -n $shard ]]; then k=${shard%/*} n=${shard#*/}; fi
-  "$root/tests/shards" "$n" | awk -F'\t' -v k="$k" -v root="$root" '$1 == k { print root "/" $3 }'
+  "$root/tests/shards" "$n" | awk -F'\t' -v k="$k" -v root="$root" -v changed="$changed" -v selected="$selected" '
+    BEGIN { n = split(selected, list, "\n"); for (i = 1; i <= n; i++) chosen[list[i]] = 1 }
+    $1 == k && (changed == "" || $3 in chosen) { print root "/" $3 }'
+}
+
+# The paths --changed starts from (see the header), one per line, relative to the checkout.
+changed_paths() {
+  local entry
+  git -C "$root" diff --name-only "$base...HEAD"
+  while IFS= read -r -d '' entry; do
+    echo "${entry:3}"
+    # A rename or copy's entry is followed by its source's path.
+    if [[ ${entry:0:2} == *[RC]* ]]; then IFS= read -r -d '' entry && echo "$entry"; fi
+  done < <(git -C "$root" status --porcelain=v1 -z --untracked-files=all)
+}
+
+# The files the selection reads, from the checkout's root: the bats files that grep "$@" matches,
+# the matches of an existing glob, and the files under bin/ a change can reach a script through.
+naming() { grep -l "$@" tests/*.bats || (($? == 1)); }
+glob() { compgen -G "$1" || true; }
+own_files() { glob "tests/$1.bats"; glob "tests/$1-*.bats"; }
+bin_files() { find bin -path bin/lib/vendor -prune -o -type f -print; }
+doctor_files() {
+  glob 'tests/team-doctor*.bats'
+  glob 'tests/team-bootstrap*.bats'
+  glob 'tests/team-load-check.bats'
+  glob 'tests/team-resume.bats'
+}
+whole_suite() {
+  case $1 in
+    bin/lib/team.sh | bin/lib/platform.sh | bin/lib/ledger.jq | bin/lib/ledger-contract.json) ;;
+    tests/helpers/common.bash | tests/run | tests/shards | tests/fixtures/* | tests/vendor/*) ;;
+    *) return 1 ;;
+  esac
+}
+
+# A script's bats files: its own and those naming it as a word.
+script_files() { own_files "$1" && naming -wF -- "$1"; }
+
+# A script's (bin/team-<x>, bin/claude-coordinator, a hook): its own, and its callers' under bin/.
+script_reach() {
+  local name=${1##*/} caller
+  script_files "$name"
+  while IFS= read -r caller; do
+    if [[ $caller == "$1" ]] || whole_suite "$caller"; then continue; fi
+    case $caller in
+      bin/lib/doctor.d/*) doctor_files ;;
+      bin/team-* | bin/claude-coordinator | bin/hooks/*) script_files "${caller##*/}" ;;
+    esac
+  done < <(bin_files | xargs grep -lwF -- "$name" || true)
+}
+
+# A bin/lib file's (or directory's, by its first part under bin/lib/): the files named after it
+# or naming lib/<it>, and its users' under bin/, each bin/lib one once.
+declare -A lib_seen=()
+lib_reach() {
+  local key=${1#bin/lib/} pattern user
+  key=${key%%/*}
+  [[ -z ${lib_seen[$key]:-} ]] || return 0
+  lib_seen[$key]=1
+  pattern="lib/${key//./\\.}([^A-Za-z0-9_-]|\$)"
+  own_files "${key%.*}"
+  naming -E -- "$pattern"
+  [[ $key != *.jq ]] || pattern+="|(include|import) \"${key%.jq}\""
+  while IFS= read -r user; do
+    if [[ $user == bin/lib/"$key" || $user == bin/lib/"$key"/* ]] || whole_suite "$user"; then continue; fi
+    case $user in
+      bin/lib/doctor.d/*) doctor_files ;;
+      bin/lib/*) lib_reach "$user" ;;
+      *) script_reach "$user" ;;
+    esac
+  done < <(bin_files | xargs grep -lE -- "$pattern" || true)
+}
+
+# A tests/helpers file's: the bats files naming helpers/<it> outside a comment (as `load
+# helpers/<it>` does), and those of each helper naming it so.
+declare -A helper_seen=()
+helper_reach() {
+  local key=${1#tests/helpers/} pattern helper
+  key=${key%.bash}
+  [[ -z ${helper_seen[$key]:-} ]] || return 0
+  helper_seen[$key]=1
+  pattern="^[^#]*helpers/${key//./\\.}([^A-Za-z0-9_-]|\$)"
+  naming -E -- "$pattern"
+  while IFS= read -r helper; do
+    [[ $helper != "$1" ]] || continue
+    if whole_suite "$helper"; then glob 'tests/*.bats'; else helper_reach "$helper"; fi
+  done < <(grep -lE -- "$pattern" tests/helpers/*.bash || true)
+}
+
+# The bats files one changed path reaches (see the header), one per line, repeats and all.
+reach() {
+  local dir
+  echo tests/repo.bats
+  case $1 in
+    bin/* | roles/* | templates/* | settings/* | plugins/*) echo tests/coordinator-manual.bats ;;
+  esac
+  case $1 in
+    bin/lib/doctor.d/*) doctor_files ;;
+    bin/lib/*) lib_reach "$1" ;;
+    bin/team-* | bin/claude-coordinator | bin/hooks/*) script_reach "$1" ;;
+    tests/helpers/*) helper_reach "$1" ;;
+    tests/*/*) own_files "$(basename "${1%.*}")"; naming -F -- "$1" ;;
+    tests/*.bats) echo "$1" ;;
+    tests/*) own_files "$(basename "${1%.*}")"; naming -F -- "$1" ;;
+    roles/* | templates/* | settings/* | plugins/* | servers/* | toolkits/* | coordinator.settings.json)
+      naming -F -- "$1"
+      dir=$1
+      while [[ $dir == */* ]]; do
+        dir=${dir%/*}
+        naming -F -- "$dir/"
+      done ;;
+  esac
+}
+
+# The bats files --changed runs (see the header), one tests/<name>.bats per line, sorted: every
+# one when a changed path is a whole-suite one, none when no path changed.
+changed_selection() {
+  local paths path
+  paths=$(changed_paths | sort -u) || return 1
+  cd "$root"
+  while IFS= read -r path; do
+    if [[ -n $path ]] && whole_suite "$path"; then
+      glob 'tests/*.bats'
+      return
+    fi
+  done <<<"$paths"
+  while IFS= read -r path; do
+    [[ -z $path ]] || reach "$path"
+  done <<<"$paths" | while IFS= read -r path; do
+    [[ ! -f $path ]] || echo "$path"
+  done
 }
 
 # How many bats files run at once (see the header), read once the heavy-run lock is held.
@@ -85,12 +251,20 @@ parallelism() {
 
 # The bats files (bats_files), in parallel (see the header); fails if any file fails.
 run_bats() {
-  local file failed=0
+  local file failed=0 names
   out=$(mktemp -d)
   trap 'rm -rf "$out"' EXIT
   # Each file's output goes to $out/<file>, with $out/<file>.failed beside it when it fails.
   bats_files >"$out/files" || { echo "bats: tests/shards could not split the files"; return 1; }
-  if [[ ! -s $out/files ]]; then
+  if [[ -n $changed ]]; then
+    if [[ ! -s $out/files ]]; then
+      echo "bats: no path changed since $base, so no file runs"
+      return 0
+    fi
+    echo "bats --changed $base: $(wc -l <"$out/files") of $(find "$root/tests" -maxdepth 1 -name '*.bats' | wc -l) files"
+    mapfile -t names <<<"$selected"
+    printf '  %s\n' "${names[@]}"
+  elif [[ ! -s $out/files ]]; then
     echo "bats: shard $shard has no file"
     return 0
   fi
@@ -110,7 +284,14 @@ run_bats() {
   ((failed == 0))
 }
 
-if [[ -n $list ]]; then
+selected=''
+if [[ -n $changed ]]; then
+  selected=$(changed_selection | LC_ALL=C sort -u) || die "could not read the paths changed since $base"
+fi
+if [[ -n $list && -n $changed ]]; then
+  [[ -z $selected ]] || echo "$selected"
+  exit
+elif [[ -n $list ]]; then
   files=$(bats_files) || die "tests/shards could not split the files"
   while IFS= read -r file; do [[ -z $file ]] || echo "${file#"$root/"}"; done <<<"$files"
   exit
