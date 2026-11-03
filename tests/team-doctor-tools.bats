@@ -271,6 +271,38 @@ lock_has_its_shape() {
   assert_equal "$(line_of 'tool tmux')" 'FAIL tool tmux: `tmux -V` printed no version; fix: sudo pacman -S --needed tmux'
 }
 
+@test "every tool's version command starts before any is read, so one that hangs fails only its own line, in its place" {
+  local first first_cmd first_source last last_cmd answer
+  tools_at arch
+  IFS=$'\t' read -r first first_cmd _ first_source < <(lock_tools arch | head -n 1)
+  IFS=$'\t' read -r last last_cmd _ < <(lock_tools arch | tail -n 1)
+  # The last tool's version command marks that it started, then answers as before.
+  answer=$TOOL_ANSWERS/$last/${last_cmd#* }
+  answer=${answer// /_}
+  printf '%s\n' 'touch "$STUB_FIXTURES/last-started"' "cat $(printf '%q' "$answer")" >"$answer.sh"
+  # The first tool's hangs until the last tool's has started, then ends as timeout ends a call it
+  # stopped at its 30 s; had the doctor waited for it before starting the next, it would end
+  # after 20 s with no version. Every other call goes to the real timeout.
+  mkdir "$BATS_TEST_TMPDIR/first"
+  ln "$(shared hanging-timeout <<'EOF'
+#!/usr/bin/env bash
+if [[ $1 == 30 && ${*:2} == "$HANG_CMD" ]]; then
+  for _ in {1..200}; do
+    [[ ! -e $STUB_FIXTURES/last-started ]] || exit 124
+    sleep 0.1
+  done
+  exit 1
+fi
+exec "$(type -P -a timeout | grep -vxF "$0" | head -n 1)" "$@"
+EOF
+)" "$BATS_TEST_TMPDIR/first/timeout"
+  HANG_CMD=$first_cmd TEAM_PATH_FIRST=$BATS_TEST_TMPDIR/first run_bin -1 team-doctor
+  assert_equal "$(grep -v '^PASS ' <<<"$output")" \
+    "FAIL tool $first: \`$first_cmd\` did not answer within 30 s; fix: $first_source"
+  # The tool lines keep the lock's order.
+  assert_equal "$(sed -nE 's/^(PASS|WARN|FAIL) tool ([^:]+):.*/\2/p' <<<"$output")" "$(lock_tools arch | cut -f1)"
+}
+
 @test "macOS without the GNU tools: the Homebrew line fails with the brew install line, and the doctor goes on" {
   on_macos
   tools_at macos

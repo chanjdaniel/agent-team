@@ -45,6 +45,10 @@
 # caller or user of a changed file, or most of bin/lib would reach the whole suite; a file the
 # library reads or runs is, like any other. A named base that is no commit is a usage error; a
 # missing origin/dev is refused.
+# After the bats, it names each file that took over 1.5 times and 60 seconds more than its seconds
+# in tests/timings.tsv for this platform, as a warning annotation under GitHub Actions.
+# TESTS_TIMINGS names the timings file it reads (default tests/timings.tsv), and TESTS_SLOWER_BY
+# the margin in seconds (a whole number, default 60, else refused); neither changes the exit code.
 # Exit 0 when every check passes; CI runs each part as its own job. The last line is the wall
 # time, so a slower suite shows, and when the bats ran, how many files at once.
 set -euo pipefail
@@ -83,6 +87,9 @@ fi
 
 if [[ -n ${TEAM_JOBS:-} && ! $TEAM_JOBS =~ ^[1-9][0-9]*$ ]]; then
   die "TEAM_JOBS is the count of bats files to run at once, a whole number above 0, not '$TEAM_JOBS'"
+fi
+if [[ -n ${TESTS_SLOWER_BY+set} && ! $TESTS_SLOWER_BY =~ ^[0-9]+$ ]]; then
+  die "TESTS_SLOWER_BY is the seconds a bats file may take over its timing, a whole number, not '$TESTS_SLOWER_BY'"
 fi
 
 # Every part but shellcheck alone and a --list runs under the machine's heavy-run lock
@@ -280,12 +287,40 @@ parallelism() {
   fi
 }
 
+# One line for each bats file whose seconds in <dir>/<name>.seconds exceed both 1.5 times and
+# TESTS_SLOWER_BY more than its seconds in the timings (see the header) for this platform, and
+# under GitHub Actions the same text as a warning annotation; a file the timings lack, or lack for
+# this platform, is never named.
+slow_files() {
+  local dir=$1 file column=linux label=${TESTS_TIMINGS:-tests/timings.tsv} timings
+  timings=${TESTS_TIMINGS:-$root/tests/timings.tsv}
+  [[ $(uname -s) != Darwin ]] || column=macos
+  [[ -f $timings ]] || return 0
+  for file in "$dir"/*.seconds; do
+    [[ -e $file ]] || continue
+    printf 'tests/%s\t%s\n' "$(basename "$file" .seconds)" "$(<"$file")"
+  done | awk -F'\t' -v column="$column" -v margin="${TESTS_SLOWER_BY:-60}" -v label="$label" \
+    -v annotate="$([[ ${GITHUB_ACTIONS:-} == true ]] && echo 1)" '
+    FILENAME != "-" {
+      if (/^#/) next
+      if ($1 == "file") { for (i = 2; i <= NF; i++) if ($i == column) c = i; next }
+      if (c && $c ~ /^[0-9]+$/) seconds[$1] = $c
+      next
+    }
+    ($1 in seconds) && $2 > seconds[$1] * 1.5 && $2 > seconds[$1] + margin {
+      text = sprintf("tests/run: %s took %ds, %ds in %s; refresh the timings with tests/shards update, or find what slowed it", $1, $2, seconds[$1], label)
+      print text
+      if (annotate) print "::warning title=bats file slower::" text
+    }' "$timings" -
+}
+
 # The bats files (bats_files), in parallel (see the header); fails if any file fails.
 run_bats() {
   local file failed=0 names
   out=$(mktemp -d)
   trap 'rm -rf "$out"' EXIT
-  # Each file's output goes to $out/<file>, with $out/<file>.failed beside it when it fails.
+  # Each file's output goes to $out/<file>, with $out/<file>.failed beside it when it fails and
+  # $out/<file>.seconds its seconds.
   bats_files >"$out/files" || { echo "bats: tests/shards could not split the files"; return 1; }
   if [[ -n $changed ]]; then
     if [[ ! -s $out/files ]]; then
@@ -304,6 +339,7 @@ run_bats() {
     xargs -0 -r -n 1 -P "$jobs" bash -c '
       name=${2##*/} verdict=ok
       "$0/tests/vendor/bats-core/bin/bats" "$2" >"$1/$name" 2>&1 || { verdict="not ok"; touch "$1/$name.failed"; }
+      echo "$SECONDS" >"$1/$name.seconds"
       printf "%s tests/%s (%ds)\n" "$verdict" "$name" "$SECONDS"' "$root" "$out"
   for file in "$out"/*.bats; do
     [[ -e $file.failed ]] || continue
@@ -312,6 +348,7 @@ run_bats() {
     cat "$file"
   done
   echo "bats: $(cat "$out"/*.bats | grep -c '^ok ') tests passed; $failed of $(find "$out" -name '*.bats' | wc -l) files failed"
+  slow_files "$out"
   ((failed == 0))
 }
 

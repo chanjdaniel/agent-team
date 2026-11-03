@@ -890,8 +890,9 @@ role_texts() {
 }
 
 # Whether an allow rule of <settings> matches <command> and no deny rule does, a rule's * matching
-# any text as Claude Code's does: allowed_in <settings> <command>
+# any text as Claude Code's does, untraced: allowed_in <settings> <command>
 allowed_in() {
+  [[ -n ${UNTRACED_DEBUG+set} ]] || { untraced allowed_in "$@"; return; }
   local rule
   denied_in "$1" "$2" && return 1
   while IFS= read -r rule; do

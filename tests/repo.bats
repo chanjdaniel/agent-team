@@ -416,8 +416,9 @@ rule_matches() {
   rule_text_matches "$glob" "$2"
 }
 
-# Every session's settings deny <rule>, and it matches each <command>: assert_denies <rule> <command>...
+# Every session's settings deny <rule>, and it matches each <command>, untraced: assert_denies <rule> <command>...
 assert_denies() {
+  [[ -n ${UNTRACED_DEBUG+set} ]] || { untraced assert_denies "$@"; return; }
   local file command
   for file in "${SETTINGS[@]}"; do
     jq -e --arg rule "$1" '.permissions.deny | index($rule)' "$REPO_ROOT/$file" >/dev/null ||
@@ -1511,6 +1512,52 @@ changed_rebase() {
   run -2 --separate-stderr "$copy/tests/run" bats --shard 1/3 --changed
   run -1 --separate-stderr "$copy/tests/run" bats --changed --list
   assert_equal "$stderr" "run: no origin/dev to compare with in $copy: fetch it, or name a base (tests/run bats --changed <base>)"
+}
+
+# tests/run in a checkout of its own, whose bats files are quick.bats, timed above what it takes,
+# and three that sleep 3 s: slow.bats, timed at 1 s, other.bats, timed only on the other platform,
+# and untimed.bats, which the timings lack.
+@test "tests/run names each bats file over 1.5 times and TESTS_SLOWER_BY seconds more than its timing on this platform, annotated under GitHub Actions, and never fails for it" {
+  local copy=$BATS_TEST_TMPDIR/copy name timings slow
+  unset TEAM_HOME GITHUB_ACTIONS TESTS_TIMINGS TESTS_SLOWER_BY
+  mkdir -p "$copy/tests/vendor"
+  copy_bin "$copy/bin"
+  link_shared tests-run "$REPO_ROOT/tests/run" "$copy/tests/run"
+  link_shared tests-shards "$REPO_ROOT/tests/shards" "$copy/tests/shards"
+  link_shared bats-core "$REPO_ROOT/tests/vendor/bats-core" "$copy/tests/vendor/bats-core"
+  echo '@test "quick" { true; }' >"$copy/tests/quick.bats"
+  for name in slow other untimed; do echo "@test \"$name\" { sleep 3; }" >"$copy/tests/$name.bats"; done
+  timings=$'# timings\nfile\tlinux\tmacos\ntests/quick.bats\t2\t2\ntests/slow.bats\t1\t1\n'
+  if [[ $(uname -s) == Darwin ]]; then timings+=$'tests/other.bats\t1\t\n'; else timings+=$'tests/other.bats\t\t1\n'; fi
+  printf '%s' "$timings" >"$copy/tests/timings.tsv"
+  slow='tests/run: tests/slow\.bats took [3-9]s, 1s in tests/timings\.tsv; refresh the timings with tests/shards update, or find what slowed it'
+
+  # Each line comes after the summary and before the wall time, and only under GitHub Actions as
+  # an annotation too.
+  TEAM_JOBS=4 TESTS_SLOWER_BY=1 run -0 --separate-stderr "$copy/tests/run" bats --shard 1/1
+  assert_contains "$output" "bats: 4 tests passed; 0 of 4 files failed"
+  [[ $(sed -n '/^bats: /,$p' <<<"$output" | sed '1d;$d') =~ ^${slow}$ ]] || { echo "not only slow.bats named after the summary" >&2; return 1; }
+  [[ $output != *::warning* ]]
+
+  # A failing file fails the run, the warning beside it; TESTS_TIMINGS names the timings file.
+  mv "$copy/tests/timings.tsv" "$BATS_TEST_TMPDIR/timings.tsv"
+  echo '@test "fails" { false; }' >"$copy/tests/fail.bats"
+  GITHUB_ACTIONS=true TESTS_TIMINGS=$BATS_TEST_TMPDIR/timings.tsv TEAM_JOBS=5 TESTS_SLOWER_BY=1 \
+    run -1 --separate-stderr "$copy/tests/run" bats --shard 1/1
+  assert_contains "$output" "bats: 4 tests passed; 1 of 5 files failed"
+  slow=${slow//tests\/timings\\.tsv/${BATS_TEST_TMPDIR//./\\.}/timings\\.tsv}
+  [[ $(sed -n '/^bats: /,$p' <<<"$output" | sed '1d;$d') =~ ^${slow}$'\n'::warning\ title=bats\ file\ slower::${slow}$ ]] ||
+    { echo "not only slow.bats named and annotated after the summary" >&2; return 1; }
+
+  # The default margin, 60 s, names none of them.
+  rm "$copy/tests/fail.bats"
+  TEAM_JOBS=4 TESTS_TIMINGS=$BATS_TEST_TMPDIR/timings.tsv run -0 --separate-stderr "$copy/tests/run" bats --shard 1/1
+  [[ $output != *"tests/run: tests/"* ]]
+
+  for slow in x -1 1.5 ' 1'; do
+    TESTS_SLOWER_BY=$slow run -1 --separate-stderr "$copy/tests/run" bats
+    assert_equal "$stderr" "run: TESTS_SLOWER_BY is the seconds a bats file may take over its timing, a whole number, not '$slow'"
+  done
 }
 
 # tests/shards in a checkout of three bats files, a.bats and b.bats timed and c.bats not.
