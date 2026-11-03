@@ -1411,19 +1411,26 @@ session_context() {
 # GitHub. GitHub failures are carried in the pr part; a broken registry or an unreadable session
 # list fails with the reason on stderr: task_state_json '<events>'
 task_state_json() (
-  local events=$1 state pr dir session_id context contexts='{}' sessions plan_project plan_projects opted_in own standing
-  local task tickets total
+  local events=$1 state pr dir session_id context contexts=() out plan_project plan_projects opted_in own standing
+  local task tickets
   live_sessions
   while IFS= read -r session_id; do
     context=$(session_context "$session_id")
-    [[ -z $context ]] || contexts=$(jq -c --arg id "$session_id" --argjson n "$context" '.[$id] = $n' <<<"$contexts")
+    [[ -z $context ]] || contexts+=("$session_id" "$context")
   done < <(ledger_jq 'live_session_ids($sessions)[]' -r --argjson sessions "$LIVE_SESSIONS" <<<"$events")
-  sessions=$(jq -c --argjson contexts "$contexts" 'map(if type == "object" then
-    .context = ($contexts[.sessionId // "" | tostring] // null) else . end)' <<<"$LIVE_SESSIONS") || exit 1
-  state=$(ledger_jq 'task_state($sessions; $home)' -c --argjson sessions "$sessions" <<<"$events") || exit 1
+  # In one jq run, a line each: the state, with each live session's context; its plan-time
+  # approval's project (empty when none); the task; and its latest pr event (null when none).
+  out=$(ledger_jq '. as $events
+    | ($ARGS.positional | [range(0; length; 2) as $i | {key: .[$i], value: (.[$i + 1] | tonumber)}] | from_entries) as $contexts
+    | ($sessions | map(if type == "object" then
+        .context = ($contexts[.sessionId // "" | tostring] // null) else . end)) as $sessions
+    | task_state($sessions; $home)
+    | tojson, (.merge_preapproval.project // "" | tostring), ($events[0].task | tostring),
+      ($events | map(select(.event == "pr")) | last | tojson)' \
+    -r --argjson sessions "$LIVE_SESSIONS" --args "${contexts[@]}" <<<"$events") || exit 1
+  { IFS= read -r state && IFS= read -r plan_project && IFS= read -r task && IFS= read -r pr; } <<<"$out"
   # The plan-time approval's project as the registry has it now; one it no longer has opts in to
   # nothing, and is the team's own only by name.
-  plan_project=$(jq -r '.merge_preapproval.project // empty' <<<"$state") || exit 1
   if [[ -n $plan_project ]]; then
     opted_in=false own=false
     plan_projects=$(team_project --list) || exit 1
@@ -1437,12 +1444,11 @@ task_state_json() (
       '.merge_preapproval += {opted_in: $opted_in, own: $own}' <<<"$state") || exit 1
   fi
   # The ticket total: the ticket files team-tickets reads, null when it refuses them.
-  task=$(jq -r '.[0].task' <<<"$events") || exit 1
   if tickets=$(TEAM_HOME=$TEAM_HOME "$(dirname "$TEAM_LIB")/team-tickets" "$task" --json 2>/dev/null </dev/null) &&
-    total=$(jq -e 'length' <<<"$tickets" 2>/dev/null); then
-    state=$(jq -c --argjson total "$total" '.progress.tickets.total = $total' <<<"$state") || exit 1
+    out=$(jq -cn 'input as $tickets | input | .progress.tickets.total = ($tickets | length)' 2>/dev/null \
+      <<<"$tickets"$'\n'"$state"); then
+    state=$out
   fi
-  pr=$(jq -c 'map(select(.event == "pr")) | last' <<<"$events") || exit 1
   if [[ $pr != null ]]; then
     dir=$(mktemp -d) || exit 1
     trap 'rm -rf "$dir"' EXIT

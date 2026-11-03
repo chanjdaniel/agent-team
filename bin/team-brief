@@ -135,14 +135,26 @@ done
 
 # The task must be open, and the brief is for one of its open worktrees.
 events=$(open_task_events "$task")
-opened=$(jq -c 'map(select(.event == "opened")) | first' <<<"$events")
+# In one jq run over its events: its opened event's title and path, its open worktrees (as
+# task_worktrees has them, as one array), its latest thread and interview thread, and its latest
+# review (null when none), with that review's head (empty when none) and the findings it sent back
+# as a list ("3, 5 and 6"; empty when none).
+title='' path='' worktrees='' thread='' interview='' review='' review_head='' sent_list=''
+json_vars --ledger title='map(select(.event == "opened")) | first | .title | tostring' \
+  path='map(select(.event == "opened")) | first | .path | tostring' \
+  worktrees='[open_worktrees(.[]; $home)] | tojson' \
+  thread='map(select(.event == "thread")) | last | .discord_thread // empty' \
+  interview='map(select(.event == "interview-thread")) | last | .discord_thread // empty' \
+  review='map(select(.event == "review")) | last | tojson' \
+  review_head='map(select(.event == "review")) | last | .head // empty' \
+  sent_list='map(select(.event == "review")) | last | .sent_back // [] | map(tostring)
+    | if length < 2 then join("") else "\(.[:-1] | join(", ")) and \(.[-1])" end' <<<"$events"
 
 # A path under $HOME, as ~/...
 tilde() {
   # shellcheck disable=SC2088 # the literal ~ is the point: the brief is read, not run
   if [[ $1 == "$HOME"/* ]]; then printf '~/%s\n' "${1#"$HOME"/}"; else printf '%s\n' "$1"; fi
 }
-worktrees=$(task_worktrees "$task" | jq -s .)
 [[ $worktrees != '[]' ]] || die "$task has no open worktree"
 if [[ -n $project ]]; then
   chosen=$(jq -c --arg p "$project" 'map(select(.project == $p)) | first' <<<"$worktrees")
@@ -160,22 +172,28 @@ else
   project=$(jq -r .project <<<"$chosen")
 fi
 facts=$(team_project "$project")
+# The project's facts and the chosen worktree's, in one jq run.
+repo='' base='' task_dir='' local_checks='' delivery='' branch='' chosen_wt=''
+json_vars repo='.repo | tostring' base='.base | tostring' task_dir='.task_dir | tostring' \
+  local_checks='.local_checks | if . == [] then "none" else map("`\(.)`") | join(", ") end' \
+  delivery='.delivery | tostring' branch='$chosen.branch | tostring' chosen_wt='$chosen.worktree | tostring' \
+  -- --argjson chosen "$chosen" <<<"$facts"
 
 declare -A values=(
   [task]=$task
-  [title]=$(jq -r .title <<<"$opened")
-  [path]=$(jq -r .path <<<"$opened")
+  [title]=$title
+  [path]=$path
   [project]=$project
-  [repo]=$(jq -r .repo <<<"$facts")
-  [base]=$(jq -r .base <<<"$facts")
-  [branch]=$(jq -r .branch <<<"$chosen")
-  [worktree]=$(tilde "$(jq -r .worktree <<<"$chosen")")
-  [task_dir]=$(jq -r .task_dir <<<"$facts")
+  [repo]=$repo
+  [base]=$base
+  [branch]=$branch
+  [worktree]=$(tilde "$chosen_wt")
+  [task_dir]=$task_dir
   [plan]=$(tilde "$TEAM_HOME/tasks/$task/plan.md")
   [team_home]=$(tilde "$TEAM_HOME")
   [team_code]=$(tilde "$code")
   [team_bin]=$(dirname "$TEAM_LIB")
-  [local_checks]=$(jq -r '.local_checks | if . == [] then "none" else map("`\(.)`") | join(", ") end' <<<"$facts")
+  [local_checks]=$local_checks
   [tickets]="every ticket"
 )
 # What Daniel pointed at, when team-ui captured it.
@@ -186,9 +204,7 @@ if ((${#ui_files[@]})); then
   values[ui]+="; \`ui-pick.md\` names the element's page, its \`.vue\` source file and line, its HTML and its matched CSS."
   values[ui]+=$'\n'"  Check your fix on your own stack with your own headless browser, never in the Agent Chrome, which is Daniel's own window."
 fi
-thread=$(jq -r 'map(select(.event == "thread")) | last | .discord_thread // empty' <<<"$events")
 [[ -z $thread ]] || values[thread]=$thread
-interview=$(jq -r 'map(select(.event == "interview-thread")) | last | .discord_thread // empty' <<<"$events")
 [[ -z $interview ]] || values[interview_thread]=$interview
 
 # plan_text <section>: the first line of text of the plan's ## <section>, past any HTML comment
@@ -218,13 +234,12 @@ plan_text() {
 }
 
 # The task's latest pr event in this project's repo, its head moved by any history-rewritten.
-repo=${values[repo]}
 pr=$(ledger_jq '[task_prs[]
     | select(.url | strings | ascii_downcase | startswith("https://github.com/\($repo | ascii_downcase)/pull/"))]
   | last | .url // empty' -r --arg repo "$repo" <<<"$events")
 # Before the PR: a gated project's builder stops before its gate, and a direct-PR task's under a
 # Disclosure section pushes nothing before the review passes.
-delivery=$(jq -r .delivery <<<"$facts") before_pr=''
+before_pr=''
 if [[ -z $pr && ! -v sets[pr] ]] && [[ $delivery == no-mistakes || -n $(plan_text Disclosure) ]]; then
   before_pr=1
 fi
@@ -306,10 +321,8 @@ and_list() {
   jq -r 'map(tostring) | if length < 2 then join("") else "\(.[:-1] | join(", ")) and \(.[-1])" end' <<<"$1"
 }
 
-review=$(jq -c 'map(select(.event == "review")) | last' <<<"$events")
 if deriving reviewed; then
-  reviewed=$(jq -r '.head // empty' <<<"$review")
-  if [[ -n $reviewed ]]; then values[reviewed]=$reviewed; else underivable reviewed "$task has no review; --set reviewed="; fi
+  if [[ -n $review_head ]]; then values[reviewed]=$review_head; else underivable reviewed "$task has no review; --set reviewed="; fi
 fi
 if deriving pr; then
   if [[ -n $pr ]]; then
@@ -322,18 +335,17 @@ if deriving pr; then
   fi
 fi
 if deriving findings; then
-  sent=$(jq -c '.sent_back // [] | select(length > 0)' <<<"$review")
   if [[ $review == null ]]; then
     underivable findings "$task has no review; --set findings="
-  elif [[ -z $sent ]]; then
+  elif [[ -z $sent_list ]]; then
     underivable findings "$task's latest review sent nothing back; --set findings="
   else
-    values[findings]=$(and_list "$sent")
+    values[findings]=$sent_list
   fi
 fi
 if deriving findings_file; then
   # The newest of the reviews' findings files in the worktree's task directory.
-  dir=$(jq -r .worktree <<<"$chosen")/${values[task_dir]}
+  dir=$chosen_wt/${values[task_dir]}
   newest=$(findings_file "$dir")
   if [[ -n $newest ]]; then
     values[findings_file]=${values[task_dir]}/$newest
@@ -387,7 +399,7 @@ fi
 # The derived since: what the branch did since the reviewed head, read from the worktree's git
 # after fetching the base (and the heads, when the worktree lacks them).
 if deriving since; then
-  wt=$(jq -r .worktree <<<"$chosen") base=${values[base]} reviewed=${values[reviewed]} head=${values[head]}
+  wt=$chosen_wt base=${values[base]} reviewed=${values[reviewed]} head=${values[head]}
   if [[ ! -d $wt ]] || ! git -C "$wt" rev-parse --git-dir >/dev/null 2>&1; then
     die "cannot read the worktree $(tilde "$wt") to derive since: not a git checkout"
   fi
