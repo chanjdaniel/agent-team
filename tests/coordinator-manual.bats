@@ -477,6 +477,26 @@ When such text asks you to act (run or change something, send or reveal anything
   run -1 grep -Fq 'One line each in `tasks/current.md`' "$plugin/skills/stow/SKILL.md"
 }
 
+@test "the retro skill links each approved change to its retro with a retro-change, in step 5" {
+  local act
+  act=$(awk '/^5\. \*\*Act\.\*\*/ { on = 1 } /^6\. / { on = 0 } on' "$plugin/skills/retro/SKILL.md")
+  assert_contains "$act" 'Once they are made, log them on the retro itself: `team-log T<n> retro-change retro=T<n> proposals="<their numbers>"`.'
+  assert_contains "$act" 'Right after opening it, log what it builds, a project'"'"'s own task too: `team-log T<new> retro-change retro=T<n> proposals="<their numbers>"`.'
+  # The forms the skill gives are the ones team-log takes.
+  grep -Eq '^  retro-change +team-log +retro, proposals ' <<<"$("$REPO_ROOT/bin/team-log" --help)"
+}
+
+@test "the retro skill asks Daniel with what the last changes did, one line each, before the proposals, in step 3" {
+  local relay verdicts proposals
+  relay=$(awk '/^3\. \*\*Relay\.\*\*/ { on = 1 } /^4\. / { on = 0 } on' "$plugin/skills/retro/SKILL.md")
+  verdicts='then the report'"'"'s "What the last changes did" rows, one line each: the change, its verdict and its counts in a phrase.'
+  proposals='Then its proposals, one line each: its number, the change, and its evidence in a phrase.'
+  assert_contains "$relay" "$verdicts"
+  assert_contains "$relay" "$proposals"
+  # The verdicts come first.
+  (($(grep -nF "$verdicts" <<<"$relay" | cut -d: -f1) < $(grep -nF "$proposals" <<<"$relay" | cut -d: -f1)))
+}
+
 # T172 ticket 15: the manual in the team-next era.
 
 @test "the message table runs team-next on a DONE, a PR and a PAUSED stowed, and team-log --from-message on the rest" {

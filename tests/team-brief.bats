@@ -944,11 +944,41 @@ SINCE
   assert_contains "$(<"$brief")" "Then where the window's time went: \`$REPO_ROOT/bin/team-time --since <the window's since> --until <its until>\`, hours per task and per phase, gate runs, reviews and Daniel's answer latency."
   # The same report holds the workers' lifetimes and where their time went, which the report's first part reasons about.
   assert_contains "$(<"$brief")" "   It is also each worker's lifetime: the averages by role, path, project and model, the longest, and where the workers' time went, with what the task was doing while a worker waited."
-  assert_contains "$(<"$brief")" '1. `report.md`, in four parts:'
-  assert_equal "$(grep -m1 '^   - \*\*' "$brief")" \
+  # The report's five parts, by name and in this order.
+  assert_contains "$(<"$brief")" '1. `report.md`, in five parts, in this order:'
+  assert_equal "$(grep -oE '^   - \*\*[^*]+\*\*' "$brief" | sed 's/^   - //' | paste -sd '|')" \
+    '**What the last changes did**|**Worker time**|**Proposals**|**SOP review**|**Considered, not proposed**'
+  assert_contains "$(<"$brief")" \
     "   - **Worker time**: the lifetimes by role (median, 90th percentile, longest) against the previous retro's when its report has them; the five longest lifetimes, each with its top sinks and, from the task's records, why; and the top sinks across workers with the hours each cost."
+  # The first part judges each change the digest's Changes lists, by the earlier report's own measure.
+  assert_contains "$(<"$brief")" '   - **What the last changes did**: one row per change in the digest'"'"'s Changes: the change (its retro, its proposals and its task), where it landed (its PRs, or the records), the events it was meant to reduce counted in two equal spans before and after it landed, each span named by its start and end, and a verdict of `helped`, `hurt`, `no observed effect` or `confounded`.'
+  assert_contains "$(<"$brief")" "     Count the events the earlier report's Judge by line names for that proposal, when it gave one; else name the events you count and why."
+  assert_contains "$(<"$brief")" '     The verdict is `confounded` when another change landed in the same spans and touches the same events, or when the counts are too few to tell from chance, as a rule fewer than three on either side.'
+  assert_contains "$(<"$brief")" "     A follow-up lands only once its task is closed, its landing time being its last merge, so a change is judged once, in the window its task closed in, even when it merged in an earlier one."
+  assert_contains "$(<"$brief")" "     A change open at the window's end, its PRs merged so far listed, gets a row with no verdict, at each retro until it lands or closes; one closed unmerged gets a row with no verdict once, in the window it closed in, the only one whose digest lists it."
+  assert_contains "$(<"$brief")" '     A `hurt` row becomes a proposal to revert or revise the change, ranked with the others.'
+  # Proposals open with the standing text's size, against the previous retro's base.
+  assert_contains "$(<"$brief")" '   - **Proposals**: open them with the standing text'"'"'s size: the bytes of `CLAUDE.md`, each `roles/*.md` and `sops/platform-gotchas.md` at this retro'"'"'s base against the previous retro'"'"'s, each base being its retro'"'"'s `opened` event'"'"'s `base_sha`.'
   assert_contains "$(<"$brief")" "the costliest first, a sink's hours from Worker time counting as cost."
-  assert_contains "$(<"$brief")" 'and the sink it answers, when it answers one)'
+  # Each proposal's fields, in this order.
+  assert_equal "$(grep -oE '^     - \*\*[^*]+\*\*' "$brief" | sed 's/^     - //' | paste -sd '|')" \
+    '**Lane**|**Form**|**Cue**|**Lesson**|**Evidence**|**Confidence**|**Exact change**|**Expected effect**|**Judge by**'
+  assert_contains "$(<"$brief")" '     - **Lane**: `team` (roles, briefs, settings, hooks, scripts, SOPs) or `project <name>` (its `review-rules.md`, `CLAUDE.md` or memory); a change that still makes sense on another project is `team`, one that does not is its project'"'"'s.'
+  assert_contains "$(<"$brief")" '     - **Form**: the cheapest that holds, in this order of what it costs every session'"'"'s context: a hook or a script (enforced, no standing text); an on-demand skill or toolkit; a line in one brief template; and last, standing text in a role, `CLAUDE.md` or `sops/platform-gotchas.md`.'
+  assert_contains "$(<"$brief")" '       A hook rests on repeated evidence and names the test showing valid work still passes it.'
+  assert_contains "$(<"$brief")" '       Give the bytes of standing text the change adds and cuts; one that adds names what it cuts to pay for it, or says why nothing can go.'
+  assert_contains "$(<"$brief")" "     - **Cue**: the shape of situation it applies to, not one task's facts."
+  assert_contains "$(<"$brief")" '     - **Evidence**: ledger events by time and task, file paths, and the sink it answers, when it answers one; and the earliest point the work went wrong, not only where it surfaced.'
+  assert_contains "$(<"$brief")" '     - **Confidence**: high, medium or low, and why.'
+  assert_contains "$(<"$brief")" '     - **Judge by**: the events, counted from the ledger, the next retro will compare before and after it lands.'
+  assert_contains "$(<"$brief")" '     A problem seen once is not proposed unless its cost was high, which the proposal says.'
+  assert_contains "$(<"$brief")" '     Before proposing a line, check the target files do not already say it: a rule already written and still broken is proposed in a stronger form, never as a second copy.'
+  assert_contains "$(<"$brief")" '     "Keep as is" is a good outcome: a retro with fewer than seven proposals, or none, is a good retro when the evidence supports no more.'
+  # The SOP review says whether each entry's problem came back.
+  assert_contains "$(<"$brief")" '   - **SOP review**: each entry of `sops/platform-gotchas.md`, with keep, merge (and with which) or drop, and why; and whether its problem recurred in the window, with the events, since an entry whose problem recurred is prose that does not hold, a candidate for a stronger form.'
+  # The reading list sends part 1 to the digest's Changes and the previous report's Judge by lines.
+  assert_contains "$(<"$brief")" "   Its Changes are the earlier retros' changes that landed or closed unmerged in the window, or were still open at its end, which the report's first part judges."
+  assert_contains "$(<"$brief")" "   Its proposals' Judge by lines, where it has them, are the measures the report's first part counts."
   assert_contains "$(<"$brief")" "Read \`$REPO_ROOT/sops/platform-gotchas.md\` before your first command."
   # What Daniel approved and the team has not built yet is read, so it is not proposed again.
   assert_contains "$(<"$brief")" '`~/agent-team-records/tasks/queued/`'

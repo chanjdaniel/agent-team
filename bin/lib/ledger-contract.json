@@ -189,6 +189,11 @@
       "about": "Daniel's word on how often a retro runs, read by team-retro from the latest across the ledger; every_hours 0 stops the retros",
       "required": {"every_hours": "number", "discord_message": "id"}
     },
+    "retro-change": {
+      "writer": "team-log",
+      "about": "the task it is logged on builds those proposals of retro T<m>, or, logged on T<m> itself, records were changed in place for them; proposals as Daniel's answer names them; team-retro digest reads when each landed, for the next retro to judge",
+      "required": {"retro": "string", "proposals": "string"}
+    },
     "stowed": {
       "writer": "team-stow",
       "about": "one per task team-stow stows, every open task at a handoff (team-handoff runs team-stow --all --cause handoff), which wrote it itself before 2026-11-02: worktrees as {project, branch, head}, with uncommitted: true for one whose changes the checkpoint kept as wip/<project>/T<n> on the team home's origin; roles the task's unfinished work, each role launched since its last stowed that nothing ended (ledger.jq's unfinished_roles), which the other machine or the resume relaunches; sessions the roles whose sessions the stow stopped, for the record (before 2026-10-25, roles held those); cause level for a stow to free the machine for the team's resource level, handoff (or absent, as in every line before team-stow) for a handoff",

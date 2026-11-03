@@ -181,6 +181,7 @@ merge-standing-withdrawn team-log project discord_message discord_channel
 branch-renamed team-log project branch
 failed team-log reason
 retro-schedule team-log every_hours discord_message
+retro-change team-log retro proposals
 stowed team-stow machine worktrees roles
 worktree-moved team-open project branch from worktree machine
 injection team-log role source text
@@ -246,6 +247,7 @@ TABLE
   grep -Eq '^  blocked +team-log +reason; optional since  \(.*since: when the park began, when it is logged after the fact\)$' <<<"$output"
   grep -Eq '^  denied +team-log, denial-log +role, what, why; optional session  \(a denial the worker went past .*parks nothing and clears nothing.*a denial that stops the work is a blocked; denial-log, every worker.s PermissionDenied hook, .*never the tool.s input\)$' <<<"$output"
   grep -Eq '^  retro-schedule +team-log +every_hours \(number\), discord_message \(id\)  \(.*every_hours 0 stops.*\)$' <<<"$output"
+  grep -Eq '^  retro-change +team-log +retro, proposals  \(the task it is logged on builds those proposals of retro T<m>, or, logged on T<m> itself, records were changed in place for them; .*team-retro digest.*\)$' <<<"$output"
   grep -Eq '^  injection +team-log +role, source, text  \(.*never the personal details.*\)$' <<<"$output"
   grep -Eq '^  stowed +team-stow +machine, worktrees \(list\), roles \(list\); optional sessions \(list\), cause \(level\|handoff\)  \(one per task team-stow stows, every open task at a handoff .*unfinished_roles.*\)$' <<<"$output"
   grep -Eq '^  rehome-failed +team-resume +project, branch, machine, reason  \(.*stands until a later opened, worktree-added, worktree-moved, rehomed or worktree-returned.*\)$' <<<"$output"
@@ -456,15 +458,17 @@ $TEAM_HOME/ledger.jsonl: 3 of 7 lines break the ledger contract"
 @test "every kind team-log writes is appended with its required fields and a note" {
   # merge-preapproved names a project of the task that opts in, and an ask it logged before;
   # branch-renamed a new branch of it that names the task; merge-standing #coordinator's channel,
-  # and merge-standing-withdrawn, after it, the word it logged.
+  # and merge-standing-withdrawn, after it, the word it logged; retro-change a retro Daniel answered.
   plan_registry
   opened T14 proj
+  a_retro T150 answered
   local kind args count=0
   while IFS= read -r kind; do
     # A head is a sha, since merge-approved's must be one a pr event logged, which team-log adds.
     mapfile -t args < <(jq -r --arg k "$kind" --arg soon "$(soon)" --arg coordinator "$COORDINATOR" '(.kinds[$k].required | to_entries[]
       | "\(.key)=\(if .key == "head" then "a1b2c3d4" elif .key == "project" then "proj" elif .key == "ask" then "x y"
           elif .key == "scope" then "[\"src/\"]" elif .key == "branch" then "feat/T14-x-fresh"
+          elif .key == "retro" then "T150"
           elif .key == "discord_channel" then $coordinator
           else .value | if type == "array" then .[0] elif . == "array" then "[]" elif . == "number" then "7" elif . == "id" then $soon else "x y" end end)"),
       (select($k == "merge-approved") | "head=a1b2c3d4")' "$CONTRACT")
@@ -472,7 +476,7 @@ $TEAM_HOME/ledger.jsonl: 3 of 7 lines break the ledger contract"
     count=$((count + 1))
     assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -r '.event + " " + .note')" "$kind why $kind"
   done < <(jq -r '.kinds | to_entries[] | select([.value.writer] | flatten | index("team-log")) | .key' "$CONTRACT")
-  assert_equal "$count" "24"
+  assert_equal "$count" "25"
   run_bin -0 team-log --check
 }
 
@@ -545,6 +549,63 @@ $TEAM_HOME/ledger.jsonl: 3 of 7 lines break the ledger contract"
 LINES
   )"
   run_bin -0 team-log --check
+}
+
+# A retro task T<m> as team-open opens it, Daniel's answer to its proposals when given: a_retro <task> [answered]
+a_retro() {
+  jq -cn --arg task "$1" '{ts: (now | todate), task: $task, event: "opened", project: "agent-team", path: "retro",
+    type: "research", title: "Retro", branch: "research/\($task)-retro", base: "dev", base_sha: "0123456", worktree: "/w/retro"}' \
+    >>"$TEAM_HOME/ledger.jsonl"
+  [[ ${2:-} != answered ]] ||
+    jq -cn --arg task "$1" '{ts: (now | todate), task: $task, event: "answered", id: "retro", answer: "1 and 3 yes, 2 no"}' \
+      >>"$TEAM_HOME/ledger.jsonl"
+}
+
+@test "retro-change links a task to the approved proposals of a retro it builds, or of its own retro for records" {
+  a_retro T150 answered
+  opened T165 agent-team
+  local before
+  before=$(cat "$TEAM_HOME/ledger.jsonl")
+  run_bin -0 team-log T165 retro-change retro=T150 'proposals=1, 3'
+  run_bin -0 team-log T150 retro-change retro=T150 'proposals=2 and the SOP review'
+  assert_equal "$(tail -n 2 "$TEAM_HOME/ledger.jsonl" | jq -c 'del(.ts)')" "$(
+    cat <<'LINES'
+{"task":"T165","event":"retro-change","retro":"T150","proposals":"1, 3"}
+{"task":"T150","event":"retro-change","retro":"T150","proposals":"2 and the SOP review"}
+LINES
+  )"
+  assert_equal "$(head -n 3 "$TEAM_HOME/ledger.jsonl")" "$before"
+  # A number alone is still the proposals' string, as the contract types it.
+  run_bin -0 team-log T165 retro-change retro=T150 proposals=4
+  assert_equal "$(tail -n 1 "$TEAM_HOME/ledger.jsonl" | jq -c '.proposals')" '"4"'
+  run_bin -0 team-log --check
+}
+
+@test "retro-change is refused for a task that is no retro, and for a retro Daniel has not answered" {
+  opened T165 agent-team
+  run_bin -1 team-log T165 retro-change retro=T165 proposals=1
+  assert_contains "$output" "T165 is not a retro task: it has no opened event with the path retro, so retro-change links no retro's proposals"
+  run_bin -1 team-log T165 retro-change retro=T9 proposals=1
+  assert_contains "$output" "T9 is not a retro task: it has no opened event with the path retro"
+  run_bin -1 team-log T165 retro-change retro=retro proposals=1
+  assert_contains "$output" "retro is not a retro task"
+  a_retro T150
+  jq -cn '{ts: (now | todate), task: "T150", event: "answered", id: "plan", answer: "yes"}' >>"$TEAM_HOME/ledger.jsonl"
+  jq -cn '{ts: (now | todate), task: "T151", event: "answered", id: "retro", answer: "yes"}' >>"$TEAM_HOME/ledger.jsonl"
+  local before
+  before=$(cat "$TEAM_HOME/ledger.jsonl")
+  run_bin -1 team-log T165 retro-change retro=T150 proposals=1
+  assert_contains "$output" "T150 has no answered with id retro: Daniel has not answered its proposals, so none is approved to build"
+  run_bin -1 team-log T150 retro-change retro=T150 proposals=1
+  assert_contains "$output" "T150 has no answered with id retro"
+  assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$before"
+  jq -cn '{ts: (now | todate), task: "T150", event: "answered", id: "retro", answer: "1 yes"}' >>"$TEAM_HOME/ledger.jsonl"
+  before=$(cat "$TEAM_HOME/ledger.jsonl")
+  run_bin -1 team-log T165 retro-change retro=T150
+  assert_contains "$output" "retro-change needs proposals"
+  run_bin -1 team-log T165 retro-change proposals=1
+  assert_contains "$output" "retro-change needs retro"
+  assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$before"
 }
 
 @test "a value of the wrong type or outside its choices is refused with nothing appended" {
