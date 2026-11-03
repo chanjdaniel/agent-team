@@ -21,8 +21,8 @@ stack_memory() {
   local -a stacks=() weighed=() short=() unknown=()
   while IFS= read -r project; do
     [[ -n $project ]] || continue
-    facts=$(team_project "$project" 2>/dev/null) || continue
-    if jq -e '.stack != null' <<<"$facts" >/dev/null; then stacks+=("$project"); fi
+    project_registry "$project" 2>/dev/null || continue
+    if jq -e '.stack != null' <<<"$registry_reply" >/dev/null; then stacks+=("$project"); fi
   done <<<"$1"
   if ((${#stacks[@]} == 0)); then
     report "stack memory" PASS "no registered project has a stack block"
@@ -62,7 +62,8 @@ stack_memory() {
   # Each stack's mem_limits, from its wrapper's config in the primary checkout, called as a
   # project of its own whose ports Docker assigns, so it names no stack that runs.
   for project in "${stacks[@]}"; do
-    facts=$(team_project "$project")
+    project_registry "$project"
+    facts=$registry_reply
     path=$(jq -r .path <<<"$facts") compose=$(jq -r .stack.compose <<<"$facts")
     if [[ ! -x $path/$compose ]]; then
       unknown+=("unknown for $project, since its checkout has no $compose")
@@ -103,6 +104,6 @@ stack_memory() {
 }
 
 # On a supported OS, once the registry is read (the projects line reports a registry it refuses).
-if [[ -n $os ]] && projects=$(team_project --list 2>/dev/null); then
-  stack_memory "$projects"
+if [[ -n $os ]] && project_registry --list 2>/dev/null; then
+  stack_memory "$registry_reply"
 fi

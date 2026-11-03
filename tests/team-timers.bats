@@ -517,15 +517,15 @@ finished: stopped T9-builder 44444444: its work is handed on"
   assert_equal "$(stops)" ""
 }
 
-@test "a claude stop deaf to its time limit's SIGTERM is killed 10 s later, a warning line, and the step goes on" {
+@test "a claude stop deaf to its time limit's SIGTERM is killed TEAM_TIMERS_KILL_SECONDS later, a warning line, and the step goes on" {
   finished_workers
   echo 11111111 >"$STUB_FIXTURES/stop-hangs"
   local start=$SECONDS
-  TEAM_TIMERS_FINISHED_CALL_SECONDS=1 run_bin -0 team-timers run
+  TEAM_TIMERS_FINISHED_CALL_SECONDS=1 TEAM_TIMERS_KILL_SECONDS=1 run_bin -0 team-timers run
   assert_equal "$(grep ' finished: ' <<<"$output" | cut -d ' ' -f 2-)" "finished: warning: could not stop T9-planner 11111111 (claude stop failed with no reason given)
 finished: stopped T9-reviewer 33333333: its work is handed on
 finished: stopped T9-builder 44444444: its work is handed on"
-  # Killed at 11 s, well before the stub's 60.
+  # Killed at 2 s (11 s by default), well before the stub's 60.
   ((SECONDS - start < 40))
 }
 
@@ -1094,17 +1094,18 @@ EOF
   jq -cn --arg at "$(date -u -d '1 minute ago' +%FT%TZ)" \
     '{at: $at, os: "linux", memory: {total: 34359738368, available: 25769803776, team: 0, others: 8589934592}, cpu: null}' \
     >"$HOME/.local/state/agent-team/capacity/readings.jsonl"
-  # The capacity step gets 5 s, which team-capacity needs on a slow machine (CI's macOS runner) to
-  # reach its docker call before the step stops it, still well inside its own 30 s for Docker; the
-  # level step, which first checks the lease and reads the budget, 10 s.
-  TEAM_TIMERS_CAPACITY_SECONDS=5 TEAM_TIMERS_LEVEL_SECONDS=10 TEAM_TIMERS_SWEEP_SECONDS=1 \
-    TEAM_TIMERS_JANITOR_SECONDS=2 run_bin -1 team-timers run
+  # Each step's limit is about 14 times what it takes here to reach its docker call (capacity
+  # 0.07 s, level 0.28 s, which first checks the lease and reads the budget), so CI's macOS runner,
+  # about 4 times slower, still reaches it before the step stops; all well inside their own 30 s
+  # for Docker.
+  TEAM_TIMERS_CAPACITY_SECONDS=1 TEAM_TIMERS_LEVEL_SECONDS=4 TEAM_TIMERS_SWEEP_SECONDS=1 \
+    TEAM_TIMERS_JANITOR_SECONDS=1 run_bin -1 team-timers run
   assert_equal "$output" "$(cat "$log")"
   assert_equal "$(steps "$output")" "lease capacity level stacks checkpoint janitor"
-  [[ $(grep ' capacity: ' <<<"$output") =~ ^[0-9T:Z-]+" capacity: failed: timed out after 5 s"$ ]]
-  [[ $(grep ' level: ' <<<"$output") =~ ^[0-9T:Z-]+" level: failed: timed out after 10 s"$ ]]
+  [[ $(grep ' capacity: ' <<<"$output") =~ ^[0-9T:Z-]+" capacity: failed: timed out after 1 s"$ ]]
+  [[ $(grep ' level: ' <<<"$output") =~ ^[0-9T:Z-]+" level: failed: timed out after 4 s"$ ]]
   [[ $(grep ' stacks: ' <<<"$output") =~ ^[0-9T:Z-]+" stacks: failed: timed out after 1 s"$ ]]
-  [[ $(tail -n 1 <<<"$output") =~ ^[0-9T:Z-]+" janitor: failed: timed out after 2 s"$ ]]
+  [[ $(tail -n 1 <<<"$output") =~ ^[0-9T:Z-]+" janitor: failed: timed out after 1 s"$ ]]
   # Nothing they started is left waiting, and the janitor stopped wrote no report, so the next
   # run starts it again.
   local pid

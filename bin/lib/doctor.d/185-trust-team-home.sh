@@ -10,10 +10,13 @@
 # Its probe is team-doctor-home-trust, a name no project's probe can have. A broken registry is
 # the projects line's, and the team home is probed as if it were no project's.
 home_project=''
-if [[ -d $TEAM_HOME ]] && projects=$(team_project --list 2>/dev/null); then
+if [[ -d $TEAM_HOME ]] && project_registry --list 2>/dev/null; then
+  projects=$registry_reply
   while IFS= read -r project; do
     [[ -n $project ]] || continue
-    ! same_path "$(team_project "$project" | jq -r .path)" "$TEAM_HOME" || home_project=$project
+    home_path=''
+    ! project_registry "$project" || home_path=$(jq -r .path <<<"$registry_reply")
+    ! same_path "$home_path" "$TEAM_HOME" || home_project=$project
   done <<<"$projects"
 fi
 if [[ -z $TEAM_HOME ]]; then
