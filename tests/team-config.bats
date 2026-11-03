@@ -86,6 +86,13 @@ plugin ponder@claude-plugins-official not in plugins.txt"
   jq -e 'length == 8 and .[1] == {item: "settings.json", state: "differs"} and .[2] == {item: "skill retro", state: "local only"}' <<<"$output"
 }
 
+@test "a plugins.txt whose last line has no final newline still lists that line" {
+  printf '%s\n' 'marketplace anthropics/claude-plugins-official' 'plugin discord@claude-plugins-official' >"$shared/plugins.txt"
+  printf '%s' 'plugin mongodb-atlas@claude-plugins-official' >>"$shared/plugins.txt"
+  run_bin -0 team-config diff
+  assert_equal "$output" ""
+}
+
 @test "diff --full adds a unified diff, the team home's side first, under each text that differs; settings as sorted JSON" {
   echo '{"model": "sonnet"}' >"$HOME/.claude/settings.json"
   echo "Changed here." >>"$HOME/.claude/skills/wizard/references/steps.md"

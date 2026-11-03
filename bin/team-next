@@ -190,14 +190,14 @@ same_def='def same($p): .event == $p.event and
 # - briefs: the briefs the task's launches read, one name a line (brief_launched).
 # - builder_kits, reviewer_kits: the toolkits of the task's latest launch of that role, else of its
 #   latest builder launch, one a line (hand_off).
-# - launch: the launch of the session the parsed done names, its worktree a local path (a launch
-#   of null's when it names none); sender_wt its worktree, launch_project its project.
+# - sender_wt, launch_project: the worktree, as a local path, and the project of the launch of the
+#   session the parsed done names (a launch of null's when it names none).
 # - review: the message's review, or null.
 # - latest: the task's latest review, or null.
 launch_def='def sender_launch: ($parsed | map(select(.event == "done")) | first | .session | tostring) as $session
   | map(select(.event == "launch" and .session == $session)) | last
   | . + {worktree: (.worktree | local_path($home))};'
-kind='' back='' held='' briefs='' builder_kits='' reviewer_kits='' launch='' sender_wt='' launch_project=''
+kind='' back='' held='' briefs='' builder_kits='' reviewer_kits='' sender_wt='' launch_project=''
 review='' latest=''
 json_vars --ledger kind='$message | gsub("^\\s+"; "") | [splits("\\s+")] | .[1:3]
   | (.[1] // "") as $sub
@@ -222,7 +222,7 @@ json_vars --ledger kind='$message | gsub("^\\s+"; "") | [splits("\\s+")] | .[1:3
   builder_kits='map(select(.event == "launch" and .role == "builder")) | last | [.toolkits[]?] | join("\n")' \
   reviewer_kits='(map(select(.event == "launch" and .role == "reviewer")) | last)
     // (map(select(.event == "launch" and .role == "builder")) | last) | [.toolkits[]?] | join("\n")' \
-  launch="$launch_def sender_launch | tojson" sender_wt="$launch_def sender_launch | .worktree | tostring" \
+  sender_wt="$launch_def sender_launch | .worktree | tostring" \
   launch_project="$launch_def sender_launch | .project // empty" \
   review='$parsed | map(select(.event == "review")) | first | tojson' latest='map(select(.event == "review")) | last | tojson' \
   -- --arg message "$message" --argjson parsed "$parsed" <<<"$events"

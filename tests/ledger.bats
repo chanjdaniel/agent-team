@@ -47,6 +47,27 @@ SCRIPT
   assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" ""
 }
 
+@test "an event that is not JSON, or more than one object, is refused as such, and a broken ledger.jq shows jq's own error" {
+  append_as team-thread 'not json'
+  assert_equal "$status" "1"
+  assert_equal "$output" "team-thread: not a JSON object for the ledger: not json"
+  append_as team-thread '{"a": 1} {"b": 2}'
+  assert_equal "$status" "1"
+  assert_equal "$output" 'team-thread: not one JSON object for the ledger: {"a": 1} {"b": 2}'
+  mkdir "$BATS_TEST_TMPDIR/code"
+  copy_bin "$BATS_TEST_TMPDIR/code/bin"
+  rm "$BATS_TEST_TMPDIR/code/bin/lib/ledger.jq"
+  echo 'def broken: (;' >"$BATS_TEST_TMPDIR/code/bin/lib/ledger.jq"
+  printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' "source \"$BATS_TEST_TMPDIR/code/bin/lib/team.sh\" \"\$@\"" \
+    'ledger_append "$1"' >"$BATS_TEST_TMPDIR/bin/team-thread"
+  chmod +x "$BATS_TEST_TMPDIR/bin/team-thread"
+  run "$BATS_TEST_TMPDIR/bin/team-thread" '{"ts":"2026-10-22T02:00:00Z","task":"T7","event":"thread","discord_thread":"1563"}'
+  assert_equal "$status" "1"
+  assert_contains "$output" "jq: error: syntax error"
+  [[ $output != *"not a JSON object"* ]]
+  assert_equal "$(cat "$TEAM_HOME/ledger.jsonl" 2>/dev/null)" ""
+}
+
 @test "a review whose sent_back holds whole numbers as strings is refused, a form only --check takes" {
   local review='{"ts":"2026-10-27T02:00:00Z","task":"T7","event":"review","verdict":"findings","head":"a1b2c3d","findings":{"blocking":1,"correctness":0,"security":0,"real-data":0,"note-change":0,"note-before":0},"guarded":[]'
   append_as team-log "$review,\"sent_back\":[\"5\"]}"

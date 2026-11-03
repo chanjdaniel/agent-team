@@ -176,7 +176,7 @@ skills_in() {
 listed() {
   [[ -f $shared/plugins.txt ]] || return 0
   local kind value _
-  while read -r kind value _; do
+  while read -r kind value _ || [[ -n $kind ]]; do
     if [[ -n $kind && $kind != \#* && $kind == "$1" ]]; then printf '%s\n' "$value"; fi
   done <"$shared/plugins.txt"
 }

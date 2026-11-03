@@ -95,7 +95,8 @@ ledger_jq() {
 
 # Read several values of one JSON document on stdin into shell variables, in one jq run: each
 # <name> is set to its <filter>'s first output as text (a string as it is, null or no output
-# empty, anything else compact JSON); the options after -- go to jq (-s, --arg, -L), and with
+# empty, anything else compact JSON), with its trailing newlines stripped, as $(jq -r <filter>)
+# strips them; the options after -- go to jq (-s, --arg, -L), and with
 # --ledger it runs as ledger_jq, with the ledger's definitions and $contract. When jq fails (input
 # that is not JSON), it fails with jq's status and sets nothing; with no document on stdin, it
 # fails with 1 and sets nothing. The caller's local variables are
@@ -116,7 +117,7 @@ json_vars() {
   [[ -n $_jv_out ]] || return 1
   eval "_jv_values=($_jv_out)"
   for _jv_i in "${!_jv_names[@]}"; do
-    printf -v "${_jv_names[_jv_i]}" '%s' "${_jv_values[_jv_i]}"
+    printf -v "${_jv_names[_jv_i]}" '%s' "${_jv_values[_jv_i]%"${_jv_values[_jv_i]##*[!$'\n']}"}"
   done
 }
 
@@ -126,11 +127,13 @@ json_vars() {
 # a lock still held then is a refusal: ledger_append <event> [<seconds>]
 ledger_append() {
   local out line problems lock_wait=()
-  # One jq run: the object's compact line, then its problems (none when it is not one object).
-  out=$(ledger_jq '[inputs | select(type == "object")]
-      | if length == 0 then "none" elif length > 1 then "many"
-        else (first | tojson), ([first | append_problems($contract; $writer)] | join("; ")) end' \
-    -nr --arg writer "${0##*/}" <<<"$1" 2>/dev/null) || die "not a JSON object for the ledger: $1"
+  # One jq run: the object's compact line, then its problems ("none" when the input holds no object
+  # or is not JSON, "many" when it holds more than one). Any other failure (an unreadable contract,
+  # an error in ledger.jq) is jq's own, and its message is shown.
+  out=$(ledger_jq '(try [inputs | select(type == "object")] catch []) as $objects
+      | if ($objects | length) == 0 then "none" elif ($objects | length) > 1 then "many"
+        else ($objects[0] | tojson), ([$objects[0] | append_problems($contract; $writer)] | join("; ")) end' \
+    -nr --arg writer "${0##*/}" <<<"$1") || die "cannot check the event against the ledger contract: $1"
   line=${out%%$'\n'*} problems=''
   [[ $out != *$'\n'* ]] || problems=${out#*$'\n'}
   [[ $line != none ]] || die "not a JSON object for the ledger: $1"

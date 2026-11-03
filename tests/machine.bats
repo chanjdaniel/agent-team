@@ -179,7 +179,7 @@ EOF
       list=.list obj=.obj text=.text first=".list[]" <<<"$1"
     printf "[%s]\n" "$holder" "$epoch" "$state" "$none" "$gone" "$mine" "$list" "$obj" "$text" "$first"' \
     '{"holder": "home-pc", "epoch": 7, "state": null, "mine": false, "list": [1, "a"], "obj": {"a": 1},
-      "text": "two\nlines\n"}'
+      "text": "two\n\nlines\n\n"}'
   assert_equal "$output" '[home-pc]
 [7]
 []
@@ -189,8 +189,8 @@ EOF
 [[1,"a"]]
 [{"a":1}]
 [two
-lines
-]
+
+lines]
 [1]'
   assert_equal "$(wc -l <"$BATS_TEST_TMPDIR/jq-runs")" 1
 }

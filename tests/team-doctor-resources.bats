@@ -176,3 +176,18 @@ sessions() {
   run_bin -0 team-doctor
   assert_equal "$(line_of resources)" "PASS resources: $LEVEL; no hard limits on macOS: admission and stow only"
 }
+
+@test "the resources line fails on a team-capacity check that prints no JSON, and the checks after it still run" {
+  rm "$CODE_CHECKOUT/bin/team-capacity"
+  ln "$(shared not-json-capacity <<EOS
+#!/usr/bin/env bash
+if [[ \$1 == check ]]; then echo 'not json'; exit 0; fi
+exec "$REPO_ROOT/bin/team-capacity" "\$@"
+EOS
+)" "$CODE_CHECKOUT/bin/team-capacity"
+  mkdir -p "$HOME/.local/state/agent-team"
+  echo '{"since": "2026-11-03T00:00:00Z"}' >"$HOME/.local/state/agent-team/offline"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of resources)" "FAIL resources: team-capacity check printed no JSON verdict; fix: run team-capacity check --json and fix what it names, then run team-doctor again"
+  [[ $(line_of offline) == "WARN offline: offline since 2026-11-03T00:00:00Z"* ]]
+}
