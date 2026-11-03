@@ -378,3 +378,14 @@ caught_up_standing() {
   refused "no review of the head ${head:0:7} is logged, so no reviewer has passed it" "$(ask_standing)"
   [[ $stderr != *"does not stand on the review"* ]]
 }
+
+@test "a caught-up head whose own review is logged is judged on that review, not on the review of the head it was made from" {
+  caught_up_standing base
+  ledger_line --arg h "$head" '{ts: "2026-10-22T05:00:00Z", task: "T14", event: "review", verdict: "findings", head: $h,
+    findings: {blocking: 0, correctness: 0, security: 0, "real-data": 0, "note-change": 1, "note-before": 0},
+    sent_back: [1], guarded: ["settings"]}'
+  refused "the latest review of the head ${head:0:7}, at 2026-10-22T05:00:00Z, is findings, not pass" \
+    "the latest review of the head ${head:0:7}, at 2026-10-22T05:00:00Z, found the change touching guarded areas: settings" \
+    "$(ask_standing)"
+  [[ $stderr != *"caught up to"* ]]
+}

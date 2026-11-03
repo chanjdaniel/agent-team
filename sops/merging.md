@@ -39,7 +39,7 @@ The plan-time and standing words are the unattended words, and share one bar, so
 
 - Daniel's message read back from Discord, from an author in `allowFrom`;
 - the PR from the task's own branch for the project;
-- the latest review of the head passed and logged `guarded` as an empty list, where a head `team-catch-up` made (its `caught-up` event) stands on the review of the head it was made from, once git shows it adds only clean merges of the base to it;
+- the latest review of the head passed and logged `guarded` as an empty list, where a head `team-catch-up` made (its `caught-up` event) and no review names stands on the review of the head it was made from, once git shows it adds only clean merges of the base to it;
 - no review of the task counted a security or real-data finding, fixed or not, or left out its finding counts;
 - GitHub's paged list of the PR's files read in full, no path holding a line break, and no changed path (or a rename's old path) matching a guarded pattern of `bin/lib/guarded`.
 

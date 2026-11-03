@@ -30,11 +30,12 @@
 #   to counts once the coordinator logs it); the latest review of the head (by the shorter
 #   prefix) has verdict pass and logged guarded as an empty list (one that left it out, or named
 #   areas, is refused, naming them), where a head team-catch-up made (a caught-up event names it)
-#   stands on the latest review of the head it was made from, followed back through each such
-#   event, once git (after fetching the branch and the base into the primary checkout) shows it
-#   adds only clean merges of the base to that head, else it is refused naming the first merge
-#   that is not; no review of the task counted a security or real-data
-#   finding, fixed or not, or left out its findings, each such review named by its head and time;
+#   and no review names stands on the latest review of the head it was made from, followed back
+#   through each such event to a head with a review of its own, once git (after fetching the
+#   branch and the base into the primary checkout) shows it adds only clean merges of the base to
+#   that head, else it is refused naming the first merge that is not; no review of the task
+#   counted a security or real-data finding, fixed or not, or left out its findings, each such
+#   review named by its head and time;
 #   the PR's changed files, read from GitHub's paged list of its files (each filename, and each
 #   rename's previous filename), number the PR's changedFiles, else the list is refused as not
 #   read in full; each changed path is within the approval's scope (an entry ending in / covers
