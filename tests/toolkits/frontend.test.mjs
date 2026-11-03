@@ -1,7 +1,7 @@
 // The frontend toolkit's scripts against a headless Chrome standing in for the Agent Chrome:
 // ui-capture reads the element selected in DevTools on a local fixture page shaped like
 // Conventioner's dev build (vite-plugin-vue-inspector's hidden __v_inspector props, a Vue app
-// with a router), or the page itself when nothing is selected, and only localhost pages;
+// with a router), or the page Daniel is on when nothing is selected, and only localhost pages;
 // agent-chrome starts Chrome with its own profile and debugging port.
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
@@ -10,7 +10,7 @@ import { createServer } from "node:net";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { promisify } from "node:util";
-import { browserSession, chromePath, inspect, serveFixture, serverListing, startChrome } from "./helpers/chrome.mjs";
+import { bringToFront, browserSession, chromePath, inspect, serveFixture, serverListing, startChrome } from "./helpers/chrome.mjs";
 import { repoRoot, tempDir } from "./helpers/mcp.mjs";
 
 const scripts = join(repoRoot, "toolkits", "frontend", "scripts");
@@ -109,6 +109,20 @@ describe("ui-capture", () => {
     assert.equal(help.status, 0);
     assert.match(help.stdout, /^Capture the element selected in the Agent Chrome's DevTools Elements panel/);
     assert.match(help.stdout, /Usage: ui-capture \[--browser-url <url>\] <out-dir>/);
+    // The active-page rule, its four steps in order, each with the reason the capture gives.
+    assert.match(
+      help.stdout,
+      new RegExp(
+        [
+          "The page it takes, the first that applies:",
+          "  1\\. the localhost page whose DevTools Elements panel has an element selected[^]*",
+          "  2\\. else a localhost page with DevTools open and nothing selected[^]*\"DevTools is\\s+open on it, nothing selected\";",
+          "  3\\. else the visible localhost tab[^]*\"the visible localhost tab\";",
+          "  4\\. else, when no localhost tab is visible[^]*the most recently active localhost tab[^]*\"the most recently active\\s+localhost tab; none is visible\"\\.",
+          "Recency is the order of the Agent Chrome's /json/list, most recently active first\\.",
+        ].join("\n"),
+      ),
+    );
   });
 
   test("fails in one line when no Agent Chrome answers", async () => {
@@ -120,16 +134,20 @@ describe("ui-capture", () => {
     assert.ok(!existsSync(join(out, "ui-pick.md")));
   });
 
-  // In order: no DevTools yet, DevTools open on its default <body>, then <html>, then each selection.
-  test("fails in one line when no localhost page has DevTools open, even with DevTools open on another page", async () => {
+  // In order: DevTools open on another page only, DevTools open on the fixture's default <body>,
+  // then <html>, then each selection.
+  test("captures the most recently active localhost tab when DevTools is open on another page only", async () => {
     await inspect(chrome.browserUrl, elsewhere, "p");
+    await bringToFront(chrome.browserUrl, elsewhere);
     const out = tempDir("out");
     const result = await script("ui-capture", ["--browser-url", chrome.browserUrl, out]);
-    assert.equal(result.status, 1);
-    assert.equal(result.stderr, "ui-capture: no localhost page of the Agent Chrome has DevTools open; right-click the element and Inspect\n");
-    // The other page is never read: nothing of it reaches the output.
+    assert.equal(result.status, 0, result.stderr);
+    const reason = "the most recently active localhost tab; none is visible";
+    assert.equal(result.stdout, `ui-capture: page ${site.url} (${reason}), no element selected -> ${out}/ui-page.md\n`);
+    assertPageCapture(out, site.url, { reason, visible: false });
+    // The other page is never read: nothing of it reaches the output or a file.
     assert.ok(!`${result.stdout}${result.stderr}`.includes("marker-elsewhere"));
-    assert.ok(!existsSync(join(out, "ui-pick.md")));
+    for (const file of ["ui-page.md", "page-snapshot.txt"]) assert.ok(!readFileSync(join(out, file), "utf8").includes("marker-elsewhere"), file);
   });
 
   test("captures the page when DevTools is open on it and nothing is selected", async () => {
@@ -225,7 +243,7 @@ describe("ui-capture on a page without a Vue router", () => {
     const out = staleCapture();
     const result = await script("ui-capture", ["--browser-url", chrome.browserUrl, out]);
     assert.equal(result.status, 0, result.stderr);
-    assertPageCapture(out, site.url, "Plain page");
+    assertPageCapture(out, site.url, { title: "Plain page" });
     assert.ok(readFileSync(join(out, "ui-page.md"), "utf8").includes("\nVue route: (no Vue router found)\n"));
   });
 });
@@ -238,18 +256,104 @@ function staleCapture() {
   return out;
 }
 
-// A page capture of `url` in `out`: ui-page.md's lines, a PNG of the viewport, the snapshot, and
-// none of an element capture's files.
-function assertPageCapture(out, url, title = "Fixture app") {
-  assert.deepEqual(readdirSync(out).sort(), ["page-snapshot.txt", "page.png", "ui-page.md"]);
+// A page capture of `url` in `out`, taken for `reason`, with `others` the other localhost tabs:
+// ui-page.md's lines, a PNG of the viewport, the snapshot, and none of an element capture's files.
+function assertPageCapture(out, url, { title = "Fixture app", route = "/", reason = "DevTools is open on it, nothing selected", others = "none", visible = true } = {}) {
+  assert.deepEqual(readdirSync(out).sort(), visible ? ["page-snapshot.txt", "page.png", "ui-page.md"] : ["page-snapshot.txt", "ui-page.md"]);
   const page = readFileSync(join(out, "ui-page.md"), "utf8");
   assert.match(page, /^# The page capture\n\nCaptured \d{4}-\d\d-\d\dT[\d:.]+Z by ui-capture from the Agent Chrome at http:\/\/127\.0\.0\.1:\d+\.\n/);
-  assert.ok(page.includes(`\nPage: ${url}\nRoute: /\nTitle: ${title}\n\nTaken because: DevTools is open on it, nothing selected\nOther localhost tabs: none\n`), page);
-  assert.ok(page.includes("\nFiles:\n\n- page.png: the viewport, as Daniel sees it\n- page-snapshot.txt: the page's accessibility snapshot (take_snapshot)\n"), page);
+  assert.ok(page.includes(`\nPage: ${url}\nRoute: ${route}\nTitle: ${title}\n\nTaken because: ${reason}\nOther localhost tabs: ${others}\n`), page);
+  const shot = visible
+    ? "- page.png: the viewport, as Daniel sees it"
+    : "- no page.png: the tab is not visible, and Chrome paints no hidden tab, so it has no screenshot";
+  assert.ok(page.includes(`\nFiles:\n\n${shot}\n- page-snapshot.txt: the page's accessibility snapshot (take_snapshot)\n`), page);
   assert.ok(!page.includes("ui-pick.md") && !page.includes("element.png"), page);
-  assert.deepEqual([...readFileSync(join(out, "page.png")).subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], "page.png is a PNG");
+  if (visible) assert.deepEqual([...readFileSync(join(out, "page.png")).subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], "page.png is a PNG");
   assert.match(readFileSync(join(out, "page-snapshot.txt"), "utf8"), new RegExp(`RootWebArea "${title}"`));
 }
+
+// The Agent Chrome with DevTools closed on every page: two localhost tabs and one off localhost,
+// which Daniel's clicks bring to the front in turn. The off-localhost page's marker must reach
+// nothing, and its tab is never attached to, which the browser reports to a session that
+// discovers targets.
+describe("ui-capture with DevTools closed", () => {
+  let site, chrome, first, second, offsite, browser;
+  const attached = [];
+  before(async () => {
+    site = await serveFixture({ "/": fixture, "/second": "<!doctype html><title>Second page</title><p>The second tab</p>" });
+    first = site.url;
+    second = `${site.url}second`;
+    offsite = "data:text/html,<title>Off localhost</title><p>marker-offsite</p>";
+    chrome = await startChrome([first, second, offsite]);
+    browser = await browserSession(chrome.browserUrl);
+    browser.on("Target.targetInfoChanged", ({ targetInfo }) => targetInfo.attached && attached.push(targetInfo.url));
+    await browser.send("Target.setDiscoverTargets", { discover: true });
+  });
+  after(async () => {
+    browser?.close();
+    await chrome?.close();
+    await site?.close();
+  });
+  const capture = async (url, reason, others) => {
+    const out = tempDir("out");
+    const result = await script("ui-capture", ["--browser-url", chrome.browserUrl, out]);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, `ui-capture: page ${url} (${reason}), no element selected -> ${out}/ui-page.md\n`);
+    const title = url === first ? "Fixture app" : "Second page";
+    // A tab in step 4 is hidden, and gets no screenshot.
+    const visible = !reason.includes("none is visible");
+    assertPageCapture(out, url, { title, route: new URL(url).pathname, reason, others, visible });
+    for (const file of readdirSync(out)) assert.ok(!readFileSync(join(out, file), "utf8").includes("marker-offsite"), file);
+    assert.ok(!`${result.stdout}${result.stderr}`.includes("marker-offsite"));
+    return out;
+  };
+
+  test("captures the visible localhost tab", async () => {
+    await bringToFront(chrome.browserUrl, first);
+    const out = await capture(first, "the visible localhost tab", second);
+    assert.ok(readFileSync(join(out, "ui-page.md"), "utf8").includes("\n- /events/:id/import (event-import): ImportView src/views/events/ImportView.vue\n"));
+  });
+
+  test("captures the other localhost tab once it is brought to the front", async () => {
+    await bringToFront(chrome.browserUrl, second);
+    await capture(second, "the visible localhost tab", first);
+  });
+
+  test("captures the most recently active localhost tab when the off-localhost tab is in front, and never attaches to that one", async () => {
+    await bringToFront(chrome.browserUrl, first);
+    await bringToFront(chrome.browserUrl, offsite);
+    await capture(first, "the most recently active localhost tab; none is visible", second);
+    // Every capture so far attached to the localhost tabs only.
+    assert.ok(attached.includes(first) && attached.includes(second), attached.join(", "));
+    assert.deepEqual(attached.filter((url) => !url.startsWith(site.url) && /^(data|https?):/.test(url)), []);
+  });
+
+  test("takes the localhost page DevTools is open on over the visible one", async () => {
+    await inspect(chrome.browserUrl, first, null);
+    await bringToFront(chrome.browserUrl, second);
+    await capture(first, "DevTools is open on it, nothing selected", second);
+  });
+});
+
+// The Agent Chrome open on a page off localhost only.
+describe("ui-capture with no localhost page open", () => {
+  let chrome;
+  before(async () => {
+    chrome = await startChrome(["data:text/html,<title>Off localhost</title><p>marker-offsite</p>"]);
+  });
+  after(async () => {
+    await chrome?.close();
+  });
+
+  test("fails in one line and writes nothing", async () => {
+    const out = join(tempDir("out"), "ui");
+    const result = await script("ui-capture", ["--browser-url", chrome.browserUrl, out]);
+    assert.equal(result.status, 1);
+    assert.equal(result.stderr, "ui-capture: the Agent Chrome has no localhost page open\n");
+    assert.equal(result.stdout, "");
+    assert.ok(!existsSync(out));
+  });
+});
 
 // A page that never answers the DevTools protocol (here a script that never ends; on a busy
 // machine, a starved or hung renderer) stops the capture in one line, not a stack trace, after

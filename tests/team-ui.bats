@@ -67,9 +67,9 @@ $ui/notes.txt"
 }
 
 @test "a capture that fails keeps the attachments, and says why in one line" {
-  echo "no localhost page of the Agent Chrome has DevTools open; right-click the element and Inspect" >"$STUB_FIXTURES/capture-fails"
+  echo "the Agent Chrome has no localhost page open" >"$STUB_FIXTURES/capture-fails"
   run_bin -1 --separate-stderr team-ui T7 --attach "$inbox/1563-screenshot.png" --capture
-  assert_equal "$stderr" "team-ui: the capture failed: ui-capture: no localhost page of the Agent Chrome has DevTools open; right-click the element and Inspect"
+  assert_equal "$stderr" "team-ui: the capture failed: ui-capture: the Agent Chrome has no localhost page open"
   assert_equal "$output" "tasks/T7/ui/ holds:
 $ui/1563-screenshot.png"
 }

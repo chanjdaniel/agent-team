@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Capture the element selected in the Agent Chrome's DevTools Elements panel into a directory, for
 // an agent to fix: its page, HTML, matched CSS, Vue source location and two screenshots; or, when
-// DevTools is open on a localhost page with nothing selected, a capture of that page.
+// nothing is selected, a capture of the localhost page Daniel is on.
 //
 // Usage: ui-capture [--browser-url <url>] <out-dir>
 //   --browser-url  The Agent Chrome's remote debugging address (default http://127.0.0.1:9222,
@@ -10,8 +10,20 @@
 //   1. the localhost page whose DevTools Elements panel has an element selected: an element
 //      capture of it;
 //   2. else a localhost page with DevTools open and nothing selected (DevTools' default <body>,
-//      or <html>), the first the server lists: a page capture of it, "DevTools is open on it,
-//      nothing selected".
+//      or <html>), among several the first in step 3's order: a page capture of it, "DevTools is
+//      open on it, nothing selected";
+//   3. else the visible localhost tab (the front tab of a window that is not minimised), among
+//      several (several windows) the one whose document has focus, else the most recently
+//      active: a page capture of it, "the visible localhost tab";
+//   4. else, when no localhost tab is visible (its window shows another page, or is minimised),
+//      the most recently active localhost tab: a page capture of it, "the most recently active
+//      localhost tab; none is visible".
+// Recency is the order of the Agent Chrome's /json/list, most recently active first. Visibility
+// and focus are read before the server selects any page, over one short DevTools protocol
+// session per localhost tab that evaluates document.visibilityState and document.hasFocus() and
+// nothing else: the server turns on focus emulation for each page it selects, which makes every
+// page read visible and focused while it is connected. No tab off localhost is attached to, by
+// the server or by that read.
 // Writes, creating <out-dir> if needed, for an element capture:
 //   ui-pick.md    the time, the page's URL and route, the snapshot line of the selected element,
 //                 its source chain (vite-plugin-vue-inspector's file:line:column, innermost
@@ -24,7 +36,8 @@
 //                 localhost tabs, the Vue route (the current route's matched records of the Vue
 //                 app mounted on the page, outermost first, each its path, name, component and
 //                 file; "(no Vue router found)" on a page without one) and the files
-//   page.png      a screenshot of the viewport
+//   page.png      a screenshot of the viewport, unless the tab is not visible: Chrome paints no
+//                 hidden tab, so a screenshot of it never comes, and ui-page.md says so
 //   page-snapshot.txt  the page's accessibility snapshot (take_snapshot)
 // Of those five names, a capture removes the ones it did not write once it has written its own;
 // a failed capture writes and removes nothing.
@@ -36,10 +49,10 @@
 // The element is the one DevTools marks in the page's snapshot ("selected in the DevTools
 // Elements panel"); one outside the accessibility tree is found in a verbose snapshot.
 // Exit 0 captured, its one line on stdout naming the element or the page; 1 with one line on
-// stderr when no Agent Chrome answers, no localhost page has DevTools open, the element carries
-// no Vue source data (a production build, or a Vue DevTools without the inspector), the server
-// never attached to an open tab, or a page does not answer in 30 s (a busy machine can cause
-// either); 2 a malformed command line.
+// stderr when no Agent Chrome answers, the Agent Chrome has no localhost page open, the element
+// carries no Vue source data (a production build, or a Vue DevTools without the inspector), the
+// server never attached to an open tab, or a page does not answer in 30 s (a busy machine can
+// cause either); 2 a malformed command line.
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout } from "node:timers/promises";
@@ -178,17 +191,21 @@ const notInTree = /there is a selected element in the DevTools Elements panel bu
 // the browser itself reports (asked again each time, so a tab that navigates is followed), ask
 // again, and twice start a new connection, which attaches anew. Tabs still missing then are named
 // in the failure, should no page listed give a capture.
+// The browser's own list is the localhost page targets, most recently active first.
+const localhost = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//;
 const localTabs = () =>
   fetch(new URL("/json/list", browserUrl), { signal: AbortSignal.timeout(5000) })
     .then((response) => response.json())
-    .then((targets) => targets.filter((t) => t.type === "page" && /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//.test(t.url)).map((t) => t.url))
+    .then((targets) => targets.filter((t) => t.type === "page" && localhost.test(t.url)))
     .catch(() => []);
 let pages = [];
 let missing = [];
+let tabs = [];
 listing: for (let connection = 1; ; connection++) {
   for (let attempt = 0; attempt < 30; attempt++) {
     pages = listedPages((await call("list_pages")).text).filter((p) => /^https?:/.test(p.url));
-    missing = (await localTabs()).filter((url) => !pages.some((p) => p.url === url));
+    tabs = await localTabs();
+    missing = tabs.map((t) => t.url).filter((url) => !pages.some((p) => p.url === url));
     if (missing.length === 0) break listing;
     await setTimeout(100);
   }
@@ -199,6 +216,48 @@ listing: for (let connection = 1; ; connection++) {
 const unattached = () =>
   `chrome-devtools-mcp never attached to ${missing.join(", ")}, which the Agent Chrome has open (a busy machine can cause it); wait, and try again`;
 if (pages.length === 0) await done(1, missing.length ? unattached() : "the Agent Chrome has no localhost page open");
+
+// Whether a localhost tab is visible and its document focused, read over a DevTools protocol
+// session of its own: the server's evaluate_script cannot tell, since each page the server selects
+// gets focus emulation, under which every page reads visible and focused. Only a page target whose
+// URL is a localhost one is attached to; the session evaluates this one fixed expression and
+// nothing else, enables no domain, and is closed at once. A tab that does not answer in 5 s is
+// unread: neither visible nor focused in the order, but still given a screenshot.
+const stateExpression = "({ visible: document.visibilityState === 'visible', focus: document.hasFocus() })";
+async function tabState(target) {
+  const unread = { visible: null, focus: false };
+  if (target.type !== "page" || !localhost.test(target.url) || !/^ws:\/\/(127\.0\.0\.1|localhost)(:\d+)?\//.test(target.webSocketDebuggerUrl ?? "")) return unread;
+  const socket = new WebSocket(target.webSocketDebuggerUrl);
+  try {
+    const answer = await Promise.race([
+      new Promise((resolve, reject) => {
+        socket.onopen = () => socket.send(JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression: stateExpression, returnByValue: true } }));
+        socket.onmessage = ({ data }) => {
+          const message = JSON.parse(data);
+          if (message.id === 1) resolve(message.result?.result?.value);
+        };
+        socket.onerror = () => reject(new Error("no connection"));
+      }),
+      setTimeout(5000, undefined, { ref: false }),
+    ]);
+    return answer ? { visible: answer.visible === true, focus: answer.focus === true } : unread;
+  } catch {
+    return unread;
+  } finally {
+    socket.close();
+  }
+}
+// The listed pages in the order steps 2 and 3 choose by: visible first, then focused, then most
+// recently active (its URL's place in /json/list); two tabs on one URL keep the server's order.
+const states = await Promise.all(tabs.map(async (t) => ({ url: t.url, ...(await tabState(t)) })));
+for (const page of pages) {
+  const same = states.filter((t) => t.url === page.url);
+  page.visible = same.some((t) => t.visible === true) || (same.some((t) => t.visible === false) ? false : null);
+  page.focus = same.some((t) => t.focus);
+  page.recency = same.length ? states.indexOf(same[0]) : states.length;
+}
+const order = (a, b) => (b.visible === true) - (a.visible === true) || b.focus - a.focus || a.recency - b.recency;
+pages.sort(order);
 
 // A JSON value evaluate_script returned.
 const evaluated = (text) => JSON.parse(text.match(/```json\n([\s\S]*?)\n```/)?.[1] ?? "null");
@@ -231,6 +290,7 @@ let pick, inspected;
 for (const page of pages) {
   await call("select_page", { pageId: page.id });
   const snapshot = (await call("take_snapshot")).text;
+  page.snapshot = snapshot;
   const marked = snapshot.includes(selectedMark)
     ? snapshot
     : notInTree.test(snapshot) ? (await call("take_snapshot", { verbose: true })).text : null;
@@ -239,7 +299,7 @@ for (const page of pages) {
   const facts = line && (await elementFacts(line.match(/uid=(\S+)/)[1]));
   if (line && !facts) await done(1, "evaluate_script returned nothing readable for the selected element");
   if (!line || facts.tag === "BODY" || facts.tag === "HTML") {
-    inspected ??= { ...page, snapshot };
+    inspected ??= page;
     continue;
   }
   pick = { ...page, line, uid: line.match(/uid=(\S+)/)[1], facts };
@@ -247,7 +307,6 @@ for (const page of pages) {
 }
 // A tab the server never attached to may hold the selection, so that comes first.
 if (!pick && missing.length) await done(1, unattached());
-if (!pick && !inspected) await done(1, "no localhost page of the Agent Chrome has DevTools open; right-click the element and Inspect");
 
 const fence = (text) => "`".repeat(Math.max(3, ...[...text.matchAll(/`+/g)].map((m) => m[0].length + 1)));
 const block = (lang, text) => `${fence(text)}${lang}\n${text}\n${fence(text)}`;
@@ -262,11 +321,15 @@ const write = (files) => {
 };
 
 if (!pick) {
-  // The page capture: DevTools is open on the page and nothing is selected. Its facts are read in
-  // the page: its route and title, and the matched records of the current route of the Vue 3 app
+  // The page capture: nothing is selected, so the page is the one DevTools is open on (step 2),
+  // else the first in step 3's order, visible (step 3) or not (step 4). Its facts are read in the
+  // page: its route and title, and the matched records of the current route of the Vue 3 app
   // mounted on it (__vue_app__ on its container, which Vue marks data-v-app), when there is one.
-  const reason = "DevTools is open on it, nothing selected";
-  await call("select_page", { pageId: inspected.id });
+  const chosen = inspected ?? pages[0];
+  const reason = inspected
+    ? "DevTools is open on it, nothing selected"
+    : chosen.visible === true ? "the visible localhost tab" : "the most recently active localhost tab; none is visible";
+  await call("select_page", { pageId: chosen.id });
   const seen = evaluated(
     (
       await call("evaluate_script", {
@@ -294,13 +357,14 @@ if (!pick) {
     ).text,
   );
   if (!seen) await done(1, "evaluate_script returned nothing readable for the page");
-  const screenshot = (await call("take_screenshot")).images[0];
-  if (!screenshot) await done(1, "take_screenshot returned no image");
-  const others = pages.filter((p) => p.id !== inspected.id).map((p) => p.url);
+  // A tab read as hidden gets none: Chrome paints no hidden tab, so its screenshot never comes.
+  const screenshot = chosen.visible === false ? null : (await call("take_screenshot")).images[0];
+  if (chosen.visible !== false && !screenshot) await done(1, "take_screenshot returned no image");
+  const others = pages.filter((p) => p.id !== chosen.id).map((p) => p.url);
   const route = (r) => `- ${r.path}${r.name ? ` (${r.name})` : ""}: ${r.component ? r.component + (r.file ? ` ${r.file}` : "") : "(no component)"}`;
   write({
-    "page.png": Buffer.from(screenshot.data, "base64"),
-    "page-snapshot.txt": `${inspected.snapshot.replace(/\n*$/, "")}\n`,
+    ...(screenshot && { "page.png": Buffer.from(screenshot.data, "base64") }),
+    "page-snapshot.txt": `${chosen.snapshot.replace(/\n*$/, "")}\n`,
     "ui-page.md": [
       "# The page capture",
       "",
@@ -320,7 +384,9 @@ if (!pick) {
       "",
       "Files:",
       "",
-      "- page.png: the viewport, as Daniel sees it",
+      screenshot
+        ? "- page.png: the viewport, as Daniel sees it"
+        : "- no page.png: the tab is not visible, and Chrome paints no hidden tab, so it has no screenshot",
       "- page-snapshot.txt: the page's accessibility snapshot (take_snapshot)",
       "",
     ].join("\n"),
