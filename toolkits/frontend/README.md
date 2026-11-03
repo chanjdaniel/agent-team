@@ -1,6 +1,7 @@
 # frontend
 
-Front-end fixes on the element Daniel points at: Daniel right-clicks it in the Agent Chrome and picks Inspect, and the agent gets its HTML, matched CSS, Vue source file and line, and screenshot, with a capture of the page it is on.
+Front-end fixes on the element Daniel points at, and a look at the page Daniel is on: Daniel right-clicks an element in the Agent Chrome and picks Inspect, and the agent gets its HTML, matched CSS, Vue source file and line, and screenshot, with a capture of the page it is on; with nothing selected, the agent gets that page capture alone.
+A page capture holds the page's URL, route, title and Vue route, a screenshot, its accessibility snapshot, and its console problems and failed requests since it last loaded.
 For Daniel's own Claude Code session, and for the coordinator's intake of a fix sent from Discord; workers read the coordinator's capture, never the Agent Chrome, and `team-worker` refuses them the toolkit.
 
 ## Use it
@@ -11,6 +12,11 @@ At the laptop, in Conventioner's checkout:
 2. Start the session with the toolkit: `claude --plugin-dir ~/agent-team/toolkits/frontend`.
 3. For each fix: right-click the element in the Agent Chrome, pick Inspect, and type the fix, for example "the selected element: give it the same height as Import responses".
    The skill captures the element, opens its `.vue` file at the line and makes the change; the dev server reloads it in the Agent Chrome.
+   With nothing selected, the capture holds only the page, so the skill asks Daniel to inspect the element rather than guess.
+
+The capture takes the page Daniel is on: the page with an element selected, else a page with DevTools open, else the visible localhost tab, else the most recently active one ("What it runs" says how).
+
+From Discord, the coordinator's `ui-intake` skill captures with `team-ui T<n> --capture` when Daniel asks it to check, look at or capture the page, or sends a fix about the inspected element; Daniel turns a task's manual QC walk on and off by saying so in its thread, which the coordinator records with `team-ui T<n> --walk start|stop`, and while it is on the coordinator captures the page with each message Daniel posts there.
 
 ## What it can see
 
@@ -55,6 +61,8 @@ At the laptop, in Conventioner's checkout:
 `tests/run toolkits` runs `tests/toolkits/frontend.test.mjs`: a headless Chrome stands in for the Agent Chrome, a local fixture page shaped like Conventioner's dev build stands in for the app, and the test opens DevTools and selects an element in the Elements panel exactly as a click there does (`tests/toolkits/helpers/chrome.mjs`).
 That Chrome runs off the record, so no page waits for a fresh profile's cookie database, and a Chrome too old for `open_devtools` fails the test at once.
 It checks each capture (the element with its page's capture, and the page with nothing selected, with a Vue router and without, with DevTools open and closed, and which tab is taken as tabs are brought to the front), the page's console problems and failed requests from before the capture, kept to the last 50 and fenced, the commands `ui-capture` sends a page over its own sessions (through a relay of the debugging address), the history it cannot read, and each refusal, that a page off localhost is never read or attached to, that the MCP server `.mcp.json` declares lists localhost pages only and sees the selection, and that `agent-chrome` starts Chrome with its own profile and port.
+
+The bats suite checks the coordinator's side with `ui-capture` stubbed: `tests/team-ui.bats` that each capture gets a directory of its own with its kind and Daniel's note, that a failed one leaves none, and that a walk turns on and off in the ledger, `tests/team-brief.bats` that the briefs name each capture, and `tests/team-state.bats` that a walk that is on shows.
 
 `evals/` holds the skill's eval cases (`claude plugin eval ~/agent-team/toolkits/frontend`): it fires on a fix about the selected element and leaves a general front-end question alone.
 Every `frontend` call there is answered by an agent mock of a Conventioner page (`evals/mocks/frontend/_server.md`), whose `_tools.json` is the server's own `tools/list`, which the toolkit test keeps in step.
