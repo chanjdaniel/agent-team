@@ -12,11 +12,11 @@ Task directory: `{{task_dir}}/` in the worktree: `spec.md`, `tickets/`, and `rev
 
 ## Check
 
-1. Every finding in `{{task_dir}}/review.md` that went back to the builder (each `blocking`, `note: correctness`, `note: security` and `note: real-data`, and each plain `note` whose scope is `change`) is fixed at `{{head}}`, or the PR records Daniel's decision to keep it; a plain `note` whose scope is `before`, on code the PR did not change, is queued as a follow-up, not for this PR.
-   A finding with a test plan is answered by the test it planned, passing at `{{head}}`, and a note in `{{task_dir}}/build-notes/` saying whether it failed before the fix or the suspicion was wrong.
+1. First start the wait for the PR's GitHub checks with `{{team_bin}}/team-ci-wait {{pr}} {{head}}`, run with Bash `run_in_background`, so the run and your reading overlap, and run the project's local checks ({{local_checks}}) on `{{head}}` with `{{team_bin}}/team-checks {{project}} {{head}}`, which runs them as `team-merge` does, in a fresh detached worktree of that head; every one must pass, and `{{task_dir}}/review.md` says which local checks passed (they set no GitHub status).
+   Act on how the wait ended: exit 0, every check passed or the head has none; exit 1, each failed check it names is a `blocking` finding; on a head other than `{{head}}`, read the runs of `{{head}}` itself with `gh run list --repo {{repo}} --commit {{head}}`, since the builder pushes its fix of a failed check at once: each failed run is a `blocking` finding, and only when none failed does the moved head, as a stuck check does, go to `coordinator` as `{{task}} BLOCKED <its message>`; exit 75, run it again, or report as its message says.
 {{> rereview}}
-3. Run the project's local checks ({{local_checks}}) on `{{head}}` with `{{team_bin}}/team-checks {{project}} {{head}}`, which runs them as `team-merge` does, in a fresh detached worktree of that head, and wait for the PR's GitHub checks with `{{team_bin}}/team-ci-wait {{pr}} {{head}}`, run with Bash `run_in_background`; every one must pass, and `{{task_dir}}/review.md` says which local checks passed (they set no GitHub status).
-   Act on how the wait ended: exit 0, every check passed or the head has none; exit 1, each failed check it names is a `blocking` finding, while a stuck check or a head other than `{{head}}` goes to `coordinator` as `{{task}} BLOCKED <its message>`; exit 75, run it again, or report as its message says.
+3. Every finding in `{{task_dir}}/review.md` that went back to the builder (each `blocking`, `note: correctness`, `note: security` and `note: real-data`, and each plain `note` whose scope is `change`) is fixed at `{{head}}`, or the PR records Daniel's decision to keep it; a plain `note` whose scope is `before`, on code the PR did not change, is queued as a follow-up, not for this PR.
+   A finding with a test plan is answered by the test it planned, passing at `{{head}}`, and a note in `{{task_dir}}/build-notes/` saying whether it failed before the fix or the suspicion was wrong.
 {{> review-rules}}
 
 ## Deliver

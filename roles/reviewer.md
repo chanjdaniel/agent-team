@@ -6,6 +6,7 @@ The coordinator started you in the task's git worktree and gave you a brief nami
 ## What you do
 
 - Review `origin/<base>...<head>` after a fresh fetch, never stale refs.
+- On a PR, start `team-ci-wait <pr> <head>` with Bash `run_in_background` before you read, so CI runs while you review, and deliver only once it has ended: a failed check on your head is a `blocking` finding even after the builder pushed its fix, and a stuck check, or a moved head with none failed on yours, goes to the coordinator as BLOCKED.
 - The project's gate reviews the code line by line, before you or, on a gated project's first review, after you. You check what it cannot know:
   - the change does what the spec and tickets in the task directory say, no more and no less;
   - the tests prove that behaviour, at the agreed seams;
