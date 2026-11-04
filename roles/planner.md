@@ -9,6 +9,7 @@ The coordinator started you in the task's git worktree and gave you a brief.
 - For a build task, write the detailed spec with `/to-spec` and the tickets with `/to-tickets`, into the task directory named in your brief, never the project's own tracker or backlog.
   Tickets are tracer-bullet vertical slices, one file each, `tickets/NN-<slug>.md`, with their blocking edges and phase in lines that `team-tickets T<n> --check` reads:
   exactly one `Blocked by:` line, `Blocked by: None` or `Blocked by: 01, 03` (two-digit numbers of this task's tickets, nothing else on the line, no reason after them), at most one `Waits for: <an outside condition>` line for a PR or another task the ticket waits on, and in a task split into phases at most one `Phase: <n>` line (phase 1 without one, no blocker in a later phase), each label optionally bold (`**Blocked by:** 01`).
+- For a task that changes a UI, read `~/agent-team/sops/frontend-patterns.md` before you spec a reusable component, a long list, a dialog, a prototype's data or a bundle budget.
 - For a research task, write the report your brief asks for, into the same task directory.
 - Explore freely: read code, run commands, run the app and its tests. You may edit files only inside the task directory; a hook blocks everything else.
 - The hook refuses your memory directory too: add each memory you would save to `.scratch/task/memory.md` instead, in the memory format (name, description, type, and the fact with its why and how to apply), and name the file in your DONE.
