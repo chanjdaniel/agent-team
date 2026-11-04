@@ -42,10 +42,10 @@
 #         script's kind is the same from every checkout, and no path goes in costs.jsonl); in a
 #         scope, the peak and CPU are its MemoryPeak and CPUUsageNSec, read inside it as the
 #         command ends; elsewhere the peak is the highest resident memory of its process group,
-#         sampled every 10 seconds, and the CPU the time its processes took. A run that was
-#         stopped, one that ended before its first sample, or a scope whose MemoryPeak is not set
-#         leaves no sample, said on stderr, and a sample that cannot be written is a line on
-#         stderr: neither changes the exit status.
+#         sampled every 10 seconds from the first look that reads any, and the CPU the time its
+#         processes took. A run that was stopped, one that ended before its first sample, or a
+#         scope whose MemoryPeak is not set leaves no sample, said on stderr, and a sample that
+#         cannot be written is a line on stderr: neither changes the exit status.
 #         An INT, TERM or HUP to team-heavy (a Ctrl-C in its terminal, or stop) ends the
 #         command's whole tree, as stop says, and team-heavy then exits with the command's status.
 #         Under a run already (TEAM_HEAVY_HELD set), the command runs at once, inside its parent's
@@ -163,15 +163,16 @@ group_alive() {
   ps -A -o pgid= -o stat= | awk -v g="$1" '$1 == g && $2 !~ /^Z/ { found = 1 } END { exit !found }'
 }
 
-# Sample the resident memory of process group <pgid> into <file> (the highest, in bytes) every
-# SAMPLE_SECONDS while it lives; TERM ends it with its sleep.
+# Sample the resident memory of process group <pgid> into <file> (the highest, in bytes) while it
+# lives, every SAMPLE_SECONDS once a look has read any and every tenth of a second until then,
+# since on macOS a process just forked can read as none; TERM ends it with its sleep.
 sample_group() {
   local pgid=$1 file=$2 peak=0 now nap=''
   trap '[[ -z $nap ]] || kill "$nap" 2>/dev/null; exit 0' TERM
   while kill -0 -- "-$pgid" 2>/dev/null; do
     now=$(ps -A -o pgid= -o rss= | awk -v g="$pgid" '$1 == g { s += $2 } END { printf "%d\n", s * 1024 }')
     if ((now > peak)); then peak=$now && echo "$peak" >"$file"; fi
-    sleep "$SAMPLE_SECONDS" &
+    if ((peak > 0)); then sleep "$SAMPLE_SECONDS" & else sleep 0.1 & fi
     nap=$!
     wait "$nap" || true
     nap=''

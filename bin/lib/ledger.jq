@@ -809,11 +809,11 @@ def duration:
 # team-sweep calls it stalled. default, 50 minutes, so with the sweep watch's three-minute stand
 # the coordinator is woken within the hour (a full Playwright run or tests/run, up to about 33
 # minutes seen, passes); gate, 180 minutes, while a running call runs the gate, whose runs went
-# up to about 115; ci_wait, 100 minutes, while a running call runs team-ci-wait, which ends by
-# its 90-minute deadline; interview, none (null), while a running call waits on Daniel with
+# up to about 115; ci_wait, 110 minutes, while a running call runs team-ci-wait, whose deadline of
+# 180 looks ends it by about 100, each look's reads taking a few seconds on top of its 30; interview, none (null), while a running call waits on Daniel with
 # team-thread wait. session-activity names each call's limit from its whole command. team-sweep
 # reads the session-activity floor from default too, since no session quieter than it is stalled.
-def stall_limits: {default: 3000, gate: 10800, ci_wait: 6000, interview: null};
+def stall_limits: {default: 3000, gate: 10800, ci_wait: 6600, interview: null};
 
 # A running call's stall limit: the one session-activity names for it (its limit), else default.
 def call_limit:

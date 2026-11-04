@@ -334,7 +334,8 @@ describe("ui-capture on a page with more than 50 problems", () => {
 <script>
   for (let i = 1; i < 60; i++) console.error("noisy-" + i);
   console.error("noisy-60 " + String.fromCharCode(96).repeat(5) + " first line\\nsecond line " + "x".repeat(600));
-  for (let i = 1; i <= 60; i++) fetch("/gone-" + i);
+  // Handled, so a fetch a busy runner's network rejects stays a failed request, and is no problem more.
+  for (let i = 1; i <= 60; i++) fetch("/gone-" + i).catch(() => {});
 </script>`,
     });
     chrome = await startChrome([site.url]);
@@ -356,7 +357,8 @@ describe("ui-capture on a page with more than 50 problems", () => {
       return { head, fence, lines: body.split("\n") };
     };
     const problems = section("Console problems since the page loaded");
-    assert.equal(problems.head, "the last 50 of 60, oldest first; the 10 before them are left out");
+    // The whole capture as the message, so a count that differs shows what it counted.
+    assert.equal(problems.head, "the last 50 of 60, oldest first; the 10 before them are left out", page);
     assert.equal(problems.fence, "``````");
     assert.equal(problems.lines.length, 50);
     assert.deepEqual(
@@ -367,10 +369,10 @@ describe("ui-capture on a page with more than 50 problems", () => {
     const text = `noisy-60 \`\`\`\`\` first line\nsecond line ${"x".repeat(600)}`;
     assert.equal(problems.lines[49].replace(/^error at \S+: /, ""), `${text.slice(0, 500).replace("\n", "\\n")} [trimmed: ${text.length} characters in all]`);
     const failed = section("Failed requests since the page loaded");
-    assert.equal(failed.head, "the last 50 of 60, oldest first; the 10 before them are left out");
+    assert.equal(failed.head, "the last 50 of 60, oldest first; the 10 before them are left out", page);
     assert.equal(failed.fence, "```");
     assert.equal(failed.lines.length, 50);
-    for (const line of failed.lines) assert.match(line, new RegExp(`^404 \\(Not Found\\) ${site.url}gone-\\d+$`));
+    for (const line of failed.lines) assert.match(line, new RegExp(`^(404 \\(Not Found\\)|net::ERR_\\w+) ${site.url}gone-\\d+$`));
   });
 });
 

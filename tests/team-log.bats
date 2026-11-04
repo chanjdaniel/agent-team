@@ -188,6 +188,8 @@ injection team-log role source text
 rehome-failed team-resume project branch machine reason
 rehomed team-open project branch worktree machine
 walk team-ui state
+image-posted team-post thread discord_thread discord_message file
+image-retracted team-post thread discord_thread discord_message
 TABLE
   )
   actual=$(jq -r '.kinds | to_entries[] | [.key, ([.value.writer] | flatten | join(",")), (.value.required | keys_unsorted[])] | join(" ")' "$CONTRACT")

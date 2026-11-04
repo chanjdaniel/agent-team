@@ -277,6 +277,25 @@ costs() {
   jq -e '.kind == "heavy:tests-run" and .peak_bytes > 0' "$COSTS"
 }
 
+@test "a first look that reads no memory looks again soon, so a short run still leaves its sample" {
+  as_macos
+  # On macOS a process just forked can read as no memory; the first look reads that, every later one the machine.
+  local real_ps first_look=$BATS_TEST_TMPDIR/first-look
+  real_ps=$(command -v ps)
+  stub_command ps
+  stub_script ps <<SH
+if [[ \$* == "-A -o pgid= -o rss=" && ! -e "$first_look" ]]; then
+  touch "$first_look"
+  exit 0
+fi
+exec "$real_ps" "\$@"
+SH
+  run_bin -0 --separate-stderr team-heavy run --kind tests-run -- bash -c 'sleep 1'
+  [[ -e $first_look ]]
+  assert_equal "$stderr" ""
+  jq -e '.kind == "heavy:tests-run" and .peak_bytes > 0' "$COSTS"
+}
+
 @test "a cost sample that cannot be written is a line on stderr and the run's status stands" {
   as_macos
   # No team home, so no admission needs the state directory either.
