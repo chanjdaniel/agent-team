@@ -984,9 +984,9 @@ read 1 of 4 transcripts; wrote 1 time file"
   mv "$BATS_TEST_TMPDIR/ledger.jsonl" "$TEAM_HOME/ledger.jsonl"
   local version usage_before
   version=$(jq .version "$scan")
-  assert_equal "$version" 3
-  # Version 2's scan state, written before a stopped background call ended at its stop.
-  jq ".version = 2" "$scan" >"$BATS_TEST_TMPDIR/scan" && mv "$BATS_TEST_TMPDIR/scan" "$scan"
+  assert_equal "$version" 4
+  # Version 3's scan state, written before a heredoc's body was left out of a command's name.
+  jq ".version = 3" "$scan" >"$BATS_TEST_TMPDIR/scan" && mv "$BATS_TEST_TMPDIR/scan" "$scan"
   usage_before=$(fingerprint "$usage"/*.jsonl)
   run_bin -0 team-tokens export
   assert_equal "$output" "usage/home-pc/time/2026-10-20.jsonl: 1 session, 1 new

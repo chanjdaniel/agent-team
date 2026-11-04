@@ -185,8 +185,9 @@
 #   compaction       a compact_boundary's durationMs, taken out of the stretch that ends at it
 # A transcript with no turn_duration line ends a turn at a reply whose stop_reason is end_turn with
 # no call outstanding. A command's name comes from its text alone: each heredoc's body left out, an
-# unterminated one cut at its marker, split into simple commands at the control operators, newlines, $(, backticks and parentheses
-# outside quotes, comments left out; past leading reserved words, assignments, and wrappers
+# unterminated one cut at its marker, split into simple commands at the control operators,
+# newlines, $(, backticks and parentheses outside quotes, comments left out; past leading reserved
+# words, assignments, and wrappers
 # (timeout, env, nice, nohup, command, exec, stdbuf, time) with their options and a duration, the
 # program is the first word: a path from /, ~ or $ by its base name, a relative one of up to four
 # parts with no .. as written, and anything else not 1 to 40 of [A-Za-z0-9_.+-] other; git, gh,
