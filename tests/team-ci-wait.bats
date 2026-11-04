@@ -16,6 +16,7 @@ setup() {
   stub_gh
   stub_sleep
   pr OPEN "$head"
+  head_runs 0
 }
 
 # answer <look> <what> <answer>: from look <look> on, gh answers <what> (view, checks, or run-<run
@@ -54,6 +55,15 @@ workflow_run() {
     updated_at: "2026-10-30T18:52:11Z", name: "CI", display_title: "OUTPUT-MARKER"}')"
 }
 
+# head_runs <look> [<id>:<name>:<status>]...: the head's workflow runs as gh api lists them, from
+# <look> on (none given: every one completed, so none listed here keeps the wait going).
+head_runs() {
+  local look=$1
+  shift
+  answer "$look" runs "$(jq -cn '{total_count: ($ARGS.positional | length), workflow_runs: [$ARGS.positional[] | split(":")
+    | {id: (.[0] | tonumber), name: .[1], status: .[2], conclusion: null, display_title: "OUTPUT-MARKER"}]}' --args "$@")"
+}
+
 # gh answers each read from the latest answer at or before the current look; gh pr checks exits 8
 # while a check is pending, as gh does. Anything unplanned fails.
 stub_gh() {
@@ -62,6 +72,7 @@ n=$(cat "$GH_DIR/look")
 case "$*" in
   "pr view 217 --repo owner/proj --json state,headRefOid") what=view ;;
   "pr checks 217 --repo owner/proj --json name,state,bucket,link,workflow") what=checks ;;
+  "api repos/owner/proj/actions/runs?head_sha="*"&per_page=100") what=runs ;;
   "api repos/owner/proj/actions/runs/"*) what=run-${2##*/} ;;
   *) echo "unplanned gh call: $*" >&2; exit 1 ;;
 esac
@@ -117,6 +128,74 @@ ended_at() {
   assert_equal "$(ended_at)" 11
   assert_contains "$output" "team-ci-wait: every check passed on a1b2c3d: test passed"
   [[ $output != *"still"* ]]
+}
+
+# During a re-run's first seconds, or a push's, gh pr checks may list only another workflow's checks.
+@test "a workflow run still open on the head holds the wait past checks that all passed" {
+  checks 0 "$(check zizmor-online SUCCESS 7002)"
+  head_runs 0 7001:CI:queued 7002:Zizmor:completed
+  checks 2 "$(check zizmor-online SUCCESS 7002)" "$(check macos IN_PROGRESS 7001)"
+  workflow_run 2 7001 in_progress
+  head_runs 2 7001:CI:in_progress 7002:Zizmor:completed
+  checks 4 "$(check zizmor-online SUCCESS 7002)" "$(check macos SUCCESS 7001)"
+  head_runs 4 7001:CI:completed 7002:Zizmor:completed
+  run_bin team-ci-wait --no-agent-review "$url" "$head"
+  assert_equal "$status" 0
+  assert_equal "$(ended_at)" 4
+  assert_contains "$output" "team-ci-wait: every check passed on a1b2c3d: zizmor-online passed, macos passed"
+  # It asks for the PR's head, and prints nothing of a run's text.
+  assert_contains "$(stub_calls gh)" "repos/owner/proj/actions/runs?head_sha=$head&per_page=100"
+  [[ $output != *OUTPUT-MARKER* ]]
+}
+
+@test "a workflow run still open on the head holds the wait past a failed check, which a re-run may replace" {
+  checks 0 "$(check macos FAILURE 7001)"
+  head_runs 0 7001:CI:queued
+  checks 3 "$(check macos SUCCESS 7001)"
+  head_runs 3 7001:CI:completed
+  run_bin team-ci-wait "$url"
+  assert_equal "$status" 0
+  assert_equal "$(ended_at)" 3
+}
+
+@test "a workflow run still open on the head holds the wait past 2 minutes of no checks" {
+  answer 0 checks none
+  head_runs 0 7001:CI:queued
+  checks 8 "$(check test SUCCESS 7001)"
+  head_runs 8 7001:CI:completed
+  run_bin team-ci-wait "$url"
+  assert_equal "$status" 0
+  assert_equal "$(ended_at)" 8
+  assert_contains "$output" "every check passed on a1b2c3d: test passed"
+  # With none open, the 2 minutes run again from the first look that saw none.
+  echo 0 >"$GH_DIR/look"
+  rm "$GH_DIR"/runs.* "$GH_DIR"/checks.*
+  answer 0 checks none
+  head_runs 0 7001:CI:queued
+  head_runs 3
+  run_bin team-ci-wait "$url"
+  assert_equal "$status" 0
+  assert_equal "$(ended_at)" 7
+  assert_contains "$output" "has no GitHub checks: none reported for 2 minutes"
+}
+
+@test "a workflow run that never ends still ends the wait at the deadline, naming that run once" {
+  checks 0 "$(check lint SUCCESS 7002)" "$(check test IN_PROGRESS 7001)"
+  workflow_run 0 7001 in_progress
+  head_runs 0 7001:CI:in_progress 7003:Deploy:waiting
+  TEAM_CI_WAIT_DEADLINE_SECONDS=600 run_bin team-ci-wait "$url"
+  assert_equal "$status" 75
+  assert_contains "$output" "checks still pending on a1b2c3d: test (in_progress, run 7001 in_progress); Deploy (workflow run 7003 waiting)"
+  [[ $output != *"CI (workflow run"* ]]
+}
+
+@test "a look whose list of the head's workflow runs fails reads no state" {
+  checks 0 "$(check test SUCCESS 7001)"
+  answer 0 runs fail
+  head_runs 2
+  run_bin team-ci-wait "$url"
+  assert_equal "$status" 0
+  assert_equal "$(ended_at)" 2
 }
 
 @test "every check passed or skipped ends the wait with exit 0, naming each" {
@@ -347,7 +426,7 @@ EOF
   run_bin team-ci-wait "$url"
   assert_equal "$status" 75
   assert_contains "$output" "the team is holding"
-  assert_equal "$(stub_calls gh | grep -c .)" 2
+  assert_equal "$(stub_calls gh | grep -c .)" 3
 }
 
 @test "a malformed command line is a usage error, and a repo no project has is refused" {
@@ -380,10 +459,11 @@ EOF
   run_bin team-ci-wait "$url"
   assert_equal "$status" 1
   [[ $output != *OUTPUT-MARKER* ]]
-  assert_equal "$(stub_calls gh | jq -r '.[0:2] | join(" ")' | sort -u)" "api repos/owner/proj/actions/runs/7002
+  assert_equal "$(stub_calls gh | jq -r '.[0:2] | join(" ")' | LC_ALL=C sort -u)" "api repos/owner/proj/actions/runs/7002
+api repos/owner/proj/actions/runs?head_sha=$head&per_page=100
 pr checks
 pr view"
   # One read of each distinct run per look, with nothing that writes.
-  assert_equal "$(stub_calls gh | jq -c 'select(.[0] == "api")' | sort -u)" '["api","repos/owner/proj/actions/runs/7002"]'
-  assert_equal "$(stub_calls gh | jq -c 'select(.[0] == "api")' | grep -c .)" 2
+  assert_equal "$(stub_calls gh | jq -c 'select(.[0] == "api" and (.[1] | contains("head_sha") | not))' | sort -u)" '["api","repos/owner/proj/actions/runs/7002"]'
+  assert_equal "$(stub_calls gh | jq -c 'select(.[0] == "api" and (.[1] | contains("head_sha") | not))' | grep -c .)" 2
 }

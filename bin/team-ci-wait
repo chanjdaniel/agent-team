@@ -16,10 +16,14 @@
 # below. TEAM_CI_WAIT_GRACE_SECONDS replaces the grace's seconds, and TEAM_CI_WAIT_DEADLINE_SECONDS
 # the deadline's 90 minutes (DEADLINE_SECONDS), in seconds (the tests' seams).
 # It looks every 30 s (WAIT_SECONDS), counting time in looks, so a test steps it with a stub
-# sleep. Each look reads the PR's state and head (gh pr view), its checks (gh pr checks), and,
-# once per run, the workflow run of each pending check whose link is an Actions job link
+# sleep. Each look reads the PR's state and head (gh pr view), its checks (gh pr checks), the head's
+# workflow runs (gh api repos/<repo>/actions/runs?head_sha=<head>&per_page=100), and, once per run,
+# the workflow run of each pending check whose link is an Actions job link
 # (.../actions/runs/<run id>/job/<job id>, through gh api repos/<repo>/actions/runs/<run id>):
-# only reads, never a log or a check's output. Before each look, while the team holds offline
+# only reads, never a log or a check's output. A workflow run of the head that is not completed
+# holds the wait whatever the checks show, since in a re-run's or a push's first seconds gh pr checks
+# may list only another workflow's checks, and an earlier attempt's failure may yet be replaced.
+# Before each look, while the team holds offline
 # (offline_hold), it ends at once with exit 75 and the hold's text.
 # It prints one line when it starts, naming the PR and the short head of the first look, and
 # its result when it ends, nothing in between; it ends at the earliest look where one of
@@ -30,14 +34,17 @@
 #                                                      coordinator when it is not the worker's own
 #   the head is not the first look's                   exit 1, naming both short heads: the new
 #                                                      head's checks need a wait of their own
-#   no check reported for 2 minutes of looks           exit 0: the head has no GitHub checks
-#   no check pending, every one passed or skipped      exit 0, naming each
-#   no check pending but stuck ones, and at least one  exit 1, naming each failed or cancelled
-#   failed, cancelled or stuck                         check with its link, and each stuck one
+#   no check reported and no workflow run open for     exit 0: the head has no GitHub checks
+#   2 minutes of looks
+#   no check pending and no workflow run open, every   exit 0, naming each
+#   check passed or skipped
+#   no check pending but stuck ones, no workflow run   exit 1, naming each failed or cancelled
+#   open, and at least one failed, cancelled or stuck  check with its link, and each stuck one
 #   a gh call failing at every look for 5 minutes      exit 75, with gh's last reason line
-#   90 minutes of looks with checks still pending      exit 75, naming each pending check with
-#                                                      its run's id and status: run team-ci-wait
-#                                                      again to wait on them, or report BLOCKED
+#   90 minutes of looks with checks still pending or   exit 75, naming each pending check with
+#   a workflow run open                                its run's id and status and each other
+#                                                      open run: run team-ci-wait again to wait
+#                                                      on them, or report BLOCKED
 # A check is stuck when it is pending while its Actions run's status is completed, at every
 # readable look for 5 minutes from the first that saw it: GitHub lost the job's status, and the
 # message names the run, its conclusion and time, and the step: re-run it with gh run rerun <run
@@ -76,32 +83,38 @@ pr=$(registered_pr "$1")
 dir=$(mktemp -d)
 trap 'rm -rf "$dir"' EXIT
 
-# Read one look into $dir/look, {state, head, checks: [{name, state, bucket, link, run}]}, each
-# pending check's run {id, status, conclusion, updated_at} when its link is an Actions job link,
-# else null; fails with gh's reason in $dir/error.
+# Read one look into $dir/look, {state, head, checks: [{name, state, bucket, link, run}], open_runs:
+# [{id, name, status}]}, each pending check's run {id, status, conclusion, updated_at} when its link
+# is an Actions job link, else null, and open_runs the head's workflow runs not yet completed; fails
+# with gh's reason in $dir/error.
 read_look() {
   local id files=()
   rm -f "$dir"/run-*
   github "$dir" view pr view "$number" --repo "$repo" --json state,headRefOid || return 1
   github "$dir" checks pr checks "$number" --repo "$repo" --json name,state,bucket,link,workflow || return 1
+  github "$dir" head-runs api "repos/$repo/actions/runs?head_sha=$(jq -r .headRefOid "$dir/view")&per_page=100" || return 1
   while IFS= read -r id; do
     github "$dir" "run-$id" api "repos/$repo/actions/runs/$id" || return 1
     files+=("$dir/run-$id")
   done < <(jq -r '[.[] | select(.bucket == "pending") | .link // "" | capture("/actions/runs/(?<id>[0-9]+)/job/[0-9]+").id]
     | unique[]' "$dir/checks")
-  jq -n --slurpfile view "$dir/view" --slurpfile checks "$dir/checks" --argjson without_review "$without_review" \
+  jq -n --slurpfile view "$dir/view" --slurpfile checks "$dir/checks" --slurpfile head_runs "$dir/head-runs" --argjson without_review "$without_review" \
     --argjson runs "$(jq -s 'map({key: (.id | tostring), value: {id, status, conclusion, updated_at}}) | from_entries' \
       /dev/null "${files[@]}")" '
     {state: $view[0].state, head: $view[0].headRefOid,
      checks: [$checks[0][] | select($without_review and .name == "agent-review" | not) | {name, state: (.state | ascii_downcase), bucket, link: (.link // ""),
        run: (if .bucket == "pending" then $runs[(.link // "") | capture("/actions/runs/(?<id>[0-9]+)/job/[0-9]+").id // ""]
-         else null end)}]}' >"$dir/look"
+         else null end)}],
+     open_runs: [$head_runs[0].workflow_runs[] | select(.status != "completed") | {id, name, status}]}' >"$dir/look"
 }
 
-# The text naming each pending check of the last readable look, with its run's id and status.
+# The text naming each pending check of the last readable look, with its run's id and status, and
+# each open workflow run no pending check names.
 pending_text() {
-  jq -r '[.checks[] | select(.bucket == "pending")
-    | "\(.name) (\(.state), " + (if .run then "run \(.run.id) \(.run.status))" else "not an Actions run)" end)]
+  jq -r '[.checks[] | select(.bucket == "pending") | .run.id // empty] as $named
+    | [(.checks[] | select(.bucket == "pending")
+        | "\(.name) (\(.state), " + (if .run then "run \(.run.id) \(.run.status))" else "not an Actions run)" end)),
+       (.open_runs[] | select(.id | IN($named[]) | not) | "\(.name) (workflow run \(.id) \(.status))")]
     | join("; ")' "$dir/look"
 }
 
@@ -146,7 +159,9 @@ while :; do
       echo "team-ci-wait: the head of $repo#$number moved from ${first_head:0:7} to ${head:0:7}: the new head's checks need a wait of their own"
       exit 1
     fi
-    if jq -e '.checks == []' "$dir/look" >/dev/null; then
+    if jq -e '.checks == [] and .open_runs != []' "$dir/look" >/dev/null; then
+      no_checks_since=''
+    elif jq -e '.checks == []' "$dir/look" >/dev/null; then
       [[ -n $no_checks_since ]] || no_checks_since=$seen_n
       if (((seen_n - no_checks_since) * WAIT_SECONDS >= NO_CHECKS_SECONDS)); then
         echo "team-ci-wait: ${head:0:7} has no GitHub checks: none reported for $((NO_CHECKS_SECONDS / 60)) minutes"
@@ -173,7 +188,7 @@ while :; do
       # The outcome once nothing is pending but stuck checks: its exit code, then its text.
       if result=$(jq -re --argjson stuck "$(jq -cn '$ARGS.positional' --args "${stuck[@]}")" \
         --arg repo "$repo" --arg short "${head:0:7}" '
-        if any(.checks[]; .bucket == "pending" and (.name | IN($stuck[]) | not)) then empty
+        if .open_runs != [] or any(.checks[]; .bucket == "pending" and (.name | IN($stuck[]) | not)) then empty
         elif all(.checks[]; .bucket == "pass" or .bucket == "skipping") then
           "0\nteam-ci-wait: every check passed on \($short): "
             + ([.checks[] | "\(.name) " + (if .bucket == "pass" then "passed" else "skipped" end)] | join(", "))
