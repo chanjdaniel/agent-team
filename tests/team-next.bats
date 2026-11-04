@@ -529,7 +529,7 @@ launched T7-reviewer c0000001"
   # The plan's Disclosure section is a comment only, as the template leaves it: not a Disclosure task.
   printf '%s\n' "" "## Disclosure" "" "<!-- Only for a security change; delete otherwise. -->" >>"$TEAM_HOME/tasks/T7/plan.md"
   run_bin -1 --separate-stderr team-next T7 --checks "$(checks)" -- "T7 DONE review-ready $head"
-  assert_contains "$stderr" "pr (T7 has no pr event in owner/proj; --set pr=)"
+  assert_contains "$stderr" "pr (T7 has no open PR in owner/proj; --set pr=)"
   assert_equal "$(bg_calls | wc -l)" 0
   printf '%s\n' "" "Describe it as hardening the input checks." >>"$TEAM_HOME/tasks/T7/plan.md"
   run_bin -0 --separate-stderr team-next T7 --checks "$(checks)" -- "T7 DONE review-ready $head"
@@ -1006,6 +1006,36 @@ then, once the checks pass on its merge: merge ask: $url at $sha; the review fou
   assert_equal "$(tail -n 1 <<<"$output")" \
     "send to T7-builder (b0000001, 90k): T7 the review of ${sha:0:8} passed: go on with your delivery"
   assert_equal "$(stub_calls gh)" ""
+}
+
+@test "a later phase after a merged PR: its review-ready gets the pre-gate re-review naming no PR, and its pass sends the builder on" {
+  sed -i 's/^delivery = "direct-pr"/delivery = "no-mistakes"/' "$TEAM_HOME/projects.toml"
+  reviewing "$sha"
+  review_logged pass "$sha" '[]'
+  event 'done' '{role: "reviewer", session: "r0000002"}'
+  event merged "$(jq -cn --arg url "$url" --arg h "$sha" '{pr: 9, url: $url, merge: "abc1234", head: $h, approval: "head"}')"
+  # GitHub says the first phase's PR is merged, and nothing else may be read of it.
+  export GH_HEAD=$sha
+  stub_script gh <<'SH'
+case "$*" in
+  "pr view 9 --repo owner/proj --json number,state,baseRefName,headRefOid,headRefName,changedFiles")
+    jq -cn --arg h "$GH_HEAD" '{number: 9, state: "MERGED", baseRefName: "main", headRefOid: $h, headRefName: "feat/T7-toil", changedFiles: 1}' ;;
+  "pr checks 9 --repo owner/proj"*) echo '[]' ;;
+  *) echo "unplanned gh call: $*" >&2; exit 1 ;;
+esac
+SH
+  local later brief
+  later=$(commit later.txt "feat: phase 2")
+  launched b0000003 brief-deliver-p2 '["browser"]'
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE review-ready $later"
+  assert_contains "$output" "launched T7-reviewer"
+  local name
+  name=$(jq -r 'select(.event == "launch" and .role == "reviewer") | .brief' "$TEAM_HOME/ledger.jsonl" | tail -n 1)
+  brief=$(<"$TEAM_HOME/tasks/T7/$name.md")
+  assert_contains "$brief" "No PR yet: reviewed at \`$sha\`, now at the local head \`$later\`."
+  [[ $brief != *team-review* && $brief != *team-ci-wait* && $brief != */pull/* && $brief != *'{{'* ]]
+  run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $later $counts before=none guarded=none"
+  assert_contains "$(tail -n 1 <<<"$output")" "T7 the review of ${later:0:8} passed: go on with your delivery"
 }
 
 @test "a findings verdict needs --sent-back, logs it as numbers and routes the findings to the holder under 250k" {

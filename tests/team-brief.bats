@@ -371,7 +371,7 @@ EOF
   open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
   local pr=https://github.com/chanjdaniel/agent-team/pull/9 brief
   run_bin -1 team-brief T14 reviewer --name review --set head=abc1234 --set "checks=the checks"
-  assert_equal "$output" "team-brief: unfilled placeholders: pr; nothing to derive them from: pr (T14 has no pr event in chanjdaniel/agent-team; --set pr=)"
+  assert_equal "$output" "team-brief: unfilled placeholders: pr; nothing to derive them from: pr (T14 has no open PR in chanjdaniel/agent-team; --set pr=)"
   run_bin -0 team-brief T14 reviewer --name review --set pr=$pr --set head=abc1234 --set "checks=the checks"
   brief=$(<"$output")
   assert_contains "$brief" 'branch `feat/T14-team-tooling`; review `origin/main...abc1234`.'
@@ -483,7 +483,7 @@ EOF
     "<!-- Only for a security change in a public repository; delete otherwise. -->" "" "## Notes" "" "None." \
     >"$TEAM_HOME/tasks/T14/plan.md"
   run_bin -1 team-brief T14 reviewer --name review --set head=abc1234 --set "checks=the checks"
-  assert_equal "$output" "team-brief: unfilled placeholders: pr; nothing to derive them from: pr (T14 has no pr event in chanjdaniel/agent-team; --set pr=)"
+  assert_equal "$output" "team-brief: unfilled placeholders: pr; nothing to derive them from: pr (T14 has no open PR in chanjdaniel/agent-team; --set pr=)"
   printf '%s\n' "# T14 plan" "" "## Goal" "" "The team has its tooling." "" "## Disclosure" "" \
     "<!-- Only for a security change. -->" "- Describe it as hardening the hooks." >"$TEAM_HOME/tasks/T14/plan.md"
   run_bin -0 team-brief T14 reviewer --name review --set head=abc1234 --set "checks=the checks"
@@ -511,6 +511,43 @@ EOF
   assert_contains "$(<"$output")" "The comment on PR https://github.com/chanjdaniel/agent-team/pull/9 is that file"
   run_bin -0 team-brief T14 builder-round --name round-2
   assert_contains "$(<"$output")" "PR: https://github.com/chanjdaniel/agent-team/pull/9, against"
+}
+
+@test "a merged PR is no PR: a later phase's re-review reads the local head before its gate and names no PR, until the phase has its own" {
+  open_t12
+  reviewed_branch T12 dev
+  local first=https://github.com/chanjdaniel/Conventioner/pull/9 second=https://github.com/chanjdaniel/Conventioner/pull/10 brief
+  event T12 pr "$(jq -cn --arg url "$first" --arg h "$reviewed" '{url: $url, head: $h}')"
+  # While the PR is open, the re-review is the PR's.
+  on_github "$first" "$head"
+  run_bin -0 --separate-stderr team-brief T12 rereview --name open --set head="$head"
+  assert_contains "$(<"$output")" "$first"
+  # Its merge ends that: phase 2's first review has no PR, in each form that names one.
+  event T12 merged "$(jq -cn --arg url "$first" --arg h "$reviewed" '{pr: 9, url: $url, merge: "abc1234", head: $h, approval: "head"}')"
+  run_bin -0 --separate-stderr team-brief T12 rereview --name rereview --set head="$head"
+  brief=$(<"$output")
+  assert_contains "$brief" "No PR yet: reviewed at \`$reviewed\`, now at the local head \`$head\`."
+  refute_grep -e team-review -e team-ci-wait -e '/pull/' -e '{{' "$output"
+  assert_equal "$(jq -c '.values.pr' "$TEAM_HOME/tasks/T12/brief-rereview.json")" null
+  run_bin -0 --separate-stderr team-brief T12 verify --name verify --set head="$head"
+  refute_grep -e team-review -e team-ci-wait -e '/pull/' -e '{{' "$output"
+  run_bin -0 --separate-stderr team-brief T12 builder-round --name round --set findings_file=.scratch/task/review.md --set goal=g
+  assert_contains "$(<"$output")" "PR: none, against"
+  # The phase's own PR is the one named once it is open.
+  event T12 pr "$(jq -cn --arg url "$second" --arg h "$head" '{url: $url, head: $h}')"
+  on_github "$second" "$head"
+  run_bin -0 --separate-stderr team-brief T12 rereview --name second --set head="$head"
+  assert_contains "$(<"$output")" "$second"
+  refute_grep -e "$first" "$output"
+}
+
+@test "a direct-PR task's only PR merged leaves a template that needs a PR unfilled, naming --set pr" {
+  open_task T14 home feature feat/T14-x agent-team/.claude/worktrees/1 "the work"
+  local url=https://github.com/chanjdaniel/agent-team/pull/9
+  event T14 pr "$(jq -cn --arg url "$url" '{url: $url, head: "abc1234"}')"
+  event T14 merged "$(jq -cn --arg url "$url" '{pr: 9, url: $url, merge: "abc1234", head: "abc1234", approval: "head"}')"
+  run_bin -1 --separate-stderr team-brief T14 builder-merge-base --name merge-base
+  assert_contains "$stderr" "pr (T14 has no open PR in chanjdaniel/agent-team; --set pr=)"
 }
 
 @test "before the PR, a gated project's re-review and verify read the local head before the gate and post nothing; with a PR, they are the PR's" {
@@ -762,7 +799,7 @@ SINCE
 @test "with no review and no pr, each derived fact is refused naming its --set, and a head the worktree lacks is refused" {
   open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
   run_bin -1 team-brief T14 rereview
-  assert_equal "$output" "team-brief: unfilled placeholders: head, pr, reviewed, since; nothing to derive them from: head (no pr to read it from; --set head=), pr (T14 has no pr event in chanjdaniel/agent-team; --set pr=), reviewed (T14 has no review; --set reviewed=), since (derived from reviewed and head)"
+  assert_equal "$output" "team-brief: unfilled placeholders: head, pr, reviewed, since; nothing to derive them from: head (no pr to read it from; --set head=), pr (T14 has no open PR in chanjdaniel/agent-team; --set pr=), reviewed (T14 has no review; --set reviewed=), since (derived from reviewed and head)"
   run_bin -1 team-brief T14 rereview --set pr=not-a-url --set reviewed=abc1234
   assert_equal "$output" "team-brief: unfilled placeholders: head, since; nothing to derive them from: head (not-a-url is not a GitHub pull request URL; --set head=), since (derived from reviewed and head)"
   reviewed_branch T14 main
@@ -1652,7 +1689,7 @@ Nor guess them.'
 @test "a direct-PR project's round needs its pr event, and a review that sent nothing back gives no findings" {
   open_task T14 home feature feat/T14-team-tooling agent-team/.claude/worktrees/2 "the team's tooling"
   run_bin -1 team-brief T14 builder-round
-  assert_equal "$output" "team-brief: unfilled placeholders: findings, findings_file, goal, pr; nothing to derive them from: findings (T14 has no review; --set findings=), findings_file (no review.md or rereview*.md in ~/agent-team/.claude/worktrees/2/.work/task; --set findings_file=), goal (~/agent-team-records/tasks/T14/plan.md has no ## Goal sentence; --set goal=), pr (T14 has no pr event in chanjdaniel/agent-team; --set pr=)"
+  assert_equal "$output" "team-brief: unfilled placeholders: findings, findings_file, goal, pr; nothing to derive them from: findings (T14 has no review; --set findings=), findings_file (no review.md or rereview*.md in ~/agent-team/.claude/worktrees/2/.work/task; --set findings_file=), goal (~/agent-team-records/tasks/T14/plan.md has no ## Goal sentence; --set goal=), pr (T14 has no open PR in chanjdaniel/agent-team; --set pr=)"
   event T14 review '{verdict: "pass", head: "abc1234"}'
   run_bin -1 team-brief T14 builder-round
   assert_contains "$output" "findings (T14's latest review sent nothing back; --set findings=)"

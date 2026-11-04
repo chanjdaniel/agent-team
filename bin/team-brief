@@ -42,10 +42,10 @@
 # delivery (how a builder delivers), review and rereview (what a reviewer reads and posts, verify
 # reading rereview's too; a gated project's first review reads the branch's local head before the
 # gate, with no pr), and wait (the first review's wait on the PR's GitHub checks, started before it
-# reads; with no PR, a line saying there are none). Before the PR (no --set pr, and no pr event
-# in the project's repo) on a gated project, or on a direct-PR one whose plan's ## Disclosure
-# section holds text past its HTML comments (its builder pushes nothing before the review
-# passes), <name>/<delivery>-before-pr.md takes the place of <name>/<delivery>.md where it
+# reads; with no PR, a line saying there are none). Before the PR (no --set pr, and no open PR in
+# the project's repo: no pr event, or a merged event for its latest, as in a later phase) on a
+# gated project, or on a direct-PR one whose plan's ## Disclosure section holds text past its HTML
+# comments (its builder pushes nothing before the review passes), <name>/<delivery>-before-pr.md takes the place of <name>/<delivery>.md where it
 # exists: review/direct-pr-before-pr.md reads the local head with no pr, as the gated review does,
 # and wait/direct-pr-before-pr.md says there are no checks to wait for; and
 # before-pr/<template>.md takes the place of the template where it exists: before-pr/rereview.md
@@ -58,7 +58,7 @@
 # read is refused.
 # Derived: a template's reviewed, pr and head the caller does not --set are filled from the ledger
 # and GitHub. reviewed is the head of the task's latest review; pr the URL of the task's latest pr
-# event in the project's repo; head that event's head (moved by any history-rewritten), or the
+# event in the project's repo while that PR has no merged event; head that event's head (moved by any history-rewritten), or the
 # PR's head on GitHub (gh pr view) when it differs, which stderr says; builder-round's pr is none
 # before the PR, as above: a gated project's before its gate, a Disclosure task's before its first
 # push. So are findings, findings_file and goal:
@@ -254,10 +254,11 @@ plan_text() {
     }' "$plan_file"
 }
 
-# The task's latest pr event in this project's repo, its head moved by any history-rewritten.
-pr=$(ledger_jq '[task_prs[]
+# The task's latest pr event in this project's repo, while its PR is open: a later phase's review
+# has no PR once the earlier phase's merged.
+pr=$(ledger_jq '. as $events | task_prs as $prs | [$prs[]
     | select(.url | strings | ascii_downcase | startswith("https://github.com/\($repo | ascii_downcase)/pull/"))]
-  | last | .url // empty' -r --arg repo "$repo" <<<"$events")
+  | last | select(. != null and (pr_merged($events; $prs) | not)) | .url // empty' -r --arg repo "$repo" <<<"$events")
 # Before the PR: a gated project's builder stops before its gate, and a direct-PR task's under a
 # Disclosure section pushes nothing before the review passes.
 before_pr=''
@@ -352,7 +353,7 @@ if deriving pr; then
     # A round on the first review, before the gate or the first push opens the PR.
     values[pr]=none
   else
-    underivable pr "$task has no pr event in $repo; --set pr="
+    underivable pr "$task has no open PR in $repo; --set pr="
   fi
 fi
 if deriving findings; then
