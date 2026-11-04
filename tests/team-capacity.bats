@@ -755,6 +755,98 @@ cost() {
   assert_equal "$stderr" "no room for heavy:tests-run at minor (30%): 6.7 GiB of 9.6 GiB reserved, a heavy run of tests-run needs 5.0 GiB; room comes when the team's work shrinks or the level rises"
 }
 
+# agents <text>: what claude agents --json prints, the setup's stub reading it.
+agents() {
+  printf '%s\n' "$1" >"$STUB_FIXTURES/agents.json"
+}
+
+# launched <task> <role> <session>: the launch team-worker logs once its session has started, now.
+launched() {
+  jq -cn --arg t "$1" --arg r "$2" --arg s "$3" \
+    '{ts: (now | floor | todate), task: $t, event: "launch", role: $r, session: $s, worktree: "/w/1", toolkits: []}' \
+    >>"$TEAM_HOME/ledger.jsonl"
+}
+
+# The admissions of status --json, one compact [kind, task] per item.
+admissions() {
+  guard_sandbox
+  "$REPO_ROOT/bin/team-capacity" status --json | jq -c '.reserved.items[] | select(.part == "admissions") | [.kind, .task]'
+}
+
+@test "an admission whose session has stopped no longer counts as reserved, at its estimate or in the stored reading" {
+  busy_reading
+  level minor
+  run_bin -0 team-capacity admit --kind session:reviewer --task T9
+  # No launch is logged yet, so its session may still be starting: kept, with no session list read.
+  assert_equal "$(admissions)" '["session:reviewer","T9"]'
+  assert_equal "$(stub_calls claude)" ""
+  # Its session runs: kept.
+  launched T9 reviewer c0000009
+  agents '[{"id": "c0000009", "sessionId": "c0000009-1111", "name": "T9-reviewer", "status": "busy"}]'
+  assert_equal "$(admissions)" '["session:reviewer","T9"]'
+  # A list that cannot be read says nothing of it: kept.
+  agents 'not a list'
+  assert_equal "$(admissions)" '["session:reviewer","T9"]'
+  # Its session is gone: released, within its 10 minutes, and the next admission drops it.
+  agents '[]'
+  assert_equal "$(admissions)" ""
+  run_bin -0 team-capacity admit --kind session:planner --task T5
+  assert_equal "$(jq -c 'map([.kind, .task])' "$STATE_DIR/admitted.json")" '[["session:planner","T5"]]'
+}
+
+@test "a stopped session's admission leaves its use and spike allowance out of a stored reading that still holds it" {
+  busy_reading '.tasks += [{task: "T9", memory: 1073741824, cpu: null, cpu_nsec: null, stacks: [],
+    sessions: [{id: "c0000009", role: "reviewer", memory: 1073741824, peak: 1073741824, cpu_seconds: 1}]}]'
+  level minor
+  run_bin -0 team-capacity admit --kind session:reviewer --task T9
+  launched T9 reviewer c0000009
+  agents '[{"id": "c0000009", "status": "busy"}]'
+  assert_contains "$(reserved_items)" '"session:reviewer","T9"'
+  agents '[]'
+  [[ $(reserved_items) != *'"T9"'* ]]
+}
+
+@test "each admission pairs with its own launch: a later one's session running keeps it, and another task's or role's says nothing" {
+  busy_reading
+  level full
+  # Both sessions run while the next admissions read the list, which keeps theirs.
+  agents '[{"id": "c0000001", "status": "busy"}, {"id": "c0000002", "status": "busy"}]'
+  run_bin -0 team-capacity admit --kind session:reviewer --task T9
+  launched T9 reviewer c0000001
+  run_bin -0 team-capacity admit --kind session:reviewer --task T9
+  launched T9 reviewer c0000002
+  run_bin -0 team-capacity admit --kind session:builder --task T9
+  run_bin -0 team-capacity admit --kind session:reviewer --task T8
+  assert_equal "$(jq length "$STATE_DIR/admitted.json")" 4
+  # A launch before the admission, and one of another role or task, are not its session.
+  agents '[{"id": "c0000002", "status": "busy"}]'
+  assert_equal "$(admissions | sort)" '["session:builder","T9"]
+["session:reviewer","T8"]
+["session:reviewer","T9"]'
+  agents '[]'
+  assert_equal "$(admissions | sort)" '["session:builder","T9"]
+["session:reviewer","T8"]'
+  # A session listed by its full id only counts.
+  agents '[{"sessionId": "c0000002-1111-4222-8333-444455556666", "status": "busy"}]'
+  assert_equal "$(admissions | sort)" '["session:builder","T9"]
+["session:reviewer","T8"]
+["session:reviewer","T9"]'
+  # A stack's admission and a heavy run's name no session, so no launch releases them.
+  run_bin -0 team-capacity admit --kind stack:other --task T9 --name other-9 --seed-bytes 1024
+  agents '[]'
+  assert_contains "$(admissions)" '"stack:other","T9"'
+}
+
+@test "the plan reads an admission's session from the list it is given" {
+  busy_reading
+  level minor
+  run_bin -0 team-capacity admit --kind session:reviewer --task T9
+  launched T9 reviewer c0000009
+  echo '[]' >"$BATS_TEST_TMPDIR/sessions.json"
+  run_bin -0 team-capacity plan --json --sessions "$BATS_TEST_TMPDIR/sessions.json"
+  assert_equal "$(stub_calls claude)" ""
+}
+
 @test "status: a session past its admission window reserves its use, the team one spike allowance for the largest gap, and one in its window the larger of its estimate and its use" {
   cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
   mkdir -p "$HOME/.config/agent-team"

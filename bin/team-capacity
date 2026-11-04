@@ -144,7 +144,9 @@
 #                             their use, at 0 at least, and 0 with none past its window;
 #            admissions       each admission of the last 10 minutes but a heavy run's, at its
 #                             estimate then (no use yet, and its time as admitted), since a new
-#                             session or stack has not grown yet; a session of its kind and task
+#                             session or stack has not grown yet, until a session's launch is
+#                             logged and claude agents --json no longer lists that session, which
+#                             leaves it out of the reading too; a session of its kind and task
 #                             the reading holds is in that window (the one using least, when
 #                             several), reserved once, at the larger of the estimate and its use;
 #            stacks, gates    each running team or gate stack, and the gate while it runs a
@@ -182,7 +184,7 @@
 #          ~/.local/state/agent-team/capacity/admitted.json ({at, kind, task, name (a stack's, else
 #          null), bytes, pid (a heavy run's team-heavy, the lock's holder)}), which reserves it for
 #          10 minutes as status --json's admissions say (a heavy run's while its team-heavy holds
-#          the lock); else it exits 75 with the reason on stderr and what makes room, "no room for
+#          the lock, a session's until its session stops); else it exits 75 with the reason on stderr and what makes room, "no room for
 #          session:reviewer at minor (30%): 8.9 GiB of 9.2 GiB reserved, a reviewer needs 0.5 GiB;
 #          room comes when the team's work shrinks or the level rises", and at level none "no room
 #          for session:reviewer: the team is at level none: nothing starts; room comes when Daniel
@@ -845,6 +847,33 @@ read_level_and_admitted() {
     >"$work/read" 2>"$work/level.err" || return 1
   { IFS= read -r line && printf '%s\n' "$line" >"$work/level.json" && IFS= read -r line && printf '%s\n' "$line" >"$work/heavy.json" &&
     IFS= read -r line && printf '%s\n' "$line" >"$work/admitted.json" && IFS= read -r stacks_seen && IFS= read -r fresh; } <"$work/read"
+  release_stopped_admissions
+}
+
+# Drop from $work/admitted.json each session admission whose launch is logged and whose session is
+# gone, and add that session to freed, since the stored reading may still hold it, so stopping a
+# worker frees its room at once (admission_launches and stopped_admissions in bin/lib/capacity.jq).
+# The session list is LIVE_SESSIONS when the caller has one, else read only once such a pair
+# exists; one that cannot be read releases nothing, as does a ledger that cannot be.
+release_stopped_admissions() {
+  local ledger=$TEAM_HOME/ledger.jsonl pairs sessions stopped
+  [[ -r $ledger ]] || return 0
+  jq -e 'any(.[]; .kind | startswith("session:"))' "$work/admitted.json" >/dev/null || return 0
+  pairs=$({ grep -F '"launch"' "$ledger" || true; } | jq -nRc -L "$TEAM_LIB" --slurpfile admitted "$work/admitted.json" '
+    include "capacity"; include "stack";
+    [inputs | fromjson? | objects | select(.event == "launch" and (.session | type) == "string")] as $launches
+    | $admitted[0] | admission_launches($launches)') || return 0
+  [[ $pairs != '[]' ]] || return 0
+  sessions=${LIVE_SESSIONS:-}
+  if [[ -z $sessions ]]; then
+    sessions=$(bounded 30 claude agents --json 2>/dev/null | jq -ce 'select(type == "array")' 2>/dev/null) || return 0
+  fi
+  stopped=$(jq -c --argjson sessions "$sessions" -L "$TEAM_LIB" 'include "capacity"; include "stack"; stopped_admissions($sessions)' <<<"$pairs")
+  [[ $stopped != '[]' ]] || return 0
+  jq -c --argjson stopped "$stopped" '[$stopped[].i] as $gone | to_entries | map(select(.key | IN($gone[]) | not) | .value)' \
+    "$work/admitted.json" >"$work/admitted.kept"
+  mv -f "$work/admitted.kept" "$work/admitted.json"
+  mapfile -t -O "${#freed[@]}" freed < <(jq -r '.[].session' <<<"$stopped")
 }
 
 # The roles in roles/ but the coordinator's into roles, and with <read> true the registry
@@ -971,12 +1000,12 @@ plan() {
   local ledger=$TEAM_HOME/ledger.jsonl
   [[ -e $ledger ]] || ledger=/dev/null
   read_settings
-  read_level_and_admitted || die "$(level_error)"
-  costs_json "$stacks_seen"
   if [[ -n $sessions_file ]]; then
     LIVE_SESSIONS=$(jq -ce 'select(type == "array")' "$sessions_file" 2>/dev/null) ||
       die "$sessions_file holds no session list (a JSON array, as claude agents --json prints)"
   fi
+  read_level_and_admitted || die "$(level_error)"
+  costs_json "$stacks_seen"
   live_sessions
   [[ -r $ledger ]] || die "could not read $ledger"
   # The ledger's open tasks (plan_tasks, read as ledger_jq reads them) and the plan in one program,
