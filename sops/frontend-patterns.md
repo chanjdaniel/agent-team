@@ -1,6 +1,6 @@
 # SOP: frontend patterns
 
-Read this before a UI task plans or builds a reusable component, a long list, a dialog or a prototype's data.
+Read this before a UI task plans or builds a reusable component, a long list, a dialog, a prototype's data or a bundle budget.
 Each rule held up on a real product, under review and at real sizes, and says why it holds.
 The examples come from a Vue and Vite app, and the rules hold on any stack; numbers and paths are examples to start from.
 A project's own design document decides how things look, and wins where it disagrees.
