@@ -41,15 +41,21 @@
 #                  of it) or a standing word of Daniel's on one of its projects (those of its
 #                  opened and worktree-added events: the latest merge-standing or
 #                  merge-standing-withdrawn of the project or all, logged under any task, is a
-#                  merge-standing), no ask nothing settled and no paused or waiting standing, with
-#                  session null: "awaiting the merge of <PR URLs> on Daniel's plan-time word on
+#                  merge-standing), no ask nothing settled, no paused or waiting standing, no
+#                  merge-base round in flight (its latest builder launch or resumed naming a
+#                  merge-base brief, with no review, caught-up or merged since and a worker on it
+#                  live with no done since) and a PR not merged with no review-side reason against
+#                  the word (team-state's: the latest review of its head a pass that found no
+#                  guarded area, and no review of the task that counted a security or real-data
+#                  finding or left its counts out), with session null: "awaiting the merge of
+#                  <those PRs' URLs> on Daniel's plan-time word on
 #                  <projects>, with no ask open; next: run team-merge T<n>; on a refusal, ask
 #                  Daniel for the per-head word with team-ask", with "standing word on
 #                  <projects>" for the standing word, or "plan-time word on <projects> and
 #                  standing word on <projects>" for both, and no other finding of the task's; the
 #                  ledger names no PR's project, so any word on one of the task's projects counts,
-#                  and the registry is not read: team-merge says when a project no longer opts in
-#                  or a PR's own project has no word
+#                  and neither the registry nor GitHub is read: team-merge says when a project no
+#                  longer opts in, a PR's own project has no word or a changed path is guarded
 #   stray          a live session named like a team worker (T<n>-<role>) whose task is closed or
 #                  not in the ledger; never one of T0, the load check's task
 #   activity       after every task finding, with task and session null: session-activity

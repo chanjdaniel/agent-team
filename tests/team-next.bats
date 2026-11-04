@@ -828,7 +828,7 @@ then, once the checks pass on its merge: merge ask: $url at $sha; the review fou
   run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
   assert_contains "$output" "logged review verdict=pass head=$sha"
   assert_equal "$(tail -n 1 <<<"$output")" \
-    "merge base: $url is 3 behind main and conflicts on one.txt, so it merges main first (step 6): render team-brief T7 builder-merge-base and send its path to T7-builder (b0000001, 120k)"
+    "merge base: $url is 3 behind main and conflicts on one.txt, so it merges main first (step 6): render team-brief T7 builder-merge-base, send its path to T7-builder (b0000001, 120k) and log team-log T7 resumed brief=<its file name without .md>, which holds team-sweep's merge-due"
   # Past 250k, the holder stows and a fresh builder takes the brief.
   live b0000001 260000
   run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
@@ -850,14 +850,14 @@ then, once the checks pass on its merge: merge ask: $url at $sha; the review fou
   run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
   assert_contains "$output" "logged review verdict=pass head=$sha"
   assert_equal "$(tail -n 1 <<<"$output")" \
-    "merge base: $url is 3 behind main (whether the merge is clean is not known: the PR's branch feat/T7-toil and main cannot be fetched into $primary: fatal: couldn't find remote ref refs/heads/feat/T7-toil), so it merges main first (step 6): render team-brief T7 builder-merge-base and send its path to T7-builder (b0000001, 120k)"
+    "merge base: $url is 3 behind main (whether the merge is clean is not known: the PR's branch feat/T7-toil and main cannot be fetched into $primary: fatal: couldn't find remote ref refs/heads/feat/T7-toil), so it merges main first (step 6): render team-brief T7 builder-merge-base, send its path to T7-builder (b0000001, 120k) and log team-log T7 resumed brief=<its file name without .md>, which holds team-sweep's merge-due"
   # A head git cannot read once fetched: base_merge's line is the reason.
   on_origin
   reviewing 0123456789abcdef0123456789abcdef01234567
   pr_on_github 0123456789abcdef0123456789abcdef01234567 3
   run_bin -0 --separate-stderr team-next T7 -- "T7 DONE pass $url $counts before=none guarded=none"
   assert_equal "$(tail -n 1 <<<"$output")" \
-    "merge base: $url is 3 behind main (whether the merge is clean is not known: merge-tree: 0123456789abcdef0123456789abcdef01234567 - not something we can merge), so it merges main first (step 6): render team-brief T7 builder-merge-base and send its path to T7-builder (b0000001, 120k)"
+    "merge base: $url is 3 behind main (whether the merge is clean is not known: merge-tree: 0123456789abcdef0123456789abcdef01234567 - not something we can merge), so it merges main first (step 6): render team-brief T7 builder-merge-base, send its path to T7-builder (b0000001, 120k) and log team-log T7 resumed brief=<its file name without .md>, which holds team-sweep's merge-due"
   assert_equal "$(outside_calls)" ""
 }
 

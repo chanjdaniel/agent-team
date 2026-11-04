@@ -130,8 +130,9 @@
     },
     "resumed": {
       "writer": ["team-log", "team-answer"],
-      "about": "clears held, blocked, paused and waiting",
-      "required": {}
+      "about": "clears held, blocked, paused and waiting; brief: the file name without .md of the brief the holder was sent, on a merge-base round, which holds team-sweep's merge-due",
+      "required": {},
+      "optional": {"brief": "string"}
     },
     "pr": {
       "writer": "team-log",

@@ -442,7 +442,7 @@ if [[ $handoff == verdict ]]; then
     if [[ -z $caught ]]; then
       step="merge base: $url is $behind_by, so it merges $base first (step 6):"
       case $holds in
-        holds) echo "$step render team-brief $task builder-merge-base and send its path to $who" ;;
+        holds) echo "$step render team-brief $task builder-merge-base, send its path to $who and log team-log $task resumed brief=<its file name without .md>, which holds team-sweep's merge-due" ;;
         full) echo "$step send $task STOW to $who, then launch a fresh builder on team-brief $task builder-merge-base" ;;
         gone) echo "$step $task-builder $session is gone, so launch a fresh builder on team-brief $task builder-merge-base" ;;
       esac
