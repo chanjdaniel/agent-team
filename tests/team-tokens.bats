@@ -797,6 +797,34 @@ model: 19.5 4 5
 wait message: 3600 1 3600"
 }
 
+@test "a background call that writes a heredoc and then waits on Daniel is keyed by its wait" {
+  local projects=$HOME/.claude/projects/-home-dan-agent-team--claude-worktrees-1
+  local session=c4000000-0000-4000-8000-000000000000
+  rm -r "$HOME/.claude/projects"
+  mkdir -p "$projects"
+  printf '{"ts":"2026-10-20T09:00:00Z","task":"T1","event":"launch","role":"planner","session":"c4000000","worktree":"/home/dan/agent-team/.claude/worktrees/1","toolkits":[]}\n' >"$TEAM_HOME/ledger.jsonl"
+  jq -nc --arg session "$session" --arg command $'cd CONTENT-dir; cat >> interview.md <<\'EOF\'\nCONTENT-note\nEOF\nteam-thread wait T1' '
+    "<task-notification><task-id>bgwait01</task-id><tool-use-id>toolu_wait</tool-use-id><status>completed</status><summary>CONTENT-done</summary></task-notification>" as $note
+    | {type: "user", timestamp: "2026-10-20T10:00:00.000Z", sessionId: $session, message: {content: "CONTENT-brief"}},
+    {type: "assistant", timestamp: "2026-10-20T10:00:05.000Z", sessionId: $session, requestId: "req_1",
+     message: {stop_reason: "tool_use", content: [{type: "tool_use", id: "toolu_wait", name: "Bash",
+       input: {command: $command, run_in_background: true}}]}},
+    {type: "user", timestamp: "2026-10-20T10:00:05.500Z", sessionId: $session,
+     message: {content: [{type: "tool_result", tool_use_id: "toolu_wait", content: "Command running in background with ID: bgwait01."}]}},
+    {type: "assistant", timestamp: "2026-10-20T10:00:10.000Z", sessionId: $session, requestId: "req_2",
+     message: {stop_reason: "end_turn", content: [{type: "text", text: "CONTENT-waiting"}]}},
+    {type: "system", subtype: "turn_duration", timestamp: "2026-10-20T10:00:10.000Z", sessionId: $session},
+    {type: "queue-operation", operation: "enqueue", timestamp: "2026-10-20T10:30:10.000Z", sessionId: $session, content: $note},
+    {type: "user", timestamp: "2026-10-20T10:30:10.000Z", sessionId: $session, message: {content: $note}},
+    {type: "assistant", timestamp: "2026-10-20T10:30:15.000Z", sessionId: $session, requestId: "req_3",
+     message: {stop_reason: "end_turn", content: [{type: "text", text: "CONTENT-done"}]}},
+    {type: "system", subtype: "turn_duration", timestamp: "2026-10-20T10:30:15.000Z", sessionId: $session}' >"$projects/$session.jsonl"
+  run_bin -0 team-tokens time
+  assert_equal "$(jq -r '.keys | keys[] | select(contains("bash"))' <<<"$output")" "background bash team-thread wait
+bash team-thread wait"
+  if grep CONTENT <<<"$output"; then false; fi
+}
+
 @test "a call is named by its command's first program that is not plumbing, with its subcommand words" {
   # Each command, then the name it gets.
   local cases=(
@@ -832,6 +860,14 @@ wait message: 3600 1 3600"
     'team-checks agent-team cafe123' 'team-checks agent-team'
     'gh-axi pr checks 35' 'gh-axi pr checks'
     '/home/x/agent-team/bin/team-ci-wait https://github.com/CONTENT/x/pull/35 cafe123' 'team-ci-wait'
+    # A heredoc's body is left out, and what follows it counts: its closing line, then the next
+    # command, past a <<- and a quoted marker, and over two heredocs.
+    $'cd CONTENT-dir; cat > CONTENT-f <<\'EOF\'\nCONTENT-line; rm -rf CONTENT-x\nEOF\nteam-thread wait T1' 'team-thread wait'
+    $'cd CONTENT-dir; cat <<-"EOF" | tee CONTENT-f\n\tCONTENT-line\n\tEOF\ntests/run' 'tests/run'
+    $'cat > CONTENT-a <<A\nCONTENT-a\nA\ncat > CONTENT-b <<B\nCONTENT-b\nB\nmake check' 'make check'
+    # A here-string is no heredoc, and a heredoc never closed is cut at its marker: both as before.
+    $'cd CONTENT-dir; cat <<<CONTENT-here\ntests/run' 'cd'
+    $'cd CONTENT-dir; cat > CONTENT-f <<EOF\nCONTENT-line\ntests/run' 'cd'
   )
   local projects=$HOME/.claude/projects/-home-dan-agent-team--claude-worktrees-1 i session expected=
   rm -r "$HOME/.claude/projects"

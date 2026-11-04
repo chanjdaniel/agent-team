@@ -184,8 +184,8 @@
 #                    turn_duration after it), whatever woke it
 #   compaction       a compact_boundary's durationMs, taken out of the stretch that ends at it
 # A transcript with no turn_duration line ends a turn at a reply whose stop_reason is end_turn with
-# no call outstanding. A command's name comes from its text alone: cut at its first heredoc (<<),
-# split into simple commands at the control operators, newlines, $(, backticks and parentheses
+# no call outstanding. A command's name comes from its text alone: each heredoc's body left out, an
+# unterminated one cut at its marker, split into simple commands at the control operators, newlines, $(, backticks and parentheses
 # outside quotes, comments left out; past leading reserved words, assignments, and wrappers
 # (timeout, env, nice, nohup, command, exec, stdbuf, time) with their options and a duration, the
 # program is the first word: a path from /, ~ or $ by its base name, a relative one of up to four
@@ -233,7 +233,7 @@ COUNTS = ("input", "cache_write_1h", "cache_write_5m", "cache_read", "output", "
 FIELDS = ["ts", "machine", "session", "agent", "project_dir", "model", "request", *COUNTS]
 # Raised to 2 with the time rows, and to 3 when a stopped background call came to end at its stop,
 # so the first export after each reads every transcript again and rewrites the rows that change.
-SCAN_VERSION = 3
+SCAN_VERSION = 4
 
 
 def fail(message, status=1):
@@ -413,11 +413,16 @@ EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 MICRO = timedelta(microseconds=1)
 
 
-# The simple commands of a Bash command's text, one at a time: cut at its first heredoc marker and
-# split at the control operators, newlines, substitutions and parentheses outside quotes, comments
-# left out.
+# A heredoc, from its marker through its closing line, the rest of the marker's line kept; a
+# here-string (<<<) is none.
+HEREDOC = re.compile(r"(?<!<)<<(?!<)-?[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1([^\n]*)\n(?:.*?\n)??[ \t]*\2[ \t]*(?=\n|$)", re.S)
+
+
+# The simple commands of a Bash command's text, one at a time: each heredoc's body left out, an
+# unterminated one cut at its marker, and split at the control operators, newlines, substitutions
+# and parentheses outside quotes, comments left out.
 def simple_commands(command):
-    text, current, quote, i = command.split("<<", 1)[0], "", None, 0
+    text, current, quote, i = HEREDOC.sub(r"\3", command).split("<<", 1)[0], "", None, 0
     while i < len(text):
         c, two = text[i], text[i : i + 2]
         if quote == "'":
