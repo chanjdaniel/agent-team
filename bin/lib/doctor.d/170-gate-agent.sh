@@ -40,7 +40,7 @@ if [[ $agent == claude ]]; then
   # that value which is no flag is an argument of claude's own: the second half of an unquoted
   # project,local in a flow list, say. --settings takes the next item or its own after an =, and
   # every one given must name a file whose commit attribution is off.
-  gate_rc=0 gate_strict=0 gate_sources=() gate_user=0 gate_stray= gate_settings=() gate_attributed=0
+  gate_rc=0 gate_strict=0 gate_sources=() gate_user=0 gate_stray='' gate_settings=() gate_attributed=0
   gate_args=$(awk -v args=claude -f "$bin/lib/gate-config.awk" "$gate_config") || gate_rc=$?
   mapfile -t gate_items <<<"$gate_args"
   for ((i = 0; i < ${#gate_items[@]}; i++)); do
