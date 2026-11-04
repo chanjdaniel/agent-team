@@ -530,6 +530,34 @@ workers_json() {
     '[["b0960001","2026-10-27T08:30:00Z","done",30,1,30],["b0960002","2026-10-27T09:31:00Z","done",31,1,30],["b0980001","2026-10-27T23:00:00Z","done",180,1,180],["r0980001","2026-10-28T00:30:00Z","done",90,1,90]]'
 }
 
+@test "a worker's stow ends a builder's or a planner's lifetime there, never a reviewer's" {
+  printf '%s\n' \
+    '{"ts":"2026-10-28T10:00:00Z","task":"T7","event":"opened","project":"agent-team","path":"small","type":"fix","title":"x","branch":"fix/T7-x","base":"dev","base_sha":"0123456","worktree":"/w/1"}' \
+    '{"ts":"2026-10-28T10:00:00Z","task":"T7","event":"launch","role":"planner","session":"p0070001","worktree":"/w/1","toolkits":[]}' \
+    '{"ts":"2026-10-28T10:10:00Z","task":"T7","event":"launch","role":"reviewer","session":"r0070001","worktree":"/w/1","toolkits":[]}' \
+    '{"ts":"2026-10-28T10:30:00Z","task":"T7","event":"paused","reason":"stowed: the level fell"}' \
+    '{"ts":"2026-10-28T12:00:00Z","task":"T7","event":"launch","role":"builder","session":"b0070001","worktree":"/w/1","toolkits":[]}' \
+    '{"ts":"2026-10-28T12:30:00Z","task":"T7","event":"paused","reason":"stowed"}' \
+    '{"ts":"2026-10-28T13:00:00Z","task":"T7","event":"paused","reason":"no room for session:reviewer"}' >"$TEAM_HOME/ledger.jsonl"
+  local json
+  json=$(time_json --until 2026-10-28T20:00:00Z)
+  assert_equal "$(jq -r '.workers.lifetimes[] | [.session, .end, .ended, .minutes] | map(. // "null") | @tsv' <<<"$json")" "$(
+    printf '%s\n' \
+      $'p0070001\t2026-10-28T10:30:00Z\tstowed\t30' \
+      $'b0070001\t2026-10-28T12:30:00Z\tstowed\t30'
+  )"
+  # A reviewer beside them runs on, since a stow names no session.
+  assert_equal "$(jq -r '.workers.running[].session' <<<"$json")" r0070001
+}
+
+@test "a team-thread wait counts as waiting for a message, in the foreground or the background" {
+  local key
+  for key in "bash team-thread wait" "background bash team-thread wait"; do
+    run -0 jq -nr -L "$REPO_ROOT/bin/lib" --arg key "$key" 'include "workers"; include "time"; include "ledger"; $key | key_class'
+    assert_equal "$output" "wait:message"
+  done
+}
+
 @test "a round's window is 5 minutes after its last event, two dones are two rounds, and a late lone ticket-done is no round" {
   local json
   json=$(workers_json --task T95)

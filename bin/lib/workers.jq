@@ -43,8 +43,9 @@ def worker_rounds:
 # ends_worker in ledger.jq); it ends at its last round's last event (ended done when that round
 # holds a done, else pr or ticket-done); else, for a reviewer, at the task's last review after its
 # launch and before the task's next reviewer launch (review); else at the first after its launch of
-# the task's next launch of the same role (replaced), its stowed (stowed) or its closed (closed);
-# else it is running (ended "running", end null). Its first done is the minutes to its first
+# the task's next launch of the same role (replaced), its stowed or, for a builder or a planner, a
+# paused reason=stowed, which names no session and so says nothing of a reviewer beside them
+# (stowed), or its closed (closed); else it is running (ended "running", end null). Its first done is the minutes to its first
 # round's report; its phases the minutes per phase of the task's segments (gate runs included)
 # over its span, null for a legacy task. Its segments, those over its span, are for workers_join,
 # which drops them.
@@ -68,8 +69,9 @@ def task_lifetimes($hi):
      // (if $l.role == "reviewer" then
            [$after[:$after | first_launch("reviewer")][] | select(.event == "review")] | last | if . then {end: .ts, ended: "review"} else null end
          else null end)
-     // ([$after[] | select((.event == "launch" and .role == $l.role) or .event == "stowed" or .event == "closed")] | first
-         | if . then {end: .ts, ended: (if .event == "launch" then "replaced" else .event end)} else null end)
+     // ([$after[] | select((.event == "launch" and .role == $l.role) or .event == "stowed" or .event == "closed"
+           or (IN($l.role; "builder", "planner") and .event == "paused" and ((.reason // "") | startswith("stowed"))))] | first
+         | if . then {end: .ts, ended: (if .event == "launch" then "replaced" elif .event == "paused" then "stowed" else .event end)} else null end)
      // {end: null, ended: "running"}) as $end
   | ((if $end.end then $end.end | fromdate else $hi end)) as $stop
   | {task: $l.task, project: ($l.project // $opened.project // "-"), path: ($opened.path // "-"), role: $l.role,
@@ -126,7 +128,8 @@ def worker_classes: [
 ];
 
 # A time row's key's class, first match wins, looking through "background " and the key's kind
-# (bash, monitor or tool): model, compaction, the three waits; then a command's: checks
+# (bash, monitor or tool): model, compaction, the three waits; then a command's: wait:message
+# (team-thread wait, an interview's wait on Daniel), checks
 # (team-checks, or a name naming a linter, formatter or type checker, go vet), gate (no-mistakes,
 # git push no-mistakes), ci (team-ci-wait, gh or gh-axi pr checks, run watch or run view), tests
 # (tests/run, bats, playwright, pytest, vitest, jest, go test, cargo test, npm test or npm run
@@ -146,6 +149,7 @@ def key_class:
       elif $name == "Agent" then "subagents"
       elif IN($name; "Read", "Edit", "Write", "Grep", "Glob", "NotebookEdit") then "files"
       else "other" end
+    elif $name == "team-thread wait" then "wait:message"
     elif $words[0] == "team-checks" or ($name | test("lint|format|fmt|type-?check|tsc|eslint|prettier|shellcheck|ruff|mypy|^go vet")) then "checks"
     elif $words[0] == "no-mistakes" or $name == "git push no-mistakes" then "gate"
     elif $words[0] == "team-ci-wait"
