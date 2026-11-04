@@ -232,6 +232,71 @@ EOF
   assert_equal "$(find "$TEAM_HOME/tasks/T1" -name '*.png' | wc -l)" "0"
 }
 
+# Screenshots a project keeps outside the task directory go with the worktree that took them, and
+# treehouse leaves what git ignores in a slot it takes back.
+@test "a returned treehouse slot loses its .scratch/shots/, and another task's slot keeps its own" {
+  run_bin -0 team-open conv feature feat move "Move it"
+  run_bin -0 team-open conv feature feat other "Other work"
+  local slot=${conv_slots[0]} other=${conv_slots[1]}
+  mkdir -p "$slot/.scratch/shots/builder/after" "$other/.scratch/shots"
+  echo png >"$slot/.scratch/shots/builder/after/page.png"
+  echo png >"$other/.scratch/shots/page.png"
+  echo keep >"$slot/.scratch/notes.md"
+  work_and_push "$slot" move.txt
+  run_bin -0 --separate-stderr team-close T1
+  [[ ! -e $slot/.scratch/shots ]]
+  assert_contains "$stderr" "team-close: removed .scratch/shots/ of $slot"
+  # Only that folder: what else the project keeps in .scratch/ is not the team's to remove.
+  [[ -f $slot/.scratch/notes.md ]]
+  [[ -f $other/.scratch/shots/page.png ]]
+  # And none of it reached the archive.
+  assert_equal "$(find "$TEAM_HOME/tasks/T1" -name '*.png' | wc -l)" "0"
+}
+
+@test "a returned git worktree takes its .scratch/shots/ with it" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  local slot=${home_slots[0]}
+  mkdir -p "$slot/.scratch/shots"
+  echo png >"$slot/.scratch/shots/page.png"
+  work_and_push "$slot" feature.txt
+  run_bin -0 --separate-stderr team-close T1
+  [[ ! -e $slot ]]
+  assert_contains "$stderr" "team-close: removed .scratch/shots/ of $slot"
+}
+
+@test "a kept worktree keeps its .scratch/shots/, and the worktree returned beside it does not" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  run_bin -0 team-open --task T1 --add conv feat move
+  local kept=${home_slots[0]} returned=${conv_slots[0]}
+  mkdir -p "$kept/.scratch/shots" "$returned/.scratch/shots"
+  echo png >"$kept/.scratch/shots/page.png"
+  echo png >"$returned/.scratch/shots/page.png"
+  echo unpushed >"$kept/unpushed.txt"
+  work_and_push "$returned" move.txt
+  run_bin -0 --separate-stderr team-close T1 --keep-worktree
+  [[ -f $kept/.scratch/shots/page.png ]]
+  [[ $stderr != *"of $kept"* ]]
+  [[ ! -e $returned/.scratch/shots ]]
+  assert_equal "$(events closed | jq -c .kept)" "$(jq -cn --arg k "$kept" '[$k]')"
+}
+
+# The work has landed by now, so a folder that will not go must not stop the slot's return, and
+# the doctor's captures line names it from then on.
+@test "a .scratch/shots/ that cannot be removed is reported, and the close still finishes" {
+  run_bin -0 team-open conv feature feat move "Move it"
+  local slot=${conv_slots[0]}
+  mkdir -p "$slot/.scratch/shots/locked"
+  echo png >"$slot/.scratch/shots/locked/page.png"
+  work_and_push "$slot" move.txt
+  chmod a-w "$slot/.scratch/shots/locked"
+  run_bin -0 --separate-stderr team-close T1
+  chmod u+w "$slot/.scratch/shots/locked"
+  assert_contains "$stderr" "team-close: cannot remove .scratch/shots/ of $slot ("
+  assert_contains "$stderr" "); team-doctor's captures line names it until it is gone"
+  [[ $stderr != *"removed .scratch/shots/"* ]]
+  assert_equal "$(events closed | jq -c .returned)" "$(jq -cn --arg s "$slot" '[$s]')"
+}
+
 @test "the archive leaves out a UI capture, nested repositories, files over 1 MiB and names that may hold a secret, each named" {
   run_bin -0 team-open home feature feat work "Do the work"
   local slot=${home_slots[0]}

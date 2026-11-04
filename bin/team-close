@@ -26,8 +26,10 @@
 # leaves out, each named on stderr, a missing or empty one reported on stderr; claude rm <id>
 # for each of the task's sessions; each landed worktree returned through its pool (git: git
 # worktree remove, never --force; treehouse: its task directory emptied, then the project's
-# return command run from the primary checkout with the path), each return appending
-# worktree-returned; the task's
+# return command run from the primary checkout with the path), each first losing .scratch/shots/,
+# the screenshots a project's workers keep outside the task directory (one that cannot be removed
+# is reported on stderr and team-doctor's captures line names it; a kept worktree keeps its own),
+# each return appending worktree-returned; the task's
 # wip/<project>/T<n> (team-checkpoint's snapshots) deleted on the team home's origin, and its
 # copy refs/remotes/team-home/wip/<project>/T<n> (team-open --resume's) in the project's primary
 # checkout, one that cannot be deleted reported on stderr with the command that deletes it; and
@@ -256,6 +258,16 @@ for wt in "${returning[@]}"; do
   project=$(field project "$wt") branch=$(field branch "$wt") path=$(field worktree "$wt")
   facts=$(team_project "$project")
   primary=$(jq -r .path <<<"$facts")
+  # Screenshots outside the task directory go with the task too: a treehouse return leaves what git
+  # ignores in the slot. The work has landed, so a folder that will not go never stops the return.
+  shots=$path/.scratch/shots
+  if [[ -e $shots || -L $shots ]]; then
+    if rm -rf -- "$shots" 2>"$scratch/error"; then
+      echo "team-close: removed .scratch/shots/ of $path" >&2
+    else
+      echo "team-close: cannot remove .scratch/shots/ of $path ($(grep -m1 . "$scratch/error" || echo "no reason given")); team-doctor's captures line names it until it is gone" >&2
+    fi
+  fi
   case $(jq -r .pool.provider <<<"$facts") in
     git)
       git -C "$primary" worktree remove -- "$path" || die "cannot remove the worktree $path"
