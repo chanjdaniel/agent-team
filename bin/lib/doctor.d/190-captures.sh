@@ -5,8 +5,9 @@
 #               leave out); the fix removes those, whatever their age. Warns too on a non-empty
 #               .scratch/shots/ in a project's slot held by no open task, which team-close removes
 #               from each worktree it returns, the fix removing it: a slot of an open task, a
-#               kept worktree still on a branch and another clone's worktree are left alone, and
-#               no slot is judged without a ledger and a registry to read.
+#               kept worktree still on a branch, another clone's worktree and a slot whose .scratch
+#               is a link are left alone, and no slot is judged without a ledger and a registry to
+#               read.
 # shellcheck shell=bash
 # shellcheck disable=SC2154 # registry_reply, the doctor's
 
@@ -60,6 +61,8 @@ idle_shots() {
     mapfile -t slots < <(jq -r '.pool.slots[]' <<<"$facts")
     [[ $(jq -r .pool.provider <<<"$facts") != treehouse ]] || mapfile -t slots < <(treehouse_slots "${slots[@]}")
     for slot in "${slots[@]}"; do
+      # Through a linked .scratch the folder may be another worktree's, which the fix must not remove.
+      [[ ! -L $slot/.scratch ]] || continue
       [[ -n $(find "$slot/.scratch/shots" -mindepth 1 -print -quit 2>/dev/null) ]] || continue
       ! pool_slot "$slot" "${held[@]}" >/dev/null || continue
       common=$(git -C "$slot" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || continue

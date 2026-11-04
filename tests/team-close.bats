@@ -280,6 +280,68 @@ EOF
   assert_equal "$(events closed | jq -c .kept)" "$(jq -cn --arg k "$kept" '[$k]')"
 }
 
+# A link in the slot may point anywhere, another slot's folders included: only the link is the
+# slot's own, so a close never removes through it.
+@test "a slot whose .scratch is a link leaves the folders it points at, and says so" {
+  run_bin -0 team-open conv feature feat move "Move it"
+  run_bin -0 team-open conv feature feat other "Other work"
+  local slot=${conv_slots[0]} other=${conv_slots[1]}
+  mkdir -p "$other/.scratch/shots"
+  echo png >"$other/.scratch/shots/page.png"
+  echo plan >"$other/.scratch/task/spec.md"
+  rm -r "$slot/.scratch"
+  ln -s "$other/.scratch" "$slot/.scratch"
+  echo .scratch >>"$(git -C "$slot" rev-parse --git-path info/exclude)"
+  work_and_push "$slot" move.txt
+  run_bin -0 --separate-stderr team-close T1
+  [[ -f $other/.scratch/shots/page.png ]]
+  [[ -f $other/.scratch/task/spec.md ]]
+  assert_contains "$stderr" "team-close: left .scratch/shots/ of $slot: .scratch is a link, to what may be another worktree's"
+  assert_contains "$stderr" "team-close: left .scratch/task of $slot: .scratch is a link, to what may be another worktree's"
+  [[ $stderr != *"removed .scratch/shots/"* ]]
+  assert_equal "$(events closed | jq -c .returned)" "$(jq -cn --arg s "$slot" '[$s]')"
+}
+
+@test "a slot whose .scratch/shots is itself a link loses the link and keeps what it points at" {
+  run_bin -0 team-open conv feature feat move "Move it"
+  local slot=${conv_slots[0]} target=$BATS_TEST_TMPDIR/elsewhere
+  mkdir -p "$target"
+  echo png >"$target/page.png"
+  ln -s "$target" "$slot/.scratch/shots"
+  work_and_push "$slot" move.txt
+  run_bin -0 --separate-stderr team-close T1
+  [[ ! -e $slot/.scratch/shots && ! -L $slot/.scratch/shots ]]
+  [[ -f $target/page.png ]]
+  assert_contains "$stderr" "team-close: removed .scratch/shots/ of $slot"
+}
+
+# Each step a stopped close already took is one its rerun finds done.
+@test "a close stopped by a failed return removes the rest on its rerun" {
+  run_bin -0 team-open conv feature feat move "Move it"
+  local slot=${conv_slots[0]} return_script=$conv/scripts/th-return.sh
+  mkdir -p "$slot/.scratch/shots"
+  echo png >"$slot/.scratch/shots/page.png"
+  work_and_push "$slot" move.txt
+  mv "$return_script" "$return_script.real"
+  cat >"$return_script" <<'SH'
+#!/usr/bin/env bash
+echo "the pool is busy" >&2
+exit 3
+SH
+  chmod +x "$return_script"
+  run_bin -1 --separate-stderr team-close T1
+  assert_contains "$stderr" "T1 is half closed"
+  [[ ! -e $slot/.scratch/shots ]]
+  assert_equal "$(events worktree-returned)$(events closed)" ""
+  # A folder made since goes on the rerun, which then finishes.
+  mkdir -p "$slot/.scratch/shots"
+  echo png >"$slot/.scratch/shots/late.png"
+  mv "$return_script.real" "$return_script"
+  run_bin -0 --separate-stderr team-close T1
+  [[ ! -e $slot/.scratch/shots ]]
+  assert_equal "$(events closed | jq -c .returned)" "$(jq -cn --arg s "$slot" '[$s]')"
+}
+
 # The work has landed by now, so a folder that will not go must not stop the slot's return, and
 # the doctor's captures line names it from then on.
 @test "a .scratch/shots/ that cannot be removed is reported, and the close still finishes" {

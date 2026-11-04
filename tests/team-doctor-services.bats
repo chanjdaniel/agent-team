@@ -602,6 +602,15 @@ slot_closed() {
   mkdir -p "$slot/.scratch/shots"
   run_bin team-doctor
   assert_equal "$(line_of captures)" "$captures_pass"
+
+  # A linked .scratch points at what may be another slot's, which its fix must not remove.
+  other=$BATS_TEST_TMPDIR/elsewhere
+  mkdir -p "$other/shots"
+  touch "$other/shots/page.png"
+  rm -r "$slot/.scratch"
+  ln -s "$other" "$slot/.scratch"
+  run_bin team-doctor
+  assert_equal "$(line_of captures)" "$captures_pass"
 }
 
 @test "the captures line leaves a kept worktree's .scratch/shots/ while it is on a branch, and warns once it is returned" {
