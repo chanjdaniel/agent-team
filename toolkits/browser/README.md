@@ -29,6 +29,12 @@ The builder and reviewer roles name `ui-check` for a session that lists it, so a
   Its Lighthouse filtering and LCP-breakdown steps are adapted from chrome-devtools-mcp 1.12.0's `a11y-debugging` and `debug-optimize-lcp` skills (Apache-2.0).
 - No MCP server (no `.mcp.json`).
 
+## Screenshots outside the task directory
+
+`ui-check`'s tiles live in the task directory, and go with it.
+A worker that keeps screenshots of its own in the worktree's `.scratch/shots/`, outside the task directory, leaves them to `team-close`, which removes that folder from each worktree it returns and leaves a kept worktree's.
+`team-doctor`'s `captures` line warns about a non-empty one in a slot no open task holds, with the `rm -rf` that removes it.
+
 ## What a run costs
 
 Estimates from the skill's budget table and the trial's output sizes; each run records its own image tokens in its `findings.md`.

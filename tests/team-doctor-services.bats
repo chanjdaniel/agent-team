@@ -171,13 +171,13 @@ FAIL interview channel: no DISCORD_BOT_TOKEN in ~/.claude/channels/discord/.env,
   [[ $seen != *70000000000000000* ]] || { echo "the doctor printed a member's id" >&2; return 1; }
 }
 
-@test "the interview channel line fails unless the channel is set, has no access.json group and lets the bot read, open threads and post in them" {
+@test "the interview channel line fails unless the channel is set, has no access.json group and lets the bot read, open threads, post in them and attach images" {
   only_checks 167-interview-channel.sh
   local line="interview channel" give="fix: Daniel gives the bot's role"
   local make="fix: Daniel makes a text channel for interviews, with no access.json group, and a PR sets its id as INTERVIEW_CHANNEL in bin/lib/team.sh"
   tools_at arch
   run_bin -0 team-doctor
-  assert_equal "$(line_of "$line")" "PASS interview channel: $INTERVIEW_ID has no access.json group, so the coordinator never hears an interview, and the bot may read it, open threads and post in them"
+  assert_equal "$(line_of "$line")" "PASS interview channel: $INTERVIEW_ID has no access.json group, so the coordinator never hears an interview, and the bot may read it, open threads, post in them and attach images"
   # Its reads, each with the token on stdin.
   assert_equal "$(stub_calls curl | jq -r '.[-1] | select(startswith("https://discord.com/")) | ltrimstr("https://discord.com/api/v10/")')" "channels/$INTERVIEW_ID
 users/@me
@@ -201,7 +201,7 @@ guilds/$GUILD_ID/roles"
   echo "DISCORD_BOT_TOKEN=$FAKE_DISCORD_TOKEN" >"$HOME/.claude/channels/discord/.env"
 
   TEAM_INTERVIEW_CHANNEL=1 run_bin -1 team-doctor
-  assert_equal "$(line_of "$line")" "FAIL interview channel: Discord refused the bot's read of channels/1 (curl: (22) The requested URL returned error: 404), so the bot cannot reach the interview channel 1; $give View Channel, Read Message History, Create Public Threads, Send Messages in Threads in the interview channel's permissions"
+  assert_equal "$(line_of "$line")" "FAIL interview channel: Discord refused the bot's read of channels/1 (curl: (22) The requested URL returned error: 404), so the bot cannot reach the interview channel 1; $give View Channel, Read Message History, Create Public Threads, Send Messages in Threads, Attach Files in the interview channel's permissions"
 
   jq '.type = 2' "$STUB_FIXTURES/discord/channels/$INTERVIEW_ID.json" >"$BATS_TEST_TMPDIR/channel.json"
   cp "$BATS_TEST_TMPDIR/channel.json" "$STUB_FIXTURES/discord/channels/$INTERVIEW_ID.json"
@@ -211,28 +211,35 @@ guilds/$GUILD_ID/roles"
   # The bot's role, then the channel's overwrites for @everyone, the bot's roles and the bot.
   interview_server "$(interview_bits 10 11 16)" '[]'
   run_bin -1 team-doctor
-  assert_equal "$(line_of "$line")" "FAIL interview channel: the bot lacks Create Public Threads, Send Messages in Threads in the interview channel $INTERVIEW_ID; $give Create Public Threads, Send Messages in Threads in the interview channel's permissions"
-  interview_server "$(interview_bits 10 16 35 38)" "[{\"id\": \"$GUILD_ID\", \"type\": 0, \"allow\": \"0\", \"deny\": \"$(interview_bits 10)\"}]"
+  assert_equal "$(line_of "$line")" "FAIL interview channel: the bot lacks Create Public Threads, Send Messages in Threads, Attach Files in the interview channel $INTERVIEW_ID; $give Create Public Threads, Send Messages in Threads, Attach Files in the interview channel's permissions"
+  interview_server "$(interview_bits 10 15 16 35 38)" "[{\"id\": \"$GUILD_ID\", \"type\": 0, \"allow\": \"0\", \"deny\": \"$(interview_bits 10)\"}]"
   run_bin -1 team-doctor
   assert_equal "$(line_of "$line")" "FAIL interview channel: the bot lacks View Channel in the interview channel $INTERVIEW_ID; $give View Channel in the interview channel's permissions"
-  interview_server "$(interview_bits 10 16 35 38)" "[{\"id\": \"$GUILD_ID\", \"type\": 0, \"allow\": \"0\", \"deny\": \"$(interview_bits 10)\"},
+  interview_server "$(interview_bits 10 15 16 35 38)" "[{\"id\": \"$GUILD_ID\", \"type\": 0, \"allow\": \"0\", \"deny\": \"$(interview_bits 10)\"},
     {\"id\": \"$BOT_ROLE\", \"type\": 0, \"allow\": \"$(interview_bits 10)\", \"deny\": \"0\"}]"
   run_bin -0 team-doctor
   assert_contains "$(line_of "$line")" "PASS interview channel: "
   # Another role's overwrite is not the bot's; the bot's own deny comes last.
-  interview_server "$(interview_bits 10 16)" "[{\"id\": \"$BOT_ROLE\", \"type\": 0, \"allow\": \"$(interview_bits 35 38)\", \"deny\": \"0\"},
+  interview_server "$(interview_bits 10 15 16)" "[{\"id\": \"$BOT_ROLE\", \"type\": 0, \"allow\": \"$(interview_bits 35 38)\", \"deny\": \"0\"},
     {\"id\": \"$BOT_ID\", \"type\": 1, \"allow\": \"0\", \"deny\": \"$(interview_bits 38)\"},
-    {\"id\": \"700000000000000049\", \"type\": 0, \"allow\": \"0\", \"deny\": \"$(interview_bits 10 16 35 38)\"}]"
+    {\"id\": \"700000000000000049\", \"type\": 0, \"allow\": \"0\", \"deny\": \"$(interview_bits 10 15 16 35 38)\"}]"
   run_bin -1 team-doctor
   assert_equal "$(line_of "$line")" "FAIL interview channel: the bot lacks Send Messages in Threads in the interview channel $INTERVIEW_ID; $give Send Messages in Threads in the interview channel's permissions"
+  # Attach Files is bit 15, for team-post --attach, as the channel's overwrites may deny it alone.
+  interview_server "$(interview_bits 10 16 35 38)" '[]'
+  run_bin -1 team-doctor
+  assert_equal "$(line_of "$line")" "FAIL interview channel: the bot lacks Attach Files in the interview channel $INTERVIEW_ID; $give Attach Files in the interview channel's permissions"
+  interview_server "$(interview_bits 10 15 16 35 38)" "[{\"id\": \"$BOT_ROLE\", \"type\": 0, \"allow\": \"0\", \"deny\": \"32768\"}]"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of "$line")" "FAIL interview channel: the bot lacks Attach Files in the interview channel $INTERVIEW_ID; $give Attach Files in the interview channel's permissions"
   # Administrator allows everything, whatever the overwrites deny.
-  interview_server "$(interview_bits 3)" "[{\"id\": \"$BOT_ID\", \"type\": 1, \"allow\": \"0\", \"deny\": \"$(interview_bits 10 16 35 38)\"}]"
+  interview_server "$(interview_bits 3)" "[{\"id\": \"$BOT_ID\", \"type\": 1, \"allow\": \"0\", \"deny\": \"$(interview_bits 10 15 16 35 38)\"}]"
   run_bin -0 team-doctor
   assert_contains "$(line_of "$line")" "PASS interview channel: "
   # A permission that is not a number is never read as one.
   interview_server '$(touch pwned)' '[]'
   run_bin -1 team-doctor
-  assert_contains "$(line_of "$line")" "FAIL interview channel: the bot lacks View Channel, Read Message History, Create Public Threads, Send Messages in Threads"
+  assert_contains "$(line_of "$line")" "FAIL interview channel: the bot lacks View Channel, Read Message History, Create Public Threads, Send Messages in Threads, Attach Files"
   [[ ! -e pwned && ! -e $HOME/pwned ]]
 
   # Discord not answering warns.
@@ -497,6 +504,8 @@ RECORDS_FIX="fix what it names in the team home (team-log --check and team-proje
   assert_equal "$(line_of 'heavy runs')" "PASS heavy runs: held by tests/run all in ~/agent-team (pid 1) since 2026-10-25 10:00:00 +0000"
 }
 
+captures_pass="PASS captures: the team home's git ignores tasks/*/ui/, every capture belongs to an open task, and no slot held by no open task holds .scratch/shots/"
+
 @test "the captures line warns while the team home's git does not ignore tasks/*/ui/, or a capture is left by a task that is not open or in an archive" {
   only_checks 190-captures.sh
   tools_at arch
@@ -513,9 +522,139 @@ RECORDS_FIX="fix what it names in the team home (team-log --check and team-proje
   assert_equal "$(line_of captures)" "WARN captures: tasks/T5/ui/, tasks/T4/scratch-my site/ui/ are left behind, by a task that is not open or in an archive (team-close removes a task's captures, and archives leave them out); fix: rm -rf $TEAM_HOME/tasks/T5/ui $TEAM_HOME/tasks/T4/scratch-my\\ site/ui"
   rm -r "$TEAM_HOME/tasks/T5/ui" "$TEAM_HOME/tasks/T4/scratch-my site/ui"
   run_bin team-doctor
-  assert_equal "$(line_of captures)" "PASS captures: the team home's git ignores tasks/*/ui/, and every capture belongs to an open task"
+  assert_equal "$(line_of captures)" "$captures_pass"
   sed -i '\#^tasks/\*/ui/$#d' "$TEAM_HOME/.git/info/exclude"
   run_bin team-doctor
   assert_equal "$(line_of captures)" "WARN captures: the team home's git does not ignore tasks/*/ui/, so a checkpoint or handoff could carry a capture off this machine; fix: add tasks/*/ui/ to the team home's .gitignore, a records commit on dev"
 }
 
+# A slot <slot> of Conventioner's pool (its folder's number) with a screenshot in .scratch/shots/,
+# detached as a returned slot is; prints its path: slot_with_shots <n>
+slot_with_shots() {
+  local slot=$HOME/.treehouse/Conventioner-d4c77a/$1/Conventioner
+  git -C "$CONVENTIONER" worktree add -q --detach "$slot"
+  mkdir -p "$slot/.scratch/shots/builder"
+  touch "$slot/.scratch/shots/builder/page.png"
+  echo "$slot"
+}
+
+# An event of Conventioner's slot <slot> in T<n>'s life, as team-open and team-close log them.
+slot_opened() {
+  jq -cn --arg task "$1" --arg wt "$2" '{ts: "2026-10-24T10:00:00Z", task: $task, event: "opened",
+    project: "conventioner", path: "feature", type: "feat", title: "Work", branch: "feat/\($task)-work",
+    base: "main", base_sha: "0000000", worktree: $wt}' >>"$TEAM_HOME/ledger.jsonl"
+}
+slot_closed() {
+  jq -cn --arg task "$1" --arg wt "$2" --arg how "$3" '{ts: "2026-10-25T10:00:00Z", task: $task, event: "closed", archive: [],
+    returned: (if $how == "returned" then [$wt] else [] end), kept: (if $how == "kept" then [$wt] else [] end)}' >>"$TEAM_HOME/ledger.jsonl"
+}
+
+@test "the captures line warns about .scratch/shots/ in a slot held by no open task, with the fix" {
+  only_checks 190-captures.sh
+  tools_at arch
+  local shown one two
+  # A slot of Conventioner's a closed task left: nothing removed it before team-close did.
+  one=$(slot_with_shots 1)
+  slot_opened T5 "$one"
+  slot_closed T5 "$one" returned
+  # shellcheck disable=SC2088 # the doctor's lines name HOME as ~
+  shown='~/.treehouse/Conventioner-d4c77a'
+  run_bin team-doctor
+  assert_equal "$(line_of captures)" "WARN captures: $shown/1/Conventioner/.scratch/shots/ is left behind, in a slot held by no open task (team-close removes .scratch/shots/ from each worktree it returns); fix: rm -rf $one/.scratch/shots"
+
+  # A slot past the registered ones counts, a slot no ledger line names too, and each is listed
+  # with its path quoted.
+  two=$(slot_with_shots 7)
+  run_bin team-doctor
+  assert_equal "$(line_of captures)" "WARN captures: $shown/1/Conventioner/.scratch/shots/, $shown/7/Conventioner/.scratch/shots/ are left behind, in slots held by no open task (team-close removes .scratch/shots/ from each worktree it returns); fix: rm -rf $one/.scratch/shots $two/.scratch/shots"
+
+  # A git pool's slot counts as well.
+  rm -r "$one/.scratch/shots" "$two/.scratch/shots"
+  git -C "$SITE" worktree add -q --detach "$HOME/projects/site-slots/1"
+  mkdir -p "$HOME/projects/site-slots/1/.scratch/shots"
+  touch "$HOME/projects/site-slots/1/.scratch/shots/page.png"
+  run_bin team-doctor
+  assert_equal "$(line_of captures)" "WARN captures: ~/projects/site-slots/1/.scratch/shots/ is left behind, in a slot held by no open task (team-close removes .scratch/shots/ from each worktree it returns); fix: rm -rf $HOME/projects/site-slots/1/.scratch/shots"
+}
+
+@test "the captures line says nothing of .scratch/shots/ that is empty, or in the slot of an open task" {
+  only_checks 190-captures.sh
+  tools_at arch
+  local slot other
+  slot=$(slot_with_shots 1)
+  # Held by T5, under another spelling of its path, and earlier held by a closed task.
+  slot_opened T4 "$slot"
+  slot_closed T4 "$slot" returned
+  other=$(other_spelling "$HOME/.treehouse")
+  slot_opened T5 "${other}/Conventioner-d4c77a/1/Conventioner"
+  run_bin team-doctor
+  assert_equal "$(line_of captures)" "$captures_pass"
+
+  # A legacy task, one with no opened event, holds what it launched in.
+  slot=$(slot_with_shots 3)
+  jq -cn --arg wt "$slot" '{ts: "2026-10-24T10:00:00Z", task: "T6", event: "launch", role: "builder", session: "4f2a9c1e", worktree: $wt, toolkits: []}' >>"$TEAM_HOME/ledger.jsonl"
+  run_bin team-doctor
+  assert_equal "$(line_of captures)" "$captures_pass"
+
+  # An empty folder holds nothing to warn about.
+  slot=$HOME/.treehouse/Conventioner-d4c77a/4/Conventioner
+  git -C "$CONVENTIONER" worktree add -q --detach "$slot"
+  mkdir -p "$slot/.scratch/shots"
+  run_bin team-doctor
+  assert_equal "$(line_of captures)" "$captures_pass"
+
+  # A linked .scratch points at what may be another slot's, which its fix must not remove.
+  other=$BATS_TEST_TMPDIR/elsewhere
+  mkdir -p "$other/shots"
+  touch "$other/shots/page.png"
+  rm -r "$slot/.scratch"
+  ln -s "$other" "$slot/.scratch"
+  run_bin team-doctor
+  assert_equal "$(line_of captures)" "$captures_pass"
+}
+
+@test "the captures line leaves a kept worktree's .scratch/shots/ while it is on a branch, and warns once it is returned" {
+  only_checks 190-captures.sh
+  tools_at arch
+  local slot
+  slot=$(slot_with_shots 1)
+  git -C "$slot" switch -q -c feat/T5-work
+  slot_opened T5 "$slot"
+  slot_closed T5 "$slot" kept
+  run_bin team-doctor
+  assert_equal "$(line_of captures)" "$captures_pass"
+
+  # Daniel returned it by hand, so no team-close will remove them.
+  git -C "$slot" switch -q --detach
+  run_bin team-doctor
+  assert_contains "$(line_of captures)" "WARN captures: ~/.treehouse/Conventioner-d4c77a/1/Conventioner/.scratch/shots/ is left behind"
+}
+
+@test "the captures line leaves another clone's worktree in the pool, and judges nothing without a ledger or a registry" {
+  only_checks 190-captures.sh
+  tools_at arch
+  local slot other=$HOME/firstmate/projects/Conventioner
+  # A clone sharing the pool owns slot 1, whose screenshots are that clone's.
+  git clone -q "$CONVENTIONER" "$other"
+  slot=$HOME/.treehouse/Conventioner-d4c77a/1/Conventioner
+  git -C "$other" worktree add -q --detach "$slot"
+  mkdir -p "$slot/.scratch/shots"
+  touch "$slot/.scratch/shots/page.png"
+  # A folder holding no worktree at all is the slots line's.
+  mkdir -p "$HOME/.treehouse/Conventioner-d4c77a/2/Conventioner/.scratch/shots"
+  touch "$HOME/.treehouse/Conventioner-d4c77a/2/Conventioner/.scratch/shots/page.png"
+  run_bin team-doctor
+  assert_equal "$(line_of captures)" "$captures_pass"
+
+  # With no ledger to read, no slot is known to be free; with no registry, no slot is known.
+  slot_with_shots 3 >/dev/null
+  run_bin team-doctor
+  assert_contains "$(line_of captures)" "/3/Conventioner/.scratch/shots/ is left behind"
+  mv "$TEAM_HOME/ledger.jsonl" "$TEAM_HOME/ledger.jsonl.aside"
+  run_bin team-doctor
+  assert_equal "$(line_of captures)" "$captures_pass"
+  mv "$TEAM_HOME/ledger.jsonl.aside" "$TEAM_HOME/ledger.jsonl"
+  mv "$TEAM_HOME/projects.toml" "$TEAM_HOME/projects.toml.aside"
+  run_bin team-doctor
+  assert_equal "$(line_of captures)" "$captures_pass"
+}

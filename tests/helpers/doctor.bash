@@ -174,7 +174,7 @@ EOF
   # The bot token is the one line the Discord API reads; the interview channel lets the bot in.
   echo "DISCORD_BOT_TOKEN=$FAKE_DISCORD_TOKEN" >"$HOME/.claude/channels/discord/.env"
   export TEAM_INTERVIEW_CHANNEL=$INTERVIEW_ID
-  interview_server "$(interview_bits 10 16 35 38)" '[]'
+  interview_server "$(interview_bits 10 15 16 35 38)" '[]'
   export TEAM_1PASSWORD_APP=$BATS_TEST_TMPDIR/1Password
   touch "$TEAM_1PASSWORD_APP"
   # The Docker daemon answers, and a browser is installed.

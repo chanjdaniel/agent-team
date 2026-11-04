@@ -17,16 +17,27 @@
 #             is said there: a planner whose brief is planner-interview talks with Daniel there.
 #   wait      Blocks until Daniel posts in the open task's interview thread, then prints each of
 #             their new messages, oldest first, as one JSON line: {"id", "sent" (Discord's
-#             timestamp), "text" (verbatim), "attachments" (their links, only when there are
-#             any)}. New means after --after's message, else after the bot's latest post in the
-#             thread (the last question, so an answer that came before the wait began is still
-#             new), else every message in it. Daniel is the top-level allowFrom of the Discord
-#             plugin's ~/.claude/channels/discord/access.json; any other author's message is
-#             skipped, never printed. Run it with Bash run_in_background, and pass the last id it
-#             printed as --after to the next wait when no question was posted between.
+#             timestamp), "text" (verbatim), "attachments" (only when there are any: each one's
+#             {"url", "saved"} or {"url", "error"})}. New means after --after's message, else
+#             after the bot's latest post in the thread (the last question, so an answer that came
+#             before the wait began is still new), else every message in it. Daniel is the
+#             top-level allowFrom of the Discord plugin's ~/.claude/channels/discord/access.json;
+#             any other author's message is skipped, never printed, and its attachments never
+#             fetched. Run it with Bash run_in_background, and pass the last id it printed as
+#             --after to the next wait when no question was posted between.
 #             It reads the thread every 5 seconds through the REST API (discord_api), 100 messages
 #             a read; on a 429 it waits Discord's Retry-After, and on a failed connection or a
 #             5xx it waits twice as long each time, up to a minute.
+#             An attachment of Daniel's is saved in tasks/T<n>/ui/, where the team home's git
+#             ignores it and team-close removes it with the task's captures, and "saved" is its
+#             path: a PNG, JPEG, GIF or WebP by its first bytes, of at most 20 MiB, named for
+#             Discord's file name with anything but letters, digits, ".", "_" and "-" replaced,
+#             its extension from those bytes, and numbered (-2, -3, ... before the extension) when
+#             that name is taken, so it never overwrites a file. Anything else keeps its link, with
+#             "error" saying why it was not saved: a link off Discord's CDN, a type Discord calls
+#             no image or a size Discord gives over the limit (none of these fetched), a file over
+#             the limit, first bytes of another kind, a failed download or a ui/ it cannot write
+#             in. None of these ends the wait.
 # --interview and wait refuse on a machine that is fenced or that lost the lease (lease_refusal,
 # checked before each read), and with no interview channel set; wait ends with the hold's
 # message (offline_hold) when the team holds offline. In a worker session only a planner's wait
@@ -41,6 +52,13 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 POLL_SECONDS=5
 MAX_BACKOFF=60
 READ_TIMEOUT=20
+# The largest attachment of Daniel's kept, in bytes (what team-post sends, so one posted is one
+# kept), the hosts Discord serves attachments from, and the most one download and its retries may
+# take, in seconds.
+MAX_IMAGE=$((20 * 1024 * 1024))
+CDN_LINK='^https://(cdn\.discordapp\.com|media\.discordapp\.net)/[^[:space:][:cntrl:]]+$'
+FETCH_TIMEOUT=60
+FETCH_RETRIES_TIMEOUT=120
 # Minutes with no message before Discord archives a thread: 3 days (it allows 60, 1440, 4320 or 10080).
 ARCHIVE_MINUTES=4320
 USAGE="usage: team-thread <task> <project> <title> | team-thread T<n> --interview | team-thread wait T<n> [--after <message id>]"
@@ -102,6 +120,78 @@ read_page() {
   done
 }
 
+# Save the attachment <json> describes in $ui under a free name and print its path, or print why
+# not and fail. It downloads to a hidden file in $ui, and only a whole, checked file takes its name,
+# by a hard link, which fails on a name already taken, a dangling link's included; one killed midway
+# leaves only the hidden file, which nothing lists and team-close removes. The CDN takes no token,
+# so this is plain curl rather than discord_api, whose token must reach the API alone:
+# save_image <json>
+save_image() {
+  local url stem type incoming bytes kind target n=2 why=''
+  url=$(jq -r .url <<<"$1")
+  [[ $url =~ $CDN_LINK ]] || { echo "not saved: its link is not on Discord's CDN, so it was not fetched"; return 1; }
+  type=$(jq -r '.content_type | strings' <<<"$1")
+  if [[ -n $type && $type != image/* ]]; then
+    echo "not saved: Discord calls it $type, so it was not fetched"
+    return 1
+  fi
+  if jq -e --argjson max "$MAX_IMAGE" '(.size | numbers) > $max' <<<"$1" >/dev/null; then
+    echo "not saved: over the limit of $MAX_IMAGE bytes"
+    return 1
+  fi
+  if ! mkdir -p -- "$ui" 2>/dev/null || ! incoming=$(mktemp "$ui/.incoming.XXXXXX" 2>/dev/null); then
+    echo "not saved: cannot write in $ui/"
+    return 1
+  fi
+  if ! curl -fsS -g --max-filesize "$MAX_IMAGE" --max-time "$FETCH_TIMEOUT" --retry 2 \
+    --retry-max-time "$FETCH_RETRIES_TIMEOUT" -o "$incoming" "$url" </dev/null 2>"$scratch/error"; then
+    why="not saved: $(grep -m 1 . "$scratch/error" || echo "the download failed")"
+  else
+    bytes=$(wc -c <"$incoming")
+    kind=$(image_type "$incoming")
+    if ((bytes > MAX_IMAGE)); then
+      why="not saved: over the limit of $MAX_IMAGE bytes"
+    elif [[ -z $kind ]]; then
+      why="not saved: not a PNG, JPEG, GIF or WebP by its first bytes"
+    else
+      # The last part of Discord's file name, its extension gone, in letters, digits, ".", "_" and "-",
+      # with no leading ".", "_" or "-", so it is no path and no hidden file.
+      stem=$(jq -r '.filename | strings | sub("^.*[/\\\\]"; "") | sub("\\.[^.]*$"; "")
+        | gsub("[^A-Za-z0-9._-]"; "_") | sub("^[._-]+"; "") | .[0:80]' <<<"$1")
+      target=${stem:-image}.$kind
+      until ln -T -- "$incoming" "$ui/$target" 2>/dev/null; do
+        if [[ ! -e $ui/$target && ! -L $ui/$target ]]; then
+          why="not saved: cannot write in $ui/"
+          break
+        fi
+        target=${stem:-image}-$n.$kind
+        n=$((n + 1))
+      done
+    fi
+  fi
+  rm -f -- "$incoming"
+  if [[ -n $why ]]; then
+    echo "$why"
+    return 1
+  fi
+  echo "$ui/$target"
+}
+
+# Print a message of Daniel's read from the thread, each attachment saved or with why it was not:
+# print_message <found line>
+print_message() {
+  local attachment result
+  : >"$scratch/outcomes"
+  while read -r attachment; do
+    if result=$(save_image "$attachment"); then
+      jq -c --arg saved "$result" '{url, saved: $saved}' <<<"$attachment"
+    else
+      jq -c --arg error "$result" '{url, error: $error}' <<<"$attachment"
+    fi >>"$scratch/outcomes"
+  done < <(jq -c '.attachments // [] | .[]' <<<"$1")
+  jq -c --slurpfile outcomes "$scratch/outcomes" 'if .attachments then .attachments = $outcomes else . end' <<<"$1"
+}
+
 # What a machine that may not wait does instead, as the lease-fence hook says it.
 WAITS="waits on no interview; stop, since the coordinator on the holder takes the task on."
 
@@ -129,6 +219,7 @@ if [[ ${1:-} == wait ]]; then
   discord_token >/dev/null || die "no DISCORD_BOT_TOKEN in ~/.claude/channels/discord/.env"
   scratch=$(mktemp -d)
   trap 'rm -rf "$scratch"' EXIT
+  ui=$TEAM_HOME/tasks/$task/ui
 
   if [[ -z $after ]]; then
     read_page "$thread" "limit=100"
@@ -143,13 +234,14 @@ if [[ ${1:-} == wait ]]; then
       jq -c --argjson allow "$allow" '.[]
         | select(.author.bot != true and (.author.id | tostring | IN($allow[])))
         | {id, sent: .timestamp, text: (.content // "")}
-          + ([.attachments // [] | .[].url | strings] | if . == [] then {} else {attachments: .} end)' \
+          + ([.attachments // [] | .[] | select(.url | type == "string") | {url, filename, content_type, size}]
+            | if . == [] then {} else {attachments: .} end)' \
         <<<"$page" >>"$scratch/found"
     fi
     # A full page means more may follow at once.
     [[ $(jq length <<<"$page") -lt 100 ]] || continue
     if [[ -s $scratch/found ]]; then
-      cat "$scratch/found"
+      while IFS= read -r message; do print_message "$message"; done <"$scratch/found"
       exit 0
     fi
     sleep "$POLL_SECONDS"

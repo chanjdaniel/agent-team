@@ -149,7 +149,7 @@ So that admission can rest on what work costs on this machine, each reading also
 | `session:<role>` | the session list no longer has the session | the highest `MemoryPeak` its scope had (its tree's memory elsewhere) |
 | `stack:<project>` | Docker no longer runs the stack | the highest memory the readings saw it use |
 | `gate` | no gate pipeline runs | the highest memory its daemon used while one ran |
-| `heavy:<kind>` | `team-heavy run` ends | its scope's `MemoryPeak` (its process group's memory, sampled every 10 seconds, elsewhere) |
+| `heavy:<kind>` | `team-heavy run` ends | its scope's `MemoryPeak` (its process group's memory, sampled every 10 seconds from the first look that reads any, elsewhere) |
 
 A session list or a Docker that did not answer ends nothing, so a hiccup never writes a false sample.
 The readings are 5 minutes apart, so a peak is what they saw, and a session or a run shorter than that may never be seen; a session's `MemoryPeak` is the kernel's own, so it is exact.

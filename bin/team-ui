@@ -34,7 +34,9 @@
 # "walk on for T<n>" and stop "walk off for T<n>"; a start while on, or a stop while off, logs
 # nothing and says "walk already on for T<n> since <ts>" or "walk already off for T<n>"; status
 # logs nothing and prints "walk on for T<n> since <ts>" or "walk off for T<n>".
-# Refused, exit 1: a task that is not open, an attachment or a note file that is not a readable
+# Refused, exit 1: a worker session, any task and any form (worker_refusal in bin/lib/team.sh), since
+# an image can leave the machine in a worker's team-post, and the Agent Chrome may show real data; a
+# task that is not open, an attachment or a note file that is not a readable
 # file, or a note file with no words (nothing copied), a ui/ it cannot make the capture's directory
 # in, and a capture that fails, with ui-capture's own line; exit 2 a malformed command line,
 # --walk with no word, another word, a second --walk, or with --capture, --note-file or --attach
@@ -74,6 +76,7 @@ while (($#)); do
   esac
 done
 [[ $task =~ ^T[1-9][0-9]*$ ]] || usage_error "$usage"
+why=$(worker_refusal "$task" "runs no team-ui") && die "$why"
 if [[ -n $walk ]]; then
   ((!capture && !noted && !${#attachments[@]})) || usage_error "--walk goes alone, without --capture, --note-file or --attach"
   events=$(open_task_events "$task")

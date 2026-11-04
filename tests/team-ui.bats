@@ -199,7 +199,7 @@ slots = ["wt/T7"]
 TOML
   run_bin -0 team-brief T7 builder-fix --set 'read=- `AGENTS.md`.' --set commits=fix --set goal=g
   local brief=$TEAM_HOME/tasks/T7/brief.md
-  grep -qF "captured at intake: \`$ui/\`, each capture in a directory of its own, listed below." "$brief"
+  grep -qF "kept for this task: \`$ui/\`, each capture in a directory of its own, listed below." "$brief"
   grep -qxF '  - `capture-1/`: an element and page capture.' "$brief"
   grep -qxF '  - `capture-2/`: a page capture, no element selected; `note.md` holds the words Daniel posted with it.' "$brief"
   grep -qF 'never in the Agent Chrome' "$brief"
@@ -323,6 +323,34 @@ off"
   [[ ! -e $TEAM_HOME/ledger.jsonl ]] || assert_equal "$(walk_events T7)" ""
   [[ ! -e $STUB_CALLS/ui-capture.log ]]
   [[ ! -e $ui ]]
+}
+
+# The guard on the Agent Chrome: a worker's image can leave through team-post, so no worker session
+# reaches that window through team-ui. A settings deny is the speed bump, this the refusal.
+@test "no worker session captures, attaches or runs a walk, its own task's included; the coordinator's capture still runs" {
+  local role
+  for role in planner builder reviewer ops; do
+    AGENT_TEAM_ROLE=$role AGENT_TEAM_TASK=T7 run_bin -1 team-ui T7 --capture
+    assert_equal "$output" "team-ui: a $role session runs no team-ui: that is the coordinator's; send it your message"
+    AGENT_TEAM_ROLE=$role AGENT_TEAM_TASK=T7 run_bin -1 team-ui T7 --attach "$inbox/1563-screenshot.png"
+    assert_contains "$output" "a $role session runs no team-ui"
+    local word
+    for word in start stop status; do
+      AGENT_TEAM_ROLE=$role AGENT_TEAM_TASK=T7 run_bin -1 team-ui T7 --walk "$word"
+      assert_contains "$output" "a $role session runs no team-ui"
+    done
+  done
+  [[ ! -e $STUB_CALLS/ui-capture.log ]]
+  [[ ! -e $ui ]]
+  assert_equal "$(walk_events T7)" ""
+
+  AGENT_TEAM_ROLE=coordinator run_bin -0 team-ui T7 --capture
+  assert_equal "$(cat "$STUB_CALLS/ui-capture.log")" "$ui/capture-1"
+  AGENT_TEAM_ROLE=coordinator run_bin -0 team-ui T7 --walk start
+  assert_equal "$output" "walk on for T7"
+  # Daniel's own shell and the heartbeat set no role.
+  run_bin -0 team-ui T7 --capture
+  [[ -d $ui/capture-2 ]]
 }
 
 @test "--help documents --walk, what a walk is for, and that the ledger records it" {

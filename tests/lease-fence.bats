@@ -259,6 +259,8 @@ age_probe() {
 @test "team-post, team-ask and team-inbox are blocked for workers and the coordinator alike when fenced or when origin names another holder" {
   local command posts=("team-post T7 --file q.md" "/home/x/agent-team/bin/team-post --coordinator --file q.md"
     "cd wt && team-post T7 --thread task --file q.md" $'team-log T7 note\nteam-post T7 --file q.md'
+    "team-post T7 --thread interview --file q.md --attach a.png --attach b.png"
+    "/home/x/agent-team/bin/team-post T7 --thread interview --retract 1564000000000000001"
     "team-ask T7 sign-in --file q.md" "TZ=UTC ~/agent-team/bin/team-ask T7 sign-in --file q.md --from planner"
     "team-inbox" "/home/x/agent-team/bin/team-inbox")
   local others=("echo team-post" "grep -rn 'team-post' bin" "team-poster T7" "team-log T7 note"

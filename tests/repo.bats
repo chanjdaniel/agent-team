@@ -1083,6 +1083,31 @@ sudo -l
 COMMANDS
 }
 
+# A worker's image can leave through team-post, so no worker reaches the Agent Chrome. team-ui's
+# refusal is the guard; these rules are a speed bump, each pinned so a sha or a message id holding
+# 9222 passes, and they also refuse a search naming them, a cost accepted as for the role's rules.
+@test "a worker's Bash call naming the Agent Chrome's port, its axi variable or ui-capture is denied" {
+  local SETTINGS=(settings/worker.json) command
+  assert_denies 'Bash(*:9222*)' 'curl http://127.0.0.1:9222/json' 'curl -s localhost:9222/json/version' \
+    'chrome-devtools-axi --browser-url=http://127.0.0.1:9222 open http://localhost:5173'
+  assert_denies 'Bash(*port 9222*)' 'agent-chrome --port 9222' 'ssh -L 1234:x --remote-debugging-port 9222'
+  assert_denies 'Bash(*port=9222*)' 'chrome --remote-debugging-port=9222'
+  assert_denies 'Bash(*CHROME_DEVTOOLS_AXI_BROWSER_URL*)' 'CHROME_DEVTOOLS_AXI_BROWSER_URL=http://127.0.0.1:1 chrome-devtools-axi open x' \
+    'export CHROME_DEVTOOLS_AXI_BROWSER_URL=x'
+  # shellcheck disable=SC2088 # ~ is part of the command as an agent types it
+  assert_denies 'Bash(*toolkits/frontend/scripts/ui-capture*)' '~/agent-team/toolkits/frontend/scripts/ui-capture .scratch/task/out' \
+    'node toolkits/frontend/scripts/ui-capture out'
+  while IFS= read -r command; do
+    if denied settings/worker.json "$command"; then echo "settings/worker.json denies: $command" >&2; return 1; fi
+  done <<'COMMANDS'
+git show 92226f1
+git log 79222ab..HEAD
+~/agent-team/bin/team-thread wait T7 --after 1564000092220000001
+chrome-devtools-axi open http://127.0.0.1:5173
+node --test tests/toolkits/frontend.test.mjs
+COMMANDS
+}
+
 # worker_refusal (bin/lib/team.sh) reads AGENT_TEAM_ROLE and AGENT_TEAM_TASK, which team-worker sets
 # in a worker's settings: a worker is denied setting either on a command line, and unsetting it
 # with unset or env's -u, so the refusal cannot be talked past (env -i, which clears every
