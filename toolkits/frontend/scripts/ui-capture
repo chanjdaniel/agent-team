@@ -517,6 +517,7 @@ async function pageCapture(chosen, reason, element) {
   const files = {
     ...(screenshot && { "page.png": Buffer.from(screenshot.data, "base64") }),
     "page-snapshot.txt": `${chosen.snapshot.replace(/\n*$/, "")}\n`,
+    // bin/team-post reads where the page came from in the third and fourth of these lines.
     "ui-page.md": [
       "# The page capture",
       "",

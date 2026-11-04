@@ -366,13 +366,13 @@ def waiting:
   else null end;
 
 # The task's manual QC walk: {since} while it is on, since the ts of its latest walk event when
-# that says on, with its thread when that names one (interview), else null, as for a task with
-# none or a closed one, whose walk ended with it. Read by team-ui --walk, capture_refusal and
-# task_state.
+# that says on, with its thread when that names one (interview) and the message of Daniel's it
+# reseeded on when it has one, else null, as for a task with none or a closed one, whose walk ended
+# with it. Read by team-ui --walk, capture_refusal, team-post and task_state.
 def qc_walk:
   if task_status == "closed" then null
   else map(select(.event == "walk")) | last
-    | if .state == "on" then {since: .ts} + (if .thread then {thread} else {} end) else null end end;
+    | if .state == "on" then {since: .ts} + (if .thread then {thread} else {} end) + (if .reseeded then {reseeded} else {} end) else null end end;
 
 # The worktrees team-resume could not re-home that still are not made: each project's latest
 # rehome-failed with no later opened, worktree-added, worktree-moved, rehomed or worktree-returned

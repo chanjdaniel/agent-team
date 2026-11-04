@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Keep what Daniel pointed at for a UI fix in the task's directory, tasks/T<n>/ui/, where
 # team-brief names it in the planner's, builders' and reviewers' briefs. A capture stays on this
-# machine: the team home's git ignores tasks/*/ui/, so no checkpoint or handoff carries it, and
-# team-close removes it with the task.
+# machine, but for an image a walk's planner posts under team-post's guards: the team home's git
+# ignores tasks/*/ui/, so no checkpoint or handoff carries it, and team-close removes it with the task.
 #
 # Usage: team-ui T<n> [--capture [--note-file <file>]] [--attach <file>]...
-#        team-ui T<n> --walk start [--in interview] | --walk stop | --walk status
+#        team-ui T<n> --walk start [--in interview [--reseeded <message id>]] | --walk stop | --walk status
 #   --capture  Run the frontend toolkit's ui-capture into a new directory, tasks/T<n>/ui/capture-<k>/,
 #              k one more than the highest capture-<k> there (from 1), so no capture overwrites
 #              another: the page Daniel is on in the Agent Chrome (its URL, route, title, Vue
@@ -40,6 +40,14 @@
 #              planner follows it there, which the walk event's thread records, and each line
 #              above about the walk says with " in its interview thread" at its end. Only one such
 #              walk is on at a time, since Daniel has one Agent Chrome window.
+#   --reseeded  Only with --walk start --in interview: the Discord message of Daniel's saying the
+#              primary stack was just reseeded, read back through daniel_message from the task's
+#              interview thread, its thread or #coordinator, so a model's word never stands in for
+#              theirs. It must be theirs, sent within the last hour, and hold "seed" in any case
+#              (reseeded, re-seeded, seeded), so that no other message of theirs is taken for it.
+#              The walk event's reseeded records it, the walk's lines above say so, and team-post
+#              then lets that walk's captures leave from a port not the task's own stack's, until
+#              the walk stops; a later start needs a new word.
 # Refused, exit 1: a worker session, any task and any form (worker_refusal in bin/lib/team.sh), since
 # an image can leave the machine in a worker's team-post, and the Agent Chrome may show real data;
 # the one exception is --capture, with or without --note-file, by a planner of the task while its
@@ -50,14 +58,18 @@
 # directory, a ui/ it cannot make the capture's directory in, and a capture that fails, with
 # ui-capture's own line; of --walk start, a walk on in the task's other thread, which a stop must
 # end first, and with --in interview, a task with no interview thread, or another task's interview
-# walk that is on, which the refusal names. Exit 2 a malformed command line, --walk with no word,
-# another word, a second --walk, or with --capture, --note-file or --attach among them, and --in
-# with any word but interview, or without --walk start.
+# walk that is on, which the refusal names; with --reseeded, a message that cannot be read, or that
+# is not Daniel's, old or silent on seeding, and a walk on with no word or another, which a stop must
+# end first, since a start that changed nothing must not read as cleared. Exit 2 a malformed command line, --walk with no word, another word, a second --walk, or
+# with --capture, --note-file or --attach among them, --in with any word but interview, or without
+# --walk start, and --reseeded with no message id, or without --walk start --in interview.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
-usage="usage: team-ui T<n> [--capture [--note-file <file>]] [--attach <file>]... | team-ui T<n> --walk start [--in interview] | --walk stop | --walk status"
-task='' capture=0 note='' note_file='' noted=0 attachments=() walk='' in=''
+usage="usage: team-ui T<n> [--capture [--note-file <file>]] [--attach <file>]... | team-ui T<n> --walk start [--in interview [--reseeded <message id>]] | --walk stop | --walk status"
+task='' capture=0 note='' note_file='' noted=0 attachments=() walk='' in='' reseeded=''
+# How long Daniel's word that the primary stack was just reseeded holds for a walk's start, in seconds.
+RESEEDED_SECONDS=3600
 while (($#)); do
   case $1 in
     --walk)
@@ -71,6 +83,11 @@ while (($#)); do
       [[ $# -ge 2 ]] || usage_error "--in takes only interview"
       [[ $2 == interview ]] || usage_error "--in takes only interview, got '$2'"
       in=$2
+      shift 2
+      ;;
+    --reseeded)
+      [[ $# -ge 2 && $2 =~ ^[1-9][0-9]{0,18}$ ]] || usage_error "--reseeded needs the id of Daniel's message"
+      reseeded=$2
       shift 2
       ;;
     --capture) capture=1 && shift ;;
@@ -95,6 +112,7 @@ while (($#)); do
 done
 [[ $task =~ ^T[1-9][0-9]*$ ]] || usage_error "$usage"
 [[ -z $in || $walk == start ]] || usage_error "--in goes only with --walk start"
+[[ -z $reseeded || ($walk == start && -n $in) ]] || usage_error "--reseeded goes only with --walk start --in interview"
 # A worker's one form is --capture with no attachment, which its gate judges.
 if [[ -z $walk ]] && ((capture && !${#attachments[@]})); then
   why=$(capture_refusal "$task") && die "$why"
@@ -102,12 +120,36 @@ else
   why=$(worker_refusal "$task" "runs no team-ui") && die "$why"
 fi
 
+# What a walk's line adds for Daniel's word <message id>, or nothing: on_word <message id or "">
+on_word() {
+  [[ -z $1 ]] || echo ", on Daniel's word $1 that the primary stack was just reseeded"
+}
+
+# Refuse unless Daniel's message $reseeded says the primary stack was just reseeded, read back from
+# Discord: check_reseeded
+check_reseeded() {
+  local places=() channel word sent
+  while IFS= read -r channel; do
+    places+=("$task's thread $channel")
+  done < <(jq -r '(map(select(.event == "interview-thread")) | last | .discord_thread | strings),
+    (map(select(.event == "thread")) | last | .discord_thread | strings)' <<<"$events")
+  places+=("#coordinator $COORDINATOR_CHANNEL")
+  word=$(daniel_message "$reseeded" "the word that the primary stack was reseeded" "${places[@]}" 2>&1) || die "$word"
+  jq -e '.message.content | strings | test("seed"; "i")' <<<"$word" >/dev/null ||
+    die "Discord message $reseeded does not say the primary stack was reseeded: ask Daniel to say so in a new message"
+  # A Discord id holds the milliseconds since 2015-01-01 above its low 22 bits.
+  sent=$(((10#$reseeded >> 22) / 1000 + 1420070400))
+  (($(date +%s) - sent <= RESEEDED_SECONDS)) ||
+    die "Discord message $reseeded was sent at $(date -ud "@$sent" +%FT%TZ), over an hour ago, so it does not say the primary stack was just reseeded: ask Daniel to say so in a new message"
+}
+
 # Start this task's walk in its interview thread: only one such walk is on at a time, which a lock
-# of the machine's holds while it reads the ledger and appends to it.
+# of the machine's holds while it reads the ledger and appends to it. Discord is read before that.
 start_interview_walk() {
   local state=$HOME/.local/state/agent-team lock other
   ledger_jq 'any(.[]; .event == "interview-thread")' -e <<<"$events" >/dev/null ||
     die "$task has no interview thread in the ledger; team-thread $task --interview opens one"
+  [[ -z $reseeded ]] || check_reseeded
   mkdir -p "$state"
   exec {lock}>>"$state/walk.lock"
   flock -w 30 -x "$lock" || die "another team-ui still holds $state/walk.lock after 30 seconds"
@@ -115,27 +157,30 @@ start_interview_walk() {
     | first // empty | "\(.key)\t\(.value | qc_walk | .since)"' -nRr "$TEAM_HOME/ledger.jsonl")
   [[ -z $other ]] ||
     die "${other%%$'\t'*}'s interview walk is on since ${other#*$'\t'}, and Daniel has one Agent Chrome window: team-ui ${other%%$'\t'*} --walk stop ends it"
-  ledger_append "$(jq -cn --arg task "$task" '{ts: (now | todate), task: $task, event: "walk", state: "on", thread: "interview"}')"
+  ledger_append "$(jq -cn --arg task "$task" --arg word "$reseeded" '{ts: (now | todate), task: $task, event: "walk", state: "on", thread: "interview"}
+    + (if $word != "" then {reseeded: $word} else {} end)')"
 }
 
 if [[ -n $walk ]]; then
   ((!capture && !noted && !${#attachments[@]})) || usage_error "--walk goes alone, without --capture, --note-file or --attach"
   events=$(open_task_events "$task")
-  since='' thread=''
-  json_vars --ledger since='qc_walk.since' thread='qc_walk.thread' <<<"$events"
-  where=${thread:+ in its $thread thread}
+  since='' thread='' word=''
+  json_vars --ledger since='qc_walk.since' thread='qc_walk.thread' word='qc_walk.reseeded' <<<"$events"
+  where=${thread:+ in its $thread thread}$(on_word "$word")
   case $walk:${since:+on} in
     status:on) echo "walk on for $task since $since$where" ;;
     status:) echo "walk off for $task" ;;
     start:on)
       [[ $thread == "$in" ]] || die "$task's walk is on since $since in its ${thread:-task} thread: stop it before starting it in another thread"
+      [[ -z $reseeded || $reseeded == "$word" ]] ||
+        die "$task's walk is on since $since$where: stop it before starting it on Daniel's word $reseeded"
       echo "walk already on for $task since $since$where"
       ;;
     stop:) echo "walk already off for $task" ;;
     start:)
       if [[ -n $in ]]; then
         start_interview_walk
-        echo "walk on for $task in its $in thread"
+        echo "walk on for $task in its $in thread$(on_word "$reseeded")"
       else
         ledger_append "$(jq -cn --arg task "$task" '{ts: (now | todate), task: $task, event: "walk", state: "on"}')"
         echo "walk on for $task"

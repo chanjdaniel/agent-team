@@ -572,7 +572,8 @@ function assertPageCapture(out, url, { title = "Fixture app", route = "/", reaso
   const files = [...(visible ? ["page.png"] : []), "page-snapshot.txt", "ui-page.md", ...(element ? ["ui-pick.md", ...(visible ? ["element.png"] : [])] : [])];
   assert.deepEqual(readdirSync(out).sort(), files.sort());
   const page = readFileSync(join(out, "ui-page.md"), "utf8");
-  assert.match(page, /^# The page capture\n\nCaptured \d{4}-\d\d-\d\dT[\d:.]+Z by ui-capture from the Agent Chrome at http:\/\/127\.0\.0\.1:\d+\.\n/);
+  // bin/team-post reads where the page came from in these two fixed lines, the third and the fourth.
+  assert.match(page, /^# The page capture\n\nCaptured \d{4}-\d\d-\d\dT[\d:.]+Z by ui-capture from the Agent Chrome at http:\/\/127\.0\.0\.1:\d+\.\nPage: http:\/\/(localhost|127\.0\.0\.1):\d+\//);
   assert.ok(page.includes(`\nPage: ${url}\nRoute: ${route}\nTitle: ${title}\n\nTaken because: ${reason}\nOther localhost tabs: ${others}\n`), page);
   const shot = visible
     ? "- page.png: the viewport, as Daniel sees it"
