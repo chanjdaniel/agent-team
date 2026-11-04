@@ -296,6 +296,37 @@ EOF
   grep -qxF '6. Send `T12 DONE .scratch/task/spec.md` to `coordinator`.' "$brief"
 }
 
+@test "the interview brief says when and how to prototype, how to show it and what a stow loses" {
+  open_t12
+  event T12 interview-thread '{discord_thread: "1565400000000000012"}'
+  run_bin -0 team-brief T12 planner-interview --set 'read=- `AGENTS.md`.'
+  local brief=$TEAM_HOME/tasks/T12/brief.md
+  # When, and the one form the planner's hook leaves it.
+  grep -qxF 'Make a prototype when a question is about how something looks, or when Daniel asks to see it.' "$brief"
+  grep -qF 'a throwaway script in `.scratch/task/proto/` that draws the idea over the real app on this worktree'"'"'s own stack, with no repository edit' "$brief"
+  # What it cannot be, and who hears so.
+  grep -qF "Something Daniel must use by hand is a builder's job in the app" "$brief"
+  grep -qF '`T12 BLOCKED prototype <what> Daniel must use it by hand, so it needs a builder` to `coordinator`' "$brief"
+  # The stack: its own, started and stopped by team-stack, and what a refusal means.
+  grep -qF "\`$REPO_ROOT/bin/team-stack up\`, run with Bash \`run_in_background\` as a call of its own" "$brief"
+  grep -qF 'never the primary stack' "$brief"
+  grep -qF 'When `up` exits 75, the team has no room: send `T12 PAUSED <its reason line>`' "$brief"
+  grep -qF "\`$REPO_ROOT/bin/team-stack stop\` once the tiles are taken" "$brief"
+  # The tiles: where, numbered and captioned, fixture values only, posted by the allowed form.
+  grep -qF 'Take the tiles into `.scratch/task/shots/`, numbered' "$brief"
+  grep -qF 'with fixture values only' "$brief"
+  grep -qF 'with each tile'"'"'s number and caption in its text' "$brief"
+  grep -qF "\`$REPO_ROOT/bin/team-post T12 --thread interview --file <file> --attach <tile> --attach <tile>\`" "$brief"
+  # The notebook, the mistake, and the rule that no image is committed, with its reason.
+  grep -qF "each posted image's message id and file name go in \`.scratch/task/interview.md\`" "$brief"
+  grep -qF "\`$REPO_ROOT/bin/team-post T12 --thread interview --retract <message id>\`" "$brief"
+  grep -qxF 'Never commit an image.' "$brief"
+  grep -qF '`.scratch/task/` is ignored by git, which `team-open` checks' "$brief"
+  # What a stow or a handoff loses, and what the handoff names.
+  grep -qF 'Count the tiles as lost on a stow or a handoff, and the script as kept' "$brief"
+  grep -qF '`handoff.md` also names the script and each posted image'"'"'s message id' "$brief"
+}
+
 @test "a partial is picked by the project's delivery, from the directory of its name" {
   fake_checkout
   mkdir -p "$code/templates/briefs/extra"
