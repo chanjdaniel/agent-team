@@ -12,9 +12,11 @@
 #   Daniel's word holds for the PR's head when it is the approval's head, or when every commit
 #   since that head not on origin's base is a merge commit (read in the primary checkout, after
 #   fetching the PR's branch and the base) and a review with verdict pass on the head now is
-#   logged after the approval, or, when each such merge is clean (a merge of the base whose tree
-#   is git merge-tree's of its parents), with no review after the word that found anything; a
-#   merge that is neither is refused naming why (the first merge not clean, or the review that
+#   logged after the approval, or on the head a caught-up event says team-catch-up made it from
+#   (reviewed_head), the latest review of that one a pass logged after the approval and git showing
+#   the head adds only clean merges of the base to it, or, when each such merge is clean (a merge of
+#   the base whose tree is git merge-tree's of its parents), with no review after the word that
+#   found anything; a merge that is none of these is refused naming why (the first merge not clean, or the review that
 #   found something); a head that does not hold the approval's, or holds a commit of
 #   its own since it (the first is named), is refused, to ask again; the approval's head must be
 #   one such an event logged; a legacy approval with no head holds for any head, its
@@ -370,8 +372,10 @@ if [[ $word == plan && -n $head ]]; then
 fi
 # Daniel's word on a head the PR has since moved past holds only through merges of the base, read
 # in the primary checkout once the PR's branch and the base are fetched from origin: merges that
-# are clean (clean_base_merges) with no review logged after the word that found something, or
-# merges whose passing review was logged after the word.
+# are clean (clean_base_merges) with no review logged after the word that found something, merges
+# whose passing review was logged after the word, or a head team-catch-up made from such a head,
+# the latest review of the head it was made from (reviewed_head) a pass logged after the word and
+# git showing it adds only clean merges of the base to that head.
 if [[ -n $approved && -n $pr_ts && -n $head ]] &&
   ! ledger_jq 'same_head($a; $b)' -ne --arg a "$approved" --arg b "$head" >/dev/null; then
   if ! fetch_pr; then
@@ -383,7 +387,14 @@ if [[ -n $approved && -n $pr_ts && -n $head ]] &&
     if [[ -n $own ]]; then
       head_reasons+=("the head moved past Daniel's word with ${own:0:7}: ask again")
     elif ! ledger_jq 'any(.[$approval.i + 1:][]; .event == "review" and .verdict == "pass" and same_head(.head; $head))' \
-      -e --argjson approval "$approval" --arg head "$head" <<<"$events" >/dev/null; then
+      -e --argjson approval "$approval" --arg head "$head" <<<"$events" >/dev/null && ! {
+      reviewed=$(ledger_jq 'reviewed_head($head)' -r --arg head "$head" <<<"$events") || jq_failed $?
+      ! ledger_jq 'same_head($a; $b)' -ne --arg a "$reviewed" --arg b "$head" >/dev/null &&
+        ledger_jq '[.[$approval.i + 1:][] | select(.event == "review" and same_head(.head; $reviewed))] | last | .verdict == "pass"' \
+          -e --argjson approval "$approval" --arg reviewed "$reviewed" <<<"$events" >/dev/null &&
+        git -C "$primary" merge-base --is-ancestor "$approved" "$reviewed" 2>/dev/null &&
+        clean_base_merges "$primary" "$reviewed" "$head" "origin/$base" >/dev/null
+    }; then
       found=$(ledger_jq '[.[$approval.i + 1:][] | select(.event == "review" and .verdict == "findings")] | first
         | if . == null then empty else "the review of the head \(.head[:7]) at \(.ts)" end' \
         -r --argjson approval "$approval" <<<"$events") || jq_failed $?
