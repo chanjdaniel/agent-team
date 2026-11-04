@@ -290,7 +290,12 @@
       "Bash(*unset AGENT_TEAM_*)",
       "Bash(*unset=AGENT_TEAM_*)",
       "Bash(*-u AGENT_TEAM_*)",
-      "Bash(*-uAGENT_TEAM_*)"
+      "Bash(*-uAGENT_TEAM_*)",
+      "Bash(*:9222*)",
+      "Bash(*port 9222*)",
+      "Bash(*port=9222*)",
+      "Bash(*CHROME_DEVTOOLS_AXI_BROWSER_URL*)",
+      "Bash(*toolkits/frontend/scripts/ui-capture*)"
     ]
   },
   "autoMode": {

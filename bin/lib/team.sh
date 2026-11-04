@@ -482,7 +482,7 @@ lease_refusal() {
   fi
 }
 
-# Print why this session may not <does> on Discord, or fail when it may: a worker session (its
+# Print why this session may not <does>, which is the coordinator's, or fail when it may: a worker session (its
 # settings' AGENT_TEAM_ROLE names a role other than the coordinator; Daniel's own shell and the
 # heartbeat set none) may not, except a planner on its own task (its settings' AGENT_TEAM_TASK)
 # when the caller passes --interview, for the interview thread's post and wait. Worker settings
