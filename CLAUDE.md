@@ -17,6 +17,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
     - `code`: the paths every tracked path matches.
     - `data-check`: the one scan the CI's `data` job and the records' hook refuse with.
     - `doctor.d/`: `team-doctor`'s checks, one file each, which it sources in the order of their names (a new check is a new file, its number between its neighbours').
+    - `gate-claude-settings.json`: the settings the gate's Claude takes with `--settings`, its commit attribution off, since it loads no user settings.
     - `gate-config.awk`: reads and sets the one key the team writes in Daniel's no-mistakes config (`agent_path_override`'s opencode), and reads `agent_args_override`'s list for one agent.
     - `guarded`: the guarded paths, one extended regular expression per line with its area, any changed path of which brings a plan-time or standing merge back to Daniel, read by `team-merge`.
     - `ledger-contract.json` and `ledger.jq`: the ledger contract and its jq.
