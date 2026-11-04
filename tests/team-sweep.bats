@@ -510,7 +510,7 @@ T9 stalled: T9-builder 9a8b7c6d has written nothing for 55m, waiting on \"tests/
   assert_contains "$output" "T8-builder 4f2a9c1e has written nothing for 2h00m, waiting on \"grep -r no-mistakes-config .\""
 }
 
-@test "stalled: a wait on a PR's checks passes past 50 minutes, ending at 90, and is named at 1 hour 45 minutes" {
+@test "stalled: a wait on a PR's checks passes past 50 minutes, ending by about 100, and is named at 1 hour 55 minutes" {
   opened T8
   launch T8 builder 4f2a9c1e
   sessions "$(session 4f2a9c1e T8-builder busy working)"

@@ -57,7 +57,7 @@
 # readable look for 5 minutes from the first that saw it: GitHub lost the job's status, and the
 # message names the run, its conclusion and time, and the step: re-run it with gh run rerun <run
 # id> --repo <repo>, then run team-ci-wait again, and report BLOCKED if it sticks again. A look
-# whose gh call fails reads no state: it neither starts nor advances the stuck or the no-checks
+# whose gh call fails reads no state: it neither starts nor advances the stuck or the standing
 # clock, while the deadline counts every look. A pending check from outside Actions (no run in
 # its link) is waited on until it concludes or the deadline; agent-review is a check like any
 # other, unless --no-agent-review leaves it out.
@@ -207,13 +207,13 @@ while :; do
         settled_on=$names settled_since=$seen_n
       fi
       if (((seen_n - settled_since) * WAIT_SECONDS >= SETTLE_SECONDS)); then
-        missing=$(jq -r --argjson required "$required" '[.checks[].name] as $listed
+        unlisted=$(jq -r --argjson required "$required" '[.checks[].name] as $listed
           | [$required[] | select(. != "agent-review" and (IN($listed[]) | not))] | join("\n")' "$dir/look")
-        if [[ -n $missing ]]; then
+        if [[ -n $unlisted ]]; then
           echo "team-ci-wait: the checks on ${head:0:7} did not pass:"
           while IFS= read -r name; do
             echo "  $name was not reported for $((SETTLE_SECONDS / 60)) minutes, and the project requires it"
-          done <<<"$missing"
+          done <<<"$unlisted"
           exit 1
         fi
         if [[ $names == '[]' ]]; then

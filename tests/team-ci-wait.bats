@@ -263,6 +263,8 @@ team-ci-wait: the checks on a1b2c3d did not pass:
   assert_equal "$(ended_at)" 24
   # Open and closed in turn, it never stands, and the deadline ends it.
   echo 0 >"$GH_DIR/look"
+  checks 0 "$(check test SUCCESS 7001)"
+  checks 20 "$(check test SUCCESS 7001)"
   local n
   for ((n = 0; n < 30; n += 2)); do
     head_runs "$n" 7001:CI:queued

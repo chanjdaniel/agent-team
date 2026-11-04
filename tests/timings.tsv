@@ -37,7 +37,7 @@ tests/team-capacity.bats	66	73
 tests/team-catch-up.bats	30	34
 tests/team-checkpoint.bats	52	93
 tests/team-checks.bats	9	15
-tests/team-ci-wait.bats	15	33
+tests/team-ci-wait.bats	46	98
 tests/team-clean-messages.bats	10	28
 tests/team-close.bats	110	167
 tests/team-config-memory.bats	19	32
