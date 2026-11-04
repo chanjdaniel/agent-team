@@ -694,7 +694,7 @@ def task_words: if length < 2 then join("") else "\(.[:-1] | join(", ")) and \(.
 # The stow plan and the resume plan, team-capacity plan's object, from $in: {settings, current
 # (level_current's {mode, level, last_change}), readings (the stored readings, oldest first), costs
 # (capacity_costs' array), heavy, admitted, now (as capacity_reservations takes them), tasks
-# (ledger.jq's plan_tasks: each open task's opened, finished sessions and stowed), sessions (the
+# (ledger.jq's plan_tasks: each open task's opened, finished sessions, stowed and walk), sessions (the
 # session list, claude agents --json's)}:
 #   budget     the memory budget at the level, from the newest reading (0 at none, null with no
 #              reading above none)
@@ -707,10 +707,11 @@ def task_words: if length < 2 then join("") else "\(.[:-1] | join(", ")) and \(.
 # it ends, the spike allowance taken again over the sessions left):
 #   stop_sessions  [{task, role, session, frees}]: each finished session, by task number
 #   stop_stacks    [{task, name, worktree, frees}]: each running team dev stack of an open task
-#                  that no busy session (interactive ones too) works in, its worktree or below
+#                  that no busy session (interactive ones too) works in, its worktree or below,
+#                  and whose task's walk does not count now
 #   stow           [{task, opened, frees}]: the open tasks with a live worker or reservations left,
-#                  the most recently opened first, until what is left fits the budget; at none
-#                  every one
+#                  the most recently opened first and any whose walk counts now after every other,
+#                  until what is left fits the budget; at none every one
 # and the resume plan, whatever the budget: resume [{task, stowed, roles, needs, fits}], each task
 # stowed, waiting to resume (for the level or a handoff), oldest stow first, needs its roles' session estimates and fits whether
 # needs fits beside what is reserved now (never at none). Each step list is [] when not confirmed.
@@ -749,13 +750,14 @@ def capacity_plan($in):
   | gone($r) as $gone
   | [$r.stacks // [] | .[]
      | select(.class == "team" and .kind == "dev" and $open[.task // ""] != null and .worktree != null
-              and (.task | IN($gone[]) | not))
+              and (.task | IN($gone[]) | not) and ($open[.task].walk | not))
      | . as $stack | select(all($busy[]; within($stack.worktree) | not))] as $idle
   | def stowable($rest):
       [$open[] | .task as $task
        | select(any($live[]; .task == $task and (.id as $id | any($finished[]; .session == $id) | not))
                 or any($rest[]; .task == $task and .part != "spike_allowance"))]
-      | sort_by(.opened, (.task[1:] | tonumber)) | reverse;
+      | sort_by(.opened, (.task[1:] | tonumber)) | reverse
+      | map(select(.walk | not)) + map(select(.walk));
     def over($items; $budget):
       $budget != null and (($items | reserved_total) > $budget
         or ($current.level == "none" and stowable($items | drop(.part == "stacks" and (.name as $n | any($idle[]; .name == $n)))) != []));

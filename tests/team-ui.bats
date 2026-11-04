@@ -378,6 +378,47 @@ off"
   assert_contains "$output" "captured: element and page"
 }
 
+# The walk-note lines of the ledger, a count.
+walk_note_count() {
+  jq -s 'map(select(.event == "walk-note")) | length' "$TEAM_HOME/ledger.jsonl"
+}
+
+@test "a noted capture is a walk note in a walk of the task's own thread, even when the capture fails" {
+  printf 'This is off.\n' >"$BATS_TEST_TMPDIR/note"
+  # No walk on: nothing.
+  run_bin -0 team-ui T7 --capture --note-file "$BATS_TEST_TMPDIR/note"
+  assert_equal "$(walk_note_count)" 0
+  run_bin -0 team-ui T7 --walk start
+  # No note: the capture says nothing of Daniel.
+  run_bin -0 team-ui T7 --capture
+  assert_equal "$(walk_note_count)" 0
+  run_bin -0 team-ui T7 --capture --note-file "$BATS_TEST_TMPDIR/note"
+  assert_equal "$(walk_note_count)" 1
+  echo 'no Agent Chrome' >"$STUB_FIXTURES/capture-fails"
+  run_bin -1 team-ui T7 --capture --note-file "$BATS_TEST_TMPDIR/note"
+  assert_equal "$(walk_note_count)" 2
+}
+
+@test "a walk note takes its message id from the coordinator's note file, and never Daniel's words" {
+  run_bin -0 team-ui T7 --walk start
+  printf 'This button is off.\n' >"$BATS_TEST_TMPDIR/.note-1564000000000000009"
+  run_bin -0 team-ui T7 --capture --note-file "$BATS_TEST_TMPDIR/.note-1564000000000000009"
+  assert_equal "$(jq -c 'select(.event == "walk-note") | [.task, .discord_message, (keys | length)]' "$TEAM_HOME/ledger.jsonl")" '["T7","1564000000000000009",4]'
+  assert_equal "$(grep -c 'This button' "$TEAM_HOME/ledger.jsonl" || true)" 0
+  # A note file of any other name has no id to give.
+  printf 'And this.\n' >"$BATS_TEST_TMPDIR/note"
+  run_bin -0 team-ui T7 --capture --note-file "$BATS_TEST_TMPDIR/note"
+  assert_equal "$(jq -c 'select(.event == "walk-note") | .discord_message' "$TEAM_HOME/ledger.jsonl" | tail -n 1)" null
+}
+
+@test "a noted capture in an interview walk is no walk note: the wait logs that thread's messages" {
+  interview_thread T7
+  run_bin -0 team-ui T7 --walk start --in interview
+  printf 'This is off.\n' >"$BATS_TEST_TMPDIR/note"
+  run_bin -0 team-ui T7 --capture --note-file "$BATS_TEST_TMPDIR/note"
+  assert_equal "$(walk_note_count)" 0
+}
+
 @test "only that planner, only --capture, and only while that walk is on in its interview thread" {
   interview_thread T7
   open_task T9

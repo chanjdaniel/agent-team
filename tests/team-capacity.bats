@@ -1179,6 +1179,68 @@ Stowed, waiting to resume, oldest stow first:
 ["stow","T1",1]'
 }
 
+# The walk of <task> turned on <hours> ago, as team-ui logs it, with a message of Daniel's on it
+# <note hours> ago when given: plan_walk <task> <hours> [<note hours>]
+plan_walk() {
+  jq -cn --arg t "$1" --arg ts "$(date -u -d "$2 hours ago" +%FT%TZ)" '{ts: $ts, task: $t, event: "walk", state: "on"}' >>"$TEAM_HOME/ledger.jsonl"
+  [[ -z ${3:-} ]] || jq -cn --arg t "$1" --arg ts "$(date -u -d "$3 hours ago" +%FT%TZ)" '{ts: $ts, task: $t, event: "walk-note"}' >>"$TEAM_HOME/ledger.jsonl"
+}
+
+@test "plan: a task's walk keeps its stack out of step 2 and stows it after every other task" {
+  plan_machine
+  plan_walk T3 1
+  plan_level 60 minor
+  # T3's stack stays up, and T2, the newest of the others, brings the rest under the budget, where
+  # with no walk T3, the newest of all, stows first.
+  assert_equal "$(plan_steps)" "[\"stop\",\"T1\",\"reviewer\",\"aaaa0012\",1]
+[\"stop\",\"T4\",\"planner\",\"aaaa0041\",0.5]
+[\"stow\",\"T2\",5]"
+}
+
+@test "plan: at none every task stows, a walk's included and last" {
+  plan_machine
+  plan_walk T2 1
+  plan_level 30 none
+  assert_equal "$(plan_steps)" "[\"stop\",\"T1\",\"reviewer\",\"aaaa0012\",1]
+[\"stop\",\"T4\",\"planner\",\"aaaa0041\",0.5]
+[\"stop\",\"T3\",\"conventioner-3\",\"$HOME/wt/T3\",3]
+[\"stow\",\"T3\",4]
+[\"stow\",\"T1\",1]
+[\"stow\",\"T2\",5]"
+}
+
+@test "plan: at none a task whose walk is on with only its stack left still stows, which stops that stack" {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  plan_task T5 09:00
+  plan_walk T5 1
+  echo '[]' >"$STUB_FIXTURES/agents.json"
+  team_reading 8
+  with_stacks T5:conventioner-5:2
+  age_by 300
+  team_reading 8
+  with_stacks T5:conventioner-5:2
+  plan_level 30 none
+  assert_equal "$(plan_steps)" '["stow","T5",3]'
+}
+
+@test "plan: a walk with no message from Daniel for over 4 hours counts for nothing, and one message brings it back" {
+  plan_machine
+  plan_walk T3 6 5
+  plan_level 60 minor
+  assert_equal "$(plan_steps | tail -n 2)" "[\"stop\",\"T3\",\"conventioner-3\",\"$HOME/wt/T3\",3]
+[\"stow\",\"T3\",4]"
+  jq -cn --arg ts "$(date -u -d '1 hour ago' +%FT%TZ)" '{ts: $ts, task: "T3", event: "walk-note"}' >>"$TEAM_HOME/ledger.jsonl"
+  assert_equal "$(plan_steps | tail -n 1)" '["stow","T2",5]'
+}
+
+@test "plan: two walks stow newest first among themselves, after every other task" {
+  plan_machine
+  plan_walk T3 1
+  plan_walk T2 1
+  plan_level 30 none
+  assert_equal "$(plan_steps | sed -n 's/^\["stow","\(T[0-9]*\)".*/\1/p' | paste -sd ' ')" "T1 T3 T2"
+}
+
 @test "plan: with no reading there is no budget and nothing to plan, and an unreadable session list fails it" {
   cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
   run_bin -0 team-capacity plan --json

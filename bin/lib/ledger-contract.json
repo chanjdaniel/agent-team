@@ -226,6 +226,12 @@
       "required": {"state": ["on", "off"]},
       "optional": {"thread": ["interview"], "reseeded": "id"}
     },
+    "walk-note": {
+      "writer": ["team-thread", "team-ui"],
+      "about": "a message of Daniel's on the walk that is on, its id when known and never its words: team-thread wait logs the latest it read in an interview walk's thread, team-ui --capture --note-file a note in a walk of the task's own thread; a walk counts for its stack and its place in the stow order for 4 hours after the latest of these and its start (walk_holds in bin/lib/ledger.jq), so a message reaching neither path does not reset that clock",
+      "required": {},
+      "optional": {"discord_message": "id"}
+    },
     "image-posted": {
       "writer": "team-post",
       "about": "one image team-post --attach sent: its thread, the message holding it and its base name; a message of several images has one line each, and what left the machine is never removed from the ledger",

@@ -36,6 +36,12 @@
 #                  turn) or else the oldest, "Bash in a subagent" for a subagent's, a tool other
 #                  than Bash by its name, and ", and <n> more running" when others run; or " with no
 #                  tool call running". None for a session whose transcript cannot be found
+#   walk-stale     an open task, parked or not, with session null, whose walk is on with no message
+#                  from Daniel for over 4 hours (walk_holds in bin/lib/ledger.jq: since the latest of
+#                  its start and its walk-note events), so it no longer keeps its stack up or stows
+#                  last: "T<n> walk-stale: its walk has had no message from Daniel since <time>, over
+#                  4 hours, ...; next: ask Daniel whether it goes on: if not, team-ui T<n> --walk
+#                  stop; if so, stop and start it again"
 #   merge-due      an open task in awaiting-merge with a plan-time merge approval not withdrawn (its
 #                  latest merge-preapproved of a project with no later merge-preapproval-withdrawn
 #                  of it) or a standing word of Daniel's on one of its projects (those of its
@@ -59,8 +65,9 @@
 #                  worker is found stalled: fix what session-activity names"
 #   level-stow     after the activity finding, with task and session null: team-capacity plan (from
 #                  the stored readings) confirms the team over its budget at its level and names
-#                  tasks to stow, newest first: "level: over budget at minor (30%): stow T174, then
-#                  T171" (the coordinator sends their workers STOW, then runs team-stow)
+#                  tasks to stow, newest first and a task whose walk counts after every other:
+#                  "level: over budget at minor (30%): stow T174, then T171" (the coordinator sends
+#                  their workers STOW, then runs team-stow)
 #   level-resume   after it, with task and session null: the first task stowed, waiting to
 #                  resume (for the level or a handoff), oldest stow first, whose roles' estimates
 #                  fit the budget again: "level: T171 fits again: relaunch its builder"

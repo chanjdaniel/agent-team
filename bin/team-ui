@@ -36,6 +36,12 @@
 # "walk on for T<n>" and stop "walk off for T<n>"; a start while on, or a stop while off, logs
 # nothing and says "walk already on for T<n> since <ts>" or "walk already off for T<n>"; status
 # logs nothing and prints "walk on for T<n> since <ts>" or "walk off for T<n>".
+# A walk counts for its stack and its task's place in the stow order for 4 hours after the latest of
+# its start and its walk-note events (walk_holds in bin/lib/ledger.jq). A --capture --note-file in a
+# walk of the task's own thread logs one, before the capture and whether or not it succeeds, with
+# the message id when the file is named .note-<message id>, never the words; team-thread wait logs
+# those of an interview walk. A message reaching neither does not reset the clock: the walk lapses,
+# and team-sweep's walk-stale finding names it for the coordinator to ask about.
 #   --in interview  Only with --walk start: the walk runs in the task's interview thread, and its
 #              planner follows it there, which the walk event's thread records, and each line
 #              above about the walk says with " in its interview thread" at its end. Only one such
@@ -196,7 +202,7 @@ fi
 ((capture || !noted)) || usage_error "--note-file goes with --capture"
 ((capture || ${#attachments[@]})) || usage_error "$usage"
 
-open_task_events "$task" >/dev/null
+events=$(open_task_events "$task")
 for file in "${attachments[@]}"; do
   [[ -f $file && -r $file ]] || die "cannot read $file"
 done
@@ -208,6 +214,14 @@ if ((noted)); then
     task_own_dirs "$task"
     path_under "$(realpath -e -- "$note_file")" "${TASK_OWN_DIRS[@]}" ||
       die "cannot use $note_file: a worker session's note file must be in $task's task directory"
+  fi
+  # A note in a walk of the task's own thread is Daniel's message on it, whatever the capture does;
+  # team-thread wait logs an interview walk's. Its id if the file's name holds one, never its words.
+  if ledger_jq 'qc_walk | . != null and .thread == null' -e <<<"$events" >/dev/null; then
+    id=''
+    [[ ${note_file##*/} =~ ^\.note-([0-9]{1,20})$ ]] && id=${BASH_REMATCH[1]}
+    ledger_append "$(jq -cn --arg task "$task" --arg id "$id" '{ts: (now | todate), task: $task, event: "walk-note"}
+      + (if $id != "" then {discord_message: $id} else {} end)')"
   fi
 fi
 

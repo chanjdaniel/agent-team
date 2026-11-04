@@ -368,11 +368,28 @@ def waiting:
 # The task's manual QC walk: {since} while it is on, since the ts of its latest walk event when
 # that says on, with its thread when that names one (interview) and the message of Daniel's it
 # reseeded on when it has one, else null, as for a task with none or a closed one, whose walk ended
-# with it. Read by team-ui --walk, capture_refusal, team-post and task_state.
+# with it. Read by team-ui --walk, capture_refusal, team-post, task_state and walk_last_note.
 def qc_walk:
   if task_status == "closed" then null
   else map(select(.event == "walk")) | last
     | if .state == "on" then {since: .ts} + (if .thread then {thread} else {} end) + (if .reseeded then {reseeded} else {} end) else null end end;
+
+# How long a walk counts with no message from Daniel, in seconds: a person clicking in Chrome makes
+# no session busy, so this is all that tells a walk under way from one left on.
+def walk_hold_seconds: 14400;
+
+# Over a task's events: when Daniel last spoke on the walk that is on, the latest of its start and
+# its walk-note events, or null with no walk on. A message that reached neither team-thread wait nor
+# team-ui --note-file is not among them.
+def walk_last_note:
+  qc_walk as $walk
+  | if $walk == null then null
+    else [$walk.since, (.[] | select(.event == "walk-note") | .ts)] | max end;
+
+# Over a task's events: whether a walk is on and still counts at the time <now> (seconds), keeping
+# its stack up and its task last to stow. Read by team-stack sweep and plan_tasks.
+def walk_holds($now):
+  walk_last_note | . != null and ($now - fromdateiso8601) <= walk_hold_seconds;
 
 # The worktrees team-resume could not re-home that still are not made: each project's latest
 # rehome-failed with no later opened, worktree-added, worktree-moved, rehomed or worktree-returned
@@ -776,6 +793,14 @@ def finding($task; $kind; $session; $name; $detail; $next):
   {task: $task, kind: $kind, session: $session, name: $name, next: $next,
    text: "\($task) \($kind): \($detail); next: \($next)"};
 
+# team-sweep's walk-stale finding, over a task's events, or nothing: a walk on that no longer counts.
+def walk_stale_finding:
+  .[0].task as $task | walk_last_note as $last
+  | select($last != null and (walk_holds(now) | not))
+  | finding($task; "walk-stale"; null; null;
+      "its walk has had no message from Daniel since \($last), over \(walk_hold_seconds / 3600) hours, so it no longer keeps its stack up or stows last";
+      "ask Daniel whether it goes on: if not, team-ui \($task) --walk stop; if so, stop and start it again");
+
 # team-sweep's merge-due finding, over a task's events, or nothing: the task awaits merge, a
 # plan-time approval of it stands or a standing word of Daniel's stands for one of its projects
 # (its opened and worktree-added events'), and nothing else parks it (no ask nothing settled,
@@ -853,10 +878,11 @@ def waiting_on:
 # A live session is at work while it is busy, waiting for input, or idle with no ledger event
 # since its launch (silent); idle with an event since, it has handed the next step back to the
 # coordinator, so a task with no session at work is no-worker however many are live. A denied is
-# no report (the worker went past the denial), so these findings read the events without it.
+# no report (the worker went past the denial), nor is a walk-note (Daniel spoke, the worker did
+# not), so these findings read the events without them.
 def task_findings($sessions; $activity):
   .[0].task as $task
-  | map(select(.event != "denied"))
+  | map(select(.event | IN("denied", "walk-note") | not))
   | length as $count
   | [to_entries[] | select(.value.event == "launch") | {i: .key, launch: .value}] as $launches
   | ([$launches | reverse | .[] | . + {live: live_session(.launch.session; $sessions)} | select(.live != null)
@@ -1007,7 +1033,8 @@ def activity_finding:
 # team-sweep's findings, over every ledger event as one array, the session list, the stow plan
 # ($plan, as level_findings takes it) and session-activity's object ($activity, as task_findings
 # takes it): each open task's merge-due (under a plan-time word or a standing word of any task's),
-# else its findings unless it is parked, then the stray sessions (named like a team worker whose
+# else its findings unless it is parked, then its walk-stale, parked or not, since a parked task's
+# walk still needs asking about, then the stray sessions (named like a team worker whose
 # task is closed or not in the ledger, never the load check's T0, whose session the coordinator
 # waits on for up to 30 minutes), in task number order; then the activity, level and retro-due
 # findings.
@@ -1018,6 +1045,7 @@ def sweep($sessions; $plan; $activity):
   | ([($tasks[] | select(is_open) | [merge_due_finding($standing)] as $due
         | if $due != [] then $due[] elif parked then empty
           else task_findings($sessions; $activity) end),
+      ($tasks[] | select(is_open) | walk_stale_finding),
       (team_sessions($tasks; $sessions)[] | select(.task_state | IN("closed", "unknown"))
         | finding(.task; "stray"; .session; .name;
             "\(.name) \(.session) is live but \(stray_reason)";
@@ -1032,7 +1060,8 @@ def sweep($sessions; $plan; $activity):
 # finished ([{session, role}]: the idle live sessions whose work is handed on, handed_on_launches
 # with no new launch), stowed (while it is stowed_awaiting_resume, {at, roles} of its latest stowed,
 # else null), stowed_since (its latest stowed's time when no launch follows it, else null),
-# refused (refused_launches')} per open task, in task number order.
+# refused (refused_launches'), walk (whether its walk counts now, walk_holds)} per open task, in
+# task number order.
 def plan_tasks($sessions):
   [by_task | to_entries[] | select(.value | is_open) | .key as $task | .value as $events
    | {task: $task,
@@ -1043,7 +1072,8 @@ def plan_tasks($sessions):
                else null end),
       stowed_since: ($events | latest_stowed as $i
         | if $i >= 0 and (any(.[$i + 1:][]; .event == "launch") | not) then .[$i].ts else null end),
-      refused: ($events | refused_launches)}]
+      refused: ($events | refused_launches),
+      walk: ($events | walk_holds(now))}]
   | by_task_number;
 
 # The ids of the open tasks stowed, waiting to resume (stowed_awaiting_resume), among every task's
