@@ -515,11 +515,11 @@ T9 stalled: T9-builder 9a8b7c6d has written nothing for 55m, waiting on \"tests/
   launch T8 builder 4f2a9c1e
   sessions "$(session 4f2a9c1e T8-builder busy working)"
   local wait='/home/x/agent-team/bin/team-ci-wait https://github.com/owner/proj/pull/217 a1b2c3d'
-  { call toolu_01 96 Bash "$wait" background; result toolu_01 96 background; } | transcript - 4f2a9c1e 95
-  run_bin -0 team-sweep
   { call toolu_01 106 Bash "$wait" background; result toolu_01 106 background; } | transcript - 4f2a9c1e 105
+  run_bin -0 team-sweep
+  { call toolu_01 116 Bash "$wait" background; result toolu_01 116 background; } | transcript - 4f2a9c1e 115
   run_bin -1 team-sweep
-  assert_contains "$output" "T8-builder 4f2a9c1e has written nothing for 1h45m, waiting on \"$wait\" (Bash, in the background, running 1h46m); next:"
+  assert_contains "$output" "T8-builder 4f2a9c1e has written nothing for 1h55m, waiting on \"$wait\" (Bash, in the background, running 1h56m); next:"
 }
 
 @test "stalled: the gate, team-thread wait and team-ci-wait limits read the whole command, though only its first line is named" {
