@@ -12,7 +12,7 @@
 # the script's help_more, if it defined one before sourcing), and provides die, usage_error, team_project, ledger_jq, json_vars, ledger_append,
 # task_events, task_event_array, known_task_events, open_task_events, task_status, task_worktrees, script_place_refusal, local_path,
 # archive_left_out, rsync_rule, archive_task_dir, machine_name, os_release, team_os, tool_dirs,
-# team_tool_path, fence_reason, offline_hold, lease_refusal, worker_refusal, toolkit_refusal, lease_gate, worktree_changes, same_path, bounded, docker_bounded, docker_silence, trust_probe,
+# team_tool_path, fence_reason, offline_hold, lease_refusal, worker_refusal, capture_refusal, toolkit_refusal, task_own_dirs, path_under, lease_gate, worktree_changes, same_path, bounded, docker_bounded, docker_silence, trust_probe,
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin,
 # only_records, records_list, records_pathspecs, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
 # own_project, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_level, image_type, discord_token, discord_api,
@@ -499,15 +499,57 @@ worker_refusal() {
   fi
 }
 
+# Print why this session may not read the Agent Chrome for <task>, or fail when it may: only a
+# worker session is held, and the one worker that may is a planner of <task> (its settings'
+# AGENT_TEAM_TASK) while that task's walk is on in its interview thread, by Daniel's decision
+# (Discord 1567568771311337525): that planner captures the page Daniel drives, read-only. A ledger
+# that cannot be read refuses. team-ui --capture and the frontend toolkit's ui-capture both ask
+# it: capture_refusal <task>
+capture_refusal() {
+  local task=$1 role=${AGENT_TEAM_ROLE:-} own=${AGENT_TEAM_TASK:-}
+  [[ -n $role && $role != coordinator ]] || return 1
+  if [[ $role != planner ]]; then
+    worker_refusal "$task" "takes no capture of the Agent Chrome"
+  elif [[ $task != "$own" ]]; then
+    echo "a planner session of ${own:-no task} takes no capture of the Agent Chrome for $task: a planner captures only during its own task's interview walk"
+  elif [[ $(task_event_array "$task" | ledger_jq 'qc_walk.thread // empty' -r) != interview ]]; then
+    echo "$task has no interview walk on: a planner captures only during its own task's interview walk, which Daniel starts through the coordinator"
+  else
+    return 1
+  fi
+}
+
+# Set TASK_OWN_DIRS to the real path of each open worktree's task directory of <task>
+# (<worktree>/<task_dir>), what a worker's files must lie under; it holds none for a task with no
+# open worktree: task_own_dirs <task>
+task_own_dirs() {
+  local worktree project dir
+  TASK_OWN_DIRS=()
+  while IFS=$'\t' read -r worktree project; do
+    dir=$(team_project "$project" task_dir) || die "cannot read $project's task directory from the registry"
+    TASK_OWN_DIRS+=("$(realpath -m -- "$worktree/$dir")")
+  done < <(task_worktrees "$1" | jq -r '[.worktree, .project] | @tsv')
+}
+
+# Whether the real path <path> lies under one of <dirs>: path_under <path> <dirs>...
+path_under() {
+  local path=$1 dir
+  for dir in "${@:2}"; do
+    [[ $path != "$dir"/* ]] || return 0
+  done
+  return 1
+}
+
 # Print why a worker session of <role> may not load toolkit <name>, or fail when it may: the
 # coordinator toolkit is claude-coordinator's alone and the frontend toolkit Daniel's own sessions'
-# (it attaches to their one Agent Chrome window), so no worker loads either; a production toolkit
-# (prod-*) is the ops role's alone. The one list of them, which team-worker and team-load-check
-# read; an empty <role> judges only the toolkits no worker loads: toolkit_refusal <name> <role or "">
+# (it attaches to their one Agent Chrome window, and a walk's planner reads it only through
+# capture_refusal's gate), so no worker loads either; a production toolkit (prod-*) is the ops
+# role's alone. The one list of them, which team-worker and team-load-check read; an empty <role>
+# judges only the toolkits no worker loads: toolkit_refusal <name> <role or "">
 toolkit_refusal() {
   case $1 in
     coordinator) echo "toolkit 'coordinator' is the coordinator's own (claude-coordinator loads it)" ;;
-    frontend) echo "toolkit 'frontend' is Daniel's own (claude --plugin-dir in their session): it attaches to their one Agent Chrome window, never a worker's" ;;
+    frontend) echo "toolkit 'frontend' is Daniel's own (claude --plugin-dir in their session): it attaches to their one Agent Chrome window, never a worker's; by Daniel's decision (Discord 1567568771311337525), a walk's planner only reads that window, by team-ui --capture" ;;
     prod-*) [[ -n $2 && $2 != ops ]] || return 1; echo "toolkit '$1' is for the ops role only" ;;
     *) return 1 ;;
   esac

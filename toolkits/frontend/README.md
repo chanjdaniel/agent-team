@@ -3,6 +3,7 @@
 Front-end fixes on the element Daniel points at, and a look at the page Daniel is on: Daniel right-clicks an element in the Agent Chrome and picks Inspect, and the agent gets its HTML, matched CSS, Vue source file and line, and screenshot, with a capture of the page it is on; with nothing selected, the agent gets that page capture alone.
 A page capture holds the page's URL, route, title and Vue route, a screenshot, its accessibility snapshot, and its console problems and failed requests since it last loaded.
 For Daniel's own Claude Code session, and for the coordinator's intake of a fix sent from Discord; workers read the coordinator's capture, never the Agent Chrome, and `team-worker` refuses them the toolkit.
+The one exception, by Daniel's decision (Discord 1567568771311337525), which narrows their 2026-10-29 one (1565230935333670923): an interview's planner, while its task's walk is on in its own thread, takes a capture of the page Daniel is on, read-only, and Daniel alone drives the window.
 
 ## Use it
 
@@ -25,7 +26,9 @@ From Discord, the coordinator's `ui-intake` skill captures with `team-ui T<n> --
 - Its `http://localhost:*` and `http://127.0.0.1:*` pages only: the server runs with an allowlist of those two and DevTools' own frontend (`devtools://devtools/*`, where the Elements panel's selection is read), so any other tab is neither listed nor read, and a navigation elsewhere is refused.
 - Use it for the local dev site with fixture data, logged in with a fixture account.
   Never open production or real applicant data there: anything a capture holds can end up in a Discord thread or a task directory, and remote debugging on port 9222 lets any local process drive that window.
-- No worker session takes a capture: `team-ui` refuses every form to one, which is the guard, since a worker's `team-post` can send an image off the machine.
+- No worker session takes a capture but one: `team-ui` refuses every form to a worker, which is the guard, since a worker's `team-post` can send an image off the machine, except `team-ui T<n> --capture` by a planner of T<n> while that task's walk is on in its interview thread, one such walk at a time (`team-ui T<n> --walk start --in interview`, which the coordinator runs on Daniel's word).
+  That planner gets the capture alone: `team-worker` still refuses it this toolkit, so no worker has the MCP server's navigate, click and type tools.
+  `ui-capture` holds a worker session to the same gate (`capture_refusal` in `bin/lib/team.sh`) when it is run directly, which guards that script alone, since any local process can reach the port.
   `settings/worker.json` also denies a Bash call naming that port (`:9222`, `port 9222`, `port=9222`), `CHROME_DEVTOOLS_AXI_BROWSER_URL` or `toolkits/frontend/scripts/ui-capture`, a speed bump that another spelling gets past.
 - Google's usage statistics, CrUX lookups and the server's update checks are off.
 - The Agent Chrome runs with the mock keychain and the basic password store, so it never reads or adds a "Chrome Safe Storage" item in Daniel's login keychain, and no keychain prompt appears for a Chrome a test starts.
@@ -54,7 +57,7 @@ From Discord, the coordinator's `ui-intake` skill captures with `team-ui T<n> --
   Each script's header is its `--help`.
 - The MCP server `frontend` (`.mcp.json`): the same pinned server with the same flags, so the agent can look again after a capture (`take_snapshot`, `take_screenshot`, `get_css_styles` and the rest of Chrome DevTools MCP's tools).
   Its path uses `${CLAUDE_PLUGIN_ROOT}`, which Claude Code fills in for `--plugin-dir` and not under `team-worker`'s `--mcp-config`.
-  The toolkit is not for workers: every session with it shares Daniel's one Agent Chrome window, so `team-worker --toolkit frontend` is refused as a usage error, for every role and for the load check, and workers read captures instead.
+  The toolkit is not for workers: every session with it shares Daniel's one Agent Chrome window, so `team-worker --toolkit frontend` is refused as a usage error, for every role and for the load check, and workers read captures instead, a walk's planner taking its own with `team-ui --capture`.
 - The skill `fixing-the-selected-element` (`skills/`): when Daniel's message is about the selected element, capture it, read the capture, fix the `.vue` file it names and capture again to check.
 - All of them speak to the pinned `chrome-devtools-mcp` in `servers/` (installed by `servers/install`, checked by `team-doctor`'s `servers` line).
 
@@ -64,7 +67,9 @@ From Discord, the coordinator's `ui-intake` skill captures with `team-ui T<n> --
 That Chrome runs off the record, so no page waits for a fresh profile's cookie database, and a Chrome too old for `open_devtools` fails the test at once.
 It checks each capture (the element with its page's capture, on a tab in front and on one no longer in front, and the page with nothing selected, with a Vue router and without, with DevTools open and closed, and which tab is taken as tabs are brought to the front), the page's console problems and failed requests from before the capture, kept to the last 50 and fenced, the commands `ui-capture` sends a page over its own sessions (through a relay of the debugging address), the history it cannot read, and each refusal, that a page off localhost is never read or attached to, that the MCP server `.mcp.json` declares lists localhost pages only and sees the selection, and that `agent-chrome` starts Chrome with its own profile and port.
 
-The bats suite checks the coordinator's side with `ui-capture` stubbed: `tests/team-ui.bats` that each capture gets a directory of its own with its kind and Daniel's note, that a failed one leaves none, and that a walk turns on and off in the ledger, `tests/team-brief.bats` that the briefs name each capture, and `tests/team-state.bats` that a walk that is on shows.
+It also checks that a worker session running `ui-capture` directly meets the gate before anything reads a Chrome.
+
+The bats suite checks the coordinator's side with `ui-capture` stubbed: `tests/team-ui.bats` that each capture gets a directory of its own with its kind and Daniel's note, that a failed one leaves none, that a walk turns on and off in the ledger, and who may capture during one, `tests/team-brief.bats` that the briefs name each capture, and `tests/team-state.bats` that a walk that is on shows.
 
 `evals/` holds the skill's eval cases (`claude plugin eval ~/agent-team/toolkits/frontend`): it fires on a fix about the selected element and leaves a general front-end question alone.
 Every `frontend` call there is answered by an agent mock of a Conventioner page (`evals/mocks/frontend/_server.md`), whose `_tools.json` is the server's own `tools/list`, which the toolkit test keeps in step.

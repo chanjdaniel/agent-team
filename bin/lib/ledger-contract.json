@@ -222,8 +222,9 @@
     },
     "walk": {
       "writer": "team-ui",
-      "about": "a manual QC walk of the task turned on or off (team-ui --walk start or stop), only when that changes it: the walk is on while the task's latest walk is on and the task is not closed, since its ts, and while it is on each message of Daniel's in the task's thread is a walk note the coordinator captures the page with",
-      "required": {"state": ["on", "off"]}
+      "about": "a manual QC walk of the task turned on or off (team-ui --walk start or stop), only when that changes it: the walk is on while the task's latest walk is on and the task is not closed, since its ts, and while it is on each message of Daniel's in the task's thread is a walk note the coordinator captures the page with; thread interview on an on event puts the walk in the task's interview thread, where its planner captures instead",
+      "required": {"state": ["on", "off"]},
+      "optional": {"thread": ["interview"]}
     },
     "image-posted": {
       "writer": "team-post",

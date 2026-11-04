@@ -5,7 +5,7 @@
 # team-close removes it with the task.
 #
 # Usage: team-ui T<n> [--capture [--note-file <file>]] [--attach <file>]...
-#        team-ui T<n> --walk start|stop|status
+#        team-ui T<n> --walk start [--in interview] | --walk stop | --walk status
 #   --capture  Run the frontend toolkit's ui-capture into a new directory, tasks/T<n>/ui/capture-<k>/,
 #              k one more than the highest capture-<k> there (from 1), so no capture overwrites
 #              another: the page Daniel is on in the Agent Chrome (its URL, route, title, Vue
@@ -14,10 +14,12 @@
 #              HTML, matched CSS, Vue source file and line, and screenshot); toolkits/frontend/
 #              README.md says which page it takes.
 #   --note-file  Write the text of <file>, the words Daniel posted that the capture goes with, as
-#              the coordinator copied them, with the time, to note.md in the capture's directory.
+#              the session taking it copied them, with the time, to note.md in the capture's directory.
 #              A file, never the words on the command line, which a permission rule reads whole.
 #              The coordinator writes it to tasks/T<n>/ui/.note-<message id>, a name team-ui and
-#              team-brief list nowhere. Only with --capture, once.
+#              team-brief list nowhere. A planner's hook refuses writes there, so a worker's note
+#              file must be in its task's own directory (<worktree>/<task_dir> of an open worktree),
+#              judged by its real path. Only with --capture, once.
 #   --attach   Copy <file>, a screenshot Daniel attached in Discord as the Discord plugin's
 #              download_attachment saved it, into tasks/T<n>/ui/ under its own name, numbered
 #              (-2, -3, ... before the extension) when that name is taken.
@@ -34,18 +36,28 @@
 # "walk on for T<n>" and stop "walk off for T<n>"; a start while on, or a stop while off, logs
 # nothing and says "walk already on for T<n> since <ts>" or "walk already off for T<n>"; status
 # logs nothing and prints "walk on for T<n> since <ts>" or "walk off for T<n>".
+#   --in interview  Only with --walk start: the walk runs in the task's interview thread, and its
+#              planner follows it there, which the walk event's thread records, and each line
+#              above about the walk says with " in its interview thread" at its end. Only one such
+#              walk is on at a time, since Daniel has one Agent Chrome window.
 # Refused, exit 1: a worker session, any task and any form (worker_refusal in bin/lib/team.sh), since
-# an image can leave the machine in a worker's team-post, and the Agent Chrome may show real data; a
-# task that is not open, an attachment or a note file that is not a readable
-# file, or a note file with no words (nothing copied), a ui/ it cannot make the capture's directory
-# in, and a capture that fails, with ui-capture's own line; exit 2 a malformed command line,
-# --walk with no word, another word, a second --walk, or with --capture, --note-file or --attach
-# among them.
+# an image can leave the machine in a worker's team-post, and the Agent Chrome may show real data;
+# the one exception is --capture, with or without --note-file, by a planner of the task while its
+# walk is on in its interview thread, by Daniel's decision (Discord 1567568771311337525;
+# capture_refusal in bin/lib/team.sh), so that planner reads the page Daniel drives, and never
+# touches it. Refused too: a task that is not open, an attachment or a note file that is not a
+# readable file, a note file with no words (nothing copied), a worker's note file outside its task's
+# directory, a ui/ it cannot make the capture's directory in, and a capture that fails, with
+# ui-capture's own line; of --walk start, a walk on in the task's other thread, which a stop must
+# end first, and with --in interview, a task with no interview thread, or another task's interview
+# walk that is on, which the refusal names. Exit 2 a malformed command line, --walk with no word,
+# another word, a second --walk, or with --capture, --note-file or --attach among them, and --in
+# with any word but interview, or without --walk start.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
-usage="usage: team-ui T<n> [--capture [--note-file <file>]] [--attach <file>]... | team-ui T<n> --walk start|stop|status"
-task='' capture=0 note='' note_file='' noted=0 attachments=() walk=''
+usage="usage: team-ui T<n> [--capture [--note-file <file>]] [--attach <file>]... | team-ui T<n> --walk start [--in interview] | --walk stop | --walk status"
+task='' capture=0 note='' note_file='' noted=0 attachments=() walk='' in=''
 while (($#)); do
   case $1 in
     --walk)
@@ -53,6 +65,12 @@ while (($#)); do
       [[ $# -ge 2 ]] || usage_error "--walk needs start, stop or status"
       [[ $2 =~ ^(start|stop|status)$ ]] || usage_error "--walk needs start, stop or status, got '$2'"
       walk=$2
+      shift 2
+      ;;
+    --in)
+      [[ $# -ge 2 ]] || usage_error "--in takes only interview"
+      [[ $2 == interview ]] || usage_error "--in takes only interview, got '$2'"
+      in=$2
       shift 2
       ;;
     --capture) capture=1 && shift ;;
@@ -76,21 +94,56 @@ while (($#)); do
   esac
 done
 [[ $task =~ ^T[1-9][0-9]*$ ]] || usage_error "$usage"
-why=$(worker_refusal "$task" "runs no team-ui") && die "$why"
+[[ -z $in || $walk == start ]] || usage_error "--in goes only with --walk start"
+# A worker's one form is --capture with no attachment, which its gate judges.
+if [[ -z $walk ]] && ((capture && !${#attachments[@]})); then
+  why=$(capture_refusal "$task") && die "$why"
+else
+  why=$(worker_refusal "$task" "runs no team-ui") && die "$why"
+fi
+
+# Start this task's walk in its interview thread: only one such walk is on at a time, which a lock
+# of the machine's holds while it reads the ledger and appends to it.
+start_interview_walk() {
+  local state=$HOME/.local/state/agent-team lock other
+  ledger_jq 'any(.[]; .event == "interview-thread")' -e <<<"$events" >/dev/null ||
+    die "$task has no interview thread in the ledger; team-thread $task --interview opens one"
+  mkdir -p "$state"
+  exec {lock}>>"$state/walk.lock"
+  flock -w 30 -x "$lock" || die "another team-ui still holds $state/walk.lock after 30 seconds"
+  other=$(ledger_jq 'ledger_events | by_task | to_entries | map(select(.value | qc_walk | .thread == "interview"))
+    | first // empty | "\(.key)\t\(.value | qc_walk | .since)"' -nRr "$TEAM_HOME/ledger.jsonl")
+  [[ -z $other ]] ||
+    die "${other%%$'\t'*}'s interview walk is on since ${other#*$'\t'}, and Daniel has one Agent Chrome window: team-ui ${other%%$'\t'*} --walk stop ends it"
+  ledger_append "$(jq -cn --arg task "$task" '{ts: (now | todate), task: $task, event: "walk", state: "on", thread: "interview"}')"
+}
+
 if [[ -n $walk ]]; then
   ((!capture && !noted && !${#attachments[@]})) || usage_error "--walk goes alone, without --capture, --note-file or --attach"
   events=$(open_task_events "$task")
-  since=$(ledger_jq 'qc_walk | .since // empty' -r <<<"$events")
+  since='' thread=''
+  json_vars --ledger since='qc_walk.since' thread='qc_walk.thread' <<<"$events"
+  where=${thread:+ in its $thread thread}
   case $walk:${since:+on} in
-    status:on) echo "walk on for $task since $since" ;;
+    status:on) echo "walk on for $task since $since$where" ;;
     status:) echo "walk off for $task" ;;
-    start:on) echo "walk already on for $task since $since" ;;
+    start:on)
+      [[ $thread == "$in" ]] || die "$task's walk is on since $since in its ${thread:-task} thread: stop it before starting it in another thread"
+      echo "walk already on for $task since $since$where"
+      ;;
     stop:) echo "walk already off for $task" ;;
-    *)
-      state=on
-      [[ $walk == start ]] || state=off
-      ledger_append "$(jq -cn --arg task "$task" --arg state "$state" '{ts: (now | todate), task: $task, event: "walk", state: $state}')"
-      echo "walk $state for $task"
+    start:)
+      if [[ -n $in ]]; then
+        start_interview_walk
+        echo "walk on for $task in its $in thread"
+      else
+        ledger_append "$(jq -cn --arg task "$task" '{ts: (now | todate), task: $task, event: "walk", state: "on"}')"
+        echo "walk on for $task"
+      fi
+      ;;
+    stop:on)
+      ledger_append "$(jq -cn --arg task "$task" '{ts: (now | todate), task: $task, event: "walk", state: "off"}')"
+      echo "walk off for $task"
       ;;
   esac
   exit 0
@@ -106,6 +159,11 @@ if ((noted)); then
   [[ -f $note_file && -r $note_file ]] || die "cannot read $note_file"
   note=$(<"$note_file")
   [[ $note == *[![:space:]]* ]] || die "$note_file holds no words"
+  if [[ -n ${AGENT_TEAM_ROLE:-} && $AGENT_TEAM_ROLE != coordinator ]]; then
+    task_own_dirs "$task"
+    path_under "$(realpath -e -- "$note_file")" "${TASK_OWN_DIRS[@]}" ||
+      die "cannot use $note_file: a worker session's note file must be in $task's task directory"
+  fi
 fi
 
 # Code comes from this checkout, beside bin/.
@@ -146,8 +204,8 @@ write_note() {
   while IFS= read -r run; do
     ((${#run} < ${#fence})) || fence=$run'`'
   done < <(grep -o '`\+' <<<"$note" || true)
-  printf "# Daniel's note\n\nDaniel's words this capture goes with, as the coordinator copied them, at %s.\n\n%s\n%s\n%s\n" \
-    "$(date -u +%FT%TZ)" "$fence" "$note" "$fence" >"$1/note.md"
+  printf "# Daniel's note\n\nDaniel's words this capture goes with, as the %s copied them, at %s.\n\n%s\n%s\n%s\n" \
+    "${AGENT_TEAM_ROLE:-coordinator}" "$(date -u +%FT%TZ)" "$fence" "$note" "$fence" >"$1/note.md"
 }
 
 failed=''

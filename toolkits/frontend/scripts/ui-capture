@@ -69,6 +69,12 @@
 // the element carries no Vue source data (a production build, or a Vue DevTools without the
 // inspector), the server never attached to an open tab, or a page does not answer in 30 s (a busy
 // machine can cause either); 2 a malformed command line.
+// A worker session (AGENT_TEAM_ROLE names a role other than the coordinator) meets the gate team-ui
+// holds it to before anything reads the Agent Chrome, capture_refusal in bin/lib/team.sh, and exits
+// 1 with its reason: only a planner of its own task, while that task's walk is on in its interview
+// thread. So a call that spells this script past settings/worker.json's deny rule still stops here.
+// It guards this script alone, since any local process can reach the debugging port.
+import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout } from "node:timers/promises";
@@ -111,6 +117,17 @@ for (let i = 0; i < args.length; i++) {
 if (out === undefined) fail(usage, 2);
 if (!/^http:\/\/(127\.0\.0\.1|localhost):\d+\/?$/.test(browserUrl)) {
   fail(`--browser-url must be http://127.0.0.1:<port> or http://localhost:<port>, not ${browserUrl}`, 2);
+}
+
+// A gate that cannot say refuses, as a worker session has no other business here.
+const role = process.env.AGENT_TEAM_ROLE;
+if (role && role !== "coordinator") {
+  const gate = spawnSync(
+    "bash",
+    ["-c", 'set -euo pipefail; source "$0/bin/lib/team.sh"; if why=$(capture_refusal "${AGENT_TEAM_TASK:-}"); then echo "$why"; exit 1; fi', code],
+    { encoding: "utf8" },
+  );
+  if (gate.status !== 0) fail((gate.stdout || gate.stderr || "the gate on a worker session did not run").trim().split("\n")[0]);
 }
 
 // The Agent Chrome answers before the server is started, so its absence is one plain line.

@@ -59,8 +59,10 @@
 # waiting is the task's latest waiting (on, reason, since) until a later launch or resumed, or
 # null; the text form ends with "waiting on <on>: <reason>".
 # walk is the task's manual QC walk (team-ui T<n> --walk), {"since": "<ts>"} while it is on, from
-# its latest walk event's ts, and null while it is off or the task is closed; the text form says
-# "walk on since <ts>" while it is on, before any waiting, and nothing of it while it is off.
+# its latest walk event's ts, with "thread": "interview" when it runs in the task's interview
+# thread, and null while it is off or the task is closed; the text form says "walk on since <ts>"
+# while it is on, then " in its interview thread" for such a walk, before any waiting, and nothing
+# of it while it is off.
 # rehome_failures are the worktrees team-resume could not re-home and nothing has made since: each
 # project's latest rehome-failed, as {project, branch, machine, reason, since}, until a later
 # opened, worktree-added, worktree-moved, rehomed or worktree-returned in that project; the text

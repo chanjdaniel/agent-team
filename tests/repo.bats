@@ -1083,8 +1083,8 @@ sudo -l
 COMMANDS
 }
 
-# A worker's image can leave through team-post, so no worker reaches the Agent Chrome. team-ui's
-# refusal is the guard; these rules are a speed bump, each pinned so a sha or a message id holding
+# A worker's image can leave through team-post, so a worker reaches the Agent Chrome only as a walk's
+# planner by team-ui --capture, where capture_refusal is the guard; these rules are a speed bump, each pinned so a sha or a message id holding
 # 9222 passes, and they also refuse a search naming them, a cost accepted as for the role's rules.
 @test "a worker's Bash call naming the Agent Chrome's port, its axi variable or ui-capture is denied" {
   local SETTINGS=(settings/worker.json) command
@@ -1106,6 +1106,16 @@ git log 79222ab..HEAD
 chrome-devtools-axi open http://127.0.0.1:5173
 node --test tests/toolkits/frontend.test.mjs
 COMMANDS
+}
+
+# A walk's planner reads the Agent Chrome only by team-ui --capture, Daniel's decision: no role's
+# settings names the toolkit's server, whose tools drive the window, and only the planner's allow
+# that capture.
+@test "no worker's settings name the frontend toolkit's server, and only the planner's allow team-ui, its capture alone" {
+  run -1 grep -E 'mcp__frontend|toolkits/frontend/\.mcp' settings/*.json
+  run -0 jq -r '(.permissions.allow // [])[] | select(contains("team-ui"))' settings/*.json
+  assert_equal "$output" "Bash(@TEAM_CODE@/bin/team-ui @TASK@ --capture)
+Bash(@TEAM_CODE@/bin/team-ui @TASK@ --capture --note-file *)"
 }
 
 # worker_refusal (bin/lib/team.sh) reads AGENT_TEAM_ROLE and AGENT_TEAM_TASK, which team-worker sets

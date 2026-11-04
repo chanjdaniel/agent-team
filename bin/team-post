@@ -82,15 +82,6 @@ interview=()
 if [[ $thread == interview ]]; then interview=(--interview); fi
 why=$(worker_refusal "$task" "posts to Discord" "${interview[@]}") && die "$why"
 
-# Whether the real path <path> lies under one of <dirs>: under <path> <dirs>...
-under() {
-  local path=$1 dir
-  for dir in "${@:2}"; do
-    [[ $path != "$dir"/* ]] || return 0
-  done
-  return 1
-}
-
 # Each attachment's base name and image type, and the message that carries it, from 0; and how many
 # messages carry them. Filled by check_attachment, in order.
 names=() types=() carried_by=() file_messages=0 in_message=0 bytes=0
@@ -107,7 +98,7 @@ check_attachment() {
     real=$(realpath -e -- "$path")
     [[ $real != "$ui"/capture-* ]] ||
       die "cannot attach $path: it is in a capture of the page Daniel is on, and nothing proves that page held no real data"
-    under "$real" "${own_dirs[@]}" ||
+    path_under "$real" "${TASK_OWN_DIRS[@]}" ||
       die "cannot attach $path: a worker session attaches only from $task's task directory"
     [[ -n $type ]] || die "cannot attach $path: not a PNG, JPEG, WebP or GIF by its first bytes"
   fi
@@ -129,17 +120,14 @@ if ((retracting)); then
 else
   # A worker's files stay in the task's own place, each open worktree's task directory; ui/ only
   # names what the refusal of a capture says.
-  worker=0 own_dirs=() ui=''
+  worker=0 ui=''
   if [[ -n ${AGENT_TEAM_ROLE:-} && $AGENT_TEAM_ROLE != coordinator ]]; then
     worker=1
     ui=$(realpath -m -- "$TEAM_HOME/tasks/$task/ui")
-    while IFS=$'\t' read -r worktree project; do
-      dir=$(team_project "$project" task_dir) || die "cannot read $project's task directory from the registry"
-      own_dirs+=("$(realpath -m -- "$worktree/$dir")")
-    done < <(task_worktrees "$task" | jq -r '[.worktree, .project] | @tsv')
+    task_own_dirs "$task"
   fi
   [[ -f $file && -r $file ]] || die "no file to post: $file"
-  if ((worker)) && ! under "$(realpath -e -- "$file")" "${own_dirs[@]}"; then
+  if ((worker)) && ! path_under "$(realpath -e -- "$file")" "${TASK_OWN_DIRS[@]}"; then
     die "cannot post $file: a worker session posts only a file in $task's task directory"
   fi
   for path in "${attachments[@]}"; do check_attachment "$path"; done

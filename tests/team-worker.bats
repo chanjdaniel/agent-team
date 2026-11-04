@@ -154,6 +154,7 @@ run_fake() {
   for role in planner builder reviewer ops; do
     run_bin -2 team-worker T7 "$role" "$wt1" --toolkit frontend -- go
     assert_contains "$output" "toolkit 'frontend' is Daniel's own"
+    assert_contains "$output" "Discord 1567568771311337525"
   done
   run_bin -2 team-worker T0 planner "$wt1" --toolkit browser --toolkit frontend -- go
   assert_contains "$output" "toolkit 'frontend' is Daniel's own"
@@ -857,16 +858,30 @@ allowed_in() {
   for command in "$bin/team-post T7 --thread interview --file $HOME/w/.scratch/task/q1.md" \
     "$bin/team-post T7 --thread interview --file $HOME/w/.scratch/task/q1.md --attach $HOME/w/.scratch/task/shots/1.png --attach $HOME/w/.scratch/task/shots/2.png" \
     "$bin/team-post T7 --thread interview --retract 1564000000000000001" \
-    "$bin/team-thread wait T7" "$bin/team-thread wait T7 --after 1564000000000000001"; do
+    "$bin/team-thread wait T7" "$bin/team-thread wait T7 --after 1564000000000000001" \
+    "$bin/team-ui T7 --capture" "$bin/team-ui T7 --capture --note-file $HOME/w/.scratch/task/note-1.md"; do
     allowed_in "$settings" "$command" || { echo "planner may not: $command" >&2; return 1; }
   done
   for command in "$bin/team-post T17 --thread interview --file q.md" "$bin/team-post T7 --file q.md" \
     "$bin/team-post T17 --thread interview --retract 1" "$bin/team-post T7 --retract 1" \
     "$bin/team-post T7 --thread task --retract 1" "$bin/team-post T17 --thread interview --file q.md --attach a.png" \
     "$bin/team-post T7 --file q.md --attach a.png" "$bin/team-post --coordinator --file q.md --attach a.png" \
-    "$bin/team-thread wait T17" "$bin/team-thread wait T7; $bin/team-post --coordinator --file q.md"; do
+    "$bin/team-thread wait T17" "$bin/team-thread wait T7; $bin/team-post --coordinator --file q.md" \
+    "$bin/team-ui T17 --capture" "$bin/team-ui T17 --capture --note-file n" "$bin/team-ui T7 --walk start" \
+    "$bin/team-ui T7 --walk stop" "$bin/team-ui T7 --attach a.png" "$bin/team-ui T7 --attach a.png --capture" \
+    "$HOME/agent-team/bin/team-ui T7 --capture"; do
     if allowed_in "$settings" "$command"; then echo "planner may: $command" >&2; return 1; fi
   done
+}
+
+# Daniel's decision: a walk's planner captures through team-ui, and its walk gives it no MCP server.
+@test "a planner launched while its interview walk is on gets no frontend server, and is still refused the toolkit" {
+  thread T7
+  jq -cn '{ts: "2026-10-25T10:02:00Z", task: "T7", event: "walk", state: "on", thread: "interview"}' >>"$TEAM_HOME/ledger.jsonl"
+  run_bin -2 team-worker T7 planner "$wt1" --toolkit frontend -- go
+  assert_contains "$output" "toolkit 'frontend' is Daniel's own"
+  run_bin -0 team-worker T7 planner "$wt1" -- go
+  assert_equal "$(jq -c '.mcpServers | has("frontend")' "$TEAM_HOME/tasks/T7/mcp.planner.json")" false
 }
 
 # T177's builder was refused gh pr ready on its own draft PR, which no rule allowed.

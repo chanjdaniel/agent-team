@@ -50,6 +50,31 @@ open_task() {
     branch: "fix/\($task)-more-button", base: "dev", base_sha: "aba9d074", worktree: $wt}' >>"$TEAM_HOME/ledger.jsonl"
 }
 
+# interview_thread <task>: the event team-thread --interview writes.
+interview_thread() {
+  jq -cn --arg task "$1" '{ts: "2026-10-25T10:01:00Z", task: $task, event: "interview-thread", discord_thread: "1563000000000000009"}' >>"$TEAM_HOME/ledger.jsonl"
+}
+
+# register_conventioner: the registry naming Conventioner, with its task directory.
+register_conventioner() {
+  cat >"$TEAM_HOME/projects.toml" <<'TOML'
+[conventioner]
+repo = "chanjdaniel/Conventioner"
+path = "Documents/projects/personal/Conventioner"
+base = "dev"
+delivery = "no-mistakes"
+merge_method = "merge"
+required_checks = []
+task_dir = ".scratch/task"
+docs = []
+toolkits = []
+
+[conventioner.pool]
+provider = "git"
+slots = ["wt/T7"]
+TOML
+}
+
 @test "--capture runs ui-capture into a new capture-<k>/ each time and says which kind it took" {
   run_bin -0 --separate-stderr team-ui T7 --capture
   assert_equal "$(cat "$STUB_CALLS/ui-capture.log")" "$ui/capture-1"
@@ -181,22 +206,7 @@ $ui/capture-1/ui-pick.md"
   printf 'check the page state\n' >"$BATS_TEST_TMPDIR/note"
   run_bin -0 team-ui T7 --capture --note-file "$BATS_TEST_TMPDIR/note"
   jq -cn '{ts: "2026-10-25T10:01:00Z", task: "T7", event: "thread", discord_thread: "1563000000000000007"}' >>"$TEAM_HOME/ledger.jsonl"
-  cat >"$TEAM_HOME/projects.toml" <<'TOML'
-[conventioner]
-repo = "chanjdaniel/Conventioner"
-path = "Documents/projects/personal/Conventioner"
-base = "dev"
-delivery = "no-mistakes"
-merge_method = "merge"
-required_checks = []
-task_dir = ".scratch/task"
-docs = []
-toolkits = []
-
-[conventioner.pool]
-provider = "git"
-slots = ["wt/T7"]
-TOML
+  register_conventioner
   run_bin -0 team-brief T7 builder-fix --set 'read=- `AGENTS.md`.' --set commits=fix --set goal=g
   local brief=$TEAM_HOME/tasks/T7/brief.md
   grep -qF "kept for this task: \`$ui/\`, each capture in a directory of its own, listed below." "$brief"
@@ -326,12 +336,17 @@ off"
 }
 
 # The guard on the Agent Chrome: a worker's image can leave through team-post, so no worker session
-# reaches that window through team-ui. A settings deny is the speed bump, this the refusal.
-@test "no worker session captures, attaches or runs a walk, its own task's included; the coordinator's capture still runs" {
+# reaches that window through team-ui but the one the tests after this one name. A settings deny is
+# the speed bump, this the refusal.
+@test "with no interview walk on, no worker session captures, attaches or runs a walk, its own task's included; the coordinator's capture still runs" {
   local role
   for role in planner builder reviewer ops; do
     AGENT_TEAM_ROLE=$role AGENT_TEAM_TASK=T7 run_bin -1 team-ui T7 --capture
-    assert_equal "$output" "team-ui: a $role session runs no team-ui: that is the coordinator's; send it your message"
+    if [[ $role == planner ]]; then
+      assert_equal "$output" "team-ui: T7 has no interview walk on: a planner captures only during its own task's interview walk, which Daniel starts through the coordinator"
+    else
+      assert_equal "$output" "team-ui: a $role session takes no capture of the Agent Chrome: that is the coordinator's; send it your message"
+    fi
     AGENT_TEAM_ROLE=$role AGENT_TEAM_TASK=T7 run_bin -1 team-ui T7 --attach "$inbox/1563-screenshot.png"
     assert_contains "$output" "a $role session runs no team-ui"
     local word
@@ -353,10 +368,188 @@ off"
   [[ -d $ui/capture-2 ]]
 }
 
+# Daniel's decision (Discord 1567568771311337525): an interview's planner, with its task's walk on in
+# its own thread, takes a capture of the page Daniel is on, read-only; no other worker can.
+@test "a planner captures during its own task's interview walk" {
+  interview_thread T7
+  run_bin -0 team-ui T7 --walk start --in interview
+  AGENT_TEAM_ROLE=planner AGENT_TEAM_TASK=T7 run_bin -0 team-ui T7 --capture
+  assert_equal "$(cat "$STUB_CALLS/ui-capture.log")" "$ui/capture-1"
+  assert_contains "$output" "captured: element and page"
+}
+
+@test "only that planner, only --capture, and only while that walk is on in its interview thread" {
+  interview_thread T7
+  open_task T9
+  run_bin -0 team-ui T7 --walk start --in interview
+  local role word
+  # Another role of the same task.
+  for role in builder reviewer ops; do
+    AGENT_TEAM_ROLE=$role AGENT_TEAM_TASK=T7 run_bin -1 team-ui T7 --capture
+    assert_equal "$output" "team-ui: a $role session takes no capture of the Agent Chrome: that is the coordinator's; send it your message"
+  done
+  # A planner of another task, for that walk's task or its own.
+  AGENT_TEAM_ROLE=planner AGENT_TEAM_TASK=T9 run_bin -1 team-ui T7 --capture
+  assert_equal "$output" "team-ui: a planner session of T9 takes no capture of the Agent Chrome for T7: a planner captures only during its own task's interview walk"
+  AGENT_TEAM_ROLE=planner AGENT_TEAM_TASK=T9 run_bin -1 team-ui T9 --capture
+  assert_equal "$output" "team-ui: T9 has no interview walk on: a planner captures only during its own task's interview walk, which Daniel starts through the coordinator"
+  # Every other form stays refused to the walk's own planner, and nothing of them runs.
+  AGENT_TEAM_ROLE=planner AGENT_TEAM_TASK=T7 run_bin -1 team-ui T7 --attach "$inbox/1563-screenshot.png"
+  assert_contains "$output" "a planner session runs no team-ui"
+  AGENT_TEAM_ROLE=planner AGENT_TEAM_TASK=T7 run_bin -1 team-ui T7 --capture --attach "$inbox/1563-screenshot.png"
+  assert_contains "$output" "a planner session runs no team-ui"
+  for word in start stop status; do
+    AGENT_TEAM_ROLE=planner AGENT_TEAM_TASK=T7 run_bin -1 team-ui T7 --walk "$word"
+    assert_contains "$output" "a planner session runs no team-ui"
+  done
+  [[ ! -e $STUB_CALLS/ui-capture.log ]]
+  [[ ! -e $ui ]]
+  assert_equal "$(walk_events T7)" "on"
+
+  # Off again, it refuses; so does a walk in the task's own thread, which the coordinator follows.
+  run_bin -0 team-ui T7 --walk stop
+  AGENT_TEAM_ROLE=planner AGENT_TEAM_TASK=T7 run_bin -1 team-ui T7 --capture
+  assert_contains "$output" "T7 has no interview walk on"
+  run_bin -0 team-ui T7 --walk start
+  AGENT_TEAM_ROLE=planner AGENT_TEAM_TASK=T7 run_bin -1 team-ui T7 --capture
+  assert_contains "$output" "T7 has no interview walk on"
+  run_bin -0 team-ui T7 --walk stop
+  # A walk left on ends with its task.
+  run_bin -0 team-ui T7 --walk start --in interview
+  jq -cn '{ts: "2026-10-25T11:00:00Z", task: "T7", event: "closed"}' >>"$TEAM_HOME/ledger.jsonl"
+  AGENT_TEAM_ROLE=planner AGENT_TEAM_TASK=T7 run_bin -1 team-ui T7 --capture
+  assert_contains "$output" "T7 has no interview walk on"
+  [[ ! -e $STUB_CALLS/ui-capture.log ]]
+}
+
+@test "--in interview logs the walk's thread, status and a repeat say it, and it goes only with start" {
+  interview_thread T7
+  run_bin -0 team-ui T7 --walk start --in interview
+  assert_equal "$output" "walk on for T7 in its interview thread"
+  assert_equal "$(jq -c 'select(.event == "walk") | del(.ts)' "$TEAM_HOME/ledger.jsonl")" '{"task":"T7","event":"walk","state":"on","thread":"interview"}'
+  run_bin -0 team-log --check
+  local since
+  since=$(jq -r 'select(.event == "walk") | .ts' "$TEAM_HOME/ledger.jsonl")
+  run_bin -0 team-ui T7 --walk status
+  assert_equal "$output" "walk on for T7 since $since in its interview thread"
+  run_bin -0 team-ui T7 --walk start --in interview
+  assert_equal "$output" "walk already on for T7 since $since in its interview thread"
+  assert_equal "$(walk_events T7)" "on"
+  # A walk moves between threads only by a stop, so no caller reads "on" as the thread it asked for.
+  run_bin -1 --separate-stderr team-ui T7 --walk start
+  assert_equal "$stderr" "team-ui: T7's walk is on since $since in its interview thread: stop it before starting it in another thread"
+  assert_equal "$(walk_events T7)" "on"
+  run_bin -0 team-ui T7 --walk stop
+  assert_equal "$output" "walk off for T7"
+  assert_equal "$(jq -c 'select(.event == "walk" and .state == "off") | del(.ts)' "$TEAM_HOME/ledger.jsonl")" '{"task":"T7","event":"walk","state":"off"}'
+  run_bin -0 team-ui T7 --walk start
+  assert_equal "$output" "walk on for T7"
+  since=$(jq -r 'select(.event == "walk" and .state == "on") | .ts' "$TEAM_HOME/ledger.jsonl" | tail -n 1)
+  run_bin -1 --separate-stderr team-ui T7 --walk start --in interview
+  assert_equal "$stderr" "team-ui: T7's walk is on since $since in its task thread: stop it before starting it in another thread"
+  # The malformed forms.
+  run_bin -2 --separate-stderr team-ui T7 --walk stop --in interview
+  assert_equal "$stderr" "team-ui: --in goes only with --walk start"
+  run_bin -2 --separate-stderr team-ui T7 --walk status --in interview
+  assert_equal "$stderr" "team-ui: --in goes only with --walk start"
+  run_bin -2 --separate-stderr team-ui T7 --capture --in interview
+  assert_equal "$stderr" "team-ui: --in goes only with --walk start"
+  run_bin -2 --separate-stderr team-ui T7 --walk start --in task
+  assert_equal "$stderr" "team-ui: --in takes only interview, got 'task'"
+  run_bin -2 --separate-stderr team-ui T7 --walk start --in
+  assert_equal "$stderr" "team-ui: --in takes only interview"
+  assert_equal "$(walk_events T7)" "on
+off
+on"
+}
+
+@test "--in interview needs the task's interview thread" {
+  run_bin -1 --separate-stderr team-ui T7 --walk start --in interview
+  assert_equal "$stderr" "team-ui: T7 has no interview thread in the ledger; team-thread T7 --interview opens one"
+  assert_equal "$(walk_events T7)" ""
+}
+
+@test "a second interview walk is refused, naming the one that is on, and a walk in a task's thread is not one" {
+  interview_thread T7
+  open_task T9
+  interview_thread T9
+  open_task T11
+  run_bin -0 team-ui T7 --walk start --in interview
+  local since
+  since=$(jq -r 'select(.event == "walk") | .ts' "$TEAM_HOME/ledger.jsonl")
+  run_bin -1 --separate-stderr team-ui T9 --walk start --in interview
+  assert_equal "$stderr" "team-ui: T7's interview walk is on since $since, and Daniel has one Agent Chrome window: team-ui T7 --walk stop ends it"
+  assert_equal "$(walk_events T9)" ""
+  # A walk the coordinator follows in a task's own thread neither counts nor waits.
+  run_bin -0 team-ui T11 --walk start
+  assert_equal "$output" "walk on for T11"
+  run_bin -1 team-ui T9 --walk start --in interview
+  assert_contains "$output" "T7's interview walk is on"
+  # Stopped, or ended with its task, it holds nothing.
+  run_bin -0 team-ui T7 --walk stop
+  run_bin -0 team-ui T9 --walk start --in interview
+  jq -cn '{ts: "2026-10-25T11:00:00Z", task: "T9", event: "closed"}' >>"$TEAM_HOME/ledger.jsonl"
+  run_bin -0 team-ui T7 --walk start --in interview
+}
+
+@test "of several interview walks started at once, one is on" {
+  local n
+  for n in 21 22 23 24 25 26; do
+    open_task "T$n"
+    interview_thread "T$n"
+  done
+  for n in 21 22 23 24 25 26; do
+    "$CODE_CHECKOUT/bin/team-ui" "T$n" --walk start --in interview >/dev/null 2>&1 &
+  done
+  wait
+  assert_equal "$(jq -c 'select(.event == "walk")' "$TEAM_HOME/ledger.jsonl" | wc -l)" 1
+}
+
+@test "the coordinator's captures are unchanged while a planner's walk is on" {
+  interview_thread T7
+  open_task T9
+  run_bin -0 team-ui T7 --walk start --in interview
+  AGENT_TEAM_ROLE=coordinator run_bin -0 team-ui T7 --capture
+  AGENT_TEAM_ROLE=coordinator run_bin -0 team-ui T9 --capture
+  run_bin -0 team-ui T9 --capture
+  assert_equal "$(cat "$STUB_CALLS/ui-capture.log")" "$ui/capture-1
+$TEAM_HOME/tasks/T9/ui/capture-1
+$TEAM_HOME/tasks/T9/ui/capture-2"
+  # The coordinator's note stays where it writes them, in ui/, and says who copied it.
+  printf 'check the page\n' >"$ui/.note-1"
+  AGENT_TEAM_ROLE=coordinator run_bin -0 team-ui T7 --capture --note-file "$ui/.note-1"
+  grep -qF 'as the coordinator copied them' "$ui/capture-2/note.md"
+}
+
+@test "a planner's note file must be in its task directory, since its hook refuses writes to ui/" {
+  register_conventioner
+  interview_thread T7
+  run_bin -0 team-ui T7 --walk start --in interview
+  local own=$HOME/wt/T7/.scratch/task
+  mkdir -p "$own" "$ui"
+  printf 'the header is off\n' >"$own/note-1.md"
+  AGENT_TEAM_ROLE=planner AGENT_TEAM_TASK=T7 run_bin -0 team-ui T7 --capture --note-file "$own/note-1.md"
+  assert_contains "$(cat "$ui/capture-1/note.md")" "the header is off"
+  grep -qF 'as the planner copied them' "$ui/capture-1/note.md"
+
+  # Anywhere else is refused before any capture: outside, a link out of it, ui/, and a .. out of it.
+  printf 'secret\n' >"$HOME/wt/outside"
+  ln -s "$HOME/wt/outside" "$own/link.md"
+  printf 'words\n' >"$ui/.note-1"
+  local note
+  for note in "$HOME/wt/outside" "$own/link.md" "$ui/.note-1" "$own/../../../outside"; do
+    AGENT_TEAM_ROLE=planner AGENT_TEAM_TASK=T7 run_bin -1 team-ui T7 --capture --note-file "$note"
+    assert_equal "$output" "team-ui: cannot use $note: a worker session's note file must be in T7's task directory"
+  done
+  assert_equal "$(wc -l <"$STUB_CALLS/ui-capture.log")" 1
+  [[ ! -e $ui/capture-2 ]]
+}
+
 @test "--help documents --walk, what a walk is for, and that the ledger records it" {
   run_bin -0 team-ui --help
   assert_contains "$output" "Usage: team-ui T<n> [--capture [--note-file <file>]] [--attach <file>]...
-       team-ui T<n> --walk start|stop|status"
+       team-ui T<n> --walk start [--in interview] | --walk stop | --walk status"
   assert_contains "$output" "manual QC walk"
   assert_contains "$output" "walk event in the ledger"
+  assert_contains "$output" "1567568771311337525"
 }
