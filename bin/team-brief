@@ -32,7 +32,7 @@
 # "every ticket" unless set (team-next sets a phase's tickets for that phase's deliverer);
 # paths under $HOME are written ~/..., except team_bin, this checkout's bin/, always absolute
 # because the workers' allow rules name the scripts in it by their full path. ui is empty unless
-# tasks/T<n>/ui/ holds files (what Daniel pointed at, kept by team-ui): then a newline and a
+# tasks/T<n>/ui/ holds files (what Daniel pointed at, kept by team-ui or team-thread wait): then a newline and a
 # reading-list item naming the files at its top and what ui-pick.md holds, with the rule that a
 # worker checks a fix on its own stack, never in the Agent Chrome; with capture-<k>/ directories,
 # it says what ui-page.md holds too, and names each by number with its kind (element and page when

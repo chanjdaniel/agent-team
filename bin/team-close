@@ -19,7 +19,8 @@
 # stack block, so nothing of it is left running (its logs, saved in the task directory, stay out
 # of the archive; a kept worktree keeps its stack; a failed teardown stops the close with the
 # reason, the task half closed); tasks/T<n>/ui/, the
-# task's UI captures (team-ui), removed, since they stay on this machine and are never archived;
+# task's UI captures (team-ui, and the images team-thread wait saves), removed, since they stay on
+# this machine and are never archived;
 # each worktree's task directory mirrored to tasks/T<n>/scratch/ (the opened project) or
 # tasks/T<n>/scratch-<project>/ (an added one), less what archive_left_out (bin/lib/team.sh)
 # leaves out, each named on stderr, a missing or empty one reported on stderr; claude rm <id>

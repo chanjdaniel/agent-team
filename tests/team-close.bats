@@ -200,6 +200,38 @@ T2"
   [[ -f $TEAM_HOME/tasks/T2/ui/page.png ]]
 }
 
+# What team-thread wait saves from an interview goes the same way.
+@test "an image team-thread wait saved goes with the task's captures, and into no archive" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  local slot=${home_slots[0]} saved
+  mkdir -p "$slot/.scratch/task"
+  echo "spec" >"$slot/.scratch/task/spec.md"
+  work_and_push "$slot" feature.txt
+  echo '{"ts":"2026-10-01T10:00:02Z","task":"T1","event":"interview-thread","discord_thread":"5555"}' >>"$TEAM_HOME/ledger.jsonl"
+  echo '{"allowFrom": ["757"], "groups": {}}' >"$HOME/.claude/channels/discord/access.json"
+  export SKETCH=$BATS_TEST_TMPDIR/sketch.png
+  printf '\x89PNG\r\n\x1a\nsketch' >"$SKETCH"
+  stub_script curl <<'EOF'
+url=${*: -1}
+if [[ $url == https://cdn.discordapp.com/* ]]; then
+  for ((i = 1; i < $#; i++)); do [[ ${!i} != -o ]] || { j=$((i + 1)); cp "$SKETCH" "${!j}"; }; done
+elif [[ $url == *'/channels/5555/messages?'* ]]; then
+  for ((i = 1; i < $#; i++)); do [[ ${!i} != -D ]] || { j=$((i + 1)); printf 'HTTP/2 200\r\n\r\n' >"${!j}"; }; done
+  echo '[{"id":"1564000000000000001","content":"this","timestamp":"2026-10-29T11:00:00.000000+00:00","author":{"id":"757"},"attachments":[{"filename":"sketch.png","url":"https://cdn.discordapp.com/attachments/5555/1/sketch.png"}]}]'
+else
+  echo '{}'
+fi
+EOF
+  run_bin -0 team-thread wait T1
+  saved=$(jq -r '.attachments[0].saved' <<<"$output")
+  assert_equal "$saved" "$TEAM_HOME/tasks/T1/ui/sketch.png"
+  cmp "$SKETCH" "$saved"
+  run_bin -0 --separate-stderr team-close T1
+  [[ ! -e $TEAM_HOME/tasks/T1/ui ]]
+  assert_contains "$stderr" "team-close: removed tasks/T1/ui/, the task's UI captures"
+  assert_equal "$(find "$TEAM_HOME/tasks/T1" -name '*.png' | wc -l)" "0"
+}
+
 @test "the archive leaves out a UI capture, nested repositories, files over 1 MiB and names that may hold a secret, each named" {
   run_bin -0 team-open home feature feat work "Do the work"
   local slot=${home_slots[0]}
