@@ -477,15 +477,22 @@ EOF
   ln -s "$outside/real.png" "$IMAGES/link.png"
   ln -s "$IMAGES/fine.png" "$IMAGES/inner-link.png"
   ln -s "$outside" "$IMAGES/linked-dir"
+  # A hard link has its real path here, whatever else names the same file.
+  png "$ui/capture-1/element.png"
+  ln "$ui/capture-1/element.png" "$IMAGES/hard-link.png"
+  # The top of ui/ holds what no one can vouch for: a flat capture an older team-ui left, a file
+  # team-ui --attach copied from another channel, and Daniel's own images.
+  png "$ui/flat-page.png"
   echo "just text" >"$IMAGES/text.png"
   : >"$IMAGES/empty.png"
   printf 'BM\0\0\0\0\0\0\0\0\0\0\0\0' >"$IMAGES/bitmap.png"
   printf '\x89PNG not quite' >"$IMAGES/almost.png"
   printf 'RIFF\0\0\0\0WAVEfmt ' >"$IMAGES/sound.png"
 
-  local from="a worker session attaches only from T7's task directory or tasks/T7/ui/"
+  local from="a worker session attaches only from T7's task directory"
   local bytes="not a PNG, JPEG, WebP or GIF by its first bytes"
   local refused=(
+    "$ui/flat-page.png|$from" "$IMAGES/hard-link.png|it is a link"
     "$outside/real.png|$from" "$OTHER_IMAGES/theirs.png|$from"
     "$TEAM_HOME/tasks/T17/ui/theirs.png|$from" "$TEAM_HOME/tasks/T7/beside-ui.png|$from"
     "$BATS_TEST_TMPDIR/wt/beside-task.png|$from" "$IMAGES/../../beside-task.png|$from"
@@ -506,25 +513,22 @@ EOF
   assert_equal "$(logged image-posted)" ""
 }
 
-@test "a worker may attach a PNG, JPEG, WebP or GIF from its task directory or its ui/, each sent as its type" {
+@test "a worker may attach a PNG, JPEG, WebP or GIF from its task directory, each sent as its type" {
   interview_task
-  local ui=$TEAM_HOME/tasks/T7/ui
-  mkdir -p "$ui" "$IMAGES/shots"
+  mkdir -p "$IMAGES/shots"
   png "$IMAGES/shots/a.png"
   printf '\xff\xd8\xff\xe0\0\x10JFIF' >"$IMAGES/shots/b.jpg"
   printf 'RIFF\x24\0\0\0WEBPVP8 ' >"$IMAGES/shots/c.webp"
   printf 'GIF87a\x01\0\x01\0' >"$IMAGES/shots/d.gif"
   printf 'GIF89a\x01\0\x01\0' >"$IMAGES/shots/e.gif"
-  png "$ui/f.png"
   as_planner -0 team-post T7 --thread interview --file "$IMAGES/q.md" --attach "$IMAGES/shots/a.png" \
     --attach "$IMAGES/shots/b.jpg" --attach "$IMAGES/shots/c.webp" --attach "$IMAGES/shots/d.gif" \
-    --attach "$IMAGES/shots/e.gif" --attach "$ui/f.png"
+    --attach "$IMAGES/shots/e.gif"
   assert_equal "$(forms | jq -r '.[1:][] | sub(".*filename="; "")')" '"a.png";type=image/png
 "b.jpg";type=image/jpeg
 "c.webp";type=image/webp
 "d.gif";type=image/gif
-"e.gif";type=image/gif
-"f.png";type=image/png'
+"e.gif";type=image/gif'
 
   # The type is the first bytes', whatever the name says.
   : >"$STUB_CALLS/curl.log"

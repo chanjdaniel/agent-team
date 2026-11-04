@@ -5,11 +5,12 @@
 # #coordinator, never to a channel named by id. Unlike discord_api alone, it refuses on a machine
 # that is fenced or that lost the lease (lease_refusal in bin/lib/team.sh, as the lease-fence hook
 # does), and posts nothing then; while the team holds offline it still posts, since Discord is up
-# and the plugin's posts go on too. In a worker session it posts only a planner's question to its
-# own task's interview thread (worker_refusal in bin/lib/team.sh); the coordinator posts the rest.
+# and the plugin's posts go on too. In a worker session it posts only a planner's question, with
+# its images, to its own task's interview thread, or retracts one of those images
+# (worker_refusal in bin/lib/team.sh); the coordinator posts the rest.
 #
 # Usage: team-post T<n> [--thread task|interview] --file <path>
-#        team-post T<n> --thread interview --file <path> --attach <image>...
+#        team-post T<n> --thread interview --file <path> --attach <image> [--attach <image>]...
 #        team-post T<n> --thread interview --retract <message id>
 #        team-post --coordinator --file <path>
 # The message is the file's text with its trailing blank lines and spaces dropped. One over
@@ -28,10 +29,11 @@
 #              image-retracted; any other id, or one already retracted, is refused. Prints
 #              "retracted <id>". A copy Discord's CDN holds may outlive it.
 # In a worker session --file must be inside the task's own directory (<worktree>/<task_dir> of its
-# open worktrees), and each --attach there or in tasks/T<n>/ui/, no link, and a PNG, JPEG, WebP or
-# GIF by its first bytes; both judged by the real path. A capture, tasks/T<n>/ui/capture-<k>/, is
-# refused to a worker: nothing here proves its page held no real data. Each refusal names the path
-# and comes before anything is sent.
+# open worktrees), and each --attach there too, no symbolic link, no file with a second hard link,
+# and a PNG, JPEG, WebP or GIF by its first bytes; both judged by the real path. So nothing in
+# tasks/T<n>/ui/ leaves in a worker's post, a capture there having its own refusal, since nothing
+# here proves its page held no real data. These go by path, and a copy is a new file that no path
+# check can see. Each refusal names the path and comes before anything is sent.
 # Exit codes: 0 posted; 1 refused, or Discord refused a part (the parts before it stay posted,
 # their ids printed, and none after it is sent); 2 a malformed command line; 75 Discord answered
 # 429, with the retry time from its headers on stderr.
@@ -50,7 +52,7 @@ FRAMING=$((64 * 1024))
 UPLOAD_TIMEOUT=120
 # The request body of a message that holds only files.
 NO_TEXT='{"allowed_mentions":{"parse":["users"]}}'
-USAGE="usage: team-post T<n> [--thread task|interview] --file <path> | team-post T<n> --thread interview --file <path> --attach <image>... | team-post T<n> --thread interview --retract <message id> | team-post --coordinator --file <path>"
+USAGE="usage: team-post T<n> [--thread task|interview] --file <path> | team-post T<n> --thread interview --file <path> --attach <image> [--attach <image>]... | team-post T<n> --thread interview --retract <message id> | team-post --coordinator --file <path>"
 
 task='' coordinator=0 thread='' file='' retracting=0 retract='' attachments=()
 while (($#)); do
@@ -101,12 +103,12 @@ check_attachment() {
   [[ $name != *[[:cntrl:]]* ]] || die "cannot attach $path: its name holds a control character"
   type=$(image_type "$path")
   if ((worker)); then
-    [[ ! -L $path ]] || die "cannot attach $path: it is a link"
+    [[ ! -L $path && $(stat -c %h -- "$path") == 1 ]] || die "cannot attach $path: it is a link"
     real=$(realpath -e -- "$path")
-    under "$real" "${own_dirs[@]}" "$ui" ||
-      die "cannot attach $path: a worker session attaches only from $task's task directory or tasks/$task/ui/"
     [[ $real != "$ui"/capture-* ]] ||
       die "cannot attach $path: it is in a capture of the page Daniel is on, and nothing proves that page held no real data"
+    under "$real" "${own_dirs[@]}" ||
+      die "cannot attach $path: a worker session attaches only from $task's task directory"
     [[ -n $type ]] || die "cannot attach $path: not a PNG, JPEG, WebP or GIF by its first bytes"
   fi
   size=$(stat -c %s -- "$path")
@@ -125,8 +127,8 @@ if ((retracting)); then
   channel=$(task_events "$task" | jq -r --arg id "$retract" 'select(.event == "image-posted" and .discord_message == $id) | .discord_thread' | tail -n 1)
   [[ -n $channel ]] || die "the ledger records no image post $retract for $task, so nothing was retracted"
 else
-  # A worker's files stay in the task's own places: each open worktree's task directory, and for an
-  # image its ui/ too.
+  # A worker's files stay in the task's own place, each open worktree's task directory; ui/ only
+  # names what the refusal of a capture says.
   worker=0 own_dirs=() ui=''
   if [[ -n ${AGENT_TEAM_ROLE:-} && $AGENT_TEAM_ROLE != coordinator ]]; then
     worker=1
