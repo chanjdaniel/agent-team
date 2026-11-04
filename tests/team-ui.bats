@@ -199,7 +199,7 @@ slots = ["wt/T7"]
 TOML
   run_bin -0 team-brief T7 builder-fix --set 'read=- `AGENTS.md`.' --set commits=fix --set goal=g
   local brief=$TEAM_HOME/tasks/T7/brief.md
-  grep -qF "captured at intake: \`$ui/\`, each capture in a directory of its own, listed below." "$brief"
+  grep -qF "kept for this task: \`$ui/\`, each capture in a directory of its own, listed below." "$brief"
   grep -qxF '  - `capture-1/`: an element and page capture.' "$brief"
   grep -qxF '  - `capture-2/`: a page capture, no element selected; `note.md` holds the words Daniel posted with it.' "$brief"
   grep -qF 'never in the Agent Chrome' "$brief"

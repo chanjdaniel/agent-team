@@ -1752,12 +1752,24 @@ Daniel moves it with one command.'
   assert_contains "$(<"$output")" '"T14: the given goal."'
 }
 
+# team-thread wait keeps Daniel's images there with no pick, so the item says what ui-pick.md holds
+# only when there is one.
+@test "a task with only an image Daniel posted names it, and no ui-pick.md" {
+  open_t12
+  mkdir -p "$TEAM_HOME/tasks/T12/ui"
+  touch "$TEAM_HOME/tasks/T12/ui/mockup.png"
+  run_bin -0 team-brief T12 builder-fix --set read='- `AGENTS.md`.' --set commits=fix --set goal=g
+  grep -qxF -- '- What Daniel pointed at, kept for this task: `~/agent-team-records/tasks/T12/ui/` (`mockup.png`).' "$TEAM_HOME/tasks/T12/brief.md"
+  refute_grep -F 'ui-pick.md' "$TEAM_HOME/tasks/T12/brief.md"
+  grep -qF 'never in the Agent Chrome' "$TEAM_HOME/tasks/T12/brief.md"
+}
+
 # A UI fix's capture (team-ui) in tasks/T<n>/ui/: every brief of a worker who reads or changes
 # the code names it, with the rule that a worker checks its fix on its own stack.
 @test "a task with a UI capture names it in each planner, builder and reviewer brief; a task without names none" {
   open_t12
   local template brief ui_line rule
-  ui_line='- What Daniel pointed at, captured at intake: `~/agent-team-records/tasks/T12/ui/` (`element.png`, `page.png`, `screenshot-1.png`, `ui-pick.md`); `ui-pick.md` names the element'"'"'s page, its `.vue` source file and line, its HTML and its matched CSS.'
+  ui_line='- What Daniel pointed at, kept for this task: `~/agent-team-records/tasks/T12/ui/` (`element.png`, `page.png`, `screenshot-1.png`, `ui-pick.md`); `ui-pick.md` names the element'"'"'s page, its `.vue` source file and line, its HTML and its matched CSS.'
   rule='  Check your fix on your own stack with your own headless browser, never in the Agent Chrome, which is Daniel'"'"'s own window.'
   run_bin -0 team-brief T12 builder-fix --set read='- `AGENTS.md`.' --set commits=fix --set goal=g --name none
   refute_grep -F 'tasks/T12/ui' "$TEAM_HOME/tasks/T12/brief-none.md"
@@ -1789,7 +1801,7 @@ Daniel moves it with one command.'
     "$ui/capture-2/"{ui-page.md,page.png,page-snapshot.txt,note.md} "$ui/capture-10/"{ui-page.md,page-snapshot.txt}
   run_bin -0 team-brief T12 builder-fix --set read='- `AGENTS.md`.' --set commits=fix --set goal=g
   assert_equal "$(sed -n '/^- `AGENTS.md`\.$/,/^$/p' "$TEAM_HOME/tasks/T12/brief.md")" '- `AGENTS.md`.
-- What Daniel pointed at, captured at intake: `~/agent-team-records/tasks/T12/ui/` (`screenshot-1.png`), each capture in a directory of its own, listed below.
+- What Daniel pointed at, kept for this task: `~/agent-team-records/tasks/T12/ui/` (`screenshot-1.png`), each capture in a directory of its own, listed below.
   `ui-page.md` says what the page held when Daniel saw it: its URL, route, title and Vue route, and its console problems and failed requests since it loaded, beside `page.png`, its screenshot, and `page-snapshot.txt`, its accessibility snapshot; in an element capture, `ui-pick.md` names the element'"'"'s `.vue` source file and line, its HTML and its matched CSS.
   Check your fix on your own stack with your own headless browser, never in the Agent Chrome, which is Daniel'"'"'s own window.
   - `capture-1/`: an element and page capture.
@@ -1798,6 +1810,6 @@ Daniel moves it with one command.'
   # Captures alone: no top-level files to name.
   rm "$ui/screenshot-1.png"
   run_bin -0 team-brief T12 builder-fix --set read='- `AGENTS.md`.' --set commits=fix --set goal=g --force
-  grep -qxF -- '- What Daniel pointed at, captured at intake: `~/agent-team-records/tasks/T12/ui/`, each capture in a directory of its own, listed below.' \
+  grep -qxF -- '- What Daniel pointed at, kept for this task: `~/agent-team-records/tasks/T12/ui/`, each capture in a directory of its own, listed below.' \
     "$TEAM_HOME/tasks/T12/brief.md"
 }
