@@ -2,15 +2,15 @@
 #               Fails unless the interview channel (INTERVIEW_CHANNEL in bin/lib/team.sh) is set,
 #               has no group in the Discord plugin's access.json (so the plugin delivers none of
 #               its threads' messages to the coordinator), is a text channel, and lets the bot see
-#               it, read its history, open public threads and post in them: the bot's roles and
-#               the channel's overwrites, read with the bot token through the Discord API. Warns
-#               when Discord does not answer.
+#               it, read its history, open public threads, post in them and attach images: the
+#               bot's roles and the channel's overwrites, read with the bot token through the
+#               Discord API. Warns when Discord does not answer.
 # shellcheck shell=bash
 
 access=$HOME/.claude/channels/discord/access.json
 # The permissions team-thread and team-post use there, as Discord numbers their bits.
-declare -A interview_bits=([View Channel]=10 [Read Message History]=16 [Create Public Threads]=35 [Send Messages in Threads]=38)
-interview_names=("View Channel" "Read Message History" "Create Public Threads" "Send Messages in Threads")
+declare -A interview_bits=([View Channel]=10 [Read Message History]=16 [Create Public Threads]=35 [Send Messages in Threads]=38 [Attach Files]=15)
+interview_names=("View Channel" "Read Message History" "Create Public Threads" "Send Messages in Threads" "Attach Files")
 interview_err=$(mktemp)
 # GET <path> through the Discord API into $interview_reply, or report the line and fail; in the
 # same jq run that checks it is a JSON object or array, each <name>=<filter> is read from it into
@@ -101,7 +101,7 @@ interview_check() {
     report "interview channel" FAIL "the bot lacks $(printf '%s, ' "${missing[@]}" | sed 's/, $//') in the interview channel $INTERVIEW_CHANNEL" \
       "Daniel gives the bot's role $(printf '%s, ' "${missing[@]}" | sed 's/, $//') in the interview channel's permissions"
   else
-    report "interview channel" PASS "$INTERVIEW_CHANNEL has no access.json group, so the coordinator never hears an interview, and the bot may read it, open threads and post in them"
+    report "interview channel" PASS "$INTERVIEW_CHANNEL has no access.json group, so the coordinator never hears an interview, and the bot may read it, open threads, post in them and attach images"
   fi
 }
 

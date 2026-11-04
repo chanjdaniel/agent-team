@@ -171,13 +171,13 @@ FAIL interview channel: no DISCORD_BOT_TOKEN in ~/.claude/channels/discord/.env,
   [[ $seen != *70000000000000000* ]] || { echo "the doctor printed a member's id" >&2; return 1; }
 }
 
-@test "the interview channel line fails unless the channel is set, has no access.json group and lets the bot read, open threads and post in them" {
+@test "the interview channel line fails unless the channel is set, has no access.json group and lets the bot read, open threads, post in them and attach images" {
   only_checks 167-interview-channel.sh
   local line="interview channel" give="fix: Daniel gives the bot's role"
   local make="fix: Daniel makes a text channel for interviews, with no access.json group, and a PR sets its id as INTERVIEW_CHANNEL in bin/lib/team.sh"
   tools_at arch
   run_bin -0 team-doctor
-  assert_equal "$(line_of "$line")" "PASS interview channel: $INTERVIEW_ID has no access.json group, so the coordinator never hears an interview, and the bot may read it, open threads and post in them"
+  assert_equal "$(line_of "$line")" "PASS interview channel: $INTERVIEW_ID has no access.json group, so the coordinator never hears an interview, and the bot may read it, open threads, post in them and attach images"
   # Its reads, each with the token on stdin.
   assert_equal "$(stub_calls curl | jq -r '.[-1] | select(startswith("https://discord.com/")) | ltrimstr("https://discord.com/api/v10/")')" "channels/$INTERVIEW_ID
 users/@me
@@ -201,7 +201,7 @@ guilds/$GUILD_ID/roles"
   echo "DISCORD_BOT_TOKEN=$FAKE_DISCORD_TOKEN" >"$HOME/.claude/channels/discord/.env"
 
   TEAM_INTERVIEW_CHANNEL=1 run_bin -1 team-doctor
-  assert_equal "$(line_of "$line")" "FAIL interview channel: Discord refused the bot's read of channels/1 (curl: (22) The requested URL returned error: 404), so the bot cannot reach the interview channel 1; $give View Channel, Read Message History, Create Public Threads, Send Messages in Threads in the interview channel's permissions"
+  assert_equal "$(line_of "$line")" "FAIL interview channel: Discord refused the bot's read of channels/1 (curl: (22) The requested URL returned error: 404), so the bot cannot reach the interview channel 1; $give View Channel, Read Message History, Create Public Threads, Send Messages in Threads, Attach Files in the interview channel's permissions"
 
   jq '.type = 2' "$STUB_FIXTURES/discord/channels/$INTERVIEW_ID.json" >"$BATS_TEST_TMPDIR/channel.json"
   cp "$BATS_TEST_TMPDIR/channel.json" "$STUB_FIXTURES/discord/channels/$INTERVIEW_ID.json"
@@ -211,28 +211,35 @@ guilds/$GUILD_ID/roles"
   # The bot's role, then the channel's overwrites for @everyone, the bot's roles and the bot.
   interview_server "$(interview_bits 10 11 16)" '[]'
   run_bin -1 team-doctor
-  assert_equal "$(line_of "$line")" "FAIL interview channel: the bot lacks Create Public Threads, Send Messages in Threads in the interview channel $INTERVIEW_ID; $give Create Public Threads, Send Messages in Threads in the interview channel's permissions"
-  interview_server "$(interview_bits 10 16 35 38)" "[{\"id\": \"$GUILD_ID\", \"type\": 0, \"allow\": \"0\", \"deny\": \"$(interview_bits 10)\"}]"
+  assert_equal "$(line_of "$line")" "FAIL interview channel: the bot lacks Create Public Threads, Send Messages in Threads, Attach Files in the interview channel $INTERVIEW_ID; $give Create Public Threads, Send Messages in Threads, Attach Files in the interview channel's permissions"
+  interview_server "$(interview_bits 10 15 16 35 38)" "[{\"id\": \"$GUILD_ID\", \"type\": 0, \"allow\": \"0\", \"deny\": \"$(interview_bits 10)\"}]"
   run_bin -1 team-doctor
   assert_equal "$(line_of "$line")" "FAIL interview channel: the bot lacks View Channel in the interview channel $INTERVIEW_ID; $give View Channel in the interview channel's permissions"
-  interview_server "$(interview_bits 10 16 35 38)" "[{\"id\": \"$GUILD_ID\", \"type\": 0, \"allow\": \"0\", \"deny\": \"$(interview_bits 10)\"},
+  interview_server "$(interview_bits 10 15 16 35 38)" "[{\"id\": \"$GUILD_ID\", \"type\": 0, \"allow\": \"0\", \"deny\": \"$(interview_bits 10)\"},
     {\"id\": \"$BOT_ROLE\", \"type\": 0, \"allow\": \"$(interview_bits 10)\", \"deny\": \"0\"}]"
   run_bin -0 team-doctor
   assert_contains "$(line_of "$line")" "PASS interview channel: "
   # Another role's overwrite is not the bot's; the bot's own deny comes last.
-  interview_server "$(interview_bits 10 16)" "[{\"id\": \"$BOT_ROLE\", \"type\": 0, \"allow\": \"$(interview_bits 35 38)\", \"deny\": \"0\"},
+  interview_server "$(interview_bits 10 15 16)" "[{\"id\": \"$BOT_ROLE\", \"type\": 0, \"allow\": \"$(interview_bits 35 38)\", \"deny\": \"0\"},
     {\"id\": \"$BOT_ID\", \"type\": 1, \"allow\": \"0\", \"deny\": \"$(interview_bits 38)\"},
-    {\"id\": \"700000000000000049\", \"type\": 0, \"allow\": \"0\", \"deny\": \"$(interview_bits 10 16 35 38)\"}]"
+    {\"id\": \"700000000000000049\", \"type\": 0, \"allow\": \"0\", \"deny\": \"$(interview_bits 10 15 16 35 38)\"}]"
   run_bin -1 team-doctor
   assert_equal "$(line_of "$line")" "FAIL interview channel: the bot lacks Send Messages in Threads in the interview channel $INTERVIEW_ID; $give Send Messages in Threads in the interview channel's permissions"
+  # Attach Files is bit 15, for team-post --attach, as the channel's overwrites may deny it alone.
+  interview_server "$(interview_bits 10 16 35 38)" '[]'
+  run_bin -1 team-doctor
+  assert_equal "$(line_of "$line")" "FAIL interview channel: the bot lacks Attach Files in the interview channel $INTERVIEW_ID; $give Attach Files in the interview channel's permissions"
+  interview_server "$(interview_bits 10 15 16 35 38)" "[{\"id\": \"$BOT_ROLE\", \"type\": 0, \"allow\": \"0\", \"deny\": \"32768\"}]"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of "$line")" "FAIL interview channel: the bot lacks Attach Files in the interview channel $INTERVIEW_ID; $give Attach Files in the interview channel's permissions"
   # Administrator allows everything, whatever the overwrites deny.
-  interview_server "$(interview_bits 3)" "[{\"id\": \"$BOT_ID\", \"type\": 1, \"allow\": \"0\", \"deny\": \"$(interview_bits 10 16 35 38)\"}]"
+  interview_server "$(interview_bits 3)" "[{\"id\": \"$BOT_ID\", \"type\": 1, \"allow\": \"0\", \"deny\": \"$(interview_bits 10 15 16 35 38)\"}]"
   run_bin -0 team-doctor
   assert_contains "$(line_of "$line")" "PASS interview channel: "
   # A permission that is not a number is never read as one.
   interview_server '$(touch pwned)' '[]'
   run_bin -1 team-doctor
-  assert_contains "$(line_of "$line")" "FAIL interview channel: the bot lacks View Channel, Read Message History, Create Public Threads, Send Messages in Threads"
+  assert_contains "$(line_of "$line")" "FAIL interview channel: the bot lacks View Channel, Read Message History, Create Public Threads, Send Messages in Threads, Attach Files"
   [[ ! -e pwned && ! -e $HOME/pwned ]]
 
   # Discord not answering warns.

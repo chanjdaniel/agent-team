@@ -15,7 +15,7 @@
 # team_tool_path, fence_reason, offline_hold, lease_refusal, worker_refusal, toolkit_refusal, lease_gate, worktree_changes, same_path, bounded, docker_bounded, docker_silence, trust_probe,
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin,
 # only_records, records_list, records_pathspecs, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
-# own_project, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_level, discord_token, discord_api,
+# own_project, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_level, image_type, discord_token, discord_api,
 # daniel_message, refresh_inbox, github, base_merge, clean_base_merges, pr_part, pr_file_reasons, task_state_json, pr_standing_word, loose_objects, pack_size, story_file and findings_file, and sets IMAGE_TYPE,
 # PACK_LOOSE, COORDINATOR_CHANNEL and INTERVIEW_CHANNEL.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
@@ -1090,6 +1090,19 @@ COORDINATOR_CHANNEL=${TEAM_COORDINATOR_CHANNEL:-1562486564871995482}
 # included, which the scripts refuse as none set.
 # shellcheck disable=SC2034 # read by the scripts that source this library
 INTERVIEW_CHANNEL=${TEAM_INTERVIEW_CHANNEL-1565336720998928556}
+
+# Print the type of the image <file> holds by its first bytes, png, jpeg, gif or webp, the images a
+# worker session may post, or nothing: image_type <file>
+image_type() {
+  local hex
+  hex=$(head -c 12 -- "$1" | od -An -tx1 | tr -d ' \n')
+  case $hex in
+    89504e470d0a1a0a*) echo png ;;
+    ffd8ff*) echo jpeg ;;
+    474946383761* | 474946383961*) echo gif ;;
+    52494646????????57454250*) echo webp ;;
+  esac
+}
 
 # Print the Discord bot token from ~/.claude/channels/discord/.env, or fail with nothing printed.
 # Callers keep it in a variable or test for it (discord_token >/dev/null); never print it.
