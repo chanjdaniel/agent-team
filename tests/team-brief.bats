@@ -1915,7 +1915,8 @@ Daniel moves it with one command.'
 }
 
 # team-ui keeps each capture in a capture-<k>/ of its own: the item names each that holds Daniel's
-# words, by number, with its kind, and counts the rest, so a long walk does not bloat each brief.
+# words or an element, by number, with its kind, and counts the rest, so a long walk does not bloat
+# each brief.
 @test "a task with capture directories names each with a note or an element, with its kind, and counts the others" {
   open_t12
   local ui=$TEAM_HOME/tasks/T12/ui
