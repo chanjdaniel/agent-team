@@ -2,7 +2,7 @@
 # Strip agent attribution lines from the messages of a task branch's own commits, prove nothing
 # else changed, move the branch and print the push for the coordinator to run with Daniel's OK.
 #
-# Usage: team-clean-messages <worktree> [--check]
+# Usage: team-clean-messages <worktree> [--check | --clear-gate-lane]
 # The range is origin/<base>..HEAD after git fetch origin <base>, the base being projects.toml's
 # for the project whose primary checkout the worktree belongs to (any other repo is refused).
 # Attribution lines are the library's (attribution_lines): a Co-Authored-By naming Claude,
@@ -24,15 +24,29 @@
 # stdout (the lease is origin's head of the branch: the old head, an older one while commits are
 # unpushed, empty while origin has none) and appends history-rewritten. With nothing to clean it
 # says so and exits 0.
+# When the project's no-mistakes remote holds the branch, the gate's next run would refuse the old
+# commits there as at risk, so it prints a second line on stdout, the step to run after the push:
+# this script with --clear-gate-lane. It reads the mirror and moves nothing there.
+# --clear-gate-lane clears the branch's ref in the gate's private mirror, the bare repository the
+# no-mistakes remote names, so the gate's next run takes the branch as new. Like the push, it runs
+# with Daniel's OK; a worker session is refused (worker_refusal). It refuses, moving nothing, on
+# what a rewrite refuses for the branch and its tree, while a gate run is active on the branch,
+# until origin's branch is this one's head, and unless each commit only the mirror holds has the
+# patch id of its own commit of the branch (each against its first parent, so a merge has one).
+# Then it keeps the mirror's head at refs/tags/no-mistakes-abandoned/<branch>/<sha>, as the gate's
+# own reconciliation does, and deletes that one branch ref, leased on the value it checked. It
+# touches no other ref, nothing on origin and no worktree. With no such ref on the mirror, or no
+# commit only the mirror holds, it says there is nothing to clear and exits 0.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
-usage="usage: team-clean-messages <worktree> [--check]"
+usage="usage: team-clean-messages <worktree> [--check | --clear-gate-lane]"
 
-worktree='' check=''
+worktree='' check='' clear=''
 while (($#)); do
   case $1 in
     --check) check=1 ;;
+    --clear-gate-lane) clear=1 ;;
     -*) usage_error "$usage" ;;
     *)
       [[ -z $worktree ]] || usage_error "$usage"
@@ -42,6 +56,10 @@ while (($#)); do
   shift
 done
 [[ -n $worktree ]] || usage_error "$usage"
+[[ -z $check || -z $clear ]] || usage_error "$usage"
+if [[ -n $clear ]]; then
+  why=$(worker_refusal "" "clears no gate lane") && die "$why"
+fi
 
 git -C "$worktree" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "$worktree is not a git worktree"
 worktree=$(git -C "$worktree" rev-parse --show-toplevel)
@@ -71,6 +89,69 @@ require_task_branch() {
   mapfile -t changes < <(worktree_changes "$worktree")
   ((${#changes[@]} == 0)) || die "$worktree has uncommitted changes: $(printf '%s; ' "${changes[@]}" | sed 's/; $//')"
 }
+
+# git in the gate's mirror, once mirror names it.
+mirror_git() { git --git-dir "$mirror" "$@"; }
+
+# The patch id of the commit <sha> against its first parent, "empty" for one that changes nothing.
+patch_id() {
+  local id
+  id=$(g diff-tree -p "$1^" "$1" | g patch-id --stable | cut -d' ' -f1) || return 1
+  echo "${id:-empty}"
+}
+
+clear_gate_lane() {
+  local gate remote mirror_head stale live_commits sha id tag unmatched=()
+  local -A live=()
+  require_task_branch
+  mirror=$(g remote get-url no-mistakes 2>/dev/null) || die "$worktree has no no-mistakes remote: its project has no gate lane to clear"
+  [[ -d $mirror ]] || die "the no-mistakes remote names $mirror, which is no directory"
+  mirror_head=$(mirror_git rev-parse -q --verify "refs/heads/$branch^{commit}") || {
+    echo "team-clean-messages: nothing to clear: the gate's mirror has no $branch" >&2
+    return 0
+  }
+
+  gate=$(cd "$worktree" && no-mistakes axi 2>&1) || die "cannot read the gate's state in $worktree: $(head -n 1 <<<"$gate"); no ref moved"
+  ! grep -q '^active_run:' <<<"$gate" || die "a gate run is active on $branch: let it end or abort it first; no ref moved"
+
+  remote=$(g ls-remote --heads origin "refs/heads/$branch") || die "cannot read $branch from origin; no ref moved"
+  remote=${remote%%$'\t'*}
+  [[ -n $remote ]] || die "origin has no branch $branch: run the push first; no ref moved"
+  [[ $remote == "$old_head" ]] || die "origin's $branch is at ${remote:0:7}, not this branch's ${old_head:0:7}: run the push first; no ref moved"
+
+  g fetch -q --no-tags "$mirror" "refs/heads/$branch" || die "cannot fetch $branch from the gate's mirror; no ref moved"
+  stale=$(g rev-list "$mirror_head" --not "$old_head" "origin/$base") || die "cannot list what only the gate's mirror holds; no ref moved"
+  if [[ -z $stale ]]; then
+    echo "team-clean-messages: nothing to clear: the gate's mirror holds no commit $branch lacks" >&2
+    return 0
+  fi
+  live_commits=$(g rev-list "$old_head" --not "$mirror_head" "origin/$base") || die "cannot list what only $branch holds; no ref moved"
+
+  # Each commit of the branch answers for one commit of the mirror, so a repeated patch counts.
+  for sha in $live_commits; do
+    id=$(patch_id "$sha") || die "cannot read the patch of $sha; no ref moved"
+    live[$id]=$((${live[$id]:-0} + 1))
+  done
+  for sha in $stale; do
+    id=$(patch_id "$sha") || die "cannot read the patch of $sha; no ref moved"
+    if ((${live[$id]:-0} > 0)); then
+      live[$id]=$((${live[$id]} - 1))
+    else
+      unmatched+=("$(g rev-parse --short "$sha")")
+    fi
+  done
+  ((${#unmatched[@]} == 0)) || die "the gate's mirror holds ${unmatched[*]}, with no commit of the same patch on $branch; no ref moved"
+
+  tag=refs/tags/no-mistakes-abandoned/$branch/$mirror_head
+  mirror_git update-ref "$tag" "$mirror_head" || die "cannot keep $mirror_head at $tag; no branch ref moved"
+  mirror_git update-ref -d "refs/heads/$branch" "$mirror_head" || die "$branch moved on the gate's mirror while it was being cleared, so it was left there; $tag keeps $mirror_head"
+  echo "team-clean-messages: cleared $branch on the gate's mirror; $tag keeps its head $mirror_head" >&2
+}
+
+if [[ -n $clear ]]; then
+  clear_gate_lane
+  exit 0
+fi
 
 commits=$(g rev-list --reverse "origin/$base..$old_head") || die "cannot list $range"
 mapfile -t commits <<<"$commits"
@@ -211,3 +292,9 @@ ledger_append "$(jq -cn --arg task "$task" --arg project "$project" --arg branch
   echo "team-clean-messages: $branch moved from ${old_head:0:7} to ${new_head:0:7}; nothing is pushed. With Daniel's OK, run:"
 } >&2
 echo "$push"
+
+# The gate's mirror keeps the old commits past the push, so a gate on this branch needs the step.
+if mirror=$(g remote get-url no-mistakes 2>/dev/null) && mirror_git rev-parse -q --verify "refs/heads/$branch^{commit}" >/dev/null 2>&1; then
+  echo "team-clean-messages: the gate's mirror still holds the old commits of $branch, so its next run would refuse them. Once that push has landed and no gate run is active, with Daniel's OK, run:" >&2
+  printf '%q %q --clear-gate-lane\n' "$(realpath -- "$0")" "$worktree"
+fi

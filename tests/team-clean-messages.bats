@@ -523,3 +523,208 @@ sign_head() {
   assert_contains "$output" "which this branch does not contain"
   assert_unchanged
 }
+
+# The gate's mirror, as no-mistakes init leaves one: a bare repository the project names as its
+# no-mistakes remote, with no gate run active. The push that lands a rewrite is the plain push of
+# a branch origin does not have yet: these tests never force a push, so they run the printed step
+# after that one, and never the printed push.
+gate_mirror() {
+  mirror=$BATS_TEST_TMPDIR/mirror.git
+  git init -q --bare -b dev "$mirror"
+  git -C "$primary" remote add no-mistakes "$mirror"
+  fake_gate
+}
+
+# The mirror's refs, to prove a refusal moved none.
+mirror_refs() { git --git-dir "$mirror" for-each-ref --format='%(refname) %(objectname)'; }
+
+# Clean the branch's messages, land the rewrite on origin, and print the step it printed.
+rewrite_and_land() {
+  local printed
+  printed=$("$REPO_ROOT/bin/team-clean-messages" "$wt" 2>/dev/null) || return 1
+  git -C "$wt" push -q origin feat/T7-thing || return 1
+  echo "${printed##*$'\n'}"
+}
+
+@test "on a gated branch it prints the mirror's step after the push, and touches no ref of the mirror" {
+  gate_mirror
+  commit $'feat: one\n\nClaude-Session: x' a
+  git -C "$wt" push -q no-mistakes feat/T7-thing
+  local refs
+  refs=$(mirror_refs)
+  run_bin -0 --separate-stderr team-clean-messages "$wt"
+  assert_equal "$output" "git push --force-with-lease=feat/T7-thing: origin feat/T7-thing
+$REPO_ROOT/bin/team-clean-messages $wt --clear-gate-lane"
+  assert_contains "$stderr" "the gate's mirror still holds the old commits of feat/T7-thing"
+  assert_equal "$(mirror_refs)" "$refs"
+  assert_equal "$(stub_calls no-mistakes)" ""
+}
+
+@test "no mirror's step when the project has no gate or the mirror has no such branch" {
+  commit $'feat: one\n\nClaude-Session: x' a
+  run_bin -0 --separate-stderr team-clean-messages "$wt"
+  assert_equal "$output" "git push --force-with-lease=feat/T7-thing: origin feat/T7-thing"
+
+  gate_mirror
+  commit $'feat: two\n\nClaude-Session: y' b
+  run_bin -0 --separate-stderr team-clean-messages "$wt"
+  assert_equal "$output" "git push --force-with-lease=feat/T7-thing: origin feat/T7-thing"
+  [[ $stderr != *"gate's mirror"* ]]
+}
+
+@test "the printed step clears only the branch's ref on the mirror, when the patch ids match, and keeps its head" {
+  gate_mirror
+  commit "feat: kept" a
+  commit "$attributed" b
+  commit $'docs: message only\n\nClaude-Session: x'
+  git -C "$wt" push -q no-mistakes feat/T7-thing
+  git -C "$wt" push -q no-mistakes "feat/T7-thing:refs/heads/feat/T8-other"
+  local old other step new
+  old=$(git -C "$wt" rev-parse HEAD)
+  other=$(git --git-dir "$mirror" rev-parse feat/T8-other)
+  step=$(rewrite_and_land)
+  new=$(git -C "$wt" rev-parse HEAD)
+  [[ $new != "$old" ]]
+
+  run bash -c "$step"
+  assert_equal "$status" 0
+  assert_contains "$output" "cleared feat/T7-thing on the gate's mirror"
+  assert_contains "$output" "refs/tags/no-mistakes-abandoned/feat/T7-thing/$old"
+  assert_equal "$(mirror_refs)" "refs/heads/feat/T8-other $other
+refs/tags/no-mistakes-abandoned/feat/T7-thing/$old $old"
+  # Nothing else moved, and the gate's next push of the branch is a new branch to it.
+  assert_equal "$(git -C "$wt" rev-parse HEAD)" "$new"
+  assert_equal "$(git -C "$primary" ls-remote origin refs/heads/feat/T7-thing | cut -f1)" "$new"
+  git -C "$wt" push -q no-mistakes feat/T7-thing
+  assert_equal "$(git --git-dir "$mirror" rev-parse feat/T7-thing)" "$new"
+}
+
+@test "the printed step matches a merge of the base by its patch too" {
+  gate_mirror
+  commit $'feat: one\n\nClaude-Session: x' a
+  merge_base
+  commit $'feat: two\n\nClaude-Session: y' b
+  git -C "$wt" push -q no-mistakes feat/T7-thing
+  local old step
+  old=$(git -C "$wt" rev-parse HEAD)
+  step=$(rewrite_and_land)
+  run bash -c "$step"
+  assert_equal "$status" 0
+  assert_equal "$(mirror_refs)" "refs/tags/no-mistakes-abandoned/feat/T7-thing/$old $old"
+}
+
+@test "the printed step refuses, moving nothing, when a commit only the mirror holds has no patch on the branch" {
+  gate_mirror
+  commit $'feat: one\n\nClaude-Session: x' a
+  commit "feat: only the gate has this" gate-fix
+  local lost step refs
+  lost=$(git -C "$wt" rev-parse --short HEAD)
+  git -C "$wt" push -q no-mistakes feat/T7-thing
+  git -C "$wt" reset -q --hard HEAD~1
+  commit "feat: another patch" other
+  step=$(rewrite_and_land)
+  refs=$(mirror_refs)
+  run bash -c "$step"
+  assert_equal "$status" 1
+  assert_contains "$output" "the gate's mirror holds $lost"
+  assert_contains "$output" "no ref moved"
+  assert_equal "$(mirror_refs)" "$refs"
+}
+
+@test "the printed step counts each patch once, so a repeated one the branch has fewer of refuses" {
+  gate_mirror
+  commit $'feat: one\n\nClaude-Session: x' a
+  git -C "$wt" revert --no-edit HEAD >/dev/null
+  git -C "$wt" cherry-pick HEAD~1 >/dev/null
+  git -C "$wt" push -q no-mistakes feat/T7-thing
+  git -C "$wt" reset -q --hard HEAD~1
+  local step refs
+  step=$(rewrite_and_land)
+  refs=$(mirror_refs)
+  run bash -c "$step"
+  assert_equal "$status" 1
+  assert_contains "$output" "no ref moved"
+  assert_equal "$(mirror_refs)" "$refs"
+}
+
+@test "the printed step refuses, moving nothing, before the push has landed" {
+  gate_mirror
+  commit $'feat: one\n\nClaude-Session: x' a
+  git -C "$wt" push -q no-mistakes feat/T7-thing
+  run_bin -0 --separate-stderr team-clean-messages "$wt"
+  local step refs
+  step=${output##*$'\n'}
+  refs=$(mirror_refs)
+  run bash -c "$step"
+  assert_equal "$status" 1
+  assert_contains "$output" "origin has no branch feat/T7-thing"
+  assert_contains "$output" "no ref moved"
+  assert_equal "$(mirror_refs)" "$refs"
+
+  # A branch that moved on from what origin has is refused the same way.
+  git -C "$wt" push -q origin feat/T7-thing
+  commit "feat: unpushed" b
+  run bash -c "$step"
+  assert_equal "$status" 1
+  assert_contains "$output" "origin's feat/T7-thing is at"
+  assert_equal "$(mirror_refs)" "$refs"
+}
+
+@test "the printed step refuses, moving nothing, while a gate run is active on the branch" {
+  gate_mirror
+  commit $'feat: one\n\nClaude-Session: x' a
+  git -C "$wt" push -q no-mistakes feat/T7-thing
+  local step refs
+  step=$(rewrite_and_land)
+  fake_gate "$wt"
+  refs=$(mirror_refs)
+  run bash -c "$step"
+  assert_equal "$status" 1
+  assert_contains "$output" "a gate run is active on feat/T7-thing"
+  assert_equal "$(mirror_refs)" "$refs"
+}
+
+@test "--clear-gate-lane has nothing to clear when the mirror has no such branch or holds nothing the branch lacks" {
+  gate_mirror
+  commit "feat: one" a
+  git -C "$wt" push -q origin feat/T7-thing
+  run_bin -0 team-clean-messages "$wt" --clear-gate-lane
+  assert_contains "$output" "nothing to clear: the gate's mirror has no feat/T7-thing"
+  assert_equal "$(mirror_refs)" ""
+
+  git -C "$wt" push -q no-mistakes feat/T7-thing
+  commit "feat: two" b
+  git -C "$wt" push -q origin feat/T7-thing
+  local refs
+  refs=$(mirror_refs)
+  run_bin -0 team-clean-messages "$wt" --clear-gate-lane
+  assert_contains "$output" "nothing to clear: the gate's mirror holds no commit feat/T7-thing lacks"
+  assert_equal "$(mirror_refs)" "$refs"
+}
+
+@test "--clear-gate-lane is refused with no gate, with uncommitted changes, on a detached HEAD and in a worker session" {
+  commit "feat: one" a
+  run_bin -1 team-clean-messages "$wt" --clear-gate-lane
+  assert_contains "$output" "has no no-mistakes remote"
+
+  gate_mirror
+  git -C "$wt" push -q no-mistakes feat/T7-thing
+  git -C "$wt" push -q origin feat/T7-thing
+  local refs
+  refs=$(mirror_refs)
+
+  AGENT_TEAM_ROLE=builder run_bin -1 team-clean-messages "$wt" --clear-gate-lane
+  assert_contains "$output" "a builder session clears no gate lane"
+
+  echo change >>"$wt/a"
+  run_bin -1 team-clean-messages "$wt" --clear-gate-lane
+  assert_contains "$output" "uncommitted changes"
+  git -C "$wt" checkout -q -- a
+
+  git -C "$wt" checkout -q --detach
+  run_bin -1 team-clean-messages "$wt" --clear-gate-lane
+  assert_contains "$output" "detached HEAD"
+  assert_equal "$(mirror_refs)" "$refs"
+
+  run_bin -2 team-clean-messages "$wt" --check --clear-gate-lane
+}
