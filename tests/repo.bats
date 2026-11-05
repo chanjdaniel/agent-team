@@ -394,15 +394,19 @@ role_matrix() {
 }
 
 # The gate's state is the gate's own, and the coordinator's on Daniel's OK. Each command below holds
-# a placeholder where a verb or a ref goes, so none runs as written.
+# a placeholder verb, ref or target, so none reaches a real mirror or branch.
 # A rule's * on both sides refuses any Bash call naming the gate's directory itself or a path under
 # its mirrors, a read or a search among them, and a call taking a substitution of the mirror's URL,
 # however it then uses it, a cost accepted as for the Agent Chrome's rules: no gate command names
 # those, and a message or a file that does goes through the Write tool and -F
-# (sops/platform-gotchas.md). A gate's run worktree shares its mirror's refs, so a call naming one is
-# denied what moves a ref or a checkout, and a deleting or forced push naming the gate's remote
-# anywhere, a branch of that name on origin too, is refused. Deny rules are a speed bump, as
-# CLAUDE.md says of git's, and a role's "When something is denied" stands behind them.
+# (sops/platform-gotchas.md). A worker on the gate's own repository meets this cost on a search
+# typed with the directory's dotted name and on that directory in a throwaway home.
+# A gate's run worktree shares its mirror's refs, so a call naming one is denied each git command
+# on a fixed list that moves a ref or a checkout, those commands' reads there too (one is pinned
+# below), since text cannot tell a read from a write, and a push to one or a remote naming one.
+# A deleting or forced push naming the gate's remote anywhere, a branch of that name on origin too,
+# is refused. Deny rules are a speed bump, as CLAUDE.md says of git's, and a role's "When something
+# is denied" stands behind them.
 @test "no worker role writes to the gate's mirrors, by path, by its remote's URL, in a run worktree or by a deleting push" {
   # shellcheck disable=SC2088,SC2016 # the paths are text, as an agent types them
   local mirror='~/.no-mistakes/repos/x.git' home_mirror='$HOME/.no-mistakes/repos/x.git' run='~/.no-mistakes/worktrees/01KQ3V2M8Z/x'
@@ -420,7 +424,8 @@ role_matrix() {
     "git push no-mistakes HEAD:feat/T1-x" "git push --dry-run no-mistakes feat/T1-x" \
     "git push no-mistakes feat/T1-x --dry-run" "git fetch no-mistakes" "git ls-remote no-mistakes" \
     "git remote get-url no-mistakes" "git remote get-url no-mistakes 2>/dev/null || echo none" "git remote -v" \
-    'head=$(git rev-parse HEAD); git remote get-url no-mistakes' "git push origin --delete fix/T1-x" \
+    'head=$(git rev-parse HEAD); git remote get-url no-mistakes' 'o=$(git remote get-url origin); git push no-mistakes <ref>' \
+    'h=$(git -C ~/wt rev-parse HEAD); git remote get-url no-mistakes' "git push origin --delete fix/T1-x" \
     "git push origin fix/T1-no-mistakes-x" "git push -u origin fix/T1-no-mistakes-x" \
     "ls $run" "cat $run/README.md" "cd $run && git status" "cd $run && git log" "git -C $run status" \
     "git -C $run log --branches --tags" "git add .no-mistakes.yaml" "cat .no-mistakes.yml" \
@@ -455,6 +460,9 @@ role_matrix() {
     "git -C $run branch <ref>" "cd $run && git tag <ref>" "cd $run && git symbolic-ref <ref> <ref>" \
     "cd $run && git fetch <remote>" "git -C $run commit <options>" "git -C $run worktree <command>" \
     "cd $run && git reset <options>" "cd $run && cd ../../../repos/x.git" "cd $run/../../../repos/x.git" \
+    "git push $run <ref>" "git remote add z $run" "git -C ~/.no-mistakes//worktrees/01KQ3V2M8Z/x update-ref <ref> <sha>" \
+    "cd ~/.no-mistakes/./worktrees/01KQ3V2M8Z/x && git branch <ref>" "git -C $run filter-branch <options>" \
+    "git -C $run bisect <command>" "git -C $run fast-import" "git -C $run branch --show-current" \
     "git push no-mistakes :feat/T1-x" "git push -u no-mistakes :feat/T1-x" "git push no-mistakes a :feat/T1-x" \
     "git push no-mistakes ':feat/T1-x'" "git push no-mistakes \":feat/T1-x\"" "git push \"no-mistakes\" :feat/T1-x" \
     "git push no-mistakes --delete feat/T1-x" "git push --delete no-mistakes feat/T1-x" \
@@ -465,7 +473,10 @@ role_matrix() {
     "git push no-mistakes --mirror <ref>" "git push --mirror no-mistakes <ref>" "git push no-mistakes --force feat/T1-x" \
     "git push no-mistakes +feat/T1-x" "git -C ~/wt push --force no-mistakes feat/T1-x" \
     "git -C ~/wt push no-mistakes -f feat/T1-x" "git -C ~/wt push -f no-mistakes feat/T1-x" \
-    "git -C ~/wt push no-mistakes +feat/T1-x" "git -C ~/wt push no-mistakes '+feat/T1-x'"
+    "git -C ~/wt push no-mistakes +feat/T1-x" "git -C ~/wt push no-mistakes '+feat/T1-x'" \
+    "git push -uf no-mistakes feat/T1-x" "git push no-mistakes -uf feat/T1-x" "git -C ~/wt push -uf no-mistakes feat/T1-x" \
+    "git push no-mistakes -ud feat/T1-x" "git push no-mistakes feat/T1-x -ud" "git push -vf no-mistakes feat/T1-x" \
+    "git push -vd no-mistakes feat/T1-x"
 }
 
 # team-clean-messages' own refusal (worker_refusal) stands behind these rules; a run of its tests
