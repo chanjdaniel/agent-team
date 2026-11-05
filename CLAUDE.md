@@ -56,6 +56,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
   - `records-rewrite.md`: the cutover that rewrites the records repository's history with `team-records-rewrite`, each step Daniel's or the coordinator's.
   - `resources.md`: the team's resources: its systemd user slice and each task's, `team-capacity install`, the placement of worker sessions and the gate in it, the checked assumptions, the readings per task, the learned costs, heavy runs' scopes, and the doctor's `resources` line.
 - `templates/`: the task plan and the worker briefs `team-open` and `team-brief` render.
+  - `briefs/planner-walk.md`: a planner following Daniel's manual QC walk in its interview thread, capturing the page they drive.
 - `tests/`: the bats suite, one `.bats` file per script (a long one split by topic, as `team-doctor-*.bats`).
   - `tests/bootstrap-drill`: runs `team-bootstrap` on a fresh runner for the by-hand Bootstrap workflow.
   - `tests/compaction-drill`: run by hand by the coordinator, since it starts a real Claude session; it compacts a coordinator-shaped session in a sandbox team home built from `tests/fixtures/compaction-drill/` and checks it still knows each task's wait and every current item.
@@ -70,6 +71,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
 - `toolkits/`: plugin directories a worker loads with `team-worker --toolkit <name>`: MCP config (`.mcp.json`), skills, hooks (`hooks/hooks.json`), docs, scripts, and the skills' evals (`claude plugin eval`, on MCP mocks).
   - `browser/`: its session-start hook prints a banner for a UI task's builder and reviewer, whose `ui-check` skill captures and judges the screens a UI change touches.
   - `coordinator/`: the coordinator's MCP servers and the claude.ai connectors it keeps, no worker's, the only ones `claude-coordinator` lets it load (its README says how the others are denied and how one is added).
+  - `frontend/`: the Agent Chrome's capture and its server, for Daniel's session and the coordinator; of the workers, only a walk's planner reads it, by `team-ui --capture`.
 
 `.scratch/task/` is the task directory of a task on this repo, ignored by git.
 

@@ -14,7 +14,7 @@
 #             (INTERVIEW_CHANNEL in bin/lib/team.sh), named as its thread from its opened event,
 #             logs it as interview-thread and prints its id, or prints the one already logged.
 #             The plugin delivers nothing from that channel, so the coordinator never hears what
-#             is said there: a planner whose brief is planner-interview talks with Daniel there.
+#             is said there: a planner whose brief is planner-interview or planner-walk talks with Daniel there.
 #   wait      Blocks until Daniel posts in the open task's interview thread, then prints each of
 #             their new messages, oldest first, as one JSON line: {"id", "sent" (Discord's
 #             timestamp), "text" (verbatim), "attachments" (only when there are any: each one's

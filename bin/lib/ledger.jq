@@ -1188,7 +1188,9 @@ def merge_ready_prs($plan_repos; $standing_repos):
 
 # What waits on Daniel, over every ledger event, each open task's in task number order:
 # {asks: [{task, id, text (its first line), thread (the task's thread when it was asked), message
-# (the question's discord_message)}], prs: [{task, title, url}], interviews: [{task, title, thread}],
+# (the question's discord_message)}], prs: [{task, title, url}], interviews: [{task, title, thread}]
+# (none whose walk is on in that thread, which walks lists), walks: [{task, title, thread (the
+# thread it runs in, or null)}],
 # standing: standing_word_events of the projects $projects a standing word stands for}, the PRs as
 # merge_ready_prs has them, its standing repos being those of $repos (each repo, lowercased, to its
 # project) whose project a standing word stands for.
@@ -1203,8 +1205,11 @@ def inbox_items($plan_repos; $repos; $projects):
            thread: ([$events[:.k][] | select(.event == "thread") | .discord_thread | strings] | last),
            message: (.ask.discord_message | if . == null then null else tostring end)}],
      prs: [.[] | {task, title} + (.events | merge_ready_prs($plan_repos; $standing_repos)[] | {url})],
-     interviews: [.[] | select(.events | interview_under_way)
+     interviews: [.[] | select(.events | interview_under_way and (qc_walk.thread != "interview"))
         | {task, title, thread: (.events | map(select(.event == "interview-thread") | .discord_thread) | last | tostring)}],
+     walks: [.[] | (.events | qc_walk) as $walk | select($walk != null)
+        | (if $walk.thread == "interview" then "interview-thread" else "thread" end) as $kind
+        | {task, title, thread: (.events | map(select(.event == $kind) | .discord_thread | strings) | last)}],
      standing: ($standing | standing_word_events)};
 
 # The Waiting on you message from inbox_items, at most $limit characters, its asks linked to the
@@ -1221,7 +1226,8 @@ def inbox_text($guild; $limit; $now; $resources):
   def named: .task + if .title == null then "" else " \(.title | clip(80))" end;
   [["**Asks**", [.asks[] | "- \(.task) \(.id): \(.text | clip(150))" + link]],
    ["**PRs ready to merge**", [.prs[] | "- \(named): \(.url)"]],
-   ["**Interviews under way**", [.interviews[] | "- \(named): <#\(.thread)>"]]] as $sections
+   ["**Interviews under way**", [.interviews[] | "- \(named): <#\(.thread)>"]],
+   ["**Walks under way**", [.walks[] | "- \(named)" + (if .thread == null then "" else ": <#\(.thread)>" end)]]] as $sections
   | ([$sections[][1][]] | length) as $total
   | [(.standing // [])[] | "-# Standing merge word on \(.projects | projects_text) since"
       + " https://discord.com/channels/\($guild)/\(.word.discord_channel)/\(.word.discord_message)"] as $words

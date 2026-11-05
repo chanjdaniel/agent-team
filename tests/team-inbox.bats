@@ -94,6 +94,36 @@ Resources: manual, full (90%): no reading of the machine's load yet, so no budge
 - T9 Nine: <#9999>"
 }
 
+@test "a walk under way is listed as an interview is, by the thread it runs in, once, until it stops" {
+  opened T9 "Nine" >>"$TEAM_HOME/ledger.jsonl"
+  log_events '{"task":"T9","event":"thread","discord_thread":"9000"}' \
+    '{"task":"T9","event":"interview-thread","discord_thread":"9999"}' \
+    '{"task":"T9","event":"walk","state":"on","thread":"interview"}'
+  opened T12 "Twelve" >>"$TEAM_HOME/ledger.jsonl"
+  log_events '{"task":"T12","event":"thread","discord_thread":"1212"}' \
+    '{"task":"T12","event":"walk","state":"on"}'
+  opened T14 "Fourteen" >>"$TEAM_HOME/ledger.jsonl"
+  log_events '{"task":"T14","event":"walk","state":"on"}'
+  run_bin -0 team-inbox
+  # An interview walk is no interview too, and a walk with no thread to link still shows.
+  assert_equal "$(inbox_items_shown)" "**Walks under way**
+- T9 Nine: <#9999>
+- T12 Twelve: <#1212>
+- T14 Fourteen"
+  # Stopped, an interview's thread goes back to being an interview, and a task's walk leaves the list.
+  log_events '{"task":"T9","event":"walk","state":"off"}' '{"task":"T12","event":"walk","state":"off"}' \
+    '{"task":"T14","event":"walk","state":"off"}'
+  run_bin -0 team-inbox
+  assert_equal "$(inbox_items_shown)" "**Interviews under way**
+- T9 Nine: <#9999>"
+  # A walk left on ends with its task.
+  log_events '{"task":"T12","event":"walk","state":"on"}' \
+    '{"task":"T12","event":"closed","archive":[],"returned":[],"kept":[]}'
+  run_bin -0 team-inbox
+  assert_equal "$(inbox_items_shown)" "**Interviews under way**
+- T9 Nine: <#9999>"
+}
+
 @test "a section with nothing in it is left out, and an ask settled by merge-approved goes with it" {
   opened T4 "Four" >>"$TEAM_HOME/ledger.jsonl"
   log_events '{"task":"T4","event":"pr","url":"https://github.com/owner/proj/pull/4","head":"abc1234def"}' \

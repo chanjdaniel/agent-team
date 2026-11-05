@@ -200,7 +200,7 @@ $ui/capture-1/ui-pick.md"
   [[ -z $(ls -A "$ui") ]]
 }
 
-@test "the brief that follows names each capture with its kind and its note" {
+@test "the brief that follows names each capture with a note, with its kind, and counts the others" {
   run_bin -0 team-ui T7 --capture
   echo page >"$STUB_FIXTURES/capture-kind"
   printf 'check the page state\n' >"$BATS_TEST_TMPDIR/note"
@@ -209,9 +209,9 @@ $ui/capture-1/ui-pick.md"
   register_conventioner
   run_bin -0 team-brief T7 builder-fix --set 'read=- `AGENTS.md`.' --set commits=fix --set goal=g
   local brief=$TEAM_HOME/tasks/T7/brief.md
-  grep -qF "kept for this task: \`$ui/\`, each capture in a directory of its own, listed below." "$brief"
-  grep -qxF '  - `capture-1/`: an element and page capture.' "$brief"
+  grep -qF "kept for this task: \`$ui/\`, each capture in a directory of its own." "$brief"
   grep -qxF '  - `capture-2/`: a page capture, no element selected; `note.md` holds the words Daniel posted with it.' "$brief"
+  grep -qxF '  - 1 with no note, `capture-1/`.' "$brief"
   grep -qF 'never in the Agent Chrome' "$brief"
 }
 
@@ -416,6 +416,20 @@ walk_note_count() {
   run_bin -0 team-ui T7 --walk start --in interview
   printf 'This is off.\n' >"$BATS_TEST_TMPDIR/note"
   run_bin -0 team-ui T7 --capture --note-file "$BATS_TEST_TMPDIR/note"
+  assert_equal "$(walk_note_count)" 0
+}
+
+@test "a planner's noted capture is no walk note: the wait logged that message already" {
+  register_conventioner
+  interview_thread T7
+  run_bin -0 team-ui T7 --walk start --in interview
+  mkdir -p "$HOME/wt/T7/.scratch/task"
+  # The note file's name holds an id, as the coordinator's does, and still logs nothing.
+  local note=$HOME/wt/T7/.scratch/task/.note-1564000000000000009
+  printf 'This is off.\n' >"$note"
+  AGENT_TEAM_ROLE=planner AGENT_TEAM_TASK=T7 run_bin -0 team-ui T7 --capture --note-file "$note"
+  assert_equal "$(cat "$STUB_CALLS/ui-capture.log")" "$ui/capture-1"
+  assert_contains "$(<"$ui/capture-1/note.md")" "as the planner copied them"
   assert_equal "$(walk_note_count)" 0
 }
 
