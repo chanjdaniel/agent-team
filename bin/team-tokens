@@ -232,8 +232,9 @@ USAGE = (
 COUNTS = ("input", "cache_write_1h", "cache_write_5m", "cache_read", "output", "thinking")
 # A line's fields, in the order it is written.
 FIELDS = ["ts", "machine", "session", "agent", "project_dir", "model", "request", *COUNTS]
-# Raised to 2 with the time rows, and to 3 when a stopped background call came to end at its stop,
-# so the first export after each reads every transcript again and rewrites the rows that change.
+# Raised to 2 with the time rows, to 3 when a stopped background call came to end at its stop, and
+# to 4 when a command's name came to be read past its heredoc, so the first export after each reads
+# every transcript again and rewrites the rows that change.
 SCAN_VERSION = 4
 
 
