@@ -333,10 +333,17 @@ EOF
   run_bin -0 team-doctor
   assert_equal "$(line_of gate-agent)" "PASS gate-agent: config.yaml runs the gate on claude with --setting-sources project,local, --strict-mcp-config and commit attribution off, and claude is installed"
 
-  # Without it the line fails naming the fix.
+  # With no --settings at all and nothing else lacking, it only warns, so a resume goes on until
+  # Daniel adds it: team-merge still refuses a commit that carries the line.
   printf '%s\n' 'agent: claude' "agent_args_override: {claude: [$sources]}" >"$config"
-  run_bin -1 team-doctor
-  assert_equal "$(line_of gate-agent)" "$fail"
+  run_bin -0 team-doctor
+  local fix=${fail##*; fix: }
+  assert_equal "$(line_of gate-agent)" "WARN gate-agent: config.yaml runs the gate on claude with --setting-sources project,local and --strict-mcp-config, but its agent_args_override.claude has no --settings naming a file whose attribution.commit is empty, so the gate's own commits may carry an agent line, which team-merge refuses; fix: $fix"
+  # With a stray item too, the warning names both.
+  printf '%s\n' 'agent: claude' 'agent_args_override: {claude: [--setting-sources, project,local, --strict-mcp-config]}' >"$config"
+  run_bin -0 team-doctor
+  assert_contains "$(line_of gate-agent)" "WARN gate-agent: config.yaml runs the gate on claude with --setting-sources project and --strict-mcp-config, but its agent_args_override.claude has no --settings naming"
+  assert_contains "$(line_of gate-agent)" "which team-merge refuses, and it has local right after --setting-sources project, which claude takes as an argument of its own"
   # --settings last, with no value.
   printf '%s\n' 'agent: claude' "agent_args_override: {claude: [$sources, --settings]}" >"$config"
   run_bin -1 team-doctor

@@ -9,9 +9,12 @@
 #               none of Daniel's user settings (their hooks, the Discord plugin, Remote Control) and
 #               none of their MCP servers, and --settings naming a file whose attribution.commit is
 #               empty (bin/lib/gate-claude-settings.json), since the user settings are what turn
-#               commit attribution off; it warns when an item right after the sources is no
-#               flag, which claude takes as an argument of its own (the second half of an unquoted
-#               project,local in a flow list). Any other agent, or none (auto would pick whichever
+#               commit attribution off; with no --settings at all and nothing else lacking it only
+#               warns, so a resume goes on until Daniel adds it, since team-merge still refuses a
+#               commit that carries the line, while a --settings naming a file that is not there or
+#               leaves attribution on fails. It also warns when an item right after the sources is
+#               no flag, which claude takes as an argument of its own (the second half of an
+#               unquoted project,local in a flow list). Any other agent, or none (auto would pick whichever
 #               agent no-mistakes finds first), fails. Only those keys of the file are read (none
 #               holds a credential), and none of the rest printed.
 # shellcheck shell=bash
@@ -74,6 +77,10 @@ if [[ $agent == claude ]]; then
   elif ((gate_rc)); then
     report gate-agent FAIL "$(tilde "$gate_config")'s agent_args_override is in a form team-doctor does not read (a flow collection over several lines, a nested one, or a scalar)" \
       "Daniel writes its claude list as a block or a one-line flow sequence: $claude_args"
+  elif ((${#gate_missing[@]} == 1 && ${#gate_settings[@]} == 0)); then
+    gate_reason="config.yaml runs the gate on claude with --setting-sources $(printf '%s\n' "${gate_sources[@]}" | paste -sd ' ' -) and --strict-mcp-config, but its agent_args_override.claude has no --settings naming a file whose attribution.commit is empty, so the gate's own commits may carry an agent line, which team-merge refuses"
+    [[ -z $gate_stray ]] || gate_reason+=", and it has $gate_stray, which claude takes as an argument of its own (an unquoted project,local in a flow list is two items)"
+    report gate-agent WARN "$gate_reason" "Daniel sets $claude_args in ~/.no-mistakes/config.yaml"
   elif ((${#gate_missing[@]})); then
     gate_reason=$(printf '%s; ' "${gate_missing[@]}")
     report gate-agent FAIL "$(tilde "$gate_config") runs the gate on claude, but its agent_args_override.claude lacks ${gate_reason%; }" \
