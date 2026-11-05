@@ -366,11 +366,31 @@ def waiting:
   else null end;
 
 # The task's manual QC walk: {since} while it is on, since the ts of its latest walk event when
-# that says on, else null, as for a task with none or a closed one, whose walk ended with it. Read
-# by team-ui --walk and task_state.
+# that says on, with its thread when that names one (interview) and the message of Daniel's it
+# reseeded on and the one port that clears when it has one, else null, as for a task with none or a
+# closed one, whose walk ended
+# with it. Read by team-ui --walk, capture_refusal, team-post, task_state and walk_last_note.
 def qc_walk:
   if task_status == "closed" then null
-  else map(select(.event == "walk")) | last | if .state == "on" then {since: .ts} else null end end;
+  else map(select(.event == "walk")) | last
+    | if .state == "on" then {since: .ts} + (if .thread then {thread} else {} end) + (if .reseeded then {reseeded, reseeded_port} else {} end) else null end end;
+
+# How long a walk counts with no message from Daniel, in seconds: a person clicking in Chrome makes
+# no session busy, so this is all that tells a walk under way from one left on.
+def walk_hold_seconds: 14400;
+
+# Over a task's events: when Daniel last spoke on the walk that is on, the latest of its start and
+# its walk-note events, or null with no walk on. A message that reached neither team-thread wait nor
+# team-ui --note-file is not among them.
+def walk_last_note:
+  qc_walk as $walk
+  | if $walk == null then null
+    else [$walk.since, (.[] | select(.event == "walk-note") | .ts)] | max end;
+
+# Over a task's events: whether a walk is on and still counts at the time <now> (seconds), keeping
+# its stack up and its task last to stow. Read by team-stack sweep and plan_tasks.
+def walk_holds($now):
+  walk_last_note | . != null and ($now - fromdateiso8601) <= walk_hold_seconds;
 
 # The worktrees team-resume could not re-home that still are not made: each project's latest
 # rehome-failed with no later opened, worktree-added, worktree-moved, rehomed or worktree-returned
@@ -760,7 +780,7 @@ def state_line:
        elif .covers then " | standing word covers it"
        else " | standing word does not cover it: \(.reasons[0])"
          + (.reasons | length | if . > 1 then " (and \(. - 1) more)" else "" end) end)
-  + (if .walk == null then "" else " | walk on since \(.walk.since)" end)
+  + (if .walk == null then "" else " | walk on since \(.walk.since)\(if .walk.thread then " in its \(.walk.thread) thread" else "" end)" end)
   + (if .waiting == null then "" else " | waiting on \(.waiting.on): \(.waiting.reason)" end);
 
 # Whether a task is parked, waiting on something other than a worker: held, blocked or awaiting
@@ -773,6 +793,14 @@ def parked:
 def finding($task; $kind; $session; $name; $detail; $next):
   {task: $task, kind: $kind, session: $session, name: $name, next: $next,
    text: "\($task) \($kind): \($detail); next: \($next)"};
+
+# team-sweep's walk-stale finding, over a task's events, or nothing: a walk on that no longer counts.
+def walk_stale_finding:
+  .[0].task as $task | walk_last_note as $last | qc_walk as $walk
+  | select($last != null and (walk_holds(now) | not))
+  | finding($task; "walk-stale"; null; null;
+      "its walk has had no message from Daniel since \($last), over \(walk_hold_seconds / 3600) hours, so it no longer keeps its stack up or stows last";
+      "ask Daniel whether it goes on: if not, team-ui \($task) --walk stop; if so, team-ui \($task) --walk stop, then team-ui \($task) --walk start\(if $walk.thread then " --in \($walk.thread)" else "" end)\(if $walk.reseeded then " --reseeded <a new message of Daniel's>" else "" end)");
 
 # team-sweep's merge-due finding, over a task's events, or nothing: the task awaits merge, a
 # plan-time approval of it stands or a standing word of Daniel's stands for one of its projects
@@ -851,10 +879,11 @@ def waiting_on:
 # A live session is at work while it is busy, waiting for input, or idle with no ledger event
 # since its launch (silent); idle with an event since, it has handed the next step back to the
 # coordinator, so a task with no session at work is no-worker however many are live. A denied is
-# no report (the worker went past the denial), so these findings read the events without it.
+# no report (the worker went past the denial), nor is a walk-note (Daniel spoke, the worker did
+# not), so these findings read the events without them.
 def task_findings($sessions; $activity):
   .[0].task as $task
-  | map(select(.event != "denied"))
+  | map(select(.event | IN("denied", "walk-note") | not))
   | length as $count
   | [to_entries[] | select(.value.event == "launch") | {i: .key, launch: .value}] as $launches
   | ([$launches | reverse | .[] | . + {live: live_session(.launch.session; $sessions)} | select(.live != null)
@@ -1005,7 +1034,8 @@ def activity_finding:
 # team-sweep's findings, over every ledger event as one array, the session list, the stow plan
 # ($plan, as level_findings takes it) and session-activity's object ($activity, as task_findings
 # takes it): each open task's merge-due (under a plan-time word or a standing word of any task's),
-# else its findings unless it is parked, then the stray sessions (named like a team worker whose
+# else its findings unless it is parked, then its walk-stale, parked or not, since a parked task's
+# walk still needs asking about, then the stray sessions (named like a team worker whose
 # task is closed or not in the ledger, never the load check's T0, whose session the coordinator
 # waits on for up to 30 minutes), in task number order; then the activity, level and retro-due
 # findings.
@@ -1016,6 +1046,7 @@ def sweep($sessions; $plan; $activity):
   | ([($tasks[] | select(is_open) | [merge_due_finding($standing)] as $due
         | if $due != [] then $due[] elif parked then empty
           else task_findings($sessions; $activity) end),
+      ($tasks[] | select(is_open) | walk_stale_finding),
       (team_sessions($tasks; $sessions)[] | select(.task_state | IN("closed", "unknown"))
         | finding(.task; "stray"; .session; .name;
             "\(.name) \(.session) is live but \(stray_reason)";
@@ -1030,7 +1061,8 @@ def sweep($sessions; $plan; $activity):
 # finished ([{session, role}]: the idle live sessions whose work is handed on, handed_on_launches
 # with no new launch), stowed (while it is stowed_awaiting_resume, {at, roles} of its latest stowed,
 # else null), stowed_since (its latest stowed's time when no launch follows it, else null),
-# refused (refused_launches')} per open task, in task number order.
+# refused (refused_launches'), walk (whether its walk counts now, walk_holds)} per open task, in
+# task number order.
 def plan_tasks($sessions):
   [by_task | to_entries[] | select(.value | is_open) | .key as $task | .value as $events
    | {task: $task,
@@ -1041,7 +1073,8 @@ def plan_tasks($sessions):
                else null end),
       stowed_since: ($events | latest_stowed as $i
         | if $i >= 0 and (any(.[$i + 1:][]; .event == "launch") | not) then .[$i].ts else null end),
-      refused: ($events | refused_launches)}]
+      refused: ($events | refused_launches),
+      walk: ($events | walk_holds(now))}]
   | by_task_number;
 
 # The ids of the open tasks stowed, waiting to resume (stowed_awaiting_resume), among every task's
@@ -1156,7 +1189,9 @@ def merge_ready_prs($plan_repos; $standing_repos):
 
 # What waits on Daniel, over every ledger event, each open task's in task number order:
 # {asks: [{task, id, text (its first line), thread (the task's thread when it was asked), message
-# (the question's discord_message)}], prs: [{task, title, url}], interviews: [{task, title, thread}],
+# (the question's discord_message)}], prs: [{task, title, url}], interviews: [{task, title, thread}]
+# (none whose walk is on in that thread, which walks lists), walks: [{task, title, thread (the
+# thread it runs in, or null)}],
 # standing: standing_word_events of the projects $projects a standing word stands for}, the PRs as
 # merge_ready_prs has them, its standing repos being those of $repos (each repo, lowercased, to its
 # project) whose project a standing word stands for.
@@ -1171,8 +1206,11 @@ def inbox_items($plan_repos; $repos; $projects):
            thread: ([$events[:.k][] | select(.event == "thread") | .discord_thread | strings] | last),
            message: (.ask.discord_message | if . == null then null else tostring end)}],
      prs: [.[] | {task, title} + (.events | merge_ready_prs($plan_repos; $standing_repos)[] | {url})],
-     interviews: [.[] | select(.events | interview_under_way)
+     interviews: [.[] | select(.events | interview_under_way and (qc_walk.thread != "interview"))
         | {task, title, thread: (.events | map(select(.event == "interview-thread") | .discord_thread) | last | tostring)}],
+     walks: [.[] | (.events | qc_walk) as $walk | select($walk != null)
+        | (if $walk.thread == "interview" then "interview-thread" else "thread" end) as $kind
+        | {task, title, thread: (.events | map(select(.event == $kind) | .discord_thread | strings) | last)}],
      standing: ($standing | standing_word_events)};
 
 # The Waiting on you message from inbox_items, at most $limit characters, its asks linked to the
@@ -1189,7 +1227,8 @@ def inbox_text($guild; $limit; $now; $resources):
   def named: .task + if .title == null then "" else " \(.title | clip(80))" end;
   [["**Asks**", [.asks[] | "- \(.task) \(.id): \(.text | clip(150))" + link]],
    ["**PRs ready to merge**", [.prs[] | "- \(named): \(.url)"]],
-   ["**Interviews under way**", [.interviews[] | "- \(named): <#\(.thread)>"]]] as $sections
+   ["**Interviews under way**", [.interviews[] | "- \(named): <#\(.thread)>"]],
+   ["**Walks under way**", [.walks[] | "- \(named)" + (if .thread == null then "" else ": <#\(.thread)>" end)]]] as $sections
   | ([$sections[][1][]] | length) as $total
   | [(.standing // [])[] | "-# Standing merge word on \(.projects | projects_text) since"
       + " https://discord.com/channels/\($guild)/\(.word.discord_channel)/\(.word.discord_message)"] as $words

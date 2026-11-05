@@ -238,13 +238,17 @@ So one spike in Daniel's use never stows a task, and a change Daniel makes takes
 While it is confirmed, the plan's steps, in order, each with what it frees (the reservations it ends, the spike allowance taken again over the sessions left):
 
 1. stop each finished session: idle, its work handed on, by the rule `team-worker` stops a task's own sessions by (`handed_on_launches` in `bin/lib/ledger.jq`), over every open task; with no new launch, a builder counts only once a later builder has launched in its worktree (its work handed on, as for `team-worker`, by a `ticket-done`, `pr` or `done` after its launch), since a builder whose PR is open still takes the review's findings;
-2. stop each running team stack of an open task (its worktree's own, kind `dev`) that no busy session, Daniel's own included, works in;
-3. stow the open tasks with a live worker or a reservation left, the most recently opened first (its work the least invested), until what is left fits; at none, every one.
+2. stop each running team stack of an open task (its worktree's own, kind `dev`) that no busy session, Daniel's own included, works in, and whose task's walk does not count now;
+3. stow the open tasks with a live worker or a reservation left, the most recently opened first (its work the least invested) and any whose walk counts now after every other, until what is left fits; at none, every one, a walk's included.
+
+A walk counts while `team-ui T<n> --walk` has it on and the latest of its start and its `walk-note` events is at most 4 hours old (`walk_holds` in `bin/lib/ledger.jq`), since stowing one frees little and Daniel is waiting on it.
+`team-thread wait` logs a `walk-note` for an interview walk, and `team-ui --capture --note-file` for a walk in the task's own thread; a message of Daniel's reaching neither does not reset the clock.
+Past the 4 hours the walk no longer counts in either step, and `team-sweep`'s `walk-stale` finding names it for the coordinator to ask Daniel about.
 
 The heartbeat's `level` step (`team-level tick`) takes steps 1 and 2 itself, since they lose nothing: `claude stop`, bounded 30 seconds, for each session, and `team-stack stop --worktree <path>`, its data kept, for each stack, one heartbeat log line each, such as "stopped T7-reviewer r7r7r7r7, its work handed on, to bring the team under its budget at minor (30%): frees 1.0 GiB".
 Step 1 seldom finds a session: the heartbeat's `finished` step, before the `capacity` step's reading, stops the same finished sessions on every run, whatever the level and budget (`team-timers --help`), but for a planner whose task has no `plan-approved`, which it keeps since a refusal of its tickets goes back to it.
 So step 1 is left only that planner and the sessions that step could not stop.
-Step 3 is the coordinator's: `team-sweep`'s `level-stow` finding names the tasks, newest first ("level: over budget at minor (30%): stow T174, then T171"), and the coordinator sends each live worker its STOW, then runs `team-stow` with `cause` `level`.
+Step 3 is the coordinator's: `team-sweep`'s `level-stow` finding names the tasks in that order, newest first ("level: over budget at minor (30%): stow T174, then T171"), and the coordinator sends each live worker its STOW, then runs `team-stow` with `cause` `level`.
 `team-level`'s acknowledgement of a change and its automatic post name the same tasks, in task number order.
 
 A task is stowed, waiting to resume, while its latest `stowed` names roles to relaunch and no launch follows it, whatever its `cause`: a task a handoff or a shutdown stowed that the resume could not relaunch (at none, or a launch refused with 75) waits for room as one stowed for the level does.

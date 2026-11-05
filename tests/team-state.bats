@@ -692,6 +692,18 @@ EOF
   ledger_line '{ts: "2026-10-22T05:00:00Z", task: "T14", event: "walk", state: "on"}'
   run_bin -0 team-state T14
   assert_equal "$output" "T14 proj feature planning | no live worker | walk on since 2026-10-22T05:00:00Z | waiting on Daniel: walk the import page"
+  # A walk in the task's interview thread says so, in both forms.
+  ledger_line '{ts: "2026-10-22T05:10:00Z", task: "T14", event: "walk", state: "off"}'
+  ledger_line '{ts: "2026-10-22T05:20:00Z", task: "T14", event: "walk", state: "on", thread: "interview"}'
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .walk <<<"$output")" '{"since":"2026-10-22T05:20:00Z","thread":"interview"}'
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature planning | no live worker | walk on since 2026-10-22T05:20:00Z in its interview thread | waiting on Daniel: walk the import page"
+  # Daniel's word that the primary stack was reseeded goes with it, in the JSON.
+  ledger_line '{ts: "2026-10-22T05:30:00Z", task: "T14", event: "walk", state: "off"}'
+  ledger_line '{ts: "2026-10-22T05:40:00Z", task: "T14", event: "walk", state: "on", thread: "interview", reseeded: "1564000000000000020", reseeded_port: 5173}'
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c .walk <<<"$output")" '{"since":"2026-10-22T05:40:00Z","thread":"interview","reseeded":"1564000000000000020","reseeded_port":5173}'
   # A walk left on ends with its task.
   ledger_line '{ts: "2026-10-22T06:00:00Z", task: "T14", event: "closed", archive: [], returned: [], kept: []}'
   run_bin -0 team-state T14 --json
@@ -1070,4 +1082,5 @@ progress_task() {
   assert_contains "$output" "(caught up cleanly with <base>)"
   assert_contains "$output" "walk on since <ts>"
   assert_contains "$output" '{"since": "<ts>"}'
+  assert_contains "$output" '"thread": "interview"'
 }

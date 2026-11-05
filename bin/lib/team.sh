@@ -12,10 +12,10 @@
 # the script's help_more, if it defined one before sourcing), and provides die, usage_error, team_project, ledger_jq, json_vars, ledger_append,
 # task_events, task_event_array, known_task_events, open_task_events, task_status, task_worktrees, script_place_refusal, local_path,
 # archive_left_out, rsync_rule, archive_task_dir, machine_name, os_release, team_os, tool_dirs,
-# team_tool_path, fence_reason, offline_hold, lease_refusal, worker_refusal, toolkit_refusal, lease_gate, worktree_changes, same_path, bounded, docker_bounded, docker_silence, trust_probe,
+# team_tool_path, fence_reason, offline_hold, lease_refusal, worker_refusal, capture_refusal, toolkit_refusal, task_own_dirs, path_under, lease_gate, worktree_changes, same_path, bounded, docker_bounded, docker_silence, trust_probe,
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin,
 # only_records, records_list, records_pathspecs, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
-# own_project, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_level, image_type, discord_token, discord_api,
+# own_project, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_level, image_type, email_kind, refused_emails, discord_token, discord_api,
 # daniel_message, refresh_inbox, github, base_merge, clean_base_merges, pr_part, pr_file_reasons, task_state_json, pr_standing_word, loose_objects, pack_size, story_file and findings_file, and sets IMAGE_TYPE,
 # PACK_LOOSE, COORDINATOR_CHANNEL and INTERVIEW_CHANNEL.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
@@ -253,7 +253,7 @@ local_path() {
 # The paths of the task directory <dir> that have no place in the team home's history, so its
 # archive leaves them out, each as "<why>\t<path>" (relative to <dir>), NUL-terminated, in this
 # order, sorted within each:
-#   UI capture         a top-level ui/ (a frontend capture stays on the machine that took it)
+#   UI capture         a top-level ui/ (a frontend capture's files stay on the machine that took them)
 #   stack logs         a top-level stack-logs/, where team-stack down saves each service's log
 #                      tail: for the builder at the time, never the records
 #   Lighthouse reports a ui-check run's lighthouse/, ui-check/<run>/lighthouse (its failing
@@ -499,15 +499,57 @@ worker_refusal() {
   fi
 }
 
+# Print why this session may not read the Agent Chrome for <task>, or fail when it may: only a
+# worker session is held, and the one worker that may is a planner of <task> (its settings'
+# AGENT_TEAM_TASK) while that task's walk is on in its interview thread, by Daniel's decision
+# (D1 of T216's report, 2026-11-04): that planner captures the page Daniel drives, read-only. A ledger
+# that cannot be read refuses. team-ui --capture and the frontend toolkit's ui-capture both ask
+# it: capture_refusal <task>
+capture_refusal() {
+  local task=$1 role=${AGENT_TEAM_ROLE:-} own=${AGENT_TEAM_TASK:-}
+  [[ -n $role && $role != coordinator ]] || return 1
+  if [[ $role != planner ]]; then
+    worker_refusal "$task" "takes no capture of the Agent Chrome"
+  elif [[ $task != "$own" ]]; then
+    echo "a planner session of ${own:-no task} takes no capture of the Agent Chrome for $task: a planner captures only during its own task's interview walk"
+  elif [[ $(task_event_array "$task" | ledger_jq 'qc_walk.thread // empty' -r) != interview ]]; then
+    echo "$task has no interview walk on: a planner captures only during its own task's interview walk, which Daniel starts through the coordinator"
+  else
+    return 1
+  fi
+}
+
+# Set TASK_OWN_DIRS to the real path of each open worktree's task directory of <task>
+# (<worktree>/<task_dir>), what a worker's files must lie under; it holds none for a task with no
+# open worktree: task_own_dirs <task>
+task_own_dirs() {
+  local worktree project dir
+  TASK_OWN_DIRS=()
+  while IFS=$'\t' read -r worktree project; do
+    dir=$(team_project "$project" task_dir) || die "cannot read $project's task directory from the registry"
+    TASK_OWN_DIRS+=("$(realpath -m -- "$worktree/$dir")")
+  done < <(task_worktrees "$1" | jq -r '[.worktree, .project] | @tsv')
+}
+
+# Whether the real path <path> lies under one of <dirs>: path_under <path> <dirs>...
+path_under() {
+  local path=$1 dir
+  for dir in "${@:2}"; do
+    [[ $path != "$dir"/* ]] || return 0
+  done
+  return 1
+}
+
 # Print why a worker session of <role> may not load toolkit <name>, or fail when it may: the
 # coordinator toolkit is claude-coordinator's alone and the frontend toolkit Daniel's own sessions'
-# (it attaches to their one Agent Chrome window), so no worker loads either; a production toolkit
-# (prod-*) is the ops role's alone. The one list of them, which team-worker and team-load-check
-# read; an empty <role> judges only the toolkits no worker loads: toolkit_refusal <name> <role or "">
+# (it attaches to their one Agent Chrome window, and a walk's planner reads it only through
+# capture_refusal's gate), so no worker loads either; a production toolkit (prod-*) is the ops
+# role's alone. The one list of them, which team-worker and team-load-check read; an empty <role>
+# judges only the toolkits no worker loads: toolkit_refusal <name> <role or "">
 toolkit_refusal() {
   case $1 in
     coordinator) echo "toolkit 'coordinator' is the coordinator's own (claude-coordinator loads it)" ;;
-    frontend) echo "toolkit 'frontend' is Daniel's own (claude --plugin-dir in their session): it attaches to their one Agent Chrome window, never a worker's" ;;
+    frontend) echo "toolkit 'frontend' is Daniel's own (claude --plugin-dir in their session): it attaches to their one Agent Chrome window, never a worker's; by Daniel's decision (D1 of T216's report, 2026-11-04), a walk's planner only reads that window, by team-ui --capture" ;;
     prod-*) [[ -n $2 && $2 != ops ]] || return 1; echo "toolkit '$1' is for the ops role only" ;;
     *) return 1 ;;
   esac
@@ -1102,6 +1144,52 @@ image_type() {
     474946383761* | 474946383961*) echo gif ;;
     52494646????????57454250*) echo webp ;;
   esac
+}
+
+# The one rule on email addresses, which data-check's two policies and a worker's team-post hold to:
+# the kind of the address <address>: none (no address: a name@word.<file type>, or a domain starting
+# with a digit), service (a noreply or no-reply address, one at users.noreply.github.com, git@<host>),
+# fixture (data-check's header lists the domains), owner (it is <owner>, when given), provider (a
+# public one) or other: email_kind <address> [<owner>]
+email_kind() {
+  local addr=${1,,} owner=${2:-}
+  local name=${addr%@*} domain=${addr##*@}
+  local file_type='png|jpe?g|svg|gif|webp|ico|js|ts|vue|css|scss|py|json|md|html|lock|map|mjs|cjs|txt|min'
+  local provider='^(gmail|googlemail|hotmail|outlook|live|msn|yahoo|ymail|icloud|me|mac|aol|protonmail|proton|pm|gmx|mail|shaw|telus|rogers|sympatico|bell|yandex|qq|163|zoho|hey|fastmail)\.[a-z.]{2,8}$'
+  if [[ $domain =~ \.($file_type)$ || $domain =~ ^[0-9] ]]; then
+    echo none
+  elif [[ $name =~ ^no-?reply$ || $name == git || $domain == users.noreply.github.com ]]; then
+    echo service
+  elif [[ $domain =~ (^|\.)example(\.|$) || $domain =~ \.(test|invalid|localhost)$ ||
+    $domain == localhost || $domain =~ (^|\.)ex\.(com|io|org)$ ]]; then
+    echo fixture
+  elif [[ -n $owner && $addr == "${owner,,}" ]]; then
+    echo owner
+  elif [[ $domain =~ $provider ]]; then
+    echo provider
+  else
+    echo other
+  fi
+}
+
+# How many addresses in the text on stdin <policy> refuses, as "<count> <kind words>" for each kind
+# it refuses, one per line, never an address: code refuses a provider's and every other outside the
+# fixture domains, records only a provider's other than <owner>: refused_emails <policy> [<owner>]
+refused_emails() {
+  local policy=$1 owner=${2:-} addr kind noun words
+  local -A refused_kinds=()
+  while IFS= read -r addr; do
+    kind=$(email_kind "$addr" "$owner")
+    case $policy:$kind in
+      code:provider | code:other | records:provider) refused_kinds[$kind]=$((${refused_kinds[$kind]:-0} + 1)) ;;
+    esac
+  done < <(LC_ALL=C grep -aoE "[A-Za-z0-9._%+'-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,24}" || true)
+  for kind in "${!refused_kinds[@]}"; do
+    noun=address words="outside the fixture domains"
+    ((refused_kinds[$kind] == 1)) || noun=addresses
+    [[ $kind != provider ]] || words="at a public provider"
+    echo "${refused_kinds[$kind]} email $noun $words"
+  done | sort
 }
 
 # Print the Discord bot token from ~/.claude/channels/discord/.env, or fail with nothing printed.

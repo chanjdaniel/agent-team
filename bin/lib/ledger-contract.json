@@ -222,8 +222,15 @@
     },
     "walk": {
       "writer": "team-ui",
-      "about": "a manual QC walk of the task turned on or off (team-ui --walk start or stop), only when that changes it: the walk is on while the task's latest walk is on and the task is not closed, since its ts, and while it is on each message of Daniel's in the task's thread is a walk note the coordinator captures the page with",
-      "required": {"state": ["on", "off"]}
+      "about": "a manual QC walk of the task turned on or off (team-ui --walk start or stop), only when that changes it: the walk is on while the task's latest walk is on and the task is not closed, since its ts, and while it is on each message of Daniel's in the task's thread is a walk note the coordinator captures the page with; thread interview on an on event puts the walk in the task's interview thread, where its planner captures instead; reseeded on an on event is Daniel's Discord message saying the primary stack was just reseeded, which team-ui read back before logging it, and reseeded_port the one port that message names, whose captures that walk clears for team-post",
+      "required": {"state": ["on", "off"]},
+      "optional": {"thread": ["interview"], "reseeded": "id", "reseeded_port": "number"}
+    },
+    "walk-note": {
+      "writer": ["team-thread", "team-ui"],
+      "about": "a message of Daniel's on the walk that is on, its id when known and never its words: team-thread wait logs the latest it read in an interview walk's thread, team-ui --capture --note-file a note in a walk of the task's own thread; a walk counts for its stack and its place in the stow order for 4 hours after the latest of these and its start (walk_holds in bin/lib/ledger.jq), so a message reaching neither path does not reset that clock",
+      "required": {},
+      "optional": {"discord_message": "id"}
     },
     "image-posted": {
       "writer": "team-post",

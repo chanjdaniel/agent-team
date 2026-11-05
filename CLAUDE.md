@@ -57,6 +57,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
   - `records-rewrite.md`: the cutover that rewrites the records repository's history with `team-records-rewrite`, each step Daniel's or the coordinator's.
   - `resources.md`: the team's resources: its systemd user slice and each task's, `team-capacity install`, the placement of worker sessions and the gate in it, the checked assumptions, the readings per task, the learned costs, heavy runs' scopes, and the doctor's `resources` line.
 - `templates/`: the task plan and the worker briefs `team-open` and `team-brief` render.
+  - `briefs/planner-walk.md`: a planner following Daniel's manual QC walk in its interview thread, capturing the page they drive.
 - `tests/`: the bats suite, one `.bats` file per script (a long one split by topic, as `team-doctor-*.bats`).
   - `tests/bootstrap-drill`: runs `team-bootstrap` on a fresh runner for the by-hand Bootstrap workflow.
   - `tests/compaction-drill`: run by hand by the coordinator, since it starts a real Claude session; it compacts a coordinator-shaped session in a sandbox team home built from `tests/fixtures/compaction-drill/` and checks it still knows each task's wait and every current item.
@@ -71,6 +72,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
 - `toolkits/`: plugin directories a worker loads with `team-worker --toolkit <name>`: MCP config (`.mcp.json`), skills, hooks (`hooks/hooks.json`), docs, scripts, and the skills' evals (`claude plugin eval`, on MCP mocks).
   - `browser/`: its session-start hook prints a banner for a UI task's builder and reviewer, whose `ui-check` skill captures and judges the screens a UI change touches.
   - `coordinator/`: the coordinator's MCP servers and the claude.ai connectors it keeps, no worker's, the only ones `claude-coordinator` lets it load (its README says how the others are denied and how one is added).
+  - `frontend/`: the Agent Chrome's capture and its server, for Daniel's session and the coordinator; of the workers, only a walk's planner reads it, by `team-ui --capture`.
 
 `.scratch/task/` is the task directory of a task on this repo, ignored by git.
 
@@ -105,6 +107,7 @@ It holds:
   On every remote and branch, it also refuses a push whose tip tree holds a records path unless the remote's URL is the team home's origin (a trailing `.git` or slash aside), so the records never reach the code repository from a stale checkout.
 - The records repository takes its one hook from here by absolute path, `git -C ~/agent-team-records config core.hooksPath ~/agent-team/bin/hooks/records-git`, which `team-doctor`'s `records hooks` line checks: its `pre-commit` refuses a records commit that adds an email address at a public provider or any image (a screenshot is never kept in git), naming each path, never the address.
 - One scan, `bin/lib/data-check`, holds both data rules: that hook runs its `records` policy, and CI's `data` job its `code` policy (no email address outside the fixture domains, no image, no `node_modules/` path), after gitleaks over the PR's commits.
+  Its rule on addresses is `email_kind` and `refused_emails` in `bin/lib/team.sh`, which `team-post` holds a worker's post and a capture's text to as well.
   A test that needs an address uses `example.com`, `example.invalid` or another fixture domain `bin/lib/data-check`'s header lists, and builds one at a real provider from a variable, so the file never holds one written out.
 - Every session is denied skipping the hooks (`--no-verify`, `git commit -n`) and setting, unsetting or overriding `core.hooksPath` (reading it stays allowed), so the setup lines above are Daniel's to run.
   Those deny rules are a speed bump, never the guarantee: git accepts too many spellings for a deny list to cover, so the hooks and `dev`'s protection are what hold the rule.

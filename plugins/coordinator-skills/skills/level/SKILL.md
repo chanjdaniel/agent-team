@@ -22,7 +22,7 @@ You stay up at every level, outside the share.
 
 ## The sweep's findings
 
-- `level-stow` ("level: over budget at minor (30%): stow T174, then T171", newest task first) comes once `team-capacity plan` confirms the team is over budget, in two readings in a row or in one since the level changed, a drop automatic mode made included: stow the tasks it names as "Stowing tasks" says, without `--stop-runs`, so a running test or gate finishes first.
+- `level-stow` ("level: over budget at minor (30%): stow T174, then T171", newest task first, and a task whose walk counts after every other) comes once `team-capacity plan` confirms the team is over budget, in two readings in a row or in one since the level changed, a drop automatic mode made included: stow the tasks it names as "Stowing tasks" says, without `--stop-runs`, so a running test or gate finishes first.
 - `level-resume` ("level: T171 fits again: relaunch its builder") names one task at a time, the earliest stowed of those that fit, whether the level or a handoff stowed it (one the `resume` skill could not relaunch): relaunch it as "Relaunching a task" says, and once it is launched the next finding names the next.
 - `level-launch` ("level: T5 has room again: launch its reviewer, refused for room at <time>") names a task whose launch `team-worker` refused with 75 (the `paused` you logged with its line), one task at a time: run the same `team-worker` command again, with the brief you wrote for it; a 75 again is logged as `paused` with its line, and the next `level-launch` names it again.
 - `level` (an error) is `team-capacity`'s: fix what it names, or take it to Daniel.

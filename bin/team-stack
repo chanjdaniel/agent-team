@@ -100,9 +100,17 @@
 #           docker compose -p <project> stop, its data kept, and one line is printed and added to
 #           ~/.local/state/agent-team/stacks/sweep.log ("<time> stopped <project> of <task> in
 #           <worktree>: last busy at <time> (idle_minutes <n>), its data kept", or "not seen busy
-#           since its start at <time>"). Gate and unowned stacks are never stopped. Docker not
-#           answering means no stack runs: it says so on stderr, exit 0, so the heartbeat logs
-#           nothing for it (stdout is only what was stopped). The session list is read only when a
+#           since its start at <time>"). Gate and unowned stacks are never stopped.
+#           A dev stack of a task whose walk counts now (walk_holds in bin/lib/ledger.jq: team-ui's
+#           walk is on, and Daniel's last walk-note, or its start, is at most 4 hours old) is busy
+#           too, since a person clicking in Chrome makes no session busy: it gets last_busy and the
+#           walk's start as walk in the state file, and for each walk one line, printed and added
+#           to sweep.log ("<time> kept <project> of <task> in <worktree>: its walk is on since
+#           <time>, which counts as busy"). An instance (kind e2e) is never held, as no walk runs
+#           on one.
+#           Docker not answering means no stack runs: it says so on stderr, exit 0, so the heartbeat
+#           logs nothing for it (stdout is only what was stopped or first kept for a walk). The
+#           session list is read only when a
 #           team stack runs; one that cannot be read is exit 1, nothing stopped. A stop that fails
 #           is named on stderr, the others still swept, exit 1.
 #
@@ -803,6 +811,7 @@ cmd_sweep() {
     | select(all(.[]; owner_class(.Config.Labels; .project; $stacks; $gated) == "team") and any(.[]; .State.Running))
     | {project: .[0].project, task: ([.[] | team_label(.Config.Labels; "task") // empty] | unique | join(",")),
        worktrees: ([.[] | team_label(.Config.Labels; "worktree") // empty] | unique),
+       dev: any(.[]; team_label(.Config.Labels; "kind") == "dev"),
        started: ([.[] | select(.State.Running) | .State.StartedAt | utc_time | fromdate] | max)}' \
     --slurpfile stacks "$WORK/stacks.json" --arg gate_root "$GATE_WORKTREES" "$WORK/containers.json" >"$WORK/running.jsonl"
   [[ -s $WORK/running.jsonl ]] || return 0
@@ -816,6 +825,12 @@ cmd_sweep() {
     busy+=("$(realpath -m -- "$cwd")")
   done < <(jq -r '.[] | select(.status == "busy") | .cwd // empty | select(. != "")' <<<"$LIVE_SESSIONS")
 
+  # The tasks whose walk counts now (walk_holds in bin/lib/ledger.jq), each with its walk's start.
+  local walks='{}' walk said
+  [[ ! -e $TEAM_HOME/ledger.jsonl ]] ||
+    walks=$(ledger_jq 'ledger_events | by_task | with_entries(select(.value | walk_holds(now)) | .value |= qc_walk.since)' \
+      -nRc "$TEAM_HOME/ledger.jsonl")
+
   local stack project worktree file now last line failed=''
   local -a worktrees
   mkdir -p "$STATE/stacks"
@@ -824,6 +839,18 @@ cmd_sweep() {
     mapfile -t worktrees < <(jq -r '.worktrees[]' <<<"$stack")
     file=$STATE/stacks/$project.json
     now=$(date +%s)
+    walk=$(jq -r --argjson walks "$walks" 'select(.dev) | first(.task | split(",")[] | $walks[.] // empty) // empty' <<<"$stack")
+    if [[ -n $walk ]]; then
+      said=$(jq -r '.walk // empty' "$file" 2>/dev/null) || said=''
+      jq -n --argjson now "$now" --arg walk "$walk" '{last_busy: ($now | todate), walk: $walk}' >"$file.tmp" && mv "$file.tmp" "$file"
+      [[ $said != "$walk" ]] || continue
+      line=$(jq -nr --argjson stack "$stack" --argjson now "$now" --arg walk "$walk" '
+        "\($now | todate) kept \($stack.project) of \($stack.task) in \($stack.worktrees | if . == [] then "no worktree" else join(", ") end):"
+          + " its walk is on since \($walk), which counts as busy"')
+      printf '%s\n' "$line" >>"$STATE/stacks/sweep.log"
+      printf '%s\n' "$line"
+      continue
+    fi
     if sweep_busy "${worktrees[@]}"; then
       jq -n --argjson now "$now" '{last_busy: ($now | todate)}' >"$file.tmp" && mv "$file.tmp" "$file"
       continue

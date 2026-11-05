@@ -1275,6 +1275,84 @@ retro due since $(plus "$opened" 24) (every 24h, last retro T30): run the retro 
   (((end - start) < 2000000000))
 }
 
+# The walk of <task> turned on at <time>, as team-ui logs it: walk_at <task> <time>
+walk_at() {
+  ledger_line --arg t "$1" --arg ts "$2" '{ts: $ts, task: $t, event: "walk", state: "on"}'
+}
+
+# A message of Daniel's on <task>'s walk at <time>: walk_note_at <task> <time>
+walk_note_at() {
+  ledger_line --arg t "$1" --arg ts "$2" '{ts: $ts, task: $t, event: "walk-note"}'
+}
+
+@test "a stale walk's next step names the form that walk needs to start again" {
+  opened T3
+  launch T3 planner 4f2a9c1e
+  sessions "$(session 4f2a9c1e T3-planner busy working)"
+  ledger_line --arg ts "$(ago 6)" '{ts: $ts, task: "T3", event: "walk", state: "on", thread: "interview"}'
+  run_bin -1 team-sweep
+  assert_contains "$output" "if so, team-ui T3 --walk stop, then team-ui T3 --walk start --in interview"
+  [[ $output != *--reseeded* ]]
+  ledger_line --arg ts "$(ago 5)" '{ts: $ts, task: "T3", event: "walk", state: "off"}'
+  ledger_line --arg ts "$(ago 5)" '{ts: $ts, task: "T3", event: "walk", state: "on", thread: "interview", reseeded: "1564000000000000020", reseeded_port: 5173}'
+  run_bin -1 team-sweep
+  assert_contains "$output" "if so, team-ui T3 --walk stop, then team-ui T3 --walk start --in interview --reseeded <a new message of Daniel's>"
+}
+
+@test "a walk with no message from Daniel for over 4 hours is named, from its last message or its start" {
+  opened T3
+  launch T3 planner 4f2a9c1e
+  sessions "$(session 4f2a9c1e T3-planner busy working)"
+  local since note
+  since=$(ago 6)
+  walk_at T3 "$since"
+  run_bin -1 --separate-stderr team-sweep
+  assert_equal "$output" "T3 walk-stale: its walk has had no message from Daniel since $since, over 4 hours, so it no longer keeps its stack up or stows last; next: ask Daniel whether it goes on: if not, team-ui T3 --walk stop; if so, team-ui T3 --walk stop, then team-ui T3 --walk start"
+  run_bin -1 team-sweep --json
+  assert_equal "$(jq -c '[.[] | [.task, .kind, .session, .name]]' <<<"$output")" '[["T3","walk-stale",null,null]]'
+  # A message 5 hours ago names that time, and one within the 4 hours ends the finding.
+  note=$(ago 5)
+  walk_note_at T3 "$note"
+  run_bin -1 team-sweep
+  assert_contains "$output" "no message from Daniel since $note, over 4 hours"
+  walk_note_at T3 "$(ago 1)"
+  run_bin -0 team-sweep
+  assert_equal "$output" ""
+}
+
+@test "a stale walk is named on a parked task too" {
+  opened T3
+  launch T3 planner 4f2a9c1e
+  event T3 waiting '{on: "Daniel", reason: "the walkthrough"}'
+  walk_at T3 "$(ago 6)"
+  run_bin -1 team-sweep --json
+  assert_equal "$(jq -c '[.[] | [.task, .kind]]' <<<"$output")" '[["T3","walk-stale"]]'
+}
+
+@test "no walk within its 4 hours, stopped, or of a closed task is named" {
+  opened T3
+  launch T3 planner 4f2a9c1e
+  sessions "$(session 4f2a9c1e T3-planner busy working)"
+  walk_at T3 "$(ago 3)"
+  run_bin -0 team-sweep
+  walk_at T3 "$(ago 8)"
+  ledger_line --arg ts "$(ago 7)" '{ts: $ts, task: "T3", event: "walk", state: "off"}'
+  run_bin -0 team-sweep
+  opened T4
+  walk_at T4 "$(ago 6)"
+  event T4 closed '{archive: [], returned: [], kept: []}'
+  run_bin -0 team-sweep
+}
+
+@test "a planner idle with a walk note as its only event since its launch stays silent, not handed back" {
+  opened T3
+  launch T3 planner 4f2a9c1e
+  walk_note_at T3 "$(ago 1)"
+  sessions "$(session 4f2a9c1e T3-planner idle)"
+  run_bin -1 team-sweep --json
+  assert_equal "$(jq -c '[.[] | .kind]' <<<"$output")" '["silent"]'
+}
+
 # level_task <task> <opened at HH:MM> [<role>:<session>]: <task> opened at that time on
 # 2026-10-22 in /w/<n>, with its worker launched a minute later.
 level_task() {

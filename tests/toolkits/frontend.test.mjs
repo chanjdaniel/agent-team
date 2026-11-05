@@ -5,7 +5,7 @@
 // agent-chrome starts Chrome with its own profile and debugging port.
 import assert from "node:assert/strict";
 import { execFile, execFileSync } from "node:child_process";
-import { chmodSync, existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { connect, createServer } from "node:net";
 import { join } from "node:path";
@@ -18,10 +18,17 @@ const scripts = join(repoRoot, "toolkits", "frontend", "scripts");
 const modules = join(repoRoot, "servers", "node_modules");
 const run = promisify(execFile);
 
+// The environment with no worker's role in it, as a builder running these tests has one, which
+// ui-capture would hold to its gate; plus <extra>.
+function environment(extra = {}) {
+  const { AGENT_TEAM_ROLE, AGENT_TEAM_TASK, ...rest } = process.env;
+  return { ...rest, ...extra };
+}
+
 // A script's exit status, stdout and stderr, whatever the status.
 async function script(name, args, options = {}) {
   try {
-    const { stdout, stderr } = await run(join(scripts, name), args, { timeout: 120_000, ...options });
+    const { stdout, stderr } = await run(join(scripts, name), args, { timeout: 120_000, env: environment(), ...options });
     return { status: 0, stdout, stderr };
   } catch (error) {
     if (error.code === undefined || typeof error.code !== "number") throw error;
@@ -301,6 +308,66 @@ describe("ui-capture", () => {
 });
 
 // A localhost page with no Vue app on it, as a production build or another dev server.
+// The gate team-ui holds a worker to holds a run of the script itself too. Each case reads a port
+// nothing listens on, so a run past the gate says no Agent Chrome answers, and none reads a Chrome.
+describe("ui-capture in a worker session", () => {
+  const events = [
+    { ts: "2026-11-05T10:00:00Z", task: "T7", event: "opened", project: "p", path: "small", type: "fix", title: "t", branch: "b", base: "dev", base_sha: "aba9d074", worktree: "/w" },
+    { ts: "2026-11-05T10:01:00Z", task: "T7", event: "walk", state: "on", thread: "interview" },
+    { ts: "2026-11-05T10:01:00Z", task: "T9", event: "opened", project: "p", path: "small", type: "fix", title: "t", branch: "c", base: "dev", base_sha: "aba9d074", worktree: "/x" },
+    { ts: "2026-11-05T10:02:00Z", task: "T9", event: "walk", state: "on" },
+  ];
+  let home, port, noChrome;
+  before(async () => {
+    home = tempDir("team-home");
+    mkdirSync(join(home, "tasks"), { recursive: true });
+    writeFileSync(join(home, "ledger.jsonl"), events.map((event) => JSON.stringify(event)).join("\n") + "\n");
+    port = await freePort();
+    noChrome = `ui-capture: no Agent Chrome answers at http://127.0.0.1:${port}; start it with toolkits/frontend/scripts/agent-chrome\n`;
+  });
+  const capture = (role, task, teamHome = home) =>
+    script("ui-capture", ["--browser-url", `http://127.0.0.1:${port}`, tempDir("out")], {
+      env: environment({ TEAM_HOME: teamHome, AGENT_TEAM_ROLE: role, AGENT_TEAM_TASK: task }),
+    });
+
+  test("refuses every role but a planner, its own task's walk on or not", async () => {
+    for (const role of ["builder", "reviewer", "ops"]) {
+      const result = await capture(role, "T7");
+      assert.equal(result.status, 1);
+      assert.equal(result.stderr, `ui-capture: a ${role} session takes no capture of the Agent Chrome: that is the coordinator's; send it your message\n`);
+    }
+  });
+
+  test("refuses a planner with no walk on in its own interview thread", async () => {
+    // T9's walk is in its task's own thread, and T11 has none.
+    for (const task of ["T9", "T11"]) {
+      const result = await capture("planner", task);
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, new RegExp(`^ui-capture: ${task} has no interview walk on: `));
+    }
+  });
+
+  test("lets that walk's planner, and the coordinator, past the gate", async () => {
+    for (const [role, task] of [["planner", "T7"], ["coordinator", "T9"]]) {
+      const result = await capture(role, task);
+      assert.equal(result.status, 1);
+      assert.equal(result.stderr, noChrome);
+    }
+  });
+
+  test("refuses when the gate cannot read the ledger, a worker's capture never going on unjudged", async () => {
+    const empty = tempDir("no-ledger");
+    const result = await capture("planner", "T7", empty);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /^ui-capture: T7 has no interview walk on: /);
+    // A team home the library refuses says so in its one line.
+    const missing = await capture("planner", "T7", join(empty, "missing"));
+    assert.equal(missing.status, 1);
+    assert.doesNotMatch(missing.stderr, /no Agent Chrome answers/);
+    assert.equal(missing.stderr.trimEnd().split("\n").length, 1);
+  });
+});
+
 describe("ui-capture on a page without a Vue router", () => {
   let site, chrome;
   before(async () => {
@@ -505,7 +572,8 @@ function assertPageCapture(out, url, { title = "Fixture app", route = "/", reaso
   const files = [...(visible ? ["page.png"] : []), "page-snapshot.txt", "ui-page.md", ...(element ? ["ui-pick.md", ...(visible ? ["element.png"] : [])] : [])];
   assert.deepEqual(readdirSync(out).sort(), files.sort());
   const page = readFileSync(join(out, "ui-page.md"), "utf8");
-  assert.match(page, /^# The page capture\n\nCaptured \d{4}-\d\d-\d\dT[\d:.]+Z by ui-capture from the Agent Chrome at http:\/\/127\.0\.0\.1:\d+\.\n/);
+  // bin/team-post reads where the page came from in these two fixed lines, the third and the fourth.
+  assert.match(page, /^# The page capture\n\nCaptured \d{4}-\d\d-\d\dT[\d:.]+Z by ui-capture from the Agent Chrome at http:\/\/127\.0\.0\.1:\d+\.\nPage: http:\/\/(localhost|127\.0\.0\.1):\d+\//);
   assert.ok(page.includes(`\nPage: ${url}\nRoute: ${route}\nTitle: ${title}\n\nTaken because: ${reason}\nOther localhost tabs: ${others}\n`), page);
   const shot = visible
     ? "- page.png: the viewport, as Daniel sees it"

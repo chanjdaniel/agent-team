@@ -8,8 +8,9 @@
 # as team-sweep reads it), with the task, the ask's id, its first line and a link to the question
 # (its discord_message, which team-ask logs, in the task's thread; else the thread); each PR ready
 # to merge (the task's phase awaiting-merge, the PR not merged and no merge-approved logged at its
-# head), with its full URL; and each interview under way (an interview-thread with no planner's
-# done or plan-approved after it), with its thread. With none, it says "Nothing waits on you". The
+# head), with its full URL; each interview under way (an interview-thread with no planner's done
+# or plan-approved after it) with no walk on in that thread, with its thread; and each walk under
+# way (team-ui --walk, on), with the thread it runs in. With none, it says "Nothing waits on you". The
 # line after the items and the standing word lines (below), or after the items alone when no word
 # stands, is the team's resource level, from team-level status --stored --json (it takes no
 # reading): "Resources: manual, minor (30%): 9.2 GiB and 3.6 cores for the team; 6.1 GiB reserved;
