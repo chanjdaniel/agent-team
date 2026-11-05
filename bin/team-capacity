@@ -146,9 +146,10 @@
 #                             estimate then (no use yet, and its time as admitted), since a new
 #                             session or stack has not grown yet, until a session's launch was
 #                             logged a minute or more before a claude agents --json that does not
-#                             list that session was read, which leaves it out of the reading too; a session of its kind and task
-#                             the reading holds is in that window (the one using least, when
-#                             several), reserved once, at the larger of the estimate and its use;
+#                             list that session was read, which leaves it out of the reading
+#                             too; a session of its kind and task the reading holds is in that
+#                             window (the one using least, when several), reserved once, at the
+#                             larger of the estimate and its use;
 #            stacks, gates    each running team or gate stack, and the gate while it runs a
 #                             pipeline, at the larger of its estimate and its use; a stack an
 #                             admission names (its kind, task and --name) is that admission,
@@ -184,17 +185,18 @@
 #          ~/.local/state/agent-team/capacity/admitted.json ({at, kind, task, name (a stack's, else
 #          null), bytes, pid (a heavy run's team-heavy, the lock's holder)}), which reserves it for
 #          10 minutes as status --json's admissions say (a heavy run's while its team-heavy holds
-#          the lock, a session's until its session stops); else it exits 75 with the reason on stderr and what makes room, "no room for
-#          session:reviewer at minor (30%): 8.9 GiB of 9.2 GiB reserved, a reviewer needs 0.5 GiB;
-#          room comes when the team's work shrinks or the level rises", and at level none "no room
-#          for session:reviewer: the team is at level none: nothing starts; room comes when Daniel
-#          raises the level" ("when the level rises" in auto mode). CPU is never admitted: the
-#          slice's quota holds it. Above none, with no reading to size the budget by, exit 1 with
-#          the reason.
+#          the lock, a session's until its session stops); else it exits 75 with the reason on
+#          stderr and what makes room, "no room for session:reviewer at minor (30%): 8.9 GiB of
+#          9.2 GiB reserved, a reviewer needs 0.5 GiB; room comes when the team's work shrinks or
+#          the level rises", and at level none "no room for session:reviewer: the team is at level
+#          none: nothing starts; room comes when Daniel raises the level" ("when the level rises"
+#          in auto mode). CPU is never admitted: the slice's quota holds it. Above none, with no
+#          reading to size the budget by, exit 1 with the reason.
 # plan     What brings the team back under the level's memory budget, and what may come back,
 #          from the stored readings only (it takes none, so the sweep and the heartbeat read it
 #          fast), the ledger and the session list (claude agents --json, or with --sessions the
-#          list a caller already read, such as team-sweep's, kept in <file>; an unreadable one
+#          list a caller already read, such as team-sweep's, kept in <file>, whose time is taken
+#          as the time that list was read, so write it straight after the read; an unreadable one
 #          fails it, exit 1). Over
 #          budget is what the newest reading reserves (as status --json says it) above the
 #          budget, or at none any open task with a live worker or a running stack, leaving out a

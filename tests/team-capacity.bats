@@ -773,13 +773,18 @@ admissions() {
   "$REPO_ROOT/bin/team-capacity" status --json | jq -c '.reserved.items[] | select(.part == "admissions") | [.kind, .task]'
 }
 
-# Move every admission and launch two minutes back, past a launch's grace, inside the 10 minutes.
-two_minutes_pass() {
-  local back='(fromdateiso8601 - 120 | todate)'
+# Move every admission and launch <seconds> back.
+seconds_pass() {
+  local back="(fromdateiso8601 - $1 | todate)"
   jq -c "map(.at |= $back)" "$STATE_DIR/admitted.json" >"$STATE_DIR/admitted.back"
   mv "$STATE_DIR/admitted.back" "$STATE_DIR/admitted.json"
   jq -c "if .event == \"launch\" then .ts |= $back else . end" "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/ledger.back"
   mv "$TEAM_HOME/ledger.back" "$TEAM_HOME/ledger.jsonl"
+}
+
+# Past a launch's grace, inside the 10 minutes.
+two_minutes_pass() {
+  seconds_pass 120
 }
 
 @test "a session just launched keeps its admission though the list does not hold it yet, then a stopped one is released" {
@@ -951,6 +956,23 @@ EOF
   echo '[]' >"$BATS_TEST_TMPDIR/sessions.json"
   run_bin -0 team-capacity plan --json --sessions "$BATS_TEST_TMPDIR/sessions.json"
   assert_equal "$(stub_calls claude)" ""
+}
+
+@test "the plan takes the time of the list it is given as the list's read, so a list older than a launch releases nothing" {
+  busy_reading
+  level full
+  run_bin -0 team-capacity admit --kind session:reviewer --task T9
+  launched T9 reviewer c0000009
+  seconds_pass 90
+  echo '[]' >"$BATS_TEST_TMPDIR/sessions.json"
+  touch -d '2 minutes ago' "$BATS_TEST_TMPDIR/sessions.json"
+  run_bin -0 --separate-stderr team-capacity plan --json --sessions "$BATS_TEST_TMPDIR/sessions.json"
+  local kept
+  kept=$(jq .reserved <<<"$output")
+  # The same list, read now, is a minute past that launch.
+  touch "$BATS_TEST_TMPDIR/sessions.json"
+  run_bin -0 --separate-stderr team-capacity plan --json --sessions "$BATS_TEST_TMPDIR/sessions.json"
+  assert_equal "$((kept - $(jq .reserved <<<"$output")))" "$(jq '.[0].bytes' "$STATE_DIR/admitted.json")"
 }
 
 @test "status: a session past its admission window reserves its use, the team one spike allowance for the largest gap, and one in its window the larger of its estimate and its use" {
