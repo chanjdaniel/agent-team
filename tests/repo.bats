@@ -393,52 +393,79 @@ role_matrix() {
   assert_equal "$(jq -c '[.permissions.deny[]? | select(contains("team-run-approved"))]' "$REPO_ROOT/coordinator.settings.json")" '[]'
 }
 
-# The gate's state is the gate's own, and the coordinator's on Daniel's OK. A rule's * on both sides
-# refuses any Bash call naming a path under the mirrors, a read or a search among them, a cost
-# accepted as for the Agent Chrome's rules: no gate command names that path, and a message or a file
-# that does goes through the Write tool and -F (sops/platform-gotchas.md). Deny rules are a speed
-# bump, as CLAUDE.md says of git's, and a role's "When something is denied" stands behind them.
-@test "no worker role writes to the gate's mirrors, by path, by its remote's URL or by a deleting push" {
+# The gate's state is the gate's own, and the coordinator's on Daniel's OK. Each command below holds
+# a placeholder where a verb or a ref goes, so none runs as written.
+# A rule's * on both sides refuses any Bash call naming the gate's directory itself or a path under
+# its mirrors, a read or a search among them, and a call taking a substitution of the mirror's URL,
+# however it then uses it, a cost accepted as for the Agent Chrome's rules: no gate command names
+# those, and a message or a file that does goes through the Write tool and -F
+# (sops/platform-gotchas.md). A gate's run worktree shares its mirror's refs, so a call naming one is
+# denied what moves a ref or a checkout, and a deleting or forced push naming the gate's remote
+# anywhere, a branch of that name on origin too, is refused. Deny rules are a speed bump, as
+# CLAUDE.md says of git's, and a role's "When something is denied" stands behind them.
+@test "no worker role writes to the gate's mirrors, by path, by its remote's URL, in a run worktree or by a deleting push" {
   # shellcheck disable=SC2088,SC2016 # the paths are text, as an agent types them
-  local mirror='~/.no-mistakes/repos/x.git' home_mirror='$HOME/.no-mistakes/repos/x.git'
+  local mirror='~/.no-mistakes/repos/x.git' home_mirror='$HOME/.no-mistakes/repos/x.git' run='~/.no-mistakes/worktrees/01KQ3V2M8Z/x'
   jq -e '.permissions.deny | index("Edit(~/.no-mistakes/repos/**)") != null' "$REPO_ROOT/settings/worker.json" >/dev/null
-  # shellcheck disable=SC2016 # the commands are text, as an agent types them
+  # shellcheck disable=SC2088,SC2016 # the commands are text, as an agent types them
   role_matrix \
     "no-mistakes" "no-mistakes init" "no-mistakes doctor" "no-mistakes rerun" "no-mistakes axi" \
     "no-mistakes axi run --help" "no-mistakes axi run --intent 'T7: the goal'" "no-mistakes axi status" \
     "no-mistakes axi logs --step review --full" "no-mistakes axi respond --action approve" \
     "no-mistakes axi respond --action fix --findings a,b --instructions 'keep it short'" \
     "no-mistakes axi respond --action skip" "no-mistakes axi sync --check" "no-mistakes axi sync" \
-    "no-mistakes axi sync --recover" "no-mistakes axi sync --adopt-published" "no-mistakes axi abort" \
-    "no-mistakes axi abort --run 01KQ3V2M8Z" "git push no-mistakes feat/T1-x" "git push -u no-mistakes HEAD" \
-    "git push no-mistakes HEAD:feat/T1-x" "git fetch no-mistakes" "git ls-remote no-mistakes" \
+    "no-mistakes axi sync --recover" "no-mistakes axi sync --recover --keep-local" \
+    "no-mistakes axi sync --adopt-published" "no-mistakes axi abort" "no-mistakes axi abort --run 01KQ3V2M8Z" \
+    "~/.no-mistakes/bin/no-mistakes --version" "git push no-mistakes feat/T1-x" "git push -u no-mistakes HEAD" \
+    "git push no-mistakes HEAD:feat/T1-x" "git push --dry-run no-mistakes feat/T1-x" \
+    "git push no-mistakes feat/T1-x --dry-run" "git fetch no-mistakes" "git ls-remote no-mistakes" \
     "git remote get-url no-mistakes" "git remote get-url no-mistakes 2>/dev/null || echo none" "git remote -v" \
-    "git push origin --delete fix/T1-no-mistakes-x" "git push origin fix/T1-no-mistakes-x" \
-    "ls ~/.no-mistakes/worktrees/01KQ3V2M8Z" "cd ~/.no-mistakes/worktrees/01KQ3V2M8Z/x && git status" \
-    "git add .no-mistakes.yaml" "cat .no-mistakes.yml" "grep -n 'no-mistakes/repos' bin/team-clean-messages" \
-    "git log -S no-mistakes/repos" -- \
-    "git --git-dir $mirror log" "git --git-dir=$mirror log" "git --git-dir=$home_mirror log" \
-    "git --git-dir \"$home_mirror\" log" "git -C $mirror log" "git -C $home_mirror log" \
-    "git -C ~/wt --git-dir $mirror log" "GIT_DIR=$mirror git log" "GIT_DIR=\"$home_mirror\" git log" \
-    "env GIT_DIR=$mirror git log" "export GIT_DIR=$mirror && git log" "GIT_COMMON_DIR=$mirror git log" \
-    "cd $mirror && git log" "pushd $home_mirror && git log" "git push $mirror feat/T1-x" \
+    'head=$(git rev-parse HEAD); git remote get-url no-mistakes' "git push origin --delete fix/T1-x" \
+    "git push origin fix/T1-no-mistakes-x" "git push -u origin fix/T1-no-mistakes-x" \
+    "ls $run" "cat $run/README.md" "cd $run && git status" "cd $run && git log" "git -C $run status" \
+    "git -C $run log --branches --tags" "git add .no-mistakes.yaml" "cat .no-mistakes.yml" \
+    "rm .no-mistakes.yaml" "grep -n 'no-mistakes/repos' bin/team-clean-messages" "git log -S no-mistakes/repos" -- \
+    "git --git-dir $mirror <command>" "git --git-dir=$mirror <command>" "git --git-dir=$home_mirror <command>" \
+    "git --git-dir \"$home_mirror\" <command>" "git -C $mirror <command>" "git -C $home_mirror <command>" \
+    "git -C ~/wt --git-dir $mirror <command>" "GIT_DIR=$mirror git <command>" "GIT_DIR=\"$home_mirror\" git <command>" \
+    "env GIT_DIR=$mirror git <command>" "export GIT_DIR=$mirror && git <command>" "GIT_COMMON_DIR=$mirror git <command>" \
+    "cd $mirror && git <command>" "pushd $home_mirror && git <command>" "git push $mirror feat/T1-x" \
     "git clone $mirror y" "git remote add z $mirror" "touch $mirror/x" "cp x $mirror/x" "echo x > $mirror/x" \
-    "tee $mirror/x" "bash -c 'git -C $mirror log'" "python3 -c \"open('$home_mirror/x', 'w')\"" \
-    "cd ~/.no-mistakes && git -C repos/x.git log" "cd ~/.no-mistakes/ && git -C repos/x.git log" \
-    "cd \$HOME/.no-mistakes && ls" "pushd ~/.no-mistakes && ls" "pushd ~/.no-mistakes/ && ls" \
-    "git -C ~/.no-mistakes --git-dir repos/x.git log" "git -C ~/.no-mistakes/ --git-dir repos/x.git log" \
-    'git --git-dir "$(git remote get-url no-mistakes)" log' 'git -C "$(git remote get-url no-mistakes)" log' \
-    'GIT_DIR=$(git remote get-url no-mistakes) git log' 'git --git-dir `git remote get-url no-mistakes` log' \
-    'm=$(git remote get-url no-mistakes); git --git-dir "$m" log' 'm=$(git remote get-url --push no-mistakes); git -C "$m" log' \
-    'm=$(git ls-remote --get-url no-mistakes); git -C "$m" log' 'git remote get-url no-mistakes | xargs -I{} git --git-dir {} log' \
-    'git --git-dir "$(git config remote.no-mistakes.url)" log' 'git --git-dir `git config --get remote.no-mistakes.url` log' \
+    "tee $mirror/x" "bash -c 'git -C $mirror <command>'" "python3 -c \"open('$home_mirror/x', 'w')\"" \
+    "git --git-dir ~/.no-mistakes//repos/x.git <command>" "git --git-dir ~/.no-mistakes/./repos/x.git <command>" \
+    "git --git-dir ~/.no-mistakes/worktrees/../repos/x.git <command>" "touch ~/.no-mistakes/re*/x.git/y" \
+    "touch ~/.no-mistakes/*/x.git/y" "rm <options> ~/.no-mistakes" "rm <options> ~/.no-mistakes/*" \
+    "mv ~/.no-mistakes <path>" "cd ~/.no-mistakes && git -C repos/x.git <command>" \
+    "cd ~/.no-mistakes/ && git -C repos/x.git <command>" "cd \$HOME/.no-mistakes && <command>" \
+    "pushd ~/.no-mistakes && <command>" "pushd ~/.no-mistakes/ && <command>" \
+    "cd \"\$HOME/.no-mistakes\" && git -C repos/x.git <command>" "cd \"\$HOME/.no-mistakes/\" && <command>" \
+    "cd '$HOME/.no-mistakes' && <command>" "pushd \"\$HOME/.no-mistakes\" && <command>" \
+    "git -C ~/.no-mistakes --git-dir repos/x.git <command>" "git -C ~/.no-mistakes/ --git-dir repos/x.git <command>" \
+    "git -C \"\$HOME/.no-mistakes\" --git-dir repos/x.git <command>" "git -C \"\$HOME/.no-mistakes/\" --git-dir repos/x.git <command>" \
+    "git --git-dir repos/x.git -C ~/.no-mistakes <command>" "git --no-pager -C ~/.no-mistakes --git-dir repos/x.git <command>" \
+    "git -c a.b=c -C ~/.no-mistakes <command>" "env -C ~/.no-mistakes git --git-dir repos/x.git <command>" \
+    'git --git-dir "$(git remote get-url no-mistakes)" <command>' 'git -C "$(git remote get-url no-mistakes)" <command>' \
+    'GIT_DIR=$(git remote get-url no-mistakes) git <command>' 'git --git-dir `git remote get-url no-mistakes` <command>' \
+    'm=$(git remote get-url no-mistakes); git --git-dir "$m" <command>' 'm=$(git remote get-url --push no-mistakes); git -C "$m" <command>' \
+    'm=$(git ls-remote --get-url no-mistakes); git -C "$m" <command>' 'm=$(git -C ~/wt remote get-url no-mistakes); git -C "$m" <command>' \
+    'git remote get-url no-mistakes | xargs -I{} git --git-dir {} <command>' \
+    'git --git-dir "$(git config remote.no-mistakes.url)" <command>' 'git --git-dir `git config --get remote.no-mistakes.url` <command>' \
+    'git --git-dir "$(git -C ~/wt config remote.no-mistakes.url)" <command>' \
+    "cd $run && git update-ref <ref> <sha>" "cd $run && git branch <ref>" "git -C $run update-ref <ref> <sha>" \
+    "git -C $run branch <ref>" "cd $run && git tag <ref>" "cd $run && git symbolic-ref <ref> <ref>" \
+    "cd $run && git fetch <remote>" "git -C $run commit <options>" "git -C $run worktree <command>" \
+    "cd $run && git reset <options>" "cd $run && cd ../../../repos/x.git" "cd $run/../../../repos/x.git" \
     "git push no-mistakes :feat/T1-x" "git push -u no-mistakes :feat/T1-x" "git push no-mistakes a :feat/T1-x" \
+    "git push no-mistakes ':feat/T1-x'" "git push no-mistakes \":feat/T1-x\"" "git push \"no-mistakes\" :feat/T1-x" \
     "git push no-mistakes --delete feat/T1-x" "git push --delete no-mistakes feat/T1-x" \
     "git push no-mistakes feat/T1-x --delete" "git -C ~/wt push no-mistakes --delete feat/T1-x" \
-    "git push no-mistakes -d feat/T1-x" "git push -d no-mistakes feat/T1-x" "git push no-mistakes feat/T1-x -d y" \
-    "git push no-mistakes --prune" "git push --prune no-mistakes" "git push --prune no-mistakes HEAD" \
-    "git push no-mistakes --mirror" "git push --mirror no-mistakes" "git push no-mistakes --force feat/T1-x" \
-    "git push no-mistakes +feat/T1-x"
+    "git push \"no-mistakes\" --delete feat/T1-x" "git push no-mistakes -d feat/T1-x" "git push -d no-mistakes feat/T1-x" \
+    "git push no-mistakes feat/T1-x -d <ref>" "git push no-mistakes feat/T1-x -d" "git push -d -u no-mistakes feat/T1-x" \
+    "git push -ud no-mistakes feat/T1-x" "git push no-mistakes --prune <ref>" "git push --prune no-mistakes <ref>" \
+    "git push no-mistakes --mirror <ref>" "git push --mirror no-mistakes <ref>" "git push no-mistakes --force feat/T1-x" \
+    "git push no-mistakes +feat/T1-x" "git -C ~/wt push --force no-mistakes feat/T1-x" \
+    "git -C ~/wt push no-mistakes -f feat/T1-x" "git -C ~/wt push -f no-mistakes feat/T1-x" \
+    "git -C ~/wt push no-mistakes +feat/T1-x" "git -C ~/wt push no-mistakes '+feat/T1-x'"
 }
 
 # team-clean-messages' own refusal (worker_refusal) stands behind these rules; a run of its tests
