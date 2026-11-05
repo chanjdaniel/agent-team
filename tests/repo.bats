@@ -393,17 +393,20 @@ role_matrix() {
   assert_equal "$(jq -c '[.permissions.deny[]? | select(contains("team-run-approved"))]' "$REPO_ROOT/coordinator.settings.json")" '[]'
 }
 
-# The gate's state is the gate's own, and the coordinator's on Daniel's OK. Each command below holds
-# a placeholder verb, ref or target, so none reaches a real mirror or branch.
+# The gate's state is the gate's own, and the coordinator's on Daniel's OK. Each refused command below
+# holds a placeholder verb, ref or target, so none reaches a real mirror or branch.
 # A rule's * on both sides refuses any Bash call naming the gate's directory itself or a path under
 # its mirrors, a read or a search among them, and a call taking a substitution of the mirror's URL,
-# however it then uses it, a cost accepted as for the Agent Chrome's rules: no gate command names
-# those, and a message or a file that does goes through the Write tool and -F
+# however it then uses it, a cost accepted as for the Agent Chrome's rules: no documented gate command
+# names those, and a message or a file that does goes through the Write tool and -F
 # (sops/platform-gotchas.md). A worker on the gate's own repository meets this cost on a search
-# typed with the directory's dotted name and on that directory in a throwaway home.
-# A gate's run worktree shares its mirror's refs, so a call naming one is denied each git command
-# on a fixed list that moves a ref or a checkout, those commands' reads there too (one is pinned
-# below), since text cannot tell a read from a write, and a push to one or a remote naming one.
+# typed with the directory's dotted name and on that directory in a throwaway home, and a call typing
+# the gate binary's own path meets it when the mirrors' directory name comes later in the call.
+# A gate's run worktree shares its mirror's refs, so a call naming one is denied each word on a fixed
+# list of git commands that move a ref or a checkout, and a push to one or a remote naming one.
+# It is the word that is matched, anywhere after the path and whatever the command, so those commands'
+# reads there (one is pinned below) and any other read holding the word are refused too, since text
+# cannot tell a read from a write.
 # A deleting or forced push naming the gate's remote anywhere, a branch of that name on origin too,
 # is refused. Deny rules are a speed bump, as CLAUDE.md says of git's, and a role's "When something
 # is denied" stands behind them.
