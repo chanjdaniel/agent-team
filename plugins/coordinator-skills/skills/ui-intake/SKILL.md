@@ -32,7 +32,7 @@ So keep the pointer at once, before planning.
    - no answer in 30 s, or the server never attached: the machine is busy or the page hung, so reload it or try again later.
 4. Read the capture (below), so a "what is wrong here" note is answered from it before planning.
    A fix about the inspected element that gets `captured: page` had nothing selected: say so in one line and go on with the page and the words.
-5. Write the plan and briefs as usual: `team-brief` names `tasks/T<n>/ui/`, each capture in it with a note, and counts the others, in the planner's, builders' and reviewers' briefs, with the rule that a worker checks its fix on its own stack with its own headless browser, never in the Agent Chrome.
+5. Write the plan and briefs as usual: `team-brief` names `tasks/T<n>/ui/`, each capture in it with a note or an element, and counts the others, in the planner's, builders' and reviewers' briefs, with the rule that a worker checks its fix on its own stack with its own headless browser, never in the Agent Chrome.
 
 ## A manual QC walk
 
@@ -53,14 +53,14 @@ It leaves you out of each note, and only one runs at a time, since Daniel has on
 1. On Daniel's word, open the thread with `team-thread T<n> --interview`, which prints its id; a task of its own for the walk is a `research` one, since its planner delivers a report and a fix plan.
 2. Start the walk with `team-ui T<n> --walk start --in interview`, which refuses a second one and names the walk on.
    It runs on the task's own seeded stack, whose captures may leave.
-   Only when Daniel says, in a message, that the primary stack was just reseeded, and wants to walk there, add `--reseeded <its message id>`: it reads that message back, and it must be theirs, within the hour, and say so; a walk already on must stop first.
+   Only when Daniel says, in a message naming its port, that the primary stack was just reseeded, and wants to walk there, add `--reseeded <its message id>`: it reads that message back, and it must be theirs, within the hour, and say so; it clears only the port it names, and a walk already on must stop first.
 3. Write the brief with `team-brief T<n> planner-walk --set-file read=<file>`, the file naming the walk's stops, and launch it with `team-worker T<n> planner <worktree> -- "Read your brief at <path>"`.
    `team-worker` still refuses it this toolkit: it reads the window only by `team-ui T<n> --capture`.
 4. Log `team-log T<n> waiting on=Daniel reason="walk in <#id>"`, post `<#id>` in the task's thread and `#coordinator`, and run `team-inbox`, which lists it under Walks under way.
 5. A message of Daniel's in the task's thread during it is no walk note: point them at `<#id>`, unless it is the stop.
 6. Stop it with `team-ui T<n> --walk stop` on Daniel's word in the task's thread or `#coordinator`, or on the planner's `DONE`, whichever comes first, since it holds the window's one walk until then, and with it stopped the planner's captures refuse.
 7. `team-sweep`'s `walk-stale` finding, for either kind of walk, says a walk has had no message from Daniel in 4 hours, so it no longer keeps its stack up or stows last.
-   Ask Daniel in the task's thread whether it goes on: if not, `team-ui T<n> --walk stop`; if so, stop and start it again, with a new word when it used `--reseeded`.
+   Ask Daniel in the task's thread whether it goes on: if not, `team-ui T<n> --walk stop`; if so, stop it and start it again in the form the finding names, `--in interview` included, with a new word when it used `--reseeded`.
    A stopped stack is the planner's to start again; a later message of Daniel's in an interview walk also makes it count again.
 
 ## Reading a capture
@@ -80,6 +80,6 @@ Read the files of the `tasks/T<n>/ui/capture-<k>/` that `ui-capture`'s line name
 - A capture's files stay on the machine that took it: the team home's git ignores `tasks/*/ui/`, so no checkpoint, records commit or handoff carries one, and `team-close` removes it when the task closes.
   A worker on another machine after a handoff has no capture: give it the page and the element in words.
 - You never post a capture.
-  A walk's planner, in its interview thread, posts only `page.png` and `element.png` of a capture, images and never a capture's text, by Daniel's decision (T222's D2), under `team-post`'s guards: the page's port is one of the task's own stack, or the walk's start names Daniel's word that the primary was just reseeded, and no file of the capture holds an address outside the fixture domains.
+  A walk's planner, in its interview thread, posts only `page.png` and `element.png` of a capture, images and never a capture's text, by Daniel's decision (T222's D2), under `team-post`'s guards: the page's port is one of the task's own stack, or the one named by Daniel's word, at the walk's start, that the primary was just reseeded, and no file of the capture holds an address outside the fixture domains.
   Each posted image stays in that thread, and is retracted only for a mistake.
   Anywhere else, a brief points at a capture.

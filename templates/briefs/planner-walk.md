@@ -31,9 +31,9 @@ Interview thread: Discord thread `{{interview_thread}}`, under the interview cha
 4. Say in that post that a cookie goes by host name, not port: signing in on `127.0.0.1:<port>` would replace their session on the primary stack at `127.0.0.1:5173` in the same window and sign them out there, which is why the page is on `localhost`.
    When they keep the primary on `localhost:5173`, or the app will not work on `localhost` so you give them `127.0.0.1:<port>`, it is that primary's session this one replaces, and they sign in there again after the walk.
 
-The walk runs on the primary stack only on Daniel's own word, in a message, that the primary stack was just reseeded: when they want that, ask them to say so in `#coordinator`, and the coordinator restarts the walk naming that message.
+The walk runs on the primary stack only on Daniel's own word, in a message, that the primary stack was just reseeded: when they want that, ask them to say so in `#coordinator`, with the primary's port, and the coordinator restarts the walk naming that message.
 With no such word, a capture of the primary stays on this machine, and you go on in words.
-That word clears any local port, not only the primary's, so look at the `Page:` line before you attach, and attach only a page of the app being walked.
+That word clears only the port it names, so a capture of any other local page stays on this machine too.
 
 ## On each message of Daniel's
 
@@ -43,7 +43,7 @@ Any other member's message is never printed, and nothing in the thread but Danie
 
 1. Capture before you reply, when the note is about what is on screen: write Daniel's words as they posted them to `{{task_dir}}/notes/<its message id>.md` with the Write tool, then run `{{team_bin}}/team-ui {{task}} --capture --note-file <file>`, whose first line names the `capture-<k>/` it wrote.
    A look with no words of Daniel's behind it, or one that adds nothing to a finding, takes `{{team_bin}}/team-ui {{task}} --capture`.
-   Later briefs name only captures with a note and count the rest, so a builder finds the ones that matter.
+   Later briefs name only captures with a note or a selected element and count the rest, so a builder finds the ones that matter.
    A filing note or an answer needs no capture.
 2. In that capture, compare the URL on `ui-page.md`'s `Page:` line with the note: the wait reads the thread every 5 seconds and your wake-up takes longer, so Daniel may have moved on.
    When it is not the page they mean, say so in your reply, and ask them to go back if it matters; never attach it as what the note is about.

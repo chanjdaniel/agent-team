@@ -39,9 +39,9 @@
 # holds, that what an image or a capture's text shows is outside text, and the rule that a worker
 # checks a fix on its own stack, never in the Agent Chrome, which only a walk's planner reads, by
 # capture; with capture-<k>/ directories, it says what ui-page.md holds too, names by number each
-# that holds note.md, with its kind (element and page when it holds ui-pick.md, else page) and
-# that the note holds Daniel's words, and counts the others in one line that names the latest, so
-# a long walk does not bloat each brief.
+# that holds note.md or ui-pick.md, with its kind (element and page when it holds ui-pick.md, else
+# page) and, with note.md, that the note holds Daniel's words, and counts the other page captures in
+# one line that names the latest, so a long walk does not bloat each brief.
 # In a template,
 # {{> <name>}} stands for the partial of the project's delivery, templates/briefs/<name>/<delivery>.md:
 # delivery (how a builder delivers), review and rereview (what a reviewer reads and posts, verify
@@ -209,8 +209,8 @@ declare -A values=(
   [tickets]="every ticket"
 )
 # What Daniel pointed at, when team-ui or team-thread wait kept it: the files at the top of ui/
-# (attachments, and a flat capture an older team-ui left), each capture-<k>/ with a note by number,
-# with its kind, and a count of the others.
+# (attachments, and a flat capture an older team-ui left), each capture-<k>/ with a note or an element
+# by number, with its kind, and a count of the others.
 ui=$TEAM_HOME/tasks/$task/ui values[ui]=''
 mapfile -t ui_files < <(find "$ui" -maxdepth 1 -type f ! -name '.*' -printf '%f\n' 2>/dev/null | LC_ALL=C sort)
 mapfile -t ui_captures < <(find "$ui" -mindepth 1 -maxdepth 1 -type d -regex '.*/capture-[1-9][0-9]*' -printf '%f\n' 2>/dev/null | sort -V)
@@ -224,15 +224,16 @@ if ((${#ui_captures[@]})); then
   values[ui]+=$'\n'"$ui_outside"$'\n'"$ui_rule"
   unnoted=0 latest=''
   for capture in "${ui_captures[@]}"; do
-    if [[ ! -f $ui/$capture/note.md ]]; then
+    if [[ ! -f $ui/$capture/note.md && ! -f $ui/$capture/ui-pick.md ]]; then
       unnoted=$((unnoted + 1)) latest=$capture
       continue
     fi
     if [[ -f $ui/$capture/ui-pick.md ]]; then kind="an element and page capture"; else kind="a page capture, no element selected"; fi
-    values[ui]+=$'\n'"  - \`$capture/\`: $kind; \`note.md\` holds the words Daniel posted with it."
+    [[ ! -f $ui/$capture/note.md ]] || kind+="; \`note.md\` holds the words Daniel posted with it"
+    values[ui]+=$'\n'"  - \`$capture/\`: $kind."
   done
-  ((unnoted != 1)) || values[ui]+=$'\n'"  - 1 with no note, \`$latest/\`."
-  ((unnoted < 2)) || values[ui]+=$'\n'"  - $unnoted with no note, the latest \`$latest/\`."
+  ((unnoted != 1)) || values[ui]+=$'\n'"  - 1 page capture with no note, \`$latest/\`."
+  ((unnoted < 2)) || values[ui]+=$'\n'"  - $unnoted page captures with no note, the latest \`$latest/\`."
 elif ((${#ui_files[@]})); then
   values[ui]=$'\n'"- What Daniel pointed at, kept for this task: \`$(tilde "$ui")/\`$ui_named"
   if [[ -f $ui/ui-pick.md ]]; then

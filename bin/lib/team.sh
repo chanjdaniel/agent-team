@@ -502,7 +502,7 @@ worker_refusal() {
 # Print why this session may not read the Agent Chrome for <task>, or fail when it may: only a
 # worker session is held, and the one worker that may is a planner of <task> (its settings'
 # AGENT_TEAM_TASK) while that task's walk is on in its interview thread, by Daniel's decision
-# (Discord 1567568771311337525): that planner captures the page Daniel drives, read-only. A ledger
+# (D1 of T216's report, 2026-11-04): that planner captures the page Daniel drives, read-only. A ledger
 # that cannot be read refuses. team-ui --capture and the frontend toolkit's ui-capture both ask
 # it: capture_refusal <task>
 capture_refusal() {
@@ -549,7 +549,7 @@ path_under() {
 toolkit_refusal() {
   case $1 in
     coordinator) echo "toolkit 'coordinator' is the coordinator's own (claude-coordinator loads it)" ;;
-    frontend) echo "toolkit 'frontend' is Daniel's own (claude --plugin-dir in their session): it attaches to their one Agent Chrome window, never a worker's; by Daniel's decision (Discord 1567568771311337525), a walk's planner only reads that window, by team-ui --capture" ;;
+    frontend) echo "toolkit 'frontend' is Daniel's own (claude --plugin-dir in their session): it attaches to their one Agent Chrome window, never a worker's; by Daniel's decision (D1 of T216's report, 2026-11-04), a walk's planner only reads that window, by team-ui --capture" ;;
     prod-*) [[ -n $2 && $2 != ops ]] || return 1; echo "toolkit '$1' is for the ops role only" ;;
     *) return 1 ;;
   esac

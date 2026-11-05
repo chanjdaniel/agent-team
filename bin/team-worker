@@ -65,7 +65,7 @@
 #
 # The coordinator toolkit is claude-coordinator's alone, never a worker's, and the frontend toolkit
 # Daniel's own sessions', since it attaches to their one Agent Chrome window, so either is a
-# malformed command line (exit 2). By Daniel's decision (Discord 1567568771311337525), a walk's
+# malformed command line (exit 2). By Daniel's decision (D1 of T216's report, 2026-11-04), a walk's
 # planner reads that window only by team-ui --capture (capture_refusal in bin/lib/team.sh), never
 # with this toolkit's MCP server. Production toolkits (prod-*) are for the ops role only (exit 1).
 # toolkit_refusal in bin/lib/team.sh holds that list, which team-load-check reads too. The ops role

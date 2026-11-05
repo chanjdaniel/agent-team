@@ -40,7 +40,8 @@
 # or 127.0.0.1 with a port, and that port must be one team-stack env gives for an open worktree of
 # the task, on a stack labelled with the task. Failing that, the task's walk must be on, its start
 # must name Daniel's word that the primary stack was just reseeded (team-ui --reseeded, which read
-# it from Discord), and the capture must have been taken since that start. Then every other file in
+# it from Discord), the port must be the one that word names, and the capture must have been taken
+# since that start. Then every other file in
 # the capture must be a plain file, and is scanned, as a worker's post text always is, by
 # data-check's rule (refused_emails code in bin/lib/team.sh): an address outside the fixture domains
 # refuses it. The scan cannot see a name, or anything in an image, so the page's origin is the guard
@@ -130,7 +131,7 @@ read_own_ports() {
 # Refuse <path> unless its capture directory <dir> shows a page proved clear, as the header says:
 # check_capture <path> <dir>
 check_capture() {
-  local path=$1 dir=$2 capture=${2##*/} no_page lines=() taken port own cleared=0 since='' word='' why entry found
+  local path=$1 dir=$2 capture=${2##*/} no_page lines=() taken port own cleared=0 since='' word='' word_port='' why entry found
   no_page="cannot attach $path: $capture's ui-page.md names no page on a local port"
   [[ -e $dir/ui-page.md || -L $dir/ui-page.md ]] ||
     die "cannot attach $path: $capture holds no ui-page.md, so nothing says where its page came from"
@@ -147,10 +148,12 @@ check_capture() {
     [[ $own != "$port" ]] || cleared=1
   done
   if ((!cleared)); then
-    json_vars --ledger since='qc_walk.since' word='qc_walk.reseeded' <<<"$(task_event_array "$task")"
+    json_vars --ledger since='qc_walk.since' word='qc_walk.reseeded' word_port='qc_walk.reseeded_port' <<<"$(task_event_array "$task")"
     why=${OWN_PORTS_WHY:+ ($OWN_PORTS_WHY)}
     [[ -n $word ]] ||
       die "cannot attach $path: $capture's page is on port $port, no port of $task's own stack$why, and its walk's start names no word of Daniel's that the primary stack was just reseeded"
+    [[ $port == "$word_port" ]] ||
+      die "cannot attach $path: $capture's page is on port $port, no port of $task's own stack$why, and Daniel's word $word clears only port ${word_port:-none}"
     (($(date -ud "$taken" +%s) >= $(date -ud "$since" +%s))) ||
       die "cannot attach $path: $capture was taken before the walk that Daniel's word $word clears began"
   fi

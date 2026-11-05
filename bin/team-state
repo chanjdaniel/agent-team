@@ -60,7 +60,8 @@
 # null; the text form ends with "waiting on <on>: <reason>".
 # walk is the task's manual QC walk (team-ui T<n> --walk), {"since": "<ts>"} while it is on, from
 # its latest walk event's ts, with "thread": "interview" when it runs in the task's interview
-# thread, and null while it is off or the task is closed; the text form says "walk on since <ts>"
+# thread, "reseeded" and "reseeded_port" when its start named Daniel's word that the primary stack
+# on that port was just reseeded (team-ui --reseeded), and null while it is off or the task is closed; the text form says "walk on since <ts>"
 # while it is on, then " in its interview thread" for such a walk, before any waiting, and nothing
 # of it while it is off.
 # rehome_failures are the worktrees team-resume could not re-home and nothing has made since: each

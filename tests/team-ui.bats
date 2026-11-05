@@ -200,7 +200,7 @@ $ui/capture-1/ui-pick.md"
   [[ -z $(ls -A "$ui") ]]
 }
 
-@test "the brief that follows names each capture with a note, with its kind, and counts the others" {
+@test "the brief that follows names each capture with a note or an element, with its kind, and counts the others" {
   run_bin -0 team-ui T7 --capture
   echo page >"$STUB_FIXTURES/capture-kind"
   printf 'check the page state\n' >"$BATS_TEST_TMPDIR/note"
@@ -211,7 +211,7 @@ $ui/capture-1/ui-pick.md"
   local brief=$TEAM_HOME/tasks/T7/brief.md
   grep -qF "kept for this task: \`$ui/\`, each capture in a directory of its own." "$brief"
   grep -qxF '  - `capture-2/`: a page capture, no element selected; `note.md` holds the words Daniel posted with it.' "$brief"
-  grep -qxF '  - 1 with no note, `capture-1/`.' "$brief"
+  grep -qxF '  - `capture-1/`: an element and page capture.' "$brief"
   grep -qF 'never in the Agent Chrome' "$brief"
 }
 
@@ -368,7 +368,7 @@ off"
   [[ -d $ui/capture-2 ]]
 }
 
-# Daniel's decision (Discord 1567568771311337525): an interview's planner, with its task's walk on in
+# Daniel's decision (D1 of T216's report, 2026-11-04): an interview's planner, with its task's walk on in
 # its own thread, takes a capture of the page Daniel is on, read-only; no other worker can.
 @test "a planner captures during its own task's interview walk" {
   interview_thread T7
@@ -606,7 +606,7 @@ $TEAM_HOME/tasks/T9/ui/capture-2"
        team-ui T<n> --walk start [--in interview [--reseeded <message id>]] | --walk stop | --walk status"
   assert_contains "$output" "manual QC walk"
   assert_contains "$output" "walk event in the ledger"
-  assert_contains "$output" "1567568771311337525"
+  assert_contains "$output" "D1 of T216's report"
 }
 
 # Daniel's message <id> in channel <channel> saying <text>, by <author> (757, the one in allowFrom,
@@ -641,12 +641,12 @@ THREAD=1563000000000000009
   interview_thread T7
   local id
   id=$(word_id 60)
-  discord_word "$THREAD" "$id" "Just RESEEDED the primary with the fixture."
+  discord_word "$THREAD" "$id" "Just RESEEDED the primary on :5173 with the fixture."
   run_bin -0 team-ui T7 --walk start --in interview --reseeded "$id"
-  local said=", on Daniel's word $id that the primary stack was just reseeded"
+  local said=", on Daniel's word $id that the primary stack on port 5173 was just reseeded"
   assert_equal "$output" "walk on for T7 in its interview thread$said"
   assert_equal "$(jq -c 'select(.event == "walk") | del(.ts)' "$TEAM_HOME/ledger.jsonl")" \
-    "{\"task\":\"T7\",\"event\":\"walk\",\"state\":\"on\",\"thread\":\"interview\",\"reseeded\":\"$id\"}"
+    "{\"task\":\"T7\",\"event\":\"walk\",\"state\":\"on\",\"thread\":\"interview\",\"reseeded\":\"$id\",\"reseeded_port\":5173}"
   run_bin -0 team-log --check
   # The read went to Discord with the token on stdin, never on the command line.
   assert_contains "$(stub_calls curl)" "channels/$THREAD/messages/$id"
@@ -660,8 +660,8 @@ THREAD=1563000000000000009
   assert_equal "$output" "walk already on for T7 since $since in its interview thread$said"
   run_bin -0 team-ui T7 --walk start --in interview
   assert_equal "$output" "walk already on for T7 since $since in its interview thread$said"
-  run_bin -1 --separate-stderr team-ui T7 --walk start --in interview --reseeded 1567568771311337525
-  assert_equal "$stderr" "team-ui: T7's walk is on since $since in its interview thread$said: stop it before starting it on Daniel's word 1567568771311337525"
+  run_bin -1 --separate-stderr team-ui T7 --walk start --in interview --reseeded 1564000000000000020
+  assert_equal "$stderr" "team-ui: T7's walk is on since $since in its interview thread$said: stop it before starting it on Daniel's word 1564000000000000020"
   assert_equal "$(walk_events T7)" "on"
   # A stop ends the word with the walk: the next on carries none.
   run_bin -0 team-ui T7 --walk stop
@@ -681,17 +681,34 @@ THREAD=1563000000000000009
   assert_equal "$(stub_calls curl)" ""
 }
 
+@test "--reseeded takes the one port its word names, and refuses a word that names none or two" {
+  interview_thread T7
+  local id text
+  for text in "Reseeded the primary." "Reseeded 5173 and 8080." "Reseeded on 70000." "Reseeded on 2026-11-05 at 5173."; do
+    id=$(word_id $((100 + ${#text})))
+    discord_word "$THREAD" "$id" "$text"
+    run_bin -1 --separate-stderr team-ui T7 --walk start --in interview --reseeded "$id"
+    assert_equal "$stderr" "team-ui: Discord message $id does not name the one port it clears, of 4 or 5 digits: ask Daniel to say so in a new message with the primary stack's port"
+    assert_equal "$(jq -c 'select(.event == "walk")' "$TEAM_HOME/ledger.jsonl")" ""
+  done
+  # An address's other numbers, a task's and a repeat of the port are no second port.
+  id=$(word_id 300)
+  discord_word "$THREAD" "$id" "T1234: reseeded http://127.0.0.1:5173/ just now; yes, 5173."
+  run_bin -0 team-ui T7 --walk start --in interview --reseeded "$id"
+  assert_equal "$(jq -c 'select(.event == "walk") | .reseeded_port' "$TEAM_HOME/ledger.jsonl")" 5173
+}
+
 @test "the word may be in the task's thread or #coordinator" {
   interview_thread T7
   jq -cn '{ts: "2026-10-25T10:02:00Z", task: "T7", event: "thread", discord_thread: "1563000000000000010"}' >>"$TEAM_HOME/ledger.jsonl"
   local id
   id=$(word_id)
-  discord_word 1563000000000000010 "$id" "the primary is reseeded"
+  discord_word 1563000000000000010 "$id" "the primary on 5173 is reseeded"
   run_bin -0 team-ui T7 --walk start --in interview --reseeded "$id"
   run_bin -0 team-ui T7 --walk stop
   id=$(word_id 1)
   export TEAM_COORDINATOR_CHANNEL=1562000000000000001
-  discord_word "$TEAM_COORDINATOR_CHANNEL" "$id" "primary reseeded"
+  discord_word "$TEAM_COORDINATOR_CHANNEL" "$id" "primary reseeded, localhost:5173/"
   run_bin -0 team-ui T7 --walk start --in interview --reseeded "$id"
   assert_contains "$output" "on Daniel's word $id"
 }
@@ -723,14 +740,14 @@ THREAD=1563000000000000009
 }
 
 @test "--reseeded needs a message id and --walk start --in interview, and an interview thread to read it from" {
-  run_bin -1 --separate-stderr team-ui T7 --walk start --in interview --reseeded 1567568771311337525
+  run_bin -1 --separate-stderr team-ui T7 --walk start --in interview --reseeded 1564000000000000020
   assert_equal "$stderr" "team-ui: T7 has no interview thread in the ledger; team-thread T7 --interview opens one"
   assert_equal "$(stub_calls curl)" ""
   interview_thread T7
   local form
   for form in "--walk start" "--walk stop" "--walk status" "--capture"; do
     # shellcheck disable=SC2086 # each form is its words
-    run_bin -2 --separate-stderr team-ui T7 $form --reseeded 1567568771311337525
+    run_bin -2 --separate-stderr team-ui T7 $form --reseeded 1564000000000000020
     assert_equal "$stderr" "team-ui: --reseeded goes only with --walk start --in interview"
   done
   run_bin -2 --separate-stderr team-ui T7 --walk start --in interview --reseeded

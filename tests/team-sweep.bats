@@ -1285,6 +1285,20 @@ walk_note_at() {
   ledger_line --arg t "$1" --arg ts "$2" '{ts: $ts, task: $t, event: "walk-note"}'
 }
 
+@test "a stale walk's next step names the form that walk needs to start again" {
+  opened T3
+  launch T3 planner 4f2a9c1e
+  sessions "$(session 4f2a9c1e T3-planner busy working)"
+  ledger_line --arg ts "$(ago 6)" '{ts: $ts, task: "T3", event: "walk", state: "on", thread: "interview"}'
+  run_bin -1 team-sweep
+  assert_contains "$output" "if so, team-ui T3 --walk stop, then team-ui T3 --walk start --in interview"
+  [[ $output != *--reseeded* ]]
+  ledger_line --arg ts "$(ago 5)" '{ts: $ts, task: "T3", event: "walk", state: "off"}'
+  ledger_line --arg ts "$(ago 5)" '{ts: $ts, task: "T3", event: "walk", state: "on", thread: "interview", reseeded: "1564000000000000020", reseeded_port: 5173}'
+  run_bin -1 team-sweep
+  assert_contains "$output" "if so, team-ui T3 --walk stop, then team-ui T3 --walk start --in interview --reseeded <a new message of Daniel's>"
+}
+
 @test "a walk with no message from Daniel for over 4 hours is named, from its last message or its start" {
   opened T3
   launch T3 planner 4f2a9c1e
@@ -1293,7 +1307,7 @@ walk_note_at() {
   since=$(ago 6)
   walk_at T3 "$since"
   run_bin -1 --separate-stderr team-sweep
-  assert_equal "$output" "T3 walk-stale: its walk has had no message from Daniel since $since, over 4 hours, so it no longer keeps its stack up or stows last; next: ask Daniel whether it goes on: if not, team-ui T3 --walk stop; if so, stop and start it again"
+  assert_equal "$output" "T3 walk-stale: its walk has had no message from Daniel since $since, over 4 hours, so it no longer keeps its stack up or stows last; next: ask Daniel whether it goes on: if not, team-ui T3 --walk stop; if so, team-ui T3 --walk stop, then team-ui T3 --walk start"
   run_bin -1 team-sweep --json
   assert_equal "$(jq -c '[.[] | [.task, .kind, .session, .name]]' <<<"$output")" '[["T3","walk-stale",null,null]]'
   # A message 5 hours ago names that time, and one within the 4 hours ends the finding.

@@ -3,7 +3,7 @@
 Front-end fixes on the element Daniel points at, and a look at the page Daniel is on: Daniel right-clicks an element in the Agent Chrome and picks Inspect, and the agent gets its HTML, matched CSS, Vue source file and line, and screenshot, with a capture of the page it is on; with nothing selected, the agent gets that page capture alone.
 A page capture holds the page's URL, route, title and Vue route, a screenshot, its accessibility snapshot, and its console problems and failed requests since it last loaded.
 For Daniel's own Claude Code session, and for the coordinator's intake of a fix sent from Discord; workers read the coordinator's capture, never the Agent Chrome, and `team-worker` refuses them the toolkit.
-The one exception, by Daniel's decision (Discord 1567568771311337525), which narrows their 2026-10-29 one (1565230935333670923): an interview's planner, while its task's walk is on in its own thread, takes a capture of the page Daniel is on, read-only, and Daniel alone drives the window.
+The one exception, by Daniel's decision (D1 of T216's report, 2026-11-04), which narrows their 2026-10-29 one: an interview's planner, while its task's walk is on in its own thread, takes a capture of the page Daniel is on, read-only, and Daniel alone drives the window.
 
 ## Use it
 
@@ -34,7 +34,7 @@ A walk in an interview thread (`team-ui T<n> --walk start --in interview`, on Da
 - Google's usage statistics, CrUX lookups and the server's update checks are off.
 - The Agent Chrome runs with the mock keychain and the basic password store, so it never reads or adds a "Chrome Safe Storage" item in Daniel's login keychain, and no keychain prompt appears for a Chrome a test starts.
 - A capture's files stay on the machine that took it: Daniel's session writes it to `.scratch/ui` in its checkout (git-ignored, and outside a task's `.scratch/task/`, which archives carry; an archive leaves out a `ui/` there anyway, and every image anywhere in it), and the coordinator's intake (`team-ui`) to the team home's `tasks/T<n>/ui/`, which the team home's git ignores, so no checkpoint or handoff carries it; `team-close` removes it with the task, and `team-doctor`'s `captures` line reports one left behind.
-  A walk's planner posts `page.png` and `element.png` of a capture, and never its text, in its interview thread, under `team-post`'s guards (`bin/team-post`'s header): the page must be on the task's own stack, or the walk's start must name Daniel's word that the primary was just reseeded, so `localhost` alone never clears one.
+  A walk's planner posts `page.png` and `element.png` of a capture, and never its text, in its interview thread, under `team-post`'s guards (`bin/team-post`'s header): the page must be on the task's own stack, or on the one port named by Daniel's word, at the walk's start, that the primary was just reseeded, so `localhost` alone never clears one.
 
 ## What it runs
 
@@ -71,7 +71,7 @@ It checks each capture (the element with its page's capture, on a tab in front a
 
 It also checks that a worker session running `ui-capture` directly meets the gate before anything reads a Chrome.
 
-The bats suite checks the coordinator's side with `ui-capture` stubbed: `tests/team-ui.bats` that each capture gets a directory of its own with its kind and Daniel's note, that a failed one leaves none, that a walk turns on and off in the ledger, and who may capture during one, `tests/team-brief.bats` that the briefs name each capture with a note and count the others, and what the walk's brief says, and `tests/team-state.bats` that a walk that is on shows.
+The bats suite checks the coordinator's side with `ui-capture` stubbed: `tests/team-ui.bats` that each capture gets a directory of its own with its kind and Daniel's note, that a failed one leaves none, that a walk turns on and off in the ledger, and who may capture during one, `tests/team-brief.bats` that the briefs name each capture with a note or an element and count the others, and what the walk's brief says, and `tests/team-state.bats` that a walk that is on shows.
 
 `evals/` holds the skill's eval cases (`claude plugin eval ~/agent-team/toolkits/frontend`): it fires on a fix about the selected element and leaves a general front-end question alone.
 Every `frontend` call there is answered by an agent mock of a Conventioner page (`evals/mocks/frontend/_server.md`), whose `_tools.json` is the server's own `tools/list`, which the toolkit test keeps in step.

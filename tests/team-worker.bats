@@ -154,7 +154,7 @@ run_fake() {
   for role in planner builder reviewer ops; do
     run_bin -2 team-worker T7 "$role" "$wt1" --toolkit frontend -- go
     assert_contains "$output" "toolkit 'frontend' is Daniel's own"
-    assert_contains "$output" "Discord 1567568771311337525"
+    assert_contains "$output" "D1 of T216's report"
   done
   run_bin -2 team-worker T0 planner "$wt1" --toolkit browser --toolkit frontend -- go
   assert_contains "$output" "toolkit 'frontend' is Daniel's own"

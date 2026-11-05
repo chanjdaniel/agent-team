@@ -222,9 +222,9 @@
     },
     "walk": {
       "writer": "team-ui",
-      "about": "a manual QC walk of the task turned on or off (team-ui --walk start or stop), only when that changes it: the walk is on while the task's latest walk is on and the task is not closed, since its ts, and while it is on each message of Daniel's in the task's thread is a walk note the coordinator captures the page with; thread interview on an on event puts the walk in the task's interview thread, where its planner captures instead; reseeded on an on event is Daniel's Discord message saying the primary stack was just reseeded, which team-ui read back before logging it, and which clears that walk's captures from a port not the task's own for team-post",
+      "about": "a manual QC walk of the task turned on or off (team-ui --walk start or stop), only when that changes it: the walk is on while the task's latest walk is on and the task is not closed, since its ts, and while it is on each message of Daniel's in the task's thread is a walk note the coordinator captures the page with; thread interview on an on event puts the walk in the task's interview thread, where its planner captures instead; reseeded on an on event is Daniel's Discord message saying the primary stack was just reseeded, which team-ui read back before logging it, and reseeded_port the one port that message names, whose captures that walk clears for team-post",
       "required": {"state": ["on", "off"]},
-      "optional": {"thread": ["interview"], "reseeded": "id"}
+      "optional": {"thread": ["interview"], "reseeded": "id", "reseeded_port": "number"}
     },
     "walk-note": {
       "writer": ["team-thread", "team-ui"],

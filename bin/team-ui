@@ -51,13 +51,16 @@
 #              interview thread, its thread or #coordinator, so a model's word never stands in for
 #              theirs. It must be theirs, sent within the last hour, and hold "seed" in any case
 #              (reseeded, re-seeded, seeded), so that no other message of theirs is taken for it.
-#              The walk event's reseeded records it, the walk's lines above say so, and team-post
-#              then lets that walk's captures leave from a port not the task's own stack's, until
-#              the walk stops; a later start needs a new word.
+#              It must also name the primary stack's port, the one number in it of 4 or 5 digits,
+#              from 1024 to 65535, with no letter joined to it and no dot before it (so
+#              127.0.0.1:5173 names 5173, and a date's year is a second number, which refuses). The walk event's
+#              reseeded and reseeded_port record them, the walk's lines above say so, and team-post
+#              then lets that walk's captures leave from that one port, until the walk stops; a
+#              later start needs a new word.
 # Refused, exit 1: a worker session, any task and any form (worker_refusal in bin/lib/team.sh), since
 # an image can leave the machine in a worker's team-post, and the Agent Chrome may show real data;
 # the one exception is --capture, with or without --note-file, by a planner of the task while its
-# walk is on in its interview thread, by Daniel's decision (Discord 1567568771311337525;
+# walk is on in its interview thread, by Daniel's decision (D1 of T216's report, 2026-11-04;
 # capture_refusal in bin/lib/team.sh), so that planner reads the page Daniel drives, and never
 # touches it. Refused too: a task that is not open, an attachment or a note file that is not a
 # readable file, a note file with no words (nothing copied), a worker's note file outside its task's
@@ -65,7 +68,7 @@
 # ui-capture's own line; of --walk start, a walk on in the task's other thread, which a stop must
 # end first, and with --in interview, a task with no interview thread, or another task's interview
 # walk that is on, which the refusal names; with --reseeded, a message that cannot be read, or that
-# is not Daniel's, old or silent on seeding, and a walk on with no word or another, which a stop must
+# is not Daniel's, old, or silent on seeding or on its one port, and a walk on with no word or another, which a stop must
 # end first, since a start that changed nothing must not read as cleared. Exit 2 a malformed command line, --walk with no word, another word, a second --walk, or
 # with --capture, --note-file or --attach among them, --in with any word but interview, or without
 # --walk start, and --reseeded with no message id, or without --walk start --in interview.
@@ -126,13 +129,14 @@ else
   why=$(worker_refusal "$task" "runs no team-ui") && die "$why"
 fi
 
-# What a walk's line adds for Daniel's word <message id>, or nothing: on_word <message id or "">
+# What a walk's line adds for Daniel's word <message id> on <port>, or nothing:
+# on_word <message id or ""> <port or "">
 on_word() {
-  [[ -z $1 ]] || echo ", on Daniel's word $1 that the primary stack was just reseeded"
+  [[ -z $1 ]] || echo ", on Daniel's word $1 that the primary stack on port $2 was just reseeded"
 }
 
-# Refuse unless Daniel's message $reseeded says the primary stack was just reseeded, read back from
-# Discord: check_reseeded
+# Refuse unless Daniel's message $reseeded says the primary stack was just reseeded, and names its
+# one port, read back from Discord, and set $reseeded_port to that port: check_reseeded
 check_reseeded() {
   local places=() channel word sent
   while IFS= read -r channel; do
@@ -147,6 +151,10 @@ check_reseeded() {
   sent=$(((10#$reseeded >> 22) / 1000 + 1420070400))
   (($(date +%s) - sent <= RESEEDED_SECONDS)) ||
     die "Discord message $reseeded was sent at $(date -ud "@$sent" +%FT%TZ), over an hour ago, so it does not say the primary stack was just reseeded: ask Daniel to say so in a new message"
+  reseeded_port=$(jq -r '[.message.content | match("(?<![0-9A-Za-z.])[0-9]{4,5}(?![0-9A-Za-z])"; "g").string | tonumber] | unique
+    | if length == 1 and .[0] >= 1024 and .[0] <= 65535 then .[0] else empty end' <<<"$word")
+  [[ -n $reseeded_port ]] ||
+    die "Discord message $reseeded does not name the one port it clears, of 4 or 5 digits: ask Daniel to say so in a new message with the primary stack's port"
 }
 
 # Start this task's walk in its interview thread: only one such walk is on at a time, which a lock
@@ -163,16 +171,16 @@ start_interview_walk() {
     | first // empty | "\(.key)\t\(.value | qc_walk | .since)"' -nRr "$TEAM_HOME/ledger.jsonl")
   [[ -z $other ]] ||
     die "${other%%$'\t'*}'s interview walk is on since ${other#*$'\t'}, and Daniel has one Agent Chrome window: team-ui ${other%%$'\t'*} --walk stop ends it"
-  ledger_append "$(jq -cn --arg task "$task" --arg word "$reseeded" '{ts: (now | todate), task: $task, event: "walk", state: "on", thread: "interview"}
-    + (if $word != "" then {reseeded: $word} else {} end)')"
+  ledger_append "$(jq -cn --arg task "$task" --arg word "$reseeded" --arg port "$reseeded_port" '{ts: (now | todate), task: $task, event: "walk", state: "on", thread: "interview"}
+    + (if $word != "" then {reseeded: $word, reseeded_port: ($port | tonumber)} else {} end)')"
 }
 
 if [[ -n $walk ]]; then
   ((!capture && !noted && !${#attachments[@]})) || usage_error "--walk goes alone, without --capture, --note-file or --attach"
   events=$(open_task_events "$task")
-  since='' thread='' word=''
-  json_vars --ledger since='qc_walk.since' thread='qc_walk.thread' word='qc_walk.reseeded' <<<"$events"
-  where=${thread:+ in its $thread thread}$(on_word "$word")
+  since='' thread='' word='' word_port='' reseeded_port=''
+  json_vars --ledger since='qc_walk.since' thread='qc_walk.thread' word='qc_walk.reseeded' word_port='qc_walk.reseeded_port' <<<"$events"
+  where=${thread:+ in its $thread thread}$(on_word "$word" "$word_port")
   case $walk:${since:+on} in
     status:on) echo "walk on for $task since $since$where" ;;
     status:) echo "walk off for $task" ;;
@@ -186,7 +194,7 @@ if [[ -n $walk ]]; then
     start:)
       if [[ -n $in ]]; then
         start_interview_walk
-        echo "walk on for $task in its $in thread$(on_word "$reseeded")"
+        echo "walk on for $task in its $in thread$(on_word "$reseeded" "$reseeded_port")"
       else
         ledger_append "$(jq -cn --arg task "$task" '{ts: (now | todate), task: $task, event: "walk", state: "on"}')"
         echo "walk on for $task"

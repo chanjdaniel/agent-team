@@ -2,7 +2,8 @@
 # team-post --attach of a walk's capture: an image of tasks/T<n>/ui/capture-<k>/ leaves in a
 # planner's post only from a page proved clear of real data, its port one of the task's own stack,
 # as the real team-stack env gives it on the stub docker, or the walk's start naming Daniel's word
-# that the primary stack was just reseeded, which the real team-ui reads from the stub Discord. The
+# that the primary stack on that port was just reseeded, which the real team-ui reads from the stub
+# Discord. The
 # capture's text and the post's text are scanned for a real email address, with bin/lib/data-check's
 # own rule. Every address at a real provider here is built from a variable, as CLAUDE.md's data rule
 # says.
@@ -114,7 +115,7 @@ fresh_id() {
 # The coordinator starts T22's walk in its interview thread on Daniel's word just given.
 start_walk_on_word() {
   WORD=$(fresh_id)
-  daniel_says "$WORD" "I just reseeded the primary stack with the fixture."
+  daniel_says "$WORD" "I just reseeded the primary stack on $PRIMARY_PORT with the fixture."
   run_bin -0 team-ui T22 --walk start --in interview --reseeded "$WORD"
   : >"$STUB_CALLS/curl.log"
 }
@@ -211,6 +212,23 @@ ui-pick.md"
   attach -1 "$UI/capture-3/page.png"
   assert_contains "$output" "its walk's start names no word of Daniel's"
   assert_equal "$(stub_calls curl)" ""
+}
+
+@test "Daniel's word clears only the port it names: a capture of any other local port is refused, and stays" {
+  local other=$((PRIMARY_PORT + 1))
+  start_walk_on_word
+  capture 1 "http://127.0.0.1:$other/"
+  capture 2 "http://localhost:$other/events/7"
+  attach -1 "$UI/capture-1/page.png"
+  assert_equal "$output" "team-post: cannot attach $UI/capture-1/page.png: capture-1's page is on port $other, no port of T22's own stack, and Daniel's word $WORD clears only port $PRIMARY_PORT"
+  assert_nothing_sent
+  attach -1 "$UI/capture-2/page.png"
+  assert_nothing_sent
+  [[ -f $UI/capture-1/page.png && -f $UI/capture-2/page.png ]]
+  # The port it names still leaves.
+  capture 3 "http://localhost:$PRIMARY_PORT/"
+  attach -0 "$UI/capture-3/page.png"
+  assert_equal "$(sent_files)" "page.png"
 }
 
 @test "a worker cannot give the word: team-ui refuses it, and a message that is not Daniel's logs no walk" {

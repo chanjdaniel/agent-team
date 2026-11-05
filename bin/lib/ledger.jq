@@ -367,12 +367,13 @@ def waiting:
 
 # The task's manual QC walk: {since} while it is on, since the ts of its latest walk event when
 # that says on, with its thread when that names one (interview) and the message of Daniel's it
-# reseeded on when it has one, else null, as for a task with none or a closed one, whose walk ended
+# reseeded on and the one port that clears when it has one, else null, as for a task with none or a
+# closed one, whose walk ended
 # with it. Read by team-ui --walk, capture_refusal, team-post, task_state and walk_last_note.
 def qc_walk:
   if task_status == "closed" then null
   else map(select(.event == "walk")) | last
-    | if .state == "on" then {since: .ts} + (if .thread then {thread} else {} end) + (if .reseeded then {reseeded} else {} end) else null end end;
+    | if .state == "on" then {since: .ts} + (if .thread then {thread} else {} end) + (if .reseeded then {reseeded, reseeded_port} else {} end) else null end end;
 
 # How long a walk counts with no message from Daniel, in seconds: a person clicking in Chrome makes
 # no session busy, so this is all that tells a walk under way from one left on.
@@ -795,11 +796,11 @@ def finding($task; $kind; $session; $name; $detail; $next):
 
 # team-sweep's walk-stale finding, over a task's events, or nothing: a walk on that no longer counts.
 def walk_stale_finding:
-  .[0].task as $task | walk_last_note as $last
+  .[0].task as $task | walk_last_note as $last | qc_walk as $walk
   | select($last != null and (walk_holds(now) | not))
   | finding($task; "walk-stale"; null; null;
       "its walk has had no message from Daniel since \($last), over \(walk_hold_seconds / 3600) hours, so it no longer keeps its stack up or stows last";
-      "ask Daniel whether it goes on: if not, team-ui \($task) --walk stop; if so, stop and start it again");
+      "ask Daniel whether it goes on: if not, team-ui \($task) --walk stop; if so, team-ui \($task) --walk stop, then team-ui \($task) --walk start\(if $walk.thread then " --in \($walk.thread)" else "" end)\(if $walk.reseeded then " --reseeded <a new message of Daniel's>" else "" end)");
 
 # team-sweep's merge-due finding, over a task's events, or nothing: the task awaits merge, a
 # plan-time approval of it stands or a standing word of Daniel's stands for one of its projects
