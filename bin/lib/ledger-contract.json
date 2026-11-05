@@ -57,6 +57,12 @@
       "required": {"branch": "string", "old_head": "string", "head": "string"},
       "optional": {"project": "string"}
     },
+    "gate-lane-cleared": {
+      "writer": "team-clean-messages",
+      "about": "the branch's ref was deleted from the gate's mirror after a rewrite; head, the mirror's head it held; tag, the mirror's ref that keeps it",
+      "required": {"branch": "string", "head": "string", "tag": "string"},
+      "optional": {"project": "string"}
+    },
     "caught-up": {
       "writer": "team-catch-up",
       "about": "url is the PR's; from, the reviewed head whose review the merge stands on, the merge made onto it or onto an earlier catch-up of it; head, that merge, pushed as the PR's head; base, the base's commit it merged; all full shas",

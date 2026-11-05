@@ -1353,7 +1353,8 @@ def retro_digest($task; $team_home):
        totals: ($spans | group_by(.on | tostring | ascii_downcase)
          | map({on: .[0].on, hours: (map(.hours) | add * 100 | round / 100), wall_hours: wall_hours, spans: length})
          | sort_by(-.hours))},
-     rewrites: [$in[] | select(.event == "history-rewritten") | del(.i, .event)],
+     rewrites: [$in[] | select(.event == "history-rewritten" or .event == "gate-lane-cleared")
+       | del(.i) | if .event == "history-rewritten" then del(.event) else . end],
      injections: [$in[] | select(.event == "injection") | del(.i, .event)],
      tasks: [$in | task_groups[] | .[0].task as $id | $tasks[$id] as $all
        | ($all | map(select(.event == "opened")) | first) as $opened
@@ -1385,7 +1386,8 @@ def retro_digest_text:
     + (if .open then ", open at the window's end" else "" end) + ": \(.reason)"]),
   section("Wait totals"; [.waits.totals[] | "\(.on): \(.hours)h over \(plural(.spans; "span")), \(.wall_hours)h wall-clock"]),
   section("Rewrites"; [.rewrites[] | "\(.ts) \(.task)\(if .branch then " \(.branch)" else "" end): "
-    + (if .old_head then "\(.old_head) -> " else "to " end) + "\(.head)" + (if .note then " (\(.note))" else "" end)]),
+    + (if .event == "gate-lane-cleared" then "gate lane cleared, its head " elif .old_head then "\(.old_head) -> " else "to " end)
+    + "\(.head)" + (if .note then " (\(.note))" else "" end)]),
   section("Injections"; [.injections[] | "\(.ts) \(.task) \(.role) at \(.source): \(.text)"]),
   section("Tasks"; [.tasks[] | "\(.task) \([.project, .path, .phase] | map(select(. != null)) | join(" ")): \(.title // "untitled")"
     + "; record \(.record); sessions "

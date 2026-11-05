@@ -524,12 +524,13 @@ sign_head() {
   assert_unchanged
 }
 
-# The gate's mirror, as no-mistakes init leaves one: a bare repository the project names as its
-# no-mistakes remote, with no gate run active. The push that lands a rewrite is the plain push of
-# a branch origin does not have yet: these tests never force a push, so they run the printed step
-# after that one, and never the printed push.
+# The gate's mirror, as no-mistakes init leaves one: a bare repository under ~/.no-mistakes/repos/
+# the project names as its no-mistakes remote, with no gate run active; HOME is the sandbox's. The
+# push that lands a rewrite is the plain push of a branch origin does not have yet: these tests
+# never force a push, so they run the printed step after that one, and never the printed push.
 gate_mirror() {
-  mirror=$BATS_TEST_TMPDIR/mirror.git
+  mirror=$HOME/.no-mistakes/repos/0123456789ab.git
+  mkdir -p "$(dirname "$mirror")"
   git init -q --bare -b dev "$mirror"
   git -C "$primary" remote add no-mistakes "$mirror"
   fake_gate
@@ -572,7 +573,7 @@ $REPO_ROOT/bin/team-clean-messages $wt --clear-gate-lane"
   [[ $stderr != *"gate's mirror"* ]]
 }
 
-@test "the printed step clears only the branch's ref on the mirror, when the patch ids match, and keeps its head" {
+@test "the printed step clears only the branch's ref on the mirror, when each commit's change matches, keeps its head and logs it" {
   gate_mirror
   commit "feat: kept" a
   commit "$attributed" b
@@ -597,9 +598,118 @@ refs/tags/no-mistakes-abandoned/feat/T7-thing/$old $old"
   assert_equal "$(git -C "$primary" ls-remote origin refs/heads/feat/T7-thing | cut -f1)" "$new"
   git -C "$wt" push -q no-mistakes feat/T7-thing
   assert_equal "$(git --git-dir "$mirror" rev-parse feat/T7-thing)" "$new"
+  # The ledger says the lane was cleared.
+  assert_equal "$(jq -c 'select(.event == "gate-lane-cleared") | del(.ts)' "$TEAM_HOME/ledger.jsonl")" \
+    "{\"task\":\"T7\",\"event\":\"gate-lane-cleared\",\"project\":\"proj\",\"branch\":\"feat/T7-thing\",\"head\":\"$old\",\"tag\":\"refs/tags/no-mistakes-abandoned/feat/T7-thing/$old\"}"
+  run_bin -0 team-log --check
 }
 
-@test "the printed step matches a merge of the base by its patch too" {
+# Point the project's no-mistakes remote at <path>, and run <step> expecting a refusal naming it
+# that moves nothing on the mirror it named before and logs nothing: refused_remote <path> <step>.
+refused_remote() {
+  git -C "$primary" remote set-url no-mistakes "$1"
+  local refs events said rc=0
+  refs=$(mirror_refs)
+  events=$(cat "$TEAM_HOME/ledger.jsonl")
+  said=$(bash -c "$2" 2>&1) || rc=$?
+  assert_equal "$rc" 1
+  assert_contains "$said" "the no-mistakes remote names $1, which is no bare repository directly under"
+  assert_equal "$(mirror_refs)" "$refs"
+  assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$events"
+}
+
+@test "--clear-gate-lane refuses a remote naming anything but a bare repository directly under ~/.no-mistakes/repos/" {
+  gate_mirror
+  commit $'feat: one\n\nClaude-Session: x' a
+  git -C "$wt" push -q no-mistakes feat/T7-thing
+  local step old elsewhere other_refs
+  old=$(git -C "$wt" rev-parse HEAD)
+  step=$(rewrite_and_land)
+
+  # A bare repository elsewhere that holds the branch with a matching commit.
+  elsewhere=$BATS_TEST_TMPDIR/elsewhere.git
+  git init -q --bare -b dev "$elsewhere"
+  git -C "$wt" push -q "$elsewhere" "$old:refs/heads/feat/T7-thing"
+  other_refs=$(git --git-dir "$elsewhere" for-each-ref)
+  refused_remote "$elsewhere" "$step"
+  assert_equal "$(git --git-dir "$elsewhere" for-each-ref)" "$other_refs"
+  # The project's own repository, which also holds the branch.
+  refused_remote "$primary/.git" "$step"
+  assert_equal "$(git -C "$primary" rev-parse feat/T7-thing)" "$(git -C "$wt" rev-parse HEAD)"
+  # A link under the root that leads out of it, a repository deeper in it, one not bare, and none.
+  ln -s "$elsewhere" "$HOME/.no-mistakes/repos/link.git"
+  refused_remote "$HOME/.no-mistakes/repos/link.git" "$step"
+  assert_equal "$(git --git-dir "$elsewhere" for-each-ref)" "$other_refs"
+  git init -q --bare -b dev "$HOME/.no-mistakes/repos/deep/er.git"
+  refused_remote "$HOME/.no-mistakes/repos/deep/er.git" "$step"
+  git init -q -b dev "$HOME/.no-mistakes/repos/plain"
+  refused_remote "$HOME/.no-mistakes/repos/plain" "$step"
+  refused_remote "$HOME/.no-mistakes/repos/missing.git" "$step"
+}
+
+@test "a rewrite prints no step for a remote naming anything but a gate's mirror" {
+  gate_mirror
+  commit $'feat: one\n\nClaude-Session: x' a
+  local elsewhere=$BATS_TEST_TMPDIR/elsewhere.git
+  git init -q --bare -b dev "$elsewhere"
+  git -C "$wt" push -q "$elsewhere" HEAD:refs/heads/feat/T7-thing
+  git -C "$primary" remote set-url no-mistakes "$elsewhere"
+  run_bin -0 --separate-stderr team-clean-messages "$wt"
+  assert_equal "$output" "git push --force-with-lease=feat/T7-thing: origin feat/T7-thing"
+}
+
+@test "the printed step runs no hook of the mirror's" {
+  gate_mirror
+  commit $'feat: one\n\nClaude-Session: x' a
+  git -C "$wt" push -q no-mistakes feat/T7-thing
+  local step marker=$BATS_TEST_TMPDIR/hook-ran
+  step=$(rewrite_and_land)
+  printf '#!/usr/bin/env bash\ntouch %q\n' "$marker" >"$mirror/hooks/reference-transaction"
+  chmod +x "$mirror/hooks/reference-transaction"
+  run bash -c "$step"
+  assert_equal "$status" 0
+  [[ ! -e $marker ]]
+  assert_equal "$(git --git-dir "$mirror" for-each-ref 'refs/heads/*')" ""
+}
+
+# The branch's commit in the mirror holds <file> with the bytes <mirror's>, and its commit on the
+# branch the bytes <branch's>, the same patch to a patch id: same_patch_other_bytes <file> <mirror's>
+# <branch's>. Prints the printed step.
+same_patch_other_bytes() {
+  printf '%b' "$2" >"$wt/$1"
+  git -C "$wt" add "$1"
+  commit $'feat: bytes\n\nClaude-Session: x'
+  git -C "$wt" push -q no-mistakes feat/T7-thing
+  git -C "$wt" reset -q --hard HEAD~1
+  printf '%b' "$3" >"$wt/$1"
+  git -C "$wt" add "$1"
+  commit $'feat: bytes\n\nClaude-Session: x'
+  rewrite_and_land
+}
+
+@test "the printed step refuses, moving nothing, when the mirror's commit differs only in a binary's bytes" {
+  gate_mirror
+  local step refs
+  step=$(same_patch_other_bytes b.bin 'x\0' 'y\0')
+  refs=$(mirror_refs)
+  run bash -c "$step"
+  assert_equal "$status" 1
+  assert_contains "$output" "no ref moved"
+  assert_equal "$(mirror_refs)" "$refs"
+}
+
+@test "the printed step refuses, moving nothing, when the mirror's commit differs only in whitespace" {
+  gate_mirror
+  local step refs
+  step=$(same_patch_other_bytes spaced 'a b\n' 'a  b\n')
+  refs=$(mirror_refs)
+  run bash -c "$step"
+  assert_equal "$status" 1
+  assert_contains "$output" "no ref moved"
+  assert_equal "$(mirror_refs)" "$refs"
+}
+
+@test "the printed step matches a merge of the base by its change too" {
   gate_mirror
   commit $'feat: one\n\nClaude-Session: x' a
   merge_base
@@ -613,7 +723,7 @@ refs/tags/no-mistakes-abandoned/feat/T7-thing/$old $old"
   assert_equal "$(mirror_refs)" "refs/tags/no-mistakes-abandoned/feat/T7-thing/$old $old"
 }
 
-@test "the printed step refuses, moving nothing, when a commit only the mirror holds has no patch on the branch" {
+@test "the printed step refuses, moving nothing, when a commit only the mirror holds has no match on the branch" {
   gate_mirror
   commit $'feat: one\n\nClaude-Session: x' a
   commit "feat: only the gate has this" gate-fix
@@ -631,7 +741,7 @@ refs/tags/no-mistakes-abandoned/feat/T7-thing/$old $old"
   assert_equal "$(mirror_refs)" "$refs"
 }
 
-@test "the printed step counts each patch once, so a repeated one the branch has fewer of refuses" {
+@test "the printed step counts each change once, so a repeated one the branch has fewer of refuses" {
   gate_mirror
   commit $'feat: one\n\nClaude-Session: x' a
   git -C "$wt" revert --no-edit HEAD >/dev/null
@@ -727,4 +837,102 @@ refs/tags/no-mistakes-abandoned/feat/T7-thing/$old $old"
   assert_equal "$(mirror_refs)" "$refs"
 
   run_bin -2 team-clean-messages "$wt" --check --clear-gate-lane
+}
+
+@test "--clear-gate-lane is refused on a branch naming no task, and on the base branch and main" {
+  gate_mirror
+  commit "feat: one" a
+  git -C "$wt" push -q no-mistakes feat/T7-thing
+  local refs branch
+  refs=$(mirror_refs)
+  git -C "$wt" checkout -q -b feat/no-task
+  run_bin -1 team-clean-messages "$wt" --clear-gate-lane
+  assert_contains "$output" "feat/no-task names no task"
+  git -C "$primary" checkout -q --detach
+  for branch in dev main; do
+    git -C "$wt" checkout -q -B "$branch" feat/T7-thing
+    run_bin -1 team-clean-messages "$wt" --clear-gate-lane
+    assert_contains "$output" "$branch is the base branch or main"
+  done
+  assert_equal "$(mirror_refs)" "$refs"
+}
+
+@test "--clear-gate-lane is refused, moving nothing, when it cannot read the gate's state" {
+  gate_mirror
+  commit $'feat: one\n\nClaude-Session: x' a
+  git -C "$wt" push -q no-mistakes feat/T7-thing
+  local step refs
+  step=$(rewrite_and_land)
+  stub_script no-mistakes <<'EOF'
+echo 'the daemon does not answer'
+exit 3
+EOF
+  refs=$(mirror_refs)
+  run bash -c "$step"
+  assert_equal "$status" 1
+  assert_contains "$output" "cannot read the gate's state in $wt: the daemon does not answer; no ref moved"
+  assert_equal "$(mirror_refs)" "$refs"
+}
+
+@test "the mirror's ref is deleted only from the value checked: a compare-and-swap, with its head still kept" {
+  gate_mirror
+  commit "feat: first" a
+  commit $'feat: two\n\nClaude-Session: x' b
+  git -C "$wt" push -q no-mistakes feat/T7-thing
+  local step old moved real
+  old=$(git -C "$wt" rev-parse HEAD)
+  moved=$(git -C "$wt" rev-parse HEAD~1)
+  step=$(rewrite_and_land)
+  real=$(command -v git)
+  # Something moves the mirror's ref just before the delete.
+  wrap_git <<SH
+if [[ " \$* " == *" update-ref -d "* ]]; then
+  '$real' --git-dir '$mirror' update-ref refs/heads/feat/T7-thing $moved
+fi
+SH
+  run bash -c "$step"
+  rm "$BATS_TEST_TMPDIR/stubs/git"
+  assert_equal "$status" 1
+  assert_contains "$output" "feat/T7-thing moved on the gate's mirror while it was being cleared"
+  assert_equal "$(git --git-dir "$mirror" rev-parse feat/T7-thing)" "$moved"
+  assert_equal "$(git --git-dir "$mirror" rev-parse "refs/tags/no-mistakes-abandoned/feat/T7-thing/$old")" "$old"
+  [[ $(cat "$TEAM_HOME/ledger.jsonl") != *gate-lane-cleared* ]]
+}
+
+# Rewrite the message file commit-tree is handed: the rebuilt offender's (<name>.new) by <offender>
+# and any other's by <other>, each a bash expression on $file that prints the new file to use.
+wrap_message() {
+  wrap_git <<SH
+if [[ " \$* " == *" commit-tree "* ]]; then
+  args=() next=''
+  for a in "\$@"; do
+    if [[ -n \$next ]]; then
+      next='' file=\$a
+      if [[ \$file == *.new ]]; then a=\$($1); else a=\$($2); fi
+    fi
+    [[ \$a != -F ]] || next=1
+    args+=("\$a")
+  done
+  set -- "\${args[@]}"
+fi
+SH
+}
+
+@test "the branch does not move when a rebuilt commit that had no attribution lines changes its message" {
+  commit $'feat: one\n\nClaude-Session: x' a
+  commit "feat: two" b
+  remember_before
+  wrap_message 'echo "$file"' 'printf "feat: changed\n" >"$file.other"; echo "$file.other"'
+  run_bin -1 team-clean-messages "$wt"
+  assert_contains "$output" "its message differs; nothing moved"
+  assert_unchanged
+}
+
+@test "the branch does not move when a rebuilt commit still carries an attribution line" {
+  commit $'feat: one\n\nClaude-Session: x' a
+  remember_before
+  wrap_message 'echo "${file%.new}"' 'echo "$file"'
+  run_bin -1 team-clean-messages "$wt"
+  assert_contains "$output" "it still carries attribution lines; nothing moved"
+  assert_unchanged
 }
