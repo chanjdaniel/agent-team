@@ -798,6 +798,49 @@ two_minutes_pass() {
   assert_equal "$(admissions)" '["session:planner","T5"]'
 }
 
+@test "admit judges a launch by when its list was read, so a wait for the lock releases no session the list could not judge" {
+  busy_reading
+  level full
+  run_bin -0 team-capacity admit --kind session:reviewer --task T9
+  stub_script claude <<'EOF'
+touch "$STUB_FIXTURES/listed"
+echo '[]'
+EOF
+  # Admit reads its list, then waits on the lock the test holds.
+  local lock tries=0 slow
+  exec {lock}>>"$HOME/.local/state/agent-team/capacity.lock"
+  flock -x "$lock"
+  guard_sandbox
+  "$REPO_ROOT/bin/team-capacity" admit --kind session:planner --task T5 >"$BATS_TEST_TMPDIR/admit.out" 2>&1 3>&- {lock}>&- &
+  slow=$!
+  until [[ -e $STUB_FIXTURES/listed ]]; do
+    ((++tries < 100))
+    sleep 0.1
+  done
+  # A real minute's wait is too slow for the suite, so this launch is 61 seconds old by the time
+  # admit judges it and under a minute old at the list's read, three seconds back: as with a later
+  # launch, that list cannot say this session has stopped.
+  sleep 3
+  local back='now | floor | . - 61 | todate'
+  jq -c --arg at "$(jq -nr "$back")" '. + [{at: $at, kind: "session:builder", task: "T7", name: null, bytes: 1, pid: null}]' \
+    "$STATE_DIR/admitted.json" >"$STATE_DIR/admitted.more"
+  mv "$STATE_DIR/admitted.more" "$STATE_DIR/admitted.json"
+  jq -cn --arg at "$(jq -nr "$back")" '{ts: $at, task: "T7", event: "launch", role: "builder", session: "c0000007", worktree: "/w/1", toolkits: []}' \
+    >>"$TEAM_HOME/ledger.jsonl"
+  flock -u "$lock"
+  exec {lock}>&-
+  local code=0
+  wait "$slow" || code=$?
+  assert_equal "$code" 0
+  assert_equal "$(jq -c 'map([.kind, .task])' "$STATE_DIR/admitted.json")" \
+    '[["session:reviewer","T9"],["session:builder","T7"],["session:planner","T5"]]'
+
+  # The next admission's list, read past that launch's minute, has the last word.
+  run_bin -0 team-capacity admit --kind session:planner --task T6
+  assert_equal "$(jq -c 'map([.kind, .task])' "$STATE_DIR/admitted.json")" \
+    '[["session:reviewer","T9"],["session:planner","T5"],["session:planner","T6"]]'
+}
+
 @test "what claude agents leaves running holds no admission's lock, and a slow list holds no other admission" {
   busy_reading
   level full
