@@ -482,14 +482,17 @@ def admission_launches($launches):
       | (first($launches[]
           | select(.task == $a.value.task and "session:\(.role)" == $a.value.kind and .ts >= $a.value.at
               and (.session as $s | any($state.taken[]; . == $s) | not))) // null) as $l
-      | if $l == null then . else .taken += [$l.session] | .pairs += [{i: $a.key, session: $l.session}] end)
+      | if $l == null then . else .taken += [$l.session] | .pairs += [{i: $a.key, session: $l.session, launched: $l.ts}] end)
   | .pairs;
 
 # Of admission_launches' pairs (the input), those whose session the session list $sessions (claude
-# agents --json's) no longer holds, by its short id or the start of its full one.
+# agents --json's) no longer holds, by its short id or the start of its full one, once a minute has
+# passed since its launch: team-worker logs a launch before any list has shown the session, and a
+# list from a daemon just restarting holds none.
 def stopped_admissions($sessions):
-  map(select(.session as $s
-    | any($sessions[]; .id == $s or ((.sessionId // "") | startswith($s))) | not));
+  now as $now
+  | map(select((.launched | fromdateiso8601) <= $now - 60)
+      | select(.session as $s | any($sessions[]; .id == $s or ((.sessionId // "") | startswith($s))) | not));
 
 # What the team's live work reserves, from $in: {reading (the newest, or null), costs
 # (capacity_costs' array), settings, heavy (the heavy-run lock now: {held, pid, label, task}),

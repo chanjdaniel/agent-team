@@ -144,9 +144,9 @@
 #                             their use, at 0 at least, and 0 with none past its window;
 #            admissions       each admission of the last 10 minutes but a heavy run's, at its
 #                             estimate then (no use yet, and its time as admitted), since a new
-#                             session or stack has not grown yet, until a session's launch is
-#                             logged and claude agents --json no longer lists that session, which
-#                             leaves it out of the reading too; a session of its kind and task
+#                             session or stack has not grown yet, until a session's launch was
+#                             logged a minute ago or more and claude agents --json does not list
+#                             that session, which leaves it out of the reading too; a session of its kind and task
 #                             the reading holds is in that window (the one using least, when
 #                             several), reserved once, at the larger of the estimate and its use;
 #            stacks, gates    each running team or gate stack, and the gate while it runs a
@@ -850,11 +850,18 @@ read_level_and_admitted() {
   release_stopped_admissions
 }
 
-# Drop from $work/admitted.json each session admission whose launch is logged and whose session is
-# gone, and add that session to freed, since the stored reading may still hold it, so stopping a
-# worker frees its room at once (admission_launches and stopped_admissions in bin/lib/capacity.jq).
-# The session list is LIVE_SESSIONS when the caller has one, else read only once such a pair
-# exists; one that cannot be read releases nothing, as does a ledger that cannot be.
+# The live session list, or fail when it cannot be read.
+session_list() {
+  bounded 30 claude agents --json 2>/dev/null | jq -ce 'select(type == "array")' 2>/dev/null
+}
+
+# Drop from $work/admitted.json each session admission whose launch is logged, a minute ago or more,
+# and whose session is gone, and add that session to freed, since the stored reading may still hold
+# it, so stopping a worker frees its room (admission_launches and stopped_admissions in
+# bin/lib/capacity.jq). The session list is LIVE_SESSIONS when the caller has one, else read only
+# once such a pair exists, but never under admit's lock (admit reads it first, so a slow list holds
+# no other admission and what it leaves running inherits no lock); a list or a ledger that cannot be
+# read releases nothing.
 release_stopped_admissions() {
   local ledger=$TEAM_HOME/ledger.jsonl pairs sessions stopped
   [[ -r $ledger ]] || return 0
@@ -866,7 +873,8 @@ release_stopped_admissions() {
   [[ $pairs != '[]' ]] || return 0
   sessions=${LIVE_SESSIONS:-}
   if [[ -z $sessions ]]; then
-    sessions=$(bounded 30 claude agents --json 2>/dev/null | jq -ce 'select(type == "array")' 2>/dev/null) || return 0
+    [[ -z ${holding_admit_lock:-} ]] || return 0
+    sessions=$(session_list) || return 0
   fi
   stopped=$(jq -c --argjson sessions "$sessions" -L "$TEAM_LIB" 'include "capacity"; include "stack"; stopped_admissions($sessions)' <<<"$pairs")
   [[ $stopped != '[]' ]] || return 0
@@ -958,8 +966,13 @@ admit() {
   local fd read=false budget admitted entry
   read_settings
   mkdir -p "$STATE"
+  # release_stopped_admissions' list, read before the lock: a session launched since is in its minute.
+  if [[ -z ${LIVE_SESSIONS:-} ]] && jq -e 'any(.[]; .kind | startswith("session:"))' "$ADMITTED" >/dev/null 2>&1; then
+    LIVE_SESSIONS=$(session_list) || LIVE_SESSIONS=''
+  fi
   exec {fd}>>"$ADMIT_LOCK"
   flock -w 120 -x "$fd" || die "another admission still holds $(tilde "$ADMIT_LOCK") after 2 minutes"
+  holding_admit_lock=1
   if ! read_level_and_admitted 600; then
     fresh_reading {fd}>&-
     die "$(level_error)"

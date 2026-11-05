@@ -773,6 +773,66 @@ admissions() {
   "$REPO_ROOT/bin/team-capacity" status --json | jq -c '.reserved.items[] | select(.part == "admissions") | [.kind, .task]'
 }
 
+# Move every admission and launch two minutes back, past a launch's grace, inside the 10 minutes.
+two_minutes_pass() {
+  local back='(fromdateiso8601 - 120 | todate)'
+  jq -c "map(.at |= $back)" "$STATE_DIR/admitted.json" >"$STATE_DIR/admitted.back"
+  mv "$STATE_DIR/admitted.back" "$STATE_DIR/admitted.json"
+  jq -c "if .event == \"launch\" then .ts |= $back else . end" "$TEAM_HOME/ledger.jsonl" >"$TEAM_HOME/ledger.back"
+  mv "$TEAM_HOME/ledger.back" "$TEAM_HOME/ledger.jsonl"
+}
+
+@test "a session just launched keeps its admission though the list does not hold it yet, then a stopped one is released" {
+  busy_reading
+  level minor
+  run_bin -0 team-capacity admit --kind session:reviewer --task T9
+  launched T9 reviewer c0000009
+  # The list has not caught up with the launch, or the daemon is restarting: kept, and the next
+  # admission keeps it too.
+  agents '[]'
+  assert_equal "$(admissions)" '["session:reviewer","T9"]'
+  run_bin -0 team-capacity admit --kind session:planner --task T5
+  assert_equal "$(jq -c 'map([.kind, .task])' "$STATE_DIR/admitted.json")" '[["session:reviewer","T9"],["session:planner","T5"]]'
+  # Past the grace, the list's word stands.
+  two_minutes_pass
+  assert_equal "$(admissions)" '["session:planner","T5"]'
+}
+
+@test "what claude agents leaves running holds no admission's lock, and a slow list holds no other admission" {
+  busy_reading
+  level full
+  run_bin -0 team-capacity admit --kind session:reviewer --task T9
+  launched T9 reviewer c0000009
+  two_minutes_pass
+  # The list leaves a process behind, as a daemon it starts would, inheriting all but its output.
+  stub_script claude <<'EOF'
+sleep 20 >/dev/null 2>&1 &
+echo "$!" >>"$STUB_FIXTURES/left-behind"
+echo '[]'
+EOF
+  run_bin -0 team-capacity admit --kind session:planner --task T5
+  local started=$SECONDS
+  run_bin -0 team-capacity admit --kind session:builder --task T5
+  local took=$((SECONDS - started)) pid
+  while read -r pid; do kill "$pid" 2>/dev/null || true; done <"$STUB_FIXTURES/left-behind"
+  ((took < 10))
+
+  # A list that hangs has the next admission wait for nothing but its own.
+  stub_script claude <<'EOF'
+sleep 5
+echo '[]'
+EOF
+  guard_sandbox
+  "$REPO_ROOT/bin/team-capacity" admit --kind session:planner --task T6 >/dev/null 2>&1 3>&- &
+  local slow=$!
+  sleep 1
+  local fast
+  fast=$(flock -n "$HOME/.local/state/agent-team/capacity.lock" echo free || echo held)
+  kill "$slow" 2>/dev/null || true
+  wait "$slow" 2>/dev/null || true
+  assert_equal "$fast" free
+}
+
 @test "an admission whose session has stopped no longer counts as reserved, at its estimate or in the stored reading" {
   busy_reading
   level minor
@@ -788,6 +848,7 @@ admissions() {
   agents 'not a list'
   assert_equal "$(admissions)" '["session:reviewer","T9"]'
   # Its session is gone: released, within its 10 minutes, and the next admission drops it.
+  two_minutes_pass
   agents '[]'
   assert_equal "$(admissions)" ""
   run_bin -0 team-capacity admit --kind session:planner --task T5
@@ -802,6 +863,7 @@ admissions() {
   launched T9 reviewer c0000009
   agents '[{"id": "c0000009", "status": "busy"}]'
   assert_contains "$(reserved_items)" '"session:reviewer","T9"'
+  two_minutes_pass
   agents '[]'
   [[ $(reserved_items) != *'"T9"'* ]]
 }
@@ -818,6 +880,7 @@ admissions() {
   run_bin -0 team-capacity admit --kind session:builder --task T9
   run_bin -0 team-capacity admit --kind session:reviewer --task T8
   assert_equal "$(jq length "$STATE_DIR/admitted.json")" 4
+  two_minutes_pass
   # A launch before the admission, and one of another role or task, are not its session.
   agents '[{"id": "c0000002", "status": "busy"}]'
   assert_equal "$(admissions | sort)" '["session:builder","T9"]
