@@ -757,6 +757,20 @@ same_patch_other_bytes() {
   assert_equal "$(mirror_refs)" "$refs"
 }
 
+@test "the printed step clears a branch holding a repeated change as often as the mirror does" {
+  gate_mirror
+  commit $'feat: one\n\nClaude-Session: x' a
+  git -C "$wt" revert --no-edit HEAD >/dev/null
+  git -C "$wt" cherry-pick HEAD~1 >/dev/null
+  git -C "$wt" push -q no-mistakes feat/T7-thing
+  local old step
+  old=$(git -C "$wt" rev-parse HEAD)
+  step=$(rewrite_and_land)
+  run bash -c "$step"
+  assert_equal "$status" 0
+  assert_equal "$(mirror_refs)" "refs/tags/no-mistakes-abandoned/feat/T7-thing/$old $old"
+}
+
 @test "the printed step refuses, moving nothing, before the push has landed" {
   gate_mirror
   commit $'feat: one\n\nClaude-Session: x' a
