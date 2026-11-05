@@ -275,6 +275,94 @@ $three docs: message only
   remember_before
   run_bin -1 team-clean-messages "$wt"
   assert_contains "$output" "a merge commit in origin/dev..feat/T7-thing: $(git -C "$wt" rev-parse --short HEAD)"
+  assert_contains "$output" "only a merge of origin/dev"
+  assert_unchanged
+}
+
+# Advance origin's dev by one commit and merge it into the worktree's branch, with the message
+# <message> when given: merge_base [<message>]. Sets merged to the base commit it merged.
+merge_base() {
+  when=$((when + 3600))
+  echo "$when" >>"$primary/on-dev"
+  git -C "$primary" add on-dev
+  git -C "$primary" commit -q -m "chore: base moves"
+  git -C "$primary" push -q origin dev
+  git -C "$wt" fetch -q origin dev
+  merged=$(git -C "$wt" rev-parse origin/dev)
+  GIT_AUTHOR_NAME="Ada Author" GIT_AUTHOR_EMAIL=ada@example.invalid GIT_AUTHOR_DATE="$when +0200" \
+    GIT_COMMITTER_NAME="Cy Committer" GIT_COMMITTER_EMAIL=cy@example.invalid GIT_COMMITTER_DATE="$((when + 60)) -0500" \
+    git -C "$wt" merge -q --no-ff -m "${1:-Merge remote-tracking branch origin/dev}" origin/dev
+}
+
+# The parents of <rev>, one line.
+parents() { git -C "$wt" rev-list --parents -n 1 "$1" | cut -d' ' -f2-; }
+
+@test "a range holding a merge of the base is rewritten keeping its parents, its tree unchanged" {
+  commit $'feat: one\n\nClaude-Session: x' a
+  merge_base
+  commit $'feat: two\n\nClaude-Session: y' b
+  local old old_merge new
+  old=$(git -C "$wt" rev-parse HEAD)
+  old_merge=$(git -C "$wt" rev-parse HEAD~1)
+  run_bin -0 --separate-stderr team-clean-messages "$wt"
+  assert_contains "$stderr" "rewrote the messages of 2 of 3 commits"
+  new=$(git -C "$wt" rev-parse HEAD)
+  [[ $new != "$old" ]]
+  assert_equal "$(git -C "$wt" rev-parse "$new^{tree}")" "$(git -C "$wt" rev-parse "$old^{tree}")"
+  assert_equal "$(git -C "$wt" rev-list --count origin/dev..HEAD)" 3
+  # The rebuilt merge still merges the same base commit, on the rebuilt commit before it.
+  assert_equal "$(parents HEAD~1)" "$(git -C "$wt" rev-parse HEAD~2) $merged"
+  [[ $(git -C "$wt" rev-parse HEAD~1) != "$old_merge" ]]
+  assert_equal "$(headers HEAD~1)" "$(headers "$old_merge")"
+  assert_equal "$(message HEAD~1)" "$(message "$old_merge")"
+  assert_equal "$(message HEAD~2)" 'feat: one'
+  assert_equal "$(message HEAD)" 'feat: two'
+  assert_equal "$(parents HEAD~2)" "$(parents "$old~2")"
+  git -C "$wt" merge-base --is-ancestor origin/dev HEAD
+  run_bin -0 team-clean-messages "$wt" --check
+}
+
+@test "a merge of the base carrying attribution lines loses them and keeps its parents" {
+  commit "feat: one" a
+  local first
+  first=$(git -C "$wt" rev-parse HEAD)
+  merge_base $'chore: merge dev\n\nClaude-Session: x'
+  run_bin -0 team-clean-messages "$wt"
+  assert_equal "$(message HEAD)" 'chore: merge dev'
+  assert_equal "$(parents HEAD)" "$first $merged"
+}
+
+@test "a merge of the base before the first offender stays the commit it was" {
+  commit "feat: one" a
+  merge_base
+  local kept
+  kept=$(git -C "$wt" rev-parse HEAD)
+  commit $'feat: two\n\nClaude-Session: x' b
+  run_bin -0 team-clean-messages "$wt"
+  assert_equal "$(git -C "$wt" rev-parse HEAD~1)" "$kept"
+}
+
+@test "the branch does not move when a rebuilt merge's parents differ" {
+  commit $'feat: one\n\nClaude-Session: x' a
+  merge_base
+  remember_before
+  # commit-tree is handed only the first parent of each commit.
+  wrap_git <<'SH'
+if [[ " $* " == *" commit-tree "* ]]; then
+  args=() seen=''
+  while (($#)); do
+    if [[ $1 == -p ]]; then
+      if [[ -n $seen ]]; then shift 2; continue; fi
+      seen=1
+    fi
+    args+=("$1")
+    shift
+  done
+  set -- "${args[@]}"
+fi
+SH
+  run_bin -1 team-clean-messages "$wt"
+  assert_contains "$output" "its parents differ; nothing moved"
   assert_unchanged
 }
 

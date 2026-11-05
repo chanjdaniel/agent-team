@@ -11,13 +11,15 @@
 # --check prints each offending commit (short sha and subject) with its lines, exit 1 if any,
 # and changes nothing.
 # Otherwise it refuses, changing nothing, on a detached HEAD, on the base branch or main, on a
-# branch naming no task (<type>/T<n>-...), with uncommitted changes, with a merge or root commit
-# in the range, or when origin's branch has commits this one lacks. From the first offender on,
-# each commit is rebuilt with git commit-tree (never signed) on its own tree and its new parent,
-# with its author's and committer's names, emails and dates and its encoding; only the message
-# changes. The branch moves, by a compare-and-swap ref update against the old head, only when
-# every rebuilt commit has its original's tree, author and committer, the commit count matches
-# and the old and new heads have an empty diff; otherwise exit 1 and nothing moves.
+# branch naming no task (<type>/T<n>-...), with uncommitted changes, with a root commit or a merge
+# of anything but the base (a merge any of whose parents but its first is not on origin/<base>) in
+# the range, or when origin's branch has commits this one lacks. From the first offender on, each
+# commit is rebuilt with git commit-tree (never signed) on its own tree, its new first parent and
+# a merge's other parents as they were, with its author's and committer's names, emails and dates
+# and its encoding; only the message changes. The branch moves, by a compare-and-swap ref update
+# against the old head, only when every rebuilt commit has its original's tree, author, committer
+# and other parents, the commit count matches and the old and new heads have an empty diff;
+# otherwise exit 1 and nothing moves.
 # It never pushes: it prints git push --force-with-lease=<branch>:<old head> origin <branch> on
 # stdout (the lease is origin's head of the branch: the old head, an older one while commits are
 # unpushed, empty while origin has none) and appends history-rewritten. With nothing to clean it
@@ -59,6 +61,17 @@ g rev-parse -q --verify "refs/remotes/origin/$base^{commit}" >/dev/null || die "
 branch=$(g symbolic-ref -q --short HEAD) || branch=''
 old_head=$(g rev-parse HEAD)
 range="origin/$base..${branch:-HEAD}"
+
+# The refusals of a run that moves a ref: a task's branch, with nothing uncommitted. Sets task.
+require_task_branch() {
+  [[ -n $branch ]] || die "$worktree is on a detached HEAD; check out the task's branch first"
+  [[ $branch != "$base" && $branch != main ]] || die "$branch is the base branch or main; only a task branch is cleaned"
+  [[ $branch =~ ^[^/]+/(T[1-9][0-9]*)- ]] || die "$branch names no task (<type>/T<n>-<slug>)"
+  task=${BASH_REMATCH[1]}
+  mapfile -t changes < <(worktree_changes "$worktree")
+  ((${#changes[@]} == 0)) || die "$worktree has uncommitted changes: $(printf '%s; ' "${changes[@]}" | sed 's/; $//')"
+}
+
 commits=$(g rev-list --reverse "origin/$base..$old_head") || die "cannot list $range"
 mapfile -t commits <<<"$commits"
 [[ -n ${commits[0]} ]] || commits=()
@@ -86,15 +99,23 @@ if [[ -n $check ]]; then
   ((${#offenders[@]} == 0)) || exit 1
 fi
 
+# The parents of the commit <sha> after its first, on one line.
+other_parents() { g rev-list --parents -n 1 "$1" | cut -s -d' ' -f3-; }
+
 if [[ -z $check ]]; then
-  [[ -n $branch ]] || die "$worktree is on a detached HEAD; check out the task's branch first"
-  [[ $branch != "$base" && $branch != main ]] || die "$branch is the base branch or main; only a task branch is cleaned"
-  [[ $branch =~ ^[^/]+/(T[1-9][0-9]*)- ]] || die "$branch names no task (<type>/T<n>-<slug>)"
-  task=${BASH_REMATCH[1]}
-  mapfile -t changes < <(worktree_changes "$worktree")
-  ((${#changes[@]} == 0)) || die "$worktree has uncommitted changes: $(printf '%s; ' "${changes[@]}" | sed 's/; $//')"
-  merges=$(g rev-list --min-parents=2 --abbrev-commit "origin/$base..$old_head" | paste -sd ' ')
-  [[ -z $merges ]] || die "there is a merge commit in $range: $merges; it cannot be rebuilt message by message"
+  require_task_branch
+  # A merge of the base has only its first parent in the range, so the range stays one line of
+  # commits to rebuild; any other merge would need its side's commits rebuilt too.
+  merges=''
+  for sha in $(g rev-list --min-parents=2 "origin/$base..$old_head"); do
+    for other in $(other_parents "$sha"); do
+      if ! g merge-base --is-ancestor "$other" "origin/$base"; then
+        merges+=" $(g rev-parse --short "$sha")"
+        break
+      fi
+    done
+  done
+  [[ -z $merges ]] || die "there is a merge commit in $range:$merges; only a merge of origin/$base can be rebuilt message by message"
   roots=$(g rev-list --max-parents=0 --abbrev-commit "origin/$base..$old_head" | paste -sd ' ')
   [[ -z $roots ]] || die "$roots is a root commit: $branch does not start from origin/$base"
   # The push must replace only what origin has: its branch is absent, or the old head or behind it.
@@ -143,21 +164,26 @@ for sha in "${commits[@]}"; do
     die "cannot read the author and committer of $(describe "$sha"); nothing moved"
   # A commit in another encoding names it in its header, and so must its rebuild.
   encoding=$(g cat-file commit "$sha" | sed -n '/^$/q; s/^encoding //p')
+  parents=(-p "$parent")
+  for other in $(other_parents "$sha"); do parents+=(-p "$other"); done
   parent=$(GIT_AUTHOR_NAME=${author[0]} GIT_AUTHOR_EMAIL=${author[1]} GIT_AUTHOR_DATE=${author[2]} \
     GIT_COMMITTER_NAME=${committer[0]} GIT_COMMITTER_EMAIL=${committer[1]} GIT_COMMITTER_DATE=${committer[2]} \
-    g -c i18n.commitEncoding="${encoding:-UTF-8}" commit-tree --no-gpg-sign "$(g rev-parse "$sha^{tree}")" -p "$parent" -F "$msg") ||
+    g -c i18n.commitEncoding="${encoding:-UTF-8}" commit-tree --no-gpg-sign "$(g rev-parse "$sha^{tree}")" "${parents[@]}" -F "$msg") ||
     die "cannot rebuild $(describe "$sha"); nothing moved"
   rebuilt+=("$parent")
 done
 new_head=$parent
 
-# The proof, before anything moves: same trees, people and dates, same count, no diff.
+# The proof, before anything moves: same trees, people, dates and merged parents, same count, no
+# diff.
 for i in "${!commits[@]}"; do
   sha=${commits[i]} new=${rebuilt[i]}
   [[ $(g rev-parse "$sha^{tree}") == "$(g rev-parse "$new^{tree}")" ]] ||
     die "the rebuilt $(describe "$sha") is wrong: its tree differs; nothing moved"
   [[ $(kept_headers "$sha") == "$(kept_headers "$new")" ]] ||
     die "the rebuilt $(describe "$sha") is wrong: its author, committer or headers differ; nothing moved"
+  [[ $(other_parents "$sha") == "$(other_parents "$new")" ]] ||
+    die "the rebuilt $(describe "$sha") is wrong: its parents differ; nothing moved"
 done
 [[ $(g rev-list --count "origin/$base..$new_head") == "${#commits[@]}" ]] ||
   die "the rebuilt branch does not have ${#commits[@]} commits on origin/$base; nothing moved"
