@@ -17,6 +17,11 @@ A project whose tasks mostly change a UI lists it in its `toolkits` in `projects
 A planner, a task with no UI, and ops never get it.
 The builder and reviewer roles name `ui-check` for a session that lists it, so a session with the toolkit runs it and one without reads the line and does nothing: a ticket builder spot-checks its ticket's states, the builder who delivers runs it on the whole change and puts a "UI check" section in the PR body, a fix round rechecks what the fix touched and its siblings, and the reviewer runs it on the head under review and writes each finding into `review.md` with its tile.
 
+## How a UI is built
+
+This toolkit checks a UI and teaches nothing about building one: `sops/frontend-patterns.md` holds the rules that hold beyond one project for a dev-only component library, a combobox, a large list, a dialog, a realistic fixture and bundle growth.
+A planner never gets this toolkit, so the planner and builder roles name that document for a UI task.
+
 ## What loads
 
 - The hook `hooks/hooks.json`: at session start, `bin/hooks/axi-banner chrome-devtools-axi`, reached from the toolkit as `${CLAUDE_PLUGIN_ROOT}/../../bin/hooks/axi-banner`, since `--plugin-dir` loads the toolkit in place in the code checkout.
