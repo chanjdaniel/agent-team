@@ -31,7 +31,7 @@
 #               end ends there (open), one from before its start is clipped to it (clipped); then
 #               per on (in any case), most hours first: the hours (task-hours, summed over the
 #               spans), wall_hours (the hours their union covers, overlaps counted once) and spans
-#   rewrites    every history-rewritten
+#   rewrites    every history-rewritten, and every gate-lane-cleared, which keeps its event
 #   injections  every injection
 #   tasks       each task with an event in the window: title, project, path, phase, its record
 #               directory under the team home, and the sessions it launched in the window

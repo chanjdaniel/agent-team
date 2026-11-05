@@ -5,12 +5,6 @@ Each entry is a general rule about the tools the team runs on (Claude Code, git,
 The retro proposes adding, merging and dropping entries, and Daniel approves every change, which lands through a PR on the code repository, since this file is code.
 A `Seen:` line's `tasks/`, `memory/` and ledger citations are records: read them in the team home, never in the code checkout.
 
-## Put a flag that takes many values before the other options, or end the options with `--`
-
-Why: a variadic flag such as `--mcp-config`, `--add-dir` or `--allowedTools` takes every argument after it as one of its values, so a positional argument right behind it, a prompt say, is swallowed.
-
-Seen: `team-worker`'s launch, whose first prompt was swallowed so the session started idle (2026-10-21; the launch comment in `bin/team-worker`, and the coordinator's memory `memory/coordinator/agent-team-design-decisions.md`).
-
 ## Keep a background session's working files out of `.claude/` directories, except `.claude/worktrees/`
 
 Why: Claude Code protects `.claude/` paths, so allow rules never pre-approve a write there and every write prompts, which a background session cannot answer.
@@ -46,7 +40,7 @@ Seen: T12 and T22 (twice), whose gate rebased and force-pushed their branches (l
 
 Why: `*` matches any text, spaces and other arguments included, a rule whose one `*` ends it after a space also matches the command with nothing there (two, as `**`, keep the space required), and a deny rule or auto mode judges the whole call, so a rule matches more commands than it looks, and one matching part (a word in a commit message, a grep pattern or a heredoc, or one guarded step of a chain) refuses the whole call; write messages and file contents with the Write or Edit tool and pass the file (`git commit -F <file>`, `gh pr edit --body-file <file>`), and run each commit, push and edit as its own call.
 
-Seen: T172's planner's heredoc of ticket files, refused whole for prose naming `team-worker` (ledger 2026-11-01T05:44:17Z; `tasks/queued/deny-rule-prose-match.md`); T94's and T113's read of `git config core.hooksPath`, which the write rule `git config core.hooksPath *` matched with nothing after the key (2026-10-29T09:24:23Z, 23:45:43Z), until T134 ended the write rules in `**`; T135's replay of base merges, chained with an install into a shared git config and a `git clean -fdx` it did not mean, refused whole (2026-10-30T16:20:03Z).
+Seen: T172's planner's heredoc of ticket files, refused whole for prose naming `team-worker` (ledger 2026-11-01T05:44:17Z; `tasks/queued/deny-rule-prose-match.md`); T94's and T113's read of `git config core.hooksPath`, which the write rule `git config core.hooksPath *` matched with nothing after the key (2026-10-29T09:24:23Z, 23:45:43Z), until T134 ended the write rules in `**`; T191's `rm` chained with `team-stack down`, refused whole (2026-11-03T13:03:53Z), and T215's chained read, whose planner could not tell which part was refused (2026-11-04T13:59:40Z).
 
 ## To know what a CI or deploy run built, read the commit its checkout fetched, never the run's branch and commit label
 

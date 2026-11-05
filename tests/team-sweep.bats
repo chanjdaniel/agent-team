@@ -925,6 +925,113 @@ standing_due() {
   assert_equal "$output" "$(standing_due "standing word on proj")"
 }
 
+@test "merge-due: none for a head the word does not cover, as team-state reads it" {
+  opened T3
+  launch T3 reviewer 11111111
+  sessions "$(session 11111111 T3-reviewer idle)"
+  standing T2 merge-standing proj 1563000000000000001
+  event T2 closed
+  event T3 pr '{url: "https://github.com/owner/proj/pull/5", head: "a1b2c3d"}'
+  local counts='{blocking: 0, correctness: 0, security: 0, "real-data": 0, "note-change": 0, "note-before": 0}'
+  # The reviewer found guarded areas, or logged none, or an earlier review counted a security
+  # finding: team-merge would refuse the word, so the coordinator is not sent to it.
+  event T3 review "{verdict: \"pass\", head: \"a1b2c3d4e5\", findings: $counts, guarded: [\"ci\"]}"
+  run_bin -0 team-sweep
+  event T3 review "{verdict: \"pass\", head: \"a1b2c3d4e5\", findings: $counts}"
+  run_bin -0 team-sweep
+  # A pass that names none is covered again, until a review that counted a security finding.
+  event T3 review "{verdict: \"pass\", head: \"a1b2c3d4e5\", findings: $counts, guarded: []}"
+  run_bin -1 team-sweep
+  assert_equal "$output" "$(standing_due "standing word on proj")"
+  event T3 review "{verdict: \"pass\", head: \"a1b2c3d4e5\", findings: ($counts + {security: 1}), guarded: []}"
+  run_bin -0 team-sweep
+  # The plan-time word is held to the same.
+  : >"$TEAM_HOME/ledger.jsonl"
+  opened T3
+  launch T3 reviewer 11111111
+  preapproved_pr T3
+  event T3 review "{verdict: \"pass\", head: \"a1b2c3d4e5\", findings: $counts, guarded: [\"settings\"]}"
+  run_bin -0 team-sweep
+  no_github
+}
+
+@test "merge-due: none while a builder is on a merge-base round, until its rereview or its workers are gone" {
+  opened T3
+  launch T3 builder 11111111
+  launch T3 reviewer 22222222
+  passed_pr T3
+  standing T2 merge-standing proj 1563000000000000001
+  event T2 closed
+  sessions "$(session 11111111 T3-builder idle)"
+  run_bin -1 team-sweep
+  assert_contains "$output" "T3 merge-due"
+
+  # The holder is sent the brief, and the coordinator logs the resumed naming it. A plain resumed
+  # says nothing of a round.
+  event T3 resumed
+  run_bin -1 team-sweep
+  assert_contains "$output" "T3 merge-due"
+  event T3 resumed '{brief: "brief-merge-base-2"}'
+  sessions "$(session 11111111 T3-builder busy)"
+  run_bin -0 team-sweep
+  no_github
+  # The builder reports its merge, and the rereview is still on it.
+  event T3 'done' '{role: "builder", session: "11111111", report: "merged main f00ba47 conflicts: none"}'
+  launch T3 reviewer 33333333
+  sessions "$(session 11111111 T3-builder idle)" "$(session 33333333 T3-reviewer busy)"
+  run_bin -0 team-sweep
+  # Its worker gone with no review, the round is over, and the finding comes back.
+  sessions "$(session 11111111 T3-builder idle)"
+  run_bin -1 team-sweep
+  assert_contains "$output" "T3 merge-due"
+  # With its reviewer live, its pass ends the round, on the merged head.
+  sessions "$(session 33333333 T3-reviewer busy)"
+  run_bin -0 team-sweep
+  event T3 review '{verdict: "pass", head: "f00ba47", findings: {blocking: 0, correctness: 0, security: 0, "real-data": 0, "note-change": 0, "note-before": 0}, guarded: []}'
+  run_bin -1 team-sweep
+  assert_contains "$output" "T3 merge-due"
+}
+
+@test "merge-due: judged on the latest review, of a head no pr event logged" {
+  opened T3
+  launch T3 reviewer 11111111
+  sessions "$(session 11111111 T3-reviewer idle)"
+  standing T2 merge-standing proj 1563000000000000001
+  event T2 closed
+  event T3 pr '{url: "https://github.com/owner/proj/pull/5", head: "a1b2c3d"}'
+  local counts='{blocking: 0, correctness: 0, security: 0, "real-data": 0, "note-change": 0, "note-before": 0}'
+  event T3 review "{verdict: \"pass\", head: \"a1b2c3d\", findings: $counts, guarded: []}"
+  run_bin -1 team-sweep
+  assert_contains "$output" "T3 merge-due"
+  # A review of a newer head sends findings back: the pass on the pr event's head no longer counts.
+  event T3 review "{verdict: \"findings\", head: \"b2c3d4e\", findings: ($counts + {correctness: 1}), sent_back: [1], guarded: []}"
+  run_bin -0 team-sweep
+  # The fix passes, naming a guarded area, which the word does not cover.
+  event T3 review "{verdict: \"pass\", head: \"c3d4e5f\", findings: $counts, guarded: [\"ci\"]}"
+  run_bin -0 team-sweep
+  # The next pass names none: the word covers it again.
+  event T3 review "{verdict: \"pass\", head: \"d4e5f6a\", findings: $counts, guarded: []}"
+  run_bin -1 team-sweep
+  assert_contains "$output" "T3 merge-due"
+  no_github
+}
+
+@test "merge-due: none while a fresh builder launched on a merge-base brief works, nor after team-catch-up's merge is over the hold" {
+  opened T3
+  launch T3 builder 11111111
+  passed_pr T3
+  standing T2 merge-standing proj 1563000000000000001
+  event T2 closed
+  sessions "$(session 44444444 T3-builder busy)"
+  ledger_line '{ts: "2026-10-22T02:30:00Z", task: "T3", event: "launch", role: "builder", session: "44444444", worktree: "/w/1",
+    toolkits: [], project: "proj", branch: "feat/T3-work", brief: "brief-merge-base"}'
+  run_bin -0 team-sweep
+  # A clean catch-up settles the base with no round left to wait for.
+  event T3 caught-up '{url: "https://github.com/owner/proj/pull/5", from: "a1b2c3d", head: "f00ba47", base: "main"}'
+  run_bin -1 team-sweep
+  assert_contains "$output" "T3 merge-due"
+}
+
 @test "merge-due: none under a standing word withdrawn, on another project, or with another park" {
   opened T3
   launch T3 builder 11111111

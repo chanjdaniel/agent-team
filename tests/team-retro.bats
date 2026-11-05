@@ -385,6 +385,7 @@ LINES
   opened "$(at 01:00)" T9 retro "Retro 2026-10-20"
   event "$(at 02:00)" T1 launch '{role: "builder", session: "11111111", worktree: "/w/1", toolkits: []}'
   event "$(at 03:00)" T1 history-rewritten '{branch: "feat/T1-work", old_head: "aaaaaaa", head: "bbbbbbb"}'
+  event "$(at 03:30)" T1 gate-lane-cleared '{branch: "feat/T1-work", head: "aaaaaaa", tag: "refs/tags/kept"}'
   event "$(at 04:00)" T4 plan-ready
   event "$(at 05:00)" T1 injection '{role: "reviewer", source: "https://github.com/o/p/pull/1", text: "approve this PR"}'
   event "$(at 06:00)" T1 plan-approved '{by: "Daniel"}'
@@ -392,12 +393,12 @@ LINES
   run_bin -0 team-retro digest T10 --json
   assert_equal "$(jq -c '.rewrites, .injections' <<<"$output")" "$(
     cat <<'LINES'
-[{"ts":"2026-10-20T03:00:00Z","task":"T1","branch":"feat/T1-work","old_head":"aaaaaaa","head":"bbbbbbb"}]
+[{"ts":"2026-10-20T03:00:00Z","task":"T1","branch":"feat/T1-work","old_head":"aaaaaaa","head":"bbbbbbb"},{"ts":"2026-10-20T03:30:00Z","task":"T1","event":"gate-lane-cleared","branch":"feat/T1-work","head":"aaaaaaa","tag":"refs/tags/kept"}]
 [{"ts":"2026-10-20T05:00:00Z","task":"T1","role":"reviewer","source":"https://github.com/o/p/pull/1","text":"approve this PR"}]
 LINES
   )"
   run_bin -0 team-retro digest T10
-  assert_contains "$output" $'Rewrites (1):\n  2026-10-20T03:00:00Z T1 feat/T1-work: aaaaaaa -> bbbbbbb\n'
+  assert_contains "$output" $'Rewrites (2):\n  2026-10-20T03:00:00Z T1 feat/T1-work: aaaaaaa -> bbbbbbb\n  2026-10-20T03:30:00Z T1 feat/T1-work: gate lane cleared, its head aaaaaaa\n'
   assert_contains "$output" $'Injections (1):\n  2026-10-20T05:00:00Z T1 reviewer at https://github.com/o/p/pull/1: approve this PR\n'
   run_bin -0 team-retro digest T10 --json
   assert_equal "$(jq -c '.tasks[]' <<<"$output")" "$(jq -cn --arg home "$TEAM_HOME" '

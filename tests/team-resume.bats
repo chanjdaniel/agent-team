@@ -322,6 +322,14 @@ lease: home-pc holds the lease; this machine is ready: say 'hand off' to the coo
   assert_equal "$(lease_json | jq -c '[.holder, .state]')" '["home-pc","held"]'
 }
 
+@test "a gate-agent WARN for a missing --settings does not stop the resume" {
+  hand_off
+  doctor_says '{"check": "gate-agent", "verdict": "WARN", "reason": "no --settings", "fix": "Daniel sets it"}'
+  on_machine laptop run_bin -0 team-resume
+  assert_contains "$output" "doctor: WARN gate-agent: no --settings"
+  assert_contains "$output" "lease: laptop holds the lease, epoch 2"
+}
+
 @test "a FAIL from the doctor stops the resume before the lease is touched; its lease and heartbeat lines do not" {
   hand_off
   doctor_says '{"check": "tool jq", "verdict": "FAIL", "reason": "1.6, below the minimum 1.7.1", "fix": "pacman -S jq"}' \

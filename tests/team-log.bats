@@ -156,6 +156,7 @@ worktree-returned team-close project worktree
 closed team-close archive returned kept
 merged team-merge pr merge head by
 history-rewritten team-clean-messages branch old_head head
+gate-lane-cleared team-clean-messages branch head tag
 caught-up team-catch-up url from head base
 done team-log role session
 ticket-done team-log ticket commits
@@ -248,7 +249,7 @@ TABLE
   grep -Eq '^  asked +team-log, team-ask +id, text; optional discord_message \(id\), script, sha256  \(a decision put to Daniel; .*script and sha256: .*together.*team-run-approved.*\)$' <<<"$output"
   grep -Eq '^  ran +team-run-approved +id, exit \(number\)  \(.*\)$' <<<"$output"
   grep -Eq '^  waiting +team-log, team-ask +on, reason; optional since  \(.*\)$' <<<"$output"
-  grep -Eq '^  resumed +team-log, team-answer +- +\(clears held, blocked, paused and waiting\)$' <<<"$output"
+  grep -Eq '^  resumed +team-log, team-answer +-; optional brief +\(clears held, blocked, paused and waiting; brief: ' <<<"$output"
   grep -Eq '^  blocked +team-log +reason; optional since  \(.*since: when the park began, when it is logged after the fact\)$' <<<"$output"
   grep -Eq '^  denied +team-log, denial-log +role, what, why; optional session  \(a denial the worker went past .*parks nothing and clears nothing.*a denial that stops the work is a blocked; denial-log, every worker.s PermissionDenied hook, .*never the tool.s input\)$' <<<"$output"
   grep -Eq '^  retro-schedule +team-log +every_hours \(number\), discord_message \(id\)  \(.*every_hours 0 stops.*\)$' <<<"$output"

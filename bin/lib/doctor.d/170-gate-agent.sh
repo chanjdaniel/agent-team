@@ -7,9 +7,14 @@
 #               tool claude line), and agent_args_override.claude carrying --setting-sources with
 #               sources that leave out user, and --strict-mcp-config, so the gate's claude loads
 #               none of Daniel's user settings (their hooks, the Discord plugin, Remote Control) and
-#               none of their MCP servers; it warns when an item right after the sources is no
-#               flag, which claude takes as an argument of its own (the second half of an unquoted
-#               project,local in a flow list). Any other agent, or none (auto would pick whichever
+#               none of their MCP servers, and --settings naming a file whose attribution.commit is
+#               empty (bin/lib/gate-claude-settings.json), since the user settings are what turn
+#               commit attribution off; with no --settings at all and nothing else lacking it only
+#               warns, so a resume goes on until Daniel adds it, since team-merge still refuses a
+#               commit that carries the line, while a --settings naming a file that is not there or
+#               leaves attribution on fails. It also warns when an item right after the sources is
+#               no flag, which claude takes as an argument of its own (the second half of an
+#               unquoted project,local in a flow list). Any other agent, or none (auto would pick whichever
 #               agent no-mistakes finds first), fails. Only those keys of the file are read (none
 #               holds a credential), and none of the rest printed.
 # shellcheck shell=bash
@@ -22,7 +27,7 @@
 wrapper=$HOME/.no-mistakes/bin/opencode-gate gate_config=$HOME/.no-mistakes/config.yaml
 wrapper_fix="mkdir -p ~/.no-mistakes/bin && install -m 755 $(tilde "$bin/lib/opencode-gate") ~/.no-mistakes/bin/opencode-gate"
 setting="agent_path_override: {opencode: $wrapper}" tools="$(tilde "$bin/team-bootstrap") --stage tools"
-claude_args='agent_args_override: {claude: [--setting-sources, "project,local", --strict-mcp-config]}'
+claude_args="agent_args_override: {claude: [--setting-sources, \"project,local\", --strict-mcp-config, --settings, $bin/lib/gate-claude-settings.json]}"
 agent_fix="Daniel sets agent: opencode in ~/.no-mistakes/config.yaml (then $tools names the wrapper in it), or agent: claude with $claude_args"
 agent=''
 if [[ -f $gate_config ]]; then
@@ -36,13 +41,16 @@ if [[ $agent == claude ]]; then
   # The flags as no-mistakes passes them: --setting-sources takes the next item, or its own after
   # an =, and claude splits it on commas; every one given must leave out user. An item right after
   # that value which is no flag is an argument of claude's own: the second half of an unquoted
-  # project,local in a flow list, say.
-  gate_rc=0 gate_strict=0 gate_sources=() gate_user=0 gate_stray=
+  # project,local in a flow list, say. --settings takes the next item or its own after an =, and
+  # every one given must name a file whose commit attribution is off.
+  gate_rc=0 gate_strict=0 gate_sources=() gate_user=0 gate_stray='' gate_settings=() gate_attributed=0
   gate_args=$(awk -v args=claude -f "$bin/lib/gate-config.awk" "$gate_config") || gate_rc=$?
   mapfile -t gate_items <<<"$gate_args"
   for ((i = 0; i < ${#gate_items[@]}; i++)); do
     case ${gate_items[i]} in
       --strict-mcp-config) gate_strict=1 && continue ;;
+      --settings) gate_settings+=("${gate_items[i + 1]:-}") && i=$((i + 1)) && continue ;;
+      --settings=*) gate_settings+=("${gate_items[i]#--settings=}") && continue ;;
       --setting-sources) gate_shown="--setting-sources ${gate_items[i + 1]:-}" gate_value=${gate_items[i + 1]:-} && i=$((i + 1)) ;;
       --setting-sources=*) gate_shown=${gate_items[i]} gate_value=${gate_items[i]#--setting-sources=} ;;
       *) continue ;;
@@ -55,21 +63,30 @@ if [[ $agent == claude ]]; then
   for gate_value in "${gate_sources[@]}"; do
     [[ -n ${gate_value//[ ,]/} && ,${gate_value// /}, != *,user,* ]] || gate_user=1
   done
+  for gate_value in "${gate_settings[@]}"; do
+    [[ -f $gate_value ]] && jq -e '.attribution.commit == ""' "$gate_value" >/dev/null 2>&1 || gate_attributed=1
+  done
   gate_missing=()
   ((${#gate_sources[@]} && !gate_user)) ||
     gate_missing+=("--setting-sources with sources that leave out user, so the gate's claude loads Daniel's user settings (their hooks, the Discord plugin, Remote Control)")
   ((gate_strict)) || gate_missing+=("--strict-mcp-config, so the gate's claude loads Daniel's MCP servers")
+  ((${#gate_settings[@]} && !gate_attributed)) ||
+    gate_missing+=("--settings naming a file whose attribution.commit is empty, so the gate's own commits carry no agent line")
   if [[ -z ${installed[claude]:-} ]]; then
     report gate-agent FAIL "claude is not installed, so the gate has no agent to run" "the tool claude line's fix"
   elif ((gate_rc)); then
     report gate-agent FAIL "$(tilde "$gate_config")'s agent_args_override is in a form team-doctor does not read (a flow collection over several lines, a nested one, or a scalar)" \
       "Daniel writes its claude list as a block or a one-line flow sequence: $claude_args"
+  elif ((${#gate_missing[@]} == 1 && ${#gate_settings[@]} == 0)); then
+    gate_reason="config.yaml runs the gate on claude with --setting-sources $(printf '%s\n' "${gate_sources[@]}" | paste -sd ' ' -) and --strict-mcp-config, but its agent_args_override.claude has no --settings naming a file whose attribution.commit is empty, so the gate's own commits may carry an agent line, which team-merge refuses"
+    [[ -z $gate_stray ]] || gate_reason+=", and it has $gate_stray, which claude takes as an argument of its own (an unquoted project,local in a flow list is two items)"
+    report gate-agent WARN "$gate_reason" "Daniel sets $claude_args in ~/.no-mistakes/config.yaml"
   elif ((${#gate_missing[@]})); then
     gate_reason=$(printf '%s; ' "${gate_missing[@]}")
     report gate-agent FAIL "$(tilde "$gate_config") runs the gate on claude, but its agent_args_override.claude lacks ${gate_reason%; }" \
       "Daniel sets $claude_args in ~/.no-mistakes/config.yaml"
   else
-    gate_shown="config.yaml runs the gate on claude with --setting-sources $(printf '%s\n' "${gate_sources[@]}" | paste -sd ' ' -) and --strict-mcp-config"
+    gate_shown="config.yaml runs the gate on claude with --setting-sources $(printf '%s\n' "${gate_sources[@]}" | paste -sd ' ' -), --strict-mcp-config and commit attribution off"
     if [[ -n $gate_stray ]]; then
       report gate-agent WARN "$gate_shown, but agent_args_override.claude has $gate_stray, which claude takes as an argument of its own (an unquoted project,local in a flow list is two items)" \
         "Daniel quotes the sources as one item in ~/.no-mistakes/config.yaml: $claude_args"

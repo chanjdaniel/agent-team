@@ -470,6 +470,30 @@ def kind_estimate($costs; $s; $kind; $seed):
 def admission_kept($heavy; $now):
   (.at | fromdateiso8601) >= $now - 600 or (.pid != null and $heavy.held and .pid == $heavy.pid);
 
+# The session each session admission (the input: admitted.json's entries, as admission_kept keeps
+# them) came to, from the ledger's launch events $launches: [{i, session}], i its index in the
+# input. Oldest admission first, each takes the first launch of its role and task at or after its
+# time that no earlier one took; one with no such launch has no pair, its session still starting
+# or its launch failed.
+def admission_launches($launches):
+  to_entries | map(select(.value.kind | startswith("session:"))) | sort_by(.value.at)
+  | reduce .[] as $a ({taken: [], pairs: []};
+      . as $state
+      | (first($launches[]
+          | select(.task == $a.value.task and "session:\(.role)" == $a.value.kind and .ts >= $a.value.at
+              and (.session as $s | any($state.taken[]; . == $s) | not))) // null) as $l
+      | if $l == null then . else .taken += [$l.session] | .pairs += [{i: $a.key, session: $l.session, launched: $l.ts}] end)
+  | .pairs;
+
+# Of admission_launches' pairs (the input), those whose session the session list $sessions (claude
+# agents --json's, read at $read_at, in seconds) no longer holds, by its short id or the start of
+# its full one, when its launch was a minute or more before that read: team-worker logs a launch
+# before any list has shown the session, a list from a daemon just restarting holds none, and a list
+# read before a launch cannot hold it, however old the launch is by now.
+def stopped_admissions($sessions; $read_at):
+  map(select((.launched | fromdateiso8601) <= $read_at - 60)
+      | select(.session as $s | any($sessions[]; .id == $s or ((.sessionId // "") | startswith($s))) | not));
+
 # What the team's live work reserves, from $in: {reading (the newest, or null), costs
 # (capacity_costs' array), settings, heavy (the heavy-run lock now: {held, pid, label, task}),
 # admitted (capacity/admitted.json's entries), now (seconds), asking (the kind being admitted, or
@@ -479,7 +503,8 @@ def admission_kept($heavy; $now):
 #   sessions_use: each live team session of the reading past its admission window, at its use;
 #   spike_allowance: one for the team while any session is past its window, the largest of those
 #   sessions' kind estimates less their use, at 0 at least, named by that session;
-#   admissions: each admission of the last 10 minutes but a heavy run's, at its estimate then
+#   admissions: each admission of the last 10 minutes but a heavy run's, a stopped session's already
+#   left out of admitted by team-capacity's release_stopped_admissions, at its estimate then
 #   (admitted: its time); one of a session kind together with a session of that kind and task the
 #   reading holds, which is then within its window, at the larger of that estimate and the
 #   session's use (of several sessions of the kind and task, the newest admissions take the ones

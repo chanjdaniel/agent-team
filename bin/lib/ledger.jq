@@ -774,13 +774,37 @@ def finding($task; $kind; $session; $name; $detail; $next):
   {task: $task, kind: $kind, session: $session, name: $name, next: $next,
    text: "\($task) \($kind): \($detail); next: \($next)"};
 
-# team-sweep's merge-due finding, over a task's events, or nothing: the task awaits merge, a
-# plan-time approval of it stands or a standing word of Daniel's stands for one of its projects
-# (its opened and worktree-added events'), and nothing else parks it (no ask nothing settled,
-# pause or wait). $standing is the ledger's merge-standing and merge-standing-withdrawn events,
-# every task's, as standing_words reads them. The ledger names no PR's project, so any word on one
-# of the task's projects counts, and team-merge holds each PR to its own project's.
-def merge_due_finding($standing):
+# Whether a task's merge-base round is in flight, over its events and the session list: its latest
+# builder launch or resumed that names a merge-base brief has no later review, caught-up or merged,
+# and a worker on it is live with no done since: the builder then, or a launch since, such as the
+# rereview's. A round whose workers are gone is over, so the task is not left unwatched.
+def merge_base_round($sessions):
+  . as $events
+  | ([range(length) | select($events[.]
+      | (.event == "resumed" or (.event == "launch" and .role == "builder")) and ((.brief // "") | contains("merge-base")))]
+     | last) as $i
+  | if $i == null then false
+    else $events[$i + 1:] as $rest
+    | if any($rest[]; .event | IN("review", "caught-up", "merged")) then false
+      else any(([$events[:$i + 1][] | select(.event == "launch" and .role == "builder")] | last | select(. != null)),
+            ($rest[] | select(.event == "launch"));
+          . as $l | (any($rest[]; .event == "done" and .session == $l.session) | not)
+            and live_session($l.session; $sessions) != null)
+      end
+    end;
+
+# team-sweep's merge-due finding, over a task's events and the session list, or nothing: the task
+# awaits merge, a plan-time approval of it stands or a standing word of Daniel's stands for one of
+# its projects (its opened and worktree-added events'), nothing else parks it (no ask nothing
+# settled, pause or wait), no merge-base round is in flight, and a PR not merged has no review-side
+# reason against a word given on no head on the latest head the task logged for it (pr_heads, since
+# no pr event logs a fix; unattended_review_reasons, as team-state and team-merge read them: the
+# sweep reads no GitHub, so a guarded path a reviewer did not name is team-merge's to find, and of
+# two open PRs the later review stands for both); only such PRs are named. $standing is the ledger's merge-standing and
+# merge-standing-withdrawn events, every task's, as standing_words reads them. The ledger names no
+# PR's project, so any word on one of the task's projects counts, and team-merge holds each PR to
+# its own project's.
+def merge_due_finding($standing; $sessions):
   .[0].task as $task
   | . as $events
   | if phase == "awaiting-merge" and pending_asks == [] and (standing_until_launch("paused") | not)
@@ -790,9 +814,13 @@ def merge_due_finding($standing):
           | reduce .[] as $p ([]; if IN(.[]; $p) then . else . + [$p] end)) as $projects
          | $standing | standing_words($projects)[] | .project] as $words
       | select($plan != [] or $words != [])
+      | select($events | merge_base_round($sessions) | not)
       | task_prs as $prs
+      | [$prs[] | select(pr_merged($events; $prs) | not) | . as $pr
+         | select([$events | unattended_review_reasons(pr_heads($pr.url) | last | .head // $pr.head)] == []) | .url] as $due
+      | select($due != [])
       | finding($task; "merge-due"; null; null;
-          "awaiting the merge of \([$prs[] | select(pr_merged($events; $prs) | not) | .url] | join(", "))"
+          "awaiting the merge of \($due | join(", "))"
           + " on Daniel's "
           + ([if $plan != [] then "plan-time word on \($plan | join(", "))" else empty end,
               if $words != [] then "standing word on \($words | join(", "))" else empty end] | join(" and "))
@@ -1013,7 +1041,7 @@ def sweep($sessions; $plan; $activity):
   . as $events
   | by_task as $tasks
   | [.[] | select(.event == "merge-standing" or .event == "merge-standing-withdrawn")] as $standing
-  | ([($tasks[] | select(is_open) | [merge_due_finding($standing)] as $due
+  | ([($tasks[] | select(is_open) | [merge_due_finding($standing; $sessions)] as $due
         | if $due != [] then $due[] elif parked then empty
           else task_findings($sessions; $activity) end),
       (team_sessions($tasks; $sessions)[] | select(.task_state | IN("closed", "unknown"))
@@ -1325,7 +1353,8 @@ def retro_digest($task; $team_home):
        totals: ($spans | group_by(.on | tostring | ascii_downcase)
          | map({on: .[0].on, hours: (map(.hours) | add * 100 | round / 100), wall_hours: wall_hours, spans: length})
          | sort_by(-.hours))},
-     rewrites: [$in[] | select(.event == "history-rewritten") | del(.i, .event)],
+     rewrites: [$in[] | select(.event == "history-rewritten" or .event == "gate-lane-cleared")
+       | del(.i) | if .event == "history-rewritten" then del(.event) else . end],
      injections: [$in[] | select(.event == "injection") | del(.i, .event)],
      tasks: [$in | task_groups[] | .[0].task as $id | $tasks[$id] as $all
        | ($all | map(select(.event == "opened")) | first) as $opened
@@ -1357,7 +1386,8 @@ def retro_digest_text:
     + (if .open then ", open at the window's end" else "" end) + ": \(.reason)"]),
   section("Wait totals"; [.waits.totals[] | "\(.on): \(.hours)h over \(plural(.spans; "span")), \(.wall_hours)h wall-clock"]),
   section("Rewrites"; [.rewrites[] | "\(.ts) \(.task)\(if .branch then " \(.branch)" else "" end): "
-    + (if .old_head then "\(.old_head) -> " else "to " end) + "\(.head)" + (if .note then " (\(.note))" else "" end)]),
+    + (if .event == "gate-lane-cleared" then "gate lane cleared, its head " elif .old_head then "\(.old_head) -> " else "to " end)
+    + "\(.head)" + (if .note then " (\(.note))" else "" end)]),
   section("Injections"; [.injections[] | "\(.ts) \(.task) \(.role) at \(.source): \(.text)"]),
   section("Tasks"; [.tasks[] | "\(.task) \([.project, .path, .phase] | map(select(. != null)) | join(" ")): \(.title // "untitled")"
     + "; record \(.record); sessions "

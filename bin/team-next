@@ -80,8 +80,9 @@
 # builder-merge-base brief for the holder under 250k, else a fresh builder, after the
 # holder's STOW when it is live, with "conflicts on <files>" after the behind count for a conflict,
 # or "(whether the merge is clean is not known: <why>)" when the fetch or git fails. For a pass
-# with no PR (a review-ready, a gated or Disclosure task's), the message telling the holder to go
-# on with its delivery. For findings, or a pass that sent some
+# with no PR (a review-ready, a gated or Disclosure task's, or a later phase's whose earlier PR
+# GitHub says is merged), the message telling the holder to go on with its delivery. For findings,
+# or a pass that sent some
 # back (which team-log logs as findings): the message for the holder under 250k (its name, the
 # findings sent back and the findings file the message names, for a pass the newest of review.md
 # and rereview*.md in the holder's task directory, as team-brief derives a round's), else the
@@ -356,7 +357,7 @@ if [[ $handoff == verdict ]]; then
   # characters, and the PR's facts for a merge base.
   pr='' holder='' session='' holds='' context='' pr_error='' pr_url='' pr_reason='' live_head='' reviewed=''
   same='' sent='' short='' behind='' base='' pr_project='' branch='' before=''
-  json_vars --ledger pr='.pr | tojson' holder='[.workers[] | select(.role == "builder")] | last | . != null' \
+  json_vars --ledger pr='.pr | if (.state? // "") == "merged" then null else . end | tojson' holder='[.workers[] | select(.role == "builder")] | last | . != null' \
     session='[.workers[] | select(.role == "builder")] | last | .session | tostring' \
     holds='[.workers[] | select(.role == "builder")] | last
       | if .live | not then "gone" elif (.context | type) == "number" and .context >= 250000 then "full" else "holds" end' \
@@ -441,7 +442,7 @@ if [[ $handoff == verdict ]]; then
     if [[ -z $caught ]]; then
       step="merge base: $url is $behind_by, so it merges $base first (step 6):"
       case $holds in
-        holds) echo "$step render team-brief $task builder-merge-base and send its path to $who" ;;
+        holds) echo "$step render team-brief $task builder-merge-base, send its path to $who and log team-log $task resumed brief=<its file name without .md>, which holds team-sweep's merge-due" ;;
         full) echo "$step send $task STOW to $who, then launch a fresh builder on team-brief $task builder-merge-base" ;;
         gone) echo "$step $task-builder $session is gone, so launch a fresh builder on team-brief $task builder-merge-base" ;;
       esac
