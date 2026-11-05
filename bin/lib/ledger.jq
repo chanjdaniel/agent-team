@@ -797,9 +797,10 @@ def merge_base_round($sessions):
 # awaits merge, a plan-time approval of it stands or a standing word of Daniel's stands for one of
 # its projects (its opened and worktree-added events'), nothing else parks it (no ask nothing
 # settled, pause or wait), no merge-base round is in flight, and a PR not merged has no review-side
-# reason against a word given on no head (unattended_review_reasons, as team-state and team-merge
-# read them: the sweep reads no GitHub, so a guarded path a reviewer did not name is team-merge's
-# to find); only such PRs are named. $standing is the ledger's merge-standing and
+# reason against a word given on no head on the latest head the task logged for it (pr_heads, since
+# no pr event logs a fix; unattended_review_reasons, as team-state and team-merge read them: the
+# sweep reads no GitHub, so a guarded path a reviewer did not name is team-merge's to find, and of
+# two open PRs the later review stands for both); only such PRs are named. $standing is the ledger's merge-standing and
 # merge-standing-withdrawn events, every task's, as standing_words reads them. The ledger names no
 # PR's project, so any word on one of the task's projects counts, and team-merge holds each PR to
 # its own project's.
@@ -816,7 +817,7 @@ def merge_due_finding($standing; $sessions):
       | select($events | merge_base_round($sessions) | not)
       | task_prs as $prs
       | [$prs[] | select(pr_merged($events; $prs) | not) | . as $pr
-         | select([$events | unattended_review_reasons($pr.head)] == []) | .url] as $due
+         | select([$events | unattended_review_reasons(pr_heads($pr.url) | last | .head // $pr.head)] == []) | .url] as $due
       | select($due != [])
       | finding($task; "merge-due"; null; null;
           "awaiting the merge of \($due | join(", "))"

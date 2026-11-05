@@ -45,9 +45,10 @@
 #                  merge-base round in flight (its latest builder launch or resumed naming a
 #                  merge-base brief, with no review, caught-up or merged since and a worker on it
 #                  live with no done since) and a PR not merged with no review-side reason against
-#                  the word (team-state's: the latest review of its head a pass that found no
-#                  guarded area, and no review of the task that counted a security or real-data
-#                  finding or left its counts out), with session null: "awaiting the merge of
+#                  the word (team-state's: the latest review of the latest head the task logged for
+#                  it a pass that found no guarded area, and no review of the task that counted a
+#                  security or real-data finding or left its counts out), with session null:
+#                  "awaiting the merge of
 #                  <those PRs' URLs> on Daniel's plan-time word on
 #                  <projects>, with no ask open; next: run team-merge T<n>; on a refusal, ask
 #                  Daniel for the per-head word with team-ask", with "standing word on
