@@ -393,6 +393,77 @@ role_matrix() {
   assert_equal "$(jq -c '[.permissions.deny[]? | select(contains("team-run-approved"))]' "$REPO_ROOT/coordinator.settings.json")" '[]'
 }
 
+# The gate's state is the gate's own, and the coordinator's on Daniel's OK. A rule's * on both sides
+# refuses any Bash call naming a path under the mirrors, a read or a search among them, a cost
+# accepted as for the Agent Chrome's rules: no gate command names that path, and a message or a file
+# that does goes through the Write tool and -F (sops/platform-gotchas.md). Deny rules are a speed
+# bump, as CLAUDE.md says of git's, and a role's "When something is denied" stands behind them.
+@test "no worker role writes to the gate's mirrors, by path, by its remote's URL or by a deleting push" {
+  # shellcheck disable=SC2088,SC2016 # the paths are text, as an agent types them
+  local mirror='~/.no-mistakes/repos/x.git' home_mirror='$HOME/.no-mistakes/repos/x.git'
+  jq -e '.permissions.deny | index("Edit(~/.no-mistakes/repos/**)") != null' "$REPO_ROOT/settings/worker.json" >/dev/null
+  # shellcheck disable=SC2016 # the commands are text, as an agent types them
+  role_matrix \
+    "no-mistakes" "no-mistakes init" "no-mistakes doctor" "no-mistakes rerun" "no-mistakes axi" \
+    "no-mistakes axi run --help" "no-mistakes axi run --intent 'T7: the goal'" "no-mistakes axi status" \
+    "no-mistakes axi logs --step review --full" "no-mistakes axi respond --action approve" \
+    "no-mistakes axi respond --action fix --findings a,b --instructions 'keep it short'" \
+    "no-mistakes axi respond --action skip" "no-mistakes axi sync --check" "no-mistakes axi sync" \
+    "no-mistakes axi sync --recover" "no-mistakes axi sync --adopt-published" "no-mistakes axi abort" \
+    "no-mistakes axi abort --run 01KQ3V2M8Z" "git push no-mistakes feat/T1-x" "git push -u no-mistakes HEAD" \
+    "git push no-mistakes HEAD:feat/T1-x" "git fetch no-mistakes" "git ls-remote no-mistakes" \
+    "git remote get-url no-mistakes" "git remote get-url no-mistakes 2>/dev/null || echo none" "git remote -v" \
+    "git push origin --delete fix/T1-no-mistakes-x" "git push origin fix/T1-no-mistakes-x" \
+    "ls ~/.no-mistakes/worktrees/01KQ3V2M8Z" "cd ~/.no-mistakes/worktrees/01KQ3V2M8Z/x && git status" \
+    "git add .no-mistakes.yaml" "cat .no-mistakes.yml" "grep -n 'no-mistakes/repos' bin/team-clean-messages" \
+    "git log -S no-mistakes/repos" -- \
+    "git --git-dir $mirror log" "git --git-dir=$mirror log" "git --git-dir=$home_mirror log" \
+    "git --git-dir \"$home_mirror\" log" "git -C $mirror log" "git -C $home_mirror log" \
+    "git -C ~/wt --git-dir $mirror log" "GIT_DIR=$mirror git log" "GIT_DIR=\"$home_mirror\" git log" \
+    "env GIT_DIR=$mirror git log" "export GIT_DIR=$mirror && git log" "GIT_COMMON_DIR=$mirror git log" \
+    "cd $mirror && git log" "pushd $home_mirror && git log" "git push $mirror feat/T1-x" \
+    "git clone $mirror y" "git remote add z $mirror" "touch $mirror/x" "cp x $mirror/x" "echo x > $mirror/x" \
+    "tee $mirror/x" "bash -c 'git -C $mirror log'" "python3 -c \"open('$home_mirror/x', 'w')\"" \
+    "cd ~/.no-mistakes && git -C repos/x.git log" "cd ~/.no-mistakes/ && git -C repos/x.git log" \
+    "cd \$HOME/.no-mistakes && ls" "pushd ~/.no-mistakes && ls" "pushd ~/.no-mistakes/ && ls" \
+    "git -C ~/.no-mistakes --git-dir repos/x.git log" "git -C ~/.no-mistakes/ --git-dir repos/x.git log" \
+    'git --git-dir "$(git remote get-url no-mistakes)" log' 'git -C "$(git remote get-url no-mistakes)" log' \
+    'GIT_DIR=$(git remote get-url no-mistakes) git log' 'git --git-dir `git remote get-url no-mistakes` log' \
+    'm=$(git remote get-url no-mistakes); git --git-dir "$m" log' 'm=$(git remote get-url --push no-mistakes); git -C "$m" log' \
+    'm=$(git ls-remote --get-url no-mistakes); git -C "$m" log' 'git remote get-url no-mistakes | xargs -I{} git --git-dir {} log' \
+    'git --git-dir "$(git config remote.no-mistakes.url)" log' 'git --git-dir `git config --get remote.no-mistakes.url` log' \
+    "git push no-mistakes :feat/T1-x" "git push -u no-mistakes :feat/T1-x" "git push no-mistakes a :feat/T1-x" \
+    "git push no-mistakes --delete feat/T1-x" "git push --delete no-mistakes feat/T1-x" \
+    "git push no-mistakes feat/T1-x --delete" "git -C ~/wt push no-mistakes --delete feat/T1-x" \
+    "git push no-mistakes -d feat/T1-x" "git push -d no-mistakes feat/T1-x" "git push no-mistakes feat/T1-x -d y" \
+    "git push no-mistakes --prune" "git push --prune no-mistakes" "git push --prune no-mistakes HEAD" \
+    "git push no-mistakes --mirror" "git push --mirror no-mistakes" "git push no-mistakes --force feat/T1-x" \
+    "git push no-mistakes +feat/T1-x"
+}
+
+# team-clean-messages' own refusal (worker_refusal) stands behind these rules; a run of its tests
+# and a search for the flag stay allowed. The coordinator runs the step on Daniel's OK.
+@test "no worker role clears a gate lane, and the coordinator still does" {
+  local bin=$REPO_ROOT/bin
+  # shellcheck disable=SC2088 # ~ is part of the command as an agent types it
+  role_matrix "$bin/team-clean-messages ~/wt" "$bin/team-clean-messages ~/wt --check" "$bin/team-clean-messages --help" \
+    "git add bin/team-clean-messages tests/team-clean-messages.bats" "shellcheck bin/team-clean-messages" \
+    "tests/vendor/bats-core/bin/bats tests/team-clean-messages.bats -f '--clear-gate-lane'" \
+    "grep -n -- --clear-gate-lane bin/team-clean-messages sops/merging.md" "git log -S--clear-gate-lane" -- \
+    "$bin/team-clean-messages ~/wt --clear-gate-lane" "$bin/team-clean-messages --clear-gate-lane ~/wt" \
+    "team-clean-messages ~/wt --clear-gate-lane" "~/agent-team/bin/team-clean-messages ~/wt --clear-gate-lane" \
+    "./team-clean-messages ~/wt --clear-gate-lane" "cd /tmp && TZ=UTC $bin/team-clean-messages ~/wt --clear-gate-lane" \
+    "\"$bin/team-clean-messages\" ~/wt --clear-gate-lane" "'$bin/team-clean-messages' ~/wt --clear-gate-lane" \
+    "bash $bin/team-clean-messages ~/wt --clear-gate-lane" "bash -c '$bin/team-clean-messages ~/wt --clear-gate-lane'" \
+    "nohup $bin/team-clean-messages ~/wt --clear-gate-lane" "$bin/team-clean-messages ~/wt --clear-gate-lane 2>&1 | tail -1"
+  # The coordinator's own settings deny it nothing of the gate's state.
+  assert_equal "$(jq -c '[.permissions.deny[]? | select(test("clear-gate-lane|no-mistakes"))]' "$REPO_ROOT/coordinator.settings.json")" '[]'
+  if denied coordinator.settings.json "$bin/team-clean-messages ~/wt --clear-gate-lane"; then
+    echo "coordinator.settings.json denies the step" >&2
+    return 1
+  fi
+}
+
 @test "no worker role gains Discord: none runs its scripts or reads the bot's files, and only a planner's file leaves it the interview post and wait" {
   local bin=$REPO_ROOT/bin role settings command
   # shellcheck disable=SC2088 # ~ is part of the command as an agent types it

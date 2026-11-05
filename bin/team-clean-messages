@@ -32,8 +32,9 @@
 # directly under ~/.no-mistakes/repos/, links resolved, that the no-mistakes remote names, with
 # none of its hooks run, so the gate's next run takes the branch as new. A remote naming anything
 # else is refused, and gets no printed step. Like the push, it runs with Daniel's OK, which nothing
-# checks; a worker session is refused by its AGENT_TEAM_ROLE (worker_refusal), and no deny rule
-# names it. It refuses, moving nothing, on what a rewrite refuses for the branch and its tree, while
+# checks; a worker session is refused by its AGENT_TEAM_ROLE (worker_refusal) and by the worker
+# settings' deny rules, which name this flag and the mirrors' path, and the coordinator's lack.
+# It refuses, moving nothing, on what a rewrite refuses for the branch and its tree, while
 # a gate run is active on the branch, until origin's branch is this one's head, and unless each
 # commit only the mirror holds makes the same change as its own commit of the branch: each path's
 # modes and blob ids against the first parent, so a merge has one, a binary's bytes and whitespace
