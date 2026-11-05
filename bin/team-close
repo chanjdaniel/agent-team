@@ -19,14 +19,19 @@
 # stack block, so nothing of it is left running (its logs, saved in the task directory, stay out
 # of the archive; a kept worktree keeps its stack; a failed teardown stops the close with the
 # reason, the task half closed); tasks/T<n>/ui/, the
-# task's UI captures (team-ui), removed, since they stay on this machine and are never archived;
+# task's UI captures (team-ui, and the images team-thread wait saves), removed, since they stay on
+# this machine and are never archived;
 # each worktree's task directory mirrored to tasks/T<n>/scratch/ (the opened project) or
 # tasks/T<n>/scratch-<project>/ (an added one), less what archive_left_out (bin/lib/team.sh)
 # leaves out, each named on stderr, a missing or empty one reported on stderr; claude rm <id>
 # for each of the task's sessions; each landed worktree returned through its pool (git: git
 # worktree remove, never --force; treehouse: its task directory emptied, then the project's
-# return command run from the primary checkout with the path), each return appending
-# worktree-returned; the task's
+# return command run from the primary checkout with the path), each first losing .scratch/shots/,
+# the screenshots a project's workers keep outside the task directory (one that cannot be removed
+# is reported on stderr and team-doctor's captures line names it; a kept worktree keeps its own),
+# and neither that folder nor a treehouse task directory is removed through a link on the way to it,
+# which may point at another worktree's, only reported on stderr,
+# each return appending worktree-returned; the task's
 # wip/<project>/T<n> (team-checkpoint's snapshots) deleted on the team home's origin, and its
 # copy refs/remotes/team-home/wip/<project>/T<n> (team-open --resume's) in the project's primary
 # checkout, one that cannot be deleted reported on stderr with the command that deletes it; and
@@ -105,6 +110,21 @@ fi
 
 # One field of a worktree's JSON, empty when null: field <name> <json>
 field() { jq -r --arg f "$1" '.[$f] // ""' <<<"$2"; }
+
+# The first part of <relative path> under <worktree> that is a link, or fail when none is, so what
+# a close removes there is the worktree's own: linked_part <worktree> <relative path>
+linked_part() {
+  local part sofar='' parts
+  IFS=/ read -ra parts <<<"$2"
+  for part in "${parts[@]}"; do
+    sofar+=${sofar:+/}$part
+    if [[ -L $1/$sofar ]]; then
+      echo "$sofar"
+      return 0
+    fi
+  done
+  return 1
+}
 
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
@@ -255,14 +275,30 @@ for wt in "${returning[@]}"; do
   project=$(field project "$wt") branch=$(field branch "$wt") path=$(field worktree "$wt")
   facts=$(team_project "$project")
   primary=$(jq -r .path <<<"$facts")
+  # Screenshots outside the task directory go with the task too: a treehouse return leaves what git
+  # ignores in the slot. The work has landed, so a folder that will not go never stops the return.
+  shots=$path/.scratch/shots
+  if linked=$(linked_part "$path" .scratch); then
+    [[ ! -e $shots ]] || echo "team-close: left .scratch/shots/ of $path: $linked is a link, to what may be another worktree's" >&2
+  elif [[ -e $shots || -L $shots ]]; then
+    if rm -rf -- "$shots" 2>"$scratch/error"; then
+      echo "team-close: removed .scratch/shots/ of $path" >&2
+    else
+      echo "team-close: cannot remove .scratch/shots/ of $path ($(grep -m1 . "$scratch/error" || echo "no reason given")); team-doctor's captures line names it until it is gone" >&2
+    fi
+  fi
   case $(jq -r .pool.provider <<<"$facts") in
     git)
       git -C "$primary" worktree remove -- "$path" || die "cannot remove the worktree $path"
       ;;
     treehouse)
       return_cmd=$(jq -r .pool.return <<<"$facts")
-      task_dir=$path/$(jq -r .task_dir <<<"$facts")
-      [[ ! -d $task_dir ]] || find "$task_dir" -mindepth 1 -delete
+      task_dir=$(jq -r .task_dir <<<"$facts")
+      if linked=$(linked_part "$path" "$task_dir"); then
+        echo "team-close: left $task_dir of $path: $linked is a link, to what may be another worktree's" >&2
+      elif [[ -d $path/$task_dir ]]; then
+        find "$path/$task_dir" -mindepth 1 -delete
+      fi
       (cd "$primary" && "$return_cmd" "$path") </dev/null >&2 || die "$return_cmd failed for $path"
       # A treehouse return of a slot it finds dirty asks, and with no terminal leaves it leased.
       ! git -C "$path" symbolic-ref -q HEAD >/dev/null || die "$return_cmd did not return $path: it is still on a branch"

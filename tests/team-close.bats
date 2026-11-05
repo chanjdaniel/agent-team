@@ -200,6 +200,165 @@ T2"
   [[ -f $TEAM_HOME/tasks/T2/ui/page.png ]]
 }
 
+# What team-thread wait saves from an interview goes the same way.
+@test "an image team-thread wait saved goes with the task's captures, and into no archive" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  local slot=${home_slots[0]} saved
+  mkdir -p "$slot/.scratch/task"
+  echo "spec" >"$slot/.scratch/task/spec.md"
+  work_and_push "$slot" feature.txt
+  echo '{"ts":"2026-10-01T10:00:02Z","task":"T1","event":"interview-thread","discord_thread":"5555"}' >>"$TEAM_HOME/ledger.jsonl"
+  echo '{"allowFrom": ["757"], "groups": {}}' >"$HOME/.claude/channels/discord/access.json"
+  export SKETCH=$BATS_TEST_TMPDIR/sketch.png
+  printf '\x89PNG\r\n\x1a\nsketch' >"$SKETCH"
+  stub_script curl <<'EOF'
+url=${*: -1}
+if [[ $url == https://cdn.discordapp.com/* ]]; then
+  for ((i = 1; i < $#; i++)); do [[ ${!i} != -o ]] || { j=$((i + 1)); cp "$SKETCH" "${!j}"; }; done
+elif [[ $url == *'/channels/5555/messages?'* ]]; then
+  for ((i = 1; i < $#; i++)); do [[ ${!i} != -D ]] || { j=$((i + 1)); printf 'HTTP/2 200\r\n\r\n' >"${!j}"; }; done
+  echo '[{"id":"1564000000000000001","content":"this","timestamp":"2026-10-29T11:00:00.000000+00:00","author":{"id":"757"},"attachments":[{"filename":"sketch.png","url":"https://cdn.discordapp.com/attachments/5555/1/sketch.png"}]}]'
+else
+  echo '{}'
+fi
+EOF
+  run_bin -0 team-thread wait T1
+  saved=$(jq -r '.attachments[0].saved' <<<"$output")
+  assert_equal "$saved" "$TEAM_HOME/tasks/T1/ui/sketch.png"
+  cmp "$SKETCH" "$saved"
+  run_bin -0 --separate-stderr team-close T1
+  [[ ! -e $TEAM_HOME/tasks/T1/ui ]]
+  assert_contains "$stderr" "team-close: removed tasks/T1/ui/, the task's UI captures"
+  assert_equal "$(find "$TEAM_HOME/tasks/T1" -name '*.png' | wc -l)" "0"
+}
+
+# Screenshots a project keeps outside the task directory go with the worktree that took them, and
+# treehouse leaves what git ignores in a slot it takes back.
+@test "a returned treehouse slot loses its .scratch/shots/, and another task's slot keeps its own" {
+  run_bin -0 team-open conv feature feat move "Move it"
+  run_bin -0 team-open conv feature feat other "Other work"
+  local slot=${conv_slots[0]} other=${conv_slots[1]}
+  mkdir -p "$slot/.scratch/shots/builder/after" "$other/.scratch/shots"
+  echo png >"$slot/.scratch/shots/builder/after/page.png"
+  echo png >"$other/.scratch/shots/page.png"
+  echo keep >"$slot/.scratch/notes.md"
+  work_and_push "$slot" move.txt
+  run_bin -0 --separate-stderr team-close T1
+  [[ ! -e $slot/.scratch/shots ]]
+  assert_contains "$stderr" "team-close: removed .scratch/shots/ of $slot"
+  # Only that folder: what else the project keeps in .scratch/ is not the team's to remove.
+  [[ -f $slot/.scratch/notes.md ]]
+  [[ -f $other/.scratch/shots/page.png ]]
+  # And none of it reached the archive.
+  assert_equal "$(find "$TEAM_HOME/tasks/T1" -name '*.png' | wc -l)" "0"
+}
+
+@test "a returned git worktree takes its .scratch/shots/ with it" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  local slot=${home_slots[0]}
+  mkdir -p "$slot/.scratch/shots"
+  echo png >"$slot/.scratch/shots/page.png"
+  work_and_push "$slot" feature.txt
+  run_bin -0 --separate-stderr team-close T1
+  [[ ! -e $slot ]]
+  assert_contains "$stderr" "team-close: removed .scratch/shots/ of $slot"
+}
+
+@test "a kept worktree keeps its .scratch/shots/, and the worktree returned beside it does not" {
+  run_bin -0 team-open home feature feat work "Do the work"
+  run_bin -0 team-open --task T1 --add conv feat move
+  local kept=${home_slots[0]} returned=${conv_slots[0]}
+  mkdir -p "$kept/.scratch/shots" "$returned/.scratch/shots"
+  echo png >"$kept/.scratch/shots/page.png"
+  echo png >"$returned/.scratch/shots/page.png"
+  echo unpushed >"$kept/unpushed.txt"
+  work_and_push "$returned" move.txt
+  run_bin -0 --separate-stderr team-close T1 --keep-worktree
+  [[ -f $kept/.scratch/shots/page.png ]]
+  [[ $stderr != *"of $kept"* ]]
+  [[ ! -e $returned/.scratch/shots ]]
+  assert_equal "$(events closed | jq -c .kept)" "$(jq -cn --arg k "$kept" '[$k]')"
+}
+
+# A link in the slot may point anywhere, another slot's folders included: only the link is the
+# slot's own, so a close never removes through it.
+@test "a slot whose .scratch is a link leaves the folders it points at, and says so" {
+  run_bin -0 team-open conv feature feat move "Move it"
+  run_bin -0 team-open conv feature feat other "Other work"
+  local slot=${conv_slots[0]} other=${conv_slots[1]}
+  mkdir -p "$other/.scratch/shots"
+  echo png >"$other/.scratch/shots/page.png"
+  echo plan >"$other/.scratch/task/spec.md"
+  rm -r "$slot/.scratch"
+  ln -s "$other/.scratch" "$slot/.scratch"
+  echo .scratch >>"$(git -C "$slot" rev-parse --git-path info/exclude)"
+  work_and_push "$slot" move.txt
+  run_bin -0 --separate-stderr team-close T1
+  [[ -f $other/.scratch/shots/page.png ]]
+  [[ -f $other/.scratch/task/spec.md ]]
+  assert_contains "$stderr" "team-close: left .scratch/shots/ of $slot: .scratch is a link, to what may be another worktree's"
+  assert_contains "$stderr" "team-close: left .scratch/task of $slot: .scratch is a link, to what may be another worktree's"
+  [[ $stderr != *"removed .scratch/shots/"* ]]
+  assert_equal "$(events closed | jq -c .returned)" "$(jq -cn --arg s "$slot" '[$s]')"
+}
+
+@test "a slot whose .scratch/shots is itself a link loses the link and keeps what it points at" {
+  run_bin -0 team-open conv feature feat move "Move it"
+  local slot=${conv_slots[0]} target=$BATS_TEST_TMPDIR/elsewhere
+  mkdir -p "$target"
+  echo png >"$target/page.png"
+  ln -s "$target" "$slot/.scratch/shots"
+  work_and_push "$slot" move.txt
+  run_bin -0 --separate-stderr team-close T1
+  [[ ! -e $slot/.scratch/shots && ! -L $slot/.scratch/shots ]]
+  [[ -f $target/page.png ]]
+  assert_contains "$stderr" "team-close: removed .scratch/shots/ of $slot"
+}
+
+# Each step a stopped close already took is one its rerun finds done.
+@test "a close stopped by a failed return removes the rest on its rerun" {
+  run_bin -0 team-open conv feature feat move "Move it"
+  local slot=${conv_slots[0]} return_script=$conv/scripts/th-return.sh
+  mkdir -p "$slot/.scratch/shots"
+  echo png >"$slot/.scratch/shots/page.png"
+  work_and_push "$slot" move.txt
+  mv "$return_script" "$return_script.real"
+  cat >"$return_script" <<'SH'
+#!/usr/bin/env bash
+echo "the pool is busy" >&2
+exit 3
+SH
+  chmod +x "$return_script"
+  run_bin -1 --separate-stderr team-close T1
+  assert_contains "$stderr" "T1 is half closed"
+  [[ ! -e $slot/.scratch/shots ]]
+  assert_equal "$(events worktree-returned)$(events closed)" ""
+  # A folder made since goes on the rerun, which then finishes.
+  mkdir -p "$slot/.scratch/shots"
+  echo png >"$slot/.scratch/shots/late.png"
+  mv "$return_script.real" "$return_script"
+  run_bin -0 --separate-stderr team-close T1
+  [[ ! -e $slot/.scratch/shots ]]
+  assert_equal "$(events closed | jq -c .returned)" "$(jq -cn --arg s "$slot" '[$s]')"
+}
+
+# The work has landed by now, so a folder that will not go must not stop the slot's return, and
+# the doctor's captures line names it from then on.
+@test "a .scratch/shots/ that cannot be removed is reported, and the close still finishes" {
+  run_bin -0 team-open conv feature feat move "Move it"
+  local slot=${conv_slots[0]}
+  mkdir -p "$slot/.scratch/shots/locked"
+  echo png >"$slot/.scratch/shots/locked/page.png"
+  work_and_push "$slot" move.txt
+  chmod a-w "$slot/.scratch/shots/locked"
+  run_bin -0 --separate-stderr team-close T1
+  chmod u+w "$slot/.scratch/shots/locked"
+  assert_contains "$stderr" "team-close: cannot remove .scratch/shots/ of $slot ("
+  assert_contains "$stderr" "); team-doctor's captures line names it until it is gone"
+  [[ $stderr != *"removed .scratch/shots/"* ]]
+  assert_equal "$(events closed | jq -c .returned)" "$(jq -cn --arg s "$slot" '[$s]')"
+}
+
 @test "the archive leaves out a UI capture, nested repositories, files over 1 MiB and names that may hold a secret, each named" {
   run_bin -0 team-open home feature feat work "Do the work"
   local slot=${home_slots[0]}

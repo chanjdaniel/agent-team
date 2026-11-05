@@ -26,8 +26,8 @@
 #                  transcripts (its own and its subagents', under ~/.claude/projects) have not been
 #                  written for longer than its limit (stall_limits in bin/lib/ledger.jq), the
 #                  largest of its running calls', each read from its whole command: 180 minutes for
-#                  a command with no-mistakes as a word (the gate), 100 for one that runs
-#                  team-ci-wait (which ends by 90), none for one that runs team-thread wait (an
+#                  a command with no-mistakes as a word (the gate), 110 for one that runs
+#                  team-ci-wait (which ends by about 100), none for one that runs team-thread wait (an
 #                  interview's wait on Daniel), else 50, and 50 when none runs. A running call is a
 #                  tool call started since the session's startedAt with no result yet, or in the
 #                  background with no task notification yet. "<name> <short id> has written nothing

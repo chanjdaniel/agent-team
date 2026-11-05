@@ -40,12 +40,34 @@ EOF
 # channels/<c>/messages?limit=100 answers the newest 100 of $DISCORD_DIR/<c>.jsonl, and with
 # after=<id> the oldest 100 after it, newest first either way, as Discord does. $DISCORD_DIR/fail
 # makes the next calls fail, one line each: 429 <retry-after> (curl's -D header dump written, exit
-# 22), a status (exit 22) or "network" (exit 6, no headers).
+# 22), a status (exit 22) or "network" (exit 6, no headers). A GET of a link on Discord's CDN writes
+# $DISCORD_DIR/cdn/<the link's last name> to curl's -o, and fails with a 404 without one, or as a
+# failed connection after part of a file with <that name>.network there; the API's fail lines
+# never touch it. $DISCORD_DIR/real-curl, which real_cdn writes, makes that GET the real curl's.
 stub_discord() {
   stub_script curl <<'EOF'
 url=${*: -1}
 headers=''
 for ((i = 1; i < $#; i++)); do [[ ${!i} != -D ]] || { j=$((i + 1)); headers=${!j}; }; done
+if [[ $url =~ ^https://(cdn\.discordapp\.com|media\.discordapp\.net)/ ]]; then
+  name=${url%%\?*} name=${name##*/}
+  if [[ -f $DISCORD_DIR/real-curl ]]; then
+    read -r real port <"$DISCORD_DIR/real-curl"
+    exec "$real" "${@:1:$#-1}" "http://127.0.0.1:$port/$name"
+  fi
+  for ((i = 1; i < $#; i++)); do [[ ${!i} != -o ]] || { j=$((i + 1)); target=${!j}; }; done
+  if [[ -f $DISCORD_DIR/cdn/$name.network ]]; then
+    echo partial >"$target"
+    echo "curl: (6) Could not resolve host: cdn.discordapp.com" >&2
+    exit 6
+  fi
+  if [[ ! -f $DISCORD_DIR/cdn/$name ]]; then
+    echo "curl: (22) The requested URL returned error: 404" >&2
+    exit 22
+  fi
+  cp "$DISCORD_DIR/cdn/$name" "$target"
+  exit 0
+fi
 if [[ -s $DISCORD_DIR/fail ]]; then
   read -r status retry <"$DISCORD_DIR/fail"
   sed -i 1d "$DISCORD_DIR/fail"
@@ -79,6 +101,107 @@ say() {
   jq -nc --arg id "$1" --arg a "$2" --arg text "$3" --argjson bot "$([[ $2 == "$BOT" ]] && echo true || echo false)" \
     '{id: $id, channel_id: env.THREAD, content: $text, timestamp: "2026-10-29T11:00:00.000000+00:00", attachments: [],
       author: ({id: $a, username: "u\($a)"} + if $bot then {bot: true} else {} end)}' >>"$DISCORD_DIR/$THREAD.jsonl"
+}
+
+# The stand-in for Discord's CDN that the real curl fetches from, so its options and its handling
+# of each answer are checked, not assumed: a server on the loopback for <n> requests, each within
+# 30 s, of ok.png (an image), moved.png (a redirect to it), huge.png (one over the limit by its
+# Content-Length), endless.png (one over the limit with no length) or else a 404: real_cdn <n>
+real_cdn() {
+  local real port=$BATS_TEST_TMPDIR/port
+  real=$(type -ap curl | grep -vF "$BATS_TEST_TMPDIR/stubs/" | head -n 1)
+  python3 -I - "$port" "$1" 3>&- 2>/dev/null <<'PY' &
+import http.server, os, sys
+PNG = b"\x89PNG\r\n\x1a\nreal"
+OVER = 20 * 1024 * 1024 + 1
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        name = self.path.rsplit("/", 1)[-1]
+        if name == "ok.png":
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(PNG)))
+            self.end_headers()
+            self.wfile.write(PNG)
+        elif name == "moved.png":
+            self.send_response(302)
+            self.send_header("Location", "/ok.png")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+        elif name == "huge.png":
+            self.send_response(200)
+            self.send_header("Content-Length", str(OVER))
+            self.end_headers()
+            self.wfile.write(PNG)
+        elif name == "endless.png":
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(PNG)
+            for _ in range(21):
+                self.wfile.write(bytes(1024 * 1024))
+        else:
+            self.send_error(404)
+    def log_message(self, *args):
+        pass
+server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+server.timeout = 30
+with open(sys.argv[1] + ".new", "w") as out:
+    out.write(str(server.server_address[1]))
+os.rename(sys.argv[1] + ".new", sys.argv[1])
+for _ in range(int(sys.argv[2])):
+    server.handle_request()
+PY
+  while [[ ! -s $port ]] && ((SECONDS < 30)); do :; done
+  echo "$real $(<"$port")" >"$DISCORD_DIR/real-curl"
+}
+
+# A file on the fake CDN named <name> with <kind>'s first bytes: cdn_file <name> png|jpeg|gif|webp|html
+cdn_file() {
+  mkdir -p "$DISCORD_DIR/cdn"
+  case $2 in
+    png) printf '\x89PNG\r\n\x1a\n%s' "$1" ;;
+    jpeg) printf '\xff\xd8\xff\xe0%s' "$1" ;;
+    gif) printf 'GIF89a%s' "$1" ;;
+    webp) printf 'RIFF\x10\x00\x00\x00WEBPVP8 %s' "$1" ;;
+    html) printf '<html>%s</html>' "$1" ;;
+  esac >"$DISCORD_DIR/cdn/$1"
+}
+
+# The link Discord gives an attachment named <name>, signed as its links are.
+cdn_url() {
+  echo "https://cdn.discordapp.com/attachments/$THREAD/1/$1?ex=1&is=2&hm=3&"
+}
+
+# An attachment as Discord describes it, named <name>, with <fields> (a jq object) over its
+# defaults: attachment <name> [<fields>]
+attachment() {
+  jq -nc --arg name "$1" --arg url "$(cdn_url "$1")" \
+    "{id: \"1\", filename: \$name, url: \$url, content_type: \"image/png\", size: 100} + ${2:-null}"
+}
+
+# Message <id> by <author> saying <text>, with these attachments: say_with <id> <author> <text> <attachment>...
+say_with() {
+  say "$1" "$2" "$3"
+  jq -c --arg id "$1" --argjson attachments "$(printf '%s\n' "${@:4}" | jq -sc .)" \
+    'if .id == $id then .attachments = $attachments else . end' "$DISCORD_DIR/$THREAD.jsonl" >"$DISCORD_DIR/edited"
+  mv "$DISCORD_DIR/edited" "$DISCORD_DIR/$THREAD.jsonl"
+}
+
+# Each attachment wait printed, a line each, its link cut to its last name and a saved path to
+# what follows the task's ui/.
+outcomes() {
+  jq -c --arg ui "$TEAM_HOME/tasks/T7/ui/" '.attachments // empty | .[]
+    | .url |= (sub("\\?.*$"; "") | sub("^.*/"; ""))
+    | if .saved then .saved |= ltrimstr($ui) else . end' <<<"$output"
+}
+
+# The files in the task's ui/, hidden ones too, a line each.
+ui_files() {
+  (cd "$TEAM_HOME/tasks/T7/ui" && find . -mindepth 1 | LC_ALL=C sort)
+}
+
+# The calls that went to anywhere but Discord's API, a line each.
+cdn_calls() {
+  stub_calls curl | jq -c 'select(.[-1] | startswith("https://discord.com/api/") | not)'
 }
 
 # The task's interview thread, logged as team-thread --interview logs it.
@@ -182,12 +305,240 @@ EOF
 jq -nc '{id: "1564000000000000003", content: "", timestamp: "2026-10-29T11:01:00.000000+00:00",
   author: {id: "757", username: "daniel"}, attachments: [{url: "https://cdn.discordapp.com/a/1/sketch.png"}]}' >>"$DISCORD_DIR/5555.jsonl"
 EOF
+  cdn_file sketch.png png
   run_bin -0 --separate-stderr team-thread wait T7
-  assert_equal "$output" '{"id":"1564000000000000003","sent":"2026-10-29T11:01:00.000000+00:00","text":"","attachments":["https://cdn.discordapp.com/a/1/sketch.png"]}'
+  assert_equal "$output" "{\"id\":\"1564000000000000003\",\"sent\":\"2026-10-29T11:01:00.000000+00:00\",\"text\":\"\",\"attachments\":[{\"url\":\"https://cdn.discordapp.com/a/1/sketch.png\",\"saved\":\"$TEAM_HOME/tasks/T7/ui/image.png\"}]}"
   assert_equal "$(stub_calls sleep | sort | uniq -c | sed 's/^ *//')" '3 ["5"]'
   # Each poll reads from the last message seen, another member's included.
   assert_equal "$(reads | tail -n 2)" "channels/$THREAD/messages?after=1564000000000000001&limit=100
 channels/$THREAD/messages?after=1564000000000000002&limit=100"
+}
+
+@test "an image of Daniel's is saved in the task's ui/ and its path printed beside its link, with no token sent to the CDN" {
+  interview_logged
+  say 1564000000000000001 "$BOT" "Q1: how should it look?"
+  say_with 1564000000000000002 "$DANIEL" "Like this" "$(attachment sketch.png)"
+  cdn_file sketch.png png
+  run_bin -0 --separate-stderr team-thread wait T7
+  assert_equal "$stderr" ""
+  assert_equal "$(jq -c 'del(.attachments)' <<<"$output")" \
+    '{"id":"1564000000000000002","sent":"2026-10-29T11:00:00.000000+00:00","text":"Like this"}'
+  assert_equal "$(jq -r '.attachments[0].url' <<<"$output")" "$(cdn_url sketch.png)"
+  assert_equal "$(jq -r '.attachments[0].saved' <<<"$output")" "$TEAM_HOME/tasks/T7/ui/sketch.png"
+  cmp "$DISCORD_DIR/cdn/sketch.png" "$TEAM_HOME/tasks/T7/ui/sketch.png"
+  assert_equal "$(ui_files)" "./sketch.png"
+  # The API's token goes to the API alone, so the one fetch carries no header at all.
+  assert_equal "$(cdn_calls | wc -l)" "1"
+  assert_equal "$(cdn_calls | jq 'index("-H")')" "null"
+  assert_equal "$(cdn_calls | jq -r 'index("--max-filesize") as $i | .[$i + 1]')" "20971520"
+  [[ $(cdn_calls) != *"$FAKE_DISCORD_TOKEN"* ]]
+}
+
+@test "the real curl saves an image, and keeps nothing from a 404, a redirect or a file over the limit" {
+  interview_logged
+  say 1564000000000000001 "$BOT" "Q1"
+  say_with 1564000000000000002 "$DANIEL" "These" "$(attachment ok.png)" "$(attachment gone.png)" "$(attachment moved.png)" \
+    "$(attachment huge.png)" "$(attachment endless.png)"
+  real_cdn 5
+  run_bin -0 team-thread wait T7
+  wait
+  assert_equal "$(outcomes | sed -n 1,3p)" '{"url":"ok.png","saved":"ok.png"}
+{"url":"gone.png","error":"not saved: curl: (22) The requested URL returned error: 404"}
+{"url":"moved.png","error":"not saved: not a PNG, JPEG, GIF or WebP by its first bytes"}'
+  assert_contains "$(outcomes | sed -n 4p)" 'curl: (63)'
+  # A curl older than 8.4 only stops one with no length at the limit's check afterwards.
+  assert_contains "$(outcomes | sed -n 5p)" '"error":"not saved: '
+  assert_equal "$(ui_files)" "./ok.png"
+  assert_equal "$(od -An -tx1 -N8 "$TEAM_HOME/tasks/T7/ui/ok.png" | tr -d ' \n')" "89504e470d0a1a0a"
+}
+
+@test "a saved image stays where the team home's git ignores it" {
+  interview_logged
+  say_with 1564000000000000001 "$DANIEL" "Like this" "$(attachment sketch.png)"
+  cdn_file sketch.png png
+  run_bin -0 team-thread wait T7
+  git -C "$TEAM_HOME" init -q
+  # The rule the doctor's captures line holds the team home's .gitignore to.
+  echo 'tasks/*/ui/' >"$TEAM_HOME/.gitignore"
+  git -C "$TEAM_HOME" check-ignore -q "$(jq -r '.attachments[0].saved' <<<"$output")"
+  [[ $(git -C "$TEAM_HOME" status --porcelain --untracked-files=all) != *sketch* ]]
+}
+
+@test "another member's attachment is never fetched, and Daniel's beside it is" {
+  interview_logged
+  say 1564000000000000001 "$BOT" "Q1"
+  say_with 1564000000000000002 "$OTHER" "look at this" "$(attachment bait.png)"
+  say_with 1564000000000000003 "$DANIEL" "and this" "$(attachment sketch.png)"
+  cdn_file bait.png png
+  cdn_file sketch.png png
+  run_bin -0 team-thread wait T7
+  assert_equal "$(ids)" "1564000000000000003"
+  [[ $output != *bait* ]]
+  assert_equal "$(cdn_calls | wc -l)" "1"
+  assert_contains "$(cdn_calls)" sketch.png
+  assert_equal "$(ui_files)" "./sketch.png"
+
+  # And with only another member's since, nothing more is fetched.
+  say 1564000000000000004 "$BOT" "Q2"
+  say_with 1564000000000000005 "$OTHER" "again" "$(attachment bait.png)"
+  say 1564000000000000006 "$DANIEL" "words only"
+  run_bin -0 team-thread wait T7
+  assert_equal "$(ids)" "1564000000000000006"
+  assert_equal "$(cdn_calls | wc -l)" "1"
+  assert_equal "$(ui_files)" "./sketch.png"
+}
+
+@test "a saved name cannot leave ui/, takes its extension from the first bytes, and never overwrites another" {
+  interview_logged
+  say 1564000000000000001 "$BOT" "Q1"
+  mkdir -p "$TEAM_HOME/tasks/T7/ui/folder.png"
+  echo mine >"$TEAM_HOME/tasks/T7/ui/taken.png"
+  ln -s "$BATS_TEST_TMPDIR/outside" "$TEAM_HOME/tasks/T7/ui/linked.png"
+  local name long path
+  for name in climb hidden spaces notes page taken linked folder a b c; do cdn_file "$name" png; done
+  cdn_file photo jpeg
+  cdn_file anim gif
+  cdn_file pic webp
+  long=$(printf 'x%.0s' {1..300})
+  say_with 1564000000000000002 "$DANIEL" "many" \
+    "$(attachment climb '{filename: "../../../../etc/cron.d/evil.png"}')" \
+    "$(attachment hidden '{filename: "..hidden.png"}')" \
+    "$(attachment spaces '{filename: "a b$(touch x);c\nd.PNG"}')" \
+    "$(attachment notes '{filename: "notes.html"}')" \
+    "$(attachment page '{filename: "...."}')" \
+    "$(attachment taken '{filename: "taken.png"}')" \
+    "$(attachment linked '{filename: "linked.png"}')" \
+    "$(attachment folder '{filename: "folder.png"}')"
+  say_with 1564000000000000003 "$DANIEL" "more" \
+    "$(attachment photo '{filename: "IMG.png"}')" \
+    "$(attachment anim '{filename: 7}')" \
+    "$(attachment pic "{filename: \"$long.webp\"}")"
+  say_with 1564000000000000004 "$DANIEL" "one name, twice in a message and once more after" \
+    "$(attachment a '{filename: "image.png"}')" "$(attachment b '{filename: "image.png"}')"
+  say_with 1564000000000000005 "$DANIEL" "again" "$(attachment c '{filename: "image.png"}')"
+  run_bin -0 team-thread wait T7
+
+  assert_equal "$(outcomes | jq -r .saved)" "evil.png
+hidden.png
+a_b__touch_x__c_d.png
+notes.png
+image.png
+taken-2.png
+linked-2.png
+folder-2.png
+IMG.jpeg
+image.gif
+$(printf 'x%.0s' {1..80}).webp
+image-2.png
+image-3.png
+image-4.png"
+  assert_equal "$(cat "$TEAM_HOME/tasks/T7/ui/taken.png")" mine
+  [[ -L $TEAM_HOME/tasks/T7/ui/linked.png && ! -e $BATS_TEST_TMPDIR/outside ]]
+  [[ -d $TEAM_HOME/tasks/T7/ui/folder.png && -z $(ls -A "$TEAM_HOME/tasks/T7/ui/folder.png") ]]
+  # Each path holds what its own link served, at the top of ui/, with nothing else left there.
+  while read -r name path; do
+    cmp "$DISCORD_DIR/cdn/$name" "$path"
+    assert_equal "$(dirname "$path")" "$TEAM_HOME/tasks/T7/ui"
+  done < <(jq -r '.attachments[] | "\(.url | sub("\\?.*$"; "") | sub("^.*/"; "")) \(.saved)"' <<<"$output")
+  assert_equal "$(find "$TEAM_HOME/tasks/T7/ui" -mindepth 1 -name '.*' | wc -l)" "0"
+  [[ ! -e x && ! -e $TEAM_HOME/tasks/T7/ui/x ]]
+}
+
+@test "a file that is no image by its first bytes is not kept, whatever it claims, and one Discord calls no image is not fetched" {
+  interview_logged
+  say 1564000000000000001 "$BOT" "Q1"
+  cdn_file page.png html
+  cdn_file note.pdf html
+  cdn_file vector.svg html
+  : >"$DISCORD_DIR/cdn/empty.png"
+  say_with 1564000000000000002 "$DANIEL" "These" "$(attachment page.png)" \
+    "$(attachment note.pdf '{content_type: "application/pdf"}')" "$(attachment empty.png)" \
+    "$(attachment vector.svg '{content_type: "image/svg+xml"}')"
+  run_bin -0 team-thread wait T7
+  assert_equal "$(outcomes)" '{"url":"page.png","error":"not saved: not a PNG, JPEG, GIF or WebP by its first bytes"}
+{"url":"note.pdf","error":"not saved: Discord calls it application/pdf, so it was not fetched"}
+{"url":"empty.png","error":"not saved: not a PNG, JPEG, GIF or WebP by its first bytes"}
+{"url":"vector.svg","error":"not saved: not a PNG, JPEG, GIF or WebP by its first bytes"}'
+  assert_equal "$(jq -r .text <<<"$output")" "These"
+  assert_equal "$(ui_files)" ""
+  [[ $(cdn_calls) != *note.pdf* ]]
+}
+
+@test "an image over the limit is not kept, by Discord's word with no fetch or by the file's own size" {
+  interview_logged
+  say 1564000000000000001 "$BOT" "Q1"
+  cdn_file big.png png
+  cdn_file huge.png png
+  truncate -s 20971521 "$DISCORD_DIR/cdn/huge.png"
+  cdn_file limit.png png
+  truncate -s 20971520 "$DISCORD_DIR/cdn/limit.png"
+  say_with 1564000000000000002 "$DANIEL" "Big" "$(attachment big.png '{size: 20971521}')" "$(attachment huge.png)" \
+    "$(attachment limit.png '{size: 20971520}')"
+  run_bin -0 team-thread wait T7
+  assert_equal "$(outcomes)" '{"url":"big.png","error":"not saved: over the limit of 20971520 bytes"}
+{"url":"huge.png","error":"not saved: over the limit of 20971520 bytes"}
+{"url":"limit.png","saved":"limit.png"}'
+  assert_equal "$(ui_files)" "./limit.png"
+  [[ $(cdn_calls) != *big.png* ]]
+}
+
+@test "a failed download keeps the message's text and link, says why, and ends neither the message nor the wait" {
+  interview_logged
+  say 1564000000000000001 "$BOT" "Q1"
+  mkdir -p "$DISCORD_DIR/cdn"
+  touch "$DISCORD_DIR/cdn/flaky.png.network"
+  cdn_file good.png png
+  say_with 1564000000000000002 "$DANIEL" "first" "$(attachment gone.png)" "$(attachment flaky.png)" "$(attachment good.png)"
+  say 1564000000000000003 "$DANIEL" "second, words only"
+  run_bin -0 --separate-stderr team-thread wait T7
+  assert_equal "$(ids)" "1564000000000000002
+1564000000000000003"
+  assert_equal "$(jq -r .text <<<"$output")" "first
+second, words only"
+  assert_equal "$(outcomes)" '{"url":"gone.png","error":"not saved: curl: (22) The requested URL returned error: 404"}
+{"url":"flaky.png","error":"not saved: curl: (6) Could not resolve host: cdn.discordapp.com"}
+{"url":"good.png","saved":"good.png"}'
+  assert_equal "$(head -n 1 <<<"$output" | jq -r '.attachments[0].url')" "$(cdn_url gone.png)"
+  # Nothing of a failed file stays, partial or under a name of its own.
+  assert_equal "$(ui_files)" "./good.png"
+}
+
+@test "a link off Discord's CDN is not fetched and a ui/ that cannot be written says why, and the message still prints" {
+  interview_logged
+  say 1564000000000000001 "$BOT" "Q1"
+  say_with 1564000000000000002 "$DANIEL" "off the CDN" \
+    "$(attachment a.png '{url: "https://example.com/a.png"}')" \
+    "$(attachment b.png '{url: "http://cdn.discordapp.com/b.png"}')" \
+    "$(attachment c.png '{url: "https://cdn.discordapp.com.example.com/c.png"}')" \
+    "$(attachment d.png '{url: "https://cdn.discordapp.com@example.com/d.png"}')"
+  run_bin -0 team-thread wait T7
+  assert_equal "$(jq -r '.attachments[].error' <<<"$output" | sort -u)" "not saved: its link is not on Discord's CDN, so it was not fetched"
+  assert_equal "$(jq -r '.attachments[0].url' <<<"$output")" "https://example.com/a.png"
+  assert_equal "$(cdn_calls)" ""
+  [[ ! -e $TEAM_HOME/tasks/T7/ui ]]
+
+  mkdir -p "$TEAM_HOME/tasks/T7"
+  : >"$TEAM_HOME/tasks/T7/ui"
+  say 1564000000000000003 "$BOT" "Q2"
+  say_with 1564000000000000004 "$DANIEL" "this" "$(attachment sketch.png)"
+  cdn_file sketch.png png
+  run_bin -0 team-thread wait T7
+  assert_equal "$(jq -r .text <<<"$output")" "this"
+  assert_equal "$(jq -r '.attachments[0].error' <<<"$output")" "not saved: cannot write in $TEAM_HOME/tasks/T7/ui/"
+  assert_equal "$(jq -r '.attachments[0].url' <<<"$output")" "$(cdn_url sketch.png)"
+  assert_equal "$(cdn_calls)" ""
+}
+
+@test "the proxy's link is on Discord's CDN too, and an attachment with no link prints as none" {
+  interview_logged
+  say 1564000000000000001 "$BOT" "Q1"
+  cdn_file sketch.png png
+  say_with 1564000000000000002 "$DANIEL" "this" \
+    "$(attachment sketch.png '{url: "https://media.discordapp.net/attachments/1/2/sketch.png"}')"
+  say_with 1564000000000000003 "$DANIEL" "that" '{"filename": "lost.png"}'
+  run_bin -0 team-thread wait T7
+  assert_equal "$(head -n 1 <<<"$output" | jq -r '.attachments[0].saved')" "$TEAM_HOME/tasks/T7/ui/sketch.png"
+  assert_equal "$(tail -n 1 <<<"$output" | jq -c 'del(.sent)')" '{"id":"1564000000000000003","text":"that"}'
 }
 
 @test "wait --after returns every message of Daniel's since, sent while no session ran, in order, past a page of 100" {

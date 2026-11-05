@@ -5,16 +5,35 @@
 # #coordinator, never to a channel named by id. Unlike discord_api alone, it refuses on a machine
 # that is fenced or that lost the lease (lease_refusal in bin/lib/team.sh, as the lease-fence hook
 # does), and posts nothing then; while the team holds offline it still posts, since Discord is up
-# and the plugin's posts go on too. In a worker session it posts only a planner's question to its
-# own task's interview thread (worker_refusal in bin/lib/team.sh); the coordinator posts the rest.
+# and the plugin's posts go on too. In a worker session it posts only a planner's question, with
+# its images, to its own task's interview thread, or retracts one of those images
+# (worker_refusal in bin/lib/team.sh); the coordinator posts the rest.
 #
 # Usage: team-post T<n> [--thread task|interview] --file <path>
+#        team-post T<n> --thread interview --file <path> --attach <image> [--attach <image>]...
+#        team-post T<n> --thread interview --retract <message id>
 #        team-post --coordinator --file <path>
 # The message is the file's text with its trailing blank lines and spaces dropped. One over
 # Discord's 2000 characters goes as several messages, cut as the Discord plugin's chunkMode
 # newline cuts: at the last paragraph break past half the limit, else the last line break past
 # half, else the last space, else at 2000, the line breaks at a cut dropped. Mentions ping users
 # only, never @everyone, @here or a role. Prints each sent message's id, one per line, in order.
+#   --attach   Sends the image with the text, repeatable, as multipart/form-data (payload_json and
+#              files[n]) under its base name alone. Images go on the first message and on, in
+#              order, a message taking at most 10 files and 25 MiB in all, its text and framing
+#              counted; more than the text's parts hold go on messages of their own. A file over
+#              20 MiB, an empty one, or one with a control character in its name is refused. Each
+#              image posted is one image-posted event in the ledger, with its thread, message id
+#              and file name, appended once its message is sent.
+#   --retract  Deletes a message the ledger records for the task as carrying images, and logs
+#              image-retracted; any other id, or one already retracted, is refused. Prints
+#              "retracted <id>". A copy Discord's CDN holds may outlive it.
+# In a worker session --file must be inside the task's own directory (<worktree>/<task_dir> of its
+# open worktrees), and each --attach there too, no symbolic link, no file with a second hard link,
+# and a PNG, JPEG, WebP or GIF by its first bytes; both judged by the real path. So nothing in
+# tasks/T<n>/ui/ leaves in a worker's post, a capture there having its own refusal, since nothing
+# here proves its page held no real data. These go by path, and a copy is a new file that no path
+# check can see. Each refusal names the path and comes before anything is sent.
 # Exit codes: 0 posted; 1 refused, or Discord refused a part (the parts before it stay posted,
 # their ids printed, and none after it is sent); 2 a malformed command line; 75 Discord answered
 # 429, with the retry time from its headers on stderr.
@@ -24,20 +43,36 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 # Discord's limit on a message's characters, and the most one post may take, in seconds.
 LIMIT=2000
 POST_TIMEOUT=20
-USAGE="usage: team-post T<n> [--thread task|interview] --file <path> | team-post --coordinator --file <path>"
+# Discord's limits on a message's files, on one file and on a request, what a request's text and
+# multipart framing are allowed for, and the most one upload may take, in seconds.
+MAX_FILES=10
+MAX_FILE=$((20 * 1024 * 1024))
+MAX_REQUEST=$((25 * 1024 * 1024))
+FRAMING=$((64 * 1024))
+UPLOAD_TIMEOUT=120
+# The request body of a message that holds only files.
+NO_TEXT='{"allowed_mentions":{"parse":["users"]}}'
+USAGE="usage: team-post T<n> [--thread task|interview] --file <path> | team-post T<n> --thread interview --file <path> --attach <image> [--attach <image>]... | team-post T<n> --thread interview --retract <message id> | team-post --coordinator --file <path>"
 
-task='' coordinator=0 thread='' file=''
+task='' coordinator=0 thread='' file='' retracting=0 retract='' attachments=()
 while (($#)); do
   case $1 in
     --coordinator) coordinator=1 ;;
     --thread) (($# > 1)) || usage_error "$USAGE"; thread=$2; shift ;;
     --file) (($# > 1)) || usage_error "$USAGE"; file=$2; shift ;;
+    --attach) (($# > 1)) || usage_error "$USAGE"; attachments+=("$2"); shift ;;
+    --retract) (($# > 1)) || usage_error "$USAGE"; retracting=1 retract=$2; shift ;;
     T*) [[ -z $task ]] || usage_error "$USAGE"; task=$1 ;;
     *) usage_error "$USAGE" ;;
   esac
   shift
 done
-[[ -n $file ]] || usage_error "$USAGE"
+if ((retracting)); then
+  [[ -z $file && $thread == interview && $retract =~ ^[0-9]+$ && ${#attachments[@]} -eq 0 ]] || usage_error "$USAGE"
+else
+  [[ -n $file ]] || usage_error "$USAGE"
+fi
+((!${#attachments[@]})) || [[ $thread == interview ]] || usage_error "$USAGE"
 if ((coordinator)); then
   [[ -z $task && -z $thread ]] || usage_error "$USAGE"
 else
@@ -47,36 +82,97 @@ interview=()
 if [[ $thread == interview ]]; then interview=(--interview); fi
 why=$(worker_refusal "$task" "posts to Discord" "${interview[@]}") && die "$why"
 
-[[ -f $file && -r $file ]] || die "no file to post: $file"
-# Each part's request body, one compact JSON object per line, cut as the plugin's chunk() does,
-# over characters (jq's code points). The file is read with --rawfile, since -R decodes a
-# character its read buffer splits as two replacement characters.
-mapfile -t bodies < <(jq -nc --rawfile text "$file" --argjson limit "$LIMIT" '
-  # The last index at or before $from where $pat (code points) starts in $c, or -1.
-  def last_at($c; $pat; $from):
-    first(range([$from, ($c | length) - ($pat | length)] | min; -1; -1)
-      | select($c[.:. + ($pat | length)] == $pat)) // -1;
-  def parts:
-    if length <= $limit then [.]
-    else . as $c
-      | last_at($c; [10, 10]; $limit) as $para | last_at($c; [10]; $limit) as $line
-      | last_at($c; [32]; $limit) as $space
-      | (if $para > $limit / 2 then $para elif $line > $limit / 2 then $line
-         elif $space > 0 then $space else $limit end) as $cut
-      | [$c[:$cut]] + ($c[$cut:] | until(.[0] != 10; .[1:]) | if length > 0 then parts else [] end)
-    end;
-  $text | sub("\\s+\\z"; "") | select(. != "")
-  | explode | parts[] | {content: implode, allowed_mentions: {parse: ["users"]}}')
-((${#bodies[@]})) || die "nothing to post: $file is blank"
+# Whether the real path <path> lies under one of <dirs>: under <path> <dirs>...
+under() {
+  local path=$1 dir
+  for dir in "${@:2}"; do
+    [[ $path != "$dir"/* ]] || return 0
+  done
+  return 1
+}
 
-if ((coordinator)); then
-  channel=$COORDINATOR_CHANNEL
+# Each attachment's base name and image type, and the message that carries it, from 0; and how many
+# messages carry them. Filled by check_attachment, in order.
+names=() types=() carried_by=() file_messages=0 in_message=0 bytes=0
+
+# Refuse an attachment that may not leave, or take it into the arrays above: check_attachment <path>
+check_attachment() {
+  local path=$1 name real type size
+  [[ -f $path && -r $path ]] || die "no image to attach: $path"
+  name=$(basename -- "$path")
+  [[ $name != *[[:cntrl:]]* ]] || die "cannot attach $path: its name holds a control character"
+  type=$(image_type "$path")
+  if ((worker)); then
+    [[ ! -L $path && $(stat -c %h -- "$path") == 1 ]] || die "cannot attach $path: it is a link"
+    real=$(realpath -e -- "$path")
+    [[ $real != "$ui"/capture-* ]] ||
+      die "cannot attach $path: it is in a capture of the page Daniel is on, and nothing proves that page held no real data"
+    under "$real" "${own_dirs[@]}" ||
+      die "cannot attach $path: a worker session attaches only from $task's task directory"
+    [[ -n $type ]] || die "cannot attach $path: not a PNG, JPEG, WebP or GIF by its first bytes"
+  fi
+  size=$(stat -c %s -- "$path")
+  ((size > 0)) || die "cannot attach $path: it is empty"
+  ((size <= MAX_FILE)) || die "cannot attach $path: $size bytes is over Discord's $MAX_FILE on one file"
+  if ((!${#names[@]} || in_message == MAX_FILES || bytes + size + FRAMING > MAX_REQUEST)); then
+    file_messages=$((file_messages + 1)) in_message=0 bytes=0
+  fi
+  names+=("$name") types+=("$type") carried_by+=("$((file_messages - 1))")
+  in_message=$((in_message + 1)) bytes=$((bytes + size))
+}
+
+if ((retracting)); then
+  retracted=$(task_events "$task" | jq -r --arg id "$retract" 'select(.event == "image-retracted" and .discord_message == $id) | .discord_message')
+  [[ -z $retracted ]] || die "message $retract of $task is already retracted"
+  channel=$(task_events "$task" | jq -r --arg id "$retract" 'select(.event == "image-posted" and .discord_message == $id) | .discord_thread' | tail -n 1)
+  [[ -n $channel ]] || die "the ledger records no image post $retract for $task, so nothing was retracted"
 else
-  kind=thread
-  [[ ${thread:-task} == task ]] || kind="interview-thread"
-  channel=$(task_events "$task" | jq -r --arg kind "$kind" 'select(.event == $kind) | .discord_thread | strings' | tail -n 1)
-  [[ -n $channel || $kind != thread ]] || die "$task has no Discord thread in the ledger; team-thread opens one"
-  [[ -n $channel ]] || die "$task has no interview thread in the ledger; team-thread $task --interview opens one"
+  # A worker's files stay in the task's own place, each open worktree's task directory; ui/ only
+  # names what the refusal of a capture says.
+  worker=0 own_dirs=() ui=''
+  if [[ -n ${AGENT_TEAM_ROLE:-} && $AGENT_TEAM_ROLE != coordinator ]]; then
+    worker=1
+    ui=$(realpath -m -- "$TEAM_HOME/tasks/$task/ui")
+    while IFS=$'\t' read -r worktree project; do
+      dir=$(team_project "$project" task_dir) || die "cannot read $project's task directory from the registry"
+      own_dirs+=("$(realpath -m -- "$worktree/$dir")")
+    done < <(task_worktrees "$task" | jq -r '[.worktree, .project] | @tsv')
+  fi
+  [[ -f $file && -r $file ]] || die "no file to post: $file"
+  if ((worker)) && ! under "$(realpath -e -- "$file")" "${own_dirs[@]}"; then
+    die "cannot post $file: a worker session posts only a file in $task's task directory"
+  fi
+  for path in "${attachments[@]}"; do check_attachment "$path"; done
+  # Each part's request body, one compact JSON object per line, cut as the plugin's chunk() does,
+  # over characters (jq's code points). The file is read with --rawfile, since -R decodes a
+  # character its read buffer splits as two replacement characters.
+  mapfile -t bodies < <(jq -nc --rawfile text "$file" --argjson limit "$LIMIT" '
+    # The last index at or before $from where $pat (code points) starts in $c, or -1.
+    def last_at($c; $pat; $from):
+      first(range([$from, ($c | length) - ($pat | length)] | min; -1; -1)
+        | select($c[.:. + ($pat | length)] == $pat)) // -1;
+    def parts:
+      if length <= $limit then [.]
+      else . as $c
+        | last_at($c; [10, 10]; $limit) as $para | last_at($c; [10]; $limit) as $line
+        | last_at($c; [32]; $limit) as $space
+        | (if $para > $limit / 2 then $para elif $line > $limit / 2 then $line
+           elif $space > 0 then $space else $limit end) as $cut
+        | [$c[:$cut]] + ($c[$cut:] | until(.[0] != 10; .[1:]) | if length > 0 then parts else [] end)
+      end;
+    $text | sub("\\s+\\z"; "") | select(. != "")
+    | explode | parts[] | {content: implode, allowed_mentions: {parse: ["users"]}}')
+  ((${#bodies[@]})) || die "nothing to post: $file is blank"
+
+  if ((coordinator)); then
+    channel=$COORDINATOR_CHANNEL
+  else
+    kind=thread
+    [[ ${thread:-task} == task ]] || kind="interview-thread"
+    channel=$(task_events "$task" | jq -r --arg kind "$kind" 'select(.event == $kind) | .discord_thread | strings' | tail -n 1)
+    [[ -n $channel || $kind != thread ]] || die "$task has no Discord thread in the ledger; team-thread opens one"
+    [[ -n $channel ]] || die "$task has no interview thread in the ledger; team-thread $task --interview opens one"
+  fi
 fi
 
 why=$(lease_refusal "posts nothing to Discord; the coordinator on the holder answers there.") && die "$why"
@@ -85,38 +181,79 @@ discord_token >/dev/null || die "no DISCORD_BOT_TOKEN in ~/.claude/channels/disc
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 
-# What was posted before a failure, for its message.
-posted() {
-  case $sent in
-    0) echo "nothing was posted" ;;
-    1) echo "1 of ${#bodies[@]} parts was posted, its id above" ;;
-    *) echo "$sent of ${#bodies[@]} parts were posted, their ids above" ;;
-  esac
-}
-
 # The value of the last response header <name> in the dump, case aside: header <name>
 header() {
   sed -nE "s/^$1:[[:space:]]*([^[:space:]]+).*/\\1/Ip" "$scratch/headers" | tail -n 1
 }
 
-sent=0
-for body in "${bodies[@]}"; do
-  rm -f "$scratch/headers"
-  if reply=$(discord_api "channels/$channel/messages" -X POST -H "Content-Type: application/json" \
-    --max-time "$POST_TIMEOUT" -D "$scratch/headers" -d "$body" 2>"$scratch/error") &&
-    id=$(jq -er '.id | strings | select(test("^[0-9]+$"))' <<<"$reply" 2>/dev/null); then
-    echo "$id"
-    sent=$((sent + 1))
-    continue
-  fi
+# Exit as Discord's answer to a failed call says, naming what stands: call_failed <call> <what stands>
+call_failed() {
   # curl writes the headers it got, a failed status's included; none when it got no answer.
   touch "$scratch/headers"
+  local status retry
   status=$(sed -nE 's#^HTTP/[0-9.]+ ([0-9]{3}).*#\1#p' "$scratch/headers" | tail -n 1)
   if [[ $status == 429 ]]; then
     retry=$(header retry-after)
     [[ -n $retry ]] || retry=$(header x-ratelimit-reset-after)
-    echo "team-post: Discord is rate-limiting the bot (429): try again ${retry:+in $retry s}$([[ -n $retry ]] || echo later); $(posted)" >&2
+    echo "team-post: Discord is rate-limiting the bot (429): try again ${retry:+in $retry s}$([[ -n $retry ]] || echo later); $2" >&2
     exit 75
   fi
-  die "Discord refused the post: $(grep -m 1 . "$scratch/error" || echo "no message id in its answer"); $(posted)"
+  die "Discord refused the $1: $(grep -m 1 . "$scratch/error" || echo "$3"); $2"
+}
+
+if ((retracting)); then
+  discord_api "channels/$channel/messages/$retract" -X DELETE --max-time "$POST_TIMEOUT" \
+    -D "$scratch/headers" >/dev/null 2>"$scratch/error" ||
+    call_failed retract "nothing was retracted" "no answer"
+  ledger_append "$(jq -cn --arg task "$task" --arg channel "$channel" --arg id "$retract" \
+    '{ts: (now | todate), task: $task, event: "image-retracted", thread: "interview", discord_thread: $channel, discord_message: $id}')"
+  echo "retracted $retract"
+  exit 0
+fi
+
+# What was posted before a failure, for its message.
+total=$((${#bodies[@]} > file_messages ? ${#bodies[@]} : file_messages))
+posted() {
+  case $sent in
+    0) echo "nothing was posted" ;;
+    1) echo "1 of $total parts was posted, its id above" ;;
+    *) echo "$sent of $total parts were posted, their ids above" ;;
+  esac
+}
+
+# A word of curl's -F in double quotes, its backslashes and double quotes escaped, as curl reads a
+# name that may hold a comma or a semicolon: form_quoted <word>
+form_quoted() {
+  local word=${1//\\/\\\\}
+  printf '"%s"' "${word//\"/\\\"}"
+}
+
+sent=0
+for ((part = 0; part < total; part++)); do
+  body=${bodies[part]:-$NO_TEXT}
+  form=() n=0
+  for i in "${!attachments[@]}"; do
+    ((carried_by[i] == part)) || continue
+    form+=(-F "files[$n]=@$(form_quoted "${attachments[i]}");filename=$(form_quoted "${names[i]}")${types[i]:+;type=image/${types[i]}}")
+    n=$((n + 1))
+  done
+  rm -f "$scratch/headers"
+  if ((n)); then
+    headers=() timeout=$UPLOAD_TIMEOUT data=(--form-string "payload_json=$body" "${form[@]}")
+  else
+    headers=(-H "Content-Type: application/json") timeout=$POST_TIMEOUT data=(-d "$body")
+  fi
+  if reply=$(discord_api "channels/$channel/messages" -X POST "${headers[@]}" \
+    --max-time "$timeout" -D "$scratch/headers" "${data[@]}" 2>"$scratch/error") &&
+    id=$(jq -er '.id | strings | select(test("^[0-9]+$"))' <<<"$reply" 2>/dev/null); then
+    echo "$id"
+    sent=$((sent + 1))
+    for i in "${!attachments[@]}"; do
+      ((carried_by[i] == part)) || continue
+      ledger_append "$(jq -cn --arg task "$task" --arg channel "$channel" --arg id "$id" --arg file "${names[i]}" \
+        '{ts: (now | todate), task: $task, event: "image-posted", thread: "interview", discord_thread: $channel, discord_message: $id, file: $file}')"
+    done
+    continue
+  fi
+  call_failed post "$(posted)" "no message id in its answer"
 done

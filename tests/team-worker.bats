@@ -853,11 +853,17 @@ allowed_in() {
     assert_equal "$(jq -r .env.AGENT_TEAM_TASK "$TEAM_HOME/tasks/T7/settings.$role.json")" T7
   done
   settings=$TEAM_HOME/tasks/T7/settings.planner.json
+  # --attach after --file needs no rule of its own; team-post holds what it may send.
   for command in "$bin/team-post T7 --thread interview --file $HOME/w/.scratch/task/q1.md" \
+    "$bin/team-post T7 --thread interview --file $HOME/w/.scratch/task/q1.md --attach $HOME/w/.scratch/task/shots/1.png --attach $HOME/w/.scratch/task/shots/2.png" \
+    "$bin/team-post T7 --thread interview --retract 1564000000000000001" \
     "$bin/team-thread wait T7" "$bin/team-thread wait T7 --after 1564000000000000001"; do
     allowed_in "$settings" "$command" || { echo "planner may not: $command" >&2; return 1; }
   done
   for command in "$bin/team-post T17 --thread interview --file q.md" "$bin/team-post T7 --file q.md" \
+    "$bin/team-post T17 --thread interview --retract 1" "$bin/team-post T7 --retract 1" \
+    "$bin/team-post T7 --thread task --retract 1" "$bin/team-post T17 --thread interview --file q.md --attach a.png" \
+    "$bin/team-post T7 --file q.md --attach a.png" "$bin/team-post --coordinator --file q.md --attach a.png" \
     "$bin/team-thread wait T17" "$bin/team-thread wait T7; $bin/team-post --coordinator --file q.md"; do
     if allowed_in "$settings" "$command"; then echo "planner may: $command" >&2; return 1; fi
   done

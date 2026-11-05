@@ -225,6 +225,16 @@
       "writer": "team-ui",
       "about": "a manual QC walk of the task turned on or off (team-ui --walk start or stop), only when that changes it: the walk is on while the task's latest walk is on and the task is not closed, since its ts, and while it is on each message of Daniel's in the task's thread is a walk note the coordinator captures the page with",
       "required": {"state": ["on", "off"]}
+    },
+    "image-posted": {
+      "writer": "team-post",
+      "about": "one image team-post --attach sent: its thread, the message holding it and its base name; a message of several images has one line each, and what left the machine is never removed from the ledger",
+      "required": {"thread": ["interview"], "discord_thread": "id", "discord_message": "id", "file": "string"}
+    },
+    "image-retracted": {
+      "writer": "team-post",
+      "about": "team-post --retract deleted the message discord_message, which image-posted lines of the task record; a copy Discord's CDN holds may outlive it",
+      "required": {"thread": ["interview"], "discord_thread": "id", "discord_message": "id"}
     }
   }
 }

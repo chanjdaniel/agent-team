@@ -17,6 +17,11 @@ A project whose tasks mostly change a UI lists it in its `toolkits` in `projects
 A planner, a task with no UI, and ops never get it.
 The builder and reviewer roles name `ui-check` for a session that lists it, so a session with the toolkit runs it and one without reads the line and does nothing: a ticket builder spot-checks its ticket's states, the builder who delivers runs it on the whole change and puts a "UI check" section in the PR body, a fix round rechecks what the fix touched and its siblings, and the reviewer runs it on the head under review and writes each finding into `review.md` with its tile.
 
+## How a UI is built
+
+This toolkit checks a UI and teaches nothing about building one: `sops/frontend-patterns.md` holds the rules that hold beyond one project for a dev-only component library, a combobox, a large list, a dialog, a realistic fixture and bundle growth.
+A planner never gets this toolkit, so the planner and builder roles name that document for a UI task.
+
 ## What loads
 
 - The hook `hooks/hooks.json`: at session start, `bin/hooks/axi-banner chrome-devtools-axi`, reached from the toolkit as `${CLAUDE_PLUGIN_ROOT}/../../bin/hooks/axi-banner`, since `--plugin-dir` loads the toolkit in place in the code checkout.
@@ -28,6 +33,12 @@ The builder and reviewer roles name `ui-check` for a session that lists it, so a
   Before any image it runs the cheaper text checks: the phone probe (horizontal overflow and small targets as numbers), `console`, and Lighthouse's accessibility audit in snapshot mode with only the failing audits read through `jq`; a throttled trace with its LCP breakdown runs only when the change can affect page load, and `stop` ends the session's browser.
   Its Lighthouse filtering and LCP-breakdown steps are adapted from chrome-devtools-mcp 1.12.0's `a11y-debugging` and `debug-optimize-lcp` skills (Apache-2.0).
 - No MCP server (no `.mcp.json`).
+
+## Screenshots outside the task directory
+
+`ui-check`'s tiles live in the task directory, and go with it.
+A worker that keeps screenshots of its own in the worktree's `.scratch/shots/`, outside the task directory, leaves them to `team-close`, which removes that folder from each worktree it returns and leaves a kept worktree's.
+`team-doctor`'s `captures` line warns about a non-empty one in a slot no open task holds, with the `rm -rf` that removes it.
 
 ## What a run costs
 
