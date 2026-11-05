@@ -253,7 +253,7 @@ local_path() {
 # The paths of the task directory <dir> that have no place in the team home's history, so its
 # archive leaves them out, each as "<why>\t<path>" (relative to <dir>), NUL-terminated, in this
 # order, sorted within each:
-#   UI capture         a top-level ui/ (a frontend capture stays on the machine that took it)
+#   UI capture         a top-level ui/ (a frontend capture's files stay on the machine that took them)
 #   stack logs         a top-level stack-logs/, where team-stack down saves each service's log
 #                      tail: for the builder at the time, never the records
 #   Lighthouse reports a ui-check run's lighthouse/, ui-check/<run>/lighthouse (its failing
