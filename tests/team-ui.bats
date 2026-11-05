@@ -712,7 +712,9 @@ THREAD=1563000000000000009
   run_bin -1 --separate-stderr team-ui T7 --walk start --in interview --reseeded "$id"
   assert_contains "$stderr" "team-ui: Discord message $id was sent at "
   assert_contains "$stderr" ", over an hour ago, so it does not say the primary stack was just reseeded: ask Daniel to say so in a new message"
-  run_bin -1 --separate-stderr team-ui T7 --walk start --in interview --reseeded "$(word_id 4)"
+  # An age far from those above, since word_id counts seconds: a clock that ticks once between two
+  # calls gives "4 seconds ago" the same id as "3 seconds ago", which Discord's stub then has.
+  run_bin -1 --separate-stderr team-ui T7 --walk start --in interview --reseeded "$(word_id 1800)"
   assert_contains "$stderr" "cannot be fetched from T7's thread $THREAD or #coordinator"
   rm "$HOME/.claude/channels/discord/access.json"
   run_bin -1 --separate-stderr team-ui T7 --walk start --in interview --reseeded "$id"
