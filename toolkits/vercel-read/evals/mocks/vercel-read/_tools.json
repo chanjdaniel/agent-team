@@ -162,7 +162,7 @@
     },
     {
       "name": "runtime-logs",
-      "description": "Read a deployment's runtime logs, where a function's errors show (why it answers 500), with every email address, phone number, URL credential and token masked. Vercel's Hobby plan keeps about an hour of them. It stops at `limit` lines, after `seconds`, or at the stream's end, and says which.",
+      "description": "Read a deployment's runtime logs, where a function's errors show (why it answers 500), with every email address, phone number, URL credential, private key, token and credential-named value masked. Vercel's Hobby plan keeps about an hour of them. It stops at `limit` lines, at the answer's size limit, after `seconds`, or at the stream's end, and says which.",
       "inputSchema": {
         "type": "object",
         "properties": {

@@ -987,6 +987,14 @@ const maskCases = [
   [`VERCEL_TOKEN=${tokens["back-end"]} leaked, ${tokens["front-end"]} too`, "VERCEL_TOKEN=<vercel-token> leaked, <vercel-token> too"],
   ["request 12345678-1234-4abc-8def-123456789012 of 6c1e9a4e-2b7d-4f0c-9d3e-8a1b2c3d4e5f at 2026-10-23T12:28:00Z on 2026-10-23",
     "request 12345678-1234-4abc-8def-123456789012 of 6c1e9a4e-2b7d-4f0c-9d3e-8a1b2c3d4e5f at 2026-10-23T12:28:00Z on 2026-10-23"],
+  [`GET /api/invite?email=jane%40example.com&next=https%3A%2F%2Fu%3A${secrets.password}%40ex.com%2F with Bearer%20${secrets.bearer}`,
+    "GET /api/invite?email=<email>&next=https%3A%2F%2F<credentials>%40ex.com%2F with Bearer%20<redacted>"],
+  [`GET /cb?token=${secrets.meta}&access_token=abcdef0123456789abcdef&key=AIzaFixture0123&client_secret=s3cr3t&page=2&sort=key_desc`,
+    "GET /cb?token=<redacted>&access_token=<redacted>&key=<redacted>&client_secret=<redacted>&page=2&sort=key_desc"],
+  [`loaded -----BEGIN RSA PRIVATE KEY-----\nMIIEfixture${secrets.settings}\nAAAA\n-----END RSA PRIVATE KEY----- from env`,
+    "loaded <private-key> from env"],
+  [`config {"user":"app","password":"${secrets.password}","apiKey":"k-${secrets.meta}","port":5432} and PASSWORD=${secrets.env}`,
+    'config {"user":"app","password":"<redacted>","apiKey":"<redacted>","port":5432} and PASSWORD=<redacted>'],
   ["at 1729700000000, id 65a1f3c2b9e8d7a6f5e4d3c2, room 12, ref x6045550106, 20 rows",
     "at 1729700000000, id 65a1f3c2b9e8d7a6f5e4d3c2, room 12, ref x6045550106, 20 rows"],
 ];
@@ -1049,6 +1057,52 @@ describe("runtime-logs", () => {
       assert.deepEqual(records.slice(0, -1).map((record) => record.message), maskCases.map(([, masked]) => masked));
       assert.equal(records.at(-1).path, "/api/login?email=<email>&next=https://<credentials>@ex.com/&t=<vercel-token>");
       assertHoldsNoSecret(result.text);
+    });
+  });
+
+  // The review's test plans: a URL-encoded address and a credential-named query parameter in a
+  // path, a private key in a message, a path that is huge, and a message that is a long run.
+  test("masks a path's URL-encoded address and access_token, and a private key in a message", async () => {
+    const key = `-----BEGIN PRIVATE KEY-----\nMIIEvQIBADAN${secrets.settings}\nBgkqhkiG9w0BAQEFAASC\n-----END PRIVATE KEY-----`;
+    logsOf([logLine(0, { requestPath: "/api/invite?email=jane%40example.com&access_token=abcdef0123456789abcdef", message: `key: ${key}` }),
+      logLine(1, { message: `unterminated -----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC${secrets.meta}` })]);
+    await withServer(async (server) => {
+      const result = await readLogs(server);
+      const { records } = untrusted(result.text);
+      assert.equal(records[0].path, "/api/invite?email=<email>&access_token=<redacted>");
+      assert.equal(records[0].message, "key: <private-key>");
+      assert.equal(records[1].message, "unterminated <private-key>");
+      assert.ok(!result.text.includes("jane") && !result.text.includes("abcdef0123456789abcdef"), result.text);
+      assertHoldsNoSecret(result.text);
+    });
+  });
+
+  test("cuts a path at 1,000 characters and stops at the answer's size limit, saying so", async () => {
+    logsOf(Array.from({ length: 100 }, (_, n) => logLine(n, { message: "m".repeat(1000), requestPath: `/p/${"q".repeat(100_000)}` })));
+    await withServer(async (server) => {
+      const result = await readLogs(server);
+      assert.ok(!result.isError, result.text);
+      const { records } = untrusted(result.text);
+      assert.ok(records.length > 0 && records.length < 100, String(records.length));
+      for (const record of records) {
+        assert.equal(record.path.length, 1000);
+        assert.equal(record.truncated, true);
+      }
+      assert.ok(result.text.length <= 52_000, String(result.text.length));
+      assert.match(result.text, new RegExp(`^Read ${records.length} log lines of dpl_backend0 \\(back-end\\), stopped at the answer's size limit of 50,000 characters: ask for fewer lines or levels\\.`));
+    });
+  });
+
+  test("masks a long run of word characters in time, within its seconds", async () => {
+    logsOf([logLine(0, { message: "A".repeat(250_000), requestPath: `/${"a+b".repeat(80_000)}` }),
+      logLine(1, { message: "1 ".repeat(120_000) })]);
+    await withServer(async (server) => {
+      const start = Date.now();
+      const result = await readLogs(server, { seconds: 2 });
+      assert.ok(Date.now() - start < 3000, `took ${Date.now() - start} ms`);
+      assert.ok(!result.isError, result.text);
+      const { records } = untrusted(result.text);
+      assert.deepEqual(records.map(({ message, truncated }) => [message.length, truncated]), [[1000, true], [1000, true]]);
     });
   });
 

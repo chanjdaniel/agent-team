@@ -6,7 +6,7 @@
   - which deployment `conventioner.io` and `api.conventioner.io` each serve, and whether that is the project's newest ready production deployment (`domain-deployment`);
   - a project's deployments, with their state and commit, paging back (`list-deployments`);
   - one deployment's details: its aliases and its error code and message (`get-deployment`);
-  - a deployment's runtime logs, as Vercel's Hobby plan keeps them (about an hour), with email addresses, phone numbers, URL credentials, Bearer tokens and Vercel tokens masked (`runtime-logs`);
+  - a deployment's runtime logs, as Vercel's Hobby plan keeps them (about an hour), with email addresses, phone numbers, URL credentials (URL-encoded too), Bearer tokens, Vercel tokens, private keys and the values of credential-named parameters and JSON keys (`access_token=`, `"password":`) masked (`runtime-logs`); the masks match shapes, so a secret of no known shape or name passes;
   - the names, types and targets of a project's environment variables, and whether each name given is set (`list-env-names`).
 - Each of those is one or more `GET` requests to `https://api.vercel.com`, on one of five endpoints only: `/v7/deployments`, `/v13/deployments/{id or host}`, `/v9/projects/{id}/domains`, `/v1/projects/{id}/deployments/{id}/runtime-logs` and `/v10/projects/{id}/env`.
 
