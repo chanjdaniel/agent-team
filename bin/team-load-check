@@ -101,9 +101,9 @@
 #     once, and the ops log gains a requested line and nothing else for each;
 #   - the ops log gains no other line;
 #   - no secret of a given toolkit reached the session's transcript, Claude Code's MCP logs,
-#     ~/.mongodb or the team home: with prod-*, a connection string's user and password (FAIL: a
-#     connection string in:), with vercel-read, a vcp_ token (FAIL: a Vercel token in:); only file
-#     names are printed;
+#     ~/.mongodb, or the team home's tasks/T0/ and memory/ (all the session and its hooks can write
+#     there): with prod-*, a connection string's user and password (FAIL: a connection string in:),
+#     with vercel-read, a vcp_ token (FAIL: a Vercel token in:); only file names are printed;
 #   - team-ops-end removes the session and its transcript.
 # The session copies only collection names and counts out of production, and a deployment count
 # out of Vercel, and writes nothing to either.
@@ -744,10 +744,13 @@ ops_check() {
   fi
 
   # The leak check, before team-ops-end deletes the transcript: each given toolkit's secret, once.
+  # In the team home, only what the session or its hooks can write (T0's directory, with its ops
+  # log, and the projects' auto memory): other tasks' archived scratch holds fixture tokens.
   for kit in "${kits[@]}"; do
     [[ -z ${scanned[${leak_name[$kit]}]:-} ]] || continue
     scanned[${leak_name[$kit]}]=1
-    hits=$(grep -rlE "${leak_re[$kit]}" "${own[@]}" "$HOME/.cache/claude-cli-nodejs" "$HOME/.mongodb" "$TEAM_HOME" 2>/dev/null || true)
+    hits=$(grep -rlE "${leak_re[$kit]}" "${own[@]}" "$HOME/.cache/claude-cli-nodejs" "$HOME/.mongodb" \
+      "$TEAM_HOME/tasks/T0" "$TEAM_HOME/memory" 2>/dev/null || true)
     if [[ -n $hits ]]; then
       echo "FAIL: ${leak_name[$kit]} in:"
       while IFS= read -r file; do echo "  $file"; done <<<"$hits"

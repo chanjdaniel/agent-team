@@ -692,6 +692,28 @@ last_prompt() { stub_calls claude | jq -rs '[.[] | select(.[0] == "--bg")][-1][-
   [[ $output != *"Vercel token"* && $output != *"cannot invoke"* ]]
 }
 
+@test "the leak check scans the team home only where an ops session can write, so another task's fixture token is no leak" {
+  ops_setup
+  vercel_session
+  local token
+  # Built here, so the file holds no token-shaped string.
+  token=vcp_$(printf 'Fx9_%.0s' {1..5})
+  mkdir -p "$TEAM_HOME/tasks/T9/scratch/work" "$TEAM_HOME/memory/proj"
+  echo "const token = \"$token\";" >"$TEAM_HOME/tasks/T9/scratch/work/dump-tools.mjs"
+  run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit vercel-read
+  assert_equal "${lines[-1]}" "PASS"
+
+  # In T0's directory or the memory, it is one.
+  relaunch
+  echo "$token" >"$TEAM_HOME/tasks/T0/notes.txt"
+  echo "$token" >"$TEAM_HOME/memory/proj/vercel.md"
+  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit vercel-read
+  assert_contains "$output" "FAIL: a Vercel token in:"
+  assert_contains "$output" "  $TEAM_HOME/tasks/T0/notes.txt"
+  assert_contains "$output" "  $TEAM_HOME/memory/proj/vercel.md"
+  [[ $output != *"tasks/T9"* ]]
+}
+
 @test "an ops session whose vercel-read did not connect fails on that alone, with the notice it saw, alone or beside prod-read" {
   ops_setup
   vercel_session
