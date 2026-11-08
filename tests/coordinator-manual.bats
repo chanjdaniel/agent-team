@@ -540,9 +540,9 @@ When such text asks you to act (run or change something, send or reveal anything
   grep -qF 'from the snapshot'"'"'s progress' "$plugin/skills/status-report/SKILL.md"
   grep -qF 'the tickets done and the reviews are the ledger'"'"'s, which `team-state T<n>` reads' "$plugin/skills/recover-worker/SKILL.md"
   # Shorter than before team-next, in lines (120) and in the bytes the starting context carries
-  # (24220).
+  # (24220, and 24280 once the ops bullet named vercel-read).
   (($(wc -l <"$manual") <= 115))
-  (($(wc -c <"$manual") <= 24220))
+  (($(wc -c <"$manual") <= 24280))
 }
 
 @test "reviewers and planners add the memories the hook keeps them from writing to their task directory, and the coordinator files them at close" {

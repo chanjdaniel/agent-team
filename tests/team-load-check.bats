@@ -632,6 +632,13 @@ SH
   want 1 planner prod-read
   run_bin -2 team-load-check --toolkit prod-read
   assert_equal "$output" "$want"
+  want 1 planner vercel-read
+  run_bin -2 team-load-check --toolkit vercel-read
+  assert_equal "$output" "$want"
+  assert_contains "$output" "toolkit 'vercel-read' is for the ops role only"
+  want 1 builder vercel-read
+  run_bin -2 team-load-check --context --role builder --toolkit vercel-read
+  assert_equal "$output" "$want"
   # The ops form refuses what no worker loads before it judges its toolkit set.
   want 2 ops frontend
   run_bin -2 team-load-check --role ops --worktree "$HOME" --toolkit prod-read --toolkit frontend
