@@ -1153,7 +1153,7 @@ matcher_matches() {
   assert_equal "$(launches)" ""
 }
 
-@test "an ops launch without prod-read or vercel-read, prod-write without prod-read, or a launch without Daniel's request is refused" {
+@test "an ops launch without prod-read or vercel-read, prod-write without prod-read or beside vercel-read, or a launch without Daniel's request is refused" {
   fake_checkout
   mkdir -p "$code/toolkits/prod-read" "$code/toolkits/prod-write" "$code/toolkits/vercel-read"
   cp "$REPO_ROOT/roles/ops.md" "$code/roles/" && cp "$REPO_ROOT/settings/ops.json" "$code/settings/"
@@ -1171,6 +1171,10 @@ matcher_matches() {
   run_fake T7 ops "$wt1" --toolkit vercel-read --toolkit prod-write --request "$request" -- go
   assert_equal "$status" 1
   assert_contains "$output" "prod-write needs --toolkit prod-read beside it"
+  # The ops load check proves no write session with vercel-read, so none launches.
+  run_fake T7 ops "$wt1" --toolkit prod-read --toolkit prod-write --toolkit vercel-read --request "$request" -- go
+  assert_equal "$status" 1
+  assert_contains "$output" "prod-write takes no --toolkit vercel-read beside it"
   run_fake T7 ops "$wt1" --toolkit vercel-read -- go
   assert_equal "$status" 1
   assert_contains "$output" "the ops role needs --request <the link to Daniel's Discord message>"
