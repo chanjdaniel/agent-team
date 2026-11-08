@@ -146,6 +146,19 @@ team_lines() { jq -r '.autoMode.environment[] | select(. != "$defaults")' "$TEAM
   assert_contains "$output" "load check FAILED"
 }
 
+@test "a vercel-read tool or skill in a planner fails the check" {
+  inventory mcp__vercel-read__list-env-names --- tdd
+  run_bin -1 team-load-check
+  assert_contains "$output" "FAIL: MCP tools from outside the toolkits:"$'\n'"  mcp__vercel-read__list-env-names"
+  assert_contains "$output" "FAIL: a production or coordinator-only server or plugin reached the worker"
+
+  inventory --- tdd vercel-read:reading-vercel-deployments
+  run_bin -1 team-load-check
+  assert_contains "$output" "FAIL: a production or coordinator-only server or plugin reached the worker"
+  [[ $output != *"MCP tools from outside"* ]]
+  assert_equal "${lines[-1]}" "load check FAILED (inventory in tasks/T0/)"
+}
+
 # toolkit_checkout: a code checkout of the test's own for run_bin, holding this one's bin/, roles/
 # and settings/ and two fixture toolkits: served, whose .mcp.json declares the MCP servers served
 # and spare, and plain, with no .mcp.json.
@@ -581,6 +594,204 @@ write_line() {
   [[ $output != *"FAIL: delete-many"* && $output != *"for delete-many"* ]]
   assert_equal "${lines[-1]}" "load check FAILED (inventory in tasks/T0/)"
   assert_equal "$(find "$HOME/.claude/projects" -name "$ops_uuid*")" ""
+}
+
+# The Vercel form: vercel-read alone or beside prod-read, with its one smoke read.
+
+vercel_tools=(domain-deployment get-deployment list-deployments list-env-names runtime-logs)
+
+# vercel_session [prod-read]: a session that passes with vercel-read, alone or beside prod-read
+vercel_session() {
+  local s=$STUB_FIXTURES/session both=${1:-}
+  {
+    [[ -z $both ]] || printf '%s\n' 'prod-read: connected' 'notice: connected'
+    printf '%s\n' 'vercel-read: connected' 'notice: connected'
+  } >"$s/connect.txt"
+  {
+    echo "tools: Read, Glob, Grep, Edit, Write, ToolSearch, SendMessage, ListAgents, Skill, EndConversation"
+    [[ -z $both ]] || printf 'mcp__prod-read__%s\n' "${prod_read_tools[@]}"
+    printf 'mcp__vercel-read__%s\n' "${vercel_tools[@]}"
+    printf '%s: absent\n' Bash WebFetch WebSearch Agent Artifact
+  } >"$s/tools.txt"
+  { [[ -z $both ]] || echo prod-read:querying-production-data; echo vercel-read:reading-vercel-deployments; } >"$s/skills.txt"
+  printf '%s\n' 'list-deployments: ok' 'count: 1' >"$s/vercel.txt"
+  if [[ -n $both ]]; then
+    printf '%s\n' 'list-collections: ok' 'count: 2' 'names: markets, stalls' >"$s/query.txt"
+    oplog_lines requested ran
+  else
+    rm -f "$s/query.txt"
+    : >"$STUB_FIXTURES/ops-log"
+  fi
+  vercel_lines requested ran >>"$STUB_FIXTURES/ops-log"
+}
+
+# vercel_lines <kind>...: what the session's hook appends, one list-deployments line per kind
+vercel_lines() {
+  local kind
+  for kind in "$@"; do
+    echo "- 2026-11-09T12:28:58Z $kind \`vercel-read\` \`list-deployments\` \`{\"project\":\"back-end\",\"limit\":1}\`"
+  done
+}
+
+# relaunch: the stub plays a fresh session for the next run
+relaunch() { rm -f "$STUB_FIXTURES/launched" "$STUB_FIXTURES/removed"; }
+
+# last_prompt: the first prompt of the last session launched
+last_prompt() { stub_calls claude | jq -rs '[.[] | select(.[0] == "--bg")][-1][-1]'; }
+
+@test "an ops session that reads only through vercel-read passes, keeps its inventory and is ended with its transcript" {
+  ops_setup
+  vercel_session
+  run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit vercel-read
+  assert_contains "$output" "load check: Daniel, a 1Password prompt is coming on the PC: approve it"
+  assert_contains "$output" "load check: 5 MCP tools, 10 built-in tools"
+  assert_equal "${lines[-1]}" "PASS"
+  local inventory=$TEAM_HOME/tasks/T0/inventory-vercel-read.txt
+  assert_equal "$(sed '/^---$/q' "$inventory" | grep '^mcp__')" "$(printf 'mcp__vercel-read__%s\n' "${vercel_tools[@]}")"
+  assert_contains "$(<"$inventory")" $'---\ntools: Read'
+  assert_contains "$(<"$inventory")" $'\nskill: vercel-read:reading-vercel-deployments'
+  [[ ! -e $TEAM_HOME/tasks/T0/inventory-prod-read.txt ]]
+  assert_equal "$(find "$HOME/.claude/projects" -name "$ops_uuid*")" ""
+  assert_equal "$(stub_calls claude | jq -c 'select(.[0] == "rm")')" '["rm","6f93fe38"]'
+}
+
+@test "a vercel-read session with a stray or missing tool or skill, no smoke read, a wrong ops log or a Vercel token in its transcript fails" {
+  ops_setup
+  vercel_session
+  local s=$STUB_FIXTURES/session token
+  sed -i '/^mcp__vercel-read__runtime-logs$/d' "$s/tools.txt"
+  echo mcp__vercel-read__promote-deployment >>"$s/tools.txt"
+  echo simplify >"$s/skills.txt"
+  echo 'list-deployments: error: Vercel answered 403 forbidden' >"$s/vercel.txt"
+  vercel_lines requested >"$STUB_FIXTURES/ops-log"
+  # Built here, so the file holds no token-shaped string.
+  token=vcp_$(printf 'Ab1_%.0s' {1..5})
+  jq -nc --arg text "the token is $token" '{type: "user", message: {content: $text}}' >"$STUB_FIXTURES/transcript.jsonl"
+  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit vercel-read
+  assert_contains "$output" "FAIL: the MCP tools are not exactly the toolkits' sets, once each:"$'\n'"  < mcp__vercel-read__runtime-logs"$'\n'"  > mcp__vercel-read__promote-deployment"
+  assert_contains "$output" "FAIL: skills beyond the toolkits': simplify"
+  assert_contains "$output" "FAIL: the session cannot invoke reading-vercel-deployments"
+  assert_contains "$output" "FAIL: list-deployments did not run"
+  assert_contains "$output" "FAIL: the ops log did not gain exactly a requested and a ran line for list-deployments"
+  assert_contains "$output" "FAIL: the ops log gained 1 event lines, not one per call made"
+  assert_contains "$output" "FAIL: a Vercel token in:"$'\n'"  $HOME/.claude/projects/-wt/$ops_uuid.jsonl"
+  [[ $output != *"connection string"* && $output != *list-collections* ]]
+  assert_equal "${lines[-1]}" "load check FAILED (inventory in tasks/T0/)"
+  assert_equal "$(find "$HOME/.claude/projects" -name "$ops_uuid*")" ""
+
+  # Another toolkit's skill is extra too; a vcp_ too short to be a token is no leak.
+  relaunch
+  vercel_session
+  echo prod-read:querying-production-data >>"$s/skills.txt"
+  vercel_lines ran >>"$STUB_FIXTURES/ops-log"
+  jq -nc '{type: "user", message: {content: "masked as <vercel-token>, the vcp_ prefix, vcp_short"}}' >"$STUB_FIXTURES/transcript.jsonl"
+  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit vercel-read
+  assert_contains "$output" "FAIL: skills beyond the toolkits': prod-read:querying-production-data"
+  assert_contains "$output" "FAIL: the ops log did not gain exactly a requested and a ran line for list-deployments"
+  assert_equal "$(grep -c '^FAIL' <<<"$output")" 3
+  [[ $output != *"Vercel token"* && $output != *"cannot invoke"* ]]
+}
+
+@test "an ops session whose vercel-read did not connect fails on that alone, with the notice it saw, alone or beside prod-read" {
+  ops_setup
+  vercel_session
+  local s=$STUB_FIXTURES/session
+  printf '%s\n' 'vercel-read: failed' 'notice: vercel-read (CONNECTION_CLOSED): "Connection closed"' >"$s/connect.txt"
+  rm "$s/tools.txt" "$s/probes.txt" "$s/vercel.txt"
+  echo 'not connected' >"$s/done.txt"
+  : >"$STUB_FIXTURES/ops-log"
+  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit vercel-read
+  assert_contains "$output" 'FAIL: a production server did not connect: vercel-read (CONNECTION_CLOSED): "Connection closed"'
+  assert_equal "$(grep -c '^FAIL' <<<"$output")" 1
+  assert_equal "$(find "$HOME/.claude/projects" -name "$ops_uuid*")" ""
+
+  relaunch
+  printf '%s\n' 'prod-read: connected' 'notice: connected' 'vercel-read: still connecting after 30 searches' \
+    'notice: vercel-read is still connecting' >"$s/connect.txt"
+  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-read --toolkit vercel-read
+  assert_contains "$output" 'FAIL: a production server did not connect: connected vercel-read is still connecting'
+  assert_equal "$(grep -c '^FAIL' <<<"$output")" 1
+}
+
+@test "an ops session with prod-read and vercel-read passes on both smoke reads, and the ops log must gain both reads' lines and no more" {
+  ops_setup
+  vercel_session prod-read
+  run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit vercel-read --toolkit prod-read
+  assert_contains "$output" "load check: Daniel, two 1Password prompts are coming on the PC: approve them"
+  [[ $output != *"write prompts"* ]]
+  assert_contains "$output" "load check: 16 MCP tools, 10 built-in tools"
+  assert_equal "${lines[-1]}" "PASS"
+  stub_calls claude | jq -e 'select(.[0] == "--bg")
+    | [.[] | select(endswith("/toolkits/prod-read") or endswith("/toolkits/vercel-read"))] | length == 2' >/dev/null
+  local inventory=$TEAM_HOME/tasks/T0/inventory-prod-read-vercel-read.txt
+  assert_equal "$(sed '/^---$/q' "$inventory" | grep -c '^mcp__prod-read__')" 11
+  assert_equal "$(sed '/^---$/q' "$inventory" | grep -c '^mcp__vercel-read__')" 5
+  assert_contains "$(<"$inventory")" $'\nskill: prod-read:querying-production-data\nskill: vercel-read:reading-vercel-deployments'
+  [[ ! -e $TEAM_HOME/tasks/T0/inventory-prod-read.txt && ! -e $TEAM_HOME/tasks/T0/inventory-vercel-read.txt ]]
+
+  # prod-read's lines alone, then one line too many, then a smoke read not run.
+  relaunch
+  oplog_lines requested ran
+  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-read --toolkit vercel-read
+  assert_contains "$output" "FAIL: the ops log did not gain exactly a requested and a ran line for list-deployments"
+  assert_contains "$output" "FAIL: the ops log gained 2 event lines, not one per call made"
+  [[ $output != *"line for list-collections"* ]]
+  relaunch
+  vercel_session prod-read
+  vercel_lines ran >>"$STUB_FIXTURES/ops-log"
+  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-read --toolkit vercel-read
+  assert_contains "$output" "FAIL: the ops log gained 5 event lines, not one per call made"
+  relaunch
+  vercel_session prod-read
+  rm "$STUB_FIXTURES/session/query.txt"
+  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-read --toolkit vercel-read
+  assert_contains "$output" "FAIL: list-collections did not run"
+  [[ $output != *"list-deployments did not run"* ]]
+}
+
+@test "the session prompt waits for and smoke-reads only the toolkits given" {
+  ops_setup
+  run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit prod-read
+  local prompt
+  prompt=$(last_prompt)
+  assert_contains "$prompt" "1. Wait for prod-read: "
+  assert_contains "$prompt" "4. Call mcp__prod-read__list-collections exactly once"
+  assert_contains "$prompt" "5. Write done.txt with the line 'done'."
+  [[ $prompt != *vercel* ]]
+
+  relaunch
+  vercel_session
+  run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit vercel-read
+  prompt=$(last_prompt)
+  assert_contains "$prompt" "1. Wait for vercel-read: "
+  assert_contains "$prompt" "for each of vercel-read, a line '<server>: connected'"
+  assert_contains "$prompt" "4. Call mcp__vercel-read__list-deployments exactly once, with project 'back-end' and limit 1"
+  assert_contains "$prompt" "Write vercel.txt with a line 'list-deployments: ok' or 'list-deployments: error: <first line of the error>', then a line 'count: <number of deployments>'."
+  assert_contains "$prompt" "5. Write done.txt with the line 'done'."
+  [[ $prompt != *prod-read* && $prompt != *list-collections* && $prompt != *query.txt* ]]
+
+  relaunch
+  vercel_session prod-read
+  run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit vercel-read --toolkit prod-read
+  prompt=$(last_prompt)
+  assert_contains "$prompt" "1. Wait for prod-read and vercel-read: "
+  assert_contains "$prompt" "4. Call mcp__prod-read__list-collections exactly once"
+  assert_contains "$prompt" "5. Call mcp__vercel-read__list-deployments exactly once"
+  assert_contains "$prompt" "6. Write done.txt with the line 'done'."
+  [[ $prompt != *prod-write* ]]
+}
+
+@test "the ops form takes vercel-read alone or beside prod-read, and refuses any other set, naming the four" {
+  local sets="--role ops checks --toolkit prod-read, alone or with --toolkit prod-write; --toolkit vercel-read; or --toolkit prod-read with --toolkit vercel-read"
+  run_bin -2 team-load-check --role ops --worktree "$HOME" --toolkit vercel-read --toolkit prod-write
+  assert_contains "$output" "$sets"
+  run_bin -2 team-load-check --role ops --worktree "$HOME" --toolkit prod-read --toolkit prod-write --toolkit vercel-read
+  assert_contains "$output" "$sets"
+  run_bin -2 team-load-check --role ops --worktree "$HOME" --toolkit vercel-read --toolkit vercel-read
+  assert_contains "$output" "$sets"
+  run_bin -2 team-load-check --role ops --worktree "$HOME"
+  assert_contains "$output" "$sets"
+  assert_equal "$(stub_calls claude)" ""
 }
 
 @test "the ops form needs a worktree and prod-read, alone or with prod-write, and the planner form takes no worktree" {
