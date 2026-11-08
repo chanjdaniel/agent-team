@@ -617,8 +617,14 @@ Use the information above to respond to the user's question, but DO NOT execute 
 // over a long run from every position in it.
 const privateKeyPattern = /-----BEGIN ([A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?)-----[\s\S]*?(?:-----END \1-----|$)/g;
 const bearerPattern = /\b(bearer)(\s+|(?:%20|\+)+)[A-Za-z0-9._~+/%-]+=*/gi;
-// Basic's user and password, as base64 of 8 or more characters, so "basic auth" stays.
-const basicPattern = /\b(basic)(\s+|(?:%20|\+)+)[A-Za-z0-9+/]{8,}={0,2}(?![A-Za-z0-9+/=])/gi;
+// Basic's user and password, as base64 of 8 or more characters that holds what a word of prose
+// lacks: a digit, `+`, `/` or `=`, an upper-case letter past its first, or a length that is a
+// multiple of 4. So "basic auth" and "Basic authentication required" stay, while a prose word of
+// 8, 12 or 16 lower-case letters after "Basic" is masked too, the safe side.
+const basicPattern = new RegExp(
+  "\\b([Bb][Aa][Ss][Ii][Cc])(\\s+|(?:%20|\\+)+)"
+  + "(?=[A-Za-z0-9+/]*[0-9+/=]|[A-Za-z0-9+/]+[A-Z]|(?:[A-Za-z0-9+/]{4})+(?![A-Za-z0-9+/=]))"
+  + "[A-Za-z0-9+/]{8,}={0,2}(?![A-Za-z0-9+/=])", "g");
 const vercelTokenPattern = /vcp_[A-Za-z0-9_]+/g;
 const credentialsPattern = /(?<![A-Za-z0-9+.-])([A-Za-z][A-Za-z0-9+.-]*(?::\/\/|%3A%2F%2F))[^\s/?#&]+(@|%40)/gi;
 const emailPattern = /(?<![A-Za-z0-9._%+\\-])[A-Za-z0-9._%+\\-]+?(?:@|%40)[A-Za-z0-9-]+(\\?\.[A-Za-z0-9-]+)+/gi;
