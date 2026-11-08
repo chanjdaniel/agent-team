@@ -1,0 +1,10 @@
+{
+  "name": "effect-hook-fixture",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@effect/tsgo": "0.67.5",
+    "effect": "4.1.2",
+    "typescript": "7.0.2"
+  }
+}

@@ -1,33 +1,50 @@
 // The effect toolkit as team-worker --toolkit effect loads it: its plugin layout and README, and
 // its effect-v4 skill, whose limits and order of sections the test holds, and whose trap table it
 // checks against the effect package servers/ pins: every name the GA column gives exists there, and
-// every name a v3 or early-beta column gives is gone.
+// every name a v3 or early-beta column gives is gone; and its post-edit hook, run as Claude Code runs
+// a plugin's on a copy of the fixture project, against the effect-tsgo servers/ pins and stubs.
 import assert from "node:assert/strict";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, test } from "node:test";
-import { repoRoot } from "./helpers/mcp.mjs";
+import { repoRoot, tempDir, testPath } from "./helpers/mcp.mjs";
 
 const toolkit = join(repoRoot, "toolkits", "effect");
 const skillFile = join(toolkit, "skills", "effect-v4", "SKILL.md");
 const skill = readFileSync(skillFile, "utf8");
+const readme = readFileSync(join(toolkit, "README.md"), "utf8");
+const hooks = JSON.parse(readFileSync(join(toolkit, "hooks", "hooks.json"), "utf8"));
+const deadlineSeconds = Number(readme.match(/The hook's deadline is (\d+) s/)?.[1]);
 
 describe("the effect toolkit", () => {
-  test("is a plugin named effect with no hook, no MCP server and one skill, effect-v4", () => {
+  test("is a plugin named effect with one PostToolUse hook, no MCP server and one skill, effect-v4", () => {
     const manifest = JSON.parse(readFileSync(join(toolkit, ".claude-plugin", "plugin.json"), "utf8"));
     assert.equal(manifest.name, "effect");
     assert.equal(manifest.author?.name, "Daniel Chan");
     assert.ok(!existsSync(join(toolkit, ".mcp.json")), "the toolkit declares an MCP server");
-    assert.ok(!existsSync(join(toolkit, "hooks")), "the toolkit declares a hook");
-    assert.deepEqual(readdirSync(toolkit).sort(), [".claude-plugin", "README.md", "evals", "skills"]);
+    assert.deepEqual(readdirSync(toolkit).sort(), [".claude-plugin", "README.md", "evals", "hooks", "scripts", "skills"]);
+    assert.deepEqual(readdirSync(join(toolkit, "hooks")), ["hooks.json"]);
+    assert.deepEqual(readdirSync(join(toolkit, "scripts")), ["effect-diagnostics.mjs"]);
     assert.deepEqual(readdirSync(join(toolkit, "skills")), ["effect-v4"]);
     assert.deepEqual(readdirSync(join(toolkit, "skills", "effect-v4")), ["SKILL.md"]);
+    assert.deepEqual(Object.keys(hooks.hooks), ["PostToolUse"]);
+    assert.equal(hooks.hooks.PostToolUse.length, 1);
+    assert.equal(hooks.hooks.PostToolUse[0].matcher, "Edit|Write|MultiEdit");
+    assert.deepEqual(hooks.hooks.PostToolUse[0].hooks, [{
+      type: "command",
+      command: 'node "${CLAUDE_PLUGIN_ROOT}/scripts/effect-diagnostics.mjs"',
+      timeout: deadlineSeconds + 5,
+    }]);
+  });
+
+  test("its README records the hook's deadline, between 3 and 15 seconds", () => {
+    assert.ok(deadlineSeconds >= 3 && deadlineSeconds <= 15, `the deadline is ${deadlineSeconds} s`);
   });
 
   test("its README says when the coordinator gives it", () => {
-    const readme = readFileSync(join(toolkit, "README.md"), "utf8");
     assert.match(readme, /^## When the coordinator gives it$/m);
     assert.match(readme, /--toolkit effect/);
   });
@@ -220,5 +237,230 @@ describe("the effect-v4 skill", () => {
       assert.ok(urls.length > 0, `${topic} cites no source`);
       for (const url of urls) assert.match(url ?? "an undefined link", allowed, topic);
     }
+  });
+});
+
+// The post-edit hook, run as Claude Code runs a plugin's PostToolUse hook: its command through a
+// shell, CLAUDE_PLUGIN_ROOT set to the toolkit, and the event on stdin; against the real
+// effect-tsgo servers/ pins, on the fixture project copied to a temporary directory whose
+// node_modules is servers/node_modules, and against stub effect-tsgo binaries for the deadline,
+// the cap and a failure.
+const fixture = join(repoRoot, "tests", "toolkits", "fixtures", "effect-project");
+const serversModules = join(repoRoot, "servers", "node_modules");
+const hookCommand = hooks.hooks.PostToolUse[0].hooks[0].command;
+const checkCommand = skill.match(/`(node_modules\/\.bin\/effect-tsgo tsc -p tsconfig\.json)`/)?.[1];
+
+// A copy of the fixture, its node_modules linked to servers/, under a real path (macOS's tmpdir
+// is behind a link, and Claude Code gives the hook real paths).
+function project() {
+  const dir = realpathSync(tempDir("effect-project"));
+  cpSync(fixture, dir, { recursive: true });
+  symlinkSync(serversModules, join(dir, "node_modules"));
+  return dir;
+}
+
+// A worktree whose node_modules/.bin/effect-tsgo is the shell script given, and a TypeScript file.
+function stubbed(script) {
+  const dir = realpathSync(tempDir("effect-stub"));
+  mkdirSync(join(dir, "node_modules", ".bin"), { recursive: true });
+  writeFileSync(join(dir, "node_modules", ".bin", "effect-tsgo"), `#!/bin/sh\n${script}\n`, { mode: 0o755 });
+  mkdirSync(join(dir, "src"));
+  writeFileSync(join(dir, "src", "app.ts"), "export const x = 1\n");
+  return dir;
+}
+
+// The hook on an edit of file in a session whose cwd is cwd: its exit code, stdout, stderr and
+// time; wrap runs the hook's shell under another command (unshare).
+function runHook({ cwd, file, tool = "Edit", env = {}, wrap = [] }) {
+  const event = {
+    session_id: "5be0c1a2-0000-4000-8000-000000000000",
+    hook_event_name: "PostToolUse",
+    cwd,
+    tool_name: tool,
+    tool_input: { file_path: file, old_string: "a", new_string: "b" },
+    tool_response: { filePath: file },
+  };
+  const started = Date.now();
+  const run = spawnSync(wrap[0] ?? "sh", [...wrap.slice(1), ...(wrap.length ? ["sh"] : []), "-c", hookCommand], {
+    cwd,
+    encoding: "utf8",
+    input: JSON.stringify(event),
+    env: { HOME: cwd, PATH: testPath({ withOp: false }), CLAUDE_PLUGIN_ROOT: toolkit, ...env },
+    timeout: 60_000,
+  });
+  return { status: run.status, stdout: run.stdout, stderr: run.stderr, ms: Date.now() - started };
+}
+
+// The hook's additional context, after checking its output is the documented JSON shape.
+function context(run) {
+  assert.equal(run.status, 0, run.stderr);
+  const out = JSON.parse(run.stdout);
+  assert.deepEqual(Object.keys(out), ["hookSpecificOutput"]);
+  assert.equal(out.hookSpecificOutput.hookEventName, "PostToolUse");
+  assert.equal(typeof out.hookSpecificOutput.additionalContext, "string");
+  return out.hookSpecificOutput.additionalContext;
+}
+
+function silent(run) {
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(run.stdout, "");
+}
+
+// Whether a process group still has a member.
+function alive(group) {
+  try {
+    process.kill(-group, 0);
+    return true;
+  } catch (error) {
+    if (error.code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+const findings = (text) => text.split("\n").slice(1);
+
+describe("the effect toolkit's post-edit hook", () => {
+  test("names catch for Effect.catchAll and forkChild for Effect.fork, headed by the file's path", () => {
+    const cwd = project();
+    for (const tool of ["Edit", "Write", "MultiEdit"]) {
+      const text = context(runHook({ cwd, file: join(cwd, "src", "v3-habits.ts"), tool }));
+      const [head, ...lines] = text.split("\n");
+      assert.match(head, /^Effect's language service on src\/v3-habits\.ts:$/);
+      assert.ok(lines.some((line) => /catchAll/.test(line) && /Renamed to catch\./.test(line)), text);
+      assert.ok(lines.some((line) => /`fork`/.test(line) && /Renamed to forkChild\./.test(line)), text);
+      assert.ok(lines.every((line) => line.startsWith("src/v3-habits.ts(")), text);
+      assert.ok(!text.includes(cwd), "the findings name the file by its absolute path");
+    }
+  });
+
+  test("says nothing of a clean v4 file", () => {
+    const cwd = project();
+    silent(runHook({ cwd, file: join(cwd, "src", "clean.ts") }));
+  });
+
+  test("says nothing of a file that is not TypeScript, a declaration file, or one the tsconfig does not include", () => {
+    const cwd = project();
+    const habit = readFileSync(join(cwd, "src", "v3-habits.ts"), "utf8");
+    writeFileSync(join(cwd, "src", "notes.md"), habit);
+    writeFileSync(join(cwd, "src", "habits.d.ts"), habit);
+    for (const file of ["src/notes.md", "src/habits.d.ts", "scripts/not-included.ts"]) {
+      silent(runHook({ cwd, file: join(cwd, file) }));
+    }
+  });
+
+  test("says nothing of a file outside cwd or under node_modules", () => {
+    // Another worktree's file, beside an effect-tsgo of its own: the hook never reaches it.
+    const cwd = project();
+    const other = project();
+    silent(runHook({ cwd, file: join(other, "src", "v3-habits.ts") }));
+    silent(runHook({ cwd, file: join(cwd, "..", "v3-habits.ts") }));
+    const vendored = join(cwd, "node_modules", "effect", "src", "Effect.ts");
+    assert.ok(existsSync(vendored), "servers/node_modules/effect has no src/Effect.ts");
+    silent(runHook({ cwd, file: vendored }));
+  });
+
+  // The real CLI is silent on most of those too, so a stub that reports every file it is given
+  // shows the hook never starts it for them.
+  test("never starts effect-tsgo for a file it skips", () => {
+    const cwd = stubbed(`touch "${"$"}{0%/node_modules/*}/started"\necho "$3(1,1): warning effect(outdatedApi): a finding"`);
+    const other = stubbed("true");
+    mkdirSync(join(cwd, "src", "node_modules", "pkg"), { recursive: true });
+    const skipped = ["src/notes.md", "src/app.d.ts", "src/app.d.mts", "src/app.d.css.ts", "src/app.js", "src/node_modules/pkg/index.ts"];
+    for (const file of skipped) writeFileSync(join(cwd, file), "export const x = 1\n");
+    for (const file of [...skipped.map((file) => join(cwd, file)), join(other, "src", "app.ts")]) {
+      silent(runHook({ cwd, file }));
+      assert.ok(!existsSync(join(cwd, "started")), `the hook started effect-tsgo for ${file}`);
+    }
+    assert.match(context(runHook({ cwd, file: join(cwd, "src", "app.ts") })), /a finding/);
+    assert.ok(existsSync(join(cwd, "started")));
+  });
+
+  test("says nothing in a worktree with no effect-tsgo", () => {
+    const cwd = realpathSync(tempDir("no-tsgo"));
+    cpSync(fixture, cwd, { recursive: true });
+    silent(runHook({ cwd, file: join(cwd, "src", "v3-habits.ts") }));
+  });
+
+  test("on its deadline kills the language service's process group and gives one line", () => {
+    const cwd = stubbed(`echo $$ >"${"$"}{0%/node_modules/*}/group"\nsleep 30 &\nsleep 30\n`);
+    const run = runHook({ cwd, file: join(cwd, "src", "app.ts"), env: { EFFECT_DIAGNOSTICS_DEADLINE_MS: "500" } });
+    const text = context(run);
+    assert.ok(run.ms < 500 + 2500, `the hook took ${run.ms} ms on a 500 ms deadline`);
+    assert.equal(text.split("\n").length, 1, text);
+    assert.match(text, /src\/app\.ts/);
+    assert.match(text, /0\.5 s/);
+    assert.ok(text.includes(checkCommand), text);
+    const group = Number(readFileSync(join(cwd, "group"), "utf8"));
+    assert.ok(group > 1);
+    assert.ok(!alive(group), `process group ${group} is still alive`);
+  });
+
+  test("keeps the deadline its README records when no seam is set", () => {
+    const cwd = stubbed("sleep 60");
+    const run = runHook({ cwd, file: join(cwd, "src", "app.ts") });
+    const text = context(run);
+    assert.ok(run.ms >= deadlineSeconds * 1000, `the hook gave up after ${run.ms} ms`);
+    assert.ok(run.ms < (deadlineSeconds + 3) * 1000, `the hook took ${run.ms} ms`);
+    assert.match(text, new RegExp(`its ${deadlineSeconds} s deadline`));
+  });
+
+  test("cuts a long list of findings at 4,000 characters with a line saying how many it cut", () => {
+    const cwd = stubbed(
+      `i=1; while [ $i -le 300 ]; do echo "$3($i,1): warning effect(outdatedApi): finding number $i of many"; i=$((i+1)); done\n` +
+        `echo "Checked 1 files out of 1 files."\necho "0 errors, 300 warnings and 0 messages."`,
+    );
+    const text = context(runHook({ cwd, file: join(cwd, "src", "app.ts") }));
+    assert.ok(text.length <= 4000, `the context is ${text.length} characters`);
+    const lines = text.split("\n");
+    const shown = lines.filter((line) => line.startsWith("src/app.ts(")).length;
+    assert.ok(shown > 10 && shown < 300, `${shown} findings shown`);
+    assert.equal(lines.at(-1), `${300 - shown} more lines cut; run ${checkCommand} from the project's root for all of them.`);
+    assert.ok(!text.includes("Checked 1 files"), "the summary lines came through");
+  });
+
+  test("gives one line with the exit code and the first line of stderr when the tool fails", () => {
+    const cwd = stubbed("echo 'DiscoveryError: no typescript' >&2\necho 'at somewhere' >&2\nexit 3");
+    const text = context(runHook({ cwd, file: join(cwd, "src", "app.ts") }));
+    assert.equal(text.split("\n").length, 1, text);
+    assert.match(text, /src\/app\.ts/);
+    assert.match(text, /exit code 3/);
+    assert.match(text, /DiscoveryError: no typescript/);
+    assert.doesNotMatch(text, /at somewhere/);
+  });
+
+  test("passes the stub the file and no version or tag", () => {
+    const cwd = stubbed(`printf '%s\\n' "$@" >"${"$"}{0%/node_modules/*}/args"`);
+    silent(runHook({ cwd, file: join(cwd, "src", "app.ts") }));
+    assert.deepEqual(readFileSync(join(cwd, "args"), "utf8").trim().split("\n"),
+      ["diagnostics", "--file", join(cwd, "src", "app.ts"), "--format", "text"]);
+  });
+
+  test("the skill's check command, as the skill writes it, reports the v3 rename on the fixture", () => {
+    assert.ok(checkCommand, "the skill names no effect-tsgo check command");
+    const cwd = project();
+    const run = spawnSync("sh", ["-c", checkCommand], { cwd, encoding: "utf8", env: { HOME: cwd, PATH: testPath({ withOp: false }) } });
+    assert.notEqual(run.status, 0, run.stdout);
+    assert.match(run.stdout, /Renamed to catch\./);
+    assert.match(run.stdout, /Renamed to forkChild\./);
+  });
+
+  // unshare -rn makes a user namespace with no network: no interface but a loopback that is down.
+  const unshare = process.platform === "linux" && spawnSync("unshare", ["-rn", "true"]).status === 0;
+  test("gives the same findings with no network", {
+    skip: unshare ? false : `needs Linux with an unprivileged unshare -rn (${process.platform})`,
+  }, () => {
+    const cwd = project();
+    const file = join(cwd, "src", "v3-habits.ts");
+    const offline = context(runHook({ cwd, file, wrap: ["unshare", "-rn"] }));
+    assert.equal(offline, context(runHook({ cwd, file })));
+    assert.match(offline, /Renamed to forkChild\./);
+  });
+
+  test("pins effect-tsgo, effect and typescript in its fixture as servers/ pins them", () => {
+    const pins = JSON.parse(readFileSync(join(repoRoot, "servers", "package.json"), "utf8")).dependencies;
+    const wanted = JSON.parse(readFileSync(join(fixture, "package.json"), "utf8")).dependencies;
+    for (const [name, version] of Object.entries(wanted)) assert.equal(pins[name], version, name);
+    assert.match(pins["@effect/tsgo"], /^\d+\.\d+\.\d+$/);
+    assert.match(pins.typescript, /^7\.\d+\.\d+$/);
   });
 });
