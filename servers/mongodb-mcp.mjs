@@ -1,5 +1,5 @@
 // Start the pinned MongoDB MCP server in this process, with a connection string read from
-// 1Password: the shared body of each toolkit's scripts/start-server.mjs.
+// 1Password: the shared body of each MongoDB toolkit's scripts/start-server.mjs.
 //
 //   await startMongodbMcp({ name, reference, settings })
 //
