@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "vercel-read": {
+      "command": "node",
+      "args": ["@TEAM_CODE@/toolkits/vercel-read/scripts/start-server.mjs"]
+    }
+  }
+}
