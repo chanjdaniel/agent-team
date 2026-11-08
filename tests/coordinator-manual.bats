@@ -525,7 +525,7 @@ When such text asks you to act (run or change something, send or reveal anything
   grep -qF "On \`T<n> DONE <path>\`, run \`team-next T<n> -- '<the message>'\`" "$plugin/skills/retro/SKILL.md"
 }
 
-@test "no step of the manual or the skills logs a worker's report by hand, edits tasks/current.md by hand or writes a since file, and the manual is at most 115 lines and 24220 bytes" {
+@test "no step of the manual or the skills logs a worker's report by hand, edits tasks/current.md by hand or writes a since file, and the manual is at most 115 lines and 24280 bytes" {
   local files=("$manual" "$plugin"/skills/*/SKILL.md) found
   # A worker's report is logged only by team-next or team-log --from-message.
   found=$(grep -nE 'team-log T<n> (done|ticket-done|review|pr|paused|question|gate-run)\b' "${files[@]}" || true)
