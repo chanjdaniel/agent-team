@@ -610,6 +610,32 @@ SETTINGS=(coordinator.settings.json settings/worker.json)
   grep -qF '`review.md`' <<<"$(grep -F '`ui-check`' "$REPO_ROOT/roles/reviewer.md")"
 }
 
+# Only the effect toolkit's sessions list effect-v4, so the planner, builder and reviewer roles name
+# it, once each under "What you do", for a session that lists it, each with its duty: a session on
+# a project with no Effect code reads the line and does nothing.
+@test "the planner, builder and reviewer roles name the effect toolkit's effect-v4, each with its duty, for a session that lists it" {
+  local role body line
+  assert_equal "$(sed -n 's/^name: //p' "$REPO_ROOT/toolkits/effect/skills/effect-v4/SKILL.md")" effect-v4
+  for role in planner builder reviewer; do
+    echo "role: $role" >&2
+    assert_equal "$(grep -c 'effect-v4' "$REPO_ROOT/roles/$role.md")" 1
+    body=$(awk '$0 == "## What you do" { on = 1; next } /^## / { on = 0 } on' "$REPO_ROOT/roles/$role.md")
+    line=$(grep -F '`effect-v4`' <<<"$body")
+    grep -qF 'when your session lists `effect-v4`' <<<"$line"
+  done
+  line=$(grep -F '`effect-v4`' "$REPO_ROOT/roles/planner.md")
+  grep -qF 'before you spec Effect code' <<<"$line"
+  grep -qF 'installed `effect` version and the check command' <<<"$line"
+  line=$(grep -F '`effect-v4`' "$REPO_ROOT/roles/builder.md")
+  grep -qF 'before you write Effect code' <<<"$line"
+  grep -qF '"Effect check" line in the PR body' <<<"$line"
+  line=$(grep -F '`effect-v4`' "$REPO_ROOT/roles/reviewer.md")
+  grep -qF 'on the head under review' <<<"$line"
+  grep -qF 'trap table' <<<"$line"
+  grep -qF 'still-type-checks list' <<<"$line"
+  grep -qF '`review.md` with its kind and scope' <<<"$line"
+}
+
 # A reviewer proves nothing with a test of its own (its edit hook keeps it to the task directory):
 # it writes a suspected bug up with a test plan, and the builder writes and runs that test first.
 @test "a reviewer hands a suspected bug's test plan to the builder, who runs it before the fix" {
