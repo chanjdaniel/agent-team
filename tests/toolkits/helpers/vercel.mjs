@@ -10,6 +10,8 @@
 //                                   another project than the one holding it
 //   vercel.aliases[host] = uid      the deployment a domain serves, as Vercel's alias points it
 //   vercel.domains[projectId]       the project's domains, as GET /v9/projects/<id>/domains gives them
+//   vercel.envs[projectId]          the project's environment variables, as GET /v10/projects/<id>/env
+//                                   gives them without decrypt, values included
 //   vercel.scope[label] = "all"     that project's token reaches every project, as a team-scoped
 //                                   or full-account token does; "none", no project; "project",
 //                                   the default, its own only
@@ -27,8 +29,10 @@
 //   vercel.requests()               every request so far: { method, path, query, token }, `token`
 //                                   the label of the project whose token it carried, "unknown"
 //                                   for any other token and null for none; query as an object
-//   vercel.reset()                  forgets the requests, the streams, the logs, the aliases and
-//                                   the domains
+//   vercel.seen()                   every request since the fake started, as requests() gives them,
+//                                   which reset() never forgets: what the whole file's runs sent
+//   vercel.reset()                  forgets the requests, the streams, the logs, the aliases, the
+//                                   domains and the environment variables
 //   await vercel.close()
 //
 // A request with no token, or one the fake does not know, is answered 403 with Vercel's
@@ -47,10 +51,12 @@ import { createServer } from "node:http";
 const error = (code, message, extra = {}) => ({ error: { code, message, ...extra } });
 const deploymentPath = /^\/v13\/deployments\/([^/]+)$/;
 const domainsPath = /^\/v9\/projects\/([^/]+)\/domains$/;
+const envPath = /^\/v10\/projects\/([^/]+)\/env$/;
 const logsPath = /^\/v1\/projects\/([^/]+)\/deployments\/([^/]+)\/runtime-logs$/;
 
 export async function startFakeVercel({ projects }) {
   const log = [];
+  const everyRequest = [];
   const labelOf = new Map(Object.entries(projects).map(([label, { token }]) => [token, label]));
   const fake = {
     deployments: Object.fromEntries(Object.values(projects).map(({ id }) => [id, []])),
@@ -58,14 +64,17 @@ export async function startFakeVercel({ projects }) {
     logs: {},
     aliases: {},
     domains: {},
+    envs: {},
     streams: [],
     requests: () => log.map((entry) => ({ ...entry, query: { ...entry.query } })),
+    seen: () => everyRequest.map((entry) => ({ ...entry, query: { ...entry.query } })),
     reset: () => {
       log.splice(0);
       fake.streams.splice(0);
       fake.logs = {};
       fake.aliases = {};
       fake.domains = {};
+      fake.envs = {};
     },
   };
 
@@ -116,6 +125,13 @@ export async function startFakeVercel({ projects }) {
       const list = fake.domains[projectId] ?? [];
       return [200, { domains: list, pagination: { count: list.length, next: null, prev: null } }];
     }
+    const env = url.pathname.match(envPath);
+    if (env) {
+      const [, projectId] = env;
+      if (!reaches(label, projectId)) return [403, error("forbidden", "Not authorized")];
+      const envs = fake.envs[projectId] ?? [];
+      return [200, { envs, pagination: { count: envs.length, next: null, prev: null } }];
+    }
     const logs = url.pathname.match(logsPath);
     if (logs) {
       const [, projectId, deploymentId] = logs;
@@ -155,7 +171,9 @@ export async function startFakeVercel({ projects }) {
     const url = new URL(req.url, "http://127.0.0.1");
     const bearer = req.headers.authorization?.match(/^Bearer (.*)$/)?.[1];
     const label = bearer === undefined ? null : (labelOf.get(bearer) ?? "unknown");
-    log.push({ method: req.method, path: url.pathname, query: Object.fromEntries(url.searchParams), token: label });
+    const entry = { method: req.method, path: url.pathname, query: Object.fromEntries(url.searchParams), token: label };
+    log.push(entry);
+    everyRequest.push(entry);
     const [status, body, deploymentId] = req.method !== "GET" ? [404, error("not_found", "The requested path was not found")]
       : label === null || label === "unknown" ? [403, error("forbidden", "Not authorized", { invalidToken: true })]
       : answer(url, label);

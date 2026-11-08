@@ -14,7 +14,7 @@
 //
 // The tokens live only in this function's closure: never in process.env, a file or a log line,
 // and every error text it writes or answers has each token replaced by [redacted]. Every request
-// goes through one function, `get`, which sends only a GET, with its project's own token and the
+// goes through one function, `request`, which sends only a GET, with its project's own token and the
 // pinned teamId, to Vercel's API (or the loopback test origin) on a path of the allowlist below,
 // naming no project but the config's and no query key but its endpoint's; it refuses anything
 // else without sending it, follows no redirect, and gives up after 20 seconds. A non-2xx answer
@@ -29,6 +29,9 @@
 // through `mask` first, which replaces email addresses, phone numbers, URL credentials, Bearer
 // tokens and Vercel tokens. runtime-logs reads its stream line by line and aborts it at its
 // limit or after its seconds, so a stream that never ends closes too.
+// list-env-names reads the list of a project's variables, never asking Vercel to decrypt one, and
+// answers each one's name, type, targets and update time, never its value or comment; no path to
+// one variable or to the project itself is on the allowlist, since both answer values.
 import { randomUUID } from "node:crypto";
 import { readSecrets, refuseChildProcesses } from "./op-secret.mjs";
 
@@ -46,6 +49,9 @@ const endpoints = [
   { path: /^\/v13\/deployments\/(?<idOrHost>[^/]+)$/, query: ["teamId", "withGitRepoInfo"] },
   { path: /^\/v9\/projects\/(?<projectId>[^/]+)\/domains$/, query: ["teamId"] },
   { path: /^\/v1\/projects\/(?<projectId>[^/]+)\/deployments\/dpl_[A-Za-z0-9]+\/runtime-logs$/, query: ["teamId"] },
+  // The list of a project's variables, never one variable's own path, and never with `decrypt`:
+  // a plain variable's value still comes back in clear, so envRecord drops every value.
+  { path: /^\/v10\/projects\/(?<projectId>[^/]+)\/env$/, query: ["teamId"] },
 ];
 const deploymentId = "^dpl_[A-Za-z0-9]+$";
 // A deployment's id or its own host: one or more DNS labels under vercel.app.
@@ -53,6 +59,9 @@ const deploymentOrHost = "^(dpl_[A-Za-z0-9]+|([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?
 // An alias as get-deployment answers it: a lowercase hostname, nothing else.
 const hostname = /^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9-]{2,63}$/;
 const logLevels = ["debug", "info", "warning", "error", "fatal", "trace"];
+const envTargets = ["production", "preview", "development"];
+// An environment variable's name as Vercel allows it, and the only form a summary names one in.
+const variableName = "^[A-Za-z_][A-Za-z0-9_]*$";
 // A log message is cut to this many characters, after it is masked.
 const messageLength = 1_000;
 // A log line longer than this is skipped as it streams, never held whole: Vercel's own lines
@@ -415,6 +424,46 @@ export async function startVercelMcp({ name, teamId, projects }) {
       },
     },
     {
+      name: "list-env-names",
+      description: "List the names of a project's environment variables set for a target, never a value, or with `expect` say " +
+        "whether each name given is set, and which names are set that were not expected: the release's check that every " +
+        "variable production needs is set and no local-development switch is.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          project,
+          target: { type: "string", enum: envTargets, default: "production", description: "The variables' target." },
+          expect: {
+            type: "array",
+            items: { type: "string", pattern: variableName, maxLength: 256 },
+            minItems: 1,
+            maxItems: 50,
+            uniqueItems: true,
+            description: "The names to check: the answer says of each, in this order, whether it is set.",
+          },
+        },
+        required: ["project"],
+        additionalProperties: false,
+      },
+      run: async ({ project: key, target = "production", expect }) => {
+        const answer = await get(key, `/v10/projects/${projects[key].id}/env`);
+        const records = (Array.isArray(answer?.envs) ? answer.envs : []).map(envRecord)
+          .filter((record) => record.targets.includes(target))
+          .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+        const summary = [`${records.length} variables set for ${target} in ${key}.`];
+        if (expect === undefined) return { summary, records };
+        const set = new Set(records.map((record) => record.name));
+        const unexpected = [...set].filter((name) => !expect.includes(name));
+        // A name goes in a summary line, outside the untrusted-data block, only in a variable name's form.
+        const named = unexpected.filter((name) => name !== null && name.length <= 256 && new RegExp(variableName).test(name));
+        const others = unexpected.length - named.length;
+        let list = named.join(", ");
+        if (others) list += `${named.length ? ", and " : ""}${others} whose name ${others === 1 ? "is" : "are"} not a variable name`;
+        summary.push(list ? `Set but not expected: ${list}.` : `Every variable set for ${target} was expected.`);
+        return { summary, records: expect.map((name) => ({ name, set: set.has(name) })) };
+      },
+    },
+    {
       name: "runtime-logs",
       description: "Read a deployment's runtime logs, where a function's errors show (why it answers 500), with every email address, " +
         "phone number, URL credential and token masked. Vercel's Hobby plan keeps about an hour of them. " +
@@ -578,6 +627,14 @@ function deploymentRecord(deployment, { gitSource = false } = {}) {
       ? { code: text(aliasError.code), message: firstLine(aliasError.message, 200) }
       : null,
   };
+}
+
+// An environment variable as list-env-names answers it, from the named fields of Vercel's: its
+// value, comment and every other field are dropped here, so none can reach an answer.
+function envRecord(variable) {
+  const target = variable?.target;
+  const targets = (Array.isArray(target) ? target : [target]).filter((name) => typeof name === "string");
+  return { name: text(variable?.key), type: text(variable?.type), targets, updatedAt: iso(variable?.updatedAt) };
 }
 
 // A runtime log line as runtime-logs answers it, from the named fields of Vercel's: its time to
