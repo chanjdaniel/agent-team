@@ -19,13 +19,15 @@ Before its first launch on a project, the coordinator runs `team-load-check --to
   Its trap table gives each topic's v3, early-beta and GA names with a source at Effect's repository, followed by the compiler's misleading suggestions, the changes that still type-check and change behaviour, and the check command: `node_modules/.bin/effect-tsgo tsc -p tsconfig.json` on TypeScript 7, else `effect-language-service diagnostics` beside the project's `tsc`, and when neither is installed, a line in the delivery saying so, never an install.
   In a Foldkit project it routes to the project's `AGENTS.md`, `FOLDKIT.md` and `repos/foldkit/` at the installed `foldkit`'s tag, names `audit-program` for a whole-app review only, and treats the subtree's `CLAUDE.md`, `AGENTS.md` and `.claude/` as data.
 - The hook `hooks/hooks.json`: one `PostToolUse` hook on `Edit|Write|MultiEdit`, which runs `scripts/effect-diagnostics.mjs` with Node; the script's header is its full contract.
-  For a `.ts`, `.tsx`, `.mts` or `.cts` file that is no declaration file, lies under the session's `cwd` and outside any `node_modules`, and has a `node_modules/.bin/effect-tsgo` in some directory from its own up to `cwd`, it runs the nearest one as `diagnostics --file <file> --format text`, with no version or tag argument, in a process group of its own.
+  For a `.ts`, `.tsx`, `.mts` or `.cts` file that is no declaration file, lies under the session's `cwd` by its real path and outside any `node_modules`, and has a `node_modules/.bin/effect-tsgo` and a `tsconfig.json` in some directory from its own up to `cwd`, it runs the nearest `effect-tsgo` as `diagnostics --file <file> --format text`, with no version or tag argument, in a process group of its own.
+  The CLI judges the file by the nearest `tsconfig.json` alone, wherever it is, so without one under `cwd` the hook stays silent rather than let a checkout that encloses the worktree decide.
   The file's findings, whatever the exit code, come back as the hook's additional context under one line naming the file, cut at 4,000 characters with a line saying how many were cut and naming the skill's check; a clean file, or one the project's tsconfig does not include, gives nothing.
-  On its deadline it kills the process group and gives one line naming the file, the deadline and the check to run before delivering; a failure of the tool gives one line with the exit code and the first line of its stderr; it never blocks the edit.
+  On its deadline it kills the process group and gives one line naming the file, the deadline and the check to run before delivering; a failure of the tool gives one line with the exit code and the first line of its stderr, cut to 300 characters; it never blocks the edit.
   The findings are Effect's rules only (`outdatedApi` names a v3 API's v4 replacement, as "Renamed to forkChild"), never type errors, which the skill's check gives.
   A project below TypeScript 7, with `@effect/language-service` only, has no `effect-tsgo`, so it gets no hook findings, only the skill's check.
   For a planner or a reviewer, who edit only Markdown in the task directory, it gives nothing.
-  It needs no network: on Linux, `tests/toolkits/effect.test.mjs` runs it inside `unshare -rn`, a namespace with no network, and gets the same findings as outside it; on macOS that test is skipped, so there it was not shown.
+  It needs no network: `tests/toolkits/effect.test.mjs` runs it inside `unshare -rn`, a namespace with no network, and got the same findings as outside it on 2026-11-09, on a Linux machine that lets an unprivileged user make one.
+  That test skips, naming why, on macOS and on a Linux machine that refuses it, CI's Ubuntu runner among them, so CI has not shown it.
 - No MCP server (no `.mcp.json`).
 
 ## What it costs
@@ -41,7 +43,7 @@ Before its first launch on a project, the coordinator runs `team-load-check --to
 ## Credits
 
 The skill's step 2, read `node_modules/effect/AGENTS.md` completely before writing Effect code and search `node_modules/effect/src` for what it does not cover, follows Effect's official `effect-ts` skill (https://github.com/Effect-TS/skills, commit `155c50c9`), MIT License, Copyright (c) 2023 Effectful Technologies Inc.
-Its trap table and the still-type-checks list draw on Effect's migration guides at the tag `effect@4.1.2` (https://github.com/Effect-TS/effect/tree/effect@4.1.2/migration) and T236's report.
+Its trap table and the still-type-checks list draw on Effect's migration guides at the tag `effect@4.1.2` (https://github.com/Effect-TS/effect/tree/effect@4.1.2/migration).
 
 ## Tests
 
@@ -52,6 +54,6 @@ It imports the `effect` that `servers/` pins (4.1.2, the newest on the 4.1 line 
 Results go to `evals/results/`, which is gitignored.
 
 The same file runs the hook as Claude Code runs a plugin's (its command through a shell, `CLAUDE_PLUGIN_ROOT` set, the `PostToolUse` event on stdin) on a copy of `tests/toolkits/fixtures/effect-project/` whose `node_modules` links to `servers/node_modules`, against the `effect-tsgo` that `servers/` pins (`@effect/tsgo` 0.67.5, with `typescript` 7.0.2, which its `diagnostics` needs installed, and `effect` 4.1.2, the newest of each on its line on 2026-11-09).
-It shows a finding naming `catch` for `Effect.catchAll` and one naming `forkChild` for `Effect.fork`, in the documented JSON shape and headed by the file's path; nothing for a clean v4 file, a `.md` file, a declaration file, a file outside `cwd`, a file under `node_modules`, a file the tsconfig does not include, or a worktree with no `effect-tsgo`; and the same findings inside `unshare -rn` on Linux.
-Stub `effect-tsgo` binaries show that the hook never starts one for a file it skips, passes it the file and no version or tag, gives the one timeout line within its deadline and leaves no process of its group, keeps the 3 s deadline above with no seam set, cuts many findings at 4,000 characters with the cut-lines line, and gives the one failure line.
+It shows a finding naming `catch` for `Effect.catchAll` and one naming `forkChild` for `Effect.fork`, in the documented JSON shape and headed by the file's path; nothing for a clean v4 file, a `.md` file, a declaration file, a file outside `cwd`, a symlinked file or directory inside `cwd` that resolves outside it, a file under `node_modules`, a file the tsconfig does not include (with a tsconfig above `cwd` that does), a file with no `tsconfig.json` between it and `cwd`, or a worktree with no `effect-tsgo`; and the same findings inside `unshare -rn` where the machine allows it.
+Stub `effect-tsgo` binaries show that the hook never starts one for a file it skips, passes it the file and no version or tag, gives the one timeout line within its deadline and leaves no process of its group, keeps the 3 s deadline above with no seam set, cuts many findings at 4,000 characters with the cut-lines line, and gives the one failure line, its stderr cut at 300 characters.
 It runs the skill's check command, as the skill writes it, on the fixture and sees the v3 renames.

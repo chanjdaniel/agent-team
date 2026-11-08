@@ -38,7 +38,7 @@ In the v3 and beta columns, each `Module.member` span and `effect/...` path is g
 | Tagged errors | | `Schema.TaggedErrorClass` | `Schema.TaggedError<Self>()("Tag", { ... })` | [ref] |
 | Catching | `Effect.catchAll`, `Effect.catchAllCause`, `Effect.catchAllDefect`, `Effect.catchSome`, `Effect.catchSomeDefect` | | `Effect.catch`, `Effect.catchCause`, `Effect.catchDefect`, `Effect.catchFilter` | [err] |
 | Either and Result | `Either`, `Effect.either` | | `Result`, `Effect.result` (success first) | [yld] |
-| Forking | `Effect.fork`, `Effect.forkDaemon`, `Effect.forkAll`, `Effect.forkWithErrorHandler` | | `Effect.forkChild`, `Effect.forkDetach`; the last two removed | [frk] |
+| Forking | `Effect.fork`, `Effect.forkDaemon`, `Effect.forkAll`, `Effect.forkWithErrorHandler` | | `Effect.forkChild`, `Effect.forkDetach`; the v3 column's last two have none | [frk] |
 | Callbacks | `Effect.async`, `Stream.async` | | `Effect.callback`, `Stream.callback` | [ref] |
 | Scoped layers | `Layer.scoped` | | `Layer.effect` | [ref] |
 | Sequencing | `Effect.zipRight`, `Effect.zipLeft` | | `Effect.andThen`; `Effect.zip` then `Effect.map` | [ref] |

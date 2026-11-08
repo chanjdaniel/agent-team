@@ -5,7 +5,7 @@
 // a plugin's on a copy of the fixture project, against the effect-tsgo servers/ pins and stubs.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -259,9 +259,11 @@ function project() {
   return dir;
 }
 
-// A worktree whose node_modules/.bin/effect-tsgo is the shell script given, and a TypeScript file.
+// A worktree whose node_modules/.bin/effect-tsgo is the shell script given, a tsconfig.json and a
+// TypeScript file.
 function stubbed(script) {
   const dir = realpathSync(tempDir("effect-stub"));
+  writeFileSync(join(dir, "tsconfig.json"), "{}\n");
   mkdirSync(join(dir, "node_modules", ".bin"), { recursive: true });
   writeFileSync(join(dir, "node_modules", ".bin", "effect-tsgo"), `#!/bin/sh\n${script}\n`, { mode: 0o755 });
   mkdirSync(join(dir, "src"));
@@ -348,6 +350,37 @@ describe("the effect toolkit's post-edit hook", () => {
     }
   });
 
+  // A worktree slot inside an enclosing checkout, as `.claude/worktrees/<n>` sits in the primary
+  // one: the enclosing tsconfig includes everything, the slot's only src/.
+  function enclosed() {
+    const parent = realpathSync(tempDir("effect-enclosing"));
+    writeFileSync(join(parent, "tsconfig.json"), JSON.stringify({
+      compilerOptions: { strict: true, noEmit: true, moduleResolution: "bundler", module: "ESNext", plugins: [{ name: "@effect/language-service" }] },
+      include: ["**/*"],
+    }));
+    const cwd = join(parent, "slot");
+    cpSync(fixture, cwd, { recursive: true });
+    symlinkSync(serversModules, join(cwd, "node_modules"));
+    return cwd;
+  }
+
+  test("says nothing of a file its worktree's tsconfig does not include, whatever a tsconfig above cwd includes", () => {
+    const cwd = enclosed();
+    silent(runHook({ cwd, file: join(cwd, "scripts", "not-included.ts") }));
+    assert.match(context(runHook({ cwd, file: join(cwd, "src", "v3-habits.ts") })), /Renamed to catch\./);
+  });
+
+  // The CLI, given no tsconfig between the file and cwd, takes the nearest one above cwd.
+  test("says nothing of a file with no tsconfig.json between it and cwd, and never starts effect-tsgo for it", () => {
+    const cwd = enclosed();
+    rmSync(join(cwd, "tsconfig.json"));
+    silent(runHook({ cwd, file: join(cwd, "scripts", "not-included.ts") }));
+    const stub = stubbed(`touch "${"$"}{0%/node_modules/*}/started"\necho "$3(1,1): warning effect(outdatedApi): a finding"`);
+    rmSync(join(stub, "tsconfig.json"));
+    silent(runHook({ cwd: stub, file: join(stub, "src", "app.ts") }));
+    assert.ok(!existsSync(join(stub, "started")), "the hook started effect-tsgo with no tsconfig.json under cwd");
+  });
+
   test("says nothing of a file outside cwd or under node_modules", () => {
     // Another worktree's file, beside an effect-tsgo of its own: the hook never reaches it.
     const cwd = project();
@@ -373,6 +406,25 @@ describe("the effect toolkit's post-edit hook", () => {
     }
     assert.match(context(runHook({ cwd, file: join(cwd, "src", "app.ts") })), /a finding/);
     assert.ok(existsSync(join(cwd, "started")));
+  });
+
+  // A path inside cwd that resolves outside it is another worktree's file: the hook judges the real
+  // path, never the one it was given.
+  test("says nothing of a symlinked file or directory inside cwd that resolves outside it", () => {
+    const cwd = project();
+    const other = project();
+    symlinkSync(join(other, "src", "v3-habits.ts"), join(cwd, "src", "link.ts"));
+    symlinkSync(join(other, "src"), join(cwd, "linked"));
+    for (const file of ["src/link.ts", "linked/v3-habits.ts"]) silent(runHook({ cwd, file: join(cwd, file) }));
+
+    const stub = stubbed(`touch "${"$"}{0%/node_modules/*}/started"\necho "$3(1,1): warning effect(outdatedApi): a finding"`);
+    const away = stubbed("true");
+    symlinkSync(join(away, "src", "app.ts"), join(stub, "src", "link.ts"));
+    symlinkSync(join(away, "src"), join(stub, "linked"));
+    for (const file of ["src/link.ts", "linked/app.ts"]) {
+      silent(runHook({ cwd: stub, file: join(stub, file) }));
+      assert.ok(!existsSync(join(stub, "started")), `the hook started effect-tsgo for ${file}`);
+    }
   });
 
   test("says nothing in a worktree with no effect-tsgo", () => {
@@ -428,6 +480,14 @@ describe("the effect toolkit's post-edit hook", () => {
     assert.doesNotMatch(text, /at somewhere/);
   });
 
+  test("cuts the tool's first stderr line at 300 characters", () => {
+    const cwd = stubbed(`printf 'Error: %0500d\\n' 0 >&2\nexit 1`);
+    const text = context(runHook({ cwd, file: join(cwd, "src", "app.ts") }));
+    assert.equal(text.split("\n").length, 1, text);
+    assert.ok(text.includes(`Error: ${"0".repeat(293)}... (207 characters cut)`), text);
+    assert.ok(text.length < 450, `the line is ${text.length} characters`);
+  });
+
   test("passes the stub the file and no version or tag", () => {
     const cwd = stubbed(`printf '%s\\n' "$@" >"${"$"}{0%/node_modules/*}/args"`);
     silent(runHook({ cwd, file: join(cwd, "src", "app.ts") }));
@@ -445,10 +505,15 @@ describe("the effect toolkit's post-edit hook", () => {
   });
 
   // unshare -rn makes a user namespace with no network: no interface but a loopback that is down.
-  const unshare = process.platform === "linux" && spawnSync("unshare", ["-rn", "true"]).status === 0;
-  test("gives the same findings with no network", {
-    skip: unshare ? false : `needs Linux with an unprivileged unshare -rn (${process.platform})`,
-  }, () => {
+  // It needs Linux, and a machine that lets an unprivileged user make one, which CI's Ubuntu
+  // runner refuses; the skip says why.
+  const probe = process.platform === "linux" ? spawnSync("unshare", ["-rn", "true"], { encoding: "utf8" }) : undefined;
+  const noNetwork = !probe
+    ? `unshare -rn is Linux's, and this is ${process.platform}`
+    : probe.status === 0
+      ? false
+      : `this machine refuses an unprivileged unshare -rn: ${(probe.error?.message ?? probe.stderr.trim().split("\n")[0]) || `exit code ${probe.status}`}`;
+  test("gives the same findings with no network", { skip: noNetwork }, () => {
     const cwd = project();
     const file = join(cwd, "src", "v3-habits.ts");
     const offline = context(runHook({ cwd, file, wrap: ["unshare", "-rn"] }));

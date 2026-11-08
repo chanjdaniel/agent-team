@@ -8,12 +8,16 @@
 // tool_input.file_path and cwd (https://code.claude.com/docs/en/hooks, "PostToolUse input").
 // It does nothing (no output, exit 0) unless the file ends in .ts, .tsx, .mts or .cts and is no
 // declaration file (.d.ts, .d.mts, .d.cts, .d.<ext>.ts), lies under cwd and outside any
-// node_modules, and some directory from the file's up to cwd holds node_modules/.bin/effect-tsgo.
+// node_modules, some directory from the file's up to cwd holds node_modules/.bin/effect-tsgo, and
+// some directory from the file's up to cwd holds a tsconfig.json: the CLI takes the nearest
+// tsconfig.json, wherever it is, so without one under cwd it would judge the file by a checkout
+// that encloses the worktree.
 // It runs the nearest such effect-tsgo as `diagnostics --file <file> --format text`, with no
 // version or tag argument, so it fetches nothing and runs what the project pinned; its working
 // directory is the one holding that node_modules, and it runs in a process group of its own. The
-// CLI finds the file's tsconfig.json itself: its --project checks the whole project beside the
-// file, so the hook never passes one.
+// CLI finds the file's tsconfig.json itself, the nearest one only, and skips the file when that one
+// does not include it: its --project checks the whole project beside the file, so the hook never
+// passes one.
 // It prints, as the event's documented JSON output ("PostToolUse decision control",
 // hookSpecificOutput with hookEventName "PostToolUse" and additionalContext):
 //   - the file's findings, whatever the exit code, under one line naming the file relative to
@@ -23,7 +27,8 @@
 //   - on the deadline, after killing the process group: one line with the file, the deadline and
 //     that check, to run before delivering;
 //   - on a failure of the tool itself (no findings and a non-zero exit, a signal, or no start):
-//     one line with the exit code and the first line of its stderr.
+//     one line with the exit code and the first line of its stderr, or why it could not start,
+//     that part cut to 300 characters.
 // With no findings it prints nothing, so a file the project's tsconfig does not include (the CLI
 // skips it) is silent. It never blocks the edit: it always exits 0, never 2.
 // The findings are Effect's rules only, never type errors, which the skill's check gives; a
@@ -39,12 +44,19 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 const defaultDeadlineMs = 3000;
 const cap = 4000;
+// The most characters of the tool's own line (its first stderr line, or why it could not start).
+const lineCap = 300;
 const check = "node_modules/.bin/effect-tsgo tsc -p tsconfig.json";
 
 // The CLI's summary lines, which say nothing of the file.
 const summary = /^(Checked \d+ files? out of \d+ files?\.|Skipped \d+ files? because .*|\d+ errors?, \d+ warnings? and \d+ messages?\.)\s*$/;
 // A finding's first line: a path, a line and column, and the rest.
 const located = /^(.+?)\((\d+),(\d+)\): (.*)$/;
+
+// The line cut to lineCap characters, saying so when it cut.
+function short(line) {
+  return line.length <= lineCap ? line : `${line.slice(0, lineCap)}... (${line.length - lineCap} characters cut)`;
+}
 
 function give(text) {
   process.stdout.write(`${JSON.stringify({ hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: text } })}\n`);
@@ -71,6 +83,14 @@ function nearestTsgo(file, cwd) {
     const bin = join(dir, "node_modules", ".bin", "effect-tsgo");
     if (existsSync(bin)) return { dir, bin };
     if (dir === cwd || dirname(dir) === dir) return undefined;
+  }
+}
+
+// Whether some directory from the file's up to cwd holds a tsconfig.json.
+function tsconfigUnder(file, cwd) {
+  for (let dir = dirname(file); ; dir = dirname(dir)) {
+    if (existsSync(join(dir, "tsconfig.json"))) return true;
+    if (dir === cwd || dirname(dir) === dir) return false;
   }
 }
 
@@ -116,7 +136,7 @@ function main() {
   const shown = under(cwd, file);
   if (shown === undefined || shown.split(sep).includes("node_modules")) return;
   const tsgo = nearestTsgo(file, cwd);
-  if (!tsgo) return;
+  if (!tsgo || !tsconfigUnder(file, cwd)) return;
 
   const seam = Number(process.env.EFFECT_DIAGNOSTICS_DEADLINE_MS);
   const deadlineMs = Number.isFinite(seam) && seam > 0 ? seam : defaultDeadlineMs;
@@ -150,7 +170,7 @@ function main() {
   }, deadlineMs);
 
   child.on("error", (error) => {
-    finish(`effect-tsgo diagnostics on ${shown} could not start: ${error.message}`);
+    finish(`effect-tsgo diagnostics on ${shown} could not start: ${short(error.message)}`);
   });
   child.on("close", (code, signal) => {
     const lines = findingsOf(stdout, [...new Set([file, given])], shown);
@@ -158,7 +178,7 @@ function main() {
     if (code === 0) return finish();
     const first = stderr.split(/\r?\n/).find((line) => line.trim() !== "")?.trim() ?? "no stderr";
     const how = signal ? `signal ${signal}` : `exit code ${code}`;
-    finish(`effect-tsgo diagnostics on ${shown} failed with ${how}: ${first}`);
+    finish(`effect-tsgo diagnostics on ${shown} failed with ${how}: ${short(first)}`);
   });
 }
 

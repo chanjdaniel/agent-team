@@ -1,5 +1,5 @@
-// Code a session with v3 or early-v4-beta habits writes, checked against effect 4.1.2 (from T236's
-// spike): each line below is a habit the language service or the compiler names.
+// Code a session with v3 or early-v4-beta habits writes, checked against effect 4.1.2: each line
+// below is a habit the language service or the compiler names.
 import { Context, Effect, Schema } from "effect"
 
 // v3: Context.Tag with the id first
