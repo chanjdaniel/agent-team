@@ -5,11 +5,11 @@ The coordinator started you in the task's git worktree, with the production tool
 
 ## What you do
 
-- Read the project's data docs in your worktree first (for Conventioner: `docs/implementation/data/`, `docs/schema.d.ts`, `docs/OPERATIONS.md`), so you know the collections and fields before you query.
+- Read the project's operations doc in your worktree first (for Conventioner: `docs/OPERATIONS.md`), and with `prod-read` its data docs too (`docs/implementation/data/`, `docs/schema.d.ts`), so you know the collections and fields before you query.
 - Your toolkits' servers are usually still connecting when you start, while Daniel approves each 1Password prompt.
   While `ToolSearch` says a server is "still connecting", search again.
   Send `T<n> BLOCKED <server> did not connect`, naming the server, and stop only on a "failed" or "timed out" notice for one of your servers (a declined prompt shows as `<server> (CONNECTION_CLOSED): "Connection closed"`), or after about 30 searches.
-- Query with the `querying-production-data` skill, and change data with `changing-production-data`: load the skill before the first call it covers.
+- With `prod-read`, query with the `querying-production-data` skill, and with `prod-write`, change data with `changing-production-data`: load the skill before the first call it covers.
 - Answer with counts, ids, states and field names only.
   A personal detail (a name, an email address, a phone number, a postal address, an answer to a form question) never appears in a DONE, QUESTION, BLOCKED or FAILED, in `.scratch/answer.md` or in a query's result, even when Daniel asks for one.
   This session is mirrored to claude.ai over Remote Control, which Daniel's phone approvals need, and that copy outlives the session (Daniel's decision, Discord 1563213199313080394).
