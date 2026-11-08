@@ -40,11 +40,14 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
 - `plugins/coordinator-skills/`: skills loaded only into the coordinator by `bin/claude-coordinator`.
 - `README.md`, `SETUP.md`: what a stranger reads first, with the sentence Daniel types on a new machine, and the agent's entry point for "set up as host".
 - `roles/`: the role prompts each session's system prompt is appended with, one per role, the coordinator's included.
-- `servers/`: the MCP servers the toolkits and sessions run, the MCP client `ui-capture` speaks with, and the `chrome-devtools-axi` client the browser toolkit's test runs.
+- `servers/`: the MCP servers the toolkits and sessions run, the MCP client `ui-capture` speaks with, the `chrome-devtools-axi` client the browser toolkit's test runs, and the `effect`, `@effect/tsgo` and `typescript` the effect toolkit's test checks its skill and its hook against.
   - `install`: puts them in the gitignored `servers/node_modules/`, as `team-bootstrap` does while `team-doctor`'s `servers` line fails.
   - `package.json` and `package-lock.json`: the packages and their pins, among them:
+    - `@effect/tsgo`: Effect's language service on TypeScript 7, whose `effect-tsgo` the effect toolkit's test runs its post-edit hook and the `effect-v4` skill's check against.
     - `chrome-devtools-axi`: the client the browser toolkit's test runs, since CI's runner has no global install; sessions run the one `tools.lock` pins, at the same version.
     - `chrome-devtools-mcp`: the sessions' MCP server, which their settings name by `CHROME_DEVTOOLS_AXI_MCP_PATH`.
+    - `effect`: the Effect version whose exports the effect toolkit's test holds the `effect-v4` skill's trap table to.
+    - `typescript`: TypeScript 7, which `effect-tsgo diagnostics` needs installed beside it, though `@effect/tsgo` declares no peer.
 - `settings/`: worker settings: `worker.json` shared, one file per role layered on it.
 - `sops/`: standing procedures.
   - `docker.md`: the team's Docker stacks: labels, owner classes, the wrapper contract, `team-stack`'s subcommands, instances, admission, the idle sweep, the reaper, `team-janitor`'s daily report, the heartbeat's steps, the close teardown and the agents' rules.
@@ -72,6 +75,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
 - `toolkits/`: plugin directories a worker loads with `team-worker --toolkit <name>`: MCP config (`.mcp.json`), skills, hooks (`hooks/hooks.json`), docs, scripts, and the skills' evals (`claude plugin eval`, on MCP mocks).
   - `browser/`: its session-start hook prints a banner for a UI task's builder and reviewer, whose `ui-check` skill captures and judges the screens a UI change touches.
   - `coordinator/`: the coordinator's MCP servers and the claude.ai connectors it keeps, no worker's, the only ones `claude-coordinator` lets it load (its README says how the others are denied and how one is added).
+  - `effect/`: for an Effect project's planner, builder and reviewer, the `effect-v4` skill, which sends the session to the installed `effect`'s sources, names the v3 and beta traps beside their GA names and gives the check, and a hook giving Effect's findings on each TypeScript file edited.
 
 `.scratch/task/` is the task directory of a task on this repo, ignored by git.
 
@@ -128,6 +132,8 @@ It holds:
   `frontend.test.mjs` runs the frontend toolkit's scripts and server against a headless Chrome (the machine's, or `TEAM_CHROME`) on a local fixture page, never a window on the screen; that Chrome must be current enough for `open_devtools`, which `chrome-helper.test.mjs` checks fails at once on one too old.
   `browser.test.mjs` checks the browser toolkit's layout and runs its session-start hook as Claude Code runs a plugin's, under the user settings of today and the guarded ones; it also runs every `chrome-devtools-axi` command its `ui-check` skill names, headless on a fixture site in a named axi session of its own, and fails when the skill names one it does not run or its budget table's token figures do not match its image sizes.
   `servers-ftp.test.mjs` runs get-uri's `ftp://` fetch, as mongodb-mcp-server's proxy support installs it, against a minimal FTP server on the loopback, on the basic-ftp 6.x that `servers/package.json`'s `overrides` puts in place of get-uri's `^5`; `tests/repo.bats` holds the lock to 6.2.1 or later.
+  `effect.test.mjs` checks the effect toolkit's layout, its README and evals, and its `effect-v4` skill's limits and order, and holds the skill's trap table to the pinned `effect`'s exports: every GA name exists and every v3 or beta name is gone.
+  It runs the toolkit's post-edit hook as Claude Code runs a plugin's, against the pinned `effect-tsgo` on a copy of `tests/toolkits/fixtures/effect-project/` whose `node_modules` links to `servers/node_modules`, and again inside `unshare -rn`, with no network, on a Linux machine that lets an unprivileged user make that namespace, which CI's Ubuntu runner does not.
   `servers-hono.test.mjs` checks that @modelcontextprotocol/sdk and @modelcontextprotocol/node (under mongodb-mcp-server) resolve @hono/node-server 2.1.3 or later, and that each one's Streamable HTTP server transport, served on the loopback inside the test, still answers an MCP `initialize` POST on it with a 200 and the server's result, within a deadline that fails a stream which never sends its event; `tests/repo.bats` holds the lock to 2.1.3 or later.
   No test reaches 1Password or production: the test `PATH` refuses to start if a real `op` is on it.
 - One file: `tests/vendor/bats-core/bin/bats tests/<name>.bats`; one test: add `-f '<part of its name>'`.
