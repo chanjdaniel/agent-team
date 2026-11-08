@@ -1,0 +1,225 @@
+{
+  "tools": [
+    {
+      "name": "domain-deployment",
+      "description": "Say which deployment each production domain serves, and whether it is its project's newest ready production deployment: a project left rolled back keeps its domain on an older one. Both domains when `domain` is left out.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "domain": {
+            "type": "string",
+            "enum": [
+              "conventioner.io",
+              "api.conventioner.io"
+            ],
+            "description": "Only this domain."
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "get-deployment",
+      "description": "One deployment's details: its state, the commit it was built from, its aliases, and its error code and message, which say why a deployment failed or did not reach its domain.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "enum": [
+              "front-end",
+              "back-end"
+            ],
+            "description": "The Vercel project: front-end (makers-market-management-front-end), back-end (makers-market-management-back-end)."
+          },
+          "deployment": {
+            "type": "string",
+            "pattern": "^(dpl_[A-Za-z0-9]+|([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+vercel\\.app)$",
+            "maxLength": 253,
+            "description": "The deployment's id, dpl_..., or its own host, ....vercel.app."
+          }
+        },
+        "required": [
+          "project",
+          "deployment"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "list-deployments",
+      "description": "List a project's recent deployments, newest first, with each one's state and the commit it was built from. Pass a previous answer's `before` to page back to older ones.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "enum": [
+              "front-end",
+              "back-end"
+            ],
+            "description": "The Vercel project: front-end (makers-market-management-front-end), back-end (makers-market-management-back-end)."
+          },
+          "target": {
+            "type": "string",
+            "enum": [
+              "production",
+              "preview"
+            ],
+            "default": "production",
+            "description": "The deployments' target."
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "BUILDING",
+              "ERROR",
+              "INITIALIZING",
+              "QUEUED",
+              "READY",
+              "CANCELED",
+              "BLOCKED"
+            ],
+            "description": "Only the deployments in this state."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20,
+            "default": 5,
+            "description": "How many deployments to list."
+          },
+          "before": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Only the deployments created before this time, in milliseconds since the epoch: an answer's `before`."
+          }
+        },
+        "required": [
+          "project"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "list-env-names",
+      "description": "List the names of a project's environment variables set for a target, never a value, or with `expect` say whether each name given is set, and which names are set that were not expected: the release's check that every variable production needs is set and no local-development switch is.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "enum": [
+              "front-end",
+              "back-end"
+            ],
+            "description": "The Vercel project: front-end (makers-market-management-front-end), back-end (makers-market-management-back-end)."
+          },
+          "target": {
+            "type": "string",
+            "enum": [
+              "production",
+              "preview",
+              "development"
+            ],
+            "default": "production",
+            "description": "The variables' target."
+          },
+          "expect": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+              "maxLength": 256
+            },
+            "minItems": 1,
+            "maxItems": 50,
+            "uniqueItems": true,
+            "description": "The names to check: the answer says of each, in this order, whether it is set."
+          }
+        },
+        "required": [
+          "project"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false
+      }
+    },
+    {
+      "name": "runtime-logs",
+      "description": "Read a deployment's runtime logs, where a function's errors show (why it answers 500), with every email address, phone number, URL credential and token masked. Vercel's Hobby plan keeps about an hour of them. It stops at `limit` lines, after `seconds`, or at the stream's end, and says which.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "enum": [
+              "front-end",
+              "back-end"
+            ],
+            "description": "The Vercel project: front-end (makers-market-management-front-end), back-end (makers-market-management-back-end)."
+          },
+          "deployment": {
+            "type": "string",
+            "pattern": "^dpl_[A-Za-z0-9]+$",
+            "description": "The deployment's id, dpl_..."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500,
+            "default": 100,
+            "description": "At most this many lines, of the levels kept."
+          },
+          "levels": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "debug",
+                "info",
+                "warning",
+                "error",
+                "fatal",
+                "trace"
+              ]
+            },
+            "minItems": 1,
+            "description": "Only the lines of these levels; every level when left out."
+          },
+          "seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 30,
+            "default": 10,
+            "description": "Stop reading after this many seconds."
+          }
+        },
+        "required": [
+          "project",
+          "deployment"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false
+      }
+    }
+  ]
+}

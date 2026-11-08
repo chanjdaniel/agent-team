@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { after, before, beforeEach, describe, test } from "node:test";
 import { opStub, repoRoot, startToolkitServer, tempDir } from "./helpers/mcp.mjs";
 import { children, inetPeers, startingEnvironment } from "./helpers/process.mjs";
-import { assertNoLeak, launcherRefusalTests } from "./helpers/toolkit.mjs";
+import { assertNoLeak, evalMockTools, launcherRefusalTests } from "./helpers/toolkit.mjs";
 import { startFakeVercel } from "./helpers/vercel.mjs";
 
 const teamId = "team_Gbd0cUxeyRWKRqeIhkta9F8Q";
@@ -232,6 +232,13 @@ describe("the tools", () => {
         assert.equal(tool.annotations?.readOnlyHint, true, tool.name);
         assert.equal(tool.annotations?.destructiveHint, false, tool.name);
       }
+    });
+  });
+
+  test("are the tools/list the skill's eval mocks give the server", async () => {
+    await withServer(async (server) => {
+      assert.deepEqual(evalMockTools("vercel-read", "vercel-read"), await server.listTools(),
+        "toolkits/vercel-read/evals/mocks/vercel-read/_tools.json");
     });
   });
 });
