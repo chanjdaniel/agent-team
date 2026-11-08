@@ -15,10 +15,11 @@
 #        team-load-check --context [--role planner|builder|reviewer] [--toolkit <name>]...
 #        team-load-check --role ops --worktree <path> --toolkit <name>...
 # The ops form takes four toolkit sets: prod-read, prod-read with prod-write, vercel-read, or
-# prod-read with vercel-read (in any order); any other is a malformed command line (exit 2). A toolkit team-worker refuses one of the form's roles (toolkit_refusal in
-# bin/lib/team.sh: the coordinator and frontend toolkits, and prod-* and vercel-read outside the
-# ops form) is refused at once, with team-worker's message, as a malformed command line (exit 2),
-# before the doctor runs.
+# prod-read with vercel-read (in any order); any other is a malformed command line (exit 2). A
+# toolkit team-worker refuses one of the form's roles (toolkit_refusal in bin/lib/team.sh: the
+# coordinator and frontend toolkits, and prod-* and vercel-read outside the ops form) is refused
+# at once, with team-worker's message, as a malformed command line (exit 2), before the doctor
+# runs.
 #
 # The planner form first rehearses a lease of each project whose pool is treehouse: the project's
 # lease command leases a slot from the primary checkout to a holder of this run's own,
