@@ -8,8 +8,10 @@
 #               /opt/homebrew/opt/python@3.12/libexec/bin/python3").
 #               The fix is the lock's install command for this OS and machine type (uname -m),
 #               from bin/lib/tools.jq: for a GitHub release, its archive checked against the
-#               SHA-256 the lock records; for a fork (no-mistakes), a build of its pinned
-#               commit, with Go and make from their own tool lines.
+#               SHA-256 the lock records; for a download (MongoDB's Database Tools), the
+#               publisher's archive checked the same way and only the tool's binary installed;
+#               for a fork (no-mistakes), a build of its pinned commit, with Go and make from
+#               their own tool lines.
 # shellcheck shell=bash
 # shellcheck disable=SC2034,SC2004,SC2154 # installed, an associative array of the doctor's, for the later checks; scratch, the doctor's
 # reads state from: 010-os.sh

@@ -43,7 +43,8 @@ every_tool_fails() {
 }
 
 # <lock> (default bin/lib/tools.lock) has the shape bin/lib/tools.jq reads: each tool a name, a
-# version_cmd, a pattern, and a pin or a min with its sources, or a GitHub release or fork.
+# version_cmd, a pattern, and a pin or a min with its sources, or a GitHub release or fork, or a
+# download.
 lock_has_its_shape() {
   jq -e '.tools | length > 0 and all(.[];
       (.name | type == "string") and (.version_cmd | type == "string") and (.version_pattern | type == "string")
@@ -51,7 +52,7 @@ lock_has_its_shape() {
       and if has("from") then
         ([has("pin"), has("min"), has("source")] | any | not)
         and (.dir | type == "object" and length > 0 and (keys - ["arch", "macos"] == []))
-        and (.from | IN("release", "fork")) and has(.from)
+        and (.from | IN("release", "fork", "download")) and has(.from)
         and ((has("release") | not) or ((.release.repo | test("^[^/]+/[^/]+$")) and (.release.tag | test("^v[0-9]+(\\.[0-9]+)+$"))
           and (.release.sha256 | keys == ["darwin-amd64", "darwin-arm64", "linux-amd64"])
           and (.release.sha256 | all(.[]; test("^[0-9a-f]{64}$")))))
@@ -61,6 +62,13 @@ lock_has_its_shape() {
           and (.fork.commit | test("^[0-9a-f]{40}$"))
           and ("^\(.release.tag | ltrimstr("v") | gsub("\\."; "\\."))-[0-9]+-g\(.fork.commit[:7])$" as $describe
             | .fork.version | test($describe))))
+        # A download names its version in every archive'\''s file name, so a half-bumped pin fails.
+        and ((has("download") | not) or ((.download.version | test("^[0-9]+(\\.[0-9]+)+$"))
+          and (.download.index | test("^https://"))
+          and (.download.archives | keys == ["darwin-amd64", "darwin-arm64", "linux-amd64", "linux-arm64"])
+          and (.download.version as $v | .download.archives | all(.[];
+            (.url | test("^https://[^ ]+/[^/ ]+-\($v | gsub("\\."; "\\."))\\.(tgz|zip)$"))
+            and (.sha256 | test("^[0-9a-f]{64}$"))))))
       else
         ([has("pin"), has("min")] | map(select(.)) | length == 1)
         and ((.pin // .min) | test("^[0-9]+(\\.[0-9]+)+"))
@@ -71,7 +79,7 @@ lock_has_its_shape() {
 @test "tools.lock lists every tool of the spec once per OS, each with a version_cmd, a pattern, a pin or a min, and its sources" {
   lock_has_its_shape
   local os both=(claude node codegraph gh-axi chrome-devtools-axi chrome-devtools-mcp lavish-axi opencode bun
-    treehouse no-mistakes op git jq tmux gh rsync docker docker-compose python bash go)
+    treehouse no-mistakes mongodump mongorestore op git jq tmux gh rsync docker docker-compose python bash go)
   local mac_only=(coreutils findutils gnu-sed grep flock) arch_only=(make unzip)
   for os in arch macos; do
     local expected=("${both[@]}")
@@ -80,12 +88,14 @@ lock_has_its_shape() {
   done
   # Pinned: the tools the bootstrap installs itself, op on Linux only; Claude Code only warns.
   assert_equal "$(jq -r '[.tools[] | select(.pin or .from) | .name] | join(" ")' "$LOCK")" \
-    "claude node codegraph gh-axi chrome-devtools-axi chrome-devtools-mcp lavish-axi opencode bun treehouse no-mistakes op"
+    "claude node codegraph gh-axi chrome-devtools-axi chrome-devtools-mcp lavish-axi opencode bun treehouse no-mistakes mongodump mongorestore op"
   # treehouse is a GitHub release, each archive's checksum recorded; no-mistakes is Daniel's fork,
   # built at a commit on its main past upstream's release (the next test holds its version to
   # both), and keeps upstream's release, which from = "release" would pin instead.
   assert_equal "$(jq -r '[.tools[] | select(.from) | "\(.name)=\(.from)"] | join(" ")' "$LOCK")" \
-    "treehouse=release no-mistakes=fork"
+    "treehouse=release no-mistakes=fork mongodump=download mongorestore=download"
+  # MongoDB's Database Tools ship every tool in one archive, so their entries name the same one.
+  assert_equal "$(jq -c '[.tools[] | select(.from == "download") | .download] | unique | length' "$LOCK")" 1
   assert_equal "$(jq -r '[.tools[] | select(.release) | "\(.name)=\(.release.repo)"] | join(" ")' "$LOCK")" \
     "treehouse=kunchenguid/treehouse no-mistakes=kunchenguid/no-mistakes"
   assert_equal "$(jq -r '.tools[] | select(.fork) | "\(.name)=\(.fork.repo)"' "$LOCK")" "no-mistakes=chanjdaniel/no-mistakes"
@@ -250,6 +260,70 @@ lock_has_its_shape() {
   # The other tools resolve exactly as before.
   assert_equal "$(jq -L "$REPO_ROOT/bin/lib" -c --arg os arch --arg machine x86_64 'include "tools"; tools_for($os; $machine) | select(.name != "no-mistakes")' "$lock")" \
     "$(jq -L "$REPO_ROOT/bin/lib" -c --arg os arch --arg machine x86_64 'include "tools"; tools_for($os; $machine) | select(.name != "no-mistakes")' "$LOCK")"
+}
+
+@test "a download's version is in every archive's file name, so a half-bumped pin fails the lock's shape" {
+  local lock=$BATS_TEST_TMPDIR/tools.lock
+  [[ $(lock_of mongodump '.download.archives["linux-amd64"].url') == */mongodb-database-tools-ubuntu2404-x86_64-$(lock_pin mongodump).tgz ]]
+  # The version bumped without its archives, or one archive without the others.
+  jq '(.tools[] | select(.name == "mongodump")).download.version = "100.21.0"' "$LOCK" >"$lock"
+  run -1 lock_has_its_shape "$lock"
+  jq '(.tools[] | select(.name == "mongodump")).download.archives["linux-arm64"].url |= sub("100\\.20\\.1"; "100.21.0")' "$LOCK" >"$lock"
+  run -1 lock_has_its_shape "$lock"
+  # A platform dropped, a checksum cut short, an archive that is neither .tgz nor .zip.
+  jq '(.tools[] | select(.name == "mongodump")).download.archives |= del(.["darwin-amd64"])' "$LOCK" >"$lock"
+  run -1 lock_has_its_shape "$lock"
+  jq '(.tools[] | select(.name == "mongodump")).download.archives["linux-amd64"].sha256 |= .[1:]' "$LOCK" >"$lock"
+  run -1 lock_has_its_shape "$lock"
+  jq '(.tools[] | select(.name == "mongodump")).download.archives["linux-amd64"].url |= sub("\\.tgz$"; ".deb")' "$LOCK" >"$lock"
+  run -1 lock_has_its_shape "$lock"
+}
+
+@test "a download's fix fetches this machine's archive, checks its SHA-256 and installs only the tool's binary into ~/.local/bin, on each OS and CPU" {
+  only_checks 030-tools.sh
+  local name
+  every_tool_fails arch -
+  for name in mongodump mongorestore; do
+    assert_equal "$(line_of "tool $name")" "FAIL tool $name: not installed; fix: $(download_fix "$name" linux-amd64 'sha256sum -c -' tar)"
+  done
+  # An ARM Linux, then each Mac, gets its own archive; a Mac's is a .zip, checked with shasum.
+  echo aarch64 >"$STUB_FIXTURES/uname-m.out"
+  tools_at arch
+  answer "mongodump --version"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of 'tool mongodump')" "FAIL tool mongodump: not installed; fix: $(download_fix mongodump linux-arm64 'sha256sum -c -' tar)"
+  assert_equal "$(line_of 'tool mongorestore')" "PASS tool mongorestore: $(lock_pin mongorestore)"
+  on_macos
+  tools_at macos
+  answer "mongorestore --version"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of 'tool mongorestore')" "FAIL tool mongorestore: not installed; fix: $(download_fix mongorestore darwin-arm64 'shasum -a 256 -c' unzip)"
+  echo x86_64 >"$STUB_FIXTURES/uname-m.out"
+  tools_at macos
+  answer "mongodump --version"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of 'tool mongodump')" "FAIL tool mongodump: not installed; fix: $(download_fix mongodump darwin-amd64 'shasum -a 256 -c' unzip)"
+}
+
+@test "a download off its pin fails with the same fix, and a machine type with no archive gets a line naming the release index" {
+  only_checks 030-tools.sh
+  local pin
+  pin=$(lock_pin mongodump)
+  tools_at arch
+  answer "mongodump --version" $'mongodump version: 100.9.4\ngit version: 0000000\nGo version: go1.21.0'
+  run_bin -1 team-doctor
+  assert_equal "$(line_of 'tool mongodump')" "FAIL tool mongodump: 100.9.4, not the pinned $pin; fix: $(download_fix mongodump linux-amd64 'sha256sum -c -' tar)"
+  assert_equal "$(line_of 'tool mongorestore')" "PASS tool mongorestore: $pin"
+  # Only its git version line: no version of its own.
+  answer "mongodump --version" "git version: 99fd6bc7140e31e0287a9b4ef7e03194d834c7f0"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of 'tool mongodump')" "FAIL tool mongodump: \`mongodump --version\` printed no version; fix: $(download_fix mongodump linux-amd64 'sha256sum -c -' tar)"
+
+  echo riscv64 >"$STUB_FIXTURES/uname-m.out"
+  tools_at arch
+  answer "mongodump --version"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of 'tool mongodump')" "FAIL tool mongodump: not installed; fix: bin/lib/tools.lock records no linux-riscv64 archive of mongodump $pin; see https://downloads.mongodb.org/tools/db/full.json"
 }
 
 @test "on macOS each missing tool fails its line with its Homebrew or install command" {

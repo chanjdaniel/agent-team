@@ -32,7 +32,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
     - `stow.sh`: `team-stow`'s steps, which `team-handoff` takes through `team-stow`: each task's branches checked and pushed, its sessions stopped, its ops session ended, its `stowed` logged.
     - `time.jq`: `team-time`'s split of each task's time into phases, and its counts.
     - `tools.jq`: turns `tools.lock` into each tool's pin and install command for a machine.
-    - `tools.lock`: the tools `team-doctor` checks, pinned or with a minimum, and their source per OS (for treehouse and no-mistakes, a GitHub release with each archive's checksum, or a fork's commit).
+    - `tools.lock`: the tools `team-doctor` checks, pinned or with a minimum, and their source per OS (for treehouse and no-mistakes, a GitHub release with each archive's checksum, or a fork's commit; for MongoDB's Database Tools, the publisher's archive with its checksum).
     - `vendor/git-filter-repo/`: git filter-repo 2.47.0, vendored with its MIT license.
     - `workers.jq`: `team-time`'s worker lifetimes, from each launch to its done, pr or ticket-done, review, replacement, stow or close, with their averages by role, path, project and model, the longest, the running, and the classes and breakdown of their time rows.
 - `coordinator.settings.json`: the coordinator's own settings: Discord, its hooks and its denials.

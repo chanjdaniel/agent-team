@@ -26,6 +26,8 @@ declare -gA FORMAT=(
   # The real build also names its commit in parentheses after the version, which the pattern
   # skips; a stub at any version leaves it out.
   [no-mistakes]='no-mistakes version v%s 2026-10-31T01:47:41Z'
+  [mongodump]=$'mongodump version: %s\ngit version: 99fd6bc7140e31e0287a9b4ef7e03194d834c7f0\nGo version: go1.27.3'
+  [mongorestore]=$'mongorestore version: %s\ngit version: 99fd6bc7140e31e0287a9b4ef7e03194d834c7f0\nGo version: go1.27.3'
   [op]='%s'
   [git]='git version %s'
   [jq]='jq-%s'
@@ -348,10 +350,26 @@ lock_of() {
   jq -r --arg name "$1" "first(.tools[] | select(.name == \$name)) | $2" "$LOCK"
 }
 
-# The version <name> is pinned to in bin/lib/tools.lock: its pin, its fork's version, or its
-# release's tag without the v.
+# The version <name> is pinned to in bin/lib/tools.lock: its pin, its fork's or download's
+# version, or its release's tag without the v.
 lock_pin() {
-  lock_of "$1" 'if .from == "fork" then .fork.version elif .from == "release" then .release.tag | ltrimstr("v") else .pin end'
+  lock_of "$1" 'if .from == "fork" then .fork.version elif .from == "download" then .download.version
+    elif .from == "release" then .release.tag | ltrimstr("v") else .pin end'
+}
+
+# The fix of download tool <name> on <platform> (the lock's <os>-<arch> name): its archive of the
+# lock, checked with <check>, unpacked with <unpack> (tar or unzip), the tool's binary installed
+# into ~/.local/bin: download_fix <name> <platform> <check> <unpack>.
+download_fix() {
+  local name=$1 platform=$2 check=$3 url sha root unpack
+  url=$(lock_of "$name" ".download.archives[\"$platform\"].url")
+  sha=$(lock_of "$name" ".download.archives[\"$platform\"].sha256")
+  root=${url##*/} root=${root%.*}
+  case $4 in
+    tar) unpack="tar -xzf \"\$f\" -C \"\$d\" $root/bin/$name" ;;
+    unzip) unpack="unzip -q \"\$f\" $root/bin/$name -d \"\$d\"" ;;
+  esac
+  echo "f=\$(mktemp) && d=\$(mktemp -d) && curl -fsSLo \"\$f\" $url && echo \"$sha  \$f\" | $check && $unpack && mkdir -p ~/.local/bin && install -m 755 \"\$d/$root/bin/$name\" ~/.local/bin/$name && rm -rf \"\$f\" \"\$d\""
 }
 
 # Every tool of <os> answers at <version> (default its pin or min), or is missing (version "-").

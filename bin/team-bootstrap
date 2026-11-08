@@ -33,9 +33,11 @@
 #   tools      Every other failing tool line, by its fix in bin/lib/tools.lock: nvm (installed
 #              first when missing) with Node and the global npm tools, Bun, Claude Code, the
 #              treehouse release archive for this OS and CPU, no-mistakes built from Daniel's
-#              fork at its pinned commit (with the packages stage's Go and make), the 1Password
-#              CLI, opencode; then the gate's opencode wrapper, ~/.no-mistakes/bin/opencode-gate,
-#              while the gate-agent line asks for it (on any gate but a Claude one), and
+#              fork at its pinned commit (with the packages stage's Go and make), mongodump and
+#              mongorestore from MongoDB's Database Tools archive for this OS and CPU (into
+#              ~/.local/bin, no sudo), the 1Password CLI, opencode; then the gate's opencode
+#              wrapper, ~/.no-mistakes/bin/opencode-gate, while the gate-agent line asks for it
+#              (on any gate but a Claude one), and
 #              agent_path_override.opencode in ~/.no-mistakes/config.yaml set to its full path,
 #              that key alone, the file's mode kept and none of it printed (a missing config.yaml
 #              is team-secrets restore's, and its agent, opencode or claude with its flags,

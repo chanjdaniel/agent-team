@@ -4,6 +4,7 @@
 # builds. Every installer is a stub that installs by making the tool's version stub answer its
 # pin or min (mark_installed): brew, pacman (behind a sudo stub that runs nothing else), npm, the
 # curl | bash installers and nvm's, the release archives (curl, sha256sum or shasum, tar), the
+# downloads' archives (the same, unzip, and the install of their binary into ~/.local/bin), the
 # fork's build (its clone, checkout, make build and install, logged to fork-build.log), the clones
 # (git clone of a GitHub URL comes from the test's bare origin of the same name), the no-mistakes
 # gate and claude's plugin commands. Nothing reaches this machine's own HOME, package
@@ -163,6 +164,12 @@ if [[ ${!#} == "$HOME/.no-mistakes/bin/no-mistakes" ]]; then
   mark_installed no-mistakes
   exit 0
 fi
+# A download's binary, from the archive tar or unzip left unpacked.
+target=${!#}
+if [[ $target == "$HOME/.local/bin/"* ]]; then mark_installed "${target##*/}"; exit 0; fi
+EOF
+  wrapper unzip <<'EOF'
+if [[ $1 == -q ]]; then exit 0; fi
 EOF
   wrapper sha256sum <<'EOF'
 if [[ $1 == -c ]]; then cat >/dev/null; echo "-: OK"; exit 0; fi

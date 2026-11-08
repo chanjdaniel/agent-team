@@ -68,7 +68,7 @@ Each stage after the first is one `~/agent-team/bin/team-bootstrap` run; read it
 
 ### Stage 4: tools
 
-`~/agent-team/bin/team-bootstrap --stage tools`: everything else `bin/lib/tools.lock` pins for this OS: Claude Code, nvm with Node and the global npm tools (opencode, the gate's agent on an opencode gate, among them), Bun, the treehouse release archive (checked against its SHA-256), no-mistakes built from Daniel's fork at its pinned commit (with stage 3's Go and make), and on Arch the 1Password CLI.
+`~/agent-team/bin/team-bootstrap --stage tools`: everything else `bin/lib/tools.lock` pins for this OS: Claude Code, nvm with Node and the global npm tools (opencode, the gate's agent on an opencode gate, among them), Bun, the treehouse release archive (checked against its SHA-256), no-mistakes built from Daniel's fork at its pinned commit (with stage 3's Go and make), `mongodump` and `mongorestore` from MongoDB's Database Tools archive (checked against its SHA-256, into `~/.local/bin`), and on Arch the 1Password CLI.
 Then, while the doctor's `gate-agent` line asks for it (on any gate but a Claude one), it installs the gate's opencode wrapper, `~/.no-mistakes/bin/opencode-gate`, from `bin/lib/opencode-gate`: it gives every opencode the gate starts the gate-only config, on Arch and macOS alike.
 Last, `servers/install` puts the pinned MCP servers in `~/agent-team/servers/node_modules/` while the doctor's `servers` line fails: the toolkits' servers, and the `chrome-devtools-mcp` every session's `chrome-devtools-axi` runs.
 

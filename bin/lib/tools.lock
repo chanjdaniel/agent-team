@@ -1,5 +1,5 @@
 {
-  "about": "The tools a machine needs to run the team, read by team-doctor through bin/lib/tools.jq. version_cmd is run with no shell (words split on spaces); version_pattern is an ERE whose first group is the version, matched against each line of the command's output (stdout and stderr) in turn, the first that matches giving it, so ^ and $ anchor to a line; a pattern starts at a line's start or names its tool, so another tool's version in a stray line (Node's path in a crash) is never read as this one's. pin is exact (the tools installed by the bootstrap itself); min is a floor, compared number by number (OS-package tools). pin_mismatch is the verdict on a different version than the pin (default FAIL). A tool is checked on each OS its source names (arch, macos), and the source is the package or the exact install command, which doctor prints as the fix. A tool built on GitHub has from instead of pin and source: from picks release ({repo, tag, sha256 per <os>-<arch> archive}) or fork ({repo, commit, version}), dir names where the binary goes on each OS, and bin/lib/tools.jq makes the pin and the install command from them. path names, per OS, the directory a tool that is not built on GitHub is installed into, ~ being HOME, @NVM_DIR@ nvm's directory (NVM_DIR, else ~/.nvm) and @HOMEBREW_PREFIX@ Homebrew's prefix: with each dir, it is what bin/lib/tools.jq's tool_dirs gives the library to put on PATH. show_path true makes the doctor name where it found the tool's command.",
+  "about": "The tools a machine needs to run the team, read by team-doctor through bin/lib/tools.jq. version_cmd is run with no shell (words split on spaces); version_pattern is an ERE whose first group is the version, matched against each line of the command's output (stdout and stderr) in turn, the first that matches giving it, so ^ and $ anchor to a line; a pattern starts at a line's start or names its tool, so another tool's version in a stray line (Node's path in a crash) is never read as this one's. pin is exact (the tools installed by the bootstrap itself); min is a floor, compared number by number (OS-package tools). pin_mismatch is the verdict on a different version than the pin (default FAIL). A tool is checked on each OS its source names (arch, macos), and the source is the package or the exact install command, which doctor prints as the fix. A tool built on GitHub or published as an archive elsewhere has from instead of pin and source: from picks release ({repo, tag, sha256 per <os>-<arch> archive}), fork ({repo, commit, version}) or download ({version, index, archives: {<os>-<arch>: {url, sha256}}}, a .tgz or .zip whose <root>/bin/<name> is the binary, index the publisher's release index), dir names where the binary goes on each OS, and bin/lib/tools.jq makes the pin and the install command from them. path names, per OS, the directory a tool without from is installed into, ~ being HOME, @NVM_DIR@ nvm's directory (NVM_DIR, else ~/.nvm) and @HOMEBREW_PREFIX@ Homebrew's prefix: with each dir, it is what bin/lib/tools.jq's tool_dirs gives the library to put on PATH. show_path true makes the doctor name where it found the tool's command.",
   "tools": [
     {
       "name": "claude",
@@ -145,6 +145,70 @@
       "dir": {
         "arch": "~/.no-mistakes/bin",
         "macos": "~/.no-mistakes/bin"
+      }
+    },
+    {
+      "name": "mongodump",
+      "version_cmd": "mongodump --version",
+      "version_pattern": "^mongodump version: ([0-9]+\\.[0-9]+\\.[0-9]+)$",
+      "from": "download",
+      "download": {
+        "version": "100.20.1",
+        "index": "https://downloads.mongodb.org/tools/db/full.json",
+        "archives": {
+          "linux-amd64": {
+            "url": "https://fastdl.mongodb.org/tools/db/mongodb-database-tools-ubuntu2404-x86_64-100.20.1.tgz",
+            "sha256": "20f43dcaa37f5a4841ac5a91da685a488a5ebbd81113c018e25a6b544cc350ea"
+          },
+          "linux-arm64": {
+            "url": "https://fastdl.mongodb.org/tools/db/mongodb-database-tools-ubuntu2404-arm64-100.20.1.tgz",
+            "sha256": "7644e12e351bceea542921e60769e3ed658fc770dc09eed07bc5cc2a1ca2ca41"
+          },
+          "darwin-arm64": {
+            "url": "https://fastdl.mongodb.org/tools/db/mongodb-database-tools-macos-arm64-100.20.1.zip",
+            "sha256": "2d49b4bd58477ce7ffbad2c4d1a686f2befa3ce27e8c7cf8fcd2869d8f73063a"
+          },
+          "darwin-amd64": {
+            "url": "https://fastdl.mongodb.org/tools/db/mongodb-database-tools-macos-x86_64-100.20.1.zip",
+            "sha256": "de677258cb2dd2f8dfce714021dcf5ebdd812b07f391118d3af5200370d2f67c"
+          }
+        }
+      },
+      "dir": {
+        "arch": "~/.local/bin",
+        "macos": "~/.local/bin"
+      }
+    },
+    {
+      "name": "mongorestore",
+      "version_cmd": "mongorestore --version",
+      "version_pattern": "^mongorestore version: ([0-9]+\\.[0-9]+\\.[0-9]+)$",
+      "from": "download",
+      "download": {
+        "version": "100.20.1",
+        "index": "https://downloads.mongodb.org/tools/db/full.json",
+        "archives": {
+          "linux-amd64": {
+            "url": "https://fastdl.mongodb.org/tools/db/mongodb-database-tools-ubuntu2404-x86_64-100.20.1.tgz",
+            "sha256": "20f43dcaa37f5a4841ac5a91da685a488a5ebbd81113c018e25a6b544cc350ea"
+          },
+          "linux-arm64": {
+            "url": "https://fastdl.mongodb.org/tools/db/mongodb-database-tools-ubuntu2404-arm64-100.20.1.tgz",
+            "sha256": "7644e12e351bceea542921e60769e3ed658fc770dc09eed07bc5cc2a1ca2ca41"
+          },
+          "darwin-arm64": {
+            "url": "https://fastdl.mongodb.org/tools/db/mongodb-database-tools-macos-arm64-100.20.1.zip",
+            "sha256": "2d49b4bd58477ce7ffbad2c4d1a686f2befa3ce27e8c7cf8fcd2869d8f73063a"
+          },
+          "darwin-amd64": {
+            "url": "https://fastdl.mongodb.org/tools/db/mongodb-database-tools-macos-x86_64-100.20.1.zip",
+            "sha256": "de677258cb2dd2f8dfce714021dcf5ebdd812b07f391118d3af5200370d2f67c"
+          }
+        }
+      },
+      "dir": {
+        "arch": "~/.local/bin",
+        "macos": "~/.local/bin"
       }
     },
     {

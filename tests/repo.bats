@@ -1499,6 +1499,26 @@ YAML
   done
 }
 
+# The toolkit tests run MongoDB's Database Tools, which CI installs by the lock's own commands, so
+# the pins live in tools.lock alone and a new download entry needs no change to the workflow.
+@test "CI's toolkits job installs every download tool of tools.lock by tools.jq's commands, into ~/.local/bin on PATH, before the toolkit tests" {
+  local ci=$REPO_ROOT/.github/workflows/ci.yml block
+  block=$(sed -n '/^jobs:$/,$p' "$ci" | sed -n '/^  toolkits:$/,/^  [a-z_-]*:$/p' | sed '$d')
+  grep -qxF "          mapfile -t fixes < <(jq -L bin/lib -r --arg os arch --arg machine x86_64 'include \"tools\"; download_sources(\$os; \$machine)' bin/lib/tools.lock)" <<<"$block"
+  grep -qxF '          for fix in "${fixes[@]}"; do bash -c "$fix" || exit 1; done' <<<"$block"
+  grep -qxF '          echo "$HOME/.local/bin" >>"$GITHUB_PATH"' <<<"$block"
+  # The install comes before the tests, and names no tool itself.
+  (($(grep -n 'download_sources' <<<"$block" | cut -d: -f1) < $(grep -nxF '      - run: tests/run toolkits' <<<"$block" | cut -d: -f1)))
+  if grep -nE 'mongo(dump|restore|import)' <<<"$block"; then echo "the toolkits job names a download tool itself" >&2; return 1; fi
+  # Every download tool goes to ~/.local/bin on Arch, which the step puts on PATH, and has an
+  # archive for the runner.
+  # shellcheck disable=SC2088 # the lock's own text, never expanded
+  assert_equal "$(jq -r '[.tools[] | select(.from == "download") | .dir.arch] | unique | join(" ")' "$REPO_ROOT/bin/lib/tools.lock")" '~/.local/bin'
+  run -0 jq -L "$REPO_ROOT/bin/lib" -r --arg os arch --arg machine x86_64 'include "tools"; download_sources($os; $machine)' "$REPO_ROOT/bin/lib/tools.lock"
+  assert_equal "$(grep -c '^f=$(mktemp) && d=$(mktemp -d) && curl -fsSLo "$f" https://' <<<"$output")" \
+    "$(jq '[.tools[] | select(.from == "download")] | length' "$REPO_ROOT/bin/lib/tools.lock")"
+}
+
 # Every tests/*.bats file lands in exactly one shard, tests/run's shard is tests/shards' own, and
 # the shards' weights stay within the heaviest file's of each other.
 @test "tests/run's bats shards split every file once, evenly by tests/shards' weights" {
