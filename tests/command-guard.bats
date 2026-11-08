@@ -51,10 +51,12 @@ passes() {
     "$REPO_ROOT/settings/worker.json")" '[]'
 }
 
-# Each command below was refused by a text match on a name it only reads or writes (T172's,
-# T222's, T225's and T227's denials, tasks/queued/deny-rule-prose-match.md in the team home).
+# The commands below are reads, searches, diffs, commits and file writes of the kind the old deny
+# rules refused for naming a guarded thing, which they only read or write.
 @test "a read, search, diff, commit or file write that only names a guarded thing passes" {
   passes "grep -rn 'AGENT_TEAM_ROLE=' tests/" "git grep -n 'AGENT_TEAM_ROLE=coordinator'" \
+    "git log -S'toolkits/frontend/scripts/ui-capture' -- settings/worker.json" \
+    "git log -S 'team-worker T1 ops' --oneline" "grep -rn 'bash <<EOF' docs" \
     "git grep -n 'Agent Chrome' -- roles bin/team-worker bin/lib/team.sh plugins toolkits/browser sops templates" \
     "git diff origin/dev -- bin/team-worker sops/platform-gotchas.md" "git log --oneline -- bin/team-worker sops" \
     "wc -l toolkits/frontend/scripts/ui-capture" "git add toolkits/frontend/scripts/ui-capture" \
@@ -72,12 +74,65 @@ passes() {
   # A heredoc's body is a file's text: a bats line in team-ui.bats's own form, and a ticket's prose.
   passes $'cat >>tests/team-ui.bats <<\'EOF\'\n  AGENT_TEAM_ROLE=builder run_bin -1 team-ui T7 open\nEOF' \
     $'cat >tickets/02.md <<EOF\nteam-worker T1 ops stops and reports.\nunset AGENT_TEAM_ROLE\nEOF' \
-    $'cat >x.md <<-"END"\n\tnode toolkits/frontend/scripts/ui-capture out\n\tEND\ngit add x.md'
+    $'cat >x.md <<-"END"\n\tnode toolkits/frontend/scripts/ui-capture out\n\tEND\ngit add x.md' \
+    $'cat >run.sh <<\'EOF\'\nteam-worker T1 ops wt\nEOF' \
+    $'cat >a.md <<\'A\' >b.md <<\'B\'\nunset AGENT_TEAM_ROLE\nA\nteam-worker T1 ops\nB' \
+    $'cat >t.md <<END-1\nx\nEND\nteam-worker T1 ops wt\nEND-1'
 }
 
-@test "a call of another tool, or with no command, passes" {
+@test "a call of another tool passes, and input it cannot read is refused, naming why" {
   run_bin -0 --separate-stderr hooks/command-guard <<<'{"tool_name": "Read", "tool_input": {"file_path": "AGENT_TEAM_ROLE=x"}}'
-  run_bin -0 --separate-stderr hooks/command-guard <<<'{"tool_name": "Bash", "tool_input": {}}'
+  local input
+  for input in 'not json' '{"tool_input": {"command": "git status"}}' '{"tool_name": "Bash", "tool_input": {}}' \
+    '{"tool_name": "Bash", "tool_input": {"command": ["team-worker", "T1", "ops"]}}' '[]'; do
+    run_bin -2 --separate-stderr hooks/command-guard <<<"$input"
+    [[ $stderr == "Blocked by command-guard: it could not read "*"; a guardrail, so report it as BLOCKED and do not reach it another way." ]] ||
+      { printf 'input %s: stderr %s\n' "$input" "$stderr" >&2; return 1; }
+  done
+}
+
+# The forms a deny rule matching anywhere refused, which a reading of where a command starts must
+# find too: shell grammar, a shell reading its script from stdin, and the common runners.
+@test "a guarded command after a reserved word or in a brace group is refused" {
+  refuses "$OPS" '{ team-worker T1 ops wt; }' 'if true; then team-worker T1 ops wt; fi' \
+    'for t in T1; do team-worker "$t" ops wt; done' '! team-worker T1 ops wt' 'x || { team-worker T1 ops wt; }' \
+    'if team-worker T1 ops wt; then :; fi' 'while false; do :; done; until team-worker T1 ops wt; do :; done' \
+    'if x; then :; else team-worker T1 ops wt; fi' 'if x; then :; elif team-worker T1 ops wt; then :; fi' \
+    'time team-worker T1 ops wt'
+  refuses "$SET" 'while x; do AGENT_TEAM_ROLE=x team-post T7 --file f; done' 'let AGENT_TEAM_ROLE=1' \
+    'read -r AGENT_TEAM_TASK <<<T1' 'printf -v AGENT_TEAM_ROLE %s coordinator'
+  refuses "$UNSET" '{ unset AGENT_TEAM_ROLE; }'
+}
+
+@test "a guarded command a shell reads from stdin is refused: a heredoc, a here-string or a pipe" {
+  refuses "$OPS" $'bash <<\'EOF\'\nteam-worker T1 ops wt\nEOF' $'sh -s <<EOF\ncd x\nteam-worker T1 ops wt\nEOF' \
+    "bash <<<'team-worker T1 ops wt'" "echo 'team-worker T1 ops wt' | bash" 'echo team-worker T1 ops wt | sh -s' \
+    "printf '%s\n' 'team-worker T1 ops wt' | /bin/bash" $'source /dev/stdin <<\'EOF\'\nteam-worker T1 ops wt\nEOF' \
+    $'cat <<\'EOF\' | bash\nteam-worker T1 ops wt\nEOF' $'. /dev/stdin <<EOF\nteam-worker T1 ops wt\nEOF'
+  refuses "$SET" $'bash <<\'EOF\'\nAGENT_TEAM_ROLE=x team-post T7 --file f\nEOF'
+}
+
+@test "a guarded command run by find -exec, watch, flock, script, su, parallel or after bash -c -- is refused" {
+  refuses "$OPS" 'find . -exec team-worker T1 ops wt \;' 'find . -execdir team-worker {} ops wt +' \
+    'watch -n 5 team-worker T1 ops wt' "watch 'team-worker T1 ops wt'" 'flock /tmp/l team-worker T1 ops wt' \
+    "flock -x /tmp/l -c 'team-worker T1 ops wt'" "script -qc 'team-worker T1 ops wt' /dev/null" \
+    "su -c 'team-worker T1 ops wt' me" 'parallel team-worker {} ops wt ::: T1' "bash -c -- 'team-worker T1 ops wt'"
+  refuses "$CAPTURE" 'deno run toolkits/frontend/scripts/ui-capture out' 'bun toolkits/frontend/scripts/ui-capture out' \
+    'npx toolkits/frontend/scripts/ui-capture out'
+}
+
+# A << that opens no heredoc, or a heredoc's marker taken whole, never hides a line Bash runs.
+@test "a guarded command next to a << that opens no heredoc, or after a heredoc, is refused" {
+  refuses "$OPS" $'echo \'<<X\'\nteam-worker T1 ops wt\nX' $'echo "<<X"\nteam-worker T1 ops wt\nX' \
+    $'cat <<END-1\nx\nEND-1\nteam-worker T1 ops wt\nEND' $'echo $((1<<X))\nteam-worker T1 ops wt\nX' \
+    $'# a <<X note\nteam-worker T1 ops wt\nX' \
+    $'cat <<EOF\nx\nEOF\nteam-worker T1 ops wt' $'cat <<-EOF\n\tx\n\tEOF\nteam-worker T1 ops wt' \
+    $'cat <<A <<B\na\nA\nb\nB\nteam-worker T1 ops wt' $'cat <<EOF; team-worker T1 ops wt\nx\nEOF'
+}
+
+@test "a guarded command after a pipe, in a backtick, in a subshell or through xargs is refused" {
+  refuses "$OPS" 'git status | team-worker T1 ops wt' 'echo `team-worker T1 ops wt`' '(team-worker T1 ops wt)' \
+    'echo T1 | xargs -I{} team-worker {} ops wt'
 }
 
 # Rule Bash(*team-worker *ops *), and the forms it took in by matching anywhere.

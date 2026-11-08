@@ -6,46 +6,58 @@
 #
 # Usage: command-guard   (the hook's input on stdin)
 #
-# A command naming none of team-worker, team-load-check, ui-capture and AGENT_TEAM_ passes at
-# once. Any other is read as bin/lib/command_text.py prints it (each heredoc's body left out but
-# an unquoted one's command substitutions, the string after a shell's -c, eval and env -S read as
-# code), and refused, where a command starts (COMMAND_START in bin/lib/team.sh, also past the
-# wrappers env, nohup, command, exec, time, nice, ionice, stdbuf, timeout, setsid, xargs, sudo,
-# doas and the shells, their options and env's assignments), when it is:
+# Input it cannot read is refused, naming why: not JSON, no tool_name, or a Bash call whose
+# tool_input.command is missing or not a string. Another tool's call passes, and so does a command
+# naming none of team-worker, team-load-check, ui-capture and AGENT_TEAM_, at once. Any other is
+# read as bin/lib/command_text.py prints it (each heredoc's body left out but an unquoted one's
+# command substitutions, and all of one a shell may read as its script; the string after a
+# shell's -c, eval, env -S and find -exec read as code, and the text a line feeds a shell on
+# stdin), and refused, where a command starts (COMMAND_START in bin/lib/team.sh, after a
+# separator or a reserved word, also past the wrappers env, nohup, command, exec, time, nice,
+# ionice, stdbuf, timeout, setsid, xargs, parallel, watch, flock and its file, sudo, doas and the
+# shells, their options and env's assignments), when it is:
 #   team-worker or team-load-check with ops among its words (before team-worker's --): an ops
 #     session is the coordinator's to launch, on Daniel's request;
-#   the frontend toolkit's capture script, ui-capture, by any path or run by bash, sh, node,
-#     source or `.`: it is Daniel's own sessions';
+#   the frontend toolkit's capture script, ui-capture, by any path or run by bash, sh, node, deno,
+#     bun, npx, source or `.`: it is Daniel's own sessions';
 #   an assignment of AGENT_TEAM_ROLE or AGENT_TEAM_TASK, alone, before a command or through env,
-#     or either named by export, declare, typeset, local or readonly; or either named by unset or
-#     by env's -u or --unset: worker_refusal in bin/lib/team.sh reads them.
+#     either named by export, declare, typeset, local, readonly, let, read, mapfile or readarray,
+#     or by printf -v; or either named by unset or by env's -u or --unset: worker_refusal in
+#     bin/lib/team.sh reads them.
 # The text is matched as written, quotes and all, so a separator inside quotes counts as one,
-# which refuses more, never less; a name spelled across quotes, held in a variable or reached
-# through a script of one's own is not seen, nor env -i, which clears every variable: a speed
-# bump, as a deny rule is, which the role's rule against reaching a refused thing another way holds.
+# which refuses more, never less. Not seen: a name spelled across quotes or held in a variable; a
+# script of one's own, or a copy or link of a guarded one; a string another interpreter runs
+# (python3 -c, node -e, perl -e, a require of the capture script); a command after a case
+# pattern's ); a file a shell reads on stdin (cat x | bash); and env -i, which clears every
+# variable. It is a speed bump, as a deny rule is, which the role's rule against reaching a
+# refused thing another way holds.
 # When command_text.py cannot run, a command naming one of those is refused, naming why.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/../lib/team.sh" "$@"
 
 # Exit 1, not 2: a hook's exit 2 would block every call it sees.
 [[ $# -eq 0 ]] || { echo "command-guard: usage: command-guard   (the hook's input on stdin)" >&2 && exit 1; }
-input=$(cat)
-[[ $(jq -r '.tool_name // empty' <<<"$input") == Bash ]] || exit 0
-command=$(jq -r '.tool_input.command // empty' <<<"$input")
-[[ $command == *team-worker* || $command == *team-load-check* || $command == *ui-capture* ||
-  $command == *AGENT_TEAM_* ]] || exit 0
 
 block() {
   echo "Blocked by command-guard: $1; a guardrail, so report it as BLOCKED and do not reach it another way." >&2
   exit 2
 }
 
+input=$(cat)
+tool=$(jq -er 'if type == "object" then .tool_name | strings else empty end' <<<"$input" 2>/dev/null) ||
+  block "it could not read the hook's input (JSON with a tool_name)"
+[[ $tool == Bash ]] || exit 0
+command=$(jq -er '.tool_input.command | strings' <<<"$input" 2>/dev/null) ||
+  block "it could not read the Bash call's command (tool_input.command, a string)"
+[[ $command == *team-worker* || $command == *team-load-check* || $command == *ui-capture* ||
+  $command == *AGENT_TEAM_* ]] || exit 0
+
 code=$(python3 -I "$TEAM_LIB/command_text.py" <<<"$command" 2>&1) ||
   block "it could not read the command (bin/lib/command_text.py: ${code##*$'\n'})"
 
 # Where a command starts, past any wrappers: each with its options (one may take a value), a
-# duration and env's assignments, and the directory of what it runs.
-wrapper='(env|nohup|command|exec|time|nice|ionice|stdbuf|timeout|setsid|xargs|sudo|doas|bash|sh|zsh|dash|ksh)'
+# duration and env's assignments (flock its file too), and the directory of what it runs.
+wrapper='(env|nohup|command|exec|time|nice|ionice|stdbuf|timeout|setsid|xargs|parallel|watch|sudo|doas|bash|sh|zsh|dash|ksh|flock([[:space:]]+-[^[:space:];&|]*)*[[:space:]]+[^-[:space:];&|][^[:space:];&|]*)'
 arg='[[:space:]]+(-[^[:space:];&|]*([[:space:]]+[^-[:space:];&|][^[:space:];&|]*)?|[0-9][0-9.]*[smhd]?|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*)'
 lead="$COMMAND_START($wrapper($arg)*[[:space:]]+([^[:space:];&|]*/)?)*"
 # A command's words up to a separator, none of them --.
@@ -54,9 +66,10 @@ words='([[:space:]]+([^-[:space:];&|][^[:space:];&|]*|-|-[^-[:space:];&|][^[:spa
 end='([[:space:];&|)]|$)'
 
 ops=$lead"['\"]?team-(worker|load-check)['\"]?${words}[[:space:]=]['\"]?ops['\"]?$end"
-capture=$lead"((node|source|\\.)($arg)*[[:space:]]+([^[:space:];&|]*/)?)?['\"]?ui-capture['\"]?$end"
+capture=$lead"((node|deno([[:space:]]+run)?|bun([[:space:]]+run)?|npx|source|\\.)($arg)*[[:space:]]+([^[:space:];&|]*/)?)?['\"]?ui-capture['\"]?$end"
 assign=$lead'AGENT_TEAM_(ROLE|TASK)\+?='
-declared=$lead"(export|declare|typeset|local|readonly)([[:space:]]+[^[:space:];&|]+)*[[:space:]]+['\"]?AGENT_TEAM_(ROLE|TASK)([=+'\"[:space:];&|)]|$)"
+declared=$lead"(export|declare|typeset|local|readonly|let|read|mapfile|readarray)([[:space:]]+[^[:space:];&|]+)*[[:space:]]+['\"]?AGENT_TEAM_(ROLE|TASK)([=+'\"[:space:];&|)<]|$)"
+printed=$lead"printf([[:space:]]+[^[:space:];&|]+)*[[:space:]]+-v[[:space:]]*['\"]?AGENT_TEAM_(ROLE|TASK)"
 unset_var=$lead"unset([[:space:]]+[^[:space:];&|]+)*[[:space:]]+['\"]?AGENT_TEAM_(ROLE|TASK)(['\"[:space:];&|)]|$)"
 env_unset=$lead"env([[:space:]]+[^[:space:];&|]+)*[[:space:]]+(-[[:alnum:]]*u[[:space:]]*|--unset([[:space:]]+|=))['\"]?AGENT_TEAM_(ROLE|TASK)"
 
@@ -64,7 +77,7 @@ if [[ $code =~ $ops ]]; then
   block "an ops session is the coordinator's to launch, on Daniel's request (team-worker or team-load-check with ops)"
 elif [[ $code =~ $capture ]]; then
   block "the frontend toolkit's capture script is Daniel's own sessions' (run by its path or by an interpreter)"
-elif [[ $code =~ $assign || $code =~ $declared ]]; then
+elif [[ $code =~ $assign || $code =~ $declared || $code =~ $printed ]]; then
   block "a worker's role and task are its settings' (an assignment of AGENT_TEAM_ROLE or AGENT_TEAM_TASK)"
 elif [[ $code =~ $unset_var || $code =~ $env_unset ]]; then
   block "a worker's role and task are its settings' (an unset of AGENT_TEAM_ROLE or AGENT_TEAM_TASK)"
