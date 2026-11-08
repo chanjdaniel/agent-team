@@ -40,11 +40,12 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
 - `plugins/coordinator-skills/`: skills loaded only into the coordinator by `bin/claude-coordinator`.
 - `README.md`, `SETUP.md`: what a stranger reads first, with the sentence Daniel types on a new machine, and the agent's entry point for "set up as host".
 - `roles/`: the role prompts each session's system prompt is appended with, one per role, the coordinator's included.
-- `servers/`: the MCP servers the toolkits and sessions run, the MCP client `ui-capture` speaks with, and the `chrome-devtools-axi` client the browser toolkit's test runs.
+- `servers/`: the MCP servers the toolkits and sessions run, the MCP client `ui-capture` speaks with, the `chrome-devtools-axi` client the browser toolkit's test runs, and the `effect` the effect toolkit's test checks its skill against.
   - `install`: puts them in the gitignored `servers/node_modules/`, as `team-bootstrap` does while `team-doctor`'s `servers` line fails.
   - `package.json` and `package-lock.json`: the packages and their pins, among them:
     - `chrome-devtools-axi`: the client the browser toolkit's test runs, since CI's runner has no global install; sessions run the one `tools.lock` pins, at the same version.
     - `chrome-devtools-mcp`: the sessions' MCP server, which their settings name by `CHROME_DEVTOOLS_AXI_MCP_PATH`.
+    - `effect`: the Effect version whose exports the effect toolkit's test holds the `effect-v4` skill's trap table to.
 - `settings/`: worker settings: `worker.json` shared, one file per role layered on it.
 - `sops/`: standing procedures.
   - `docker.md`: the team's Docker stacks: labels, owner classes, the wrapper contract, `team-stack`'s subcommands, instances, admission, the idle sweep, the reaper, `team-janitor`'s daily report, the heartbeat's steps, the close teardown and the agents' rules.
@@ -72,6 +73,7 @@ One path per bullet and one thing per line, alphabetical within each list, so tw
 - `toolkits/`: plugin directories a worker loads with `team-worker --toolkit <name>`: MCP config (`.mcp.json`), skills, hooks (`hooks/hooks.json`), docs, scripts, and the skills' evals (`claude plugin eval`, on MCP mocks).
   - `browser/`: its session-start hook prints a banner for a UI task's builder and reviewer, whose `ui-check` skill captures and judges the screens a UI change touches.
   - `coordinator/`: the coordinator's MCP servers and the claude.ai connectors it keeps, no worker's, the only ones `claude-coordinator` lets it load (its README says how the others are denied and how one is added).
+  - `effect/`: for the planner, builder and reviewer of a task on an Effect project, the `effect-v4` skill, which sends the session to the installed `effect`'s own sources, names the v3 and beta traps beside their v4 GA names and gives the check to run.
 
 `.scratch/task/` is the task directory of a task on this repo, ignored by git.
 
