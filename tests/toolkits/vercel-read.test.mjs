@@ -32,6 +32,9 @@ const secrets = {
   email: `creator-${hex()}@example.com`,
   meta: `metamarker${hex()}`,
   settings: `settingsmarker${hex()}`,
+  logField: `logfieldmarker${hex()}`,
+  password: `pw${hex()}`,
+  bearer: `eyJhbGciOiJIUzI1NiJ9.${hex()}.sig`,
 };
 
 const deploymentStates = ["BUILDING", "ERROR", "INITIALIZING", "QUEUED", "READY", "CANCELED", "BLOCKED"];
@@ -165,10 +168,10 @@ test("the MCP config names one server, vercel-read, with no secret and no path b
 });
 
 describe("the tools", () => {
-  test("are list-deployments, read-only by its annotations", async () => {
+  test("are list-deployments and runtime-logs, each read-only by its annotations", async () => {
     await withServer(async (server) => {
       const listed = await server.listTools();
-      assert.deepEqual(listed.map((tool) => tool.name), ["list-deployments"]);
+      assert.deepEqual(listed.map((tool) => tool.name), ["list-deployments", "runtime-logs"]);
       assert.deepEqual(listed[0].inputSchema.properties.state.enum, deploymentStates);
       for (const tool of listed) {
         assert.equal(tool.annotations?.readOnlyHint, true, tool.name);
@@ -385,23 +388,304 @@ describe("list-deployments", () => {
   });
 });
 
+// A runtime log line as Vercel streams it, with fields no answer may hold.
+const logBase = Date.parse("2026-11-08T18:30:00.123Z");
+function logLine(n, fields = {}) {
+  return {
+    level: "error",
+    message: `line ${n}`,
+    messageTruncated: false,
+    requestMethod: "GET",
+    requestPath: `/api/markets/${n}`,
+    responseStatusCode: 500,
+    source: "serverless",
+    timestampInMs: logBase + n * 1000,
+    domain: "api.conventioner.io",
+    rowId: `row${n}${secrets.logField}`,
+    proxy: { clientIp: secrets.logField, userAgent: [secrets.logField] },
+    ...fields,
+  };
+}
+
+// The shapes mask replaces, each with what an answer holds in its place, then the ones it keeps.
+const maskCases = [
+  [`boot refused: MONGODB_URI mongodb+srv://app:${secrets.password}@cluster0.example.mongodb.net/db is unreachable`,
+    "boot refused: MONGODB_URI mongodb+srv://<credentials>@cluster0.example.mongodb.net/db is unreachable"],
+  ["signup from Ann.Lee+x@Example.co.uk and cy_d@sub.ex.org", "signup from <email> and <email>"],
+  ["call +1 604 555 0101, (604) 555-0102, 6045550103, 604.555.0105 or +16045550104",
+    "call <phone>, <phone>, <phone>, <phone> or <phone>"],
+  [`refused Authorization: Bearer ${secrets.bearer}; and bearer ${tokens["front-end"]}`,
+    "refused Authorization: Bearer <redacted>; and bearer <redacted>"],
+  [`VERCEL_TOKEN=${tokens["back-end"]} leaked, ${tokens["front-end"]} too`, "VERCEL_TOKEN=<vercel-token> leaked, <vercel-token> too"],
+  ["request 12345678-1234-4abc-8def-123456789012 of 6c1e9a4e-2b7d-4f0c-9d3e-8a1b2c3d4e5f at 2026-10-23T12:28:00Z on 2026-10-23",
+    "request 12345678-1234-4abc-8def-123456789012 of 6c1e9a4e-2b7d-4f0c-9d3e-8a1b2c3d4e5f at 2026-10-23T12:28:00Z on 2026-10-23"],
+  ["at 1729700000000, id 65a1f3c2b9e8d7a6f5e4d3c2, room 12, ref x6045550106, 20 rows",
+    "at 1729700000000, id 65a1f3c2b9e8d7a6f5e4d3c2, room 12, ref x6045550106, 20 rows"],
+];
+
+const backEnd = projects["back-end"].id;
+const logsOf = (lines, options = {}) => {
+  vercel.logs.dpl_backend0 = { projectId: backEnd, lines, ...options };
+};
+const readLogs = (server, args = {}) => server.callTool("runtime-logs", { project: "back-end", deployment: "dpl_backend0", ...args });
+const messages = (result) => untrusted(result.text).records.map((record) => record.message);
+
+// Resolves when `promise` does, or fails after `ms`.
+const within = (promise, ms, what) => Promise.race([
+  promise,
+  new Promise((_, reject) => setTimeout(() => reject(new Error(`${what} did not happen within ${ms} ms`)), ms)),
+]);
+
+describe("runtime-logs", () => {
+  test("reads a deployment's logs to the end of the stream with its project's token", async () => {
+    logsOf([0, 1, 2].map((n) => logLine(n)));
+    await withServer(async (server) => {
+      const result = await readLogs(server);
+      assert.ok(!result.isError, result.text);
+      assert.match(result.text,
+        /^Read 3 log lines of dpl_backend0 \(back-end\), stopped at the end of the stream\. Hobby keeps about an hour of logs\.\n\n/);
+      assert.deepEqual(messages(result), ["line 0", "line 1", "line 2"]);
+      assert.deepEqual(toolRequests(), [{
+        method: "GET",
+        path: `/v1/projects/${backEnd}/deployments/dpl_backend0/runtime-logs`,
+        query: { teamId },
+        token: "back-end",
+      }]);
+    });
+  });
+
+  test("answers each line as the spec's record and nothing else of it", async () => {
+    logsOf([logLine(4, { level: "warning", requestMethod: "POST", responseStatusCode: null, source: "edge-function" })]);
+    await withServer(async (server) => {
+      const result = await readLogs(server);
+      assert.deepEqual(untrusted(result.text).records, [{
+        time: "2026-11-08T18:30:04.123Z",
+        level: "warning",
+        source: "edge-function",
+        method: "POST",
+        path: "/api/markets/4",
+        status: null,
+        message: "line 4",
+        truncated: false,
+      }]);
+      assertHoldsNoSecret(result.text);
+      for (const field of ["rowId", "domain", "proxy"]) assert.ok(!result.text.includes(`"${field}"`), `${field} is in: ${result.text}`);
+    });
+  });
+
+  test("masks every personal detail and credential in a line's message and path, and keeps ids, dates and epochs", async () => {
+    const path = `/api/login?email=bo@ex.io&next=https://u:${secrets.password}@ex.com/&t=${tokens["back-end"]}`;
+    logsOf([...maskCases.map(([message], n) => logLine(n, { message })), logLine(9, { requestPath: path })]);
+    await withServer(async (server) => {
+      const result = await readLogs(server);
+      const { records } = untrusted(result.text);
+      assert.deepEqual(records.slice(0, -1).map((record) => record.message), maskCases.map(([, masked]) => masked));
+      assert.equal(records.at(-1).path, "/api/login?email=<email>&next=https://<credentials>@ex.com/&t=<vercel-token>");
+      assertHoldsNoSecret(result.text);
+    });
+  });
+
+  test("cuts a message at 1,000 characters after masking it, saying so in truncated, and keeps Vercel's own truncated", async () => {
+    logsOf([
+      logLine(0, { message: `${"x".repeat(994)} bo@ex.io and more` }),
+      logLine(1, { message: `${"y".repeat(998)}${tokens["back-end"]}` }),
+      logLine(2, { message: "cut by Vercel", messageTruncated: true }),
+      logLine(3, { message: "z".repeat(1000) }),
+    ]);
+    await withServer(async (server) => {
+      const result = await readLogs(server);
+      assert.deepEqual(untrusted(result.text).records.map(({ message, truncated }) => [message, truncated]), [
+        [`${"x".repeat(994)} <emai`, true],
+        [`${"y".repeat(998)}<v`, true],
+        ["cut by Vercel", true],
+        ["z".repeat(1000), false],
+      ]);
+      assertHoldsNoSecret(result.text);
+    });
+  });
+
+  test("keeps only the levels asked for, and the limit counts the kept lines only", async () => {
+    const levels = ["info", "error", "warning", "error", "debug", "fatal", "error", "error"];
+    logsOf(levels.map((level, n) => logLine(n, { level })));
+    await withServer(async (server) => {
+      const result = await readLogs(server, { levels: ["warning", "fatal"] });
+      assert.deepEqual(untrusted(result.text).records.map((record) => [record.message, record.level]), [["line 2", "warning"], ["line 5", "fatal"]]);
+      assert.match(result.text, /^Read 2 log lines of dpl_backend0 \(back-end\), stopped at the end of the stream\./);
+
+      const limited = await readLogs(server, { levels: ["error"], limit: 3 });
+      assert.deepEqual(messages(limited), ["line 1", "line 3", "line 6"]);
+      assert.match(limited.text, /^Read 3 log lines of dpl_backend0 \(back-end\), stopped at the limit\./);
+    });
+  });
+
+  test("stops at the limit on a stream that never ends, and closes the connection", async () => {
+    logsOf([0, 1, 2, 3, 4, 5].map((n) => logLine(n)), { end: false, interval: 20 });
+    await withServer(async (server) => {
+      const started = Date.now();
+      const result = await readLogs(server, { limit: 2, seconds: 30 });
+      assert.ok(Date.now() - started < 5_000, "it waited for its time limit");
+      assert.match(result.text, /^Read 2 log lines of dpl_backend0 \(back-end\), stopped at the limit\./);
+      const [stream] = vercel.streams;
+      await within(stream.closed, 2_000, "the connection's close");
+      assert.equal(stream.ended, false);
+      assert.ok(stream.sent < 6, `the fake sent all ${stream.sent} lines`);
+    });
+  });
+
+  test("stops after its seconds on a stream that never ends, and closes the connection", async () => {
+    logsOf([0, 1, 2].map((n) => logLine(n)), { end: false });
+    await withServer(async (server) => {
+      const started = Date.now();
+      const result = await readLogs(server, { seconds: 1 });
+      const took = Date.now() - started;
+      assert.ok(took >= 1_000 && took < 5_000, `it took ${took} ms`);
+      assert.ok(!result.isError, result.text);
+      assert.match(result.text,
+        /^Read 3 log lines of dpl_backend0 \(back-end\), stopped after 1 second\. Hobby keeps about an hour of logs\.\n\n/);
+      const [stream] = vercel.streams;
+      await within(stream.closed, 2_000, "the connection's close");
+      assert.equal(stream.ended, false);
+      assert.deepEqual(messages(result), ["line 0", "line 1", "line 2"]);
+    });
+  });
+
+  test("answers an error when Vercel sends no answer within its seconds, and closes the connection", async () => {
+    logsOf([logLine(0)], { answer: false });
+    await withServer(async (server) => {
+      const result = await readLogs(server, { seconds: 1 });
+      assert.equal(result.isError, true, result.text);
+      assert.equal(result.text, "runtime-logs: Vercel did not answer within 1 second");
+      await within(vercel.streams[0].closed, 2_000, "the connection's close");
+    });
+  });
+
+  test("names more than one second in the plural", async () => {
+    logsOf([logLine(0)], { end: false });
+    await withServer(async (server) => {
+      const result = await readLogs(server, { seconds: 2 });
+      assert.match(result.text, /^Read 1 log lines of dpl_backend0 \(back-end\), stopped after 2 seconds\./);
+    });
+  });
+
+  test("skips and counts the lines that are not JSON log records, and reads a line split across writes", async () => {
+    logsOf([
+      logLine(0),
+      "not json at all\n",
+      '{"level":"error","mess',
+      'age":"split line","timestampInMs":1}\n',
+      "[1, 2]\n",
+      "\n",
+      "null\n",
+      JSON.stringify(logLine(1, { message: "no newline at the end" })),
+    ]);
+    await withServer(async (server) => {
+      const result = await readLogs(server);
+      assert.deepEqual(messages(result), ["line 0", "split line", "no newline at the end"]);
+      assert.match(result.text, new RegExp("^Read 3 log lines of dpl_backend0 \\(back-end\\), stopped at the end of the stream\\. " +
+        "Hobby keeps about an hour of logs\\.\\nSkipped 3 lines that are not JSON log records\\.\\n\\n"));
+    });
+  });
+
+  test("says nothing of skipped lines when there were none", async () => {
+    logsOf([logLine(0)]);
+    await withServer(async (server) => {
+      assert.doesNotMatch((await readLogs(server)).text, /Skipped/);
+    });
+  });
+
+  test("skips a line longer than Vercel's 256 KB without holding it whole, and reads on", async () => {
+    logsOf([`{"level":"error","message":"${"a".repeat(300_000)}`, `${"b".repeat(300_000)}"}\n`, logLine(1)]);
+    await withServer(async (server) => {
+      const result = await readLogs(server);
+      assert.deepEqual(messages(result), ["line 1"]);
+      assert.match(result.text, /\nSkipped 1 lines that are not JSON log records\.\n/);
+    });
+  });
+
+  const dplPattern = 'deployment must match pattern "^dpl_[A-Za-z0-9]+$"';
+  for (const [what, args, why] of [
+    ["an unknown project", { project: "other" }, "refused its input: project must be one of front-end, back-end"],
+    ["no deployment", { deployment: undefined }, "refused its input: the input must have required property 'deployment'"],
+    ["a deployment that is a host", { deployment: "api.conventioner.io" }, `refused its input: ${dplPattern}`],
+    ["a deployment with a path in it", { deployment: "dpl_x/../../v10/projects" }, `refused its input: ${dplPattern}`],
+    ["a limit of 0", { limit: 0 }, "refused its input: limit must be >= 1"],
+    ["a limit of 501", { limit: 501 }, "refused its input: limit must be <= 500"],
+    ["seconds of 0", { seconds: 0 }, "refused its input: seconds must be >= 1"],
+    ["seconds of 31", { seconds: 31 }, "refused its input: seconds must be <= 30"],
+    ["seconds that are not a whole number", { seconds: 1.5 }, "refused its input: seconds must be integer"],
+    ["an unknown level", { levels: ["error", "critical"] }, "refused its input: levels/1 must be one of debug, info, warning, error, fatal, trace"],
+    ["no levels", { levels: [] }, "refused its input: levels must NOT have fewer than 1 items"],
+    ["an argument it does not take", { until: 1 }, "takes no until"],
+  ]) {
+    test(`refuses ${what}, saying so and sending nothing`, async () => {
+      logsOf([logLine(0)]);
+      await withServer(async (server) => {
+        const input = Object.fromEntries(Object.entries({ project: "back-end", deployment: "dpl_backend0", ...args })
+          .filter(([, value]) => value !== undefined));
+        const result = await server.callTool("runtime-logs", input);
+        assert.equal(result.isError, true, result.text);
+        assert.equal(result.text, `runtime-logs: ${why}`);
+        assert.deepEqual(toolRequests(), []);
+      });
+    });
+  }
+
+  test("answers an error naming Vercel's status and code for a deployment of the other project", async () => {
+    vercel.logs.dpl_frontend0 = { projectId: projects["front-end"].id, lines: [logLine(0)] };
+    await withServer(async (server) => {
+      const result = await readLogs(server, { deployment: "dpl_frontend0" });
+      assert.equal(result.isError, true);
+      assert.equal(result.text, "runtime-logs: Vercel answered 404 not_found");
+      assert.deepEqual(vercel.streams, []);
+    });
+  });
+});
+
+describe("mask", () => {
+  test("holds on a commit message and an alias error as on a log line", async () => {
+    vercel.deployments[projects["front-end"].id] = maskCases.map(([message], n) => ({
+      ...deployment("front-end", n),
+      meta: { githubCommitSha: "c".repeat(40), githubCommitRef: "main", githubCommitMessage: message },
+      aliasError: { code: "alias_failed", message },
+    }));
+    await withServer(async (server) => {
+      const result = await server.callTool("list-deployments", { project: "front-end", limit: 20 });
+      const { records } = untrusted(result.text);
+      const masked = maskCases.map(([, text]) => text.slice(0, 200));
+      assert.deepEqual(records.map((record) => record.commit.message), masked);
+      assert.deepEqual(records.map((record) => record.aliasError.message), masked);
+      assertHoldsNoSecret(result.text);
+    });
+  });
+});
+
 describe("every request", () => {
-  test("is a GET on /v7/deployments with only its query keys, the pinned teamId and its project's token", async () => {
+  test("is a GET on a template of the allowlist with only its query keys, the pinned teamId and its project's token", async () => {
+    vercel.logs.dpl_frontend0 = { projectId: projects["front-end"].id, lines: [logLine(0)] };
+    logsOf([logLine(0)]);
     await withServer(async (server) => {
       await server.callTool("list-deployments", { project: "front-end", state: "READY", limit: 2, before: base });
       await server.callTool("list-deployments", { project: "back-end", target: "preview" });
+      await server.callTool("runtime-logs", { project: "front-end", deployment: "dpl_frontend0", levels: ["error"], limit: 5, seconds: 2 });
+      await readLogs(server);
     });
     const requests = vercel.requests();
-    assert.equal(requests.length, 6);
+    assert.equal(requests.length, 8);
     const ids = Object.fromEntries(Object.entries(projects).map(([label, { id }]) => [id, label]));
-    for (const { method, path, query, token } of requests) {
+    const templates = [
+      { path: /^\/v7\/deployments$/, query: ["projectId", "teamId", "target", "state", "limit", "until"] },
+      { path: /^\/v1\/projects\/(?<projectId>[^/]+)\/deployments\/dpl_[A-Za-z0-9]+\/runtime-logs$/, query: ["teamId"] },
+    ];
+    for (const [n, { method, path, query, token }] of requests.entries()) {
       assert.equal(method, "GET");
-      assert.equal(path, "/v7/deployments");
-      for (const key of Object.keys(query)) assert.ok(["projectId", "teamId", "target", "state", "limit", "until"].includes(key), key);
+      const template = templates.find((candidate) => candidate.path.test(path));
+      assert.ok(template, path);
+      for (const key of Object.keys(query)) assert.ok(template.query.includes(key), `${key} on ${path}`);
       assert.equal(query.teamId, teamId);
       assert.ok(!("decrypt" in query));
-      assert.ok(ids[query.projectId], query.projectId);
+      const projectId = path.match(template.path).groups?.projectId ?? query.projectId;
+      assert.ok(ids[projectId], projectId);
+      if (n >= 4) assert.equal(ids[projectId], token);
     }
-    for (const { query, token } of requests.slice(4)) assert.equal(ids[query.projectId], token);
   });
 });
