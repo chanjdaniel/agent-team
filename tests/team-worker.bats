@@ -392,14 +392,15 @@ TOML
     "**Trusted repo**: a worker's working directory is a linked git worktree of one of those repositories, on its task's branch, with origin at that repository on GitHub: github.com/owner/proj"
 }
 
-@test "every role's settings run the fence hook on Bash; the planner's and reviewer's add the edit hook" {
+@test "every role's settings run the fence and command guard hooks on Bash; the planner's and reviewer's add the edit hook" {
   thread T7
   local role settings
   for role in planner builder reviewer; do
     run_bin -0 team-worker T7 "$role" "$wt1" -- go
     settings=$TEAM_HOME/tasks/T7/settings.$role.json
     assert_equal "$(jq -r '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].command' "$settings")" \
-      "$REPO_ROOT/bin/hooks/lease-fence"
+      "$REPO_ROOT/bin/hooks/lease-fence
+$REPO_ROOT/bin/hooks/command-guard"
     if [[ $role == builder ]]; then
       assert_equal "$(jq '.hooks.PreToolUse | length' "$settings")" 1
     else
@@ -409,7 +410,7 @@ TOML
     fi
     assert_equal "$(jq -r '.permissions.deny | index("Bash(gh pr merge*)") != null' "$settings")" true
   done
-  [[ -x $REPO_ROOT/bin/hooks/scratch-only-edits && -x $REPO_ROOT/bin/hooks/lease-fence ]]
+  [[ -x $REPO_ROOT/bin/hooks/scratch-only-edits && -x $REPO_ROOT/bin/hooks/lease-fence && -x $REPO_ROOT/bin/hooks/command-guard ]]
 }
 
 @test "toolkits add their plugin directories and only their MCP servers" {
