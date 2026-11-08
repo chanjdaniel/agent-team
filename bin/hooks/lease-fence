@@ -56,20 +56,20 @@ case $tool in
   Bash)
     command=$(jq -r '.tool_input.command // empty' <<<"$input")
     push='(^|[^[:alnum:]_.-])git([[:space:]]+(-[Cc][[:space:]]+[^[:space:]]+|-[^[:space:]]+))*[[:space:]]+push([[:space:]]|$)'
-    # gh or gh-axi where a command starts: at the start, after a separator or a line break, past
-    # any variable assignments and a directory.
-    gh=$'(^|[;&|(`\n])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|]*/)?gh(-axi)?([[:space:]]|$)'
+    # gh or gh-axi where a command starts (COMMAND_START in bin/lib/team.sh: at the start, after a
+    # separator or a line break, past any variable assignments and a directory).
+    gh=$COMMAND_START'gh(-axi)?([[:space:]]|$)'
     # The team commands that write to GitHub and the ledger, where a command starts, as gh.
-    team_write=$'(^|[;&|(`\n])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|]*/)?team-(merge|catch-up|open|close)([[:space:]]|$)'
+    team_write=$COMMAND_START'team-(merge|catch-up|open|close)([[:space:]]|$)'
     # team-post, team-ask, which posts through it, or team-inbox, which edits the Waiting on you
     # message, where a command starts, as gh: refused as the Discord tools are, for every role.
-    post=$'(^|[;&|(`\n])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|]*/)?team-(post|ask|inbox)([[:space:]]|$)'
+    post=$COMMAND_START'team-(post|ask|inbox)([[:space:]]|$)'
     # team-answer, which logs Daniel's answer, where a command starts, as gh.
-    answer=$'(^|[;&|(`\n])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|]*/)?team-answer([[:space:]]|$)'
+    answer=$COMMAND_START'team-answer([[:space:]]|$)'
     # team-thread wait, the interview's blocking read of Discord, where a command starts, as gh.
-    wait=$'(^|[;&|(`\n])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|]*/)?team-thread[[:space:]]+wait([[:space:]]|$)'
+    wait=$COMMAND_START'team-thread[[:space:]]+wait([[:space:]]|$)'
     # team-ci-wait, a worker's wait on a PR's GitHub checks, where a command starts, as gh.
-    ci_wait=$'(^|[;&|(`\n])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|]*/)?team-ci-wait([[:space:]]|$)'
+    ci_wait=$COMMAND_START'team-ci-wait([[:space:]]|$)'
     if [[ $command =~ $post ]]; then
       why=$(lease_refusal "$POSTS") && block "$why"
     fi

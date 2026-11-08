@@ -287,14 +287,14 @@ read 3 of 3 transcripts; wrote 1 day file"
   local code=$BATS_TEST_TMPDIR/code
   mkdir -p "$code/bin/lib"
   cp "$REPO_ROOT/bin/team-tokens" "$code/bin/"
-  cp "$REPO_ROOT/bin/lib/prices.json" "$code/bin/lib/"
+  cp "$REPO_ROOT/bin/lib/prices.json" "$REPO_ROOT/bin/lib/command_text.py" "$code/bin/lib/"
   unset TEAM_HOME
   local verb
   for verb in export time ""; do
     run -1 --separate-stderr "$code/bin/team-tokens" ${verb:+"$verb"}
     assert_equal "$stderr" "team-tokens: neither TEAM_HOME nor ~/.config/agent-team/home names the team home; name its checkout there, relative to your home directory: echo agent-team-records > ~/.config/agent-team/home"
   done
-  [[ ! -e $code/usage ]]
+  [[ ! -e $code/usage && ! -e $code/bin/lib/__pycache__ ]]
   run -0 "$code/bin/team-tokens" --help
 }
 

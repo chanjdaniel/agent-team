@@ -1095,16 +1095,13 @@ git status
 COMMANDS
 }
 
-# Only the coordinator launches an ops session, on Daniel's request: a worker is denied team-worker's
-# ops role and the ops load check, while its own test runs of those scripts stay allowed.
-@test "an ops launch and the ops load check are denied to workers, and stay the coordinator's" {
-  local command rule
-  for rule in 'Bash(*team-worker *ops *)' 'Bash(*team-load-check *ops*)'; do
-    jq -e --arg r "$rule" '.permissions.deny | index($r)' "$REPO_ROOT/settings/worker.json" >/dev/null ||
-      { echo "settings/worker.json lacks the deny rule $rule" >&2; return 1; }
-  done
+# Only the coordinator launches an ops session, on Daniel's request: a worker's command-guard hook
+# refuses team-worker's ops role and the ops load check (tests/command-guard.bats), and the
+# coordinator's settings deny neither and run no such hook.
+@test "an ops launch and the ops load check stay the coordinator's" {
+  local command
+  assert_equal "$(jq -c '[.hooks[][]?.hooks[]?.command | select(contains("command-guard"))]' "$REPO_ROOT/coordinator.settings.json")" '[]'
   while IFS= read -r command; do
-    denied settings/worker.json "$command" || { echo "a worker may run: $command" >&2; return 1; }
     if denied coordinator.settings.json "$command"; then echo "the coordinator may not run: $command" >&2; return 1; fi
   done <<'COMMANDS'
 /home/me/agent-team/bin/team-worker T5 ops /home/me/slots/proj-1 --toolkit prod-read --request https://discord.com/channels/1/2/3 -- "$(cat /home/me/agent-team/tasks/T5/brief-ops.md)"
@@ -1223,8 +1220,9 @@ COMMANDS
 
 # A worker's image can leave through team-post, so no worker reaches the Agent Chrome. team-ui's
 # refusal is the guard; these rules are a speed bump, each pinned so a sha or a message id holding
-# 9222 passes, and they also refuse a search naming them, a cost accepted as for the role's rules.
-@test "a worker's Bash call naming the Agent Chrome's port, its axi variable or ui-capture is denied" {
+# 9222 passes, and they also refuse a search naming them, a cost accepted. The capture script is
+# refused only run, by the command-guard hook (tests/command-guard.bats).
+@test "a worker's Bash call naming the Agent Chrome's port or its axi variable is denied" {
   local SETTINGS=(settings/worker.json) command
   assert_denies 'Bash(*:9222*)' 'curl http://127.0.0.1:9222/json' 'curl -s localhost:9222/json/version' \
     'chrome-devtools-axi --browser-url=http://127.0.0.1:9222 open http://localhost:5173'
@@ -1232,9 +1230,6 @@ COMMANDS
   assert_denies 'Bash(*port=9222*)' 'chrome --remote-debugging-port=9222'
   assert_denies 'Bash(*CHROME_DEVTOOLS_AXI_BROWSER_URL*)' 'CHROME_DEVTOOLS_AXI_BROWSER_URL=http://127.0.0.1:1 chrome-devtools-axi open x' \
     'export CHROME_DEVTOOLS_AXI_BROWSER_URL=x'
-  # shellcheck disable=SC2088 # ~ is part of the command as an agent types it
-  assert_denies 'Bash(*toolkits/frontend/scripts/ui-capture*)' '~/agent-team/toolkits/frontend/scripts/ui-capture .scratch/task/out' \
-    'node toolkits/frontend/scripts/ui-capture out'
   while IFS= read -r command; do
     if denied settings/worker.json "$command"; then echo "settings/worker.json denies: $command" >&2; return 1; fi
   done <<'COMMANDS'
@@ -1243,35 +1238,6 @@ git log 79222ab..HEAD
 ~/agent-team/bin/team-thread wait T7 --after 1564000092220000001
 chrome-devtools-axi open http://127.0.0.1:5173
 node --test tests/toolkits/frontend.test.mjs
-COMMANDS
-}
-
-# worker_refusal (bin/lib/team.sh) reads AGENT_TEAM_ROLE and AGENT_TEAM_TASK, which team-worker sets
-# in a worker's settings: a worker is denied setting either on a command line, and unsetting it
-# with unset or env's -u, so the refusal cannot be talked past (env -i, which clears every
-# variable, is left: it is a speed bump). Like the GIT_CONFIG_ rules, a rule's * on both sides also
-# takes in a search naming an assignment, so grep -n 'AGENT_TEAM_ROLE=' tests/ is refused too;
-# that cost is accepted (a search for the bare name stays allowed).
-@test "a worker cannot set or unset its role or task on a command line" {
-  local SETTINGS=(settings/worker.json) command
-  # shellcheck disable=SC2088 # ~ is part of the command as an agent types it
-  assert_denies 'Bash(*AGENT_TEAM_ROLE=*)' 'AGENT_TEAM_ROLE=coordinator ~/agent-team/bin/team-post T7 --file f' \
-    'export AGENT_TEAM_ROLE=x' 'AGENT_TEAM_ROLE= team-post T7 --file f' 'env AGENT_TEAM_ROLE=coordinator team-post T7 --file f'
-  assert_denies 'Bash(*AGENT_TEAM_TASK=*)' 'env AGENT_TEAM_TASK=T1 cmd' 'export AGENT_TEAM_TASK=T8; team-post T8 --file f' \
-    'AGENT_TEAM_ROLE=planner AGENT_TEAM_TASK=T8 team-post T8 --thread interview --file f'
-  assert_denies 'Bash(*unset AGENT_TEAM_*)' 'unset AGENT_TEAM_ROLE; team-post T7 --file f' \
-    'env --unset AGENT_TEAM_ROLE team-post T7 --file f'
-  assert_denies 'Bash(*unset=AGENT_TEAM_*)' 'env --unset=AGENT_TEAM_ROLE team-post T7 --file f'
-  assert_denies 'Bash(*-u AGENT_TEAM_*)' 'env -u AGENT_TEAM_ROLE team-post T7 --file f'
-  assert_denies 'Bash(*-uAGENT_TEAM_*)' 'env -uAGENT_TEAM_TASK team-post T7 --file f'
-  while IFS= read -r command; do
-    if denied settings/worker.json "$command"; then echo "settings/worker.json denies: $command" >&2; return 1; fi
-  done <<'COMMANDS'
-grep -rn AGENT_TEAM_ROLE bin/
-git grep -n 'AGENT_TEAM_TASK:-'
-echo "$AGENT_TEAM_ROLE $AGENT_TEAM_TASK"
-env | grep AGENT_TEAM_
-tests/vendor/bats-core/bin/bats tests/team-post.bats -f 'a planner session'
 COMMANDS
 }
 

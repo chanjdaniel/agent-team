@@ -167,12 +167,13 @@ age_probe() {
   hold="Blocked: GitHub is unreachable (since $(date -d 2026-10-22T13:05:00Z +%H:%M)); the team is holding: commit locally, write handoff.md, send T<n> PAUSED offline, and wait."
   for command in "git push" "git -C /home/x/wt push origin HEAD" "cd wt && git push" "gh pr create --fill" \
     "gh-axi pr view 6" "cd wt && gh pr checks 6 --watch" "GH_REPO=a/b gh issue list" "/usr/bin/gh api user" \
-    $'git commit -m wip\ngh pr view' "echo x | gh pr comment 6 -F -" "(gh pr view)" '$(gh api user)'; do
+    $'git commit -m wip\ngh pr view' "echo x | gh pr comment 6 -F -" "(gh pr view)" '$(gh api user)' \
+    "{ gh pr view 6; }" "if true; then gh pr view 6; fi" "! gh pr view 6" "for n in 6; do gh pr view \$n; done"; do
     bash_call -2 "$command"
     assert_equal "$stderr" "$hold"
   done
   for command in "git status" "git commit -m 'gh pr later'" "grep -rn 'gh pr' bin" "ls ~/.config/gh" \
-    "cat high.txt" "git log --grep gh" "ghost run" "echo gh-axi"; do
+    "cat high.txt" "git log --grep gh" "ghost run" "echo gh-axi" "git commit -m 'then gh later'"; do
     bash_call -0 "$command"
   done
   # The hold is read from the flag alone: origin is never asked.
