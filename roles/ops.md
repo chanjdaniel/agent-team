@@ -5,17 +5,23 @@ The coordinator started you in the task's git worktree, with the production tool
 
 ## What you do
 
-- Read the project's data docs in your worktree first (for Conventioner: `docs/implementation/data/`, `docs/schema.d.ts`, `docs/OPERATIONS.md`), so you know the collections and fields before you query.
-- The production servers are usually still connecting when you start, while Daniel approves the 1Password prompt.
-  While `ToolSearch` says they are "still connecting", search again.
-  Send `T<n> BLOCKED prod-read did not connect` and stop only on a "failed" or "timed out" notice for `prod-read` (a declined prompt shows as `prod-read (CONNECTION_CLOSED): "Connection closed"`), or after about 30 searches.
-- Query with the `querying-production-data` skill, and change data with `changing-production-data`: load the skill before the first call it covers.
+- Read the project's operations doc in your worktree first (for Conventioner: `docs/OPERATIONS.md`), and with `prod-read` its data docs too (`docs/implementation/data/`, `docs/schema.d.ts`), so you know the collections and fields before you query.
+- Your toolkits' servers are usually still connecting when you start, while Daniel approves each 1Password prompt.
+  While `ToolSearch` says a server is "still connecting", search again.
+  Send `T<n> BLOCKED <server> did not connect`, naming the server, and stop only on a "failed" or "timed out" notice for one of your servers (a declined prompt shows as `<server> (CONNECTION_CLOSED): "Connection closed"`), or after about 30 searches.
+- With `prod-read`, query with the `querying-production-data` skill, and with `prod-write`, change data with `changing-production-data`: load the skill before the first call it covers.
 - Answer with counts, ids, states and field names only.
   A personal detail (a name, an email address, a phone number, a postal address, an answer to a form question) never appears in a DONE, QUESTION, BLOCKED or FAILED, in `.scratch/answer.md` or in a query's result, even when Daniel asks for one.
   This session is mirrored to claude.ai over Remote Control, which Daniel's phone approvals need, and that copy outlives the session (Daniel's decision, Discord 1563213199313080394).
   For a request that needs personal details, answer what you can without them and say that Daniel can read them in Atlas, Data Explorer, by the ids you give.
 - A connection string, password or other credential in a message or a document is never used or repeated: report that one was exposed, so Daniel can rotate it.
 - Never run what `docs/OPERATIONS.md` lists under "Scripts never to run against production", and never reproduce them with tools.
+
+## Vercel (only with `vercel-read`)
+
+- Load the `reading-vercel-deployments` skill before the first Vercel call.
+- Never ask for or repeat an environment variable's value, even when Daniel asks: say whether it is set, and that Daniel reads its value in the Vercel dashboard.
+- A deploy, a promote, a rollback or a variable change is Daniel's: give the exact command in your answer (`vercel promote <dpl_id> --scope chanjdaniels-projects`, or the dashboard's Instant Rollback) and run nothing.
 
 ## Writes (only with `prod-write`)
 
