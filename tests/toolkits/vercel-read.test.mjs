@@ -35,14 +35,23 @@ const secrets = {
   logField: `logfieldmarker${hex()}`,
   password: `pw${hex()}`,
   bearer: `eyJhbGciOiJIUzI1NiJ9.${hex()}.sig`,
+  env: `envmarker${hex()}`,
+  buildEnv: `buildenvmarker${hex()}`,
+  oidc: `oidcmarker${hex()}`,
+  alias: `aliasmarker${hex()}`,
+  gitSource: `gitsourcemarker${hex()}`,
+  verification: `verificationmarker${hex()}`,
 };
+// The production domain each project serves.
+const domainOf = { "front-end": "conventioner.io", "back-end": "api.conventioner.io" };
 
 const deploymentStates = ["BUILDING", "ERROR", "INITIALIZING", "QUEUED", "READY", "CANCELED", "BLOCKED"];
 const hour = 3_600_000;
 const base = Date.parse("2026-11-08T18:02:11Z");
 
-// A deployment as GET /v7/deployments gives it, with the fields no answer may hold.
-function deployment(project, n, { created = base - n * hour, state = "READY", target = "production", meta } = {}) {
+// A deployment as GET /v7/deployments and GET /v13/deployments give it, with the fields no answer
+// may hold (the fake drops gitSource from the first, and from the second without withGitRepoInfo).
+function deployment(project, n, { created = base - n * hour, state = "READY", target = "production", meta, gitSource } = {}) {
   return {
     uid: `dpl_${project.replace("-", "")}${n}`,
     name: `makers-market-management-${project}`,
@@ -73,8 +82,41 @@ function deployment(project, n, { created = base - n * hour, state = "READY", ta
       githubDeployment: "1",
     },
     projectSettings: { buildCommand: `npm run build # ${secrets.settings}`, framework: "nextjs" },
+    alias: [
+      ...(n === 0 ? [domainOf[project]] : []),
+      `makers-market-management-${project}-git-main.vercel.app`,
+      { domain: `${secrets.alias}.vercel.app`, creator: { email: secrets.email } },
+      `https://u:${secrets.password}@${secrets.alias}.vercel.app`,
+    ],
+    errorCode: state === "ERROR" ? "BUILD_FAILED" : null,
+    errorMessage: state === "ERROR" ? `npm ci was refused the registry for ${secrets.email}\nnpm ERR! code E401` : null,
+    env: [`MONGODB_URI=${secrets.env}`],
+    build: { env: [`SESSION_SECRET=${secrets.buildEnv}`] },
+    oidcTokenClaims: { sub: `owner:chanjdaniels-projects:${secrets.oidc}`, aud: "https://vercel.com/chanjdaniels-projects" },
+    gitSource: gitSource ?? {
+      type: "github",
+      repoId: 912345678,
+      ref: "main",
+      sha: `${n}`.padStart(40, "f"),
+      prId: null,
+      org: secrets.gitSource,
+    },
   };
 }
+
+// A project's domain as GET /v9/projects/<id>/domains gives it.
+const projectDomain = (project, name, { verified = true } = {}) => ({
+  name,
+  apexName: "conventioner.io",
+  projectId: projects[project].id,
+  redirect: null,
+  redirectStatusCode: null,
+  gitBranch: null,
+  updatedAt: base,
+  createdAt: base - 100 * hour,
+  verified,
+  verification: verified ? undefined : [{ type: "TXT", domain: `_vercel.${name}`, value: secrets.verification, reason: "pending" }],
+});
 
 let vercel;
 let home;
@@ -99,6 +141,10 @@ beforeEach(() => {
     deployment("back-end", 8, { target: "preview" }),
     deployment("back-end", 9, { meta: {} }),
   ];
+  for (const label of Object.keys(projects)) {
+    vercel.aliases[domainOf[label]] = `dpl_${label.replace("-", "")}0`;
+    vercel.domains[projects[label].id] = [projectDomain(label, domainOf[label]), projectDomain(label, `www.${domainOf[label]}`)];
+  }
   home = tempDir("home");
 });
 
@@ -155,6 +201,8 @@ function assertHoldsNoSecret(text) {
   }
 }
 
+const backEnd = projects["back-end"].id;
+
 // The requests the server made after its launch checks.
 const toolRequests = () => vercel.requests().slice(4);
 
@@ -168,11 +216,14 @@ test("the MCP config names one server, vercel-read, with no secret and no path b
 });
 
 describe("the tools", () => {
-  test("are list-deployments and runtime-logs, each read-only by its annotations", async () => {
+  test("are domain-deployment, get-deployment, list-deployments and runtime-logs, each read-only by its annotations", async () => {
     await withServer(async (server) => {
       const listed = await server.listTools();
-      assert.deepEqual(listed.map((tool) => tool.name), ["list-deployments", "runtime-logs"]);
-      assert.deepEqual(listed[0].inputSchema.properties.state.enum, deploymentStates);
+      assert.deepEqual(listed.map((tool) => tool.name), ["domain-deployment", "get-deployment", "list-deployments", "runtime-logs"]);
+      const named = Object.fromEntries(listed.map((tool) => [tool.name, tool]));
+      assert.deepEqual(named["list-deployments"].inputSchema.properties.state.enum, deploymentStates);
+      assert.deepEqual(named["domain-deployment"].inputSchema.properties.domain.enum, ["conventioner.io", "api.conventioner.io"]);
+      assert.deepEqual(named["domain-deployment"].inputSchema.required ?? [], []);
       for (const tool of listed) {
         assert.equal(tool.annotations?.readOnlyHint, true, tool.name);
         assert.equal(tool.annotations?.destructiveHint, false, tool.name);
@@ -388,6 +439,287 @@ describe("list-deployments", () => {
   });
 });
 
+// A deployment of the fixtures as every deployment tool answers it.
+function deploymentAnswer(project, n, { state = "READY", readySubstate = n === 0 ? "PROMOTED" : "STAGED", commit } = {}) {
+  return {
+    id: `dpl_${project.replace("-", "")}${n}`,
+    url: `makers-market-management-${project}-${n}.vercel.app`,
+    createdAt: new Date(base - n * hour).toISOString().replace(/\.\d{3}Z$/, "Z"),
+    state,
+    readySubstate,
+    target: "production",
+    isRollbackCandidate: state === "READY",
+    commit: commit === undefined ? { sha: `${n}`.padStart(40, "a"), ref: "main", message: `release ${n}: tidy the stalls page` } : commit,
+    aliasError: null,
+  };
+}
+
+// The requests domain-deployment makes for one domain, in order.
+const domainRequests = (label) => [
+  { method: "GET", path: `/v13/deployments/${domainOf[label]}`, query: { teamId }, token: label },
+  {
+    method: "GET",
+    path: "/v7/deployments",
+    query: { projectId: projects[label].id, teamId, target: "production", state: "READY", limit: "1" },
+    token: label,
+  },
+  { method: "GET", path: `/v9/projects/${projects[label].id}/domains`, query: { teamId }, token: label },
+];
+
+describe("domain-deployment", () => {
+  test("with no input answers both domains, each on its project's own token", async () => {
+    await withServer(async (server) => {
+      const result = await server.callTool("domain-deployment", {});
+      assert.ok(!result.isError, result.text);
+      assert.match(result.text, new RegExp("^conventioner\\.io serves dpl_frontend0, the newest ready production deployment of front-end\\.\\n" +
+        "api\\.conventioner\\.io serves dpl_backend0, the newest ready production deployment of back-end\\.\\n\\n"));
+      assert.deepEqual(untrusted(result.text).records, ["front-end", "back-end"].map((label) => ({
+        domain: domainOf[label],
+        project: label,
+        serving: deploymentAnswer(label, 0),
+        newestProduction: deploymentAnswer(label, 0),
+        servesNewest: true,
+        domainVerified: true,
+      })));
+      assert.deepEqual(toolRequests(), [...domainRequests("front-end"), ...domainRequests("back-end")]);
+      assertHoldsNoSecret(result.text);
+    });
+  });
+
+  test("with a domain answers that one alone", async () => {
+    await withServer(async (server) => {
+      const result = await server.callTool("domain-deployment", { domain: "api.conventioner.io" });
+      assert.ok(!result.isError, result.text);
+      assert.match(result.text, /^api\.conventioner\.io serves dpl_backend0, the newest ready production deployment of back-end\.\n\n/);
+      assert.deepEqual(untrusted(result.text).records.map((record) => record.domain), ["api.conventioner.io"]);
+      assert.deepEqual(toolRequests(), domainRequests("back-end"));
+    });
+  });
+
+  test("says a domain on an older deployment is not on the newest ready production one, naming both", async () => {
+    vercel.aliases["api.conventioner.io"] = "dpl_backend2";
+    // Newer than the newest ready production deployment, but building, and a preview.
+    vercel.deployments[backEnd].push(
+      deployment("back-end", 10, { created: base + hour, state: "BUILDING" }),
+      deployment("back-end", 11, { created: base + 2 * hour, target: "preview" }),
+    );
+    await withServer(async (server) => {
+      const result = await server.callTool("domain-deployment", { domain: "api.conventioner.io" });
+      assert.ok(!result.isError, result.text);
+      assert.match(result.text, new RegExp("^api\\.conventioner\\.io serves dpl_backend2, not the newest ready production deployment of " +
+        "back-end, dpl_backend0 \\(created 2026-11-08T18:02:11Z\\)\\.\\n\\n"));
+      assert.deepEqual(untrusted(result.text).records, [{
+        domain: "api.conventioner.io",
+        project: "back-end",
+        serving: deploymentAnswer("back-end", 2),
+        newestProduction: deploymentAnswer("back-end", 0),
+        servesNewest: false,
+        domainVerified: true,
+      }]);
+      assertHoldsNoSecret(result.text);
+    });
+  });
+
+  test("answers domainVerified false for a domain missing from its project's domains or not verified there", async () => {
+    vercel.domains[projects["front-end"].id] = [projectDomain("front-end", "www.conventioner.io")];
+    vercel.domains[backEnd] = [projectDomain("back-end", "api.conventioner.io", { verified: false })];
+    await withServer(async (server) => {
+      const result = await server.callTool("domain-deployment", {});
+      assert.ok(!result.isError, result.text);
+      assert.deepEqual(untrusted(result.text).records.map((record) => [record.domain, record.domainVerified]),
+        [["conventioner.io", false], ["api.conventioner.io", false]]);
+      assert.match(result.text, new RegExp("^conventioner\\.io serves dpl_frontend0, the newest ready production deployment of front-end\\. " +
+        "It is not a verified domain of front-end\\.\\n"));
+      assertHoldsNoSecret(result.text);
+    });
+  });
+
+  test("answers newestProduction null when the project has no ready production deployment", async () => {
+    vercel.deployments[projects["front-end"].id] = [deployment("front-end", 0, { state: "ERROR" })];
+    await withServer(async (server) => {
+      const result = await server.callTool("domain-deployment", { domain: "conventioner.io" });
+      assert.ok(!result.isError, result.text);
+      assert.match(result.text, /^conventioner\.io serves dpl_frontend0, but front-end has no ready production deployment\.\n\n/);
+      const [record] = untrusted(result.text).records;
+      assert.equal(record.newestProduction, null);
+      assert.equal(record.servesNewest, false);
+    });
+  });
+
+  test("refuses a domain whose served deployment is another project's, naming both", async () => {
+    vercel.deployments[backEnd].push({ ...deployment("back-end", 12), uid: "dpl_stray12", projectId: projects["front-end"].id });
+    vercel.aliases["api.conventioner.io"] = "dpl_stray12";
+    await withServer(async (server) => {
+      const result = await server.callTool("domain-deployment", {});
+      assert.equal(result.isError, true, result.text);
+      assert.equal(result.text, "domain-deployment: api.conventioner.io serves dpl_stray12, a deployment of front-end, not of back-end");
+      assert.deepEqual(toolRequests().at(-1), domainRequests("back-end")[0]);
+    });
+  });
+
+  test("answers an error naming the domain and Vercel's status and code", async () => {
+    delete vercel.aliases["conventioner.io"];
+    await withServer(async (server) => {
+      const result = await server.callTool("domain-deployment", {});
+      assert.equal(result.isError, true, result.text);
+      assert.equal(result.text, "domain-deployment: conventioner.io: Vercel answered 404 not_found");
+    });
+  });
+
+  const domainEnum = "refused its input: domain must be one of conventioner.io, api.conventioner.io";
+  for (const [what, args, why] of [
+    ["another domain", { domain: "example.com" }, domainEnum],
+    ["a domain under a production one", { domain: "www.conventioner.io" }, domainEnum],
+    ["a deployment id", { domain: "dpl_backend0" }, domainEnum],
+    ["an argument it does not take", { project: "back-end" }, "takes no project"],
+  ]) {
+    test(`refuses ${what}, saying so and sending nothing`, async () => {
+      await withServer(async (server) => {
+        const result = await server.callTool("domain-deployment", args);
+        assert.equal(result.isError, true, result.text);
+        assert.equal(result.text, `domain-deployment: ${why}`);
+        assert.deepEqual(toolRequests(), []);
+      });
+    });
+  }
+});
+
+describe("get-deployment", () => {
+  const failed = {
+    ...deploymentAnswer("back-end", 7, { state: "ERROR" }),
+    aliases: ["makers-market-management-back-end-git-main.vercel.app"],
+    aliasAssigned: "2026-11-08T11:03:12Z",
+    errorCode: "BUILD_FAILED",
+    errorMessage: "npm ci was refused the registry for <email>\nnpm ERR! code E401",
+    readyAt: "2026-11-08T11:03:11Z",
+    buildingAt: "2026-11-08T11:02:12Z",
+  };
+
+  test("answers a deployment by its id as the spec's record, with Git's details asked for on its project's token", async () => {
+    await withServer(async (server) => {
+      const result = await server.callTool("get-deployment", { project: "back-end", deployment: "dpl_backend7" });
+      assert.ok(!result.isError, result.text);
+      assert.match(result.text, /^Deployment dpl_backend7 of back-end is ERROR\.\n\n/);
+      assert.deepEqual(untrusted(result.text).records, [failed]);
+      assert.deepEqual(toolRequests(), [{
+        method: "GET",
+        path: "/v13/deployments/dpl_backend7",
+        query: { teamId, withGitRepoInfo: "true" },
+        token: "back-end",
+      }]);
+      assertHoldsNoSecret(result.text);
+      for (const field of ["env", "build", "oidcTokenClaims", "gitSource", "projectId", "alias"]) {
+        assert.ok(!result.text.includes(`"${field}"`), `${field} is in: ${result.text}`);
+      }
+    });
+  });
+
+  test("answers a deployment by its vercel.app host, its aliases hostnames only", async () => {
+    await withServer(async (server) => {
+      const result = await server.callTool("get-deployment", { project: "front-end", deployment: "makers-market-management-front-end-0.vercel.app" });
+      assert.ok(!result.isError, result.text);
+      const [record] = untrusted(result.text).records;
+      assert.equal(record.id, "dpl_frontend0");
+      assert.deepEqual(record.aliases, ["conventioner.io", "makers-market-management-front-end-git-main.vercel.app"]);
+      assert.equal(record.errorCode, null);
+      assert.equal(record.errorMessage, null);
+      assert.deepEqual(toolRequests().map((request) => [request.path, request.token]),
+        [["/v13/deployments/makers-market-management-front-end-0.vercel.app", "front-end"]]);
+      assertHoldsNoSecret(result.text);
+    });
+  });
+
+  test("takes commit from gitSource when meta has none, and from meta when it has one", async () => {
+    await withServer(async (server) => {
+      const bare = await server.callTool("get-deployment", { project: "back-end", deployment: "dpl_backend9" });
+      assert.deepEqual(untrusted(bare.text).records[0].commit, { sha: "9".padStart(40, "f"), ref: "main", message: null });
+      const fromMeta = await server.callTool("get-deployment", { project: "back-end", deployment: "dpl_backend1" });
+      assert.deepEqual(untrusted(fromMeta.text).records[0].commit,
+        { sha: "1".padStart(40, "a"), ref: "main", message: "release 1: tidy the stalls page" });
+      assertHoldsNoSecret(bare.text);
+    });
+  });
+
+  test("answers commit null when neither meta nor gitSource has one", async () => {
+    vercel.deployments[backEnd] = [deployment("back-end", 0, { meta: {}, gitSource: { type: "cli" } })];
+    await withServer(async (server) => {
+      const result = await server.callTool("get-deployment", { project: "back-end", deployment: "dpl_backend0" });
+      assert.equal(untrusted(result.text).records[0].commit, null);
+    });
+  });
+
+  test("masks the error message and keeps it to 1,000 characters", async () => {
+    vercel.deployments[backEnd] = [{
+      ...deployment("back-end", 0, { state: "ERROR" }),
+      errorMessage: `boot refused: mongodb+srv://app:${secrets.password}@db.example.net, Bearer ${secrets.bearer}, ` +
+        `${tokens["back-end"]} ${"x".repeat(1200)}`,
+    }];
+    await withServer(async (server) => {
+      const result = await server.callTool("get-deployment", { project: "back-end", deployment: "dpl_backend0" });
+      const { errorMessage } = untrusted(result.text).records[0];
+      assert.ok(errorMessage.startsWith("boot refused: mongodb+srv://<credentials>@db.example.net, Bearer <redacted>, <vercel-token> x"),
+        errorMessage);
+      assert.equal(errorMessage.length, 1000);
+      assertHoldsNoSecret(result.text);
+    });
+  });
+
+  test("refuses a deployment Vercel says is the other project's, with the spec's message", async () => {
+    vercel.deployments[backEnd].push({ ...deployment("back-end", 12), uid: "dpl_stray12", projectId: projects["front-end"].id });
+    await withServer(async (server) => {
+      const result = await server.callTool("get-deployment", { project: "back-end", deployment: "dpl_stray12" });
+      assert.equal(result.isError, true, result.text);
+      assert.equal(result.text, "get-deployment: dpl_stray12 is not a deployment of back-end");
+    });
+  });
+
+  test("answers Vercel's refusal of a deployment the project's token does not reach", async () => {
+    await withServer(async (server) => {
+      const result = await server.callTool("get-deployment", { project: "back-end", deployment: "dpl_frontend0" });
+      assert.equal(result.isError, true, result.text);
+      assert.equal(result.text, "get-deployment: Vercel answered 403 forbidden");
+      assert.deepEqual(toolRequests().map((request) => request.token), ["back-end"]);
+    });
+  });
+
+  for (const [what, deploymentArg] of [
+    ["a production domain", "api.conventioner.io"],
+    ["a host under another domain", "makers-market-management-back-end-0.vercel.app.example.com"],
+    ["vercel.app itself", "vercel.app"],
+    ["a URL", "https://makers-market-management-back-end-0.vercel.app"],
+    ["a host with credentials", `u:${secrets.password}@x.vercel.app`],
+    ["a path", "dpl_backend0/../../v10/projects"],
+    ["an id that is not dpl_", "prj_KlG2FlrqAxbX7afm7xuYEcBzqPeg"],
+    ["an empty string", ""],
+  ]) {
+    test(`refuses ${what}, saying so and sending nothing`, async () => {
+      await withServer(async (server) => {
+        const { pattern } = (await server.listTools()).find((tool) => tool.name === "get-deployment").inputSchema.properties.deployment;
+        const result = await server.callTool("get-deployment", { project: "back-end", deployment: deploymentArg });
+        assert.equal(result.isError, true, result.text);
+        assert.equal(result.text, `get-deployment: refused its input: deployment must match pattern "${pattern}"`);
+        assert.deepEqual(toolRequests(), []);
+        assertHoldsNoSecret(result.text);
+      });
+    });
+  }
+
+  for (const [what, args, why] of [
+    ["an unknown project", { project: "other", deployment: "dpl_backend0" }, "refused its input: project must be one of front-end, back-end"],
+    ["no deployment", { project: "back-end" }, "refused its input: the input must have required property 'deployment'"],
+    ["an argument it does not take", { project: "back-end", deployment: "dpl_backend0", withGitRepoInfo: false }, "takes no withGitRepoInfo"],
+  ]) {
+    test(`refuses ${what}, saying so and sending nothing`, async () => {
+      await withServer(async (server) => {
+        const result = await server.callTool("get-deployment", args);
+        assert.equal(result.isError, true, result.text);
+        assert.equal(result.text, `get-deployment: ${why}`);
+        assert.deepEqual(toolRequests(), []);
+      });
+    });
+  }
+});
+
 // A runtime log line as Vercel streams it, with fields no answer may hold.
 const logBase = Date.parse("2026-11-08T18:30:00.123Z");
 function logLine(n, fields = {}) {
@@ -423,7 +755,6 @@ const maskCases = [
     "at 1729700000000, id 65a1f3c2b9e8d7a6f5e4d3c2, room 12, ref x6045550106, 20 rows"],
 ];
 
-const backEnd = projects["back-end"].id;
 const logsOf = (lines, options = {}) => {
   vercel.logs.dpl_backend0 = { projectId: backEnd, lines, ...options };
 };
@@ -668,12 +999,22 @@ describe("every request", () => {
       await server.callTool("list-deployments", { project: "back-end", target: "preview" });
       await server.callTool("runtime-logs", { project: "front-end", deployment: "dpl_frontend0", levels: ["error"], limit: 5, seconds: 2 });
       await readLogs(server);
+      await server.callTool("domain-deployment", {});
+      await server.callTool("get-deployment", { project: "front-end", deployment: "dpl_frontend1" });
+      await server.callTool("get-deployment", { project: "back-end", deployment: "makers-market-management-back-end-3.vercel.app" });
     });
     const requests = vercel.requests();
-    assert.equal(requests.length, 8);
+    assert.equal(requests.length, 16);
     const ids = Object.fromEntries(Object.entries(projects).map(([label, { id }]) => [id, label]));
+    // Whose a deployment id, a vercel.app host or a production domain is, by the fixtures.
+    const holders = Object.fromEntries(Object.entries(projects).flatMap(([label, { id }]) => [
+      [domainOf[label], label],
+      ...vercel.deployments[id].flatMap((fixture) => [[fixture.uid, label], [fixture.url, label]]),
+    ]));
     const templates = [
       { path: /^\/v7\/deployments$/, query: ["projectId", "teamId", "target", "state", "limit", "until"] },
+      { path: /^\/v13\/deployments\/(?<idOrHost>[^/]+)$/, query: ["teamId", "withGitRepoInfo"] },
+      { path: /^\/v9\/projects\/(?<projectId>[^/]+)\/domains$/, query: ["teamId"] },
       { path: /^\/v1\/projects\/(?<projectId>[^/]+)\/deployments\/dpl_[A-Za-z0-9]+\/runtime-logs$/, query: ["teamId"] },
     ];
     for (const [n, { method, path, query, token }] of requests.entries()) {
@@ -683,9 +1024,12 @@ describe("every request", () => {
       for (const key of Object.keys(query)) assert.ok(template.query.includes(key), `${key} on ${path}`);
       assert.equal(query.teamId, teamId);
       assert.ok(!("decrypt" in query));
-      const projectId = path.match(template.path).groups?.projectId ?? query.projectId;
-      assert.ok(ids[projectId], projectId);
-      if (n >= 4) assert.equal(ids[projectId], token);
+      const { projectId = query.projectId, idOrHost } = path.match(template.path).groups ?? {};
+      const owner = idOrHost === undefined ? ids[projectId] : holders[idOrHost];
+      assert.ok(owner, path);
+      if (n >= 4) assert.equal(owner, token, path);
     }
+    assert.deepEqual(requests.filter((request) => request.path.startsWith("/v13/")).map((request) => request.query.withGitRepoInfo),
+      [undefined, undefined, "true", "true"]);
   });
 });

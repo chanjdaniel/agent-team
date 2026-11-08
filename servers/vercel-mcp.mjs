@@ -19,10 +19,12 @@
 // naming no project but the config's and no query key but its endpoint's; it refuses anything
 // else without sending it, follows no redirect, and gives up after 20 seconds. A non-2xx answer
 // becomes an error naming its status and Vercel's error code, never its body.
-// Each tool is read-only by its annotations, takes a `project` of the config's keys, and answers
-// one text: a summary, then its records as one JSON array in an untrusted-data block with a fresh
-// uuid. A record is built from named fields only, so whatever else Vercel's answer carries (a
-// creator's email, the Git provider's other metadata, the project's settings) never leaves, and
+// Each tool is read-only by its annotations, takes a `project` of the config's keys (or, for
+// domain-deployment, a `domain` of the config's), and answers one text: a summary, then its
+// records as one JSON array in an untrusted-data block with a fresh uuid. domain-deployment and
+// get-deployment refuse a deployment whose `projectId` is not the project's. A record is built
+// from named fields only, so whatever else Vercel's answer carries (a creator's email, the Git
+// provider's other metadata, the project's settings, the deployment's env) never leaves, and
 // every free-text field in it (a commit message, an error, a log line's message and path) goes
 // through `mask` first, which replaces email addresses, phone numbers, URL credentials, Bearer
 // tokens and Vercel tokens. runtime-logs reads its stream line by line and aborts it at its
@@ -37,12 +39,19 @@ const loopbackOrigin = /^http:\/\/(127\.0\.0\.1|\[::1\]):\d{1,5}$/;
 const deploymentStates = ["BUILDING", "ERROR", "INITIALIZING", "QUEUED", "READY", "CANCELED", "BLOCKED"];
 
 // The request allowlist: each path the server may read, and the query keys it may carry. A
-// `projectId` in a path's groups or its query must be one of the config's projects.
+// `projectId` in a path's groups or its query must be one of the config's projects, and an
+// `idOrHost` a dpl_ id, a vercel.app host, or a domain of the project the request is made for.
 const endpoints = [
   { path: /^\/v7\/deployments$/, query: ["projectId", "teamId", "target", "state", "limit", "until"] },
+  { path: /^\/v13\/deployments\/(?<idOrHost>[^/]+)$/, query: ["teamId", "withGitRepoInfo"] },
+  { path: /^\/v9\/projects\/(?<projectId>[^/]+)\/domains$/, query: ["teamId"] },
   { path: /^\/v1\/projects\/(?<projectId>[^/]+)\/deployments\/dpl_[A-Za-z0-9]+\/runtime-logs$/, query: ["teamId"] },
 ];
 const deploymentId = "^dpl_[A-Za-z0-9]+$";
+// A deployment's id or its own host: one or more DNS labels under vercel.app.
+const deploymentOrHost = "^(dpl_[A-Za-z0-9]+|([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+vercel\\.app)$";
+// An alias as get-deployment answers it: a lowercase hostname, nothing else.
+const hostname = /^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9-]{2,63}$/;
 const logLevels = ["debug", "info", "warning", "error", "fatal", "trace"];
 // A log message is cut to this many characters, after it is masked.
 const messageLength = 1_000;
@@ -128,6 +137,10 @@ export async function startVercelMcp({ name, teamId, projects }) {
       const owner = owners.get(id);
       if (owner === undefined) throw new Refusal(`${id} is not a project of ${name}`);
       if (owner !== project && owner !== probe) throw new Refusal(`${id} is not ${project}'s project`);
+    }
+    const { idOrHost } = path.match(endpoint.path).groups ?? {};
+    if (idOrHost !== undefined && !new RegExp(deploymentOrHost).test(idOrHost) && !(projects[project].domains ?? []).includes(idOrHost)) {
+      throw new Refusal(`${idOrHost} is not a deployment, a vercel.app host or a domain of ${project}`);
     }
     const url = new URL(path, origin);
     for (const [key, value] of Object.entries({ ...query, teamId })) url.searchParams.set(key, String(value));
@@ -274,7 +287,101 @@ export async function startVercelMcp({ name, teamId, projects }) {
     enum: keys,
     description: `The Vercel project: ${keys.map((key) => `${key} (${projects[key].name})`).join(", ")}.`,
   };
+  // Each production domain with its project, in the config's order.
+  const domains = keys.flatMap((key) => (projects[key].domains ?? []).map((domain) => ({ domain, key })));
+
+  // Which deployment `domain` serves, its project's newest ready production deployment, and
+  // whether the domain is a verified domain of the project; an error names the domain.
+  async function domainDeployment({ domain, key }) {
+    const { id } = projects[key];
+    const named = async (call) => {
+      try {
+        return await call();
+      } catch (error) {
+        if (error instanceof VercelError) throw new VercelError(`${domain}: ${error.message}`, error);
+        throw error;
+      }
+    };
+    const served = await named(() => get(key, `/v13/deployments/${domain}`));
+    const serving = deploymentRecord(served);
+    if (served?.projectId !== id) {
+      const other = owners.get(served?.projectId) ?? (/^prj_[A-Za-z0-9]+$/.test(served?.projectId) ? served.projectId : "another project");
+      throw new Refusal(`${domain} serves ${shown(serving.id)}, a deployment of ${other}, not of ${key}`);
+    }
+    const listed = await named(() => get(key, "/v7/deployments", { projectId: id, target: "production", state: "READY", limit: 1 }));
+    const newest = Array.isArray(listed?.deployments) && listed.deployments.length ? deploymentRecord(listed.deployments[0]) : null;
+    const projectDomains = await named(() => get(key, `/v9/projects/${id}/domains`));
+    const entry = (Array.isArray(projectDomains?.domains) ? projectDomains.domains : []).find((candidate) => candidate?.name === domain);
+    const record = {
+      domain,
+      project: key,
+      serving,
+      newestProduction: newest,
+      servesNewest: newest !== null && serving.id !== null && serving.id === newest.id,
+      domainVerified: entry?.verified === true,
+    };
+    let line = `${domain} serves ${shown(serving.id)}, `;
+    if (record.servesNewest) line += `the newest ready production deployment of ${key}.`;
+    else if (newest === null) line += `but ${key} has no ready production deployment.`;
+    else line += `not the newest ready production deployment of ${key}, ${shown(newest.id)} (created ${newest.createdAt ?? "at a time Vercel does not give"}).`;
+    if (!record.domainVerified) line += ` It is not a verified domain of ${key}.`;
+    return { line, record };
+  }
+
   const tools = [
+    {
+      name: "domain-deployment",
+      description: "Say which deployment each production domain serves, and whether it is its project's newest ready production " +
+        "deployment: a project left rolled back keeps its domain on an older one. Both domains when `domain` is left out.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          domain: { type: "string", enum: domains.map(({ domain }) => domain), description: "Only this domain." },
+        },
+        additionalProperties: false,
+      },
+      run: async ({ domain }) => {
+        const answers = [];
+        for (const entry of domains.filter((candidate) => domain === undefined || candidate.domain === domain)) {
+          answers.push(await domainDeployment(entry));
+        }
+        return { summary: answers.map(({ line }) => line), records: answers.map(({ record }) => record) };
+      },
+    },
+    {
+      name: "get-deployment",
+      description: "One deployment's details: its state, the commit it was built from, its aliases, and its error code and " +
+        "message, which say why a deployment failed or did not reach its domain.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          project,
+          deployment: {
+            type: "string",
+            pattern: deploymentOrHost,
+            maxLength: 253,
+            description: "The deployment's id, dpl_..., or its own host, ....vercel.app.",
+          },
+        },
+        required: ["project", "deployment"],
+        additionalProperties: false,
+      },
+      run: async ({ project: key, deployment }) => {
+        const answer = await get(key, `/v13/deployments/${deployment}`, { withGitRepoInfo: true });
+        if (answer?.projectId !== projects[key].id) throw new Refusal(`${deployment} is not a deployment of ${key}`);
+        const record = {
+          ...deploymentRecord(answer, { gitSource: true }),
+          aliases: Array.isArray(answer.alias) ? answer.alias.filter((alias) => typeof alias === "string" && hostname.test(alias)) : [],
+          aliasAssigned: iso(answer.aliasAssigned),
+          errorCode: text(answer.errorCode),
+          errorMessage: cut(masked(answer.errorMessage), messageLength),
+          readyAt: iso(answer.ready),
+          buildingAt: iso(answer.buildingAt),
+        };
+        const state = deploymentStates.includes(record.state) ? record.state : "in a state it does not name";
+        return { summary: [`Deployment ${shown(record.id)} of ${key} is ${state}.`], records: [record] };
+      },
+    },
     {
       name: "list-deployments",
       description: "List a project's recent deployments, newest first, with each one's state and the commit it was built from. " +
@@ -430,6 +537,10 @@ function mask(value) {
     });
 }
 
+// A deployment's id as a summary line names it, outside the untrusted-data block: only a dpl_ id.
+const shown = (id) => (typeof id === "string" && new RegExp(deploymentId).test(id) ? id : "a deployment with no dpl_ id");
+// Text cut to `length` characters, never inside a surrogate pair.
+const cut = (value, length) => (value === null || value.length <= length ? value : value.slice(0, length).replace(/[\uD800-\uDBFF]$/, ""));
 const inSeconds = (n) => `${n} second${n === 1 ? "" : "s"}`;
 const text = (value) => (typeof value === "string" ? value : null);
 const masked = (value) => (typeof value === "string" ? mask(value) : null);
@@ -444,10 +555,15 @@ function iso(ms) {
   return Number.isNaN(date.getTime()) ? null : date.toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
-// A deployment as the tools answer it, from the named fields of Vercel's.
-function deploymentRecord(deployment) {
+// A deployment as the tools answer it, from the named fields of Vercel's. Its commit is meta's,
+// or, with `gitSource`, the gitSource withGitRepoInfo asked for when meta has none.
+function deploymentRecord(deployment, { gitSource = false } = {}) {
   const meta = deployment?.meta ?? {};
-  const commit = { sha: text(meta.githubCommitSha), ref: text(meta.githubCommitRef), message: firstLine(meta.githubCommitMessage, 200) };
+  const fromMeta = { sha: text(meta.githubCommitSha), ref: text(meta.githubCommitRef), message: firstLine(meta.githubCommitMessage, 200) };
+  const source = gitSource && deployment?.gitSource && typeof deployment.gitSource === "object" ? deployment.gitSource : {};
+  const fromSource = { sha: text(source.sha), ref: text(source.ref), message: firstLine(source.message, 200) };
+  const none = (candidate) => Object.values(candidate).every((value) => value === null);
+  const commit = none(fromMeta) ? fromSource : fromMeta;
   const aliasError = deployment?.aliasError;
   return {
     id: text(deployment?.uid ?? deployment?.id),
@@ -457,7 +573,7 @@ function deploymentRecord(deployment) {
     readySubstate: text(deployment?.readySubstate),
     target: text(deployment?.target),
     isRollbackCandidate: flag(deployment?.isRollbackCandidate),
-    commit: Object.values(commit).every((value) => value === null) ? null : commit,
+    commit: none(commit) ? null : commit,
     aliasError: aliasError && typeof aliasError === "object"
       ? { code: text(aliasError.code), message: firstLine(aliasError.message, 200) }
       : null,
@@ -468,7 +584,6 @@ function deploymentRecord(deployment) {
 // the millisecond, and its path and message masked, the message cut after it is masked.
 function logRecord(line) {
   const message = masked(line.message);
-  const cut = message !== null && message.length > messageLength;
   return {
     time: Number.isFinite(line.timestampInMs) && !Number.isNaN(new Date(line.timestampInMs).getTime())
       ? new Date(line.timestampInMs).toISOString()
@@ -478,7 +593,7 @@ function logRecord(line) {
     method: text(line.requestMethod),
     path: masked(line.requestPath),
     status: Number.isInteger(line.responseStatusCode) ? line.responseStatusCode : null,
-    message: cut ? message.slice(0, messageLength).replace(/[\uD800-\uDBFF]$/, "") : message,
-    truncated: line.messageTruncated === true || cut,
+    message: cut(message, messageLength),
+    truncated: line.messageTruncated === true || (message !== null && message.length > messageLength),
   };
 }

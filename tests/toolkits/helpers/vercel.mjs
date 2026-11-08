@@ -4,7 +4,12 @@
 //
 //   const vercel = await startFakeVercel({ projects: { "front-end": { id, token }, ... } });
 //   vercel.origin, vercel.port      http://127.0.0.1:<random port>, for VERCEL_READ_API
-//   vercel.deployments[projectId]   the project's deployments, as Vercel gives them; a test sets them
+//   vercel.deployments[projectId]   the project's deployments, as Vercel gives them; a test sets them.
+//                                   A deployment's own `projectId`, when it has one, is the one
+//                                   GET /v13/deployments answers, so a test can make Vercel name
+//                                   another project than the one holding it
+//   vercel.aliases[host] = uid      the deployment a domain serves, as Vercel's alias points it
+//   vercel.domains[projectId]       the project's domains, as GET /v9/projects/<id>/domains gives them
 //   vercel.scope[label] = "all"     that project's token reaches every project, as a team-scoped
 //                                   or full-account token does; "none", no project; "project",
 //                                   the default, its own only
@@ -22,19 +27,26 @@
 //   vercel.requests()               every request so far: { method, path, query, token }, `token`
 //                                   the label of the project whose token it carried, "unknown"
 //                                   for any other token and null for none; query as an object
-//   vercel.reset()                  forgets the requests, the streams and the logs
+//   vercel.reset()                  forgets the requests, the streams, the logs, the aliases and
+//                                   the domains
 //   await vercel.close()
 //
 // A request with no token, or one the fake does not know, is answered 403 with Vercel's
 // invalidToken error; a project-scoped token naming another project's id is answered 403
 // forbidden. GET /v7/deployments filters by projectId, target, state and until, newest first, to
 // at most `limit` (Vercel's 20 by default), with pagination.next the oldest one's `created` when
-// older ones remain. GET /v1/projects/<projectId>/deployments/<deploymentId>/runtime-logs streams
-// the deployment's logs as application/stream+json, and is answered 404 for a deployment it has
-// no logs of or whose logs are another project's. Any other method or path is answered 404.
+// older ones remain; it never answers a deployment's gitSource. GET /v13/deployments/<id, url or
+// alias> answers the deployment, with `id` for its `uid`, its `projectId`, and its `gitSource`
+// only with withGitRepoInfo=true, 403 when the token does not reach the project holding it, or
+// 404 when there is none. GET /v9/projects/<projectId>/domains answers the project's domains.
+// GET /v1/projects/<projectId>/deployments/<deploymentId>/runtime-logs streams the deployment's
+// logs as application/stream+json, and is answered 404 for a deployment it has no logs of or
+// whose logs are another project's. Any other method or path is answered 404.
 import { createServer } from "node:http";
 
 const error = (code, message, extra = {}) => ({ error: { code, message, ...extra } });
+const deploymentPath = /^\/v13\/deployments\/([^/]+)$/;
+const domainsPath = /^\/v9\/projects\/([^/]+)\/domains$/;
 const logsPath = /^\/v1\/projects\/([^/]+)\/deployments\/([^/]+)\/runtime-logs$/;
 
 export async function startFakeVercel({ projects }) {
@@ -44,12 +56,16 @@ export async function startFakeVercel({ projects }) {
     deployments: Object.fromEntries(Object.values(projects).map(({ id }) => [id, []])),
     scope: Object.fromEntries(Object.keys(projects).map((label) => [label, "project"])),
     logs: {},
+    aliases: {},
+    domains: {},
     streams: [],
     requests: () => log.map((entry) => ({ ...entry, query: { ...entry.query } })),
     reset: () => {
       log.splice(0);
       fake.streams.splice(0);
       fake.logs = {};
+      fake.aliases = {};
+      fake.domains = {};
     },
   };
 
@@ -68,12 +84,37 @@ export async function startFakeVercel({ projects }) {
         .filter((deployment) => query.state === undefined || deployment.state === query.state)
         .filter((deployment) => query.until === undefined || deployment.created < Number(query.until))
         .sort((a, b) => b.created - a.created);
-      const deployments = matching.slice(0, limit);
+      const deployments = matching.slice(0, limit).map(({ gitSource, ...listed }) => listed);
       const more = matching.length > deployments.length;
       return [200, {
         deployments,
         pagination: { count: deployments.length, next: more ? deployments.at(-1).created : null, prev: null },
       }];
+    }
+    const single = url.pathname.match(deploymentPath);
+    if (single) {
+      const idOrHost = decodeURIComponent(single[1]);
+      const uid = fake.aliases[idOrHost] ?? idOrHost;
+      for (const [holder, list] of Object.entries(fake.deployments)) {
+        const found = list.find((deployment) => deployment.uid === uid || deployment.url === idOrHost);
+        if (!found) continue;
+        if (!reaches(label, holder)) return [403, error("forbidden", "Not authorized")];
+        const { uid: id, gitSource, ...rest } = found;
+        return [200, {
+          id,
+          ...rest,
+          projectId: found.projectId ?? holder,
+          ...(query.withGitRepoInfo === "true" && gitSource ? { gitSource } : {}),
+        }];
+      }
+      return [404, error("not_found", "The deployment was not found")];
+    }
+    const domains = url.pathname.match(domainsPath);
+    if (domains) {
+      const [, projectId] = domains;
+      if (!reaches(label, projectId)) return [403, error("forbidden", "Not authorized")];
+      const list = fake.domains[projectId] ?? [];
+      return [200, { domains: list, pagination: { count: list.length, next: null, prev: null } }];
     }
     const logs = url.pathname.match(logsPath);
     if (logs) {
