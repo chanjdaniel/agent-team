@@ -1000,11 +1000,11 @@ COMMANDS
 }
 
 # The deny rules name the runtimes; a launcher without its exec bit cannot be run by its path at all.
-@test "the production launchers and the MCP server's entry are not executable" {
+@test "the production launchers, the MCP server's entry and its 1Password read are not executable" {
   local modes
-  modes=$(git -C "$REPO_ROOT" ls-files -s toolkits/prod-read/scripts toolkits/prod-write/scripts servers/mongodb-mcp.mjs |
-    awk '{print $1, $4}')
-  assert_equal "$(wc -l <<<"$modes")" 3
+  modes=$(git -C "$REPO_ROOT" ls-files -s toolkits/prod-read/scripts toolkits/prod-write/scripts servers/mongodb-mcp.mjs \
+    servers/op-secret.mjs | awk '{print $1, $4}')
+  assert_equal "$(wc -l <<<"$modes")" 4
   if grep -v '^100644 ' <<<"$modes"; then echo "executable in git (above)" >&2; return 1; fi
 }
 
