@@ -2,20 +2,25 @@
 // token per project read from 1Password: the shared body of a Vercel toolkit's
 // scripts/start-server.mjs.
 //
-//   await startVercelMcp({ name, teamId, projects: { <key>: { id, name, reference, domains } } })
+//   await startVercelMcp({ name, teamIdReference,
+//     projects: { <key>: { name, idReference, tokenReference, domains } } })
 //
-// Before it serves, it refuses an argument, and a VERCEL_READ_API (the tests' fake Vercel API)
-// that is not an http://127.0.0.1:<port> or http://[::1]:<port> origin, so no setting can send a
-// token off the machine; then it reads every project's reference in turn and signs out of op once
-// (op-secret.mjs), so 1Password asks once, refuses a value that is not one line of 20 or more of
-// [A-Za-z0-9_], and refuses every child process. Then it checks each token reaches its own
-// project and is refused (403) every other one, which only a project-scoped token is.
+// Each reference is a 1Password secret reference: the team id, and each project's id and token,
+// live in 1Password, never in the launcher. Before it serves, it refuses an argument, and a
+// VERCEL_READ_API (the tests' fake Vercel API) that is not an http://127.0.0.1:<port> or
+// http://[::1]:<port> origin, so no setting can send a token off the machine; then it reads the
+// team id and each project's id and token in turn and signs out of op once (op-secret.mjs), so
+// 1Password asks once, refuses a team id that is not team_<letters and digits>, a project id
+// that is not prj_<letters and digits> or is another project's too, and a token that is not one
+// line of 20 or more of [A-Za-z0-9_], and refuses every child process. Then it checks each token
+// reaches its own project and is refused (403) every other one, which only a project-scoped
+// token is.
 // On any failure it exits 1 with one `<name>: <reason>` line on stderr, never holding a token.
 //
 // The tokens live only in this function's closure: never in process.env, a file or a log line,
 // and every error text it writes or answers has each token replaced by [redacted]. Every request
 // goes through one function, `request`, which sends only a GET, with its project's own token and the
-// pinned teamId, to Vercel's API (or the loopback test origin) on a path of the allowlist below,
+// team id it read, to Vercel's API (or the loopback test origin) on a path of the allowlist below,
 // naming no project but the config's and no query key but its endpoint's; it refuses anything
 // else without sending it, follows no redirect, and gives up after 20 seconds. A non-2xx answer
 // becomes an error naming its status and Vercel's error code, never its body.
@@ -38,6 +43,8 @@ import { readSecrets, refuseChildProcesses } from "./op-secret.mjs";
 const vercelOrigin = "https://api.vercel.com";
 const requestTimeoutMs = 20_000;
 const tokenPattern = /^[A-Za-z0-9_]{20,}$/;
+const teamIdPattern = /^team_[A-Za-z0-9]+$/;
+const projectIdPattern = /^prj_[A-Za-z0-9]+$/;
 const loopbackOrigin = /^http:\/\/(127\.0\.0\.1|\[::1\]):\d{1,5}$/;
 const deploymentStates = ["BUILDING", "ERROR", "INITIALIZING", "QUEUED", "READY", "CANCELED", "BLOCKED"];
 
@@ -79,8 +86,8 @@ class VercelError extends Error {
 // A tool's refusal of its input, or of a request it would send.
 class Refusal extends Error {}
 
-export async function startVercelMcp({ name, teamId, projects }) {
-  const keys = Object.keys(projects);
+export async function startVercelMcp({ name, teamIdReference, projects: config }) {
+  const keys = Object.keys(config);
   const tokens = {};
   const redact = (text) => {
     let line = String(text);
@@ -103,14 +110,29 @@ export async function startVercelMcp({ name, teamId, projects }) {
     fail("the pinned MCP SDK is not installed: run servers/install");
   }
 
-  const keyOf = new Map(keys.map((key) => [projects[key].reference, key]));
-  const values = readSecrets(name, keys.map((key) => projects[key].reference), (value, reference) => {
-    if (!tokenPattern.test(value)) return `op read returned something that is not a Vercel token (${keyOf.get(reference)})`;
+  // What each reference holds: the team id, then each project's id and token, read in this order.
+  const reads = [{ reference: teamIdReference, what: "team id" }];
+  for (const key of keys) {
+    reads.push({ reference: config[key].idReference, what: "project id", key }, { reference: config[key].tokenReference, what: "token", key });
+  }
+  const readOf = new Map(reads.map((read) => [read.reference, read]));
+  const values = readSecrets(name, reads.map(({ reference }) => reference), (value, reference) => {
+    const { what, key } = readOf.get(reference);
+    const pattern = { "team id": teamIdPattern, "project id": projectIdPattern, token: tokenPattern }[what];
+    if (!pattern.test(value)) return `op read returned something that is not a Vercel ${what}${key ? ` (${key})` : ""}`;
   });
+  const teamId = values[0];
+  const projects = {};
   keys.forEach((key, index) => {
-    tokens[key] = values[index];
+    const { name: projectName, domains } = config[key];
+    projects[key] = { id: values[1 + 2 * index], name: projectName, domains };
+    tokens[key] = values[2 + 2 * index];
   });
   values.length = 0;
+  keys.forEach((key, index) => {
+    const same = keys.slice(0, index).find((earlier) => projects[earlier].id === projects[key].id);
+    if (same) fail(`op read returned the same project id for ${same} and ${key}`);
+  });
   refuseChildProcesses(name);
 
   const owners = new Map(keys.map((key) => [projects[key].id, key]));

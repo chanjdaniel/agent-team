@@ -15,7 +15,7 @@
 - Write anything: the server sends only `GET`s, so it cannot deploy, promote, roll back, redeploy, add, change or delete a variable, or change a project, a domain or an alias; there is no write tool, and the one request function refuses any other method, path, query key, project or host.
 - Read a variable's value: it never sends `decrypt`, has no path to one variable (`/v1/projects/{id}/env/{id}`) or to a project itself (`/v9/projects/{id}`, which carries every value), and drops the `value` Vercel's list still carries for a `plain` variable, with its comment and every other field, before an answer is built.
 - Read build logs (`/v3/deployments/{id}/events`), which may echo a variable.
-- Read another project: every request names one of the two pinned project ids, or a deployment whose answer must belong to the project the call names.
+- Read another project: every request names one of the two project ids read from 1Password at launch, or a deployment whose answer must belong to the project the call names.
 - Reach team or account resources (members, billing, other projects, tokens, team-level aliases), which a project-scoped token is refused, and the server has no path to.
 - Pass on what Vercel's answers carry beyond the allowed fields: a creator's email address, the Git provider's other metadata, a deployment's `env` and `build.env`, its OIDC claims, an alias's protection bypass secret.
 - Send a token anywhere but Vercel: the only other origin the server takes is the tests' fake on the loopback (`VERCEL_READ_API`), and it refuses at start a value that is not `http://127.0.0.1:<port>` or `http://[::1]:<port>`; it follows no redirect.
@@ -27,8 +27,9 @@ Two Vercel access tokens, each scoped to one project (Vercel's "Project" scope),
 - `agent-team-vercel-read-front-end`, for `makers-market-management-front-end`, in 1Password at `op://agent-team/conventioner-vercel-read/front-end-token`;
 - `agent-team-vercel-read-back-end`, for `makers-market-management-back-end`, at `op://agent-team/conventioner-vercel-read/back-end-token`.
 
-The toolkit holds only the references, which are not secret.
-`scripts/start-server.mjs` reads both with `op read` when the session starts its MCP server, which raises one 1Password approval prompt on the PC; it then signs `op` out and serves from the same process, so the tokens exist only in that process's memory, never in an environment, a file, a transcript or a log, and any error text it writes or answers has each token replaced by `[redacted]`.
+The same 1Password item holds the Vercel team id (`team-id`) and the two project ids (`front-end-project-id`, `back-end-project-id`), which are not secret but stay out of this public repository.
+The toolkit holds only the references.
+`scripts/start-server.mjs` reads all five with `op read` when the session starts its MCP server, which raises one 1Password approval prompt on the PC; it then signs `op` out and serves from the same process, so the tokens exist only in that process's memory, never in an environment, a file, a transcript or a log, and any error text it writes or answers has each token replaced by `[redacted]`.
 Before it serves, it checks that each token reaches its own project and is refused the other, and exits when either check fails.
 These are separate from GitHub's `VERCEL_TOKEN`, the Deploy workflow's, which is scoped to the team.
 
@@ -48,7 +49,7 @@ What limits that here:
 
 ## Rotating and revoking
 
-Making, rotating and revoking the tokens are Daniel's steps, in `manual-steps.md` (T231).
+Making, rotating and revoking the tokens are Daniel's steps, in the team home's `manual-steps.md`.
 
 - Rotating, before the 90 days end, or at once if a token was ever pasted anywhere or an agent reports one exposed: create a new token the same way, paste it over its field in 1Password, then delete the old token on Account Tokens (`vercel.com/account/tokens`); nothing in the toolkit changes.
 - Revoking at once: delete both tokens on Account Tokens, or the 1Password item; every launch with `vercel-read` then exits with "the <project> token was refused", and the session reports BLOCKED.

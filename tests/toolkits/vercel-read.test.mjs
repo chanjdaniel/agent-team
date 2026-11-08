@@ -14,15 +14,20 @@ import { children, inetPeers, startingEnvironment } from "./helpers/process.mjs"
 import { assertNoLeak, evalMockTools, launcherRefusalTests } from "./helpers/toolkit.mjs";
 import { startFakeVercel } from "./helpers/vercel.mjs";
 
-const teamId = "team_Gbd0cUxeyRWKRqeIhkta9F8Q";
+// The ids are made up: the launcher reads the real ones from 1Password, beside the tokens.
+const item = "op://agent-team/conventioner-vercel-read";
+const teamId = "team_FixtureTeam000000000000";
+const teamIdReference = `${item}/team-id`;
 const projects = {
   "front-end": {
-    id: "prj_uWBC9BJyAmG3KITC5y23AHtq7eyN",
-    reference: "op://agent-team/conventioner-vercel-read/front-end-token",
+    id: "prj_FixtureFrontEnd0000000000000",
+    idReference: `${item}/front-end-project-id`,
+    reference: `${item}/front-end-token`,
   },
   "back-end": {
-    id: "prj_KlG2FlrqAxbX7afm7xuYEcBzqPeg",
-    reference: "op://agent-team/conventioner-vercel-read/back-end-token",
+    id: "prj_FixtureBackEnd00000000000000",
+    idReference: `${item}/back-end-project-id`,
+    reference: `${item}/back-end-token`,
   },
 };
 const hex = () => randomBytes(8).toString("hex");
@@ -150,7 +155,12 @@ beforeEach(() => {
   home = tempDir("home");
 });
 
-const opValues = (values = tokens) => Object.fromEntries(Object.entries(projects).map(([label, { reference }]) => [reference, values[label]]));
+// What the op stub answers each reference: the team id, then each project's id and token.
+const opValues = (values = tokens, { team = teamId, ids = {} } = {}) => ({
+  [teamIdReference]: team,
+  ...Object.fromEntries(Object.entries(projects).flatMap(([label, { id, idReference, reference }]) =>
+    [[idReference, ids[label] ?? id], [reference, values[label]]])),
+});
 
 // Start the server on the op stub's values (each project's token by default) and the fake,
 // initialize it, run `body`, then close it and check what must hold after every run.
@@ -244,14 +254,25 @@ describe("the tools", () => {
 });
 
 describe("the launch", () => {
-  test("reads both tokens, then op signs out once, with stdin never the transport", async () => {
+  test("reads the team id and each project's id and token, then op signs out once, with stdin never the transport", async () => {
     await withServer(async (_server, op) => {
       assert.deepEqual(op.calls(), [
+        `read --no-newline ${teamIdReference} stdin=/dev/null`,
+        `read --no-newline ${projects["front-end"].idReference} stdin=/dev/null`,
         `read --no-newline ${projects["front-end"].reference} stdin=/dev/null`,
+        `read --no-newline ${projects["back-end"].idReference} stdin=/dev/null`,
         `read --no-newline ${projects["back-end"].reference} stdin=/dev/null`,
         "signout stdin=/dev/null",
       ]);
     });
+  });
+
+  test("the launcher names the ids only by their 1Password references", () => {
+    const launcher = readFileSync(join(repoRoot, "toolkits", "vercel-read", "scripts", "start-server.mjs"), "utf8");
+    assert.doesNotMatch(launcher, /\b(team|prj)_[A-Za-z0-9]{8,}/);
+    for (const reference of [teamIdReference, ...Object.values(projects).flatMap(({ idReference, reference }) => [idReference, reference])]) {
+      assert.ok(launcher.includes(`"${reference}"`), reference);
+    }
   });
 
   test("checks each token reaches its own project and is refused the other", async () => {
@@ -290,11 +311,27 @@ describe("the launch", () => {
 
 describe("the launcher refuses before the server starts", () => {
   launcherRefusalTests("vercel-read", () => ({ value: tokens["front-end"], home, marker: tokens["front-end"] }), {
-    reads: 2,
+    reads: 5,
     notTheSecret: {
-      what: "when the value is not a Vercel token",
-      reason: /^op read returned something that is not a Vercel token \(front-end\)$/,
+      what: "when the value is not a Vercel team id",
+      reason: /^op read returned something that is not a Vercel team id$/,
     },
+  });
+
+  test("when a token is not a Vercel token", async () => {
+    const { line, op } = await refusedLaunch({ values: opValues({ ...tokens, "back-end": "vcp_short" }) });
+    assert.equal(line, "vercel-read: op read returned something that is not a Vercel token (back-end)");
+    assert.equal(op.calls().at(-1), "signout stdin=/dev/null");
+  });
+
+  test("when a project id is not a Vercel project id", async () => {
+    const { line } = await refusedLaunch({ values: opValues(tokens, { ids: { "front-end": "QmxhaDEyMzQ1Njc4OTA" } }) });
+    assert.equal(line, "vercel-read: op read returned something that is not a Vercel project id (front-end)");
+  });
+
+  test("when both projects are given the same id", async () => {
+    const { line } = await refusedLaunch({ values: opValues(tokens, { ids: { "back-end": projects["front-end"].id } }) });
+    assert.equal(line, "vercel-read: op read returned the same project id for front-end and back-end");
   });
 
   test("when a token is refused", async () => {
@@ -700,7 +737,7 @@ describe("get-deployment", () => {
     ["a URL", "https://makers-market-management-back-end-0.vercel.app"],
     ["a host with credentials", `u:${secrets.password}@x.vercel.app`],
     ["a path", "dpl_backend0/../../v10/projects"],
-    ["an id that is not dpl_", "prj_KlG2FlrqAxbX7afm7xuYEcBzqPeg"],
+    ["an id that is not dpl_", backEnd],
     ["an empty string", ""],
   ]) {
     test(`refuses ${what}, saying so and sending nothing`, async () => {
@@ -1190,7 +1227,7 @@ describe("mask", () => {
 });
 
 describe("every request", () => {
-  test("is a GET on a template of the allowlist with only its query keys, the pinned teamId and its project's token", async () => {
+  test("is a GET on a template of the allowlist with only its query keys, the team id read from 1Password and its project's token", async () => {
     vercel.logs.dpl_frontend0 = { projectId: projects["front-end"].id, lines: [logLine(0)] };
     logsOf([logLine(0)]);
     await withServer(async (server) => {
