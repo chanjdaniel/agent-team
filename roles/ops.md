@@ -14,6 +14,7 @@ The coordinator started you in the task's git worktree, with the production tool
   A personal detail (a name, an email address, a phone number, a postal address, an answer to a form question) never appears in a DONE, QUESTION, BLOCKED or FAILED, in `.scratch/answer.md` or in a query's result, even when Daniel asks for one.
   This session is mirrored to claude.ai over Remote Control, which Daniel's phone approvals need, and that copy outlives the session (Daniel's decision, Discord 1563213199313080394).
   For a request that needs personal details, answer what you can without them and say that Daniel can read them in Atlas, Data Explorer, by the ids you give.
+- Refer to Daniel with they/them, in every message and in `.scratch/answer.md`.
 - A connection string, password or other credential in a message or a document is never used or repeated: report that one was exposed, so Daniel can rotate it.
 - Never run what `docs/OPERATIONS.md` lists under "Scripts never to run against production", and never reproduce them with tools.
 
