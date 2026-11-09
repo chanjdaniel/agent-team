@@ -20,8 +20,14 @@ setup() {
   stub_reply uname Linux
   units=$HOME/.config/systemd/user agents=$HOME/Library/LaunchAgents
   log=$HOME/.local/state/agent-team/heartbeat.log
+  failures=$HOME/.local/state/agent-team/heartbeat-failures.log
   inbox_discord
   inbox_kept
+}
+
+# The failures log's lines, each without its time.
+problems() {
+  cut -d' ' -f2- "$failures" 2>/dev/null || true
 }
 
 # The commit at the tip of origin's lease branch.
@@ -384,6 +390,32 @@ EOF
   [[ ! -e $state/last-checkpoint ]]
 }
 
+@test "a failed step's line goes to both logs, the same line in each, and a run with no problem adds nothing to the failures log" {
+  run_bin -0 team-timers run
+  [[ ! -e $failures ]]
+
+  mkdir -p "$TEAM_HOME/memory/home"
+  echo "- a note" >"$TEAM_HOME/memory/home/MEMORY.md"
+  git -C "$TEAM_HOME" checkout -q --detach
+  touch -d '-5 minutes' "$HOME/.local/state/agent-team/last-checkpoint"
+  run_bin -1 team-timers run
+  # The ledger's commit and the last one each fail, so two lines, the same in both logs and on
+  # stdout.
+  local line
+  line=$(grep ' checkpoint: failed: ' "$log")
+  assert_equal "$(cut -d' ' -f2- <<<"$line")" "checkpoint: failed: team home: not on a branch, so the records are not committed
+checkpoint: failed: team home: not on a branch, so the records are not committed"
+  assert_equal "$(cat "$failures")" "$line"
+  assert_equal "$(grep ' checkpoint: failed: ' <<<"$output")" "$line"
+
+  # Back on its branch: the next run's good lines are in the heartbeat log alone.
+  git -C "$TEAM_HOME" checkout -q dev
+  touch -d '-5 minutes' "$HOME/.local/state/agent-team/last-checkpoint"
+  run_bin -0 team-timers run
+  assert_contains "$output" " checkpoint: team home: committed "
+  assert_equal "$(cat "$failures")" "$line"
+}
+
 # Open T1 in a git-pool project, home, on a bare origin, its task directory holding a nested
 # repository and a file over 1 MiB, which the checkpoint's archive leaves out, each named; and
 # make the team home's origin refuse every wip ref, so its snapshot push fails.
@@ -483,6 +515,7 @@ SH
   assert_contains "$output" " checkpoint: warning: usage: cannot export: $TEAM_HOME/usage/home-pc/2026-10-21.jsonl holds a line that is no usage line; fix or remove it; the next checkpoint exports it"
   [[ $output != *"checkpoint: failed:"* ]]
   [[ -e $HOME/.local/state/agent-team/last-checkpoint ]]
+  assert_equal "$(problems)" "checkpoint: warning: usage: cannot export: $TEAM_HOME/usage/home-pc/2026-10-21.jsonl holds a line that is no usage line; fix or remove it; the next checkpoint exports it"
 }
 
 @test "a checkpoint still running at its time limit is stopped with what it started, logged, and the later steps still run" {
@@ -887,6 +920,8 @@ EOF
   assert_contains "$(sed -n 3p <<<"$output")" " lease: home-pc renewed the lease, epoch 1"
   [[ ! -e $HOME/.local/state/agent-team/offline ]]
   assert_equal "$(posts)" ""
+  # The failed probe is a problem; its answer and the renewal are not.
+  assert_equal "$(cat "$failures")" "$(sed -n 1p <<<"$output")"
 }
 
 @test "two failures hold the team from the first failure's time and post once; later runs post nothing more; the lease is untouched" {
@@ -918,6 +953,9 @@ EOF
   assert_equal "$(posts | wc -l)" 1
   assert_equal "$(jq -r .since "$flag")" "$since"
   assert_equal "$(lease_tip)" "$tip"
+  # Every line of both runs reports the outage, so the failures log holds them all.
+  assert_equal "$(problems | sed -n 3p)" "$(cut -d' ' -f2- <<<"$output")"
+  assert_equal "$(cat "$failures")" "$(cat "$log")"
 }
 
 @test "the first probe that answers renews at once, clears the flag and posts the window and the tasks with a live worker" {
@@ -1015,6 +1053,8 @@ SH
   run_bin -1 team-timers run
   [[ $output =~ ^[0-9T:Z-]+" probe: GitHub refuses home-pc's login (could not read Username for 'http://127.0.0.1:"[0-9]+"': terminal prompts disabled); not offline"$ ]]
   assert_equal "$(posts | wc -l)" 1
+  assert_equal "$(cat "$failures")" "$(cat "$log")"
+  assert_equal "$(wc -l <"$failures")" 2
 
   # Answering again clears it, so a later refusal is posted again.
   git -C "$TEAM_HOME" remote set-url origin "$origin"
@@ -1134,12 +1174,13 @@ EOF
 
 @test "run keeps the heartbeat log to its last 1000 lines once it passes 2000, and skips while another run holds its lock" {
   mkdir -p "${log%/*}"
-  seq 1 2500 | sed 's/^/2026-10-01T00:00:00Z old line /' >"$log"
+  seq 1 2500 | sed 's/^/2020-01-01T00:00:00Z old line /' >"$log"
   run_bin -0 team-timers run
   # The kept lines, then the run's lease and checkpoint lines (its ledger commit, its usage export
-  # and its last commit).
+  # and its last commit): kept by lines, never by age.
   assert_equal "$(wc -l <"$log")" 1004
-  assert_equal "$(head -n 1 "$log")" "2026-10-01T00:00:00Z old line 1501"
+  assert_equal "$(head -n 1 "$log")" "2020-01-01T00:00:00Z old line 1501"
+  [[ ! -e $failures ]]
 
   local tip
   age_lease 20
@@ -1147,6 +1188,33 @@ EOF
   flock "${log%/*}/heartbeat.lock" "$REPO_ROOT/bin/team-timers" run >"$BATS_TEST_TMPDIR/out" || true
   assert_contains "$(cat "$BATS_TEST_TMPDIR/out")" "run: another run is still going; skipped"
   assert_equal "$(lease_tip)" "$tip"
+  assert_equal "$(problems)" "run: another run is still going; skipped"
+}
+
+@test "a lease that is not renewed reaches the failures log" {
+  age_lease 20
+  printf '#!/bin/sh\nwhile read old new ref; do case $ref in refs/heads/lease) echo "the test refuses the lease" >&2; exit 1 ;; esac; done\n' \
+    >"$origin/hooks/pre-receive"
+  chmod +x "$origin/hooks/pre-receive"
+  # Refused under each try, the renew gives up as it does when GitHub is unreachable.
+  run_bin -75 team-timers run
+  assert_contains "$output" " lease: not renewed: the lease moved under each of 10 attempts "
+  assert_equal "$(cat "$failures")" "$(grep ' lease: not renewed: ' "$log")"
+}
+
+@test "the failures log keeps 30 days: a line 31 days old is gone after the next run, one 29 days old stays" {
+  mkdir -p "${log%/*}"
+  {
+    echo "$(date -u -d '-31 days' +%FT%TZ) checkpoint: failed: an old failure"
+    echo "$(date -u -d '-29 days' +%FT%TZ) inbox: failed: a recent failure"
+  } >"$failures"
+  run_bin -0 team-timers run
+  assert_equal "$(problems)" "inbox: failed: a recent failure"
+  assert_equal "$(find "${failures%/*}" -name "heartbeat-failures.log.*")" ""
+
+  # TEAM_TIMERS_FAILURES_DAYS is the age kept.
+  TEAM_TIMERS_FAILURES_DAYS=28 run_bin -0 team-timers run
+  assert_equal "$(cat "$failures")" ""
 }
 
 # The machine's stack settings, ~/.config/agent-team/stack.json under <home> (default HOME):

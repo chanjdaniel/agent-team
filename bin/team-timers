@@ -125,7 +125,10 @@
 #            change (team-lease status shows a hold already on), and it prints the first change,
 #            the same line, and exits 0. Re-arm it after acting on that line.
 # In ~/.local/state/agent-team/: heartbeat.log ("<UTC time> <step>: <what happened>", kept to its
-# last 1000 lines once it passes 2000), heartbeat.lock (one run at a time), offline ({since,
+# last 1000 lines once it passes 2000), heartbeat-failures.log (each of its lines that reports a
+# problem, the same line: a failed step, a warning, a failed or refused probe and each run's line of
+# an outage, a lease not checked or not renewed, a failed post, a skipped or timed-out run; kept 30
+# days, the older lines dropped once a run), heartbeat.lock (one run at a time), offline ({since,
 # posted}: GitHub unreachable since the UTC time, and whether #coordinator was told; read by
 # team-lease status, the fence hook and the doctor), login-refused ({since, reason}: the refusal
 # was posted), and on macOS heartbeat.err, the job's stderr (systemd keeps it in the journal).
@@ -135,7 +138,8 @@
 # checkpoint step's 300 s, the finished step's 90 s after which no stop starts, its 30 s for each
 # call (the back step's session list's too), the capacity step's 60 s for each of its commands, the
 # level step's 300 s, the sweep's 300 s, the janitor's 1200 s, the run's 4200 s and the 10 s after
-# a time limit at which a command still running is killed (the tests' seams).
+# a time limit at which a command still running is killed, and TEAM_TIMERS_FAILURES_DAYS the
+# failures log's 30 days (the tests' seams).
 # Exit 0 done, 1 refused or a step failed, 2 usage error, 75 GitHub unreachable.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
@@ -185,6 +189,8 @@ CHECKPOINT_PROBLEM_LINES=20
 WATCH_SECONDS=60
 LOG_KEEP=1000
 LOG_MAX=2000
+# Days: how long the failures log keeps a line.
+FAILURES_DAYS=${TEAM_TIMERS_FAILURES_DAYS:-30}
 SERVICE=agent-team-heartbeat
 HEARTBEAT_LABEL=agent-team.heartbeat
 CAFFEINATE_LABEL=agent-team.caffeinate
@@ -206,6 +212,7 @@ program=$bin/team-timers
 job_path=$PATH
 state=$HOME/.local/state/agent-team
 log=$state/heartbeat.log
+failures=$state/heartbeat-failures.log
 offline=$state/offline
 refused=$state/login-refused
 units=$HOME/.config/systemd/user
@@ -467,12 +474,29 @@ yes_no() {
   if [[ $1 == true ]]; then echo yes; else echo no; fi
 }
 
-# One line of the heartbeat log, also on stdout: log <step> <what happened>
+# One line of the heartbeat log, also on stdout, and in each <other log> given:
+# log <step> <what happened> [<other log>...]
 log() {
-  local line
+  local line file
   line="$(date -u +%FT%TZ) $1: $2"
-  printf '%s\n' "$line" >>"$log"
+  for file in "$log" "${@:3}"; do printf '%s\n' "$line" >>"$file"; done
   printf '%s\n' "$line"
+}
+
+# A line that reports a problem: logged, and the same line, its time included, in the failures
+# log. Each caller decides it as it logs it, never by the text: problem <step> <what happened>
+problem() {
+  log "$1" "$2" "$failures"
+}
+
+# Drop the failures log's lines whose leading UTC time is more than FAILURES_DAYS days old, the
+# file written whole and moved into place.
+trim_failures() {
+  local cutoff
+  [[ -f $failures ]] || return 0
+  cutoff=$(date -u -d "-$FAILURES_DAYS days" +%FT%TZ)
+  awk -v cutoff="$cutoff" '!($1 ~ /^[0-9][0-9][0-9][0-9]-/ && $1 < cutoff)' "$failures" >"$failures.$$"
+  mv -f "$failures.$$" "$failures"
 }
 
 # The first line a sibling command wrote to stderr (in $err), without its "<script>: " prefix.
@@ -493,8 +517,11 @@ fence_step() {
   local why rc=0 out
   why=$(fence_reason) || return 1
   out=$(team team-timers disable 2>"$err") || rc=$?
-  ((rc == 0)) || out="the heartbeat could not be disabled: $(first_error)"
-  log lease "$machine is $why; $out"
+  if ((rc == 0)); then
+    log lease "$machine is $why; $out"
+  else
+    problem lease "$machine is $why; the heartbeat could not be disabled: $(first_error)"
+  fi
   exit "$rc"
 }
 
@@ -527,7 +554,7 @@ probe_step() {
   first=$(date -u +%FT%TZ)
   probe_once || rc=$?
   if ((rc == 1)) && [[ ! -e $offline ]]; then
-    log probe "GitHub unreachable ($PROBE_REASON); trying again in ${RETRY_SECONDS}s"
+    problem probe "GitHub unreachable ($PROBE_REASON); trying again in ${RETRY_SECONDS}s"
     sleep "$RETRY_SECONDS"
     rc=0
     probe_once || rc=$?
@@ -543,7 +570,7 @@ probe_step() {
     1) go_offline "$first" ;;
     2) login_refused ;;
     *)
-      log probe "cannot ask GitHub: $PROBE_REASON"
+      problem probe "cannot ask GitHub: $PROBE_REASON"
       exit 1
       ;;
   esac
@@ -555,11 +582,11 @@ go_offline() {
   local since post
   if [[ -e $offline ]]; then
     since=$(jq -r '.since // empty' "$offline" 2>/dev/null) || since=''
-    log probe "GitHub unreachable since ${since:-an unknown time} ($PROBE_REASON); the team is still holding"
+    problem probe "GitHub unreachable since ${since:-an unknown time} ($PROBE_REASON); the team is still holding"
     exit 75
   fi
   if ! jq -e --arg machine "$machine" '.holder == $machine and .state == "held"' "$state/lease.json" >/dev/null 2>&1; then
-    log probe "GitHub unreachable ($PROBE_REASON); $machine does not hold the lease, so there is no team to hold"
+    problem probe "GitHub unreachable ($PROBE_REASON); $machine does not hold the lease, so there is no team to hold"
     exit 75
   fi
   jq -n --arg since "$1" '{since: $since, posted: false}' >"$offline.$$"
@@ -571,7 +598,7 @@ go_offline() {
   else
     post=" the post to #coordinator failed ($POST_ERROR); it goes with the back message"
   fi
-  log probe "GitHub unreachable since $1 ($PROBE_REASON); the team is holding;$post"
+  problem probe "GitHub unreachable since $1 ($PROBE_REASON); the team is holding;$post"
   exit 75
 }
 
@@ -587,20 +614,20 @@ login_refused() {
       post="; the post to #coordinator failed ($POST_ERROR)"
     fi
   fi
-  log probe "GitHub refuses $machine's login ($PROBE_REASON); not offline$post"
+  problem probe "GitHub refuses $machine's login ($PROBE_REASON); not offline$post"
   exit 1
 }
 
 # The back step, on the first probe that answers while offline: renew at once; renewed, clear
 # the flag and tell #coordinator; a machine that lost the lease meanwhile is fenced by the renew.
 back_step() {
-  local since back rc=0 out text posted told
+  local since back rc=0 out text posted
   read -r since posted < <(jq -r '"\(.since // "") \(.posted // false)"' "$offline" 2>/dev/null) || since='' posted=false
   out=$(team team-lease renew 2>"$err") || rc=$?
   case $rc in
     0) ;;
     75)
-      log back "GitHub answers, but the renew did not: $(first_error); the team is still holding"
+      problem back "GitHub answers, but the renew did not: $(first_error); the team is still holding"
       exit 75
       ;;
     *)
@@ -609,7 +636,7 @@ back_step() {
         log back "$(first_error)"
         return
       fi
-      log back "GitHub answers; not renewed: $(first_error)"
+      problem back "GitHub answers; not renewed: $(first_error)"
       exit 1
       ;;
   esac
@@ -618,11 +645,10 @@ back_step() {
   text="GitHub back at $(clock "$back") (unreachable from $(clock "$since")); $(held_tasks)"
   [[ $posted == true ]] || text="$(outage_text "$since")"$'\n'"$text"
   if post "$text"; then
-    told="#coordinator is told"
+    log back "$out; GitHub back at $back (unreachable from $since); #coordinator is told"
   else
-    told="the post to #coordinator failed ($POST_ERROR)"
+    problem back "$out; GitHub back at $back (unreachable from $since); the post to #coordinator failed ($POST_ERROR)"
   fi
-  log back "$out; GitHub back at $back (unreachable from $since); $told"
   holding=1
 }
 
@@ -671,11 +697,11 @@ lease_step() {
   case $rc in
     0) ;;
     75)
-      log lease "not checked: $(first_error)"
+      problem lease "not checked: $(first_error)"
       exit 75
       ;;
     *)
-      log lease "not checked: $(first_error)"
+      problem lease "not checked: $(first_error)"
       exit 1
       ;;
   esac
@@ -717,19 +743,19 @@ checkpoint_step() {
     ((shown < CHECKPOINT_PROBLEM_LINES)) || continue
     shown=$((shown + 1))
     line=${line#team-checkpoint: }
-    if [[ $line == "warning: "* ]]; then log checkpoint "$line"; else log checkpoint "failed: $line"; fi
+    if [[ $line == "warning: "* ]]; then problem checkpoint "$line"; else problem checkpoint "failed: $line"; fi
   done <"$err"
   if ((total > shown)); then
     kind=warning
     ((rc == 0)) || kind=failed
-    log checkpoint "$kind: and $((total - shown)) more problem lines"
+    problem checkpoint "$kind: and $((total - shown)) more problem lines"
   fi
   case $rc in
     0) ;;
     124 | 137) step_failed checkpoint "timed out after $CHECKPOINT_TIMEOUT s" ;;
     *)
       failed=1
-      ((total)) || log checkpoint "failed: team-checkpoint exited $rc with no reason on stderr"
+      ((total)) || problem checkpoint "failed: team-checkpoint exited $rc with no reason on stderr"
       ;;
   esac
 }
@@ -741,8 +767,8 @@ inbox_step() {
   out=$(TEAM_HOME=$TEAM_HOME timeout --kill-after="$KILL_SECONDS" "$INBOX_TIMEOUT" "$bin/team-inbox" 2>"$err" {run_fd}>&-) || rc=$?
   case $rc in
     0) [[ $out != posted* ]] || log inbox "$out" ;;
-    124 | 137) log inbox "failed: timed out after $INBOX_TIMEOUT s" ;;
-    *) log inbox "failed: $(grep -q . "$err" && first_error || echo "team-inbox exited $rc")" ;;
+    124 | 137) problem inbox "failed: timed out after $INBOX_TIMEOUT s" ;;
+    *) problem inbox "failed: $(grep -q . "$err" && first_error || echo "team-inbox exited $rc")" ;;
   esac
 }
 
@@ -756,13 +782,13 @@ finished_step() {
   [[ -e $ledger ]] || ledger=/dev/null
   if ! sessions=$(timeout --kill-after="$KILL_SECONDS" "$FINISHED_CALL_TIMEOUT" claude agents --json 2>/dev/null </dev/null {run_fd}>&- |
     jq -ce 'select(type == "array")' 2>/dev/null); then
-    log finished "warning: cannot read the live session list (claude agents --json), so no finished session was stopped"
+    problem finished "warning: cannot read the live session list (claude agents --json), so no finished session was stopped"
     return 0
   fi
   if ! finished=$(ledger_jq 'ledger_events | by_task as $tasks | plan_tasks($sessions)[] | .task as $task | .finished[]
       | select(.role != "planner" or any($tasks[$task][]; .event == "plan-approved")) | [$task, .role, .session] | @tsv' \
     -nRr --argjson sessions "$sessions" "$ledger" 2>"$err"); then
-    log finished "warning: cannot read $ledger ($(first_error)), so no finished session was stopped"
+    problem finished "warning: cannot read $ledger ($(first_error)), so no finished session was stopped"
     return 0
   fi
   while IFS=$'\t' read -r task role session; do
@@ -772,10 +798,10 @@ finished_step() {
     elif out=$(timeout --kill-after="$KILL_SECONDS" "$FINISHED_CALL_TIMEOUT" claude stop "$session" 2>&1 </dev/null {run_fd}>&-); then
       log finished "stopped $task-$role $session: its work is handed on"
     else
-      log finished "warning: could not stop $task-$role $session ($(grep -m1 . <<<"$out" || echo "claude stop failed with no reason given"))"
+      problem finished "warning: could not stop $task-$role $session ($(grep -m1 . <<<"$out" || echo "claude stop failed with no reason given"))"
     fi
   done <<<"$finished"
-  ((left == 0)) || log finished "warning: $left finished $( ((left == 1)) && echo session || echo sessions) left for the next run: no stop starts $FINISHED_TIMEOUT s into the step"
+  ((left == 0)) || problem finished "warning: $left finished $( ((left == 1)) && echo session || echo sessions) left for the next run: no stop starts $FINISHED_TIMEOUT s into the step"
 }
 
 # The capacity step, on the holder after the finished step: team-capacity sample, then
@@ -860,7 +886,7 @@ run_step() {
 # A step that failed, logged as "<step>: failed: <reason>": the steps after it still run, and the
 # run exits 1 at its end.
 step_failed() {
-  log "$1" "failed: $2"
+  problem "$1" "failed: $2"
   failed=1
 }
 
@@ -871,7 +897,7 @@ renew() {
   case $rc in
     0) log lease "$out" ;;
     75)
-      log lease "not renewed: $(first_error)"
+      problem lease "not renewed: $(first_error)"
       exit 75
       ;;
     *)
@@ -879,7 +905,7 @@ renew() {
         log lease "$(first_error)"
         return
       fi
-      log lease "not renewed: $(first_error)"
+      problem lease "not renewed: $(first_error)"
       exit 1
       ;;
   esac
@@ -889,15 +915,16 @@ run_heartbeat() {
   mkdir -p "$state"
   exec {run_fd}>>"$state/heartbeat.lock"
   if ! flock -n "$run_fd"; then
-    log run "another run is still going; skipped"
+    problem run "another run is still going; skipped"
     return
   fi
   if [[ -f $log ]] && (($(wc -l <"$log") > LOG_MAX)); then
     tail -n "$LOG_KEEP" "$log" >"$log.$$"
     mv -f "$log.$$" "$log"
   fi
+  trim_failures
   if ! machine=$(machine_name 2>"$err"); then
-    log run "$(first_error)"
+    problem run "$(first_error)"
     exit 1
   fi
   fence_step || true
@@ -973,7 +1000,7 @@ bounded_run() {
   if [[ -e $fired ]]; then
     wait "$watchdog" || true
     rm -f "$fired"
-    log run "failed: timed out after $RUN_TIMEOUT s"
+    problem run "failed: timed out after $RUN_TIMEOUT s"
     exit 1
   fi
   stop_tree "$watchdog" 0
