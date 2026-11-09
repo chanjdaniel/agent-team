@@ -50,7 +50,7 @@ denied_lines() {
   assert_equal "$stderr" ""
   run -1 grep -q -e "$secret" -e example.invalid -e toolu_ -e transcript "$TEAM_HOME/ledger.jsonl"
   # The check is the coordinator's reading: team-log refuses the builder the setup exports.
-  AGENT_TEAM_ROLE= run_bin -0 team-log --check
+  AGENT_TEAM_ROLE='' run_bin -0 team-log --check
 }
 
 @test "the label is the reason's leading bracket only; any other reason is no verdict" {
@@ -74,13 +74,13 @@ Bash: no verdict
 Bash: no verdict
 mcp__prod-write__update: Production Deploy"
   run -1 grep -q "$secret" "$TEAM_HOME/ledger.jsonl"
-  AGENT_TEAM_ROLE= run_bin -0 team-log --check
+  AGENT_TEAM_ROLE='' run_bin -0 team-log --check
 }
 
 @test "an input with no session id logs the denial without a session" {
   hook "$(denial | jq -c 'del(.session_id)')"
   assert_equal "$(denied_lines)" '{"task":"T7","event":"denied","role":"builder","what":"Bash","why":"Data Exfiltration"}'
-  AGENT_TEAM_ROLE= run_bin -0 team-log --check
+  AGENT_TEAM_ROLE='' run_bin -0 team-log --check
 }
 
 @test "a session it cannot place on an open task appends nothing" {
