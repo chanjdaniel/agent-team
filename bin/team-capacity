@@ -123,13 +123,13 @@
 #          Then the cost samples: what it saw running is kept in
 #          ~/.local/state/agent-team/capacity/live.json, and each item that ended appends one line
 #          {at, kind, peak_bytes, cpu_seconds, seconds, measure ("docker" for a stack, its docker
-#          stats use, else "working_set")} to costs.jsonl beside it: a session (session:<role>) the session list no longer has, its peak the
-#          highest use the readings saw and its CPU the last; a stack of a registered project
-#          (stack:<project>) Docker no longer runs, its peak the highest memory the readings saw;
-#          the gate (gate) once no pipeline runs, its peak the highest memory seen while one ran,
-#          its CPU the daemon's since the first reading that saw it run. seconds runs from the
-#          first reading that saw it to the last. A session list or Docker that did not answer
-#          ends nothing.
+#          stats use, else "working_set")} to costs.jsonl beside it: a session (session:<role>) the
+#          session list no longer has, its peak the highest use the readings saw and its CPU the
+#          last; a stack of a registered project (stack:<project>) Docker no longer runs, its peak
+#          the highest memory the readings saw; the gate (gate) once no pipeline runs, its peak the
+#          highest memory seen while one ran, its CPU the daemon's since the first reading that saw
+#          it run. seconds runs from the first reading that saw it to the last. A session list or
+#          Docker that did not answer ends nothing.
 # status   The newest reading: a line with what other programs and the team use, then one per
 #          task with its use, its sessions and its stacks, and the gate while it runs a pipeline.
 #          With no reading of the last 10 minutes (no heartbeat takes them) it first takes one as
@@ -883,14 +883,15 @@ session_list() {
 }
 
 # Give each session admission in $work/admitted.json whose launch is logged that launch's session
-# (session), so a reading that holds the session reserves it as that admission (capacity_reservations); then drop
-# each one whose launch is logged a minute or more before the session list was read (list_read_at)
-# and whose session is gone, and add that session to freed, since the stored reading may still hold
-# it, so stopping a worker frees its room (admission_launches and stopped_admissions in
-# bin/lib/capacity.jq). admit writes admitted.json without the sessions. The session list is
-# LIVE_SESSIONS when the caller has one, else read only once such a pair exists, but never under
-# admit's lock (admit reads it first, so a slow list holds no other admission and what it leaves
-# running inherits no lock); a list or a ledger that cannot be read releases nothing.
+# (session), so a reading that holds the session reserves it as that admission
+# (capacity_reservations); then drop each one whose launch is logged a minute or more before the
+# session list was read (list_read_at) and whose session is gone, and add that session to freed,
+# since the stored reading may still hold it, so stopping a worker frees its room
+# (admission_launches and stopped_admissions in bin/lib/capacity.jq). admit writes admitted.json
+# without the sessions. The session list is LIVE_SESSIONS when the caller has one, else read only
+# once such a pair exists, but never under admit's lock (admit reads it first, so a slow list holds
+# no other admission and what it leaves running inherits no lock); a list or a ledger that cannot be
+# read releases nothing.
 release_stopped_admissions() {
   local ledger=$TEAM_HOME/ledger.jsonl pairs sessions stopped
   [[ -r $ledger ]] || return 0
