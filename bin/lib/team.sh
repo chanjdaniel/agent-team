@@ -17,7 +17,7 @@
 # only_records, records_list, records_pathspecs, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
 # own_project, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_level, image_type, discord_token, discord_api,
 # daniel_message, refresh_inbox, github, base_merge, clean_base_merges, pr_part, pr_file_reasons, task_state_json, pr_standing_word, loose_objects, pack_size, story_file and findings_file, and sets IMAGE_TYPE,
-# PACK_LOOSE, COORDINATOR_CHANNEL and INTERVIEW_CHANNEL.
+# PACK_LOOSE, COMMAND_START, COORDINATOR_CHANNEL and INTERVIEW_CHANNEL.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
 # shellcheck shell=bash
 
@@ -68,6 +68,14 @@ IMAGE_TYPE='png|jpe?g|gif|webp|bmp|tiff?|ico|svg|heic|heif|avif'
 # pack, so none stays loose); team-doctor's team home pack line warns at twice as many.
 # shellcheck disable=SC2034 # read by team-timers and team-doctor
 PACK_LOOSE=200
+
+# Where a command starts in a Bash command's text, the opening of an extended regular expression a
+# hook follows with a command's name: at the start, after a separator, a parenthesis, a backtick or
+# a line break, past the reserved words a command may follow there ({, !, if, then, else, elif,
+# do, while, until and time), any variable assignments and a directory. bin/hooks/lease-fence and
+# bin/hooks/command-guard read it.
+# shellcheck disable=SC2034 # read by the hooks
+COMMAND_START=$'(^|[;&|(`\n])[[:space:]]*((\\{|!|if|then|else|elif|do|while|until|time)[[:space:]]+)*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|]*/)?'
 
 # Refuse with a reason on stderr.
 die() {
@@ -502,13 +510,14 @@ worker_refusal() {
 # Print why a worker session of <role> may not load toolkit <name>, or fail when it may: the
 # coordinator toolkit is claude-coordinator's alone and the frontend toolkit Daniel's own sessions'
 # (it attaches to their one Agent Chrome window), so no worker loads either; a production toolkit
-# (prod-*) is the ops role's alone. The one list of them, which team-worker and team-load-check
-# read; an empty <role> judges only the toolkits no worker loads: toolkit_refusal <name> <role or "">
+# (prod-*, and vercel-read) is the ops role's alone. The one list of them, which team-worker and
+# team-load-check read; an empty <role> judges only the toolkits no worker loads:
+# toolkit_refusal <name> <role or "">
 toolkit_refusal() {
   case $1 in
     coordinator) echo "toolkit 'coordinator' is the coordinator's own (claude-coordinator loads it)" ;;
     frontend) echo "toolkit 'frontend' is Daniel's own (claude --plugin-dir in their session): it attaches to their one Agent Chrome window, never a worker's" ;;
-    prod-*) [[ -n $2 && $2 != ops ]] || return 1; echo "toolkit '$1' is for the ops role only" ;;
+    prod-* | vercel-read) [[ -n $2 && $2 != ops ]] || return 1; echo "toolkit '$1' is for the ops role only" ;;
     *) return 1 ;;
   esac
 }

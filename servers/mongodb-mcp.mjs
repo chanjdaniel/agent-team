@@ -1,5 +1,5 @@
 // Start the pinned MongoDB MCP server in this process, with a connection string read from
-// 1Password: the shared body of each toolkit's scripts/start-server.mjs.
+// 1Password: the shared body of each MongoDB toolkit's scripts/start-server.mjs.
 //
 //   await startMongodbMcp({ name, reference, settings })
 //
@@ -11,11 +11,10 @@
 // process's /proc/<pid>/environ, and not in a child's, since there are none.
 // On any failure it exits 1 before the server starts, with one line on stderr that never holds
 // the value.
-import childProcess from "node:child_process";
 import { readFileSync } from "node:fs";
-import { syncBuiltinESMExports } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { readSecrets, refuseChildProcesses } from "./op-secret.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const serverDir = join(here, "node_modules", "mongodb-mcp-server");
@@ -30,30 +29,10 @@ const fixedSettings = {
   MDB_MCP_DISABLE_UNTRUSTED_DATA_WARNING: "false",
 };
 
-// 1Password gives up on its own prompt after about 60 seconds; this is a backstop, inside the
-// session's MCP_TIMEOUT of 120 seconds.
-const opTimeoutMs = 90_000;
-
 export async function startMongodbMcp({ name, reference, settings }) {
-  let value;
   const fail = (reason) => {
-    let line = String(reason).split("\n").map((part) => part.trim()).filter(Boolean).join(" ");
-    if (value) line = line.replaceAll(value, "[redacted]");
-    process.stderr.write(`${name}: ${line}\n`);
+    process.stderr.write(`${name}: ${reason}\n`);
     process.exit(1);
-  };
-  const op = (args, what) => {
-    try {
-      return childProcess.execFileSync("op", args, {
-        stdio: ["ignore", "pipe", "pipe"],
-        encoding: "utf8",
-        timeout: opTimeoutMs,
-      });
-    } catch (error) {
-      if (error.code === "ENOENT") fail("op is not on PATH");
-      if (error.signal) fail(`${what} did not finish (${error.signal})`);
-      fail(`${what} failed: ${error.stderr?.trim().split("\n").at(-1) || `exit ${error.status}`}`);
-    }
   };
 
   if (process.argv.length > 2) fail("takes no arguments");
@@ -65,10 +44,9 @@ export async function startMongodbMcp({ name, reference, settings }) {
     fail("the pinned MongoDB MCP server is not installed: run servers/install");
   }
 
-  value = op(["read", "--no-newline", reference], "op read");
-  op(["signout"], "op signout");
-  if (!value.trim()) fail("op read returned an empty value");
-  if (!/^mongodb(\+srv)?:\/\//.test(value)) fail("op read returned something that is not a MongoDB connection string");
+  const [value] = readSecrets(name, [reference], (read) => {
+    if (!/^mongodb(\+srv)?:\/\//.test(read)) return "op read returned something that is not a MongoDB connection string";
+  });
 
   for (const key of Object.keys(process.env)) {
     if (key.startsWith("MDB_MCP_")) delete process.env[key];
@@ -77,13 +55,7 @@ export async function startMongodbMcp({ name, reference, settings }) {
 
   // A child would start with this environment, connection string included. The server's only
   // child is node-machine-id's shell for the device id, which falls back to "unknown".
-  const refuse = () => {
-    throw new Error(`${name}: child processes are disabled`);
-  };
-  for (const fn of ["spawn", "spawnSync", "exec", "execSync", "execFile", "execFileSync", "fork"]) {
-    childProcess[fn] = refuse;
-  }
-  syncBuiltinESMExports();
+  refuseChildProcesses(name);
 
   await import(pathToFileURL(entry).href);
 }

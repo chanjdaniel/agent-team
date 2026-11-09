@@ -5,7 +5,7 @@
   "disableBundledSkills": true,
   "disableSkillShellExecution": true,
   "permissions": {
-    "allow": ["mcp__prod-read__*", "Edit(./.scratch/**)"],
+    "allow": ["mcp__prod-read__*", "mcp__vercel-read__*", "Edit(./.scratch/**)"],
     "ask": [
       "mcp__*prod-write*",
       "mcp__prod-write__insert-many",
@@ -35,19 +35,19 @@
         "hooks": [{ "type": "command", "command": "@TEAM_CODE@/bin/hooks/scratch-only-edits" }]
       },
       {
-        "matcher": "^mcp__.*prod-(read|write).*__",
+        "matcher": "^mcp__.*(prod-(read|write)|vercel-read).*__",
         "hooks": [{ "type": "command", "command": "@TEAM_CODE@/bin/hooks/ops-log", "args": ["@TASK_DIR@"], "onFailure": "block" }]
       }
     ],
     "PostToolUse": [
       {
-        "matcher": "^mcp__.*prod-(read|write).*__",
+        "matcher": "^mcp__.*(prod-(read|write)|vercel-read).*__",
         "hooks": [{ "type": "command", "command": "@TEAM_CODE@/bin/hooks/ops-log", "args": ["@TASK_DIR@"] }]
       }
     ],
     "PostToolUseFailure": [
       {
-        "matcher": "^mcp__.*prod-(read|write).*__",
+        "matcher": "^mcp__.*(prod-(read|write)|vercel-read).*__",
         "hooks": [{ "type": "command", "command": "@TEAM_CODE@/bin/hooks/ops-log", "args": ["@TASK_DIR@"] }]
       }
     ]
