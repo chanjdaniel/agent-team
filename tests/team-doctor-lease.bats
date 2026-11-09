@@ -171,7 +171,7 @@ FAIL salvage T2 site"
   assert_equal "$(line_of offline)" "WARN offline: offline since $(jq -r .since "$HOME/.local/state/agent-team/offline") (35 minutes); fix: check this machine's network; the heartbeat resumes the team when GitHub answers"
 }
 
-@test "the heartbeat line: PASS enabled on the holder or disabled elsewhere, FAIL otherwise with the command" {
+@test "the heartbeat line: PASS enabled on the holder or disabled elsewhere, FAIL otherwise with the command, WARN for a job not as defined" {
   only_checks 240-heartbeat.sh
   tools_at arch
   make_machine laptop
@@ -179,12 +179,24 @@ FAIL salvage T2 site"
   run_bin -1 team-doctor
   assert_equal "$(line_of heartbeat)" "FAIL heartbeat: disabled, but this machine holds the lease; fix: team-timers enable"
 
+  # Enabled on the holder, but as an older checkout wrote it: a warning, which enable puts right.
+  "$CODE_CHECKOUT/bin/team-timers" enable >/dev/null
+  run_bin -0 team-doctor
+  assert_equal "$(line_of heartbeat)" "PASS heartbeat: enabled, and this machine holds the lease"
+  sed -i '/^TimeoutStartSec=/d' "$HOME/.config/systemd/user/agent-team-heartbeat.service"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of heartbeat)" "WARN heartbeat: enabled, but the installed job is not the one this checkout defines; fix: team-timers enable"
+  "$CODE_CHECKOUT/bin/team-timers" enable >/dev/null
+  run_bin -0 team-doctor
+  assert_equal "$(line_of heartbeat)" "PASS heartbeat: enabled, and this machine holds the lease"
+  "$REPO_ROOT/bin/team-timers" disable >/dev/null
+
   run -0 "$REPO_ROOT/bin/team-lease" release
   run_bin -0 team-doctor
   assert_equal "$(line_of heartbeat)" "PASS heartbeat: disabled, and this machine does not hold the lease"
 
   on_machine laptop run -0 "$REPO_ROOT/bin/team-lease" take
-  "$REPO_ROOT/bin/team-timers" enable >/dev/null
+  "$CODE_CHECKOUT/bin/team-timers" enable >/dev/null
   run_bin -1 team-doctor
   assert_equal "$(line_of heartbeat)" "FAIL heartbeat: enabled, but this machine does not hold the lease; fix: team-timers disable"
 

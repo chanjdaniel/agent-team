@@ -45,6 +45,7 @@ Type=oneshot
 Environment="TEAM_HOME=$TEAM_HOME"
 Environment="PATH=$1"
 ExecStart="$REPO_ROOT/bin/team-timers" run
+TimeoutStartSec=4500
 EOF
 }
 
@@ -182,6 +183,19 @@ EOF
   assert_equal "$(stub_calls systemctl | grep -v '"is-')" '["--user","enable","--now","agent-team-heartbeat.timer"]'
 }
 
+@test "on Linux, enable rewrites and reloads an installed service with no TimeoutStartSec" {
+  run_bin -0 team-timers enable
+  # The service as enable wrote it before it had a start timeout.
+  expected_service "$PATH" | grep -v '^TimeoutStartSec=' >"$units/agent-team-heartbeat.service"
+  : >"$STUB_CALLS/systemctl.log"
+  run_bin -0 team-timers enable
+  assert_equal "$output" "the heartbeat is enabled: agent-team-heartbeat.timer runs $REPO_ROOT/bin/team-timers run every 5 minutes"
+  assert_equal "$(cat "$units/agent-team-heartbeat.service")" "$(expected_service "$PATH")"
+  assert_equal "$(grep -c '^TimeoutStartSec=4500$' "$units/agent-team-heartbeat.service")" 1
+  assert_equal "$(stub_calls systemctl | grep -v '"is-')" "$(printf '%s\n' '["--user","daemon-reload"]' \
+    '["--user","enable","--now","agent-team-heartbeat.timer"]' '["--user","restart","agent-team-heartbeat.timer"]')"
+}
+
 @test "on macOS, enable and disable are idempotent, a changed LaunchAgent is reloaded, and caffeinate goes with the heartbeat" {
   as_macos
   local uid
@@ -218,7 +232,7 @@ EOF
   run_bin -0 team-timers status
   assert_equal "$output" "$(printf '%s\n' 'installed: no' 'enabled: no' 'last run: never')"
   run_bin -0 team-timers status --json
-  jq -e '. == {installed: false, enabled: false, last_run: null}' <<<"$output"
+  jq -e '. == {installed: false, enabled: false, current: null, last_run: null}' <<<"$output"
 
   run_bin -0 team-timers enable
   run_bin -0 team-timers run
@@ -228,7 +242,7 @@ EOF
   run_bin -0 team-timers status
   assert_equal "$output" "$(printf '%s\n' 'installed: yes' 'enabled: yes' "last run: $last")"
   run_bin -0 team-timers status --json
-  jq -e --arg last "$last" '. == {installed: true, enabled: true, last_run: $last}' <<<"$output"
+  jq -e --arg last "$last" '. == {installed: true, enabled: true, current: true, last_run: $last}' <<<"$output"
 
   # Installed but stopped is not enabled.
   rm "$HOME/.fake-systemd/agent-team-heartbeat.timer.active"
@@ -237,7 +251,7 @@ EOF
 
   as_macos
   run_bin -0 team-timers status --json
-  jq -e --arg last "$last" '. == {installed: false, enabled: false, last_run: $last}' <<<"$output"
+  jq -e --arg last "$last" '. == {installed: false, enabled: false, current: null, last_run: $last}' <<<"$output"
   run_bin -0 team-timers enable
   run_bin -0 team-timers status --json
   jq -e '.installed and .enabled' <<<"$output"
@@ -245,6 +259,55 @@ EOF
   launchctl bootout "gui/$(id -u)/agent-team.caffeinate"
   run_bin -0 team-timers status --json
   jq -e '.installed and (.enabled | not)' <<<"$output"
+}
+
+@test "status says whether the installed job is the one this checkout defines, the PATH it was enabled with aside" {
+  run_bin -0 team-timers enable
+  # Another shell's PATH is no change: the job keeps the one enable captured.
+  PATH=$PATH:$BATS_TEST_TMPDIR/elsewhere run_bin -0 team-timers status --json
+  jq -e '.installed and .enabled and .current == true' <<<"$output"
+  run_bin -0 team-timers status
+  assert_equal "${lines[0]}" "installed: yes"
+
+  # A service with no start timeout, as an older checkout wrote it.
+  sed -i '/^TimeoutStartSec=/d' "$units/agent-team-heartbeat.service"
+  run_bin -0 team-timers status --json
+  jq -e '.installed and .enabled and .current == false' <<<"$output"
+  run_bin -0 team-timers status
+  assert_equal "${lines[0]}" "installed: yes, but not as this checkout defines it (team-timers enable rewrites it)"
+  run_bin -0 team-timers enable
+  run_bin -0 team-timers status --json
+  jq -e '.current == true' <<<"$output"
+
+  # Another checkout's job, or another team home's, is not this one's.
+  sed -i "s#^ExecStart=.*#ExecStart=\"$HOME/other/bin/team-timers\" run#" "$units/agent-team-heartbeat.service"
+  run_bin -0 team-timers status --json
+  jq -e '.current == false' <<<"$output"
+  run_bin -0 team-timers enable
+  sed -i "s#^Environment=\"TEAM_HOME=.*#Environment=\"TEAM_HOME=$HOME/other-home\"#" "$units/agent-team-heartbeat.service"
+  run_bin -0 team-timers status --json
+  jq -e '.current == false' <<<"$output"
+
+  # Half installed is not current either.
+  run_bin -0 team-timers enable
+  rm "$units/agent-team-heartbeat.timer"
+  run_bin -0 team-timers status --json
+  jq -e '.installed == false and .current == false' <<<"$output"
+
+  # On macOS, the heartbeat's LaunchAgent or caffeinate's.
+  as_macos
+  run_bin -0 team-timers status --json
+  jq -e '.current == null' <<<"$output"
+  run_bin -0 team-timers enable
+  PATH=$PATH:$BATS_TEST_TMPDIR/elsewhere run_bin -0 team-timers status --json
+  jq -e '.installed and .enabled and .current == true' <<<"$output"
+  echo "<!-- stale -->" >>"$agents/agent-team.caffeinate.plist"
+  run_bin -0 team-timers status --json
+  jq -e '.current == false' <<<"$output"
+  run_bin -0 team-timers enable
+  sed -i "s#<string>$REPO_ROOT/bin/team-timers</string>#<string>$HOME/other/bin/team-timers</string>#" "$agents/agent-team.heartbeat.plist"
+  run_bin -0 team-timers status
+  assert_equal "${lines[0]}" "installed: yes, but not as this checkout defines it (team-timers enable rewrites it)"
 }
 
 @test "run on the holder renews only once the last renewal is 15 minutes old" {
@@ -379,16 +442,32 @@ SH
   [[ $(grep ' checkpoint: failed: ' <<<"$output") =~ ^[0-9T:Z-]+" checkpoint: failed: team home: not on a branch, so the records are not committed"$'\n'[0-9T:Z-]+" checkpoint: failed: T1 home: cannot push wip/home/T1 to the team home's origin: "[^$'\n']+$'\n'[0-9T:Z-]+" checkpoint: failed: team home: not on a branch, so the records are not committed"$ ]]
 }
 
-@test "a checkpoint with more than 20 problem lines logs 20 of them and a count of the rest" {
-  # A checkpoint of a code checkout of the test's own that fails with 23 lines, which no real
-  # sandbox makes cheaply (23 broken worktrees).
+# Run the heartbeat from a code checkout of the test's own (CODE_CHECKOUT) whose team-checkpoint
+# is the bash script on stdin, for a checkpoint no real sandbox makes cheaply: fake_checkpoint
+fake_checkpoint() {
   CODE_CHECKOUT=$BATS_TEST_TMPDIR/code
   mkdir -p "$CODE_CHECKOUT"
   copy_bin "$CODE_CHECKOUT/bin"
   rm "$CODE_CHECKOUT/bin/team-checkpoint"
-  printf '#!/usr/bin/env bash\nfor n in {1..22}; do echo "team-checkpoint: T$n home: cannot push wip/home/T$n" >&2; done\necho "team-checkpoint: warning: usage: cannot export" >&2\nexit 1\n' \
-    >"$CODE_CHECKOUT/bin/team-checkpoint"
+  { echo '#!/usr/bin/env bash'; cat; } >"$CODE_CHECKOUT/bin/team-checkpoint"
   chmod +x "$CODE_CHECKOUT/bin/team-checkpoint"
+}
+
+# The processes whose ids are listed in the file <file> that still run, one line each.
+still_running() {
+  local pid
+  while read -r pid; do
+    if [[ -n $pid ]] && kill -0 "$pid" 2>/dev/null; then echo "$pid still runs"; fi
+  done <"$1"
+}
+
+@test "a checkpoint with more than 20 problem lines logs 20 of them and a count of the rest" {
+  # 23 lines would need 23 broken worktrees.
+  fake_checkpoint <<'SH'
+for n in {1..22}; do echo "team-checkpoint: T$n home: cannot push wip/home/T$n" >&2; done
+echo "team-checkpoint: warning: usage: cannot export" >&2
+exit 1
+SH
   run_bin -1 team-timers run
   assert_equal "$(grep -c ' checkpoint: ' <<<"$output")" 21
   [[ $(grep ' checkpoint: ' <<<"$output" | head -n 1) =~ " checkpoint: failed: T1 home: cannot push wip/home/T1"$ ]]
@@ -406,6 +485,84 @@ SH
   [[ -e $HOME/.local/state/agent-team/last-checkpoint ]]
 }
 
+@test "a checkpoint still running at its time limit is stopped with what it started, logged, and the later steps still run" {
+  docker_machine
+  stack_json '{"heartbeat_janitor": true}'
+  add_loose 200
+  # A checkpoint deaf to SIGTERM, as a hung git under it may be, with a child of its own.
+  local hung=$BATS_TEST_TMPDIR/hung
+  fake_checkpoint <<SH
+trap '' TERM
+echo "a line before it hangs"
+command -p sleep 300 &
+echo "\$!" >>'$hung'
+echo "\$\$" >>'$hung'
+wait
+SH
+  TEAM_TIMERS_CHECKPOINT_SECONDS=1 TEAM_TIMERS_KILL_SECONDS=1 run_bin -1 team-timers run
+  assert_equal "$output" "$(cat "$log")"
+  assert_equal "$(steps "$output")" "lease checkpoint pack janitor"
+  assert_equal "$(grep ' checkpoint: ' <<<"$output" | cut -d' ' -f2-)" "checkpoint: a line before it hangs
+checkpoint: failed: timed out after 1 s"
+  [[ -s $(day_report) ]]
+  assert_equal "$(grep -c . "$hung")" 2
+  assert_equal "$(still_running "$hung")" ""
+  flock -n "$HOME/.local/state/agent-team/heartbeat.lock" true
+}
+
+@test "a checkpoint that fails, and one that exits 75, are each a failed step: the pack and the janitor still run, and the run exits 1" {
+  docker_machine
+  stack_json '{"heartbeat_janitor": true}'
+  add_loose 200
+  mkdir -p "$TEAM_HOME/memory/home"
+  echo "- a note" >"$TEAM_HOME/memory/home/MEMORY.md"
+  git -C "$TEAM_HOME" checkout -q --detach
+  run_bin -1 team-timers run
+  assert_equal "$(steps "$output")" "lease checkpoint pack janitor"
+  [[ $(grep ' checkpoint: failed: ' <<<"$output" | head -n 1) =~ ^[0-9T:Z-]+" checkpoint: failed: team home: not on a branch, so the records are not committed"$ ]]
+  assert_contains "$(grep ' pack: ' <<<"$output")" "pack: packed "
+  [[ -s $(day_report) ]]
+  [[ ! -e $HOME/.local/state/agent-team/last-checkpoint ]]
+
+  # 75: another checkpoint still running, or GitHub unreachable.
+  git -C "$TEAM_HOME" checkout -q dev
+  rm "$(day_report)"
+  add_loose 200
+  fake_checkpoint <<'SH'
+echo "team-checkpoint: another checkpoint is still running" >&2
+exit 75
+SH
+  run_bin -1 team-timers run
+  assert_equal "$(steps "$output")" "lease checkpoint pack janitor"
+  assert_equal "$(grep ' checkpoint: ' <<<"$output" | cut -d' ' -f2-)" "checkpoint: failed: another checkpoint is still running"
+  [[ -s $(day_report) ]]
+}
+
+@test "a run still going at its time limit is stopped with everything it started, logged, exits 1, and the next run takes the lock" {
+  # A session list that never answers and is deaf to SIGTERM, under a step's own timeout, whose
+  # process group the run's own signal does not reach.
+  local hung=$BATS_TEST_TMPDIR/hung
+  stub_script claude <<SH
+[[ \$1 == agents ]] || exit 0
+trap '' TERM
+echo "\$\$" >>'$hung'
+command -p sleep 300
+SH
+  local start=$SECONDS
+  TEAM_TIMERS_RUN_SECONDS=3 TEAM_TIMERS_KILL_SECONDS=1 run_bin -1 team-timers run
+  ((SECONDS - start < 20))
+  assert_equal "$output" "$(cat "$log")"
+  [[ $(tail -n 1 <<<"$output") =~ ^[0-9T:Z-]+" run: failed: timed out after 3 s"$ ]]
+  (($(grep -c . "$hung") >= 1))
+  assert_equal "$(still_running "$hung")" ""
+  flock -n "$HOME/.local/state/agent-team/heartbeat.lock" true
+
+  rm "$STUB_FIXTURES/claude.sh"
+  stub_reply claude '[]'
+  run_bin -0 team-timers run
+  assert_equal "$(steps "$output")" "lease checkpoint"
+}
+
 @test "the inbox step edits the Waiting on you message once a run on the holder, logging only a new message or a failure, which never fails the run" {
   run_bin -0 team-timers run
   assert_equal "$(steps "$output")" "lease checkpoint"
@@ -416,14 +573,14 @@ SH
   rm "$STUB_FIXTURES/inbox/1569000000000000000.json"
   : >"$STUB_FIXTURES/inbox/calls"
   run_bin -0 team-timers run
-  assert_equal "$(steps "$output")" "lease inbox checkpoint"
+  assert_equal "$(steps "$output")" "lease checkpoint inbox"
   [[ $(grep ' inbox: ' <<<"$output") =~ ^[0-9T:Z-]+" inbox: posted https://discord.com/channels/$INBOX_GUILD/1562486564871995482/1569000000000000001"$ ]]
   assert_equal "$(inbox_calls)" "PATCH channels/1562486564871995482/messages/1569000000000000000
 POST channels/1562486564871995482/messages"
 
   echo 500 >"$STUB_FIXTURES/inbox/fail"
   run_bin -0 team-timers run
-  assert_equal "$(steps "$output")" "lease inbox checkpoint"
+  assert_equal "$(steps "$output")" "lease checkpoint inbox"
   [[ $(grep ' inbox: ' <<<"$output") =~ ^[0-9T:Z-]+" inbox: failed: Discord refused the edit of message 1569000000000000001: curl: (22) The requested URL returned error: 500"$ ]]
 }
 
@@ -550,7 +707,7 @@ stops() {
   finished_workers
   run_bin -0 team-timers run
   assert_equal "$output" "$(cat "$log")"
-  assert_equal "$(steps "$output")" "lease finished checkpoint"
+  assert_equal "$(steps "$output")" "lease checkpoint finished"
   assert_equal "$(grep ' finished: ' <<<"$output" | cut -d ' ' -f 2-)" "finished: stopped T9-planner 11111111: its work is handed on
 finished: stopped T9-reviewer 33333333: its work is handed on
 finished: stopped T9-builder 44444444: its work is handed on"
@@ -588,13 +745,13 @@ finished: stopped T9-builder 44444444: its work is handed on"
   assert_equal "$(grep ' finished: ' <<<"$output" | cut -d ' ' -f 2-)" "finished: stopped T9-planner 11111111: its work is handed on
 finished: warning: could not stop T9-reviewer 33333333 (no such session 33333333)
 finished: stopped T9-builder 44444444: its work is handed on"
-  assert_equal "$(steps "$output")" "lease finished checkpoint"
+  assert_equal "$(steps "$output")" "lease checkpoint finished"
 
   # The capacity and level steps read the same list, and their failures are what fail this run.
   touch "$STUB_FIXTURES/agents-fail"
   : >"$STUB_CALLS/claude.log"
   run_bin -1 team-timers run
-  assert_equal "$(steps "$output")" "lease finished capacity level checkpoint"
+  assert_equal "$(steps "$output")" "lease checkpoint finished capacity level"
   assert_equal "$(grep ' finished: ' <<<"$output" | cut -d ' ' -f 2-)" \
     "finished: warning: cannot read the live session list (claude agents --json), so no finished session was stopped"
   assert_equal "$(grep -c ': failed: ' <<<"$output")" 2
@@ -810,6 +967,34 @@ EOF
   back=$(sed -nE 's/.* GitHub back at ([^ ]+) .*/\1/p' <<<"$output")
   assert_equal "$(posts | sed -n 2p)" "$(jq -n --arg t "GitHub unreachable since $(clock "$since") on home-pc; holding the team
 GitHub back at $(clock "$back") (unreachable from $(clock "$since")); no worker was live, so none was held" '$t')"
+}
+
+@test "with a session list that never answers, the back post is still made, saying the list could not be read" {
+  stub_sleep </dev/null
+  discord_answers
+  stub_reply claude '[]'
+  cut_origin
+  run_bin -75 team-timers run
+  local since
+  since=$(jq -r .since "$HOME/.local/state/agent-team/offline")
+
+  # The back step's read of the session list, the run's first, never answers; later ones do.
+  stub_script claude <<SH
+if [[ ! -e '$BATS_TEST_TMPDIR/hung' ]]; then
+  touch '$BATS_TEST_TMPDIR/hung'
+  command -p sleep 300
+fi
+echo '[]'
+SH
+  git -C "$TEAM_HOME" remote set-url origin "$origin"
+  local start=$SECONDS
+  TEAM_TIMERS_FINISHED_CALL_SECONDS=1 TEAM_TIMERS_KILL_SECONDS=1 run_bin -0 team-timers run
+  ((SECONDS - start < 20))
+  [[ ! -e $HOME/.local/state/agent-team/offline ]]
+  local back
+  back=$(sed -nE 's/.* GitHub back at ([^ ]+) .*/\1/p' <<<"$output")
+  assert_contains "$(head -n 1 <<<"$output")" "; #coordinator is told"
+  assert_equal "$(posts | sed -n 2p)" "$(jq -n --arg t "GitHub back at $(clock "$back") (unreachable from $(clock "$since")); resuming the held tasks (the live session list could not be read)" '$t')"
 }
 
 @test "GitHub refusing the login (HTTP 403 or 401) is not offline: logged each run, posted once, no second try" {
@@ -1034,7 +1219,7 @@ LINES
   add_loose 200
   run_bin -0 team-timers run
   assert_equal "$output" "$(cat "$log")"
-  assert_equal "$(steps "$output")" "lease inbox finished capacity level stacks checkpoint pack janitor"
+  assert_equal "$(steps "$output")" "lease checkpoint inbox finished capacity level stacks pack janitor"
 }
 
 @test "the stacks and janitor steps are off without stack.json, without their keys and while they are false: no line, no call" {
@@ -1052,12 +1237,12 @@ LINES
   [[ ! -e $HOME/.local/state/agent-team/janitor && ! -e $HOME/.local/state/agent-team/stacks ]]
 }
 
-@test "with heartbeat_sweep on, the stacks step sweeps before the checkpoint, a log line per line the sweep prints" {
+@test "with heartbeat_sweep on, the stacks step sweeps after the level step, a log line per line the sweep prints" {
   docker_machine
   stack_json '{"heartbeat_sweep": true}'
   run_bin -0 team-timers run
   assert_equal "$output" "$(cat "$log")"
-  assert_equal "$(steps "$output")" "lease stacks checkpoint"
+  assert_equal "$(steps "$output")" "lease checkpoint stacks"
   [[ $(grep ' stacks: ' <<<"$output") =~ ^[0-9T:Z-]+" stacks: "[0-9T:Z-]+" stopped conventioner-2 of T7 in $STACK_WORKTREE: not seen busy since its start at "[0-9T:Z-]+" (idle_minutes 30), its data kept"$ ]]
   assert_equal "$(docker_calls | sed -n 's/^compose -p \(.*\) stop$/\1/p')" conventioner-2
   # A sweep that stops nothing prints nothing, so the step logs nothing; the janitor stays off.
@@ -1097,7 +1282,7 @@ exit 1
 EOF
   run_bin -1 team-timers run
   assert_equal "$output" "$(cat "$log")"
-  assert_equal "$(steps "$output")" "lease finished capacity level stacks checkpoint janitor"
+  assert_equal "$(steps "$output")" "lease checkpoint finished capacity level stacks janitor"
   # The finished step warns and stops nothing, never failing the run.
   assert_equal "$(grep ' finished: ' <<<"$output" | cut -d ' ' -f 2-)" \
     "finished: warning: cannot read the live session list (claude agents --json), so no finished session was stopped"
@@ -1125,17 +1310,6 @@ EOF
   [[ -s $(day_report) ]]
   run_bin -0 team-timers run
   assert_equal "$(steps "$output")" "lease checkpoint"
-
-  # A checkpoint that fails ends the run, as it always has: the janitor waits for the next run.
-  rm "$(day_report)"
-  mkdir -p "$TEAM_HOME/memory/home"
-  echo "- a note" >"$TEAM_HOME/memory/home/MEMORY.md"
-  git -C "$TEAM_HOME" checkout -q --detach
-  touch -d '-15 minutes' "$HOME/.local/state/agent-team/last-checkpoint"
-  run_bin -1 team-timers run
-  assert_equal "$(steps "$output")" "lease checkpoint"
-  [[ $(tail -n 1 <<<"$output") =~ " checkpoint: failed: team home: not on a branch, so the records are not committed"$ ]]
-  [[ ! -e $(day_report) ]]
 }
 
 @test "the pack step packs the team home on the holder once it has 200 loose objects, unreachable ones too" {
@@ -1187,7 +1361,7 @@ EOF
   TEAM_TIMERS_CAPACITY_SECONDS=1 TEAM_TIMERS_LEVEL_SECONDS=4 TEAM_TIMERS_SWEEP_SECONDS=1 \
     TEAM_TIMERS_JANITOR_SECONDS=1 run_bin -1 team-timers run
   assert_equal "$output" "$(cat "$log")"
-  assert_equal "$(steps "$output")" "lease capacity level stacks checkpoint janitor"
+  assert_equal "$(steps "$output")" "lease checkpoint capacity level stacks janitor"
   [[ $(grep ' capacity: ' <<<"$output") =~ ^[0-9T:Z-]+" capacity: failed: timed out after 1 s"$ ]]
   [[ $(grep ' level: ' <<<"$output") =~ ^[0-9T:Z-]+" level: failed: timed out after 4 s"$ ]]
   [[ $(grep ' stacks: ' <<<"$output") =~ ^[0-9T:Z-]+" stacks: failed: timed out after 1 s"$ ]]
@@ -1211,12 +1385,12 @@ EOF
   local file=$HOME/.config/agent-team/stack.json
   stack_json '{"heartbeat_sweep": "yes", "heartbeat_janitor": true}'
   run_bin -1 team-timers run
-  assert_equal "$(steps "$output")" "lease stacks checkpoint janitor"
+  assert_equal "$(steps "$output")" "lease checkpoint stacks janitor"
   [[ $(grep ' stacks: ' <<<"$output") =~ ^[0-9T:Z-]+" stacks: failed: $file: heartbeat_sweep must be true or false, not \"yes\""$ ]]
   [[ $(grep ' janitor: ' <<<"$output") =~ ^[0-9T:Z-]+" janitor: failed: $file: heartbeat_sweep must be true or false, not \"yes\""$ ]]
   stack_json '{"heartbeat_sweep": true,'
   run_bin -1 team-timers run
-  assert_equal "$(steps "$output")" "lease stacks checkpoint janitor"
+  assert_equal "$(steps "$output")" "lease checkpoint stacks janitor"
   assert_contains "$(grep ' stacks: ' <<<"$output")" " stacks: failed: $file is not JSON: "
   stack_json '[true]'
   run_bin -1 team-timers run
@@ -1235,7 +1409,7 @@ EOF
   local file=$HOME/.config/agent-team/capacity.json
   echo '{"minor_share": 2}' >"$file"
   run_bin -1 team-timers run
-  assert_equal "$(steps "$output")" "lease capacity level checkpoint"
+  assert_equal "$(steps "$output")" "lease checkpoint capacity level"
   run_bin -0 team-timers --help
   [[ $output != *slots* ]]
 }
@@ -1250,7 +1424,7 @@ EOF
   fake_process 100 99 - claude
   stub_reply claude '[{"pid": 100, "id": "a1b2c3d4", "name": "T7-builder", "status": "idle"}]'
   run_bin -0 team-timers run
-  assert_equal "$(steps "$output")" "lease capacity checkpoint"
+  assert_equal "$(steps "$output")" "lease checkpoint capacity"
   assert_equal "$(grep ' capacity: ' <<<"$output" | cut -d ' ' -f 2-)" "capacity: placed T7-builder a1b2c3d4 in agent-team-T7-a1b2c3d4.scope (1 process)"
   # Off the lease, none.
   make_machine laptop
@@ -1264,7 +1438,7 @@ EOF
   echo '{"minor_share": "a third"}' >"$file"
   run_bin -1 team-timers run
   assert_equal "$output" "$(cat "$log")"
-  assert_equal "$(steps "$output")" "lease capacity level checkpoint"
+  assert_equal "$(steps "$output")" "lease checkpoint capacity level"
   [[ $(grep ' capacity: ' <<<"$output") =~ ^[0-9T:Z-]+" capacity: failed: $file: minor_share must be a number above 0 and at most 1, not \"a third\""$ ]]
   [[ $(grep ' level: ' <<<"$output") =~ ^[0-9T:Z-]+" level: failed: $file: minor_share must be a number above 0 and at most 1, not \"a third\""$ ]]
   [[ ! -e $HOME/.local/state/agent-team/capacity/readings.jsonl ]]
@@ -1297,7 +1471,7 @@ EOF
 
   git -C "$TEAM_HOME" remote set-url origin "$origin"
   run_bin -0 team-timers run
-  assert_equal "$(steps "$output")" "back stacks checkpoint janitor"
+  assert_equal "$(steps "$output")" "back checkpoint stacks janitor"
   assert_equal "$(readings | wc -l)" 1
 
   steal_lease laptop home-pc
@@ -1448,7 +1622,7 @@ EOF2
     >"$TEAM_HOME/level.jsonl"
   run_bin -0 team-timers run
   assert_equal "$output" "$(cat "$log")"
-  assert_equal "$(steps "$output")" "lease capacity level checkpoint"
+  assert_equal "$(steps "$output")" "lease checkpoint capacity level"
   [[ $(grep ' level: ' <<<"$output") =~ ^[0-9T:Z-]+" level: Resources: auto raised the team to full (90%) at "[0-9:]{5}": other programs use "[0-9.]+" GiB of 32.0 GiB; nothing needs to stow"$ ]]
   assert_equal "$(posts)" "$(grep ' level: ' <<<"$output" | cut -d ' ' -f 3- | jq -R .)"
   assert_equal "$(jq -c '[.mode, .level, .by]' <(tail -n 1 "$TEAM_HOME/level.jsonl"))" '["auto","full","auto"]'
@@ -1465,7 +1639,7 @@ EOF2
   echo 'not a level record' >"$TEAM_HOME/level.jsonl"
   run_bin -1 team-timers run
   assert_equal "$output" "$(cat "$log")"
-  assert_equal "$(steps "$output")" "lease level stacks checkpoint"
+  assert_equal "$(steps "$output")" "lease checkpoint level stacks"
   [[ $(grep ' level: ' <<<"$output") =~ ^[0-9T:Z-]+" level: failed: $TEAM_HOME/level.jsonl has lines that are not level records ".*"line 1; fix or remove them, then run it again"$ ]]
   # The sweep after it still ran.
   assert_equal "$(docker_calls | sed -n 's/^compose -p \(.*\) stop$/\1/p')" conventioner-2
