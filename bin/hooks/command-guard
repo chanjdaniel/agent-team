@@ -12,11 +12,11 @@
 # an option together with team- or claude-coordinator, at once. Any other is read as
 # bin/lib/command_text.py prints it (each heredoc's body left out but an unquoted one's command
 # substitutions, and all of one a shell may read as its script; the string after a shell's -c,
-# eval, env -S and find -exec read as code, and the text a line feeds a shell on stdin), and
-# refused, where a command starts (COMMAND_START in bin/lib/team.sh, after a separator or a
-# reserved word, also past the wrappers env, nohup, command, exec, time, nice, ionice, stdbuf,
-# timeout, setsid, xargs, parallel, watch, flock and its file, sudo, doas and the shells, their
-# options and env's assignments), when it is:
+# eval, env -S and find -exec read as code, and the text piped into a shell where a command
+# starts), and refused, where a command starts (COMMAND_START in bin/lib/team.sh, after a
+# separator, a parenthesis, a brace or a reserved word, also past the wrappers env, nohup,
+# command, exec, time, nice, ionice, stdbuf, timeout, setsid, xargs, parallel, watch, flock and
+# its file, sudo, doas and the shells, their options and env's assignments), when it is:
 #   team-worker or team-load-check with ops among its words (before team-worker's --): an ops
 #     session is the coordinator's to launch, on Daniel's request;
 #   the frontend toolkit's capture script, ui-capture, by any path or run by bash, sh, node, deno,
@@ -31,11 +31,11 @@
 #     own worker_refusal would not see the worker.
 # The text is matched as written, quotes and all, so a separator inside quotes counts as one,
 # which refuses more, never less. Not seen: a name spelled across quotes or held in a variable; a
-# script of one's own, or a copy or link of a guarded one; a string another interpreter runs
-# (python3 -c, node -e, perl -e, a require of the capture script); a command after a case
-# pattern's ); and a file a shell reads on stdin (cat x | bash); each under an emptied environment
-# too, so a team script that one of those runs there goes unseen. It is a speed bump, as a deny
-# rule is, which the role's rule against reaching a refused thing another way holds.
+# script or function of one's own, or a copy or link of a guarded one; a string another
+# interpreter runs (python3 -c, node -e, perl -e, a require of the capture script); and a file a
+# shell reads on stdin (cat x | bash); each under an emptied environment too, so a team script
+# that one of those runs there goes unseen. It is a speed bump, as a deny rule is, which the
+# role's rule against reaching a refused thing another way holds.
 # When command_text.py cannot run, a command naming one of those is refused, naming why.
 # It reads nothing of the team home, so it decides on a machine that names none. A wrong argument
 # on its command line refuses every call, and any command of its own that fails ends as an exit 2
