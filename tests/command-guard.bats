@@ -125,15 +125,22 @@ passes() {
 }
 
 # What is piped into a shell is read as code in whichever pipeline it stands, and wherever the shell
-# starts in the command it is piped into: in a group, a substitution, quoted, or behind a wrapper.
-@test "a guarded command piped into a shell in a group, a substitution or behind a wrapper is refused" {
+# starts in the command it is piped into: in a group, a substitution, behind a wrapper, its name
+# quoted in whole or in part; and a group ends after a compound command's end, as Bash reads it.
+@test "a guarded command piped into a shell in a group, a substitution, behind a wrapper or quoted is refused" {
   refuses "$OPS" "true && echo 'team-worker T1 ops wt' | bash" "false || echo 'team-worker T1 ops wt' | bash" \
     "{ echo 'team-worker T1 ops wt' | bash; }" '(echo team-worker T1 ops wt) | bash' \
     "echo 'team-worker T1 ops wt' | (bash)" $'cat <<\'EOF\' | (bash)\nteam-worker T1 ops wt\nEOF' \
     "echo 'team-worker T1 ops wt' | \"bash\"" "echo 'team-worker T1 ops wt' | \\bash" \
     "echo 'team-worker T1 ops wt' | xargs -0 bash -c" $'cat <<\'EOF\' | xargs -0 bash -c\nteam-worker T1 ops wt\nEOF' \
     "echo 'team-worker T1 ops wt' | flock /tmp/l bash" "echo 'team-worker T1 ops wt' | tee >(bash)" \
-    '(case x in x) echo team-worker T1 ops wt;; esac) | bash' '{ : }; echo team-worker T1 ops wt; } | bash'
+    '(case x in x) echo team-worker T1 ops wt;; esac) | bash' '{ : }; echo team-worker T1 ops wt; } | bash' \
+    "{ if true; then echo 'team-worker T1 ops wt'; fi } | bash" \
+    "{ for i in 1; do echo 'team-worker T1 ops wt'; done } | bash" "{ echo 'team-worker T1 ops wt'; (:) } | bash" \
+    "(case x in x) { :; } esac; echo 'team-worker T1 ops wt') | bash" \
+    "echo 'team-worker T1 ops wt' | ba\"sh\"" "echo 'team-worker T1 ops wt' | \"ba\"sh" \
+    "echo 'team-worker T1 ops wt' | b\\ash" "echo 'team-worker T1 ops wt' | \$'bash'" \
+    "echo 'team-worker T1 ops wt' | /bin/ba''sh"
 }
 
 @test "a guarded command run by find -exec, watch, flock, script, su, parallel or after bash -c -- is refused" {

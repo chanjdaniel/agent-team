@@ -5,11 +5,11 @@ Usage: python3 -I command_text.py   (the command on stdin; prints the text on st
 
 bin/hooks/command-guard runs this file on a Bash call's command, and team-tokens imports
 without_heredocs from it. It reads the command far enough to know its quotes ('...', "..." and
-$'...'), backslashes, comments, arithmetic ($((, (( and $[), groups ((, $(, a backtick, ${ in which
-quotes nest up to its first }, and a { and its } where a command starts, or a { opening a
-function's body), case's patterns, pipelines, here-strings and heredocs, whose marker is its word
-up to a blank or an operator with its quotes removed, as Bash takes it; a << inside quotes, a
-comment, arithmetic or ${ opens none.
+$'...'), backslashes, comments, arithmetic ($((, (( and $[), groups ((, $(, a backtick, ${ in
+which quotes nest up to its first }, and a { and its } where a command starts, after a separator,
+a reserved word or a compound command's end, or a { opening a function's body), case's patterns,
+pipelines, here-strings and heredocs, whose marker is its word up to a blank or an operator with
+its quotes removed, as Bash takes it; a << inside quotes, a comment, arithmetic or ${ opens none.
 The text it prints is the command with:
   - each heredoc's body left out, through its closing line, its marker's line kept. A body is kept
     whole, as code, when a shell may read it as its script: the heredoc is a shell's own, or its
@@ -24,11 +24,12 @@ The text it prints is the command with:
   - a shell's here-string, or one in a command piped into a shell, its quotes removed; and for
     each command piped into a shell, the text of each of its quoted strings and of each of its
     simple commands' words after the first, quotes dropped; each added on a line of its own.
-A shell here is bash, sh, zsh, dash, ksh, source or ., its name quoted or not, where a pipeline's
-command starts, past reserved words, assignments and the wrappers env, nohup, command, exec, time,
-nice, ionice, stdbuf, timeout, setsid, sudo, doas, xargs, parallel, watch and flock with its file,
-or a command a group or substitution in which starts one, as (bash) or tee >(bash) does; so a
-shell or . named as an argument feeds it nothing.
+A shell here is bash, sh, zsh, dash, ksh, source or . where a pipeline's command starts, past
+reserved words, assignments and the wrappers env, nohup, command, exec, time, nice, ionice,
+stdbuf, timeout, setsid, sudo, doas, xargs, parallel, watch and flock with its file, each word
+read with its quotes removed (a backslash in $'...' quoting the next character, as in \\', so an
+escape such as \\x62 is not decoded); or a command a group or substitution in which starts one, as
+(bash) or tee >(bash) does; so a shell or . named as an argument feeds it nothing.
 It reads no quoting beyond that: a guard matching the text sees a separator inside quotes as one,
 which refuses more, never less.
 """
@@ -43,14 +44,14 @@ METACHARACTERS = frozenset(" \t\n;&|()<>")
 RESERVED = r"(?:!|\{|if|then|else|elif|do|while|until|time|coproc)"
 # Where a command starts in a segment's text: blanks and reserved words before it.
 COMMAND_START = re.compile(rf"\s*(?:{RESERVED}\s+)*")
-# A shell that may read its script from stdin, where a pipeline's command starts, its name quoted
-# or not.
+# A shell that may read its script from stdin, where a pipeline's command starts, in a segment's
+# text with its words' quotes removed (_dequoted).
 SHELL_START = re.compile(
     rf"\s*(?:{RESERVED}[ \t]+)*(?:[A-Za-z_]\w*=\S*[ \t]+)*"
     r"(?:(?:(?:env|nohup|command|exec|time|nice|ionice|stdbuf|timeout|setsid|sudo|doas|xargs|parallel|watch)"
     r"(?:[ \t]+(?:-[^\s;&|]*(?:[ \t]+[^-\s;&|][^\s;&|]*)?|[0-9][0-9.]*[smhd]?|[A-Za-z_]\w*=\S*))*"
     r"|flock(?:[ \t]+-[^\s;&|]*)*[ \t]+[^-\s;&|][^\s;&|]*)[ \t]+)*"
-    r"(?:[\"'\\]*(?:[^\s;&|]*/)?(?:(?:ba|z|da|k)?sh|source)[\"']*(?=[\s;&|()<>]|$)|[\"']?\.[\"']?(?=[ \t]))"
+    r"(?:(?:[^\s;&|]*/)?(?:(?:ba|z|da|k)?sh|source)(?=[\s;&|()<>]|$)|\.(?=[ \t]))"
 )
 # A word, from where it starts to a metacharacter.
 WORD = re.compile(r"[^\s;&|()<>]+")
@@ -121,6 +122,24 @@ def _word(text, i):
     return "".join(out), quoted, i
 
 
+def _dequoted(text, start, end):
+    """The text from start to end with each word's quotes removed, as _word reads it; from a quote
+    that never closes on, the text as written."""
+    out, i = [], start
+    while i < end:
+        if text[i] in METACHARACTERS:
+            out.append(text[i])
+            i += 1
+            continue
+        word, _, after = _word(text, i)
+        if word is None or after > end:
+            out.append(text[i:end])
+            break
+        out.append(word)
+        i = after
+    return "".join(out)
+
+
 def _past_blanks(text, i):
     """The first index at or after i that is no blank."""
     while text[i : i + 1] in (" ", "\t"):
@@ -154,8 +173,10 @@ def read_command(text):
     """The command's reading, as Reading says, from one pass over its text."""
     pipelines, heredocs, strings, pending = [], [], [], []
     # Each group open at i: its kind (root, (, `, {, ${, or a case's case-word, case-pattern or
-    # case-body), its pipeline, where its segment starts, whether a pipe began that segment, and
-    # the quote it sits in.
+    # case-body), its pipeline, where its segment starts, whether a pipe began that segment, the
+    # quote it sits in, where its next command may start (its segment's start, or a compound
+    # command's end since), and whether it is a compound command (a subshell, a brace group or a
+    # case), whose end its parent's next command may follow.
     frames = []
     quote, i, n = None, 0, len(text)
 
@@ -165,22 +186,27 @@ def read_command(text):
     def end_segment(at):
         pipelines[frames[-1][1]][1].append((frames[-1][2], at))
 
-    def push(kind, at, resume=None):
+    def push(kind, at, resume=None, compound=False):
         pipelines.append((here() if frames else None, []))
-        frames.append([kind, len(pipelines) - 1, at, False, resume])
+        frames.append([kind, len(pipelines) - 1, at, False, resume, at, compound])
 
-    def pop(at):
+    def pop(at, after=None):
         end_segment(at)
-        return frames.pop()[4]
+        frame = frames.pop()
+        if frame[6] and frames:
+            frames[-1][5] = after
+        return frame[4]
 
     def next_pipeline(at, after):
         end_segment(at)
         pipelines.append((pipelines[frames[-1][1]][0], []))
         frames[-1][1:4] = [len(pipelines) - 1, after, False]
+        frames[-1][5] = after
 
     def command_start(at):
-        """Whether a command starts at at: only blanks and reserved words since its segment's start."""
-        return COMMAND_START.fullmatch(text, frames[-1][2], at) is not None
+        """Whether a command starts at at: only blanks and reserved words since its segment's start
+        or a compound command's end."""
+        return COMMAND_START.fullmatch(text, frames[-1][5], at) is not None
 
     push("root", 0)
     while i < n:
@@ -230,11 +256,11 @@ def read_command(text):
             # A pattern's opening parenthesis or its alternatives' bar.
             i += 1
         elif c == "(":
-            push("(", i + 1)
+            push("(", i + 1, compound=command_start(i))
             i += 1
         elif c == ")":
             if kind == "(":
-                quote = pop(i)
+                quote = pop(i, i + 1)
             else:
                 # A case pattern's end, after which its command starts; else one Bash would refuse.
                 next_pipeline(i, i + 1)
@@ -244,12 +270,12 @@ def read_command(text):
         elif (
             c == "{"
             and text[i + 1 : i + 2] in (" ", "\t", "\n")
-            and (command_start(i) or FUNCTION.fullmatch(text, frames[-1][2], i))
+            and (command_start(i) or FUNCTION.fullmatch(text, frames[-1][5], i))
         ):
-            push("{", i + 1)
+            push("{", i + 1, compound=True)
             i += 1
         elif c == "}" and kind == "{" and command_start(i) and (i + 1 == n or text[i + 1] in METACHARACTERS):
-            pop(i)
+            pop(i, i + 1)
             i += 1
         elif text.startswith("<<<", i):
             word, _, end = _word(text, _past_blanks(text, i + 3))
@@ -272,6 +298,7 @@ def read_command(text):
                 step = 2 if text.startswith("|&", i) else 1
                 end_segment(i)
                 frames[-1][2:4] = [i + step, True]
+                frames[-1][5] = i + step
                 i += step
         elif kind == "case-body" and text[i : i + 2] in (";;", ";&"):
             # A case item's end, after which the next pattern comes.
@@ -295,20 +322,23 @@ def read_command(text):
                 pending = []
                 if last is not None:
                     # The next segment starts after the bodies.
-                    frames[-1][2], i = last, last
+                    frames[-1][2], frames[-1][5], i = last, last, last
                     continue
             i += step
         else:
             # A case's reserved words: case where a command starts, in after its word, and esac
-            # in place of a pattern or where a command starts.
+            # in place of a pattern or where a command starts; and fi and done, the ends of the
+            # other compound commands, after which a command may start.
             found = WORD.match(text, i) if i == 0 or text[i - 1] in METACHARACTERS else None
             word = found and found.group()
             if word == "case" and kind not in ("case-word", "case-pattern") and command_start(i):
-                push("case-word", i + 4)
+                push("case-word", i + 4, compound=True)
             elif word == "in" and kind == "case-word":
                 frames[-1][0] = "case-pattern"
             elif word == "esac" and (kind == "case-pattern" or (kind == "case-body" and command_start(i))):
-                pop(i)
+                pop(i, i + 4)
+            elif word in ("fi", "done") and command_start(i):
+                frames[-1][5] = i + len(word)
             else:
                 word = None
             i += len(word) if word else 1
@@ -341,7 +371,7 @@ def code_text(command):
     """The command's text as code: heredoc bodies out, run strings and fed text added, as the
     header says."""
     reading = read_command(command)
-    shells = [[bool(SHELL_START.match(command, s, e)) for s, e in segments] for _, segments in reading.pipelines]
+    shells = [[bool(SHELL_START.match(_dequoted(command, s, e))) for s, e in segments] for _, segments in reading.pipelines]
     # A segment is a shell too when a group or substitution in it starts one, (bash) or >(bash),
     # since it reads the segment's stdin; a group's pipelines come after its parent's.
     for (parent, _), shell in reversed(list(zip(reading.pipelines, shells))):
