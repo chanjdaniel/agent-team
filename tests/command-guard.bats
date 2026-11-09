@@ -77,7 +77,15 @@ passes() {
     $'cat >x.md <<-"END"\n\tnode toolkits/frontend/scripts/ui-capture out\n\tEND\ngit add x.md' \
     $'cat >run.sh <<\'EOF\'\nteam-worker T1 ops wt\nEOF' \
     $'cat >a.md <<\'A\' >b.md <<\'B\'\nunset AGENT_TEAM_ROLE\nA\nteam-worker T1 ops\nB' \
-    $'cat >t.md <<END-1\nx\nEND\nteam-worker T1 ops wt\nEND-1'
+    $'cat >t.md <<END-1\nx\nEND\nteam-worker T1 ops wt\nEND-1' $'cat >x.md <<\\EOF\nunset AGENT_TEAM_ROLE\nEOF'
+}
+
+# A shell named as an argument, `.` above all, feeds nothing to a shell: a search of the tree or a
+# commit of it, the forms these guards set free.
+@test "a search or commit whose arguments name a shell or . passes" {
+  passes "grep -rn 'AGENT_TEAM_ROLE=' . | head" "grep -rn 'team-worker T1 ops' . | head" \
+    "grep -rn 'team-worker T1 ops' bin | grep -v bash" \
+    $'git add . && git commit -F - <<\'EOF\'\nfix: x\n\nunset AGENT_TEAM_ROLE is refused now\nEOF'
 }
 
 @test "a call of another tool passes, and input it cannot read is refused, naming why" {
@@ -93,12 +101,13 @@ passes() {
 
 # The forms a deny rule matching anywhere refused, which a reading of where a command starts must
 # find too: shell grammar, a shell reading its script from stdin, and the common runners.
-@test "a guarded command after a reserved word or in a brace group is refused" {
+@test "a guarded command after a reserved word or a case pattern, in a brace group or in a function is refused" {
   refuses "$OPS" '{ team-worker T1 ops wt; }' 'if true; then team-worker T1 ops wt; fi' \
     'for t in T1; do team-worker "$t" ops wt; done' '! team-worker T1 ops wt' 'x || { team-worker T1 ops wt; }' \
     'if team-worker T1 ops wt; then :; fi' 'while false; do :; done; until team-worker T1 ops wt; do :; done' \
     'if x; then :; else team-worker T1 ops wt; fi' 'if x; then :; elif team-worker T1 ops wt; then :; fi' \
-    'time team-worker T1 ops wt'
+    'time team-worker T1 ops wt' 'f() { team-worker T1 ops wt; }; f' 'function f { team-worker T1 ops wt; }; f' \
+    'coproc team-worker T1 ops wt' 'case x in x) team-worker T1 ops wt;; esac'
   refuses "$SET" 'while x; do AGENT_TEAM_ROLE=x team-post T7 --file f; done' 'let AGENT_TEAM_ROLE=1' \
     'read -r AGENT_TEAM_TASK <<<T1' 'printf -v AGENT_TEAM_ROLE %s coordinator'
   refuses "$UNSET" '{ unset AGENT_TEAM_ROLE; }'
@@ -127,7 +136,9 @@ passes() {
     $'cat <<END-1\nx\nEND-1\nteam-worker T1 ops wt\nEND' $'echo $((1<<X))\nteam-worker T1 ops wt\nX' \
     $'# a <<X note\nteam-worker T1 ops wt\nX' \
     $'cat <<EOF\nx\nEOF\nteam-worker T1 ops wt' $'cat <<-EOF\n\tx\n\tEOF\nteam-worker T1 ops wt' \
-    $'cat <<A <<B\na\nA\nb\nB\nteam-worker T1 ops wt' $'cat <<EOF; team-worker T1 ops wt\nx\nEOF'
+    $'cat <<A <<B\na\nA\nb\nB\nteam-worker T1 ops wt' $'cat <<EOF; team-worker T1 ops wt\nx\nEOF' \
+    $'cat <<E"O"F\nx\nEOF\nteam-worker T1 ops wt\nE' $'cat <<\'E\'OF\nx\nEOF\nteam-worker T1 ops wt\nE' \
+    $'echo $\'it\\\'s\'; echo \'<<X\'\nteam-worker T1 ops wt\nX' $'cat <<EOF; echo \'<<X\'\nx\nEOF\nteam-worker T1 ops wt\nX'
 }
 
 @test "a guarded command after a pipe, in a backtick, in a subshell or through xargs is refused" {
