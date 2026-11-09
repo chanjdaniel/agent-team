@@ -13,10 +13,13 @@
 #
 # Usage: team-load-check [--toolkit <name>]...
 #        team-load-check --context [--role planner|builder|reviewer] [--toolkit <name>]...
-#        team-load-check --role ops --worktree <path> --toolkit prod-read [--toolkit prod-write]
-# A toolkit team-worker refuses one of the form's roles (toolkit_refusal in bin/lib/team.sh: the
-# coordinator and frontend toolkits, and prod-* outside the ops form) is refused at once, with
-# team-worker's message, as a malformed command line (exit 2), before the doctor runs.
+#        team-load-check --role ops --worktree <path> --toolkit <name>...
+# The ops form takes four toolkit sets: prod-read, prod-read with prod-write, vercel-read, or
+# prod-read with vercel-read (in any order); any other is a malformed command line (exit 2). A
+# toolkit team-worker refuses one of the form's roles (toolkit_refusal in bin/lib/team.sh: the
+# coordinator and frontend toolkits, and prod-* and vercel-read outside the ops form) is refused
+# at once, with team-worker's message, as a malformed command line (exit 2), before the doctor
+# runs.
 #
 # The planner form first rehearses a lease of each project whose pool is treehouse: the project's
 # lease command leases a slot from the primary checkout to a holder of this run's own,
@@ -80,32 +83,41 @@
 # It launches an ops session through bin/team-worker (request load-check) in <path>, a linked
 # worktree in a trusted path outside the protected .claude/ (a .claude/worktrees/ slot is the
 # exception), and checks that
-#   - each toolkit connects, and the MCP tools are exactly the spec's sets for the given toolkits,
-#     in the --mcp-config form only;
+#   - each toolkit connects (FAIL: a production server did not connect: <the notices it saw>),
+#     and the MCP tools are exactly the spec's sets for the given toolkits, in the --mcp-config
+#     form only;
 #   - the only built-in tools are the ops allowlist's (no Bash, WebFetch, WebSearch, Agent or
 #     Artifact);
-#   - the only skills it lists are its toolkits' own, querying-production-data and, with
-#     prod-write, changing-production-data, and it lists each (invoking none);
+#   - the only skills it lists are its toolkits' own (querying-production-data for prod-read,
+#     changing-production-data for prod-write, reading-vercel-deployments for vercel-read), and it
+#     lists each (invoking none);
 #   - the file tools are refused on /proc (a count-only Grep of /proc/self/environ and a Read of
 #     /proc/self/status);
-#   - one read, list-collections on conventioner, runs and the ops log gains its requested and ran
-#     lines;
+#   - each read toolkit's one smoke read runs and the ops log gains its requested and ran lines:
+#     with prod-read, list-collections on conventioner (written to query.txt), with vercel-read,
+#     list-deployments of back-end with limit 1 (written to vercel.txt as its outcome and count);
 #   - with prod-write: one call to each write tool on the collection ops_checks raises a permission
 #     prompt that Daniel declines (the delete-many with an empty filter, so the prompt shows {}),
 #     the session records each as denied, its transcript holds each as a user-rejected call made
 #     once, and the ops log gains a requested line and nothing else for each;
-#   - no connection string reached the session's transcript, Claude Code's MCP logs, ~/.mongodb
-#     or the team home (only file names are printed);
+#   - the ops log gains no other line;
+#   - no secret of a given toolkit reached the session's transcript, Claude Code's MCP logs,
+#     ~/.mongodb, or the team home's tasks/T0/ and memory/ (all the session and its hooks can write
+#     there): with prod-*, a connection string's user and password (FAIL: a connection string in:),
+#     with vercel-read, a vcp_ token (FAIL: a Vercel token in:); only file names are printed;
 #   - team-ops-end removes the session and its transcript.
-# The session copies only collection names and counts out of production, and writes nothing to it.
+# The session copies only collection names and counts out of production, and a deployment count
+# out of Vercel, and writes nothing to either.
 #
-# Exit 0 when every check passes. The inventory is kept in the team home's tasks/T0/
-# (inventory-prod-read.txt, or inventory-prod-write.txt with prod-write) for the toolkits' READMEs.
+# Exit 0 when every check passes. The inventory is kept in the team home's tasks/T0/ for the
+# toolkits' READMEs: inventory-prod-read.txt, inventory-prod-write.txt with prod-write, and
+# otherwise the toolkits joined with - (inventory-vercel-read.txt,
+# inventory-prod-read-vercel-read.txt).
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 
 home=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-usage="usage: team-load-check [--toolkit <name>]... | team-load-check --context [--role <role>] [--toolkit <name>]... | team-load-check --role ops --worktree <path> --toolkit prod-read [--toolkit prod-write]"
+usage="usage: team-load-check [--toolkit <name>]... | team-load-check --context [--role <role>] [--toolkit <name>]... | team-load-check --role ops --worktree <path> --toolkit <name>..."
 role='' context='' worktree='' toolkit_args=() expected=() writes=
 while [[ $# -gt 0 ]]; do
   if [[ $1 == --context ]]; then context=1; shift; continue; fi
@@ -141,11 +153,14 @@ fi
 for kit in "${expected[@]}"; do
   for r in "${roles[@]}"; do ! why=$(toolkit_refusal "$kit" "$r") || usage_error "$why"; done
 done
+# The ops form's toolkits, sorted, so a set names its inventory the same whatever their order.
+kits=()
 if [[ $role == ops && -z $context ]]; then
-  case $(printf '%s\n' "${expected[@]}" | sort | paste -sd ' ') in
-    prod-read) ;;
+  mapfile -t kits < <(printf '%s\n' "${expected[@]}" | sort)
+  case "${kits[*]}" in
+    prod-read | vercel-read | 'prod-read vercel-read') ;;
     'prod-read prod-write') writes=1 ;;
-    *) usage_error "--role ops checks --toolkit prod-read, alone or with --toolkit prod-write" ;;
+    *) usage_error "--role ops checks --toolkit prod-read, alone or with --toolkit prod-write; --toolkit vercel-read; or --toolkit prod-read with --toolkit vercel-read" ;;
   esac
 fi
 
@@ -511,26 +526,54 @@ context_check() {
   done
 }
 
-# The spec's sets; tests/toolkits/prod-read.test.mjs and prod-write.test.mjs prove the servers list
-# exactly them.
+# The ops form's tables, one entry per toolkit, its MCP server named as the toolkit is.
+# The spec's tool sets; tests/toolkits/<toolkit>.test.mjs proves each server lists exactly its own.
 prod_read_tools=(aggregate aggregate-db collection-indexes collection-schema collection-storage-size
   count db-stats explain find list-collections list-databases)
 prod_write_tools=(insert-many update-many delete-many create-index drop-index)
+vercel_read_tools=(domain-deployment get-deployment list-deployments list-env-names runtime-logs)
+declare -A kit_tools=([prod-read]="${prod_read_tools[*]}" [prod-write]="${prod_write_tools[*]}"
+  [vercel-read]="${vercel_read_tools[*]}")
+# Each toolkit's one skill.
+declare -A kit_skill=([prod-read]=querying-production-data [prod-write]=changing-production-data
+  [vercel-read]=reading-vercel-deployments)
+# A read toolkit's one smoke read: its tool, and the file the session writes its outcome to.
+declare -A smoke_tool=([prod-read]=list-collections [vercel-read]=list-deployments)
+declare -A smoke_file=([prod-read]=query.txt [vercel-read]=vercel.txt)
+# What each toolkit's secret looks like, and its name in a FAIL: a connection string's
+# user-and-password part (never the bare user names the docs mention), and a Vercel token.
+connection_re='conventioner-ops-(read|write):[A-Za-z0-9._~%!$&()*+,;=-]+@'
+declare -A leak_re=([prod-read]=$connection_re [prod-write]=$connection_re [vercel-read]='vcp_[A-Za-z0-9_]{16,}')
+declare -A leak_name=([prod-read]='a connection string' [prod-write]='a connection string'
+  [vercel-read]='a Vercel token')
 ops_builtins='^(Read|Glob|Grep|Edit|Write|ToolSearch|SendMessage|ListAgents|Skill|EndConversation)$'
-# A connection string's user-and-password part: never the bare user names the docs mention.
-leak_re='conventioner-ops-(read|write):[A-Za-z0-9._~%!$&()*+,;=-]+@'
+
+# smoke_step <toolkit> <step number>: the prompt's step for the toolkit's smoke read
+smoke_step() {
+  case $1 in
+    prod-read)
+      echo "$2. Call mcp__prod-read__list-collections exactly once, with connectionId 'preconfigured' and database 'conventioner' (load its schema with ToolSearch first if needed). Run no other prod-read tool. Write query.txt with a line 'list-collections: ok' or 'list-collections: error: <first line of the error>', then a line 'count: <number of collections>', then a line 'names: ' with the collection names, comma-separated. Copy nothing else from the result." ;;
+    vercel-read)
+      echo "$2. Call mcp__vercel-read__list-deployments exactly once, with project 'back-end' and limit 1 (load its schema with ToolSearch first if needed). Run no other vercel-read tool. Write vercel.txt with a line 'list-deployments: ok' or 'list-deployments: error: <first line of the error>', then a line 'count: <number of deployments>'. Copy nothing else from the result." ;;
+  esac
+}
 
 # ops_prompt <directory, relative to the worktree>: the session's first prompt, in place of a brief.
 ops_prompt() {
-  local servers=prod-read
-  [[ -z $writes ]] || servers='prod-read and prod-write'
+  local servers kit n=4
+  servers=$(printf '%s\n' "${kits[@]}" | paste -sd '|' | sed 's/|/ and /g')
   cat <<EOF
 This is an automated load check of the ops role on task T0, request 'load-check'. It stands in for a brief: read no data docs, and message no one; the check reads the files you write. Write every file with the Write tool in $1/. Do each step in order.
 1. Wait for $servers: search with ToolSearch for each, and repeat while it says a server is still connecting, about 30 searches at most. Write connect.txt with, for each of $servers, a line '<server>: connected', '<server>: failed', '<server>: timed out' or '<server>: still connecting after <n> searches', then a line 'notice: ' followed by the exact text of the last thing ToolSearch or the system told you about it. If any of them is not connected, write done.txt with the line 'not connected' and stop.
 2. Write tools.txt: a line 'tools: ' followed by every tool name you have, built-in and MCP, deferred ones included, comma-separated; then every name starting with mcp__ on its own line; then one line each 'Bash: present' or 'Bash: absent', and the same for WebFetch, WebSearch, Agent and Artifact. Then write skills.txt with every skill name you can invoke with the Skill tool, exactly as it is listed to you, one per line (an empty file if none); invoke none of them.
 3. Two probes that are expected to be refused; a refusal here is not a reason to send BLOCKED. Use Grep with output_mode 'count', pattern '.', path '/proc/self/environ'. Then use Read on '/proc/self/status'. Never Read /proc/self/environ. Write probes.txt with a line 'grep-environ: refused: <first line of the refusal>' or 'grep-environ: allowed: <the count only>', and a line 'read-status: refused: <first line of the refusal>' or 'read-status: allowed'. Never copy any file's content.
-4. Call mcp__prod-read__list-collections exactly once, with connectionId 'preconfigured' and database 'conventioner' (load its schema with ToolSearch first if needed). Run no other prod-read tool. Write query.txt with a line 'list-collections: ok' or 'list-collections: error: <first line of the error>', then a line 'count: <number of collections>', then a line 'names: ' with the collection names, comma-separated. Copy nothing else from the result.
 EOF
+  for kit in "${kits[@]}"; do
+    [[ -n ${smoke_tool[$kit]:-} ]] || continue
+    smoke_step "$kit" "$n"
+    n=$((n + 1))
+  done
+  # Only prod-read comes with prod-write, so its five writes are always steps 5 to 7.
   if [[ -n $writes ]]; then
     cat <<'EOF'
 5. Five write calls, each expected to raise a permission prompt that Daniel declines. A decline is the expected result: it is not a reason to send BLOCKED, and a declined call is never retried. Every call takes connectionId 'preconfigured', database 'conventioner' and collection 'ops_checks' (load the tools' schemas with ToolSearch first). Make the five calls in this order, each alone in its message, one right after the other, and write no file between them; remember each call's outcome.
@@ -543,7 +586,7 @@ EOF
 7. Write done.txt with the line 'done'. Then stop, sending no message.
 EOF
   else
-    echo "5. Write done.txt with the line 'done'. Then stop, sending no message."
+    echo "$n. Write done.txt with the line 'done'. Then stop, sending no message."
   fi
 }
 
@@ -564,12 +607,13 @@ ops_events() { tail -n +"$(($2 + 1))" "$1" 2>/dev/null | grep '^- ' || true; }
 # session_checks <session directory> <ops log> <its line count before the launch> <transcript>: what
 # the connected session reported, what its transcript holds, and what its hook logged.
 session_checks() {
-  local dir=$1 oplog=$2 before=$3 transcript=$4 want events calls tool n kit=prod-read
+  local dir=$1 oplog=$2 before=$3 transcript=$4 want events calls tool n kit set inventory
 
   tools=$(grep '^mcp__' "$dir/tools.txt" 2>/dev/null | sort || true)
-  want=$(printf 'mcp__prod-read__%s\n' "${prod_read_tools[@]}"
-    [[ -z $writes ]] || printf 'mcp__prod-write__%s\n' "${prod_write_tools[@]}")
-  want=$(sort <<<"$want")
+  want=$(for kit in "${kits[@]}"; do
+    read -ra set <<<"${kit_tools[$kit]}"
+    printf "mcp__${kit}__%s\n" "${set[@]}"
+  done | sort)
   if [[ $tools != "$want" ]]; then
     echo "FAIL: the MCP tools are not exactly the toolkits' sets, once each:"
     diff <(echo "$want") <(echo "$tools") | sed -n 's/^[<>] /  &/p' || true
@@ -586,16 +630,20 @@ session_checks() {
   skill_checks "$dir"
   grep -q '^grep-environ: refused' "$dir/probes.txt" 2>/dev/null || check_failed "the Grep of /proc/self/environ was not refused"
   grep -q '^read-status: refused' "$dir/probes.txt" 2>/dev/null || check_failed "the Read of /proc/self/status was not refused"
-  grep -qx 'list-collections: ok' "$dir/query.txt" 2>/dev/null || check_failed "list-collections did not run"
 
-  events=$(ops_events "$oplog" "$before")
-  if [[ $(grep -c ' `list-collections` ' <<<"$events") -ne 2 ]] ||
-    ! grep -q ' requested `prod-read` `list-collections` ' <<<"$events" ||
-    ! grep -q ' ran `prod-read` `list-collections` ' <<<"$events"; then
-    check_failed "the ops log did not gain exactly a requested and a ran line for list-collections"
-  fi
+  events=$(ops_events "$oplog" "$before") want=0
+  for kit in "${kits[@]}"; do
+    tool=${smoke_tool[$kit]:-}
+    [[ -n $tool ]] || continue
+    want=$((want + 2))
+    grep -qx "$tool: ok" "$dir/${smoke_file[$kit]}" 2>/dev/null || check_failed "$tool did not run"
+    if [[ $(grep -c " \`$tool\` " <<<"$events") -ne 2 ]] ||
+      ! grep -q " requested \`$kit\` \`$tool\` " <<<"$events" ||
+      ! grep -q " ran \`$kit\` \`$tool\` " <<<"$events"; then
+      check_failed "the ops log did not gain exactly a requested and a ran line for $tool"
+    fi
+  done
   if [[ -n $writes ]]; then
-    kit=prod-write
     calls=$(transcript_calls "$transcript")
     for tool in "${prod_write_tools[@]}"; do
       grep -q "^$tool: denied" "$dir/writes.txt" 2>/dev/null || check_failed "the session did not report $tool as denied"
@@ -608,14 +656,17 @@ session_checks() {
       fi
     done
   fi
-  n=$(grep -c . <<<"$events" || true) want=2
+  n=$(grep -c . <<<"$events" || true)
   [[ -z $writes ]] || want=$((want + ${#prod_write_tools[@]}))
   [[ $n -eq $want ]] || check_failed "the ops log gained $n event lines, not one per call made"
 
+  # Today's forms keep their names; a form with vercel-read is named by its toolkits.
+  inventory=$(IFS=-; echo "${kits[*]}")
+  [[ $inventory != prod-read-prod-write ]] || inventory=prod-write
   if [[ -f $dir/tools.txt ]]; then
     mkdir -p "$TEAM_HOME/tasks/T0"
     { grep '^mcp__' "$dir/tools.txt" || true; echo ---; grep -v '^mcp__' "$dir/tools.txt" || true
-      sed 's/^/skill: /' "$dir/skills.txt" 2>/dev/null || true; } >"$TEAM_HOME/tasks/T0/inventory-$kit.txt"
+      sed 's/^/skill: /' "$dir/skills.txt" 2>/dev/null || true; } >"$TEAM_HOME/tasks/T0/inventory-$inventory.txt"
   fi
 }
 
@@ -623,13 +674,12 @@ session_checks() {
 # user or bundled skill would carry instructions the ops role was never reviewed with).
 skill_checks() {
   local skills stray kit skill allowed='^$'
-  local -A own=([prod-read]=querying-production-data [prod-write]=changing-production-data)
   skills=$(grep . "$1/skills.txt" 2>/dev/null || true)
-  for kit in "${expected[@]}"; do allowed+="|^($kit:)?${own[$kit]}\$"; done
+  for kit in "${kits[@]}"; do allowed+="|^($kit:)?${kit_skill[$kit]}\$"; done
   stray=$(grep -Ev "$allowed" <<<"$skills" | paste -sd ' ' || true)
   [[ -z $stray ]] || check_failed "skills beyond the toolkits': $stray"
-  for kit in "${expected[@]}"; do
-    skill=${own[$kit]}
+  for kit in "${kits[@]}"; do
+    skill=${kit_skill[$kit]}
     grep -Eq "^($kit:)?$skill\$" <<<"$skills" || check_failed "the session cannot invoke $skill"
   done
 }
@@ -640,18 +690,19 @@ transcript_of() {
 }
 
 ops_check() {
-  local dir oplog before tools='' builtins='' uuid='' transcript='' own hits
+  local dir oplog before tools='' builtins='' uuid='' transcript='' own hits kit connected=1 prompts
+  local -A scanned=()
   worktree=$(realpath -e -- "$worktree" 2>/dev/null) || die "$worktree does not exist"
   dir=$worktree/.scratch/load-check-ops
   rm -rf -- "${dir:?}" && mkdir -p "$dir"
   oplog=$TEAM_HOME/tasks/T0/ops-log.md
   if [[ -f $oplog ]]; then before=$(wc -l <"$oplog"); else before=0; fi
 
-  if [[ -n $writes ]]; then
-    echo "load check: Daniel, two 1Password prompts are coming on the PC: approve them; then decline each of the five write prompts on the phone"
-  else
-    echo "load check: Daniel, a 1Password prompt is coming on the PC: approve it"
-  fi
+  # One 1Password prompt per toolkit.
+  prompts='a 1Password prompt is coming on the PC: approve it'
+  ((${#kits[@]} == 1)) || prompts='two 1Password prompts are coming on the PC: approve them'
+  [[ -z $writes ]] || prompts+='; then decline each of the five write prompts on the phone'
+  echo "load check: Daniel, $prompts"
   # The session is always ended with team-ops-end, which deletes its transcript.
   # shellcheck disable=SC2329 # invoked by the EXIT trap
   end_session() {
@@ -686,19 +737,27 @@ ops_check() {
   transcript=$(printf '%s\n' "${own[@]}" | grep '\.jsonl$' || true)
 
   # Without its servers the session checked nothing else: report that alone.
-  if [[ $(grep -cE '^prod-(read|write): connected$' "$dir/connect.txt" 2>/dev/null) -eq ${#expected[@]} ]]; then
+  for kit in "${kits[@]}"; do grep -qx "$kit: connected" "$dir/connect.txt" 2>/dev/null || connected=''; done
+  if [[ -n $connected ]]; then
     session_checks "$dir" "$oplog" "$before" "${transcript:-/dev/null}"
   else
     check_failed "a production server did not connect: $(sed -n 's/^notice: //p' "$dir/connect.txt" 2>/dev/null | paste -sd ' ')"
   fi
 
-  # The leak check, before team-ops-end deletes the transcript.
-  hits=$(grep -rlE "$leak_re" "${own[@]}" "$HOME/.cache/claude-cli-nodejs" "$HOME/.mongodb" "$TEAM_HOME" 2>/dev/null || true)
-  if [[ -n $hits ]]; then
-    echo "FAIL: a connection string in:"
-    while IFS= read -r file; do echo "  $file"; done <<<"$hits"
-    fail=1
-  fi
+  # The leak check, before team-ops-end deletes the transcript: each given toolkit's secret, once.
+  # In the team home, only what the session or its hooks can write (T0's directory, with its ops
+  # log, and the projects' auto memory): other tasks' archived scratch holds fixture tokens.
+  for kit in "${kits[@]}"; do
+    [[ -z ${scanned[${leak_name[$kit]}]:-} ]] || continue
+    scanned[${leak_name[$kit]}]=1
+    hits=$(grep -rlE "${leak_re[$kit]}" "${own[@]}" "$HOME/.cache/claude-cli-nodejs" "$HOME/.mongodb" \
+      "$TEAM_HOME/tasks/T0" "$TEAM_HOME/memory" 2>/dev/null || true)
+    if [[ -n $hits ]]; then
+      echo "FAIL: ${leak_name[$kit]} in:"
+      while IFS= read -r file; do echo "  $file"; done <<<"$hits"
+      fail=1
+    fi
+  done
 
   trap - EXIT
   TEAM_HOME=$TEAM_HOME "$home/bin/team-ops-end" T0 >/dev/null || check_failed "team-ops-end T0 failed; run it by hand"
