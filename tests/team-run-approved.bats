@@ -13,6 +13,54 @@ setup() {
   echo "{\"ts\":\"2026-11-01T10:00:00Z\",\"task\":\"T7\",\"event\":\"opened\",\"project\":\"agent-team\",\"path\":\"feature\",\"type\":\"feat\",\"title\":\"x\",\"branch\":\"feat/T7-x\",\"base\":\"dev\",\"base_sha\":\"0123456\",\"worktree\":\"$WT\"}" \
     >>"$TEAM_HOME/ledger.jsonl"
   approved_script "$WT/scripts/fix.sh" 3
+  echo '{"dmPolicy": "allowlist", "allowFrom": ["757"], "groups": {}, "pending": {}}' \
+    >"$HOME/.claude/channels/discord/access.json"
+  DISCORD_DIR=$BATS_TEST_TMPDIR/discord
+  mkdir -p "$DISCORD_DIR"
+  export DISCORD_DIR
+  echo 0 >"$DISCORD_DIR/next"
+  stub_discord
+}
+
+# The fake Discord API: GET channels/<c>/messages/<m> answers $DISCORD_DIR/<c>-<m>.json, a
+# missing one fails as curl -f does on a 404.
+stub_discord() {
+  stub_script curl <<'EOF'
+url=${*: -1}
+if [[ $url =~ ^https://discord\.com/api/v10/channels/([0-9]+)/messages/([0-9]+)$ &&
+  -f $DISCORD_DIR/${BASH_REMATCH[1]}-${BASH_REMATCH[2]}.json ]]; then
+  cat "$DISCORD_DIR/${BASH_REMATCH[1]}-${BASH_REMATCH[2]}.json"
+else
+  echo "curl: (22) The requested URL returned error: 404" >&2
+  exit 22
+fi
+EOF
+}
+
+# The next Discord message id, later than every one before it in the test: next_message
+next_message() {
+  local n
+  n=$(($(cat "$DISCORD_DIR/next") + 1))
+  echo "$n" >"$DISCORD_DIR/next"
+  echo $((1564000000000000000 + n * 4194304))
+}
+
+# Message <id> in #coordinator by author <author id>, saying <text>: message <id> <author> <text>
+message() {
+  jq -n --arg c 1562486564871995482 --arg id "$1" --arg a "$2" --arg text "$3" \
+    '{id: $id, channel_id: $c, content: $text, author: {id: $a, username: "daniel"}}' \
+    >"$DISCORD_DIR/1562486564871995482-$1.json"
+}
+
+# Daniel's answer <text> to ask <id>, sent in #coordinator now and logged as team-answer logs it;
+# prints its message id: answer <id> <text>
+answer() {
+  local m
+  m=$(next_message)
+  message "$m" 757 "$2"
+  jq -nc --arg ts "$(date -u +%FT%TZ)" --arg id "$1" --arg text "$2" --arg m "$m" \
+    '{ts: $ts, task: "T7", event: "answered", id: $id, answer: $text, discord_message: $m}' >>"$TEAM_HOME/ledger.jsonl"
+  echo "$m"
 }
 
 # Write a script that leaves the marker, prints a line to stdout and one to stderr, names its
@@ -41,17 +89,30 @@ hash_of() {
   sha256sum "$1" | cut -d' ' -f1
 }
 
-# Log an ask about <script> as <id>, as team-ask --script logs it, and Daniel's answer:
-# approve <id> <script>
+# Log an ask about <script> as <id>, as team-ask --script logs it, and Daniel's answer in
+# Discord, <text> or yes: approve <id> <script> [<text>]
 approve() {
   asked_about "$1" run-it "$2"
-  run_bin -0 team-log T7 answered id="$1" answer=yes
+  answer "$1" "${3:-yes}" >/dev/null
 }
 
-# Log the asked team-ask --script logs, its script <script> as given: asked_about <id> <text> <script>
+# Log the asked team-ask --script logs, its script <script> as given and its question a Discord
+# message sent now: asked_about <id> <text> <script>
 asked_about() {
   jq -nc --arg ts "$(date -u +%FT%TZ)" --arg id "$1" --arg text "$2" --arg script "$3" --arg sha256 "$(hash_of "$3")" \
-    '{ts: $ts, task: "T7", event: "asked", id: $id, text: $text, script: $script, sha256: $sha256}' >>"$TEAM_HOME/ledger.jsonl"
+    --arg m "$(next_message)" \
+    '{ts: $ts, task: "T7", event: "asked", id: $id, text: $text, script: $script, sha256: $sha256, discord_message: $m}' >>"$TEAM_HOME/ledger.jsonl"
+}
+
+# The ts of the latest asked of <id>: asked_at <id>
+asked_at() {
+  jq -r --arg id "$1" 'select(.event == "asked" and .id == $id) | .ts' "$TEAM_HOME/ledger.jsonl" | tail -n 1
+}
+
+# The refusal of a reply with no line that starts with yes to ask <id>, Discord message <m>:
+# no_yes <id> <m>
+no_yes() {
+  echo "T7's ask $1, at $(asked_at "$1"), runs nothing: Daniel's latest answer, Discord message $2, has no line that starts with yes, and the script runs only on a reply with a line that starts with the word yes, in any case, after an optional list marker (1., 2), - or *) and task id (T7, T7: or T7,); ask again with team-ask T7 $1 --file <question> --script <path>"
 }
 
 # The ledger's events of T7 after the opened, without ts, one per line.
@@ -283,4 +344,81 @@ SCRIPT
   run_bin -0 team-run-approved T7 slow
   assert_equal "$(cat "$MARK")" "ran
 ran"
+}
+
+@test "a reply with a line that starts with yes runs the script, whatever else it says" {
+  approved_script "$WT/scripts/ok.sh" 0
+  local n=0 reply
+  for reply in "yes" "Yes, run it" "YES." "t7 yes" "T200: yes" "T7, Yes please" $'1. yes\n2. go with rec\n3. later' \
+    "2) yes" "- yes" "* yes" "  yes" $'Thanks.\nyes, go ahead'; do
+    n=$((n + 1))
+    approve "ok$n" "$WT/scripts/ok.sh" "$reply"
+    run_bin -0 team-run-approved T7 "ok$n"
+    assert_equal "$(events | tail -n 1)" "{\"task\":\"T7\",\"event\":\"ran\",\"id\":\"ok$n\",\"exit\":0}"
+  done
+  assert_equal "$(wc -l <"$MARK")" "$n"
+}
+
+@test "refused with nothing run: a reply with no line that starts with yes, quoting the rule" {
+  local n=0 reply m
+  for reply in "no" "No, wait" "not yet" "yesterday's plan" "go with rec" "wait" "yess" $'1. no\n2. not that one either' \
+    "ok, yes" "T7 no" "T7yes" "1.5 yes"; do
+    n=$((n + 1))
+    asked_about "no$n" run-it "$WT/scripts/fix.sh"
+    m=$(answer "no$n" "$reply")
+    refuses "$(no_yes "no$n" "$m")" "no$n"
+  done
+}
+
+@test "a later answer supersedes an earlier one: yes, then no, runs nothing; no, then yes, runs" {
+  approve fix "$WT/scripts/fix.sh"
+  local m
+  m=$(answer fix "no, wait")
+  refuses "$(no_yes fix "$m")" fix
+  approve fix "$WT/scripts/fix.sh" "not yet"
+  answer fix "yes" >/dev/null
+  run_bin -3 team-run-approved T7 fix
+}
+
+@test "refused with nothing run: an answered that names no Discord message, as one logged at the terminal" {
+  asked_about fix run-it "$WT/scripts/fix.sh"
+  run_bin -0 team-log T7 answered id=fix answer=yes
+  local answered
+  answered=$(jq -r 'select(.event == "answered") | .ts' "$TEAM_HOME/ledger.jsonl")
+  refuses "T7's ask fix, at $(asked_at fix), runs nothing on its latest answered, at $answered, which names no Discord message, as one logged for an answer given at the terminal: Daniel runs the script themselves, or answers in Discord for team-answer T7 fix <message id> to log" fix
+  # A yes in Discord before it is superseded by it too.
+  approve fix "$WT/scripts/fix.sh"
+  run_bin -0 team-log T7 answered id=fix answer=yes
+  answered=$(jq -r 'select(.event == "answered") | .ts' "$TEAM_HOME/ledger.jsonl" | tail -n 1)
+  refuses "T7's ask fix, at $(asked_at fix), runs nothing on its latest answered, at $answered, which names no Discord message, as one logged for an answer given at the terminal: Daniel runs the script themselves, or answers in Discord for team-answer T7 fix <message id> to log" fix
+}
+
+@test "refused with nothing run: an answer Discord does not have, not Daniel's, edited, or sent before the question" {
+  local m prefix
+  # Discord has no such message.
+  asked_about gone run-it "$WT/scripts/fix.sh"
+  m=$(answer gone yes)
+  rm "$DISCORD_DIR/1562486564871995482-$m.json"
+  refuses "T7's ask gone, at $(asked_at gone), runs nothing on Daniel's latest answer: Discord message $m cannot be fetched from #coordinator 1562486564871995482: curl: (22) The requested URL returned error: 404" gone
+  # Someone not in allowFrom wrote it.
+  asked_about other run-it "$WT/scripts/fix.sh"
+  m=$(answer other yes)
+  message "$m" 999 yes
+  refuses "T7's ask other, at $(asked_at other), runs nothing on Daniel's latest answer: Discord message $m is by daniel (999), who is not in allowFrom of ~/.claude/channels/discord/access.json" other
+  # It was edited after it was sent.
+  asked_about edited run-it "$WT/scripts/fix.sh"
+  m=$(answer edited yes)
+  jq '. + {edited_timestamp: "2026-11-01T10:05:00.000000+00:00"}' "$DISCORD_DIR/1562486564871995482-$m.json" >"$DISCORD_DIR/m"
+  mv "$DISCORD_DIR/m" "$DISCORD_DIR/1562486564871995482-$m.json"
+  refuses "T7's ask edited, at $(asked_at edited), runs nothing on Daniel's latest answer: Discord message $m was edited at 2026-11-01T10:05:00.000000+00:00, so its text may not be what Daniel first sent: ask them to send the answer again as a new message" edited
+  # It was sent before the question, so it answers an earlier one.
+  m=$(next_message)
+  message "$m" 757 yes
+  asked_about early run-it "$WT/scripts/fix.sh"
+  jq -nc --arg m "$m" '{ts: "2026-11-01T10:00:00Z", task: "T7", event: "answered", id: "early", answer: "yes", discord_message: $m}' >>"$TEAM_HOME/ledger.jsonl"
+  prefix="T7's ask early, at $(asked_at early), runs nothing on Daniel's latest answer: Discord message $m was sent at"
+  run_bin -1 team-run-approved T7 early
+  assert_contains "$output" "team-run-approved: $prefix"
+  assert_contains "$output" ", before T7's question early (Discord message $((m + 4194304))), so it is not Daniel's answer to it"
+  [[ ! -e $MARK ]]
 }

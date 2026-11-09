@@ -10,13 +10,24 @@
 # It runs the script only when every one of these holds, and otherwise refuses with nothing run:
 #   - it is not a worker session (worker_refusal in bin/lib/team.sh): the coordinator runs it;
 #   - the task is open, and the ask names a script;
-#   - the ask has an answered of <id> logged after it (the coordinator runs it on Daniel's yes:
-#     an answered is the ledger's record that they answered, whatever they said);
+#   - the ask has an answered of <id> logged after it, and the latest one names a Discord
+#     message, as team-answer logs it: one logged for an answer given at the terminal runs
+#     nothing, so Daniel runs the script themselves or answers in Discord;
 #   - no ran of <id> was logged since the ask, so a second run needs a new ask;
 #   - the script, its symbolic links resolved, is a file under one of the task's open worktrees
 #     or the team home's tasks/T<n>/;
 #   - its sha256 now is the ask's, or the refusal names both hashes;
 #   - this machine holds the lease, confirmed against origin (team-lease check), as for a launch;
+#   - that message, read back from Discord now, holds as team-answer held it (answer_message in
+#     bin/lib/team.sh: Daniel's, in the task's thread or #coordinator, sent after the question,
+#     never edited), or the refusal gives its reason;
+#   - its text has a line that starts with the word yes, in any case and ending at a word
+#     boundary, after an optional list marker (1., 2), - or *) and an optional task id (T200,
+#     any case, a colon or comma after it or not): "yes", "Yes, run it", "t200 yes" and a reply
+#     whose first line is "1. yes" pass, and "no", "not yet", "yesterday's plan" and "wait" run
+#     nothing, the refusal quoting the rule and saying to ask again; so a later answer, such as
+#     "no, wait" after a "yes", supersedes an earlier one, and which line of a batched reply
+#     answers which ask stays the coordinator's reading;
 #   - no other run of the ask holds its lock, and no run of it started on this machine: a run
 #     that was killed, or could not log its ran, still used the OK.
 # So one OK runs the script once on one machine, never twice there: the mark of a started run is
@@ -53,8 +64,11 @@ asked_at=$(jq -r .ts <<<"$ask")
 [[ -n $script && -n $expected ]] ||
   die "$task's ask $id, at $asked_at, names no script: an approved script is asked with team-ask $task $id --file <question> --script <path>"
 since=$(jq -c --argjson k "$(jq .k <<<"$ask")" '.[$k + 1:]' <<<"$events")
-jq -e --arg id "$id" 'any(.[]; .event == "answered" and .id == $id)' <<<"$since" >/dev/null ||
-  die "$task's ask $id, at $asked_at, has no answered since: Daniel has not answered it"
+answered=$(jq -c --arg id "$id" 'map(select(.event == "answered" and .id == $id)) | last // empty' <<<"$since")
+[[ -n $answered ]] || die "$task's ask $id, at $asked_at, has no answered since: Daniel has not answered it"
+message=$(jq -r '.discord_message // empty | tostring' <<<"$answered")
+[[ -n $message ]] ||
+  die "$task's ask $id, at $asked_at, runs nothing on its latest answered, at $(jq -r .ts <<<"$answered"), which names no Discord message, as one logged for an answer given at the terminal: Daniel runs the script themselves, or answers in Discord for team-answer $task $id <message id> to log"
 ran=$(jq -r --arg id "$id" 'map(select(.event == "ran" and .id == $id)) | first // empty | "\(.ts), exit \(.exit)"' <<<"$since")
 [[ -z $ran ]] || die "$task already ran $id since its ask, at $ran: a new run needs a new ask"
 
@@ -73,6 +87,14 @@ actual=$(sha256sum "$copy" | cut -d' ' -f1)
   die "$script has changed since $task's ask $id: its sha256 is $actual now, and the ask named ${expected,,}"
 
 lease_gate "an approved script"
+
+# Daniel's latest answer, read back from Discord and held to what team-answer held it to, must
+# have a line that starts with yes.
+word=$(answer_message "$task" "$id" "$message" "$events" 2>"$scratch/error") ||
+  die "$task's ask $id, at $asked_at, runs nothing on Daniel's latest answer: $(<"$scratch/error")"
+jq -e '.message.content | strings | split("\n")
+  | any(test("^\\s*(?:(?:[0-9]+[.)]|[-*])\\s*)?(?:t[1-9][0-9]*(?:[:,]\\s*|\\s+))?yes\\b"; "i"))' <<<"$word" >/dev/null ||
+  die "$task's ask $id, at $asked_at, runs nothing: Daniel's latest answer, Discord message $message, has no line that starts with yes, and the script runs only on a reply with a line that starts with the word yes, in any case, after an optional list marker (1., 2), - or *) and task id ($task, $task: or $task,); ask again with team-ask $task $id --file <question> --script <path>"
 
 # The run's directory, with no symbolic link from agent-team/ down, then its lock, held to the end.
 state=${XDG_STATE_HOME:-$HOME/.local/state}/agent-team

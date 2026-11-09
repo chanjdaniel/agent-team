@@ -16,7 +16,7 @@
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, worktree_tree, snapshot_message, is_snapshot, wip_origin,
 # only_records, records_list, records_pathspecs, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
 # own_project, standing_projects, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_level, image_type, discord_token, discord_api,
-# daniel_message, refresh_inbox, github, base_merge, clean_base_merges, pr_part, pr_file_reasons, task_state_json, pr_standing_word, loose_objects, pack_size, story_file and findings_file, and sets IMAGE_TYPE,
+# daniel_message, answer_message, refresh_inbox, github, base_merge, clean_base_merges, pr_part, pr_file_reasons, task_state_json, pr_standing_word, loose_objects, pack_size, story_file and findings_file, and sets IMAGE_TYPE,
 # PACK_LOOSE, COMMAND_START, COORDINATOR_CHANNEL and INTERVIEW_CHANNEL.
 # Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
 # shellcheck shell=bash
@@ -1181,6 +1181,54 @@ daniel_message() {
   fi
   jq -c --arg place "$found" --arg channel "${found##* }" --arg who "$who" \
     '{place: $place, channel: $channel, who: $who, message: .}' <<<"$reply"
+}
+
+# Read Discord message <message> as Daniel's answer to <task>'s ask <id>, held to what an answer
+# is held to: sent after the latest asked of <id> in <events> (the task's events, one JSON
+# array), that is after its question's message (the asked's discord_message, which team-ask
+# logs), else no earlier than the asked's ts, as Discord ids order by time; Daniel's
+# (daniel_message), in the task's thread, else #coordinator; and never edited, so its text is
+# the text Daniel sent. With <does>, a machine that is fenced or lost the lease (lease_refusal
+# <does>) is refused after the time check and before Discord is read. Prints daniel_message's
+# {place, channel, who, message}, the text being .message.content; fails with the one reason on
+# stderr. team-answer and team-run-approved hold an answer to it:
+# answer_message <task> <id> <message> <events> [<does>]
+answer_message() {
+  local task=$1 id=$2 message=$3 events=$4 sent asked question asked_ts why thread places=() word edited
+  [[ $message =~ ^[1-9][0-9]{0,18}$ ]] || {
+    echo "$message is not a Discord message id, so it is not Daniel's answer to $task's $id" >&2
+    return 1
+  }
+  # A Discord id holds the milliseconds since 2015-01-01 above its low 22 bits.
+  sent=$(((10#$message >> 22) / 1000 + 1420070400))
+  asked=$(jq -c --arg id "$id" 'map(select(.event == "asked" and .id == $id)) | last' <<<"$events") || return 1
+  question=$(jq -r '.discord_message // empty | tostring' <<<"$asked") || return 1
+  if [[ $question =~ ^[1-9][0-9]{0,18}$ ]]; then
+    ((10#$message > 10#$question)) || {
+      echo "Discord message $message was sent at $(date -ud "@$sent" +%FT%TZ), before $task's question $id (Discord message $question), so it is not Daniel's answer to it" >&2
+      return 1
+    }
+  else
+    asked_ts=$(jq -r .ts <<<"$asked") || return 1
+    ((sent >= $(date -ud "$asked_ts" +%s))) || {
+      echo "Discord message $message was sent at $(date -ud "@$sent" +%FT%TZ), before $task asked $id at $asked_ts, so it is not Daniel's answer to it" >&2
+      return 1
+    }
+  fi
+  if [[ -n ${5:-} ]] && why=$(lease_refusal "$5"); then
+    echo "$why" >&2
+    return 1
+  fi
+  thread=$(jq -r 'map(select(.event == "thread") | .discord_thread | strings) | last // empty' <<<"$events") || return 1
+  if [[ -n $thread ]]; then places+=("the task's thread $thread"); fi
+  places+=("#coordinator $COORDINATOR_CHANNEL")
+  word=$(daniel_message "$message" "the answer" "${places[@]}") || return 1
+  edited=$(jq -r '.message.edited_timestamp // empty' <<<"$word") || return 1
+  [[ -z $edited ]] || {
+    echo "Discord message $message was edited at $edited, so its text may not be what Daniel first sent: ask them to send the answer again as a new message" >&2
+    return 1
+  }
+  printf '%s\n' "$word"
 }
 
 # Bring the Waiting on you message in #coordinator up to date with this checkout's team-inbox, at
