@@ -85,7 +85,10 @@ passes() {
 @test "a search or commit whose arguments name a shell or . passes" {
   passes "grep -rn 'AGENT_TEAM_ROLE=' . | head" "grep -rn 'team-worker T1 ops' . | head" \
     "grep -rn 'team-worker T1 ops' bin | grep -v bash" \
-    $'git add . && git commit -F - <<\'EOF\'\nfix: x\n\nunset AGENT_TEAM_ROLE is refused now\nEOF'
+    $'git add . && git commit -F - <<\'EOF\'\nfix: x\n\nunset AGENT_TEAM_ROLE is refused now\nEOF' \
+    "grep -rn 'team-worker T1 ops' . && bash -n x.sh" \
+    "case \"\$x\" in a|b) grep -rn 'team-worker T1 ops' . ;; *) git grep -n 'AGENT_TEAM_ROLE=' ;; esac" \
+    $'git commit -m "$(cat <<\'EOF\'\nfix: x\n\nteam-worker T1 ops wt is refused\nEOF\n)"'
 }
 
 @test "a call of another tool passes, and input it cannot read is refused, naming why" {
@@ -121,6 +124,18 @@ passes() {
   refuses "$SET" $'bash <<\'EOF\'\nAGENT_TEAM_ROLE=x team-post T7 --file f\nEOF'
 }
 
+# What is piped into a shell is read as code in whichever pipeline it stands, and wherever the shell
+# starts in the command it is piped into: in a group, a substitution, quoted, or behind a wrapper.
+@test "a guarded command piped into a shell in a group, a substitution or behind a wrapper is refused" {
+  refuses "$OPS" "true && echo 'team-worker T1 ops wt' | bash" "false || echo 'team-worker T1 ops wt' | bash" \
+    "{ echo 'team-worker T1 ops wt' | bash; }" '(echo team-worker T1 ops wt) | bash' \
+    "echo 'team-worker T1 ops wt' | (bash)" $'cat <<\'EOF\' | (bash)\nteam-worker T1 ops wt\nEOF' \
+    "echo 'team-worker T1 ops wt' | \"bash\"" "echo 'team-worker T1 ops wt' | \\bash" \
+    "echo 'team-worker T1 ops wt' | xargs -0 bash -c" $'cat <<\'EOF\' | xargs -0 bash -c\nteam-worker T1 ops wt\nEOF' \
+    "echo 'team-worker T1 ops wt' | flock /tmp/l bash" "echo 'team-worker T1 ops wt' | tee >(bash)" \
+    '(case x in x) echo team-worker T1 ops wt;; esac) | bash' '{ : }; echo team-worker T1 ops wt; } | bash'
+}
+
 @test "a guarded command run by find -exec, watch, flock, script, su, parallel or after bash -c -- is refused" {
   refuses "$OPS" 'find . -exec team-worker T1 ops wt \;' 'find . -execdir team-worker {} ops wt +' \
     'watch -n 5 team-worker T1 ops wt' "watch 'team-worker T1 ops wt'" 'flock /tmp/l team-worker T1 ops wt' \
@@ -138,7 +153,11 @@ passes() {
     $'cat <<EOF\nx\nEOF\nteam-worker T1 ops wt' $'cat <<-EOF\n\tx\n\tEOF\nteam-worker T1 ops wt' \
     $'cat <<A <<B\na\nA\nb\nB\nteam-worker T1 ops wt' $'cat <<EOF; team-worker T1 ops wt\nx\nEOF' \
     $'cat <<E"O"F\nx\nEOF\nteam-worker T1 ops wt\nE' $'cat <<\'E\'OF\nx\nEOF\nteam-worker T1 ops wt\nE' \
-    $'echo $\'it\\\'s\'; echo \'<<X\'\nteam-worker T1 ops wt\nX' $'cat <<EOF; echo \'<<X\'\nx\nEOF\nteam-worker T1 ops wt\nX'
+    $'echo $\'it\\\'s\'; echo \'<<X\'\nteam-worker T1 ops wt\nX' $'cat <<EOF; echo \'<<X\'\nx\nEOF\nteam-worker T1 ops wt\nX' \
+    $'echo "$(case x in x) echo "<<X";; esac)"\nteam-worker T1 ops wt\nX' \
+    $'echo "$(case x in x) echo "<<X ";; esac)"\nteam-worker T1 ops wt\nX' \
+    $'echo "${x:-"<<X"}"\nteam-worker T1 ops wt\nX' $'echo "${x:-"<<X "}"\nteam-worker T1 ops wt\nX' \
+    $'echo $[1<<X]\nteam-worker T1 ops wt\nX' $'echo $[1<<X ]\nteam-worker T1 ops wt\nX'
 }
 
 @test "a guarded command after a pipe, in a backtick, in a subshell or through xargs is refused" {
