@@ -145,7 +145,10 @@ passes() {
     "{ echo 'team-worker T1 ops wt'; function f (:) } | bash" \
     "a=(x) [[ ; echo 'team-worker T1 ops wt' | bash" "a+=(x) [[ ; echo 'team-worker T1 ops wt' | bash" \
     "declare -a a=(x) [[ ; echo 'team-worker T1 ops wt' | bash" "((echo 'team-worker T1 ops wt' | bash) )" \
-    "echo \"\$((echo 'team-worker T1 ops wt' | bash) )\"" "echo \$((echo 'team-worker T1 ops wt' | bash) )"
+    "echo \"\$((echo 'team-worker T1 ops wt' | bash) )\"" "echo \$((echo 'team-worker T1 ops wt' | bash) )" \
+    "{ a=(case in) ; echo 'team-worker T1 ops wt'; } | bash" $'{ a=(\ncase in) ; echo \'team-worker T1 ops wt\'; } | bash' \
+    "((echo \"))\"; echo 'team-worker T1 ops wt' ) | bash)" "((echo '))'; echo 'team-worker T1 ops wt' ) | bash)" \
+    "echo \$((echo \"))\"; echo 'team-worker T1 ops wt' ) | bash)"
 }
 
 # Bash takes } and esac as reserved words after every compound command's end, so each form below

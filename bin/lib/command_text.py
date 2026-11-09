@@ -6,12 +6,12 @@ Usage: python3 -I command_text.py   (the command on stdin; prints the text on st
 bin/hooks/command-guard runs this file on a Bash call's command, and team-tokens imports
 without_heredocs from it. It reads the command far enough to know its quotes ('...', "..." and
 $'...'), backslashes, comments, arithmetic ($[, and $(( or (( whose two closing parentheses are
-adjacent, as Bash takes it: ((cmd) ) is two subshells), groups ((, $(, a backtick, ${ in which
-quotes nest up to its first }, [[ ... ]], in which a comment and a newline's heredoc bodies are
-read as outside it, and a { ... }; a ( right after = is an array assignment's, a word's part),
-case's patterns, pipelines, here-strings and heredocs, whose marker is its word up to a blank or
-an operator with its quotes removed, as Bash takes it; a << inside quotes, a comment, arithmetic,
-${ or [[ opens none.
+adjacent, matched past quotes, as Bash takes it: ((cmd) ) is two subshells), groups ((, $(, a
+backtick, ${ in which quotes nest up to its first }, [[ ... ]], in which a comment and a
+newline's heredoc bodies are read as outside it, a { ... }, and after = an array assignment's
+list, a word's part in which no word is reserved), case's patterns, pipelines, here-strings and
+heredocs, whose marker is its word up to a blank or an operator with its quotes removed, as Bash
+takes it; a << inside quotes, a comment, arithmetic, ${ or [[ opens none.
 A reserved word ({, }, case, esac, [[ and the rest) is one where Bash takes it as one, as its
 reserved_word_acceptable does: after a separator, a pipe, (, ), {, }, an opening reserved word,
 a compound command's end (fi, done, esac, }, ), (( ... )) or ]]), time, its -p or the -- after
@@ -154,14 +154,40 @@ def _past_blanks(text, i):
     return i
 
 
+def _quoted_end(text, i):
+    """The end of the quoted string or backtick whose opening character is at i ('...', $'...',
+    "..." or `...`), past its closing one; a "..." skips the $( groups in it whole."""
+    n, close = len(text), text[i + (text[i] == "$")]
+    j = i + 1 + (text[i] == "$")
+    while j < n:
+        if text[j] == close:
+            return j + 1
+        if text[j] == "\\" and (close != "'" or text[i] == "$"):
+            j += 2
+        elif close == '"' and text.startswith("$(", j):
+            j = _matching(text, j + 1)
+        else:
+            j += 1
+    return n
+
+
 def _matching(text, i, pair="()"):
-    """The end of the group whose opening pair[0] is at i, past its matching pair[1]."""
-    depth = 0
-    for j in range(i, len(text)):
-        depth += {pair[0]: 1, pair[1]: -1}.get(text[j], 0)
+    """The end of the group whose opening pair[0] is at i, past its matching pair[1], skipping
+    quotes, backticks and backslashes as Bash's parse_matched_pair does."""
+    depth, j, n = 0, i, len(text)
+    while j < n:
+        c = text[j]
+        if c == "\\":
+            j += 2
+            continue
+        if c in "'\"`" or text.startswith("$'", j):
+            j = _quoted_end(text, j)
+            continue
+        depth += {pair[0]: 1, pair[1]: -1}.get(c, 0)
         if depth == 0:
             return j + 1
-    return len(text)
+        j += 1
+    return n
 
 
 def _arith_end(text, i):
@@ -186,11 +212,12 @@ def _closing(text, pos, word, tabs):
 def read_command(text):
     """The command's reading, as Reading says, from one pass over its text."""
     pipelines, heredocs, strings, pending = [], [], [], []
-    # Each group open at i: its kind (root, (, `, {, ${, [[, or a case's case-word, case-pattern
-    # or case-body), its pipeline, where its segment starts, whether a pipe began that segment,
-    # the quote it sits in, whether a reserved word may come next (True, False, or "name",
-    # "coproc", "time" or "time -p" after function, coproc, time or time's -p), and that state for
-    # its parent once it ends: a compound command's end lets one come, a word's part does not.
+    # Each group open at i: its kind (root, (, `, {, ${, [[, an array assignment's list, or a
+    # case's case-word, case-pattern or case-body), its pipeline, where its segment starts,
+    # whether a pipe began that segment, the quote it sits in, whether a reserved word may come
+    # next (True, False, or "name", "coproc", "time" or "time -p" after function, coproc, time or
+    # time's -p), and that state for its parent once it ends: a compound command's end lets one
+    # come, a word's part does not.
     frames = []
     quote, i, n = None, 0, len(text)
 
@@ -218,8 +245,8 @@ def read_command(text):
         frames[-1][5] = True
 
     def reserved():
-        """Whether a reserved word may come here."""
-        return frames[-1][5] in (True, "coproc", "time", "time -p")
+        """Whether a reserved word may come here: never in an array assignment's list."""
+        return frames[-1][0] != "array" and frames[-1][5] in (True, "coproc", "time", "time -p")
 
     def bodies(pos):
         """Read the pending heredocs' bodies from pos on, each up to its closing line, and return
@@ -311,10 +338,10 @@ def read_command(text):
             substitution = text[i - 1 : i] in ("<", ">", "=")
             if substitution:
                 frames[-1][5] = False
-            push("(", i + 1, ends=not substitution)
+            push("array" if text[i - 1 : i] == "=" else "(", i + 1, ends=not substitution)
             i += 1
         elif c == ")":
-            if kind == "(":
+            if kind in ("(", "array"):
                 quote = pop(i)
             else:
                 # A case pattern's end, after which its command starts; else one Bash would refuse.
