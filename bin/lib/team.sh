@@ -12,7 +12,7 @@
 # the script's help_more, if it defined one before sourcing), and provides die, usage_error, team_project, ledger_jq, json_vars, email_kind, refused_emails, ledger_append, ledger_push,
 # task_events, task_event_array, known_task_events, open_task_events, task_status, task_worktrees, script_place_refusal, local_path,
 # archive_left_out, rsync_rule, archive_task_dir, machine_name, os_release, team_os, tool_dirs,
-# team_tool_path, fence_reason, offline_hold, lease_refusal, worker_refusal, toolkit_refusal, lease_gate, worktree_changes, same_path, bounded, docker_bounded, docker_silence, trust_probe,
+# team_tool_path, fence_reason, offline_since, offline_hold, lease_refusal, worker_refusal, toolkit_refusal, lease_gate, worktree_changes, same_path, bounded, docker_bounded, docker_silence, trust_probe,
 # pool_status, pool_entry, pool_slot, treehouse_slots, slot_changes, secret_paths, snapshot_left_out, inert_config, worktree_tree, snapshot_message, is_snapshot, wip_origin,
 # only_records, records_list, records_pathspecs, origin_git, origin_reason, commit_records, fast_forward, follow_base, render_template,
 # own_project, standing_projects, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_level, image_type, discord_token, discord_api,
@@ -270,12 +270,11 @@ ledger_append() {
 # is, silently. Each script that writes a push kind calls it once, after its last event:
 # ledger_push
 ledger_push() {
-  local why err offline=$HOME/.local/state/agent-team/offline since
+  local why err since
   [[ -n ${LEDGER_PUSH_DUE:-} ]] || return 0
   LEDGER_PUSH_DUE=''
   [[ -e $TEAM_HOME/.git ]] && git -C "$TEAM_HOME" remote get-url origin >/dev/null 2>&1 || return 0
-  if [[ -e $offline ]] && ! fence_reason >/dev/null; then
-    since=$(jq -er '.since | strings' "$offline" 2>/dev/null) || since=$(date -u -r "$offline" +%FT%TZ)
+  if ! fence_reason >/dev/null && since=$(offline_since); then
     echo "${0##*/}: the ledger is not on origin yet (GitHub is unreachable since $(date -d "$since" +%H:%M), and the team is holding); the next checkpoint pushes it" >&2
     return 0
   fi
@@ -600,15 +599,23 @@ fence_reason() {
     "$file" 2>/dev/null || echo "fenced since $since"
 }
 
-# Print the hold while the team holds offline (team-timers' ~/.local/state/agent-team/offline,
-# {"since": "<UTC time>", ...}, dated from its modification time without one): "GitHub is
-# unreachable (since 13:05); the team is holding: commit locally, write handoff.md, send T<n>
-# PAUSED offline, and wait.", or fail when it does not hold. The lease-fence hook and
-# team-thread wait give it: offline_hold
-offline_hold() {
-  local file=$HOME/.local/state/agent-team/offline since
+# Print since when the team holds offline, a UTC time, or fail when it does not: the one reader of
+# team-timers' flag, ~/.local/state/agent-team/offline ({"since": "<UTC time>", ...}, dated from
+# its modification time without one), for offline_hold, ledger_push and team-timers:
+# offline_since
+offline_since() {
+  local file=$HOME/.local/state/agent-team/offline
   [[ -e $file ]] || return 1
-  since=$(jq -er '.since | strings' "$file" 2>/dev/null) || since=$(date -u -r "$file" +%FT%TZ)
+  jq -er '.since | strings' "$file" 2>/dev/null || date -u -r "$file" +%FT%TZ
+}
+
+# Print the hold while the team holds offline (offline_since): "GitHub is unreachable (since
+# 13:05); the team is holding: commit locally, write handoff.md, send T<n> PAUSED offline, and
+# wait.", or fail when it does not hold. The lease-fence hook and team-thread wait give it:
+# offline_hold
+offline_hold() {
+  local since
+  since=$(offline_since) || return 1
   echo "GitHub is unreachable (since $(date -d "$since" +%H:%M)); the team is holding: commit locally, write handoff.md, send T<n> PAUSED offline, and wait."
 }
 

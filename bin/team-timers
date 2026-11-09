@@ -53,8 +53,9 @@
 #              unattended  sweep findings the coordinator step has seen at every look for 60
 #                     minutes, with no ledger event but a denied logged since it first saw each
 #                     ("the coordinator has left <n> findings unattended since <t>"); alerting by
-#                     definition; no sweep kind; not raised beside the coordinator problem, nor
-#                     while the record was written before this holding began.
+#                     definition; no sweep kind; not raised beside the coordinator or heartbeat
+#                     problem, when the last run made no look, nor while the record was written
+#                     before this holding began.
 #              ledger  lines of ledger.jsonl no reader can parse, with their count and line
 #                     numbers; alerting; sweep health.
 #              step-<name>  any other step failing (the usage export as step-usage, a session
@@ -118,9 +119,10 @@
 #                     for 60 minutes with nothing but denied events logged since is the unattended
 #                     problem. A sweep that cannot run (no JSON list on stdout, or timed out) is the
 #                     step failing ("coordinator: failed: cannot run the sweep (team-sweep --json):
-#                     <its last line on stderr>"), the findings kept but no longer aged: a run
-#                     with no look, or a look over 15 minutes after the last (the machine slept),
-#                     dates every finding at the next look again. It fails no run, and the
+#                     <its last line on stderr>"), the findings kept but no longer aged: after a
+#                     run with no look, or a run that starts over 15 minutes after the last one
+#                     ended (the machine slept), the next look dates every finding again. It
+#                     fails no run, and the
 #                     heartbeat never starts or restarts a coordinator, however long one is missing
 #                     or leaves its findings: that launches a session in bypass mode, which is
 #                     Daniel's to decide. The health record is written next.
@@ -1237,7 +1239,7 @@ write_record() {
   local now last_checkpoint='' offline_json=null refused_json=null since prev=(--argjson prev null)
   now=$(date -u +%FT%TZ)
   [[ ! -e $state/last-checkpoint ]] || last_checkpoint=$(date -u -r "$state/last-checkpoint" +%FT%TZ)
-  since=$(offline_since)
+  since=$(offline_since) || since=''
   [[ -z $since ]] || offline_json=$(jq -cn --arg since "$since" '{since: $since}')
   if [[ -e $refused ]]; then
     refused_json=$(jq -c 'select(type == "object" and (.since | type) == "string") | {since, reason}' "$refused" 2>/dev/null) || refused_json=''
@@ -1518,22 +1520,16 @@ bounded_run() {
   exit "$rc"
 }
 
-# Since when the team holds, from the offline flag; nothing when it does not.
-offline_since() {
-  [[ -e $offline ]] || return 0
-  jq -er '.since | strings' "$offline" 2>/dev/null || date -u -r "$offline" +%FT%TZ
-}
-
 # The watch: a line each time the offline flag appears or goes, until killed; with --once, the
 # first change from the flag as it finds it, and then it ends.
 watch() {
   local seen='' since
   if ((once)); then
-    seen=$(offline_since)
+    seen=$(offline_since) || seen=''
     sleep "$WATCH_SECONDS"
   fi
   while :; do
-    since=$(offline_since)
+    since=$(offline_since) || since=''
     if [[ $since != "$seen" ]]; then
       if [[ -n $since ]]; then
         echo "GitHub unreachable since $since; the team is holding"
