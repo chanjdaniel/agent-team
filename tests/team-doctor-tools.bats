@@ -13,20 +13,18 @@ setup() {
 }
 
 # Every tool line of <os> fails, naming that OS's install command, when every tool is <version>
-# ("-" for missing); Claude Code's pin mismatch only warns. The whole doctor, since "nothing else
-# fails" reads every line.
+# ("-" for missing, else one below every minimum, so Claude Code's fails too). The whole doctor,
+# since "nothing else fails" reads every line.
 every_tool_fails() {
-  local os=$1 version=$2 name source line verdict
+  local os=$1 version=$2 name source line
   tools_at "$os" "$version"
   TEAM_DOCTOR_CHECKS='' run_bin -1 team-doctor
   while IFS=$'\t' read -r name _ _ source; do
     line=$(line_of "tool $name")
-    verdict=FAIL
-    [[ $version == - || $name != claude ]] || verdict=WARN
     if [[ $version == - ]]; then
       assert_equal "$line" "FAIL tool $name: not installed; fix: $source"
     else
-      [[ $line == "$verdict tool $name: "*"; fix: $source" ]] ||
+      [[ $line == "FAIL tool $name: "*"; fix: $source" ]] ||
         { echo "tool $name: $line" >&2; return 1; }
     fi
   done < <(lock_tools "$os")
@@ -62,8 +60,10 @@ lock_has_its_shape() {
           and ("^\(.release.tag | ltrimstr("v") | gsub("\\."; "\\."))-[0-9]+-g\(.fork.commit[:7])$" as $describe
             | .fork.version | test($describe))))
       else
-        ([has("pin"), has("min")] | map(select(.)) | length == 1)
-        and ((.pin // .min) | test("^[0-9]+(\\.[0-9]+)+"))
+        # A pin, a min, or both, the min then no higher than the pin.
+        ([has("pin"), has("min")] | any)
+        and all(.pin // empty, .min // empty; test("^[0-9]+(\\.[0-9]+)+"))
+        and ((has("pin") and has("min") | not) or ([.min, .pin] | map(split(".") | map(tonumber)) | .[0] <= .[1]))
         and (.source | type == "object" and length > 0 and (keys - ["arch", "macos"] == []))
       end)' "${1:-$LOCK}"
 }
@@ -93,6 +93,8 @@ lock_has_its_shape() {
   assert_equal "$(jq -r '[.tools[] | select(.name | IN("go", "make")) | "\(.name)>=\(.min):\(.source | keys | join(","))"] | join(" ")' "$LOCK")" \
     "go>=1.25.0:arch,macos make>=4.0:arch"
   assert_equal "$(jq -r '[.tools[] | select(.pin_mismatch) | "\(.name)=\(.pin_mismatch)"] | join(" ")' "$LOCK")" "claude=WARN"
+  # Claude Code also has a floor, the first version whose hooks honour onFailure.
+  assert_equal "$(jq -r '[.tools[] | select(.pin and .min) | "\(.name)>=\(.min)"] | join(" ")' "$LOCK")" "claude>=2.1.295"
   assert_equal "$(jq -r '.tools[] | select(.name == "docker-compose") | .min' "$LOCK")" 2.24.0
 }
 
@@ -127,7 +129,7 @@ lock_has_its_shape() {
   assert_equal "$(grep -v '^PASS ' <<<"$output")" ""
   local expected
   expected=$(printf '%s\n' os; lock_tools arch | cut -f1 | sed 's/^/tool /'
-    printf '%s\n' docker chrome servers machine 'team home' 'team home fetch' 'team home pack' 'git hooks' 'records hooks' 'claude login' 'github login' config plugins memory discord 'own settings' 1password
+    printf '%s\n' docker chrome servers machine 'team home' 'team home fetch' 'team home pack' 'git hooks' 'guard hooks' 'records hooks' 'claude login' 'github login' config plugins memory discord 'own settings' 1password
     secret_ids | sed 's/^/secret /'
     echo 'discord access'
     echo 'interview channel'
@@ -157,7 +159,7 @@ lock_has_its_shape() {
   assert_equal "$(grep -v '^PASS ' <<<"$output")" ""
   local expected
   expected=$(printf '%s\n' os homebrew; lock_tools macos | cut -f1 | sed 's/^/tool /'
-    printf '%s\n' docker chrome servers machine 'team home' 'team home fetch' 'team home pack' 'git hooks' 'records hooks' 'claude login' 'github login' config plugins memory discord 'own settings' 1password
+    printf '%s\n' docker chrome servers machine 'team home' 'team home fetch' 'team home pack' 'git hooks' 'guard hooks' 'records hooks' 'claude login' 'github login' config plugins memory discord 'own settings' 1password
     secret_ids | sed 's/^/secret /'
     echo 'discord access'
     echo 'interview channel'
@@ -177,14 +179,31 @@ lock_has_its_shape() {
   assert_equal "$(line_of 'tool jq')" "FAIL tool jq: not installed; fix: sudo pacman -S --needed jq"
 }
 
-@test "on Arch each tool below its minimum or off its pin fails its line; Claude Code's only warns" {
+@test "on Arch each tool below its minimum or off its pin fails its line, Claude Code's below its minimum too" {
   local bun claude
   bun=$(lock_pin bun)
   claude=$(lock_pin claude)
   every_tool_fails arch 0.1.0
   assert_equal "$(line_of 'tool git')" "FAIL tool git: 0.1.0, below the minimum 2.40.0; fix: sudo pacman -S --needed git"
   assert_equal "$(line_of 'tool bun')" "FAIL tool bun: 0.1.0, not the pinned $bun; fix: curl -fsSL https://bun.sh/install | bash -s bun-v$bun"
-  assert_equal "$(line_of 'tool claude')" "WARN tool claude: 0.1.0, not the pinned $claude; fix: curl -fsSL https://claude.ai/install.sh | bash -s $claude"
+  assert_equal "$(line_of 'tool claude')" "FAIL tool claude: 0.1.0, below the minimum 2.1.295; fix: curl -fsSL https://claude.ai/install.sh | bash -s $claude"
+}
+
+@test "Claude Code below 2.1.295, whose hooks ignore onFailure, fails its line; at it, off the pin only warns" {
+  local claude fix
+  claude=$(lock_pin claude)
+  fix="curl -fsSL https://claude.ai/install.sh | bash -s $claude"
+  only_checks 030-tools.sh
+  tools_at arch
+  answer "claude --version" "2.1.294 (Claude Code)"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of 'tool claude')" "FAIL tool claude: 2.1.294, below the minimum 2.1.295; fix: $fix"
+  answer "claude --version" "2.1.295 (Claude Code)"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'tool claude')" "WARN tool claude: 2.1.295, not the pinned $claude; fix: $fix"
+  answer "claude --version" "$claude (Claude Code)"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of 'tool claude')" "PASS tool claude: $claude"
 }
 
 @test "a GitHub release's fix downloads this machine's archive and checks its recorded SHA-256 before unpacking it" {

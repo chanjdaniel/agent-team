@@ -1155,3 +1155,12 @@ $(merge_post 1563 "\`git revert $MERGE_SHA\`")"
   assert_contains "$stderr" "post this text with team-post --coordinator --file <its file>:
 $(merge_post 1563 "\`git revert $MERGE_SHA\`")"
 }
+
+@test "refused in a worker session, whatever its role, before any read; --help and the coordinator are not" {
+  worker_refused team-merge "merges no PR" T14
+  worker_refused team-merge "merges no PR" T14 --pr https://github.com/owner/proj/pull/5
+  AGENT_TEAM_ROLE=builder run_bin -0 team-merge --help
+  assert_equal "${lines[0]}" "$(sed -n '2s/^# //p' "$REPO_ROOT/bin/team-merge")"
+  AGENT_TEAM_ROLE=coordinator run_bin -1 team-merge T99
+  assert_equal "$output" "team-merge: unknown task T99: the ledger has no events for it"
+}

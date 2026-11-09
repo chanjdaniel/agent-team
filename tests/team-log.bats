@@ -1733,6 +1733,17 @@ team-log: $TEAM_HOME/ledger.jsonl: 2 lines hold strings that are no whole number
   assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" 3
 }
 
+@test "refused in a worker session, whatever its role and form, --print and --check included; --help and the coordinator are not" {
+  worker_refused team-log "runs no team-log" T7 review verdict=pass
+  worker_refused team-log "runs no team-log" T7 --from-message 'T7 DONE 01 abc1234 the ticket' --print
+  worker_refused team-log "runs no team-log" --check
+  worker_refused team-log "runs no team-log" --fix-sent-back
+  AGENT_TEAM_ROLE=builder run_bin -0 team-log --help
+  assert_equal "${lines[0]}" "$(sed -n '2s/^# //p' "$REPO_ROOT/bin/team-log")"
+  AGENT_TEAM_ROLE=coordinator run_bin -0 team-log T14 resumed
+  assert_equal "$(ledger_without_ts)" '{"task":"T14","event":"resumed"}'
+}
+
 @test "an event holding an address at a public provider is refused, naming its field and never the value, since the records hook would refuse every later ledger commit" {
   open_t7
   provider=gmail.com

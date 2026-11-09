@@ -4,8 +4,11 @@
 # The Discord plugin logs in to Discord from every session that loads it, so it is off in user
 # settings and on here alone, through this session's own --settings. Bypass mode, by Daniel's
 # choice; workers run in auto mode, and crossSessionInbound: accept (user settings) keeps their
-# messages to this session from being held. With the safety classifier off here, deny rules and
-# GitHub rulesets are what block force-push, reset --hard and merging unapproved PRs.
+# messages to this session from being held. With the safety classifier off here, its settings'
+# deny rules stop the plain spelling of a force push, a push to dev or main, git reset --hard,
+# git clean, git branch -D, a Docker prune and a merge outside team-merge, by the workers' own
+# rules (tests/repo.bats holds the two together), a speed bump another spelling gets past;
+# GitHub's protection of agent-team's dev refuses a direct push and a merge with a red check.
 #
 # The manual, roles/coordinator.md, is appended to the system prompt, and the coordinator's own
 # skills (handoff, level, recover-worker, resume, retro, status-report, stow, ui-intake) load
@@ -19,7 +22,9 @@
 # launch runs `claude mcp list` in the working directory and its settings deny
 # (deniedMcpServers) every server the list names but the toolkit's, those of a plugin they
 # enable, and the claude.ai connectors the toolkit's connectors.json keeps, by exact name. A
-# failed list refuses the launch (exit 1).
+# failed list refuses the launch (exit 1), and so does one that printed a line but named no
+# server in its format, naming its first line, since a changed format would deny nothing; an
+# empty list, or Claude Code's "No MCP servers configured." line, denies none.
 #
 # It compacts at 200k tokens, by the launch's --autocompact flag rather than autoCompactWindow in
 # its settings: the flag is not preempted by a higher-priority settings scope, so a /autocompact
@@ -84,10 +89,15 @@ mv -f "$mcp.$$" "$mcp"
 # Every other server this session would load: each line of the list is "<name>: <what it runs>
 # - <health>", and a name holds no ": ". Its health check starts the servers, so they get no lock.
 listed=$(claude mcp list {lock_fd}>&-) || die "claude mcp list failed, so the servers to deny are unknown"
-servers=()
+servers=() first='' empty=''
 while IFS= read -r line; do
   if [[ $line =~ ^(([^:]|:[^ ])+):\ .+\ -\ .+$ ]]; then servers+=("${BASH_REMATCH[1]}"); fi
+  [[ -n $first || $line != *[![:space:]]* ]] || first=$line
+  [[ $line != 'No MCP servers configured.'* ]] || empty=1
 done <<<"$listed"
+# A list whose lines name no server is one this parse cannot read, unless it says it is empty.
+[[ ${#servers[@]} -gt 0 || -z $first || -n $empty ]] ||
+  die "claude mcp list printed lines but named no server in its format (\"<name>: <what it runs> - <health>\"), so the servers to deny are unknown; its first line: $first"
 
 # The settings, with the hooks of this checkout and those servers denied; written whole, then
 # moved into place. A plugin's servers are named plugin:<plugin>:<server>.

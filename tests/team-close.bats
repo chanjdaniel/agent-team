@@ -1146,3 +1146,12 @@ legacy_task() {
   cmp "$TEAM_HOME/ledger.jsonl" "$BATS_TEST_TMPDIR/ledger.before"
   [[ ! -e $TEAM_HOME/tasks/T5 ]]
 }
+
+@test "refused in a worker session, whatever its role, before any read; --help and the coordinator are not" {
+  worker_refused team-close "closes no task" T1
+  worker_refused team-close "closes no task" T1 --keep-worktree --stop-busy
+  AGENT_TEAM_ROLE=ops run_bin -0 team-close --help
+  assert_equal "${lines[0]}" "$(sed -n '2s/^# //p' "$REPO_ROOT/bin/team-close")"
+  AGENT_TEAM_ROLE=coordinator run_bin -2 team-close
+  assert_contains "$output" "usage: team-close T<n>"
+}

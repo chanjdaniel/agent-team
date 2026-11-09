@@ -443,3 +443,17 @@ EOF
   assert_equal "$status" 1
   assert_equal "$output" "${clean:0:7} does not hold ${own:0:7}"
 }
+
+@test "refused in a worker session, whatever its role, before any read; --help and the coordinator are not" {
+  worker_refused team-catch-up "catches no branch up" T14
+  worker_refused team-catch-up "catches no branch up" T14 --pr "$url"
+  AGENT_TEAM_ROLE=builder run_bin -0 team-catch-up --help
+  assert_equal "${lines[0]}" "$(sed -n '2s/^# //p' "$REPO_ROOT/bin/team-catch-up")"
+}
+
+@test "the coordinator's catch-up sets agent-review through team-review-status" {
+  base_moves >/dev/null
+  AGENT_TEAM_ROLE=coordinator AGENT_TEAM_TASK='' run_bin -0 --separate-stderr team-catch-up T14
+  assert_contains "$stderr" "agent-review success on owner/proj@"
+  [[ -s $GH_DIR/statuses ]]
+}

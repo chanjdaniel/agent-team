@@ -644,3 +644,22 @@ team-level: could not stop conventioner-9 of T9 (team-stack: docker compose stop
   assert_equal "${stderr%%$'\n'*}" "team-level: could not stop T7-reviewer r7r7r7r7 (cannot stop r7r7r7r7)"
   [[ $stderr != *"macOS"* ]]
 }
+
+@test "a worker session's change of the level is refused, whatever its role; its status reads as today" {
+  reading 1 8 2
+  local word
+  for word in full minor none manual auto apply tick; do worker_refused team-level "changes no resource level" "$word"; done
+  worker_refused team-level "changes no resource level" minor --message 123
+  [[ ! -e $RECORD ]]
+  local form today
+  for form in "status --json --stored" "status --stored" "status --json" ""; do
+    # shellcheck disable=SC2086 # each form is its words
+    run_bin -0 --separate-stderr team-level $form
+    today=$output
+    # shellcheck disable=SC2086
+    AGENT_TEAM_ROLE=builder AGENT_TEAM_TASK=T7 run_bin -0 --separate-stderr team-level $form
+    assert_equal "$output" "$today"
+  done
+  AGENT_TEAM_ROLE=coordinator run_bin -0 --separate-stderr team-level minor
+  assert_equal "$(jq -c '[.mode, .level]' "$RECORD")" '["manual","minor"]'
+}
