@@ -75,7 +75,10 @@
 #                     team-stack sweep, which stops the team's idle stacks.
 #              checkpoint  On the holder, after the lease or back step: team-checkpoint, which
 #                     makes one once the last is 5 minutes old (less the same minute), so each
-#                     run makes one. A failed checkpoint ends the run.
+#                     run makes one. Each of its stderr lines, problems only, is logged: a
+#                     warning as "checkpoint: warning: <part>: <reason>", any other line as
+#                     "checkpoint: failed: <line>", at most 20 and a count of the rest. A failed
+#                     checkpoint ends the run.
 #              pack   On the holder, after the checkpoint, once the team home has PACK_LOOSE (200,
 #                     bin/lib/team.sh) loose objects: git gc in it, then one line, "packed 213
 #                     loose objects; 0 left loose, 38.40 MiB in packs". So the team home stays
@@ -158,6 +161,8 @@ JANITOR_TIMEOUT=${TEAM_TIMERS_JANITOR_SECONDS:-1200}
 # Seconds: how long after its time limit's SIGTERM a command still running is killed.
 KILL_SECONDS=${TEAM_TIMERS_KILL_SECONDS:-10}
 PACK_TIMEOUT=300
+# The most of a checkpoint's problem lines (its stderr) one run logs; a count stands for the rest.
+CHECKPOINT_PROBLEM_LINES=20
 # Seconds between the watch's looks at the offline flag.
 WATCH_SECONDS=60
 LOG_KEEP=1000
@@ -640,15 +645,32 @@ lease_step() {
   fi
 }
 
-# The checkpoint step, on the holder: team-checkpoint, which says when none is due yet.
+# The checkpoint step, on the holder: team-checkpoint, which says when none is due yet. Each
+# stdout line is logged, then each stderr line, which holds problems only: a warning as
+# "checkpoint: warning: <part>: <reason>", any other line as "checkpoint: failed: <line>", each
+# without its "team-checkpoint: " prefix, at most CHECKPOINT_PROBLEM_LINES of them and a count
+# of the rest.
 checkpoint_step() {
-  local rc=0 out line
+  local rc=0 out line kind shown=0 total=0
   out=$(team team-checkpoint 2>"$err") || rc=$?
   while IFS= read -r line; do
     [[ -z $line ]] || log checkpoint "$line"
   done <<<"$out"
+  while IFS= read -r line; do
+    [[ -n $line ]] || continue
+    total=$((total + 1))
+    ((shown < CHECKPOINT_PROBLEM_LINES)) || continue
+    shown=$((shown + 1))
+    line=${line#team-checkpoint: }
+    if [[ $line == "warning: "* ]]; then log checkpoint "$line"; else log checkpoint "failed: $line"; fi
+  done <"$err"
+  if ((total > shown)); then
+    kind=warning
+    ((rc == 0)) || kind=failed
+    log checkpoint "$kind: and $((total - shown)) more problem lines"
+  fi
   if ((rc)); then
-    log checkpoint "failed: $(first_error)"
+    ((total)) || log checkpoint "failed: team-checkpoint exited $rc with no reason on stderr"
     exit "$rc"
   fi
 }

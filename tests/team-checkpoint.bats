@@ -304,13 +304,21 @@ T4 home: archived .scratch/task to tasks/T4/scratch"
   assert_equal "$(head -n 1 <<<"$output")" "T1 home: archived .scratch/task to tasks/T1/scratch"
 }
 
-@test "an empty task directory is reported and archives nothing" {
+@test "an empty or a missing task directory is one line under the worktree's label, archives nothing and is no problem" {
   run_bin -0 team-open home feature feat work "Do the work"
   run_bin -0 --separate-stderr team-checkpoint
-  assert_equal "$stderr" "team-checkpoint: $HOME/slots/home/1/.scratch/task is empty, so nothing was archived from home"
-  assert_equal "$output" "T1 home: pushed wip/home/T1 $(git -C "$HOME/slots/home/1" rev-parse --short=7 HEAD) (the branch head, no uncommitted changes)
+  assert_equal "$stderr" ""
+  assert_equal "$output" "T1 home: $HOME/slots/home/1/.scratch/task is empty, so nothing was archived from home
+T1 home: pushed wip/home/T1 $(git -C "$HOME/slots/home/1" rev-parse --short=7 HEAD) (the branch head, no uncommitted changes)
 usage: read 0 of 0 transcripts; no day file changed
 team home: committed $(git -C "$TEAM_HOME" rev-parse --short HEAD) chore: checkpoint and pushed dev"
+  [[ ! -e $TEAM_HOME/tasks/T1/scratch ]]
+  [[ -f $state/last-checkpoint ]]
+
+  rmdir "$HOME/slots/home/1/.scratch/task"
+  run_bin -0 --separate-stderr team-checkpoint --force
+  assert_equal "$stderr" ""
+  assert_equal "$(head -n 1 <<<"$output")" "T1 home: $HOME/slots/home/1/.scratch/task is missing, so nothing was archived from home"
   [[ ! -e $TEAM_HOME/tasks/T1/scratch ]]
 }
 
@@ -333,11 +341,12 @@ team home: committed $(git -C "$TEAM_HOME" rev-parse --short HEAD) chore: checkp
   echo "old" >"$TEAM_HOME/tasks/T1/scratch/big.bin"
 
   run_bin -0 --separate-stderr team-checkpoint
-  assert_equal "$stderr" "team-checkpoint: left out of tasks/T1/scratch: clone (nested repository)
-team-checkpoint: left out of tasks/T1/scratch: big.bin (over 1 MiB)
-team-checkpoint: left out of tasks/T1/scratch: .env.local (may hold a secret)
-team-checkpoint: left out of tasks/T1/scratch: access.json (may hold a secret)"
-  assert_contains "$output" "T1 home: archived .scratch/task to tasks/T1/scratch"
+  assert_equal "$stderr" ""
+  assert_contains "$output" "T1 home: left out of tasks/T1/scratch: clone (nested repository)
+T1 home: left out of tasks/T1/scratch: big.bin (over 1 MiB)
+T1 home: left out of tasks/T1/scratch: .env.local (may hold a secret)
+T1 home: left out of tasks/T1/scratch: access.json (may hold a secret)
+T1 home: archived .scratch/task to tasks/T1/scratch"
   assert_equal "$(cd "$TEAM_HOME/tasks/T1/scratch" && find . -mindepth 1 | sort)" "./notes.md"
   # The checkpoint's commit holds the notes alone: no gitlink, no large file, no secret.
   assert_equal "$(git -C "$team_origin" ls-tree -r dev tasks/T1/scratch)" \
@@ -362,11 +371,13 @@ team-checkpoint: left out of tasks/T1/scratch: access.json (may hold a secret)"
   ln -s notes.md "$dir/latest.md"
 
   run_bin -0 --separate-stderr team-checkpoint
-  assert_equal "$stderr" "team-checkpoint: left out of tasks/T1/scratch: mirror.git (nested repository)
-team-checkpoint: left out of tasks/T1/scratch: tools/node_modules (dependencies)
-team-checkpoint: left out of tasks/T1/scratch: trial (over 200 files)
-team-checkpoint: left out of tasks/T1/scratch: latest.md (link)
-team-checkpoint: left out of tasks/T1/scratch: node_modules (link)"
+  assert_equal "$stderr" ""
+  assert_contains "$output" "T1 home: left out of tasks/T1/scratch: mirror.git (nested repository)
+T1 home: left out of tasks/T1/scratch: tools/node_modules (dependencies)
+T1 home: left out of tasks/T1/scratch: trial (over 200 files)
+T1 home: left out of tasks/T1/scratch: latest.md (link)
+T1 home: left out of tasks/T1/scratch: node_modules (link)
+T1 home: archived .scratch/task to tasks/T1/scratch"
   assert_equal "$(cd "$TEAM_HOME/tasks/T1/scratch" && find . -mindepth 1 -not -path './kept/*' | sort)" "./kept
 ./notes.md
 ./tools"
@@ -385,8 +396,10 @@ team-checkpoint: left out of tasks/T1/scratch: node_modules (link)"
   echo "old" >"$TEAM_HOME/tasks/T1/scratch/ui-check/reviewer-abc1234/menu-390x844.png"
 
   run_bin -0 --separate-stderr team-checkpoint
-  assert_equal "$stderr" "team-checkpoint: left out of tasks/T1/scratch: ui-check/reviewer-abc1234/dialog-1440x810.WEBP (image)
-team-checkpoint: left out of tasks/T1/scratch: ui-check/reviewer-abc1234/menu-390x844.png (image)"
+  assert_equal "$stderr" ""
+  assert_contains "$output" "T1 home: left out of tasks/T1/scratch: ui-check/reviewer-abc1234/dialog-1440x810.WEBP (image)
+T1 home: left out of tasks/T1/scratch: ui-check/reviewer-abc1234/menu-390x844.png (image)
+T1 home: archived .scratch/task to tasks/T1/scratch"
   assert_equal "$(cd "$TEAM_HOME/tasks/T1/scratch" && find . -mindepth 1 | sort)" "./ui-check
 ./ui-check/reviewer-abc1234
 ./ui-check/reviewer-abc1234/findings.md"
@@ -406,7 +419,9 @@ team-checkpoint: left out of tasks/T1/scratch: ui-check/reviewer-abc1234/menu-39
   echo "{}" >"$TEAM_HOME/tasks/T1/scratch/ui-check/reviewer-abc1234/lighthouse/dialog/report.json"
 
   run_bin -0 --separate-stderr team-checkpoint
-  assert_equal "$stderr" "team-checkpoint: left out of tasks/T1/scratch: ui-check/reviewer-abc1234/lighthouse (Lighthouse reports)"
+  assert_equal "$stderr" ""
+  assert_contains "$output" "T1 home: left out of tasks/T1/scratch: ui-check/reviewer-abc1234/lighthouse (Lighthouse reports)
+T1 home: archived .scratch/task to tasks/T1/scratch"
   assert_equal "$(git -C "$team_origin" ls-tree -r --name-only dev tasks/T1/scratch)" "tasks/T1/scratch/ui-check/reviewer-abc1234/findings.md"
 }
 
@@ -420,7 +435,9 @@ team-checkpoint: left out of tasks/T1/scratch: ui-check/reviewer-abc1234/menu-39
   echo "backend started" >"$TEAM_HOME/tasks/T1/scratch/stack-logs/home-1-backend.log"
 
   run_bin -0 --separate-stderr team-checkpoint
-  assert_equal "$stderr" "team-checkpoint: left out of tasks/T1/scratch: stack-logs (stack logs)"
+  assert_equal "$stderr" ""
+  assert_contains "$output" "T1 home: left out of tasks/T1/scratch: stack-logs (stack logs)
+T1 home: archived .scratch/task to tasks/T1/scratch"
   assert_equal "$(git -C "$team_origin" ls-tree -r --name-only dev tasks/T1/scratch)" "tasks/T1/scratch/notes.md"
 }
 
@@ -508,14 +525,14 @@ team home: nothing to commit"
   assert_equal "$(team_tip)" "$tip"
 }
 
-@test "a failed export is reported and fails nothing: the records are still committed and pushed" {
+@test "a failed export is a warning and fails nothing: the records are still committed and pushed" {
   run_bin -0 team-open home feature feat work "Do the work"
   echo "spec" >"$HOME/slots/home/1/.scratch/task/spec.md"
   cp -R "$BATS_TEST_DIRNAME/fixtures/team-tokens/projects" "$HOME/.claude/projects"
   mkdir -p "$TEAM_HOME/usage/home-pc"
   echo "not json" >"$TEAM_HOME/usage/home-pc/2026-10-21.jsonl"
   run_bin -0 --separate-stderr team-checkpoint
-  assert_equal "$stderr" "team-checkpoint: usage: cannot export: $TEAM_HOME/usage/home-pc/2026-10-21.jsonl holds a line that is no usage line; fix or remove it; the next checkpoint exports it"
+  assert_equal "$stderr" "team-checkpoint: warning: usage: cannot export: $TEAM_HOME/usage/home-pc/2026-10-21.jsonl holds a line that is no usage line; fix or remove it; the next checkpoint exports it"
   assert_contains "$output" "team home: committed"
   assert_equal "$(changed_in dev)" "ledger.jsonl
 tasks/T1/plan.md

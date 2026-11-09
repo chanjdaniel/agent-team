@@ -336,30 +336,35 @@ rsync_rule() {
 
 # Mirror the task directory <dir> of a worktree of <project> into <archive> under the team home
 # (tasks/T<n>/scratch or tasks/T<n>/scratch-<project>), so the archive is the task directory as
-# it is now, less what archive_left_out names, each named on stderr as "left out of <archive>:
-# <path> (<why>)", and removed from an archive made before it was left out. A missing or empty
-# task directory archives nothing and is reported on stderr, failing:
+# it is now, less what archive_left_out names, and removed from an archive made before it was
+# left out. Its notes go to stdout, one line each and with no script prefix, for the caller to
+# label: "left out of <archive>: <path> (<why>)" for each path left out, and "<dir> is missing,
+# so nothing was archived from <project>" (or "is empty"). Returns 0 when it archived, 1 when
+# there was nothing to archive, and 2 when the mirror failed, with one line on stderr, "cannot
+# mirror <dir> into <archive>: <rsync's first error line>"; it never exits the caller:
 # archive_task_dir <dir> <project> <archive>
 archive_task_dir() {
-  local dir=$1 why path rules
+  local dir=$1 why path rules err reason
   if [[ ! -d $dir ]]; then
-    echo "${0##*/}: $dir is missing, so nothing was archived from $2" >&2
+    echo "$dir is missing, so nothing was archived from $2"
     return 1
   elif [[ -z $(find "$dir" -mindepth 1 -maxdepth 1 -print -quit) ]]; then
-    echo "${0##*/}: $dir is empty, so nothing was archived from $2" >&2
+    echo "$dir is empty, so nothing was archived from $2"
     return 1
   fi
-  rules=$(mktemp)
+  rules=$(mktemp) err=$(mktemp)
   while IFS=$'\t' read -r -d '' why path; do
-    echo "${0##*/}: left out of $3: $path ($why)" >&2
+    echo "left out of $3: $path ($why)"
     rsync_rule "$path" >>"$rules"
   done < <(archive_left_out "$dir")
-  mkdir -p "$TEAM_HOME/$3"
-  if ! rsync -a --delete --delete-excluded --from0 --exclude-from="$rules" -- "$dir/" "$TEAM_HOME/$3/"; then
-    rm -f "$rules"
-    die "cannot mirror $dir into $3"
+  if ! mkdir -p "$TEAM_HOME/$3" 2>"$err" ||
+    ! rsync -a --delete --delete-excluded --from0 --exclude-from="$rules" -- "$dir/" "$TEAM_HOME/$3/" 2>"$err"; then
+    reason=$(grep -m1 . "$err" || echo "no reason given")
+    echo "cannot mirror $dir into $3: $reason" >&2
+    rm -f "$rules" "$err"
+    return 2
   fi
-  rm -f "$rules"
+  rm -f "$rules" "$err"
 }
 
 # Print this machine's team name, the first line of ~/.config/agent-team/machine (lower-case

@@ -12,8 +12,9 @@
 #      git command (index.lock) is skipped with a line saying why.
 #   2. Its task directory is mirrored into tasks/T<n>/scratch/ (the project the task was opened
 #      in) or tasks/T<n>/scratch-<project>/ (one added later), as team-close does; a missing or
-#      empty one is reported on stderr and archives nothing. It is mirrored less what
-#      archive_left_out (bin/lib/team.sh) leaves out, each named on stderr.
+#      empty one is a line saying so and archives nothing. It is mirrored less what
+#      archive_left_out (bin/lib/team.sh) leaves out, each named on a line; a mirror that fails
+#      is that worktree's failure, with rsync's reason, and its snapshot is still made.
 #   3. Its work is kept on the team home's origin, never the project's (which may be public), as
 #      refs/heads/wip/<project>/T<n>, pushed from the worktree to that origin's URL in place of
 #      what is there (the one forced push, a script's, never on a task branch, and no PR's head;
@@ -26,8 +27,8 @@
 #      A wip/<project>/T<n> already that head, or a snapshot with the same tree and parent, is
 #      left alone. The worktree's files, index, branch and stash are never touched.
 # Then team-tokens export writes this machine's usage of each complete UTC day into usage/<machine>/
-# (its lines prefixed "usage: "); a failed export is reported on stderr and fails nothing, since
-# the transcripts stay and the next checkpoint exports what this one could not.
+# (its lines prefixed "usage: "); a failed export is a warning and fails nothing, since the
+# transcripts stay and the next checkpoint exports what this one could not.
 # Then, in the team home, the ledger's lock held: commits every records path bin/lib/records lists
 # (the ledger, level.jsonl, tasks/ with the scratch archives, plans, briefs and their records and
 # tasks/current.md or its removal, projects/, projects.toml, memory/, machine/, usage/ and
@@ -38,7 +39,11 @@
 # change is in the way (what is staged stays staged), then pushes again; else they stay unpushed
 # and it says why. No change, no commit and no push.
 # Writes ~/.local/state/agent-team/last-checkpoint, dated the checkpoint's start, once every step
-# succeeded. Prints one line per step; a failed step is reported on stderr and the rest still run.
+# succeeded. Prints one line per step and per note (a path left out, a task directory missing or
+# empty) on stdout; stderr holds problems only, one line each: a failure, "team-checkpoint:
+# <label>: <what failed>: <reason>" (the label "T<n> <project>" or "team home"), after which the
+# rest still runs and the exit is 1, and a warning, "team-checkpoint: warning: <part>: <reason>"
+# (today only the usage export's, part usage), which changes no exit code.
 # Exit 0 done, 1 refused or a step failed, 2 usage error, 75 GitHub unreachable or another
 # checkpoint still running.
 set -euo pipefail
@@ -100,10 +105,16 @@ say() {
   printf '%s\n' "$*"
 }
 
-# A failed step, on stderr; the checkpoint goes on and exits 1: fail <what failed>
+# A failed step, one line on stderr; the checkpoint goes on and exits 1: fail <label>: <what
+# failed>: <reason>
 fail() {
   echo "team-checkpoint: $*" >&2
   failed=1
+}
+
+# A problem that fails nothing, one line on stderr: warn <part> <reason>
+warn() {
+  echo "team-checkpoint: warning: $1: $2" >&2
 }
 
 # Why the worktree <wt> of <branch> is skipped, or nothing when it is checkpointed.
@@ -176,9 +187,14 @@ for wt_json in "${worktrees[@]}"; do
     continue
   fi
   task_dir=$(team_project "$project" task_dir)
-  if archive_task_dir "$wt/$task_dir" "$project" "tasks/$task/$archive"; then
-    say "$label: archived $task_dir to tasks/$task/$archive"
-  fi
+  rc=0
+  notes=$(archive_task_dir "$wt/$task_dir" "$project" "tasks/$task/$archive" 2>"$scratch/archive-err") || rc=$?
+  while IFS= read -r line; do say "$label: $line"; done < <(grep . <<<"$notes")
+  case $rc in
+    0) say "$label: archived $task_dir to tasks/$task/$archive" ;;
+    1) ;;
+    *) fail "$label: $(grep -m1 . "$scratch/archive-err" || echo "cannot archive $task_dir (exit $rc)")" ;;
+  esac
   snapshot "$task" "$project" "$wt" "$label"
 done
 
@@ -186,7 +202,7 @@ done
 rc=0
 out=$(TEAM_HOME=$TEAM_HOME "$bin/team-tokens" export 2>"$scratch/tokens-err" {lock_fd}>&-) || rc=$?
 while IFS= read -r line; do say "usage: $line"; done < <(grep . <<<"$out")
-((rc == 0)) || echo "team-checkpoint: usage: $(sed -n '1s/^team-tokens: //p' "$scratch/tokens-err"); the next checkpoint exports it" >&2
+((rc == 0)) || warn usage "$(sed -n '1s/^team-tokens: //p' "$scratch/tokens-err"); the next checkpoint exports it"
 
 # The team home's records, every one: commit them, then push the branch when it is ahead of origin's.
 commit_records "chore: checkpoint" || failed=1

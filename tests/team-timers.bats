@@ -321,6 +321,90 @@ EOF
   [[ ! -e $state/last-checkpoint ]]
 }
 
+# Open T1 in a git-pool project, home, on a bare origin, its task directory holding a nested
+# repository and a file over 1 MiB, which the checkpoint's archive leaves out, each named; and
+# make the team home's origin refuse every wip ref, so its snapshot push fails.
+open_task_refused_wip() {
+  make_repo home >/dev/null
+  printf '.scratch/\n' >"$HOME/projects/home/.gitignore"
+  git -C "$HOME/projects/home" add .gitignore
+  git -C "$HOME/projects/home" commit -q -m "chore: ignore scratch"
+  git -C "$HOME/projects/home" push -q origin main
+  cat >>"$TEAM_HOME/projects.toml" <<'TOML'
+
+[home]
+repo = "owner/home"
+path = "projects/home"
+base = "main"
+delivery = "direct-pr"
+merge_method = "merge"
+required_checks = []
+task_dir = ".scratch/task"
+docs = []
+toolkits = []
+
+[home.pool]
+provider = "git"
+slots = ["slots/home/1"]
+TOML
+  # team-thread's post answers with the thread's id; team-inbox's calls go to the fake Discord.
+  stub_script curl <<'SH'
+[[ ! -f $STUB_FIXTURES/inbox.sh ]] || source "$STUB_FIXTURES/inbox.sh"
+echo '{"id":"1563000000000000001"}'
+SH
+  run_bin -0 team-open home feature feat work "Do the work"
+  local dir=$HOME/slots/home/1/.scratch/task
+  git init -q "$dir/clone"
+  head -c 2M /dev/zero >"$dir/big.bin"
+  echo "spec" >"$dir/spec.md"
+  printf '#!/bin/sh\nwhile read old new ref; do case $ref in refs/heads/wip/*) echo "the test refuses wip" >&2; exit 1 ;; esac; done\n' \
+    >"$origin/hooks/pre-receive"
+  chmod +x "$origin/hooks/pre-receive"
+}
+
+@test "a failed checkpoint logs its own failure lines, never the archive's notes, which are ordinary lines" {
+  open_task_refused_wip
+  run_bin -1 team-timers run
+  assert_equal "$output" "$(cat "$log")"
+  [[ $output =~ " checkpoint: T1 home: left out of tasks/T1/scratch: clone (nested repository)"$'\n'[0-9T:Z-]+" checkpoint: T1 home: left out of tasks/T1/scratch: big.bin (over 1 MiB)"$'\n'[0-9T:Z-]+" checkpoint: T1 home: archived .scratch/task to tasks/T1/scratch"$'\n' ]]
+  assert_equal "$(grep -c ' checkpoint: failed: ' <<<"$output")" 1
+  [[ $(grep ' checkpoint: failed: ' <<<"$output") =~ ^[0-9T:Z-]+" checkpoint: failed: T1 home: cannot push wip/home/T1 to the team home's origin: failed to push some refs to "[^$'\n']+$ ]]
+  [[ $(grep ' failed: ' <<<"$output") != *"left out"* ]]
+  [[ ! -e $HOME/.local/state/agent-team/last-checkpoint ]]
+
+  # Two failures are two lines, in the checkpoint's order.
+  git -C "$TEAM_HOME" checkout -q --detach
+  run_bin -1 team-timers run
+  [[ $(grep ' checkpoint: failed: ' <<<"$output") =~ ^[0-9T:Z-]+" checkpoint: failed: T1 home: cannot push wip/home/T1 to the team home's origin: "[^$'\n']+$'\n'[0-9T:Z-]+" checkpoint: failed: team home: not on a branch, so the records are not committed"$ ]]
+}
+
+@test "a checkpoint with more than 20 problem lines logs 20 of them and a count of the rest" {
+  # A checkpoint of a code checkout of the test's own that fails with 23 lines, which no real
+  # sandbox makes cheaply (23 broken worktrees).
+  CODE_CHECKOUT=$BATS_TEST_TMPDIR/code
+  mkdir -p "$CODE_CHECKOUT"
+  copy_bin "$CODE_CHECKOUT/bin"
+  rm "$CODE_CHECKOUT/bin/team-checkpoint"
+  printf '#!/usr/bin/env bash\nfor n in {1..22}; do echo "team-checkpoint: T$n home: cannot push wip/home/T$n" >&2; done\necho "team-checkpoint: warning: usage: cannot export" >&2\nexit 1\n' \
+    >"$CODE_CHECKOUT/bin/team-checkpoint"
+  chmod +x "$CODE_CHECKOUT/bin/team-checkpoint"
+  run_bin -1 team-timers run
+  assert_equal "$(grep -c ' checkpoint: ' <<<"$output")" 21
+  [[ $(grep ' checkpoint: ' <<<"$output" | head -n 1) =~ " checkpoint: failed: T1 home: cannot push wip/home/T1"$ ]]
+  [[ $(grep ' checkpoint: ' <<<"$output" | sed -n 20p) =~ " checkpoint: failed: T20 home: cannot push wip/home/T20"$ ]]
+  [[ $(grep ' checkpoint: ' <<<"$output" | tail -n 1) =~ " checkpoint: failed: and 3 more problem lines"$ ]]
+}
+
+@test "a good checkpoint with a warning logs it, and the run still exits 0" {
+  cp -R "$BATS_TEST_DIRNAME/fixtures/team-tokens/projects" "$HOME/.claude/projects"
+  mkdir -p "$TEAM_HOME/usage/home-pc"
+  echo "not json" >"$TEAM_HOME/usage/home-pc/2026-10-21.jsonl"
+  run_bin -0 team-timers run
+  assert_contains "$output" " checkpoint: warning: usage: cannot export: $TEAM_HOME/usage/home-pc/2026-10-21.jsonl holds a line that is no usage line; fix or remove it; the next checkpoint exports it"
+  [[ $output != *"checkpoint: failed:"* ]]
+  [[ -e $HOME/.local/state/agent-team/last-checkpoint ]]
+}
+
 @test "the inbox step edits the Waiting on you message once a run on the holder, logging only a new message or a failure, which never fails the run" {
   run_bin -0 team-timers run
   assert_equal "$(steps "$output")" "lease checkpoint"
