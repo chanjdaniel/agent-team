@@ -20,7 +20,7 @@ import { humanBytes } from "../../servers/prod-mongo/dump.mjs";
 import { restoreLimit } from "../../servers/prod-mongo/drill.mjs";
 import { kept } from "../../servers/prod-mongo/list.mjs";
 import { destinationRefusal, dumpByStamp } from "../../servers/prod-mongo/root.mjs";
-import { perThreadCaches as throwawayCaches, startThrowaway, teamLabel, throwawayImage, throwawayName } from "../../servers/prod-mongo/throwaway.mjs";
+import { perThreadCaches as throwawayCaches, removeThrowaway, startThrowaway, teamLabel, throwawayImage, throwawayName } from "../../servers/prod-mongo/throwaway.mjs";
 import { opStub, repoRoot, startToolkitServer, stubDir, tempDir, testPath } from "./helpers/mcp.mjs";
 import { mongoImage, perThreadCaches, startMongo } from "./helpers/mongo.mjs";
 import { assertNoLeak, evalMockTools, launcherRefusalTests } from "./helpers/toolkit.mjs";
@@ -649,7 +649,8 @@ describe("restore-drill", () => {
   // The spy docker: each call's arguments, one per line and ended by "--- end", in `calls`, and
   // the environment `docker run` starts with, in `run-environ`; then the real docker, but for
   // `docker port`, which fails while `fail-port` exists. While `hold-run` exists, `docker run`
-  // first writes `run-held` and waits up to 20 seconds for `go-run`, as a first pull of the image does.
+  // first writes its pid to `run-held` and to `held-<its --name>`, waits up to 20 seconds for
+  // `go-run`, as a first pull of the image does, and then writes `went-on-<its --name>`.
   function spyDocker() {
     const dir = tempDir("docker-spy");
     writeFileSync(join(dir, "docker"), `#!/bin/sh
@@ -657,9 +658,12 @@ dir='${dir}'
 { printf '%s\\n' "$@"; echo '--- end'; } >>"$dir/calls"
 if [ "$1" = run ]; then ${environOf} >"$dir/run-environ"; fi
 if [ "$1" = run ] && [ -f "$dir/hold-run" ]; then
-  : >"$dir/run-held"
+  name=$(printf '%s\\n' "$@" | sed -n '/^--name$/{n;p;q;}')
+  echo $$ >"$dir/held-$name"
+  echo $$ >"$dir/run-held"
   n=0
   while [ ! -f "$dir/go-run" ] && [ $n -lt 200 ]; do sleep 0.1; n=$((n + 1)); done
+  : >"$dir/went-on-$name"
 fi
 if [ "$1" = port ] && [ -f "$dir/fail-port" ]; then echo 'Error: no port, as the test asked' >&2; exit 1; fi
 exec '${realDocker}' "$@"
@@ -719,6 +723,14 @@ exit $status
     const inspected = spawnSync(realDocker, ["container", "inspect", name], { encoding: "utf8" });
     return inspected.status !== 0 && /no such (container|object)/i.test(inspected.stderr);
   };
+  const alive = (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      return error.code !== "ESRCH";
+    }
+  };
   const timed = (text) => text.replace(/: (PASS|FAIL) in \d+( min \d+)? s, /, ": $1 in <time>, ");
   const drillsOf = (stamp) => (existsSync(join(root, stamp, "drills")) ? readdirSync(join(root, stamp, "drills")) : []);
 
@@ -754,6 +766,31 @@ exit $status
     } finally {
       spawnSync(realDocker, ["rm", "--force", name]);
       spawnSync(realDocker, ["network", "rm", network]);
+    }
+  });
+
+  test("removing one throwaway kills only its own docker run, never another one still starting", async () => {
+    const path = process.env.PATH;
+    process.env.PATH = [docker.dir, path].join(delimiter);
+    docker.set("hold-run");
+    const [first, second] = [throwawayName("drill"), throwawayName("drill")];
+    try {
+      const settled = Promise.allSettled([first, second].map((name) => startThrowaway({ name, kind: "drill", MongoClient })));
+      await until(() => existsSync(join(docker.dir, `held-${first}`)) && existsSync(join(docker.dir, `held-${second}`)), 30_000);
+      assert.deepEqual(removeThrowaway(first), { gone: true });
+      await until(() => !alive(Number(docker.read(`held-${first}`))), 10_000);
+      assert.equal(alive(Number(docker.read(`held-${second}`))), true, "the other docker run was killed");
+      docker.set("go-run");
+      const [stopped, started] = await settled;
+      assert.equal(stopped.status, "rejected");
+      assert.equal(existsSync(join(docker.dir, `went-on-${first}`)), false, "the removed throwaway's docker run went on");
+      assert.equal(started.status, "fulfilled", started.reason?.message);
+      assert.equal(started.value.name, second);
+      assert.deepEqual(await started.value.stop(), { gone: true });
+      assert.ok(gone(first) && gone(second));
+    } finally {
+      process.env.PATH = path;
+      for (const name of [first, second]) spawnSync(realDocker, ["rm", "--force", name]);
     }
   });
 
@@ -1106,8 +1143,12 @@ exit $status
     const out = JSON.parse(result.stdout);
     assert.equal(out.failed, "the drill was stopped (SIGTERM)");
     assert.deepEqual(out.cleanup, { gone: true });
-    // The held docker run never goes on to start the container once its drill is gone.
-    await new Promise((resolve) => setTimeout(resolve, 25_000));
+    // The held docker run never goes on to start the container once its drill is gone: let it go
+    // on, wait until its process is gone, and it never got past its hold.
+    const held = Number(docker.read(`held-${out.container}`));
+    docker.set("go-run");
+    await until(() => !alive(held), 10_000);
+    assert.equal(existsSync(join(docker.dir, `went-on-${out.container}`)), false, "the held docker run went on");
     assert.ok(gone(out.container), out.container);
     assert.deepEqual(drillsOf(stamp), []);
   });

@@ -18,9 +18,9 @@
 //                            starts one and waits until its root user can ping it; resolves
 //                            { name, port, expires, uri, password, client, stop() }; on any failure
 //                            it removes the container first, then rejects
-//   removeThrowaway(name)    kills a docker run still starting one, removes the container (docker rm
-//                            --force), then checks it is gone: { gone: true } or { gone: false,
-//                            error }; synchronous, for a signal
+//   removeThrowaway(name)    kills the docker run still starting `name`, if any, never another's,
+//                            removes the container (docker rm --force), then checks it is gone:
+//                            { gone: true } or { gone: false, error }; synchronous, for a signal
 //   throwaway.stop()         closes the client, then removeThrowaway
 //
 // The container: the pinned image with its data and config on tmpfs, so restored personal data
@@ -99,12 +99,13 @@ export function removeExpired(now = Date.now()) {
 
 export const throwawayName = (kind) => `${toolkit}-${kind}-${randomBytes(6).toString("hex")}`;
 
-// The docker run children still running, which removeThrowaway kills first, so a run a signal
-// interrupts never goes on to start a container after its maker is gone.
-const starting = new Set();
+// The docker run children still running, by the container each starts, which removeThrowaway
+// kills first, so a run a signal interrupts never goes on to start a container after its maker is
+// gone.
+const starting = new Map();
 
 export function removeThrowaway(name) {
-  for (const child of starting) child.kill("SIGKILL");
+  starting.get(name)?.kill("SIGKILL");
   const gone = docker(["rm", "--force", "--volumes", name]);
   const left = docker(["container", "inspect", "--format", "{{.Id}}", name]);
   if (!left.ok && /no such (container|object)/i.test(left.why)) return { gone: true };
@@ -116,6 +117,7 @@ export async function startThrowaway({ name, kind, join, MongoClient }) {
   const expires = isoSecond(Date.now() + lifeSeconds * 1000);
   const remove = () => removeThrowaway(name);
   const started = await dockerRun(
+    name,
     [
       "run", "--detach", "--rm", "--name", name,
       ...toolkitLabels({ kind, expires }),
@@ -165,15 +167,15 @@ export async function startThrowaway({ name, kind, join, MongoClient }) {
 
 // docker run, as docker() answers, but without blocking: pulling the image the first time can take
 // minutes, and a signal meanwhile must be handled at once.
-async function dockerRun(args, env) {
+async function dockerRun(name, args, env) {
   let result;
   try {
     result = await run("docker", args, {
       env,
       timeoutMs: 10 * 60_000,
       onSpawn: (child) => {
-        starting.add(child);
-        child.on("exit", () => starting.delete(child));
+        starting.set(name, child);
+        child.on("exit", () => starting.delete(name));
       },
     });
   } catch (error) {
