@@ -25,7 +25,8 @@ for (const dir of system) {
   assert.ok(!existsSync(join(dir, "codegraph")), `${dir} holds a codegraph, so no case can run without one`);
 }
 
-// A stub codegraph that logs each call's arguments to `calls`, prints on stderr and, but for the
+// A stub codegraph that logs each call's arguments to `calls` and its telemetry variables
+// (CODEGRAPH_TELEMETRY and DO_NOT_TRACK, - when unset) to `env`, prints on stderr and, but for the
 // JSON of `status --json`, on stdout (which the hook must keep out of its output), reports a
 // directory initialised once it has a database, makes one on init, and exits with the code in
 // `fail` when that file names the call's subcommand.
@@ -33,6 +34,7 @@ function stub() {
   const dir = tempDir("stub");
   writeFileSync(join(dir, "codegraph"), `#!/bin/sh
 printf '%s\\n' "$*" >>'${dir}/calls'
+printf '%s %s\\n' "\${CODEGRAPH_TELEMETRY:--}" "\${DO_NOT_TRACK:--}" >>'${dir}/env'
 [ "$1" = status ] || echo "stub $1 output"
 echo "stub $1 error" >&2
 if [ -f '${dir}/fail' ]; then
@@ -50,6 +52,7 @@ esac
     dir,
     fail: (sub, code) => writeFileSync(join(dir, "fail"), `${sub} ${code}\n`),
     calls: () => (existsSync(join(dir, "calls")) ? readFileSync(join(dir, "calls"), "utf8").trim().split("\n") : []),
+    env: () => (existsSync(join(dir, "env")) ? readFileSync(join(dir, "env"), "utf8").trim().split("\n") : []),
   };
 }
 
@@ -136,6 +139,8 @@ describe("the codegraph toolkit", () => {
       assertBanner(out.stdout);
       assert.equal(out.stderr, "");
       assert.deepEqual(s.calls(), [`status --json ${dir}`, `init ${dir}`]);
+      // Each call runs with CodeGraph's telemetry off, whatever the machine's setting.
+      assert.deepEqual(s.env(), ["0 1", "0 1"]);
     });
 
     test(`for a ${role} with an index it syncs it, then prints the banner`, () => {
@@ -145,6 +150,7 @@ describe("the codegraph toolkit", () => {
       assert.equal(out.status, 0, out.stderr);
       assertBanner(out.stdout);
       assert.deepEqual(s.calls(), [`status --json ${dir}`, `sync ${dir}`]);
+      assert.deepEqual(s.env(), ["0 1", "0 1"]);
     });
   }
 
@@ -223,14 +229,15 @@ const real = spawnSync("sh", ["-c", "command -v codegraph"], { encoding: "utf8" 
 
 describe("the codegraph toolkit on the installed codegraph", () => {
   const skip = real ? false : "no codegraph on PATH (CI installs none)";
-  // The real CLI's directory and node's, then the hook's tools; telemetry and the update check off.
+  // The real CLI's directory and node's, then the hook's tools. The hook runs as it ships, turning
+  // telemetry off itself; the test's own calls turn it off here.
   const path = () => [dirname(real), dirname(process.execPath), tools, ...system].join(":");
   const env = { CODEGRAPH_TELEMETRY: "0", DO_NOT_TRACK: "1" };
 
   test("builds a small project's index, prints the banner, then syncs it", { skip }, () => {
     const dir = project();
     writeFileSync(join(dir, "greet.ts"), "export function hello() {\n  return 1;\n}\nexport function world() {\n  return hello();\n}\n");
-    const first = runHook({ cwd: dir, path: path(), env });
+    const first = runHook({ cwd: dir, path: path() });
     assert.equal(first.status, 0, first.stderr);
     assertBanner(first.stdout);
     assert.ok(statSync(join(dir, ".codegraph", "codegraph.db")).size > 0, "no index was built");
@@ -239,7 +246,7 @@ describe("the codegraph toolkit on the installed codegraph", () => {
     assert.equal(status.fileCount, 1);
     const found = execFileSync(real, ["explore", "--path", dir, "world"], { encoding: "utf8", env: { ...process.env, ...env } });
     assert.match(found, /greet\.ts/);
-    const second = runHook({ cwd: dir, path: path(), env });
+    const second = runHook({ cwd: dir, path: path() });
     assert.equal(second.status, 0, second.stderr);
     assertBanner(second.stdout);
   });

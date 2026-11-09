@@ -13,7 +13,9 @@
 #      `codegraph sync <dir>`, their output kept out of the session's context; init runs without
 #      --yes, whose default would install git sync hooks where file watching is off;
 #   5. the banner, or one line naming the command that failed and its exit status.
-# CodeGraph writes only its own files in the directory's .codegraph/, and starts no daemon.
+# Its codegraph calls run with CODEGRAPH_TELEMETRY=0 and DO_NOT_TRACK=1, so CodeGraph keeps no
+# usage counts in ~/.codegraph/ and sends none, whatever the machine's telemetry setting; in the
+# directory it writes only its own files in .codegraph/, and it starts no daemon.
 # Always exits 0, so a session always starts.
 set -uo pipefail
 
@@ -24,6 +26,7 @@ IFS= read -r -d '' event || true
 dir=$(jq -r '.cwd // empty' <<<"$event" 2>/dev/null) || dir=
 [[ -n $dir ]] || dir=$PWD
 [[ -d $dir/.codegraph ]] || exit 0
+export CODEGRAPH_TELEMETRY=0 DO_NOT_TRACK=1
 
 failed() {
   echo "CodeGraph: \`$1\` exited $2, so this worktree has no fresh index; locate code as usual."

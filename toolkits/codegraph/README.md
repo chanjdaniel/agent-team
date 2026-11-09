@@ -20,7 +20,8 @@ It always exits 0, within the hook's 30-second timeout: a fresh index of Convent
 
 ## What it writes
 
-Only CodeGraph's own files in the worktree's `.codegraph/`, which the project's tracked `.codegraph/.gitignore` ignores: about 110 MB for a Conventioner worktree.
+In the worktree, only CodeGraph's own files in its `.codegraph/`, which the project's tracked `.codegraph/.gitignore` ignores: about 110 MB for a Conventioner worktree.
+Its `codegraph` calls run with `CODEGRAPH_TELEMETRY=0` and `DO_NOT_TRACK=1`, so CodeGraph keeps no usage counts in `~/.codegraph/` and sends none, whatever the machine's telemetry setting.
 It starts no daemon: the CLI's `init`, `sync` and `explore` leave none running.
 It runs `init` without `--yes`, whose default would install git sync hooks where CodeGraph's file watching is off.
 No MCP server (no `.mcp.json`) and no skill.
@@ -31,6 +32,6 @@ It is the trial's minimal form of the queued "CodeGraph in every worktree" task,
 
 ## Tests
 
-`tests/toolkits/codegraph.test.mjs` checks the plugin's layout and runs the hook's command as Claude Code would, with `CLAUDE_PLUGIN_ROOT` set and a SessionStart event on stdin, on a stub `codegraph` that records its arguments: init then the banner, sync then the banner, each failing command's one line, and nothing for no `.codegraph/`, no `codegraph`, or a role other than builder and reviewer.
+`tests/toolkits/codegraph.test.mjs` checks the plugin's layout and runs the hook's command as Claude Code would, with `CLAUDE_PLUGIN_ROOT` set and a SessionStart event on stdin, on a stub `codegraph` that records its arguments and that telemetry is off: init then the banner, sync then the banner, each failing command's one line, and nothing for no `.codegraph/`, no `codegraph`, or a role other than builder and reviewer.
 Where a real `codegraph` is on PATH it also runs the hook against it on a small project the test writes, and checks the banner names only subcommands the installed CLI has; on CI, which installs none, those cases skip.
 `tests/team-worker.bats` checks that `--toolkit codegraph` adds the plugin directory and no MCP server.
