@@ -1142,3 +1142,50 @@ SH
   assert_equal "$(jq -c .findings "$record")" "$seen"
   assert_equal "$(alerts_shown)" ""
 }
+
+@test "a finding is unattended only when seen at every run: a run whose sweep failed starts it again, so an hour of failed looks posts no unattended alert" {
+  stub_reply claude "$STRAY"
+  run_bin -0 team-timers run
+  date_ledger 120
+  date_record '.findings[].since = ago(61)'
+  fake_sweep <<'SH'
+echo "team-sweep: cannot read the live session list: the daemon is down" >&2
+exit 1
+SH
+  run_bin -0 team-timers run
+  assert_equal "$(coordinator_lines)" \
+    "coordinator: failed: cannot run the sweep (team-sweep --json): cannot read the live session list: the daemon is down"
+  view
+  assert_equal "$(problem_of unattended)" null
+  assert_equal "$(alerts_shown)" ""
+
+  # The sweep runs again: the finding is dated from this look, not from the one before the failure.
+  rm -f "$CODE_CHECKOUT/bin/team-sweep"
+  cp "$REPO_ROOT/bin/team-sweep" "$CODE_CHECKOUT/bin/team-sweep"
+  local back
+  back=$(date -u +%FT%TZ)
+  run_bin -0 team-timers run
+  jq -e --arg back "$back" '(.findings | length) == 1 and .findings[0].since >= $back' "$record"
+  view
+  assert_equal "$(problem_of unattended)" null
+  assert_equal "$(alerts_shown)" ""
+}
+
+@test "a finding is unattended only when seen at every run: after a sleep longer than the stale minutes, the first look dates it anew and posts nothing" {
+  stub_reply claude "$STRAY"
+  run_bin -0 team-timers run
+  date_ledger 120
+  # The machine slept for over an hour after that run, the coordinator with it.
+  date_record '.findings[].since = ago(61) | .last_run.start = ago(61) | .last_run.end = ago(61)
+    | if has("findings_at") then .findings_at = ago(61) else . end'
+  local back
+  back=$(date -u +%FT%TZ)
+  # Read before the first run after waking, the view says nothing of it either.
+  view
+  assert_equal "$(problem_of unattended)" null
+  run_bin -0 team-timers run
+  jq -e --arg back "$back" '(.findings | length) == 1 and .findings[0].since >= $back' "$record"
+  view
+  assert_equal "$(problem_of unattended)" null
+  assert_equal "$(alerts_shown)" ""
+}

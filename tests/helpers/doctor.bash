@@ -229,7 +229,8 @@ good_heartbeat_run() {
   touch "$state/last-checkpoint"
   jq -n -L "$REPO_ROOT/bin/lib" --arg now "$now" 'include "health";
     null | health_fold({machine: "home-pc", id: "doctor-machine", start: $now, now: $now, ended: "ok",
-      last_checkpoint: $now, offline: null, login_refused: null}; [{holding: true}, {lease_renewed: $now}, {coordinator_live: true}])' \
+      last_checkpoint: $now, offline: null, login_refused: null}; [{holding: true}, {lease_renewed: $now}, {coordinator_live: true}];
+      health_limits)' \
     >"$state/health.json"
 }
 

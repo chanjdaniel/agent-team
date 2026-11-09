@@ -118,7 +118,9 @@
 #                     for 60 minutes with nothing but denied events logged since is the unattended
 #                     problem. A sweep that cannot run (no JSON list on stdout, or timed out) is the
 #                     step failing ("coordinator: failed: cannot run the sweep (team-sweep --json):
-#                     <its last line on stderr>"), the findings kept. It fails no run, and the
+#                     <its last line on stderr>"), the findings kept but no longer aged: a run
+#                     with no look, or a look over 15 minutes after the last (the machine slept),
+#                     dates every finding at the next look again. It fails no run, and the
 #                     heartbeat never starts or restarts a coordinator, however long one is missing
 #                     or leaves its findings: that launches a session in bypass mode, which is
 #                     Daniel's to decide. The health record is written next.
@@ -242,7 +244,8 @@
 # not run keeping its entry; the ledger step's count of lines that are not JSON objects, by line
 # number, with the time of its last event that is not a denied; whether the coordinator step last
 # saw a session named coordinator, and since which run it has not; the sweep findings it last saw,
-# each with the time of the first look that saw it; and the open alerts, each with
+# each with the time of the first look that saw it, and the time of the run's look, none when
+# the run made none; and the open alerts, each with
 # since when, its text, when it was posted and its message), heartbeat.log ("<UTC time> <step>:
 # <what happened>", kept to its last 1000 lines once it passes 2000), heartbeat-failures.log (each
 # of its lines that reports a problem, the same line: a failed step, a warning, a failed or refused
@@ -1244,12 +1247,13 @@ write_record() {
   [[ ! -f $health ]] || prev=(--rawfile prev "$health")
   if jq -n -L "$TEAM_LIB" "${prev[@]}" --slurpfile results "$results" --arg machine "${machine:-}" \
     --arg start "$run_start" --arg id "$run_id" --arg now "$now" --arg ended "$1" --arg last_checkpoint "$last_checkpoint" \
-    --argjson offline "$offline_json" --argjson login_refused "$refused_json" '
+    --argjson offline "$offline_json" --argjson login_refused "$refused_json" --argjson seams "$(health_seams)" '
       include "health";
       def given: if . == "" then null else . end;
       $prev | (if type == "string" then try fromjson catch null else . end)
       | health_fold({machine: ($machine | given), id: $id, start: $start, now: $now, ended: ($ended | given),
-          last_checkpoint: ($last_checkpoint | given), offline: $offline, login_refused: $login_refused}; $results)' \
+          last_checkpoint: ($last_checkpoint | given), offline: $offline, login_refused: $login_refused}; $results;
+          health_limits($seams))' \
     >"$health.$$" 2>"$health.$$.err"; then
     mv -f "$health.$$" "$health"
   else
