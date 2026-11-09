@@ -1942,7 +1942,7 @@ $(printf 'file\tlinux\tmacos\ntests/a.bats\t12\t30\ntests/b.bats\t7\t15\ntests/c
 # toolkit tests hold to the server's own tools/list, says what it must still be.
 @test "each production toolkit's README inventory is exactly its server's tools" {
   local kit listed want
-  for kit in prod-read prod-write; do
+  for kit in prod-read prod-write prod-mongo; do
     listed=$(sed -n '/^```text$/,/^```$/p' "$REPO_ROOT/toolkits/$kit/README.md" | grep '^mcp__' | sort)
     want=$(jq -r --arg kit "$kit" '.tools[] | "mcp__\($kit)__\(.name)"' "$REPO_ROOT/toolkits/$kit/evals/mocks/$kit/_tools.json" | sort)
     [[ -n $want ]]

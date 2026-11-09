@@ -23,7 +23,7 @@ import { destinationRefusal, dumpByStamp } from "../../servers/prod-mongo/root.m
 import { perThreadCaches as throwawayCaches, startThrowaway, teamLabel, throwawayImage, throwawayName } from "../../servers/prod-mongo/throwaway.mjs";
 import { opStub, repoRoot, startToolkitServer, stubDir, tempDir, testPath } from "./helpers/mcp.mjs";
 import { mongoImage, perThreadCaches, startMongo } from "./helpers/mongo.mjs";
-import { assertNoLeak, launcherRefusalTests } from "./helpers/toolkit.mjs";
+import { assertNoLeak, evalMockTools, launcherRefusalTests } from "./helpers/toolkit.mjs";
 
 const reference = "op://agent-team/conventioner-prod-read/uri";
 // The read user's password, which every connection string the op stub prints carries.
@@ -205,6 +205,12 @@ test("the tools are backup and list-backups, taking no input, and restore-drill,
     assert.equal(inputSchema.properties.backup.type, "string");
     assert.equal(inputSchema.required, undefined);
     assert.equal(inputSchema.additionalProperties, false);
+  });
+});
+
+test("the tools are the tools/list the skill's eval mocks give the server", async () => {
+  await withServer(async (server) => {
+    assert.deepEqual(evalMockTools("prod-mongo", "prod-mongo"), await server.listTools(), "toolkits/prod-mongo/evals/mocks/prod-mongo/_tools.json");
   });
 });
 
