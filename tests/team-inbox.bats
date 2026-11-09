@@ -405,8 +405,72 @@ Resources: manual, minor (30%): 9.6 GiB and 3.6 cores for the team; 0.0 GiB rese
 Nothing waits on you."
 }
 
-@test "past 2000 characters the last items are left out and counted" {
+# Replace team-timers with the bash read from stdin, in a code checkout of the test's own.
+fake_timers() {
+  CODE_CHECKOUT=$BATS_TEST_TMPDIR/code
+  mkdir -p "$CODE_CHECKOUT"
+  copy_bin "$CODE_CHECKOUT/bin"
+  rm -f "$CODE_CHECKOUT/bin/team-timers"
+  { echo '#!/usr/bin/env bash'; cat; } >"$CODE_CHECKOUT/bin/team-timers"
+  chmod +x "$CODE_CHECKOUT/bin/team-timers"
+}
+
+@test "on the lease holder the health line follows the resources line, and before any record it is an unknown health" {
+  hold_lease home-pc >/dev/null
+  run_bin -0 --separate-stderr team-inbox
+  assert_equal "$stderr" ""
+  assert_equal "$(inbox_shown | sed '$d')" "**Waiting on you**
+Nothing waits on you.
+Resources: manual, full (90%): no reading of the machine's load yet, so no budget
+**Health**: unknown - no health record yet; the heartbeat writes one each run"
+  assert_equal "$(inbox_health_shown)" "**Health**: unknown - no health record yet; the heartbeat writes one each run"
+  assert_equal "$(inbox_items_shown)" "Nothing waits on you."
+}
+
+@test "on a machine that is named but does not hold the lease the view has no line, so the message is as it was" {
+  run_bin -0 team-inbox
+  local before
+  before=$(inbox_shown | sed '$d')
+  mkdir -p "$HOME/.config/agent-team"
+  echo home-pc >"$HOME/.config/agent-team/machine"
+  run_bin -0 --separate-stderr team-inbox
+  assert_equal "$stderr" ""
+  assert_equal "$(inbox_shown | sed '$d')" "$before"
+  assert_equal "$(inbox_health_shown)" ""
+}
+
+@test "with the health view unreadable, the health line is an unknown health with its reason, stderr says why, and it exits 0" {
+  hold_lease home-pc >/dev/null
+  fake_timers <<'EOF'
+echo "not a view"
+echo "team-timers: something first" >&2
+echo "team-timers: cannot read the health record $HOME/.local/state/agent-team/health.json" >&2
+exit 1
+EOF
+  run_bin -0 --separate-stderr team-inbox
+  assert_equal "$stderr" "team-inbox: shows the health as unknown, since team-timers health printed no view: team-timers: cannot read the health record ~/.local/state/agent-team/health.json"
+  assert_equal "$(inbox_shown | tail -n 2 | head -n 1)" \
+    "**Health**: unknown - team-timers: cannot read the health record ~/.local/state/agent-team/health.json"
+
+  # A view printed with exit 1, a view with problems, is shown as it is.
+  fake_timers <<'EOF'
+echo '{"schema": "team-health/1", "machine": "home-pc", "holding": true, "ok": false, "line": "**Health**: the heartbeat last ran <t:1:R>", "problems": []}'
+exit 1
+EOF
+  run_bin -0 --separate-stderr team-inbox
+  assert_equal "$stderr" ""
+  assert_equal "$(inbox_health_shown)" "**Health**: the heartbeat last ran <t:1:R>"
+
+  # A team-timers that prints nothing and says nothing.
+  fake_timers <<<'exit 3'
+  run_bin -0 --separate-stderr team-inbox
+  assert_equal "$stderr" "team-inbox: shows the health as unknown, since team-timers health printed no view: team-timers health exited 3 with no view"
+  assert_equal "$(inbox_health_shown)" "**Health**: unknown - team-timers health exited 3 with no view"
+}
+
+@test "past 2000 characters the last items are left out and counted, and the health line is kept whole" {
   local n
+  hold_lease home-pc >/dev/null
   opened T3 "Three" >>"$TEAM_HOME/ledger.jsonl"
   log_events '{"task":"T3","event":"thread","discord_thread":"3333"}'
   for n in $(seq 1 30); do
@@ -425,8 +489,9 @@ Nothing waits on you."
   more=$(sed -nE 's/^- and ([0-9]+) more, which team-snapshot lists$/\1/p' <<<"$shown")
   assert_equal "$((listed + more))" 30
   ((listed > 5))
-  # The resources line stays, after the count.
-  assert_equal "$(tail -n 2 <<<"$shown" | head -n 1)" "Resources: manual, full (90%): no reading of the machine's load yet, so no budget"
+  # The resources line and the health line stay whole, after the count.
+  assert_equal "$(tail -n 3 <<<"$shown" | head -n 2)" "Resources: manual, full (90%): no reading of the machine's load yet, so no budget
+**Health**: unknown - no health record yet; the heartbeat writes one each run"
 }
 
 @test "a message cut for length keeps its standing word lines and its footer" {

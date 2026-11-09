@@ -54,7 +54,7 @@ declare -gA FORMAT=(
 # cloned as the bootstrap clones them,
 # ~/.config/agent-team/home names the team home, and its core.hooksPath the code's records-git;
 # the user manager delegates cpu and memory and the team's slice is installed (team-capacity);
-# and a reading of the machine's load was just taken.
+# and a reading of the machine's load was just taken, as a good heartbeat run just ended.
 doctor_machine() {
   # The whole doctor, until a test names its checks (only_checks).
   unset TEAM_DOCTOR_CHECKS
@@ -216,6 +216,21 @@ EOF
   "$REPO_ROOT/bin/team-config" apply >/dev/null
   # A reading of the machine's load just taken, as its heartbeat takes one.
   capacity_reading 0
+  # And a good heartbeat run just ended, with its checkpoint.
+  good_heartbeat_run
+}
+
+# The health record a good heartbeat run on the holder home-pc leaves, just now, with its
+# checkpoint, folded by the health module as team-timers run folds one.
+good_heartbeat_run() {
+  local state=$HOME/.local/state/agent-team now
+  now=$(date -u +%FT%TZ)
+  mkdir -p "$state"
+  touch "$state/last-checkpoint"
+  jq -n -L "$REPO_ROOT/bin/lib" --arg now "$now" 'include "health";
+    null | health_fold({machine: "home-pc", id: "doctor-machine", start: $now, now: $now, ended: "ok",
+      last_checkpoint: $now, offline: null, login_refused: null}; [{holding: true}, {lease_renewed: $now}])' \
+    >"$state/health.json"
 }
 
 # capacity_reading <minutes>: append a reading of the machine's load with the team's use per task,

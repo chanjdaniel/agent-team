@@ -2,10 +2,11 @@
 # shellcheck disable=SC2153 # LOCK and the other globals are helpers/doctor.bash's
 # team-doctor: one PASS, WARN or FAIL line per thing this machine needs, on the machine
 # tests/helpers/doctor.bash builds: every tool a version stub, the OS a stubbed uname.
-# This file: the clock, lease, salvage, offline and heartbeat lines.
+# This file: the clock, lease, salvage, offline, heartbeat and health lines.
 
 load helpers/common
 load helpers/doctor
+load helpers/inbox
 
 setup() {
   sandbox
@@ -209,4 +210,72 @@ FAIL salvage T2 site"
   stub_reply uname FreeBSD
   run_bin -1 team-doctor
   assert_equal "$(line_of heartbeat)" "FAIL heartbeat: FreeBSD has neither systemd nor launchd; the heartbeat runs on Linux or macOS; fix: fix what team-timers names, then run team-doctor again"
+}
+
+@test "the health line: PASS with the plain healthy line on the holder, FAIL on a heartbeat or checkpoint problem, WARN on any other, PASS off the lease" {
+  only_checks 245-health.sh
+  tools_at arch
+  # The heartbeat's runs below edit the Waiting on you message in a fake Discord, and list no session.
+  stub_script curl <<'EOF'
+source "$STUB_FIXTURES/inbox.sh"
+echo "curl: (22) The requested URL returned error: 404" >&2
+exit 22
+EOF
+  inbox_discord
+  stub_reply claude '[]'
+  local state=$HOME/.local/state/agent-team fix
+  fix="read ~/.local/state/agent-team/heartbeat-failures.log for each failed step's reason, fix what it names, then run team-checkpoint --force"
+
+  # As set up, a good run just ended.
+  run_bin -0 team-doctor
+  [[ $(line_of health) =~ ^"PASS health: ok - last checkpoint "[0-9T:-]+"Z (0 minutes ago), lease renewed " ]]
+
+  # The holder before its first run: an unknown health, a warning.
+  rm "$state/health.json"
+  run_bin -0 team-doctor
+  assert_equal "$(line_of health)" "WARN health: unknown - no health record yet; the heartbeat writes one each run; fix: fix what each problem names; team-timers health lists them"
+
+  # After a good run, the plain healthy line.
+  run -0 "$CODE_CHECKOUT/bin/team-timers" run
+  run_bin -0 team-doctor
+  [[ $(line_of health) =~ ^"PASS health: ok - last checkpoint "[0-9T:-]+"Z (0 minutes ago), lease renewed "[0-9T:-]+"Z (0 minutes ago)"$ ]]
+
+  # A failing checkpoint fails, naming it, with the failures log and a forced checkpoint as the fix.
+  git -C "$TEAM_HOME" checkout -q --detach
+  touch -d '-5 minutes' "$state/last-checkpoint"
+  run -1 "$CODE_CHECKOUT/bin/team-timers" run
+  run_bin -1 team-doctor
+  [[ $(line_of health) =~ ^"FAIL health: checkpoint failing since "[0-9T:-]+"Z (1 run): team home: not on a branch, so the records are not committed; fix: $fix"$ ]]
+  git -C "$TEAM_HOME" checkout -q dev
+
+  # Any other problem warns: the inbox step failing.
+  echo 500 >"$STUB_FIXTURES/inbox/fail"
+  run -0 "$CODE_CHECKOUT/bin/team-timers" run
+  run_bin -0 team-doctor
+  [[ $(line_of health) =~ ^"WARN health: inbox failing since "[0-9T:-]+"Z (1 run): Discord refused ".*"; fix: fix what each problem names; team-timers health lists them"$ ]]
+  rm "$STUB_FIXTURES/inbox/fail"
+
+  # A heartbeat that last ran 20 minutes ago fails, as the heartbeat problem.
+  run -0 "$CODE_CHECKOUT/bin/team-timers" run
+  local ago
+  ago=$(date -u -d '-20 minutes' +%FT%TZ)
+  jq --arg ago "$ago" '.last_run.start = $ago' "$state/health.json" >"$state/health.json.new"
+  mv "$state/health.json.new" "$state/health.json"
+  jq --arg ago "$ago" '.written_at = $ago' "$state/lease.json" >"$state/lease.json.new"
+  mv "$state/lease.json.new" "$state/lease.json"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of health)" "FAIL health: the heartbeat last ran $ago (20 minutes ago); fix: $fix"
+
+  # A team-timers that prints no view fails with its reason.
+  mv "$CODE_CHECKOUT/bin/team-timers" "$BATS_TEST_TMPDIR/team-timers"
+  printf '#!/usr/bin/env bash\necho "team-timers: cannot read the health record" >&2\nexit 1\n' >"$CODE_CHECKOUT/bin/team-timers"
+  chmod +x "$CODE_CHECKOUT/bin/team-timers"
+  run_bin -1 team-doctor
+  assert_equal "$(line_of health)" "FAIL health: team-timers health printed no view: cannot read the health record; fix: fix what team-timers names, then run team-doctor again"
+  mv -f "$BATS_TEST_TMPDIR/team-timers" "$CODE_CHECKOUT/bin/team-timers"
+
+  # Off the lease, whatever the record says, it keeps no health.
+  run -0 "$REPO_ROOT/bin/team-lease" release
+  run_bin -0 team-doctor
+  assert_equal "$(line_of health)" "PASS health: this machine does not hold the lease, so it keeps no health"
 }
