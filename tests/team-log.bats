@@ -1697,3 +1697,24 @@ team-log: $TEAM_HOME/ledger.jsonl: 2 lines hold strings that are no whole number
   assert_contains "$output" "--print is taken only with --from-message"
   assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" 3
 }
+
+@test "an event holding an address at a public provider is refused, naming its field and never the value, since the records hook would refuse every later ledger commit" {
+  open_t7
+  provider=gmail.com
+  before=$(cat "$TEAM_HOME/ledger.jsonl")
+  run_bin -1 team-log T7 waiting on=Daniel "reason=mail someone.else@$provider about the key"
+  assert_contains "$output" "team-log: refusing a ledger event: reason holds 1 email address at a public provider"
+  [[ $output != *someone.else* ]]
+  assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$before"
+  # Two fields, one of them a list's item, are both named.
+  run_bin -1 team-log T7 paused "reason=from a@$provider" "note=and b@$provider, c@$provider"
+  assert_contains "$output" "refusing a ledger event: reason holds 1 email address at a public provider; note holds 2 email addresses at a public provider"
+  [[ $output != *"@$provider"* ]]
+  assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$before"
+  # What the hook takes is taken: a fixture address, a service, and the team home's own user.email.
+  run_bin -0 team-log T7 waiting on=Daniel "reason=mail team@example.com, noreply@$provider"
+  git init -q "$TEAM_HOME"
+  git -C "$TEAM_HOME" config user.email "daniel@$provider"
+  run_bin -0 team-log T7 waiting on=Daniel "reason=mail daniel@$provider"
+  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "$(($(wc -l <<<"$before") + 2))"
+}
