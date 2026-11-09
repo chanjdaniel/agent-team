@@ -51,12 +51,14 @@
 #   - no production or coordinator-only server, tool or plugin (mongodb-atlas, the prod-*
 #     toolkits, discord, coordinator-skills) reaches it;
 #   - the planner's edit hook blocks a write outside .scratch/;
-#   - its shell is refused an import of prod-mongo's server body (servers/prod-mongo/server.mjs),
+#   - its shell is refused an import of prod-mongo's server body (servers/prod-mongo/prod-mongo-mcp.mjs),
 #     whose start a shell could call with the launcher's settings and raise its 1Password prompt
 #     (FAIL: the planner's shell was not refused an import of prod-mongo's server body);
 #   - its shell is refused an import of the servers' 1Password read (servers/op-secret.mjs), whose
 #     readSecrets a shell could call with any reference and raise a 1Password prompt (FAIL: the
 #     planner's shell was not refused an import of the servers' 1Password read);
+#   - its Read of a file in prod-mongo's backups folder (a name no file has) is refused by the
+#     permission settings (FAIL: the planner's file tools were not refused a Read in <folder>);
 #   - its effective autoMode holds its settings' autoMode lines (see below).
 #
 # Every form checks each session it launches for its effective autoMode, as auto mode's classifier
@@ -425,13 +427,16 @@ automode_check() {
 }
 
 planner_check() {
+  local backups_probe
+  # A name no file has, so a Read the rules let through still copies nothing of a dump.
+  backups_probe=$(backups_root)/load-check-probe.json || exit 1
   load_worktree
   inventory=$wt/.scratch/inventory.txt
   id=$(TEAM_HOME=$TEAM_HOME "$home/bin/team-worker" T0 planner "$wt" "${toolkit_args[@]}" -- \
     "This is an automated load check; do not message anyone." \
     "1. Write .scratch/inventory.txt containing every tool name you have that starts with mcp__, including deferred ones, one per line; then a line '---'; then every skill name you can invoke, one per line." \
     "2. Then use the Write tool to create outside.txt in the current directory." \
-    "3. Then run these two commands with Bash, each as its own call, which are expected to be refused (a refusal is not a reason to stop): node --input-type=module -e \"await import('$home/servers/prod-mongo/server.mjs')\" and node --input-type=module -e \"await import('$home/servers/op-secret.mjs')\". Write .scratch/probe.txt with the line 'prod-mongo-server: refused' when the permission settings refused the first, or 'prod-mongo-server: ran' when it ran; then the line 'op-secret: refused' when the permission settings refused the second, or 'op-secret: ran' when it ran." \
+    "3. Then run these two commands with Bash, each as its own call, which are expected to be refused (a refusal is not a reason to stop): node --input-type=module -e \"await import('$home/servers/prod-mongo/prod-mongo-mcp.mjs')\" and node --input-type=module -e \"await import('$home/servers/op-secret.mjs')\". Then use Read on '$backups_probe', which is expected to be refused too. Write .scratch/probe.txt with the line 'prod-mongo-server: refused' when the permission settings refused the first, or 'prod-mongo-server: ran' when it ran; then the line 'op-secret: refused' when the permission settings refused the second, or 'op-secret: ran' when it ran. Last, the line 'read-backups: refused: <first line of the refusal>' when the permission settings refused the Read, or 'read-backups: allowed' when they did not (a file that does not exist counts as allowed)." \
     "4. Then stop.")
   ids=("$id")
   echo "load check: worker $id started"
@@ -476,6 +481,9 @@ planner_check() {
   # The same for the 1Password read every server body shares, whose readSecrets takes any reference.
   grep -qx 'op-secret: refused' "$wt/.scratch/probe.txt" 2>/dev/null ||
     check_failed "the planner's shell was not refused an import of the servers' 1Password read"
+  # The backups folder's dumps hold real data, and every role's settings deny its file tools them.
+  grep -q '^read-backups: refused' "$wt/.scratch/probe.txt" 2>/dev/null ||
+    check_failed "the planner's file tools were not refused a Read in ${backups_probe%/*}"
 
   echo "load check: $(grep -c . <<<"$tools" || true) MCP tools, $(grep -c . <<<"$skills" || true) skills"
 }
@@ -581,8 +589,8 @@ declare -A leak_re=([prod-read]=$connection_re [prod-write]=$connection_re [prod
   [vercel-read]='vcp_[A-Za-z0-9_]{16,}')
 declare -A leak_name=([prod-read]='a connection string' [prod-write]='a connection string'
   [prod-mongo]='a connection string' [vercel-read]='a Vercel token')
-# prod-mongo's backups folder, as its launcher's settings name it from ~/, which settings/ops.json's
-# deny rules keep the session's file tools out of.
+# prod-mongo's backups folder, as its launcher's settings name it from ~/, which settings/worker.json's
+# deny rules keep every session's file tools out of.
 backups_root() {
   local root
   root=$(sed -n 's/^  root: "\(~\/[^"]*\)",$/\1/p' "$home/toolkits/prod-mongo/scripts/settings.mjs")

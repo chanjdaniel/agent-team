@@ -1037,7 +1037,7 @@ assert_prod_write_gated() {
   # Daniel's backups folder holds real data and migration output: the session's file tools never
   # open it, whichever toolkits it has. A Read rule covers Grep and Glob and an Edit rule Write,
   # whose own path rules Claude Code accepts but never matches.
-  assert_equal "$(jq -c '[.permissions.deny[] | select(contains("conventioner-backups"))]' "$s")" \
+  assert_equal "$(jq -c '[.permissions.deny[] | select(contains("conventioner-backups") and (startswith("Bash(") | not))]' "$s")" \
     '["Read(~/conventioner-backups/**)","Edit(~/conventioner-backups/**)"]'
   assert_equal "$(jq -r '.permissions.deny[] | select(test("^(Grep|Glob|Write)\\("))' "$s")" ""
   assert_equal "$(jq -c .env.MCP_TIMEOUT "$s")" '"120000"'
@@ -1178,7 +1178,7 @@ matcher_matches() {
     local s=$t/settings.ops.json
     assert_equal "$(jq -c .permissions.allow "$s")" '["mcp__prod-read__*","mcp__vercel-read__*","mcp__prod-mongo__*","Edit(./.scratch/**)"]'
     assert_prod_write_gated "$s"
-    assert_equal "$(jq -c '[.permissions.deny[] | select(contains("conventioner-backups"))]' "$s")" \
+    assert_equal "$(jq -c '[.permissions.deny[] | select(contains("conventioner-backups") and (startswith("Bash(") | not))]' "$s")" \
       '["Read(~/conventioner-backups/**)","Edit(~/conventioner-backups/**)"]'
     matcher_matches "$s" mcp__prod-mongo__backup mcp__plugin_prod-mongo_prod-mongo__restore-drill \
       mcp__prod-mongo__list-backups mcp__prod-read__find mcp__plugin_prod-write_prod-write__delete-many

@@ -1063,13 +1063,16 @@ COMMANDS
   assert_denies 'Bash(bun *vercel-mcp*)' 'bun servers/vercel-mcp.mjs'
   assert_denies 'Bash(deno *vercel-mcp*)' 'deno run -A servers/vercel-mcp.mjs'
   # prod-mongo's server body exports its start, which a shell's import could call with the
-  # launcher's settings, raising the launch's 1Password prompt.
-  assert_denies 'Bash(*node *prod-mongo/server*)' \
-    'node --input-type=module -e "await import(\"/home/me/agent-team/servers/prod-mongo/server.mjs\")"' \
-    'cd servers && node -e "import(\"./prod-mongo/server.mjs\").then((m) => m.startProdMongo({}))"'
-  assert_denies 'Bash(env *prod-mongo/server*)' 'env PROD_MONGO_ROOT=/x node -e "import(\"./servers/prod-mongo/server.mjs\")"'
-  assert_denies 'Bash(bun *prod-mongo/server*)' 'bun -e "await import(\"./servers/prod-mongo/server.mjs\")"'
-  assert_denies 'Bash(deno *prod-mongo/server*)' 'deno eval "await import(\"./servers/prod-mongo/server.mjs\")"'
+  # launcher's settings, raising the launch's 1Password prompt; its file name is its own, so a
+  # relative import from its own directory names it too.
+  assert_denies 'Bash(*node *prod-mongo-mcp*)' \
+    'node --input-type=module -e "await import(\"/home/me/agent-team/servers/prod-mongo/prod-mongo-mcp.mjs\")"' \
+    'cd servers && node -e "import(\"./prod-mongo/prod-mongo-mcp.mjs\").then((m) => m.startProdMongo({}))"' \
+    'cd servers/prod-mongo && node -e "import(\"./prod-mongo-mcp.mjs\").then((m) => m.startProdMongo({}))"'
+  assert_denies 'Bash(env *prod-mongo-mcp*)' 'env PROD_MONGO_ROOT=/x node -e "import(\"./servers/prod-mongo/prod-mongo-mcp.mjs\")"'
+  assert_denies 'Bash(bun *prod-mongo-mcp*)' 'bun -e "await import(\"./prod-mongo-mcp.mjs\")"'
+  assert_denies 'Bash(deno *prod-mongo-mcp*)' 'deno eval "await import(\"./servers/prod-mongo/prod-mongo-mcp.mjs\")"'
+  [[ -f $REPO_ROOT/servers/prod-mongo/prod-mongo-mcp.mjs && ! -e $REPO_ROOT/servers/prod-mongo/server.mjs ]]
   assert_denies 'Bash(*node *prod-mongo/scripts/settings*)' \
     'node -e "import(\"/home/me/agent-team/toolkits/prod-mongo/scripts/settings.mjs\")"'
   assert_denies 'Bash(env *prod-mongo/scripts/settings*)' 'env node toolkits/prod-mongo/scripts/settings.mjs'
@@ -1087,6 +1090,27 @@ COMMANDS
     'claude --bg --plugin-dir=toolkits/vercel-read'
   assert_denies 'Bash(*--mcp-config*vercel-read*)' 'claude -p hi --mcp-config toolkits/vercel-read/.mcp.json' \
     'claude --strict-mcp-config --mcp-config /home/me/agent-team/tasks/T5/mcp.vercel-read.json'
+}
+
+# A dump under the backups folder holds every vendor's personal details, and every session runs as
+# Daniel's account, so the folder's 0700 mode keeps none of them out: every session's file tools are
+# denied it, and its shell has speed bumps on the folder's path. Only prod-mongo's server, which no
+# session's tools are, writes and reads there.
+@test "every session is denied reading or editing the backups folder, by its file tools and by its path in a shell" {
+  local file rule
+  for file in "${SETTINGS[@]}"; do
+    for rule in 'Read(~/conventioner-backups/**)' 'Edit(~/conventioner-backups/**)'; do
+      jq -e --arg rule "$rule" '.permissions.deny | index($rule)' "$REPO_ROOT/$file" >/dev/null ||
+        { echo "$file lacks the deny rule $rule" >&2; return 1; }
+    done
+  done
+  # The ops role takes them from worker.json, which every role's settings layer on.
+  if grep -n conventioner-backups "$REPO_ROOT/settings/ops.json"; then echo "ops.json repeats worker.json's rules" >&2; return 1; fi
+  assert_denies 'Bash(*/conventioner-backups/*)' 'zcat ~/conventioner-backups/2026-11-09T081502Z/dump/conventioner/vendors.bson.gz' \
+    'cat /home/me/conventioner-backups/x/manifest.json' 'ls ~/conventioner-backups/' 'cd ~/conventioner-backups/x && ls'
+  assert_denies 'Bash(*/conventioner-backups)' 'ls -la ~/conventioner-backups' 'cd $HOME/conventioner-backups'
+  assert_denies 'Bash(*/conventioner-backups *)' 'grep -r vendor ~/conventioner-backups --include "*.json"' \
+    'du -sh ~/conventioner-backups | sort'
 }
 
 # The deny rules name the runtimes; a launcher without its exec bit cannot be run by its path at all.
@@ -1207,8 +1231,11 @@ git log --oneline -- servers/vercel-mcp.mjs
 node --test tests/toolkits/prod-mongo.test.mjs
 node --test tests/toolkits/prod-mongo.test.mjs --test-name-pattern 'list-backups'
 git add servers/prod-mongo toolkits/prod-mongo tests/toolkits/prod-mongo.test.mjs
-git diff origin/dev -- servers/prod-mongo/server.mjs toolkits/prod-mongo/scripts/settings.mjs
-sed -n 1,40p servers/prod-mongo/server.mjs
+git diff origin/dev -- servers/prod-mongo/prod-mongo-mcp.mjs toolkits/prod-mongo/scripts/settings.mjs
+sed -n 1,40p servers/prod-mongo/prod-mongo-mcp.mjs
+grep -n conventioner-backups toolkits/prod-mongo/README.md settings/worker.json
+git grep -n "~/conventioner-backups"
+PROD_MONGO_ROOT=$HOME/.cache/agent-team-tests/backups node --test tests/toolkits/prod-mongo.test.mjs
 cat toolkits/prod-mongo/scripts/settings.mjs
 claude plugin validate --strict toolkits/prod-mongo
 git diff origin/dev -- servers/op-secret.mjs

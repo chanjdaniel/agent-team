@@ -14,7 +14,7 @@
 - Restore a dump to production: the drill restores only into its own throwaway, whose connection string it builds itself, and takes no connection string; restoring to production is Daniel's own command (`restoring.md`).
 - Choose a folder: no tool takes a path, and `restore-drill` takes a dump by its stamp only, directly under the backups folder.
   The server refuses a backups folder inside a git checkout or worktree, the team home, `~/.claude`, `~/.no-mistakes`, a shared temporary directory, a synced folder or a CI workspace, or the home itself, before it touches it.
-- Read a dump back through MCP: every answer is counts, sizes, names, verdicts and paths, never a document, and the ops session's own file tools are denied `~/conventioner-backups`.
+- Read a dump back through MCP: every answer is counts, sizes, names, verdicts and paths, never a document, and every session's file tools are denied `~/conventioner-backups` itself, the ops session's included (a search from above the folder is what the ops load check probes).
 - Delete a dump: dumps past the retention rule (the 5 newest verified ones are kept) are named for Daniel to delete by hand; a backup removes only the unfinished folder it made itself when its dump fails the check.
 - Read another database or cluster: the read user is restricted to the cluster `conventioner-prod`, and `read@conventioner` grants nothing else.
 - Give the connection string to any child but `mongodump`, which reads it from a FIFO named in `--config`, so it is never in an environment, an argument list, a file at rest or a log; every child gets an environment built from a short list, never the server's own.

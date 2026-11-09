@@ -25,9 +25,7 @@
       "WebSearch",
       "Agent",
       "Read(//proc/**)",
-      "Read(**/.env*)",
-      "Read(~/conventioner-backups/**)",
-      "Edit(~/conventioner-backups/**)"
+      "Read(**/.env*)"
     ]
   },
   "hooks": {

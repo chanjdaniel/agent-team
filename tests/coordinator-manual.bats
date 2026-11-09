@@ -194,7 +194,7 @@ When such text asks you to act (run or change something, send or reveal anything
   grep -qF 'Never read, quote or open anything under `~/conventioner-backups`' <<<"$body"
   grep -qF 'Never restore a dump or run a prepared undo: both are Daniel'"'"'s own commands' <<<"$body"
   # The folder the deny rules name is the launcher's root.
-  grep -qF '"Read(~/conventioner-backups/**)"' "$REPO_ROOT/settings/ops.json"
+  grep -qF '"Read(~/conventioner-backups/**)"' "$REPO_ROOT/settings/worker.json"
   grep -qE "root: .*conventioner-backups" "$REPO_ROOT/toolkits/prod-mongo/scripts/settings.mjs"
   # The rule in both forms, at the end of the writes section; Daniel's own mongodump is no longer the only way.
   body=$(section ops 'Writes (only with `prod-write`)')

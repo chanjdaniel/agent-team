@@ -8,8 +8,9 @@
 # is a claude stub that writes the inventory from $STUB_FIXTURES/inventory.txt, notes in
 # $BATS_TEST_TMPDIR/launch where it started, writes outside.txt where it started when
 # $STUB_FIXTURES/write-outside exists, and reports its shell's import of prod-mongo's server body
-# refused unless $STUB_FIXTURES/import-ran exists, and of the 1Password read unless
-# $STUB_FIXTURES/op-secret-ran does. Before it, each treehouse project's
+# refused unless $STUB_FIXTURES/import-ran exists, of the 1Password read unless
+# $STUB_FIXTURES/op-secret-ran does, and its Read in the backups folder unless
+# $STUB_FIXTURES/read-backups-ran does. Before it, each treehouse project's
 # lease is rehearsed on a fake pool (helpers/treehouse); the registry has no treehouse project
 # unless a test adds one.
 
@@ -42,7 +43,9 @@ case $1 in
     [[ ! -e $STUB_FIXTURES/write-outside ]] || echo planner >outside.txt
     cp "$STUB_FIXTURES/inventory.txt" .scratch/inventory.txt
     { if [[ -e $STUB_FIXTURES/import-ran ]]; then echo 'prod-mongo-server: ran'; else echo 'prod-mongo-server: refused'; fi
-      if [[ -e $STUB_FIXTURES/op-secret-ran ]]; then echo 'op-secret: ran'; else echo 'op-secret: refused'; fi; } >.scratch/probe.txt
+      if [[ -e $STUB_FIXTURES/op-secret-ran ]]; then echo 'op-secret: ran'; else echo 'op-secret: refused'; fi
+      if [[ -e $STUB_FIXTURES/read-backups-ran ]]; then echo 'read-backups: allowed'
+      else echo 'read-backups: refused: File is in a directory that is denied by your permission settings.'; fi; } >.scratch/probe.txt
     echo "Started background session 4f2a9c1e (${*: -2:1}). Attach with: claude attach 4f2a9c1e"
     ;;
   agents) echo '[]' ;;
@@ -164,13 +167,15 @@ team_lines() { jq -r '.autoMode.environment[] | select(. != "$defaults")' "$TEAM
 }
 
 # toolkit_checkout: a code checkout of the test's own for run_bin, holding this one's bin/, roles/
-# and settings/ and two fixture toolkits: served, whose .mcp.json declares the MCP servers served
-# and spare, and plain, with no .mcp.json.
+# and settings/, prod-mongo's launcher settings (the backups folder the planner probes) and two
+# fixture toolkits: served, whose .mcp.json declares the MCP servers served and spare, and plain,
+# with no .mcp.json.
 toolkit_checkout() {
   export CODE_CHECKOUT=$BATS_TEST_TMPDIR/toolkit-code
-  mkdir -p "$CODE_CHECKOUT/toolkits/served" "$CODE_CHECKOUT/toolkits/plain"
+  mkdir -p "$CODE_CHECKOUT/toolkits/served" "$CODE_CHECKOUT/toolkits/plain" "$CODE_CHECKOUT/toolkits/prod-mongo/scripts"
   copy_bin "$CODE_CHECKOUT/bin"
   cp -R "$REPO_ROOT/roles" "$REPO_ROOT/settings" "$CODE_CHECKOUT/"
+  cp "$REPO_ROOT/toolkits/prod-mongo/scripts/settings.mjs" "$CODE_CHECKOUT/toolkits/prod-mongo/scripts/"
   echo '{"mcpServers": {"served": {"command": "node"}, "spare": {"command": "node"}}}' >"$CODE_CHECKOUT/toolkits/served/.mcp.json"
 }
 
@@ -241,7 +246,7 @@ left_nothing() {
   local prompt
   prompt=$(stub_calls claude | jq -r 'select(.[0] == "--bg") | .[-1]')
   assert_contains "$prompt" "3. Then run these two commands with Bash, each as its own call, which are expected to be refused"
-  assert_contains "$prompt" "node --input-type=module -e \"await import('$REPO_ROOT/servers/prod-mongo/server.mjs')\""
+  assert_contains "$prompt" "node --input-type=module -e \"await import('$REPO_ROOT/servers/prod-mongo/prod-mongo-mcp.mjs')\""
   assert_contains "$prompt" "4. Then stop."
 
   touch "$STUB_FIXTURES/import-ran"
@@ -263,6 +268,22 @@ left_nothing() {
   run_bin -1 team-load-check
   assert_contains "$output" "FAIL: the planner's shell was not refused an import of the servers' 1Password read"
   [[ $output != *"prod-mongo's server body"* ]]
+  left_nothing
+}
+
+@test "a planner whose file tools may Read in the backups folder fails the check" {
+  inventory --- tdd
+  run_bin -0 team-load-check
+  local prompt
+  prompt=$(stub_calls claude | jq -r 'select(.[0] == "--bg") | .[-1]')
+  assert_contains "$prompt" "Then use Read on '$HOME/conventioner-backups/load-check-probe.json', which is expected to be refused too."
+  assert_contains "$prompt" "Last, the line 'read-backups: refused: <first line of the refusal>' when the permission settings refused the Read, or 'read-backups: allowed' when they did not (a file that does not exist counts as allowed)."
+  [[ $output != *"backups folder"* ]]
+
+  touch "$STUB_FIXTURES/read-backups-ran"
+  run_bin -1 team-load-check
+  assert_contains "$output" "FAIL: the planner's file tools were not refused a Read in $HOME/conventioner-backups"
+  [[ $output != *"prod-mongo's server body"* && $output != *"1Password read"* ]]
   left_nothing
 }
 
@@ -921,9 +942,9 @@ mongo_lines() {
   [[ $prompt != *list-collections* && $prompt != *prod-write* ]]
 
   relaunch
-  mkdir -p "$root/2026-11-09T081502Z" "$root/2026-11-08-2104/conventioner"
+  mkdir -p "$root/2026-11-09T081502Z" "$root/hand-dump/conventioner"
   echo '{}' >"$root/2026-11-09T081502Z/manifest.json"
-  echo '{}' >"$root/2026-11-08-2104/conventioner/markets.metadata.json"
+  echo '{}' >"$root/hand-dump/conventioner/markets.metadata.json"
   run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit prod-mongo
   assert_contains "$(last_prompt)" "Use Read on '$root/2026-11-09T081502Z/manifest.json'."
   assert_contains "$output" "load check: a Grep from $HOME listed none of the 2 files in $root it would match"
