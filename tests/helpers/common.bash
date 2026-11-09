@@ -287,9 +287,12 @@ stub_script() {
 # fails_on_call <cmd> [<text>]: put on PATH a <cmd> that exits 5, printing nothing, on every call
 # one of whose arguments holds <text> (on every call, without one) and runs the machine's own <cmd>
 # otherwise, for a test of what a script does when a command inside it fails unexpectedly. Each
-# call it failed is one line of its arguments in $STUB_CALLS/<cmd>.failed.
+# call it failed is one line of its arguments in $STUB_CALLS/<cmd>.failed. It exports the stubs'
+# directory as TEAM_PATH_FIRST, so the stand-in wins on macOS too, where the library puts
+# Homebrew's GNU tools (cat, among them) ahead of the rest of PATH.
 fails_on_call() {
   command -v "$1" >"$STUB_FIXTURES/$1.real"
+  export TEAM_PATH_FIRST=$BATS_TEST_TMPDIR/stubs
   printf '%s\n' "${2-}" >"$STUB_FIXTURES/$1.fail-on"
   shared_make fails-on-call <<'EOF'
 #!/usr/bin/env bash

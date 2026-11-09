@@ -700,10 +700,10 @@ pretooluse_problems() {
   done
   assert_equal "$(cd "$REPO_ROOT" && pretooluse_problems "${files[@]}")" ""
   # Each of the four guards, at its timeout.
-  assert_equal "$(cd "$REPO_ROOT" && jq -r '.hooks.PreToolUse // [] | .[].hooks[] | "\(.command | sub("^\"?@TEAM_CODE@/bin/hooks/"; "") | sub("\""; "")) \(.timeout)"' "${files[@]}" | sort -u)" \
+  assert_equal "$(cd "$REPO_ROOT" && jq -r '.hooks.PreToolUse // [] | .[].hooks[] | "\(.command | sub("^\"?@TEAM_CODE@/bin/hooks/"; "") | sub("\""; "")) \(.timeout)"' "${files[@]}" | LC_ALL=C sort -u)" \
     "command-guard 10
-lease-fence 60
 lease-fence --coordinator 60
+lease-fence 60
 ops-log 30
 scratch-only-edits 30"
   # The check names the file and the hook of each entry left open.
