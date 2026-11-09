@@ -7,19 +7,21 @@ An ops session takes it alone (`--toolkit vercel-read`) for a Vercel question, o
 
 ## What loads
 
-The MCP tools, from the server's own `tools/list` (`evals/mocks/vercel-read/_tools.json`), as an ops launch names them:
+The MCP tools, pasted from the ops load check's inventory on Daniel's tokens (`team-load-check --role ops --toolkit vercel-read`, 2026-11-09 12:47Z, the MCP lines of `tasks/T0/inventory-vercel-read.txt`):
 
 ```text
+mcp__vercel-read__list-deployments
 mcp__vercel-read__domain-deployment
 mcp__vercel-read__get-deployment
-mcp__vercel-read__list-deployments
 mcp__vercel-read__list-env-names
 mcp__vercel-read__runtime-logs
 ```
 
 Nothing else: every tool is read-only by its annotations, and none deploys, promotes, rolls back, or reads or changes a variable's value.
-The skill is `reading-vercel-deployments` (`skills/`), the only one this toolkit adds.
-This list is the server's, not yet a live session's: the ops load check's inventory (`team-load-check --role ops --toolkit vercel-read`), once it has run on Daniel's real tokens, replaces it.
+Only the records read from Vercel's list carry `isRollbackCandidate`: `list-deployments`'s and `domain-deployment`'s `newestProduction`.
+`get-deployment`'s record and `domain-deployment`'s `serving` leave it out, since Vercel's lookup, `GET /v13/deployments/{idOrUrl}`, has no such field: its documented 200 schema names none, and in the live run it answered null where the list answered true for the same deployment.
+The live run read no runtime logs, so whether `runtime-logs` answers lines from before the call, or only those from the call on, is not yet checked live.
+The skill is `reading-vercel-deployments` (`skills/`), the only one an ops session given `vercel-read` alone can invoke: the same inventory lists `skill: vercel-read:reading-vercel-deployments` and no other.
 `docs/access.md` says what the toolkit can and cannot reach.
 
 ## Its credential

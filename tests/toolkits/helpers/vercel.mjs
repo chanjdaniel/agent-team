@@ -40,8 +40,9 @@
 // forbidden. GET /v7/deployments filters by projectId, target, state and until, newest first, to
 // at most `limit` (Vercel's 20 by default), with pagination.next the oldest one's `created` when
 // older ones remain; it never answers a deployment's gitSource. GET /v13/deployments/<id, url or
-// alias> answers the deployment, with `id` for its `uid`, its `projectId`, and its `gitSource`
-// only with withGitRepoInfo=true, 403 when the token does not reach the project holding it, or
+// alias> answers the deployment, with `id` for its `uid`, its `projectId`, no
+// `isRollbackCandidate` (Vercel's lookup has none, only its list), and its `gitSource` only with
+// withGitRepoInfo=true, 403 when the token does not reach the project holding it, or
 // 404 when there is none. GET /v9/projects/<projectId>/domains answers the project's domains.
 // GET /v1/projects/<projectId>/deployments/<deploymentId>/runtime-logs streams the deployment's
 // logs as application/stream+json, and is answered 404 for a deployment it has no logs of or
@@ -108,7 +109,7 @@ export async function startFakeVercel({ projects }) {
         const found = list.find((deployment) => deployment.uid === uid || deployment.url === idOrHost);
         if (!found) continue;
         if (!reaches(label, holder)) return [403, error("forbidden", "Not authorized")];
-        const { uid: id, gitSource, ...rest } = found;
+        const { uid: id, gitSource, isRollbackCandidate, ...rest } = found;
         return [200, {
           id,
           ...rest,
