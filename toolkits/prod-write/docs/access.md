@@ -13,7 +13,7 @@
 - Reach another database or cluster: the user is restricted to the cluster `conventioner-prod`, and its role names only `conventioner`.
 - Open another connection, run server-side JavaScript, export, read the server's logs, or reach Atlas's administration API or MongoDB's assistant tools.
 - Ask the client to confirm a call itself: its confirmation list is empty, so the `ask` rule's prompt is the one gate.
-- Undo a write: the Flex cluster takes no snapshot on demand (Atlas keeps the last 8 daily ones), so a change to more than 20 documents waits for Daniel's own `mongodump`.
+- Undo a write: the Flex cluster takes no snapshot on demand (Atlas keeps the last 8 daily ones), so a change to more than 20 documents waits for a backup: the `prod-mongo` toolkit's, when the session has it beside this one, else Daniel's own.
 
 ## The Atlas user
 
