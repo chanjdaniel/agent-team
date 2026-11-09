@@ -15,8 +15,16 @@
 # reading): "Resources: manual, minor (30%): 9.2 GiB and 3.6 cores for the team; 6.1 GiB reserved;
 # T171 stowed, waiting to resume", naming each open task whose latest stowed (for the level or a
 # handoff) names roles to relaunch and that no launch has followed; when team-level fails the line
-# is left out, with a line on stderr saying why. Its last line is the time of this run. Items past
-# Discord's 2000 characters are left out from the end, counted in a line.
+# is left out, with a line on stderr saying why. After it comes the health line, the line of
+# team-timers health --json (asked once, for at most 10 s; bin/lib/health.jq words it): on the
+# holder "-# Health: ok - last checkpoint <when>, lease renewed <when>" when healthy, else
+# "**Health**: " and each problem, as "checkpoint failing since <time> (2 runs): <reason>"; when
+# the view cannot be read (team-timers fails or prints no JSON view), "**Health**: unknown - " and
+# the last line team-timers wrote on stderr, with a line on team-inbox's stderr saying why. A
+# machine that does not hold the lease, or has no team name, keeps no health, so the view has no
+# line and none is added.
+# Its last line is the time of this run. Items past Discord's 2000 characters are left out from the
+# end, counted in a line; the health line is never cut, and the limit counts it.
 # A PR ready to merge is left out while it waits on no word of Daniel's: the task's latest
 # merge-preapproved of the PR's project (the registered one whose repo is the URL's) stands, and
 # that project opts in now (team-project --find merge_with_plan true) and is not the team's own
@@ -54,6 +62,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
 LIMIT=2000
 CALL_TIMEOUT=20
 LOCK_SECONDS=60
+# The most team-timers health may take, in seconds; it reads three files.
+HEALTH_TIMEOUT=10
 # Discord's message flag SUPPRESS_EMBEDS, so a PR's link shows no preview card.
 SUPPRESS_EMBEDS=4
 
@@ -164,10 +174,32 @@ if why=$(jq -er '.error // empty' <<<"$level"); then
   echo "team-inbox: leaves out the resources line, since team-level status failed: $why" >&2
 fi
 
+# The health line, for the line after the resources line: the view's line, none off the lease, and
+# an unknown health, saying why, when the view cannot be read. A machine with no team name holds no
+# lease, so it is not asked.
+health=null
+if machine_name >/dev/null 2>&1; then
+  rc=0
+  view=$(TEAM_HOME=$TEAM_HOME bounded "$HEALTH_TIMEOUT" "$(dirname "$TEAM_LIB")/team-timers" health --json \
+    2>"$scratch/health" </dev/null) || rc=$?
+  health=$(jq -c 'select(type == "object" and .schema == "team-health/1" and (.line | type | IN("string", "null")))
+    | .line' <<<"$view" 2>/dev/null | head -n 1) || health=''
+  if [[ -z $health ]]; then
+    if ((rc == 124)); then
+      why="team-timers health timed out after $HEALTH_TIMEOUT s"
+    else
+      why=$(grep . "$scratch/health" | tail -n 1) || why="team-timers health exited $rc with no view"
+    fi
+    why=${why//"$HOME/"/"~/"}
+    echo "team-inbox: shows the health as unknown, since team-timers health printed no view: $why" >&2
+    health=$(jq -cn -L "$TEAM_LIB" --arg why "$why" 'include "health"; "**Health**: unknown - \($why | health_cut(150))"')
+  fi
+fi
+
 ledger_jq 'ledger_events | (by_task | awaiting_resume) as $stowed | inbox_items($plan_repos; $repos; $projects)
-  | inbox_text($guild; $limit; now | floor; resources_line($level; $stowed))
+  | inbox_text($guild; $limit; now | floor; resources_line($level; $stowed); $health)
   | {content: ., allowed_mentions: {parse: []}, flags: $flags}' -nRc --argjson plan_repos "$plan_repos" \
-  --argjson repos "$repos" --argjson projects "$projects" --argjson level "$level" \
+  --argjson repos "$repos" --argjson projects "$projects" --argjson level "$level" --argjson health "$health" \
   --arg guild "$guild" --argjson limit "$LIMIT" --argjson flags "$SUPPRESS_EMBEDS" "$ledger" >"$scratch/body"
 
 # Keep the message's place: keep <message>

@@ -1226,6 +1226,17 @@ EOF
 team-capacity: no reading of the machine's load, so no budget to admit session:planner by: team-capacity sample says why it takes none"
 }
 
+@test "admit in a builder's session reads the level as anywhere: none refuses, full admits" {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  busy_reading
+  level none
+  AGENT_TEAM_ROLE=builder AGENT_TEAM_TASK=T7 run_bin -75 --separate-stderr team-capacity admit --kind stack:conventioner --task T7
+  assert_equal "$stderr" "no room for stack:conventioner: the team is at level none: nothing starts; room comes when Daniel raises the level"
+  level full
+  AGENT_TEAM_ROLE=builder AGENT_TEAM_TASK=T7 run_bin -0 team-capacity admit --kind stack:conventioner --task T7
+  [[ -s $STATE_DIR/admitted.json ]]
+}
+
 @test "status: a stack admitted in the last 10 minutes that the reading shows running is reserved once, at the larger of the two" {
   cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
   # T7's conventioner-2 runs at 2 GiB of its 3 GiB of limits.

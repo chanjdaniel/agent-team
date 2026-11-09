@@ -242,6 +242,34 @@ JSON
   assert_equal "$(jq -c .deniedMcpServers "$HOME/.local/state/agent-team/coordinator.settings.json")" '[]'
 }
 
+@test "with nothing listed it denies none" {
+  printf '\n  \n' >"$BATS_TEST_TMPDIR/mcp-list.txt"
+  run_bin -0 claude-coordinator
+  assert_equal "$(jq -c .deniedMcpServers "$HOME/.local/state/agent-team/coordinator.settings.json")" '[]'
+  : >"$BATS_TEST_TMPDIR/mcp-list.txt"
+  run_bin -0 claude-coordinator
+  assert_equal "$(jq -c .deniedMcpServers "$HOME/.local/state/agent-team/coordinator.settings.json")" '[]'
+  # Claude Code's other wording of an empty list, after the health line.
+  printf '%s\n' 'Checking MCP server health…' '' 'No MCP servers configured. Run `claude mcp add` to add one.' \
+    >"$BATS_TEST_TMPDIR/mcp-list.txt"
+  run_bin -0 claude-coordinator
+  assert_equal "$(jq -c .deniedMcpServers "$HOME/.local/state/agent-team/coordinator.settings.json")" '[]'
+}
+
+@test "a list it cannot read refuses the launch, naming its first line, so a changed format never starts it with every server" {
+  printf '%s\n' '' 'Checking MCP server health…' '' '✔ codegraph (codegraph serve --mcp)' \
+    '✔ vercel (https://mcp.vercel.com)' >"$BATS_TEST_TMPDIR/mcp-list.txt"
+  run_bin -1 --separate-stderr claude-coordinator
+  assert_equal "$stderr" "claude-coordinator: claude mcp list printed lines but named no server in its format (\"<name>: <what it runs> - <health>\"), so the servers to deny are unknown; its first line: Checking MCP server health…"
+  assert_not_launched
+  assert_equal "$(find "$HOME/.local/state/agent-team" -name 'coordinator.settings.json*')" ""
+  # One server it reads is enough: the lines it cannot read are not servers.
+  printf '%s\n' 'Checking MCP server health…' '' 'vercel: https://mcp.vercel.com (HTTP) - ✔ Connected' \
+    '✔ codegraph (codegraph serve --mcp)' >"$BATS_TEST_TMPDIR/mcp-list.txt"
+  run_bin -0 claude-coordinator
+  assert_equal "$(denied)" vercel
+}
+
 @test "a failed claude mcp list refuses the launch, so no coordinator starts with servers it should not have" {
   echo 1 >"$BATS_TEST_TMPDIR/mcp.status"
   run_bin -1 --separate-stderr claude-coordinator

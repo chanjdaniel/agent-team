@@ -516,3 +516,13 @@ EOF
   assert_contains "$output" "Each project's pool is its only bound: the machine's load never refuses an open"
   [[ $output != *"slot lock"* && $output != *"machine's cap"* ]]
 }
+
+@test "refused in a worker session, whatever its role and form, before any read; --help and the coordinator are not" {
+  worker_refused team-open "opens no task" proj feature feat tooling "The team's own tooling"
+  worker_refused team-open "opens no task" --task T7 --add proj fix x
+  worker_refused team-open "opens no task" --task T7 --resume proj
+  AGENT_TEAM_ROLE=planner run_bin -0 team-open --help
+  assert_equal "${lines[0]}" "$(sed -n '2s/^# //p' "$REPO_ROOT/bin/team-open")"
+  AGENT_TEAM_ROLE=coordinator run_bin -0 --separate-stderr team-open proj feature feat tooling "The team's own tooling"
+  assert_equal "$(jq -r .task <<<"$output")" T1
+}

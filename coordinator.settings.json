@@ -21,6 +21,49 @@
       "Bash(gh pr merge*)",
       "Bash(gh-axi pr merge*)",
       "Bash(gh api*pulls/*/merge*)",
+      "Bash(git push --force*)",
+      "Bash(git push -f*)",
+      "Bash(git push * --force*)",
+      "Bash(git push * -f*)",
+      "Bash(git push * +*)",
+      "Bash(git push origin dev*)",
+      "Bash(git push origin main*)",
+      "Bash(git push origin HEAD:dev*)",
+      "Bash(git push origin HEAD:main*)",
+      "Bash(git -C * push --force*)",
+      "Bash(git -C * push -f*)",
+      "Bash(git -C * push * --force*)",
+      "Bash(git -C * push * -f*)",
+      "Bash(git -C * push * +*)",
+      "Bash(git -C * push origin dev*)",
+      "Bash(git -C * push origin main*)",
+      "Bash(git -C * push origin HEAD:dev*)",
+      "Bash(git -C * push origin HEAD:main*)",
+      "Bash(docker system prune*)",
+      "Bash(docker * system prune*)",
+      "Bash(*/docker system prune*)",
+      "Bash(docker volume prune*)",
+      "Bash(docker * volume prune*)",
+      "Bash(*/docker volume prune*)",
+      "Bash(docker image prune*)",
+      "Bash(docker * image prune*)",
+      "Bash(*/docker image prune*)",
+      "Bash(docker network prune*)",
+      "Bash(docker * network prune*)",
+      "Bash(*/docker network prune*)",
+      "Bash(docker builder prune*)",
+      "Bash(docker * builder prune*)",
+      "Bash(*/docker builder prune*)",
+      "Bash(docker container prune*)",
+      "Bash(docker * container prune*)",
+      "Bash(*/docker container prune*)",
+      "Bash(docker buildx prune*)",
+      "Bash(docker * buildx prune*)",
+      "Bash(*/docker buildx prune*)",
+      "Bash(git reset --hard*)",
+      "Bash(git reset * --hard*)",
+      "Bash(git clean*)",
+      "Bash(git branch -D*)",
       "Bash(op)",
       "Bash(op *)",
       "Bash(*&& op *)",
@@ -253,11 +296,11 @@
     "PreToolUse": [
       {
         "matcher": "mcp__plugin_discord_discord__reply|mcp__plugin_discord_discord__react|mcp__plugin_discord_discord__edit_message",
-        "hooks": [{ "type": "command", "command": "\"@TEAM_CODE@/bin/hooks/lease-fence\"" }]
+        "hooks": [{ "type": "command", "command": "\"@TEAM_CODE@/bin/hooks/lease-fence\"", "onFailure": "block", "timeout": 60 }]
       },
       {
         "matcher": "Bash",
-        "hooks": [{ "type": "command", "command": "\"@TEAM_CODE@/bin/hooks/lease-fence\" --coordinator" }]
+        "hooks": [{ "type": "command", "command": "\"@TEAM_CODE@/bin/hooks/lease-fence\" --coordinator", "onFailure": "block", "timeout": 60 }]
       }
     ]
   }

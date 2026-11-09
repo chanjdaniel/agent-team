@@ -56,7 +56,7 @@ declare -gA FORMAT=(
 # cloned as the bootstrap clones them,
 # ~/.config/agent-team/home names the team home, and its core.hooksPath the code's records-git;
 # the user manager delegates cpu and memory and the team's slice is installed (team-capacity);
-# and a reading of the machine's load was just taken.
+# and a reading of the machine's load was just taken, as a good heartbeat run just ended.
 doctor_machine() {
   # The whole doctor, until a test names its checks (only_checks).
   unset TEAM_DOCTOR_CHECKS
@@ -218,6 +218,21 @@ EOF
   "$REPO_ROOT/bin/team-config" apply >/dev/null
   # A reading of the machine's load just taken, as its heartbeat takes one.
   capacity_reading 0
+  # And a good heartbeat run just ended, with its checkpoint.
+  good_heartbeat_run
+}
+
+# The health record a good heartbeat run on the holder home-pc leaves, just now, with its
+# checkpoint, folded by the health module as team-timers run folds one.
+good_heartbeat_run() {
+  local state=$HOME/.local/state/agent-team now
+  now=$(date -u +%FT%TZ)
+  mkdir -p "$state"
+  touch "$state/last-checkpoint"
+  jq -n -L "$REPO_ROOT/bin/lib" --arg now "$now" 'include "health";
+    null | health_fold({machine: "home-pc", id: "doctor-machine", start: $now, now: $now, ended: "ok",
+      last_checkpoint: $now, offline: null, login_refused: null}; [{holding: true}, {lease_renewed: $now}])' \
+    >"$state/health.json"
 }
 
 # capacity_reading <minutes>: append a reading of the machine's load with the team's use per task,
@@ -335,13 +350,13 @@ answer() {
   if (($# > 1)); then printf '%s\n' "$2" >"$file"; else : >"$file.missing"; fi
 }
 
-# The tools of <os> (arch, macos) on this machine type, one "name<TAB>version_cmd<TAB>pin or
+# The tools of <os> (arch, macos) on this machine type, one "name<TAB>version_cmd<TAB>pin, else
 # min<TAB>source" each, as bin/lib/tools.jq resolves them for the doctor.
 lock_tools() {
   local machine
   machine=$(cat "$STUB_FIXTURES/uname-m.out" 2>/dev/null || echo x86_64)
   jq -L "$REPO_ROOT/bin/lib" -r --arg os "$1" --arg machine "$machine" \
-    'include "tools"; tools_for($os; $machine) | [.name, .version_cmd, .pin + .min, .source] | @tsv' "$LOCK"
+    'include "tools"; tools_for($os; $machine) | [.name, .version_cmd, (if .pin != "" then .pin else .min end), .source] | @tsv' "$LOCK"
 }
 
 # <filter> of <name>'s first entry in bin/lib/tools.lock, raw: what a test builds its expected

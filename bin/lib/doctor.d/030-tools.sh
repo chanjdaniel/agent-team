@@ -2,7 +2,8 @@
 #               version it cannot read (no line of the output matches its version_pattern, as
 #               when it prints only another tool's version), or below its min fails; a version
 #               off its pin fails, or
-#               warns where the lock says pin_mismatch WARN (Claude Code, which updates itself).
+#               warns where the lock says pin_mismatch WARN (Claude Code, which updates itself,
+#               and fails below its min, 2.1.295, which a hook's onFailure needs).
 #               Each runs with the library's PATH, the tool directories of the lock first, and a
 #               tool the lock marks show_path (Python) names the command it found ("3.12.4 at
 #               /opt/homebrew/opt/python@3.12/libexec/bin/python3").
@@ -63,12 +64,12 @@ check_tool() {
   else
     shown=$version
     [[ $show != true ]] || shown+=" at $(command -v "${words[0]}")"
-    if [[ -n $pin && $version == "$pin" ]]; then
+    if [[ -n $min ]] && version_below "$version" "$min"; then
+      report "tool $name" FAIL "$shown, below the minimum $min" "$source"
+    elif [[ -n $pin && $version == "$pin" ]]; then
       report "tool $name" PASS "$shown"
     elif [[ -n $pin ]]; then
       report "tool $name" "$mismatch" "$shown, not the pinned $pin" "$source"
-    elif version_below "$version" "$min"; then
-      report "tool $name" FAIL "$shown, below the minimum $min" "$source"
     else
       report "tool $name" PASS "$shown (minimum $min)"
     fi

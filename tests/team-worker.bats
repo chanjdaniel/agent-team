@@ -413,6 +413,28 @@ $REPO_ROOT/bin/hooks/command-guard"
   [[ -x $REPO_ROOT/bin/hooks/scratch-only-edits && -x $REPO_ROOT/bin/hooks/lease-fence && -x $REPO_ROOT/bin/hooks/command-guard ]]
 }
 
+@test "every role's generated settings keep onFailure block and the timeout on each PreToolUse hook" {
+  thread T7
+  ops_stub
+  local role settings expected
+  for role in planner builder reviewer ops; do
+    if [[ $role == ops ]]; then
+      run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$request" -- go
+    else
+      run_bin -0 team-worker T7 "$role" "$wt1" -- go
+    fi
+    settings=$TEAM_HOME/tasks/T7/settings.$role.json
+    expected="lease-fence block 60
+command-guard block 10"
+    case $role in
+      planner | reviewer) expected+=$'\nscratch-only-edits block 30' ;;
+      ops) expected+=$'\nscratch-only-edits block 30\nops-log block 30' ;;
+    esac
+    assert_equal "$(jq -r '.hooks.PreToolUse[].hooks[] | "\(.command | ltrimstr("'"$REPO_ROOT"'/bin/hooks/")) \(.onFailure) \(.timeout)"' "$settings" | sort)" \
+      "$(sort <<<"$expected")"
+  done
+}
+
 @test "toolkits add their plugin directories and only their MCP servers" {
   fake_checkout
   thread T7
@@ -1632,4 +1654,14 @@ LINES
   assert_equal "$stderr" "team-worker: team-capacity admit failed for T7-builder (exit 1): team-capacity: $HOME/.config/agent-team/capacity.json: session_gib must be a number above 0, not 0"
   assert_equal "$(bg_calls)" ""
   assert_equal "$(launches)" ""
+}
+
+@test "refused in a worker session, whatever its role, before any read; --help and the coordinator are not" {
+  thread T7
+  worker_refused team-worker "launches no session" T7 builder "$wt1" -- go
+  worker_refused team-worker "launches no session" T7 ops "$wt1" --toolkit prod-read --request x -- go
+  AGENT_TEAM_ROLE=builder run_bin -0 team-worker --help
+  assert_equal "${lines[0]}" "$(sed -n '2s/^# //p' "$REPO_ROOT/bin/team-worker")"
+  AGENT_TEAM_ROLE=coordinator run_bin -2 team-worker T7 builder
+  assert_contains "$output" "usage: team-worker <task> <role> <worktree>"
 }

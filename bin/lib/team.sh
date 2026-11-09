@@ -18,8 +18,22 @@
 # own_project, standing_projects, registered_pr, attribution_lines, strip_attribution, live_sessions, session_context, machine_level, image_type, discord_token, discord_api,
 # daniel_message, answer_message, refresh_inbox, github, base_merge, clean_base_merges, pr_part, pr_file_reasons, task_state_json, pr_standing_word, loose_objects, pack_size, story_file and findings_file, and sets IMAGE_TYPE,
 # DATA_EMAIL, DATA_FILE_TYPE, DATA_PROVIDER, PACK_LOOSE, COMMAND_START, COORDINATOR_CHANNEL and INTERVIEW_CHANNEL.
-# Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later.
+# Exit codes: 0 done, 1 refused or a check failed, 2 usage error, 75 try again later; a guard hook
+# that sets team_guard (below) exits 2 for every exit of its but 0.
 # shellcheck shell=bash
+
+# A guard hook decides or refuses: a PreToolUse hook of bin/hooks/ sets team_guard to its name
+# before sourcing, and any exit of its but 0 and 2, this library's own refusals and a failed
+# command under set -e included, then ends as an exit 2 with one line on stderr saying so, so the
+# call is blocked even where its settings entry does not block on a failure. Read by Bash 3.2 too.
+if [[ -n ${team_guard:-} ]]; then
+  team_guard_exit() {
+    [[ $1 != 0 && $1 != 2 ]] || return 0
+    echo "Blocked by $team_guard: it failed with exit $1 before it could decide, and a guard that cannot decide refuses; report it as BLOCKED and do not reach it another way." >&2
+    exit 2
+  }
+  trap 'team_guard_exit $?' EXIT
+fi
 
 # PWD names a directory other than ".", or none, once the one the shell is in is deleted. Read by
 # Bash 3.2 too, before platform.sh's version check.
@@ -77,12 +91,13 @@ DATA_PROVIDER='^(gmail|googlemail|hotmail|outlook|live|msn|yahoo|ymail|icloud|me
 PACK_LOOSE=200
 
 # Where a command starts in a Bash command's text, the opening of an extended regular expression a
-# hook follows with a command's name: at the start, after a separator, a parenthesis, a backtick or
-# a line break, past the reserved words a command may follow there ({, !, if, then, else, elif,
-# do, while, until and time), any variable assignments and a directory. bin/hooks/lease-fence and
+# hook follows with a command's name: at the start, after a separator, a parenthesis (a subshell's
+# or a case pattern's), a brace (a group's or a function's body), a backtick or a line break, past
+# the reserved words a command may follow there ({, !, if, then, else, elif, do, while, until,
+# time and coproc), any variable assignments and a directory. bin/hooks/lease-fence and
 # bin/hooks/command-guard read it.
 # shellcheck disable=SC2034 # read by the hooks
-COMMAND_START=$'(^|[;&|(`\n])[[:space:]]*((\\{|!|if|then|else|elif|do|while|until|time)[[:space:]]+)*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|]*/)?'
+COMMAND_START=$'(^|[;&|(){`\n])[[:space:]]*((\\{|!|if|then|else|elif|do|while|until|time|coproc)[[:space:]]+)*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|]*/)?'
 
 # Refuse with a reason on stderr.
 die() {
