@@ -45,8 +45,11 @@
 # HOME, as for every recorded worktree) and be on a branch naming the task, else exit 1. The first named slot archives to
 # scratch/, others to scratch-<project>/, one slot per project.
 # A failure after the checks leaves the task half closed: fix the cause and run team-close again.
+# Refused, exit 1, before it reads or changes anything: a worker session (an AGENT_TEAM_ROLE but
+# coordinator; worker_refusal in bin/lib/team.sh), in every form; --help still answers.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+why=$(worker_refusal "" "closes no task") && die "$why"
 
 usage="usage: team-close T<n> [--keep-worktree] [--stop-busy] [--worktree <path>]..."
 

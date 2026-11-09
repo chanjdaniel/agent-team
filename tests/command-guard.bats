@@ -15,6 +15,7 @@ OPS="an ops session is the coordinator's to launch, on Daniel's request (team-wo
 CAPTURE="the frontend toolkit's capture script is Daniel's own sessions' (run by its path or by an interpreter)"
 SET="a worker's role and task are its settings' (an assignment of AGENT_TEAM_ROLE or AGENT_TEAM_TASK)"
 UNSET="a worker's role and task are its settings' (an unset of AGENT_TEAM_ROLE or AGENT_TEAM_TASK)"
+EMPTIED="a worker's role and task are its settings' (a team script run with its environment emptied, by env -i, env --ignore-environment, env - or exec -c)"
 
 # The hook on a Bash call of <command>, as Claude Code sends it: guard <status> <command>
 guard() {
@@ -246,6 +247,34 @@ passes() {
   printf '#!/bin/sh\nexit 3\n' >"$BATS_TEST_TMPDIR/stubs/python3"
   chmod +x "$BATS_TEST_TMPDIR/stubs/python3"
   guard -0 'git status && tests/run bats --changed'
+  guard -0 'env -i ls' && guard -0 'env -i PATH="$PATH" HOME="$HOME" tests/run' && guard -0 'exec -c bash'
+  guard -0 'team-log T7 review' && guard -0 'env A=1 team-state T7'
+  guard -2 'env -i team-log T7 review'
+  [[ $stderr == "Blocked by command-guard: it could not read the command"* ]]
   guard -2 'grep -rn AGENT_TEAM_ROLE bin/'
   [[ $stderr == "Blocked by command-guard: it could not read the command"* ]]
+}
+
+# The one plain way past worker_refusal's role check: a team script run with no AGENT_TEAM_ROLE.
+@test "a team script run behind env -i, env --ignore-environment, env - or exec -c is refused, by any path" {
+  # shellcheck disable=SC2088 # ~ is part of the command as an agent types it
+  refuses "$EMPTIED" 'env -i team-log T7 review verdict=pass' 'env -i ~/agent-team/bin/team-merge T7' \
+    '/usr/bin/env -i PATH="$PATH" HOME="$HOME" team-log T7 review' 'env --ignore-environment team-next T7 -- x' \
+    'env --ignore-env team-close T7' 'env - team-open proj feature feat x y' 'env - A=1 team-catch-up T7' \
+    'exec -c team-worker T7 builder wt -- go' 'exec -c -a x "$HOME/agent-team/bin/team-level" minor' \
+    'exec -cl team-review-status url sha success x' 'env -i claude-coordinator' 'env -iC /tmp team-log T7 x' \
+    'env -u HOME -i team-log T7 x' 'env -0i team-log T7 x' "env -i 'team-log' T7 x" 'env -i "team-log" T7 x' \
+    'cd x && env -i team-log T7 x' 'nohup env -i team-log T7 x &' 'git status; env -i team-log T7 x' \
+    'env -i nohup team-log T7 x' 'env -i timeout 10 team-log T7 x' 'env -i bash ~/agent-team/bin/team-log T7 x' \
+    "bash -c 'env -i team-log T7 x'" "env -i bash -c 'team-log T7 x'" 'eval "env -i team-log T7 x"' $'bash <<\'EOF\'\nenv -i team-log T7 x\nEOF' \
+    'echo "$(env -i team-merge T7)"' 'env -i team-anything'
+}
+
+@test "env -i before another command, and a search, commit or file naming env -i or a team script, pass" {
+  passes 'env -i ls' 'env -i PATH="$PATH" HOME="$HOME" tests/run' 'env -i PATH="$PATH" tests/run bats --changed' \
+    'env -i bash -c "echo hi"' 'env -i git status' 'env -i grep -rn team-log bin/' 'exec -c ls' 'env team-log T7 x' \
+    "grep -rn 'env -i team-log' tests/" "git grep -n 'exec -c team-worker'" "git log -S'env -i team-merge' --oneline" \
+    'git commit -m "fix(command-guard): refuse env -i team-log and exec -c team-worker"' \
+    $'cat >notes.md <<\'EOF\'\nenv -i team-log T7 x\nEOF' "sed -n '/env -i team-/p' bin/hooks/command-guard" \
+    'env -i ~/team-stuff/run' 'env -i ./steam-run' 'team-log T7 resumed' 'env -i teammate'
 }

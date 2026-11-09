@@ -88,6 +88,8 @@
 # strings as numbers, leaves every other line byte for byte, and prints how many lines it changed;
 # a string there that is no whole number refuses the whole conversion, naming each line, and
 # changes nothing.
+# Refused, exit 1, before it reads or changes anything: a worker session (an AGENT_TEAM_ROLE but
+# coordinator; worker_refusal in bin/lib/team.sh), in every form, --print and --check included; --help still answers.
 set -euo pipefail
 
 # Printed by --help after the header.
@@ -97,6 +99,7 @@ help_more() {
 }
 
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
+why=$(worker_refusal "" "runs no team-log") && die "$why"
 
 usage="usage: team-log T<n> <event> [key=value]... | team-log T<n> --from-message '<message>' [--from <session>] [--sent-back <list>] [--print] | team-log --check [<file>] | team-log --fix-sent-back [<file>]"
 

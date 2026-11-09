@@ -1591,3 +1591,13 @@ LINES
   assert_equal "$(bg_calls)" ""
   assert_equal "$(launches)" ""
 }
+
+@test "refused in a worker session, whatever its role, before any read; --help and the coordinator are not" {
+  thread T7
+  worker_refused team-worker "launches no session" T7 builder "$wt1" -- go
+  worker_refused team-worker "launches no session" T7 ops "$wt1" --toolkit prod-read --request x -- go
+  AGENT_TEAM_ROLE=builder run_bin -0 team-worker --help
+  assert_equal "${lines[0]}" "$(sed -n '2s/^# //p' "$REPO_ROOT/bin/team-worker")"
+  AGENT_TEAM_ROLE=coordinator run_bin -2 team-worker T7 builder
+  assert_contains "$output" "usage: team-worker <task> <role> <worktree>"
+}
