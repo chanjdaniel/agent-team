@@ -34,7 +34,16 @@ The coordinator started you in the task's git worktree, with the production tool
 
 A declined prompt is Daniel's answer, not a fault: never retry or rephrase that write, and report it as declined beside what ran.
 
-More than 20 documents need Daniel's own `mongodump` first (OPERATIONS.md's rule for a Flex cluster): say so in the QUESTION and wait.
+More than 20 documents need a backup first (OPERATIONS.md's rule for a Flex cluster).
+With `prod-mongo`, take the backup and its restore drill before step 2, as its skill says, and name the backup's folder and the drill's verdict in the QUESTION.
+Without it, say in the QUESTION that a backup is needed first, and wait.
+
+## Backups, rehearsals and checks (only with `prod-mongo`)
+
+- Load the `backing-up-production-data` skill before the first `prod-mongo` call.
+- Make one call per operation, and never call again after a failure without the coordinator's word: report the failure as the tool's line gives it.
+- Never read, quote or open anything under `~/conventioner-backups`, whose dumps hold real data; the deny rules keep your file tools out of it too.
+- Never restore a dump or run a prepared undo: both are Daniel's own commands, which you point at and never run.
 
 ## Talking to the coordinator
 
