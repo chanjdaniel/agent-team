@@ -1706,7 +1706,7 @@ team-log: $TEAM_HOME/ledger.jsonl: 2 lines hold strings that are no whole number
   assert_contains "$output" "team-log: refusing a ledger event: reason holds 1 email address at a public provider"
   [[ $output != *someone.else* ]]
   assert_equal "$(cat "$TEAM_HOME/ledger.jsonl")" "$before"
-  # Two fields, one of them a list's item, are both named.
+  # Two string fields are both named (a list's item, tests/ledger.bats).
   run_bin -1 team-log T7 paused "reason=from a@$provider" "note=and b@$provider, c@$provider"
   assert_contains "$output" "refusing a ledger event: reason holds 1 email address at a public provider; note holds 2 email addresses at a public provider"
   [[ $output != *"@$provider"* ]]
@@ -1716,5 +1716,10 @@ team-log: $TEAM_HOME/ledger.jsonl: 2 lines hold strings that are no whole number
   git init -q "$TEAM_HOME"
   git -C "$TEAM_HOME" config user.email "daniel@$provider"
   run_bin -0 team-log T7 waiting on=Daniel "reason=mail daniel@$provider"
+  assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "$(($(wc -l <<<"$before") + 2))"
+  # The line is judged as written, as the hook reads it: a control character right before the
+  # owner's address is written as an escape, whose last letters run into the address's name.
+  run_bin -1 team-log T7 waiting on=Daniel "reason=mail "$'\x01'"daniel@$provider"
+  assert_contains "$output" "team-log: refusing a ledger event: reason holds 1 email address at a public provider"
   assert_equal "$(wc -l <"$TEAM_HOME/ledger.jsonl")" "$(($(wc -l <<<"$before") + 2))"
 }

@@ -180,7 +180,9 @@ refused_emails() {
 
 # What the event <line> holds that the records hook refuses, as "<field> holds <count> email
 # address(es) at a public provider" for each string field (a list's item as <field>.<index>),
-# joined by "; ", or nothing; the owner is the team home's git user.email, as the hook's is:
+# joined by "; ", or nothing. Each field is read as the line writes it, escapes and all, since
+# that is the text the hook reads (an escaped control character's last letters run into the
+# address after it), and the owner is the team home's git user.email, as the hook's is:
 # ledger_refused_data <line>
 ledger_refused_data() {
   local owner field text words out=''
@@ -190,7 +192,7 @@ ledger_refused_data() {
       out+="${out:+; }$field holds $words"
     done < <(printf '%s\n' "$text" | refused_emails records "${owner,,}")
   done < <(jq -r 'paths(strings) as $p | getpath($p) | select(test("@"))
-    | [($p | map(tostring) | join(".")), .] | @tsv' <<<"$1")
+    | [($p | map(tostring) | join(".")), tojson] | @tsv' <<<"$1")
   printf '%s' "$out"
 }
 

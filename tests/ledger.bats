@@ -90,6 +90,15 @@ SCRIPT
   assert_equal "$(jq -c '.model' "$TEAM_HOME/ledger.jsonl")" $'"sonnet"\nnull'
 }
 
+@test "an address at a public provider in a list's item is refused, naming the item and never the value" {
+  local provider=gmail.com
+  append_as team-worker '{"ts":"2026-10-27T02:00:00Z","task":"T7","event":"launch","role":"reviewer","session":"4f2a9c1e","worktree":"/w","toolkits":["browser","x@'"$provider"'"]}'
+  assert_equal "$status" "1"
+  assert_contains "$output" "team-worker: refusing a ledger event: toolkits.1 holds 1 email address at a public provider"
+  [[ $output != *"x@$provider"* ]]
+  [[ ! -s $TEAM_HOME/ledger.jsonl ]]
+}
+
 @test "legacy shapes are refused at append time, whatever their ts" {
   append_as team-close '{"ts":"2026-10-01T00:00:00Z","task":"T1","event":"closed"}'
   assert_equal "$status" "1"
