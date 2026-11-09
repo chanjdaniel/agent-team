@@ -40,7 +40,7 @@ reading() {
        cpu: (if $cores == "" then null else {cpus: 12, seconds: 300, team: 1.5, others: ($cores | tonumber)} end),
        systemd: true, sessions: true,
        tasks: ($tasks // [{task: "T7", memory: (3 * 1073741824), cpu: 1.5, cpu_nsec: null,
-                sessions: [{id: "a1b2c3d4", role: "builder", memory: (536870912), peak: 536870912, cpu_seconds: 10}], stacks: []}]),
+                sessions: [{id: "a1b2c3d4", role: "builder", memory: (536870912), cpu_seconds: 10}], stacks: []}]),
        stacks: $stacks, gate: {running: false, memory: 0, cpu_seconds: 0}}' >>"$file"
 }
 
@@ -79,9 +79,16 @@ levels() {
   jq -c '[.level, .by]' "$RECORD"
 }
 
-# The slice's use, as the user manager reports its MemoryCurrent: slice_use <GiB>
+# The slice's use, its working set: its cgroup, as the user manager reports its ControlGroup,
+# holds <GiB> beside 2 GiB of page cache, which never counts: slice_use <GiB>
 slice_use() {
-  jq -n --argjson g "$1" '$g * 1073741824 | floor' >"$SLICE_STATE.MemoryCurrent"
+  local path bytes cache=2147483648
+  path=$(user_cgroup agent-team.slice)
+  bytes=$(jq -n --argjson g "$1" '$g * 1073741824 | floor')
+  echo "$path" >"$SLICE_STATE.ControlGroup"
+  mkdir -p "$TEAM_CGROUP_ROOT/sys/fs/cgroup$path"
+  echo $((bytes + cache)) >"$TEAM_CGROUP_ROOT/sys/fs/cgroup$path/memory.current"
+  printf 'anon %d\nfile %d\nshmem 0\n' "$bytes" "$cache" >"$TEAM_CGROUP_ROOT/sys/fs/cgroup$path/memory.stat"
 }
 
 # The set-property calls made on the team's slice, one line each, its assignments joined by spaces.
@@ -587,7 +594,7 @@ SH
   local stacks tasks
   stacks=$(jq -cn --arg home "$HOME" '["T7", "T9"] | map({name: "conventioner-\(.[1:])", class: "team", task: ., project: "conventioner",
     worktree: "\($home)/wt/\(.)", kind: "dev", memory: (2 * 1073741824), cpu: 0, limits: (3 * 1073741824)})')
-  tasks=$(jq -cn 'def s($id; $role; $g): {id: $id, role: $role, memory: ($g * 1073741824), peak: ($g * 1073741824), cpu_seconds: 1};
+  tasks=$(jq -cn 'def s($id; $role; $g): {id: $id, role: $role, memory: ($g * 1073741824), cpu_seconds: 1};
     [{task: "T7", memory: 0, cpu: null, cpu_nsec: null, sessions: [s("a1b2c3d4"; "builder"; 4), s("r7r7r7r7"; "reviewer"; 1)], stacks: []},
      {task: "T9", memory: 0, cpu: null, cpu_nsec: null, sessions: [s("p9p9p9p9"; "planner"; 1), s("b9b9b9b9"; "builder"; 2)], stacks: []}]')
   change 60 manual minor
