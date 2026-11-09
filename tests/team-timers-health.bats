@@ -952,3 +952,193 @@ SH
   view
   jq -e '.key == "coordinator"' <<<"$(problem_of coordinator)"
 }
+
+# The unattended findings: the coordinator step's team-sweep --json, each finding dated from the
+# first run that saw it, and the alert once one has stood an hour with nothing logged since.
+
+# The live session list with the coordinator and a worker of a task the ledger does not hold, which
+# the sweep finds stray at every look; STRAYS has two such workers.
+STRAY='[{"id": "c0ffee00", "name": "coordinator", "status": "idle"}, {"id": "9a9a9a9a", "name": "T9-builder", "status": "idle"}]'
+STRAYS='[{"id": "c0ffee00", "name": "coordinator", "status": "idle"}, {"id": "8a8a8a8a", "name": "T8-builder", "status": "idle"}, {"id": "9a9a9a9a", "name": "T9-builder", "status": "idle"}]'
+
+# Append an event <event> to the ledger, logged <minutes> ago: log_event <minutes> <event>
+log_event() {
+  jq -cn --argjson m "$1" --arg event "$2" '{ts: (now - $m * 60 | floor | todate), task: "T1", event: $event}' \
+    >>"$TEAM_HOME/ledger.jsonl"
+}
+
+# Date every event of the ledger <minutes> ago.
+date_ledger() {
+  local file=$TEAM_HOME/ledger.jsonl
+  [[ -s $file ]] || return 0
+  jq -c --argjson m "$1" '.ts = (now - $m * 60 | floor | todate)' "$file" >"$file.new"
+  mv "$file.new" "$file"
+}
+
+# The time of the ledger's last event that is not a denied.
+last_logged() {
+  jq -r 'select(.event != "denied") | .ts' "$TEAM_HOME/ledger.jsonl" | tail -n 1
+}
+
+# The sweep's stray findings' texts, in its order, one a line.
+stray_texts() {
+  { "$REPO_ROOT/bin/team-sweep" --json || true; } | jq -r '.[] | select(.kind == "stray") | .text'
+}
+
+# Replace team-sweep with the bash read from stdin, in a code checkout of the test's own.
+fake_sweep() {
+  CODE_CHECKOUT=$BATS_TEST_TMPDIR/code
+  mkdir -p "$CODE_CHECKOUT"
+  [[ -d $CODE_CHECKOUT/bin ]] || copy_bin "$CODE_CHECKOUT/bin"
+  rm -f "$CODE_CHECKOUT/bin/team-sweep"
+  { echo '#!/usr/bin/env bash'; cat; } >"$CODE_CHECKOUT/bin/team-sweep"
+  chmod +x "$CODE_CHECKOUT/bin/team-sweep"
+}
+
+@test "a sweep finding seen at every run for an hour with nothing logged since posts one unattended alert; at 59 minutes nothing; later runs post nothing; its clearing resolves it" {
+  stub_reply claude "$STRAY"
+  log_event 0 note
+  run_bin -0 team-timers run
+  local text
+  text=$(stray_texts)
+  date_ledger 120
+  # First seen 59 minutes ago: nothing.
+  date_record '.findings[].since = ago(59)'
+  run_bin -0 team-timers run
+  view
+  assert_equal "$(problem_of unattended)" null
+  assert_equal "$(alerts_shown)" ""
+
+  # Past the hour, at every run, with nothing logged since: one post, mentioning no one.
+  date_record '.findings[].since = ago(61)'
+  run_bin -0 team-timers run
+  view
+  local since id
+  since=$(jq -r '.findings[0].since' "$record")
+  jq -e --arg since "$since" '. == {key: "unattended", since: $since,
+    text: "the coordinator has left 1 finding unattended since \($since)", alerting: true, sweep: null}' <<<"$(problem_of unattended)"
+  id=$(jq -r .id <<<"$(alerts_shown)")
+  jq -e --arg text "The coordinator on home-pc has left 1 finding unattended for over an hour, with nothing logged since $(clock "$(last_logged)"): $text. It may be stalled: look at its session, and restart it with claude-coordinator if it is." \
+    '. == {id: .id, content: $text, allowed_mentions: {parse: []}}' <<<"$(alerts_shown)"
+  assert_equal "$(alert_lines)" "alert: unattended: posted to #coordinator (message $id)"
+  # The heartbeat starts no coordinator: no claude call but the session lists.
+  assert_equal "$(stub_calls claude | jq -sc 'map(select(. != ["agents", "--json"]))')" "[]"
+
+  # Later runs post nothing more, and the line says since when.
+  run_bin -0 team-timers run
+  assert_equal "$(alerts_shown | wc -l)" 1
+  view
+  assert_equal "$(jq -r .line <<<"$view")" "**Health**: the coordinator has left 1 finding unattended since <t:$(date -d "$since" +%s):t>"
+
+  # The finding clears: the post is edited resolved.
+  stub_reply claude "$COORDINATOR"
+  run_bin -0 team-timers run
+  [[ $(jq -r .content <<<"$(alerts_shown)") =~ ^"The coordinator on home-pc has left 1 finding unattended "[^$'\n']+$'\n'"-# Resolved at "[0-9]{2}:[0-9]{2}"."$ ]]
+  assert_equal "$(alert_lines | tail -n 1)" "alert: unattended: resolved (message $id edited)"
+  assert_equal "$(open_alerts)" ""
+  view
+  jq -e '.ok' <<<"$view"
+}
+
+@test "several unattended findings are counted, the first quoted with how many more; an event logged since posts nothing, a denied alone is none, and one logged after the post resolves it" {
+  stub_reply claude "$STRAYS"
+  log_event 0 note
+  run_bin -0 team-timers run
+  local first
+  first=$(stray_texts | head -n 1)
+  date_record '.findings[].since = ago(61)'
+  # An event logged since the findings were first seen: nothing.
+  date_ledger 120
+  log_event 30 note
+  run_bin -0 team-timers run
+  view
+  assert_equal "$(problem_of unattended)" null
+  assert_equal "$(alerts_shown)" ""
+
+  # With nothing logged since but a denied, both are counted in one post.
+  date_ledger 120
+  log_event 0 denied
+  run_bin -0 team-timers run
+  view
+  jq -e '.text | startswith("the coordinator has left 2 findings unattended since ")' <<<"$(problem_of unattended)"
+  assert_equal "$(jq -r .content <<<"$(alerts_shown)")" \
+    "The coordinator on home-pc has left 2 findings unattended for over an hour, with nothing logged since $(clock "$(last_logged)"): $first; and 1 more. It may be stalled: look at its session, and restart it with claude-coordinator if it is."
+
+  # An event logged now ends it while the findings stand.
+  log_event 0 note
+  run_bin -0 team-timers run
+  [[ $(jq -r .content <<<"$(alerts_shown)") == *$'\n'"-# Resolved at "[0-9][0-9]:[0-9][0-9]. ]]
+  assert_equal "$(alerts_shown | wc -l)" 1
+  assert_equal "$(open_alerts)" ""
+  view
+  assert_equal "$(problem_of unattended)" null
+}
+
+@test "a finding that cleared for one run is dated from its return, and none is unattended while no coordinator is live, which the coordinator alert says" {
+  stub_reply claude "$STRAY"
+  run_bin -0 team-timers run
+  date_ledger 120
+  date_record '.findings[].since = ago(61)'
+  stub_reply claude "$COORDINATOR"
+  run_bin -0 team-timers run
+  jq -e '.findings == []' "$record"
+  local back
+  back=$(date -u +%FT%TZ)
+  stub_reply claude "$STRAY"
+  run_bin -0 team-timers run
+  jq -e --arg back "$back" '(.findings | length) == 1 and .findings[0].since >= $back' "$record"
+  view
+  assert_equal "$(problem_of unattended)" null
+
+  # With no coordinator live, an hour-old finding is the coordinator problem only.
+  stub_reply claude '[{"id": "9a9a9a9a", "name": "T9-builder", "status": "idle"}]'
+  run_bin -0 team-timers run
+  date_record '.findings[].since = ago(61)'
+  run_bin -0 team-timers run
+  view
+  assert_equal "$(problem_of unattended)" null
+  jq -e '.alerting' <<<"$(problem_of coordinator)"
+  assert_equal "$(alerts_shown | wc -l)" 1
+  jq -e '.content | startswith("No coordinator session is live on home-pc")' <<<"$(alerts_shown)"
+  assert_equal "$(open_alerts | cut -d' ' -f1)" coordinator
+}
+
+@test "a sweep that cannot run is the coordinator step failing with its reason, one line a run, keeping the findings seen and posting no unattended alert" {
+  stub_reply claude "$STRAY"
+  run_bin -0 team-timers run
+  date_record '.findings[].since = ago(30)'
+  local seen
+  seen=$(jq -c .findings "$record")
+  fake_sweep <<'SH'
+echo "team-sweep: cannot read the live session list: the daemon is down" >&2
+exit 1
+SH
+  run_bin -0 team-timers run
+  assert_equal "$(coordinator_lines)" \
+    "coordinator: failed: cannot run the sweep (team-sweep --json): cannot read the live session list: the daemon is down"
+  assert_contains "$(problems_logged)" "coordinator: failed: cannot run the sweep (team-sweep --json): cannot read"
+  assert_equal "$(jq -c .findings "$record")" "$seen"
+  view
+  jq -e '.alerting | not' <<<"$(problem_of step-coordinator)"
+  assert_equal "$(problem_of unattended)" null
+
+  fake_sweep <<'SH'
+echo '{"not": "a list"}'
+SH
+  run_bin -0 team-timers run
+  assert_equal "$(coordinator_lines | tail -n 1)" "coordinator: failed: cannot run the sweep (team-sweep --json): it printed no JSON list"
+  fake_sweep <<'SH'
+exit 1
+SH
+  run_bin -0 team-timers run
+  assert_equal "$(coordinator_lines | tail -n 1)" "coordinator: failed: cannot run the sweep (team-sweep --json): team-sweep exited 1 with no JSON list"
+  fake_sweep <<'SH'
+sleep 30
+SH
+  TEAM_TIMERS_COORDINATOR_SWEEP_SECONDS=1 TEAM_TIMERS_KILL_SECONDS=1 run_bin -0 team-timers run
+  assert_equal "$(coordinator_lines | tail -n 1)" "coordinator: failed: cannot run the sweep (team-sweep --json): timed out after 1 s"
+  assert_equal "$(coordinator_lines | wc -l)" 4
+  jq -e '.steps.coordinator.runs == 4' "$record"
+  assert_equal "$(jq -c .findings "$record")" "$seen"
+  assert_equal "$(alerts_shown)" ""
+}

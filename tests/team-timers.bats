@@ -1540,8 +1540,8 @@ EOF
   [[ $(grep ' capacity: ' <<<"$output") =~ ^[0-9T:Z-]+" capacity: failed: $file: minor_share must be a number above 0 and at most 1, not \"a third\""$ ]]
   [[ $(grep ' level: ' <<<"$output") =~ ^[0-9T:Z-]+" level: failed: $file: minor_share must be a number above 0 and at most 1, not \"a third\""$ ]]
   [[ ! -e $HOME/.local/state/agent-team/capacity/readings.jsonl ]]
-  # The coordinator step's session list, the finished step's and the place's.
-  assert_equal "$(stub_calls claude)" $'["agents","--json"]\n["agents","--json"]\n["agents","--json"]'
+  # The coordinator step's session list and its sweep's, the finished step's and the place's.
+  assert_equal "$(stub_calls claude)" $'["agents","--json"]\n["agents","--json"]\n["agents","--json"]\n["agents","--json"]'
 }
 
 @test "neither step runs off the lease, while another run holds the lock, offline or on a fenced machine; both run after the back step" {
