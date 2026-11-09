@@ -1026,6 +1026,29 @@ def level_findings:
         text: "level: \(.task) has room again: \($next), refused for room at \(.refused)"})
   end;
 
+# team-sweep's health findings, from team-timers health --json's view (or {error} when it could
+# not be read), each with task and session null: checkpoint-stale for the alerting problems whose
+# sweep kind it is (checkpoint, heartbeat), health for those whose kind is health (login-refused,
+# ledger, a step failing for an hour), joined in one finding each, and one health finding naming
+# the error when the view could not be read. A view off the lease has no problems, so none.
+def health_findings:
+  if .error then
+    {task: null, kind: "health", session: null, name: null, next: "fix what team-timers names",
+     text: "health: \(.error): fix what team-timers names"}
+  else
+    [.problems // [] | .[] | select(.alerting == true)] as $alerting
+    | ([$alerting[] | select(.sweep == "checkpoint-stale") | .text]
+       | select(. != [])
+       | "fix what it names (heartbeat-failures.log has every line), then run team-checkpoint --force" as $next
+       | {task: null, kind: "checkpoint-stale", session: null, name: null, next: $next,
+          text: "checkpoint: \(join("; ")); next: \($next)"}),
+      ([$alerting[] | select(.sweep == "health") | .text]
+       | select(. != [])
+       | "fix what each names; team-timers health lists them" as $next
+       | {task: null, kind: "health", session: null, name: null, next: $next,
+          text: "health: \(join("; ")); next: \($next)"})
+  end;
+
 # team-sweep's activity finding, from session-activity's object as task_findings takes it: one
 # naming the error when it failed, since then no busy worker can be found stalled, else none.
 def activity_finding:
@@ -1038,9 +1061,10 @@ def activity_finding:
 # takes it): each open task's merge-due (under a plan-time word or a standing word of any task's),
 # else its findings unless it is parked, then the stray sessions (named like a team worker whose
 # task is closed or not in the ledger, never the load check's T0, whose session the coordinator
-# waits on for up to 30 minutes), in task number order; then the activity, level and retro-due
-# findings. $covered is the projects a standing word may cover, as merge_due_finding takes it.
-def sweep($sessions; $plan; $activity; $covered):
+# waits on for up to 30 minutes), in task number order; then the activity, level, retro-due and
+# health findings. $covered is the projects a standing word may cover, as merge_due_finding takes
+# it, and $health the health view, as health_findings takes it.
+def sweep($sessions; $plan; $activity; $covered; $health):
   . as $events
   | by_task as $tasks
   | [.[] | select(.event == "merge-standing" or .event == "merge-standing-withdrawn")] as $standing
@@ -1054,7 +1078,8 @@ def sweep($sessions; $plan; $activity; $covered):
      | by_task_number)
     + [$activity | activity_finding]
     + [$plan | level_findings]
-    + [$events | retro_status | retro_due_finding];
+    + [$events | retro_status | retro_due_finding]
+    + [$health | health_findings];
 
 # What team-capacity plan reads of the ledger, over every ledger event as one array, with the
 # session list <sessions>: one {task, opened (its opened's time, else its first event's),
