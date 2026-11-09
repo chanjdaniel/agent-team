@@ -162,8 +162,8 @@ def _pair_end(text, j, open_, close, flags=""):
     """Past the close that matches open_, read from j, just after open_, as Bash's
     parse_matched_pair reads it, or len(text) when none does. flags "esc" lets a backslash quote
     in '...' ($'...'), "first" ends at the first close (${...}), and "arith" reads only a $( whole
-    (a (( command's span, P_ARITH). In a group ((...), ${...} or $[...]) a quote or backtick nests
-    and a $(, ${ or $[ is read whole, a $( by the scan, as Bash's parse_comsub; in "..." a
+    (the span after (( or $((, P_ARITH). In a group ((...), ${...} or $[...]) a quote or backtick
+    nests and a $(, ${ or $[ is read whole, a $( by the scan, as Bash's parse_comsub; in "..." a
     backtick, $(, ${ and $[ do; elsewhere only a backslash."""
     n, count, dollar = len(text), 1, False
     while j < n:
