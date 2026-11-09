@@ -924,18 +924,18 @@ UNLISTED="a new toolkit for a project takes Daniel's yes, then its name in that 
   run_bin -0 team-worker T0 ops "$conv_wt" --toolkit prod-read --toolkit prod-write --request "$(ops_request "$OPS_COORDINATOR")" -- go
 }
 
-@test "T0 takes any toolkit but a prod-* one whatever its worktree's project lists; a prod-* one needs the project to list it" {
+@test "T0 takes any toolkit but a production one whatever its worktree's project lists; a production one needs the project to list it" {
   fixture_projects
   ops_stub
   run_bin -0 team-worker T0 builder "$at_wt" --toolkit browser --toolkit effect -- go
   assert_equal "$(bg_calls | jq -c '[.[index("--plugin-dir") + 1], .[index("--plugin-dir") + 3]]')" \
     "$(jq -cn --arg k "$REPO_ROOT/toolkits" '["\($k)/browser", "\($k)/effect"]')"
-  run_bin -0 team-worker T0 ops "$at_wt" --toolkit vercel-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
   : >"$STUB_CALLS/claude.log"
-  : >"$HOME/.local/state/agent-team/ops-requests"
+  ops_refused "toolkit 'vercel-read' is not one of agent-team's toolkits in projects.toml (it lists none): $UNLISTED" \
+    T0 ops "$at_wt" --toolkit vercel-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
   ops_refused "toolkit 'prod-read' is not one of agent-team's toolkits in projects.toml (it lists none): $UNLISTED" \
     T0 ops "$at_wt" --toolkit prod-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
-  ops_refused "toolkit 'prod-read' is not one of agent-team's toolkits in projects.toml (it lists none): $UNLISTED" \
+  ops_refused "toolkit 'vercel-read' is not one of agent-team's toolkits in projects.toml (it lists none): $UNLISTED" \
     T0 ops "$at_wt" --toolkit vercel-read --toolkit prod-read --request "$(ops_request "$OPS_COORDINATOR")" -- go
 }
 

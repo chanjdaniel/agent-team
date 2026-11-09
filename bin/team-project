@@ -37,7 +37,7 @@
 #   docs             what a worker reads first
 #   toolkits         the toolkits a worker of this project may be given, an allow list
 #                    team-worker enforces: it refuses any other in the project's worktrees
-#                    (T0, the load check, takes one unlisted but a prod-* one); a new one
+#                    (T0, the load check, takes one unlisted but prod-* and vercel-read); a new one
 #                    takes Daniel's yes, then its name here
 #   models           optional: a table of worker role (planner, builder or reviewer) to the model
 #                    alias or name its sessions launch on, such as { reviewer = "sonnet" }

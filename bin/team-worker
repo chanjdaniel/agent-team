@@ -82,7 +82,7 @@
 # projects.toml. The project is the one the task's open worktree names in the ledger, else (T0, a
 # task from before team-open) the registered project whose primary checkout is the worktree's main
 # checkout; a worktree of no registered project gets no toolkit. T0, the load check, measures a
-# toolkit before any project lists it, so it takes any toolkit unlisted but a prod-* one.
+# toolkit before any project lists it, so it takes any toolkit unlisted but a production one.
 # An ops launch runs on one message of Daniel's, the one --request links, and is refused (exit 1,
 # nothing started or logged, before the session list is read) unless that message is in
 # #coordinator or the task's latest thread (T0's, which has no thread, in #coordinator only), was
@@ -224,7 +224,8 @@ fi
 # A worker gets only the toolkits its worktree's project lists in the registry: the project its
 # open worktree names in the ledger, else (T0, a task from before team-open) the registered project
 # whose primary checkout is the worktree's main checkout. T0, the load check, measures a toolkit
-# before any project lists it, so it may take any but a prod-* one unlisted.
+# before any project lists it, so it may take unlisted any but a production one, which
+# toolkit_refusal holds to the ops role.
 if ((${#toolkits[@]})); then
   kit_project=$project
   if [[ -z $kit_project ]]; then
@@ -235,7 +236,7 @@ if ((${#toolkits[@]})); then
   fi
   kit_list=$(team_project "$kit_project" toolkits) || exit 1
   for kit in "${toolkits[@]}"; do
-    [[ $task != T0 || $kit == prod-* ]] || continue
+    [[ $task != T0 ]] || toolkit_refusal "$kit" builder >/dev/null || continue
     jq -e --arg kit "$kit" 'index([$kit])' <<<"$kit_list" >/dev/null ||
       die "toolkit '$kit' is not one of $kit_project's toolkits in projects.toml ($(jq -r 'if . == [] then "it lists none" else join(", ") end' <<<"$kit_list")): a new toolkit for a project takes Daniel's yes, then its name in that project's toolkits line in projects.toml"
   done
