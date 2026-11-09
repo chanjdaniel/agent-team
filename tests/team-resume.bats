@@ -655,10 +655,12 @@ TOML
   run -0 "$REPO_ROOT/bin/team-timers" run
   [[ -e $HOME/.local/state/agent-team/fenced ]]
   # Its doctor then lists what only home-pc holds, with the commands that push it to a salvage
-  # branch, and fails.
+  # branch, and fails; its team home holds nothing origin lacks, the checkpoint having pushed it.
   run -1 --separate-stderr "$REPO_ROOT/bin/team-doctor" --json
   assert_equal "$(jq -c '.[] | select(.check | startswith("salvage")) | [.check, .verdict, .reason, .fix]' <<<"$output")" \
-    "$(jq -cn --arg url "$team_origin" '["salvage T1 home", "FAIL",
+    "$(jq -cn --arg url "$team_origin" '["salvage records", "PASS",
+      "the team home holds no records that neither origin'"'"'s dev nor a salvage branch keeps", ""],
+      ["salvage T1 home", "FAIL",
       "~/slots/home/1 has 1 commit on no origin branch and uncommitted changes (changes to tracked files: a.txt; untracked files: b.txt)",
       "git -C ~/slots/home/1 add -A && git -C ~/slots/home/1 commit -m \"wip: salvage from home-pc\", then git -C ~/slots/home/1 push \($url) HEAD:refs/heads/salvage/home/T1-home-pc"]')"
 }

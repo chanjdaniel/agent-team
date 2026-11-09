@@ -64,7 +64,13 @@ It is enabled only on the holder: `team-resume` enables it, `team-handoff` disab
 
 ## Checkpoints
 
-`team-checkpoint` makes a dead machine lose at most 5 minutes:
+What a dead machine can lose:
+
+- while checkpoints succeed, about the last 5 minutes of work in flight, since the heartbeat checkpoints on each run;
+- none of the ledger's events of a kind its contract marks `"push": true` (Daniel's word and answers, a `plan-approved`, a `merged`, a `closed`, a `ran`), since each writer pushes the ledger the moment it logs one (`ledger_push` in `bin/lib/team.sh`), and a push that fails says so on stderr and leaves it to the next checkpoint;
+- when checkpoints stop, everything since the last good one, which no window bounds: what holds then is the heartbeat's post in `#coordinator` and the sweep's `checkpoint-stale` finding, both standing until a checkpoint succeeds again.
+
+What `team-checkpoint` does:
 
 - first, before any worktree, `ledger.jsonl` and `level.jsonl` alone are committed as `chore: checkpoint ledger` and pushed, so no worktree, however slow or broken, keeps the ledger from origin;
 - each open task's task directory is mirrored into its archive in the team home, less what `archive_left_out` (`bin/lib/team.sh`) leaves out, each named on a line of the checkpoint's output, which is no failure: its stderr holds problems only, and the heartbeat logs each of them.
@@ -89,6 +95,7 @@ So a coordinator left running on a machine that lost the lease (its fence's `cla
 `team-doctor` on a fenced machine lists, per task worktree with work origin lacks, the command that pushes it to the team home's origin as `salvage/<project>/T<n>-<machine>`, for Daniel to run.
 Like a snapshot, a salvage never goes to the project's origin, which may be public; `team-open --resume` names the same place for a branch here with commits origin's lacks.
 A worktree whose head a salvage branch holds, with nothing uncommitted, is salvaged, and neither a salvage nor a snapshot ever counts as landed for `team-close`.
+Its `salvage records` line does the same for the team home itself, as "A crash" says.
 `team-lease take` (inside `team-resume`) clears the fence.
 
 ## Offline
@@ -136,8 +143,10 @@ Taking the PC down for a while (an update, a restart, a night off) is a handoff 
 
 - The surviving machine: Daniel runs `team-resume --steal` in their own terminal and types the dead holder's name.
 - A task with a launch after its latest `stowed` crashed: `team-open --resume` resumes it from the later of origin's branch and the head `wip/<project>/T<n>` holds, and applies the snapshot as uncommitted changes only when its parent is that head.
-- The resume brief tells each worker the checkpoint it starts from and that up to 5 minutes of work, and any no-mistakes run in flight, may be missing, so it checks before building on it.
+- The resume brief tells each worker the checkpoint it starts from and what may be missing, as "Checkpoints" says, with any no-mistakes run in flight, so it checks before building on it.
 - When the dead machine boots, its still-enabled heartbeat finds the new holder and fences it before anyone could start a coordinator there (sessions do not restart on their own after a shutdown); its doctor then lists the salvage commands.
+- Its doctor's `salvage records` line names what its team home holds that origin's branch lacks, the commits and the uncommitted records (the ledger lines of its last minutes, with their count), and the commands that commit them as `wip: salvage records from <machine>` and push the head to the team home's origin as `salvage/records/<machine>-<epoch>`, the epoch of the lease that machine last held.
+  Daniel runs them before that team home is brought level with origin, since the reset that levels it throws those lines away; the line passes once the salvage branch holds the head and nothing is uncommitted.
 
 ## A real server later
 
