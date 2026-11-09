@@ -623,7 +623,7 @@ team_reading() {
   # the time sample took) between the two.
   assert_equal "$(tail -n 2 "$STATE_DIR/costs.jsonl" | jq -c '[.kind, .peak_bytes, (.cpu_seconds | if . < 100 then . else . >= 150 and . <= 165 end),
       (.seconds | . >= 300 and . <= 330), .measure]')" \
-    "$(printf '%s\n' "[\"session:builder\",$((1000 * MIB)),95,true,\"working_set\"]" '["stack:conventioner",628935884,true,true,"working_set"]')"
+    "$(printf '%s\n' "[\"session:builder\",$((1000 * MIB)),95,true,\"working_set\"]" '["stack:conventioner",628935884,true,true,"docker"]')"
   assert_equal "$(jq -c '[.sessions, .stacks, .gate, .limits]' "$STATE_DIR/live.json")" '[{},{},null,{"conventioner":1879048192}]'
   [[ $(tail -n 1 "$STATE_DIR/costs.jsonl" | jq -r .at) == $(tail -n 1 "$STATE_DIR/readings.jsonl" | jq -r .at) ]]
 }
@@ -690,6 +690,43 @@ cost() {
   assert_equal "$(sed -n 5p <<<"$output")" "stack:conventioner: no estimate, no seed: no stack of it seen running yet"
   assert_equal "$(sed -n 6p <<<"$output")" "gate: 2.2 GiB, the seed: gate_gib 2.2 GiB, its default"
   assert_equal "$(sed -n 7p <<<"$output")" "heavy:tests-run: 1.9 GiB, learned from the last 20 of 25 samples, 0.1 GiB to 2.0 GiB"
+}
+
+# old_cost <kind> <peak MiB>...: one cost line of <kind> per peak with no measure, as written
+# before the working set.
+old_cost() {
+  local peak
+  mkdir -p "$STATE_DIR"
+  for peak in "${@:2}"; do
+    jq -cn --arg kind "$1" --argjson peak "$((peak * MIB))" \
+      '{at: "2026-11-01T09:00:00Z", kind: $kind, peak_bytes: $peak, cpu_seconds: 1, seconds: 60}' >>"$STATE_DIR/costs.jsonl"
+  done
+}
+
+@test "costs: a stack's lines from before the working set still count, since Docker's measure never counted page cache" {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  mkdir -p "$STATE_DIR"
+  echo '{"sessions": {}, "stacks": {}, "gate": null, "limits": {"conventioner": 1879048192}}' >"$STATE_DIR/live.json"
+  old_cost stack:conventioner 600 700 800 900 1000
+  run_bin -0 team-capacity costs --json
+  assert_equal "$(jq -c '.costs[] | select(.kind == "stack:conventioner") | [.estimate_bytes, .source, .samples]' <<<"$output")" \
+    "[$((1000 * MIB * 11 / 10)),\"learned\",5]"
+}
+
+@test "costs: a kind short of 5 working-set samples is held at the lower of its seed and what its lines from before give" {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  # 20 old heavy runs at 2000 MiB, their peaks counting page cache: an upper bound below the 5 GiB seed.
+  old_cost heavy:tests-run 2000 2000 2000 2000 2000 2000 2000 2000 2000 2000 2000 2000 2000 2000 2000 2000 2000 2000 2000 2000
+  cost heavy:tests-run 800 900
+  # Old builders above the 0.5 GiB seed leave the seed; 4 old planners are too few to bound it.
+  old_cost session:builder 4000 4000 4000 4000 4000
+  old_cost session:planner 100 100 100 100
+  run_bin -0 team-capacity costs --json
+  assert_equal "$(jq -c '.costs | map(select(.kind | IN("heavy:tests-run", "session:builder", "session:planner")) | [.kind, .estimate_bytes, .source, .samples])' <<<"$output")" \
+    "[[\"session:builder\",536870912,\"seed\",0],[\"session:planner\",536870912,\"seed\",0],[\"heavy:tests-run\",$((2000 * MIB * 11 / 10)),\"before\",2]]"
+  run_bin -0 team-capacity costs
+  assert_equal "$(grep '^heavy:tests-run:' <<<"$output")" \
+    "heavy:tests-run: 2.1 GiB, the lower of the seed (heavy_gib 5 GiB, its default) and 20 samples from before the working set, 2.0 GiB to 2.0 GiB, which count page cache (2 samples of 5)"
 }
 
 @test "costs: a stack's seed is its mem_limits as the readings last saw it running, and capacity.json's seeds are read" {
@@ -1088,7 +1125,7 @@ EOF
   assert_equal "$(reserved_split)" '{"bytes":7.75,"sessions_use":6,"spike_allowance":1.75,"admissions":0,"stacks":0,"heavy_runs":0,"gates":0}'
 }
 
-@test "status: an admission whose session a reading holds leaves its window at that reading, at its use, and one no reading holds yet keeps its estimate" {
+@test "status: an admission whose session a reading holds reserves it at the larger of its estimate and its use for 10 minutes, and one no reading holds yet its estimate" {
   cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
   mkdir -p "$HOME/.config/agent-team"
   echo '{"session_gib": 2}' >"$HOME/.config/agent-team/capacity.json"
@@ -1098,28 +1135,52 @@ EOF
   launched T9 builder c3c3c3c3
   # No reading holds its session yet: at its estimate.
   assert_equal "$(reserved_items)" '["admissions","session:builder","T9",2]'
-  # A reading holds it at 0.25 GiB: its use, and the team's one allowance its growth to its estimate.
+  # A reading holds it at 0.25 GiB: its use plus its gap to its estimate, named by its session.
   team_reading 8 "T9 builder c3c3c3c3 0.25"
-  assert_equal "$(reserved_items)" '["sessions_use","session:builder","T9",0.25]
-["spike_allowance","session:builder","T9",1.75]'
+  assert_equal "$(reserved_items)" '["admissions","session:builder","T9",2]'
   run_bin -0 team-capacity status --json
   assert_equal "$(jq -c --argjson gib "$GIB" '[.reserved.items[] | [.part, .name, .estimate_bytes / $gib, .use_bytes / $gib]]' <<<"$output")" \
-    '[["sessions_use","c3c3c3c3",2,0.25],["spike_allowance","c3c3c3c3",2,0.25]]'
+    '[["admissions","c3c3c3c3",2,0.25]]'
   # A second builder of T9, launched since, is not the session the reading holds: at its estimate,
-  # until a reading holds its own.
+  # until a reading holds its own, which takes its own admission, never the first's.
   run_bin -0 team-capacity admit --kind session:builder --task T9
   launched T9 builder c4c4c4c4
-  assert_equal "$(reserved_items)" '["sessions_use","session:builder","T9",0.25]
-["spike_allowance","session:builder","T9",1.75]
+  assert_equal "$(reserved_items)" '["admissions","session:builder","T9",2]
 ["admissions","session:builder","T9",2]'
-  team_reading 8 "T9 builder c3c3c3c3 0.25" "T9 builder c4c4c4c4 0.5"
+  team_reading 8 "T9 builder c3c3c3c3 0.25" "T9 builder c4c4c4c4 2.5"
+  run_bin -0 team-capacity status --json
+  assert_equal "$(jq -c --argjson gib "$GIB" '[.reserved.items[] | [.part, .name, .bytes / $gib]]' <<<"$output")" \
+    '[["admissions","c3c3c3c3",2],["admissions","c4c4c4c4",2.5]]'
+  # Ten minutes on, each is at its use, and the team one allowance.
+  age_admissions 601
   assert_equal "$(reserved_items)" '["sessions_use","session:builder","T9",0.25]
-["sessions_use","session:builder","T9",0.5]
+["sessions_use","session:builder","T9",2.5]
 ["spike_allowance","session:builder","T9",1.75]'
   # admitted.json keeps what admit wrote, never the session a status paired it with.
   assert_equal "$(jq -c 'map(keys)' "$STATE_DIR/admitted.json")" '[["at","bytes","kind","name","pid","task"],["at","bytes","kind","name","pid","task"]]'
   run_bin -0 team-capacity admit --kind session:planner --task T11
   assert_equal "$(jq -c 'map(has("session")) | unique' "$STATE_DIR/admitted.json")" '[false]'
+}
+
+@test "status: five builders a reading holds early are each reserved at their estimate until 10 minutes after their admissions" {
+  cp "$BATS_TEST_DIRNAME/fixtures/projects.toml" "$TEAM_HOME/projects.toml"
+  mkdir -p "$HOME/.config/agent-team"
+  echo '{"session_gib": 1}' >"$HOME/.config/agent-team/capacity.json"
+  team_reading 8
+  agents '[{"id": "b1b1b1b1", "status": "busy"}, {"id": "b2b2b2b2", "status": "busy"}, {"id": "b3b3b3b3", "status": "busy"},
+    {"id": "b4b4b4b4", "status": "busy"}, {"id": "b5b5b5b5", "status": "busy"}]'
+  local n
+  for n in 1 2 3 4 5; do
+    run_bin -0 team-capacity admit --kind session:builder --task "T$n"
+    launched "T$n" builder "b${n}b${n}b${n}b${n}"
+  done
+  # A reading seconds after their launches holds each at 0.1 GiB, a fraction of what it grows to.
+  team_reading 8 "T1 builder b1b1b1b1 0.1" "T2 builder b2b2b2b2 0.1" "T3 builder b3b3b3b3 0.1" \
+    "T4 builder b4b4b4b4 0.1" "T5 builder b5b5b5b5 0.1"
+  assert_equal "$(reserved_split)" '{"bytes":5,"sessions_use":0,"spike_allowance":0,"admissions":5,"stacks":0,"heavy_runs":0,"gates":0}'
+  # Ten minutes on, each is at its use, and the team one allowance.
+  age_admissions 601
+  assert_equal "$(reserved_split)" '{"bytes":1.4,"sessions_use":0.5,"spike_allowance":0.9,"admissions":0,"stacks":0,"heavy_runs":0,"gates":0}'
 }
 
 @test "admit on home-pc's numbers: seven idle builders at their use and one allowance leave room for an eighth builder and a heavy run" {

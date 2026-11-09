@@ -80,7 +80,7 @@ With `T` the memory total, `C` the cores, `s` the level's share (0 for none), an
 So none's budget is 0, and no level's is more than what Daniel's programs leave.
 A command that needs the budget takes a reading first when the newest is more than 10 minutes old.
 `team-capacity jobs` is the floor of the CPU budget, at least 1, read from the stored readings without taking one: `tests/run` runs that many bats files at once, and `team-checks` gives it to its commands as `TEAM_JOBS` (`nproc` with no team home, no reading, or a malformed record or settings).
-What the team's live work reserves is said in "Admission" below: a live session its use and one shared spike allowance, a new one until a reading holds it, a stack, a heavy run and a gate the larger of their kind's estimate and their use.
+What the team's live work reserves is said in "Admission" below: a live session its use and one shared spike allowance, a new one the larger of its estimate and its use for its first 10 minutes, a stack, a heavy run and a gate the larger of their kind's estimate and their use.
 
 Memory is read as RAM alone, as the kernel's `MemAvailable` and each cgroup's working set count it: swap is left out of the budget, the use and the limits (home-pc has a 33.6 GiB swap partition, much of it in use).
 
@@ -150,7 +150,7 @@ A user manager or a session list that does not answer is said in the reading (`"
 
 ## Learned costs
 
-So that admission can rest on what work costs on this machine, each reading also keeps what it saw running in `capacity/live.json`, and each item that ended adds one line to `capacity/costs.jsonl`: `{at, kind, peak_bytes, cpu_seconds, seconds, measure}`, its `measure` `working_set`.
+So that admission can rest on what work costs on this machine, each reading also keeps what it saw running in `capacity/live.json`, and each item that ended adds one line to `capacity/costs.jsonl`: `{at, kind, peak_bytes, cpu_seconds, seconds, measure}`, its `measure` `docker` for a stack (`docker stats`' use) and `working_set` for the rest.
 
 | Kind | Ends when | Its peak |
 | - | - | - |
@@ -172,7 +172,9 @@ A run that was stopped, or whose memory no look read, writes nothing, since its 
 It never reaches a Docker container the run started, which rootful Docker keeps outside the scope and the process group, and the stopped test's own cleanup never runs: a team stack goes with its task's stack, by `team-stack`, and any other container stays: a stopped `tests/run toolkits` leaves its throwaway MongoDB (`toolkit-test-<hex>`, labelled `agent-team-test=toolkits`) running, which `team-janitor`'s report lists as not the team's and only a hand removal (`docker rm --force --volumes <name>`) takes.
 
 `team-capacity costs` gives each kind's estimate: from 5 samples, the 90th percentile of the last 20 peaks plus 10%; before that, the seed.
-It reads only the lines whose `measure` is `working_set`: the lines from before 2026-11-09 have none, their peaks counting the page cache, so they stay in `costs.jsonl` and count for nothing, and each kind is on its seed again until it has 5 new samples.
+Its samples are the lines in their kind's measure: a stack's `docker`, and a stack's line from before 2026-11-09, which has no measure, since `docker stats` never counted the page cache; every other kind's `working_set`.
+Every other kind's lines from before 2026-11-09 have no measure, their peaks the kernel's `MemoryPeak`, page cache counted, so they stay in `costs.jsonl` and are never samples, and each such kind is on its seed again until it has 5 new ones.
+But such a peak bounds the same work's working set from above, so while a kind has fewer than 5 samples and 5 or more of those old lines, its estimate is the lower of its seed and what those lines give the same way (`source` `before`): on home-pc on 2026-11-09 a tests run's old lines gave 2.7 GiB against `heavy_gib`'s 5, and a reviewer's 0.2 GiB against `session_gib`'s 0.5, so the cut never raises an estimate above the one before it.
 The seeds are `capacity.json`'s `session_gib` (0.5), `heavy_gib` (5) and `gate_gib` (2.2), and for a stack the sum of its services' `mem_limit`s as the readings last saw it running (`team-stack ls --json`'s `memory_limit_bytes`).
 The seeds' evidence: 13 sessions at 0.3 to 0.55 GiB each, one heavy run 4 to 6 GiB and a gate about 2.2 GiB (T19's measure), from the plan's deep dive of 2026-11-01.
 
@@ -189,7 +191,9 @@ What is reserved, in the parts `team-capacity status --json` splits it into:
 - `spike_allowance`: one for the team, the largest of those sessions' estimates less their use, at 0 at least, and 0 with no session past its window, which keeps room reserved for one worker's spike at a time;
 - `admissions`: each admission of the last 10 minutes, but a heavy run's, at its estimate then, since a new session or stack has not grown yet and the next reading may not hold it; they are kept in `capacity/admitted.json`.
   One whose session's launch was logged a minute or more before `claude agents --json` was read, and whose session that list does not hold, is released, and that session is left out of the stored reading too, so stopping a worker frees its room.
-  A session admission's window ends at the first reading that holds the session its logged launch names (the ledger's `launch`, paired as the release pairs it): from then on that session is in `sessions_use` at its use, the spike allowance covering its growth, and the admission reserves nothing more; on 2026-11-09 five launches in a few minutes filled full's budget, each held at a builder's 2.8 GiB for 10 minutes though the readings held their sessions at a tenth of it.
+  A session admission whose session the reading holds, the session its logged launch names (the ledger's `launch`, paired as the release pairs it), reserves that session once, at the larger of the estimate and its use, its use plus its gap, until 10 minutes after the admission, when the session joins `sessions_use` under the one spike allowance.
+  So a burst of launches that one reading catches early, at a fraction of what they grow to, is reserved at what they grow to: five builders read at 0.1 GiB seconds after their launches would otherwise reserve 0.5 GiB and one allowance, and let more in while they grow to five estimates.
+  On 2026-11-09 five such launches filled full's budget only because each estimate was a cache-inflated 2.8 GiB; the working-set estimates (see "Learned costs") are a fraction of that.
   A session the reading holds of an admission's kind and task that no admission's launch names (its launch not logged yet) is in the window of one whose session the reading does not hold, reserved once, at the larger of that estimate and its use; of several such sessions, the ones using least are, since a new session uses little yet.
 - `stacks` and `gates`: each running team or gate stack, and the gate while it runs a pipeline, at the larger of its kind's estimate and its use, but a gate stack no process works in (`in_use` false, its gate run over) at its use, since only a run grows it; a stack the reading holds that an admission names (`team-stack up` gives its Compose project name, `--name`) is reserved once, among the stacks, at the larger of that and the admission's estimate, so an instance admitted while its task's own stack runs is reserved beside that stack until the reading holds it;
 - `heavy_runs`: the running heavy run, while a `team-heavy` holds its lock, at the larger of its estimate and its use, at its admission's kind, its use the reading's (its scope's on Linux) when the reading saw it; a run holding the lock in another form, Conventioner's, at `heavy_gib`.

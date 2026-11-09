@@ -122,8 +122,8 @@
 #                      CPUUsageNSec, else the processes in ~/.no-mistakes and their descendants
 #          Then the cost samples: what it saw running is kept in
 #          ~/.local/state/agent-team/capacity/live.json, and each item that ended appends one line
-#          {at, kind, peak_bytes, cpu_seconds, seconds, measure: "working_set"} to costs.jsonl
-#          beside it: a session (session:<role>) the session list no longer has, its peak the
+#          {at, kind, peak_bytes, cpu_seconds, seconds, measure ("docker" for a stack, its docker
+#          stats use, else "working_set")} to costs.jsonl beside it: a session (session:<role>) the session list no longer has, its peak the
 #          highest use the readings saw and its CPU the last; a stack of a registered project
 #          (stack:<project>) Docker no longer runs, its peak the highest memory the readings saw;
 #          the gate (gate) once no pipeline runs, its peak the highest memory seen while one ran,
@@ -153,13 +153,12 @@
 #                             session or stack has not grown yet, until a session's launch was
 #                             logged a minute or more before a claude agents --json that does not
 #                             list that session was read, which leaves it out of the reading
-#                             too, or until the reading holds the session its logged launch
-#                             names, which ends its window there: that session is then in
-#                             sessions_use, at its use, under the spike allowance; a session of
-#                             its kind and task the reading holds that no admission's launch
-#                             names is in the window of one whose session the reading does not
-#                             hold yet (the one using least, when several), reserved once, at
-#                             the larger of the estimate and its use;
+#                             too; the session its logged launch names, once the reading holds
+#                             it, reserved once, at the larger of the estimate and its use (its
+#                             use plus its gap), until those 10 minutes end; a session of its
+#                             kind and task the reading holds that no admission's launch names
+#                             is in the window of one whose session the reading does not hold
+#                             yet (the one using least, when several), reserved the same way;
 #            stacks, gates    each running team or gate stack, and the gate while it runs a
 #                             pipeline, at the larger of its estimate and its use, but a gate
 #                             stack no process works in (in_use false) at its use; a stack an
@@ -174,15 +173,17 @@
 # costs    Each kind of work's estimate, one line each ("session:builder: 0.6 GiB, learned from 7
 #          samples, 0.4 GiB to 0.6 GiB"): a session by role (each role in roles/ but the
 #          coordinator's), a stack by registered project with a stack block, the gate, then every
-#          other kind costs.jsonl has (heavy:<kind>, which team-heavy writes). It reads only the
-#          lines whose measure is "working_set", so a line from before, whose peak counted page
-#          cache, is never a sample. From 5 samples the estimate is the 90th percentile (nearest
-#          rank) of the peaks of the last 20, plus 10%; before that the seed: session_gib,
-#          heavy_gib or gate_gib, and for a stack the sum of its services' mem_limits as the
-#          readings last saw it running (none before). With --json
-#          {schema: "team-capacity-costs/1", costs: [{kind, estimate_bytes (null with no seed),
-#          source ("learned", "seed" or "none"), samples, range ({min, max} of the last 20 peaks,
-#          or null), says}]}.
+#          other kind costs.jsonl has (heavy:<kind>, which team-heavy writes). Its samples are the
+#          lines in their kind's measure: a stack's "docker" (or none, a line from before, since
+#          docker stats never counted page cache), every other kind's "working_set". From 5
+#          samples the estimate is the 90th percentile (nearest rank) of the peaks of the last 20,
+#          plus 10%; before that the seed: session_gib, heavy_gib or gate_gib, and for a stack the
+#          sum of its services' mem_limits as the readings last saw it running (none before); but
+#          when 5 or more of the kind's lines have no measure (but a stack's: from before the
+#          working set, their peaks counting page cache, so an upper bound) and give, the same
+#          way, less than the seed, that. With --json {schema: "team-capacity-costs/1", costs:
+#          [{kind, estimate_bytes (null with no seed), source ("learned", "seed", "before" or
+#          "none"), samples, range ({min, max} of the last 20 samples' peaks, or null), says}]}.
 # admit    Admits one item of work of <kind>, session:<role> (team-worker), stack:<project>
 #          (team-stack up, which names the stack with --name), heavy:<kind> (team-heavy run) or
 #          gate, for the task --task names, when it fits the level's memory budget beside what is
@@ -882,7 +883,7 @@ session_list() {
 }
 
 # Give each session admission in $work/admitted.json whose launch is logged that launch's session
-# (session), so a reading that holds the session ends its window (capacity_reservations); then drop
+# (session), so a reading that holds the session reserves it as that admission (capacity_reservations); then drop
 # each one whose launch is logged a minute or more before the session list was read (list_read_at)
 # and whose session is gone, and add that session to freed, since the stored reading may still hold
 # it, so stopping a worker frees its room (admission_launches and stopped_admissions in
