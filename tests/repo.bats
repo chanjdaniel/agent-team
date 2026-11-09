@@ -1027,6 +1027,19 @@ COMMANDS
   # claude given the toolkit have rules of their own.
   assert_denies 'Bash(*node *start-server.mjs*)' 'node /home/me/agent-team/toolkits/vercel-read/scripts/start-server.mjs'
   assert_denies 'Bash(*&& scripts/*start-server.mjs*)' 'cd toolkits/vercel-read && scripts/start-server.mjs'
+  # So is prod-mongo's, and a claude given it is denied by the prod-* rules.
+  assert_denies 'Bash(*node *start-server.mjs*)' 'node /home/me/agent-team/toolkits/prod-mongo/scripts/start-server.mjs'
+  assert_denies 'Bash(./*start-server.mjs*)' './toolkits/prod-mongo/scripts/start-server.mjs'
+  assert_denies 'Bash(/*start-server.mjs*)' '/home/me/agent-team/toolkits/prod-mongo/scripts/start-server.mjs'
+  assert_denies 'Bash(toolkits/*start-server.mjs*)' 'toolkits/prod-mongo/scripts/start-server.mjs'
+  assert_denies 'Bash(scripts/*start-server.mjs*)' 'scripts/start-server.mjs'
+  assert_denies 'Bash(*&& scripts/*start-server.mjs*)' 'cd toolkits/prod-mongo && scripts/start-server.mjs'
+  assert_denies 'Bash(*; scripts/*start-server.mjs*)' 'cd toolkits/prod-mongo; scripts/start-server.mjs'
+  assert_denies 'Bash(env *start-server.mjs*)' 'env toolkits/prod-mongo/scripts/start-server.mjs'
+  assert_denies 'Bash(bun *start-server.mjs*)' 'bun toolkits/prod-mongo/scripts/start-server.mjs'
+  assert_denies 'Bash(deno *start-server.mjs*)' 'deno run -A toolkits/prod-mongo/scripts/start-server.mjs'
+  assert_denies 'Bash(*--plugin-dir*prod-*)' 'claude -p hi --plugin-dir /home/me/agent-team/toolkits/prod-mongo'
+  assert_denies 'Bash(*--mcp-config*prod-*)' 'claude -p hi --mcp-config toolkits/prod-mongo/.mcp.json'
   assert_denies 'Bash(*node *vercel-mcp*)' 'node -e "import(\"/home/me/agent-team/servers/vercel-mcp.mjs\")"' \
     'node servers/vercel-mcp.mjs' 'cd servers && node --input-type=module -e "await import(\"./vercel-mcp.mjs\")"'
   assert_denies 'Bash(./*vercel-mcp*)' './vercel-mcp.mjs'
@@ -1043,10 +1056,16 @@ COMMANDS
 
 # The deny rules name the runtimes; a launcher without its exec bit cannot be run by its path at all.
 @test "the production launchers, the MCP servers' bodies and their 1Password read are not executable" {
-  local modes
+  local modes path
+  for path in toolkits/prod-read/scripts toolkits/prod-write/scripts toolkits/vercel-read/scripts \
+    toolkits/prod-mongo/scripts servers/mongodb-mcp.mjs servers/vercel-mcp.mjs servers/prod-mongo \
+    servers/op-secret.mjs; do
+    [[ -n $(git -C "$REPO_ROOT" ls-files -- "$path") ]] || { echo "$path holds no tracked file" >&2; return 1; }
+  done
   modes=$(git -C "$REPO_ROOT" ls-files -s toolkits/prod-read/scripts toolkits/prod-write/scripts toolkits/vercel-read/scripts \
-    servers/mongodb-mcp.mjs servers/vercel-mcp.mjs servers/op-secret.mjs | awk '{print $1, $4}')
-  assert_equal "$(wc -l <<<"$modes")" 6
+    toolkits/prod-mongo/scripts servers/mongodb-mcp.mjs servers/vercel-mcp.mjs servers/prod-mongo servers/op-secret.mjs |
+    awk '{print $1, $4}')
+  grep -qx '100644 toolkits/prod-mongo/scripts/start-server.mjs' <<<"$modes"
   if grep -v '^100644 ' <<<"$modes"; then echo "executable in git (above)" >&2; return 1; fi
 }
 

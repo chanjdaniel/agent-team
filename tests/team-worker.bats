@@ -998,12 +998,12 @@ assert_prod_write_gated() {
     <(jq 'del(.permissions.deny)' "$TEAM_HOME/tasks/T7/settings.ops.json")
 }
 
-@test "the generated ops settings allow only prod-read, vercel-read and .scratch edits, ask for every prod-write tool, and deny every outbound tool" {
+@test "the generated ops settings allow only prod-read, vercel-read, prod-mongo and .scratch edits, ask for every prod-write tool, and deny every outbound tool and the backups folder" {
   thread T7
   ops_stub
   run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$request" -- go
   local s=$TEAM_HOME/tasks/T7/settings.ops.json rule
-  assert_equal "$(jq -c .permissions.allow "$s")" '["mcp__prod-read__*","mcp__vercel-read__*","Edit(./.scratch/**)"]'
+  assert_equal "$(jq -c .permissions.allow "$s")" '["mcp__prod-read__*","mcp__vercel-read__*","mcp__prod-mongo__*","Edit(./.scratch/**)"]'
   # The write rules hold even in a read session, where prod-write is not loaded.
   assert_prod_write_gated "$s"
   assert_equal "$(jq '.permissions.ask | length' "$s")" 11
@@ -1016,7 +1016,12 @@ assert_prod_write_gated() {
   # A worktree's .env files (Conventioner's back-end/.env among them) at any depth. Claude Code
   # applies Read rules to Grep and Glob too, and never matches a Grep(path) or Glob(path) rule.
   jq -e '.permissions.deny | index("Read(**/.env*)") != null' "$s" >/dev/null
-  assert_equal "$(jq -r '.permissions.deny[] | select(test("^(Grep|Glob)\\("))' "$s")" ""
+  # Daniel's backups folder holds real data and migration output: the session's file tools never
+  # open it, whichever toolkits it has. A Read rule covers Grep and Glob and an Edit rule Write,
+  # whose own path rules Claude Code accepts but never matches.
+  assert_equal "$(jq -c '[.permissions.deny[] | select(contains("conventioner-backups"))]' "$s")" \
+    '["Read(~/conventioner-backups/**)","Edit(~/conventioner-backups/**)"]'
+  assert_equal "$(jq -r '.permissions.deny[] | select(test("^(Grep|Glob|Write)\\("))' "$s")" ""
   assert_equal "$(jq -c .env.MCP_TIMEOUT "$s")" '"120000"'
   # --restricted ignores the user settings, and without this the coordinator's replies (the
   # write protocol's answers) never reach the session (T16 ticket 04's live check).
@@ -1069,10 +1074,10 @@ Edit|Write|MultiEdit|NotebookEdit $REPO_ROOT/bin/hooks/scratch-only-edits"
 
   local s=$t/settings.ops.json
   assert_prod_write_gated "$s"
-  assert_equal "$(jq -c .permissions.allow "$s")" '["mcp__prod-read__*","mcp__vercel-read__*","Edit(./.scratch/**)"]'
+  assert_equal "$(jq -c .permissions.allow "$s")" '["mcp__prod-read__*","mcp__vercel-read__*","mcp__prod-mongo__*","Edit(./.scratch/**)"]'
   # The ops log's hooks cover both toolkits' tools, and block a write whose line is lost.
   assert_equal "$(jq -r '.hooks.PreToolUse[] | select(.hooks[0].command | endswith("/ops-log"))
-    | "\(.matcher) \(.hooks[0].onFailure)"' "$s")" '^mcp__.*(prod-(read|write)|vercel-read).*__ block'
+    | "\(.matcher) \(.hooks[0].onFailure)"' "$s")" '^mcp__.*(prod-(read|write|mongo)|vercel-read).*__ block'
   run -1 grep -Eq 'mongodb(\+srv)?://|MDB_MCP_CONNECTION|op://|password' <(jq 'del(.permissions.deny)' "$s")
 
   assert_equal "$(launches | jq -c '[.toolkits, .request]')" "$(jq -cn --arg r "$request" '[["prod-read", "prod-write"], $r]')"
@@ -1115,12 +1120,56 @@ matcher_matches() {
     run -1 grep -Eq '@TEAM_CODE@|@TASK@|vcp_|VERCEL|op://|token|mongodb(\+srv)?://|password' "$mcp"
 
     local s=$t/settings.ops.json
-    assert_equal "$(jq -c .permissions.allow "$s")" '["mcp__prod-read__*","mcp__vercel-read__*","Edit(./.scratch/**)"]'
+    assert_equal "$(jq -c .permissions.allow "$s")" '["mcp__prod-read__*","mcp__vercel-read__*","mcp__prod-mongo__*","Edit(./.scratch/**)"]'
     assert_prod_write_gated "$s"
     matcher_matches "$s" mcp__vercel-read__list-deployments mcp__plugin_vercel-read_vercel-read__runtime-logs \
       mcp__prod-read__find mcp__plugin_prod-write_prod-write__delete-many
     run -1 grep -Eq 'vcp_|op://|password' <(jq 'del(.permissions.deny)' "$s")
     assert_equal "$(launches | tail -n 1 | jq -c .toolkits)" "$(jq -cn --args '$ARGS.positional' "${kits[@]}")"
+  done
+  run_bin -0 team-log --check
+}
+
+@test "a backup launch adds prod-mongo's plugin and server, alone, beside prod-read's or beside prod-read's and prod-write's, its tools allowed, logged and its folder denied the file tools" {
+  thread T7
+  opened T7 proj feat/T7-one "$wt1"
+  ops_stub
+  local t=$TEAM_HOME/tasks/T7 set
+  for set in prod-mongo 'prod-read prod-mongo' 'prod-read prod-write prod-mongo' 'prod-mongo prod-read'; do
+    : >"$STUB_CALLS/claude.log"
+    local kits args=() plugins=() kit
+    read -ra kits <<<"$set"
+    for kit in "${kits[@]}"; do args+=(--toolkit "$kit"); plugins+=(--plugin-dir "$REPO_ROOT/toolkits/$kit"); done
+    run_bin -0 team-worker T7 ops "$wt1" "${args[@]}" --request "$request" -- Take a backup
+    assert_equal "$(bg_calls)" "$(jq -cn --arg t "$t" --arg code "$REPO_ROOT" \
+      --argjson plugins "$(printf '%s\n' "${plugins[@]}" | jq -R . | jq -sc .)" '["--bg",
+      "--restricted", "--tools", "Read,Glob,Grep,Edit,Write,ToolSearch,SendMessage,ListAgents,Skill",
+      "--strict-mcp-config", "--mcp-config", "\($t)/mcp.ops.json"] + $plugins + [
+      "--settings", "\($t)/settings.ops.json",
+      "--append-system-prompt-file", "\($code)/roles/ops.md",
+      "--permission-mode", "auto", "--name", "T7-ops", "Take a backup"]')"
+
+    # The real launcher, which reads the read user's connection string itself, and the server's
+    # own 90-minute timeout for its long calls: the config holds no secret.
+    local mcp=$t/mcp.ops.json
+    assert_equal "$(jq -c '.mcpServers["prod-mongo"]' "$mcp")" \
+      "$(jq -cn --arg code "$REPO_ROOT" '{command: "node", args: ["\($code)/toolkits/prod-mongo/scripts/start-server.mjs"], timeout: 5400000}')"
+    assert_equal "$(jq -c '.mcpServers | keys' "$mcp")" "$(printf '%s\n' "${kits[@]}" | jq -R . | jq -sc 'sort')"
+    run -1 grep -Eq '@TEAM_CODE@|@TASK@|mongodb(\+srv)?://|MDB_MCP|op://|password' "$mcp"
+
+    local s=$t/settings.ops.json
+    assert_equal "$(jq -c .permissions.allow "$s")" '["mcp__prod-read__*","mcp__vercel-read__*","mcp__prod-mongo__*","Edit(./.scratch/**)"]'
+    assert_prod_write_gated "$s"
+    assert_equal "$(jq -c '[.permissions.deny[] | select(contains("conventioner-backups"))]' "$s")" \
+      '["Read(~/conventioner-backups/**)","Edit(~/conventioner-backups/**)"]'
+    matcher_matches "$s" mcp__prod-mongo__backup mcp__plugin_prod-mongo_prod-mongo__restore-drill \
+      mcp__prod-mongo__list-backups mcp__prod-read__find mcp__plugin_prod-write_prod-write__delete-many
+    # Every ops-log hook covers prod-mongo, and the one before the call blocks a call it cannot log.
+    assert_equal "$(jq -r '[.hooks[][] | select(.hooks[0].command | endswith("/ops-log")) | .matcher] | unique[]' "$s")" \
+      '^mcp__.*(prod-(read|write|mongo)|vercel-read).*__'
+    assert_equal "$(jq -r '.hooks.PreToolUse[] | select(.hooks[0].command | endswith("/ops-log")) | .hooks[0].onFailure' "$s")" block
+    run -1 grep -Eq 'mongodb(\+srv)?://|MDB_MCP_CONNECTION|op://|password' <(jq 'del(.permissions.deny)' "$s")
+    assert_equal "$(launches | tail -n 1 | jq -c .toolkits)" "$(printf '%s\n' "${kits[@]}" | jq -R . | jq -sc .)"
   done
   run_bin -0 team-log --check
 }
@@ -1145,7 +1194,7 @@ matcher_matches() {
   done
 }
 
-@test "production toolkits, vercel-read among them, are refused for every role but ops, with nothing started or logged" {
+@test "production toolkits, vercel-read and prod-mongo among them, are refused for every role but ops, with nothing started or logged" {
   thread T7
   ops_stub
   local role
@@ -1156,6 +1205,8 @@ matcher_matches() {
     assert_contains "$output" "toolkit 'prod-write' is for the ops role only"
     run_bin -1 team-worker T7 "$role" "$wt1" --toolkit vercel-read -- go
     assert_contains "$output" "toolkit 'vercel-read' is for the ops role only"
+    run_bin -1 team-worker T7 "$role" "$wt1" --toolkit prod-mongo -- go
+    assert_contains "$output" "toolkit 'prod-mongo' is for the ops role only"
   done
   run_bin -2 team-worker T7 builder "$wt1" --request "$request" -- go
   assert_contains "$output" "--request is for the ops role only"
@@ -1163,18 +1214,18 @@ matcher_matches() {
   assert_equal "$(launches)" ""
 }
 
-@test "an ops launch without prod-read or vercel-read, prod-write without prod-read or beside vercel-read, or a launch without Daniel's request is refused" {
+@test "an ops launch without prod-read, vercel-read or prod-mongo, prod-write without prod-read or beside vercel-read, prod-mongo beside vercel-read, or a launch without Daniel's request is refused" {
   fake_checkout
-  mkdir -p "$code/toolkits/prod-read" "$code/toolkits/prod-write" "$code/toolkits/vercel-read"
+  mkdir -p "$code/toolkits/prod-read" "$code/toolkits/prod-write" "$code/toolkits/vercel-read" "$code/toolkits/prod-mongo"
   cp "$REPO_ROOT/roles/ops.md" "$code/roles/" && cp "$REPO_ROOT/settings/ops.json" "$code/settings/"
   thread T7
   ops_stub
   run_fake T7 ops "$wt1" --request "$request" -- go
   assert_equal "$status" 1
-  assert_contains "$output" "the ops role needs --toolkit prod-read or --toolkit vercel-read"
+  assert_contains "$output" "the ops role needs --toolkit prod-read, --toolkit vercel-read or --toolkit prod-mongo"
   run_fake T7 ops "$wt1" --toolkit kit-a --request "$request" -- go
   assert_equal "$status" 1
-  assert_contains "$output" "the ops role needs --toolkit prod-read or --toolkit vercel-read"
+  assert_contains "$output" "the ops role needs --toolkit prod-read, --toolkit vercel-read or --toolkit prod-mongo"
   run_fake T7 ops "$wt1" --toolkit prod-write --request "$request" -- go
   assert_equal "$status" 1
   assert_contains "$output" "prod-write needs --toolkit prod-read beside it"
@@ -1185,6 +1236,19 @@ matcher_matches() {
   run_fake T7 ops "$wt1" --toolkit prod-read --toolkit prod-write --toolkit vercel-read --request "$request" -- go
   assert_equal "$status" 1
   assert_contains "$output" "prod-write takes no --toolkit vercel-read beside it"
+  run_fake T7 ops "$wt1" --toolkit prod-mongo --toolkit prod-write --request "$request" -- go
+  assert_equal "$status" 1
+  assert_contains "$output" "prod-write needs --toolkit prod-read beside it"
+  # Nor does it prove prod-mongo beside vercel-read, with prod-read or without it.
+  run_fake T7 ops "$wt1" --toolkit prod-mongo --toolkit vercel-read --request "$request" -- go
+  assert_equal "$status" 1
+  assert_contains "$output" "prod-mongo takes no --toolkit vercel-read beside it"
+  run_fake T7 ops "$wt1" --toolkit vercel-read --toolkit prod-read --toolkit prod-mongo --request "$request" -- go
+  assert_equal "$status" 1
+  assert_contains "$output" "prod-mongo takes no --toolkit vercel-read beside it"
+  run_fake T7 ops "$wt1" --toolkit prod-mongo -- go
+  assert_equal "$status" 1
+  assert_contains "$output" "the ops role needs --request <the link to Daniel's Discord message>"
   run_fake T7 ops "$wt1" --toolkit vercel-read -- go
   assert_equal "$status" 1
   assert_contains "$output" "the ops role needs --request <the link to Daniel's Discord message>"

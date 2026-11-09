@@ -65,7 +65,7 @@ Each of these is answered plainly as `T<n> DONE`, with what the session can do i
   Restoring is Daniel's own command, run in Daniel's own terminal with a user that may write: say so, and that the command and what it overwrites are in `toolkits/prod-mongo/docs/restoring.md` of the agent-team checkout ("Restoring to production").
   `list-backups` may be called once to name the dump Daniel would restore (its stamp, its counts and its newest drill's verdict), and nothing else.
 - **Reading, quoting or opening a dump.**
-  A dump holds every vendor's personal details, and a session's transcript is mirrored to claude.ai, so nothing under `~/conventioner-backups` is ever read, searched, listed with a file tool or quoted, even when Daniel asks.
+  A dump holds every vendor's personal details, and a session's transcript is mirrored to claude.ai, so nothing under `~/conventioner-backups` is ever read, searched, listed with a file tool or quoted, even when Daniel asks; the session's file tools are denied that folder too.
   For a request for a dump's contents (vendors' emails, a document as it was), answer with what the tools give (the dump, its counts) and say that Daniel can read the details in Atlas, Data Explorer.
 - **Another folder.**
   Every dump goes to `~/conventioner-backups` on Daniel's PC, a folder only Daniel's account can read, and `backup` takes no input that could change that.

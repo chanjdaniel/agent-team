@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 # hooks/ops-log: the ops session's PreToolUse, PostToolUse and PostToolUseFailure hook appends
 # every production tool call to the task's ops log, masked and without results, and blocks a
-# write it cannot log.
+# write or a prod-mongo call it cannot log.
 
 load helpers/common
 
@@ -87,12 +87,12 @@ READ_INPUT='{"database":"conventioner","collection":"markets","filter":{"phase":
   mkdir "$log"
   hook -2 "$(hook_input PreToolUse mcp__prod-write__update-one "$input")"
   assert_equal "$output" ""
-  assert_contains "$stderr" "Blocked: this production write could not be logged to $log, so it does not run."
+  assert_contains "$stderr" "Blocked: this production call could not be logged to $log, so it does not run."
   hook -0 "$(hook_input PreToolUse mcp__prod-read__find "$READ_INPUT")"
   assert_contains "$stderr" "ops-log: could not log this production read to $log"
   # After the call, a write's lost line is shown to the agent (exit 2 does not block there).
   hook -2 "$(hook_input PostToolUse mcp__prod-write__update-one "$input" '{"tool_response": []}')"
-  assert_contains "$stderr" "this production write ran but could not be logged to $log"
+  assert_contains "$stderr" "this production call ran but could not be logged to $log"
 }
 
 @test "a write is blocked when its input cannot be read, even if the hook itself fails" {
@@ -147,6 +147,35 @@ READ_INPUT='{"database":"conventioner","collection":"markets","filter":{"phase":
   hook -2 "$(hook_input PreToolUse mcp__plugin_vercel-read_vercel-write__list-deployments '{}')"
 }
 
+@test "a prod-mongo call is logged in both name forms, and blocked when its requested line is lost, as a write is" {
+  hook -0 "$(hook_input PreToolUse mcp__prod-mongo__backup '{}')"
+  hook -0 "$(hook_input PostToolUse mcp__prod-mongo__backup '{}' \
+    '{"tool_response": [{"type": "text", "text": "backup: took 2026-11-09T081502Z, 5 collections, 10 documents"}]}')"
+  hook -0 "$(hook_input PostToolUseFailure mcp__plugin_prod-mongo_prod-mongo__restore-drill '{"backup":"2026-11-09T081502Z"}' \
+    '{"error": "restore-drill: failed: the count of accounts (ann@ex.com) differs\nsecond line", "is_interrupt": false}')"
+  hook -0 "$(hook_input PreToolUse mcp__plugin_prod-mongo_prod-mongo__list-backups '{}')"
+  assert_equal "$output$stderr" ""
+  assert_equal "$(entries)" '- TIME requested `prod-mongo` `backup` `{}`
+- TIME ran `prod-mongo` `backup` `{}`
+- TIME failed `prod-mongo` `restore-drill` `{"backup":"2026-11-09T081502Z"}` error `restore-drill: failed: the count of accounts (<email>) differs`
+- TIME requested `prod-mongo` `list-backups` `{}`'
+  run -1 grep -q -e @ -e 'took 2026' -e 'second line' "$log"
+
+  rm "$log"
+  mkdir "$log"
+  local name
+  for name in mcp__prod-mongo__backup mcp__plugin_prod-mongo_prod-mongo__list-backups; do
+    hook -2 "$(hook_input PreToolUse "$name" '{}')"
+    assert_equal "$output" ""
+    assert_contains "$stderr" "Blocked: this production call could not be logged to $log, so it does not run."
+    # After the call, a lost line is shown to the agent.
+    hook -2 "$(hook_input PostToolUse "$name" '{}' '{"tool_response": []}')"
+    assert_contains "$stderr" "ops-log: this production call ran but could not be logged to $log; say so in your report."
+    hook -2 "$(hook_input PostToolUseFailure "$name" '{}' '{"error": "x", "is_interrupt": false}')"
+    assert_contains "$stderr" "ops-log: this production call failed but could not be logged to $log; say so in your report."
+  done
+}
+
 @test "an input holding backticks stays one code span" {
   hook -0 "$(hook_input PreToolUse mcp__prod-read__find '{"filter":{"name":"a`b``c"}}')"
   assert_equal "$(entries)" '- TIME requested `prod-read` `find` ```{"filter":{"name":"a`b``c"}}```'
@@ -164,22 +193,23 @@ READ_INPUT='{"database":"conventioner","collection":"markets","filter":{"phase":
   assert_equal "$(wc -l <"$log")" 32
 }
 
-@test "the ops settings wire the hook for every production and Vercel tool in both name forms" {
+@test "the ops settings wire the hook for every production, backup and Vercel tool in both name forms" {
   local s=$REPO_ROOT/settings/ops.json event name
   for event in PreToolUse PostToolUse PostToolUseFailure; do
     assert_equal "$(jq -c --arg e "$event" '[.hooks[$e][] | select(.hooks[].command | endswith("/bin/hooks/ops-log"))]
       | map({matcher, args: .hooks[0].args}) ' "$s")" \
-      '[{"matcher":"^mcp__.*(prod-(read|write)|vercel-read).*__","args":["@TASK_DIR@"]}]'
+      '[{"matcher":"^mcp__.*(prod-(read|write|mongo)|vercel-read).*__","args":["@TASK_DIR@"]}]'
   done
   # Claude Code tests a matcher holding other characters than letters, digits, _, -, | and spaces
   # as an unanchored JavaScript regular expression; this one means the same in ERE.
   for name in mcp__prod-read__find mcp__prod-write__update-many mcp__plugin_prod-read_prod-read__find \
     mcp__plugin_prod-write_prod-write__delete-one mcp__vercel-read__list-deployments \
-    mcp__plugin_vercel-read_vercel-read__runtime-logs; do
+    mcp__plugin_vercel-read_vercel-read__runtime-logs mcp__prod-mongo__backup \
+    mcp__plugin_prod-mongo_prod-mongo__list-backups; do
     grep -Eq "$(jq -r '.hooks.PreToolUse[] | select(.hooks[0].command | endswith("/bin/hooks/ops-log")) | .matcher' "$s")" <<<"$name" ||
       { echo "the matcher misses $name" >&2; return 1; }
   done
-  for name in mcp__other__find Read mcp__prod_read__find mcp__vercel_read__list-deployments; do
+  for name in mcp__other__find Read mcp__prod_read__find mcp__vercel_read__list-deployments mcp__prod_mongo__backup; do
     run -1 grep -Eq "$(jq -r '.hooks.PreToolUse[] | select(.hooks[0].command | endswith("/bin/hooks/ops-log")) | .matcher' "$s")" <<<"$name"
   done
   # A failing or timed-out hook blocks the call instead of letting an unlogged write through.

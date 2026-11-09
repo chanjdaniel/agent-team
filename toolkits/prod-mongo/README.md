@@ -37,6 +37,9 @@ Each launch raises one 1Password prompt, even for a session that only drills or 
 - Every child process gets an environment built from a short list (`childEnv`, `servers/prod-mongo/children.mjs`), never the server's own, and every child's error reaches an answer only scrubbed of connection strings, the secret and its hosts.
 - Only an ops launch starts it: every other session's settings deny a shell command that runs a `start-server.mjs` (with `node`, `bun`, `deno` or `env`, or by its path, though no file here is executable), while reading them stays allowed, or a `claude` given a production toolkit by `--plugin-dir` or `--mcp-config`.
   These are speed bumps (`tests/repo.bats`): Daniel's rule of approving a 1Password prompt only right after an announced launch is what holds.
+- An ops launch takes it alone, beside `prod-read`, or beside `prod-read` and `prod-write`, never beside `vercel-read` (`bin/team-worker`).
+  The ops settings (`settings/ops.json`) allow its tools with no prompt, and deny the session's own file tools the backups folder (`Read(~/conventioner-backups/**)` and `Edit(~/conventioner-backups/**)`, which cover Grep, Glob and Write too).
+  The ops-log hook (`bin/hooks/ops-log`) logs each call's requested, ran or failed line in the task's ops log, and blocks a call whose requested line it cannot write, as it does a write.
 
 ## What it leaves behind
 
