@@ -53,12 +53,14 @@
 # of the same role (replaced), its stowed or, for a builder or a planner, a paused reason=stowed
 # (stowed) or its closed (closed); else it is running.
 # Its project is the launch's, else the task's; its path the task's, else "-"; its model the
-# launch's, else "default"; its first done the minutes to its first round's report; its phases
-# its task's phase minutes over its span (null for a legacy task). A lifetime is in the
+# launch's, else "default"; its toolkits the launch's list, sorted and deduplicated, [] for none or
+# for a legacy launch with no list; its first done the minutes to its first round's report; its
+# phases its task's phase minutes over its span (null for a legacy task). A lifetime is in the
 # window when it ended in it; one running at --until is listed apart with its age, in no average.
 # The averages, over the window's lifetimes in minutes: workers, mean, median, 90th percentile by
-# nearest rank and longest, by role, by role and path, by role and project, by role and model; then
-# the ten longest. A session in a later round after --until counts again, longer, in a later window.
+# nearest rank and longest, by role, by role and path, by role and project, by role and model, by
+# role, project and toolkits (none for the empty list, + between toolkits in the text); then the
+# ten longest. A session in a later round after --until counts again, longer, in a later window.
 # Then where the workers' time went, from each launched session's time rows (team-tokens --help),
 # read by running team-tokens time --since <the earliest start among the window's lifetimes>
 # --until <until> once, and not at all with no lifetime: a lifetime's rows are all those whose
@@ -85,9 +87,10 @@
 # projects), gate_runs (per_pr, by_cause, by_outcome, step_minutes), reviews, builders, denials,
 # answers (answered, unanswered, median_minutes, p90_minutes), done_to_next (count,
 # median_seconds, p90_seconds, within_minute) and workers: lifetimes (task, project, path, role,
-# session, model, start, end, ended, minutes, rounds, first_done_minutes, phases, transcript),
-# running (the same, with age_minutes), stats (by_role, by_role_path, by_role_project,
-# by_role_model, each a list of role, the group's key, workers, mean, median, p90 and longest),
+# session, model, toolkits, start, end, ended, minutes, rounds, first_done_minutes, phases,
+# transcript), running (the same, with age_minutes), stats (by_role, by_role_path,
+# by_role_project, by_role_model and by_role_project_toolkits, each a list of role, the group's
+# keys (project and toolkits for the last), workers, mean, median, p90 and longest),
 # longest (sessions, longest first), breakdown (null when team-tokens failed: coverage {lifetimes,
 # transcripts, roles}, classes and share {role and all: {class: minutes, or percent}}, top (key,
 # class, minutes, calls, longest, lifetimes) and waits {role: {phase: minutes}}) and transcripts

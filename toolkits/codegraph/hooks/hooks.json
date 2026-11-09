@@ -1,0 +1,16 @@
+{
+  "description": "At session start, for a builder or reviewer in a worktree with a .codegraph/ directory, builds or syncs the worktree's CodeGraph index and prints the banner, or one line when the index fails; nothing otherwise.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/codegraph-banner\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
