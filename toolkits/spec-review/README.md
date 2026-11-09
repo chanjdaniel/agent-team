@@ -7,8 +7,8 @@ Their findings go to `spec-review.md` in the task directory, where the spec's au
 
 ## When the coordinator gives it
 
-To a planner on the build path, `team-worker T<n> planner <worktree> --toolkit spec-review -- ...`, once T240's phase 3 makes the review a planner step; until then, a planner's brief does not name it.
-To T240's phase 2 replay builder, `team-worker T240 builder <worktree> --toolkit spec-review -- ...`, which reviews archived specs it did not write, so the skill stops once the readers' part is written.
+Only when the coordinator chooses to: T240's replay said `stop` (below), so no brief names it and no planner step runs it.
+A session that wants it, a planner reviewing its own spec or a later replay, is launched with `team-worker T<n> <role> <worktree> --toolkit spec-review -- ...`; a session that did not write the spec, as a replay's builder, gets only the readers' part, since the skill stops before the sort.
 `team-worker` loads it from the code checkout `~/agent-team`, so a session can list it only once the PR that adds it is merged.
 Before its first launch, the coordinator runs `team-load-check --toolkit spec-review` and `team-load-check --context --toolkit spec-review`.
 
@@ -20,7 +20,7 @@ Before its first launch, the coordinator runs `team-load-check --toolkit spec-re
 - The agent `agents/spec-paraphrase.md`, dispatched as `spec-review:spec-paraphrase`: it reads only `spec.md` and the tickets and returns "What this changes", "How the system works today, per this spec" and "Could not follow".
 - The agent `agents/spec-readiness.md`, dispatched as `spec-review:spec-readiness`: it reads the code root's `CLAUDE.md` and `AGENTS.md`, `spec.md`, `scope.txt` and each ticket with the files it names, checks with Grep and Glob that each name the spec says exists does, and returns its findings (`open-decision`, `missing`, `contradiction` or `too-large`, each `blocking` or `note`, each on a line) and the files it read.
 - Both agents have only Read, Grep and Glob, and `omitClaudeMd: true`, since the session's `CLAUDE.md` is the worktree's, which in a replay is not the archived project's: the readiness reader reads the code root's own instead.
-  Both run on `model: inherit`, the session's model, unless the skill is given `--model`; T240's replay chooses the model they will name.
+  Both run on `model: inherit`, the session's model, unless the skill is given `--model`; T240's replay named no model, since neither passed.
   Both are told never to read the task directory beyond their inputs: no plan, brief, interview, memory, handoff, build note or other review.
   The readiness reader keeps its searches out of the task directory when it lies under the code root.
 - No MCP server, hook or script.
@@ -28,7 +28,12 @@ Before its first launch, the coordinator runs `team-load-check --toolkit spec-re
 ## What it costs
 
 - The skill's description, about 60 tokens, in the starting context of every session that lists the toolkit, and the two agents' descriptions, about 60 tokens each, in its Agent tool's list.
-- Per review: measured by T240's replay.
+- Per review, as T240's replay measured it (`tasks/T240/scratch/replay.md` in the team home once T240 closes) on six archived specs (five tasks whose builders asked 14 questions, 5 of them a spec could have settled, and a control whose builder asked none), each reviewed once per model:
+  - Opus readers (`high` effort): 1 of the 5 questions found (20%), $w 1.60 and 3.4 minutes per spec on average.
+  - Sonnet readers (`medium`, Sonnet 5.5's default): 1 of the 5 found (20%), $w 0.20 and 0.5 minutes per spec.
+  - Neither reached the third of the questions the go line asked for, so the replay said `stop`: no brief names the toolkit, and the readers stay on `model: inherit`.
+  - Neither model raised a `blocking` finding on the control spec.
+    Opus's readiness reader raised seven `blocking` gaps that the builders settled alone or that reviews caught later, which the go line does not count; Sonnet's raised none of those.
 
 ## Credits
 
