@@ -515,29 +515,30 @@ EOF
   assert_equal "$(git -C "$elsewhere" for-each-ref --format='%(refname)' | paste -sd ' ')" "refs/heads/probe-1 refs/heads/probe-2"
 }
 
-@test "worktrees not begun by the worktree deadline are skipped as failures, the records still committed, and taken first next time" {
+@test "with --deadline, worktrees not begun by it are skipped as failures, the records still committed, and taken first next time; without it every one runs" {
   local n real_rsync
   for n in 1 2 3; do
     run_bin -0 team-open home feature feat "work$n" "Work $n"
     echo "spec $n" >"$HOME/slots/home/$n/.scratch/task/spec.md"
   done
-  # An archive that takes 4 s, so T1's, begun at once, ends past the 3 s deadline.
+  # T1's archive takes 4 s, so it ends past a 3 s deadline; the others' are quick.
   real_rsync=$(command -v rsync)
-  printf '#!/usr/bin/env bash\ncommand -p sleep 4\nexec "%s" "$@"\n' "$real_rsync" >"$BATS_TEST_TMPDIR/stubs/rsync"
+  printf '#!/usr/bin/env bash\n[[ "$*" != *"/slots/home/1/"* ]] || command -p sleep 4\nexec "%s" "$@"\n' "$real_rsync" \
+    >"$BATS_TEST_TMPDIR/stubs/rsync"
   chmod +x "$BATS_TEST_TMPDIR/stubs/rsync"
 
-  TEAM_CHECKPOINT_WORKTREE_SECONDS=3 run_bin -1 --separate-stderr team-checkpoint
+  run_bin -1 --separate-stderr team-checkpoint --deadline 3
   assert_contains "$output" "T1 home: pushed wip/home/T1"
-  [[ $stderr =~ ^"team-checkpoint: T2 home: skipped: the checkpoint has run "[0-9]+" s, past its 3 s for worktrees, so the records are committed in time; the next checkpoint takes it first"$'\n'"team-checkpoint: T3 home: skipped: "[^$'\n']*$ ]]
+  [[ $stderr =~ ^"team-checkpoint: T2 home: skipped: the checkpoint has run "[0-9]+" s, past its 3 s deadline for worktrees, so the records are committed in time; the next checkpoint takes it first"$'\n'"team-checkpoint: T3 home: skipped: "[^$'\n']*$ ]]
   # The records are committed and pushed all the same: T1's archive with them.
   assert_equal "$(git -C "$team_origin" show dev:tasks/T1/scratch/spec.md)" "spec 1"
   assert_equal "$(git -C "$team_origin" log -1 --format=%s dev)" "chore: checkpoint"
   [[ -z $(git -C "$team_origin" rev-parse -q --verify refs/heads/wip/home/T2) ]]
   [[ ! -e $state/last-checkpoint ]]
 
-  # The next checkpoint takes the skipped first, in their order, then the rest.
-  rm "$BATS_TEST_TMPDIR/stubs/rsync"
-  run_bin -0 --separate-stderr team-checkpoint
+  # The next checkpoint, with no deadline (as team-stow and team-handoff run it), takes the
+  # skipped first, in their order, then the rest, and every one runs, however long.
+  run_bin -0 --separate-stderr team-checkpoint --force
   assert_equal "$stderr" ""
   assert_equal "$(grep -oE '^T[0-9] home: (pushed|wip/home/T[0-9] is up to date)' <<<"$output" | cut -c1-2 | paste -sd ' ')" "T2 T3 T1"
   assert_equal "$(git -C "$team_origin" show dev:tasks/T3/scratch/spec.md)" "spec 3"
@@ -999,8 +1000,12 @@ docs: a readme"
 }
 
 @test "it needs a machine name, and refuses a malformed command line" {
-  run_bin -2 team-checkpoint --now
-  assert_equal "$output" "team-checkpoint: usage: team-checkpoint [--force]"
+  local args
+  for args in --now "--deadline" "--deadline 1.5" "--deadline x" "--force --force" "--deadline 3 --deadline 4"; do
+    # shellcheck disable=SC2086 # each case is its words
+    run_bin -2 team-checkpoint $args
+    assert_equal "$output" "team-checkpoint: usage: team-checkpoint [--force] [--deadline <seconds>]"
+  done
   rm "$HOME/.config/agent-team/machine"
   run_bin -1 team-checkpoint
   assert_contains "$output" "this machine has no team name"

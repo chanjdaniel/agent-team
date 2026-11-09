@@ -493,6 +493,16 @@ still_running() {
   done <"$1"
 }
 
+@test "the checkpoint is given a deadline for its worktrees of two fifths of its limit" {
+  fake_checkpoint <<'SH'
+echo "given: $*"
+SH
+  run_bin -0 team-timers run
+  assert_contains "$output" " checkpoint: given: --deadline 120"
+  TEAM_TIMERS_CHECKPOINT_SECONDS=100 run_bin -0 team-timers run
+  assert_contains "$output" " checkpoint: given: --deadline 40"
+}
+
 @test "a checkpoint with more than 20 problem lines logs 20 of them and a count of the rest" {
   # 23 lines would need 23 broken worktrees.
   fake_checkpoint <<'SH'

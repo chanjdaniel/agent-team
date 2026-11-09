@@ -52,8 +52,8 @@
 #                     failed: <line>", at most 20 and a count of the rest. It is stopped after
 #                     300 s with the commands it runs, killed 10 s later ("checkpoint: failed:
 #                     timed out after 300 s"; a git call of its own with its own 60 s limit ends by
-#                     that; it begins no worktree past 120 s, so its records commit begins inside
-#                     the limit), and a checkpoint that fails, times out or exits 75 (GitHub
+#                     that; given --deadline 120, it begins no worktree past 120 s, so its records
+#                     commit begins inside the limit), and a checkpoint that fails, times out or exits 75 (GitHub
 #                     unreachable, or another checkpoint still running) is a failed step.
 #              inbox  On the holder, after the checkpoint step: team-inbox, which edits the
 #                     Waiting on you message in #coordinator, so what waits on Daniel shows there
@@ -173,6 +173,9 @@ INBOX_TIMEOUT=120
 # or in a command no step's limit reaches), so one hang never ends the renewals and checkpoints for
 # good; the systemd service's START_TIMEOUT, 75 minutes, is the backstop behind it.
 CHECKPOINT_TIMEOUT=${TEAM_TIMERS_CHECKPOINT_SECONDS:-300}
+# Seconds past which the checkpoint begins no worktree, two fifths of its limit (120 of 300): one
+# begun by then makes at most two origin calls of 60 s, so its records commit begins in the limit.
+CHECKPOINT_DEADLINE=$((CHECKPOINT_TIMEOUT * 2 / 5))
 FINISHED_TIMEOUT=${TEAM_TIMERS_FINISHED_SECONDS:-90}
 FINISHED_CALL_TIMEOUT=${TEAM_TIMERS_FINISHED_CALL_SECONDS:-30}
 CAPACITY_TIMEOUT=${TEAM_TIMERS_CAPACITY_SECONDS:-60}
@@ -734,7 +737,7 @@ lease_step() {
 checkpoint_step() {
   local rc=0 out line kind shown=0 total=0
   out=$(TEAM_HOME=$TEAM_HOME timeout --kill-after="$KILL_SECONDS" "$CHECKPOINT_TIMEOUT" "$bin/team-checkpoint" \
-    2>"$err" {run_fd}>&-) || rc=$?
+    --deadline "$CHECKPOINT_DEADLINE" 2>"$err" {run_fd}>&-) || rc=$?
   while IFS= read -r line; do
     [[ -z $line ]] || log checkpoint "$line"
   done <<<"$out"
