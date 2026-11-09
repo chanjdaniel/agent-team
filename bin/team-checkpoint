@@ -3,17 +3,35 @@
 # heartbeat (team-timers run, every 5 minutes), or at once with --force (a handoff, or a record
 # that must be durable now).
 #
-# Usage: team-checkpoint [--force]
+# Usage: team-checkpoint [--force] [--deadline <seconds>]
 # Refuses unless team-lease check says this machine holds the lease (exit 1), and exits 75 when
 # GitHub is unreachable; either way nothing changes. Without --force, a checkpoint less than 5
 # minutes (less a minute for the timer's slack) after the last does nothing but say so.
-# For each open task, in task number order, for each of its open worktrees:
+# First, before any worktree, commits ledger.jsonl and level.jsonl alone as "chore: checkpoint
+# ledger" and pushes the branch, as the records commit below does, so no worktree, however slow or
+# broken, keeps the ledger from origin; nothing new in either is a line saying so, and a failure is
+# the team home's, after which the rest still runs.
+# Then, for each open task, in task number order (those the last checkpoint skipped at its
+# deadline first, in their order), for each of its open worktrees, each contained: any step of
+# one worktree that fails, from the registry lookup to the push, is that worktree's failure, with
+# the first error line it gave (git's, rsync's or the registry's), and stops no other worktree nor
+# any later step; its archive and its snapshot are made apart, so either is still made when the
+# other failed. With --deadline, once the checkpoint has run that many seconds (its lock wait
+# included), each worktree not yet begun is skipped as a failure, "<label>: skipped: the
+# checkpoint has run <n> s, past its <seconds> s deadline for worktrees, ...", and kept in
+# ~/.local/state/agent-team/checkpoint-first for the next checkpoint to take first. The heartbeat
+# gives 120, two fifths of its 300 s limit for the checkpoint (bin/team-timers): a worktree begun
+# by then makes at most two origin calls of 60 s each, so the records commit below begins inside
+# that limit, and a slow GitHub costs the worktrees left, never the records. Without it (team-stow,
+# team-handoff, by hand), every worktree is taken, however long they take.
 #   1. A worktree that is missing, on another branch than its recorded one, or locked by a running
 #      git command (index.lock) is skipped with a line saying why.
 #   2. Its task directory is mirrored into tasks/T<n>/scratch/ (the project the task was opened
 #      in) or tasks/T<n>/scratch-<project>/ (one added later), as team-close does; a missing or
-#      empty one is reported on stderr and archives nothing. It is mirrored less what
-#      archive_left_out (bin/lib/team.sh) leaves out, each named on stderr.
+#      empty one is a line saying so and archives nothing. It is mirrored less what
+#      archive_left_out (bin/lib/team.sh) leaves out, each named on a line; a mirror that fails
+#      is that worktree's failure, with rsync's reason, and so is a failed registry lookup of its
+#      project (one the registry no longer has), which skips its archive alone.
 #   3. Its work is kept on the team home's origin, never the project's (which may be public), as
 #      refs/heads/wip/<project>/T<n>, pushed from the worktree to that origin's URL in place of
 #      what is there (the one forced push, a script's, never on a task branch, and no PR's head;
@@ -24,21 +42,40 @@
 #      left out, each named on a line; with none, the branch head itself, so a branch never
 #      pushed is kept too and an older snapshot is gone.
 #      A wip/<project>/T<n> already that head, or a snapshot with the same tree and parent, is
-#      left alone. The worktree's files, index, branch and stash are never touched.
+#      left alone. The worktree's files, index, branch and stash are never touched, and its
+#      files are read running no command its repository's config names (no core.fsmonitor, no
+#      filter driver's clean or process command, so a file a filter such as Git LFS's would
+#      clean is kept as it is on disk), since a worker may write that config. The push runs
+#      none of the project's hooks (hooks off for that one command, its output kept out of the
+#      checkpoint's), since it is the team's own plumbing to a private repository. It and the read
+#      of the wip ref before it run in a temporary bare repository that borrows the worktree's
+#      objects (objects/info/alternates), never in the worktree's repository, so none of that
+#      repository's config is read (a url.<x>.insteadOf or pushInsteadOf that would send the
+#      task's work elsewhere, a credential helper or core.sshCommand that would run a command):
+#      only Daniel's global and the system config.
 # Then team-tokens export writes this machine's usage of each complete UTC day into usage/<machine>/
-# (its lines prefixed "usage: "); a failed export is reported on stderr and fails nothing, since
-# the transcripts stay and the next checkpoint exports what this one could not.
+# (its lines prefixed "usage: "); a failed export is a warning and fails nothing, since the
+# transcripts stay and the next checkpoint exports what this one could not.
 # Then, in the team home, the ledger's lock held: commits every records path bin/lib/records lists
 # (the ledger, level.jsonl, tasks/ with the scratch archives, plans, briefs and their records and
 # tasks/current.md or its removal, projects/, projects.toml, memory/, machine/, usage/ and
 # manual-steps.md), less what git ignores, as "chore: checkpoint" on the branch checked out (dev),
-# leaving whatever else is staged as it was, and pushes the branch when it is ahead of origin's;
-# a path the team home's hook refuses (an image) fails the commit, named. A rejected push fetches
+# leaving whatever else is staged as it was, and pushes the branch when it is ahead of origin's.
+# When that one commit fails (a path the team home's hook refuses: an image, an address at a
+# public provider), it commits group by group instead, the ledger's (ledger.jsonl and level.jsonl)
+# first, then each other in name order, each alone as "chore: checkpoint <group>", a group being a
+# top-level records entry, or under tasks/ the entry one level down (tasks/T5/, tasks/current.md):
+# a group still refused is one failure naming it and the hook's first line, and stays uncommitted
+# for the next checkpoint, and every other is committed and pushed. A rejected push fetches
 # and replays the commits origin lacks onto origin's branch when they apply cleanly and no local
 # change is in the way (what is staged stays staged), then pushes again; else they stay unpushed
 # and it says why. No change, no commit and no push.
 # Writes ~/.local/state/agent-team/last-checkpoint, dated the checkpoint's start, once every step
-# succeeded. Prints one line per step; a failed step is reported on stderr and the rest still run.
+# succeeded. Prints one line per step and per note (a path left out, a task directory missing or
+# empty) on stdout; stderr holds problems only, one line each: a failure, "team-checkpoint:
+# <label>: <what failed>: <reason>" (the label "T<n> <project>" or "team home"), after which the
+# rest still runs and the exit is 1, and a warning, "team-checkpoint: warning: <part>: <reason>"
+# (today only the usage export's, part usage), which changes no exit code.
 # Exit 0 done, 1 refused or a step failed, 2 usage error, 75 GitHub unreachable or another
 # checkpoint still running.
 set -euo pipefail
@@ -50,16 +87,29 @@ SLACK_SECONDS=60
 # Seconds: the most one call to an origin may take, and the longest wait for another checkpoint.
 NET_TIMEOUT=60
 LOCK_WAIT=120
-
-usage="usage: team-checkpoint [--force]"
-force=''
-if (($# > 1)) || [[ $# -eq 1 && $1 != --force ]]; then usage_error "$usage"; fi
-(($# == 0)) || force=1
+usage="usage: team-checkpoint [--force] [--deadline <seconds>]"
+# --deadline's seconds since the checkpoint started, past which no worktree is begun; none
+# without it.
+force='' deadline=''
+while (($#)); do
+  case $1 in
+    --force) [[ -z $force ]] || usage_error "$usage"; force=1 ;;
+    --deadline)
+      [[ -z $deadline && ${2:-} =~ ^[0-9]+$ ]] || usage_error "$usage"
+      deadline=$2
+      shift
+      ;;
+    *) usage_error "$usage" ;;
+  esac
+  shift
+done
 
 machine=$(machine_name) || exit 1
 bin=$(dirname "$TEAM_LIB")
 state=$HOME/.local/state/agent-team
 last=$state/last-checkpoint
+# The worktrees the last checkpoint skipped at its deadline, "<task> <project>" a line, taken first.
+first=$state/checkpoint-first
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 NET_ERR=$scratch/err
@@ -100,10 +150,16 @@ say() {
   printf '%s\n' "$*"
 }
 
-# A failed step, on stderr; the checkpoint goes on and exits 1: fail <what failed>
+# A failed step, one line on stderr; the checkpoint goes on and exits 1: fail <label>: <what
+# failed>: <reason>
 fail() {
   echo "team-checkpoint: $*" >&2
   failed=1
+}
+
+# A problem that fails nothing, one line on stderr: warn <part> <reason>
+warn() {
+  echo "team-checkpoint: warning: $1: $2" >&2
 }
 
 # Why the worktree <wt> of <branch> is skipped, or nothing when it is checkpointed.
@@ -121,22 +177,66 @@ skip_reason() {
   fi
 }
 
+# Why a command failed, from its stderr in the file <err>: its first fatal or error line, else its
+# first line, git's "fatal: " or "error: " or a team script's "team-<name>: " cut, else its exit
+# status: reason_in <err> <exit status>
+reason_in() {
+  local why
+  why=$(grep -m1 -E '^(fatal|error): ' "$1" || grep -m1 . "$1") || why=''
+  why=$(sed -E 's/^(fatal|error|team-[a-z-]+): //' <<<"$why")
+  printf '%s\n' "${why:-exit $2}"
+}
+
+# A bare repository of the checkpoint's own, with no template and no config but what git init
+# writes, whose objects/info/alternates names the objects of the worktree <wt>'s repository (and
+# its shallow file, when it has one), so a call to the team home's origin sends that worktree's
+# work reading none of its repository's config; its path in REPLY: borrow_objects <wt>
+borrow_objects() {
+  local common
+  REPLY=$scratch/borrow.git
+  [[ -d $REPLY ]] || git init -q --bare --template= "$REPLY" || return 1
+  common=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir) || return 1
+  printf '%s\n' "$common/objects" >"$REPLY/objects/info/alternates" || return 1
+  rm -f "$REPLY/shallow"
+  [[ ! -f $common/shallow ]] || cp "$common/shallow" "$REPLY/shallow"
+}
+
 # Keep the work of the worktree <wt> of <task> in <project> on the team home's origin as
-# wip/<project>/<task>: its branch head, or a snapshot of its uncommitted changes on that head:
-# snapshot <task> <project> <wt> <label>
+# wip/<project>/<task>: its branch head, or a snapshot of its uncommitted changes on that head.
+# Every command's status is checked, so a failure is this worktree's alone, one line with git's
+# reason, and the next worktree still runs: snapshot <task> <project> <wt> <label>
 snapshot() {
-  local task=$1 project=$2 wt=$3 label=$4 wip=wip/$2/$1 tree head remote old commit what left rc=0
-  tree=$(worktree_tree "$wt")
-  left=$(snapshot_left_out "$wt" | paste -sd ' ')
+  local task=$1 project=$2 wt=$3 label=$4 wip=wip/$2/$1 err=$scratch/snapshot-err tree head head_tree remote old \
+    commit what left out borrow rc=0
+  tree=$(worktree_tree "$wt" 2>"$err") || rc=$?
+  if ((rc)); then
+    fail "$label: cannot snapshot $wip: $(reason_in "$err" "$rc")"
+    return
+  fi
+  left=$(snapshot_left_out "$wt" 2>"$err" | paste -sd ' ') || rc=$?
+  if ((rc)); then
+    fail "$label: cannot snapshot $wip: $(reason_in "$err" "$rc")"
+    return
+  fi
   [[ -z $left ]] || say "$label: left out of $wip, as files that may hold a secret: $left"
-  head=$(git -C "$wt" rev-parse HEAD)
-  remote=$(origin_git -C "$wt" ls-remote "$wip_url" "refs/heads/$wip") || rc=$?
+  { head=$(git -C "$wt" rev-parse HEAD) && head_tree=$(git -C "$wt" rev-parse "$head^{tree}"); } 2>"$err" || rc=$?
+  if ((rc)); then
+    fail "$label: cannot read the head of $wt: $(reason_in "$err" "$rc")"
+    return
+  fi
+  borrow_objects "$wt" 2>"$err" || rc=$?
+  if ((rc)); then
+    fail "$label: cannot snapshot $wip: $(reason_in "$err" "$rc")"
+    return
+  fi
+  borrow=$REPLY
+  remote=$(origin_git --git-dir="$borrow" ls-remote "$wip_url" "refs/heads/$wip") || rc=$?
   if ((rc)); then
     fail "$label: cannot read $wip on the team home's origin: $(origin_reason "$rc")"
     return
   fi
   old=${remote%%[[:space:]]*}
-  if [[ $tree == "$(git -C "$wt" rev-parse "HEAD^{tree}")" ]]; then
+  if [[ $tree == "$head_tree" ]]; then
     commit=$head what="the branch head, no uncommitted changes"
     if [[ $old == "$head" ]]; then
       say "$label: $wip is up to date (${old:0:7}, no uncommitted changes)"
@@ -148,16 +248,36 @@ snapshot() {
       say "$label: $wip is up to date (${old:0:7})"
       return
     fi
-    commit=$(git -C "$wt" commit-tree "$tree" -p "$head" -m "$(snapshot_message "$task" "$machine" "$(date -u -d "@$start" +%FT%TZ)")")
+    commit=$(git -C "$wt" commit-tree "$tree" -p "$head" \
+      -m "$(snapshot_message "$task" "$machine" "$(date -u -d "@$start" +%FT%TZ)")" 2>"$err") || rc=$?
+    if ((rc)); then
+      fail "$label: cannot write the snapshot commit of $wip: $(reason_in "$err" "$rc")"
+      return
+    fi
     what="uncommitted changes on ${head:0:7}"
   fi
-  origin_git -C "$wt" push -q "$wip_url" "+$commit:refs/heads/$wip" || rc=$?
+  # The team's own plumbing to a private repository, from the borrowing repository, so none of the
+  # project's hooks or config is read (its pre-push still guards each push to the project's own
+  # origin), and the push's stdout goes with its stderr, so no hook's text is ever a line of the
+  # checkpoint's.
+  out=$(origin_git --git-dir="$borrow" -c core.hooksPath=/dev/null push --no-verify -q "$wip_url" "+$commit:refs/heads/$wip") ||
+    rc=$?
+  [[ -z $out ]] || printf '%s\n' "$out" >>"$NET_ERR"
   if ((rc)); then
     fail "$label: cannot push $wip to the team home's origin: $(origin_reason "$rc")"
     return
   fi
   say "$label: pushed $wip ${commit:0:7} ($what)"
 }
+
+# The ledger first, alone, so no worktree, however slow or broken, keeps it from origin.
+rc=0
+out=$(commit_records "chore: checkpoint ledger" ledger.jsonl level.jsonl) || rc=$?
+while IFS= read -r line; do
+  line=${line/#"team home: nothing to commit"/"team home: nothing new in the ledger"}
+  say "$line"
+done < <(grep . <<<"$out")
+((rc == 0)) || failed=1
 
 # Each open worktree of each open task, as {task, project, branch, worktree, archive}.
 worktrees=()
@@ -167,29 +287,55 @@ if [[ -e $TEAM_HOME/ledger.jsonl ]]; then
     -nRc "$TEAM_HOME/ledger.jsonl")
 fi
 
+# Those the last checkpoint skipped at its deadline first, in its order, then the rest.
+if [[ -s $first ]] && ((${#worktrees[@]})); then
+  mapfile -t worktrees < <(printf '%s\n' "${worktrees[@]}" |
+    jq -c --rawfile first "$first" -n '($first | split("\n") | map(select(. != ""))) as $first
+      | [inputs] | sort_by((.task + " " + .project) as $l | ($first | index($l)) // ($first | length)) | .[]')
+fi
+
+skipped=()
 for wt_json in "${worktrees[@]}"; do
   IFS=$'\t' read -r task project branch wt archive < <(jq -r '[.task, .project, .branch, .worktree, .archive] | @tsv' <<<"$wt_json")
   label="$task $project"
+  if [[ -n $deadline ]] && ((SECONDS >= deadline)); then
+    fail "$label: skipped: the checkpoint has run $SECONDS s, past its $deadline s deadline for worktrees, so the records are committed in time; the next checkpoint takes it first"
+    skipped+=("$label")
+    continue
+  fi
   why=$(skip_reason "$wt" "$branch")
   if [[ -n $why ]]; then
     say "$label: skipped: $why"
     continue
   fi
-  task_dir=$(team_project "$project" task_dir)
-  if archive_task_dir "$wt/$task_dir" "$project" "tasks/$task/$archive"; then
-    say "$label: archived $task_dir to tasks/$task/$archive"
+  # The archive and the snapshot are kept apart: either may fail, and the other is still made.
+  rc=0
+  task_dir=$(team_project "$project" task_dir 2>"$scratch/registry-err") || rc=$?
+  if ((rc)); then
+    fail "$label: cannot read $project from the registry: $(reason_in "$scratch/registry-err" "$rc")"
+    snapshot "$task" "$project" "$wt" "$label"
+    continue
   fi
+  notes=$(archive_task_dir "$wt/$task_dir" "$project" "tasks/$task/$archive" 2>"$scratch/archive-err") || rc=$?
+  while IFS= read -r line; do say "$label: $line"; done < <(grep . <<<"$notes")
+  case $rc in
+    0) say "$label: archived $task_dir to tasks/$task/$archive" ;;
+    1) ;;
+    *) fail "$label: $(grep -m1 . "$scratch/archive-err" || echo "cannot archive $task_dir (exit $rc)")" ;;
+  esac
   snapshot "$task" "$project" "$wt" "$label"
 done
+if ((${#skipped[@]})); then printf '%s\n' "${skipped[@]}" >"$first"; else rm -f "$first"; fi
 
 # This machine's usage, each complete day of it, for the commit.
 rc=0
 out=$(TEAM_HOME=$TEAM_HOME "$bin/team-tokens" export 2>"$scratch/tokens-err" {lock_fd}>&-) || rc=$?
 while IFS= read -r line; do say "usage: $line"; done < <(grep . <<<"$out")
-((rc == 0)) || echo "team-checkpoint: usage: $(sed -n '1s/^team-tokens: //p' "$scratch/tokens-err"); the next checkpoint exports it" >&2
+((rc == 0)) || warn usage "$(sed -n '1s/^team-tokens: //p' "$scratch/tokens-err"); the next checkpoint exports it"
 
-# The team home's records, every one: commit them, then push the branch when it is ahead of origin's.
-commit_records "chore: checkpoint" || failed=1
+# The team home's records, every one: commit them, group by group should the one commit fail, then
+# push the branch when it is ahead of origin's.
+records_by_group=1 commit_records "chore: checkpoint" || failed=1
 
 ((failed == 0)) || exit 1
 date -u -d "@$start" +%FT%TZ >"$last"

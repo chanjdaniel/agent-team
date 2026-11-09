@@ -156,14 +156,16 @@ usage/home-pc/time/2026-10-26.jsonl"
 }
 
 # A record file at the team home's root that must hold across machines is in every list that
-# keeps it: the records, which both commits that carry it there (team-checkpoint's and
+# keeps it: the records, which both commits that carry it there (team-checkpoint's last and
 # team-handoff's) take whole, naming no paths of their own, and CLAUDE.md's table of the team home.
+# team-checkpoint's first commit, of the ledger files by name, is a command substitution, never
+# one of these lines.
 @test "the ledger and the level record are records, committed by team-checkpoint and team-handoff, and in CLAUDE.md's table" {
   local file script calls
   for script in team-checkpoint team-handoff; do
-    calls=$(grep -E '^[[:space:]]*commit_records ' "$REPO_ROOT/bin/$script")
+    calls=$(grep -E '^[[:space:]]*(records_by_group=1 )?commit_records ' "$REPO_ROOT/bin/$script")
     [[ -n $calls ]] || { echo "$script commits no records" >&2; return 1; }
-    if grep -vE '^[[:space:]]*commit_records "[^"]*" \|\|' <<<"$calls"; then
+    if grep -vE '^[[:space:]]*(records_by_group=1 )?commit_records "[^"]*" \|\|' <<<"$calls"; then
       echo "$script names its own records paths" >&2
       return 1
     fi
