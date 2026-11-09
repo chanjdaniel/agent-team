@@ -138,10 +138,14 @@ def health_problems($lease; $now; $limits):
   | ($limits.stale_minutes * 60) as $stale
   | ($rec.steps // {}) as $steps
   | ([$rec.last_run.start, $lease.written_at] | map(strings) | max) as $seen
+  # A run whose record has no end yet is still going (or was killed before it could say so).
+  | ($seen != null and $seen == $rec.last_run.start and $rec.last_run.end == null) as $going
   | (if $seen == null or $now - ($seen | health_epoch) > $stale then
       [{key: "heartbeat", since: $seen, alerting: true, sweep: "checkpoint-stale",
-        line: "the heartbeat last ran \(if $seen then $seen | health_rel else "never" end)",
-        text: "the heartbeat last ran \(if $seen then $seen | health_plain_rel($now) else "never" end)"}]
+        line: (if $going then "a heartbeat run started \($seen | health_rel) has not ended"
+               else "the heartbeat last ran \(if $seen then $seen | health_rel else "never" end)" end),
+        text: (if $going then "a heartbeat run started \($seen | health_plain_rel($now)) has not ended"
+               else "the heartbeat last ran \(if $seen then $seen | health_plain_rel($now) else "never" end)" end)}]
     else [] end) as $heartbeat
   | (if $rec.offline then
       [{key: "offline", since: $rec.offline.since, alerting: false, sweep: null,
@@ -153,9 +157,10 @@ def health_problems($lease; $now; $limits):
         line: "GitHub refuses \($rec.machine)'s login since \($rec.login_refused.since | health_at)",
         text: "GitHub refuses \($rec.machine)'s login since \($rec.login_refused.since)"}]
     else [] end) as $refused
-  # A record written before the lease record was, by a take or a resume, says nothing of this
-  # holding's checkpoints until the first run is overdue, which the heartbeat problem says.
-  | ($lease.written_at != null and ($rec.written // "") < $lease.written_at) as $before
+  # A record written before this holding began (the lease's taken_at, which a take or a steal
+  # sets and a renewal keeps) says nothing of its checkpoints until the first run is overdue,
+  # which the heartbeat problem says; a lease record with no taken_at hides nothing.
+  | (($lease.taken_at | type) == "string" and ($rec.written // "") < $lease.taken_at) as $before
   | (if ($heartbeat + $offline + $refused | length) > 0 or $before then []
     else
       $steps.checkpoint as $failing

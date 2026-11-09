@@ -49,9 +49,15 @@ date_record() {
   mv "$record.new" "$record"
 }
 
-# Date the lease record's write <minutes> ago (0 for now).
+# Date the lease record's write <minutes> ago (0 for now), as a renewal writes it; with --take,
+# its taken_at as well, as a take or a steal writes it.
 date_lease_record() {
-  jq --argjson m "$1" '.written_at = (now - $m * 60 | floor | todate)' "$state/lease.json" >"$state/lease.json.new"
+  local fields='.written_at = $at'
+  if [[ $1 == --take ]]; then
+    fields+=' | .taken_at = $at'
+    shift
+  fi
+  jq --argjson m "$1" "(now - \$m * 60 | floor | todate) as \$at | $fields" "$state/lease.json" >"$state/lease.json.new"
   mv "$state/lease.json.new" "$state/lease.json"
 }
 
@@ -130,6 +136,16 @@ http_origin() {
   jq -e --arg since "$since" '.since == $since and .alerting and .sweep == "checkpoint-stale"
     and (.text | startswith("checkpoint failing since \($since) (2 runs): team home: not on a branch"))' <<<"$(problem_of checkpoint)"
 
+  # A renewal rewrites the lease record after the record's last write, as the lease step does
+  # before the checkpoint step: the failing checkpoint still shows, and the sweep still raises it.
+  date_lease_record --take 30
+  date_record '.written = ago(1)'
+  date_lease_record 0
+  view
+  jq -e --arg since "$since" '.since == $since and .alerting and .sweep == "checkpoint-stale"' <<<"$(problem_of checkpoint)"
+  run_bin -1 team-sweep --json
+  jq -e 'any(.[]; .kind == "checkpoint-stale")' <<<"$output"
+
   # Back on its branch, the next run clears it.
   git -C "$TEAM_HOME" checkout -q dev
   run_bin -0 team-timers run
@@ -195,8 +211,18 @@ http_origin() {
       alerting: true, sweep: "checkpoint-stale"}' <<<"$view"
   assert_equal "$(jq -r .line <<<"$view")" "**Health**: the heartbeat last ran <t:$(date -d "$seen" +%s):R>"
 
+  # A run that started 20 minutes ago and has not ended says so.
+  local start
+  date_record '.last_run.end = null | .last_run.ended = null'
+  date_lease_record 25
+  start=$(jq -r .last_run.start "$record")
+  view
+  jq -e --arg start "$start" '[.problems[].key] == ["heartbeat"]
+    and .problems[0].text == "a heartbeat run started \($start) (20 minutes ago) has not ended"' <<<"$view"
+  assert_equal "$(jq -r .line <<<"$view")" "**Health**: a heartbeat run started <t:$(date -d "$start" +%s):R> has not ended"
+
   # A take or a resume just now: quiet until its first run is overdue.
-  date_lease_record 0
+  date_lease_record --take 0
   view
   assert_equal "$view_status" 0
   jq -e '.ok and .problems == []' <<<"$view"
@@ -263,12 +289,15 @@ http_origin() {
   echo '{"minor_share": "a third"}' >"$file"
   run_bin -1 team-timers run
   view
-  local problem since
+  local problem since reason
   problem=$(problem_of step-capacity)
   since=$(jq -r .since <<<"$problem")
-  jq -e --arg since "$since" --arg file "$file" '. == {key: "step-capacity", since: $since,
-    text: "capacity failing since \($since) (1 run): \($file): minor_share must be a number above 0 and at most 1, not \"a third\"",
-    alerting: false, sweep: null}' <<<"$problem"
+  # The reason starts with the file's path, which on macOS's long TMPDIR passes the view's cut at
+  # 150 characters.
+  reason="$file: minor_share must be a number above 0 and at most 1, not \"a third\""
+  (( ${#reason} <= 150 )) || reason="${reason:0:147}..."
+  jq -e --arg since "$since" --arg reason "$reason" '. == {key: "step-capacity", since: $since,
+    text: "capacity failing since \($since) (1 run): \($reason)", alerting: false, sweep: null}' <<<"$problem"
   # The text form: one line per problem, and exit 1.
   run_bin -1 team-timers health
   assert_equal "$output" "$(jq -r '.problems[].text' <<<"$view")"
@@ -304,8 +333,13 @@ http_origin() {
   echo "not json" >"$TEAM_HOME/usage/home-pc/2026-10-21.jsonl"
   run_bin -0 team-timers run
   view
-  jq -e --arg file "$TEAM_HOME/usage/home-pc/2026-10-21.jsonl" '[.problems[].key] == ["step-usage"]
-    and (.problems[0].text | startswith("usage failing since ")) and (.problems[0].text | contains(" (1 run): cannot export: \($file) holds a line"))' <<<"$view"
+  # The reason starts with the file's path, so a long TMPDIR may pass the view's cut at 150
+  # characters: its kept part, less the "...", is then where the expected start is cut.
+  jq -e --arg start "cannot export: $TEAM_HOME/usage/home-pc/2026-10-21.jsonl holds a line" '[.problems[].key] == ["step-usage"]
+    and (.problems[0].text | startswith("usage failing since "))
+    and (.problems[0].text | split(" (1 run): ")[1] as $reason
+      | ($reason | startswith($start))
+        or ($reason | length == 150 and endswith("...") and ($start | startswith($reason[:-3]))))' <<<"$view"
 
   # A checkpoint not due exports nothing, so the entry stays.
   run_bin -0 team-timers run
@@ -544,6 +578,17 @@ SH
     '.content == $text' <<<"$(alerts_shown)"
   run_bin -0 team-timers run
   assert_equal "$(alerts_shown | wc -l)" 1
+}
+
+@test "with no good checkpoint yet the stale alert says so, and its open alert keeps a null since" {
+  run_bin -0 team-timers run
+  fake_checkpoint <<'SH'
+echo "not due: the last checkpoint is recent"
+SH
+  rm "$state/last-checkpoint"
+  run_bin -0 team-timers run
+  jq -e '.content == "No good checkpoint on home-pc yet: the checkpoint step did not run."' <<<"$(alerts_shown)"
+  jq -e '.alerts.checkpoint.since == null and (.alerts.checkpoint.message | type) == "string"' "$record"
 }
 
 @test "an alert post Discord refuses is logged in both logs and posted by the next run; an edit of a message that is gone is logged and closes the incident" {

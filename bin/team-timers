@@ -34,15 +34,18 @@
 #            record or one that cannot be read is "**Health**: unknown - <why>" (exit 1). The
 #            problems, in order (bin/lib/health.jq defines each rule and threshold once):
 #              heartbeat  the later of the last run's start and the lease record's write is over
-#                     15 minutes old; alerting; sweep checkpoint-stale.
+#                     15 minutes old ("a heartbeat run started <t> has not ended" while that run's
+#                     record has no end, else "the heartbeat last ran <t>"); alerting; sweep
+#                     checkpoint-stale.
 #              offline, login-refused  the heartbeat's own flags; login-refused alerting, sweep
 #                     health; offline neither, since the coordinator's offline watch tells it.
 #              checkpoint  the checkpoint step failing, or the last good checkpoint over 15
 #                     minutes old, with the reason (an earlier step's failing one, or "the
 #                     checkpoint step did not run"); alerting after 2 runs in a row or once
 #                     stale; sweep checkpoint-stale; not raised beside the three above, nor
-#                     while the record is older than the lease record (a take or a resume
-#                     whose first run is not due yet).
+#                     while the record was written before this holding began (the lease
+#                     record's taken_at: a take or a steal whose first run is not due yet; a
+#                     renewal keeps it).
 #              ledger  lines of ledger.jsonl no reader can parse, with their count and line
 #                     numbers; alerting; sweep health.
 #              step-<name>  any other step failing (the usage export as step-usage), alerting
@@ -871,7 +874,7 @@ set_alert() {
 # closed, an edit that fails closing it all the same. Each post, failed post and edit is a log
 # line, a failed one in the failures log too. Fails nothing.
 alerts_step() {
-  local plan alert key since text posted message id now fenced=false lease
+  local plan alert key text posted message id now fenced=false lease
   [[ -f $health && -f $state/lease.json ]] || return 0
   lease=$(jq -c 'objects' "$state/lease.json" 2>/dev/null) || lease=''
   [[ ! -e $state/fenced ]] || fenced=true
@@ -883,19 +886,19 @@ alerts_step() {
   fi
   while IFS= read -r alert; do
     [[ -n $alert ]] || continue
-    key=$(jq -r .key <<<"$alert") since=$(jq -r .since <<<"$alert") text=$(jq -r .text <<<"$alert")
+    key=$(jq -r .key <<<"$alert") text=$(jq -r .text <<<"$alert")
     now=$(date -u +%FT%TZ)
     if alert_post "$text"; then
       id=$ALERT_ID
-      set_alert "$key" "$(jq -cn --arg since "$since" --arg text "$text" --arg posted "$now" --arg id "$id" \
-        '{since: $since, text: $text, posted: $posted, message: (if $id == "" then null else $id end)}')"
+      set_alert "$key" "$(jq -c --arg posted "$now" --arg id "$id" \
+        '{since, text, posted: $posted, message: (if $id == "" then null else $id end)}' <<<"$alert")"
       if [[ -n $id ]]; then
         log alert "$key: posted to #coordinator (message $id)"
       else
         problem alert "$key: posted to #coordinator, but Discord gave no message id, so it cannot be marked resolved"
       fi
     else
-      set_alert "$key" "$(jq -cn --arg since "$since" --arg text "$text" '{since: $since, text: $text, posted: null, message: null}')"
+      set_alert "$key" "$(jq -c '{since, text, posted: null, message: null}' <<<"$alert")"
       problem alert "$key: the post to #coordinator failed ($POST_ERROR); it is tried again next run"
     fi
   done < <(jq -c '.post[]' <<<"$plan")
