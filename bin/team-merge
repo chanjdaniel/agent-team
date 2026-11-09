@@ -60,9 +60,9 @@
 #   (own_project, as for the plan-time word), with no merge_with_plan, and on the team's own its
 #   one reason is that, its message and those checks not read; every check below holds for it
 #   too, and a refusal ends with a line saying to ask Daniel for the per-head word on the head,
-#   in place of the plan-time word's; a word tried before it that does not hold has its reasons listed too, each reason
-#   once; a per-head or plan-time word that holds never reads it; with no merge-standing in the
-#   ledger, it is never read;
+#   in place of the plan-time word's; a word tried before it that does not hold has its reasons
+#   listed too, each reason once; a per-head or plan-time word that holds never reads it; with
+#   no merge-standing in the ledger, it is never read;
 #   the PR is open, not a draft, does not conflict, and targets the project's base;
 #   every required check (the base branch's protection, gh pr checks --required and the
 #   project's required_checks) is present on the head and passed (a skipped one passes);
