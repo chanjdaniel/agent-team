@@ -6,8 +6,8 @@ Usage: python3 -I command_text.py   (the command on stdin; prints the text on st
 bin/hooks/command-guard runs this file on a Bash call's command, and team-tokens imports
 without_heredocs from it. It reads the command far enough to know its quotes ('...', "..." and
 $'...'), backslashes, comments, arithmetic ($[, and $(( or (( whose two closing parentheses are
-adjacent, matched as Bash's parse_matched_pair does, past quotes, backticks, ${...} and a $(...)
-read by this scan: ((cmd) ) is two subshells), groups ((, $(, a backtick, ${ in which quotes
+adjacent, matched as Bash's parse_matched_pair does, past quotes, backticks and a $(...) read
+by this scan: ((cmd) ) is two subshells), groups ((, $(, a backtick, ${ in which quotes
 nest up to its first }, [[ ... ]], in which a comment and a newline's heredoc bodies are read as
 outside it, a { ... }, and after = an array assignment's list, a word's part in which no word is
 reserved), case's patterns, pipelines, here-strings and heredocs, whose marker is its word up to
@@ -41,6 +41,7 @@ It reads no quoting beyond that: a guard matching the text sees a separator insi
 which refuses more, never less.
 """
 
+import functools
 import re
 import sys
 from dataclasses import dataclass
@@ -160,9 +161,10 @@ def _past_blanks(text, i):
 def _pair_end(text, j, open_, close, flags=""):
     """Past the close that matches open_, read from j, just after open_, as Bash's
     parse_matched_pair reads it, or len(text) when none does. flags "esc" lets a backslash quote
-    in '...' ($'...'), and "first" ends at the first close (${...}). In a group ((...), ${...} or
-    $[...]) a quote or backtick nests and a $(, ${ or $[ is read whole, a $( by the scan, as
-    Bash's parse_comsub; in "..." a backtick, $(, ${ and $[ do; elsewhere only a backslash."""
+    in '...' ($'...'), "first" ends at the first close (${...}), and "arith" reads only a $( whole
+    (a (( command's span, P_ARITH). In a group ((...), ${...} or $[...]) a quote or backtick nests
+    and a $(, ${ or $[ is read whole, a $( by the scan, as Bash's parse_comsub; in "..." a
+    backtick, $(, ${ and $[ do; elsewhere only a backslash."""
     n, count, dollar = len(text), 1, False
     while j < n:
         ch = text[j]
@@ -184,11 +186,11 @@ def _pair_end(text, j, open_, close, flags=""):
             j = _pair_end(text, j + 1, ch, ch, "esc" if dollar and ch == "'" else "")
         elif open_ == '"' and ch == "`":
             j = _pair_end(text, j + 1, "`", "`")
-        elif open_ != "`" and dollar and ch in "({[":
+        elif open_ != "`" and dollar and (ch == "(" or ch in "{[" and flags != "arith"):
             # Bash undoes the count its open added, which a ${...} never does.
             count -= open_ == ch and flags != "first"
             if ch == "(":
-                j = read_command(text, j + 1, group=True).end
+                j = _group_end(text, j + 1)
             else:
                 j = _pair_end(text, j + 1, ch, "}" if ch == "{" else "]", "first" if ch == "{" else "")
         else:
@@ -198,11 +200,21 @@ def _pair_end(text, j, open_, close, flags=""):
     return n
 
 
+# _arith_end and _group_end keep their answers for the text being read, which read_command clears
+# for each new one: deciding a (( reads each $( in it, whose reading decides each (( in that, so
+# with no memo nested ((cmd) ) groups would take time doubling with each level.
+@functools.lru_cache(maxsize=None)
 def _arith_end(text, i):
     """The end of the arithmetic whose (( starts at i, or None when the ) closing its second ( is
     not right before another, as in ((cmd) ), which Bash reads as two subshells (parse_arith_cmd)."""
-    end = _pair_end(text, i + 2, "(", ")")
+    end = _pair_end(text, i + 2, "(", ")", "arith")
     return end + 1 if text[end : end + 1] == ")" else None
+
+
+@functools.lru_cache(maxsize=None)
+def _group_end(text, j):
+    """Past the ) that closes the group whose ( is just before j, as the scan reads it."""
+    return read_command(text, j, group=True).end
 
 
 def _closing(text, pos, word, tabs):
@@ -220,6 +232,9 @@ def _closing(text, pos, word, tabs):
 def read_command(text, start=0, group=False):
     """The command's reading, as Reading says, from one pass over its text from start; with group,
     the reading of a group whose ( is just before start, ended by its )."""
+    if not group:
+        _arith_end.cache_clear()
+        _group_end.cache_clear()
     pipelines, heredocs, strings, pending = [], [], [], []
     # Each group open at i: its kind (root, (, `, {, ${, [[, an array assignment's list, or a
     # case's case-word, case-pattern or case-body), its pipeline, where its segment starts,

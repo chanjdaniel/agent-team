@@ -153,7 +153,21 @@ passes() {
     "echo \$((echo \"\`echo \"))\"\`\"; echo 'team-worker T1 ops wt' ) | bash)" \
     "((echo \"\${x:-\"))\"}\"; echo 'team-worker T1 ops wt' ) | bash)" \
     "echo \"\$((echo \"\${x:-\"))\"}\"; echo 'team-worker T1 ops wt' ) | bash)\"" \
-    "((echo \$(case x in x) echo;; esac)); echo 'team-worker T1 ops wt' ) | bash"
+    "((echo \$(case x in x) echo;; esac)); echo 'team-worker T1 ops wt' ) | bash" \
+    "((echo \${x:-)}; echo 'team-worker T1 ops wt' | bash ))" "((echo 'team-worker T1 ops wt' | bash; echo \${x:-)} ))" \
+    "((echo 'team-worker T1 ops wt' | bash; echo \$[)] ))"
+}
+
+# Each (( is decided once and each $( in it read once, so the hook's time grows with the command,
+# not with 2 to the power of its nesting; a hook that runs past its timeout lets the call through.
+@test "a guarded pipe thirty ((cmd) ) groups deep is refused at once" {
+  local level="echo 'team-worker T1 ops wt' | bash" k
+  for ((k = 0; k < 30; k++)); do level="((echo \$( $level )) )"; done
+  bash -n -c "$level"
+  run --separate-stderr timeout 10 "$REPO_ROOT/bin/hooks/command-guard" <<<"$(jq -cn --arg c "$level" \
+    '{hook_event_name: "PreToolUse", cwd: env.HOME, tool_name: "Bash", tool_input: {command: $c}}')"
+  assert_equal "$status" 2
+  assert_equal "$stderr" "Blocked by command-guard: $OPS; a guardrail, so report it as BLOCKED and do not reach it another way."
 }
 
 # Bash takes } and esac as reserved words after every compound command's end, so each form below
