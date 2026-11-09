@@ -7,14 +7,19 @@
 # Refuses unless team-lease check says this machine holds the lease (exit 1), and exits 75 when
 # GitHub is unreachable; either way nothing changes. Without --force, a checkpoint less than 5
 # minutes (less a minute for the timer's slack) after the last does nothing but say so.
-# For each open task, in task number order, for each of its open worktrees:
+# For each open task, in task number order, for each of its open worktrees, each contained: any
+# step of one worktree that fails, from the registry lookup to the push, is that worktree's
+# failure, with the first error line it gave (git's, rsync's or the registry's), and stops no
+# other worktree nor any later step; its archive and its snapshot are made apart, so either is
+# still made when the other failed.
 #   1. A worktree that is missing, on another branch than its recorded one, or locked by a running
 #      git command (index.lock) is skipped with a line saying why.
 #   2. Its task directory is mirrored into tasks/T<n>/scratch/ (the project the task was opened
 #      in) or tasks/T<n>/scratch-<project>/ (one added later), as team-close does; a missing or
 #      empty one is a line saying so and archives nothing. It is mirrored less what
 #      archive_left_out (bin/lib/team.sh) leaves out, each named on a line; a mirror that fails
-#      is that worktree's failure, with rsync's reason, and its snapshot is still made.
+#      is that worktree's failure, with rsync's reason, and so is a failed registry lookup of its
+#      project (one the registry no longer has), which skips its archive alone.
 #   3. Its work is kept on the team home's origin, never the project's (which may be public), as
 #      refs/heads/wip/<project>/T<n>, pushed from the worktree to that origin's URL in place of
 #      what is there (the one forced push, a script's, never on a task branch, and no PR's head;
@@ -25,7 +30,9 @@
 #      left out, each named on a line; with none, the branch head itself, so a branch never
 #      pushed is kept too and an older snapshot is gone.
 #      A wip/<project>/T<n> already that head, or a snapshot with the same tree and parent, is
-#      left alone. The worktree's files, index, branch and stash are never touched.
+#      left alone. The worktree's files, index, branch and stash are never touched. The push runs
+#      none of the project's hooks (hooks off for that one command, its output kept out of the
+#      checkpoint's), since it is the team's own plumbing to a private repository.
 # Then team-tokens export writes this machine's usage of each complete UTC day into usage/<machine>/
 # (its lines prefixed "usage: "); a failed export is a warning and fails nothing, since the
 # transcripts stay and the next checkpoint exports what this one could not.
@@ -132,22 +139,46 @@ skip_reason() {
   fi
 }
 
+# Why a command failed, from its stderr in the file <err>: its first fatal or error line, else its
+# first line, git's "fatal: " or "error: " or a team script's "team-<name>: " cut, else its exit
+# status: reason_in <err> <exit status>
+reason_in() {
+  local why
+  why=$(grep -m1 -E '^(fatal|error): ' "$1" || grep -m1 . "$1") || why=''
+  why=$(sed -E 's/^(fatal|error|team-[a-z-]+): //' <<<"$why")
+  printf '%s\n' "${why:-exit $2}"
+}
+
 # Keep the work of the worktree <wt> of <task> in <project> on the team home's origin as
-# wip/<project>/<task>: its branch head, or a snapshot of its uncommitted changes on that head:
-# snapshot <task> <project> <wt> <label>
+# wip/<project>/<task>: its branch head, or a snapshot of its uncommitted changes on that head.
+# Every command's status is checked, so a failure is this worktree's alone, one line with git's
+# reason, and the next worktree still runs: snapshot <task> <project> <wt> <label>
 snapshot() {
-  local task=$1 project=$2 wt=$3 label=$4 wip=wip/$2/$1 tree head remote old commit what left rc=0
-  tree=$(worktree_tree "$wt")
-  left=$(snapshot_left_out "$wt" | paste -sd ' ')
+  local task=$1 project=$2 wt=$3 label=$4 wip=wip/$2/$1 err=$scratch/snapshot-err tree head head_tree remote old \
+    commit what left out rc=0
+  tree=$(worktree_tree "$wt" 2>"$err") || rc=$?
+  if ((rc)); then
+    fail "$label: cannot snapshot $wip: $(reason_in "$err" "$rc")"
+    return
+  fi
+  left=$(snapshot_left_out "$wt" 2>"$err" | paste -sd ' ') || rc=$?
+  if ((rc)); then
+    fail "$label: cannot snapshot $wip: $(reason_in "$err" "$rc")"
+    return
+  fi
   [[ -z $left ]] || say "$label: left out of $wip, as files that may hold a secret: $left"
-  head=$(git -C "$wt" rev-parse HEAD)
+  { head=$(git -C "$wt" rev-parse HEAD) && head_tree=$(git -C "$wt" rev-parse "$head^{tree}"); } 2>"$err" || rc=$?
+  if ((rc)); then
+    fail "$label: cannot read the head of $wt: $(reason_in "$err" "$rc")"
+    return
+  fi
   remote=$(origin_git -C "$wt" ls-remote "$wip_url" "refs/heads/$wip") || rc=$?
   if ((rc)); then
     fail "$label: cannot read $wip on the team home's origin: $(origin_reason "$rc")"
     return
   fi
   old=${remote%%[[:space:]]*}
-  if [[ $tree == "$(git -C "$wt" rev-parse "HEAD^{tree}")" ]]; then
+  if [[ $tree == "$head_tree" ]]; then
     commit=$head what="the branch head, no uncommitted changes"
     if [[ $old == "$head" ]]; then
       say "$label: $wip is up to date (${old:0:7}, no uncommitted changes)"
@@ -159,10 +190,20 @@ snapshot() {
       say "$label: $wip is up to date (${old:0:7})"
       return
     fi
-    commit=$(git -C "$wt" commit-tree "$tree" -p "$head" -m "$(snapshot_message "$task" "$machine" "$(date -u -d "@$start" +%FT%TZ)")")
+    commit=$(git -C "$wt" commit-tree "$tree" -p "$head" \
+      -m "$(snapshot_message "$task" "$machine" "$(date -u -d "@$start" +%FT%TZ)")" 2>"$err") || rc=$?
+    if ((rc)); then
+      fail "$label: cannot write the snapshot commit of $wip: $(reason_in "$err" "$rc")"
+      return
+    fi
     what="uncommitted changes on ${head:0:7}"
   fi
-  origin_git -C "$wt" push -q "$wip_url" "+$commit:refs/heads/$wip" || rc=$?
+  # The team's own plumbing to a private repository, so none of the project's hooks runs (its
+  # pre-push still guards each push to the project's own origin), and the push's stdout goes with
+  # its stderr, so no hook's text is ever a line of the checkpoint's.
+  out=$(origin_git -C "$wt" -c core.hooksPath=/dev/null push --no-verify -q "$wip_url" "+$commit:refs/heads/$wip") ||
+    rc=$?
+  [[ -z $out ]] || printf '%s\n' "$out" >>"$NET_ERR"
   if ((rc)); then
     fail "$label: cannot push $wip to the team home's origin: $(origin_reason "$rc")"
     return
@@ -186,8 +227,14 @@ for wt_json in "${worktrees[@]}"; do
     say "$label: skipped: $why"
     continue
   fi
-  task_dir=$(team_project "$project" task_dir)
+  # The archive and the snapshot are kept apart: either may fail, and the other is still made.
   rc=0
+  task_dir=$(team_project "$project" task_dir 2>"$scratch/registry-err") || rc=$?
+  if ((rc)); then
+    fail "$label: cannot read $project from the registry: $(reason_in "$scratch/registry-err" "$rc")"
+    snapshot "$task" "$project" "$wt" "$label"
+    continue
+  fi
   notes=$(archive_task_dir "$wt/$task_dir" "$project" "tasks/$task/$archive" 2>"$scratch/archive-err") || rc=$?
   while IFS= read -r line; do say "$label: $line"; done < <(grep . <<<"$notes")
   case $rc in

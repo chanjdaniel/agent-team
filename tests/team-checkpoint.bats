@@ -76,6 +76,13 @@ EOF
   chmod +x "$BATS_TEST_TMPDIR/stubs/git"
 }
 
+# A pre-push hook that refuses, says so on stdout and stderr, and leaves the marker
+# $BATS_TEST_TMPDIR/<name>.ran: refusing_hook <name>
+refusing_hook() {
+  printf '#!/bin/sh\ntouch "%s/%s.ran"\necho "HOOK SAYS NO on stdout"\necho "HOOK SAYS NO on stderr" >&2\nexit 1\n' \
+    "$BATS_TEST_TMPDIR" "$1"
+}
+
 # Everything a checkpoint must leave as it was in the worktree <wt>: its index's bytes, files,
 # staged changes, index entries, stash, branch and head, all read without optional locks.
 worktree_state() {
@@ -302,6 +309,131 @@ T4 home: archived .scratch/task to tasks/T4/scratch"
   echo spec >"$other/home/1/.scratch/task/spec.md"
   run_bin -0 --separate-stderr team-checkpoint
   assert_equal "$(head -n 1 <<<"$output")" "T1 home: archived .scratch/task to tasks/T1/scratch"
+}
+
+@test "a worktree whose snapshot git cannot build is that worktree's failure alone: the next is pushed and the records committed" {
+  [[ $(id -u) != 0 ]] || skip "root reads a file whatever its mode"
+  run_bin -0 team-open home feature feat work1 "Work 1"
+  run_bin -0 team-open home feature feat work2 "Work 2"
+  local one=$HOME/slots/home/1 two=$HOME/slots/home/2
+  echo "unreadable" >"$one/locked.txt"
+  chmod 000 "$one/locked.txt"
+  echo "change" >"$two/change.txt"
+
+  run_bin -1 --separate-stderr team-checkpoint
+  assert_equal "$stderr" "team-checkpoint: T1 home: cannot snapshot wip/home/T1: open(\"locked.txt\"): Permission denied"
+  assert_contains "$output" "T2 home: pushed wip/home/T2"
+  assert_equal "$(git -C "$team_origin" for-each-ref --format='%(refname)' refs/heads/wip/)" "refs/heads/wip/home/T2"
+  assert_equal "$(git -C "$team_origin" show wip/home/T2:change.txt)" "change"
+  assert_contains "$output" "team home: committed"
+  assert_equal "$(team_tip)" "$(git -C "$TEAM_HOME" rev-parse HEAD)"
+  [[ ! -e $state/last-checkpoint ]]
+}
+
+@test "an untracked nested repository with no commit fails that worktree's snapshot with git's own line; the others still run" {
+  run_bin -0 team-open home feature feat work1 "Work 1"
+  run_bin -0 team-open home feature feat work2 "Work 2"
+  local one=$HOME/slots/home/1 two=$HOME/slots/home/2
+  echo "spec" >"$one/.scratch/task/spec.md"
+  git init -q "$one/nested"
+  echo "change" >"$two/change.txt"
+  local before
+  before=$(worktree_state "$one")
+
+  run_bin -1 --separate-stderr team-checkpoint
+  assert_equal "$(worktree_state "$one")" "$before"
+  assert_equal "$stderr" "team-checkpoint: T1 home: cannot snapshot wip/home/T1: 'nested/' does not have a commit checked out"
+  # Its archive is kept apart from its snapshot: still made.
+  assert_contains "$output" "T1 home: archived .scratch/task to tasks/T1/scratch"
+  assert_contains "$output" "T2 home: pushed wip/home/T2"
+  assert_equal "$(git -C "$team_origin" for-each-ref --format='%(refname)' refs/heads/wip/)" "refs/heads/wip/home/T2"
+  assert_equal "$(git -C "$team_origin" show dev:tasks/T1/scratch/spec.md)" "spec"
+  [[ ! -e $state/last-checkpoint ]]
+}
+
+@test "a mirror that fails is that worktree's failure with rsync's reason; its snapshot is still pushed and the next task still runs" {
+  [[ $(id -u) != 0 ]] || skip "root reads a file whatever its mode"
+  run_bin -0 team-open home feature feat work1 "Work 1"
+  run_bin -0 team-open home feature feat work2 "Work 2"
+  local one=$HOME/slots/home/1 two=$HOME/slots/home/2
+  echo "unreadable" >"$one/.scratch/task/locked.md"
+  chmod 000 "$one/.scratch/task/locked.md"
+  echo "change 1" >"$one/change.txt"
+  echo "spec 2" >"$two/.scratch/task/spec.md"
+
+  run_bin -1 --separate-stderr team-checkpoint
+  [[ $stderr =~ ^"team-checkpoint: T1 home: cannot mirror $one/.scratch/task into tasks/T1/scratch: rsync".*"locked.md".*"Permission denied"[^$'\n']*$ ]]
+  assert_contains "$output" "T1 home: pushed wip/home/T1"
+  assert_equal "$(git -C "$team_origin" show wip/home/T1:change.txt)" "change 1"
+  assert_contains "$output" "T2 home: archived .scratch/task to tasks/T2/scratch"
+  assert_equal "$(git -C "$team_origin" show dev:tasks/T2/scratch/spec.md)" "spec 2"
+  [[ ! -e $state/last-checkpoint ]]
+}
+
+@test "a worktree whose project is gone from the registry is that worktree's failure; its snapshot is pushed and the next task still runs" {
+  run_bin -0 team-open site feature feat work1 "Work 1"
+  run_bin -0 team-open home feature feat work2 "Work 2"
+  echo "change 1" >"$HOME/slots/site/1/change.txt"
+  echo "spec 2" >"$HOME/slots/home/1/.scratch/task/spec.md"
+  sed -i '/^\[site/,$d' "$TEAM_HOME/projects.toml"
+
+  run_bin -1 --separate-stderr team-checkpoint
+  assert_equal "$stderr" "team-checkpoint: T1 site: cannot read site from the registry: unknown project 'site'; known: home"
+  assert_contains "$output" "T1 site: pushed wip/site/T1"
+  assert_contains "$output" "T2 home: archived .scratch/task to tasks/T2/scratch"
+  assert_contains "$output" "T2 home: pushed wip/home/T2"
+  assert_contains "$output" "team home: committed"
+  [[ ! -e $state/last-checkpoint ]]
+}
+
+@test "a failed read or push of one worktree's wip ref is that worktree's failure alone" {
+  run_bin -0 team-open site feature feat work1 "Work 1"
+  run_bin -0 team-open home feature feat work2 "Work 2"
+  run_bin -0 team-open home feature feat work3 "Work 3"
+  echo "change 1" >"$HOME/slots/site/1/change.txt"
+  echo "change 2" >"$HOME/slots/home/1/change.txt"
+  echo "change 3" >"$HOME/slots/home/2/change.txt"
+  # site's repository may not read a local origin; the team home's origin refuses wip/home/T2.
+  git -C "$site" config protocol.file.allow never
+  printf '#!/bin/sh\nwhile read -r old new ref; do [ "$ref" != refs/heads/wip/home/T2 ] || { echo "the test refuses T2" >&2; exit 1; }; done\n' \
+    >"$team_origin/hooks/pre-receive"
+  chmod +x "$team_origin/hooks/pre-receive"
+
+  run_bin -1 --separate-stderr team-checkpoint
+  [[ $stderr =~ ^"team-checkpoint: T1 site: cannot read wip/site/T1 on the team home's origin: "[^$'\n']+$'\n'"team-checkpoint: T2 home: cannot push wip/home/T2 to the team home's origin: "[^$'\n']+$ ]]
+  assert_contains "$output" "T3 home: pushed wip/home/T3"
+  assert_equal "$(git -C "$team_origin" for-each-ref --format='%(refname)' refs/heads/wip/)" "refs/heads/wip/home/T3"
+  assert_contains "$output" "team home: committed"
+  [[ ! -e $state/last-checkpoint ]]
+}
+
+@test "the snapshot push runs none of the project's hooks, from .git/hooks or a relative core.hooksPath" {
+  run_bin -0 team-open home feature feat work1 "Work 1"
+  run_bin -0 team-open site feature feat work2 "Work 2"
+  local one=$HOME/slots/home/1 two=$HOME/slots/site/1 hooks
+  hooks=$(git -C "$home" rev-parse --path-format=absolute --git-common-dir)/hooks
+  git -C "$site" config core.hooksPath .githooks
+  mkdir -p "$two/.githooks"
+  refusing_hook home >"$hooks/pre-push"
+  refusing_hook site >"$two/.githooks/pre-push"
+  chmod +x "$hooks/pre-push" "$two/.githooks/pre-push"
+  echo "change 1" >"$one/change.txt"
+  echo "change 2" >"$two/change.txt"
+
+  run_bin -0 --separate-stderr team-checkpoint
+  assert_contains "$output" "T1 home: pushed wip/home/T1"
+  assert_contains "$output" "T2 site: pushed wip/site/T2"
+  assert_equal "$(git -C "$team_origin" show wip/home/T1:change.txt)" "change 1"
+  assert_equal "$(git -C "$team_origin" show wip/site/T2:change.txt)" "change 2"
+  [[ $output$stderr != *"HOOK SAYS NO"* ]]
+  [[ ! -e $BATS_TEST_TMPDIR/home.ran && ! -e $BATS_TEST_TMPDIR/site.ran ]]
+
+  # Each hook is live: a plain push from either worktree runs it and is refused.
+  run git -C "$one" push "$team_origin" HEAD:refs/heads/probe-1
+  ((status != 0))
+  run git -C "$two" push "$team_origin" HEAD:refs/heads/probe-2
+  ((status != 0))
+  [[ -e $BATS_TEST_TMPDIR/home.ran && -e $BATS_TEST_TMPDIR/site.ran ]]
 }
 
 @test "an empty or a missing task directory is one line under the worktree's label, archives nothing and is no problem" {

@@ -771,23 +771,22 @@ snapshot_left_out() {
 
 # The tree of the worktree <wt> as it is, uncommitted changes and untracked files included (files
 # git ignores, and those snapshot_left_out names, are not), built in a copy of its index so the
-# worktree's own index is never touched; it equals HEAD's tree when the worktree is clean:
-# worktree_tree <wt>
+# worktree's own index is never touched; it equals HEAD's tree when the worktree is clean. Every
+# step's status is checked, so it fails the same in a condition as under set -e: it returns 1
+# with the failing command's own lines on stderr (git's, for a file it cannot read or a nested
+# repository with no commit), for the caller to report: worktree_tree <wt>
 worktree_tree() {
-  local wt=$1 index copy tree
+  local wt=$1 index copy tree='' rc=0
   index=$(git -C "$wt" rev-parse --path-format=absolute --git-path index) || return 1
-  copy=$(mktemp)
+  copy=$(mktemp) || return 1
   # A copy of the real index keeps what git knows of each file's state; with none, HEAD's.
-  if [[ -f $index ]]; then cp "$index" "$copy"; else GIT_INDEX_FILE=$copy git -C "$wt" read-tree HEAD; fi
-  if GIT_INDEX_FILE=$copy git -C "$wt" add -A &&
+  if [[ -f $index ]]; then cp "$index" "$copy"; else GIT_INDEX_FILE=$copy git -C "$wt" read-tree HEAD; fi &&
+    GIT_INDEX_FILE=$copy git -C "$wt" add -A &&
     snapshot_left_out "$wt" | GIT_INDEX_FILE=$copy git -C "$wt" update-index --force-remove --stdin &&
-    tree=$(GIT_INDEX_FILE=$copy git -C "$wt" write-tree); then
-    rm -f "$copy"
-    printf '%s\n' "$tree"
-  else
-    rm -f "$copy"
-    return 1
-  fi
+    tree=$(GIT_INDEX_FILE=$copy git -C "$wt" write-tree) || rc=1
+  rm -f "$copy"
+  ((rc == 0)) || return 1
+  printf '%s\n' "$tree"
 }
 
 # The message of a checkpoint's snapshot commit, which marks it as one (is_snapshot):
