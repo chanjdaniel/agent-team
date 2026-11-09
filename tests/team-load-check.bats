@@ -935,7 +935,7 @@ mongo_lines() {
   assert_contains "$prompt" "1. Wait for prod-mongo: "
   assert_contains "$prompt" "4. Call mcp__prod-mongo__list-backups exactly once, with no arguments"
   assert_contains "$prompt" "Call no other prod-mongo tool, and never backup or restore-drill."
-  assert_contains "$prompt" "5. Two probes of the backups folder $root, "
+  assert_contains "$prompt" "5. Two probes of the backups folder $root, which this load check makes to prove the deny rules that keep your file tools out of it: they are the one exception the ops role makes to its rule never to read or open that folder, so try each once, and a refusal is not a reason to send BLOCKED."
   assert_contains "$prompt" "Use Read on '$root/load-check-probe.json'."
   assert_contains "$prompt" "Then use Grep with output_mode 'files_with_matches', pattern '\"collectionName\"|\"verified\": true', glob '{manifest.json,*.metadata.json}' and path '$HOME'."
   assert_contains "$prompt" "6. Write done.txt with the line 'done'."
@@ -1033,6 +1033,30 @@ mongo_lines() {
   assert_equal "$(grep -c '^FAIL' <<<"$output")" 1
 }
 
+# blobbed: the stub transcript with every entry repeated as an api-request-blob entry, as today's
+# Claude Code writes the request it sends (a tool_use under role assistant, a tool_result under user)
+blobbed() {
+  local transcript=$STUB_FIXTURES/transcript.jsonl
+  jq -c '., {type: "api-request-blob", hash: "h", sessionId: "s", message: {role: (if .type == "assistant" then "assistant" else "user" end), content: .message.content}}' \
+    "$transcript" >"$transcript.new"
+  mv "$transcript.new" "$transcript"
+}
+
+@test "a call an api-request-blob entry repeats counts once, in the backup and the write form" {
+  ops_setup
+  mongo_session prod-read prod-write
+  blobbed
+  run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit prod-read --toolkit prod-write --toolkit prod-mongo
+  assert_equal "${lines[-1]}" "PASS"
+
+  relaunch
+  mongo_session
+  blobbed
+  assert_equal "$(grep -c '"api-request-blob"' "$STUB_FIXTURES/transcript.jsonl")" 2
+  run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit prod-mongo
+  assert_equal "${lines[-1]}" "PASS"
+}
+
 @test "a Grep from above the backups folder that lists files in it is a WARN, never a FAIL" {
   ops_setup
   mongo_session
@@ -1049,6 +1073,17 @@ mongo_lines() {
   run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit prod-mongo
   assert_contains "$output" "load check: a Grep from $HOME was refused"
   [[ $output != *WARN:* ]]
+
+  # A Grep the session never tried is a FAIL, as an untried Read is; one it did not report, a WARN.
+  relaunch
+  sed -i 's/^grep-above: .*/grep-above: not tried: the role never opens that folder/' "$s/root.txt"
+  run_bin -1 team-load-check --role ops --worktree "$wt" --toolkit prod-mongo
+  assert_contains "$output" "FAIL: the session did not try the Grep from $HOME"
+  [[ $output != *WARN:* ]]
+  relaunch
+  sed -i '/^grep-above: /d' "$s/root.txt"
+  run_bin -0 team-load-check --role ops --worktree "$wt" --toolkit prod-mongo
+  assert_contains "$output" "WARN: the session did not report its Grep from $HOME"
 }
 
 @test "the ops form reads each toolkit's tools from its eval mocks and its skills from its skills directory" {
