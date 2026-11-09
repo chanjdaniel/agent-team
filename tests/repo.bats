@@ -1037,14 +1037,30 @@ COMMANDS
     'claude --bg --plugin-dir=toolkits/prod-write'
   assert_denies 'Bash(*--mcp-config*prod-*)' 'claude -p hi --mcp-config toolkits/prod-read/.mcp.json' \
     'claude --strict-mcp-config --mcp-config /home/me/agent-team/tasks/T5/mcp.prod-write.json'
+  # vercel-read's launcher is a start-server.mjs, which the rules above cover; its body and a
+  # claude given the toolkit have rules of their own.
+  assert_denies 'Bash(*node *start-server.mjs*)' 'node /home/me/agent-team/toolkits/vercel-read/scripts/start-server.mjs'
+  assert_denies 'Bash(*&& scripts/*start-server.mjs*)' 'cd toolkits/vercel-read && scripts/start-server.mjs'
+  assert_denies 'Bash(*node *vercel-mcp*)' 'node -e "import(\"/home/me/agent-team/servers/vercel-mcp.mjs\")"' \
+    'node servers/vercel-mcp.mjs' 'cd servers && node --input-type=module -e "await import(\"./vercel-mcp.mjs\")"'
+  assert_denies 'Bash(./*vercel-mcp*)' './vercel-mcp.mjs'
+  assert_denies 'Bash(/*vercel-mcp*)' '/home/me/agent-team/servers/vercel-mcp.mjs'
+  assert_denies 'Bash(servers/*vercel-mcp*)' 'servers/vercel-mcp.mjs'
+  assert_denies 'Bash(env *vercel-mcp*)' 'env VERCEL_READ_API=http://127.0.0.1:1 servers/vercel-mcp.mjs'
+  assert_denies 'Bash(bun *vercel-mcp*)' 'bun servers/vercel-mcp.mjs'
+  assert_denies 'Bash(deno *vercel-mcp*)' 'deno run -A servers/vercel-mcp.mjs'
+  assert_denies 'Bash(*--plugin-dir*vercel-read*)' 'claude -p hi --plugin-dir /home/me/agent-team/toolkits/vercel-read' \
+    'claude --bg --plugin-dir=toolkits/vercel-read'
+  assert_denies 'Bash(*--mcp-config*vercel-read*)' 'claude -p hi --mcp-config toolkits/vercel-read/.mcp.json' \
+    'claude --strict-mcp-config --mcp-config /home/me/agent-team/tasks/T5/mcp.vercel-read.json'
 }
 
 # The deny rules name the runtimes; a launcher without its exec bit cannot be run by its path at all.
-@test "the production launchers and the MCP server's entry are not executable" {
+@test "the production launchers, the MCP servers' bodies and their 1Password read are not executable" {
   local modes
-  modes=$(git -C "$REPO_ROOT" ls-files -s toolkits/prod-read/scripts toolkits/prod-write/scripts servers/mongodb-mcp.mjs |
-    awk '{print $1, $4}')
-  assert_equal "$(wc -l <<<"$modes")" 3
+  modes=$(git -C "$REPO_ROOT" ls-files -s toolkits/prod-read/scripts toolkits/prod-write/scripts toolkits/vercel-read/scripts \
+    servers/mongodb-mcp.mjs servers/vercel-mcp.mjs servers/op-secret.mjs | awk '{print $1, $4}')
+  assert_equal "$(wc -l <<<"$modes")" 6
   if grep -v '^100644 ' <<<"$modes"; then echo "executable in git (above)" >&2; return 1; fi
 }
 
@@ -1122,10 +1138,14 @@ COMMANDS
 team-worker "T5" ops /home/me/slots/proj-1 --toolkit prod-read --request x -- go
 /home/me/agent-team/bin/team-load-check --role ops --worktree /home/me/slots/proj-1 --toolkit prod-read
 team-load-check --role=ops --worktree /home/me/slots/proj-1 --toolkit prod-read --toolkit prod-write
+/home/me/agent-team/bin/team-worker T5 ops /home/me/slots/proj-1 --toolkit vercel-read --request https://discord.com/channels/1/2/3 -- "$(cat /home/me/agent-team/tasks/T5/brief-ops.md)"
+team-worker T5 ops /home/me/slots/proj-1 --toolkit prod-read --toolkit vercel-read --request x -- go
+/home/me/agent-team/bin/team-load-check --role ops --worktree /home/me/slots/proj-1 --toolkit vercel-read
+team-load-check --role ops --worktree /home/me/slots/proj-1 --toolkit prod-read --toolkit vercel-read
 COMMANDS
 }
 
-@test "a worker's own work on the production toolkits and their tests stays allowed" {
+@test "a worker's own work on the production and Vercel toolkits and their tests stays allowed" {
   local command
   while IFS= read -r command; do
     if denied settings/worker.json "$command"; then echo "settings/worker.json denies: $command" >&2; return 1; fi
@@ -1138,6 +1158,12 @@ claude plugin validate --strict toolkits/prod-read
 git add toolkits/prod-write/skills/changing-production-data/SKILL.md
 git diff origin/dev -- toolkits/prod-read
 /home/me/agent-team/bin/team-worker T5 builder /home/me/slots/proj-1 -- "Read your brief"
+node --test tests/toolkits/vercel-read.test.mjs
+node --test tests/toolkits/vercel-read.test.mjs --test-name-pattern 'runtime-logs'
+claude plugin validate --strict toolkits/vercel-read
+git add toolkits/vercel-read servers/vercel-mcp.mjs tests/toolkits/vercel-read.test.mjs
+git diff origin/dev -- toolkits/vercel-read servers/vercel-mcp.mjs
+git log --oneline -- servers/vercel-mcp.mjs
 COMMANDS
 }
 

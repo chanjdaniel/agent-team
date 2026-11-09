@@ -402,6 +402,15 @@
       "Bash(deno *mongodb-mcp*)",
       "Bash(*--plugin-dir*prod-*)",
       "Bash(*--mcp-config*prod-*)",
+      "Bash(*node *vercel-mcp*)",
+      "Bash(./*vercel-mcp*)",
+      "Bash(/*vercel-mcp*)",
+      "Bash(servers/*vercel-mcp*)",
+      "Bash(env *vercel-mcp*)",
+      "Bash(bun *vercel-mcp*)",
+      "Bash(deno *vercel-mcp*)",
+      "Bash(*--plugin-dir*vercel-read*)",
+      "Bash(*--mcp-config*vercel-read*)",
       "Bash(*/proc/*/environ)",
       "Bash(*/proc/*/environ |*)",
       "Bash(*/proc/*/environ|*)",
@@ -451,7 +460,7 @@
       "**Org-specific CLIs**: the team-* scripts in ~/agent-team/bin, which write the team home's ledger and commits; team-stack, the one way the team starts, stops and removes a worktree's throwaway Docker stack; no-mistakes, a local gate with its own daemon that reviews, tests and pushes a branch and opens its pull request; treehouse, a local pool of pre-warmed worktrees; gh and gh-axi for GitHub; chrome-devtools-axi, a headless Chrome for UI checks; codegraph, a local code index.",
       "**Key internal services**: the no-mistakes daemon, with its state and worktrees under ~/.no-mistakes and its bare mirrors under ~/.no-mistakes/repos, whose linked worktrees are its runs' worktrees and share their refs, and which a worker changes only through no-mistakes commands and plain pushes to the no-mistakes remote; the Docker stacks of the team's worktrees, which workers start, stop and remove only through team-stack (a gate run starts its own, labelled kind gate), each labelled with its owner and task (io.github.chanjdaniel.team.owner and io.github.chanjdaniel.team.task), a task's own stacks being those labelled with its task, and team-stack's up, stop and down acting on one worktree's stack, the current directory's unless --worktree names another; on Linux, the team's systemd user slice, in which team-capacity places each task's sessions.",
       "**Sensitive data locations & audiences**: ~/.claude.json, ~/.claude/.credentials.json, ~/.claude/channels/ (the Discord bot's files), every .env file, ~/.no-mistakes/config.yaml and the 1Password vaults the op CLI reaches; no worker reads them.",
-      "**Sensitive remote targets**: Conventioner's production MongoDB Atlas cluster and its production deployment; only an ops session, which has no shell, reaches production, on Daniel's request, through the MCP servers of its prod-read and prod-write toolkits."
+      "**Sensitive remote targets**: Conventioner's production MongoDB Atlas cluster, its production deployment and its two Vercel projects (makers-market-management-front-end and makers-market-management-back-end); only an ops session, which has no shell, reaches production, on Daniel's request, through the MCP servers of its prod-read and prod-write toolkits, and the Vercel projects, read-only, through its vercel-read toolkit's."
     ]
   },
   "skillOverrides": {
