@@ -7,8 +7,10 @@ setup() {
   # This machine, home-pc, holds the lease; make_machine laptop builds the other one.
   hold_lease home-pc >/dev/null
   lock=$HOME/.local/state/agent-team/coordinator-launch.lock
-  # claude answers `agents` from $BATS_TEST_TMPDIR/sessions.json; a launch records its cwd and
-  # whether the launch lock was free while it ran, and whether it inherited the lock's file.
+  # claude answers `agents --json` from $BATS_TEST_TMPDIR/sessions.json as Claude Code 2.1.319's
+  # printAgentsJson does: without --all it leaves out a background job with no process (no pid)
+  # whose state is neither working nor blocked. A launch records its cwd and whether the launch
+  # lock was free while it ran, and whether it inherited the lock's file.
   echo '[]' >"$BATS_TEST_TMPDIR/sessions.json"
   # `claude mcp list` answers from $BATS_TEST_TMPDIR/mcp-list.txt: today's servers on home-pc.
   cat >"$BATS_TEST_TMPDIR/mcp-list.txt" <<'TXT'
@@ -26,7 +28,12 @@ lock=$HOME/.local/state/agent-team/coordinator-launch.lock
 if flock -n "$lock" true; then held=free; else held=held; fi
 if [[ $1 == agents ]]; then
   echo "agents $held" >>"$STUB_CALLS/claude.lock"
-  cat "$BATS_TEST_TMPDIR/sessions.json"
+  if [[ " $* " == *" --all "* ]]; then
+    cat "$BATS_TEST_TMPDIR/sessions.json"
+  else
+    jq 'if type == "array" then map(select(.pid or .state == null or .state == "working" or .state == "blocked")) else . end' \
+      "$BATS_TEST_TMPDIR/sessions.json" 2>/dev/null || cat "$BATS_TEST_TMPDIR/sessions.json"
+  fi
   exit "$(cat "$BATS_TEST_TMPDIR/agents.status" 2>/dev/null || echo 0)"
 fi
 if [[ $1 == mcp ]]; then
@@ -49,14 +56,22 @@ exit "$(cat "$BATS_TEST_TMPDIR/launch.status" 2>/dev/null || echo 0)"
 EOF
 }
 
-# session <id|-> <sessionId> <name> <status> [<kind>]: one listed session as JSON.
+# session <id|-> <sessionId> <name> <status> [<kind>]: one listed session as JSON, with a process.
 session() {
   jq -cn --arg id "$1" --arg sid "$2" --arg name "$3" --arg status "$4" --arg kind "${5:-background}" \
     '{pid: 4242, cwd: "/somewhere", kind: $kind, startedAt: 1761100000000, sessionId: $sid,
       name: $name, status: $status} + (if $id == "-" then {} else {id: $id, state: "working"} end)'
 }
 
-# sessions <session json>...: the list `claude agents --json` prints.
+# settled <id> <sessionId> <name> <state>: a background job the daemon holds with no process, as
+# claude agents --json --all lists it: no pid and no status.
+settled() {
+  jq -cn --arg id "$1" --arg sid "$2" --arg name "$3" --arg state "$4" \
+    '{id: $id, cwd: "/somewhere", kind: "background", startedAt: 1761100000000, sessionId: $sid,
+      name: $name, state: $state}'
+}
+
+# sessions <session json>...: the list `claude agents --json --all` prints.
 sessions() {
   printf '%s\n' "$@" | jq -s . >"$BATS_TEST_TMPDIR/sessions.json"
 }
@@ -94,7 +109,7 @@ assert_not_launched() {
   sessions "$(session 0a1b2c3d 0a1b2c3d-1111 T14-builder busy)" "$(session - 9f9f9f9f-2222 '' idle interactive)"
   run_bin -0 claude-coordinator
   assert_contains "$output" "Started background session 7c3e9a10"
-  assert_equal "$(stub_calls claude)" "$(printf '%s\n%s\n%s' '["agents","--json"]' '["mcp","list"]' "$(launch_argv)")"
+  assert_equal "$(stub_calls claude)" "$(printf '%s\n%s\n%s' '["agents","--json","--all"]' '["mcp","list"]' "$(launch_argv)")"
   assert_equal "$(cat "$STUB_CALLS/claude.cwd")" "$TEAM_HOME"
 }
 
@@ -350,7 +365,7 @@ JSON
   run_bin -1 --separate-stderr claude-coordinator
   assert_equal "$output" ""
   assert_contains "$stderr" "claude-coordinator: a coordinator is already live: session 5e6f7a8b"
-  assert_equal "$(stub_calls claude)" '["agents","--json"]'
+  assert_equal "$(stub_calls claude)" '["agents","--json","--all"]'
   assert_not_launched
 }
 
@@ -359,6 +374,29 @@ JSON
   run_bin -1 claude-coordinator
   assert_contains "$output" "session 5e6f7a8b"
   assert_not_launched
+}
+
+@test "a background coordinator whose turn is done and whose process the daemon settled refuses the launch" {
+  # 240ef01f on 2026-11-09: done at 12:08:09, settled, woken at 12:09:20 by the daemon.
+  sessions "$(session 0a1b2c3d 0a1b2c3d-1111 T14-builder busy)" "$(settled 240ef01f 240ef01f-8efc coordinator "done")"
+  run_bin -1 --separate-stderr claude-coordinator
+  assert_contains "$stderr" "claude-coordinator: a coordinator is already live: session 240ef01f"
+  assert_equal "$(stub_calls claude)" '["agents","--json","--all"]'
+  assert_not_launched
+}
+
+@test "a failed background coordinator refuses the launch too, since a message may wake it" {
+  sessions "$(settled 5e6f7a8b 5e6f7a8b-3333 coordinator failed)"
+  run_bin -1 claude-coordinator
+  assert_contains "$output" "session 5e6f7a8b"
+  assert_not_launched
+}
+
+@test "a stopped coordinator, which nothing wakes, does not refuse the launch" {
+  sessions "$(settled 7e6352ef 7e6352ef-1111 coordinator stopped)" "$(settled 240ef01f 240ef01f-8efc coordinator stopped)" \
+    "$(settled 0a1b2c3d 0a1b2c3d-1111 T14-builder "done")"
+  run_bin -0 claude-coordinator
+  assert_equal "$(stub_calls claude | tail -n 1)" "$(launch_argv)"
 }
 
 @test "an interactive coordinator, which has no short id, is named by its session id" {
@@ -378,13 +416,13 @@ JSON
 @test "an unreadable session list refuses the launch" {
   echo 'not json' >"$BATS_TEST_TMPDIR/sessions.json"
   run_bin -1 claude-coordinator
-  assert_contains "$output" "cannot read the live session list"
+  assert_contains "$output" "cannot read the session list (claude agents --json --all)"
   assert_not_launched
 
   echo '[]' >"$BATS_TEST_TMPDIR/sessions.json"
   echo 1 >"$BATS_TEST_TMPDIR/agents.status"
   run_bin -1 claude-coordinator
-  assert_contains "$output" "cannot read the live session list"
+  assert_contains "$output" "cannot read the session list (claude agents --json --all)"
   assert_not_launched
 }
 
