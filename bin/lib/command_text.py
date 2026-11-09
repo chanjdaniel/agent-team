@@ -6,10 +6,13 @@ Usage: python3 -I command_text.py   (the command on stdin; prints the text on st
 bin/hooks/command-guard runs this file on a Bash call's command, and team-tokens imports
 without_heredocs from it. It reads the command far enough to know its quotes ('...', "..." and
 $'...'), backslashes, comments, arithmetic ($((, (( and $[), groups ((, $(, a backtick, ${ in
-which quotes nest up to its first }, and a { and its } where a command starts, after a separator,
-a reserved word or a compound command's end, or a { opening a function's body), case's patterns,
-pipelines, here-strings and heredocs, whose marker is its word up to a blank or an operator with
-its quotes removed, as Bash takes it; a << inside quotes, a comment, arithmetic or ${ opens none.
+which quotes nest up to its first }, [[ ... ]] and a { ... }), case's patterns, pipelines,
+here-strings and heredocs, whose marker is its word up to a blank or an operator with its quotes
+removed, as Bash takes it; a << inside quotes, a comment, arithmetic, ${ or [[ opens none.
+A reserved word ({, }, case, esac, [[ and the rest) is one where Bash takes it as one, as its
+reserved_word_acceptable does: after a separator, a pipe, (, ), {, }, an opening reserved word,
+a compound command's end (fi, done, esac, }, ), (( ... )) or ]]), time or its -p, coproc, or
+coproc's or function's name; after any other word it is a word.
 The text it prints is the command with:
   - each heredoc's body left out, through its closing line, its marker's line kept. A body is kept
     whole, as code, when a shell may read it as its script: the heredoc is a shell's own, or its
@@ -42,8 +45,6 @@ from dataclasses import dataclass
 METACHARACTERS = frozenset(" \t\n;&|()<>")
 # The reserved words a command may follow where it starts.
 RESERVED = r"(?:!|\{|if|then|else|elif|do|while|until|time|coproc)"
-# Where a command starts in a segment's text: blanks and reserved words before it.
-COMMAND_START = re.compile(rf"\s*(?:{RESERVED}\s+)*")
 # A shell that may read its script from stdin, where a pipeline's command starts, in a segment's
 # text with its words' quotes removed (_dequoted).
 SHELL_START = re.compile(
@@ -55,8 +56,10 @@ SHELL_START = re.compile(
 )
 # A word, from where it starts to a metacharacter.
 WORD = re.compile(r"[^\s;&|()<>]+")
-# What comes before a function's body, its {: function and its name, or a name and ().
-FUNCTION = re.compile(r"\s*(?:function\s+[^\s;&|()<>]+\s*(?:\(\s*\)\s*)?|[^\s;&|()<>]+\s*\(\s*\)\s*)")
+# The reserved words after which another may come, each with the state it leaves: function's and
+# coproc's name lets one follow, as does time's -p (Bash's reserved_word_acceptable).
+OPENS = {word: True for word in ("!", "if", "then", "else", "elif", "do", "while", "until", "fi", "done")}
+OPENS.update(function="name", coproc="coproc", time="time")
 # Where a heredoc body's line starts a command substitution.
 SUBSTITUTION = re.compile(r"\$\(|`")
 # A string the shell runs as a command: what follows a shell's -c, eval, env's -S or find's -exec.
@@ -172,11 +175,11 @@ def _closing(text, pos, word, tabs):
 def read_command(text):
     """The command's reading, as Reading says, from one pass over its text."""
     pipelines, heredocs, strings, pending = [], [], [], []
-    # Each group open at i: its kind (root, (, `, {, ${, or a case's case-word, case-pattern or
-    # case-body), its pipeline, where its segment starts, whether a pipe began that segment, the
-    # quote it sits in, where its next command may start (its segment's start, or a compound
-    # command's end since), and whether it is a compound command (a subshell, a brace group or a
-    # case), whose end its parent's next command may follow.
+    # Each group open at i: its kind (root, (, `, {, ${, [[, or a case's case-word, case-pattern
+    # or case-body), its pipeline, where its segment starts, whether a pipe began that segment,
+    # the quote it sits in, whether a reserved word may come next (True, False, or after
+    # function's or coproc's name or time, "name", "coproc" or "time"), and that state for its
+    # parent once it ends: a compound command's end lets one come, a word's part does not.
     frames = []
     quote, i, n = None, 0, len(text)
 
@@ -186,27 +189,32 @@ def read_command(text):
     def end_segment(at):
         pipelines[frames[-1][1]][1].append((frames[-1][2], at))
 
-    def push(kind, at, resume=None, compound=False):
+    def push(kind, at, resume=None, ends=False):
         pipelines.append((here() if frames else None, []))
-        frames.append([kind, len(pipelines) - 1, at, False, resume, at, compound])
+        frames.append([kind, len(pipelines) - 1, at, False, resume, True, ends])
 
-    def pop(at, after=None):
+    def pop(at):
         end_segment(at)
         frame = frames.pop()
-        if frame[6] and frames:
-            frames[-1][5] = after
+        if frames:
+            frames[-1][5] = frame[6]
         return frame[4]
 
     def next_pipeline(at, after):
         end_segment(at)
         pipelines.append((pipelines[frames[-1][1]][0], []))
         frames[-1][1:4] = [len(pipelines) - 1, after, False]
-        frames[-1][5] = after
+        frames[-1][5] = True
 
-    def command_start(at):
-        """Whether a command starts at at: only blanks and reserved words since its segment's start
-        or a compound command's end."""
-        return COMMAND_START.fullmatch(text, frames[-1][5], at) is not None
+    def reserved():
+        """Whether a reserved word may come here."""
+        return frames[-1][5] in (True, "coproc", "time")
+
+    def word_at(at):
+        """A word that is no reserved word starts at at, or goes on there: one may follow it only
+        as function's or coproc's name."""
+        if at == 0 or text[at - 1] in METACHARACTERS:
+            frames[-1][5] = frames[-1][5] in ("name", "coproc")
 
     push("root", 0)
     while i < n:
@@ -218,6 +226,7 @@ def read_command(text):
             quote, i = None if c == "'" else quote, i + 1
             continue
         if c == "\\":
+            word_at(i)
             i += 2
             continue
         if quote == '"':
@@ -230,24 +239,36 @@ def read_command(text):
                 quote, i = None if c == '"' else quote, i + 1
             continue
         if c in "'\"" or text.startswith("$'", i):
+            word_at(i)
             quote, i = "$'" if c == "$" else c, i + 1 + (c == "$")
-        elif text.startswith("$((", i) or (kind != "${" and text.startswith("((", i)):
-            i = _arith_end(text, i + (c == "$"))
-        elif text.startswith("$[", i):
-            i = _arith_end(text, i + 1, "[]")
+        elif text.startswith("$((", i) or text.startswith("$[", i):
+            word_at(i)
+            i = _arith_end(text, i + 1, "()" if text[i + 1] == "(" else "[]")
+        elif kind not in ("${", "[[") and text.startswith("((", i):
+            # An arithmetic command, a compound one.
+            i = _arith_end(text, i)
+            frames[-1][5] = True
         elif text.startswith("$(", i) or text.startswith("${", i):
+            word_at(i)
             push("(" if text[i + 1] == "(" else "${", i + 2)
             i += 2
         elif c == "`":
             if kind == "`":
                 quote = pop(i)
             else:
+                word_at(i)
                 push("`", i + 1)
             i += 1
         elif kind == "${":
             # In ${...} quotes nest, and its first } ends it; nothing else is an operator.
             if c == "}":
                 quote = pop(i)
+            i += 1
+        elif kind == "[[":
+            # In [[ ... ]] nothing is an operator but its ]].
+            if text.startswith("]]", i) and text[i - 1] in METACHARACTERS and text[i + 2 : i + 3] in METACHARACTERS | {""}:
+                pop(i)
+                i += 1
             i += 1
         elif c == "#" and (i == 0 or text[i - 1] in " \t\n;&|()"):
             end = text.find("\n", i)
@@ -256,26 +277,26 @@ def read_command(text):
             # A pattern's opening parenthesis or its alternatives' bar.
             i += 1
         elif c == "(":
-            push("(", i + 1, compound=command_start(i))
+            # A subshell, a function's () or body, or a process substitution, a word's part.
+            substitution = text[i - 1 : i] in ("<", ">")
+            if substitution:
+                frames[-1][5] = False
+            push("(", i + 1, ends=not substitution)
             i += 1
         elif c == ")":
             if kind == "(":
-                quote = pop(i, i + 1)
+                quote = pop(i)
             else:
                 # A case pattern's end, after which its command starts; else one Bash would refuse.
                 next_pipeline(i, i + 1)
                 if kind == "case-pattern":
                     frames[-1][0] = "case-body"
             i += 1
-        elif (
-            c == "{"
-            and text[i + 1 : i + 2] in (" ", "\t", "\n")
-            and (command_start(i) or FUNCTION.fullmatch(text, frames[-1][5], i))
-        ):
-            push("{", i + 1, compound=True)
+        elif c == "{" and reserved() and text[i + 1 : i + 2] in (" ", "\t", "\n") and (i == 0 or text[i - 1] in METACHARACTERS):
+            push("{", i + 1, ends=True)
             i += 1
-        elif c == "}" and kind == "{" and command_start(i) and (i + 1 == n or text[i + 1] in METACHARACTERS):
-            pop(i, i + 1)
+        elif c == "}" and kind == "{" and reserved() and text[i - 1] in METACHARACTERS and text[i + 1 : i + 2] in METACHARACTERS | {""}:
+            pop(i)
             i += 1
         elif text.startswith("<<<", i):
             word, _, end = _word(text, _past_blanks(text, i + 3))
@@ -298,7 +319,7 @@ def read_command(text):
                 step = 2 if text.startswith("|&", i) else 1
                 end_segment(i)
                 frames[-1][2:4] = [i + step, True]
-                frames[-1][5] = i + step
+                frames[-1][5] = True
                 i += step
         elif kind == "case-body" and text[i : i + 2] in (";;", ";&"):
             # A case item's end, after which the next pattern comes.
@@ -322,24 +343,29 @@ def read_command(text):
                 pending = []
                 if last is not None:
                     # The next segment starts after the bodies.
-                    frames[-1][2], frames[-1][5], i = last, last, last
+                    frames[-1][2], frames[-1][5], i = last, True, last
                     continue
             i += step
         else:
-            # A case's reserved words: case where a command starts, in after its word, and esac
-            # in place of a pattern or where a command starts; and fi and done, the ends of the
-            # other compound commands, after which a command may start.
+            # A word, read as a reserved word where one may come: case's, in after its word and
+            # esac in place of a pattern, [[, and those after which another may come (OPENS).
             found = WORD.match(text, i) if i == 0 or text[i - 1] in METACHARACTERS else None
             word = found and found.group()
-            if word == "case" and kind not in ("case-word", "case-pattern") and command_start(i):
-                push("case-word", i + 4, compound=True)
-            elif word == "in" and kind == "case-word":
+            if word == "in" and kind == "case-word":
                 frames[-1][0] = "case-pattern"
-            elif word == "esac" and (kind == "case-pattern" or (kind == "case-body" and command_start(i))):
-                pop(i, i + 4)
-            elif word in ("fi", "done") and command_start(i):
-                frames[-1][5] = i + len(word)
+            elif word == "esac" and (kind == "case-pattern" or (kind == "case-body" and reserved())):
+                pop(i)
+            elif word == "case" and reserved() and kind not in ("case-word", "case-pattern"):
+                push("case-word", i + 4, ends=True)
+            elif word == "[[" and reserved():
+                push("[[", i + 2, ends=True)
+            elif word in OPENS and reserved():
+                frames[-1][5] = OPENS[word]
+            elif word == "-p" and frames[-1][5] == "time":
+                frames[-1][5] = True
             else:
+                if word:
+                    word_at(i)
                 word = None
             i += len(word) if word else 1
     while frames:

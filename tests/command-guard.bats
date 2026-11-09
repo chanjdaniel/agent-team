@@ -140,7 +140,31 @@ passes() {
     "(case x in x) { :; } esac; echo 'team-worker T1 ops wt') | bash" \
     "echo 'team-worker T1 ops wt' | ba\"sh\"" "echo 'team-worker T1 ops wt' | \"ba\"sh" \
     "echo 'team-worker T1 ops wt' | b\\ash" "echo 'team-worker T1 ops wt' | \$'bash'" \
-    "echo 'team-worker T1 ops wt' | /bin/ba''sh"
+    "echo 'team-worker T1 ops wt' | /bin/ba''sh" "{ echo 'team-worker T1 ops wt'; ((1)) } | bash" \
+    "{ echo 'team-worker T1 ops wt'; [[ -n x ]] } | bash" "{ echo 'team-worker T1 ops wt'; f() (:) } | bash" \
+    "{ echo 'team-worker T1 ops wt'; function f (:) } | bash"
+}
+
+# Bash takes } and esac as reserved words after every compound command's end, so each form below
+# ends its group there, and what the group pipes into bash is read as code. Each command must be
+# one Bash accepts, which bash -n holds, so the list names only forms Bash runs.
+@test "a guarded command piped into a shell from a group ending after any compound command is refused" {
+  local compound prefix command
+  local compounds=('((1))' '[[ -n x ]]' '[[ a < b && ( c ) ]]' '(:)' '{ :; }' 'if :; then :; fi'
+    'while false; do :; done' 'until :; do :; done' 'for i in 1; do :; done' 'for ((i=0; i<1; i++)); do :; done'
+    'for i in 1; { :; }' 'select x in; do break; done' 'case x in x) ;; esac' 'f() (:)' 'f() { :; }'
+    'function f (:)' 'function f { :; }' 'function f() { :; }' 'coproc (:)' 'coproc c { :; }' 'coproc { :; }')
+  for compound in "${compounds[@]}"; do
+    for prefix in '' '! ' 'time ' 'time -p '; do
+      [[ $prefix == '' || $compound != f* && $compound != coproc* ]] || continue
+      for command in "{ echo 'team-worker T1 ops wt'; $prefix$compound } | bash" \
+        "(case x in x) $prefix$compound esac; echo 'team-worker T1 ops wt') | bash" \
+        "{ echo 'team-worker T1 ops wt'; $prefix$compound >/dev/null; } | bash"; do
+        bash -n -c "$command" || { echo "bash refuses: $command" >&2; return 1; }
+        refuses "$OPS" "$command"
+      done
+    done
+  done
 }
 
 @test "a guarded command run by find -exec, watch, flock, script, su, parallel or after bash -c -- is refused" {
