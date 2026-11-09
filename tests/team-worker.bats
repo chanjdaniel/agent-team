@@ -783,6 +783,24 @@ role_texts() {
   assert_equal "$(launches | jq -c .toolkits)" '["effect"]'
 }
 
+@test "the codegraph toolkit adds its plugin directory and no MCP server" {
+  thread T7
+  run_bin -0 team-worker T7 builder "$wt1" --toolkit codegraph -- go
+  assert_equal "$(bg_calls | tail -n 1 | jq -c '[index("--plugin-dir") as $i | .[$i + 1]]')" \
+    "$(jq -cn --arg code "$REPO_ROOT" '["\($code)/toolkits/codegraph"]')"
+  assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.builder.json")" '{"mcpServers":{}}'
+  assert_equal "$(launches | jq -c .toolkits)" '["codegraph"]'
+}
+
+@test "the spec-review toolkit adds its plugin directory and no MCP server" {
+  thread T7
+  run_bin -0 team-worker T7 builder "$wt1" --toolkit spec-review -- go
+  assert_equal "$(bg_calls | tail -n 1 | jq -c '[index("--plugin-dir") as $i | .[$i + 1]]')" \
+    "$(jq -cn --arg code "$REPO_ROOT" '["\($code)/toolkits/spec-review"]')"
+  assert_equal "$(jq -c . "$TEAM_HOME/tasks/T7/mcp.builder.json")" '{"mcpServers":{}}'
+  assert_equal "$(launches | jq -c .toolkits)" '["spec-review"]'
+}
+
 @test "the worker settings take away the tools and skills no worker uses, and the check notices a named one" {
   thread T7
   run_bin -0 team-worker T7 reviewer "$wt1" -- go
@@ -998,12 +1016,12 @@ assert_prod_write_gated() {
     <(jq 'del(.permissions.deny)' "$TEAM_HOME/tasks/T7/settings.ops.json")
 }
 
-@test "the generated ops settings allow only prod-read and .scratch edits, ask for every prod-write tool, and deny every outbound tool" {
+@test "the generated ops settings allow only prod-read, vercel-read and .scratch edits, ask for every prod-write tool, and deny every outbound tool" {
   thread T7
   ops_stub
   run_bin -0 team-worker T7 ops "$wt1" --toolkit prod-read --request "$request" -- go
   local s=$TEAM_HOME/tasks/T7/settings.ops.json rule
-  assert_equal "$(jq -c .permissions.allow "$s")" '["mcp__prod-read__*","Edit(./.scratch/**)"]'
+  assert_equal "$(jq -c .permissions.allow "$s")" '["mcp__prod-read__*","mcp__vercel-read__*","Edit(./.scratch/**)"]'
   # The write rules hold even in a read session, where prod-write is not loaded.
   assert_prod_write_gated "$s"
   assert_equal "$(jq '.permissions.ask | length' "$s")" 11
@@ -1069,13 +1087,59 @@ Edit|Write|MultiEdit|NotebookEdit $REPO_ROOT/bin/hooks/scratch-only-edits"
 
   local s=$t/settings.ops.json
   assert_prod_write_gated "$s"
-  assert_equal "$(jq -c .permissions.allow "$s")" '["mcp__prod-read__*","Edit(./.scratch/**)"]'
+  assert_equal "$(jq -c .permissions.allow "$s")" '["mcp__prod-read__*","mcp__vercel-read__*","Edit(./.scratch/**)"]'
   # The ops log's hooks cover both toolkits' tools, and block a write whose line is lost.
   assert_equal "$(jq -r '.hooks.PreToolUse[] | select(.hooks[0].command | endswith("/ops-log"))
-    | "\(.matcher) \(.hooks[0].onFailure)"' "$s")" '^mcp__.*prod-(read|write).*__ block'
+    | "\(.matcher) \(.hooks[0].onFailure)"' "$s")" '^mcp__.*(prod-(read|write)|vercel-read).*__ block'
   run -1 grep -Eq 'mongodb(\+srv)?://|MDB_MCP_CONNECTION|op://|password' <(jq 'del(.permissions.deny)' "$s")
 
   assert_equal "$(launches | jq -c '[.toolkits, .request]')" "$(jq -cn --arg r "$request" '[["prod-read", "prod-write"], $r]')"
+  run_bin -0 team-log --check
+}
+
+# The ops log hook's matcher, read from <settings>, matches each <name>: matcher_matches <settings> <name>...
+matcher_matches() {
+  local matcher name
+  matcher=$(jq -r '.hooks.PreToolUse[] | select(.hooks[0].command | endswith("/ops-log")) | .matcher' "$1")
+  for name in "${@:2}"; do
+    grep -Eq "$matcher" <<<"$name" || { echo "the ops log matcher $matcher misses $name" >&2; return 1; }
+  done
+}
+
+@test "a Vercel launch adds vercel-read's plugin and server, alone or beside prod-read's, its tools allowed and logged in both naming forms" {
+  thread T7
+  opened T7 proj feat/T7-one "$wt1"
+  ops_stub
+  local t=$TEAM_HOME/tasks/T7 set
+  for set in vercel-read 'prod-read vercel-read'; do
+    : >"$STUB_CALLS/claude.log"
+    local kits args=() plugins=() kit
+    read -ra kits <<<"$set"
+    for kit in "${kits[@]}"; do args+=(--toolkit "$kit"); plugins+=(--plugin-dir "$REPO_ROOT/toolkits/$kit"); done
+    run_bin -0 team-worker T7 ops "$wt1" "${args[@]}" --request "$request" -- Answer the request
+    assert_equal "$(bg_calls)" "$(jq -cn --arg t "$t" --arg code "$REPO_ROOT" \
+      --argjson plugins "$(printf '%s\n' "${plugins[@]}" | jq -R . | jq -sc .)" '["--bg",
+      "--restricted", "--tools", "Read,Glob,Grep,Edit,Write,ToolSearch,SendMessage,ListAgents,Skill",
+      "--strict-mcp-config", "--mcp-config", "\($t)/mcp.ops.json"] + $plugins + [
+      "--settings", "\($t)/settings.ops.json",
+      "--append-system-prompt-file", "\($code)/roles/ops.md",
+      "--permission-mode", "auto", "--name", "T7-ops", "Answer the request"]')"
+
+    # The real launcher, which reads its tokens itself: the config holds no secret.
+    local mcp=$t/mcp.ops.json
+    assert_equal "$(jq -c '.mcpServers["vercel-read"]' "$mcp")" \
+      "$(jq -cn --arg code "$REPO_ROOT" '{command: "node", args: ["\($code)/toolkits/vercel-read/scripts/start-server.mjs"]}')"
+    assert_equal "$(jq -c '.mcpServers | keys' "$mcp")" "$(jq -cn --args '$ARGS.positional' "${kits[@]}")"
+    run -1 grep -Eq '@TEAM_CODE@|@TASK@|vcp_|VERCEL|op://|token|mongodb(\+srv)?://|password' "$mcp"
+
+    local s=$t/settings.ops.json
+    assert_equal "$(jq -c .permissions.allow "$s")" '["mcp__prod-read__*","mcp__vercel-read__*","Edit(./.scratch/**)"]'
+    assert_prod_write_gated "$s"
+    matcher_matches "$s" mcp__vercel-read__list-deployments mcp__plugin_vercel-read_vercel-read__runtime-logs \
+      mcp__prod-read__find mcp__plugin_prod-write_prod-write__delete-many
+    run -1 grep -Eq 'vcp_|op://|password' <(jq 'del(.permissions.deny)' "$s")
+    assert_equal "$(launches | tail -n 1 | jq -c .toolkits)" "$(jq -cn --args '$ARGS.positional' "${kits[@]}")"
+  done
   run_bin -0 team-log --check
 }
 
@@ -1099,7 +1163,7 @@ Edit|Write|MultiEdit|NotebookEdit $REPO_ROOT/bin/hooks/scratch-only-edits"
   done
 }
 
-@test "production toolkits are refused for every role but ops, with nothing started or logged" {
+@test "production toolkits, vercel-read among them, are refused for every role but ops, with nothing started or logged" {
   thread T7
   ops_stub
   local role
@@ -1108,6 +1172,8 @@ Edit|Write|MultiEdit|NotebookEdit $REPO_ROOT/bin/hooks/scratch-only-edits"
     assert_contains "$output" "toolkit 'prod-read' is for the ops role only"
     run_bin -1 team-worker T7 "$role" "$wt1" --toolkit prod-write -- go
     assert_contains "$output" "toolkit 'prod-write' is for the ops role only"
+    run_bin -1 team-worker T7 "$role" "$wt1" --toolkit vercel-read -- go
+    assert_contains "$output" "toolkit 'vercel-read' is for the ops role only"
   done
   run_bin -2 team-worker T7 builder "$wt1" --request "$request" -- go
   assert_contains "$output" "--request is for the ops role only"
@@ -1115,18 +1181,31 @@ Edit|Write|MultiEdit|NotebookEdit $REPO_ROOT/bin/hooks/scratch-only-edits"
   assert_equal "$(launches)" ""
 }
 
-@test "an ops launch without prod-read, prod-write without prod-read, or a launch without Daniel's request is refused" {
+@test "an ops launch without prod-read or vercel-read, prod-write without prod-read or beside vercel-read, or a launch without Daniel's request is refused" {
   fake_checkout
-  mkdir -p "$code/toolkits/prod-read" "$code/toolkits/prod-write"
+  mkdir -p "$code/toolkits/prod-read" "$code/toolkits/prod-write" "$code/toolkits/vercel-read"
   cp "$REPO_ROOT/roles/ops.md" "$code/roles/" && cp "$REPO_ROOT/settings/ops.json" "$code/settings/"
   thread T7
   ops_stub
   run_fake T7 ops "$wt1" --request "$request" -- go
   assert_equal "$status" 1
-  assert_contains "$output" "the ops role needs --toolkit prod-read"
+  assert_contains "$output" "the ops role needs --toolkit prod-read or --toolkit vercel-read"
+  run_fake T7 ops "$wt1" --toolkit kit-a --request "$request" -- go
+  assert_equal "$status" 1
+  assert_contains "$output" "the ops role needs --toolkit prod-read or --toolkit vercel-read"
   run_fake T7 ops "$wt1" --toolkit prod-write --request "$request" -- go
   assert_equal "$status" 1
   assert_contains "$output" "prod-write needs --toolkit prod-read beside it"
+  run_fake T7 ops "$wt1" --toolkit vercel-read --toolkit prod-write --request "$request" -- go
+  assert_equal "$status" 1
+  assert_contains "$output" "prod-write needs --toolkit prod-read beside it"
+  # The ops load check proves no write session with vercel-read, so none launches.
+  run_fake T7 ops "$wt1" --toolkit prod-read --toolkit prod-write --toolkit vercel-read --request "$request" -- go
+  assert_equal "$status" 1
+  assert_contains "$output" "prod-write takes no --toolkit vercel-read beside it"
+  run_fake T7 ops "$wt1" --toolkit vercel-read -- go
+  assert_equal "$status" 1
+  assert_contains "$output" "the ops role needs --request <the link to Daniel's Discord message>"
   run_fake T7 ops "$wt1" --toolkit prod-read -- go
   assert_equal "$status" 1
   assert_contains "$output" "the ops role needs --request <the link to Daniel's Discord message>"
@@ -1467,7 +1546,7 @@ LINES
   : >"$HOME/.local/state/agent-team/capacity/readings.jsonl"
   capacity_room $((819 * 1048576))
   jq -c '.tasks = [{task: "T9", memory: 429496730, cpu: null, cpu_nsec: null, stacks: [],
-                    sessions: [{id: "6c6c6c6c", role: "reviewer", memory: 429496730, peak: 429496730, cpu_seconds: 1}]}]' \
+                    sessions: [{id: "6c6c6c6c", role: "reviewer", memory: 429496730, cpu_seconds: 1}]}]' \
     "$HOME/.local/state/agent-team/capacity/readings.jsonl" >"$BATS_TEST_TMPDIR/reading"
   mv "$BATS_TEST_TMPDIR/reading" "$HOME/.local/state/agent-team/capacity/readings.jsonl"
   run_bin -0 --separate-stderr team-worker T9 reviewer "$wt1" -- go

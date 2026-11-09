@@ -54,7 +54,8 @@
 #          (which run outside the slice) and, while the slice uses more, the lower of its use and
 #          its MemoryHigh before, so a drop reclaims through stops and stows instead of throttling
 #          live sessions, and max the larger of high and the slice's use, plus 1 GiB, so a drop
-#          never kills a worker. A slice that is not installed is said with its fix,
+#          never kills a worker; its use is its working set, its cgroup's memory.current less its
+#          reclaimable page cache (bin/lib/working-set.awk), which the kernel drops first. A slice that is not installed is said with its fix,
 #          team-capacity install (Daniel's yes), and the rest still applies. On Linux and macOS:
 #          docker update --cpus <max(cores, min_cores)> on every running container labelled
 #          io.github.chanjdaniel.team.owner=agent-team (team-stack up gives a stack it starts the
@@ -97,7 +98,8 @@
 # so none's budget is 0, and a level's never more than what Daniel's programs leave.
 # Every subcommand but status refuses on a machine that does not hold the lease. A level.jsonl
 # line that is not a level record is refused, naming its number.
-# Test seams: TEAM_READING_CPUS stands for the machine's cores, as for team-capacity, and
+# Test seams: TEAM_READING_CPUS stands for the machine's cores, as for team-capacity,
+# TEAM_CGROUP_ROOT for / where the slice's cgroup is read, as team-capacity's does, and
 # TEAM_DOCKER_SECONDS for the 30 seconds each docker call is given.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
@@ -181,6 +183,16 @@ state() {
   jq -r "$1" "$work/state.json"
 }
 
+# The slice's use, its cgroup's working set (bin/lib/working-set.awk) in bytes, or null when it
+# cannot be read.
+slice_use() {
+  local out
+  out=$(printf 'slice\t%s\n' "$(systemctl --user show -P ControlGroup "$SLICE" 2>/dev/null || true)" |
+    awk -F '\t' -v root="${TEAM_CGROUP_ROOT:-}" -f "$TEAM_LIB/working-set.awk")
+  out=${out#*$'\t'}
+  if [[ $out =~ ^[0-9]+$ ]]; then echo "$out"; else echo null; fi
+}
+
 # Bytes of a systemd memory property of the slice, or null for infinity, unset or unknown.
 slice_bytes() {
   local value
@@ -201,7 +213,7 @@ apply_limits() {
     return 1
   fi
   if [[ $os == linux && -f $SLICE_FILE ]]; then
-    current=$(slice_bytes MemoryCurrent)
+    current=$(slice_use)
     previous=$(slice_bytes MemoryHigh)
   fi
   # The limits, as one line of the values and their words, then what is kept of them.

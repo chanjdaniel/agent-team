@@ -138,18 +138,22 @@ def capacity_units($in):
 
 # A reading of the machine's load with the team's use per task, from $in: machine_reading's input
 # and held (the worktrees held, [{task, project, worktree}], each path resolved), sessions (as
-# team_sessions reads them), units ({"<unit>": {MemoryCurrent, MemoryPeak, CPUUsageNSec}, each a
-# number or null}, or null when the user manager did not answer or off Linux), gate_units (the
+# team_sessions reads them), units ({"<unit>": {WorkingSet, CPUUsageNSec}, each a number or null:
+# its cgroup's working set, bin/lib/working-set.awk's, and its CPU}, or null when the user manager
+# did not answer or off Linux), gate_units (the
 # gate's daemon units), gate_root (~/.no-mistakes), heavy (the pid of the team-heavy that holds the
 # heavy-run lock, or null) and prior (the newest stored reading, or null).
 # Each process is a task's when its directory is that task's held worktree or below it, or it
 # descends from one that is, the nearest one deciding; on Linux one in a task's slice is counted
-# by the slice's MemoryCurrent and CPUUsageNSec instead. A session's use is its scope's on Linux,
+# by the slice's working set and CPUUsageNSec instead. A session's use is its scope's on Linux,
 # else its process tree's (the session and its descendants, but a heavy run's team-heavy and what
 # it runs, whose cost is heavy:<kind>'s). The running heavy run's use is its scope's
 # (agent-team-heavy-<pid>.scope) on Linux, else the tree of its team-heavy. The gate runs a
 # pipeline while a process works in one of its worktrees (gate_root/worktrees/...); its use is its
-# daemon unit's on Linux, else the tree of the processes in gate_root.
+# daemon unit's on Linux, else the tree of the processes in gate_root. A unit's use is its working
+# set; one whose working set is null counts as off Linux, by its processes' resident memory. A
+# gate stack is in use (in_use) while a process works in its worktree, the gate run's (with no
+# worktree label, while the gate runs a pipeline); a team stack's in_use is null.
 def capacity_reading($in):
   def gib_bytes: . * 1024;
   def under($path): . as $cwd | $cwd != "" and ($cwd == $path or ($cwd | startswith($path + "/")));
@@ -177,13 +181,16 @@ def capacity_reading($in):
      | ([$tree[] | $by_pid[.].rss // 0] | add | gib_bytes) as $rss
      | ([$tree[] | $by_pid[.].seconds // 0] | add) as $tree_seconds
      | unit("agent-team-\(.task)-\(.id).scope") as $scope
-     | {id, task, role, memory: ($scope.MemoryCurrent // $rss), peak: ($scope.MemoryPeak // $rss),
+     | {id, task, role, memory: ($scope.WorkingSet // $rss),
         cpu_seconds: (if $scope.CPUUsageNSec != null then $scope.CPUUsageNSec / 1e9 else $tree_seconds end | hundredths)}]
     as $sessions
   | [$in.stacks.projects // [] | .[] | select((.class == "team" or .class == "gate") and .memory_bytes != null)
      | .worktree as $wt
      | {name, class, task, project: (if .class == "team" then first($in.held[] | select(.worktree == $wt) | .project) // null else null end),
-        worktree: $wt, kind, memory: .memory_bytes, cpu: ((.cpu_percent // 0) / 100), limits: .memory_limit_bytes}]
+        worktree: $wt, kind, memory: .memory_bytes, cpu: ((.cpu_percent // 0) / 100), limits: .memory_limit_bytes,
+        in_use: (if .class != "gate" then null
+                 elif ($wt // "") == "" then any($procs[]; .cwd | under($in.gate_root + "/worktrees"))
+                 else any($procs[]; .cwd | under($wt)) end)}]
     as $stacks
   | [reading_tasks($in)[] as $task
      | unit("agent-team-\($task).slice") as $slice
@@ -194,7 +201,7 @@ def capacity_reading($in):
      | ([$mine[].memory] | add // 0) as $stacks_memory
      | ([$mine[].cpu] | add // 0) as $stacks_cpu
      | {task: $task,
-        memory: ((if $slice.MemoryCurrent != null then $slice.MemoryCurrent + ([$outside[].rss] | add // 0 | gib_bytes)
+        memory: ((if $slice.WorkingSet != null then $slice.WorkingSet + ([$outside[].rss] | add // 0 | gib_bytes)
                   else [$all[].rss] | add // 0 | gib_bytes end) + $stacks_memory),
         cpu: (if $timed | not then null
               else ((if $slice.CPUUsageNSec != null and $prior_read then
@@ -210,8 +217,8 @@ def capacity_reading($in):
   | (if $in.heavy == null then null
      else unit("agent-team-heavy-\($in.heavy).scope") as $scope
        | [limit(4096; $in.heavy | tostring | recurse($kids[.] // [] | .[]))] as $tree
-       | {pid: $in.heavy, memory: ($scope.MemoryCurrent // ([$tree[] | $by_pid[.].rss // 0] | add | gib_bytes))} end) as $heavy
-  | (first($in.gate_units[] | unit(.) | select(.MemoryCurrent != null)) // {}) as $daemon
+       | {pid: $in.heavy, memory: ($scope.WorkingSet // ([$tree[] | $by_pid[.].rss // 0] | add | gib_bytes))} end) as $heavy
+  | (first($in.gate_units[] | unit(.) | select(.WorkingSet != null)) // {}) as $daemon
   | [$procs[] | select(.gate)] as $gate_procs
   | $base
     + {systemd: (if $in.os == "linux" then $in.units != null else null end),
@@ -220,30 +227,36 @@ def capacity_reading($in):
        stacks: [$stacks[] | .cpu |= hundredths],
        heavy: $heavy,
        gate: {running: any($procs[]; .cwd | under($in.gate_root + "/worktrees")),
-              memory: ($daemon.MemoryCurrent // ([$gate_procs[].rss] | add // 0 | gib_bytes)),
+              memory: ($daemon.WorkingSet // ([$gate_procs[].rss] | add // 0 | gib_bytes)),
               cpu_seconds: (if $daemon.CPUUsageNSec != null then $daemon.CPUUsageNSec / 1e9
                             else [$gate_procs[].seconds] | add // 0 end | hundredths)}};
 
 # What the readings keep of what they saw running (capacity/live.json) and the cost lines of what
 # ended, from the kept state <live> (null with none) and the new reading <r> (capacity_reading's),
 # as {live, costs}. Kept: each live session by id ({kind: "session:<role>", task, first, last,
-# peak, cpu_seconds}), each running stack of a registered project by name ({kind:
+# peak, cpu_seconds, measure}), each running stack of a registered project by name ({kind:
 # "stack:<project>", first, last, peak, cpu_seconds, its CPU summed over the readings that saw it
 # 15 minutes apart at most}), the gate while it runs a pipeline ({first, last, peak, cpu_first,
-# cpu_seconds}) and each project's stack limits as last seen running (limits). A session the
-# session list no longer has, a stack Docker no longer runs and a gate no longer running a
-# pipeline end, each one cost line {at, kind, peak_bytes, cpu_seconds, seconds}, seconds from the
-# first reading that saw it to the last; what a reading could not read (the session list, Docker)
-# ends nothing.
+# cpu_seconds, measure}) and each project's stack limits as last seen running (limits). A peak is
+# the highest use the readings saw, a session's and the gate's in the working set (measure:
+# "working_set"; one kept without it, from before, starts again at this reading's use). A session
+# the session list no longer has, a stack Docker no longer runs and a gate no longer running a
+# pipeline end, each one cost line {at, kind, peak_bytes, cpu_seconds, seconds, measure},
+# seconds from the first reading that saw it to the last, measure "docker" for a stack (docker
+# stats' use) and "working_set" for the rest; what a reading could not read (the session list,
+# Docker) ends nothing.
 def capacity_track($live; $r):
   ($live // {}) as $live
   | $r.at as $at | ($at | fromdateiso8601) as $now
   | def span: (.last | fromdateiso8601) - (.first | fromdateiso8601);
-    def cost($kind): {at: $at, kind: $kind, peak_bytes: .peak, cpu_seconds: (.cpu_seconds | hundredths), seconds: span};
+    def cost($kind): {at: $at, kind: $kind, peak_bytes: .peak, cpu_seconds: (.cpu_seconds | hundredths), seconds: span,
+                      measure: (if $kind | startswith("stack:") then "docker" else "working_set" end)};
+    def peak_seen: if .measure == "working_set" then .peak else 0 end;
   ($live.sessions // {}) as $was_sessions
   | ([$r.tasks[] | .task as $task | .sessions[] | ($was_sessions[.id] // null) as $was
       | {key: .id, value: {kind: "session:\(.role)", task: $task, first: ($was.first // $at), last: $at,
-                           peak: ([$was.peak // 0, .peak] | max), cpu_seconds: ([$was.cpu_seconds // 0, .cpu_seconds] | max)}}]
+                           peak: ([($was // {} | peak_seen), .memory] | max), cpu_seconds: ([$was.cpu_seconds // 0, .cpu_seconds] | max),
+                           measure: "working_set"}}]
      | from_entries) as $sessions
   | ($was_sessions | with_entries(.key as $k | select($sessions | has($k) | not))) as $gone_sessions
   | ($live.stacks // {}) as $was_stacks
@@ -258,8 +271,8 @@ def capacity_track($live; $r):
   | ($was_stacks | with_entries(.key as $k | select($stacks | has($k) | not))) as $gone_stacks
   | ($live.gate // null) as $was_gate
   | (if $r.gate.running then
-       {first: ($was_gate.first // $at), last: $at, peak: ([$was_gate.peak // 0, $r.gate.memory] | max),
-        cpu_first: ($was_gate.cpu_first // $r.gate.cpu_seconds), cpu_seconds: $r.gate.cpu_seconds}
+       {first: ($was_gate.first // $at), last: $at, peak: ([($was_gate // {} | peak_seen), $r.gate.memory] | max),
+        cpu_first: ($was_gate.cpu_first // $r.gate.cpu_seconds), cpu_seconds: $r.gate.cpu_seconds, measure: "working_set"}
      else null end) as $gate
   | {live: {sessions: (if $r.sessions then $sessions else $was_sessions + $sessions end),
             stacks: (if $r.docker then $stacks else $was_stacks + $stacks end),
@@ -272,9 +285,21 @@ def capacity_track($live; $r):
                   [$was_gate | .cpu_seconds = ([.cpu_seconds - .cpu_first, 0] | max) | cost("gate")]
                 else [] end))};
 
-# Whether a cost line has the parts the estimates read.
+# What a cost line's peak is to the estimates: "sample" when it is in its kind's measure (a
+# stack's "docker", docker stats' use, which never counted page cache, so a stack's line from
+# before, with no measure, is one too; every other kind's "working_set"), "before" for another
+# kind's line with no measure, from before the working set, whose peak counts page cache and so
+# only bounds the same work's working set from above, else null (the line is never read).
+def cost_class:
+  if .kind | startswith("stack:") then (if .measure == null or .measure == "docker" then "sample" else null end)
+  elif .measure == "working_set" then "sample"
+  elif .measure == null then "before"
+  else null end;
+
+# Whether a cost line has the parts the estimates read and a class (cost_class).
 def well_formed_cost:
-  try (type == "object" and (.kind | type == "string") and (.peak_bytes | type == "number")) catch false;
+  try (type == "object" and (.kind | type == "string") and (.peak_bytes | type == "number") and cost_class != null)
+  catch false;
 
 # <bytes> as GiB with one decimal place.
 def gib: "\(. / 1073741824 | one_decimal) GiB";
@@ -284,9 +309,12 @@ def gib: "\(. / 1073741824 | one_decimal) GiB";
 # stack block), limits (live.json's limits)}: [{kind, estimate_bytes (null with no seed), source
 # ("learned", "seed" or "none"), samples (how many it has), range ({min, max} of the last 20
 # peaks, or null), says}], the sessions by role, the stacks by project, the gate, then every
-# other kind the costs have. From 5 samples it is the 90th percentile (nearest rank) of the last
-# 20 peaks plus 10%; else the seed: session_gib, heavy_gib or gate_gib, and for a stack the sum
-# of its services' mem_limits as last seen running.
+# other kind the costs have. From 5 samples (cost_class "sample") it is the 90th percentile
+# (nearest rank) of the last 20 peaks plus 10%; else the seed: session_gib, heavy_gib or
+# gate_gib, and for a stack the sum of its services' mem_limits as last seen running; but when
+# the kind's lines from before the working set (cost_class "before") are 5 or more and give,
+# the same way, less than the seed (or there is none), that ("before"), since their peaks count
+# page cache and so bound the work's working set from above.
 def capacity_costs($in):
   $in.settings as $s
   | (["session:" + $in.roles[]] + ["stack:" + $in.stack_projects[]] + ["gate"]) as $known
@@ -302,19 +330,31 @@ def capacity_costs($in):
         | if $limits == null then {bytes: null, says: "no seed: no stack of it seen running yet"}
           else {bytes: $limits, says: "the seed: its services' mem_limits, \($limits | gib) as last seen running"} end
       else {bytes: null, says: "no seed"} end;
+    def learned: .[-20:] | {bytes: (sort | .[(length * 0.9 | ceil) - 1] * 1.1 | round), min: min, max: max};
+    def samples_text($n): if $n > 20 then "the last 20 of \($n)" else "\($n)" end;
   [$kinds[] as $kind
-   | [$in.costs[] | select(.kind == $kind) | .peak_bytes] as $all
+   | [$in.costs[] | select(.kind == $kind) | {class: cost_class, peak: .peak_bytes}] as $lines
+   | [$lines[] | select(.class == "sample") | .peak] as $all
+   | [$lines[] | select(.class == "before") | .peak] as $before
    | $all[-20:] as $last
    | ($all | length) as $n
    | (if $last == [] then null else {min: ($last | min), max: ($last | max)} end) as $range
    | if $n >= 5 then
-       {kind: $kind, estimate_bytes: (($last | sort | .[(length * 0.9 | ceil) - 1]) * 1.1 | round), source: "learned",
-        samples: $n, range: $range,
-        says: "learned from \(if $n > 20 then "the last 20 of \($n)" else "\($n)" end) samples, \($range.min | gib) to \($range.max | gib)"}
+       ($all | learned) as $l
+       | {kind: $kind, estimate_bytes: $l.bytes, source: "learned", samples: $n, range: $range,
+          says: "learned from \(samples_text($n)) samples, \($l.min | gib) to \($l.max | gib)"}
      else seed($kind) as $seed
-       | {kind: $kind, estimate_bytes: $seed.bytes, source: (if $seed.bytes == null then "none" else "seed" end),
-          samples: $n, range: $range,
-          says: ($seed.says + (if $n == 0 then "" else " (\($n) sample\(if $n == 1 then "" else "s" end) of 5)" end))}
+       | (if $n == 0 then "" else " (\($n) sample\(if $n == 1 then "" else "s" end) of 5)" end) as $count
+       | (if ($before | length) >= 5 then $before | learned else null end) as $b
+       | if $b != null and ($seed.bytes == null or $b.bytes < $seed.bytes) then
+           {kind: $kind, estimate_bytes: $b.bytes, source: "before", samples: $n, range: $range,
+            says: ((if $seed.bytes == null then "" else "the lower of the seed (\($seed.says | ltrimstr("the seed: "))) and " end)
+                   + "\(samples_text($before | length)) samples from before the working set, \($b.min | gib) to \($b.max | gib),"
+                   + " which count page cache" + $count)}
+         else
+           {kind: $kind, estimate_bytes: $seed.bytes, source: (if $seed.bytes == null then "none" else "seed" end),
+            samples: $n, range: $range, says: ($seed.says + $count)}
+         end
      end];
 
 # team-capacity costs's lines from capacity_costs's array.
@@ -496,21 +536,26 @@ def stopped_admissions($sessions; $read_at):
 
 # What the team's live work reserves, from $in: {reading (the newest, or null), costs
 # (capacity_costs' array), settings, heavy (the heavy-run lock now: {held, pid, label, task}),
-# admitted (capacity/admitted.json's entries), now (seconds), asking (the kind being admitted, or
-# null), freed (the ids of sessions the asker stopped since the reading, left out; [] or null for
-# none)}, as [{part, kind, task, name, estimate_bytes, use_bytes, bytes}], part one of
-# reserved_parts:
+# admitted (capacity/admitted.json's entries, a session admission with session, its launch's
+# session, once team-capacity's release_stopped_admissions has paired it), now (seconds), asking
+# (the kind being admitted, or null), freed (the ids of sessions the asker stopped since the
+# reading, left out; [] or null for none)}, as [{part, kind, task, name, estimate_bytes, use_bytes,
+# bytes}], part one of reserved_parts:
 #   sessions_use: each live team session of the reading past its admission window, at its use;
 #   spike_allowance: one for the team while any session is past its window, the largest of those
 #   sessions' kind estimates less their use, at 0 at least, named by that session;
-#   admissions: each admission of the last 10 minutes but a heavy run's, a stopped session's already
-#   left out of admitted by team-capacity's release_stopped_admissions, at its estimate then
-#   (admitted: its time); one of a session kind together with a session of that kind and task the
-#   reading holds, which is then within its window, at the larger of that estimate and the
-#   session's use (of several sessions of the kind and task, the newest admissions take the ones
-#   using least, since a new session uses little yet);
+#   admissions: each admission of the last 10 minutes but a heavy run's, a stopped session's
+#   already left out of admitted by release_stopped_admissions, at its estimate then (admitted:
+#   its time); one of a session kind together with a session the reading holds, which is then
+#   within its window, at the larger of that estimate and the session's use, so each session
+#   within 10 minutes of its admission is reserved at its use plus its gap: the session its
+#   admission's launch names (session) when the reading holds it, else a session of that kind and
+#   task the reading holds that no admission's session names (of several, the newest admissions
+#   take the ones using least, since a new session uses little yet), so an admission whose launch
+#   is not logged yet still reserves its session once;
 #   stacks: each running team or gate stack, at the larger of its kind's estimate (one with none:
-#   its mem_limits) and its use; one an admission names (its kind, task and name, the newest such
+#   its mem_limits) and its use, but a gate stack in which no process works (in_use false, its
+#   gate run over) at its use; one an admission names (its kind, task and name, the newest such
 #   admission) is that admission too, reserved once, at the admission's estimate at least
 #   (admitted: its time), so a stack admitted while another of its kind and task runs (an
 #   instance) stays an admission until the reading holds it; an admission with no name pairs with
@@ -531,19 +576,25 @@ def capacity_reservations($in):
       to_entries | map(.value + {i: .key}) | group_by([.kind, .task])
       | map(sort_by(order) | to_entries | map(.value + {rank: .key, key: "\(.value.kind) \(.value.task) \(.key)"}))
       | add // [] | sort_by(.i);
-  [$in.admitted[] | select(admission_kept($heavy; $in.now) and (.kind | startswith("heavy:") | not))] as $kept
+  [$r.tasks // [] | .[] | .task as $task | .sessions[]
+   | select(.id as $id | ($in.freed // []) | index($id) | not)
+   | {kind: "session:\(.role)", task: $task, name: .id, use: .memory,
+      estimate: kind_estimate($in.costs; $in.settings; "session:\(.role)"; null).bytes}] as $live
+  | ($live | map({key: .name, value: true}) | from_entries) as $held
+  | [$in.admitted[] | select(admission_kept($heavy; $in.now) and (.kind | startswith("heavy:") | not))] as $admitted
+  | ([$admitted[] | select((.session // null) as $s | $s != null and ($held[$s] // false)) | {key: .session, value: .}]
+     | from_entries) as $own
+  | [$admitted[] | select((.session // null) as $s | $s == null or ($own[$s] // null) == null)] as $kept
   | ([$kept[] | select(.kind | startswith("session:"))] | ranked(.at | fromdateiso8601 | -.)
      | map({key, value: .}) | from_entries) as $windows
-  | ([$r.tasks // [] | .[] | .task as $task | .sessions[]
-      | select(.id as $id | ($in.freed // []) | index($id) | not)
-      | {kind: "session:\(.role)", task: $task, name: .id, use: .memory,
-         estimate: kind_estimate($in.costs; $in.settings; "session:\(.role)"; null).bytes}]
-     | ranked([.use, .name]) | map(. + {admission: $windows[.key]})) as $sessions
+  | ([$live[] | select($own[.name] == null)] | ranked([.use, .name])
+     | map({key: .name, value: $windows[.key]}) | from_entries) as $ranked
+  | [$live[] | . + {admission: ($own[.name] // $ranked[.name]), ranked: ($ranked[.name] != null)}] as $sessions
   | def same_stack($a): .kind == $a.kind and .task == $a.task and .name == $a.name;
     [$kept[] | select((.kind | startswith("stack:")) and .name != null)] as $stack_admissions
-  | [$r.stacks // [] | .[] | {kind: "stack:\(.project // .class)", task, name, memory, limits}
+  | [$r.stacks // [] | .[] | {kind: "stack:\(.project // .class)", task, name, memory, limits, idle: (.in_use == false)}
      | . + {admission: (. as $s | [$stack_admissions[] | select(. as $a | $s | same_stack($a))] | max_by(.at))}] as $stacks
-  | ([$sessions[] | select(.admission != null) | "\(.kind) \(.task)"] | group_by(.) | map({key: .[0], value: length}) | from_entries) as $taken
+  | ([$sessions[] | select(.ranked) | "\(.kind) \(.task)"] | group_by(.) | map({key: .[0], value: length}) | from_entries) as $taken
   | [$sessions[] | select(.admission == null)] as $past
   | [($sessions[]
       | if .admission == null then
@@ -555,7 +606,8 @@ def capacity_reservations($in):
      (if $past == [] then empty
       else $past | map(. + {gap: ([.estimate - (.use // 0), 0] | max)}) | max_by(.gap)
         | {part: "spike_allowance", kind, task, name, estimate_bytes: .estimate, use_bytes: .use, bytes: .gap} end),
-     ($stacks[] | .admission as $a | item("stacks"; .kind; .task; .name; .memory; .limits)
+     ($stacks[] | .admission as $a | .idle as $idle | item("stacks"; .kind; .task; .name; .memory; .limits)
+      | if $idle then .bytes = (.use_bytes // 0) else . end
       | if $a == null then . else . + {admitted: $a.at, bytes: ([.bytes, $a.bytes] | max)} end),
      (if $r.gate.running // false then item("gates"; "gate"; null; "gate"; $r.gate.memory; null) else empty end),
      (if $heavy.held and (($in.asking // "") | startswith("heavy:") | not) then

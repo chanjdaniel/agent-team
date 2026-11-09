@@ -490,6 +490,18 @@ EOF
   grep -qxF '6. Send `T12 DONE .scratch/task/spec.md` to `coordinator`.' "$TEAM_HOME/tasks/T12/brief-planner-interview.md"
 }
 
+@test "each build-path planner brief asks the spec to name the decisions it makes, right after the to-spec clause" {
+  open_t12
+  event T12 interview-thread '{discord_thread: "1565400000000000012"}'
+  local template decisions
+  decisions='   Its Implementation Decisions name each choice a builder would otherwise make (a library, a file'"'"'s place, a default, an error'"'"'s handling, wording users see, which cases a test covers) and how it was made, and end with the line `Left to the builder: none`, or each choice left open and why.'
+  for template in planner-feature planner-interview; do
+    run_bin -0 team-brief T12 "$template" --name "$template" --set 'read=- `AGENTS.md`.'
+    grep -A1 -F '1. `spec.md`, following `~/.claude/skills/to-spec/SKILL.md`' "$output" | tail -n 1 | grep -qxF -- "$decisions" ||
+      { echo "$template lacks the decisions line after the spec line" >&2; cat "$output" >&2; return 1; }
+  done
+}
+
 @test "a gated project's builder stops before the gate for the review, then runs the gate once" {
   open_t12
   run_bin -0 team-brief T12 builder-deliver --set "goal=the goal"

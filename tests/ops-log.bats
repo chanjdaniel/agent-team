@@ -117,6 +117,36 @@ READ_INPUT='{"database":"conventioner","collection":"markets","filter":{"phase":
   hook -2 "$(hook_input PreToolUse mcp__prod-readwrite__count '{}')"
 }
 
+@test "a vercel-read call is logged as a read in both name forms, its input masked, and let through when its line is lost" {
+  local input='{"project":"back-end","deployment":"dpl_8xYz","levels":["error"],"note":"from ann@ex.com, +1 604 555 0101"}'
+  local masked='{"project":"back-end","deployment":"dpl_8xYz","levels":["error"],"note":"from <email>, <phone>"}'
+  hook -0 "$(hook_input PreToolUse mcp__vercel-read__runtime-logs "$input")"
+  hook -0 "$(hook_input PostToolUse mcp__vercel-read__runtime-logs "$input" \
+    '{"tool_response": [{"type": "text", "text": "Read 3 log lines: boot refused SESSION_SECRET"}]}')"
+  hook -0 "$(hook_input PostToolUseFailure mcp__plugin_vercel-read_vercel-read__get-deployment '{"project":"front-end","deployment":"dpl_1"}' \
+    '{"error": "get-deployment: Vercel answered 403 forbidden for bo@ex.io\nsecond line", "is_interrupt": false}')"
+  hook -0 "$(hook_input PreToolUse mcp__plugin_vercel-read_vercel-read__domain-deployment '{}')"
+  assert_equal "$output$stderr" ""
+  assert_equal "$(entries)" "- TIME requested \`vercel-read\` \`runtime-logs\` \`$masked\`
+- TIME ran \`vercel-read\` \`runtime-logs\` \`$masked\`
+- TIME failed \`vercel-read\` \`get-deployment\` \`{\"project\":\"front-end\",\"deployment\":\"dpl_1\"}\` error \`get-deployment: Vercel answered 403 forbidden for <email>\`
+- TIME requested \`vercel-read\` \`domain-deployment\` \`{}\`"
+  run -1 grep -q -e @ -e SESSION_SECRET -e 'second line' "$log"
+
+  rm "$log"
+  mkdir "$log"
+  local event
+  for event in PreToolUse PostToolUse PostToolUseFailure; do
+    hook -0 "$(hook_input "$event" mcp__vercel-read__list-deployments '{"project":"back-end"}')"
+    assert_contains "$stderr" "ops-log: could not log this production read"
+    hook -0 "$(hook_input "$event" mcp__plugin_vercel-read_vercel-read__list-env-names '{"project":"back-end"}')"
+    assert_contains "$stderr" "ops-log: could not log this production read"
+  done
+  # A server the hook cannot name is still a write it blocks.
+  hook -2 "$(hook_input PreToolUse mcp__vercel-write__list-deployments '{}')"
+  hook -2 "$(hook_input PreToolUse mcp__plugin_vercel-read_vercel-write__list-deployments '{}')"
+}
+
 @test "an input holding backticks stays one code span" {
   hook -0 "$(hook_input PreToolUse mcp__prod-read__find '{"filter":{"name":"a`b``c"}}')"
   assert_equal "$(entries)" '- TIME requested `prod-read` `find` ```{"filter":{"name":"a`b``c"}}```'
@@ -134,21 +164,22 @@ READ_INPUT='{"database":"conventioner","collection":"markets","filter":{"phase":
   assert_equal "$(wc -l <"$log")" 32
 }
 
-@test "the ops settings wire the hook for every production tool in both name forms" {
+@test "the ops settings wire the hook for every production and Vercel tool in both name forms" {
   local s=$REPO_ROOT/settings/ops.json event name
   for event in PreToolUse PostToolUse PostToolUseFailure; do
     assert_equal "$(jq -c --arg e "$event" '[.hooks[$e][] | select(.hooks[].command | endswith("/bin/hooks/ops-log"))]
       | map({matcher, args: .hooks[0].args}) ' "$s")" \
-      '[{"matcher":"^mcp__.*prod-(read|write).*__","args":["@TASK_DIR@"]}]'
+      '[{"matcher":"^mcp__.*(prod-(read|write)|vercel-read).*__","args":["@TASK_DIR@"]}]'
   done
   # Claude Code tests a matcher holding other characters than letters, digits, _, -, | and spaces
   # as an unanchored JavaScript regular expression; this one means the same in ERE.
   for name in mcp__prod-read__find mcp__prod-write__update-many mcp__plugin_prod-read_prod-read__find \
-    mcp__plugin_prod-write_prod-write__delete-one; do
+    mcp__plugin_prod-write_prod-write__delete-one mcp__vercel-read__list-deployments \
+    mcp__plugin_vercel-read_vercel-read__runtime-logs; do
     grep -Eq "$(jq -r '.hooks.PreToolUse[] | select(.hooks[0].command | endswith("/bin/hooks/ops-log")) | .matcher' "$s")" <<<"$name" ||
       { echo "the matcher misses $name" >&2; return 1; }
   done
-  for name in mcp__other__find Read mcp__prod_read__find; do
+  for name in mcp__other__find Read mcp__prod_read__find mcp__vercel_read__list-deployments; do
     run -1 grep -Eq "$(jq -r '.hooks.PreToolUse[] | select(.hooks[0].command | endswith("/bin/hooks/ops-log")) | .matcher' "$s")" <<<"$name"
   done
   # A failing or timed-out hook blocks the call instead of letting an unlogged write through.

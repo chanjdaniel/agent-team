@@ -1,0 +1,8 @@
+{
+  "name": "spec-review",
+  "version": "0.1.0",
+  "description": "For a planner before its plan is approved, and for a replay of an archived spec: the spec-review skill, which has two fresh, read-only reader agents read a task's spec.md and tickets in parallel, one as a stranger who paraphrases them and one as the builder who checks each ticket against the code, and writes their findings to spec-review.md for the spec's author to sort. No MCP server, hook or script.",
+  "author": {
+    "name": "Daniel Chan"
+  }
+}

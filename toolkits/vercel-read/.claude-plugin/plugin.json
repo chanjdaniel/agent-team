@@ -1,0 +1,8 @@
+{
+  "name": "vercel-read",
+  "version": "0.1.0",
+  "description": "Read-only access to Conventioner's two Vercel projects through the team's own MCP server, which sends only GET requests to a fixed set of endpoints on two project-scoped tokens from 1Password at server start. Loaded only into the ops role.",
+  "author": {
+    "name": "Daniel Chan"
+  }
+}
