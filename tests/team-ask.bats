@@ -71,7 +71,7 @@ logged() {
 - T7 sign-in: Which of the two sign-in limits stays? https://discord.com/channels/$INBOX_GUILD/2222/1564000000000000001"
 }
 
-@test "--script hashes the script first, ends the question with its path and sha256, and logs one asked with both" {
+@test "--script hashes the script first, ends the question with its path, its sha256 and the yes rule, and logs one asked with both" {
   mkdir -p "$TEAM_HOME/tasks/T7/scripts"
   printf 'echo fixing\n' >"$TEAM_HOME/tasks/T7/scripts/fix.sh"
   ln -s "$TEAM_HOME/tasks/T7/scripts/fix.sh" "$BATS_TEST_TMPDIR/link.sh"
@@ -83,7 +83,8 @@ logged() {
 Five tries a minute, or ten an hour.
 
 Script: $path
-sha256: $hash"
+sha256: $hash
+It runs only on a reply in Discord with a line that starts with yes."
   assert_equal "$(logged | jq -c 'select(.event == "asked")')" \
     "$(jq -cn --arg path "$path" --arg hash "$hash" '{task: "T7", event: "asked", id: "fix",
       text: "Which of the two sign-in limits stays?", script: $path, sha256: $hash,

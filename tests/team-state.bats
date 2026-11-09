@@ -865,6 +865,23 @@ files_read() {
     "T14 proj feature awaiting-merge | no live worker | review 1 pass | PR #5 a1b2c3d checks 1/1 agent-review missing | standing word covers it | waiting on CI: a rerun"
 }
 
+@test "a PR of the team's own project has no standing word, while one on every project stands for another's" {
+  awaiting_merge
+  standing merge-standing all 1563000000000000001
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c '.pr.standing_word.covers' <<<"$output")" true
+
+  # proj's repo is the code checkout's origin, so proj is the team's own.
+  code_checkout
+  git -C "$CODE_CHECKOUT" remote set-url origin https://github.com/owner/proj.git
+  : >"$STUB_CALLS/gh.log"
+  run_bin -0 team-state T14 --json
+  assert_equal "$(jq -c '[.phase, .pr.standing_word]' <<<"$output")" '["awaiting-merge",null]'
+  run ! files_read
+  run_bin -0 team-state T14
+  assert_equal "$output" "T14 proj feature awaiting-merge | no live worker | review 1 pass | PR #5 a1b2c3d checks 1/1 agent-review missing"
+}
+
 @test "a PR the standing word does not cover names the first reason, how many more, and every one in the JSON" {
   awaiting_merge .github/workflows/ci.yml src/tooling.py
   standing merge-standing proj 1563000000000000001

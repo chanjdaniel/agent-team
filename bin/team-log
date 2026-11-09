@@ -35,15 +35,16 @@
 # merge-preapproved of its project stands for the task (its latest, with no withdrawal since). A
 # merge-standing, Daniel's standing word, or a merge-standing-withdrawn, its withdrawal, both read
 # across the whole ledger, is refused when its project is neither all nor a project team-project
-# --list names (and all when a registered project is named all), when its discord_message is a
-# string of digits that is no Discord id, and when its discord_channel is neither #coordinator's
-# channel nor the task's thread (its latest thread event), naming both; a merge-standing-withdrawn
-# is refused too when no standing word stands for its project (for all: for any project the
-# registry or a merge-standing names). A
-# branch-renamed, the task's new branch in a project after the gate rewrote the remote one, is
-# refused when its project is not one of the task's opened or worktree-added events, its branch is
-# the task's there now (the latest opened, worktree-added or branch-renamed of the project), does
-# not name the task, or is no branch name git takes (git check-ref-format --branch). A review
+# --list names (and all when a registered project is named all), when its project is the team's
+# own (own_project, whatever the registry says; all covers every project but it), when its
+# discord_message is a string of digits that is no Discord id, and when its discord_channel is
+# neither #coordinator's channel nor the task's thread (its latest thread event), naming both; a
+# merge-standing-withdrawn is refused too when no standing word stands for its project (for all:
+# for any project the registry or a merge-standing names). A branch-renamed, the task's new
+# branch in a project after the gate rewrote the remote one, is refused when its project is not
+# one of the task's opened or worktree-added events, its branch is the task's there now (the
+# latest opened, worktree-added or branch-renamed of the project), does not name the task, or is
+# no branch name git takes (git check-ref-format --branch). A review
 # whose sent_back names any finding is logged with verdict findings, a pass's too, since a pass
 # whose notes go back before the merge is not ready to merge. A review's findings, when given,
 # must count exactly blocking, correctness, security, real-data, note-change and note-before, each
@@ -313,11 +314,11 @@ if [[ $event == merge-preapproval-withdrawn && -n ${seen[project]:-} ]]; then
     die "$task has no merge-preapproved of ${seen[project]} left to withdraw"
 fi
 
-# Daniel's standing word, and its withdrawal, name a project the registry names, or all for every
-# project, and a message team-merge can read back: a Discord id, in #coordinator's channel or the
-# task's latest thread. A withdrawal withdraws a word that stands (standing_words in
-# bin/lib/ledger.jq, over the whole ledger): for all, one standing for any project the registry
-# or a merge-standing names.
+# Daniel's standing word, and its withdrawal, name a project the registry names but the team's own
+# (own_project), or all for every project but that one, and a message team-merge can read back:
+# a Discord id, in #coordinator's channel or the task's latest thread. A withdrawal withdraws a
+# word that stands (standing_words in bin/lib/ledger.jq, over the whole ledger): for all, one
+# standing for any project the registry or a merge-standing names.
 if [[ $event == merge-standing || $event == merge-standing-withdrawn ]]; then
   project=${seen[project]:-}
   if [[ -n $project ]]; then
@@ -327,6 +328,8 @@ if [[ $event == merge-standing || $event == merge-standing-withdrawn ]]; then
     elif ! grep -qxF -- "$project" <<<"$registered"; then
       if [[ -z $registered ]]; then names=': it names none'; else names=": $(sed ':a;N;$!ba;s/\n/, /g' <<<"$registered")"; fi
       die "$project is neither all, for every project, nor a project projects.toml names$names"
+    elif own_project "$project"; then
+      die "$project is the team's own project, whose PRs merge only on Daniel's word per head, never on a standing word"
     fi
   fi
   message=${seen[discord_message]:-}

@@ -386,26 +386,31 @@ standing() {
   event "$1" "$2" "{ts: \"$5\", project: \"$3\", discord_message: \"$4\", discord_channel: \"1562486564871995482\"}"
 }
 
-@test "the standing merge words follow the resources line, one per word with the projects it stands for, and --json lists them by project" {
+@test "the standing merge words follow the resources line, one per word with the projects it stands for but the team's own, and --json lists them by project" {
   reserve_agent_team
   open_prs owner/proj '[]'
   open_prs owner/conv '[]'
   opened T3
   opened T4
   standing T3 merge-standing all 1564100000000000001 2026-10-22T03:00:00Z
+  run_bin -0 team-snapshot
+  assert_equal "$(sed -n 5p <<<"$output")" "Standing merge word: proj, conv (Discord message 1564100000000000001, 2026-10-22T03:00:00Z, T3)"
+
+  # A word on the team's own project, as an old ledger may hold, names it nowhere.
   standing T3 merge-standing-withdrawn conv 1564100000000000002 2026-10-22T04:00:00Z
   standing T4 merge-standing proj 1564100000000000003 2026-10-22T05:00:00Z
+  standing T4 merge-standing agent-team 1564100000000000006 2026-10-22T05:30:00Z
   run_bin -0 team-snapshot
   assert_equal "$(sed -n 4p <<<"$output")" "Resources: manual, full (90%): no reading of the machine's load yet, so no budget"
-  assert_equal "$(sed -n 5,6p <<<"$output")" "Standing merge word: agent-team (Discord message 1564100000000000001, 2026-10-22T03:00:00Z, T3)
-Standing merge word: proj (Discord message 1564100000000000003, 2026-10-22T05:00:00Z, T4)"
+  assert_equal "$(sed -n 5,6p <<<"$output")" "Standing merge word: proj (Discord message 1564100000000000003, 2026-10-22T05:00:00Z, T4)
+Live team sessions: none"
   run_bin -0 team-snapshot --json
-  assert_equal "$(jq -c .standing_words <<<"$output")" '[{"project":"proj","word":{"project":"proj","task":"T4","ts":"2026-10-22T05:00:00Z","discord_message":"1564100000000000003","discord_channel":"1562486564871995482"}},{"project":"agent-team","word":{"project":"all","task":"T3","ts":"2026-10-22T03:00:00Z","discord_message":"1564100000000000001","discord_channel":"1562486564871995482"}}]'
+  assert_equal "$(jq -c .standing_words <<<"$output")" '[{"project":"proj","word":{"project":"proj","task":"T4","ts":"2026-10-22T05:00:00Z","discord_message":"1564100000000000003","discord_channel":"1562486564871995482"}}]'
 
   # One word standing for many projects is one line naming them, and a withdrawal of all ends them.
   standing T4 merge-standing all 1564100000000000004 2026-10-22T06:00:00Z
   run_bin -0 team-snapshot
-  assert_equal "$(sed -n 5p <<<"$output")" "Standing merge word: proj, conv, agent-team (Discord message 1564100000000000004, 2026-10-22T06:00:00Z, T4)"
+  assert_equal "$(sed -n 5p <<<"$output")" "Standing merge word: proj, conv (Discord message 1564100000000000004, 2026-10-22T06:00:00Z, T4)"
   standing T4 merge-standing-withdrawn all 1564100000000000005 2026-10-22T07:00:00Z
   run_bin -0 team-snapshot
   assert_equal "$(sed -n 5,6p <<<"$output")" "Standing merge word: none

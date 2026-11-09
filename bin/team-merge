@@ -56,12 +56,13 @@
 #   discord_channel is #coordinator's channel or the thread of the task it was logged under
 #   (that task's latest thread event), and Discord shows its discord_message there, whenever it
 #   was sent, from an author in allowFrom; then the plan-time word's checks of the branch, the
-#   reviews and the changed paths, with no scope; it holds for every project, the team's own
-#   included, with no merge_with_plan; every check below holds for it too, and a refusal ends
-#   with a line saying to ask Daniel for the per-head word on the head, in place of the plan-time
-#   word's; a word tried before it that does not hold has its reasons listed too, each reason
-#   once; a per-head or plan-time word that holds never reads it; with no merge-standing in the
-#   ledger, it is never read;
+#   reviews and the changed paths, with no scope; it holds for every project but the team's own
+#   (own_project, as for the plan-time word), with no merge_with_plan, and on the team's own its
+#   one reason is that, its message and those checks not read; every check below holds for it
+#   too, and a refusal ends with a line saying to ask Daniel for the per-head word on the head,
+#   in place of the plan-time word's; a word tried before it that does not hold has its reasons
+#   listed too, each reason once; a per-head or plan-time word that holds never reads it; with
+#   no merge-standing in the ledger, it is never read;
 #   the PR is open, not a draft, does not conflict, and targets the project's base;
 #   every required check (the base branch's protection, gh pr checks --required and the
 #   project's required_checks) is present on the head and passed (a skipped one passes);
@@ -423,7 +424,12 @@ fi
 # The standing word holds only while the word applying to the project stands, in #coordinator or
 # the thread of the task it was logged under, where Discord shows its message from an allowFrom
 # author; it is read whenever it was sent, since it is on no head and answers no ask.
-if [[ $word == standing ]]; then
+# The team's own project never merges on it, as on the plan-time word, whatever the word says.
+team_own=''
+if [[ $word == standing ]] && own_project "$project"; then team_own=true; fi
+if [[ -n $team_own ]]; then
+  standing_reasons+=("$project is the team's own project, whose PRs merge only on Daniel's word per head")
+elif [[ $word == standing ]]; then
   out=$(ledger_jq 'standing_word_reasons($project)' -r --arg project "$project" <<<"$standing") || jq_failed $?
   if [[ -n $out ]]; then
     standing_reasons+=("$out")
@@ -443,7 +449,7 @@ if [[ $word == standing ]]; then
 fi
 
 # The standing word holds on the same checks, with no scope, once a word applies and stands.
-if [[ $word == standing && -n $head ]] && jq -e .stands <<<"$standing" >/dev/null; then
+if [[ $word == standing && -z $team_own && -n $head ]] && jq -e .stands <<<"$standing" >/dev/null; then
   unattended_reasons standing_reasons
 fi
 

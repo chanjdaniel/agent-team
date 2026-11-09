@@ -52,6 +52,16 @@ plan_registry() {
   } >"$TEAM_HOME/projects.toml"
 }
 
+# A code checkout of tools, at owner/tools, for run_bin to run team-log from, so the team's own
+# project is mirror by its repo and tools by its path: own_by_repo_and_path <merge_with_plan>
+own_by_repo_and_path() {
+  export CODE_CHECKOUT
+  CODE_CHECKOUT=$(make_repo tools dev)
+  copy_bin "$CODE_CHECKOUT/bin"
+  git -C "$CODE_CHECKOUT" remote set-url origin git@github.com:Owner/Tools.git
+  plan_registry "$(plan_project mirror "$1" owner/tools && echo && plan_project tools false owner/elsewhere)"
+}
+
 # A project of the task, as team-open logs it: opened <task> <project> [worktree-added]
 opened() {
   jq -cn --arg task "$1" --arg project "$2" --arg event "${3:-opened}" \
@@ -237,8 +247,8 @@ TABLE
   grep -Eq '^  review +team-log +verdict \(pass\|findings\), head; optional agent_review, sent_back \(list of whole numbers\), findings \(object\), before \(list of whole numbers\), guarded \(list\), memory  \(verdict: findings whenever sent_back names a finding, whatever the reviewer.s word, .*sent_back: the numbers of the findings sent back .*findings: the count of each kind.*before: the numbers of the plain notes .*guarded: the guarded areas.*memory: the file in the task directory of the memories.*\)$' <<<"$output"
   grep -Eq '^  merge-preapproved +team-log +project, ask, discord_message \(id\), scope \(list\)  \(Daniel.s plan-time word .*\)$' <<<"$output"
   grep -Eq '^  merge-preapproval-withdrawn +team-log +project, discord_message \(id\)  \(.*withdr.*\)$' <<<"$output"
-  grep -Eq '^  merge-standing +team-log +project, discord_message \(id\), discord_channel \(id\)  \(Daniel.s standing word .*every project when project is all.*across the whole ledger.*the latest merge-standing or merge-standing-withdrawn whose project is .* or all decides.*stands when that is a merge-standing.*\)$' <<<"$output"
-  grep -Eq '^  merge-standing-withdrawn +team-log +project, discord_message \(id\), discord_channel \(id\)  \(Daniel withdrew .*standing word.*every project when project is all.*across the whole ledger.*\)$' <<<"$output"
+  grep -Eq '^  merge-standing +team-log +project, discord_message \(id\), discord_channel \(id\)  \(Daniel.s standing word .*never the team.s own \(own_project\), which team-log refuses, or of every other project when project is all.*across the whole ledger.*the latest merge-standing or merge-standing-withdrawn whose project is .* or all decides.*stands when that is a merge-standing.*\)$' <<<"$output"
+  grep -Eq '^  merge-standing-withdrawn +team-log +project, discord_message \(id\), discord_channel \(id\)  \(Daniel withdrew .*standing word.*every project but the team.s own when project is all.*across the whole ledger.*\)$' <<<"$output"
   grep -Eq '^  merged +team-merge +pr \(number\), merge, head, by; optional .*approval \(head\|plan\|standing\)  \(approval: .*\)$' <<<"$output"
   grep -Eq '^  gate-run +team-log +run, head, outcome \(pushed\|red\|aborted\|stopped-green\); optional cause \(review\|notes\|gate-finding\|load\|tooling\|base-merge\|other\), minutes \(object\)  \(.*\)$' <<<"$output"
   grep -Eq '^  closed +team-close +archive \(list\), returned \(list\), kept \(list\)  \(.*legacy.*\)$' <<<"$output"
@@ -738,11 +748,7 @@ LINES
   assert_equal "$output" "team-log: agent-team is the team's own project, whose PRs merge only on Daniel's word per head, never on a plan-time word"
 
   # By repo, which --check does not read, the key set to true; and by path, at the code checkout.
-  export CODE_CHECKOUT
-  CODE_CHECKOUT=$(make_repo tools dev)
-  copy_bin "$CODE_CHECKOUT/bin"
-  git -C "$CODE_CHECKOUT" remote set-url origin git@github.com:Owner/Tools.git
-  plan_registry "$(plan_project mirror true owner/tools && echo && plan_project tools false owner/elsewhere)"
+  own_by_repo_and_path true
   opened T14 mirror worktree-added
   opened T14 tools worktree-added
   run_bin -1 team-log T14 merge-preapproved project=mirror ask=plan discord_message="$(soon)" 'scope=["src/"]'
@@ -898,6 +904,35 @@ merge-standing conv"
   assert_equal "$output" "team-log: projects.toml names a project all, so project=all cannot say every project"
   assert_equal "$(standing_events)" ""
   run_bin -0 team-log T14 merge-standing project=proj discord_message="$(soon)" discord_channel=1563000000000000002
+}
+
+@test "merge-standing and its withdrawal are refused for the team's own project, by name, by repo and by path, and all is logged beside it" {
+  local kind said=(discord_message="$(soon)" discord_channel="$COORDINATOR")
+  plan_registry "$(plan_project agent-team false)"
+  for kind in merge-standing merge-standing-withdrawn; do
+    run_bin -1 team-log T14 $kind project=agent-team "${said[@]}"
+    assert_equal "$output" "team-log: agent-team is the team's own project, whose PRs merge only on Daniel's word per head, never on a standing word"
+  done
+
+  # By repo, the origin of the code checkout team-log runs from; and by path, at that checkout.
+  own_by_repo_and_path false
+  for kind in merge-standing merge-standing-withdrawn; do
+    run_bin -1 team-log T14 $kind project=mirror "${said[@]}"
+    assert_equal "$output" "team-log: mirror is the team's own project, whose PRs merge only on Daniel's word per head, never on a standing word"
+    run_bin -1 team-log T14 $kind project=tools "${said[@]}"
+    assert_equal "$output" "team-log: tools is the team's own project, whose PRs merge only on Daniel's word per head, never on a standing word"
+  done
+  assert_equal "$(standing_events)" ""
+
+  # Every project, and a project not the team's own, are logged as before.
+  run_bin -0 team-log T14 merge-standing project=all "${said[@]}"
+  run_bin -0 team-log T14 merge-standing project=proj "${said[@]}"
+  run_bin -0 team-log T14 merge-standing-withdrawn project=proj "${said[@]}"
+  run_bin -0 team-log T14 merge-standing-withdrawn project=all "${said[@]}"
+  assert_equal "$(standing_events)" "merge-standing all
+merge-standing proj
+merge-standing-withdrawn proj
+merge-standing-withdrawn all"
 }
 
 @test "merge-standing-withdrawn needs a standing word for its project, or for any project when it withdraws all" {

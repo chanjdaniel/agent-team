@@ -23,11 +23,13 @@
 # (own_project in bin/lib/team.sh), so team-merge merges it on that plan-time word. One it
 # refuses comes back as the coordinator's ask, its text naming the PR's URL, listed with the asks.
 # A PR ready to merge is left out too while a standing word of Daniel's stands for its project (the
-# latest merge-standing or merge-standing-withdrawn naming the project or all is a merge-standing),
-# so team-merge merges it on that word; one it refuses comes back as the coordinator's ask too.
+# latest merge-standing or merge-standing-withdrawn naming the project or all is a merge-standing)
+# and that project is not the team's own (standing_projects in bin/lib/team.sh), so team-merge
+# merges it on that word; one it refuses comes back as the coordinator's ask too. The team's own
+# project's ready PRs are listed whatever word stands, since they merge only on the per-head word.
 # While a standing word stands, one line per word after the items, before the resources line,
-# names the registered projects it stands for and links Daniel's message: "-# Standing merge word
-# on <projects> since <link>"; the length limit never cuts those lines.
+# names the registered projects it stands for, never the team's own, and links Daniel's message:
+# "-# Standing merge word on <projects> since <link>"; the length limit never cuts those lines.
 # The registry is read only once the ledger holds a merge-preapproved or a merge-standing; when it
 # cannot be read, every PR ready to merge is listed, the standing word lines name the projects as
 # the words were logged (all as "every project"), and a line on stderr says why.
@@ -118,7 +120,8 @@ ledger=$TEAM_HOME/ledger.jsonl
 
 # The repos, lowercased, of the projects whose PRs may merge on Daniel's plan-time word, each to
 # its project: those that opt in now and are not the team's own; and, for the standing word, the
-# registered projects and every one's repo. The registry is read only once the ledger holds such a
+# registered projects it may cover (standing_projects: every one but the team's own) and every
+# one's repo. The registry is read only once the ledger holds such a
 # word, and one that cannot be read lists every PR, the standing word lines naming the projects as
 # the words were logged.
 words=$(ledger_jq 'ledger_events | {plan: any(.[]; .event == "merge-preapproved"),
@@ -136,7 +139,7 @@ if jq -e .plan <<<"$words" >/dev/null; then
   fi
 fi
 if [[ -z $unreadable ]] && jq -e '.standing != []' <<<"$words" >/dev/null; then
-  if found=$(team_project --list 2>"$scratch/registry"); then
+  if found=$(standing_projects 2>"$scratch/registry"); then
     while IFS= read -r project; do
       [[ -n $project ]] || continue
       repo=$(team_project "$project" repo) || exit 1
