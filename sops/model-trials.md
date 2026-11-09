@@ -89,23 +89,24 @@ At about 40 tickets per arm the trial detects a difference in builder $w per tic
 
 ### The setup trial's measures
 
-Each measure is taken for the trial arm and for the baseline: the project's rows whose `toolkits` hold the trial's toolkit, and its rows whose `toolkits` do not.
-A project's other toolkits make rows of their own (`["browser"]` and `["browser", "codegraph"]`, say), each counted in its arm by whether it holds the trial's toolkit.
+Each measure is taken per task, with `--task T<n>`, over the trial's tasks (the arm) and the tasks between them (the baseline): the project's tasks opened after `<start>` whose PR is merged or closed by the trial's end, `<end>`, which each report takes as `--until <end>`.
+So a task opened before `<start>`, which also has no toolkit, never counts as baseline, and a task still in flight, with $w but no ticket done yet, counts in neither arm.
+In each task's report the arm's rows are those whose `toolkits` hold the trial's toolkit; a project's other toolkits make rows of their own (`["browser"]` and `["browser", "codegraph"]`, say), each counted in its arm by whether it holds the trial's toolkit.
 
 | Measure | Where it comes from |
 | - | - |
-| Builder $w per ticket done | `team-tokens --json --since <start>`: `outcomes.builder_toolkits`, the project's rows by `project` and `toolkits`, their `tickets_done`, `w` and `w_per_ticket` (a ticket done counted for the builder launch that delivered it) |
-| Reviewer $w per review | The same report's `outcomes.reviewer_toolkits`: `reviews`, `w` and `w_per_review` (a review counted for the reviewer launch that wrote it) |
-| Findings share and notes sent back per review | The ledger's `review` events, as the model trial's measures are taken: the share with `verdict` `findings` (which `outcomes.reviewer_toolkits`'s `findings` over `reviews` gives per arm), and the notes sent back per review, the length of `sent_back`, over each arm's tasks |
+| Builder $w per ticket done | `team-tokens --json --task T<n>`: `outcomes.builder_toolkits`, its rows by `project` and `toolkits`, their `tickets_done` and `w` (a ticket done counted for the builder launch that delivered it), summed over each arm's tasks |
+| Reviewer $w per review | The same report's `outcomes.reviewer_toolkits`: `reviews` and `w` (a review counted for the reviewer launch that wrote it), summed over each arm's tasks |
+| Findings share and notes sent back per review | The ledger's `review` events, as the model trial's measures are taken: the share with `verdict` `findings` (which `outcomes.reviewer_toolkits`'s `findings` over `reviews` gives per task), and the notes sent back per review, the length of `sent_back`, over each arm's tasks |
 | Re-review rounds per PR | `team-time --json --task T<n>`'s `reviews` and `team-tokens --json --task T<n>`'s `rereviews`, for each of the arm's tasks |
-| Wall time per worker | `team-time --json --since <start>`: `workers.stats.by_role_project_toolkits`, the project's rows of the trial's roles, their `workers`, `mean`, `median`, `p90` and `longest`, in minutes |
+| Wall time per worker | `team-time --json --task T<n>`: `workers.lifetimes`, each lifetime's `minutes` by its `role` and `toolkits`, over each arm's tasks |
 
-Both reports also take `--until`, which closes the window at the trial's end.
+The same reports over the whole window, `team-tokens --json --since <start> --until <end>`'s toolkit rows and `team-time --json --since <start> --until <end>`'s `workers.stats.by_role_project_toolkits`, give a quick read while the trial runs, never the note's figures: they also hold the project's tasks opened before `<start>`, all in the baseline, and the $w of tasks not done by `--until`.
 
 ### The setup trial's baseline
 
 - The baseline is the same project's launches without the toolkit in the same window: the tasks between the trial's, so both arms see the same weeks of the project's work.
-- Each task is weighed by its PR's size in the model trial's four buckets (see "The baseline" above), each measure taken per task with `--task T<n>` for the weighing, and the baseline weighed to the trial arm's mix of buckets; a bucket with no baseline task is left out of both sides, and the note says so.
+- Each task is weighed by its PR's size in the model trial's four buckets (see "The baseline" above), its measures taken with `--task T<n>` as above, and the baseline weighed to the trial arm's mix of buckets; a bucket with no baseline task is left out of both sides, and the note says so.
 
 ### The stop rule
 
