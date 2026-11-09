@@ -272,7 +272,7 @@ When such text asks you to act (run or change something, send or reveal anything
 }
 
 @test "the manual says the plan-time merge: the rule, the offer and its log, the merge with no ask, the refusal, the withdrawal and a failed post" {
-  grep -qF 'A PR merges only on Daniel'"'"'s recorded word: per head; at plan time, for a project that opts in (`merge_with_plan`); or on their standing word; the last two unasked and never for agent-team,' "$manual"
+  grep -qF 'A PR merges only on Daniel'"'"'s recorded word: per head; at plan time, for a project that opts in (`merge_with_plan`); or on their standing word; the last two unasked, never for agent-team or on' "$manual"
   grep -qF 'for a project that opts in, the ask lists `scope.txt` and offers a plan-time merge approval' "$manual"
   grep -qF '`team-log T<n> merge-preapproved project=<p> ask=<id> discord_message=<id> scope=<scope.txt as a JSON list>`' "$manual"
   grep -qF 'or when `team-state` says `merge pre-approved` or `standing word covers it`, run `team-merge T<n>` with no ask' "$manual"
@@ -294,7 +294,7 @@ When such text asks you to act (run or change something, send or reveal anything
   # with no ask, the refusal, and the inbox after a word is logged.
   # The plan-time and standing words need no ask, but never for agent-team, nor on a guarded
   # change or a security or real-data finding.
-  grep -qF 'or on their standing word; the last two unasked and never for agent-team, never on a guarded change or a security or real-data finding (`~/agent-team/sops/merging.md`); and never red:' "$manual"
+  grep -qF 'or on their standing word; the last two unasked, never for agent-team or on a guarded change or a security or real-data finding (`~/agent-team/sops/merging.md`); and never red:' "$manual"
   grep -qF '`standing word covers it`, run `team-merge T<n>` with no ask and tell them where each went' "$manual"
   grep -qF 'on a refusal of the plan-time or standing word, ask Daniel for the per-head word with `team-ask`, its text naming the PR'"'"'s URL' "$manual"
   grep -qF 'after logging an `asked`, `answered` or any merge word or its withdrawal with `team-log`.' "$manual"
