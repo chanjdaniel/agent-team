@@ -158,6 +158,7 @@ It holds:
 - Scripts and tests run on Linux and macOS: on macOS `bin/lib/platform.sh` (sourced by the library and the test helpers) puts Homebrew's GNU coreutils, findutils, sed, grep and `flock` first on `PATH`, so GNU forms are fine and BSD-only ones are not.
   CI's `macos-shards` jobs run `tests/run bats` in three shards on macOS runners, and its `macos` job passes only when every shard did, with the rest of CI: on every PR to `dev` and to `main`, and by hand.
 - Repo invariants are tests too: every executable in `bin/` answers `--help` with its header, every `bin/team-*` script is named in `roles/coordinator.md`, which stays at most 120 lines, no tracked Markdown or template outside the records (`bin/lib/records`, kept as written) has an em dash, and the Layout above stays a list, one thing per line of at most 300 characters, alphabetical within each list.
+- Every PreToolUse hook entry, in `settings/*.json`, `coordinator.settings.json` and a toolkit's `hooks/hooks.json`, sets `"onFailure": "block"` and a whole-number `timeout` from 1 to 120 seconds beside its `command`, which `tests/repo.bats` holds, so a guard hook that fails or hangs blocks the call; `team-doctor`'s `guard hooks` line runs `scratch-only-edits`, `command-guard` and `lease-fence` on a harmless Bash call, since a guard that always fails then blocks every call it sees.
 
 ## Script conventions
 

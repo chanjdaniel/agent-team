@@ -675,6 +675,47 @@ SETTINGS=(coordinator.settings.json settings/worker.json)
   done
 }
 
+# Each PreToolUse hook object of each settings or hooks file <file> that lacks onFailure "block"
+# or a whole-number timeout from 1 to 120, one "<file>: <command>: <what>" line each, the file
+# as given: pretooluse_problems <file>...
+pretooluse_problems() {
+  local file
+  for file; do
+    jq -r --arg file "$file" '.hooks.PreToolUse // [] | .[].hooks[]
+      | (.command + ([.args // [] | .[]] | map(" " + .) | join(""))) as $hook
+      | (if .onFailure != "block" then "\($file): \($hook): onFailure is \(.onFailure // "unset"), not \"block\"" else empty end),
+        (if (.timeout | type) != "number" or .timeout != (.timeout | floor) or .timeout < 1 or .timeout > 120
+         then "\($file): \($hook): timeout is \(.timeout // "unset"), not a whole number of seconds from 1 to 120" else empty end)' "$file"
+  done
+}
+
+# A guard hook blocks the call on any failure only when its entry says so, and Claude Code waits
+# 600 seconds on one that hangs by default (T248, R1): every PreToolUse entry fails closed, soon.
+@test "every PreToolUse hook blocks on its failure and has a timeout, in every settings and toolkit hooks file" {
+  local files=() file bad=$BATS_TEST_TMPDIR/bad.json
+  for file in "$REPO_ROOT"/settings/*.json "$REPO_ROOT"/coordinator.settings.json "$REPO_ROOT"/toolkits/*/hooks/hooks.json; do
+    files+=("${file#"$REPO_ROOT/"}")
+  done
+  assert_equal "$(cd "$REPO_ROOT" && pretooluse_problems "${files[@]}")" ""
+  # Each of the four guards, at its timeout.
+  assert_equal "$(cd "$REPO_ROOT" && jq -r '.hooks.PreToolUse // [] | .[].hooks[] | "\(.command | sub("^\"?@TEAM_CODE@/bin/hooks/"; "") | sub("\""; "")) \(.timeout)"' "${files[@]}" | sort -u)" \
+    "command-guard 10
+lease-fence 60
+lease-fence --coordinator 60
+ops-log 30
+scratch-only-edits 30"
+  # The check names the file and the hook of each entry left open.
+  jq -n '{hooks: {PreToolUse: [{matcher: "Bash", hooks: [
+      {type: "command", command: "a-guard", timeout: 10},
+      {type: "command", command: "b-guard", args: ["x"], onFailure: "block", timeout: 1.5},
+      {type: "command", command: "c-guard", onFailure: "block", timeout: 121},
+      {type: "command", command: "d-guard", onFailure: "block", timeout: 120}]}],
+    PostToolUse: [{hooks: [{type: "command", command: "e-hook"}]}]}}' >"$bad"
+  assert_equal "$(pretooluse_problems "$bad")" "$bad: a-guard: onFailure is unset, not \"block\"
+$bad: b-guard x: timeout is 1.5, not a whole number of seconds from 1 to 120
+$bad: c-guard: timeout is 121, not a whole number of seconds from 1 to 120"
+}
+
 # Whether one of the Bash deny rules in <settings file> matches <command> in one of its
 # deny_forms, a rule's * matching any text as Claude Code's does: denied <settings file> <command>
 denied() {

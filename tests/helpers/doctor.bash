@@ -333,13 +333,13 @@ answer() {
   if (($# > 1)); then printf '%s\n' "$2" >"$file"; else : >"$file.missing"; fi
 }
 
-# The tools of <os> (arch, macos) on this machine type, one "name<TAB>version_cmd<TAB>pin or
+# The tools of <os> (arch, macos) on this machine type, one "name<TAB>version_cmd<TAB>pin, else
 # min<TAB>source" each, as bin/lib/tools.jq resolves them for the doctor.
 lock_tools() {
   local machine
   machine=$(cat "$STUB_FIXTURES/uname-m.out" 2>/dev/null || echo x86_64)
   jq -L "$REPO_ROOT/bin/lib" -r --arg os "$1" --arg machine "$machine" \
-    'include "tools"; tools_for($os; $machine) | [.name, .version_cmd, .pin + .min, .source] | @tsv' "$LOCK"
+    'include "tools"; tools_for($os; $machine) | [.name, .version_cmd, (if .pin != "" then .pin else .min end), .source] | @tsv' "$LOCK"
 }
 
 # <filter> of <name>'s first entry in bin/lib/tools.lock, raw: what a test builds its expected
