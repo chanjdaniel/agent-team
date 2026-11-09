@@ -21,7 +21,7 @@ setup() {
   units=$HOME/.config/systemd/user agents=$HOME/Library/LaunchAgents
   log=$HOME/.local/state/agent-team/heartbeat.log
   failures=$HOME/.local/state/agent-team/heartbeat-failures.log
-  inbox_discord
+  inbox_discord alerts
   inbox_kept
 }
 
@@ -234,21 +234,27 @@ EOF
   assert_equal "$(stub_calls launchctl | grep -v '"print"')" ""
 }
 
-@test "status says installed, enabled and the last run from the heartbeat log; --json says the same" {
+@test "status says installed, enabled, the last run from the heartbeat log, the last good run and health; --json says the same" {
   run_bin -0 team-timers status
-  assert_equal "$output" "$(printf '%s\n' 'installed: no' 'enabled: no' 'last run: never')"
+  assert_equal "$output" "$(printf '%s\n' 'installed: no' 'enabled: no' 'last run: never' 'last good run: never' \
+    'health: unknown - no health record yet; the heartbeat writes one each run')"
   run_bin -0 team-timers status --json
-  jq -e '. == {installed: false, enabled: false, current: null, last_run: null}' <<<"$output"
+  jq -e '. == {installed: false, enabled: false, current: null, last_run: null, last_good_run: null,
+    health: "Health: unknown - no health record yet; the heartbeat writes one each run"}' <<<"$output"
 
   run_bin -0 team-timers enable
   run_bin -0 team-timers run
   local last
   last=$(tail -n 1 "$log" | cut -d' ' -f1)
   [[ $last =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
+  local good health
+  good=$(jq -r .last_run.start "$HOME/.local/state/agent-team/health.json")
+  health=$(TEAM_HOME=$TEAM_HOME "$REPO_ROOT/bin/team-timers" health | head -n 1)
   run_bin -0 team-timers status
-  assert_equal "$output" "$(printf '%s\n' 'installed: yes' 'enabled: yes' "last run: $last")"
+  assert_equal "$output" "$(printf '%s\n' 'installed: yes' 'enabled: yes' "last run: $last" "last good run: $good" "health: ${health#Health: }")"
   run_bin -0 team-timers status --json
-  jq -e --arg last "$last" '. == {installed: true, enabled: true, current: true, last_run: $last}' <<<"$output"
+  jq -e --arg last "$last" --arg good "$good" --arg health "$health" \
+    '. == {installed: true, enabled: true, current: true, last_run: $last, last_good_run: $good, health: $health}' <<<"$output"
 
   # Installed but stopped is not enabled.
   rm "$HOME/.fake-systemd/agent-team-heartbeat.timer.active"
@@ -257,7 +263,7 @@ EOF
 
   as_macos
   run_bin -0 team-timers status --json
-  jq -e --arg last "$last" '. == {installed: false, enabled: false, current: null, last_run: $last}' <<<"$output"
+  jq -e --arg last "$last" '{installed, enabled, current, last_run} == {installed: false, enabled: false, current: null, last_run: $last}' <<<"$output"
   run_bin -0 team-timers enable
   run_bin -0 team-timers status --json
   jq -e '.installed and .enabled' <<<"$output"
@@ -386,7 +392,7 @@ EOF
   echo "- a note" >"$TEAM_HOME/memory/home/MEMORY.md"
   git -C "$TEAM_HOME" checkout -q --detach
   run_bin -1 team-timers run
-  [[ $(tail -n 1 <<<"$output") =~ ^[0-9T:Z-]+" checkpoint: failed: team home: not on a branch, so the records are not committed"$ ]]
+  [[ $(grep -E '^[^ ]+ checkpoint: ' <<<"$output" | tail -n 1) =~ ^[0-9T:Z-]+" checkpoint: failed: team home: not on a branch, so the records are not committed"$ ]]
   [[ ! -e $state/last-checkpoint ]]
 }
 
@@ -511,10 +517,12 @@ echo "team-checkpoint: warning: usage: cannot export" >&2
 exit 1
 SH
   run_bin -1 team-timers run
-  assert_equal "$(grep -c ' checkpoint: ' <<<"$output")" 21
-  [[ $(grep ' checkpoint: ' <<<"$output" | head -n 1) =~ " checkpoint: failed: T1 home: cannot push wip/home/T1"$ ]]
-  [[ $(grep ' checkpoint: ' <<<"$output" | sed -n 20p) =~ " checkpoint: failed: T20 home: cannot push wip/home/T20"$ ]]
-  [[ $(grep ' checkpoint: ' <<<"$output" | tail -n 1) =~ " checkpoint: failed: and 3 more problem lines"$ ]]
+  local logged
+  logged=$(grep -E '^[^ ]+ checkpoint: ' <<<"$output")
+  assert_equal "$(grep -c . <<<"$logged")" 21
+  [[ $(head -n 1 <<<"$logged") =~ " checkpoint: failed: T1 home: cannot push wip/home/T1"$ ]]
+  [[ $(sed -n 20p <<<"$logged") =~ " checkpoint: failed: T20 home: cannot push wip/home/T20"$ ]]
+  [[ $(tail -n 1 <<<"$logged") =~ " checkpoint: failed: and 3 more problem lines"$ ]]
 }
 
 @test "a good checkpoint with a warning logs it, and the run still exits 0" {
@@ -544,8 +552,9 @@ wait
 SH
   TEAM_TIMERS_CHECKPOINT_SECONDS=1 TEAM_TIMERS_KILL_SECONDS=1 run_bin -1 team-timers run
   assert_equal "$output" "$(cat "$log")"
-  assert_equal "$(steps "$output")" "lease checkpoint pack janitor"
-  assert_equal "$(grep ' checkpoint: ' <<<"$output" | cut -d' ' -f2-)" "checkpoint: a line before it hangs
+  # With no good checkpoint yet, its first failure alerts, before the later steps.
+  assert_equal "$(steps "$output")" "lease checkpoint alert pack janitor"
+  assert_equal "$(grep -E '^[^ ]+ checkpoint: ' <<<"$output" | cut -d' ' -f2-)" "checkpoint: a line before it hangs
 checkpoint: failed: timed out after 1 s"
   [[ -s $(day_report) ]]
   assert_equal "$(grep -c . "$hung")" 2
@@ -561,7 +570,8 @@ checkpoint: failed: timed out after 1 s"
   echo "- a note" >"$TEAM_HOME/memory/home/MEMORY.md"
   git -C "$TEAM_HOME" checkout -q --detach
   run_bin -1 team-timers run
-  assert_equal "$(steps "$output")" "lease checkpoint pack janitor"
+  # With no good checkpoint yet, its first failure alerts, before the later steps.
+  assert_equal "$(steps "$output")" "lease checkpoint alert pack janitor"
   [[ $(grep ' checkpoint: failed: ' <<<"$output" | head -n 1) =~ ^[0-9T:Z-]+" checkpoint: failed: team home: not on a branch, so the records are not committed"$ ]]
   assert_contains "$(grep ' pack: ' <<<"$output")" "pack: packed "
   [[ -s $(day_report) ]]
@@ -1671,10 +1681,11 @@ EOF2
 
 @test "team-timers refuses a malformed command line" {
   local args
-  for args in "" "start" "enable --now" "status --yes" "run now" "run --once" "watch --json" "watch --once --once"; do
+  for args in "" "start" "enable --now" "status --yes" "health --once" "health --json --json" "run now" "run --once" \
+    "watch --json" "watch --once --once"; do
     # shellcheck disable=SC2086 # each case is its words
     run_bin -2 --separate-stderr team-timers $args
-    assert_equal "$stderr" "team-timers: usage: team-timers enable | disable | status [--json] | run | watch [--once]"
+    assert_equal "$stderr" "team-timers: usage: team-timers enable | disable | status [--json] | health [--json] | run | watch [--once]"
   done
 }
 
