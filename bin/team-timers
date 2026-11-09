@@ -11,16 +11,43 @@
 #          and agent-team.caffeinate, `caffeinate -i` kept alive, so this Mac does not idle-sleep
 #          while the heartbeat is enabled.
 #
-# Usage: team-timers enable | disable | status [--json] | run | watch [--once]
+# Usage: team-timers enable | disable | status [--json] | health [--json] | run | watch [--once]
 #   enable   Installs the job and starts it (and caffeinate on macOS). A job already installed
 #            as defined and running is left alone; one that differs is rewritten and reloaded.
 #            Only on the machine that holds the lease, and only with Daniel's yes.
 #   disable  Stops and removes the job (and caffeinate). Nothing installed is fine.
 #   status   installed, enabled (every job of this OS loaded and running), current (whether the
 #            installed job is what enable would write from this checkout, the PATH it was enabled
-#            with aside; null when nothing is installed) and the last run, the time of the
-#            heartbeat log's last line; --json prints them as one object, and the text form's
-#            installed line says when the job is installed but not as this checkout defines it.
+#            with aside; null when nothing is installed), the last run, the time of the heartbeat
+#            log's last line, the last good run, the start of the last run that ended 0 as holder
+#            (from the health record), and health, the plain health line (null off the lease);
+#            --json prints them as one object (last_run, last_good_run, health), and the text
+#            form's installed line says when the job is installed but not as this checkout
+#            defines it.
+#   health   The health view, from the health record, the lease record and the fence file (never
+#            the network or a service manager), read-only: one line per problem, or the plain
+#            healthy line, exit 0 healthy and 1 with any problem. --json prints team-health/1:
+#            {schema, machine, holding, ok, line (Discord's markup), text (plain, UTC times and
+#            ages in minutes), problems, each {key, since, text, alerting, sweep}}. A machine
+#            that does not hold the lease (its lease record names another, or none, or it is
+#            fenced) has holding false, no problems and a null line (exit 0); on the holder, no
+#            record or one that cannot be read is "**Health**: unknown - <why>" (exit 1). The
+#            problems, in order (bin/lib/health.jq defines each rule and threshold once):
+#              heartbeat  the later of the last run's start and the lease record's write is over
+#                     15 minutes old; alerting; sweep checkpoint-stale.
+#              offline, login-refused  the heartbeat's own flags; login-refused alerting, sweep
+#                     health; offline neither, since the coordinator's offline watch tells it.
+#              checkpoint  the checkpoint step failing, or the last good checkpoint over 15
+#                     minutes old, with the reason (an earlier step's failing one, or "the
+#                     checkpoint step did not run"); alerting after 2 runs in a row or once
+#                     stale; sweep checkpoint-stale; not raised beside the three above, nor
+#                     while the record is older than the lease record (a take or a resume
+#                     whose first run is not due yet).
+#              ledger  lines of ledger.jsonl no reader can parse, with their count and line
+#                     numbers; alerting; sweep health.
+#              step-<name>  any other step failing (the usage export as step-usage), alerting
+#                     after 12 runs in a row; sweep health.
+#            Each reason in the line is cut at 150 characters and the line at 500.
 #   run      What the job runs, each step one line in the heartbeat log (and on stdout):
 #              fence  On a fenced machine, team-timers disable, and nothing else.
 #              probe  git ls-remote of origin's lease branch, at most 20 s. A network failure
@@ -56,7 +83,12 @@
 #                     commit begins inside the limit), and a checkpoint that fails, times out or
 #                     exits 75 (GitHub unreachable, or another checkpoint still running) is a
 #                     failed step.
-#              inbox  On the holder, after the checkpoint step: team-inbox, which edits the
+#              ledger  On the holder, after the checkpoint step: one pass over ledger.jsonl that
+#                     counts its lines that are not JSON objects, by line number, and reads the
+#                     time of its last event that is not a denied, for the health record; a line
+#                     no reader can parse fails the step ("ledger: failed: 2 lines are not JSON
+#                     objects: line 3, 7"). The health record is written next.
+#              inbox  On the holder, after the ledger step: team-inbox, which edits the
 #                     Waiting on you message in #coordinator, so what waits on Daniel shows there
 #                     within five minutes whatever changed it. It logs only a new message
 #                     ("posted <link>", when the old one is gone) and a failure, and a failure
@@ -100,23 +132,23 @@
 #                     failed still wrote the day's report, so it runs again the next day.
 #            The checkpoint, capacity, level, stacks and janitor steps log one line per line their
 #            command prints (a good capacity step prints only the sessions it placed, and a level
-#            step only a change); a step that is off logs nothing. A checkpoint, capacity, level,
-#            stacks, pack or janitor step that fails (a level step's post that Discord refused,
-#            kept for its next run, too), or whose stack.json (capacity.json for the capacity and
-#            level steps) is malformed, is logged as "<step>: failed: <reason>", the steps after
-#            it still run (the capacity step's place after its sample too), and the run exits 1 at
-#            its end. A hung GitHub or Docker never holds the run's lock for good: the checkpoint
-#            is stopped after 300 s, each reading and the place after 60 s, the level step, the
-#            sweep and the pack after 300 s and the janitor after 1200 s, each logged as
+#            step only a change); a step that is off logs nothing. A checkpoint, ledger, capacity,
+#            level, stacks, pack or janitor step that fails (a level step's post that Discord
+#            refused, kept for its next run, too), or whose stack.json (capacity.json for the
+#            capacity and level steps) is malformed, is logged as "<step>: failed: <reason>", the
+#            steps after it still run (the capacity step's place after its sample too), and the run
+#            exits 1 at its end. A hung GitHub or Docker never holds the run's lock for good: the
+#            checkpoint is stopped after 300 s, each reading and the place after 60 s, the level
+#            step, the sweep and the pack after 300 s and the janitor after 1200 s, each logged as
 #            "<step>: failed: timed out after <n> s" (a janitor stopped so wrote no report, so the
-#            next run starts it again), and a whole run, on Linux and macOS alike, after 70
-#            minutes, with everything it started, logged as "run: failed: timed out after 4200 s"
-#            (exit 1), so the next run takes the lock; the systemd service's TimeoutStartSec=4500
-#            stands behind that. The sweep, the janitor and the level step need docker on the PATH
-#            enable captured (the sweep and the capacity step claude too), and the reading counts
-#            the team's stacks as other programs without it: run enable again once it is there. A
-#            run that finds another still going skips. Posts go through discord_api; times in
-#            them are this machine's local time.
+#            next run starts it again), and a whole run, on Linux and macOS alike, after 70 minutes,
+#            with everything it started, logged as "run: failed: timed out after 4200 s" (exit 1),
+#            so the next run takes the lock; the systemd service's TimeoutStartSec=4500 stands
+#            behind that. The sweep, the janitor and the level step need docker on the PATH enable
+#            captured (the sweep and the capacity step claude too), and the reading counts the
+#            team's stacks as other programs without it: run enable again once it is there. A run
+#            that finds another still going skips. Posts go through discord_api; times in them are
+#            this machine's local time.
 #   watch    A stream for anyone watching the hold: checks the offline flag every 60 s until
 #            killed, and prints one line when it appears (at once if it is there) and one when it
 #            goes:
@@ -126,22 +158,31 @@
 #            no expiry and wakes it once, when the command ends: the flag as it finds it is no
 #            change (team-lease status shows a hold already on), and it prints the first change,
 #            the same line, and exits 0. Re-arm it after acting on that line.
-# In ~/.local/state/agent-team/: heartbeat.log ("<UTC time> <step>: <what happened>", kept to its
-# last 1000 lines once it passes 2000), heartbeat-failures.log (each of its lines that reports a
-# problem, the same line: a failed step, a warning, a failed or refused probe and each run's line of
-# an outage, a lease not checked or not renewed, a failed post, a skipped or timed-out run; kept 30
-# days, the older lines dropped once a run), heartbeat.lock (one run at a time), offline ({since,
-# posted}: GitHub unreachable since the UTC time, and whether #coordinator was told; read by
-# team-lease status, the fence hook and the doctor), login-refused ({since, reason}: the refusal
-# was posted), and on macOS heartbeat.err, the job's stderr (systemd keeps it in the journal).
+# In ~/.local/state/agent-team/: health.json (the health record, team-health/1, written whole by the
+# run alone, after the ledger step, before the inbox step, and when the run ends, however it ends, a
+# run its time limit stopped as timed-out: the last run, its start, end, how it ended (ok, failed,
+# offline, login-refused, not-holder, fenced or timed-out) and whether it held the lease; the last
+# good run; the lease's last renewal; the last good checkpoint; each step failing now, since when,
+# for how many runs in a row and its latest reason, counted once a run, a step that did not run
+# keeping its entry; and the ledger step's count of lines that are not JSON objects, by line number,
+# with the time of its last event that is not a denied), heartbeat.log ("<UTC time> <step>: <what
+# happened>", kept to its last 1000 lines once it passes 2000), heartbeat-failures.log (each of its
+# lines that reports a problem, the same line: a failed step, a warning, a failed or refused probe
+# and each run's line of an outage, a lease not checked or not renewed, a failed post, a skipped or
+# timed-out run; kept 30 days, the older lines dropped once a run), heartbeat.lock (one run at a
+# time), offline ({since, posted}: GitHub unreachable since the UTC time, and whether #coordinator
+# was told; read by team-lease status, the fence hook and the doctor), login-refused ({since,
+# reason}: the refusal was posted), and on macOS heartbeat.err, the job's stderr (systemd keeps it
+# in the journal).
 # TEAM_TIMERS_CHECKPOINT_SECONDS, TEAM_TIMERS_FINISHED_SECONDS, TEAM_TIMERS_FINISHED_CALL_SECONDS,
 # TEAM_TIMERS_CAPACITY_SECONDS, TEAM_TIMERS_LEVEL_SECONDS, TEAM_TIMERS_SWEEP_SECONDS,
 # TEAM_TIMERS_JANITOR_SECONDS, TEAM_TIMERS_RUN_SECONDS and TEAM_TIMERS_KILL_SECONDS replace the
 # checkpoint step's 300 s, the finished step's 90 s after which no stop starts, its 30 s for each
 # call (the back step's session list's too), the capacity step's 60 s for each of its commands, the
 # level step's 300 s, the sweep's 300 s, the janitor's 1200 s, the run's 4200 s and the 10 s after
-# a time limit at which a command still running is killed, and TEAM_TIMERS_FAILURES_DAYS the
-# failures log's 30 days (the tests' seams).
+# a time limit at which a command still running is killed, TEAM_TIMERS_FAILURES_DAYS the
+# failures log's 30 days, and TEAM_TIMERS_HEALTH_RUNS, TEAM_TIMERS_HEALTH_STALE_MINUTES and
+# TEAM_TIMERS_HEALTH_STEP_RUNS the health view's 2 runs, 15 minutes and 12 runs (the tests' seams).
 # Exit 0 done, 1 refused or a step failed, 2 usage error, 75 GitHub unreachable.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/team.sh" "$@"
@@ -200,11 +241,11 @@ SERVICE=agent-team-heartbeat
 HEARTBEAT_LABEL=agent-team.heartbeat
 CAFFEINATE_LABEL=agent-team.caffeinate
 
-usage="usage: team-timers enable | disable | status [--json] | run | watch [--once]"
+usage="usage: team-timers enable | disable | status [--json] | health [--json] | run | watch [--once]"
 command=${1:-} json=0 once=0
 case $command in
   enable | disable | run) [[ $# -eq 1 ]] || usage_error "$usage" ;;
-  status) [[ $# -eq 1 || ($# -eq 2 && $2 == --json) ]] || usage_error "$usage" ;;
+  status | health) [[ $# -eq 1 || ($# -eq 2 && $2 == --json) ]] || usage_error "$usage" ;;
   watch) [[ $# -eq 1 || ($# -eq 2 && $2 == --once) ]] || usage_error "$usage" ;;
   *) usage_error "$usage" ;;
 esac
@@ -220,11 +261,16 @@ log=$state/heartbeat.log
 failures=$state/heartbeat-failures.log
 offline=$state/offline
 refused=$state/login-refused
+health=$state/health.json
 units=$HOME/.config/systemd/user
 agents=$HOME/Library/LaunchAgents
 domain=gui/$(id -u)
 err=$(mktemp)
-trap 'rm -f "$err"' EXIT
+# The run's results for the health record, one JSON object a line (step_ok, step_fail, run_fact),
+# written by the run and read by bounded_run too; and the watchdog's mark that the run timed out.
+results=$(mktemp)
+fired=$err.fired
+trap 'rm -f "$err" "$results"' EXIT
 
 # The service manager of this OS: systemd or launchd.
 manager() {
@@ -450,7 +496,7 @@ current() {
 }
 
 status() {
-  local installed=false enabled=false last=null line current installed_text
+  local installed=false enabled=false last=null line current installed_text good name view plain
   if [[ $mgr == systemd ]]; then
     [[ ! -f $units/$SERVICE.service || ! -f $units/$SERVICE.timer ]] || installed=true
     ! timer_running || enabled=true
@@ -463,16 +509,59 @@ status() {
     [[ ! ${line%% *} =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z$ ]] || last=\"${line%% *}\"
   fi
   current=$(current)
+  good=$(jq -c '.last_good_run // null' "$health" 2>/dev/null) || good=null
+  [[ -n $good ]] || good=null
+  # The plain health line, null on a machine with no name or that does not hold the lease.
+  if name=$(machine_name 2>/dev/null) && view=$(health_view "$name" 2>/dev/null); then
+    plain=$(jq -c .text <<<"$view")
+  else
+    plain=null
+  fi
   if ((json)); then
     jq -n --argjson installed "$installed" --argjson enabled "$enabled" --argjson current "$current" \
-      --argjson last "$last" '{installed: $installed, enabled: $enabled, current: $current, last_run: $last}'
+      --argjson last "$last" --argjson good "$good" --argjson health "$plain" \
+      '{installed: $installed, enabled: $enabled, current: $current, last_run: $last, last_good_run: $good, health: $health}'
   else
     installed_text=$(yes_no "$installed")
     [[ $installed-$current != true-false ]] ||
       installed_text+=", but not as this checkout defines it (team-timers enable rewrites it)"
-    printf 'installed: %s\nenabled: %s\nlast run: %s\n' "$installed_text" "$(yes_no "$enabled")" \
-      "$(jq -r '. // "never"' <<<"$last")"
+    printf 'installed: %s\nenabled: %s\nlast run: %s\nlast good run: %s\nhealth: %s\n' "$installed_text" \
+      "$(yes_no "$enabled")" "$(jq -r '. // "never"' <<<"$last")" "$(jq -r '. // "never"' <<<"$good")" \
+      "$(jq -r '. // "none kept here, since this machine does not hold the lease" | ltrimstr("Health: ")' <<<"$plain")"
   fi
+}
+
+# The health thresholds' seams, from the environment, for health_limits in bin/lib/health.jq.
+health_seams() {
+  jq -cn --arg runs "${TEAM_TIMERS_HEALTH_RUNS:-}" --arg stale "${TEAM_TIMERS_HEALTH_STALE_MINUTES:-}" \
+    --arg step "${TEAM_TIMERS_HEALTH_STEP_RUNS:-}" '{runs: $runs, stale_minutes: $stale, step_runs: $step}'
+}
+
+# The health view of the machine <name>, from the health record, the lease record and the fence
+# file, never the network or a service manager: health_view <name>
+health_view() {
+  local raw=(--argjson raw null) lease='' fenced=false
+  [[ ! -f $health ]] || raw=(--rawfile raw "$health")
+  [[ ! -f $state/lease.json ]] || lease=$(jq -c 'objects' "$state/lease.json" 2>/dev/null) || lease=''
+  [[ ! -e $state/fenced ]] || fenced=true
+  jq -n -L "$TEAM_LIB" "${raw[@]}" --argjson lease "${lease:-null}" --argjson fenced "$fenced" --arg machine "$1" \
+    --argjson seams "$(health_seams)" \
+    'include "health"; health_view($raw; $lease; $fenced; $machine; now; health_limits($seams))'
+}
+
+# The health command: the view as JSON, or one line per problem (the plain healthy line when there
+# is none); exits 1 with any problem.
+health_command() {
+  local name view
+  name=$(machine_name) || exit 1
+  view=$(health_view "$name") || die "cannot read the health record $health"
+  if ((json)); then
+    printf '%s\n' "$view"
+  else
+    jq -r 'if .holding | not then "\(.machine) does not hold the lease, so it keeps no health"
+      elif .ok then .text else .problems[].text end' <<<"$view"
+  fi
+  jq -e .ok <<<"$view" >/dev/null || exit 1
 }
 
 yes_no() {
@@ -567,6 +656,7 @@ probe_step() {
   fi
   case $rc in
     0)
+      step_ok probe
       if [[ -e $refused ]]; then
         rm -f "$refused"
         log probe "GitHub accepts $machine's login again"
@@ -576,6 +666,7 @@ probe_step() {
     2) login_refused ;;
     *)
       problem probe "cannot ask GitHub: $PROBE_REASON"
+      step_fail probe "cannot ask GitHub: $PROBE_REASON"
       exit 1
       ;;
   esac
@@ -585,6 +676,7 @@ probe_step() {
 # whose record says it holds the lease. Exits 75.
 go_offline() {
   local since post
+  RUN_ENDED=offline
   if [[ -e $offline ]]; then
     since=$(jq -r '.since // empty' "$offline" 2>/dev/null) || since=''
     problem probe "GitHub unreachable since ${since:-an unknown time} ($PROBE_REASON); the team is still holding"
@@ -611,6 +703,7 @@ go_offline() {
 # Exits 1.
 login_refused() {
   local post=''
+  RUN_ENDED=login-refused
   if [[ ! -e $refused ]]; then
     jq -n --arg since "$(date -u +%FT%TZ)" --arg reason "$PROBE_REASON" '{since: $since, reason: $reason}' >"$refused"
     if post "GitHub refuses $machine's login ($PROBE_REASON); the heartbeat cannot renew the lease until it is fixed there (team-doctor)"; then
@@ -633,6 +726,7 @@ back_step() {
     0) ;;
     75)
       problem back "GitHub answers, but the renew did not: $(first_error); the team is still holding"
+      step_fail lease "GitHub answers, but the renew did not: $(first_error)"
       exit 75
       ;;
     *)
@@ -642,11 +736,14 @@ back_step() {
         return
       fi
       problem back "GitHub answers; not renewed: $(first_error)"
+      step_fail lease "not renewed: $(first_error)"
       exit 1
       ;;
   esac
   rm -f "$offline"
   back=$(date -u +%FT%TZ)
+  step_ok lease
+  run_fact "$(jq -cn --arg at "$back" '{lease_renewed: $at}')"
   text="GitHub back at $(clock "$back") (unreachable from $(clock "$since")); $(held_tasks)"
   [[ $posted == true ]] || text="$(outage_text "$since")"$'\n'"$text"
   if post "$text"; then
@@ -703,10 +800,12 @@ lease_step() {
     0) ;;
     75)
       problem lease "not checked: $(first_error)"
+      step_fail lease "not checked: $(first_error)"
       exit 75
       ;;
     *)
       problem lease "not checked: $(first_error)"
+      step_fail lease "not checked: $(first_error)"
       exit 1
       ;;
   esac
@@ -715,12 +814,16 @@ lease_step() {
     renew
   elif jq -e '.state == "released"' <<<"$desc" >/dev/null; then
     log lease "the lease is released (epoch $epoch); nothing to do"
+    step_ok lease
   elif jq -e '.mine | not' <<<"$desc" >/dev/null; then
     log lease "$holder holds the lease (epoch $epoch); nothing to do"
+    step_ok lease
   else
     age=$(jq -r 'now - (.renewed_at | fromdateiso8601) | floor' <<<"$desc")
     if ((age < RENEW_MINUTES * 60 - SLACK_SECONDS)); then
       log lease "$machine holds the lease, epoch $epoch, renewed $((age / 60)) minutes ago; no renewal due"
+      step_ok lease
+      run_fact "$(jq -c '{lease_renewed: .renewed_at}' <<<"$desc")"
       holding=1
       return
     fi
@@ -736,7 +839,7 @@ lease_step() {
 # "team-checkpoint: " prefix, at most CHECKPOINT_PROBLEM_LINES of them and a count of the rest. A
 # checkpoint that fails, times out or exits 75 is a failed step: the steps after it still run.
 checkpoint_step() {
-  local rc=0 out line kind shown=0 total=0
+  local rc=0 out line kind shown=0 total=0 first='' fails=0 usage=''
   out=$(TEAM_HOME=$TEAM_HOME timeout --kill-after="$KILL_SECONDS" "$CHECKPOINT_TIMEOUT" "$bin/team-checkpoint" \
     --deadline "$CHECKPOINT_DEADLINE" 2>"$err" {run_fd}>&-) || rc=$?
   while IFS= read -r line; do
@@ -745,9 +848,15 @@ checkpoint_step() {
   while IFS= read -r line; do
     [[ -n $line ]] || continue
     total=$((total + 1))
+    line=${line#team-checkpoint: }
+    if [[ $line == "warning: usage: "* ]]; then
+      [[ -n $usage ]] || usage=${line#warning: usage: }
+    elif [[ $line != "warning: "* ]]; then
+      fails=$((fails + 1))
+      [[ -n $first ]] || first=$line
+    fi
     ((shown < CHECKPOINT_PROBLEM_LINES)) || continue
     shown=$((shown + 1))
-    line=${line#team-checkpoint: }
     if [[ $line == "warning: "* ]]; then problem checkpoint "$line"; else problem checkpoint "failed: $line"; fi
   done <"$err"
   if ((total > shown)); then
@@ -756,24 +865,41 @@ checkpoint_step() {
     problem checkpoint "$kind: and $((total - shown)) more problem lines"
   fi
   case $rc in
-    0) ;;
+    0) step_ok checkpoint ;;
     124 | 137) step_failed checkpoint "timed out after $CHECKPOINT_TIMEOUT s" ;;
     *)
       failed=1
       ((total)) || problem checkpoint "failed: team-checkpoint exited $rc with no reason on stderr"
+      step_fail checkpoint "${first:-team-checkpoint exited $rc with no reason on stderr}" "$((fails > 1 ? fails - 1 : 0))"
       ;;
   esac
+  # The usage export: its warning fails the usage step; a checkpoint made with none passed it.
+  if [[ -n $usage ]]; then
+    step_fail usage "$usage"
+  elif ((rc == 0)) && [[ $out != "not due: "* ]]; then
+    step_ok usage
+  fi
 }
 
-# The inbox step, on the holder after the checkpoint step: team-inbox, logged only when it
+# The inbox step, on the holder after the ledger step: team-inbox, logged only when it
 # posted a new message or failed, and never failing the run, since Discord holds no lease.
 inbox_step() {
-  local rc=0 out
+  local rc=0 out why
   out=$(TEAM_HOME=$TEAM_HOME timeout --kill-after="$KILL_SECONDS" "$INBOX_TIMEOUT" "$bin/team-inbox" 2>"$err" {run_fd}>&-) || rc=$?
   case $rc in
-    0) [[ $out != posted* ]] || log inbox "$out" ;;
-    124 | 137) problem inbox "failed: timed out after $INBOX_TIMEOUT s" ;;
-    *) problem inbox "failed: $(grep -q . "$err" && first_error || echo "team-inbox exited $rc")" ;;
+    0)
+      [[ $out != posted* ]] || log inbox "$out"
+      step_ok inbox
+      ;;
+    124 | 137)
+      problem inbox "failed: timed out after $INBOX_TIMEOUT s"
+      step_fail inbox "timed out after $INBOX_TIMEOUT s"
+      ;;
+    *)
+      why=$(grep -q . "$err" && first_error || echo "team-inbox exited $rc")
+      problem inbox "failed: $why"
+      step_fail inbox "$why"
+      ;;
   esac
 }
 
@@ -785,15 +911,16 @@ inbox_step() {
 finished_step() {
   local ledger=$TEAM_HOME/ledger.jsonl sessions finished task role session out start=$SECONDS left=0
   [[ -e $ledger ]] || ledger=/dev/null
+  step_ok finished
   if ! sessions=$(timeout --kill-after="$KILL_SECONDS" "$FINISHED_CALL_TIMEOUT" claude agents --json 2>/dev/null </dev/null {run_fd}>&- |
     jq -ce 'select(type == "array")' 2>/dev/null); then
-    problem finished "warning: cannot read the live session list (claude agents --json), so no finished session was stopped"
+    finished_warning "cannot read the live session list (claude agents --json), so no finished session was stopped"
     return 0
   fi
   if ! finished=$(ledger_jq 'ledger_events | by_task as $tasks | plan_tasks($sessions)[] | .task as $task | .finished[]
       | select(.role != "planner" or any($tasks[$task][]; .event == "plan-approved")) | [$task, .role, .session] | @tsv' \
     -nRr --argjson sessions "$sessions" "$ledger" 2>"$err"); then
-    problem finished "warning: cannot read $ledger ($(first_error)), so no finished session was stopped"
+    finished_warning "cannot read $ledger ($(first_error)), so no finished session was stopped"
     return 0
   fi
   while IFS=$'\t' read -r task role session; do
@@ -803,10 +930,17 @@ finished_step() {
     elif out=$(timeout --kill-after="$KILL_SECONDS" "$FINISHED_CALL_TIMEOUT" claude stop "$session" 2>&1 </dev/null {run_fd}>&-); then
       log finished "stopped $task-$role $session: its work is handed on"
     else
-      problem finished "warning: could not stop $task-$role $session ($(grep -m1 . <<<"$out" || echo "claude stop failed with no reason given"))"
+      finished_warning "could not stop $task-$role $session ($(grep -m1 . <<<"$out" || echo "claude stop failed with no reason given"))"
     fi
   done <<<"$finished"
-  ((left == 0)) || problem finished "warning: $left finished $( ((left == 1)) && echo session || echo sessions) left for the next run: no stop starts $FINISHED_TIMEOUT s into the step"
+  ((left == 0)) || finished_warning "$left finished $( ((left == 1)) && echo session || echo sessions) left for the next run: no stop starts $FINISHED_TIMEOUT s into the step"
+}
+
+# A warning of the finished step: its line, and the step failing in the health record, never the
+# run: finished_warning <what>
+finished_warning() {
+  problem finished "warning: $1"
+  step_fail finished "$1"
 }
 
 # The capacity step, on the holder after the finished step: team-capacity sample, then
@@ -836,7 +970,10 @@ pack_step() {
     step_failed pack "cannot count the team home's loose objects: $(first_error)"
     return 0
   fi
-  ((loose >= PACK_LOOSE)) || return 0
+  if ((loose < PACK_LOOSE)); then
+    step_ok pack
+    return 0
+  fi
   timeout --kill-after="$KILL_SECONDS" "$PACK_TIMEOUT" git -C "$TEAM_HOME" gc --quiet 2>"$err" {run_fd}>&- || rc=$?
   case $rc in
     0) ;;
@@ -844,6 +981,7 @@ pack_step() {
     *) step_failed pack "$(grep -q . "$err" && first_error || echo "git gc exited $rc")" && return 0 ;;
   esac
   log pack "packed $loose loose objects; $(loose_objects) left loose, $(pack_size) in packs"
+  step_ok pack
 }
 
 # The janitor step, on the holder after the pack step: team-janitor, when heartbeat_janitor is
@@ -869,7 +1007,10 @@ step_on() {
       return 1
     fi
   fi
-  jq -e -L "$TEAM_LIB" --arg key "$2" 'include "stack"; settings[$key]' <<<"$given" >/dev/null
+  jq -e -L "$TEAM_LIB" --arg key "$2" 'include "stack"; settings[$key]' <<<"$given" >/dev/null && return 0
+  # A step that is off has nothing failing.
+  step_ok "$1"
+  return 1
 }
 
 # Run the step <step>'s sibling command, stopped (with all it started) after <seconds>:
@@ -882,7 +1023,7 @@ run_step() {
     [[ -z $line ]] || log "$1" "$line"
   done <<<"$out"
   case $rc in
-    0) ;;
+    0) step_ok "$1" ;;
     124 | 137) step_failed "$1" "timed out after $2 s" ;;
     *) step_failed "$1" "$(grep -q . "$err" && first_error || echo "$3 exited $rc")" ;;
   esac
@@ -892,7 +1033,93 @@ run_step() {
 # run exits 1 at its end.
 step_failed() {
   problem "$1" "failed: $2"
+  step_fail "$1" "$2"
   failed=1
+}
+
+# The run's results for the health record (bin/lib/health.jq's health_fold): a step that went
+# well, a step that failed with its reason (and how many more failure lines it gave), and a fact
+# of the run as one JSON object. A step with no result in a run did not run, and keeps its entry.
+step_ok() {
+  jq -cn --arg step "$1" '{step: $step, reason: null}' >>"$results"
+}
+
+step_fail() {
+  jq -cn --arg step "$1" --arg reason "$2" --argjson more "${3:-0}" '{step: $step, reason: $reason, more: $more}' >>"$results"
+}
+
+run_fact() {
+  printf '%s\n' "$1" >>"$results"
+}
+
+# Write the health record, folding this run's results into it, written whole and moved into place:
+# write_record <how the run ended> (empty while it goes on). A record it cannot write is a problem
+# line and fails nothing.
+write_record() {
+  local now last_checkpoint='' offline_json=null refused_json=null since prev=(--argjson prev null)
+  now=$(date -u +%FT%TZ)
+  [[ ! -e $state/last-checkpoint ]] || last_checkpoint=$(date -u -r "$state/last-checkpoint" +%FT%TZ)
+  since=$(offline_since)
+  [[ -z $since ]] || offline_json=$(jq -cn --arg since "$since" '{since: $since}')
+  if [[ -e $refused ]]; then
+    refused_json=$(jq -c 'select(type == "object" and (.since | type) == "string") | {since, reason}' "$refused" 2>/dev/null) || refused_json=''
+    [[ -n $refused_json ]] ||
+      refused_json=$(jq -cn --arg since "$(date -u -r "$refused" +%FT%TZ)" '{since: $since, reason: null}')
+  fi
+  [[ ! -f $health ]] || prev=(--rawfile prev "$health")
+  if jq -n -L "$TEAM_LIB" "${prev[@]}" --slurpfile results "$results" --arg machine "${machine:-}" \
+    --arg start "$run_start" --arg id "$run_id" --arg now "$now" --arg ended "$1" --arg last_checkpoint "$last_checkpoint" \
+    --argjson offline "$offline_json" --argjson login_refused "$refused_json" '
+      include "health";
+      def given: if . == "" then null else . end;
+      $prev | (if type == "string" then try fromjson catch null else . end)
+      | health_fold({machine: ($machine | given), id: $id, start: $start, now: $now, ended: ($ended | given),
+          last_checkpoint: ($last_checkpoint | given), offline: $offline, login_refused: $login_refused}; $results)' \
+    >"$health.$$" 2>"$health.$$.err"; then
+    mv -f "$health.$$" "$health"
+  else
+    problem run "cannot write the health record $health: $(grep -m1 . "$health.$$.err" || echo "jq failed")"
+    rm -f "$health.$$"
+  fi
+  rm -f "$health.$$.err"
+}
+
+# The run's end, however it ends (its EXIT trap): the health record written with how it ended,
+# unless it never took the lock or the run's time limit stopped it (bounded_run writes that one).
+run_ended() {
+  local rc=$? ended
+  ((recording)) || return 0
+  [[ ! -e $fired ]] || return 0
+  if [[ -n $RUN_ENDED ]]; then
+    ended=$RUN_ENDED
+  elif [[ -e $state/fenced ]]; then
+    ended=fenced
+  elif ((rc == 0 && holding)); then
+    ended=ok
+  elif ((rc == 0)); then
+    ended=not-holder
+  else
+    ended=failed
+  fi
+  write_record "$ended"
+}
+
+# The ledger step, on the holder after the checkpoint step: one pass over ledger.jsonl that counts
+# the lines that are not JSON objects, by line number, and reads the time of its last event that is
+# not a denied; a line no reader can parse fails the step.
+ledger_step() {
+  local file=$TEAM_HOME/ledger.jsonl scan
+  [[ -e $file ]] || file=/dev/null
+  if ! scan=$(jq -nRc -L "$TEAM_LIB" 'include "health"; ledger_scan' "$file" 2>"$err"); then
+    step_failed ledger "cannot read $file: $(first_error)"
+    return 0
+  fi
+  run_fact "{\"ledger\": $scan}"
+  if jq -e '.count > 0' <<<"$scan" >/dev/null; then
+    step_failed ledger "$(jq -r -L "$TEAM_LIB" 'include "health"; ledger_reason' <<<"$scan")"
+  else
+    step_ok ledger
+  fi
 }
 
 # team-lease renew, logged; a renew that fenced this machine did its job.
@@ -900,9 +1127,14 @@ renew() {
   local rc=0 out
   out=$(team team-lease renew 2>"$err") || rc=$?
   case $rc in
-    0) log lease "$out" ;;
+    0)
+      log lease "$out"
+      step_ok lease
+      run_fact "$(jq -cn '{lease_renewed: (now | floor | todate)}')"
+      ;;
     75)
       problem lease "not renewed: $(first_error)"
+      step_fail lease "not renewed: $(first_error)"
       exit 75
       ;;
     *)
@@ -911,12 +1143,14 @@ renew() {
         return
       fi
       problem lease "not renewed: $(first_error)"
+      step_fail lease "not renewed: $(first_error)"
       exit 1
       ;;
   esac
 }
 
 run_heartbeat() {
+  recording=0
   mkdir -p "$state"
   exec {run_fd}>>"$state/heartbeat.lock"
   if ! flock -n "$run_fd"; then
@@ -928,16 +1162,26 @@ run_heartbeat() {
     mv -f "$log.$$" "$log"
   fi
   trim_failures
+  holding=0 failed=0 RUN_ENDED='' machine=''
+  run_start=$(date -u +%FT%TZ) run_id=$(date +%s%N)-$BASHPID
+  run_fact "$(jq -cn --arg start "$run_start" --arg id "$run_id" '{start: $start, id: $id}')"
+  recording=1
+  trap run_ended EXIT
   if ! machine=$(machine_name 2>"$err"); then
+    machine=''
     problem run "$(first_error)"
+    step_fail run "$(first_error)"
     exit 1
   fi
+  step_ok run
   fence_step || true
   probe_step
-  holding=0 failed=0
   if [[ -e $offline ]]; then back_step; else lease_step; fi
+  ((!holding)) || run_fact '{"holding": true}'
   if ((holding)); then
     checkpoint_step
+    ledger_step
+    write_record ''
     inbox_step
     finished_step
     capacity_step
@@ -990,7 +1234,7 @@ stop_tree() {
 # timeout runs its command in a process group of its own, which no signal to one group reaches),
 # log it and exit 1; its lock goes with it. Otherwise exit with the run's own code.
 bounded_run() {
-  local run watchdog rc=0 fired=$err.fired
+  local run watchdog rc=0
   mkdir -p "$state"
   run_heartbeat &
   run=$!
@@ -1006,6 +1250,13 @@ bounded_run() {
     wait "$watchdog" || true
     rm -f "$fired"
     problem run "failed: timed out after $RUN_TIMEOUT s"
+    # The record of a run the limit stopped, from the results it left.
+    read -r run_start run_id < <(jq -r 'select(.start) | "\(.start) \(.id)"' "$results" | head -n 1) || true
+    if [[ -n $run_start ]]; then
+      machine=$(machine_name 2>/dev/null) || machine=''
+      step_fail run "timed out after $RUN_TIMEOUT s"
+      write_record timed-out
+    fi
     exit 1
   fi
   stop_tree "$watchdog" 0
@@ -1058,6 +1309,7 @@ case $command in
     mgr=$(manager) || exit 1
     status
     ;;
+  health) health_command ;;
   run) bounded_run ;;
   watch) watch ;;
 esac
