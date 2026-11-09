@@ -408,6 +408,18 @@ read 3 of 3 transcripts; wrote 1 day file"
   assert_contains "$output" "| sonnet | 1 | 1 | 1 | 1 | 0.25 | 0.25 | claude-sonnet-5-5 0.25 |"
 }
 
+@test "with no toolkit given, the toolkit lists add up to the report's builder and reviewer figures" {
+  report_fixture
+  report_json
+  # T0's builder launch (t0t0t0t0) is the load check, team-test's, so it is in no row.
+  assert_equal "$(q '[.outcomes.builder_toolkits[].toolkits, .outcomes.reviewer_toolkits[].toolkits] | unique')" '[[]]'
+  assert_equal "$(q '[.outcomes.builder_toolkits[].project] | unique')" '["agent-team","conventioner"]'
+  assert_equal "$(q '[(.outcomes.builder_toolkits | map(.tickets_done) | add), .outcomes.counts.tickets_done]')" '[2,2]'
+  assert_equal "$(q '[(.outcomes.builder_toolkits | map(.w) | add), (.outcomes.sessions[] | select(.role == "builder") | .w)]')" '[2.54,2.54]'
+  assert_equal "$(q '[(.outcomes.reviewer_toolkits | map(.reviews) | add), .outcomes.counts.reviews]')" '[2,2]'
+  assert_equal "$(q '[(.outcomes.reviewer_toolkits | map(.w) | add), (.outcomes.sessions[] | select(.role == "reviewer") | .w)]')" '[0.75,0.75]'
+}
+
 @test "the report gives builder and reviewer launches by project and toolkits, each with its outcomes and \$w" {
   toolkits_fixture
   report_json

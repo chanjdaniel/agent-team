@@ -55,12 +55,13 @@
 #                    event's model, else default), with how many have replies, the reviews they
 #                    wrote by --until (a review is its task's latest reviewer launch's), those with
 #                    findings, their $w and $w per review, and the models their replies ran on;
-#                    and the window's builder and reviewer launches by project (the launch's, else
-#                    its task's) and the toolkits each carried (its launch event's toolkits, sorted
-#                    and deduplicated, none for an empty list or none named), with how many have
-#                    replies and, over those, a builder's tickets done by --until (a ticket done is
-#                    its task's latest builder launch's), a reviewer's reviews and those with
-#                    findings, their $w and $w per ticket or per review
+#                    and the window's builder and reviewer launches, but T0's (team-test's), by
+#                    project (the launch's, else its task's) and the toolkits each carried (its
+#                    launch event's toolkits, sorted and deduplicated, none for an empty list or
+#                    none named), with how many have replies and, over those, a builder's tickets
+#                    done by --until (a ticket done is its task's latest builder launch's), a
+#                    reviewer's reviews and those with findings, their $w and $w per ticket or per
+#                    review
 #   relaunches       a launch of a role for a task while that role's previous session there
 #                    finished nothing (no done; for a builder no ticket-done, for a reviewer no
 #                    review), by what came between, with the new session's warm-up (its first 10
@@ -1768,7 +1769,8 @@ def build_report(opts):
     report["outcomes"]["reviewer_models"] = reviewer_models
 
     # The window's builder and reviewer launches by their project and the toolkits each carried,
-    # so a setup trial's arm compares with its baseline in one project (sops/model-trials.md).
+    # so a setup trial's arm compares with its baseline in one project (sops/model-trials.md); T0's,
+    # the load check's, are team-test's and in no row.
     def toolkit_key(e):
         kits = e.get("toolkits") if isinstance(e.get("toolkits"), list) else []
         name = e["project"] if isinstance(e.get("project"), str) else project.get(e.get("task"), "(unknown)")
@@ -1776,7 +1778,7 @@ def build_report(opts):
 
     def by_toolkits(role):
         out = []
-        for (name, kits), ls in sorted(group([e for e in events if e.get("event") == "launch" and e.get("role") == role], toolkit_key).items()):
+        for (name, kits), ls in sorted(group([e for e in events if e.get("event") == "launch" and e.get("role") == role and e.get("task") != "T0"], toolkit_key).items()):
             seen = [e for e in ls if session_w(e) is not None]
             got = [x for e in seen for x in delivered[id(e)] if x["_t"] <= until]
             w = sum(session_w(e) for e in seen)
