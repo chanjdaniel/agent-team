@@ -72,6 +72,7 @@ Like the plan-time word, it never holds for agent-team, the team's own project (
 - When Daniel withdraws a plan-time word, it logs `team-log T<n> merge-preapproval-withdrawn project=<p> discord_message=<id>`, which `team-log` refuses when no `merge-preapproved` of that project stands for the task.
 - After logging any of the merge words or their withdrawals, it runs `team-inbox`, so the Waiting on you message is current: it shows each standing word ("Standing merge word on <projects> since <link>") and leaves out of "PRs ready to merge" a PR a plan-time or standing word stands for, whose refusal comes back as an ask.
 - `team-snapshot` says at session start which projects a standing word stands for, and since which message.
+- No reader offers the standing word for agent-team, the team's own project: `team-state` gives its PR a null `standing_word` (`own_project`), so `team-next` prints the merge ask for it, and `team-sweep`, `team-inbox` and `team-snapshot` take the projects a standing word may cover from `standing_projects` in `bin/lib/team.sh` (every registered one but the team's own), so the sweep gives no `merge-due` on the standing word alone, the inbox lists its ready PRs, and the standing word lines of the inbox and the snapshot name the other projects only.
 
 ## Giving and withdrawing the standing word
 
